@@ -29,9 +29,7 @@ type Chain struct {
 
 // NewChain initializes a new Middleware Chain.
 func NewChain(middlewares ...Middleware) *Chain {
-	return &Chain{
-		middlewares: middlewares,
-	}
+	return &Chain{middlewares: middlewares}
 }
 
 // Then applies the middleware chain to the given handler.
@@ -135,18 +133,19 @@ func TimeoutMiddleware(cmd Command, defaultTimeout time.Duration) Middleware {
 }
 
 // PermissionMiddleware enforces that the sender has sufficient permission for the command.
+// Security-sensitive commands fail closed when the permission provider is unavailable.
 func PermissionMiddleware(cmd Command) Middleware {
 	return func(next CommandHandler) CommandHandler {
 		return func(ctx *Context) error {
-			var userID int64
-			if ctx.Sender != nil {
-				userID = ctx.Sender.ID
+			if cmd.Permission != PermissionEveryone {
+				var userID int64
+				if ctx.Sender != nil {
+					userID = ctx.Sender.ID
+				}
+				if ctx.Perms == nil || !ctx.Perms.CanRun(userID, cmd) {
+					return ErrPermissionDenied
+				}
 			}
-
-			if ctx.Perms != nil && !ctx.Perms.CanRun(userID, cmd) {
-				return ErrPermissionDenied
-			}
-
 			return next(ctx)
 		}
 	}
@@ -159,17 +158,12 @@ func FilterMiddleware(cmd Command) Middleware {
 			if cmd.GroupOnly && !ctx.IsGroup() {
 				return ErrGroupOnly
 			}
-
 			if cmd.PrivateOnly && !ctx.IsPrivate() {
 				return ErrPrivateOnly
 			}
-
-			if cmd.ReplyOnly {
-				if ctx.Message == nil || ctx.Message.ReplyToID == 0 {
-					return ErrReplyRequired
-				}
+			if cmd.ReplyOnly && (ctx.Message == nil || ctx.Message.ReplyToID == 0) {
+				return ErrReplyRequired
 			}
-
 			return next(ctx)
 		}
 	}
@@ -182,8 +176,6 @@ func CooldownMiddleware(cmd Command, tracker *CooldownTracker) Middleware {
 			if cmd.Cooldown <= 0 || tracker == nil {
 				return next(ctx)
 			}
-
-			// Owner is exempt from cooldowns
 			if ctx.IsOwner() {
 				return next(ctx)
 			}
@@ -192,13 +184,10 @@ func CooldownMiddleware(cmd Command, tracker *CooldownTracker) Middleware {
 			if ctx.Sender != nil {
 				userID = ctx.Sender.ID
 			}
-
 			if remaining, ok := tracker.CheckAndRecord(userID, cmd.Name, cmd.Cooldown); !ok {
 				return fmt.Errorf("%w: wait %s", ErrCooldownActive, remaining.Round(time.Millisecond))
 			}
-
 			return next(ctx)
 		}
 	}
 }
-
