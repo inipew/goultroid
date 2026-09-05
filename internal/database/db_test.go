@@ -250,3 +250,65 @@ func TestDatabase_Concurrent(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestFilterOperations(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	chatID := int64(-100123456789)
+
+	// 1. Initial list empty
+	filters, err := db.ListFilters(ctx, chatID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(filters) != 0 {
+		t.Fatalf("expected 0 filters, got %d", len(filters))
+	}
+
+	// 2. Save filter
+	if err := db.SaveFilter(ctx, chatID, "hello", "Hello there!"); err != nil {
+		t.Fatalf("failed to save filter: %v", err)
+	}
+	if err := db.SaveFilter(ctx, chatID, "rules", "Be kind."); err != nil {
+		t.Fatalf("failed to save second filter: %v", err)
+	}
+
+	// 3. Get filter (case-insensitive)
+	f, err := db.GetFilter(ctx, chatID, "HeLLo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if f == nil || f.ReplyText != "Hello there!" {
+		t.Errorf("unexpected filter result: %+v", f)
+	}
+
+	// 4. Overwrite filter
+	if err := db.SaveFilter(ctx, chatID, "hello", "General Kenobi!"); err != nil {
+		t.Fatalf("failed to overwrite filter: %v", err)
+	}
+	f, _ = db.GetFilter(ctx, chatID, "hello")
+	if f == nil || f.ReplyText != "General Kenobi!" {
+		t.Errorf("expected overwritten text 'General Kenobi!', got %+v", f)
+	}
+
+	// 5. List filters
+	all, err := db.ListFilters(ctx, chatID)
+	if err != nil || len(all) != 2 {
+		t.Fatalf("expected 2 filters, got %d (err: %v)", len(all), err)
+	}
+
+	// 6. Delete filter
+	if err := db.DeleteFilter(ctx, chatID, "rules"); err != nil {
+		t.Fatalf("failed to delete filter: %v", err)
+	}
+	all, _ = db.ListFilters(ctx, chatID)
+	if len(all) != 1 {
+		t.Errorf("expected 1 filter after delete, got %d", len(all))
+	}
+
+	// 7. Delete non-existent
+	if err := db.DeleteFilter(ctx, chatID, "rules"); err == nil {
+		t.Errorf("expected error deleting non-existent filter")
+	}
+}
+

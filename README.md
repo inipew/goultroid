@@ -136,6 +136,14 @@ docker run -it --rm \
 | `.chatinfo` | `.groupinfo`, `.cinfo` | Info | Sudo | Tampilkan metadata lengkap grup/supergroup/channel saat ini |
 | `.exec` | `.sh`, `.bash`, `.cmd` | System | Owner | Eksekusi shell command di host secara aman (timeout 60s & auto-upload) |
 | `.restart` | - | System | Owner | Restart proses userbot secara anggun dan konfirmasi otomatis |
+| `.filter` | - | Filters | Sudo | Simpan auto-reply berbasis kata kunci per chat (mendukung teks reply) |
+| `.stop` | - | Filters | Sudo | Hapus filter kata kunci aktif di chat saat ini |
+| `.filters` | - | Filters | Sudo | Tampilkan daftar semua filter kata kunci aktif di chat saat ini |
+| `.roll` | `.dice` | Fun | Sudo | Lempar dadu atau angka acak (e.g. `.roll` atau `.roll 20`) |
+| `.shrug` | - | Fun | Sudo | Kirim ekspresi shrug ¯\\_(ツ)_/¯ |
+| `.tableflip` | - | Fun | Sudo | Kirim ekspresi tableflip (╯°□°)╯︵ ┻━┻ |
+| `.unflip` | - | Fun | Sudo | Kirim ekspresi unflip ┬─┬ノ( º _ ºノ) |
+| `.mock` | - | Fun | Sudo | Konversi teks menjadi SpongeBob mock case selang-seling huruf |
 
 ---
 

@@ -86,6 +86,14 @@ func (d *DB) migrate(ctx context.Context) error {
 		reason TEXT NOT NULL DEFAULT '',
 		since DATETIME NOT NULL
 	);
+
+	CREATE TABLE IF NOT EXISTS filters (
+		chat_id INTEGER NOT NULL,
+		keyword TEXT NOT NULL,
+		reply_text TEXT NOT NULL,
+		created_at DATETIME NOT NULL,
+		PRIMARY KEY (chat_id, keyword)
+	);
 	`
 	_, err := d.ExecContext(ctx, schema)
 	return err

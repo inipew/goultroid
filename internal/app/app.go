@@ -14,7 +14,9 @@ import (
 	"github.com/inipew/goultroid/plugins/afk"
 	"github.com/inipew/goultroid/plugins/alive"
 	"github.com/inipew/goultroid/plugins/downloader"
+	"github.com/inipew/goultroid/plugins/filters"
 	"github.com/inipew/goultroid/plugins/forward"
+	"github.com/inipew/goultroid/plugins/fun"
 	"github.com/inipew/goultroid/plugins/help"
 	"github.com/inipew/goultroid/plugins/info"
 	"github.com/inipew/goultroid/plugins/media"
@@ -105,6 +107,9 @@ func New(cfg *config.Config) (*App, error) {
 	afkPlugin := afk.New(db, cfg.OwnerID, client.Service)
 	dispatcher.AddMessageHandler(afkPlugin.HandleIncomingMessage)
 
+	filtersPlugin := filters.New(db, client.Service)
+	dispatcher.AddMessageHandler(filtersPlugin.HandleIncomingMessage)
+
 	plugins := []plugin.Plugin{
 		ping.New(),
 		help.New(router),
@@ -120,6 +125,8 @@ func New(cfg *config.Config) (*App, error) {
 		sticker.New(),
 		info.New(),
 		system.New(),
+		filtersPlugin,
+		fun.New(),
 	}
 
 	for _, p := range plugins {
