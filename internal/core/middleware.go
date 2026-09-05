@@ -10,8 +10,14 @@ import (
 	"go.uber.org/zap"
 )
 
-// ErrPermissionDenied is returned when a user attempts to execute a command without sufficient permissions.
-var ErrPermissionDenied = errors.New("permission denied")
+// Sentinel errors for middleware checks.
+var (
+	ErrPermissionDenied = errors.New("permission denied")
+	ErrGroupOnly        = errors.New("command can only be used in groups")
+	ErrPrivateOnly      = errors.New("command can only be used in private chat")
+	ErrReplyRequired    = errors.New("command must be a reply to a message")
+	ErrCooldownActive   = errors.New("command is on cooldown")
+)
 
 // Middleware wraps a CommandHandler, providing pre/post processing hooks.
 type Middleware func(next CommandHandler) CommandHandler
@@ -140,3 +146,54 @@ func PermissionMiddleware(cmd Command) Middleware {
 		}
 	}
 }
+
+// FilterMiddleware validates contextual requirements (GroupOnly, PrivateOnly, ReplyOnly).
+func FilterMiddleware(cmd Command) Middleware {
+	return func(next CommandHandler) CommandHandler {
+		return func(ctx *Context) error {
+			if cmd.GroupOnly && !ctx.IsGroup() {
+				return ErrGroupOnly
+			}
+
+			if cmd.PrivateOnly && !ctx.IsPrivate() {
+				return ErrPrivateOnly
+			}
+
+			if cmd.ReplyOnly {
+				if ctx.Message == nil || ctx.Message.ReplyToID == 0 {
+					return ErrReplyRequired
+				}
+			}
+
+			return next(ctx)
+		}
+	}
+}
+
+// CooldownMiddleware prevents command spamming by enforcing rate limits per user.
+func CooldownMiddleware(cmd Command, tracker *CooldownTracker) Middleware {
+	return func(next CommandHandler) CommandHandler {
+		return func(ctx *Context) error {
+			if cmd.Cooldown <= 0 || tracker == nil {
+				return next(ctx)
+			}
+
+			// Owner is exempt from cooldowns
+			if ctx.IsOwner() {
+				return next(ctx)
+			}
+
+			var userID int64
+			if ctx.Sender != nil {
+				userID = ctx.Sender.ID
+			}
+
+			if remaining, ok := tracker.CheckAndRecord(userID, cmd.Name, cmd.Cooldown); !ok {
+				return fmt.Errorf("%w: wait %s", ErrCooldownActive, remaining.Round(time.Millisecond))
+			}
+
+			return next(ctx)
+		}
+	}
+}
+

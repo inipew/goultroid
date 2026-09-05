@@ -144,3 +144,82 @@ func TestPermissionMiddleware(t *testing.T) {
 		t.Errorf("expected owner to be allowed, got error: %v", err)
 	}
 }
+
+func TestFilterMiddleware(t *testing.T) {
+	dummy := func(ctx *Context) error { return nil }
+
+	// GroupOnly test
+	groupCmd := Command{Name: "ban", GroupOnly: true}
+	mGroup := FilterMiddleware(groupCmd)(dummy)
+
+	if err := mGroup(&Context{Chat: &Chat{Type: "private"}}); !errors.Is(err, ErrGroupOnly) {
+		t.Errorf("expected ErrGroupOnly, got %v", err)
+	}
+	if err := mGroup(&Context{Chat: &Chat{Type: "group"}}); err != nil {
+		t.Errorf("expected group to pass GroupOnly filter, got %v", err)
+	}
+	if err := mGroup(&Context{Chat: &Chat{Type: "supergroup"}}); err != nil {
+		t.Errorf("expected supergroup to pass GroupOnly filter, got %v", err)
+	}
+
+	// PrivateOnly test
+	privateCmd := Command{Name: "secret", PrivateOnly: true}
+	mPrivate := FilterMiddleware(privateCmd)(dummy)
+
+	if err := mPrivate(&Context{Chat: &Chat{Type: "group"}}); !errors.Is(err, ErrPrivateOnly) {
+		t.Errorf("expected ErrPrivateOnly, got %v", err)
+	}
+	if err := mPrivate(&Context{Chat: &Chat{Type: "private"}}); err != nil {
+		t.Errorf("expected private chat to pass PrivateOnly filter, got %v", err)
+	}
+
+	// ReplyOnly test
+	replyCmd := Command{Name: "info", ReplyOnly: true}
+	mReply := FilterMiddleware(replyCmd)(dummy)
+
+	if err := mReply(&Context{Message: &Message{ReplyToID: 0}}); !errors.Is(err, ErrReplyRequired) {
+		t.Errorf("expected ErrReplyRequired when ReplyToID is 0, got %v", err)
+	}
+	if err := mReply(&Context{Message: nil}); !errors.Is(err, ErrReplyRequired) {
+		t.Errorf("expected ErrReplyRequired when Message is nil, got %v", err)
+	}
+	if err := mReply(&Context{Message: &Message{ReplyToID: 42}}); err != nil {
+		t.Errorf("expected reply message to pass ReplyOnly filter, got %v", err)
+	}
+}
+
+func TestCooldownMiddleware(t *testing.T) {
+	dummy := func(ctx *Context) error { return nil }
+	tracker := NewCooldownTracker()
+
+	cmd := Command{Name: "ping", Cooldown: 100 * time.Millisecond}
+	m := CooldownMiddleware(cmd, tracker)(dummy)
+
+	ctxNormal := &Context{
+		Sender: &User{ID: 222},
+		Perms:  NewPermissions(111, nil),
+	}
+
+	// First execution -> pass
+	if err := m(ctxNormal); err != nil {
+		t.Fatalf("expected first execution to pass, got %v", err)
+	}
+
+	// Immediate second execution -> ErrCooldownActive
+	if err := m(ctxNormal); !errors.Is(err, ErrCooldownActive) {
+		t.Fatalf("expected ErrCooldownActive, got %v", err)
+	}
+
+	// Owner execution -> always bypasses cooldown
+	ctxOwner := &Context{
+		Sender: &User{ID: 111},
+		Perms:  NewPermissions(111, nil),
+	}
+	if err := m(ctxOwner); err != nil {
+		t.Fatalf("owner should bypass cooldown, got %v", err)
+	}
+	if err := m(ctxOwner); err != nil {
+		t.Fatalf("owner should bypass cooldown repeatedly, got %v", err)
+	}
+}
+

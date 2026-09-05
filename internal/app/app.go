@@ -3,11 +3,13 @@ package app
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/telegram"
+	"github.com/inipew/goultroid/plugins/alive"
 	"github.com/inipew/goultroid/plugins/help"
 	"github.com/inipew/goultroid/plugins/ping"
 	"go.uber.org/zap"
@@ -69,6 +71,9 @@ func New(cfg *config.Config) (*App, error) {
 	}
 	if err := mgr.Register(help.New(router)); err != nil {
 		return nil, fmt.Errorf("failed to register help plugin: %w", err)
+	}
+	if err := mgr.Register(alive.New(time.Now())); err != nil {
+		return nil, fmt.Errorf("failed to register alive plugin: %w", err)
 	}
 
 	return &App{

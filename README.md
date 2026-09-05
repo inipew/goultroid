@@ -109,6 +109,7 @@ docker run -it --rm \
 | Perintah | Alias | Kategori | Izin | Deskripsi |
 |---|---|---|---|---|
 | `.ping` | `.p`, `.latency` | Utility | Everyone | Mengukur respons dan latensi userbot |
+| `.alive` | `.a` | Utility | Everyone | Menampilkan status aktif, uptime, versi Go, dan resource usage |
 | `.help` | `.h`, `.commands` | Utility | Everyone | Menampilkan daftar perintah atau detail perintah |
 
 ---

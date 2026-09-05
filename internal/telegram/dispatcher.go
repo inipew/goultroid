@@ -13,12 +13,13 @@ import (
 
 // Dispatcher processes incoming Telegram updates and routes them to userbot commands.
 type Dispatcher struct {
-	router *core.Router
-	perms  *core.Permissions
-	svc    core.TelegramServicer
-	logger *zap.Logger
-	selfID int64
-	mu     sync.RWMutex
+	router   *core.Router
+	perms    *core.Permissions
+	svc      core.TelegramServicer
+	logger   *zap.Logger
+	cooldown *core.CooldownTracker
+	selfID   int64
+	mu       sync.RWMutex
 }
 
 // NewDispatcher creates a new Dispatcher instance.
@@ -29,10 +30,11 @@ func NewDispatcher(
 	logger *zap.Logger,
 ) *Dispatcher {
 	return &Dispatcher{
-		router: router,
-		perms:  perms,
-		svc:    svc,
-		logger: logger,
+		router:   router,
+		perms:    perms,
+		svc:      svc,
+		logger:   logger,
+		cooldown: core.NewCooldownTracker(),
 	}
 }
 
@@ -181,6 +183,8 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		core.RecoveryMiddleware(d.logger),
 		core.LoggingMiddleware(d.logger),
 		core.PermissionMiddleware(cmd),
+		core.FilterMiddleware(cmd),
+		core.CooldownMiddleware(cmd, d.cooldown),
 		core.TimeoutMiddleware(30*time.Second),
 	)
 
@@ -189,7 +193,11 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	// Execute command concurrently
 	go func() {
 		if err := handler(coreCtx); err != nil {
-			if errors.Is(err, core.ErrPermissionDenied) {
+			if errors.Is(err, core.ErrPermissionDenied) || errors.Is(err, core.ErrCooldownActive) {
+				return
+			}
+			if errors.Is(err, core.ErrGroupOnly) || errors.Is(err, core.ErrPrivateOnly) || errors.Is(err, core.ErrReplyRequired) {
+				_ = coreCtx.Reply("⚠️ " + err.Error())
 				return
 			}
 			if d.logger != nil {
