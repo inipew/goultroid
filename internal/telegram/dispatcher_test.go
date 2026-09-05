@@ -163,7 +163,7 @@ func TestNewClient_Validation(t *testing.T) {
 	dispatcher := NewDispatcher(router, nil, nil, logger)
 
 	// Nil config
-	if _, err := NewClient(nil, dispatcher, logger); err == nil {
+	if _, err := NewClient(nil, dispatcher, nil, logger); err == nil {
 		t.Errorf("expected error with nil config")
 	}
 
@@ -177,7 +177,7 @@ func TestNewClient_Validation(t *testing.T) {
 		SessionFile: sessionPath,
 	}
 
-	client, err := NewClient(cfg, dispatcher, logger)
+	client, err := NewClient(cfg, dispatcher, nil, logger)
 	if err != nil {
 		t.Fatalf("unexpected error creating client: %v", err)
 	}

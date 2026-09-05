@@ -102,7 +102,12 @@ func New(cfg *config.Config) (*App, error) {
 
 	// Telegram dispatcher & client
 	dispatcher := telegram.NewDispatcher(router, perms, nil, logger)
-	client, err := telegram.NewClient(cfg, dispatcher, logger)
+
+	// Domain event bus — allows plugins to react to edit/delete/create events.
+	eventBus := core.NewEventBus()
+	dispatcher.SetEventBus(eventBus)
+
+	client, err := telegram.NewClient(cfg, dispatcher, db, logger)
 	if err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to create telegram client: %w", err)
@@ -118,8 +123,9 @@ func New(cfg *config.Config) (*App, error) {
 	blacklistPlugin := blacklist.New(db, client.Service)
 	dispatcher.AddMessageHandler(blacklistPlugin.HandleIncomingMessage)
 
-	// Scheduler Engine
+	// Scheduler Engine (shares unified CommandExecutor with Dispatcher)
 	schedEngine := scheduler.NewEngine(db, client.Service, router, perms, logger)
+	schedEngine.SetExecutor(dispatcher.Executor())
 
 	plugins := []plugin.Plugin{
 		ping.New(),

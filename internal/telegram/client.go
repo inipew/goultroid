@@ -11,13 +11,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/inipew/goultroid/internal/config"
-	"github.com/inipew/goultroid/internal/core"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
 	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/telegram/updates"
 	"github.com/gotd/td/tg"
+	"github.com/inipew/goultroid/internal/config"
+	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/database"
 	"go.uber.org/zap"
 )
 
@@ -69,7 +70,7 @@ func (t terminalAuth) Code(ctx context.Context, sentCode *tg.AuthSentCode) (stri
 }
 
 // NewClient creates and configures a new Telegram client instance.
-func NewClient(cfg *config.Config, dispatcher *Dispatcher, logger *zap.Logger) (*Client, error) {
+func NewClient(cfg *config.Config, dispatcher *Dispatcher, db *database.DB, logger *zap.Logger) (*Client, error) {
 	if cfg == nil {
 		return nil, errors.New("config is nil")
 	}
@@ -102,7 +103,13 @@ func NewClient(cfg *config.Config, dispatcher *Dispatcher, logger *zap.Logger) (
 		},
 	)
 
-	peerManager := peers.Options{}.Build(raw.API())
+	var peerStorage peers.Storage
+	if db != nil {
+		peerStorage = NewPeerStorage(db)
+	}
+	peerManager := peers.Options{
+		Storage: peerStorage,
+	}.Build(raw.API())
 	gaps := updates.New(updates.Config{
 		Handler:      tgDispatcher,
 		AccessHasher: peerManager,

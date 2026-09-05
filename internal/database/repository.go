@@ -2,12 +2,18 @@ package database
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 )
+
+// ErrJobLeaseLost is returned when a worker attempts to complete or fail a job whose lease expired
+// or was claimed/reclaimed by another worker (fencing token mismatch).
+var ErrJobLeaseLost = errors.New("scheduled job lease was lost or claimed by another worker")
 
 // SudoUser represents a registered sudo user.
 type SudoUser struct {
@@ -69,6 +75,17 @@ type ScheduledJob struct {
 	ClaimedAt       *time.Time `json:"claimed_at,omitempty"`
 	LastStartedAt   *time.Time `json:"last_started_at,omitempty"`
 	LastFinishedAt  *time.Time `json:"last_finished_at,omitempty"`
+	ClaimToken      string     `json:"claim_token"`
+}
+
+// JobHistoryEntry records a single execution attempt of a scheduled job.
+type JobHistoryEntry struct {
+	ID         int64     `json:"id"`
+	JobID      int64     `json:"job_id"`
+	RanAt      time.Time `json:"ran_at"`
+	DurationMs int64     `json:"duration_ms"`
+	Success    bool      `json:"success"`
+	ErrorMsg   string    `json:"error_msg,omitempty"`
 }
 
 // Repository defines data access methods for GoUltroid.
@@ -101,11 +118,15 @@ type Repository interface {
 	ListScheduledJobs(ctx context.Context, chatID int64) ([]ScheduledJob, error)
 	ListDueScheduledJobs(ctx context.Context, before time.Time) ([]ScheduledJob, error)
 	ClaimDueScheduledJobs(ctx context.Context, now time.Time, limit int, lease time.Duration) ([]ScheduledJob, error)
-	CompleteScheduledJob(ctx context.Context, id int64, now time.Time) error
-	FailScheduledJob(ctx context.Context, id int64, lastError string, retryDelay time.Duration, now time.Time) error
+	CompleteScheduledJob(ctx context.Context, id int64, claimToken string, now time.Time) error
+	FailScheduledJob(ctx context.Context, id int64, claimToken string, lastError string, retryDelay time.Duration, now time.Time) error
 	UpdateScheduledJobNextRun(ctx context.Context, id int64, nextRun time.Time) error
 	RecordJobFailure(ctx context.Context, id int64, lastError string) error
 	DeleteScheduledJob(ctx context.Context, id int64) error
+
+	// Job History
+	RecordJobRun(ctx context.Context, entry *JobHistoryEntry) error
+	GetJobHistory(ctx context.Context, jobID int64, limit int) ([]JobHistoryEntry, error)
 
 	// Blacklist
 	AddBlacklist(ctx context.Context, chatID int64, word string) error
@@ -341,7 +362,7 @@ func (d *DB) DeleteFilter(ctx context.Context, chatID int64, keyword string) err
 
 // =================== Scheduled Job Methods ===================
 
-const scheduledJobColumns = `id, chat_id, peer_type, access_hash, action_type, payload, interval_seconds, next_run_at, created_at, created_by, last_error, attempt_count, status, max_attempts, lease_until, claimed_at, last_started_at, last_finished_at`
+const scheduledJobColumns = `id, chat_id, peer_type, access_hash, action_type, payload, interval_seconds, next_run_at, created_at, created_by, last_error, attempt_count, status, max_attempts, lease_until, claimed_at, last_started_at, last_finished_at, claim_token`
 
 func scanScheduledJob(scanner interface{ Scan(dest ...any) error }) (*ScheduledJob, error) {
 	var job ScheduledJob
@@ -352,6 +373,7 @@ func scanScheduledJob(scanner interface{ Scan(dest ...any) error }) (*ScheduledJ
 		&job.CreatedBy, &job.LastError, &job.AttemptCount,
 		&job.Status, &job.MaxAttempts,
 		&leaseUntil, &claimedAt, &lastStartedAt, &lastFinishedAt,
+		&job.ClaimToken,
 	); err != nil {
 		return nil, err
 	}
@@ -392,13 +414,15 @@ func (d *DB) CreateScheduledJob(ctx context.Context, job *ScheduledJob) (*Schedu
 		chat_id, peer_type, access_hash, action_type, payload,
 		interval_seconds, next_run_at, created_at, created_by,
 		last_error, attempt_count, status, max_attempts,
-		lease_until, claimed_at, last_started_at, last_finished_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		lease_until, claimed_at, last_started_at, last_finished_at,
+		claim_token
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	res, err := d.ExecContext(ctx, query,
 		job.ChatID, job.PeerType, job.AccessHash, job.ActionType, job.Payload,
 		job.IntervalSeconds, job.NextRunAt, job.CreatedAt, job.CreatedBy,
 		job.LastError, job.AttemptCount, job.Status, job.MaxAttempts,
 		job.LeaseUntil, job.ClaimedAt, job.LastStartedAt, job.LastFinishedAt,
+		job.ClaimToken,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert scheduled job: %w", err)
@@ -463,12 +487,20 @@ func (d *DB) ListDueScheduledJobs(ctx context.Context, before time.Time) ([]Sche
 	return jobs, rows.Err()
 }
 
+func generateClaimToken() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
 func (d *DB) ClaimDueScheduledJobs(ctx context.Context, now time.Time, limit int, lease time.Duration) ([]ScheduledJob, error) {
 	if limit <= 0 {
 		limit = 10
 	}
 	if lease <= 0 {
-		lease = 30 * time.Second
+		lease = 90 * time.Second
 	}
 
 	tx, err := d.BeginTx(ctx, &sql.TxOptions{})
@@ -513,7 +545,8 @@ func (d *DB) ClaimDueScheduledJobs(ctx context.Context, now time.Time, limit int
 		    lease_until = ?,
 		    claimed_at = ?,
 		    last_started_at = ?,
-		    attempt_count = attempt_count + 1
+		    attempt_count = attempt_count + 1,
+		    claim_token = ?
 		WHERE id = ?
 	`)
 	if err != nil {
@@ -522,7 +555,8 @@ func (d *DB) ClaimDueScheduledJobs(ctx context.Context, now time.Time, limit int
 	defer updateStmt.Close()
 
 	for i := range jobs {
-		if _, err := updateStmt.ExecContext(ctx, leaseUntil, now, now, jobs[i].ID); err != nil {
+		token := generateClaimToken()
+		if _, err := updateStmt.ExecContext(ctx, leaseUntil, now, now, token, jobs[i].ID); err != nil {
 			return nil, fmt.Errorf("failed to update claimed job %d: %w", jobs[i].ID, err)
 		}
 		jobs[i].Status = JobStatusRunning
@@ -530,6 +564,7 @@ func (d *DB) ClaimDueScheduledJobs(ctx context.Context, now time.Time, limit int
 		jobs[i].ClaimedAt = &now
 		jobs[i].LastStartedAt = &now
 		jobs[i].AttemptCount++
+		jobs[i].ClaimToken = token
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -539,7 +574,7 @@ func (d *DB) ClaimDueScheduledJobs(ctx context.Context, now time.Time, limit int
 	return jobs, nil
 }
 
-func (d *DB) CompleteScheduledJob(ctx context.Context, id int64, now time.Time) error {
+func (d *DB) CompleteScheduledJob(ctx context.Context, id int64, claimToken string, now time.Time) error {
 	tx, err := d.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
 		return err
@@ -547,17 +582,23 @@ func (d *DB) CompleteScheduledJob(ctx context.Context, id int64, now time.Time) 
 	defer tx.Rollback()
 
 	var intervalSeconds int64
-	err = tx.QueryRowContext(ctx, "SELECT interval_seconds FROM scheduled_jobs WHERE id = ?", id).Scan(&intervalSeconds)
+	var nextRunAt time.Time
+	err = tx.QueryRowContext(ctx, "SELECT interval_seconds, next_run_at FROM scheduled_jobs WHERE id = ? AND status = 'running' AND claim_token = ?", id, claimToken).Scan(&intervalSeconds, &nextRunAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return errors.New("scheduled job not found")
+			return ErrJobLeaseLost
 		}
-		return fmt.Errorf("failed to fetch job interval: %w", err)
+		return fmt.Errorf("failed to fetch job state for completion: %w", err)
 	}
 
 	if intervalSeconds > 0 {
-		nextRun := now.Add(time.Duration(intervalSeconds) * time.Second)
-		_, err = tx.ExecContext(ctx, `
+		// Anchored next run calculation with SkipMissed policy to eliminate clock drift
+		nextRun := nextRunAt.Add(time.Duration(intervalSeconds) * time.Second)
+		for !nextRun.After(now) {
+			nextRun = nextRun.Add(time.Duration(intervalSeconds) * time.Second)
+		}
+
+		res, err := tx.ExecContext(ctx, `
 			UPDATE scheduled_jobs
 			SET status = 'pending',
 			    next_run_at = ?,
@@ -565,23 +606,38 @@ func (d *DB) CompleteScheduledJob(ctx context.Context, id int64, now time.Time) 
 			    last_error = '',
 			    lease_until = NULL,
 			    claimed_at = NULL,
+			    claim_token = '',
 			    last_finished_at = ?
-			WHERE id = ?
-		`, nextRun, now, id)
+			WHERE id = ? AND status = 'running' AND claim_token = ?
+		`, nextRun, now, id, claimToken)
 		if err != nil {
 			return fmt.Errorf("failed to update recurring job: %w", err)
 		}
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			return ErrJobLeaseLost
+		}
 	} else {
-		_, err = tx.ExecContext(ctx, "DELETE FROM scheduled_jobs WHERE id = ?", id)
+		res, err := tx.ExecContext(ctx, "DELETE FROM scheduled_jobs WHERE id = ? AND status = 'running' AND claim_token = ?", id, claimToken)
 		if err != nil {
 			return fmt.Errorf("failed to delete completed job: %w", err)
+		}
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			return ErrJobLeaseLost
 		}
 	}
 
 	return tx.Commit()
 }
 
-func (d *DB) FailScheduledJob(ctx context.Context, id int64, lastError string, retryDelay time.Duration, now time.Time) error {
+func (d *DB) FailScheduledJob(ctx context.Context, id int64, claimToken string, lastError string, retryDelay time.Duration, now time.Time) error {
 	tx, err := d.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
 		return err
@@ -589,41 +645,51 @@ func (d *DB) FailScheduledJob(ctx context.Context, id int64, lastError string, r
 	defer tx.Rollback()
 
 	var attemptCount, maxAttempts int
-	err = tx.QueryRowContext(ctx, "SELECT attempt_count, max_attempts FROM scheduled_jobs WHERE id = ?", id).Scan(&attemptCount, &maxAttempts)
+	err = tx.QueryRowContext(ctx, "SELECT attempt_count, max_attempts FROM scheduled_jobs WHERE id = ? AND status = 'running' AND claim_token = ?", id, claimToken).Scan(&attemptCount, &maxAttempts)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return errors.New("scheduled job not found")
+			return ErrJobLeaseLost
 		}
-		return fmt.Errorf("failed to fetch job state: %w", err)
+		return fmt.Errorf("failed to fetch job state for failure: %w", err)
 	}
 
 	if maxAttempts <= 0 {
 		maxAttempts = 3
 	}
 
+	var res sql.Result
 	if attemptCount >= maxAttempts {
-		_, err = tx.ExecContext(ctx, `
+		res, err = tx.ExecContext(ctx, `
 			UPDATE scheduled_jobs
 			SET status = 'failed',
 			    last_error = ?,
 			    lease_until = NULL,
+			    claim_token = '',
 			    last_finished_at = ?
-			WHERE id = ?
-		`, lastError, now, id)
+			WHERE id = ? AND status = 'running' AND claim_token = ?
+		`, lastError, now, id, claimToken)
 	} else {
 		nextRun := now.Add(retryDelay)
-		_, err = tx.ExecContext(ctx, `
+		res, err = tx.ExecContext(ctx, `
 			UPDATE scheduled_jobs
 			SET status = 'pending',
 			    next_run_at = ?,
 			    last_error = ?,
 			    lease_until = NULL,
+			    claim_token = '',
 			    last_finished_at = ?
-			WHERE id = ?
-		`, nextRun, lastError, now, id)
+			WHERE id = ? AND status = 'running' AND claim_token = ?
+		`, nextRun, lastError, now, id, claimToken)
 	}
 	if err != nil {
 		return fmt.Errorf("failed to update failed scheduled job: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrJobLeaseLost
 	}
 
 	return tx.Commit()
@@ -731,5 +797,47 @@ func (d *DB) ListBlacklists(ctx context.Context, chatID int64) ([]string, error)
 	return words, rows.Err()
 }
 
+// =================== Job History Methods ===================
 
+// RecordJobRun inserts a history entry for a single scheduler job execution attempt.
+func (d *DB) RecordJobRun(ctx context.Context, entry *JobHistoryEntry) error {
+	if entry == nil {
+		return fmt.Errorf("job history entry cannot be nil")
+	}
+	query := `
+		INSERT INTO scheduled_job_history (job_id, ran_at, duration_ms, success, error_msg)
+		VALUES (?, ?, ?, ?, ?)`
+	if _, err := d.ExecContext(ctx, query, entry.JobID, entry.RanAt, entry.DurationMs, entry.Success, entry.ErrorMsg); err != nil {
+		return fmt.Errorf("failed to record job run: %w", err)
+	}
+	return nil
+}
 
+// GetJobHistory returns the most recent execution history entries for a scheduled job,
+// ordered newest-first. Limit ≤ 0 defaults to 20.
+func (d *DB) GetJobHistory(ctx context.Context, jobID int64, limit int) ([]JobHistoryEntry, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	query := `
+		SELECT id, job_id, ran_at, duration_ms, success, error_msg
+		FROM scheduled_job_history
+		WHERE job_id = ?
+		ORDER BY ran_at DESC
+		LIMIT ?`
+	rows, err := d.QueryContext(ctx, query, jobID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query job history: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []JobHistoryEntry
+	for rows.Next() {
+		var e JobHistoryEntry
+		if err := rows.Scan(&e.ID, &e.JobID, &e.RanAt, &e.DurationMs, &e.Success, &e.ErrorMsg); err != nil {
+			return nil, fmt.Errorf("failed to scan job history entry: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}

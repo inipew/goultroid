@@ -303,3 +303,38 @@ func TestFormatBytes(t *testing.T) {
 		}
 	}
 }
+
+func TestMediaInfo_EmptyTypeNoPanic(t *testing.T) {
+	p := New()
+	svc := &mockService{}
+	ctx := &core.Context{
+		Ctx:    context.Background(),
+		PeerID: &tg.InputPeerChat{ChatID: 100},
+		Message: &core.Message{
+			ID: 1,
+			Media: &core.MediaInfo{
+				Type:     "",
+				FileName: "song<title>&artist.mp3",
+				MimeType: "audio/mpeg",
+			},
+		},
+		Svc: svc,
+	}
+
+	err := p.handleMediaInfo(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(svc.sent, "Unknown") {
+		t.Errorf("expected 'Unknown' type display, got: %s", svc.sent)
+	}
+
+	// Verify HTML escaping
+	if strings.Contains(svc.sent, "<title>") {
+		t.Errorf("raw '<title>' was not HTML escaped: %s", svc.sent)
+	}
+	if !strings.Contains(svc.sent, "song&lt;title&gt;&amp;artist.mp3") {
+		t.Errorf("expected escaped filename in output, got: %s", svc.sent)
+	}
+}

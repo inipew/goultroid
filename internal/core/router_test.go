@@ -69,7 +69,11 @@ func TestRouter_Parse(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		parsed, ok := r.Parse(tt.input)
+		parsed, ok, err := r.Parse(tt.input)
+		if err != nil {
+			t.Errorf("unexpected error for %q: %v", tt.input, err)
+			continue
+		}
 		if ok != tt.wantOK {
 			t.Errorf("Parse(%q) ok = %v, wantOK = %v", tt.input, ok, tt.wantOK)
 			continue
@@ -89,19 +93,40 @@ func TestRouter_Parse(t *testing.T) {
 	}
 }
 
+func TestRouter_SyntaxErrors(t *testing.T) {
+	r := NewRouter(".")
+
+	// Unclosed quotes
+	_, ok, err := r.Parse(`.exec "echo hello`)
+	if ok || err != ErrUnclosedQuote {
+		t.Errorf("expected ErrUnclosedQuote, got ok=%v, err=%v", ok, err)
+	}
+
+	_, ok, err = r.Parse(`.cmd 'single quote unclosed`)
+	if ok || err != ErrUnclosedQuote {
+		t.Errorf("expected ErrUnclosedQuote, got ok=%v, err=%v", ok, err)
+	}
+
+	// Trailing backslash escape
+	_, ok, err = r.Parse(`.cmd hello\`)
+	if ok || err != ErrTrailingEscape {
+		t.Errorf("expected ErrTrailingEscape, got ok=%v, err=%v", ok, err)
+	}
+}
+
 func TestRouter_CustomPrefix(t *testing.T) {
 	r := NewRouter("!")
 	if r.Prefix() != "!" {
 		t.Errorf("expected prefix !, got %s", r.Prefix())
 	}
 
-	if _, ok := r.Parse(".ping"); ok {
+	if _, ok, _ := r.Parse(".ping"); ok {
 		t.Errorf("did not expect .ping to match with ! prefix")
 	}
 
-	parsed, ok := r.Parse("!ping")
-	if !ok || parsed.Name != "ping" {
-		t.Errorf("expected !ping to match, got %v, %v", ok, parsed)
+	parsed, ok, err := r.Parse("!ping")
+	if err != nil || !ok || parsed.Name != "ping" {
+		t.Errorf("expected !ping to match, got ok=%v, parsed=%v, err=%v", ok, parsed, err)
 	}
 
 	// Default prefix when empty string passed

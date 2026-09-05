@@ -90,6 +90,55 @@ var migrations = []migration{
 			`CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_claim ON scheduled_jobs(status, next_run_at, lease_until);`,
 		},
 	},
+	{
+		version:     4,
+		description: "Scheduler fencing tokens and high-performance due index",
+		statements: []string{
+			`ALTER TABLE scheduled_jobs ADD COLUMN claim_token TEXT NOT NULL DEFAULT '';`,
+			`CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_due ON scheduled_jobs(next_run_at, status, lease_until);`,
+			`CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_claim_token ON scheduled_jobs(claim_token);`,
+		},
+	},
+	{
+		version:     5,
+		description: "Persistent peer storage for access hash caching",
+		statements: []string{
+			`CREATE TABLE IF NOT EXISTS peers_storage (
+				prefix TEXT NOT NULL,
+				id INTEGER NOT NULL,
+				access_hash INTEGER NOT NULL,
+				updated_at DATETIME NOT NULL,
+				PRIMARY KEY (prefix, id)
+			);`,
+			`CREATE TABLE IF NOT EXISTS peers_phones (
+				phone TEXT PRIMARY KEY,
+				prefix TEXT NOT NULL,
+				id INTEGER NOT NULL,
+				access_hash INTEGER NOT NULL,
+				updated_at DATETIME NOT NULL
+			);`,
+			`CREATE TABLE IF NOT EXISTS peers_metadata (
+				key TEXT PRIMARY KEY,
+				int_val INTEGER NOT NULL
+			);`,
+		},
+	},
+	{
+		version:     6,
+		description: "Scheduler execution history for audit trail",
+		statements: []string{
+			`CREATE TABLE IF NOT EXISTS scheduled_job_history (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				job_id INTEGER NOT NULL,
+				ran_at DATETIME NOT NULL,
+				duration_ms INTEGER NOT NULL DEFAULT 0,
+				success BOOLEAN NOT NULL DEFAULT 0,
+				error_msg TEXT NOT NULL DEFAULT ''
+			);`,
+			`CREATE INDEX IF NOT EXISTS idx_job_history_job_id ON scheduled_job_history(job_id);`,
+			`CREATE INDEX IF NOT EXISTS idx_job_history_ran_at ON scheduled_job_history(ran_at DESC);`,
+		},
+	},
 }
 
 // migrate runs pending database migrations in sequence inside atomic transactions.

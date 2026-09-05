@@ -24,16 +24,64 @@ func mapTelegramError(err error) error {
 	if err == nil {
 		return nil
 	}
+	if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrPermissionDenied) || errors.Is(err, core.ErrRateLimit) || errors.Is(err, core.ErrTelegram) {
+		return err
+	}
 	if wait, ok := tgerr.AsFloodWait(err); ok {
 		return core.NewRateLimitError(wait, err)
 	}
-	if tgerr.Is(err, "CHAT_ID_INVALID", "PEER_ID_INVALID", "USER_ID_INVALID") {
+	if tgerr.Is(err, "CHAT_ID_INVALID", "PEER_ID_INVALID", "USER_ID_INVALID", "MESSAGE_ID_INVALID") {
 		return fmt.Errorf("%w: %v", core.ErrNotFound, err)
 	}
-	if tgerr.Is(err, "CHAT_ADMIN_REQUIRED", "RIGHTS_NOT_MODIFIED") {
+	if tgerr.Is(err, "CHAT_ADMIN_REQUIRED", "RIGHTS_NOT_MODIFIED", "CHAT_WRITE_FORBIDDEN") {
 		return fmt.Errorf("%w: %v", core.ErrPermissionDenied, err)
 	}
 	return fmt.Errorf("%w: %v", core.ErrTelegram, err)
+}
+
+// FullBanRights returns the complete set of chat restrictions representing a full ban.
+func FullBanRights(untilDate int) tg.ChatBannedRights {
+	return tg.ChatBannedRights{
+		ViewMessages:    true,
+		SendMessages:    true,
+		SendMedia:       true,
+		SendStickers:    true,
+		SendGifs:        true,
+		SendGames:       true,
+		SendInline:      true,
+		EmbedLinks:      true,
+		SendPolls:       true,
+		SendPhotos:      true,
+		SendVideos:      true,
+		SendRoundvideos: true,
+		SendAudios:      true,
+		SendVoices:      true,
+		SendDocs:        true,
+		SendPlain:       true,
+		UntilDate:       untilDate,
+	}
+}
+
+// FullMuteRights returns the complete set of chat restrictions representing a mute (can view, but cannot send anything).
+func FullMuteRights(untilDate int) tg.ChatBannedRights {
+	return tg.ChatBannedRights{
+		SendMessages:    true,
+		SendMedia:       true,
+		SendStickers:    true,
+		SendGifs:        true,
+		SendGames:       true,
+		SendInline:      true,
+		EmbedLinks:      true,
+		SendPolls:       true,
+		SendPhotos:      true,
+		SendVideos:      true,
+		SendRoundvideos: true,
+		SendAudios:      true,
+		SendVoices:      true,
+		SendDocs:        true,
+		SendPlain:       true,
+		UntilDate:       untilDate,
+	}
 }
 
 func retryOnFloodWait[T any](ctx context.Context, op func() (T, error)) (T, error) {
@@ -180,14 +228,18 @@ func (s *Service) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msg
 // React places an emoji reaction on the given message.
 func (s *Service) React(ctx context.Context, peer tg.InputPeerClass, msgID int, emoji string) error {
 	if s.sender == nil {
-		return fmt.Errorf("sender is not initialized")
+		return fmt.Errorf("%w: sender is not initialized", core.ErrInternal)
 	}
 
-	_, err := s.sender.To(peer).Reaction(ctx, msgID, &tg.ReactionEmoji{Emoticon: emoji})
+	peer = s.ensureChannelAccessHash(ctx, peer)
+	_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
+		_, err := s.sender.To(peer).Reaction(ctx, msgID, &tg.ReactionEmoji{Emoticon: emoji})
+		return struct{}{}, err
+	})
 	return err
 }
 
-// GetMessage fetches a message by its ID.
+// GetMessage fetches a message by its ID. Returns (nil, core.ErrNotFound) if message does not exist.
 func (s *Service) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) (*tg.Message, error) {
 	var msgs []tg.MessageClass
 
@@ -203,7 +255,7 @@ func (s *Service) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID 
 			ID: []tg.InputMessageClass{&tg.InputMessageID{ID: msgID}},
 		})
 		if err != nil {
-			return nil, err
+			return nil, mapTelegramError(err)
 		}
 		if s.peerManager != nil {
 			switch m := res.(type) {
@@ -226,7 +278,7 @@ func (s *Service) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID 
 	default:
 		res, err := s.api.MessagesGetMessages(ctx, []tg.InputMessageClass{&tg.InputMessageID{ID: msgID}})
 		if err != nil {
-			return nil, err
+			return nil, mapTelegramError(err)
 		}
 		if s.peerManager != nil {
 			switch m := res.(type) {
@@ -254,7 +306,7 @@ func (s *Service) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID 
 		}
 	}
 
-	return nil, nil
+	return nil, fmt.Errorf("%w: message %d not found", core.ErrNotFound, msgID)
 }
 
 // PinMessage pins a message in the chat.
@@ -298,15 +350,24 @@ func (s *Service) UnpinMessage(ctx context.Context, peer tg.InputPeerClass, msgI
 	return err
 }
 
-// ForwardMessages forwards messages from fromPeer to toPeer.
+// ForwardMessages forwards messages from fromPeer to toPeer with access hash normalization.
 func (s *Service) ForwardMessages(ctx context.Context, fromPeer, toPeer tg.InputPeerClass, msgIDs []int) error {
 	if s.sender == nil {
-		return fmt.Errorf("sender is not initialized")
+		return fmt.Errorf("%w: sender is not initialized", core.ErrInternal)
 	}
 	if len(msgIDs) == 0 {
 		return nil
 	}
-	_, err := s.sender.To(toPeer).ForwardIDs(fromPeer, msgIDs[0], msgIDs[1:]...).Send(ctx)
+
+	fromPeer = s.ensureChannelAccessHash(ctx, fromPeer)
+	fromPeer = s.ensureUserAccessHash(ctx, fromPeer)
+	toPeer = s.ensureChannelAccessHash(ctx, toPeer)
+	toPeer = s.ensureUserAccessHash(ctx, toPeer)
+
+	_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
+		_, err := s.sender.To(toPeer).ForwardIDs(fromPeer, msgIDs[0], msgIDs[1:]...).Send(ctx)
+		return struct{}{}, err
+	})
 	return err
 }
 
@@ -316,7 +377,10 @@ func (s *Service) DownloadFile(ctx context.Context, location tg.InputFileLocatio
 		s.downloader = downloader.NewDownloader()
 	}
 	_, err := s.downloader.Download(s.api, location).ToPath(ctx, dstPath)
-	return err
+	if err != nil {
+		return mapTelegramError(err)
+	}
+	return nil
 }
 
 // BanUser restricts a user from viewing and sending messages in a group/supergroup.
@@ -331,19 +395,9 @@ func (s *Service) BanUser(ctx context.Context, peer tg.InputPeerClass, user tg.I
 		participant := s.ensureUserAccessHash(ctx, user)
 		_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
 			_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
-				Channel:     &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
-				Participant: participant,
-				BannedRights: tg.ChatBannedRights{
-					ViewMessages: true,
-					SendMessages: true,
-					SendMedia:    true,
-					SendStickers: true,
-					SendGifs:     true,
-					SendGames:    true,
-					SendInline:   true,
-					EmbedLinks:   true,
-					UntilDate:    untilDate,
-				},
+				Channel:      &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
+				Participant:  participant,
+				BannedRights: FullBanRights(untilDate),
 			})
 			if err != nil && tgerr.Is(err, "CHAT_NOT_MODIFIED") {
 				return struct{}{}, nil
@@ -460,26 +514,9 @@ func (s *Service) MuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.
 		participant := s.ensureUserAccessHash(ctx, user)
 		_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
 			_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
-				Channel:     &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
-				Participant: participant,
-				BannedRights: tg.ChatBannedRights{
-					SendMessages:    true,
-					SendMedia:       true,
-					SendStickers:    true,
-					SendGifs:        true,
-					SendGames:       true,
-					SendInline:      true,
-					EmbedLinks:      true,
-					SendPolls:       true,
-					SendPhotos:      true,
-					SendVideos:      true,
-					SendRoundvideos: true,
-					SendAudios:      true,
-					SendVoices:      true,
-					SendDocs:        true,
-					SendPlain:       true,
-					UntilDate:       untilDate,
-				},
+				Channel:      &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
+				Participant:  participant,
+				BannedRights: FullMuteRights(untilDate),
 			})
 			if err != nil && tgerr.Is(err, "CHAT_NOT_MODIFIED") {
 				return struct{}{}, nil
@@ -649,24 +686,32 @@ func (s *Service) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaTy
 // GetFullUser retrieves extended profile information for a user.
 func (s *Service) GetFullUser(ctx context.Context, user tg.InputUserClass) (*tg.UsersUserFull, error) {
 	if s.api == nil {
-		return nil, errors.New("telegram api not initialized")
+		return nil, fmt.Errorf("%w: telegram api not initialized", core.ErrInternal)
 	}
-	return s.api.UsersGetFullUser(ctx, user)
+	res, err := s.api.UsersGetFullUser(ctx, user)
+	if err != nil {
+		return nil, mapTelegramError(err)
+	}
+	return res, nil
 }
 
 // ResolveUsername resolves a public @username to peer entities.
 func (s *Service) ResolveUsername(ctx context.Context, username string) (*tg.ContactsResolvedPeer, error) {
 	if s.api == nil {
-		return nil, errors.New("telegram api not initialized")
+		return nil, fmt.Errorf("%w: telegram api not initialized", core.ErrInternal)
 	}
 	cleaned := strings.TrimPrefix(username, "@")
-	return s.api.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: cleaned})
+	res, err := s.api.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: cleaned})
+	if err != nil {
+		return nil, mapTelegramError(err)
+	}
+	return res, nil
 }
 
 // GetFullChat retrieves extended information for a group, supergroup, or channel.
 func (s *Service) GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.MessagesChatFull, error) {
 	if s.api == nil {
-		return nil, errors.New("telegram api not initialized")
+		return nil, fmt.Errorf("%w: telegram api not initialized", core.ErrInternal)
 	}
 
 	peer = s.ensureChannelAccessHash(ctx, peer)
@@ -683,14 +728,18 @@ func (s *Service) GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.
 	case *tg.InputPeerChat:
 		res, err = s.api.MessagesGetFullChat(ctx, p.ChatID)
 	default:
-		return nil, errors.New("chat info is only available for groups, supergroups, and channels")
+		return nil, fmt.Errorf("%w: chat info is only available for groups, supergroups, and channels", core.ErrUnsupported)
 	}
 
-	if err == nil && res != nil && s.peerManager != nil {
+	if err != nil {
+		return nil, mapTelegramError(err)
+	}
+
+	if res != nil && s.peerManager != nil {
 		_ = s.peerManager.Apply(ctx, res.Users, res.Chats)
 	}
 
-	return res, err
+	return res, nil
 }
 
 // PromoteAdmin promotes a user to administrator in the supergroup/channel with custom title.

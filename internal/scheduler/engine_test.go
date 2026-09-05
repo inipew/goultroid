@@ -507,3 +507,94 @@ func TestEngine_ValidationAndInterval(t *testing.T) {
 	}
 }
 
+func TestEngine_DynamicPrincipalRevocation(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+	defer db.Close()
+
+	router := core.NewRouter(".")
+	sudoID := int64(777)
+	ownerID := int64(1001)
+	perms := core.NewPermissions(ownerID, []int64{sudoID})
+
+	var sudoCmdRan bool
+	router.Register(core.Command{
+		Name:       "sudocmd",
+		Permission: core.PermissionSudo,
+		Handler: func(ctx *core.Context) error {
+			sudoCmdRan = true
+			return nil
+		},
+	})
+
+	engine := NewEngine(db, func() core.TelegramServicer { return &mockService{} }, router, perms, zap.NewNop())
+	ctx := context.Background()
+
+	// Schedule a command created by sudo user 777
+	job, err := engine.ScheduleOnce(ctx, 12345, "chat", 0, time.Now().Add(-time.Minute), ActionCommand, ".sudocmd", sudoID)
+	if err != nil {
+		t.Fatalf("failed to schedule command: %v", err)
+	}
+
+	// REVOKE SUDO PRIVILEGES dynamically before job execution
+	perms.RemoveSudo(sudoID)
+
+	// Claim and execute job
+	claimed, err := db.ClaimDueScheduledJobs(ctx, time.Now(), 1, 90*time.Second)
+	if err != nil || len(claimed) == 0 {
+		t.Fatalf("failed to claim job: %v", err)
+	}
+
+	engine.executeJob(ctx, claimed[0])
+
+	if sudoCmdRan {
+		t.Fatalf("command should NOT have run after sudo revocation!")
+	}
+
+	// Verify job failed closed with permission denied
+	updated, err := db.GetScheduledJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("failed to get job: %v", err)
+	}
+	if updated.LastError != core.ErrPermissionDenied.Error() {
+		t.Errorf("expected LastError %q, got %q", core.ErrPermissionDenied.Error(), updated.LastError)
+	}
+}
+
+func TestEngine_StopWithTimeout_Bounded(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+	defer db.Close()
+
+	router := core.NewRouter(".")
+	perms := core.NewPermissions(1001, nil)
+	engine := NewEngine(db, func() core.TelegramServicer { return &mockService{} }, router, perms, zap.NewNop())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := engine.Start(ctx); err != nil {
+		t.Fatalf("failed to start engine: %v", err)
+	}
+
+	// Simulate an uncooperative background task holding wg
+	engine.wg.Add(1)
+	defer engine.wg.Done() // ensure test cleanup doesn't deadlock
+
+	// Stop with short timeout (50ms) -> MUST return error within timeout
+	t0 := time.Now()
+	err = engine.StopWithTimeout(50 * time.Millisecond)
+	elapsed := time.Since(t0)
+
+	if err == nil {
+		t.Errorf("expected timeout error, got nil")
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("StopWithTimeout hung longer than bounded timeout: took %v", elapsed)
+	}
+}
+

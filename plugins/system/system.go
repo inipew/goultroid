@@ -1,12 +1,15 @@
 package system
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -31,12 +34,14 @@ type Plugin struct {
 	restartStatePath string
 	restartFunc      func(state RestartState) error
 	cmdRunner        func(ctx context.Context, name string, args ...string) ([]byte, error)
+	startTime        time.Time
 }
 
 // New creates a new System plugin.
 func New() *Plugin {
 	return &Plugin{
 		restartStatePath: "data/restart.json",
+		startTime:        time.Now(),
 	}
 }
 
@@ -121,7 +126,36 @@ func (p *Plugin) Commands() []core.Command {
 			Timeout:     180 * time.Second,
 			Handler:     p.handleUpdate,
 		},
+		{
+			Name:        "health",
+			Aliases:     []string{"runtime", "memstats"},
+			Description: "Show runtime memory and goroutine health statistics (Owner Only)",
+			Usage:       ".health",
+			Category:    "System",
+			Permission:  core.PermissionOwner,
+			Handler:     p.handleHealth,
+		},
 	}
+}
+
+type limitedWriter struct {
+	w         *bytes.Buffer
+	remain    int
+	truncated bool
+}
+
+func (lw *limitedWriter) Write(p []byte) (n int, err error) {
+	if lw.remain <= 0 {
+		lw.truncated = true
+		return len(p), nil
+	}
+	if len(p) > lw.remain {
+		lw.truncated = true
+		p = p[:lw.remain]
+	}
+	n, err = lw.w.Write(p)
+	lw.remain -= n
+	return len(p), err
 }
 
 // handleExec executes a bash command with timeout and formats the result.
@@ -146,10 +180,28 @@ func (p *Plugin) handleExec(ctx *core.Context) error {
 	}
 
 	cmd := exec.CommandContext(execCtx, shell, "-c", commandStr)
-	outBytes, err := cmd.CombinedOutput()
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil && cmd.Process.Pid > 0 {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
+	}
+
+	// Limit output capture to 2 MB to prevent memory exhaustion
+	const maxOutputBytes = 2 * 1024 * 1024
+	buf := new(bytes.Buffer)
+	limitWriter := &limitedWriter{w: buf, remain: maxOutputBytes}
+	cmd.Stdout = limitWriter
+	cmd.Stderr = limitWriter
+
+	err := cmd.Run()
 	elapsed := time.Since(start)
 
-	output := string(outBytes)
+	output := buf.String()
+	if limitWriter.truncated {
+		output += "\n\n[output truncated after 2MB]"
+	}
 	if output == "" {
 		if err != nil {
 			output = fmt.Sprintf("Error: %v", err)
@@ -232,8 +284,8 @@ func (p *Plugin) handleRestart(ctx *core.Context) error {
 		}
 	}
 
-	msgID := 0
-	if ctx.Message != nil {
+	msgID := ctx.LastResponseID
+	if msgID == 0 && ctx.Message != nil {
 		msgID = ctx.Message.ID
 	}
 
@@ -250,11 +302,19 @@ func (p *Plugin) handleRestart(ctx *core.Context) error {
 		return p.restartFunc(state)
 	}
 
-	// Save state to file
+	// Save state to file atomically
 	if p.restartStatePath != "" {
-		_ = os.MkdirAll(filepath.Dir(p.restartStatePath), 0700)
-		data, _ := json.Marshal(state)
-		_ = os.WriteFile(p.restartStatePath, data, 0600)
+		if err := os.MkdirAll(filepath.Dir(p.restartStatePath), 0700); err == nil {
+			if data, err := json.Marshal(state); err == nil {
+				tmpPath := p.restartStatePath + ".tmp"
+				if f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600); err == nil {
+					_, _ = f.Write(data)
+					_ = f.Sync()
+					_ = f.Close()
+					_ = os.Rename(tmpPath, p.restartStatePath)
+				}
+			}
+		}
 	}
 
 	// Trigger self-exec on Linux
@@ -311,8 +371,15 @@ func (p *Plugin) handleUpdate(ctx *core.Context) error {
 	pullCtx, cancelPull := context.WithTimeout(ctx.Ctx, 60*time.Second)
 	defer cancelPull()
 
-	if out, err := p.runCmd(pullCtx, "git", "pull"); err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ <code>git pull</code> failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
+	// Check for uncommitted working tree modifications
+	statusOut, _ := p.runCmd(pullCtx, "git", "status", "--porcelain")
+	if strings.TrimSpace(string(statusOut)) != "" {
+		_ = ctx.Reply("❌ Cannot update: working directory has uncommitted modifications. Stash or commit your changes first.")
+		return errors.New("dirty working tree")
+	}
+
+	if out, err := p.runCmd(pullCtx, "git", "pull", "--ff-only"); err != nil {
+		_ = ctx.Reply(fmt.Sprintf("❌ <code>git pull --ff-only</code> failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
 		return err
 	}
 
@@ -321,8 +388,17 @@ func (p *Plugin) handleUpdate(ctx *core.Context) error {
 	buildCtx, cancelBuild := context.WithTimeout(ctx.Ctx, 120*time.Second)
 	defer cancelBuild()
 
-	if out, err := p.runCmd(buildCtx, "go", "build", "-o", "bin/goultroid", "./cmd/goultroid"); err != nil {
+	tmpBin := filepath.Join("bin", "goultroid.tmp")
+	if out, err := p.runCmd(buildCtx, "go", "build", "-o", tmpBin, "./cmd/goultroid"); err != nil {
+		_ = os.Remove(tmpBin)
 		_ = ctx.Reply(fmt.Sprintf("❌ Rebuild failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
+		return err
+	}
+
+	finalBin := filepath.Join("bin", "goultroid")
+	if err := os.Rename(tmpBin, finalBin); err != nil {
+		_ = os.Remove(tmpBin)
+		_ = ctx.Reply(fmt.Sprintf("❌ Failed to replace binary: %v", err))
 		return err
 	}
 
@@ -331,8 +407,46 @@ func (p *Plugin) handleUpdate(ctx *core.Context) error {
 }
 
 func escapeHTML(s string) string {
-	s = strings.ReplaceAll(s, "&", "&amp;")
-	s = strings.ReplaceAll(s, "<", "&lt;")
-	s = strings.ReplaceAll(s, ">", "&gt;")
-	return s
+	return core.EscapeHTML(s)
+}
+
+// handleHealth collects runtime memory, goroutine, and GC stats and replies with a formatted report.
+func (p *Plugin) handleHealth(ctx *core.Context) error {
+	stats := core.GatherHealth(p.startTime)
+
+	// Build a human-readable uptime string
+	uptime := stats.Uptime
+	days := int(uptime.Hours()) / 24
+	hours := int(uptime.Hours()) % 24
+	mins := int(uptime.Minutes()) % 60
+	secs := int(uptime.Seconds()) % 60
+
+	var uptimeStr string
+	if days > 0 {
+		uptimeStr = fmt.Sprintf("%dd %02dh %02dm %02ds", days, hours, mins, secs)
+	} else if hours > 0 {
+		uptimeStr = fmt.Sprintf("%dh %02dm %02ds", hours, mins, secs)
+	} else {
+		uptimeStr = fmt.Sprintf("%dm %02ds", mins, secs)
+	}
+
+	msg := fmt.Sprintf(
+		"🔧 <b>GoUltroid Runtime Health</b>\n\n"+
+			"⏱️ <b>Uptime:</b> <code>%s</code>\n"+
+			"🧵 <b>Goroutines:</b> <code>%d</code>\n"+
+			"💾 <b>Heap Alloc:</b> <code>%.2f MB</code>\n"+
+			"🖥️ <b>Sys Memory:</b> <code>%.2f MB</code>\n"+
+			"♻️ <b>GC Cycles:</b> <code>%d</code>\n"+
+			"⏸️ <b>GC Pause Total:</b> <code>%.2f ms</code>\n"+
+			"🔢 <b>Go Version:</b> <code>%s</code>",
+		uptimeStr,
+		stats.Goroutines,
+		stats.HeapAllocMB,
+		stats.SysMB,
+		stats.NumGC,
+		stats.PauseTotalMs,
+		runtime.Version(),
+	)
+
+	return ctx.Reply(msg)
 }

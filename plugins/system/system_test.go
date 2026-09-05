@@ -2,6 +2,8 @@ package system
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -98,8 +100,8 @@ func TestSystemPlugin_Metadata(t *testing.T) {
 	}
 
 	cmds := p.Commands()
-	if len(cmds) != 3 {
-		t.Fatalf("expected 3 commands, got %d", len(cmds))
+	if len(cmds) != 4 {
+		t.Fatalf("expected 4 commands, got %d", len(cmds))
 	}
 
 	for _, c := range cmds {
@@ -325,6 +327,14 @@ func TestUpdate_PullAndRebuild(t *testing.T) {
 
 	p.SetCmdRunner(func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		executedCommands = append(executedCommands, name+" "+strings.Join(args, " "))
+		if name == "git" && len(args) > 0 && args[0] == "status" {
+			return []byte(""), nil // clean tree
+		}
+		if name == "go" && len(args) > 2 && args[0] == "build" {
+			tmpBin := args[2]
+			_ = os.MkdirAll(filepath.Dir(tmpBin), 0755)
+			_ = os.WriteFile(tmpBin, []byte("binary"), 0755)
+		}
 		return []byte("ok"), nil
 	})
 
@@ -346,8 +356,8 @@ func TestUpdate_PullAndRebuild(t *testing.T) {
 		t.Errorf("expected restart to be called after pull and rebuild")
 	}
 
-	expectedGitPull := "git pull"
-	expectedBuild := "go build -o bin/goultroid ./cmd/goultroid"
+	expectedGitPull := "git pull --ff-only"
+	expectedBuild := "go build -o bin/goultroid.tmp ./cmd/goultroid"
 	hasPull := false
 	hasBuild := false
 	for _, c := range executedCommands {
@@ -360,5 +370,33 @@ func TestUpdate_PullAndRebuild(t *testing.T) {
 	}
 	if !hasPull || !hasBuild {
 		t.Errorf("expected git pull and go build commands executed, got: %v", executedCommands)
+	}
+}
+
+func TestUpdate_DirtyWorkingTree(t *testing.T) {
+	p := New()
+	p.SetCmdRunner(func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "git" && len(args) > 0 && args[0] == "status" {
+			return []byte(" M internal/core/router.go"), nil // dirty working tree
+		}
+		return []byte(""), nil
+	})
+
+	svc := &mockService{}
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		PeerID:  &tg.InputPeerChat{ChatID: 100},
+		Message: &core.Message{ID: 1, Text: ".update pull"},
+		Args:    []string{"pull"},
+		Svc:     svc,
+	}
+
+	err := p.handleUpdate(ctx)
+	if err == nil {
+		t.Fatalf("expected error on dirty working tree, got nil")
+	}
+
+	if !strings.Contains(svc.sent, "working directory has uncommitted modifications") {
+		t.Errorf("expected dirty tree warning message, got: %s", svc.sent)
 	}
 }

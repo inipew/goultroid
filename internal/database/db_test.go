@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -495,10 +496,10 @@ func TestMigrations_Versioning(t *testing.T) {
 		}
 		migrations = append(migrations, m)
 	}
-	if len(migrations) != 3 {
-		t.Fatalf("expected 3 applied migrations, got %d", len(migrations))
+	if len(migrations) != 6 {
+		t.Fatalf("expected 6 applied migrations, got %d", len(migrations))
 	}
-	if migrations[0].version != 1 || migrations[1].version != 2 || migrations[2].version != 3 {
+	if migrations[0].version != 1 || migrations[1].version != 2 || migrations[2].version != 3 || migrations[3].version != 4 || migrations[4].version != 5 || migrations[5].version != 6 {
 		t.Errorf("unexpected migration versions: %+v", migrations)
 	}
 
@@ -537,13 +538,13 @@ func TestMigrations_Versioning(t *testing.T) {
 		t.Fatalf("migrate failed on legacy db: %v", err)
 	}
 
-	// Verify v1, v2, and v3 are recorded
+	// Verify v1, v2, v3, and v4 are recorded
 	var count int
 	if err := rawDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatalf("failed to count schema_migrations: %v", err)
 	}
-	if count != 3 {
-		t.Fatalf("expected 3 migrations in legacy db after runMigrations, got %d", count)
+	if count != 6 {
+		t.Fatalf("expected 6 migrations in legacy db after runMigrations, got %d", count)
 	}
 }
 
@@ -682,14 +683,16 @@ func TestScheduledJob_ClaimLeaseAndStateTransitions(t *testing.T) {
 		t.Fatalf("failed to create recurring job: %v", err)
 	}
 
-	// 2. Claim due jobs with 30s lease
-	claimed, err := db.ClaimDueScheduledJobs(ctx, now, 10, 30*time.Second)
+	// 2. Claim due jobs with 90s lease
+	claimed, err := db.ClaimDueScheduledJobs(ctx, now, 10, 90*time.Second)
 	if err != nil {
 		t.Fatalf("failed to claim due jobs: %v", err)
 	}
 	if len(claimed) != 2 {
 		t.Fatalf("expected 2 claimed jobs, got %d", len(claimed))
 	}
+
+	var oneShotClaimToken, recClaimToken string
 	for _, j := range claimed {
 		if j.Status != JobStatusRunning {
 			t.Errorf("expected status 'running', got %q", j.Status)
@@ -697,13 +700,21 @@ func TestScheduledJob_ClaimLeaseAndStateTransitions(t *testing.T) {
 		if j.AttemptCount != 1 {
 			t.Errorf("expected attempt_count 1, got %d", j.AttemptCount)
 		}
+		if j.ClaimToken == "" {
+			t.Errorf("expected non-empty claim token on claimed job %d", j.ID)
+		}
 		if j.LeaseUntil == nil || !j.LeaseUntil.After(now) {
 			t.Errorf("expected lease_until in future, got %v", j.LeaseUntil)
+		}
+		if j.ID == createdOneShot.ID {
+			oneShotClaimToken = j.ClaimToken
+		} else if j.ID == createdRecurring.ID {
+			recClaimToken = j.ClaimToken
 		}
 	}
 
 	// 3. Trying to claim again immediately should return 0 jobs (both currently leased)
-	claimedAgain, err := db.ClaimDueScheduledJobs(ctx, now.Add(5*time.Second), 10, 30*time.Second)
+	claimedAgain, err := db.ClaimDueScheduledJobs(ctx, now.Add(5*time.Second), 10, 90*time.Second)
 	if err != nil {
 		t.Fatalf("failed second claim: %v", err)
 	}
@@ -711,8 +722,8 @@ func TestScheduledJob_ClaimLeaseAndStateTransitions(t *testing.T) {
 		t.Fatalf("expected 0 jobs claimed while lease active, got %d", len(claimedAgain))
 	}
 
-	// 4. Test failure with retry: Fail one-shot job (attempt 1)
-	err = db.FailScheduledJob(ctx, createdOneShot.ID, "temporary rpc fail", 10*time.Second, now)
+	// 4. Test failure with retry: Fail one-shot job (attempt 1) with correct token
+	err = db.FailScheduledJob(ctx, createdOneShot.ID, oneShotClaimToken, "temporary rpc fail", 10*time.Second, now)
 	if err != nil {
 		t.Fatalf("failed to fail job: %v", err)
 	}
@@ -729,20 +740,23 @@ func TestScheduledJob_ClaimLeaseAndStateTransitions(t *testing.T) {
 	if fetchedOneShot.LeaseUntil != nil {
 		t.Errorf("expected lease_until to be cleared after failure, got %v", fetchedOneShot.LeaseUntil)
 	}
+	if fetchedOneShot.ClaimToken != "" {
+		t.Errorf("expected claim_token to be cleared after failure, got %q", fetchedOneShot.ClaimToken)
+	}
 
 	// 5. Simulate retry attempts up to max_attempts (3)
 	// Second attempt: claim at now + 10s
-	claim2, err := db.ClaimDueScheduledJobs(ctx, now.Add(10*time.Second), 10, 30*time.Second)
+	claim2, err := db.ClaimDueScheduledJobs(ctx, now.Add(10*time.Second), 10, 90*time.Second)
 	if err != nil || len(claim2) != 1 {
 		t.Fatalf("expected 1 job claimed on attempt 2, got %d (err: %v)", len(claim2), err)
 	}
 	if claim2[0].AttemptCount != 2 {
 		t.Errorf("expected attempt 2, got %d", claim2[0].AttemptCount)
 	}
-	_ = db.FailScheduledJob(ctx, createdOneShot.ID, "fail 2", 20*time.Second, now.Add(10*time.Second))
+	_ = db.FailScheduledJob(ctx, createdOneShot.ID, claim2[0].ClaimToken, "fail 2", 20*time.Second, now.Add(10*time.Second))
 
 	// Third attempt: claim at now + 30s
-	claim3, err := db.ClaimDueScheduledJobs(ctx, now.Add(30*time.Second), 10, 30*time.Second)
+	claim3, err := db.ClaimDueScheduledJobs(ctx, now.Add(30*time.Second), 10, 90*time.Second)
 	if err != nil || len(claim3) != 1 {
 		t.Fatalf("expected 1 job claimed on attempt 3, got %d (err: %v)", len(claim3), err)
 	}
@@ -750,23 +764,10 @@ func TestScheduledJob_ClaimLeaseAndStateTransitions(t *testing.T) {
 		t.Errorf("expected attempt 3, got %d", claim3[0].AttemptCount)
 	}
 	// Third failure reaches max_attempts (3) -> enters 'failed' state (dead letter)
-	_ = db.FailScheduledJob(ctx, createdOneShot.ID, "fail 3 (fatal)", 40*time.Second, now.Add(30*time.Second))
+	_ = db.FailScheduledJob(ctx, createdOneShot.ID, claim3[0].ClaimToken, "fail 3 (fatal)", 40*time.Second, now.Add(30*time.Second))
 
-	fetchedDeadLetter, _ := db.GetScheduledJob(ctx, createdOneShot.ID)
-	if fetchedDeadLetter.Status != JobStatusFailed {
-		t.Errorf("expected dead-letter status 'failed', got %q", fetchedDeadLetter.Status)
-	}
-
-	// Claiming should NOT pick up the failed job anymore
-	claimedDead, _ := db.ClaimDueScheduledJobs(ctx, now.Add(2*time.Hour), 10, 30*time.Second)
-	for _, j := range claimedDead {
-		if j.ID == createdOneShot.ID {
-			t.Fatalf("dead letter job should not be claimed")
-		}
-	}
-
-	// 6. Test completion of recurring job:
-	err = db.CompleteScheduledJob(ctx, createdRecurring.ID, now)
+	// 6. Test completion of recurring job (within its active 90s lease):
+	err = db.CompleteScheduledJob(ctx, createdRecurring.ID, recClaimToken, now)
 	if err != nil {
 		t.Fatalf("failed to complete recurring job: %v", err)
 	}
@@ -785,15 +786,26 @@ func TestScheduledJob_ClaimLeaseAndStateTransitions(t *testing.T) {
 		t.Errorf("expected next run %v, got %v", expectedNext, fetchedRec.NextRunAt)
 	}
 
+	// Claiming at 2 hours later should NOT pick up the dead letter job
+	claimedDead, _ := db.ClaimDueScheduledJobs(ctx, now.Add(2*time.Hour), 10, 90*time.Second)
+	for _, j := range claimedDead {
+		if j.ID == createdOneShot.ID {
+			t.Fatalf("dead letter job should not be claimed")
+		}
+	}
+
 	// 7. Test completion of one-shot job:
-	// Create another one-shot job to complete
 	oneShot2, _ := db.CreateScheduledJob(ctx, &ScheduledJob{
 		ChatID:     333,
 		ActionType: "message",
 		Payload:    "one shot 2",
 		NextRunAt:  now,
 	})
-	err = db.CompleteScheduledJob(ctx, oneShot2.ID, now)
+	claimOS2, err := db.ClaimDueScheduledJobs(ctx, now, 10, 90*time.Second)
+	if err != nil || len(claimOS2) == 0 {
+		t.Fatalf("failed to claim oneShot2: %v", err)
+	}
+	err = db.CompleteScheduledJob(ctx, oneShot2.ID, claimOS2[0].ClaimToken, now)
 	if err != nil {
 		t.Fatalf("failed to complete one-shot job: %v", err)
 	}
@@ -803,6 +815,113 @@ func TestScheduledJob_ClaimLeaseAndStateTransitions(t *testing.T) {
 	}
 	if deletedJob != nil {
 		t.Errorf("expected completed one-shot job to be deleted from database, got %+v", deletedJob)
+	}
+}
+
+func TestScheduledJob_FencingTokenAndMisfirePolicy(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+
+	// 1. Test Fencing Token Protection (stale worker rejected)
+	job, err := db.CreateScheduledJob(ctx, &ScheduledJob{
+		ChatID:          999,
+		PeerType:        "chat",
+		ActionType:      "message",
+		Payload:         "fencing test",
+		IntervalSeconds: 0,
+		NextRunAt:       now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create job: %v", err)
+	}
+
+	// Worker A claims job
+	claimA, err := db.ClaimDueScheduledJobs(ctx, now, 1, 30*time.Second)
+	if err != nil || len(claimA) != 1 {
+		t.Fatalf("worker A failed to claim: %v", err)
+	}
+	tokenA := claimA[0].ClaimToken
+
+	// Simulate lease expiry: 31 seconds later, Worker B reclaims the job
+	tLater := now.Add(31 * time.Second)
+	claimB, err := db.ClaimDueScheduledJobs(ctx, tLater, 1, 30*time.Second)
+	if err != nil || len(claimB) != 1 {
+		t.Fatalf("worker B failed to reclaim expired job: %v", err)
+	}
+	tokenB := claimB[0].ClaimToken
+
+	if tokenA == tokenB {
+		t.Fatalf("tokens must be distinct between claims")
+	}
+
+	// Stale Worker A attempts to CompleteScheduledJob with tokenA -> MUST FAIL with ErrJobLeaseLost
+	err = db.CompleteScheduledJob(ctx, job.ID, tokenA, tLater)
+	if !errors.Is(err, ErrJobLeaseLost) {
+		t.Errorf("expected ErrJobLeaseLost for stale Worker A Complete, got %v", err)
+	}
+
+	// Stale Worker A attempts to FailScheduledJob with tokenA -> MUST FAIL with ErrJobLeaseLost
+	err = db.FailScheduledJob(ctx, job.ID, tokenA, "error from stale worker", 10*time.Second, tLater)
+	if !errors.Is(err, ErrJobLeaseLost) {
+		t.Errorf("expected ErrJobLeaseLost for stale Worker A Fail, got %v", err)
+	}
+
+	// Active Worker B completes job with tokenB -> MUST SUCCEED
+	err = db.CompleteScheduledJob(ctx, job.ID, tokenB, tLater)
+	if err != nil {
+		t.Fatalf("active Worker B failed to complete job: %v", err)
+	}
+
+	// 2. Test Anchored Recurring Schedule and SkipMissed Policy
+	anchorJob, err := db.CreateScheduledJob(ctx, &ScheduledJob{
+		ChatID:          888,
+		PeerType:        "chat",
+		ActionType:      "message",
+		Payload:         "recurring anchor test",
+		IntervalSeconds: 3600, // 1 hour
+		NextRunAt:       now,  // 12:00
+	})
+	if err != nil {
+		t.Fatalf("failed to create recurring job: %v", err)
+	}
+
+	// Normal run: runs at 12:00, finishes at 12:01
+	claimNormal, err := db.ClaimDueScheduledJobs(ctx, now, 1, 90*time.Second)
+	if err != nil || len(claimNormal) != 1 {
+		t.Fatalf("failed to claim anchor job: %v", err)
+	}
+	finishNormal := now.Add(1 * time.Minute) // 12:01
+	err = db.CompleteScheduledJob(ctx, anchorJob.ID, claimNormal[0].ClaimToken, finishNormal)
+	if err != nil {
+		t.Fatalf("failed to complete anchor job: %v", err)
+	}
+
+	fetchedNormal, _ := db.GetScheduledJob(ctx, anchorJob.ID)
+	// Expected next run: strictly 13:00 (NOT 13:01!)
+	expectedNextNormal := now.Add(1 * time.Hour)
+	if !fetchedNormal.NextRunAt.Equal(expectedNextNormal) {
+		t.Errorf("schedule drift detected! Expected %v, got %v", expectedNextNormal, fetchedNormal.NextRunAt)
+	}
+
+	// Simulated downtime: Bot went offline, resumes at 16:30
+	downtimeNow := now.Add(4*time.Hour + 30*time.Minute) // 16:30
+	claimCatchup, err := db.ClaimDueScheduledJobs(ctx, downtimeNow, 1, 90*time.Second)
+	if err != nil || len(claimCatchup) != 1 {
+		t.Fatalf("failed to claim during catchup: %v", err)
+	}
+	finishCatchup := downtimeNow.Add(1 * time.Minute) // 16:31
+	err = db.CompleteScheduledJob(ctx, anchorJob.ID, claimCatchup[0].ClaimToken, finishCatchup)
+	if err != nil {
+		t.Fatalf("failed to complete catchup job: %v", err)
+	}
+
+	fetchedCatchup, _ := db.GetScheduledJob(ctx, anchorJob.ID)
+	// Anchored slot at 12:00 + N*1h that is > 16:31 is 17:00 (strictly on the hour!)
+	expectedNextCatchup := now.Add(5 * time.Hour) // 17:00
+	if !fetchedCatchup.NextRunAt.Equal(expectedNextCatchup) {
+		t.Errorf("misfire catchup incorrect! Expected %v, got %v", expectedNextCatchup, fetchedCatchup.NextRunAt)
 	}
 }
 

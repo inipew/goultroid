@@ -68,12 +68,18 @@ type Message struct {
 	ReplyToID  int
 	MediaType  string
 	Media      *MediaInfo
-	IsOutgoing bool // true when the message was sent by the bot owner (userbot)
+	IsOutgoing bool  // true when the message was sent by the bot owner (userbot)
+	GroupedID  int64 // non-zero when this message belongs to an album (grouped media)
 }
 
 // HasMedia returns true if the message has an attached downloadable media.
 func (m *Message) HasMedia() bool {
 	return m != nil && m.Media != nil && m.Media.Location != nil
+}
+
+// IsAlbum returns true when the message is part of a grouped media album.
+func (m *Message) IsAlbum() bool {
+	return m != nil && m.GroupedID != 0
 }
 
 // Chat represents the chat in which an event occurred.
@@ -104,7 +110,11 @@ type Context struct {
 	Message *Message
 	Chat    *Chat
 	Sender  *User
-	Perms   *Permissions
+	Perms     *Permissions
+	Principal *Principal
+
+	// LastResponseID tracks the ID of the bot's most recent reply in this context
+	LastResponseID int
 
 	Svc      TelegramServicer
 	PeerID   tg.InputPeerClass
@@ -119,7 +129,12 @@ func (c *Context) SenderID() int64 {
 	return 0
 }
 
-// Reply sends a response message to the same chat.
+// IsAlbum returns true when the triggering message is part of a grouped media album.
+func (c *Context) IsAlbum() bool {
+	return c != nil && c.Message != nil && c.Message.IsAlbum()
+}
+
+// Reply sends a response message to the same chat and records LastResponseID.
 func (c *Context) Reply(text string) error {
 	if c.Svc == nil {
 		return errors.New("telegram service not initialized")
@@ -131,13 +146,13 @@ func (c *Context) Reply(text string) error {
 	if err != nil {
 		return fmt.Errorf("reply failed: %w", err)
 	}
-	if sent != nil && c.Message != nil {
-		c.Message.ID = sent.ID
+	if sent != nil {
+		c.LastResponseID = sent.ID
 	}
 	return nil
 }
 
-// Edit edits the command message (if sent by self) or a previously sent response.
+// Edit edits the previously sent response (if Reply was called) or the outgoing command message.
 func (c *Context) Edit(text string) error {
 	if c.Svc == nil {
 		return errors.New("telegram service not initialized")
@@ -145,13 +160,18 @@ func (c *Context) Edit(text string) error {
 	if c.PeerID == nil {
 		return errors.New("peer is nil")
 	}
-	if c.Message == nil || c.Message.ID == 0 {
+
+	msgID := c.LastResponseID
+	if msgID == 0 && c.Message != nil {
+		msgID = c.Message.ID
+	}
+	if msgID == 0 {
 		return errors.New("no message to edit")
 	}
-	return c.Svc.EditMessage(c.Ctx, c.PeerID, c.Message.ID, text)
+	return c.Svc.EditMessage(c.Ctx, c.PeerID, msgID, text)
 }
 
-// Delete deletes the current message.
+// Delete deletes the current command message.
 func (c *Context) Delete() error {
 	if c.Svc == nil {
 		return errors.New("telegram service not initialized")
@@ -163,6 +183,20 @@ func (c *Context) Delete() error {
 		return errors.New("no message to delete")
 	}
 	return c.Svc.DeleteMessage(c.Ctx, c.PeerID, []int{c.Message.ID})
+}
+
+// DeleteResponse deletes the bot's previously sent response message, if any.
+func (c *Context) DeleteResponse() error {
+	if c.Svc == nil {
+		return errors.New("telegram service not initialized")
+	}
+	if c.PeerID == nil {
+		return errors.New("peer is nil")
+	}
+	if c.LastResponseID == 0 {
+		return errors.New("no response message to delete")
+	}
+	return c.Svc.DeleteMessage(c.Ctx, c.PeerID, []int{c.LastResponseID})
 }
 
 // React sends an emoji reaction to the message.
@@ -315,7 +349,16 @@ func (c *Context) DownloadMedia(destDir string) (string, error) {
 
 	filePath := filepath.Join(destDir, fileName)
 	if err := c.Svc.DownloadFile(c.Ctx, media.Location, filePath); err != nil {
+		_ = os.Remove(filePath)
 		return "", fmt.Errorf("download failed: %w", err)
+	}
+
+	// Verify actual downloaded file size against hard limit
+	if stat, err := os.Stat(filePath); err == nil {
+		if stat.Size() > MaxMediaDownloadSize {
+			_ = os.Remove(filePath)
+			return "", fmt.Errorf("%w: downloaded file size (%d bytes) exceeds maximum limit (500MB)", ErrMedia, stat.Size())
+		}
 	}
 
 	return filePath, nil
@@ -331,6 +374,9 @@ func (c *Context) GetReply() (*Message, error) {
 	}
 	msg, err := c.Svc.GetMessage(c.Ctx, c.PeerID, c.Message.ReplyToID)
 	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("failed to fetch reply message: %w", err)
 	}
 	if msg == nil {
@@ -757,8 +803,27 @@ func (c *Context) IsChannel() bool {
 	return c.Chat != nil && c.Chat.Type == "channel"
 }
 
+// GetPrincipal returns the dynamically resolved authorization identity of the caller.
+func (c *Context) GetPrincipal() *Principal {
+	if c == nil {
+		return nil
+	}
+	if c.Principal != nil && (c.Sender == nil || c.Principal.UserID == c.Sender.ID) {
+		return c.Principal
+	}
+	if c.Perms != nil && c.Sender != nil {
+		p, _ := c.Perms.Resolve(c.Ctx, c.Sender.ID)
+		c.Principal = p
+		return p
+	}
+	return nil
+}
+
 // IsOwner returns true if the sender is the Owner.
 func (c *Context) IsOwner() bool {
+	if p := c.GetPrincipal(); p != nil {
+		return p.IsOwner
+	}
 	if c.Sender == nil || c.Perms == nil {
 		return false
 	}
@@ -767,6 +832,9 @@ func (c *Context) IsOwner() bool {
 
 // IsSudo returns true if the sender has Sudo or Owner privileges.
 func (c *Context) IsSudo() bool {
+	if p := c.GetPrincipal(); p != nil {
+		return p.IsSudo
+	}
 	if c.Sender == nil || c.Perms == nil {
 		return false
 	}

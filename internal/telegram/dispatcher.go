@@ -23,6 +23,7 @@ type Dispatcher struct {
 	selfID   int64
 	resolver core.PeerResolver
 	rootCtx  context.Context
+	eventBus *core.EventBus
 
 	messageHandlers []MessageHandler
 	mu              sync.RWMutex
@@ -50,6 +51,18 @@ func NewDispatcher(
 		logger:   logger,
 		cooldown: cooldown,
 		executor: executor,
+	}
+}
+
+// Executor returns the underlying CommandExecutor used by this dispatcher.
+func (d *Dispatcher) Executor() *core.CommandExecutor {
+	return d.executor
+}
+
+// SetExecutor sets the CommandExecutor used by this dispatcher.
+func (d *Dispatcher) SetExecutor(executor *core.CommandExecutor) {
+	if executor != nil {
+		d.executor = executor
 	}
 }
 
@@ -120,10 +133,34 @@ func (d *Dispatcher) Service() core.TelegramServicer {
 	return d.getService()
 }
 
-// RegisterHooks binds NewMessage and NewChannelMessage handlers to a tg.UpdateDispatcher.
+// EventBus returns the domain event bus used by this dispatcher.
+func (d *Dispatcher) EventBus() *core.EventBus {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.eventBus
+}
+
+// SetEventBus sets the domain event bus. Must be called before RegisterHooks.
+func (d *Dispatcher) SetEventBus(bus *core.EventBus) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.eventBus = bus
+}
+
+func (d *Dispatcher) getEventBus() *core.EventBus {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.eventBus
+}
+
+// RegisterHooks binds message, edit, and delete handlers to a tg.UpdateDispatcher.
 func (d *Dispatcher) RegisterHooks(dispatcher *tg.UpdateDispatcher) {
 	dispatcher.OnNewMessage(d.OnNewMessage)
 	dispatcher.OnNewChannelMessage(d.OnNewChannelMessage)
+	dispatcher.OnEditMessage(d.OnEditMessage)
+	dispatcher.OnEditChannelMessage(d.OnEditChannelMessage)
+	dispatcher.OnDeleteMessages(d.OnDeleteMessages)
+	dispatcher.OnDeleteChannelMessages(d.OnDeleteChannelMessages)
 }
 
 // OnNewMessage handles private and standard group message updates.
@@ -144,8 +181,96 @@ func (d *Dispatcher) OnNewChannelMessage(ctx context.Context, e tg.Entities, upd
 	return d.dispatch(ctx, e, msg)
 }
 
+// OnEditMessage handles edits in private chats and standard groups.
+func (d *Dispatcher) OnEditMessage(ctx context.Context, e tg.Entities, update *tg.UpdateEditMessage) error {
+	bus := d.getEventBus()
+	if bus == nil {
+		return nil
+	}
+	msg, ok := update.Message.(*tg.Message)
+	if !ok {
+		return nil
+	}
+	chatID := extractChatIDFromPeer(msg.PeerID)
+	bus.Publish(&core.MessageEditedEvent{
+		At:     time.Now(),
+		MsgID:  msg.ID,
+		ChatID: chatID,
+		Text:   msg.Message,
+	})
+	return nil
+}
+
+// OnEditChannelMessage handles edits in supergroups and channels.
+func (d *Dispatcher) OnEditChannelMessage(ctx context.Context, e tg.Entities, update *tg.UpdateEditChannelMessage) error {
+	bus := d.getEventBus()
+	if bus == nil {
+		return nil
+	}
+	msg, ok := update.Message.(*tg.Message)
+	if !ok {
+		return nil
+	}
+	chatID := extractChatIDFromPeer(msg.PeerID)
+	bus.Publish(&core.MessageEditedEvent{
+		At:     time.Now(),
+		MsgID:  msg.ID,
+		ChatID: chatID,
+		Text:   msg.Message,
+	})
+	return nil
+}
+
+// OnDeleteMessages handles bulk message deletions in private chats and standard groups.
+func (d *Dispatcher) OnDeleteMessages(ctx context.Context, e tg.Entities, update *tg.UpdateDeleteMessages) error {
+	bus := d.getEventBus()
+	if bus == nil {
+		return nil
+	}
+	bus.Publish(&core.MessagesDeletedEvent{
+		At:     time.Now(),
+		ChatID: 0, // not available in this update type without additional context
+		MsgIDs: update.Messages,
+	})
+	return nil
+}
+
+// OnDeleteChannelMessages handles bulk message deletions in supergroups and channels.
+func (d *Dispatcher) OnDeleteChannelMessages(ctx context.Context, e tg.Entities, update *tg.UpdateDeleteChannelMessages) error {
+	bus := d.getEventBus()
+	if bus == nil {
+		return nil
+	}
+	bus.Publish(&core.MessagesDeletedEvent{
+		At:     time.Now(),
+		ChatID: update.ChannelID,
+		MsgIDs: update.Messages,
+	})
+	return nil
+}
+
+// extractChatIDFromPeer returns a numeric chat ID for the given peer class.
+func extractChatIDFromPeer(peer tg.PeerClass) int64 {
+	if peer == nil {
+		return 0
+	}
+	switch p := peer.(type) {
+	case *tg.PeerUser:
+		return p.UserID
+	case *tg.PeerChat:
+		return p.ChatID
+	case *tg.PeerChannel:
+		return p.ChannelID
+	}
+	return 0
+}
+
 func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Message) error {
-	parsed, isCmd := d.router.Parse(msg.Message)
+	parsed, isCmd, err := d.router.Parse(msg.Message)
+	if err != nil {
+		d.logger.Warn("command parse syntax error", zap.Error(err), zap.String("text", msg.Message))
+		return nil
+	}
 	cmdName := ""
 	if isCmd {
 		cmdName = parsed.Name
@@ -175,6 +300,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		Text:       msg.Message,
 		Date:       time.Unix(int64(msg.Date), 0),
 		IsOutgoing: msg.Out,
+		GroupedID:  msg.GroupedID,
 	}
 
 	if msg.Media != nil {
@@ -286,7 +412,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	if root == nil {
 		root = context.Background()
 	}
-	execCtx, cancel := context.WithTimeout(root, 30*time.Second)
+	execCtx, cancel := context.WithCancel(root)
 
 	coreCtx := &core.Context{
 		Ctx:      execCtx,

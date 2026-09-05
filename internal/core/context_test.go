@@ -191,11 +191,14 @@ func TestContext_Actions(t *testing.T) {
 	if mock.sentText != "hello world" {
 		t.Errorf("expected sent text 'hello world', got %q", mock.sentText)
 	}
-	if ctx.Message.ID != 42 {
-		t.Errorf("expected context message ID to update to 42, got %d", ctx.Message.ID)
+	if ctx.Message.ID != 10 {
+		t.Errorf("expected context message ID to remain immutable (10), got %d", ctx.Message.ID)
+	}
+	if ctx.LastResponseID != 42 {
+		t.Errorf("expected LastResponseID to be 42, got %d", ctx.LastResponseID)
 	}
 
-	// Test Edit
+	// Test Edit (should edit the sent reply with ID 42)
 	if err := ctx.Edit("edited text"); err != nil {
 		t.Fatalf("unexpected error editing: %v", err)
 	}
@@ -203,12 +206,21 @@ func TestContext_Actions(t *testing.T) {
 		t.Errorf("expected edited text 'edited text', got %q", mock.editedText)
 	}
 
-	// Test Delete
+	// Test Delete (should delete the original command message with ID 10)
 	if err := ctx.Delete(); err != nil {
 		t.Fatalf("unexpected error deleting: %v", err)
 	}
+	if len(mock.deletedIDs) != 1 || mock.deletedIDs[0] != 10 {
+		t.Errorf("expected deleted ID 10 for original message, got %v", mock.deletedIDs)
+	}
+
+	// Test DeleteResponse (should delete the bot reply with ID 42)
+	mock.deletedIDs = nil
+	if err := ctx.DeleteResponse(); err != nil {
+		t.Fatalf("unexpected error deleting response: %v", err)
+	}
 	if len(mock.deletedIDs) != 1 || mock.deletedIDs[0] != 42 {
-		t.Errorf("expected deleted ID 42, got %v", mock.deletedIDs)
+		t.Errorf("expected deleted ID 42 for bot response, got %v", mock.deletedIDs)
 	}
 
 	// Test React

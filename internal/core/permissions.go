@@ -1,6 +1,22 @@
 package core
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
+
+// Principal represents the resolved authorization identity for an execution context.
+type Principal struct {
+	UserID  int64      `json:"user_id"`
+	IsOwner bool       `json:"is_owner"`
+	IsSudo  bool       `json:"is_sudo"`
+	Level   Permission `json:"level"`
+}
+
+// PrincipalResolver dynamically evaluates and resolves identity permissions at execution time.
+type PrincipalResolver interface {
+	Resolve(ctx context.Context, userID int64) (*Principal, error)
+}
 
 // Permissions manages user access tiers (Owner, Sudo, Everyone) in a thread-safe manner.
 type Permissions struct {
@@ -96,4 +112,25 @@ func (p *Permissions) Level(userID int64) Permission {
 // CanRun checks if the given userID has sufficient permission to run cmd.
 func (p *Permissions) CanRun(userID int64, cmd Command) bool {
 	return p.Level(userID) >= cmd.Permission
+}
+
+var _ PrincipalResolver = (*Permissions)(nil)
+
+// Resolve dynamically resolves user permissions into a Principal at execution time.
+func (p *Permissions) Resolve(ctx context.Context, userID int64) (*Principal, error) {
+	if p == nil || userID == 0 {
+		return &Principal{
+			UserID:  userID,
+			IsOwner: false,
+			IsSudo:  false,
+			Level:   PermissionEveryone,
+		}, nil
+	}
+
+	return &Principal{
+		UserID:  userID,
+		IsOwner: p.IsOwner(userID),
+		IsSudo:  p.IsSudo(userID),
+		Level:   p.Level(userID),
+	}, nil
 }

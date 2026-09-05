@@ -82,25 +82,30 @@ func (r *Router) Register(cmd Command) error {
 }
 
 // Parse checks if a text starts with prefix and parses it into ParsedCommand.
-// Returns (parsed, true) if it is a valid command format, (nil, false) otherwise.
-func (r *Router) Parse(text string) (*ParsedCommand, bool) {
+// Returns (parsed, true, nil) if it is a valid command format,
+// (nil, false, nil) if not a command,
+// or (nil, false, err) if it starts with the command prefix but contains syntax errors.
+func (r *Router) Parse(text string) (*ParsedCommand, bool, error) {
 	r.mu.RLock()
 	prefix := r.prefix
 	r.mu.RUnlock()
 
 	text = strings.TrimSpace(text)
 	if !strings.HasPrefix(text, prefix) {
-		return nil, false
+		return nil, false, nil
 	}
 
 	afterPrefix := strings.TrimSpace(text[len(prefix):])
 	if afterPrefix == "" {
-		return nil, false
+		return nil, false, nil
 	}
 
-	tokens := tokenize(afterPrefix)
+	tokens, err := tokenize(afterPrefix)
+	if err != nil {
+		return nil, false, err
+	}
 	if len(tokens) == 0 {
-		return nil, false
+		return nil, false, nil
 	}
 
 	cmdName := strings.ToLower(tokens[0])
@@ -121,7 +126,7 @@ func (r *Router) Parse(text string) (*ParsedCommand, bool) {
 		Name:    cmdName,
 		Args:    args,
 		RawArgs: rawArgs,
-	}, true
+	}, true, nil
 }
 
 // Find retrieves a registered Command by name or alias (case-insensitive).
@@ -145,7 +150,7 @@ func (r *Router) All() []Command {
 
 // tokenize splits a string into whitespace-separated arguments,
 // preserving quoted substrings (both single and double quotes) and backslash escapes.
-func tokenize(s string) []string {
+func tokenize(s string) ([]string, error) {
 	var tokens []string
 	var current strings.Builder
 	inSingle := false
@@ -185,9 +190,17 @@ func tokenize(s string) []string {
 		current.WriteRune(r)
 	}
 
+	if escaped {
+		return nil, ErrTrailingEscape
+	}
+
+	if inSingle || inDouble {
+		return nil, ErrUnclosedQuote
+	}
+
 	if current.Len() > 0 {
 		tokens = append(tokens, current.String())
 	}
 
-	return tokens
+	return tokens, nil
 }

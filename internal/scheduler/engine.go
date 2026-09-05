@@ -90,8 +90,14 @@ func (e *Engine) Start(parentCtx context.Context) error {
 	return nil
 }
 
-// Stop gracefully halts the scheduler engine and cancels all active periodic tasks.
+// Stop gracefully halts the scheduler engine, waiting for jobs up to a 10s upper bound.
 func (e *Engine) Stop() error {
+	return e.StopWithTimeout(10 * time.Second)
+}
+
+// StopWithTimeout gracefully halts the scheduler engine and cancels all active periodic tasks
+// with an explicit timeout bound on waiting for ongoing jobs.
+func (e *Engine) StopWithTimeout(timeout time.Duration) error {
 	e.runMu.Lock()
 	if !e.running {
 		e.runMu.Unlock()
@@ -109,9 +115,20 @@ func (e *Engine) Stop() error {
 	e.tasks = make(map[string]context.CancelFunc)
 	e.tasksMu.Unlock()
 
-	e.wg.Wait()
-	e.logger.Info("scheduler engine stopped")
-	return nil
+	done := make(chan struct{})
+	go func() {
+		e.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		e.logger.Info("scheduler engine stopped gracefully")
+		return nil
+	case <-time.After(timeout):
+		e.logger.Warn("scheduler engine stop timed out waiting for jobs", zap.Duration("timeout", timeout))
+		return fmt.Errorf("scheduler engine stop timed out after %v", timeout)
+	}
 }
 
 // RegisterPeriodicTask registers a non-persisted recurring background task for plugins.
@@ -267,6 +284,11 @@ func (e *Engine) List(ctx context.Context, chatID int64) ([]database.ScheduledJo
 	return e.db.ListScheduledJobs(ctx, chatID)
 }
 
+// JobHistory returns up to limit recent execution history entries for the given job.
+func (e *Engine) JobHistory(ctx context.Context, jobID int64, limit int) ([]database.JobHistoryEntry, error) {
+	return e.db.GetJobHistory(ctx, jobID, limit)
+}
+
 func (e *Engine) runLoop(ctx context.Context) {
 	defer e.wg.Done()
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -283,8 +305,8 @@ func (e *Engine) runLoop(ctx context.Context) {
 }
 
 func (e *Engine) processDueJobs(ctx context.Context, now time.Time) {
-	// Claim up to 10 due jobs with a 30-second lease
-	claimedJobs, err := e.db.ClaimDueScheduledJobs(ctx, now, 10, 30*time.Second)
+	// Claim up to 10 due jobs with a 90-second lease (3x default execution timeout)
+	claimedJobs, err := e.db.ClaimDueScheduledJobs(ctx, now, 10, 90*time.Second)
 	if err != nil {
 		e.logger.Error("failed to claim due scheduled jobs", zap.Error(err))
 		return
@@ -307,9 +329,11 @@ func (e *Engine) executeJob(ctx context.Context, job database.ScheduledJob) {
 	defer func() {
 		if r := recover(); r != nil {
 			e.logger.Error("scheduled job execution panicked", zap.Int64("job_id", job.ID), zap.Any("panic", r))
-			_ = e.db.FailScheduledJob(ctx, job.ID, fmt.Sprintf("panic: %v", r), 10*time.Second, time.Now().UTC())
+			_ = e.db.FailScheduledJob(ctx, job.ID, job.ClaimToken, fmt.Sprintf("panic: %v", r), 10*time.Second, time.Now().UTC())
 		}
 	}()
+
+	startTime := time.Now()
 
 	var execErr error
 	switch job.ActionType {
@@ -323,9 +347,32 @@ func (e *Engine) executeJob(ctx context.Context, job database.ScheduledJob) {
 	}
 
 	now := time.Now().UTC()
+	durationMs := now.Sub(startTime).Milliseconds()
+
+	// Always record history regardless of outcome.
+	histEntry := &database.JobHistoryEntry{
+		JobID:      job.ID,
+		RanAt:      now,
+		DurationMs: durationMs,
+		Success:    execErr == nil,
+	}
+	if execErr != nil {
+		histEntry.ErrorMsg = execErr.Error()
+	}
+	if err := e.db.RecordJobRun(ctx, histEntry); err != nil {
+		e.logger.Warn("failed to record job run history", zap.Int64("job_id", job.ID), zap.Error(err))
+	}
+
 	if execErr == nil {
-		if err := e.db.CompleteScheduledJob(ctx, job.ID, now); err != nil {
-			e.logger.Error("failed to complete scheduled job", zap.Int64("job_id", job.ID), zap.Error(err))
+		if err := e.db.CompleteScheduledJob(ctx, job.ID, job.ClaimToken, now); err != nil {
+			if errors.Is(err, database.ErrJobLeaseLost) {
+				e.logger.Warn("scheduled job lease lost or claimed by another worker on complete",
+					zap.Int64("job_id", job.ID),
+					zap.String("claim_token", job.ClaimToken),
+				)
+			} else {
+				e.logger.Error("failed to complete scheduled job", zap.Int64("job_id", job.ID), zap.Error(err))
+			}
 		}
 	} else {
 		// Exponential backoff: 10s * 2^(attempt - 1), capped at 5 minutes
@@ -339,8 +386,15 @@ func (e *Engine) executeJob(ctx context.Context, job database.ScheduledJob) {
 		}
 		retryDelay := time.Duration(10*backoffMultiplier) * time.Second
 
-		if err := e.db.FailScheduledJob(ctx, job.ID, execErr.Error(), retryDelay, now); err != nil {
-			e.logger.Error("failed to record scheduled job failure", zap.Int64("job_id", job.ID), zap.Error(err))
+		if err := e.db.FailScheduledJob(ctx, job.ID, job.ClaimToken, execErr.Error(), retryDelay, now); err != nil {
+			if errors.Is(err, database.ErrJobLeaseLost) {
+				e.logger.Warn("scheduled job lease lost or claimed by another worker on fail",
+					zap.Int64("job_id", job.ID),
+					zap.String("claim_token", job.ClaimToken),
+				)
+			} else {
+				e.logger.Error("failed to record scheduled job failure", zap.Int64("job_id", job.ID), zap.Error(err))
+			}
 		}
 	}
 }
@@ -390,7 +444,11 @@ func (e *Engine) executeCommand(ctx context.Context, job database.ScheduledJob) 
 		return err
 	}
 
-	parsed, isCmd := e.router.Parse(job.Payload)
+	parsed, isCmd, err := e.router.Parse(job.Payload)
+	if err != nil {
+		e.logger.Warn("scheduled command payload has syntax error", zap.Error(err), zap.String("payload", job.Payload))
+		return fmt.Errorf("%w: %v", core.ErrInvalidArgs, err)
+	}
 	if !isCmd {
 		err := fmt.Errorf("scheduled command payload is not a command: %s", job.Payload)
 		e.logger.Warn(err.Error())
@@ -406,9 +464,13 @@ func (e *Engine) executeCommand(ctx context.Context, job database.ScheduledJob) 
 
 	peer := reconstructInputPeer(job.PeerType, job.ChatID, job.AccessHash)
 
-	// SECURITY BOUNDARY:
+	// SECURITY BOUNDARY & DYNAMIC PRINCIPAL EVALUATION:
 	// If CreatedBy == 0, principal is unknown/unprivileged. Do NOT assume OwnerID!
 	callerID := job.CreatedBy
+	var principal *core.Principal
+	if e.perms != nil {
+		principal, _ = e.perms.Resolve(ctx, callerID)
+	}
 
 	coreMsg := &core.Message{
 		ID:         0,
@@ -425,16 +487,17 @@ func (e *Engine) executeCommand(ctx context.Context, job database.ScheduledJob) 
 	}
 
 	coreCtx := &core.Context{
-		Ctx:     ctx,
-		Command: parsed.Name,
-		Args:    parsed.Args,
-		RawArgs: parsed.RawArgs,
-		Message: coreMsg,
-		Chat:    chat,
-		Sender:  sender,
-		Perms:   e.perms,
-		Svc:     svc,
-		PeerID:  peer,
+		Ctx:       ctx,
+		Command:   parsed.Name,
+		Args:      parsed.Args,
+		RawArgs:   parsed.RawArgs,
+		Message:   coreMsg,
+		Chat:      chat,
+		Sender:    sender,
+		Perms:     e.perms,
+		Principal: principal,
+		Svc:       svc,
+		PeerID:    peer,
 	}
 
 	if err := e.executor.Execute(coreCtx, cmd); err != nil {

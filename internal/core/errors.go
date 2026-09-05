@@ -25,7 +25,10 @@ var (
 	ErrInternal      = errors.New("internal error")
 	ErrTelegram        = errors.New("telegram api error")
 	ErrRateLimited     = errors.New("rate limited")
+	ErrRateLimit       = ErrRateLimited
 	ErrPeerUnresolved  = errors.New("peer access hash could not be resolved")
+	ErrUnclosedQuote   = errors.New("unclosed quote in command arguments")
+	ErrTrailingEscape  = errors.New("trailing backslash escape in command arguments")
 )
 
 // RateLimitError represents a FloodWait or rate-limiting event from Telegram.

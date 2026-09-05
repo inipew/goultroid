@@ -48,6 +48,9 @@ type Service interface {
 	Cancel(ctx context.Context, jobID int64) error
 	List(ctx context.Context, chatID int64) ([]database.ScheduledJob, error)
 
+	// Job History
+	JobHistory(ctx context.Context, jobID int64, limit int) ([]database.JobHistoryEntry, error)
+
 	// Lifecycle
 	Start(ctx context.Context) error
 	Stop() error

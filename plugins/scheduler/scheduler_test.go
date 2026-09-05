@@ -86,8 +86,11 @@ func (m *mockSchedulerService) List(ctx context.Context, chatID int64) ([]databa
 	}
 	return list, nil
 }
+func (m *mockSchedulerService) JobHistory(ctx context.Context, jobID int64, limit int) ([]database.JobHistoryEntry, error) {
+	return nil, nil
+}
 func (m *mockSchedulerService) Start(ctx context.Context) error { return nil }
-func (m *mockSchedulerService) Stop() error                  { return nil }
+func (m *mockSchedulerService) Stop() error                     { return nil }
 
 type mockTelegramServicer struct {
 	sent string
@@ -176,8 +179,8 @@ func TestSchedulerPlugin(t *testing.T) {
 	}
 
 	cmds := p.Commands()
-	if len(cmds) != 4 {
-		t.Fatalf("expected 4 commands, got %d", len(cmds))
+	if len(cmds) != 5 {
+		t.Fatalf("expected 5 commands, got %d", len(cmds))
 	}
 
 	cmdMap := make(map[string]core.Command)

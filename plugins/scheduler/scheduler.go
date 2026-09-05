@@ -67,6 +67,15 @@ func (p *Plugin) Commands() []core.Command {
 			Permission:  core.PermissionSudo,
 			Handler:     p.handleCancel,
 		},
+		{
+			Name:        "schedhistory",
+			Aliases:     []string{"jobhistory", "schedlog"},
+			Description: "Show the last execution history entries for a scheduled job",
+			Usage:       ".schedhistory <id> [limit]",
+			Category:    "Scheduler",
+			Permission:  core.PermissionSudo,
+			Handler:     p.handleSchedHistory,
+		},
 	}
 }
 
@@ -240,6 +249,65 @@ func (p *Plugin) handleCancel(ctx *core.Context) error {
 	}
 
 	return ctx.Reply(fmt.Sprintf("🗑️ Scheduled job <code>#%d</code> canceled successfully.", id))
+}
+
+func (p *Plugin) handleSchedHistory(ctx *core.Context) error {
+	if len(ctx.Args) == 0 {
+		_ = ctx.Reply("⚠️ Usage: <code>.schedhistory &lt;id&gt; [limit]</code>")
+		return errors.New("missing job id")
+	}
+
+	idStr := strings.TrimPrefix(ctx.Args[0], "#")
+	jobID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		_ = ctx.Reply(fmt.Sprintf("❌ Invalid job ID %q: %v", idStr, err))
+		return err
+	}
+
+	limit := 10
+	if len(ctx.Args) >= 2 {
+		if n, err := strconv.Atoi(ctx.Args[1]); err == nil && n > 0 {
+			if n > 50 {
+				n = 50
+			}
+			limit = n
+		}
+	}
+
+	entries, err := p.sched.JobHistory(ctx.Ctx, jobID, limit)
+	if err != nil {
+		_ = ctx.Reply(fmt.Sprintf("❌ Failed to fetch history for job #%d: %v", jobID, err))
+		return err
+	}
+
+	if len(entries) == 0 {
+		return ctx.Reply(fmt.Sprintf("ℹ️ No execution history found for job <code>#%d</code>.", jobID))
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "📋 <b>Execution History — Job #%d</b> (last %d):\n\n", jobID, len(entries))
+	for _, e := range entries {
+		icon := "✅"
+		errPart := ""
+		if !e.Success {
+			icon = "❌"
+			if e.ErrorMsg != "" {
+				snippet := e.ErrorMsg
+				if len(snippet) > 60 {
+					snippet = snippet[:57] + "..."
+				}
+				errPart = fmt.Sprintf("\n  └ <i>Error:</i> <code>%s</code>", snippet)
+			}
+		}
+		fmt.Fprintf(&sb, "%s <code>%s</code> — <i>%dms</i>%s\n",
+			icon,
+			e.RanAt.UTC().Format("2006-01-02 15:04:05"),
+			e.DurationMs,
+			errPart,
+		)
+	}
+
+	return ctx.Reply(sb.String())
 }
 
 func getChatID(ctx *core.Context) int64 {

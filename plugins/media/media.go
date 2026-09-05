@@ -75,17 +75,22 @@ func (p *Plugin) handleMediaInfo(ctx *core.Context) error {
 	sb.WriteString("📊 <b>Media Information</b>\n\n")
 
 	// Type
-	mediaTypeDisplay := strings.ToUpper(media.Type[:1]) + media.Type[1:]
-	sb.WriteString(fmt.Sprintf("• <b>Type</b>: <code>%s</code>\n", mediaTypeDisplay))
+	mediaTypeDisplay := media.Type
+	if len(mediaTypeDisplay) > 0 {
+		mediaTypeDisplay = strings.ToUpper(mediaTypeDisplay[:1]) + mediaTypeDisplay[1:]
+	} else {
+		mediaTypeDisplay = "Unknown"
+	}
+	sb.WriteString(fmt.Sprintf("• <b>Type</b>: <code>%s</code>\n", core.EscapeHTML(mediaTypeDisplay)))
 
 	// File Name
 	if media.FileName != "" {
-		sb.WriteString(fmt.Sprintf("• <b>File Name</b>: <code>%s</code>\n", media.FileName))
+		sb.WriteString(fmt.Sprintf("• <b>File Name</b>: <code>%s</code>\n", core.EscapeHTML(media.FileName)))
 	}
 
 	// MIME Type
 	if media.MimeType != "" {
-		sb.WriteString(fmt.Sprintf("• <b>MIME Type</b>: <code>%s</code>\n", media.MimeType))
+		sb.WriteString(fmt.Sprintf("• <b>MIME Type</b>: <code>%s</code>\n", core.EscapeHTML(media.MimeType)))
 	}
 
 	// Size
