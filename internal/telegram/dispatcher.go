@@ -2,14 +2,13 @@ package telegram
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"sync"
 	"time"
 
-	"github.com/inipew/goultroid/internal/core"
 	"github.com/gotd/td/tg"
+	"github.com/inipew/goultroid/internal/core"
 	"go.uber.org/zap"
 )
 
@@ -20,8 +19,10 @@ type Dispatcher struct {
 	svc      core.TelegramServicer
 	logger   *zap.Logger
 	cooldown *core.CooldownTracker
+	executor *core.CommandExecutor
 	selfID   int64
 	resolver core.PeerResolver
+	rootCtx  context.Context
 
 	messageHandlers []MessageHandler
 	mu              sync.RWMutex
@@ -40,13 +41,29 @@ func NewDispatcher(
 	if logger == nil {
 		logger = zap.NewNop()
 	}
+	cooldown := core.NewCooldownTracker()
+	executor := core.NewCommandExecutor(logger, cooldown, 30*time.Second)
 	return &Dispatcher{
 		router:   router,
 		perms:    perms,
 		svc:      svc,
 		logger:   logger,
-		cooldown: core.NewCooldownTracker(),
+		cooldown: cooldown,
+		executor: executor,
 	}
+}
+
+// SetRootContext sets the application root context used for command lifetime coordination.
+func (d *Dispatcher) SetRootContext(ctx context.Context) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.rootCtx = ctx
+}
+
+func (d *Dispatcher) getRootContext() context.Context {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.rootCtx
 }
 
 // AddMessageHandler registers an interceptor for raw message processing (e.g. AFK, filters).
@@ -141,9 +158,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	d.mu.RUnlock()
 
 	for _, h := range handlers {
-		if err := h(ctx, e, msg, isCmd, cmdName); err != nil {
-			d.logger.Warn("message handler returned error", zap.Error(err))
-		}
+		d.safeExecuteInterceptor(ctx, h, e, msg, isCmd, cmdName)
 	}
 
 	if !isCmd {
@@ -267,48 +282,53 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 
 	coreMsg.SenderID = sender.ID
 
+	root := d.getRootContext()
+	if root == nil {
+		root = context.Background()
+	}
+	execCtx, cancel := context.WithTimeout(root, 30*time.Second)
+
 	coreCtx := &core.Context{
-		Ctx:     context.WithoutCancel(ctx),
-		Command: parsed.Name,
-		Args:    parsed.Args,
-		RawArgs: parsed.RawArgs,
-		Message: coreMsg,
-		Chat:    chat,
-		Sender:  sender,
+		Ctx:      execCtx,
+		Command:  parsed.Name,
+		Args:     parsed.Args,
+		RawArgs:  parsed.RawArgs,
+		Message:  coreMsg,
+		Chat:     chat,
+		Sender:   sender,
 		Perms:    d.perms,
 		Svc:      d.getService(),
 		PeerID:   peerInput,
 		Resolver: d.getResolver(),
 	}
 
-	chain := core.NewChain(
-		core.RecoveryMiddleware(d.logger),
-		core.LoggingMiddleware(d.logger),
-		core.PermissionMiddleware(cmd),
-		core.FilterMiddleware(cmd),
-		core.CooldownMiddleware(cmd, d.cooldown),
-		core.TimeoutMiddleware(cmd, 30*time.Second),
-	)
-
-	handler := chain.Then(cmd.Handler)
-
-	// Execute command concurrently. The update callback context can be short-lived;
-	// the detached context remains valid until the command timeout or app shutdown policy.
+	// Execute command asynchronously with application-scoped context
 	go func() {
-		if err := handler(coreCtx); err != nil {
-			if errors.Is(err, core.ErrPermissionDenied) || errors.Is(err, core.ErrCooldownActive) {
-				return
-			}
-			if errors.Is(err, core.ErrGroupOnly) || errors.Is(err, core.ErrPrivateOnly) || errors.Is(err, core.ErrReplyRequired) {
-				_ = coreCtx.Reply("⚠️ " + err.Error())
-				return
-			}
-			d.logger.Error("command failed",
-				zap.String("command", parsed.Name),
-				zap.Error(err),
-			)
-		}
+		defer cancel()
+		_ = d.executor.Execute(coreCtx, cmd)
 	}()
 
 	return nil
+}
+
+func (d *Dispatcher) safeExecuteInterceptor(
+	ctx context.Context,
+	h MessageHandler,
+	e tg.Entities,
+	msg *tg.Message,
+	isCmd bool,
+	cmdName string,
+) {
+	defer func() {
+		if r := recover(); r != nil {
+			d.logger.Error("message interceptor panicked", zap.Any("panic", r))
+		}
+	}()
+
+	interceptorCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	if err := h(interceptorCtx, e, msg, isCmd, cmdName); err != nil {
+		d.logger.Warn("message interceptor returned error", zap.Error(err))
+	}
 }

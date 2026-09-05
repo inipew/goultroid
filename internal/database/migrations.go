@@ -77,6 +77,19 @@ var migrations = []migration{
 			`CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_chat_id ON scheduled_jobs(chat_id);`,
 		},
 	},
+	{
+		version:     3,
+		description: "Scheduler distributed lease, claim state, and retry machine",
+		statements: []string{
+			`ALTER TABLE scheduled_jobs ADD COLUMN status TEXT NOT NULL DEFAULT 'pending';`,
+			`ALTER TABLE scheduled_jobs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3;`,
+			`ALTER TABLE scheduled_jobs ADD COLUMN lease_until DATETIME;`,
+			`ALTER TABLE scheduled_jobs ADD COLUMN claimed_at DATETIME;`,
+			`ALTER TABLE scheduled_jobs ADD COLUMN last_started_at DATETIME;`,
+			`ALTER TABLE scheduled_jobs ADD COLUMN last_finished_at DATETIME;`,
+			`CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_claim ON scheduled_jobs(status, next_run_at, lease_until);`,
+		},
+	},
 }
 
 // migrate runs pending database migrations in sequence inside atomic transactions.

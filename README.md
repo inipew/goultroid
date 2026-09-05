@@ -7,32 +7,37 @@ Reimplementasi Telegram UserBot **Ultroid** dari Python/Telethon ke **Go** denga
 ## 🏛️ Arsitektur
 
 ```text
-               Telegram MTProto
-                      │
-                      ▼
-               gotd/td Client
-                      │
-                      ▼
-          telegram.updates.Manager (gap & state sync)
-                      │
-                      ▼
-             tg.UpdateDispatcher
-                      │
-                      ▼
-         telegram.Dispatcher (bridge)
-                      │
-                      ▼
-            core.Command Router (quoted args, aliases, case-insensitive)
-                      │
-                      ▼
-        core.Middleware Chain (Recovery → Logging → Permission → Timeout)
-                      │
-                      ▼
-             core.Context API (Reply, Edit, Delete, React, GetReply)
-                      │
-           ┌──────────┴──────────┐
-           ▼                     ▼
-      plugins/ping          plugins/help
+           Telegram MTProto                         SQLite Scheduler
+                  │                                         │
+                  ▼                                         ▼
+           gotd/td Client                            scheduler.Engine
+                  │                                  (atomic claim &
+                  ▼                                   exponential retry)
+      telegram.updates.Manager                              │
+                  │                                         │
+                  ▼                                         │
+         tg.UpdateDispatcher                                │
+                  │                                         │
+                  ▼                                         │
+        telegram.Dispatcher                                 │
+     (interceptor panic isolation)                          │
+                  │                                         │
+                  ▼                                         │
+        core.Command Router                                 │
+                  │                                         │
+                  └───────────────────┬─────────────────────┘
+                                      │
+                                      ▼
+                             core.CommandExecutor
+       (Recovery → Logging → Permission → Filter → Cooldown → Timeout)
+                                      │
+                                      ▼
+                              core.Context API
+                        (Reply, Edit, Delete, Media)
+                                      │
+                         ┌────────────┴────────────┐
+                         ▼                         ▼
+                    plugins/ping              plugins/admin
 ```
 
 ---
@@ -142,7 +147,7 @@ docker run -it --rm \
 | `.sticker` | `.stk` | Media | Sudo | Konversi foto/gambar yang di-reply menjadi Telegram sticker (512x512) |
 | `.whois` | `.info`, `.userinfo` | Info | Everyone | Tampilkan informasi profil lengkap pengguna (ID, username, status, bio) |
 | `.chatinfo` | `.groupinfo`, `.cinfo` | Info | Sudo | Tampilkan metadata lengkap grup/supergroup/channel saat ini |
-| `.exec` | `.sh`, `.bash`, `.cmd` | System | Owner | Eksekusi shell command di host secara aman (timeout 60s & auto-upload) |
+| `.exec` | `.sh`, `.bash`, `.cmd` | System | Owner | Owner-only host shell execution dengan batas timeout 60s & auto-upload |
 | `.restart` | - | System | Owner | Restart proses userbot secara anggun dan konfirmasi otomatis |
 | `.update` | `.gitupdate` | System | Owner | Cek pembaruan git atau tarik kode terbaru, bangun ulang biner, dan restart (`.update [pull/now]`) |
 | `.filter` | - | Filters | Sudo | Simpan auto-reply berbasis kata kunci per chat (mendukung teks reply) |
@@ -156,7 +161,7 @@ docker run -it --rm \
 | `.remind` | - | Scheduler | Sudo | Atur pengingat cepat satu kali (e.g. `.remind 15m review PR` atau via reply) |
 | `.schedule` | - | Scheduler | Sudo | Jadwalkan pesan atau perintah (`in 30m` atau `every 2h .alive`) |
 | `.schedules` | - | Scheduler | Sudo | Tampilkan daftar semua jadwal aktif di chat saat ini |
-| `.cancelschedule` | `.delschedule`, `.delremind` | Scheduler | Sudo | Batalkan jadwal berdasarkan ID (`.cancelschedule #1`) |
+| `.cancelschedule` | `.unschedule`, `.delschedule`, `.delremind` | Scheduler | Sudo | Batalkan jadwal berdasarkan ID (`.cancelschedule #1`) |
 
 ---
 

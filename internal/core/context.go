@@ -243,6 +243,9 @@ func (c *Context) ForwardToSelf() error {
 	return c.Forward(&tg.InputPeerSelf{})
 }
 
+// Enforce global maximum concurrent downloads (default: 3 concurrent jobs)
+var downloadSemaphore = make(chan struct{}, 3)
+
 // DownloadMedia downloads the media attached to the message or the replied message.
 func (c *Context) DownloadMedia(destDir string) (string, error) {
 	if c.Svc == nil {
@@ -265,6 +268,20 @@ func (c *Context) DownloadMedia(destDir string) (string, error) {
 		return "", errors.New("no media found in message or reply")
 	}
 
+	// Enforce global maximum download size (default: 500 MB)
+	const MaxMediaDownloadSize = 500 * 1024 * 1024
+	if media.Size > MaxMediaDownloadSize {
+		return "", fmt.Errorf("%w: file size (%d bytes) exceeds maximum allowed limit (500MB)", ErrMedia, media.Size)
+	}
+
+	// Acquire concurrent download slot (max 3 concurrent jobs)
+	select {
+	case downloadSemaphore <- struct{}{}:
+		defer func() { <-downloadSemaphore }()
+	case <-c.Ctx.Done():
+		return "", c.Ctx.Err()
+	}
+
 	if err := os.MkdirAll(destDir, 0700); err != nil {
 		return "", fmt.Errorf("failed to create destination directory: %w", err)
 	}
@@ -285,6 +302,15 @@ func (c *Context) DownloadMedia(destDir string) (string, error) {
 			ext = ".webp"
 		}
 		fileName = fmt.Sprintf("media_%d%s", time.Now().UnixNano(), ext)
+	}
+
+	if len(fileName) > 120 {
+		ext := filepath.Ext(fileName)
+		base := strings.TrimSuffix(fileName, ext)
+		if len(base) > 100 {
+			base = base[:100]
+		}
+		fileName = base + ext
 	}
 
 	filePath := filepath.Join(destDir, fileName)

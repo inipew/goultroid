@@ -60,7 +60,7 @@ func (p *Plugin) Commands() []core.Command {
 		},
 		{
 			Name:        "cancelschedule",
-			Aliases:     []string{"delschedule", "delremind"},
+			Aliases:     []string{"unschedule", "delschedule", "delremind"},
 			Description: "Cancel a scheduled job by its ID",
 			Usage:       ".cancelschedule <id>",
 			Category:    "Scheduler",
@@ -206,10 +206,15 @@ func (p *Plugin) handleList(ctx *core.Context) error {
 			payloadSnippet = payloadSnippet[:32] + "..."
 		}
 
-		fmt.Fprintf(&sb, "• <b>#%d</b> [%s | %s] <code>%s</code>\n  └ <i>Due in:</i> <code>%s</code>\n",
-			j.ID, mode, j.ActionType, payloadSnippet, remaining)
+		status := j.Status
+		if status == "" {
+			status = "pending"
+		}
+
+		fmt.Fprintf(&sb, "• <b>#%d</b> [%s | %s | %s] <code>%s</code>\n  └ <i>Due in:</i> <code>%s</code>\n",
+			j.ID, mode, j.ActionType, status, payloadSnippet, remaining)
 		if j.LastError != "" {
-			fmt.Fprintf(&sb, "  └ ⚠️ <i>Last Error (%d attempts):</i> <code>%s</code>\n", j.AttemptCount, j.LastError)
+			fmt.Fprintf(&sb, "  └ ⚠️ <i>Last Error (%d/%d attempts):</i> <code>%s</code>\n", j.AttemptCount, j.MaxAttempts, j.LastError)
 		}
 	}
 

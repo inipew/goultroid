@@ -341,7 +341,7 @@ func TestExecuteCommand_ThroughMiddleware(t *testing.T) {
 	defer engine.Stop()
 
 	// Scheduling a panicking command must NOT crash the bot; RecoveryMiddleware catches it
-	_, err = engine.ScheduleOnce(ctx, 1234, "chat", 0, time.Now().Add(-10*time.Millisecond), ActionCommand, ".paniccmd")
+	_, err = engine.ScheduleOnce(ctx, 1234, "chat", 0, time.Now().Add(-10*time.Millisecond), ActionCommand, ".paniccmd", 1001)
 	if err != nil {
 		t.Fatalf("failed to schedule command: %v", err)
 	}
@@ -403,10 +403,25 @@ func TestExecuteCommand_WithCreatorID(t *testing.T) {
 		Payload:    ".secretcmd",
 		CreatedBy:  ownerID,
 	}
-	engine.executeCommand(ctx, jobOwner)
+	_ = engine.executeCommand(ctx, jobOwner)
 
 	if atomic.LoadInt32(&ownerCmdRan) != 1 {
 		t.Fatalf("expected owner-only command to run when created by owner, ran %d times", atomic.LoadInt32(&ownerCmdRan))
+	}
+
+	// 3. Security Boundary: CreatedBy == 0 must NOT default to owner and must NOT run owner commands
+	jobAnonymous := database.ScheduledJob{
+		ID:         3,
+		ChatID:     123,
+		PeerType:   "chat",
+		ActionType: ActionCommand,
+		Payload:    ".secretcmd",
+		CreatedBy:  0, // Unknown/unprivileged
+	}
+	_ = engine.executeCommand(ctx, jobAnonymous)
+
+	if atomic.LoadInt32(&ownerCmdRan) != 1 {
+		t.Fatalf("expected owner-only command NOT to run when CreatedBy == 0")
 	}
 }
 
@@ -436,10 +451,15 @@ func TestJob_RecordsFailure(t *testing.T) {
 		t.Fatalf("failed to schedule recurring: %v", err)
 	}
 
-	// Execute command, which returns an error
-	engine.executeCommand(ctx, *saved)
+	// Claim and execute job
+	claimed, err := db.ClaimDueScheduledJobs(ctx, time.Now().Add(time.Hour), 1, 30*time.Second)
+	if err != nil || len(claimed) == 0 {
+		t.Fatalf("failed to claim job: %v", err)
+	}
 
-	// Fetch from DB to verify failure was recorded
+	engine.executeJob(ctx, claimed[0])
+
+	// Fetch from DB to verify failure was recorded and status is pending with backoff
 	updated, err := db.GetScheduledJob(ctx, saved.ID)
 	if err != nil {
 		t.Fatalf("failed to get updated job: %v", err)
@@ -450,4 +470,40 @@ func TestJob_RecordsFailure(t *testing.T) {
 	if updated.LastError != "command intentional failure" {
 		t.Errorf("expected LastError 'command intentional failure', got %q", updated.LastError)
 	}
+	if updated.Status != database.JobStatusPending {
+		t.Errorf("expected Status 'pending' after first failure, got %q", updated.Status)
+	}
 }
+
+func TestEngine_ValidationAndInterval(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+	defer db.Close()
+
+	router := core.NewRouter(".")
+	perms := core.NewPermissions(1001, []int64{})
+	engine := NewEngine(db, func() core.TelegramServicer { return &mockService{} }, router, perms, zap.NewNop())
+
+	ctx := context.Background()
+
+	// 1. Recurring duration < 1s must be rejected
+	_, err = engine.ScheduleRecurring(ctx, 123, "chat", 0, 500*time.Millisecond, ActionMessage, "hello")
+	if err == nil {
+		t.Errorf("expected error when scheduling recurring job with interval < 1s, got nil")
+	}
+
+	// 2. Invalid action type on ScheduleOnce must be rejected
+	_, err = engine.ScheduleOnce(ctx, 123, "chat", 0, time.Now().Add(time.Minute), "unknown_action", "hello")
+	if err == nil {
+		t.Errorf("expected error when scheduling job with invalid action type, got nil")
+	}
+
+	// 3. Invalid action type on ScheduleRecurring must be rejected
+	_, err = engine.ScheduleRecurring(ctx, 123, "chat", 0, 5*time.Second, "unknown_action", "hello")
+	if err == nil {
+		t.Errorf("expected error when scheduling recurring job with invalid action type, got nil")
+	}
+}
+

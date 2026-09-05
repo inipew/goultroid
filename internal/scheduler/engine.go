@@ -17,11 +17,12 @@ import (
 
 // Engine implements Service for managing and dispatching scheduled tasks.
 type Engine struct {
-	db      database.Repository
-	svcFunc func() core.TelegramServicer
-	router  *core.Router
-	perms   *core.Permissions
-	logger  *zap.Logger
+	db       database.Repository
+	svcFunc  func() core.TelegramServicer
+	router   *core.Router
+	perms    *core.Permissions
+	executor *core.CommandExecutor
+	logger   *zap.Logger
 
 	tasks   map[string]context.CancelFunc
 	tasksMu sync.RWMutex
@@ -46,14 +47,28 @@ func NewEngine(
 	if logger == nil {
 		logger = zap.NewNop()
 	}
+	executor := core.NewCommandExecutor(logger, nil, 30*time.Second)
 	return &Engine{
-		db:      db,
-		svcFunc: svcFunc,
-		router:  router,
-		perms:   perms,
-		logger:  logger,
-		tasks:   make(map[string]context.CancelFunc),
+		db:       db,
+		svcFunc:  svcFunc,
+		router:   router,
+		perms:    perms,
+		executor: executor,
+		logger:   logger,
+		tasks:    make(map[string]context.CancelFunc),
 	}
+}
+
+// SetExecutor overrides the CommandExecutor used for executing scheduled commands.
+func (e *Engine) SetExecutor(executor *core.CommandExecutor) {
+	if executor != nil {
+		e.executor = executor
+	}
+}
+
+func validateActionType(actionType string) error {
+	_, err := ParseActionType(actionType)
+	return err
 }
 
 // Start boots the background ticker loops for job execution.
@@ -175,6 +190,9 @@ func (e *Engine) ScheduleOnce(
 	payload string,
 	creatorID ...int64,
 ) (*database.ScheduledJob, error) {
+	if err := validateActionType(actionType); err != nil {
+		return nil, err
+	}
 	if peerType == "" {
 		peerType = "chat"
 	}
@@ -190,13 +208,15 @@ func (e *Engine) ScheduleOnce(
 		Payload:         payload,
 		IntervalSeconds: 0,
 		NextRunAt:       when,
-		CreatedAt:       time.Now(),
+		CreatedAt:       time.Now().UTC(),
 		CreatedBy:       createdBy,
+		Status:          database.JobStatusPending,
+		MaxAttempts:     3,
 	}
 	return e.db.CreateScheduledJob(ctx, job)
 }
 
-// ScheduleRecurring saves a recurring task (interval > 0) to be run repeatedly.
+// ScheduleRecurring saves a recurring task (interval >= 1s) to be run repeatedly.
 func (e *Engine) ScheduleRecurring(
 	ctx context.Context,
 	chatID int64,
@@ -207,8 +227,11 @@ func (e *Engine) ScheduleRecurring(
 	payload string,
 	creatorID ...int64,
 ) (*database.ScheduledJob, error) {
-	if interval <= 0 {
-		return nil, errors.New("interval must be greater than zero")
+	if err := validateActionType(actionType); err != nil {
+		return nil, err
+	}
+	if interval < time.Second {
+		return nil, fmt.Errorf("%w: recurring interval must be at least 1 second (got %v)", core.ErrInvalidArgs, interval)
 	}
 	if peerType == "" {
 		peerType = "chat"
@@ -225,9 +248,11 @@ func (e *Engine) ScheduleRecurring(
 		ActionType:      actionType,
 		Payload:         payload,
 		IntervalSeconds: sec,
-		NextRunAt:       time.Now().Add(interval),
-		CreatedAt:       time.Now(),
+		NextRunAt:       time.Now().UTC().Add(interval),
+		CreatedAt:       time.Now().UTC(),
 		CreatedBy:       createdBy,
+		Status:          database.JobStatusPending,
+		MaxAttempts:     3,
 	}
 	return e.db.CreateScheduledJob(ctx, job)
 }
@@ -258,34 +283,23 @@ func (e *Engine) runLoop(ctx context.Context) {
 }
 
 func (e *Engine) processDueJobs(ctx context.Context, now time.Time) {
-	dueJobs, err := e.db.ListDueScheduledJobs(ctx, now)
-	if err != nil || len(dueJobs) == 0 {
+	// Claim up to 10 due jobs with a 30-second lease
+	claimedJobs, err := e.db.ClaimDueScheduledJobs(ctx, now, 10, 30*time.Second)
+	if err != nil {
+		e.logger.Error("failed to claim due scheduled jobs", zap.Error(err))
+		return
+	}
+	if len(claimedJobs) == 0 {
 		return
 	}
 
-	for _, job := range dueJobs {
+	for _, job := range claimedJobs {
 		j := job
-		// Immediately update or delete in DB to prevent re-fetching on the next tick
-		if j.IntervalSeconds == 0 {
-			if err := e.db.DeleteScheduledJob(ctx, j.ID); err != nil {
-				e.logger.Error("failed to delete one-shot scheduled job, skipping execution",
-					zap.Int64("job_id", j.ID),
-					zap.Error(err),
-				)
-				continue
-			}
-		} else {
-			nextRun := now.Add(time.Duration(j.IntervalSeconds) * time.Second)
-			if err := e.db.UpdateScheduledJobNextRun(ctx, j.ID, nextRun); err != nil {
-				e.logger.Error("failed to update recurring scheduled job next run, skipping execution",
-					zap.Int64("job_id", j.ID),
-					zap.Error(err),
-				)
-				continue
-			}
-		}
-
-		go e.executeJob(ctx, j)
+		e.wg.Add(1)
+		go func(targetJob database.ScheduledJob) {
+			defer e.wg.Done()
+			e.executeJob(ctx, targetJob)
+		}(j)
 	}
 }
 
@@ -293,28 +307,55 @@ func (e *Engine) executeJob(ctx context.Context, job database.ScheduledJob) {
 	defer func() {
 		if r := recover(); r != nil {
 			e.logger.Error("scheduled job execution panicked", zap.Int64("job_id", job.ID), zap.Any("panic", r))
+			_ = e.db.FailScheduledJob(ctx, job.ID, fmt.Sprintf("panic: %v", r), 10*time.Second, time.Now().UTC())
 		}
 	}()
 
+	var execErr error
 	switch job.ActionType {
 	case ActionMessage:
-		e.executeSendMessage(ctx, job)
+		execErr = e.executeSendMessage(ctx, job)
 	case ActionCommand:
-		e.executeCommand(ctx, job)
+		execErr = e.executeCommand(ctx, job)
 	default:
+		execErr = fmt.Errorf("unknown action type: %s", job.ActionType)
 		e.logger.Warn("unknown action type for scheduled job", zap.String("action_type", job.ActionType), zap.Int64("job_id", job.ID))
+	}
+
+	now := time.Now().UTC()
+	if execErr == nil {
+		if err := e.db.CompleteScheduledJob(ctx, job.ID, now); err != nil {
+			e.logger.Error("failed to complete scheduled job", zap.Int64("job_id", job.ID), zap.Error(err))
+		}
+	} else {
+		// Exponential backoff: 10s * 2^(attempt - 1), capped at 5 minutes
+		attempt := job.AttemptCount
+		if attempt < 1 {
+			attempt = 1
+		}
+		backoffMultiplier := 1 << (attempt - 1)
+		if backoffMultiplier > 30 {
+			backoffMultiplier = 30
+		}
+		retryDelay := time.Duration(10*backoffMultiplier) * time.Second
+
+		if err := e.db.FailScheduledJob(ctx, job.ID, execErr.Error(), retryDelay, now); err != nil {
+			e.logger.Error("failed to record scheduled job failure", zap.Int64("job_id", job.ID), zap.Error(err))
+		}
 	}
 }
 
-func (e *Engine) executeSendMessage(ctx context.Context, job database.ScheduledJob) {
+func (e *Engine) executeSendMessage(ctx context.Context, job database.ScheduledJob) error {
 	if e.svcFunc == nil {
-		e.logger.Warn("cannot execute scheduled message: servicer function is nil")
-		return
+		err := errors.New("cannot execute scheduled message: servicer function is nil")
+		e.logger.Warn(err.Error())
+		return err
 	}
 	svc := e.svcFunc()
 	if svc == nil {
-		e.logger.Warn("cannot execute scheduled message: servicer is nil")
-		return
+		err := errors.New("cannot execute scheduled message: servicer is nil")
+		e.logger.Warn(err.Error())
+		return err
 	}
 
 	peer := reconstructInputPeer(job.PeerType, job.ChatID, job.AccessHash)
@@ -326,42 +367,48 @@ func (e *Engine) executeSendMessage(ctx context.Context, job database.ScheduledJ
 
 	if _, err := svc.SendMessage(ctx, peer, text); err != nil {
 		e.logger.Warn("failed to send scheduled message", zap.Int64("chat_id", job.ChatID), zap.Error(err))
-		_ = e.db.RecordJobFailure(ctx, job.ID, err.Error())
+		return err
 	}
+	return nil
 }
 
-func (e *Engine) executeCommand(ctx context.Context, job database.ScheduledJob) {
+func (e *Engine) executeCommand(ctx context.Context, job database.ScheduledJob) error {
 	if e.router == nil {
-		e.logger.Warn("cannot execute scheduled command: router is nil")
-		return
+		err := errors.New("cannot execute scheduled command: router is nil")
+		e.logger.Warn(err.Error())
+		return err
 	}
 	if e.svcFunc == nil {
-		e.logger.Warn("cannot execute scheduled command: servicer function is nil")
-		return
+		err := errors.New("cannot execute scheduled command: servicer function is nil")
+		e.logger.Warn(err.Error())
+		return err
 	}
 	svc := e.svcFunc()
 	if svc == nil {
-		e.logger.Warn("cannot execute scheduled command: servicer is nil")
-		return
+		err := errors.New("cannot execute scheduled command: servicer is nil")
+		e.logger.Warn(err.Error())
+		return err
 	}
 
 	parsed, isCmd := e.router.Parse(job.Payload)
 	if !isCmd {
-		e.logger.Warn("scheduled command payload is not a command", zap.String("payload", job.Payload))
-		return
+		err := fmt.Errorf("scheduled command payload is not a command: %s", job.Payload)
+		e.logger.Warn(err.Error())
+		return err
 	}
 
 	cmd, exists := e.router.Find(parsed.Name)
 	if !exists {
-		e.logger.Warn("scheduled command not found in router", zap.String("command", parsed.Name))
-		return
+		err := fmt.Errorf("scheduled command not found in router: %s", parsed.Name)
+		e.logger.Warn(err.Error())
+		return err
 	}
 
 	peer := reconstructInputPeer(job.PeerType, job.ChatID, job.AccessHash)
+
+	// SECURITY BOUNDARY:
+	// If CreatedBy == 0, principal is unknown/unprivileged. Do NOT assume OwnerID!
 	callerID := job.CreatedBy
-	if callerID == 0 && e.perms != nil {
-		callerID = e.perms.OwnerID
-	}
 
 	coreMsg := &core.Message{
 		ID:         0,
@@ -390,19 +437,11 @@ func (e *Engine) executeCommand(ctx context.Context, job database.ScheduledJob) 
 		PeerID:  peer,
 	}
 
-	chain := core.NewChain(
-		core.RecoveryMiddleware(e.logger),
-		core.LoggingMiddleware(e.logger),
-		core.PermissionMiddleware(cmd),
-		core.FilterMiddleware(cmd),
-		core.TimeoutMiddleware(cmd, 30*time.Second),
-	)
-
-	handler := chain.Then(cmd.Handler)
-	if err := handler(coreCtx); err != nil {
+	if err := e.executor.Execute(coreCtx, cmd); err != nil {
 		e.logger.Warn("scheduled command returned error", zap.String("command", parsed.Name), zap.Error(err))
-		_ = e.db.RecordJobFailure(ctx, job.ID, err.Error())
+		return err
 	}
+	return nil
 }
 
 func reconstructInputPeer(peerType string, chatID int64, accessHash int64) tg.InputPeerClass {

@@ -120,10 +120,6 @@ func New(cfg *config.Config) (*App, error) {
 
 	// Scheduler Engine
 	schedEngine := scheduler.NewEngine(db, client.Service, router, perms, logger)
-	if err := schedEngine.Start(context.Background()); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("failed to start scheduler engine: %w", err)
-	}
 
 	plugins := []plugin.Plugin{
 		ping.New(),
@@ -149,7 +145,6 @@ func New(cfg *config.Config) (*App, error) {
 
 	for _, p := range plugins {
 		if err := mgr.Register(p); err != nil {
-			_ = schedEngine.Stop()
 			_ = db.Close()
 			return nil, fmt.Errorf("failed to register plugin %q: %w", p.Name(), err)
 		}
@@ -169,6 +164,19 @@ func New(cfg *config.Config) (*App, error) {
 // Run connects to Telegram and maintains the update loop until context is canceled.
 func (a *App) Run(ctx context.Context) error {
 	a.logger.Info("starting GoUltroid...")
+
+	// Pass application root context to dispatcher for command lifetime scoping
+	if a.client != nil && a.client.Dispatcher() != nil {
+		a.client.Dispatcher().SetRootContext(ctx)
+	}
+
+	// Start scheduler engine with application root context
+	if a.sched != nil {
+		if err := a.sched.Start(ctx); err != nil {
+			return fmt.Errorf("failed to start scheduler engine: %w", err)
+		}
+	}
+
 	return a.client.Run(ctx)
 }
 

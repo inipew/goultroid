@@ -49,7 +49,7 @@ func RecoveryMiddleware(logger *zap.Logger) Middleware {
 							zap.String("stack", stack),
 						)
 					}
-					err = fmt.Errorf("panic in command %s: %v", ctx.Command, r)
+					err = fmt.Errorf("%w: panic in command %s: %v", ErrInternal, ctx.Command, r)
 				}
 			}()
 			return next(ctx)

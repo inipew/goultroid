@@ -237,3 +237,81 @@ func TestDispatcher_MessageHandler(t *testing.T) {
 		t.Errorf("expected command handler called with ping, got called=%v cmd=%v name=%s", called, gotCmd, gotCmdName)
 	}
 }
+
+func TestDispatcher_InterceptorPanicIsolation(t *testing.T) {
+	logger := zap.NewNop()
+	router := core.NewRouter(".")
+	dispatcher := NewDispatcher(router, nil, nil, logger)
+
+	panickingRan := false
+	subsequentRan := false
+
+	// Interceptor 1: panics
+	dispatcher.AddMessageHandler(func(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error {
+		panickingRan = true
+		panic("interceptor fatal bug")
+	})
+
+	// Interceptor 2: must still run despite panic in interceptor 1
+	dispatcher.AddMessageHandler(func(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error {
+		subsequentRan = true
+		return nil
+	})
+
+	err := dispatcher.OnNewMessage(context.Background(), tg.Entities{}, &tg.UpdateNewMessage{
+		Message: &tg.Message{Message: "test message"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !panickingRan {
+		t.Errorf("expected panicking interceptor to run")
+	}
+	if !subsequentRan {
+		t.Errorf("expected subsequent interceptor to run despite previous panic")
+	}
+}
+
+func TestDispatcher_RootContextCancellation(t *testing.T) {
+	logger := zap.NewNop()
+	router := core.NewRouter(".")
+	dispatcher := NewDispatcher(router, nil, nil, logger)
+
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	dispatcher.SetRootContext(rootCtx)
+
+	cmdStarted := make(chan struct{})
+	cmdCanceled := make(chan struct{})
+
+	_ = router.Register(core.Command{
+		Name: "longcmd",
+		Handler: func(c *core.Context) error {
+			close(cmdStarted)
+			<-c.Ctx.Done()
+			close(cmdCanceled)
+			return c.Ctx.Err()
+		},
+	})
+
+	_ = dispatcher.OnNewMessage(context.Background(), tg.Entities{}, &tg.UpdateNewMessage{
+		Message: &tg.Message{Message: ".longcmd"},
+	})
+
+	select {
+	case <-cmdStarted:
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for command to start")
+	}
+
+	// Cancel root application context
+	rootCancel()
+
+	select {
+	case <-cmdCanceled:
+		// Success! Command context was canceled when rootCtx was canceled
+	case <-time.After(1 * time.Second):
+		t.Fatal("command context was not canceled when rootCtx was canceled")
+	}
+}
+

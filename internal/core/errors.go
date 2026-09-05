@@ -23,8 +23,9 @@ var (
 	ErrStorage       = errors.New("storage operation failed")
 	ErrTimeout       = errors.New("operation timed out")
 	ErrInternal      = errors.New("internal error")
-	ErrTelegram      = errors.New("telegram api error")
-	ErrRateLimited   = errors.New("rate limited")
+	ErrTelegram        = errors.New("telegram api error")
+	ErrRateLimited     = errors.New("rate limited")
+	ErrPeerUnresolved  = errors.New("peer access hash could not be resolved")
 )
 
 // RateLimitError represents a FloodWait or rate-limiting event from Telegram.
