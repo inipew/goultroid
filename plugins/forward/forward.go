@@ -31,7 +31,7 @@ func (p *Plugin) Commands() []core.Command {
 			Description: "Forward the replied message to Saved Messages",
 			Usage:       ".forward",
 			Category:    "Utility",
-			Permission:  core.PermissionEveryone,
+			Permission:  core.PermissionSudo,
 			ReplyOnly:   true,
 			Handler:     p.handleForward,
 		},

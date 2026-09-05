@@ -15,6 +15,7 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
+	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/telegram/updates"
 	"github.com/gotd/td/tg"
 	"go.uber.org/zap"
@@ -22,11 +23,12 @@ import (
 
 // Client wraps the gotd MTProto Telegram client and manages updates and authentication.
 type Client struct {
-	raw        *telegram.Client
-	cfg        *config.Config
-	dispatcher *Dispatcher
-	gaps       *updates.Manager
-	logger     *zap.Logger
+	raw         *telegram.Client
+	cfg         *config.Config
+	dispatcher  *Dispatcher
+	gaps        *updates.Manager
+	peerManager *peers.Manager
+	logger      *zap.Logger
 }
 
 // terminalAuth handles interactive CLI login with phone, SMS/app OTP code, and 2FA password.
@@ -82,10 +84,7 @@ func NewClient(cfg *config.Config, dispatcher *Dispatcher, logger *zap.Logger) (
 	tgDispatcher := tg.NewUpdateDispatcher()
 	dispatcher.RegisterHooks(&tgDispatcher)
 
-	// Setup gap manager
-	gaps := updates.New(updates.Config{
-		Handler: tgDispatcher,
-	})
+	var updateHook telegram.UpdateHandler
 
 	raw := telegram.NewClient(
 		cfg.AppID,
@@ -94,16 +93,29 @@ func NewClient(cfg *config.Config, dispatcher *Dispatcher, logger *zap.Logger) (
 			SessionStorage: &telegram.FileSessionStorage{
 				Path: cfg.SessionFile,
 			},
-			UpdateHandler: gaps,
+			UpdateHandler: telegram.UpdateHandlerFunc(func(ctx context.Context, u tg.UpdatesClass) error {
+				if updateHook != nil {
+					return updateHook.Handle(ctx, u)
+				}
+				return nil
+			}),
 		},
 	)
 
+	peerManager := peers.Options{}.Build(raw.API())
+	gaps := updates.New(updates.Config{
+		Handler:      tgDispatcher,
+		AccessHasher: peerManager,
+	})
+	updateHook = peerManager.UpdateHook(gaps)
+
 	return &Client{
-		raw:        raw,
-		cfg:        cfg,
-		dispatcher: dispatcher,
-		gaps:       gaps,
-		logger:     logger,
+		raw:         raw,
+		cfg:         cfg,
+		dispatcher:  dispatcher,
+		gaps:        gaps,
+		peerManager: peerManager,
+		logger:      logger,
 	}, nil
 }
 
@@ -159,6 +171,25 @@ func (c *Client) Run(ctx context.Context) error {
 
 		c.dispatcher.SetSelfID(me.ID)
 
+		if c.peerManager != nil {
+			if err := c.peerManager.Init(ctx); err != nil && c.logger != nil {
+				c.logger.Warn("failed to initialize peer manager", zap.Error(err))
+			}
+
+			// Preload dialogs to register channel and supergroup access hashes
+			dialogs, err := c.raw.API().MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
+				OffsetPeer: &tg.InputPeerEmpty{},
+				Limit:      100,
+			})
+			if err == nil {
+				if d, ok := dialogs.AsModified(); ok {
+					_ = c.peerManager.Apply(ctx, d.GetUsers(), d.GetChats())
+				}
+			} else if c.logger != nil {
+				c.logger.Warn("failed to preload dialogs for channel access hashes", zap.Error(err))
+			}
+		}
+
 		if c.logger != nil {
 			c.logger.Info("connected to Telegram",
 				zap.String("name", me.FirstName+" "+me.LastName),
@@ -185,11 +216,12 @@ func checkRestartState(ctx context.Context, svc core.TelegramServicer, logger *z
 	defer os.Remove(restartPath)
 
 	type restartState struct {
-		ChatID     int64 `json:"chat_id"`
-		IsChannel  bool  `json:"is_channel"`
-		AccessHash int64 `json:"access_hash"`
-		MsgID      int   `json:"msg_id"`
-		Time       int64 `json:"time"`
+		PeerType   string `json:"peer_type"`
+		ChatID     int64  `json:"chat_id"`
+		IsChannel  bool   `json:"is_channel"`
+		AccessHash int64  `json:"access_hash"`
+		MsgID      int    `json:"msg_id"`
+		Time       int64  `json:"time"`
 	}
 
 	var state restartState
@@ -197,23 +229,50 @@ func checkRestartState(ctx context.Context, svc core.TelegramServicer, logger *z
 		return
 	}
 
-	if state.MsgID == 0 || state.ChatID == 0 {
+	if state.MsgID == 0 && state.ChatID == 0 && state.PeerType == "" {
 		return
 	}
 
 	var peer tg.InputPeerClass
-	if state.IsChannel {
+	switch state.PeerType {
+	case "self":
+		peer = &tg.InputPeerSelf{}
+	case "user":
+		peer = &tg.InputPeerUser{UserID: state.ChatID, AccessHash: state.AccessHash}
+	case "channel":
 		peer = &tg.InputPeerChannel{ChannelID: state.ChatID, AccessHash: state.AccessHash}
-	} else {
+	case "chat":
 		peer = &tg.InputPeerChat{ChatID: state.ChatID}
+	default:
+		// Backward compatibility for legacy restart.json
+		if state.IsChannel {
+			peer = &tg.InputPeerChannel{ChannelID: state.ChatID, AccessHash: state.AccessHash}
+		} else if state.ChatID == 0 {
+			peer = &tg.InputPeerSelf{}
+		} else if state.AccessHash != 0 {
+			peer = &tg.InputPeerUser{UserID: state.ChatID, AccessHash: state.AccessHash}
+		} else {
+			peer = &tg.InputPeerChat{ChatID: state.ChatID}
+		}
 	}
 
 	elapsed := time.Since(time.Unix(state.Time, 0)).Round(time.Millisecond)
 	msg := fmt.Sprintf("✅ <b>GoUltroid restarted successfully!</b> (took <i>%s</i>)", elapsed)
 
-	if err := svc.EditMessage(ctx, peer, state.MsgID, msg); err != nil {
-		if logger != nil {
-			logger.Warn("failed to edit restart confirmation message", zap.Error(err))
+	var editErr error
+	if state.MsgID != 0 {
+		editErr = svc.EditMessage(ctx, peer, state.MsgID, msg)
+	}
+
+	// Fallback to sending a new message if editing fails or no msgID
+	if state.MsgID == 0 || editErr != nil {
+		if _, sendErr := svc.SendMessage(ctx, peer, msg); sendErr != nil {
+			if logger != nil {
+				logger.Warn("failed to send/edit restart confirmation message",
+					zap.NamedError("editErr", editErr),
+					zap.NamedError("sendErr", sendErr),
+				)
+			}
 		}
 	}
 }

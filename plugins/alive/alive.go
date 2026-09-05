@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/ui"
 )
 
 // Plugin provides the alive status command.
@@ -57,27 +58,22 @@ func (p *Plugin) handleAlive(ctx *core.Context) error {
 
 	var ownerStr string
 	if ctx.Perms != nil && ctx.Perms.OwnerID != 0 {
-		ownerStr = fmt.Sprintf("`%d`", ctx.Perms.OwnerID)
+		ownerStr = ui.Code(fmt.Sprintf("%d", ctx.Perms.OwnerID))
 	} else {
-		ownerStr = "Not configured"
+		ownerStr = "<i>Not configured</i>"
 	}
 
-	text := fmt.Sprintf(
-		"✨ **GoUltroid is Alive & Running!**\n\n"+
-			"⏱️ **Uptime:** %s\n"+
-			"🐹 **Go Version:** `%s`\n"+
-			"🧠 **RAM Usage:** `%.2f MB` / `%.2f MB`\n"+
-			"🔄 **Goroutines:** `%d`\n"+
-			"👑 **Owner:** %s\n"+
-			"⚡ **Prefix:** `.`",
-		formatDuration(uptime),
-		runtime.Version(),
-		allocMB, sysMB,
-		runtime.NumGoroutine(),
-		ownerStr,
-	)
+	card := ui.NewCard("GoUltroid is Alive & Running!").
+		WithIcon("✨").
+		AddField("Uptime", formatDuration(uptime)).
+		AddField("Go Version", ui.Code(runtime.Version())).
+		AddField("RAM Usage", fmt.Sprintf("%s (%.1f / %.1f MB)", ui.ProgressBar(int64(mem.Alloc), int64(mem.Sys), 8), allocMB, sysMB)).
+		AddField("Goroutines", ui.Code(fmt.Sprintf("%d", runtime.NumGoroutine()))).
+		AddField("Owner", ownerStr).
+		AddField("Prefix", ui.Code(".")).
+		WithFooter("<i>Powered by Go & gotd</i>")
 
-	return ctx.Reply(text)
+	return ctx.Reply(card.Render())
 }
 
 func formatDuration(d time.Duration) string {

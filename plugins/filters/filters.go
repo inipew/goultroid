@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
@@ -189,21 +190,39 @@ func extractChatID(peer tg.PeerClass) int64 {
 }
 
 func extractPeerInput(peer tg.PeerClass, e tg.Entities) tg.InputPeerClass {
+	if peer == nil {
+		return nil
+	}
 	switch p := peer.(type) {
 	case *tg.PeerUser:
+		if p.UserID == 0 {
+			return nil
+		}
 		if u, ok := e.Users[p.UserID]; ok {
 			return &tg.InputPeerUser{UserID: p.UserID, AccessHash: u.AccessHash}
 		}
-		return &tg.InputPeerSelf{}
+		return &tg.InputPeerUser{UserID: p.UserID, AccessHash: 0}
 	case *tg.PeerChat:
+		if p.ChatID == 0 {
+			return nil
+		}
 		return &tg.InputPeerChat{ChatID: p.ChatID}
 	case *tg.PeerChannel:
+		if p.ChannelID == 0 {
+			return nil
+		}
 		if ch, ok := e.Channels[p.ChannelID]; ok {
 			return &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: ch.AccessHash}
 		}
+		return &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: 0}
 	}
 	return nil
 }
+
+var (
+	filterRegexMu    sync.RWMutex
+	filterRegexCache = make(map[string]*regexp.Regexp)
+)
 
 func matchFilter(text, keyword string) bool {
 	kw := strings.ToLower(strings.TrimSpace(keyword))
@@ -211,9 +230,23 @@ func matchFilter(text, keyword string) bool {
 		return false
 	}
 	lowerText := strings.ToLower(text)
-	pattern := `(?i)(?:^|[^\p{L}\p{N}_])` + regexp.QuoteMeta(kw) + `(?:$|[^\p{L}\p{N}_])`
-	re, err := regexp.Compile(pattern)
-	if err == nil {
+
+	filterRegexMu.RLock()
+	re, ok := filterRegexCache[kw]
+	filterRegexMu.RUnlock()
+
+	if !ok {
+		pattern := `(?i)(?:^|[^\p{L}\p{N}_])` + regexp.QuoteMeta(kw) + `(?:$|[^\p{L}\p{N}_])`
+		compiled, err := regexp.Compile(pattern)
+		if err == nil {
+			filterRegexMu.Lock()
+			filterRegexCache[kw] = compiled
+			filterRegexMu.Unlock()
+			re = compiled
+		}
+	}
+
+	if re != nil {
 		return re.MatchString(lowerText)
 	}
 	return strings.Contains(lowerText, kw)

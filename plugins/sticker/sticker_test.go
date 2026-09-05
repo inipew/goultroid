@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
@@ -114,6 +115,12 @@ func TestStickerPlugin_Metadata(t *testing.T) {
 	}
 	if len(cmds[0].Aliases) != 1 || cmds[0].Aliases[0] != "stk" {
 		t.Errorf("expected stk alias, got %v", cmds[0].Aliases)
+	}
+	if cmds[0].Permission != core.PermissionSudo {
+		t.Errorf("expected PermissionSudo, got %v", cmds[0].Permission)
+	}
+	if cmds[0].Timeout != 60*time.Second {
+		t.Errorf("expected 60s timeout, got %v", cmds[0].Timeout)
 	}
 }
 

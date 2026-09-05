@@ -109,7 +109,7 @@ func TestHelpPlugin(t *testing.T) {
 		PeerID:  &tg.InputPeerSelf{},
 	}
 
-	// 1. Help without args -> lists categories
+	// 1. Help without args -> lists categories with expandable blockquotes
 	ctxAll := *baseCtx
 	ctxAll.Command = "help"
 	if err := cmds[0].Handler(&ctxAll); err != nil {
@@ -118,6 +118,9 @@ func TestHelpPlugin(t *testing.T) {
 
 	if !strings.Contains(svc.sent, "[Admin]") || !strings.Contains(svc.sent, "[Utility]") {
 		t.Errorf("expected help output to contain [Admin] and [Utility], got: %s", svc.sent)
+	}
+	if !strings.Contains(svc.sent, "<blockquote expandable>") {
+		t.Errorf("expected help output to contain expandable blockquotes, got: %s", svc.sent)
 	}
 
 	// 2. Help for existing command
@@ -128,11 +131,23 @@ func TestHelpPlugin(t *testing.T) {
 		t.Fatalf("unexpected error running help ping: %v", err)
 	}
 
-	if !strings.Contains(svc.sent, "Command:** `.ping`") || !strings.Contains(svc.sent, "Check latency") {
+	if !strings.Contains(svc.sent, "Command: .ping") || !strings.Contains(svc.sent, "Check latency") {
 		t.Errorf("expected help target to show ping details, got: %s", svc.sent)
 	}
 
-	// 3. Help for non-existent command
+	// 3. Help for module/category
+	ctxCat := *baseCtx
+	ctxCat.Command = "help"
+	ctxCat.Args = []string{"admin"}
+	if err := cmds[0].Handler(&ctxCat); err != nil {
+		t.Fatalf("unexpected error running help admin: %v", err)
+	}
+
+	if !strings.Contains(svc.sent, "Module: Admin") || !strings.Contains(svc.sent, ".ban") {
+		t.Errorf("expected module help to show admin commands, got: %s", svc.sent)
+	}
+
+	// 4. Help for non-existent command/module
 	ctxUnknown := *baseCtx
 	ctxUnknown.Command = "help"
 	ctxUnknown.Args = []string{"nonexistent"}

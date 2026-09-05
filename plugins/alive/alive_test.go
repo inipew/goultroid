@@ -113,7 +113,7 @@ func TestAlivePlugin(t *testing.T) {
 	if !strings.Contains(svc.sent, "GoUltroid is Alive") {
 		t.Errorf("expected output to contain 'GoUltroid is Alive', got: %s", svc.sent)
 	}
-	if !strings.Contains(svc.sent, "Uptime:**") {
+	if !strings.Contains(svc.sent, "Uptime:") {
 		t.Errorf("expected output to contain uptime, got: %s", svc.sent)
 	}
 	if !strings.Contains(svc.sent, "123456") {

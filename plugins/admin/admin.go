@@ -79,7 +79,6 @@ func (p *Plugin) Commands() []core.Command {
 			Usage:       "reply to a message with .purge",
 			Category:    "Admin",
 			Permission:  core.PermissionSudo,
-			GroupOnly:   true,
 			ReplyOnly:   true,
 			Handler:     p.handlePurge,
 		},

@@ -72,3 +72,33 @@ func TestCooldownTracker_Concurrent(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestCooldownTracker_Cleanup(t *testing.T) {
+	tracker := NewCooldownTracker()
+
+	tracker.CheckAndRecord(101, "cmd1", time.Second)
+	tracker.CheckAndRecord(102, "cmd2", time.Second)
+
+	// Immediately, cleanup with 1 hour maxAge should purge nothing
+	purged := tracker.Cleanup(1 * time.Hour)
+	if purged != 0 {
+		t.Errorf("expected 0 purged, got %d", purged)
+	}
+
+	// Artificially set an old timestamp
+	tracker.mu.Lock()
+	tracker.records[userCommandKey{userID: 999, cmdName: "old"}] = time.Now().Add(-2 * time.Hour)
+	tracker.mu.Unlock()
+
+	purged = tracker.Cleanup(1 * time.Hour)
+	if purged != 1 {
+		t.Errorf("expected 1 purged record, got %d", purged)
+	}
+
+	// Nil safety
+	var nilTracker *CooldownTracker
+	if n := nilTracker.Cleanup(time.Hour); n != 0 {
+		t.Errorf("expected 0 from nil tracker cleanup, got %d", n)
+	}
+}
+

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
@@ -185,21 +186,39 @@ func extractChatID(peer tg.PeerClass) int64 {
 }
 
 func extractPeerInput(peer tg.PeerClass, e tg.Entities) tg.InputPeerClass {
+	if peer == nil {
+		return nil
+	}
 	switch p := peer.(type) {
 	case *tg.PeerUser:
+		if p.UserID == 0 {
+			return nil
+		}
 		if u, ok := e.Users[p.UserID]; ok {
 			return &tg.InputPeerUser{UserID: p.UserID, AccessHash: u.AccessHash}
 		}
-		return &tg.InputPeerSelf{}
+		return &tg.InputPeerUser{UserID: p.UserID, AccessHash: 0}
 	case *tg.PeerChat:
+		if p.ChatID == 0 {
+			return nil
+		}
 		return &tg.InputPeerChat{ChatID: p.ChatID}
 	case *tg.PeerChannel:
+		if p.ChannelID == 0 {
+			return nil
+		}
 		if ch, ok := e.Channels[p.ChannelID]; ok {
 			return &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: ch.AccessHash}
 		}
+		return &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: 0}
 	}
 	return nil
 }
+
+var (
+	blacklistRegexMu    sync.RWMutex
+	blacklistRegexCache = make(map[string]*regexp.Regexp)
+)
 
 func matchBlacklist(text, word string) bool {
 	w := strings.ToLower(strings.TrimSpace(word))
@@ -207,9 +226,23 @@ func matchBlacklist(text, word string) bool {
 		return false
 	}
 	lowerText := strings.ToLower(text)
-	pattern := `(?i)(?:^|[^\p{L}\p{N}_])` + regexp.QuoteMeta(w) + `(?:$|[^\p{L}\p{N}_])`
-	re, err := regexp.Compile(pattern)
-	if err == nil {
+
+	blacklistRegexMu.RLock()
+	re, ok := blacklistRegexCache[w]
+	blacklistRegexMu.RUnlock()
+
+	if !ok {
+		pattern := `(?i)(?:^|[^\p{L}\p{N}_])` + regexp.QuoteMeta(w) + `(?:$|[^\p{L}\p{N}_])`
+		compiled, err := regexp.Compile(pattern)
+		if err == nil {
+			blacklistRegexMu.Lock()
+			blacklistRegexCache[w] = compiled
+			blacklistRegexMu.Unlock()
+			re = compiled
+		}
+	}
+
+	if re != nil {
 		return re.MatchString(lowerText)
 	}
 	return strings.Contains(lowerText, w)

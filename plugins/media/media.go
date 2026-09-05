@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/inipew/goultroid/internal/core"
 )
@@ -47,6 +48,7 @@ func (p *Plugin) Commands() []core.Command {
 			Description: "Inspect metadata, dimensions, duration, and file size of media attachments",
 			Usage:       ".mediainfo (or reply to media)",
 			Category:    "Media",
+			Permission:  core.PermissionEveryone,
 			Handler:     p.handleMediaInfo,
 		},
 		{
@@ -55,6 +57,8 @@ func (p *Plugin) Commands() []core.Command {
 			Description: "Extract audio track from video or media into MP3",
 			Usage:       ".extractaudio (reply to video/audio/document)",
 			Category:    "Media",
+			Permission:  core.PermissionSudo,
+			Timeout:     3 * time.Minute,
 			Handler:     p.handleExtractAudio,
 		},
 	}

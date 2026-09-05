@@ -90,7 +90,8 @@ func TestLoggingMiddleware(t *testing.T) {
 }
 
 func TestTimeoutMiddleware(t *testing.T) {
-	m := TimeoutMiddleware(50 * time.Millisecond)
+	cmdDefault := Command{Name: "ping"}
+	mDefault := TimeoutMiddleware(cmdDefault, 50*time.Millisecond)
 
 	slowHandler := func(ctx *Context) error {
 		select {
@@ -101,10 +102,29 @@ func TestTimeoutMiddleware(t *testing.T) {
 		}
 	}
 
-	wrapped := m(slowHandler)
+	wrapped := mDefault(slowHandler)
 	err := wrapped(&Context{Ctx: context.Background()})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("expected DeadlineExceeded error, got %v", err)
+	}
+
+	// Command with custom timeout overrides default timeout
+	cmdCustom := Command{Name: "exec", Timeout: 300 * time.Millisecond}
+	mCustom := TimeoutMiddleware(cmdCustom, 50*time.Millisecond)
+
+	mediumHandler := func(ctx *Context) error {
+		select {
+		case <-time.After(100 * time.Millisecond):
+			return nil
+		case <-ctx.Ctx.Done():
+			return ctx.Ctx.Err()
+		}
+	}
+
+	wrappedCustom := mCustom(mediumHandler)
+	err = wrappedCustom(&Context{Ctx: context.Background()})
+	if err != nil {
+		t.Errorf("expected custom timeout to allow 100ms execution, got: %v", err)
 	}
 }
 

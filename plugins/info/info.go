@@ -46,6 +46,7 @@ func (p *Plugin) Commands() []core.Command {
 			Description: "Display detailed profile information of a user",
 			Usage:       ".whois [username|id|reply]",
 			Category:    "Info",
+			Permission:  core.PermissionEveryone,
 			Handler:     p.handleWhois,
 		},
 		{
@@ -54,6 +55,7 @@ func (p *Plugin) Commands() []core.Command {
 			Description: "Display detailed metadata of the current chat/group/channel",
 			Usage:       ".chatinfo",
 			Category:    "Info",
+			Permission:  core.PermissionSudo,
 			GroupOnly:   true,
 			Handler:     p.handleChatInfo,
 		},

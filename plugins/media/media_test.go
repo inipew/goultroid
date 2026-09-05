@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
@@ -118,8 +119,17 @@ func TestMediaPlugin_Metadata(t *testing.T) {
 	if cmds[0].Name != "mediainfo" {
 		t.Errorf("expected mediainfo command, got %s", cmds[0].Name)
 	}
+	if cmds[0].Permission != core.PermissionEveryone {
+		t.Errorf("expected mediainfo to be PermissionEveryone, got %v", cmds[0].Permission)
+	}
 	if cmds[1].Name != "extractaudio" {
 		t.Errorf("expected extractaudio command, got %s", cmds[1].Name)
+	}
+	if cmds[1].Permission != core.PermissionSudo {
+		t.Errorf("expected extractaudio to be PermissionSudo, got %v", cmds[1].Permission)
+	}
+	if cmds[1].Timeout != 3*time.Minute {
+		t.Errorf("expected extractaudio timeout to be 3m, got %v", cmds[1].Timeout)
 	}
 }
 

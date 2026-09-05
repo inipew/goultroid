@@ -114,9 +114,14 @@ func LoggingMiddleware(logger *zap.Logger) Middleware {
 }
 
 // TimeoutMiddleware enforces a deadline on the command execution context.
-func TimeoutMiddleware(timeout time.Duration) Middleware {
+// If cmd.Timeout > 0, it is used; otherwise, defaultTimeout is used.
+func TimeoutMiddleware(cmd Command, defaultTimeout time.Duration) Middleware {
 	return func(next CommandHandler) CommandHandler {
 		return func(ctx *Context) error {
+			timeout := defaultTimeout
+			if cmd.Timeout > 0 {
+				timeout = cmd.Timeout
+			}
 			if timeout <= 0 {
 				return next(ctx)
 			}

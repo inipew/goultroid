@@ -17,11 +17,12 @@ import (
 
 // RestartState stores metadata across bot restarts.
 type RestartState struct {
-	ChatID   int64 `json:"chat_id"`
-	IsChannel bool  `json:"is_channel"`
-	AccessHash int64 `json:"access_hash"`
-	MsgID    int   `json:"msg_id"`
-	Time     int64 `json:"time"`
+	PeerType   string `json:"peer_type"` // "self", "user", "channel", "chat"
+	ChatID     int64  `json:"chat_id"`
+	IsChannel  bool   `json:"is_channel,omitempty"`
+	AccessHash int64  `json:"access_hash"`
+	MsgID      int    `json:"msg_id"`
+	Time       int64  `json:"time"`
 }
 
 // Plugin provides shell execution and system management commands.
@@ -88,6 +89,7 @@ func (p *Plugin) Commands() []core.Command {
 			Usage:       ".exec <shell command>",
 			Category:    "System",
 			Permission:  core.PermissionOwner,
+			Timeout:     65 * time.Second,
 			Handler:     p.handleExec,
 		},
 		{
@@ -105,6 +107,7 @@ func (p *Plugin) Commands() []core.Command {
 			Usage:       ".update [pull|now]",
 			Category:    "System",
 			Permission:  core.PermissionOwner,
+			Timeout:     180 * time.Second,
 			Handler:     p.handleUpdate,
 		},
 	}
@@ -173,18 +176,48 @@ func (p *Plugin) handleRestart(ctx *core.Context) error {
 	_ = ctx.Reply("🔄 <i>Restarting GoUltroid...</i>")
 
 	var chatID int64
-	var isChannel bool
+	var peerType string
 	var accessHash int64
+	var isChannel bool
+
 	if ctx.PeerID != nil {
 		switch peer := ctx.PeerID.(type) {
-		case *tg.InputPeerChannel:
-			chatID = peer.ChannelID
-			isChannel = true
-			accessHash = peer.AccessHash
-		case *tg.InputPeerChat:
-			chatID = peer.ChatID
+		case *tg.InputPeerSelf:
+			peerType = "self"
 		case *tg.InputPeerUser:
+			peerType = "user"
 			chatID = peer.UserID
+			accessHash = peer.AccessHash
+		case *tg.InputPeerChannel:
+			peerType = "channel"
+			chatID = peer.ChannelID
+			accessHash = peer.AccessHash
+			isChannel = true
+		case *tg.InputPeerChat:
+			peerType = "chat"
+			chatID = peer.ChatID
+		default:
+			if ctx.Chat != nil {
+				chatID = ctx.Chat.ID
+				if ctx.Chat.Type == "channel" || ctx.Chat.Type == "supergroup" {
+					peerType = "channel"
+					isChannel = true
+				} else if ctx.Chat.Type == "private" {
+					peerType = "user"
+				} else {
+					peerType = "chat"
+				}
+			}
+		}
+	} else if ctx.Chat != nil {
+		chatID = ctx.Chat.ID
+		if ctx.Chat.Type == "channel" || ctx.Chat.Type == "supergroup" {
+			peerType = "channel"
+			isChannel = true
+		} else if ctx.Chat.Type == "private" {
+			peerType = "user"
+		} else {
+			peerType = "chat"
 		}
 	}
 
@@ -194,6 +227,7 @@ func (p *Plugin) handleRestart(ctx *core.Context) error {
 	}
 
 	state := RestartState{
+		PeerType:   peerType,
 		ChatID:     chatID,
 		IsChannel:  isChannel,
 		AccessHash: accessHash,

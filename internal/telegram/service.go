@@ -33,26 +33,36 @@ func NewService(api *tg.Client) *Service {
 }
 
 // SendMessage sends a text message to the specified peer and returns the created tg.Message if available.
+// It parses HTML formatting, falling back to plain text if parsing or formatting fails.
 func (s *Service) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
 	if s.sender == nil {
 		return nil, fmt.Errorf("sender is not initialized")
 	}
 
-	updates, err := s.sender.To(peer).Text(ctx, text)
+	updates, err := s.sender.To(peer).StyledText(ctx, html.String(nil, text))
 	if err != nil {
-		return nil, err
+		// Fallback to plain text if HTML parsing or formatting fails
+		updates, err = s.sender.To(peer).Text(ctx, text)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return extractMessageFromUpdates(updates), nil
 }
 
 // EditMessage edits the text of an existing message.
+// It parses HTML formatting, falling back to plain text if parsing or formatting fails.
 func (s *Service) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
 	if s.sender == nil {
 		return fmt.Errorf("sender is not initialized")
 	}
 
-	_, err := s.sender.To(peer).Edit(msgID).Text(ctx, text)
+	_, err := s.sender.To(peer).Edit(msgID).StyledText(ctx, html.String(nil, text))
+	if err != nil {
+		// Fallback to plain text if HTML parsing or formatting fails
+		_, err = s.sender.To(peer).Edit(msgID).Text(ctx, text)
+	}
 	return err
 }
 

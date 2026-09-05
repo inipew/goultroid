@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/inipew/goultroid/internal/core"
@@ -61,5 +62,42 @@ func TestDeleteMessage_EmptyIDs(t *testing.T) {
 	err := s.DeleteMessage(context.Background(), &tg.InputPeerSelf{}, nil)
 	if err != nil {
 		t.Errorf("expected no error when deleting empty message IDs: %v", err)
+	}
+}
+
+func TestCheckRestartState_FileHandling(t *testing.T) {
+	// 1. Missing file -> no-op, no panic
+	checkRestartState(context.Background(), nil, nil)
+
+	// 2. Self peer state
+	_ = os.MkdirAll("data", 0755)
+	defer os.RemoveAll("data")
+
+	selfJSON := []byte(`{"peer_type":"self","chat_id":0,"msg_id":99,"time":1700000000}`)
+	_ = os.WriteFile("data/restart.json", selfJSON, 0644)
+
+	// Calls checkRestartState with nil sender; svc.EditMessage will fail safely and remove file
+	checkRestartState(context.Background(), &Service{}, nil)
+
+	if _, err := os.Stat("data/restart.json"); !os.IsNotExist(err) {
+		t.Errorf("expected data/restart.json to be removed by checkRestartState")
+	}
+
+	// 3. User peer with access hash
+	userJSON := []byte(`{"peer_type":"user","chat_id":12345,"access_hash":67890,"msg_id":101,"time":1700000000}`)
+	_ = os.WriteFile("data/restart.json", userJSON, 0644)
+	checkRestartState(context.Background(), &Service{}, nil)
+
+	if _, err := os.Stat("data/restart.json"); !os.IsNotExist(err) {
+		t.Errorf("expected data/restart.json to be removed")
+	}
+
+	// 4. Legacy format fallback
+	legacyJSON := []byte(`{"chat_id":777,"is_channel":true,"access_hash":888,"msg_id":102,"time":1700000000}`)
+	_ = os.WriteFile("data/restart.json", legacyJSON, 0644)
+	checkRestartState(context.Background(), &Service{}, nil)
+
+	if _, err := os.Stat("data/restart.json"); !os.IsNotExist(err) {
+		t.Errorf("expected legacy data/restart.json to be removed")
 	}
 }

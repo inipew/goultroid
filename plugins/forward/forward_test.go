@@ -91,6 +91,9 @@ func TestForwardPlugin(t *testing.T) {
 	if !cmds[0].ReplyOnly {
 		t.Errorf("expected forward command to have ReplyOnly=true")
 	}
+	if cmds[0].Permission != core.PermissionSudo {
+		t.Errorf("expected PermissionSudo, got %v", cmds[0].Permission)
+	}
 
 	svc := &mockService{}
 	ctx := &core.Context{

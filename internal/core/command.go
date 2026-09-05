@@ -41,5 +41,6 @@ type Command struct {
 	PrivateOnly bool
 	ReplyOnly   bool
 	Cooldown    time.Duration
+	Timeout     time.Duration
 	Handler     CommandHandler
 }

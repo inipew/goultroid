@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -133,9 +134,10 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	}
 
 	coreMsg := &core.Message{
-		ID:   msg.ID,
-		Text: msg.Message,
-		Date: time.Unix(int64(msg.Date), 0),
+		ID:         msg.ID,
+		Text:       msg.Message,
+		Date:       time.Unix(int64(msg.Date), 0),
+		IsOutgoing: msg.Out,
 	}
 
 	if msg.Media != nil {
@@ -171,6 +173,8 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 			peerInput = &tg.InputPeerUser{UserID: p.UserID, AccessHash: u.AccessHash}
 		} else if p.UserID == d.getSelfID() {
 			peerInput = &tg.InputPeerSelf{}
+		} else {
+			peerInput = &tg.InputPeerUser{UserID: p.UserID, AccessHash: 0}
 		}
 	case *tg.PeerChat:
 		chat.ID = p.ChatID
@@ -181,15 +185,31 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		}
 	case *tg.PeerChannel:
 		chat.ID = p.ChannelID
-		chat.Type = "channel"
+		// Default to supergroup; upgraded to channel if entity says otherwise.
+		// Most user-facing groups are megagroups (supergroups).
+		chat.Type = "supergroup"
+		var accessHash int64
 		if ch, ok := e.Channels[p.ChannelID]; ok {
 			chat.Title = ch.Title
 			chat.Username = ch.Username
 			if ch.Megagroup {
 				chat.Type = "supergroup"
+			} else {
+				chat.Type = "channel"
 			}
-			peerInput = &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: ch.AccessHash}
+			accessHash = ch.AccessHash
 		}
+		peerInput = &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: accessHash}
+	}
+
+	if d.logger != nil {
+		d.logger.Debug("dispatch: peer resolved",
+			zap.String("peerType", fmt.Sprintf("%T", msg.PeerID)),
+			zap.String("chatType", chat.Type),
+			zap.Int64("chatID", chat.ID),
+			zap.Bool("msgOut", msg.Out),
+			zap.String("command", cmdName),
+		)
 	}
 
 	if peerInput == nil {
@@ -234,7 +254,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		core.PermissionMiddleware(cmd),
 		core.FilterMiddleware(cmd),
 		core.CooldownMiddleware(cmd, d.cooldown),
-		core.TimeoutMiddleware(30*time.Second),
+		core.TimeoutMiddleware(cmd, 30*time.Second),
 	)
 
 	handler := chain.Then(cmd.Handler)

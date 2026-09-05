@@ -36,9 +36,10 @@ func (p *Plugin) Commands() []core.Command {
 			Description: "Download media from replied message",
 			Usage:       ".download",
 			Category:    "Media",
-			Permission:  core.PermissionEveryone,
+			Permission:  core.PermissionSudo,
 			ReplyOnly:   true,
 			Cooldown:    3 * time.Second,
+			Timeout:     5 * time.Minute,
 			Handler:     p.handleDownload,
 		},
 	}

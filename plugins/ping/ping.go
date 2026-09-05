@@ -48,5 +48,5 @@ func (p *Plugin) handlePing(ctx *core.Context) error {
 	}
 
 	latency := time.Since(start)
-	return ctx.Edit(fmt.Sprintf("🏓 Pong!\n⚡ Latency: %d ms", latency.Milliseconds()))
+	return ctx.Edit(fmt.Sprintf("🏓 <b>Pong!</b>\n⚡ <b>Latency:</b> <code>%d ms</code>", latency.Milliseconds()))
 }

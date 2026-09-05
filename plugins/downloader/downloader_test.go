@@ -108,6 +108,12 @@ func TestDownloaderPlugin(t *testing.T) {
 	if !cmds[0].ReplyOnly {
 		t.Errorf("expected download command to have ReplyOnly=true")
 	}
+	if cmds[0].Permission != core.PermissionSudo {
+		t.Errorf("expected PermissionSudo, got %v", cmds[0].Permission)
+	}
+	if cmds[0].Timeout != 5*time.Minute {
+		t.Errorf("expected 5m timeout, got %v", cmds[0].Timeout)
+	}
 	if cmds[0].Cooldown != 3*time.Second {
 		t.Errorf("expected 3s cooldown, got %v", cmds[0].Cooldown)
 	}

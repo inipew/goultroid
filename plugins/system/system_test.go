@@ -206,11 +206,41 @@ func TestRestart_CustomHandler(t *testing.T) {
 	if !called {
 		t.Errorf("expected custom restart handler to be called")
 	}
-	if calledState.ChatID != 777 || !calledState.IsChannel || calledState.AccessHash != 888 || calledState.MsgID != 100 {
+	if calledState.PeerType != "channel" || calledState.ChatID != 777 || !calledState.IsChannel || calledState.AccessHash != 888 || calledState.MsgID != 100 {
 		t.Errorf("unexpected restart state captured: %+v", calledState)
 	}
 	if !strings.Contains(svc.sent, "Restarting GoUltroid") {
 		t.Errorf("expected restart response, got: %s", svc.sent)
+	}
+
+	// Test with InputPeerSelf
+	called = false
+	ctxSelf := &core.Context{
+		Ctx:     context.Background(),
+		PeerID:  &tg.InputPeerSelf{},
+		Message: &core.Message{ID: 55, Text: ".restart"},
+		Svc:     svc,
+	}
+	if err := p.handleRestart(ctxSelf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called || calledState.PeerType != "self" {
+		t.Errorf("expected peer_type self, got: %+v", calledState)
+	}
+
+	// Test with InputPeerUser
+	called = false
+	ctxUser := &core.Context{
+		Ctx:     context.Background(),
+		PeerID:  &tg.InputPeerUser{UserID: 12345, AccessHash: 67890},
+		Message: &core.Message{ID: 66, Text: ".restart"},
+		Svc:     svc,
+	}
+	if err := p.handleRestart(ctxUser); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called || calledState.PeerType != "user" || calledState.ChatID != 12345 || calledState.AccessHash != 67890 {
+		t.Errorf("expected peer_type user with hash, got: %+v", calledState)
 	}
 }
 

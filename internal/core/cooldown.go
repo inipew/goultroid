@@ -53,3 +53,25 @@ func (c *CooldownTracker) CheckAndRecord(userID int64, cmdName string, duration 
 	c.records[key] = now
 	return 0, true
 }
+
+// Cleanup purges cooldown records that are older than maxAge.
+// Returns the number of purged records.
+func (c *CooldownTracker) Cleanup(maxAge time.Duration) int {
+	if c == nil || maxAge <= 0 {
+		return 0
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	now := time.Now()
+	purged := 0
+	for k, t := range c.records {
+		if now.Sub(t) > maxAge {
+			delete(c.records, k)
+			purged++
+		}
+	}
+	return purged
+}
+

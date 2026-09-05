@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/gotd/td/tg"
@@ -103,6 +104,13 @@ func (m *mockTelegramServicer) GetFullUser(ctx context.Context, user tg.InputUse
 	return &tg.UsersUserFull{}, nil
 }
 func (m *mockTelegramServicer) ResolveUsername(ctx context.Context, username string) (*tg.ContactsResolvedPeer, error) {
+	if username == "targetuser" {
+		return &tg.ContactsResolvedPeer{
+			Users: []tg.UserClass{
+				&tg.User{ID: 9999, AccessHash: 55555},
+			},
+		}, nil
+	}
 	return &tg.ContactsResolvedPeer{}, nil
 }
 func (m *mockTelegramServicer) GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.MessagesChatFull, error) {
@@ -377,6 +385,17 @@ func TestContext_ModerationActions(t *testing.T) {
 	if err != nil || uid != 8888 || p == nil {
 		t.Errorf("failed to resolve target from reply: uid=%d, err=%v", uid, err)
 	}
+
+	// 8. ResolveTargetUser via username
+	ctxWithUsername := *ctx
+	ctxWithUsername.Args = []string{"@targetuser"}
+	p, uid, err = ctxWithUsername.ResolveTargetUser()
+	if err != nil || uid != 9999 || p == nil {
+		t.Errorf("failed to resolve target from username: uid=%d, err=%v", uid, err)
+	}
+	if inputUser, ok := p.(*tg.InputPeerUser); !ok || inputUser.AccessHash != 55555 {
+		t.Errorf("expected InputPeerUser with access hash 55555, got: %v", p)
+	}
 }
 
 func TestContext_SendMedia(t *testing.T) {
@@ -445,6 +464,45 @@ func TestContext_InfoHelpers(t *testing.T) {
 	}
 	if _, err := nilCtx.GetFullChat(); err == nil {
 		t.Errorf("expected error with nil service")
+	}
+}
+
+func TestDownloadMedia_PathTraversal(t *testing.T) {
+	mock := &mockTelegramServicer{}
+	tmpDir := t.TempDir()
+
+	ctx := &Context{
+		Ctx:    context.Background(),
+		PeerID: &tg.InputPeerChat{ChatID: 123},
+		Svc:    mock,
+		Message: &Message{
+			ID: 1,
+			Media: &MediaInfo{
+				Type:     "document",
+				FileName: "../../malicious.sh",
+				Location: &tg.InputDocumentFileLocation{},
+			},
+		},
+	}
+
+	savedPath, err := ctx.DownloadMedia(tmpDir)
+	if err != nil {
+		t.Fatalf("DownloadMedia failed: %v", err)
+	}
+
+	expectedPath := filepath.Join(tmpDir, "malicious.sh")
+	if savedPath != expectedPath {
+		t.Errorf("expected sanitized path %q, got %q", expectedPath, savedPath)
+	}
+
+	// Verify fallback when cleaned name is empty or dot
+	ctx.Message.Media.FileName = "../.."
+	savedFallback, err := ctx.DownloadMedia(tmpDir)
+	if err != nil {
+		t.Fatalf("DownloadMedia fallback failed: %v", err)
+	}
+	if filepath.Dir(savedFallback) != tmpDir {
+		t.Errorf("expected fallback path to be in %q, got %q", tmpDir, savedFallback)
 	}
 }
 

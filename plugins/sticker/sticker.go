@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/inipew/goultroid/internal/core"
 	"golang.org/x/image/draw"
@@ -54,6 +55,8 @@ func (p *Plugin) Commands() []core.Command {
 			Description: "Convert a replied or sent photo/image into a Telegram sticker",
 			Usage:       ".sticker (reply to photo or image)",
 			Category:    "Media",
+			Permission:  core.PermissionSudo,
+			Timeout:     60 * time.Second,
 			Handler:     p.handleSticker,
 		},
 	}

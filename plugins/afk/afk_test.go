@@ -219,3 +219,26 @@ func TestFormatDuration(t *testing.T) {
 		}
 	}
 }
+
+func TestAFKPlugin_Cleanup(t *testing.T) {
+	p := New(nil, 100, nil)
+
+	// Add recent and old timestamps
+	p.cooldown.Store(int64(101), time.Now())
+	p.cooldown.Store(int64(102), time.Now().Add(-20*time.Minute))
+
+	purged := p.Cleanup(10 * time.Minute)
+	if purged != 1 {
+		t.Errorf("expected 1 record purged, got %d", purged)
+	}
+
+	// Verify 101 remains
+	if _, ok := p.cooldown.Load(int64(101)); !ok {
+		t.Errorf("expected 101 to remain in cooldown map")
+	}
+	// Verify 102 was removed
+	if _, ok := p.cooldown.Load(int64(102)); ok {
+		t.Errorf("expected 102 to be purged from cooldown map")
+	}
+}
+

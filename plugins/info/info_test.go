@@ -125,8 +125,14 @@ func TestInfoPlugin_Metadata(t *testing.T) {
 	if cmds[0].Name != "whois" {
 		t.Errorf("expected whois, got %s", cmds[0].Name)
 	}
+	if cmds[0].Permission != core.PermissionEveryone {
+		t.Errorf("expected whois to be PermissionEveryone, got %v", cmds[0].Permission)
+	}
 	if cmds[1].Name != "chatinfo" {
 		t.Errorf("expected chatinfo, got %s", cmds[1].Name)
+	}
+	if cmds[1].Permission != core.PermissionSudo {
+		t.Errorf("expected chatinfo to be PermissionSudo, got %v", cmds[1].Permission)
 	}
 }
 

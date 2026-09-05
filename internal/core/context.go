@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gotd/td/tg"
@@ -59,14 +60,15 @@ type MediaInfo struct {
 
 // Message represents a high-level Telegram message.
 type Message struct {
-	ID        int
-	SenderID  int64
-	TopicID   int // Root ID of the forum topic / thread, if sent in a topic
-	Text      string
-	Date      time.Time
-	ReplyToID int
-	MediaType string
-	Media     *MediaInfo
+	ID         int
+	SenderID   int64
+	TopicID    int // Root ID of the forum topic / thread, if sent in a topic
+	Text       string
+	Date       time.Time
+	ReplyToID  int
+	MediaType  string
+	Media      *MediaInfo
+	IsOutgoing bool // true when the message was sent by the bot owner (userbot)
 }
 
 // HasMedia returns true if the message has an attached downloadable media.
@@ -266,8 +268,8 @@ func (c *Context) DownloadMedia(destDir string) (string, error) {
 		return "", fmt.Errorf("failed to create destination directory: %w", err)
 	}
 
-	fileName := media.FileName
-	if fileName == "" {
+	fileName := filepath.Base(filepath.Clean(media.FileName))
+	if fileName == "." || fileName == ".." || fileName == "/" || fileName == "" {
 		ext := ".bin"
 		switch media.Type {
 		case "photo":
@@ -352,20 +354,38 @@ func (c *Context) TopicID() int {
 	return 0
 }
 
-// ResolveTargetUser extracts the target user's InputPeer and UserID from args (if ID numeric) or from replied message.
+// ResolveTargetUser extracts the target user's InputPeer and UserID from args (numeric ID or @username) or from replied message.
 func (c *Context) ResolveTargetUser() (tg.InputPeerClass, int64, error) {
 	if len(c.Args) > 0 {
-		if uid, err := strconv.ParseInt(c.Args[0], 10, 64); err == nil && uid != 0 {
+		arg := c.Args[0]
+		// 1. Numeric ID
+		if uid, err := strconv.ParseInt(arg, 10, 64); err == nil && uid != 0 {
 			return &tg.InputPeerUser{UserID: uid}, uid, nil
+		}
+
+		// 2. Username (@username or username)
+		if strings.HasPrefix(arg, "@") || (!strings.ContainsAny(arg, " /.:") && len(arg) >= 3) {
+			username := strings.TrimPrefix(arg, "@")
+			if c.Svc != nil {
+				resolved, err := c.ResolveUsername(username)
+				if err == nil && resolved != nil {
+					for _, u := range resolved.Users {
+						if user, ok := u.(*tg.User); ok {
+							return &tg.InputPeerUser{UserID: user.ID, AccessHash: user.AccessHash}, user.ID, nil
+						}
+					}
+				}
+			}
 		}
 	}
 
+	// 3. Reply to user
 	reply, err := c.GetReply()
 	if err == nil && reply != nil && reply.SenderID != 0 {
 		return &tg.InputPeerUser{UserID: reply.SenderID}, reply.SenderID, nil
 	}
 
-	return nil, 0, errors.New("please provide a valid user ID or reply to a user's message")
+	return nil, 0, errors.New("please provide a valid user ID, username, or reply to a user's message")
 }
 
 // Ban bans a user from the chat.
@@ -613,7 +633,10 @@ func ExtractMediaFromTG(media tg.MessageMediaClass) *MediaInfo {
 		for _, attr := range doc.Attributes {
 			switch a := attr.(type) {
 			case *tg.DocumentAttributeFilename:
-				fileName = a.FileName
+				base := filepath.Base(filepath.Clean(a.FileName))
+				if base != "." && base != ".." && base != "/" && base != "" {
+					fileName = base
+				}
 			case *tg.DocumentAttributeVideo:
 				mediaType = "video"
 				width = a.W
@@ -654,9 +677,15 @@ func (c *Context) IsPrivate() bool {
 	return c.Chat != nil && c.Chat.Type == "private"
 }
 
-// IsGroup returns true if the chat is a group or supergroup.
+// IsGroup returns true if the chat is a group, supergroup, or channel.
+// Channels are included because Telegram supergroups are represented as PeerChannel
+// and may appear as "channel" type when entity metadata is absent from the cache.
 func (c *Context) IsGroup() bool {
-	return c.Chat != nil && (c.Chat.Type == "group" || c.Chat.Type == "supergroup")
+	if c.Chat == nil {
+		return false
+	}
+	t := c.Chat.Type
+	return t == "group" || t == "supergroup" || t == "channel"
 }
 
 // IsChannel returns true if the chat is a broadcast channel.
