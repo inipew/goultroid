@@ -35,6 +35,11 @@ type TelegramServicer interface {
 
 	// Media upload actions
 	SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error)
+
+	// Info & Query actions
+	GetFullUser(ctx context.Context, user tg.InputUserClass) (*tg.UsersUserFull, error)
+	ResolveUsername(ctx context.Context, username string) (*tg.ContactsResolvedPeer, error)
+	GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.MessagesChatFull, error)
 }
 
 // MediaInfo stores metadata and download location for message attachments.
@@ -487,6 +492,33 @@ func (c *Context) SendAudio(filePath, caption string) error {
 	}
 	_, err := c.Svc.SendMedia(c.Ctx, c.PeerID, "audio", filePath, caption)
 	return err
+}
+
+// GetFullUser fetches detailed user information.
+func (c *Context) GetFullUser(user tg.InputUserClass) (*tg.UsersUserFull, error) {
+	if c.Svc == nil {
+		return nil, errors.New("telegram service not initialized")
+	}
+	return c.Svc.GetFullUser(c.Ctx, user)
+}
+
+// ResolveUsername resolves a public username to user/chat entities.
+func (c *Context) ResolveUsername(username string) (*tg.ContactsResolvedPeer, error) {
+	if c.Svc == nil {
+		return nil, errors.New("telegram service not initialized")
+	}
+	return c.Svc.ResolveUsername(c.Ctx, username)
+}
+
+// GetFullChat fetches detailed chat/channel information for the current chat.
+func (c *Context) GetFullChat() (*tg.MessagesChatFull, error) {
+	if c.Svc == nil {
+		return nil, errors.New("telegram service not initialized")
+	}
+	if c.PeerID == nil {
+		return nil, errors.New("peer is nil")
+	}
+	return c.Svc.GetFullChat(c.Ctx, c.PeerID)
 }
 
 // ExtractMediaFromTG parses raw tg.MessageMediaClass into core.MediaInfo.

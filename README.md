@@ -132,6 +132,10 @@ docker run -it --rm \
 | `.mediainfo` | `.media`, `.minfo` | Media | Everyone | Inspeksi metadata, resolusi, durasi, dan ukuran media |
 | `.extractaudio` | `.extaudio` | Media | Sudo | Ekstrak track audio dari video/dokumen ke format MP3 |
 | `.sticker` | `.stk` | Media | Sudo | Konversi foto/gambar yang di-reply menjadi Telegram sticker (512x512) |
+| `.whois` | `.info`, `.userinfo` | Info | Everyone | Tampilkan informasi profil lengkap pengguna (ID, username, status, bio) |
+| `.chatinfo` | `.groupinfo`, `.cinfo` | Info | Sudo | Tampilkan metadata lengkap grup/supergroup/channel saat ini |
+| `.exec` | `.sh`, `.bash`, `.cmd` | System | Owner | Eksekusi shell command di host secara aman (timeout 60s & auto-upload) |
+| `.restart` | - | System | Owner | Restart proses userbot secara anggun dan konfirmasi otomatis |
 
 ---
 

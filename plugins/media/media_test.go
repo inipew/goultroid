@@ -85,6 +85,15 @@ func (m *mockService) SendMedia(ctx context.Context, peer tg.InputPeerClass, med
 	m.mediaCaption = caption
 	return &tg.Message{ID: 200}, nil
 }
+func (m *mockService) GetFullUser(ctx context.Context, user tg.InputUserClass) (*tg.UsersUserFull, error) {
+	return nil, nil
+}
+func (m *mockService) ResolveUsername(ctx context.Context, username string) (*tg.ContactsResolvedPeer, error) {
+	return nil, nil
+}
+func (m *mockService) GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.MessagesChatFull, error) {
+	return nil, nil
+}
 
 func TestMediaPlugin_Metadata(t *testing.T) {
 	p := New()

@@ -81,6 +81,15 @@ func (m *mockService) PurgeMessages(ctx context.Context, peer tg.InputPeerClass,
 func (m *mockService) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
 	return &tg.Message{ID: 100}, nil
 }
+func (m *mockService) GetFullUser(ctx context.Context, user tg.InputUserClass) (*tg.UsersUserFull, error) {
+	return nil, nil
+}
+func (m *mockService) ResolveUsername(ctx context.Context, username string) (*tg.ContactsResolvedPeer, error) {
+	return nil, nil
+}
+func (m *mockService) GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.MessagesChatFull, error) {
+	return nil, nil
+}
 
 func TestDownloaderPlugin(t *testing.T) {
 	p := New()

@@ -12,11 +12,10 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/gotd/td/tg"
 	"go.uber.org/zap"
-	"go.uber.org/zap/zaptest"
 )
 
 func TestDispatcher_OnNewMessage(t *testing.T) {
-	logger := zaptest.NewLogger(t)
+	logger := zap.NewNop()
 	router := core.NewRouter(".")
 	perms := core.NewPermissions(1001, []int64{2001})
 
@@ -88,7 +87,7 @@ func TestDispatcher_OnNewMessage(t *testing.T) {
 }
 
 func TestDispatcher_IgnoredUpdates(t *testing.T) {
-	logger := zaptest.NewLogger(t)
+	logger := zap.NewNop()
 	router := core.NewRouter(".")
 	dispatcher := NewDispatcher(router, nil, nil, logger)
 
@@ -118,7 +117,7 @@ func TestDispatcher_IgnoredUpdates(t *testing.T) {
 }
 
 func TestDispatcher_OnNewChannelMessage(t *testing.T) {
-	logger := zaptest.NewLogger(t)
+	logger := zap.NewNop()
 	router := core.NewRouter(".")
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -159,7 +158,7 @@ func TestDispatcher_OnNewChannelMessage(t *testing.T) {
 }
 
 func TestNewClient_Validation(t *testing.T) {
-	logger := zaptest.NewLogger(t)
+	logger := zap.NewNop()
 	router := core.NewRouter(".")
 	dispatcher := NewDispatcher(router, nil, nil, logger)
 

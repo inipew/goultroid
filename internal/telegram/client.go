@@ -3,11 +3,13 @@ package telegram
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
@@ -165,7 +167,54 @@ func (c *Client) Run(ctx context.Context) error {
 			)
 		}
 
+		// Check if process was restarted and notify origin chat
+		go checkRestartState(ctx, svc, c.logger)
+
 		// Run update recovery manager until context cancellation
 		return c.gaps.Run(ctx, c.raw.API(), me.ID, updates.AuthOptions{IsBot: me.Bot})
 	})
 }
+
+// checkRestartState checks data/restart.json to edit the restart message if present.
+func checkRestartState(ctx context.Context, svc core.TelegramServicer, logger *zap.Logger) {
+	restartPath := "data/restart.json"
+	data, err := os.ReadFile(restartPath)
+	if err != nil {
+		return
+	}
+	defer os.Remove(restartPath)
+
+	type restartState struct {
+		ChatID     int64 `json:"chat_id"`
+		IsChannel  bool  `json:"is_channel"`
+		AccessHash int64 `json:"access_hash"`
+		MsgID      int   `json:"msg_id"`
+		Time       int64 `json:"time"`
+	}
+
+	var state restartState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return
+	}
+
+	if state.MsgID == 0 || state.ChatID == 0 {
+		return
+	}
+
+	var peer tg.InputPeerClass
+	if state.IsChannel {
+		peer = &tg.InputPeerChannel{ChannelID: state.ChatID, AccessHash: state.AccessHash}
+	} else {
+		peer = &tg.InputPeerChat{ChatID: state.ChatID}
+	}
+
+	elapsed := time.Since(time.Unix(state.Time, 0)).Round(time.Millisecond)
+	msg := fmt.Sprintf("✅ <b>GoUltroid restarted successfully!</b> (took <i>%s</i>)", elapsed)
+
+	if err := svc.EditMessage(ctx, peer, state.MsgID, msg); err != nil {
+		if logger != nil {
+			logger.Warn("failed to edit restart confirmation message", zap.Error(err))
+		}
+	}
+}
+

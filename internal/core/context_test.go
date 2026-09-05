@@ -99,6 +99,15 @@ func (m *mockTelegramServicer) PurgeMessages(ctx context.Context, peer tg.InputP
 func (m *mockTelegramServicer) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
 	return &tg.Message{ID: 777}, nil
 }
+func (m *mockTelegramServicer) GetFullUser(ctx context.Context, user tg.InputUserClass) (*tg.UsersUserFull, error) {
+	return &tg.UsersUserFull{}, nil
+}
+func (m *mockTelegramServicer) ResolveUsername(ctx context.Context, username string) (*tg.ContactsResolvedPeer, error) {
+	return &tg.ContactsResolvedPeer{}, nil
+}
+func (m *mockTelegramServicer) GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.MessagesChatFull, error) {
+	return &tg.MessagesChatFull{}, nil
+}
 
 func TestContext_Helpers(t *testing.T) {
 	ctx := &Context{
@@ -393,5 +402,42 @@ func TestContext_SendMedia(t *testing.T) {
 		t.Errorf("expected error with nil peer")
 	}
 }
+
+func TestContext_InfoHelpers(t *testing.T) {
+	mock := &mockTelegramServicer{}
+	ctx := &Context{
+		Ctx:    context.Background(),
+		PeerID: &tg.InputPeerChat{ChatID: 123},
+		Svc:    mock,
+	}
+
+	fu, err := ctx.GetFullUser(&tg.InputUserSelf{})
+	if err != nil || fu == nil {
+		t.Errorf("GetFullUser failed: %v", err)
+	}
+
+	rp, err := ctx.ResolveUsername("testuser")
+	if err != nil || rp == nil {
+		t.Errorf("ResolveUsername failed: %v", err)
+	}
+
+	fc, err := ctx.GetFullChat()
+	if err != nil || fc == nil {
+		t.Errorf("GetFullChat failed: %v", err)
+	}
+
+	// Service nil check
+	nilCtx := &Context{Ctx: context.Background(), PeerID: &tg.InputPeerChat{ChatID: 123}}
+	if _, err := nilCtx.GetFullUser(&tg.InputUserSelf{}); err == nil {
+		t.Errorf("expected error with nil service")
+	}
+	if _, err := nilCtx.ResolveUsername("user"); err == nil {
+		t.Errorf("expected error with nil service")
+	}
+	if _, err := nilCtx.GetFullChat(); err == nil {
+		t.Errorf("expected error with nil service")
+	}
+}
+
 
 

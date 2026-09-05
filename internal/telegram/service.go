@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gotd/td/telegram/downloader"
@@ -447,6 +448,42 @@ func (s *Service) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaTy
 	}
 
 	return extractMessageFromUpdates(updates), nil
+}
+
+// GetFullUser retrieves extended profile information for a user.
+func (s *Service) GetFullUser(ctx context.Context, user tg.InputUserClass) (*tg.UsersUserFull, error) {
+	if s.api == nil {
+		return nil, errors.New("telegram api not initialized")
+	}
+	return s.api.UsersGetFullUser(ctx, user)
+}
+
+// ResolveUsername resolves a public @username to peer entities.
+func (s *Service) ResolveUsername(ctx context.Context, username string) (*tg.ContactsResolvedPeer, error) {
+	if s.api == nil {
+		return nil, errors.New("telegram api not initialized")
+	}
+	cleaned := strings.TrimPrefix(username, "@")
+	return s.api.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: cleaned})
+}
+
+// GetFullChat retrieves extended information for a group, supergroup, or channel.
+func (s *Service) GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.MessagesChatFull, error) {
+	if s.api == nil {
+		return nil, errors.New("telegram api not initialized")
+	}
+
+	switch p := peer.(type) {
+	case *tg.InputPeerChannel:
+		return s.api.ChannelsGetFullChannel(ctx, &tg.InputChannel{
+			ChannelID:  p.ChannelID,
+			AccessHash: p.AccessHash,
+		})
+	case *tg.InputPeerChat:
+		return s.api.MessagesGetFullChat(ctx, p.ChatID)
+	default:
+		return nil, errors.New("chat info is only available for groups, supergroups, and channels")
+	}
 }
 
 // extractMessageFromUpdates attempts to locate a tg.Message from tg.UpdatesClass.
