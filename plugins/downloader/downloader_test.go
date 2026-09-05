@@ -1,24 +1,28 @@
-package alive
+package downloader
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/inipew/goultroid/internal/core"
 	"github.com/gotd/td/tg"
+	"github.com/inipew/goultroid/internal/core"
 )
 
 type mockService struct {
-	sent string
+	sent   string
+	edited string
 }
 
 func (m *mockService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
 	m.sent = text
-	return &tg.Message{ID: 1, Message: text}, nil
+	return &tg.Message{ID: 10, Message: text}, nil
 }
 func (m *mockService) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
+	m.edited = text
 	return nil
 }
 func (m *mockService) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {
@@ -28,7 +32,19 @@ func (m *mockService) React(ctx context.Context, peer tg.InputPeerClass, msgID i
 	return nil
 }
 func (m *mockService) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) (*tg.Message, error) {
-	return nil, nil
+	return &tg.Message{
+		ID: 42,
+		Media: &tg.MessageMediaDocument{
+			Document: &tg.Document{
+				ID:       999,
+				MimeType: "video/mp4",
+				Size:     2048576,
+				Attributes: []tg.DocumentAttributeClass{
+					&tg.DocumentAttributeFilename{FileName: "sample.mp4"},
+				},
+			},
+		},
+	}, nil
 }
 func (m *mockService) PinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, silent bool) error {
 	return nil
@@ -40,15 +56,15 @@ func (m *mockService) ForwardMessages(ctx context.Context, fromPeer, toPeer tg.I
 	return nil
 }
 func (m *mockService) DownloadFile(ctx context.Context, location tg.InputFileLocationClass, dstPath string) error {
-	return nil
+	// Create a dummy file at dstPath to simulate successful download
+	_ = os.MkdirAll(filepath.Dir(dstPath), 0755)
+	return os.WriteFile(dstPath, []byte("dummy video content"), 0644)
 }
 
-func TestAlivePlugin(t *testing.T) {
-	startTime := time.Now().Add(-2 * time.Hour)
-	p := New(startTime)
-
-	if p.Name() != "alive" {
-		t.Errorf("expected plugin name alive, got %s", p.Name())
+func TestDownloaderPlugin(t *testing.T) {
+	p := New()
+	if p.Name() != "downloader" {
+		t.Errorf("expected plugin name downloader, got %s", p.Name())
 	}
 	if err := p.Init(); err != nil {
 		t.Errorf("unexpected error in Init: %v", err)
@@ -58,8 +74,8 @@ func TestAlivePlugin(t *testing.T) {
 	if len(cmds) != 1 {
 		t.Fatalf("expected 1 command, got %d", len(cmds))
 	}
-	if cmds[0].Name != "alive" {
-		t.Errorf("expected command name alive, got %s", cmds[0].Name)
+	if !cmds[0].ReplyOnly {
+		t.Errorf("expected download command to have ReplyOnly=true")
 	}
 	if cmds[0].Cooldown != 3*time.Second {
 		t.Errorf("expected 3s cooldown, got %v", cmds[0].Cooldown)
@@ -68,43 +84,38 @@ func TestAlivePlugin(t *testing.T) {
 	svc := &mockService{}
 	ctx := &core.Context{
 		Ctx:     context.Background(),
-		Command: "alive",
-		Message: &core.Message{ID: 1},
-		Perms:   core.NewPermissions(123456, nil),
+		Message: &core.Message{ID: 1, ReplyToID: 42},
 		Svc:     svc,
 		PeerID:  &tg.InputPeerSelf{},
 	}
 
 	if err := cmds[0].Handler(ctx); err != nil {
-		t.Fatalf("unexpected error running alive handler: %v", err)
+		t.Fatalf("unexpected error running download: %v", err)
 	}
 
-	if !strings.Contains(svc.sent, "GoUltroid is Alive") {
-		t.Errorf("expected output to contain 'GoUltroid is Alive', got: %s", svc.sent)
+	if !strings.Contains(svc.sent, "Downloading") {
+		t.Errorf("expected initial reply to mention Downloading, got %s", svc.sent)
 	}
-	if !strings.Contains(svc.sent, "Uptime:**") {
-		t.Errorf("expected output to contain uptime, got: %s", svc.sent)
-	}
-	if !strings.Contains(svc.sent, "123456") {
-		t.Errorf("expected output to contain owner ID 123456, got: %s", svc.sent)
+	if !strings.Contains(svc.edited, "Download Complete") || !strings.Contains(svc.edited, "sample.mp4") {
+		t.Errorf("expected edit message to report complete and filename, got %s", svc.edited)
 	}
 }
 
-func TestFormatDuration(t *testing.T) {
+func TestFormatBytes(t *testing.T) {
 	tests := []struct {
-		d    time.Duration
+		b    int64
 		want string
 	}{
-		{45 * time.Second, "45s"},
-		{5*time.Minute + 12*time.Second, "5m 12s"},
-		{3*time.Hour + 20*time.Minute + 10*time.Second, "3h 20m 10s"},
-		{2*24*time.Hour + 4*time.Hour + 5*time.Minute + 1*time.Second, "2d 4h 5m 1s"},
+		{500, "500 B"},
+		{1024, "1.00 KB"},
+		{1048576, "1.00 MB"},
+		{1073741824, "1.00 GB"},
 	}
 
 	for _, tt := range tests {
-		got := formatDuration(tt.d)
+		got := formatBytes(tt.b)
 		if got != tt.want {
-			t.Errorf("formatDuration(%v) = %q, want %q", tt.d, got, tt.want)
+			t.Errorf("formatBytes(%d) = %q, want %q", tt.b, got, tt.want)
 		}
 	}
 }

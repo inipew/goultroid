@@ -1,17 +1,19 @@
-package ping
+package pin
 
 import (
 	"context"
 	"strings"
 	"testing"
 
-	"github.com/inipew/goultroid/internal/core"
 	"github.com/gotd/td/tg"
+	"github.com/inipew/goultroid/internal/core"
 )
 
 type mockService struct {
-	sent   string
-	edited string
+	sent     string
+	pinnedID int
+	silent   bool
+	unpinned bool
 }
 
 func (m *mockService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
@@ -19,7 +21,6 @@ func (m *mockService) SendMessage(ctx context.Context, peer tg.InputPeerClass, t
 	return &tg.Message{ID: 10, Message: text}, nil
 }
 func (m *mockService) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
-	m.edited = text
 	return nil
 }
 func (m *mockService) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {
@@ -32,9 +33,12 @@ func (m *mockService) GetMessage(ctx context.Context, peer tg.InputPeerClass, ms
 	return nil, nil
 }
 func (m *mockService) PinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, silent bool) error {
+	m.pinnedID = msgID
+	m.silent = silent
 	return nil
 }
 func (m *mockService) UnpinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) error {
+	m.unpinned = true
 	return nil
 }
 func (m *mockService) ForwardMessages(ctx context.Context, fromPeer, toPeer tg.InputPeerClass, msgIDs []int) error {
@@ -44,41 +48,53 @@ func (m *mockService) DownloadFile(ctx context.Context, location tg.InputFileLoc
 	return nil
 }
 
-func TestPingPlugin(t *testing.T) {
+func TestPinPlugin(t *testing.T) {
 	p := New()
-	if p.Name() != "ping" {
-		t.Errorf("expected plugin name ping, got %s", p.Name())
+	if p.Name() != "pin" {
+		t.Errorf("expected plugin name pin, got %s", p.Name())
 	}
 	if err := p.Init(); err != nil {
 		t.Errorf("unexpected error in Init: %v", err)
 	}
 
 	cmds := p.Commands()
-	if len(cmds) != 1 {
-		t.Fatalf("expected 1 command, got %d", len(cmds))
-	}
-	if cmds[0].Name != "ping" {
-		t.Errorf("expected command name ping, got %s", cmds[0].Name)
+	if len(cmds) != 2 {
+		t.Fatalf("expected 2 commands, got %d", len(cmds))
 	}
 
 	svc := &mockService{}
 	ctx := &core.Context{
 		Ctx:     context.Background(),
-		Command: "ping",
-		Message: &core.Message{ID: 1},
+		Message: &core.Message{ID: 1, ReplyToID: 42},
 		Svc:     svc,
 		PeerID:  &tg.InputPeerSelf{},
 	}
 
+	// 1. Pin test
 	if err := cmds[0].Handler(ctx); err != nil {
-		t.Fatalf("unexpected error running ping: %v", err)
+		t.Fatalf("unexpected error running pin: %v", err)
+	}
+	if svc.pinnedID != 42 || svc.silent {
+		t.Errorf("expected pinned ID 42 silent=false, got %d %v", svc.pinnedID, svc.silent)
+	}
+	if !strings.Contains(svc.sent, "pinned") {
+		t.Errorf("expected reply to mention pinned, got %s", svc.sent)
 	}
 
-	if svc.sent != "🏓 ..." {
-		t.Errorf("expected initial reply '🏓 ...', got %q", svc.sent)
+	// 2. Pin silent test
+	ctx.Args = []string{"silent"}
+	if err := cmds[0].Handler(ctx); err != nil {
+		t.Fatalf("unexpected error running pin silent: %v", err)
+	}
+	if !svc.silent {
+		t.Errorf("expected silent=true")
 	}
 
-	if !strings.Contains(svc.edited, "Pong!") {
-		t.Errorf("expected edit message to contain 'Pong!', got %q", svc.edited)
+	// 3. Unpin test
+	if err := cmds[1].Handler(ctx); err != nil {
+		t.Fatalf("unexpected error running unpin: %v", err)
+	}
+	if !svc.unpinned {
+		t.Errorf("expected unpinned=true")
 	}
 }

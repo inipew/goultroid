@@ -29,6 +29,18 @@ func (m *mockService) React(ctx context.Context, peer tg.InputPeerClass, msgID i
 func (m *mockService) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) (*tg.Message, error) {
 	return nil, nil
 }
+func (m *mockService) PinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, silent bool) error {
+	return nil
+}
+func (m *mockService) UnpinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) error {
+	return nil
+}
+func (m *mockService) ForwardMessages(ctx context.Context, fromPeer, toPeer tg.InputPeerClass, msgIDs []int) error {
+	return nil
+}
+func (m *mockService) DownloadFile(ctx context.Context, location tg.InputFileLocationClass, dstPath string) error {
+	return nil
+}
 
 func TestHelpPlugin(t *testing.T) {
 	router := core.NewRouter(".")

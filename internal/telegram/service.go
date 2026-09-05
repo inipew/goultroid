@@ -4,21 +4,24 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/tg"
 )
 
 // Service provides high-level Telegram operations implementing core.TelegramServicer.
 type Service struct {
-	api    *tg.Client
-	sender *message.Sender
+	api        *tg.Client
+	sender     *message.Sender
+	downloader *downloader.Downloader
 }
 
 // NewService creates a new Service instance.
 func NewService(api *tg.Client) *Service {
 	return &Service{
-		api:    api,
-		sender: message.NewSender(api),
+		api:        api,
+		sender:     message.NewSender(api),
+		downloader: downloader.NewDownloader(),
 	}
 }
 
@@ -123,6 +126,54 @@ func (s *Service) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID 
 	}
 
 	return nil, nil
+}
+
+// PinMessage pins a message in the chat.
+func (s *Service) PinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, silent bool) error {
+	req := &tg.MessagesUpdatePinnedMessageRequest{
+		Silent: silent,
+		Unpin:  false,
+		Peer:   peer,
+		ID:     msgID,
+	}
+	if silent {
+		req.SetSilent(true)
+	}
+	_, err := s.api.MessagesUpdatePinnedMessage(ctx, req)
+	return err
+}
+
+// UnpinMessage unpins a message in the chat.
+func (s *Service) UnpinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) error {
+	req := &tg.MessagesUpdatePinnedMessageRequest{
+		Unpin: true,
+		Peer:  peer,
+		ID:    msgID,
+	}
+	req.SetUnpin(true)
+	_, err := s.api.MessagesUpdatePinnedMessage(ctx, req)
+	return err
+}
+
+// ForwardMessages forwards messages from fromPeer to toPeer.
+func (s *Service) ForwardMessages(ctx context.Context, fromPeer, toPeer tg.InputPeerClass, msgIDs []int) error {
+	if s.sender == nil {
+		return fmt.Errorf("sender is not initialized")
+	}
+	if len(msgIDs) == 0 {
+		return nil
+	}
+	_, err := s.sender.To(toPeer).ForwardIDs(fromPeer, msgIDs[0], msgIDs[1:]...).Send(ctx)
+	return err
+}
+
+// DownloadFile streams and downloads a Telegram media file to local destination path.
+func (s *Service) DownloadFile(ctx context.Context, location tg.InputFileLocationClass, dstPath string) error {
+	if s.downloader == nil {
+		s.downloader = downloader.NewDownloader()
+	}
+	_, err := s.downloader.Download(s.api, location).ToPath(ctx, dstPath)
+	return err
 }
 
 // extractMessageFromUpdates attempts to locate a tg.Message from tg.UpdatesClass.

@@ -35,8 +35,8 @@ func TestApp_New(t *testing.T) {
 
 	// Verify plugins were registered
 	plugins := app.plugins.Plugins()
-	if len(plugins) < 3 {
-		t.Errorf("expected at least 3 plugins registered (ping, help, alive), got %d", len(plugins))
+	if len(plugins) < 6 {
+		t.Errorf("expected at least 6 plugins registered (ping, help, alive, pin, forward, downloader), got %d", len(plugins))
 	}
 
 	// Test Shutdown

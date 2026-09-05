@@ -62,6 +62,22 @@ func (m *mockTelegramServicer) GetMessage(ctx context.Context, peer tg.InputPeer
 	return m.messageToGet, nil
 }
 
+func (m *mockTelegramServicer) PinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, silent bool) error {
+	return nil
+}
+
+func (m *mockTelegramServicer) UnpinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) error {
+	return nil
+}
+
+func (m *mockTelegramServicer) ForwardMessages(ctx context.Context, fromPeer, toPeer tg.InputPeerClass, msgIDs []int) error {
+	return nil
+}
+
+func (m *mockTelegramServicer) DownloadFile(ctx context.Context, location tg.InputFileLocationClass, dstPath string) error {
+	return nil
+}
+
 func TestContext_Helpers(t *testing.T) {
 	ctx := &Context{
 		Chat:   &Chat{Type: "private"},
@@ -199,3 +215,54 @@ func TestContext_ActionErrors(t *testing.T) {
 		t.Errorf("expected error when edit fails")
 	}
 }
+
+func TestContext_ExtendedActions(t *testing.T) {
+	mock := &mockTelegramServicer{}
+	peer := &tg.InputPeerSelf{}
+
+	ctx := &Context{
+		Ctx: context.Background(),
+		Message: &Message{
+			ID: 10,
+			Media: &MediaInfo{
+				Type:     "photo",
+				FileName: "test.jpg",
+				Location: &tg.InputPhotoFileLocation{ID: 123},
+			},
+		},
+		Svc:    mock,
+		PeerID: peer,
+	}
+
+	// 1. Pin & Unpin
+	if err := ctx.Pin(true); err != nil {
+		t.Errorf("unexpected error in Pin: %v", err)
+	}
+	if err := ctx.Unpin(); err != nil {
+		t.Errorf("unexpected error in Unpin: %v", err)
+	}
+
+	// 2. Forward & ForwardToSelf
+	if err := ctx.Forward(peer); err != nil {
+		t.Errorf("unexpected error in Forward: %v", err)
+	}
+	if err := ctx.ForwardToSelf(); err != nil {
+		t.Errorf("unexpected error in ForwardToSelf: %v", err)
+	}
+
+	// 3. DownloadMedia
+	tmpDir := t.TempDir()
+	path, err := ctx.DownloadMedia(tmpDir)
+	if err != nil {
+		t.Errorf("unexpected error in DownloadMedia: %v", err)
+	}
+	if path == "" {
+		t.Errorf("expected non-empty downloaded path")
+	}
+
+	// 4. HasMedia
+	if !ctx.Message.HasMedia() {
+		t.Errorf("expected HasMedia to be true")
+	}
+}
+

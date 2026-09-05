@@ -10,7 +10,10 @@ import (
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/telegram"
 	"github.com/inipew/goultroid/plugins/alive"
+	"github.com/inipew/goultroid/plugins/downloader"
+	"github.com/inipew/goultroid/plugins/forward"
 	"github.com/inipew/goultroid/plugins/help"
+	"github.com/inipew/goultroid/plugins/pin"
 	"github.com/inipew/goultroid/plugins/ping"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -74,6 +77,15 @@ func New(cfg *config.Config) (*App, error) {
 	}
 	if err := mgr.Register(alive.New(time.Now())); err != nil {
 		return nil, fmt.Errorf("failed to register alive plugin: %w", err)
+	}
+	if err := mgr.Register(pin.New()); err != nil {
+		return nil, fmt.Errorf("failed to register pin plugin: %w", err)
+	}
+	if err := mgr.Register(forward.New()); err != nil {
+		return nil, fmt.Errorf("failed to register forward plugin: %w", err)
+	}
+	if err := mgr.Register(downloader.New()); err != nil {
+		return nil, fmt.Errorf("failed to register downloader plugin: %w", err)
 	}
 
 	return &App{

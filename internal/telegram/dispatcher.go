@@ -105,6 +105,13 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		Date: time.Unix(int64(msg.Date), 0),
 	}
 
+	if msg.Media != nil {
+		coreMsg.Media = core.ExtractMediaFromTG(msg.Media)
+		if coreMsg.Media != nil {
+			coreMsg.MediaType = coreMsg.Media.Type
+		}
+	}
+
 	if msg.ReplyTo != nil {
 		if header, ok := msg.ReplyTo.(*tg.MessageReplyHeader); ok {
 			coreMsg.ReplyToID = header.ReplyToMsgID
