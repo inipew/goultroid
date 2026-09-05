@@ -18,9 +18,13 @@ type Dispatcher struct {
 	svc      core.TelegramServicer
 	logger   *zap.Logger
 	cooldown *core.CooldownTracker
-	selfID   int64
-	mu       sync.RWMutex
+	selfID          int64
+	messageHandlers []MessageHandler
+	mu              sync.RWMutex
 }
+
+// MessageHandler is invoked for each incoming message.
+type MessageHandler func(ctx context.Context, e tg.Entities, msg *tg.Message, isCommand bool, cmdName string) error
 
 // NewDispatcher creates a new Dispatcher instance.
 func NewDispatcher(
@@ -36,6 +40,13 @@ func NewDispatcher(
 		logger:   logger,
 		cooldown: core.NewCooldownTracker(),
 	}
+}
+
+// AddMessageHandler registers an interceptor for raw message processing (e.g. AFK, filters).
+func (d *Dispatcher) AddMessageHandler(h MessageHandler) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.messageHandlers = append(d.messageHandlers, h)
 }
 
 // SetService updates the TelegramServicer instance (e.g. once client is connected).
@@ -64,6 +75,11 @@ func (d *Dispatcher) getService() core.TelegramServicer {
 	return d.svc
 }
 
+// Service returns the configured TelegramServicer.
+func (d *Dispatcher) Service() core.TelegramServicer {
+	return d.getService()
+}
+
 // RegisterHooks binds NewMessage and NewChannelMessage handlers to a tg.UpdateDispatcher.
 func (d *Dispatcher) RegisterHooks(dispatcher *tg.UpdateDispatcher) {
 	dispatcher.OnNewMessage(d.OnNewMessage)
@@ -89,8 +105,25 @@ func (d *Dispatcher) OnNewChannelMessage(ctx context.Context, e tg.Entities, upd
 }
 
 func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Message) error {
-	parsed, ok := d.router.Parse(msg.Message)
-	if !ok {
+	parsed, isCmd := d.router.Parse(msg.Message)
+	cmdName := ""
+	if isCmd {
+		cmdName = parsed.Name
+	}
+
+	// Run message interceptors (e.g. AFK, filters)
+	d.mu.RLock()
+	handlers := make([]MessageHandler, len(d.messageHandlers))
+	copy(handlers, d.messageHandlers)
+	d.mu.RUnlock()
+
+	for _, h := range handlers {
+		if err := h(ctx, e, msg, isCmd, cmdName); err != nil {
+			d.logger.Warn("message handler returned error", zap.Error(err))
+		}
+	}
+
+	if !isCmd {
 		return nil
 	}
 
@@ -172,6 +205,8 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 			}
 		}
 	}
+
+	coreMsg.SenderID = sender.ID
 
 	coreCtx := &core.Context{
 		Ctx:     ctx,

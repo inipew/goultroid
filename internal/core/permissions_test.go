@@ -105,3 +105,39 @@ func TestPermissions_LevelsAndCanRun(t *testing.T) {
 		t.Errorf("nil perms should not allow cmdSudo")
 	}
 }
+
+func TestPermissions_DynamicSudo(t *testing.T) {
+	perms := NewPermissions(100, []int64{200})
+
+	if !perms.IsSudo(200) {
+		t.Errorf("200 should be sudo initially")
+	}
+	if perms.IsSudo(300) {
+		t.Errorf("300 should not be sudo initially")
+	}
+
+	// Dynamic add
+	perms.AddSudo(300)
+	if !perms.IsSudo(300) {
+		t.Errorf("300 should be sudo after AddSudo")
+	}
+
+	list := perms.ListSudo()
+	if len(list) != 2 {
+		t.Errorf("expected 2 sudo users, got %d", len(list))
+	}
+
+	// Dynamic remove
+	perms.RemoveSudo(200)
+	if perms.IsSudo(200) {
+		t.Errorf("200 should not be sudo after RemoveSudo")
+	}
+
+	// Nil receiver safety
+	var nilPerms *Permissions
+	nilPerms.AddSudo(123)
+	nilPerms.RemoveSudo(123)
+	if nilPerms.ListSudo() != nil {
+		t.Errorf("expected nil list from nil perms")
+	}
+}

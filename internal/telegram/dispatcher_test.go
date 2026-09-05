@@ -190,3 +190,50 @@ func TestNewClient_Validation(t *testing.T) {
 		t.Errorf("expected session directory to be created")
 	}
 }
+
+func TestDispatcher_MessageHandler(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	router := core.NewRouter(".")
+	dispatcher := NewDispatcher(router, nil, nil, logger)
+
+	called := false
+	var gotCmd bool
+	var gotCmdName string
+
+	dispatcher.AddMessageHandler(func(ctx context.Context, e tg.Entities, msg *tg.Message, isCommand bool, cmdName string) error {
+		called = true
+		gotCmd = isCommand
+		gotCmdName = cmdName
+		return nil
+	})
+
+	// Non-command message
+	err := dispatcher.OnNewMessage(context.Background(), tg.Entities{}, &tg.UpdateNewMessage{
+		Message: &tg.Message{Message: "hello world"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called || gotCmd {
+		t.Errorf("expected non-command handler called")
+	}
+
+	// Command message
+	called = false
+	var wg sync.WaitGroup
+	wg.Add(1)
+	_ = router.Register(core.Command{Name: "ping", Handler: func(ctx *core.Context) error {
+		defer wg.Done()
+		return nil
+	}})
+	err = dispatcher.OnNewMessage(context.Background(), tg.Entities{}, &tg.UpdateNewMessage{
+		Message: &tg.Message{Message: ".ping"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wg.Wait()
+	if !called || !gotCmd || gotCmdName != "ping" {
+		t.Errorf("expected command handler called with ping, got called=%v cmd=%v name=%s", called, gotCmd, gotCmdName)
+	}
+}

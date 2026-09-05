@@ -16,12 +16,13 @@ func TestApp_New(t *testing.T) {
 	// Valid config
 	tmpDir := t.TempDir()
 	cfg := &config.Config{
-		AppID:       123456,
-		AppHash:     "hash123",
-		Phone:       "+628123456789",
-		SessionFile: filepath.Join(tmpDir, "session.json"),
-		Prefix:      ".",
-		LogLevel:    "debug",
+		AppID:        123456,
+		AppHash:      "hash123",
+		Phone:        "+628123456789",
+		SessionFile:  filepath.Join(tmpDir, "session.json"),
+		DatabasePath: filepath.Join(tmpDir, "test.db"),
+		Prefix:       ".",
+		LogLevel:     "debug",
 	}
 
 	app, err := New(cfg)
@@ -35,8 +36,8 @@ func TestApp_New(t *testing.T) {
 
 	// Verify plugins were registered
 	plugins := app.plugins.Plugins()
-	if len(plugins) < 6 {
-		t.Errorf("expected at least 6 plugins registered (ping, help, alive, pin, forward, downloader), got %d", len(plugins))
+	if len(plugins) < 9 {
+		t.Errorf("expected at least 9 plugins registered, got %d", len(plugins))
 	}
 
 	// Test Shutdown

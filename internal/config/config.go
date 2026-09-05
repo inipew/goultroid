@@ -10,14 +10,15 @@ import (
 
 // Config holds all configuration values for the application.
 type Config struct {
-	AppID       int
-	AppHash     string
-	Phone       string
-	SessionFile string
-	Prefix      string
-	OwnerID     int64
-	SudoUsers   []int64
-	LogLevel    string
+	AppID        int
+	AppHash      string
+	Phone        string
+	SessionFile  string
+	DatabasePath string
+	Prefix       string
+	OwnerID      int64
+	SudoUsers    []int64
+	LogLevel     string
 }
 
 // Load reads configuration from environment variables and validates all fields.
@@ -44,6 +45,11 @@ func Load() (*Config, error) {
 	sessionFile := strings.TrimSpace(os.Getenv("SESSION_FILE"))
 	if sessionFile == "" {
 		sessionFile = "data/session.json"
+	}
+
+	databasePath := strings.TrimSpace(os.Getenv("DATABASE_PATH"))
+	if databasePath == "" {
+		databasePath = "data/goultroid.db"
 	}
 
 	prefix := os.Getenv("PREFIX")
@@ -82,14 +88,15 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
-		AppID:       appID,
-		AppHash:     appHash,
-		Phone:       phone,
-		SessionFile: sessionFile,
-		Prefix:      prefix,
-		OwnerID:     ownerID,
-		SudoUsers:   sudoUsers,
-		LogLevel:    logLevel,
+		AppID:        appID,
+		AppHash:      appHash,
+		Phone:        phone,
+		SessionFile:  sessionFile,
+		DatabasePath: databasePath,
+		Prefix:       prefix,
+		OwnerID:      ownerID,
+		SudoUsers:    sudoUsers,
+		LogLevel:     logLevel,
 	}, nil
 }
 

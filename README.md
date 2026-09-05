@@ -104,15 +104,25 @@ docker run -it --rm \
 
 ---
 
+## 🧩 Built-in Commands
+
 | Perintah | Alias | Kategori | Izin | Deskripsi |
 |---|---|---|---|---|
 | `.ping` | `.p`, `.latency` | Utility | Everyone | Mengukur respons dan latensi userbot |
 | `.alive` | `.a` | Utility | Everyone | Menampilkan status aktif, uptime, versi Go, dan resource usage |
 | `.help` | `.h`, `.commands` | Utility | Everyone | Menampilkan daftar perintah atau detail perintah |
-| `.pin` | - | Admin | Sudo | Sematkan pesan reply (tambahkan `silent` untuk tanpa notifikasi) |
+| `.pin` | - | Admin | Sudo | Sematkan pesan reply (opsi `silent` untuk hening) |
 | `.unpin` | - | Admin | Sudo | Lepas sematan pesan yang di-reply |
 | `.forward` | `.fwd` | Utility | Sudo | Teruskan pesan reply ke chat saat ini atau target yang ditentukan |
 | `.download` | `.dl` | Media | Sudo | Unduh media (foto/dokumen/video/audio) dari pesan yang di-reply ke server lokal |
+| `.addsudo` | - | Admin | Owner | Tambahkan user ke daftar sudo secara dinamis |
+| `.delsudo` | - | Admin | Owner | Hapus user dari daftar sudo |
+| `.sudolist` | `.sudos` | Admin | Owner | Tampilkan daftar semua sudo users aktif |
+| `.save` | - | Notes | Sudo | Simpan teks catatan di chat (mendukung pesan reply) |
+| `.get` | - | Notes | Sudo | Ambil dan kirim isi catatan tersimpan |
+| `.notes` | - | Notes | Sudo | Tampilkan daftar semua catatan di chat saat ini |
+| `.clear` | - | Notes | Sudo | Hapus catatan yang tersimpan |
+| `.afk` | - | AFK | Owner | Aktifkan mode AFK dengan alasan opsional (auto-reply & auto-unafk) |
 
 ---
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/inipew/goultroid/internal/config"
+	"github.com/inipew/goultroid/internal/core"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
 	"github.com/gotd/td/telegram/updates"
@@ -107,6 +108,22 @@ func NewClient(cfg *config.Config, dispatcher *Dispatcher, logger *zap.Logger) (
 // API returns the raw Telegram MTProto client.
 func (c *Client) API() *tg.Client {
 	return c.raw.API()
+}
+
+// Service returns the TelegramServicer instance.
+func (c *Client) Service() core.TelegramServicer {
+	if c != nil && c.dispatcher != nil {
+		return c.dispatcher.Service()
+	}
+	return nil
+}
+
+// Dispatcher returns the underlying Dispatcher instance.
+func (c *Client) Dispatcher() *Dispatcher {
+	if c != nil {
+		return c.dispatcher
+	}
+	return nil
 }
 
 // Run connects to Telegram, performs authentication, and maintains the update loop.

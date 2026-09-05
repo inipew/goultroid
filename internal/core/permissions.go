@@ -1,8 +1,11 @@
 package core
 
-// Permissions manages user access tiers (Owner, Sudo, Everyone).
+import "sync"
+
+// Permissions manages user access tiers (Owner, Sudo, Everyone) in a thread-safe manner.
 type Permissions struct {
 	OwnerID   int64
+	mu        sync.RWMutex
 	SudoUsers map[int64]struct{}
 }
 
@@ -33,8 +36,47 @@ func (p *Permissions) IsSudo(userID int64) bool {
 	if p.IsOwner(userID) {
 		return true
 	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	_, ok := p.SudoUsers[userID]
 	return ok
+}
+
+// AddSudo dynamically adds a user to the sudo users set.
+func (p *Permissions) AddSudo(userID int64) {
+	if p == nil || userID == 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.SudoUsers == nil {
+		p.SudoUsers = make(map[int64]struct{})
+	}
+	p.SudoUsers[userID] = struct{}{}
+}
+
+// RemoveSudo dynamically removes a user from the sudo users set.
+func (p *Permissions) RemoveSudo(userID int64) {
+	if p == nil || userID == 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.SudoUsers, userID)
+}
+
+// ListSudo returns a copy of all registered sudo user IDs.
+func (p *Permissions) ListSudo() []int64 {
+	if p == nil {
+		return nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	list := make([]int64, 0, len(p.SudoUsers))
+	for id := range p.SudoUsers {
+		list = append(list, id)
+	}
+	return list
 }
 
 // Level returns the highest Permission tier of the given userID.

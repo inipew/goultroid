@@ -12,6 +12,7 @@ func clearEnv() {
 		"APP_HASH",
 		"PHONE",
 		"SESSION_FILE",
+		"DATABASE_PATH",
 		"PREFIX",
 		"OWNER_ID",
 		"SUDO_USERS",
@@ -45,6 +46,9 @@ func TestLoad_ValidMinimal(t *testing.T) {
 	if cfg.SessionFile != "data/session.json" {
 		t.Errorf("expected default SessionFile data/session.json, got %s", cfg.SessionFile)
 	}
+	if cfg.DatabasePath != "data/goultroid.db" {
+		t.Errorf("expected default DatabasePath data/goultroid.db, got %s", cfg.DatabasePath)
+	}
 	if cfg.Prefix != "." {
 		t.Errorf("expected default Prefix ., got %s", cfg.Prefix)
 	}
@@ -65,6 +69,7 @@ func TestLoad_ValidFull(t *testing.T) {
 	os.Setenv("APP_HASH", "hash999")
 	os.Setenv("PHONE", "+1234567890")
 	os.Setenv("SESSION_FILE", "custom/session.json")
+	os.Setenv("DATABASE_PATH", "custom/goultroid.db")
 	os.Setenv("PREFIX", "!")
 	os.Setenv("OWNER_ID", "11223344")
 	os.Setenv("SUDO_USERS", " 101, 102 , , 103 ")
@@ -80,6 +85,9 @@ func TestLoad_ValidFull(t *testing.T) {
 	}
 	if cfg.SessionFile != "custom/session.json" {
 		t.Errorf("expected custom SessionFile, got %s", cfg.SessionFile)
+	}
+	if cfg.DatabasePath != "custom/goultroid.db" {
+		t.Errorf("expected custom DatabasePath, got %s", cfg.DatabasePath)
 	}
 	if cfg.Prefix != "!" {
 		t.Errorf("expected custom Prefix !, got %s", cfg.Prefix)

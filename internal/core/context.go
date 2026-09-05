@@ -37,6 +37,7 @@ type MediaInfo struct {
 // Message represents a high-level Telegram message.
 type Message struct {
 	ID        int
+	SenderID  int64
 	Text      string
 	Date      time.Time
 	ReplyToID int
@@ -81,6 +82,14 @@ type Context struct {
 
 	Svc    TelegramServicer
 	PeerID tg.InputPeerClass
+}
+
+// SenderID returns the ID of the sender if present.
+func (c *Context) SenderID() int64 {
+	if c != nil && c.Sender != nil {
+		return c.Sender.ID
+	}
+	return 0
 }
 
 // Reply sends a response message to the same chat.
@@ -279,6 +288,12 @@ func (c *Context) GetReply() (*Message, error) {
 		ID:   msg.ID,
 		Text: msg.Message,
 		Date: time.Unix(int64(msg.Date), 0),
+	}
+
+	if msg.FromID != nil {
+		if u, ok := msg.FromID.(*tg.PeerUser); ok {
+			res.SenderID = u.UserID
+		}
 	}
 
 	// Extract media if present in reply
