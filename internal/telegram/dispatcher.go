@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"go.uber.org/zap"
@@ -153,7 +154,7 @@ func (d *Dispatcher) getEventBus() *core.EventBus {
 	return d.eventBus
 }
 
-// RegisterHooks binds message, edit, and delete handlers to a tg.UpdateDispatcher.
+// RegisterHooks binds message, edit, delete, and callback query handlers to a tg.UpdateDispatcher.
 func (d *Dispatcher) RegisterHooks(dispatcher *tg.UpdateDispatcher) {
 	dispatcher.OnNewMessage(d.OnNewMessage)
 	dispatcher.OnNewChannelMessage(d.OnNewChannelMessage)
@@ -161,6 +162,8 @@ func (d *Dispatcher) RegisterHooks(dispatcher *tg.UpdateDispatcher) {
 	dispatcher.OnEditChannelMessage(d.OnEditChannelMessage)
 	dispatcher.OnDeleteMessages(d.OnDeleteMessages)
 	dispatcher.OnDeleteChannelMessages(d.OnDeleteChannelMessages)
+	dispatcher.OnBotCallbackQuery(d.OnBotCallbackQuery)
+	dispatcher.OnInlineBotCallbackQuery(d.OnInlineBotCallbackQuery)
 }
 
 // OnNewMessage handles private and standard group message updates.
@@ -249,6 +252,39 @@ func (d *Dispatcher) OnDeleteChannelMessages(ctx context.Context, e tg.Entities,
 	return nil
 }
 
+// OnBotCallbackQuery handles inline keyboard button callback queries.
+func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, update *tg.UpdateBotCallbackQuery) error {
+	bus := d.getEventBus()
+	if bus == nil {
+		return nil
+	}
+	chatID := extractChatIDFromPeer(update.Peer)
+	bus.Publish(&core.CallbackQueryEvent{
+		At:      time.Now(),
+		QueryID: update.QueryID,
+		UserID:  update.UserID,
+		ChatID:  chatID,
+		MsgID:   update.MsgID,
+		Data:    update.Data,
+	})
+	return nil
+}
+
+// OnInlineBotCallbackQuery handles inline message button callback queries.
+func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities, update *tg.UpdateInlineBotCallbackQuery) error {
+	bus := d.getEventBus()
+	if bus == nil {
+		return nil
+	}
+	bus.Publish(&core.CallbackQueryEvent{
+		At:      time.Now(),
+		QueryID: update.QueryID,
+		UserID:  update.UserID,
+		Data:    update.Data,
+	})
+	return nil
+}
+
 // extractChatIDFromPeer returns a numeric chat ID for the given peer class.
 func extractChatIDFromPeer(peer tg.PeerClass) int64 {
 	if peer == nil {
@@ -276,6 +312,34 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		cmdName = parsed.Name
 	}
 
+	// Asynchronously cache peer entities in local SQLite for fast offline resolution
+	if len(e.Users) > 0 || len(e.Channels) > 0 || len(e.Chats) > 0 {
+		resolver := d.getResolver()
+		if r, ok := resolver.(*Resolver); ok && r.storage != nil {
+			go func() {
+				bgCtx := context.Background()
+				for _, user := range e.Users {
+					if user != nil {
+						_ = r.storage.Save(bgCtx, peers.Key{Prefix: "user", ID: user.ID}, peers.Value{AccessHash: user.AccessHash})
+						_ = r.storage.SaveEntity(bgCtx, "user", user.ID, user.Username, user.Phone, user.FirstName, user.LastName, "")
+					}
+				}
+				for _, ch := range e.Channels {
+					if ch != nil {
+						_ = r.storage.Save(bgCtx, peers.Key{Prefix: "channel", ID: ch.ID}, peers.Value{AccessHash: ch.AccessHash})
+						_ = r.storage.SaveEntity(bgCtx, "channel", ch.ID, ch.Username, "", "", "", ch.Title)
+					}
+				}
+				for _, chat := range e.Chats {
+					if chat != nil {
+						_ = r.storage.Save(bgCtx, peers.Key{Prefix: "chat", ID: chat.ID}, peers.Value{AccessHash: 0})
+						_ = r.storage.SaveEntity(bgCtx, "chat", chat.ID, "", "", "", "", chat.Title)
+					}
+				}
+			}()
+		}
+	}
+
 	// Run message interceptors (e.g. AFK, filters).
 	d.mu.RLock()
 	handlers := make([]MessageHandler, len(d.messageHandlers))
@@ -301,6 +365,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		Date:       time.Unix(int64(msg.Date), 0),
 		IsOutgoing: msg.Out,
 		GroupedID:  msg.GroupedID,
+		Entities:   msg.Entities,
 	}
 
 	if msg.Media != nil {

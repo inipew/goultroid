@@ -496,10 +496,10 @@ func TestMigrations_Versioning(t *testing.T) {
 		}
 		migrations = append(migrations, m)
 	}
-	if len(migrations) != 6 {
-		t.Fatalf("expected 6 applied migrations, got %d", len(migrations))
+	if len(migrations) != 7 {
+		t.Fatalf("expected 7 applied migrations, got %d", len(migrations))
 	}
-	if migrations[0].version != 1 || migrations[1].version != 2 || migrations[2].version != 3 || migrations[3].version != 4 || migrations[4].version != 5 || migrations[5].version != 6 {
+	if migrations[0].version != 1 || migrations[1].version != 2 || migrations[2].version != 3 || migrations[3].version != 4 || migrations[4].version != 5 || migrations[5].version != 6 || migrations[6].version != 7 {
 		t.Errorf("unexpected migration versions: %+v", migrations)
 	}
 
@@ -538,13 +538,13 @@ func TestMigrations_Versioning(t *testing.T) {
 		t.Fatalf("migrate failed on legacy db: %v", err)
 	}
 
-	// Verify v1, v2, v3, and v4 are recorded
+	// Verify all 7 migrations are recorded
 	var count int
 	if err := rawDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatalf("failed to count schema_migrations: %v", err)
 	}
-	if count != 6 {
-		t.Fatalf("expected 6 migrations in legacy db after runMigrations, got %d", count)
+	if count != 7 {
+		t.Fatalf("expected 7 migrations in legacy db after runMigrations, got %d", count)
 	}
 }
 
@@ -723,7 +723,7 @@ func TestScheduledJob_ClaimLeaseAndStateTransitions(t *testing.T) {
 	}
 
 	// 4. Test failure with retry: Fail one-shot job (attempt 1) with correct token
-	err = db.FailScheduledJob(ctx, createdOneShot.ID, oneShotClaimToken, "temporary rpc fail", 10*time.Second, now)
+	err = db.FailScheduledJob(ctx, createdOneShot.ID, oneShotClaimToken, "temporary rpc fail", 50, 10*time.Second, false, now)
 	if err != nil {
 		t.Fatalf("failed to fail job: %v", err)
 	}
@@ -753,7 +753,7 @@ func TestScheduledJob_ClaimLeaseAndStateTransitions(t *testing.T) {
 	if claim2[0].AttemptCount != 2 {
 		t.Errorf("expected attempt 2, got %d", claim2[0].AttemptCount)
 	}
-	_ = db.FailScheduledJob(ctx, createdOneShot.ID, claim2[0].ClaimToken, "fail 2", 20*time.Second, now.Add(10*time.Second))
+	_ = db.FailScheduledJob(ctx, createdOneShot.ID, claim2[0].ClaimToken, "fail 2", 60, 20*time.Second, false, now.Add(10*time.Second))
 
 	// Third attempt: claim at now + 30s
 	claim3, err := db.ClaimDueScheduledJobs(ctx, now.Add(30*time.Second), 10, 90*time.Second)
@@ -764,10 +764,10 @@ func TestScheduledJob_ClaimLeaseAndStateTransitions(t *testing.T) {
 		t.Errorf("expected attempt 3, got %d", claim3[0].AttemptCount)
 	}
 	// Third failure reaches max_attempts (3) -> enters 'failed' state (dead letter)
-	_ = db.FailScheduledJob(ctx, createdOneShot.ID, claim3[0].ClaimToken, "fail 3 (fatal)", 40*time.Second, now.Add(30*time.Second))
+	_ = db.FailScheduledJob(ctx, createdOneShot.ID, claim3[0].ClaimToken, "fail 3 (fatal)", 70, 40*time.Second, false, now.Add(30*time.Second))
 
 	// 6. Test completion of recurring job (within its active 90s lease):
-	err = db.CompleteScheduledJob(ctx, createdRecurring.ID, recClaimToken, now)
+	err = db.CompleteScheduledJob(ctx, createdRecurring.ID, recClaimToken, 100, now)
 	if err != nil {
 		t.Fatalf("failed to complete recurring job: %v", err)
 	}
@@ -805,7 +805,7 @@ func TestScheduledJob_ClaimLeaseAndStateTransitions(t *testing.T) {
 	if err != nil || len(claimOS2) == 0 {
 		t.Fatalf("failed to claim oneShot2: %v", err)
 	}
-	err = db.CompleteScheduledJob(ctx, oneShot2.ID, claimOS2[0].ClaimToken, now)
+	err = db.CompleteScheduledJob(ctx, oneShot2.ID, claimOS2[0].ClaimToken, 80, now)
 	if err != nil {
 		t.Fatalf("failed to complete one-shot job: %v", err)
 	}
@@ -857,19 +857,19 @@ func TestScheduledJob_FencingTokenAndMisfirePolicy(t *testing.T) {
 	}
 
 	// Stale Worker A attempts to CompleteScheduledJob with tokenA -> MUST FAIL with ErrJobLeaseLost
-	err = db.CompleteScheduledJob(ctx, job.ID, tokenA, tLater)
+	err = db.CompleteScheduledJob(ctx, job.ID, tokenA, 50, tLater)
 	if !errors.Is(err, ErrJobLeaseLost) {
 		t.Errorf("expected ErrJobLeaseLost for stale Worker A Complete, got %v", err)
 	}
 
 	// Stale Worker A attempts to FailScheduledJob with tokenA -> MUST FAIL with ErrJobLeaseLost
-	err = db.FailScheduledJob(ctx, job.ID, tokenA, "error from stale worker", 10*time.Second, tLater)
+	err = db.FailScheduledJob(ctx, job.ID, tokenA, "error from stale worker", 50, 10*time.Second, false, tLater)
 	if !errors.Is(err, ErrJobLeaseLost) {
 		t.Errorf("expected ErrJobLeaseLost for stale Worker A Fail, got %v", err)
 	}
 
 	// Active Worker B completes job with tokenB -> MUST SUCCEED
-	err = db.CompleteScheduledJob(ctx, job.ID, tokenB, tLater)
+	err = db.CompleteScheduledJob(ctx, job.ID, tokenB, 50, tLater)
 	if err != nil {
 		t.Fatalf("active Worker B failed to complete job: %v", err)
 	}
@@ -893,7 +893,7 @@ func TestScheduledJob_FencingTokenAndMisfirePolicy(t *testing.T) {
 		t.Fatalf("failed to claim anchor job: %v", err)
 	}
 	finishNormal := now.Add(1 * time.Minute) // 12:01
-	err = db.CompleteScheduledJob(ctx, anchorJob.ID, claimNormal[0].ClaimToken, finishNormal)
+	err = db.CompleteScheduledJob(ctx, anchorJob.ID, claimNormal[0].ClaimToken, 60000, finishNormal)
 	if err != nil {
 		t.Fatalf("failed to complete anchor job: %v", err)
 	}
@@ -912,7 +912,7 @@ func TestScheduledJob_FencingTokenAndMisfirePolicy(t *testing.T) {
 		t.Fatalf("failed to claim during catchup: %v", err)
 	}
 	finishCatchup := downtimeNow.Add(1 * time.Minute) // 16:31
-	err = db.CompleteScheduledJob(ctx, anchorJob.ID, claimCatchup[0].ClaimToken, finishCatchup)
+	err = db.CompleteScheduledJob(ctx, anchorJob.ID, claimCatchup[0].ClaimToken, 60000, finishCatchup)
 	if err != nil {
 		t.Fatalf("failed to complete catchup job: %v", err)
 	}
@@ -925,6 +925,225 @@ func TestScheduledJob_FencingTokenAndMisfirePolicy(t *testing.T) {
 	}
 }
 
+func TestScheduledJob_AtomicStateHistoryAndPermanentError(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Second)
 
+	// 1. Recurring job completion writes history atomically
+	recJob, err := db.CreateScheduledJob(ctx, &ScheduledJob{
+		ChatID:          111,
+		PeerType:        "user",
+		ActionType:      "message",
+		Payload:         "atomic recurring test",
+		IntervalSeconds: 60,
+		NextRunAt:       now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create job: %v", err)
+	}
 
+	claimed, err := db.ClaimDueScheduledJobs(ctx, now, 1, 30*time.Second)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("failed to claim job: %v", err)
+	}
 
+	if err := db.CompleteScheduledJob(ctx, recJob.ID, claimed[0].ClaimToken, 125, now); err != nil {
+		t.Fatalf("failed to complete job: %v", err)
+	}
+
+	history, err := db.GetJobHistory(ctx, recJob.ID, 10)
+	if err != nil {
+		t.Fatalf("failed to get job history: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(history))
+	}
+	if !history[0].Success || history[0].DurationMs != 125 || history[0].ErrorMsg != "" {
+		t.Errorf("unexpected history entry: %+v", history[0])
+	}
+
+	// 2. Permanent error bypasses retry and marks failed immediately
+	permJob, err := db.CreateScheduledJob(ctx, &ScheduledJob{
+		ChatID:          222,
+		PeerType:        "chat",
+		ActionType:      "command",
+		Payload:         ".help",
+		IntervalSeconds: 0,
+		NextRunAt:       now,
+		MaxAttempts:     3,
+	})
+	if err != nil {
+		t.Fatalf("failed to create permanent job: %v", err)
+	}
+
+	claimedPerm, err := db.ClaimDueScheduledJobs(ctx, now, 1, 30*time.Second)
+	if err != nil || len(claimedPerm) != 1 {
+		t.Fatalf("failed to claim perm job: %v", err)
+	}
+
+	// Fail on attempt 1 with isPermanent = true
+	err = db.FailScheduledJob(ctx, permJob.ID, claimedPerm[0].ClaimToken, "CHAT_WRITE_FORBIDDEN", 45, 10*time.Second, true, now)
+	if err != nil {
+		t.Fatalf("failed to fail permanent job: %v", err)
+	}
+
+	fetchedPerm, err := db.GetScheduledJob(ctx, permJob.ID)
+	if err != nil {
+		t.Fatalf("failed to get permanent job: %v", err)
+	}
+	if fetchedPerm.Status != JobStatusFailed {
+		t.Errorf("expected job status 'failed' immediately on permanent error, got %q", fetchedPerm.Status)
+	}
+
+	historyPerm, err := db.GetJobHistory(ctx, permJob.ID, 10)
+	if err != nil {
+		t.Fatalf("failed to get history: %v", err)
+	}
+	if len(historyPerm) != 1 {
+		t.Fatalf("expected 1 history entry for perm fail, got %d", len(historyPerm))
+	}
+	if historyPerm[0].Success || historyPerm[0].ErrorMsg != "CHAT_WRITE_FORBIDDEN" || historyPerm[0].DurationMs != 45 {
+		t.Errorf("unexpected perm history: %+v", historyPerm[0])
+	}
+}
+
+func TestScheduledJob_LeaseRecoveryAudit(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Second)
+
+	job, err := db.CreateScheduledJob(ctx, &ScheduledJob{
+		ChatID:          333,
+		PeerType:        "user",
+		ActionType:      "message",
+		Payload:         "lease recovery audit test",
+		IntervalSeconds: 0,
+		NextRunAt:       now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create job: %v", err)
+	}
+
+	// Worker 1 claims job with 5-second lease
+	claim1, err := db.ClaimDueScheduledJobs(ctx, now, 1, 5*time.Second)
+	if err != nil || len(claim1) != 1 {
+		t.Fatalf("worker 1 failed to claim: %v", err)
+	}
+
+	// Advance time past lease expiration (10 seconds later)
+	tLater := now.Add(10 * time.Second)
+
+	// Worker 2 claims due jobs -> should reclaim the expired job AND record an audit history entry
+	claim2, err := db.ClaimDueScheduledJobs(ctx, tLater, 1, 30*time.Second)
+	if err != nil || len(claim2) != 1 {
+		t.Fatalf("worker 2 failed to reclaim expired job: %v", err)
+	}
+	if claim2[0].ID != job.ID {
+		t.Fatalf("expected reclaimed job ID %d, got %d", job.ID, claim2[0].ID)
+	}
+	if claim2[0].LastError != "previous execution lease expired" {
+		t.Errorf("expected LastError to record lease expiration, got %q", claim2[0].LastError)
+	}
+
+	// Check history: should have audit record for the abandoned run
+	hist, err := db.GetJobHistory(ctx, job.ID, 10)
+	if err != nil {
+		t.Fatalf("failed to get job history: %v", err)
+	}
+	if len(hist) != 1 {
+		t.Fatalf("expected 1 history record for abandoned lease, got %d", len(hist))
+	}
+	if hist[0].Success {
+		t.Errorf("expected failure record for abandoned lease, got success=true")
+	}
+}
+
+func TestScheduledJob_RenewJobLease(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Second)
+
+	job, err := db.CreateScheduledJob(ctx, &ScheduledJob{
+		ChatID:          555,
+		PeerType:        "user",
+		ActionType:      "message",
+		Payload:         "lease renew test",
+		IntervalSeconds: 0,
+		NextRunAt:       now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create job: %v", err)
+	}
+
+	claimed, err := db.ClaimDueScheduledJobs(ctx, now, 1, 30*time.Second)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("failed to claim job: %v", err)
+	}
+	token := claimed[0].ClaimToken
+
+	// 1. Valid token renews lease
+	err = db.RenewJobLease(ctx, job.ID, token, 90*time.Second, now)
+	if err != nil {
+		t.Fatalf("failed to renew job lease: %v", err)
+	}
+
+	fetched, err := db.GetScheduledJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("failed to get job: %v", err)
+	}
+	expectedLease := now.Add(90 * time.Second)
+	if fetched.LeaseUntil == nil || !fetched.LeaseUntil.Equal(expectedLease) {
+		t.Errorf("expected lease %v, got %v", expectedLease, fetched.LeaseUntil)
+	}
+
+	// 2. Invalid/stale token fails with ErrJobLeaseLost
+	err = db.RenewJobLease(ctx, job.ID, "stale-token", 90*time.Second, now)
+	if !errors.Is(err, ErrJobLeaseLost) {
+		t.Errorf("expected ErrJobLeaseLost for invalid token, got %v", err)
+	}
+}
+
+func TestPeerEntity_SaveAndFindByUsername(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	// 1. Save peer storage access hash
+	query := `INSERT INTO peers_storage (prefix, id, access_hash, updated_at) VALUES ('user', 12345, 987654321, ?)`
+	if _, err := db.ExecContext(ctx, query, time.Now()); err != nil {
+		t.Fatalf("failed to insert peers_storage: %v", err)
+	}
+
+	// 2. Save peer entity metadata
+	err := db.SavePeerEntity(ctx, "user", 12345, "@GopherBot", "+1234567890", "Go", "Pher", "")
+	if err != nil {
+		t.Fatalf("failed to save peer entity: %v", err)
+	}
+
+	// 3. Find by username (case-insensitive, with @ prefix)
+	prefix, id, accessHash, found, err := db.FindPeerByUsername(ctx, "@gopherbot")
+	if err != nil {
+		t.Fatalf("FindPeerByUsername failed: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected peer to be found")
+	}
+	if prefix != "user" || id != 12345 || accessHash != 987654321 {
+		t.Errorf("unexpected find result: prefix=%s, id=%d, accessHash=%d", prefix, id, accessHash)
+	}
+
+	// 4. Find by username without @ prefix
+	_, _, _, foundNoAt, err := db.FindPeerByUsername(ctx, "GOPHERBOT")
+	if err != nil || !foundNoAt {
+		t.Errorf("expected peer to be found without @: %v, found: %v", err, foundNoAt)
+	}
+
+	// 5. Non-existent username
+	_, _, _, foundNonExistent, err := db.FindPeerByUsername(ctx, "nobody_here")
+	if err != nil {
+		t.Fatalf("unexpected error for non-existent user: %v", err)
+	}
+	if foundNonExistent {
+		t.Errorf("expected found=false for non-existent user")
+	}
+}

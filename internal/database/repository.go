@@ -118,15 +118,20 @@ type Repository interface {
 	ListScheduledJobs(ctx context.Context, chatID int64) ([]ScheduledJob, error)
 	ListDueScheduledJobs(ctx context.Context, before time.Time) ([]ScheduledJob, error)
 	ClaimDueScheduledJobs(ctx context.Context, now time.Time, limit int, lease time.Duration) ([]ScheduledJob, error)
-	CompleteScheduledJob(ctx context.Context, id int64, claimToken string, now time.Time) error
-	FailScheduledJob(ctx context.Context, id int64, claimToken string, lastError string, retryDelay time.Duration, now time.Time) error
+	CompleteScheduledJob(ctx context.Context, id int64, claimToken string, durationMs int64, now time.Time) error
+	FailScheduledJob(ctx context.Context, id int64, claimToken string, lastError string, durationMs int64, retryDelay time.Duration, isPermanent bool, now time.Time) error
 	UpdateScheduledJobNextRun(ctx context.Context, id int64, nextRun time.Time) error
 	RecordJobFailure(ctx context.Context, id int64, lastError string) error
 	DeleteScheduledJob(ctx context.Context, id int64) error
+	RenewJobLease(ctx context.Context, id int64, claimToken string, extension time.Duration, now time.Time) error
 
 	// Job History
 	RecordJobRun(ctx context.Context, entry *JobHistoryEntry) error
 	GetJobHistory(ctx context.Context, jobID int64, limit int) ([]JobHistoryEntry, error)
+
+	// Peer Metadata
+	SavePeerEntity(ctx context.Context, prefix string, id int64, username, phone, firstName, lastName, title string) error
+	FindPeerByUsername(ctx context.Context, username string) (prefix string, id int64, accessHash int64, found bool, err error)
 
 	// Blacklist
 	AddBlacklist(ctx context.Context, chatID int64, word string) error
@@ -546,35 +551,64 @@ func (d *DB) ClaimDueScheduledJobs(ctx context.Context, now time.Time, limit int
 		    claimed_at = ?,
 		    last_started_at = ?,
 		    attempt_count = attempt_count + 1,
-		    claim_token = ?
+		    claim_token = ?,
+		    last_error = ?
 		WHERE id = ?
+		  AND (status = 'pending' OR (status = 'running' AND lease_until IS NOT NULL AND lease_until < ?))
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to prepare claim update statement: %w", err)
 	}
 	defer updateStmt.Close()
 
+	histStmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO scheduled_job_history (job_id, ran_at, duration_ms, success, error_msg)
+		VALUES (?, ?, ?, 0, ?)
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to prepare claim history statement: %w", err)
+	}
+	defer histStmt.Close()
+
+	var claimedJobs []ScheduledJob
 	for i := range jobs {
+		lastErr := jobs[i].LastError
+		if jobs[i].Status == JobStatusRunning {
+			lastErr = "previous execution lease expired"
+			if _, err := histStmt.ExecContext(ctx, jobs[i].ID, now, 0, "execution lease expired (previous worker abandoned or crashed)"); err != nil {
+				return nil, fmt.Errorf("failed to record lease expiration history for job %d: %w", jobs[i].ID, err)
+			}
+		}
+
 		token := generateClaimToken()
-		if _, err := updateStmt.ExecContext(ctx, leaseUntil, now, now, token, jobs[i].ID); err != nil {
+		res, err := updateStmt.ExecContext(ctx, leaseUntil, now, now, token, lastErr, jobs[i].ID, now)
+		if err != nil {
 			return nil, fmt.Errorf("failed to update claimed job %d: %w", jobs[i].ID, err)
 		}
-		jobs[i].Status = JobStatusRunning
-		jobs[i].LeaseUntil = &leaseUntil
-		jobs[i].ClaimedAt = &now
-		jobs[i].LastStartedAt = &now
-		jobs[i].AttemptCount++
-		jobs[i].ClaimToken = token
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if rows == 1 {
+			jobs[i].Status = JobStatusRunning
+			jobs[i].LeaseUntil = &leaseUntil
+			jobs[i].ClaimedAt = &now
+			jobs[i].LastStartedAt = &now
+			jobs[i].AttemptCount++
+			jobs[i].ClaimToken = token
+			jobs[i].LastError = lastErr
+			claimedJobs = append(claimedJobs, jobs[i])
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("failed to commit claim transaction: %w", err)
 	}
 
-	return jobs, nil
+	return claimedJobs, nil
 }
 
-func (d *DB) CompleteScheduledJob(ctx context.Context, id int64, claimToken string, now time.Time) error {
+func (d *DB) CompleteScheduledJob(ctx context.Context, id int64, claimToken string, durationMs int64, now time.Time) error {
 	tx, err := d.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
 		return err
@@ -634,10 +668,18 @@ func (d *DB) CompleteScheduledJob(ctx context.Context, id int64, claimToken stri
 		}
 	}
 
+	// Atomically record execution history in the same transaction
+	histQuery := `
+		INSERT INTO scheduled_job_history (job_id, ran_at, duration_ms, success, error_msg)
+		VALUES (?, ?, ?, 1, '')`
+	if _, err := tx.ExecContext(ctx, histQuery, id, now, durationMs); err != nil {
+		return fmt.Errorf("failed to record completion history: %w", err)
+	}
+
 	return tx.Commit()
 }
 
-func (d *DB) FailScheduledJob(ctx context.Context, id int64, claimToken string, lastError string, retryDelay time.Duration, now time.Time) error {
+func (d *DB) FailScheduledJob(ctx context.Context, id int64, claimToken string, lastError string, durationMs int64, retryDelay time.Duration, isPermanent bool, now time.Time) error {
 	tx, err := d.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
 		return err
@@ -658,7 +700,7 @@ func (d *DB) FailScheduledJob(ctx context.Context, id int64, claimToken string, 
 	}
 
 	var res sql.Result
-	if attemptCount >= maxAttempts {
+	if isPermanent || attemptCount >= maxAttempts {
 		res, err = tx.ExecContext(ctx, `
 			UPDATE scheduled_jobs
 			SET status = 'failed',
@@ -690,6 +732,14 @@ func (d *DB) FailScheduledJob(ctx context.Context, id int64, claimToken string, 
 	}
 	if rows == 0 {
 		return ErrJobLeaseLost
+	}
+
+	// Atomically record execution failure history in the same transaction
+	histQuery := `
+		INSERT INTO scheduled_job_history (job_id, ran_at, duration_ms, success, error_msg)
+		VALUES (?, ?, ?, 0, ?)`
+	if _, err := tx.ExecContext(ctx, histQuery, id, now, durationMs, lastError); err != nil {
+		return fmt.Errorf("failed to record failure history: %w", err)
 	}
 
 	return tx.Commit()
@@ -840,4 +890,85 @@ func (d *DB) GetJobHistory(ctx context.Context, jobID int64, limit int) ([]JobHi
 		entries = append(entries, e)
 	}
 	return entries, rows.Err()
+}
+
+// RenewJobLease extends the lease duration of a currently running scheduled job.
+// Returns ErrJobLeaseLost if the job is no longer running with the specified claimToken.
+func (d *DB) RenewJobLease(ctx context.Context, id int64, claimToken string, extension time.Duration, now time.Time) error {
+	newLease := now.Add(extension)
+	query := `
+		UPDATE scheduled_jobs
+		SET lease_until = ?
+		WHERE id = ? AND status = 'running' AND claim_token = ?`
+	res, err := d.ExecContext(ctx, query, newLease, id, claimToken)
+	if err != nil {
+		return fmt.Errorf("failed to renew job lease: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrJobLeaseLost
+	}
+	return nil
+}
+
+// =================== Peer Metadata Entity Methods ===================
+
+// PeerEntity stores metadata for Telegram peers (users, chats, channels).
+type PeerEntity struct {
+	Prefix    string    `json:"prefix"`
+	ID        int64     `json:"id"`
+	Username  string    `json:"username,omitempty"`
+	Phone     string    `json:"phone,omitempty"`
+	FirstName string    `json:"first_name,omitempty"`
+	LastName  string    `json:"last_name,omitempty"`
+	Title     string    `json:"title,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// SavePeerEntity creates or updates entity metadata for a peer (user or channel/chat).
+func (d *DB) SavePeerEntity(ctx context.Context, prefix string, id int64, username, phone, firstName, lastName, title string) error {
+	query := `
+		INSERT INTO peers_entities (prefix, id, username, phone, first_name, last_name, title, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(prefix, id) DO UPDATE SET
+			username = CASE WHEN excluded.username != '' THEN excluded.username ELSE peers_entities.username END,
+			phone = CASE WHEN excluded.phone != '' THEN excluded.phone ELSE peers_entities.phone END,
+			first_name = CASE WHEN excluded.first_name != '' THEN excluded.first_name ELSE peers_entities.first_name END,
+			last_name = CASE WHEN excluded.last_name != '' THEN excluded.last_name ELSE peers_entities.last_name END,
+			title = CASE WHEN excluded.title != '' THEN excluded.title ELSE peers_entities.title END,
+			updated_at = excluded.updated_at`
+	_, err := d.ExecContext(ctx, query, prefix, id, strings.TrimPrefix(username, "@"), phone, firstName, lastName, title, time.Now())
+	if err != nil {
+		return fmt.Errorf("failed to save peer entity (%s:%d): %w", prefix, id, err)
+	}
+	return nil
+}
+
+// FindPeerByUsername searches local SQLite cache for a peer by its username (case-insensitive)
+// and returns its prefix, id, and access hash from peers_storage.
+func (d *DB) FindPeerByUsername(ctx context.Context, username string) (string, int64, int64, bool, error) {
+	username = strings.TrimPrefix(strings.TrimSpace(username), "@")
+	if username == "" {
+		return "", 0, 0, false, nil
+	}
+	query := `
+		SELECT e.prefix, e.id, COALESCE(s.access_hash, 0)
+		FROM peers_entities e
+		LEFT JOIN peers_storage s ON e.prefix = s.prefix AND e.id = s.id
+		WHERE e.username = ? COLLATE NOCASE
+		LIMIT 1`
+	var prefix string
+	var id int64
+	var accessHash int64
+	err := d.QueryRowContext(ctx, query, username).Scan(&prefix, &id, &accessHash)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", 0, 0, false, nil
+		}
+		return "", 0, 0, false, fmt.Errorf("failed to find peer by username %q: %w", username, err)
+	}
+	return prefix, id, accessHash, true, nil
 }

@@ -189,14 +189,23 @@ func (a *App) Run(ctx context.Context) error {
 // Shutdown triggers graceful shutdown of all registered plugins, scheduler, and flushes logs.
 func (a *App) Shutdown() error {
 	a.logger.Info("shutting down GoUltroid...")
-	if err := a.plugins.Shutdown(); err != nil {
-		a.logger.Warn("error during plugin shutdown", zap.Error(err))
-	}
+
+	// 1. Stop scheduler engine first (allowing in-flight jobs to complete or abort within grace period)
 	if a.sched != nil {
 		if err := a.sched.Stop(); err != nil {
 			a.logger.Warn("error stopping scheduler engine", zap.Error(err))
 		}
 	}
+
+	// 2. Stop registered plugins
+	if err := a.plugins.Shutdown(); err != nil {
+		a.logger.Warn("error during plugin shutdown", zap.Error(err))
+	}
+
+	// 3. Grace period (100ms) for any final in-flight transactions to settle
+	time.Sleep(100 * time.Millisecond)
+
+	// 4. Close database last so running goroutines never write to a closed DB connection
 	if a.db != nil {
 		if err := a.db.Close(); err != nil {
 			a.logger.Warn("error closing database", zap.Error(err))

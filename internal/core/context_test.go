@@ -578,5 +578,42 @@ func TestContext_PeerResolver(t *testing.T) {
 	}
 }
 
+func TestMessage_MentionsAndURLs(t *testing.T) {
+	// 1. Mentions and URLs from Telegram Entities
+	msg := &Message{
+		Text: "Hello @alice and @bob check https://example.com and click here!",
+		Entities: []tg.MessageEntityClass{
+			&tg.MessageEntityMention{Offset: 6, Length: 6},                              // @alice
+			&tg.MessageEntityMentionName{Offset: 17, Length: 4, UserID: 123456},         // @bob / user ID 123456
+			&tg.MessageEntityURL{Offset: 28, Length: 19},                                // https://example.com
+			&tg.MessageEntityTextURL{Offset: 52, Length: 10, URL: "https://golang.org"}, // click here
+		},
+	}
+	ctx := &Context{Message: msg}
 
+	mentions := ctx.Mentions()
+	if len(mentions) != 2 || mentions[0] != "@alice" || mentions[1] != "123456" {
+		t.Errorf("unexpected mentions: %v", mentions)
+	}
 
+	urls := ctx.URLs()
+	if len(urls) != 2 || urls[0] != "https://example.com" || urls[1] != "https://golang.org" {
+		t.Errorf("unexpected urls: %v", urls)
+	}
+
+	// 2. Plain-text fallback when Entities is empty
+	plainMsg := &Message{
+		Text: "Hey @charlie go to https://google.com or http://test.org now",
+	}
+	plainCtx := &Context{Message: plainMsg}
+
+	plainMentions := plainCtx.Mentions()
+	if len(plainMentions) != 1 || plainMentions[0] != "@charlie" {
+		t.Errorf("unexpected plain mentions: %v", plainMentions)
+	}
+
+	plainURLs := plainCtx.URLs()
+	if len(plainURLs) != 2 || plainURLs[0] != "https://google.com" || plainURLs[1] != "http://test.org" {
+		t.Errorf("unexpected plain urls: %v", plainURLs)
+	}
+}

@@ -71,3 +71,35 @@ func TestRateLimitError_Behavior(t *testing.T) {
 		t.Errorf("expected wait duration 15s, got %v", extracted.Wait)
 	}
 }
+
+func TestIsPermanentError(t *testing.T) {
+	tests := []struct {
+		err       error
+		permanent bool
+	}{
+		{nil, false},
+		{ErrRateLimited, false},
+		{NewRateLimitError(10*time.Second, nil), false},
+		{ErrTimeout, false},
+		{errors.New("rpc error: FLOOD_WAIT_30"), false},
+		{errors.New("network connection reset by peer"), false},
+		{ErrPermissionDenied, true},
+		{ErrNotFound, true},
+		{ErrInvalidArgs, true},
+		{ErrUnsupported, true},
+		{ErrUnclosedQuote, true},
+		{ErrTrailingEscape, true},
+		{errors.New("rpc error: CHAT_WRITE_FORBIDDEN"), true},
+		{errors.New("rpc error: CHANNEL_PRIVATE"), true},
+		{errors.New("rpc error: USER_BANNED_IN_CHANNEL"), true},
+		{errors.New("rpc error: PEER_ID_INVALID"), true},
+		{errors.New("scheduled command not found in router: foo"), true},
+	}
+
+	for _, tc := range tests {
+		got := IsPermanentError(tc.err)
+		if got != tc.permanent {
+			t.Errorf("IsPermanentError(%v) = %v, want %v", tc.err, got, tc.permanent)
+		}
+	}
+}

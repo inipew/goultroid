@@ -29,6 +29,7 @@ type Client struct {
 	dispatcher  *Dispatcher
 	gaps        *updates.Manager
 	peerManager *peers.Manager
+	peerStorage *PeerStorage
 	logger      *zap.Logger
 }
 
@@ -103,7 +104,7 @@ func NewClient(cfg *config.Config, dispatcher *Dispatcher, db *database.DB, logg
 		},
 	)
 
-	var peerStorage peers.Storage
+	var peerStorage *PeerStorage
 	if db != nil {
 		peerStorage = NewPeerStorage(db)
 	}
@@ -122,6 +123,7 @@ func NewClient(cfg *config.Config, dispatcher *Dispatcher, db *database.DB, logg
 		dispatcher:  dispatcher,
 		gaps:        gaps,
 		peerManager: peerManager,
+		peerStorage: peerStorage,
 		logger:      logger,
 	}, nil
 }
@@ -155,6 +157,9 @@ func (c *Client) Run(ctx context.Context) error {
 		svc.SetPeerManager(c.peerManager)
 		c.dispatcher.SetService(svc)
 		resolver := NewResolver(c.raw.API(), c.peerManager)
+		if c.peerStorage != nil {
+			resolver.SetStorage(c.peerStorage)
+		}
 		c.dispatcher.SetResolver(resolver)
 
 		// Authenticate if needed
@@ -186,18 +191,21 @@ func (c *Client) Run(ctx context.Context) error {
 				c.logger.Warn("failed to initialize peer manager", zap.Error(err))
 			}
 
-			// Preload dialogs to register channel and supergroup access hashes
-			dialogs, err := c.raw.API().MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
-				OffsetPeer: &tg.InputPeerEmpty{},
-				Limit:      100,
-			})
-			if err == nil {
-				if d, ok := dialogs.AsModified(); ok {
-					_ = c.peerManager.Apply(ctx, d.GetUsers(), d.GetChats())
+			// Background warm-up: asynchronously preload dialogs into peer manager
+			// without blocking client startup and the update recovery loop.
+			go func() {
+				dialogs, err := c.raw.API().MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
+					OffsetPeer: &tg.InputPeerEmpty{},
+					Limit:      100,
+				})
+				if err == nil {
+					if d, ok := dialogs.AsModified(); ok {
+						_ = c.peerManager.Apply(ctx, d.GetUsers(), d.GetChats())
+					}
+				} else if c.logger != nil {
+					c.logger.Warn("failed to preload dialogs for channel access hashes", zap.Error(err))
 				}
-			} else if c.logger != nil {
-				c.logger.Warn("failed to preload dialogs for channel access hashes", zap.Error(err))
-			}
+			}()
 		}
 
 		if c.logger != nil {

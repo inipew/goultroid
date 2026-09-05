@@ -72,13 +72,15 @@ func (s *PeerStorage) SavePhone(ctx context.Context, phone string, key peers.Key
 
 	query := `
 	INSERT INTO peers_phones (phone, prefix, id, access_hash, updated_at)
-	VALUES (?, ?, ?, 0, ?)
+	VALUES (?, ?, ?, COALESCE((SELECT access_hash FROM peers_storage WHERE prefix = ? AND id = ?), 0), ?)
 	ON CONFLICT(phone) DO UPDATE SET
 		prefix = excluded.prefix,
 		id = excluded.id,
+		access_hash = excluded.access_hash,
 		updated_at = excluded.updated_at;
 	`
-	_, err := s.db.ExecContext(ctx, query, phone, key.Prefix, key.ID, time.Now())
+	now := time.Now()
+	_, err := s.db.ExecContext(ctx, query, phone, key.Prefix, key.ID, key.Prefix, key.ID, now)
 	if err != nil {
 		return fmt.Errorf("failed to save phone %q: %w", phone, err)
 	}
@@ -92,7 +94,7 @@ func (s *PeerStorage) FindPhone(ctx context.Context, phone string) (peers.Key, p
 	}
 
 	query := `
-	SELECT p.prefix, p.id, COALESCE(s.access_hash, 0)
+	SELECT p.prefix, p.id, COALESCE(s.access_hash, p.access_hash, 0)
 	FROM peers_phones p
 	LEFT JOIN peers_storage s ON p.prefix = s.prefix AND p.id = s.id
 	WHERE p.phone = ?;
@@ -148,4 +150,29 @@ func (s *PeerStorage) SaveContactsHash(ctx context.Context, hash int64) error {
 		return fmt.Errorf("failed to save contacts hash: %w", err)
 	}
 	return nil
+}
+
+// DB returns the underlying database instance.
+func (s *PeerStorage) DB() *database.DB {
+	return s.db
+}
+
+// SaveEntity persists metadata (username, names, phone) for a peer.
+func (s *PeerStorage) SaveEntity(ctx context.Context, prefix string, id int64, username, phone, firstName, lastName, title string) error {
+	if s.db == nil {
+		return errors.New("database is nil")
+	}
+	return s.db.SavePeerEntity(ctx, prefix, id, username, phone, firstName, lastName, title)
+}
+
+// FindByUsername looks up a peer key and access hash by username from local SQLite cache.
+func (s *PeerStorage) FindByUsername(ctx context.Context, username string) (peers.Key, peers.Value, bool, error) {
+	if s.db == nil {
+		return peers.Key{}, peers.Value{}, false, errors.New("database is nil")
+	}
+	prefix, id, accessHash, found, err := s.db.FindPeerByUsername(ctx, username)
+	if err != nil || !found {
+		return peers.Key{}, peers.Value{}, false, err
+	}
+	return peers.Key{Prefix: prefix, ID: id}, peers.Value{AccessHash: accessHash}, true, nil
 }

@@ -139,6 +139,24 @@ var migrations = []migration{
 			`CREATE INDEX IF NOT EXISTS idx_job_history_ran_at ON scheduled_job_history(ran_at DESC);`,
 		},
 	},
+	{
+		version:     7,
+		description: "Persistent peer entities and local username cache",
+		statements: []string{
+			`CREATE TABLE IF NOT EXISTS peers_entities (
+				prefix TEXT NOT NULL,
+				id INTEGER NOT NULL,
+				username TEXT NOT NULL DEFAULT '',
+				phone TEXT NOT NULL DEFAULT '',
+				first_name TEXT NOT NULL DEFAULT '',
+				last_name TEXT NOT NULL DEFAULT '',
+				title TEXT NOT NULL DEFAULT '',
+				updated_at DATETIME NOT NULL,
+				PRIMARY KEY (prefix, id)
+			);`,
+			`CREATE INDEX IF NOT EXISTS idx_peers_entities_username ON peers_entities(username COLLATE NOCASE);`,
+		},
+	},
 }
 
 // migrate runs pending database migrations in sequence inside atomic transactions.
@@ -244,6 +262,23 @@ func (d *DB) applyMigration(ctx context.Context, m migration) error {
 
 // columnExists checks whether a column already exists in a given table.
 func (d *DB) columnExists(ctx context.Context, tx *sql.Tx, tableName, columnName string) bool {
+	validTables := map[string]bool{
+		"sudo_users":            true,
+		"notes":                 true,
+		"afk_status":            true,
+		"filters":               true,
+		"scheduled_jobs":        true,
+		"blacklists":            true,
+		"peers_storage":         true,
+		"peers_phones":          true,
+		"peers_metadata":        true,
+		"peers_entities":        true,
+		"scheduled_job_history": true,
+	}
+	if !validTables[strings.ToLower(tableName)] {
+		return false
+	}
+
 	query := fmt.Sprintf("PRAGMA table_info(%s)", tableName)
 	rows, err := tx.QueryContext(ctx, query)
 	if err != nil {

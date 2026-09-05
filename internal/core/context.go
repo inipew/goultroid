@@ -70,6 +70,7 @@ type Message struct {
 	Media      *MediaInfo
 	IsOutgoing bool  // true when the message was sent by the bot owner (userbot)
 	GroupedID  int64 // non-zero when this message belongs to an album (grouped media)
+	Entities   []tg.MessageEntityClass
 }
 
 // HasMedia returns true if the message has an attached downloadable media.
@@ -80,6 +81,62 @@ func (m *Message) HasMedia() bool {
 // IsAlbum returns true when the message is part of a grouped media album.
 func (m *Message) IsAlbum() bool {
 	return m != nil && m.GroupedID != 0
+}
+
+// Mentions returns all usernames and text mentions parsed from message entities or plain text.
+func (m *Message) Mentions() []string {
+	if m == nil {
+		return nil
+	}
+	var mentions []string
+	runes := []rune(m.Text)
+	for _, ent := range m.Entities {
+		switch e := ent.(type) {
+		case *tg.MessageEntityMention:
+			if e.Offset >= 0 && e.Offset+e.Length <= len(runes) {
+				mentions = append(mentions, string(runes[e.Offset:e.Offset+e.Length]))
+			}
+		case *tg.MessageEntityMentionName:
+			mentions = append(mentions, strconv.FormatInt(e.UserID, 10))
+		}
+	}
+	if len(mentions) > 0 {
+		return mentions
+	}
+	for _, word := range strings.Fields(m.Text) {
+		if strings.HasPrefix(word, "@") && len(word) > 1 {
+			mentions = append(mentions, word)
+		}
+	}
+	return mentions
+}
+
+// URLs returns all URLs parsed from message entities or plain text.
+func (m *Message) URLs() []string {
+	if m == nil {
+		return nil
+	}
+	var urls []string
+	runes := []rune(m.Text)
+	for _, ent := range m.Entities {
+		switch e := ent.(type) {
+		case *tg.MessageEntityURL:
+			if e.Offset >= 0 && e.Offset+e.Length <= len(runes) {
+				urls = append(urls, string(runes[e.Offset:e.Offset+e.Length]))
+			}
+		case *tg.MessageEntityTextURL:
+			urls = append(urls, e.URL)
+		}
+	}
+	if len(urls) > 0 {
+		return urls
+	}
+	for _, word := range strings.Fields(m.Text) {
+		if strings.HasPrefix(word, "http://") || strings.HasPrefix(word, "https://") {
+			urls = append(urls, word)
+		}
+	}
+	return urls
 }
 
 // Chat represents the chat in which an event occurred.
@@ -132,6 +189,22 @@ func (c *Context) SenderID() int64 {
 // IsAlbum returns true when the triggering message is part of a grouped media album.
 func (c *Context) IsAlbum() bool {
 	return c != nil && c.Message != nil && c.Message.IsAlbum()
+}
+
+// Mentions returns all user mentions in the triggering message.
+func (c *Context) Mentions() []string {
+	if c != nil && c.Message != nil {
+		return c.Message.Mentions()
+	}
+	return nil
+}
+
+// URLs returns all URLs present in the triggering message.
+func (c *Context) URLs() []string {
+	if c != nil && c.Message != nil {
+		return c.Message.URLs()
+	}
+	return nil
 }
 
 // Reply sends a response message to the same chat and records LastResponseID.

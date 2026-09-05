@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -64,4 +65,48 @@ func NewRateLimitError(wait time.Duration, err error) *RateLimitError {
 		Wait: wait,
 		Err:  err,
 	}
+}
+
+// IsPermanentError determines whether an execution error is non-retryable (fatal).
+// Permanent errors immediately fail a scheduled job without wasting exponential backoff retries.
+func IsPermanentError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Rate limit / flood wait and timeout are transient, never permanent
+	if errors.Is(err, ErrRateLimited) || errors.Is(err, ErrTimeout) {
+		return false
+	}
+	// Sentinel checks
+	if errors.Is(err, ErrPermissionDenied) ||
+		errors.Is(err, ErrNotFound) ||
+		errors.Is(err, ErrInvalidArgs) ||
+		errors.Is(err, ErrUnsupported) ||
+		errors.Is(err, ErrUnclosedQuote) ||
+		errors.Is(err, ErrTrailingEscape) {
+		return true
+	}
+	// RPC string heuristics
+	msg := strings.ToUpper(err.Error())
+	if strings.Contains(msg, "FLOOD_WAIT") {
+		return false
+	}
+	permanentPatterns := []string{
+		"CHAT_WRITE_FORBIDDEN",
+		"CHANNEL_PRIVATE",
+		"USER_BANNED",
+		"PEER_ID_INVALID",
+		"MESSAGE_ID_INVALID",
+		"USER_ID_INVALID",
+		"CHAT_ID_INVALID",
+		"CHAT_ADMIN_REQUIRED",
+		"SCHEDULED COMMAND NOT FOUND",
+		"SCHEDULED COMMAND PAYLOAD IS NOT A COMMAND",
+	}
+	for _, p := range permanentPatterns {
+		if strings.Contains(msg, p) {
+			return true
+		}
+	}
+	return false
 }

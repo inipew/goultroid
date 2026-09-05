@@ -329,7 +329,32 @@ func (e *Engine) executeJob(ctx context.Context, job database.ScheduledJob) {
 	defer func() {
 		if r := recover(); r != nil {
 			e.logger.Error("scheduled job execution panicked", zap.Int64("job_id", job.ID), zap.Any("panic", r))
-			_ = e.db.FailScheduledJob(ctx, job.ID, job.ClaimToken, fmt.Sprintf("panic: %v", r), 10*time.Second, time.Now().UTC())
+			_ = e.db.FailScheduledJob(ctx, job.ID, job.ClaimToken, fmt.Sprintf("panic: %v", r), 0, 10*time.Second, false, time.Now().UTC())
+		}
+	}()
+
+	// Start lease renewal heartbeat: extends lease by 90s every 30s for long-running jobs (>90s)
+	heartbeatDone := make(chan struct{})
+	defer close(heartbeatDone)
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatDone:
+				return
+			case <-ctx.Done():
+				return
+			case t := <-ticker.C:
+				if err := e.db.RenewJobLease(ctx, job.ID, job.ClaimToken, 90*time.Second, t.UTC()); err != nil {
+					e.logger.Debug("heartbeat lease renewal failed or lease lost",
+						zap.Int64("job_id", job.ID),
+						zap.Error(err),
+					)
+					return
+				}
+				e.logger.Debug("heartbeat renewed job lease", zap.Int64("job_id", job.ID))
+			}
 		}
 	}()
 
@@ -349,22 +374,8 @@ func (e *Engine) executeJob(ctx context.Context, job database.ScheduledJob) {
 	now := time.Now().UTC()
 	durationMs := now.Sub(startTime).Milliseconds()
 
-	// Always record history regardless of outcome.
-	histEntry := &database.JobHistoryEntry{
-		JobID:      job.ID,
-		RanAt:      now,
-		DurationMs: durationMs,
-		Success:    execErr == nil,
-	}
-	if execErr != nil {
-		histEntry.ErrorMsg = execErr.Error()
-	}
-	if err := e.db.RecordJobRun(ctx, histEntry); err != nil {
-		e.logger.Warn("failed to record job run history", zap.Int64("job_id", job.ID), zap.Error(err))
-	}
-
 	if execErr == nil {
-		if err := e.db.CompleteScheduledJob(ctx, job.ID, job.ClaimToken, now); err != nil {
+		if err := e.db.CompleteScheduledJob(ctx, job.ID, job.ClaimToken, durationMs, now); err != nil {
 			if errors.Is(err, database.ErrJobLeaseLost) {
 				e.logger.Warn("scheduled job lease lost or claimed by another worker on complete",
 					zap.Int64("job_id", job.ID),
@@ -375,18 +386,23 @@ func (e *Engine) executeJob(ctx context.Context, job database.ScheduledJob) {
 			}
 		}
 	} else {
-		// Exponential backoff: 10s * 2^(attempt - 1), capped at 5 minutes
-		attempt := job.AttemptCount
-		if attempt < 1 {
-			attempt = 1
-		}
-		backoffMultiplier := 1 << (attempt - 1)
-		if backoffMultiplier > 30 {
-			backoffMultiplier = 30
-		}
-		retryDelay := time.Duration(10*backoffMultiplier) * time.Second
+		isPermanent := core.IsPermanentError(execErr)
+		var retryDelay time.Duration
 
-		if err := e.db.FailScheduledJob(ctx, job.ID, job.ClaimToken, execErr.Error(), retryDelay, now); err != nil {
+		if !isPermanent {
+			// Exponential backoff: 10s * 2^(attempt - 1), capped at 5 minutes
+			attempt := job.AttemptCount
+			if attempt < 1 {
+				attempt = 1
+			}
+			backoffMultiplier := 1 << (attempt - 1)
+			if backoffMultiplier > 30 {
+				backoffMultiplier = 30
+			}
+			retryDelay = time.Duration(10*backoffMultiplier) * time.Second
+		}
+
+		if err := e.db.FailScheduledJob(ctx, job.ID, job.ClaimToken, execErr.Error(), durationMs, retryDelay, isPermanent, now); err != nil {
 			if errors.Is(err, database.ErrJobLeaseLost) {
 				e.logger.Warn("scheduled job lease lost or claimed by another worker on fail",
 					zap.Int64("job_id", job.ID),

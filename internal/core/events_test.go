@@ -129,3 +129,50 @@ func TestEventBus_WrongTypeNotDelivered(t *testing.T) {
 		t.Errorf("handler called for wrong type: got %d calls", count.Load())
 	}
 }
+
+func TestEventBus_CallbackQueryEvent(t *testing.T) {
+	bus := core.NewEventBus()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	var received *core.CallbackQueryEvent
+	bus.Subscribe(core.EventTypeCallbackQuery, func(e core.Event) {
+		defer wg.Done()
+		if cb, ok := e.(*core.CallbackQueryEvent); ok {
+			received = cb
+		}
+	})
+
+	now := time.Now()
+	ev := &core.CallbackQueryEvent{
+		At:      now,
+		QueryID: 12345,
+		UserID:  999,
+		ChatID:  -1001234567,
+		MsgID:   42,
+		Data:    []byte("btn_click"),
+	}
+	bus.Publish(ev)
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for callback query handler")
+	}
+
+	if received == nil {
+		t.Fatal("expected non-nil CallbackQueryEvent")
+	}
+	if received.QueryID != 12345 || received.UserID != 999 || received.ChatID != -1001234567 || received.MsgID != 42 || string(received.Data) != "btn_click" {
+		t.Errorf("received payload mismatch: %+v", received)
+	}
+	if received.Type() != core.EventTypeCallbackQuery {
+		t.Errorf("expected EventTypeCallbackQuery, got %s", received.Type())
+	}
+	if !received.Timestamp().Equal(now) {
+		t.Errorf("timestamp mismatch: got %v, want %v", received.Timestamp(), now)
+	}
+}
