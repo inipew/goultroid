@@ -10,15 +10,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// Sentinel errors for middleware checks.
-var (
-	ErrPermissionDenied = errors.New("permission denied")
-	ErrGroupOnly        = errors.New("command can only be used in groups")
-	ErrPrivateOnly      = errors.New("command can only be used in private chat")
-	ErrReplyRequired    = errors.New("command must be a reply to a message")
-	ErrCooldownActive   = errors.New("command is on cooldown")
-)
-
 // Middleware wraps a CommandHandler, providing pre/post processing hooks.
 type Middleware func(next CommandHandler) CommandHandler
 
@@ -94,11 +85,21 @@ func LoggingMiddleware(logger *zap.Logger) Middleware {
 
 			if logger != nil {
 				if err != nil {
-					logger.Warn("command executed with error",
-						zap.String("command", ctx.Command),
-						zap.Duration("duration", duration),
-						zap.Error(err),
-					)
+					var rle *RateLimitError
+					if errors.As(err, &rle) {
+						logger.Warn("command hit telegram rate limit",
+							zap.String("command", ctx.Command),
+							zap.Duration("flood_wait", rle.Wait),
+							zap.Duration("duration", duration),
+							zap.Error(err),
+						)
+					} else {
+						logger.Warn("command executed with error",
+							zap.String("command", ctx.Command),
+							zap.Duration("duration", duration),
+							zap.Error(err),
+						)
+					}
 				} else {
 					logger.Debug("command executed successfully",
 						zap.String("command", ctx.Command),
@@ -152,15 +153,24 @@ func PermissionMiddleware(cmd Command) Middleware {
 }
 
 // FilterMiddleware validates contextual requirements (GroupOnly, PrivateOnly, ReplyOnly).
+// For outgoing messages (userbot owner commands), GroupOnly and PrivateOnly are bypassed
+// because Telegram update delivery for outgoing messages may represent PeerID as PeerUser
+// or the owner may be testing commands in direct chats/Saved Messages.
+// The Telegram API RPC calls enforce actual contextual constraints and return descriptive errors if invalid.
 func FilterMiddleware(cmd Command) Middleware {
 	return func(next CommandHandler) CommandHandler {
 		return func(ctx *Context) error {
-			if cmd.GroupOnly && !ctx.IsGroup() {
-				return ErrGroupOnly
+			isOutgoing := ctx.Message != nil && ctx.Message.IsOutgoing
+
+			if !isOutgoing {
+				if cmd.GroupOnly && !ctx.IsGroup() {
+					return ErrGroupOnly
+				}
+				if cmd.PrivateOnly && !ctx.IsPrivate() {
+					return ErrPrivateOnly
+				}
 			}
-			if cmd.PrivateOnly && !ctx.IsPrivate() {
-				return ErrPrivateOnly
-			}
+
 			if cmd.ReplyOnly && (ctx.Message == nil || ctx.Message.ReplyToID == 0) {
 				return ErrReplyRequired
 			}

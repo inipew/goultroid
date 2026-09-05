@@ -31,9 +31,13 @@ func (m *mockSchedulerService) RegisterPeriodicTask(name string, interval time.D
 func (m *mockSchedulerService) UnregisterPeriodicTask(name string) error {
 	return nil
 }
-func (m *mockSchedulerService) ScheduleOnce(ctx context.Context, chatID int64, peerType string, accessHash int64, when time.Time, actionType string, payload string) (*database.ScheduledJob, error) {
+func (m *mockSchedulerService) ScheduleOnce(ctx context.Context, chatID int64, peerType string, accessHash int64, when time.Time, actionType string, payload string, creatorID ...int64) (*database.ScheduledJob, error) {
 	id := m.nextID
 	m.nextID++
+	var createdBy int64
+	if len(creatorID) > 0 {
+		createdBy = creatorID[0]
+	}
 	job := &database.ScheduledJob{
 		ID:         id,
 		ChatID:     chatID,
@@ -42,13 +46,18 @@ func (m *mockSchedulerService) ScheduleOnce(ctx context.Context, chatID int64, p
 		ActionType: actionType,
 		Payload:    payload,
 		NextRunAt:  when,
+		CreatedBy:  createdBy,
 	}
 	m.jobs[id] = job
 	return job, nil
 }
-func (m *mockSchedulerService) ScheduleRecurring(ctx context.Context, chatID int64, peerType string, accessHash int64, interval time.Duration, actionType string, payload string) (*database.ScheduledJob, error) {
+func (m *mockSchedulerService) ScheduleRecurring(ctx context.Context, chatID int64, peerType string, accessHash int64, interval time.Duration, actionType string, payload string, creatorID ...int64) (*database.ScheduledJob, error) {
 	id := m.nextID
 	m.nextID++
+	var createdBy int64
+	if len(creatorID) > 0 {
+		createdBy = creatorID[0]
+	}
 	job := &database.ScheduledJob{
 		ID:              id,
 		ChatID:          chatID,
@@ -58,6 +67,7 @@ func (m *mockSchedulerService) ScheduleRecurring(ctx context.Context, chatID int
 		Payload:         payload,
 		IntervalSeconds: int64(interval.Seconds()),
 		NextRunAt:       time.Now().Add(interval),
+		CreatedBy:       createdBy,
 	}
 	m.jobs[id] = job
 	return job, nil
@@ -257,6 +267,10 @@ func TestSchedulerPlugin(t *testing.T) {
 	}
 
 	// 6. .schedules list
+	if j, ok := mockSched.jobs[2]; ok {
+		j.LastError = "connection timeout"
+		j.AttemptCount = 2
+	}
 	ctxList := &core.Context{
 		Ctx:     context.Background(),
 		Command: "schedules",
@@ -267,8 +281,8 @@ func TestSchedulerPlugin(t *testing.T) {
 	if err := cmdMap["schedules"].Handler(ctxList); err != nil {
 		t.Fatalf("schedules list failed: %v", err)
 	}
-	if !strings.Contains(mockSvc.sent, "Active Schedules in this chat") {
-		t.Errorf("expected active schedules list, got: %s", mockSvc.sent)
+	if !strings.Contains(mockSvc.sent, "Active Schedules in this chat") || !strings.Contains(mockSvc.sent, "Last Error") {
+		t.Errorf("expected active schedules list with Last Error, got: %s", mockSvc.sent)
 	}
 
 	// 7. .cancelschedule

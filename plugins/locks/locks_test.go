@@ -131,4 +131,19 @@ func TestLocksPlugin(t *testing.T) {
 	if !strings.Contains(svc.sent, "Chat Permissions & Locks") {
 		t.Errorf("expected locks summary, got: %s", svc.sent)
 	}
+
+	// 7. Private chat rejection
+	ctxPrivate := &core.Context{
+		Ctx:     context.Background(),
+		Command: "lock",
+		Args:    []string{"media"},
+		Svc:     svc,
+		PeerID:  &tg.InputPeerUser{UserID: 999},
+	}
+	if err := cmdMap["lock"].Handler(ctxPrivate); err != nil {
+		t.Errorf("expected clean nil return when locking in private chat, got: %v", err)
+	}
+	if !strings.Contains(svc.sent, "hanya dapat digunakan di grup") {
+		t.Errorf("expected friendly group notice, got: %s", svc.sent)
+	}
 }

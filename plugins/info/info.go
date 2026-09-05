@@ -59,6 +59,15 @@ func (p *Plugin) Commands() []core.Command {
 			GroupOnly:   true,
 			Handler:     p.handleChatInfo,
 		},
+		{
+			Name:        "id",
+			Aliases:     []string{"chatid"},
+			Description: "Display current chat ID, chat type, and sender ID",
+			Usage:       ".id",
+			Category:    "Info",
+			Permission:  core.PermissionEveryone,
+			Handler:     p.handleID,
+		},
 	}
 }
 
@@ -239,4 +248,31 @@ func escapeHTML(s string) string {
 	s = strings.ReplaceAll(s, "<", "&lt;")
 	s = strings.ReplaceAll(s, ">", "&gt;")
 	return s
+}
+
+// handleID displays the current chat ID, chat type, sender ID, and reply IDs.
+func (p *Plugin) handleID(ctx *core.Context) error {
+	var sb strings.Builder
+	sb.WriteString("🆔 <b>Chat &amp; User Information</b>\n\n")
+
+	if ctx.Chat != nil {
+		sb.WriteString(fmt.Sprintf("• <b>Chat ID:</b> <code>%d</code>\n", ctx.Chat.ID))
+		sb.WriteString(fmt.Sprintf("• <b>Chat Type:</b> <code>%s</code>\n", ctx.Chat.Type))
+		if ctx.Chat.Title != "" {
+			sb.WriteString(fmt.Sprintf("• <b>Chat Title:</b> %s\n", escapeHTML(ctx.Chat.Title)))
+		}
+	}
+
+	if ctx.Sender != nil {
+		sb.WriteString(fmt.Sprintf("• <b>Sender ID:</b> <code>%d</code>\n", ctx.Sender.ID))
+	}
+
+	if ctx.Message != nil && ctx.Message.ReplyToID != 0 {
+		sb.WriteString(fmt.Sprintf("• <b>Reply Msg ID:</b> <code>%d</code>\n", ctx.Message.ReplyToID))
+		if reply, err := ctx.GetReply(); err == nil && reply != nil && reply.SenderID != 0 {
+			sb.WriteString(fmt.Sprintf("• <b>Reply Sender ID:</b> <code>%d</code>\n", reply.SenderID))
+		}
+	}
+
+	return ctx.Reply(sb.String())
 }

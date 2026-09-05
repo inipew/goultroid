@@ -10,16 +10,60 @@ import (
 	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/telegram/message/html"
+	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
+	"github.com/gotd/td/tgerr"
+	"github.com/inipew/goultroid/internal/core"
 )
+
+const defaultFloodWaitRetryLimit = 5 * time.Second
+
+// mapTelegramError maps raw MTProto/RPC errors into core domain errors.
+func mapTelegramError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if wait, ok := tgerr.AsFloodWait(err); ok {
+		return core.NewRateLimitError(wait, err)
+	}
+	if tgerr.Is(err, "CHAT_ID_INVALID", "PEER_ID_INVALID", "USER_ID_INVALID") {
+		return fmt.Errorf("%w: %v", core.ErrNotFound, err)
+	}
+	if tgerr.Is(err, "CHAT_ADMIN_REQUIRED", "RIGHTS_NOT_MODIFIED") {
+		return fmt.Errorf("%w: %v", core.ErrPermissionDenied, err)
+	}
+	return fmt.Errorf("%w: %v", core.ErrTelegram, err)
+}
+
+func retryOnFloodWait[T any](ctx context.Context, op func() (T, error)) (T, error) {
+	val, err := op()
+	if err == nil {
+		return val, nil
+	}
+
+	if wait, ok := tgerr.AsFloodWait(err); ok && wait <= defaultFloodWaitRetryLimit {
+		select {
+		case <-ctx.Done():
+			return val, ctx.Err()
+		case <-time.After(wait):
+			val, err = op()
+			if err == nil {
+				return val, nil
+			}
+		}
+	}
+
+	return val, mapTelegramError(err)
+}
 
 // Service provides high-level Telegram operations implementing core.TelegramServicer.
 type Service struct {
-	api        *tg.Client
-	sender     *message.Sender
-	downloader *downloader.Downloader
-	uploader   *uploader.Uploader
+	api         *tg.Client
+	sender      *message.Sender
+	downloader  *downloader.Downloader
+	uploader    *uploader.Uploader
+	peerManager *peers.Manager
 }
 
 // NewService creates a new Service instance.
@@ -32,37 +76,75 @@ func NewService(api *tg.Client) *Service {
 	}
 }
 
+// SetPeerManager configures the peers.Manager used for caching and resolving peer access hashes.
+func (s *Service) SetPeerManager(pm *peers.Manager) {
+	s.peerManager = pm
+}
+
+func (s *Service) ensureChannelAccessHash(ctx context.Context, peer tg.InputPeerClass) tg.InputPeerClass {
+	ch, ok := peer.(*tg.InputPeerChannel)
+	if !ok || ch.AccessHash != 0 || s.peerManager == nil {
+		return peer
+	}
+	if resolved, err := s.peerManager.ResolveChannelID(ctx, ch.ChannelID); err == nil {
+		return resolved.InputPeer()
+	}
+	return peer
+}
+
+func (s *Service) ensureUserAccessHash(ctx context.Context, user tg.InputPeerClass) tg.InputPeerClass {
+	u, ok := user.(*tg.InputPeerUser)
+	if !ok || u.AccessHash != 0 || s.peerManager == nil {
+		return user
+	}
+	if resolved, err := s.peerManager.ResolveUserID(ctx, u.UserID); err == nil {
+		return resolved.InputPeer()
+	}
+	return user
+}
+
 // SendMessage sends a text message to the specified peer and returns the created tg.Message if available.
 // It parses HTML formatting, falling back to plain text if parsing or formatting fails.
+// If a short FloodWait is encountered (<= 5s), it automatically waits and retries once.
 func (s *Service) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
 	if s.sender == nil {
-		return nil, fmt.Errorf("sender is not initialized")
+		return nil, fmt.Errorf("%w: sender is not initialized", core.ErrInternal)
 	}
 
-	updates, err := s.sender.To(peer).StyledText(ctx, html.String(nil, text))
-	if err != nil {
-		// Fallback to plain text if HTML parsing or formatting fails
-		updates, err = s.sender.To(peer).Text(ctx, text)
+	return retryOnFloodWait(ctx, func() (*tg.Message, error) {
+		updates, err := s.sender.To(peer).StyledText(ctx, html.String(nil, text))
 		if err != nil {
-			return nil, err
+			if _, isFlood := tgerr.AsFloodWait(err); isFlood {
+				return nil, err
+			}
+			// Fallback to plain text if HTML parsing or formatting fails
+			updates, err = s.sender.To(peer).Text(ctx, text)
+			if err != nil {
+				return nil, err
+			}
 		}
-	}
-
-	return extractMessageFromUpdates(updates), nil
+		return extractMessageFromUpdates(updates), nil
+	})
 }
 
 // EditMessage edits the text of an existing message.
 // It parses HTML formatting, falling back to plain text if parsing or formatting fails.
+// If a short FloodWait is encountered (<= 5s), it automatically waits and retries once.
 func (s *Service) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
 	if s.sender == nil {
-		return fmt.Errorf("sender is not initialized")
+		return fmt.Errorf("%w: sender is not initialized", core.ErrInternal)
 	}
 
-	_, err := s.sender.To(peer).Edit(msgID).StyledText(ctx, html.String(nil, text))
-	if err != nil {
-		// Fallback to plain text if HTML parsing or formatting fails
-		_, err = s.sender.To(peer).Edit(msgID).Text(ctx, text)
-	}
+	_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
+		_, err := s.sender.To(peer).Edit(msgID).StyledText(ctx, html.String(nil, text))
+		if err != nil {
+			if _, isFlood := tgerr.AsFloodWait(err); isFlood {
+				return struct{}{}, err
+			}
+			_, err = s.sender.To(peer).Edit(msgID).Text(ctx, text)
+		}
+		return struct{}{}, err
+	})
 	return err
 }
 
@@ -72,18 +154,26 @@ func (s *Service) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msg
 		return nil
 	}
 
+	peer = s.ensureChannelAccessHash(ctx, peer)
+
 	if ch, ok := peer.(*tg.InputPeerChannel); ok {
-		_, err := s.api.ChannelsDeleteMessages(ctx, &tg.ChannelsDeleteMessagesRequest{
-			Channel: &tg.InputChannel{
-				ChannelID:  ch.ChannelID,
-				AccessHash: ch.AccessHash,
-			},
-			ID: msgIDs,
+		_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
+			_, err := s.api.ChannelsDeleteMessages(ctx, &tg.ChannelsDeleteMessagesRequest{
+				Channel: &tg.InputChannel{
+					ChannelID:  ch.ChannelID,
+					AccessHash: ch.AccessHash,
+				},
+				ID: msgIDs,
+			})
+			return struct{}{}, err
 		})
 		return err
 	}
 
-	_, err := s.sender.To(peer).Revoke().Messages(ctx, msgIDs...)
+	_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
+		_, err := s.sender.To(peer).Revoke().Messages(ctx, msgIDs...)
+		return struct{}{}, err
+	})
 	return err
 }
 
@@ -101,6 +191,8 @@ func (s *Service) React(ctx context.Context, peer tg.InputPeerClass, msgID int, 
 func (s *Service) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) (*tg.Message, error) {
 	var msgs []tg.MessageClass
 
+	peer = s.ensureChannelAccessHash(ctx, peer)
+
 	switch p := peer.(type) {
 	case *tg.InputPeerChannel:
 		res, err := s.api.ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
@@ -112,6 +204,16 @@ func (s *Service) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID 
 		})
 		if err != nil {
 			return nil, err
+		}
+		if s.peerManager != nil {
+			switch m := res.(type) {
+			case *tg.MessagesChannelMessages:
+				_ = s.peerManager.Apply(ctx, m.Users, m.Chats)
+			case *tg.MessagesMessages:
+				_ = s.peerManager.Apply(ctx, m.Users, m.Chats)
+			case *tg.MessagesMessagesSlice:
+				_ = s.peerManager.Apply(ctx, m.Users, m.Chats)
+			}
 		}
 		switch m := res.(type) {
 		case *tg.MessagesChannelMessages:
@@ -125,6 +227,16 @@ func (s *Service) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID 
 		res, err := s.api.MessagesGetMessages(ctx, []tg.InputMessageClass{&tg.InputMessageID{ID: msgID}})
 		if err != nil {
 			return nil, err
+		}
+		if s.peerManager != nil {
+			switch m := res.(type) {
+			case *tg.MessagesChannelMessages:
+				_ = s.peerManager.Apply(ctx, m.Users, m.Chats)
+			case *tg.MessagesMessages:
+				_ = s.peerManager.Apply(ctx, m.Users, m.Chats)
+			case *tg.MessagesMessagesSlice:
+				_ = s.peerManager.Apply(ctx, m.Users, m.Chats)
+			}
 		}
 		switch m := res.(type) {
 		case *tg.MessagesMessages:
@@ -147,6 +259,7 @@ func (s *Service) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID 
 
 // PinMessage pins a message in the chat.
 func (s *Service) PinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, silent bool) error {
+	peer = s.ensureChannelAccessHash(ctx, peer)
 	req := &tg.MessagesUpdatePinnedMessageRequest{
 		Silent: silent,
 		Unpin:  false,
@@ -156,19 +269,32 @@ func (s *Service) PinMessage(ctx context.Context, peer tg.InputPeerClass, msgID 
 	if silent {
 		req.SetSilent(true)
 	}
-	_, err := s.api.MessagesUpdatePinnedMessage(ctx, req)
+	_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
+		_, err := s.api.MessagesUpdatePinnedMessage(ctx, req)
+		if err != nil && tgerr.Is(err, "CHAT_NOT_MODIFIED") {
+			return struct{}{}, nil
+		}
+		return struct{}{}, err
+	})
 	return err
 }
 
 // UnpinMessage unpins a message in the chat.
 func (s *Service) UnpinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) error {
+	peer = s.ensureChannelAccessHash(ctx, peer)
 	req := &tg.MessagesUpdatePinnedMessageRequest{
 		Unpin: true,
 		Peer:  peer,
 		ID:    msgID,
 	}
 	req.SetUnpin(true)
-	_, err := s.api.MessagesUpdatePinnedMessage(ctx, req)
+	_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
+		_, err := s.api.MessagesUpdatePinnedMessage(ctx, req)
+		if err != nil && tgerr.Is(err, "CHAT_NOT_MODIFIED") {
+			return struct{}{}, nil
+		}
+		return struct{}{}, err
+	})
 	return err
 }
 
@@ -199,36 +325,48 @@ func (s *Service) BanUser(ctx context.Context, peer tg.InputPeerClass, user tg.I
 		return errors.New("api is not initialized")
 	}
 
+	peer = s.ensureChannelAccessHash(ctx, peer)
+
 	if ch, ok := peer.(*tg.InputPeerChannel); ok {
-		_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
-			Channel:     &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
-			Participant: user,
-			BannedRights: tg.ChatBannedRights{
-				ViewMessages: true,
-				SendMessages: true,
-				SendMedia:    true,
-				SendStickers: true,
-				SendGifs:     true,
-				SendGames:    true,
-				SendInline:   true,
-				EmbedLinks:   true,
-				UntilDate:    untilDate,
-			},
+		participant := s.ensureUserAccessHash(ctx, user)
+		_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
+			_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
+				Channel:     &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
+				Participant: participant,
+				BannedRights: tg.ChatBannedRights{
+					ViewMessages: true,
+					SendMessages: true,
+					SendMedia:    true,
+					SendStickers: true,
+					SendGifs:     true,
+					SendGames:    true,
+					SendInline:   true,
+					EmbedLinks:   true,
+					UntilDate:    untilDate,
+				},
+			})
+			if err != nil && tgerr.Is(err, "CHAT_NOT_MODIFIED") {
+				return struct{}{}, nil
+			}
+			return struct{}{}, err
 		})
 		return err
 	}
 
 	if chat, ok := peer.(*tg.InputPeerChat); ok {
 		if u, ok := user.(*tg.InputPeerUser); ok {
-			_, err := s.api.MessagesDeleteChatUser(ctx, &tg.MessagesDeleteChatUserRequest{
-				ChatID: chat.ChatID,
-				UserID: &tg.InputUser{UserID: u.UserID, AccessHash: u.AccessHash},
+			_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
+				_, err := s.api.MessagesDeleteChatUser(ctx, &tg.MessagesDeleteChatUserRequest{
+					ChatID: chat.ChatID,
+					UserID: &tg.InputUser{UserID: u.UserID, AccessHash: u.AccessHash},
+				})
+				return struct{}{}, err
 			})
 			return err
 		}
 	}
 
-	return fmt.Errorf("unsupported peer type for ban: %T", peer)
+	return fmt.Errorf("%w: unsupported peer type for ban: %T", core.ErrUnsupported, peer)
 }
 
 // UnbanUser removes all ban restrictions on a user.
@@ -237,16 +375,25 @@ func (s *Service) UnbanUser(ctx context.Context, peer tg.InputPeerClass, user tg
 		return errors.New("api is not initialized")
 	}
 
+	peer = s.ensureChannelAccessHash(ctx, peer)
+
 	if ch, ok := peer.(*tg.InputPeerChannel); ok {
-		_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
-			Channel:      &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
-			Participant:  user,
-			BannedRights: tg.ChatBannedRights{}, // reset all rights
+		participant := s.ensureUserAccessHash(ctx, user)
+		_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
+			_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
+				Channel:      &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
+				Participant:  participant,
+				BannedRights: tg.ChatBannedRights{}, // reset all rights
+			})
+			if err != nil && tgerr.Is(err, "CHAT_NOT_MODIFIED", "RIGHTS_NOT_MODIFIED", "USER_NOT_PARTICIPANT") {
+				return struct{}{}, nil
+			}
+			return struct{}{}, err
 		})
 		return err
 	}
 
-	return nil
+	return fmt.Errorf("%w: unban is only supported in supergroups and channels (got %T)", core.ErrUnsupported, peer)
 }
 
 // KickUser removes a user from the group while allowing them to rejoin.
@@ -255,35 +402,50 @@ func (s *Service) KickUser(ctx context.Context, peer tg.InputPeerClass, user tg.
 		return errors.New("api is not initialized")
 	}
 
+	peer = s.ensureChannelAccessHash(ctx, peer)
+
 	if ch, ok := peer.(*tg.InputPeerChannel); ok {
 		channel := &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash}
-		_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
-			Channel:      channel,
-			Participant:  user,
-			BannedRights: tg.ChatBannedRights{ViewMessages: true, UntilDate: int(time.Now().Unix() + 60)},
+		participant := s.ensureUserAccessHash(ctx, user)
+		_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
+			_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
+				Channel:      channel,
+				Participant:  participant,
+				BannedRights: tg.ChatBannedRights{ViewMessages: true, UntilDate: int(time.Now().Unix() + 60)},
+			})
+			return struct{}{}, err
 		})
 		if err != nil {
 			return err
 		}
-		_, err = s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
-			Channel:      channel,
-			Participant:  user,
-			BannedRights: tg.ChatBannedRights{}, // allow rejoin
+		_, err = retryOnFloodWait(ctx, func() (struct{}, error) {
+			_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
+				Channel:      channel,
+				Participant:  participant,
+				BannedRights: tg.ChatBannedRights{}, // allow rejoin
+			})
+			if err != nil && tgerr.Is(err, "CHAT_NOT_MODIFIED", "RIGHTS_NOT_MODIFIED") {
+				return struct{}{}, nil
+			}
+			return struct{}{}, err
 		})
 		return err
 	}
 
 	if chat, ok := peer.(*tg.InputPeerChat); ok {
 		if u, ok := user.(*tg.InputPeerUser); ok {
-			_, err := s.api.MessagesDeleteChatUser(ctx, &tg.MessagesDeleteChatUserRequest{
-				ChatID: chat.ChatID,
-				UserID: &tg.InputUser{UserID: u.UserID, AccessHash: u.AccessHash},
+			_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
+				_, err := s.api.MessagesDeleteChatUser(ctx, &tg.MessagesDeleteChatUserRequest{
+					ChatID: chat.ChatID,
+					UserID: &tg.InputUser{UserID: u.UserID, AccessHash: u.AccessHash},
+				})
+				return struct{}{}, err
 			})
 			return err
 		}
 	}
 
-	return fmt.Errorf("unsupported peer type for kick: %T", peer)
+	return fmt.Errorf("%w: unsupported peer type for kick: %T", core.ErrUnsupported, peer)
 }
 
 // MuteUser restricts a user from sending messages and media until untilDate.
@@ -292,33 +454,42 @@ func (s *Service) MuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.
 		return errors.New("api is not initialized")
 	}
 
+	peer = s.ensureChannelAccessHash(ctx, peer)
+
 	if ch, ok := peer.(*tg.InputPeerChannel); ok {
-		_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
-			Channel:     &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
-			Participant: user,
-			BannedRights: tg.ChatBannedRights{
-				SendMessages:    true,
-				SendMedia:       true,
-				SendStickers:    true,
-				SendGifs:        true,
-				SendGames:       true,
-				SendInline:      true,
-				EmbedLinks:      true,
-				SendPolls:       true,
-				SendPhotos:      true,
-				SendVideos:      true,
-				SendRoundvideos: true,
-				SendAudios:      true,
-				SendVoices:      true,
-				SendDocs:        true,
-				SendPlain:       true,
-				UntilDate:       untilDate,
-			},
+		participant := s.ensureUserAccessHash(ctx, user)
+		_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
+			_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
+				Channel:     &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
+				Participant: participant,
+				BannedRights: tg.ChatBannedRights{
+					SendMessages:    true,
+					SendMedia:       true,
+					SendStickers:    true,
+					SendGifs:        true,
+					SendGames:       true,
+					SendInline:      true,
+					EmbedLinks:      true,
+					SendPolls:       true,
+					SendPhotos:      true,
+					SendVideos:      true,
+					SendRoundvideos: true,
+					SendAudios:      true,
+					SendVoices:      true,
+					SendDocs:        true,
+					SendPlain:       true,
+					UntilDate:       untilDate,
+				},
+			})
+			if err != nil && tgerr.Is(err, "CHAT_NOT_MODIFIED") {
+				return struct{}{}, nil
+			}
+			return struct{}{}, err
 		})
 		return err
 	}
 
-	return fmt.Errorf("mute is only supported in supergroups and channels")
+	return fmt.Errorf("%w: mute is only supported in supergroups and channels (got %T)", core.ErrUnsupported, peer)
 }
 
 // UnmuteUser removes send message restrictions on a user.
@@ -327,16 +498,25 @@ func (s *Service) UnmuteUser(ctx context.Context, peer tg.InputPeerClass, user t
 		return errors.New("api is not initialized")
 	}
 
+	peer = s.ensureChannelAccessHash(ctx, peer)
+
 	if ch, ok := peer.(*tg.InputPeerChannel); ok {
-		_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
-			Channel:      &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
-			Participant:  user,
-			BannedRights: tg.ChatBannedRights{},
+		participant := s.ensureUserAccessHash(ctx, user)
+		_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
+			_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
+				Channel:      &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
+				Participant:  participant,
+				BannedRights: tg.ChatBannedRights{},
+			})
+			if err != nil && tgerr.Is(err, "CHAT_NOT_MODIFIED", "RIGHTS_NOT_MODIFIED", "USER_NOT_PARTICIPANT") {
+				return struct{}{}, nil
+			}
+			return struct{}{}, err
 		})
 		return err
 	}
 
-	return nil
+	return fmt.Errorf("%w: unmute is only supported in supergroups and channels (got %T)", core.ErrUnsupported, peer)
 }
 
 // PurgeMessages purges messages in the range [fromID..toID]. If topicID > 0, it uses MessagesGetReplies
@@ -365,7 +545,10 @@ func (s *Service) PurgeMessages(ctx context.Context, peer tg.InputPeerClass, top
 			MaxID: maxID + 1,
 			Limit: 100,
 		})
-		if err == nil && resp != nil {
+		if err != nil {
+			return 0, fmt.Errorf("failed to fetch topic replies for purge: %w", err)
+		}
+		if resp != nil {
 			if mod, ok := resp.AsModified(); ok {
 				for _, m := range mod.GetMessages() {
 					if msg, ok := m.(*tg.Message); ok {
@@ -384,7 +567,10 @@ func (s *Service) PurgeMessages(ctx context.Context, peer tg.InputPeerClass, top
 			MaxID: maxID + 1,
 			Limit: 100,
 		})
-		if err == nil && resp != nil {
+		if err != nil {
+			return 0, fmt.Errorf("failed to fetch message history for purge: %w", err)
+		}
+		if resp != nil {
 			if mod, ok := resp.AsModified(); ok {
 				for _, m := range mod.GetMessages() {
 					if msg, ok := m.(*tg.Message); ok {
@@ -483,31 +669,44 @@ func (s *Service) GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.
 		return nil, errors.New("telegram api not initialized")
 	}
 
+	peer = s.ensureChannelAccessHash(ctx, peer)
+
+	var res *tg.MessagesChatFull
+	var err error
+
 	switch p := peer.(type) {
 	case *tg.InputPeerChannel:
-		return s.api.ChannelsGetFullChannel(ctx, &tg.InputChannel{
+		res, err = s.api.ChannelsGetFullChannel(ctx, &tg.InputChannel{
 			ChannelID:  p.ChannelID,
 			AccessHash: p.AccessHash,
 		})
 	case *tg.InputPeerChat:
-		return s.api.MessagesGetFullChat(ctx, p.ChatID)
+		res, err = s.api.MessagesGetFullChat(ctx, p.ChatID)
 	default:
 		return nil, errors.New("chat info is only available for groups, supergroups, and channels")
 	}
+
+	if err == nil && res != nil && s.peerManager != nil {
+		_ = s.peerManager.Apply(ctx, res.Users, res.Chats)
+	}
+
+	return res, err
 }
 
-// extractMessageFromUpdates attempts to locate a tg.Message from tg.UpdatesClass.
 // PromoteAdmin promotes a user to administrator in the supergroup/channel with custom title.
 func (s *Service) PromoteAdmin(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, title string) error {
 	if s.api == nil {
 		return errors.New("api is not initialized")
 	}
 
+	peer = s.ensureChannelAccessHash(ctx, peer)
+
 	ch, ok := peer.(*tg.InputPeerChannel)
 	if !ok {
-		return fmt.Errorf("promote is only supported in supergroups/channels, got: %T", peer)
+		return fmt.Errorf("%w: promote is only supported in supergroups/channels, got: %T", core.ErrUnsupported, peer)
 	}
 
+	user = s.ensureUserAccessHash(ctx, user)
 	u, ok := user.(*tg.InputPeerUser)
 	if !ok {
 		return fmt.Errorf("target user must be an InputPeerUser, got: %T", user)
@@ -531,7 +730,13 @@ func (s *Service) PromoteAdmin(ctx context.Context, peer tg.InputPeerClass, user
 		req.SetRank(title)
 	}
 
-	_, err := s.api.ChannelsEditAdmin(ctx, req)
+	_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
+		_, err := s.api.ChannelsEditAdmin(ctx, req)
+		if err != nil && tgerr.Is(err, "CHAT_NOT_MODIFIED") {
+			return struct{}{}, nil
+		}
+		return struct{}{}, err
+	})
 	return err
 }
 
@@ -541,11 +746,14 @@ func (s *Service) DemoteAdmin(ctx context.Context, peer tg.InputPeerClass, user 
 		return errors.New("api is not initialized")
 	}
 
+	peer = s.ensureChannelAccessHash(ctx, peer)
+
 	ch, ok := peer.(*tg.InputPeerChannel)
 	if !ok {
-		return fmt.Errorf("demote is only supported in supergroups/channels, got: %T", peer)
+		return fmt.Errorf("%w: demote is only supported in supergroups/channels, got: %T", core.ErrUnsupported, peer)
 	}
 
+	user = s.ensureUserAccessHash(ctx, user)
 	u, ok := user.(*tg.InputPeerUser)
 	if !ok {
 		return fmt.Errorf("target user must be an InputPeerUser, got: %T", user)
@@ -557,7 +765,13 @@ func (s *Service) DemoteAdmin(ctx context.Context, peer tg.InputPeerClass, user 
 		AdminRights: tg.ChatAdminRights{}, // empty rights removes admin status
 	}
 
-	_, err := s.api.ChannelsEditAdmin(ctx, req)
+	_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
+		_, err := s.api.ChannelsEditAdmin(ctx, req)
+		if err != nil && tgerr.Is(err, "CHAT_NOT_MODIFIED") {
+			return struct{}{}, nil
+		}
+		return struct{}{}, err
+	})
 	return err
 }
 
@@ -567,12 +781,24 @@ func (s *Service) EditChatDefaultBannedRights(ctx context.Context, peer tg.Input
 		return errors.New("api is not initialized")
 	}
 
+	ch, ok := peer.(*tg.InputPeerChannel)
+	if !ok {
+		return fmt.Errorf("%w: permissions lock is only supported in supergroups, got %T", core.ErrUnsupported, peer)
+	}
+
 	req := &tg.MessagesEditChatDefaultBannedRightsRequest{
-		Peer:         peer,
+		Peer:         ch,
 		BannedRights: rights,
 	}
 
-	_, err := s.api.MessagesEditChatDefaultBannedRights(ctx, req)
+	_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
+		_, err := s.api.MessagesEditChatDefaultBannedRights(ctx, req)
+		if err != nil && tgerr.Is(err, "CHAT_NOT_MODIFIED", "RIGHTS_NOT_MODIFIED") {
+			// Rights are already in the requested state; treat as idempotent success.
+			return struct{}{}, nil
+		}
+		return struct{}{}, err
+	})
 	return err
 }
 

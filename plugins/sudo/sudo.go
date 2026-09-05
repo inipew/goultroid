@@ -66,6 +66,11 @@ func (p *Plugin) resolveTargetUser(ctx *core.Context) (int64, error) {
 		if err == nil && id != 0 {
 			return id, nil
 		}
+		// Also support usernames (e.g. @username)
+		_, targetID, err := ctx.ResolveUser(ctx.Args[0])
+		if err == nil && targetID != 0 {
+			return targetID, nil
+		}
 	}
 
 	reply, err := ctx.GetReply()

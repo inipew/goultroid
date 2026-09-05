@@ -506,5 +506,65 @@ func TestDownloadMedia_PathTraversal(t *testing.T) {
 	}
 }
 
+func TestContext_PeerResolver(t *testing.T) {
+	mockResolver := &MockPeerResolver{
+		UserID:   999888,
+		UserPeer: &tg.InputPeerUser{UserID: 999888, AccessHash: 77777},
+		ChatPeer: &tg.InputPeerChannel{ChannelID: 555444, AccessHash: 33333},
+	}
+
+	ctx := &Context{
+		Ctx:      context.Background(),
+		Resolver: mockResolver,
+		Args:     []string{"@alice"},
+	}
+
+	// 1. ResolveUser
+	uPeer, uid, err := ctx.ResolveUser("@alice")
+	if err != nil {
+		t.Fatalf("ResolveUser failed: %v", err)
+	}
+	if uid != 999888 {
+		t.Errorf("expected uid 999888, got %d", uid)
+	}
+	if up, ok := uPeer.(*tg.InputPeerUser); !ok || up.AccessHash != 77777 {
+		t.Errorf("expected user peer with access hash 77777, got %+v", uPeer)
+	}
+
+	// 2. ResolveChat
+	cPeer, err := ctx.ResolveChat("-100555444")
+	if err != nil {
+		t.Fatalf("ResolveChat failed: %v", err)
+	}
+	if cp, ok := cPeer.(*tg.InputPeerChannel); !ok || cp.AccessHash != 33333 {
+		t.Errorf("expected channel peer with access hash 33333, got %+v", cPeer)
+	}
+
+	// 3. ResolveTargetUser with username using resolver
+	resolvedTarget, tid, err := ctx.ResolveTargetUser()
+	if err != nil {
+		t.Fatalf("ResolveTargetUser failed: %v", err)
+	}
+	if tid != 999888 {
+		t.Errorf("expected target ID 999888, got %d", tid)
+	}
+	if targetUser, ok := resolvedTarget.(*tg.InputPeerUser); !ok || targetUser.AccessHash != 77777 {
+		t.Errorf("expected target user peer with access hash 77777, got %+v", resolvedTarget)
+	}
+
+	// 4. ResolveTargetUser with numeric ID using resolver
+	ctx.Args = []string{"999888"}
+	resolvedNumeric, nid, err := ctx.ResolveTargetUser()
+	if err != nil {
+		t.Fatalf("ResolveTargetUser with numeric ID failed: %v", err)
+	}
+	if nid != 999888 {
+		t.Errorf("expected target ID 999888, got %d", nid)
+	}
+	if targetUser, ok := resolvedNumeric.(*tg.InputPeerUser); !ok || targetUser.AccessHash != 77777 {
+		t.Errorf("expected target user peer with access hash 77777, got %+v", resolvedNumeric)
+	}
+}
+
 
 

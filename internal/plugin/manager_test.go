@@ -136,3 +136,69 @@ func TestManager_Shutdown(t *testing.T) {
 		t.Errorf("expected both plugins to have Shutdown invoked")
 	}
 }
+
+type describedPlugin struct {
+	dummyPlugin
+	meta Metadata
+}
+
+func (d *describedPlugin) Metadata() Metadata {
+	return d.meta
+}
+
+func TestManager_Metadata(t *testing.T) {
+	router := core.NewRouter(".")
+	mgr := NewManager(router)
+
+	// 1. Regular plugin (defaults populated)
+	p1 := &dummyPlugin{name: "basic"}
+	if err := mgr.Register(p1); err != nil {
+		t.Fatalf("failed to register basic: %v", err)
+	}
+
+	m1, ok := mgr.GetMetadata("basic")
+	if !ok {
+		t.Fatalf("expected metadata for basic plugin")
+	}
+	if m1.Name != "basic" || m1.Version != "1.0.0" {
+		t.Errorf("unexpected default metadata: %+v", m1)
+	}
+
+	// 2. Described plugin (custom metadata)
+	p2 := &describedPlugin{
+		dummyPlugin: dummyPlugin{name: "custom"},
+		meta: Metadata{
+			Name:        "custom",
+			Version:     "2.4.0",
+			Author:      "Pew",
+			Description: "Custom extended plugin",
+		},
+	}
+	if err := mgr.Register(p2); err != nil {
+		t.Fatalf("failed to register custom: %v", err)
+	}
+
+	m2, ok := mgr.GetMetadata("CUSTOM")
+	if !ok {
+		t.Fatalf("expected metadata for custom plugin")
+	}
+	if m2.Version != "2.4.0" || m2.Author != "Pew" || m2.Description != "Custom extended plugin" {
+		t.Errorf("unexpected custom metadata: %+v", m2)
+	}
+
+	// 3. AllMetadata
+	all := mgr.AllMetadata()
+	if len(all) != 2 {
+		t.Fatalf("expected 2 metadata entries, got %d", len(all))
+	}
+	if all["custom"].Author != "Pew" {
+		t.Errorf("unexpected all metadata entry for custom: %+v", all["custom"])
+	}
+
+	// 4. Nonexistent plugin
+	_, ok = mgr.GetMetadata("nonexistent")
+	if ok {
+		t.Errorf("expected false for nonexistent plugin metadata")
+	}
+}
+

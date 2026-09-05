@@ -143,9 +143,12 @@ func (c *Client) Dispatcher() *Dispatcher {
 // Run connects to Telegram, performs authentication, and maintains the update loop.
 func (c *Client) Run(ctx context.Context) error {
 	return c.raw.Run(ctx, func(ctx context.Context) error {
-		// Initialize service wrapper
+		// Initialize service wrapper & peer resolver
 		svc := NewService(c.raw.API())
+		svc.SetPeerManager(c.peerManager)
 		c.dispatcher.SetService(svc)
+		resolver := NewResolver(c.raw.API(), c.peerManager)
+		c.dispatcher.SetResolver(resolver)
 
 		// Authenticate if needed
 		status, err := c.raw.Auth().Status(ctx)

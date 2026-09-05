@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -468,6 +469,181 @@ func TestBlacklistOperations(t *testing.T) {
 	// 6. Remove non-existent
 	if err := db.RemoveBlacklist(ctx, chatID, "nonexistent"); err == nil {
 		t.Errorf("expected error removing non-existent word")
+	}
+}
+
+func TestMigrations_Versioning(t *testing.T) {
+	ctx := context.Background()
+	db := setupTestDB(t)
+
+	// Verify schema_migrations has version 1 and 2
+	rows, err := db.QueryContext(ctx, "SELECT version, description FROM schema_migrations ORDER BY version ASC")
+	if err != nil {
+		t.Fatalf("failed to query schema_migrations: %v", err)
+	}
+	defer rows.Close()
+
+	type mig struct {
+		version int
+		desc    string
+	}
+	var migrations []mig
+	for rows.Next() {
+		var m mig
+		if err := rows.Scan(&m.version, &m.desc); err != nil {
+			t.Fatalf("failed to scan migration: %v", err)
+		}
+		migrations = append(migrations, m)
+	}
+	if len(migrations) != 2 {
+		t.Fatalf("expected 2 applied migrations, got %d", len(migrations))
+	}
+	if migrations[0].version != 1 || migrations[1].version != 2 {
+		t.Errorf("unexpected migration versions: %+v", migrations)
+	}
+
+	// Test legacy adoption
+	// Create raw in-memory db simulating legacy database with sudo_users table
+	rawDB, err := sql.Open("sqlite", "file:legacy_test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open raw sqlite: %v", err)
+	}
+	defer rawDB.Close()
+
+	_, err = rawDB.ExecContext(ctx, `
+		CREATE TABLE sudo_users (
+			user_id INTEGER PRIMARY KEY,
+			added_at TIMESTAMP NOT NULL,
+			added_by INTEGER NOT NULL
+		);
+		CREATE TABLE scheduled_jobs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			chat_id INTEGER NOT NULL,
+			peer_type TEXT NOT NULL,
+			access_hash INTEGER NOT NULL DEFAULT 0,
+			action_type TEXT NOT NULL,
+			payload TEXT NOT NULL,
+			interval_seconds INTEGER NOT NULL DEFAULT 0,
+			next_run_at TIMESTAMP NOT NULL,
+			created_at TIMESTAMP NOT NULL
+		);
+	`)
+	if err != nil {
+		t.Fatalf("failed to create legacy schema: %v", err)
+	}
+
+	wrapped := &DB{DB: rawDB}
+	if err := wrapped.migrate(ctx); err != nil {
+		t.Fatalf("migrate failed on legacy db: %v", err)
+	}
+
+	// Verify v1 and v2 are recorded
+	var count int
+	if err := rawDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations").Scan(&count); err != nil {
+		t.Fatalf("failed to count schema_migrations: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 migrations in legacy db after runMigrations, got %d", count)
+	}
+}
+
+func TestScheduledJob_DurableFields(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	now := time.Now().Truncate(time.Second)
+	job := &ScheduledJob{
+		ChatID:          12345,
+		PeerType:        "user",
+		AccessHash:      9999,
+		ActionType:      "command",
+		Payload:         ".ping",
+		IntervalSeconds: 60,
+		NextRunAt:       now,
+		CreatedBy:       54321,
+	}
+
+	created, err := db.CreateScheduledJob(ctx, job)
+	if err != nil {
+		t.Fatalf("failed to create job: %v", err)
+	}
+	if created.CreatedBy != 54321 {
+		t.Fatalf("expected CreatedBy 54321, got %d", created.CreatedBy)
+	}
+
+	fetched, err := db.GetScheduledJob(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("failed to get job: %v", err)
+	}
+	if fetched.CreatedBy != 54321 {
+		t.Errorf("expected fetched CreatedBy 54321, got %d", fetched.CreatedBy)
+	}
+
+	list, err := db.ListScheduledJobs(ctx, 12345)
+	if err != nil {
+		t.Fatalf("failed to list jobs: %v", err)
+	}
+	if len(list) != 1 || list[0].CreatedBy != 54321 {
+		t.Errorf("expected list to have CreatedBy 54321: %+v", list)
+	}
+
+	due, err := db.ListDueScheduledJobs(ctx, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("failed to list due jobs: %v", err)
+	}
+	if len(due) != 1 || due[0].CreatedBy != 54321 {
+		t.Errorf("expected due to have CreatedBy 54321: %+v", due)
+	}
+}
+
+func TestRecordJobFailure(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	job := &ScheduledJob{
+		ChatID:          999,
+		PeerType:        "chat",
+		ActionType:      "message",
+		Payload:         "test failure",
+		NextRunAt:       time.Now(),
+		CreatedBy:       111,
+	}
+	created, err := db.CreateScheduledJob(ctx, job)
+	if err != nil {
+		t.Fatalf("failed to create job: %v", err)
+	}
+
+	// Record first failure
+	if err := db.RecordJobFailure(ctx, created.ID, "connection timeout"); err != nil {
+		t.Fatalf("failed to record failure: %v", err)
+	}
+
+	fetched, err := db.GetScheduledJob(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("failed to get job: %v", err)
+	}
+	if fetched.AttemptCount != 1 {
+		t.Errorf("expected AttemptCount 1, got %d", fetched.AttemptCount)
+	}
+	if fetched.LastError != "connection timeout" {
+		t.Errorf("expected LastError 'connection timeout', got %q", fetched.LastError)
+	}
+
+	// Record second failure
+	if err := db.RecordJobFailure(ctx, created.ID, "rpc error: FLOOD_WAIT_300"); err != nil {
+		t.Fatalf("failed to record second failure: %v", err)
+	}
+	fetched2, _ := db.GetScheduledJob(ctx, created.ID)
+	if fetched2.AttemptCount != 2 {
+		t.Errorf("expected AttemptCount 2, got %d", fetched2.AttemptCount)
+	}
+	if fetched2.LastError != "rpc error: FLOOD_WAIT_300" {
+		t.Errorf("expected LastError 'rpc error: FLOOD_WAIT_300', got %q", fetched2.LastError)
+	}
+
+	// Record failure on non-existent job
+	if err := db.RecordJobFailure(ctx, 9999999, "should fail"); err == nil {
+		t.Errorf("expected error on non-existent job failure record")
 	}
 }
 

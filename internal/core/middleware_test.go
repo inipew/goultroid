@@ -182,6 +182,11 @@ func TestFilterMiddleware(t *testing.T) {
 		t.Errorf("expected supergroup to pass GroupOnly filter, got %v", err)
 	}
 
+	// Outgoing commands bypass GroupOnly
+	if err := mGroup(&Context{Chat: &Chat{Type: "private"}, Message: &Message{IsOutgoing: true}}); err != nil {
+		t.Errorf("expected outgoing message to bypass GroupOnly, got %v", err)
+	}
+
 	// PrivateOnly test
 	privateCmd := Command{Name: "secret", PrivateOnly: true}
 	mPrivate := FilterMiddleware(privateCmd)(dummy)
@@ -191,6 +196,11 @@ func TestFilterMiddleware(t *testing.T) {
 	}
 	if err := mPrivate(&Context{Chat: &Chat{Type: "private"}}); err != nil {
 		t.Errorf("expected private chat to pass PrivateOnly filter, got %v", err)
+	}
+
+	// Outgoing commands bypass PrivateOnly
+	if err := mPrivate(&Context{Chat: &Chat{Type: "group"}, Message: &Message{IsOutgoing: true}}); err != nil {
+		t.Errorf("expected outgoing message to bypass PrivateOnly, got %v", err)
 	}
 
 	// ReplyOnly test
@@ -205,6 +215,10 @@ func TestFilterMiddleware(t *testing.T) {
 	}
 	if err := mReply(&Context{Message: &Message{ReplyToID: 42}}); err != nil {
 		t.Errorf("expected reply message to pass ReplyOnly filter, got %v", err)
+	}
+	// ReplyOnly is strictly enforced even for outgoing messages
+	if err := mReply(&Context{Message: &Message{ReplyToID: 0, IsOutgoing: true}}); !errors.Is(err, ErrReplyRequired) {
+		t.Errorf("expected ErrReplyRequired for outgoing message when ReplyToID is 0, got %v", err)
 	}
 }
 

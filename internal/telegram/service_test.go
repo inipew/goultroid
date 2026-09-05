@@ -2,11 +2,14 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
+	"time"
 
-	"github.com/inipew/goultroid/internal/core"
 	"github.com/gotd/td/tg"
+	"github.com/gotd/td/tgerr"
+	"github.com/inipew/goultroid/internal/core"
 )
 
 // Ensure Service implements core.TelegramServicer.
@@ -101,3 +104,92 @@ func TestCheckRestartState_FileHandling(t *testing.T) {
 		t.Errorf("expected legacy data/restart.json to be removed")
 	}
 }
+
+func TestUnbanUser_UnsupportedPeer(t *testing.T) {
+	// Mock tg client with nil api
+	svc := &Service{api: &tg.Client{}}
+
+	// Calling UnbanUser with *tg.InputPeerChat or *tg.InputPeerUser should return an explicit error
+	err := svc.UnbanUser(context.Background(), &tg.InputPeerChat{ChatID: 12345}, &tg.InputPeerUser{UserID: 67890})
+	if err == nil {
+		t.Fatalf("expected error for unsupported peer type in UnbanUser, got nil")
+	}
+}
+
+func TestMapTelegramError(t *testing.T) {
+	// 1. Nil error
+	if err := mapTelegramError(nil); err != nil {
+		t.Errorf("expected nil for nil error, got %v", err)
+	}
+
+	// 2. Flood wait error
+	floodErr := tgerr.New(420, "FLOOD_WAIT_10")
+	mappedFlood := mapTelegramError(floodErr)
+	if !errors.Is(mappedFlood, core.ErrRateLimited) {
+		t.Errorf("expected mappedFlood to match ErrRateLimited, got %v", mappedFlood)
+	}
+	var rle *core.RateLimitError
+	if !errors.As(mappedFlood, &rle) || rle.Wait != 10*time.Second {
+		t.Errorf("expected RateLimitError with wait 10s, got %+v", rle)
+	}
+
+	// 3. Not found errors
+	chatInvalidErr := tgerr.New(400, "CHAT_ID_INVALID")
+	mappedChat := mapTelegramError(chatInvalidErr)
+	if !errors.Is(mappedChat, core.ErrNotFound) {
+		t.Errorf("expected mappedChat to match ErrNotFound, got %v", mappedChat)
+	}
+
+	// 4. Permission denied errors
+	adminReqErr := tgerr.New(400, "CHAT_ADMIN_REQUIRED")
+	mappedAdmin := mapTelegramError(adminReqErr)
+	if !errors.Is(mappedAdmin, core.ErrPermissionDenied) {
+		t.Errorf("expected mappedAdmin to match ErrPermissionDenied, got %v", mappedAdmin)
+	}
+
+	// 5. Generic telegram error
+	genErr := tgerr.New(500, "INTERNAL_SERVER_ERROR")
+	mappedGen := mapTelegramError(genErr)
+	if !errors.Is(mappedGen, core.ErrTelegram) {
+		t.Errorf("expected mappedGen to match ErrTelegram, got %v", mappedGen)
+	}
+}
+
+func TestRetryOnFloodWait_ExceedsLimit(t *testing.T) {
+	ctx := context.Background()
+	callCount := 0
+	floodErr := tgerr.New(420, "FLOOD_WAIT_60")
+
+	res, err := retryOnFloodWait(ctx, func() (string, error) {
+		callCount++
+		return "", floodErr
+	})
+
+	if res != "" {
+		t.Errorf("expected empty result, got %q", res)
+	}
+	if callCount != 1 {
+		t.Errorf("expected exactly 1 call when flood wait exceeds limit, got %d", callCount)
+	}
+	if !errors.Is(err, core.ErrRateLimited) {
+		t.Errorf("expected ErrRateLimited, got %v", err)
+	}
+}
+
+func TestEditChatDefaultBannedRights_UnsupportedPeer(t *testing.T) {
+	svc := &Service{api: &tg.Client{}}
+	ctx := context.Background()
+
+	// 1. InputPeerUser is unsupported for chat default banned rights
+	err := svc.EditChatDefaultBannedRights(ctx, &tg.InputPeerUser{UserID: 123}, tg.ChatBannedRights{})
+	if !errors.Is(err, core.ErrUnsupported) {
+		t.Errorf("expected ErrUnsupported for InputPeerUser, got %v", err)
+	}
+
+	// 2. InputPeerSelf is unsupported
+	err = svc.EditChatDefaultBannedRights(ctx, &tg.InputPeerSelf{}, tg.ChatBannedRights{})
+	if !errors.Is(err, core.ErrUnsupported) {
+		t.Errorf("expected ErrUnsupported for InputPeerSelf, got %v", err)
+	}
+}
+

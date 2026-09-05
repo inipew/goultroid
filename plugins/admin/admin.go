@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 )
 
@@ -103,7 +104,41 @@ func (p *Plugin) Commands() []core.Command {
 	}
 }
 
+func isPrivateOrUnsupported(ctx *core.Context) bool {
+	if ctx.Chat != nil && ctx.Chat.Type == "private" {
+		return true
+	}
+	if _, ok := ctx.PeerID.(*tg.InputPeerUser); ok {
+		return true
+	}
+	if _, ok := ctx.PeerID.(*tg.InputPeerSelf); ok {
+		return true
+	}
+	return false
+}
+
+func formatAdminError(action string, err error) string {
+	if errors.Is(err, core.ErrPermissionDenied) || strings.Contains(err.Error(), "CHAT_ADMIN_REQUIRED") {
+		return fmt.Sprintf("❌ Gagal %s: Anda/bot harus menjadi Admin dengan hak yang sesuai di grup ini.", action)
+	}
+	if strings.Contains(err.Error(), "USER_ADMIN_INVALID") {
+		return fmt.Sprintf("❌ Gagal %s: Target adalah admin atau memiliki hak lebih tinggi.", action)
+	}
+	if strings.Contains(err.Error(), "ADMINS_TOO_MUCH") {
+		return "❌ Gagal: Batas maksimal admin di grup ini telah tercapai."
+	}
+	if errors.Is(err, core.ErrUnsupported) {
+		return "⚠️ Fitur ini hanya didukung pada Supergroup."
+	}
+	return fmt.Sprintf("❌ Failed to %s: %v", action, err)
+}
+
 func (p *Plugin) handleBan(ctx *core.Context) error {
+	if isPrivateOrUnsupported(ctx) {
+		_ = ctx.Reply("⚠️ Fitur ban hanya dapat digunakan di grup atau supergroup.")
+		return nil
+	}
+
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
 		_ = ctx.Reply("⚠️ " + err.Error())
@@ -116,7 +151,7 @@ func (p *Plugin) handleBan(ctx *core.Context) error {
 	}
 
 	if err := ctx.Ban(targetPeer, 0); err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Failed to ban user: %v", err))
+		_ = ctx.Reply(formatAdminError("ban user", err))
 		return err
 	}
 
@@ -129,6 +164,11 @@ func (p *Plugin) handleBan(ctx *core.Context) error {
 }
 
 func (p *Plugin) handleUnban(ctx *core.Context) error {
+	if isPrivateOrUnsupported(ctx) {
+		_ = ctx.Reply("⚠️ Fitur unban hanya dapat digunakan di grup atau supergroup.")
+		return nil
+	}
+
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
 		_ = ctx.Reply("⚠️ " + err.Error())
@@ -136,7 +176,7 @@ func (p *Plugin) handleUnban(ctx *core.Context) error {
 	}
 
 	if err := ctx.Unban(targetPeer); err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Failed to unban user: %v", err))
+		_ = ctx.Reply(formatAdminError("unban user", err))
 		return err
 	}
 
@@ -144,6 +184,11 @@ func (p *Plugin) handleUnban(ctx *core.Context) error {
 }
 
 func (p *Plugin) handleKick(ctx *core.Context) error {
+	if isPrivateOrUnsupported(ctx) {
+		_ = ctx.Reply("⚠️ Fitur kick hanya dapat digunakan di grup atau supergroup.")
+		return nil
+	}
+
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
 		_ = ctx.Reply("⚠️ " + err.Error())
@@ -156,7 +201,7 @@ func (p *Plugin) handleKick(ctx *core.Context) error {
 	}
 
 	if err := ctx.Kick(targetPeer); err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Failed to kick user: %v", err))
+		_ = ctx.Reply(formatAdminError("kick user", err))
 		return err
 	}
 
@@ -164,6 +209,11 @@ func (p *Plugin) handleKick(ctx *core.Context) error {
 }
 
 func (p *Plugin) handleMute(ctx *core.Context) error {
+	if isPrivateOrUnsupported(ctx) {
+		_ = ctx.Reply("⚠️ Fitur mute hanya dapat digunakan di grup atau supergroup.")
+		return nil
+	}
+
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
 		_ = ctx.Reply("⚠️ " + err.Error())
@@ -192,7 +242,7 @@ func (p *Plugin) handleMute(ctx *core.Context) error {
 	}
 
 	if err := ctx.Mute(targetPeer, untilDate); err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Failed to mute user: %v", err))
+		_ = ctx.Reply(formatAdminError("mute user", err))
 		return err
 	}
 
@@ -200,6 +250,11 @@ func (p *Plugin) handleMute(ctx *core.Context) error {
 }
 
 func (p *Plugin) handleUnmute(ctx *core.Context) error {
+	if isPrivateOrUnsupported(ctx) {
+		_ = ctx.Reply("⚠️ Fitur unmute hanya dapat digunakan di grup atau supergroup.")
+		return nil
+	}
+
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
 		_ = ctx.Reply("⚠️ " + err.Error())
@@ -207,7 +262,7 @@ func (p *Plugin) handleUnmute(ctx *core.Context) error {
 	}
 
 	if err := ctx.Unmute(targetPeer); err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Failed to unmute user: %v", err))
+		_ = ctx.Reply(formatAdminError("unmute user", err))
 		return err
 	}
 
@@ -215,9 +270,14 @@ func (p *Plugin) handleUnmute(ctx *core.Context) error {
 }
 
 func (p *Plugin) handlePurge(ctx *core.Context) error {
+	if ctx.Message == nil || ctx.Message.ReplyToID == 0 {
+		_ = ctx.Reply("⚠️ Harap reply ke pesan awal yang ingin di-purge.")
+		return core.ErrReplyRequired
+	}
+
 	count, err := ctx.Purge()
 	if err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Failed to purge messages: %v", err))
+		_ = ctx.Reply(formatAdminError("purge pesan", err))
 		return err
 	}
 
@@ -230,6 +290,11 @@ func (p *Plugin) handlePurge(ctx *core.Context) error {
 }
 
 func (p *Plugin) handlePromote(ctx *core.Context) error {
+	if isPrivateOrUnsupported(ctx) {
+		_ = ctx.Reply("⚠️ Fitur promote hanya dapat digunakan di grup atau supergroup.")
+		return nil
+	}
+
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
 		_ = ctx.Reply("⚠️ " + err.Error())
@@ -248,7 +313,7 @@ func (p *Plugin) handlePromote(ctx *core.Context) error {
 	}
 
 	if err := ctx.Promote(targetPeer, title); err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Failed to promote user: %v", err))
+		_ = ctx.Reply(formatAdminError("promote user", err))
 		return err
 	}
 
@@ -261,6 +326,11 @@ func (p *Plugin) handlePromote(ctx *core.Context) error {
 }
 
 func (p *Plugin) handleDemote(ctx *core.Context) error {
+	if isPrivateOrUnsupported(ctx) {
+		_ = ctx.Reply("⚠️ Fitur demote hanya dapat digunakan di grup atau supergroup.")
+		return nil
+	}
+
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
 		_ = ctx.Reply("⚠️ " + err.Error())
@@ -273,7 +343,7 @@ func (p *Plugin) handleDemote(ctx *core.Context) error {
 	}
 
 	if err := ctx.Demote(targetPeer); err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Failed to demote user: %v", err))
+		_ = ctx.Reply(formatAdminError("demote user", err))
 		return err
 	}
 

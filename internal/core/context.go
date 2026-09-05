@@ -106,8 +106,9 @@ type Context struct {
 	Sender  *User
 	Perms   *Permissions
 
-	Svc    TelegramServicer
-	PeerID tg.InputPeerClass
+	Svc      TelegramServicer
+	PeerID   tg.InputPeerClass
+	Resolver PeerResolver
 }
 
 // SenderID returns the ID of the sender if present.
@@ -264,7 +265,7 @@ func (c *Context) DownloadMedia(destDir string) (string, error) {
 		return "", errors.New("no media found in message or reply")
 	}
 
-	if err := os.MkdirAll(destDir, 0755); err != nil {
+	if err := os.MkdirAll(destDir, 0700); err != nil {
 		return "", fmt.Errorf("failed to create destination directory: %w", err)
 	}
 
@@ -354,17 +355,48 @@ func (c *Context) TopicID() int {
 	return 0
 }
 
+// ResolveUser resolves a user reference (ID, @username, phone) using the injected PeerResolver.
+func (c *Context) ResolveUser(ref string) (tg.InputPeerClass, int64, error) {
+	if c != nil && c.Resolver != nil {
+		return c.Resolver.ResolveUser(c.Ctx, ref)
+	}
+	return nil, 0, ErrUnsupported
+}
+
+// ResolveChat resolves a chat reference (ID, @username) using the injected PeerResolver.
+func (c *Context) ResolveChat(ref string) (tg.InputPeerClass, error) {
+	if c != nil && c.Resolver != nil {
+		return c.Resolver.ResolveChat(c.Ctx, ref)
+	}
+	return nil, ErrUnsupported
+}
+
 // ResolveTargetUser extracts the target user's InputPeer and UserID from args (numeric ID or @username) or from replied message.
+// It leverages PeerResolver to obtain full access hashes whenever available.
 func (c *Context) ResolveTargetUser() (tg.InputPeerClass, int64, error) {
 	if len(c.Args) > 0 {
 		arg := c.Args[0]
 		// 1. Numeric ID
 		if uid, err := strconv.ParseInt(arg, 10, 64); err == nil && uid != 0 {
+			if c.Resolver != nil {
+				peer, id, err := c.Resolver.ResolveUser(c.Ctx, arg)
+				if err == nil && peer != nil {
+					return peer, id, nil
+				}
+			}
 			return &tg.InputPeerUser{UserID: uid}, uid, nil
 		}
 
 		// 2. Username (@username or username)
 		if strings.HasPrefix(arg, "@") || (!strings.ContainsAny(arg, " /.:") && len(arg) >= 3) {
+			if c.Resolver != nil {
+				peer, id, err := c.Resolver.ResolveUser(c.Ctx, arg)
+				if err == nil && peer != nil {
+					return peer, id, nil
+				}
+			}
+
+			// Fallback to legacy ResolveUsername
 			username := strings.TrimPrefix(arg, "@")
 			if c.Svc != nil {
 				resolved, err := c.ResolveUsername(username)
@@ -382,6 +414,12 @@ func (c *Context) ResolveTargetUser() (tg.InputPeerClass, int64, error) {
 	// 3. Reply to user
 	reply, err := c.GetReply()
 	if err == nil && reply != nil && reply.SenderID != 0 {
+		if c.Resolver != nil {
+			peer, id, err := c.Resolver.ResolveUser(c.Ctx, strconv.FormatInt(reply.SenderID, 10))
+			if err == nil && peer != nil {
+				return peer, id, nil
+			}
+		}
 		return &tg.InputPeerUser{UserID: reply.SenderID}, reply.SenderID, nil
 	}
 

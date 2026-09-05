@@ -25,7 +25,7 @@ func Open(dsn string) (*DB, error) {
 
 	if dsn != ":memory:" {
 		dir := filepath.Dir(dsn)
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0700); err != nil {
 			return nil, fmt.Errorf("failed to create db directory: %w", err)
 		}
 	}
@@ -61,60 +61,4 @@ func Open(dsn string) (*DB, error) {
 	}
 
 	return instance, nil
-}
-
-func (d *DB) migrate(ctx context.Context) error {
-	schema := `
-	CREATE TABLE IF NOT EXISTS sudo_users (
-		user_id INTEGER PRIMARY KEY,
-		added_at DATETIME NOT NULL,
-		added_by INTEGER NOT NULL
-	);
-
-	CREATE TABLE IF NOT EXISTS notes (
-		chat_id INTEGER NOT NULL,
-		name TEXT NOT NULL,
-		content TEXT NOT NULL,
-		created_at DATETIME NOT NULL,
-		updated_at DATETIME NOT NULL,
-		PRIMARY KEY (chat_id, name)
-	);
-
-	CREATE TABLE IF NOT EXISTS afk_status (
-		user_id INTEGER PRIMARY KEY,
-		is_afk BOOLEAN NOT NULL DEFAULT 0,
-		reason TEXT NOT NULL DEFAULT '',
-		since DATETIME NOT NULL
-	);
-
-	CREATE TABLE IF NOT EXISTS filters (
-		chat_id INTEGER NOT NULL,
-		keyword TEXT NOT NULL,
-		reply_text TEXT NOT NULL,
-		created_at DATETIME NOT NULL,
-		PRIMARY KEY (chat_id, keyword)
-	);
-
-	CREATE TABLE IF NOT EXISTS scheduled_jobs (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		chat_id INTEGER NOT NULL,
-		peer_type TEXT NOT NULL DEFAULT 'chat',
-		access_hash INTEGER NOT NULL DEFAULT 0,
-		action_type TEXT NOT NULL,
-		payload TEXT NOT NULL,
-		interval_seconds INTEGER DEFAULT 0,
-		next_run_at DATETIME NOT NULL,
-		created_at DATETIME NOT NULL
-	);
-	CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_next_run ON scheduled_jobs(next_run_at);
-
-	CREATE TABLE IF NOT EXISTS blacklists (
-		chat_id INTEGER NOT NULL,
-		word TEXT NOT NULL,
-		created_at DATETIME NOT NULL,
-		PRIMARY KEY (chat_id, word)
-	);
-	`
-	_, err := d.ExecContext(ctx, schema)
-	return err
 }

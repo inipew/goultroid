@@ -119,8 +119,8 @@ func TestInfoPlugin_Metadata(t *testing.T) {
 	}
 
 	cmds := p.Commands()
-	if len(cmds) != 2 {
-		t.Fatalf("expected 2 commands, got %d", len(cmds))
+	if len(cmds) != 3 {
+		t.Fatalf("expected 3 commands, got %d", len(cmds))
 	}
 	if cmds[0].Name != "whois" {
 		t.Errorf("expected whois, got %s", cmds[0].Name)
@@ -133,6 +133,12 @@ func TestInfoPlugin_Metadata(t *testing.T) {
 	}
 	if cmds[1].Permission != core.PermissionSudo {
 		t.Errorf("expected chatinfo to be PermissionSudo, got %v", cmds[1].Permission)
+	}
+	if cmds[2].Name != "id" {
+		t.Errorf("expected id, got %s", cmds[2].Name)
+	}
+	if cmds[2].Permission != core.PermissionEveryone {
+		t.Errorf("expected id to be PermissionEveryone, got %v", cmds[2].Permission)
 	}
 }
 
@@ -276,3 +282,44 @@ func TestEscapeHTML(t *testing.T) {
 		t.Errorf("unexpected escape result: %s", out)
 	}
 }
+
+func TestHandleID(t *testing.T) {
+	p := New()
+	svc := &mockService{}
+
+	ctx := &core.Context{
+		Ctx: context.Background(),
+		Chat: &core.Chat{
+			ID:    -100123456789,
+			Type:  "supergroup",
+			Title: "Test Supergroup",
+		},
+		Sender: &core.User{
+			ID: 55555,
+		},
+		Message: &core.Message{
+			ID:        100,
+			ReplyToID: 77,
+		},
+		PeerID: &tg.InputPeerChannel{ChannelID: 123456789},
+		Svc:    svc,
+	}
+
+	if err := p.handleID(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(svc.sent, "-100123456789") {
+		t.Errorf("expected chat id in output, got: %s", svc.sent)
+	}
+	if !strings.Contains(svc.sent, "supergroup") {
+		t.Errorf("expected chat type in output, got: %s", svc.sent)
+	}
+	if !strings.Contains(svc.sent, "55555") {
+		t.Errorf("expected sender id in output, got: %s", svc.sent)
+	}
+	if !strings.Contains(svc.sent, "8888") {
+		t.Errorf("expected reply sender id in output, got: %s", svc.sent)
+	}
+}
+

@@ -52,6 +52,9 @@ type ScheduledJob struct {
 	IntervalSeconds int64     `json:"interval_seconds"`
 	NextRunAt       time.Time `json:"next_run_at"`
 	CreatedAt       time.Time `json:"created_at"`
+	CreatedBy       int64     `json:"created_by"`
+	LastError       string    `json:"last_error"`
+	AttemptCount    int       `json:"attempt_count"`
 }
 
 // Repository defines data access methods for GoUltroid.
@@ -84,6 +87,7 @@ type Repository interface {
 	ListScheduledJobs(ctx context.Context, chatID int64) ([]ScheduledJob, error)
 	ListDueScheduledJobs(ctx context.Context, before time.Time) ([]ScheduledJob, error)
 	UpdateScheduledJobNextRun(ctx context.Context, id int64, nextRun time.Time) error
+	RecordJobFailure(ctx context.Context, id int64, lastError string) error
 	DeleteScheduledJob(ctx context.Context, id int64) error
 
 	// Blacklist
@@ -328,9 +332,9 @@ func (d *DB) CreateScheduledJob(ctx context.Context, job *ScheduledJob) (*Schedu
 		job.CreatedAt = time.Now()
 	}
 
-	query := `INSERT INTO scheduled_jobs (chat_id, peer_type, access_hash, action_type, payload, interval_seconds, next_run_at, created_at)
-	          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-	res, err := d.ExecContext(ctx, query, job.ChatID, job.PeerType, job.AccessHash, job.ActionType, job.Payload, job.IntervalSeconds, job.NextRunAt, job.CreatedAt)
+	query := `INSERT INTO scheduled_jobs (chat_id, peer_type, access_hash, action_type, payload, interval_seconds, next_run_at, created_at, created_by, last_error, attempt_count)
+	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	res, err := d.ExecContext(ctx, query, job.ChatID, job.PeerType, job.AccessHash, job.ActionType, job.Payload, job.IntervalSeconds, job.NextRunAt, job.CreatedAt, job.CreatedBy, job.LastError, job.AttemptCount)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert scheduled job: %w", err)
 	}
@@ -344,12 +348,12 @@ func (d *DB) CreateScheduledJob(ctx context.Context, job *ScheduledJob) (*Schedu
 }
 
 func (d *DB) GetScheduledJob(ctx context.Context, id int64) (*ScheduledJob, error) {
-	query := `SELECT id, chat_id, peer_type, access_hash, action_type, payload, interval_seconds, next_run_at, created_at
+	query := `SELECT id, chat_id, peer_type, access_hash, action_type, payload, interval_seconds, next_run_at, created_at, created_by, last_error, attempt_count
 	          FROM scheduled_jobs WHERE id = ?`
 	row := d.QueryRowContext(ctx, query, id)
 
 	var job ScheduledJob
-	if err := row.Scan(&job.ID, &job.ChatID, &job.PeerType, &job.AccessHash, &job.ActionType, &job.Payload, &job.IntervalSeconds, &job.NextRunAt, &job.CreatedAt); err != nil {
+	if err := row.Scan(&job.ID, &job.ChatID, &job.PeerType, &job.AccessHash, &job.ActionType, &job.Payload, &job.IntervalSeconds, &job.NextRunAt, &job.CreatedAt, &job.CreatedBy, &job.LastError, &job.AttemptCount); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -359,7 +363,7 @@ func (d *DB) GetScheduledJob(ctx context.Context, id int64) (*ScheduledJob, erro
 }
 
 func (d *DB) ListScheduledJobs(ctx context.Context, chatID int64) ([]ScheduledJob, error) {
-	query := `SELECT id, chat_id, peer_type, access_hash, action_type, payload, interval_seconds, next_run_at, created_at
+	query := `SELECT id, chat_id, peer_type, access_hash, action_type, payload, interval_seconds, next_run_at, created_at, created_by, last_error, attempt_count
 	          FROM scheduled_jobs WHERE chat_id = ? ORDER BY next_run_at ASC`
 	rows, err := d.QueryContext(ctx, query, chatID)
 	if err != nil {
@@ -370,7 +374,7 @@ func (d *DB) ListScheduledJobs(ctx context.Context, chatID int64) ([]ScheduledJo
 	var jobs []ScheduledJob
 	for rows.Next() {
 		var job ScheduledJob
-		if err := rows.Scan(&job.ID, &job.ChatID, &job.PeerType, &job.AccessHash, &job.ActionType, &job.Payload, &job.IntervalSeconds, &job.NextRunAt, &job.CreatedAt); err != nil {
+		if err := rows.Scan(&job.ID, &job.ChatID, &job.PeerType, &job.AccessHash, &job.ActionType, &job.Payload, &job.IntervalSeconds, &job.NextRunAt, &job.CreatedAt, &job.CreatedBy, &job.LastError, &job.AttemptCount); err != nil {
 			return nil, fmt.Errorf("failed to scan scheduled job: %w", err)
 		}
 		jobs = append(jobs, job)
@@ -379,7 +383,7 @@ func (d *DB) ListScheduledJobs(ctx context.Context, chatID int64) ([]ScheduledJo
 }
 
 func (d *DB) ListDueScheduledJobs(ctx context.Context, before time.Time) ([]ScheduledJob, error) {
-	query := `SELECT id, chat_id, peer_type, access_hash, action_type, payload, interval_seconds, next_run_at, created_at
+	query := `SELECT id, chat_id, peer_type, access_hash, action_type, payload, interval_seconds, next_run_at, created_at, created_by, last_error, attempt_count
 	          FROM scheduled_jobs WHERE next_run_at <= ? ORDER BY next_run_at ASC`
 	rows, err := d.QueryContext(ctx, query, before)
 	if err != nil {
@@ -390,7 +394,7 @@ func (d *DB) ListDueScheduledJobs(ctx context.Context, before time.Time) ([]Sche
 	var jobs []ScheduledJob
 	for rows.Next() {
 		var job ScheduledJob
-		if err := rows.Scan(&job.ID, &job.ChatID, &job.PeerType, &job.AccessHash, &job.ActionType, &job.Payload, &job.IntervalSeconds, &job.NextRunAt, &job.CreatedAt); err != nil {
+		if err := rows.Scan(&job.ID, &job.ChatID, &job.PeerType, &job.AccessHash, &job.ActionType, &job.Payload, &job.IntervalSeconds, &job.NextRunAt, &job.CreatedAt, &job.CreatedBy, &job.LastError, &job.AttemptCount); err != nil {
 			return nil, fmt.Errorf("failed to scan due scheduled job: %w", err)
 		}
 		jobs = append(jobs, job)
@@ -403,6 +407,22 @@ func (d *DB) UpdateScheduledJobNextRun(ctx context.Context, id int64, nextRun ti
 	res, err := d.ExecContext(ctx, query, nextRun, id)
 	if err != nil {
 		return fmt.Errorf("failed to update scheduled job next_run_at: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return errors.New("scheduled job not found")
+	}
+	return nil
+}
+
+func (d *DB) RecordJobFailure(ctx context.Context, id int64, lastError string) error {
+	query := "UPDATE scheduled_jobs SET attempt_count = attempt_count + 1, last_error = ? WHERE id = ?"
+	res, err := d.ExecContext(ctx, query, lastError, id)
+	if err != nil {
+		return fmt.Errorf("failed to record scheduled job failure: %w", err)
 	}
 	rows, err := res.RowsAffected()
 	if err != nil {

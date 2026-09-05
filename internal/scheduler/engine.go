@@ -114,6 +114,10 @@ func (e *Engine) RegisterPeriodicTask(name string, interval time.Duration, task 
 	e.tasksMu.Lock()
 	defer e.tasksMu.Unlock()
 
+	if e.ctx == nil || e.cancel == nil {
+		return errors.New("scheduler engine is not running: call Start() first")
+	}
+
 	if cancelExisting, exists := e.tasks[name]; exists {
 		cancelExisting()
 	}
@@ -160,7 +164,7 @@ func (e *Engine) UnregisterPeriodicTask(name string) error {
 	return errors.New("task not found")
 }
 
-// ScheduleOnce saves a one-off task (interval = 0) to be run at a specific future time.
+// ScheduleOnce saves a one-shot task (interval == 0) to be run at a specific time.
 func (e *Engine) ScheduleOnce(
 	ctx context.Context,
 	chatID int64,
@@ -169,9 +173,14 @@ func (e *Engine) ScheduleOnce(
 	when time.Time,
 	actionType string,
 	payload string,
+	creatorID ...int64,
 ) (*database.ScheduledJob, error) {
 	if peerType == "" {
 		peerType = "chat"
+	}
+	var createdBy int64
+	if len(creatorID) > 0 {
+		createdBy = creatorID[0]
 	}
 	job := &database.ScheduledJob{
 		ChatID:          chatID,
@@ -182,6 +191,7 @@ func (e *Engine) ScheduleOnce(
 		IntervalSeconds: 0,
 		NextRunAt:       when,
 		CreatedAt:       time.Now(),
+		CreatedBy:       createdBy,
 	}
 	return e.db.CreateScheduledJob(ctx, job)
 }
@@ -195,12 +205,17 @@ func (e *Engine) ScheduleRecurring(
 	interval time.Duration,
 	actionType string,
 	payload string,
+	creatorID ...int64,
 ) (*database.ScheduledJob, error) {
 	if interval <= 0 {
 		return nil, errors.New("interval must be greater than zero")
 	}
 	if peerType == "" {
 		peerType = "chat"
+	}
+	var createdBy int64
+	if len(creatorID) > 0 {
+		createdBy = creatorID[0]
 	}
 	sec := int64(interval.Seconds())
 	job := &database.ScheduledJob{
@@ -212,6 +227,7 @@ func (e *Engine) ScheduleRecurring(
 		IntervalSeconds: sec,
 		NextRunAt:       time.Now().Add(interval),
 		CreatedAt:       time.Now(),
+		CreatedBy:       createdBy,
 	}
 	return e.db.CreateScheduledJob(ctx, job)
 }
@@ -251,10 +267,22 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) {
 		j := job
 		// Immediately update or delete in DB to prevent re-fetching on the next tick
 		if j.IntervalSeconds == 0 {
-			_ = e.db.DeleteScheduledJob(ctx, j.ID)
+			if err := e.db.DeleteScheduledJob(ctx, j.ID); err != nil {
+				e.logger.Error("failed to delete one-shot scheduled job, skipping execution",
+					zap.Int64("job_id", j.ID),
+					zap.Error(err),
+				)
+				continue
+			}
 		} else {
 			nextRun := now.Add(time.Duration(j.IntervalSeconds) * time.Second)
-			_ = e.db.UpdateScheduledJobNextRun(ctx, j.ID, nextRun)
+			if err := e.db.UpdateScheduledJobNextRun(ctx, j.ID, nextRun); err != nil {
+				e.logger.Error("failed to update recurring scheduled job next run, skipping execution",
+					zap.Int64("job_id", j.ID),
+					zap.Error(err),
+				)
+				continue
+			}
 		}
 
 		go e.executeJob(ctx, j)
@@ -298,6 +326,7 @@ func (e *Engine) executeSendMessage(ctx context.Context, job database.ScheduledJ
 
 	if _, err := svc.SendMessage(ctx, peer, text); err != nil {
 		e.logger.Warn("failed to send scheduled message", zap.Int64("chat_id", job.ChatID), zap.Error(err))
+		_ = e.db.RecordJobFailure(ctx, job.ID, err.Error())
 	}
 }
 
@@ -329,22 +358,23 @@ func (e *Engine) executeCommand(ctx context.Context, job database.ScheduledJob) 
 	}
 
 	peer := reconstructInputPeer(job.PeerType, job.ChatID, job.AccessHash)
-	ownerID := int64(0)
-	if e.perms != nil {
-		ownerID = e.perms.OwnerID
+	callerID := job.CreatedBy
+	if callerID == 0 && e.perms != nil {
+		callerID = e.perms.OwnerID
 	}
 
 	coreMsg := &core.Message{
-		ID:   0,
-		Text: job.Payload,
-		Date: time.Now(),
+		ID:         0,
+		Text:       job.Payload,
+		Date:       time.Now(),
+		IsOutgoing: true,
 	}
 	chat := &core.Chat{
 		ID:   job.ChatID,
 		Type: job.PeerType,
 	}
 	sender := &core.User{
-		ID: ownerID,
+		ID: callerID,
 	}
 
 	coreCtx := &core.Context{
@@ -360,8 +390,18 @@ func (e *Engine) executeCommand(ctx context.Context, job database.ScheduledJob) 
 		PeerID:  peer,
 	}
 
-	if err := cmd.Handler(coreCtx); err != nil {
+	chain := core.NewChain(
+		core.RecoveryMiddleware(e.logger),
+		core.LoggingMiddleware(e.logger),
+		core.PermissionMiddleware(cmd),
+		core.FilterMiddleware(cmd),
+		core.TimeoutMiddleware(cmd, 30*time.Second),
+	)
+
+	handler := chain.Then(cmd.Handler)
+	if err := handler(coreCtx); err != nil {
 		e.logger.Warn("scheduled command returned error", zap.String("command", parsed.Name), zap.Error(err))
+		_ = e.db.RecordJobFailure(ctx, job.ID, err.Error())
 	}
 }
 
@@ -371,7 +411,7 @@ func reconstructInputPeer(peerType string, chatID int64, accessHash int64) tg.In
 		return &tg.InputPeerSelf{}
 	case "user":
 		return &tg.InputPeerUser{UserID: chatID, AccessHash: accessHash}
-	case "channel":
+	case "channel", "supergroup":
 		return &tg.InputPeerChannel{ChannelID: chatID, AccessHash: accessHash}
 	default:
 		return &tg.InputPeerChat{ChatID: chatID}

@@ -17,3 +17,18 @@ type Plugin interface {
 type Shutdowner interface {
 	Shutdown() error
 }
+
+// Metadata describes authorship, version, and details of a plugin.
+type Metadata struct {
+	Name        string `json:"name"`
+	Version     string `json:"version"`
+	Author      string `json:"author"`
+	Description string `json:"description"`
+}
+
+// DescribedPlugin is an optional interface that plugins can implement
+// to provide rich metadata.
+type DescribedPlugin interface {
+	Plugin
+	Metadata() Metadata
+}

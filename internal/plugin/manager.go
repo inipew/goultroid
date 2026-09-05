@@ -10,18 +10,20 @@ import (
 
 // Manager manages the lifecycle and registration of plugins.
 type Manager struct {
-	router  *core.Router
-	plugins map[string]Plugin
-	list    []Plugin
-	mu      sync.RWMutex
+	router   *core.Router
+	plugins  map[string]Plugin
+	metadata map[string]Metadata
+	list     []Plugin
+	mu       sync.RWMutex
 }
 
 // NewManager creates a new Manager wired to the given command Router.
 func NewManager(router *core.Router) *Manager {
 	return &Manager{
-		router:  router,
-		plugins: make(map[string]Plugin),
-		list:    make([]Plugin, 0),
+		router:   router,
+		plugins:  make(map[string]Plugin),
+		metadata: make(map[string]Metadata),
+		list:     make([]Plugin, 0),
 	}
 }
 
@@ -53,7 +55,25 @@ func (m *Manager) Register(p Plugin) error {
 		}
 	}
 
+	var meta Metadata
+	if dp, ok := p.(DescribedPlugin); ok {
+		meta = dp.Metadata()
+	} else {
+		meta = Metadata{
+			Name:        name,
+			Version:     "1.0.0",
+			Description: fmt.Sprintf("%s plugin", name),
+		}
+	}
+	if meta.Name == "" {
+		meta.Name = name
+	}
+	if meta.Version == "" {
+		meta.Version = "1.0.0"
+	}
+
 	m.plugins[name] = p
+	m.metadata[name] = meta
 	m.list = append(m.list, p)
 	return nil
 }
@@ -75,6 +95,27 @@ func (m *Manager) Find(name string) (Plugin, bool) {
 
 	p, ok := m.plugins[strings.ToLower(strings.TrimSpace(name))]
 	return p, ok
+}
+
+// GetMetadata retrieves metadata for a registered plugin.
+func (m *Manager) GetMetadata(name string) (Metadata, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	meta, ok := m.metadata[strings.ToLower(strings.TrimSpace(name))]
+	return meta, ok
+}
+
+// AllMetadata returns a copy of all registered plugin metadata.
+func (m *Manager) AllMetadata() map[string]Metadata {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	res := make(map[string]Metadata, len(m.metadata))
+	for k, v := range m.metadata {
+		res[k] = v
+	}
+	return res
 }
 
 // Shutdown invokes Shutdown on all registered plugins that implement Shutdowner.

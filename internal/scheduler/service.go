@@ -24,8 +24,8 @@ type Service interface {
 	UnregisterPeriodicTask(name string) error
 
 	// Persistent scheduled jobs for users & plugins (persisted in SQLite)
-	ScheduleOnce(ctx context.Context, chatID int64, peerType string, accessHash int64, when time.Time, actionType string, payload string) (*database.ScheduledJob, error)
-	ScheduleRecurring(ctx context.Context, chatID int64, peerType string, accessHash int64, interval time.Duration, actionType string, payload string) (*database.ScheduledJob, error)
+	ScheduleOnce(ctx context.Context, chatID int64, peerType string, accessHash int64, when time.Time, actionType string, payload string, creatorID ...int64) (*database.ScheduledJob, error)
+	ScheduleRecurring(ctx context.Context, chatID int64, peerType string, accessHash int64, interval time.Duration, actionType string, payload string, creatorID ...int64) (*database.ScheduledJob, error)
 
 	// Cancellation & Listing
 	Cancel(ctx context.Context, jobID int64) error

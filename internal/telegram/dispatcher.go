@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -20,6 +21,7 @@ type Dispatcher struct {
 	logger   *zap.Logger
 	cooldown *core.CooldownTracker
 	selfID   int64
+	resolver core.PeerResolver
 
 	messageHandlers []MessageHandler
 	mu              sync.RWMutex
@@ -62,6 +64,19 @@ func (d *Dispatcher) SetService(svc core.TelegramServicer) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.svc = svc
+}
+
+// SetResolver updates the PeerResolver instance.
+func (d *Dispatcher) SetResolver(resolver core.PeerResolver) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.resolver = resolver
+}
+
+func (d *Dispatcher) getResolver() core.PeerResolver {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.resolver
 }
 
 // SetSelfID sets the current logged-in user ID.
@@ -174,14 +189,23 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	case *tg.PeerUser:
 		chat.ID = p.UserID
 		chat.Type = "private"
+		var accessHash int64
 		if u, ok := e.Users[p.UserID]; ok {
 			chat.Username = u.Username
 			chat.Title = u.FirstName + " " + u.LastName
-			peerInput = &tg.InputPeerUser{UserID: p.UserID, AccessHash: u.AccessHash}
+			accessHash = u.AccessHash
 		} else if p.UserID == d.getSelfID() {
 			peerInput = &tg.InputPeerSelf{}
-		} else {
-			peerInput = &tg.InputPeerUser{UserID: p.UserID, AccessHash: 0}
+		}
+		if peerInput == nil {
+			if accessHash == 0 && d.getResolver() != nil {
+				if resolved, _, err := d.getResolver().ResolveUser(ctx, strconv.FormatInt(p.UserID, 10)); err == nil {
+					if ipu, ok := resolved.(*tg.InputPeerUser); ok && ipu.AccessHash != 0 {
+						accessHash = ipu.AccessHash
+					}
+				}
+			}
+			peerInput = &tg.InputPeerUser{UserID: p.UserID, AccessHash: accessHash}
 		}
 	case *tg.PeerChat:
 		chat.ID = p.ChatID
@@ -203,6 +227,13 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 				chat.Type = "channel"
 			}
 			accessHash = ch.AccessHash
+		}
+		if accessHash == 0 && d.getResolver() != nil {
+			if resolved, err := d.getResolver().ResolveChat(ctx, fmt.Sprintf("-100%d", p.ChannelID)); err == nil {
+				if ipc, ok := resolved.(*tg.InputPeerChannel); ok && ipc.AccessHash != 0 {
+					accessHash = ipc.AccessHash
+				}
+			}
 		}
 		peerInput = &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: accessHash}
 	}
@@ -244,9 +275,10 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		Message: coreMsg,
 		Chat:    chat,
 		Sender:  sender,
-		Perms:   d.perms,
-		Svc:     d.getService(),
-		PeerID:  peerInput,
+		Perms:    d.perms,
+		Svc:      d.getService(),
+		PeerID:   peerInput,
+		Resolver: d.getResolver(),
 	}
 
 	chain := core.NewChain(

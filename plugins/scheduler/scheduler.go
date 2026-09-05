@@ -99,7 +99,7 @@ func (p *Plugin) handleRemind(ctx *core.Context) error {
 	peerType, accessHash := extractPeerInfo(ctx.PeerID)
 	when := time.Now().Add(dur)
 
-	job, err := p.sched.ScheduleOnce(ctx.Ctx, chatID, peerType, accessHash, when, scheduler.ActionMessage, text)
+	job, err := p.sched.ScheduleOnce(ctx.Ctx, chatID, peerType, accessHash, when, scheduler.ActionMessage, text, ctx.SenderID())
 	if err != nil {
 		_ = ctx.Reply(fmt.Sprintf("❌ Failed to schedule reminder: %v", err))
 		return err
@@ -160,7 +160,7 @@ func (p *Plugin) handleSchedule(ctx *core.Context) error {
 	peerType, accessHash := extractPeerInfo(ctx.PeerID)
 
 	if isRecurring {
-		job, err := p.sched.ScheduleRecurring(ctx.Ctx, chatID, peerType, accessHash, dur, actionType, payload)
+		job, err := p.sched.ScheduleRecurring(ctx.Ctx, chatID, peerType, accessHash, dur, actionType, payload, ctx.SenderID())
 		if err != nil {
 			_ = ctx.Reply(fmt.Sprintf("❌ Failed to create recurring schedule: %v", err))
 			return err
@@ -169,7 +169,7 @@ func (p *Plugin) handleSchedule(ctx *core.Context) error {
 	}
 
 	when := time.Now().Add(dur)
-	job, err := p.sched.ScheduleOnce(ctx.Ctx, chatID, peerType, accessHash, when, actionType, payload)
+	job, err := p.sched.ScheduleOnce(ctx.Ctx, chatID, peerType, accessHash, when, actionType, payload, ctx.SenderID())
 	if err != nil {
 		_ = ctx.Reply(fmt.Sprintf("❌ Failed to create schedule: %v", err))
 		return err
@@ -208,6 +208,9 @@ func (p *Plugin) handleList(ctx *core.Context) error {
 
 		fmt.Fprintf(&sb, "• <b>#%d</b> [%s | %s] <code>%s</code>\n  └ <i>Due in:</i> <code>%s</code>\n",
 			j.ID, mode, j.ActionType, payloadSnippet, remaining)
+		if j.LastError != "" {
+			fmt.Fprintf(&sb, "  └ ⚠️ <i>Last Error (%d attempts):</i> <code>%s</code>\n", j.AttemptCount, j.LastError)
+		}
 	}
 
 	return ctx.Reply(sb.String())

@@ -13,6 +13,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/plugin"
 )
 
 // RestartState stores metadata across bot restarts.
@@ -62,6 +63,16 @@ func (p *Plugin) runCmd(ctx context.Context, name string, args ...string) ([]byt
 // Name returns the plugin identifier.
 func (p *Plugin) Name() string {
 	return "system"
+}
+
+// Metadata returns rich information about the system plugin.
+func (p *Plugin) Metadata() plugin.Metadata {
+	return plugin.Metadata{
+		Name:        "system",
+		Version:     "1.0.0",
+		Author:      "GoUltroid Team",
+		Description: "Shell command execution and userbot lifecycle management",
+	}
 }
 
 // Description returns a short summary of the plugin.
@@ -241,9 +252,9 @@ func (p *Plugin) handleRestart(ctx *core.Context) error {
 
 	// Save state to file
 	if p.restartStatePath != "" {
-		_ = os.MkdirAll(filepath.Dir(p.restartStatePath), 0755)
+		_ = os.MkdirAll(filepath.Dir(p.restartStatePath), 0700)
 		data, _ := json.Marshal(state)
-		_ = os.WriteFile(p.restartStatePath, data, 0644)
+		_ = os.WriteFile(p.restartStatePath, data, 0600)
 	}
 
 	// Trigger self-exec on Linux

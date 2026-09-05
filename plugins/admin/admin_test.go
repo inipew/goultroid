@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 type mockService struct {
 	core.MockTelegramServicer
 	sent          string
+	errToReturn   error
 	banCalled     bool
 	unbanCalled   bool
 	kickCalled    bool
@@ -60,28 +62,31 @@ func (m *mockService) DownloadFile(ctx context.Context, location tg.InputFileLoc
 }
 func (m *mockService) BanUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, untilDate int) error {
 	m.banCalled = true
-	return nil
+	return m.errToReturn
 }
 func (m *mockService) UnbanUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
 	m.unbanCalled = true
-	return nil
+	return m.errToReturn
 }
 func (m *mockService) KickUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
 	m.kickCalled = true
-	return nil
+	return m.errToReturn
 }
 func (m *mockService) MuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, untilDate int) error {
 	m.muteCalled = true
-	return nil
+	return m.errToReturn
 }
 func (m *mockService) UnmuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
 	m.unmuteCalled = true
-	return nil
+	return m.errToReturn
 }
 func (m *mockService) PurgeMessages(ctx context.Context, peer tg.InputPeerClass, topicID int, fromID, toID int) (int, error) {
 	m.purgeCalled = true
 	m.purgeTopicID = topicID
 	m.purgeCount = 12
+	if m.errToReturn != nil {
+		return 0, m.errToReturn
+	}
 	return 12, nil
 }
 func (m *mockService) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
@@ -96,11 +101,11 @@ func (m *mockService) ResolveUsername(ctx context.Context, username string) (*tg
 func (m *mockService) PromoteAdmin(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, title string) error {
 	m.promoteCalled = true
 	m.promoteTitle = title
-	return nil
+	return m.errToReturn
 }
 func (m *mockService) DemoteAdmin(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
 	m.demoteCalled = true
-	return nil
+	return m.errToReturn
 }
 
 func TestAdminPlugin(t *testing.T) {
@@ -253,5 +258,101 @@ func TestParseDuration(t *testing.T) {
 		if err != nil || got != c.exp {
 			t.Errorf("parseDuration(%q) = %v (err=%v), expected %v", c.in, got, err, c.exp)
 		}
+	}
+}
+
+func TestAdminPluginErrorsAndGuards(t *testing.T) {
+	p := New()
+	cmds := p.Commands()
+	cmdMap := make(map[string]core.Command)
+	for _, c := range cmds {
+		cmdMap[c.Name] = c
+	}
+
+	ownerID := int64(1001)
+	perms := core.NewPermissions(ownerID, nil)
+	svc := &mockService{}
+
+	// 1. Private chat guard
+	privCtx := &core.Context{
+		Ctx:     context.Background(),
+		Sender:  &core.User{ID: ownerID},
+		Chat:    &core.Chat{ID: 1001, Type: "private"},
+		Message: &core.Message{ID: 1},
+		Perms:   perms,
+		Svc:     svc,
+		PeerID:  &tg.InputPeerUser{UserID: 1001},
+		Args:    []string{"2002"},
+	}
+
+	adminCmds := []string{"ban", "unban", "kick", "mute", "unmute", "promote", "demote"}
+	for _, name := range adminCmds {
+		err := cmdMap[name].Handler(privCtx)
+		if err != nil {
+			t.Errorf("expected %s in private chat to return nil after friendly message, got err: %v", name, err)
+		}
+		if !strings.Contains(svc.sent, "hanya dapat digunakan di grup atau supergroup") {
+			t.Errorf("expected friendly private chat warning for %s, got: %s", name, svc.sent)
+		}
+	}
+
+	// 2. Purge without reply
+	groupCtx := &core.Context{
+		Ctx:     context.Background(),
+		Sender:  &core.User{ID: ownerID},
+		Chat:    &core.Chat{ID: -100123456, Type: "supergroup"},
+		Message: &core.Message{ID: 10, ReplyToID: 0},
+		Perms:   perms,
+		Svc:     svc,
+		PeerID:  &tg.InputPeerChannel{ChannelID: 123456},
+		Args:    []string{"2002"},
+	}
+
+	err := cmdMap["purge"].Handler(groupCtx)
+	if err == nil {
+		t.Errorf("expected purge without reply to return error")
+	}
+	if !strings.Contains(svc.sent, "Harap reply ke pesan awal") {
+		t.Errorf("expected reply prompt for purge, got: %s", svc.sent)
+	}
+
+	// 3. Permission denied error handling
+	svc.errToReturn = core.ErrPermissionDenied
+	err = cmdMap["ban"].Handler(groupCtx)
+	if err == nil {
+		t.Errorf("expected error on permission denied")
+	}
+	if !strings.Contains(svc.sent, "Anda/bot harus menjadi Admin") {
+		t.Errorf("expected admin notice on ErrPermissionDenied, got: %s", svc.sent)
+	}
+
+	// 4. USER_ADMIN_INVALID
+	svc.errToReturn = errors.New("rpc: USER_ADMIN_INVALID")
+	err = cmdMap["kick"].Handler(groupCtx)
+	if err == nil {
+		t.Errorf("expected error on USER_ADMIN_INVALID")
+	}
+	if !strings.Contains(svc.sent, "Target adalah admin") {
+		t.Errorf("expected target admin notice, got: %s", svc.sent)
+	}
+
+	// 5. ADMINS_TOO_MUCH
+	svc.errToReturn = errors.New("rpc: ADMINS_TOO_MUCH")
+	err = cmdMap["promote"].Handler(groupCtx)
+	if err == nil {
+		t.Errorf("expected error on ADMINS_TOO_MUCH")
+	}
+	if !strings.Contains(svc.sent, "Batas maksimal admin") {
+		t.Errorf("expected admins limit notice, got: %s", svc.sent)
+	}
+
+	// 6. ErrUnsupported
+	svc.errToReturn = core.ErrUnsupported
+	err = cmdMap["mute"].Handler(groupCtx)
+	if err == nil {
+		t.Errorf("expected error on ErrUnsupported")
+	}
+	if !strings.Contains(svc.sent, "hanya didukung pada Supergroup") {
+		t.Errorf("expected supergroup notice, got: %s", svc.sent)
 	}
 }

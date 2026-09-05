@@ -57,10 +57,28 @@ func (p *Plugin) Commands() []core.Command {
 	}
 }
 
+func isPrivateOrUnsupported(ctx *core.Context) bool {
+	if ctx.Chat != nil && ctx.Chat.Type == "private" {
+		return true
+	}
+	if _, ok := ctx.PeerID.(*tg.InputPeerUser); ok {
+		return true
+	}
+	if _, ok := ctx.PeerID.(*tg.InputPeerSelf); ok {
+		return true
+	}
+	return false
+}
+
 func (p *Plugin) handleLock(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
 		_ = ctx.Reply("⚠️ Usage: <code>.lock &lt;permission&gt;</code>\nValid options: <code>messages</code>, <code>media</code>, <code>stickers</code>, <code>gifs</code>, <code>links</code>, <code>polls</code>, <code>invites</code>, <code>pin</code>, <code>info</code>, <code>all</code>")
 		return errors.New("missing lock permission argument")
+	}
+
+	if isPrivateOrUnsupported(ctx) {
+		_ = ctx.Reply("⚠️ Fitur locks permission hanya dapat digunakan di grup atau supergroup.")
+		return nil
 	}
 
 	perm := ctx.Args[0]
@@ -72,6 +90,17 @@ func (p *Plugin) handleLock(ctx *core.Context) error {
 	}
 
 	if err := ctx.EditChatDefaultBannedRights(updated); err != nil {
+		if strings.Contains(err.Error(), "CHAT_NOT_MODIFIED") || strings.Contains(err.Error(), "RIGHTS_NOT_MODIFIED") {
+			return ctx.Reply(fmt.Sprintf("🔒 <b>Permission:</b> <code>%s</code> sudah dalam keadaan terkunci (locked).", strings.ToLower(perm)))
+		}
+		if errors.Is(err, core.ErrUnsupported) {
+			_ = ctx.Reply("⚠️ Fitur locks Telegram hanya didukung pada Supergroup.")
+			return err
+		}
+		if errors.Is(err, core.ErrPermissionDenied) || strings.Contains(err.Error(), "CHAT_ADMIN_REQUIRED") {
+			_ = ctx.Reply("❌ Gagal mengatur lock: Anda/bot harus menjadi Admin dengan hak ubah permission di grup ini.")
+			return err
+		}
 		_ = ctx.Reply(fmt.Sprintf("❌ Failed to lock permission: %v", err))
 		return err
 	}
@@ -85,6 +114,11 @@ func (p *Plugin) handleUnlock(ctx *core.Context) error {
 		return errors.New("missing unlock permission argument")
 	}
 
+	if isPrivateOrUnsupported(ctx) {
+		_ = ctx.Reply("⚠️ Fitur locks permission hanya dapat digunakan di grup atau supergroup.")
+		return nil
+	}
+
 	perm := ctx.Args[0]
 	current := getCurrentRights(ctx)
 	updated, err := applyLock(current, perm, false)
@@ -94,6 +128,17 @@ func (p *Plugin) handleUnlock(ctx *core.Context) error {
 	}
 
 	if err := ctx.EditChatDefaultBannedRights(updated); err != nil {
+		if strings.Contains(err.Error(), "CHAT_NOT_MODIFIED") || strings.Contains(err.Error(), "RIGHTS_NOT_MODIFIED") {
+			return ctx.Reply(fmt.Sprintf("🔓 <b>Permission:</b> <code>%s</code> sudah dalam keadaan terbuka (unlocked).", strings.ToLower(perm)))
+		}
+		if errors.Is(err, core.ErrUnsupported) {
+			_ = ctx.Reply("⚠️ Fitur locks Telegram hanya didukung pada Supergroup.")
+			return err
+		}
+		if errors.Is(err, core.ErrPermissionDenied) || strings.Contains(err.Error(), "CHAT_ADMIN_REQUIRED") {
+			_ = ctx.Reply("❌ Gagal mengatur lock: Anda/bot harus menjadi Admin dengan hak ubah permission di grup ini.")
+			return err
+		}
 		_ = ctx.Reply(fmt.Sprintf("❌ Failed to unlock permission: %v", err))
 		return err
 	}
@@ -102,6 +147,10 @@ func (p *Plugin) handleUnlock(ctx *core.Context) error {
 }
 
 func (p *Plugin) handleLocks(ctx *core.Context) error {
+	if isPrivateOrUnsupported(ctx) {
+		_ = ctx.Reply("⚠️ Fitur locks permission hanya dapat digunakan di grup atau supergroup.")
+		return nil
+	}
 	rights := getCurrentRights(ctx)
 	return ctx.Reply(formatLocks(rights))
 }

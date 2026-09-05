@@ -187,4 +187,28 @@ func TestSudoPlugin(t *testing.T) {
 	if !perms.IsSudo(3003) {
 		t.Errorf("expected 3003 to be sudo via reply")
 	}
+
+	// 9. addsudo with username
+	ctxUsername := *baseCtx
+	ctxUsername.Resolver = &mockResolver{}
+	ctxUsername.Args = []string{"@helper"}
+	if err := cmdMap["addsudo"].Handler(&ctxUsername); err != nil {
+		t.Fatalf("unexpected error adding via username: %v", err)
+	}
+	if !perms.IsSudo(4004) {
+		t.Errorf("expected 4004 to be sudo via username")
+	}
+}
+
+type mockResolver struct{}
+
+func (m *mockResolver) ResolveUser(ctx context.Context, ref string) (tg.InputPeerClass, int64, error) {
+	if strings.TrimPrefix(ref, "@") == "helper" {
+		return &tg.InputPeerUser{UserID: 4004}, 4004, nil
+	}
+	return nil, 0, core.ErrNotFound
+}
+
+func (m *mockResolver) ResolveChat(ctx context.Context, ref string) (tg.InputPeerClass, error) {
+	return nil, nil
 }

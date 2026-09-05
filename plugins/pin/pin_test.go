@@ -11,10 +11,11 @@ import (
 
 type mockService struct {
 	core.MockTelegramServicer
-	sent     string
-	pinnedID int
-	silent   bool
-	unpinned bool
+	sent        string
+	pinnedID    int
+	silent      bool
+	unpinned    bool
+	errToReturn error
 }
 
 func (m *mockService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
@@ -36,11 +37,11 @@ func (m *mockService) GetMessage(ctx context.Context, peer tg.InputPeerClass, ms
 func (m *mockService) PinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, silent bool) error {
 	m.pinnedID = msgID
 	m.silent = silent
-	return nil
+	return m.errToReturn
 }
 func (m *mockService) UnpinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) error {
 	m.unpinned = true
-	return nil
+	return m.errToReturn
 }
 func (m *mockService) ForwardMessages(ctx context.Context, fromPeer, toPeer tg.InputPeerClass, msgIDs []int) error {
 	return nil
@@ -127,5 +128,45 @@ func TestPinPlugin(t *testing.T) {
 	}
 	if !svc.unpinned {
 		t.Errorf("expected unpinned=true")
+	}
+}
+
+func TestPinPluginErrors(t *testing.T) {
+	p := New()
+	cmds := p.Commands()
+
+	svc := &mockService{
+		errToReturn: core.ErrPermissionDenied,
+	}
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		Message: &core.Message{ID: 1, ReplyToID: 42},
+		Svc:     svc,
+		PeerID:  &tg.InputPeerChannel{ChannelID: 12345},
+	}
+
+	// 1. Pin permission error
+	if err := cmds[0].Handler(ctx); err == nil {
+		t.Errorf("expected pin to fail with permission denied")
+	}
+	if !strings.Contains(svc.sent, "bot/akun harus menjadi Admin") {
+		t.Errorf("expected admin notice, got: %s", svc.sent)
+	}
+
+	// 2. Unpin permission error
+	if err := cmds[1].Handler(ctx); err == nil {
+		t.Errorf("expected unpin to fail with permission denied")
+	}
+	if !strings.Contains(svc.sent, "bot/akun harus menjadi Admin") {
+		t.Errorf("expected admin notice, got: %s", svc.sent)
+	}
+
+	// 3. Unsupported error
+	svc.errToReturn = core.ErrUnsupported
+	if err := cmds[0].Handler(ctx); err == nil {
+		t.Errorf("expected pin to fail with unsupported")
+	}
+	if !strings.Contains(svc.sent, "tidak didukung") {
+		t.Errorf("expected unsupported notice, got: %s", svc.sent)
 	}
 }
