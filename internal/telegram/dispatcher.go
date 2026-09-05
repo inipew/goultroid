@@ -19,7 +19,8 @@ type Dispatcher struct {
 	svc      core.TelegramServicer
 	logger   *zap.Logger
 	cooldown *core.CooldownTracker
-	selfID          int64
+	selfID   int64
+
 	messageHandlers []MessageHandler
 	mu              sync.RWMutex
 }
@@ -34,6 +35,9 @@ func NewDispatcher(
 	svc core.TelegramServicer,
 	logger *zap.Logger,
 ) *Dispatcher {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	return &Dispatcher{
 		router:   router,
 		perms:    perms,
@@ -45,6 +49,9 @@ func NewDispatcher(
 
 // AddMessageHandler registers an interceptor for raw message processing (e.g. AFK, filters).
 func (d *Dispatcher) AddMessageHandler(h MessageHandler) {
+	if h == nil {
+		return
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.messageHandlers = append(d.messageHandlers, h)
@@ -112,7 +119,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		cmdName = parsed.Name
 	}
 
-	// Run message interceptors (e.g. AFK, filters)
+	// Run message interceptors (e.g. AFK, filters).
 	d.mu.RLock()
 	handlers := make([]MessageHandler, len(d.messageHandlers))
 	copy(handlers, d.messageHandlers)
@@ -185,8 +192,6 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		}
 	case *tg.PeerChannel:
 		chat.ID = p.ChannelID
-		// Default to supergroup; upgraded to channel if entity says otherwise.
-		// Most user-facing groups are megagroups (supergroups).
 		chat.Type = "supergroup"
 		var accessHash int64
 		if ch, ok := e.Channels[p.ChannelID]; ok {
@@ -202,20 +207,16 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		peerInput = &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: accessHash}
 	}
 
-	if d.logger != nil {
-		d.logger.Debug("dispatch: peer resolved",
-			zap.String("peerType", fmt.Sprintf("%T", msg.PeerID)),
-			zap.String("chatType", chat.Type),
-			zap.Int64("chatID", chat.ID),
-			zap.Bool("msgOut", msg.Out),
-			zap.String("command", cmdName),
-		)
-	}
+	d.logger.Debug("dispatch: peer resolved",
+		zap.String("peerType", fmt.Sprintf("%T", msg.PeerID)),
+		zap.String("chatType", chat.Type),
+		zap.Int64("chatID", chat.ID),
+		zap.Bool("msgOut", msg.Out),
+		zap.String("command", cmdName),
+	)
 
-	if peerInput == nil {
-		if msg.Out {
-			peerInput = &tg.InputPeerSelf{}
-		}
+	if peerInput == nil && msg.Out {
+		peerInput = &tg.InputPeerSelf{}
 	}
 
 	sender := &core.User{}
@@ -236,7 +237,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	coreMsg.SenderID = sender.ID
 
 	coreCtx := &core.Context{
-		Ctx:     ctx,
+		Ctx:     context.WithoutCancel(ctx),
 		Command: parsed.Name,
 		Args:    parsed.Args,
 		RawArgs: parsed.RawArgs,
@@ -259,7 +260,8 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 
 	handler := chain.Then(cmd.Handler)
 
-	// Execute command concurrently
+	// Execute command concurrently. The update callback context can be short-lived;
+	// the detached context remains valid until the command timeout or app shutdown policy.
 	go func() {
 		if err := handler(coreCtx); err != nil {
 			if errors.Is(err, core.ErrPermissionDenied) || errors.Is(err, core.ErrCooldownActive) {
@@ -269,12 +271,10 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 				_ = coreCtx.Reply("⚠️ " + err.Error())
 				return
 			}
-			if d.logger != nil {
-				d.logger.Error("command failed",
-					zap.String("command", parsed.Name),
-					zap.Error(err),
-				)
-			}
+			d.logger.Error("command failed",
+				zap.String("command", parsed.Name),
+				zap.Error(err),
+			)
 		}
 	}()
 
