@@ -80,6 +80,9 @@ func (m *mockService) PurgeMessages(ctx context.Context, peer tg.InputPeerClass,
 	m.purgeCount = 12
 	return 12, nil
 }
+func (m *mockService) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
+	return &tg.Message{ID: 100}, nil
+}
 
 func TestAdminPlugin(t *testing.T) {
 	p := New()

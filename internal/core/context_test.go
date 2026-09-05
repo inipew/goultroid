@@ -96,6 +96,9 @@ func (m *mockTelegramServicer) UnmuteUser(ctx context.Context, peer tg.InputPeer
 func (m *mockTelegramServicer) PurgeMessages(ctx context.Context, peer tg.InputPeerClass, topicID int, fromID, toID int) (int, error) {
 	return 5, nil
 }
+func (m *mockTelegramServicer) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
+	return &tg.Message{ID: 777}, nil
+}
 
 func TestContext_Helpers(t *testing.T) {
 	ctx := &Context{
@@ -357,4 +360,38 @@ func TestContext_ModerationActions(t *testing.T) {
 		t.Errorf("failed to resolve target from reply: uid=%d, err=%v", uid, err)
 	}
 }
+
+func TestContext_SendMedia(t *testing.T) {
+	mock := &mockTelegramServicer{}
+	ctx := &Context{
+		Ctx:    context.Background(),
+		PeerID: &tg.InputPeerChat{ChatID: 123},
+		Svc:    mock,
+	}
+
+	if err := ctx.SendFile("/tmp/test.txt", "caption"); err != nil {
+		t.Errorf("SendFile failed: %v", err)
+	}
+	if err := ctx.SendPhoto("/tmp/test.jpg", "photo caption"); err != nil {
+		t.Errorf("SendPhoto failed: %v", err)
+	}
+	if err := ctx.SendSticker("/tmp/test.webp"); err != nil {
+		t.Errorf("SendSticker failed: %v", err)
+	}
+	if err := ctx.SendAudio("/tmp/test.mp3", "audio caption"); err != nil {
+		t.Errorf("SendAudio failed: %v", err)
+	}
+
+	// Service nil check
+	nilCtx := &Context{Ctx: context.Background(), PeerID: &tg.InputPeerChat{ChatID: 123}}
+	if err := nilCtx.SendFile("a", "b"); err == nil {
+		t.Errorf("expected error with nil service")
+	}
+	// Peer nil check
+	nilPeerCtx := &Context{Ctx: context.Background(), Svc: mock}
+	if err := nilPeerCtx.SendFile("a", "b"); err == nil {
+		t.Errorf("expected error with nil peer")
+	}
+}
+
 

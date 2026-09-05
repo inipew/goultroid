@@ -16,9 +16,11 @@ import (
 	"github.com/inipew/goultroid/plugins/downloader"
 	"github.com/inipew/goultroid/plugins/forward"
 	"github.com/inipew/goultroid/plugins/help"
+	"github.com/inipew/goultroid/plugins/media"
 	"github.com/inipew/goultroid/plugins/notes"
 	"github.com/inipew/goultroid/plugins/pin"
 	"github.com/inipew/goultroid/plugins/ping"
+	"github.com/inipew/goultroid/plugins/sticker"
 	"github.com/inipew/goultroid/plugins/sudo"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -112,6 +114,8 @@ func New(cfg *config.Config) (*App, error) {
 		notes.New(db),
 		afkPlugin,
 		admin.New(),
+		media.New(),
+		sticker.New(),
 	}
 
 	for _, p := range plugins {

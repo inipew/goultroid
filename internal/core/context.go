@@ -32,6 +32,9 @@ type TelegramServicer interface {
 	MuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, untilDate int) error
 	UnmuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error
 	PurgeMessages(ctx context.Context, peer tg.InputPeerClass, topicID int, fromID, toID int) (int, error)
+
+	// Media upload actions
+	SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error)
 }
 
 // MediaInfo stores metadata and download location for message attachments.
@@ -40,6 +43,9 @@ type MediaInfo struct {
 	FileName string
 	MimeType string
 	Size     int64
+	Width    int
+	Height   int
+	Duration int
 	Location tg.InputFileLocationClass
 }
 
@@ -435,6 +441,54 @@ func (c *Context) Purge() (int, error) {
 	return c.Svc.PurgeMessages(c.Ctx, c.PeerID, topicID, fromID, toID)
 }
 
+// SendFile uploads and sends a file/document to the chat.
+func (c *Context) SendFile(filePath, caption string) error {
+	if c.Svc == nil {
+		return errors.New("telegram service not initialized")
+	}
+	if c.PeerID == nil {
+		return errors.New("peer is nil")
+	}
+	_, err := c.Svc.SendMedia(c.Ctx, c.PeerID, "file", filePath, caption)
+	return err
+}
+
+// SendPhoto uploads and sends a photo to the chat.
+func (c *Context) SendPhoto(filePath, caption string) error {
+	if c.Svc == nil {
+		return errors.New("telegram service not initialized")
+	}
+	if c.PeerID == nil {
+		return errors.New("peer is nil")
+	}
+	_, err := c.Svc.SendMedia(c.Ctx, c.PeerID, "photo", filePath, caption)
+	return err
+}
+
+// SendSticker uploads and sends a sticker to the chat.
+func (c *Context) SendSticker(filePath string) error {
+	if c.Svc == nil {
+		return errors.New("telegram service not initialized")
+	}
+	if c.PeerID == nil {
+		return errors.New("peer is nil")
+	}
+	_, err := c.Svc.SendMedia(c.Ctx, c.PeerID, "sticker", filePath, "")
+	return err
+}
+
+// SendAudio uploads and sends an audio file to the chat.
+func (c *Context) SendAudio(filePath, caption string) error {
+	if c.Svc == nil {
+		return errors.New("telegram service not initialized")
+	}
+	if c.PeerID == nil {
+		return errors.New("peer is nil")
+	}
+	_, err := c.Svc.SendMedia(c.Ctx, c.PeerID, "audio", filePath, caption)
+	return err
+}
+
 // ExtractMediaFromTG parses raw tg.MessageMediaClass into core.MediaInfo.
 func ExtractMediaFromTG(media tg.MessageMediaClass) *MediaInfo {
 	if media == nil {
@@ -450,16 +504,21 @@ func ExtractMediaFromTG(media tg.MessageMediaClass) *MediaInfo {
 
 		var largestSize string
 		var largestBytes int64
+		var width, height int
 		for _, s := range photo.Sizes {
 			switch sz := s.(type) {
 			case *tg.PhotoSize:
 				largestSize = sz.Type
 				largestBytes = int64(sz.Size)
+				width = sz.W
+				height = sz.H
 			case *tg.PhotoSizeProgressive:
 				largestSize = sz.Type
 				if len(sz.Sizes) > 0 {
 					largestBytes = int64(sz.Sizes[len(sz.Sizes)-1])
 				}
+				width = sz.W
+				height = sz.H
 			}
 		}
 
@@ -468,6 +527,8 @@ func ExtractMediaFromTG(media tg.MessageMediaClass) *MediaInfo {
 			FileName: fmt.Sprintf("photo_%d.jpg", photo.ID),
 			MimeType: "image/jpeg",
 			Size:     largestBytes,
+			Width:    width,
+			Height:   height,
 			Location: photo.AsInputPhotoFileLocation(largestSize),
 		}
 
@@ -479,6 +540,7 @@ func ExtractMediaFromTG(media tg.MessageMediaClass) *MediaInfo {
 
 		mediaType := "document"
 		fileName := fmt.Sprintf("document_%d", doc.ID)
+		var width, height, duration int
 
 		for _, attr := range doc.Attributes {
 			switch a := attr.(type) {
@@ -486,12 +548,19 @@ func ExtractMediaFromTG(media tg.MessageMediaClass) *MediaInfo {
 				fileName = a.FileName
 			case *tg.DocumentAttributeVideo:
 				mediaType = "video"
+				width = a.W
+				height = a.H
+				duration = int(a.Duration)
 			case *tg.DocumentAttributeAudio:
 				if a.Voice {
 					mediaType = "voice"
 				} else {
 					mediaType = "audio"
 				}
+				duration = a.Duration
+			case *tg.DocumentAttributeImageSize:
+				width = a.W
+				height = a.H
 			case *tg.DocumentAttributeSticker:
 				mediaType = "sticker"
 			}
@@ -502,6 +571,9 @@ func ExtractMediaFromTG(media tg.MessageMediaClass) *MediaInfo {
 			FileName: fileName,
 			MimeType: doc.MimeType,
 			Size:     doc.Size,
+			Width:    width,
+			Height:   height,
+			Duration: duration,
 			Location: doc.AsInputDocumentFileLocation(""),
 		}
 	}

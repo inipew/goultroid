@@ -8,6 +8,8 @@ import (
 
 	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/telegram/message"
+	"github.com/gotd/td/telegram/message/html"
+	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
 )
 
@@ -16,6 +18,7 @@ type Service struct {
 	api        *tg.Client
 	sender     *message.Sender
 	downloader *downloader.Downloader
+	uploader   *uploader.Uploader
 }
 
 // NewService creates a new Service instance.
@@ -24,6 +27,7 @@ func NewService(api *tg.Client) *Service {
 		api:        api,
 		sender:     message.NewSender(api),
 		downloader: downloader.NewDownloader(),
+		uploader:   uploader.NewUploader(api),
 	}
 }
 
@@ -403,6 +407,46 @@ func (s *Service) PurgeMessages(ctx context.Context, peer tg.InputPeerClass, top
 	}
 
 	return totalDeleted, nil
+}
+
+// SendMedia uploads and sends media (photo, sticker, audio, video, file) to the specified peer.
+func (s *Service) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
+	if s.sender == nil || s.uploader == nil {
+		return nil, fmt.Errorf("sender/uploader is not initialized")
+	}
+
+	inputFile, err := s.uploader.FromPath(ctx, filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to upload file %q: %w", filePath, err)
+	}
+
+	builder := s.sender.To(peer)
+	var styledCaption []message.StyledTextOption
+	if caption != "" {
+		styledCaption = append(styledCaption, html.String(nil, caption))
+	}
+
+	var updates tg.UpdatesClass
+	switch mediaType {
+	case "photo":
+		updates, err = builder.UploadedPhoto(ctx, inputFile, styledCaption...)
+	case "sticker":
+		updates, err = builder.UploadedSticker(ctx, inputFile, styledCaption...)
+	case "audio":
+		updates, err = builder.Audio(ctx, inputFile, styledCaption...)
+	case "video":
+		updates, err = builder.Video(ctx, inputFile, styledCaption...)
+	case "file", "document":
+		fallthrough
+	default:
+		updates, err = builder.File(ctx, inputFile, styledCaption...)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to send media (%s): %w", mediaType, err)
+	}
+
+	return extractMessageFromUpdates(updates), nil
 }
 
 // extractMessageFromUpdates attempts to locate a tg.Message from tg.UpdatesClass.

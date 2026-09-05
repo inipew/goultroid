@@ -129,6 +129,9 @@ docker run -it --rm \
 | `.notes` | - | Notes | Sudo | Tampilkan daftar semua catatan di chat saat ini |
 | `.clear` | - | Notes | Sudo | Hapus catatan yang tersimpan |
 | `.afk` | - | AFK | Owner | Aktifkan mode AFK dengan alasan opsional (auto-reply & auto-unafk) |
+| `.mediainfo` | `.media`, `.minfo` | Media | Everyone | Inspeksi metadata, resolusi, durasi, dan ukuran media |
+| `.extractaudio` | `.extaudio` | Media | Sudo | Ekstrak track audio dari video/dokumen ke format MP3 |
+| `.sticker` | `.stk` | Media | Sudo | Konversi foto/gambar yang di-reply menjadi Telegram sticker (512x512) |
 
 ---
 

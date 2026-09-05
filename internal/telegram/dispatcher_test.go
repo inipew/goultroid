@@ -11,6 +11,7 @@ import (
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/gotd/td/tg"
+	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
 )
 
@@ -192,7 +193,7 @@ func TestNewClient_Validation(t *testing.T) {
 }
 
 func TestDispatcher_MessageHandler(t *testing.T) {
-	logger := zaptest.NewLogger(t)
+	logger := zap.NewNop()
 	router := core.NewRouter(".")
 	dispatcher := NewDispatcher(router, nil, nil, logger)
 

@@ -59,6 +59,9 @@ func (m *mockService) UnmuteUser(ctx context.Context, peer tg.InputPeerClass, us
 func (m *mockService) PurgeMessages(ctx context.Context, peer tg.InputPeerClass, topicID int, fromID, toID int) (int, error) {
 	return 0, nil
 }
+func (m *mockService) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
+	return &tg.Message{ID: 100}, nil
+}
 
 func TestHelpPlugin(t *testing.T) {
 	router := core.NewRouter(".")
