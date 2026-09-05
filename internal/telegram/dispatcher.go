@@ -148,6 +148,13 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	if msg.ReplyTo != nil {
 		if header, ok := msg.ReplyTo.(*tg.MessageReplyHeader); ok {
 			coreMsg.ReplyToID = header.ReplyToMsgID
+			if header.ForumTopic || header.ReplyToTopID != 0 {
+				if header.ReplyToTopID != 0 {
+					coreMsg.TopicID = header.ReplyToTopID
+				} else {
+					coreMsg.TopicID = header.ReplyToMsgID
+				}
+			}
 		}
 	}
 

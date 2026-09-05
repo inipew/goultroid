@@ -10,6 +10,7 @@ import (
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/telegram"
+	"github.com/inipew/goultroid/plugins/admin"
 	"github.com/inipew/goultroid/plugins/afk"
 	"github.com/inipew/goultroid/plugins/alive"
 	"github.com/inipew/goultroid/plugins/downloader"
@@ -110,6 +111,7 @@ func New(cfg *config.Config) (*App, error) {
 		sudo.New(db, perms),
 		notes.New(db),
 		afkPlugin,
+		admin.New(),
 	}
 
 	for _, p := range plugins {

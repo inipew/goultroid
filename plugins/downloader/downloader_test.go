@@ -60,6 +60,24 @@ func (m *mockService) DownloadFile(ctx context.Context, location tg.InputFileLoc
 	_ = os.MkdirAll(filepath.Dir(dstPath), 0755)
 	return os.WriteFile(dstPath, []byte("dummy video content"), 0644)
 }
+func (m *mockService) BanUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, untilDate int) error {
+	return nil
+}
+func (m *mockService) UnbanUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
+	return nil
+}
+func (m *mockService) KickUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
+	return nil
+}
+func (m *mockService) MuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, untilDate int) error {
+	return nil
+}
+func (m *mockService) UnmuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
+	return nil
+}
+func (m *mockService) PurgeMessages(ctx context.Context, peer tg.InputPeerClass, topicID int, fromID, toID int) (int, error) {
+	return 0, nil
+}
 
 func TestDownloaderPlugin(t *testing.T) {
 	p := New()

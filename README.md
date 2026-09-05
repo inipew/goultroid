@@ -118,6 +118,12 @@ docker run -it --rm \
 | `.addsudo` | - | Admin | Owner | Tambahkan user ke daftar sudo secara dinamis |
 | `.delsudo` | - | Admin | Owner | Hapus user dari daftar sudo |
 | `.sudolist` | `.sudos` | Admin | Owner | Tampilkan daftar semua sudo users aktif |
+| `.ban` | - | Admin | Sudo | Blokir pengguna dari grup (opsional sertakan alasan) |
+| `.unban` | - | Admin | Sudo | Buka blokir pengguna di grup |
+| `.kick` | - | Admin | Sudo | Keluarkan pengguna dari grup |
+| `.mute` | - | Admin | Sudo | Bisukan pengguna (opsi durasi: `10m`, `2h`, `1d`) |
+| `.unmute` | - | Admin | Sudo | Buka status bisu pengguna di grup |
+| `.purge` | - | Admin | Sudo | Hapus pesan massal secara aman & scoped per forum topic |
 | `.save` | - | Notes | Sudo | Simpan teks catatan di chat (mendukung pesan reply) |
 | `.get` | - | Notes | Sudo | Ambil dan kirim isi catatan tersimpan |
 | `.notes` | - | Notes | Sudo | Tampilkan daftar semua catatan di chat saat ini |

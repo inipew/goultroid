@@ -78,6 +78,25 @@ func (m *mockTelegramServicer) DownloadFile(ctx context.Context, location tg.Inp
 	return nil
 }
 
+func (m *mockTelegramServicer) BanUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, untilDate int) error {
+	return nil
+}
+func (m *mockTelegramServicer) UnbanUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
+	return nil
+}
+func (m *mockTelegramServicer) KickUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
+	return nil
+}
+func (m *mockTelegramServicer) MuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, untilDate int) error {
+	return nil
+}
+func (m *mockTelegramServicer) UnmuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
+	return nil
+}
+func (m *mockTelegramServicer) PurgeMessages(ctx context.Context, peer tg.InputPeerClass, topicID int, fromID, toID int) (int, error) {
+	return 5, nil
+}
+
 func TestContext_Helpers(t *testing.T) {
 	ctx := &Context{
 		Chat:   &Chat{Type: "private"},
@@ -263,6 +282,79 @@ func TestContext_ExtendedActions(t *testing.T) {
 	// 4. HasMedia
 	if !ctx.Message.HasMedia() {
 		t.Errorf("expected HasMedia to be true")
+	}
+}
+
+func TestContext_ModerationActions(t *testing.T) {
+	mock := &mockTelegramServicer{
+		messageToGet: &tg.Message{
+			ID:      50,
+			Message: "original message",
+			FromID:  &tg.PeerUser{UserID: 8888},
+		},
+	}
+	user := &tg.InputPeerUser{UserID: 8888}
+
+	ctx := &Context{
+		Ctx: context.Background(),
+		Message: &Message{
+			ID:        100,
+			ReplyToID: 50,
+			TopicID:   42,
+		},
+		Svc:    mock,
+		PeerID: &tg.InputPeerChannel{ChannelID: 123},
+	}
+
+	// 1. TopicID helper
+	if ctx.TopicID() != 42 {
+		t.Errorf("expected TopicID 42, got %d", ctx.TopicID())
+	}
+
+	// 2. Ban & Unban
+	if err := ctx.Ban(user, 0); err != nil {
+		t.Errorf("unexpected error in Ban: %v", err)
+	}
+	if err := ctx.Unban(user); err != nil {
+		t.Errorf("unexpected error in Unban: %v", err)
+	}
+
+	// 3. Kick
+	if err := ctx.Kick(user); err != nil {
+		t.Errorf("unexpected error in Kick: %v", err)
+	}
+
+	// 4. Mute & Unmute
+	if err := ctx.Mute(user, 3600); err != nil {
+		t.Errorf("unexpected error in Mute: %v", err)
+	}
+	if err := ctx.Unmute(user); err != nil {
+		t.Errorf("unexpected error in Unmute: %v", err)
+	}
+
+	// 5. Purge
+	count, err := ctx.Purge()
+	if err != nil {
+		t.Errorf("unexpected error in Purge: %v", err)
+	}
+	if count != 5 {
+		t.Errorf("expected purge count 5, got %d", count)
+	}
+
+	// 6. ResolveTargetUser via args
+	ctxWithArgs := *ctx
+	ctxWithArgs.Args = []string{"7777"}
+	p, uid, err := ctxWithArgs.ResolveTargetUser()
+	if err != nil || uid != 7777 || p == nil {
+		t.Errorf("failed to resolve target from args: uid=%d, err=%v", uid, err)
+	}
+
+	// 7. ResolveTargetUser via reply
+	ctxWithReply := *ctx
+	ctxWithReply.Args = nil
+	p, uid, err = ctxWithReply.ResolveTargetUser()
+	if err != nil || uid != 8888 || p == nil {
+		t.Errorf("failed to resolve target from reply: uid=%d, err=%v", uid, err)
 	}
 }
 

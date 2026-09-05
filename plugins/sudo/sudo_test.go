@@ -46,6 +46,24 @@ func (m *mockService) ForwardMessages(ctx context.Context, fromPeer, toPeer tg.I
 func (m *mockService) DownloadFile(ctx context.Context, location tg.InputFileLocationClass, dstPath string) error {
 	return nil
 }
+func (m *mockService) BanUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, untilDate int) error {
+	return nil
+}
+func (m *mockService) UnbanUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
+	return nil
+}
+func (m *mockService) KickUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
+	return nil
+}
+func (m *mockService) MuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, untilDate int) error {
+	return nil
+}
+func (m *mockService) UnmuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
+	return nil
+}
+func (m *mockService) PurgeMessages(ctx context.Context, peer tg.InputPeerClass, topicID int, fromID, toID int) (int, error) {
+	return 0, nil
+}
 
 func TestSudoPlugin(t *testing.T) {
 	db, err := database.Open(":memory:")

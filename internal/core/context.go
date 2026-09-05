@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/gotd/td/tg"
@@ -23,6 +24,14 @@ type TelegramServicer interface {
 	UnpinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) error
 	ForwardMessages(ctx context.Context, fromPeer, toPeer tg.InputPeerClass, msgIDs []int) error
 	DownloadFile(ctx context.Context, location tg.InputFileLocationClass, dstPath string) error
+
+	// Moderation & Admin actions
+	BanUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, untilDate int) error
+	UnbanUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error
+	KickUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error
+	MuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, untilDate int) error
+	UnmuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error
+	PurgeMessages(ctx context.Context, peer tg.InputPeerClass, topicID int, fromID, toID int) (int, error)
 }
 
 // MediaInfo stores metadata and download location for message attachments.
@@ -38,6 +47,7 @@ type MediaInfo struct {
 type Message struct {
 	ID        int
 	SenderID  int64
+	TopicID   int // Root ID of the forum topic / thread, if sent in a topic
 	Text      string
 	Date      time.Time
 	ReplyToID int
@@ -296,6 +306,19 @@ func (c *Context) GetReply() (*Message, error) {
 		}
 	}
 
+	if msg.ReplyTo != nil {
+		if h, ok := msg.ReplyTo.(*tg.MessageReplyHeader); ok {
+			res.ReplyToID = h.ReplyToMsgID
+			if h.ForumTopic || h.ReplyToTopID != 0 {
+				if h.ReplyToTopID != 0 {
+					res.TopicID = h.ReplyToTopID
+				} else {
+					res.TopicID = h.ReplyToMsgID
+				}
+			}
+		}
+	}
+
 	// Extract media if present in reply
 	if msg.Media != nil {
 		res.Media = ExtractMediaFromTG(msg.Media)
@@ -305,6 +328,111 @@ func (c *Context) GetReply() (*Message, error) {
 	}
 
 	return res, nil
+}
+
+// TopicID returns the forum topic ID of the command or replied message, if any.
+func (c *Context) TopicID() int {
+	if c.Message != nil && c.Message.TopicID != 0 {
+		return c.Message.TopicID
+	}
+	return 0
+}
+
+// ResolveTargetUser extracts the target user's InputPeer and UserID from args (if ID numeric) or from replied message.
+func (c *Context) ResolveTargetUser() (tg.InputPeerClass, int64, error) {
+	if len(c.Args) > 0 {
+		if uid, err := strconv.ParseInt(c.Args[0], 10, 64); err == nil && uid != 0 {
+			return &tg.InputPeerUser{UserID: uid}, uid, nil
+		}
+	}
+
+	reply, err := c.GetReply()
+	if err == nil && reply != nil && reply.SenderID != 0 {
+		return &tg.InputPeerUser{UserID: reply.SenderID}, reply.SenderID, nil
+	}
+
+	return nil, 0, errors.New("please provide a valid user ID or reply to a user's message")
+}
+
+// Ban bans a user from the chat.
+func (c *Context) Ban(user tg.InputPeerClass, untilDate int) error {
+	if c.Svc == nil {
+		return errors.New("telegram service not initialized")
+	}
+	if c.PeerID == nil {
+		return errors.New("peer is nil")
+	}
+	return c.Svc.BanUser(c.Ctx, c.PeerID, user, untilDate)
+}
+
+// Unban removes ban restrictions on a user.
+func (c *Context) Unban(user tg.InputPeerClass) error {
+	if c.Svc == nil {
+		return errors.New("telegram service not initialized")
+	}
+	if c.PeerID == nil {
+		return errors.New("peer is nil")
+	}
+	return c.Svc.UnbanUser(c.Ctx, c.PeerID, user)
+}
+
+// Kick kicks a user from the chat.
+func (c *Context) Kick(user tg.InputPeerClass) error {
+	if c.Svc == nil {
+		return errors.New("telegram service not initialized")
+	}
+	if c.PeerID == nil {
+		return errors.New("peer is nil")
+	}
+	return c.Svc.KickUser(c.Ctx, c.PeerID, user)
+}
+
+// Mute mutes a user in the chat until the specified unix timestamp (0 for permanent).
+func (c *Context) Mute(user tg.InputPeerClass, untilDate int) error {
+	if c.Svc == nil {
+		return errors.New("telegram service not initialized")
+	}
+	if c.PeerID == nil {
+		return errors.New("peer is nil")
+	}
+	return c.Svc.MuteUser(c.Ctx, c.PeerID, user, untilDate)
+}
+
+// Unmute unmutes a user in the chat.
+func (c *Context) Unmute(user tg.InputPeerClass) error {
+	if c.Svc == nil {
+		return errors.New("telegram service not initialized")
+	}
+	if c.PeerID == nil {
+		return errors.New("peer is nil")
+	}
+	return c.Svc.UnmuteUser(c.Ctx, c.PeerID, user)
+}
+
+// Purge safely purges messages from the replied message up to the current command message,
+// taking into account forum topic scope so messages in other topics are never affected.
+func (c *Context) Purge() (int, error) {
+	if c.Svc == nil {
+		return 0, errors.New("telegram service not initialized")
+	}
+	if c.PeerID == nil {
+		return 0, errors.New("peer is nil")
+	}
+	if c.Message == nil || c.Message.ReplyToID == 0 {
+		return 0, errors.New("purge must be a reply to a message")
+	}
+
+	topicID := c.TopicID()
+	if topicID == 0 {
+		reply, _ := c.GetReply()
+		if reply != nil && reply.TopicID != 0 {
+			topicID = reply.TopicID
+		}
+	}
+
+	fromID := c.Message.ReplyToID
+	toID := c.Message.ID
+	return c.Svc.PurgeMessages(c.Ctx, c.PeerID, topicID, fromID, toID)
 }
 
 // ExtractMediaFromTG parses raw tg.MessageMediaClass into core.MediaInfo.

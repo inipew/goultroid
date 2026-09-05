@@ -2,7 +2,9 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/telegram/message"
@@ -174,6 +176,233 @@ func (s *Service) DownloadFile(ctx context.Context, location tg.InputFileLocatio
 	}
 	_, err := s.downloader.Download(s.api, location).ToPath(ctx, dstPath)
 	return err
+}
+
+// BanUser restricts a user from viewing and sending messages in a group/supergroup.
+func (s *Service) BanUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, untilDate int) error {
+	if s.api == nil {
+		return errors.New("api is not initialized")
+	}
+
+	if ch, ok := peer.(*tg.InputPeerChannel); ok {
+		_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
+			Channel:     &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
+			Participant: user,
+			BannedRights: tg.ChatBannedRights{
+				ViewMessages: true,
+				SendMessages: true,
+				SendMedia:    true,
+				SendStickers: true,
+				SendGifs:     true,
+				SendGames:    true,
+				SendInline:   true,
+				EmbedLinks:   true,
+				UntilDate:    untilDate,
+			},
+		})
+		return err
+	}
+
+	if chat, ok := peer.(*tg.InputPeerChat); ok {
+		if u, ok := user.(*tg.InputPeerUser); ok {
+			_, err := s.api.MessagesDeleteChatUser(ctx, &tg.MessagesDeleteChatUserRequest{
+				ChatID: chat.ChatID,
+				UserID: &tg.InputUser{UserID: u.UserID, AccessHash: u.AccessHash},
+			})
+			return err
+		}
+	}
+
+	return fmt.Errorf("unsupported peer type for ban: %T", peer)
+}
+
+// UnbanUser removes all ban restrictions on a user.
+func (s *Service) UnbanUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
+	if s.api == nil {
+		return errors.New("api is not initialized")
+	}
+
+	if ch, ok := peer.(*tg.InputPeerChannel); ok {
+		_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
+			Channel:      &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
+			Participant:  user,
+			BannedRights: tg.ChatBannedRights{}, // reset all rights
+		})
+		return err
+	}
+
+	return nil
+}
+
+// KickUser removes a user from the group while allowing them to rejoin.
+func (s *Service) KickUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
+	if s.api == nil {
+		return errors.New("api is not initialized")
+	}
+
+	if ch, ok := peer.(*tg.InputPeerChannel); ok {
+		channel := &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash}
+		_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
+			Channel:      channel,
+			Participant:  user,
+			BannedRights: tg.ChatBannedRights{ViewMessages: true, UntilDate: int(time.Now().Unix() + 60)},
+		})
+		if err != nil {
+			return err
+		}
+		_, err = s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
+			Channel:      channel,
+			Participant:  user,
+			BannedRights: tg.ChatBannedRights{}, // allow rejoin
+		})
+		return err
+	}
+
+	if chat, ok := peer.(*tg.InputPeerChat); ok {
+		if u, ok := user.(*tg.InputPeerUser); ok {
+			_, err := s.api.MessagesDeleteChatUser(ctx, &tg.MessagesDeleteChatUserRequest{
+				ChatID: chat.ChatID,
+				UserID: &tg.InputUser{UserID: u.UserID, AccessHash: u.AccessHash},
+			})
+			return err
+		}
+	}
+
+	return fmt.Errorf("unsupported peer type for kick: %T", peer)
+}
+
+// MuteUser restricts a user from sending messages and media until untilDate.
+func (s *Service) MuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, untilDate int) error {
+	if s.api == nil {
+		return errors.New("api is not initialized")
+	}
+
+	if ch, ok := peer.(*tg.InputPeerChannel); ok {
+		_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
+			Channel:     &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
+			Participant: user,
+			BannedRights: tg.ChatBannedRights{
+				SendMessages:    true,
+				SendMedia:       true,
+				SendStickers:    true,
+				SendGifs:        true,
+				SendGames:       true,
+				SendInline:      true,
+				EmbedLinks:      true,
+				SendPolls:       true,
+				SendPhotos:      true,
+				SendVideos:      true,
+				SendRoundvideos: true,
+				SendAudios:      true,
+				SendVoices:      true,
+				SendDocs:        true,
+				SendPlain:       true,
+				UntilDate:       untilDate,
+			},
+		})
+		return err
+	}
+
+	return fmt.Errorf("mute is only supported in supergroups and channels")
+}
+
+// UnmuteUser removes send message restrictions on a user.
+func (s *Service) UnmuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
+	if s.api == nil {
+		return errors.New("api is not initialized")
+	}
+
+	if ch, ok := peer.(*tg.InputPeerChannel); ok {
+		_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
+			Channel:      &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
+			Participant:  user,
+			BannedRights: tg.ChatBannedRights{},
+		})
+		return err
+	}
+
+	return nil
+}
+
+// PurgeMessages purges messages in the range [fromID..toID]. If topicID > 0, it uses MessagesGetReplies
+// to ensure only messages inside that forum topic/thread are deleted.
+func (s *Service) PurgeMessages(ctx context.Context, peer tg.InputPeerClass, topicID int, fromID, toID int) (int, error) {
+	if s.api == nil {
+		return 0, errors.New("api is not initialized")
+	}
+
+	minID := fromID
+	maxID := toID
+	if minID > maxID {
+		minID, maxID = maxID, minID
+	}
+
+	msgIDsMap := make(map[int]struct{})
+	msgIDsMap[fromID] = struct{}{}
+	msgIDsMap[toID] = struct{}{}
+
+	if topicID > 0 {
+		// Topic-scoped purge via GetReplies
+		resp, err := s.api.MessagesGetReplies(ctx, &tg.MessagesGetRepliesRequest{
+			Peer:  peer,
+			MsgID: topicID,
+			MinID: minID - 1,
+			MaxID: maxID + 1,
+			Limit: 100,
+		})
+		if err == nil && resp != nil {
+			if mod, ok := resp.AsModified(); ok {
+				for _, m := range mod.GetMessages() {
+					if msg, ok := m.(*tg.Message); ok {
+						if msg.ID >= minID && msg.ID <= maxID {
+							msgIDsMap[msg.ID] = struct{}{}
+						}
+					}
+				}
+			}
+		}
+	} else {
+		// Non-topic history fetch
+		resp, err := s.api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
+			Peer:  peer,
+			MinID: minID - 1,
+			MaxID: maxID + 1,
+			Limit: 100,
+		})
+		if err == nil && resp != nil {
+			if mod, ok := resp.AsModified(); ok {
+				for _, m := range mod.GetMessages() {
+					if msg, ok := m.(*tg.Message); ok {
+						if msg.ID >= minID && msg.ID <= maxID {
+							msgIDsMap[msg.ID] = struct{}{}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	allIDs := make([]int, 0, len(msgIDsMap))
+	for id := range msgIDsMap {
+		allIDs = append(allIDs, id)
+	}
+
+	// Delete in chunks of 100
+	const chunkSize = 100
+	totalDeleted := 0
+	for i := 0; i < len(allIDs); i += chunkSize {
+		end := i + chunkSize
+		if end > len(allIDs) {
+			end = len(allIDs)
+		}
+		chunk := allIDs[i:end]
+		if err := s.DeleteMessage(ctx, peer, chunk); err != nil {
+			return totalDeleted, err
+		}
+		totalDeleted += len(chunk)
+	}
+
+	return totalDeleted, nil
 }
 
 // extractMessageFromUpdates attempts to locate a tg.Message from tg.UpdatesClass.
