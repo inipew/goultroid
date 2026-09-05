@@ -1,0 +1,103 @@
+package help
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/inipew/goultroid/internal/core"
+	"github.com/gotd/td/tg"
+)
+
+type mockService struct {
+	sent string
+}
+
+func (m *mockService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
+	m.sent = text
+	return &tg.Message{ID: 10, Message: text}, nil
+}
+func (m *mockService) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
+	return nil
+}
+func (m *mockService) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {
+	return nil
+}
+func (m *mockService) React(ctx context.Context, peer tg.InputPeerClass, msgID int, emoji string) error {
+	return nil
+}
+func (m *mockService) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) (*tg.Message, error) {
+	return nil, nil
+}
+
+func TestHelpPlugin(t *testing.T) {
+	router := core.NewRouter(".")
+	_ = router.Register(core.Command{
+		Name:        "ping",
+		Aliases:     []string{"p"},
+		Description: "Check latency",
+		Category:    "Utility",
+	})
+	_ = router.Register(core.Command{
+		Name:        "ban",
+		Description: "Ban user",
+		Category:    "Admin",
+		Permission:  core.PermissionSudo,
+	})
+
+	p := New(router)
+	if p.Name() != "help" {
+		t.Errorf("expected plugin name help, got %s", p.Name())
+	}
+	if err := p.Init(); err != nil {
+		t.Errorf("unexpected error in Init: %v", err)
+	}
+
+	cmds := p.Commands()
+	if len(cmds) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(cmds))
+	}
+
+	svc := &mockService{}
+	baseCtx := &core.Context{
+		Ctx:     context.Background(),
+		Message: &core.Message{ID: 1},
+		Svc:     svc,
+		PeerID:  &tg.InputPeerSelf{},
+	}
+
+	// 1. Help without args -> lists categories
+	ctxAll := *baseCtx
+	ctxAll.Command = "help"
+	if err := cmds[0].Handler(&ctxAll); err != nil {
+		t.Fatalf("unexpected error running help all: %v", err)
+	}
+
+	if !strings.Contains(svc.sent, "[Admin]") || !strings.Contains(svc.sent, "[Utility]") {
+		t.Errorf("expected help output to contain [Admin] and [Utility], got: %s", svc.sent)
+	}
+
+	// 2. Help for existing command
+	ctxTarget := *baseCtx
+	ctxTarget.Command = "help"
+	ctxTarget.Args = []string{"ping"}
+	if err := cmds[0].Handler(&ctxTarget); err != nil {
+		t.Fatalf("unexpected error running help ping: %v", err)
+	}
+
+	if !strings.Contains(svc.sent, "Command:** `.ping`") || !strings.Contains(svc.sent, "Check latency") {
+		t.Errorf("expected help target to show ping details, got: %s", svc.sent)
+	}
+
+	// 3. Help for non-existent command
+	ctxUnknown := *baseCtx
+	ctxUnknown.Command = "help"
+	ctxUnknown.Args = []string{"nonexistent"}
+	if err := cmds[0].Handler(&ctxUnknown); err != nil {
+		t.Fatalf("unexpected error running help nonexistent: %v", err)
+	}
+
+	if !strings.Contains(svc.sent, "not found") {
+		t.Errorf("expected not found message, got: %s", svc.sent)
+	}
+}

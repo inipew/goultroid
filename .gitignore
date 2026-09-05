@@ -1,0 +1,8 @@
+.env
+data/*
+!data/.gitkeep
+*.log
+bin/
+dist/
+.idea/
+.vscode/
