@@ -124,6 +124,14 @@ docker run -it --rm \
 | `.mute` | - | Admin | Sudo | Bisukan pengguna (opsi durasi: `10m`, `2h`, `1d`) |
 | `.unmute` | - | Admin | Sudo | Buka status bisu pengguna di grup |
 | `.purge` | - | Admin | Sudo | Hapus pesan massal secara aman & scoped per forum topic |
+| `.promote` | - | Admin | Sudo | Promosikan pengguna menjadi admin dengan gelar khusus (`.promote <user> [title]`) |
+| `.demote` | - | Admin | Sudo | Turunkan status admin menjadi pengguna reguler (`.demote <user>`) |
+| `.lock` | - | Moderation | Sudo | Kunci izin default obrolan grup (`messages`, `media`, `stickers`, `polls`, `links`, `invites`, `topics`, `all`) |
+| `.unlock` | - | Moderation | Sudo | Buka kunci izin default obrolan grup yang terkunci |
+| `.locks` | - | Moderation | Sudo | Tampilkan status izin default obrolan grup saat ini |
+| `.blacklist` | - | Moderation | Sudo | Tambahkan kata/frasa ke daftar hitam obrolan untuk penghapusan otomatis |
+| `.unblacklist` | `.rmblacklist` | Moderation | Sudo | Hapus kata/frasa dari daftar hitam obrolan |
+| `.blacklists` | - | Moderation | Sudo | Tampilkan daftar semua kata/frasa yang dilarang di obrolan |
 | `.save` | - | Notes | Sudo | Simpan teks catatan di chat (mendukung pesan reply) |
 | `.get` | - | Notes | Sudo | Ambil dan kirim isi catatan tersimpan |
 | `.notes` | - | Notes | Sudo | Tampilkan daftar semua catatan di chat saat ini |
@@ -136,6 +144,7 @@ docker run -it --rm \
 | `.chatinfo` | `.groupinfo`, `.cinfo` | Info | Sudo | Tampilkan metadata lengkap grup/supergroup/channel saat ini |
 | `.exec` | `.sh`, `.bash`, `.cmd` | System | Owner | Eksekusi shell command di host secara aman (timeout 60s & auto-upload) |
 | `.restart` | - | System | Owner | Restart proses userbot secara anggun dan konfirmasi otomatis |
+| `.update` | `.gitupdate` | System | Owner | Cek pembaruan git atau tarik kode terbaru, bangun ulang biner, dan restart (`.update [pull/now]`) |
 | `.filter` | - | Filters | Sudo | Simpan auto-reply berbasis kata kunci per chat (mendukung teks reply) |
 | `.stop` | - | Filters | Sudo | Hapus filter kata kunci aktif di chat saat ini |
 | `.filters` | - | Filters | Sudo | Tampilkan daftar semua filter kata kunci aktif di chat saat ini |

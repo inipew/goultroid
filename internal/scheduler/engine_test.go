@@ -79,6 +79,15 @@ func (m *mockService) ResolveUsername(ctx context.Context, username string) (*tg
 func (m *mockService) GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.MessagesChatFull, error) {
 	return nil, nil
 }
+func (m *mockService) PromoteAdmin(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, title string) error {
+	return nil
+}
+func (m *mockService) DemoteAdmin(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
+	return nil
+}
+func (m *mockService) EditChatDefaultBannedRights(ctx context.Context, peer tg.InputPeerClass, rights tg.ChatBannedRights) error {
+	return nil
+}
 
 func (m *mockService) LastSent() string {
 	m.mu.Lock()

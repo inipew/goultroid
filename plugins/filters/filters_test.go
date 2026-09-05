@@ -11,6 +11,7 @@ import (
 )
 
 type mockService struct {
+	core.MockTelegramServicer
 	sent   string
 	sentTo tg.InputPeerClass
 }

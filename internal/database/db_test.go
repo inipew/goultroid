@@ -420,4 +420,56 @@ func TestScheduledJobOperations(t *testing.T) {
 	}
 }
 
+func TestBlacklistOperations(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	chatID := int64(112233)
+
+	// 1. Initial list empty
+	words, err := db.ListBlacklists(ctx, chatID)
+	if err != nil {
+		t.Fatalf("unexpected error listing blacklists: %v", err)
+	}
+	if len(words) != 0 {
+		t.Fatalf("expected 0 words, got %d", len(words))
+	}
+
+	// 2. Add blacklist word
+	if err := db.AddBlacklist(ctx, chatID, "spam"); err != nil {
+		t.Fatalf("failed to add blacklist: %v", err)
+	}
+	if err := db.AddBlacklist(ctx, chatID, "scam"); err != nil {
+		t.Fatalf("failed to add second blacklist: %v", err)
+	}
+
+	// 3. Add duplicate (upsert)
+	if err := db.AddBlacklist(ctx, chatID, "SPAM"); err != nil {
+		t.Fatalf("failed to upsert blacklist: %v", err)
+	}
+
+	// 4. List blacklists
+	words, err = db.ListBlacklists(ctx, chatID)
+	if err != nil {
+		t.Fatalf("failed to list blacklists: %v", err)
+	}
+	if len(words) != 2 || words[0] != "scam" || words[1] != "spam" {
+		t.Errorf("unexpected blacklist words: %v", words)
+	}
+
+	// 5. Remove blacklist
+	if err := db.RemoveBlacklist(ctx, chatID, "spam"); err != nil {
+		t.Fatalf("failed to remove blacklist: %v", err)
+	}
+	words, _ = db.ListBlacklists(ctx, chatID)
+	if len(words) != 1 || words[0] != "scam" {
+		t.Errorf("expected only 'scam' remaining, got %v", words)
+	}
+
+	// 6. Remove non-existent
+	if err := db.RemoveBlacklist(ctx, chatID, "nonexistent"); err == nil {
+		t.Errorf("expected error removing non-existent word")
+	}
+}
+
+
 

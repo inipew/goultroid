@@ -11,15 +11,19 @@ import (
 )
 
 type mockService struct {
-	sent         string
-	banCalled    bool
-	unbanCalled  bool
-	kickCalled   bool
-	muteCalled   bool
-	unmuteCalled bool
-	purgeCalled  bool
-	purgeTopicID int
-	purgeCount   int
+	core.MockTelegramServicer
+	sent          string
+	banCalled     bool
+	unbanCalled   bool
+	kickCalled    bool
+	muteCalled    bool
+	unmuteCalled  bool
+	purgeCalled   bool
+	purgeTopicID  int
+	purgeCount    int
+	promoteCalled bool
+	promoteTitle  string
+	demoteCalled  bool
 }
 
 func (m *mockService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
@@ -89,8 +93,14 @@ func (m *mockService) GetFullUser(ctx context.Context, user tg.InputUserClass) (
 func (m *mockService) ResolveUsername(ctx context.Context, username string) (*tg.ContactsResolvedPeer, error) {
 	return nil, nil
 }
-func (m *mockService) GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.MessagesChatFull, error) {
-	return nil, nil
+func (m *mockService) PromoteAdmin(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, title string) error {
+	m.promoteCalled = true
+	m.promoteTitle = title
+	return nil
+}
+func (m *mockService) DemoteAdmin(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
+	m.demoteCalled = true
+	return nil
 }
 
 func TestAdminPlugin(t *testing.T) {
@@ -103,8 +113,8 @@ func TestAdminPlugin(t *testing.T) {
 	}
 
 	cmds := p.Commands()
-	if len(cmds) != 6 {
-		t.Fatalf("expected 6 commands, got %d", len(cmds))
+	if len(cmds) != 8 {
+		t.Fatalf("expected 8 commands, got %d", len(cmds))
 	}
 
 	cmdMap := make(map[string]core.Command)
@@ -198,6 +208,33 @@ func TestAdminPlugin(t *testing.T) {
 	}
 	if !strings.Contains(svc.sent, "Purged 12 messages") || !strings.Contains(svc.sent, "42") {
 		t.Errorf("expected topic purge confirmation, got: %s", svc.sent)
+	}
+
+	// 8. Promote with title
+	ctxPromote := *baseCtx
+	ctxPromote.Args = []string{"5555", "Mod", "Captain"}
+	if err := cmdMap["promote"].Handler(&ctxPromote); err != nil {
+		t.Fatalf("unexpected error running promote: %v", err)
+	}
+	if !svc.promoteCalled || svc.promoteTitle != "Mod Captain" || !strings.Contains(svc.sent, "Promoted user") {
+		t.Errorf("expected promote called with title 'Mod Captain', got called=%v title=%q sent=%s", svc.promoteCalled, svc.promoteTitle, svc.sent)
+	}
+
+	// 9. Demote
+	ctxDemote := *baseCtx
+	ctxDemote.Args = []string{"5555"}
+	if err := cmdMap["demote"].Handler(&ctxDemote); err != nil {
+		t.Fatalf("unexpected error running demote: %v", err)
+	}
+	if !svc.demoteCalled || !strings.Contains(svc.sent, "Demoted admin") {
+		t.Errorf("expected demote called, got: %s", svc.sent)
+	}
+
+	// 10. Demote owner rejected
+	ctxDemoteOwner := *baseCtx
+	ctxDemoteOwner.Args = []string{"1001"}
+	if err := cmdMap["demote"].Handler(&ctxDemoteOwner); err == nil {
+		t.Errorf("expected error when demoting owner")
 	}
 }
 

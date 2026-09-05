@@ -28,6 +28,7 @@ type RestartState struct {
 type Plugin struct {
 	restartStatePath string
 	restartFunc      func(state RestartState) error
+	cmdRunner        func(ctx context.Context, name string, args ...string) ([]byte, error)
 }
 
 // New creates a new System plugin.
@@ -43,6 +44,18 @@ func NewWithCustomRestart(statePath string, restartFn func(state RestartState) e
 		restartStatePath: statePath,
 		restartFunc:      restartFn,
 	}
+}
+
+// SetCmdRunner overrides command execution for testing.
+func (p *Plugin) SetCmdRunner(fn func(ctx context.Context, name string, args ...string) ([]byte, error)) {
+	p.cmdRunner = fn
+}
+
+func (p *Plugin) runCmd(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if p.cmdRunner != nil {
+		return p.cmdRunner(ctx, name, args...)
+	}
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
 // Name returns the plugin identifier.
@@ -84,6 +97,15 @@ func (p *Plugin) Commands() []core.Command {
 			Category:    "System",
 			Permission:  core.PermissionOwner,
 			Handler:     p.handleRestart,
+		},
+		{
+			Name:        "update",
+			Aliases:     []string{"gitupdate"},
+			Description: "Check for updates from git remote or pull and rebuild (Owner Only)",
+			Usage:       ".update [pull|now]",
+			Category:    "System",
+			Permission:  core.PermissionOwner,
+			Handler:     p.handleUpdate,
 		},
 	}
 }
@@ -198,6 +220,69 @@ func (p *Plugin) handleRestart(ctx *core.Context) error {
 
 	os.Exit(0)
 	return nil
+}
+
+func (p *Plugin) handleUpdate(ctx *core.Context) error {
+	isPull := len(ctx.Args) > 0 && (strings.ToLower(ctx.Args[0]) == "pull" || strings.ToLower(ctx.Args[0]) == "now")
+
+	if !isPull {
+		_ = ctx.Reply("🔍 <i>Checking for updates from git remote...</i>")
+
+		fetchCtx, cancel := context.WithTimeout(ctx.Ctx, 30*time.Second)
+		defer cancel()
+
+		if out, err := p.runCmd(fetchCtx, "git", "fetch"); err != nil {
+			_ = ctx.Reply(fmt.Sprintf("❌ <code>git fetch</code> failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
+			return err
+		}
+
+		// Get current short commit
+		currHashOut, _ := p.runCmd(fetchCtx, "git", "rev-parse", "--short", "HEAD")
+		currHash := strings.TrimSpace(string(currHashOut))
+
+		// Check commits behind
+		logOut, err := p.runCmd(fetchCtx, "git", "log", "HEAD..origin/main", "--oneline")
+		if err != nil {
+			logOut, err = p.runCmd(fetchCtx, "git", "log", "HEAD..@{u}", "--oneline")
+		}
+
+		commits := strings.TrimSpace(string(logOut))
+		if err != nil || commits == "" {
+			return ctx.Reply(fmt.Sprintf("✨ <b>GoUltroid is already up to date!</b>\n• <b>Commit:</b> <code>%s</code>", currHash))
+		}
+
+		commitLines := strings.Split(commits, "\n")
+		var sb strings.Builder
+		sb.WriteString("🔄 <b>New updates available!</b>\n")
+		sb.WriteString(fmt.Sprintf("• <b>Current Commit:</b> <code>%s</code>\n", currHash))
+		sb.WriteString(fmt.Sprintf("• <b>Pending Commits (%d):</b>\n", len(commitLines)))
+		sb.WriteString(fmt.Sprintf("<pre>%s</pre>\n\n", escapeHTML(commits)))
+		sb.WriteString("💡 <i>Run <code>.update pull</code> or <code>.update now</code> to pull changes, rebuild, and restart.</i>")
+		return ctx.Reply(sb.String())
+	}
+
+	_ = ctx.Reply("⬇️ <i>Pulling latest updates from git...</i>")
+
+	pullCtx, cancelPull := context.WithTimeout(ctx.Ctx, 60*time.Second)
+	defer cancelPull()
+
+	if out, err := p.runCmd(pullCtx, "git", "pull"); err != nil {
+		_ = ctx.Reply(fmt.Sprintf("❌ <code>git pull</code> failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
+		return err
+	}
+
+	_ = ctx.Reply("🔨 <i>Rebuilding GoUltroid binary...</i>")
+
+	buildCtx, cancelBuild := context.WithTimeout(ctx.Ctx, 120*time.Second)
+	defer cancelBuild()
+
+	if out, err := p.runCmd(buildCtx, "go", "build", "-o", "bin/goultroid", "./cmd/goultroid"); err != nil {
+		_ = ctx.Reply(fmt.Sprintf("❌ Rebuild failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
+		return err
+	}
+
+	_ = ctx.Reply("✅ <i>Rebuild successful! Restarting GoUltroid...</i>")
+	return p.handleRestart(ctx)
 }
 
 func escapeHTML(s string) string {

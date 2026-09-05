@@ -13,6 +13,7 @@ import (
 )
 
 type mockService struct {
+	core.MockTelegramServicer
 	sent   string
 	edited string
 }

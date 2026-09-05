@@ -10,6 +10,7 @@ import (
 )
 
 type mockService struct {
+	core.MockTelegramServicer
 	sent         string
 	mediaSent    bool
 	mediaType    string
@@ -97,8 +98,8 @@ func TestSystemPlugin_Metadata(t *testing.T) {
 	}
 
 	cmds := p.Commands()
-	if len(cmds) != 2 {
-		t.Fatalf("expected 2 commands, got %d", len(cmds))
+	if len(cmds) != 3 {
+		t.Fatalf("expected 3 commands, got %d", len(cmds))
 	}
 
 	for _, c := range cmds {
@@ -210,5 +211,124 @@ func TestRestart_CustomHandler(t *testing.T) {
 	}
 	if !strings.Contains(svc.sent, "Restarting GoUltroid") {
 		t.Errorf("expected restart response, got: %s", svc.sent)
+	}
+}
+
+func TestUpdate_UpToDate(t *testing.T) {
+	p := New()
+	p.SetCmdRunner(func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "git" && len(args) > 0 {
+			switch args[0] {
+			case "fetch":
+				return []byte(""), nil
+			case "rev-parse":
+				return []byte("abcdef1"), nil
+			case "log":
+				return []byte(""), nil // no pending commits
+			}
+		}
+		return []byte(""), nil
+	})
+
+	svc := &mockService{}
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		PeerID:  &tg.InputPeerChat{ChatID: 100},
+		Message: &core.Message{ID: 1, Text: ".update"},
+		Args:    nil,
+		Svc:     svc,
+	}
+
+	err := p.handleUpdate(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(svc.sent, "already up to date") || !strings.Contains(svc.sent, "abcdef1") {
+		t.Errorf("expected up to date message with commit hash, got: %s", svc.sent)
+	}
+}
+
+func TestUpdate_HasUpdates(t *testing.T) {
+	p := New()
+	p.SetCmdRunner(func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "git" && len(args) > 0 {
+			switch args[0] {
+			case "fetch":
+				return []byte(""), nil
+			case "rev-parse":
+				return []byte("abcdef1"), nil
+			case "log":
+				return []byte("1234567 fix: some bug\n89abcde feat: new feature"), nil
+			}
+		}
+		return []byte(""), nil
+	})
+
+	svc := &mockService{}
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		PeerID:  &tg.InputPeerChat{ChatID: 100},
+		Message: &core.Message{ID: 1, Text: ".update"},
+		Args:    nil,
+		Svc:     svc,
+	}
+
+	err := p.handleUpdate(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(svc.sent, "New updates available") || !strings.Contains(svc.sent, "Pending Commits (2)") || !strings.Contains(svc.sent, "fix: some bug") {
+		t.Errorf("expected new updates message with commits, got: %s", svc.sent)
+	}
+}
+
+func TestUpdate_PullAndRebuild(t *testing.T) {
+	var executedCommands []string
+	var restartCalled bool
+
+	p := NewWithCustomRestart("", func(state RestartState) error {
+		restartCalled = true
+		return nil
+	})
+
+	p.SetCmdRunner(func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		executedCommands = append(executedCommands, name+" "+strings.Join(args, " "))
+		return []byte("ok"), nil
+	})
+
+	svc := &mockService{}
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		PeerID:  &tg.InputPeerChat{ChatID: 100},
+		Message: &core.Message{ID: 1, Text: ".update pull"},
+		Args:    []string{"pull"},
+		Svc:     svc,
+	}
+
+	err := p.handleUpdate(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !restartCalled {
+		t.Errorf("expected restart to be called after pull and rebuild")
+	}
+
+	expectedGitPull := "git pull"
+	expectedBuild := "go build -o bin/goultroid ./cmd/goultroid"
+	hasPull := false
+	hasBuild := false
+	for _, c := range executedCommands {
+		if c == expectedGitPull {
+			hasPull = true
+		}
+		if c == expectedBuild {
+			hasBuild = true
+		}
+	}
+	if !hasPull || !hasBuild {
+		t.Errorf("expected git pull and go build commands executed, got: %v", executedCommands)
 	}
 }

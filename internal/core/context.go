@@ -32,6 +32,9 @@ type TelegramServicer interface {
 	MuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, untilDate int) error
 	UnmuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error
 	PurgeMessages(ctx context.Context, peer tg.InputPeerClass, topicID int, fromID, toID int) (int, error)
+	PromoteAdmin(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, title string) error
+	DemoteAdmin(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error
+	EditChatDefaultBannedRights(ctx context.Context, peer tg.InputPeerClass, rights tg.ChatBannedRights) error
 
 	// Media upload actions
 	SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error)
@@ -444,6 +447,39 @@ func (c *Context) Purge() (int, error) {
 	fromID := c.Message.ReplyToID
 	toID := c.Message.ID
 	return c.Svc.PurgeMessages(c.Ctx, c.PeerID, topicID, fromID, toID)
+}
+
+// Promote promotes a user to administrator in the current chat.
+func (c *Context) Promote(user tg.InputPeerClass, title string) error {
+	if c.Svc == nil {
+		return errors.New("telegram service not initialized")
+	}
+	if c.PeerID == nil {
+		return errors.New("peer is nil")
+	}
+	return c.Svc.PromoteAdmin(c.Ctx, c.PeerID, user, title)
+}
+
+// Demote demotes an administrator to a regular member in the current chat.
+func (c *Context) Demote(user tg.InputPeerClass) error {
+	if c.Svc == nil {
+		return errors.New("telegram service not initialized")
+	}
+	if c.PeerID == nil {
+		return errors.New("peer is nil")
+	}
+	return c.Svc.DemoteAdmin(c.Ctx, c.PeerID, user)
+}
+
+// EditChatDefaultBannedRights updates default permissions / locks for all members in the chat.
+func (c *Context) EditChatDefaultBannedRights(rights tg.ChatBannedRights) error {
+	if c.Svc == nil {
+		return errors.New("telegram service not initialized")
+	}
+	if c.PeerID == nil {
+		return errors.New("peer is nil")
+	}
+	return c.Svc.EditChatDefaultBannedRights(c.Ctx, c.PeerID, rights)
 }
 
 // SendFile uploads and sends a file/document to the chat.

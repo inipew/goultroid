@@ -144,6 +144,15 @@ func (m *mockTelegramServicer) ResolveUsername(ctx context.Context, username str
 func (m *mockTelegramServicer) GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.MessagesChatFull, error) {
 	return nil, nil
 }
+func (m *mockTelegramServicer) PromoteAdmin(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, title string) error {
+	return nil
+}
+func (m *mockTelegramServicer) DemoteAdmin(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
+	return nil
+}
+func (m *mockTelegramServicer) EditChatDefaultBannedRights(ctx context.Context, peer tg.InputPeerClass, rights tg.ChatBannedRights) error {
+	return nil
+}
 
 func TestSchedulerPlugin(t *testing.T) {
 	mockSched := newMockSchedulerService()

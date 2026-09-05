@@ -14,12 +14,14 @@ import (
 	"github.com/inipew/goultroid/plugins/admin"
 	"github.com/inipew/goultroid/plugins/afk"
 	"github.com/inipew/goultroid/plugins/alive"
+	"github.com/inipew/goultroid/plugins/blacklist"
 	"github.com/inipew/goultroid/plugins/downloader"
 	"github.com/inipew/goultroid/plugins/filters"
 	"github.com/inipew/goultroid/plugins/forward"
 	"github.com/inipew/goultroid/plugins/fun"
 	"github.com/inipew/goultroid/plugins/help"
 	"github.com/inipew/goultroid/plugins/info"
+	"github.com/inipew/goultroid/plugins/locks"
 	"github.com/inipew/goultroid/plugins/media"
 	"github.com/inipew/goultroid/plugins/notes"
 	"github.com/inipew/goultroid/plugins/pin"
@@ -113,6 +115,9 @@ func New(cfg *config.Config) (*App, error) {
 	filtersPlugin := filters.New(db, client.Service)
 	dispatcher.AddMessageHandler(filtersPlugin.HandleIncomingMessage)
 
+	blacklistPlugin := blacklist.New(db, client.Service)
+	dispatcher.AddMessageHandler(blacklistPlugin.HandleIncomingMessage)
+
 	// Scheduler Engine
 	schedEngine := scheduler.NewEngine(db, client.Service, router, perms, logger)
 	if err := schedEngine.Start(context.Background()); err != nil {
@@ -138,6 +143,8 @@ func New(cfg *config.Config) (*App, error) {
 		filtersPlugin,
 		fun.New(),
 		schedPlugin.New(schedEngine),
+		locks.New(),
+		blacklistPlugin,
 	}
 
 	for _, p := range plugins {

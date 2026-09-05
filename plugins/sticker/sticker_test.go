@@ -14,6 +14,7 @@ import (
 )
 
 type mockService struct {
+	core.MockTelegramServicer
 	sent         string
 	mediaSent    bool
 	mediaType    string

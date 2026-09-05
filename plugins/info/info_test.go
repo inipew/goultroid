@@ -10,6 +10,7 @@ import (
 )
 
 type mockService struct {
+	core.MockTelegramServicer
 	sent          string
 	resolvedUsers []tg.UserClass
 	fullUser      *tg.UsersUserFull

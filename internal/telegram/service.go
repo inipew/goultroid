@@ -487,6 +487,85 @@ func (s *Service) GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.
 }
 
 // extractMessageFromUpdates attempts to locate a tg.Message from tg.UpdatesClass.
+// PromoteAdmin promotes a user to administrator in the supergroup/channel with custom title.
+func (s *Service) PromoteAdmin(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, title string) error {
+	if s.api == nil {
+		return errors.New("api is not initialized")
+	}
+
+	ch, ok := peer.(*tg.InputPeerChannel)
+	if !ok {
+		return fmt.Errorf("promote is only supported in supergroups/channels, got: %T", peer)
+	}
+
+	u, ok := user.(*tg.InputPeerUser)
+	if !ok {
+		return fmt.Errorf("target user must be an InputPeerUser, got: %T", user)
+	}
+
+	req := &tg.ChannelsEditAdminRequest{
+		Channel: &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
+		UserID:  &tg.InputUser{UserID: u.UserID, AccessHash: u.AccessHash},
+		AdminRights: tg.ChatAdminRights{
+			ChangeInfo:     true,
+			PostMessages:   true,
+			EditMessages:   true,
+			DeleteMessages: true,
+			BanUsers:       true,
+			InviteUsers:    true,
+			PinMessages:    true,
+			ManageTopics:   true,
+		},
+	}
+	if title != "" {
+		req.SetRank(title)
+	}
+
+	_, err := s.api.ChannelsEditAdmin(ctx, req)
+	return err
+}
+
+// DemoteAdmin demotes an administrator to regular member in the supergroup/channel.
+func (s *Service) DemoteAdmin(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
+	if s.api == nil {
+		return errors.New("api is not initialized")
+	}
+
+	ch, ok := peer.(*tg.InputPeerChannel)
+	if !ok {
+		return fmt.Errorf("demote is only supported in supergroups/channels, got: %T", peer)
+	}
+
+	u, ok := user.(*tg.InputPeerUser)
+	if !ok {
+		return fmt.Errorf("target user must be an InputPeerUser, got: %T", user)
+	}
+
+	req := &tg.ChannelsEditAdminRequest{
+		Channel:     &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
+		UserID:      &tg.InputUser{UserID: u.UserID, AccessHash: u.AccessHash},
+		AdminRights: tg.ChatAdminRights{}, // empty rights removes admin status
+	}
+
+	_, err := s.api.ChannelsEditAdmin(ctx, req)
+	return err
+}
+
+// EditChatDefaultBannedRights updates the default chat permissions (locks) in a group/supergroup.
+func (s *Service) EditChatDefaultBannedRights(ctx context.Context, peer tg.InputPeerClass, rights tg.ChatBannedRights) error {
+	if s.api == nil {
+		return errors.New("api is not initialized")
+	}
+
+	req := &tg.MessagesEditChatDefaultBannedRightsRequest{
+		Peer:         peer,
+		BannedRights: rights,
+	}
+
+	_, err := s.api.MessagesEditChatDefaultBannedRights(ctx, req)
+	return err
+}
+
 func extractMessageFromUpdates(u tg.UpdatesClass) *tg.Message {
 	switch upd := u.(type) {
 	case *tg.Updates:

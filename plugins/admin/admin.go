@@ -83,6 +83,24 @@ func (p *Plugin) Commands() []core.Command {
 			ReplyOnly:   true,
 			Handler:     p.handlePurge,
 		},
+		{
+			Name:        "promote",
+			Description: "Promote a user to admin with custom title",
+			Usage:       ".promote <user_id / reply> [title]",
+			Category:    "Admin",
+			Permission:  core.PermissionSudo,
+			GroupOnly:   true,
+			Handler:     p.handlePromote,
+		},
+		{
+			Name:        "demote",
+			Description: "Demote an admin back to regular user",
+			Usage:       ".demote <user_id / reply>",
+			Category:    "Admin",
+			Permission:  core.PermissionSudo,
+			GroupOnly:   true,
+			Handler:     p.handleDemote,
+		},
 	}
 }
 
@@ -210,6 +228,57 @@ func (p *Plugin) handlePurge(ctx *core.Context) error {
 	}
 
 	return ctx.Reply(fmt.Sprintf("🗑️ <b>Purged %d messages successfully%s!</b>", count, topicMsg))
+}
+
+func (p *Plugin) handlePromote(ctx *core.Context) error {
+	targetPeer, targetID, err := ctx.ResolveTargetUser()
+	if err != nil {
+		_ = ctx.Reply("⚠️ " + err.Error())
+		return err
+	}
+
+	title := ""
+	if len(ctx.Args) > 0 {
+		if _, parseErr := strconv.ParseInt(ctx.Args[0], 10, 64); parseErr == nil {
+			if len(ctx.Args) > 1 {
+				title = strings.TrimSpace(strings.Join(ctx.Args[1:], " "))
+			}
+		} else {
+			title = strings.TrimSpace(strings.Join(ctx.Args, " "))
+		}
+	}
+
+	if err := ctx.Promote(targetPeer, title); err != nil {
+		_ = ctx.Reply(fmt.Sprintf("❌ Failed to promote user: %v", err))
+		return err
+	}
+
+	titleStr := ""
+	if title != "" {
+		titleStr = fmt.Sprintf(" with title <i>%s</i>", title)
+	}
+
+	return ctx.Reply(fmt.Sprintf("👑 Promoted user <code>%d</code>%s to admin.", targetID, titleStr))
+}
+
+func (p *Plugin) handleDemote(ctx *core.Context) error {
+	targetPeer, targetID, err := ctx.ResolveTargetUser()
+	if err != nil {
+		_ = ctx.Reply("⚠️ " + err.Error())
+		return err
+	}
+
+	if ctx.Perms != nil && ctx.Perms.IsOwner(targetID) {
+		_ = ctx.Reply("⚠️ Cannot demote the owner!")
+		return errors.New("cannot demote owner")
+	}
+
+	if err := ctx.Demote(targetPeer); err != nil {
+		_ = ctx.Reply(fmt.Sprintf("❌ Failed to demote user: %v", err))
+		return err
+	}
+
+	return ctx.Reply(fmt.Sprintf("📉 Demoted admin <code>%d</code> to normal user.", targetID))
 }
 
 func parseDuration(s string) (time.Duration, error) {

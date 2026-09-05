@@ -107,6 +107,13 @@ func (d *DB) migrate(ctx context.Context) error {
 		created_at DATETIME NOT NULL
 	);
 	CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_next_run ON scheduled_jobs(next_run_at);
+
+	CREATE TABLE IF NOT EXISTS blacklists (
+		chat_id INTEGER NOT NULL,
+		word TEXT NOT NULL,
+		created_at DATETIME NOT NULL,
+		PRIMARY KEY (chat_id, word)
+	);
 	`
 	_, err := d.ExecContext(ctx, schema)
 	return err
