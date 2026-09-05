@@ -78,7 +78,7 @@ func (p *Plugin) handleLock(ctx *core.Context) error {
 
 	if isPrivateOrUnsupported(ctx) {
 		_ = ctx.Reply("⚠️ Fitur locks permission hanya dapat digunakan di grup atau supergroup.")
-		return nil
+		return core.ErrUnsupported
 	}
 
 	perm := ctx.Args[0]
@@ -116,7 +116,7 @@ func (p *Plugin) handleUnlock(ctx *core.Context) error {
 
 	if isPrivateOrUnsupported(ctx) {
 		_ = ctx.Reply("⚠️ Fitur locks permission hanya dapat digunakan di grup atau supergroup.")
-		return nil
+		return core.ErrUnsupported
 	}
 
 	perm := ctx.Args[0]
@@ -149,7 +149,7 @@ func (p *Plugin) handleUnlock(ctx *core.Context) error {
 func (p *Plugin) handleLocks(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
 		_ = ctx.Reply("⚠️ Fitur locks permission hanya dapat digunakan di grup atau supergroup.")
-		return nil
+		return core.ErrUnsupported
 	}
 	rights := getCurrentRights(ctx)
 	return ctx.Reply(formatLocks(rights))

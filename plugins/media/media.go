@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,9 @@ import (
 
 	"github.com/inipew/goultroid/internal/core"
 )
+
+// ffmpegSemaphore limits concurrent audio extraction to 2 parallel tasks to protect host CPU/RAM.
+var ffmpegSemaphore = make(chan struct{}, 2)
 
 // Plugin provides media inspection and conversion utilities.
 type Plugin struct{}
@@ -122,10 +126,25 @@ func (p *Plugin) handleExtractAudio(ctx *core.Context) error {
 		return ctx.Reply("⚠️ Cannot extract audio from a photo or sticker.")
 	}
 
+	// Verify media size before processing
+	if media.Size > 0 {
+		if err := core.ValidateMediaSize(media.Size, core.DefaultMaxExtractAudioSize); err != nil {
+			return ctx.Reply(fmt.Sprintf("⚠️ <b>Media too large!</b> File size (%s) exceeds extraction limit (150MB).", formatBytes(media.Size)))
+		}
+	}
+
 	// Verify ffmpeg is available
 	ffmpegPath, err := exec.LookPath("ffmpeg")
 	if err != nil {
 		return ctx.Reply("❌ <b>ffmpeg is not installed on this system.</b> Please install ffmpeg to use <code>.extractaudio</code>.")
+	}
+
+	// Acquire concurrency slot for FFmpeg to protect CPU/RAM
+	select {
+	case ffmpegSemaphore <- struct{}{}:
+		defer func() { <-ffmpegSemaphore }()
+	case <-ctx.Ctx.Done():
+		return ctx.Ctx.Err()
 	}
 
 	_ = ctx.Reply("⏳ <i>Downloading and extracting audio...</i>")
@@ -136,6 +155,15 @@ func (p *Plugin) handleExtractAudio(ctx *core.Context) error {
 	}
 	defer os.RemoveAll(tmpDir)
 
+	// Pre-flight disk space check (require at least 2x media size or 50MB)
+	requiredSpace := media.Size * 2
+	if requiredSpace <= 0 {
+		requiredSpace = 50 * 1024 * 1024
+	}
+	if err := core.CheckDiskSpace(tmpDir, requiredSpace); err != nil {
+		return ctx.Reply("❌ <b>Insufficient disk space</b> on host machine to process audio extraction.")
+	}
+
 	downloadedPath, err := ctx.DownloadMedia(tmpDir)
 	if err != nil {
 		return ctx.Reply(fmt.Sprintf("❌ Failed to download media: %v", err))
@@ -143,11 +171,21 @@ func (p *Plugin) handleExtractAudio(ctx *core.Context) error {
 
 	outPath := filepath.Join(tmpDir, "extracted_audio.mp3")
 	cmd := exec.CommandContext(ctx.Ctx, ffmpegPath, "-y", "-i", downloadedPath, "-vn", "-acodec", "libmp3lame", "-q:a", "2", outPath)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to extract audio: %v\nOutput: %s", err, string(out)))
+
+	var outputBuf bytes.Buffer
+	cmd.Stdout = &outputBuf
+	cmd.Stderr = &outputBuf
+
+	if err := cmd.Run(); err != nil {
+		outStr := outputBuf.String()
+		if len(outStr) > 2000 {
+			outStr = outStr[len(outStr)-2000:]
+		}
+		return ctx.Reply(fmt.Sprintf("❌ Failed to extract audio: %v\nOutput: %s", err, core.EscapeHTML(outStr)))
 	}
 
-	caption := fmt.Sprintf("🎵 Extracted from: <code>%s</code>", media.FileName)
+	cleanFileName := core.SanitizeFileName(media.FileName)
+	caption := fmt.Sprintf("🎵 Extracted from: <code>%s</code>", core.EscapeHTML(cleanFileName))
 	if err := ctx.SendAudio(outPath, caption); err != nil {
 		return ctx.Reply(fmt.Sprintf("❌ Failed to send audio: %v", err))
 	}

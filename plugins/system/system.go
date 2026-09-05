@@ -35,6 +35,7 @@ type Plugin struct {
 	restartFunc      func(state RestartState) error
 	cmdRunner        func(ctx context.Context, name string, args ...string) ([]byte, error)
 	startTime        time.Time
+	metrics          core.MetricsCollector
 }
 
 // New creates a new System plugin.
@@ -51,6 +52,11 @@ func NewWithCustomRestart(statePath string, restartFn func(state RestartState) e
 		restartStatePath: statePath,
 		restartFunc:      restartFn,
 	}
+}
+
+// SetMetrics configures an optional MetricsCollector for runtime health reporting.
+func (p *Plugin) SetMetrics(m core.MetricsCollector) {
+	p.metrics = m
 }
 
 // SetCmdRunner overrides command execution for testing.
@@ -180,6 +186,7 @@ func (p *Plugin) handleExec(ctx *core.Context) error {
 	}
 
 	cmd := exec.CommandContext(execCtx, shell, "-c", commandStr)
+	cmd.Env = buildSanitizedEnv()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process != nil && cmd.Process.Pid > 0 {
@@ -448,5 +455,48 @@ func (p *Plugin) handleHealth(ctx *core.Context) error {
 		runtime.Version(),
 	)
 
+	if p.metrics != nil {
+		snap := p.metrics.Snapshot()
+		msg += fmt.Sprintf(
+			"\n\n📊 <b>Operational Telemetry</b>\n"+
+				"• <b>Commands:</b> <code>%d</code> (errors: <code>%d</code>)\n"+
+				"• <b>Scheduled Jobs:</b> <code>%d</code> (failed: <code>%d</code>)\n"+
+				"• <b>Telegram Reqs:</b> <code>%d</code> (errors: <code>%d</code>)",
+			snap.TotalCommands, snap.TotalErrors,
+			snap.SchedulerJobsRun, snap.SchedulerJobsFail,
+			snap.TelegramRequests, snap.TelegramErrors,
+		)
+	}
+
 	return ctx.Reply(msg)
+}
+
+// buildSanitizedEnv masks sensitive environment variables before passing them to child processes.
+func buildSanitizedEnv() []string {
+	sensitiveKeywords := []string{
+		"SESSION", "TOKEN", "API_HASH", "API_ID", "SECRET", "PASSWORD",
+		"PASS", "KEY", "CRED", "AUTH", "DATABASE", "PRIVATE",
+	}
+
+	var sanitized []string
+	for _, env := range os.Environ() {
+		parts := strings.SplitN(env, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		keyUpper := strings.ToUpper(parts[0])
+		isSensitive := false
+		for _, kw := range sensitiveKeywords {
+			if strings.Contains(keyUpper, kw) {
+				isSensitive = true
+				break
+			}
+		}
+		if isSensitive {
+			sanitized = append(sanitized, parts[0]+"=[REDACTED]")
+		} else {
+			sanitized = append(sanitized, env)
+		}
+	}
+	return sanitized
 }

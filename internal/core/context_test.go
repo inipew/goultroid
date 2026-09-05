@@ -617,3 +617,61 @@ func TestMessage_MentionsAndURLs(t *testing.T) {
 		t.Errorf("unexpected plain urls: %v", plainURLs)
 	}
 }
+
+func TestContext_SubFacades(t *testing.T) {
+	mock := &mockTelegramServicer{}
+	ctx := &Context{
+		Ctx:    context.Background(),
+		PeerID: &tg.InputPeerChat{ChatID: 100},
+		Svc:    mock,
+	}
+
+	// 1. MessagesFacade
+	if err := ctx.Messages().Reply("hello from facade"); err != nil {
+		t.Errorf("unexpected error in Messages().Reply: %v", err)
+	}
+	if mock.sentText != "hello from facade" {
+		t.Errorf("expected sentText 'hello from facade', got %q", mock.sentText)
+	}
+	if ctx.LastResponseID != 42 {
+		t.Errorf("expected LastResponseID 42, got %d", ctx.LastResponseID)
+	}
+
+	if err := ctx.Messages().Edit("edited from facade"); err != nil {
+		t.Errorf("unexpected error in Messages().Edit: %v", err)
+	}
+	if mock.editedText != "edited from facade" {
+		t.Errorf("expected editedText 'edited from facade', got %q", mock.editedText)
+	}
+
+	// 2. AdminFacade
+	if err := ctx.Admin().Ban(&tg.InputPeerUser{UserID: 999}, 0); err != nil {
+		t.Errorf("unexpected error in Admin().Ban: %v", err)
+	}
+	if err := ctx.Admin().Kick(&tg.InputPeerUser{UserID: 999}); err != nil {
+		t.Errorf("unexpected error in Admin().Kick: %v", err)
+	}
+
+	// 3. MediaFacade
+	if err := ctx.Media().SendPhoto("fake.jpg", "caption"); err != nil {
+		t.Errorf("unexpected error in Media().SendPhoto: %v", err)
+	}
+
+	// 4. PeerFacade with nil resolver returns ErrUnsupported
+	_, _, err := ctx.Peer().ResolveUser("123")
+	if !errors.Is(err, ErrUnsupported) {
+		t.Errorf("expected ErrUnsupported, got %v", err)
+	}
+
+	// 5. Zero-value Context should not panic
+	emptyCtx := &Context{}
+	if err := emptyCtx.Messages().Reply("test"); err == nil {
+		t.Errorf("expected error from empty context, got nil")
+	}
+	if err := emptyCtx.Admin().Ban(&tg.InputPeerUser{UserID: 1}, 0); err == nil {
+		t.Errorf("expected error from empty context, got nil")
+	}
+	if _, err := emptyCtx.Media().DownloadMedia("/tmp"); err == nil {
+		t.Errorf("expected error from empty context, got nil")
+	}
+}

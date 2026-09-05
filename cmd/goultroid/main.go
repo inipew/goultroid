@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/inipew/goultroid/internal/app"
 	"github.com/inipew/goultroid/internal/config"
@@ -38,8 +39,10 @@ func main() {
 		log.Fatalf("Application error: %v", err)
 	}
 
-	// Graceful cleanup
-	if err := instance.Shutdown(); err != nil {
+	// Graceful cleanup with global 30s budget (signal ctx is trigger, shutdown ctx is budget)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := instance.Shutdown(shutdownCtx); err != nil {
 		log.Printf("Shutdown warning: %v", err)
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -207,83 +206,24 @@ func (c *Context) URLs() []string {
 	return nil
 }
 
-// Reply sends a response message to the same chat and records LastResponseID.
-func (c *Context) Reply(text string) error {
-	if c.Svc == nil {
-		return errors.New("telegram service not initialized")
-	}
-	if c.PeerID == nil {
-		return errors.New("peer is nil")
-	}
-	sent, err := c.Svc.SendMessage(c.Ctx, c.PeerID, text)
-	if err != nil {
-		return fmt.Errorf("reply failed: %w", err)
-	}
-	if sent != nil {
-		c.LastResponseID = sent.ID
-	}
-	return nil
+// Messages returns the dedicated MessagesFacade for messaging operations.
+func (c *Context) Messages() *MessagesFacade {
+	return &MessagesFacade{ctx: c}
 }
 
-// Edit edits the previously sent response (if Reply was called) or the outgoing command message.
-func (c *Context) Edit(text string) error {
-	if c.Svc == nil {
-		return errors.New("telegram service not initialized")
-	}
-	if c.PeerID == nil {
-		return errors.New("peer is nil")
-	}
-
-	msgID := c.LastResponseID
-	if msgID == 0 && c.Message != nil {
-		msgID = c.Message.ID
-	}
-	if msgID == 0 {
-		return errors.New("no message to edit")
-	}
-	return c.Svc.EditMessage(c.Ctx, c.PeerID, msgID, text)
+// Admin returns the dedicated AdminFacade for moderation and group administration.
+func (c *Context) Admin() *AdminFacade {
+	return &AdminFacade{ctx: c}
 }
 
-// Delete deletes the current command message.
-func (c *Context) Delete() error {
-	if c.Svc == nil {
-		return errors.New("telegram service not initialized")
-	}
-	if c.PeerID == nil {
-		return errors.New("peer is nil")
-	}
-	if c.Message == nil || c.Message.ID == 0 {
-		return errors.New("no message to delete")
-	}
-	return c.Svc.DeleteMessage(c.Ctx, c.PeerID, []int{c.Message.ID})
+// Media returns the dedicated MediaFacade for media handling and uploads.
+func (c *Context) Media() *MediaFacade {
+	return &MediaFacade{ctx: c}
 }
 
-// DeleteResponse deletes the bot's previously sent response message, if any.
-func (c *Context) DeleteResponse() error {
-	if c.Svc == nil {
-		return errors.New("telegram service not initialized")
-	}
-	if c.PeerID == nil {
-		return errors.New("peer is nil")
-	}
-	if c.LastResponseID == 0 {
-		return errors.New("no response message to delete")
-	}
-	return c.Svc.DeleteMessage(c.Ctx, c.PeerID, []int{c.LastResponseID})
-}
-
-// React sends an emoji reaction to the message.
-func (c *Context) React(emoji string) error {
-	if c.Svc == nil {
-		return errors.New("telegram service not initialized")
-	}
-	if c.PeerID == nil {
-		return errors.New("peer is nil")
-	}
-	if c.Message == nil || c.Message.ID == 0 {
-		return errors.New("no message to react to")
-	}
-	return c.Svc.React(c.Ctx, c.PeerID, c.Message.ID, emoji)
+// Peer returns the dedicated PeerFacade for user/chat resolution.
+func (c *Context) Peer() *PeerFacade {
+	return &PeerFacade{ctx: c}
 }
 
 // targetMsgID returns the replied-to message ID if present, otherwise current message ID.
@@ -297,144 +237,12 @@ func (c *Context) targetMsgID() int {
 	return 0
 }
 
-// Pin pins the current message or the replied-to message.
-func (c *Context) Pin(silent bool) error {
-	if c.Svc == nil {
-		return errors.New("telegram service not initialized")
+// TopicID returns the forum topic ID of the command or replied message, if any.
+func (c *Context) TopicID() int {
+	if c.Message != nil && c.Message.TopicID != 0 {
+		return c.Message.TopicID
 	}
-	if c.PeerID == nil {
-		return errors.New("peer is nil")
-	}
-	targetID := c.targetMsgID()
-	if targetID == 0 {
-		return errors.New("no message to pin")
-	}
-	return c.Svc.PinMessage(c.Ctx, c.PeerID, targetID, silent)
-}
-
-// Unpin unpins the current message or the replied-to message.
-func (c *Context) Unpin() error {
-	if c.Svc == nil {
-		return errors.New("telegram service not initialized")
-	}
-	if c.PeerID == nil {
-		return errors.New("peer is nil")
-	}
-	targetID := c.targetMsgID()
-	if targetID == 0 {
-		return errors.New("no message to unpin")
-	}
-	return c.Svc.UnpinMessage(c.Ctx, c.PeerID, targetID)
-}
-
-// Forward forwards the message (or replied message) to another peer.
-func (c *Context) Forward(toPeer tg.InputPeerClass) error {
-	if c.Svc == nil {
-		return errors.New("telegram service not initialized")
-	}
-	if c.PeerID == nil {
-		return errors.New("peer is nil")
-	}
-	if toPeer == nil {
-		return errors.New("destination peer is nil")
-	}
-	targetID := c.targetMsgID()
-	if targetID == 0 {
-		return errors.New("no message to forward")
-	}
-	return c.Svc.ForwardMessages(c.Ctx, c.PeerID, toPeer, []int{targetID})
-}
-
-// ForwardToSelf forwards the message (or replied message) to Saved Messages.
-func (c *Context) ForwardToSelf() error {
-	return c.Forward(&tg.InputPeerSelf{})
-}
-
-// Enforce global maximum concurrent downloads (default: 3 concurrent jobs)
-var downloadSemaphore = make(chan struct{}, 3)
-
-// DownloadMedia downloads the media attached to the message or the replied message.
-func (c *Context) DownloadMedia(destDir string) (string, error) {
-	if c.Svc == nil {
-		return "", errors.New("telegram service not initialized")
-	}
-
-	var media *MediaInfo
-	if c.Message != nil && c.Message.Media != nil {
-		media = c.Message.Media
-	}
-
-	if media == nil || media.Location == nil {
-		replied, err := c.GetReply()
-		if err == nil && replied != nil && replied.Media != nil {
-			media = replied.Media
-		}
-	}
-
-	if media == nil || media.Location == nil {
-		return "", errors.New("no media found in message or reply")
-	}
-
-	// Enforce global maximum download size (default: 500 MB)
-	const MaxMediaDownloadSize = 500 * 1024 * 1024
-	if media.Size > MaxMediaDownloadSize {
-		return "", fmt.Errorf("%w: file size (%d bytes) exceeds maximum allowed limit (500MB)", ErrMedia, media.Size)
-	}
-
-	// Acquire concurrent download slot (max 3 concurrent jobs)
-	select {
-	case downloadSemaphore <- struct{}{}:
-		defer func() { <-downloadSemaphore }()
-	case <-c.Ctx.Done():
-		return "", c.Ctx.Err()
-	}
-
-	if err := os.MkdirAll(destDir, 0700); err != nil {
-		return "", fmt.Errorf("failed to create destination directory: %w", err)
-	}
-
-	fileName := filepath.Base(filepath.Clean(media.FileName))
-	if fileName == "." || fileName == ".." || fileName == "/" || fileName == "" {
-		ext := ".bin"
-		switch media.Type {
-		case "photo":
-			ext = ".jpg"
-		case "video":
-			ext = ".mp4"
-		case "audio":
-			ext = ".mp3"
-		case "voice":
-			ext = ".ogg"
-		case "sticker":
-			ext = ".webp"
-		}
-		fileName = fmt.Sprintf("media_%d%s", time.Now().UnixNano(), ext)
-	}
-
-	if len(fileName) > 120 {
-		ext := filepath.Ext(fileName)
-		base := strings.TrimSuffix(fileName, ext)
-		if len(base) > 100 {
-			base = base[:100]
-		}
-		fileName = base + ext
-	}
-
-	filePath := filepath.Join(destDir, fileName)
-	if err := c.Svc.DownloadFile(c.Ctx, media.Location, filePath); err != nil {
-		_ = os.Remove(filePath)
-		return "", fmt.Errorf("download failed: %w", err)
-	}
-
-	// Verify actual downloaded file size against hard limit
-	if stat, err := os.Stat(filePath); err == nil {
-		if stat.Size() > MaxMediaDownloadSize {
-			_ = os.Remove(filePath)
-			return "", fmt.Errorf("%w: downloaded file size (%d bytes) exceeds maximum limit (500MB)", ErrMedia, stat.Size())
-		}
-	}
-
-	return filePath, nil
+	return 0
 }
 
 // GetReply retrieves the message that was replied to, if any.
@@ -481,7 +289,6 @@ func (c *Context) GetReply() (*Message, error) {
 		}
 	}
 
-	// Extract media if present in reply
 	if msg.Media != nil {
 		res.Media = ExtractMediaFromTG(msg.Media)
 		if res.Media != nil {
@@ -492,272 +299,156 @@ func (c *Context) GetReply() (*Message, error) {
 	return res, nil
 }
 
-// TopicID returns the forum topic ID of the command or replied message, if any.
-func (c *Context) TopicID() int {
-	if c.Message != nil && c.Message.TopicID != 0 {
-		return c.Message.TopicID
-	}
-	return 0
+// --- Backward-Compatible Delegator Methods ---
+
+// Reply sends a response message to the same chat and records LastResponseID.
+func (c *Context) Reply(text string) error {
+	return c.Messages().Reply(text)
 }
 
-// ResolveUser resolves a user reference (ID, @username, phone) using the injected PeerResolver.
-func (c *Context) ResolveUser(ref string) (tg.InputPeerClass, int64, error) {
-	if c != nil && c.Resolver != nil {
-		return c.Resolver.ResolveUser(c.Ctx, ref)
-	}
-	return nil, 0, ErrUnsupported
+// Edit edits the previously sent response (if Reply was called) or the outgoing command message.
+func (c *Context) Edit(text string) error {
+	return c.Messages().Edit(text)
 }
 
-// ResolveChat resolves a chat reference (ID, @username) using the injected PeerResolver.
-func (c *Context) ResolveChat(ref string) (tg.InputPeerClass, error) {
-	if c != nil && c.Resolver != nil {
-		return c.Resolver.ResolveChat(c.Ctx, ref)
-	}
-	return nil, ErrUnsupported
+// Delete deletes the current command message.
+func (c *Context) Delete() error {
+	return c.Messages().Delete()
 }
 
-// ResolveTargetUser extracts the target user's InputPeer and UserID from args (numeric ID or @username) or from replied message.
-// It leverages PeerResolver to obtain full access hashes whenever available.
-func (c *Context) ResolveTargetUser() (tg.InputPeerClass, int64, error) {
-	if len(c.Args) > 0 {
-		arg := c.Args[0]
-		// 1. Numeric ID
-		if uid, err := strconv.ParseInt(arg, 10, 64); err == nil && uid != 0 {
-			if c.Resolver != nil {
-				peer, id, err := c.Resolver.ResolveUser(c.Ctx, arg)
-				if err == nil && peer != nil {
-					return peer, id, nil
-				}
-			}
-			return &tg.InputPeerUser{UserID: uid}, uid, nil
-		}
-
-		// 2. Username (@username or username)
-		if strings.HasPrefix(arg, "@") || (!strings.ContainsAny(arg, " /.:") && len(arg) >= 3) {
-			if c.Resolver != nil {
-				peer, id, err := c.Resolver.ResolveUser(c.Ctx, arg)
-				if err == nil && peer != nil {
-					return peer, id, nil
-				}
-			}
-
-			// Fallback to legacy ResolveUsername
-			username := strings.TrimPrefix(arg, "@")
-			if c.Svc != nil {
-				resolved, err := c.ResolveUsername(username)
-				if err == nil && resolved != nil {
-					for _, u := range resolved.Users {
-						if user, ok := u.(*tg.User); ok {
-							return &tg.InputPeerUser{UserID: user.ID, AccessHash: user.AccessHash}, user.ID, nil
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// 3. Reply to user
-	reply, err := c.GetReply()
-	if err == nil && reply != nil && reply.SenderID != 0 {
-		if c.Resolver != nil {
-			peer, id, err := c.Resolver.ResolveUser(c.Ctx, strconv.FormatInt(reply.SenderID, 10))
-			if err == nil && peer != nil {
-				return peer, id, nil
-			}
-		}
-		return &tg.InputPeerUser{UserID: reply.SenderID}, reply.SenderID, nil
-	}
-
-	return nil, 0, errors.New("please provide a valid user ID, username, or reply to a user's message")
+// DeleteResponse deletes the bot's previously sent response message, if any.
+func (c *Context) DeleteResponse() error {
+	return c.Messages().DeleteResponse()
 }
 
-// Ban bans a user from the chat.
+// React sends an emoji reaction to the message.
+func (c *Context) React(emoji string) error {
+	return c.Messages().React(emoji)
+}
+
+// Pin pins the current message or the replied-to message.
+func (c *Context) Pin(silent bool) error {
+	return c.Messages().Pin(silent)
+}
+
+// Unpin unpins the current message or the replied-to message.
+func (c *Context) Unpin() error {
+	return c.Messages().Unpin()
+}
+
+// Forward forwards the message (or replied message) to another peer.
+func (c *Context) Forward(toPeer tg.InputPeerClass) error {
+	return c.Messages().Forward(toPeer)
+}
+
+// ForwardToSelf forwards the message (or replied message) to Saved Messages.
+func (c *Context) ForwardToSelf() error {
+	return c.Messages().ForwardToSelf()
+}
+
+// Purge safely purges messages from the replied message up to the current command message.
+func (c *Context) Purge() (int, error) {
+	return c.Messages().Purge()
+}
+
+// Ban restricts a user in the chat until untilDate.
 func (c *Context) Ban(user tg.InputPeerClass, untilDate int) error {
-	if c.Svc == nil {
-		return errors.New("telegram service not initialized")
-	}
-	if c.PeerID == nil {
-		return errors.New("peer is nil")
-	}
-	return c.Svc.BanUser(c.Ctx, c.PeerID, user, untilDate)
+	return c.Admin().Ban(user, untilDate)
 }
 
-// Unban removes ban restrictions on a user.
+// Unban removes restrictions from a user in the chat.
 func (c *Context) Unban(user tg.InputPeerClass) error {
-	if c.Svc == nil {
-		return errors.New("telegram service not initialized")
-	}
-	if c.PeerID == nil {
-		return errors.New("peer is nil")
-	}
-	return c.Svc.UnbanUser(c.Ctx, c.PeerID, user)
+	return c.Admin().Unban(user)
 }
 
 // Kick kicks a user from the chat.
 func (c *Context) Kick(user tg.InputPeerClass) error {
-	if c.Svc == nil {
-		return errors.New("telegram service not initialized")
-	}
-	if c.PeerID == nil {
-		return errors.New("peer is nil")
-	}
-	return c.Svc.KickUser(c.Ctx, c.PeerID, user)
+	return c.Admin().Kick(user)
 }
 
-// Mute mutes a user in the chat until the specified unix timestamp (0 for permanent).
+// Mute mutes a user in the chat until untilDate.
 func (c *Context) Mute(user tg.InputPeerClass, untilDate int) error {
-	if c.Svc == nil {
-		return errors.New("telegram service not initialized")
-	}
-	if c.PeerID == nil {
-		return errors.New("peer is nil")
-	}
-	return c.Svc.MuteUser(c.Ctx, c.PeerID, user, untilDate)
+	return c.Admin().Mute(user, untilDate)
 }
 
 // Unmute unmutes a user in the chat.
 func (c *Context) Unmute(user tg.InputPeerClass) error {
-	if c.Svc == nil {
-		return errors.New("telegram service not initialized")
-	}
-	if c.PeerID == nil {
-		return errors.New("peer is nil")
-	}
-	return c.Svc.UnmuteUser(c.Ctx, c.PeerID, user)
-}
-
-// Purge safely purges messages from the replied message up to the current command message,
-// taking into account forum topic scope so messages in other topics are never affected.
-func (c *Context) Purge() (int, error) {
-	if c.Svc == nil {
-		return 0, errors.New("telegram service not initialized")
-	}
-	if c.PeerID == nil {
-		return 0, errors.New("peer is nil")
-	}
-	if c.Message == nil || c.Message.ReplyToID == 0 {
-		return 0, errors.New("purge must be a reply to a message")
-	}
-
-	topicID := c.TopicID()
-	if topicID == 0 {
-		reply, _ := c.GetReply()
-		if reply != nil && reply.TopicID != 0 {
-			topicID = reply.TopicID
-		}
-	}
-
-	fromID := c.Message.ReplyToID
-	toID := c.Message.ID
-	return c.Svc.PurgeMessages(c.Ctx, c.PeerID, topicID, fromID, toID)
+	return c.Admin().Unmute(user)
 }
 
 // Promote promotes a user to administrator in the current chat.
 func (c *Context) Promote(user tg.InputPeerClass, title string) error {
-	if c.Svc == nil {
-		return errors.New("telegram service not initialized")
-	}
-	if c.PeerID == nil {
-		return errors.New("peer is nil")
-	}
-	return c.Svc.PromoteAdmin(c.Ctx, c.PeerID, user, title)
+	return c.Admin().Promote(user, title)
 }
 
 // Demote demotes an administrator to a regular member in the current chat.
 func (c *Context) Demote(user tg.InputPeerClass) error {
-	if c.Svc == nil {
-		return errors.New("telegram service not initialized")
-	}
-	if c.PeerID == nil {
-		return errors.New("peer is nil")
-	}
-	return c.Svc.DemoteAdmin(c.Ctx, c.PeerID, user)
+	return c.Admin().Demote(user)
 }
 
 // EditChatDefaultBannedRights updates default permissions / locks for all members in the chat.
 func (c *Context) EditChatDefaultBannedRights(rights tg.ChatBannedRights) error {
-	if c.Svc == nil {
-		return errors.New("telegram service not initialized")
-	}
-	if c.PeerID == nil {
-		return errors.New("peer is nil")
-	}
-	return c.Svc.EditChatDefaultBannedRights(c.Ctx, c.PeerID, rights)
+	return c.Admin().SetChatPermissions(rights)
+}
+
+// DownloadMedia downloads the media attached to the message or the replied message.
+func (c *Context) DownloadMedia(destDir string) (string, error) {
+	return c.Media().DownloadMedia(destDir)
+}
+
+// SendMedia sends a media file to the chat.
+func (c *Context) SendMedia(mediaType string, filePath string, caption string) (*Message, error) {
+	return c.Media().SendMedia(mediaType, filePath, caption)
 }
 
 // SendFile uploads and sends a file/document to the chat.
 func (c *Context) SendFile(filePath, caption string) error {
-	if c.Svc == nil {
-		return errors.New("telegram service not initialized")
-	}
-	if c.PeerID == nil {
-		return errors.New("peer is nil")
-	}
-	_, err := c.Svc.SendMedia(c.Ctx, c.PeerID, "file", filePath, caption)
-	return err
+	return c.Media().SendFile(filePath, caption)
 }
 
 // SendPhoto uploads and sends a photo to the chat.
 func (c *Context) SendPhoto(filePath, caption string) error {
-	if c.Svc == nil {
-		return errors.New("telegram service not initialized")
-	}
-	if c.PeerID == nil {
-		return errors.New("peer is nil")
-	}
-	_, err := c.Svc.SendMedia(c.Ctx, c.PeerID, "photo", filePath, caption)
-	return err
+	return c.Media().SendPhoto(filePath, caption)
 }
 
 // SendSticker uploads and sends a sticker to the chat.
 func (c *Context) SendSticker(filePath string) error {
-	if c.Svc == nil {
-		return errors.New("telegram service not initialized")
-	}
-	if c.PeerID == nil {
-		return errors.New("peer is nil")
-	}
-	_, err := c.Svc.SendMedia(c.Ctx, c.PeerID, "sticker", filePath, "")
-	return err
+	return c.Media().SendSticker(filePath)
 }
 
 // SendAudio uploads and sends an audio file to the chat.
 func (c *Context) SendAudio(filePath, caption string) error {
-	if c.Svc == nil {
-		return errors.New("telegram service not initialized")
-	}
-	if c.PeerID == nil {
-		return errors.New("peer is nil")
-	}
-	_, err := c.Svc.SendMedia(c.Ctx, c.PeerID, "audio", filePath, caption)
-	return err
+	return c.Media().SendAudio(filePath, caption)
+}
+
+// ResolveUser resolves a user reference using the injected PeerResolver.
+func (c *Context) ResolveUser(ref string) (tg.InputPeerClass, int64, error) {
+	return c.Peer().ResolveUser(ref)
+}
+
+// ResolveChat resolves a chat reference using the injected PeerResolver.
+func (c *Context) ResolveChat(ref string) (tg.InputPeerClass, error) {
+	return c.Peer().ResolveChat(ref)
+}
+
+// ResolveTargetUser extracts the target user's InputPeer and UserID from args or reply.
+func (c *Context) ResolveTargetUser() (tg.InputPeerClass, int64, error) {
+	return c.Peer().ResolveTargetUser()
 }
 
 // GetFullUser fetches detailed user information.
 func (c *Context) GetFullUser(user tg.InputUserClass) (*tg.UsersUserFull, error) {
-	if c.Svc == nil {
-		return nil, errors.New("telegram service not initialized")
-	}
-	return c.Svc.GetFullUser(c.Ctx, user)
+	return c.Peer().GetFullUser(user)
 }
 
 // ResolveUsername resolves a public username to user/chat entities.
 func (c *Context) ResolveUsername(username string) (*tg.ContactsResolvedPeer, error) {
-	if c.Svc == nil {
-		return nil, errors.New("telegram service not initialized")
-	}
-	return c.Svc.ResolveUsername(c.Ctx, username)
+	return c.Peer().ResolveUsername(username)
 }
 
 // GetFullChat fetches detailed chat/channel information for the current chat.
 func (c *Context) GetFullChat() (*tg.MessagesChatFull, error) {
-	if c.Svc == nil {
-		return nil, errors.New("telegram service not initialized")
-	}
-	if c.PeerID == nil {
-		return nil, errors.New("peer is nil")
-	}
-	return c.Svc.GetFullChat(c.Ctx, c.PeerID)
+	return c.Peer().GetFullChat()
 }
 
 // ExtractMediaFromTG parses raw tg.MessageMediaClass into core.MediaInfo.

@@ -88,3 +88,36 @@ func TestCommandExecutor_PanicRecovery(t *testing.T) {
 		t.Fatalf("expected ErrInternal from panic recovery, got: %v", err)
 	}
 }
+
+func TestCommandExecutor_WithMetrics(t *testing.T) {
+	logger := zap.NewNop()
+	exec := NewCommandExecutor(logger, nil, 5*time.Second)
+	metrics := NewDefaultMetricsTracker()
+	exec.SetMetrics(metrics)
+
+	cmd := Command{
+		Name:       "metric_test",
+		Permission: PermissionEveryone,
+		Handler: func(ctx *Context) error {
+			time.Sleep(2 * time.Millisecond)
+			return nil
+		},
+	}
+
+	ctx := &Context{
+		Ctx:     context.Background(),
+		Command: "metric_test",
+	}
+
+	if err := exec.Execute(ctx, cmd); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	snap := metrics.Snapshot()
+	if snap.TotalCommands != 1 {
+		t.Errorf("expected 1 command recorded, got %d", snap.TotalCommands)
+	}
+	if st, ok := snap.Commands["metric_test"]; !ok || st.TotalCalls != 1 {
+		t.Errorf("expected metric_test stats recorded, got %+v", st)
+	}
+}

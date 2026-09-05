@@ -557,7 +557,12 @@ func (s *Service) UnmuteUser(ctx context.Context, peer tg.InputPeerClass, user t
 }
 
 // PurgeMessages purges messages in the range [fromID..toID]. If topicID > 0, it uses MessagesGetReplies
-// to ensure only messages inside that forum topic/thread are deleted.
+// MaxPurgeBatchLimit defines the maximum number of messages that can be purged in a single call.
+const MaxPurgeBatchLimit = 1000
+
+// PurgeMessages purges messages in the range [fromID..toID]. If topicID > 0, it uses MessagesGetReplies
+// to ensure only messages inside that forum topic/thread are deleted. It paginates backwards from maxID
+// to minID until all messages in the range are collected or MaxPurgeBatchLimit is reached.
 func (s *Service) PurgeMessages(ctx context.Context, peer tg.InputPeerClass, topicID int, fromID, toID int) (int, error) {
 	if s.api == nil {
 		return 0, errors.New("api is not initialized")
@@ -573,51 +578,92 @@ func (s *Service) PurgeMessages(ctx context.Context, peer tg.InputPeerClass, top
 	msgIDsMap[fromID] = struct{}{}
 	msgIDsMap[toID] = struct{}{}
 
-	if topicID > 0 {
-		// Topic-scoped purge via GetReplies
-		resp, err := s.api.MessagesGetReplies(ctx, &tg.MessagesGetRepliesRequest{
-			Peer:  peer,
-			MsgID: topicID,
-			MinID: minID - 1,
-			MaxID: maxID + 1,
-			Limit: 100,
-		})
-		if err != nil {
-			return 0, fmt.Errorf("failed to fetch topic replies for purge: %w", err)
+	currentOffsetID := maxID + 1
+
+	for len(msgIDsMap) < MaxPurgeBatchLimit {
+		var (
+			messages []tg.MessageClass
+			fetchErr error
+		)
+
+		if topicID > 0 {
+			// Topic-scoped purge via GetReplies with pagination
+			_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
+				resp, err := s.api.MessagesGetReplies(ctx, &tg.MessagesGetRepliesRequest{
+					Peer:     peer,
+					MsgID:    topicID,
+					OffsetID: currentOffsetID,
+					MinID:    minID - 1,
+					MaxID:    maxID + 1,
+					Limit:    100,
+				})
+				if err != nil {
+					return struct{}{}, err
+				}
+				if resp != nil {
+					if mod, ok := resp.AsModified(); ok {
+						messages = mod.GetMessages()
+					}
+				}
+				return struct{}{}, nil
+			})
+			fetchErr = err
+		} else {
+			// Non-topic history fetch with pagination
+			_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
+				resp, err := s.api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
+					Peer:     peer,
+					OffsetID: currentOffsetID,
+					MinID:    minID - 1,
+					MaxID:    maxID + 1,
+					Limit:    100,
+				})
+				if err != nil {
+					return struct{}{}, err
+				}
+				if resp != nil {
+					if mod, ok := resp.AsModified(); ok {
+						messages = mod.GetMessages()
+					}
+				}
+				return struct{}{}, nil
+			})
+			fetchErr = err
 		}
-		if resp != nil {
-			if mod, ok := resp.AsModified(); ok {
-				for _, m := range mod.GetMessages() {
-					if msg, ok := m.(*tg.Message); ok {
-						if msg.ID >= minID && msg.ID <= maxID {
-							msgIDsMap[msg.ID] = struct{}{}
-						}
+
+		if fetchErr != nil {
+			if len(msgIDsMap) <= 2 {
+				return 0, fmt.Errorf("failed to fetch messages for purge: %w", fetchErr)
+			}
+			break
+		}
+
+		if len(messages) == 0 {
+			break
+		}
+
+		lowestIDInBatch := currentOffsetID
+		newFound := 0
+
+		for _, m := range messages {
+			if msg, ok := m.(*tg.Message); ok {
+				if msg.ID < lowestIDInBatch {
+					lowestIDInBatch = msg.ID
+				}
+				if msg.ID >= minID && msg.ID <= maxID {
+					if _, exists := msgIDsMap[msg.ID]; !exists {
+						msgIDsMap[msg.ID] = struct{}{}
+						newFound++
 					}
 				}
 			}
 		}
-	} else {
-		// Non-topic history fetch
-		resp, err := s.api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
-			Peer:  peer,
-			MinID: minID - 1,
-			MaxID: maxID + 1,
-			Limit: 100,
-		})
-		if err != nil {
-			return 0, fmt.Errorf("failed to fetch message history for purge: %w", err)
+
+		if lowestIDInBatch >= currentOffsetID || lowestIDInBatch <= minID || newFound == 0 {
+			break
 		}
-		if resp != nil {
-			if mod, ok := resp.AsModified(); ok {
-				for _, m := range mod.GetMessages() {
-					if msg, ok := m.(*tg.Message); ok {
-						if msg.ID >= minID && msg.ID <= maxID {
-							msgIDsMap[msg.ID] = struct{}{}
-						}
-					}
-				}
-			}
-		}
+
+		currentOffsetID = lowestIDInBatch
 	}
 
 	allIDs := make([]int, 0, len(msgIDsMap))

@@ -193,3 +193,11 @@ func TestEditChatDefaultBannedRights_UnsupportedPeer(t *testing.T) {
 	}
 }
 
+func TestPurgeMessages_NilAPI(t *testing.T) {
+	svc := &Service{api: nil}
+	_, err := svc.PurgeMessages(context.Background(), &tg.InputPeerChat{ChatID: 123}, 0, 10, 20)
+	if err == nil {
+		t.Errorf("expected error when api is nil, got nil")
+	}
+}
+

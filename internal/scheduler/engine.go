@@ -72,6 +72,9 @@ func validateActionType(actionType string) error {
 }
 
 // Start boots the background ticker loops for job execution.
+// Invariant: lifecycle-bound. All job contexts are children of e.ctx.
+// Stop() is authoritative — jobs must not survive scheduler/application shutdown.
+// No context.WithoutCancel is used; cancellation must propagate to running jobs.
 func (e *Engine) Start(parentCtx context.Context) error {
 	e.runMu.Lock()
 	defer e.runMu.Unlock()
@@ -93,6 +96,42 @@ func (e *Engine) Start(parentCtx context.Context) error {
 // Stop gracefully halts the scheduler engine, waiting for jobs up to a 10s upper bound.
 func (e *Engine) Stop() error {
 	return e.StopWithTimeout(10 * time.Second)
+}
+
+// StopContext gracefully halts the scheduler engine bounded by the provided context.
+// It is the production-grade variant: caller controls budget (e.g. 10s slice of 30s global shutdown).
+func (e *Engine) StopContext(ctx context.Context) error {
+	e.runMu.Lock()
+	if !e.running {
+		e.runMu.Unlock()
+		return nil
+	}
+	e.running = false
+	e.cancel()
+	e.runMu.Unlock()
+
+	// Cancel programmatic tasks
+	e.tasksMu.Lock()
+	for _, cancelTask := range e.tasks {
+		cancelTask()
+	}
+	e.tasks = make(map[string]context.CancelFunc)
+	e.tasksMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		e.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		e.logger.Info("scheduler engine stopped gracefully")
+		return nil
+	case <-ctx.Done():
+		e.logger.Warn("scheduler engine stop timed out waiting for jobs", zap.Error(ctx.Err()))
+		return fmt.Errorf("scheduler engine stop timed out: %w", ctx.Err())
+	}
 }
 
 // StopWithTimeout gracefully halts the scheduler engine and cancels all active periodic tasks
@@ -320,7 +359,11 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) {
 		e.wg.Add(1)
 		go func(targetJob database.ScheduledJob) {
 			defer e.wg.Done()
-			e.executeJob(ctx, targetJob)
+			// Lifecycle-bound child context: cancelled when scheduler stops, inherits timeout/cancellation.
+			// No context.WithoutCancel — jobs must not survive shutdown.
+			jobCtx, cancel := context.WithCancel(e.ctx)
+			defer cancel()
+			e.executeJob(jobCtx, targetJob)
 		}(j)
 	}
 }

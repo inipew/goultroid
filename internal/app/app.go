@@ -123,9 +123,16 @@ func New(cfg *config.Config) (*App, error) {
 	blacklistPlugin := blacklist.New(db, client.Service)
 	dispatcher.AddMessageHandler(blacklistPlugin.HandleIncomingMessage)
 
+	// Unified operational metrics tracker
+	metrics := core.NewDefaultMetricsTracker()
+	dispatcher.Executor().SetMetrics(metrics)
+
 	// Scheduler Engine (shares unified CommandExecutor with Dispatcher)
 	schedEngine := scheduler.NewEngine(db, client.Service, router, perms, logger)
 	schedEngine.SetExecutor(dispatcher.Executor())
+
+	systemPlugin := system.New()
+	systemPlugin.SetMetrics(metrics)
 
 	plugins := []plugin.Plugin{
 		ping.New(),
@@ -141,7 +148,7 @@ func New(cfg *config.Config) (*App, error) {
 		media.New(),
 		sticker.New(),
 		info.New(),
-		system.New(),
+		systemPlugin,
 		filtersPlugin,
 		fun.New(),
 		schedPlugin.New(schedEngine),
@@ -187,25 +194,40 @@ func (a *App) Run(ctx context.Context) error {
 }
 
 // Shutdown triggers graceful shutdown of all registered plugins, scheduler, and flushes logs.
-func (a *App) Shutdown() error {
-	a.logger.Info("shutting down GoUltroid...")
+// ctx is the global shutdown budget (expected 30s from caller). Scheduler gets a 10s slice of that budget.
+// Lifecycle boundary is caller-controlled; no Background() is created inside.
+func (a *App) Shutdown(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	a.logger.Info("shutting down GoUltroid...", zap.Duration("budget", func() time.Duration { if d, ok := ctx.Deadline(); ok { return time.Until(d) }; return 0 }()))
 
-	// 1. Stop scheduler engine first (allowing in-flight jobs to complete or abort within grace period)
+	// 1. Stop scheduler engine first with 10s slice of global budget
 	if a.sched != nil {
-		if err := a.sched.Stop(); err != nil {
+		schedCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		if err := a.sched.StopContext(schedCtx); err != nil {
 			a.logger.Warn("error stopping scheduler engine", zap.Error(err))
+		}
+		cancel()
+		// If global budget already exceeded, abort early
+		select {
+		case <-ctx.Done():
+			a.logger.Warn("global shutdown budget exceeded after scheduler stop", zap.Error(ctx.Err()))
+			if a.db != nil {
+				_ = a.db.Close()
+			}
+			_ = a.logger.Sync()
+			return ctx.Err()
+		default:
 		}
 	}
 
-	// 2. Stop registered plugins
-	if err := a.plugins.Shutdown(); err != nil {
+	// 2. Stop registered plugins with remaining budget
+	if err := a.plugins.ShutdownWithContext(ctx); err != nil {
 		a.logger.Warn("error during plugin shutdown", zap.Error(err))
 	}
 
-	// 3. Grace period (100ms) for any final in-flight transactions to settle
-	time.Sleep(100 * time.Millisecond)
-
-	// 4. Close database last so running goroutines never write to a closed DB connection
+	// 3. Close database last so running goroutines never write to a closed DB connection
 	if a.db != nil {
 		if err := a.db.Close(); err != nil {
 			a.logger.Warn("error closing database", zap.Error(err))

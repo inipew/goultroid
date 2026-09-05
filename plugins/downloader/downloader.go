@@ -46,12 +46,34 @@ func (p *Plugin) Commands() []core.Command {
 }
 
 func (p *Plugin) handleDownload(ctx *core.Context) error {
+	saveDir := filepath.Join("data", "downloads")
+
+	var mediaSize int64
+	if ctx.Message != nil && ctx.Message.Media != nil {
+		mediaSize = ctx.Message.Media.Size
+	} else if reply, err := ctx.GetReply(); err == nil && reply != nil && reply.Media != nil {
+		mediaSize = reply.Media.Size
+	}
+
+	if mediaSize > 0 {
+		if err := core.ValidateMediaSize(mediaSize, core.DefaultMaxDownloadSize); err != nil {
+			return ctx.Reply(fmt.Sprintf("⚠️ <b>Media too large!</b> File size (%s) exceeds download limit (500MB).", formatBytes(mediaSize)))
+		}
+	}
+
+	requiredSpace := mediaSize
+	if requiredSpace <= 0 {
+		requiredSpace = 50 * 1024 * 1024
+	}
+	if err := core.CheckDiskSpace(saveDir, requiredSpace); err != nil {
+		return ctx.Reply("❌ <b>Insufficient disk space</b> on host machine to complete download.")
+	}
+
 	if err := ctx.Reply("⏳ Downloading media..."); err != nil {
 		return err
 	}
 
 	start := time.Now()
-	saveDir := filepath.Join("data", "downloads")
 
 	filePath, err := ctx.DownloadMedia(saveDir)
 	if err != nil {

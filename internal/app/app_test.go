@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -40,8 +41,8 @@ func TestApp_New(t *testing.T) {
 		t.Errorf("expected at least 19 plugins registered, got %d", len(plugins))
 	}
 
-	// Test Shutdown
-	if err := app.Shutdown(); err != nil {
+	// Test Shutdown with global budget
+	if err := app.Shutdown(context.Background()); err != nil {
 		t.Errorf("unexpected error during shutdown: %v", err)
 	}
 }

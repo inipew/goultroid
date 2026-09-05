@@ -338,3 +338,31 @@ func TestMediaInfo_EmptyTypeNoPanic(t *testing.T) {
 		t.Errorf("expected escaped filename in output, got: %s", svc.sent)
 	}
 }
+
+func TestExtractAudio_MediaTooLarge(t *testing.T) {
+	p := New()
+	svc := &mockService{}
+	ctx := &core.Context{
+		Ctx:    context.Background(),
+		PeerID: &tg.InputPeerChat{ChatID: 100},
+		Message: &core.Message{
+			ID: 1,
+			Media: &core.MediaInfo{
+				Type:     "video",
+				FileName: "giant_video.mp4",
+				MimeType: "video/mp4",
+				Size:     200 * 1024 * 1024, // 200MB > 150MB limit
+			},
+		},
+		Svc: svc,
+	}
+
+	err := p.handleExtractAudio(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(svc.sent, "Media too large") {
+		t.Errorf("expected rejection for oversized media, got: %s", svc.sent)
+	}
+}

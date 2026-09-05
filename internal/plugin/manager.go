@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -120,14 +121,34 @@ func (m *Manager) AllMetadata() map[string]Metadata {
 
 // Shutdown invokes Shutdown on all registered plugins that implement Shutdowner.
 func (m *Manager) Shutdown() error {
+	return m.ShutdownWithContext(context.Background())
+}
+
+// ShutdownWithContext invokes Shutdown on all plugins respecting context budget.
+// If context expires, remaining plugins are skipped and context error is returned.
+func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	var errs []string
 	for _, p := range m.list {
+		select {
+		case <-ctx.Done():
+			errs = append(errs, fmt.Sprintf("shutdown context cancelled before %s: %v", p.Name(), ctx.Err()))
+			return fmt.Errorf("errors during plugin shutdown: %s", strings.Join(errs, "; "))
+		default:
+		}
 		if s, ok := p.(Shutdowner); ok {
-			if err := s.Shutdown(); err != nil {
-				errs = append(errs, fmt.Sprintf("%s: %v", p.Name(), err))
+			// Run shutdown with context awareness: abort if ctx done
+			done := make(chan error, 1)
+			go func(sh Shutdowner) { done <- sh.Shutdown() }(s)
+			select {
+			case <-ctx.Done():
+				errs = append(errs, fmt.Sprintf("%s: shutdown timed out: %v", p.Name(), ctx.Err()))
+			case err := <-done:
+				if err != nil {
+					errs = append(errs, fmt.Sprintf("%s: %v", p.Name(), err))
+				}
 			}
 		}
 	}

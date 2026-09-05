@@ -288,8 +288,8 @@ func TestAdminPluginErrorsAndGuards(t *testing.T) {
 	adminCmds := []string{"ban", "unban", "kick", "mute", "unmute", "promote", "demote"}
 	for _, name := range adminCmds {
 		err := cmdMap[name].Handler(privCtx)
-		if err != nil {
-			t.Errorf("expected %s in private chat to return nil after friendly message, got err: %v", name, err)
+		if !errors.Is(err, core.ErrUnsupported) {
+			t.Errorf("expected %s in private chat to return ErrUnsupported after friendly message, got err: %v", name, err)
 		}
 		if !strings.Contains(svc.sent, "hanya dapat digunakan di grup atau supergroup") {
 			t.Errorf("expected friendly private chat warning for %s, got: %s", name, svc.sent)

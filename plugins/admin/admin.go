@@ -136,7 +136,7 @@ func formatAdminError(action string, err error) string {
 func (p *Plugin) handleBan(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
 		_ = ctx.Reply("⚠️ Fitur ban hanya dapat digunakan di grup atau supergroup.")
-		return nil
+		return core.ErrUnsupported
 	}
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
@@ -166,7 +166,7 @@ func (p *Plugin) handleBan(ctx *core.Context) error {
 func (p *Plugin) handleUnban(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
 		_ = ctx.Reply("⚠️ Fitur unban hanya dapat digunakan di grup atau supergroup.")
-		return nil
+		return core.ErrUnsupported
 	}
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
@@ -186,7 +186,7 @@ func (p *Plugin) handleUnban(ctx *core.Context) error {
 func (p *Plugin) handleKick(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
 		_ = ctx.Reply("⚠️ Fitur kick hanya dapat digunakan di grup atau supergroup.")
-		return nil
+		return core.ErrUnsupported
 	}
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
@@ -211,7 +211,7 @@ func (p *Plugin) handleKick(ctx *core.Context) error {
 func (p *Plugin) handleMute(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
 		_ = ctx.Reply("⚠️ Fitur mute hanya dapat digunakan di grup atau supergroup.")
-		return nil
+		return core.ErrUnsupported
 	}
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
@@ -252,7 +252,7 @@ func (p *Plugin) handleMute(ctx *core.Context) error {
 func (p *Plugin) handleUnmute(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
 		_ = ctx.Reply("⚠️ Fitur unmute hanya dapat digunakan di grup atau supergroup.")
-		return nil
+		return core.ErrUnsupported
 	}
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
@@ -292,7 +292,7 @@ func (p *Plugin) handlePurge(ctx *core.Context) error {
 func (p *Plugin) handlePromote(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
 		_ = ctx.Reply("⚠️ Fitur promote hanya dapat digunakan di grup atau supergroup.")
-		return nil
+		return core.ErrUnsupported
 	}
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
@@ -328,7 +328,7 @@ func (p *Plugin) handlePromote(ctx *core.Context) error {
 func (p *Plugin) handleDemote(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
 		_ = ctx.Reply("⚠️ Fitur demote hanya dapat digunakan di grup atau supergroup.")
-		return nil
+		return core.ErrUnsupported
 	}
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()

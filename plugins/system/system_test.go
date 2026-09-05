@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
@@ -398,5 +399,74 @@ func TestUpdate_DirtyWorkingTree(t *testing.T) {
 
 	if !strings.Contains(svc.sent, "working directory has uncommitted modifications") {
 		t.Errorf("expected dirty tree warning message, got: %s", svc.sent)
+	}
+}
+
+func TestBuildSanitizedEnv(t *testing.T) {
+	// Set dummy sensitive environment variables
+	t.Setenv("TG_SESSION", "super_secret_session_token_123")
+	t.Setenv("BOT_TOKEN", "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11")
+	t.Setenv("API_HASH", "0123456789abcdef0123456789abcdef")
+	t.Setenv("NORMAL_VAR", "harmless_value")
+
+	env := buildSanitizedEnv()
+
+	var hasNormal, hasRedactedSession, hasRedactedToken, hasRedactedHash bool
+	for _, e := range env {
+		if e == "NORMAL_VAR=harmless_value" {
+			hasNormal = true
+		}
+		if e == "TG_SESSION=[REDACTED]" {
+			hasRedactedSession = true
+		}
+		if e == "BOT_TOKEN=[REDACTED]" {
+			hasRedactedToken = true
+		}
+		if e == "API_HASH=[REDACTED]" {
+			hasRedactedHash = true
+		}
+		if strings.Contains(e, "super_secret_session_token_123") {
+			t.Errorf("found unredacted secret session in env: %s", e)
+		}
+	}
+
+	if !hasNormal {
+		t.Errorf("expected NORMAL_VAR to be preserved")
+	}
+	if !hasRedactedSession {
+		t.Errorf("expected TG_SESSION to be redacted")
+	}
+	if !hasRedactedToken {
+		t.Errorf("expected BOT_TOKEN to be redacted")
+	}
+	if !hasRedactedHash {
+		t.Errorf("expected API_HASH to be redacted")
+	}
+}
+
+func TestHealth_WithMetrics(t *testing.T) {
+	p := New()
+	metrics := core.NewDefaultMetricsTracker()
+	metrics.RecordCommand("ping", 15*time.Millisecond, nil)
+	metrics.RecordSchedulerJob(1, "remind", 50*time.Millisecond, nil)
+	p.SetMetrics(metrics)
+
+	svc := &mockService{}
+	ctx := &core.Context{
+		Ctx:    context.Background(),
+		PeerID: &tg.InputPeerChat{ChatID: 100},
+		Svc:    svc,
+	}
+
+	err := p.handleHealth(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(svc.sent, "Operational Telemetry") {
+		t.Errorf("expected Operational Telemetry section in output, got: %s", svc.sent)
+	}
+	if !strings.Contains(svc.sent, "Commands:") {
+		t.Errorf("expected Commands count in output, got: %s", svc.sent)
 	}
 }

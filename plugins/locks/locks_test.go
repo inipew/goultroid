@@ -2,6 +2,7 @@ package locks
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -132,7 +133,7 @@ func TestLocksPlugin(t *testing.T) {
 		t.Errorf("expected locks summary, got: %s", svc.sent)
 	}
 
-	// 7. Private chat rejection
+	// 7. Private chat rejection — now returns ErrUnsupported after Reply (observability)
 	ctxPrivate := &core.Context{
 		Ctx:     context.Background(),
 		Command: "lock",
@@ -140,8 +141,8 @@ func TestLocksPlugin(t *testing.T) {
 		Svc:     svc,
 		PeerID:  &tg.InputPeerUser{UserID: 999},
 	}
-	if err := cmdMap["lock"].Handler(ctxPrivate); err != nil {
-		t.Errorf("expected clean nil return when locking in private chat, got: %v", err)
+	if err := cmdMap["lock"].Handler(ctxPrivate); !errors.Is(err, core.ErrUnsupported) {
+		t.Errorf("expected ErrUnsupported when locking in private chat, got: %v", err)
 	}
 	if !strings.Contains(svc.sent, "hanya dapat digunakan di grup") {
 		t.Errorf("expected friendly group notice, got: %s", svc.sent)

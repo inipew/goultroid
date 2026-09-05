@@ -14,6 +14,7 @@ type CommandExecutor struct {
 	logger         *zap.Logger
 	cooldown       *CooldownTracker
 	defaultTimeout time.Duration
+	metrics        MetricsCollector
 }
 
 // NewCommandExecutor creates a new CommandExecutor instance.
@@ -28,6 +29,16 @@ func NewCommandExecutor(logger *zap.Logger, cooldown *CooldownTracker, defaultTi
 	}
 }
 
+// SetMetrics configures an optional MetricsCollector for runtime command telemetry.
+func (e *CommandExecutor) SetMetrics(metrics MetricsCollector) {
+	e.metrics = metrics
+}
+
+// Metrics returns the configured MetricsCollector, if any.
+func (e *CommandExecutor) Metrics() MetricsCollector {
+	return e.metrics
+}
+
 // Execute executes a command for a given context through the unified middleware chain:
 // Recovery -> Logging -> Permission -> Filter -> Cooldown -> Timeout -> Handler.
 func (e *CommandExecutor) Execute(ctx *Context, cmd Command) error {
@@ -40,8 +51,12 @@ func (e *CommandExecutor) Execute(ctx *Context, cmd Command) error {
 		TimeoutMiddleware(cmd, e.defaultTimeout),
 	)
 
+	start := time.Now()
 	handler := chain.Then(cmd.Handler)
 	err := handler(ctx)
+	if e.metrics != nil {
+		e.metrics.RecordCommand(cmd.Name, time.Since(start), err)
+	}
 	if err != nil {
 		if errors.Is(err, ErrPermissionDenied) || errors.Is(err, ErrCooldownActive) {
 			return err
