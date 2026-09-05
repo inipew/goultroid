@@ -312,3 +312,112 @@ func TestFilterOperations(t *testing.T) {
 	}
 }
 
+func TestScheduledJobOperations(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	chatID := int64(998877)
+
+	// 1. Initial list empty
+	jobs, err := db.ListScheduledJobs(ctx, chatID)
+	if err != nil {
+		t.Fatalf("unexpected error listing jobs: %v", err)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("expected 0 jobs, got %d", len(jobs))
+	}
+
+	// 2. Create one-shot job
+	now := time.Now().Truncate(time.Second)
+	job1 := &ScheduledJob{
+		ChatID:          chatID,
+		PeerType:        "chat",
+		AccessHash:      0,
+		ActionType:      "message",
+		Payload:         "Don't forget medicine!",
+		IntervalSeconds: 0,
+		NextRunAt:       now.Add(10 * time.Minute),
+	}
+	created1, err := db.CreateScheduledJob(ctx, job1)
+	if err != nil {
+		t.Fatalf("failed to create job1: %v", err)
+	}
+	if created1.ID == 0 {
+		t.Fatalf("expected non-zero ID for created job1")
+	}
+
+	// 3. Create recurring job
+	job2 := &ScheduledJob{
+		ChatID:          chatID,
+		PeerType:        "channel",
+		AccessHash:      12345678,
+		ActionType:      "command",
+		Payload:         ".alive",
+		IntervalSeconds: 3600,
+		NextRunAt:       now.Add(1 * time.Hour),
+	}
+	created2, err := db.CreateScheduledJob(ctx, job2)
+	if err != nil {
+		t.Fatalf("failed to create job2: %v", err)
+	}
+
+	// 4. Get job
+	fetched, err := db.GetScheduledJob(ctx, created1.ID)
+	if err != nil {
+		t.Fatalf("failed to get job1: %v", err)
+	}
+	if fetched == nil || fetched.Payload != "Don't forget medicine!" || fetched.PeerType != "chat" {
+		t.Fatalf("unexpected fetched job: %+v", fetched)
+	}
+
+	fetched2, err := db.GetScheduledJob(ctx, created2.ID)
+	if err != nil || fetched2.AccessHash != 12345678 || fetched2.PeerType != "channel" {
+		t.Fatalf("unexpected fetched job2: %+v", fetched2)
+	}
+
+	// 5. List jobs by chat
+	all, err := db.ListScheduledJobs(ctx, chatID)
+	if err != nil {
+		t.Fatalf("failed to list jobs: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 jobs, got %d", len(all))
+	}
+	if all[0].ID != created1.ID || all[1].ID != created2.ID {
+		t.Errorf("jobs not in expected order: %+v", all)
+	}
+
+	// 6. List due jobs
+	due, err := db.ListDueScheduledJobs(ctx, now.Add(15*time.Minute))
+	if err != nil {
+		t.Fatalf("failed to list due jobs: %v", err)
+	}
+	if len(due) != 1 || due[0].ID != created1.ID {
+		t.Fatalf("expected 1 due job (created1), got %d: %+v", len(due), due)
+	}
+
+	// 7. Update next run
+	newNextRun := now.Add(2 * time.Hour)
+	if err := db.UpdateScheduledJobNextRun(ctx, created2.ID, newNextRun); err != nil {
+		t.Fatalf("failed to update next run: %v", err)
+	}
+	updated, _ := db.GetScheduledJob(ctx, created2.ID)
+	if !updated.NextRunAt.Equal(newNextRun) {
+		t.Errorf("expected NextRunAt %v, got %v", newNextRun, updated.NextRunAt)
+	}
+
+	// 8. Delete job
+	if err := db.DeleteScheduledJob(ctx, created1.ID); err != nil {
+		t.Fatalf("failed to delete job1: %v", err)
+	}
+	allAfter, _ := db.ListScheduledJobs(ctx, chatID)
+	if len(allAfter) != 1 || allAfter[0].ID != created2.ID {
+		t.Errorf("expected only created2 remaining, got %d", len(allAfter))
+	}
+
+	// 9. Delete non-existent job
+	if err := db.DeleteScheduledJob(ctx, 999999); err == nil {
+		t.Errorf("expected error deleting non-existent job")
+	}
+}
+
+

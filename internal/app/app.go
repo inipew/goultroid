@@ -9,6 +9,7 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/scheduler"
 	"github.com/inipew/goultroid/internal/telegram"
 	"github.com/inipew/goultroid/plugins/admin"
 	"github.com/inipew/goultroid/plugins/afk"
@@ -23,6 +24,7 @@ import (
 	"github.com/inipew/goultroid/plugins/notes"
 	"github.com/inipew/goultroid/plugins/pin"
 	"github.com/inipew/goultroid/plugins/ping"
+	schedPlugin "github.com/inipew/goultroid/plugins/scheduler"
 	"github.com/inipew/goultroid/plugins/sticker"
 	"github.com/inipew/goultroid/plugins/sudo"
 	"github.com/inipew/goultroid/plugins/system"
@@ -38,6 +40,7 @@ type App struct {
 	client  *telegram.Client
 	plugins *plugin.Manager
 	router  *core.Router
+	sched   *scheduler.Engine
 }
 
 // New constructs and wires all application components.
@@ -110,6 +113,13 @@ func New(cfg *config.Config) (*App, error) {
 	filtersPlugin := filters.New(db, client.Service)
 	dispatcher.AddMessageHandler(filtersPlugin.HandleIncomingMessage)
 
+	// Scheduler Engine
+	schedEngine := scheduler.NewEngine(db, client.Service, router, perms, logger)
+	if err := schedEngine.Start(context.Background()); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to start scheduler engine: %w", err)
+	}
+
 	plugins := []plugin.Plugin{
 		ping.New(),
 		help.New(router),
@@ -127,10 +137,12 @@ func New(cfg *config.Config) (*App, error) {
 		system.New(),
 		filtersPlugin,
 		fun.New(),
+		schedPlugin.New(schedEngine),
 	}
 
 	for _, p := range plugins {
 		if err := mgr.Register(p); err != nil {
+			_ = schedEngine.Stop()
 			_ = db.Close()
 			return nil, fmt.Errorf("failed to register plugin %q: %w", p.Name(), err)
 		}
@@ -143,6 +155,7 @@ func New(cfg *config.Config) (*App, error) {
 		client:  client,
 		plugins: mgr,
 		router:  router,
+		sched:   schedEngine,
 	}, nil
 }
 
@@ -152,11 +165,16 @@ func (a *App) Run(ctx context.Context) error {
 	return a.client.Run(ctx)
 }
 
-// Shutdown triggers graceful shutdown of all registered plugins and flushes logs.
+// Shutdown triggers graceful shutdown of all registered plugins, scheduler, and flushes logs.
 func (a *App) Shutdown() error {
 	a.logger.Info("shutting down GoUltroid...")
 	if err := a.plugins.Shutdown(); err != nil {
 		a.logger.Warn("error during plugin shutdown", zap.Error(err))
+	}
+	if a.sched != nil {
+		if err := a.sched.Stop(); err != nil {
+			a.logger.Warn("error stopping scheduler engine", zap.Error(err))
+		}
 	}
 	if a.db != nil {
 		if err := a.db.Close(); err != nil {

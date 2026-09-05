@@ -144,6 +144,10 @@ docker run -it --rm \
 | `.tableflip` | - | Fun | Sudo | Kirim ekspresi tableflip (╯°□°)╯︵ ┻━┻ |
 | `.unflip` | - | Fun | Sudo | Kirim ekspresi unflip ┬─┬ノ( º _ ºノ) |
 | `.mock` | - | Fun | Sudo | Konversi teks menjadi SpongeBob mock case selang-seling huruf |
+| `.remind` | - | Scheduler | Sudo | Atur pengingat cepat satu kali (e.g. `.remind 15m review PR` atau via reply) |
+| `.schedule` | - | Scheduler | Sudo | Jadwalkan pesan atau perintah (`in 30m` atau `every 2h .alive`) |
+| `.schedules` | - | Scheduler | Sudo | Tampilkan daftar semua jadwal aktif di chat saat ini |
+| `.cancelschedule` | `.delschedule`, `.delremind` | Scheduler | Sudo | Batalkan jadwal berdasarkan ID (`.cancelschedule #1`) |
 
 ---
 

@@ -41,6 +41,19 @@ type Filter struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// ScheduledJob represents a scheduled task (one-shot or recurring).
+type ScheduledJob struct {
+	ID              int64     `json:"id"`
+	ChatID          int64     `json:"chat_id"`
+	PeerType        string    `json:"peer_type"`   // "user", "chat", "channel", "self"
+	AccessHash      int64     `json:"access_hash"` // access hash for user/channel peer resolution
+	ActionType      string    `json:"action_type"` // "message" or "command"
+	Payload         string    `json:"payload"`     // message text or ".command ..."
+	IntervalSeconds int64     `json:"interval_seconds"`
+	NextRunAt       time.Time `json:"next_run_at"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
 // Repository defines data access methods for GoUltroid.
 type Repository interface {
 	// Sudo
@@ -64,6 +77,14 @@ type Repository interface {
 	GetFilter(ctx context.Context, chatID int64, keyword string) (*Filter, error)
 	ListFilters(ctx context.Context, chatID int64) ([]Filter, error)
 	DeleteFilter(ctx context.Context, chatID int64, keyword string) error
+
+	// Scheduled Jobs
+	CreateScheduledJob(ctx context.Context, job *ScheduledJob) (*ScheduledJob, error)
+	GetScheduledJob(ctx context.Context, id int64) (*ScheduledJob, error)
+	ListScheduledJobs(ctx context.Context, chatID int64) ([]ScheduledJob, error)
+	ListDueScheduledJobs(ctx context.Context, before time.Time) ([]ScheduledJob, error)
+	UpdateScheduledJobNextRun(ctx context.Context, id int64, nextRun time.Time) error
+	DeleteScheduledJob(ctx context.Context, id int64) error
 }
 
 // Ensure DB implements Repository.
@@ -291,4 +312,117 @@ func (d *DB) DeleteFilter(ctx context.Context, chatID int64, keyword string) err
 	}
 	return nil
 }
+
+// =================== Scheduled Job Methods ===================
+
+func (d *DB) CreateScheduledJob(ctx context.Context, job *ScheduledJob) (*ScheduledJob, error) {
+	if job == nil {
+		return nil, errors.New("job cannot be nil")
+	}
+	if job.CreatedAt.IsZero() {
+		job.CreatedAt = time.Now()
+	}
+
+	query := `INSERT INTO scheduled_jobs (chat_id, peer_type, access_hash, action_type, payload, interval_seconds, next_run_at, created_at)
+	          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+	res, err := d.ExecContext(ctx, query, job.ChatID, job.PeerType, job.AccessHash, job.ActionType, job.Payload, job.IntervalSeconds, job.NextRunAt, job.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to insert scheduled job: %w", err)
+	}
+
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve last insert id: %w", err)
+	}
+	job.ID = id
+	return job, nil
+}
+
+func (d *DB) GetScheduledJob(ctx context.Context, id int64) (*ScheduledJob, error) {
+	query := `SELECT id, chat_id, peer_type, access_hash, action_type, payload, interval_seconds, next_run_at, created_at
+	          FROM scheduled_jobs WHERE id = ?`
+	row := d.QueryRowContext(ctx, query, id)
+
+	var job ScheduledJob
+	if err := row.Scan(&job.ID, &job.ChatID, &job.PeerType, &job.AccessHash, &job.ActionType, &job.Payload, &job.IntervalSeconds, &job.NextRunAt, &job.CreatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get scheduled job: %w", err)
+	}
+	return &job, nil
+}
+
+func (d *DB) ListScheduledJobs(ctx context.Context, chatID int64) ([]ScheduledJob, error) {
+	query := `SELECT id, chat_id, peer_type, access_hash, action_type, payload, interval_seconds, next_run_at, created_at
+	          FROM scheduled_jobs WHERE chat_id = ? ORDER BY next_run_at ASC`
+	rows, err := d.QueryContext(ctx, query, chatID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list scheduled jobs: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []ScheduledJob
+	for rows.Next() {
+		var job ScheduledJob
+		if err := rows.Scan(&job.ID, &job.ChatID, &job.PeerType, &job.AccessHash, &job.ActionType, &job.Payload, &job.IntervalSeconds, &job.NextRunAt, &job.CreatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan scheduled job: %w", err)
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, rows.Err()
+}
+
+func (d *DB) ListDueScheduledJobs(ctx context.Context, before time.Time) ([]ScheduledJob, error) {
+	query := `SELECT id, chat_id, peer_type, access_hash, action_type, payload, interval_seconds, next_run_at, created_at
+	          FROM scheduled_jobs WHERE next_run_at <= ? ORDER BY next_run_at ASC`
+	rows, err := d.QueryContext(ctx, query, before)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list due scheduled jobs: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []ScheduledJob
+	for rows.Next() {
+		var job ScheduledJob
+		if err := rows.Scan(&job.ID, &job.ChatID, &job.PeerType, &job.AccessHash, &job.ActionType, &job.Payload, &job.IntervalSeconds, &job.NextRunAt, &job.CreatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan due scheduled job: %w", err)
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, rows.Err()
+}
+
+func (d *DB) UpdateScheduledJobNextRun(ctx context.Context, id int64, nextRun time.Time) error {
+	query := "UPDATE scheduled_jobs SET next_run_at = ? WHERE id = ?"
+	res, err := d.ExecContext(ctx, query, nextRun, id)
+	if err != nil {
+		return fmt.Errorf("failed to update scheduled job next_run_at: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return errors.New("scheduled job not found")
+	}
+	return nil
+}
+
+func (d *DB) DeleteScheduledJob(ctx context.Context, id int64) error {
+	query := "DELETE FROM scheduled_jobs WHERE id = ?"
+	res, err := d.ExecContext(ctx, query, id)
+	if err != nil {
+		return fmt.Errorf("failed to delete scheduled job: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return errors.New("scheduled job not found")
+	}
+	return nil
+}
+
 
