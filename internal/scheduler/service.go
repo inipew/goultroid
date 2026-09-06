@@ -36,22 +36,19 @@ type TaskFunc func(ctx context.Context) error
 
 // Service defines the central task scheduler interface for GoUltroid.
 type Service interface {
-	// Programmatic in-memory tasks for plugins (e.g. database cleanup, background sync)
 	RegisterPeriodicTask(name string, interval time.Duration, task TaskFunc) error
 	UnregisterPeriodicTask(name string) error
 
-	// Persistent scheduled jobs for users & plugins (persisted in SQLite)
 	ScheduleOnce(ctx context.Context, chatID int64, peerType string, accessHash int64, when time.Time, actionType string, payload string, creatorID ...int64) (*database.ScheduledJob, error)
 	ScheduleRecurring(ctx context.Context, chatID int64, peerType string, accessHash int64, interval time.Duration, actionType string, payload string, creatorID ...int64) (*database.ScheduledJob, error)
 
-	// Cancellation & Listing
-	Cancel(ctx context.Context, jobID int64) error
+	// Persistent mutations require both the requester identity and chat scope.
+	// This prevents a valid sudo user in one chat from operating on another
+	// chat's numeric job ID.
+	CancelScoped(ctx context.Context, requesterID, chatID, jobID int64) error
 	List(ctx context.Context, chatID int64) ([]database.ScheduledJob, error)
+	JobHistoryScoped(ctx context.Context, requesterID, chatID, jobID int64, limit int) ([]database.JobHistoryEntry, error)
 
-	// Job History
-	JobHistory(ctx context.Context, jobID int64, limit int) ([]database.JobHistoryEntry, error)
-
-	// Lifecycle
 	Start(ctx context.Context) error
 	Stop() error
 }
