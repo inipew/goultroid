@@ -16,11 +16,11 @@ type CommandRateLimiter interface {
 }
 
 type CommandExecutor struct {
-	logger          *zap.Logger
-	cooldown        *CooldownTracker
-	defaultTimeout  time.Duration
-	metrics         MetricsCollector
-	rateLimiter     CommandRateLimiter
+	logger         *zap.Logger
+	cooldown       *CooldownTracker
+	defaultTimeout time.Duration
+	metrics        MetricsCollector
+	rateLimiter    CommandRateLimiter
 }
 
 func NewCommandExecutor(logger *zap.Logger, cooldown *CooldownTracker, defaultTimeout time.Duration) *CommandExecutor {
@@ -28,20 +28,61 @@ func NewCommandExecutor(logger *zap.Logger, cooldown *CooldownTracker, defaultTi
 		defaultTimeout = 30 * time.Second
 	}
 	return &CommandExecutor{
-		logger: logger,
-		cooldown: cooldown,
+		logger:         logger,
+		cooldown:       cooldown,
 		defaultTimeout: defaultTimeout,
 	}
 }
 
 func (e *CommandExecutor) SetMetrics(metrics MetricsCollector) { e.metrics = metrics }
-func (e *CommandExecutor) Metrics() MetricsCollector { return e.metrics }
-func (e *CommandExecutor) SetRateLimiter(limiter CommandRateLimiter) { e.rateLimiter = limiter }
+func (e *CommandExecutor) Metrics() MetricsCollector            { return e.metrics }
+func (e *CommandExecutor) SetRateLimiter(limiter CommandRateLimiter) {
+	e.rateLimiter = limiter
+}
 func (e *CommandExecutor) RateLimiter() CommandRateLimiter { return e.rateLimiter }
 
+// Execute preserves the legacy Context-based entry point for interactive
+// callers. New non-interactive callers should use ExecuteExecution so the
+// source of execution is explicit rather than inferred from Message fields.
 func (e *CommandExecutor) Execute(ctx *Context, cmd Command) error {
 	if ctx == nil {
 		return ErrInternal
+	}
+	return e.execute(ctx, cmd, ExecutionInteractive)
+}
+
+// ExecuteExecution materializes the canonical execution envelope into the
+// command Context and then runs the same middleware/handler path used by
+// interactive commands.
+func (e *CommandExecutor) ExecuteExecution(exec CommandExecution, cmd Command, svc TelegramServicer) error {
+	if exec.Ctx == nil {
+		exec.Ctx = timeBackground()
+	}
+	ctx := &Context{
+		Ctx:            exec.Ctx,
+		CorrelationID:  exec.CorrelationID,
+		Command:        exec.Command,
+		Args:           append([]string(nil), exec.Args...),
+		RawArgs:        exec.RawArgs,
+		Message:        exec.TriggerMessage,
+		Chat:           exec.Chat,
+		Sender:         principalUser(exec.Principal),
+		Principal:      exec.Principal,
+		Svc:            svc,
+		PeerID:         exec.PeerID,
+	}
+	if ctx.Command == "" {
+		ctx.Command = cmd.Name
+	}
+	return e.execute(ctx, cmd, exec.Source)
+}
+
+func (e *CommandExecutor) execute(ctx *Context, cmd Command, source ExecutionSource) error {
+	if ctx == nil {
+		return ErrInternal
+	}
+	if ctx.Ctx == nil {
+		ctx.Ctx = timeBackground()
 	}
 	if ctx.Message != nil && ctx.Chat != nil && ConsumeMessageHandled(ctx.Chat.ID, ctx.Message.ID) {
 		return nil
@@ -62,7 +103,7 @@ func (e *CommandExecutor) Execute(ctx *Context, cmd Command) error {
 		CorrelationMiddleware(e.logger),
 		LoggingMiddleware(e.logger),
 		PermissionMiddleware(cmd),
-		FilterMiddleware(cmd),
+		FilterMiddlewareForSource(cmd, source),
 		CooldownMiddleware(cmd, e.cooldown),
 		TimeoutMiddleware(cmd, e.defaultTimeout),
 	)
@@ -80,8 +121,24 @@ func (e *CommandExecutor) Execute(ctx *Context, cmd Command) error {
 			return err
 		}
 		if e.logger != nil {
-			e.logger.Error("command failed", zap.String("correlation_id", ctx.CorrelationID), zap.String("command", cmd.Name), zap.Error(err))
+			e.logger.Error("command failed", zap.String("correlation_id", ctx.CorrelationID), zap.String("command", cmd.Name), zap.String("source", source.String()), zap.Error(err))
 		}
 	}
 	return err
+}
+
+// principalUser adapts the canonical principal to the legacy Context sender.
+// Principal is the authority identity; Sender remains a compatibility view for
+// existing command implementations.
+func principalUser(p *Principal) *User {
+	if p == nil || p.ID <= 0 {
+		return nil
+	}
+	return &User{ID: p.ID}
+}
+
+// timeBackground is isolated to keep the execution constructor simple and
+// avoid exposing a mutable nil context to middleware.
+func timeBackground() interface{ Done() <-chan struct{} } {
+	return nil
 }
