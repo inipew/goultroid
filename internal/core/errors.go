@@ -15,6 +15,9 @@ var (
 	ErrPrivateOnly      = errors.New("command can only be used in private chat")
 	ErrReplyRequired    = errors.New("command must be a reply to a message")
 	ErrCooldownActive   = errors.New("command is on cooldown")
+	// ErrInterceptHandled is an internal control-flow sentinel. It is consumed
+	// by the dispatcher and must never be surfaced as a command error.
+	ErrInterceptHandled = errors.New("message handled by interceptor")
 
 	// Domain & API errors
 	ErrInvalidArgs    = errors.New("invalid command arguments")
@@ -59,130 +62,116 @@ type RateLimitError struct {
 
 // Error returns the human-readable description of the rate limit error.
 func (e *RateLimitError) Error() string {
-	if e.Wait > 0 {
-		return fmt.Sprintf("rate limited by telegram: wait %s before retrying", e.Wait.Round(time.Second))
+	if e == nil {
+		return "rate limited"
 	}
-	if e.Err != nil {
-		return fmt.Sprintf("rate limited by telegram: %v", e.Err)
+	if e.Err == nil {
+		return fmt.Sprintf("rate limited for %s", e.Wait)
 	}
-	return "rate limited by telegram"
+	return fmt.Sprintf("rate limited for %s: %v", e.Wait, e.Err)
 }
 
-// Unwrap returns the underlying error if available.
-func (e *RateLimitError) Unwrap() error {
-	return e.Err
+func (e *RateLimitError) Unwrap() error { return e.Err }
+
+// ErrorWithCategory carries a stable category alongside an underlying error.
+type ErrorWithCategory struct {
+	Category ErrorCategory
+	Err      error
 }
 
-// Is reports whether this error matches target error.
-func (e *RateLimitError) Is(target error) bool {
-	return target == ErrRateLimited
-}
-
-// NewRateLimitError constructs a new RateLimitError with wait duration and underlying error.
-func NewRateLimitError(wait time.Duration, err error) *RateLimitError {
-	return &RateLimitError{
-		Wait: wait,
-		Err:  err,
+func (e *ErrorWithCategory) Error() string {
+	if e == nil || e.Err == nil {
+		return ""
 	}
+	return e.Err.Error()
 }
 
-// ClassifyError maps an error to an ErrorCategory for telemetry and decision making.
-func ClassifyError(err error) ErrorCategory {
+func (e *ErrorWithCategory) Unwrap() error { return e.Err }
+
+// WrapCategory annotates err with a stable error category.
+func WrapCategory(category ErrorCategory, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &ErrorWithCategory{Category: category, Err: err}
+}
+
+// CategoryOf returns the stable category associated with err.
+func CategoryOf(err error) ErrorCategory {
 	if err == nil {
 		return CategoryNone
 	}
-	if errors.Is(err, ErrRateLimited) {
-		return CategoryRateLimited
+	var classified *ErrorWithCategory
+	if errors.As(err, &classified) && classified != nil {
+		return classified.Category
 	}
 	if errors.Is(err, ErrPermissionDenied) {
 		return CategorySecurity
 	}
-	if errors.Is(err, ErrInvalidArgs) || errors.Is(err, ErrUnclosedQuote) || errors.Is(err, ErrTrailingEscape) ||
-		errors.Is(err, ErrGroupOnly) || errors.Is(err, ErrPrivateOnly) || errors.Is(err, ErrReplyRequired) {
+	if errors.Is(err, ErrInvalidArgs) || errors.Is(err, ErrUnclosedQuote) || errors.Is(err, ErrTrailingEscape) {
 		return CategoryInvalidInput
 	}
 	if errors.Is(err, ErrResourceLimit) {
 		return CategoryResourceLimit
 	}
-	if errors.Is(err, ErrTimeout) || errors.Is(err, ErrUnavailable) || errors.Is(err, ErrConflict) ||
-		errors.Is(err, ErrLeaseLost) || errors.Is(err, ErrCancelled) {
-		return CategoryTransient
-	}
-	if errors.Is(err, ErrNotFound) || errors.Is(err, ErrUnsupported) {
-		return CategoryPermanent
-	}
-
-	msg := strings.ToUpper(err.Error())
-	if strings.Contains(msg, "FLOOD_WAIT") {
+	if errors.Is(err, ErrRateLimited) {
 		return CategoryRateLimited
 	}
-	if strings.Contains(msg, "TIMEOUT") || strings.Contains(msg, "DEADLINE") || strings.Contains(msg, "CONNECTION RESET") {
+	if errors.Is(err, ErrTimeout) || errors.Is(err, ErrUnavailable) || errors.Is(err, ErrCancelled) {
 		return CategoryTransient
 	}
-
-	permanentPatterns := []string{
-		"CHAT_WRITE_FORBIDDEN",
-		"CHANNEL_PRIVATE",
-		"USER_BANNED",
-		"PEER_ID_INVALID",
-		"MESSAGE_ID_INVALID",
-		"USER_ID_INVALID",
-		"CHAT_ID_INVALID",
-		"CHAT_ADMIN_REQUIRED",
-		"SCHEDULED COMMAND NOT FOUND",
-		"SCHEDULED COMMAND PAYLOAD IS NOT A COMMAND",
-	}
-	for _, p := range permanentPatterns {
-		if strings.Contains(msg, p) {
-			return CategoryPermanent
-		}
-	}
-
 	return CategoryInternal
 }
 
-// IsPermanentError determines whether an execution error is non-retryable (fatal).
-// Permanent errors immediately fail a scheduled job without wasting exponential backoff retries.
-func IsPermanentError(err error) bool {
+// UserMessage returns a safe, concise error message suitable for Telegram users.
+func UserMessage(err error) string {
 	if err == nil {
-		return false
+		return ""
 	}
-	// Rate limit / flood wait, timeout, and transient service errors are never permanent
-	if errors.Is(err, ErrRateLimited) || errors.Is(err, ErrTimeout) || errors.Is(err, ErrUnavailable) ||
-		errors.Is(err, ErrConflict) || errors.Is(err, ErrLeaseLost) || errors.Is(err, ErrCancelled) {
-		return false
+	if errors.Is(err, ErrPermissionDenied) {
+		return "⛔ Permission denied."
 	}
-	// Sentinel checks
-	if errors.Is(err, ErrPermissionDenied) ||
-		errors.Is(err, ErrNotFound) ||
-		errors.Is(err, ErrInvalidArgs) ||
-		errors.Is(err, ErrUnsupported) ||
-		errors.Is(err, ErrUnclosedQuote) ||
-		errors.Is(err, ErrTrailingEscape) ||
-		errors.Is(err, ErrResourceLimit) {
-		return true
+	if errors.Is(err, ErrGroupOnly) {
+		return "⚠️ This command can only be used in groups."
 	}
-	// RPC string heuristics
-	msg := strings.ToUpper(err.Error())
-	if strings.Contains(msg, "FLOOD_WAIT") {
-		return false
+	if errors.Is(err, ErrPrivateOnly) {
+		return "⚠️ This command can only be used in private chats."
 	}
-	permanentPatterns := []string{
-		"CHAT_WRITE_FORBIDDEN",
-		"CHANNEL_PRIVATE",
-		"USER_BANNED",
-		"PEER_ID_INVALID",
-		"MESSAGE_ID_INVALID",
-		"USER_ID_INVALID",
-		"CHAT_ID_INVALID",
-		"CHAT_ADMIN_REQUIRED",
-		"SCHEDULED COMMAND NOT FOUND",
-		"SCHEDULED COMMAND PAYLOAD IS NOT A COMMAND",
+	if errors.Is(err, ErrReplyRequired) {
+		return "⚠️ Reply to a message to use this command."
 	}
-	for _, p := range permanentPatterns {
-		if strings.Contains(msg, p) {
-			return true
+	if errors.Is(err, ErrCooldownActive) {
+		return "⏳ Please wait before using this command again."
+	}
+	if errors.Is(err, ErrInvalidArgs) {
+		return "⚠️ Invalid command arguments."
+	}
+	if errors.Is(err, ErrNotFound) {
+		return "⚠️ Requested item was not found."
+	}
+	if errors.Is(err, ErrUnsupported) {
+		return "⚠️ This operation is not supported."
+	}
+	if errors.Is(err, ErrResourceLimit) {
+		return "⚠️ Resource limit reached. Try again later."
+	}
+	if errors.Is(err, ErrTimeout) || errors.Is(err, ErrUnavailable) {
+		return "⚠️ The service is temporarily unavailable."
+	}
+	if errors.Is(err, ErrRateLimited) {
+		return "⏳ Telegram rate limit reached. Please try again later."
+	}
+	return "❌ An internal error occurred."
+}
+
+// IsUserSafeText reports whether text appears safe to include in a user-facing error.
+// It is intentionally conservative and rejects common internal-path leakage.
+func IsUserSafeText(text string) bool {
+	lower := strings.ToLower(text)
+	for _, marker := range []string{"/home/", "/root/", "token", "password", "secret", "access_hash", "sqlite"} {
+		if strings.Contains(lower, marker) {
+			return false
 		}
 	}
-	return false
+	return true
 }
