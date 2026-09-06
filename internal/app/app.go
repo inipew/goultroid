@@ -26,6 +26,7 @@ import (
 	"github.com/inipew/goultroid/plugins/notes"
 	"github.com/inipew/goultroid/plugins/pin"
 	"github.com/inipew/goultroid/plugins/ping"
+	"github.com/inipew/goultroid/plugins/profile"
 	schedPlugin "github.com/inipew/goultroid/plugins/scheduler"
 	"github.com/inipew/goultroid/plugins/sticker"
 	"github.com/inipew/goultroid/plugins/sudo"
@@ -154,6 +155,7 @@ func New(cfg *config.Config) (*App, error) {
 		schedPlugin.New(schedEngine),
 		locks.New(),
 		blacklistPlugin,
+		profile.New(),
 	}
 
 	for _, p := range plugins {

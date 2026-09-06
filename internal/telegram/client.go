@@ -155,6 +155,9 @@ func (c *Client) Run(ctx context.Context) error {
 		// Initialize service wrapper & peer resolver
 		svc := NewService(c.raw.API())
 		svc.SetPeerManager(c.peerManager)
+		if c.peerStorage != nil {
+			svc.SetStorage(c.peerStorage)
+		}
 		c.dispatcher.SetService(svc)
 		resolver := NewResolver(c.raw.API(), c.peerManager)
 		if c.peerStorage != nil {

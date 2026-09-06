@@ -93,6 +93,7 @@ func (m *mockSchedulerService) Start(ctx context.Context) error { return nil }
 func (m *mockSchedulerService) Stop() error                     { return nil }
 
 type mockTelegramServicer struct {
+	core.MockTelegramServicer
 	sent string
 }
 

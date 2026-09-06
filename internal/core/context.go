@@ -43,6 +43,15 @@ type TelegramServicer interface {
 	GetFullUser(ctx context.Context, user tg.InputUserClass) (*tg.UsersUserFull, error)
 	ResolveUsername(ctx context.Context, username string) (*tg.ContactsResolvedPeer, error)
 	GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.MessagesChatFull, error)
+
+	// User & Profile actions
+	UpdateProfile(ctx context.Context, firstName, lastName, about *string) error
+	BlockUser(ctx context.Context, peer tg.InputPeerClass) error
+	UnblockUser(ctx context.Context, peer tg.InputPeerClass) error
+	UploadProfilePhoto(ctx context.Context, filePath string) error
+	DeleteProfilePhotos(ctx context.Context, limit int) (int, error)
+	GetDialogs(ctx context.Context, limit int) ([]*Chat, error)
+	GetContacts(ctx context.Context) ([]*User, error)
 }
 
 // MediaInfo stores metadata and download location for message attachments.
@@ -164,6 +173,7 @@ type Context struct {
 	RawArgs string
 
 	Message *Message
+	Album   []*Message
 	Chat    *Chat
 	Sender  *User
 	Perms     *Permissions
@@ -604,3 +614,22 @@ func (c *Context) IsSudo() bool {
 	}
 	return c.Perms.IsSudo(c.Sender.ID)
 }
+
+// UpdateProfile updates the account's first name, last name, and/or bio.
+func (c *Context) UpdateProfile(firstName, lastName, about *string) error {
+	if c == nil || c.Svc == nil {
+		return errors.New("telegram service not initialized")
+	}
+	return c.Svc.UpdateProfile(c.Ctx, firstName, lastName, about)
+}
+
+// BlockUser blocks the specified user.
+func (c *Context) BlockUser(peer tg.InputPeerClass) error {
+	return c.Peer().BlockUser(peer)
+}
+
+// UnblockUser unblocks the specified user.
+func (c *Context) UnblockUser(peer tg.InputPeerClass) error {
+	return c.Peer().UnblockUser(peer)
+}
+

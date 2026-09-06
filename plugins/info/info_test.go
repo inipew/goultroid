@@ -277,7 +277,7 @@ func TestChatInfo_Channel(t *testing.T) {
 
 func TestEscapeHTML(t *testing.T) {
 	in := "<script>alert('test & fun')</script>"
-	out := escapeHTML(in)
+	out := core.EscapeHTML(in)
 	if out != "&lt;script&gt;alert('test &amp; fun')&lt;/script&gt;" {
 		t.Errorf("unexpected escape result: %s", out)
 	}

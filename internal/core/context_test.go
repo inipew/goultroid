@@ -11,6 +11,7 @@ import (
 
 // mockTelegramServicer implements TelegramServicer for unit tests.
 type mockTelegramServicer struct {
+	MockTelegramServicer
 	sentText    string
 	editedText  string
 	deletedIDs  []int

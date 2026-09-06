@@ -98,10 +98,10 @@ func (p *Plugin) handleWhois(ctx *core.Context) error {
 	var sb strings.Builder
 	sb.WriteString("👤 <b>User Information</b>\n\n")
 	sb.WriteString(fmt.Sprintf("• <b>ID</b>: <code>%d</code>\n", u.ID))
-	sb.WriteString(fmt.Sprintf("• <b>First Name</b>: %s\n", escapeHTML(u.FirstName)))
+	sb.WriteString(fmt.Sprintf("• <b>First Name</b>: %s\n", core.EscapeHTML(u.FirstName)))
 
 	if u.LastName != "" {
-		sb.WriteString(fmt.Sprintf("• <b>Last Name</b>: %s\n", escapeHTML(u.LastName)))
+		sb.WriteString(fmt.Sprintf("• <b>Last Name</b>: %s\n", core.EscapeHTML(u.LastName)))
 	}
 
 	if u.Username != "" {
@@ -144,7 +144,7 @@ func (p *Plugin) handleWhois(ctx *core.Context) error {
 	}
 
 	if fullUser.FullUser.About != "" {
-		sb.WriteString(fmt.Sprintf("• <b>Bio</b>: <code>%s</code>\n", escapeHTML(fullUser.FullUser.About)))
+		sb.WriteString(fmt.Sprintf("• <b>Bio</b>: <code>%s</code>\n", core.EscapeHTML(fullUser.FullUser.About)))
 	}
 
 	return ctx.Reply(sb.String())
@@ -170,7 +170,7 @@ func (p *Plugin) handleChatInfo(ctx *core.Context) error {
 		chatID = ctx.Chat.ID
 	}
 
-	sb.WriteString(fmt.Sprintf("• <b>Title</b>: %s\n", escapeHTML(title)))
+	sb.WriteString(fmt.Sprintf("• <b>Title</b>: %s\n", core.EscapeHTML(title)))
 	sb.WriteString(fmt.Sprintf("• <b>ID</b>: <code>%d</code>\n", chatID))
 
 	if ctx.Chat != nil && ctx.Chat.Type != "" {
@@ -195,11 +195,11 @@ func (p *Plugin) handleChatInfo(ctx *core.Context) error {
 			sb.WriteString(fmt.Sprintf("• <b>Slowmode</b>: %ds\n", ch.SlowmodeSeconds))
 		}
 		if ch.About != "" {
-			sb.WriteString(fmt.Sprintf("• <b>Description</b>: <i>%s</i>\n", escapeHTML(ch.About)))
+			sb.WriteString(fmt.Sprintf("• <b>Description</b>: <i>%s</i>\n", core.EscapeHTML(ch.About)))
 		}
 	case *tg.ChatFull:
 		if ch.About != "" {
-			sb.WriteString(fmt.Sprintf("• <b>Description</b>: <i>%s</i>\n", escapeHTML(ch.About)))
+			sb.WriteString(fmt.Sprintf("• <b>Description</b>: <i>%s</i>\n", core.EscapeHTML(ch.About)))
 		}
 		switch participants := ch.Participants.(type) {
 		case *tg.ChatParticipants:
@@ -243,13 +243,6 @@ func resolveInputUser(ctx *core.Context) (tg.InputUserClass, error) {
 	return &tg.InputUserSelf{}, nil
 }
 
-func escapeHTML(s string) string {
-	s = strings.ReplaceAll(s, "&", "&amp;")
-	s = strings.ReplaceAll(s, "<", "&lt;")
-	s = strings.ReplaceAll(s, ">", "&gt;")
-	return s
-}
-
 // handleID displays the current chat ID, chat type, sender ID, and reply IDs.
 func (p *Plugin) handleID(ctx *core.Context) error {
 	var sb strings.Builder
@@ -259,7 +252,7 @@ func (p *Plugin) handleID(ctx *core.Context) error {
 		sb.WriteString(fmt.Sprintf("• <b>Chat ID:</b> <code>%d</code>\n", ctx.Chat.ID))
 		sb.WriteString(fmt.Sprintf("• <b>Chat Type:</b> <code>%s</code>\n", ctx.Chat.Type))
 		if ctx.Chat.Title != "" {
-			sb.WriteString(fmt.Sprintf("• <b>Chat Title:</b> %s\n", escapeHTML(ctx.Chat.Title)))
+			sb.WriteString(fmt.Sprintf("• <b>Chat Title:</b> %s\n", core.EscapeHTML(ctx.Chat.Title)))
 		}
 	}
 

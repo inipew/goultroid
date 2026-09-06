@@ -17,6 +17,8 @@ const (
 	EventTypeMessagesDeleted EventType = "messages.deleted"
 	// EventTypeCallbackQuery is published when an inline keyboard button callback query is received.
 	EventTypeCallbackQuery EventType = "callback.query"
+	// EventTypeReactionUpdated is published when message reactions are updated.
+	EventTypeReactionUpdated EventType = "reaction.updated"
 )
 
 // Event is the base interface for all domain events.
@@ -71,6 +73,18 @@ type CallbackQueryEvent struct {
 
 func (e *CallbackQueryEvent) Type() EventType     { return EventTypeCallbackQuery }
 func (e *CallbackQueryEvent) Timestamp() time.Time { return e.At }
+
+// ReactionUpdatedEvent is emitted when reactions on a message are updated.
+type ReactionUpdatedEvent struct {
+	At       time.Time
+	MsgID    int
+	ChatID   int64
+	Reaction string
+}
+
+func (e *ReactionUpdatedEvent) Type() EventType     { return EventTypeReactionUpdated }
+func (e *ReactionUpdatedEvent) Timestamp() time.Time { return e.At }
+
 
 // EventHandler is a callback invoked when a subscribed event is published.
 type EventHandler func(event Event)

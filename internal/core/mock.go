@@ -78,3 +78,25 @@ func (m *MockTelegramServicer) ResolveUsername(ctx context.Context, username str
 func (m *MockTelegramServicer) GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.MessagesChatFull, error) {
 	return &tg.MessagesChatFull{}, nil
 }
+func (m *MockTelegramServicer) UpdateProfile(ctx context.Context, firstName, lastName, about *string) error {
+	return nil
+}
+func (m *MockTelegramServicer) BlockUser(ctx context.Context, peer tg.InputPeerClass) error {
+	return nil
+}
+func (m *MockTelegramServicer) UnblockUser(ctx context.Context, peer tg.InputPeerClass) error {
+	return nil
+}
+func (m *MockTelegramServicer) UploadProfilePhoto(ctx context.Context, filePath string) error {
+	return nil
+}
+func (m *MockTelegramServicer) DeleteProfilePhotos(ctx context.Context, limit int) (int, error) {
+	return 0, nil
+}
+func (m *MockTelegramServicer) GetDialogs(ctx context.Context, limit int) ([]*Chat, error) {
+	return nil, nil
+}
+func (m *MockTelegramServicer) GetContacts(ctx context.Context) ([]*User, error) {
+	return nil, nil
+}
+

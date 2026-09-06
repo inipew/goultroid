@@ -16,6 +16,7 @@ import (
 )
 
 type mockService struct {
+	core.MockTelegramServicer
 	mu   sync.Mutex
 	sent []string
 }

@@ -112,6 +112,7 @@ type Service struct {
 	downloader  *downloader.Downloader
 	uploader    *uploader.Uploader
 	peerManager *peers.Manager
+	storage     peers.Storage
 }
 
 // NewService creates a new Service instance.
@@ -129,24 +130,43 @@ func (s *Service) SetPeerManager(pm *peers.Manager) {
 	s.peerManager = pm
 }
 
+// SetStorage sets the persistent peer storage for access hash lookups.
+func (s *Service) SetStorage(st peers.Storage) {
+	s.storage = st
+}
+
 func (s *Service) ensureChannelAccessHash(ctx context.Context, peer tg.InputPeerClass) tg.InputPeerClass {
 	ch, ok := peer.(*tg.InputPeerChannel)
-	if !ok || ch.AccessHash != 0 || s.peerManager == nil {
+	if !ok || ch.AccessHash != 0 {
 		return peer
 	}
-	if resolved, err := s.peerManager.ResolveChannelID(ctx, ch.ChannelID); err == nil {
-		return resolved.InputPeer()
+	if s.peerManager != nil {
+		if resolved, err := s.peerManager.ResolveChannelID(ctx, ch.ChannelID); err == nil {
+			return resolved.InputPeer()
+		}
+	}
+	if s.storage != nil {
+		if val, found, err := s.storage.Find(ctx, peers.Key{Prefix: "channel", ID: ch.ChannelID}); err == nil && found && val.AccessHash != 0 {
+			return &tg.InputPeerChannel{ChannelID: ch.ChannelID, AccessHash: val.AccessHash}
+		}
 	}
 	return peer
 }
 
 func (s *Service) ensureUserAccessHash(ctx context.Context, user tg.InputPeerClass) tg.InputPeerClass {
 	u, ok := user.(*tg.InputPeerUser)
-	if !ok || u.AccessHash != 0 || s.peerManager == nil {
+	if !ok || u.AccessHash != 0 {
 		return user
 	}
-	if resolved, err := s.peerManager.ResolveUserID(ctx, u.UserID); err == nil {
-		return resolved.InputPeer()
+	if s.peerManager != nil {
+		if resolved, err := s.peerManager.ResolveUserID(ctx, u.UserID); err == nil {
+			return resolved.InputPeer()
+		}
+	}
+	if s.storage != nil {
+		if val, found, err := s.storage.Find(ctx, peers.Key{Prefix: "user", ID: u.UserID}); err == nil && found && val.AccessHash != 0 {
+			return &tg.InputPeerUser{UserID: u.UserID, AccessHash: val.AccessHash}
+		}
 	}
 	return user
 }
@@ -926,3 +946,217 @@ func extractMessageFromUpdates(u tg.UpdatesClass) *tg.Message {
 	}
 	return nil
 }
+
+// UpdateProfile updates the account's first name, last name, and/or about (bio).
+func (s *Service) UpdateProfile(ctx context.Context, firstName, lastName, about *string) error {
+	if s.api == nil {
+		return fmt.Errorf("%w: api is not initialized", core.ErrInternal)
+	}
+
+	req := &tg.AccountUpdateProfileRequest{}
+	if firstName != nil {
+		req.SetFirstName(*firstName)
+	}
+	if lastName != nil {
+		req.SetLastName(*lastName)
+	}
+	if about != nil {
+		req.SetAbout(*about)
+	}
+
+	_, err := retryOnFloodWait(ctx, func() (tg.UserClass, error) {
+		return s.api.AccountUpdateProfile(ctx, req)
+	})
+	return err
+}
+
+// BlockUser blocks the specified peer from sending messages or calling.
+func (s *Service) BlockUser(ctx context.Context, peer tg.InputPeerClass) error {
+	if s.api == nil {
+		return fmt.Errorf("%w: api is not initialized", core.ErrInternal)
+	}
+	peer = s.ensureUserAccessHash(ctx, peer)
+
+	_, err := retryOnFloodWait(ctx, func() (bool, error) {
+		return s.api.ContactsBlock(ctx, &tg.ContactsBlockRequest{ID: peer})
+	})
+	return err
+}
+
+// UnblockUser removes the specified peer from the blocklist.
+func (s *Service) UnblockUser(ctx context.Context, peer tg.InputPeerClass) error {
+	if s.api == nil {
+		return fmt.Errorf("%w: api is not initialized", core.ErrInternal)
+	}
+	peer = s.ensureUserAccessHash(ctx, peer)
+
+	_, err := retryOnFloodWait(ctx, func() (bool, error) {
+		return s.api.ContactsUnblock(ctx, &tg.ContactsUnblockRequest{ID: peer})
+	})
+	return err
+}
+
+// UploadProfilePhoto uploads an image file and sets it as the account's profile photo.
+func (s *Service) UploadProfilePhoto(ctx context.Context, filePath string) error {
+	if s.api == nil || s.uploader == nil {
+		return fmt.Errorf("%w: api/uploader is not initialized", core.ErrInternal)
+	}
+
+	inputFile, err := s.uploader.FromPath(ctx, filePath)
+	if err != nil {
+		return fmt.Errorf("failed to upload photo file: %w", err)
+	}
+
+	_, err = retryOnFloodWait(ctx, func() (*tg.PhotosPhoto, error) {
+		return s.api.PhotosUploadProfilePhoto(ctx, &tg.PhotosUploadProfilePhotoRequest{
+			File: inputFile,
+		})
+	})
+	return err
+}
+
+// DeleteProfilePhotos deletes up to limit recent profile photos. Returns number of deleted photos.
+func (s *Service) DeleteProfilePhotos(ctx context.Context, limit int) (int, error) {
+	if s.api == nil {
+		return 0, fmt.Errorf("%w: api is not initialized", core.ErrInternal)
+	}
+	if limit <= 0 {
+		limit = 1
+	}
+
+	photosRes, err := retryOnFloodWait(ctx, func() (tg.PhotosPhotosClass, error) {
+		return s.api.PhotosGetUserPhotos(ctx, &tg.PhotosGetUserPhotosRequest{
+			UserID: &tg.InputUserSelf{},
+			Offset: 0,
+			MaxID:  0,
+			Limit:  limit,
+		})
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	var photos []tg.PhotoClass
+	switch p := photosRes.(type) {
+	case *tg.PhotosPhotos:
+		photos = p.Photos
+	case *tg.PhotosPhotosSlice:
+		photos = p.Photos
+	}
+
+	if len(photos) == 0 {
+		return 0, nil
+	}
+
+	var inputPhotos []tg.InputPhotoClass
+	for _, p := range photos {
+		if photo, ok := p.(*tg.Photo); ok {
+			inputPhotos = append(inputPhotos, &tg.InputPhoto{
+				ID:             photo.ID,
+				AccessHash:     photo.AccessHash,
+				FileReference: photo.FileReference,
+			})
+		}
+	}
+
+	if len(inputPhotos) == 0 {
+		return 0, nil
+	}
+
+	deletedIDs, err := retryOnFloodWait(ctx, func() ([]int64, error) {
+		return s.api.PhotosDeletePhotos(ctx, inputPhotos)
+	})
+	if err != nil {
+		return 0, err
+	}
+	return len(deletedIDs), nil
+}
+
+// GetDialogs returns recent active dialogs/chats up to limit (capped at 30).
+func (s *Service) GetDialogs(ctx context.Context, limit int) ([]*core.Chat, error) {
+	if s.api == nil {
+		return nil, fmt.Errorf("%w: api is not initialized", core.ErrInternal)
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 30 {
+		limit = 30
+	}
+
+	res, err := retryOnFloodWait(ctx, func() (tg.MessagesDialogsClass, error) {
+		return s.api.MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
+			OffsetPeer: &tg.InputPeerEmpty{},
+			Limit:      limit,
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var chats []tg.ChatClass
+	switch d := res.(type) {
+	case *tg.MessagesDialogs:
+		chats = d.Chats
+	case *tg.MessagesDialogsSlice:
+		chats = d.Chats
+	}
+
+	var result []*core.Chat
+	for _, c := range chats {
+		switch ch := c.(type) {
+		case *tg.Channel:
+			chatType := "channel"
+			if ch.Megagroup {
+				chatType = "supergroup"
+			}
+			result = append(result, &core.Chat{
+				ID:       ch.ID,
+				Title:    ch.Title,
+				Username: ch.Username,
+				Type:     chatType,
+			})
+		case *tg.Chat:
+			result = append(result, &core.Chat{
+				ID:    ch.ID,
+				Title: ch.Title,
+				Type:  "group",
+			})
+		}
+	}
+	return result, nil
+}
+
+// GetContacts returns all saved contacts for the logged-in user.
+func (s *Service) GetContacts(ctx context.Context) ([]*core.User, error) {
+	if s.api == nil {
+		return nil, fmt.Errorf("%w: api is not initialized", core.ErrInternal)
+	}
+
+	res, err := retryOnFloodWait(ctx, func() (tg.ContactsContactsClass, error) {
+		return s.api.ContactsGetContacts(ctx, 0)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	contacts, ok := res.(*tg.ContactsContacts)
+	if !ok {
+		return nil, nil
+	}
+
+	var users []*core.User
+	for _, u := range contacts.Users {
+		if usr, ok := u.(*tg.User); ok {
+			users = append(users, &core.User{
+				ID:        usr.ID,
+				FirstName: usr.FirstName,
+				LastName:  usr.LastName,
+				Username:  usr.Username,
+				IsBot:     usr.Bot,
+			})
+		}
+	}
+	return users, nil
+}
+

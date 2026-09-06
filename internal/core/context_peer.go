@@ -120,3 +120,28 @@ func (p *PeerFacade) GetFullChat() (*tg.MessagesChatFull, error) {
 	}
 	return c.Svc.GetFullChat(c.Ctx, c.PeerID)
 }
+
+// BlockUser adds a peer to the account blocklist.
+func (p *PeerFacade) BlockUser(peer tg.InputPeerClass) error {
+	c := p.ctx
+	if c == nil || c.Svc == nil {
+		return errors.New("telegram service not initialized")
+	}
+	if peer == nil {
+		return errors.New("peer is nil")
+	}
+	return c.Svc.BlockUser(c.Ctx, peer)
+}
+
+// UnblockUser removes a peer from the account blocklist.
+func (p *PeerFacade) UnblockUser(peer tg.InputPeerClass) error {
+	c := p.ctx
+	if c == nil || c.Svc == nil {
+		return errors.New("telegram service not initialized")
+	}
+	if peer == nil {
+		return errors.New("peer is nil")
+	}
+	return c.Svc.UnblockUser(c.Ctx, peer)
+}
+

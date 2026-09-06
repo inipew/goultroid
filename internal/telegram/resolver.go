@@ -48,6 +48,11 @@ func (r *Resolver) ResolveUser(ctx context.Context, ref string) (tg.InputPeerCla
 				return u.InputPeer(), u.ID(), nil
 			}
 		}
+		if r.storage != nil {
+			if val, found, err := r.storage.Find(ctx, peers.Key{Prefix: "user", ID: uid}); err == nil && found && val.AccessHash != 0 {
+				return &tg.InputPeerUser{UserID: uid, AccessHash: val.AccessHash}, uid, nil
+			}
+		}
 		// Fallback without cached access hash
 		return &tg.InputPeerUser{UserID: uid}, uid, nil
 	}
@@ -118,6 +123,11 @@ func (r *Resolver) ResolveChat(ctx context.Context, ref string) (tg.InputPeerCla
 			if r.peerManager != nil {
 				if ch, err := r.peerManager.ResolveChannelID(ctx, channelID); err == nil {
 					return ch.InputPeer(), nil
+				}
+			}
+			if r.storage != nil {
+				if val, found, err := r.storage.Find(ctx, peers.Key{Prefix: "channel", ID: channelID}); err == nil && found && val.AccessHash != 0 {
+					return &tg.InputPeerChannel{ChannelID: channelID, AccessHash: val.AccessHash}, nil
 				}
 			}
 			return &tg.InputPeerChannel{ChannelID: channelID}, nil

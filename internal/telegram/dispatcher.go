@@ -25,6 +25,7 @@ type Dispatcher struct {
 	resolver core.PeerResolver
 	rootCtx  context.Context
 	eventBus *core.EventBus
+	albumBuffer *core.AlbumBuffer
 
 	messageHandlers []MessageHandler
 	mu              sync.RWMutex
@@ -46,12 +47,13 @@ func NewDispatcher(
 	cooldown := core.NewCooldownTracker()
 	executor := core.NewCommandExecutor(logger, cooldown, 30*time.Second)
 	return &Dispatcher{
-		router:   router,
-		perms:    perms,
-		svc:      svc,
-		logger:   logger,
-		cooldown: cooldown,
-		executor: executor,
+		router:      router,
+		perms:       perms,
+		svc:         svc,
+		logger:      logger,
+		cooldown:    cooldown,
+		executor:    executor,
+		albumBuffer: core.NewAlbumBuffer(10 * time.Minute),
 	}
 }
 
@@ -154,7 +156,12 @@ func (d *Dispatcher) getEventBus() *core.EventBus {
 	return d.eventBus
 }
 
-// RegisterHooks binds message, edit, delete, and callback query handlers to a tg.UpdateDispatcher.
+// AlbumBuffer returns the album aggregator used by this dispatcher.
+func (d *Dispatcher) AlbumBuffer() *core.AlbumBuffer {
+	return d.albumBuffer
+}
+
+// RegisterHooks binds message, edit, delete, callback query, and reaction handlers to a tg.UpdateDispatcher.
 func (d *Dispatcher) RegisterHooks(dispatcher *tg.UpdateDispatcher) {
 	dispatcher.OnNewMessage(d.OnNewMessage)
 	dispatcher.OnNewChannelMessage(d.OnNewChannelMessage)
@@ -164,6 +171,7 @@ func (d *Dispatcher) RegisterHooks(dispatcher *tg.UpdateDispatcher) {
 	dispatcher.OnDeleteChannelMessages(d.OnDeleteChannelMessages)
 	dispatcher.OnBotCallbackQuery(d.OnBotCallbackQuery)
 	dispatcher.OnInlineBotCallbackQuery(d.OnInlineBotCallbackQuery)
+	dispatcher.OnMessageReactions(d.OnMessageReactions)
 }
 
 // OnNewMessage handles private and standard group message updates.
@@ -285,6 +293,21 @@ func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities
 	return nil
 }
 
+// OnMessageReactions handles reaction updates on messages.
+func (d *Dispatcher) OnMessageReactions(ctx context.Context, e tg.Entities, update *tg.UpdateMessageReactions) error {
+	bus := d.getEventBus()
+	if bus == nil {
+		return nil
+	}
+	chatID := extractChatIDFromPeer(update.Peer)
+	bus.Publish(&core.ReactionUpdatedEvent{
+		At:     time.Now(),
+		MsgID:  update.MsgID,
+		ChatID: chatID,
+	})
+	return nil
+}
+
 // extractChatIDFromPeer returns a numeric chat ID for the given peer class.
 func extractChatIDFromPeer(peer tg.PeerClass) int64 {
 	if peer == nil {
@@ -350,6 +373,11 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		d.safeExecuteInterceptor(ctx, h, e, msg, isCmd, cmdName)
 	}
 
+	coreMsg := extractCoreMessage(msg)
+	if coreMsg.GroupedID != 0 && d.albumBuffer != nil {
+		d.albumBuffer.Add(coreMsg)
+	}
+
 	if !isCmd {
 		return nil
 	}
@@ -357,35 +385,6 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	cmd, exists := d.router.Find(parsed.Name)
 	if !exists {
 		return nil
-	}
-
-	coreMsg := &core.Message{
-		ID:         msg.ID,
-		Text:       msg.Message,
-		Date:       time.Unix(int64(msg.Date), 0),
-		IsOutgoing: msg.Out,
-		GroupedID:  msg.GroupedID,
-		Entities:   msg.Entities,
-	}
-
-	if msg.Media != nil {
-		coreMsg.Media = core.ExtractMediaFromTG(msg.Media)
-		if coreMsg.Media != nil {
-			coreMsg.MediaType = coreMsg.Media.Type
-		}
-	}
-
-	if msg.ReplyTo != nil {
-		if header, ok := msg.ReplyTo.(*tg.MessageReplyHeader); ok {
-			coreMsg.ReplyToID = header.ReplyToMsgID
-			if header.ForumTopic || header.ReplyToTopID != 0 {
-				if header.ReplyToTopID != 0 {
-					coreMsg.TopicID = header.ReplyToTopID
-				} else {
-					coreMsg.TopicID = header.ReplyToMsgID
-				}
-			}
-		}
 	}
 
 	var peerInput tg.InputPeerClass
@@ -479,12 +478,18 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	}
 	execCtx, cancel := context.WithCancel(root)
 
+	var album []*core.Message
+	if coreMsg.GroupedID != 0 && d.albumBuffer != nil {
+		album = d.albumBuffer.Get(coreMsg.GroupedID)
+	}
+
 	coreCtx := &core.Context{
 		Ctx:      execCtx,
 		Command:  parsed.Name,
 		Args:     parsed.Args,
 		RawArgs:  parsed.RawArgs,
 		Message:  coreMsg,
+		Album:    album,
 		Chat:     chat,
 		Sender:   sender,
 		Perms:    d.perms,
@@ -500,6 +505,39 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	}()
 
 	return nil
+}
+
+func extractCoreMessage(msg *tg.Message) *core.Message {
+	coreMsg := &core.Message{
+		ID:         msg.ID,
+		Text:       msg.Message,
+		Date:       time.Unix(int64(msg.Date), 0),
+		IsOutgoing: msg.Out,
+		GroupedID:  msg.GroupedID,
+		Entities:   msg.Entities,
+	}
+
+	if msg.Media != nil {
+		coreMsg.Media = core.ExtractMediaFromTG(msg.Media)
+		if coreMsg.Media != nil {
+			coreMsg.MediaType = coreMsg.Media.Type
+		}
+	}
+
+	if msg.ReplyTo != nil {
+		if header, ok := msg.ReplyTo.(*tg.MessageReplyHeader); ok {
+			coreMsg.ReplyToID = header.ReplyToMsgID
+			if header.ForumTopic || header.ReplyToTopID != 0 {
+				if header.ReplyToTopID != 0 {
+					coreMsg.TopicID = header.ReplyToTopID
+				} else {
+					coreMsg.TopicID = header.ReplyToMsgID
+				}
+			}
+		}
+	}
+
+	return coreMsg
 }
 
 func (d *Dispatcher) safeExecuteInterceptor(
@@ -523,3 +561,4 @@ func (d *Dispatcher) safeExecuteInterceptor(
 		d.logger.Warn("message interceptor returned error", zap.Error(err))
 	}
 }
+
