@@ -1,6 +1,7 @@
 package storage_test
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -16,7 +17,7 @@ func TestFileStoragePermissions(t *testing.T) {
 		t.Fatalf("NewFileStorage failed: %v", err)
 	}
 
-	asset, err := store.Put(context.Background(), &fixedReader{data: []byte("secret")}, storage.Metadata{Name: "secret.bin"})
+	asset, err := store.Put(context.Background(), bytes.NewReader([]byte("secret")), storage.Metadata{Name: "secret.bin"})
 	if err != nil {
 		t.Fatalf("Put failed: %v", err)
 	}
@@ -53,15 +54,4 @@ func TestFileStoragePermissions(t *testing.T) {
 	if got := metaInfo.Mode().Perm(); got != 0600 {
 		t.Fatalf("metadata mode = %o, want 600", got)
 	}
-}
-
-type fixedReader struct{ data []byte }
-
-func (r *fixedReader) Read(p []byte) (int, error) {
-	if len(r.data) == 0 {
-		return 0, os.ErrClosed
-	}
-	n := copy(p, r.data)
-	r.data = r.data[n:]
-	return n, nil
 }
