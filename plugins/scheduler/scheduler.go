@@ -19,62 +19,35 @@ type Plugin struct {
 
 // New creates a new scheduler Plugin instance.
 func New(sched scheduler.Service) *Plugin {
-	return &Plugin{
-		sched: sched,
-	}
+	return &Plugin{sched: sched}
 }
 
-func (p *Plugin) Name() string {
-	return "scheduler"
-}
+func (p *Plugin) Name() string { return "scheduler" }
 
-func (p *Plugin) Init() error {
-	return nil
-}
+func (p *Plugin) Init() error { return nil }
 
 func (p *Plugin) Commands() []core.Command {
 	return []core.Command{
 		{
-			Name:        "remind",
-			Description: "Set a quick reminder in this chat",
-			Usage:       ".remind <duration> <text> or reply to a message with .remind <duration>",
-			Category:    "Scheduler",
-			Permission:  core.PermissionSudo,
-			Handler:     p.handleRemind,
+			Name: "remind", Description: "Set a quick reminder in this chat",
+			Usage: ".remind <duration> <text> or reply to a message with .remind <duration>",
+			Category: "Scheduler", Permission: core.PermissionSudo, Handler: p.handleRemind,
 		},
 		{
-			Name:        "schedule",
-			Description: "Schedule a message or command (e.g. .schedule in 30m text or .schedule every 1h .alive)",
-			Usage:       ".schedule [in|every] <duration> <payload>",
-			Category:    "Scheduler",
-			Permission:  core.PermissionSudo,
-			Handler:     p.handleSchedule,
+			Name: "schedule", Description: "Schedule a message or command (e.g. .schedule in 30m text or .schedule every 1h .alive)",
+			Usage: ".schedule [in|every] <duration> <text/command>", Category: "Scheduler", Permission: core.PermissionSudo, Handler: p.handleSchedule,
 		},
 		{
-			Name:        "schedules",
-			Description: "List all active schedules in this chat",
-			Usage:       ".schedules",
-			Category:    "Scheduler",
-			Permission:  core.PermissionSudo,
-			Handler:     p.handleList,
+			Name: "schedules", Description: "List all active schedules in this chat", Usage: ".schedules",
+			Category: "Scheduler", Permission: core.PermissionSudo, Handler: p.handleList,
 		},
 		{
-			Name:        "cancelschedule",
-			Aliases:     []string{"unschedule", "delschedule", "delremind"},
-			Description: "Cancel a scheduled job by its ID",
-			Usage:       ".cancelschedule <id>",
-			Category:    "Scheduler",
-			Permission:  core.PermissionSudo,
-			Handler:     p.handleCancel,
+			Name: "cancelschedule", Aliases: []string{"unschedule", "delschedule", "delremind"},
+			Description: "Cancel a scheduled job by its ID", Usage: ".cancelschedule <id>", Category: "Scheduler", Permission: core.PermissionSudo, Handler: p.handleCancel,
 		},
 		{
-			Name:        "schedhistory",
-			Aliases:     []string{"jobhistory", "schedlog"},
-			Description: "Show the last execution history entries for a scheduled job",
-			Usage:       ".schedhistory <id> [limit]",
-			Category:    "Scheduler",
-			Permission:  core.PermissionSudo,
-			Handler:     p.handleSchedHistory,
+			Name: "schedhistory", Aliases: []string{"jobhistory", "schedlog"},
+			Description: "Show the last execution history entries for a scheduled job", Usage: ".schedhistory <id> [limit]", Category: "Scheduler", Permission: core.PermissionSudo, Handler: p.handleSchedHistory,
 		},
 	}
 }
@@ -126,7 +99,6 @@ func (p *Plugin) handleSchedule(ctx *core.Context) error {
 	isRecurring := false
 	durIdx := 0
 	payloadIdx := 1
-
 	firstArg := strings.ToLower(ctx.Args[0])
 	if firstArg == "every" {
 		isRecurring = true
@@ -149,7 +121,6 @@ func (p *Plugin) handleSchedule(ctx *core.Context) error {
 		return err
 	}
 
-	// Extract payload
 	prefixToStrip := ctx.Args[0] + " " + ctx.Args[1]
 	if payloadIdx == 1 {
 		prefixToStrip = ctx.Args[0]
@@ -167,7 +138,6 @@ func (p *Plugin) handleSchedule(ctx *core.Context) error {
 
 	chatID := getChatID(ctx)
 	peerType, accessHash := extractPeerInfo(ctx.PeerID)
-
 	if isRecurring {
 		job, err := p.sched.ScheduleRecurring(ctx.Ctx, chatID, peerType, accessHash, dur, actionType, payload, ctx.SenderID())
 		if err != nil {
@@ -193,7 +163,6 @@ func (p *Plugin) handleList(ctx *core.Context) error {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to list schedules: %v", err))
 		return err
 	}
-
 	if len(jobs) == 0 {
 		return ctx.EditOrReply("ℹ️ No active scheduled jobs in this chat.")
 	}
@@ -209,24 +178,19 @@ func (p *Plugin) handleList(ctx *core.Context) error {
 		if remaining < 0 {
 			remaining = 0
 		}
-
 		payloadSnippet := j.Payload
 		if len(payloadSnippet) > 35 {
 			payloadSnippet = payloadSnippet[:32] + "..."
 		}
-
 		status := j.Status
 		if status == "" {
 			status = "pending"
 		}
-
-		fmt.Fprintf(&sb, "• <b>#%d</b> [%s | %s | %s] <code>%s</code>\n  └ <i>Due in:</i> <code>%s</code>\n",
-			j.ID, mode, j.ActionType, status, payloadSnippet, remaining)
+		fmt.Fprintf(&sb, "• <b>#%d</b> [%s | %s | %s] <code>%s</code>\n  └ <i>Due in:</i> <code>%s</code>\n", j.ID, mode, j.ActionType, status, payloadSnippet, remaining)
 		if j.LastError != "" {
 			fmt.Fprintf(&sb, "  └ ⚠️ <i>Last Error (%d/%d attempts):</i> <code>%s</code>\n", j.AttemptCount, j.MaxAttempts, j.LastError)
 		}
 	}
-
 	return ctx.EditOrReply(sb.String())
 }
 
@@ -235,19 +199,16 @@ func (p *Plugin) handleCancel(ctx *core.Context) error {
 		_ = ctx.EditOrReply("⚠️ Usage: <code>.cancelschedule &lt;id&gt;</code>")
 		return errors.New("missing job id")
 	}
-
 	idStr := strings.TrimPrefix(ctx.Args[0], "#")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Invalid job ID %q: %v", idStr, err))
 		return err
 	}
-
-	if err := p.sched.Cancel(ctx.Ctx, id); err != nil {
+	if err := p.sched.CancelScoped(ctx.Ctx, ctx.SenderID(), getChatID(ctx), id); err != nil {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to cancel job #%d: %v", id, err))
 		return err
 	}
-
 	return ctx.EditOrReply(fmt.Sprintf("🗑️ Scheduled job <code>#%d</code> canceled successfully.", id))
 }
 
@@ -256,34 +217,27 @@ func (p *Plugin) handleSchedHistory(ctx *core.Context) error {
 		_ = ctx.EditOrReply("⚠️ Usage: <code>.schedhistory &lt;id&gt; [limit]</code>")
 		return errors.New("missing job id")
 	}
-
 	idStr := strings.TrimPrefix(ctx.Args[0], "#")
 	jobID, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Invalid job ID %q: %v", idStr, err))
 		return err
 	}
-
 	limit := 10
 	if len(ctx.Args) >= 2 {
 		if n, err := strconv.Atoi(ctx.Args[1]); err == nil && n > 0 {
-			if n > 50 {
-				n = 50
-			}
+			if n > 50 { n = 50 }
 			limit = n
 		}
 	}
-
-	entries, err := p.sched.JobHistory(ctx.Ctx, jobID, limit)
+	entries, err := p.sched.JobHistoryScoped(ctx.Ctx, ctx.SenderID(), getChatID(ctx), jobID, limit)
 	if err != nil {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to fetch history for job #%d: %v", jobID, err))
 		return err
 	}
-
 	if len(entries) == 0 {
 		return ctx.EditOrReply(fmt.Sprintf("ℹ️ No execution history found for job <code>#%d</code>.", jobID))
 	}
-
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "📋 <b>Execution History — Job #%d</b> (last %d):\n\n", jobID, len(entries))
 	for _, e := range entries {
@@ -293,27 +247,17 @@ func (p *Plugin) handleSchedHistory(ctx *core.Context) error {
 			icon = "❌"
 			if e.ErrorMsg != "" {
 				snippet := e.ErrorMsg
-				if len(snippet) > 60 {
-					snippet = snippet[:57] + "..."
-				}
+				if len(snippet) > 60 { snippet = snippet[:57] + "..." }
 				errPart = fmt.Sprintf("\n  └ <i>Error:</i> <code>%s</code>", snippet)
 			}
 		}
-		fmt.Fprintf(&sb, "%s <code>%s</code> — <i>%dms</i>%s\n",
-			icon,
-			e.RanAt.UTC().Format("2006-01-02 15:04:05"),
-			e.DurationMs,
-			errPart,
-		)
+		fmt.Fprintf(&sb, "%s <code>%s</code> — <i>%dms</i>%s\n", icon, e.RanAt.UTC().Format("2006-01-02 15:04:05"), e.DurationMs, errPart)
 	}
-
 	return ctx.EditOrReply(sb.String())
 }
 
 func getChatID(ctx *core.Context) int64 {
-	if ctx.Chat != nil && ctx.Chat.ID != 0 {
-		return ctx.Chat.ID
-	}
+	if ctx.Chat != nil && ctx.Chat.ID != 0 { return ctx.Chat.ID }
 	return ctx.SenderID()
 }
 
