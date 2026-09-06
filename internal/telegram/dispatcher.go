@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/services/callback"
@@ -56,6 +55,10 @@ type Dispatcher struct {
 	nextHandlerID    uint64
 	acceptingUpdates atomic.Bool
 	inFlight         sync.WaitGroup
+	cmdWG            sync.WaitGroup
+	cmdSem           chan struct{}
+	runningCommands  atomic.Int64
+	totalCommands    atomic.Int64
 	mu               sync.RWMutex
 
 	// Bounded peer-cache worker pool to avoid 1000-goroutine burst on SQLite.
@@ -97,6 +100,7 @@ func NewDispatcher(
 		cooldown:    cooldown,
 		executor:    executor,
 		albumBuffer: core.NewAlbumBuffer(10 * time.Minute),
+		cmdSem:      make(chan struct{}, 32),
 	}
 	d.acceptingUpdates.Store(true)
 	return d
@@ -141,44 +145,9 @@ func (d *Dispatcher) peerWorker(ctx context.Context, q <-chan peerUpdateJob) {
 			cancel()
 			continue
 		}
-		for _, u := range job.users {
-			if u == nil {
-				continue
-			}
-			if err := r.storage.Save(saveCtx, peers.Key{Prefix: "user", ID: u.ID}, peers.Value{AccessHash: u.AccessHash}); err != nil {
-				d.peerSaveFailed.Add(1)
-				d.logger.Warn("failed to save user access hash to storage", zap.Int64("user_id", u.ID), zap.Error(err))
-			}
-			if err := r.storage.SaveEntity(saveCtx, "user", u.ID, u.Username, u.Phone, u.FirstName, u.LastName, ""); err != nil {
-				d.peerSaveFailed.Add(1)
-				d.logger.Warn("failed to save user entity to storage", zap.Int64("user_id", u.ID), zap.Error(err))
-			}
-		}
-		for _, ch := range job.channels {
-			if ch == nil {
-				continue
-			}
-			if err := r.storage.Save(saveCtx, peers.Key{Prefix: "channel", ID: ch.ID}, peers.Value{AccessHash: ch.AccessHash}); err != nil {
-				d.peerSaveFailed.Add(1)
-				d.logger.Warn("failed to save channel access hash to storage", zap.Int64("channel_id", ch.ID), zap.Error(err))
-			}
-			if err := r.storage.SaveEntity(saveCtx, "channel", ch.ID, ch.Username, "", "", "", ch.Title); err != nil {
-				d.peerSaveFailed.Add(1)
-				d.logger.Warn("failed to save channel entity to storage", zap.Int64("channel_id", ch.ID), zap.Error(err))
-			}
-		}
-		for _, chat := range job.chats {
-			if chat == nil {
-				continue
-			}
-			if err := r.storage.Save(saveCtx, peers.Key{Prefix: "chat", ID: chat.ID}, peers.Value{AccessHash: 0}); err != nil {
-				d.peerSaveFailed.Add(1)
-				d.logger.Warn("failed to save chat to storage", zap.Int64("chat_id", chat.ID), zap.Error(err))
-			}
-			if err := r.storage.SaveEntity(saveCtx, "chat", chat.ID, "", "", "", "", chat.Title); err != nil {
-				d.peerSaveFailed.Add(1)
-				d.logger.Warn("failed to save chat entity to storage", zap.Int64("chat_id", chat.ID), zap.Error(err))
-			}
+		if err := r.storage.SaveEntitiesBatch(saveCtx, job.users, job.channels, job.chats); err != nil {
+			d.peerSaveFailed.Add(1)
+			d.logger.Warn("failed to save entities batch to storage", zap.Error(err))
 		}
 		cancel()
 	}
@@ -204,7 +173,21 @@ func (d *Dispatcher) Stop(ctx context.Context) error {
 			err = ctx.Err()
 		}
 
-		// 3. Mark stopping, nil out peerQueue under lock, and wait for peer workers
+		// 3. Drain in-flight command executions
+		doneCmds := make(chan struct{})
+		go func() {
+			d.cmdWG.Wait()
+			close(doneCmds)
+		}()
+		select {
+		case <-doneCmds:
+		case <-ctx.Done():
+			if err == nil {
+				err = ctx.Err()
+			}
+		}
+
+		// 4. Mark stopping, nil out peerQueue under lock, and wait for peer workers
 		d.stopping.Store(true)
 		d.mu.Lock()
 		q := d.peerQueue
@@ -230,6 +213,16 @@ func (d *Dispatcher) Stop(ctx context.Context) error {
 // PeerCacheStats returns atomic metrics for the dispatcher peer cache pipeline.
 func (d *Dispatcher) PeerCacheStats() (enqueued, dropped, saveFailed int64) {
 	return d.peerEnqueued.Load(), d.peerDropped.Load(), d.peerSaveFailed.Load()
+}
+
+// CommandStats returns the number of currently running commands and total dispatched commands.
+func (d *Dispatcher) CommandStats() (running, total int64) {
+	return d.runningCommands.Load(), d.totalCommands.Load()
+}
+
+// RunningCommands returns the number of currently executing commands.
+func (d *Dispatcher) RunningCommands() int64 {
+	return d.runningCommands.Load()
 }
 
 // SetRootContext sets the application root context used for command lifetime coordination.
@@ -502,7 +495,7 @@ func (d *Dispatcher) OnDeleteChannelMessages(ctx context.Context, e tg.Entities,
 
 // callbackInputPeer converts a Telegram PeerClass to InputPeerClass using Entities + resolver fallback.
 // For CallbackContext it ensures Edit/Delete can dispatch without guessing peer type.
-func (d *Dispatcher) callbackInputPeer(peer tg.PeerClass, e tg.Entities) tg.InputPeerClass {
+func (d *Dispatcher) callbackInputPeer(ctx context.Context, peer tg.PeerClass, e tg.Entities) tg.InputPeerClass {
 	if peer == nil {
 		return nil
 	}
@@ -516,12 +509,15 @@ func (d *Dispatcher) callbackInputPeer(peer tg.PeerClass, e tg.Entities) tg.Inpu
 			if resolver := d.getResolver(); resolver != nil {
 				// best-effort via storage; ignore error
 				// resolver expects string ref; use userID as string
-				if resolved, _, err := resolver.ResolveUser(context.Background(), fmt.Sprintf("%d", p.UserID)); err == nil {
+				if resolved, _, err := resolver.ResolveUser(ctx, fmt.Sprintf("%d", p.UserID)); err == nil {
 					if ipu, ok := resolved.(*tg.InputPeerUser); ok {
 						accessHash = ipu.AccessHash
 					}
 				}
 			}
+		}
+		if accessHash == 0 {
+			return nil
 		}
 		return &tg.InputPeerUser{UserID: p.UserID, AccessHash: accessHash}
 	case *tg.PeerChat:
@@ -533,12 +529,15 @@ func (d *Dispatcher) callbackInputPeer(peer tg.PeerClass, e tg.Entities) tg.Inpu
 		}
 		if accessHash == 0 {
 			if resolver := d.getResolver(); resolver != nil {
-				if resolved, err := resolver.ResolveChat(context.Background(), fmt.Sprintf("-100%d", p.ChannelID)); err == nil {
+				if resolved, err := resolver.ResolveChat(ctx, fmt.Sprintf("-100%d", p.ChannelID)); err == nil {
 					if ipc, ok := resolved.(*tg.InputPeerChannel); ok {
 						accessHash = ipc.AccessHash
 					}
 				}
 			}
+		}
+		if accessHash == 0 {
+			return nil
 		}
 		return &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: accessHash}
 	default:
@@ -552,7 +551,7 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 		return nil
 	}
 	chatID := extractChatIDFromPeer(update.Peer)
-	inputPeer := d.callbackInputPeer(update.Peer, e)
+	inputPeer := d.callbackInputPeer(ctx, update.Peer, e)
 	target := core.CallbackTarget{
 		Origin:       core.CallbackOriginMessage,
 		Peer:         inputPeer,
@@ -740,24 +739,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 						go func() {
 							bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 							defer cancel()
-							for _, u := range job.users {
-								if u != nil {
-									_ = r.storage.Save(bgCtx, peers.Key{Prefix: "user", ID: u.ID}, peers.Value{AccessHash: u.AccessHash})
-									_ = r.storage.SaveEntity(bgCtx, "user", u.ID, u.Username, u.Phone, u.FirstName, u.LastName, "")
-								}
-							}
-							for _, ch := range job.channels {
-								if ch != nil {
-									_ = r.storage.Save(bgCtx, peers.Key{Prefix: "channel", ID: ch.ID}, peers.Value{AccessHash: ch.AccessHash})
-									_ = r.storage.SaveEntity(bgCtx, "channel", ch.ID, ch.Username, "", "", "", ch.Title)
-								}
-							}
-							for _, chat := range job.chats {
-								if chat != nil {
-									_ = r.storage.Save(bgCtx, peers.Key{Prefix: "chat", ID: chat.ID}, peers.Value{AccessHash: 0})
-									_ = r.storage.SaveEntity(bgCtx, "chat", chat.ID, "", "", "", "", chat.Title)
-								}
-							}
+							_ = r.storage.SaveEntitiesBatch(bgCtx, job.users, job.channels, job.chats)
 						}()
 					}
 				}
@@ -765,15 +747,21 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		}
 	}
 
-	// Run message interceptors in priority order (Security -> Moderation -> Feature -> Observability).
+	// Run message interceptors in priority order (Security -> Moderation -> Feature).
+	// Observability handlers (Priority >= 90) run asynchronously so they do not block the hot path.
 	d.mu.RLock()
-	handlers := make([]MessageHandler, len(d.messageHandlers))
-	for i, ph := range d.messageHandlers {
-		handlers[i] = ph.handler
+	var syncHandlers []MessageHandler
+	var asyncHandlers []MessageHandler
+	for _, ph := range d.messageHandlers {
+		if ph.priority >= PriorityObservability {
+			asyncHandlers = append(asyncHandlers, ph.handler)
+		} else {
+			syncHandlers = append(syncHandlers, ph.handler)
+		}
 	}
 	d.mu.RUnlock()
 
-	for _, h := range handlers {
+	for _, h := range syncHandlers {
 		if d.safeExecuteInterceptor(ctx, h, e, msg, isCmd, cmdName) {
 			return nil
 		}
@@ -785,11 +773,17 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	}
 
 	if !isCmd {
+		for _, h := range asyncHandlers {
+			_ = d.safeExecuteInterceptor(ctx, h, e, msg, isCmd, cmdName)
+		}
 		return nil
 	}
 
 	cmd, exists := d.router.Find(parsed.Name)
 	if !exists {
+		for _, h := range asyncHandlers {
+			_ = d.safeExecuteInterceptor(ctx, h, e, msg, isCmd, cmdName)
+		}
 		return nil
 	}
 
@@ -805,10 +799,10 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 			chat.Username = u.Username
 			chat.Title = u.FirstName + " " + u.LastName
 			accessHash = u.AccessHash
-		} else if p.UserID == d.getSelfID() {
-			peerInput = &tg.InputPeerSelf{}
 		}
-		if peerInput == nil {
+		if p.UserID == d.getSelfID() {
+			peerInput = &tg.InputPeerSelf{}
+		} else if peerInput == nil {
 			if accessHash == 0 && d.getResolver() != nil {
 				if resolved, _, err := d.getResolver().ResolveUser(ctx, strconv.FormatInt(p.UserID, 10)); err == nil {
 					if ipu, ok := resolved.(*tg.InputPeerUser); ok && ipu.AccessHash != 0 {
@@ -816,7 +810,9 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 					}
 				}
 			}
-			peerInput = &tg.InputPeerUser{UserID: p.UserID, AccessHash: accessHash}
+			if accessHash != 0 || d.getResolver() == nil {
+				peerInput = &tg.InputPeerUser{UserID: p.UserID, AccessHash: accessHash}
+			}
 		}
 	case *tg.PeerChat:
 		chat.ID = p.ChatID
@@ -846,7 +842,9 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 				}
 			}
 		}
-		peerInput = &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: accessHash}
+		if accessHash != 0 || d.getResolver() == nil {
+			peerInput = &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: accessHash}
+		}
 	}
 
 	d.logger.Debug("dispatch: peer resolved",
@@ -859,6 +857,15 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 
 	if peerInput == nil && msg.Out {
 		peerInput = &tg.InputPeerSelf{}
+	}
+
+	if peerInput == nil && msg.PeerID != nil {
+		d.logger.Warn("dispatch: peer unresolvable without access hash, command execution skipped",
+			zap.String("peerType", fmt.Sprintf("%T", msg.PeerID)),
+			zap.Int64("chatID", chat.ID),
+			zap.String("command", cmdName),
+		)
+		return nil
 	}
 
 	sender := &core.User{}
@@ -906,11 +913,30 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		EventBus:  d.getEventBus(),
 	}
 
-	// Execute command asynchronously with application-scoped context
+	// Bound command concurrency & track execution lifecycle
+	select {
+	case d.cmdSem <- struct{}{}:
+	case <-execCtx.Done():
+		cancel()
+		return nil
+	}
+
+	d.cmdWG.Add(1)
+	d.runningCommands.Add(1)
+	d.totalCommands.Add(1)
 	go func() {
-		defer cancel()
+		defer func() {
+			d.runningCommands.Add(-1)
+			<-d.cmdSem
+			d.cmdWG.Done()
+			cancel()
+		}()
 		_ = d.executor.Execute(coreCtx, cmd)
 	}()
+
+	for _, h := range asyncHandlers {
+		_ = d.safeExecuteInterceptor(ctx, h, e, msg, isCmd, cmdName)
+	}
 
 	return nil
 }

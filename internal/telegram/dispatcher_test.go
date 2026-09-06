@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -617,3 +618,91 @@ func TestDispatcher_PeerCacheStats_AndShutdownSafety(t *testing.T) {
 		t.Fatalf("unexpected error on new message after stop: %v", err)
 	}
 }
+
+func TestDispatcher_StopWaitsForRunningCommand(t *testing.T) {
+	logger := zap.NewNop()
+	router := core.NewRouter(".")
+	dispatcher := NewDispatcher(router, nil, nil, logger)
+
+	commandFinished := atomic.Bool{}
+	commandStarted := make(chan struct{})
+
+	_ = router.Register(core.Command{
+		Name: "slowcmd",
+		Handler: func(ctx *core.Context) error {
+			close(commandStarted)
+			time.Sleep(100 * time.Millisecond)
+			commandFinished.Store(true)
+			return nil
+		},
+	})
+
+	err := dispatcher.OnNewMessage(context.Background(), tg.Entities{}, &tg.UpdateNewMessage{
+		Message: &tg.Message{Message: ".slowcmd"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error on new message: %v", err)
+	}
+
+	// Wait for command to start running
+	<-commandStarted
+
+	// Call Stop and assert commandFinished is true when Stop returns
+	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := dispatcher.Stop(stopCtx); err != nil {
+		t.Fatalf("dispatcher.Stop failed: %v", err)
+	}
+
+	if !commandFinished.Load() {
+		t.Errorf("expected command to finish execution before Stop() returns")
+	}
+}
+
+func TestPeerStorage_SaveEntitiesBatch(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "goultroid-peer-batch-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	db, err := database.Open(fmt.Sprintf("file:peer_batch_%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("failed to create database: %v", err)
+	}
+	defer db.Close()
+
+	storage := NewPeerStorage(db)
+	ctx := context.Background()
+
+	users := []*tg.User{
+		{ID: 101, AccessHash: 1111, Username: "user1", Phone: "+111"},
+		{ID: 102, AccessHash: 2222, Username: "user2", Phone: "+222"},
+	}
+	channels := []*tg.Channel{
+		{ID: 201, AccessHash: 3333, Title: "Channel 1"},
+	}
+	chats := []*tg.Chat{
+		{ID: 301, Title: "Chat 1"},
+	}
+
+	if err := storage.SaveEntitiesBatch(ctx, users, channels, chats); err != nil {
+		t.Fatalf("SaveEntitiesBatch failed: %v", err)
+	}
+
+	// Verify lookups
+	val, found, err := storage.Find(ctx, peers.Key{Prefix: "user", ID: 101})
+	if err != nil || !found || val.AccessHash != 1111 {
+		t.Errorf("user 101: found=%v, val=%+v, err=%v", found, val, err)
+	}
+	val, found, err = storage.Find(ctx, peers.Key{Prefix: "channel", ID: 201})
+	if err != nil || !found || val.AccessHash != 3333 {
+		t.Errorf("channel 201: found=%v, val=%+v, err=%v", found, val, err)
+	}
+	key, val, found, err := storage.FindByUsername(ctx, "user2")
+	if err != nil || !found || key.ID != 102 || val.AccessHash != 2222 {
+		t.Errorf("FindByUsername user2: found=%v, key=%+v, val=%+v, err=%v", found, key, val, err)
+	}
+}
+

@@ -41,6 +41,14 @@ func (m *Manager) SetHookRegistrar(registrar HookRegistrar) {
 }
 
 func (m *Manager) Register(p Plugin) error {
+	return m.RegisterWithContext(context.Background(), p)
+}
+
+// RegisterWithContext registers and initializes a plugin using the provided startup context.
+func (m *Manager) RegisterWithContext(ctx context.Context, p Plugin) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if p == nil { return fmt.Errorf("cannot register nil plugin") }
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -64,18 +72,18 @@ func (m *Manager) Register(p Plugin) error {
 	// 2. Context-aware initialization
 	var initErr error
 	if ci, ok := p.(ContextInitializer); ok {
-		initErr = ci.InitContext(context.Background())
+		initErr = ci.InitContext(ctx)
 	} else {
 		initErr = p.Init()
 	}
 	if initErr != nil {
-		if s, ok := p.(ContextShutdowner); ok { _ = s.ShutdownContext(context.Background()) } else if s, ok := p.(Shutdowner); ok { _ = s.Shutdown() }
+		if s, ok := p.(ContextShutdowner); ok { _ = s.ShutdownContext(ctx) } else if s, ok := p.(Shutdowner); ok { _ = s.Shutdown() }
 		return fmt.Errorf("failed to initialize plugin %s: %w", name, initErr)
 	}
 
 	// 3. Command registration
 	if err := m.router.RegisterBatch(cmds); err != nil {
-		if s, ok := p.(ContextShutdowner); ok { _ = s.ShutdownContext(context.Background()) } else if s, ok := p.(Shutdowner); ok { _ = s.Shutdown() }
+		if s, ok := p.(ContextShutdowner); ok { _ = s.ShutdownContext(ctx) } else if s, ok := p.(Shutdowner); ok { _ = s.Shutdown() }
 		return fmt.Errorf("plugin %s command registration failed: %w", name, err)
 	}
 

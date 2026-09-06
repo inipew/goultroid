@@ -17,12 +17,19 @@ import (
 
 var _ plugin.MessageHookPlugin = (*Plugin)(nil)
 
+type compiledFilter struct {
+	keyword   string
+	replyText string
+	re        *regexp.Regexp
+}
+
 // Plugin manages automated chat keyword filters and auto-replies.
 type Plugin struct {
 	db          database.Repository
 	svcFunc     func() core.TelegramServicer
 	cacheMu     sync.RWMutex
-	chatFilters map[int64][]database.Filter
+	chatFilters map[int64][]compiledFilter
+	chatAccess  map[int64]time.Time
 	cooldownMu  sync.Mutex
 	lastReply   map[string]time.Time
 }
@@ -32,7 +39,8 @@ func New(db database.Repository, svcFunc func() core.TelegramServicer) *Plugin {
 	return &Plugin{
 		db:          db,
 		svcFunc:     svcFunc,
-		chatFilters: make(map[int64][]database.Filter),
+		chatFilters: make(map[int64][]compiledFilter),
+		chatAccess:  make(map[int64]time.Time),
 		lastReply:   make(map[string]time.Time),
 	}
 }
@@ -113,6 +121,7 @@ func (p *Plugin) handleFilter(ctx *core.Context) error {
 
 	p.cacheMu.Lock()
 	delete(p.chatFilters, chatID)
+	delete(p.chatAccess, chatID)
 	p.cacheMu.Unlock()
 
 	return ctx.EditOrReply(fmt.Sprintf("🎯 Filter <code>%s</code> saved successfully.", keyword))
@@ -134,6 +143,7 @@ func (p *Plugin) handleStop(ctx *core.Context) error {
 
 	p.cacheMu.Lock()
 	delete(p.chatFilters, chatID)
+	delete(p.chatAccess, chatID)
 	p.cacheMu.Unlock()
 
 	return ctx.EditOrReply(fmt.Sprintf("🗑️ Filter <code>%s</code> stopped.", keyword))
@@ -194,13 +204,34 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 	p.cacheMu.RUnlock()
 
 	if !ok {
+		var rawFilters []database.Filter
 		var err error
-		filters, err = p.db.ListFilters(ctx, chatID)
+		rawFilters, err = p.db.ListFilters(ctx, chatID)
 		if err != nil {
 			return nil
 		}
+		filters = compileFilters(rawFilters)
 		p.cacheMu.Lock()
+		if len(p.chatFilters) >= 500 {
+			var oldestChat int64
+			var oldestTime time.Time
+			for c, t := range p.chatAccess {
+				if oldestTime.IsZero() || t.Before(oldestTime) {
+					oldestTime = t
+					oldestChat = c
+				}
+			}
+			if oldestChat != 0 {
+				delete(p.chatFilters, oldestChat)
+				delete(p.chatAccess, oldestChat)
+			}
+		}
 		p.chatFilters[chatID] = filters
+		p.chatAccess[chatID] = time.Now()
+		p.cacheMu.Unlock()
+	} else {
+		p.cacheMu.Lock()
+		p.chatAccess[chatID] = time.Now()
 		p.cacheMu.Unlock()
 	}
 
@@ -208,11 +239,17 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 		return nil
 	}
 
-	text := msg.Message
+	lowerText := strings.ToLower(msg.Message)
 	for _, f := range filters {
-		if matchFilter(text, f.Keyword) {
+		matched := false
+		if f.re != nil {
+			matched = f.re.MatchString(lowerText)
+		} else if f.keyword != "" {
+			matched = strings.Contains(lowerText, f.keyword)
+		}
+		if matched {
 			// Cooldown to prevent reply storms
-			cooldownKey := fmt.Sprintf("%d:%s", chatID, f.Keyword)
+			cooldownKey := fmt.Sprintf("%d:%s", chatID, f.keyword)
 			now := time.Now()
 			p.cooldownMu.Lock()
 			last, exists := p.lastReply[cooldownKey]
@@ -232,13 +269,40 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 
 			peer := extractPeerInput(msg.PeerID, e)
 			if peer != nil {
-				_, _ = svc.SendMessage(ctx, peer, f.ReplyText)
+				_, _ = svc.SendMessage(ctx, peer, f.replyText)
 			}
 			break
 		}
 	}
 
 	return nil
+}
+
+func compileFilters(raw []database.Filter) []compiledFilter {
+	res := make([]compiledFilter, len(raw))
+	for i, f := range raw {
+		res[i] = compileFilterItem(f)
+	}
+	return res
+}
+
+func compileFilterItem(f database.Filter) compiledFilter {
+	kw := strings.ToLower(strings.TrimSpace(f.Keyword))
+	var re *regexp.Regexp
+	if kw != "" {
+		pattern := `(?i)(?:^|[^\p{L}\p{N}_])` + regexp.QuoteMeta(kw) + `(?:$|[^\p{L}\p{N}_])`
+		re, _ = regexp.Compile(pattern)
+	}
+	return compiledFilter{keyword: kw, replyText: f.ReplyText, re: re}
+}
+
+func matchFilter(text, keyword string) bool {
+	f := compileFilterItem(database.Filter{Keyword: keyword})
+	lowerText := strings.ToLower(text)
+	if f.re != nil {
+		return f.re.MatchString(lowerText)
+	}
+	return strings.Contains(lowerText, f.keyword)
 }
 
 func extractChatID(peer tg.PeerClass) int64 {
@@ -281,41 +345,4 @@ func extractPeerInput(peer tg.PeerClass, e tg.Entities) tg.InputPeerClass {
 		return nil
 	}
 	return nil
-}
-
-var (
-	filterRegexMu    sync.RWMutex
-	filterRegexCache = make(map[string]*regexp.Regexp)
-)
-
-func matchFilter(text, keyword string) bool {
-	kw := strings.ToLower(strings.TrimSpace(keyword))
-	if kw == "" {
-		return false
-	}
-	lowerText := strings.ToLower(text)
-
-	filterRegexMu.RLock()
-	re, ok := filterRegexCache[kw]
-	filterRegexMu.RUnlock()
-
-	if !ok {
-		pattern := `(?i)(?:^|[^\p{L}\p{N}_])` + regexp.QuoteMeta(kw) + `(?:$|[^\p{L}\p{N}_])`
-		compiled, err := regexp.Compile(pattern)
-		if err == nil {
-			filterRegexMu.Lock()
-			const maxRegexEntries = 500
-			if len(filterRegexCache) >= maxRegexEntries {
-				filterRegexCache = make(map[string]*regexp.Regexp)
-			}
-			filterRegexCache[kw] = compiled
-			filterRegexMu.Unlock()
-			re = compiled
-		}
-	}
-
-	if re != nil {
-		return re.MatchString(lowerText)
-	}
-	return strings.Contains(lowerText, kw)
 }

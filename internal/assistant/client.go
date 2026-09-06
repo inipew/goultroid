@@ -28,6 +28,11 @@ type Client interface {
 	Username() string
 }
 
+type userRateBucket struct {
+	tokens int
+	last   time.Time
+}
+
 type BotClient struct {
 	appID          int
 	appHash        string
@@ -40,6 +45,9 @@ type BotClient struct {
 	cancel         context.CancelFunc
 	self           *tg.User
 	mu             sync.RWMutex
+
+	limiterMu  sync.Mutex
+	rateLimits map[int64]*userRateBucket
 }
 
 var _ Client = (*BotClient)(nil)
@@ -48,7 +56,14 @@ func NewBotClient(appID int, appHash string, botToken string, logger *zap.Logger
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	return &BotClient{appID: appID, appHash: appHash, botToken: botToken, logger: logger, bridge: NewBridge()}
+	return &BotClient{
+		appID:      appID,
+		appHash:    appHash,
+		botToken:   botToken,
+		logger:     logger,
+		bridge:     NewBridge(),
+		rateLimits: make(map[int64]*userRateBucket),
+	}
 }
 
 func (c *BotClient) SetBridge(b *Bridge) {
@@ -167,6 +182,42 @@ func (c *BotClient) Stop(ctx context.Context) error {
 	return nil
 }
 
+func (c *BotClient) allowUser(userID int64) bool {
+	c.limiterMu.Lock()
+	defer c.limiterMu.Unlock()
+	if c.rateLimits == nil {
+		c.rateLimits = make(map[int64]*userRateBucket)
+	}
+	now := time.Now()
+	b, ok := c.rateLimits[userID]
+	if !ok {
+		c.rateLimits[userID] = &userRateBucket{tokens: 4, last: now}
+		if len(c.rateLimits) > 1000 {
+			for id, bucket := range c.rateLimits {
+				if now.Sub(bucket.last) > 1*time.Minute {
+					delete(c.rateLimits, id)
+				}
+			}
+		}
+		return true
+	}
+	// Refill tokens: 1 token every 2 seconds, max 5 tokens
+	elapsed := now.Sub(b.last)
+	refill := int(elapsed / (2 * time.Second))
+	if refill > 0 {
+		b.tokens += refill
+		if b.tokens > 5 {
+			b.tokens = 5
+		}
+		b.last = now
+	}
+	if b.tokens > 0 {
+		b.tokens--
+		return true
+	}
+	return false
+}
+
 func (c *BotClient) handleBotCommand(ctx context.Context, e tg.Entities, msg *tg.Message, client *telegram.Client) error {
 	if msg == nil || client == nil {
 		return nil
@@ -180,9 +231,19 @@ func (c *BotClient) handleBotCommand(ctx context.Context, e tg.Entities, msg *tg
 	if senderID == 0 {
 		return nil
 	}
-	peer := tg.InputPeerClass(&tg.InputPeerUser{UserID: senderID})
-	if u, ok := e.Users[senderID]; ok {
+
+	if !c.allowUser(senderID) {
+		c.logger.Warn("assistant: rate limit exceeded for user", zap.Int64("from_id", senderID), zap.String("command", command))
+		return nil
+	}
+
+	var peer tg.InputPeerClass
+	if u, ok := e.Users[senderID]; ok && u != nil && u.AccessHash != 0 {
 		peer = &tg.InputPeerUser{UserID: senderID, AccessHash: u.AccessHash}
+	}
+	if peer == nil {
+		c.logger.Warn("assistant: sender user access hash missing, command ignored", zap.Int64("sender_id", senderID))
+		return nil
 	}
 
 	var reply string

@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
@@ -17,12 +18,18 @@ import (
 
 var _ plugin.MessageHookPlugin = (*Plugin)(nil)
 
+type compiledBlacklist struct {
+	word string
+	re   *regexp.Regexp
+}
+
 // Plugin manages chat word blacklists and automated message deletion.
 type Plugin struct {
 	db            database.Repository
 	svcFunc       func() core.TelegramServicer
 	cacheMu       sync.RWMutex
-	chatBlacklist map[int64][]string
+	chatBlacklist map[int64][]compiledBlacklist
+	chatAccess    map[int64]time.Time
 }
 
 // New creates a new blacklist plugin instance.
@@ -30,7 +37,8 @@ func New(db database.Repository, svcFunc func() core.TelegramServicer) *Plugin {
 	return &Plugin{
 		db:            db,
 		svcFunc:       svcFunc,
-		chatBlacklist: make(map[int64][]string),
+		chatBlacklist: make(map[int64][]compiledBlacklist),
+		chatAccess:    make(map[int64]time.Time),
 	}
 }
 
@@ -106,6 +114,7 @@ func (p *Plugin) handleBlacklist(ctx *core.Context) error {
 
 	p.cacheMu.Lock()
 	delete(p.chatBlacklist, chatID)
+	delete(p.chatAccess, chatID)
 	p.cacheMu.Unlock()
 
 	return ctx.EditOrReply(fmt.Sprintf("🚫 Added <code>%s</code> to chat blacklist.", html.EscapeString(word)))
@@ -127,6 +136,7 @@ func (p *Plugin) handleUnblacklist(ctx *core.Context) error {
 
 	p.cacheMu.Lock()
 	delete(p.chatBlacklist, chatID)
+	delete(p.chatAccess, chatID)
 	p.cacheMu.Unlock()
 
 	return ctx.EditOrReply(fmt.Sprintf("✅ Removed <code>%s</code> from chat blacklist.", html.EscapeString(word)))
@@ -183,27 +193,54 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 	}
 
 	p.cacheMu.RLock()
-	words, ok := p.chatBlacklist[chatID]
+	items, ok := p.chatBlacklist[chatID]
 	p.cacheMu.RUnlock()
 
 	if !ok {
+		var rawWords []string
 		var err error
-		words, err = p.db.ListBlacklists(ctx, chatID)
+		rawWords, err = p.db.ListBlacklists(ctx, chatID)
 		if err != nil {
 			return nil
 		}
+		items = compileBlacklist(rawWords)
 		p.cacheMu.Lock()
-		p.chatBlacklist[chatID] = words
+		if len(p.chatBlacklist) >= 500 {
+			var oldestChat int64
+			var oldestTime time.Time
+			for c, t := range p.chatAccess {
+				if oldestTime.IsZero() || t.Before(oldestTime) {
+					oldestTime = t
+					oldestChat = c
+				}
+			}
+			if oldestChat != 0 {
+				delete(p.chatBlacklist, oldestChat)
+				delete(p.chatAccess, oldestChat)
+			}
+		}
+		p.chatBlacklist[chatID] = items
+		p.chatAccess[chatID] = time.Now()
+		p.cacheMu.Unlock()
+	} else {
+		p.cacheMu.Lock()
+		p.chatAccess[chatID] = time.Now()
 		p.cacheMu.Unlock()
 	}
 
-	if len(words) == 0 {
+	if len(items) == 0 {
 		return nil
 	}
 
-	text := msg.Message
-	for _, word := range words {
-		if matchBlacklist(text, word) {
+	lowerText := strings.ToLower(msg.Message)
+	for _, b := range items {
+		matched := false
+		if b.re != nil {
+			matched = b.re.MatchString(lowerText)
+		} else if b.word != "" {
+			matched = strings.Contains(lowerText, b.word)
+		}
+		if matched {
 			peer := extractPeerInput(msg.PeerID, e)
 			if peer != nil {
 				_ = svc.DeleteMessage(ctx, peer, []int{msg.ID})
@@ -213,6 +250,33 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 	}
 
 	return nil
+}
+
+func compileBlacklist(raw []string) []compiledBlacklist {
+	res := make([]compiledBlacklist, len(raw))
+	for i, w := range raw {
+		res[i] = compileBlacklistItem(w)
+	}
+	return res
+}
+
+func compileBlacklistItem(word string) compiledBlacklist {
+	w := strings.ToLower(strings.TrimSpace(word))
+	var re *regexp.Regexp
+	if w != "" {
+		pattern := `(?i)(?:^|[^\p{L}\p{N}_])` + regexp.QuoteMeta(w) + `(?:$|[^\p{L}\p{N}_])`
+		re, _ = regexp.Compile(pattern)
+	}
+	return compiledBlacklist{word: w, re: re}
+}
+
+func matchBlacklist(text, word string) bool {
+	b := compileBlacklistItem(word)
+	lowerText := strings.ToLower(text)
+	if b.re != nil {
+		return b.re.MatchString(lowerText)
+	}
+	return strings.Contains(lowerText, b.word)
 }
 
 func extractChatID(peer tg.PeerClass) int64 {
@@ -255,41 +319,4 @@ func extractPeerInput(peer tg.PeerClass, e tg.Entities) tg.InputPeerClass {
 		return nil
 	}
 	return nil
-}
-
-var (
-	blacklistRegexMu    sync.RWMutex
-	blacklistRegexCache = make(map[string]*regexp.Regexp)
-)
-
-func matchBlacklist(text, word string) bool {
-	w := strings.ToLower(strings.TrimSpace(word))
-	if w == "" {
-		return false
-	}
-	lowerText := strings.ToLower(text)
-
-	blacklistRegexMu.RLock()
-	re, ok := blacklistRegexCache[w]
-	blacklistRegexMu.RUnlock()
-
-	if !ok {
-		pattern := `(?i)(?:^|[^\p{L}\p{N}_])` + regexp.QuoteMeta(w) + `(?:$|[^\p{L}\p{N}_])`
-		compiled, err := regexp.Compile(pattern)
-		if err == nil {
-			blacklistRegexMu.Lock()
-			const maxRegexEntries = 500
-			if len(blacklistRegexCache) >= maxRegexEntries {
-				blacklistRegexCache = make(map[string]*regexp.Regexp)
-			}
-			blacklistRegexCache[w] = compiled
-			blacklistRegexMu.Unlock()
-			re = compiled
-		}
-	}
-
-	if re != nil {
-		return re.MatchString(lowerText)
-	}
-	return strings.Contains(lowerText, w)
 }

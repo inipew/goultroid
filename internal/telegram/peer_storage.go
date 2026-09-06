@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gotd/td/telegram/peers"
+	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/database"
 )
 
@@ -151,3 +152,142 @@ func (s *PeerStorage) FindByUsername(ctx context.Context, username string) (peer
 	if err != nil || !found { return peers.Key{}, peers.Value{}, false, err }
 	return peers.Key{Prefix: prefix, ID: id}, peers.Value{AccessHash: accessHash}, true, nil
 }
+
+// SaveEntitiesBatch writes multiple users, channels, and chats in a single SQLite transaction.
+// It skips entities whose state has not changed in the process-local cache.
+func (s *PeerStorage) SaveEntitiesBatch(ctx context.Context, users []*tg.User, channels []*tg.Channel, chats []*tg.Chat) error {
+	if s.db == nil {
+		return errors.New("database is nil")
+	}
+
+	type storageItem struct {
+		key   peers.Key
+		value int64
+	}
+	type entityItem struct {
+		prefix, idStr string
+		id            int64
+		snapshot      peerEntitySnapshot
+	}
+
+	var toStore []storageItem
+	var toEntity []entityItem
+
+	s.mu.RLock()
+	for _, u := range users {
+		if u == nil {
+			continue
+		}
+		key := peers.Key{Prefix: "user", ID: u.ID}
+		if old, ok := s.peers[key]; !ok || old != u.AccessHash {
+			toStore = append(toStore, storageItem{key: key, value: u.AccessHash})
+		}
+		uname := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(u.Username), "@"))
+		snap := peerEntitySnapshot{username: uname, phone: u.Phone, firstName: u.FirstName, lastName: u.LastName}
+		eKey := fmt.Sprintf("user:%d", u.ID)
+		if oldSnap, ok := s.entities[eKey]; !ok || oldSnap != snap {
+			toEntity = append(toEntity, entityItem{prefix: "user", id: u.ID, idStr: eKey, snapshot: snap})
+		}
+	}
+	for _, ch := range channels {
+		if ch == nil {
+			continue
+		}
+		key := peers.Key{Prefix: "channel", ID: ch.ID}
+		if old, ok := s.peers[key]; !ok || old != ch.AccessHash {
+			toStore = append(toStore, storageItem{key: key, value: ch.AccessHash})
+		}
+		uname := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(ch.Username), "@"))
+		snap := peerEntitySnapshot{username: uname, title: ch.Title}
+		eKey := fmt.Sprintf("channel:%d", ch.ID)
+		if oldSnap, ok := s.entities[eKey]; !ok || oldSnap != snap {
+			toEntity = append(toEntity, entityItem{prefix: "channel", id: ch.ID, idStr: eKey, snapshot: snap})
+		}
+	}
+	for _, c := range chats {
+		if c == nil {
+			continue
+		}
+		key := peers.Key{Prefix: "chat", ID: c.ID}
+		if old, ok := s.peers[key]; !ok || old != 0 {
+			toStore = append(toStore, storageItem{key: key, value: 0})
+		}
+		snap := peerEntitySnapshot{title: c.Title}
+		eKey := fmt.Sprintf("chat:%d", c.ID)
+		if oldSnap, ok := s.entities[eKey]; !ok || oldSnap != snap {
+			toEntity = append(toEntity, entityItem{prefix: "chat", id: c.ID, idStr: eKey, snapshot: snap})
+		}
+	}
+	s.mu.RUnlock()
+
+	if len(toStore) == 0 && len(toEntity) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin batch tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	now := time.Now()
+	if len(toStore) > 0 {
+		queryStorage := `
+		INSERT INTO peers_storage (prefix, id, access_hash, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(prefix, id) DO UPDATE SET
+			access_hash = excluded.access_hash,
+			updated_at = excluded.updated_at;`
+		stmtStorage, err := tx.PrepareContext(ctx, queryStorage)
+		if err != nil {
+			return fmt.Errorf("prepare storage stmt: %w", err)
+		}
+		defer stmtStorage.Close()
+
+		for _, item := range toStore {
+			if _, err := stmtStorage.ExecContext(ctx, item.key.Prefix, item.key.ID, item.value, now); err != nil {
+				return fmt.Errorf("exec storage stmt (%s:%d): %w", item.key.Prefix, item.key.ID, err)
+			}
+		}
+	}
+
+	if len(toEntity) > 0 {
+		queryEntity := `
+		INSERT INTO peers_entities (prefix, id, username, phone, first_name, last_name, title, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(prefix, id) DO UPDATE SET
+			username = CASE WHEN excluded.username != '' THEN excluded.username ELSE peers_entities.username END,
+			phone = CASE WHEN excluded.phone != '' THEN excluded.phone ELSE peers_entities.phone END,
+			first_name = CASE WHEN excluded.first_name != '' THEN excluded.first_name ELSE peers_entities.first_name END,
+			last_name = CASE WHEN excluded.last_name != '' THEN excluded.last_name ELSE peers_entities.last_name END,
+			title = CASE WHEN excluded.title != '' THEN excluded.title ELSE peers_entities.title END,
+			updated_at = excluded.updated_at;`
+		stmtEntity, err := tx.PrepareContext(ctx, queryEntity)
+		if err != nil {
+			return fmt.Errorf("prepare entity stmt: %w", err)
+		}
+		defer stmtEntity.Close()
+
+		for _, item := range toEntity {
+			if _, err := stmtEntity.ExecContext(ctx, item.prefix, item.id, item.snapshot.username, item.snapshot.phone, item.snapshot.firstName, item.snapshot.lastName, item.snapshot.title, now); err != nil {
+				return fmt.Errorf("exec entity stmt (%s:%d): %w", item.prefix, item.id, err)
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit batch tx: %w", err)
+	}
+
+	s.mu.Lock()
+	for _, item := range toStore {
+		s.peers[item.key] = item.value
+	}
+	for _, item := range toEntity {
+		s.entities[item.idStr] = item.snapshot
+	}
+	s.mu.Unlock()
+
+	return nil
+}
+
