@@ -1,5 +1,6 @@
 # Stage 1: Build binary
-FROM golang:1.24-alpine AS builder
+# Keep this aligned with go.mod and CI: Go 1.27 is the supported toolchain.
+FROM golang:1.27-alpine AS builder
 
 WORKDIR /app
 
