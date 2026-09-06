@@ -12,11 +12,7 @@ import (
 
 func TestOSRunner_RunEcho(t *testing.T) {
 	runner := NewOSRunner(2, 5*time.Second, 1024)
-
-	res, err := runner.Run(context.Background(), Request{
-		Command: "echo",
-		Args:    []string{"hello", "world"},
-	})
+	res, err := runner.Run(context.Background(), Request{Command: "echo", Args: []string{"hello", "world"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -26,33 +22,35 @@ func TestOSRunner_RunEcho(t *testing.T) {
 	if res.ExitCode != 0 {
 		t.Errorf("expected exit code 0, got %d", res.ExitCode)
 	}
-	if res.Truncated {
-		t.Errorf("expected not truncated")
+}
+
+func TestOSRunner_RejectsShell(t *testing.T) {
+	runner := NewOSRunner(2, 5*time.Second, 1024)
+	_, err := runner.Run(context.Background(), Request{Command: "echo unsafe", Shell: true})
+	if err == nil || !strings.Contains(err.Error(), "shell execution is disabled") {
+		t.Fatalf("expected shell execution to be rejected, got %v", err)
 	}
 }
 
-func TestOSRunner_RunShell(t *testing.T) {
+func TestOSRunner_ArgvIsNotShellExpanded(t *testing.T) {
 	runner := NewOSRunner(2, 5*time.Second, 1024)
-
 	res, err := runner.Run(context.Background(), Request{
-		Command: "echo 'shell-mode' && echo 'second-line'",
-		Shell:   true,
+		Command: "printf",
+		Args:    []string{"%s", "$(echo injected)"},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(res.Combined, "shell-mode") || !strings.Contains(res.Combined, "second-line") {
-		t.Errorf("unexpected output: %q", res.Combined)
+	if res.Stdout != "$(echo injected)" {
+		t.Fatalf("argument was unexpectedly interpreted by a shell: %q", res.Stdout)
 	}
 }
 
 func TestOSRunner_OutputTruncation(t *testing.T) {
-	// Limit to 20 bytes
 	runner := NewOSRunner(2, 5*time.Second, 20)
-
 	res, err := runner.Run(context.Background(), Request{
-		Command:   "echo 'this is a very long string that should exceed the twenty bytes limit'",
-		Shell:     true,
+		Command:   "printf",
+		Args:      []string{"%s", "this is a very long string that should exceed the limit"},
 		MaxOutput: 20,
 	})
 	if err != nil {
@@ -68,22 +66,20 @@ func TestOSRunner_OutputTruncation(t *testing.T) {
 
 func TestOSRunner_Timeout(t *testing.T) {
 	runner := NewOSRunner(2, 100*time.Millisecond, 1024)
-
 	t0 := time.Now()
 	res, err := runner.Run(context.Background(), Request{
-		Command: "sleep 2",
-		Shell:   true,
+		Command: "sleep",
+		Args:    []string{"2"},
 		Timeout: 100 * time.Millisecond,
 	})
 	elapsed := time.Since(t0)
-
 	if err == nil {
 		t.Fatalf("expected timeout error, got nil")
 	}
 	if !errors.Is(err, core.ErrTimeout) {
 		t.Errorf("expected ErrTimeout, got %v", err)
 	}
-	if elapsed > 1*time.Second {
+	if elapsed > time.Second {
 		t.Errorf("process did not terminate quickly on timeout: took %v", elapsed)
 	}
 	_ = res
@@ -98,9 +94,7 @@ func TestSanitizeEnv(t *testing.T) {
 		"NORMAL_USER=john",
 		"DATABASE_URL=postgres://user:pass@localhost/db",
 	}
-
 	sanitized := SanitizeEnv(env)
-
 	for _, e := range sanitized {
 		if strings.HasPrefix(e, "BOT_TOKEN=") && !strings.Contains(e, "[REDACTED]") {
 			t.Errorf("BOT_TOKEN was not redacted: %s", e)
