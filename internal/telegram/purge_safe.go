@@ -6,20 +6,16 @@ import (
 	"fmt"
 
 	"github.com/gotd/td/tg"
-	"github.com/inipew/goultroid/internal/core"
 )
 
 const (
-	// SafePurgeMaxMessages is a hard safety ceiling for one purge operation.
 	SafePurgeMaxMessages = 1000
-	// SafePurgePageSize keeps Telegram history/reply requests bounded.
-	SafePurgePageSize = 100
+	SafePurgePageSize    = 100
 )
 
 // PurgeMessagesSafe deletes only concrete message IDs discovered from the target
-// chat/thread. It deliberately does not infer deletions from an ID interval alone.
-// For forum topics, MessagesGetReplies is used with the exact topic root, which
-// prevents messages belonging to other topics from entering the delete set.
+// chat/thread. For forum topics, it queries the exact topic root rather than the
+// whole group history.
 func (s *Service) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerClass, topicID, fromID, toID int) (int, error) {
 	if s == nil || s.api == nil {
 		return 0, errors.New("api is not initialized")
@@ -34,10 +30,9 @@ func (s *Service) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerClass,
 		return 0, fmt.Errorf("invalid purge range: start message must be older than command (from=%d to=%d)", fromID, toID)
 	}
 
-	// Never delete the command itself. The purge handler intentionally edits the
-	// command into the success/error result; deleting it first causes MESSAGE_ID_INVALID.
-	maxID := toID - 1
-	minID := fromID
+	// Never delete the command itself. The command remains available for the
+	// final EditOrReply, avoiding MESSAGE_ID_INVALID after a successful purge.
+	minID, maxID := fromID, toID-1
 	ids := make(map[int]struct{})
 	offsetID := maxID + 1
 
@@ -48,12 +43,8 @@ func (s *Service) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerClass,
 		if topicID > 0 {
 			_, err = retryOnFloodWait(ctx, func() (struct{}, error) {
 				resp, callErr := s.api.MessagesGetReplies(ctx, &tg.MessagesGetRepliesRequest{
-					Peer:     peer,
-					MsgID:    topicID,
-					OffsetID: offsetID,
-					MinID:    minID,
-					MaxID:    maxID,
-					Limit:    SafePurgePageSize,
+					Peer: peer, MsgID: topicID, OffsetID: offsetID,
+					MinID: minID, MaxID: maxID, Limit: SafePurgePageSize,
 				})
 				if callErr != nil {
 					return struct{}{}, callErr
@@ -68,11 +59,8 @@ func (s *Service) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerClass,
 		} else {
 			_, err = retryOnFloodWait(ctx, func() (struct{}, error) {
 				resp, callErr := s.api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
-					Peer:     peer,
-					OffsetID: offsetID,
-					MinID:    minID,
-					MaxID:    maxID,
-					Limit:    SafePurgePageSize,
+					Peer: peer, OffsetID: offsetID, MinID: minID,
+					MaxID: maxID, Limit: SafePurgePageSize,
 				})
 				if callErr != nil {
 					return struct{}{}, callErr
@@ -107,7 +95,6 @@ func (s *Service) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerClass,
 				newIDs++
 			}
 		}
-
 		if newIDs == 0 || lowest >= offsetID || lowest <= minID {
 			break
 		}
@@ -122,7 +109,6 @@ func (s *Service) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerClass,
 	for id := range ids {
 		ordered = append(ordered, id)
 	}
-	// Stable ascending order makes logs/tests deterministic and simplifies retry diagnostics.
 	for i := 1; i < len(ordered); i++ {
 		for j := i; j > 0 && ordered[j] < ordered[j-1]; j-- {
 			ordered[j], ordered[j-1] = ordered[j-1], ordered[j]
