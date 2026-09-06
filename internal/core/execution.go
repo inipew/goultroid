@@ -41,6 +41,7 @@ type CommandExecution struct {
 	Args           []string
 	RawArgs        string
 	Principal      *Principal
+	Perms          *Permissions
 	Chat           *Chat
 	Target         *Chat
 	TriggerMessage *Message
