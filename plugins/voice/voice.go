@@ -129,7 +129,7 @@ func (p *Plugin) handleVPlay(ctx *core.Context) error {
 
 func (p *Plugin) playTrack(ctx *core.Context, defaultType voiceSvc.SourceType) error {
 	if p.svc == nil {
-		return ctx.Reply("⚠️ Voice service is not configured.")
+		return ctx.EditOrReply("⚠️ Voice service is not configured.")
 	}
 
 	query := strings.TrimSpace(strings.Join(ctx.Args, " "))
@@ -140,7 +140,7 @@ func (p *Plugin) playTrack(ctx *core.Context, defaultType voiceSvc.SourceType) e
 
 	source, err := resolver.ResolveInput(ctx.Ctx, ctx, query)
 	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ %v", err))
 	}
 	if defaultType == voiceSvc.SourceVideo && source.Type == voiceSvc.SourceAudio {
 		source.Type = voiceSvc.SourceVideo
@@ -150,7 +150,7 @@ func (p *Plugin) playTrack(ctx *core.Context, defaultType voiceSvc.SourceType) e
 
 	sess, enqueued, err := p.svc.Play(ctx.Ctx, ctx.ChatID(), *source)
 	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to start playback: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to start playback: %v", err))
 	}
 
 	durationStr := "Live / Unknown"
@@ -166,7 +166,7 @@ func (p *Plugin) playTrack(ctx *core.Context, defaultType voiceSvc.SourceType) e
 			AddField("Duration", durationStr).
 			AddField("Position in Queue", fmt.Sprintf("#%d", sess.Queue().Len())).
 			WithFooter("Use .queue to see full playlist")
-		return ctx.Reply(card.Render())
+		return ctx.EditOrReply(card.Render())
 	}
 
 	card := ui.NewCard("Now Playing").
@@ -177,63 +177,63 @@ func (p *Plugin) playTrack(ctx *core.Context, defaultType voiceSvc.SourceType) e
 		AddField("Duration", durationStr).
 		AddField("Volume", fmt.Sprintf("%d%%", sess.Volume())).
 		WithFooter("<i>Powered by GoUltroid Voice Engine</i>")
-	return ctx.Reply(card.Render())
+	return ctx.EditOrReply(card.Render())
 }
 
 func (p *Plugin) handlePause(ctx *core.Context) error {
 	if p.svc == nil {
-		return ctx.Reply("⚠️ Voice service is not configured.")
+		return ctx.EditOrReply("⚠️ Voice service is not configured.")
 	}
 	if err := p.svc.Pause(ctx.Ctx, ctx.ChatID()); err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ %v", err))
 	}
-	return ctx.Reply("⏸️ <b>Voice playback paused.</b> Use <code>.resume</code> to continue.")
+	return ctx.EditOrReply("⏸️ <b>Voice playback paused.</b> Use <code>.resume</code> to continue.")
 }
 
 func (p *Plugin) handleResume(ctx *core.Context) error {
 	if p.svc == nil {
-		return ctx.Reply("⚠️ Voice service is not configured.")
+		return ctx.EditOrReply("⚠️ Voice service is not configured.")
 	}
 	if err := p.svc.Resume(ctx.Ctx, ctx.ChatID()); err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ %v", err))
 	}
-	return ctx.Reply("▶️ <b>Voice playback resumed.</b>")
+	return ctx.EditOrReply("▶️ <b>Voice playback resumed.</b>")
 }
 
 func (p *Plugin) handleSkip(ctx *core.Context) error {
 	if p.svc == nil {
-		return ctx.Reply("⚠️ Voice service is not configured.")
+		return ctx.EditOrReply("⚠️ Voice service is not configured.")
 	}
 	next, err := p.svc.Skip(ctx.Ctx, ctx.ChatID())
 	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ %v", err))
 	}
 
 	if next == nil {
-		return ctx.Reply("⏹️ <b>Queue finished.</b> Playback stopped.")
+		return ctx.EditOrReply("⏹️ <b>Queue finished.</b> Playback stopped.")
 	}
 
-	return ctx.Reply(fmt.Sprintf("⏭️ <b>Skipped to:</b> <code>%s</code>", next.Title))
+	return ctx.EditOrReply(fmt.Sprintf("⏭️ <b>Skipped to:</b> <code>%s</code>", next.Title))
 }
 
 func (p *Plugin) handleStop(ctx *core.Context) error {
 	if p.svc == nil {
-		return ctx.Reply("⚠️ Voice service is not configured.")
+		return ctx.EditOrReply("⚠️ Voice service is not configured.")
 	}
 	if err := p.svc.Leave(ctx.Ctx, ctx.ChatID()); err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ %v", err))
 	}
-	return ctx.Reply("⏹️ <b>Playback stopped and left voice chat.</b>")
+	return ctx.EditOrReply("⏹️ <b>Playback stopped and left voice chat.</b>")
 }
 
 func (p *Plugin) handleQueue(ctx *core.Context) error {
 	if p.svc == nil {
-		return ctx.Reply("⚠️ Voice service is not configured.")
+		return ctx.EditOrReply("⚠️ Voice service is not configured.")
 	}
 
 	sess, err := p.svc.GetSession(ctx.ChatID())
 	if err != nil || sess == nil {
-		return ctx.Reply("ℹ️ No active voice chat session in this chat.")
+		return ctx.EditOrReply("ℹ️ No active voice chat session in this chat.")
 	}
 
 	snap := sess.Snapshot()
@@ -277,45 +277,45 @@ func (p *Plugin) handleQueue(ctx *core.Context) error {
 		card.AddField("Upcoming", sb.String())
 	}
 
-	return ctx.Reply(card.Render())
+	return ctx.EditOrReply(card.Render())
 }
 
 func (p *Plugin) handleVolume(ctx *core.Context) error {
 	if p.svc == nil {
-		return ctx.Reply("⚠️ Voice service is not configured.")
+		return ctx.EditOrReply("⚠️ Voice service is not configured.")
 	}
 
 	if len(ctx.Args) == 0 {
 		sess, err := p.svc.GetSession(ctx.ChatID())
 		if err != nil {
-			return ctx.Reply("ℹ️ No active voice chat session.")
+			return ctx.EditOrReply("ℹ️ No active voice chat session.")
 		}
-		return ctx.Reply(fmt.Sprintf("🔊 Current volume: <code>%d%%</code>", sess.Volume()))
+		return ctx.EditOrReply(fmt.Sprintf("🔊 Current volume: <code>%d%%</code>", sess.Volume()))
 	}
 
 	vol, err := strconv.Atoi(ctx.Args[0])
 	if err != nil || vol < 0 || vol > 200 {
-		return ctx.Reply("⚠️ Please specify a valid volume between <code>0</code> and <code>200</code>.")
+		return ctx.EditOrReply("⚠️ Please specify a valid volume between <code>0</code> and <code>200</code>.")
 	}
 
 	if err := p.svc.SetVolume(ctx.Ctx, ctx.ChatID(), vol); err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ %v", err))
 	}
 
-	return ctx.Reply(fmt.Sprintf("🔊 <b>Volume set to:</b> <code>%d%%</code>", vol))
+	return ctx.EditOrReply(fmt.Sprintf("🔊 <b>Volume set to:</b> <code>%d%%</code>", vol))
 }
 
 func (p *Plugin) handleRepeat(ctx *core.Context) error {
 	if p.svc == nil {
-		return ctx.Reply("⚠️ Voice service is not configured.")
+		return ctx.EditOrReply("⚠️ Voice service is not configured.")
 	}
 
 	if len(ctx.Args) == 0 {
 		sess, err := p.svc.GetSession(ctx.ChatID())
 		if err != nil {
-			return ctx.Reply("ℹ️ No active voice chat session.")
+			return ctx.EditOrReply("ℹ️ No active voice chat session.")
 		}
-		return ctx.Reply(fmt.Sprintf("🔁 Current repeat mode: <code>%s</code>", sess.RepeatMode()))
+		return ctx.EditOrReply(fmt.Sprintf("🔁 Current repeat mode: <code>%s</code>", sess.RepeatMode()))
 	}
 
 	mode := strings.ToLower(ctx.Args[0])
@@ -328,12 +328,12 @@ func (p *Plugin) handleRepeat(ctx *core.Context) error {
 	case "queue", "all":
 		repMode = voiceSvc.RepeatQueue
 	default:
-		return ctx.Reply("⚠️ Invalid mode. Choose: <code>off</code>, <code>track</code>, or <code>queue</code>.")
+		return ctx.EditOrReply("⚠️ Invalid mode. Choose: <code>off</code>, <code>track</code>, or <code>queue</code>.")
 	}
 
 	if err := p.svc.SetRepeatMode(ctx.Ctx, ctx.ChatID(), repMode); err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ %v", err))
 	}
 
-	return ctx.Reply(fmt.Sprintf("🔁 <b>Repeat mode set to:</b> <code>%s</code>", repMode))
+	return ctx.EditOrReply(fmt.Sprintf("🔁 <b>Repeat mode set to:</b> <code>%s</code>", repMode))
 }

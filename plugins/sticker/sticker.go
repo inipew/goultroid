@@ -66,31 +66,31 @@ func (p *Plugin) Commands() []core.Command {
 func (p *Plugin) handleSticker(ctx *core.Context) error {
 	media := findMedia(ctx)
 	if media == nil {
-		return ctx.Reply("⚠️ <b>No image found!</b> Reply to a photo, image file, or sticker.")
+		return ctx.EditOrReply("⚠️ <b>No image found!</b> Reply to a photo, image file, or sticker.")
 	}
 
 	// Only process visual media
 	if media.Type != "photo" && media.Type != "sticker" && media.Type != "document" {
-		return ctx.Reply("⚠️ Please reply to a photo, sticker, or image document.")
+		return ctx.EditOrReply("⚠️ Please reply to a photo, sticker, or image document.")
 	}
 
-	_ = ctx.Reply("⏳ <i>Processing sticker...</i>")
+	_ = ctx.EditOrReply("⏳ <i>Processing sticker...</i>")
 
 	tmpDir, err := os.MkdirTemp("", "goultroid-sticker-*")
 	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
 	}
 	defer os.RemoveAll(tmpDir)
 
 	downloadedPath, err := ctx.DownloadMedia(tmpDir)
 	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to download media: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to download media: %v", err))
 	}
 
 	// Decode source image
 	srcImg, err := decodeImageFile(downloadedPath)
 	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to decode image: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to decode image: %v", err))
 	}
 
 	// Calculate target dimensions (Telegram spec: 512px on one side, <= 512px on the other)
@@ -104,18 +104,18 @@ func (p *Plugin) handleSticker(ctx *core.Context) error {
 	outPath := filepath.Join(tmpDir, "sticker.png")
 	outFile, err := os.Create(outPath)
 	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to create output file: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create output file: %v", err))
 	}
 	defer outFile.Close()
 
 	if err := png.Encode(outFile, dstImg); err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to encode sticker PNG: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to encode sticker PNG: %v", err))
 	}
 	_ = outFile.Close()
 
 	// Upload sticker
 	if err := ctx.SendSticker(outPath); err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to send sticker: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to send sticker: %v", err))
 	}
 
 	_ = ctx.Delete()

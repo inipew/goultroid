@@ -52,6 +52,16 @@ func (m *MessagesFacade) Edit(text string) error {
 	return c.Svc.EditMessage(c.Ctx, c.PeerID, msgID, text)
 }
 
+// EditOrReply tries to edit the trigger (or last response) message in-place.
+// If editing fails for any reason it falls back to sending a new reply.
+// This is the canonical helper for the userbot "edit-in-place" UX pattern.
+func (m *MessagesFacade) EditOrReply(text string) error {
+	if err := m.Edit(text); err == nil {
+		return nil
+	}
+	return m.Reply(text)
+}
+
 // ReplyMarkup sends a response message to the same chat with reply markup attached.
 func (m *MessagesFacade) ReplyMarkup(text string, markup tg.ReplyMarkupClass) error {
 	c := m.ctx

@@ -72,7 +72,7 @@ func (p *Plugin) getChatID(ctx *core.Context) int64 {
 
 func (p *Plugin) handleFilter(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		_ = ctx.Reply("⚠️ Usage: <code>.filter &lt;keyword&gt; &lt;reply text&gt;</code> or reply to a message with <code>.filter &lt;keyword&gt;</code>")
+		_ = ctx.EditOrReply("⚠️ Usage: <code>.filter &lt;keyword&gt; &lt;reply text&gt;</code> or reply to a message with <code>.filter &lt;keyword&gt;</code>")
 		return errors.New("missing arguments")
 	}
 
@@ -84,7 +84,7 @@ func (p *Plugin) handleFilter(ctx *core.Context) error {
 	} else {
 		reply, err := ctx.GetReply()
 		if err != nil || reply == nil || reply.Text == "" {
-			_ = ctx.Reply("⚠️ Please provide reply text or reply to a text message.")
+			_ = ctx.EditOrReply("⚠️ Please provide reply text or reply to a text message.")
 			return errors.New("missing filter reply text")
 		}
 		replyText = reply.Text
@@ -92,16 +92,16 @@ func (p *Plugin) handleFilter(ctx *core.Context) error {
 
 	chatID := p.getChatID(ctx)
 	if err := p.db.SaveFilter(ctx.Ctx, chatID, keyword, replyText); err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Failed to save filter: %v", err))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to save filter: %v", err))
 		return err
 	}
 
-	return ctx.Reply(fmt.Sprintf("🎯 Filter <code>%s</code> saved successfully.", keyword))
+	return ctx.EditOrReply(fmt.Sprintf("🎯 Filter <code>%s</code> saved successfully.", keyword))
 }
 
 func (p *Plugin) handleStop(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		_ = ctx.Reply("⚠️ Usage: <code>.stop &lt;keyword&gt;</code>")
+		_ = ctx.EditOrReply("⚠️ Usage: <code>.stop &lt;keyword&gt;</code>")
 		return errors.New("missing filter keyword")
 	}
 
@@ -109,23 +109,23 @@ func (p *Plugin) handleStop(ctx *core.Context) error {
 	chatID := p.getChatID(ctx)
 
 	if err := p.db.DeleteFilter(ctx.Ctx, chatID, keyword); err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Failed to stop filter: %v", err))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to stop filter: %v", err))
 		return err
 	}
 
-	return ctx.Reply(fmt.Sprintf("🗑️ Filter <code>%s</code> stopped.", keyword))
+	return ctx.EditOrReply(fmt.Sprintf("🗑️ Filter <code>%s</code> stopped.", keyword))
 }
 
 func (p *Plugin) handleList(ctx *core.Context) error {
 	chatID := p.getChatID(ctx)
 	list, err := p.db.ListFilters(ctx.Ctx, chatID)
 	if err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Failed to list filters: %v", err))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to list filters: %v", err))
 		return err
 	}
 
 	if len(list) == 0 {
-		return ctx.Reply("ℹ️ No active filters in this chat.")
+		return ctx.EditOrReply("ℹ️ No active filters in this chat.")
 	}
 
 	var sb strings.Builder
@@ -134,7 +134,7 @@ func (p *Plugin) handleList(ctx *core.Context) error {
 		fmt.Fprintf(&sb, "• <code>%s</code>\n", f.Keyword)
 	}
 
-	return ctx.Reply(sb.String())
+	return ctx.EditOrReply(sb.String())
 }
 
 // HandleIncomingMessage intercepts incoming non-command messages to evaluate chat keyword filters.

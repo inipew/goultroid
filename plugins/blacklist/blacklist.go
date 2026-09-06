@@ -76,28 +76,28 @@ func (p *Plugin) getChatID(ctx *core.Context) int64 {
 
 func (p *Plugin) handleBlacklist(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		_ = ctx.Reply("⚠️ Usage: <code>.blacklist &lt;word/phrase&gt;</code>")
+		_ = ctx.EditOrReply("⚠️ Usage: <code>.blacklist &lt;word/phrase&gt;</code>")
 		return errors.New("missing blacklist word")
 	}
 
 	word := strings.ToLower(strings.TrimSpace(ctx.RawArgs))
 	if word == "" {
-		_ = ctx.Reply("⚠️ Blacklist word cannot be empty.")
+		_ = ctx.EditOrReply("⚠️ Blacklist word cannot be empty.")
 		return errors.New("empty blacklist word")
 	}
 
 	chatID := p.getChatID(ctx)
 	if err := p.db.AddBlacklist(ctx.Ctx, chatID, word); err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Failed to add to blacklist: %v", err))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to add to blacklist: %v", err))
 		return err
 	}
 
-	return ctx.Reply(fmt.Sprintf("🚫 Added <code>%s</code> to chat blacklist.", word))
+	return ctx.EditOrReply(fmt.Sprintf("🚫 Added <code>%s</code> to chat blacklist.", word))
 }
 
 func (p *Plugin) handleUnblacklist(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		_ = ctx.Reply("⚠️ Usage: <code>.unblacklist &lt;word/phrase&gt;</code>")
+		_ = ctx.EditOrReply("⚠️ Usage: <code>.unblacklist &lt;word/phrase&gt;</code>")
 		return errors.New("missing blacklist word")
 	}
 
@@ -105,23 +105,23 @@ func (p *Plugin) handleUnblacklist(ctx *core.Context) error {
 	chatID := p.getChatID(ctx)
 
 	if err := p.db.RemoveBlacklist(ctx.Ctx, chatID, word); err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Failed to remove from blacklist: %v", err))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to remove from blacklist: %v", err))
 		return err
 	}
 
-	return ctx.Reply(fmt.Sprintf("✅ Removed <code>%s</code> from chat blacklist.", word))
+	return ctx.EditOrReply(fmt.Sprintf("✅ Removed <code>%s</code> from chat blacklist.", word))
 }
 
 func (p *Plugin) handleListBlacklists(ctx *core.Context) error {
 	chatID := p.getChatID(ctx)
 	words, err := p.db.ListBlacklists(ctx.Ctx, chatID)
 	if err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Failed to list blacklists: %v", err))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to list blacklists: %v", err))
 		return err
 	}
 
 	if len(words) == 0 {
-		return ctx.Reply("ℹ️ No blacklisted words in this chat.")
+		return ctx.EditOrReply("ℹ️ No blacklisted words in this chat.")
 	}
 
 	var sb strings.Builder
@@ -130,7 +130,7 @@ func (p *Plugin) handleListBlacklists(ctx *core.Context) error {
 		fmt.Fprintf(&sb, "• <code>%s</code>\n", w)
 	}
 
-	return ctx.Reply(sb.String())
+	return ctx.EditOrReply(sb.String())
 }
 
 // HandleIncomingMessage intercepts incoming non-command messages and deletes messages containing blacklisted words.

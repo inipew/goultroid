@@ -79,7 +79,7 @@ func sendOrEdit(ctx *core.Context, text string) error {
 			return nil
 		}
 	}
-	return ctx.Reply(text)
+	return ctx.EditOrReply(text)
 }
 
 func (p *Plugin) handleRoll(ctx *core.Context) error {
@@ -120,7 +120,7 @@ func (p *Plugin) handleMock(ctx *core.Context) error {
 	} else {
 		reply, err := ctx.GetReply()
 		if err != nil || reply == nil || reply.Text == "" {
-			_ = ctx.Reply("⚠️ Usage: <code>.mock &lt;text&gt;</code> or reply to a message with <code>.mock</code>")
+			_ = ctx.EditOrReply("⚠️ Usage: <code>.mock &lt;text&gt;</code> or reply to a message with <code>.mock</code>")
 			return errors.New("missing text to mock")
 		}
 		input = reply.Text

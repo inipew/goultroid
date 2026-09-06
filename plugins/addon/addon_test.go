@@ -16,11 +16,17 @@ import (
 type mockTelegram struct {
 	core.MockTelegramServicer
 	sentText string
+	edited   string
 }
 
 func (m *mockTelegram) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
 	m.sentText = text
 	return &tg.Message{ID: 1, Message: text}, nil
+}
+
+func (m *mockTelegram) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
+	m.edited = text
+	return nil
 }
 
 func setupTestDB(t *testing.T) *database.DB {
@@ -70,8 +76,8 @@ func TestAddonPlugin(t *testing.T) {
 	if err := cmd.Handler(newCtx("list")); err != nil {
 		t.Fatalf("addon list failed: %v", err)
 	}
-	if !strings.Contains(mockTG.sentText, "No external addons installed") {
-		t.Errorf("expected empty list message, got %s", mockTG.sentText)
+	if !strings.Contains(mockTG.edited, "No external addons installed") {
+		t.Errorf("expected empty list message, got %s", mockTG.edited)
 	}
 
 	// 2. Install addon
@@ -84,47 +90,47 @@ capabilities: [telegram.send]
 	if err := cmd.Handler(newCtx("install", manifest)); err != nil {
 		t.Fatalf("addon install failed: %v", err)
 	}
-	if !strings.Contains(mockTG.sentText, "Addon Installed Successfully") || !strings.Contains(mockTG.sentText, "mini-calc") {
-		t.Errorf("expected successful install card, got %s", mockTG.sentText)
+	if !strings.Contains(mockTG.edited, "Addon Installed Successfully") || !strings.Contains(mockTG.edited, "mini-calc") {
+		t.Errorf("expected successful install card, got %s", mockTG.edited)
 	}
 
 	// 3. List with item
 	if err := cmd.Handler(newCtx("list")); err != nil {
 		t.Fatalf("addon list failed: %v", err)
 	}
-	if !strings.Contains(mockTG.sentText, "mini-calc") || !strings.Contains(mockTG.sentText, "active") {
-		t.Errorf("expected list to contain mini-calc, got %s", mockTG.sentText)
+	if !strings.Contains(mockTG.edited, "mini-calc") || !strings.Contains(mockTG.edited, "active") {
+		t.Errorf("expected list to contain mini-calc, got %s", mockTG.edited)
 	}
 
 	// 4. Info
 	if err := cmd.Handler(newCtx("info", "mini-calc")); err != nil {
 		t.Fatalf("addon info failed: %v", err)
 	}
-	if !strings.Contains(mockTG.sentText, "mini-calc") || !strings.Contains(mockTG.sentText, "telegram.send") {
-		t.Errorf("expected info card, got %s", mockTG.sentText)
+	if !strings.Contains(mockTG.edited, "mini-calc") || !strings.Contains(mockTG.edited, "telegram.send") {
+		t.Errorf("expected info card, got %s", mockTG.edited)
 	}
 
 	// 5. Disable
 	if err := cmd.Handler(newCtx("disable", "mini-calc")); err != nil {
 		t.Fatalf("addon disable failed: %v", err)
 	}
-	if !strings.Contains(mockTG.sentText, "Disabled addon") {
-		t.Errorf("expected disabled message, got %s", mockTG.sentText)
+	if !strings.Contains(mockTG.edited, "Disabled addon") {
+		t.Errorf("expected disabled message, got %s", mockTG.edited)
 	}
 
 	// 6. Enable
 	if err := cmd.Handler(newCtx("enable", "mini-calc")); err != nil {
 		t.Fatalf("addon enable failed: %v", err)
 	}
-	if !strings.Contains(mockTG.sentText, "Enabled addon") {
-		t.Errorf("expected enabled message, got %s", mockTG.sentText)
+	if !strings.Contains(mockTG.edited, "Enabled addon") {
+		t.Errorf("expected enabled message, got %s", mockTG.edited)
 	}
 
 	// 7. Uninstall
 	if err := cmd.Handler(newCtx("uninstall", "mini-calc")); err != nil {
 		t.Fatalf("addon uninstall failed: %v", err)
 	}
-	if !strings.Contains(mockTG.sentText, "Uninstalled addon") {
-		t.Errorf("expected uninstalled message, got %s", mockTG.sentText)
+	if !strings.Contains(mockTG.edited, "Uninstalled addon") {
+		t.Errorf("expected uninstalled message, got %s", mockTG.edited)
 	}
 }

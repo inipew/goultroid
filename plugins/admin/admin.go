@@ -174,23 +174,23 @@ func formatAdminError(action string, err error) string {
 
 func (p *Plugin) handleBan(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
-		_ = ctx.Reply("⚠️ Fitur ban hanya dapat digunakan di grup atau supergroup.")
+		_ = ctx.EditOrReply("⚠️ Fitur ban hanya dapat digunakan di grup atau supergroup.")
 		return core.ErrUnsupported
 	}
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
-		_ = ctx.Reply("⚠️ " + err.Error())
+		_ = ctx.EditOrReply("⚠️ " + err.Error())
 		return err
 	}
 
 	if ctx.Perms != nil && ctx.Perms.IsOwner(targetID) {
-		_ = ctx.Reply("⚠️ Cannot ban the owner!")
+		_ = ctx.EditOrReply("⚠️ Cannot ban the owner!")
 		return errors.New("cannot ban owner")
 	}
 
 	if err := ctx.Ban(targetPeer, 0); err != nil {
-		_ = ctx.Reply(formatAdminError("ban user", err))
+		_ = ctx.EditOrReply(formatAdminError("ban user", err))
 		return err
 	}
 
@@ -199,68 +199,68 @@ func (p *Plugin) handleBan(ctx *core.Context) error {
 		reason = fmt.Sprintf("\n<b>Reason:</b> %s", strings.Join(ctx.Args[1:], " "))
 	}
 
-	return ctx.Reply(fmt.Sprintf("🔨 Banned user <code>%d</code>.%s", targetID, reason))
+	return ctx.EditOrReply(fmt.Sprintf("🔨 Banned user <code>%d</code>.%s", targetID, reason))
 }
 
 func (p *Plugin) handleUnban(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
-		_ = ctx.Reply("⚠️ Fitur unban hanya dapat digunakan di grup atau supergroup.")
+		_ = ctx.EditOrReply("⚠️ Fitur unban hanya dapat digunakan di grup atau supergroup.")
 		return core.ErrUnsupported
 	}
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
-		_ = ctx.Reply("⚠️ " + err.Error())
+		_ = ctx.EditOrReply("⚠️ " + err.Error())
 		return err
 	}
 
 	if err := ctx.Unban(targetPeer); err != nil {
-		_ = ctx.Reply(formatAdminError("unban user", err))
+		_ = ctx.EditOrReply(formatAdminError("unban user", err))
 		return err
 	}
 
-	return ctx.Reply(fmt.Sprintf("✅ Unbanned user <code>%d</code>.", targetID))
+	return ctx.EditOrReply(fmt.Sprintf("✅ Unbanned user <code>%d</code>.", targetID))
 }
 
 func (p *Plugin) handleKick(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
-		_ = ctx.Reply("⚠️ Fitur kick hanya dapat digunakan di grup atau supergroup.")
+		_ = ctx.EditOrReply("⚠️ Fitur kick hanya dapat digunakan di grup atau supergroup.")
 		return core.ErrUnsupported
 	}
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
-		_ = ctx.Reply("⚠️ " + err.Error())
+		_ = ctx.EditOrReply("⚠️ " + err.Error())
 		return err
 	}
 
 	if ctx.Perms != nil && ctx.Perms.IsOwner(targetID) {
-		_ = ctx.Reply("⚠️ Cannot kick the owner!")
+		_ = ctx.EditOrReply("⚠️ Cannot kick the owner!")
 		return errors.New("cannot kick owner")
 	}
 
 	if err := ctx.Kick(targetPeer); err != nil {
-		_ = ctx.Reply(formatAdminError("kick user", err))
+		_ = ctx.EditOrReply(formatAdminError("kick user", err))
 		return err
 	}
 
-	return ctx.Reply(fmt.Sprintf("👢 Kicked user <code>%d</code>.", targetID))
+	return ctx.EditOrReply(fmt.Sprintf("👢 Kicked user <code>%d</code>.", targetID))
 }
 
 func (p *Plugin) handleMute(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
-		_ = ctx.Reply("⚠️ Fitur mute hanya dapat digunakan di grup atau supergroup.")
+		_ = ctx.EditOrReply("⚠️ Fitur mute hanya dapat digunakan di grup atau supergroup.")
 		return core.ErrUnsupported
 	}
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
-		_ = ctx.Reply("⚠️ " + err.Error())
+		_ = ctx.EditOrReply("⚠️ " + err.Error())
 		return err
 	}
 
 	if ctx.Perms != nil && ctx.Perms.IsOwner(targetID) {
-		_ = ctx.Reply("⚠️ Cannot mute the owner!")
+		_ = ctx.EditOrReply("⚠️ Cannot mute the owner!")
 		return errors.New("cannot mute owner")
 	}
 
@@ -281,42 +281,42 @@ func (p *Plugin) handleMute(ctx *core.Context) error {
 	}
 
 	if err := ctx.Mute(targetPeer, untilDate); err != nil {
-		_ = ctx.Reply(formatAdminError("mute user", err))
+		_ = ctx.EditOrReply(formatAdminError("mute user", err))
 		return err
 	}
 
-	return ctx.Reply(fmt.Sprintf("🔇 Muted user <code>%d</code>%s.", targetID, durStr))
+	return ctx.EditOrReply(fmt.Sprintf("🔇 Muted user <code>%d</code>%s.", targetID, durStr))
 }
 
 func (p *Plugin) handleUnmute(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
-		_ = ctx.Reply("⚠️ Fitur unmute hanya dapat digunakan di grup atau supergroup.")
+		_ = ctx.EditOrReply("⚠️ Fitur unmute hanya dapat digunakan di grup atau supergroup.")
 		return core.ErrUnsupported
 	}
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
-		_ = ctx.Reply("⚠️ " + err.Error())
+		_ = ctx.EditOrReply("⚠️ " + err.Error())
 		return err
 	}
 
 	if err := ctx.Unmute(targetPeer); err != nil {
-		_ = ctx.Reply(formatAdminError("unmute user", err))
+		_ = ctx.EditOrReply(formatAdminError("unmute user", err))
 		return err
 	}
 
-	return ctx.Reply(fmt.Sprintf("🔊 Unmuted user <code>%d</code>.", targetID))
+	return ctx.EditOrReply(fmt.Sprintf("🔊 Unmuted user <code>%d</code>.", targetID))
 }
 
 func (p *Plugin) handlePurge(ctx *core.Context) error {
 	if ctx.Message == nil || ctx.Message.ReplyToID == 0 {
-		_ = ctx.Reply("⚠️ Harap reply ke pesan awal yang ingin di-purge.")
+		_ = ctx.EditOrReply("⚠️ Harap reply ke pesan awal yang ingin di-purge.")
 		return core.ErrReplyRequired
 	}
 
 	count, err := ctx.Purge()
 	if err != nil {
-		_ = ctx.Reply(formatAdminError("purge pesan", err))
+		_ = ctx.EditOrReply(formatAdminError("purge pesan", err))
 		return err
 	}
 
@@ -325,18 +325,18 @@ func (p *Plugin) handlePurge(ctx *core.Context) error {
 		topicMsg = fmt.Sprintf(" in topic <code>%d</code>", ctx.TopicID())
 	}
 
-	return ctx.Reply(fmt.Sprintf("🗑️ <b>Purged %d messages successfully%s!</b>", count, topicMsg))
+	return ctx.EditOrReply(fmt.Sprintf("🗑️ <b>Purged %d messages successfully%s!</b>", count, topicMsg))
 }
 
 func (p *Plugin) handlePromote(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
-		_ = ctx.Reply("⚠️ Fitur promote hanya dapat digunakan di grup atau supergroup.")
+		_ = ctx.EditOrReply("⚠️ Fitur promote hanya dapat digunakan di grup atau supergroup.")
 		return core.ErrUnsupported
 	}
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
-		_ = ctx.Reply("⚠️ " + err.Error())
+		_ = ctx.EditOrReply("⚠️ " + err.Error())
 		return err
 	}
 
@@ -352,7 +352,7 @@ func (p *Plugin) handlePromote(ctx *core.Context) error {
 	}
 
 	if err := ctx.Promote(targetPeer, title); err != nil {
-		_ = ctx.Reply(formatAdminError("promote user", err))
+		_ = ctx.EditOrReply(formatAdminError("promote user", err))
 		return err
 	}
 
@@ -361,32 +361,32 @@ func (p *Plugin) handlePromote(ctx *core.Context) error {
 		titleStr = fmt.Sprintf(" with title <i>%s</i>", title)
 	}
 
-	return ctx.Reply(fmt.Sprintf("👑 Promoted user <code>%d</code>%s to admin.", targetID, titleStr))
+	return ctx.EditOrReply(fmt.Sprintf("👑 Promoted user <code>%d</code>%s to admin.", targetID, titleStr))
 }
 
 func (p *Plugin) handleDemote(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
-		_ = ctx.Reply("⚠️ Fitur demote hanya dapat digunakan di grup atau supergroup.")
+		_ = ctx.EditOrReply("⚠️ Fitur demote hanya dapat digunakan di grup atau supergroup.")
 		return core.ErrUnsupported
 	}
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
-		_ = ctx.Reply("⚠️ " + err.Error())
+		_ = ctx.EditOrReply("⚠️ " + err.Error())
 		return err
 	}
 
 	if ctx.Perms != nil && ctx.Perms.IsOwner(targetID) {
-		_ = ctx.Reply("⚠️ Cannot demote the owner!")
+		_ = ctx.EditOrReply("⚠️ Cannot demote the owner!")
 		return errors.New("cannot demote owner")
 	}
 
 	if err := ctx.Demote(targetPeer); err != nil {
-		_ = ctx.Reply(formatAdminError("demote user", err))
+		_ = ctx.EditOrReply(formatAdminError("demote user", err))
 		return err
 	}
 
-	return ctx.Reply(fmt.Sprintf("📉 Demoted admin <code>%d</code> to normal user.", targetID))
+	return ctx.EditOrReply(fmt.Sprintf("📉 Demoted admin <code>%d</code> to normal user.", targetID))
 }
 
 func parseDuration(s string) (time.Duration, error) {
@@ -409,22 +409,22 @@ func isNumeric(s string) bool {
 
 func (p *Plugin) handleWarn(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
-		_ = ctx.Reply("⚠️ Fitur warn hanya dapat digunakan di grup atau supergroup.")
+		_ = ctx.EditOrReply("⚠️ Fitur warn hanya dapat digunakan di grup atau supergroup.")
 		return core.ErrUnsupported
 	}
 	if p.moderator == nil {
-		_ = ctx.Reply("⚠️ Moderation service is not configured.")
+		_ = ctx.EditOrReply("⚠️ Moderation service is not configured.")
 		return fmt.Errorf("%w: moderation service is nil", core.ErrUnavailable)
 	}
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
-		_ = ctx.Reply("⚠️ " + err.Error())
+		_ = ctx.EditOrReply("⚠️ " + err.Error())
 		return err
 	}
 
 	if ctx.Perms != nil && ctx.Perms.IsOwner(targetID) {
-		_ = ctx.Reply("⚠️ Cannot warn the owner!")
+		_ = ctx.EditOrReply("⚠️ Cannot warn the owner!")
 		return errors.New("cannot warn owner")
 	}
 
@@ -442,7 +442,7 @@ func (p *Plugin) handleWarn(ctx *core.Context) error {
 
 	res, err := p.moderator.Warn(ctx.Ctx, ctx.PeerID, targetPeer, chatID, targetID, reason, warnedBy, 3, moderation.ActionMute)
 	if err != nil {
-		_ = ctx.Reply(formatAdminError("warn user", err))
+		_ = ctx.EditOrReply(formatAdminError("warn user", err))
 		return err
 	}
 
@@ -452,35 +452,35 @@ func (p *Plugin) handleWarn(ctx *core.Context) error {
 		text += "\n" + ctx.T("admin.warn_threshold_reached", targetStr, res.Threshold, res.ActionTaken)
 	}
 
-	return ctx.Reply(text)
+	return ctx.EditOrReply(text)
 }
 
 func (p *Plugin) handleWarns(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
-		_ = ctx.Reply("⚠️ Fitur warns hanya dapat digunakan di grup atau supergroup.")
+		_ = ctx.EditOrReply("⚠️ Fitur warns hanya dapat digunakan di grup atau supergroup.")
 		return core.ErrUnsupported
 	}
 	if p.moderator == nil {
-		_ = ctx.Reply("⚠️ Moderation service is not configured.")
+		_ = ctx.EditOrReply("⚠️ Moderation service is not configured.")
 		return fmt.Errorf("%w: moderation service is nil", core.ErrUnavailable)
 	}
 
 	_, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
-		_ = ctx.Reply("⚠️ " + err.Error())
+		_ = ctx.EditOrReply("⚠️ " + err.Error())
 		return err
 	}
 
 	chatID := ctx.ChatID()
 	records, err := p.moderator.GetWarnings(ctx.Ctx, chatID, targetID)
 	if err != nil {
-		_ = ctx.Reply(formatAdminError("get warnings", err))
+		_ = ctx.EditOrReply(formatAdminError("get warnings", err))
 		return err
 	}
 
 	targetStr := fmt.Sprintf("%d", targetID)
 	if len(records) == 0 {
-		return ctx.Reply(fmt.Sprintf("User <b>%s</b> has 0 active warnings.", targetStr))
+		return ctx.EditOrReply(fmt.Sprintf("User <b>%s</b> has 0 active warnings.", targetStr))
 	}
 
 	var sb strings.Builder
@@ -490,31 +490,31 @@ func (p *Plugin) handleWarns(ctx *core.Context) error {
 		sb.WriteString(fmt.Sprintf("%d. <i>%s</i> (by <code>%d</code>)\n", i+1, r.Reason, r.WarnedBy))
 	}
 
-	return ctx.Reply(sb.String())
+	return ctx.EditOrReply(sb.String())
 }
 
 func (p *Plugin) handleResetWarns(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
-		_ = ctx.Reply("⚠️ Fitur resetwarns hanya dapat digunakan di grup atau supergroup.")
+		_ = ctx.EditOrReply("⚠️ Fitur resetwarns hanya dapat digunakan di grup atau supergroup.")
 		return core.ErrUnsupported
 	}
 	if p.moderator == nil {
-		_ = ctx.Reply("⚠️ Moderation service is not configured.")
+		_ = ctx.EditOrReply("⚠️ Moderation service is not configured.")
 		return fmt.Errorf("%w: moderation service is nil", core.ErrUnavailable)
 	}
 
 	_, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
-		_ = ctx.Reply("⚠️ " + err.Error())
+		_ = ctx.EditOrReply("⚠️ " + err.Error())
 		return err
 	}
 
 	chatID := ctx.ChatID()
 	if err := p.moderator.ResetWarnings(ctx.Ctx, chatID, targetID); err != nil {
-		_ = ctx.Reply(formatAdminError("reset warnings", err))
+		_ = ctx.EditOrReply(formatAdminError("reset warnings", err))
 		return err
 	}
 
 	targetStr := fmt.Sprintf("%d", targetID)
-	return ctx.Reply(ctx.T("admin.warns_cleared", targetStr))
+	return ctx.EditOrReply(ctx.T("admin.warns_cleared", targetStr))
 }

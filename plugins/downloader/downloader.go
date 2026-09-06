@@ -98,7 +98,7 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 	} else if reply, err := ctx.GetReply(); err == nil && reply != nil && reply.Media != nil {
 		mediaSize = reply.Media.Size
 	} else {
-		return ctx.Reply("⚠️ <b>No media or URL found!</b> Reply to a media message or provide a valid download URL.")
+		return ctx.EditOrReply("⚠️ <b>No media or URL found!</b> Reply to a media message or provide a valid download URL.")
 	}
 
 	saveDir := filepath.Join("data", "downloads")
@@ -109,7 +109,7 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 
 	if mediaSize > 0 {
 		if err := core.ValidateMediaSize(mediaSize, core.DefaultMaxDownloadSize); err != nil {
-			return ctx.Reply(fmt.Sprintf("⚠️ <b>Media too large!</b> File size (%s) exceeds download limit (500MB).", formatBytes(mediaSize)))
+			return ctx.EditOrReply(fmt.Sprintf("⚠️ <b>Media too large!</b> File size (%s) exceeds download limit (500MB).", formatBytes(mediaSize)))
 		}
 	}
 
@@ -118,10 +118,10 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 		requiredSpace = 50 * 1024 * 1024
 	}
 	if err := core.CheckDiskSpace(saveDir, requiredSpace); err != nil {
-		return ctx.Reply("❌ <b>Insufficient disk space</b> on host machine to complete download.")
+		return ctx.EditOrReply("❌ <b>Insufficient disk space</b> on host machine to complete download.")
 	}
 
-	if err := ctx.Reply("⏳ Downloading media..."); err != nil {
+	if err := ctx.EditOrReply("⏳ Downloading media..."); err != nil {
 		return err
 	}
 
@@ -167,7 +167,7 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 }
 
 func (p *Plugin) handleURLDownload(ctx *core.Context, rawURL string) error {
-	if err := ctx.Reply("⏳ <i>Downloading media from URL...</i>"); err != nil {
+	if err := ctx.EditOrReply("⏳ <i>Downloading media from URL...</i>"); err != nil {
 		return err
 	}
 

@@ -157,12 +157,12 @@ func (p *Plugin) Commands() []core.Command {
 // handleExec executes a bash command with timeout and formats the result.
 func (p *Plugin) handleExec(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		return ctx.Reply("⚠️ <b>Usage:</b> <code>.exec &lt;shell command&gt;</code>")
+		return ctx.EditOrReply("⚠️ <b>Usage:</b> <code>.exec &lt;shell command&gt;</code>")
 	}
 
 	commandStr := strings.Join(ctx.Args, " ")
 
-	_ = ctx.Reply("⏳ <i>Executing command...</i>")
+	_ = ctx.EditOrReply("⏳ <i>Executing command...</i>")
 
 	if p.runner == nil {
 		p.runner = process.NewOSRunner(3, 60*time.Second, 2*1024*1024)
@@ -198,13 +198,13 @@ func (p *Plugin) handleExec(ctx *core.Context) error {
 		sb.WriteString(fmt.Sprintf("• <b>Command:</b> <code>%s</code>\n", escapeHTML(commandStr)))
 		sb.WriteString(fmt.Sprintf("• <b>Duration:</b> <i>%s</i>\n\n", elapsed.Round(time.Millisecond)))
 		sb.WriteString(fmt.Sprintf("<pre><code class=\"language-bash\">%s</code></pre>", escapeHTML(output)))
-		return ctx.Reply(sb.String())
+		return ctx.EditOrReply(sb.String())
 	}
 
 	// If output is too large, upload as a text file
 	tmpFile, tmpErr := os.CreateTemp("", "exec-output-*.txt")
 	if tmpErr != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to create temp file for large output: %v", tmpErr))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temp file for large output: %v", tmpErr))
 	}
 	defer os.Remove(tmpFile.Name())
 
@@ -217,7 +217,7 @@ func (p *Plugin) handleExec(ctx *core.Context) error {
 
 // handleRestart initiates a graceful restart of the bot.
 func (p *Plugin) handleRestart(ctx *core.Context) error {
-	_ = ctx.Reply("🔄 <i>Restarting GoUltroid...</i>")
+	_ = ctx.EditOrReply("🔄 <i>Restarting GoUltroid...</i>")
 
 	var chatID int64
 	var peerType string
@@ -312,13 +312,13 @@ func (p *Plugin) handleUpdate(ctx *core.Context) error {
 	isPull := len(ctx.Args) > 0 && (strings.ToLower(ctx.Args[0]) == "pull" || strings.ToLower(ctx.Args[0]) == "now")
 
 	if !isPull {
-		_ = ctx.Reply("🔍 <i>Checking for updates from git remote...</i>")
+		_ = ctx.EditOrReply("🔍 <i>Checking for updates from git remote...</i>")
 
 		fetchCtx, cancel := context.WithTimeout(ctx.Ctx, 30*time.Second)
 		defer cancel()
 
 		if out, err := p.runCmd(fetchCtx, "git", "fetch"); err != nil {
-			_ = ctx.Reply(fmt.Sprintf("❌ <code>git fetch</code> failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
+			_ = ctx.EditOrReply(fmt.Sprintf("❌ <code>git fetch</code> failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
 			return err
 		}
 
@@ -334,7 +334,7 @@ func (p *Plugin) handleUpdate(ctx *core.Context) error {
 
 		commits := strings.TrimSpace(string(logOut))
 		if err != nil || commits == "" {
-			return ctx.Reply(fmt.Sprintf("✨ <b>GoUltroid is already up to date!</b>\n• <b>Commit:</b> <code>%s</code>", currHash))
+			return ctx.EditOrReply(fmt.Sprintf("✨ <b>GoUltroid is already up to date!</b>\n• <b>Commit:</b> <code>%s</code>", currHash))
 		}
 
 		commitLines := strings.Split(commits, "\n")
@@ -344,10 +344,10 @@ func (p *Plugin) handleUpdate(ctx *core.Context) error {
 		sb.WriteString(fmt.Sprintf("• <b>Pending Commits (%d):</b>\n", len(commitLines)))
 		sb.WriteString(fmt.Sprintf("<pre>%s</pre>\n\n", escapeHTML(commits)))
 		sb.WriteString("💡 <i>Run <code>.update pull</code> or <code>.update now</code> to pull changes, rebuild, and restart.</i>")
-		return ctx.Reply(sb.String())
+		return ctx.EditOrReply(sb.String())
 	}
 
-	_ = ctx.Reply("⬇️ <i>Pulling latest updates from git...</i>")
+	_ = ctx.EditOrReply("⬇️ <i>Pulling latest updates from git...</i>")
 
 	pullCtx, cancelPull := context.WithTimeout(ctx.Ctx, 60*time.Second)
 	defer cancelPull()
@@ -355,16 +355,16 @@ func (p *Plugin) handleUpdate(ctx *core.Context) error {
 	// Check for uncommitted working tree modifications
 	statusOut, _ := p.runCmd(pullCtx, "git", "status", "--porcelain")
 	if strings.TrimSpace(string(statusOut)) != "" {
-		_ = ctx.Reply("❌ Cannot update: working directory has uncommitted modifications. Stash or commit your changes first.")
+		_ = ctx.EditOrReply("❌ Cannot update: working directory has uncommitted modifications. Stash or commit your changes first.")
 		return errors.New("dirty working tree")
 	}
 
 	if out, err := p.runCmd(pullCtx, "git", "pull", "--ff-only"); err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ <code>git pull --ff-only</code> failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ <code>git pull --ff-only</code> failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
 		return err
 	}
 
-	_ = ctx.Reply("🔨 <i>Rebuilding GoUltroid binary...</i>")
+	_ = ctx.EditOrReply("🔨 <i>Rebuilding GoUltroid binary...</i>")
 
 	buildCtx, cancelBuild := context.WithTimeout(ctx.Ctx, 120*time.Second)
 	defer cancelBuild()
@@ -372,18 +372,18 @@ func (p *Plugin) handleUpdate(ctx *core.Context) error {
 	tmpBin := filepath.Join("bin", "goultroid.tmp")
 	if out, err := p.runCmd(buildCtx, "go", "build", "-o", tmpBin, "./cmd/goultroid"); err != nil {
 		_ = os.Remove(tmpBin)
-		_ = ctx.Reply(fmt.Sprintf("❌ Rebuild failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Rebuild failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
 		return err
 	}
 
 	finalBin := filepath.Join("bin", "goultroid")
 	if err := os.Rename(tmpBin, finalBin); err != nil {
 		_ = os.Remove(tmpBin)
-		_ = ctx.Reply(fmt.Sprintf("❌ Failed to replace binary: %v", err))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to replace binary: %v", err))
 		return err
 	}
 
-	_ = ctx.Reply("✅ <i>Rebuild successful! Restarting GoUltroid...</i>")
+	_ = ctx.EditOrReply("✅ <i>Rebuild successful! Restarting GoUltroid...</i>")
 	return p.handleRestart(ctx)
 }
 
@@ -442,7 +442,7 @@ func (p *Plugin) handleHealth(ctx *core.Context) error {
 		)
 	}
 
-	return ctx.Reply(msg)
+	return ctx.EditOrReply(msg)
 }
 
 // buildSanitizedEnv masks sensitive environment variables before passing them to child processes.

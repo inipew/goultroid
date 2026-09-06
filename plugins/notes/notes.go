@@ -72,7 +72,7 @@ func (p *Plugin) getChatID(ctx *core.Context) int64 {
 
 func (p *Plugin) handleSave(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		_ = ctx.Reply("⚠️ Usage: <code>.save &lt;name&gt; &lt;content&gt;</code> or reply to a message with <code>.save &lt;name&gt;</code>")
+		_ = ctx.EditOrReply("⚠️ Usage: <code>.save &lt;name&gt; &lt;content&gt;</code> or reply to a message with <code>.save &lt;name&gt;</code>")
 		return errors.New("missing arguments")
 	}
 
@@ -84,7 +84,7 @@ func (p *Plugin) handleSave(ctx *core.Context) error {
 	} else {
 		reply, err := ctx.GetReply()
 		if err != nil || reply == nil || reply.Text == "" {
-			_ = ctx.Reply("⚠️ Please provide note content or reply to a text message.")
+			_ = ctx.EditOrReply("⚠️ Please provide note content or reply to a text message.")
 			return errors.New("missing note content")
 		}
 		content = reply.Text
@@ -92,16 +92,16 @@ func (p *Plugin) handleSave(ctx *core.Context) error {
 
 	chatID := p.getChatID(ctx)
 	if err := p.db.SaveNote(ctx.Ctx, chatID, noteName, content); err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Failed to save note: %v", err))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to save note: %v", err))
 		return err
 	}
 
-	return ctx.Reply(fmt.Sprintf("📝 Note <code>%s</code> saved successfully.", noteName))
+	return ctx.EditOrReply(fmt.Sprintf("📝 Note <code>%s</code> saved successfully.", noteName))
 }
 
 func (p *Plugin) handleGet(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		_ = ctx.Reply("⚠️ Usage: <code>.get &lt;name&gt;</code>")
+		_ = ctx.EditOrReply("⚠️ Usage: <code>.get &lt;name&gt;</code>")
 		return errors.New("missing note name")
 	}
 
@@ -110,27 +110,27 @@ func (p *Plugin) handleGet(ctx *core.Context) error {
 
 	note, err := p.db.GetNote(ctx.Ctx, chatID, noteName)
 	if err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Error fetching note: %v", err))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Error fetching note: %v", err))
 		return err
 	}
 	if note == nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Note <code>%s</code> not found in this chat.", noteName))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Note <code>%s</code> not found in this chat.", noteName))
 		return fmt.Errorf("note %s not found", noteName)
 	}
 
-	return ctx.Reply(note.Content)
+	return ctx.EditOrReply(note.Content)
 }
 
 func (p *Plugin) handleList(ctx *core.Context) error {
 	chatID := p.getChatID(ctx)
 	names, err := p.db.ListNotes(ctx.Ctx, chatID)
 	if err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Error listing notes: %v", err))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Error listing notes: %v", err))
 		return err
 	}
 
 	if len(names) == 0 {
-		return ctx.Reply("ℹ️ No notes saved in this chat.")
+		return ctx.EditOrReply("ℹ️ No notes saved in this chat.")
 	}
 
 	var sb strings.Builder
@@ -140,12 +140,12 @@ func (p *Plugin) handleList(ctx *core.Context) error {
 	}
 	sb.WriteString("\nUse <code>.get &lt;name&gt;</code> to view note.")
 
-	return ctx.Reply(sb.String())
+	return ctx.EditOrReply(sb.String())
 }
 
 func (p *Plugin) handleClear(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		_ = ctx.Reply("⚠️ Usage: <code>.clear &lt;name&gt;</code>")
+		_ = ctx.EditOrReply("⚠️ Usage: <code>.clear &lt;name&gt;</code>")
 		return errors.New("missing note name")
 	}
 
@@ -153,9 +153,9 @@ func (p *Plugin) handleClear(ctx *core.Context) error {
 	chatID := p.getChatID(ctx)
 
 	if err := p.db.DeleteNote(ctx.Ctx, chatID, noteName); err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Failed to delete note: %v", err))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to delete note: %v", err))
 		return err
 	}
 
-	return ctx.Reply(fmt.Sprintf("🗑️ Note <code>%s</code> deleted.", noteName))
+	return ctx.EditOrReply(fmt.Sprintf("🗑️ Note <code>%s</code> deleted.", noteName))
 }

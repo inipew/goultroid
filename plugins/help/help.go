@@ -9,6 +9,8 @@ import (
 	"github.com/inipew/goultroid/internal/ui"
 )
 
+const maxTelegramLen = 4096
+
 // Plugin provides the help command.
 type Plugin struct {
 	router *core.Router
@@ -44,6 +46,49 @@ func (p *Plugin) Commands() []core.Command {
 			Handler:     p.handleHelp,
 		},
 	}
+}
+
+// sendResult edits the trigger message in-place; if the text is too long it
+// edits with the first chunk and replies with subsequent chunks.
+func sendResult(ctx *core.Context, text string) error {
+	chunks := splitMessage(text, maxTelegramLen)
+	if len(chunks) == 0 {
+		return nil
+	}
+	// Edit the command trigger message (edit-in-place userbot UX).
+	if err := ctx.Edit(chunks[0]); err != nil {
+		return err
+	}
+	// Overflow chunks sent as follow-up replies.
+	for _, chunk := range chunks[1:] {
+		if err := ctx.Reply(chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// splitMessage splits text into chunks of at most maxLen bytes on HTML-safe
+// boundaries (newline preferred; hard-cut if necessary).
+func splitMessage(text string, maxLen int) []string {
+	if len(text) <= maxLen {
+		return []string{text}
+	}
+	var chunks []string
+	for len(text) > 0 {
+		if len(text) <= maxLen {
+			chunks = append(chunks, text)
+			break
+		}
+		cut := maxLen
+		// Try to cut at the last newline within the limit.
+		if idx := strings.LastIndex(text[:cut], "\n"); idx > 0 {
+			cut = idx + 1
+		}
+		chunks = append(chunks, text[:cut])
+		text = text[cut:]
+	}
+	return chunks
 }
 
 func (p *Plugin) handleHelp(ctx *core.Context) error {
@@ -110,7 +155,7 @@ func (p *Plugin) handleHelp(ctx *core.Context) error {
 			}
 
 			card.WithFooter(fmt.Sprintf("<i>Run with <code>%s%s</code></i>", prefix, cmd.Name))
-			return ctx.Reply(card.Render())
+			return sendResult(ctx, card.Render())
 		}
 
 		// 2. Check if target matches a category/module
@@ -148,14 +193,16 @@ func (p *Plugin) handleHelp(ctx *core.Context) error {
 				WithRaw(sb.String()).
 				WithFooter(fmt.Sprintf("<i>Tip: Use <code>%shelp &lt;command&gt;</code> for details.</i>", prefix))
 
-			return ctx.Reply(card.Render())
+			return sendResult(ctx, card.Render())
 		}
 
 		// 3. Not found
-		return ctx.Reply(ui.Error(fmt.Sprintf("Command or module %q not found.", ctx.Args[0])))
+		return sendResult(ctx, ui.Error(fmt.Sprintf("Command or module %q not found.", ctx.Args[0])))
 	}
 
-	// General command list grouped by Category with collapsible blockquotes
+	// General overview: compact category list only (no per-command listing).
+	// This keeps the message well within Telegram's 4096-char limit even with
+	// many plugins. Use `.help <module>` to expand a specific module.
 	all := p.router.All()
 	categories := make(map[string][]core.Command)
 
@@ -175,7 +222,7 @@ func (p *Plugin) handleHelp(ctx *core.Context) error {
 
 	var sb strings.Builder
 	sb.WriteString("📚 <b>GoUltroid Help</b>\n")
-	sb.WriteString(fmt.Sprintf("<i>%d commands available across %d modules.</i>\n\n", len(all), len(catNames)))
+	sb.WriteString(fmt.Sprintf("<i>%d commands across %d modules.</i>\n\n", len(all), len(catNames)))
 
 	for _, cat := range catNames {
 		cmds := categories[cat]
@@ -183,18 +230,22 @@ func (p *Plugin) handleHelp(ctx *core.Context) error {
 			return cmds[i].Name < cmds[j].Name
 		})
 
-		sb.WriteString(fmt.Sprintf("📂 <b>[%s]</b> <code>(%d)</code>\n", cat, len(cmds)))
-		sb.WriteString("<blockquote expandable>\n")
+		// Build a compact preview: just the command names (no descriptions).
+		var names []string
 		for _, cmd := range cmds {
-			desc := cmd.Description
-			if desc == "" {
-				desc = "No description"
-			}
-			sb.WriteString(fmt.Sprintf("• <code>%s%s</code> — %s\n", prefix, cmd.Name, ui.EscapeHTML(desc)))
+			names = append(names, fmt.Sprintf("<code>%s%s</code>", prefix, cmd.Name))
 		}
-		sb.WriteString("</blockquote>\n\n")
+		preview := strings.Join(names, "  ")
+
+		sb.WriteString(fmt.Sprintf("📂 <b>%s</b> <code>(%d)</code>\n", cat, len(cmds)))
+		sb.WriteString(preview)
+		sb.WriteString("\n\n")
 	}
 
-	sb.WriteString(fmt.Sprintf("💡 <i>Tip: Use <code>%shelp &lt;module&gt;</code> or <code>%shelp &lt;command&gt;</code></i>", prefix, prefix))
-	return ctx.Reply(strings.TrimSpace(sb.String()))
+	sb.WriteString(fmt.Sprintf(
+		"💡 <i>Use <code>%shelp &lt;module&gt;</code> or <code>%shelp &lt;command&gt;</code> for details.</i>",
+		prefix, prefix,
+	))
+
+	return sendResult(ctx, strings.TrimSpace(sb.String()))
 }

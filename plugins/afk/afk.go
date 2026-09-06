@@ -62,11 +62,11 @@ func (p *Plugin) handleAFKCommand(ctx *core.Context) error {
 	}
 
 	if err := p.db.SetAFK(ctx.Ctx, ownerID, true, reason); err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Failed to set AFK: %v", err))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to set AFK: %v", err))
 		return err
 	}
 
-	return ctx.Reply(fmt.Sprintf("🌙 <b>AFK Mode Activated!</b>\n<b>Reason:</b> <i>%s</i>", reason))
+	return ctx.EditOrReply(fmt.Sprintf("🌙 <b>AFK Mode Activated!</b>\n<b>Reason:</b> <i>%s</i>", reason))
 }
 
 // HandleIncomingMessage intercepts all incoming messages to handle auto-reply and auto-unafk.

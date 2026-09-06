@@ -52,7 +52,7 @@ func (p *Plugin) Commands() []core.Command {
 
 func (p *Plugin) handleAddon(ctx *core.Context) error {
 	if p.mgr == nil {
-		return ctx.Reply("⚠️ Addon manager is not configured.")
+		return ctx.EditOrReply("⚠️ Addon manager is not configured.")
 	}
 
 	if len(ctx.Args) == 0 || ctx.Args[0] == "list" {
@@ -72,18 +72,18 @@ func (p *Plugin) handleAddon(ctx *core.Context) error {
 	case "disable":
 		return p.handleDisable(ctx)
 	default:
-		return ctx.Reply("⚠️ Unknown subcommand. Use: <code>list</code>, <code>info</code>, <code>install</code>, <code>uninstall</code>, <code>enable</code>, or <code>disable</code>.")
+		return ctx.EditOrReply("⚠️ Unknown subcommand. Use: <code>list</code>, <code>info</code>, <code>install</code>, <code>uninstall</code>, <code>enable</code>, or <code>disable</code>.")
 	}
 }
 
 func (p *Plugin) handleList(ctx *core.Context) error {
 	addons, err := p.mgr.List(ctx.Ctx)
 	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to list addons: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to list addons: %v", err))
 	}
 
 	if len(addons) == 0 {
-		return ctx.Reply("📦 <b>No external addons installed.</b>\nUse <code>.addon install &lt;manifest&gt;</code> to register an addon.")
+		return ctx.EditOrReply("📦 <b>No external addons installed.</b>\nUse <code>.addon install &lt;manifest&gt;</code> to register an addon.")
 	}
 
 	card := ui.NewCard(fmt.Sprintf("Installed Addons (%d)", len(addons))).
@@ -106,18 +106,18 @@ func (p *Plugin) handleList(ctx *core.Context) error {
 	}
 
 	card.WithFooter("Use .addon info <name> for details")
-	return ctx.Reply(card.Render())
+	return ctx.EditOrReply(card.Render())
 }
 
 func (p *Plugin) handleInfo(ctx *core.Context) error {
 	if len(ctx.Args) < 2 {
-		return ctx.Reply("⚠️ Please specify the addon name: <code>.addon info &lt;name&gt;</code>")
+		return ctx.EditOrReply("⚠️ Please specify the addon name: <code>.addon info &lt;name&gt;</code>")
 	}
 
 	name := ctx.Args[1]
 	rec, err := p.mgr.Get(ctx.Ctx, name)
 	if err != nil || rec == nil {
-		return ctx.Reply(fmt.Sprintf("❌ Addon <code>%s</code> not found.", name))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Addon <code>%s</code> not found.", name))
 	}
 
 	statusEmoji := "🟢"
@@ -153,7 +153,7 @@ func (p *Plugin) handleInfo(ctx *core.Context) error {
 		card.AddField("Capabilities", "<i>None (Zero Privileges)</i>")
 	}
 
-	return ctx.Reply(card.Render())
+	return ctx.EditOrReply(card.Render())
 }
 
 func (p *Plugin) handleInstall(ctx *core.Context) error {
@@ -175,12 +175,12 @@ func (p *Plugin) handleInstall(ctx *core.Context) error {
 
 	rawManifest = strings.TrimSpace(rawManifest)
 	if rawManifest == "" {
-		return ctx.Reply("⚠️ Please provide manifest YAML content or reply to a manifest message:\n<code>.addon install name: example\nversion: 1.0.0\ncommands: [foo]</code>")
+		return ctx.EditOrReply("⚠️ Please provide manifest YAML content or reply to a manifest message:\n<code>.addon install name: example\nversion: 1.0.0\ncommands: [foo]</code>")
 	}
 
 	manifest, err := p.mgr.Install(ctx.Ctx, []byte(rawManifest), sourceURL)
 	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to install addon: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to install addon: %v", err))
 	}
 
 	capStr := "None"
@@ -200,44 +200,44 @@ func (p *Plugin) handleInstall(ctx *core.Context) error {
 		AddField("Capabilities", ui.Code(capStr)).
 		WithFooter("Addon is active and capability permissions have been granted")
 
-	return ctx.Reply(card.Render())
+	return ctx.EditOrReply(card.Render())
 }
 
 func (p *Plugin) handleUninstall(ctx *core.Context) error {
 	if len(ctx.Args) < 2 {
-		return ctx.Reply("⚠️ Please specify the addon name: <code>.addon uninstall &lt;name&gt;</code>")
+		return ctx.EditOrReply("⚠️ Please specify the addon name: <code>.addon uninstall &lt;name&gt;</code>")
 	}
 
 	name := ctx.Args[1]
 	if err := p.mgr.Uninstall(ctx.Ctx, name); err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to uninstall addon: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to uninstall addon: %v", err))
 	}
 
-	return ctx.Reply(fmt.Sprintf("🗑️ <b>Uninstalled addon:</b> <code>%s</code> (all capability permissions revoked)", name))
+	return ctx.EditOrReply(fmt.Sprintf("🗑️ <b>Uninstalled addon:</b> <code>%s</code> (all capability permissions revoked)", name))
 }
 
 func (p *Plugin) handleEnable(ctx *core.Context) error {
 	if len(ctx.Args) < 2 {
-		return ctx.Reply("⚠️ Please specify the addon name: <code>.addon enable &lt;name&gt;</code>")
+		return ctx.EditOrReply("⚠️ Please specify the addon name: <code>.addon enable &lt;name&gt;</code>")
 	}
 
 	name := ctx.Args[1]
 	if err := p.mgr.Enable(ctx.Ctx, name); err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to enable addon: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to enable addon: %v", err))
 	}
 
-	return ctx.Reply(fmt.Sprintf("🟢 <b>Enabled addon:</b> <code>%s</code> (capability permissions restored)", name))
+	return ctx.EditOrReply(fmt.Sprintf("🟢 <b>Enabled addon:</b> <code>%s</code> (capability permissions restored)", name))
 }
 
 func (p *Plugin) handleDisable(ctx *core.Context) error {
 	if len(ctx.Args) < 2 {
-		return ctx.Reply("⚠️ Please specify the addon name: <code>.addon disable &lt;name&gt;</code>")
+		return ctx.EditOrReply("⚠️ Please specify the addon name: <code>.addon disable &lt;name&gt;</code>")
 	}
 
 	name := ctx.Args[1]
 	if err := p.mgr.Disable(ctx.Ctx, name); err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to disable addon: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to disable addon: %v", err))
 	}
 
-	return ctx.Reply(fmt.Sprintf("🔴 <b>Disabled addon:</b> <code>%s</code> (capability permissions revoked)", name))
+	return ctx.EditOrReply(fmt.Sprintf("🔴 <b>Disabled addon:</b> <code>%s</code> (capability permissions revoked)", name))
 }

@@ -138,12 +138,12 @@ func (p *Plugin) resolveTargetUserID(ctx *core.Context) int64 {
 
 func (p *Plugin) handleApprove(ctx *core.Context) error {
 	if p.svc == nil {
-		return ctx.Reply("⚠️ PM Permit service is not configured.")
+		return ctx.EditOrReply("⚠️ PM Permit service is not configured.")
 	}
 
 	target := p.resolveTargetUserID(ctx)
 	if target == 0 {
-		return ctx.Reply("⚠️ Could not determine user. Reply to a message, run inside a PM, or provide user ID.")
+		return ctx.EditOrReply("⚠️ Could not determine user. Reply to a message, run inside a PM, or provide user ID.")
 	}
 
 	reason := "Approved by owner"
@@ -152,37 +152,37 @@ func (p *Plugin) handleApprove(ctx *core.Context) error {
 	}
 
 	if err := p.svc.Approve(ctx.Ctx, target, reason, 0); err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to approve user: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to approve user: %v", err))
 	}
 
-	return ctx.Reply(fmt.Sprintf("✅ <b>Approved</b> user <code>%d</code> for private messaging.", target))
+	return ctx.EditOrReply(fmt.Sprintf("✅ <b>Approved</b> user <code>%d</code> for private messaging.", target))
 }
 
 func (p *Plugin) handleDisapprove(ctx *core.Context) error {
 	if p.svc == nil {
-		return ctx.Reply("⚠️ PM Permit service is not configured.")
+		return ctx.EditOrReply("⚠️ PM Permit service is not configured.")
 	}
 
 	target := p.resolveTargetUserID(ctx)
 	if target == 0 {
-		return ctx.Reply("⚠️ Could not determine user. Reply to a message, run inside a PM, or provide user ID.")
+		return ctx.EditOrReply("⚠️ Could not determine user. Reply to a message, run inside a PM, or provide user ID.")
 	}
 
 	if err := p.svc.Disapprove(ctx.Ctx, target); err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to revoke approval: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to revoke approval: %v", err))
 	}
 
-	return ctx.Reply(fmt.Sprintf("⚠️ <b>Revoked approval</b> for user <code>%d</code>.", target))
+	return ctx.EditOrReply(fmt.Sprintf("⚠️ <b>Revoked approval</b> for user <code>%d</code>.", target))
 }
 
 func (p *Plugin) handleBlock(ctx *core.Context) error {
 	if p.svc == nil {
-		return ctx.Reply("⚠️ PM Permit service is not configured.")
+		return ctx.EditOrReply("⚠️ PM Permit service is not configured.")
 	}
 
 	target := p.resolveTargetUserID(ctx)
 	if target == 0 {
-		return ctx.Reply("⚠️ Could not determine user. Reply to a message, run inside a PM, or provide user ID.")
+		return ctx.EditOrReply("⚠️ Could not determine user. Reply to a message, run inside a PM, or provide user ID.")
 	}
 
 	reason := "Blocked by owner"
@@ -191,25 +191,25 @@ func (p *Plugin) handleBlock(ctx *core.Context) error {
 	}
 
 	if err := p.svc.Block(ctx.Ctx, target, reason); err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to block user: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to block user: %v", err))
 	}
 
-	return ctx.Reply(fmt.Sprintf("⛔ <b>Blocked</b> user <code>%d</code> from private messaging.", target))
+	return ctx.EditOrReply(fmt.Sprintf("⛔ <b>Blocked</b> user <code>%d</code> from private messaging.", target))
 }
 
 func (p *Plugin) handleToggle(ctx *core.Context) error {
 	if p.svc == nil {
-		return ctx.Reply("⚠️ PM Permit service is not configured.")
+		return ctx.EditOrReply("⚠️ PM Permit service is not configured.")
 	}
 
 	if len(ctx.Args) > 0 {
 		arg := strings.ToLower(ctx.Args[0])
 		if arg == "on" || arg == "enable" || arg == "true" {
 			p.svc.SetEnabled(true)
-			return ctx.Reply("🛡️ <b>PM Permit</b> is now <b>ENABLED</b>.")
+			return ctx.EditOrReply("🛡️ <b>PM Permit</b> is now <b>ENABLED</b>.")
 		} else if arg == "off" || arg == "disable" || arg == "false" {
 			p.svc.SetEnabled(false)
-			return ctx.Reply("⚠️ <b>PM Permit</b> is now <b>DISABLED</b>.")
+			return ctx.EditOrReply("⚠️ <b>PM Permit</b> is now <b>DISABLED</b>.")
 		}
 	}
 
@@ -217,5 +217,5 @@ func (p *Plugin) handleToggle(ctx *core.Context) error {
 	if !p.svc.IsEnabled() {
 		status = "DISABLED"
 	}
-	return ctx.Reply(fmt.Sprintf("🛡️ <b>PM Permit Status</b>: <b>%s</b>\nUsage: <code>.pmpermit [on|off]</code>", status))
+	return ctx.EditOrReply(fmt.Sprintf("🛡️ <b>PM Permit Status</b>: <b>%s</b>\nUsage: <code>.pmpermit [on|off]</code>", status))
 }

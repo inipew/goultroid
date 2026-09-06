@@ -62,11 +62,11 @@ func (p *Plugin) Commands() []core.Command {
 
 func (p *Plugin) handleBroadcast(ctx *core.Context) error {
 	if p.svc == nil {
-		return ctx.Reply("⚠️ Broadcast service is not configured.")
+		return ctx.EditOrReply("⚠️ Broadcast service is not configured.")
 	}
 
 	if len(ctx.Args) == 0 {
-		return ctx.Reply("⚠️ <b>Usage:</b> <code>.broadcast [-users|-groups|-all] <message></code>")
+		return ctx.EditOrReply("⚠️ <b>Usage:</b> <code>.broadcast [-users|-groups|-all] <message></code>")
 	}
 
 	scope := broadcast.TargetAll
@@ -92,14 +92,14 @@ func (p *Plugin) handleBroadcast(ctx *core.Context) error {
 		if err == nil && reply != nil && reply.Text != "" {
 			msgText = reply.Text
 		} else {
-			return ctx.Reply("⚠️ Message text cannot be empty. Specify text or reply to a message.")
+			return ctx.EditOrReply("⚠️ Message text cannot be empty. Specify text or reply to a message.")
 		}
 	}
 
-	_ = ctx.Reply(fmt.Sprintf("📡 <i>Fetching dialogs for broadcast (scope: %s)...</i>", scope))
+	_ = ctx.EditOrReply(fmt.Sprintf("📡 <i>Fetching dialogs for broadcast (scope: %s)...</i>", scope))
 
 	if ctx.Svc == nil {
-		return ctx.Reply("⚠️ Telegram service is unavailable.")
+		return ctx.EditOrReply("⚠️ Telegram service is unavailable.")
 	}
 	dialogs, err := ctx.Svc.GetDialogs(ctx.Ctx, 100)
 	if err != nil {
@@ -171,12 +171,12 @@ func (p *Plugin) handleBroadcast(ctx *core.Context) error {
 
 func (p *Plugin) handleCancelBroadcast(ctx *core.Context) error {
 	if p.svc == nil {
-		return ctx.Reply("⚠️ Broadcast service is not configured.")
+		return ctx.EditOrReply("⚠️ Broadcast service is not configured.")
 	}
 
 	canceled := p.svc.CancelActive()
 	if canceled {
-		return ctx.Reply("🛑 <b>Active broadcast cancelled!</b>")
+		return ctx.EditOrReply("🛑 <b>Active broadcast cancelled!</b>")
 	}
-	return ctx.Reply("ℹ️ No active broadcast task is currently running.")
+	return ctx.EditOrReply("ℹ️ No active broadcast task is currently running.")
 }

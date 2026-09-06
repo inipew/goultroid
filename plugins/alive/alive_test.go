@@ -13,6 +13,7 @@ import (
 type mockService struct {
 	core.MockTelegramServicer
 	sent string
+	edited string
 }
 
 func (m *mockService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
@@ -20,6 +21,7 @@ func (m *mockService) SendMessage(ctx context.Context, peer tg.InputPeerClass, t
 	return &tg.Message{ID: 1, Message: text}, nil
 }
 func (m *mockService) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
+	m.edited = text
 	return nil
 }
 func (m *mockService) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {
@@ -110,14 +112,14 @@ func TestAlivePlugin(t *testing.T) {
 		t.Fatalf("unexpected error running alive handler: %v", err)
 	}
 
-	if !strings.Contains(svc.sent, "GoUltroid is Alive") {
-		t.Errorf("expected output to contain 'GoUltroid is Alive', got: %s", svc.sent)
+	if !strings.Contains(svc.edited, "GoUltroid is Alive") {
+		t.Errorf("expected output to contain 'GoUltroid is Alive', got: %s", svc.edited)
 	}
-	if !strings.Contains(svc.sent, "Uptime:") {
-		t.Errorf("expected output to contain uptime, got: %s", svc.sent)
+	if !strings.Contains(svc.edited, "Uptime:") {
+		t.Errorf("expected output to contain uptime, got: %s", svc.edited)
 	}
-	if !strings.Contains(svc.sent, "123456") {
-		t.Errorf("expected output to contain owner ID 123456, got: %s", svc.sent)
+	if !strings.Contains(svc.edited, "123456") {
+		t.Errorf("expected output to contain owner ID 123456, got: %s", svc.edited)
 	}
 }
 

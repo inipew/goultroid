@@ -81,8 +81,8 @@ func TestBroadcastPlugin(t *testing.T) {
 	if err := cmds[1].Handler(cancelCtx); err != nil {
 		t.Fatalf("handleCancelBroadcast failed: %v", err)
 	}
-	if !strings.Contains(mockTG.sentText, "No active broadcast") {
-		t.Errorf("expected no active broadcast notice, got %s", mockTG.sentText)
+	if !strings.Contains(mockTG.edited, "No active broadcast") {
+		t.Errorf("expected no active broadcast notice, got %s", mockTG.edited)
 	}
 }
 
@@ -102,7 +102,7 @@ func TestBroadcastPlugin_EmptyArgs(t *testing.T) {
 	if err := cmds[0].Handler(ctx); err != nil {
 		t.Fatalf("handler error: %v", err)
 	}
-	if !strings.Contains(mockTG.sentText, "Usage:") {
-		t.Errorf("expected usage guide, got %s", mockTG.sentText)
+	if !strings.Contains(mockTG.edited, "Usage:") {
+		t.Errorf("expected usage guide, got %s", mockTG.edited)
 	}
 }

@@ -43,7 +43,7 @@ func (p *Plugin) Commands() []core.Command {
 func (p *Plugin) handlePing(ctx *core.Context) error {
 	start := time.Now()
 
-	if err := ctx.Reply("🏓 ..."); err != nil {
+	if err := ctx.EditOrReply("🏓 ..."); err != nil {
 		return err
 	}
 

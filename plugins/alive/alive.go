@@ -73,7 +73,7 @@ func (p *Plugin) handleAlive(ctx *core.Context) error {
 		AddField("Prefix", ui.Code(".")).
 		WithFooter("<i>Powered by Go & gotd</i>")
 
-	return ctx.Reply(card.Render())
+	return ctx.EditOrReply(card.Render())
 }
 
 func formatDuration(d time.Duration) string {

@@ -119,7 +119,7 @@ func (p *Plugin) Commands() []core.Command {
 func (p *Plugin) handleMediaInfo(ctx *core.Context) error {
 	item := findMedia(ctx)
 	if item == nil {
-		return ctx.Reply("⚠️ <b>No media found!</b> Please reply to a photo, video, audio, voice, sticker, or document.")
+		return ctx.EditOrReply("⚠️ <b>No media found!</b> Please reply to a photo, video, audio, voice, sticker, or document.")
 	}
 
 	var sb strings.Builder
@@ -159,23 +159,23 @@ func (p *Plugin) handleMediaInfo(ctx *core.Context) error {
 		sb.WriteString(fmt.Sprintf("• <b>Duration</b>: <code>%s</code>\n", formatDuration(item.Duration)))
 	}
 
-	return ctx.Reply(sb.String())
+	return ctx.EditOrReply(sb.String())
 }
 
 // handleExtractAudio extracts audio from a replied video or audio file using the media service.
 func (p *Plugin) handleExtractAudio(ctx *core.Context) error {
 	item := findMedia(ctx)
 	if item == nil {
-		return ctx.Reply("⚠️ <b>No media found!</b> Reply to a video, audio, or document to extract audio.")
+		return ctx.EditOrReply("⚠️ <b>No media found!</b> Reply to a video, audio, or document to extract audio.")
 	}
 
 	if item.Type == "photo" || item.Type == "sticker" {
-		return ctx.Reply("⚠️ Cannot extract audio from a photo or sticker.")
+		return ctx.EditOrReply("⚠️ Cannot extract audio from a photo or sticker.")
 	}
 
 	if item.Size > 0 {
 		if err := core.ValidateMediaSize(item.Size, core.DefaultMaxExtractAudioSize); err != nil {
-			return ctx.Reply(fmt.Sprintf("⚠️ <b>Media too large!</b> File size (%s) exceeds extraction limit (150MB).", formatBytes(item.Size)))
+			return ctx.EditOrReply(fmt.Sprintf("⚠️ <b>Media too large!</b> File size (%s) exceeds extraction limit (150MB).", formatBytes(item.Size)))
 		}
 	}
 
@@ -183,17 +183,17 @@ func (p *Plugin) handleExtractAudio(ctx *core.Context) error {
 		_ = p.Init()
 	}
 
-	_ = ctx.Reply("⏳ <i>Downloading and extracting audio...</i>")
+	_ = ctx.EditOrReply("⏳ <i>Downloading and extracting audio...</i>")
 
 	tmpDir, err := os.MkdirTemp("", "goultroid-audio-*")
 	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
 	}
 	defer os.RemoveAll(tmpDir)
 
 	downloadedPath, err := ctx.DownloadMedia(tmpDir)
 	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to download media: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to download media: %v", err))
 	}
 
 	stat, _ := os.Stat(downloadedPath)
@@ -215,13 +215,13 @@ func (p *Plugin) handleExtractAudio(ctx *core.Context) error {
 
 	outAsset, err := p.mediaService.ExtractAudio(ctx.Ctx, inAsset, "mp3")
 	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Audio extraction failed: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Audio extraction failed: %v", err))
 	}
 
 	cleanFileName := core.SanitizeFileName(item.FileName)
 	caption := fmt.Sprintf("🎵 Extracted from: <code>%s</code>", core.EscapeHTML(cleanFileName))
 	if err := ctx.SendAudio(outAsset.Path, caption); err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to send audio: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to send audio: %v", err))
 	}
 
 	_ = ctx.Delete()
@@ -232,7 +232,7 @@ func (p *Plugin) handleExtractAudio(ctx *core.Context) error {
 func (p *Plugin) handleConvert(ctx *core.Context) error {
 	item := findMedia(ctx)
 	if item == nil {
-		return ctx.Reply("⚠️ <b>No media found!</b> Reply to a video or audio file to convert.")
+		return ctx.EditOrReply("⚠️ <b>No media found!</b> Reply to a video or audio file to convert.")
 	}
 
 	targetFormat := "mp4"
@@ -244,17 +244,17 @@ func (p *Plugin) handleConvert(ctx *core.Context) error {
 		_ = p.Init()
 	}
 
-	_ = ctx.Reply(fmt.Sprintf("⏳ <i>Converting media to %s...</i>", targetFormat))
+	_ = ctx.EditOrReply(fmt.Sprintf("⏳ <i>Converting media to %s...</i>", targetFormat))
 
 	tmpDir, err := os.MkdirTemp("", "goultroid-convert-*")
 	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
 	}
 	defer os.RemoveAll(tmpDir)
 
 	downloadedPath, err := ctx.DownloadMedia(tmpDir)
 	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to download media: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to download media: %v", err))
 	}
 
 	stat, _ := os.Stat(downloadedPath)
@@ -278,7 +278,7 @@ func (p *Plugin) handleConvert(ctx *core.Context) error {
 		TargetFormat: targetFormat,
 	})
 	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Conversion failed: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Conversion failed: %v", err))
 	}
 
 	caption := fmt.Sprintf("🎬 Converted to: <code>%s</code>", targetFormat)
@@ -290,7 +290,7 @@ func (p *Plugin) handleConvert(ctx *core.Context) error {
 	}
 
 	if _, err := ctx.SendMedia(outAsset.Path, mediaType, caption); err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to send converted media: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to send converted media: %v", err))
 	}
 
 	_ = ctx.Delete()
@@ -301,24 +301,24 @@ func (p *Plugin) handleConvert(ctx *core.Context) error {
 func (p *Plugin) handleConvertToGIF(ctx *core.Context) error {
 	item := findMedia(ctx)
 	if item == nil {
-		return ctx.Reply("⚠️ <b>No media found!</b> Reply to a video to convert to GIF.")
+		return ctx.EditOrReply("⚠️ <b>No media found!</b> Reply to a video to convert to GIF.")
 	}
 
 	if p.mediaService == nil {
 		_ = p.Init()
 	}
 
-	_ = ctx.Reply("⏳ <i>Converting video to GIF...</i>")
+	_ = ctx.EditOrReply("⏳ <i>Converting video to GIF...</i>")
 
 	tmpDir, err := os.MkdirTemp("", "goultroid-gif-*")
 	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
 	}
 	defer os.RemoveAll(tmpDir)
 
 	downloadedPath, err := ctx.DownloadMedia(tmpDir)
 	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to download media: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to download media: %v", err))
 	}
 
 	inAsset := &storage.Asset{
@@ -334,11 +334,11 @@ func (p *Plugin) handleConvertToGIF(ctx *core.Context) error {
 
 	outAsset, err := p.mediaService.ConvertToGIF(ctx.Ctx, inAsset, media.TranscodeOptions{})
 	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ GIF conversion failed: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ GIF conversion failed: %v", err))
 	}
 
 	if _, err := ctx.SendMedia(outAsset.Path, "document", "🎞️ Converted to GIF"); err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to send GIF: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to send GIF: %v", err))
 	}
 
 	_ = ctx.Delete()
@@ -349,24 +349,24 @@ func (p *Plugin) handleConvertToGIF(ctx *core.Context) error {
 func (p *Plugin) handleConvertToSticker(ctx *core.Context) error {
 	item := findMedia(ctx)
 	if item == nil {
-		return ctx.Reply("⚠️ <b>No media found!</b> Reply to a video or animation to make a video sticker.")
+		return ctx.EditOrReply("⚠️ <b>No media found!</b> Reply to a video or animation to make a video sticker.")
 	}
 
 	if p.mediaService == nil {
 		_ = p.Init()
 	}
 
-	_ = ctx.Reply("⏳ <i>Generating video sticker (WebM 512x512)...</i>")
+	_ = ctx.EditOrReply("⏳ <i>Generating video sticker (WebM 512x512)...</i>")
 
 	tmpDir, err := os.MkdirTemp("", "goultroid-vstick-*")
 	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
 	}
 	defer os.RemoveAll(tmpDir)
 
 	downloadedPath, err := ctx.DownloadMedia(tmpDir)
 	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to download media: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to download media: %v", err))
 	}
 
 	inAsset := &storage.Asset{
@@ -382,7 +382,7 @@ func (p *Plugin) handleConvertToSticker(ctx *core.Context) error {
 
 	outAsset, err := p.mediaService.ConvertToSticker(ctx.Ctx, inAsset)
 	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Video sticker generation failed: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Video sticker generation failed: %v", err))
 	}
 
 	if _, err := ctx.SendMedia(outAsset.Path, "sticker", "🎭 Video Sticker"); err != nil {

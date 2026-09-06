@@ -105,11 +105,10 @@ func TestPingPlugin(t *testing.T) {
 		t.Fatalf("unexpected error running ping: %v", err)
 	}
 
-	if svc.sent != "🏓 ..." {
-		t.Errorf("expected initial reply '🏓 ...', got %q", svc.sent)
-	}
-
+	// With edit-in-place UX, the placeholder "🏓 ..." goes to EditMessage (edits trigger msg),
+	// then the final Pong result also goes to EditMessage.
+	// The last edit wins, so svc.edited ends with the Pong result.
 	if !strings.Contains(svc.edited, "Pong!") {
-		t.Errorf("expected edit message to contain 'Pong!', got %q", svc.edited)
+		t.Errorf("expected final edit to contain 'Pong!', got %q", svc.edited)
 	}
 }

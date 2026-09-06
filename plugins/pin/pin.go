@@ -61,35 +61,35 @@ func (p *Plugin) handlePin(ctx *core.Context) error {
 
 	if err := ctx.Pin(silent); err != nil {
 		if errors.Is(err, core.ErrPermissionDenied) || strings.Contains(err.Error(), "CHAT_ADMIN_REQUIRED") {
-			_ = ctx.Reply("❌ Gagal: bot/akun harus menjadi Admin dengan hak pin pesan.")
+			_ = ctx.EditOrReply("❌ Gagal: bot/akun harus menjadi Admin dengan hak pin pesan.")
 			return err
 		}
 		if errors.Is(err, core.ErrUnsupported) {
-			_ = ctx.Reply("⚠️ Fitur pin tidak didukung di tipe chat ini.")
+			_ = ctx.EditOrReply("⚠️ Fitur pin tidak didukung di tipe chat ini.")
 			return err
 		}
-		_ = ctx.Reply(fmt.Sprintf("❌ Gagal menyematkan pesan: %v", err))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Gagal menyematkan pesan: %v", err))
 		return err
 	}
 
 	if silent {
-		return ctx.Reply("📌 Message pinned silently!")
+		return ctx.EditOrReply("📌 Message pinned silently!")
 	}
-	return ctx.Reply("📌 Message pinned!")
+	return ctx.EditOrReply("📌 Message pinned!")
 }
 
 func (p *Plugin) handleUnpin(ctx *core.Context) error {
 	if err := ctx.Unpin(); err != nil {
 		if errors.Is(err, core.ErrPermissionDenied) || strings.Contains(err.Error(), "CHAT_ADMIN_REQUIRED") {
-			_ = ctx.Reply("❌ Gagal: bot/akun harus menjadi Admin dengan hak pin pesan.")
+			_ = ctx.EditOrReply("❌ Gagal: bot/akun harus menjadi Admin dengan hak pin pesan.")
 			return err
 		}
 		if errors.Is(err, core.ErrUnsupported) {
-			_ = ctx.Reply("⚠️ Fitur unpin tidak didukung di tipe chat ini.")
+			_ = ctx.EditOrReply("⚠️ Fitur unpin tidak didukung di tipe chat ini.")
 			return err
 		}
-		_ = ctx.Reply(fmt.Sprintf("❌ Gagal melepas sematan pesan: %v", err))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Gagal melepas sematan pesan: %v", err))
 		return err
 	}
-	return ctx.Reply("📌 Message unpinned!")
+	return ctx.EditOrReply("📌 Message unpinned!")
 }

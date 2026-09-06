@@ -15,6 +15,7 @@ import (
 type mockService struct {
 	core.MockTelegramServicer
 	sent         string
+	edited       string
 	mediaSent    bool
 	mediaType    string
 	mediaCaption string
@@ -26,7 +27,7 @@ func (m *mockService) SendMessage(ctx context.Context, peer tg.InputPeerClass, t
 	return &tg.Message{ID: 100, Message: text}, nil
 }
 func (m *mockService) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
-	m.sent = text
+	m.edited = text
 	return nil
 }
 func (m *mockService) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {
@@ -128,8 +129,8 @@ func TestExec_EmptyArgs(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.Contains(svc.sent, "Usage:") {
-		t.Errorf("expected usage message, got: %s", svc.sent)
+	if !strings.Contains(svc.edited, "Usage:") {
+		t.Errorf("expected usage message, got: %s", svc.edited)
 	}
 }
 
@@ -149,11 +150,11 @@ func TestExec_ShortOutput(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.Contains(svc.sent, "Hello GoUltroid") {
-		t.Errorf("expected 'Hello GoUltroid' in output, got: %s", svc.sent)
+	if !strings.Contains(svc.edited, "Hello GoUltroid") {
+		t.Errorf("expected 'Hello GoUltroid' in output, got: %s", svc.edited)
 	}
-	if !strings.Contains(svc.sent, "Shell Execution") {
-		t.Errorf("expected header 'Shell Execution', got: %s", svc.sent)
+	if !strings.Contains(svc.edited, "Shell Execution") {
+		t.Errorf("expected header 'Shell Execution', got: %s", svc.edited)
 	}
 }
 
@@ -209,11 +210,13 @@ func TestRestart_CustomHandler(t *testing.T) {
 	if !called {
 		t.Errorf("expected custom restart handler to be called")
 	}
-	if calledState.PeerType != "channel" || calledState.ChatID != 777 || !calledState.IsChannel || calledState.AccessHash != 888 || calledState.MsgID != 100 {
+	// With edit-in-place UX, restart edits the trigger message (ID 42) in-place.
+	// MsgID in RestartState should be the trigger message ID, not a new reply ID.
+	if calledState.PeerType != "channel" || calledState.ChatID != 777 || !calledState.IsChannel || calledState.AccessHash != 888 || calledState.MsgID != 42 {
 		t.Errorf("unexpected restart state captured: %+v", calledState)
 	}
-	if !strings.Contains(svc.sent, "Restarting GoUltroid") {
-		t.Errorf("expected restart response, got: %s", svc.sent)
+	if !strings.Contains(svc.edited, "Restarting GoUltroid") {
+		t.Errorf("expected restart response via edit, got: %s", svc.edited)
 	}
 
 	// Test with InputPeerSelf
@@ -277,8 +280,8 @@ func TestUpdate_UpToDate(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.Contains(svc.sent, "already up to date") || !strings.Contains(svc.sent, "abcdef1") {
-		t.Errorf("expected up to date message with commit hash, got: %s", svc.sent)
+	if !strings.Contains(svc.edited, "already up to date") || !strings.Contains(svc.edited, "abcdef1") {
+		t.Errorf("expected up to date message with commit hash, got: %s", svc.edited)
 	}
 }
 
@@ -312,8 +315,8 @@ func TestUpdate_HasUpdates(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.Contains(svc.sent, "New updates available") || !strings.Contains(svc.sent, "Pending Commits (2)") || !strings.Contains(svc.sent, "fix: some bug") {
-		t.Errorf("expected new updates message with commits, got: %s", svc.sent)
+	if !strings.Contains(svc.edited, "New updates available") || !strings.Contains(svc.edited, "Pending Commits (2)") || !strings.Contains(svc.edited, "fix: some bug") {
+		t.Errorf("expected new updates message with commits, got: %s", svc.edited)
 	}
 }
 
@@ -397,8 +400,8 @@ func TestUpdate_DirtyWorkingTree(t *testing.T) {
 		t.Fatalf("expected error on dirty working tree, got nil")
 	}
 
-	if !strings.Contains(svc.sent, "working directory has uncommitted modifications") {
-		t.Errorf("expected dirty tree warning message, got: %s", svc.sent)
+	if !strings.Contains(svc.edited, "working directory has uncommitted modifications") {
+		t.Errorf("expected dirty tree warning message, got: %s", svc.edited)
 	}
 }
 
@@ -453,9 +456,10 @@ func TestHealth_WithMetrics(t *testing.T) {
 
 	svc := &mockService{}
 	ctx := &core.Context{
-		Ctx:    context.Background(),
-		PeerID: &tg.InputPeerChat{ChatID: 100},
-		Svc:    svc,
+		Ctx:     context.Background(),
+		PeerID:  &tg.InputPeerChat{ChatID: 100},
+		Message: &core.Message{ID: 1},
+		Svc:     svc,
 	}
 
 	err := p.handleHealth(ctx)
@@ -463,10 +467,10 @@ func TestHealth_WithMetrics(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.Contains(svc.sent, "Operational Telemetry") {
-		t.Errorf("expected Operational Telemetry section in output, got: %s", svc.sent)
+	if !strings.Contains(svc.edited, "Operational Telemetry") {
+		t.Errorf("expected Operational Telemetry section in output, got: %s", svc.edited)
 	}
-	if !strings.Contains(svc.sent, "Commands:") {
-		t.Errorf("expected Commands count in output, got: %s", svc.sent)
+	if !strings.Contains(svc.edited, "Commands:") {
+		t.Errorf("expected Commands count in output, got: %s", svc.edited)
 	}
 }

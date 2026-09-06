@@ -12,6 +12,7 @@ import (
 type mockService struct {
 	core.MockTelegramServicer
 	sent string
+	edited string
 }
 
 func (m *mockService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
@@ -19,6 +20,7 @@ func (m *mockService) SendMessage(ctx context.Context, peer tg.InputPeerClass, t
 	return &tg.Message{ID: 10, Message: text}, nil
 }
 func (m *mockService) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
+	m.edited = text
 	return nil
 }
 func (m *mockService) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {
@@ -109,18 +111,19 @@ func TestHelpPlugin(t *testing.T) {
 		PeerID:  &tg.InputPeerSelf{},
 	}
 
-	// 1. Help without args -> lists categories with expandable blockquotes
+	// 1. Help without args -> compact category overview (bold category names, command list)
 	ctxAll := *baseCtx
 	ctxAll.Command = "help"
 	if err := cmds[0].Handler(&ctxAll); err != nil {
 		t.Fatalf("unexpected error running help all: %v", err)
 	}
 
-	if !strings.Contains(svc.sent, "[Admin]") || !strings.Contains(svc.sent, "[Utility]") {
-		t.Errorf("expected help output to contain [Admin] and [Utility], got: %s", svc.sent)
+	if !strings.Contains(svc.edited, "Admin") || !strings.Contains(svc.edited, "Utility") {
+		t.Errorf("expected help output to contain Admin and Utility categories, got: %s", svc.edited)
 	}
-	if !strings.Contains(svc.sent, "<blockquote expandable>") {
-		t.Errorf("expected help output to contain expandable blockquotes, got: %s", svc.sent)
+	// Compact view: command names listed inline, no expandable blockquotes in summary
+	if !strings.Contains(svc.edited, ".ban") || !strings.Contains(svc.edited, ".ping") {
+		t.Errorf("expected help overview to list command names, got: %s", svc.edited)
 	}
 
 	// 2. Help for existing command
@@ -131,8 +134,8 @@ func TestHelpPlugin(t *testing.T) {
 		t.Fatalf("unexpected error running help ping: %v", err)
 	}
 
-	if !strings.Contains(svc.sent, "Command: .ping") || !strings.Contains(svc.sent, "Check latency") {
-		t.Errorf("expected help target to show ping details, got: %s", svc.sent)
+	if !strings.Contains(svc.edited, "Command: .ping") || !strings.Contains(svc.edited, "Check latency") {
+		t.Errorf("expected help target to show ping details, got: %s", svc.edited)
 	}
 
 	// 3. Help for module/category
@@ -143,8 +146,8 @@ func TestHelpPlugin(t *testing.T) {
 		t.Fatalf("unexpected error running help admin: %v", err)
 	}
 
-	if !strings.Contains(svc.sent, "Module: Admin") || !strings.Contains(svc.sent, ".ban") {
-		t.Errorf("expected module help to show admin commands, got: %s", svc.sent)
+	if !strings.Contains(svc.edited, "Module: Admin") || !strings.Contains(svc.edited, ".ban") {
+		t.Errorf("expected module help to show admin commands, got: %s", svc.edited)
 	}
 
 	// 4. Help for non-existent command/module
@@ -155,7 +158,7 @@ func TestHelpPlugin(t *testing.T) {
 		t.Fatalf("unexpected error running help nonexistent: %v", err)
 	}
 
-	if !strings.Contains(svc.sent, "not found") {
-		t.Errorf("expected not found message, got: %s", svc.sent)
+	if !strings.Contains(svc.edited, "not found") {
+		t.Errorf("expected not found message, got: %s", svc.edited)
 	}
 }

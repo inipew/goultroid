@@ -16,11 +16,17 @@ import (
 type mockTelegram struct {
 	core.MockTelegramServicer
 	sentText string
+	edited   string
 }
 
 func (m *mockTelegram) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
 	m.sentText = text
 	return &tg.Message{ID: 1, Message: text}, nil
+}
+
+func (m *mockTelegram) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
+	m.edited = text
+	return nil
 }
 
 func setupTestDB(t *testing.T) *database.DB {
@@ -66,24 +72,24 @@ func TestPMPermitPlugin(t *testing.T) {
 	if err := cmds[0].Handler(ctx); err != nil {
 		t.Fatalf("approve failed: %v", err)
 	}
-	if !strings.Contains(mockTG.sentText, "Approved") {
-		t.Errorf("expected approval message, got %s", mockTG.sentText)
+	if !strings.Contains(mockTG.edited, "Approved") {
+		t.Errorf("expected approval message, got %s", mockTG.edited)
 	}
 
 	// 2. Disapprove command
 	if err := cmds[1].Handler(ctx); err != nil {
 		t.Fatalf("disapprove failed: %v", err)
 	}
-	if !strings.Contains(mockTG.sentText, "Revoked approval") {
-		t.Errorf("expected revoke message, got %s", mockTG.sentText)
+	if !strings.Contains(mockTG.edited, "Revoked approval") {
+		t.Errorf("expected revoke message, got %s", mockTG.edited)
 	}
 
 	// 3. Block command
 	if err := cmds[2].Handler(ctx); err != nil {
 		t.Fatalf("block failed: %v", err)
 	}
-	if !strings.Contains(mockTG.sentText, "Blocked") {
-		t.Errorf("expected block message, got %s", mockTG.sentText)
+	if !strings.Contains(mockTG.edited, "Blocked") {
+		t.Errorf("expected block message, got %s", mockTG.edited)
 	}
 
 	// 4. Toggle command
@@ -97,8 +103,8 @@ func TestPMPermitPlugin(t *testing.T) {
 	if err := cmds[3].Handler(toggleCtx); err != nil {
 		t.Fatalf("toggle failed: %v", err)
 	}
-	if !strings.Contains(mockTG.sentText, "DISABLED") {
-		t.Errorf("expected disabled toggle, got %s", mockTG.sentText)
+	if !strings.Contains(mockTG.edited, "DISABLED") {
+		t.Errorf("expected disabled toggle, got %s", mockTG.edited)
 	}
 	if svc.IsEnabled() {
 		t.Errorf("expected svc to be disabled")

@@ -123,7 +123,7 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 
 func (p *Plugin) handleSetLog(ctx *core.Context) error {
 	if p.svc == nil {
-		return ctx.Reply("⚠️ UserLog service is not configured.")
+		return ctx.EditOrReply("⚠️ UserLog service is not configured.")
 	}
 
 	var chatID int64
@@ -134,19 +134,19 @@ func (p *Plugin) handleSetLog(ctx *core.Context) error {
 		// Channels / supergroups use negative ID notation for unified bots
 		chatID = -peer.ChannelID
 	default:
-		return ctx.Reply("⚠️ Please run <code>.setlog</code> inside a group or channel.")
+		return ctx.EditOrReply("⚠️ Please run <code>.setlog</code> inside a group or channel.")
 	}
 
 	if err := p.svc.SetLogChat(ctx.Ctx, chatID); err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to set log chat: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to set log chat: %v", err))
 	}
 
-	return ctx.Reply(fmt.Sprintf("✅ <b>Log destination set!</b> All tags, mentions, and PMs will be forwarded here (ID: <code>%d</code>).", chatID))
+	return ctx.EditOrReply(fmt.Sprintf("✅ <b>Log destination set!</b> All tags, mentions, and PMs will be forwarded here (ID: <code>%d</code>).", chatID))
 }
 
 func (p *Plugin) handleLogStatus(ctx *core.Context) error {
 	if p.svc == nil {
-		return ctx.Reply("⚠️ UserLog service is not configured.")
+		return ctx.EditOrReply("⚠️ UserLog service is not configured.")
 	}
 
 	if len(ctx.Args) >= 2 {
@@ -161,18 +161,18 @@ func (p *Plugin) handleLogStatus(ctx *core.Context) error {
 		case "pms", "pm", "dms":
 			settingKey = userlog.SettingPMsEnable
 		default:
-			return ctx.Reply("⚠️ Unknown category. Choose <code>tags</code> or <code>pms</code>.")
+			return ctx.EditOrReply("⚠️ Unknown category. Choose <code>tags</code> or <code>pms</code>.")
 		}
 
 		if err := p.svc.SetFeatureEnabled(ctx.Ctx, settingKey, enable); err != nil {
-			return ctx.Reply(fmt.Sprintf("❌ Failed to update setting: %v", err))
+			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to update setting: %v", err))
 		}
 
 		status := "DISABLED"
 		if enable {
 			status = "ENABLED"
 		}
-		return ctx.Reply(fmt.Sprintf("✅ Logging for <code>%s</code> is now <b>%s</b>.", category, status))
+		return ctx.EditOrReply(fmt.Sprintf("✅ Logging for <code>%s</code> is now <b>%s</b>.", category, status))
 	}
 
 	logChat, _ := p.svc.GetLogChat(ctx.Ctx)
@@ -202,5 +202,5 @@ func (p *Plugin) handleLogStatus(ctx *core.Context) error {
 		destStr, tagsStr, pmsStr,
 	)
 
-	return ctx.Reply(text)
+	return ctx.EditOrReply(text)
 }

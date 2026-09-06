@@ -12,6 +12,7 @@ import (
 type mockService struct {
 	core.MockTelegramServicer
 	sent         string
+	edited       string
 	forwardedIDs []int
 }
 
@@ -20,6 +21,7 @@ func (m *mockService) SendMessage(ctx context.Context, peer tg.InputPeerClass, t
 	return &tg.Message{ID: 10, Message: text}, nil
 }
 func (m *mockService) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
+	m.edited = text
 	return nil
 }
 func (m *mockService) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {
@@ -110,7 +112,7 @@ func TestForwardPlugin(t *testing.T) {
 	if len(svc.forwardedIDs) != 1 || svc.forwardedIDs[0] != 777 {
 		t.Errorf("expected forwarded ID 777, got %v", svc.forwardedIDs)
 	}
-	if !strings.Contains(svc.sent, "Saved Messages") {
-		t.Errorf("expected reply to mention Saved Messages, got %s", svc.sent)
+	if !strings.Contains(svc.edited, "Saved Messages") {
+		t.Errorf("expected reply to mention Saved Messages, got %s", svc.edited)
 	}
 }

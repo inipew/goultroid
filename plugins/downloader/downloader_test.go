@@ -127,11 +127,10 @@ func TestDownloaderPlugin(t *testing.T) {
 		t.Fatalf("unexpected error running download: %v", err)
 	}
 
-	if !strings.Contains(svc.sent, "Downloading") {
-		t.Errorf("expected initial reply to mention Downloading, got %s", svc.sent)
-	}
+	// With edit-in-place UX, the trigger msg is first edited with "⏳ Downloading..."
+	// then again with the final result. svc.edited holds the last write.
 	if !strings.Contains(svc.edited, "Download Complete") || !strings.Contains(svc.edited, "sample.mp4") {
-		t.Errorf("expected edit message to report complete and filename, got %s", svc.edited)
+		t.Errorf("expected final edit to report complete and filename, got %s", svc.edited)
 	}
 
 	// Test no media & no URL
@@ -144,8 +143,8 @@ func TestDownloaderPlugin(t *testing.T) {
 	if err := cmds[0].Handler(emptyCtx); err != nil {
 		t.Fatalf("unexpected error running download with no media: %v", err)
 	}
-	if !strings.Contains(svc.sent, "No media or URL found") {
-		t.Errorf("expected 'No media or URL found', got %s", svc.sent)
+	if !strings.Contains(svc.edited, "No media or URL found") {
+		t.Errorf("expected 'No media or URL found', got %s", svc.edited)
 	}
 }
 

@@ -16,11 +16,17 @@ import (
 type mockTelegram struct {
 	core.MockTelegramServicer
 	sentText string
+	edited   string
 }
 
 func (m *mockTelegram) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
 	m.sentText = text
 	return &tg.Message{ID: 1, Message: text}, nil
+}
+
+func (m *mockTelegram) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
+	m.edited = text
+	return nil
 }
 
 func setupTestDB(t *testing.T) *database.DB {
@@ -60,8 +66,8 @@ func TestUserLogPlugin(t *testing.T) {
 	if err := cmds[0].Handler(setLogCtx); err != nil {
 		t.Fatalf("handleSetLog failed: %v", err)
 	}
-	if !strings.Contains(mockTG.sentText, "Log destination set") {
-		t.Errorf("expected destination set notice, got %s", mockTG.sentText)
+	if !strings.Contains(mockTG.edited, "Log destination set") {
+		t.Errorf("expected destination set notice, got %s", mockTG.edited)
 	}
 
 	chat, _ := svc.GetLogChat(context.Background())
@@ -79,8 +85,8 @@ func TestUserLogPlugin(t *testing.T) {
 	if err := cmds[1].Handler(statusCtx); err != nil {
 		t.Fatalf("handleLogStatus failed: %v", err)
 	}
-	if !strings.Contains(mockTG.sentText, "UserLog Configuration") {
-		t.Errorf("expected config overview, got %s", mockTG.sentText)
+	if !strings.Contains(mockTG.edited, "UserLog Configuration") {
+		t.Errorf("expected config overview, got %s", mockTG.edited)
 	}
 
 	// 3. .log tags off
@@ -94,8 +100,8 @@ func TestUserLogPlugin(t *testing.T) {
 	if err := cmds[1].Handler(toggleCtx); err != nil {
 		t.Fatalf("handleLogStatus toggle failed: %v", err)
 	}
-	if !strings.Contains(mockTG.sentText, "DISABLED") {
-		t.Errorf("expected DISABLED notice, got %s", mockTG.sentText)
+	if !strings.Contains(mockTG.edited, "DISABLED") {
+		t.Errorf("expected DISABLED notice, got %s", mockTG.edited)
 	}
 }
 

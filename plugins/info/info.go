@@ -75,12 +75,12 @@ func (p *Plugin) Commands() []core.Command {
 func (p *Plugin) handleWhois(ctx *core.Context) error {
 	inputUser, err := resolveInputUser(ctx)
 	if err != nil {
-		return ctx.Reply("⚠️ " + err.Error())
+		return ctx.EditOrReply("⚠️ " + err.Error())
 	}
 
 	fullUser, err := ctx.GetFullUser(inputUser)
 	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to fetch user info: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to fetch user info: %v", err))
 	}
 
 	var u *tg.User
@@ -92,7 +92,7 @@ func (p *Plugin) handleWhois(ctx *core.Context) error {
 	}
 
 	if u == nil {
-		return ctx.Reply("❌ Could not parse user details.")
+		return ctx.EditOrReply("❌ Could not parse user details.")
 	}
 
 	var sb strings.Builder
@@ -147,14 +147,14 @@ func (p *Plugin) handleWhois(ctx *core.Context) error {
 		sb.WriteString(fmt.Sprintf("• <b>Bio</b>: <code>%s</code>\n", core.EscapeHTML(fullUser.FullUser.About)))
 	}
 
-	return ctx.Reply(sb.String())
+	return ctx.EditOrReply(sb.String())
 }
 
 // handleChatInfo displays detailed metadata for groups, supergroups, and channels.
 func (p *Plugin) handleChatInfo(ctx *core.Context) error {
 	fullChat, err := ctx.GetFullChat()
 	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to fetch chat info: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to fetch chat info: %v", err))
 	}
 
 	var sb strings.Builder
@@ -207,7 +207,7 @@ func (p *Plugin) handleChatInfo(ctx *core.Context) error {
 		}
 	}
 
-	return ctx.Reply(sb.String())
+	return ctx.EditOrReply(sb.String())
 }
 
 // resolveInputUser determines the target user from reply, args, or self.
@@ -267,5 +267,5 @@ func (p *Plugin) handleID(ctx *core.Context) error {
 		}
 	}
 
-	return ctx.Reply(sb.String())
+	return ctx.EditOrReply(sb.String())
 }

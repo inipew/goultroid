@@ -12,6 +12,7 @@ import (
 type mockService struct {
 	core.MockTelegramServicer
 	sent        string
+	edited      string
 	pinnedID    int
 	silent      bool
 	unpinned    bool
@@ -23,6 +24,7 @@ func (m *mockService) SendMessage(ctx context.Context, peer tg.InputPeerClass, t
 	return &tg.Message{ID: 10, Message: text}, nil
 }
 func (m *mockService) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
+	m.edited = text
 	return nil
 }
 func (m *mockService) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {
@@ -109,8 +111,8 @@ func TestPinPlugin(t *testing.T) {
 	if svc.pinnedID != 42 || svc.silent {
 		t.Errorf("expected pinned ID 42 silent=false, got %d %v", svc.pinnedID, svc.silent)
 	}
-	if !strings.Contains(svc.sent, "pinned") {
-		t.Errorf("expected reply to mention pinned, got %s", svc.sent)
+	if !strings.Contains(svc.edited, "pinned") {
+		t.Errorf("expected reply to mention pinned, got %s", svc.edited)
 	}
 
 	// 2. Pin silent test
@@ -149,16 +151,16 @@ func TestPinPluginErrors(t *testing.T) {
 	if err := cmds[0].Handler(ctx); err == nil {
 		t.Errorf("expected pin to fail with permission denied")
 	}
-	if !strings.Contains(svc.sent, "bot/akun harus menjadi Admin") {
-		t.Errorf("expected admin notice, got: %s", svc.sent)
+	if !strings.Contains(svc.edited, "bot/akun harus menjadi Admin") {
+		t.Errorf("expected admin notice, got: %s", svc.edited)
 	}
 
 	// 2. Unpin permission error
 	if err := cmds[1].Handler(ctx); err == nil {
 		t.Errorf("expected unpin to fail with permission denied")
 	}
-	if !strings.Contains(svc.sent, "bot/akun harus menjadi Admin") {
-		t.Errorf("expected admin notice, got: %s", svc.sent)
+	if !strings.Contains(svc.edited, "bot/akun harus menjadi Admin") {
+		t.Errorf("expected admin notice, got: %s", svc.edited)
 	}
 
 	// 3. Unsupported error
@@ -166,7 +168,7 @@ func TestPinPluginErrors(t *testing.T) {
 	if err := cmds[0].Handler(ctx); err == nil {
 		t.Errorf("expected pin to fail with unsupported")
 	}
-	if !strings.Contains(svc.sent, "tidak didukung") {
-		t.Errorf("expected unsupported notice, got: %s", svc.sent)
+	if !strings.Contains(svc.edited, "tidak didukung") {
+		t.Errorf("expected unsupported notice, got: %s", svc.edited)
 	}
 }

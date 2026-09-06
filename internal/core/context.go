@@ -353,6 +353,12 @@ func (c *Context) Edit(text string) error {
 	return c.Messages().Edit(text)
 }
 
+// EditOrReply tries to edit the trigger (or last response) message in-place.
+// Falls back to Reply if editing fails. Canonical userbot UX helper.
+func (c *Context) EditOrReply(text string) error {
+	return c.Messages().EditOrReply(text)
+}
+
 // EditMarkup edits the response or command message with new text and markup.
 func (c *Context) EditMarkup(text string, markup tg.ReplyMarkupClass) error {
 	return c.Messages().EditMarkup(text, markup)

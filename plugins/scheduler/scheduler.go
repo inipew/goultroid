@@ -81,14 +81,14 @@ func (p *Plugin) Commands() []core.Command {
 
 func (p *Plugin) handleRemind(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		_ = ctx.Reply("⚠️ Usage: <code>.remind &lt;duration&gt; &lt;text&gt;</code> or reply to a message with <code>.remind &lt;duration&gt;</code>\nExample: <code>.remind 15m Take a break</code>")
+		_ = ctx.EditOrReply("⚠️ Usage: <code>.remind &lt;duration&gt; &lt;text&gt;</code> or reply to a message with <code>.remind &lt;duration&gt;</code>\nExample: <code>.remind 15m Take a break</code>")
 		return errors.New("missing arguments")
 	}
 
 	durStr := ctx.Args[0]
 	dur, err := scheduler.ParseDuration(durStr)
 	if err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Invalid duration %q: %v", durStr, err))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Invalid duration %q: %v", durStr, err))
 		return err
 	}
 
@@ -98,7 +98,7 @@ func (p *Plugin) handleRemind(ctx *core.Context) error {
 	} else {
 		reply, err := ctx.GetReply()
 		if err != nil || reply == nil || reply.Text == "" {
-			_ = ctx.Reply("⚠️ Please specify reminder text or reply to a text message.")
+			_ = ctx.EditOrReply("⚠️ Please specify reminder text or reply to a text message.")
 			return errors.New("missing reminder text")
 		}
 		text = reply.Text
@@ -110,16 +110,16 @@ func (p *Plugin) handleRemind(ctx *core.Context) error {
 
 	job, err := p.sched.ScheduleOnce(ctx.Ctx, chatID, peerType, accessHash, when, scheduler.ActionMessage, text, ctx.SenderID())
 	if err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Failed to schedule reminder: %v", err))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to schedule reminder: %v", err))
 		return err
 	}
 
-	return ctx.Reply(fmt.Sprintf("⏰ <b>Reminder set!</b>\nI will remind you in <code>%s</code>.\n<b>Job ID:</b> <code>#%d</code>", durStr, job.ID))
+	return ctx.EditOrReply(fmt.Sprintf("⏰ <b>Reminder set!</b>\nI will remind you in <code>%s</code>.\n<b>Job ID:</b> <code>#%d</code>", durStr, job.ID))
 }
 
 func (p *Plugin) handleSchedule(ctx *core.Context) error {
 	if len(ctx.Args) < 2 {
-		_ = ctx.Reply("⚠️ Usage: <code>.schedule [in|every] &lt;duration&gt; &lt;text/command&gt;</code>\nExamples:\n• <code>.schedule in 30m .whois @user</code>\n• <code>.schedule every 2h .alive</code>")
+		_ = ctx.EditOrReply("⚠️ Usage: <code>.schedule [in|every] &lt;duration&gt; &lt;text/command&gt;</code>\nExamples:\n• <code>.schedule in 30m .whois @user</code>\n• <code>.schedule every 2h .alive</code>")
 		return errors.New("missing arguments")
 	}
 
@@ -138,14 +138,14 @@ func (p *Plugin) handleSchedule(ctx *core.Context) error {
 	}
 
 	if len(ctx.Args) <= payloadIdx {
-		_ = ctx.Reply("⚠️ Please provide a text or command payload to schedule.")
+		_ = ctx.EditOrReply("⚠️ Please provide a text or command payload to schedule.")
 		return errors.New("missing schedule payload")
 	}
 
 	durStr := ctx.Args[durIdx]
 	dur, err := scheduler.ParseDuration(durStr)
 	if err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Invalid duration %q: %v", durStr, err))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Invalid duration %q: %v", durStr, err))
 		return err
 	}
 
@@ -156,7 +156,7 @@ func (p *Plugin) handleSchedule(ctx *core.Context) error {
 	}
 	payload := strings.TrimSpace(strings.TrimPrefix(ctx.RawArgs, prefixToStrip))
 	if payload == "" {
-		_ = ctx.Reply("⚠️ Payload cannot be empty.")
+		_ = ctx.EditOrReply("⚠️ Payload cannot be empty.")
 		return errors.New("empty payload")
 	}
 
@@ -171,31 +171,31 @@ func (p *Plugin) handleSchedule(ctx *core.Context) error {
 	if isRecurring {
 		job, err := p.sched.ScheduleRecurring(ctx.Ctx, chatID, peerType, accessHash, dur, actionType, payload, ctx.SenderID())
 		if err != nil {
-			_ = ctx.Reply(fmt.Sprintf("❌ Failed to create recurring schedule: %v", err))
+			_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to create recurring schedule: %v", err))
 			return err
 		}
-		return ctx.Reply(fmt.Sprintf("📅 <b>Recurring schedule created!</b>\n<b>Interval:</b> every <code>%s</code>\n<b>Type:</b> <code>%s</code>\n<b>Action:</b> <code>%s</code>\n<b>Job ID:</b> <code>#%d</code>", durStr, actionType, payload, job.ID))
+		return ctx.EditOrReply(fmt.Sprintf("📅 <b>Recurring schedule created!</b>\n<b>Interval:</b> every <code>%s</code>\n<b>Type:</b> <code>%s</code>\n<b>Action:</b> <code>%s</code>\n<b>Job ID:</b> <code>#%d</code>", durStr, actionType, payload, job.ID))
 	}
 
 	when := time.Now().Add(dur)
 	job, err := p.sched.ScheduleOnce(ctx.Ctx, chatID, peerType, accessHash, when, actionType, payload, ctx.SenderID())
 	if err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Failed to create schedule: %v", err))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to create schedule: %v", err))
 		return err
 	}
-	return ctx.Reply(fmt.Sprintf("📅 <b>Schedule created!</b>\n<b>Due in:</b> <code>%s</code>\n<b>Type:</b> <code>%s</code>\n<b>Action:</b> <code>%s</code>\n<b>Job ID:</b> <code>#%d</code>", durStr, actionType, payload, job.ID))
+	return ctx.EditOrReply(fmt.Sprintf("📅 <b>Schedule created!</b>\n<b>Due in:</b> <code>%s</code>\n<b>Type:</b> <code>%s</code>\n<b>Action:</b> <code>%s</code>\n<b>Job ID:</b> <code>#%d</code>", durStr, actionType, payload, job.ID))
 }
 
 func (p *Plugin) handleList(ctx *core.Context) error {
 	chatID := getChatID(ctx)
 	jobs, err := p.sched.List(ctx.Ctx, chatID)
 	if err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Failed to list schedules: %v", err))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to list schedules: %v", err))
 		return err
 	}
 
 	if len(jobs) == 0 {
-		return ctx.Reply("ℹ️ No active scheduled jobs in this chat.")
+		return ctx.EditOrReply("ℹ️ No active scheduled jobs in this chat.")
 	}
 
 	var sb strings.Builder
@@ -227,40 +227,40 @@ func (p *Plugin) handleList(ctx *core.Context) error {
 		}
 	}
 
-	return ctx.Reply(sb.String())
+	return ctx.EditOrReply(sb.String())
 }
 
 func (p *Plugin) handleCancel(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		_ = ctx.Reply("⚠️ Usage: <code>.cancelschedule &lt;id&gt;</code>")
+		_ = ctx.EditOrReply("⚠️ Usage: <code>.cancelschedule &lt;id&gt;</code>")
 		return errors.New("missing job id")
 	}
 
 	idStr := strings.TrimPrefix(ctx.Args[0], "#")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Invalid job ID %q: %v", idStr, err))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Invalid job ID %q: %v", idStr, err))
 		return err
 	}
 
 	if err := p.sched.Cancel(ctx.Ctx, id); err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Failed to cancel job #%d: %v", id, err))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to cancel job #%d: %v", id, err))
 		return err
 	}
 
-	return ctx.Reply(fmt.Sprintf("🗑️ Scheduled job <code>#%d</code> canceled successfully.", id))
+	return ctx.EditOrReply(fmt.Sprintf("🗑️ Scheduled job <code>#%d</code> canceled successfully.", id))
 }
 
 func (p *Plugin) handleSchedHistory(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		_ = ctx.Reply("⚠️ Usage: <code>.schedhistory &lt;id&gt; [limit]</code>")
+		_ = ctx.EditOrReply("⚠️ Usage: <code>.schedhistory &lt;id&gt; [limit]</code>")
 		return errors.New("missing job id")
 	}
 
 	idStr := strings.TrimPrefix(ctx.Args[0], "#")
 	jobID, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Invalid job ID %q: %v", idStr, err))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Invalid job ID %q: %v", idStr, err))
 		return err
 	}
 
@@ -276,12 +276,12 @@ func (p *Plugin) handleSchedHistory(ctx *core.Context) error {
 
 	entries, err := p.sched.JobHistory(ctx.Ctx, jobID, limit)
 	if err != nil {
-		_ = ctx.Reply(fmt.Sprintf("❌ Failed to fetch history for job #%d: %v", jobID, err))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to fetch history for job #%d: %v", jobID, err))
 		return err
 	}
 
 	if len(entries) == 0 {
-		return ctx.Reply(fmt.Sprintf("ℹ️ No execution history found for job <code>#%d</code>.", jobID))
+		return ctx.EditOrReply(fmt.Sprintf("ℹ️ No execution history found for job <code>#%d</code>.", jobID))
 	}
 
 	var sb strings.Builder
@@ -307,7 +307,7 @@ func (p *Plugin) handleSchedHistory(ctx *core.Context) error {
 		)
 	}
 
-	return ctx.Reply(sb.String())
+	return ctx.EditOrReply(sb.String())
 }
 
 func getChatID(ctx *core.Context) int64 {
