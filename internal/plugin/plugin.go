@@ -1,6 +1,10 @@
 package plugin
 
-import "github.com/inipew/goultroid/internal/core"
+import (
+	"context"
+
+	"github.com/inipew/goultroid/internal/core"
+)
 
 // Plugin is the standard interface that all userbot plugins must implement.
 type Plugin interface {
@@ -12,10 +16,18 @@ type Plugin interface {
 	Init() error
 }
 
-// Shutdowner is an optional interface that plugins can implement
-// if they need to release resources or close connections on exit.
+// Shutdowner is the legacy shutdown interface. It is retained for plugins that
+// do not need cancellation-aware teardown. Shutdown is invoked synchronously so
+// the application never closes shared resources while a legacy plugin is still
+// using them.
 type Shutdowner interface {
 	Shutdown() error
+}
+
+// ContextShutdowner is the preferred lifecycle interface for plugins that own
+// goroutines, network clients, timers, or other cancellable resources.
+type ContextShutdowner interface {
+	ShutdownContext(context.Context) error
 }
 
 // Metadata describes authorship, version, and details of a plugin.
