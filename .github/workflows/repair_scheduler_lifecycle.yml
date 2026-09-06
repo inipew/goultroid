@@ -41,6 +41,16 @@ jobs:
           new_query = '''\tquery := `SELECT ` + scheduledJobColumns + `\n\t\tFROM scheduled_jobs\n\t\tWHERE (status = 'pending' AND next_run_at <= ?)\n\t\t   OR (status = 'running' AND lease_until IS NOT NULL AND lease_until < ? AND next_run_at <= ?)\n\t\tORDER BY next_run_at ASC`'''
           if old_query in text:
               text = text.replace(old_query, new_query, 1)
+          old_due_args = 'rows, err := d.QueryContext(ctx, query, before)'
+          if old_due_args in text:
+              text = text.replace(old_due_args, 'rows, err := d.QueryContext(ctx, query, before, before, before)', 1)
+
+          marker = 'func (d *DB) ClaimDueScheduledJobs(ctx context.Context, now time.Time, limit int, lease time.Duration)'
+          helper_marker = 'func (d *DB) claimDueScheduledJobsOnce(ctx context.Context, now time.Time, limit int, lease time.Duration)'
+          if marker in text and helper_marker not in text:
+              text = text.replace(marker, helper_marker, 1)
+              helper = '''func (d *DB) ClaimDueScheduledJobs(ctx context.Context, now time.Time, limit int, lease time.Duration) ([]ScheduledJob, error) {\n\tconst maxAttempts = 5\n\tfor attempt := 0; attempt < maxAttempts; attempt++ {\n\t\tjobs, err := d.claimDueScheduledJobsOnce(ctx, now, limit, lease)\n\t\tif err == nil {\n\t\t\treturn jobs, nil\n\t\t}\n\t\tif !isRetryableSQLiteLock(err) || attempt == maxAttempts-1 {\n\t\t\treturn nil, err\n\t\t}\n\t\tdelay := time.Duration(25*(1<<attempt)) * time.Millisecond\n\t\ttimer := time.NewTimer(delay)\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\tif !timer.Stop() {\n\t\t\t\t<-timer.C\n\t\t\t}\n\t\t\treturn nil, ctx.Err()\n\t\tcase <-timer.C:\n\t\t}\n\t}\n\treturn nil, errors.New("scheduled job claim retry loop exhausted")\n}\n\nfunc isRetryableSQLiteLock(err error) bool {\n\tif err == nil {\n\t\treturn false\n\t}\n\tmessage := err.Error()\n\treturn strings.Contains(message, "SQLITE_BUSY") ||\n\t\tstrings.Contains(message, "SQLITE_LOCKED") ||\n\t\tstrings.Contains(message, "database is locked")\n}\n\n'''
+              text = text.replace(helper_marker, helper + helper_marker, 1)
           repo.write_text(text)
 
           engine = Path('internal/scheduler/engine.go')
