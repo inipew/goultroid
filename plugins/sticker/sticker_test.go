@@ -169,7 +169,7 @@ func TestSticker_InvalidMediaType(t *testing.T) {
 
 func TestCalculateStickerDimensions(t *testing.T) {
 	tests := []struct {
-		w, h     int
+		w, h       int
 		expW, expH int
 	}{
 		{1000, 500, 512, 256},

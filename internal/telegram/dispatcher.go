@@ -10,22 +10,27 @@ import (
 	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/services/callback"
+	"github.com/inipew/goultroid/internal/services/inline"
 	"go.uber.org/zap"
 )
 
 // Dispatcher processes incoming Telegram updates and routes them to userbot commands.
 type Dispatcher struct {
-	router   *core.Router
-	perms    *core.Permissions
-	svc      core.TelegramServicer
-	logger   *zap.Logger
-	cooldown *core.CooldownTracker
-	executor *core.CommandExecutor
-	selfID   int64
-	resolver core.PeerResolver
-	rootCtx  context.Context
-	eventBus *core.EventBus
-	albumBuffer *core.AlbumBuffer
+	router         *core.Router
+	perms          *core.Permissions
+	svc            core.TelegramServicer
+	logger         *zap.Logger
+	cooldown       *core.CooldownTracker
+	executor       *core.CommandExecutor
+	selfID         int64
+	resolver       core.PeerResolver
+	rootCtx        context.Context
+	eventBus       *core.EventBus
+	albumBuffer    *core.AlbumBuffer
+	localizer      core.Localizer
+	callbackRouter *callback.Router
+	inlineEngine   *inline.Engine
 
 	messageHandlers []MessageHandler
 	mu              sync.RWMutex
@@ -161,7 +166,46 @@ func (d *Dispatcher) AlbumBuffer() *core.AlbumBuffer {
 	return d.albumBuffer
 }
 
-// RegisterHooks binds message, edit, delete, callback query, and reaction handlers to a tg.UpdateDispatcher.
+// SetLocalizer configures the internationalization provider.
+func (d *Dispatcher) SetLocalizer(l core.Localizer) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.localizer = l
+}
+
+func (d *Dispatcher) getLocalizer() core.Localizer {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.localizer
+}
+
+// SetCallbackRouter configures the router for button callback queries.
+func (d *Dispatcher) SetCallbackRouter(r *callback.Router) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.callbackRouter = r
+}
+
+func (d *Dispatcher) getCallbackRouter() *callback.Router {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.callbackRouter
+}
+
+// SetInlineEngine configures the inline query evaluation engine.
+func (d *Dispatcher) SetInlineEngine(e *inline.Engine) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.inlineEngine = e
+}
+
+func (d *Dispatcher) getInlineEngine() *inline.Engine {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.inlineEngine
+}
+
+// RegisterHooks binds message, edit, delete, callback query, inline query, and reaction handlers to a tg.UpdateDispatcher.
 func (d *Dispatcher) RegisterHooks(dispatcher *tg.UpdateDispatcher) {
 	dispatcher.OnNewMessage(d.OnNewMessage)
 	dispatcher.OnNewChannelMessage(d.OnNewChannelMessage)
@@ -171,6 +215,7 @@ func (d *Dispatcher) RegisterHooks(dispatcher *tg.UpdateDispatcher) {
 	dispatcher.OnDeleteChannelMessages(d.OnDeleteChannelMessages)
 	dispatcher.OnBotCallbackQuery(d.OnBotCallbackQuery)
 	dispatcher.OnInlineBotCallbackQuery(d.OnInlineBotCallbackQuery)
+	dispatcher.OnBotInlineQuery(d.OnBotInlineQuery)
 	dispatcher.OnMessageReactions(d.OnMessageReactions)
 }
 
@@ -262,35 +307,56 @@ func (d *Dispatcher) OnDeleteChannelMessages(ctx context.Context, e tg.Entities,
 
 // OnBotCallbackQuery handles inline keyboard button callback queries.
 func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, update *tg.UpdateBotCallbackQuery) error {
-	bus := d.getEventBus()
-	if bus == nil {
-		return nil
-	}
 	chatID := extractChatIDFromPeer(update.Peer)
-	bus.Publish(&core.CallbackQueryEvent{
+	evt := &core.CallbackQueryEvent{
 		At:      time.Now(),
 		QueryID: update.QueryID,
 		UserID:  update.UserID,
 		ChatID:  chatID,
 		MsgID:   update.MsgID,
 		Data:    update.Data,
-	})
+	}
+
+	bus := d.getEventBus()
+	if bus != nil {
+		bus.Publish(evt)
+	}
+
+	cbRouter := d.getCallbackRouter()
+	if cbRouter != nil {
+		_ = cbRouter.Dispatch(ctx, evt, d.getService())
+	}
 	return nil
 }
 
 // OnInlineBotCallbackQuery handles inline message button callback queries.
 func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities, update *tg.UpdateInlineBotCallbackQuery) error {
-	bus := d.getEventBus()
-	if bus == nil {
-		return nil
-	}
-	bus.Publish(&core.CallbackQueryEvent{
+	evt := &core.CallbackQueryEvent{
 		At:      time.Now(),
 		QueryID: update.QueryID,
 		UserID:  update.UserID,
 		Data:    update.Data,
-	})
+	}
+
+	bus := d.getEventBus()
+	if bus != nil {
+		bus.Publish(evt)
+	}
+
+	cbRouter := d.getCallbackRouter()
+	if cbRouter != nil {
+		_ = cbRouter.Dispatch(ctx, evt, d.getService())
+	}
 	return nil
+}
+
+// OnBotInlineQuery handles incoming inline search query requests.
+func (d *Dispatcher) OnBotInlineQuery(ctx context.Context, e tg.Entities, update *tg.UpdateBotInlineQuery) error {
+	engine := d.getInlineEngine()
+	if engine == nil {
+		return nil
+	}
+	return engine.Execute(ctx, d.getService(), update.QueryID, update.UserID, update.Query, update.Offset)
 }
 
 // OnMessageReactions handles reaction updates on messages.
@@ -484,18 +550,19 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	}
 
 	coreCtx := &core.Context{
-		Ctx:      execCtx,
-		Command:  parsed.Name,
-		Args:     parsed.Args,
-		RawArgs:  parsed.RawArgs,
-		Message:  coreMsg,
-		Album:    album,
-		Chat:     chat,
-		Sender:   sender,
-		Perms:    d.perms,
-		Svc:      d.getService(),
-		PeerID:   peerInput,
-		Resolver: d.getResolver(),
+		Ctx:       execCtx,
+		Command:   parsed.Name,
+		Args:      parsed.Args,
+		RawArgs:   parsed.RawArgs,
+		Message:   coreMsg,
+		Album:     album,
+		Chat:      chat,
+		Sender:    sender,
+		Perms:     d.perms,
+		Svc:       d.getService(),
+		PeerID:    peerInput,
+		Resolver:  d.getResolver(),
+		Localizer: d.getLocalizer(),
 	}
 
 	// Execute command asynchronously with application-scoped context
@@ -561,4 +628,3 @@ func (d *Dispatcher) safeExecuteInterceptor(
 		d.logger.Warn("message interceptor returned error", zap.Error(err))
 	}
 }
-

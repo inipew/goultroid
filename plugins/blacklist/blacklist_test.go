@@ -12,9 +12,9 @@ import (
 
 type mockService struct {
 	core.MockTelegramServicer
-	sent           string
-	deletedMsgIDs  []int
-	deleteCalled   bool
+	sent          string
+	deletedMsgIDs []int
+	deleteCalled  bool
 }
 
 func (m *mockService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {

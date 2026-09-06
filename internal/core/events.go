@@ -37,7 +37,7 @@ type MessageCreatedEvent struct {
 	PeerID  interface{} // tg.InputPeerClass — kept as interface{} to avoid circular tg import
 }
 
-func (e *MessageCreatedEvent) Type() EventType    { return EventTypeMessageCreated }
+func (e *MessageCreatedEvent) Type() EventType      { return EventTypeMessageCreated }
 func (e *MessageCreatedEvent) Timestamp() time.Time { return e.At }
 
 // MessageEditedEvent is emitted when a message in a chat the bot monitors is edited.
@@ -48,7 +48,7 @@ type MessageEditedEvent struct {
 	Text   string
 }
 
-func (e *MessageEditedEvent) Type() EventType    { return EventTypeMessageEdited }
+func (e *MessageEditedEvent) Type() EventType      { return EventTypeMessageEdited }
 func (e *MessageEditedEvent) Timestamp() time.Time { return e.At }
 
 // MessagesDeletedEvent is emitted when one or more messages are deleted.
@@ -58,7 +58,7 @@ type MessagesDeletedEvent struct {
 	MsgIDs []int
 }
 
-func (e *MessagesDeletedEvent) Type() EventType    { return EventTypeMessagesDeleted }
+func (e *MessagesDeletedEvent) Type() EventType      { return EventTypeMessagesDeleted }
 func (e *MessagesDeletedEvent) Timestamp() time.Time { return e.At }
 
 // CallbackQueryEvent is emitted when a user interacts with an inline keyboard button.
@@ -71,7 +71,7 @@ type CallbackQueryEvent struct {
 	Data    []byte
 }
 
-func (e *CallbackQueryEvent) Type() EventType     { return EventTypeCallbackQuery }
+func (e *CallbackQueryEvent) Type() EventType      { return EventTypeCallbackQuery }
 func (e *CallbackQueryEvent) Timestamp() time.Time { return e.At }
 
 // ReactionUpdatedEvent is emitted when reactions on a message are updated.
@@ -82,9 +82,8 @@ type ReactionUpdatedEvent struct {
 	Reaction string
 }
 
-func (e *ReactionUpdatedEvent) Type() EventType     { return EventTypeReactionUpdated }
+func (e *ReactionUpdatedEvent) Type() EventType      { return EventTypeReactionUpdated }
 func (e *ReactionUpdatedEvent) Timestamp() time.Time { return e.At }
-
 
 // EventHandler is a callback invoked when a subscribed event is published.
 type EventHandler func(event Event)

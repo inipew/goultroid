@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -496,11 +497,13 @@ func TestMigrations_Versioning(t *testing.T) {
 		}
 		migrations = append(migrations, m)
 	}
-	if len(migrations) != 7 {
-		t.Fatalf("expected 7 applied migrations, got %d", len(migrations))
+	if len(migrations) != 11 {
+		t.Fatalf("expected 11 applied migrations, got %d", len(migrations))
 	}
-	if migrations[0].version != 1 || migrations[1].version != 2 || migrations[2].version != 3 || migrations[3].version != 4 || migrations[4].version != 5 || migrations[5].version != 6 || migrations[6].version != 7 {
-		t.Errorf("unexpected migration versions: %+v", migrations)
+	for i := 0; i < 11; i++ {
+		if migrations[i].version != i+1 {
+			t.Errorf("expected migration index %d to have version %d, got %d", i, i+1, migrations[i].version)
+		}
 	}
 
 	// Test legacy adoption
@@ -538,13 +541,75 @@ func TestMigrations_Versioning(t *testing.T) {
 		t.Fatalf("migrate failed on legacy db: %v", err)
 	}
 
-	// Verify all 7 migrations are recorded
+	// Verify all 9 migrations are recorded
 	var count int
 	if err := rawDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatalf("failed to count schema_migrations: %v", err)
 	}
-	if count != 7 {
-		t.Fatalf("expected 7 migrations in legacy db after runMigrations, got %d", count)
+	if count != len(migrations) {
+		t.Fatalf("expected %d migrations in legacy db after runMigrations, got %d", len(migrations), count)
+	}
+}
+
+func TestMigrations_ChecksumValidation(t *testing.T) {
+	ctx := context.Background()
+	db := setupTestDB(t)
+
+	// 1. Verify all migrations have non-empty checksums
+	rows, err := db.QueryContext(ctx, "SELECT version, checksum FROM schema_migrations ORDER BY version ASC")
+	if err != nil {
+		t.Fatalf("failed to query schema_migrations: %v", err)
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var v int
+		var cs string
+		if err := rows.Scan(&v, &cs); err != nil {
+			t.Fatalf("failed to scan migration: %v", err)
+		}
+		if cs == "" {
+			t.Errorf("expected migration %d to have non-empty checksum", v)
+		}
+		count++
+	}
+	if count != len(migrations) {
+		t.Fatalf("expected %d migrations, got %d", len(migrations), count)
+	}
+
+	// 2. Tampering detection: simulate altered checksum in schema_migrations
+	_, err = db.ExecContext(ctx, "UPDATE schema_migrations SET checksum = 'tampered-hash' WHERE version = 1")
+	if err != nil {
+		t.Fatalf("failed to tamper checksum: %v", err)
+	}
+
+	// Running migrate again should detect tampering and return an error
+	err = db.migrate(ctx)
+	if err == nil {
+		t.Fatalf("expected error on tampered migration checksum, got nil")
+	}
+	if !strings.Contains(err.Error(), "migration checksum mismatch") {
+		t.Errorf("expected checksum mismatch error, got: %v", err)
+	}
+
+	// 3. Checksum backfilling: if checksum is empty, migrate should backfill it
+	_, err = db.ExecContext(ctx, "UPDATE schema_migrations SET checksum = '' WHERE version = 1")
+	if err != nil {
+		t.Fatalf("failed to clear checksum: %v", err)
+	}
+
+	if err := db.migrate(ctx); err != nil {
+		t.Fatalf("migrate failed on empty checksum: %v", err)
+	}
+
+	var backfilled string
+	if err := db.QueryRowContext(ctx, "SELECT checksum FROM schema_migrations WHERE version = 1").Scan(&backfilled); err != nil {
+		t.Fatalf("failed to query backfilled checksum: %v", err)
+	}
+	expected := calculateMigrationChecksum(migrations[0])
+	if backfilled != expected {
+		t.Errorf("expected backfilled checksum %s, got %s", expected, backfilled)
 	}
 }
 
@@ -602,12 +667,12 @@ func TestRecordJobFailure(t *testing.T) {
 	ctx := context.Background()
 
 	job := &ScheduledJob{
-		ChatID:          999,
-		PeerType:        "chat",
-		ActionType:      "message",
-		Payload:         "test failure",
-		NextRunAt:       time.Now(),
-		CreatedBy:       111,
+		ChatID:     999,
+		PeerType:   "chat",
+		ActionType: "message",
+		Payload:    "test failure",
+		NextRunAt:  time.Now(),
+		CreatedBy:  111,
 	}
 	created, err := db.CreateScheduledJob(ctx, job)
 	if err != nil {
@@ -1145,5 +1210,305 @@ func TestPeerEntity_SaveAndFindByUsername(t *testing.T) {
 	}
 	if foundNonExistent {
 		t.Errorf("expected found=false for non-existent user")
+	}
+}
+
+func TestModeration_Warnings(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	chatID := int64(-100123)
+	userID := int64(456)
+	warnedBy := int64(789)
+
+	// 1. Initial count 0
+	cnt, err := db.GetWarningCount(ctx, chatID, userID)
+	if err != nil {
+		t.Fatalf("GetWarningCount error: %v", err)
+	}
+	if cnt != 0 {
+		t.Fatalf("expected 0 warnings, got %d", cnt)
+	}
+
+	// 2. Add warnings
+	if err := db.AddWarning(ctx, chatID, userID, "rule violation 1", warnedBy); err != nil {
+		t.Fatalf("failed to add warning: %v", err)
+	}
+	if err := db.AddWarning(ctx, chatID, userID, "rule violation 2", warnedBy); err != nil {
+		t.Fatalf("failed to add second warning: %v", err)
+	}
+
+	// 3. Verify count and list
+	cnt, err = db.GetWarningCount(ctx, chatID, userID)
+	if err != nil || cnt != 2 {
+		t.Errorf("expected 2 warnings, got %d (err=%v)", cnt, err)
+	}
+
+	records, err := db.GetWarnings(ctx, chatID, userID)
+	if err != nil || len(records) != 2 {
+		t.Fatalf("expected 2 records, got %d (err=%v)", len(records), err)
+	}
+	if records[0].Reason != "rule violation 2" || records[1].Reason != "rule violation 1" {
+		t.Errorf("unexpected record order: %+v", records)
+	}
+
+	// 4. Reset warnings
+	if err := db.ResetWarnings(ctx, chatID, userID); err != nil {
+		t.Fatalf("failed to reset warnings: %v", err)
+	}
+	cnt, err = db.GetWarningCount(ctx, chatID, userID)
+	if err != nil || cnt != 0 {
+		t.Errorf("expected 0 warnings after reset, got %d", cnt)
+	}
+}
+
+func TestPMPermitOperations(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	// 1. Initially non-existent
+	rec, err := db.GetPMRecord(ctx, 11111)
+	if err != nil {
+		t.Fatalf("GetPMRecord failed: %v", err)
+	}
+	if rec != nil {
+		t.Fatalf("expected nil record initially, got %+v", rec)
+	}
+
+	// 2. Set status to approved
+	exp := time.Now().Add(24 * time.Hour).UTC().Truncate(time.Second)
+	if err := db.SetPMStatus(ctx, 11111, "approved", "trusted contact", &exp); err != nil {
+		t.Fatalf("SetPMStatus failed: %v", err)
+	}
+
+	rec, err = db.GetPMRecord(ctx, 11111)
+	if err != nil || rec == nil {
+		t.Fatalf("expected record, got err=%v, rec=%+v", err, rec)
+	}
+	if rec.Status != "approved" || rec.Reason != "trusted contact" {
+		t.Errorf("unexpected record data: %+v", rec)
+	}
+
+	// 3. Increment warnings
+	w1, err := db.IncrementPMWarn(ctx, 22222)
+	if err != nil || w1 != 1 {
+		t.Errorf("expected warn count 1, got %d (err=%v)", w1, err)
+	}
+	w2, err := db.IncrementPMWarn(ctx, 22222)
+	if err != nil || w2 != 2 {
+		t.Errorf("expected warn count 2, got %d (err=%v)", w2, err)
+	}
+
+	rec2, err := db.GetPMRecord(ctx, 22222)
+	if err != nil || rec2 == nil || rec2.WarnCount != 2 {
+		t.Errorf("unexpected record 2: %+v (err=%v)", rec2, err)
+	}
+
+	// 4. Reset warnings
+	if err := db.ResetPMWarn(ctx, 22222); err != nil {
+		t.Fatalf("ResetPMWarn failed: %v", err)
+	}
+	rec2, _ = db.GetPMRecord(ctx, 22222)
+	if rec2.WarnCount != 0 {
+		t.Errorf("expected warn count 0 after reset, got %d", rec2.WarnCount)
+	}
+}
+
+func TestUserLogSettings(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	val, err := db.GetUserLogSetting(ctx, "log_chat_id")
+	if err != nil {
+		t.Fatalf("GetUserLogSetting failed: %v", err)
+	}
+	if val != "" {
+		t.Errorf("expected empty initial value, got %s", val)
+	}
+
+	if err := db.SetUserLogSetting(ctx, "log_chat_id", "-100123456789"); err != nil {
+		t.Fatalf("SetUserLogSetting failed: %v", err)
+	}
+
+	val, err = db.GetUserLogSetting(ctx, "log_chat_id")
+	if err != nil || val != "-100123456789" {
+		t.Errorf("expected -100123456789, got %s (err=%v)", val, err)
+	}
+}
+
+func TestVoiceOperations(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	// 1. Session initially nil
+	sess, err := db.GetVoiceSession(ctx, -100111)
+	if err != nil {
+		t.Fatalf("GetVoiceSession failed: %v", err)
+	}
+	if sess != nil {
+		t.Fatalf("expected nil session, got %+v", sess)
+	}
+
+	// 2. Upsert session
+	now := time.Now().UTC()
+	err = db.UpsertVoiceSession(ctx, &VoiceSessionRecord{
+		ChatID:     -100111,
+		State:      "PLAYING",
+		Volume:     120,
+		RepeatMode: "track",
+		UpdatedAt:  now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertVoiceSession failed: %v", err)
+	}
+
+	sess, err = db.GetVoiceSession(ctx, -100111)
+	if err != nil || sess == nil {
+		t.Fatalf("failed to retrieve upserted session: %v", err)
+	}
+	if sess.State != "PLAYING" || sess.Volume != 120 || sess.RepeatMode != "track" {
+		t.Errorf("unexpected session record: %+v", sess)
+	}
+
+	// 3. Queue operations: Add tracks
+	t1 := &VoiceQueueRecord{
+		ChatID:          -100111,
+		Title:           "Song 1",
+		Artist:          "Artist A",
+		SourceURL:       "https://example.com/1.mp3",
+		DurationSeconds: 180,
+		SourceType:      "audio",
+		RequesterID:     12345,
+	}
+	if err := db.AddVoiceQueueTrack(ctx, t1); err != nil {
+		t.Fatalf("AddVoiceQueueTrack failed: %v", err)
+	}
+	if t1.ID == 0 || t1.Position != 1 {
+		t.Errorf("expected track 1 ID > 0 and pos 1, got ID=%d pos=%d", t1.ID, t1.Position)
+	}
+
+	t2 := &VoiceQueueRecord{
+		ChatID:          -100111,
+		Title:           "Song 2",
+		Artist:          "Artist B",
+		SourceURL:       "https://example.com/2.mp3",
+		DurationSeconds: 240,
+		SourceType:      "audio",
+		RequesterID:     12345,
+	}
+	if err := db.AddVoiceQueueTrack(ctx, t2); err != nil {
+		t.Fatalf("AddVoiceQueueTrack 2 failed: %v", err)
+	}
+	if t2.Position != 2 {
+		t.Errorf("expected track 2 pos 2, got %d", t2.Position)
+	}
+
+	// 4. Get queue
+	queue, err := db.GetVoiceQueue(ctx, -100111)
+	if err != nil {
+		t.Fatalf("GetVoiceQueue failed: %v", err)
+	}
+	if len(queue) != 2 {
+		t.Fatalf("expected 2 items in queue, got %d", len(queue))
+	}
+	if queue[0].Title != "Song 1" || queue[1].Title != "Song 2" {
+		t.Errorf("unexpected queue ordering: %+v", queue)
+	}
+
+	// 5. Pop track
+	popped, err := db.PopVoiceQueueTrack(ctx, -100111)
+	if err != nil || popped == nil {
+		t.Fatalf("PopVoiceQueueTrack failed: %v", err)
+	}
+	if popped.Title != "Song 1" {
+		t.Errorf("expected popped title 'Song 1', got '%s'", popped.Title)
+	}
+
+	// Queue should now have 1 item
+	queue, _ = db.GetVoiceQueue(ctx, -100111)
+	if len(queue) != 1 || queue[0].Title != "Song 2" {
+		t.Errorf("expected 1 remaining track ('Song 2'), got %+v", queue)
+	}
+
+	// 6. Delete track by ID
+	if err := db.DeleteVoiceQueueTrack(ctx, queue[0].ID); err != nil {
+		t.Fatalf("DeleteVoiceQueueTrack failed: %v", err)
+	}
+	queue, _ = db.GetVoiceQueue(ctx, -100111)
+	if len(queue) != 0 {
+		t.Errorf("expected empty queue after delete, got %d", len(queue))
+	}
+
+	// 7. Pop on empty queue returns nil
+	poppedEmpty, err := db.PopVoiceQueueTrack(ctx, -100111)
+	if err != nil {
+		t.Fatalf("PopVoiceQueueTrack on empty failed: %v", err)
+	}
+	if poppedEmpty != nil {
+		t.Errorf("expected nil from empty pop, got %+v", poppedEmpty)
+	}
+}
+
+func TestAddonOperations(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	// 1. Initial list empty
+	addons, err := db.ListAddons(ctx)
+	if err != nil {
+		t.Fatalf("ListAddons failed: %v", err)
+	}
+	if len(addons) != 0 {
+		t.Fatalf("expected 0 addons, got %d", len(addons))
+	}
+
+	// 2. Save addon
+	now := time.Now().UTC()
+	a1 := &AddonRecord{
+		Name:         "weather-addon",
+		Version:      "1.0.0",
+		Description:  "Shows live weather data",
+		Author:       "Alice",
+		SourceURL:    "https://github.com/example/weather",
+		Status:       "active",
+		Capabilities: "telegram.send,media.download",
+		MinVersion:   "0.5.0",
+		InstalledAt:  now,
+		UpdatedAt:    now,
+	}
+	if err := db.SaveAddon(ctx, a1); err != nil {
+		t.Fatalf("SaveAddon failed: %v", err)
+	}
+
+	// 3. Get addon
+	got, err := db.GetAddon(ctx, "weather-addon")
+	if err != nil || got == nil {
+		t.Fatalf("GetAddon failed: %v", err)
+	}
+	if got.Author != "Alice" || got.Status != "active" || got.Capabilities != "telegram.send,media.download" {
+		t.Errorf("unexpected addon record: %+v", got)
+	}
+
+	// Case insensitive lookup
+	got2, err := db.GetAddon(ctx, "WEATHER-ADDON")
+	if err != nil || got2 == nil || got2.Name != "weather-addon" {
+		t.Errorf("case-insensitive lookup failed: %+v (err=%v)", got2, err)
+	}
+
+	// 4. Update status
+	if err := db.SetAddonStatus(ctx, "weather-addon", "disabled"); err != nil {
+		t.Fatalf("SetAddonStatus failed: %v", err)
+	}
+	gotDisabled, _ := db.GetAddon(ctx, "weather-addon")
+	if gotDisabled.Status != "disabled" {
+		t.Errorf("expected status 'disabled', got %s", gotDisabled.Status)
+	}
+
+	// 5. Delete addon
+	if err := db.DeleteAddon(ctx, "weather-addon"); err != nil {
+		t.Fatalf("DeleteAddon failed: %v", err)
+	}
+	gotDeleted, _ := db.GetAddon(ctx, "weather-addon")
+	if gotDeleted != nil {
+		t.Errorf("expected nil after delete, got %+v", gotDeleted)
 	}
 }

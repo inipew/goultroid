@@ -101,4 +101,3 @@ func TestCooldownTracker_Cleanup(t *testing.T) {
 		t.Errorf("expected 0 from nil tracker cleanup, got %d", n)
 	}
 }
-

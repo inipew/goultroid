@@ -15,6 +15,18 @@ import (
 	"go.uber.org/zap"
 )
 
+// MisfirePolicy controls how late or missed executions of recurring scheduled jobs are handled.
+type MisfirePolicy int
+
+const (
+	// MisfireRunOnce executes a late recurring job once immediately, resetting next run to now+interval.
+	MisfireRunOnce MisfirePolicy = iota
+	// MisfireSkip skips missed executions and advances next run to the future without running payload.
+	MisfireSkip
+	// MisfireCatchUp executes immediately and attempts catch-up.
+	MisfireCatchUp
+)
+
 // Engine implements Service for managing and dispatching scheduled tasks.
 type Engine struct {
 	db       database.Repository
@@ -23,6 +35,10 @@ type Engine struct {
 	perms    *core.Permissions
 	executor *core.CommandExecutor
 	logger   *zap.Logger
+
+	maxConcurrency int
+	sem            chan struct{}
+	misfirePolicy  MisfirePolicy
 
 	tasks   map[string]context.CancelFunc
 	tasksMu sync.RWMutex
@@ -48,15 +64,44 @@ func NewEngine(
 		logger = zap.NewNop()
 	}
 	executor := core.NewCommandExecutor(logger, nil, 30*time.Second)
+	const defaultConcurrency = 4
 	return &Engine{
-		db:       db,
-		svcFunc:  svcFunc,
-		router:   router,
-		perms:    perms,
-		executor: executor,
-		logger:   logger,
-		tasks:    make(map[string]context.CancelFunc),
+		db:             db,
+		svcFunc:        svcFunc,
+		router:         router,
+		perms:          perms,
+		executor:       executor,
+		logger:         logger,
+		tasks:          make(map[string]context.CancelFunc),
+		maxConcurrency: defaultConcurrency,
+		sem:            make(chan struct{}, defaultConcurrency),
+		misfirePolicy:  MisfireRunOnce,
 	}
+}
+
+// SetMaxConcurrency configures the maximum concurrent job execution limit.
+func (e *Engine) SetMaxConcurrency(n int) {
+	if n <= 0 {
+		n = 1
+	}
+	e.runMu.Lock()
+	defer e.runMu.Unlock()
+	e.maxConcurrency = n
+	e.sem = make(chan struct{}, n)
+}
+
+// SetMisfirePolicy configures the policy for handling late recurring jobs.
+func (e *Engine) SetMisfirePolicy(policy MisfirePolicy) {
+	e.runMu.Lock()
+	defer e.runMu.Unlock()
+	e.misfirePolicy = policy
+}
+
+// MisfirePolicy returns the configured misfire policy.
+func (e *Engine) MisfirePolicy() MisfirePolicy {
+	e.runMu.Lock()
+	defer e.runMu.Unlock()
+	return e.misfirePolicy
 }
 
 // SetExecutor overrides the CommandExecutor used for executing scheduled commands.
@@ -344,8 +389,18 @@ func (e *Engine) runLoop(ctx context.Context) {
 }
 
 func (e *Engine) processDueJobs(ctx context.Context, now time.Time) {
-	// Claim up to 10 due jobs with a 90-second lease (3x default execution timeout)
-	claimedJobs, err := e.db.ClaimDueScheduledJobs(ctx, now, 10, 90*time.Second)
+	// Bounded concurrency: do not claim more jobs than available worker slots
+	availableSlots := cap(e.sem) - len(e.sem)
+	if availableSlots <= 0 {
+		return
+	}
+	claimBatch := availableSlots
+	if claimBatch > 10 {
+		claimBatch = 10
+	}
+
+	// Claim up to claimBatch due jobs with a 90-second lease (3x default execution timeout)
+	claimedJobs, err := e.db.ClaimDueScheduledJobs(ctx, now, claimBatch, 90*time.Second)
 	if err != nil {
 		e.logger.Error("failed to claim due scheduled jobs", zap.Error(err))
 		return
@@ -356,19 +411,34 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) {
 
 	for _, job := range claimedJobs {
 		j := job
+		// Acquire concurrency semaphore slot
+		select {
+		case e.sem <- struct{}{}:
+		case <-ctx.Done():
+			return
+		}
+
 		e.wg.Add(1)
 		go func(targetJob database.ScheduledJob) {
-			defer e.wg.Done()
+			defer func() {
+				<-e.sem
+				e.wg.Done()
+			}()
 			// Lifecycle-bound child context: cancelled when scheduler stops, inherits timeout/cancellation.
 			// No context.WithoutCancel — jobs must not survive shutdown.
 			jobCtx, cancel := context.WithCancel(e.ctx)
 			defer cancel()
-			e.executeJob(jobCtx, targetJob)
+			e.executeJob(jobCtx, targetJob, cancel)
 		}(j)
 	}
 }
 
-func (e *Engine) executeJob(ctx context.Context, job database.ScheduledJob) {
+func (e *Engine) executeJob(ctx context.Context, job database.ScheduledJob, cancelFn ...context.CancelFunc) {
+	var cancel context.CancelFunc
+	if len(cancelFn) > 0 {
+		cancel = cancelFn[0]
+	}
+
 	defer func() {
 		if r := recover(); r != nil {
 			e.logger.Error("scheduled job execution panicked", zap.Int64("job_id", job.ID), zap.Any("panic", r))
@@ -390,10 +460,13 @@ func (e *Engine) executeJob(ctx context.Context, job database.ScheduledJob) {
 				return
 			case t := <-ticker.C:
 				if err := e.db.RenewJobLease(ctx, job.ID, job.ClaimToken, 90*time.Second, t.UTC()); err != nil {
-					e.logger.Debug("heartbeat lease renewal failed or lease lost",
+					e.logger.Warn("heartbeat lease renewal failed or lease lost, cancelling execution context",
 						zap.Int64("job_id", job.ID),
 						zap.Error(err),
 					)
+					if cancel != nil {
+						cancel()
+					}
 					return
 				}
 				e.logger.Debug("heartbeat renewed job lease", zap.Int64("job_id", job.ID))
@@ -402,6 +475,18 @@ func (e *Engine) executeJob(ctx context.Context, job database.ScheduledJob) {
 	}()
 
 	startTime := time.Now()
+
+	// Check misfire policy for overdue recurring jobs
+	if job.IntervalSeconds > 0 && time.Since(job.NextRunAt) > 1*time.Minute {
+		if e.misfirePolicy == MisfireSkip {
+			e.logger.Warn("recurring scheduled job misfired: skipping execution per MisfireSkip policy",
+				zap.Int64("job_id", job.ID),
+				zap.Time("next_run_at", job.NextRunAt),
+			)
+			_ = e.db.CompleteScheduledJob(ctx, job.ID, job.ClaimToken, 0, time.Now().UTC())
+			return
+		}
+	}
 
 	var execErr error
 	switch job.ActionType {
@@ -546,17 +631,18 @@ func (e *Engine) executeCommand(ctx context.Context, job database.ScheduledJob) 
 	}
 
 	coreCtx := &core.Context{
-		Ctx:       ctx,
-		Command:   parsed.Name,
-		Args:      parsed.Args,
-		RawArgs:   parsed.RawArgs,
-		Message:   coreMsg,
-		Chat:      chat,
-		Sender:    sender,
-		Perms:     e.perms,
-		Principal: principal,
-		Svc:       svc,
-		PeerID:    peer,
+		Ctx:           ctx,
+		CorrelationID: fmt.Sprintf("sched-%d-%d", job.ID, time.Now().UnixMilli()),
+		Command:       parsed.Name,
+		Args:          parsed.Args,
+		RawArgs:       parsed.RawArgs,
+		Message:       coreMsg,
+		Chat:          chat,
+		Sender:        sender,
+		Perms:         e.perms,
+		Principal:     principal,
+		Svc:           svc,
+		PeerID:        peer,
 	}
 
 	if err := e.executor.Execute(coreCtx, cmd); err != nil {

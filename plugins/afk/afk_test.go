@@ -241,4 +241,3 @@ func TestAFKPlugin_Cleanup(t *testing.T) {
 		t.Errorf("expected 102 to be purged from cooldown map")
 	}
 }
-

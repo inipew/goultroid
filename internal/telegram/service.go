@@ -218,6 +218,108 @@ func (s *Service) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID
 	return err
 }
 
+// SendMessageWithMarkup sends a text message with reply markup attached.
+func (s *Service) SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
+	if s.sender == nil {
+		return nil, fmt.Errorf("%w: sender is not initialized", core.ErrInternal)
+	}
+
+	return retryOnFloodWait(ctx, func() (*tg.Message, error) {
+		req := s.sender.To(peer)
+		var updates tg.UpdatesClass
+		var err error
+
+		if markup != nil {
+			b := req.Markup(markup)
+			updates, err = b.StyledText(ctx, html.String(nil, text))
+			if err != nil {
+				if _, isFlood := tgerr.AsFloodWait(err); isFlood {
+					return nil, err
+				}
+				updates, err = b.Text(ctx, text)
+			}
+		} else {
+			updates, err = req.StyledText(ctx, html.String(nil, text))
+			if err != nil {
+				if _, isFlood := tgerr.AsFloodWait(err); isFlood {
+					return nil, err
+				}
+				updates, err = req.Text(ctx, text)
+			}
+		}
+
+		if err != nil {
+			return nil, err
+		}
+		return extractMessageFromUpdates(updates), nil
+	})
+}
+
+// EditMessageMarkup edits an existing message text and updates or sets its reply markup.
+func (s *Service) EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass, msgID int, text string, markup tg.ReplyMarkupClass) error {
+	if s.api == nil {
+		return fmt.Errorf("%w: api client is not initialized", core.ErrInternal)
+	}
+
+	peer = s.ensureChannelAccessHash(ctx, peer)
+	req := &tg.MessagesEditMessageRequest{
+		Peer: peer,
+		ID:   msgID,
+	}
+	req.SetMessage(text)
+	if markup != nil {
+		req.SetReplyMarkup(markup)
+	}
+
+	_, err := retryOnFloodWait(ctx, func() (tg.UpdatesClass, error) {
+		return s.api.MessagesEditMessage(ctx, req)
+	})
+	return err
+}
+
+// AnswerCallbackQuery sends an answer to a bot callback query.
+func (s *Service) AnswerCallbackQuery(ctx context.Context, queryID int64, text string, alert bool) error {
+	if s.api == nil {
+		return fmt.Errorf("%w: api client is not initialized", core.ErrInternal)
+	}
+
+	req := &tg.MessagesSetBotCallbackAnswerRequest{
+		QueryID: queryID,
+		Message: text,
+		Alert:   alert,
+	}
+	if alert {
+		req.SetFlags()
+	}
+
+	_, err := retryOnFloodWait(ctx, func() (bool, error) {
+		return s.api.MessagesSetBotCallbackAnswer(ctx, req)
+	})
+	return err
+}
+
+// AnswerInlineQuery answers an inline query with the prepared results.
+func (s *Service) AnswerInlineQuery(ctx context.Context, queryID int64, results []tg.InputBotInlineResultClass, nextOffset string, cacheTime int) error {
+	if s.api == nil {
+		return fmt.Errorf("%w: api client is not initialized", core.ErrInternal)
+	}
+
+	req := &tg.MessagesSetInlineBotResultsRequest{
+		QueryID:    queryID,
+		Results:    results,
+		CacheTime:  cacheTime,
+		NextOffset: nextOffset,
+	}
+	if nextOffset != "" {
+		req.SetFlags()
+	}
+
+	_, err := retryOnFloodWait(ctx, func() (bool, error) {
+		return s.api.MessagesSetInlineBotResults(ctx, req)
+	})
+	return err
+}
+
 // DeleteMessage deletes messages for everyone (revokes).
 func (s *Service) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {
 	if len(msgIDs) == 0 {
@@ -1100,8 +1202,8 @@ func (s *Service) DeleteProfilePhotos(ctx context.Context, limit int) (int, erro
 	for _, p := range photos {
 		if photo, ok := p.(*tg.Photo); ok {
 			inputPhotos = append(inputPhotos, &tg.InputPhoto{
-				ID:             photo.ID,
-				AccessHash:     photo.AccessHash,
+				ID:            photo.ID,
+				AccessHash:    photo.AccessHash,
 				FileReference: photo.FileReference,
 			})
 		}
@@ -1207,4 +1309,3 @@ func (s *Service) GetContacts(ctx context.Context) ([]*core.User, error) {
 	}
 	return users, nil
 }
-

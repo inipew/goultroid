@@ -10,6 +10,7 @@ import (
 // (numeric ID, @username, phone number, etc.) into valid MTProto InputPeerClass instances
 // with guaranteed access hashes.
 type PeerResolver interface {
+	Resolve(ctx context.Context, ref string) (tg.InputPeerClass, error)
 	ResolveUser(ctx context.Context, ref string) (tg.InputPeerClass, int64, error)
 	ResolveChat(ctx context.Context, ref string) (tg.InputPeerClass, error)
 }
@@ -21,6 +22,23 @@ type MockPeerResolver struct {
 	UserErr  error
 	ChatPeer tg.InputPeerClass
 	ChatErr  error
+}
+
+// Resolve implements PeerResolver for unit tests.
+func (m *MockPeerResolver) Resolve(ctx context.Context, ref string) (tg.InputPeerClass, error) {
+	if m.UserErr != nil {
+		return nil, m.UserErr
+	}
+	if m.ChatErr != nil {
+		return nil, m.ChatErr
+	}
+	if m.UserPeer != nil {
+		return m.UserPeer, nil
+	}
+	if m.ChatPeer != nil {
+		return m.ChatPeer, nil
+	}
+	return &tg.InputPeerUser{UserID: m.UserID, AccessHash: 12345}, nil
 }
 
 // ResolveUser implements PeerResolver for unit tests.

@@ -26,6 +26,11 @@ func TestErrorTaxonomy_Sentinels(t *testing.T) {
 		{ErrInternal, "ErrInternal"},
 		{ErrTelegram, "ErrTelegram"},
 		{ErrRateLimited, "ErrRateLimited"},
+		{ErrResourceLimit, "ErrResourceLimit"},
+		{ErrConflict, "ErrConflict"},
+		{ErrUnavailable, "ErrUnavailable"},
+		{ErrLeaseLost, "ErrLeaseLost"},
+		{ErrCancelled, "ErrCancelled"},
 	}
 
 	for _, tc := range cases {
@@ -83,12 +88,17 @@ func TestIsPermanentError(t *testing.T) {
 		{ErrTimeout, false},
 		{errors.New("rpc error: FLOOD_WAIT_30"), false},
 		{errors.New("network connection reset by peer"), false},
+		{ErrConflict, false},
+		{ErrUnavailable, false},
+		{ErrLeaseLost, false},
+		{ErrCancelled, false},
 		{ErrPermissionDenied, true},
 		{ErrNotFound, true},
 		{ErrInvalidArgs, true},
 		{ErrUnsupported, true},
 		{ErrUnclosedQuote, true},
 		{ErrTrailingEscape, true},
+		{ErrResourceLimit, true},
 		{errors.New("rpc error: CHAT_WRITE_FORBIDDEN"), true},
 		{errors.New("rpc error: CHANNEL_PRIVATE"), true},
 		{errors.New("rpc error: USER_BANNED_IN_CHANNEL"), true},
@@ -100,6 +110,40 @@ func TestIsPermanentError(t *testing.T) {
 		got := IsPermanentError(tc.err)
 		if got != tc.permanent {
 			t.Errorf("IsPermanentError(%v) = %v, want %v", tc.err, got, tc.permanent)
+		}
+	}
+}
+
+func TestClassifyError(t *testing.T) {
+	tests := []struct {
+		err      error
+		expected ErrorCategory
+	}{
+		{nil, CategoryNone},
+		{ErrRateLimited, CategoryRateLimited},
+		{NewRateLimitError(5*time.Second, nil), CategoryRateLimited},
+		{errors.New("rpc error: FLOOD_WAIT_10"), CategoryRateLimited},
+		{ErrPermissionDenied, CategorySecurity},
+		{ErrInvalidArgs, CategoryInvalidInput},
+		{ErrUnclosedQuote, CategoryInvalidInput},
+		{ErrTrailingEscape, CategoryInvalidInput},
+		{ErrGroupOnly, CategoryInvalidInput},
+		{ErrResourceLimit, CategoryResourceLimit},
+		{ErrTimeout, CategoryTransient},
+		{ErrUnavailable, CategoryTransient},
+		{ErrConflict, CategoryTransient},
+		{ErrLeaseLost, CategoryTransient},
+		{errors.New("connection timeout"), CategoryTransient},
+		{ErrNotFound, CategoryPermanent},
+		{ErrUnsupported, CategoryPermanent},
+		{errors.New("rpc error: USER_BANNED"), CategoryPermanent},
+		{errors.New("some arbitrary unknown error"), CategoryInternal},
+	}
+
+	for _, tc := range tests {
+		got := ClassifyError(tc.err)
+		if got != tc.expected {
+			t.Errorf("ClassifyError(%v) = %v, want %v", tc.err, got, tc.expected)
 		}
 	}
 }

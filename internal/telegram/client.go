@@ -297,4 +297,3 @@ func checkRestartState(ctx context.Context, svc core.TelegramServicer, logger *z
 		}
 	}
 }
-

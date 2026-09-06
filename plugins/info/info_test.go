@@ -322,4 +322,3 @@ func TestHandleID(t *testing.T) {
 		t.Errorf("expected reply sender id in output, got: %s", svc.sent)
 	}
 }
-

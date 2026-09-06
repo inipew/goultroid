@@ -9,14 +9,26 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/services/moderation"
 )
 
 // Plugin provides group administration and moderation commands.
-type Plugin struct{}
+type Plugin struct {
+	moderator moderation.Moderator
+}
 
 // New creates a new admin plugin instance.
-func New() *Plugin {
-	return &Plugin{}
+func New(mod ...moderation.Moderator) *Plugin {
+	p := &Plugin{}
+	if len(mod) > 0 {
+		p.moderator = mod[0]
+	}
+	return p
+}
+
+// SetModerator configures the moderation service.
+func (p *Plugin) SetModerator(mod moderation.Moderator) {
+	p.moderator = mod
 }
 
 func (p *Plugin) Name() string {
@@ -100,6 +112,33 @@ func (p *Plugin) Commands() []core.Command {
 			Permission:  core.PermissionSudo,
 			GroupOnly:   true,
 			Handler:     p.handleDemote,
+		},
+		{
+			Name:        "warn",
+			Description: "Add a warning to a user (auto-punishes when threshold reached)",
+			Usage:       ".warn <user_id / reply> [reason]",
+			Category:    "Admin",
+			Permission:  core.PermissionSudo,
+			GroupOnly:   true,
+			Handler:     p.handleWarn,
+		},
+		{
+			Name:        "warns",
+			Description: "View active warnings for a user",
+			Usage:       ".warns <user_id / reply>",
+			Category:    "Admin",
+			Permission:  core.PermissionSudo,
+			GroupOnly:   true,
+			Handler:     p.handleWarns,
+		},
+		{
+			Name:        "resetwarns",
+			Description: "Reset all warnings for a user",
+			Usage:       ".resetwarns <user_id / reply>",
+			Category:    "Admin",
+			Permission:  core.PermissionSudo,
+			GroupOnly:   true,
+			Handler:     p.handleResetWarns,
 		},
 	}
 }
@@ -361,4 +400,121 @@ func parseDuration(s string) (time.Duration, error) {
 		return time.Duration(days) * 24 * time.Hour, nil
 	}
 	return time.ParseDuration(s)
+}
+
+func isNumeric(s string) bool {
+	_, err := strconv.ParseInt(s, 10, 64)
+	return err == nil
+}
+
+func (p *Plugin) handleWarn(ctx *core.Context) error {
+	if isPrivateOrUnsupported(ctx) {
+		_ = ctx.Reply("⚠️ Fitur warn hanya dapat digunakan di grup atau supergroup.")
+		return core.ErrUnsupported
+	}
+	if p.moderator == nil {
+		_ = ctx.Reply("⚠️ Moderation service is not configured.")
+		return fmt.Errorf("%w: moderation service is nil", core.ErrUnavailable)
+	}
+
+	targetPeer, targetID, err := ctx.ResolveTargetUser()
+	if err != nil {
+		_ = ctx.Reply("⚠️ " + err.Error())
+		return err
+	}
+
+	if ctx.Perms != nil && ctx.Perms.IsOwner(targetID) {
+		_ = ctx.Reply("⚠️ Cannot warn the owner!")
+		return errors.New("cannot warn owner")
+	}
+
+	reason := "No reason provided"
+	if len(ctx.Args) > 0 {
+		if len(ctx.Args) > 1 && (strings.HasPrefix(ctx.Args[0], "@") || isNumeric(ctx.Args[0])) {
+			reason = strings.Join(ctx.Args[1:], " ")
+		} else if !strings.HasPrefix(ctx.Args[0], "@") && !isNumeric(ctx.Args[0]) {
+			reason = strings.Join(ctx.Args, " ")
+		}
+	}
+
+	chatID := ctx.ChatID()
+	warnedBy := ctx.SenderID()
+
+	res, err := p.moderator.Warn(ctx.Ctx, ctx.PeerID, targetPeer, chatID, targetID, reason, warnedBy, 3, moderation.ActionMute)
+	if err != nil {
+		_ = ctx.Reply(formatAdminError("warn user", err))
+		return err
+	}
+
+	targetStr := fmt.Sprintf("%d", targetID)
+	text := ctx.T("admin.warned", targetStr, res.CurrentCount, res.Threshold, reason)
+	if res.ActionTaken != moderation.ActionNone {
+		text += "\n" + ctx.T("admin.warn_threshold_reached", targetStr, res.Threshold, res.ActionTaken)
+	}
+
+	return ctx.Reply(text)
+}
+
+func (p *Plugin) handleWarns(ctx *core.Context) error {
+	if isPrivateOrUnsupported(ctx) {
+		_ = ctx.Reply("⚠️ Fitur warns hanya dapat digunakan di grup atau supergroup.")
+		return core.ErrUnsupported
+	}
+	if p.moderator == nil {
+		_ = ctx.Reply("⚠️ Moderation service is not configured.")
+		return fmt.Errorf("%w: moderation service is nil", core.ErrUnavailable)
+	}
+
+	_, targetID, err := ctx.ResolveTargetUser()
+	if err != nil {
+		_ = ctx.Reply("⚠️ " + err.Error())
+		return err
+	}
+
+	chatID := ctx.ChatID()
+	records, err := p.moderator.GetWarnings(ctx.Ctx, chatID, targetID)
+	if err != nil {
+		_ = ctx.Reply(formatAdminError("get warnings", err))
+		return err
+	}
+
+	targetStr := fmt.Sprintf("%d", targetID)
+	if len(records) == 0 {
+		return ctx.Reply(fmt.Sprintf("User <b>%s</b> has 0 active warnings.", targetStr))
+	}
+
+	var sb strings.Builder
+	sb.WriteString(ctx.T("admin.warns_count", targetStr, len(records)))
+	sb.WriteString("\n\n<b>Recent warnings:</b>\n")
+	for i, r := range records {
+		sb.WriteString(fmt.Sprintf("%d. <i>%s</i> (by <code>%d</code>)\n", i+1, r.Reason, r.WarnedBy))
+	}
+
+	return ctx.Reply(sb.String())
+}
+
+func (p *Plugin) handleResetWarns(ctx *core.Context) error {
+	if isPrivateOrUnsupported(ctx) {
+		_ = ctx.Reply("⚠️ Fitur resetwarns hanya dapat digunakan di grup atau supergroup.")
+		return core.ErrUnsupported
+	}
+	if p.moderator == nil {
+		_ = ctx.Reply("⚠️ Moderation service is not configured.")
+		return fmt.Errorf("%w: moderation service is nil", core.ErrUnavailable)
+	}
+
+	_, targetID, err := ctx.ResolveTargetUser()
+	if err != nil {
+		_ = ctx.Reply("⚠️ " + err.Error())
+		return err
+	}
+
+	chatID := ctx.ChatID()
+	if err := p.moderator.ResetWarnings(ctx.Ctx, chatID, targetID); err != nil {
+		_ = ctx.Reply(formatAdminError("reset warnings", err))
+		return err
+	}
+
+	targetStr := fmt.Sprintf("%d", targetID)
+	return ctx.Reply(ctx.T("admin.warns_cleared", targetStr))
 }

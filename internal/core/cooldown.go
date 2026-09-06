@@ -74,4 +74,3 @@ func (c *CooldownTracker) Cleanup(maxAge time.Duration) int {
 	}
 	return purged
 }
-

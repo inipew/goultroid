@@ -201,4 +201,3 @@ func TestManager_Metadata(t *testing.T) {
 		t.Errorf("expected false for nonexistent plugin metadata")
 	}
 }
-

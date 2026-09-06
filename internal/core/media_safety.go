@@ -205,4 +205,3 @@ func EnforceDirectoryQuota(dir string, maxTotalBytes int64, maxAge time.Duration
 
 	return nil
 }
-

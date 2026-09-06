@@ -52,6 +52,45 @@ func (m *MessagesFacade) Edit(text string) error {
 	return c.Svc.EditMessage(c.Ctx, c.PeerID, msgID, text)
 }
 
+// ReplyMarkup sends a response message to the same chat with reply markup attached.
+func (m *MessagesFacade) ReplyMarkup(text string, markup tg.ReplyMarkupClass) error {
+	c := m.ctx
+	if c == nil || c.Svc == nil {
+		return errors.New("telegram service not initialized")
+	}
+	if c.PeerID == nil {
+		return errors.New("peer is nil")
+	}
+	sent, err := c.Svc.SendMessageWithMarkup(c.Ctx, c.PeerID, text, markup)
+	if err != nil {
+		return fmt.Errorf("reply markup failed: %w", err)
+	}
+	if sent != nil {
+		c.LastResponseID = sent.ID
+	}
+	return nil
+}
+
+// EditMarkup edits the previously sent response or command message with new text and markup.
+func (m *MessagesFacade) EditMarkup(text string, markup tg.ReplyMarkupClass) error {
+	c := m.ctx
+	if c == nil || c.Svc == nil {
+		return errors.New("telegram service not initialized")
+	}
+	if c.PeerID == nil {
+		return errors.New("peer is nil")
+	}
+
+	msgID := c.LastResponseID
+	if msgID == 0 && c.Message != nil {
+		msgID = c.Message.ID
+	}
+	if msgID == 0 {
+		return errors.New("no message to edit")
+	}
+	return c.Svc.EditMessageMarkup(c.Ctx, c.PeerID, msgID, text, markup)
+}
+
 // Delete deletes the current command message.
 func (m *MessagesFacade) Delete() error {
 	c := m.ctx

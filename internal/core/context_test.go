@@ -12,10 +12,10 @@ import (
 // mockTelegramServicer implements TelegramServicer for unit tests.
 type mockTelegramServicer struct {
 	MockTelegramServicer
-	sentText    string
-	editedText  string
-	deletedIDs  []int
-	reactEmoji  string
+	sentText     string
+	editedText   string
+	deletedIDs   []int
+	reactEmoji   string
 	messageToGet *tg.Message
 
 	errToSend   error
@@ -674,5 +674,43 @@ func TestContext_SubFacades(t *testing.T) {
 	}
 	if _, err := emptyCtx.Media().DownloadMedia("/tmp"); err == nil {
 		t.Errorf("expected error from empty context, got nil")
+	}
+}
+
+type mockLocalizer struct{}
+
+func (m *mockLocalizer) T(key string, args ...any) string {
+	if key == "hello" {
+		return "Hello World"
+	}
+	return key
+}
+
+func TestContext_LocalizationAndMarkup(t *testing.T) {
+	// 1. Nil localizer fallback
+	ctx := &Context{}
+	if val := ctx.T("raw.key"); val != "raw.key" {
+		t.Errorf("expected raw key fallback, got: %s", val)
+	}
+
+	// 2. Active localizer
+	ctx.Localizer = &mockLocalizer{}
+	if val := ctx.T("hello"); val != "Hello World" {
+		t.Errorf("expected localized text, got: %s", val)
+	}
+
+	// 3. Markup reply
+	mockSvc := &MockTelegramServicer{}
+	ctx.Svc = mockSvc
+	ctx.PeerID = &tg.InputPeerSelf{}
+
+	if err := ctx.ReplyMarkup("hello", &tg.ReplyInlineMarkup{}); err != nil {
+		t.Errorf("unexpected error in ReplyMarkup: %v", err)
+	}
+	if ctx.LastResponseID != 1 {
+		t.Errorf("expected LastResponseID to be 1, got %d", ctx.LastResponseID)
+	}
+	if err := ctx.EditMarkup("updated", &tg.ReplyInlineMarkup{}); err != nil {
+		t.Errorf("unexpected error in EditMarkup: %v", err)
 	}
 }

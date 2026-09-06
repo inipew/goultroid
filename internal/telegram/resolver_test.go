@@ -59,4 +59,29 @@ func TestResolver_BasicParsing(t *testing.T) {
 	if !errors.Is(err, core.ErrNotFound) {
 		t.Errorf("expected ErrNotFound for nonexistent username, got %v", err)
 	}
+
+	// 6. Test Resolve unified
+	selfPeer, err := resolver.Resolve(ctx, "self")
+	if err != nil {
+		t.Fatalf("unexpected error resolving self: %v", err)
+	}
+	if _, ok := selfPeer.(*tg.InputPeerSelf); !ok {
+		t.Errorf("expected *tg.InputPeerSelf, got %T", selfPeer)
+	}
+
+	userPeer, err := resolver.Resolve(ctx, "999888")
+	if err != nil {
+		t.Fatalf("unexpected error resolving user via unified Resolve: %v", err)
+	}
+	if up, ok := userPeer.(*tg.InputPeerUser); !ok || up.UserID != 999888 {
+		t.Errorf("expected *tg.InputPeerUser with ID 999888, got %+v", userPeer)
+	}
+
+	channelPeer, err := resolver.Resolve(ctx, "-100987654321")
+	if err != nil {
+		t.Fatalf("unexpected error resolving channel via unified Resolve: %v", err)
+	}
+	if cp, ok := channelPeer.(*tg.InputPeerChannel); !ok || cp.ChannelID != 987654321 {
+		t.Errorf("expected *tg.InputPeerChannel with ID 987654321, got %+v", channelPeer)
+	}
 }

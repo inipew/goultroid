@@ -19,6 +19,8 @@ type Config struct {
 	OwnerID      int64
 	SudoUsers    []int64
 	LogLevel     string
+	BotToken     string
+	Mode         string
 }
 
 // Load reads configuration from environment variables and validates all fields.
@@ -87,6 +89,16 @@ func Load() (*Config, error) {
 		logLevel = "info"
 	}
 
+	botToken := strings.TrimSpace(os.Getenv("BOT_TOKEN"))
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("MODE")))
+	if mode == "" {
+		if botToken != "" {
+			mode = "userbot+assistant"
+		} else {
+			mode = "userbot"
+		}
+	}
+
 	return &Config{
 		AppID:        appID,
 		AppHash:      appHash,
@@ -97,6 +109,8 @@ func Load() (*Config, error) {
 		OwnerID:      ownerID,
 		SudoUsers:    sudoUsers,
 		LogLevel:     logLevel,
+		BotToken:     botToken,
+		Mode:         mode,
 	}, nil
 }
 
@@ -126,4 +140,3 @@ func cleanPhone(raw string) (string, error) {
 
 	return phone, nil
 }
-

@@ -202,6 +202,11 @@ func TestSudoPlugin(t *testing.T) {
 
 type mockResolver struct{}
 
+func (m *mockResolver) Resolve(ctx context.Context, ref string) (tg.InputPeerClass, error) {
+	peer, _, err := m.ResolveUser(ctx, ref)
+	return peer, err
+}
+
 func (m *mockResolver) ResolveUser(ctx context.Context, ref string) (tg.InputPeerClass, int64, error) {
 	if strings.TrimPrefix(ref, "@") == "helper" {
 		return &tg.InputPeerUser{UserID: 4004}, 4004, nil

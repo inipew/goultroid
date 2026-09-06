@@ -9,6 +9,8 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/services/moderation"
 )
 
 type mockService struct {
@@ -118,8 +120,8 @@ func TestAdminPlugin(t *testing.T) {
 	}
 
 	cmds := p.Commands()
-	if len(cmds) != 8 {
-		t.Fatalf("expected 8 commands, got %d", len(cmds))
+	if len(cmds) != 11 {
+		t.Fatalf("expected 11 commands, got %d", len(cmds))
 	}
 
 	cmdMap := make(map[string]core.Command)
@@ -354,5 +356,98 @@ func TestAdminPluginErrorsAndGuards(t *testing.T) {
 	}
 	if !strings.Contains(svc.sent, "hanya didukung pada Supergroup") {
 		t.Errorf("expected supergroup notice, got: %s", svc.sent)
+	}
+}
+
+type mockModerator struct {
+	warnCount int
+	resets    int
+}
+
+func (m *mockModerator) Warn(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, chatID, userID int64, reason string, warnedBy int64, threshold int, actionOnThreshold string) (*moderation.WarnResult, error) {
+	m.warnCount++
+	return &moderation.WarnResult{
+		CurrentCount: m.warnCount,
+		Threshold:    3,
+		ActionTaken:  moderation.ActionNone,
+	}, nil
+}
+
+func (m *mockModerator) GetWarnings(ctx context.Context, chatID, userID int64) ([]*database.WarningRecord, error) {
+	return []*database.WarningRecord{
+		{ID: 1, ChatID: chatID, UserID: userID, Reason: "spam", WarnedBy: 999},
+	}, nil
+}
+
+func (m *mockModerator) GetWarningCount(ctx context.Context, chatID, userID int64) (int, error) {
+	return m.warnCount, nil
+}
+
+func (m *mockModerator) ResetWarnings(ctx context.Context, chatID, userID int64) error {
+	m.resets++
+	m.warnCount = 0
+	return nil
+}
+
+func (m *mockModerator) Mute(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, duration time.Duration) error {
+	return nil
+}
+func (m *mockModerator) Unmute(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
+	return nil
+}
+func (m *mockModerator) Ban(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, untilDate int) error {
+	return nil
+}
+func (m *mockModerator) Unban(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
+	return nil
+}
+func (m *mockModerator) Kick(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
+	return nil
+}
+
+func TestAdminPlugin_WarnCommands(t *testing.T) {
+	mod := &mockModerator{}
+	p := New(mod)
+	cmdMap := make(map[string]core.Command)
+	for _, c := range p.Commands() {
+		cmdMap[c.Name] = c
+	}
+
+	svc := &mockService{}
+	perms := core.NewPermissions(1001, []int64{2002})
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		Sender:  &core.User{ID: 2002},
+		Chat:    &core.Chat{ID: -100123456, Type: "supergroup"},
+		Message: &core.Message{ID: 100},
+		Perms:   perms,
+		Svc:     svc,
+		PeerID:  &tg.InputPeerChat{ChatID: -100123456},
+		Args:    []string{"3003", "inappropriate", "language"},
+	}
+
+	// 1. .warn
+	err := cmdMap["warn"].Handler(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error on warn: %v", err)
+	}
+	if mod.warnCount != 1 {
+		t.Errorf("expected warnCount 1, got %d", mod.warnCount)
+	}
+
+	// 2. .warns
+	ctx.Args = []string{"3003"}
+	err = cmdMap["warns"].Handler(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error on warns: %v", err)
+	}
+
+	// 3. .resetwarns
+	err = cmdMap["resetwarns"].Handler(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error on resetwarns: %v", err)
+	}
+	if mod.resets != 1 {
+		t.Errorf("expected resets 1, got %d", mod.resets)
 	}
 }

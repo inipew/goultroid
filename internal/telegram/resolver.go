@@ -34,6 +34,31 @@ func (r *Resolver) SetStorage(storage *PeerStorage) {
 	r.storage = storage
 }
 
+// Resolve resolves any entity reference (self, user, chat, channel) into an InputPeer.
+func (r *Resolver) Resolve(ctx context.Context, ref string) (tg.InputPeerClass, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return nil, core.ErrInvalidArgs
+	}
+
+	lower := strings.ToLower(ref)
+	if lower == "self" || lower == "me" {
+		return &tg.InputPeerSelf{}, nil
+	}
+
+	// Try resolving as user first
+	if userPeer, _, err := r.ResolveUser(ctx, ref); err == nil && userPeer != nil {
+		return userPeer, nil
+	}
+
+	// Try resolving as chat/channel
+	if chatPeer, err := r.ResolveChat(ctx, ref); err == nil && chatPeer != nil {
+		return chatPeer, nil
+	}
+
+	return nil, fmt.Errorf("%w: entity %q could not be resolved", core.ErrNotFound, ref)
+}
+
 // ResolveUser resolves a user reference (numeric ID, @username, or phone) into an InputPeer and User ID.
 func (r *Resolver) ResolveUser(ctx context.Context, ref string) (tg.InputPeerClass, int64, error) {
 	ref = strings.TrimSpace(ref)

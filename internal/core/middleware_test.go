@@ -257,3 +257,34 @@ func TestCooldownMiddleware(t *testing.T) {
 	}
 }
 
+func TestCorrelationMiddleware(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	m := CorrelationMiddleware(logger)
+
+	// 1. Without pre-existing correlation ID: should generate one starting with req-
+	ctx1 := &Context{}
+	wrapped := m(func(c *Context) error {
+		if c.CorrelationID == "" {
+			t.Errorf("expected CorrelationID to be set")
+		}
+		if c.Correlation() == "" {
+			t.Errorf("expected Correlation() helper to return non-empty")
+		}
+		return nil
+	})
+	if err := wrapped(ctx1); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// 2. With pre-existing correlation ID: should preserve existing ID
+	ctx2 := &Context{CorrelationID: "custom-corr-123"}
+	wrapped2 := m(func(c *Context) error {
+		if c.CorrelationID != "custom-corr-123" {
+			t.Errorf("expected preserved CorrelationID, got %s", c.CorrelationID)
+		}
+		return nil
+	})
+	if err := wrapped2(ctx2); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

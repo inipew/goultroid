@@ -1,7 +1,6 @@
 package system
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,6 +16,7 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/services/process"
 )
 
 // RestartState stores metadata across bot restarts.
@@ -34,6 +34,7 @@ type Plugin struct {
 	restartStatePath string
 	restartFunc      func(state RestartState) error
 	cmdRunner        func(ctx context.Context, name string, args ...string) ([]byte, error)
+	runner           process.Runner
 	startTime        time.Time
 	metrics          core.MetricsCollector
 }
@@ -43,6 +44,7 @@ func New() *Plugin {
 	return &Plugin{
 		restartStatePath: "data/restart.json",
 		startTime:        time.Now(),
+		runner:           process.NewOSRunner(3, 60*time.Second, 2*1024*1024),
 	}
 }
 
@@ -51,6 +53,14 @@ func NewWithCustomRestart(statePath string, restartFn func(state RestartState) e
 	return &Plugin{
 		restartStatePath: statePath,
 		restartFunc:      restartFn,
+		runner:           process.NewOSRunner(3, 60*time.Second, 2*1024*1024),
+	}
+}
+
+// SetRunner overrides the process.Runner used for executing shell commands.
+func (p *Plugin) SetRunner(r process.Runner) {
+	if r != nil {
+		p.runner = r
 	}
 }
 
@@ -144,26 +154,6 @@ func (p *Plugin) Commands() []core.Command {
 	}
 }
 
-type limitedWriter struct {
-	w         *bytes.Buffer
-	remain    int
-	truncated bool
-}
-
-func (lw *limitedWriter) Write(p []byte) (n int, err error) {
-	if lw.remain <= 0 {
-		lw.truncated = true
-		return len(p), nil
-	}
-	if len(p) > lw.remain {
-		lw.truncated = true
-		p = p[:lw.remain]
-	}
-	n, err = lw.w.Write(p)
-	lw.remain -= n
-	return len(p), err
-}
-
 // handleExec executes a bash command with timeout and formats the result.
 func (p *Plugin) handleExec(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
@@ -174,40 +164,24 @@ func (p *Plugin) handleExec(ctx *core.Context) error {
 
 	_ = ctx.Reply("⏳ <i>Executing command...</i>")
 
-	// Timeout protection (60s)
-	execCtx, cancel := context.WithTimeout(ctx.Ctx, 60*time.Second)
-	defer cancel()
-
-	start := time.Now()
-
-	shell := "bash"
-	if _, err := exec.LookPath("bash"); err != nil {
-		shell = "sh"
+	if p.runner == nil {
+		p.runner = process.NewOSRunner(3, 60*time.Second, 2*1024*1024)
 	}
 
-	cmd := exec.CommandContext(execCtx, shell, "-c", commandStr)
-	cmd.Env = buildSanitizedEnv()
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process != nil && cmd.Process.Pid > 0 {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	res, err := p.runner.Run(ctx.Ctx, process.Request{
+		Command: commandStr,
+		Shell:   true,
+		Timeout: 60 * time.Second,
+	})
+
+	var output string
+	var elapsed time.Duration
+	if res != nil {
+		output = res.Combined
+		elapsed = res.Duration
+		if res.Truncated {
+			output += "\n\n[output truncated after 2MB]"
 		}
-		return nil
-	}
-
-	// Limit output capture to 2 MB to prevent memory exhaustion
-	const maxOutputBytes = 2 * 1024 * 1024
-	buf := new(bytes.Buffer)
-	limitWriter := &limitedWriter{w: buf, remain: maxOutputBytes}
-	cmd.Stdout = limitWriter
-	cmd.Stderr = limitWriter
-
-	err := cmd.Run()
-	elapsed := time.Since(start)
-
-	output := buf.String()
-	if limitWriter.truncated {
-		output += "\n\n[output truncated after 2MB]"
 	}
 	if output == "" {
 		if err != nil {
@@ -473,30 +447,5 @@ func (p *Plugin) handleHealth(ctx *core.Context) error {
 
 // buildSanitizedEnv masks sensitive environment variables before passing them to child processes.
 func buildSanitizedEnv() []string {
-	sensitiveKeywords := []string{
-		"SESSION", "TOKEN", "API_HASH", "API_ID", "SECRET", "PASSWORD",
-		"PASS", "KEY", "CRED", "AUTH", "DATABASE", "PRIVATE",
-	}
-
-	var sanitized []string
-	for _, env := range os.Environ() {
-		parts := strings.SplitN(env, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		keyUpper := strings.ToUpper(parts[0])
-		isSensitive := false
-		for _, kw := range sensitiveKeywords {
-			if strings.Contains(keyUpper, kw) {
-				isSensitive = true
-				break
-			}
-		}
-		if isSensitive {
-			sanitized = append(sanitized, parts[0]+"=[REDACTED]")
-		} else {
-			sanitized = append(sanitized, env)
-		}
-	}
-	return sanitized
+	return process.SanitizeEnv(nil)
 }

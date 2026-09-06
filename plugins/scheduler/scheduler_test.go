@@ -13,8 +13,8 @@ import (
 )
 
 type mockSchedulerService struct {
-	jobs    map[int64]*database.ScheduledJob
-	nextID  int64
+	jobs     map[int64]*database.ScheduledJob
+	nextID   int64
 	canceled []int64
 }
 

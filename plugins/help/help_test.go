@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/inipew/goultroid/internal/core"
 	"github.com/gotd/td/tg"
+	"github.com/inipew/goultroid/internal/core"
 )
 
 type mockService struct {

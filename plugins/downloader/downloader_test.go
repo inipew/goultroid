@@ -105,14 +105,11 @@ func TestDownloaderPlugin(t *testing.T) {
 	if len(cmds) != 1 {
 		t.Fatalf("expected 1 command, got %d", len(cmds))
 	}
-	if !cmds[0].ReplyOnly {
-		t.Errorf("expected download command to have ReplyOnly=true")
-	}
 	if cmds[0].Permission != core.PermissionSudo {
 		t.Errorf("expected PermissionSudo, got %v", cmds[0].Permission)
 	}
-	if cmds[0].Timeout != 5*time.Minute {
-		t.Errorf("expected 5m timeout, got %v", cmds[0].Timeout)
+	if cmds[0].Timeout != 10*time.Minute {
+		t.Errorf("expected 10m timeout, got %v", cmds[0].Timeout)
 	}
 	if cmds[0].Cooldown != 3*time.Second {
 		t.Errorf("expected 3s cooldown, got %v", cmds[0].Cooldown)
@@ -135,6 +132,20 @@ func TestDownloaderPlugin(t *testing.T) {
 	}
 	if !strings.Contains(svc.edited, "Download Complete") || !strings.Contains(svc.edited, "sample.mp4") {
 		t.Errorf("expected edit message to report complete and filename, got %s", svc.edited)
+	}
+
+	// Test no media & no URL
+	emptyCtx := &core.Context{
+		Ctx:     context.Background(),
+		Message: &core.Message{ID: 2},
+		Svc:     svc,
+		PeerID:  &tg.InputPeerSelf{},
+	}
+	if err := cmds[0].Handler(emptyCtx); err != nil {
+		t.Fatalf("unexpected error running download with no media: %v", err)
+	}
+	if !strings.Contains(svc.sent, "No media or URL found") {
+		t.Errorf("expected 'No media or URL found', got %s", svc.sent)
 	}
 }
 

@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"runtime/debug"
@@ -44,6 +45,7 @@ func RecoveryMiddleware(logger *zap.Logger) Middleware {
 					stack := string(debug.Stack())
 					if logger != nil {
 						logger.Error("panic recovered in command handler",
+							zap.String("correlation_id", ctx.CorrelationID),
 							zap.String("command", ctx.Command),
 							zap.Any("recover", r),
 							zap.String("stack", stack),
@@ -52,6 +54,21 @@ func RecoveryMiddleware(logger *zap.Logger) Middleware {
 					err = fmt.Errorf("%w: panic in command %s: %v", ErrInternal, ctx.Command, r)
 				}
 			}()
+			return next(ctx)
+		}
+	}
+}
+
+// CorrelationMiddleware ensures every command execution context has a unique correlation ID.
+// If the context does not have one, a new ID is generated using timestamp and random hex bytes.
+func CorrelationMiddleware(logger *zap.Logger) Middleware {
+	return func(next CommandHandler) CommandHandler {
+		return func(ctx *Context) error {
+			if ctx.CorrelationID == "" {
+				b := make([]byte, 4)
+				_, _ = rand.Read(b)
+				ctx.CorrelationID = fmt.Sprintf("req-%d-%x", time.Now().UnixMilli(), b)
+			}
 			return next(ctx)
 		}
 	}
@@ -73,6 +90,7 @@ func LoggingMiddleware(logger *zap.Logger) Middleware {
 
 			if logger != nil {
 				logger.Debug("executing command",
+					zap.String("correlation_id", ctx.CorrelationID),
 					zap.String("command", ctx.Command),
 					zap.Int64("user_id", userID),
 					zap.Int64("chat_id", chatID),
@@ -88,6 +106,7 @@ func LoggingMiddleware(logger *zap.Logger) Middleware {
 					var rle *RateLimitError
 					if errors.As(err, &rle) {
 						logger.Warn("command hit telegram rate limit",
+							zap.String("correlation_id", ctx.CorrelationID),
 							zap.String("command", ctx.Command),
 							zap.Duration("flood_wait", rle.Wait),
 							zap.Duration("duration", duration),
@@ -95,6 +114,7 @@ func LoggingMiddleware(logger *zap.Logger) Middleware {
 						)
 					} else {
 						logger.Warn("command executed with error",
+							zap.String("correlation_id", ctx.CorrelationID),
 							zap.String("command", ctx.Command),
 							zap.Duration("duration", duration),
 							zap.Error(err),
@@ -102,6 +122,7 @@ func LoggingMiddleware(logger *zap.Logger) Middleware {
 					}
 				} else {
 					logger.Debug("command executed successfully",
+						zap.String("correlation_id", ctx.CorrelationID),
 						zap.String("command", ctx.Command),
 						zap.Duration("duration", duration),
 					)

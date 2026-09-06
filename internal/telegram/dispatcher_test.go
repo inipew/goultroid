@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/gotd/td/tg"
 	"go.uber.org/zap"
 )
 
@@ -314,4 +314,3 @@ func TestDispatcher_RootContextCancellation(t *testing.T) {
 		t.Fatal("command context was not canceled when rootCtx was canceled")
 	}
 }
-

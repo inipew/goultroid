@@ -598,4 +598,3 @@ func TestEngine_StopWithTimeout_Bounded(t *testing.T) {
 		t.Errorf("StopWithTimeout hung longer than bounded timeout: took %v", elapsed)
 	}
 }
-

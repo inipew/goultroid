@@ -144,4 +144,3 @@ func (p *PeerFacade) UnblockUser(peer tg.InputPeerClass) error {
 	}
 	return c.Svc.UnblockUser(c.Ctx, peer)
 }
-

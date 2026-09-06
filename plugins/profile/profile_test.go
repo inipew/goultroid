@@ -14,24 +14,24 @@ import (
 type mockService struct {
 	core.MockTelegramServicer
 
-	sent               string
-	updateProfileErr   error
-	blockUserErr       error
-	unblockUserErr     error
-	uploadPhotoErr     error
-	deletePhotoErr     error
-	getDialogsErr      error
-	getContactsErr     error
+	sent             string
+	updateProfileErr error
+	blockUserErr     error
+	unblockUserErr   error
+	uploadPhotoErr   error
+	deletePhotoErr   error
+	getDialogsErr    error
+	getContactsErr   error
 
-	updatedFirstName   *string
-	updatedLastName    *string
-	updatedAbout       *string
-	blockedPeer        tg.InputPeerClass
-	unblockedPeer      tg.InputPeerClass
-	uploadedPhotoPath  string
-	deletedPhotoLimit  int
-	mockDialogs        []*core.Chat
-	mockContacts       []*core.User
+	updatedFirstName  *string
+	updatedLastName   *string
+	updatedAbout      *string
+	blockedPeer       tg.InputPeerClass
+	unblockedPeer     tg.InputPeerClass
+	uploadedPhotoPath string
+	deletedPhotoLimit int
+	mockDialogs       []*core.Chat
+	mockContacts      []*core.User
 }
 
 func (m *mockService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {

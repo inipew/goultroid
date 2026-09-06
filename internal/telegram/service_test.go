@@ -244,4 +244,27 @@ func TestSendMedia_UploadSizeLimit(t *testing.T) {
 	}
 }
 
+func TestService_MarkupAndAnswerMethods_NilInit(t *testing.T) {
+	svc := &Service{}
+	ctx := context.Background()
 
+	_, err := svc.SendMessageWithMarkup(ctx, &tg.InputPeerSelf{}, "hello", nil)
+	if err == nil || !errors.Is(err, core.ErrInternal) {
+		t.Errorf("expected ErrInternal for uninitialized sender, got %v", err)
+	}
+
+	err = svc.EditMessageMarkup(ctx, &tg.InputPeerSelf{}, 1, "hello", nil)
+	if err == nil || !errors.Is(err, core.ErrInternal) {
+		t.Errorf("expected ErrInternal for uninitialized api, got %v", err)
+	}
+
+	err = svc.AnswerCallbackQuery(ctx, 123, "toast", false)
+	if err == nil || !errors.Is(err, core.ErrInternal) {
+		t.Errorf("expected ErrInternal for uninitialized api, got %v", err)
+	}
+
+	err = svc.AnswerInlineQuery(ctx, 123, nil, "", 0)
+	if err == nil || !errors.Is(err, core.ErrInternal) {
+		t.Errorf("expected ErrInternal for uninitialized api, got %v", err)
+	}
+}

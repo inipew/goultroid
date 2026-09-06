@@ -1,26 +1,37 @@
 package media
 
 import (
-	"bytes"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/services/media"
+	"github.com/inipew/goultroid/internal/services/storage"
 )
 
-// ffmpegSemaphore limits concurrent audio extraction to 2 parallel tasks to protect host CPU/RAM.
-var ffmpegSemaphore = make(chan struct{}, 2)
+// Plugin provides media inspection, audio extraction, and transcoding utilities.
+type Plugin struct {
+	mediaService *media.Service
+}
 
-// Plugin provides media inspection and conversion utilities.
-type Plugin struct{}
+// New creates a new Media plugin with optional dependencies.
+func New(deps ...any) *Plugin {
+	p := &Plugin{}
+	for _, dep := range deps {
+		switch v := dep.(type) {
+		case *media.Service:
+			p.mediaService = v
+		}
+	}
+	return p
+}
 
-// New creates a new Media plugin.
-func New() *Plugin {
-	return &Plugin{}
+// SetMediaService sets the media service platform.
+func (p *Plugin) SetMediaService(svc *media.Service) {
+	p.mediaService = svc
 }
 
 // Name returns the plugin identifier.
@@ -30,11 +41,17 @@ func (p *Plugin) Name() string {
 
 // Description returns a short summary of the plugin.
 func (p *Plugin) Description() string {
-	return "Inspect media metadata and extract audio tracks"
+	return "Inspect media metadata, extract audio tracks, and transcode video/stickers"
 }
 
 // Init initializes the plugin.
 func (p *Plugin) Init() error {
+	if p.mediaService == nil {
+		fs, err := storage.NewFileStorage(filepath.Join("data", "media"), 5*1024*1024*1024)
+		if err == nil {
+			p.mediaService = media.NewService(nil, fs, nil)
+		}
+	}
 	return nil
 }
 
@@ -62,16 +79,46 @@ func (p *Plugin) Commands() []core.Command {
 			Usage:       ".extractaudio (reply to video/audio/document)",
 			Category:    "Media",
 			Permission:  core.PermissionSudo,
-			Timeout:     3 * time.Minute,
+			Timeout:     5 * time.Minute,
 			Handler:     p.handleExtractAudio,
+		},
+		{
+			Name:        "convert",
+			Aliases:     []string{"transcode"},
+			Description: "Convert video or audio into another format (e.g. mp4, mp3, aac, webm)",
+			Usage:       ".convert <format> (reply to media)",
+			Category:    "Media",
+			Permission:  core.PermissionSudo,
+			Timeout:     5 * time.Minute,
+			Handler:     p.handleConvert,
+		},
+		{
+			Name:        "gif",
+			Aliases:     []string{"togif"},
+			Description: "Convert replied video or animation into an animated GIF",
+			Usage:       ".gif (reply to video)",
+			Category:    "Media",
+			Permission:  core.PermissionSudo,
+			Timeout:     5 * time.Minute,
+			Handler:     p.handleConvertToGIF,
+		},
+		{
+			Name:        "vstick",
+			Aliases:     []string{"videosticker"},
+			Description: "Convert replied video or media into a Telegram video sticker (WebM VP9 512x512)",
+			Usage:       ".vstick (reply to video)",
+			Category:    "Media",
+			Permission:  core.PermissionSudo,
+			Timeout:     5 * time.Minute,
+			Handler:     p.handleConvertToSticker,
 		},
 	}
 }
 
 // handleMediaInfo displays technical metadata of an attached or replied media item.
 func (p *Plugin) handleMediaInfo(ctx *core.Context) error {
-	media := findMedia(ctx)
-	if media == nil {
+	item := findMedia(ctx)
+	if item == nil {
 		return ctx.Reply("⚠️ <b>No media found!</b> Please reply to a photo, video, audio, voice, sticker, or document.")
 	}
 
@@ -79,7 +126,7 @@ func (p *Plugin) handleMediaInfo(ctx *core.Context) error {
 	sb.WriteString("📊 <b>Media Information</b>\n\n")
 
 	// Type
-	mediaTypeDisplay := media.Type
+	mediaTypeDisplay := item.Type
 	if len(mediaTypeDisplay) > 0 {
 		mediaTypeDisplay = strings.ToUpper(mediaTypeDisplay[:1]) + mediaTypeDisplay[1:]
 	} else {
@@ -88,63 +135,52 @@ func (p *Plugin) handleMediaInfo(ctx *core.Context) error {
 	sb.WriteString(fmt.Sprintf("• <b>Type</b>: <code>%s</code>\n", core.EscapeHTML(mediaTypeDisplay)))
 
 	// File Name
-	if media.FileName != "" {
-		sb.WriteString(fmt.Sprintf("• <b>File Name</b>: <code>%s</code>\n", core.EscapeHTML(media.FileName)))
+	if item.FileName != "" {
+		sb.WriteString(fmt.Sprintf("• <b>File Name</b>: <code>%s</code>\n", core.EscapeHTML(item.FileName)))
 	}
 
 	// MIME Type
-	if media.MimeType != "" {
-		sb.WriteString(fmt.Sprintf("• <b>MIME Type</b>: <code>%s</code>\n", core.EscapeHTML(media.MimeType)))
+	if item.MimeType != "" {
+		sb.WriteString(fmt.Sprintf("• <b>MIME Type</b>: <code>%s</code>\n", core.EscapeHTML(item.MimeType)))
 	}
 
 	// Size
-	if media.Size > 0 {
-		sb.WriteString(fmt.Sprintf("• <b>File Size</b>: <code>%s</code> (%d bytes)\n", formatBytes(media.Size), media.Size))
+	if item.Size > 0 {
+		sb.WriteString(fmt.Sprintf("• <b>File Size</b>: <code>%s</code> (%d bytes)\n", formatBytes(item.Size), item.Size))
 	}
 
 	// Resolution
-	if media.Width > 0 && media.Height > 0 {
-		sb.WriteString(fmt.Sprintf("• <b>Resolution</b>: <code>%dx%d</code>\n", media.Width, media.Height))
+	if item.Width > 0 && item.Height > 0 {
+		sb.WriteString(fmt.Sprintf("• <b>Resolution</b>: <code>%dx%d</code>\n", item.Width, item.Height))
 	}
 
 	// Duration
-	if media.Duration > 0 {
-		sb.WriteString(fmt.Sprintf("• <b>Duration</b>: <code>%s</code>\n", formatDuration(media.Duration)))
+	if item.Duration > 0 {
+		sb.WriteString(fmt.Sprintf("• <b>Duration</b>: <code>%s</code>\n", formatDuration(item.Duration)))
 	}
 
 	return ctx.Reply(sb.String())
 }
 
-// handleExtractAudio extracts audio from a replied video or audio file using ffmpeg.
+// handleExtractAudio extracts audio from a replied video or audio file using the media service.
 func (p *Plugin) handleExtractAudio(ctx *core.Context) error {
-	media := findMedia(ctx)
-	if media == nil {
+	item := findMedia(ctx)
+	if item == nil {
 		return ctx.Reply("⚠️ <b>No media found!</b> Reply to a video, audio, or document to extract audio.")
 	}
 
-	if media.Type == "photo" || media.Type == "sticker" {
+	if item.Type == "photo" || item.Type == "sticker" {
 		return ctx.Reply("⚠️ Cannot extract audio from a photo or sticker.")
 	}
 
-	// Verify media size before processing
-	if media.Size > 0 {
-		if err := core.ValidateMediaSize(media.Size, core.DefaultMaxExtractAudioSize); err != nil {
-			return ctx.Reply(fmt.Sprintf("⚠️ <b>Media too large!</b> File size (%s) exceeds extraction limit (150MB).", formatBytes(media.Size)))
+	if item.Size > 0 {
+		if err := core.ValidateMediaSize(item.Size, core.DefaultMaxExtractAudioSize); err != nil {
+			return ctx.Reply(fmt.Sprintf("⚠️ <b>Media too large!</b> File size (%s) exceeds extraction limit (150MB).", formatBytes(item.Size)))
 		}
 	}
 
-	// Verify ffmpeg is available
-	ffmpegPath, err := exec.LookPath("ffmpeg")
-	if err != nil {
-		return ctx.Reply("❌ <b>ffmpeg is not installed on this system.</b> Please install ffmpeg to use <code>.extractaudio</code>.")
-	}
-
-	// Acquire concurrency slot for FFmpeg to protect CPU/RAM
-	select {
-	case ffmpegSemaphore <- struct{}{}:
-		defer func() { <-ffmpegSemaphore }()
-	case <-ctx.Ctx.Done():
-		return ctx.Ctx.Err()
+	if p.mediaService == nil {
+		_ = p.Init()
 	}
 
 	_ = ctx.Reply("⏳ <i>Downloading and extracting audio...</i>")
@@ -155,39 +191,203 @@ func (p *Plugin) handleExtractAudio(ctx *core.Context) error {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	// Pre-flight disk space check (require at least 2x media size or 50MB)
-	requiredSpace := media.Size * 2
-	if requiredSpace <= 0 {
-		requiredSpace = 50 * 1024 * 1024
+	downloadedPath, err := ctx.DownloadMedia(tmpDir)
+	if err != nil {
+		return ctx.Reply(fmt.Sprintf("❌ Failed to download media: %v", err))
 	}
-	if err := core.CheckDiskSpace(tmpDir, requiredSpace); err != nil {
-		return ctx.Reply("❌ <b>Insufficient disk space</b> on host machine to process audio extraction.")
+
+	stat, _ := os.Stat(downloadedPath)
+	fileSize := item.Size
+	if stat != nil && stat.Size() > 0 {
+		fileSize = stat.Size()
 	}
+
+	inAsset := &storage.Asset{
+		ID:        filepath.Base(downloadedPath),
+		Name:      item.FileName,
+		Path:      downloadedPath,
+		Size:      fileSize,
+		Duration:  time.Duration(item.Duration) * time.Second,
+		Width:     item.Width,
+		Height:    item.Height,
+		CreatedAt: time.Now(),
+	}
+
+	outAsset, err := p.mediaService.ExtractAudio(ctx.Ctx, inAsset, "mp3")
+	if err != nil {
+		return ctx.Reply(fmt.Sprintf("❌ Audio extraction failed: %v", err))
+	}
+
+	cleanFileName := core.SanitizeFileName(item.FileName)
+	caption := fmt.Sprintf("🎵 Extracted from: <code>%s</code>", core.EscapeHTML(cleanFileName))
+	if err := ctx.SendAudio(outAsset.Path, caption); err != nil {
+		return ctx.Reply(fmt.Sprintf("❌ Failed to send audio: %v", err))
+	}
+
+	_ = ctx.Delete()
+	return nil
+}
+
+// handleConvert transcodes replied media into another format.
+func (p *Plugin) handleConvert(ctx *core.Context) error {
+	item := findMedia(ctx)
+	if item == nil {
+		return ctx.Reply("⚠️ <b>No media found!</b> Reply to a video or audio file to convert.")
+	}
+
+	targetFormat := "mp4"
+	if len(ctx.Args) > 0 {
+		targetFormat = strings.ToLower(strings.TrimPrefix(ctx.Args[0], "."))
+	}
+
+	if p.mediaService == nil {
+		_ = p.Init()
+	}
+
+	_ = ctx.Reply(fmt.Sprintf("⏳ <i>Converting media to %s...</i>", targetFormat))
+
+	tmpDir, err := os.MkdirTemp("", "goultroid-convert-*")
+	if err != nil {
+		return ctx.Reply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
+	}
+	defer os.RemoveAll(tmpDir)
 
 	downloadedPath, err := ctx.DownloadMedia(tmpDir)
 	if err != nil {
 		return ctx.Reply(fmt.Sprintf("❌ Failed to download media: %v", err))
 	}
 
-	outPath := filepath.Join(tmpDir, "extracted_audio.mp3")
-	cmd := exec.CommandContext(ctx.Ctx, ffmpegPath, "-y", "-i", downloadedPath, "-vn", "-acodec", "libmp3lame", "-q:a", "2", outPath)
-
-	var outputBuf bytes.Buffer
-	cmd.Stdout = &outputBuf
-	cmd.Stderr = &outputBuf
-
-	if err := cmd.Run(); err != nil {
-		outStr := outputBuf.String()
-		if len(outStr) > 2000 {
-			outStr = outStr[len(outStr)-2000:]
-		}
-		return ctx.Reply(fmt.Sprintf("❌ Failed to extract audio: %v\nOutput: %s", err, core.EscapeHTML(outStr)))
+	stat, _ := os.Stat(downloadedPath)
+	fileSize := item.Size
+	if stat != nil && stat.Size() > 0 {
+		fileSize = stat.Size()
 	}
 
-	cleanFileName := core.SanitizeFileName(media.FileName)
-	caption := fmt.Sprintf("🎵 Extracted from: <code>%s</code>", core.EscapeHTML(cleanFileName))
-	if err := ctx.SendAudio(outPath, caption); err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to send audio: %v", err))
+	inAsset := &storage.Asset{
+		ID:        filepath.Base(downloadedPath),
+		Name:      item.FileName,
+		Path:      downloadedPath,
+		Size:      fileSize,
+		Duration:  time.Duration(item.Duration) * time.Second,
+		Width:     item.Width,
+		Height:    item.Height,
+		CreatedAt: time.Now(),
+	}
+
+	outAsset, err := p.mediaService.ConvertVideo(ctx.Ctx, inAsset, media.TranscodeOptions{
+		TargetFormat: targetFormat,
+	})
+	if err != nil {
+		return ctx.Reply(fmt.Sprintf("❌ Conversion failed: %v", err))
+	}
+
+	caption := fmt.Sprintf("🎬 Converted to: <code>%s</code>", targetFormat)
+	mediaType := "document"
+	if targetFormat == "mp4" {
+		mediaType = "video"
+	} else if targetFormat == "mp3" || targetFormat == "m4a" || targetFormat == "aac" {
+		mediaType = "audio"
+	}
+
+	if _, err := ctx.SendMedia(outAsset.Path, mediaType, caption); err != nil {
+		return ctx.Reply(fmt.Sprintf("❌ Failed to send converted media: %v", err))
+	}
+
+	_ = ctx.Delete()
+	return nil
+}
+
+// handleConvertToGIF converts a video to an animated GIF.
+func (p *Plugin) handleConvertToGIF(ctx *core.Context) error {
+	item := findMedia(ctx)
+	if item == nil {
+		return ctx.Reply("⚠️ <b>No media found!</b> Reply to a video to convert to GIF.")
+	}
+
+	if p.mediaService == nil {
+		_ = p.Init()
+	}
+
+	_ = ctx.Reply("⏳ <i>Converting video to GIF...</i>")
+
+	tmpDir, err := os.MkdirTemp("", "goultroid-gif-*")
+	if err != nil {
+		return ctx.Reply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
+	}
+	defer os.RemoveAll(tmpDir)
+
+	downloadedPath, err := ctx.DownloadMedia(tmpDir)
+	if err != nil {
+		return ctx.Reply(fmt.Sprintf("❌ Failed to download media: %v", err))
+	}
+
+	inAsset := &storage.Asset{
+		ID:        filepath.Base(downloadedPath),
+		Name:      item.FileName,
+		Path:      downloadedPath,
+		Size:      item.Size,
+		Duration:  time.Duration(item.Duration) * time.Second,
+		Width:     item.Width,
+		Height:    item.Height,
+		CreatedAt: time.Now(),
+	}
+
+	outAsset, err := p.mediaService.ConvertToGIF(ctx.Ctx, inAsset, media.TranscodeOptions{})
+	if err != nil {
+		return ctx.Reply(fmt.Sprintf("❌ GIF conversion failed: %v", err))
+	}
+
+	if _, err := ctx.SendMedia(outAsset.Path, "document", "🎞️ Converted to GIF"); err != nil {
+		return ctx.Reply(fmt.Sprintf("❌ Failed to send GIF: %v", err))
+	}
+
+	_ = ctx.Delete()
+	return nil
+}
+
+// handleConvertToSticker converts replied video or photo into a Telegram video sticker.
+func (p *Plugin) handleConvertToSticker(ctx *core.Context) error {
+	item := findMedia(ctx)
+	if item == nil {
+		return ctx.Reply("⚠️ <b>No media found!</b> Reply to a video or animation to make a video sticker.")
+	}
+
+	if p.mediaService == nil {
+		_ = p.Init()
+	}
+
+	_ = ctx.Reply("⏳ <i>Generating video sticker (WebM 512x512)...</i>")
+
+	tmpDir, err := os.MkdirTemp("", "goultroid-vstick-*")
+	if err != nil {
+		return ctx.Reply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
+	}
+	defer os.RemoveAll(tmpDir)
+
+	downloadedPath, err := ctx.DownloadMedia(tmpDir)
+	if err != nil {
+		return ctx.Reply(fmt.Sprintf("❌ Failed to download media: %v", err))
+	}
+
+	inAsset := &storage.Asset{
+		ID:        filepath.Base(downloadedPath),
+		Name:      item.FileName,
+		Path:      downloadedPath,
+		Size:      item.Size,
+		Duration:  time.Duration(item.Duration) * time.Second,
+		Width:     item.Width,
+		Height:    item.Height,
+		CreatedAt: time.Now(),
+	}
+
+	outAsset, err := p.mediaService.ConvertToSticker(ctx.Ctx, inAsset)
+	if err != nil {
+		return ctx.Reply(fmt.Sprintf("❌ Video sticker generation failed: %v", err))
+	}
+
+	if _, err := ctx.SendMedia(outAsset.Path, "sticker", "🎭 Video Sticker"); err != nil {
+		// Fallback to document if sticker sender fails
+		_, _ = ctx.SendMedia(outAsset.Path, "document", "🎭 Video Sticker (WebM)")
 	}
 
 	_ = ctx.Delete()

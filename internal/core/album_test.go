@@ -68,7 +68,7 @@ func TestAlbumBuffer_Concurrency(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			gid := int64(idx % 4) + 1
+			gid := int64(idx%4) + 1
 			buf.Add(&Message{ID: idx, GroupedID: gid})
 			_ = buf.Get(gid)
 			_ = buf.Len()

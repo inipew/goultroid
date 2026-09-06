@@ -40,10 +40,11 @@ func (e *CommandExecutor) Metrics() MetricsCollector {
 }
 
 // Execute executes a command for a given context through the unified middleware chain:
-// Recovery -> Logging -> Permission -> Filter -> Cooldown -> Timeout -> Handler.
+// Recovery -> CorrelationID -> Logging -> Permission -> Filter -> Cooldown -> Timeout -> Handler.
 func (e *CommandExecutor) Execute(ctx *Context, cmd Command) error {
 	chain := NewChain(
 		RecoveryMiddleware(e.logger),
+		CorrelationMiddleware(e.logger),
 		LoggingMiddleware(e.logger),
 		PermissionMiddleware(cmd),
 		FilterMiddleware(cmd),
@@ -67,6 +68,7 @@ func (e *CommandExecutor) Execute(ctx *Context, cmd Command) error {
 		}
 		if e.logger != nil {
 			e.logger.Error("command failed",
+				zap.String("correlation_id", ctx.CorrelationID),
 				zap.String("command", cmd.Name),
 				zap.Error(err),
 			)

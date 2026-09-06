@@ -113,8 +113,8 @@ func TestMediaPlugin_Metadata(t *testing.T) {
 	}
 
 	cmds := p.Commands()
-	if len(cmds) != 2 {
-		t.Fatalf("expected 2 commands, got %d", len(cmds))
+	if len(cmds) != 5 {
+		t.Fatalf("expected 5 commands, got %d", len(cmds))
 	}
 	if cmds[0].Name != "mediainfo" {
 		t.Errorf("expected mediainfo command, got %s", cmds[0].Name)
@@ -128,8 +128,17 @@ func TestMediaPlugin_Metadata(t *testing.T) {
 	if cmds[1].Permission != core.PermissionSudo {
 		t.Errorf("expected extractaudio to be PermissionSudo, got %v", cmds[1].Permission)
 	}
-	if cmds[1].Timeout != 3*time.Minute {
-		t.Errorf("expected extractaudio timeout to be 3m, got %v", cmds[1].Timeout)
+	if cmds[1].Timeout != 5*time.Minute {
+		t.Errorf("expected extractaudio timeout to be 5m, got %v", cmds[1].Timeout)
+	}
+	if cmds[2].Name != "convert" {
+		t.Errorf("expected convert command, got %s", cmds[2].Name)
+	}
+	if cmds[3].Name != "gif" {
+		t.Errorf("expected gif command, got %s", cmds[3].Name)
+	}
+	if cmds[4].Name != "vstick" {
+		t.Errorf("expected vstick command, got %s", cmds[4].Name)
 	}
 }
 
@@ -364,5 +373,37 @@ func TestExtractAudio_MediaTooLarge(t *testing.T) {
 
 	if !strings.Contains(svc.sent, "Media too large") {
 		t.Errorf("expected rejection for oversized media, got: %s", svc.sent)
+	}
+}
+
+func TestNewCommands_NoMedia(t *testing.T) {
+	p := New()
+	svc := &mockService{}
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		PeerID:  &tg.InputPeerChat{ChatID: 100},
+		Message: &core.Message{ID: 1},
+		Svc:     svc,
+	}
+
+	if err := p.handleConvert(ctx); err != nil {
+		t.Errorf("handleConvert error: %v", err)
+	}
+	if !strings.Contains(svc.sent, "No media found") {
+		t.Errorf("expected 'No media found', got: %s", svc.sent)
+	}
+
+	if err := p.handleConvertToGIF(ctx); err != nil {
+		t.Errorf("handleConvertToGIF error: %v", err)
+	}
+	if !strings.Contains(svc.sent, "No media found") {
+		t.Errorf("expected 'No media found', got: %s", svc.sent)
+	}
+
+	if err := p.handleConvertToSticker(ctx); err != nil {
+		t.Errorf("handleConvertToSticker error: %v", err)
+	}
+	if !strings.Contains(svc.sent, "No media found") {
+		t.Errorf("expected 'No media found', got: %s", svc.sent)
 	}
 }

@@ -2,7 +2,9 @@ package database
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -157,35 +159,135 @@ var migrations = []migration{
 			`CREATE INDEX IF NOT EXISTS idx_peers_entities_username ON peers_entities(username COLLATE NOCASE);`,
 		},
 	},
+	{
+		version:     8,
+		description: "Persistent moderation warnings and infraction records",
+		statements: []string{
+			`CREATE TABLE IF NOT EXISTS moderation_warnings (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				chat_id INTEGER NOT NULL,
+				user_id INTEGER NOT NULL,
+				reason TEXT NOT NULL DEFAULT '',
+				warned_by INTEGER NOT NULL,
+				created_at DATETIME NOT NULL
+			);`,
+			`CREATE INDEX IF NOT EXISTS idx_moderation_warnings_chat_user ON moderation_warnings(chat_id, user_id);`,
+		},
+	},
+	{
+		version:     9,
+		description: "PM permit security records and user log settings",
+		statements: []string{
+			`CREATE TABLE IF NOT EXISTS pm_permit_records (
+				user_id INTEGER PRIMARY KEY,
+				status TEXT NOT NULL,
+				first_seen_at DATETIME NOT NULL,
+				last_seen_at DATETIME NOT NULL,
+				expires_at DATETIME,
+				reason TEXT NOT NULL DEFAULT '',
+				warn_count INTEGER NOT NULL DEFAULT 0
+			);`,
+			`CREATE INDEX IF NOT EXISTS idx_pm_permit_status ON pm_permit_records(status);`,
+			`CREATE TABLE IF NOT EXISTS user_log_settings (
+				key TEXT PRIMARY KEY,
+				val TEXT NOT NULL
+			);`,
+		},
+	},
+	{
+		version:     10,
+		description: "Voice chat sessions and playback queue",
+		statements: []string{
+			`CREATE TABLE IF NOT EXISTS voice_sessions (
+				chat_id INTEGER PRIMARY KEY,
+				state TEXT NOT NULL,
+				volume INTEGER NOT NULL DEFAULT 100,
+				repeat_mode TEXT NOT NULL DEFAULT 'off',
+				updated_at DATETIME NOT NULL
+			);`,
+			`CREATE TABLE IF NOT EXISTS voice_queue (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				chat_id INTEGER NOT NULL,
+				position INTEGER NOT NULL,
+				title TEXT NOT NULL,
+				artist TEXT NOT NULL DEFAULT '',
+				source_url TEXT NOT NULL DEFAULT '',
+				file_path TEXT NOT NULL DEFAULT '',
+				duration_seconds INTEGER NOT NULL DEFAULT 0,
+				source_type TEXT NOT NULL DEFAULT 'audio',
+				requester_id INTEGER NOT NULL,
+				created_at DATETIME NOT NULL
+			);`,
+			`CREATE INDEX IF NOT EXISTS idx_voice_queue_chat_pos ON voice_queue(chat_id, position);`,
+		},
+	},
+	{
+		version:     11,
+		description: "Addon registry for external plugin ecosystem",
+		statements: []string{
+			`CREATE TABLE IF NOT EXISTS addon_registry (
+				name TEXT PRIMARY KEY,
+				version TEXT NOT NULL,
+				description TEXT NOT NULL DEFAULT '',
+				author TEXT NOT NULL DEFAULT '',
+				source_url TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'active',
+				capabilities TEXT NOT NULL DEFAULT '',
+				min_version TEXT NOT NULL DEFAULT '',
+				installed_at DATETIME NOT NULL,
+				updated_at DATETIME NOT NULL
+			);`,
+			`CREATE INDEX IF NOT EXISTS idx_addon_registry_status ON addon_registry(status);`,
+		},
+	},
+}
+
+// calculateMigrationChecksum produces a deterministic SHA-256 hash of a migration's SQL statements.
+func calculateMigrationChecksum(m migration) string {
+	h := sha256.New()
+	for _, s := range m.statements {
+		h.Write([]byte(strings.TrimSpace(s)))
+		h.Write([]byte("\n"))
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // migrate runs pending database migrations in sequence inside atomic transactions.
 func (d *DB) migrate(ctx context.Context) error {
-	// 1. Ensure schema_migrations table exists
+	// 1. Ensure schema_migrations table exists with checksum column
 	createMigrationsTable := `
 	CREATE TABLE IF NOT EXISTS schema_migrations (
 		version INTEGER PRIMARY KEY,
 		description TEXT NOT NULL,
+		checksum TEXT NOT NULL DEFAULT '',
 		applied_at DATETIME NOT NULL
 	);`
 	if _, err := d.ExecContext(ctx, createMigrationsTable); err != nil {
 		return fmt.Errorf("failed to create schema_migrations table: %w", err)
 	}
 
-	// 2. Load already applied versions
-	rows, err := d.QueryContext(ctx, "SELECT version FROM schema_migrations ORDER BY version ASC")
+	// Backward compatibility: ensure checksum column exists on older schema_migrations
+	var colCount int
+	_ = d.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('schema_migrations') WHERE name='checksum'").Scan(&colCount)
+	if colCount == 0 {
+		_, _ = d.ExecContext(ctx, "ALTER TABLE schema_migrations ADD COLUMN checksum TEXT NOT NULL DEFAULT ''")
+	}
+
+	// 2. Load already applied versions and checksums
+	rows, err := d.QueryContext(ctx, "SELECT version, checksum FROM schema_migrations ORDER BY version ASC")
 	if err != nil {
 		return fmt.Errorf("failed to query schema_migrations: %w", err)
 	}
 	defer rows.Close()
 
-	applied := make(map[int]bool)
+	applied := make(map[int]string)
 	for rows.Next() {
 		var v int
-		if err := rows.Scan(&v); err != nil {
+		var cs string
+		if err := rows.Scan(&v, &cs); err != nil {
 			return fmt.Errorf("failed to scan migration version: %w", err)
 		}
-		applied[v] = true
+		applied[v] = cs
 	}
 	if err := rows.Err(); err != nil {
 		return err
@@ -198,20 +300,31 @@ func (d *DB) migrate(ctx context.Context) error {
 		err := d.QueryRowContext(ctx, "SELECT name FROM sqlite_master WHERE type='table' AND name='sudo_users'").Scan(&tableName)
 		if err == nil && tableName == "sudo_users" {
 			// Legacy unversioned DB detected: adopt as version 1
-			_, err := d.ExecContext(ctx, "INSERT INTO schema_migrations (version, description, applied_at) VALUES (1, 'Legacy schema adoption', ?)", time.Now())
+			cs1 := calculateMigrationChecksum(migrations[0])
+			_, err := d.ExecContext(ctx, "INSERT INTO schema_migrations (version, description, checksum, applied_at) VALUES (1, 'Legacy schema adoption', ?, ?)", cs1, time.Now())
 			if err == nil {
-				applied[1] = true
+				applied[1] = cs1
 			}
 		}
 	}
 
-	// 4. Apply pending migrations sequentially
+	// 4. Apply pending migrations sequentially and verify checksums of existing
 	for _, m := range migrations {
-		if applied[m.version] {
+		expectedChecksum := calculateMigrationChecksum(m)
+		if savedChecksum, exists := applied[m.version]; exists {
+			// If a checksum was recorded, verify it hasn't been altered
+			if savedChecksum != "" && savedChecksum != expectedChecksum {
+				return fmt.Errorf("migration checksum mismatch for version %d (%s): recorded %s, calculated %s",
+					m.version, m.description, savedChecksum, expectedChecksum)
+			}
+			// Backfill checksum if it was empty from legacy schema
+			if savedChecksum == "" {
+				_, _ = d.ExecContext(ctx, "UPDATE schema_migrations SET checksum = ? WHERE version = ?", expectedChecksum, m.version)
+			}
 			continue
 		}
 
-		if err := d.applyMigration(ctx, m); err != nil {
+		if err := d.applyMigration(ctx, m, expectedChecksum); err != nil {
 			return fmt.Errorf("failed to apply migration version %d (%s): %w", m.version, m.description, err)
 		}
 	}
@@ -220,7 +333,7 @@ func (d *DB) migrate(ctx context.Context) error {
 }
 
 // applyMigration applies a single migration step within a transaction.
-func (d *DB) applyMigration(ctx context.Context, m migration) error {
+func (d *DB) applyMigration(ctx context.Context, m migration, checksum string) error {
 	tx, err := d.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -251,9 +364,9 @@ func (d *DB) applyMigration(ctx context.Context, m migration) error {
 		}
 	}
 
-	// Record migration completion
-	recordQuery := "INSERT INTO schema_migrations (version, description, applied_at) VALUES (?, ?, ?)"
-	if _, err := tx.ExecContext(ctx, recordQuery, m.version, m.description, time.Now()); err != nil {
+	// Record migration completion with checksum
+	recordQuery := "INSERT INTO schema_migrations (version, description, checksum, applied_at) VALUES (?, ?, ?, ?)"
+	if _, err := tx.ExecContext(ctx, recordQuery, m.version, m.description, checksum, time.Now()); err != nil {
 		return fmt.Errorf("failed to record migration version %d: %w", m.version, err)
 	}
 
@@ -274,6 +387,7 @@ func (d *DB) columnExists(ctx context.Context, tx *sql.Tx, tableName, columnName
 		"peers_metadata":        true,
 		"peers_entities":        true,
 		"scheduled_job_history": true,
+		"moderation_warnings":   true,
 	}
 	if !validTables[strings.ToLower(tableName)] {
 		return false

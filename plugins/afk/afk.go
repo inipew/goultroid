@@ -257,4 +257,3 @@ func (p *Plugin) Cleanup(maxAge time.Duration) int {
 	})
 	return purged
 }
-

@@ -16,8 +16,12 @@ import (
 // Mockable for unit testing without a live MTProto connection.
 type TelegramServicer interface {
 	SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error)
+	SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error)
 	EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error
+	EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass, msgID int, text string, markup tg.ReplyMarkupClass) error
 	DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error
+	AnswerCallbackQuery(ctx context.Context, queryID int64, text string, alert bool) error
+	AnswerInlineQuery(ctx context.Context, queryID int64, results []tg.InputBotInlineResultClass, nextOffset string, cacheTime int) error
 	React(ctx context.Context, peer tg.InputPeerClass, msgID int, emoji string) error
 	GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) (*tg.Message, error)
 	PinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, silent bool) error
@@ -164,33 +168,56 @@ type User struct {
 	IsBot     bool
 }
 
+// Localizer defines the interface for internationalization and translation lookup.
+type Localizer interface {
+	T(key string, args ...any) string
+}
+
 // Context is passed to each command handler, providing clean abstractions.
 type Context struct {
 	Ctx context.Context
 
-	Command string
-	Args    []string
-	RawArgs string
+	CorrelationID string
+	Command       string
+	Args          []string
+	RawArgs       string
 
-	Message *Message
-	Album   []*Message
-	Chat    *Chat
-	Sender  *User
+	Message   *Message
+	Album     []*Message
+	Chat      *Chat
+	Sender    *User
 	Perms     *Permissions
 	Principal *Principal
 
 	// LastResponseID tracks the ID of the bot's most recent reply in this context
 	LastResponseID int
 
-	Svc      TelegramServicer
-	PeerID   tg.InputPeerClass
-	Resolver PeerResolver
+	Svc       TelegramServicer
+	PeerID    tg.InputPeerClass
+	Resolver  PeerResolver
+	Localizer Localizer
+}
+
+// Correlation returns the CorrelationID or an empty string if unset.
+func (c *Context) Correlation() string {
+	if c != nil {
+		return c.CorrelationID
+	}
+	return ""
 }
 
 // SenderID returns the ID of the sender if present.
 func (c *Context) SenderID() int64 {
 	if c != nil && c.Sender != nil {
 		return c.Sender.ID
+	}
+	return 0
+}
+
+// ChatID returns the ID of the chat if present.
+func (c *Context) ChatID() int64 {
+	if c != nil && c.Chat != nil {
+		return c.Chat.ID
 	}
 	return 0
 }
@@ -316,9 +343,40 @@ func (c *Context) Reply(text string) error {
 	return c.Messages().Reply(text)
 }
 
+// ReplyMarkup sends a response message to the same chat with reply markup attached.
+func (c *Context) ReplyMarkup(text string, markup tg.ReplyMarkupClass) error {
+	return c.Messages().ReplyMarkup(text, markup)
+}
+
 // Edit edits the previously sent response (if Reply was called) or the outgoing command message.
 func (c *Context) Edit(text string) error {
 	return c.Messages().Edit(text)
+}
+
+// EditMarkup edits the response or command message with new text and markup.
+func (c *Context) EditMarkup(text string, markup tg.ReplyMarkupClass) error {
+	return c.Messages().EditMarkup(text, markup)
+}
+
+// T translates a key with optional formatting arguments using the configured Localizer.
+func (c *Context) T(key string, args ...any) string {
+	if c != nil && c.Localizer != nil {
+		return c.Localizer.T(key, args...)
+	}
+	if len(args) == 0 {
+		return key
+	}
+	var sb strings.Builder
+	sb.WriteString(key)
+	sb.WriteString(" [")
+	for i, a := range args {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		sb.WriteString(fmt.Sprint(a))
+	}
+	sb.WriteString("]")
+	return sb.String()
 }
 
 // Delete deletes the current command message.
@@ -632,4 +690,3 @@ func (c *Context) BlockUser(peer tg.InputPeerClass) error {
 func (c *Context) UnblockUser(peer tg.InputPeerClass) error {
 	return c.Peer().UnblockUser(peer)
 }
-

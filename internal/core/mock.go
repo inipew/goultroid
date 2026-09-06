@@ -15,10 +15,22 @@ var _ TelegramServicer = (*MockTelegramServicer)(nil)
 func (m *MockTelegramServicer) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
 	return &tg.Message{ID: 1, Message: text}, nil
 }
+func (m *MockTelegramServicer) SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
+	return &tg.Message{ID: 1, Message: text}, nil
+}
 func (m *MockTelegramServicer) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
 	return nil
 }
+func (m *MockTelegramServicer) EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass, msgID int, text string, markup tg.ReplyMarkupClass) error {
+	return nil
+}
 func (m *MockTelegramServicer) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {
+	return nil
+}
+func (m *MockTelegramServicer) AnswerCallbackQuery(ctx context.Context, queryID int64, text string, alert bool) error {
+	return nil
+}
+func (m *MockTelegramServicer) AnswerInlineQuery(ctx context.Context, queryID int64, results []tg.InputBotInlineResultClass, nextOffset string, cacheTime int) error {
 	return nil
 }
 func (m *MockTelegramServicer) React(ctx context.Context, peer tg.InputPeerClass, msgID int, emoji string) error {
@@ -99,4 +111,3 @@ func (m *MockTelegramServicer) GetDialogs(ctx context.Context, limit int) ([]*Ch
 func (m *MockTelegramServicer) GetContacts(ctx context.Context) ([]*User, error) {
 	return nil, nil
 }
-
