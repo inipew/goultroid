@@ -45,7 +45,7 @@ func (e *Engine) CancelScoped(ctx context.Context, requesterID, chatID, jobID in
 
 // JobHistoryScoped prevents a caller from reading execution history for a job
 // belonging to another chat or creator unless the caller is configured sudo.
-func (e *Engine) JobHistoryScoped(ctx context.Context, requesterID, chatID, jobID, limit int) ([]database.JobHistoryEntry, error) {
+func (e *Engine) JobHistoryScoped(ctx context.Context, requesterID, chatID, jobID int64, limit int) ([]database.JobHistoryEntry, error) {
 	if _, err := e.authorizeJobAccess(ctx, requesterID, chatID, jobID); err != nil {
 		return nil, err
 	}
