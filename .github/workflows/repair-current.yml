@@ -9,18 +9,19 @@ permissions:
 
 jobs:
   repair:
-    if: startsWith(github.event.head_commit.message, 'chore: run one-time source repair and gofmt')
+    if: startsWith(github.event.head_commit.message, 'chore: run one-time source repair and gofmt') || startsWith(github.event.head_commit.message, 'fix: restore context from known good source revision')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 1
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
       - name: Restore accidental context rewrite and format Go sources
         run: |
-          git checkout HEAD^ -- internal/core/context.go
+          git fetch --no-tags --depth=1 origin d420195866d2ca36d117559d3cd892b1416c76ec
+          git show d420195866d2ca36d117559d3cd892b1416c76ec:internal/core/context.go > internal/core/context.go
           gofmt -w $(find . -name '*.go' -type f -not -path './vendor/*')
       - name: Commit repaired tree
         run: |
