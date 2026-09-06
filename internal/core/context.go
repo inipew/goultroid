@@ -60,6 +60,9 @@ type TelegramServicer interface {
 	DeleteProfilePhotos(ctx context.Context, limit int) (int, error)
 	GetDialogs(ctx context.Context, limit int) ([]*Chat, error)
 	GetContacts(ctx context.Context) ([]*User, error)
+
+	// Bot message origin tracking
+	IsBotSent(msgID int) bool
 }
 
 // InlineAnswerOptions carries Telegram's inline response policy (gallery/private/switch_pm).

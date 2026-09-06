@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 )
+
+var warnDBSync sync.Mutex
 
 // PMPermitRecord represents the security permit state of a Telegram user in PM.
 type PMPermitRecord struct {
@@ -135,6 +138,9 @@ func (db *DB) GetWarnMsgIDs(ctx context.Context, userID int64) ([]int, error) {
 
 // AddWarnMsgID appends a warning message ID for a user, capped at 20.
 func (db *DB) AddWarnMsgID(ctx context.Context, userID int64, msgID int) error {
+	warnDBSync.Lock()
+	defer warnDBSync.Unlock()
+
 	ids, _ := db.GetWarnMsgIDs(ctx, userID)
 	ids = append(ids, msgID)
 	if len(ids) > 20 {
@@ -150,11 +156,83 @@ func (db *DB) AddWarnMsgID(ctx context.Context, userID int64, msgID int) error {
 
 // ClearWarnMsgIDs clears stored warning message IDs for a user.
 func (db *DB) ClearWarnMsgIDs(ctx context.Context, userID int64) error {
+	warnDBSync.Lock()
+	defer warnDBSync.Unlock()
+
 	_, err := db.ExecContext(ctx, "UPDATE pm_permit_records SET warn_msg_ids = '[]' WHERE user_id = ?", userID)
 	if err != nil {
 		return fmt.Errorf("failed to clear warn msg ids: %w", err)
 	}
 	return nil
+}
+
+// ListPMRecords lists PM permit records filtered by status ("" for all), ordered by last_seen_at DESC.
+func (db *DB) ListPMRecords(ctx context.Context, status string, limit, offset int) ([]*PMPermitRecord, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var rows *sql.Rows
+	var err error
+	if status != "" {
+		query := `
+			SELECT user_id, status, first_seen_at, last_seen_at, expires_at, reason, warn_count
+			FROM pm_permit_records
+			WHERE status = ?
+			ORDER BY last_seen_at DESC
+			LIMIT ? OFFSET ?;
+		`
+		rows, err = db.QueryContext(ctx, query, status, limit, offset)
+	} else {
+		query := `
+			SELECT user_id, status, first_seen_at, last_seen_at, expires_at, reason, warn_count
+			FROM pm_permit_records
+			ORDER BY last_seen_at DESC
+			LIMIT ? OFFSET ?;
+		`
+		rows, err = db.QueryContext(ctx, query, limit, offset)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to list pm records: %w", err)
+	}
+	defer rows.Close()
+
+	var records []*PMPermitRecord
+	for rows.Next() {
+		var rec PMPermitRecord
+		var expiresAt sql.NullTime
+		var reason sql.NullString
+		if err := rows.Scan(&rec.UserID, &rec.Status, &rec.FirstSeenAt, &rec.LastSeenAt, &expiresAt, &reason, &rec.WarnCount); err != nil {
+			return nil, fmt.Errorf("failed to scan pm record: %w", err)
+		}
+		if expiresAt.Valid {
+			rec.ExpiresAt = &expiresAt.Time
+		}
+		if reason.Valid {
+			rec.Reason = reason.String
+		}
+		records = append(records, &rec)
+	}
+	return records, nil
+}
+
+// CountPMRecords returns the total counts of pending, approved, and blocked PM records.
+func (db *DB) CountPMRecords(ctx context.Context) (pending, approved, blocked int, err error) {
+	query := `
+		SELECT
+			COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0)
+		FROM pm_permit_records;
+	`
+	err = db.QueryRowContext(ctx, query).Scan(&pending, &approved, &blocked)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("failed to count pm records: %w", err)
+	}
+	return pending, approved, blocked, nil
 }
 
 // GetUserLogSetting retrieves a key-value setting for user logs.

@@ -17,6 +17,7 @@ const (
 	EventTypeReactionUpdated EventType = "reaction.updated"
 	EventTypeInlineChosen    EventType = "inline.chosen"
 	EventTypeAdminAction     EventType = "admin.action"
+	EventTypePMPermit        EventType = "pmpermit.action"
 )
 
 type Event interface{ Type() EventType; Timestamp() time.Time }
@@ -129,6 +130,22 @@ type AdminActionEvent struct {
 
 func (e *AdminActionEvent) Type() EventType { return EventTypeAdminAction }
 func (e *AdminActionEvent) Timestamp() time.Time { return e.At }
+
+// PMPermitEvent represents a private message access control decision or state transition.
+type PMPermitEvent struct {
+	At         time.Time
+	Action     string // "approve", "disapprove", "block", "unblock", "warn", "auto_approve"
+	UserID     int64
+	TargetName string
+	WarnCount  int
+	Reason     string
+	Success    bool
+	Error      string
+}
+
+func (e *PMPermitEvent) Type() EventType { return EventTypePMPermit }
+func (e *PMPermitEvent) Timestamp() time.Time { return e.At }
+
 
 type EventHandler func(event Event)
 

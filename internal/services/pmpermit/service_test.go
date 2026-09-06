@@ -2,6 +2,7 @@ package pmpermit_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -126,6 +127,7 @@ func TestPMPermit_HandleIncomingPM(t *testing.T) {
 	perms := core.NewPermissions(12345, nil)
 	svc := pmpermit.NewService(db, mockTG, 12345, perms, zap.NewNop())
 	svc.SetMaxWarns(3)
+	svc.SetWarnCooldown(0)
 
 	ctx := context.Background()
 	sender := int64(88888)
@@ -164,6 +166,7 @@ func TestPMPermit_DeleteWarnMessagesOnApprove(t *testing.T) {
 	perms := core.NewPermissions(12345, nil)
 	svc := pmpermit.NewService(db, mockTG, 12345, perms, zap.NewNop())
 	svc.SetMaxWarns(4)
+	svc.SetWarnCooldown(0)
 
 	ctx := context.Background()
 	sender := int64(66666)
@@ -200,6 +203,7 @@ func TestPMPermit_AutoApproveOutgoing_CleansWarningsAndUnblocks(t *testing.T) {
 	perms := core.NewPermissions(12345, nil)
 	svc := pmpermit.NewService(db, mockTG, 12345, perms, zap.NewNop())
 	svc.SetMaxWarns(2)
+	svc.SetWarnCooldown(0)
 
 	ctx := context.Background()
 	user := int64(54321)
@@ -295,5 +299,187 @@ func TestPMPermit_DisapproveResetsWarnCount(t *testing.T) {
 		t.Errorf("expected status pending, got %s", rec.Status)
 	}
 }
+
+func TestPMPermit_SilentDropOnBlocked(t *testing.T) {
+	db := setupTestDB(t)
+	mockTG := &mockTelegram{}
+	perms := core.NewPermissions(12345, nil)
+	svc := pmpermit.NewService(db, mockTG, 12345, perms, zap.NewNop())
+	svc.SetWarnCooldown(0)
+
+	ctx := context.Background()
+	user := int64(77777)
+	peer := &tg.InputPeerUser{UserID: user}
+
+	// Explicitly block user
+	_ = svc.Block(ctx, user, "bad actor")
+	initialMsgs := mockTG.msgCount
+
+	// Blocked user sends another message -> must be silently dropped (handled=true, no reply)
+	handled, err := svc.HandleIncomingPM(ctx, peer, user)
+	if err != nil || !handled {
+		t.Fatalf("expected handled true on blocked user, got %v (err=%v)", handled, err)
+	}
+	if mockTG.msgCount != initialMsgs {
+		t.Errorf("expected 0 reply messages sent to blocked user, got %d", mockTG.msgCount-initialMsgs)
+	}
+}
+
+func TestPMPermit_ActorBypass(t *testing.T) {
+	db := setupTestDB(t)
+	mockTG := &mockTelegram{}
+	perms := core.NewPermissions(12345, nil)
+	svc := pmpermit.NewService(db, mockTG, 12345, perms, zap.NewNop())
+	svc.SetWarnCooldown(0)
+
+	ctx := context.Background()
+
+	// 1. Bot bypass
+	botID := int64(1001)
+	handled, err := svc.HandleIncomingPM(ctx, &tg.InputPeerUser{UserID: botID}, botID, pmpermit.PMActor{
+		UserID: botID,
+		IsBot:  true,
+	})
+	if err != nil || handled {
+		t.Errorf("expected bot to bypass pmpermit (handled=false), got %v", handled)
+	}
+
+	// 2. Verified user bypass
+	verifiedID := int64(1002)
+	handled, err = svc.HandleIncomingPM(ctx, &tg.InputPeerUser{UserID: verifiedID}, verifiedID, pmpermit.PMActor{
+		UserID:   verifiedID,
+		Verified: true,
+	})
+	if err != nil || handled {
+		t.Errorf("expected verified user to bypass pmpermit (handled=false), got %v", handled)
+	}
+
+	// 3. Self bypass
+	selfID := int64(12345)
+	handled, err = svc.HandleIncomingPM(ctx, &tg.InputPeerUser{UserID: selfID}, selfID, pmpermit.PMActor{
+		UserID: selfID,
+		IsSelf: true,
+	})
+	if err != nil || handled {
+		t.Errorf("expected self to bypass pmpermit (handled=false), got %v", handled)
+	}
+}
+
+func TestPMPermit_WarnCooldown_Burst(t *testing.T) {
+	db := setupTestDB(t)
+	mockTG := &mockTelegram{}
+	perms := core.NewPermissions(12345, nil)
+	svc := pmpermit.NewService(db, mockTG, 12345, perms, zap.NewNop())
+	svc.SetMaxWarns(4)
+	svc.SetWarnCooldown(500 * time.Millisecond) // 500ms cooldown
+
+	ctx := context.Background()
+	user := int64(333444)
+	peer := &tg.InputPeerUser{UserID: user}
+
+	// Message 1: triggers warning 1
+	handled, _ := svc.HandleIncomingPM(ctx, peer, user)
+	if !handled || mockTG.msgCount != 1 {
+		t.Fatalf("expected msg 1 to send warning, got count=%d", mockTG.msgCount)
+	}
+
+	// Message 2 immediate burst (in cooldown): silently dropped, does NOT trigger warning 2
+	handled, _ = svc.HandleIncomingPM(ctx, peer, user)
+	if !handled || mockTG.msgCount != 1 {
+		t.Fatalf("expected burst msg 2 to be in cooldown, got count=%d", mockTG.msgCount)
+	}
+
+	// Wait for cooldown to expire
+	time.Sleep(550 * time.Millisecond)
+
+	// Message 3: triggers warning 2
+	handled, _ = svc.HandleIncomingPM(ctx, peer, user)
+	if !handled || mockTG.msgCount != 2 {
+		t.Fatalf("expected msg 3 to send warning 2, got count=%d", mockTG.msgCount)
+	}
+}
+
+func TestPMPermit_UnblockAndStats(t *testing.T) {
+	db := setupTestDB(t)
+	mockTG := &mockTelegram{}
+	perms := core.NewPermissions(12345, nil)
+	svc := pmpermit.NewService(db, mockTG, 12345, perms, zap.NewNop())
+	svc.SetWarnCooldown(0)
+
+	ctx := context.Background()
+	userA := int64(111)
+	userB := int64(222)
+	userC := int64(333)
+
+	_ = svc.Approve(ctx, userA, "friend", 0)
+	_ = svc.Block(ctx, userB, "spam")
+	_, _ = db.IncrementPMWarn(ctx, userC)
+
+	pending, approved, blocked, err := svc.GetStats(ctx)
+	if err != nil {
+		t.Fatalf("GetStats failed: %v", err)
+	}
+	if approved != 1 || blocked != 1 || pending != 1 {
+		t.Errorf("expected stats 1/1/1, got pending=%d, approved=%d, blocked=%d", pending, approved, blocked)
+	}
+
+	apprList, _ := svc.ListApproved(ctx, 10, 0)
+	if len(apprList) != 1 || apprList[0].UserID != userA {
+		t.Errorf("expected approved userA in list, got %v", apprList)
+	}
+
+	// Unblock userB
+	if err := svc.Unblock(ctx, nil, userB); err != nil {
+		t.Fatalf("Unblock failed: %v", err)
+	}
+	rec, _ := db.GetPMRecord(ctx, userB)
+	if rec == nil || rec.Status != pmpermit.StatusPending {
+		t.Errorf("expected userB status pending after unblock, got %+v", rec)
+	}
+}
+
+func TestPMPermit_EventBus(t *testing.T) {
+	db := setupTestDB(t)
+	mockTG := &mockTelegram{}
+	perms := core.NewPermissions(12345, nil)
+	svc := pmpermit.NewService(db, mockTG, 12345, perms, zap.NewNop())
+	svc.SetWarnCooldown(0)
+
+	bus := core.NewEventBus()
+	defer bus.Close()
+	svc.SetEventBus(bus)
+
+	var lastAction string
+	var lastUserID int64
+	var mu sync.Mutex
+	bus.Subscribe(core.EventTypePMPermit, func(evt core.Event) {
+		mu.Lock()
+		defer mu.Unlock()
+		if pmEvt, ok := evt.(*core.PMPermitEvent); ok {
+			lastAction = pmEvt.Action
+			lastUserID = pmEvt.UserID
+		}
+	})
+
+	ctx := context.Background()
+	_ = svc.Approve(ctx, 9988, "test", 0)
+
+	for i := 0; i < 20; i++ {
+		mu.Lock()
+		act := lastAction
+		mu.Unlock()
+		if act == "approve" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if lastAction != "approve" || lastUserID != 9988 {
+		t.Errorf("expected event approve for 9988, got action=%s, user=%d", lastAction, lastUserID)
+	}
+}
+
 
 

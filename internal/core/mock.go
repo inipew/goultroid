@@ -123,3 +123,7 @@ func (m *MockTelegramServicer) GetDialogs(ctx context.Context, limit int) ([]*Ch
 func (m *MockTelegramServicer) GetContacts(ctx context.Context) ([]*User, error) {
 	return nil, nil
 }
+func (m *MockTelegramServicer) IsBotSent(msgID int) bool {
+	return false
+}
+

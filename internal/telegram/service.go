@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gotd/td/telegram/downloader"
@@ -115,16 +116,58 @@ type Service struct {
 	uploader    *uploader.Uploader
 	peerManager *peers.Manager
 	storage     peers.Storage
+
+	botSentMu       sync.RWMutex
+	botSentMessages map[int]time.Time
 }
 
 // NewService creates a new Service instance.
 func NewService(api *tg.Client) *Service {
 	return &Service{
-		api:        api,
-		sender:     message.NewSender(api),
-		downloader: downloader.NewDownloader(),
-		uploader:   uploader.NewUploader(api),
+		api:             api,
+		sender:          message.NewSender(api),
+		downloader:      downloader.NewDownloader(),
+		uploader:        uploader.NewUploader(api),
+		botSentMessages: make(map[int]time.Time),
 	}
+}
+
+func (s *Service) recordBotSent(msgID int) {
+	if s == nil || msgID == 0 {
+		return
+	}
+	s.botSentMu.Lock()
+	defer s.botSentMu.Unlock()
+	if s.botSentMessages == nil {
+		s.botSentMessages = make(map[int]time.Time)
+	}
+	now := time.Now()
+	s.botSentMessages[msgID] = now
+	if len(s.botSentMessages) > 200 {
+		cutoff := now.Add(-5 * time.Minute)
+		for id, t := range s.botSentMessages {
+			if t.Before(cutoff) {
+				delete(s.botSentMessages, id)
+			}
+		}
+	}
+}
+
+// IsBotSent returns true if the message ID was dispatched programmatically by this bot instance.
+func (s *Service) IsBotSent(msgID int) bool {
+	if s == nil || msgID == 0 {
+		return false
+	}
+	s.botSentMu.RLock()
+	defer s.botSentMu.RUnlock()
+	if s.botSentMessages == nil {
+		return false
+	}
+	t, ok := s.botSentMessages[msgID]
+	if !ok {
+		return false
+	}
+	return time.Since(t) < 5*time.Minute
 }
 
 // SetPeerManager configures the peers.Manager used for caching and resolving peer access hashes.
@@ -184,7 +227,7 @@ func (s *Service) SendMessage(ctx context.Context, peer tg.InputPeerClass, text 
 	peer = s.ensureChannelAccessHash(ctx, peer)
 	peer = s.ensureUserAccessHash(ctx, peer)
 
-	return retryOnFloodWait(ctx, func() (*tg.Message, error) {
+	res, err := retryOnFloodWait(ctx, func() (*tg.Message, error) {
 		updates, err := s.sender.To(peer).StyledText(ctx, html.String(nil, text))
 		if err != nil {
 			if _, isFlood := tgerr.AsFloodWait(err); isFlood {
@@ -198,6 +241,10 @@ func (s *Service) SendMessage(ctx context.Context, peer tg.InputPeerClass, text 
 		}
 		return extractMessageFromUpdates(updates), nil
 	})
+	if err == nil && res != nil {
+		s.recordBotSent(res.ID)
+	}
+	return res, err
 }
 
 // EditMessage edits the text of an existing message.
@@ -231,7 +278,7 @@ func (s *Service) SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerCl
 	peer = s.ensureChannelAccessHash(ctx, peer)
 	peer = s.ensureUserAccessHash(ctx, peer)
 
-	return retryOnFloodWait(ctx, func() (*tg.Message, error) {
+	res, err := retryOnFloodWait(ctx, func() (*tg.Message, error) {
 		req := s.sender.To(peer)
 		var updates tg.UpdatesClass
 		var err error
@@ -260,6 +307,10 @@ func (s *Service) SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerCl
 		}
 		return extractMessageFromUpdates(updates), nil
 	})
+	if err == nil && res != nil {
+		s.recordBotSent(res.ID)
+	}
+	return res, err
 }
 
 // EditMessageMarkup edits an existing message text and updates or sets its reply markup.
@@ -417,6 +468,7 @@ func (s *Service) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msg
 	}
 
 	peer = s.ensureChannelAccessHash(ctx, peer)
+	peer = s.ensureUserAccessHash(ctx, peer)
 
 	if ch, ok := peer.(*tg.InputPeerChannel); ok {
 		_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
@@ -446,6 +498,7 @@ func (s *Service) React(ctx context.Context, peer tg.InputPeerClass, msgID int, 
 	}
 
 	peer = s.ensureChannelAccessHash(ctx, peer)
+	peer = s.ensureUserAccessHash(ctx, peer)
 	_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
 		_, err := s.sender.To(peer).Reaction(ctx, msgID, &tg.ReactionEmoji{Emoticon: emoji})
 		return struct{}{}, err
@@ -458,6 +511,7 @@ func (s *Service) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID 
 	var msgs []tg.MessageClass
 
 	peer = s.ensureChannelAccessHash(ctx, peer)
+	peer = s.ensureUserAccessHash(ctx, peer)
 
 	switch p := peer.(type) {
 	case *tg.InputPeerChannel:
@@ -978,7 +1032,11 @@ func (s *Service) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaTy
 		return nil, fmt.Errorf("failed to send media (%s): %w", mediaType, err)
 	}
 
-	return extractMessageFromUpdates(updates), nil
+	msg := extractMessageFromUpdates(updates)
+	if msg != nil {
+		s.recordBotSent(msg.ID)
+	}
+	return msg, nil
 }
 
 // GetFullUser retrieves extended profile information for a user.

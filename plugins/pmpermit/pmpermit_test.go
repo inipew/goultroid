@@ -15,8 +15,9 @@ import (
 
 type mockTelegram struct {
 	core.MockTelegramServicer
-	sentText string
-	edited   string
+	sentText   string
+	edited     string
+	botSentIDs map[int]bool
 }
 
 func (m *mockTelegram) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
@@ -27,6 +28,13 @@ func (m *mockTelegram) SendMessage(ctx context.Context, peer tg.InputPeerClass, 
 func (m *mockTelegram) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
 	m.edited = text
 	return nil
+}
+
+func (m *mockTelegram) IsBotSent(msgID int) bool {
+	if m.botSentIDs != nil && m.botSentIDs[msgID] {
+		return true
+	}
+	return false
 }
 
 func setupTestDB(t *testing.T) *database.DB {
@@ -56,8 +64,8 @@ func TestPMPermitPlugin(t *testing.T) {
 	}
 
 	cmds := p.Commands()
-	if len(cmds) != 4 {
-		t.Fatalf("expected 4 commands, got %d", len(cmds))
+	if len(cmds) != 6 {
+		t.Fatalf("expected 6 commands, got %d", len(cmds))
 	}
 
 	ctx := &core.Context{
@@ -92,7 +100,30 @@ func TestPMPermitPlugin(t *testing.T) {
 		t.Errorf("expected block message, got %s", mockTG.edited)
 	}
 
-	// 4. Toggle command
+	// 4. Unblock command
+	if err := cmds[3].Handler(ctx); err != nil {
+		t.Fatalf("unblock failed: %v", err)
+	}
+	if !strings.Contains(mockTG.edited, "Unblocked") {
+		t.Errorf("expected unblock message, got %s", mockTG.edited)
+	}
+
+	// 5. ListApproved command
+	listCtx := &core.Context{
+		Ctx:     context.Background(),
+		Svc:     mockTG,
+		PeerID:  &tg.InputPeerUser{UserID: 88888},
+		Message: &core.Message{ID: 1, IsOutgoing: true},
+	}
+	_ = svc.Approve(context.Background(), 88888, "approved test", 0)
+	if err := cmds[4].Handler(listCtx); err != nil {
+		t.Fatalf("listapproved failed: %v", err)
+	}
+	if !strings.Contains(mockTG.edited, "APPROVED") {
+		t.Errorf("expected list of approved users, got %s", mockTG.edited)
+	}
+
+	// 6. Toggle command
 	toggleCtx := &core.Context{
 		Ctx:     context.Background(),
 		Svc:     mockTG,
@@ -100,7 +131,7 @@ func TestPMPermitPlugin(t *testing.T) {
 		Message: &core.Message{ID: 1, IsOutgoing: true},
 		Args:    []string{"off"},
 	}
-	if err := cmds[3].Handler(toggleCtx); err != nil {
+	if err := cmds[5].Handler(toggleCtx); err != nil {
 		t.Fatalf("toggle failed: %v", err)
 	}
 	if !strings.Contains(mockTG.edited, "DISABLED") {
@@ -108,6 +139,36 @@ func TestPMPermitPlugin(t *testing.T) {
 	}
 	if svc.IsEnabled() {
 		t.Errorf("expected svc to be disabled")
+	}
+
+	// Status dashboard
+	statusCtx := &core.Context{
+		Ctx:     context.Background(),
+		Svc:     mockTG,
+		PeerID:  &tg.InputPeerUser{UserID: 88888},
+		Message: &core.Message{ID: 1, IsOutgoing: true},
+		Args:    []string{"status"},
+	}
+	if err := cmds[5].Handler(statusCtx); err != nil {
+		t.Fatalf("status failed: %v", err)
+	}
+	if !strings.Contains(mockTG.edited, "Dashboard") {
+		t.Errorf("expected dashboard, got %s", mockTG.edited)
+	}
+
+	// Test self-test
+	testCtx := &core.Context{
+		Ctx:     context.Background(),
+		Svc:     mockTG,
+		PeerID:  &tg.InputPeerUser{UserID: 88888},
+		Message: &core.Message{ID: 1, IsOutgoing: true},
+		Args:    []string{"test"},
+	}
+	if err := cmds[5].Handler(testCtx); err != nil {
+		t.Fatalf("test subcommand failed: %v", err)
+	}
+	if !strings.Contains(mockTG.edited, "Self-Test OK") {
+		t.Errorf("expected self-test ok, got %s", mockTG.edited)
 	}
 }
 
@@ -166,7 +227,11 @@ func TestPMPermitPlugin_HandleIncomingMessage(t *testing.T) {
 
 func TestPMPermitPlugin_DisapproveAndWarningDoNotAutoApprove(t *testing.T) {
 	db := setupTestDB(t)
-	mockTG := &mockTelegram{}
+	mockTG := &mockTelegram{
+		botSentIDs: map[int]bool{
+			99: true, // ID 99 was sent by bot automation (scheduler/broadcast/downloader)
+		},
+	}
 	perms := core.NewPermissions(12345, nil)
 	svc := pmpermitSvc.NewService(db, mockTG, 12345, perms, zap.NewNop())
 	p := pmpermit.New(svc)
@@ -207,22 +272,39 @@ func TestPMPermitPlugin_DisapproveAndWarningDoNotAutoApprove(t *testing.T) {
 		t.Errorf("outgoing bot warning message should NOT auto-approve")
 	}
 
-	// 3. Outgoing message to a blocked user must NEVER auto-approve
+	// 3. Outgoing automated message (IsBotSent == true) must NEVER auto-approve
+	botAutoMsg := &tg.Message{
+		ID:      99,
+		Out:     true,
+		Message: "Automated broadcast or download notification",
+		PeerID:  &tg.PeerUser{UserID: targetID},
+	}
+	if err := p.HandleIncomingMessage(ctx, e, botAutoMsg, false, ""); err != nil {
+		t.Fatalf("HandleIncomingMessage failed: %v", err)
+	}
+	if ok, _ := svc.IsApproved(ctx, targetID); ok {
+		t.Errorf("outgoing automated bot message should NOT auto-approve")
+	}
+
+	// 4. Legitimate owner message to a blocked user SHOULD unblock and auto-approve
 	_ = svc.Block(ctx, targetID, "test block")
 	chatMsgToBlocked := &tg.Message{
 		ID:      12,
 		Out:     true,
-		Message: "Hello blocked user",
+		Message: "Hello blocked user, unblocking you now",
 		PeerID:  &tg.PeerUser{UserID: targetID},
 	}
 	if err := p.HandleIncomingMessage(ctx, e, chatMsgToBlocked, false, ""); err != nil {
 		t.Fatalf("HandleIncomingMessage failed: %v", err)
 	}
-	if ok, _ := svc.IsApproved(ctx, targetID); ok {
-		t.Errorf("outgoing message to blocked user should NOT auto-approve")
+	if ok, _ := svc.IsApproved(ctx, targetID); !ok {
+		t.Errorf("legitimate owner message to blocked user SHOULD unblock and auto-approve")
+	}
+	if svc.IsBlocked(ctx, targetID) {
+		t.Errorf("user should no longer be marked as blocked after owner messages them")
 	}
 
-	// 4. Legitimate chat to a non-blocked unapproved user SHOULD auto-approve
+	// 5. Legitimate chat to a non-blocked unapproved user SHOULD auto-approve
 	newTarget := int64(6666)
 	e.Users[newTarget] = &tg.User{ID: newTarget, AccessHash: 456}
 	chatMsg := &tg.Message{
