@@ -62,10 +62,6 @@ func (e *CommandExecutor) ExecuteExecution(exec CommandExecution, cmd Command, s
 	if exec.Command == "" {
 		exec.Command = cmd.Name
 	}
-	sender := exec.Sender
-	if sender == nil && exec.Principal != nil && exec.Principal.ID > 0 {
-		sender = &User{ID: exec.Principal.ID}
-	}
 	ctx := &Context{
 		Ctx:            exec.Ctx,
 		CorrelationID:  exec.CorrelationID,
@@ -74,7 +70,7 @@ func (e *CommandExecutor) ExecuteExecution(exec CommandExecution, cmd Command, s
 		RawArgs:        exec.RawArgs,
 		Message:        exec.TriggerMessage,
 		Chat:           exec.Chat,
-		Sender:         sender,
+		Sender:         exec.Sender,
 		Principal:      exec.Principal,
 		Perms:          exec.Perms,
 		Svc:            svc,
