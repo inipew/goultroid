@@ -21,7 +21,8 @@ const (
 //
 // Safety invariants:
 //   - the command message is never included in the deletion set;
-//   - a forum topic is queried by its exact root message ID;
+//   - the replied-to message IS included in the deletion range;
+//   - a forum topic is queried by its exact topic root;
 //   - the forum topic root itself is never deleted;
 //   - only concrete Message IDs returned by Telegram are deleted;
 //   - a hard ceiling prevents an accidental large-range purge;
@@ -47,10 +48,16 @@ func (s *Service) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerClass,
 		return 0, fmt.Errorf("invalid forum topic ID %d for command message %d", topicID, toID)
 	}
 
-	// Never delete the command itself. The command remains available for the
-	// final EditOrReply, avoiding MESSAGE_ID_INVALID after a successful purge.
-	minID, maxID := fromID, toID-1
-	ids := make(map[int]struct{}, min(maxInt(SafePurgeMaxMessages, SafePurgePageSize), maxID-minID+1))
+	// Telegram's MinID is a lower boundary for history/replies rather than an
+	// inclusive message selector. Query one ID below the requested start, then
+	// enforce the real inclusive [fromID, toID) range locally. This is what makes
+	// the replied-to message part of purge instead of silently skipping it.
+	queryMinID := fromID - 1
+	if queryMinID < 0 {
+		queryMinID = 0
+	}
+	maxID := toID - 1
+	ids := make(map[int]struct{}, min(maxInt(SafePurgeMaxMessages, SafePurgePageSize), maxID-fromID+1))
 	offsetID := maxID + 1
 
 	for len(ids) < SafePurgeMaxMessages {
@@ -63,7 +70,7 @@ func (s *Service) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerClass,
 					Peer: peer,
 					MsgID: topicID,
 					OffsetID: offsetID,
-					MinID: minID,
+					MinID: queryMinID,
 					MaxID: maxID,
 					Limit: SafePurgePageSize,
 				})
@@ -82,7 +89,7 @@ func (s *Service) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerClass,
 				resp, callErr := s.api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
 					Peer: peer,
 					OffsetID: offsetID,
-					MinID: minID,
+					MinID: queryMinID,
 					MaxID: maxID,
 					Limit: SafePurgePageSize,
 				})
@@ -108,7 +115,7 @@ func (s *Service) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerClass,
 		newIDs := 0
 		for _, item := range messages {
 			msg, ok := item.(*tg.Message)
-			if !ok || msg == nil || msg.ID < minID || msg.ID > maxID {
+			if !ok || msg == nil || msg.ID < fromID || msg.ID > maxID {
 				continue
 			}
 
@@ -129,13 +136,21 @@ func (s *Service) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerClass,
 
 		// Telegram pagination must make monotonic progress. If a response cannot
 		// move the cursor, stop rather than risking a repeated query loop.
-		if newIDs == 0 || lowest >= offsetID {
+		if lowest >= offsetID {
 			break
 		}
-		if lowest <= minID {
+		if lowest <= queryMinID {
 			break
 		}
+		// offset_id is exclusive on the older side, so reusing the lowest ID
+		// moves to the next older page without skipping that lowest message.
 		offsetID = lowest
+
+		// If the page contained no new IDs but still moved through unrelated
+		// messages, continue pagination until the requested lower boundary.
+		if newIDs == 0 && lowest <= fromID {
+			break
+		}
 	}
 
 	if len(ids) == 0 {
