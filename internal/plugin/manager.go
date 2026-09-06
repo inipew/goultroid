@@ -6,20 +6,38 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 )
 
+// MessageHookHandler represents the raw Telegram message interceptor signature.
+type MessageHookHandler = func(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error
+
+// HookRegistrar allows the plugin manager to attach message hooks into the dispatcher.
+type HookRegistrar interface {
+	AddPrioritizedMessageHandler(priority int, h MessageHookHandler) func()
+}
+
 type Manager struct {
-	router   *core.Router
-	plugins  map[string]Plugin
-	metadata map[string]Metadata
-	list     []Plugin
-	mu       sync.RWMutex
-	shutdown bool
+	router        *core.Router
+	hookRegistrar HookRegistrar
+	plugins       map[string]Plugin
+	metadata      map[string]Metadata
+	list          []Plugin
+	hookCleanups  []func()
+	mu            sync.RWMutex
+	shutdown      bool
 }
 
 func NewManager(router *core.Router) *Manager {
 	return &Manager{router: router, plugins: make(map[string]Plugin), metadata: make(map[string]Metadata), list: make([]Plugin, 0)}
+}
+
+// SetHookRegistrar attaches a hook registrar (e.g. Telegram Dispatcher) to this manager.
+func (m *Manager) SetHookRegistrar(registrar HookRegistrar) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.hookRegistrar = registrar
 }
 
 func (m *Manager) Register(p Plugin) error {
@@ -32,13 +50,43 @@ func (m *Manager) Register(p Plugin) error {
 	if name == "" { return fmt.Errorf("plugin name cannot be empty") }
 	if _, exists := m.plugins[name]; exists { return fmt.Errorf("plugin already registered: %s", name) }
 
-	if err := p.Init(); err != nil {
-		if s, ok := p.(ContextShutdowner); ok { _ = s.ShutdownContext(context.Background()) } else if s, ok := p.(Shutdowner); ok { _ = s.Shutdown() }
-		return fmt.Errorf("failed to initialize plugin %s: %w", name, err)
+	// 1. Startup validation: ensure commands are valid and handlers are non-nil
+	cmds := p.Commands()
+	for _, cmd := range cmds {
+		if strings.TrimSpace(cmd.Name) == "" {
+			return fmt.Errorf("plugin %s contains command with empty name", name)
+		}
+		if cmd.Handler == nil {
+			return fmt.Errorf("plugin %s command %q has nil handler", name, cmd.Name)
+		}
 	}
-	if err := m.router.RegisterBatch(p.Commands()); err != nil {
+
+	// 2. Context-aware initialization
+	var initErr error
+	if ci, ok := p.(ContextInitializer); ok {
+		initErr = ci.InitContext(context.Background())
+	} else {
+		initErr = p.Init()
+	}
+	if initErr != nil {
+		if s, ok := p.(ContextShutdowner); ok { _ = s.ShutdownContext(context.Background()) } else if s, ok := p.(Shutdowner); ok { _ = s.Shutdown() }
+		return fmt.Errorf("failed to initialize plugin %s: %w", name, initErr)
+	}
+
+	// 3. Command registration
+	if err := m.router.RegisterBatch(cmds); err != nil {
 		if s, ok := p.(ContextShutdowner); ok { _ = s.ShutdownContext(context.Background()) } else if s, ok := p.(Shutdowner); ok { _ = s.Shutdown() }
 		return fmt.Errorf("plugin %s command registration failed: %w", name, err)
+	}
+
+	// 4. Hook registration for plugins that intercept raw Telegram messages
+	if m.hookRegistrar != nil {
+		if mhp, ok := p.(MessageHookPlugin); ok {
+			cleanup := m.hookRegistrar.AddPrioritizedMessageHandler(mhp.MessageHookPriority(), mhp.HandleIncomingMessage)
+			if cleanup != nil {
+				m.hookCleanups = append(m.hookCleanups, cleanup)
+			}
+		}
 	}
 
 	var meta Metadata
@@ -69,9 +117,19 @@ func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 	m.mu.Lock()
 	if m.shutdown { m.mu.Unlock(); return nil }
 	m.shutdown = true
+	cleanups := m.hookCleanups
+	m.hookCleanups = nil
 	plugins := make([]Plugin, len(m.list)); copy(plugins, m.list)
 	m.mu.Unlock()
 
+	// 1. Detach all message hooks first so no incoming update hits shutting-down plugins
+	for _, cleanup := range cleanups {
+		if cleanup != nil {
+			cleanup()
+		}
+	}
+
+	// 2. Shut down plugins in reverse registration order
 	var errs []string
 	for i := len(plugins) - 1; i >= 0; i-- {
 		p := plugins[i]

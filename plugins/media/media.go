@@ -244,7 +244,7 @@ func (p *Plugin) handleConvert(ctx *core.Context) error {
 		_ = p.Init()
 	}
 
-	_ = ctx.EditOrReply(fmt.Sprintf("⏳ <i>Converting media to %s...</i>", targetFormat))
+	_ = ctx.EditOrReply(fmt.Sprintf("⏳ <i>Converting media to %s...</i>", core.EscapeHTML(targetFormat)))
 
 	tmpDir, err := os.MkdirTemp("", "goultroid-convert-*")
 	if err != nil {
@@ -281,7 +281,7 @@ func (p *Plugin) handleConvert(ctx *core.Context) error {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Conversion failed: %v", err))
 	}
 
-	caption := fmt.Sprintf("🎬 Converted to: <code>%s</code>", targetFormat)
+	caption := fmt.Sprintf("🎬 Converted to: <code>%s</code>", core.EscapeHTML(targetFormat))
 	mediaType := "document"
 	if targetFormat == "mp4" {
 		mediaType = "video"

@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 
+	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 )
 
@@ -43,4 +44,17 @@ type Metadata struct {
 type DescribedPlugin interface {
 	Plugin
 	Metadata() Metadata
+}
+
+// ContextInitializer is an optional interface for plugins requiring cancellation-aware initialization.
+type ContextInitializer interface {
+	InitContext(context.Context) error
+}
+
+// MessageHookPlugin is an optional interface for plugins that intercept raw Telegram messages.
+// The priority integer corresponds to HandlerPriority (Security=10, Moderation=20, Feature=50, Observability=90).
+type MessageHookPlugin interface {
+	Plugin
+	MessageHookPriority() int
+	HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error
 }

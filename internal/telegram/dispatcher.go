@@ -20,7 +20,7 @@ import (
 
 // HandlerPriority determines the execution order of raw message handlers.
 // Lower numerical values execute earlier.
-type HandlerPriority int
+type HandlerPriority = int
 
 const (
 	PrioritySecurity      HandlerPriority = 10 // PMPermit, Blacklist, Access Control
@@ -30,6 +30,7 @@ const (
 )
 
 type prioritizedHandler struct {
+	id       uint64
 	priority HandlerPriority
 	handler  MessageHandler
 }
@@ -51,8 +52,11 @@ type Dispatcher struct {
 	callbackRouter *callback.Router
 	inlineEngine   *inline.Engine
 
-	messageHandlers []prioritizedHandler
-	mu              sync.RWMutex
+	messageHandlers  []prioritizedHandler
+	nextHandlerID    uint64
+	acceptingUpdates atomic.Bool
+	inFlight         sync.WaitGroup
+	mu               sync.RWMutex
 
 	// Bounded peer-cache worker pool to avoid 1000-goroutine burst on SQLite.
 	peerQueue      chan peerUpdateJob
@@ -71,7 +75,7 @@ type peerUpdateJob struct {
 }
 
 // MessageHandler is invoked for each incoming message.
-type MessageHandler func(ctx context.Context, e tg.Entities, msg *tg.Message, isCommand bool, cmdName string) error
+type MessageHandler = func(ctx context.Context, e tg.Entities, msg *tg.Message, isCommand bool, cmdName string) error
 
 // NewDispatcher creates a new Dispatcher instance.
 func NewDispatcher(
@@ -85,7 +89,7 @@ func NewDispatcher(
 	}
 	cooldown := core.NewCooldownTracker()
 	executor := core.NewCommandExecutor(logger, cooldown, 30*time.Second)
-	return &Dispatcher{
+	d := &Dispatcher{
 		router:      router,
 		perms:       perms,
 		svc:         svc,
@@ -94,6 +98,8 @@ func NewDispatcher(
 		executor:    executor,
 		albumBuffer: core.NewAlbumBuffer(10 * time.Minute),
 	}
+	d.acceptingUpdates.Store(true)
+	return d
 }
 
 // Executor returns the underlying CommandExecutor used by this dispatcher.
@@ -178,11 +184,27 @@ func (d *Dispatcher) peerWorker(ctx context.Context, q <-chan peerUpdateJob) {
 	}
 }
 
-// Stop drains the peer-cache queue and waits for workers to exit. It should
-// be called before database close during application shutdown.
+// Stop drains incoming in-flight handlers and the peer-cache queue, waiting
+// for workers to exit. It should be called before database close during application shutdown.
 func (d *Dispatcher) Stop(ctx context.Context) error {
 	var err error
 	d.peerStopOnce.Do(func() {
+		// 1. Quiesce: stop accepting new incoming updates immediately
+		d.acceptingUpdates.Store(false)
+
+		// 2. Drain in-flight message dispatches & interceptors
+		doneInFlight := make(chan struct{})
+		go func() {
+			d.inFlight.Wait()
+			close(doneInFlight)
+		}()
+		select {
+		case <-doneInFlight:
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
+
+		// 3. Mark stopping, nil out peerQueue under lock, and wait for peer workers
 		d.stopping.Store(true)
 		d.mu.Lock()
 		q := d.peerQueue
@@ -192,12 +214,14 @@ func (d *Dispatcher) Stop(ctx context.Context) error {
 			return
 		}
 		close(q)
-		done := make(chan struct{})
-		go func() { d.peerWG.Wait(); close(done) }()
+		doneWorkers := make(chan struct{})
+		go func() { d.peerWG.Wait(); close(doneWorkers) }()
 		select {
-		case <-done:
+		case <-doneWorkers:
 		case <-ctx.Done():
-			err = ctx.Err()
+			if err == nil {
+				err = ctx.Err()
+			}
 		}
 	})
 	return err
@@ -223,21 +247,35 @@ func (d *Dispatcher) getRootContext() context.Context {
 
 // AddMessageHandler registers an interceptor for raw message processing with default PriorityFeature.
 func (d *Dispatcher) AddMessageHandler(h MessageHandler) {
-	d.AddPrioritizedMessageHandler(PriorityFeature, h)
+	_ = d.AddPrioritizedMessageHandler(PriorityFeature, h)
 }
 
 // AddPrioritizedMessageHandler registers an interceptor with an explicit priority.
 // Lower numerical priority executes first (e.g. PrioritySecurity < PriorityModeration < PriorityFeature < PriorityObservability).
-func (d *Dispatcher) AddPrioritizedMessageHandler(priority HandlerPriority, h MessageHandler) {
+// It returns an unregister function that detaches this handler from the dispatcher.
+func (d *Dispatcher) AddPrioritizedMessageHandler(priority HandlerPriority, h MessageHandler) func() {
 	if h == nil {
-		return
+		return func() {}
 	}
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.messageHandlers = append(d.messageHandlers, prioritizedHandler{priority: priority, handler: h})
+	d.nextHandlerID++
+	id := d.nextHandlerID
+	d.messageHandlers = append(d.messageHandlers, prioritizedHandler{id: id, priority: priority, handler: h})
 	sort.SliceStable(d.messageHandlers, func(i, j int) bool {
 		return d.messageHandlers[i].priority < d.messageHandlers[j].priority
 	})
+	d.mu.Unlock()
+
+	return func() {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		for i, ph := range d.messageHandlers {
+			if ph.id == id {
+				d.messageHandlers = append(d.messageHandlers[:i], d.messageHandlers[i+1:]...)
+				break
+			}
+		}
+	}
 }
 
 // SetService updates the TelegramServicer instance (e.g. once client is connected).
@@ -383,6 +421,9 @@ func (d *Dispatcher) OnNewChannelMessage(ctx context.Context, e tg.Entities, upd
 
 // OnEditMessage handles edits in private chats and standard groups.
 func (d *Dispatcher) OnEditMessage(ctx context.Context, e tg.Entities, update *tg.UpdateEditMessage) error {
+	if !d.acceptingUpdates.Load() {
+		return nil
+	}
 	bus := d.getEventBus()
 	if bus == nil {
 		return nil
@@ -403,6 +444,9 @@ func (d *Dispatcher) OnEditMessage(ctx context.Context, e tg.Entities, update *t
 
 // OnEditChannelMessage handles edits in supergroups and channels.
 func (d *Dispatcher) OnEditChannelMessage(ctx context.Context, e tg.Entities, update *tg.UpdateEditChannelMessage) error {
+	if !d.acceptingUpdates.Load() {
+		return nil
+	}
 	bus := d.getEventBus()
 	if bus == nil {
 		return nil
@@ -423,6 +467,9 @@ func (d *Dispatcher) OnEditChannelMessage(ctx context.Context, e tg.Entities, up
 
 // OnDeleteMessages handles bulk message deletions in private chats and standard groups.
 func (d *Dispatcher) OnDeleteMessages(ctx context.Context, e tg.Entities, update *tg.UpdateDeleteMessages) error {
+	if !d.acceptingUpdates.Load() {
+		return nil
+	}
 	bus := d.getEventBus()
 	if bus == nil {
 		return nil
@@ -438,6 +485,9 @@ func (d *Dispatcher) OnDeleteMessages(ctx context.Context, e tg.Entities, update
 
 // OnDeleteChannelMessages handles bulk message deletions in supergroups and channels.
 func (d *Dispatcher) OnDeleteChannelMessages(ctx context.Context, e tg.Entities, update *tg.UpdateDeleteChannelMessages) error {
+	if !d.acceptingUpdates.Load() {
+		return nil
+	}
 	bus := d.getEventBus()
 	if bus == nil {
 		return nil
@@ -498,6 +548,9 @@ func (d *Dispatcher) callbackInputPeer(peer tg.PeerClass, e tg.Entities) tg.Inpu
 
 // OnBotCallbackQuery handles inline keyboard button callback queries.
 func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, update *tg.UpdateBotCallbackQuery) error {
+	if !d.acceptingUpdates.Load() {
+		return nil
+	}
 	chatID := extractChatIDFromPeer(update.Peer)
 	inputPeer := d.callbackInputPeer(update.Peer, e)
 	target := core.CallbackTarget{
@@ -532,6 +585,9 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 
 // OnInlineBotCallbackQuery handles inline message button callback queries.
 func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities, update *tg.UpdateInlineBotCallbackQuery) error {
+	if !d.acceptingUpdates.Load() {
+		return nil
+	}
 	target := core.CallbackTarget{
 		Origin:       core.CallbackOriginInline,
 		InlineID:     update.MsgID,
@@ -563,6 +619,9 @@ func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities
 
 // OnBotInlineQuery handles incoming inline search query requests.
 func (d *Dispatcher) OnBotInlineQuery(ctx context.Context, e tg.Entities, update *tg.UpdateBotInlineQuery) error {
+	if !d.acceptingUpdates.Load() {
+		return nil
+	}
 	engine := d.getInlineEngine()
 	if engine == nil {
 		return nil
@@ -572,6 +631,9 @@ func (d *Dispatcher) OnBotInlineQuery(ctx context.Context, e tg.Entities, update
 
 // OnBotInlineSend handles inline result chosen feedback (observational only).
 func (d *Dispatcher) OnBotInlineSend(ctx context.Context, e tg.Entities, update *tg.UpdateBotInlineSend) error {
+	if !d.acceptingUpdates.Load() {
+		return nil
+	}
 	bus := d.getEventBus()
 	if bus != nil {
 		var inlineID tg.InputBotInlineMessageIDClass
@@ -594,6 +656,9 @@ func (d *Dispatcher) OnBotInlineSend(ctx context.Context, e tg.Entities, update 
 
 // OnMessageReactions handles reaction updates on messages.
 func (d *Dispatcher) OnMessageReactions(ctx context.Context, e tg.Entities, update *tg.UpdateMessageReactions) error {
+	if !d.acceptingUpdates.Load() {
+		return nil
+	}
 	bus := d.getEventBus()
 	if bus == nil {
 		return nil
@@ -624,6 +689,12 @@ func extractChatIDFromPeer(peer tg.PeerClass) int64 {
 }
 
 func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Message) error {
+	if !d.acceptingUpdates.Load() {
+		return nil
+	}
+	d.inFlight.Add(1)
+	defer d.inFlight.Done()
+
 	parsed, isCmd, err := d.router.Parse(msg.Message)
 	if err != nil {
 		d.logger.Warn("command parse syntax error", zap.Error(err), zap.String("text", msg.Message))

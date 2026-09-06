@@ -251,4 +251,45 @@ func TestFiltersPlugin(t *testing.T) {
 			t.Errorf("matchFilter(%q, %q) = %v; want %v", tc.text, tc.kw, got, tc.matched)
 		}
 	}
+
+	// 8. Bot loop prevention
+	botEntities := tg.Entities{
+		Users: map[int64]*tg.User{
+			9999: {ID: 9999, Bot: true},
+		},
+	}
+	svc.sent = ""
+	err = p.HandleIncomingMessage(context.Background(), botEntities, &tg.Message{
+		PeerID:  &tg.PeerChat{ChatID: chatID},
+		FromID:  &tg.PeerUser{UserID: 9999},
+		Message: "replied to this filter keyword",
+	}, false, "")
+	if err != nil || svc.sent != "" {
+		t.Errorf("expected bot sender to be ignored, got sent: %s", svc.sent)
+	}
+
+	// 9. Cooldown test: first reply works, second within 5s is dropped
+	humanEntities := tg.Entities{
+		Users: map[int64]*tg.User{
+			8888: {ID: 8888, Bot: false},
+		},
+	}
+	svc.sent = ""
+	err = p.HandleIncomingMessage(context.Background(), humanEntities, &tg.Message{
+		PeerID:  &tg.PeerChat{ChatID: chatID},
+		FromID:  &tg.PeerUser{UserID: 8888},
+		Message: "replied to this filter keyword",
+	}, false, "")
+	if err != nil || svc.sent == "" {
+		t.Fatalf("expected first human trigger to reply, got sent: %s", svc.sent)
+	}
+	svc.sent = ""
+	err = p.HandleIncomingMessage(context.Background(), humanEntities, &tg.Message{
+		PeerID:  &tg.PeerChat{ChatID: chatID},
+		FromID:  &tg.PeerUser{UserID: 8888},
+		Message: "replied to this filter keyword again immediately",
+	}, false, "")
+	if err != nil || svc.sent != "" {
+		t.Errorf("expected cooldown to drop immediate repeat reply, got sent: %s", svc.sent)
+	}
 }

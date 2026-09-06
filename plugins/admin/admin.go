@@ -196,7 +196,7 @@ func (p *Plugin) handleBan(ctx *core.Context) error {
 
 	reason := ""
 	if len(ctx.Args) > 1 {
-		reason = fmt.Sprintf("\n<b>Reason:</b> %s", strings.Join(ctx.Args[1:], " "))
+		reason = fmt.Sprintf("\n<b>Reason:</b> %s", core.EscapeHTML(strings.Join(ctx.Args[1:], " ")))
 	}
 
 	rawReason := ""
@@ -387,7 +387,7 @@ func (p *Plugin) handlePromote(ctx *core.Context) error {
 
 	titleStr := ""
 	if title != "" {
-		titleStr = fmt.Sprintf(" with title <i>%s</i>", title)
+		titleStr = fmt.Sprintf(" with title <i>%s</i>", core.EscapeHTML(title))
 	}
 
 	return ctx.EditOrReply(fmt.Sprintf("👑 Promoted user <code>%d</code>%s to admin.", targetID, titleStr))
@@ -518,7 +518,7 @@ func (p *Plugin) handleWarns(ctx *core.Context) error {
 	sb.WriteString(ctx.T("admin.warns_count", targetStr, len(records)))
 	sb.WriteString("\n\n<b>Recent warnings:</b>\n")
 	for i, r := range records {
-		sb.WriteString(fmt.Sprintf("%d. <i>%s</i> (by <code>%d</code>)\n", i+1, r.Reason, r.WarnedBy))
+		sb.WriteString(fmt.Sprintf("%d. <i>%s</i> (by <code>%d</code>)\n", i+1, core.EscapeHTML(r.Reason), r.WarnedBy))
 	}
 
 	return ctx.EditOrReply(sb.String())

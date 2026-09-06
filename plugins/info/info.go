@@ -38,7 +38,7 @@ func (p *Plugin) handleWhois(ctx *core.Context) error {
 	sb.WriteString(fmt.Sprintf("• <b>ID</b>: <code>%d</code>\n", u.ID))
 	sb.WriteString(fmt.Sprintf("• <b>First Name</b>: %s\n", core.EscapeHTML(u.FirstName)))
 	if u.LastName != "" { sb.WriteString(fmt.Sprintf("• <b>Last Name</b>: %s\n", core.EscapeHTML(u.LastName))) }
-	if u.Username != "" { sb.WriteString(fmt.Sprintf("• <b>Username</b>: @%s\n", u.Username)) } else { sb.WriteString("• <b>Username</b>: <i>None</i>\n") }
+	if u.Username != "" { sb.WriteString(fmt.Sprintf("• <b>Username</b>: @%s\n", core.EscapeHTML(u.Username))) } else { sb.WriteString("• <b>Username</b>: <i>None</i>\n") }
 	sb.WriteString(fmt.Sprintf("• <b>User Link</b>: <a href=\"tg://user?id=%d\">Permanent Link</a>\n", u.ID))
 	if u.Bot { sb.WriteString("• <b>Is Bot</b>: Yes 🤖\n") } else { sb.WriteString("• <b>Is Bot</b>: No\n") }
 	if u.Premium { sb.WriteString("• <b>Premium</b>: Yes ⭐️\n") }
@@ -62,7 +62,7 @@ func (p *Plugin) handleChatInfo(ctx *core.Context) error {
 	if ctx.Chat != nil { chatID = ctx.Chat.ID }
 	sb.WriteString(fmt.Sprintf("• <b>Title</b>: %s\n", core.EscapeHTML(title)))
 	sb.WriteString(fmt.Sprintf("• <b>ID</b>: <code>%d</code>\n", chatID))
-	if ctx.Chat != nil && ctx.Chat.Type != "" { sb.WriteString(fmt.Sprintf("• <b>Type</b>: <code>%s</code>\n", ctx.Chat.Type)) }
+	if ctx.Chat != nil && ctx.Chat.Type != "" { sb.WriteString(fmt.Sprintf("• <b>Type</b>: <code>%s</code>\n", core.EscapeHTML(ctx.Chat.Type))) }
 	switch ch := fullChat.FullChat.(type) {
 	case *tg.ChannelFull:
 		if ch.ParticipantsCount > 0 { sb.WriteString(fmt.Sprintf("• <b>Members</b>: %d\n", ch.ParticipantsCount)) }
@@ -104,7 +104,7 @@ func (p *Plugin) handleID(ctx *core.Context) error {
 	sb.WriteString("🆔 <b>Chat &amp; User Information</b>\n\n")
 	if ctx.Chat != nil {
 		sb.WriteString(fmt.Sprintf("• <b>Chat ID:</b> <code>%d</code>\n", ctx.Chat.ID))
-		sb.WriteString(fmt.Sprintf("• <b>Chat Type:</b> <code>%s</code>\n", ctx.Chat.Type))
+		sb.WriteString(fmt.Sprintf("• <b>Chat Type:</b> <code>%s</code>\n", core.EscapeHTML(ctx.Chat.Type)))
 		if ctx.Chat.Title != "" { sb.WriteString(fmt.Sprintf("• <b>Chat Title:</b> %s\n", core.EscapeHTML(ctx.Chat.Title))) }
 	}
 	if ctx.Sender != nil { sb.WriteString(fmt.Sprintf("• <b>Sender ID:</b> <code>%d</code>\n", ctx.Sender.ID)) }

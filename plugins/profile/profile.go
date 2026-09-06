@@ -380,7 +380,7 @@ func (p *Plugin) handleDialogs(ctx *core.Context) error {
 			title = "Untitled Chat"
 		}
 		sb.WriteString(fmt.Sprintf("%d. <b>%s</b> [<code>%s</code>]\n   ID: <code>%d</code>\n",
-			i+1, core.EscapeHTML(title), d.Type, d.ID))
+			i+1, core.EscapeHTML(title), core.EscapeHTML(d.Type), d.ID))
 	}
 
 	return ctx.EditOrReply(sb.String())

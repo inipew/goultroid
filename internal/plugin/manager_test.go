@@ -1,9 +1,11 @@
 package plugin
 
 import (
+	"context"
 	"errors"
 	"testing"
 
+	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 )
 
@@ -20,7 +22,14 @@ func (d *dummyPlugin) Name() string {
 }
 
 func (d *dummyPlugin) Commands() []core.Command {
-	return d.commands
+	cmds := make([]core.Command, len(d.commands))
+	copy(cmds, d.commands)
+	for i := range cmds {
+		if cmds[i].Handler == nil {
+			cmds[i].Handler = func(ctx *core.Context) error { return nil }
+		}
+	}
+	return cmds
 }
 
 func (d *dummyPlugin) Init() error {
@@ -114,6 +123,91 @@ func TestManager_ValidationErrors(t *testing.T) {
 	}
 	if err := mgr.Register(p2); err == nil {
 		t.Errorf("expected error when command conflicts across plugins")
+	}
+
+	// Empty command name
+	pEmptyCmd := &rawCommandPlugin{
+		name: "empty_cmd_plugin",
+		commands: []core.Command{
+			{Name: "", Handler: func(ctx *core.Context) error { return nil }},
+		},
+	}
+	if err := mgr.Register(pEmptyCmd); err == nil {
+		t.Errorf("expected error when command name is empty")
+	}
+
+	// Nil command handler
+	pNilHandler := &rawCommandPlugin{
+		name: "nil_handler_plugin",
+		commands: []core.Command{
+			{Name: "valid_name", Handler: nil},
+		},
+	}
+	if err := mgr.Register(pNilHandler); err == nil {
+		t.Errorf("expected error when command handler is nil")
+	}
+}
+
+type rawCommandPlugin struct {
+	name     string
+	commands []core.Command
+}
+
+func (r *rawCommandPlugin) Name() string                { return r.name }
+func (r *rawCommandPlugin) Commands() []core.Command    { return r.commands }
+func (r *rawCommandPlugin) Init() error                 { return nil }
+func (r *rawCommandPlugin) Shutdown() error             { return nil }
+
+type mockHookPlugin struct {
+	dummyPlugin
+	hookCalled bool
+}
+
+func (m *mockHookPlugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error {
+	m.hookCalled = true
+	return nil
+}
+
+func (m *mockHookPlugin) MessageHookPriority() int {
+	return 42
+}
+
+type mockHookRegistrar struct {
+	registered   int
+	unregistered int
+}
+
+func (r *mockHookRegistrar) AddPrioritizedMessageHandler(priority int, handler MessageHookHandler) func() {
+	r.registered++
+	return func() {
+		r.unregistered++
+	}
+}
+
+func TestManager_HookRegistrationAndShutdown(t *testing.T) {
+	router := core.NewRouter(".")
+	mgr := NewManager(router)
+	registrar := &mockHookRegistrar{}
+	mgr.SetHookRegistrar(registrar)
+
+	hookPlug := &mockHookPlugin{
+		dummyPlugin: dummyPlugin{name: "hook_plugin"},
+	}
+
+	if err := mgr.Register(hookPlug); err != nil {
+		t.Fatalf("failed to register hook plugin: %v", err)
+	}
+
+	if registrar.registered != 1 {
+		t.Errorf("expected 1 hook registered, got %d", registrar.registered)
+	}
+
+	if err := mgr.Shutdown(); err != nil {
+		t.Fatalf("unexpected error shutting down: %v", err)
+	}
+
+	if registrar.unregistered != 1 {
+		t.Errorf("expected 1 hook unregistered on shutdown, got %d", registrar.unregistered)
 	}
 }
 

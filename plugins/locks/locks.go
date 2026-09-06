@@ -82,7 +82,11 @@ func (p *Plugin) handleLock(ctx *core.Context) error {
 	}
 
 	perm := ctx.Args[0]
-	current := getCurrentRights(ctx)
+	current, err := getCurrentRights(ctx)
+	if err != nil {
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ %v", err))
+		return err
+	}
 	updated, err := applyLock(current, perm, true)
 	if err != nil {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ %v", err))
@@ -120,7 +124,11 @@ func (p *Plugin) handleUnlock(ctx *core.Context) error {
 	}
 
 	perm := ctx.Args[0]
-	current := getCurrentRights(ctx)
+	current, err := getCurrentRights(ctx)
+	if err != nil {
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ %v", err))
+		return err
+	}
 	updated, err := applyLock(current, perm, false)
 	if err != nil {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ %v", err))
@@ -151,7 +159,11 @@ func (p *Plugin) handleLocks(ctx *core.Context) error {
 		_ = ctx.EditOrReply("⚠️ Fitur locks permission hanya dapat digunakan di grup atau supergroup.")
 		return core.ErrUnsupported
 	}
-	rights := getCurrentRights(ctx)
+	rights, err := getCurrentRights(ctx)
+	if err != nil {
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ %v", err))
+		return err
+	}
 	return ctx.EditOrReply(formatLocks(rights))
 }
 
@@ -198,19 +210,22 @@ func applyLock(rights tg.ChatBannedRights, perm string, lock bool) (tg.ChatBanne
 	return rights, nil
 }
 
-func getCurrentRights(ctx *core.Context) tg.ChatBannedRights {
+func getCurrentRights(ctx *core.Context) (tg.ChatBannedRights, error) {
 	fullChat, err := ctx.GetFullChat()
-	if err == nil && fullChat != nil {
+	if err != nil {
+		return tg.ChatBannedRights{}, fmt.Errorf("failed to fetch chat permissions: %w", err)
+	}
+	if fullChat != nil {
 		for _, ch := range fullChat.Chats {
 			switch c := ch.(type) {
 			case *tg.Channel:
-				return c.DefaultBannedRights
+				return c.DefaultBannedRights, nil
 			case *tg.Chat:
-				return c.DefaultBannedRights
+				return c.DefaultBannedRights, nil
 			}
 		}
 	}
-	return tg.ChatBannedRights{}
+	return tg.ChatBannedRights{}, nil
 }
 
 func formatLocks(r tg.ChatBannedRights) string {

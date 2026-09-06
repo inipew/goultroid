@@ -117,7 +117,7 @@ func (p *Plugin) handleInfo(ctx *core.Context) error {
 	name := ctx.Args[1]
 	rec, err := p.mgr.Get(ctx.Ctx, name)
 	if err != nil || rec == nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Addon <code>%s</code> not found.", name))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Addon <code>%s</code> not found.", core.EscapeHTML(name)))
 	}
 
 	statusEmoji := "🟢"
@@ -213,7 +213,7 @@ func (p *Plugin) handleUninstall(ctx *core.Context) error {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to uninstall addon: %v", err))
 	}
 
-	return ctx.EditOrReply(fmt.Sprintf("🗑️ <b>Uninstalled addon:</b> <code>%s</code> (all capability permissions revoked)", name))
+	return ctx.EditOrReply(fmt.Sprintf("🗑️ <b>Uninstalled addon:</b> <code>%s</code> (all capability permissions revoked)", core.EscapeHTML(name)))
 }
 
 func (p *Plugin) handleEnable(ctx *core.Context) error {
@@ -226,7 +226,7 @@ func (p *Plugin) handleEnable(ctx *core.Context) error {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to enable addon: %v", err))
 	}
 
-	return ctx.EditOrReply(fmt.Sprintf("🟢 <b>Enabled addon:</b> <code>%s</code> (capability permissions restored)", name))
+	return ctx.EditOrReply(fmt.Sprintf("🟢 <b>Enabled addon:</b> <code>%s</code> (capability permissions restored)", core.EscapeHTML(name)))
 }
 
 func (p *Plugin) handleDisable(ctx *core.Context) error {
@@ -239,5 +239,5 @@ func (p *Plugin) handleDisable(ctx *core.Context) error {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to disable addon: %v", err))
 	}
 
-	return ctx.EditOrReply(fmt.Sprintf("🔴 <b>Disabled addon:</b> <code>%s</code> (capability permissions revoked)", name))
+	return ctx.EditOrReply(fmt.Sprintf("🔴 <b>Disabled addon:</b> <code>%s</code> (capability permissions revoked)", core.EscapeHTML(name)))
 }

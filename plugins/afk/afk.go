@@ -3,6 +3,7 @@ package afk
 import (
 	"context"
 	"fmt"
+	"html"
 	"strings"
 	"sync"
 	"time"
@@ -10,7 +11,10 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/plugin"
 )
+
+var _ plugin.MessageHookPlugin = (*Plugin)(nil)
 
 // Plugin provides AFK (Away From Keyboard) status and auto-reply capabilities.
 type Plugin struct {
@@ -35,6 +39,11 @@ func (p *Plugin) Name() string {
 
 func (p *Plugin) Init() error {
 	return nil
+}
+
+// MessageHookPriority returns priority for the message hook (Feature = 50).
+func (p *Plugin) MessageHookPriority() int {
+	return 50
 }
 
 func (p *Plugin) Commands() []core.Command {
@@ -66,7 +75,7 @@ func (p *Plugin) handleAFKCommand(ctx *core.Context) error {
 		return err
 	}
 
-	return ctx.EditOrReply(fmt.Sprintf("🌙 <b>AFK Mode Activated!</b>\n<b>Reason:</b> <i>%s</i>", reason))
+	return ctx.EditOrReply(fmt.Sprintf("🌙 <b>AFK Mode Activated!</b>\n<b>Reason:</b> <i>%s</i>", html.EscapeString(reason)))
 }
 
 // HandleIncomingMessage intercepts all incoming messages to handle auto-reply and auto-unafk.
@@ -165,7 +174,7 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 
 	sinceStr := formatDuration(time.Since(status.Since))
 	replyText := fmt.Sprintf("🌙 <i>My owner is currently AFK!</i>\n<b>Reason:</b> %s\n<b>Since:</b> <code>%s ago</code>",
-		status.Reason, sinceStr)
+		html.EscapeString(status.Reason), sinceStr)
 
 	_, _ = svc.SendMessage(ctx, peer, replyText)
 	return nil
@@ -195,7 +204,7 @@ func extractPeerInput(peer tg.PeerClass, e tg.Entities) tg.InputPeerClass {
 		if u, ok := e.Users[p.UserID]; ok {
 			return &tg.InputPeerUser{UserID: p.UserID, AccessHash: u.AccessHash}
 		}
-		return &tg.InputPeerUser{UserID: p.UserID, AccessHash: 0}
+		return nil
 	case *tg.PeerChat:
 		if p.ChatID == 0 {
 			return nil
@@ -208,7 +217,7 @@ func extractPeerInput(peer tg.PeerClass, e tg.Entities) tg.InputPeerClass {
 		if ch, ok := e.Channels[p.ChannelID]; ok {
 			return &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: ch.AccessHash}
 		}
-		return &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: 0}
+		return nil
 	}
 	return nil
 }

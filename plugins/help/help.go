@@ -68,27 +68,9 @@ func sendResult(ctx *core.Context, text string) error {
 	return nil
 }
 
-// splitMessage splits text into chunks of at most maxLen bytes on HTML-safe
-// boundaries (newline preferred; hard-cut if necessary).
+// splitMessage splits text into chunks of at most maxLen runes on safe HTML boundaries.
 func splitMessage(text string, maxLen int) []string {
-	if len(text) <= maxLen {
-		return []string{text}
-	}
-	var chunks []string
-	for len(text) > 0 {
-		if len(text) <= maxLen {
-			chunks = append(chunks, text)
-			break
-		}
-		cut := maxLen
-		// Try to cut at the last newline within the limit.
-		if idx := strings.LastIndex(text[:cut], "\n"); idx > 0 {
-			cut = idx + 1
-		}
-		chunks = append(chunks, text[:cut])
-		text = text[cut:]
-	}
-	return chunks
+	return core.SplitTelegramHTML(text, maxLen)
 }
 
 func (p *Plugin) handleHelp(ctx *core.Context) error {

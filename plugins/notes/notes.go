@@ -3,6 +3,7 @@ package notes
 import (
 	"errors"
 	"fmt"
+	"html"
 	"strings"
 
 	"github.com/inipew/goultroid/internal/core"
@@ -96,7 +97,7 @@ func (p *Plugin) handleSave(ctx *core.Context) error {
 		return err
 	}
 
-	return ctx.EditOrReply(fmt.Sprintf("📝 Note <code>%s</code> saved successfully.", noteName))
+	return ctx.EditOrReply(fmt.Sprintf("📝 Note <code>%s</code> saved successfully.", html.EscapeString(noteName)))
 }
 
 func (p *Plugin) handleGet(ctx *core.Context) error {
@@ -114,7 +115,7 @@ func (p *Plugin) handleGet(ctx *core.Context) error {
 		return err
 	}
 	if note == nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Note <code>%s</code> not found in this chat.", noteName))
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Note <code>%s</code> not found in this chat.", html.EscapeString(noteName)))
 		return fmt.Errorf("note %s not found", noteName)
 	}
 
@@ -134,9 +135,9 @@ func (p *Plugin) handleList(ctx *core.Context) error {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("📝 <b>Notes in this chat (%d):</b>\n\n", len(names)))
+	fmt.Fprintf(&sb, "📝 <b>Notes in this chat (%d):</b>\n\n", len(names))
 	for _, name := range names {
-		sb.WriteString(fmt.Sprintf("• <code>%s</code>\n", name))
+		fmt.Fprintf(&sb, "• <code>%s</code>\n", html.EscapeString(name))
 	}
 	sb.WriteString("\nUse <code>.get &lt;name&gt;</code> to view note.")
 
@@ -157,5 +158,5 @@ func (p *Plugin) handleClear(ctx *core.Context) error {
 		return err
 	}
 
-	return ctx.EditOrReply(fmt.Sprintf("🗑️ Note <code>%s</code> deleted.", noteName))
+	return ctx.EditOrReply(fmt.Sprintf("🗑️ Note <code>%s</code> deleted.", html.EscapeString(noteName)))
 }

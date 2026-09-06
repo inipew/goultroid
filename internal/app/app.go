@@ -117,6 +117,7 @@ func New(cfg *config.Config) (*App, error) {
 	router := core.NewRouter(cfg.Prefix)
 	mgr := plugin.NewManager(router)
 	dispatcher := telegram.NewDispatcher(router, perms, nil, logger)
+	mgr.SetHookRegistrar(dispatcher)
 	eventBus := core.NewEventBus()
 	dispatcher.SetEventBus(eventBus)
 
@@ -128,11 +129,8 @@ func New(cfg *config.Config) (*App, error) {
 	}
 
 	afkPlugin := afk.New(db, cfg.OwnerID, client.Service)
-	dispatcher.AddPrioritizedMessageHandler(telegram.PriorityFeature, afkPlugin.HandleIncomingMessage)
 	filtersPlugin := filters.New(db, client.Service)
-	dispatcher.AddPrioritizedMessageHandler(telegram.PriorityModeration, filtersPlugin.HandleIncomingMessage)
 	blacklistPlugin := blacklist.New(db, client.Service)
-	dispatcher.AddPrioritizedMessageHandler(telegram.PrioritySecurity, blacklistPlugin.HandleIncomingMessage)
 
 	metrics := core.NewDefaultMetricsTracker()
 	dispatcher.Executor().SetMetrics(metrics)
@@ -192,10 +190,8 @@ func New(cfg *config.Config) (*App, error) {
 	broadcastService := broadcastSvc.NewService(client.Service, logger)
 	userlogService := userlogSvc.NewService(db, client.Service, logger)
 	pmpermitPlugin := pmpermit.New(pmpermitService)
-	dispatcher.AddPrioritizedMessageHandler(telegram.PrioritySecurity, pmpermitPlugin.HandleIncomingMessage)
 	userlogPlugin := userlog.New(userlogService, cfg.OwnerID)
 	userlogPlugin.SetEventBus(eventBus)
-	dispatcher.AddPrioritizedMessageHandler(telegram.PriorityObservability, userlogPlugin.HandleIncomingMessage)
 	broadcastPlugin := broadcast.New(broadcastService)
 
 	limiter := ratelimit.New(ratelimit.Policy{Limit: 60, Window: time.Minute, Burst: 30}, 5*time.Minute)

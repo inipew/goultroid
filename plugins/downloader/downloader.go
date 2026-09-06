@@ -151,16 +151,16 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 	}
 
 	text := fmt.Sprintf(
-		"📥 **Download Complete!**\n\n"+
-			"📁 **File:** `%s`\n"+
-			"📦 **Size:** `%s`\n"+
-			"⏱️ **Time:** `%.2fs` (%s)\n"+
-			"📍 **Saved to:** `%s`",
-		fileName,
+		"📥 <b>Download Complete!</b>\n\n"+
+			"📁 <b>File:</b> <code>%s</code>\n"+
+			"📦 <b>Size:</b> <code>%s</code>\n"+
+			"⏱️ <b>Time:</b> <code>%.2fs</code> (%s)\n"+
+			"📍 <b>Saved to:</b> <code>%s</code>",
+		core.EscapeHTML(fileName),
 		sizeStr,
 		duration.Seconds(),
 		speedStr,
-		filePath,
+		core.EscapeHTML(filePath),
 	)
 
 	return ctx.Edit(text)
@@ -203,16 +203,16 @@ func (p *Plugin) handleURLDownload(ctx *core.Context, rawURL string) error {
 	}
 
 	text := fmt.Sprintf(
-		"📥 **URL Download Complete!**\n\n"+
-			"📁 **File:** `%s`\n"+
-			"📦 **Size:** `%s`\n"+
-			"⏱️ **Time:** `%.2fs` (%s)\n"+
-			"📍 **Path:** `%s`",
-		asset.Name,
+		"📥 <b>URL Download Complete!</b>\n\n"+
+			"📁 <b>File:</b> <code>%s</code>\n"+
+			"📦 <b>Size:</b> <code>%s</code>\n"+
+			"⏱️ <b>Time:</b> <code>%.2fs</code> (%s)\n"+
+			"📍 <b>Path:</b> <code>%s</code>",
+		core.EscapeHTML(asset.Name),
 		sizeStr,
 		duration.Seconds(),
 		speedStr,
-		asset.Path,
+		core.EscapeHTML(asset.Path),
 	)
 
 	return ctx.Edit(text)

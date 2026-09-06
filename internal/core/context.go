@@ -171,10 +171,11 @@ func (m *Message) URLs() []string {
 
 // Chat represents the chat in which an event occurred.
 type Chat struct {
-	ID       int64
-	Title    string
-	Username string
-	Type     string // "private", "group", "supergroup", "channel"
+	ID         int64
+	Title      string
+	Username   string
+	Type       string // "private", "group", "supergroup", "channel"
+	AccessHash int64
 }
 
 // User represents the user who sent the message.

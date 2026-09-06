@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"regexp"
 	"strings"
 	"sync"
@@ -11,19 +12,25 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/plugin"
 )
+
+var _ plugin.MessageHookPlugin = (*Plugin)(nil)
 
 // Plugin manages chat word blacklists and automated message deletion.
 type Plugin struct {
-	db      database.Repository
-	svcFunc func() core.TelegramServicer
+	db            database.Repository
+	svcFunc       func() core.TelegramServicer
+	cacheMu       sync.RWMutex
+	chatBlacklist map[int64][]string
 }
 
 // New creates a new blacklist plugin instance.
 func New(db database.Repository, svcFunc func() core.TelegramServicer) *Plugin {
 	return &Plugin{
-		db:      db,
-		svcFunc: svcFunc,
+		db:            db,
+		svcFunc:       svcFunc,
+		chatBlacklist: make(map[int64][]string),
 	}
 }
 
@@ -33,6 +40,11 @@ func (p *Plugin) Name() string {
 
 func (p *Plugin) Init() error {
 	return nil
+}
+
+// MessageHookPriority returns priority for the message hook (Security = 10).
+func (p *Plugin) MessageHookPriority() int {
+	return 10
 }
 
 func (p *Plugin) Commands() []core.Command {
@@ -92,7 +104,11 @@ func (p *Plugin) handleBlacklist(ctx *core.Context) error {
 		return err
 	}
 
-	return ctx.EditOrReply(fmt.Sprintf("🚫 Added <code>%s</code> to chat blacklist.", word))
+	p.cacheMu.Lock()
+	delete(p.chatBlacklist, chatID)
+	p.cacheMu.Unlock()
+
+	return ctx.EditOrReply(fmt.Sprintf("🚫 Added <code>%s</code> to chat blacklist.", html.EscapeString(word)))
 }
 
 func (p *Plugin) handleUnblacklist(ctx *core.Context) error {
@@ -109,7 +125,11 @@ func (p *Plugin) handleUnblacklist(ctx *core.Context) error {
 		return err
 	}
 
-	return ctx.EditOrReply(fmt.Sprintf("✅ Removed <code>%s</code> from chat blacklist.", word))
+	p.cacheMu.Lock()
+	delete(p.chatBlacklist, chatID)
+	p.cacheMu.Unlock()
+
+	return ctx.EditOrReply(fmt.Sprintf("✅ Removed <code>%s</code> from chat blacklist.", html.EscapeString(word)))
 }
 
 func (p *Plugin) handleListBlacklists(ctx *core.Context) error {
@@ -127,7 +147,7 @@ func (p *Plugin) handleListBlacklists(ctx *core.Context) error {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "🚫 <b>Blacklisted Words in this chat (%d):</b>\n", len(words))
 	for _, w := range words {
-		fmt.Fprintf(&sb, "• <code>%s</code>\n", w)
+		fmt.Fprintf(&sb, "• <code>%s</code>\n", html.EscapeString(w))
 	}
 
 	return ctx.EditOrReply(sb.String())
@@ -140,6 +160,14 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 	}
 	if msg.Out {
 		return nil
+	}
+	// Prevent bot loop: ignore messages sent by bot users
+	if msg.FromID != nil {
+		if uPeer, ok := msg.FromID.(*tg.PeerUser); ok {
+			if senderUser, found := e.Users[uPeer.UserID]; found && senderUser != nil && senderUser.Bot {
+				return nil
+			}
+		}
 	}
 	if p.svcFunc == nil {
 		return nil
@@ -154,8 +182,22 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 		return nil
 	}
 
-	words, err := p.db.ListBlacklists(ctx, chatID)
-	if err != nil || len(words) == 0 {
+	p.cacheMu.RLock()
+	words, ok := p.chatBlacklist[chatID]
+	p.cacheMu.RUnlock()
+
+	if !ok {
+		var err error
+		words, err = p.db.ListBlacklists(ctx, chatID)
+		if err != nil {
+			return nil
+		}
+		p.cacheMu.Lock()
+		p.chatBlacklist[chatID] = words
+		p.cacheMu.Unlock()
+	}
+
+	if len(words) == 0 {
 		return nil
 	}
 
@@ -197,7 +239,7 @@ func extractPeerInput(peer tg.PeerClass, e tg.Entities) tg.InputPeerClass {
 		if u, ok := e.Users[p.UserID]; ok {
 			return &tg.InputPeerUser{UserID: p.UserID, AccessHash: u.AccessHash}
 		}
-		return &tg.InputPeerUser{UserID: p.UserID, AccessHash: 0}
+		return nil
 	case *tg.PeerChat:
 		if p.ChatID == 0 {
 			return nil
@@ -210,7 +252,7 @@ func extractPeerInput(peer tg.PeerClass, e tg.Entities) tg.InputPeerClass {
 		if ch, ok := e.Channels[p.ChannelID]; ok {
 			return &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: ch.AccessHash}
 		}
-		return &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: 0}
+		return nil
 	}
 	return nil
 }
@@ -236,6 +278,10 @@ func matchBlacklist(text, word string) bool {
 		compiled, err := regexp.Compile(pattern)
 		if err == nil {
 			blacklistRegexMu.Lock()
+			const maxRegexEntries = 500
+			if len(blacklistRegexCache) >= maxRegexEntries {
+				blacklistRegexCache = make(map[string]*regexp.Regexp)
+			}
 			blacklistRegexCache[w] = compiled
 			blacklistRegexMu.Unlock()
 			re = compiled

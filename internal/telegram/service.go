@@ -1465,32 +1465,63 @@ func (s *Service) GetDialogs(ctx context.Context, limit int) ([]*core.Chat, erro
 	}
 
 	var chats []tg.ChatClass
+	var users []tg.UserClass
 	switch d := res.(type) {
 	case *tg.MessagesDialogs:
 		chats = d.Chats
+		users = d.Users
 	case *tg.MessagesDialogsSlice:
 		chats = d.Chats
+		users = d.Users
 	}
 
 	var result []*core.Chat
 	for _, c := range chats {
 		switch ch := c.(type) {
 		case *tg.Channel:
+			if s.storage != nil {
+				_ = s.storage.Save(ctx, peers.Key{Prefix: "channel", ID: ch.ID}, peers.Value{AccessHash: ch.AccessHash})
+			}
 			chatType := "channel"
 			if ch.Megagroup {
 				chatType = "supergroup"
 			}
 			result = append(result, &core.Chat{
-				ID:       ch.ID,
-				Title:    ch.Title,
-				Username: ch.Username,
-				Type:     chatType,
+				ID:         ch.ID,
+				Title:      ch.Title,
+				Username:   ch.Username,
+				Type:       chatType,
+				AccessHash: ch.AccessHash,
 			})
 		case *tg.Chat:
 			result = append(result, &core.Chat{
 				ID:    ch.ID,
 				Title: ch.Title,
 				Type:  "group",
+			})
+		}
+	}
+	for _, u := range users {
+		if usr, ok := u.(*tg.User); ok && usr != nil {
+			if usr.Self {
+				continue
+			}
+			if s.storage != nil {
+				_ = s.storage.Save(ctx, peers.Key{Prefix: "user", ID: usr.ID}, peers.Value{AccessHash: usr.AccessHash})
+			}
+			name := strings.TrimSpace(usr.FirstName + " " + usr.LastName)
+			if name == "" {
+				name = usr.Username
+			}
+			if name == "" {
+				name = fmt.Sprintf("User %d", usr.ID)
+			}
+			result = append(result, &core.Chat{
+				ID:         usr.ID,
+				Title:      name,
+				Username:   usr.Username,
+				Type:       "private",
+				AccessHash: usr.AccessHash,
 			})
 		}
 	}

@@ -148,3 +148,37 @@ func TestLocksPlugin(t *testing.T) {
 		t.Errorf("expected friendly group notice, got: %s", svc.sent)
 	}
 }
+
+type errFullChatService struct {
+	mockService
+}
+
+func (e *errFullChatService) GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.MessagesChatFull, error) {
+	return nil, errors.New("network timeout")
+}
+
+func TestLocksPlugin_FailClosedOnGetFullChatError(t *testing.T) {
+	p := New()
+	cmds := p.Commands()
+	svc := &errFullChatService{}
+	peer := &tg.InputPeerChannel{ChannelID: 12345, AccessHash: 67890}
+
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		Command: "lock",
+		Args:    []string{"media"},
+		Svc:     svc,
+		PeerID:  peer,
+	}
+
+	err := cmds[0].Handler(ctx)
+	if err == nil {
+		t.Fatalf("expected error when GetFullChat fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to fetch chat permissions") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+	if svc.rightsEdited.SendMedia {
+		t.Errorf("expected EditChatDefaultBannedRights not to be called on failure")
+	}
+}

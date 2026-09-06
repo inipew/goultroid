@@ -110,7 +110,7 @@ func NewSafeTransport() *http.Transport {
 	}
 
 	return &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
+		Proxy:                 nil, // Direct connections only, preventing SSRF bypass via environment proxies
 		DialContext:           dialer.DialContext,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          50,

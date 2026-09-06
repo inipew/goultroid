@@ -19,7 +19,16 @@ type lifecyclePlugin struct {
 }
 
 func (p *lifecyclePlugin) Name() string { return p.name }
-func (p *lifecyclePlugin) Commands() []core.Command { return p.commands }
+func (p *lifecyclePlugin) Commands() []core.Command {
+	res := make([]core.Command, len(p.commands))
+	for i, c := range p.commands {
+		res[i] = c
+		if res[i].Handler == nil {
+			res[i].Handler = func(ctx *core.Context) error { return nil }
+		}
+	}
+	return res
+}
 func (p *lifecyclePlugin) Init() error { return nil }
 func (p *lifecyclePlugin) Shutdown() error {
 	p.shutdowns.Add(1)

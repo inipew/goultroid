@@ -146,13 +146,34 @@ func (t *FFmpegTranscoder) Run(ctx context.Context, input *storage.Asset, op Ope
 	})
 }
 
+func sanitizeFormat(format string) (string, error) {
+	format = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(format, ".")))
+	if format == "" {
+		return "", nil
+	}
+	if len(format) > 10 {
+		return "", fmt.Errorf("format extension too long: %q", format)
+	}
+	for _, r := range format {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+			return "", fmt.Errorf("invalid format character in %q", format)
+		}
+	}
+	return format, nil
+}
+
 func buildFFmpegArgs(inputPath string, tmpDir string, op Operation, opts TranscodeOptions) (string, []string, error) {
 	args := []string{"-y", "-i", inputPath}
 	var ext string
 
+	targetFmt, err := sanitizeFormat(opts.TargetFormat)
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: %v", core.ErrInvalidArgs, err)
+	}
+
 	switch op {
 	case OpExtractAudio:
-		ext = opts.TargetFormat
+		ext = targetFmt
 		if ext == "" {
 			ext = "mp3"
 		}
@@ -164,17 +185,29 @@ func buildFFmpegArgs(inputPath string, tmpDir string, op Operation, opts Transco
 			args = append(args, "-acodec", "aac", "-b:a", "192k")
 		case "ogg", "opus":
 			args = append(args, "-acodec", "libopus", "-b:a", "64k")
+		case "flac":
+			args = append(args, "-acodec", "flac")
+		case "wav":
+			args = append(args, "-acodec", "pcm_s16le")
 		default:
-			args = append(args, "-acodec", "libmp3lame", "-q:a", "2")
-			ext = "mp3"
+			return "", nil, fmt.Errorf("%w: unsupported audio format %q", ErrUnsupportedOperation, ext)
 		}
 
 	case OpConvertVideo:
-		ext = opts.TargetFormat
+		ext = targetFmt
 		if ext == "" {
 			ext = "mp4"
 		}
-		args = append(args, "-vcodec", "libx264", "-preset", "fast", "-crf", "23", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart")
+		switch ext {
+		case "mp4", "mkv", "mov":
+			args = append(args, "-vcodec", "libx264", "-preset", "fast", "-crf", "23", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart")
+		case "webm":
+			args = append(args, "-c:v", "libvpx-vp9", "-crf", "30", "-b:v", "0", "-c:a", "libopus")
+		case "avi":
+			args = append(args, "-vcodec", "mpeg4", "-q:v", "3", "-c:a", "libmp3lame", "-b:a", "128k")
+		default:
+			return "", nil, fmt.Errorf("%w: unsupported video format %q", ErrUnsupportedOperation, ext)
+		}
 		if opts.Width > 0 && opts.Height > 0 {
 			args = append(args, "-vf", fmt.Sprintf("scale=%d:%d", opts.Width, opts.Height))
 		}

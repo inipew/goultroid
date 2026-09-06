@@ -164,7 +164,10 @@ func (p *Plugin) ShutdownContext(ctx context.Context) error {
 	}
 }
 
-var _ plugin.ContextShutdowner = (*Plugin)(nil)
+var (
+	_ plugin.ContextShutdowner = (*Plugin)(nil)
+	_ plugin.MessageHookPlugin = (*Plugin)(nil)
+)
 
 func (p *Plugin) Name() string { return "userlog" }
 
@@ -173,6 +176,9 @@ func (p *Plugin) Description() string {
 }
 
 func (p *Plugin) Init() error { return nil }
+
+// MessageHookPriority returns priority for the message hook (Observability = 90).
+func (p *Plugin) MessageHookPriority() int { return 90 }
 
 func (p *Plugin) Commands() []core.Command {
 	return []core.Command{

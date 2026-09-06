@@ -7,23 +7,33 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/plugin"
 )
+
+var _ plugin.MessageHookPlugin = (*Plugin)(nil)
 
 // Plugin manages automated chat keyword filters and auto-replies.
 type Plugin struct {
-	db      database.Repository
-	svcFunc func() core.TelegramServicer
+	db          database.Repository
+	svcFunc     func() core.TelegramServicer
+	cacheMu     sync.RWMutex
+	chatFilters map[int64][]database.Filter
+	cooldownMu  sync.Mutex
+	lastReply   map[string]time.Time
 }
 
 // New creates a new filters plugin instance.
 func New(db database.Repository, svcFunc func() core.TelegramServicer) *Plugin {
 	return &Plugin{
-		db:      db,
-		svcFunc: svcFunc,
+		db:          db,
+		svcFunc:     svcFunc,
+		chatFilters: make(map[int64][]database.Filter),
+		lastReply:   make(map[string]time.Time),
 	}
 }
 
@@ -33,6 +43,11 @@ func (p *Plugin) Name() string {
 
 func (p *Plugin) Init() error {
 	return nil
+}
+
+// MessageHookPriority returns priority for the message hook (Moderation = 20).
+func (p *Plugin) MessageHookPriority() int {
+	return 20
 }
 
 func (p *Plugin) Commands() []core.Command {
@@ -96,6 +111,10 @@ func (p *Plugin) handleFilter(ctx *core.Context) error {
 		return err
 	}
 
+	p.cacheMu.Lock()
+	delete(p.chatFilters, chatID)
+	p.cacheMu.Unlock()
+
 	return ctx.EditOrReply(fmt.Sprintf("🎯 Filter <code>%s</code> saved successfully.", keyword))
 }
 
@@ -112,6 +131,10 @@ func (p *Plugin) handleStop(ctx *core.Context) error {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to stop filter: %v", err))
 		return err
 	}
+
+	p.cacheMu.Lock()
+	delete(p.chatFilters, chatID)
+	p.cacheMu.Unlock()
 
 	return ctx.EditOrReply(fmt.Sprintf("🗑️ Filter <code>%s</code> stopped.", keyword))
 }
@@ -145,6 +168,14 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 	if msg.Out {
 		return nil
 	}
+	// Prevent bot loop: ignore messages sent by bot users
+	if msg.FromID != nil {
+		if uPeer, ok := msg.FromID.(*tg.PeerUser); ok {
+			if senderUser, found := e.Users[uPeer.UserID]; found && senderUser != nil && senderUser.Bot {
+				return nil
+			}
+		}
+	}
 	if p.svcFunc == nil {
 		return nil
 	}
@@ -158,14 +189,47 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 		return nil
 	}
 
-	filters, err := p.db.ListFilters(ctx, chatID)
-	if err != nil || len(filters) == 0 {
+	p.cacheMu.RLock()
+	filters, ok := p.chatFilters[chatID]
+	p.cacheMu.RUnlock()
+
+	if !ok {
+		var err error
+		filters, err = p.db.ListFilters(ctx, chatID)
+		if err != nil {
+			return nil
+		}
+		p.cacheMu.Lock()
+		p.chatFilters[chatID] = filters
+		p.cacheMu.Unlock()
+	}
+
+	if len(filters) == 0 {
 		return nil
 	}
 
 	text := msg.Message
 	for _, f := range filters {
 		if matchFilter(text, f.Keyword) {
+			// Cooldown to prevent reply storms
+			cooldownKey := fmt.Sprintf("%d:%s", chatID, f.Keyword)
+			now := time.Now()
+			p.cooldownMu.Lock()
+			last, exists := p.lastReply[cooldownKey]
+			if exists && now.Sub(last) < 5*time.Second {
+				p.cooldownMu.Unlock()
+				break
+			}
+			p.lastReply[cooldownKey] = now
+			if len(p.lastReply) > 1000 {
+				for k, v := range p.lastReply {
+					if now.Sub(v) > 30*time.Second {
+						delete(p.lastReply, k)
+					}
+				}
+			}
+			p.cooldownMu.Unlock()
+
 			peer := extractPeerInput(msg.PeerID, e)
 			if peer != nil {
 				_, _ = svc.SendMessage(ctx, peer, f.ReplyText)
@@ -201,7 +265,7 @@ func extractPeerInput(peer tg.PeerClass, e tg.Entities) tg.InputPeerClass {
 		if u, ok := e.Users[p.UserID]; ok {
 			return &tg.InputPeerUser{UserID: p.UserID, AccessHash: u.AccessHash}
 		}
-		return &tg.InputPeerUser{UserID: p.UserID, AccessHash: 0}
+		return nil
 	case *tg.PeerChat:
 		if p.ChatID == 0 {
 			return nil
@@ -214,7 +278,7 @@ func extractPeerInput(peer tg.PeerClass, e tg.Entities) tg.InputPeerClass {
 		if ch, ok := e.Channels[p.ChannelID]; ok {
 			return &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: ch.AccessHash}
 		}
-		return &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: 0}
+		return nil
 	}
 	return nil
 }
@@ -240,6 +304,10 @@ func matchFilter(text, keyword string) bool {
 		compiled, err := regexp.Compile(pattern)
 		if err == nil {
 			filterRegexMu.Lock()
+			const maxRegexEntries = 500
+			if len(filterRegexCache) >= maxRegexEntries {
+				filterRegexCache = make(map[string]*regexp.Regexp)
+			}
 			filterRegexCache[kw] = compiled
 			filterRegexMu.Unlock()
 			re = compiled

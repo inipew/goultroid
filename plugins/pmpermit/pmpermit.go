@@ -9,8 +9,11 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/pmpermit"
 )
+
+var _ plugin.MessageHookPlugin = (*Plugin)(nil)
 
 type Plugin struct {
 	svc *pmpermit.Service
@@ -30,6 +33,11 @@ func (p *Plugin) Description() string {
 
 func (p *Plugin) Init() error {
 	return nil
+}
+
+// MessageHookPriority returns priority for the message hook (Security = 10).
+func (p *Plugin) MessageHookPriority() int {
+	return 10
 }
 
 func (p *Plugin) Service() *pmpermit.Service {

@@ -3,6 +3,7 @@ package scheduler
 import (
 	"errors"
 	"fmt"
+	"html"
 	"strconv"
 	"strings"
 	"time"
@@ -144,7 +145,7 @@ func (p *Plugin) handleSchedule(ctx *core.Context) error {
 			_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to create recurring schedule: %v", err))
 			return err
 		}
-		return ctx.EditOrReply(fmt.Sprintf("📅 <b>Recurring schedule created!</b>\n<b>Interval:</b> every <code>%s</code>\n<b>Type:</b> <code>%s</code>\n<b>Action:</b> <code>%s</code>\n<b>Job ID:</b> <code>#%d</code>", durStr, actionType, payload, job.ID))
+		return ctx.EditOrReply(fmt.Sprintf("📅 <b>Recurring schedule created!</b>\n<b>Interval:</b> every <code>%s</code>\n<b>Type:</b> <code>%s</code>\n<b>Action:</b> <code>%s</code>\n<b>Job ID:</b> <code>#%d</code>", durStr, actionType, html.EscapeString(payload), job.ID))
 	}
 
 	when := time.Now().Add(dur)
@@ -153,7 +154,7 @@ func (p *Plugin) handleSchedule(ctx *core.Context) error {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to create schedule: %v", err))
 		return err
 	}
-	return ctx.EditOrReply(fmt.Sprintf("📅 <b>Schedule created!</b>\n<b>Due in:</b> <code>%s</code>\n<b>Type:</b> <code>%s</code>\n<b>Action:</b> <code>%s</code>\n<b>Job ID:</b> <code>#%d</code>", durStr, actionType, payload, job.ID))
+	return ctx.EditOrReply(fmt.Sprintf("📅 <b>Schedule created!</b>\n<b>Due in:</b> <code>%s</code>\n<b>Type:</b> <code>%s</code>\n<b>Action:</b> <code>%s</code>\n<b>Job ID:</b> <code>#%d</code>", durStr, actionType, html.EscapeString(payload), job.ID))
 }
 
 func (p *Plugin) handleList(ctx *core.Context) error {
@@ -186,9 +187,9 @@ func (p *Plugin) handleList(ctx *core.Context) error {
 		if status == "" {
 			status = "pending"
 		}
-		fmt.Fprintf(&sb, "• <b>#%d</b> [%s | %s | %s] <code>%s</code>\n  └ <i>Due in:</i> <code>%s</code>\n", j.ID, mode, j.ActionType, status, payloadSnippet, remaining)
+		fmt.Fprintf(&sb, "• <b>#%d</b> [%s | %s | %s] <code>%s</code>\n  └ <i>Due in:</i> <code>%s</code>\n", j.ID, mode, j.ActionType, status, html.EscapeString(payloadSnippet), remaining)
 		if j.LastError != "" {
-			fmt.Fprintf(&sb, "  └ ⚠️ <i>Last Error (%d/%d attempts):</i> <code>%s</code>\n", j.AttemptCount, j.MaxAttempts, j.LastError)
+			fmt.Fprintf(&sb, "  └ ⚠️ <i>Last Error (%d/%d attempts):</i> <code>%s</code>\n", j.AttemptCount, j.MaxAttempts, html.EscapeString(j.LastError))
 		}
 	}
 	return ctx.EditOrReply(sb.String())
@@ -248,7 +249,7 @@ func (p *Plugin) handleSchedHistory(ctx *core.Context) error {
 			if e.ErrorMsg != "" {
 				snippet := e.ErrorMsg
 				if len(snippet) > 60 { snippet = snippet[:57] + "..." }
-				errPart = fmt.Sprintf("\n  └ <i>Error:</i> <code>%s</code>", snippet)
+				errPart = fmt.Sprintf("\n  └ <i>Error:</i> <code>%s</code>", html.EscapeString(snippet))
 			}
 		}
 		fmt.Fprintf(&sb, "%s <code>%s</code> — <i>%dms</i>%s\n", icon, e.RanAt.UTC().Format("2006-01-02 15:04:05"), e.DurationMs, errPart)

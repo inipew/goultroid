@@ -113,24 +113,26 @@ func (p *Plugin) handleBroadcast(ctx *core.Context) error {
 		}
 		switch scope {
 		case broadcast.TargetUsers:
-			if d.Type == "user" {
-				targets = append(targets, &tg.InputPeerUser{UserID: d.ID})
+			if d.Type == "user" || d.Type == "private" {
+				if peer := toInputPeer(d); peer != nil {
+					targets = append(targets, peer)
+				}
 			}
 		case broadcast.TargetGroups:
 			if d.Type == "group" || d.Type == "supergroup" {
-				targets = append(targets, &tg.InputPeerChat{ChatID: d.ID})
+				if peer := toInputPeer(d); peer != nil {
+					targets = append(targets, peer)
+				}
 			}
 		case broadcast.TargetChannels:
 			if d.Type == "channel" {
-				targets = append(targets, &tg.InputPeerChannel{ChannelID: d.ID})
+				if peer := toInputPeer(d); peer != nil {
+					targets = append(targets, peer)
+				}
 			}
 		default: // TargetAll
-			if d.Type == "user" {
-				targets = append(targets, &tg.InputPeerUser{UserID: d.ID})
-			} else if d.Type == "group" || d.Type == "supergroup" {
-				targets = append(targets, &tg.InputPeerChat{ChatID: d.ID})
-			} else if d.Type == "channel" {
-				targets = append(targets, &tg.InputPeerChannel{ChannelID: d.ID})
+			if peer := toInputPeer(d); peer != nil {
+				targets = append(targets, peer)
 			}
 		}
 	}
@@ -179,4 +181,20 @@ func (p *Plugin) handleCancelBroadcast(ctx *core.Context) error {
 		return ctx.EditOrReply("🛑 <b>Active broadcast cancelled!</b>")
 	}
 	return ctx.EditOrReply("ℹ️ No active broadcast task is currently running.")
+}
+
+func toInputPeer(d *core.Chat) tg.InputPeerClass {
+	if d == nil {
+		return nil
+	}
+	switch d.Type {
+	case "private", "user":
+		return &tg.InputPeerUser{UserID: d.ID, AccessHash: d.AccessHash}
+	case "group":
+		return &tg.InputPeerChat{ChatID: d.ID}
+	case "supergroup", "channel":
+		return &tg.InputPeerChannel{ChannelID: d.ID, AccessHash: d.AccessHash}
+	default:
+		return nil
+	}
 }
