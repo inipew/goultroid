@@ -3,8 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-
-	"go.uber.org/zap"
 )
 
 // Shutdown releases long-lived application resources in dependency order.
@@ -49,5 +47,3 @@ func (a *App) Shutdown(ctx context.Context) error {
 	}
 	return nil
 }
-
-var _ = zap.NewNop
