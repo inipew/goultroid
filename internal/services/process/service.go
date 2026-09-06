@@ -19,6 +19,8 @@ import (
 type Request struct {
 	Command    string
 	Args       []string
+	// Shell is intentionally unsupported for untrusted/user-derived input.
+	// Keep it only as an explicit compatibility guard; callers must use argv.
 	Shell      bool
 	Timeout    time.Duration
 	MaxOutput  int64
@@ -41,8 +43,7 @@ type Runner interface {
 	Run(ctx context.Context, req Request) (*Result, error)
 }
 
-// OSRunner implements Runner with process isolation, environment sanitization,
-// memory limits, and concurrent process throttling.
+// OSRunner implements Runner with process isolation and concurrent process throttling.
 type OSRunner struct {
 	sem            chan struct{}
 	defaultTimeout time.Duration
@@ -50,10 +51,8 @@ type OSRunner struct {
 	mu             sync.Mutex
 }
 
-// Ensure OSRunner implements Runner.
 var _ Runner = (*OSRunner)(nil)
 
-// NewOSRunner creates a new production-grade process runner.
 func NewOSRunner(maxConcurrent int, defaultTimeout time.Duration, maxOutputBytes int64) *OSRunner {
 	if maxConcurrent <= 0 {
 		maxConcurrent = 3
@@ -62,9 +61,8 @@ func NewOSRunner(maxConcurrent int, defaultTimeout time.Duration, maxOutputBytes
 		defaultTimeout = 60 * time.Second
 	}
 	if maxOutputBytes <= 0 {
-		maxOutputBytes = 2 * 1024 * 1024 // 2 MB default cap
+		maxOutputBytes = 2 * 1024 * 1024
 	}
-
 	return &OSRunner{
 		sem:            make(chan struct{}, maxConcurrent),
 		defaultTimeout: defaultTimeout,
@@ -72,7 +70,6 @@ func NewOSRunner(maxConcurrent int, defaultTimeout time.Duration, maxOutputBytes
 	}
 }
 
-// limitedBuffer captures output up to a maximum limit and flags truncation.
 type limitedBuffer struct {
 	buf       *bytes.Buffer
 	remain    int64
@@ -81,16 +78,12 @@ type limitedBuffer struct {
 }
 
 func newLimitedBuffer(limit int64) *limitedBuffer {
-	return &limitedBuffer{
-		buf:    new(bytes.Buffer),
-		remain: limit,
-	}
+	return &limitedBuffer{buf: new(bytes.Buffer), remain: limit}
 }
 
 func (lb *limitedBuffer) Write(p []byte) (n int, err error) {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
-
 	origLen := len(p)
 	if lb.remain <= 0 {
 		lb.truncated = true
@@ -117,13 +110,23 @@ func (lb *limitedBuffer) IsTruncated() bool {
 	return lb.truncated
 }
 
-// Run executes the requested command in an isolated child process.
+// Run executes a binary directly with argv semantics. Shell execution is
+// deliberately rejected so user-derived arguments can never become shell code.
 func (r *OSRunner) Run(ctx context.Context, req Request) (*Result, error) {
-	if req.Command == "" && len(req.Args) == 0 {
+	if req.Shell {
+		return nil, fmt.Errorf("%w: shell execution is disabled; use Command plus Args", core.ErrInvalidArgs)
+	}
+
+	cmdName := strings.TrimSpace(req.Command)
+	cmdArgs := req.Args
+	if cmdName == "" && len(cmdArgs) > 0 {
+		cmdName = cmdArgs[0]
+		cmdArgs = cmdArgs[1:]
+	}
+	if cmdName == "" {
 		return nil, fmt.Errorf("%w: process command cannot be empty", core.ErrInvalidArgs)
 	}
 
-	// Throttle concurrent process executions
 	select {
 	case r.sem <- struct{}{}:
 		defer func() { <-r.sem }()
@@ -135,40 +138,15 @@ func (r *OSRunner) Run(ctx context.Context, req Request) (*Result, error) {
 	if timeout <= 0 {
 		timeout = r.defaultTimeout
 	}
-
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	var cmd *exec.Cmd
-	if req.Shell {
-		shell := "bash"
-		if _, err := exec.LookPath("bash"); err != nil {
-			shell = "sh"
-		}
-		var fullCmd string
-		if req.Command != "" {
-			fullCmd = req.Command
-			if len(req.Args) > 0 {
-				fullCmd += " " + strings.Join(req.Args, " ")
-			}
-		} else {
-			fullCmd = strings.Join(req.Args, " ")
-		}
-		cmd = exec.CommandContext(execCtx, shell, "-c", fullCmd)
-	} else {
-		cmdName := req.Command
-		cmdArgs := req.Args
-		if cmdName == "" && len(req.Args) > 0 {
-			cmdName = req.Args[0]
-			cmdArgs = req.Args[1:]
-		}
-		cmd = exec.CommandContext(execCtx, cmdName, cmdArgs...)
-	}
-
-	// Environment sanitization
+	cmd := exec.CommandContext(execCtx, cmdName, cmdArgs...)
+	// Do not inherit the ambient process environment by default. A caller that
+	// needs an environment must pass it explicitly, and sensitive variables are
+	// removed before spawning the child.
 	cmd.Env = SanitizeEnv(req.Env)
 
-	// Working directory
 	if req.WorkingDir != "" {
 		if _, err := os.Stat(req.WorkingDir); err != nil {
 			return nil, fmt.Errorf("%w: invalid working directory: %v", core.ErrInvalidArgs, err)
@@ -176,11 +154,12 @@ func (r *OSRunner) Run(ctx context.Context, req Request) (*Result, error) {
 		cmd.Dir = req.WorkingDir
 	}
 
-	// Process group isolation: kill all child processes on cancellation
+	// Put the command in its own process group so cancellation also kills
+	// descendants instead of leaving orphaned ffmpeg/python/etc. processes.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process != nil && cmd.Process.Pid > 0 {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		}
 		return nil
 	}
@@ -189,7 +168,6 @@ func (r *OSRunner) Run(ctx context.Context, req Request) (*Result, error) {
 	if maxOutput <= 0 {
 		maxOutput = r.maxOutputBytes
 	}
-
 	outBuf := newLimitedBuffer(maxOutput)
 	errBuf := newLimitedBuffer(maxOutput)
 	cmd.Stdout = outBuf
@@ -198,7 +176,6 @@ func (r *OSRunner) Run(ctx context.Context, req Request) (*Result, error) {
 	start := time.Now()
 	runErr := cmd.Run()
 	elapsed := time.Since(start)
-
 	stdout := outBuf.String()
 	stderr := errBuf.String()
 	truncated := outBuf.IsTruncated() || errBuf.IsTruncated()
@@ -223,18 +200,12 @@ func (r *OSRunner) Run(ctx context.Context, req Request) (*Result, error) {
 	}
 
 	res := &Result{
-		Stdout:    stdout,
-		Stderr:    stderr,
-		Combined:  combined,
-		ExitCode:  exitCode,
-		Duration:  elapsed,
-		Truncated: truncated,
+		Stdout: stdout, Stderr: stderr, Combined: combined,
+		ExitCode: exitCode, Duration: elapsed, Truncated: truncated,
 	}
-
 	if execCtx.Err() != nil {
 		return res, fmt.Errorf("%w: process timed out after %v: %v", core.ErrTimeout, timeout, execCtx.Err())
 	}
-
 	return res, runErr
 }
 
@@ -245,12 +216,10 @@ func SanitizeEnv(customEnv []string) []string {
 		"SESSION", "TOKEN", "API_HASH", "API_ID", "SECRET", "PASSWORD",
 		"PASS", "KEY", "CRED", "AUTH", "DATABASE", "PRIVATE",
 	}
-
 	base := customEnv
 	if len(base) == 0 {
 		base = os.Environ()
 	}
-
 	var sanitized []string
 	for _, env := range base {
 		parts := strings.SplitN(env, "=", 2)
