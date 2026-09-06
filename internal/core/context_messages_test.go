@@ -11,115 +11,65 @@ import (
 
 func TestMessagesFacadeReplyAndDelete(t *testing.T) {
 	mock := &mockTelegramServicer{}
-	ctx := &Context{
-		Ctx: context.Background(),
-		Message: &Message{
-			ID: 104,
-		},
-		Svc:    mock,
-		PeerID: &tg.InputPeerSelf{},
-	}
-
+	ctx := &Context{Ctx: context.Background(), Message: &Message{ID: 104}, Svc: mock, PeerID: &tg.InputPeerSelf{}}
 	if err := ctx.Messages().ReplyAndDelete("purged 4 messages"); err != nil {
 		t.Fatalf("ReplyAndDelete() error = %v", err)
 	}
-	if mock.sentText != "purged 4 messages" {
-		t.Fatalf("sent text = %q, want purge result", mock.sentText)
-	}
-	if ctx.LastResponseID != 42 {
-		t.Fatalf("LastResponseID = %d, want 42", ctx.LastResponseID)
-	}
-	if len(mock.deletedIDs) != 1 || mock.deletedIDs[0] != 104 {
-		t.Fatalf("deleted IDs = %v, want [104]", mock.deletedIDs)
-	}
+	if mock.sentText != "purged 4 messages" { t.Fatalf("sent text = %q, want purge result", mock.sentText) }
+	if ctx.LastResponseID != 42 { t.Fatalf("LastResponseID = %d, want 42", ctx.LastResponseID) }
+	if len(mock.deletedIDs) != 1 || mock.deletedIDs[0] != 104 { t.Fatalf("deleted IDs = %v, want [104]", mock.deletedIDs) }
 }
 
 func TestMessagesFacadeReplyAndDeleteKeepsTriggerWhenReplyFails(t *testing.T) {
 	replyErr := errors.New("send failed")
 	mock := &mockTelegramServicer{errToSend: replyErr}
-	ctx := &Context{
-		Ctx: context.Background(),
-		Message: &Message{
-			ID: 104,
-		},
-		Svc:    mock,
-		PeerID: &tg.InputPeerSelf{},
-	}
-
+	ctx := &Context{Ctx: context.Background(), Message: &Message{ID: 104}, Svc: mock, PeerID: &tg.InputPeerSelf{}}
 	err := ctx.Messages().ReplyAndDelete("purge failed")
-	if err == nil || !errors.Is(err, replyErr) {
-		t.Fatalf("ReplyAndDelete() error = %v, want wrapped send error", err)
-	}
-	if len(mock.deletedIDs) != 0 {
-		t.Fatalf("deleted IDs = %v, want no deletion when reply fails", mock.deletedIDs)
-	}
+	if err == nil || !errors.Is(err, replyErr) { t.Fatalf("ReplyAndDelete() error = %v, want wrapped send error", err) }
+	if len(mock.deletedIDs) != 0 { t.Fatalf("deleted IDs = %v, want no deletion when reply fails", mock.deletedIDs) }
 }
 
 func TestMessagesFacadeReplyAndDeleteIgnoresTriggerDeleteFailure(t *testing.T) {
 	mock := &mockTelegramServicer{errToDelete: errors.New("delete forbidden")}
-	ctx := &Context{
-		Ctx: context.Background(),
-		Message: &Message{
-			ID: 104,
-		},
-		Svc:    mock,
-		PeerID: &tg.InputPeerSelf{},
-	}
-
-	if err := ctx.Messages().ReplyAndDelete("purged 4 messages"); err != nil {
-		t.Fatalf("ReplyAndDelete() error = %v, want nil after successful reply", err)
-	}
-	if ctx.LastResponseID != 42 {
-		t.Fatalf("LastResponseID = %d, want 42", ctx.LastResponseID)
-	}
+	ctx := &Context{Ctx: context.Background(), Message: &Message{ID: 104}, Svc: mock, PeerID: &tg.InputPeerSelf{}}
+	if err := ctx.Messages().ReplyAndDelete("purged 4 messages"); err != nil { t.Fatalf("ReplyAndDelete() error = %v, want nil after successful reply", err) }
+	if ctx.LastResponseID != 42 { t.Fatalf("LastResponseID = %d, want 42", ctx.LastResponseID) }
 }
 
 func TestMessagesFacadeEditOrReplyIncomingDeletesTrigger(t *testing.T) {
 	mock := &mockTelegramServicer{}
-	ctx := &Context{
-		Ctx: context.Background(),
-		Message: &Message{
-			ID:         104,
-			IsOutgoing: false,
-		},
-		Svc:    mock,
-		PeerID: &tg.InputPeerSelf{},
-	}
+	ctx := &Context{Ctx: context.Background(), Message: &Message{ID: 104, IsOutgoing: false}, Svc: mock, PeerID: &tg.InputPeerSelf{}}
+	if err := ctx.Messages().EditOrReply("purged 4 messages"); err != nil { t.Fatalf("EditOrReply() error = %v", err) }
+	if len(mock.deletedIDs) != 1 || mock.deletedIDs[0] != 104 { t.Fatalf("deleted IDs = %v, want [104]", mock.deletedIDs) }
+}
 
-	if err := ctx.Messages().EditOrReply("purged 4 messages"); err != nil {
-		t.Fatalf("EditOrReply() error = %v", err)
-	}
-	if len(mock.deletedIDs) != 1 || mock.deletedIDs[0] != 104 {
-		t.Fatalf("deleted IDs = %v, want [104]", mock.deletedIDs)
-	}
+type delayedDeleteMock struct {
+	*mockTelegramServicer
+	deleted chan int
+}
+
+func (m *delayedDeleteMock) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {
+	err := m.mockTelegramServicer.DeleteMessage(ctx, peer, msgIDs)
+	if err == nil && len(msgIDs) > 0 { m.deleted <- msgIDs[0] }
+	return err
 }
 
 func TestMessagesFacadeReplyAndDeleteWithDelay(t *testing.T) {
-	mock := &mockTelegramServicer{}
-	ctx := &Context{
-		Ctx: context.Background(),
-		Message: &Message{
-			ID: 104,
-		},
-		Svc:    mock,
-		PeerID: &tg.InputPeerSelf{},
-	}
-
+	mock := &delayedDeleteMock{mockTelegramServicer: &mockTelegramServicer{}, deleted: make(chan int, 2)}
+	ctx := &Context{Ctx: context.Background(), Message: &Message{ID: 104}, Svc: mock, PeerID: &tg.InputPeerSelf{}}
 	delay := 30 * time.Millisecond
-	if err := ctx.Messages().ReplyAndDeleteWithDelay("purged 5 messages", delay); err != nil {
-		t.Fatalf("ReplyAndDeleteWithDelay() error = %v", err)
+	if err := ctx.Messages().ReplyAndDeleteWithDelay("purged 5 messages", delay); err != nil { t.Fatalf("ReplyAndDeleteWithDelay() error = %v", err) }
+	if mock.sentText != "purged 5 messages" { t.Fatalf("sent text = %q, want purge result", mock.sentText) }
+	select {
+	case id := <-mock.deleted:
+		if id != 104 { t.Fatalf("first deleted ID = %d, want 104", id) }
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for trigger deletion")
 	}
-	if mock.sentText != "purged 5 messages" {
-		t.Fatalf("sent text = %q, want purge result", mock.sentText)
-	}
-	// Immediately, trigger message 104 should be deleted
-	if len(mock.deletedIDs) != 1 || mock.deletedIDs[0] != 104 {
-		t.Fatalf("deleted IDs immediately = %v, want [104]", mock.deletedIDs)
-	}
-
-	// After delay, the response message (ID 42) should be deleted
-	time.Sleep(delay + 50*time.Millisecond)
-	if len(mock.deletedIDs) != 1 || mock.deletedIDs[0] != 42 {
-		t.Fatalf("deleted IDs after delay = %v, want response message [42]", mock.deletedIDs)
+	select {
+	case id := <-mock.deleted:
+		if id != 42 { t.Fatalf("delayed deleted ID = %d, want 42", id) }
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for delayed response deletion")
 	}
 }
