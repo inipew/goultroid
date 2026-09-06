@@ -64,7 +64,7 @@ func (p *Plugin) SetOwnerUsername(username string) {
 	p.ownerUsername = strings.TrimPrefix(username, "@")
 }
 
-// SetEventBus subscribes the plugin to domain events (e.g. AdminActionEvent).
+// SetEventBus subscribes the plugin to domain events (AdminActionEvent and PMPermitEvent).
 func (p *Plugin) SetEventBus(eb *core.EventBus) {
 	if eb == nil {
 		return
@@ -82,6 +82,27 @@ func (p *Plugin) SetEventBus(eb *core.EventBus) {
 					evt.TargetName,
 					evt.ActorID,
 					evt.ChatTitle,
+					evt.Reason,
+					evt.Success,
+					evt.Error,
+				)
+			})
+		}
+	})
+	eb.Subscribe(core.EventTypePMPermit, func(event core.Event) {
+		if evt, ok := event.(*core.PMPermitEvent); ok && p.svc != nil {
+			logCtx := p.ctx
+			p.enqueue(func() {
+				jobCtx, cancel := context.WithTimeout(logCtx, 15*time.Second)
+				defer cancel()
+				actionName := fmt.Sprintf("PMPermit %s", strings.ToUpper(evt.Action))
+				_ = p.svc.LogActionDetailed(
+					jobCtx,
+					actionName,
+					evt.UserID,
+					evt.TargetName,
+					0,
+					"Private Message",
 					evt.Reason,
 					evt.Success,
 					evt.Error,

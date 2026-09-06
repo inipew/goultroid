@@ -349,3 +349,34 @@ func TestUserLogPlugin_AdminActionEvent(t *testing.T) {
 	}
 }
 
+func TestUserLogPlugin_PMPermitEvent(t *testing.T) {
+	db := setupTestDB(t)
+	mockTG := &mockTelegram{}
+	svc := userlogSvc.NewService(db, mockTG, zap.NewNop())
+	_ = svc.SetLogChat(context.Background(), 777)
+	p := userlog.New(svc, 12345)
+
+	eventBus := core.NewEventBus()
+	defer eventBus.Close()
+	p.SetEventBus(eventBus)
+
+	eventBus.Publish(&core.PMPermitEvent{
+		At:      time.Now(),
+		Action:  "block",
+		UserID:  888,
+		Reason:  "exceeded warn limit",
+		Success: true,
+	})
+
+	for i := 0; i < 20; i++ {
+		if strings.Contains(mockTG.getSent(), "PMPERMIT BLOCK") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(mockTG.getSent(), "PMPERMIT BLOCK") {
+		t.Errorf("expected PMPERMIT BLOCK logged to userlog, got %s", mockTG.getSent())
+	}
+}
+
+

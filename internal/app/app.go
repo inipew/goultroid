@@ -188,6 +188,7 @@ func New(cfg *config.Config) (*App, error) {
 	mediaPlugin := media.New(mediaService)
 
 	pmpermitService := pmpermitSvc.NewService(db, client.Service, cfg.OwnerID, perms, logger)
+	pmpermitService.SetEventBus(eventBus)
 	broadcastService := broadcastSvc.NewService(client.Service, logger)
 	userlogService := userlogSvc.NewService(db, client.Service, logger)
 	pmpermitPlugin := pmpermit.New(pmpermitService)
