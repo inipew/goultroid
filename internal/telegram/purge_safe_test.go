@@ -26,7 +26,7 @@ func TestSafePurgeCollectIDsIncludesRepliedMessage(t *testing.T) {
 		&tg.Message{ID: 104},
 	}
 
-	lowest, newIDs := collectSafePurgeIDs(messages, 100, 103, 0, ids, 104)
+	lowest, newIDs := collectSafePurgeIDs(messages, 100, 103, 0, ids, 105)
 	if _, ok := ids[100]; !ok {
 		t.Fatalf("replied message ID 100 is missing from deletion set: %v", ids)
 	}
