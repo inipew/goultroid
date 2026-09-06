@@ -17,8 +17,8 @@ import (
 
 // Request defines the input parameters for executing a system process.
 type Request struct {
-	Command    string
-	Args       []string
+	Command string
+	Args    []string
 	// Shell is intentionally unsupported for untrusted/user-derived input.
 	// Keep it only as an explicit compatibility guard; callers must use argv.
 	Shell      bool
@@ -142,10 +142,11 @@ func (r *OSRunner) Run(ctx context.Context, req Request) (*Result, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(execCtx, cmdName, cmdArgs...)
-	// Do not inherit the ambient process environment by default. A caller that
-	// needs an environment must pass it explicitly, and sensitive variables are
-	// removed before spawning the child.
-	cmd.Env = SanitizeEnv(req.Env)
+	// Do not pass session tokens, API credentials, passwords, or other known
+	// secrets to child processes. Unlike SanitizeEnv (which is for logging),
+	// this helper removes sensitive variables instead of replacing values with
+	// the literal string "[REDACTED]".
+	cmd.Env = childEnv(req.Env)
 
 	if req.WorkingDir != "" {
 		if _, err := os.Stat(req.WorkingDir); err != nil {
@@ -209,13 +210,43 @@ func (r *OSRunner) Run(ctx context.Context, req Request) (*Result, error) {
 	return res, runErr
 }
 
-// SanitizeEnv removes or redacts known secret keys from an environment slice.
-// If customEnv is empty, os.Environ() is used as the base.
-func SanitizeEnv(customEnv []string) []string {
+func isSensitiveEnvKey(key string) bool {
 	sensitiveKeywords := []string{
 		"SESSION", "TOKEN", "API_HASH", "API_ID", "SECRET", "PASSWORD",
 		"PASS", "KEY", "CRED", "AUTH", "DATABASE", "PRIVATE",
 	}
+	keyUpper := strings.ToUpper(key)
+	for _, kw := range sensitiveKeywords {
+		if strings.Contains(keyUpper, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// childEnv builds an environment suitable for a child process. Sensitive
+// variables are omitted entirely; ordinary variables (including PATH) remain
+// available so direct argv commands can resolve normally.
+func childEnv(customEnv []string) []string {
+	base := customEnv
+	if len(base) == 0 {
+		base = os.Environ()
+	}
+	filtered := make([]string, 0, len(base))
+	for _, env := range base {
+		parts := strings.SplitN(env, "=", 2)
+		if len(parts) != 2 || isSensitiveEnvKey(parts[0]) {
+			continue
+		}
+		filtered = append(filtered, env)
+	}
+	return filtered
+}
+
+// SanitizeEnv removes or redacts known secret keys from an environment slice.
+// If customEnv is empty, os.Environ() is used as the base. This helper is for
+// safe logging/display, not for constructing the child process environment.
+func SanitizeEnv(customEnv []string) []string {
 	base := customEnv
 	if len(base) == 0 {
 		base = os.Environ()
@@ -226,15 +257,7 @@ func SanitizeEnv(customEnv []string) []string {
 		if len(parts) != 2 {
 			continue
 		}
-		keyUpper := strings.ToUpper(parts[0])
-		isSensitive := false
-		for _, kw := range sensitiveKeywords {
-			if strings.Contains(keyUpper, kw) {
-				isSensitive = true
-				break
-			}
-		}
-		if isSensitive {
+		if isSensitiveEnvKey(parts[0]) {
 			sanitized = append(sanitized, parts[0]+"=[REDACTED]")
 		} else {
 			sanitized = append(sanitized, env)
