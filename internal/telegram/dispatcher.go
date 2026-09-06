@@ -512,7 +512,7 @@ func (d *Dispatcher) OnBotInlineQuery(ctx context.Context, e tg.Entities, update
 	if engine == nil {
 		return nil
 	}
-	return engine.Execute(ctx, d.getService(), update.QueryID, update.UserID, update.Query, update.Offset)
+	return engine.ExecuteWithPeerType(ctx, d.getService(), update.QueryID, update.UserID, update.Query, update.Offset, update.PeerType)
 }
 
 // OnBotInlineSend handles inline result chosen feedback (observational only).

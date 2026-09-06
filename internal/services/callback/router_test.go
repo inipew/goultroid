@@ -35,18 +35,24 @@ type recordingService struct {
 	lastAnswerAlert    bool
 	lastEditInlineID   tg.InputBotInlineMessageIDClass
 	lastEditInlineText string
-	lastEditPeer       tg.InputPeerClass
-	lastEditMsgID      int
-	lastEditText       string
-	lastDeletePeer     tg.InputPeerClass
-	lastDeleteMsgIDs   []int
+	lastEditPeer                   tg.InputPeerClass
+	lastEditMsgID                  int
+	lastEditText                   string
+	lastEditMarkupOnlyPeer         tg.InputPeerClass
+	lastEditMarkupOnlyMsgID        int
+	lastEditMarkupOnlyMarkup       tg.ReplyMarkupClass
+	lastEditInlineMarkupOnlyID     tg.InputBotInlineMessageIDClass
+	lastEditInlineMarkupOnlyMarkup tg.ReplyMarkupClass
+	lastDeletePeer                 tg.InputPeerClass
+	lastDeleteMsgIDs               []int
+	errToAnswer                    error
 }
 
 func (r *recordingService) AnswerCallbackQuery(ctx context.Context, queryID int64, text string, alert bool) error {
 	r.lastAnswerQueryID = queryID
 	r.lastAnswerText = text
 	r.lastAnswerAlert = alert
-	return nil
+	return r.errToAnswer
 }
 
 func (r *recordingService) EditInlineBotMessage(ctx context.Context, inlineID tg.InputBotInlineMessageIDClass, text string, markup tg.ReplyMarkupClass) error {
@@ -55,10 +61,23 @@ func (r *recordingService) EditInlineBotMessage(ctx context.Context, inlineID tg
 	return nil
 }
 
+func (r *recordingService) EditInlineBotMessageMarkup(ctx context.Context, inlineID tg.InputBotInlineMessageIDClass, markup tg.ReplyMarkupClass) error {
+	r.lastEditInlineMarkupOnlyID = inlineID
+	r.lastEditInlineMarkupOnlyMarkup = markup
+	return nil
+}
+
 func (r *recordingService) EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass, msgID int, text string, markup tg.ReplyMarkupClass) error {
 	r.lastEditPeer = peer
 	r.lastEditMsgID = msgID
 	r.lastEditText = text
+	return nil
+}
+
+func (r *recordingService) EditMessageMarkupOnly(ctx context.Context, peer tg.InputPeerClass, msgID int, markup tg.ReplyMarkupClass) error {
+	r.lastEditMarkupOnlyPeer = peer
+	r.lastEditMarkupOnlyMsgID = msgID
+	r.lastEditMarkupOnlyMarkup = markup
 	return nil
 }
 
@@ -446,3 +465,71 @@ func TestRouter_HandlerPanicRecovery(t *testing.T) {
 		t.Errorf("expected ErrInternal, got %v", err)
 	}
 }
+
+func TestCallbackContext_AnswerErrorSemantics(t *testing.T) {
+	svc := &recordingService{errToAnswer: errors.New("rpc failed")}
+	cbCtx := &CallbackContext{
+		Ctx:     context.Background(),
+		QueryID: 999,
+		Service: svc,
+	}
+
+	err := cbCtx.Answer("hello", false)
+	if err == nil {
+		t.Fatalf("expected error from failed answer RPC")
+	}
+	if cbCtx.IsAnswered() {
+		t.Errorf("IsAnswered must remain false when AnswerCallbackQuery returns an error")
+	}
+
+	// Now succeed
+	svc.errToAnswer = nil
+	err = cbCtx.Answer("hello", false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cbCtx.IsAnswered() {
+		t.Errorf("IsAnswered must be true after successful Answer")
+	}
+}
+
+func TestCallbackContext_EditMarkupOnlySemantics(t *testing.T) {
+	svc := &recordingService{}
+	markup := &tg.ReplyKeyboardMarkup{}
+
+	// 1. Normal message: EditMarkup calls EditMessageMarkupOnly (without changing text)
+	peer := &tg.InputPeerChat{ChatID: 42}
+	msgCtx := &CallbackContext{
+		Origin: core.CallbackOriginMessage,
+		Target: core.CallbackTarget{
+			Origin:    core.CallbackOriginMessage,
+			Peer:      peer,
+			MessageID: 100,
+		},
+		Service: svc,
+	}
+	if err := msgCtx.EditMarkup(markup); err != nil {
+		t.Fatalf("EditMarkup failed: %v", err)
+	}
+	if svc.lastEditMarkupOnlyMsgID != 100 || svc.lastEditMarkupOnlyPeer != peer {
+		t.Errorf("expected EditMessageMarkupOnly called for normal message, got msgID=%d", svc.lastEditMarkupOnlyMsgID)
+	}
+
+	// 2. Inline message: EditMarkup calls EditInlineBotMessageMarkup
+	inlineID := &tg.InputBotInlineMessageID64{DCID: 2, ID: 789, AccessHash: 111}
+	inlineCtx := &CallbackContext{
+		Origin: core.CallbackOriginInline,
+		Target: core.CallbackTarget{
+			Origin:   core.CallbackOriginInline,
+			InlineID: inlineID,
+		},
+		Service: svc,
+	}
+	if err := inlineCtx.EditMarkup(markup); err != nil {
+		t.Fatalf("EditMarkup on inline failed: %v", err)
+	}
+	if svc.lastEditInlineMarkupOnlyID != inlineID {
+		t.Errorf("expected EditInlineBotMessageMarkup called for inline message")
+	}
+}
+

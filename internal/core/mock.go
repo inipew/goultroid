@@ -24,7 +24,13 @@ func (m *MockTelegramServicer) EditMessage(ctx context.Context, peer tg.InputPee
 func (m *MockTelegramServicer) EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass, msgID int, text string, markup tg.ReplyMarkupClass) error {
 	return nil
 }
+func (m *MockTelegramServicer) EditMessageMarkupOnly(ctx context.Context, peer tg.InputPeerClass, msgID int, markup tg.ReplyMarkupClass) error {
+	return nil
+}
 func (m *MockTelegramServicer) EditInlineBotMessage(ctx context.Context, inlineID tg.InputBotInlineMessageIDClass, text string, markup tg.ReplyMarkupClass) error {
+	return nil
+}
+func (m *MockTelegramServicer) EditInlineBotMessageMarkup(ctx context.Context, inlineID tg.InputBotInlineMessageIDClass, markup tg.ReplyMarkupClass) error {
 	return nil
 }
 func (m *MockTelegramServicer) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {

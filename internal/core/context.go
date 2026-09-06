@@ -19,7 +19,9 @@ type TelegramServicer interface {
 	SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error)
 	EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error
 	EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass, msgID int, text string, markup tg.ReplyMarkupClass) error
+	EditMessageMarkupOnly(ctx context.Context, peer tg.InputPeerClass, msgID int, markup tg.ReplyMarkupClass) error
 	EditInlineBotMessage(ctx context.Context, inlineID tg.InputBotInlineMessageIDClass, text string, markup tg.ReplyMarkupClass) error
+	EditInlineBotMessageMarkup(ctx context.Context, inlineID tg.InputBotInlineMessageIDClass, markup tg.ReplyMarkupClass) error
 	DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error
 	AnswerCallbackQuery(ctx context.Context, queryID int64, text string, alert bool) error
 	AnswerInlineQuery(ctx context.Context, queryID int64, results []tg.InputBotInlineResultClass, nextOffset string, cacheTime int) error

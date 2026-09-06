@@ -161,15 +161,16 @@ func (r *Registry) Resolve(query string) (InlineHandler, []string, bool) {
 
 // Engine coordinates inline query execution, caching, pagination, and MTProto serialization.
 type Engine struct {
-	registry  *Registry
-	cache     *Cache
-	paginator *Paginator
-	logger    *zap.Logger
-	cacheTime int
-	metrics   core.MetricsCollector
-	limiter   *ratelimit.Limiter
-	timeout   time.Duration
-	perms     *core.Permissions
+	registry    *Registry
+	cache       *Cache
+	paginator   *Paginator
+	serializers *SerializerRegistry
+	logger      *zap.Logger
+	cacheTime   int
+	metrics     core.MetricsCollector
+	limiter     *ratelimit.Limiter
+	timeout     time.Duration
+	perms       *core.Permissions
 }
 
 const (
@@ -189,12 +190,13 @@ func NewEngine(registry *Registry, logger *zap.Logger) *Engine {
 		logger = zap.NewNop()
 	}
 	return &Engine{
-		registry:  registry,
-		cache:     NewCache(30 * time.Second),
-		paginator: NewPaginator(DefaultPageSize),
-		logger:    logger,
-		cacheTime: 5, // 5 seconds Telegram cache
-		timeout:   defaultInlineTimeout,
+		registry:    registry,
+		cache:       NewCache(30 * time.Second),
+		paginator:   NewPaginator(DefaultPageSize),
+		serializers: NewSerializerRegistry(),
+		logger:      logger,
+		cacheTime:   5, // 5 seconds Telegram cache
+		timeout:     defaultInlineTimeout,
 	}
 }
 
@@ -214,12 +216,63 @@ func (e *Engine) SetTimeout(d time.Duration) {
 // SetPermissions configures authorization checker for inline handlers.
 func (e *Engine) SetPermissions(p *core.Permissions) { e.perms = p }
 
-func isUserAllowed(policy InlineAccessPolicy, userID int64, perms *core.Permissions) bool {
-	if policy.OwnerOnly {
-		if perms == nil {
-			return false
+// SetPaginator configures a custom paginator for inline results.
+func (e *Engine) SetPaginator(p *Paginator) {
+	if p != nil {
+		e.paginator = p
+	}
+}
+
+// Serializers returns the engine's serializer registry.
+func (e *Engine) Serializers() *SerializerRegistry {
+	return e.serializers
+}
+
+// SetSerializer registers a custom serializer for an inline result type.
+func (e *Engine) SetSerializer(t InlineResultType, s ResultSerializer) {
+	if e.serializers != nil {
+		e.serializers.Register(t, s)
+	}
+}
+
+// PeerTypeToChatType maps a tg.InlineQueryPeerTypeClass to an InlineChatType.
+func PeerTypeToChatType(pt tg.InlineQueryPeerTypeClass) InlineChatType {
+	if pt == nil {
+		return ""
+	}
+	switch pt.(type) {
+	case *tg.InlineQueryPeerTypeSameBotPM, *tg.InlineQueryPeerTypePM:
+		return ChatTypePrivate
+	case *tg.InlineQueryPeerTypeChat:
+		return ChatTypeGroup
+	case *tg.InlineQueryPeerTypeMegagroup:
+		return ChatTypeSupergroup
+	case *tg.InlineQueryPeerTypeBroadcast:
+		return ChatTypeChannel
+	default:
+		return ""
+	}
+}
+
+// hasCallbackButtons inspects inline results to detect whether any item contains inline keyboard buttons with callback_data.
+func hasCallbackButtons(results []InlineResult) bool {
+	for _, res := range results {
+		if res.Markup != nil {
+			for _, row := range res.Markup.Rows {
+				for _, btn := range row {
+					if btn.Type == ui.ButtonCallback || len(btn.Data) > 0 {
+						return true
+					}
+				}
+			}
 		}
-		if !perms.IsOwner(userID) {
+	}
+	return false
+}
+
+func isUserAllowed(policy InlineAccessPolicy, userID int64, perms *core.Permissions, peerType tg.InlineQueryPeerTypeClass) bool {
+	if policy.OwnerOnly {
+		if perms == nil || !perms.IsOwner(userID) {
 			return false
 		}
 	}
@@ -227,7 +280,7 @@ func isUserAllowed(policy InlineAccessPolicy, userID int64, perms *core.Permissi
 		if perms == nil {
 			return false
 		}
-		if !perms.IsSudo(userID) {
+		if !perms.IsOwner(userID) && !perms.IsSudo(userID) {
 			return false
 		}
 	}
@@ -243,7 +296,28 @@ func isUserAllowed(policy InlineAccessPolicy, userID int64, perms *core.Permissi
 			return false
 		}
 	}
-	// AllowedChats requires chat context which inline query currently lacks; treat as permissive for now
+	// Fail-closed for AllowedChats: Telegram inline queries do not provide verifiable chat IDs.
+	// A policy requiring specific chat IDs cannot be verified safely in inline mode.
+	if len(policy.AllowedChats) > 0 {
+		return false
+	}
+	// Check AllowedChatTypes against query PeerType
+	if len(policy.AllowedChatTypes) > 0 {
+		chatType := PeerTypeToChatType(peerType)
+		if chatType == "" {
+			return false
+		}
+		matched := false
+		for _, ct := range policy.AllowedChatTypes {
+			if ct == chatType {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
 	return true
 }
 
@@ -259,6 +333,11 @@ func (e *Engine) Cache() *Cache {
 
 // Execute processes an incoming inline query and answers Telegram via the provided service.
 func (e *Engine) Execute(ctx context.Context, svc core.TelegramServicer, queryID int64, userID int64, rawQuery string, offset string) error {
+	return e.ExecuteWithPeerType(ctx, svc, queryID, userID, rawQuery, offset, nil)
+}
+
+// ExecuteWithPeerType processes an incoming inline query with peer context and answers Telegram.
+func (e *Engine) ExecuteWithPeerType(ctx context.Context, svc core.TelegramServicer, queryID int64, userID int64, rawQuery string, offset string, peerType tg.InlineQueryPeerTypeClass) error {
 	start := time.Now()
 	trimmed := strings.TrimSpace(rawQuery)
 	correlationID := fmt.Sprintf("inline-%d-%d", queryID, time.Now().UnixNano())
@@ -304,8 +383,8 @@ func (e *Engine) Execute(ctx context.Context, svc core.TelegramServicer, queryID
 	}
 
 	// Authorization before cache/handler execution (P2 auth policy)
-	if access.OwnerOnly || access.SudoOnly || len(access.AllowedUsers) > 0 || len(access.AllowedChats) > 0 {
-		if !isUserAllowed(access, userID, e.perms) {
+	if access.OwnerOnly || access.SudoOnly || len(access.AllowedUsers) > 0 || len(access.AllowedChats) > 0 || len(access.AllowedChatTypes) > 0 {
+		if !isUserAllowed(access, userID, e.perms, peerType) {
 			e.logger.Debug("inline unauthorized", zap.Int64("user_id", userID), zap.String("pattern", handler.Pattern()), zap.String("correlation_id", correlationID))
 			if e.metrics != nil {
 				e.metrics.RecordInline(false, 0, time.Since(start), fmt.Errorf("unauthorized"))
@@ -326,15 +405,26 @@ func (e *Engine) Execute(ctx context.Context, svc core.TelegramServicer, queryID
 	if policy == CacheNone {
 		// skip cache
 	} else {
-		// Check scoped cache with locale/version
-		scopedKey := ScopedKeyEx(handler.Pattern(), trimmed, offset, policy, userID, 0, locale, version)
-		if cached, hit := e.cache.GetScoped(scopedKey); hit {
+		// Check scoped cache with locale/version.
+		// The unpaginated result set is stored under key with offset "", so we look up with "".
+		scopedKey := ScopedKeyEx(handler.Pattern(), trimmed, "", policy, userID, 0, locale, version)
+		cached, hit := e.cache.GetScoped(scopedKey)
+		if !hit && policy == CacheGlobal {
+			// If declared as CacheGlobal, check if it was auto-downgraded to CachePerUser
+			// (e.g. results contained callback buttons or private content).
+			perUserKey := ScopedKeyEx(handler.Pattern(), trimmed, "", CachePerUser, userID, 0, locale, version)
+			cached, hit = e.cache.GetScoped(perUserKey)
+		}
+		if hit {
 			if e.metrics != nil {
 				e.metrics.RecordInlineCacheHit()
 				e.metrics.RecordInline(true, len(cached), time.Since(start), nil)
 			}
 			pageResults, nextOffset := e.paginator.Paginate(cached, offset)
 			tgResults := serializeResults(pageResults)
+			if len(tgResults) > 50 {
+				tgResults = tgResults[:50]
+			}
 			if svc != nil {
 				// Use scoped cacheTime; for cached we reuse e.cacheTime
 				err := svc.AnswerInlineQuery(ctx, queryID, tgResults, nextOffset, e.cacheTime)
@@ -359,6 +449,7 @@ func (e *Engine) Execute(ctx context.Context, svc core.TelegramServicer, queryID
 		Args:          args,
 		Offset:        offset,
 		CorrelationID: correlationID,
+		PeerType:      peerType,
 	}
 
 	var resp *InlineResponse
@@ -437,9 +528,10 @@ func (e *Engine) Execute(ctx context.Context, svc core.TelegramServicer, queryID
 		pageResults = allResults
 		nextOffset = resp.NextOffset
 	} else {
-		// Fix P1 Private cache leak: private results must not be cached globally
+		// Fix P1 Private cache leak: private results or results containing interactive callback buttons
+		// must not be cached globally to prevent cross-user state collision.
 		effectivePolicy := policy
-		if resp.Private && effectivePolicy == CacheGlobal {
+		if (resp.Private || hasCallbackButtons(allResults)) && effectivePolicy == CacheGlobal {
 			effectivePolicy = CachePerUser
 		}
 		// cache then paginate with locale/version dimensions
@@ -457,6 +549,9 @@ func (e *Engine) Execute(ctx context.Context, svc core.TelegramServicer, queryID
 	}
 
 	tgResults := serializeResults(pageResults)
+	if len(tgResults) > 50 {
+		tgResults = tgResults[:50]
+	}
 
 	if e.metrics != nil {
 		e.metrics.RecordInline(false, len(tgResults), time.Since(start), nil)
@@ -502,53 +597,17 @@ func (e *Engine) Execute(ctx context.Context, svc core.TelegramServicer, queryID
 	return nil
 }
 
-func serializeResults(results []InlineResult) []tg.InputBotInlineResultClass {
-	tgResults := make([]tg.InputBotInlineResultClass, 0, len(results))
-	for _, res := range results {
-		id := truncate(res.ID, maxInlineIDLen)
-		if id == "" {
-			id = "0"
-		}
-		title := truncate(res.Title, maxInlineTitleLen)
-		desc := truncate(res.Description, maxInlineDescLen)
-		text := truncate(res.Text, maxInlineTextLen)
-		msg := &tg.InputBotInlineMessageText{
-			Message: text,
-		}
-		if res.Markup != nil {
-			if tgMarkup := res.Markup.ToTelegramMarkup(); tgMarkup != nil {
-				msg.ReplyMarkup = tgMarkup
-				msg.SetFlags()
-			}
-		}
-		t := res.Type
-		if t == "" {
-			t = ResultArticle
-		}
-		// Typed serializer: use actual type string; generic InputBotInlineResult supports
-		// article/photo/document etc via Type field. Dedicated InputBotInlineResultPhoto
-		// requires InputPhotoClass (not web URL) so we keep generic path for now with correct Type.
-		item := &tg.InputBotInlineResult{
-			ID:          id,
-			Type:        string(t),
-			Title:       title,
-			Description: desc,
-			SendMessage: msg,
-		}
-		if res.ThumbURL != "" {
-			item.SetThumb(tg.InputWebDocument{URL: truncate(res.ThumbURL, 512), MimeType: "image/jpeg"})
-		}
-		if res.URL != "" {
-			item.SetURL(truncate(res.URL, 512))
-		}
-		// Content for media types via web document when MediaURL present
-		if res.MediaURL != "" && t != ResultArticle {
-			item.SetContent(tg.InputWebDocument{URL: truncate(res.MediaURL, 512), MimeType: res.MediaMimeType})
-		}
-		item.SetFlags()
-		tgResults = append(tgResults, item)
+var defaultSerializers = NewSerializerRegistry()
+
+func (e *Engine) serializeResults(results []InlineResult) []tg.InputBotInlineResultClass {
+	if e != nil && e.serializers != nil {
+		return e.serializers.SerializeAll(results)
 	}
-	return tgResults
+	return defaultSerializers.SerializeAll(results)
+}
+
+func serializeResults(results []InlineResult) []tg.InputBotInlineResultClass {
+	return defaultSerializers.SerializeAll(results)
 }
 
 func truncate(s string, max int) string {

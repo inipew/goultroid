@@ -86,8 +86,14 @@ type CallbackContext struct {
 	answered bool
 }
 
-// IsInline returns true when the callback originated from an inline message.
-func (c *CallbackContext) IsInline() bool { return c != nil && c.Origin == core.CallbackOriginInline }
+// IsInline returns true when the callback originated from an inline message,
+// using Target.IsInline() as the single source of truth.
+func (c *CallbackContext) IsInline() bool {
+	if c == nil {
+		return false
+	}
+	return c.Target.IsInline() || c.Origin == core.CallbackOriginInline
+}
 
 // IsAnswered returns true if an answer has already been sent for this query.
 func (c *CallbackContext) IsAnswered() bool {
@@ -106,8 +112,11 @@ func (c *CallbackContext) Answer(text string, alert bool) error {
 	if len(text) > 200 {
 		text = text[:200]
 	}
-	c.answered = true
-	return c.Service.AnswerCallbackQuery(c.Ctx, c.QueryID, text, alert)
+	err := c.Service.AnswerCallbackQuery(c.Ctx, c.QueryID, text, alert)
+	if err == nil {
+		c.answered = true
+	}
+	return err
 }
 
 // Edit updates the text and optional reply markup of the message where the button was pressed.
@@ -140,12 +149,25 @@ func (c *CallbackContext) EditText(text string) error {
 	return c.Edit(text, nil)
 }
 
-// EditMarkup updates only the reply markup, keeping text unchanged if service supports it.
-// For Telegram MTProto it still requires message text; empty text keeps current text on server side may error,
-// so callers should prefer Edit with explicit text. This helper forwards to Edit with empty text.
+// EditMarkup updates only the reply markup, preserving the message text on Telegram server.
+// For inline messages it calls EditInlineBotMessageMarkup; for normal messages it calls EditMessageMarkupOnly.
 func (c *CallbackContext) EditMarkup(markup tg.ReplyMarkupClass) error {
-	// We preserve text as empty to let server keep current; if caller needs text preservation, use Edit.
-	return c.Edit("", markup)
+	if c == nil {
+		return fmt.Errorf("%w: callback context is nil", core.ErrInternal)
+	}
+	if c.Service == nil {
+		return fmt.Errorf("%w: telegram service is nil", core.ErrInternal)
+	}
+	if c.IsInline() {
+		if c.Target.InlineID == nil {
+			return fmt.Errorf("%w: inline message id is missing", core.ErrInternal)
+		}
+		return c.Service.EditInlineBotMessageMarkup(c.Ctx, c.Target.InlineID, markup)
+	}
+	if c.Target.Peer == nil {
+		return fmt.Errorf("%w: peer is missing for normal message edit", core.ErrInternal)
+	}
+	return c.Service.EditMessageMarkupOnly(c.Ctx, c.Target.Peer, c.Target.MessageID, markup)
 }
 
 // Delete deletes the originating message. For inline-origin callbacks it returns an error

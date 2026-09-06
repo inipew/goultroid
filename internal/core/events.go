@@ -60,6 +60,11 @@ type CallbackTarget struct {
 	ChatInstance int64
 }
 
+// IsInline reports whether this callback target represents an inline message.
+func (t CallbackTarget) IsInline() bool {
+	return t.InlineID != nil || t.Origin == CallbackOriginInline
+}
+
 // CallbackQueryEvent is the domain event for both normal and inline callback queries.
 // ChatID and MsgID are deprecated: use Target.Peer / Target.MessageID or Target.InlineID.
 // They are kept for backward compatibility (C) and populated from Target.
@@ -82,8 +87,14 @@ type CallbackQueryEvent struct {
 func (e *CallbackQueryEvent) Type() EventType { return EventTypeCallbackQuery }
 func (e *CallbackQueryEvent) Timestamp() time.Time { return e.At }
 
-// IsInline returns true when the callback originated from an inline message.
-func (e *CallbackQueryEvent) IsInline() bool { return e != nil && e.Origin == CallbackOriginInline }
+// IsInline returns true when the callback originated from an inline message,
+// using Target.IsInline() as the single source of truth.
+func (e *CallbackQueryEvent) IsInline() bool {
+	if e == nil {
+		return false
+	}
+	return e.Target.IsInline() || e.Origin == CallbackOriginInline
+}
 
 type ReactionUpdatedEvent struct{ At time.Time; MsgID int; ChatID int64; Reaction string }
 func (e *ReactionUpdatedEvent) Type() EventType { return EventTypeReactionUpdated }

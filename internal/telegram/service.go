@@ -284,6 +284,27 @@ func (s *Service) EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass,
 	return err
 }
 
+// EditMessageMarkupOnly updates only the reply markup of an existing message, preserving its text.
+func (s *Service) EditMessageMarkupOnly(ctx context.Context, peer tg.InputPeerClass, msgID int, markup tg.ReplyMarkupClass) error {
+	if s.api == nil {
+		return fmt.Errorf("%w: api client is not initialized", core.ErrInternal)
+	}
+
+	peer = s.ensureChannelAccessHash(ctx, peer)
+	req := &tg.MessagesEditMessageRequest{
+		Peer: peer,
+		ID:   msgID,
+	}
+	if markup != nil {
+		req.SetReplyMarkup(markup)
+	}
+
+	_, err := retryOnFloodWait(ctx, func() (tg.UpdatesClass, error) {
+		return s.api.MessagesEditMessage(ctx, req)
+	})
+	return err
+}
+
 // EditInlineBotMessage edits an inline-origin bot message via messages.editInlineBotMessage.
 func (s *Service) EditInlineBotMessage(ctx context.Context, inlineID tg.InputBotInlineMessageIDClass, text string, markup tg.ReplyMarkupClass) error {
 	if s.api == nil {
@@ -296,6 +317,26 @@ func (s *Service) EditInlineBotMessage(ctx context.Context, inlineID tg.InputBot
 		ID: inlineID,
 	}
 	req.SetMessage(text)
+	if markup != nil {
+		req.SetReplyMarkup(markup)
+	}
+	_, err := retryOnFloodWait(ctx, func() (bool, error) {
+		return s.api.MessagesEditInlineBotMessage(ctx, req)
+	})
+	return err
+}
+
+// EditInlineBotMessageMarkup updates only the reply markup of an inline message, preserving its text.
+func (s *Service) EditInlineBotMessageMarkup(ctx context.Context, inlineID tg.InputBotInlineMessageIDClass, markup tg.ReplyMarkupClass) error {
+	if s.api == nil {
+		return fmt.Errorf("%w: api client is not initialized", core.ErrInternal)
+	}
+	if inlineID == nil {
+		return fmt.Errorf("%w: inline message id is nil", core.ErrInternal)
+	}
+	req := &tg.MessagesEditInlineBotMessageRequest{
+		ID: inlineID,
+	}
 	if markup != nil {
 		req.SetReplyMarkup(markup)
 	}

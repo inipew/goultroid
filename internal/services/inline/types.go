@@ -111,12 +111,23 @@ type SwitchWebView struct {
 	URL  string
 }
 
+// InlineChatType identifies the chat category reported by Telegram in inline queries.
+type InlineChatType string
+
+const (
+	ChatTypePrivate    InlineChatType = "private"
+	ChatTypeGroup      InlineChatType = "group"
+	ChatTypeSupergroup InlineChatType = "supergroup"
+	ChatTypeChannel    InlineChatType = "channel"
+)
+
 // InlineAccessPolicy declares handler authorization.
 type InlineAccessPolicy struct {
-	OwnerOnly    bool
-	SudoOnly     bool
-	AllowedUsers []int64
-	AllowedChats []int64
+	OwnerOnly        bool
+	SudoOnly         bool
+	AllowedUsers     []int64
+	AllowedChats     []int64
+	AllowedChatTypes []InlineChatType
 }
 
 // InlineMatcher abstracts query matching.

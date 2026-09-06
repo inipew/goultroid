@@ -36,6 +36,7 @@ type recordingInlineService struct {
 	lastResults    []tg.InputBotInlineResultClass
 	lastNextOffset string
 	lastCacheTime  int
+	lastOpts       core.InlineAnswerOptions
 }
 
 func (r *recordingInlineService) AnswerInlineQuery(ctx context.Context, queryID int64, results []tg.InputBotInlineResultClass, nextOffset string, cacheTime int) error {
@@ -43,6 +44,11 @@ func (r *recordingInlineService) AnswerInlineQuery(ctx context.Context, queryID 
 	r.lastResults = results
 	r.lastNextOffset = nextOffset
 	r.lastCacheTime = cacheTime
+	r.lastOpts = core.InlineAnswerOptions{
+		Results:    results,
+		NextOffset: nextOffset,
+		CacheTime:  cacheTime,
+	}
 	return nil
 }
 
@@ -55,6 +61,7 @@ func (r *recordingInlineService) AnswerInlineQueryOptions(ctx context.Context, q
 	}
 	r.lastNextOffset = opts.NextOffset
 	r.lastCacheTime = opts.CacheTime
+	r.lastOpts = opts
 	return nil
 }
 
@@ -363,5 +370,262 @@ func TestEngine_PanicRecovery(t *testing.T) {
 	}
 	if !errors.Is(err, core.ErrInternal) {
 		t.Errorf("expected ErrInternal from panic recovery, got %v", err)
+	}
+}
+
+func TestEngine_AccessPolicy_AllowedChats_FailClosed(t *testing.T) {
+	reg := NewRegistry()
+	hChatSpecific := &mockInlineHandlerV2{
+		mockInlineHandler: mockInlineHandler{pattern: "groupquery"},
+		accessPolicy:      InlineAccessPolicy{AllowedChats: []int64{12345}},
+		response: &InlineResponse{
+			Results: []InlineResult{{ID: "g-1", Title: "Group Only"}},
+		},
+	}
+	_ = reg.Register(hChatSpecific)
+
+	perms := core.NewPermissions(1111, nil)
+	engine := NewEngine(reg, zap.NewNop())
+	engine.SetPermissions(perms)
+	svc := &recordingInlineService{}
+	ctx := context.Background()
+
+	// Even owner (1111) must be rejected because AllowedChats is fail-closed in inline mode
+	err := engine.ExecuteWithPeerType(ctx, svc, 1, 1111, "groupquery", "", &tg.InlineQueryPeerTypeChat{})
+	if err == nil {
+		t.Fatalf("expected error for AllowedChats fail-closed policy, got nil")
+	}
+	if hChatSpecific.invoked {
+		t.Errorf("handler with AllowedChats must never be invoked in inline mode")
+	}
+}
+
+func TestEngine_AccessPolicy_AllowedChatTypes(t *testing.T) {
+	reg := NewRegistry()
+	hPMOnly := &mockInlineHandlerV2{
+		mockInlineHandler: mockInlineHandler{pattern: "pmquery"},
+		accessPolicy:      InlineAccessPolicy{AllowedChatTypes: []InlineChatType{ChatTypePrivate}},
+		response: &InlineResponse{
+			Results: []InlineResult{{ID: "pm-1", Title: "PM Only"}},
+		},
+	}
+	_ = reg.Register(hPMOnly)
+
+	engine := NewEngine(reg, zap.NewNop())
+	svc := &recordingInlineService{}
+	ctx := context.Background()
+
+	// 1. Private chat peer type should be allowed
+	hPMOnly.invoked = false
+	err := engine.ExecuteWithPeerType(ctx, svc, 101, 200, "pmquery", "", &tg.InlineQueryPeerTypePM{})
+	if err != nil {
+		t.Fatalf("unexpected error for matching ChatTypePrivate: %v", err)
+	}
+	if !hPMOnly.invoked {
+		t.Fatalf("expected handler to be invoked for matching ChatTypePrivate")
+	}
+
+	// 2. Group peer type should be rejected
+	hPMOnly.invoked = false
+	err = engine.ExecuteWithPeerType(ctx, svc, 102, 200, "pmquery", "", &tg.InlineQueryPeerTypeChat{})
+	if err == nil {
+		t.Fatalf("expected error for mismatched ChatTypeChat, got nil")
+	}
+	if hPMOnly.invoked {
+		t.Fatalf("handler should not be invoked for mismatched ChatType")
+	}
+
+	// 3. Nil peer type should be rejected (cannot verify)
+	hPMOnly.invoked = false
+	err = engine.ExecuteWithPeerType(ctx, svc, 103, 200, "pmquery", "", nil)
+	if err == nil {
+		t.Fatalf("expected error for nil peer type, got nil")
+	}
+	if hPMOnly.invoked {
+		t.Fatalf("handler should not be invoked for nil peer type")
+	}
+}
+
+func TestEngine_Cache_CallbackButtons_AutoDowngradeToPerUser(t *testing.T) {
+	reg := NewRegistry()
+	btnMarkup := ui.NewMarkup(
+		ui.ButtonRow{
+			ui.NewCallbackButton("Action", []byte("state_payload_123")),
+		},
+	)
+	// Handler with CacheGlobal, but returns results containing a callback button
+	hInteractive := &mockInlineHandlerV2{
+		mockInlineHandler: mockInlineHandler{pattern: "interactive"},
+		cachePolicy:       CacheGlobal,
+		response: &InlineResponse{
+			Results: []InlineResult{
+				{
+					ID:     "btn-1",
+					Title:  "Click Me",
+					Markup: &btnMarkup,
+				},
+			},
+		},
+	}
+	_ = reg.Register(hInteractive)
+
+	engine := NewEngine(reg, zap.NewNop())
+	svc := &recordingInlineService{}
+	ctx := context.Background()
+
+	// First query by User 1
+	hInteractive.invoked = false
+	err := engine.Execute(ctx, svc, 201, 1001, "interactive", "")
+	if err != nil {
+		t.Fatalf("user 1 query failed: %v", err)
+	}
+	if !hInteractive.invoked {
+		t.Fatalf("expected handler to be invoked for user 1")
+	}
+
+	// Second query by User 2 with same query text
+	// Because results had callback buttons, CacheGlobal should have been auto-downgraded to CachePerUser,
+	// so User 2 must NOT hit User 1's cache!
+	hInteractive.invoked = false
+	err = engine.Execute(ctx, svc, 202, 1002, "interactive", "")
+	if err != nil {
+		t.Fatalf("user 2 query failed: %v", err)
+	}
+	if !hInteractive.invoked {
+		t.Fatalf("expected handler to be invoked for user 2 due to auto-downgraded CachePerUser")
+	}
+
+	// User 1 querying again SHOULD hit their own cache
+	hInteractive.invoked = false
+	err = engine.Execute(ctx, svc, 203, 1001, "interactive", "")
+	if err != nil {
+		t.Fatalf("user 1 second query failed: %v", err)
+	}
+	if hInteractive.invoked {
+		t.Fatalf("expected user 1 second query to hit their own per-user cache")
+	}
+}
+
+func TestEngine_HardCap_Max50Results(t *testing.T) {
+	reg := NewRegistry()
+	var sixtyResults []InlineResult
+	for i := 0; i < 60; i++ {
+		sixtyResults = append(sixtyResults, InlineResult{
+			ID:    fmt.Sprintf("item-%d", i),
+			Title: fmt.Sprintf("Result %d", i),
+		})
+	}
+
+	hMany := &mockInlineHandlerV2{
+		mockInlineHandler: mockInlineHandler{pattern: "many"},
+		cachePolicy:       CacheGlobal,
+		response: &InlineResponse{
+			Results: sixtyResults,
+		},
+	}
+	_ = reg.Register(hMany)
+
+	engine := NewEngine(reg, zap.NewNop())
+	engine.SetPaginator(NewPaginator(50))
+	svc := &recordingInlineService{}
+	ctx := context.Background()
+
+	// Initial execution: 60 results should be truncated to 50
+	err := engine.Execute(ctx, svc, 301, 5001, "many", "")
+	if err != nil {
+		t.Fatalf("engine execution failed: %v", err)
+	}
+	if len(svc.lastResults) != 50 {
+		t.Fatalf("expected exactly 50 results (hard capped), got %d", len(svc.lastResults))
+	}
+
+	// Subsequent execution (from cache)
+	svc.lastResults = nil
+	err = engine.Execute(ctx, svc, 302, 5001, "many", "")
+	if err != nil {
+		t.Fatalf("cache execution failed: %v", err)
+	}
+	if len(svc.lastResults) != 50 {
+		t.Fatalf("expected exactly 50 results from cache (hard capped), got %d", len(svc.lastResults))
+	}
+}
+
+func TestEngine_Response_SwitchPM_And_SwitchWebView(t *testing.T) {
+	reg := NewRegistry()
+	hSwitch := &mockInlineHandlerV2{
+		mockInlineHandler: mockInlineHandler{pattern: "switchtest"},
+		response: &InlineResponse{
+			Results: []InlineResult{
+				{ID: "sw-1", Title: "Switch Item", Text: "Hello"},
+			},
+			SwitchPM: &SwitchPM{
+				Text:  "Connect Bot in PM",
+				Query: "auth_token_xyz",
+			},
+			SwitchWebView: &SwitchWebView{
+				Text: "Launch Mini App",
+				URL:  "https://webapp.example.com",
+			},
+		},
+	}
+	_ = reg.Register(hSwitch)
+
+	engine := NewEngine(reg, zap.NewNop())
+	svc := &recordingInlineService{}
+	ctx := context.Background()
+
+	err := engine.Execute(ctx, svc, 401, 7001, "switchtest", "")
+	if err != nil {
+		t.Fatalf("execution failed: %v", err)
+	}
+
+	if svc.lastOpts.SwitchPM == nil {
+		t.Fatalf("expected SwitchPM to be populated in options")
+	}
+	if svc.lastOpts.SwitchPM.Text != "Connect Bot in PM" || svc.lastOpts.SwitchPM.StartParam != "auth_token_xyz" {
+		t.Errorf("unexpected SwitchPM values: %+v", svc.lastOpts.SwitchPM)
+	}
+
+	if svc.lastOpts.SwitchWebView == nil {
+		t.Fatalf("expected SwitchWebView to be populated in options")
+	}
+	if svc.lastOpts.SwitchWebView.Text != "Launch Mini App" || svc.lastOpts.SwitchWebView.URL != "https://webapp.example.com" {
+		t.Errorf("unexpected SwitchWebView values: %+v", svc.lastOpts.SwitchWebView)
+	}
+}
+
+func TestEngine_Response_GalleryAndPrivate(t *testing.T) {
+	reg := NewRegistry()
+	hGallery := &mockInlineHandlerV2{
+		mockInlineHandler: mockInlineHandler{pattern: "gallerytest"},
+		response: &InlineResponse{
+			Results: []InlineResult{
+				{ID: "gal-1", Title: "Photo 1", MediaURL: "https://example.com/1.jpg", Type: ResultPhoto},
+				{ID: "gal-2", Title: "Photo 2", MediaURL: "https://example.com/2.jpg", Type: ResultPhoto},
+			},
+			Gallery:   true,
+			Private:   true,
+			CacheTime: 60, // should be forced to 0 because Private is true
+		},
+	}
+	_ = reg.Register(hGallery)
+
+	engine := NewEngine(reg, zap.NewNop())
+	svc := &recordingInlineService{}
+	ctx := context.Background()
+
+	err := engine.Execute(ctx, svc, 501, 8001, "gallerytest", "")
+	if err != nil {
+		t.Fatalf("execution failed: %v", err)
+	}
+
+	if !svc.lastOpts.Gallery {
+		t.Errorf("expected Gallery=true in answer options")
+	}
+	if !svc.lastOpts.Private {
+		t.Errorf("expected Private=true in answer options")
+	}
+	if svc.lastOpts.CacheTime != 0 {
+		t.Errorf("expected CacheTime=0 for private results, got %d", svc.lastOpts.CacheTime)
 	}
 }
