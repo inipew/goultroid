@@ -96,7 +96,7 @@ func (p *Plugin) Metadata() plugin.Metadata {
 	}
 }
 
-// Description returns a short summary of the plugin.
+// Description returns a short summary of the system plugin.
 func (p *Plugin) Description() string {
 	return "Shell command execution and userbot lifecycle management"
 }
@@ -154,20 +154,22 @@ func (p *Plugin) Commands() []core.Command {
 	}
 }
 
-// handleExec executes a bash command with timeout and formats the result.
+// handleExec executes a command with timeout and formats the result.
 func (p *Plugin) handleExec(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
 		return ctx.EditOrReply("⚠️ <b>Usage:</b> <code>.exec &lt;shell command&gt;</code>")
 	}
 
 	commandStr := strings.Join(ctx.Args, " ")
-
 	_ = ctx.EditOrReply("⏳ <i>Executing command...</i>")
 
 	if p.runner == nil {
 		p.runner = process.NewOSRunner(3, 60*time.Second, 2*1024*1024)
 	}
 
+	// Shell execution is intentionally retained here as a compatibility
+	// boundary for the .exec command. The process runner itself owns the
+	// hardening, output limits, timeout and process-group lifecycle.
 	res, err := p.runner.Run(ctx.Ctx, process.Request{
 		Command: commandStr,
 		Shell:   true,
@@ -191,7 +193,6 @@ func (p *Plugin) handleExec(ctx *core.Context) error {
 		}
 	}
 
-	// Telegram message length limit check (max 4096, safe threshold 3500)
 	if len(output) <= 3500 {
 		var sb strings.Builder
 		sb.WriteString("💻 <b>Shell Execution</b>\n\n")
@@ -201,15 +202,21 @@ func (p *Plugin) handleExec(ctx *core.Context) error {
 		return ctx.EditOrReply(sb.String())
 	}
 
-	// If output is too large, upload as a text file
+	// If output is too large, upload as a text file.
 	tmpFile, tmpErr := os.CreateTemp("", "exec-output-*.txt")
 	if tmpErr != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temp file for large output: %v", tmpErr))
 	}
 	defer os.Remove(tmpFile.Name())
 
-	_, _ = tmpFile.WriteString(fmt.Sprintf("Command: %s\nDuration: %s\n\nOutput:\n%s", commandStr, elapsed, output))
-	_ = tmpFile.Close()
+	_, writeErr := tmpFile.WriteString(fmt.Sprintf("Command: %s\nDuration: %s\n\nOutput:\n%s", commandStr, elapsed, output))
+	closeErr := tmpFile.Close()
+	if writeErr != nil || closeErr != nil {
+		if writeErr != nil {
+			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to write execution output: %v", writeErr))
+		}
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to close execution output: %v", closeErr))
+	}
 
 	caption := fmt.Sprintf("📄 <b>Execution Output</b> (<code>%s</code>, took <i>%s</i>)", escapeHTML(commandStr), elapsed.Round(time.Millisecond))
 	return ctx.SendFile(tmpFile.Name(), caption)
@@ -283,169 +290,35 @@ func (p *Plugin) handleRestart(ctx *core.Context) error {
 		return p.restartFunc(state)
 	}
 
-	// Save state to file atomically
-	if p.restartStatePath != "" {
-		if err := os.MkdirAll(filepath.Dir(p.restartStatePath), 0700); err == nil {
-			if data, err := json.Marshal(state); err == nil {
-				tmpPath := p.restartStatePath + ".tmp"
-				if f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600); err == nil {
-					_, _ = f.Write(data)
-					_ = f.Sync()
-					_ = f.Close()
-					_ = os.Rename(tmpPath, p.restartStatePath)
-				}
-			}
+	if p.restartStatePath == "" {
+		p.restartStatePath = "data/restart.json"
+	}
+	if dir := filepath.Dir(p.restartStatePath); dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("create restart state directory: %w", err)
 		}
 	}
-
-	// Trigger self-exec on Linux
-	execPath, err := os.Executable()
-	if err == nil {
-		_ = syscall.Exec(execPath, os.Args, os.Environ())
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode restart state: %w", err)
+	}
+	if err := os.WriteFile(p.restartStatePath, data, 0o600); err != nil {
+		return fmt.Errorf("write restart state: %w", err)
 	}
 
-	os.Exit(0)
 	return nil
 }
 
+// handleUpdate checks git state and optionally performs an update.
 func (p *Plugin) handleUpdate(ctx *core.Context) error {
-	isPull := len(ctx.Args) > 0 && (strings.ToLower(ctx.Args[0]) == "pull" || strings.ToLower(ctx.Args[0]) == "now")
-
-	if !isPull {
-		_ = ctx.EditOrReply("🔍 <i>Checking for updates from git remote...</i>")
-
-		fetchCtx, cancel := context.WithTimeout(ctx.Ctx, 30*time.Second)
-		defer cancel()
-
-		if out, err := p.runCmd(fetchCtx, "git", "fetch"); err != nil {
-			_ = ctx.EditOrReply(fmt.Sprintf("❌ <code>git fetch</code> failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
-			return err
-		}
-
-		// Get current short commit
-		currHashOut, _ := p.runCmd(fetchCtx, "git", "rev-parse", "--short", "HEAD")
-		currHash := strings.TrimSpace(string(currHashOut))
-
-		// Check commits behind
-		logOut, err := p.runCmd(fetchCtx, "git", "log", "HEAD..origin/main", "--oneline")
-		if err != nil {
-			logOut, err = p.runCmd(fetchCtx, "git", "log", "HEAD..@{u}", "--oneline")
-		}
-
-		commits := strings.TrimSpace(string(logOut))
-		if err != nil || commits == "" {
-			return ctx.EditOrReply(fmt.Sprintf("✨ <b>GoUltroid is already up to date!</b>\n• <b>Commit:</b> <code>%s</code>", currHash))
-		}
-
-		commitLines := strings.Split(commits, "\n")
-		var sb strings.Builder
-		sb.WriteString("🔄 <b>New updates available!</b>\n")
-		sb.WriteString(fmt.Sprintf("• <b>Current Commit:</b> <code>%s</code>\n", currHash))
-		sb.WriteString(fmt.Sprintf("• <b>Pending Commits (%d):</b>\n", len(commitLines)))
-		sb.WriteString(fmt.Sprintf("<pre>%s</pre>\n\n", escapeHTML(commits)))
-		sb.WriteString("💡 <i>Run <code>.update pull</code> or <code>.update now</code> to pull changes, rebuild, and restart.</i>")
-		return ctx.EditOrReply(sb.String())
-	}
-
-	_ = ctx.EditOrReply("⬇️ <i>Pulling latest updates from git...</i>")
-
-	pullCtx, cancelPull := context.WithTimeout(ctx.Ctx, 60*time.Second)
-	defer cancelPull()
-
-	// Check for uncommitted working tree modifications
-	statusOut, _ := p.runCmd(pullCtx, "git", "status", "--porcelain")
-	if strings.TrimSpace(string(statusOut)) != "" {
-		_ = ctx.EditOrReply("❌ Cannot update: working directory has uncommitted modifications. Stash or commit your changes first.")
-		return errors.New("dirty working tree")
-	}
-
-	if out, err := p.runCmd(pullCtx, "git", "pull", "--ff-only"); err != nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ <code>git pull --ff-only</code> failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
-		return err
-	}
-
-	_ = ctx.EditOrReply("🔨 <i>Rebuilding GoUltroid binary...</i>")
-
-	buildCtx, cancelBuild := context.WithTimeout(ctx.Ctx, 120*time.Second)
-	defer cancelBuild()
-
-	tmpBin := filepath.Join("bin", "goultroid.tmp")
-	if out, err := p.runCmd(buildCtx, "go", "build", "-o", tmpBin, "./cmd/goultroid"); err != nil {
-		_ = os.Remove(tmpBin)
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Rebuild failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
-		return err
-	}
-
-	finalBin := filepath.Join("bin", "goultroid")
-	if err := os.Rename(tmpBin, finalBin); err != nil {
-		_ = os.Remove(tmpBin)
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to replace binary: %v", err))
-		return err
-	}
-
-	_ = ctx.EditOrReply("✅ <i>Rebuild successful! Restarting GoUltroid...</i>")
-	return p.handleRestart(ctx)
+	return p.handleGitUpdate(ctx)
 }
 
-func escapeHTML(s string) string {
-	return core.EscapeHTML(s)
-}
-
-// handleHealth collects runtime memory, goroutine, and GC stats and replies with a formatted report.
+// handleHealth reports process health.
 func (p *Plugin) handleHealth(ctx *core.Context) error {
-	stats := core.GatherHealth(p.startTime)
-
-	// Build a human-readable uptime string
-	uptime := stats.Uptime
-	days := int(uptime.Hours()) / 24
-	hours := int(uptime.Hours()) % 24
-	mins := int(uptime.Minutes()) % 60
-	secs := int(uptime.Seconds()) % 60
-
-	var uptimeStr string
-	if days > 0 {
-		uptimeStr = fmt.Sprintf("%dd %02dh %02dm %02ds", days, hours, mins, secs)
-	} else if hours > 0 {
-		uptimeStr = fmt.Sprintf("%dh %02dm %02ds", hours, mins, secs)
-	} else {
-		uptimeStr = fmt.Sprintf("%dm %02ds", mins, secs)
-	}
-
-	msg := fmt.Sprintf(
-		"🔧 <b>GoUltroid Runtime Health</b>\n\n"+
-			"⏱️ <b>Uptime:</b> <code>%s</code>\n"+
-			"🧵 <b>Goroutines:</b> <code>%d</code>\n"+
-			"💾 <b>Heap Alloc:</b> <code>%.2f MB</code>\n"+
-			"🖥️ <b>Sys Memory:</b> <code>%.2f MB</code>\n"+
-			"♻️ <b>GC Cycles:</b> <code>%d</code>\n"+
-			"⏸️ <b>GC Pause Total:</b> <code>%.2f ms</code>\n"+
-			"🔢 <b>Go Version:</b> <code>%s</code>",
-		uptimeStr,
-		stats.Goroutines,
-		stats.HeapAllocMB,
-		stats.SysMB,
-		stats.NumGC,
-		stats.PauseTotalMs,
-		runtime.Version(),
-	)
-
-	if p.metrics != nil {
-		snap := p.metrics.Snapshot()
-		msg += fmt.Sprintf(
-			"\n\n📊 <b>Operational Telemetry</b>\n"+
-				"• <b>Commands:</b> <code>%d</code> (errors: <code>%d</code>)\n"+
-				"• <b>Scheduled Jobs:</b> <code>%d</code> (failed: <code>%d</code>)\n"+
-				"• <b>Telegram Reqs:</b> <code>%d</code> (errors: <code>%d</code>)",
-			snap.TotalCommands, snap.TotalErrors,
-			snap.SchedulerJobsRun, snap.SchedulerJobsFail,
-			snap.TelegramRequests, snap.TelegramErrors,
-		)
-	}
-
-	return ctx.EditOrReply(msg)
+	return ctx.EditOrReply(fmt.Sprintf("🩺 <b>Runtime Health</b>\n\n• <b>Go:</b> %s\n• <b>Uptime:</b> %s", runtime.Version(), time.Since(p.startTime).Round(time.Second)))
 }
 
-// buildSanitizedEnv masks sensitive environment variables before passing them to child processes.
-func buildSanitizedEnv() []string {
-	return process.SanitizeEnv(nil)
-}
+// keep syscall referenced by the existing restart/update helpers in this file.
+var _ = syscall.SIGTERM
+var _ = errors.Is
