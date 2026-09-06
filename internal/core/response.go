@@ -10,11 +10,11 @@ type ResponseOptions struct {
 // Respond sends a response and optionally cleans up the incoming command.
 // The response is sent first so cleanup can never hide a successful response.
 func (c *Context) Respond(text string, opts ResponseOptions) error {
-	if err := c.Messages.Reply(text); err != nil {
+	if err := c.Messages().Reply(text); err != nil {
 		return err
 	}
 	if opts.DeleteTrigger {
-		_ = c.Messages.Delete()
+		_ = c.Messages().Delete()
 	}
 	return nil
 }
