@@ -183,7 +183,7 @@ func New(cfg *config.Config) (*App, error) {
 	broadcastPlugin := broadcast.New(broadcastService)
 
 	limiter := ratelimit.New(ratelimit.Policy{Limit: 60, Window: time.Minute, Burst: 30}, 5*time.Minute)
-	dispatcher.Executor().SetRateLimiter(limiter)
+	dispatcher.Executor().SetRateLimiter(commandRateLimiterAdapter{limiter: limiter})
 
 	// Voice chat is intentionally not wired until a real Telegram VC transport exists.
 
