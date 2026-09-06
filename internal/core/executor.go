@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"time"
@@ -27,11 +28,7 @@ func NewCommandExecutor(logger *zap.Logger, cooldown *CooldownTracker, defaultTi
 	if defaultTimeout <= 0 {
 		defaultTimeout = 30 * time.Second
 	}
-	return &CommandExecutor{
-		logger:         logger,
-		cooldown:       cooldown,
-		defaultTimeout: defaultTimeout,
-	}
+	return &CommandExecutor{logger: logger, cooldown: cooldown, defaultTimeout: defaultTimeout}
 }
 
 func (e *CommandExecutor) SetMetrics(metrics MetricsCollector) { e.metrics = metrics }
@@ -42,8 +39,7 @@ func (e *CommandExecutor) SetRateLimiter(limiter CommandRateLimiter) {
 func (e *CommandExecutor) RateLimiter() CommandRateLimiter { return e.rateLimiter }
 
 // Execute preserves the legacy Context-based entry point for interactive
-// callers. New non-interactive callers should use ExecuteExecution so the
-// source of execution is explicit rather than inferred from Message fields.
+// callers. New non-interactive callers should use ExecuteExecution.
 func (e *CommandExecutor) Execute(ctx *Context, cmd Command) error {
 	if ctx == nil {
 		return ErrInternal
@@ -51,12 +47,18 @@ func (e *CommandExecutor) Execute(ctx *Context, cmd Command) error {
 	return e.execute(ctx, cmd, ExecutionInteractive)
 }
 
-// ExecuteExecution materializes the canonical execution envelope into the
-// command Context and then runs the same middleware/handler path used by
-// interactive commands.
+// ExecuteExecution is the canonical entry point for scheduled, assistant,
+// and system execution. It does not manufacture a Telegram trigger message.
 func (e *CommandExecutor) ExecuteExecution(exec CommandExecution, cmd Command, svc TelegramServicer) error {
 	if exec.Ctx == nil {
-		exec.Ctx = timeBackground()
+		exec.Ctx = context.Background()
+	}
+	if exec.Command == "" {
+		exec.Command = cmd.Name
+	}
+	sender := exec.Sender
+	if sender == nil && exec.Principal != nil && exec.Principal.ID > 0 {
+		sender = &User{ID: exec.Principal.ID}
 	}
 	ctx := &Context{
 		Ctx:            exec.Ctx,
@@ -66,13 +68,10 @@ func (e *CommandExecutor) ExecuteExecution(exec CommandExecution, cmd Command, s
 		RawArgs:        exec.RawArgs,
 		Message:        exec.TriggerMessage,
 		Chat:           exec.Chat,
-		Sender:         principalUser(exec.Principal),
+		Sender:         sender,
 		Principal:      exec.Principal,
 		Svc:            svc,
 		PeerID:         exec.PeerID,
-	}
-	if ctx.Command == "" {
-		ctx.Command = cmd.Name
 	}
 	return e.execute(ctx, cmd, exec.Source)
 }
@@ -82,7 +81,7 @@ func (e *CommandExecutor) execute(ctx *Context, cmd Command, source ExecutionSou
 		return ErrInternal
 	}
 	if ctx.Ctx == nil {
-		ctx.Ctx = timeBackground()
+		ctx.Ctx = context.Background()
 	}
 	if ctx.Message != nil && ctx.Chat != nil && ConsumeMessageHandled(ctx.Chat.ID, ctx.Message.ID) {
 		return nil
@@ -125,20 +124,4 @@ func (e *CommandExecutor) execute(ctx *Context, cmd Command, source ExecutionSou
 		}
 	}
 	return err
-}
-
-// principalUser adapts the canonical principal to the legacy Context sender.
-// Principal is the authority identity; Sender remains a compatibility view for
-// existing command implementations.
-func principalUser(p *Principal) *User {
-	if p == nil || p.ID <= 0 {
-		return nil
-	}
-	return &User{ID: p.ID}
-}
-
-// timeBackground is isolated to keep the execution constructor simple and
-// avoid exposing a mutable nil context to middleware.
-func timeBackground() interface{ Done() <-chan struct{} } {
-	return nil
 }
