@@ -64,10 +64,11 @@ func (c *BotClient) Start(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx); c.cancel = cancel; c.mu.Unlock()
 	defer func() { c.mu.Lock(); c.cancel = nil; c.mu.Unlock(); cancel() }()
 
+	var client *telegram.Client
 	dispatcher := tg.NewUpdateDispatcher()
 	dispatcher.OnNewMessage(func(ctx context.Context, e tg.Entities, update *tg.UpdateNewMessage) error {
 		msg, ok := update.Message.(*tg.Message)
-		if !ok || msg.Out { return nil }
+		if !ok || msg.Out || client == nil { return nil }
 		return c.handleBotCommand(ctx, e, msg, client)
 	})
 	dispatcher.OnBotInlineQuery(func(ctx context.Context, e tg.Entities, update *tg.UpdateBotInlineQuery) error {
@@ -85,7 +86,7 @@ func (c *BotClient) Start(ctx context.Context) error {
 	})
 
 	gaps := updates.New(updates.Config{Handler: dispatcher})
-	client := telegram.NewClient(c.appID, c.appHash, telegram.Options{UpdateHandler: gaps})
+	client = telegram.NewClient(c.appID, c.appHash, telegram.Options{UpdateHandler: gaps})
 	c.logger.Info("starting assistant bot client...")
 	return client.Run(runCtx, func(ctx context.Context) error {
 		status, err := client.Auth().Status(ctx)
@@ -98,7 +99,9 @@ func (c *BotClient) Start(ctx context.Context) error {
 			c.mu.Lock(); c.self = self; c.mu.Unlock()
 			c.logger.Info("assistant bot authenticated successfully", zap.String("username", self.Username), zap.Int64("id", self.ID))
 		}
-		c.Bridge().Dispatch(ctx, Event{Type: EventNotification, Title: "Assistant Started", Message: fmt.Sprintf("Assistant @%s is now online.", c.Username()), CreatedAt: time.Now()})
+		if bridge := c.Bridge(); bridge != nil {
+			bridge.Dispatch(ctx, Event{Type: EventNotification, Title: "Assistant Started", Message: fmt.Sprintf("Assistant @%s is now online.", c.Username()), CreatedAt: time.Now()})
+		}
 		<-ctx.Done()
 		return ctx.Err()
 	})
@@ -110,14 +113,11 @@ func (c *BotClient) Stop(ctx context.Context) error {
 	return nil
 }
 
-// handleBotCommand implements the assistant's minimal command surface and sends
-// an actual Telegram response instead of only constructing an unused string.
 func (c *BotClient) handleBotCommand(ctx context.Context, e tg.Entities, msg *tg.Message, client *telegram.Client) error {
-	if msg == nil { return nil }
+	if msg == nil || client == nil { return nil }
 	if msg.Message != "/start" && msg.Message != "/help" { return nil }
 	senderID := extractSenderID(msg)
 	if senderID == 0 { return nil }
-
 	peer := tg.InputPeerClass(&tg.InputPeerUser{UserID: senderID})
 	if u, ok := e.Users[senderID]; ok { peer = &tg.InputPeerUser{UserID: senderID, AccessHash: u.AccessHash} }
 	reply := "👋 <b>Hello!</b> I am the <b>GoUltroid Assistant Bot</b>.\n\n• <b>Core:</b> GoUltroid Parity Engine\n• <b>Status:</b> Active\n\nUse inline queries or buttons to interact."
