@@ -85,8 +85,8 @@ func TestUserLogPlugin(t *testing.T) {
 	if err := cmds[0].Handler(setLogCtx); err != nil {
 		t.Fatalf("handleSetLog failed: %v", err)
 	}
-	if !strings.Contains(mockTG.getEdited(), "Log destination set") {
-		t.Errorf("expected destination set notice, got %s", mockTG.getEdited())
+	if !strings.Contains(mockTG.getEdited(), "Log destination verified & active!") {
+		t.Errorf("expected destination verified notice, got %s", mockTG.getEdited())
 	}
 
 	chat, _ := svc.GetLogChat(context.Background())
@@ -104,8 +104,8 @@ func TestUserLogPlugin(t *testing.T) {
 	if err := cmds[1].Handler(statusCtx); err != nil {
 		t.Fatalf("handleLogStatus failed: %v", err)
 	}
-	if !strings.Contains(mockTG.getEdited(), "UserLog Configuration") {
-		t.Errorf("expected config overview, got %s", mockTG.getEdited())
+	if !strings.Contains(mockTG.getEdited(), "UserLog Dashboard") {
+		t.Errorf("expected dashboard overview, got %s", mockTG.getEdited())
 	}
 
 	// 3. .log tags off
@@ -121,6 +121,36 @@ func TestUserLogPlugin(t *testing.T) {
 	}
 	if !strings.Contains(mockTG.getEdited(), "DISABLED") {
 		t.Errorf("expected DISABLED notice, got %s", mockTG.getEdited())
+	}
+
+	// 4. .log test
+	testCtx := &core.Context{
+		Ctx:     context.Background(),
+		Svc:     mockTG,
+		PeerID:  &tg.InputPeerChat{ChatID: 777},
+		Message: &core.Message{ID: 4, IsOutgoing: true},
+		Args:    []string{"test"},
+	}
+	if err := cmds[1].Handler(testCtx); err != nil {
+		t.Fatalf("handleLogTest failed: %v", err)
+	}
+	if !strings.Contains(mockTG.getEdited(), "UserLog test successful!") {
+		t.Errorf("expected test delivery result, got %s", mockTG.getEdited())
+	}
+
+	// 5. .log clear
+	clearCtx := &core.Context{
+		Ctx:     context.Background(),
+		Svc:     mockTG,
+		PeerID:  &tg.InputPeerChat{ChatID: 777},
+		Message: &core.Message{ID: 5, IsOutgoing: true},
+		Args:    []string{"clear"},
+	}
+	if err := cmds[1].Handler(clearCtx); err != nil {
+		t.Fatalf("handleLogClear failed: %v", err)
+	}
+	if !strings.Contains(mockTG.getEdited(), "Log destination disabled") {
+		t.Errorf("expected log cleared notice, got %s", mockTG.getEdited())
 	}
 }
 
@@ -187,4 +217,135 @@ func TestUserLogPlugin_HandleIncomingMessage(t *testing.T) {
 	if !strings.Contains(mockTG.getSent(), "New Private Message") {
 		t.Errorf("expected PM logged, got %s", mockTG.getSent())
 	}
+
+	// Mention via msg.Mentioned flag (without entities)
+	mockTG.mu.Lock()
+	mockTG.sentText = ""
+	mockTG.mu.Unlock()
+
+	flagMentionMsg := &tg.Message{
+		ID:        3,
+		Out:       false,
+		Mentioned: true,
+		PeerID:    &tg.PeerChat{ChatID: 100},
+		FromID:    &tg.PeerUser{UserID: 999},
+		Message:   "Reply without entity mention",
+	}
+	if err := p.HandleIncomingMessage(ctx, e, flagMentionMsg, false, ""); err != nil {
+		t.Fatalf("HandleIncomingMessage flag mention failed: %v", err)
+	}
+	for i := 0; i < 20; i++ {
+		if strings.Contains(mockTG.getSent(), "Tag / Mention Alert") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(mockTG.getSent(), "Tag / Mention Alert") {
+		t.Errorf("expected flag mention alert logged, got %s", mockTG.getSent())
+	}
+
+	// Mention via @username with p.SetOwnerUsername
+	p.SetOwnerUsername("my_boss")
+	mockTG.mu.Lock()
+	mockTG.sentText = ""
+	mockTG.mu.Unlock()
+
+	usernameMentionMsg := &tg.Message{
+		ID:      4,
+		Out:     false,
+		PeerID:  &tg.PeerChat{ChatID: 100},
+		FromID:  &tg.PeerUser{UserID: 999},
+		Message: "@my_boss please look at this!",
+		Entities: []tg.MessageEntityClass{
+			&tg.MessageEntityMention{Offset: 0, Length: 8},
+		},
+	}
+	if err := p.HandleIncomingMessage(ctx, e, usernameMentionMsg, false, ""); err != nil {
+		t.Fatalf("HandleIncomingMessage username mention failed: %v", err)
+	}
+	for i := 0; i < 20; i++ {
+		if strings.Contains(mockTG.getSent(), "Tag / Mention Alert") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(mockTG.getSent(), "Tag / Mention Alert") {
+		t.Errorf("expected username mention alert logged, got %s", mockTG.getSent())
+	}
+
+	// Bot message ignored
+	mockTG.mu.Lock()
+	mockTG.sentText = ""
+	mockTG.mu.Unlock()
+
+	e.Users[888] = &tg.User{ID: 888, FirstName: "SomeBot", Bot: true}
+	botMsg := &tg.Message{
+		ID:      5,
+		Out:     false,
+		PeerID:  &tg.PeerUser{UserID: 888},
+		FromID:  &tg.PeerUser{UserID: 888},
+		Message: "I am a bot message",
+	}
+	if err := p.HandleIncomingMessage(ctx, e, botMsg, false, ""); err != nil {
+		t.Fatalf("HandleIncomingMessage bot failed: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if mockTG.getSent() != "" {
+		t.Errorf("expected bot message to be ignored, got: %s", mockTG.getSent())
+	}
+
+	// Message in destination log chat ignored (loop prevention)
+	mockTG.mu.Lock()
+	mockTG.sentText = ""
+	mockTG.mu.Unlock()
+
+	logChatMsg := &tg.Message{
+		ID:        6,
+		Out:       false,
+		Mentioned: true,
+		PeerID:    &tg.PeerChat{ChatID: 777}, // Same as log destination
+		FromID:    &tg.PeerUser{UserID: 999},
+		Message:   "Mention in log chat itself",
+	}
+	if err := p.HandleIncomingMessage(ctx, e, logChatMsg, false, ""); err != nil {
+		t.Fatalf("HandleIncomingMessage in log chat failed: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if mockTG.getSent() != "" {
+		t.Errorf("expected message in log chat to be ignored, got: %s", mockTG.getSent())
+	}
 }
+
+func TestUserLogPlugin_AdminActionEvent(t *testing.T) {
+	db := setupTestDB(t)
+	mockTG := &mockTelegram{}
+	svc := userlogSvc.NewService(db, mockTG, zap.NewNop())
+	_ = svc.SetLogChat(context.Background(), 777)
+	p := userlog.New(svc, 12345)
+
+	eventBus := core.NewEventBus()
+	defer eventBus.Close()
+	p.SetEventBus(eventBus)
+
+	eventBus.Publish(&core.AdminActionEvent{
+		At:        time.Now(),
+		Action:    "ban",
+		ActorID:   12345,
+		TargetID:  999,
+		ChatID:    100,
+		ChatTitle: "Dev Group",
+		Reason:    "Spamming",
+		Success:   true,
+	})
+
+	for i := 0; i < 20; i++ {
+		if strings.Contains(mockTG.getSent(), "Admin Action Audit") && strings.Contains(mockTG.getSent(), "BAN") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(mockTG.getSent(), "Admin Action Audit") || !strings.Contains(mockTG.getSent(), "BAN") {
+		t.Errorf("expected admin action BAN logged, got %s", mockTG.getSent())
+	}
+}
+

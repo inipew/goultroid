@@ -199,6 +199,12 @@ func (p *Plugin) handleBan(ctx *core.Context) error {
 		reason = fmt.Sprintf("\n<b>Reason:</b> %s", strings.Join(ctx.Args[1:], " "))
 	}
 
+	rawReason := ""
+	if len(ctx.Args) > 1 {
+		rawReason = strings.TrimSpace(strings.Join(ctx.Args[1:], " "))
+	}
+	p.publishAdminAction(ctx, "ban", targetID, rawReason)
+
 	return ctx.EditOrReply(fmt.Sprintf("🔨 Banned user <code>%d</code>.%s", targetID, reason))
 }
 
@@ -218,6 +224,8 @@ func (p *Plugin) handleUnban(ctx *core.Context) error {
 		_ = ctx.EditOrReply(formatAdminError("unban user", err))
 		return err
 	}
+
+	p.publishAdminAction(ctx, "unban", targetID, "")
 
 	return ctx.EditOrReply(fmt.Sprintf("✅ Unbanned user <code>%d</code>.", targetID))
 }
@@ -243,6 +251,12 @@ func (p *Plugin) handleKick(ctx *core.Context) error {
 		_ = ctx.EditOrReply(formatAdminError("kick user", err))
 		return err
 	}
+
+	kickReason := ""
+	if len(ctx.Args) > 1 {
+		kickReason = strings.TrimSpace(strings.Join(ctx.Args[1:], " "))
+	}
+	p.publishAdminAction(ctx, "kick", targetID, kickReason)
 
 	return ctx.EditOrReply(fmt.Sprintf("👢 Kicked user <code>%d</code>.", targetID))
 }
@@ -285,6 +299,8 @@ func (p *Plugin) handleMute(ctx *core.Context) error {
 		return err
 	}
 
+	p.publishAdminAction(ctx, "mute", targetID, durStr)
+
 	return ctx.EditOrReply(fmt.Sprintf("🔇 Muted user <code>%d</code>%s.", targetID, durStr))
 }
 
@@ -304,6 +320,8 @@ func (p *Plugin) handleUnmute(ctx *core.Context) error {
 		_ = ctx.EditOrReply(formatAdminError("unmute user", err))
 		return err
 	}
+
+	p.publishAdminAction(ctx, "unmute", targetID, "")
 
 	return ctx.EditOrReply(fmt.Sprintf("🔊 Unmuted user <code>%d</code>.", targetID))
 }
@@ -365,6 +383,8 @@ func (p *Plugin) handlePromote(ctx *core.Context) error {
 		return err
 	}
 
+	p.publishAdminAction(ctx, "promote", targetID, title)
+
 	titleStr := ""
 	if title != "" {
 		titleStr = fmt.Sprintf(" with title <i>%s</i>", title)
@@ -394,6 +414,8 @@ func (p *Plugin) handleDemote(ctx *core.Context) error {
 		_ = ctx.EditOrReply(formatAdminError("demote user", err))
 		return err
 	}
+
+	p.publishAdminAction(ctx, "demote", targetID, "")
 
 	return ctx.EditOrReply(fmt.Sprintf("📉 Demoted admin <code>%d</code> to normal user.", targetID))
 }
@@ -527,3 +549,39 @@ func (p *Plugin) handleResetWarns(ctx *core.Context) error {
 	targetStr := fmt.Sprintf("%d", targetID)
 	return ctx.EditOrReply(ctx.T("admin.warns_cleared", targetStr))
 }
+
+func (p *Plugin) publishAdminAction(ctx *core.Context, action string, targetID int64, reason string) {
+	if ctx == nil || ctx.EventBus == nil {
+		return
+	}
+	var chatID int64
+	var chatTitle string
+	if ctx.Chat != nil {
+		chatID = ctx.Chat.ID
+		chatTitle = ctx.Chat.Title
+	} else if ctx.PeerID != nil {
+		switch peer := ctx.PeerID.(type) {
+		case *tg.InputPeerChannel:
+			chatID = peer.ChannelID
+		case *tg.InputPeerChat:
+			chatID = peer.ChatID
+		}
+	}
+
+	adminID := ctx.SenderID()
+	if adminID == 0 && ctx.Principal != nil {
+		adminID = ctx.Principal.UserID
+	}
+
+	ctx.EventBus.Publish(&core.AdminActionEvent{
+		At:        time.Now(),
+		Action:    action,
+		ChatID:    chatID,
+		ChatTitle: chatTitle,
+		TargetID:  targetID,
+		ActorID:   adminID,
+		Reason:    reason,
+		Success:   true,
+	})
+}
+

@@ -769,6 +769,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		PeerID:    peerInput,
 		Resolver:  d.getResolver(),
 		Localizer: d.getLocalizer(),
+		EventBus:  d.getEventBus(),
 	}
 
 	// Execute command asynchronously with application-scoped context

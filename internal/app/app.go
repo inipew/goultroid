@@ -193,6 +193,7 @@ func New(cfg *config.Config) (*App, error) {
 	pmpermitPlugin := pmpermit.New(pmpermitService)
 	dispatcher.AddMessageHandler(pmpermitPlugin.HandleIncomingMessage)
 	userlogPlugin := userlog.New(userlogService, cfg.OwnerID)
+	userlogPlugin.SetEventBus(eventBus)
 	dispatcher.AddMessageHandler(userlogPlugin.HandleIncomingMessage)
 	broadcastPlugin := broadcast.New(broadcastService)
 

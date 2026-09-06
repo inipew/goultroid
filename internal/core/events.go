@@ -16,6 +16,7 @@ const (
 	EventTypeCallbackQuery   EventType = "callback.query"
 	EventTypeReactionUpdated EventType = "reaction.updated"
 	EventTypeInlineChosen    EventType = "inline.chosen"
+	EventTypeAdminAction     EventType = "admin.action"
 )
 
 type Event interface{ Type() EventType; Timestamp() time.Time }
@@ -111,6 +112,23 @@ type InlineResultChosenEvent struct {
 
 func (e *InlineResultChosenEvent) Type() EventType { return EventTypeInlineChosen }
 func (e *InlineResultChosenEvent) Timestamp() time.Time { return e.At }
+
+// AdminActionEvent represents an administrative moderation action performed by the bot/user.
+type AdminActionEvent struct {
+	At         time.Time
+	Action     string
+	ActorID    int64
+	TargetID   int64
+	TargetName string
+	ChatID     int64
+	ChatTitle  string
+	Reason     string
+	Success    bool
+	Error      string
+}
+
+func (e *AdminActionEvent) Type() EventType { return EventTypeAdminAction }
+func (e *AdminActionEvent) Timestamp() time.Time { return e.At }
 
 type EventHandler func(event Event)
 

@@ -211,6 +211,7 @@ type Context struct {
 	PeerID    tg.InputPeerClass
 	Resolver  PeerResolver
 	Localizer Localizer
+	EventBus  *EventBus
 }
 
 // Correlation returns the CorrelationID or an empty string if unset.
