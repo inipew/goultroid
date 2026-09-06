@@ -49,7 +49,7 @@ func (e *CommandExecutor) ExecuteExecution(exec CommandExecution, cmd Command, s
 		Ctx: exec.Ctx, CorrelationID: exec.CorrelationID, Command: exec.Command,
 		Args: append([]string(nil), exec.Args...), RawArgs: exec.RawArgs,
 		Message: exec.TriggerMessage, Chat: exec.Chat, Sender: sender,
-		Principal: exec.Principal, Svc: svc, PeerID: exec.PeerID,
+		Principal: exec.Principal, Perms: exec.Perms, Svc: svc, PeerID: exec.PeerID,
 	}
 	return e.execute(ctx, cmd, exec.Source)
 }
@@ -58,13 +58,11 @@ func (e *CommandExecutor) execute(ctx *Context, cmd Command, source ExecutionSou
 	if ctx == nil { return ErrInternal }
 	if ctx.Ctx == nil { ctx.Ctx = context.Background() }
 	if ctx.Message != nil && ctx.Chat != nil && ConsumeMessageHandled(ctx.Chat.ID, ctx.Message.ID) { return nil }
-
 	if e.rateLimiter != nil {
 		key := strconv.FormatInt(ctx.SenderID(), 10)
 		if ctx.SenderID() <= 0 { key = "anonymous" }
 		if !e.rateLimiter.Allow(key) { return ErrRateLimited }
 	}
-
 	chain := NewChain(
 		RecoveryMiddleware(e.logger), CorrelationMiddleware(e.logger), LoggingMiddleware(e.logger),
 		PermissionMiddleware(cmd), FilterMiddlewareForSource(cmd, source),
@@ -79,9 +77,7 @@ func (e *CommandExecutor) execute(ctx *Context, cmd Command, source ExecutionSou
 			_ = ctx.Reply("⚠️ " + err.Error())
 			return err
 		}
-		if e.logger != nil {
-			e.logger.Error("command failed", zap.String("correlation_id", ctx.CorrelationID), zap.String("command", cmd.Name), zap.String("source", source.String()), zap.Error(err))
-		}
+		if e.logger != nil { e.logger.Error("command failed", zap.String("correlation_id", ctx.CorrelationID), zap.String("command", cmd.Name), zap.String("source", source.String()), zap.Error(err)) }
 	}
 	return err
 }
