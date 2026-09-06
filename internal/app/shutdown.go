@@ -2,8 +2,9 @@ package app
 
 import (
 	"context"
-	"fmt"
 	"errors"
+	"fmt"
+	"syscall"
 )
 
 // Shutdown releases long-lived application resources in dependency order.
@@ -39,7 +40,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 	}
 	if a.logger != nil {
-		if err := a.logger.Sync(); err != nil && !isIgnorableSyncError(err) {
+		if err := a.logger.Sync(); err != nil && !errors.Is(err, syscall.EINVAL) {
 			errs = append(errs, fmt.Errorf("logger: %w", err))
 		}
 	}
@@ -47,20 +48,4 @@ func (a *App) Shutdown(ctx context.Context) error {
 		return fmt.Errorf("shutdown completed with errors: %v", errs)
 	}
 	return nil
-}
-
-// isIgnorableSyncError handles platform/filesystem combinations where syncing
-// stderr/stdout is unsupported. Closing application resources has already
-// succeeded in that case, so shutdown should remain successful.
-func isIgnorableSyncError(err error) bool {
-	if err == nil {
-		return true
-	}
-	return errors.Is(err, syscallEINVAL())
-}
-
-// syscallEINVAL is isolated so shutdown.go remains portable across supported
-// platforms without exposing syscall details to callers.
-func syscallEINVAL() error {
-	return fmt.Errorf("sync unsupported")
 }
