@@ -249,9 +249,26 @@ func (a *App) Run(ctx context.Context) error {
 		a.client.Dispatcher().SetRootContext(ctx)
 		a.client.Dispatcher().Start(ctx)
 	}
+	// P1-01: Defer scheduler start until Telegram service is ready to avoid
+	// claiming jobs before the MTProto session is authenticated.
 	if a.sched != nil {
-		if err := a.sched.Start(ctx); err != nil {
-			return fmt.Errorf("failed to start scheduler engine: %w", err)
+		if a.client != nil && a.client.Ready() != nil {
+			go func() {
+				select {
+				case <-ctx.Done():
+					return
+				case <-a.client.Ready():
+				}
+				if err := a.sched.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
+					a.logger.Warn("scheduler failed to start after readiness gate", zap.Error(err))
+				} else {
+					a.logger.Info("scheduler engine started after Telegram readiness gate")
+				}
+			}()
+		} else {
+			if err := a.sched.Start(ctx); err != nil {
+				return fmt.Errorf("failed to start scheduler engine: %w", err)
+			}
 		}
 	}
 	if a.assistant != nil {

@@ -353,6 +353,10 @@ func (e *Engine) runLoop(ctx context.Context) {
 }
 
 func (e *Engine) processDueJobs(ctx context.Context, now time.Time) {
+	// P1-01: Do not claim jobs before Telegram service is ready.
+	if e.svcFunc != nil && e.svcFunc() == nil {
+		return
+	}
 	availableSlots := cap(e.sem) - len(e.sem)
 	if availableSlots <= 0 {
 		return
@@ -563,14 +567,24 @@ func (e *Engine) executeCommand(ctx context.Context, job database.ScheduledJob) 
 	if e.perms != nil {
 		principal, _ = e.perms.Resolve(ctx, callerID)
 	}
-	coreCtx := &core.Context{
-		Ctx: ctx, CorrelationID: fmt.Sprintf("sched-%d-%d", job.ID, time.Now().UnixMilli()),
-		Command: parsed.Name, Args: parsed.Args, RawArgs: parsed.RawArgs,
-		Message: &core.Message{ID: 0, Text: job.Payload, Date: time.Now(), IsOutgoing: true},
-		Chat:    &core.Chat{ID: job.ChatID, Type: job.PeerType}, Sender: &core.User{ID: callerID},
-		Perms: e.perms, Principal: principal, Svc: svc, PeerID: peer,
+	// P0-03/P0-04: Use explicit ExecutionScheduled source without synthetic
+	// Message{ID:0,IsOutgoing:true}. This ensures Follow-Up policy uses
+	// FilterMiddlewareForSource (no outgoing bypass) and EditOrReply falls
+	// back to Reply instead of attempting to edit a non-existent message.
+	exec := core.CommandExecution{
+		Ctx:           ctx,
+		Source:        core.ExecutionScheduled,
+		Command:       parsed.Name,
+		Args:          parsed.Args,
+		RawArgs:       parsed.RawArgs,
+		Principal:     principal,
+		Perms:         e.perms,
+		Chat:          &core.Chat{ID: job.ChatID, Type: job.PeerType},
+		Sender:        &core.User{ID: callerID},
+		PeerID:        peer,
+		CorrelationID: fmt.Sprintf("sched-%d-%d", job.ID, time.Now().UnixMilli()),
 	}
-	return e.executor.Execute(coreCtx, cmd)
+	return e.executor.ExecuteExecution(exec, cmd, svc)
 }
 
 func reconstructInputPeer(peerType string, chatID int64, accessHash int64) tg.InputPeerClass {

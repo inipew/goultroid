@@ -176,10 +176,13 @@ func (s *Service) ensureUserAccessHash(ctx context.Context, user tg.InputPeerCla
 // SendMessage sends a text message to the specified peer and returns the created tg.Message if available.
 // It parses HTML formatting, falling back to plain text if parsing or formatting fails.
 // If a short FloodWait is encountered (<= 5s), it automatically waits and retries once.
+// P1-09: Centralize access-hash preparation before every send.
 func (s *Service) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
 	if s.sender == nil {
 		return nil, fmt.Errorf("%w: sender is not initialized", core.ErrInternal)
 	}
+	peer = s.ensureChannelAccessHash(ctx, peer)
+	peer = s.ensureUserAccessHash(ctx, peer)
 
 	return retryOnFloodWait(ctx, func() (*tg.Message, error) {
 		updates, err := s.sender.To(peer).StyledText(ctx, html.String(nil, text))
@@ -204,6 +207,8 @@ func (s *Service) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID
 	if s.sender == nil {
 		return fmt.Errorf("%w: sender is not initialized", core.ErrInternal)
 	}
+	peer = s.ensureChannelAccessHash(ctx, peer)
+	peer = s.ensureUserAccessHash(ctx, peer)
 
 	_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
 		_, err := s.sender.To(peer).Edit(msgID).StyledText(ctx, html.String(nil, text))
@@ -223,6 +228,8 @@ func (s *Service) SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerCl
 	if s.sender == nil {
 		return nil, fmt.Errorf("%w: sender is not initialized", core.ErrInternal)
 	}
+	peer = s.ensureChannelAccessHash(ctx, peer)
+	peer = s.ensureUserAccessHash(ctx, peer)
 
 	return retryOnFloodWait(ctx, func() (*tg.Message, error) {
 		req := s.sender.To(peer)
@@ -1222,7 +1229,8 @@ func (s *Service) DeleteProfilePhotos(ctx context.Context, limit int) (int, erro
 	return len(deletedIDs), nil
 }
 
-// GetDialogs returns recent active dialogs/chats up to limit (capped at 30).
+// GetDialogs returns recent active dialogs/chats up to limit (capped at 100 per
+// Telegram's messages.getDialogs max; larger requests require pagination).
 func (s *Service) GetDialogs(ctx context.Context, limit int) ([]*core.Chat, error) {
 	if s.api == nil {
 		return nil, fmt.Errorf("%w: api is not initialized", core.ErrInternal)
@@ -1230,8 +1238,8 @@ func (s *Service) GetDialogs(ctx context.Context, limit int) ([]*core.Chat, erro
 	if limit <= 0 {
 		limit = 10
 	}
-	if limit > 30 {
-		limit = 30
+	if limit > 100 {
+		limit = 100
 	}
 
 	res, err := retryOnFloodWait(ctx, func() (tg.MessagesDialogsClass, error) {

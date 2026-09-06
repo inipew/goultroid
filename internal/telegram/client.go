@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gotd/td/telegram"
@@ -31,6 +32,31 @@ type Client struct {
 	peerManager *peers.Manager
 	peerStorage *PeerStorage
 	logger      *zap.Logger
+	ready       chan struct{}
+	readyOnce   sync.Once
+}
+
+func (c *Client) Ready() <-chan struct{} {
+	if c.ready == nil {
+		return nil
+	}
+	return c.ready
+}
+
+func (c *Client) IsReady() bool {
+	if c.ready == nil {
+		return false
+	}
+	select {
+	case <-c.ready:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Client) signalReady() {
+	c.readyOnce.Do(func() { close(c.ready) })
 }
 
 // terminalAuth handles interactive CLI login with phone, SMS/app OTP code, and 2FA password.
@@ -125,6 +151,7 @@ func NewClient(cfg *config.Config, dispatcher *Dispatcher, db *database.DB, logg
 		peerManager: peerManager,
 		peerStorage: peerStorage,
 		logger:      logger,
+		ready:       make(chan struct{}),
 	}, nil
 }
 
@@ -188,6 +215,7 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 
 		c.dispatcher.SetSelfID(me.ID)
+		c.signalReady()
 
 		if c.peerManager != nil {
 			if err := c.peerManager.Init(ctx); err != nil && c.logger != nil {

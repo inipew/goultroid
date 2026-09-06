@@ -372,9 +372,10 @@ func (d *Dispatcher) OnDeleteMessages(ctx context.Context, e tg.Entities, update
 		return nil
 	}
 	bus.Publish(&core.MessagesDeletedEvent{
-		At:     time.Now(),
-		ChatID: 0, // not available in this update type without additional context
-		MsgIDs: update.Messages,
+		At:          time.Now(),
+		ChatID:      0,
+		PeerUnknown: true,
+		MsgIDs:      update.Messages,
 	})
 	return nil
 }

@@ -25,7 +25,15 @@ type MessageEditedEvent struct{ At time.Time; MsgID int; ChatID int64; Text stri
 func (e *MessageEditedEvent) Type() EventType { return EventTypeMessageEdited }
 func (e *MessageEditedEvent) Timestamp() time.Time { return e.At }
 
-type MessagesDeletedEvent struct{ At time.Time; ChatID int64; MsgIDs []int }
+type MessagesDeletedEvent struct {
+	At time.Time
+	// ChatID is 0 when Telegram did not provide chat context (e.g. UpdateDeleteMessages).
+	ChatID int64
+	// PeerUnknown is true when ChatID is unknown / not provided by the update.
+	PeerUnknown bool
+	MsgIDs      []int
+}
+
 func (e *MessagesDeletedEvent) Type() EventType { return EventTypeMessagesDeleted }
 func (e *MessagesDeletedEvent) Timestamp() time.Time { return e.At }
 

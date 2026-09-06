@@ -41,8 +41,11 @@ func (p *PeerFacade) ResolveTargetUser() (tg.InputPeerClass, int64, error) {
 
 	if len(c.Args) > 0 {
 		arg := c.Args[0]
-		// 1. Numeric ID
-		if uid, err := strconv.ParseInt(arg, 10, 64); err == nil && uid != 0 {
+		// 1. Numeric ID — P1-10: reject non-positive IDs
+		if uid, err := strconv.ParseInt(arg, 10, 64); err == nil {
+			if uid <= 0 {
+				return nil, 0, errors.New("invalid user ID: must be positive")
+			}
 			if c.Resolver != nil {
 				peer, id, err := c.Resolver.ResolveUser(c.Ctx, arg)
 				if err == nil && peer != nil {

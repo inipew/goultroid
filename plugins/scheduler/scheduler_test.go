@@ -235,13 +235,20 @@ func TestSchedulerPlugin(t *testing.T) {
 		t.Fatalf("schedule once failed: %v", err)
 	}
 
-	ctxList := &core.Context{Ctx: context.Background(), Command: "scheduled", Svc: mockSvc, PeerID: peer, Chat: &core.Chat{ID: 777}}
-	if err := cmdMap["scheduled"].Handler(ctxList); err != nil {
-		t.Fatalf("scheduled list failed: %v", err)
+	ctxList := &core.Context{Ctx: context.Background(), Command: "schedules", Svc: mockSvc, PeerID: peer, Chat: &core.Chat{ID: 777}}
+	if err := cmdMap["schedules"].Handler(ctxList); err != nil {
+		t.Fatalf("schedules list failed: %v", err)
 	}
 
-	ctxCancel := &core.Context{Ctx: context.Background(), Command: "cancel", Args: []string{"1"}, RawArgs: "1", Svc: mockSvc, PeerID: peer, Chat: &core.Chat{ID: 777}, Message: &core.Message{SenderID: 42}}
-	if err := cmdMap["cancel"].Handler(ctxCancel); err != nil {
+	ctxCancel := &core.Context{
+		Ctx: context.Background(), Command: "cancelschedule", Args: []string{"1"}, RawArgs: "1",
+		Svc: mockSvc, PeerID: peer, Chat: &core.Chat{ID: 777},
+		Sender: &core.User{ID: 1},
+	}
+	// Create a job owned by user 1 so CancelScoped succeeds.
+	mockSched.jobs[1].CreatedBy = 1
+	mockSched.jobs[1].ChatID = 777
+	if err := cmdMap["cancelschedule"].Handler(ctxCancel); err != nil {
 		t.Fatalf("cancel failed: %v", err)
 	}
 }

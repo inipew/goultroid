@@ -59,11 +59,22 @@ func (p *Plugin) Commands() []core.Command {
 }
 
 func (p *Plugin) handleExec(ctx *core.Context) error {
-	if len(ctx.Args) == 0 { return ctx.EditOrReply("⚠️ <b>Usage:</b> <code>.exec &lt;shell command&gt;</code>") }
+	if len(ctx.Args) == 0 {
+		return ctx.EditOrReply("⚠️ <b>Usage:</b> <code>.exec &lt;command&gt; [args...]</code>\nExample: <code>.exec ls -la</code>")
+	}
 	commandStr := strings.Join(ctx.Args, " ")
 	_ = ctx.EditOrReply("⏳ <i>Executing command...</i>")
-	if p.runner == nil { p.runner = process.NewOSRunner(3, 60*time.Second, 2*1024*1024) }
-	res, err := p.runner.Run(ctx.Ctx, process.Request{Command: commandStr, Shell: true, Timeout: 60 * time.Second})
+	if p.runner == nil {
+		p.runner = process.NewOSRunner(3, 60*time.Second, 2*1024*1024)
+	}
+	// P0-02: Use direct argv execution instead of shell. The router already
+	// handles quoted arguments, so ctx.Args is already properly split.
+	cmdName := ctx.Args[0]
+	cmdArgs := []string{}
+	if len(ctx.Args) > 1 {
+		cmdArgs = ctx.Args[1:]
+	}
+	res, err := p.runner.Run(ctx.Ctx, process.Request{Command: cmdName, Args: cmdArgs, Timeout: 60 * time.Second})
 	var output string
 	var elapsed time.Duration
 	if res != nil { output = res.Combined; elapsed = res.Duration; if res.Truncated { output += "\n\n[output truncated after 2MB]" } }
@@ -87,20 +98,89 @@ func (p *Plugin) handleExec(ctx *core.Context) error {
 
 func (p *Plugin) handleRestart(ctx *core.Context) error {
 	_ = ctx.EditOrReply("🔄 <i>Restarting GoUltroid...</i>")
-	var chatID int64; var peerType string; var accessHash int64; var isChannel bool
-	if ctx.PeerID != nil { switch peer := ctx.PeerID.(type) {
-	case *tg.InputPeerSelf: peerType = "self"
-	case *tg.InputPeerUser: peerType = "user"; chatID = peer.UserID; accessHash = peer.AccessHash
-	case *tg.InputPeerChannel: peerType = "channel"; chatID = peer.ChannelID; accessHash = peer.AccessHash; isChannel = true
-	case *tg.InputPeerChat: peerType = "chat"; chatID = peer.ChatID
-	default: if ctx.Chat != nil { chatID = ctx.Chat.ID; if ctx.Chat.Type == "channel" || ctx.Chat.Type == "supergroup" { peerType = "channel"; isChannel = true } else if ctx.Chat.Type == "private" { peerType = "user" } else { peerType = "chat" } }
-	} } else if ctx.Chat != nil { chatID = ctx.Chat.ID; if ctx.Chat.Type == "channel" || ctx.Chat.Type == "supergroup" { peerType = "channel"; isChannel = true } else if ctx.Chat.Type == "private" { peerType = "user" } else { peerType = "chat" } }
-	msgID := ctx.LastResponseID; if msgID == 0 && ctx.Message != nil { msgID = ctx.Message.ID }
+	var chatID int64
+	var peerType string
+	var accessHash int64
+	var isChannel bool
+	if ctx.PeerID != nil {
+		switch peer := ctx.PeerID.(type) {
+		case *tg.InputPeerSelf:
+			peerType = "self"
+		case *tg.InputPeerUser:
+			peerType = "user"
+			chatID = peer.UserID
+			accessHash = peer.AccessHash
+		case *tg.InputPeerChannel:
+			peerType = "channel"
+			chatID = peer.ChannelID
+			accessHash = peer.AccessHash
+			isChannel = true
+		case *tg.InputPeerChat:
+			peerType = "chat"
+			chatID = peer.ChatID
+		default:
+			if ctx.Chat != nil {
+				chatID = ctx.Chat.ID
+				if ctx.Chat.Type == "channel" || ctx.Chat.Type == "supergroup" {
+					peerType = "channel"
+					isChannel = true
+				} else if ctx.Chat.Type == "private" {
+					peerType = "user"
+				} else {
+					peerType = "chat"
+				}
+			}
+		}
+	} else if ctx.Chat != nil {
+		chatID = ctx.Chat.ID
+		if ctx.Chat.Type == "channel" || ctx.Chat.Type == "supergroup" {
+			peerType = "channel"
+			isChannel = true
+		} else if ctx.Chat.Type == "private" {
+			peerType = "user"
+		} else {
+			peerType = "chat"
+		}
+	}
+	msgID := ctx.LastResponseID
+	if msgID == 0 && ctx.Message != nil {
+		msgID = ctx.Message.ID
+	}
 	state := RestartState{PeerType: peerType, ChatID: chatID, IsChannel: isChannel, AccessHash: accessHash, MsgID: msgID, Time: time.Now().Unix()}
-	if p.restartFunc != nil { return p.restartFunc(state) }
-	if p.restartStatePath != "" { if err := os.MkdirAll(filepath.Dir(p.restartStatePath), 0700); err == nil { if data, err := json.Marshal(state); err == nil { tmpPath := p.restartStatePath+".tmp"; if f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600); err == nil { _, _ = f.Write(data); _ = f.Sync(); _ = f.Close(); _ = os.Rename(tmpPath, p.restartStatePath) } } } }
-	execPath, err := os.Executable(); if err == nil { _ = syscall.Exec(execPath, os.Args, os.Environ()) }
-	os.Exit(0); return nil
+	if p.restartFunc != nil {
+		return p.restartFunc(state)
+	}
+	if p.restartStatePath != "" {
+		if err := os.MkdirAll(filepath.Dir(p.restartStatePath), 0700); err == nil {
+			if data, err := json.Marshal(state); err == nil {
+				tmpPath := p.restartStatePath + ".tmp"
+				if f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600); err == nil {
+					_, _ = f.Write(data)
+					_ = f.Sync()
+					_ = f.Close()
+					_ = os.Rename(tmpPath, p.restartStatePath)
+				}
+			}
+		}
+	}
+	// P1-12: Prefer known installed artifact over os.Executable() which may
+	// point to a temp binary when running via `go run`.
+	execPath := filepath.Join("bin", "goultroid")
+	if _, err := os.Stat(execPath); err != nil {
+		if p, err := os.Executable(); err == nil {
+			execPath = p
+		} else {
+			os.Exit(0)
+			return nil
+		}
+	} else {
+		if abs, err := filepath.Abs(execPath); err == nil {
+			execPath = abs
+		}
+	}
+	_ = syscall.Exec(execPath, os.Args, os.Environ())
+	os.Exit(0)
+	return nil
 }
 
 func (p *Plugin) handleUpdate(ctx *core.Context) error {
