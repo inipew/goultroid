@@ -61,7 +61,9 @@ func (m *Manager) Shutdown() error { return m.ShutdownWithContext(context.Backgr
 // ShutdownWithContext shuts plugins down in reverse registration order. A
 // context-aware plugin receives the shutdown context. Legacy Shutdowner plugins
 // are synchronous because their API cannot be cancelled; this prevents shared
-// resources from being closed while legacy teardown is still running.
+// resources from being closed while legacy teardown is still running. Context
+// cancellation does not skip later plugins: every registered plugin gets one
+// shutdown attempt so a database or network resource is not left running.
 func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 	if ctx == nil { ctx = context.Background() }
 	m.mu.Lock()
@@ -73,12 +75,6 @@ func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 	var errs []string
 	for i := len(plugins) - 1; i >= 0; i-- {
 		p := plugins[i]
-		select {
-		case <-ctx.Done():
-			errs = append(errs, fmt.Sprintf("shutdown context cancelled before %s: %v", p.Name(), ctx.Err()))
-			return fmt.Errorf("errors during plugin shutdown: %s", strings.Join(errs, "; "))
-		default:
-		}
 		var err error
 		if s, ok := p.(ContextShutdowner); ok { err = s.ShutdownContext(ctx) } else if s, ok := p.(Shutdowner); ok { err = s.Shutdown() }
 		if err != nil { errs = append(errs, fmt.Sprintf("%s: %v", p.Name(), err)) }
