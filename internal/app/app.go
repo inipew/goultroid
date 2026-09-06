@@ -306,6 +306,7 @@ func (a *App) Run(ctx context.Context) error {
 	// Pass application root context to dispatcher for command lifetime scoping
 	if a.client != nil && a.client.Dispatcher() != nil {
 		a.client.Dispatcher().SetRootContext(ctx)
+		a.client.Dispatcher().Start(ctx)
 	}
 
 	// Start scheduler engine with application root context
@@ -354,6 +355,28 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if a.assistant != nil {
 		if err := a.assistant.Stop(ctx); err != nil {
 			a.logger.Warn("error stopping assistant bot", zap.Error(err))
+		}
+	}
+
+	// 0.5 Drain dispatcher peer-cache queue with 3s slice before database close
+	if a.client != nil && a.client.Dispatcher() != nil {
+		dCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		if err := a.client.Dispatcher().Stop(dCtx); err != nil {
+			a.logger.Warn("dispatcher peer queue drain timeout", zap.Error(err))
+		}
+		cancel()
+		select {
+		case <-ctx.Done():
+			a.logger.Warn("global shutdown budget exceeded after dispatcher stop", zap.Error(ctx.Err()))
+			if a.eventBus != nil {
+				_ = a.eventBus.Close()
+			}
+			if a.db != nil {
+				_ = a.db.Close()
+			}
+			_ = a.logger.Sync()
+			return ctx.Err()
+		default:
 		}
 	}
 

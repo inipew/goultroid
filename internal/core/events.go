@@ -15,31 +15,31 @@ const (
 	EventTypeReactionUpdated EventType = "reaction.updated"
 )
 
-type Event interface { Type() EventType; Timestamp() time.Time }
+type Event interface{ Type() EventType; Timestamp() time.Time }
 
-type MessageCreatedEvent struct { At time.Time; Message *Message; ChatID int64; PeerID interface{} }
+type MessageCreatedEvent struct{ At time.Time; Message *Message; ChatID int64; PeerID interface{} }
 func (e *MessageCreatedEvent) Type() EventType { return EventTypeMessageCreated }
 func (e *MessageCreatedEvent) Timestamp() time.Time { return e.At }
 
-type MessageEditedEvent struct { At time.Time; MsgID int; ChatID int64; Text string }
+type MessageEditedEvent struct{ At time.Time; MsgID int; ChatID int64; Text string }
 func (e *MessageEditedEvent) Type() EventType { return EventTypeMessageEdited }
 func (e *MessageEditedEvent) Timestamp() time.Time { return e.At }
 
-type MessagesDeletedEvent struct { At time.Time; ChatID int64; MsgIDs []int }
+type MessagesDeletedEvent struct{ At time.Time; ChatID int64; MsgIDs []int }
 func (e *MessagesDeletedEvent) Type() EventType { return EventTypeMessagesDeleted }
 func (e *MessagesDeletedEvent) Timestamp() time.Time { return e.At }
 
-type CallbackQueryEvent struct { At time.Time; QueryID int64; UserID int64; ChatID int64; MsgID int; Data []byte }
+type CallbackQueryEvent struct{ At time.Time; QueryID int64; UserID int64; ChatID int64; MsgID int; Data []byte }
 func (e *CallbackQueryEvent) Type() EventType { return EventTypeCallbackQuery }
 func (e *CallbackQueryEvent) Timestamp() time.Time { return e.At }
 
-type ReactionUpdatedEvent struct { At time.Time; MsgID int; ChatID int64; Reaction string }
+type ReactionUpdatedEvent struct{ At time.Time; MsgID int; ChatID int64; Reaction string }
 func (e *ReactionUpdatedEvent) Type() EventType { return EventTypeReactionUpdated }
 func (e *ReactionUpdatedEvent) Timestamp() time.Time { return e.At }
 
 type EventHandler func(event Event)
 
-type eventJob struct { handler EventHandler; event Event }
+type eventJob struct{ handler EventHandler; event Event }
 
 const (
 	eventQueueSize = 1024
@@ -48,16 +48,19 @@ const (
 
 type EventBus struct {
 	mu          sync.RWMutex
-	subscribers map[EventType][]EventHandler
+	subscribers map[EventType]map[uint64]EventHandler
+	nextID      uint64
 	queue       chan eventJob
 	workers     sync.WaitGroup
 	closed      bool
 }
 
 func NewEventBus() *EventBus {
-	b := &EventBus{subscribers: make(map[EventType][]EventHandler), queue: make(chan eventJob, eventQueueSize)}
+	b := &EventBus{subscribers: make(map[EventType]map[uint64]EventHandler), queue: make(chan eventJob, eventQueueSize)}
 	b.workers.Add(eventWorkers)
-	for i := 0; i < eventWorkers; i++ { go b.worker() }
+	for i := 0; i < eventWorkers; i++ {
+		go b.worker()
+	}
 	return b
 }
 
@@ -74,36 +77,63 @@ func (b *EventBus) worker() {
 // Subscribe adds a handler. After Close, subscriptions are rejected with a
 // no-op unsubscribe function so no goroutine can be attached to a dead bus.
 func (b *EventBus) Subscribe(t EventType, handler EventHandler) func() {
-	if handler == nil { return func() {} }
+	if handler == nil {
+		return func() {}
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.closed { return func() {} }
-	b.subscribers[t] = append(b.subscribers[t], handler)
-	idx := len(b.subscribers[t]) - 1
+	if b.closed {
+		return func() {}
+	}
+	if b.subscribers[t] == nil {
+		b.subscribers[t] = make(map[uint64]EventHandler)
+	}
+	b.nextID++
+	id := b.nextID
+	b.subscribers[t][id] = handler
 	return func() {
 		b.mu.Lock()
 		defer b.mu.Unlock()
-		handlers := b.subscribers[t]
-		if idx < len(handlers) { handlers[idx] = nil }
+		if m := b.subscribers[t]; m != nil {
+			delete(m, id)
+			if len(m) == 0 {
+				delete(b.subscribers, t)
+			}
+		}
 	}
 }
 
 // Publish is intentionally non-blocking. Each subscriber is independently
 // queued; a full queue drops only that subscriber's event instead of starving
-// later subscribers. The read lock is held through enqueue to make Close and
-// Publish mutually exclusive around channel shutdown.
+// later subscribers. Snapshot is taken under read lock to keep hold time short.
 func (b *EventBus) Publish(event Event) {
-	if event == nil { return }
+	if event == nil {
+		return
+	}
 	b.mu.RLock()
-	defer b.mu.RUnlock()
-	if b.closed { return }
-	for _, h := range b.subscribers[event.Type()] {
-		if h == nil { continue }
-		select {
-		case b.queue <- eventJob{handler: h, event: event}:
-		default:
-			// Observational events are best-effort by design.
-		}
+	if b.closed {
+		b.mu.RUnlock()
+		return
+	}
+	m := b.subscribers[event.Type()]
+	if len(m) == 0 {
+		b.mu.RUnlock()
+		return
+	}
+	handlers := make([]EventHandler, 0, len(m))
+	for _, h := range m {
+		handlers = append(handlers, h)
+	}
+	b.mu.RUnlock()
+	for _, h := range handlers {
+		func(handler EventHandler) {
+			defer func() { _ = recover() }()
+			select {
+			case b.queue <- eventJob{handler: handler, event: event}:
+			default:
+				// Observational events are best-effort by design.
+			}
+		}(h)
 	}
 }
 
@@ -116,7 +146,7 @@ func (b *EventBus) Close() error {
 		return nil
 	}
 	b.closed = true
-	b.subscribers = make(map[EventType][]EventHandler)
+	b.subscribers = make(map[EventType]map[uint64]EventHandler)
 	close(b.queue)
 	b.mu.Unlock()
 	b.workers.Wait()

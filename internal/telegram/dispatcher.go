@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gotd/td/telegram/peers"
@@ -34,6 +35,19 @@ type Dispatcher struct {
 
 	messageHandlers []MessageHandler
 	mu              sync.RWMutex
+
+	// Bounded peer-cache worker pool to avoid 1000-goroutine burst on SQLite.
+	peerQueue    chan peerUpdateJob
+	peerWG       sync.WaitGroup
+	peerStopOnce sync.Once
+	peerDropped  atomic.Int64
+	peerEnqueued atomic.Int64
+}
+
+type peerUpdateJob struct {
+	users    []*tg.User
+	channels []*tg.Channel
+	chats    []*tg.Chat
 }
 
 // MessageHandler is invoked for each incoming message.
@@ -72,6 +86,80 @@ func (d *Dispatcher) SetExecutor(executor *core.CommandExecutor) {
 	if executor != nil {
 		d.executor = executor
 	}
+}
+
+// Start initializes the bounded peer-cache worker pool. It must be called
+// with the application root context before any Telegram updates are dispatched.
+func (d *Dispatcher) Start(ctx context.Context) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.peerQueue != nil {
+		return
+	}
+	d.peerQueue = make(chan peerUpdateJob, 1024)
+	workers := 2
+	d.peerWG.Add(workers)
+	for i := 0; i < workers; i++ {
+		go d.peerWorker(ctx)
+	}
+}
+
+func (d *Dispatcher) peerWorker(ctx context.Context) {
+	defer d.peerWG.Done()
+	for job := range d.peerQueue {
+		saveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		resolver := d.getResolver()
+		r, ok := resolver.(*Resolver)
+		if !ok || r == nil || r.storage == nil {
+			cancel()
+			continue
+		}
+		for _, u := range job.users {
+			if u == nil {
+				continue
+			}
+			_ = r.storage.Save(saveCtx, peers.Key{Prefix: "user", ID: u.ID}, peers.Value{AccessHash: u.AccessHash})
+			_ = r.storage.SaveEntity(saveCtx, "user", u.ID, u.Username, u.Phone, u.FirstName, u.LastName, "")
+		}
+		for _, ch := range job.channels {
+			if ch == nil {
+				continue
+			}
+			_ = r.storage.Save(saveCtx, peers.Key{Prefix: "channel", ID: ch.ID}, peers.Value{AccessHash: ch.AccessHash})
+			_ = r.storage.SaveEntity(saveCtx, "channel", ch.ID, ch.Username, "", "", "", ch.Title)
+		}
+		for _, chat := range job.chats {
+			if chat == nil {
+				continue
+			}
+			_ = r.storage.Save(saveCtx, peers.Key{Prefix: "chat", ID: chat.ID}, peers.Value{AccessHash: 0})
+			_ = r.storage.SaveEntity(saveCtx, "chat", chat.ID, "", "", "", "", chat.Title)
+		}
+		cancel()
+	}
+}
+
+// Stop drains the peer-cache queue and waits for workers to exit. It should
+// be called before database close during application shutdown.
+func (d *Dispatcher) Stop(ctx context.Context) error {
+	var err error
+	d.peerStopOnce.Do(func() {
+		d.mu.Lock()
+		q := d.peerQueue
+		d.mu.Unlock()
+		if q == nil {
+			return
+		}
+		close(q)
+		done := make(chan struct{})
+		go func() { d.peerWG.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
+	})
+	return err
 }
 
 // SetRootContext sets the application root context used for command lifetime coordination.
@@ -402,30 +490,58 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	}
 
 	// Asynchronously cache peer entities in local SQLite for fast offline resolution
+	// Bounded queue: never block dispatch, drop on full (observational cache).
 	if len(e.Users) > 0 || len(e.Channels) > 0 || len(e.Chats) > 0 {
 		resolver := d.getResolver()
 		if r, ok := resolver.(*Resolver); ok && r.storage != nil {
-			go func() {
-				bgCtx := context.Background()
-				for _, user := range e.Users {
-					if user != nil {
-						_ = r.storage.Save(bgCtx, peers.Key{Prefix: "user", ID: user.ID}, peers.Value{AccessHash: user.AccessHash})
-						_ = r.storage.SaveEntity(bgCtx, "user", user.ID, user.Username, user.Phone, user.FirstName, user.LastName, "")
+			users := make([]*tg.User, 0, len(e.Users))
+			for _, u := range e.Users {
+				users = append(users, u)
+			}
+			channels := make([]*tg.Channel, 0, len(e.Channels))
+			for _, ch := range e.Channels {
+				channels = append(channels, ch)
+			}
+			chats := make([]*tg.Chat, 0, len(e.Chats))
+			for _, c := range e.Chats {
+				chats = append(chats, c)
+			}
+			job := peerUpdateJob{users: users, channels: channels, chats: chats}
+			d.mu.RLock()
+			q := d.peerQueue
+			d.mu.RUnlock()
+			if q == nil {
+				// Fallback for tests or dispatcher not yet started: best-effort async with background.
+				go func() {
+					bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					for _, u := range job.users {
+						if u != nil {
+							_ = r.storage.Save(bgCtx, peers.Key{Prefix: "user", ID: u.ID}, peers.Value{AccessHash: u.AccessHash})
+							_ = r.storage.SaveEntity(bgCtx, "user", u.ID, u.Username, u.Phone, u.FirstName, u.LastName, "")
+						}
 					}
-				}
-				for _, ch := range e.Channels {
-					if ch != nil {
-						_ = r.storage.Save(bgCtx, peers.Key{Prefix: "channel", ID: ch.ID}, peers.Value{AccessHash: ch.AccessHash})
-						_ = r.storage.SaveEntity(bgCtx, "channel", ch.ID, ch.Username, "", "", "", ch.Title)
+					for _, ch := range job.channels {
+						if ch != nil {
+							_ = r.storage.Save(bgCtx, peers.Key{Prefix: "channel", ID: ch.ID}, peers.Value{AccessHash: ch.AccessHash})
+							_ = r.storage.SaveEntity(bgCtx, "channel", ch.ID, ch.Username, "", "", "", ch.Title)
+						}
 					}
-				}
-				for _, chat := range e.Chats {
-					if chat != nil {
-						_ = r.storage.Save(bgCtx, peers.Key{Prefix: "chat", ID: chat.ID}, peers.Value{AccessHash: 0})
-						_ = r.storage.SaveEntity(bgCtx, "chat", chat.ID, "", "", "", "", chat.Title)
+					for _, chat := range job.chats {
+						if chat != nil {
+							_ = r.storage.Save(bgCtx, peers.Key{Prefix: "chat", ID: chat.ID}, peers.Value{AccessHash: 0})
+							_ = r.storage.SaveEntity(bgCtx, "chat", chat.ID, "", "", "", "", chat.Title)
+						}
 					}
+				}()
+			} else {
+				select {
+				case q <- job:
+					d.peerEnqueued.Add(1)
+				default:
+					d.peerDropped.Add(1)
 				}
-			}()
+			}
 		}
 	}
 
