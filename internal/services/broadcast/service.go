@@ -12,7 +12,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// TargetType defines the target scope for broadcasting.
 type TargetType string
 
 const (
@@ -22,7 +21,6 @@ const (
 	TargetChannels TargetType = "channels"
 )
 
-// BroadcastReport summarizes the results of a broadcast job.
 type BroadcastReport struct {
 	Total       int           `json:"total"`
 	Sent        int           `json:"sent"`
@@ -32,10 +30,8 @@ type BroadcastReport struct {
 	Duration    time.Duration `json:"duration"`
 }
 
-// ProgressCallback reports live metrics during a broadcast.
 type ProgressCallback func(report BroadcastReport)
 
-// BroadcastRequest specifies parameters for a broadcast job.
 type BroadcastRequest struct {
 	Targets  []tg.InputPeerClass
 	Text     string
@@ -43,7 +39,6 @@ type BroadcastRequest struct {
 	Progress ProgressCallback
 }
 
-// Service coordinates mass messaging with FloodWait resilience and rate limiting.
 type Service struct {
 	svc     core.TelegramServicer
 	svcFunc func() core.TelegramServicer
@@ -52,7 +47,6 @@ type Service struct {
 	mu      sync.Mutex
 }
 
-// NewService creates a new broadcast service.
 func NewService(svc any, logger *zap.Logger) *Service {
 	if logger == nil {
 		logger = zap.NewNop()
@@ -77,25 +71,25 @@ func (s *Service) getService() core.TelegramServicer {
 	return nil
 }
 
-// CancelActive aborts an ongoing broadcast job if one is running.
+// CancelActive aborts the single active broadcast job, if any. Broadcasts are
+// deliberately serialized: allowing a second run to replace the cancellation
+// handle of the first run creates a race where cleanup can cancel the wrong job.
 func (s *Service) CancelActive() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.cancel != nil {
-		s.cancel()
-		s.cancel = nil
-		return true
+	if s.cancel == nil {
+		return false
 	}
-	return false
+	s.cancel()
+	s.cancel = nil
+	return true
 }
 
-// Broadcast sends the message to all targets with rate-limiting and FloodWait retry logic.
 func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*BroadcastReport, error) {
 	svc := s.getService()
 	if svc == nil {
 		return nil, fmt.Errorf("%w: telegram service is nil", core.ErrInternal)
 	}
-
 	if len(req.Targets) == 0 {
 		return nil, fmt.Errorf("%w: no targets provided for broadcast", core.ErrInvalidArgs)
 	}
@@ -105,25 +99,30 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 
 	delay := req.Delay
 	if delay <= 0 {
-		delay = 300 * time.Millisecond // Default 300ms safe interval between messages
+		delay = 300 * time.Millisecond
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
 	s.mu.Lock()
+	if s.cancel != nil {
+		s.mu.Unlock()
+		cancel()
+		return nil, fmt.Errorf("%w: another broadcast is already running", core.ErrConflict)
+	}
 	s.cancel = cancel
 	s.mu.Unlock()
 
 	defer func() {
 		s.mu.Lock()
+		// Because concurrent Broadcast calls are rejected while cancel is set,
+		// this cleanup can only clear the cancellation handle belonging to this run.
 		s.cancel = nil
 		s.mu.Unlock()
 		cancel()
 	}()
 
 	start := time.Now()
-	report := BroadcastReport{
-		Total: len(req.Targets),
-	}
+	report := BroadcastReport{Total: len(req.Targets)}
 
 	for _, target := range req.Targets {
 		select {
@@ -134,7 +133,6 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 		default:
 		}
 
-		// Attempt sending with flood-wait handling
 		sent := false
 		for attempts := 0; attempts < 3; attempts++ {
 			_, err := svc.SendMessage(runCtx, target, req.Text)
@@ -143,12 +141,9 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 				report.Sent++
 				break
 			}
-
-			// Check for Telegram FloodWait error
 			if waitDuration, ok := tgerr.AsFloodWait(err); ok {
 				report.RateLimited++
 				if waitDuration > 60*time.Second {
-					// Don't sleep more than 60s for a single message in broadcast
 					s.logger.Warn("flood wait too long, skipping target", zap.Duration("wait", waitDuration))
 					break
 				}
@@ -162,8 +157,6 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 				}
 				continue
 			}
-
-			// Other error
 			s.logger.Debug("broadcast message error", zap.Error(err))
 			break
 		}
@@ -171,7 +164,6 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 		if !sent {
 			report.Failed++
 		}
-
 		if req.Progress != nil {
 			req.Progress(report)
 		}
