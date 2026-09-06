@@ -27,7 +27,6 @@ import (
 	"github.com/inipew/goultroid/internal/services/storage"
 	userlogSvc "github.com/inipew/goultroid/internal/services/userlog"
 	"github.com/inipew/goultroid/internal/telegram"
-	voiceSvc "github.com/inipew/goultroid/internal/voice"
 	addonPluginPkg "github.com/inipew/goultroid/plugins/addon"
 	"github.com/inipew/goultroid/plugins/admin"
 	"github.com/inipew/goultroid/plugins/afk"
@@ -52,7 +51,6 @@ import (
 	"github.com/inipew/goultroid/plugins/sudo"
 	"github.com/inipew/goultroid/plugins/system"
 	"github.com/inipew/goultroid/plugins/userlog"
-	"github.com/inipew/goultroid/plugins/voice"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -68,7 +66,6 @@ type App struct {
 	sched     *scheduler.Engine
 	eventBus  *core.EventBus
 	assistant assistant.Client
-	voiceSvc  *voiceSvc.Service
 	limiter   *ratelimit.Limiter
 	addonMgr  *addon.Manager
 }
@@ -226,11 +223,9 @@ func New(cfg *config.Config) (*App, error) {
 		Burst:  30,
 	}, 5*time.Minute)
 
-	// Voice Chat Subsystem (Phase 4)
-	voiceBackend := voiceSvc.NewMockBackend()
-	voiceResolver := voiceSvc.NewResolver(mediaService, downloadRegistry)
-	voiceService := voiceSvc.NewService(voiceBackend, db, voiceResolver, logger)
-	voicePlugin := voice.New(voiceService)
+	// Voice chat is intentionally not wired here until a real Telegram VC
+	// transport exists. A mock backend must never be exposed by the production
+	// application because it gives users a false-success feature surface.
 
 	// Addon Ecosystem & Capability Gate (Phase 5)
 	addonGate := addon.NewCapabilityGate()
@@ -271,7 +266,6 @@ func New(cfg *config.Config) (*App, error) {
 		pmpermitPlugin,
 		broadcastPlugin,
 		userlogPlugin,
-		voicePlugin,
 		addonPlugin,
 	}
 
@@ -293,7 +287,6 @@ func New(cfg *config.Config) (*App, error) {
 		sched:     schedEngine,
 		eventBus:  eventBus,
 		assistant: assistantClient,
-		voiceSvc:  voiceService,
 		limiter:   limiter,
 		addonMgr:  addonManager,
 	}, nil
@@ -326,86 +319,4 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	return a.client.Run(ctx)
-}
-
-// Shutdown triggers graceful shutdown of all registered plugins, scheduler, and flushes logs.
-// ctx is the global shutdown budget (expected 30s from caller). Scheduler gets a 10s slice of that budget.
-// Lifecycle boundary is caller-controlled; no Background() is created inside.
-func (a *App) Shutdown(ctx context.Context) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	a.logger.Info("shutting down GoUltroid...", zap.Duration("budget", func() time.Duration {
-		if d, ok := ctx.Deadline(); ok {
-			return time.Until(d)
-		}
-		return 0
-	}()))
-
-	// 0. Stop voice service and assistant bot if running
-	if a.voiceSvc != nil {
-		if err := a.voiceSvc.Shutdown(ctx); err != nil {
-			a.logger.Warn("error shutting down voice service", zap.Error(err))
-		}
-	}
-	if a.limiter != nil {
-		_ = a.limiter.Close()
-	}
-
-	if a.assistant != nil {
-		if err := a.assistant.Stop(ctx); err != nil {
-			a.logger.Warn("error stopping assistant bot", zap.Error(err))
-		}
-	}
-
-	// 0.5 Drain dispatcher peer-cache queue with 3s slice before database close
-	if a.client != nil && a.client.Dispatcher() != nil {
-		dCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		if err := a.client.Dispatcher().Stop(dCtx); err != nil {
-			a.logger.Warn("dispatcher peer queue drain timeout", zap.Error(err))
-		}
-		cancel()
-		if ctx.Err() != nil {
-			// Never close the database while dispatcher workers may still be alive.
-			// The process-level shutdown caller owns the final process exit.
-			a.logger.Warn("global shutdown budget exceeded after dispatcher stop", zap.Error(ctx.Err()))
-			return ctx.Err()
-		}
-	}
-
-	// 1. Stop scheduler engine first with 10s slice of global budget
-	if a.sched != nil {
-		schedCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		if err := a.sched.StopContext(schedCtx); err != nil {
-			a.logger.Warn("error stopping scheduler engine", zap.Error(err))
-		}
-		cancel()
-		// If global budget already exceeded, abort early
-		if ctx.Err() != nil {
-			// StopContext may have timed out while a DB-using scheduler worker is
-			// still alive. Closing DB here would violate the DB lifecycle invariant.
-			a.logger.Warn("global shutdown budget exceeded after scheduler stop; database remains open until process exit", zap.Error(ctx.Err()))
-			return ctx.Err()
-		}
-	}
-
-	// 2. Stop registered plugins with remaining budget
-	if err := a.plugins.ShutdownWithContext(ctx); err != nil {
-		a.logger.Warn("error during plugin shutdown", zap.Error(err))
-	}
-
-	// EventBus is closed after plugins so plugin teardown can still publish final
-	// observational events. Close drains queued work before the database closes.
-	if a.eventBus != nil {
-		_ = a.eventBus.Close()
-	}
-
-	// 3. Close database last so running goroutines never write to a closed DB connection
-	if a.db != nil {
-		if err := a.db.Close(); err != nil {
-			a.logger.Warn("error closing database", zap.Error(err))
-		}
-	}
-	_ = a.logger.Sync()
-	return nil
 }
