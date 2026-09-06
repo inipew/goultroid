@@ -52,13 +52,29 @@ func (m *MessagesFacade) Edit(text string) error {
 	return c.Svc.EditMessage(c.Ctx, c.PeerID, msgID, text)
 }
 
-// EditOrReply tries to edit the trigger (or last response) message in-place.
-// If editing fails for any reason it falls back to sending a new reply.
-// This is the canonical helper for the userbot "edit-in-place" UX pattern.
+// EditOrReply updates an existing response or an outgoing userbot command.
+// Incoming commands are replied to directly instead of first attempting to edit
+// the user's message. This avoids an unnecessary failing Telegram RPC on every
+// incoming command and preserves the normal userbot behavior of leaving the
+// .command trigger message intact.
 func (m *MessagesFacade) EditOrReply(text string) error {
-	if err := m.Edit(text); err == nil {
-		return nil
+	c := m.ctx
+	if c == nil {
+		return errors.New("context is nil")
 	}
+
+	// If this context already owns a response, editing it is intentional and
+	// avoids creating another message during multi-stage command flows.
+	if c.LastResponseID != 0 {
+		return m.Edit(text)
+	}
+
+	// Only messages sent by the userbot account itself are safe/appropriate to
+	// edit here. Incoming user/group messages should be answered directly.
+	if c.Message != nil && c.Message.IsOutgoing {
+		return m.Edit(text)
+	}
+
 	return m.Reply(text)
 }
 
