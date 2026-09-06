@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -41,7 +42,6 @@ func (m *MessagesFacade) Edit(text string) error {
 	if c.PeerID == nil {
 		return errors.New("peer is nil")
 	}
-
 	msgID := c.LastResponseID
 	if msgID == 0 && c.Message != nil {
 		msgID = c.Message.ID
@@ -52,9 +52,7 @@ func (m *MessagesFacade) Edit(text string) error {
 	return c.Svc.EditMessage(c.Ctx, c.PeerID, msgID, text)
 }
 
-// EditOrReply updates an existing bot-owned response or an outgoing userbot
-// command. For incoming commands it sends a normal reply and then best-effort
-// deletes the trigger message.
+// EditOrReply updates an existing bot-owned response or an outgoing userbot command.
 func (m *MessagesFacade) EditOrReply(text string) error {
 	c := m.ctx
 	if c == nil {
@@ -236,6 +234,9 @@ func (m *MessagesFacade) Purge() (int, error) {
 
 	commandTopic := c.TopicID()
 	replyTopic := reply.TopicID
+	if commandTopic > 0 && replyTopic == 0 && reply.ID == commandTopic {
+		replyTopic = commandTopic
+	}
 	if commandTopic != 0 || replyTopic != 0 {
 		if commandTopic == 0 || replyTopic == 0 || commandTopic != replyTopic {
 			return 0, fmt.Errorf("%w: purge range crosses forum topics", ErrInvalidArgs)
