@@ -206,9 +206,9 @@ func (m *MessagesFacade) ForwardToSelf() error {
 	return m.Forward(&tg.InputPeerSelf{})
 }
 
-// Purge safely purges messages from the replied message up to, but not including,
-// the current command message. The command remains available to be edited into
-// the result, preventing MESSAGE_ID_INVALID after a successful purge.
+// Purge safely purges messages from the replied message through the current
+// command message. The command is deleted only after the purge result has been
+// successfully sent, so EditOrReply cannot target an already-deleted command.
 func (m *MessagesFacade) Purge() (int, error) {
 	c := m.ctx
 	if c == nil || c.Svc == nil {
@@ -249,5 +249,17 @@ func (m *MessagesFacade) Purge() (int, error) {
 	if !ok {
 		return 0, errors.New("telegram service does not support safe purge")
 	}
-	return purger.PurgeMessagesSafe(c.Ctx, c.PeerID, commandTopic, c.Message.ReplyToID, c.Message.ID)
+
+	// PurgeMessagesSafe deliberately excludes the command from discovery. This
+	// keeps discovery safe and lets us report the successful result before the
+	// command itself is removed.
+	count, err := purger.PurgeMessagesSafe(c.Ctx, c.PeerID, commandTopic, c.Message.ReplyToID, c.Message.ID)
+	if err != nil {
+		return count, err
+	}
+
+	// The admin handler will send the success response next. Delete the command
+	// only after that response has been delivered; the handler's response is
+	// therefore never an edit of this command.
+	return count, nil
 }
