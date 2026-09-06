@@ -52,11 +52,7 @@ func (s *Service) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerClass,
 	// inclusive message selector. Query one ID below the requested start, then
 	// enforce the real inclusive [fromID, toID) range locally. This is what makes
 	// the replied-to message part of purge instead of silently skipping it.
-	queryMinID := fromID - 1
-	if queryMinID < 0 {
-		queryMinID = 0
-	}
-	maxID := toID - 1
+	queryMinID, maxID := safePurgeQueryBounds(fromID, toID)
 	ids := make(map[int]struct{}, min(maxInt(SafePurgeMaxMessages, SafePurgePageSize), maxID-fromID+1))
 	offsetID := maxID + 1
 
@@ -111,28 +107,7 @@ func (s *Service) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerClass,
 			break
 		}
 
-		lowest := offsetID
-		newIDs := 0
-		for _, item := range messages {
-			msg, ok := item.(*tg.Message)
-			if !ok || msg == nil || msg.ID < fromID || msg.ID > maxID {
-				continue
-			}
-
-			// Deleting a forum topic root is never part of a safe purge. A topic
-			// purge removes replies within the topic, not the topic container.
-			if topicID > 0 && msg.ID == topicID {
-				continue
-			}
-
-			if msg.ID < lowest {
-				lowest = msg.ID
-			}
-			if _, exists := ids[msg.ID]; !exists {
-				ids[msg.ID] = struct{}{}
-				newIDs++
-			}
-		}
+		lowest, newIDs := collectSafePurgeIDs(messages, fromID, maxID, topicID, ids, offsetID)
 
 		// Telegram pagination must make monotonic progress. If a response cannot
 		// move the cursor, stop rather than risking a repeated query loop.
@@ -189,6 +164,46 @@ func (s *Service) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerClass,
 		deleted += end - i
 	}
 	return deleted, nil
+}
+
+// safePurgeQueryBounds converts the user-visible inclusive start / exclusive
+// command range into Telegram history/replies bounds. MinID is deliberately one
+// below fromID so the replied-to message is discoverable.
+func safePurgeQueryBounds(fromID, toID int) (minID, maxID int) {
+	minID = fromID - 1
+	if minID < 0 {
+		minID = 0
+	}
+	return minID, toID - 1
+}
+
+// collectSafePurgeIDs applies the final inclusive [fromID, maxID] filter to one
+// Telegram page and appends concrete message IDs to the bounded deletion set.
+// It is intentionally shared by production code and regression tests so the
+// reply-boundary invariant cannot silently drift.
+func collectSafePurgeIDs(messages []tg.MessageClass, fromID, maxID, topicID int, ids map[int]struct{}, offsetID int) (lowest, newIDs int) {
+	lowest = offsetID
+	for _, item := range messages {
+		msg, ok := item.(*tg.Message)
+		if !ok || msg == nil || msg.ID < fromID || msg.ID > maxID {
+			continue
+		}
+
+		// Deleting a forum topic root is never part of a safe purge. A topic
+		// purge removes replies within the topic, not the topic container.
+		if topicID > 0 && msg.ID == topicID {
+			continue
+		}
+
+		if msg.ID < lowest {
+			lowest = msg.ID
+		}
+		if _, exists := ids[msg.ID]; !exists {
+			ids[msg.ID] = struct{}{}
+			newIDs++
+		}
+	}
+	return lowest, newIDs
 }
 
 func isAlreadyDeletedMessageError(err error) bool {
