@@ -34,10 +34,6 @@ func (m *MessagesFacade) Reply(text string) error {
 	return nil
 }
 
-// ReplyAndDelete sends a new response and then best-effort deletes the
-// incoming command message. Sending is authoritative: if the response fails,
-// the trigger is intentionally left intact so the user does not lose the
-// command without receiving its result.
 func (m *MessagesFacade) ReplyAndDelete(text string) error {
 	c := m.ctx
 	if c == nil || c.Svc == nil {
@@ -46,7 +42,6 @@ func (m *MessagesFacade) ReplyAndDelete(text string) error {
 	if c.PeerID == nil {
 		return errors.New("peer is nil")
 	}
-
 	sent, err := c.Svc.SendMessage(c.Ctx, c.PeerID, text)
 	if err != nil {
 		return fmt.Errorf("reply failed: %w", err)
@@ -54,18 +49,12 @@ func (m *MessagesFacade) ReplyAndDelete(text string) error {
 	if sent != nil {
 		c.LastResponseID = sent.ID
 	}
-
-	// Trigger cleanup is deliberately best-effort. The response has already
-	// succeeded, so a permission/race/error deleting the user's command must
-	// not turn a successful command into an application error.
 	if c.Message != nil && c.Message.ID > 0 {
 		_ = c.Svc.DeleteMessage(c.Ctx, c.PeerID, []int{c.Message.ID})
 	}
 	return nil
 }
 
-// ReplyAndDeleteWithDelay sends a response, deletes the trigger command message,
-// and schedules self-destruct of the response message after the specified delay.
 func (m *MessagesFacade) ReplyAndDeleteWithDelay(text string, delay time.Duration) error {
 	c := m.ctx
 	if c == nil || c.Svc == nil {
@@ -74,7 +63,6 @@ func (m *MessagesFacade) ReplyAndDeleteWithDelay(text string, delay time.Duratio
 	if c.PeerID == nil {
 		return errors.New("peer is nil")
 	}
-
 	sent, err := c.Svc.SendMessage(c.Ctx, c.PeerID, text)
 	if err != nil {
 		return fmt.Errorf("reply failed: %w", err)
@@ -82,11 +70,9 @@ func (m *MessagesFacade) ReplyAndDeleteWithDelay(text string, delay time.Duratio
 	if sent != nil {
 		c.LastResponseID = sent.ID
 	}
-
 	if c.Message != nil && c.Message.ID > 0 {
 		_ = c.Svc.DeleteMessage(c.Ctx, c.PeerID, []int{c.Message.ID})
 	}
-
 	if delay > 0 && sent != nil && sent.ID > 0 {
 		respID := sent.ID
 		peer := c.PeerID
@@ -120,6 +106,8 @@ func (m *MessagesFacade) Edit(text string) error {
 }
 
 // EditOrReply updates an existing bot-owned response or an outgoing userbot command.
+// A scheduled/system execution has no real trigger message (ID 0), so it must
+// reply instead of trying to edit the synthetic placeholder.
 func (m *MessagesFacade) EditOrReply(text string) error {
 	c := m.ctx
 	if c == nil {
@@ -128,13 +116,12 @@ func (m *MessagesFacade) EditOrReply(text string) error {
 	if c.LastResponseID != 0 {
 		return m.Edit(text)
 	}
-	if c.Message != nil && c.Message.IsOutgoing {
+	if c.Message != nil && c.Message.IsOutgoing && c.Message.ID > 0 {
 		return m.Edit(text)
 	}
 	return m.ReplyAndDelete(text)
 }
 
-// ReplyMarkup sends a response message to the same chat with reply markup attached.
 func (m *MessagesFacade) ReplyMarkup(text string, markup tg.ReplyMarkupClass) error {
 	c := m.ctx
 	if c == nil || c.Svc == nil {
@@ -153,7 +140,6 @@ func (m *MessagesFacade) ReplyMarkup(text string, markup tg.ReplyMarkupClass) er
 	return nil
 }
 
-// EditMarkup edits the previously sent response or command message with new text and markup.
 func (m *MessagesFacade) EditMarkup(text string, markup tg.ReplyMarkupClass) error {
 	c := m.ctx
 	if c == nil || c.Svc == nil {
@@ -172,7 +158,6 @@ func (m *MessagesFacade) EditMarkup(text string, markup tg.ReplyMarkupClass) err
 	return c.Svc.EditMessageMarkup(c.Ctx, c.PeerID, msgID, text, markup)
 }
 
-// Delete deletes the current command message.
 func (m *MessagesFacade) Delete() error {
 	c := m.ctx
 	if c == nil || c.Svc == nil {
@@ -187,7 +172,6 @@ func (m *MessagesFacade) Delete() error {
 	return c.Svc.DeleteMessage(c.Ctx, c.PeerID, []int{c.Message.ID})
 }
 
-// DeleteResponse deletes the bot's previously sent response message, if any.
 func (m *MessagesFacade) DeleteResponse() error {
 	c := m.ctx
 	if c == nil || c.Svc == nil {
@@ -202,7 +186,6 @@ func (m *MessagesFacade) DeleteResponse() error {
 	return c.Svc.DeleteMessage(c.Ctx, c.PeerID, []int{c.LastResponseID})
 }
 
-// React sends an emoji reaction to the message.
 func (m *MessagesFacade) React(emoji string) error {
 	c := m.ctx
 	if c == nil || c.Svc == nil {
@@ -217,7 +200,6 @@ func (m *MessagesFacade) React(emoji string) error {
 	return c.Svc.React(c.Ctx, c.PeerID, c.Message.ID, emoji)
 }
 
-// Pin pins the current message or the replied-to message.
 func (m *MessagesFacade) Pin(silent bool) error {
 	c := m.ctx
 	if c == nil || c.Svc == nil {
@@ -233,7 +215,6 @@ func (m *MessagesFacade) Pin(silent bool) error {
 	return c.Svc.PinMessage(c.Ctx, c.PeerID, targetID, silent)
 }
 
-// Unpin unpins a message in the chat.
 func (m *MessagesFacade) Unpin() error {
 	c := m.ctx
 	if c == nil || c.Svc == nil {
@@ -249,7 +230,6 @@ func (m *MessagesFacade) Unpin() error {
 	return c.Svc.UnpinMessage(c.Ctx, c.PeerID, targetID)
 }
 
-// Forward forwards the message (or replied message) to another peer.
 func (m *MessagesFacade) Forward(toPeer tg.InputPeerClass) error {
 	c := m.ctx
 	if c == nil || c.Svc == nil {
@@ -268,14 +248,10 @@ func (m *MessagesFacade) Forward(toPeer tg.InputPeerClass) error {
 	return c.Svc.ForwardMessages(c.Ctx, c.PeerID, toPeer, []int{targetID})
 }
 
-// ForwardToSelf forwards the message (or replied message) to Saved Messages.
 func (m *MessagesFacade) ForwardToSelf() error {
 	return m.Forward(&tg.InputPeerSelf{})
 }
 
-// Purge safely purges messages from the replied message up to, but not including,
-// the current command message. The command is left available so a successful
-// result can be sent without editing a message that purge already deleted.
 func (m *MessagesFacade) Purge() (int, error) {
 	c := m.ctx
 	if c == nil || c.Svc == nil {
@@ -290,7 +266,6 @@ func (m *MessagesFacade) Purge() (int, error) {
 	if c.Message.ID <= c.Message.ReplyToID {
 		return 0, errors.New("purge command must be newer than the replied message")
 	}
-
 	reply, err := c.GetReply()
 	if err != nil {
 		return 0, err
@@ -298,7 +273,6 @@ func (m *MessagesFacade) Purge() (int, error) {
 	if reply == nil {
 		return 0, fmt.Errorf("%w: replied message no longer exists", ErrNotFound)
 	}
-
 	commandTopic := c.TopicID()
 	replyTopic := reply.TopicID
 	if commandTopic > 0 && replyTopic == 0 && reply.ID == commandTopic {
@@ -309,7 +283,6 @@ func (m *MessagesFacade) Purge() (int, error) {
 			return 0, fmt.Errorf("%w: purge range crosses forum topics", ErrInvalidArgs)
 		}
 	}
-
 	purger, ok := c.Svc.(interface {
 		PurgeMessagesSafe(context.Context, tg.InputPeerClass, int, int, int) (int, error)
 	})
