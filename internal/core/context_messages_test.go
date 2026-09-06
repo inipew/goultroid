@@ -73,3 +73,25 @@ func TestMessagesFacadeReplyAndDeleteWithDelay(t *testing.T) {
 		t.Fatal("timed out waiting for delayed response deletion")
 	}
 }
+
+func TestMessagesFacadeEditOrReplyWithDelay(t *testing.T) {
+	mock := &delayedDeleteMock{mockTelegramServicer: &mockTelegramServicer{}, deleted: make(chan int, 2)}
+	// Outgoing command message
+	ctx := &Context{Ctx: context.Background(), Message: &Message{ID: 205, IsOutgoing: true}, Svc: mock, PeerID: &tg.InputPeerSelf{}}
+	delay := 30 * time.Millisecond
+	if err := ctx.Messages().EditOrReplyWithDelay("approved user", delay); err != nil {
+		t.Fatalf("EditOrReplyWithDelay() error = %v", err)
+	}
+	if mock.editedText != "approved user" {
+		t.Fatalf("edited text = %q, want 'approved user'", mock.editedText)
+	}
+	select {
+	case id := <-mock.deleted:
+		if id != 205 {
+			t.Fatalf("delayed deleted ID = %d, want 205", id)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for delayed edit message deletion")
+	}
+}
+

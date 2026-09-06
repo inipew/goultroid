@@ -240,6 +240,13 @@ var migrations = []migration{
 			`CREATE INDEX IF NOT EXISTS idx_addon_registry_status ON addon_registry(status);`,
 		},
 	},
+	{
+		version:     12,
+		description: "PM permit warn message tracking for delete-after-approve",
+		statements: []string{
+			`ALTER TABLE pm_permit_records ADD COLUMN warn_msg_ids TEXT NOT NULL DEFAULT '[]';`,
+		},
+	},
 }
 
 // calculateMigrationChecksum produces a deterministic SHA-256 hash of a migration's SQL statements.
@@ -388,6 +395,8 @@ func (d *DB) columnExists(ctx context.Context, tx *sql.Tx, tableName, columnName
 		"peers_entities":        true,
 		"scheduled_job_history": true,
 		"moderation_warnings":   true,
+		"pm_permit_records":     true,
+		"addon_registry":        true,
 	}
 	if !validTables[strings.ToLower(tableName)] {
 		return false

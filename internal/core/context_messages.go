@@ -122,6 +122,47 @@ func (m *MessagesFacade) EditOrReply(text string) error {
 	return m.ReplyAndDelete(text)
 }
 
+// EditOrReplyWithDelay updates an existing response or outgoing message and schedules its deletion after delay.
+func (m *MessagesFacade) EditOrReplyWithDelay(text string, delay time.Duration) error {
+	c := m.ctx
+	if c == nil {
+		return errors.New("context is nil")
+	}
+	if c.LastResponseID != 0 {
+		if err := m.Edit(text); err != nil {
+			return err
+		}
+		if delay > 0 && c.Svc != nil && c.PeerID != nil {
+			targetID := c.LastResponseID
+			peer := c.PeerID
+			svc := c.Svc
+			time.AfterFunc(delay, func() {
+				delCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				_ = svc.DeleteMessage(delCtx, peer, []int{targetID})
+			})
+		}
+		return nil
+	}
+	if c.Message != nil && c.Message.IsOutgoing && c.Message.ID > 0 {
+		if err := m.Edit(text); err != nil {
+			return err
+		}
+		if delay > 0 && c.Svc != nil && c.PeerID != nil {
+			targetID := c.Message.ID
+			peer := c.PeerID
+			svc := c.Svc
+			time.AfterFunc(delay, func() {
+				delCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				_ = svc.DeleteMessage(delCtx, peer, []int{targetID})
+			})
+		}
+		return nil
+	}
+	return m.ReplyAndDeleteWithDelay(text, delay)
+}
+
 func (m *MessagesFacade) ReplyMarkup(text string, markup tg.ReplyMarkupClass) error {
 	c := m.ctx
 	if c == nil || c.Svc == nil {

@@ -125,14 +125,18 @@ func TestPMPermitPlugin_HandleIncomingMessage(t *testing.T) {
 		},
 	}
 
-	// Outgoing message should be skipped
+	// Outgoing message should auto-approve (Bug2 fix: we chat first)
 	outMsg := &tg.Message{
 		ID:     1,
 		Out:    true,
-		PeerID: &tg.PeerUser{UserID: 9999},
+		PeerID: &tg.PeerUser{UserID: 8888},
 	}
+	e.Users[8888] = &tg.User{ID: 8888, AccessHash: 999}
 	if err := p.HandleIncomingMessage(ctx, e, outMsg, false, ""); err != nil {
-		t.Errorf("expected outgoing message skipped, got %v", err)
+		t.Errorf("expected outgoing message handled, got %v", err)
+	}
+	if ok, _ := svc.IsApproved(ctx, 8888); !ok {
+		t.Errorf("expected outgoing auto-approve for user 8888")
 	}
 
 	// Group message should be skipped
@@ -159,3 +163,79 @@ func TestPMPermitPlugin_HandleIncomingMessage(t *testing.T) {
 		t.Errorf("expected warning sent, got: %s", mockTG.sentText)
 	}
 }
+
+func TestPMPermitPlugin_DisapproveAndWarningDoNotAutoApprove(t *testing.T) {
+	db := setupTestDB(t)
+	mockTG := &mockTelegram{}
+	perms := core.NewPermissions(12345, nil)
+	svc := pmpermitSvc.NewService(db, mockTG, 12345, perms, zap.NewNop())
+	p := pmpermit.New(svc)
+
+	ctx := context.Background()
+	targetID := int64(7777)
+	e := tg.Entities{
+		Users: map[int64]*tg.User{
+			targetID: {ID: targetID, AccessHash: 123},
+		},
+	}
+
+	// 1. Outgoing command like .disapprove or .blockpm must NEVER auto-approve
+	cmdMsg := &tg.Message{
+		ID:      10,
+		Out:     true,
+		Message: ".disapprove",
+		PeerID:  &tg.PeerUser{UserID: targetID},
+	}
+	if err := p.HandleIncomingMessage(ctx, e, cmdMsg, true, "disapprove"); err != nil {
+		t.Fatalf("HandleIncomingMessage failed: %v", err)
+	}
+	if ok, _ := svc.IsApproved(ctx, targetID); ok {
+		t.Errorf("outgoing .disapprove command should NOT auto-approve")
+	}
+
+	// 2. Outgoing bot warning message must NEVER auto-approve
+	warnMsg := &tg.Message{
+		ID:      11,
+		Out:     true,
+		Message: "👋 <b>Hello!</b>\n\nI haven't approved you for private messaging yet. Warning 1/4",
+		PeerID:  &tg.PeerUser{UserID: targetID},
+	}
+	if err := p.HandleIncomingMessage(ctx, e, warnMsg, false, ""); err != nil {
+		t.Fatalf("HandleIncomingMessage failed: %v", err)
+	}
+	if ok, _ := svc.IsApproved(ctx, targetID); ok {
+		t.Errorf("outgoing bot warning message should NOT auto-approve")
+	}
+
+	// 3. Outgoing message to a blocked user must NEVER auto-approve
+	_ = svc.Block(ctx, targetID, "test block")
+	chatMsgToBlocked := &tg.Message{
+		ID:      12,
+		Out:     true,
+		Message: "Hello blocked user",
+		PeerID:  &tg.PeerUser{UserID: targetID},
+	}
+	if err := p.HandleIncomingMessage(ctx, e, chatMsgToBlocked, false, ""); err != nil {
+		t.Fatalf("HandleIncomingMessage failed: %v", err)
+	}
+	if ok, _ := svc.IsApproved(ctx, targetID); ok {
+		t.Errorf("outgoing message to blocked user should NOT auto-approve")
+	}
+
+	// 4. Legitimate chat to a non-blocked unapproved user SHOULD auto-approve
+	newTarget := int64(6666)
+	e.Users[newTarget] = &tg.User{ID: newTarget, AccessHash: 456}
+	chatMsg := &tg.Message{
+		ID:      13,
+		Out:     true,
+		Message: "Hey friend, how are you?",
+		PeerID:  &tg.PeerUser{UserID: newTarget},
+	}
+	if err := p.HandleIncomingMessage(ctx, e, chatMsg, false, ""); err != nil {
+		t.Fatalf("HandleIncomingMessage failed: %v", err)
+	}
+	if ok, _ := svc.IsApproved(ctx, newTarget); !ok {
+		t.Errorf("legitimate outgoing chat SHOULD auto-approve user")
+	}
+}
+

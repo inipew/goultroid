@@ -372,6 +372,11 @@ func (c *Context) EditOrReply(text string) error {
 	return c.Messages().EditOrReply(text)
 }
 
+// EditOrReplyWithDelay updates trigger/response and schedules deletion after delay.
+func (c *Context) EditOrReplyWithDelay(text string, delay time.Duration) error {
+	return c.Messages().EditOrReplyWithDelay(text, delay)
+}
+
 // EditMarkup edits the response or command message with new text and markup.
 func (c *Context) EditMarkup(text string, markup tg.ReplyMarkupClass) error {
 	return c.Messages().EditMarkup(text, markup)

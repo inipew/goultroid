@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -107,6 +108,51 @@ func (db *DB) ResetPMWarn(ctx context.Context, userID int64) error {
 	_, err := db.ExecContext(ctx, query, userID)
 	if err != nil {
 		return fmt.Errorf("failed to reset pm warn: %w", err)
+	}
+	return nil
+}
+
+// GetWarnMsgIDs retrieves stored warning message IDs for a user.
+func (db *DB) GetWarnMsgIDs(ctx context.Context, userID int64) ([]int, error) {
+	var raw sql.NullString
+	err := db.QueryRowContext(ctx, "SELECT warn_msg_ids FROM pm_permit_records WHERE user_id = ?", userID).Scan(&raw)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get warn msg ids: %w", err)
+	}
+	if !raw.Valid || raw.String == "" || raw.String == "[]" {
+		return nil, nil
+	}
+	var ids []int
+	if err := json.Unmarshal([]byte(raw.String), &ids); err != nil {
+		// corrupt JSON → treat as empty, log via caller
+		return nil, nil
+	}
+	return ids, nil
+}
+
+// AddWarnMsgID appends a warning message ID for a user, capped at 20.
+func (db *DB) AddWarnMsgID(ctx context.Context, userID int64, msgID int) error {
+	ids, _ := db.GetWarnMsgIDs(ctx, userID)
+	ids = append(ids, msgID)
+	if len(ids) > 20 {
+		ids = ids[len(ids)-20:]
+	}
+	b, _ := json.Marshal(ids)
+	_, err := db.ExecContext(ctx, "UPDATE pm_permit_records SET warn_msg_ids = ? WHERE user_id = ?", string(b), userID)
+	if err != nil {
+		return fmt.Errorf("failed to add warn msg id: %w", err)
+	}
+	return nil
+}
+
+// ClearWarnMsgIDs clears stored warning message IDs for a user.
+func (db *DB) ClearWarnMsgIDs(ctx context.Context, userID int64) error {
+	_, err := db.ExecContext(ctx, "UPDATE pm_permit_records SET warn_msg_ids = '[]' WHERE user_id = ?", userID)
+	if err != nil {
+		return fmt.Errorf("failed to clear warn msg ids: %w", err)
 	}
 	return nil
 }
