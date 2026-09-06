@@ -52,11 +52,10 @@ func (m *MessagesFacade) Edit(text string) error {
 	return c.Svc.EditMessage(c.Ctx, c.PeerID, msgID, text)
 }
 
-// EditOrReply updates an existing response or an outgoing userbot command.
-// Incoming commands are replied to directly instead of first attempting to edit
-// the user's message. This avoids an unnecessary failing Telegram RPC on every
-// incoming command and preserves the normal userbot behavior of leaving the
-// .command trigger message intact.
+// EditOrReply updates an existing bot-owned response or an outgoing userbot
+// command. For incoming commands it sends a normal reply and then best-effort
+// deletes the trigger message. This is the canonical response policy for
+// ordinary userbot commands: never attempt to edit an incoming .command.
 func (m *MessagesFacade) EditOrReply(text string) error {
 	c := m.ctx
 	if c == nil {
@@ -69,13 +68,14 @@ func (m *MessagesFacade) EditOrReply(text string) error {
 		return m.Edit(text)
 	}
 
-	// Only messages sent by the userbot account itself are safe/appropriate to
-	// edit here. Incoming user/group messages should be answered directly.
+	// Outgoing messages belong to the userbot account and may be edited in place.
 	if c.Message != nil && c.Message.IsOutgoing {
 		return m.Edit(text)
 	}
 
-	return m.Reply(text)
+	// Incoming command: send first, then best-effort cleanup. The delete must
+	// never turn a successful response into a failed command.
+	return c.ReplyAndDelete(text)
 }
 
 // ReplyMarkup sends a response message to the same chat with reply markup attached.
