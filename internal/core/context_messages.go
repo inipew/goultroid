@@ -33,6 +33,36 @@ func (m *MessagesFacade) Reply(text string) error {
 	return nil
 }
 
+// ReplyAndDelete sends a new response and then best-effort deletes the
+// incoming command message. Sending is authoritative: if the response fails,
+// the trigger is intentionally left intact so the user does not lose the
+// command without receiving its result.
+func (m *MessagesFacade) ReplyAndDelete(text string) error {
+	c := m.ctx
+	if c == nil || c.Svc == nil {
+		return errors.New("telegram service not initialized")
+	}
+	if c.PeerID == nil {
+		return errors.New("peer is nil")
+	}
+
+	sent, err := c.Svc.SendMessage(c.Ctx, c.PeerID, text)
+	if err != nil {
+		return fmt.Errorf("reply failed: %w", err)
+	}
+	if sent != nil {
+		c.LastResponseID = sent.ID
+	}
+
+	// Trigger cleanup is deliberately best-effort. The response has already
+	// succeeded, so a permission/race/error deleting the user's command must
+	// not turn a successful command into an application error.
+	if c.Message != nil && c.Message.ID > 0 {
+		_ = c.Svc.DeleteMessage(c.Ctx, c.PeerID, []int{c.Message.ID})
+	}
+	return nil
+}
+
 // Edit edits the previously sent response (if Reply was called) or the outgoing command message.
 func (m *MessagesFacade) Edit(text string) error {
 	c := m.ctx
@@ -64,7 +94,7 @@ func (m *MessagesFacade) EditOrReply(text string) error {
 	if c.Message != nil && c.Message.IsOutgoing {
 		return m.Edit(text)
 	}
-	return c.ReplyAndDelete(text)
+	return m.ReplyAndDelete(text)
 }
 
 // ReplyMarkup sends a response message to the same chat with reply markup attached.
@@ -206,9 +236,9 @@ func (m *MessagesFacade) ForwardToSelf() error {
 	return m.Forward(&tg.InputPeerSelf{})
 }
 
-// Purge safely purges messages from the replied message through the current
-// command message. The command is deleted only after the purge result has been
-// successfully sent, so EditOrReply cannot target an already-deleted command.
+// Purge safely purges messages from the replied message up to, but not including,
+// the current command message. The command is left available so a successful
+// result can be sent without editing a message that purge already deleted.
 func (m *MessagesFacade) Purge() (int, error) {
 	c := m.ctx
 	if c == nil || c.Svc == nil {
@@ -249,17 +279,5 @@ func (m *MessagesFacade) Purge() (int, error) {
 	if !ok {
 		return 0, errors.New("telegram service does not support safe purge")
 	}
-
-	// PurgeMessagesSafe deliberately excludes the command from discovery. This
-	// keeps discovery safe and lets us report the successful result before the
-	// command itself is removed.
-	count, err := purger.PurgeMessagesSafe(c.Ctx, c.PeerID, commandTopic, c.Message.ReplyToID, c.Message.ID)
-	if err != nil {
-		return count, err
-	}
-
-	// The admin handler will send the success response next. Delete the command
-	// only after that response has been delivered; the handler's response is
-	// therefore never an edit of this command.
-	return count, nil
+	return purger.PurgeMessagesSafe(c.Ctx, c.PeerID, commandTopic, c.Message.ReplyToID, c.Message.ID)
 }
