@@ -3,6 +3,8 @@ package core
 import (
 	"sync"
 	"time"
+
+	"github.com/gotd/td/tg"
 )
 
 type EventType string
@@ -13,6 +15,7 @@ const (
 	EventTypeMessagesDeleted EventType = "messages.deleted"
 	EventTypeCallbackQuery   EventType = "callback.query"
 	EventTypeReactionUpdated EventType = "reaction.updated"
+	EventTypeInlineChosen    EventType = "inline.chosen"
 )
 
 type Event interface{ Type() EventType; Timestamp() time.Time }
@@ -37,13 +40,66 @@ type MessagesDeletedEvent struct {
 func (e *MessagesDeletedEvent) Type() EventType { return EventTypeMessagesDeleted }
 func (e *MessagesDeletedEvent) Timestamp() time.Time { return e.At }
 
-type CallbackQueryEvent struct{ At time.Time; QueryID int64; UserID int64; ChatID int64; MsgID int; Data []byte }
+// CallbackOrigin identifies whether the callback originated from a normal message or an inline message.
+type CallbackOrigin int
+
+const (
+	CallbackOriginMessage CallbackOrigin = iota
+	CallbackOriginInline
+)
+
+// CallbackTarget models the Telegram target for a callback query.
+// For normal messages it carries Peer + MessageID.
+// For inline messages it carries InlineID.
+// ChatInstance is preserved for both (Telegram's chat_instance).
+type CallbackTarget struct {
+	Origin       CallbackOrigin
+	Peer         tg.InputPeerClass
+	MessageID    int
+	InlineID     tg.InputBotInlineMessageIDClass
+	ChatInstance int64
+}
+
+// CallbackQueryEvent is the domain event for both normal and inline callback queries.
+// ChatID and MsgID are deprecated: use Target.Peer / Target.MessageID or Target.InlineID.
+// They are kept for backward compatibility (C) and populated from Target.
+type CallbackQueryEvent struct {
+	At   time.Time
+	Data []byte
+
+	QueryID int64
+	UserID  int64
+
+	// Deprecated: use Target.Peer / Target.MessageID.
+	ChatID int64
+	MsgID  int
+
+	Origin       CallbackOrigin
+	Target       CallbackTarget
+	ChatInstance int64
+}
+
 func (e *CallbackQueryEvent) Type() EventType { return EventTypeCallbackQuery }
 func (e *CallbackQueryEvent) Timestamp() time.Time { return e.At }
+
+// IsInline returns true when the callback originated from an inline message.
+func (e *CallbackQueryEvent) IsInline() bool { return e != nil && e.Origin == CallbackOriginInline }
 
 type ReactionUpdatedEvent struct{ At time.Time; MsgID int; ChatID int64; Reaction string }
 func (e *ReactionUpdatedEvent) Type() EventType { return EventTypeReactionUpdated }
 func (e *ReactionUpdatedEvent) Timestamp() time.Time { return e.At }
+
+// InlineResultChosenEvent is observational feedback when an inline result is chosen/sent.
+type InlineResultChosenEvent struct {
+	At       time.Time
+	UserID   int64
+	Query    string
+	ResultID string
+	InlineID tg.InputBotInlineMessageIDClass
+}
+
+func (e *InlineResultChosenEvent) Type() EventType { return EventTypeInlineChosen }
+func (e *InlineResultChosenEvent) Timestamp() time.Time { return e.At }
 
 type EventHandler func(event Event)
 

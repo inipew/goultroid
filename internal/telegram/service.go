@@ -284,6 +284,27 @@ func (s *Service) EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass,
 	return err
 }
 
+// EditInlineBotMessage edits an inline-origin bot message via messages.editInlineBotMessage.
+func (s *Service) EditInlineBotMessage(ctx context.Context, inlineID tg.InputBotInlineMessageIDClass, text string, markup tg.ReplyMarkupClass) error {
+	if s.api == nil {
+		return fmt.Errorf("%w: api client is not initialized", core.ErrInternal)
+	}
+	if inlineID == nil {
+		return fmt.Errorf("%w: inline message id is nil", core.ErrInternal)
+	}
+	req := &tg.MessagesEditInlineBotMessageRequest{
+		ID: inlineID,
+	}
+	req.SetMessage(text)
+	if markup != nil {
+		req.SetReplyMarkup(markup)
+	}
+	_, err := retryOnFloodWait(ctx, func() (bool, error) {
+		return s.api.MessagesEditInlineBotMessage(ctx, req)
+	})
+	return err
+}
+
 // AnswerCallbackQuery sends an answer to a bot callback query.
 func (s *Service) AnswerCallbackQuery(ctx context.Context, queryID int64, text string, alert bool) error {
 	if s.api == nil {
@@ -307,19 +328,40 @@ func (s *Service) AnswerCallbackQuery(ctx context.Context, queryID int64, text s
 
 // AnswerInlineQuery answers an inline query with the prepared results.
 func (s *Service) AnswerInlineQuery(ctx context.Context, queryID int64, results []tg.InputBotInlineResultClass, nextOffset string, cacheTime int) error {
+	return s.AnswerInlineQueryOptions(ctx, queryID, results, core.InlineAnswerOptions{
+		Results:    results,
+		NextOffset: nextOffset,
+		CacheTime:  cacheTime,
+	})
+}
+
+// AnswerInlineQueryOptions answers an inline query with gallery/private/switch_pm support.
+func (s *Service) AnswerInlineQueryOptions(ctx context.Context, queryID int64, results []tg.InputBotInlineResultClass, opts core.InlineAnswerOptions) error {
 	if s.api == nil {
 		return fmt.Errorf("%w: api client is not initialized", core.ErrInternal)
 	}
+	if results == nil {
+		results = opts.Results
+	}
+	nextOffset := opts.NextOffset
+	cacheTime := opts.CacheTime
 
 	req := &tg.MessagesSetInlineBotResultsRequest{
 		QueryID:    queryID,
 		Results:    results,
 		CacheTime:  cacheTime,
 		NextOffset: nextOffset,
+		Gallery:    opts.Gallery,
+		Private:    opts.Private,
 	}
-	if nextOffset != "" {
-		req.SetFlags()
+	if opts.SwitchPM != nil {
+		req.SwitchPm = *opts.SwitchPM
 	}
+	if opts.SwitchWebView != nil {
+		req.SwitchWebview = *opts.SwitchWebView
+	}
+	// SetFlags computes flag bits for Gallery/Private/SwitchPM etc.
+	req.SetFlags()
 
 	_, err := retryOnFloodWait(ctx, func() (bool, error) {
 		return s.api.MessagesSetInlineBotResults(ctx, req)

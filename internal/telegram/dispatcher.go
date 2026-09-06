@@ -304,6 +304,7 @@ func (d *Dispatcher) RegisterHooks(dispatcher *tg.UpdateDispatcher) {
 	dispatcher.OnBotCallbackQuery(d.OnBotCallbackQuery)
 	dispatcher.OnInlineBotCallbackQuery(d.OnInlineBotCallbackQuery)
 	dispatcher.OnBotInlineQuery(d.OnBotInlineQuery)
+	dispatcher.OnBotInlineSend(d.OnBotInlineSend)
 	dispatcher.OnMessageReactions(d.OnMessageReactions)
 }
 
@@ -394,16 +395,72 @@ func (d *Dispatcher) OnDeleteChannelMessages(ctx context.Context, e tg.Entities,
 	return nil
 }
 
+// callbackInputPeer converts a Telegram PeerClass to InputPeerClass using Entities + resolver fallback.
+// For CallbackContext it ensures Edit/Delete can dispatch without guessing peer type.
+func (d *Dispatcher) callbackInputPeer(peer tg.PeerClass, e tg.Entities) tg.InputPeerClass {
+	if peer == nil {
+		return nil
+	}
+	switch p := peer.(type) {
+	case *tg.PeerUser:
+		var accessHash int64
+		if u, ok := e.Users[p.UserID]; ok && u != nil {
+			accessHash = u.AccessHash
+		}
+		if accessHash == 0 {
+			if resolver := d.getResolver(); resolver != nil {
+				// best-effort via storage; ignore error
+				// resolver expects string ref; use userID as string
+				if resolved, _, err := resolver.ResolveUser(context.Background(), fmt.Sprintf("%d", p.UserID)); err == nil {
+					if ipu, ok := resolved.(*tg.InputPeerUser); ok {
+						accessHash = ipu.AccessHash
+					}
+				}
+			}
+		}
+		return &tg.InputPeerUser{UserID: p.UserID, AccessHash: accessHash}
+	case *tg.PeerChat:
+		return &tg.InputPeerChat{ChatID: p.ChatID}
+	case *tg.PeerChannel:
+		var accessHash int64
+		if ch, ok := e.Channels[p.ChannelID]; ok && ch != nil {
+			accessHash = ch.AccessHash
+		}
+		if accessHash == 0 {
+			if resolver := d.getResolver(); resolver != nil {
+				if resolved, err := resolver.ResolveChat(context.Background(), fmt.Sprintf("-100%d", p.ChannelID)); err == nil {
+					if ipc, ok := resolved.(*tg.InputPeerChannel); ok {
+						accessHash = ipc.AccessHash
+					}
+				}
+			}
+		}
+		return &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: accessHash}
+	default:
+		return nil
+	}
+}
+
 // OnBotCallbackQuery handles inline keyboard button callback queries.
 func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, update *tg.UpdateBotCallbackQuery) error {
 	chatID := extractChatIDFromPeer(update.Peer)
+	inputPeer := d.callbackInputPeer(update.Peer, e)
+	target := core.CallbackTarget{
+		Origin:       core.CallbackOriginMessage,
+		Peer:         inputPeer,
+		MessageID:    update.MsgID,
+		ChatInstance: update.ChatInstance,
+	}
 	evt := &core.CallbackQueryEvent{
-		At:      time.Now(),
-		QueryID: update.QueryID,
-		UserID:  update.UserID,
-		ChatID:  chatID,
-		MsgID:   update.MsgID,
-		Data:    update.Data,
+		At:           time.Now(),
+		QueryID:      update.QueryID,
+		UserID:       update.UserID,
+		ChatID:       chatID,
+		MsgID:        update.MsgID,
+		Data:         update.Data,
+		Origin:       core.CallbackOriginMessage,
+		Target:       target,
+		ChatInstance: update.ChatInstance,
 	}
 
 	bus := d.getEventBus()
@@ -420,11 +477,21 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 
 // OnInlineBotCallbackQuery handles inline message button callback queries.
 func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities, update *tg.UpdateInlineBotCallbackQuery) error {
+	target := core.CallbackTarget{
+		Origin:       core.CallbackOriginInline,
+		InlineID:     update.MsgID,
+		ChatInstance: update.ChatInstance,
+	}
 	evt := &core.CallbackQueryEvent{
-		At:      time.Now(),
-		QueryID: update.QueryID,
-		UserID:  update.UserID,
-		Data:    update.Data,
+		At:           time.Now(),
+		QueryID:      update.QueryID,
+		UserID:       update.UserID,
+		ChatID:       0,
+		MsgID:        0,
+		Data:         update.Data,
+		Origin:       core.CallbackOriginInline,
+		Target:       target,
+		ChatInstance: update.ChatInstance,
 	}
 
 	bus := d.getEventBus()
@@ -446,6 +513,28 @@ func (d *Dispatcher) OnBotInlineQuery(ctx context.Context, e tg.Entities, update
 		return nil
 	}
 	return engine.Execute(ctx, d.getService(), update.QueryID, update.UserID, update.Query, update.Offset)
+}
+
+// OnBotInlineSend handles inline result chosen feedback (observational only).
+func (d *Dispatcher) OnBotInlineSend(ctx context.Context, e tg.Entities, update *tg.UpdateBotInlineSend) error {
+	bus := d.getEventBus()
+	if bus != nil {
+		var inlineID tg.InputBotInlineMessageIDClass
+		if msgID, ok := update.GetMsgID(); ok {
+			inlineID = msgID
+		} else if update.MsgID != nil {
+			inlineID = update.MsgID
+		}
+		bus.Publish(&core.InlineResultChosenEvent{
+			At:       time.Now(),
+			UserID:   update.UserID,
+			Query:    update.Query,
+			ResultID: update.ID,
+			InlineID: inlineID,
+		})
+	}
+	// Observational: no hard dependency
+	return nil
 }
 
 // OnMessageReactions handles reaction updates on messages.

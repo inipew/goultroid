@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"go.uber.org/zap"
 )
@@ -29,15 +30,41 @@ func (m *mockHandler) HandleCallback(ctx *CallbackContext) error {
 
 type recordingService struct {
 	core.MockTelegramServicer
-	lastAnswerQueryID int64
-	lastAnswerText    string
-	lastAnswerAlert   bool
+	lastAnswerQueryID  int64
+	lastAnswerText     string
+	lastAnswerAlert    bool
+	lastEditInlineID   tg.InputBotInlineMessageIDClass
+	lastEditInlineText string
+	lastEditPeer       tg.InputPeerClass
+	lastEditMsgID      int
+	lastEditText       string
+	lastDeletePeer     tg.InputPeerClass
+	lastDeleteMsgIDs   []int
 }
 
 func (r *recordingService) AnswerCallbackQuery(ctx context.Context, queryID int64, text string, alert bool) error {
 	r.lastAnswerQueryID = queryID
 	r.lastAnswerText = text
 	r.lastAnswerAlert = alert
+	return nil
+}
+
+func (r *recordingService) EditInlineBotMessage(ctx context.Context, inlineID tg.InputBotInlineMessageIDClass, text string, markup tg.ReplyMarkupClass) error {
+	r.lastEditInlineID = inlineID
+	r.lastEditInlineText = text
+	return nil
+}
+
+func (r *recordingService) EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass, msgID int, text string, markup tg.ReplyMarkupClass) error {
+	r.lastEditPeer = peer
+	r.lastEditMsgID = msgID
+	r.lastEditText = text
+	return nil
+}
+
+func (r *recordingService) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {
+	r.lastDeletePeer = peer
+	r.lastDeleteMsgIDs = msgIDs
 	return nil
 }
 
@@ -191,5 +218,231 @@ func TestRouter_RegisterValidation(t *testing.T) {
 	}
 	if err := router.Register(h); err == nil {
 		t.Errorf("expected error registering duplicate handler")
+	}
+}
+
+func TestRouter_Dispatch_RawNoop(t *testing.T) {
+	router := NewRouter(zap.NewNop(), nil)
+	svc := &recordingService{}
+	evt := &core.CallbackQueryEvent{
+		QueryID: 101,
+		UserID:  12345,
+		Data:    []byte("noop"),
+	}
+
+	err := router.Dispatch(context.Background(), evt, svc)
+	if err != nil {
+		t.Fatalf("unexpected error for raw noop: %v", err)
+	}
+	if svc.lastAnswerQueryID != 101 {
+		t.Errorf("expected silent answer with queryID 101, got %d", svc.lastAnswerQueryID)
+	}
+	if svc.lastAnswerText != "" || svc.lastAnswerAlert {
+		t.Errorf("expected empty toast for noop button")
+	}
+}
+
+func TestRouter_Dispatch_ExpiredState(t *testing.T) {
+	store := NewStateStore()
+	router := NewRouter(zap.NewNop(), store)
+	handler := &mockHandler{namespace: "exp"}
+	_ = router.Register(handler)
+
+	token := store.Store("short-lived", 12345, 10*time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
+
+	svc := &recordingService{}
+	evt := &core.CallbackQueryEvent{
+		QueryID: 102,
+		UserID:  12345,
+		Data:    EncodeCallbackData("exp", "click", token),
+	}
+
+	err := router.Dispatch(context.Background(), evt, svc)
+	if !errors.Is(err, ErrStateExpired) {
+		t.Fatalf("expected ErrStateExpired, got %v", err)
+	}
+	if !svc.lastAnswerAlert {
+		t.Errorf("expected alert toast for expired state")
+	}
+}
+
+func TestRouter_Dispatch_SingleUseReplayProtection(t *testing.T) {
+	store := NewStateStore()
+	router := NewRouter(zap.NewNop(), store)
+	handler := &mockHandler{namespace: "action"}
+	_ = router.Register(handler)
+
+	token := store.StoreWithScope("one-time-token", StateScope{
+		UserID:    12345,
+		SingleUse: true,
+	}, 5*time.Minute)
+
+	svc := &recordingService{}
+	evt := &core.CallbackQueryEvent{
+		QueryID: 103,
+		UserID:  12345,
+		Data:    EncodeCallbackData("action", "delete", token),
+	}
+
+	// First click: should succeed and consume state
+	err := router.Dispatch(context.Background(), evt, svc)
+	if err != nil {
+		t.Fatalf("first click error: %v", err)
+	}
+
+	// Second click: state is consumed, should return ErrStateNotFound
+	handler.handled = false
+	err = router.Dispatch(context.Background(), evt, svc)
+	if !errors.Is(err, ErrStateNotFound) {
+		t.Fatalf("expected ErrStateNotFound on second click, got %v", err)
+	}
+	if handler.handled {
+		t.Errorf("handler should not run on second click")
+	}
+}
+
+func TestRouter_Dispatch_ScopeRestrictions(t *testing.T) {
+	store := NewStateStore()
+	router := NewRouter(zap.NewNop(), store)
+	handler := &mockHandler{namespace: "scoped"}
+	_ = router.Register(handler)
+
+	// 1. Chat mismatch
+	tokenChat := store.StoreWithScope("data", StateScope{
+		UserID: 12345,
+		ChatID: 9999,
+	}, 5*time.Minute)
+
+	svc := &recordingService{}
+	evt := &core.CallbackQueryEvent{
+		QueryID: 104,
+		UserID:  12345,
+		ChatID:  8888, // wrong chat
+		Data:    EncodeCallbackData("scoped", "act", tokenChat),
+	}
+	err := router.Dispatch(context.Background(), evt, svc)
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("expected ErrUnauthorized for chat mismatch, got %v", err)
+	}
+
+	// 2. MessageID mismatch
+	tokenMsg := store.StoreWithScope("data", StateScope{
+		UserID:    12345,
+		MessageID: 55,
+	}, 5*time.Minute)
+
+	evt2 := &core.CallbackQueryEvent{
+		QueryID: 105,
+		UserID:  12345,
+		Target: core.CallbackTarget{
+			MessageID: 77, // wrong msg ID
+		},
+		Data: EncodeCallbackData("scoped", "act", tokenMsg),
+	}
+	err = router.Dispatch(context.Background(), evt2, svc)
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("expected ErrUnauthorized for message mismatch, got %v", err)
+	}
+
+	// 3. Namespace mismatch
+	tokenNs := store.StoreWithScope("data", StateScope{
+		UserID:    12345,
+		Namespace: "expected_ns",
+	}, 5*time.Minute)
+
+	evt3 := &core.CallbackQueryEvent{
+		QueryID: 106,
+		UserID:  12345,
+		Data:    EncodeCallbackData("scoped", "act", tokenNs),
+	}
+	err = router.Dispatch(context.Background(), evt3, svc)
+	if !errors.Is(err, ErrInvalidCallbackData) {
+		t.Errorf("expected ErrInvalidCallbackData for namespace mismatch, got %v", err)
+	}
+}
+
+func TestCallbackContext_InlineAndMessageEditDelete(t *testing.T) {
+	svc := &recordingService{}
+
+	// 1. Inline edit dispatches to EditInlineBotMessage
+	inlineID := &tg.InputBotInlineMessageID64{DCID: 1, ID: 123, AccessHash: 456}
+	inlineCtx := &CallbackContext{
+		Origin: core.CallbackOriginInline,
+		Target: core.CallbackTarget{
+			Origin:   core.CallbackOriginInline,
+			InlineID: inlineID,
+		},
+		Service: svc,
+	}
+
+	err := inlineCtx.Edit("new inline text", nil)
+	if err != nil {
+		t.Fatalf("unexpected inline edit error: %v", err)
+	}
+	if svc.lastEditInlineText != "new inline text" {
+		t.Errorf("expected EditInlineBotMessage text 'new inline text', got %q", svc.lastEditInlineText)
+	}
+
+	// 2. Inline delete is rejected with ErrUnsupported
+	err = inlineCtx.Delete()
+	if !errors.Is(err, core.ErrUnsupported) {
+		t.Errorf("expected ErrUnsupported deleting inline message, got %v", err)
+	}
+
+	// 3. Normal message edit dispatches to EditMessageMarkup
+	peer := &tg.InputPeerChat{ChatID: 42}
+	msgCtx := &CallbackContext{
+		Origin: core.CallbackOriginMessage,
+		Target: core.CallbackTarget{
+			Origin:    core.CallbackOriginMessage,
+			Peer:      peer,
+			MessageID: 99,
+		},
+		Service: svc,
+	}
+
+	err = msgCtx.Edit("new msg text", nil)
+	if err != nil {
+		t.Fatalf("unexpected message edit error: %v", err)
+	}
+	if svc.lastEditText != "new msg text" || svc.lastEditMsgID != 99 {
+		t.Errorf("expected EditMessageMarkup, got msgID=%d text=%q", svc.lastEditMsgID, svc.lastEditText)
+	}
+
+	// 4. Normal message delete dispatches to DeleteMessage
+	err = msgCtx.Delete()
+	if err != nil {
+		t.Fatalf("unexpected message delete error: %v", err)
+	}
+	if len(svc.lastDeleteMsgIDs) != 1 || svc.lastDeleteMsgIDs[0] != 99 {
+		t.Errorf("expected DeleteMessage with msgID 99, got %+v", svc.lastDeleteMsgIDs)
+	}
+}
+
+type panickingHandler struct{}
+
+func (p *panickingHandler) Namespace() string { return "panic" }
+func (p *panickingHandler) HandleCallback(ctx *CallbackContext) error {
+	panic("callback test panic")
+}
+
+func TestRouter_HandlerPanicRecovery(t *testing.T) {
+	router := NewRouter(zap.NewNop(), nil)
+	_ = router.Register(&panickingHandler{})
+
+	svc := &recordingService{}
+	evt := &core.CallbackQueryEvent{
+		QueryID: 107,
+		UserID:  12345,
+		Data:    EncodeCallbackData("panic", "fail", "0"),
+	}
+
+	err := router.Dispatch(context.Background(), evt, svc)
+	if err == nil {
+		t.Fatalf("expected error from recovered panic, got nil")
+	}
+	if !errors.Is(err, core.ErrInternal) {
+		t.Errorf("expected ErrInternal, got %v", err)
 	}
 }

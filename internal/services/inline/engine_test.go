@@ -46,6 +46,18 @@ func (r *recordingInlineService) AnswerInlineQuery(ctx context.Context, queryID 
 	return nil
 }
 
+func (r *recordingInlineService) AnswerInlineQueryOptions(ctx context.Context, queryID int64, results []tg.InputBotInlineResultClass, opts core.InlineAnswerOptions) error {
+	r.lastQueryID = queryID
+	if opts.Results != nil {
+		r.lastResults = opts.Results
+	} else {
+		r.lastResults = results
+	}
+	r.lastNextOffset = opts.NextOffset
+	r.lastCacheTime = opts.CacheTime
+	return nil
+}
+
 func TestRegistry_RegisterAndResolve(t *testing.T) {
 	reg := NewRegistry()
 
@@ -206,5 +218,150 @@ func TestEngine_Execute(t *testing.T) {
 	err = engine.Execute(ctx, svc, 99999, 9999, "nonexistent", "")
 	if !errors.Is(err, ErrNoMatchingHandler) {
 		t.Errorf("expected ErrNoMatchingHandler, got %v", err)
+	}
+}
+
+type mockInlineHandlerV2 struct {
+	mockInlineHandler
+	matcher      InlineMatcher
+	accessPolicy InlineAccessPolicy
+	cachePolicy  CachePolicy
+	response     *InlineResponse
+}
+
+func (m *mockInlineHandlerV2) Matcher() InlineMatcher           { return m.matcher }
+func (m *mockInlineHandlerV2) AccessPolicy() InlineAccessPolicy { return m.accessPolicy }
+func (m *mockInlineHandlerV2) CachePolicy() CachePolicy         { return m.cachePolicy }
+func (m *mockInlineHandlerV2) HandleInlineV2(ctx *InlineContext) (*InlineResponse, error) {
+	m.invoked = true
+	m.lastCtx = ctx
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.response, nil
+}
+
+func TestEngine_Matcher_PrefixAndRegex(t *testing.T) {
+	reg := NewRegistry()
+
+	prefixMatcher := NewPrefixMatcher("wiki")
+	hPrefix := &mockInlineHandlerV2{
+		mockInlineHandler: mockInlineHandler{pattern: "wiki"},
+		matcher:           prefixMatcher,
+		response: &InlineResponse{
+			Results: []InlineResult{{ID: "wiki-1", Title: "Wikipedia"}},
+		},
+	}
+	_ = reg.RegisterWithPriority(hPrefix, 10)
+
+	regexMatcher, _ := NewRegexMatcher(`^math\s+(\d+)\+(\d+)`)
+	hRegex := &mockInlineHandlerV2{
+		mockInlineHandler: mockInlineHandler{pattern: "math"},
+		matcher:           regexMatcher,
+		response: &InlineResponse{
+			Results: []InlineResult{{ID: "math-1", Title: "Calculator"}},
+		},
+	}
+	_ = reg.RegisterWithPriority(hRegex, 20)
+
+	// Test prefix match
+	h, args, ok := reg.Resolve("wiki golang programming")
+	if !ok || h != hPrefix || len(args) != 2 || args[0] != "golang" || args[1] != "programming" {
+		t.Errorf("unexpected prefix resolve: ok=%v h=%v args=%v", ok, h, args)
+	}
+
+	// Test regex match
+	h, args, ok = reg.Resolve("math 5+10")
+	if !ok || h != hRegex || len(args) != 2 || args[0] != "5" || args[1] != "10" {
+		t.Errorf("unexpected regex resolve: ok=%v h=%v args=%v", ok, h, args)
+	}
+}
+
+func TestEngine_AccessPolicy(t *testing.T) {
+	reg := NewRegistry()
+	hOwner := &mockInlineHandlerV2{
+		mockInlineHandler: mockInlineHandler{pattern: "secret"},
+		accessPolicy:      InlineAccessPolicy{OwnerOnly: true},
+		response: &InlineResponse{
+			Results: []InlineResult{{ID: "s-1", Title: "Secret"}},
+		},
+	}
+	_ = reg.Register(hOwner)
+
+	perms := core.NewPermissions(1111, []int64{2222}) // owner=1111, sudo=2222
+	engine := NewEngine(reg, zap.NewNop())
+	engine.SetPermissions(perms)
+	svc := &recordingInlineService{}
+	ctx := context.Background()
+
+	// 1. Non-owner (3333) should be rejected
+	err := engine.Execute(ctx, svc, 1, 3333, "secret", "")
+	if err == nil {
+		t.Fatalf("expected error for unauthorized user, got nil")
+	}
+	if hOwner.invoked {
+		t.Errorf("handler should not have been invoked for non-owner")
+	}
+
+	// 2. Owner (1111) should succeed
+	hOwner.invoked = false
+	err = engine.Execute(ctx, svc, 2, 1111, "secret", "")
+	if err != nil {
+		t.Fatalf("unexpected error for owner: %v", err)
+	}
+	if !hOwner.invoked {
+		t.Errorf("handler should have been invoked for owner")
+	}
+}
+
+func TestEngine_NativePagination(t *testing.T) {
+	reg := NewRegistry()
+	hPaging := &mockInlineHandlerV2{
+		mockInlineHandler: mockInlineHandler{pattern: "paged"},
+		response: &InlineResponse{
+			Results:    []InlineResult{{ID: "item-1"}, {ID: "item-2"}},
+			NextOffset: "offset-token-abc",
+		},
+	}
+	_ = reg.Register(hPaging)
+
+	engine := NewEngine(reg, zap.NewNop())
+	svc := &recordingInlineService{}
+	ctx := context.Background()
+
+	err := engine.Execute(ctx, svc, 10, 100, "paged", "")
+	if err != nil {
+		t.Fatalf("execution error: %v", err)
+	}
+	if svc.lastNextOffset != "offset-token-abc" {
+		t.Errorf("expected native next offset 'offset-token-abc', got %q", svc.lastNextOffset)
+	}
+	if len(svc.lastResults) != 2 {
+		t.Errorf("expected 2 results, got %d", len(svc.lastResults))
+	}
+}
+
+type panickingInlineHandler struct{}
+
+func (p *panickingInlineHandler) Pattern() string     { return "inlinepanic" }
+func (p *panickingInlineHandler) Description() string { return "panics" }
+func (p *panickingInlineHandler) HandleInline(ctx *InlineContext) ([]InlineResult, error) {
+	panic("inline test panic")
+}
+
+func TestEngine_PanicRecovery(t *testing.T) {
+	reg := NewRegistry()
+	_ = reg.Register(&panickingInlineHandler{})
+
+	engine := NewEngine(reg, zap.NewNop())
+	svc := &recordingInlineService{}
+	ctx := context.Background()
+
+	err := engine.Execute(ctx, svc, 99, 100, "inlinepanic", "")
+	if err == nil {
+		t.Fatalf("expected error from recovered panic, got nil")
+	}
+	if !errors.Is(err, core.ErrInternal) {
+		t.Errorf("expected ErrInternal from panic recovery, got %v", err)
 	}
 }

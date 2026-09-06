@@ -96,6 +96,89 @@ func NewConfirmCancelRow(confirmData, cancelData []byte) ButtonRow {
 	}
 }
 
+// --- Phase 3 UX helpers ---
+
+// NewCloseRow creates a single Close button row. Handler should call DisableButtons on click.
+func NewCloseRow(closeData []byte) ButtonRow {
+	if len(closeData) == 0 {
+		closeData = []byte("noop")
+	}
+	return ButtonRow{NewCallbackButton("✖ Close", closeData)}
+}
+
+// NewBackRow creates a Back navigation button.
+func NewBackRow(backData []byte) ButtonRow {
+	return ButtonRow{NewCallbackButton("◀ Back", backData)}
+}
+
+// NewPaginationMarkup wraps NewPaginationRow into a Markup for convenience.
+func NewPaginationMarkup(prevData, nextData []byte, currentPage, totalPages int) Markup {
+	return NewMarkup(NewPaginationRow(prevData, nextData, currentPage, totalPages))
+}
+
+// NewConfirmCancelMarkup wraps confirm/cancel row into Markup.
+func NewConfirmCancelMarkup(confirmData, cancelData []byte) Markup {
+	return NewMarkup(NewConfirmCancelRow(confirmData, cancelData))
+}
+
+// NewCloseMarkup creates a markup with a single Close button.
+func NewCloseMarkup(closeData []byte) Markup {
+	return NewMarkup(NewCloseRow(closeData))
+}
+
+// NewBackMarkup creates a markup with a Back button.
+func NewBackMarkup(backData []byte) Markup {
+	return NewMarkup(NewBackRow(backData))
+}
+
+// NewHelpSwitchRow creates a SwitchInline row for inline help search.
+func NewHelpSwitchRow(query string) ButtonRow {
+	if query == "" {
+		query = "help"
+	}
+	return ButtonRow{NewSwitchInlineButton("🔍 Help", query, false)}
+}
+
+// NewCommonResultRow creates a row with common inline result actions: URL + SwitchInline Help.
+func NewCommonResultRow(helpQuery string, url string, urlText string) ButtonRow {
+	var row ButtonRow
+	if url != "" {
+		if urlText == "" {
+			urlText = "🔗 Open"
+		}
+		row = append(row, NewURLButton(urlText, url))
+	}
+	if helpQuery != "" {
+		row = append(row, NewSwitchInlineButton("🔍 Help", helpQuery, false))
+	}
+	return row
+}
+
+// NewStandardActionRow builds a row with Callback + URL + SwitchInline as needed.
+// Empty data/url/query are skipped.
+func NewStandardActionRow(callbackData []byte, callbackText string, url string, urlText string, inlineQuery string, inlineText string) ButtonRow {
+	var row ButtonRow
+	if len(callbackData) > 0 {
+		if callbackText == "" {
+			callbackText = "Action"
+		}
+		row = append(row, NewCallbackButton(callbackText, callbackData))
+	}
+	if url != "" {
+		if urlText == "" {
+			urlText = "Open"
+		}
+		row = append(row, NewURLButton(urlText, url))
+	}
+	if inlineQuery != "" {
+		if inlineText == "" {
+			inlineText = "Search"
+		}
+		row = append(row, NewSwitchInlineButton(inlineText, inlineQuery, false))
+	}
+	return row
+}
+
 // ToTelegramMarkup converts the high-level Markup into a Telegram MTProto tg.ReplyMarkupClass.
 func (m Markup) ToTelegramMarkup() tg.ReplyMarkupClass {
 	if len(m.Rows) == 0 {

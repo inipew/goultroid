@@ -56,17 +56,19 @@ import (
 )
 
 type App struct {
-	cfg       *config.Config
-	logger    *zap.Logger
-	db        *database.DB
-	client    *telegram.Client
-	plugins   *plugin.Manager
-	router    *core.Router
-	sched     *scheduler.Engine
-	eventBus  *core.EventBus
-	assistant assistant.Client
-	limiter   *ratelimit.Limiter
-	addonMgr  *addon.Manager
+	cfg           *config.Config
+	logger        *zap.Logger
+	db            *database.DB
+	client        *telegram.Client
+	plugins       *plugin.Manager
+	router        *core.Router
+	sched         *scheduler.Engine
+	eventBus      *core.EventBus
+	assistant     assistant.Client
+	limiter       *ratelimit.Limiter
+	addonMgr      *addon.Manager
+	callbackStore *callback.StateStore
+	inlineEngine  *inline.Engine
 }
 
 func New(cfg *config.Config) (*App, error) {
@@ -139,14 +141,26 @@ func New(cfg *config.Config) (*App, error) {
 
 	callbackStore := callback.NewStateStore()
 	callbackRouter := callback.NewRouter(logger, callbackStore)
+	callbackRouter.SetMetrics(metrics)
+	// Fase 4: dedicated limiter for callbacks (30/min, burst 10) separate from commands
+	interactionLimiter := ratelimit.New(ratelimit.Policy{Limit: 30, Window: time.Minute, Burst: 10}, 5*time.Minute)
+	callbackRouter.SetLimiter(interactionLimiter)
+	callbackRouter.SetTimeout(15 * time.Second)
 	dispatcher.SetCallbackRouter(callbackRouter)
+	// lifecycle for expired callback buttons (shutdown-aware: tied to background context, Stop() on App shutdown)
+	callbackStore.Start(context.Background())
 
 	inlineRegistry := inline.NewRegistry()
 	_ = inlineRegistry.Register(&defaultCatchAllInlineHandler{router: router, startTime: time.Now()})
 	_ = inlineRegistry.Register(&defaultHelpInlineHandler{router: router})
 	_ = inlineRegistry.Register(&defaultPingInlineHandler{startTime: time.Now()})
 	inlineEngine := inline.NewEngine(inlineRegistry, logger)
+	inlineEngine.SetMetrics(metrics)
+	inlineEngine.SetLimiter(interactionLimiter)
+	inlineEngine.SetTimeout(4 * time.Second)
+	inlineEngine.SetPermissions(perms)
 	dispatcher.SetInlineEngine(inlineEngine)
+	inlineEngine.Cache().Start(context.Background())
 
 	modService := moderation.NewService(db, client.Service, logger)
 	schedEngine := scheduler.NewEngine(db, client.Service, router, perms, logger)
@@ -240,11 +254,20 @@ func New(cfg *config.Config) (*App, error) {
 		cfg: cfg, logger: logger, db: db, client: client, plugins: mgr,
 		router: router, sched: schedEngine, eventBus: eventBus,
 		assistant: assistantClient, limiter: limiter, addonMgr: addonManager,
+		callbackStore: callbackStore, inlineEngine: inlineEngine,
 	}, nil
 }
 
 func (a *App) Run(ctx context.Context) error {
 	a.logger.Info("starting GoUltroid...")
+	// Fase 4: shutdown-aware cleanup for interaction state
+	if a.callbackStore != nil {
+		defer a.callbackStore.Stop()
+	}
+	if a.inlineEngine != nil && a.inlineEngine.Cache() != nil {
+		defer a.inlineEngine.Cache().Stop()
+		defer func() { _ = a.inlineEngine.Cache().Prune() }()
+	}
 	if a.client != nil && a.client.Dispatcher() != nil {
 		a.client.Dispatcher().SetRootContext(ctx)
 		a.client.Dispatcher().Start(ctx)

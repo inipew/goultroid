@@ -314,3 +314,168 @@ func TestDispatcher_RootContextCancellation(t *testing.T) {
 		t.Fatal("command context was not canceled when rootCtx was canceled")
 	}
 }
+
+func TestDispatcher_OnBotCallbackQuery_MessageTarget(t *testing.T) {
+	logger := zap.NewNop()
+	router := core.NewRouter(".")
+	dispatcher := NewDispatcher(router, nil, nil, logger)
+
+	bus := core.NewEventBus()
+	defer bus.Close()
+	dispatcher.SetEventBus(bus)
+
+	var receivedEvt *core.CallbackQueryEvent
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	unsub := bus.Subscribe(core.EventTypeCallbackQuery, func(e core.Event) {
+		if evt, ok := e.(*core.CallbackQueryEvent); ok {
+			receivedEvt = evt
+			wg.Done()
+		}
+	})
+	defer unsub()
+
+	entities := tg.Entities{
+		Users: map[int64]*tg.User{
+			1001: {ID: 1001, AccessHash: 99999},
+		},
+	}
+
+	update := &tg.UpdateBotCallbackQuery{
+		QueryID:      777,
+		UserID:       1001,
+		Peer:         &tg.PeerUser{UserID: 1001},
+		MsgID:        42,
+		ChatInstance: 8888,
+		Data:         []byte("noop"),
+	}
+
+	err := dispatcher.OnBotCallbackQuery(context.Background(), entities, update)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wg.Wait()
+
+	if receivedEvt == nil {
+		t.Fatal("expected CallbackQueryEvent to be published")
+	}
+	if receivedEvt.Origin != core.CallbackOriginMessage {
+		t.Errorf("expected Origin Message, got %v", receivedEvt.Origin)
+	}
+	if receivedEvt.Target.Origin != core.CallbackOriginMessage {
+		t.Errorf("expected Target Origin Message, got %v", receivedEvt.Target.Origin)
+	}
+	if receivedEvt.Target.MessageID != 42 {
+		t.Errorf("expected MessageID 42, got %d", receivedEvt.Target.MessageID)
+	}
+	if receivedEvt.Target.ChatInstance != 8888 {
+		t.Errorf("expected ChatInstance 8888, got %d", receivedEvt.Target.ChatInstance)
+	}
+	ipu, ok := receivedEvt.Target.Peer.(*tg.InputPeerUser)
+	if !ok || ipu.UserID != 1001 || ipu.AccessHash != 99999 {
+		t.Errorf("expected InputPeerUser with access hash 99999, got %+v", receivedEvt.Target.Peer)
+	}
+}
+
+func TestDispatcher_OnInlineBotCallbackQuery_InlineTarget(t *testing.T) {
+	logger := zap.NewNop()
+	router := core.NewRouter(".")
+	dispatcher := NewDispatcher(router, nil, nil, logger)
+
+	bus := core.NewEventBus()
+	defer bus.Close()
+	dispatcher.SetEventBus(bus)
+
+	var receivedEvt *core.CallbackQueryEvent
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	unsub := bus.Subscribe(core.EventTypeCallbackQuery, func(e core.Event) {
+		if evt, ok := e.(*core.CallbackQueryEvent); ok {
+			receivedEvt = evt
+			wg.Done()
+		}
+	})
+	defer unsub()
+
+	inlineID := &tg.InputBotInlineMessageID64{DCID: 2, ID: 1002, AccessHash: 55555}
+	update := &tg.UpdateInlineBotCallbackQuery{
+		QueryID:      888,
+		UserID:       2002,
+		MsgID:        inlineID,
+		ChatInstance: 9999,
+		Data:         []byte("noop"),
+	}
+
+	err := dispatcher.OnInlineBotCallbackQuery(context.Background(), tg.Entities{}, update)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wg.Wait()
+
+	if receivedEvt == nil {
+		t.Fatal("expected CallbackQueryEvent to be published")
+	}
+	if receivedEvt.Origin != core.CallbackOriginInline {
+		t.Errorf("expected Origin Inline, got %v", receivedEvt.Origin)
+	}
+	if receivedEvt.Target.Origin != core.CallbackOriginInline {
+		t.Errorf("expected Target Origin Inline, got %v", receivedEvt.Target.Origin)
+	}
+	if receivedEvt.Target.InlineID == nil {
+		t.Fatalf("expected Target InlineID to be preserved")
+	}
+	if receivedEvt.Target.ChatInstance != 9999 {
+		t.Errorf("expected ChatInstance 9999, got %d", receivedEvt.Target.ChatInstance)
+	}
+}
+
+func TestDispatcher_OnBotInlineSend_FeedbackEvent(t *testing.T) {
+	logger := zap.NewNop()
+	router := core.NewRouter(".")
+	dispatcher := NewDispatcher(router, nil, nil, logger)
+
+	bus := core.NewEventBus()
+	defer bus.Close()
+	dispatcher.SetEventBus(bus)
+
+	var receivedEvt *core.InlineResultChosenEvent
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	unsub := bus.Subscribe(core.EventTypeInlineChosen, func(e core.Event) {
+		if evt, ok := e.(*core.InlineResultChosenEvent); ok {
+			receivedEvt = evt
+			wg.Done()
+		}
+	})
+	defer unsub()
+
+	inlineID := &tg.InputBotInlineMessageID64{DCID: 1, ID: 5005, AccessHash: 12345}
+	update := &tg.UpdateBotInlineSend{
+		UserID: 3003,
+		Query:  "ping",
+		ID:     "result-ping-1",
+		MsgID:  inlineID,
+	}
+
+	err := dispatcher.OnBotInlineSend(context.Background(), tg.Entities{}, update)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wg.Wait()
+
+	if receivedEvt == nil {
+		t.Fatal("expected InlineResultChosenEvent to be published")
+	}
+	if receivedEvt.UserID != 3003 || receivedEvt.Query != "ping" || receivedEvt.ResultID != "result-ping-1" {
+		t.Errorf("unexpected received feedback event: %+v", receivedEvt)
+	}
+	if receivedEvt.InlineID == nil {
+		t.Errorf("expected InlineID to be preserved")
+	}
+}

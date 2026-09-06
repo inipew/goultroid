@@ -24,6 +24,9 @@ func (m *MockTelegramServicer) EditMessage(ctx context.Context, peer tg.InputPee
 func (m *MockTelegramServicer) EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass, msgID int, text string, markup tg.ReplyMarkupClass) error {
 	return nil
 }
+func (m *MockTelegramServicer) EditInlineBotMessage(ctx context.Context, inlineID tg.InputBotInlineMessageIDClass, text string, markup tg.ReplyMarkupClass) error {
+	return nil
+}
 func (m *MockTelegramServicer) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {
 	return nil
 }
@@ -31,6 +34,9 @@ func (m *MockTelegramServicer) AnswerCallbackQuery(ctx context.Context, queryID 
 	return nil
 }
 func (m *MockTelegramServicer) AnswerInlineQuery(ctx context.Context, queryID int64, results []tg.InputBotInlineResultClass, nextOffset string, cacheTime int) error {
+	return nil
+}
+func (m *MockTelegramServicer) AnswerInlineQueryOptions(ctx context.Context, queryID int64, results []tg.InputBotInlineResultClass, opts InlineAnswerOptions) error {
 	return nil
 }
 func (m *MockTelegramServicer) React(ctx context.Context, peer tg.InputPeerClass, msgID int, emoji string) error {

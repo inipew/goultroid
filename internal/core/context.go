@@ -19,9 +19,11 @@ type TelegramServicer interface {
 	SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error)
 	EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error
 	EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass, msgID int, text string, markup tg.ReplyMarkupClass) error
+	EditInlineBotMessage(ctx context.Context, inlineID tg.InputBotInlineMessageIDClass, text string, markup tg.ReplyMarkupClass) error
 	DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error
 	AnswerCallbackQuery(ctx context.Context, queryID int64, text string, alert bool) error
 	AnswerInlineQuery(ctx context.Context, queryID int64, results []tg.InputBotInlineResultClass, nextOffset string, cacheTime int) error
+	AnswerInlineQueryOptions(ctx context.Context, queryID int64, results []tg.InputBotInlineResultClass, opts InlineAnswerOptions) error
 	React(ctx context.Context, peer tg.InputPeerClass, msgID int, emoji string) error
 	GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) (*tg.Message, error)
 	PinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, silent bool) error
@@ -56,6 +58,17 @@ type TelegramServicer interface {
 	DeleteProfilePhotos(ctx context.Context, limit int) (int, error)
 	GetDialogs(ctx context.Context, limit int) ([]*Chat, error)
 	GetContacts(ctx context.Context) ([]*User, error)
+}
+
+// InlineAnswerOptions carries Telegram's inline response policy (gallery/private/switch_pm).
+type InlineAnswerOptions struct {
+	Results    []tg.InputBotInlineResultClass
+	NextOffset string
+	CacheTime  int
+	Gallery    bool
+	Private    bool
+	SwitchPM   *tg.InlineBotSwitchPM
+	SwitchWebView *tg.InlineBotWebView
 }
 
 // MediaInfo stores metadata and download location for message attachments.
