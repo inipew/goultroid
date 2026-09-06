@@ -44,6 +44,7 @@ type CommandExecution struct {
 	Chat           *Chat
 	Target         *Chat
 	TriggerMessage *Message
+	Sender         *User
 	PeerID         tg.InputPeerClass
 	CorrelationID  string
 }
