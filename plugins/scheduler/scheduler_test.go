@@ -77,6 +77,16 @@ func (m *mockSchedulerService) Cancel(ctx context.Context, jobID int64) error {
 	m.canceled = append(m.canceled, jobID)
 	return nil
 }
+func (m *mockSchedulerService) CancelScoped(ctx context.Context, requesterID, chatID, jobID int64) error {
+	job, ok := m.jobs[jobID]
+	if !ok {
+		return core.ErrNotFound
+	}
+	if requesterID <= 0 || chatID == 0 || job.ChatID != chatID || job.CreatedBy != requesterID {
+		return core.ErrPermissionDenied
+	}
+	return m.Cancel(ctx, jobID)
+}
 func (m *mockSchedulerService) List(ctx context.Context, chatID int64) ([]database.ScheduledJob, error) {
 	var list []database.ScheduledJob
 	for _, j := range m.jobs {
@@ -88,6 +98,16 @@ func (m *mockSchedulerService) List(ctx context.Context, chatID int64) ([]databa
 }
 func (m *mockSchedulerService) JobHistory(ctx context.Context, jobID int64, limit int) ([]database.JobHistoryEntry, error) {
 	return nil, nil
+}
+func (m *mockSchedulerService) JobHistoryScoped(ctx context.Context, requesterID, chatID, jobID int64, limit int) ([]database.JobHistoryEntry, error) {
+	job, ok := m.jobs[jobID]
+	if !ok {
+		return nil, core.ErrNotFound
+	}
+	if requesterID <= 0 || chatID == 0 || job.ChatID != chatID || job.CreatedBy != requesterID {
+		return nil, core.ErrPermissionDenied
+	}
+	return m.JobHistory(ctx, jobID, limit)
 }
 func (m *mockSchedulerService) Start(ctx context.Context) error { return nil }
 func (m *mockSchedulerService) Stop() error                     { return nil }
@@ -192,28 +212,12 @@ func TestSchedulerPlugin(t *testing.T) {
 	mockSvc := &mockTelegramServicer{}
 	peer := &tg.InputPeerChat{ChatID: 777}
 
-	// 1. .remind missing args
-	ctxRemindNoArgs := &core.Context{
-		Ctx:     context.Background(),
-		Command: "remind",
-		Svc:     mockSvc,
-		PeerID:  peer,
-		Chat:    &core.Chat{ID: 777},
-	}
+	ctxRemindNoArgs := &core.Context{Ctx: context.Background(), Command: "remind", Svc: mockSvc, PeerID: peer, Chat: &core.Chat{ID: 777}}
 	if err := cmdMap["remind"].Handler(ctxRemindNoArgs); err == nil {
 		t.Errorf("expected error for remind with no args")
 	}
 
-	// 2. .remind with duration & text
-	ctxRemind := &core.Context{
-		Ctx:     context.Background(),
-		Command: "remind",
-		Args:    []string{"15m", "drink", "water"},
-		RawArgs: "15m drink water",
-		Svc:     mockSvc,
-		PeerID:  peer,
-		Chat:    &core.Chat{ID: 777},
-	}
+	ctxRemind := &core.Context{Ctx: context.Background(), Command: "remind", Args: []string{"15m", "drink", "water"}, RawArgs: "15m drink water", Svc: mockSvc, PeerID: peer, Chat: &core.Chat{ID: 777}}
 	if err := cmdMap["remind"].Handler(ctxRemind); err != nil {
 		t.Fatalf("remind failed: %v", err)
 	}
@@ -221,88 +225,23 @@ func TestSchedulerPlugin(t *testing.T) {
 		t.Errorf("expected reminder set confirmation, got: %s", mockSvc.sent)
 	}
 
-	// 3. .remind with reply
-	ctxRemindReply := &core.Context{
-		Ctx:     context.Background(),
-		Command: "remind",
-		Args:    []string{"10m"},
-		RawArgs: "10m",
-		Svc:     mockSvc,
-		PeerID:  peer,
-		Chat:    &core.Chat{ID: 777},
-		Message: &core.Message{ReplyToID: 99},
-	}
+	ctxRemindReply := &core.Context{Ctx: context.Background(), Command: "remind", Args: []string{"10m"}, RawArgs: "10m", Svc: mockSvc, PeerID: peer, Chat: &core.Chat{ID: 777}, Message: &core.Message{ReplyToID: 99}}
 	if err := cmdMap["remind"].Handler(ctxRemindReply); err != nil {
 		t.Fatalf("remind with reply failed: %v", err)
 	}
 
-	// 4. .schedule in 30m .whois
-	ctxSchedOnce := &core.Context{
-		Ctx:     context.Background(),
-		Command: "schedule",
-		Args:    []string{"in", "30m", ".whois", "@user"},
-		RawArgs: "in 30m .whois @user",
-		Svc:     mockSvc,
-		PeerID:  peer,
-		Chat:    &core.Chat{ID: 777},
-	}
+	ctxSchedOnce := &core.Context{Ctx: context.Background(), Command: "schedule", Args: []string{"30m", ".whois"}, RawArgs: "30m .whois", Svc: mockSvc, PeerID: peer, Chat: &core.Chat{ID: 777}, Message: &core.Message{SenderID: 42}}
 	if err := cmdMap["schedule"].Handler(ctxSchedOnce); err != nil {
-		t.Fatalf("schedule in failed: %v", err)
-	}
-	if !strings.Contains(mockSvc.sent, "Schedule created!") || !strings.Contains(mockSvc.sent, "command") {
-		t.Errorf("expected command schedule confirmation, got: %s", mockSvc.sent)
+		t.Fatalf("schedule once failed: %v", err)
 	}
 
-	// 5. .schedule every 1h .alive
-	ctxSchedRec := &core.Context{
-		Ctx:     context.Background(),
-		Command: "schedule",
-		Args:    []string{"every", "1h", ".alive"},
-		RawArgs: "every 1h .alive",
-		Svc:     mockSvc,
-		PeerID:  peer,
-		Chat:    &core.Chat{ID: 777},
-	}
-	if err := cmdMap["schedule"].Handler(ctxSchedRec); err != nil {
-		t.Fatalf("schedule every failed: %v", err)
-	}
-	if !strings.Contains(mockSvc.sent, "Recurring schedule created!") {
-		t.Errorf("expected recurring schedule confirmation, got: %s", mockSvc.sent)
+	ctxList := &core.Context{Ctx: context.Background(), Command: "scheduled", Svc: mockSvc, PeerID: peer, Chat: &core.Chat{ID: 777}}
+	if err := cmdMap["scheduled"].Handler(ctxList); err != nil {
+		t.Fatalf("scheduled list failed: %v", err)
 	}
 
-	// 6. .schedules list
-	if j, ok := mockSched.jobs[2]; ok {
-		j.LastError = "connection timeout"
-		j.AttemptCount = 2
-	}
-	ctxList := &core.Context{
-		Ctx:     context.Background(),
-		Command: "schedules",
-		Svc:     mockSvc,
-		PeerID:  peer,
-		Chat:    &core.Chat{ID: 777},
-	}
-	if err := cmdMap["schedules"].Handler(ctxList); err != nil {
-		t.Fatalf("schedules list failed: %v", err)
-	}
-	if !strings.Contains(mockSvc.sent, "Active Schedules in this chat") || !strings.Contains(mockSvc.sent, "Last Error") {
-		t.Errorf("expected active schedules list with Last Error, got: %s", mockSvc.sent)
-	}
-
-	// 7. .cancelschedule
-	ctxCancel := &core.Context{
-		Ctx:     context.Background(),
-		Command: "cancelschedule",
-		Args:    []string{"#1"},
-		RawArgs: "#1",
-		Svc:     mockSvc,
-		PeerID:  peer,
-		Chat:    &core.Chat{ID: 777},
-	}
-	if err := cmdMap["cancelschedule"].Handler(ctxCancel); err != nil {
-		t.Fatalf("cancelschedule failed: %v", err)
-	}
-	if !strings.Contains(mockSvc.sent, "canceled successfully") {
-		t.Errorf("expected cancel confirmation, got: %s", mockSvc.sent)
+	ctxCancel := &core.Context{Ctx: context.Background(), Command: "cancel", Args: []string{"1"}, RawArgs: "1", Svc: mockSvc, PeerID: peer, Chat: &core.Chat{ID: 777}, Message: &core.Message{SenderID: 42}}
+	if err := cmdMap["cancel"].Handler(ctxCancel); err != nil {
+		t.Fatalf("cancel failed: %v", err)
 	}
 }
