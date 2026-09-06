@@ -10,7 +10,6 @@ import (
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/updates"
 	"github.com/gotd/td/tg"
-	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/services/localization"
@@ -49,10 +48,7 @@ func NewBotClient(appID int, appHash string, botToken string, logger *zap.Logger
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	return &BotClient{
-		appID: appID, appHash: appHash, botToken: botToken,
-		logger: logger, bridge: NewBridge(),
-	}
+	return &BotClient{appID: appID, appHash: appHash, botToken: botToken, logger: logger, bridge: NewBridge()}
 }
 
 func (c *BotClient) SetBridge(b *Bridge) {
@@ -129,11 +125,10 @@ func (c *BotClient) Start(ctx context.Context) error {
 		return c.handleBotCommand(ctx, e, msg, client)
 	})
 
-	// v1.2 assistant surface is intentionally limited to command handlers.
-	// Inline/callback frameworks are userbot-oriented and require a Telegram
-	// service adapter; registering them here with nil service state was unsafe.
-	// Keep the setters for API compatibility and wire them only when a proper
-	// assistant Telegram adapter exists.
+	// v1.2 intentionally exposes only the assistant command surface. The
+	// userbot inline/callback engines require a Telegram service adapter that
+	// the assistant client does not own; registering them with nil service state
+	// previously made callbacks/inline handlers unsafe.
 	gaps := updates.New(updates.Config{Handler: dispatcher})
 	client = telegram.NewClient(c.appID, c.appHash, telegram.Options{UpdateHandler: gaps})
 	c.logger.Info("starting assistant bot client...")
@@ -155,11 +150,7 @@ func (c *BotClient) Start(ctx context.Context) error {
 			c.logger.Info("assistant bot authenticated successfully", zap.String("username", self.Username), zap.Int64("id", self.ID))
 		}
 		if bridge := c.Bridge(); bridge != nil {
-			bridge.Dispatch(ctx, Event{
-				Type: EventNotification, Title: "Assistant Started",
-				Message: fmt.Sprintf("Assistant @%s is now online.", c.Username()),
-				CreatedAt: time.Now(),
-			})
+			bridge.Dispatch(ctx, Event{Type: EventNotification, Title: "Assistant Started", Message: fmt.Sprintf("Assistant @%s is now online.", c.Username()), CreatedAt: time.Now()})
 		}
 		<-ctx.Done()
 		return ctx.Err()
@@ -180,7 +171,6 @@ func (c *BotClient) handleBotCommand(ctx context.Context, e tg.Entities, msg *tg
 	if msg == nil || client == nil {
 		return nil
 	}
-
 	command := msg.Message
 	if command != "/start" && command != "/help" && command != "/ping" && command != "/alive" {
 		return nil
