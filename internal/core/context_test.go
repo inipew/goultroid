@@ -98,6 +98,9 @@ func (m *mockTelegramServicer) UnmuteUser(ctx context.Context, peer tg.InputPeer
 func (m *mockTelegramServicer) PurgeMessages(ctx context.Context, peer tg.InputPeerClass, topicID int, fromID, toID int) (int, error) {
 	return 5, nil
 }
+func (m *mockTelegramServicer) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerClass, topicID int, fromID, toID int) (int, error) {
+	return m.PurgeMessages(ctx, peer, topicID, fromID, toID)
+}
 func (m *mockTelegramServicer) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
 	return &tg.Message{ID: 777}, nil
 }
@@ -333,6 +336,7 @@ func TestContext_ModerationActions(t *testing.T) {
 			ID:      50,
 			Message: "original message",
 			FromID:  &tg.PeerUser{UserID: 8888},
+			ReplyTo: &tg.MessageReplyHeader{ReplyToMsgID: 50, ReplyToTopID: 42, ForumTopic: true},
 		},
 	}
 	user := &tg.InputPeerUser{UserID: 8888}

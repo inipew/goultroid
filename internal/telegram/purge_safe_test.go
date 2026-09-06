@@ -11,8 +11,8 @@ func TestSafePurgeQueryBoundsIncludeRepliedMessage(t *testing.T) {
 	if minID != 99 {
 		t.Fatalf("query min ID = %d, want 99 so reply ID 100 is discoverable", minID)
 	}
-	if maxID != 103 {
-		t.Fatalf("query max ID = %d, want 103 so command ID 104 is excluded", maxID)
+	if maxID != 104 {
+		t.Fatalf("query max ID = %d, want 104 so message 103 is discoverable via MTProto id < max_id", maxID)
 	}
 }
 

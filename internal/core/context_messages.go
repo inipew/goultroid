@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/gotd/td/tg"
 )
@@ -59,6 +60,42 @@ func (m *MessagesFacade) ReplyAndDelete(text string) error {
 	// not turn a successful command into an application error.
 	if c.Message != nil && c.Message.ID > 0 {
 		_ = c.Svc.DeleteMessage(c.Ctx, c.PeerID, []int{c.Message.ID})
+	}
+	return nil
+}
+
+// ReplyAndDeleteWithDelay sends a response, deletes the trigger command message,
+// and schedules self-destruct of the response message after the specified delay.
+func (m *MessagesFacade) ReplyAndDeleteWithDelay(text string, delay time.Duration) error {
+	c := m.ctx
+	if c == nil || c.Svc == nil {
+		return errors.New("telegram service not initialized")
+	}
+	if c.PeerID == nil {
+		return errors.New("peer is nil")
+	}
+
+	sent, err := c.Svc.SendMessage(c.Ctx, c.PeerID, text)
+	if err != nil {
+		return fmt.Errorf("reply failed: %w", err)
+	}
+	if sent != nil {
+		c.LastResponseID = sent.ID
+	}
+
+	if c.Message != nil && c.Message.ID > 0 {
+		_ = c.Svc.DeleteMessage(c.Ctx, c.PeerID, []int{c.Message.ID})
+	}
+
+	if delay > 0 && sent != nil && sent.ID > 0 {
+		respID := sent.ID
+		peer := c.PeerID
+		svc := c.Svc
+		time.AfterFunc(delay, func() {
+			delCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			_ = svc.DeleteMessage(delCtx, peer, []int{respID})
+		})
 	}
 	return nil
 }

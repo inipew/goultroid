@@ -49,12 +49,15 @@ func (s *Service) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerClass,
 	}
 
 	// Telegram's MinID is a lower boundary for history/replies rather than an
-	// inclusive message selector. Query one ID below the requested start, then
-	// enforce the real inclusive [fromID, toID) range locally. This is what makes
-	// the replied-to message part of purge instead of silently skipping it.
-	queryMinID, maxID := safePurgeQueryBounds(fromID, toID)
-	ids := make(map[int]struct{}, min(maxInt(SafePurgeMaxMessages, SafePurgePageSize), maxID-fromID+1))
-	offsetID := maxID + 1
+	// inclusive message selector (Telegram returns id > MinID). Query one ID below
+	// the requested start so the replied-to message is discovered.
+	// Similarly, Telegram's MaxID returns id < MaxID. Passing toID allows
+	// Telegram to return messages up to toID - 1 (including message e), while
+	// excluding toID (the command trigger message itself).
+	queryMinID, queryMaxID := safePurgeQueryBounds(fromID, toID)
+	localMaxID := toID - 1
+	ids := make(map[int]struct{}, min(maxInt(SafePurgeMaxMessages, SafePurgePageSize), localMaxID-fromID+1))
+	offsetID := toID
 
 	for len(ids) < SafePurgeMaxMessages {
 		var messages []tg.MessageClass
@@ -63,12 +66,12 @@ func (s *Service) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerClass,
 		if topicID > 0 {
 			_, err = retryOnFloodWait(ctx, func() (struct{}, error) {
 				resp, callErr := s.api.MessagesGetReplies(ctx, &tg.MessagesGetRepliesRequest{
-					Peer: peer,
-					MsgID: topicID,
+					Peer:     peer,
+					MsgID:    topicID,
 					OffsetID: offsetID,
-					MinID: queryMinID,
-					MaxID: maxID,
-					Limit: SafePurgePageSize,
+					MinID:    queryMinID,
+					MaxID:    queryMaxID,
+					Limit:    SafePurgePageSize,
 				})
 				if callErr != nil {
 					return struct{}{}, callErr
@@ -83,11 +86,11 @@ func (s *Service) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerClass,
 		} else {
 			_, err = retryOnFloodWait(ctx, func() (struct{}, error) {
 				resp, callErr := s.api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
-					Peer: peer,
+					Peer:     peer,
 					OffsetID: offsetID,
-					MinID: queryMinID,
-					MaxID: maxID,
-					Limit: SafePurgePageSize,
+					MinID:    queryMinID,
+					MaxID:    queryMaxID,
+					Limit:    SafePurgePageSize,
 				})
 				if callErr != nil {
 					return struct{}{}, callErr
@@ -107,7 +110,7 @@ func (s *Service) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerClass,
 			break
 		}
 
-		lowest, newIDs := collectSafePurgeIDs(messages, fromID, maxID, topicID, ids, offsetID)
+		lowest, newIDs := collectSafePurgeIDs(messages, fromID, localMaxID, topicID, ids, offsetID)
 
 		// Telegram pagination must make monotonic progress. If a response cannot
 		// move the cursor, stop rather than risking a repeated query loop.
@@ -167,14 +170,18 @@ func (s *Service) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerClass,
 }
 
 // safePurgeQueryBounds converts the user-visible inclusive start / exclusive
-// command range into Telegram history/replies bounds. MinID is deliberately one
-// below fromID so the replied-to message is discoverable.
+// command range into Telegram history/replies query bounds.
+// Telegram's MinID returns messages with id > minID.
+// Telegram's MaxID returns messages with id < maxID.
+// Therefore, to query messages in [fromID, toID):
+//   - minID must be fromID - 1 so id > fromID - 1 => id >= fromID (includes replied-to message);
+//   - maxID must be toID so id < toID => id <= toID - 1 (includes message immediately preceding command, excludes command).
 func safePurgeQueryBounds(fromID, toID int) (minID, maxID int) {
 	minID = fromID - 1
 	if minID < 0 {
 		minID = 0
 	}
-	return minID, toID - 1
+	return minID, toID
 }
 
 // collectSafePurgeIDs applies the final inclusive [fromID, maxID] filter to one

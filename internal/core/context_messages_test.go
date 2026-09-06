@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/gotd/td/tg"
 )
@@ -90,5 +91,35 @@ func TestMessagesFacadeEditOrReplyIncomingDeletesTrigger(t *testing.T) {
 	}
 	if len(mock.deletedIDs) != 1 || mock.deletedIDs[0] != 104 {
 		t.Fatalf("deleted IDs = %v, want [104]", mock.deletedIDs)
+	}
+}
+
+func TestMessagesFacadeReplyAndDeleteWithDelay(t *testing.T) {
+	mock := &mockTelegramServicer{}
+	ctx := &Context{
+		Ctx: context.Background(),
+		Message: &Message{
+			ID: 104,
+		},
+		Svc:    mock,
+		PeerID: &tg.InputPeerSelf{},
+	}
+
+	delay := 30 * time.Millisecond
+	if err := ctx.Messages().ReplyAndDeleteWithDelay("purged 5 messages", delay); err != nil {
+		t.Fatalf("ReplyAndDeleteWithDelay() error = %v", err)
+	}
+	if mock.sentText != "purged 5 messages" {
+		t.Fatalf("sent text = %q, want purge result", mock.sentText)
+	}
+	// Immediately, trigger message 104 should be deleted
+	if len(mock.deletedIDs) != 1 || mock.deletedIDs[0] != 104 {
+		t.Fatalf("deleted IDs immediately = %v, want [104]", mock.deletedIDs)
+	}
+
+	// After delay, the response message (ID 42) should be deleted
+	time.Sleep(delay + 50*time.Millisecond)
+	if len(mock.deletedIDs) != 1 || mock.deletedIDs[0] != 42 {
+		t.Fatalf("deleted IDs after delay = %v, want response message [42]", mock.deletedIDs)
 	}
 }

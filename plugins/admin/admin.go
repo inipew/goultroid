@@ -329,7 +329,12 @@ func (p *Plugin) handlePurge(ctx *core.Context) error {
 	// the command was emitted as an incoming bot update or as an outgoing
 	// userbot command. Do not use EditOrReply here: outgoing commands are
 	// normally edited in place, which would leave the purge trigger behind.
-	return ctx.ReplyAndDelete(fmt.Sprintf("🗑️ <b>Purged %d messages successfully%s!</b>", count, topicMsg))
+	// The confirmation notification is self-destructed after 4 seconds to leave
+	// the chat cleanly purged without leftover bot responses.
+	return ctx.ReplyAndDeleteWithDelay(
+		fmt.Sprintf("🗑️ <b>Purged %d messages successfully%s!</b>", count, topicMsg),
+		4*time.Second,
+	)
 }
 
 func (p *Plugin) handlePromote(ctx *core.Context) error {

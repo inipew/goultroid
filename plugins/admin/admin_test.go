@@ -23,8 +23,9 @@ type mockService struct {
 	purgeTopicID int
 }
 
-func (m *mockService) SendMessage(context.Context, tg.InputPeerClass, string) (*tg.Message, error) {
-	return &tg.Message{ID: 999}, nil
+func (m *mockService) SendMessage(_ context.Context, _ tg.InputPeerClass, text string) (*tg.Message, error) {
+	m.sent = text
+	return &tg.Message{ID: 999, Message: text}, nil
 }
 func (m *mockService) EditMessage(_ context.Context, _ tg.InputPeerClass, _ int, text string) error {
 	m.sent = text

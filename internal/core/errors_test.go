@@ -49,7 +49,7 @@ func TestRateLimitError_Behavior(t *testing.T) {
 
 	// 1. Error message
 	msg := rle.Error()
-	if msg != "rate limited by telegram: wait 15s before retrying" {
+	if msg != "rate limited by telegram: wait 15s before retrying: rpc error: FLOOD_WAIT_15" {
 		t.Errorf("unexpected error message: %q", msg)
 	}
 
