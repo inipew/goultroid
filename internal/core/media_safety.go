@@ -3,9 +3,12 @@ package core
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
+	"time"
 )
 
 var (
@@ -20,6 +23,12 @@ const (
 	DefaultMaxExtractAudioSize = 150 * 1024 * 1024
 	// DefaultMaxDownloadSize is the maximum file size allowed for generic downloads (500 MB).
 	DefaultMaxDownloadSize = 500 * 1024 * 1024
+	// DefaultMaxUploadSize is the maximum file size allowed for generic uploads (500 MB).
+	DefaultMaxUploadSize = 500 * 1024 * 1024
+	// DefaultDirectoryQuota is the maximum total disk quota for the downloads directory (2 GB).
+	DefaultDirectoryQuota = 2 * 1024 * 1024 * 1024
+	// DefaultMaxFileAge is the maximum age of downloaded files before eviction (24 hours).
+	DefaultMaxFileAge = 24 * time.Hour
 )
 
 // ValidateMediaSize checks if the given file size is within the allowed maximum limit.
@@ -34,20 +43,38 @@ func ValidateMediaSize(size int64, maxSize int64) error {
 }
 
 // CheckDiskSpace verifies if the target directory's filesystem has at least requiredBytes available.
+// If requiredBytes <= 0, a conservative safety threshold of 50 MB is enforced.
+// It resolves the nearest existing ancestor path for Statfs and fails closed on error.
 func CheckDiskSpace(path string, requiredBytes int64) error {
 	if requiredBytes <= 0 {
-		return nil
+		requiredBytes = 50 * 1024 * 1024
 	}
 
 	cleanPath := filepath.Clean(path)
 	var stat syscall.Statfs_t
-	if err := syscall.Statfs(cleanPath, &stat); err != nil {
-		// If path doesn't exist yet, try parent directory
-		parent := filepath.Dir(cleanPath)
-		if err := syscall.Statfs(parent, &stat); err != nil {
-			// If filesystem stats cannot be retrieved, do not block execution
-			return nil
+	current := cleanPath
+	var statErr error
+	found := false
+
+	for {
+		if err := syscall.Statfs(current, &stat); err == nil {
+			found = true
+			break
+		} else {
+			statErr = err
 		}
+		parent := filepath.Dir(current)
+		if parent == current || parent == "." {
+			if err := syscall.Statfs(".", &stat); err == nil {
+				found = true
+			}
+			break
+		}
+		current = parent
+	}
+
+	if !found {
+		return fmt.Errorf("%w: failed to inspect filesystem for %q: %v", ErrInsufficientDiskSpace, path, statErr)
 	}
 
 	// Available bytes to non-root users = Bavail * Bsize
@@ -91,3 +118,91 @@ func SanitizeFileName(name string) string {
 
 	return name
 }
+
+// ValidateUploadSize checks if the given local file size is within the allowed upload limit.
+// If the file exists, its size must not exceed maxUploadSize.
+func ValidateUploadSize(filePath string, maxUploadSize int64) error {
+	if maxUploadSize <= 0 {
+		maxUploadSize = DefaultMaxUploadSize
+	}
+	stat, err := os.Stat(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to inspect file %q: %w", filePath, err)
+	}
+	if stat.Size() > maxUploadSize {
+		return fmt.Errorf("%w: file %q (%d bytes) exceeds upload limit (%d bytes)", ErrMediaTooLarge, filePath, stat.Size(), maxUploadSize)
+	}
+	return nil
+}
+
+// EnforceDirectoryQuota cleans up files in dir if total size exceeds maxTotalBytes or files exceed maxAge.
+// Uses FIFO eviction (oldest modified files deleted first).
+func EnforceDirectoryQuota(dir string, maxTotalBytes int64, maxAge time.Duration) error {
+	if maxTotalBytes <= 0 {
+		maxTotalBytes = DefaultDirectoryQuota
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	type fileItem struct {
+		path    string
+		size    int64
+		modTime time.Time
+	}
+
+	var files []fileItem
+	now := time.Now()
+	var totalSize int64
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		p := filepath.Join(dir, entry.Name())
+		// Evict expired files first
+		if maxAge > 0 && now.Sub(info.ModTime()) > maxAge {
+			_ = os.Remove(p)
+			continue
+		}
+		files = append(files, fileItem{
+			path:    p,
+			size:    info.Size(),
+			modTime: info.ModTime(),
+		})
+		totalSize += info.Size()
+	}
+
+	if totalSize <= maxTotalBytes {
+		return nil
+	}
+
+	// Sort oldest first
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].modTime.Before(files[j].modTime)
+	})
+
+	for _, f := range files {
+		if totalSize <= maxTotalBytes {
+			break
+		}
+		if err := os.Remove(f.path); err == nil {
+			totalSize -= f.size
+		}
+	}
+
+	return nil
+}
+

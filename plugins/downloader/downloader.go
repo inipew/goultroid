@@ -47,6 +47,7 @@ func (p *Plugin) Commands() []core.Command {
 
 func (p *Plugin) handleDownload(ctx *core.Context) error {
 	saveDir := filepath.Join("data", "downloads")
+	_ = core.EnforceDirectoryQuota(saveDir, core.DefaultDirectoryQuota, core.DefaultMaxFileAge)
 
 	var mediaSize int64
 	if ctx.Message != nil && ctx.Message.Media != nil {

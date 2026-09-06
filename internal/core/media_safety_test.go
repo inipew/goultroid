@@ -3,8 +3,10 @@ package core
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidateMediaSize(t *testing.T) {
@@ -86,3 +88,69 @@ func TestSanitizeFileName(t *testing.T) {
 		t.Errorf("expected .mp3 suffix to be preserved, got %s", truncated)
 	}
 }
+
+func TestValidateUploadSize(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "sample.bin")
+	if err := os.WriteFile(testFile, make([]byte, 1024), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	// Size within limit
+	if err := ValidateUploadSize(testFile, 2048); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Size exceeds limit
+	if err := ValidateUploadSize(testFile, 512); !errors.Is(err, ErrMediaTooLarge) {
+		t.Errorf("expected ErrMediaTooLarge, got %v", err)
+	}
+
+	// Non-existent file should return nil (non-blocking for mock tests)
+	if err := ValidateUploadSize(filepath.Join(tmpDir, "missing.bin"), 1024); err != nil {
+		t.Errorf("expected nil error for missing file in ValidateUploadSize, got: %v", err)
+	}
+}
+
+func TestEnforceDirectoryQuota(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create 3 files with artificial timestamps
+	f1 := filepath.Join(tmpDir, "file1.bin")
+	f2 := filepath.Join(tmpDir, "file2.bin")
+	f3 := filepath.Join(tmpDir, "file3.bin")
+
+	_ = os.WriteFile(f1, make([]byte, 100), 0644)
+	_ = os.WriteFile(f2, make([]byte, 100), 0644)
+	_ = os.WriteFile(f3, make([]byte, 100), 0644)
+
+	// Set distinct modification times: f1 oldest, then f2, f3 newest
+	now := time.Now()
+	_ = os.Chtimes(f1, now.Add(-3*time.Hour), now.Add(-3*time.Hour))
+	_ = os.Chtimes(f2, now.Add(-2*time.Hour), now.Add(-2*time.Hour))
+	_ = os.Chtimes(f3, now.Add(-1*time.Hour), now.Add(-1*time.Hour))
+
+	// Max total quota 150 bytes: should evict f1 first so total becomes <= 150 bytes
+	if err := EnforceDirectoryQuota(tmpDir, 150, 0); err != nil {
+		t.Fatalf("EnforceDirectoryQuota error: %v", err)
+	}
+
+	if _, err := os.Stat(f1); !os.IsNotExist(err) {
+		t.Errorf("expected f1 to be evicted")
+	}
+	if _, err := os.Stat(f3); err != nil {
+		t.Errorf("expected f3 to still exist: %v", err)
+	}
+
+	// Test maxAge eviction: files older than 90m should be removed (f2 should be removed)
+	if err := EnforceDirectoryQuota(tmpDir, 1000, 90*time.Minute); err != nil {
+		t.Fatalf("EnforceDirectoryQuota error: %v", err)
+	}
+	if _, err := os.Stat(f2); !os.IsNotExist(err) {
+		t.Errorf("expected f2 to be evicted due to age")
+	}
+	if _, err := os.Stat(f3); err != nil {
+		t.Errorf("expected f3 to still exist: %v", err)
+	}
+}
+

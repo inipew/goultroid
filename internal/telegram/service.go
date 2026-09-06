@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -391,13 +393,43 @@ func (s *Service) ForwardMessages(ctx context.Context, fromPeer, toPeer tg.Input
 	return err
 }
 
+type boundedWriter struct {
+	writer  io.Writer
+	limit   int64
+	written int64
+}
+
+func (w *boundedWriter) Write(p []byte) (int, error) {
+	if w.written+int64(len(p)) > w.limit {
+		return 0, fmt.Errorf("%w: streamed download exceeded safety limit (%d bytes)", core.ErrMediaTooLarge, w.limit)
+	}
+	n, err := w.writer.Write(p)
+	w.written += int64(n)
+	return n, err
+}
+
 // DownloadFile streams and downloads a Telegram media file to local destination path.
+// It wraps the destination in a boundedWriter to enforce real-time streaming byte limits (500MB),
+// preventing transient disk and bandwidth exhaustion even when media metadata size is 0 or unknown.
 func (s *Service) DownloadFile(ctx context.Context, location tg.InputFileLocationClass, dstPath string) error {
 	if s.downloader == nil {
 		s.downloader = downloader.NewDownloader()
 	}
-	_, err := s.downloader.Download(s.api, location).ToPath(ctx, dstPath)
+
+	file, err := os.OpenFile(dstPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
+		return fmt.Errorf("failed to create destination file: %w", err)
+	}
+	defer file.Close()
+
+	bw := &boundedWriter{
+		writer: file,
+		limit:  core.DefaultMaxDownloadSize,
+	}
+
+	_, err = s.downloader.Download(s.api, location).Stream(ctx, bw)
+	if err != nil {
+		_ = os.Remove(dstPath)
 		return mapTelegramError(err)
 	}
 	return nil
@@ -711,6 +743,14 @@ func (s *Service) PurgeMessages(ctx context.Context, peer tg.InputPeerClass, top
 
 // SendMedia uploads and sends media (photo, sticker, audio, video, file) to the specified peer.
 func (s *Service) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
+	stat, err := os.Stat(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to inspect file %q: %w", filePath, err)
+	}
+	if stat.Size() > core.DefaultMaxUploadSize {
+		return nil, fmt.Errorf("%w: file size (%d bytes) exceeds maximum upload limit (500MB)", core.ErrMediaTooLarge, stat.Size())
+	}
+
 	if s.sender == nil || s.uploader == nil {
 		return nil, fmt.Errorf("sender/uploader is not initialized")
 	}
@@ -998,6 +1038,14 @@ func (s *Service) UnblockUser(ctx context.Context, peer tg.InputPeerClass) error
 
 // UploadProfilePhoto uploads an image file and sets it as the account's profile photo.
 func (s *Service) UploadProfilePhoto(ctx context.Context, filePath string) error {
+	stat, err := os.Stat(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to inspect photo file %q: %w", filePath, err)
+	}
+	if stat.Size() > core.DefaultMaxUploadSize {
+		return fmt.Errorf("%w: photo file size (%d bytes) exceeds upload limit (500MB)", core.ErrMediaTooLarge, stat.Size())
+	}
+
 	if s.api == nil || s.uploader == nil {
 		return fmt.Errorf("%w: api/uploader is not initialized", core.ErrInternal)
 	}

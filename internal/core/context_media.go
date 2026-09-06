@@ -40,9 +40,21 @@ func (m *MediaFacade) DownloadMedia(destDir string) (string, error) {
 	}
 
 	// Enforce global maximum download size (default: 500 MB)
-	const MaxMediaDownloadSize = 500 * 1024 * 1024
+	const MaxMediaDownloadSize = DefaultMaxDownloadSize
 	if media.Size > MaxMediaDownloadSize {
 		return "", fmt.Errorf("%w: file size (%d bytes) exceeds maximum allowed limit (500MB)", ErrMedia, media.Size)
+	}
+
+	// 1. Quota check & rotation on destination directory (FIFO cleanup if full or expired)
+	_ = EnforceDirectoryQuota(destDir, DefaultDirectoryQuota, DefaultMaxFileAge)
+
+	// 2. Pre-flight disk space check (reserves 50MB if metadata size is 0/unknown)
+	requiredSpace := media.Size
+	if requiredSpace <= 0 {
+		requiredSpace = 50 * 1024 * 1024
+	}
+	if err := CheckDiskSpace(destDir, requiredSpace); err != nil {
+		return "", err
 	}
 
 	// Acquire concurrent download slot (max 3 concurrent jobs)
@@ -102,6 +114,9 @@ func (m *MediaFacade) SendMedia(mediaType string, filePath string, caption strin
 	}
 	if c.PeerID == nil {
 		return nil, errors.New("peer is nil")
+	}
+	if err := ValidateUploadSize(filePath, DefaultMaxUploadSize); err != nil {
+		return nil, err
 	}
 	msg, err := c.Svc.SendMedia(c.Ctx, c.PeerID, mediaType, filePath, caption)
 	if err != nil {

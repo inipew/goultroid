@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
 	"github.com/inipew/goultroid/internal/core"
@@ -200,4 +202,46 @@ func TestPurgeMessages_NilAPI(t *testing.T) {
 		t.Errorf("expected error when api is nil, got nil")
 	}
 }
+
+func TestBoundedWriter_LimitEnforcement(t *testing.T) {
+	var buf strings.Builder
+	bw := &boundedWriter{
+		writer: &buf,
+		limit:  100,
+	}
+
+	// 1. Write within limit
+	n, err := bw.Write([]byte(strings.Repeat("a", 80)))
+	if err != nil || n != 80 {
+		t.Fatalf("expected 80 bytes written, got %d, err: %v", n, err)
+	}
+
+	// 2. Write exceeding limit
+	_, err = bw.Write([]byte(strings.Repeat("b", 30)))
+	if err == nil || !errors.Is(err, core.ErrMediaTooLarge) {
+		t.Errorf("expected ErrMediaTooLarge when exceeding limit, got %v", err)
+	}
+}
+
+func TestSendMedia_UploadSizeLimit(t *testing.T) {
+	tmpDir := t.TempDir()
+	largeFile := tmpDir + "/large.bin"
+	f, err := os.Create(largeFile)
+	if err != nil {
+		t.Fatalf("failed to create large test file: %v", err)
+	}
+	// Truncate to 501 MB (exceeds DefaultMaxUploadSize 500MB)
+	if err := f.Truncate(core.DefaultMaxUploadSize + 1024); err != nil {
+		f.Close()
+		t.Fatalf("failed to truncate large test file: %v", err)
+	}
+	f.Close()
+
+	svc := &Service{sender: &message.Sender{}}
+	_, err = svc.SendMedia(context.Background(), &tg.InputPeerSelf{}, "file", largeFile, "")
+	if err == nil || !errors.Is(err, core.ErrMediaTooLarge) {
+		t.Errorf("expected ErrMediaTooLarge for oversized upload file, got %v", err)
+	}
+}
+
 
