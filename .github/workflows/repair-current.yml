@@ -1,0 +1,42 @@
+name: One-time source repair
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: startsWith(github.event.head_commit.message, 'chore: run one-time source repair and gofmt')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Restore accidental context rewrite and format Go sources
+        run: |
+          git checkout HEAD^ -- internal/core/context.go
+          gofmt -w $(find . -name '*.go' -type f -not -path './vendor/*')
+      - name: Commit repaired tree
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'chore: repair formatting and restore context source'
+          git push
+      - name: Remove one-time workflow
+        run: |
+          git rm .github/workflows/repair-current.yml || true
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'chore: remove one-time repair workflow'
+          git push
