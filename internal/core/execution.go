@@ -1,6 +1,10 @@
 package core
 
-import "context"
+import (
+	"context"
+
+	"github.com/gotd/td/tg"
+)
 
 // ExecutionSource identifies who or what triggered a command execution.
 // It is deliberately explicit so scheduled, assistant, and system executions
@@ -40,7 +44,7 @@ type CommandExecution struct {
 	Chat           *Chat
 	Target         *Chat
 	TriggerMessage *Message
-	PeerID         any
+	PeerID         tg.InputPeerClass
 	CorrelationID  string
 }
 
