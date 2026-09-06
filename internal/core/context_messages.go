@@ -54,27 +54,18 @@ func (m *MessagesFacade) Edit(text string) error {
 
 // EditOrReply updates an existing bot-owned response or an outgoing userbot
 // command. For incoming commands it sends a normal reply and then best-effort
-// deletes the trigger message. This is the canonical response policy for
-// ordinary userbot commands: never attempt to edit an incoming .command.
+// deletes the trigger message.
 func (m *MessagesFacade) EditOrReply(text string) error {
 	c := m.ctx
 	if c == nil {
 		return errors.New("context is nil")
 	}
-
-	// If this context already owns a response, editing it is intentional and
-	// avoids creating another message during multi-stage command flows.
 	if c.LastResponseID != 0 {
 		return m.Edit(text)
 	}
-
-	// Outgoing messages belong to the userbot account and may be edited in place.
 	if c.Message != nil && c.Message.IsOutgoing {
 		return m.Edit(text)
 	}
-
-	// Incoming command: send first, then best-effort cleanup. The delete must
-	// never turn a successful response into a failed command.
 	return c.ReplyAndDelete(text)
 }
 
@@ -106,7 +97,6 @@ func (m *MessagesFacade) EditMarkup(text string, markup tg.ReplyMarkupClass) err
 	if c.PeerID == nil {
 		return errors.New("peer is nil")
 	}
-
 	msgID := c.LastResponseID
 	if msgID == 0 && c.Message != nil {
 		msgID = c.Message.ID
@@ -178,7 +168,7 @@ func (m *MessagesFacade) Pin(silent bool) error {
 	return c.Svc.PinMessage(c.Ctx, c.PeerID, targetID, silent)
 }
 
-// Unpin unpins the current message or the replied-to message.
+// Unpin unpins a message in the chat.
 func (m *MessagesFacade) Unpin() error {
 	c := m.ctx
 	if c == nil || c.Svc == nil {
@@ -218,8 +208,9 @@ func (m *MessagesFacade) ForwardToSelf() error {
 	return m.Forward(&tg.InputPeerSelf{})
 }
 
-// Purge safely purges messages from the replied message up to the current command message,
-// taking into account forum topic scope so messages in other topics are never affected.
+// Purge safely purges messages from the replied message up to, but not including,
+// the current command message. The command remains available to be edited into
+// the result, preventing MESSAGE_ID_INVALID after a successful purge.
 func (m *MessagesFacade) Purge() (int, error) {
 	c := m.ctx
 	if c == nil || c.Svc == nil {
@@ -228,19 +219,34 @@ func (m *MessagesFacade) Purge() (int, error) {
 	if c.PeerID == nil {
 		return 0, errors.New("peer is nil")
 	}
-	if c.Message == nil || c.Message.ReplyToID == 0 {
-		return 0, errors.New("purge must be a reply to a message")
+	if c.Message == nil || c.Message.ID <= 0 || c.Message.ReplyToID <= 0 {
+		return 0, errors.New("purge must be a reply to a valid message")
+	}
+	if c.Message.ID <= c.Message.ReplyToID {
+		return 0, errors.New("purge command must be newer than the replied message")
 	}
 
-	topicID := c.TopicID()
-	if topicID == 0 {
-		reply, _ := c.GetReply()
-		if reply != nil && reply.TopicID != 0 {
-			topicID = reply.TopicID
+	reply, err := c.GetReply()
+	if err != nil {
+		return 0, err
+	}
+	if reply == nil {
+		return 0, fmt.Errorf("%w: replied message no longer exists", ErrNotFound)
+	}
+
+	commandTopic := c.TopicID()
+	replyTopic := reply.TopicID
+	if commandTopic != 0 || replyTopic != 0 {
+		if commandTopic == 0 || replyTopic == 0 || commandTopic != replyTopic {
+			return 0, fmt.Errorf("%w: purge range crosses forum topics", ErrInvalidArgs)
 		}
 	}
 
-	fromID := c.Message.ReplyToID
-	toID := c.Message.ID
-	return c.Svc.PurgeMessages(c.Ctx, c.PeerID, topicID, fromID, toID)
+	purger, ok := c.Svc.(interface {
+		PurgeMessagesSafe(context.Context, tg.InputPeerClass, int, int, int) (int, error)
+	})
+	if !ok {
+		return 0, errors.New("telegram service does not support safe purge")
+	}
+	return purger.PurgeMessagesSafe(c.Ctx, c.PeerID, commandTopic, c.Message.ReplyToID, c.Message.ID)
 }
