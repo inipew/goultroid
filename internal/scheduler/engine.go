@@ -387,6 +387,11 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) {
 	}
 }
 
+// executeJob deliberately uses an at-least-once external execution model.
+// Database fencing prevents stale workers from mutating durable state, but it
+// cannot roll back a Telegram side effect that succeeded immediately before a
+// worker crash or lease loss. Callers must therefore treat scheduled actions
+// as potentially duplicated across crash recovery.
 func (e *Engine) executeJob(ctx context.Context, job database.ScheduledJob, cancel context.CancelFunc) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -562,7 +567,7 @@ func (e *Engine) executeCommand(ctx context.Context, job database.ScheduledJob) 
 		Ctx: ctx, CorrelationID: fmt.Sprintf("sched-%d-%d", job.ID, time.Now().UnixMilli()),
 		Command: parsed.Name, Args: parsed.Args, RawArgs: parsed.RawArgs,
 		Message: &core.Message{ID: 0, Text: job.Payload, Date: time.Now(), IsOutgoing: true},
-		Chat: &core.Chat{ID: job.ChatID, Type: job.PeerType}, Sender: &core.User{ID: callerID},
+		Chat:    &core.Chat{ID: job.ChatID, Type: job.PeerType}, Sender: &core.User{ID: callerID},
 		Perms: e.perms, Principal: principal, Svc: svc, PeerID: peer,
 	}
 	return e.executor.Execute(coreCtx, cmd)

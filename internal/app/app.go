@@ -365,18 +365,11 @@ func (a *App) Shutdown(ctx context.Context) error {
 			a.logger.Warn("dispatcher peer queue drain timeout", zap.Error(err))
 		}
 		cancel()
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
+			// Never close the database while dispatcher workers may still be alive.
+			// The process-level shutdown caller owns the final process exit.
 			a.logger.Warn("global shutdown budget exceeded after dispatcher stop", zap.Error(ctx.Err()))
-			if a.eventBus != nil {
-				_ = a.eventBus.Close()
-			}
-			if a.db != nil {
-				_ = a.db.Close()
-			}
-			_ = a.logger.Sync()
 			return ctx.Err()
-		default:
 		}
 	}
 
@@ -388,18 +381,11 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 		cancel()
 		// If global budget already exceeded, abort early
-		select {
-		case <-ctx.Done():
-			a.logger.Warn("global shutdown budget exceeded after scheduler stop", zap.Error(ctx.Err()))
-			if a.eventBus != nil {
-				_ = a.eventBus.Close()
-			}
-			if a.db != nil {
-				_ = a.db.Close()
-			}
-			_ = a.logger.Sync()
+		if ctx.Err() != nil {
+			// StopContext may have timed out while a DB-using scheduler worker is
+			// still alive. Closing DB here would violate the DB lifecycle invariant.
+			a.logger.Warn("global shutdown budget exceeded after scheduler stop; database remains open until process exit", zap.Error(ctx.Err()))
 			return ctx.Err()
-		default:
 		}
 	}
 

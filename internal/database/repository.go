@@ -474,8 +474,12 @@ func (d *DB) ListScheduledJobs(ctx context.Context, chatID int64) ([]ScheduledJo
 }
 
 func (d *DB) ListDueScheduledJobs(ctx context.Context, before time.Time) ([]ScheduledJob, error) {
-	query := `SELECT ` + scheduledJobColumns + ` FROM scheduled_jobs WHERE status IN ('pending', 'running') AND next_run_at <= ? ORDER BY next_run_at ASC`
-	rows, err := d.QueryContext(ctx, query, before)
+	query := `SELECT ` + scheduledJobColumns + `
+		FROM scheduled_jobs
+		WHERE (status = 'pending' AND next_run_at <= ?)
+		   OR (status = 'running' AND lease_until IS NOT NULL AND lease_until < ? AND next_run_at <= ?)
+		ORDER BY next_run_at ASC`
+	rows, err := d.QueryContext(ctx, query, before, before, before)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list due scheduled jobs: %w", err)
 	}
@@ -501,6 +505,40 @@ func generateClaimToken() string {
 }
 
 func (d *DB) ClaimDueScheduledJobs(ctx context.Context, now time.Time, limit int, lease time.Duration) ([]ScheduledJob, error) {
+	const maxAttempts = 5
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		jobs, err := d.claimDueScheduledJobsOnce(ctx, now, limit, lease)
+		if err == nil {
+			return jobs, nil
+		}
+		if !isRetryableSQLiteLock(err) || attempt == maxAttempts-1 {
+			return nil, err
+		}
+		delay := time.Duration(25*(1<<attempt)) * time.Millisecond
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, errors.New("scheduled job claim retry loop exhausted")
+}
+
+func isRetryableSQLiteLock(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "SQLITE_BUSY") ||
+		strings.Contains(message, "SQLITE_LOCKED") ||
+		strings.Contains(message, "database is locked")
+}
+
+func (d *DB) claimDueScheduledJobsOnce(ctx context.Context, now time.Time, limit int, lease time.Duration) ([]ScheduledJob, error) {
 	if limit <= 0 {
 		limit = 10
 	}
