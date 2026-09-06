@@ -2,7 +2,6 @@ package scheduler
 
 import (
 	"context"
-	"errors"
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
@@ -57,5 +56,3 @@ var _ interface {
 	CancelScoped(context.Context, int64, int64, int64) error
 	JobHistoryScoped(context.Context, int64, int64, int64, int) ([]database.JobHistoryEntry, error)
 } = (*Engine)(nil)
-
-var _ = errors.Is
