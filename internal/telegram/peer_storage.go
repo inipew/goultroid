@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -115,10 +116,25 @@ func (s *PeerStorage) SaveContactsHash(ctx context.Context, hash int64) error {
 	return nil
 }
 
+// Invalidate removes a cached access hash from memory and persistent SQLite storage.
+func (s *PeerStorage) Invalidate(key peers.Key) error {
+	s.mu.Lock()
+	delete(s.peers, key)
+	s.mu.Unlock()
+	if s.db != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, err := s.db.ExecContext(ctx, `DELETE FROM peers_storage WHERE prefix = ? AND id = ?;`, key.Prefix, key.ID)
+		return err
+	}
+	return nil
+}
+
 func (s *PeerStorage) DB() *database.DB { return s.db }
 
 func (s *PeerStorage) SaveEntity(ctx context.Context, prefix string, id int64, username, phone, firstName, lastName, title string) error {
 	if s.db == nil { return errors.New("database is nil") }
+	username = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(username), "@"))
 	key := fmt.Sprintf("%s:%d", prefix, id)
 	snapshot := peerEntitySnapshot{username: username, phone: phone, firstName: firstName, lastName: lastName, title: title}
 	s.mu.RLock(); old, ok := s.entities[key]; s.mu.RUnlock()
@@ -130,6 +146,7 @@ func (s *PeerStorage) SaveEntity(ctx context.Context, prefix string, id int64, u
 
 func (s *PeerStorage) FindByUsername(ctx context.Context, username string) (peers.Key, peers.Value, bool, error) {
 	if s.db == nil { return peers.Key{}, peers.Value{}, false, errors.New("database is nil") }
+	username = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(username), "@"))
 	prefix, id, accessHash, found, err := s.db.FindPeerByUsername(ctx, username)
 	if err != nil || !found { return peers.Key{}, peers.Value{}, false, err }
 	return peers.Key{Prefix: prefix, ID: id}, peers.Value{AccessHash: accessHash}, true, nil

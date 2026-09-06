@@ -2,9 +2,11 @@ package addon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/inipew/goultroid/internal/database"
@@ -14,11 +16,12 @@ import (
 // Manager coordinates addon installation, validation, capability gating,
 // external-process lifecycle, and database persistence.
 type Manager struct {
-	db         *database.DB
-	gate       *CapabilityGate
-	broker     *CapabilityBroker
-	appVersion string
-	logger     *zap.Logger
+	db           *database.DB
+	gate         *CapabilityGate
+	broker       *CapabilityBroker
+	appVersion   string
+	logger       *zap.Logger
+	shuttingDown atomic.Bool
 
 	runtimeMu sync.RWMutex
 	runtimes  map[string]*ExternalRuntime
@@ -76,6 +79,9 @@ func (m *Manager) Install(ctx context.Context, rawManifest []byte, sourceURL str
 // StartRuntime validates and starts an installed addon executable. The optional
 // SHA-256 digest is checked before process creation when supplied.
 func (m *Manager) StartRuntime(ctx context.Context, name, executable, expectedSHA256 string) error {
+	if m.shuttingDown.Load() {
+		return errors.New("addon manager is shutting down")
+	}
 	cleanName := strings.ToLower(strings.TrimSpace(name))
 	if cleanName == "" { return ErrAddonNotFound }
 	manifest, err := m.manifestForRuntime(ctx, cleanName)
@@ -85,9 +91,15 @@ func (m *Manager) StartRuntime(ctx context.Context, name, executable, expectedSH
 	}
 
 	runtime := NewExternalRuntime(*manifest, executable, m.broker)
+	runtime.SetLogger(m.logger)
 	if err := runtime.Start(ctx); err != nil { return err }
 
 	m.runtimeMu.Lock()
+	if m.shuttingDown.Load() {
+		m.runtimeMu.Unlock()
+		_ = runtime.Stop()
+		return errors.New("addon manager is shutting down")
+	}
 	old := m.runtimes[cleanName]
 	m.runtimes[cleanName] = runtime
 	m.runtimeMu.Unlock()
@@ -118,6 +130,9 @@ func (m *Manager) RuntimeRunning(name string) bool {
 // CallRuntime performs an IPC request. Privileged calls must use
 // CallRuntimeWithCapability so the manifest gate is checked at the boundary.
 func (m *Manager) CallRuntime(ctx context.Context, name, method string, params any) (interface{}, error) {
+	if m.shuttingDown.Load() {
+		return nil, ErrAddonDisabled
+	}
 	cleanName := strings.ToLower(strings.TrimSpace(name))
 	m.runtimeMu.RLock()
 	runtime := m.runtimes[cleanName]
@@ -135,6 +150,7 @@ func (m *Manager) CallRuntimeWithCapability(ctx context.Context, name string, ca
 }
 
 func (m *Manager) ShutdownRuntimes() error {
+	m.shuttingDown.Store(true)
 	m.runtimeMu.Lock()
 	runtimes := make(map[string]*ExternalRuntime, len(m.runtimes))
 	for name, runtime := range m.runtimes { runtimes[name] = runtime }

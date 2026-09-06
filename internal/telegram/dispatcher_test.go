@@ -2,15 +2,18 @@ package telegram
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/database"
 	"go.uber.org/zap"
 )
 
@@ -477,5 +480,140 @@ func TestDispatcher_OnBotInlineSend_FeedbackEvent(t *testing.T) {
 	}
 	if receivedEvt.InlineID == nil {
 		t.Errorf("expected InlineID to be preserved")
+	}
+}
+
+func TestDispatcher_PrioritizedInterceptors(t *testing.T) {
+	logger := zap.NewNop()
+	router := core.NewRouter(".")
+	dispatcher := NewDispatcher(router, nil, nil, logger)
+
+	var executionOrder []string
+
+	// Register in reverse order
+	dispatcher.AddPrioritizedMessageHandler(PriorityObservability, func(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error {
+		executionOrder = append(executionOrder, "observability")
+		return nil
+	})
+	dispatcher.AddPrioritizedMessageHandler(PriorityFeature, func(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error {
+		executionOrder = append(executionOrder, "feature")
+		return nil
+	})
+	dispatcher.AddPrioritizedMessageHandler(PriorityModeration, func(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error {
+		executionOrder = append(executionOrder, "moderation")
+		return nil
+	})
+	dispatcher.AddPrioritizedMessageHandler(PrioritySecurity, func(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error {
+		executionOrder = append(executionOrder, "security")
+		return nil
+	})
+
+	err := dispatcher.OnNewMessage(context.Background(), tg.Entities{}, &tg.UpdateNewMessage{
+		Message: &tg.Message{Message: "hello"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expected := []string{"security", "moderation", "feature", "observability"}
+	if len(executionOrder) != len(expected) {
+		t.Fatalf("expected %d handlers, got %d", len(expected), len(executionOrder))
+	}
+	for i, name := range expected {
+		if executionOrder[i] != name {
+			t.Errorf("step %d: expected %s, got %s", i, name, executionOrder[i])
+		}
+	}
+}
+
+func TestDispatcher_InterceptorShortCircuit(t *testing.T) {
+	logger := zap.NewNop()
+	router := core.NewRouter(".")
+	dispatcher := NewDispatcher(router, nil, nil, logger)
+
+	featureRan := false
+	dispatcher.AddPrioritizedMessageHandler(PrioritySecurity, func(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error {
+		return core.ErrInterceptHandled
+	})
+	dispatcher.AddPrioritizedMessageHandler(PriorityFeature, func(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error {
+		featureRan = true
+		return nil
+	})
+
+	err := dispatcher.OnNewMessage(context.Background(), tg.Entities{}, &tg.UpdateNewMessage{
+		Message: &tg.Message{Message: "blocked"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if featureRan {
+		t.Errorf("expected feature handler NOT to run when security handler returned ErrInterceptHandled")
+	}
+}
+
+func TestDispatcher_PeerCacheStats_AndShutdownSafety(t *testing.T) {
+	logger := zap.NewNop()
+	router := core.NewRouter(".")
+	dispatcher := NewDispatcher(router, nil, nil, logger)
+
+	db, err := database.Open(fmt.Sprintf("file:dispatch_peer_%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("failed to open in-memory db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	storage := NewPeerStorage(db)
+	resolver := NewResolver(nil, nil)
+	resolver.SetStorage(storage)
+	dispatcher.SetResolver(resolver)
+
+	// 1. Start worker pool
+	ctx := context.Background()
+	dispatcher.Start(ctx)
+
+	entities := tg.Entities{
+		Users: map[int64]*tg.User{
+			1001: {ID: 1001, AccessHash: 5555, Username: "testuser"},
+		},
+		Channels: map[int64]*tg.Channel{
+			2002: {ID: 2002, AccessHash: 6666, Title: "testchannel"},
+		},
+		Chats: map[int64]*tg.Chat{
+			3003: {ID: 3003, Title: "testchat"},
+		},
+	}
+
+	err = dispatcher.OnNewMessage(ctx, entities, &tg.UpdateNewMessage{
+		Message: &tg.Message{Message: "hello with entities"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error on new message: %v", err)
+	}
+
+	enqueued, _, _ := dispatcher.PeerCacheStats()
+	if enqueued == 0 {
+		t.Errorf("expected peerEnqueued > 0, got %d", enqueued)
+	}
+
+	// 2. Stop dispatcher cleanly
+	stopCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if err := dispatcher.Stop(stopCtx); err != nil {
+		t.Fatalf("unexpected error stopping dispatcher: %v", err)
+	}
+
+	// 3. Verify entities were saved into storage by the worker
+	val, found, err := storage.Find(ctx, peers.Key{Prefix: "user", ID: 1001})
+	if err != nil || !found || val.AccessHash != 5555 {
+		t.Errorf("expected user 1001 saved in storage with hash 5555, found=%v val=%+v err=%v", found, val, err)
+	}
+
+	// 4. Dispatch after Stop: must not panic or error
+	err = dispatcher.OnNewMessage(ctx, entities, &tg.UpdateNewMessage{
+		Message: &tg.Message{Message: "hello after stop"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error on new message after stop: %v", err)
 	}
 }

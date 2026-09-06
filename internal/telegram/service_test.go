@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gotd/td/telegram/message"
+	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
 	"github.com/inipew/goultroid/internal/core"
@@ -149,6 +150,16 @@ func TestMapTelegramError(t *testing.T) {
 		t.Errorf("expected mappedAdmin to match ErrPermissionDenied, got %v", mappedAdmin)
 	}
 
+	// 4b. Idempotent success errors (RIGHTS_NOT_MODIFIED, CHAT_NOT_MODIFIED)
+	rightsNotModErr := tgerr.New(400, "RIGHTS_NOT_MODIFIED")
+	if err := mapTelegramError(rightsNotModErr); err != nil {
+		t.Errorf("expected nil for RIGHTS_NOT_MODIFIED, got %v", err)
+	}
+	chatNotModErr := tgerr.New(400, "CHAT_NOT_MODIFIED")
+	if err := mapTelegramError(chatNotModErr); err != nil {
+		t.Errorf("expected nil for CHAT_NOT_MODIFIED, got %v", err)
+	}
+
 	// 5. Generic telegram error
 	genErr := tgerr.New(500, "INTERNAL_SERVER_ERROR")
 	mappedGen := mapTelegramError(genErr)
@@ -266,5 +277,54 @@ func TestService_MarkupAndAnswerMethods_NilInit(t *testing.T) {
 	err = svc.AnswerInlineQuery(ctx, 123, nil, "", 0)
 	if err == nil || !errors.Is(err, core.ErrInternal) {
 		t.Errorf("expected ErrInternal for uninitialized api, got %v", err)
+	}
+}
+
+type mockInvalidatingStorage struct {
+	invalidated []peers.Key
+}
+
+func (m *mockInvalidatingStorage) Save(ctx context.Context, key peers.Key, value peers.Value) error {
+	return nil
+}
+
+func (m *mockInvalidatingStorage) Find(ctx context.Context, key peers.Key) (peers.Value, bool, error) {
+	return peers.Value{}, false, nil
+}
+
+func (m *mockInvalidatingStorage) SavePhone(ctx context.Context, phone string, key peers.Key) error {
+	return nil
+}
+
+func (m *mockInvalidatingStorage) FindPhone(ctx context.Context, phone string) (peers.Key, peers.Value, bool, error) {
+	return peers.Key{}, peers.Value{}, false, nil
+}
+
+func (m *mockInvalidatingStorage) GetContactsHash(ctx context.Context) (int64, error) {
+	return 0, nil
+}
+
+func (m *mockInvalidatingStorage) SaveContactsHash(ctx context.Context, hash int64) error {
+	return nil
+}
+
+func (m *mockInvalidatingStorage) Invalidate(key peers.Key) error {
+	m.invalidated = append(m.invalidated, key)
+	return nil
+}
+
+func TestService_InvalidatePeerOnInvalid(t *testing.T) {
+	svc := NewService(nil)
+	storage := &mockInvalidatingStorage{}
+	svc.SetStorage(storage)
+
+	peer := &tg.InputPeerChannel{ChannelID: 12345, AccessHash: 9999}
+	svc.checkPeerError(tgerr.New(400, "CHANNEL_INVALID"), peer)
+
+	if len(storage.invalidated) != 1 {
+		t.Fatalf("expected 1 invalidated key, got %d", len(storage.invalidated))
+	}
+	if storage.invalidated[0].Prefix != "channel" || storage.invalidated[0].ID != 12345 {
+		t.Errorf("unexpected invalidated key: %+v", storage.invalidated[0])
 	}
 }

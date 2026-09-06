@@ -77,12 +77,13 @@ func (r *Resolver) ResolveUser(ctx context.Context, ref string) (tg.InputPeerCla
 			if val, found, err := r.storage.Find(ctx, peers.Key{Prefix: "user", ID: uid}); err == nil && found && val.AccessHash != 0 {
 				return &tg.InputPeerUser{UserID: uid, AccessHash: val.AccessHash}, uid, nil
 			}
+			return nil, 0, fmt.Errorf("%w: user %d has no cached access hash", core.ErrAccessHashMissing, uid)
 		}
-		// Fallback without cached access hash
+		// Fallback without cached access hash (for lightweight tests without storage)
 		return &tg.InputPeerUser{UserID: uid}, uid, nil
 	}
 
-	cleaned := strings.TrimPrefix(ref, "@")
+	cleaned := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(ref), "@"))
 
 	// 2. Check local SQLite cache first before network calls
 	if r.storage != nil {
@@ -133,32 +134,40 @@ func (r *Resolver) ResolveChat(ctx context.Context, ref string) (tg.InputPeerCla
 
 	// 1. Numeric Chat/Channel ID
 	if id, err := strconv.ParseInt(ref, 10, 64); err == nil {
-		// Telegram channel / supergroup notation often starts with -100
 		if id < 0 {
-			channelID := id
 			str := strconv.FormatInt(id, 10)
+			// Telegram channel / supergroup notation starts with -100
 			if strings.HasPrefix(str, "-100") {
+				channelID := -id
 				if parsed, err := strconv.ParseInt(str[4:], 10, 64); err == nil {
 					channelID = parsed
 				}
-			} else {
-				channelID = -id
+
+				if r.peerManager != nil {
+					if ch, err := r.peerManager.ResolveChannelID(ctx, channelID); err == nil {
+						return ch.InputPeer(), nil
+					}
+				}
+				if r.storage != nil {
+					if val, found, err := r.storage.Find(ctx, peers.Key{Prefix: "channel", ID: channelID}); err == nil && found && val.AccessHash != 0 {
+						return &tg.InputPeerChannel{ChannelID: channelID, AccessHash: val.AccessHash}, nil
+					}
+					return nil, fmt.Errorf("%w: channel %d has no cached access hash", core.ErrAccessHashMissing, channelID)
+				}
+				return &tg.InputPeerChannel{ChannelID: channelID}, nil
 			}
 
+			// Negative integer without -100 is a legacy basic chat/group ID with inverted sign (e.g. -12345 -> ChatID: 12345)
+			chatID := -id
 			if r.peerManager != nil {
-				if ch, err := r.peerManager.ResolveChannelID(ctx, channelID); err == nil {
-					return ch.InputPeer(), nil
+				if c, err := r.peerManager.ResolveChatID(ctx, chatID); err == nil {
+					return c.InputPeer(), nil
 				}
 			}
-			if r.storage != nil {
-				if val, found, err := r.storage.Find(ctx, peers.Key{Prefix: "channel", ID: channelID}); err == nil && found && val.AccessHash != 0 {
-					return &tg.InputPeerChannel{ChannelID: channelID, AccessHash: val.AccessHash}, nil
-				}
-			}
-			return &tg.InputPeerChannel{ChannelID: channelID}, nil
+			return &tg.InputPeerChat{ChatID: chatID}, nil
 		}
 
-		// Basic Chat
+		// Basic Chat (positive ID)
 		if r.peerManager != nil {
 			if c, err := r.peerManager.ResolveChatID(ctx, id); err == nil {
 				return c.InputPeer(), nil
@@ -167,7 +176,7 @@ func (r *Resolver) ResolveChat(ctx context.Context, ref string) (tg.InputPeerCla
 		return &tg.InputPeerChat{ChatID: id}, nil
 	}
 
-	cleaned := strings.TrimPrefix(ref, "@")
+	cleaned := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(ref), "@"))
 
 	// 2. Check local SQLite cache first before network calls
 	if r.storage != nil {

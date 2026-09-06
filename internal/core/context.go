@@ -196,6 +196,7 @@ type Context struct {
 	Ctx context.Context
 
 	CorrelationID string
+	Source        ExecutionSource
 	Command       string
 	Args          []string
 	RawArgs       string
@@ -215,6 +216,31 @@ type Context struct {
 	Resolver  PeerResolver
 	Localizer Localizer
 	EventBus  *EventBus
+}
+
+// IsInteractive returns true if triggered by human interaction in Telegram.
+func (c *Context) IsInteractive() bool {
+	return c == nil || c.Source == ExecutionInteractive
+}
+
+// IsScheduled returns true if triggered by the internal scheduler engine.
+func (c *Context) IsScheduled() bool {
+	return c != nil && c.Source == ExecutionScheduled
+}
+
+// IsAssistant returns true if triggered via the assistant bot interface.
+func (c *Context) IsAssistant() bool {
+	return c != nil && c.Source == ExecutionAssistant
+}
+
+// IsAddon returns true if triggered via an external addon runtime.
+func (c *Context) IsAddon() bool {
+	return c != nil && c.Source == ExecutionAddon
+}
+
+// IsSystem returns true if triggered by an internal system process or startup hook.
+func (c *Context) IsSystem() bool {
+	return c != nil && c.Source == ExecutionSystem
 }
 
 // Correlation returns the CorrelationID or an empty string if unset.

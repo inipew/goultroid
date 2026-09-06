@@ -6,6 +6,35 @@ import (
 	"github.com/gotd/td/tg"
 )
 
+// PeerKind denotes the categorical Telegram entity type.
+type PeerKind uint8
+
+const (
+	PeerKindUser PeerKind = iota
+	PeerKindChat
+	PeerKindChannel
+)
+
+func (k PeerKind) String() string {
+	switch k {
+	case PeerKindUser:
+		return "user"
+	case PeerKindChat:
+		return "chat"
+	case PeerKindChannel:
+		return "channel"
+	default:
+		return "unknown"
+	}
+}
+
+// PeerRef is a typed, normalized reference to a Telegram entity.
+type PeerRef struct {
+	Kind       PeerKind
+	ID         int64
+	AccessHash int64
+}
+
 // PeerResolver abstracts the resolution of user and chat references
 // (numeric ID, @username, phone number, etc.) into valid MTProto InputPeerClass instances
 // with guaranteed access hashes.

@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 const AddonProtocolVersion = 1
@@ -71,6 +73,7 @@ type ExternalRuntime struct {
 	cmd        *exec.Cmd
 	stdin      io.WriteCloser
 	stdout     *bufio.Reader
+	logger     *zap.Logger
 	mu         sync.Mutex
 	callMu     sync.Mutex
 	running    bool
@@ -79,6 +82,12 @@ type ExternalRuntime struct {
 
 func NewExternalRuntime(manifest Manifest, executable string, broker *CapabilityBroker) *ExternalRuntime {
 	return &ExternalRuntime{manifest: manifest, executable: executable, broker: broker}
+}
+
+func (r *ExternalRuntime) SetLogger(logger *zap.Logger) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.logger = logger
 }
 
 func (r *ExternalRuntime) Manifest() Manifest { return r.manifest }
@@ -98,7 +107,12 @@ func (r *ExternalRuntime) Start(ctx context.Context) error {
 	}
 
 	cmd := exec.CommandContext(ctx, path)
-	cmd.Dir = filepath.Dir(path)
+	runtimeDir := filepath.Join("data", "addons", "runtime", r.manifest.Name)
+	if err := os.MkdirAll(runtimeDir, 0700); err == nil {
+		cmd.Dir = runtimeDir
+	} else {
+		cmd.Dir = filepath.Dir(path)
+	}
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "GOUTROID_ADDON_NAME=" + r.manifest.Name, "GOUTROID_ADDON_VERSION=" + r.manifest.Version}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -109,11 +123,31 @@ func (r *ExternalRuntime) Start(ctx context.Context) error {
 		_ = stdin.Close()
 		return fmt.Errorf("addon stdout: %w", err)
 	}
-	cmd.Stderr = os.Stderr
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		return fmt.Errorf("addon stderr: %w", err)
+	}
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
+		_ = stdout.Close()
+		_ = stderrPipe.Close()
 		return fmt.Errorf("start addon: %w", err)
 	}
+
+	go func() {
+		scanner := bufio.NewScanner(stderrPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			r.mu.Lock()
+			l := r.logger
+			r.mu.Unlock()
+			if l != nil {
+				l.Warn("addon stderr", zap.String("addon", r.manifest.Name), zap.String("line", line))
+			}
+		}
+	}()
 
 	r.cmd = cmd
 	r.stdin = stdin
@@ -172,6 +206,7 @@ func (r *ExternalRuntime) callLocked(ctx context.Context, method string, params 
 	id := fmt.Sprintf("%d-%d", time.Now().UnixNano(), r.seq)
 	request, _ := json.Marshal(IPCRequest{ID: id, Method: method, Params: params})
 	_, err := r.stdin.Write(append(request, '\n'))
+	stdout := r.stdout
 	r.mu.Unlock()
 	if err != nil {
 		return nil, fmt.Errorf("write addon IPC request: %w", err)
@@ -182,9 +217,7 @@ func (r *ExternalRuntime) callLocked(ctx context.Context, method string, params 
 		err      error
 	}, 1)
 	go func() {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		line, err := r.stdout.ReadBytes('\n')
+		line, err := stdout.ReadBytes('\n')
 		if err != nil {
 			resultCh <- struct {
 				response IPCResponse
@@ -215,6 +248,9 @@ func (r *ExternalRuntime) callLocked(ctx context.Context, method string, params 
 
 	select {
 	case <-ctx.Done():
+		// Subprocess timed out or canceled. Terminate process to unblock reader goroutine
+		// and avoid stream desynchronization.
+		_ = r.Stop()
 		return nil, ctx.Err()
 	case result := <-resultCh:
 		if result.err != nil {

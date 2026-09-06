@@ -3,8 +3,8 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -46,10 +46,7 @@ func (e *CommandExecutor) Execute(ctx *Context, cmd Command) error {
 	if ctx == nil {
 		return ErrInternal
 	}
-	source := ExecutionInteractive
-	if strings.HasPrefix(ctx.CorrelationID, "sched-") {
-		source = ExecutionScheduled
-	}
+	source := ctx.Source
 	return e.execute(ctx, cmd, source)
 }
 
@@ -65,6 +62,7 @@ func (e *CommandExecutor) ExecuteExecution(exec CommandExecution, cmd Command, s
 	ctx := &Context{
 		Ctx:            exec.Ctx,
 		CorrelationID:  exec.CorrelationID,
+		Source:         exec.Source,
 		Command:        exec.Command,
 		Args:           append([]string(nil), exec.Args...),
 		RawArgs:        exec.RawArgs,
@@ -86,14 +84,34 @@ func (e *CommandExecutor) execute(ctx *Context, cmd Command, source ExecutionSou
 	if ctx.Ctx == nil {
 		ctx.Ctx = context.Background()
 	}
+	ctx.Source = source
 	if ctx.Message != nil && ctx.Chat != nil && ConsumeMessageHandled(ctx.Chat.ID, ctx.Message.ID) {
 		return nil
 	}
 
 	if e.rateLimiter != nil {
-		key := strconv.FormatInt(ctx.SenderID(), 10)
-		if ctx.SenderID() <= 0 {
-			key = "anonymous"
+		var key string
+		switch source {
+		case ExecutionScheduled:
+			key = "sched:" + cmd.Name
+		case ExecutionAssistant:
+			if ctx.SenderID() > 0 {
+				key = fmt.Sprintf("assistant:%d", ctx.SenderID())
+			} else {
+				key = "assistant:" + cmd.Name
+			}
+		case ExecutionAddon:
+			key = "addon:" + cmd.Name
+		case ExecutionSystem:
+			key = "system:" + cmd.Name
+		case ExecutionAutomation:
+			key = "auto:" + cmd.Name
+		default:
+			if ctx.SenderID() > 0 {
+				key = strconv.FormatInt(ctx.SenderID(), 10)
+			} else {
+				key = "anonymous"
+			}
 		}
 		if !e.rateLimiter.Allow(key) {
 			return ErrRateLimited

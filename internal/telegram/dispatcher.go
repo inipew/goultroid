@@ -2,7 +2,9 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -15,6 +17,22 @@ import (
 	"github.com/inipew/goultroid/internal/services/inline"
 	"go.uber.org/zap"
 )
+
+// HandlerPriority determines the execution order of raw message handlers.
+// Lower numerical values execute earlier.
+type HandlerPriority int
+
+const (
+	PrioritySecurity      HandlerPriority = 10 // PMPermit, Blacklist, Access Control
+	PriorityModeration    HandlerPriority = 20 // Filters, Auto-Moderation, Anti-Flood
+	PriorityFeature       HandlerPriority = 50 // AFK, Custom Handlers, Feature Plugins
+	PriorityObservability HandlerPriority = 90 // UserLog, Analytics, Auditing
+)
+
+type prioritizedHandler struct {
+	priority HandlerPriority
+	handler  MessageHandler
+}
 
 // Dispatcher processes incoming Telegram updates and routes them to userbot commands.
 type Dispatcher struct {
@@ -33,15 +51,17 @@ type Dispatcher struct {
 	callbackRouter *callback.Router
 	inlineEngine   *inline.Engine
 
-	messageHandlers []MessageHandler
+	messageHandlers []prioritizedHandler
 	mu              sync.RWMutex
 
 	// Bounded peer-cache worker pool to avoid 1000-goroutine burst on SQLite.
-	peerQueue    chan peerUpdateJob
-	peerWG       sync.WaitGroup
-	peerStopOnce sync.Once
-	peerDropped  atomic.Int64
-	peerEnqueued atomic.Int64
+	peerQueue      chan peerUpdateJob
+	peerWG         sync.WaitGroup
+	peerStopOnce   sync.Once
+	peerDropped    atomic.Int64
+	peerEnqueued   atomic.Int64
+	peerSaveFailed atomic.Int64
+	stopping       atomic.Bool
 }
 
 type peerUpdateJob struct {
@@ -99,14 +119,15 @@ func (d *Dispatcher) Start(ctx context.Context) {
 	d.peerQueue = make(chan peerUpdateJob, 1024)
 	workers := 2
 	d.peerWG.Add(workers)
+	q := d.peerQueue
 	for i := 0; i < workers; i++ {
-		go d.peerWorker(ctx)
+		go d.peerWorker(ctx, q)
 	}
 }
 
-func (d *Dispatcher) peerWorker(ctx context.Context) {
+func (d *Dispatcher) peerWorker(ctx context.Context, q <-chan peerUpdateJob) {
 	defer d.peerWG.Done()
-	for job := range d.peerQueue {
+	for job := range q {
 		saveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		resolver := d.getResolver()
 		r, ok := resolver.(*Resolver)
@@ -118,22 +139,40 @@ func (d *Dispatcher) peerWorker(ctx context.Context) {
 			if u == nil {
 				continue
 			}
-			_ = r.storage.Save(saveCtx, peers.Key{Prefix: "user", ID: u.ID}, peers.Value{AccessHash: u.AccessHash})
-			_ = r.storage.SaveEntity(saveCtx, "user", u.ID, u.Username, u.Phone, u.FirstName, u.LastName, "")
+			if err := r.storage.Save(saveCtx, peers.Key{Prefix: "user", ID: u.ID}, peers.Value{AccessHash: u.AccessHash}); err != nil {
+				d.peerSaveFailed.Add(1)
+				d.logger.Warn("failed to save user access hash to storage", zap.Int64("user_id", u.ID), zap.Error(err))
+			}
+			if err := r.storage.SaveEntity(saveCtx, "user", u.ID, u.Username, u.Phone, u.FirstName, u.LastName, ""); err != nil {
+				d.peerSaveFailed.Add(1)
+				d.logger.Warn("failed to save user entity to storage", zap.Int64("user_id", u.ID), zap.Error(err))
+			}
 		}
 		for _, ch := range job.channels {
 			if ch == nil {
 				continue
 			}
-			_ = r.storage.Save(saveCtx, peers.Key{Prefix: "channel", ID: ch.ID}, peers.Value{AccessHash: ch.AccessHash})
-			_ = r.storage.SaveEntity(saveCtx, "channel", ch.ID, ch.Username, "", "", "", ch.Title)
+			if err := r.storage.Save(saveCtx, peers.Key{Prefix: "channel", ID: ch.ID}, peers.Value{AccessHash: ch.AccessHash}); err != nil {
+				d.peerSaveFailed.Add(1)
+				d.logger.Warn("failed to save channel access hash to storage", zap.Int64("channel_id", ch.ID), zap.Error(err))
+			}
+			if err := r.storage.SaveEntity(saveCtx, "channel", ch.ID, ch.Username, "", "", "", ch.Title); err != nil {
+				d.peerSaveFailed.Add(1)
+				d.logger.Warn("failed to save channel entity to storage", zap.Int64("channel_id", ch.ID), zap.Error(err))
+			}
 		}
 		for _, chat := range job.chats {
 			if chat == nil {
 				continue
 			}
-			_ = r.storage.Save(saveCtx, peers.Key{Prefix: "chat", ID: chat.ID}, peers.Value{AccessHash: 0})
-			_ = r.storage.SaveEntity(saveCtx, "chat", chat.ID, "", "", "", "", chat.Title)
+			if err := r.storage.Save(saveCtx, peers.Key{Prefix: "chat", ID: chat.ID}, peers.Value{AccessHash: 0}); err != nil {
+				d.peerSaveFailed.Add(1)
+				d.logger.Warn("failed to save chat to storage", zap.Int64("chat_id", chat.ID), zap.Error(err))
+			}
+			if err := r.storage.SaveEntity(saveCtx, "chat", chat.ID, "", "", "", "", chat.Title); err != nil {
+				d.peerSaveFailed.Add(1)
+				d.logger.Warn("failed to save chat entity to storage", zap.Int64("chat_id", chat.ID), zap.Error(err))
+			}
 		}
 		cancel()
 	}
@@ -144,8 +183,10 @@ func (d *Dispatcher) peerWorker(ctx context.Context) {
 func (d *Dispatcher) Stop(ctx context.Context) error {
 	var err error
 	d.peerStopOnce.Do(func() {
+		d.stopping.Store(true)
 		d.mu.Lock()
 		q := d.peerQueue
+		d.peerQueue = nil
 		d.mu.Unlock()
 		if q == nil {
 			return
@@ -162,6 +203,11 @@ func (d *Dispatcher) Stop(ctx context.Context) error {
 	return err
 }
 
+// PeerCacheStats returns atomic metrics for the dispatcher peer cache pipeline.
+func (d *Dispatcher) PeerCacheStats() (enqueued, dropped, saveFailed int64) {
+	return d.peerEnqueued.Load(), d.peerDropped.Load(), d.peerSaveFailed.Load()
+}
+
 // SetRootContext sets the application root context used for command lifetime coordination.
 func (d *Dispatcher) SetRootContext(ctx context.Context) {
 	d.mu.Lock()
@@ -175,14 +221,23 @@ func (d *Dispatcher) getRootContext() context.Context {
 	return d.rootCtx
 }
 
-// AddMessageHandler registers an interceptor for raw message processing (e.g. AFK, filters).
+// AddMessageHandler registers an interceptor for raw message processing with default PriorityFeature.
 func (d *Dispatcher) AddMessageHandler(h MessageHandler) {
+	d.AddPrioritizedMessageHandler(PriorityFeature, h)
+}
+
+// AddPrioritizedMessageHandler registers an interceptor with an explicit priority.
+// Lower numerical priority executes first (e.g. PrioritySecurity < PriorityModeration < PriorityFeature < PriorityObservability).
+func (d *Dispatcher) AddPrioritizedMessageHandler(priority HandlerPriority, h MessageHandler) {
 	if h == nil {
 		return
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.messageHandlers = append(d.messageHandlers, h)
+	d.messageHandlers = append(d.messageHandlers, prioritizedHandler{priority: priority, handler: h})
+	sort.SliceStable(d.messageHandlers, func(i, j int) bool {
+		return d.messageHandlers[i].priority < d.messageHandlers[j].priority
+	})
 }
 
 // SetService updates the TelegramServicer instance (e.g. once client is connected).
@@ -597,52 +652,60 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 				chats = append(chats, c)
 			}
 			job := peerUpdateJob{users: users, channels: channels, chats: chats}
-			d.mu.RLock()
-			q := d.peerQueue
-			d.mu.RUnlock()
-			if q == nil {
-				// Fallback for tests or dispatcher not yet started: best-effort async with background.
-				go func() {
-					bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					defer cancel()
-					for _, u := range job.users {
-						if u != nil {
-							_ = r.storage.Save(bgCtx, peers.Key{Prefix: "user", ID: u.ID}, peers.Value{AccessHash: u.AccessHash})
-							_ = r.storage.SaveEntity(bgCtx, "user", u.ID, u.Username, u.Phone, u.FirstName, u.LastName, "")
-						}
+			if !d.stopping.Load() {
+				d.mu.RLock()
+				if !d.stopping.Load() && d.peerQueue != nil {
+					select {
+					case d.peerQueue <- job:
+						d.peerEnqueued.Add(1)
+					default:
+						d.peerDropped.Add(1)
 					}
-					for _, ch := range job.channels {
-						if ch != nil {
-							_ = r.storage.Save(bgCtx, peers.Key{Prefix: "channel", ID: ch.ID}, peers.Value{AccessHash: ch.AccessHash})
-							_ = r.storage.SaveEntity(bgCtx, "channel", ch.ID, ch.Username, "", "", "", ch.Title)
-						}
+					d.mu.RUnlock()
+				} else {
+					d.mu.RUnlock()
+					if !d.stopping.Load() {
+						// Fallback for tests or dispatcher not yet started: best-effort async with background.
+						go func() {
+							bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+							defer cancel()
+							for _, u := range job.users {
+								if u != nil {
+									_ = r.storage.Save(bgCtx, peers.Key{Prefix: "user", ID: u.ID}, peers.Value{AccessHash: u.AccessHash})
+									_ = r.storage.SaveEntity(bgCtx, "user", u.ID, u.Username, u.Phone, u.FirstName, u.LastName, "")
+								}
+							}
+							for _, ch := range job.channels {
+								if ch != nil {
+									_ = r.storage.Save(bgCtx, peers.Key{Prefix: "channel", ID: ch.ID}, peers.Value{AccessHash: ch.AccessHash})
+									_ = r.storage.SaveEntity(bgCtx, "channel", ch.ID, ch.Username, "", "", "", ch.Title)
+								}
+							}
+							for _, chat := range job.chats {
+								if chat != nil {
+									_ = r.storage.Save(bgCtx, peers.Key{Prefix: "chat", ID: chat.ID}, peers.Value{AccessHash: 0})
+									_ = r.storage.SaveEntity(bgCtx, "chat", chat.ID, "", "", "", "", chat.Title)
+								}
+							}
+						}()
 					}
-					for _, chat := range job.chats {
-						if chat != nil {
-							_ = r.storage.Save(bgCtx, peers.Key{Prefix: "chat", ID: chat.ID}, peers.Value{AccessHash: 0})
-							_ = r.storage.SaveEntity(bgCtx, "chat", chat.ID, "", "", "", "", chat.Title)
-						}
-					}
-				}()
-			} else {
-				select {
-				case q <- job:
-					d.peerEnqueued.Add(1)
-				default:
-					d.peerDropped.Add(1)
 				}
 			}
 		}
 	}
 
-	// Run message interceptors (e.g. AFK, filters).
+	// Run message interceptors in priority order (Security -> Moderation -> Feature -> Observability).
 	d.mu.RLock()
 	handlers := make([]MessageHandler, len(d.messageHandlers))
-	copy(handlers, d.messageHandlers)
+	for i, ph := range d.messageHandlers {
+		handlers[i] = ph.handler
+	}
 	d.mu.RUnlock()
 
 	for _, h := range handlers {
-		d.safeExecuteInterceptor(ctx, h, e, msg, isCmd, cmdName)
+		if d.safeExecuteInterceptor(ctx, h, e, msg, isCmd, cmdName) {
+			return nil
+		}
 	}
 
 	coreMsg := extractCoreMessage(msg)
@@ -821,7 +884,7 @@ func (d *Dispatcher) safeExecuteInterceptor(
 	msg *tg.Message,
 	isCmd bool,
 	cmdName string,
-) {
+) bool {
 	defer func() {
 		if r := recover(); r != nil {
 			d.logger.Error("message interceptor panicked", zap.Any("panic", r))
@@ -832,6 +895,10 @@ func (d *Dispatcher) safeExecuteInterceptor(
 	defer cancel()
 
 	if err := h(interceptorCtx, e, msg, isCmd, cmdName); err != nil {
+		if errors.Is(err, core.ErrInterceptHandled) {
+			return true
+		}
 		d.logger.Warn("message interceptor returned error", zap.Error(err))
 	}
+	return false
 }

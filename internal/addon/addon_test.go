@@ -214,3 +214,24 @@ capabilities:
 		t.Errorf("expected nil after uninstall, got %+v", rec)
 	}
 }
+
+func TestManager_ShutdownState(t *testing.T) {
+	db := setupTestDB(t)
+	gate := addon.NewCapabilityGate()
+	mgr := addon.NewManager(db, gate, "1.5.0", zap.NewNop())
+	ctx := context.Background()
+
+	if err := mgr.ShutdownRuntimes(); err != nil {
+		t.Fatalf("ShutdownRuntimes failed: %v", err)
+	}
+
+	// Should reject StartRuntime after shutdown
+	if err := mgr.StartRuntime(ctx, "nonexistent", "/bin/sh", ""); err == nil {
+		t.Errorf("expected error starting runtime after shutdown, got nil")
+	}
+
+	// Should reject CallRuntime after shutdown
+	if _, err := mgr.CallRuntime(ctx, "nonexistent", "hello", nil); err == nil {
+		t.Errorf("expected error calling runtime after shutdown, got nil")
+	}
+}

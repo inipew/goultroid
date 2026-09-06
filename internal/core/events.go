@@ -2,6 +2,7 @@ package core
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gotd/td/tg"
@@ -156,13 +157,24 @@ const (
 	eventWorkers   = 8
 )
 
+type EventBusStats struct {
+	Published int64
+	Delivered int64
+	Dropped   int64
+	Panics    int64
+}
+
 type EventBus struct {
-	mu          sync.RWMutex
-	subscribers map[EventType]map[uint64]EventHandler
-	nextID      uint64
-	queue       chan eventJob
-	workers     sync.WaitGroup
-	closed      bool
+	mu             sync.RWMutex
+	subscribers    map[EventType]map[uint64]EventHandler
+	nextID         uint64
+	queue          chan eventJob
+	workers        sync.WaitGroup
+	closed         bool
+	publishedCount atomic.Int64
+	deliveredCount atomic.Int64
+	droppedCount   atomic.Int64
+	panicCount     atomic.Int64
 }
 
 func NewEventBus() *EventBus {
@@ -174,11 +186,26 @@ func NewEventBus() *EventBus {
 	return b
 }
 
+// Stats returns a snapshot of the event bus counters.
+func (b *EventBus) Stats() EventBusStats {
+	return EventBusStats{
+		Published: b.publishedCount.Load(),
+		Delivered: b.deliveredCount.Load(),
+		Dropped:   b.droppedCount.Load(),
+		Panics:    b.panicCount.Load(),
+	}
+}
+
 func (b *EventBus) worker() {
 	for job := range b.queue {
 		func() {
-			defer func() { _ = recover() }()
+			defer func() {
+				if r := recover(); r != nil {
+					b.panicCount.Add(1)
+				}
+			}()
 			job.handler(job.event)
+			b.deliveredCount.Add(1)
 		}()
 	}
 	b.workers.Done()
@@ -240,8 +267,10 @@ func (b *EventBus) Publish(event Event) {
 			defer func() { _ = recover() }()
 			select {
 			case b.queue <- eventJob{handler: handler, event: event}:
+				b.publishedCount.Add(1)
 			default:
 				// Observational events are best-effort by design.
+				b.droppedCount.Add(1)
 			}
 		}(h)
 	}

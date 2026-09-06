@@ -112,3 +112,33 @@ func TestEventBus_PublishDoesNotStarveLaterSubscribersWhenQueueFills(t *testing.
 	deadline := time.After(2 * time.Second)
 	for later.Load() == 0 { select { case <-deadline: t.Fatal("later subscriber was starved"); default: time.Sleep(time.Millisecond) } }
 }
+
+func TestEventBus_Stats(t *testing.T) {
+	bus := core.NewEventBus()
+	defer bus.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	bus.Subscribe(core.EventTypeMessageCreated, func(e core.Event) {
+		defer wg.Done()
+	})
+	bus.Subscribe(core.EventTypeMessageCreated, func(e core.Event) {
+		defer wg.Done()
+		panic("expected test panic")
+	})
+
+	bus.Publish(&core.MessageCreatedEvent{At: time.Now()})
+	wg.Wait()
+
+	time.Sleep(10 * time.Millisecond)
+	stats := bus.Stats()
+	if stats.Published < 2 {
+		t.Errorf("expected published >= 2, got %d", stats.Published)
+	}
+	if stats.Panics != 1 {
+		t.Errorf("expected 1 panic, got %d", stats.Panics)
+	}
+	if stats.Delivered < 1 {
+		t.Errorf("expected delivered >= 1, got %d", stats.Delivered)
+	}
+}

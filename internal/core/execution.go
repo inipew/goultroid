@@ -16,6 +16,8 @@ const (
 	ExecutionScheduled
 	ExecutionAssistant
 	ExecutionSystem
+	ExecutionAddon
+	ExecutionAutomation
 )
 
 func (s ExecutionSource) String() string {
@@ -26,6 +28,10 @@ func (s ExecutionSource) String() string {
 		return "assistant"
 	case ExecutionSystem:
 		return "system"
+	case ExecutionAddon:
+		return "addon"
+	case ExecutionAutomation:
+		return "automation"
 	default:
 		return "interactive"
 	}

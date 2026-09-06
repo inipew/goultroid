@@ -175,6 +175,28 @@ func TestContext_Helpers(t *testing.T) {
 	if ctx.IsOwner() || ctx.IsSudo() {
 		t.Errorf("normal user should not be owner or sudo")
 	}
+
+	// ExecutionSource helpers
+	ctx.Source = ExecutionInteractive
+	if !ctx.IsInteractive() || ctx.IsScheduled() || ctx.IsAssistant() || ctx.IsAddon() || ctx.IsSystem() {
+		t.Errorf("expected only IsInteractive to be true")
+	}
+	ctx.Source = ExecutionScheduled
+	if ctx.IsInteractive() || !ctx.IsScheduled() {
+		t.Errorf("expected IsScheduled to be true")
+	}
+	ctx.Source = ExecutionAssistant
+	if !ctx.IsAssistant() {
+		t.Errorf("expected IsAssistant to be true")
+	}
+	ctx.Source = ExecutionAddon
+	if !ctx.IsAddon() {
+		t.Errorf("expected IsAddon to be true")
+	}
+	ctx.Source = ExecutionSystem
+	if !ctx.IsSystem() {
+		t.Errorf("expected IsSystem to be true")
+	}
 }
 
 func TestContext_Actions(t *testing.T) {

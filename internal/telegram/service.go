@@ -33,10 +33,15 @@ func mapTelegramError(err error) error {
 	if wait, ok := tgerr.AsFloodWait(err); ok {
 		return core.NewRateLimitError(wait, err)
 	}
+	// RIGHTS_NOT_MODIFIED and CHAT_NOT_MODIFIED indicate the requested permissions/state
+	// are already in place; treat as idempotent success.
+	if tgerr.Is(err, "RIGHTS_NOT_MODIFIED", "CHAT_NOT_MODIFIED") {
+		return nil
+	}
 	if tgerr.Is(err, "CHAT_ID_INVALID", "PEER_ID_INVALID", "USER_ID_INVALID", "MESSAGE_ID_INVALID") {
 		return fmt.Errorf("%w: %v", core.ErrNotFound, err)
 	}
-	if tgerr.Is(err, "CHAT_ADMIN_REQUIRED", "RIGHTS_NOT_MODIFIED", "CHAT_WRITE_FORBIDDEN") {
+	if tgerr.Is(err, "CHAT_ADMIN_REQUIRED", "CHAT_WRITE_FORBIDDEN") {
 		return fmt.Errorf("%w: %v", core.ErrPermissionDenied, err)
 	}
 	return fmt.Errorf("%w: %v", core.ErrTelegram, err)
@@ -98,6 +103,18 @@ func retryOnFloodWait[T any](ctx context.Context, op func() (T, error)) (T, erro
 		case <-ctx.Done():
 			return val, ctx.Err()
 		case <-time.After(wait):
+			val, err = op()
+			if err == nil {
+				return val, nil
+			}
+		}
+	}
+
+	if tgerr.Is(err, "RPC_CALL_FAIL") {
+		select {
+		case <-ctx.Done():
+			return val, ctx.Err()
+		case <-time.After(300 * time.Millisecond):
 			val, err = op()
 			if err == nil {
 				return val, nil
@@ -216,6 +233,38 @@ func (s *Service) ensureUserAccessHash(ctx context.Context, user tg.InputPeerCla
 	return user
 }
 
+func (s *Service) invalidatePeer(peer tg.InputPeerClass) {
+	if s == nil || s.storage == nil || peer == nil {
+		return
+	}
+	type invalidator interface {
+		Invalidate(key peers.Key) error
+	}
+	inv, ok := s.storage.(invalidator)
+	if !ok {
+		return
+	}
+	switch p := peer.(type) {
+	case *tg.InputPeerUser:
+		_ = inv.Invalidate(peers.Key{Prefix: "user", ID: p.UserID})
+	case *tg.InputPeerChannel:
+		_ = inv.Invalidate(peers.Key{Prefix: "channel", ID: p.ChannelID})
+	case *tg.InputPeerChat:
+		_ = inv.Invalidate(peers.Key{Prefix: "chat", ID: p.ChatID})
+	}
+}
+
+func (s *Service) checkPeerError(err error, peers ...tg.InputPeerClass) {
+	if err == nil {
+		return
+	}
+	if tgerr.Is(err, "PEER_ID_INVALID", "CHANNEL_INVALID", "CHANNEL_PRIVATE") {
+		for _, p := range peers {
+			s.invalidatePeer(p)
+		}
+	}
+}
+
 // SendMessage sends a text message to the specified peer and returns the created tg.Message if available.
 // It parses HTML formatting, falling back to plain text if parsing or formatting fails.
 // If a short FloodWait is encountered (<= 5s), it automatically waits and retries once.
@@ -241,6 +290,9 @@ func (s *Service) SendMessage(ctx context.Context, peer tg.InputPeerClass, text 
 		}
 		return extractMessageFromUpdates(updates), nil
 	})
+	if err != nil {
+		s.checkPeerError(err, peer)
+	}
 	if err == nil && res != nil {
 		s.recordBotSent(res.ID)
 	}
@@ -267,6 +319,9 @@ func (s *Service) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID
 		}
 		return struct{}{}, err
 	})
+	if err != nil {
+		s.checkPeerError(err, peer)
+	}
 	return err
 }
 
@@ -307,6 +362,9 @@ func (s *Service) SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerCl
 		}
 		return extractMessageFromUpdates(updates), nil
 	})
+	if err != nil {
+		s.checkPeerError(err, peer)
+	}
 	if err == nil && res != nil {
 		s.recordBotSent(res.ID)
 	}
@@ -332,6 +390,9 @@ func (s *Service) EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass,
 	_, err := retryOnFloodWait(ctx, func() (tg.UpdatesClass, error) {
 		return s.api.MessagesEditMessage(ctx, req)
 	})
+	if err != nil {
+		s.checkPeerError(err, peer)
+	}
 	return err
 }
 
@@ -353,6 +414,9 @@ func (s *Service) EditMessageMarkupOnly(ctx context.Context, peer tg.InputPeerCl
 	_, err := retryOnFloodWait(ctx, func() (tg.UpdatesClass, error) {
 		return s.api.MessagesEditMessage(ctx, req)
 	})
+	if err != nil {
+		s.checkPeerError(err, peer)
+	}
 	return err
 }
 
@@ -481,6 +545,9 @@ func (s *Service) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msg
 			})
 			return struct{}{}, err
 		})
+		if err != nil {
+			s.checkPeerError(err, peer)
+		}
 		return err
 	}
 
@@ -488,6 +555,9 @@ func (s *Service) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msg
 		_, err := s.sender.To(peer).Revoke().Messages(ctx, msgIDs...)
 		return struct{}{}, err
 	})
+	if err != nil {
+		s.checkPeerError(err, peer)
+	}
 	return err
 }
 
@@ -1029,6 +1099,7 @@ func (s *Service) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaTy
 	}
 
 	if err != nil {
+		s.checkPeerError(err, peer)
 		return nil, fmt.Errorf("failed to send media (%s): %w", mediaType, err)
 	}
 

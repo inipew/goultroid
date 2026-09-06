@@ -25,6 +25,8 @@ var (
 	ErrRateLimited      = errors.New("rate limited")
 	ErrRateLimit        = ErrRateLimited
 	ErrPeerUnresolved   = errors.New("peer access hash could not be resolved")
+	ErrAccessHashMissing = errors.New("access hash missing for peer")
+	ErrPeerInvalid       = errors.New("peer or access hash invalid")
 	ErrUnclosedQuote    = errors.New("unclosed quote in command arguments")
 	ErrTrailingEscape   = errors.New("trailing backslash escape in command arguments")
 	ErrResourceLimit    = errors.New("resource limit exceeded")
