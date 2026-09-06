@@ -118,7 +118,7 @@ func TestDownloaderPlugin(t *testing.T) {
 	svc := &mockService{}
 	ctx := &core.Context{
 		Ctx:     context.Background(),
-		Message: &core.Message{ID: 1, ReplyToID: 42},
+		Message: &core.Message{ID: 1, ReplyToID: 42, IsOutgoing: true},
 		Svc:     svc,
 		PeerID:  &tg.InputPeerSelf{},
 	}
@@ -136,7 +136,7 @@ func TestDownloaderPlugin(t *testing.T) {
 	// Test no media & no URL
 	emptyCtx := &core.Context{
 		Ctx:     context.Background(),
-		Message: &core.Message{ID: 2},
+		Message: &core.Message{ID: 2, IsOutgoing: true},
 		Svc:     svc,
 		PeerID:  &tg.InputPeerSelf{},
 	}

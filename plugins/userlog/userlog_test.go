@@ -3,7 +3,9 @@ package userlog_test
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
@@ -15,18 +17,35 @@ import (
 
 type mockTelegram struct {
 	core.MockTelegramServicer
+	mu       sync.Mutex
 	sentText string
 	edited   string
 }
 
 func (m *mockTelegram) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
+	m.mu.Lock()
 	m.sentText = text
+	m.mu.Unlock()
 	return &tg.Message{ID: 1, Message: text}, nil
 }
 
 func (m *mockTelegram) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
+	m.mu.Lock()
 	m.edited = text
+	m.mu.Unlock()
 	return nil
+}
+
+func (m *mockTelegram) getSent() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sentText
+}
+
+func (m *mockTelegram) getEdited() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.edited
 }
 
 func setupTestDB(t *testing.T) *database.DB {
@@ -61,13 +80,13 @@ func TestUserLogPlugin(t *testing.T) {
 		Ctx:     context.Background(),
 		Svc:     mockTG,
 		PeerID:  &tg.InputPeerChat{ChatID: 777},
-		Message: &core.Message{ID: 1},
+		Message: &core.Message{ID: 1, IsOutgoing: true},
 	}
 	if err := cmds[0].Handler(setLogCtx); err != nil {
 		t.Fatalf("handleSetLog failed: %v", err)
 	}
-	if !strings.Contains(mockTG.edited, "Log destination set") {
-		t.Errorf("expected destination set notice, got %s", mockTG.edited)
+	if !strings.Contains(mockTG.getEdited(), "Log destination set") {
+		t.Errorf("expected destination set notice, got %s", mockTG.getEdited())
 	}
 
 	chat, _ := svc.GetLogChat(context.Background())
@@ -80,13 +99,13 @@ func TestUserLogPlugin(t *testing.T) {
 		Ctx:     context.Background(),
 		Svc:     mockTG,
 		PeerID:  &tg.InputPeerChat{ChatID: 777},
-		Message: &core.Message{ID: 2},
+		Message: &core.Message{ID: 2, IsOutgoing: true},
 	}
 	if err := cmds[1].Handler(statusCtx); err != nil {
 		t.Fatalf("handleLogStatus failed: %v", err)
 	}
-	if !strings.Contains(mockTG.edited, "UserLog Configuration") {
-		t.Errorf("expected config overview, got %s", mockTG.edited)
+	if !strings.Contains(mockTG.getEdited(), "UserLog Configuration") {
+		t.Errorf("expected config overview, got %s", mockTG.getEdited())
 	}
 
 	// 3. .log tags off
@@ -94,14 +113,14 @@ func TestUserLogPlugin(t *testing.T) {
 		Ctx:     context.Background(),
 		Svc:     mockTG,
 		PeerID:  &tg.InputPeerChat{ChatID: 777},
-		Message: &core.Message{ID: 3},
+		Message: &core.Message{ID: 3, IsOutgoing: true},
 		Args:    []string{"tags", "off"},
 	}
 	if err := cmds[1].Handler(toggleCtx); err != nil {
 		t.Fatalf("handleLogStatus toggle failed: %v", err)
 	}
-	if !strings.Contains(mockTG.edited, "DISABLED") {
-		t.Errorf("expected DISABLED notice, got %s", mockTG.edited)
+	if !strings.Contains(mockTG.getEdited(), "DISABLED") {
+		t.Errorf("expected DISABLED notice, got %s", mockTG.getEdited())
 	}
 }
 
@@ -137,8 +156,15 @@ func TestUserLogPlugin_HandleIncomingMessage(t *testing.T) {
 	if err := p.HandleIncomingMessage(ctx, e, mentionMsg, false, ""); err != nil {
 		t.Fatalf("HandleIncomingMessage failed: %v", err)
 	}
-	if !strings.Contains(mockTG.sentText, "Tag / Mention Alert") {
-		t.Errorf("expected mention alert logged, got %s", mockTG.sentText)
+	// UserLog queues work async; wait briefly for worker to process.
+	for i := 0; i < 20; i++ {
+		if strings.Contains(mockTG.getSent(), "Tag / Mention Alert") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(mockTG.getSent(), "Tag / Mention Alert") {
+		t.Errorf("expected mention alert logged, got %s", mockTG.getSent())
 	}
 
 	// Incoming PM
@@ -152,7 +178,13 @@ func TestUserLogPlugin_HandleIncomingMessage(t *testing.T) {
 	if err := p.HandleIncomingMessage(ctx, e, pmMsg, false, ""); err != nil {
 		t.Fatalf("HandleIncomingMessage PM failed: %v", err)
 	}
-	if !strings.Contains(mockTG.sentText, "New Private Message") {
-		t.Errorf("expected PM logged, got %s", mockTG.sentText)
+	for i := 0; i < 20; i++ {
+		if strings.Contains(mockTG.getSent(), "New Private Message") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(mockTG.getSent(), "New Private Message") {
+		t.Errorf("expected PM logged, got %s", mockTG.getSent())
 	}
 }

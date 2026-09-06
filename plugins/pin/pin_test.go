@@ -99,7 +99,7 @@ func TestPinPlugin(t *testing.T) {
 	svc := &mockService{}
 	ctx := &core.Context{
 		Ctx:     context.Background(),
-		Message: &core.Message{ID: 1, ReplyToID: 42},
+		Message: &core.Message{ID: 1, ReplyToID: 42, IsOutgoing: true},
 		Svc:     svc,
 		PeerID:  &tg.InputPeerSelf{},
 	}
@@ -142,7 +142,7 @@ func TestPinPluginErrors(t *testing.T) {
 	}
 	ctx := &core.Context{
 		Ctx:     context.Background(),
-		Message: &core.Message{ID: 1, ReplyToID: 42},
+		Message: &core.Message{ID: 1, ReplyToID: 42, IsOutgoing: true},
 		Svc:     svc,
 		PeerID:  &tg.InputPeerChannel{ChannelID: 12345},
 	}

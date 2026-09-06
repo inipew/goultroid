@@ -100,7 +100,7 @@ func TestForwardPlugin(t *testing.T) {
 	svc := &mockService{}
 	ctx := &core.Context{
 		Ctx:     context.Background(),
-		Message: &core.Message{ID: 1, ReplyToID: 777},
+		Message: &core.Message{ID: 1, ReplyToID: 777, IsOutgoing: true},
 		Svc:     svc,
 		PeerID:  &tg.InputPeerSelf{},
 	}

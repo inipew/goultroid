@@ -74,7 +74,7 @@ func TestVoicePlugin(t *testing.T) {
 			Ctx:     context.Background(),
 			Svc:     mockTG,
 			PeerID:  &tg.InputPeerChat{ChatID: -100123},
-			Message: &core.Message{ID: 1, SenderID: 12345},
+			Message: &core.Message{ID: 1, SenderID: 12345, IsOutgoing: true},
 			Args:    args,
 		}
 	}

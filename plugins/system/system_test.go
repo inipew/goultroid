@@ -119,7 +119,7 @@ func TestExec_EmptyArgs(t *testing.T) {
 	ctx := &core.Context{
 		Ctx:     context.Background(),
 		PeerID:  &tg.InputPeerChat{ChatID: 100},
-		Message: &core.Message{ID: 1, Text: ".exec"},
+		Message: &core.Message{ID: 1, Text: ".exec", IsOutgoing: true},
 		Args:    nil,
 		Svc:     svc,
 	}
@@ -140,7 +140,7 @@ func TestExec_ShortOutput(t *testing.T) {
 	ctx := &core.Context{
 		Ctx:     context.Background(),
 		PeerID:  &tg.InputPeerChat{ChatID: 100},
-		Message: &core.Message{ID: 1, Text: ".exec echo Hello GoUltroid"},
+		Message: &core.Message{ID: 1, Text: ".exec echo Hello GoUltroid", IsOutgoing: true},
 		Args:    []string{"echo", "Hello", "GoUltroid"},
 		Svc:     svc,
 	}
@@ -166,7 +166,7 @@ func TestExec_LongOutput(t *testing.T) {
 	ctx := &core.Context{
 		Ctx:     context.Background(),
 		PeerID:  &tg.InputPeerChat{ChatID: 100},
-		Message: &core.Message{ID: 1, Text: ".exec " + cmdStr},
+		Message: &core.Message{ID: 1, Text: ".exec " + cmdStr, IsOutgoing: true},
 		Args:    []string{"head", "-c", "4000", "<", "/dev/zero", "|", "tr", "'\\0'", "'A'"},
 		Svc:     svc,
 	}
@@ -198,7 +198,7 @@ func TestRestart_CustomHandler(t *testing.T) {
 	ctx := &core.Context{
 		Ctx:     context.Background(),
 		PeerID:  &tg.InputPeerChannel{ChannelID: 777, AccessHash: 888},
-		Message: &core.Message{ID: 42, Text: ".restart"},
+		Message: &core.Message{ID: 42, Text: ".restart", IsOutgoing: true},
 		Svc:     svc,
 	}
 
@@ -224,7 +224,7 @@ func TestRestart_CustomHandler(t *testing.T) {
 	ctxSelf := &core.Context{
 		Ctx:     context.Background(),
 		PeerID:  &tg.InputPeerSelf{},
-		Message: &core.Message{ID: 55, Text: ".restart"},
+		Message: &core.Message{ID: 55, Text: ".restart", IsOutgoing: true},
 		Svc:     svc,
 	}
 	if err := p.handleRestart(ctxSelf); err != nil {
@@ -239,7 +239,7 @@ func TestRestart_CustomHandler(t *testing.T) {
 	ctxUser := &core.Context{
 		Ctx:     context.Background(),
 		PeerID:  &tg.InputPeerUser{UserID: 12345, AccessHash: 67890},
-		Message: &core.Message{ID: 66, Text: ".restart"},
+		Message: &core.Message{ID: 66, Text: ".restart", IsOutgoing: true},
 		Svc:     svc,
 	}
 	if err := p.handleRestart(ctxUser); err != nil {
@@ -270,7 +270,7 @@ func TestUpdate_UpToDate(t *testing.T) {
 	ctx := &core.Context{
 		Ctx:     context.Background(),
 		PeerID:  &tg.InputPeerChat{ChatID: 100},
-		Message: &core.Message{ID: 1, Text: ".update"},
+		Message: &core.Message{ID: 1, Text: ".update", IsOutgoing: true},
 		Args:    nil,
 		Svc:     svc,
 	}
@@ -305,7 +305,7 @@ func TestUpdate_HasUpdates(t *testing.T) {
 	ctx := &core.Context{
 		Ctx:     context.Background(),
 		PeerID:  &tg.InputPeerChat{ChatID: 100},
-		Message: &core.Message{ID: 1, Text: ".update"},
+		Message: &core.Message{ID: 1, Text: ".update", IsOutgoing: true},
 		Args:    nil,
 		Svc:     svc,
 	}
@@ -346,7 +346,7 @@ func TestUpdate_PullAndRebuild(t *testing.T) {
 	ctx := &core.Context{
 		Ctx:     context.Background(),
 		PeerID:  &tg.InputPeerChat{ChatID: 100},
-		Message: &core.Message{ID: 1, Text: ".update pull"},
+		Message: &core.Message{ID: 1, Text: ".update pull", IsOutgoing: true},
 		Args:    []string{"pull"},
 		Svc:     svc,
 	}
@@ -390,7 +390,7 @@ func TestUpdate_DirtyWorkingTree(t *testing.T) {
 	ctx := &core.Context{
 		Ctx:     context.Background(),
 		PeerID:  &tg.InputPeerChat{ChatID: 100},
-		Message: &core.Message{ID: 1, Text: ".update pull"},
+		Message: &core.Message{ID: 1, Text: ".update pull", IsOutgoing: true},
 		Args:    []string{"pull"},
 		Svc:     svc,
 	}
@@ -458,7 +458,7 @@ func TestHealth_WithMetrics(t *testing.T) {
 	ctx := &core.Context{
 		Ctx:     context.Background(),
 		PeerID:  &tg.InputPeerChat{ChatID: 100},
-		Message: &core.Message{ID: 1},
+		Message: &core.Message{ID: 1, IsOutgoing: true},
 		Svc:     svc,
 	}
 

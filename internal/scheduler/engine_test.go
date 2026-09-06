@@ -458,7 +458,8 @@ func TestJob_RecordsFailure(t *testing.T) {
 		t.Fatalf("failed to claim job: %v", err)
 	}
 
-	engine.executeJob(ctx, claimed[0])
+	_, cancel2 := context.WithCancel(ctx)
+	engine.executeJob(ctx, claimed[0], cancel2)
 
 	// Fetch from DB to verify failure was recorded and status is pending with backoff
 	updated, err := db.GetScheduledJob(ctx, saved.ID)
@@ -548,7 +549,8 @@ func TestEngine_DynamicPrincipalRevocation(t *testing.T) {
 		t.Fatalf("failed to claim job: %v", err)
 	}
 
-	engine.executeJob(ctx, claimed[0])
+	_, cancel2 := context.WithCancel(ctx)
+	engine.executeJob(ctx, claimed[0], cancel2)
 
 	if sudoCmdRan {
 		t.Fatalf("command should NOT have run after sudo revocation!")

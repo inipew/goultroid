@@ -102,7 +102,7 @@ func TestAlivePlugin(t *testing.T) {
 	ctx := &core.Context{
 		Ctx:     context.Background(),
 		Command: "alive",
-		Message: &core.Message{ID: 1},
+		Message: &core.Message{ID: 1, IsOutgoing: true},
 		Perms:   core.NewPermissions(123456, nil),
 		Svc:     svc,
 		PeerID:  &tg.InputPeerSelf{},

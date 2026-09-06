@@ -64,7 +64,7 @@ func TestPMPermitPlugin(t *testing.T) {
 		Ctx:     context.Background(),
 		Svc:     mockTG,
 		PeerID:  &tg.InputPeerUser{UserID: 88888},
-		Message: &core.Message{ID: 1},
+		Message: &core.Message{ID: 1, IsOutgoing: true},
 		Args:    []string{"88888"},
 	}
 
@@ -97,7 +97,7 @@ func TestPMPermitPlugin(t *testing.T) {
 		Ctx:     context.Background(),
 		Svc:     mockTG,
 		PeerID:  &tg.InputPeerUser{UserID: 88888},
-		Message: &core.Message{ID: 1},
+		Message: &core.Message{ID: 1, IsOutgoing: true},
 		Args:    []string{"off"},
 	}
 	if err := cmds[3].Handler(toggleCtx); err != nil {

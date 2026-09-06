@@ -121,7 +121,8 @@ func TestEngine_MisfirePolicy_Skip(t *testing.T) {
 	}
 
 	// Execute job with MisfireSkip policy
-	engine.executeJob(ctx, claimed[0])
+	_, cancel2 := context.WithCancel(ctx)
+	engine.executeJob(ctx, claimed[0], cancel2)
 
 	// Per MisfireSkip, message should NOT have been sent
 	if atomic.LoadInt32(&sentCount) != 0 {

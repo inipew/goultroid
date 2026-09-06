@@ -57,7 +57,7 @@ func TestBroadcastPlugin(t *testing.T) {
 		Ctx:     context.Background(),
 		Svc:     mockTG,
 		PeerID:  &tg.InputPeerSelf{},
-		Message: &core.Message{ID: 1},
+		Message: &core.Message{ID: 1, IsOutgoing: true},
 		Args:    []string{"-users", "Hello", "Users"},
 		RawArgs: "-users Hello Users",
 	}
@@ -76,7 +76,7 @@ func TestBroadcastPlugin(t *testing.T) {
 		Ctx:     context.Background(),
 		Svc:     mockTG,
 		PeerID:  &tg.InputPeerSelf{},
-		Message: &core.Message{ID: 2},
+		Message: &core.Message{ID: 2, IsOutgoing: true},
 	}
 	if err := cmds[1].Handler(cancelCtx); err != nil {
 		t.Fatalf("handleCancelBroadcast failed: %v", err)
@@ -96,7 +96,7 @@ func TestBroadcastPlugin_EmptyArgs(t *testing.T) {
 		Ctx:     context.Background(),
 		Svc:     mockTG,
 		PeerID:  &tg.InputPeerSelf{},
-		Message: &core.Message{ID: 1},
+		Message: &core.Message{ID: 1, IsOutgoing: true},
 	}
 
 	if err := cmds[0].Handler(ctx); err != nil {
