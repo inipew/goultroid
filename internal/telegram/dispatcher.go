@@ -291,6 +291,11 @@ func (d *Dispatcher) getResolver() core.PeerResolver {
 	return d.resolver
 }
 
+// Resolver returns the configured PeerResolver instance.
+func (d *Dispatcher) Resolver() core.PeerResolver {
+	return d.getResolver()
+}
+
 // SetSelfID sets the current logged-in user ID.
 func (d *Dispatcher) SetSelfID(id int64) {
 	d.mu.Lock()
@@ -704,6 +709,16 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		cmdName = parsed.Name
 	}
 
+	origin := core.ExecutionInteractive
+	if msg.Out {
+		svc := d.getService()
+		if svc != nil && svc.IsBotSent(msg.ID) {
+			origin = core.ExecutionAutomation
+		}
+	}
+	decision := core.NewMessageDecision(origin)
+	ctx = core.WithMessageDecision(ctx, decision)
+
 	// Asynchronously cache peer entities in local SQLite for fast offline resolution
 	// Bounded queue: never block dispatch, drop on full (observational cache).
 	if len(e.Users) > 0 || len(e.Channels) > 0 || len(e.Chats) > 0 {
@@ -765,6 +780,10 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		if d.safeExecuteInterceptor(ctx, h, e, msg, isCmd, cmdName) {
 			return nil
 		}
+	}
+
+	if decision.IsHandled() || decision.IsSuppressedCommands() {
+		return nil
 	}
 
 	coreMsg := extractCoreMessage(msg)

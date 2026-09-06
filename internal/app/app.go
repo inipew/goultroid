@@ -129,6 +129,8 @@ func New(cfg *config.Config) (*App, error) {
 	}
 
 	afkPlugin := afk.New(db, cfg.OwnerID, client.Service)
+	afkPlugin.SetLogger(logger)
+	afkPlugin.SetResolver(dispatcher.Resolver())
 	filtersPlugin := filters.New(db, client.Service)
 	blacklistPlugin := blacklist.New(db, client.Service)
 

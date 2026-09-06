@@ -22,3 +22,36 @@ func TestHandledMessageMarkerExpires(t *testing.T) {
 		t.Fatal("expired marker must not be consumed as handled")
 	}
 }
+
+func TestMessageDecision(t *testing.T) {
+	d := NewMessageDecision(ExecutionScheduled)
+	if d.Origin() != ExecutionScheduled {
+		t.Fatalf("expected ExecutionScheduled, got %v", d.Origin())
+	}
+	if d.IsHandled() || d.IsSuppressedAutomation() || d.IsSuppressedAFK() || d.IsSuppressedFilters() || d.IsSuppressedCommands() {
+		t.Fatal("initial flags must be false")
+	}
+
+	d.SetHandled(true)
+	d.SetSuppressAutomation(true)
+	d.SetSuppressAFK(true)
+	d.SetSuppressFilters(true)
+	d.SetSuppressCommands(true)
+	d.SetOrigin(ExecutionInteractive)
+
+	if !d.IsHandled() || !d.IsSuppressedAutomation() || !d.IsSuppressedAFK() || !d.IsSuppressedFilters() || !d.IsSuppressedCommands() {
+		t.Fatal("flags must be true after setting")
+	}
+	if d.Origin() != ExecutionInteractive {
+		t.Fatalf("expected ExecutionInteractive, got %v", d.Origin())
+	}
+
+	ctx := WithMessageDecision(nil, d)
+	retrieved := GetMessageDecision(ctx)
+	if retrieved != d {
+		t.Fatalf("retrieved decision does not match original")
+	}
+	if GetMessageDecision(nil) != nil {
+		t.Fatal("expected nil on nil context")
+	}
+}

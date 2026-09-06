@@ -245,7 +245,14 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 			if peer != nil {
 				_ = svc.DeleteMessage(ctx, peer, []int{msg.ID})
 			}
-			break
+			if decision := core.GetMessageDecision(ctx); decision != nil {
+				decision.SetHandled(true)
+				decision.SetSuppressAutomation(true)
+				decision.SetSuppressAFK(true)
+				decision.SetSuppressFilters(true)
+				decision.SetSuppressCommands(true)
+			}
+			return core.ErrInterceptHandled
 		}
 	}
 

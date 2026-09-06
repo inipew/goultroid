@@ -176,6 +176,14 @@ func (c *Client) Dispatcher() *Dispatcher {
 	return nil
 }
 
+// Resolver returns the configured PeerResolver instance.
+func (c *Client) Resolver() core.PeerResolver {
+	if c != nil && c.dispatcher != nil {
+		return c.dispatcher.Resolver()
+	}
+	return nil
+}
+
 // Run connects to Telegram, performs authentication, and maintains the update loop.
 func (c *Client) Run(ctx context.Context) error {
 	return c.raw.Run(ctx, func(ctx context.Context) error {

@@ -2,6 +2,7 @@ package pmpermit_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -217,8 +218,8 @@ func TestPMPermitPlugin_HandleIncomingMessage(t *testing.T) {
 		PeerID: &tg.PeerUser{UserID: 9999},
 		FromID: &tg.PeerUser{UserID: 9999},
 	}
-	if err := p.HandleIncomingMessage(ctx, e, inMsg, false, ""); err != nil {
-		t.Errorf("unexpected error handling incoming PM: %v", err)
+	if err := p.HandleIncomingMessage(ctx, e, inMsg, false, ""); !errors.Is(err, core.ErrInterceptHandled) {
+		t.Errorf("expected ErrInterceptHandled on intercepted PM, got %v", err)
 	}
 	if !strings.Contains(mockTG.sentText, "Warning") {
 		t.Errorf("expected warning sent, got: %s", mockTG.sentText)

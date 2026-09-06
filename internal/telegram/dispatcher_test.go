@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,6 +16,8 @@ import (
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/plugins/afk"
 	"go.uber.org/zap"
 )
 
@@ -703,6 +706,206 @@ func TestPeerStorage_SaveEntitiesBatch(t *testing.T) {
 	key, val, found, err := storage.FindByUsername(ctx, "user2")
 	if err != nil || !found || key.ID != 102 || val.AccessHash != 2222 {
 		t.Errorf("FindByUsername user2: found=%v, key=%+v, val=%+v, err=%v", found, key, val, err)
+	}
+}
+
+type afkTestService struct {
+	core.MockTelegramServicer
+	mu           sync.Mutex
+	sentMessages []string
+	botSentIDs   map[int]bool
+	messages     map[int]*tg.Message
+}
+
+func (s *afkTestService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sentMessages = append(s.sentMessages, text)
+	return &tg.Message{ID: len(s.sentMessages) + 100, Message: text}, nil
+}
+
+func (s *afkTestService) IsBotSent(msgID int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.botSentIDs[msgID]
+}
+
+func (s *afkTestService) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) (*tg.Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.messages != nil {
+		if m, ok := s.messages[msgID]; ok {
+			return m, nil
+		}
+	}
+	return nil, nil
+}
+
+func TestDispatcher_AFK_EndToEnd(t *testing.T) {
+	logger := zap.NewNop()
+	router := core.NewRouter(".")
+	ownerID := int64(1001)
+	perms := core.NewPermissions(ownerID, nil)
+
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("database open: %v", err)
+	}
+	defer db.Close()
+
+	svc := &afkTestService{
+		botSentIDs: make(map[int]bool),
+		messages:   make(map[int]*tg.Message),
+	}
+
+	dispatcher := NewDispatcher(router, perms, nil, logger)
+	dispatcher.SetSelfID(ownerID)
+	dispatcher.SetService(svc)
+
+	mgr := plugin.NewManager(router)
+	mgr.SetHookRegistrar(dispatcher)
+
+	afkPlugin := afk.New(db, ownerID, func() core.TelegramServicer { return svc })
+	afkPlugin.SetLogger(logger)
+	afkPlugin.SetResolver(dispatcher.Resolver())
+	if err := mgr.Register(afkPlugin); err != nil {
+		t.Fatalf("register afkPlugin: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// 1. Owner executes ".afk sleeping" via dispatcher command routing
+	cmdUpdate := &tg.UpdateNewMessage{
+		Message: &tg.Message{
+			ID:      1,
+			Out:     true,
+			Message: ".afk sleeping",
+			PeerID:  &tg.PeerUser{UserID: ownerID},
+			FromID:  &tg.PeerUser{UserID: ownerID},
+		},
+	}
+	if err := dispatcher.OnNewMessage(ctx, tg.Entities{}, cmdUpdate); err != nil {
+		t.Fatalf("OnNewMessage command failed: %v", err)
+	}
+	// Give command executor goroutine time to complete
+	time.Sleep(100 * time.Millisecond)
+
+	st, err := db.GetAFK(ctx, ownerID)
+	if err != nil || st == nil || !st.IsAFK {
+		t.Fatalf("expected AFK to be active in database, got: %+v, err: %v", st, err)
+	}
+
+	// 2. Incoming DM from user 2002 (Telegram MTProto omits FromID in private chats)
+	dmEntities := tg.Entities{
+		Users: map[int64]*tg.User{
+			2002: {ID: 2002, AccessHash: 111, FirstName: "Bob"},
+		},
+	}
+	dmUpdate := &tg.UpdateNewMessage{
+		Message: &tg.Message{
+			ID:      2,
+			Out:     false,
+			Message: "Hello, are you there?",
+			PeerID:  &tg.PeerUser{UserID: 2002},
+			FromID:  nil, // Omitted in private chats
+		},
+	}
+	if err := dispatcher.OnNewMessage(ctx, dmEntities, dmUpdate); err != nil {
+		t.Fatalf("OnNewMessage DM failed: %v", err)
+	}
+
+	svc.mu.Lock()
+	lastSent := ""
+	if len(svc.sentMessages) > 0 {
+		lastSent = svc.sentMessages[len(svc.sentMessages)-1]
+	}
+	svc.mu.Unlock()
+
+	if !strings.Contains(lastSent, "currently AFK") {
+		t.Fatalf("expected AFK responder to reply to DM, got: %q", lastSent)
+	}
+
+	// 3. Incoming mention in supergroup from user 3003
+	sgEntities := tg.Entities{
+		Users: map[int64]*tg.User{
+			ownerID: {ID: ownerID, Username: "superboss", AccessHash: 999},
+			3003:    {ID: 3003, AccessHash: 222, FirstName: "Charlie"},
+		},
+		Channels: map[int64]*tg.Channel{
+			500: {ID: 500, AccessHash: 333, Title: "Test Group"},
+		},
+	}
+	sgUpdate := &tg.UpdateNewChannelMessage{
+		Message: &tg.Message{
+			ID:      3,
+			Out:     false,
+			Message: "hey @superboss check this out",
+			PeerID:  &tg.PeerChannel{ChannelID: 500},
+			FromID:  &tg.PeerUser{UserID: 3003},
+			Entities: []tg.MessageEntityClass{
+				&tg.MessageEntityMention{Offset: 4, Length: 10},
+			},
+		},
+	}
+	if err := dispatcher.OnNewChannelMessage(ctx, sgEntities, sgUpdate); err != nil {
+		t.Fatalf("OnNewChannelMessage mention failed: %v", err)
+	}
+
+	svc.mu.Lock()
+	lastSent = svc.sentMessages[len(svc.sentMessages)-1]
+	svc.mu.Unlock()
+
+	if !strings.Contains(lastSent, "currently AFK") {
+		t.Fatalf("expected AFK responder to reply to group mention, got: %q", lastSent)
+	}
+
+	// 4. Automated bot message (Scheduler/Broadcast) should NOT unAFK
+	svc.mu.Lock()
+	svc.botSentIDs[10] = true
+	svc.mu.Unlock()
+
+	botUpdate := &tg.UpdateNewMessage{
+		Message: &tg.Message{
+			ID:      10,
+			Out:     true,
+			Message: "Automated broadcast message",
+			PeerID:  &tg.PeerUser{UserID: 2002},
+		},
+	}
+	if err := dispatcher.OnNewMessage(ctx, dmEntities, botUpdate); err != nil {
+		t.Fatalf("OnNewMessage bot automated message failed: %v", err)
+	}
+
+	// Verify still AFK
+	st, err = db.GetAFK(ctx, ownerID)
+	if err != nil || st == nil || !st.IsAFK {
+		t.Fatalf("expected AFK to remain active after automated bot message, got: %+v", st)
+	}
+
+	// 5. Manual owner outgoing message in private chat -> auto-unAFK + Welcome Back!
+	manualUpdate := &tg.UpdateNewMessage{
+		Message: &tg.Message{
+			ID:      11,
+			Out:     true,
+			Message: "I'm back!",
+			PeerID:  &tg.PeerUser{UserID: 2002},
+		},
+	}
+	if err := dispatcher.OnNewMessage(ctx, dmEntities, manualUpdate); err != nil {
+		t.Fatalf("OnNewMessage manual unAFK failed: %v", err)
+	}
+
+	st, err = db.GetAFK(ctx, ownerID)
+	if err != nil || (st != nil && st.IsAFK) {
+		t.Fatalf("expected AFK to be deactivated after manual message, got: %+v", st)
+	}
+
+	svc.mu.Lock()
+	lastSent = svc.sentMessages[len(svc.sentMessages)-1]
+	svc.mu.Unlock()
+
+	if !strings.Contains(lastSent, "Welcome back") {
+		t.Fatalf("expected Welcome back message in private chat, got: %q", lastSent)
 	}
 }
 

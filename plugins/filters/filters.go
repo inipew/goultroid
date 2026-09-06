@@ -178,6 +178,11 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 	if msg.Out {
 		return nil
 	}
+	if decision := core.GetMessageDecision(ctx); decision != nil {
+		if decision.IsSuppressedFilters() || decision.IsSuppressedAutomation() {
+			return nil
+		}
+	}
 	// Prevent bot loop: ignore messages sent by bot users
 	if msg.FromID != nil {
 		if uPeer, ok := msg.FromID.(*tg.PeerUser); ok {
@@ -270,6 +275,9 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 			peer := extractPeerInput(msg.PeerID, e)
 			if peer != nil {
 				_, _ = svc.SendMessage(ctx, peer, f.replyText)
+			}
+			if decision := core.GetMessageDecision(ctx); decision != nil {
+				decision.SetSuppressAFK(true)
 			}
 			break
 		}

@@ -2,6 +2,7 @@ package blacklist
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -161,8 +162,8 @@ func TestBlacklistPlugin(t *testing.T) {
 		PeerID:  &tg.PeerChat{ChatID: chatID},
 		Message: "Warning, this might be a SCAM alert!",
 	}, false, "")
-	if err != nil {
-		t.Fatalf("unexpected error in HandleIncomingMessage: %v", err)
+	if !errors.Is(err, core.ErrInterceptHandled) {
+		t.Fatalf("expected ErrInterceptHandled in HandleIncomingMessage, got: %v", err)
 	}
 	if !svc.deleteCalled || len(svc.deletedMsgIDs) == 0 || svc.deletedMsgIDs[0] != 104 {
 		t.Errorf("expected message 104 to be auto-deleted, got deleteCalled=%v msgIDs=%v", svc.deleteCalled, svc.deletedMsgIDs)
@@ -176,8 +177,8 @@ func TestBlacklistPlugin(t *testing.T) {
 		PeerID:  &tg.PeerChat{ChatID: chatID},
 		Message: "Click here to get free crypto now!",
 	}, false, "")
-	if err != nil {
-		t.Fatalf("unexpected error in HandleIncomingMessage: %v", err)
+	if !errors.Is(err, core.ErrInterceptHandled) {
+		t.Fatalf("expected ErrInterceptHandled in HandleIncomingMessage, got: %v", err)
 	}
 	if !svc.deleteCalled || len(svc.deletedMsgIDs) == 0 || svc.deletedMsgIDs[0] != 105 {
 		t.Errorf("expected message 105 to be auto-deleted, got deleteCalled=%v msgIDs=%v", svc.deleteCalled, svc.deletedMsgIDs)

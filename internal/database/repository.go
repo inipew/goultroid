@@ -272,14 +272,33 @@ func (d *DB) DeleteNote(ctx context.Context, chatID int64, name string) error {
 // =================== AFK Methods ===================
 
 func (d *DB) SetAFK(ctx context.Context, userID int64, isAFK bool, reason string) error {
-	query := `
-	INSERT INTO afk_status (user_id, is_afk, reason, since)
-	VALUES (?, ?, ?, ?)
-	ON CONFLICT(user_id) DO UPDATE SET is_afk = excluded.is_afk, reason = excluded.reason, since = excluded.since
-	`
-	_, err := d.ExecContext(ctx, query, userID, isAFK, reason, time.Now().UTC())
+	now := time.Now().UTC()
+	if isAFK {
+		query := `
+		INSERT INTO afk_status (user_id, is_afk, reason, since)
+		VALUES (?, 1, ?, ?)
+		ON CONFLICT(user_id) DO UPDATE SET is_afk = 1, reason = excluded.reason, since = excluded.since
+		`
+		_, err := d.ExecContext(ctx, query, userID, reason, now)
+		if err != nil {
+			return fmt.Errorf("failed to update afk status: %w", err)
+		}
+		return nil
+	}
+
+	// Atomic deactivate: update is_afk = 0 without overwriting the original since timestamp
+	query := `UPDATE afk_status SET is_afk = 0 WHERE user_id = ? AND is_afk = 1`
+	res, err := d.ExecContext(ctx, query, userID)
 	if err != nil {
-		return fmt.Errorf("failed to update afk status: %w", err)
+		return fmt.Errorf("failed to deactivate afk status: %w", err)
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		insertQuery := `
+		INSERT INTO afk_status (user_id, is_afk, reason, since)
+		VALUES (?, 0, ?, ?)
+		ON CONFLICT(user_id) DO UPDATE SET is_afk = 0
+		`
+		_, _ = d.ExecContext(ctx, insertQuery, userID, reason, now)
 	}
 	return nil
 }

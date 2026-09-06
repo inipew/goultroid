@@ -167,8 +167,18 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 	if err != nil {
 		return err
 	}
-	if handled && isCommand {
-		core.MarkMessageHandled(senderID, msg.ID)
+	if handled {
+		if isCommand {
+			core.MarkMessageHandled(senderID, msg.ID)
+		}
+		if decision := core.GetMessageDecision(ctx); decision != nil {
+			decision.SetHandled(true)
+			decision.SetSuppressAutomation(true)
+			decision.SetSuppressAFK(true)
+			decision.SetSuppressFilters(true)
+			decision.SetSuppressCommands(true)
+		}
+		return core.ErrInterceptHandled
 	}
 	return nil
 }
