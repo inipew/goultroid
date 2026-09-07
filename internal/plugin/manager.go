@@ -45,20 +45,38 @@ func (m *Manager) Register(p Plugin) error {
 }
 
 // RegisterWithContext registers and initializes a plugin using the provided startup context.
+// It is transactional: no partial registration is visible on failure, and manager mutex is never held while invoking plugin code.
 func (m *Manager) RegisterWithContext(ctx context.Context, p Plugin) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if p == nil { return fmt.Errorf("cannot register nil plugin") }
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.shutdown { return fmt.Errorf("plugin manager is shutting down") }
-	if m.router == nil { return fmt.Errorf("plugin router is nil") }
+	if p == nil {
+		return fmt.Errorf("cannot register nil plugin")
+	}
 	name := strings.ToLower(strings.TrimSpace(p.Name()))
-	if name == "" { return fmt.Errorf("plugin name cannot be empty") }
-	if _, exists := m.plugins[name]; exists { return fmt.Errorf("plugin already registered: %s", name) }
+	if name == "" {
+		return fmt.Errorf("plugin name cannot be empty")
+	}
 
-	// 1. Startup validation: ensure commands are valid and handlers are non-nil
+	// 1. Lightweight pre-check under lock (duplicate, shutdown, router nil)
+	m.mu.Lock()
+	if m.shutdown {
+		m.mu.Unlock()
+		return fmt.Errorf("plugin manager is shutting down")
+	}
+	if m.router == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("plugin router is nil")
+	}
+	if _, exists := m.plugins[name]; exists {
+		m.mu.Unlock()
+		return fmt.Errorf("plugin already registered: %s", name)
+	}
+	// Copy router reference for validate without holding lock
+	router := m.router
+	m.mu.Unlock()
+
+	// 2. Validate commands outside lock
 	cmds := p.Commands()
 	for _, cmd := range cmds {
 		if strings.TrimSpace(cmd.Name) == "" {
@@ -69,7 +87,7 @@ func (m *Manager) RegisterWithContext(ctx context.Context, p Plugin) error {
 		}
 	}
 
-	// 2. Context-aware initialization
+	// 3. Initialization without holding lock (may be long, may call manager)
 	var initErr error
 	if ci, ok := p.(ContextInitializer); ok {
 		initErr = ci.InitContext(ctx)
@@ -77,33 +95,71 @@ func (m *Manager) RegisterWithContext(ctx context.Context, p Plugin) error {
 		initErr = p.Init()
 	}
 	if initErr != nil {
-		if s, ok := p.(ContextShutdowner); ok { _ = s.ShutdownContext(ctx) } else if s, ok := p.(Shutdowner); ok { _ = s.Shutdown() }
+		// Compensating cleanup outside lock
+		if s, ok := p.(ContextShutdowner); ok {
+			_ = s.ShutdownContext(ctx)
+		} else if s, ok := p.(Shutdowner); ok {
+			_ = s.Shutdown()
+		}
 		return fmt.Errorf("failed to initialize plugin %s: %w", name, initErr)
 	}
 
-	// 3. Command registration
-	if err := m.router.RegisterBatch(cmds); err != nil {
-		if s, ok := p.(ContextShutdowner); ok { _ = s.ShutdownContext(ctx) } else if s, ok := p.(Shutdowner); ok { _ = s.Shutdown() }
+	// 4. Atomic commit under lock: re-check, register commands, hooks, metadata
+	m.mu.Lock()
+	if m.shutdown {
+		m.mu.Unlock()
+		if s, ok := p.(ContextShutdowner); ok {
+			_ = s.ShutdownContext(ctx)
+		} else if s, ok := p.(Shutdowner); ok {
+			_ = s.Shutdown()
+		}
+		return fmt.Errorf("plugin manager is shutting down")
+	}
+	if _, exists := m.plugins[name]; exists {
+		m.mu.Unlock()
+		if s, ok := p.(ContextShutdowner); ok {
+			_ = s.ShutdownContext(ctx)
+		} else if s, ok := p.(Shutdowner); ok {
+			_ = s.Shutdown()
+		}
+		return fmt.Errorf("plugin already registered: %s", name)
+	}
+	if err := router.RegisterBatch(cmds); err != nil {
+		m.mu.Unlock()
+		if s, ok := p.(ContextShutdowner); ok {
+			_ = s.ShutdownContext(ctx)
+		} else if s, ok := p.(Shutdowner); ok {
+			_ = s.Shutdown()
+		}
 		return fmt.Errorf("plugin %s command registration failed: %w", name, err)
 	}
 
-	// 4. Hook registration for plugins that intercept raw Telegram messages
+	var hookCleanup func()
 	if m.hookRegistrar != nil {
 		if mhp, ok := p.(MessageHookPlugin); ok {
-			cleanup := m.hookRegistrar.AddPrioritizedMessageHandler(mhp.MessageHookPriority(), mhp.HandleIncomingMessage)
-			if cleanup != nil {
-				m.hookCleanups = append(m.hookCleanups, cleanup)
-			}
+			hookCleanup = m.hookRegistrar.AddPrioritizedMessageHandler(mhp.MessageHookPriority(), mhp.HandleIncomingMessage)
 		}
 	}
 
 	var meta Metadata
-	if dp, ok := p.(DescribedPlugin); ok { meta = dp.Metadata() } else { meta = Metadata{Name: name, Version: "1.0.0", Description: fmt.Sprintf("%s plugin", name)} }
-	if meta.Name == "" { meta.Name = name }
-	if meta.Version == "" { meta.Version = "1.0.0" }
+	if dp, ok := p.(DescribedPlugin); ok {
+		meta = dp.Metadata()
+	} else {
+		meta = Metadata{Name: name, Version: "1.0.0", Description: fmt.Sprintf("%s plugin", name)}
+	}
+	if meta.Name == "" {
+		meta.Name = name
+	}
+	if meta.Version == "" {
+		meta.Version = "1.0.0"
+	}
 	m.plugins[name] = p
 	m.metadata[name] = meta
 	m.list = append(m.list, p)
+	if hookCleanup != nil {
+		m.hookCleanups = append(m.hookCleanups, hookCleanup)
+	}
+	m.mu.Unlock()
 	return nil
 }
 
