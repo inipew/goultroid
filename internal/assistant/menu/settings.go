@@ -25,10 +25,12 @@ func (c *Controller) AttachSettingsRoutes(r *callback.Router, svc *settings.Serv
 	if r == nil || svc == nil { return }
 	r.Register("settings", "home", func(ctx context.Context, tx *callback.Transaction) error {
 		if _, err := c.validateSession(ctx, tx); err != nil { return err }
+		unlock := c.lockInstance(tx); defer unlock()
 		return c.editScreen(ctx, tx, buildSettingsHome(svc.Registry()))
 	})
 	r.Register("settings", "category", func(ctx context.Context, tx *callback.Transaction) error {
 		if _, err := c.validateSession(ctx, tx); err != nil { return err }
+		unlock := c.lockInstance(tx); defer unlock()
 		category := tx.Payload.State
 		if category == "" { return fmt.Errorf("settings category is required") }
 		screen, err := buildSettingsCategory(ctx, svc, tx.UserID, tx.Target.ChatID(), category)
@@ -37,14 +39,13 @@ func (c *Controller) AttachSettingsRoutes(r *callback.Router, svc *settings.Serv
 	})
 	r.Register("settings", "set", func(ctx context.Context, tx *callback.Transaction) error {
 		if _, err := c.validateSession(ctx, tx); err != nil { return err }
+		unlock := c.lockInstance(tx); defer unlock()
 		ns, key, op, err := parseSettingState(tx.Payload.State); if err != nil { return err }
 		def, ok := svc.Registry().Get(ns, key); if !ok || def == nil { _ = tx.Answer(ctx, "Setting is no longer available", true); return fmt.Errorf("unknown setting %s:%s", ns, key) }
 		current, err := svc.Resolve(ctx, tx.UserID, tx.Target.ChatID(), ns, key); if err != nil { return err }
 		value, changed, err := nextSettingValue(def, current, op)
 		if err != nil {
-			if def.Type == settings.TypeString {
-				return c.beginStringInput(ctx, tx, def)
-			}
+			if def.Type == settings.TypeString { return c.beginStringInput(ctx, tx, def) }
 			_ = tx.Answer(ctx, "This setting cannot be changed from the menu", true); return err
 		}
 		if !changed { _ = tx.Answer(ctx, fmt.Sprintf("%s is already %s", def.Title, current), true) } else if err := svc.Set(ctx, settings.ScopeUser, tx.UserID, ns, key, value, tx.UserID); err != nil { _ = tx.Answer(ctx, "Invalid setting value", true); return err } else { _ = tx.Answer(ctx, fmt.Sprintf("%s → %s", def.Title, value), false) }
@@ -52,6 +53,7 @@ func (c *Controller) AttachSettingsRoutes(r *callback.Router, svc *settings.Serv
 	})
 	r.Register("settings", "reset", func(ctx context.Context, tx *callback.Transaction) error {
 		if _, err := c.validateSession(ctx, tx); err != nil { return err }
+		unlock := c.lockInstance(tx); defer unlock()
 		ns, key, _, err := parseSettingState(tx.Payload.State); if err != nil { return err }
 		def, ok := svc.Registry().Get(ns, key); if !ok { return fmt.Errorf("unknown setting %s:%s", ns, key) }
 		if err := svc.Reset(ctx, settings.ScopeUser, tx.UserID, ns, key, tx.UserID); err != nil { return err }
@@ -74,16 +76,24 @@ func (c *Controller) beginStringInput(ctx context.Context, tx *callback.Transact
 // HandleTextMessage consumes a pending free-form setting input. It returns true when the message was consumed.
 func (c *Controller) HandleTextMessage(ctx context.Context, userID, chatID int64, text string, inter interaction.MessageInteraction, svc *settings.Service) (bool, error) {
 	if userID == 0 || svc == nil || inter == nil { return false, nil }
-	if strings.HasPrefix(strings.TrimSpace(text), "/") { return false, nil }
 	c.pendingMu.Lock()
 	pending, ok := c.pending[userID]
 	if ok && time.Now().After(pending.ExpiresAt) { delete(c.pending, userID); ok = false }
 	c.pendingMu.Unlock()
 	if !ok { return false, nil }
 	if chatID != pending.Target.ChatID() { return true, fmt.Errorf("pending setting belongs to another chat") }
+
+	trimmed := strings.TrimSpace(text)
+	if strings.EqualFold(trimmed, "/cancel") {
+		c.clearPending(userID)
+		_, err := inter.SendMessage(ctx, pending.Target.Peer(), "❌ Setting change cancelled.", nil)
+		return true, err
+	}
+	if strings.HasPrefix(trimmed, "/") { return false, nil }
+
 	def, exists := svc.Registry().Get(pending.Namespace, pending.Key)
 	if !exists || def == nil { c.clearPending(userID); return true, fmt.Errorf("setting is no longer registered: %s:%s", pending.Namespace, pending.Key) }
-	value := strings.TrimSpace(text)
+	value := trimmed
 	if value == "" { _, _ = inter.SendMessage(ctx, pending.Target.Peer(), "Value cannot be empty.", nil); return true, nil }
 	if err := svc.Set(ctx, settings.ScopeUser, userID, pending.Namespace, pending.Key, value, userID); err != nil { _, _ = inter.SendMessage(ctx, pending.Target.Peer(), "⚠️ Invalid value: "+err.Error(), nil); return true, nil }
 	c.clearPending(userID)
