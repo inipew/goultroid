@@ -77,12 +77,13 @@ func (s *MemoryInstanceStore) Register(instance MenuInstance) {
 
 	s.instances[key] = &instance
 
-	// Periodic prune if store grows
+	// Periodic prune if store grows. Never remove lock entries here: a concurrent
+	// callback may still hold a lock for this key. Replacing the mutex while it
+	// is held would break the per-message serialization guarantee.
 	if len(s.instances) > 500 {
 		for k, inst := range s.instances {
 			if now.After(inst.ExpiresAt) {
 				delete(s.instances, k)
-				delete(s.locks, k)
 			}
 		}
 	}
@@ -102,7 +103,6 @@ func (s *MemoryInstanceStore) Get(chatID int64, messageID int) (*MenuInstance, b
 	if time.Now().After(inst.ExpiresAt) {
 		s.mu.Lock()
 		delete(s.instances, key)
-		delete(s.locks, key)
 		s.mu.Unlock()
 		return nil, false
 	}
@@ -122,13 +122,14 @@ func (s *MemoryInstanceStore) UpdateScreen(chatID int64, messageID int, screen S
 }
 
 // Invalidate explicitly removes a menu instance (e.g. upon Close).
+// The per-instance mutex is intentionally retained so a later callback cannot
+// acquire a different mutex while an earlier callback is still finishing.
 func (s *MemoryInstanceStore) Invalidate(chatID int64, messageID int) {
 	key := instanceKey(chatID, messageID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	delete(s.instances, key)
-	delete(s.locks, key)
 }
 
 // LockInstance acquires a mutex dedicated to the specified menu instance
