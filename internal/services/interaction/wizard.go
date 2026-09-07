@@ -8,6 +8,7 @@ import (
 )
 
 // WizardState represents persisted wizard session state.
+// Data is map[string]string for MVP; typed access is via constants and helpers below to avoid magic strings.
 type WizardState struct {
 	ID        string            `json:"id"`
 	Title     string            `json:"title"`
@@ -18,6 +19,31 @@ type WizardState struct {
 	Data      map[string]string `json:"data,omitempty"`
 	ExpiresAt time.Time         `json:"expires_at"`
 	Canceled  bool              `json:"canceled"`
+}
+
+// WizardData keys — use constants instead of raw strings to avoid magic strings.
+const (
+	WizardKeyChatID   = "chat_id"
+	WizardKeyInterval = "interval"
+	WizardKeyAction   = "action"
+	WizardKeyConfirm  = "confirm"
+)
+
+// Get returns a wizard data value by key.
+func (s *WizardState) Get(key string) (string, bool) {
+	if s.Data == nil {
+		return "", false
+	}
+	v, ok := s.Data[key]
+	return v, ok
+}
+
+// Set sets a wizard data value.
+func (s *WizardState) Set(key, val string) {
+	if s.Data == nil {
+		s.Data = make(map[string]string)
+	}
+	s.Data[key] = val
 }
 
 // WizardEngine manages multi-step interactive wizard sessions with state, validation, and lifecycle.

@@ -13,6 +13,8 @@ type StateScope struct {
 }
 
 // StateEntry is the stored value plus scope returned to callers.
+// Data is intentionally any for the framework layer (StateStore is a generic short-lived session store).
+// Domain code should use typed wrappers (e.g., SettingActionState) and avoid raw any assertions outside the store.
 type StateEntry struct {
 	Data  any
 	Scope StateScope
