@@ -23,6 +23,11 @@ var (
 	// ErrUnauthorized occurs when an unprivileged user triggers a protected action.
 	ErrUnauthorized = errors.New("assistant/callback: unauthorized actor")
 
+	// ErrDuplicateCallback indicates a callback query ID that has already been admitted for execution.
+	// Telegram callback deliveries are treated as at-least-once, so duplicate query IDs must not
+	// execute the same side effect twice.
+	ErrDuplicateCallback = errors.New("assistant/callback: duplicate callback query")
+
 	// ErrTimeout indicates a callback transaction exceeded its execution deadline.
 	ErrTimeout = errors.New("assistant/callback: transaction execution timeout")
 )
