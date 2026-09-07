@@ -85,10 +85,13 @@ func (h *Handler) HandleCallback(ctx *callback.CallbackContext) error {
 		return ctx.Answer("🏓 Pong!", true)
 
 	case "close":
-		// Acknowledge first so Telegram clears the callback loading state even
-		// though the originating message is about to disappear.
+		// Acknowledge first so Telegram clears the callback loading state before
+		// deleting the originating menu message.
 		if err := ctx.Answer("Menu closed", false); err != nil {
 			return err
+		}
+		if botService, ok := ctx.Service.(*BotServiceAdapter); ok {
+			return botService.deleteCallbackMessage(ctx.Ctx, ctx.Target.Peer, ctx.Target.MessageID)
 		}
 		return ctx.Delete()
 
