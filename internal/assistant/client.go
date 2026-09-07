@@ -54,6 +54,10 @@ type BotClient struct {
 
 	limiterMu  sync.Mutex
 	rateLimits map[int64]*userRateBucket
+
+	hashesMu      sync.RWMutex
+	userHashes    map[int64]int64
+	channelHashes map[int64]int64
 }
 
 var _ Client = (*BotClient)(nil)
@@ -63,14 +67,66 @@ func NewBotClient(appID int, appHash string, botToken string, logger *zap.Logger
 		logger = zap.NewNop()
 	}
 	return &BotClient{
-		appID:      appID,
-		appHash:    appHash,
-		botToken:   botToken,
-		logger:     logger,
-		bridge:     NewBridge(),
-		startTime:  time.Now(),
-		rateLimits: make(map[int64]*userRateBucket),
+		appID:         appID,
+		appHash:       appHash,
+		botToken:      botToken,
+		logger:        logger,
+		bridge:        NewBridge(),
+		startTime:     time.Now(),
+		rateLimits:    make(map[int64]*userRateBucket),
+		userHashes:    make(map[int64]int64),
+		channelHashes: make(map[int64]int64),
 	}
+}
+
+// CacheEntities stores access hashes for users and channels from received update entities.
+func (c *BotClient) CacheEntities(e tg.Entities) {
+	c.hashesMu.Lock()
+	defer c.hashesMu.Unlock()
+	for id, u := range e.Users {
+		if u != nil && u.AccessHash != 0 {
+			c.userHashes[id] = u.AccessHash
+		}
+	}
+	for id, ch := range e.Channels {
+		if ch != nil && ch.AccessHash != 0 {
+			c.channelHashes[id] = ch.AccessHash
+		}
+	}
+}
+
+// SetUserAccessHash caches the access hash for a given user.
+func (c *BotClient) SetUserAccessHash(userID int64, accessHash int64) {
+	if userID == 0 || accessHash == 0 {
+		return
+	}
+	c.hashesMu.Lock()
+	defer c.hashesMu.Unlock()
+	c.userHashes[userID] = accessHash
+}
+
+// GetUserAccessHash retrieves the cached access hash for a given user.
+func (c *BotClient) GetUserAccessHash(userID int64) int64 {
+	c.hashesMu.RLock()
+	defer c.hashesMu.RUnlock()
+	return c.userHashes[userID]
+}
+
+// SetChannelAccessHash caches the access hash for a given channel.
+func (c *BotClient) SetChannelAccessHash(channelID int64, accessHash int64) {
+	if channelID == 0 || accessHash == 0 {
+		return
+	}
+	c.hashesMu.Lock()
+	defer c.hashesMu.Unlock()
+	c.channelHashes[channelID] = accessHash
+}
+
+// GetChannelAccessHash retrieves the cached access hash for a given channel.
+func (c *BotClient) GetChannelAccessHash(channelID int64) int64 {
+	c.hashesMu.RLock()
+	defer c.hashesMu.RUnlock()
+	return c.channelHashes[channelID]
 }
 
 func (c *BotClient) SetBridge(b *Bridge) {
@@ -165,6 +221,7 @@ func (c *BotClient) Start(ctx context.Context) error {
 
 	// 1. Bot Command & Message Handler
 	dispatcher.OnNewMessage(func(ctx context.Context, e tg.Entities, update *tg.UpdateNewMessage) error {
+		c.CacheEntities(e)
 		msg, ok := update.Message.(*tg.Message)
 		if !ok || msg.Out || client == nil {
 			return nil
@@ -174,8 +231,9 @@ func (c *BotClient) Start(ctx context.Context) error {
 
 	// 2. Bot Callback Query Handler (normal message buttons)
 	dispatcher.OnBotCallbackQuery(func(ctx context.Context, e tg.Entities, update *tg.UpdateBotCallbackQuery) error {
+		c.CacheEntities(e)
 		chatID := extractChatIDFromPeer(update.Peer)
-		inputPeer := callbackInputPeer(update.Peer, e)
+		inputPeer := c.callbackInputPeer(update.Peer, update.UserID, e)
 		target := core.CallbackTarget{
 			Origin:       core.CallbackOriginMessage,
 			Peer:         inputPeer,
@@ -197,13 +255,21 @@ func (c *BotClient) Start(ctx context.Context) error {
 			bus.Publish(evt)
 		}
 		if c.callbackRouter != nil && adapter != nil {
-			_ = c.callbackRouter.Dispatch(ctx, evt, adapter)
+			if err := c.callbackRouter.Dispatch(ctx, evt, adapter); err != nil {
+				c.logger.Warn("assistant: callback dispatch returned error",
+					zap.Error(err),
+					zap.Int64("query_id", update.QueryID),
+					zap.Int64("user_id", update.UserID),
+					zap.ByteString("data", update.Data),
+				)
+			}
 		}
 		return nil
 	})
 
 	// 3. Inline Bot Callback Query Handler (inline message buttons)
 	dispatcher.OnInlineBotCallbackQuery(func(ctx context.Context, e tg.Entities, update *tg.UpdateInlineBotCallbackQuery) error {
+		c.CacheEntities(e)
 		target := core.CallbackTarget{
 			Origin:       core.CallbackOriginInline,
 			InlineID:     update.MsgID,
@@ -224,13 +290,21 @@ func (c *BotClient) Start(ctx context.Context) error {
 			bus.Publish(evt)
 		}
 		if c.callbackRouter != nil && adapter != nil {
-			_ = c.callbackRouter.Dispatch(ctx, evt, adapter)
+			if err := c.callbackRouter.Dispatch(ctx, evt, adapter); err != nil {
+				c.logger.Warn("assistant: inline callback dispatch returned error",
+					zap.Error(err),
+					zap.Int64("query_id", update.QueryID),
+					zap.Int64("user_id", update.UserID),
+					zap.ByteString("data", update.Data),
+				)
+			}
 		}
 		return nil
 	})
 
 	// 4. Bot Inline Query Handler (@bot query)
 	dispatcher.OnBotInlineQuery(func(ctx context.Context, e tg.Entities, update *tg.UpdateBotInlineQuery) error {
+		c.CacheEntities(e)
 		if c.inlineEngine == nil || adapter == nil {
 			return nil
 		}
@@ -366,7 +440,10 @@ func (c *BotClient) handleBotCommand(ctx context.Context, e tg.Entities, msg *tg
 
 	var peer tg.InputPeerClass
 	if u, ok := e.Users[senderID]; ok && u != nil && u.AccessHash != 0 {
+		c.SetUserAccessHash(senderID, u.AccessHash)
 		peer = &tg.InputPeerUser{UserID: senderID, AccessHash: u.AccessHash}
+	} else if hash := c.GetUserAccessHash(senderID); hash != 0 {
+		peer = &tg.InputPeerUser{UserID: senderID, AccessHash: hash}
 	}
 	if peer == nil {
 		c.logger.Warn("assistant: sender user access hash missing, command ignored", zap.Int64("sender_id", senderID))
@@ -443,23 +520,37 @@ func extractChatIDFromPeer(peer tg.PeerClass) int64 {
 	return 0
 }
 
-func callbackInputPeer(peer tg.PeerClass, e tg.Entities) tg.InputPeerClass {
+func (c *BotClient) callbackInputPeer(peer tg.PeerClass, userID int64, e tg.Entities) tg.InputPeerClass {
 	if peer == nil {
+		if userID != 0 {
+			if hash := c.GetUserAccessHash(userID); hash != 0 {
+				return &tg.InputPeerUser{UserID: userID, AccessHash: hash}
+			}
+		}
 		return nil
 	}
 	switch p := peer.(type) {
 	case *tg.PeerUser:
 		var accessHash int64
-		if u, ok := e.Users[p.UserID]; ok && u != nil {
+		if u, ok := e.Users[p.UserID]; ok && u != nil && u.AccessHash != 0 {
 			accessHash = u.AccessHash
+			c.SetUserAccessHash(p.UserID, accessHash)
+		} else {
+			accessHash = c.GetUserAccessHash(p.UserID)
+		}
+		if accessHash == 0 && userID != 0 {
+			accessHash = c.GetUserAccessHash(userID)
 		}
 		return &tg.InputPeerUser{UserID: p.UserID, AccessHash: accessHash}
 	case *tg.PeerChat:
 		return &tg.InputPeerChat{ChatID: p.ChatID}
 	case *tg.PeerChannel:
 		var accessHash int64
-		if ch, ok := e.Channels[p.ChannelID]; ok && ch != nil {
+		if ch, ok := e.Channels[p.ChannelID]; ok && ch != nil && ch.AccessHash != 0 {
 			accessHash = ch.AccessHash
+			c.SetChannelAccessHash(p.ChannelID, accessHash)
+		} else {
+			accessHash = c.GetChannelAccessHash(p.ChannelID)
 		}
 		return &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: accessHash}
 	default:

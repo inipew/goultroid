@@ -113,7 +113,7 @@ func (r *Router) checkRateLimit(ctx context.Context, evt *core.CallbackQueryEven
 // resolveState looks up opaqueID state, validates expiry/consumed, and performs authorization and scope checks.
 // Returns storedState, entry, hasState, and any reject error.
 func (r *Router) resolveState(ctx context.Context, evt *core.CallbackQueryEvent, ns, action, opaqueID string, svc core.TelegramServicer, start time.Time) (any, StateEntry, bool, error) {
-	if opaqueID == "" || r.stateStore == nil {
+	if opaqueID == "" || opaqueID == ActionNoop || opaqueID == "-" || r.stateStore == nil {
 		return nil, StateEntry{}, false, nil
 	}
 	e, getErr := r.stateStore.GetEntry(opaqueID)
@@ -274,7 +274,7 @@ func (r *Router) Dispatch(ctx context.Context, evt *core.CallbackQueryEvent, svc
 	if err := r.checkRateLimit(ctx, evt, ns, svc, start); err != nil {
 		return err
 	}
-	if action == ActionNoop || opaqueID == ActionNoop {
+	if action == ActionNoop {
 		if svc != nil {
 			if err := svc.AnswerCallbackQuery(ctx, evt.QueryID, "", false); err != nil {
 				r.logger.Debug("answer noop action failed", zap.Error(err), zap.Int64("query_id", evt.QueryID))

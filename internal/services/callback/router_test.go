@@ -261,6 +261,61 @@ func TestRouter_Dispatch_RawNoop(t *testing.T) {
 	}
 }
 
+func TestRouter_Dispatch_StatelessNoopOpaqueID(t *testing.T) {
+	router := NewRouter(zap.NewNop(), nil)
+	handler := &mockHandler{namespace: "assistant"}
+	if err := router.Register(handler); err != nil {
+		t.Fatalf("register handler failed: %v", err)
+	}
+
+	svc := &recordingService{}
+	// Button payload where opaqueID is "noop" (e.g. v1:assistant:status:noop)
+	evt := &core.CallbackQueryEvent{
+		QueryID: 202,
+		UserID:  12345,
+		Data:    EncodeCallbackData("assistant", "status", ActionNoop),
+	}
+
+	err := router.Dispatch(context.Background(), evt, svc)
+	if err != nil {
+		t.Fatalf("dispatch error for stateless noop opaqueID: %v", err)
+	}
+
+	if !handler.handled {
+		t.Fatalf("expected handler to be called when opaqueID is noop")
+	}
+	if handler.lastCtx.Action != "status" || handler.lastCtx.Namespace != "assistant" {
+		t.Errorf("unexpected handler callback context: %+v", handler.lastCtx)
+	}
+}
+
+func TestRouter_Dispatch_EncodedActionNoop(t *testing.T) {
+	router := NewRouter(zap.NewNop(), nil)
+	handler := &mockHandler{namespace: "ui"}
+	if err := router.Register(handler); err != nil {
+		t.Fatalf("register handler failed: %v", err)
+	}
+
+	svc := &recordingService{}
+	// Button payload where action is "noop" (e.g. v1:ui:noop:-)
+	evt := &core.CallbackQueryEvent{
+		QueryID: 303,
+		UserID:  12345,
+		Data:    EncodeCallbackData("ui", ActionNoop, "-"),
+	}
+
+	err := router.Dispatch(context.Background(), evt, svc)
+	if err != nil {
+		t.Fatalf("unexpected error for encoded action noop: %v", err)
+	}
+	if handler.handled {
+		t.Fatalf("handler should not be called for ActionNoop")
+	}
+	if svc.lastAnswerQueryID != 303 {
+		t.Errorf("expected silent answer with queryID 303, got %d", svc.lastAnswerQueryID)
+	}
+}
+
 func TestRouter_Dispatch_ExpiredState(t *testing.T) {
 	store := NewStateStore()
 	router := NewRouter(zap.NewNop(), store)

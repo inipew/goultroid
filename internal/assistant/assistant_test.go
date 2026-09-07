@@ -238,3 +238,45 @@ func TestBotServiceAdapter_Unsupported(t *testing.T) {
 	}
 }
 
+func TestBotClient_EntityAccessHashCache(t *testing.T) {
+	client := assistant.NewBotClient(1234, "hash", "token", zap.NewNop())
+
+	// Test initial empty state
+	if hash := client.GetUserAccessHash(999); hash != 0 {
+		t.Errorf("expected 0 for unrecorded user, got %d", hash)
+	}
+	if hash := client.GetChannelAccessHash(888); hash != 0 {
+		t.Errorf("expected 0 for unrecorded channel, got %d", hash)
+	}
+
+	// Test SetUserAccessHash and SetChannelAccessHash
+	client.SetUserAccessHash(999, 123456789)
+	client.SetChannelAccessHash(888, 987654321)
+
+	if hash := client.GetUserAccessHash(999); hash != 123456789 {
+		t.Errorf("expected 123456789, got %d", hash)
+	}
+	if hash := client.GetChannelAccessHash(888); hash != 987654321 {
+		t.Errorf("expected 987654321, got %d", hash)
+	}
+
+	// Test CacheEntities bulk cache
+	entities := tg.Entities{
+		Users: map[int64]*tg.User{
+			1001: {ID: 1001, AccessHash: 55555},
+		},
+		Channels: map[int64]*tg.Channel{
+			2002: {ID: 2002, AccessHash: 77777},
+		},
+	}
+	client.CacheEntities(entities)
+
+	if hash := client.GetUserAccessHash(1001); hash != 55555 {
+		t.Errorf("expected 55555 for user 1001, got %d", hash)
+	}
+	if hash := client.GetChannelAccessHash(2002); hash != 77777 {
+		t.Errorf("expected 77777 for channel 2002, got %d", hash)
+	}
+}
+
+

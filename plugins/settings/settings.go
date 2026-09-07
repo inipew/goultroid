@@ -234,11 +234,13 @@ func (p *Plugin) renderHomeScreen(ctx context.Context, state MenuState) *ui.Scre
 	scopeState.Scope = nextScope
 	scopeState.ScopeID = nextScopeID
 	scopeOid := p.storeState(scopeState)
-
 	closeOid := p.storeState(state)
 
 	screen.AddRow(ui.NewCallbackButton(scopeText, callback.EncodeCallbackData("settings", callback.ActionNav, scopeOid)))
-	screen.AddRow(ui.NewCallbackButton("❌ Close", callback.EncodeCallbackData("settings", callback.ActionClose, closeOid)))
+	screen.AddRow(
+		ui.NewCallbackButton("« Back to Menu", callback.EncodeCallbackData("assistant", "start", callback.ActionNoop)),
+		ui.NewCallbackButton("❌ Close", callback.EncodeCallbackData("settings", callback.ActionClose, closeOid)),
+	)
 
 	return screen
 }

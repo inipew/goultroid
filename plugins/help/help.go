@@ -337,8 +337,9 @@ func (p *Plugin) buildOverviewMarkup(catNames []string, userID int64) tg.ReplyMa
 		rows = append(rows, row)
 	}
 
+	backBtn := ui.NewCallbackButton("« Back to Menu", callback.EncodeCallbackData("assistant", "start", callback.ActionNoop))
 	closeBtn := ui.NewCallbackButton("❌ Close", callback.EncodeCallbackData("help", "close", callback.ActionNoop))
-	rows = append(rows, ui.ButtonRow{closeBtn})
+	rows = append(rows, ui.ButtonRow{backBtn, closeBtn})
 
 	return render.ToTelegramMarkup(ui.Markup{Rows: rows})
 }
