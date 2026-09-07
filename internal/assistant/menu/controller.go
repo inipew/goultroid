@@ -173,13 +173,16 @@ func (c *Controller) lockInstance(tx *callback.Transaction) func() {
 }
 
 // validateSession verifies that a menu instance exists, is not expired,
-// and enforces session ownership: if inst.OwnerID != 0 && inst.OwnerID != tx.UserID,
-// the callback is rejected with callback.ErrUnauthorized.
+// and enforces strict session ownership. An invalid/unknown actor is never
+// treated as the owner of a menu instance.
 func (c *Controller) validateSession(ctx context.Context, tx *callback.Transaction) (*MenuInstance, error) {
 	if c.instances == nil {
-		return nil, nil
+		return nil, callback.ErrSessionExpired
 	}
-	if tx == nil {
+	if tx == nil || !tx.Target.IsValid() || tx.UserID == 0 {
+		if tx != nil {
+			_ = tx.Answer(ctx, "Session expired, send /start again", true)
+		}
 		return nil, callback.ErrSessionExpired
 	}
 	inst, ok := c.instances.Get(tx.Target.ChatID(), tx.Target.MessageID())
@@ -187,7 +190,7 @@ func (c *Controller) validateSession(ctx context.Context, tx *callback.Transacti
 		_ = tx.Answer(ctx, "Session expired, send /start again", true)
 		return nil, callback.ErrSessionExpired
 	}
-	if inst.OwnerID != 0 && tx.UserID != 0 && inst.OwnerID != tx.UserID {
+	if inst.OwnerID == 0 || tx.UserID != inst.OwnerID {
 		_ = tx.Answer(ctx, "⚠️ You do not own this menu!", true)
 		return nil, callback.ErrUnauthorized
 	}
