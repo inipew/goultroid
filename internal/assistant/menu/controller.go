@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -32,16 +31,18 @@ type Controller struct {
 
 func NewController(renderer RendererFunc) *Controller {
 	c := &Controller{
-		renderer: renderer, instances: NewMemoryInstanceStore(DefaultMenuTTL),
-		registry: NewRegistry(), pending: make(map[int64]pendingSettingInput),
+		renderer:  renderer,
+		instances: NewMemoryInstanceStore(DefaultMenuTTL),
+		registry:  NewRegistry(),
+		pending:   make(map[int64]pendingSettingInput),
 	}
 	c.registerDefaultScreens()
 	return c
 }
 
 func (c *Controller) SetCommandSource(cs CommandSource) { c.cmdSource = cs }
-func (c *Controller) Instances() InstanceStore          { return c.instances }
-func (c *Controller) Registry() *Registry               { return c.registry }
+func (c *Controller) Instances() InstanceStore           { return c.instances }
+func (c *Controller) Registry() *Registry                 { return c.registry }
 
 type ScreenContext struct {
 	Username string
@@ -51,29 +52,18 @@ type ScreenContext struct {
 }
 
 func (c *Controller) registerDefaultScreens() {
-	c.registry.Register(ScreenIDStart, func(ctx any) (*Screen, error) {
-		data := screenContext(ctx)
-		return BuildStartScreenWithCommands(data.Username, data.Uptime, data.Commands), nil
+	c.registry.Register(ScreenIDStart, func(ctx ScreenContext) (*Screen, error) {
+		return BuildStartScreenWithCommands(ctx.Username, ctx.Uptime, ctx.Commands), nil
 	})
-	c.registry.Register(ScreenIDSettings, func(ctx any) (*Screen, error) {
-		data := screenContext(ctx)
-		return BuildSettingsScreen(data.Username), nil
+	c.registry.Register(ScreenIDSettings, func(ctx ScreenContext) (*Screen, error) {
+		return BuildSettingsScreen(ctx.Username), nil
 	})
-	c.registry.Register(ScreenIDHelp, func(ctx any) (*Screen, error) {
-		data := screenContext(ctx)
-		return BuildHelpScreenWithCommands(data.Username, data.Commands), nil
+	c.registry.Register(ScreenIDHelp, func(ctx ScreenContext) (*Screen, error) {
+		return BuildHelpScreenWithCommands(ctx.Username, ctx.Commands), nil
 	})
-	c.registry.Register(ScreenIDStatus, func(ctx any) (*Screen, error) {
-		data := screenContext(ctx)
-		return BuildStatusScreen(data.Username, data.Uptime, data.Engine), nil
+	c.registry.Register(ScreenIDStatus, func(ctx ScreenContext) (*Screen, error) {
+		return BuildStatusScreen(ctx.Username, ctx.Uptime, ctx.Engine), nil
 	})
-}
-
-func screenContext(ctx any) ScreenContext {
-	if value, ok := ctx.(ScreenContext); ok {
-		return value
-	}
-	return ScreenContext{Username: "GoUltroidBot", Engine: "GoUltroid (MTProto)"}
 }
 
 func (c *Controller) buildRegistered(id ScreenID, data ScreenContext) (*Screen, error) {
@@ -91,7 +81,12 @@ func BuildStartScreenWithCommands(botUsername string, uptime time.Duration, cmds
 	if botUsername == "" {
 		botUsername = "GoUltroidBot"
 	}
-	card := ui.NewCard("GoUltroid Assistant").WithIcon("🤖").WithHeader("Control center for your userbot and assistant.").AddField("Bot", "@"+botUsername).AddField("Status", "🟢 Online & ready").AddField("Uptime", appStatus.FormatDuration(uptime))
+	card := ui.NewCard("GoUltroid Assistant").
+		WithIcon("🤖").
+		WithHeader("Control center for your userbot and assistant.").
+		AddField("Bot", "@"+botUsername).
+		AddField("Status", "🟢 Online & ready").
+		AddField("Uptime", appStatus.FormatDuration(uptime))
 	if len(cmds) > 0 {
 		card.AddField("Assistant commands", fmt.Sprintf("%d available", len(cmds)))
 	}
@@ -105,7 +100,11 @@ func BuildStartScreenWithCommands(botUsername string, uptime time.Duration, cmds
 
 func BuildSettingsScreen(botUsername string) *Screen {
 	screen := NewScreen(ScreenIDSettings, "⚙️ Settings", "")
-	screen.Body = ui.NewCard("Assistant Settings").WithIcon("⚙️").WithHeader("Manage persistent userbot configuration through the central settings service.").WithFooter("<i>Changes are validated, persisted, and applied by the shared settings subsystem.</i>").Render()
+	screen.Body = ui.NewCard("Assistant Settings").
+		WithIcon("⚙️").
+		WithHeader("Manage persistent userbot configuration through the central settings service.").
+		WithFooter("<i>Changes are validated, persisted, and applied by the shared settings subsystem.</i>").
+		Render()
 	screen.AddRow(NewButton("📂 Open Settings Dashboard", "a1:settings:home"))
 	screen.AddRow(NewButton("🏠 Back to Menu", "a1:assistant:start"), NewButton("❌ Close", "a1:assistant:close"))
 	return screen
@@ -118,43 +117,40 @@ func BuildHelpScreen(botUsername string) *Screen {
 func BuildHelpScreenWithCommands(botUsername string, cmds []core.Command) *Screen {
 	screen := NewScreen(ScreenIDHelp, "📚 Help", "")
 	if len(cmds) == 0 {
-		screen.Body = ui.NewCard("Command Browser").WithIcon("📚").WithHeader("Browse the commands exposed by the Assistant surface.").WithRaw("<code>/start</code> — open this dashboard\n<code>/help</code> — command documentation\n<code>/status</code> — runtime status\n<code>/ping</code> — connectivity check").Render()
+		screen.Body = ui.NewCard("Command Browser").
+			WithIcon("📚").
+			WithHeader("Browse the commands exposed by the Assistant surface.").
+			WithRaw("<code>/start</code> — open this dashboard\n<code>/help</code> — command documentation\n<code>/status</code> — runtime status\n<code>/ping</code> — connectivity check").
+			WithFooter("<i>Use /help &lt;module&gt; or /help &lt;command&gt; for details.</i>").
+			Render()
 	} else {
-		sorted := append([]core.Command(nil), cmds...)
-		sort.Slice(sorted, func(i, j int) bool {
-			ci, cj := sorted[i].Category, sorted[j].Category
-			if ci == "" {
-				ci = "General"
+		categories := make(map[string]int)
+		for _, cmd := range cmds {
+			category := cmd.Category
+			if category == "" {
+				category = "General"
 			}
-			if cj == "" {
-				cj = "General"
-			}
-			if ci != cj {
-				return ci < cj
-			}
-			return sorted[i].Name < sorted[j].Name
-		})
-		var b strings.Builder
-		category := ""
-		for _, cmd := range sorted {
-			cat := cmd.Category
-			if cat == "" {
-				cat = "General"
-			}
-			if cat != category {
-				if category != "" {
-					b.WriteString("\n")
-				}
-				b.WriteString(fmt.Sprintf("📂 <b>%s</b>\n", ui.EscapeHTML(cat)))
-				category = cat
-			}
-			desc := cmd.Description
-			if desc == "" {
-				desc = "No description"
-			}
-			b.WriteString(fmt.Sprintf("• <code>/%s</code> — %s\n", ui.EscapeHTML(cmd.Name), ui.EscapeHTML(desc)))
+			categories[category]++
 		}
-		screen.Body = ui.NewCard("Assistant Commands").WithIcon("📚").WithHeader(fmt.Sprintf("%d commands are available on the Assistant surface.", len(sorted))).WithRaw(strings.TrimSpace(b.String())).WithFooter("<i>Use /help &lt;command&gt; for detailed documentation.</i>").Render()
+
+		categoryNames := make([]string, 0, len(categories))
+		for category := range categories {
+			categoryNames = append(categoryNames, category)
+		}
+		sort.Strings(categoryNames)
+
+		body := fmt.Sprintf("<i>%d commands across %d modules.</i>\n\n", len(cmds), len(categoryNames))
+		for _, category := range categoryNames {
+			body += fmt.Sprintf("📂 <b>%s</b> <code>(%d)</code>\n", ui.EscapeHTML(category), categories[category])
+		}
+		body += "\n💡 <i>Use <code>/help &lt;module&gt;</code> or <code>/help &lt;command&gt;</code> for details.</i>"
+
+		screen.Body = ui.NewCard("Assistant Commands").
+			WithIcon("📚").
+			WithHeader("Command browser").
+			WithRaw(body).
+			WithFooter("<i>The command registry is the single source of truth.</i>").
+			Render()
 	}
 	screen.AddRow(NewButton("⚙️ Settings", "a1:assistant:settings"), NewButton("📊 Status", "a1:assistant:status"))
 	screen.AddRow(NewButton("🏠 Back to Menu", "a1:assistant:start"), NewButton("❌ Close", "a1:assistant:close"))
@@ -168,7 +164,16 @@ func BuildStatusScreen(botUsername string, uptime time.Duration, engine string) 
 	if engine == "" {
 		engine = "GoUltroid (MTProto)"
 	}
-	body := ui.NewCard("System Status").WithIcon("📊").WithHeader("Assistant runtime health and transport information.").AddField("Assistant", "@"+botUsername).AddField("Status", "🟢 Operational").AddField("Uptime", appStatus.FormatDuration(uptime)).AddField("Engine", engine).AddField("Callbacks", "🟢 Active").WithFooter("<i>Refresh to read the latest runtime state.</i>").Render()
+	body := ui.NewCard("System Status").
+		WithIcon("📊").
+		WithHeader("Assistant runtime health and transport information.").
+		AddField("Assistant", "@"+botUsername).
+		AddField("Status", "🟢 Operational").
+		AddField("Uptime", appStatus.FormatDuration(uptime)).
+		AddField("Engine", engine).
+		AddField("Callbacks", "🟢 Active").
+		WithFooter("<i>Refresh to read the latest runtime state.</i>").
+		Render()
 	screen := NewScreen(ScreenIDStatus, "", body)
 	screen.AddRow(NewButton("🔄 Refresh", "a1:assistant:status"), NewButton("🏠 Home", "a1:assistant:start"), NewButton("❌ Close", "a1:assistant:close"))
 	return screen
