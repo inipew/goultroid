@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"errors"
-	"strings"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/callback"
@@ -25,8 +24,9 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		var senderID int64;if user,ok:=msg.FromID.(*tg.PeerUser);ok{senderID=user.UserID}else if user,ok:=msg.PeerID.(*tg.PeerUser);ok{senderID=user.UserID};if senderID==0{return nil}
 		if deps.Resolver==nil||deps.Interaction==nil{return nil}
 		inputPeer,err:=deps.Resolver.Resolve(ctx,msg.PeerID,senderID,e);if err!=nil||inputPeer==nil{logger.Warn("assistant: sender access hash missing, message ignored",zap.Int64("sender_id",senderID),zap.Error(err));return nil}
-		// A pending free-form setting consumes the next non-command message before command dispatch.
-		if deps.MenuController!=nil&&deps.SettingsService!=nil&&!strings.HasPrefix(strings.TrimSpace(msg.Message),"/"){
+		// A pending free-form setting consumes its next message. /cancel is handled here too,
+		// so it must be checked before normal command dispatch.
+		if deps.MenuController!=nil&&deps.SettingsService!=nil{
 			if handled,hErr:=deps.MenuController.HandleTextMessage(ctx,senderID,extractChatID(msg.PeerID),msg.Message,deps.Interaction,deps.SettingsService);handled{return hErr}
 		}
 		if deps.RateLimiter!=nil&&!deps.RateLimiter.Allow(senderID,"command"){logger.Warn("assistant: rate limit exceeded for command",zap.Int64("sender_id",senderID));return nil}
