@@ -83,7 +83,7 @@ func IsPermanentError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, ErrValidation) || errors.Is(err, ErrPermissionDenied) || errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrForbidden) || errors.Is(err, ErrInvalidArgs) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrUnsupported) || errors.Is(err, ErrGroupOnly) || errors.Is(err, ErrPrivateOnly) || errors.Is(err, ErrReplyRequired) || errors.Is(err, ErrUnclosedQuote) || errors.Is(err, ErrTrailingEscape) || errors.Is(err, ErrResourceLimit) || errors.Is(err, ErrConflict) {
+	if errors.Is(err, ErrValidation) || errors.Is(err, ErrPermissionDenied) || errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrForbidden) || errors.Is(err, ErrInvalidArgs) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrUnsupported) || errors.Is(err, ErrGroupOnly) || errors.Is(err, ErrPrivateOnly) || errors.Is(err, ErrReplyRequired) || errors.Is(err, ErrUnclosedQuote) || errors.Is(err, ErrTrailingEscape) || errors.Is(err, ErrResourceLimit) {
 		return true
 	}
 	text := strings.ToUpper(err.Error())
