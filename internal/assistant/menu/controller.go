@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -102,8 +104,8 @@ func BuildSettingsScreen(botUsername string) *Screen {
 	screen := NewScreen(ScreenIDSettings, "⚙️ Settings", "")
 	screen.Body = ui.NewCard("Assistant Settings").
 		WithIcon("⚙️").
-		WithHeader("Manage persistent userbot configuration through the central settings service.").
-		WithFooter("<i>Changes are validated, persisted, and applied by the shared settings subsystem.</i>").
+		WithHeader("Configure persistent userbot behavior. Select a category to browse its settings.").
+		WithFooter("<i>All changes use the central settings service and are validated before persistence.</i>").
 		Render()
 	screen.AddRow(NewButton("📂 Open Settings Dashboard", "a1:settings:home"))
 	screen.AddRow(NewButton("🏠 Back to Menu", "a1:assistant:start"), NewButton("❌ Close", "a1:assistant:close"))
@@ -115,46 +117,212 @@ func BuildHelpScreen(botUsername string) *Screen {
 }
 
 func BuildHelpScreenWithCommands(botUsername string, cmds []core.Command) *Screen {
-	screen := NewScreen(ScreenIDHelp, "📚 Help", "")
-	if len(cmds) == 0 {
-		screen.Body = ui.NewCard("Command Browser").
-			WithIcon("📚").
-			WithHeader("Browse the commands exposed by the Assistant surface.").
-			WithRaw("<code>/start</code> — open this dashboard\n<code>/help</code> — command documentation\n<code>/status</code> — runtime status\n<code>/ping</code> — connectivity check").
-			WithFooter("<i>Use /help &lt;module&gt; or /help &lt;command&gt; for details.</i>").
-			Render()
-	} else {
-		categories := make(map[string]int)
-		for _, cmd := range cmds {
-			category := cmd.Category
-			if category == "" {
-				category = "General"
-			}
-			categories[category]++
-		}
+	return buildHelpPage(botUsername, sortedCommands(cmds), 0)
+}
 
-		categoryNames := make([]string, 0, len(categories))
-		for category := range categories {
-			categoryNames = append(categoryNames, category)
-		}
-		sort.Strings(categoryNames)
+const (
+	helpModulesPerPage  = 6
+	helpCommandsPerPage = 6
+)
 
-		body := fmt.Sprintf("<i>%d commands across %d modules.</i>\n\n", len(cmds), len(categoryNames))
-		for _, category := range categoryNames {
-			body += fmt.Sprintf("📂 <b>%s</b> <code>(%d)</code>\n", ui.EscapeHTML(category), categories[category])
+func sortedCommands(cmds []core.Command) []core.Command {
+	out := append([]core.Command(nil), cmds...)
+	sort.SliceStable(out, func(i, j int) bool {
+		ci, cj := out[i].Category, out[j].Category
+		if ci == "" {
+			ci = "General"
 		}
-		body += "\n💡 <i>Use <code>/help &lt;module&gt;</code> or <code>/help &lt;command&gt;</code> for details.</i>"
+		if cj == "" {
+			cj = "General"
+		}
+		if ci != cj {
+			return strings.ToLower(ci) < strings.ToLower(cj)
+		}
+		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
+	})
+	return out
+}
 
-		screen.Body = ui.NewCard("Assistant Commands").
-			WithIcon("📚").
-			WithHeader("Command browser").
-			WithRaw(body).
-			WithFooter("<i>The command registry is the single source of truth.</i>").
-			Render()
+func commandCategories(cmds []core.Command) []string {
+	seen := make(map[string]struct{})
+	for _, cmd := range cmds {
+		category := cmd.Category
+		if category == "" {
+			category = "General"
+		}
+		seen[category] = struct{}{}
 	}
-	screen.AddRow(NewButton("⚙️ Settings", "a1:assistant:settings"), NewButton("📊 Status", "a1:assistant:status"))
-	screen.AddRow(NewButton("🏠 Back to Menu", "a1:assistant:start"), NewButton("❌ Close", "a1:assistant:close"))
+	categories := make([]string, 0, len(seen))
+	for category := range seen {
+		categories = append(categories, category)
+	}
+	sort.Strings(categories)
+	return categories
+}
+
+func commandsInCategory(cmds []core.Command, category string) []core.Command {
+	out := make([]core.Command, 0)
+	for _, cmd := range cmds {
+		cat := cmd.Category
+		if cat == "" {
+			cat = "General"
+		}
+		if cat == category {
+			out = append(out, cmd)
+		}
+	}
+	return out
+}
+
+func buildHelpPage(botUsername string, cmds []core.Command, page int) *Screen {
+	categories := commandCategories(cmds)
+	pages := maxPage(len(categories), helpModulesPerPage)
+	page = clampPage(page, pages)
+	start := page * helpModulesPerPage
+	end := min(start+helpModulesPerPage, len(categories))
+
+	card := ui.NewCard("Command Browser").WithIcon("📚").WithHeader("Browse Assistant commands by module.")
+	if len(cmds) == 0 {
+		card.WithRaw("<i>No Assistant commands are currently registered.</i>")
+	} else {
+		card.AddField("Commands", strconv.Itoa(len(cmds))).AddField("Modules", strconv.Itoa(len(categories)))
+		card.WithFooter("<i>Tap a module to browse its commands. Tap a command to see its full help.</i>")
+	}
+	screen := NewScreen(ScreenIDHelp, "📚 Help", card.Render())
+	for i := start; i < end; i++ {
+		category := categories[i]
+		count := len(commandsInCategory(cmds, category))
+		state := strconv.Itoa(i)
+		screen.AddRow(NewButton(fmt.Sprintf("📂 %s · %d", category, count), "a1:assistant:help_module:"+state))
+	}
+	if pages > 1 {
+		screen.AddRow(helpPagerButtons("assistant:help_page", page, pages))
+	}
+	screen.AddRow(NewButton("🏠 Home", "a1:assistant:start"), NewButton("❌ Close", "a1:assistant:close"))
 	return screen
+}
+
+func buildHelpModulePage(cmds []core.Command, moduleIndex, page int) *Screen {
+	categories := commandCategories(cmds)
+	if moduleIndex < 0 || moduleIndex >= len(categories) {
+		return buildHelpPage("", cmds, 0)
+	}
+	category := categories[moduleIndex]
+	moduleCommands := commandsInCategory(cmds, category)
+	pages := maxPage(len(moduleCommands), helpCommandsPerPage)
+	page = clampPage(page, pages)
+	start := page * helpCommandsPerPage
+	end := min(start+helpCommandsPerPage, len(moduleCommands))
+
+	card := ui.NewCard(category).WithIcon("📂").WithHeader("Select a command to view its documentation.").
+		AddField("Commands", strconv.Itoa(len(moduleCommands))).
+		WithFooter("<i>Use the command buttons below to open detailed help.</i>")
+	screen := NewScreen(ScreenIDHelp, "📚 Help", card.Render())
+	for i := start; i < end; i++ {
+		cmd := moduleCommands[i]
+		label := "/" + cmd.Name
+		if cmd.Description != "" {
+			label += " — " + truncateRunes(cmd.Description, 42)
+		}
+		state := fmt.Sprintf("%d:%d", moduleIndex, i)
+		screen.AddRow(NewButton(label, "a1:assistant:help_command:"+state))
+	}
+	if pages > 1 {
+		screen.AddRow(helpPagerButtons(fmt.Sprintf("assistant:help_module_page:%d", moduleIndex), page, pages))
+	}
+	screen.AddRow(NewButton("« Modules", "a1:assistant:help"), NewButton("🏠 Home", "a1:assistant:start"))
+	return screen
+}
+
+func buildHelpCommandScreen(cmd core.Command, moduleIndex int) *Screen {
+	name := "/" + cmd.Name
+	card := ui.NewCard(name).WithIcon("📖").WithHeader(cmd.Description)
+	if cmd.Usage != "" {
+		card.AddField("Usage", "<code>"+ui.EscapeHTML(cmd.Usage)+"</code>")
+	}
+	if len(cmd.Aliases) > 0 {
+		aliases := make([]string, 0, len(cmd.Aliases))
+		for _, alias := range cmd.Aliases {
+			aliases = append(aliases, "/"+alias)
+		}
+		card.AddField("Aliases", ui.EscapeHTML(strings.Join(aliases, ", ")))
+	}
+	category := cmd.Category
+	if category == "" {
+		category = "General"
+	}
+	card.AddField("Module", ui.EscapeHTML(category)).AddField("Permission", cmd.Permission.String())
+	if cmd.GroupOnly {
+		card.AddField("Context", "Group only")
+	}
+	if cmd.PrivateOnly {
+		card.AddField("Context", "Private only")
+	}
+	if cmd.ReplyOnly {
+		card.AddField("Context", "Reply required")
+	}
+	if cmd.Cooldown > 0 {
+		card.AddField("Cooldown", cmd.Cooldown.String())
+	}
+	if cmd.Timeout > 0 {
+		card.AddField("Timeout", cmd.Timeout.String())
+	}
+	card.WithFooter("<i>Execute it with /" + ui.EscapeHTML(cmd.Name) + ".</i>")
+	screen := NewScreen(ScreenIDHelp, "📚 Help", card.Render())
+	screen.AddRow(NewButton("« Commands", fmt.Sprintf("a1:assistant:help_module:%d", moduleIndex)))
+	screen.AddRow(NewButton("📚 Modules", "a1:assistant:help"), NewButton("🏠 Home", "a1:assistant:start"))
+	return screen
+}
+
+func helpPagerButtons(action string, page, pages int) *ui.ButtonRow {
+	row := ui.NewButtonRow()
+	if page > 0 {
+		row.Add(NewButton("◀️ Previous", "a1:"+action+":"+strconv.Itoa(page-1)))
+	} else {
+		row.Add(NewButton("·", "a1:assistant:noop"))
+	}
+	row.Add(NewButton(fmt.Sprintf("%d / %d", page+1, pages), "a1:assistant:noop"))
+	if page+1 < pages {
+		row.Add(NewButton("Next ▶️", "a1:"+action+":"+strconv.Itoa(page+1)))
+	} else {
+		row.Add(NewButton("·", "a1:assistant:noop"))
+	}
+	return row
+}
+
+func maxPage(total, pageSize int) int {
+	if total <= 0 {
+		return 1
+	}
+	return (total + pageSize - 1) / pageSize
+}
+
+func clampPage(page, pages int) int {
+	if page < 0 {
+		return 0
+	}
+	if page >= pages {
+		return pages - 1
+	}
+	return page
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func truncateRunes(s string, max int) string {
+	r := []rune(strings.TrimSpace(s))
+	if len(r) <= max {
+		return string(r)
+	}
+	if max <= 1 {
+		return string(r[:max])
+	}
+	return string(r[:max-1]) + "…"
 }
 
 func BuildStatusScreen(botUsername string, uptime time.Duration, engine string) *Screen {
@@ -246,7 +414,7 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 		if c.cmdSource == nil {
 			return nil
 		}
-		return c.cmdSource.CommandsForSurface(execution.SourceAssistant)
+		return sortedCommands(c.cmdSource.CommandsForSurface(execution.SourceAssistant))
 	}
 	contextData := func() ScreenContext {
 		return ScreenContext{Username: username(), Uptime: uptime(), Engine: "GoUltroid (MTProto)", Commands: commands()}
@@ -271,6 +439,93 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 	r.Register("assistant", "start", func(ctx context.Context, tx *callback.Transaction) error { return edit(ctx, tx, ScreenIDStart) })
 	r.Register("assistant", "settings", func(ctx context.Context, tx *callback.Transaction) error { return edit(ctx, tx, ScreenIDSettings) })
 	r.Register("assistant", "help", func(ctx context.Context, tx *callback.Transaction) error { return edit(ctx, tx, ScreenIDHelp) })
+	r.Register("assistant", "help_page", func(ctx context.Context, tx *callback.Transaction) error {
+		if _, err := c.validateSession(ctx, tx); err != nil {
+			return err
+		}
+		page, err := strconv.Atoi(tx.Payload.State)
+		if err != nil {
+			return fmt.Errorf("invalid help page: %w", err)
+		}
+		unlock := c.lockInstance(tx)
+		defer unlock()
+		text, markup := c.renderer(buildHelpPage(username(), commands(), page))
+		return tx.Edit(ctx, text, markup)
+	})
+	r.Register("assistant", "help_module", func(ctx context.Context, tx *callback.Transaction) error {
+		if _, err := c.validateSession(ctx, tx); err != nil {
+			return err
+		}
+		parts := strings.Split(tx.Payload.State, ":")
+		moduleIndex, err := strconv.Atoi(parts[0])
+		if err != nil {
+			return fmt.Errorf("invalid help module: %w", err)
+		}
+		page := 0
+		if len(parts) > 1 {
+			page, err = strconv.Atoi(parts[1])
+			if err != nil {
+				return fmt.Errorf("invalid help module page: %w", err)
+			}
+		}
+		unlock := c.lockInstance(tx)
+		defer unlock()
+		text, markup := c.renderer(buildHelpModulePage(commands(), moduleIndex, page))
+		return tx.Edit(ctx, text, markup)
+	})
+	r.Register("assistant", "help_module_page", func(ctx context.Context, tx *callback.Transaction) error {
+		if _, err := c.validateSession(ctx, tx); err != nil {
+			return err
+		}
+		parts := strings.Split(tx.Payload.State, ":")
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid help module pagination state")
+		}
+		moduleIndex, err := strconv.Atoi(parts[0])
+		if err != nil {
+			return err
+		}
+		page, err := strconv.Atoi(parts[1])
+		if err != nil {
+			return err
+		}
+		unlock := c.lockInstance(tx)
+		defer unlock()
+		text, markup := c.renderer(buildHelpModulePage(commands(), moduleIndex, page))
+		return tx.Edit(ctx, text, markup)
+	})
+	r.Register("assistant", "help_command", func(ctx context.Context, tx *callback.Transaction) error {
+		if _, err := c.validateSession(ctx, tx); err != nil {
+			return err
+		}
+		parts := strings.Split(tx.Payload.State, ":")
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid help command state")
+		}
+		moduleIndex, err := strconv.Atoi(parts[0])
+		if err != nil {
+			return err
+		}
+		commandIndex, err := strconv.Atoi(parts[1])
+		if err != nil {
+			return err
+		}
+		categories := commandCategories(commands())
+		if moduleIndex < 0 || moduleIndex >= len(categories) {
+			return fmt.Errorf("help module out of range")
+		}
+		moduleCommands := commandsInCategory(commands(), categories[moduleIndex])
+		if commandIndex < 0 || commandIndex >= len(moduleCommands) {
+			return fmt.Errorf("help command out of range")
+		}
+		unlock := c.lockInstance(tx)
+		defer unlock()
+		text, markup := c.renderer(buildHelpCommandScreen(moduleCommands[commandIndex], moduleIndex))
+		return tx.Edit(ctx, text, markup)
+	})
+	r.Register("assistant", "noop", func(ctx context.Context, tx *callback.Transaction) error {
+		return tx.Answer(ctx, "", false)
+	})
 	r.Register("assistant", "status", func(ctx context.Context, tx *callback.Transaction) error { return edit(ctx, tx, ScreenIDStatus) })
 	r.Register("assistant", "ping", func(ctx context.Context, tx *callback.Transaction) error {
 		unlock := c.lockInstance(tx)
