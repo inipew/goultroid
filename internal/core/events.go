@@ -1,6 +1,8 @@
 package core
 
 import (
+	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,18 +24,43 @@ const (
 	EventTypeSettingChanged  EventType = "setting.changed"
 )
 
-type Event interface{ Type() EventType; Timestamp() time.Time }
+type EventMeta struct {
+	ID            string
+	CorrelationID string
+	CausationID   string
+}
 
-type MessageCreatedEvent struct{ At time.Time; Message *Message; ChatID int64; PeerID interface{} }
-func (e *MessageCreatedEvent) Type() EventType { return EventTypeMessageCreated }
+type Event interface {
+	Type() EventType
+	Timestamp() time.Time
+	Meta() EventMeta
+}
+
+type MessageCreatedEvent struct {
+	MetaData EventMeta
+	At       time.Time
+	Message  *Message
+	ChatID   int64
+	PeerID   interface{}
+}
+func (e *MessageCreatedEvent) Type() EventType      { return EventTypeMessageCreated }
 func (e *MessageCreatedEvent) Timestamp() time.Time { return e.At }
+func (e *MessageCreatedEvent) Meta() EventMeta      { return e.MetaData }
 
-type MessageEditedEvent struct{ At time.Time; MsgID int; ChatID int64; Text string }
-func (e *MessageEditedEvent) Type() EventType { return EventTypeMessageEdited }
+type MessageEditedEvent struct {
+	MetaData EventMeta
+	At       time.Time
+	MsgID    int
+	ChatID   int64
+	Text     string
+}
+func (e *MessageEditedEvent) Type() EventType      { return EventTypeMessageEdited }
 func (e *MessageEditedEvent) Timestamp() time.Time { return e.At }
+func (e *MessageEditedEvent) Meta() EventMeta      { return e.MetaData }
 
 type MessagesDeletedEvent struct {
-	At time.Time
+	MetaData EventMeta
+	At       time.Time
 	// ChatID is 0 when Telegram did not provide chat context (e.g. UpdateDeleteMessages).
 	ChatID int64
 	// PeerUnknown is true when ChatID is unknown / not provided by the update.
@@ -41,8 +68,9 @@ type MessagesDeletedEvent struct {
 	MsgIDs      []int
 }
 
-func (e *MessagesDeletedEvent) Type() EventType { return EventTypeMessagesDeleted }
+func (e *MessagesDeletedEvent) Type() EventType      { return EventTypeMessagesDeleted }
 func (e *MessagesDeletedEvent) Timestamp() time.Time { return e.At }
+func (e *MessagesDeletedEvent) Meta() EventMeta      { return e.MetaData }
 
 // CallbackOrigin identifies whether the callback originated from a normal message or an inline message.
 type CallbackOrigin int
@@ -73,8 +101,9 @@ func (t CallbackTarget) IsInline() bool {
 // ChatID and MsgID are deprecated: use Target.Peer / Target.MessageID or Target.InlineID.
 // They are kept for backward compatibility (C) and populated from Target.
 type CallbackQueryEvent struct {
-	At   time.Time
-	Data []byte
+	MetaData EventMeta
+	At       time.Time
+	Data     []byte
 
 	QueryID int64
 	UserID  int64
@@ -88,8 +117,9 @@ type CallbackQueryEvent struct {
 	ChatInstance int64
 }
 
-func (e *CallbackQueryEvent) Type() EventType { return EventTypeCallbackQuery }
+func (e *CallbackQueryEvent) Type() EventType      { return EventTypeCallbackQuery }
 func (e *CallbackQueryEvent) Timestamp() time.Time { return e.At }
+func (e *CallbackQueryEvent) Meta() EventMeta      { return e.MetaData }
 
 // IsInline returns true when the callback originated from an inline message,
 // using Target.IsInline() as the single source of truth.
@@ -100,12 +130,20 @@ func (e *CallbackQueryEvent) IsInline() bool {
 	return e.Target.IsInline() || e.Origin == CallbackOriginInline
 }
 
-type ReactionUpdatedEvent struct{ At time.Time; MsgID int; ChatID int64; Reaction string }
-func (e *ReactionUpdatedEvent) Type() EventType { return EventTypeReactionUpdated }
+type ReactionUpdatedEvent struct {
+	MetaData EventMeta
+	At       time.Time
+	MsgID    int
+	ChatID   int64
+	Reaction string
+}
+func (e *ReactionUpdatedEvent) Type() EventType      { return EventTypeReactionUpdated }
 func (e *ReactionUpdatedEvent) Timestamp() time.Time { return e.At }
+func (e *ReactionUpdatedEvent) Meta() EventMeta      { return e.MetaData }
 
 // InlineResultChosenEvent is observational feedback when an inline result is chosen/sent.
 type InlineResultChosenEvent struct {
+	MetaData EventMeta
 	At       time.Time
 	UserID   int64
 	Query    string
@@ -113,11 +151,13 @@ type InlineResultChosenEvent struct {
 	InlineID tg.InputBotInlineMessageIDClass
 }
 
-func (e *InlineResultChosenEvent) Type() EventType { return EventTypeInlineChosen }
+func (e *InlineResultChosenEvent) Type() EventType      { return EventTypeInlineChosen }
 func (e *InlineResultChosenEvent) Timestamp() time.Time { return e.At }
+func (e *InlineResultChosenEvent) Meta() EventMeta      { return e.MetaData }
 
 // AdminActionEvent represents an administrative moderation action performed by the bot/user.
 type AdminActionEvent struct {
+	MetaData   EventMeta
 	At         time.Time
 	Action     string
 	ActorID    int64
@@ -130,11 +170,13 @@ type AdminActionEvent struct {
 	Error      string
 }
 
-func (e *AdminActionEvent) Type() EventType { return EventTypeAdminAction }
+func (e *AdminActionEvent) Type() EventType      { return EventTypeAdminAction }
 func (e *AdminActionEvent) Timestamp() time.Time { return e.At }
+func (e *AdminActionEvent) Meta() EventMeta      { return e.MetaData }
 
 // PMPermitEvent represents a private message access control decision or state transition.
 type PMPermitEvent struct {
+	MetaData   EventMeta
 	At         time.Time
 	Action     string // "approve", "disapprove", "block", "unblock", "warn", "auto_approve"
 	UserID     int64
@@ -145,11 +187,13 @@ type PMPermitEvent struct {
 	Error      string
 }
 
-func (e *PMPermitEvent) Type() EventType { return EventTypePMPermit }
+func (e *PMPermitEvent) Type() EventType      { return EventTypePMPermit }
 func (e *PMPermitEvent) Timestamp() time.Time { return e.At }
+func (e *PMPermitEvent) Meta() EventMeta      { return e.MetaData }
 
 // SettingChangedEvent is published when a setting is created, updated, or reset.
 type SettingChangedEvent struct {
+	MetaData  EventMeta
 	At        time.Time
 	ScopeType string
 	ScopeID   int64
@@ -160,8 +204,9 @@ type SettingChangedEvent struct {
 	ChangedBy int64
 }
 
-func (e *SettingChangedEvent) Type() EventType { return EventTypeSettingChanged }
+func (e *SettingChangedEvent) Type() EventType      { return EventTypeSettingChanged }
 func (e *SettingChangedEvent) Timestamp() time.Time { return e.At }
+func (e *SettingChangedEvent) Meta() EventMeta      { return e.MetaData }
 
 
 type EventHandler func(event Event)
@@ -259,6 +304,7 @@ func (b *EventBus) Subscribe(t EventType, handler EventHandler) func() {
 // Publish is intentionally non-blocking. Each subscriber is independently
 // queued; a full queue drops only that subscriber's event instead of starving
 // later subscribers. Snapshot is taken under read lock to keep hold time short.
+// Best-effort: for observational events (metrics, typing, debug) that may be dropped.
 func (b *EventBus) Publish(event Event) {
 	if event == nil {
 		return
@@ -290,6 +336,54 @@ func (b *EventBus) Publish(event Event) {
 			}
 		}(h)
 	}
+}
+
+// PublishDurable delivers an event synchronously to all subscribers without queueing.
+// It is for durable events (e.g., SettingChanged) where drop is not allowed.
+// Delivery is ordered per caller (single worker) and panics are recovered and returned as error.
+// The caller (e.g., outbox worker) should only mark the outbox row as processed after this returns nil.
+func (b *EventBus) PublishDurable(ctx context.Context, event Event) error {
+	if event == nil {
+		return nil
+	}
+	b.mu.RLock()
+	if b.closed {
+		b.mu.RUnlock()
+		return fmt.Errorf("event bus closed")
+	}
+	m := b.subscribers[event.Type()]
+	if len(m) == 0 {
+		b.mu.RUnlock()
+		return nil
+	}
+	handlers := make([]EventHandler, 0, len(m))
+	for _, h := range m {
+		handlers = append(handlers, h)
+	}
+	b.mu.RUnlock()
+
+	for _, h := range handlers {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		var panicErr error
+		func(handler EventHandler) {
+			defer func() {
+				if r := recover(); r != nil {
+					b.panicCount.Add(1)
+					panicErr = fmt.Errorf("event handler panic: %v", r)
+				}
+			}()
+			handler(event)
+			b.deliveredCount.Add(1)
+		}(h)
+		if panicErr != nil {
+			return panicErr
+		}
+	}
+	return nil
 }
 
 // Close stops accepting new work, drains already queued events, and waits for

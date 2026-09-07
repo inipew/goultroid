@@ -56,7 +56,9 @@ func NewService(repo database.Repository, reg *Registry, bus *core.EventBus) *Se
 	return s
 }
 
-// runOutboxWorker periodically drains setting_outbox and republishes to EventBus for durability.
+// runOutboxWorker periodically drains setting_outbox and republishes via durable dispatch.
+// Single ordered worker: processes pending outbox rows in created_at order, dispatches synchronously,
+// and only marks processed after successful delivery (no drop). Retries on next tick if dispatch fails.
 func (s *Service) runOutboxWorker(ctx context.Context) {
 	defer s.outboxWG.Done()
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -71,17 +73,26 @@ func (s *Service) runOutboxWorker(ctx context.Context) {
 				continue
 			}
 			for _, e := range entries {
-				if s.bus != nil {
-					s.bus.Publish(&core.SettingChangedEvent{
-						At:        e.CreatedAt,
-						ScopeType: e.ScopeType,
-						ScopeID:   e.ScopeID,
-						Namespace: e.Namespace,
-						Key:       e.Key,
-						OldVal:    e.OldVal,
-						NewVal:    e.NewVal,
-						ChangedBy: e.ChangedBy,
-					})
+				if s.bus == nil {
+					continue
+				}
+				evt := &core.SettingChangedEvent{
+					MetaData: core.EventMeta{
+						ID: fmt.Sprintf("outbox:setting:%d", e.ID),
+					},
+					At:        e.CreatedAt,
+					ScopeType: e.ScopeType,
+					ScopeID:   e.ScopeID,
+					Namespace: e.Namespace,
+					Key:       e.Key,
+					OldVal:    e.OldVal,
+					NewVal:    e.NewVal,
+					ChangedBy: e.ChangedBy,
+				}
+				// Durable dispatch: synchronous, no queue drop, panic recovered. Only mark on success.
+				if err := s.bus.PublishDurable(ctx, evt); err != nil {
+					// Delivery failed (bus closed, ctx cancelled, or handler panic) — retry next tick.
+					continue
 				}
 				_ = s.repo.MarkOutboxProcessed(ctx, e.ID)
 			}
