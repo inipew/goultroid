@@ -67,6 +67,15 @@ func (m *mockRepo) SetSetting(ctx context.Context, item *database.SettingItem) e
 	return nil
 }
 
+func (m *mockRepo) SetSettingsBatch(ctx context.Context, items []*database.SettingItem) error {
+	for _, item := range items {
+		if err := m.SetSetting(ctx, item); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (m *mockRepo) DeleteSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -343,7 +352,7 @@ func TestServiceInheritanceAndOperations(t *testing.T) {
 	}
 
 	// 7. Reset chat override -> should fall back to user override "?"
-	if err := svc.Reset(ctx, ScopeChat, chatID, "core", "prefix"); err != nil {
+	if err := svc.Reset(ctx, ScopeChat, chatID, "core", "prefix", userID); err != nil {
 		t.Fatalf("failed to reset chat override: %v", err)
 	}
 	val, _ = svc.Resolve(ctx, userID, chatID, "core", "prefix")
@@ -409,3 +418,199 @@ func TestServiceInheritanceAndOperations(t *testing.T) {
 		t.Error("expected at least 1 SettingChangedEvent published to event bus")
 	}
 }
+
+func TestScopeRef(t *testing.T) {
+	g := GlobalScope()
+	if err := g.Validate(); err != nil {
+		t.Errorf("global scope validation failed: %v", err)
+	}
+
+	badG := ScopeRef{Type: ScopeGlobal, ID: 123}
+	if err := badG.Validate(); err == nil {
+		t.Errorf("expected error for non-zero global scope ID")
+	}
+
+	u := UserScope(456)
+	if err := u.Validate(); err != nil {
+		t.Errorf("user scope validation failed: %v", err)
+	}
+
+	badU := ScopeRef{Type: ScopeUser, ID: 0}
+	if err := badU.Validate(); err == nil {
+		t.Errorf("expected error for zero user scope ID")
+	}
+
+	c := ChatScope(789)
+	if err := c.Validate(); err != nil {
+		t.Errorf("chat scope validation failed: %v", err)
+	}
+
+	badC := ScopeRef{Type: ScopeChat, ID: 0}
+	if err := badC.Validate(); err == nil {
+		t.Errorf("expected error for zero chat scope ID")
+	}
+}
+
+func TestSettingValue(t *testing.T) {
+	vBool := NewSettingValue("true", nil)
+	if !vBool.Bool() {
+		t.Errorf("expected true, got %v", vBool.Bool())
+	}
+	if vBool.String() != "true" || vBool.Raw() != "true" {
+		t.Errorf("expected 'true', got %s", vBool.String())
+	}
+
+	vInt := NewSettingValue("42", nil)
+	if vInt.Int() != 42 {
+		t.Errorf("expected 42, got %d", vInt.Int())
+	}
+
+	vDur := NewSettingValue("5m", nil)
+	if vDur.Duration() != 5*time.Minute {
+		t.Errorf("expected 5m, got %v", vDur.Duration())
+	}
+
+	vErr := NewSettingValue("", errors.New("missing"))
+	if vErr.Err() == nil {
+		t.Errorf("expected error to be preserved")
+	}
+	if vErr.Bool() != false || vErr.Int() != 0 || vErr.Duration() != 0 {
+		t.Errorf("expected zero values when err is present")
+	}
+}
+
+func TestImport_Atomicity(t *testing.T) {
+	ctx := context.Background()
+	reg := NewRegistry()
+	_ = RegisterDefaultDefinitions(reg)
+	repo := newMockRepo()
+	svc := NewService(repo, reg, nil)
+
+	// Attempt import with one valid and one INVALID setting (fails validation)
+	invalidBatch := map[string]map[string]string{
+		"afk": {
+			"auto_reply": "true",
+			"cooldown":   "not-a-valid-duration",
+		},
+	}
+
+	count, err := svc.Import(ctx, ScopeGlobal, 0, invalidBatch, 1)
+	if err == nil {
+		t.Fatalf("expected import to fail due to invalid duration")
+	}
+	if count != 0 {
+		t.Errorf("expected 0 imported items on failure, got %d", count)
+	}
+
+	// Verify that the valid setting was NOT written (atomic rollback / pre-validation)
+	val, err := repo.GetSetting(ctx, string(ScopeGlobal), 0, "afk", "auto_reply")
+	if err != nil {
+		t.Fatalf("failed to query repo: %v", err)
+	}
+	if val != nil {
+		t.Errorf("expected auto_reply NOT to be written due to batch atomicity, found: %v", val)
+	}
+}
+
+func TestServiceScopeValidation(t *testing.T) {
+	ctx := context.Background()
+	repo := newMockRepo()
+	svc := NewService(repo, nil, nil)
+
+	// Global scope with non-zero ID must fail
+	if err := svc.Set(ctx, ScopeGlobal, 123, "core", "prefix", ".", 1); err == nil {
+		t.Error("expected Set with ScopeGlobal and non-zero ID to fail")
+	}
+	if _, err := svc.Get(ctx, ScopeGlobal, 123, "core", "prefix"); err == nil {
+		t.Error("expected Get with ScopeGlobal and non-zero ID to fail")
+	}
+	if err := svc.Reset(ctx, ScopeGlobal, 123, "core", "prefix", 1); err == nil {
+		t.Error("expected Reset with ScopeGlobal and non-zero ID to fail")
+	}
+	if _, err := svc.ListByScope(ctx, ScopeGlobal, 123, "core"); err == nil {
+		t.Error("expected ListByScope with ScopeGlobal and non-zero ID to fail")
+	}
+	if _, err := svc.Export(ctx, ScopeGlobal, 123); err == nil {
+		t.Error("expected Export with ScopeGlobal and non-zero ID to fail")
+	}
+	if _, err := svc.Import(ctx, ScopeGlobal, 123, map[string]map[string]string{"core": {"prefix": "."}}, 1); err == nil {
+		t.Error("expected Import with ScopeGlobal and non-zero ID to fail")
+	}
+
+	// Chat scope with zero ID must fail
+	if err := svc.Set(ctx, ScopeChat, 0, "core", "prefix", ".", 1); err == nil {
+		t.Error("expected Set with ScopeChat and zero ID to fail")
+	}
+	if _, err := svc.Get(ctx, ScopeChat, 0, "core", "prefix"); err == nil {
+		t.Error("expected Get with ScopeChat and zero ID to fail")
+	}
+	if err := svc.Reset(ctx, ScopeChat, 0, "core", "prefix", 1); err == nil {
+		t.Error("expected Reset with ScopeChat and zero ID to fail")
+	}
+}
+
+func TestServiceResolverCacheAndInvalidation(t *testing.T) {
+	ctx := context.Background()
+	repo := newMockRepo()
+	reg := NewRegistry()
+	_ = RegisterDefaultDefinitions(reg)
+	bus := core.NewEventBus()
+	svc := NewService(repo, reg, bus)
+
+	// 1. Initial resolution populates cache with default
+	val, err := svc.Resolve(ctx, 10, 20, "core", "prefix")
+	if err != nil || val != "." {
+		t.Fatalf("expected default '.', got %q (err=%v)", val, err)
+	}
+
+	// 2. Setting override invalidates cache
+	if err := svc.Set(ctx, ScopeChat, 20, "core", "prefix", "#", 10); err != nil {
+		t.Fatalf("failed to set chat prefix: %v", err)
+	}
+	val, err = svc.Resolve(ctx, 10, 20, "core", "prefix")
+	if err != nil || val != "#" {
+		t.Fatalf("expected resolved '#', got %q", val)
+	}
+
+	// 3. Reset invalidates cache
+	if err := svc.Reset(ctx, ScopeChat, 20, "core", "prefix", 10); err != nil {
+		t.Fatalf("failed to reset chat prefix: %v", err)
+	}
+	val, err = svc.Resolve(ctx, 10, 20, "core", "prefix")
+	if err != nil || val != "." {
+		t.Fatalf("expected resolved fallback to '.', got %q", val)
+	}
+
+	// 4. External event invalidates cache
+	_ = svc.Set(ctx, ScopeGlobal, 0, "core", "prefix", "$", 1)
+	val, _ = svc.Resolve(ctx, 10, 20, "core", "prefix")
+	if val != "$" {
+		t.Fatalf("expected '$', got %q", val)
+	}
+
+	// Publish SettingChangedEvent via bus
+	bus.Publish(&core.SettingChangedEvent{
+		ScopeType: string(ScopeGlobal),
+		ScopeID:   0,
+		Namespace: "core",
+		Key:       "prefix",
+		NewVal:    "%",
+	})
+	// Give worker a brief moment to process event
+	time.Sleep(10 * time.Millisecond)
+
+	// Cache was invalidated, now query returns repo/new setting if we updated repo
+	_ = repo.SetSetting(ctx, &database.SettingItem{
+		ScopeType: string(ScopeGlobal),
+		ScopeID:   0,
+		Namespace: "core",
+		Key:       "prefix",
+		Value:     "%",
+		ValueType: string(TypeString),
+	})
+	val, _ = svc.Resolve(ctx, 10, 20, "core", "prefix")
+	if val != "%" {
+		t.Fatalf("expected event-invalidated resolution '%%', got %q", val)
+	}
+}
+

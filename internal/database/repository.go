@@ -166,6 +166,7 @@ type Repository interface {
 	// Generic Settings
 	GetSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) (*SettingItem, error)
 	SetSetting(ctx context.Context, item *SettingItem) error
+	SetSettingsBatch(ctx context.Context, items []*SettingItem) error
 	DeleteSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) error
 	ListSettings(ctx context.Context, scopeType string, scopeID int64, namespace string) ([]SettingItem, error)
 	GetSettingHistory(ctx context.Context, namespace, key string, limit int) ([]SettingChangeRecord, error)
@@ -1141,6 +1142,79 @@ func (d *DB) SetSetting(ctx context.Context, item *SettingItem) error {
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit setting transaction: %w", err)
+	}
+	return nil
+}
+
+// SetSettingsBatch creates or updates multiple settings atomically within a single transaction,
+// recording audit entries for each change.
+func (d *DB) SetSettingsBatch(ctx context.Context, items []*SettingItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin batch settings transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	selectStmt, err := tx.PrepareContext(ctx, `SELECT value FROM settings WHERE scope_type = ? AND scope_id = ? AND namespace = ? AND key = ?`)
+	if err != nil {
+		return fmt.Errorf("prepare select statement: %w", err)
+	}
+	defer selectStmt.Close()
+
+	upsertStmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO settings (scope_type, scope_id, namespace, key, value_type, value, updated_by, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(scope_type, scope_id, namespace, key) DO UPDATE SET
+			value_type = excluded.value_type,
+			value = excluded.value,
+			updated_by = excluded.updated_by,
+			updated_at = excluded.updated_at`)
+	if err != nil {
+		return fmt.Errorf("prepare upsert statement: %w", err)
+	}
+	defer upsertStmt.Close()
+
+	changeStmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO setting_changes (scope_type, scope_id, namespace, key, old_val, new_val, changed_by, changed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("prepare audit statement: %w", err)
+	}
+	defer changeStmt.Close()
+
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		if item.UpdatedAt.IsZero() {
+			item.UpdatedAt = now
+		}
+
+		var oldVal string
+		err := selectStmt.QueryRowContext(ctx, item.ScopeType, item.ScopeID, item.Namespace, item.Key).Scan(&oldVal)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("failed to read previous setting value for %s/%s: %w", item.Namespace, item.Key, err)
+		}
+
+		_, err = upsertStmt.ExecContext(ctx,
+			item.ScopeType, item.ScopeID, item.Namespace, item.Key, item.ValueType, item.Value, item.UpdatedBy, item.UpdatedAt)
+		if err != nil {
+			return fmt.Errorf("failed to upsert setting %s/%s: %w", item.Namespace, item.Key, err)
+		}
+
+		_, err = changeStmt.ExecContext(ctx,
+			item.ScopeType, item.ScopeID, item.Namespace, item.Key, oldVal, item.Value, item.UpdatedBy, item.UpdatedAt)
+		if err != nil {
+			return fmt.Errorf("failed to record setting change audit for %s/%s: %w", item.Namespace, item.Key, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit batch settings transaction: %w", err)
 	}
 	return nil
 }

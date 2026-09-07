@@ -121,13 +121,13 @@ func (r *Router) Dispatch(ctx context.Context, evt *core.CallbackQueryEvent, svc
 			zap.String("origin", originString(evt.Origin)),
 			zap.ByteString("data", evt.Data),
 			zap.Error(err))
-		if r.metrics != nil {
-			r.metrics.RecordCallback("invalid", time.Since(start), err)
-		}
-		if svc != nil {
-			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Invalid button action", false)
-		}
-		return ErrInvalidCallbackData
+		return r.reject(ctx, evt, svc, CallbackFailure{
+			Code:        FailureCodeInvalidPayload,
+			MetricTag:   "invalid",
+			UserAlert:   "Invalid button action",
+			InternalErr: ErrInvalidCallbackData,
+			IsAlert:     false,
+		}, start)
 	}
 
 	// Rate limiting per user (separate from command limiter)
@@ -135,18 +135,18 @@ func (r *Router) Dispatch(ctx context.Context, evt *core.CallbackQueryEvent, svc
 		key := fmt.Sprintf("%d", evt.UserID)
 		if !r.limiter.Allow(ratelimit.DimensionOperation, "callback:"+key) {
 			r.logger.Debug("callback rate limited", zap.Int64("user_id", evt.UserID), zap.String("namespace", ns))
-			if r.metrics != nil {
-				r.metrics.RecordCallback("rate_limited", time.Since(start), nil)
-			}
-			if svc != nil {
-				_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "⏳ Too many clicks, slow down.", true)
-			}
-			return fmt.Errorf("%w: callback rate limited", core.ErrRateLimited)
+			return r.reject(ctx, evt, svc, CallbackFailure{
+				Code:        FailureCodeRateLimited,
+				MetricTag:   "rate_limited",
+				UserAlert:   "⏳ Too many clicks, slow down.",
+				InternalErr: fmt.Errorf("%w: callback rate limited", core.ErrRateLimited),
+				IsAlert:     true,
+			}, start)
 		}
 	}
 
 	// No-op buttons (e.g. page counter indicators)
-	if action == "noop" || opaqueID == "noop" {
+	if action == ActionNoop || opaqueID == ActionNoop {
 		if svc != nil {
 			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "", false)
 		}
@@ -167,13 +167,13 @@ func (r *Router) Dispatch(ctx context.Context, evt *core.CallbackQueryEvent, svc
 					zap.String("action", action),
 					zap.String("opaque_id", opaqueID),
 					zap.String("origin", originString(evt.Origin)))
-				if r.metrics != nil {
-					r.metrics.RecordCallback("expired", time.Since(start), getErr)
-				}
-				if svc != nil {
-					_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "⏰ Button expired, run the command again.", true)
-				}
-				return ErrStateExpired
+				return r.reject(ctx, evt, svc, CallbackFailure{
+					Code:        FailureCodeSessionExpired,
+					MetricTag:   "expired",
+					UserAlert:   "⏰ Button expired, run the command again.",
+					InternalErr: ErrStateExpired,
+					IsAlert:     true,
+				}, start)
 			}
 			if errors.Is(getErr, ErrStateConsumed) {
 				r.logger.Debug("callback state already consumed",
@@ -183,13 +183,13 @@ func (r *Router) Dispatch(ctx context.Context, evt *core.CallbackQueryEvent, svc
 					zap.String("action", action),
 					zap.String("opaque_id", opaqueID),
 					zap.String("origin", originString(evt.Origin)))
-				if r.metrics != nil {
-					r.metrics.RecordCallback("invalid", time.Since(start), getErr)
-				}
-				if svc != nil {
-					_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Button already used.", true)
-				}
-				return ErrStateNotFound
+				return r.reject(ctx, evt, svc, CallbackFailure{
+					Code:        FailureCodeSessionExpired,
+					MetricTag:   "invalid",
+					UserAlert:   "Button already used.",
+					InternalErr: ErrStateNotFound,
+					IsAlert:     true,
+				}, start)
 			}
 			if errors.Is(getErr, ErrStateNotFound) {
 				// No state is not an error for stateless callbacks; just continue without state.
@@ -213,13 +213,13 @@ func (r *Router) Dispatch(ctx context.Context, evt *core.CallbackQueryEvent, svc
 					zap.String("namespace", ns),
 					zap.String("action", action),
 					zap.String("opaque_id", opaqueID))
-				if r.metrics != nil {
-					r.metrics.RecordCallback("unauthorized", time.Since(start), ErrUnauthorized)
-				}
-				if svc != nil {
-					_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "⚠️ You are not authorized to use this button.", true)
-				}
-				return ErrUnauthorized
+				return r.reject(ctx, evt, svc, CallbackFailure{
+					Code:        FailureCodeUnauthorized,
+					MetricTag:   "unauthorized",
+					UserAlert:   "⚠️ You are not authorized to use this button.",
+					InternalErr: ErrUnauthorized,
+					IsAlert:     true,
+				}, start)
 			}
 			// Scope: namespace binding
 			if e.Scope.Namespace != "" && e.Scope.Namespace != ns {
@@ -227,59 +227,59 @@ func (r *Router) Dispatch(ctx context.Context, evt *core.CallbackQueryEvent, svc
 					zap.String("expected", e.Scope.Namespace),
 					zap.String("got", ns),
 					zap.String("opaque_id", opaqueID))
-				if r.metrics != nil {
-					r.metrics.RecordCallback("invalid", time.Since(start), ErrInvalidCallbackData)
-				}
-				if svc != nil {
-					_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Invalid button scope.", false)
-				}
-				return ErrInvalidCallbackData
+				return r.reject(ctx, evt, svc, CallbackFailure{
+					Code:        FailureCodeInvalidPayload,
+					MetricTag:   "invalid",
+					UserAlert:   "Invalid button scope.",
+					InternalErr: ErrInvalidCallbackData,
+					IsAlert:     false,
+				}, start)
 			}
 			// Scope: chat / message binding if set
-			if e.Scope.ChatID != 0 && evt.ChatID != 0 && e.Scope.ChatID != evt.ChatID {
+			if e.Scope.ChatID != 0 && e.Scope.ChatID != evt.ChatID {
 				r.logger.Warn("callback chat scope mismatch",
 					zap.Int64("expected_chat", e.Scope.ChatID),
 					zap.Int64("got_chat", evt.ChatID),
 					zap.String("opaque_id", opaqueID))
-				if r.metrics != nil {
-					r.metrics.RecordCallback("unauthorized", time.Since(start), ErrUnauthorized)
-				}
-				if svc != nil {
-					_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Button not valid in this chat.", true)
-				}
-				return ErrUnauthorized
+				return r.reject(ctx, evt, svc, CallbackFailure{
+					Code:        FailureCodeUnauthorized,
+					MetricTag:   "unauthorized",
+					UserAlert:   "Button not valid in this chat.",
+					InternalErr: ErrUnauthorized,
+					IsAlert:     true,
+				}, start)
 			}
-			if e.Scope.MessageID != 0 && evt.Target.MessageID != 0 && e.Scope.MessageID != evt.Target.MessageID {
+			if e.Scope.MessageID != 0 && e.Scope.MessageID != evt.Target.MessageID {
 				r.logger.Warn("callback message scope mismatch",
 					zap.Int("expected_msg", e.Scope.MessageID),
 					zap.Int("got_msg", evt.Target.MessageID))
-				if r.metrics != nil {
-					r.metrics.RecordCallback("unauthorized", time.Since(start), ErrUnauthorized)
-				}
-				if svc != nil {
-					_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Button not valid for this message.", true)
-				}
-				return ErrUnauthorized
+				return r.reject(ctx, evt, svc, CallbackFailure{
+					Code:        FailureCodeUnauthorized,
+					MetricTag:   "unauthorized",
+					UserAlert:   "Button not valid for this message.",
+					InternalErr: ErrUnauthorized,
+					IsAlert:     true,
+				}, start)
 			}
 			// SingleUse: atomically consume before handler
 			if e.Scope.SingleUse {
 				if _, cErr := r.stateStore.Consume(opaqueID); cErr != nil {
 					if errors.Is(cErr, ErrStateExpired) {
-						if r.metrics != nil {
-							r.metrics.RecordCallback("expired", time.Since(start), cErr)
-						}
-						if svc != nil {
-							_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "⏰ Button expired.", true)
-						}
-						return ErrStateExpired
+						return r.reject(ctx, evt, svc, CallbackFailure{
+							Code:        FailureCodeSessionExpired,
+							MetricTag:   "expired",
+							UserAlert:   "⏰ Button expired.",
+							InternalErr: ErrStateExpired,
+							IsAlert:     true,
+						}, start)
 					}
-					if r.metrics != nil {
-						r.metrics.RecordCallback("invalid", time.Since(start), cErr)
-					}
-					if svc != nil {
-						_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Button already used.", true)
-					}
-					return ErrStateNotFound
+					return r.reject(ctx, evt, svc, CallbackFailure{
+						Code:        FailureCodeSessionExpired,
+						MetricTag:   "invalid",
+						UserAlert:   "Button already used.",
+						InternalErr: ErrStateNotFound,
+						IsAlert:     true,
+					}, start)
 				}
 			}
 		}
@@ -296,13 +296,13 @@ func (r *Router) Dispatch(ctx context.Context, evt *core.CallbackQueryEvent, svc
 			zap.Int64("query_id", evt.QueryID),
 			zap.Int64("user_id", evt.UserID),
 			zap.String("origin", originString(evt.Origin)))
-		if r.metrics != nil {
-			r.metrics.RecordCallback("invalid", time.Since(start), ErrHandlerNotFound)
-		}
-		if svc != nil {
-			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Feature not available", false)
-		}
-		return ErrHandlerNotFound
+		return r.reject(ctx, evt, svc, CallbackFailure{
+			Code:        FailureCodeHandlerNotFound,
+			MetricTag:   "invalid",
+			UserAlert:   "Feature not available",
+			InternalErr: ErrHandlerNotFound,
+			IsAlert:     false,
+		}, start)
 	}
 
 	cbCtx := &CallbackContext{
@@ -380,3 +380,19 @@ func originString(o core.CallbackOrigin) string {
 	}
 	return "message"
 }
+
+// reject records failure metrics, sends user feedback via AnswerCallbackQuery, and returns the underlying error.
+func (r *Router) reject(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer, failure CallbackFailure, start time.Time) error {
+	if r.metrics != nil {
+		metricTag := failure.MetricTag
+		if metricTag == "" {
+			metricTag = string(failure.Code)
+		}
+		r.metrics.RecordCallback(metricTag, time.Since(start), failure.InternalErr)
+	}
+	if svc != nil && failure.UserAlert != "" {
+		_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, failure.UserAlert, failure.IsAlert)
+	}
+	return failure.InternalErr
+}
+

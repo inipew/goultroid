@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/services/callback"
 )
 
 func TestFormatHelpers(t *testing.T) {
@@ -176,3 +177,35 @@ func TestAlerts(t *testing.T) {
 		t.Errorf("unexpected Information alert: %s", got)
 	}
 }
+
+func TestScreen_RenderScreen(t *testing.T) {
+	screen := NewScreen("main", "Dashboard", "Welcome to dashboard")
+	screen.AddRow(NewCallbackButton("Click", []byte("click_data")))
+
+	rendered := screen.RenderScreen()
+	if !strings.Contains(rendered.Text, "<b>Dashboard</b>") {
+		t.Errorf("expected title in rendered screen text, got: %s", rendered.Text)
+	}
+	if rendered.Markup == nil {
+		t.Errorf("expected non-nil markup in rendered screen")
+	}
+}
+
+func TestMapUserErrorMessage(t *testing.T) {
+	if got := MapUserErrorMessage(nil); got != "" {
+		t.Errorf("expected empty string for nil error, got: %s", got)
+	}
+	if got := MapUserErrorMessage(core.ErrRateLimited); !strings.Contains(got, "Too many requests") {
+		t.Errorf("expected rate limit message, got: %s", got)
+	}
+	if got := MapUserErrorMessage(callback.ErrUnauthorized); !strings.Contains(got, "not authorized") {
+		t.Errorf("expected unauthorized message, got: %s", got)
+	}
+	if got := MapUserErrorMessage(callback.ErrStateExpired); !strings.Contains(got, "expired") {
+		t.Errorf("expected expired message, got: %s", got)
+	}
+	if got := MapUserErrorMessage(callback.ErrInvalidCallbackData); !strings.Contains(got, "Invalid button action") {
+		t.Errorf("expected invalid callback message, got: %s", got)
+	}
+}
+

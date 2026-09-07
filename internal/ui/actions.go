@@ -65,7 +65,7 @@ func BuildLoadingButton(text string) Button {
 	if text == "" {
 		text = "⏳ Processing..."
 	}
-	return NewCallbackButton(text, []byte("noop"))
+	return NewCallbackButton(text, NoopData)
 }
 
 // BuildRetryRow creates a transient error recovery button bar:

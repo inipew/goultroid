@@ -1636,3 +1636,65 @@ func TestDBSettings(t *testing.T) {
 	}
 }
 
+func TestDB_SetSettingsBatch(t *testing.T) {
+	db := setupTestDB(t)
+
+	ctx := context.Background()
+
+	batch := []*SettingItem{
+		{
+			ScopeType: "global",
+			ScopeID:   0,
+			Namespace: "system",
+			Key:       "theme",
+			ValueType: "string",
+			Value:     "dark",
+			UpdatedBy: 111,
+		},
+		{
+			ScopeType: "global",
+			ScopeID:   0,
+			Namespace: "system",
+			Key:       "notifications",
+			ValueType: "bool",
+			Value:     "true",
+			UpdatedBy: 111,
+		},
+		{
+			ScopeType: "chat",
+			ScopeID:   -100999888,
+			Namespace: "pmpermit",
+			Key:       "warns",
+			ValueType: "int",
+			Value:     "5",
+			UpdatedBy: 222,
+		},
+	}
+
+	if err := db.SetSettingsBatch(ctx, batch); err != nil {
+		t.Fatalf("failed to batch insert settings: %v", err)
+	}
+
+	// Verify all items were inserted
+	item1, err := db.GetSetting(ctx, "global", 0, "system", "theme")
+	if err != nil || item1 == nil || item1.Value != "dark" {
+		t.Errorf("item1 mismatch: %+v, err: %v", item1, err)
+	}
+
+	item2, err := db.GetSetting(ctx, "global", 0, "system", "notifications")
+	if err != nil || item2 == nil || item2.Value != "true" {
+		t.Errorf("item2 mismatch: %+v, err: %v", item2, err)
+	}
+
+	item3, err := db.GetSetting(ctx, "chat", -100999888, "pmpermit", "warns")
+	if err != nil || item3 == nil || item3.Value != "5" {
+		t.Errorf("item3 mismatch: %+v, err: %v", item3, err)
+	}
+
+	// Empty batch should be no-op
+	if err := db.SetSettingsBatch(ctx, nil); err != nil {
+		t.Errorf("expected no error for empty batch, got: %v", err)
+	}
+}
+
+

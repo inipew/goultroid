@@ -69,6 +69,9 @@ func NewMarkup(rows ...ButtonRow) Markup {
 	return Markup{Rows: rows}
 }
 
+// NoopData is the standard non-interactive callback payload (page indicators, placeholders, etc.).
+var NoopData = []byte("noop")
+
 // NewPaginationRow creates a standard pagination navigation row.
 // e.g. [ < ] [ 2 / 5 ] [ > ]
 func NewPaginationRow(prevData, nextData []byte, currentPage, totalPages int) ButtonRow {
@@ -79,7 +82,7 @@ func NewPaginationRow(prevData, nextData []byte, currentPage, totalPages int) Bu
 	}
 
 	label := fmt.Sprintf("%d / %d", currentPage, totalPages)
-	row = append(row, NewCallbackButton(label, []byte("noop")))
+	row = append(row, NewCallbackButton(label, NoopData))
 
 	if len(nextData) > 0 && currentPage < totalPages {
 		row = append(row, NewCallbackButton("Next ▶", nextData))

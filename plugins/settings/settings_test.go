@@ -310,6 +310,33 @@ func TestPlugin_CLIConfig(t *testing.T) {
 	if !strings.Contains(tgSvc.lastText, "core:prefix") {
 		t.Errorf("expected list to contain core:prefix, got: %s", tgSvc.lastText)
 	}
+
+	// 8. Scoped CLI: set and get with -s chat
+	ctx.Args = []string{"set", "-s", "chat", "core:prefix", "#"}
+	_ = p.handleConfigCommand(ctx)
+	if !strings.Contains(tgSvc.lastText, "Setting updated (chat)") {
+		t.Errorf("expected chat setting updated, got: %s", tgSvc.lastText)
+	}
+
+	ctx.Args = []string{"get", "-s", "chat", "core:prefix"}
+	_ = p.handleConfigCommand(ctx)
+	if !strings.Contains(tgSvc.lastText, "core:prefix") || !strings.Contains(tgSvc.lastText, "#") {
+		t.Errorf("expected chat prefix #, got: %s", tgSvc.lastText)
+	}
+
+	// Reset with -s chat
+	ctx.Args = []string{"reset", "-s", "chat", "core:prefix"}
+	_ = p.handleConfigCommand(ctx)
+	if !strings.Contains(tgSvc.lastText, "reset in scope <code>chat</code>") {
+		t.Errorf("expected chat reset message, got: %s", tgSvc.lastText)
+	}
+
+	// Scoped Export
+	ctx.Args = []string{"export", "-s", "user"}
+	_ = p.handleConfigCommand(ctx)
+	if !strings.Contains(tgSvc.lastText, "Settings Export (user)") {
+		t.Errorf("expected user settings export, got: %s", tgSvc.lastText)
+	}
 }
 
 func TestPlugin_InteractiveCallbacks(t *testing.T) {
@@ -475,3 +502,74 @@ func TestPlugin_InteractiveCallbacks(t *testing.T) {
 		t.Errorf("expected dashboard closed text, got: %s", tgSvc.lastText)
 	}
 }
+
+func TestPlugin_ScopeSwitchingAndTarget(t *testing.T) {
+	st := MenuState{
+		Scope:   settings.ScopeGlobal,
+		ScopeID: 0,
+		ChatID:  -100777,
+		OwnerID: 888,
+	}
+
+	st.SetTarget("core", "prefix")
+	ns, key := st.GetTarget()
+	if ns != "core" || key != "prefix" {
+		t.Errorf("expected core:prefix, got %s:%s", ns, key)
+	}
+	if st.Selected != "core:prefix" {
+		t.Errorf("expected Selected synced to core:prefix, got %s", st.Selected)
+	}
+
+	// Verify backward compat when only Selected is set (e.g. from older serialized states)
+	stOld := MenuState{Selected: "afk:cooldown"}
+	nsOld, keyOld := stOld.GetTarget()
+	if nsOld != "afk" || keyOld != "cooldown" {
+		t.Errorf("expected afk:cooldown, got %s:%s", nsOld, keyOld)
+	}
+
+	// Verify scope switching bindings
+	p, svc, _, tgSvc := setupTestPlugin(t)
+	ctx := context.Background()
+
+	// 1. Initial home screen with Global scope
+	scr := p.renderHomeScreen(ctx, st)
+	_, markup := scr.Render()
+	if markup == nil {
+		t.Fatalf("expected non-nil markup for home screen")
+	}
+
+	// 2. Test applySettingAction with typed Target
+	stAction := MenuState{
+		Scope:       settings.ScopeChat,
+		ScopeID:     -100777,
+		Target:      &SettingTarget{Namespace: "core", Key: "prefix"},
+		ActionValue: "!",
+		OwnerID:     888,
+		ChatID:      -100777,
+	}
+	cbCtx := &callback.CallbackContext{
+		Ctx:     ctx,
+		QueryID: 999,
+		UserID:  888,
+		Action:  "set",
+		Service: tgSvc,
+		Target:  core.CallbackTarget{Peer: &tg.InputPeerUser{UserID: 888}, MessageID: 1},
+	}
+	if err := p.applySettingAction(cbCtx, &stAction, "set"); err != nil {
+		t.Fatalf("applySettingAction set failed: %v", err)
+	}
+	val, err := svc.Resolve(ctx, 888, -100777, "core", "prefix")
+	if err != nil || val != "!" {
+		t.Errorf("expected '!' set for chat scope, got: %q (err=%v)", val, err)
+	}
+
+	// 3. Reset via applySettingAction
+	if err := p.applySettingAction(cbCtx, &stAction, "reset"); err != nil {
+		t.Fatalf("applySettingAction reset failed: %v", err)
+	}
+	valReset, _ := svc.Resolve(ctx, 888, -100777, "core", "prefix")
+	if valReset != "." {
+		t.Errorf("expected fallback to default '.' after reset, got: %q", valReset)
+	}
+}
+

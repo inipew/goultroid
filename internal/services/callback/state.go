@@ -34,10 +34,9 @@ type stateItem struct {
 
 // StateStore is a thread-safe in-memory cache for temporary callback payload states.
 type StateStore struct {
-	mu       sync.RWMutex
-	items    map[string]stateItem
-	stopCh   chan struct{}
-	stopOnce sync.Once
+	mu     sync.RWMutex
+	items  map[string]stateItem
+	cancel context.CancelFunc
 }
 
 // NewStateStore creates an initialized StateStore.
@@ -192,12 +191,12 @@ func (s *StateStore) Prune() int {
 // It is safe to call multiple times; subsequent calls are no-op.
 func (s *StateStore) Start(ctx context.Context) {
 	s.mu.Lock()
-	if s.stopCh != nil {
+	if s.cancel != nil {
 		s.mu.Unlock()
 		return
 	}
-	s.stopCh = make(chan struct{})
-	stopCh := s.stopCh
+	runCtx, cancel := context.WithCancel(ctx)
+	s.cancel = cancel
 	s.mu.Unlock()
 
 	go func() {
@@ -207,9 +206,7 @@ func (s *StateStore) Start(ctx context.Context) {
 			select {
 			case <-ticker.C:
 				s.Prune()
-			case <-ctx.Done():
-				return
-			case <-stopCh:
+			case <-runCtx.Done():
 				return
 			}
 		}
@@ -219,14 +216,11 @@ func (s *StateStore) Start(ctx context.Context) {
 // Stop terminates the background pruning goroutine.
 func (s *StateStore) Stop() {
 	s.mu.Lock()
-	ch := s.stopCh
+	cancel := s.cancel
+	s.cancel = nil
 	s.mu.Unlock()
-	if ch == nil {
-		return
+
+	if cancel != nil {
+		cancel()
 	}
-	s.stopOnce.Do(func() { close(ch) })
-	s.mu.Lock()
-	s.stopCh = nil
-	s.stopOnce = sync.Once{}
-	s.mu.Unlock()
 }

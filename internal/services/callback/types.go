@@ -30,7 +30,55 @@ const (
 	CallbackVersion1 = "v1"
 	// MaxCallbackDataLen is Telegram's callback data limit (64 bytes).
 	MaxCallbackDataLen = 64
+
+	// Standard callback actions.
+	ActionNoop   = "noop"
+	ActionNav    = "nav"
+	ActionToggle = "toggle"
+	ActionSet    = "set"
+	ActionReset  = "reset"
+	ActionBack   = "back"
+	ActionClose  = "close"
+	ActionSelect = "select"
 )
+
+// FailureCode categorizes standard callback processing rejections.
+type FailureCode string
+
+const (
+	FailureCodeInvalidPayload  FailureCode = "INVALID_PAYLOAD"
+	FailureCodeRateLimited     FailureCode = "RATE_LIMITED"
+	FailureCodeSessionExpired  FailureCode = "SESSION_EXPIRED"
+	FailureCodeUnauthorized    FailureCode = "UNAUTHORIZED"
+	FailureCodeHandlerNotFound FailureCode = "HANDLER_NOT_FOUND"
+	FailureCodeInternal        FailureCode = "INTERNAL_ERROR"
+)
+
+// CallbackFailure encapsulates failure details for answering queries and reporting metrics.
+type CallbackFailure struct {
+	Code        FailureCode
+	UserAlert   string
+	InternalErr error
+	MetricTag   string
+	IsAlert     bool
+}
+
+func (f *CallbackFailure) Error() string {
+	if f == nil {
+		return ""
+	}
+	if f.InternalErr != nil {
+		return fmt.Sprintf("callback failure [%s]: %v", f.Code, f.InternalErr)
+	}
+	return fmt.Sprintf("callback failure [%s]: %s", f.Code, f.UserAlert)
+}
+
+func (f *CallbackFailure) Unwrap() error {
+	if f == nil {
+		return nil
+	}
+	return f.InternalErr
+}
 
 // CallbackHandlerOptions controls standard UX behaviour for a handler.
 type CallbackHandlerOptions struct {
@@ -382,3 +430,9 @@ func isValidOpaqueID(s string) bool {
 	}
 	return true
 }
+
+// NewActionData constructs standard callback data encoded as v1:namespace:action:opaqueID.
+func NewActionData(namespace, action, opaqueID string) ([]byte, error) {
+	return EncodeCallbackDataChecked(namespace, action, opaqueID)
+}
+

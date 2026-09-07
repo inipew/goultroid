@@ -61,3 +61,19 @@ func (s *Screen) Render() (string, *tg.ReplyInlineMarkup) {
 
 	return text, nil
 }
+
+// RenderedScreen represents the rendered presentation output ready for transmission.
+type RenderedScreen struct {
+	Text   string
+	Markup *tg.ReplyInlineMarkup
+}
+
+// RenderScreen renders the screen into a structured RenderedScreen object.
+func (s *Screen) RenderScreen() RenderedScreen {
+	text, markup := s.Render()
+	return RenderedScreen{
+		Text:   text,
+		Markup: markup,
+	}
+}
+

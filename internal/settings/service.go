@@ -5,17 +5,25 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
 )
 
+type resolveCacheKey struct {
+	userID int64
+	chatID int64
+}
+
 // Service provides a unified management and resolution interface for settings.
 type Service struct {
-	repo database.Repository
-	reg  *Registry
-	bus  *core.EventBus
+	repo    database.Repository
+	reg     *Registry
+	bus     *core.EventBus
+	cacheMu sync.RWMutex
+	cache   map[string]map[resolveCacheKey]string // namespace:key -> resolveCacheKey -> value
 }
 
 // NewService instantiates a new settings Service.
@@ -23,16 +31,51 @@ func NewService(repo database.Repository, reg *Registry, bus *core.EventBus) *Se
 	if reg == nil {
 		reg = NewRegistry()
 	}
-	return &Service{
-		repo: repo,
-		reg:  reg,
-		bus:  bus,
+	s := &Service{
+		repo:  repo,
+		reg:   reg,
+		bus:   bus,
+		cache: make(map[string]map[resolveCacheKey]string),
 	}
+	if bus != nil {
+		bus.Subscribe(core.EventTypeSettingChanged, func(event core.Event) {
+			if e, ok := event.(*core.SettingChangedEvent); ok {
+				s.invalidate(e.Namespace, e.Key)
+			}
+		})
+	}
+	return s
 }
 
 // Registry returns the underlying schema registry.
 func (s *Service) Registry() *Registry {
 	return s.reg
+}
+
+func (s *Service) invalidate(namespace, key string) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if namespace == "" && key == "" {
+		s.cache = make(map[string]map[resolveCacheKey]string)
+		return
+	}
+	ns := strings.ToLower(strings.TrimSpace(namespace))
+	k := strings.ToLower(strings.TrimSpace(key))
+	delete(s.cache, ns+":"+k)
+}
+
+func (s *Service) putCache(cacheKey string, rKey resolveCacheKey, val string) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if s.cache == nil {
+		s.cache = make(map[string]map[resolveCacheKey]string)
+	}
+	byKey, ok := s.cache[cacheKey]
+	if !ok {
+		byKey = make(map[resolveCacheKey]string)
+		s.cache[cacheKey] = byKey
+	}
+	byKey[rKey] = val
 }
 
 // Resolve applies the hierarchical fallback:
@@ -43,6 +86,17 @@ func (s *Service) Registry() *Registry {
 func (s *Service) Resolve(ctx context.Context, userID, chatID int64, namespace, key string) (string, error) {
 	ns := strings.ToLower(strings.TrimSpace(namespace))
 	k := strings.ToLower(strings.TrimSpace(key))
+	cacheKey := ns + ":" + k
+	rKey := resolveCacheKey{userID: userID, chatID: chatID}
+
+	s.cacheMu.RLock()
+	if byKey, ok := s.cache[cacheKey]; ok {
+		if val, found := byKey[rKey]; found {
+			s.cacheMu.RUnlock()
+			return val, nil
+		}
+	}
+	s.cacheMu.RUnlock()
 
 	// 1. Chat Scope
 	if chatID != 0 {
@@ -51,6 +105,7 @@ func (s *Service) Resolve(ctx context.Context, userID, chatID int64, namespace, 
 			return "", fmt.Errorf("failed to query chat setting (%d:%s:%s): %w", chatID, ns, k, err)
 		}
 		if item != nil {
+			s.putCache(cacheKey, rKey, item.Value)
 			return item.Value, nil
 		}
 	}
@@ -62,6 +117,7 @@ func (s *Service) Resolve(ctx context.Context, userID, chatID int64, namespace, 
 			return "", fmt.Errorf("failed to query user setting (%d:%s:%s): %w", userID, ns, k, err)
 		}
 		if item != nil {
+			s.putCache(cacheKey, rKey, item.Value)
 			return item.Value, nil
 		}
 	}
@@ -72,14 +128,17 @@ func (s *Service) Resolve(ctx context.Context, userID, chatID int64, namespace, 
 		return "", fmt.Errorf("failed to query global setting (0:%s:%s): %w", ns, k, err)
 	}
 	if item != nil {
+		s.putCache(cacheKey, rKey, item.Value)
 		return item.Value, nil
 	}
 
 	// 4. Schema Default
 	if def, ok := s.reg.Get(ns, k); ok {
+		s.putCache(cacheKey, rKey, def.DefaultValue)
 		return def.DefaultValue, nil
 	}
 
+	s.putCache(cacheKey, rKey, "")
 	return "", nil
 }
 
@@ -130,13 +189,26 @@ func (s *Service) ResolveString(ctx context.Context, userID, chatID int64, names
 	return s.Resolve(ctx, userID, chatID, namespace, key)
 }
 
+// ResolveValue returns a SettingValue wrapping the resolved string and any lookup error.
+func (s *Service) ResolveValue(ctx context.Context, userID, chatID int64, namespace, key string) SettingValue {
+	val, err := s.Resolve(ctx, userID, chatID, namespace, key)
+	return NewSettingValue(val, err)
+}
+
 // Get retrieves an explicit setting from the repository for a given scope without inheritance.
 func (s *Service) Get(ctx context.Context, scope SettingScope, scopeID int64, namespace, key string) (*database.SettingItem, error) {
+	if err := (ScopeRef{Type: scope, ID: scopeID}).Validate(); err != nil {
+		return nil, err
+	}
 	return s.repo.GetSetting(ctx, string(scope), scopeID, strings.ToLower(namespace), strings.ToLower(key))
 }
 
 // Set validates and saves a setting in the given scope, publishing a change event on success.
 func (s *Service) Set(ctx context.Context, scope SettingScope, scopeID int64, namespace, key, value string, updaterID int64) error {
+	if err := (ScopeRef{Type: scope, ID: scopeID}).Validate(); err != nil {
+		return err
+	}
+
 	ns := strings.ToLower(strings.TrimSpace(namespace))
 	k := strings.ToLower(strings.TrimSpace(key))
 
@@ -178,6 +250,8 @@ func (s *Service) Set(ctx context.Context, scope SettingScope, scopeID int64, na
 		return fmt.Errorf("failed to save setting (%s:%d:%s:%s): %w", scope, scopeID, ns, k, err)
 	}
 
+	s.invalidate(ns, k)
+
 	// Publish SettingChangedEvent
 	if s.bus != nil {
 		s.bus.Publish(&core.SettingChangedEvent{
@@ -196,7 +270,11 @@ func (s *Service) Set(ctx context.Context, scope SettingScope, scopeID int64, na
 }
 
 // Reset removes an override from the specified scope, falling back to lower scopes or default.
-func (s *Service) Reset(ctx context.Context, scope SettingScope, scopeID int64, namespace, key string) error {
+func (s *Service) Reset(ctx context.Context, scope SettingScope, scopeID int64, namespace, key string, updaterID int64) error {
+	if err := (ScopeRef{Type: scope, ID: scopeID}).Validate(); err != nil {
+		return err
+	}
+
 	ns := strings.ToLower(strings.TrimSpace(namespace))
 	k := strings.ToLower(strings.TrimSpace(key))
 
@@ -213,6 +291,8 @@ func (s *Service) Reset(ctx context.Context, scope SettingScope, scopeID int64, 
 		return fmt.Errorf("failed to delete setting: %w", err)
 	}
 
+	s.invalidate(ns, k)
+
 	if s.bus != nil {
 		s.bus.Publish(&core.SettingChangedEvent{
 			At:        time.Now().UTC(),
@@ -222,7 +302,7 @@ func (s *Service) Reset(ctx context.Context, scope SettingScope, scopeID int64, 
 			Key:       k,
 			OldVal:    oldVal,
 			NewVal:    "",
-			ChangedBy: 0,
+			ChangedBy: updaterID,
 		})
 	}
 
@@ -231,11 +311,17 @@ func (s *Service) Reset(ctx context.Context, scope SettingScope, scopeID int64, 
 
 // ListByScope lists all configured settings for a specific scope.
 func (s *Service) ListByScope(ctx context.Context, scope SettingScope, scopeID int64, namespace string) ([]database.SettingItem, error) {
+	if err := (ScopeRef{Type: scope, ID: scopeID}).Validate(); err != nil {
+		return nil, err
+	}
 	return s.repo.ListSettings(ctx, string(scope), scopeID, strings.ToLower(namespace))
 }
 
 // Export dumps all explicit settings for a scope into a namespace -> key -> value map.
 func (s *Service) Export(ctx context.Context, scope SettingScope, scopeID int64) (map[string]map[string]string, error) {
+	if err := (ScopeRef{Type: scope, ID: scopeID}).Validate(); err != nil {
+		return nil, err
+	}
 	items, err := s.repo.ListSettings(ctx, string(scope), scopeID, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to export settings: %w", err)
@@ -251,18 +337,88 @@ func (s *Service) Export(ctx context.Context, scope SettingScope, scopeID int64)
 	return exportData, nil
 }
 
-// Import bulk-updates settings for a scope from a map. Returns number of settings imported.
+// Import atomically validates and bulk-updates settings for a scope from a map.
+// Phase 1 pre-validates all values against registered schemas; Phase 2 persists in a single batch transaction.
 func (s *Service) Import(ctx context.Context, scope SettingScope, scopeID int64, data map[string]map[string]string, updaterID int64) (int, error) {
-	count := 0
+	if err := (ScopeRef{Type: scope, ID: scopeID}).Validate(); err != nil {
+		return 0, err
+	}
+	if len(data) == 0 {
+		return 0, nil
+	}
+
+	// Phase 1: Pre-validation & canonicalization
+	type preparedItem struct {
+		ns        string
+		k         string
+		valType   string
+		canonical string
+	}
+	var prepared []preparedItem
 	for ns, kv := range data {
+		nsNorm := strings.ToLower(strings.TrimSpace(ns))
 		for k, v := range kv {
-			if err := s.Set(ctx, scope, scopeID, ns, k, v, updaterID); err != nil {
-				return count, fmt.Errorf("failed importing setting %s:%s: %w", ns, k, err)
+			kNorm := strings.ToLower(strings.TrimSpace(k))
+			valType := string(TypeString)
+			canonicalVal := strings.TrimSpace(v)
+
+			if def, ok := s.reg.Get(nsNorm, kNorm); ok {
+				valType = string(def.Type)
+				cVal, err := def.Canonicalize(v)
+				if err != nil {
+					return 0, fmt.Errorf("invalid value for %s:%s: %w", nsNorm, kNorm, err)
+				}
+				canonicalVal = cVal
 			}
-			count++
+			prepared = append(prepared, preparedItem{
+				ns:        nsNorm,
+				k:         kNorm,
+				valType:   valType,
+				canonical: canonicalVal,
+			})
 		}
 	}
-	return count, nil
+
+	// Phase 2: Batch Transaction
+	now := time.Now().UTC()
+	dbItems := make([]*database.SettingItem, 0, len(prepared))
+	for _, p := range prepared {
+		dbItems = append(dbItems, &database.SettingItem{
+			ScopeType: string(scope),
+			ScopeID:   scopeID,
+			Namespace: p.ns,
+			Key:       p.k,
+			ValueType: p.valType,
+			Value:     p.canonical,
+			UpdatedBy: updaterID,
+			UpdatedAt: now,
+		})
+	}
+
+	if err := s.repo.SetSettingsBatch(ctx, dbItems); err != nil {
+		return 0, fmt.Errorf("failed executing batch settings import: %w", err)
+	}
+
+	for _, p := range prepared {
+		s.invalidate(p.ns, p.k)
+	}
+
+	// Phase 3: Publish events
+	if s.bus != nil {
+		for _, p := range prepared {
+			s.bus.Publish(&core.SettingChangedEvent{
+				At:        now,
+				ScopeType: string(scope),
+				ScopeID:   scopeID,
+				Namespace: p.ns,
+				Key:       p.k,
+				NewVal:    p.canonical,
+				ChangedBy: updaterID,
+			})
+		}
+	}
+
+	return len(prepared), nil
 }
 
 // GetHistory retrieves the audit log for a setting.

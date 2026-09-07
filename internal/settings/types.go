@@ -165,3 +165,105 @@ func NormalizeScope(scope string) (SettingScope, error) {
 		return "", errors.New("invalid scope: must be 'global', 'chat', or 'user'")
 	}
 }
+
+// ScopeRef identifies an explicit settings context hierarchy target with its ID.
+type ScopeRef struct {
+	Type SettingScope
+	ID   int64
+}
+
+// Validate checks whether ScopeRef specifies a valid type and consistent ID.
+func (s ScopeRef) Validate() error {
+	switch s.Type {
+	case ScopeGlobal:
+		if s.ID != 0 {
+			return errors.New("global scope must have ID 0")
+		}
+	case ScopeChat:
+		if s.ID == 0 {
+			return errors.New("chat scope must have non-zero chat ID")
+		}
+	case ScopeUser:
+		if s.ID == 0 {
+			return errors.New("user scope must have non-zero user ID")
+		}
+	default:
+		return fmt.Errorf("unknown scope type: %s", s.Type)
+	}
+	return nil
+}
+
+// GlobalScope returns a ScopeRef for global bot settings.
+func GlobalScope() ScopeRef {
+	return ScopeRef{Type: ScopeGlobal, ID: 0}
+}
+
+// UserScope returns a ScopeRef for user-specific settings.
+func UserScope(userID int64) ScopeRef {
+	return ScopeRef{Type: ScopeUser, ID: userID}
+}
+
+// ChatScope returns a ScopeRef for chat-specific settings.
+func ChatScope(chatID int64) ScopeRef {
+	return ScopeRef{Type: ScopeChat, ID: chatID}
+}
+
+// SettingValue provides typed getters with fallback defaults around a resolved setting.
+type SettingValue struct {
+	raw string
+	err error
+}
+
+// NewSettingValue creates a SettingValue wrapping a raw string and optional error.
+func NewSettingValue(val string, err error) SettingValue {
+	return SettingValue{raw: val, err: err}
+}
+
+// Raw returns the underlying raw string value.
+func (v SettingValue) Raw() string {
+	return v.raw
+}
+
+// Err returns any error encountered during value resolution.
+func (v SettingValue) Err() error {
+	return v.err
+}
+
+// String returns the setting as a string.
+func (v SettingValue) String() string {
+	return v.raw
+}
+
+// Bool returns the setting parsed as a boolean.
+func (v SettingValue) Bool() bool {
+	if v.err != nil {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(v.raw))
+	return lower == "true" || lower == "1" || lower == "yes" || lower == "on"
+}
+
+// Int returns the setting parsed as an int64.
+func (v SettingValue) Int() int64 {
+	if v.err != nil {
+		return 0
+	}
+	val, err := strconv.ParseInt(strings.TrimSpace(v.raw), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return val
+}
+
+// Duration returns the setting parsed as a time.Duration.
+func (v SettingValue) Duration() time.Duration {
+	if v.err != nil {
+		return 0
+	}
+	dur, err := time.ParseDuration(strings.TrimSpace(v.raw))
+	if err != nil {
+		return 0
+	}
+	return dur
+}
+

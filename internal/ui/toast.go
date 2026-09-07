@@ -1,6 +1,9 @@
 package ui
 
 import (
+	"errors"
+
+	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/services/callback"
 )
 
@@ -27,3 +30,30 @@ func AnswerErrorToast(ctx *callback.CallbackContext, text string) error {
 	}
 	return AnswerToast(ctx, text, true)
 }
+
+// MapUserErrorMessage maps domain and infrastructure errors into user-friendly UI alert messages.
+func MapUserErrorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, core.ErrRateLimited) {
+		return "⏳ Too many requests, slow down."
+	}
+	if errors.Is(err, callback.ErrUnauthorized) {
+		return "⚠️ You are not authorized to perform this action."
+	}
+	if errors.Is(err, callback.ErrStateExpired) {
+		return "⏰ Button expired, run the command again."
+	}
+	if errors.Is(err, callback.ErrStateNotFound) {
+		return "Button already used or state expired."
+	}
+	if errors.Is(err, callback.ErrInvalidCallbackData) {
+		return "Invalid button action or payload."
+	}
+	if errors.Is(err, callback.ErrHandlerNotFound) {
+		return "Feature not available."
+	}
+	return "❌ " + err.Error()
+}
+

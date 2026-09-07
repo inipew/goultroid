@@ -80,6 +80,40 @@ type peerUpdateJob struct {
 // MessageHandler is invoked for each incoming message.
 type MessageHandler = func(ctx context.Context, e tg.Entities, msg *tg.Message, isCommand bool, cmdName string) error
 
+// DispatcherDeps specifies dependencies for initializing a Dispatcher via dependency injection.
+type DispatcherDeps struct {
+	Router         *core.Router
+	Permissions    *core.Permissions
+	Service        core.TelegramServicer
+	Logger         *zap.Logger
+	EventBus       *core.EventBus
+	Localizer      core.Localizer
+	CallbackRouter *callback.Router
+	InlineEngine   *inline.Engine
+	Resolver       core.PeerResolver
+}
+
+// NewDispatcherWithDeps constructs a Dispatcher with all available dependencies.
+func NewDispatcherWithDeps(deps DispatcherDeps) *Dispatcher {
+	d := NewDispatcher(deps.Router, deps.Permissions, deps.Service, deps.Logger)
+	if deps.EventBus != nil {
+		d.SetEventBus(deps.EventBus)
+	}
+	if deps.Localizer != nil {
+		d.SetLocalizer(deps.Localizer)
+	}
+	if deps.CallbackRouter != nil {
+		d.SetCallbackRouter(deps.CallbackRouter)
+	}
+	if deps.InlineEngine != nil {
+		d.SetInlineEngine(deps.InlineEngine)
+	}
+	if deps.Resolver != nil {
+		d.SetResolver(deps.Resolver)
+	}
+	return d
+}
+
 // NewDispatcher creates a new Dispatcher instance.
 func NewDispatcher(
 	router *core.Router,
@@ -105,6 +139,7 @@ func NewDispatcher(
 	d.acceptingUpdates.Store(true)
 	return d
 }
+
 
 // Executor returns the underlying CommandExecutor used by this dispatcher.
 func (d *Dispatcher) Executor() *core.CommandExecutor {

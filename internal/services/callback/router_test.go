@@ -345,6 +345,19 @@ func TestRouter_Dispatch_ScopeRestrictions(t *testing.T) {
 		t.Errorf("expected ErrUnauthorized for chat mismatch, got %v", err)
 	}
 
+	// 1b. Chat mismatch via inline event (ChatID == 0)
+	evtInline := &core.CallbackQueryEvent{
+		QueryID: 1041,
+		UserID:  12345,
+		ChatID:  0,
+		Origin:  core.CallbackOriginInline,
+		Data:    EncodeCallbackData("scoped", "act", tokenChat),
+	}
+	err = router.Dispatch(context.Background(), evtInline, svc)
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("expected ErrUnauthorized for inline bypass of chat scope, got %v", err)
+	}
+
 	// 2. MessageID mismatch
 	tokenMsg := store.StoreWithScope("data", StateScope{
 		UserID:    12345,
@@ -532,4 +545,51 @@ func TestCallbackContext_EditMarkupOnlySemantics(t *testing.T) {
 		t.Errorf("expected EditInlineBotMessageMarkup called for inline message")
 	}
 }
+
+func TestStateStore_StartStopCancel(t *testing.T) {
+	store := NewStateStore()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Calling Start multiple times should be safe
+	store.Start(ctx)
+	store.Start(ctx)
+
+	// Calling Stop multiple times should be safe
+	store.Stop()
+	store.Stop()
+
+	// Calling Start again after Stop should work without panic
+	store.Start(ctx)
+	store.Stop()
+}
+
+func TestCallback_FailureAndNewActionData(t *testing.T) {
+	fail := &CallbackFailure{
+		Code:        FailureCodeUnauthorized,
+		UserAlert:   "Access denied",
+		InternalErr: ErrUnauthorized,
+		MetricTag:   "unauthorized",
+		IsAlert:     true,
+	}
+	if !errors.Is(fail, ErrUnauthorized) {
+		t.Errorf("expected fail to unwrap to ErrUnauthorized")
+	}
+	if fail.Error() == "" {
+		t.Errorf("expected non-empty error string")
+	}
+
+	data, err := NewActionData("settings", ActionNav, "abc12345")
+	if err != nil {
+		t.Fatalf("NewActionData failed: %v", err)
+	}
+	ns, act, oid, err := ParseCallbackData(data)
+	if err != nil {
+		t.Fatalf("ParseCallbackData failed: %v", err)
+	}
+	if ns != "settings" || act != ActionNav || oid != "abc12345" {
+		t.Errorf("unexpected parsed action data: ns=%s act=%s oid=%s", ns, act, oid)
+	}
+}
+
 
