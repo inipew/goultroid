@@ -23,7 +23,13 @@ func RegisterStart(r *Router, usernameProvider func() string, uptimeProvider fun
 			uptime = uptimeProvider()
 		}
 		screen := menu.BuildStartScreen(username, uptime)
-		text, markup := renderer(screen)
+		var text string
+		var markup tg.ReplyMarkupClass
+		if renderer != nil {
+			text, markup = renderer(screen)
+		} else if screen != nil {
+			text = screen.Text()
+		}
 		sent, err := c.Reply(text, markup)
 		if err == nil && sent != nil && instanceStore != nil {
 			chatID := extractChatIDFromInputPeer(c.Peer)
