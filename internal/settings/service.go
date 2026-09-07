@@ -18,7 +18,7 @@ type resolveCacheKey struct {
 
 // Service provides a unified management and resolution interface for settings.
 type Service struct {
-	repo    database.Repository
+	repo    database.SettingsRepository
 	reg     *Registry
 	bus     *core.EventBus
 	cacheMu sync.RWMutex
@@ -29,7 +29,7 @@ type Service struct {
 }
 
 // NewService instantiates a new settings Service.
-func NewService(repo database.Repository, reg *Registry, bus *core.EventBus) *Service {
+func NewService(repo database.SettingsRepository, reg *Registry, bus *core.EventBus) *Service {
 	if reg == nil {
 		reg = NewRegistry()
 	}

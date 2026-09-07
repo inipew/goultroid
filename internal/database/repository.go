@@ -127,8 +127,57 @@ type SettingOutboxEntry struct {
 	Processed bool      `json:"processed"`
 }
 
+// SettingsRepository is the minimal contract for settings domain.
+type SettingsRepository interface {
+	GetSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) (*SettingItem, error)
+	GetEffectiveSetting(ctx context.Context, namespace, key string, chatID, userID int64) (*SettingItem, error)
+	SetSetting(ctx context.Context, item *SettingItem) error
+	SetSettingsBatch(ctx context.Context, items []*SettingItem) error
+	DeleteSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) error
+	ListSettings(ctx context.Context, scopeType string, scopeID int64, namespace string) ([]SettingItem, error)
+	GetSettingHistory(ctx context.Context, namespace, key string, limit int) ([]SettingChangeRecord, error)
+	ListPendingOutbox(ctx context.Context, limit int) ([]SettingOutboxEntry, error)
+	MarkOutboxProcessed(ctx context.Context, id int64) error
+}
+
+// SchedulerRepository is the minimal contract for scheduler domain.
+type SchedulerRepository interface {
+	CreateScheduledJob(ctx context.Context, job *ScheduledJob) (*ScheduledJob, error)
+	GetScheduledJob(ctx context.Context, id int64) (*ScheduledJob, error)
+	ListScheduledJobs(ctx context.Context, chatID int64) ([]ScheduledJob, error)
+	ListDueScheduledJobs(ctx context.Context, before time.Time) ([]ScheduledJob, error)
+	ClaimDueScheduledJobs(ctx context.Context, now time.Time, limit int, lease time.Duration) ([]ScheduledJob, error)
+	CompleteScheduledJob(ctx context.Context, id int64, claimToken string, durationMs int64, now time.Time) error
+	FailScheduledJob(ctx context.Context, id int64, claimToken string, lastError string, durationMs int64, retryDelay time.Duration, isPermanent bool, now time.Time) error
+	UpdateScheduledJobNextRun(ctx context.Context, id int64, nextRun time.Time) error
+	RecordJobFailure(ctx context.Context, id int64, lastError string) error
+	DeleteScheduledJob(ctx context.Context, id int64) error
+	RenewJobLease(ctx context.Context, id int64, claimToken string, extension time.Duration, now time.Time) error
+	RecordJobRun(ctx context.Context, entry *JobHistoryEntry) error
+	GetJobHistory(ctx context.Context, jobID int64, limit int) ([]JobHistoryEntry, error)
+}
+
+// PeerRepository is the minimal contract for peer metadata.
+type PeerRepository interface {
+	SavePeerEntity(ctx context.Context, prefix string, id int64, username, phone, firstName, lastName, title string) error
+	FindPeerByUsername(ctx context.Context, username string) (prefix string, id int64, accessHash int64, found bool, err error)
+}
+
+// ModerationRepository groups moderation/warning persistence.
+type ModerationRepository interface {
+	// AddWarning and related are defined in moderation.go but not yet in Repository interface;
+	// kept as placeholder for future extraction.
+}
+
+// PMPermitRepository groups PM permit persistence.
+type PMPermitRepository interface{}
+
 // Repository defines data access methods for GoUltroid.
+// Deprecated for new consumers: prefer domain-specific interfaces (SettingsRepository, SchedulerRepository, PeerRepository, etc.).
 type Repository interface {
+	SettingsRepository
+	SchedulerRepository
+	PeerRepository
 	// Sudo
 	GetSudoUsers(ctx context.Context) ([]SudoUser, error)
 	AddSudoUser(ctx context.Context, userID, addedBy int64) error
@@ -151,46 +200,17 @@ type Repository interface {
 	ListFilters(ctx context.Context, chatID int64) ([]Filter, error)
 	DeleteFilter(ctx context.Context, chatID int64, keyword string) error
 
-	// Scheduled Jobs
-	CreateScheduledJob(ctx context.Context, job *ScheduledJob) (*ScheduledJob, error)
-	GetScheduledJob(ctx context.Context, id int64) (*ScheduledJob, error)
-	ListScheduledJobs(ctx context.Context, chatID int64) ([]ScheduledJob, error)
-	ListDueScheduledJobs(ctx context.Context, before time.Time) ([]ScheduledJob, error)
-	ClaimDueScheduledJobs(ctx context.Context, now time.Time, limit int, lease time.Duration) ([]ScheduledJob, error)
-	CompleteScheduledJob(ctx context.Context, id int64, claimToken string, durationMs int64, now time.Time) error
-	FailScheduledJob(ctx context.Context, id int64, claimToken string, lastError string, durationMs int64, retryDelay time.Duration, isPermanent bool, now time.Time) error
-	UpdateScheduledJobNextRun(ctx context.Context, id int64, nextRun time.Time) error
-	RecordJobFailure(ctx context.Context, id int64, lastError string) error
-	DeleteScheduledJob(ctx context.Context, id int64) error
-	RenewJobLease(ctx context.Context, id int64, claimToken string, extension time.Duration, now time.Time) error
-
-	// Job History
-	RecordJobRun(ctx context.Context, entry *JobHistoryEntry) error
-	GetJobHistory(ctx context.Context, jobID int64, limit int) ([]JobHistoryEntry, error)
-
-	// Peer Metadata
-	SavePeerEntity(ctx context.Context, prefix string, id int64, username, phone, firstName, lastName, title string) error
-	FindPeerByUsername(ctx context.Context, username string) (prefix string, id int64, accessHash int64, found bool, err error)
-
 	// Blacklist
 	AddBlacklist(ctx context.Context, chatID int64, word string) error
 	RemoveBlacklist(ctx context.Context, chatID int64, word string) error
 	ListBlacklists(ctx context.Context, chatID int64) ([]string, error)
-
-	// Generic Settings
-	GetSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) (*SettingItem, error)
-	GetEffectiveSetting(ctx context.Context, namespace, key string, chatID, userID int64) (*SettingItem, error)
-	SetSetting(ctx context.Context, item *SettingItem) error
-	SetSettingsBatch(ctx context.Context, items []*SettingItem) error
-	DeleteSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) error
-	ListSettings(ctx context.Context, scopeType string, scopeID int64, namespace string) ([]SettingItem, error)
-	GetSettingHistory(ctx context.Context, namespace, key string, limit int) ([]SettingChangeRecord, error)
-	ListPendingOutbox(ctx context.Context, limit int) ([]SettingOutboxEntry, error)
-	MarkOutboxProcessed(ctx context.Context, id int64) error
 }
 
-// Ensure DB implements Repository.
+// Ensure DB implements Repository and segregated interfaces.
 var _ Repository = (*DB)(nil)
+var _ SettingsRepository = (*DB)(nil)
+var _ SchedulerRepository = (*DB)(nil)
+var _ PeerRepository = (*DB)(nil)
 
 // =================== Sudo User Methods ===================
 
