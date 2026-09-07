@@ -10,8 +10,10 @@ import (
 	"github.com/inipew/goultroid/internal/execution"
 )
 
-const maxBotCommands = 100
-const maxBotCommandDescription = 256
+const (
+	maxBotCommands           = 100
+	maxBotCommandDescription = 256
+)
 
 // RegisterTelegramCommandMenu synchronizes Telegram's native bot command menu
 // from the canonical Assistant command surface. It never creates a second
@@ -21,7 +23,7 @@ func RegisterTelegramCommandMenu(ctx context.Context, api *tg.Client, router *co
 		return fmt.Errorf("assistant/menu: telegram API is nil")
 	}
 
-	commands := make([]*tg.BotCommand, 0, maxBotCommands)
+	commands := make([]tg.BotCommand, 0, maxBotCommands)
 	seen := make(map[string]struct{}, maxBotCommands)
 	appendCommand := func(name, description string) {
 		name = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(name)), "/")
@@ -38,7 +40,7 @@ func RegisterTelegramCommandMenu(ctx context.Context, api *tg.Client, router *co
 		if len(description) > maxBotCommandDescription {
 			description = description[:maxBotCommandDescription]
 		}
-		commands = append(commands, &tg.BotCommand{Command: name, Description: description})
+		commands = append(commands, tg.BotCommand{Command: name, Description: description})
 	}
 
 	// /start is the transport-level dashboard and therefore exists even when
