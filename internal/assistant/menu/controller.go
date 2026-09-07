@@ -172,17 +172,15 @@ func (c *Controller) isSessionValid(tx *callback.Transaction) bool {
 	if tx == nil {
 		return false
 	}
-	if _, ok := c.instances.Get(tx.Target.ChatID(), tx.Target.MessageID()); !ok {
-		// Auto-register missing instance as start session (allows direct callback in tests and first navigation).
-		// Real expiration is handled by Get returning false after TTL; missing is treated as new session.
-		c.instances.Register(MenuInstance{
-			ChatID:    tx.Target.ChatID(),
-			MessageID: tx.Target.MessageID(),
-			Screen:    ScreenIDStart,
-		})
-		return true
+	_, ok := c.instances.Get(tx.Target.ChatID(), tx.Target.MessageID())
+	return ok
+}
+
+// RegisterInstance registers a menu instance into the controller's session store.
+func (c *Controller) RegisterInstance(inst MenuInstance) {
+	if c.instances != nil {
+		c.instances.Register(inst)
 	}
-	return true
 }
 
 // AttachRoutes registers all standard assistant menu actions into the given Router.

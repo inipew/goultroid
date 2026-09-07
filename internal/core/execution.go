@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/gotd/td/tg"
+	"github.com/inipew/goultroid/internal/execution"
 )
 
 // ExecutionSource identifies who or what triggered a command execution.
@@ -34,6 +35,16 @@ func (s ExecutionSource) String() string {
 		return "automation"
 	default:
 		return "interactive"
+	}
+}
+
+// Surface maps this runtime ExecutionSource trigger to its canonical execution surface.
+func (s ExecutionSource) Surface() execution.Source {
+	switch s {
+	case ExecutionAssistant:
+		return execution.SourceAssistant
+	default:
+		return execution.SourceUserbot
 	}
 }
 

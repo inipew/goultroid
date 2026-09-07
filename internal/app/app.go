@@ -6,7 +6,6 @@ import (
 
 	"github.com/inipew/goultroid/internal/addon"
 	appCap "github.com/inipew/goultroid/internal/application/capability"
-	appCmd "github.com/inipew/goultroid/internal/application/command"
 	"github.com/inipew/goultroid/internal/assistant"
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
@@ -76,11 +75,9 @@ func New(cfg *config.Config) (*App, error) {
 	capRegistry := appCap.NewRegistry()
 	pluginManager.SetCapabilityRegistry(capRegistry)
 
-	unifiedCmdReg := appCmd.NewUnifiedRegistry()
-	pluginManager.SetUnifiedCommandRegistry(unifiedCmdReg)
-
 	if tgRuntime.assistant != nil {
-		tgRuntime.assistant.SetUnifiedRegistry(unifiedCmdReg)
+		tgRuntime.assistant.SetCoreRouter(coreDeps.router)
+		tgRuntime.assistant.SetMetricsCollector(coreDeps.metrics)
 	}
 
 	pluginsList, err := buildPlugins(coreDeps, tgRuntime, domServices)

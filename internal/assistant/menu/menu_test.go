@@ -118,6 +118,11 @@ func TestController_AttachRoutes(t *testing.T) {
 	fake := &fakeInteraction{}
 	ctx := context.Background()
 	target := interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 100}, 50, 100, 1)
+	ctrl.RegisterInstance(menu.MenuInstance{
+		ChatID:    100,
+		MessageID: 50,
+		Screen:    menu.ScreenIDStart,
+	})
 
 	// 1. Dispatch "start"
 	txStart := callback.NewTransaction(1, 100, callback.ParsedPayload{Namespace: "assistant", Action: "start"}, target, fake)
@@ -147,5 +152,12 @@ func TestController_AttachRoutes(t *testing.T) {
 	}
 	if !fake.deleted {
 		t.Fatalf("expected message to be deleted on close")
+	}
+
+	// 4. Dispatch after close should fail with session expired
+	txPostClose := callback.NewTransaction(4, 100, callback.ParsedPayload{Namespace: "assistant", Action: "start"}, target, fake)
+	err := router.Dispatch(ctx, txPostClose)
+	if err == nil {
+		t.Fatalf("expected session expired error after close, got nil")
 	}
 }

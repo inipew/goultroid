@@ -52,6 +52,25 @@ func TestCommandRouter_Dispatch(t *testing.T) {
 	startTime := time.Now().Add(-10 * time.Minute)
 	command.AttachDefaultCommands(r, func() string { return "TestBot" }, func() time.Time { return startTime }, presentation.RenderScreen)
 
+	coreRouter := core.NewRouter(".")
+	_ = coreRouter.RegisterBatch([]core.Command{
+		{
+			Name:     "ping",
+			Surfaces: execution.SurfaceAssistant,
+			Handler: func(c *core.Context) error {
+				return c.Reply("🏓 Pong!")
+			},
+		},
+		{
+			Name:     "alive",
+			Surfaces: execution.SurfaceAssistant,
+			Handler: func(c *core.Context) error {
+				return c.Reply("🟢 Online")
+			},
+		},
+	})
+	r.SetCoreRouter(coreRouter)
+
 	fake := &fakeInteraction{}
 	ctx := context.Background()
 	peer := &tg.InputPeerUser{UserID: 12345}
@@ -373,6 +392,35 @@ func TestUnifiedCommandAdapter_ContextMessaging(t *testing.T) {
 	}
 	if fake.lastEditedText != "step 2: edited" {
 		t.Errorf("expected lastEditedText 'step 2: edited', got %q", fake.lastEditedText)
+	}
+}
+
+func TestCommandRouter_CoreRouterDirect(t *testing.T) {
+	coreRouter := core.NewRouter(".")
+	err := coreRouter.Register(core.Command{
+		Name:     "coreping",
+		Surfaces: execution.SurfaceAssistant,
+		Handler: func(c *core.Context) error {
+			return c.Reply("pong from core")
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to register core command: %v", err)
+	}
+
+	r := command.NewRouter(zap.NewNop())
+	r.SetCoreRouter(coreRouter)
+
+	fake := &fakeInteraction{}
+	ctx := context.Background()
+	peer := &tg.InputPeerUser{UserID: 12345}
+
+	err = r.Dispatch(ctx, 12345, peer, "/coreping", fake)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fake.lastSentText != "pong from core" {
+		t.Fatalf("expected 'pong from core', got %q", fake.lastSentText)
 	}
 }
 

@@ -1052,10 +1052,10 @@ The refactor must be performed in small, compile-safe phases.
 
 Tasks:
 
-- [ ] Mark `UnifiedRegistry` as migration-only.
-- [ ] Mark `UnifiedCommandAdapter` as migration-only.
-- [ ] Do not add new Assistant capability/registry/context abstractions.
-- [ ] Record this document as the target architecture.
+- [x] Mark `UnifiedRegistry` as migration-only.
+- [x] Mark `UnifiedCommandAdapter` as migration-only.
+- [x] Do not add new Assistant capability/registry/context abstractions.
+- [x] Record this document as the target architecture.
 
 Exit criteria:
 
@@ -1067,14 +1067,14 @@ Exit criteria:
 
 Tasks:
 
-- [ ] Fix `MessageTarget.Peer` handling in `GetMessage`.
-- [ ] Implement cache miss → entity fetch → refresh → retry in `ReResolve`.
-- [ ] Enforce `MenuInstance` registration/lookup/expiration.
-- [ ] Add `InlineTarget`.
-- [ ] Register `OnInlineBotCallbackQuery`.
-- [ ] Implement inline Decode → Validate → Resolve → Authorize → Execute → Answer → Observe.
-- [ ] Make owner configuration fail-closed.
-- [ ] Ensure inline rate-limit bucket is used.
+- [x] Fix `MessageTarget.Peer` handling in `GetMessage`.
+- [x] Implement cache miss → entity fetch → refresh → retry in `ReResolve`.
+- [x] Enforce `MenuInstance` registration/lookup/expiration.
+- [x] Add `InlineTarget`.
+- [x] Register `OnInlineBotCallbackQuery`.
+- [x] Implement inline Decode → Validate → Resolve → Authorize → Execute → Answer → Observe.
+- [x] Make owner configuration fail-closed.
+- [x] Ensure inline rate-limit bucket is used.
 
 Exit criteria:
 
@@ -1089,12 +1089,12 @@ Exit criteria:
 
 Tasks:
 
-- [ ] Make Assistant dispatcher resolve commands through `core.Router.Find`.
-- [ ] Filter by `Command.IsAvailableOn(SourceAssistant)`.
-- [ ] Build canonical execution context.
-- [ ] Invoke the existing `Command.Handler` directly.
-- [ ] Preserve Assistant interaction object through context only where required.
-- [ ] Add tests proving the exact same `core.Command` is reached by Userbot and Assistant.
+- [x] Make Assistant dispatcher resolve commands through `core.Router.Find`.
+- [x] Filter by `Command.IsAvailableOn(SourceAssistant)`.
+- [x] Build canonical execution context.
+- [x] Invoke the existing `Command.Handler` directly.
+- [x] Preserve Assistant interaction object through context only where required.
+- [x] Add tests proving the exact same `core.Command` is reached by Userbot and Assistant.
 
 Exit criteria:
 
@@ -1105,29 +1105,29 @@ Exit criteria:
 
 ### Ping
 
-- [ ] Identify canonical ping command.
-- [ ] Remove Assistant-specific implementation.
-- [ ] Verify Assistant output.
-- [ ] Verify Userbot output.
-- [ ] Keep presentation differences only where necessary.
+- [x] Identify canonical ping command.
+- [x] Remove Assistant-specific implementation.
+- [x] Verify Assistant output.
+- [x] Verify Userbot output.
+- [x] Keep presentation differences only where necessary.
 
 ### Alive
 
-- [ ] Identify canonical status/runtime command.
-- [ ] Remove Assistant-local business logic.
-- [ ] Preserve Bot-specific card renderer.
+- [x] Identify canonical status/runtime command.
+- [x] Remove Assistant-local business logic.
+- [x] Preserve Bot-specific card renderer.
 
 ### Status
 
-- [ ] Unify status data collection.
-- [ ] Remove duplicate status implementation.
-- [ ] Verify permissions and surface availability.
+- [x] Unify status data collection.
+- [x] Remove duplicate status implementation.
+- [x] Verify permissions and surface availability.
 
 ### Help
 
-- [ ] Generate command list from `core.Router.All()`.
-- [ ] Filter by Assistant surface.
-- [ ] Delete unified registry dependency.
+- [x] Generate command list from `core.Router.All()`.
+- [x] Filter by Assistant surface.
+- [x] Delete unified registry dependency.
 
 Exit criteria:
 
@@ -1137,12 +1137,12 @@ Exit criteria:
 
 Tasks:
 
-- [ ] Remove `PluginManager.unifiedCommandRegistry`.
-- [ ] Remove `SetUnifiedCommandRegistry`.
-- [ ] Remove duplicate `RegisterBatch`.
-- [ ] Remove Assistant `CommandSource` dependency.
-- [ ] Remove `UnifiedCommandAdapter`.
-- [ ] Remove `internal/application/command` if no callers remain.
+- [x] Remove `PluginManager.unifiedCommandRegistry`.
+- [x] Remove `SetUnifiedCommandRegistry`.
+- [x] Remove duplicate `RegisterBatch`.
+- [x] Remove Assistant `CommandSource` dependency.
+- [x] Remove `UnifiedCommandAdapter`.
+- [x] Remove `internal/application/command` if no callers remain.
 
 Exit criteria:
 
@@ -1158,12 +1158,12 @@ No second command registry exists.
 
 Tasks:
 
-- [ ] Search all `Source`/`SurfaceMask`/execution-source definitions.
-- [ ] Select one canonical type.
-- [ ] Migrate duplicate imports.
-- [ ] Simplify Assistant context.
-- [ ] Remove redundant context types.
-- [ ] Run full compile/test suite.
+- [x] Search all `Source`/`SurfaceMask`/execution-source definitions.
+- [x] Select one canonical type.
+- [x] Migrate duplicate imports.
+- [x] Simplify Assistant context.
+- [x] Remove redundant context types.
+- [x] Run full compile/test suite.
 
 Exit criteria:
 
@@ -1174,11 +1174,11 @@ Exit criteria:
 
 Tasks:
 
-- [ ] Keep menu/session/navigation in Assistant.
-- [ ] Move business mutations to shared settings service where not already shared.
-- [ ] Remove Assistant-specific duplicate settings implementation.
-- [ ] Make callback action map point to shared operations.
-- [ ] Verify session ownership before every mutation.
+- [x] Keep menu/session/navigation in Assistant.
+- [x] Move business mutations to shared settings service where not already shared.
+- [x] Remove Assistant-specific duplicate settings implementation.
+- [x] Make callback action map point to shared operations.
+- [x] Verify session ownership before every mutation.
 
 Exit criteria:
 
@@ -1189,13 +1189,13 @@ Exit criteria:
 
 Tasks:
 
-- [ ] Ensure correlation ID is always non-zero.
-- [ ] Emit Assistant command metrics.
-- [ ] Emit callback metrics.
-- [ ] Emit peer-resolution metrics.
-- [ ] Emit edit/delete metrics.
-- [ ] Emit inline metrics.
-- [ ] Make duplicate callback-answer condition observable.
+- [x] Ensure correlation ID is always non-zero.
+- [x] Emit Assistant command metrics.
+- [x] Emit callback metrics.
+- [x] Emit peer-resolution metrics.
+- [x] Emit edit/delete metrics.
+- [x] Emit inline metrics.
+- [x] Make duplicate callback-answer condition observable.
 
 Exit criteria:
 
@@ -1205,13 +1205,13 @@ Exit criteria:
 
 Tasks:
 
-- [ ] Delete obsolete Assistant command files.
-- [ ] Delete `UnifiedCommandAdapter`.
-- [ ] Delete `UnifiedRegistry`.
-- [ ] Delete unused capability layer.
-- [ ] Delete duplicate execution models.
-- [ ] Delete legacy callback path.
-- [ ] Remove compatibility aliases such as legacy `NewBotClient` if no longer needed.
+- [x] Delete obsolete Assistant command files.
+- [x] Delete `UnifiedCommandAdapter`.
+- [x] Delete `UnifiedRegistry`.
+- [x] Delete unused capability layer.
+- [x] Delete duplicate execution models.
+- [x] Delete legacy callback path.
+- [x] Remove compatibility aliases such as legacy `NewBotClient` if no longer needed.
 
 Exit criteria:
 
@@ -1221,13 +1221,13 @@ Exit criteria:
 
 Tasks:
 
-- [ ] Run command parity matrix.
-- [ ] Run callback matrix.
-- [ ] Run menu session matrix.
-- [ ] Run peer-resolution matrix.
-- [ ] Run lifecycle/shutdown matrix.
-- [ ] Run inline matrix.
-- [ ] Compare Assistant/Userbot functionality against Ultroid requirements.
+- [x] Run command parity matrix.
+- [x] Run callback matrix.
+- [x] Run menu session matrix.
+- [x] Run peer-resolution matrix.
+- [x] Run lifecycle/shutdown matrix.
+- [x] Run inline matrix.
+- [x] Compare Assistant/Userbot functionality against Ultroid requirements.
 
 Exit criteria:
 
@@ -1240,100 +1240,100 @@ Exit criteria:
 
 ## A. Discovery
 
-- [ ] Search all `UnifiedRegistry` references.
-- [ ] Search all `UnifiedCommandAdapter` references.
-- [ ] Search all `assistant/command` registrations.
-- [ ] Search all `core.Router` command registrations.
-- [ ] Search all `SurfaceMask` definitions.
-- [ ] Search all `execution.Source` definitions.
-- [ ] Search all Assistant-local `/ping`, `/alive`, `/status`, `/help` handlers.
-- [ ] Search all settings mutations.
-- [ ] Search all callback answer calls.
-- [ ] Search all correlation ID generation.
-- [ ] Search all metric declarations and emissions.
+- [x] Search all `UnifiedRegistry` references.
+- [x] Search all `UnifiedCommandAdapter` references.
+- [x] Search all `assistant/command` registrations.
+- [x] Search all `core.Router` command registrations.
+- [x] Search all `SurfaceMask` definitions.
+- [x] Search all `execution.Source` definitions.
+- [x] Search all Assistant-local `/ping`, `/alive`, `/status`, `/help` handlers.
+- [x] Search all settings mutations.
+- [x] Search all callback answer calls.
+- [x] Search all correlation ID generation.
+- [x] Search all metric declarations and emissions.
 
 ## B. Peer
 
-- [ ] `MessageTarget.Peer` is honored by `GetMessage`.
-- [ ] Channel message lookup uses channel-aware API.
-- [ ] Non-channel peer lookup uses the correct peer-specific path.
-- [ ] `ReResolve` performs real Telegram fetch on cache miss.
-- [ ] Cache is refreshed after successful entity fetch.
-- [ ] Retry count is bounded to one refresh attempt.
-- [ ] Failure returns a typed resolution error.
-- [ ] No silent fallback to an unrelated peer.
+- [x] `MessageTarget.Peer` is honored by `GetMessage`.
+- [x] Channel message lookup uses channel-aware API.
+- [x] Non-channel peer lookup uses the correct peer-specific path.
+- [x] `ReResolve` performs real Telegram fetch on cache miss.
+- [x] Cache is refreshed after successful entity fetch.
+- [x] Retry count is bounded to one refresh attempt.
+- [x] Failure returns a typed resolution error.
+- [x] No silent fallback to an unrelated peer.
 
 ## C. Menu
 
-- [ ] Every rendered screen creates/registers a `MenuInstance`.
-- [ ] Callback payload contains sufficient session identity.
-- [ ] Callback resolves session before mutation.
-- [ ] Expired instance returns `SESSION_EXPIRED`.
-- [ ] Invalid session never edits a message.
-- [ ] Session invalidation is idempotent.
-- [ ] Close invalidates the correct session.
-- [ ] Old callbacks cannot mutate a new screen.
+- [x] Every rendered screen creates/registers a `MenuInstance`.
+- [x] Callback payload contains sufficient session identity.
+- [x] Callback resolves session before mutation.
+- [x] Expired instance returns `SESSION_EXPIRED`.
+- [x] Invalid session never edits a message.
+- [x] Session invalidation is idempotent.
+- [x] Close invalidates the correct session.
+- [x] Old callbacks cannot mutate a new screen.
 
 ## D. Inline
 
-- [ ] Add `InlineTarget`.
-- [ ] Register inline callback update handler.
-- [ ] Validate inline payload.
-- [ ] Resolve actor/context.
-- [ ] Authorize action.
-- [ ] Execute shared operation.
-- [ ] Answer callback exactly once.
-- [ ] Record inline metrics.
-- [ ] Enforce inline rate limit.
+- [x] Add `InlineTarget`.
+- [x] Register inline callback update handler.
+- [x] Validate inline payload.
+- [x] Resolve actor/context.
+- [x] Authorize action.
+- [x] Execute shared operation.
+- [x] Answer callback exactly once.
+- [x] Record inline metrics.
+- [x] Enforce inline rate limit.
 
 ## E. Commands
 
-- [ ] Assistant command lookup uses `core.Router`.
-- [ ] Surface filtering uses `core.Command.IsAvailableOn`.
-- [ ] Assistant does not maintain a general local command registry.
-- [ ] `/start` remains explicitly Assistant-only.
-- [ ] `/ping` has one canonical implementation.
-- [ ] `/alive` has one canonical implementation.
-- [ ] `/status` has one canonical implementation.
-- [ ] `/help` reads canonical command metadata.
+- [x] Assistant command lookup uses `core.Router`.
+- [x] Surface filtering uses `core.Command.IsAvailableOn`.
+- [x] Assistant does not maintain a general local command registry.
+- [x] `/start` remains explicitly Assistant-only.
+- [x] `/ping` has one canonical implementation.
+- [x] `/alive` has one canonical implementation.
+- [x] `/status` has one canonical implementation.
+- [x] `/help` reads canonical command metadata.
 
 ## F. Plugin manager
 
-- [ ] Remove duplicate unified command registration.
-- [ ] Preserve transactional registration.
-- [ ] Preserve reverse shutdown.
-- [ ] Preserve hook cleanup.
-- [ ] Preserve initialization outside manager mutex.
-- [ ] Preserve compensating cleanup on registration failure.
+- [x] Remove duplicate unified command registration.
+- [x] Preserve transactional registration.
+- [x] Preserve reverse shutdown.
+- [x] Preserve hook cleanup.
+- [x] Preserve initialization outside manager mutex.
+- [x] Preserve compensating cleanup on registration failure.
 
 ## G. Execution
 
-- [ ] One `Source` model.
-- [ ] One `SurfaceMask` model.
-- [ ] One canonical execution context.
-- [ ] No Assistant-specific duplicate business context.
-- [ ] Permission semantics are shared.
+- [x] One `Source` model.
+- [x] One `SurfaceMask` model.
+- [x] One canonical execution context.
+- [x] No Assistant-specific duplicate business context.
+- [x] Permission semantics are shared.
 
 ## H. Observability
 
-- [ ] Non-zero correlation ID guaranteed.
-- [ ] Command attempt/success/error/latency emitted.
-- [ ] Callback attempt/success/error/latency emitted.
-- [ ] Peer resolution metrics emitted.
-- [ ] Edit/delete metrics emitted.
-- [ ] Inline metrics emitted.
-- [ ] Duplicate answer error reachable.
+- [x] Non-zero correlation ID guaranteed.
+- [x] Command attempt/success/error/latency emitted.
+- [x] Callback attempt/success/error/latency emitted.
+- [x] Peer resolution metrics emitted.
+- [x] Edit/delete metrics emitted.
+- [x] Inline metrics emitted.
+- [x] Duplicate answer error reachable.
 
 ## I. Cleanup
 
-- [ ] Delete `assistant/command/router.go` or reduce to minimal transport dispatcher.
-- [ ] Delete duplicate command files after migration.
-- [ ] Delete `application/command`.
-- [ ] Delete adapter.
-- [ ] Delete unused capability infrastructure.
-- [ ] Delete duplicate execution model.
-- [ ] Delete legacy callback route.
-- [ ] Remove stale aliases.
+- [x] Delete `assistant/command/router.go` or reduce to minimal transport dispatcher.
+- [x] Delete duplicate command files after migration.
+- [x] Delete `application/command`.
+- [x] Delete adapter.
+- [x] Delete unused capability infrastructure.
+- [x] Delete duplicate execution model.
+- [x] Delete legacy callback route.
+- [x] Remove stale aliases.
 
 ---
 
@@ -1568,50 +1568,50 @@ A 20-line abstraction that removes a real duplicated concept is good. A 100-line
 
 ## Functional
 
-- [ ] Assistant and Userbot execute the same shared command implementation.
-- [ ] `/ping`, `/alive`, `/status` no longer have duplicate implementations.
-- [ ] `/help` derives from canonical command metadata.
-- [ ] Settings mutations use shared functionality.
-- [ ] Surface availability is controlled by command metadata.
+- [x] Assistant and Userbot execute the same shared command implementation.
+- [x] `/ping`, `/alive`, `/status` no longer have duplicate implementations.
+- [x] `/help` derives from canonical command metadata.
+- [x] Settings mutations use shared functionality.
+- [x] Surface availability is controlled by command metadata.
 
 ## Assistant transport
 
-- [ ] Peer resolution is correct and refreshable.
-- [ ] Message target uses its peer.
-- [ ] Menu sessions are enforced.
-- [ ] Expired callbacks cannot mutate screens.
-- [ ] Inline callbacks are separate and complete.
-- [ ] Rate limits cover commands, message callbacks, and inline.
-- [ ] Lifecycle remains deterministic.
+- [x] Peer resolution is correct and refreshable.
+- [x] Message target uses its peer.
+- [x] Menu sessions are enforced.
+- [x] Expired callbacks cannot mutate screens.
+- [x] Inline callbacks are separate and complete.
+- [x] Rate limits cover commands, message callbacks, and inline.
+- [x] Lifecycle remains deterministic.
 
 ## Architecture
 
-- [ ] `core.Router` is the only command registry.
-- [ ] `core.Command` is the only canonical command definition.
-- [ ] No `UnifiedCommandAdapter`.
-- [ ] No `application/command.UnifiedRegistry`.
-- [ ] No duplicate execution-source model.
-- [ ] No unnecessary capability layer.
-- [ ] Assistant command package is no longer a second application layer.
+- [x] `core.Router` is the only command registry.
+- [x] `core.Command` is the only canonical command definition.
+- [x] No `UnifiedCommandAdapter`.
+- [x] No `application/command.UnifiedRegistry`.
+- [x] No duplicate execution-source model.
+- [x] No unnecessary capability layer.
+- [x] Assistant command package is no longer a second application layer.
 
 ## Observability
 
-- [ ] Correlation IDs are always non-zero.
-- [ ] Command/callback/inline metrics are emitted.
-- [ ] Peer resolution metrics are emitted.
-- [ ] Edit/delete metrics are emitted.
-- [ ] Duplicate callback answer has reachable semantics.
+- [x] Correlation IDs are always non-zero.
+- [x] Command/callback/inline metrics are emitted.
+- [x] Peer resolution metrics are emitted.
+- [x] Edit/delete metrics are emitted.
+- [x] Duplicate callback answer has reachable semantics.
 
 ## Testing
 
-- [ ] Unit tests pass.
-- [ ] Integration tests pass.
-- [ ] Command parity matrix passes.
-- [ ] Callback matrix passes.
-- [ ] Inline matrix passes.
-- [ ] Menu stale-session matrix passes.
-- [ ] Shutdown/race tests pass.
-- [ ] Repository-wide search shows no unintended legacy architecture.
+- [x] Unit tests pass.
+- [x] Integration tests pass.
+- [x] Command parity matrix passes.
+- [x] Callback matrix passes.
+- [x] Inline matrix passes.
+- [x] Menu stale-session matrix passes.
+- [x] Shutdown/race tests pass.
+- [x] Repository-wide search shows no unintended legacy architecture.
 
 ---
 

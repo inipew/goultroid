@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
@@ -48,10 +49,11 @@ type CommandSource interface {
 // Router dispatches incoming bot commands to registered handlers.
 type Router struct {
 	handlers        map[string]Handler
+	coreRouter      *core.Router
 	unifiedRegistry CommandSource
-	adapter         *UnifiedCommandAdapter
 	ownerID         int64
 	sudoGetter      func() []int64
+	metrics         core.MetricsCollector
 	logger          *zap.Logger
 }
 
@@ -70,9 +72,11 @@ func NewRouter(logger *zap.Logger) *Router {
 func (r *Router) SetOwner(ownerID int64, sudoGetter func() []int64) {
 	r.ownerID = ownerID
 	r.sudoGetter = sudoGetter
-	if r.adapter != nil {
-		r.adapter.SetOwner(ownerID, sudoGetter)
-	}
+}
+
+// SetMetricsCollector configures optional runtime metrics collection.
+func (r *Router) SetMetricsCollector(m core.MetricsCollector) {
+	r.metrics = m
 }
 
 // OwnerID returns the configured owner ID.
@@ -80,30 +84,49 @@ func (r *Router) OwnerID() int64 {
 	return r.ownerID
 }
 
-// SetUnifiedRegistry attaches the unified command registry to enable plugin commands on Assistant.
+// SetCoreRouter attaches the canonical core.Router as the authoritative command source.
+func (r *Router) SetCoreRouter(router *core.Router) {
+	r.coreRouter = router
+}
+
+// CoreRouter returns the attached canonical core.Router.
+func (r *Router) CoreRouter() *core.Router {
+	return r.coreRouter
+}
+
+// SetUnifiedRegistry attaches a command source.
 func (r *Router) SetUnifiedRegistry(reg CommandSource) {
 	r.unifiedRegistry = reg
-	if reg != nil {
-		adapter := NewUnifiedCommandAdapter(reg, r.logger)
-		adapter.SetOwner(r.ownerID, r.sudoGetter)
-		r.adapter = adapter
-	} else {
-		r.adapter = nil
+	if cr, ok := reg.(*core.Router); ok {
+		r.coreRouter = cr
 	}
 }
 
 // UnifiedRegistry returns the attached unified command source.
 func (r *Router) UnifiedRegistry() CommandSource {
+	if r.coreRouter != nil {
+		return r.coreRouter
+	}
 	return r.unifiedRegistry
 }
 
-// Register attaches a handler to a command name (e.g. "/start", "/ping").
+// Register attaches a handler to a command name (e.g. "/start").
 func (r *Router) Register(cmd string, handler Handler) {
 	cmd = strings.ToLower(strings.TrimSpace(cmd))
 	if !strings.HasPrefix(cmd, "/") {
 		cmd = "/" + cmd
 	}
 	r.handlers[cmd] = handler
+}
+
+func (r *Router) findCommand(name string) (core.Command, bool) {
+	if r.coreRouter != nil {
+		return r.coreRouter.Find(name)
+	}
+	if r.unifiedRegistry != nil {
+		return r.unifiedRegistry.FindForSurface(name, execution.SourceAssistant)
+	}
+	return core.Command{}, false
 }
 
 // Dispatch parses the message text, extracts the command, and invokes the matching handler.
@@ -134,12 +157,90 @@ func (r *Router) Dispatch(ctx context.Context, senderID int64, peer tg.InputPeer
 
 	cmdNameClean := strings.TrimPrefix(cmdRaw, "/")
 
-	// 1. Primary: Unified command adapter for plugins declaring SurfaceAssistant (§0, §10, §31 bug16_1)
-	if r.adapter != nil {
-		handled, err := r.adapter.Execute(ctx, cmdNameClean, fields[1:], senderID, peer, inter)
-		if handled {
-			return err
+	// 1. Primary: Canonical command lookup from core.Router (or fallback unified source)
+	if cmd, ok := r.findCommand(cmdNameClean); ok && cmd.Handler != nil {
+		if !cmd.IsAvailableOn(execution.SourceAssistant) {
+			return fmt.Errorf("%w: %s", ErrUnknownCommand, cmdRaw)
 		}
+
+		// Permission check
+		isOwner := r.ownerID != 0 && senderID == r.ownerID
+		isSudo := isOwner
+		var sudoList []int64
+		if r.sudoGetter != nil {
+			sudoList = r.sudoGetter()
+			for _, s := range sudoList {
+				if s == senderID {
+					isSudo = true
+					break
+				}
+			}
+		}
+
+		switch cmd.Permission {
+		case core.PermissionOwner:
+			if !isOwner {
+				r.logger.Warn("assistant: permission denied for command",
+					zap.String("command", cmdNameClean),
+					zap.Int64("sender_id", senderID),
+				)
+				if inter != nil {
+					_, _ = inter.SendMessage(ctx, peer, "⛔ <i>This command is restricted to the bot owner.</i>", nil)
+				}
+				return nil
+			}
+		case core.PermissionSudo:
+			if !isSudo {
+				r.logger.Warn("assistant: sudo permission required for command",
+					zap.String("command", cmdNameClean),
+					zap.Int64("sender_id", senderID),
+				)
+				if inter != nil {
+					_, _ = inter.SendMessage(ctx, peer, "⛔ <i>This command requires sudo privileges.</i>", nil)
+				}
+				return nil
+			}
+		}
+
+		r.logger.Debug("assistant: executing canonical command",
+			zap.String("command", cmdNameClean),
+			zap.Int64("sender_id", senderID),
+		)
+
+		chatID := extractChatIDFromInputPeer(peer)
+		if chatID == 0 {
+			chatID = senderID
+		}
+
+		perms := core.NewPermissions(r.ownerID, sudoList)
+		principal := &core.Principal{
+			UserID:  senderID,
+			IsOwner: isOwner,
+			IsSudo:  isSudo,
+		}
+
+		coreCtx := &core.Context{
+			Ctx:           ctx,
+			CorrelationID: fmt.Sprintf("asst-%d-%d", senderID, time.Now().UnixNano()),
+			Source:        core.ExecutionAssistant,
+			Command:       cmdNameClean,
+			Args:          fields[1:],
+			RawArgs:       strings.Join(fields[1:], " "),
+			PeerID:        peer,
+			Message:       &core.Message{SenderID: senderID, Text: "/" + cmdNameClean + " " + strings.Join(fields[1:], " ")},
+			Sender:        &core.User{ID: senderID},
+			Chat:          &core.Chat{ID: chatID},
+			Perms:         perms,
+			Principal:     principal,
+			Svc:           &assistantServicerAdapter{inter: inter},
+		}
+
+		start := time.Now()
+		err := cmd.Handler(coreCtx)
+		if r.metrics != nil {
+			r.metrics.RecordCommand(cmdNameClean, time.Since(start), err)
+		}
+		return err
 	}
 
 	// 2. Fallback: Assistant-specific presentation handlers (e.g. /start dashboard menu)
@@ -148,7 +249,12 @@ func (r *Router) Dispatch(ctx context.Context, senderID int64, peer tg.InputPeer
 			zap.String("command", cmdRaw),
 			zap.Int64("sender_id", senderID),
 		)
-		return handler(cmdCtx)
+		start := time.Now()
+		err := handler(cmdCtx)
+		if r.metrics != nil {
+			r.metrics.RecordCommand(cmdNameClean, time.Since(start), err)
+		}
+		return err
 	}
 
 	return fmt.Errorf("%w: %s", ErrUnknownCommand, cmdRaw)

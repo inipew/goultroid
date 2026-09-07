@@ -118,8 +118,11 @@ func (t *Transaction) IsAnswered() bool {
 
 // Answer sends an acknowledgement or alert to Telegram.
 // It is single-flight and guaranteed to execute RPC answering at most once.
+// Subsequent calls return interaction.ErrCallbackAlreadyAnswered.
 func (t *Transaction) Answer(ctx context.Context, text string, alert bool) error {
+	var firstCall bool
 	t.answerOnce.Do(func() {
+		firstCall = true
 		atomic.StoreUint32(&t.answered, 1)
 		_ = t.Transition(StateAnswering)
 		if t.Interaction != nil && t.QueryID != 0 {
@@ -129,6 +132,9 @@ func (t *Transaction) Answer(ctx context.Context, text string, alert bool) error
 			_ = t.Transition(StateAnswered)
 		}
 	})
+	if !firstCall {
+		return interaction.ErrCallbackAlreadyAnswered
+	}
 	return t.answerErr
 }
 

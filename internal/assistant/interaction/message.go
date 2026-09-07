@@ -12,6 +12,7 @@ import (
 	"github.com/gotd/td/telegram/message/html"
 	"github.com/gotd/td/telegram/message/styling"
 	"github.com/gotd/td/tg"
+	"github.com/inipew/goultroid/internal/core"
 	"go.uber.org/zap"
 )
 
@@ -26,6 +27,7 @@ type ClientInteraction struct {
 	api        TelegramAPI
 	logger     *zap.Logger
 	reResolver PeerReResolver
+	metrics    core.MetricsCollector
 }
 
 var _ MessageInteraction = (*ClientInteraction)(nil)
@@ -39,6 +41,11 @@ func NewClientInteraction(api TelegramAPI, logger *zap.Logger) *ClientInteractio
 		api:    api,
 		logger: logger,
 	}
+}
+
+// SetMetricsCollector configures optional runtime metrics collection.
+func (c *ClientInteraction) SetMetricsCollector(m core.MetricsCollector) {
+	c.metrics = m
 }
 
 // SetPeerReResolver configures a resolver called when ACCESS_HASH_INVALID is detected.
@@ -94,10 +101,17 @@ func extractMessage(u tg.UpdatesClass) *tg.Message {
 }
 
 // Answer sends an acknowledgement or popup alert for a callback query.
-func (c *ClientInteraction) Answer(ctx context.Context, queryID int64, text string, alert bool) error {
+func (c *ClientInteraction) Answer(ctx context.Context, queryID int64, text string, alert bool) (retErr error) {
 	if c.api == nil {
 		return ErrInvalidTarget
 	}
+	start := time.Now()
+	defer func() {
+		if c.metrics != nil {
+			c.metrics.RecordTelegramRequest("MessagesSetBotCallbackAnswer", time.Since(start), retErr)
+		}
+	}()
+
 	req := &tg.MessagesSetBotCallbackAnswerRequest{
 		QueryID: queryID,
 		Alert:   alert,
@@ -112,16 +126,23 @@ func (c *ClientInteraction) Answer(ctx context.Context, queryID int64, text stri
 			c.logger.Debug("callback answer skipped: query already expired", zap.Int64("query_id", queryID))
 			return nil
 		}
-		return fmt.Errorf("assistant answer callback query: %w", classified)
+		retErr = fmt.Errorf("assistant answer callback query: %w", classified)
+		return retErr
 	}
 	return nil
 }
 
 // Edit updates the text and inline markup of a dialog message with bounded stale hash recovery.
-func (c *ClientInteraction) Edit(ctx context.Context, target MessageTarget, text string, markup tg.ReplyMarkupClass) error {
+func (c *ClientInteraction) Edit(ctx context.Context, target MessageTarget, text string, markup tg.ReplyMarkupClass) (retErr error) {
 	if c.api == nil || !target.IsValid() {
 		return ErrInvalidTarget
 	}
+	start := time.Now()
+	defer func() {
+		if c.metrics != nil {
+			c.metrics.RecordTelegramRequest("MessagesEditMessage", time.Since(start), retErr)
+		}
+	}()
 
 	plain, ents := parseHTML(text)
 	req := &tg.MessagesEditMessageRequest{
@@ -197,10 +218,16 @@ func (c *ClientInteraction) EditMarkup(ctx context.Context, target MessageTarget
 }
 
 // Delete removes a dialog message using peer-aware MTProto RPC with idempotent semantics and stale hash recovery.
-func (c *ClientInteraction) Delete(ctx context.Context, target MessageTarget) error {
+func (c *ClientInteraction) Delete(ctx context.Context, target MessageTarget) (retErr error) {
 	if c.api == nil || !target.IsValid() {
 		return ErrInvalidTarget
 	}
+	start := time.Now()
+	defer func() {
+		if c.metrics != nil {
+			c.metrics.RecordTelegramRequest("MessagesDeleteMessages", time.Since(start), retErr)
+		}
+	}()
 
 	currentPeer := target.Peer()
 	for attempt := 0; attempt <= MaxPeerRecoveryAttempts; attempt++ {
@@ -216,7 +243,8 @@ func (c *ClientInteraction) Delete(ctx context.Context, target MessageTarget) er
 			req.SetRevoke(true)
 			_, rpcErr = c.api.MessagesDeleteMessages(ctx, req)
 		default:
-			return fmt.Errorf("%w: unsupported peer %T", ErrUnsupportedTarget, currentPeer)
+			retErr = fmt.Errorf("%w: unsupported peer %T", ErrUnsupportedTarget, currentPeer)
+			return retErr
 		}
 
 		if rpcErr == nil {
@@ -239,16 +267,24 @@ func (c *ClientInteraction) Delete(ctx context.Context, target MessageTarget) er
 				continue // retry once
 			}
 		}
-		return fmt.Errorf("assistant delete message: %w", classified)
+		retErr = fmt.Errorf("assistant delete message: %w", classified)
+		return retErr
 	}
-	return ErrAccessHashStale
+	retErr = ErrAccessHashStale
+	return retErr
 }
 
 // GetMessage retrieves a message using peer-aware MTProto RPC with bounded stale hash recovery.
-func (c *ClientInteraction) GetMessage(ctx context.Context, target MessageTarget) (*tg.Message, error) {
+func (c *ClientInteraction) GetMessage(ctx context.Context, target MessageTarget) (_ *tg.Message, retErr error) {
 	if c.api == nil || !target.IsValid() {
 		return nil, ErrInvalidTarget
 	}
+	start := time.Now()
+	defer func() {
+		if c.metrics != nil {
+			c.metrics.RecordTelegramRequest("MessagesGetMessages", time.Since(start), retErr)
+		}
+	}()
 
 	currentPeer := target.Peer()
 	for attempt := 0; attempt <= MaxPeerRecoveryAttempts; attempt++ {
@@ -309,10 +345,16 @@ func (c *ClientInteraction) GetMessage(ctx context.Context, target MessageTarget
 }
 
 // SendMessage sends a new message to a peer with optional reply markup.
-func (c *ClientInteraction) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
+func (c *ClientInteraction) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (_ *tg.Message, retErr error) {
 	if c.api == nil || peer == nil {
 		return nil, ErrInvalidTarget
 	}
+	start := time.Now()
+	defer func() {
+		if c.metrics != nil {
+			c.metrics.RecordTelegramRequest("MessagesSendMessage", time.Since(start), retErr)
+		}
+	}()
 
 	plain, ents := parseHTML(text)
 	req := &tg.MessagesSendMessageRequest{
@@ -329,7 +371,8 @@ func (c *ClientInteraction) SendMessage(ctx context.Context, peer tg.InputPeerCl
 
 	updates, err := c.api.MessagesSendMessage(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("assistant SendMessage: %w", ClassifyRPCError(err))
+		retErr = fmt.Errorf("assistant SendMessage: %w", ClassifyRPCError(err))
+		return nil, retErr
 	}
 	return extractMessage(updates), nil
 }
@@ -352,10 +395,16 @@ func (i *InlineClientInteraction) Answer(ctx context.Context, queryID int64, tex
 }
 
 // Edit updates an inline-sent bot message text and markup.
-func (i *InlineClientInteraction) Edit(ctx context.Context, target InlineTarget, text string, markup tg.ReplyMarkupClass) error {
+func (i *InlineClientInteraction) Edit(ctx context.Context, target InlineTarget, text string, markup tg.ReplyMarkupClass) (retErr error) {
 	if i.ci == nil || i.ci.api == nil || !target.IsValid() {
 		return ErrInvalidTarget
 	}
+	start := time.Now()
+	defer func() {
+		if i.ci != nil && i.ci.metrics != nil {
+			i.ci.metrics.RecordTelegramRequest("MessagesEditInlineBotMessage", time.Since(start), retErr)
+		}
+	}()
 
 	plain, ents := parseHTML(text)
 	req := &tg.MessagesEditInlineBotMessageRequest{
@@ -376,7 +425,8 @@ func (i *InlineClientInteraction) Edit(ctx context.Context, target InlineTarget,
 		if classified == nil {
 			return nil
 		}
-		return fmt.Errorf("assistant edit inline message: %w", classified)
+		retErr = fmt.Errorf("assistant edit inline message: %w", classified)
+		return retErr
 	}
 	return nil
 }

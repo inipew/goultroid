@@ -7,6 +7,7 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/callback"
 	"github.com/inipew/goultroid/internal/assistant/client"
 	"github.com/inipew/goultroid/internal/assistant/command"
+	"github.com/inipew/goultroid/internal/core"
 	"go.uber.org/zap"
 )
 
@@ -17,8 +18,10 @@ type Client interface {
 	IsRunning() bool
 	Username() string
 	StartTime() time.Time
+	SetCoreRouter(router *core.Router)
 	SetUnifiedRegistry(reg command.CommandSource)
 	SetOwner(ownerID int64, sudoGetter func() []int64)
+	SetMetricsCollector(m core.MetricsCollector)
 }
 
 // AssistantApp serves as the top-level application facade for the Assistant subsystem.
@@ -81,7 +84,17 @@ func (a *AssistantApp) SetOwner(ownerID int64, sudoGetter func() []int64) {
 	a.client.SetOwner(ownerID, sudoGetter)
 }
 
+// SetCoreRouter configures the canonical core.Router for the assistant client.
+func (a *AssistantApp) SetCoreRouter(router *core.Router) {
+	a.client.SetCoreRouter(router)
+}
+
 // SetUnifiedRegistry configures the unified command registry for surface parity.
 func (a *AssistantApp) SetUnifiedRegistry(reg command.CommandSource) {
 	a.client.SetUnifiedRegistry(reg)
+}
+
+// SetMetricsCollector configures runtime metrics collection on the assistant client.
+func (a *AssistantApp) SetMetricsCollector(m core.MetricsCollector) {
+	a.client.SetMetricsCollector(m)
 }

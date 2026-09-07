@@ -152,4 +152,42 @@ func TestDefaultResolver_Resolve(t *testing.T) {
 	if inpUser, ok := reresolved.(*tg.InputPeerUser); !ok || inpUser.AccessHash != 8888 {
 		t.Fatalf("expected ReResolve with 8888, got %+v", reresolved)
 	}
+
+	// 9. ReResolve with EntityFetcher on cache miss
+	res.InvalidatePeer(inputUser)
+	mockFetcher := &mockEntityFetcher{
+		userHash: map[int64]int64{42: 77777},
+	}
+	res.SetEntityFetcher(mockFetcher)
+	fetched, err := res.ReResolve(ctx, inputUser)
+	if err != nil {
+		t.Fatalf("unexpected error on ReResolve with fetcher: %v", err)
+	}
+	if inpUser, ok := fetched.(*tg.InputPeerUser); !ok || inpUser.AccessHash != 77777 {
+		t.Fatalf("expected ReResolve with 77777 from fetcher, got %+v", fetched)
+	}
+	if mockFetcher.userCalls != 1 {
+		t.Fatalf("expected 1 fetch call, got %d", mockFetcher.userCalls)
+	}
+}
+
+type mockEntityFetcher struct {
+	userHash  map[int64]int64
+	chanHash  map[int64]int64
+	userCalls int
+}
+
+func (m *mockEntityFetcher) FetchUser(ctx context.Context, id int64) (*tg.User, error) {
+	m.userCalls++
+	if h, ok := m.userHash[id]; ok {
+		return &tg.User{ID: id, AccessHash: h}, nil
+	}
+	return nil, errors.New("user not found")
+}
+
+func (m *mockEntityFetcher) FetchChannel(ctx context.Context, id int64) (*tg.Channel, error) {
+	if h, ok := m.chanHash[id]; ok {
+		return &tg.Channel{ID: id, AccessHash: h}, nil
+	}
+	return nil, errors.New("channel not found")
 }

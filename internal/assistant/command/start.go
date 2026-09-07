@@ -40,6 +40,34 @@ func RegisterStart(r *Router, usernameProvider func() string, uptimeProvider fun
 	})
 }
 
+// AttachDefaultCommands registers /start into the command Router.
+func AttachDefaultCommands(r *Router, getUsername func() string, getStartTime func() time.Time, renderer menu.RendererFunc) {
+	AttachDefaultCommandsWithStore(r, getUsername, getStartTime, renderer, nil)
+}
+
+// AttachDefaultCommandsWithStore registers /start into the command Router with optional session instance store.
+func AttachDefaultCommandsWithStore(r *Router, getUsername func() string, getStartTime func() time.Time, renderer menu.RendererFunc, store menu.InstanceStore) {
+	if r == nil {
+		return
+	}
+
+	uptime := func() time.Duration {
+		if getStartTime != nil {
+			return time.Since(getStartTime())
+		}
+		return 0
+	}
+
+	username := func() string {
+		if getUsername != nil {
+			return getUsername()
+		}
+		return "GoUltroidBot"
+	}
+
+	RegisterStart(r, username, uptime, renderer, store)
+}
+
 func extractChatIDFromInputPeer(peer tg.InputPeerClass) int64 {
 	if peer == nil {
 		return 0

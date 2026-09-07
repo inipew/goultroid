@@ -15,6 +15,7 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/menu"
 	"github.com/inipew/goultroid/internal/assistant/peer"
 	"github.com/inipew/goultroid/internal/assistant/presentation"
+	"github.com/inipew/goultroid/internal/core"
 	"go.uber.org/zap"
 )
 
@@ -53,6 +54,7 @@ type AssistantClient struct {
 	cmdRouter   *command.Router
 	cbRouter    *callback.Router
 	menuCtrl    *menu.Controller
+	metrics     core.MetricsCollector
 }
 
 var _ Client = (*AssistantClient)(nil)
@@ -116,6 +118,9 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	})
 
 	c.interaction = interaction.NewClientInteraction(tdClient.API(), c.logger)
+	if c.metrics != nil {
+		c.interaction.SetMetricsCollector(c.metrics)
+	}
 	c.interaction.SetPeerReResolver(c.resolver)
 
 	// Register updates
@@ -227,8 +232,36 @@ func (c *AssistantClient) SetOwner(ownerID int64, sudoGetter func() []int64) {
 	}
 }
 
+// SetCoreRouter configures the canonical core.Router for the assistant router and menu controller.
+func (c *AssistantClient) SetCoreRouter(router *core.Router) {
+	if c.cmdRouter != nil {
+		c.cmdRouter.SetCoreRouter(router)
+	}
+	if c.menuCtrl != nil {
+		c.menuCtrl.SetCommandSource(router)
+	}
+}
+
+// SetMetricsCollector configures runtime metrics collection on routers and interactions.
+func (c *AssistantClient) SetMetricsCollector(m core.MetricsCollector) {
+	c.metrics = m
+	if c.cmdRouter != nil {
+		c.cmdRouter.SetMetricsCollector(m)
+	}
+	if c.cbRouter != nil {
+		c.cbRouter.SetMetricsCollector(m)
+	}
+	if c.interaction != nil {
+		c.interaction.SetMetricsCollector(m)
+	}
+}
+
 // SetUnifiedRegistry configures the unified command registry for the assistant router and menu controller.
 func (c *AssistantClient) SetUnifiedRegistry(reg command.CommandSource) {
+	if cr, ok := reg.(*core.Router); ok {
+		c.SetCoreRouter(cr)
+		return
+	}
 	if c.cmdRouter != nil {
 		c.cmdRouter.SetUnifiedRegistry(reg)
 	}

@@ -8,7 +8,6 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/application/capability"
-	appCmd "github.com/inipew/goultroid/internal/application/command"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 )
@@ -22,10 +21,9 @@ type HookRegistrar interface {
 }
 
 type Manager struct {
-	router                 *core.Router
-	capabilityRegistry     *capability.Registry
-	unifiedCommandRegistry *appCmd.UnifiedRegistry
-	hookRegistrar          HookRegistrar
+	router             *core.Router
+	capabilityRegistry *capability.Registry
+	hookRegistrar      HookRegistrar
 	plugins                map[string]Plugin
 	metadata               map[string]Metadata
 	list                   []Plugin
@@ -52,19 +50,6 @@ func (m *Manager) CapabilityRegistry() *capability.Registry {
 	return m.capabilityRegistry
 }
 
-// SetUnifiedCommandRegistry configures the unified command registry for surface-aware commands.
-func (m *Manager) SetUnifiedCommandRegistry(reg *appCmd.UnifiedRegistry) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.unifiedCommandRegistry = reg
-}
-
-// UnifiedCommandRegistry returns the attached unified command registry.
-func (m *Manager) UnifiedCommandRegistry() *appCmd.UnifiedRegistry {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.unifiedCommandRegistry
-}
 
 // SetHookRegistrar attaches a hook registrar (e.g. Telegram Dispatcher) to this manager.
 func (m *Manager) SetHookRegistrar(registrar HookRegistrar) {
@@ -165,9 +150,6 @@ func (m *Manager) RegisterWithContext(ctx context.Context, p Plugin) error {
 			_ = s.Shutdown()
 		}
 		return fmt.Errorf("plugin %s command registration failed: %w", name, err)
-	}
-	if m.unifiedCommandRegistry != nil && len(cmds) > 0 {
-		_ = m.unifiedCommandRegistry.RegisterBatch(cmds)
 	}
 
 	var hookCleanup func()

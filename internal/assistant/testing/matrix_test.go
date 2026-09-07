@@ -12,8 +12,11 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/callback"
 	"github.com/inipew/goultroid/internal/assistant/client"
 	"github.com/inipew/goultroid/internal/assistant/command"
+	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/assistant/menu"
 	"github.com/inipew/goultroid/internal/assistant/presentation"
+	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
 	"go.uber.org/zap"
 )
 
@@ -28,6 +31,7 @@ func TestIntegration_15ScenarioMatrix(t *testing.T) {
 
 		fake := NewFakeInteraction()
 		target := FixtureMessageTarget(100, 1)
+		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart})
 		tx := callback.NewTransaction(1, 100, callback.ParsedPayload{Namespace: "assistant", Action: "start"}, target, fake)
 
 		if err := router.Dispatch(ctx, tx); err != nil {
@@ -45,6 +49,7 @@ func TestIntegration_15ScenarioMatrix(t *testing.T) {
 
 		fake := NewFakeInteraction()
 		target := FixtureMessageTarget(100, 1)
+		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart})
 		tx := callback.NewTransaction(2, 100, callback.ParsedPayload{Namespace: "assistant", Action: "settings"}, target, fake)
 
 		if err := router.Dispatch(ctx, tx); err != nil {
@@ -62,6 +67,7 @@ func TestIntegration_15ScenarioMatrix(t *testing.T) {
 
 		fake := NewFakeInteraction()
 		target := FixtureMessageTarget(100, 1)
+		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart})
 		tx := callback.NewTransaction(3, 100, callback.ParsedPayload{Namespace: "assistant", Action: "help"}, target, fake)
 
 		if err := router.Dispatch(ctx, tx); err != nil {
@@ -79,6 +85,7 @@ func TestIntegration_15ScenarioMatrix(t *testing.T) {
 
 		fake := NewFakeInteraction()
 		target := FixtureMessageTarget(100, 1)
+		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart})
 		tx := callback.NewTransaction(4, 100, callback.ParsedPayload{Namespace: "assistant", Action: "status"}, target, fake)
 
 		if err := router.Dispatch(ctx, tx); err != nil {
@@ -96,6 +103,7 @@ func TestIntegration_15ScenarioMatrix(t *testing.T) {
 
 		fake := NewFakeInteraction()
 		target := FixtureMessageTarget(100, 1)
+		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart})
 		tx := callback.NewTransaction(5, 100, callback.ParsedPayload{Namespace: "assistant", Action: "ping"}, target, fake)
 
 		if err := router.Dispatch(ctx, tx); err != nil {
@@ -106,6 +114,21 @@ func TestIntegration_15ScenarioMatrix(t *testing.T) {
 		}
 	})
 
+	t.Run("05b_Menu_SessionExpired_Rejected", func(t *testing.T) {
+		router := callback.NewRouter(zap.NewNop())
+		ctrl := menu.NewController(presentation.RenderScreen)
+		ctrl.AttachRoutes(router, func() string { return "Bot" }, nil)
+
+		fake := NewFakeInteraction()
+		target := FixtureMessageTarget(100, 999) // not registered
+		tx := callback.NewTransaction(55, 100, callback.ParsedPayload{Namespace: "assistant", Action: "settings"}, target, fake)
+
+		err := router.Dispatch(ctx, tx)
+		if !errors.Is(err, callback.ErrSessionExpired) {
+			t.Fatalf("expected ErrSessionExpired, got %v", err)
+		}
+	})
+
 	t.Run("06_Menu_CloseIdempotent", func(t *testing.T) {
 		router := callback.NewRouter(zap.NewNop())
 		ctrl := menu.NewController(presentation.RenderScreen)
@@ -113,6 +136,7 @@ func TestIntegration_15ScenarioMatrix(t *testing.T) {
 
 		fake := NewFakeInteraction()
 		target := FixtureMessageTarget(100, 1)
+		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart})
 		tx := callback.NewTransaction(6, 100, callback.ParsedPayload{Namespace: "assistant", Action: "close"}, target, fake)
 
 		if err := router.Dispatch(ctx, tx); err != nil {
@@ -255,6 +279,13 @@ func TestIntegration_15ScenarioMatrix(t *testing.T) {
 		r := command.NewRouter(zap.NewNop())
 		command.AttachDefaultCommands(r, func() string { return "TestBot" }, func() time.Time { return time.Now() }, presentation.RenderScreen)
 
+		coreRouter := core.NewRouter(".")
+		_ = coreRouter.RegisterBatch([]core.Command{
+			{Name: "help", Surfaces: execution.SurfaceAssistant, Handler: func(c *core.Context) error { return c.Reply("help") }},
+			{Name: "alive", Aliases: []string{"status"}, Surfaces: execution.SurfaceAssistant, Handler: func(c *core.Context) error { return c.Reply("alive") }},
+		})
+		r.SetCoreRouter(coreRouter)
+
 		fake := NewFakeInteraction()
 		peer := &tg.InputPeerUser{UserID: 12345}
 
@@ -277,6 +308,76 @@ func TestIntegration_15ScenarioMatrix(t *testing.T) {
 
 		if len(fake.SentMessages) != 4 {
 			t.Fatalf("expected 4 sent messages for 4 commands, got %d", len(fake.SentMessages))
+		}
+	})
+
+	t.Run("16_Inline_Callback_Lifecycle_Pipeline", func(t *testing.T) {
+		cbRouter := callback.NewRouter(zap.NewNop())
+		handled := false
+		cbRouter.RegisterInline("inline_test", "toggle", func(ctx context.Context, tx *callback.InlineTransaction) error {
+			handled = true
+			if err := tx.Edit(ctx, "toggled text", nil); err != nil {
+				return err
+			}
+			return tx.Answer(ctx, "toggled!", false)
+		})
+
+		fake := NewFakeInlineInteraction()
+		target := interaction.NewInlineTarget(888, &tg.InputBotInlineMessageID{DCID: 1, ID: 2, AccessHash: 3}, 999)
+		tx := callback.NewInlineTransaction(888, 12345, callback.ParsedPayload{Namespace: "inline_test", Action: "toggle"}, target, fake)
+
+		err := cbRouter.DispatchInline(ctx, tx)
+		if err != nil {
+			t.Fatalf("dispatch inline failed: %v", err)
+		}
+		if !handled {
+			t.Fatalf("expected inline callback handler to run")
+		}
+		if tx.State() != callback.StateCompleted {
+			t.Fatalf("expected StateCompleted, got %v", tx.State())
+		}
+	})
+
+	t.Run("17_Duplicate_Answer_Returns_ErrCallbackAlreadyAnswered", func(t *testing.T) {
+		fake := NewFakeInteraction()
+		target := FixtureMessageTarget(100, 1)
+		tx := callback.NewTransaction(222, 100, callback.ParsedPayload{Namespace: "assistant", Action: "test"}, target, fake)
+
+		err1 := tx.Answer(ctx, "first", false)
+		if err1 != nil {
+			t.Fatalf("expected first answer to succeed, got %v", err1)
+		}
+
+		err2 := tx.Answer(ctx, "second", false)
+		if !errors.Is(err2, interaction.ErrCallbackAlreadyAnswered) {
+			t.Fatalf("expected ErrCallbackAlreadyAnswered on duplicate answer, got %v", err2)
+		}
+	})
+
+	t.Run("18_Observability_Metrics_Emitted", func(t *testing.T) {
+		metrics := core.NewDefaultMetricsTracker()
+
+		cmdRouter := command.NewRouter(zap.NewNop())
+		cmdRouter.SetMetricsCollector(metrics)
+
+		coreRouter := core.NewRouter(".")
+		_ = coreRouter.Register(core.Command{
+			Name:     "metricping",
+			Surfaces: execution.SurfaceAssistant,
+			Handler:  func(c *core.Context) error { return c.Reply("pong") },
+		})
+		cmdRouter.SetCoreRouter(coreRouter)
+
+		fake := NewFakeInteraction()
+		peer := &tg.InputPeerUser{UserID: 12345}
+		_ = cmdRouter.Dispatch(ctx, 12345, peer, "/metricping", fake)
+
+		snap := metrics.Snapshot()
+		if snap.TotalCommands == 0 {
+			t.Fatalf("expected TotalCommands > 0 in metrics snapshot, got 0")
+		}
+		if _, ok := snap.Commands["metricping"]; !ok {
+			t.Fatalf("expected command 'metricping' recorded in metrics stats")
 		}
 	})
 }

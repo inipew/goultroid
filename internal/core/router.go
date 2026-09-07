@@ -5,6 +5,8 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+
+	"github.com/inipew/goultroid/internal/execution"
 )
 
 // ParsedCommand contains the extracted command name and arguments.
@@ -110,6 +112,32 @@ func (r *Router) All() []Command {
 	defer r.mu.RUnlock()
 	result := make([]Command, len(r.all))
 	copy(result, r.all)
+	return result
+}
+
+// FindForSurface retrieves a command by name only if supported on the given source surface.
+func (r *Router) FindForSurface(name string, source execution.Source) (Command, bool) {
+	cmd, exists := r.Find(name)
+	if !exists {
+		return Command{}, false
+	}
+	if !cmd.IsAvailableOn(source) {
+		return Command{}, false
+	}
+	return cmd, true
+}
+
+// CommandsForSurface returns all registered commands supported on the specified surface.
+func (r *Router) CommandsForSurface(source execution.Source) []Command {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var result []Command
+	for _, cmd := range r.all {
+		if cmd.IsAvailableOn(source) {
+			result = append(result, cmd)
+		}
+	}
 	return result
 }
 

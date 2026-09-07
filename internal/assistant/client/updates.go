@@ -94,7 +94,7 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		if deps.CacheEntities != nil {
 			deps.CacheEntities(e)
 		}
-		if deps.RateLimiter != nil && !deps.RateLimiter.Allow(update.UserID, "callback") {
+		if deps.RateLimiter != nil && !deps.RateLimiter.Allow(update.UserID, "inline") {
 			if deps.Interaction != nil {
 				_ = deps.Interaction.Answer(ctx, update.QueryID, "Too many requests. Please wait.", true)
 			}
@@ -102,9 +102,27 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		}
 		// Inline callback uses InlineTarget — structurally separated from MessageTarget (§4)
 		inlineTarget := interaction.NewInlineTarget(update.QueryID, update.MsgID, update.ChatInstance)
-		_ = inlineTarget
-		logger.Debug("assistant: inline callback received (structural separation)", zap.Int64("query_id", update.QueryID))
-		// Inline edit via interaction.AsInline().Edit(...) when needed
+
+		payload, parseErr := callback.Parse(update.Data)
+		if parseErr != nil {
+			logger.Debug("assistant: non-v2 inline callback payload received", zap.ByteString("data", update.Data), zap.Error(parseErr))
+			if deps.Interaction != nil {
+				_ = deps.Interaction.Answer(ctx, update.QueryID, "Invalid callback", false)
+			}
+			return nil
+		}
+
+		if deps.CallbackRouter != nil && deps.Interaction != nil {
+			tx := callback.NewInlineTransaction(update.QueryID, update.UserID, *payload, inlineTarget, deps.Interaction.AsInline())
+			if err := deps.CallbackRouter.DispatchInline(ctx, tx); err != nil {
+				logger.Warn("assistant: inline callback router error",
+					zap.Error(err),
+					zap.Int64("query_id", update.QueryID),
+					zap.Int64("user_id", update.UserID),
+					zap.String("action", payload.Action),
+				)
+			}
+		}
 		return nil
 	})
 
