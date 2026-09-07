@@ -10,7 +10,6 @@ const (
 	ScreenIDStatus   ScreenID = "status"
 )
 
-
 // Screen models an interactive screen decoupled from MTProto rendering.
 type Screen struct {
 	ID    ScreenID
