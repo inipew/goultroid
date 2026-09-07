@@ -153,8 +153,8 @@ func TestAssistantHandler(t *testing.T) {
 	if h.Namespace() != "assistant" {
 		t.Errorf("expected namespace 'assistant', got %q", h.Namespace())
 	}
-	if !h.CallbackOptions().AutoAnswer {
-		t.Errorf("expected AutoAnswer to be true")
+	if h.CallbackOptions().AutoAnswer {
+		t.Errorf("expected AutoAnswer to be false for deterministic assistant callbacks")
 	}
 
 	ctx := context.Background()
@@ -180,29 +180,39 @@ func TestAssistantHandler(t *testing.T) {
 	if mockSvc.lastEditedText == "" {
 		t.Error("expected edited text on status action")
 	}
+	if !cbCtx.IsAnswered() {
+		t.Error("expected status callback to be acknowledged before editing")
+	}
 
 	for _, action := range []string{"settings", "help", "start"} {
 		cbCtx.Action = action
+		cbCtx.QueryID++
+		cbCtx.answered = false
 		if err := h.HandleCallback(cbCtx); err != nil {
 			t.Fatalf("HandleCallback %s failed: %v", action, err)
 		}
 	}
 
-	// Ping edits the menu but does not issue a second callback answer. The router's
-	// AutoAnswer option owns the acknowledgement lifecycle.
 	cbCtx.Action = "ping"
+	cbCtx.QueryID++
+	cbCtx.answered = false
 	mockSvc.lastAnswer = ""
 	mockSvc.lastAlert = false
 	if err := h.HandleCallback(cbCtx); err != nil {
 		t.Fatalf("HandleCallback ping failed: %v", err)
 	}
-	if mockSvc.lastAnswer != "" || mockSvc.lastAlert {
-		t.Errorf("ping handler must not answer callback a second time, got text=%q alert=%v", mockSvc.lastAnswer, mockSvc.lastAlert)
+	if mockSvc.lastAnswer != "🏓 Pong!" || !mockSvc.lastAlert {
+		t.Errorf("expected ping alert answer, got text=%q alert=%v", mockSvc.lastAnswer, mockSvc.lastAlert)
 	}
 
 	cbCtx.Action = "close"
+	cbCtx.QueryID++
+	cbCtx.answered = false
 	if err := h.HandleCallback(cbCtx); err != nil {
 		t.Fatalf("HandleCallback close failed: %v", err)
+	}
+	if mockSvc.lastAnswer != "Menu closed" || mockSvc.lastAlert {
+		t.Errorf("expected close acknowledgement, got text=%q alert=%v", mockSvc.lastAnswer, mockSvc.lastAlert)
 	}
 	if len(mockSvc.lastDeletedIDs) != 1 || mockSvc.lastDeletedIDs[0] != 55 {
 		t.Errorf("expected message 55 deleted on close, got %v", mockSvc.lastDeletedIDs)
