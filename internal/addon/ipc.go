@@ -93,16 +93,21 @@ func (r *ExternalRuntime) SetLogger(logger *zap.Logger) {
 func (r *ExternalRuntime) Manifest() Manifest { return r.manifest }
 
 func (r *ExternalRuntime) Start(ctx context.Context) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.running {
-		return errors.New("addon runtime already running")
-	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
+	// Do not hold r.mu while performing the handshake. handshake -> callLocked
+	// needs the same mutex to access the IPC streams; holding it here deadlocks
+	// every otherwise-valid addon during startup.
+	r.mu.Lock()
+	if r.running {
+		r.mu.Unlock()
+		return errors.New("addon runtime already running")
+	}
 	path, err := validateExecutable(r.executable)
 	if err != nil {
+		r.mu.Unlock()
 		return err
 	}
 
@@ -116,23 +121,27 @@ func (r *ExternalRuntime) Start(ctx context.Context) error {
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "GOUTROID_ADDON_NAME=" + r.manifest.Name, "GOUTROID_ADDON_VERSION=" + r.manifest.Version}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		r.mu.Unlock()
 		return fmt.Errorf("addon stdin: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		_ = stdin.Close()
+		r.mu.Unlock()
 		return fmt.Errorf("addon stdout: %w", err)
 	}
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
+		r.mu.Unlock()
 		return fmt.Errorf("addon stderr: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
 		_ = stderrPipe.Close()
+		r.mu.Unlock()
 		return fmt.Errorf("start addon: %w", err)
 	}
 
@@ -153,12 +162,10 @@ func (r *ExternalRuntime) Start(ctx context.Context) error {
 	r.stdin = stdin
 	r.stdout = bufio.NewReader(io.LimitReader(stdout, 8<<20))
 	r.running = true
+	r.mu.Unlock()
 
 	if err := r.handshake(ctx); err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		r.running = false
-		r.cmd, r.stdin, r.stdout = nil, nil, nil
+		_ = r.Stop()
 		return err
 	}
 	return nil
