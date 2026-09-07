@@ -1,24 +1,16 @@
 package menu
 
-// Button represents an interactive inline button.
-type Button struct {
-	Label string
-	Data  string
-	URL   string
-}
+import "github.com/inipew/goultroid/internal/ui"
 
-// NewButton creates a standard callback query button.
+// Button is the canonical UI button used by the assistant menu.
+type Button = ui.Button
+
+// NewButton creates a standard callback button through the shared UI layer.
 func NewButton(label, data string) Button {
-	return Button{
-		Label: label,
-		Data:  data,
-	}
+	return ui.NewCallbackButton(label, []byte(data))
 }
 
-// NewURLButton creates a link button opening an external URL.
+// NewURLButton creates a link button through the shared UI layer.
 func NewURLButton(label, url string) Button {
-	return Button{
-		Label: label,
-		URL:   url,
-	}
+	return ui.NewURLButton(label, url)
 }
