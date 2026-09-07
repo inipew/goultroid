@@ -164,16 +164,34 @@ func BuildStatusScreen(botUsername string, uptime time.Duration, engine string) 
 	return screen
 }
 
-// isSessionValid checks if a menu instance exists and has not expired.
-func (c *Controller) isSessionValid(tx *callback.Transaction) bool {
+// lockInstance acquires the per-menu instance mutex.
+func (c *Controller) lockInstance(tx *callback.Transaction) func() {
+	if c.instances != nil && tx != nil {
+		return c.instances.LockInstance(tx.Target.ChatID(), tx.Target.MessageID())
+	}
+	return func() {}
+}
+
+// validateSession verifies that a menu instance exists, is not expired,
+// and enforces session ownership: if inst.OwnerID != 0 && inst.OwnerID != tx.UserID,
+// the callback is rejected with callback.ErrUnauthorized.
+func (c *Controller) validateSession(ctx context.Context, tx *callback.Transaction) (*MenuInstance, error) {
 	if c.instances == nil {
-		return true
+		return nil, nil
 	}
 	if tx == nil {
-		return false
+		return nil, callback.ErrSessionExpired
 	}
-	_, ok := c.instances.Get(tx.Target.ChatID(), tx.Target.MessageID())
-	return ok
+	inst, ok := c.instances.Get(tx.Target.ChatID(), tx.Target.MessageID())
+	if !ok || inst == nil {
+		_ = tx.Answer(ctx, "Session expired, send /start again", true)
+		return nil, callback.ErrSessionExpired
+	}
+	if inst.OwnerID != 0 && tx.UserID != 0 && inst.OwnerID != tx.UserID {
+		_ = tx.Answer(ctx, "⚠️ You do not own this menu!", true)
+		return nil, callback.ErrUnauthorized
+	}
+	return inst, nil
 }
 
 // RegisterInstance registers a menu instance into the controller's session store.
@@ -205,9 +223,11 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 
 	// 1. Start Menu
 	r.Register("assistant", "start", func(ctx context.Context, tx *callback.Transaction) error {
-		if !c.isSessionValid(tx) {
-			_ = tx.Answer(ctx, "Session expired, send /start again", true)
-			return callback.ErrSessionExpired
+		unlock := c.lockInstance(tx)
+		defer unlock()
+
+		if _, err := c.validateSession(ctx, tx); err != nil {
+			return err
 		}
 		if c.instances != nil {
 			c.instances.UpdateScreen(tx.Target.ChatID(), tx.Target.MessageID(), ScreenIDStart)
@@ -219,9 +239,11 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 
 	// 2. Settings Menu
 	r.Register("assistant", "settings", func(ctx context.Context, tx *callback.Transaction) error {
-		if !c.isSessionValid(tx) {
-			_ = tx.Answer(ctx, "Session expired, send /start again", true)
-			return callback.ErrSessionExpired
+		unlock := c.lockInstance(tx)
+		defer unlock()
+
+		if _, err := c.validateSession(ctx, tx); err != nil {
+			return err
 		}
 		if c.instances != nil {
 			c.instances.UpdateScreen(tx.Target.ChatID(), tx.Target.MessageID(), ScreenIDSettings)
@@ -233,9 +255,11 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 
 	// 3. Help Menu
 	r.Register("assistant", "help", func(ctx context.Context, tx *callback.Transaction) error {
-		if !c.isSessionValid(tx) {
-			_ = tx.Answer(ctx, "Session expired, send /start again", true)
-			return callback.ErrSessionExpired
+		unlock := c.lockInstance(tx)
+		defer unlock()
+
+		if _, err := c.validateSession(ctx, tx); err != nil {
+			return err
 		}
 		if c.instances != nil {
 			c.instances.UpdateScreen(tx.Target.ChatID(), tx.Target.MessageID(), ScreenIDHelp)
@@ -251,9 +275,11 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 
 	// 4. Status Menu
 	r.Register("assistant", "status", func(ctx context.Context, tx *callback.Transaction) error {
-		if !c.isSessionValid(tx) {
-			_ = tx.Answer(ctx, "Session expired, send /start again", true)
-			return callback.ErrSessionExpired
+		unlock := c.lockInstance(tx)
+		defer unlock()
+
+		if _, err := c.validateSession(ctx, tx); err != nil {
+			return err
 		}
 		if c.instances != nil {
 			c.instances.UpdateScreen(tx.Target.ChatID(), tx.Target.MessageID(), ScreenIDStatus)
@@ -265,15 +291,23 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 
 	// 5. Ping Action (toast popup only, screen untouched)
 	r.Register("assistant", "ping", func(ctx context.Context, tx *callback.Transaction) error {
-		if !c.isSessionValid(tx) {
-			_ = tx.Answer(ctx, "Session expired, send /start again", true)
-			return callback.ErrSessionExpired
+		unlock := c.lockInstance(tx)
+		defer unlock()
+
+		if _, err := c.validateSession(ctx, tx); err != nil {
+			return err
 		}
 		return tx.Answer(ctx, "🏓 Pong!", true)
 	})
 
 	// 6. Close Action (idempotent delete)
 	r.Register("assistant", "close", func(ctx context.Context, tx *callback.Transaction) error {
+		unlock := c.lockInstance(tx)
+		defer unlock()
+
+		if _, err := c.validateSession(ctx, tx); err != nil {
+			return err
+		}
 		_ = tx.Answer(ctx, "Menu closed", false)
 		if c.instances != nil {
 			c.instances.Invalidate(tx.Target.ChatID(), tx.Target.MessageID())

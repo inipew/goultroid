@@ -115,70 +115,47 @@ func TestCommandRouter_Dispatch(t *testing.T) {
 	}
 }
 
-type fakeUnifiedSource struct {
-	cmd core.Command
-}
-
-func (f *fakeUnifiedSource) FindForSurface(name string, s execution.Source) (core.Command, bool) {
-	if f.cmd.Name == name && f.cmd.IsAvailableOn(s) {
-		return f.cmd, true
-	}
-	return core.Command{}, false
-}
-
-func (f *fakeUnifiedSource) CommandsForSurface(s execution.Source) []core.Command {
-	if f.cmd.IsAvailableOn(s) {
-		return []core.Command{f.cmd}
-	}
-	return nil
-}
-
-func TestCommandRouter_UnifiedRegistryFallback(t *testing.T) {
+func TestCommandRouter_CoreRouterDispatch(t *testing.T) {
 	r := command.NewRouter(zap.NewNop())
 	fake := &fakeInteraction{}
 	ctx := context.Background()
 	peer := &tg.InputPeerUser{UserID: 12345}
 
 	called := false
-	fakeSrc := &fakeUnifiedSource{
-		cmd: core.Command{
-			Name:     "customplugin",
-			Surfaces: execution.SurfaceAssistant,
-			Handler: func(c *core.Context) error {
-				called = true
-				return nil
-			},
+	coreRouter := core.NewRouter(".")
+	_ = coreRouter.Register(core.Command{
+		Name:     "customplugin",
+		Surfaces: execution.SurfaceAssistant,
+		Handler: func(c *core.Context) error {
+			called = true
+			return nil
 		},
-	}
-
-	r.SetUnifiedRegistry(fakeSrc)
+	})
+	_ = coreRouter.Register(core.Command{
+		Name:     "useronly",
+		Surfaces: execution.SurfaceUserbot,
+		Handler: func(c *core.Context) error {
+			return nil
+		},
+	})
+	r.SetCoreRouter(coreRouter)
 
 	err := r.Dispatch(ctx, 12345, peer, "/customplugin arg1", fake)
 	if err != nil {
-		t.Fatalf("unexpected error dispatching unified plugin command: %v", err)
+		t.Fatalf("unexpected error dispatching command: %v", err)
 	}
 	if !called {
-		t.Fatalf("expected unified plugin handler to be called")
+		t.Fatalf("expected command handler to be called")
 	}
 
 	// Verify command not available on assistant surface
-	fakeSrcUserOnly := &fakeUnifiedSource{
-		cmd: core.Command{
-			Name:     "useronly",
-			Surfaces: execution.SurfaceUserbot,
-			Handler: func(c *core.Context) error {
-				return nil
-			},
-		},
-	}
-	r.SetUnifiedRegistry(fakeSrcUserOnly)
 	err = r.Dispatch(ctx, 12345, peer, "/useronly", fake)
 	if !errors.Is(err, command.ErrUnknownCommand) {
 		t.Fatalf("expected ErrUnknownCommand for user-only command on assistant, got %v", err)
 	}
 }
 
-func TestCommandRouter_UnifiedTakesPrecedenceOverLocal(t *testing.T) {
+func TestCommandRouter_CoreRouterPrecedenceOverLocal(t *testing.T) {
 	r := command.NewRouter(zap.NewNop())
 	fake := &fakeInteraction{}
 	ctx := context.Background()
@@ -191,54 +168,30 @@ func TestCommandRouter_UnifiedTakesPrecedenceOverLocal(t *testing.T) {
 	})
 
 	pluginCalled := false
-	fakeSrc := &fakeUnifiedSource{
-		cmd: core.Command{
-			Name:     "ping",
-			Surfaces: execution.SurfaceAssistant,
-			Handler: func(c *core.Context) error {
-				pluginCalled = true
-				return nil
-			},
+	coreRouter := core.NewRouter(".")
+	_ = coreRouter.Register(core.Command{
+		Name:     "ping",
+		Surfaces: execution.SurfaceAssistant,
+		Handler: func(c *core.Context) error {
+			pluginCalled = true
+			return nil
 		},
-	}
-	r.SetUnifiedRegistry(fakeSrc)
+	})
+	r.SetCoreRouter(coreRouter)
 
 	err := r.Dispatch(ctx, 12345, peer, "/ping", fake)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !pluginCalled {
-		t.Fatal("expected plugin command to be called (unified precedence)")
+		t.Fatal("expected canonical command to be called")
 	}
 	if localCalled {
-		t.Fatal("expected local command NOT to be called when plugin command is present")
+		t.Fatal("expected local command NOT to be called when canonical command is present")
 	}
 }
 
-
-type fakeMultiSource struct {
-	cmds map[string]core.Command
-}
-
-func (f *fakeMultiSource) FindForSurface(name string, s execution.Source) (core.Command, bool) {
-	cmd, ok := f.cmds[name]
-	if ok && cmd.IsAvailableOn(s) {
-		return cmd, true
-	}
-	return core.Command{}, false
-}
-
-func (f *fakeMultiSource) CommandsForSurface(s execution.Source) []core.Command {
-	var res []core.Command
-	for _, cmd := range f.cmds {
-		if cmd.IsAvailableOn(s) {
-			res = append(res, cmd)
-		}
-	}
-	return res
-}
-
-func TestUnifiedCommandAdapter_Permissions(t *testing.T) {
+func TestCommandRouter_Permissions(t *testing.T) {
 	r := command.NewRouter(zap.NewNop())
 	ownerID := int64(1001)
 	sudoID := int64(2002)
@@ -252,38 +205,37 @@ func TestUnifiedCommandAdapter_Permissions(t *testing.T) {
 	sudoCalled := false
 	everyoneCalled := false
 
-	src := &fakeMultiSource{
-		cmds: map[string]core.Command{
-			"admincmd": {
-				Name:       "admincmd",
-				Permission: core.PermissionOwner,
-				Surfaces:   execution.SurfaceAssistant,
-				Handler: func(c *core.Context) error {
-					adminCalled = true
-					return nil
-				},
-			},
-			"sudocmd": {
-				Name:       "sudocmd",
-				Permission: core.PermissionSudo,
-				Surfaces:   execution.SurfaceAssistant,
-				Handler: func(c *core.Context) error {
-					sudoCalled = true
-					return nil
-				},
-			},
-			"allcmd": {
-				Name:       "allcmd",
-				Permission: core.PermissionEveryone,
-				Surfaces:   execution.SurfaceAssistant,
-				Handler: func(c *core.Context) error {
-					everyoneCalled = true
-					return nil
-				},
+	coreRouter := core.NewRouter(".")
+	_ = coreRouter.RegisterBatch([]core.Command{
+		{
+			Name:       "admincmd",
+			Permission: core.PermissionOwner,
+			Surfaces:   execution.SurfaceAssistant,
+			Handler: func(c *core.Context) error {
+				adminCalled = true
+				return nil
 			},
 		},
-	}
-	r.SetUnifiedRegistry(src)
+		{
+			Name:       "sudocmd",
+			Permission: core.PermissionSudo,
+			Surfaces:   execution.SurfaceAssistant,
+			Handler: func(c *core.Context) error {
+				sudoCalled = true
+				return nil
+			},
+		},
+		{
+			Name:       "allcmd",
+			Permission: core.PermissionEveryone,
+			Surfaces:   execution.SurfaceAssistant,
+			Handler: func(c *core.Context) error {
+				everyoneCalled = true
+				return nil
+			},
+		},
+	})
+	r.SetCoreRouter(coreRouter)
 
 	ctx := context.Background()
 	fake := &fakeInteraction{}
@@ -329,7 +281,7 @@ func TestUnifiedCommandAdapter_Permissions(t *testing.T) {
 	}
 }
 
-func TestUnifiedCommandAdapter_ContextMessaging(t *testing.T) {
+func TestCommandRouter_ContextMessaging(t *testing.T) {
 	r := command.NewRouter(zap.NewNop())
 	ownerID := int64(1001)
 	r.SetOwner(ownerID, nil)
@@ -339,32 +291,29 @@ func TestUnifiedCommandAdapter_ContextMessaging(t *testing.T) {
 	var recordedSenderID int64
 	var recordedChatID int64
 
-	src := &fakeMultiSource{
-		cmds: map[string]core.Command{
-			"echotest": {
-				Name:       "echotest",
-				Permission: core.PermissionEveryone,
-				Surfaces:   execution.SurfaceAssistant,
-				Handler: func(c *core.Context) error {
-					recordedSource = c.Source
-					isAssistant = c.IsAssistant()
-					recordedSenderID = c.SenderID()
-					recordedChatID = c.ChatID()
+	coreRouter := core.NewRouter(".")
+	_ = coreRouter.Register(core.Command{
+		Name:       "echotest",
+		Permission: core.PermissionEveryone,
+		Surfaces:   execution.SurfaceAssistant,
+		Handler: func(c *core.Context) error {
+			recordedSource = c.Source
+			isAssistant = c.IsAssistant()
+			recordedSenderID = c.SenderID()
+			recordedChatID = c.ChatID()
 
-					// Test Reply
-					if err := c.Reply("step 1: replying"); err != nil {
-						return err
-					}
-					// Test EditOrReply (which should edit step 1)
-					if err := c.EditOrReply("step 2: edited"); err != nil {
-						return err
-					}
-					return nil
-				},
-			},
+			// Test Reply
+			if err := c.Reply("step 1: replying"); err != nil {
+				return err
+			}
+			// Test EditOrReply (which should edit step 1)
+			if err := c.EditOrReply("step 2: edited"); err != nil {
+				return err
+			}
+			return nil
 		},
-	}
-	r.SetUnifiedRegistry(src)
+	})
+	r.SetCoreRouter(coreRouter)
 
 	ctx := context.Background()
 	fake := &fakeInteraction{}

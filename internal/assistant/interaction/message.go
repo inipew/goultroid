@@ -206,6 +206,9 @@ func (c *ClientInteraction) EditMarkup(ctx context.Context, target MessageTarget
 			return nil
 		}
 		if errors.Is(classified, ErrAccessHashStale) && c.reResolver != nil && attempt < MaxPeerRecoveryAttempts {
+			c.logger.Warn("assistant: access hash stale during edit markup, invalidating and re-resolving",
+				zap.Int("msg_id", target.MessageID()),
+			)
 			c.reResolver.InvalidatePeer(req.Peer)
 			if newPeer, rerr := c.reResolver.ReResolve(ctx, req.Peer); rerr == nil && newPeer != nil {
 				req.Peer = newPeer
@@ -306,6 +309,9 @@ func (c *ClientInteraction) GetMessage(ctx context.Context, target MessageTarget
 		if rpcErr != nil {
 			classified := ClassifyRPCError(rpcErr)
 			if errors.Is(classified, ErrAccessHashStale) && c.reResolver != nil && attempt < MaxPeerRecoveryAttempts {
+				c.logger.Warn("assistant: access hash stale during get message, invalidating and re-resolving",
+					zap.Int("msg_id", target.MessageID()),
+				)
 				c.reResolver.InvalidatePeer(currentPeer)
 				if newPeer, rerr := c.reResolver.ReResolve(ctx, currentPeer); rerr == nil && newPeer != nil {
 					currentPeer = newPeer
@@ -315,9 +321,9 @@ func (c *ClientInteraction) GetMessage(ctx context.Context, target MessageTarget
 			return nil, classified
 		}
 
-		extractFirst := func(slice []tg.MessageClass) *tg.Message {
-			if len(slice) > 0 {
-				if m, ok := slice[0].(*tg.Message); ok {
+		extractTargetMessage := func(slice []tg.MessageClass) *tg.Message {
+			for _, item := range slice {
+				if m, ok := item.(*tg.Message); ok && m.ID == target.MessageID() {
 					return m
 				}
 			}
@@ -326,15 +332,15 @@ func (c *ClientInteraction) GetMessage(ctx context.Context, target MessageTarget
 
 		switch msgs := res.(type) {
 		case *tg.MessagesMessages:
-			if m := extractFirst(msgs.Messages); m != nil {
+			if m := extractTargetMessage(msgs.Messages); m != nil {
 				return m, nil
 			}
 		case *tg.MessagesMessagesSlice:
-			if m := extractFirst(msgs.Messages); m != nil {
+			if m := extractTargetMessage(msgs.Messages); m != nil {
 				return m, nil
 			}
 		case *tg.MessagesChannelMessages:
-			if m := extractFirst(msgs.Messages); m != nil {
+			if m := extractTargetMessage(msgs.Messages); m != nil {
 				return m, nil
 			}
 		}

@@ -26,12 +26,14 @@ type InstanceStore interface {
 	Get(chatID int64, messageID int) (*MenuInstance, bool)
 	UpdateScreen(chatID int64, messageID int, screen ScreenID)
 	Invalidate(chatID int64, messageID int)
+	LockInstance(chatID int64, messageID int) func()
 }
 
 // MemoryInstanceStore provides an in-memory thread-safe instance store.
 type MemoryInstanceStore struct {
 	mu        sync.RWMutex
 	instances map[string]*MenuInstance
+	locks     map[string]*sync.Mutex
 	ttl       time.Duration
 }
 
@@ -44,6 +46,7 @@ func NewMemoryInstanceStore(ttl time.Duration) *MemoryInstanceStore {
 	}
 	return &MemoryInstanceStore{
 		instances: make(map[string]*MenuInstance),
+		locks:     make(map[string]*sync.Mutex),
 		ttl:       ttl,
 	}
 }
@@ -58,6 +61,9 @@ func (s *MemoryInstanceStore) Register(instance MenuInstance) {
 		return
 	}
 	now := time.Now()
+	if instance.ID == "" {
+		instance.ID = fmt.Sprintf("menu:%d:%d:%d", instance.ChatID, instance.MessageID, now.UnixNano())
+	}
 	if instance.CreatedAt.IsZero() {
 		instance.CreatedAt = now
 	}
@@ -76,6 +82,7 @@ func (s *MemoryInstanceStore) Register(instance MenuInstance) {
 		for k, inst := range s.instances {
 			if now.After(inst.ExpiresAt) {
 				delete(s.instances, k)
+				delete(s.locks, k)
 			}
 		}
 	}
@@ -95,6 +102,7 @@ func (s *MemoryInstanceStore) Get(chatID int64, messageID int) (*MenuInstance, b
 	if time.Now().After(inst.ExpiresAt) {
 		s.mu.Lock()
 		delete(s.instances, key)
+		delete(s.locks, key)
 		s.mu.Unlock()
 		return nil, false
 	}
@@ -120,4 +128,21 @@ func (s *MemoryInstanceStore) Invalidate(chatID int64, messageID int) {
 	defer s.mu.Unlock()
 
 	delete(s.instances, key)
+	delete(s.locks, key)
+}
+
+// LockInstance acquires a mutex dedicated to the specified menu instance
+// and returns an unlock callback function to release the lock.
+func (s *MemoryInstanceStore) LockInstance(chatID int64, messageID int) func() {
+	key := instanceKey(chatID, messageID)
+	s.mu.Lock()
+	l, ok := s.locks[key]
+	if !ok {
+		l = &sync.Mutex{}
+		s.locks[key] = l
+	}
+	s.mu.Unlock()
+
+	l.Lock()
+	return l.Unlock
 }

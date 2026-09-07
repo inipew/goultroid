@@ -191,3 +191,109 @@ func (m *mockEntityFetcher) FetchChannel(ctx context.Context, id int64) (*tg.Cha
 	}
 	return nil, errors.New("channel not found")
 }
+
+func TestResolver_Resolve_AutoFetchOnCacheMiss(t *testing.T) {
+	ctx := context.Background()
+	cache := peer.NewMemoryCache()
+	res := peer.NewResolver(cache)
+
+	mockFetcher := &mockEntityFetcher{
+		userHash: map[int64]int64{101: 55555},
+		chanHash: map[int64]int64{202: 66666},
+	}
+	res.SetEntityFetcher(mockFetcher)
+
+	// User auto fetch on cache miss
+	pUser, err := res.Resolve(ctx, &tg.PeerUser{UserID: 101}, 0, tg.Entities{})
+	if err != nil {
+		t.Fatalf("expected auto-fetch to resolve user, got %v", err)
+	}
+	if inpUser, ok := pUser.(*tg.InputPeerUser); !ok || inpUser.AccessHash != 55555 {
+		t.Fatalf("expected access hash 55555, got %+v", pUser)
+	}
+
+	// Channel auto fetch on cache miss
+	pChan, err := res.Resolve(ctx, &tg.PeerChannel{ChannelID: 202}, 0, tg.Entities{})
+	if err != nil {
+		t.Fatalf("expected auto-fetch to resolve channel, got %v", err)
+	}
+	if inpChan, ok := pChan.(*tg.InputPeerChannel); !ok || inpChan.AccessHash != 66666 {
+		t.Fatalf("expected access hash 66666, got %+v", pChan)
+	}
+
+	// Nil peer with senderID auto fetch
+	pSender, err := res.Resolve(ctx, nil, 101, tg.Entities{})
+	if err != nil {
+		t.Fatalf("expected sender auto-fetch, got %v", err)
+	}
+	if inpUser, ok := pSender.(*tg.InputPeerUser); !ok || inpUser.AccessHash != 55555 {
+		t.Fatalf("expected access hash 55555 for sender, got %+v", pSender)
+	}
+}
+
+type mockFetcherAPI struct {
+	users   []tg.UserClass
+	chats   tg.MessagesChatsClass
+	userErr error
+	chanErr error
+}
+
+func (m *mockFetcherAPI) UsersGetUsers(ctx context.Context, id []tg.InputUserClass) ([]tg.UserClass, error) {
+	if m.userErr != nil {
+		return nil, m.userErr
+	}
+	return m.users, nil
+}
+
+func (m *mockFetcherAPI) ChannelsGetChannels(ctx context.Context, id []tg.InputChannelClass) (tg.MessagesChatsClass, error) {
+	if m.chanErr != nil {
+		return nil, m.chanErr
+	}
+	return m.chats, nil
+}
+
+func TestTelegramEntityFetcher(t *testing.T) {
+	ctx := context.Background()
+	api := &mockFetcherAPI{
+		users: []tg.UserClass{
+			&tg.User{ID: 12345, AccessHash: 98765},
+		},
+		chats: &tg.MessagesChats{
+			Chats: []tg.ChatClass{
+				&tg.Channel{ID: 54321, AccessHash: 13579},
+			},
+		},
+	}
+
+	fetcher := peer.NewTelegramEntityFetcher(api)
+
+	// FetchUser success
+	u, err := fetcher.FetchUser(ctx, 12345)
+	if err != nil {
+		t.Fatalf("FetchUser failed: %v", err)
+	}
+	if u.AccessHash != 98765 {
+		t.Fatalf("expected access hash 98765, got %d", u.AccessHash)
+	}
+
+	// FetchUser not found
+	_, err = fetcher.FetchUser(ctx, 99999)
+	if !errors.Is(err, peer.ErrPeerResolution) {
+		t.Fatalf("expected ErrPeerResolution for unknown user, got %v", err)
+	}
+
+	// FetchChannel success
+	ch, err := fetcher.FetchChannel(ctx, 54321)
+	if err != nil {
+		t.Fatalf("FetchChannel failed: %v", err)
+	}
+	if ch.AccessHash != 13579 {
+		t.Fatalf("expected access hash 13579, got %d", ch.AccessHash)
+	}
+
+	// FetchChannel not found
+	_, err = fetcher.FetchChannel(ctx, 99999)
+	if !errors.Is(err, peer.ErrPeerResolution) {
+		t.Fatalf("expected ErrPeerResolution for unknown channel, got %v", err)
+	}
+}

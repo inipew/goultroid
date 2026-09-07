@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gotd/td/telegram"
@@ -45,6 +46,8 @@ type AssistantClient struct {
 	self      *tg.User
 	mu        sync.RWMutex
 	cancel    context.CancelFunc
+	shuttingDown atomic.Bool
+	wg           sync.WaitGroup
 
 	lifecycle   *Lifecycle
 	rateLimiter RateLimiter
@@ -117,11 +120,16 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 		UpdateHandler: updateMgr,
 	})
 
+	entityFetcher := peer.NewTelegramEntityFetcher(tdClient.API())
+	c.resolver.SetEntityFetcher(entityFetcher)
+
 	c.interaction = interaction.NewClientInteraction(tdClient.API(), c.logger)
 	if c.metrics != nil {
 		c.interaction.SetMetricsCollector(c.metrics)
 	}
 	c.interaction.SetPeerReResolver(c.resolver)
+
+	c.shuttingDown.Store(false)
 
 	// Register updates
 	deps := UpdateHandlerDeps{
@@ -132,11 +140,14 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 		CallbackRouter: c.cbRouter,
 		Interaction:    c.interaction,
 		CacheEntities:  c.CacheEntities,
+		IsShuttingDown: c.shuttingDown.Load,
 	}
 	RegisterUpdateHandlers(&dispatcher, deps)
 
 	errCh := make(chan error, 1)
+	c.wg.Add(1)
 	go func() {
+		defer c.wg.Done()
 		err := tdClient.Run(runCtx, func(ctx context.Context) error {
 			status, err := tdClient.Auth().Status(ctx)
 			if err != nil {
@@ -187,14 +198,34 @@ func (c *AssistantClient) Stop(ctx context.Context) error {
 	if !c.lifecycle.TryStop() {
 		return nil
 	}
+	c.shuttingDown.Store(true)
+
 	c.mu.Lock()
 	if c.cancel != nil {
 		c.cancel()
 		c.cancel = nil
 	}
 	c.mu.Unlock()
+
+	stopped := make(chan struct{})
+	go func() {
+		c.wg.Wait()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+	case <-ctx.Done():
+		c.logger.Warn("assistant: shutdown timed out waiting for client loop")
+	}
+
 	c.lifecycle.SetState(StateStopped)
 	return nil
+}
+
+// IsShuttingDown reports whether the client has initiated shutdown.
+func (c *AssistantClient) IsShuttingDown() bool {
+	return c.shuttingDown.Load()
 }
 
 // IsRunning reports whether the client is active.
@@ -253,20 +284,6 @@ func (c *AssistantClient) SetMetricsCollector(m core.MetricsCollector) {
 	}
 	if c.interaction != nil {
 		c.interaction.SetMetricsCollector(m)
-	}
-}
-
-// SetUnifiedRegistry configures the unified command registry for the assistant router and menu controller.
-func (c *AssistantClient) SetUnifiedRegistry(reg command.CommandSource) {
-	if cr, ok := reg.(*core.Router); ok {
-		c.SetCoreRouter(cr)
-		return
-	}
-	if c.cmdRouter != nil {
-		c.cmdRouter.SetUnifiedRegistry(reg)
-	}
-	if c.menuCtrl != nil {
-		c.menuCtrl.SetCommandSource(reg)
 	}
 }
 

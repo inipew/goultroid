@@ -116,6 +116,14 @@ func (r *DefaultResolver) Resolve(ctx context.Context, peer tg.PeerClass, sender
 			if rec, ok := r.cache.Get(PeerKindUser, senderID); ok && rec.AccessHash != 0 {
 				return &tg.InputPeerUser{UserID: senderID, AccessHash: rec.AccessHash}, nil
 			}
+			if r.fetcher != nil {
+				if u, err := r.fetcher.FetchUser(ctx, senderID); err == nil && u != nil && u.AccessHash != 0 {
+					if r.cache != nil {
+						r.cache.Put(PeerRecord{ID: senderID, Kind: PeerKindUser, AccessHash: u.AccessHash})
+					}
+					return &tg.InputPeerUser{UserID: senderID, AccessHash: u.AccessHash}, nil
+				}
+			}
 		}
 		return nil, fmt.Errorf("%w: nil peer and missing sender coordinates", ErrPeerResolution)
 	}
@@ -137,6 +145,16 @@ func (r *DefaultResolver) Resolve(ctx context.Context, peer tg.PeerClass, sender
 			}
 		}
 
+		// Cache miss / missing access hash: attempt authoritative network fetch
+		if accessHash == 0 && r.fetcher != nil {
+			if u, err := r.fetcher.FetchUser(ctx, p.UserID); err == nil && u != nil && u.AccessHash != 0 {
+				accessHash = u.AccessHash
+				if r.cache != nil {
+					r.cache.Put(PeerRecord{ID: p.UserID, Kind: PeerKindUser, AccessHash: accessHash})
+				}
+			}
+		}
+
 		if accessHash == 0 {
 			return nil, fmt.Errorf("%w: missing access hash for user %d", ErrAccessHashMissing, p.UserID)
 		}
@@ -153,6 +171,16 @@ func (r *DefaultResolver) Resolve(ctx context.Context, peer tg.PeerClass, sender
 			r.cache.Put(PeerRecord{ID: p.ChannelID, Kind: PeerKindChannel, AccessHash: accessHash})
 		} else if rec, ok := r.cache.Get(PeerKindChannel, p.ChannelID); ok {
 			accessHash = rec.AccessHash
+		}
+
+		// Cache miss / missing access hash: attempt authoritative network fetch
+		if accessHash == 0 && r.fetcher != nil {
+			if ch, err := r.fetcher.FetchChannel(ctx, p.ChannelID); err == nil && ch != nil && ch.AccessHash != 0 {
+				accessHash = ch.AccessHash
+				if r.cache != nil {
+					r.cache.Put(PeerRecord{ID: p.ChannelID, Kind: PeerKindChannel, AccessHash: accessHash})
+				}
+			}
 		}
 
 		if accessHash == 0 {

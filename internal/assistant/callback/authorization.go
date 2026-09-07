@@ -46,8 +46,8 @@ func NewOwnerAuthorizer(ownerID int64, sudoGetter func() []int64) *OwnerAuthoriz
 // Authorize checks if actor matches ownerID or is in the sudo list.
 // If ownerID is 0, it fails closed to prevent unauthorized execution.
 func (a *OwnerAuthorizer) Authorize(ctx context.Context, actor Actor, action string) error {
-	if a.ownerID == 0 {
-		return ErrUnauthorized // Fail closed if ownerID is not configured
+	if a.ownerID == 0 || actor.UserID == 0 {
+		return ErrUnauthorized // Fail closed if ownerID or actor.UserID is 0
 	}
 	if actor.IsOwner || actor.UserID == a.ownerID {
 		return nil
@@ -57,7 +57,7 @@ func (a *OwnerAuthorizer) Authorize(ctx context.Context, actor Actor, action str
 	}
 	if a.sudoGetter != nil {
 		for _, id := range a.sudoGetter() {
-			if actor.UserID == id {
+			if id != 0 && actor.UserID == id {
 				return nil
 			}
 		}

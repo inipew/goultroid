@@ -99,6 +99,10 @@ func (r *Router) Dispatch(ctx context.Context, tx *Transaction) error {
 		}
 	}()
 
+	if tx.State() == StateCompleted || tx.State() == StateFailed {
+		return nil
+	}
+
 	_ = tx.Transition(StateValidated)
 
 	// 1. Authorization check
@@ -207,6 +211,10 @@ func (r *Router) DispatchInline(ctx context.Context, tx *InlineTransaction) erro
 			_ = tx.Answer(ctx, "", false)
 		}
 	}()
+
+	if tx.State() == StateCompleted || tx.State() == StateFailed {
+		return nil
+	}
 
 	_ = tx.Transition(StateValidated)
 

@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/inipew/goultroid/internal/addon"
-	appCap "github.com/inipew/goultroid/internal/application/capability"
 	"github.com/inipew/goultroid/internal/assistant"
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
@@ -71,9 +70,6 @@ func New(cfg *config.Config) (*App, error) {
 	// 4. Build and register plugins
 	pluginManager := plugin.NewManager(coreDeps.router)
 	pluginManager.SetHookRegistrar(tgRuntime.dispatcher)
-
-	capRegistry := appCap.NewRegistry()
-	pluginManager.SetCapabilityRegistry(capRegistry)
 
 	if tgRuntime.assistant != nil {
 		tgRuntime.assistant.SetCoreRouter(coreDeps.router)

@@ -21,6 +21,7 @@ type UpdateHandlerDeps struct {
 	CallbackRouter *callback.Router
 	Interaction    *interaction.ClientInteraction
 	CacheEntities  func(e tg.Entities)
+	IsShuttingDown func() bool
 }
 
 // RegisterUpdateHandlers registers message and callback handlers onto gotd's UpdateDispatcher.
@@ -35,6 +36,9 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 
 	// 1. Message Dispatcher -> Command Router
 	dispatcher.OnNewMessage(func(ctx context.Context, e tg.Entities, update *tg.UpdateNewMessage) error {
+		if deps.IsShuttingDown != nil && deps.IsShuttingDown() {
+			return nil
+		}
 		if deps.CacheEntities != nil {
 			deps.CacheEntities(e)
 		}
@@ -79,6 +83,9 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 
 	// 2a. Inline Query rate limiting (observe only, no handler yet — structural separation)
 	dispatcher.OnBotInlineQuery(func(ctx context.Context, e tg.Entities, update *tg.UpdateBotInlineQuery) error {
+		if deps.IsShuttingDown != nil && deps.IsShuttingDown() {
+			return nil
+		}
 		if deps.CacheEntities != nil {
 			deps.CacheEntities(e)
 		}
@@ -91,6 +98,9 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 	})
 
 	dispatcher.OnInlineBotCallbackQuery(func(ctx context.Context, e tg.Entities, update *tg.UpdateInlineBotCallbackQuery) error {
+		if deps.IsShuttingDown != nil && deps.IsShuttingDown() {
+			return nil
+		}
 		if deps.CacheEntities != nil {
 			deps.CacheEntities(e)
 		}
@@ -128,6 +138,9 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 
 	// 2. Callback Query Dispatcher -> Callback Router
 	dispatcher.OnBotCallbackQuery(func(ctx context.Context, e tg.Entities, update *tg.UpdateBotCallbackQuery) error {
+		if deps.IsShuttingDown != nil && deps.IsShuttingDown() {
+			return nil
+		}
 		if deps.CacheEntities != nil {
 			deps.CacheEntities(e)
 		}
@@ -141,7 +154,19 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 
 		var inputPeer tg.InputPeerClass
 		if deps.Resolver != nil {
-			inputPeer, _ = deps.Resolver.Resolve(ctx, update.Peer, update.UserID, e)
+			var err error
+			inputPeer, err = deps.Resolver.Resolve(ctx, update.Peer, update.UserID, e)
+			if err != nil {
+				logger.Warn("assistant: failed to resolve callback peer",
+					zap.Int64("user_id", update.UserID),
+					zap.Int64("query_id", update.QueryID),
+					zap.Error(err),
+				)
+				if deps.Interaction != nil {
+					_ = deps.Interaction.Answer(ctx, update.QueryID, "Unable to resolve chat. Please retry.", false)
+				}
+				return nil
+			}
 		}
 
 		chatID := extractChatID(update.Peer)

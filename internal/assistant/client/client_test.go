@@ -1,10 +1,12 @@
 package client_test
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/client"
 )
 
@@ -102,5 +104,35 @@ func TestUserRateLimiter_Concurrent(t *testing.T) {
 
 	if allowedCount != 10 {
 		t.Fatalf("expected exactly 10 requests allowed, got %d", allowedCount)
+	}
+}
+
+func TestUpdateHandlers_ShutdownBarrier(t *testing.T) {
+	dispatcher := tg.NewUpdateDispatcher()
+	var messageProcessed bool
+
+	// Handler configured with IsShuttingDown returning true
+	deps := client.UpdateHandlerDeps{
+		IsShuttingDown: func() bool { return true },
+	}
+	client.RegisterUpdateHandlers(&dispatcher, deps)
+
+	// Dispatch an update
+	update := &tg.UpdateNewMessage{
+		Message: &tg.Message{
+			ID:      123,
+			Message: "/start",
+			PeerID:  &tg.PeerUser{UserID: 42},
+		},
+	}
+
+	err := dispatcher.Handle(context.Background(), &tg.Updates{
+		Updates: []tg.UpdateClass{update},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if messageProcessed {
+		t.Fatalf("expected message to be rejected by shutdown barrier")
 	}
 }

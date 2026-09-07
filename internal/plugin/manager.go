@@ -7,9 +7,7 @@ import (
 	"sync"
 
 	"github.com/gotd/td/tg"
-	"github.com/inipew/goultroid/internal/application/capability"
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/execution"
 )
 
 // MessageHookHandler represents the raw Telegram message interceptor signature.
@@ -21,33 +19,18 @@ type HookRegistrar interface {
 }
 
 type Manager struct {
-	router             *core.Router
-	capabilityRegistry *capability.Registry
-	hookRegistrar      HookRegistrar
-	plugins                map[string]Plugin
-	metadata               map[string]Metadata
-	list                   []Plugin
-	hookCleanups           []func()
-	mu                     sync.RWMutex
-	shutdown               bool
+	router        *core.Router
+	hookRegistrar HookRegistrar
+	plugins       map[string]Plugin
+	metadata      map[string]Metadata
+	list          []Plugin
+	hookCleanups  []func()
+	mu            sync.RWMutex
+	shutdown      bool
 }
 
 func NewManager(router *core.Router) *Manager {
 	return &Manager{router: router, plugins: make(map[string]Plugin), metadata: make(map[string]Metadata), list: make([]Plugin, 0)}
-}
-
-// SetCapabilityRegistry sets the shared capability registry for plugins.
-func (m *Manager) SetCapabilityRegistry(reg *capability.Registry) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.capabilityRegistry = reg
-}
-
-// CapabilityRegistry returns the attached capability registry.
-func (m *Manager) CapabilityRegistry() *capability.Registry {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.capabilityRegistry
 }
 
 
@@ -174,14 +157,6 @@ func (m *Manager) RegisterWithContext(ctx context.Context, p Plugin) error {
 	m.plugins[name] = p
 	m.metadata[name] = meta
 	m.list = append(m.list, p)
-	if m.capabilityRegistry != nil {
-		if cp, ok := p.(execution.CapabilityProvider); ok {
-			caps := cp.Capabilities()
-			if len(caps) > 0 {
-				_ = m.capabilityRegistry.RegisterBatch(caps)
-			}
-		}
-	}
 	if hookCleanup != nil {
 		m.hookCleanups = append(m.hookCleanups, hookCleanup)
 	}

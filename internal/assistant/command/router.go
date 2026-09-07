@@ -40,21 +40,14 @@ func (c *Context) Reply(text string, markup tg.ReplyMarkupClass) (*tg.Message, e
 // Handler defines the function signature for an assistant bot command handler.
 type Handler func(c *Context) error
 
-// CommandSource defines capability to query commands for a surface.
-type CommandSource interface {
-	FindForSurface(name string, source execution.Source) (core.Command, bool)
-	CommandsForSurface(source execution.Source) []core.Command
-}
-
 // Router dispatches incoming bot commands to registered handlers.
 type Router struct {
-	handlers        map[string]Handler
-	coreRouter      *core.Router
-	unifiedRegistry CommandSource
-	ownerID         int64
-	sudoGetter      func() []int64
-	metrics         core.MetricsCollector
-	logger          *zap.Logger
+	handlers   map[string]Handler
+	coreRouter *core.Router
+	ownerID    int64
+	sudoGetter func() []int64
+	metrics    core.MetricsCollector
+	logger     *zap.Logger
 }
 
 // NewRouter creates an initialized command Router.
@@ -94,22 +87,6 @@ func (r *Router) CoreRouter() *core.Router {
 	return r.coreRouter
 }
 
-// SetUnifiedRegistry attaches a command source.
-func (r *Router) SetUnifiedRegistry(reg CommandSource) {
-	r.unifiedRegistry = reg
-	if cr, ok := reg.(*core.Router); ok {
-		r.coreRouter = cr
-	}
-}
-
-// UnifiedRegistry returns the attached unified command source.
-func (r *Router) UnifiedRegistry() CommandSource {
-	if r.coreRouter != nil {
-		return r.coreRouter
-	}
-	return r.unifiedRegistry
-}
-
 // Register attaches a handler to a command name (e.g. "/start").
 func (r *Router) Register(cmd string, handler Handler) {
 	cmd = strings.ToLower(strings.TrimSpace(cmd))
@@ -122,9 +99,6 @@ func (r *Router) Register(cmd string, handler Handler) {
 func (r *Router) findCommand(name string) (core.Command, bool) {
 	if r.coreRouter != nil {
 		return r.coreRouter.Find(name)
-	}
-	if r.unifiedRegistry != nil {
-		return r.unifiedRegistry.FindForSurface(name, execution.SourceAssistant)
 	}
 	return core.Command{}, false
 }
@@ -164,17 +138,28 @@ func (r *Router) Dispatch(ctx context.Context, senderID int64, peer tg.InputPeer
 		}
 
 		// Permission check
-		isOwner := r.ownerID != 0 && senderID == r.ownerID
+		isOwner := r.ownerID != 0 && senderID != 0 && senderID == r.ownerID
 		isSudo := isOwner
 		var sudoList []int64
 		if r.sudoGetter != nil {
 			sudoList = r.sudoGetter()
 			for _, s := range sudoList {
-				if s == senderID {
+				if s != 0 && s == senderID {
 					isSudo = true
 					break
 				}
 			}
+		}
+
+		if (cmd.Permission == core.PermissionOwner || cmd.Permission == core.PermissionSudo) && r.ownerID == 0 {
+			r.logger.Warn("assistant: owner_id not configured, rejecting privileged command",
+				zap.String("command", cmdNameClean),
+				zap.Int64("sender_id", senderID),
+			)
+			if inter != nil {
+				_, _ = inter.SendMessage(ctx, peer, "⛔ <i>Privileged commands are disabled: bot owner is not configured.</i>", nil)
+			}
+			return nil
 		}
 
 		switch cmd.Permission {

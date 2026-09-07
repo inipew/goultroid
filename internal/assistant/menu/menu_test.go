@@ -2,6 +2,8 @@ package menu_test
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 )
 
 type fakeInteraction struct {
+	mu             sync.RWMutex
 	lastAnswer     string
 	lastAlert      bool
 	lastEditedText string
@@ -21,12 +24,16 @@ type fakeInteraction struct {
 }
 
 func (f *fakeInteraction) Answer(ctx context.Context, queryID int64, text string, alert bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.lastAnswer = text
 	f.lastAlert = alert
 	return nil
 }
 
 func (f *fakeInteraction) Edit(ctx context.Context, target interaction.MessageTarget, text string, markup tg.ReplyMarkupClass) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.lastEditedText = text
 	return nil
 }
@@ -36,6 +43,8 @@ func (f *fakeInteraction) EditMarkup(ctx context.Context, target interaction.Mes
 }
 
 func (f *fakeInteraction) Delete(ctx context.Context, target interaction.MessageTarget) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.deleted = true
 	return nil
 }
@@ -159,5 +168,113 @@ func TestController_AttachRoutes(t *testing.T) {
 	err := router.Dispatch(ctx, txPostClose)
 	if err == nil {
 		t.Fatalf("expected session expired error after close, got nil")
+	}
+}
+
+func TestController_OwnershipEnforcement(t *testing.T) {
+	router := callback.NewRouter(zap.NewNop())
+	ctrl := menu.NewController(presentation.RenderScreen)
+	ctrl.AttachRoutes(router, func() string { return "MyTestBot" }, nil)
+
+	fake := &fakeInteraction{}
+	ctx := context.Background()
+	target := interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 100}, 50, 100, 1)
+
+	// Register with OwnerID = 100
+	ctrl.RegisterInstance(menu.MenuInstance{
+		ID:        "menu:100:50",
+		OwnerID:   100,
+		ChatID:    100,
+		MessageID: 50,
+		Screen:    menu.ScreenIDStart,
+	})
+
+	// 1. Foreign user (200) clicks menu -> rejected with ErrUnauthorized
+	txForeign := callback.NewTransaction(10, 200, callback.ParsedPayload{Namespace: "assistant", Action: "settings"}, target, fake)
+	err := router.Dispatch(ctx, txForeign)
+	if !errors.Is(err, callback.ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized for foreign user, got %v", err)
+	}
+	if fake.lastAnswer != "⚠️ You do not own this menu!" || !fake.lastAlert {
+		t.Fatalf("expected ownership alert answer, got text=%q alert=%v", fake.lastAnswer, fake.lastAlert)
+	}
+
+	// 2. Owner user (100) clicks menu -> allowed
+	fake.lastEditedText = ""
+	txOwner := callback.NewTransaction(11, 100, callback.ParsedPayload{Namespace: "assistant", Action: "settings"}, target, fake)
+	err = router.Dispatch(ctx, txOwner)
+	if err != nil {
+		t.Fatalf("expected owner click to succeed, got %v", err)
+	}
+	if fake.lastEditedText == "" {
+		t.Fatalf("expected settings screen edited by owner")
+	}
+}
+
+func TestController_ConcurrentTransitions(t *testing.T) {
+	router := callback.NewRouter(zap.NewNop())
+	ctrl := menu.NewController(presentation.RenderScreen)
+	ctrl.AttachRoutes(router, func() string { return "MyTestBot" }, nil)
+
+	ctx := context.Background()
+	target := interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 100}, 50, 100, 1)
+
+	ctrl.RegisterInstance(menu.MenuInstance{
+		ID:        "menu:100:50",
+		OwnerID:   100,
+		ChatID:    100,
+		MessageID: 50,
+		Screen:    menu.ScreenIDStart,
+	})
+
+	var wg sync.WaitGroup
+	actions := []string{"start", "settings", "status", "ping"}
+
+	// Run 20 concurrent transactions on the same menu
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		action := actions[i%len(actions)]
+		queryID := int64(100 + i)
+		go func(qID int64, act string) {
+			defer wg.Done()
+			txFake := &fakeInteraction{}
+			tx := callback.NewTransaction(qID, 100, callback.ParsedPayload{Namespace: "assistant", Action: act}, target, txFake)
+			_ = router.Dispatch(ctx, tx)
+		}(queryID, action)
+	}
+	wg.Wait()
+
+	// Instance must still be present and valid
+	inst, ok := ctrl.Instances().Get(100, 50)
+	if !ok || inst == nil {
+		t.Fatalf("expected menu instance to survive concurrent transitions")
+	}
+}
+
+func TestMemoryInstanceStore_LockInstance(t *testing.T) {
+	store := menu.NewMemoryInstanceStore(time.Hour)
+	unlock1 := store.LockInstance(123, 456)
+
+	locked := make(chan struct{})
+	go func() {
+		unlock2 := store.LockInstance(123, 456)
+		close(locked)
+		unlock2()
+	}()
+
+	select {
+	case <-locked:
+		t.Fatalf("second lock should be blocked until first lock releases")
+	case <-time.After(30 * time.Millisecond):
+		// Expected: blocked
+	}
+
+	unlock1()
+
+	select {
+	case <-locked:
+		// Expected: unblocked after unlock1
+	case <-time.After(100 * time.Millisecond):
+		t.Fatalf("second lock failed to acquire after unlock")
 	}
 }

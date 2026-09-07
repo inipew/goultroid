@@ -1,6 +1,7 @@
 package command
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/gotd/td/tg"
@@ -30,6 +31,7 @@ func RegisterStart(r *Router, usernameProvider func() string, uptimeProvider fun
 				chatID = c.SenderID
 			}
 			instanceStore.Register(menu.MenuInstance{
+				ID:        fmt.Sprintf("menu:%d:%d", chatID, sent.ID),
 				ChatID:    chatID,
 				MessageID: sent.ID,
 				Screen:    menu.ScreenIDStart,
