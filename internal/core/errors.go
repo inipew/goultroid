@@ -9,6 +9,9 @@ import (
 
 var (
 	ErrPermissionDenied = errors.New("permission denied")
+	ErrUnauthorized     = errors.New("unauthorized")
+	ErrForbidden        = errors.New("forbidden")
+	ErrValidation       = errors.New("validation failed")
 	ErrGroupOnly        = errors.New("command can only be used in groups")
 	ErrPrivateOnly      = errors.New("command can only be used in private chat")
 	ErrReplyRequired    = errors.New("command must be a reply to a message")
@@ -80,7 +83,7 @@ func IsPermanentError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, ErrPermissionDenied) || errors.Is(err, ErrInvalidArgs) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrUnsupported) || errors.Is(err, ErrGroupOnly) || errors.Is(err, ErrPrivateOnly) || errors.Is(err, ErrReplyRequired) || errors.Is(err, ErrUnclosedQuote) || errors.Is(err, ErrTrailingEscape) || errors.Is(err, ErrResourceLimit) {
+	if errors.Is(err, ErrValidation) || errors.Is(err, ErrPermissionDenied) || errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrForbidden) || errors.Is(err, ErrInvalidArgs) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrUnsupported) || errors.Is(err, ErrGroupOnly) || errors.Is(err, ErrPrivateOnly) || errors.Is(err, ErrReplyRequired) || errors.Is(err, ErrUnclosedQuote) || errors.Is(err, ErrTrailingEscape) || errors.Is(err, ErrResourceLimit) || errors.Is(err, ErrConflict) {
 		return true
 	}
 	text := strings.ToUpper(err.Error())
@@ -126,10 +129,10 @@ func CategoryOf(err error) ErrorCategory {
 	if errors.As(err, &c) && c != nil {
 		return c.Category
 	}
-	if errors.Is(err, ErrPermissionDenied) {
+	if errors.Is(err, ErrPermissionDenied) || errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrForbidden) {
 		return CategorySecurity
 	}
-	if errors.Is(err, ErrInvalidArgs) || errors.Is(err, ErrUnclosedQuote) || errors.Is(err, ErrTrailingEscape) || errors.Is(err, ErrGroupOnly) {
+	if errors.Is(err, ErrValidation) || errors.Is(err, ErrInvalidArgs) || errors.Is(err, ErrUnclosedQuote) || errors.Is(err, ErrTrailingEscape) || errors.Is(err, ErrGroupOnly) {
 		return CategoryInvalidInput
 	}
 	if errors.Is(err, ErrResourceLimit) {
@@ -162,8 +165,11 @@ func UserMessage(err error) string {
 	if err == nil {
 		return ""
 	}
-	if errors.Is(err, ErrPermissionDenied) {
-		return "⛔ Permission denied."
+	if errors.Is(err, ErrValidation) {
+		return "⚠️ Validation failed. Please check your input."
+	}
+	if errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrPermissionDenied) || errors.Is(err, ErrForbidden) {
+		return "⛔ You are not authorized to perform this action."
 	}
 	if errors.Is(err, ErrGroupOnly) {
 		return "⚠️ This command can only be used in groups."
@@ -182,6 +188,9 @@ func UserMessage(err error) string {
 	}
 	if errors.Is(err, ErrNotFound) {
 		return "⚠️ Requested item was not found."
+	}
+	if errors.Is(err, ErrConflict) {
+		return "⚠️ Conflict — resource already exists or was modified concurrently."
 	}
 	if errors.Is(err, ErrUnsupported) {
 		return "⚠️ This operation is not supported."
