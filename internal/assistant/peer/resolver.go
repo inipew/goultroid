@@ -5,12 +5,12 @@ import (
 	"fmt"
 
 	"github.com/gotd/td/tg"
-	"github.com/inipew/goultroid/internal/assistant/interaction"
 )
 
 // Resolver resolves Telegram generic Peer objects into MTProto InputPeerClass instances.
 type Resolver interface {
 	Resolve(ctx context.Context, peer tg.PeerClass, senderID int64, entities tg.Entities) (tg.InputPeerClass, error)
+	ReResolve(ctx context.Context, inputPeer tg.InputPeerClass) (tg.InputPeerClass, error)
 	InvalidatePeer(inputPeer tg.InputPeerClass)
 	Cache() Cache
 }
@@ -48,6 +48,33 @@ func (r *DefaultResolver) InvalidatePeer(inputPeer tg.InputPeerClass) {
 	}
 }
 
+// ReResolve attempts to refresh or re-fetch cached authorization for a previously resolved peer.
+func (r *DefaultResolver) ReResolve(ctx context.Context, inputPeer tg.InputPeerClass) (tg.InputPeerClass, error) {
+	if inputPeer == nil {
+		return nil, ErrPeerResolution
+	}
+	switch p := inputPeer.(type) {
+	case *tg.InputPeerUser:
+		if r.cache != nil {
+			if rec, ok := r.cache.Get(PeerKindUser, p.UserID); ok && rec.AccessHash != 0 {
+				return &tg.InputPeerUser{UserID: p.UserID, AccessHash: rec.AccessHash}, nil
+			}
+		}
+		return nil, fmt.Errorf("%w: user %d", ErrAccessHashMissing, p.UserID)
+	case *tg.InputPeerChannel:
+		if r.cache != nil {
+			if rec, ok := r.cache.Get(PeerKindChannel, p.ChannelID); ok && rec.AccessHash != 0 {
+				return &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: rec.AccessHash}, nil
+			}
+		}
+		return nil, fmt.Errorf("%w: channel %d", ErrAccessHashMissing, p.ChannelID)
+	case *tg.InputPeerChat:
+		return p, nil
+	default:
+		return nil, fmt.Errorf("%w: %T", ErrUnsupportedPeer, inputPeer)
+	}
+}
+
 // Resolve deterministically resolves a peer into an InputPeer.
 func (r *DefaultResolver) Resolve(ctx context.Context, peer tg.PeerClass, senderID int64, entities tg.Entities) (tg.InputPeerClass, error) {
 	// 1. Populate cache from provided entities
@@ -62,7 +89,7 @@ func (r *DefaultResolver) Resolve(ctx context.Context, peer tg.PeerClass, sender
 				return &tg.InputPeerUser{UserID: senderID, AccessHash: rec.AccessHash}, nil
 			}
 		}
-		return nil, fmt.Errorf("%w: nil peer and missing sender coordinates", interaction.ErrPeerResolution)
+		return nil, fmt.Errorf("%w: nil peer and missing sender coordinates", ErrPeerResolution)
 	}
 
 	// 3. Resolve according to explicit peer variant
@@ -83,7 +110,7 @@ func (r *DefaultResolver) Resolve(ctx context.Context, peer tg.PeerClass, sender
 		}
 
 		if accessHash == 0 {
-			return nil, fmt.Errorf("%w: missing access hash for user %d", interaction.ErrPeerResolution, p.UserID)
+			return nil, fmt.Errorf("%w: missing access hash for user %d", ErrAccessHashMissing, p.UserID)
 		}
 		return &tg.InputPeerUser{UserID: p.UserID, AccessHash: accessHash}, nil
 
@@ -101,11 +128,11 @@ func (r *DefaultResolver) Resolve(ctx context.Context, peer tg.PeerClass, sender
 		}
 
 		if accessHash == 0 {
-			return nil, fmt.Errorf("%w: missing access hash for channel %d", interaction.ErrPeerResolution, p.ChannelID)
+			return nil, fmt.Errorf("%w: missing access hash for channel %d", ErrAccessHashMissing, p.ChannelID)
 		}
 		return &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: accessHash}, nil
 
 	default:
-		return nil, fmt.Errorf("%w: unsupported peer type %T", interaction.ErrPeerResolution, peer)
+		return nil, fmt.Errorf("%w: %T", ErrUnsupportedPeer, peer)
 	}
 }

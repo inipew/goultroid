@@ -36,24 +36,14 @@ func buildTelegramRuntime(cfg *config.Config, core *coreDependencies, logger *za
 
 	var assistantClient assistant.Client
 	if cfg.BotToken != "" {
-		bot := assistant.NewBotClient(cfg.AppID, cfg.AppHash, cfg.BotToken, logger)
+		app := assistant.NewApp(cfg.AppID, cfg.AppHash, cfg.BotToken, logger)
 		if core.perms != nil {
-			bot.SetOwner(core.perms.OwnerID, core.perms.ListSudo)
+			app.SetOwner(core.perms.OwnerID, core.perms.ListSudo)
 		} else if cfg.OwnerID != 0 {
-			bot.SetOwner(cfg.OwnerID, nil)
-		}
-		bot.SetCallbackRouter(core.callbackRouter)
-		bot.SetInlineEngine(core.inlineEngine)
-		bot.SetLocalizer(core.localizer)
-		bot.SetEventBus(core.eventBus)
-
-		// Register assistant callback handler so /start and status buttons are routed properly
-		assistantHandler := assistant.NewHandler(bot, bot.StartTime())
-		if err := core.callbackRouter.Register(assistantHandler); err != nil {
-			logger.Warn("failed to register assistant callback handler", zap.Error(err))
+			app.SetOwner(cfg.OwnerID, nil)
 		}
 
-		assistantClient = bot
+		assistantClient = app
 	}
 
 	return &telegramRuntime{

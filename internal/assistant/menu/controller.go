@@ -145,9 +145,8 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 
 	// 1. Start Menu
 	r.Register("assistant", "start", func(ctx context.Context, tx *callback.Transaction) error {
-		_ = tx.Answer(ctx, "", false)
 		if c.instances != nil {
-			c.instances.UpdateScreen(tx.Target.ChatID, tx.Target.MessageID, ScreenIDStart)
+			c.instances.UpdateScreen(tx.Target.ChatID(), tx.Target.MessageID(), ScreenIDStart)
 		}
 		screen := BuildStartScreen(username(), uptime())
 		text, markup := c.renderer(screen)
@@ -156,9 +155,8 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 
 	// 2. Settings Menu
 	r.Register("assistant", "settings", func(ctx context.Context, tx *callback.Transaction) error {
-		_ = tx.Answer(ctx, "", false)
 		if c.instances != nil {
-			c.instances.UpdateScreen(tx.Target.ChatID, tx.Target.MessageID, ScreenIDSettings)
+			c.instances.UpdateScreen(tx.Target.ChatID(), tx.Target.MessageID(), ScreenIDSettings)
 		}
 		screen := BuildSettingsScreen(username())
 		text, markup := c.renderer(screen)
@@ -167,9 +165,8 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 
 	// 3. Help Menu
 	r.Register("assistant", "help", func(ctx context.Context, tx *callback.Transaction) error {
-		_ = tx.Answer(ctx, "", false)
 		if c.instances != nil {
-			c.instances.UpdateScreen(tx.Target.ChatID, tx.Target.MessageID, ScreenIDHelp)
+			c.instances.UpdateScreen(tx.Target.ChatID(), tx.Target.MessageID(), ScreenIDHelp)
 		}
 		screen := BuildHelpScreen(username())
 		text, markup := c.renderer(screen)
@@ -178,9 +175,8 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 
 	// 4. Status Menu
 	r.Register("assistant", "status", func(ctx context.Context, tx *callback.Transaction) error {
-		_ = tx.Answer(ctx, "", false)
 		if c.instances != nil {
-			c.instances.UpdateScreen(tx.Target.ChatID, tx.Target.MessageID, ScreenIDStatus)
+			c.instances.UpdateScreen(tx.Target.ChatID(), tx.Target.MessageID(), ScreenIDStatus)
 		}
 		screen := BuildStatusScreen(username(), uptime(), "GoUltroid (MTProto) v2")
 		text, markup := c.renderer(screen)
@@ -196,7 +192,7 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 	r.Register("assistant", "close", func(ctx context.Context, tx *callback.Transaction) error {
 		_ = tx.Answer(ctx, "Menu closed", false)
 		if c.instances != nil {
-			c.instances.Invalidate(tx.Target.ChatID, tx.Target.MessageID)
+			c.instances.Invalidate(tx.Target.ChatID(), tx.Target.MessageID())
 		}
 		return tx.Delete(ctx)
 	})

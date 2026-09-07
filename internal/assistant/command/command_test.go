@@ -31,7 +31,7 @@ func (f *fakeInteraction) Delete(ctx context.Context, target interaction.Message
 	return nil
 }
 func (f *fakeInteraction) GetMessage(ctx context.Context, target interaction.MessageTarget) (*tg.Message, error) {
-	return &tg.Message{ID: target.MessageID}, nil
+	return &tg.Message{ID: target.MessageID()}, nil
 }
 func (f *fakeInteraction) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
 	f.lastSentText = text

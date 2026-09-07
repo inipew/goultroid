@@ -1,7 +1,6 @@
 package callback
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 )
@@ -9,19 +8,12 @@ import (
 const (
 	// MaxCallbackDataLen is the maximum byte length of a callback_data payload permitted by Telegram MTProto.
 	MaxCallbackDataLen = 64
+	// MaxFieldLen is the maximum character length for namespace and action identifiers.
+	MaxFieldLen = 32
 	// PayloadPrefixV2 is the version indicator for assistant v2 payloads.
 	PayloadPrefixV2 = "a1"
 	// PayloadPrefixV1 is the version indicator for legacy v1 payloads.
 	PayloadPrefixV1 = "v1"
-)
-
-var (
-	// ErrPayloadTooLong indicates callback data exceeds 64 bytes.
-	ErrPayloadTooLong = errors.New("assistant/callback: payload exceeds 64 bytes limit")
-	// ErrMalformedPayload indicates callback data does not follow the required prefix and separator format.
-	ErrMalformedPayload = errors.New("assistant/callback: malformed callback payload")
-	// ErrEmptyField indicates a required field in callback data is empty.
-	ErrEmptyField = errors.New("assistant/callback: required field is empty")
 )
 
 // ParsedPayload contains the decoded parts of an incoming callback data string.
@@ -30,6 +22,20 @@ type ParsedPayload struct {
 	Namespace string
 	Action    string
 	State     string
+}
+
+func isValidField(s string) bool {
+	if len(s) == 0 || len(s) > MaxFieldLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '-' || c == '*' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // Encode builds an a1 callback data string from namespace and action.
@@ -42,6 +48,10 @@ func EncodeWithState(namespace, action, state string) (string, error) {
 	if namespace == "" || action == "" {
 		return "", ErrEmptyField
 	}
+	if !isValidField(namespace) || !isValidField(action) {
+		return "", fmt.Errorf("%w: invalid characters in namespace or action", ErrMalformedPayload)
+	}
+
 	var res string
 	if state == "" {
 		res = fmt.Sprintf("%s:%s:%s", PayloadPrefixV2, namespace, action)
@@ -79,6 +89,9 @@ func Parse(data []byte) (*ParsedPayload, error) {
 	action := parts[2]
 	if namespace == "" || action == "" {
 		return nil, ErrEmptyField
+	}
+	if !isValidField(namespace) || !isValidField(action) {
+		return nil, fmt.Errorf("%w: invalid characters in payload field", ErrMalformedPayload)
 	}
 
 	state := ""

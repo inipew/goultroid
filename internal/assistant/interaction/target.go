@@ -32,12 +32,12 @@ type Target interface {
 	IsValid() bool
 }
 
-// MessageTarget encapsulates the coordinates required to address a dialog-scoped Telegram message.
+// MessageTarget encapsulates immutable coordinates required to address a dialog-scoped Telegram message.
 type MessageTarget struct {
-	Peer         tg.InputPeerClass
-	MessageID    int
-	ChatID       int64
-	ChatInstance int64
+	peer         tg.InputPeerClass
+	messageID    int
+	chatID       int64
+	chatInstance int64
 }
 
 var _ Target = (*MessageTarget)(nil)
@@ -45,11 +45,31 @@ var _ Target = (*MessageTarget)(nil)
 // NewMessageTarget creates an immutable MessageTarget.
 func NewMessageTarget(peer tg.InputPeerClass, msgID int, chatID int64, chatInstance int64) MessageTarget {
 	return MessageTarget{
-		Peer:         peer,
-		MessageID:    msgID,
-		ChatID:       chatID,
-		ChatInstance: chatInstance,
+		peer:         peer,
+		messageID:    msgID,
+		chatID:       chatID,
+		chatInstance: chatInstance,
 	}
+}
+
+// Peer returns the InputPeer of this target.
+func (m MessageTarget) Peer() tg.InputPeerClass {
+	return m.peer
+}
+
+// MessageID returns the message ID on Telegram.
+func (m MessageTarget) MessageID() int {
+	return m.messageID
+}
+
+// ChatID returns the chat ID.
+func (m MessageTarget) ChatID() int64 {
+	return m.chatID
+}
+
+// ChatInstance returns the callback chat instance coordinate.
+func (m MessageTarget) ChatInstance() int64 {
+	return m.chatInstance
 }
 
 // Kind returns TargetKindMessage.
@@ -59,14 +79,14 @@ func (m MessageTarget) Kind() TargetKind {
 
 // IsValid reports whether MessageTarget has a non-nil peer and valid positive message ID.
 func (m MessageTarget) IsValid() bool {
-	return m.Peer != nil && m.MessageID > 0
+	return m.peer != nil && m.messageID > 0
 }
 
-// InlineTarget encapsulates the coordinates for an inline-sent message.
+// InlineTarget encapsulates immutable coordinates for an inline-sent message.
 type InlineTarget struct {
-	QueryID      int64
-	MessageID    tg.InputBotInlineMessageIDClass
-	ChatInstance int64
+	queryID      int64
+	messageID    tg.InputBotInlineMessageIDClass
+	chatInstance int64
 }
 
 var _ Target = (*InlineTarget)(nil)
@@ -74,10 +94,25 @@ var _ Target = (*InlineTarget)(nil)
 // NewInlineTarget creates an immutable InlineTarget.
 func NewInlineTarget(queryID int64, msgID tg.InputBotInlineMessageIDClass, chatInstance int64) InlineTarget {
 	return InlineTarget{
-		QueryID:      queryID,
-		MessageID:    msgID,
-		ChatInstance: chatInstance,
+		queryID:      queryID,
+		messageID:    msgID,
+		chatInstance: chatInstance,
 	}
+}
+
+// QueryID returns the original query ID.
+func (i InlineTarget) QueryID() int64 {
+	return i.queryID
+}
+
+// MessageID returns the inline message ID.
+func (i InlineTarget) MessageID() tg.InputBotInlineMessageIDClass {
+	return i.messageID
+}
+
+// ChatInstance returns the callback chat instance coordinate.
+func (i InlineTarget) ChatInstance() int64 {
+	return i.chatInstance
 }
 
 // Kind returns TargetKindInline.
@@ -85,7 +120,7 @@ func (i InlineTarget) Kind() TargetKind {
 	return TargetKindInline
 }
 
-// IsValid reports whether InlineTarget has a valid query ID or non-nil message ID.
+// IsValid reports whether InlineTarget has a non-nil message ID and non-zero query ID.
 func (i InlineTarget) IsValid() bool {
-	return i.MessageID != nil
+	return i.messageID != nil && i.queryID != 0
 }

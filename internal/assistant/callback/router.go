@@ -2,18 +2,12 @@ package callback
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"go.uber.org/zap"
-)
-
-var (
-	// ErrUnknownAction occurs when no handler matches the requested namespace and action.
-	ErrUnknownAction = errors.New("assistant/callback: no handler registered for action")
 )
 
 // ActionHandler defines the signature for a callback action handler function.
@@ -65,23 +59,48 @@ func (r *Router) Dispatch(ctx context.Context, tx *Transaction) error {
 	}
 
 	start := time.Now()
+	correlationID := fmt.Sprintf("cb-%d-%d", tx.QueryID, start.UnixNano())
 	correlationKey := fmt.Sprintf("%s:%s", tx.Payload.Namespace, tx.Payload.Action)
+
+	// Enforce 15-second execution timeout if not already set
+	var cancel context.CancelFunc
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		ctx, cancel = context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+	}
+
+	// Ensure the query is answered even if the handler forgets or panics (Router-owned lifecycle)
+	defer func() {
+		if !tx.IsAnswered() {
+			_ = tx.Answer(ctx, "", false)
+		}
+	}()
+
+	_ = tx.Transition(StateValidated)
 
 	// 1. Authorization check
 	r.mu.RLock()
 	authorizer := r.authorizer
 	r.mu.RUnlock()
 
-	if err := authorizer.Authorize(ctx, tx.UserID, tx.Payload.Action); err != nil {
+	actor := Actor{
+		UserID: tx.UserID,
+		ChatID: tx.Target.ChatID(),
+	}
+
+	if err := authorizer.Authorize(ctx, actor, tx.Payload.Action); err != nil {
 		_ = tx.Answer(ctx, "⚠️ This is OWNER's bot!!", true)
 		r.logger.Warn("assistant: unauthorized callback rejected",
+			zap.String("correlation_id", correlationID),
 			zap.Int64("user_id", tx.UserID),
 			zap.String("action", tx.Payload.Action),
 			zap.Int64("query_id", tx.QueryID),
 		)
 		tx.SetState(StateFailed)
-		return interaction.ErrUnauthorized
+		return ErrUnauthorized
 	}
+
+	_ = tx.Transition(StateAuthorized)
 
 	// 2. Resolve handler
 	r.mu.RLock()
@@ -95,6 +114,7 @@ func (r *Router) Dispatch(ctx context.Context, tx *Transaction) error {
 	if !ok {
 		_ = tx.Answer(ctx, "Unknown button action", false)
 		r.logger.Warn("assistant: unknown callback action",
+			zap.String("correlation_id", correlationID),
 			zap.String("key", correlationKey),
 			zap.Int64("query_id", tx.QueryID),
 		)
@@ -103,13 +123,14 @@ func (r *Router) Dispatch(ctx context.Context, tx *Transaction) error {
 	}
 
 	// 3. Execute handler
-	tx.SetState(StateExecuting)
+	_ = tx.Transition(StateExecuting)
 	err := handler(ctx, tx)
 
 	duration := time.Since(start)
 	if err != nil {
 		tx.SetState(StateFailed)
 		r.logger.Error("assistant: callback handler failed",
+			zap.String("correlation_id", correlationID),
 			zap.String("key", correlationKey),
 			zap.Int64("query_id", tx.QueryID),
 			zap.Duration("duration", duration),
@@ -118,8 +139,9 @@ func (r *Router) Dispatch(ctx context.Context, tx *Transaction) error {
 		return err
 	}
 
-	tx.SetState(StateCompleted)
+	_ = tx.Transition(StateCompleted)
 	r.logger.Debug("assistant: callback handler completed",
+		zap.String("correlation_id", correlationID),
 		zap.String("key", correlationKey),
 		zap.Int64("query_id", tx.QueryID),
 		zap.Duration("duration", duration),

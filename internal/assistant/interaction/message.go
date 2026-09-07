@@ -15,16 +15,17 @@ import (
 	"go.uber.org/zap"
 )
 
-// StalePeerInvalidator invalidates cached authorization coordinates upon ACCESS_HASH_INVALID.
-type StalePeerInvalidator interface {
+// PeerReResolver refreshes a peer access hash upon encountering ACCESS_HASH_INVALID.
+type PeerReResolver interface {
 	InvalidatePeer(peer tg.InputPeerClass)
+	ReResolve(ctx context.Context, inputPeer tg.InputPeerClass) (tg.InputPeerClass, error)
 }
 
 // ClientInteraction implements MessageInteraction using MTProto TelegramAPI.
 type ClientInteraction struct {
-	api         TelegramAPI
-	logger      *zap.Logger
-	invalidator StalePeerInvalidator
+	api        TelegramAPI
+	logger     *zap.Logger
+	reResolver PeerReResolver
 }
 
 var _ MessageInteraction = (*ClientInteraction)(nil)
@@ -40,23 +41,9 @@ func NewClientInteraction(api TelegramAPI, logger *zap.Logger) *ClientInteractio
 	}
 }
 
-// SetPeerInvalidator configures an invalidator called when ACCESS_HASH_INVALID is detected.
-func (c *ClientInteraction) SetPeerInvalidator(invalidator StalePeerInvalidator) {
-	c.invalidator = invalidator
-}
-
-func (c *ClientInteraction) handleRPCError(target MessageTarget, err error) error {
-	if err == nil {
-		return nil
-	}
-	classified := ClassifyRPCError(err)
-	if errors.Is(classified, ErrAccessHashStale) && c.invalidator != nil {
-		c.logger.Warn("assistant: access hash stale, invalidating peer cache",
-			zap.String("peer_type", fmt.Sprintf("%T", target.Peer)),
-		)
-		c.invalidator.InvalidatePeer(target.Peer)
-	}
-	return classified
+// SetPeerReResolver configures a resolver called when ACCESS_HASH_INVALID is detected.
+func (c *ClientInteraction) SetPeerReResolver(reResolver PeerReResolver) {
+	c.reResolver = reResolver
 }
 
 func parseHTML(text string) (string, []tg.MessageEntityClass) {
@@ -130,19 +117,16 @@ func (c *ClientInteraction) Answer(ctx context.Context, queryID int64, text stri
 	return nil
 }
 
-// Edit updates the text and inline markup of a dialog message.
+// Edit updates the text and inline markup of a dialog message with bounded stale hash recovery.
 func (c *ClientInteraction) Edit(ctx context.Context, target MessageTarget, text string, markup tg.ReplyMarkupClass) error {
-	if c.api == nil {
-		return ErrInvalidTarget
-	}
-	if !target.IsValid() {
+	if c.api == nil || !target.IsValid() {
 		return ErrInvalidTarget
 	}
 
 	plain, ents := parseHTML(text)
 	req := &tg.MessagesEditMessageRequest{
-		Peer: target.Peer,
-		ID:   target.MessageID,
+		Peer: target.Peer(),
+		ID:   target.MessageID(),
 	}
 	req.SetMessage(plain)
 	if len(ents) > 0 {
@@ -153,136 +137,175 @@ func (c *ClientInteraction) Edit(ctx context.Context, target MessageTarget, text
 		req.SetReplyMarkup(markup)
 	}
 
-	_, err := c.api.MessagesEditMessage(ctx, req)
-	if err != nil {
-		classified := c.handleRPCError(target, err)
+	for attempt := 0; attempt <= MaxPeerRecoveryAttempts; attempt++ {
+		_, err := c.api.MessagesEditMessage(ctx, req)
+		if err == nil {
+			return nil
+		}
+		classified := ClassifyRPCError(err)
 		if classified == nil {
 			return nil // MESSAGE_NOT_MODIFIED is a no-op success
 		}
+		if errors.Is(classified, ErrAccessHashStale) && c.reResolver != nil && attempt < MaxPeerRecoveryAttempts {
+			c.logger.Warn("assistant: access hash stale during edit, invalidating and re-resolving",
+				zap.Int("msg_id", target.MessageID()),
+			)
+			c.reResolver.InvalidatePeer(req.Peer)
+			if newPeer, rerr := c.reResolver.ReResolve(ctx, req.Peer); rerr == nil && newPeer != nil {
+				req.Peer = newPeer
+				continue // retry once
+			}
+		}
 		return fmt.Errorf("assistant edit message: %w", classified)
 	}
-	return nil
+	return ErrAccessHashStale
 }
 
 // EditMarkup updates only the reply markup of a dialog message.
 func (c *ClientInteraction) EditMarkup(ctx context.Context, target MessageTarget, markup tg.ReplyMarkupClass) error {
-	if c.api == nil {
-		return ErrInvalidTarget
-	}
-	if !target.IsValid() {
+	if c.api == nil || !target.IsValid() {
 		return ErrInvalidTarget
 	}
 
 	req := &tg.MessagesEditMessageRequest{
-		Peer: target.Peer,
-		ID:   target.MessageID,
+		Peer: target.Peer(),
+		ID:   target.MessageID(),
 	}
 	if markup != nil {
 		req.SetReplyMarkup(markup)
 	}
 
-	_, err := c.api.MessagesEditMessage(ctx, req)
-	if err != nil {
-		classified := c.handleRPCError(target, err)
+	for attempt := 0; attempt <= MaxPeerRecoveryAttempts; attempt++ {
+		_, err := c.api.MessagesEditMessage(ctx, req)
+		if err == nil {
+			return nil
+		}
+		classified := ClassifyRPCError(err)
 		if classified == nil {
 			return nil
 		}
+		if errors.Is(classified, ErrAccessHashStale) && c.reResolver != nil && attempt < MaxPeerRecoveryAttempts {
+			c.reResolver.InvalidatePeer(req.Peer)
+			if newPeer, rerr := c.reResolver.ReResolve(ctx, req.Peer); rerr == nil && newPeer != nil {
+				req.Peer = newPeer
+				continue
+			}
+		}
 		return fmt.Errorf("assistant edit message markup: %w", classified)
 	}
-	return nil
+	return ErrAccessHashStale
 }
 
-// Delete removes a dialog message using peer-aware MTProto RPC with idempotent semantics.
+// Delete removes a dialog message using peer-aware MTProto RPC with idempotent semantics and stale hash recovery.
 func (c *ClientInteraction) Delete(ctx context.Context, target MessageTarget) error {
-	if c.api == nil {
-		return ErrInvalidTarget
-	}
-	if !target.IsValid() {
+	if c.api == nil || !target.IsValid() {
 		return ErrInvalidTarget
 	}
 
-	var rpcErr error
-	switch p := target.Peer.(type) {
-	case *tg.InputPeerChannel:
-		_, rpcErr = c.api.ChannelsDeleteMessages(ctx, &tg.ChannelsDeleteMessagesRequest{
-			Channel: &tg.InputChannel{ChannelID: p.ChannelID, AccessHash: p.AccessHash},
-			ID:      []int{target.MessageID},
-		})
-	case *tg.InputPeerUser, *tg.InputPeerChat, *tg.InputPeerSelf:
-		req := &tg.MessagesDeleteMessagesRequest{ID: []int{target.MessageID}}
-		req.SetRevoke(true)
-		_, rpcErr = c.api.MessagesDeleteMessages(ctx, req)
-	default:
-		return fmt.Errorf("%w: unsupported peer %T", ErrUnsupportedTarget, target.Peer)
-	}
+	currentPeer := target.Peer()
+	for attempt := 0; attempt <= MaxPeerRecoveryAttempts; attempt++ {
+		var rpcErr error
+		switch p := currentPeer.(type) {
+		case *tg.InputPeerChannel:
+			_, rpcErr = c.api.ChannelsDeleteMessages(ctx, &tg.ChannelsDeleteMessagesRequest{
+				Channel: &tg.InputChannel{ChannelID: p.ChannelID, AccessHash: p.AccessHash},
+				ID:      []int{target.MessageID()},
+			})
+		case *tg.InputPeerUser, *tg.InputPeerChat, *tg.InputPeerSelf:
+			req := &tg.MessagesDeleteMessagesRequest{ID: []int{target.MessageID()}}
+			req.SetRevoke(true)
+			_, rpcErr = c.api.MessagesDeleteMessages(ctx, req)
+		default:
+			return fmt.Errorf("%w: unsupported peer %T", ErrUnsupportedTarget, currentPeer)
+		}
 
-	if rpcErr != nil {
-		classified := c.handleRPCError(target, rpcErr)
-		// Idempotency: if message is already absent or was deleted concurrently, consider success
+		if rpcErr == nil {
+			return nil
+		}
+		classified := ClassifyRPCError(rpcErr)
 		if errors.Is(classified, ErrMessageAlreadyDeleted) {
 			c.logger.Debug("assistant delete: message already absent, treating as success",
-				zap.Int("msg_id", target.MessageID),
+				zap.Int("msg_id", target.MessageID()),
 			)
 			return nil
 		}
-		return fmt.Errorf("assistant delete message: %w", classified)
-	}
-	return nil
-}
-
-// GetMessage retrieves a message using peer-aware MTProto RPC.
-func (c *ClientInteraction) GetMessage(ctx context.Context, target MessageTarget) (*tg.Message, error) {
-	if c.api == nil {
-		return nil, ErrInvalidTarget
-	}
-	if !target.IsValid() {
-		return nil, ErrInvalidTarget
-	}
-
-	var res tg.MessagesMessagesClass
-	var rpcErr error
-
-	switch p := target.Peer.(type) {
-	case *tg.InputPeerChannel:
-		res, rpcErr = c.api.ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
-			Channel: &tg.InputChannel{ChannelID: p.ChannelID, AccessHash: p.AccessHash},
-			ID:      []tg.InputMessageClass{&tg.InputMessageID{ID: target.MessageID}},
-		})
-	default:
-		res, rpcErr = c.api.MessagesGetMessages(ctx, []tg.InputMessageClass{
-			&tg.InputMessageID{ID: target.MessageID},
-		})
-	}
-
-	if rpcErr != nil {
-		return nil, c.handleRPCError(target, rpcErr)
-	}
-
-	extractFirst := func(slice []tg.MessageClass) *tg.Message {
-		if len(slice) > 0 {
-			if m, ok := slice[0].(*tg.Message); ok {
-				return m
+		if errors.Is(classified, ErrAccessHashStale) && c.reResolver != nil && attempt < MaxPeerRecoveryAttempts {
+			c.logger.Warn("assistant: access hash stale during delete, invalidating and re-resolving",
+				zap.Int("msg_id", target.MessageID()),
+			)
+			c.reResolver.InvalidatePeer(currentPeer)
+			if newPeer, rerr := c.reResolver.ReResolve(ctx, currentPeer); rerr == nil && newPeer != nil {
+				currentPeer = newPeer
+				continue // retry once
 			}
 		}
-		return nil
+		return fmt.Errorf("assistant delete message: %w", classified)
+	}
+	return ErrAccessHashStale
+}
+
+// GetMessage retrieves a message using peer-aware MTProto RPC with bounded stale hash recovery.
+func (c *ClientInteraction) GetMessage(ctx context.Context, target MessageTarget) (*tg.Message, error) {
+	if c.api == nil || !target.IsValid() {
+		return nil, ErrInvalidTarget
 	}
 
-	switch msgs := res.(type) {
-	case *tg.MessagesMessages:
-		if m := extractFirst(msgs.Messages); m != nil {
-			return m, nil
-		}
-	case *tg.MessagesMessagesSlice:
-		if m := extractFirst(msgs.Messages); m != nil {
-			return m, nil
-		}
-	case *tg.MessagesChannelMessages:
-		if m := extractFirst(msgs.Messages); m != nil {
-			return m, nil
-		}
-	}
+	currentPeer := target.Peer()
+	for attempt := 0; attempt <= MaxPeerRecoveryAttempts; attempt++ {
+		var res tg.MessagesMessagesClass
+		var rpcErr error
 
-	return nil, ErrMessageNotFound
+		switch p := currentPeer.(type) {
+		case *tg.InputPeerChannel:
+			res, rpcErr = c.api.ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
+				Channel: &tg.InputChannel{ChannelID: p.ChannelID, AccessHash: p.AccessHash},
+				ID:      []tg.InputMessageClass{&tg.InputMessageID{ID: target.MessageID()}},
+			})
+		default:
+			res, rpcErr = c.api.MessagesGetMessages(ctx, []tg.InputMessageClass{
+				&tg.InputMessageID{ID: target.MessageID()},
+			})
+		}
+
+		if rpcErr != nil {
+			classified := ClassifyRPCError(rpcErr)
+			if errors.Is(classified, ErrAccessHashStale) && c.reResolver != nil && attempt < MaxPeerRecoveryAttempts {
+				c.reResolver.InvalidatePeer(currentPeer)
+				if newPeer, rerr := c.reResolver.ReResolve(ctx, currentPeer); rerr == nil && newPeer != nil {
+					currentPeer = newPeer
+					continue
+				}
+			}
+			return nil, classified
+		}
+
+		extractFirst := func(slice []tg.MessageClass) *tg.Message {
+			if len(slice) > 0 {
+				if m, ok := slice[0].(*tg.Message); ok {
+					return m
+				}
+			}
+			return nil
+		}
+
+		switch msgs := res.(type) {
+		case *tg.MessagesMessages:
+			if m := extractFirst(msgs.Messages); m != nil {
+				return m, nil
+			}
+		case *tg.MessagesMessagesSlice:
+			if m := extractFirst(msgs.Messages); m != nil {
+				return m, nil
+			}
+		case *tg.MessagesChannelMessages:
+			if m := extractFirst(msgs.Messages); m != nil {
+				return m, nil
+			}
+		}
+
+		return nil, ErrMessageNotFound
+	}
+	return nil, ErrAccessHashStale
 }
 
 // SendMessage sends a new message to a peer with optional reply markup.
@@ -330,16 +353,13 @@ func (i *InlineClientInteraction) Answer(ctx context.Context, queryID int64, tex
 
 // Edit updates an inline-sent bot message text and markup.
 func (i *InlineClientInteraction) Edit(ctx context.Context, target InlineTarget, text string, markup tg.ReplyMarkupClass) error {
-	if i.ci == nil || i.ci.api == nil {
-		return ErrInvalidTarget
-	}
-	if !target.IsValid() {
+	if i.ci == nil || i.ci.api == nil || !target.IsValid() {
 		return ErrInvalidTarget
 	}
 
 	plain, ents := parseHTML(text)
 	req := &tg.MessagesEditInlineBotMessageRequest{
-		ID: target.MessageID,
+		ID: target.MessageID(),
 	}
 	req.SetMessage(plain)
 	if len(ents) > 0 {

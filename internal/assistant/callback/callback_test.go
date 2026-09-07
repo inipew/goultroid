@@ -90,7 +90,7 @@ func (f *fakeInteraction) Delete(ctx context.Context, target interaction.Message
 	return nil
 }
 func (f *fakeInteraction) GetMessage(ctx context.Context, target interaction.MessageTarget) (*tg.Message, error) {
-	return &tg.Message{ID: target.MessageID}, nil
+	return &tg.Message{ID: target.MessageID()}, nil
 }
 func (f *fakeInteraction) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
 	return &tg.Message{ID: 1}, nil
@@ -149,7 +149,7 @@ func TestRouter_Dispatch_Authorization(t *testing.T) {
 		fake,
 	)
 	err := r.Dispatch(ctx, txUnauthorized)
-	if !errors.Is(err, interaction.ErrUnauthorized) {
+	if !errors.Is(err, callback.ErrUnauthorized) {
 		t.Fatalf("expected ErrUnauthorized for user 777, got %v", err)
 	}
 	if executed {
@@ -175,6 +175,22 @@ func TestRouter_Dispatch_Authorization(t *testing.T) {
 	}
 	if txOwner.State() != callback.StateCompleted {
 		t.Fatalf("expected StateCompleted on successful transaction, got %v", txOwner.State())
+	}
+}
+
+func TestOwnerAuthorizer_FailClosed(t *testing.T) {
+	// When ownerID is 0, any request must be rejected (fail-closed)
+	auth := callback.NewOwnerAuthorizer(0, nil)
+	ctx := context.Background()
+
+	err := auth.Authorize(ctx, callback.Actor{UserID: 12345}, "start")
+	if !errors.Is(err, callback.ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized when ownerID=0, got %v", err)
+	}
+
+	err = auth.Authorize(ctx, callback.Actor{UserID: 0}, "start")
+	if !errors.Is(err, callback.ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized when ownerID=0 even if actorID=0, got %v", err)
 	}
 }
 

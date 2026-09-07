@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/gotd/td/tg"
-	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/assistant/peer"
 )
 
@@ -70,8 +69,8 @@ func TestDefaultResolver_Resolve(t *testing.T) {
 	// 1. User resolution with missing access hash
 	pUser := &tg.PeerUser{UserID: 42}
 	_, err := res.Resolve(ctx, pUser, 0, tg.Entities{})
-	if !errors.Is(err, interaction.ErrPeerResolution) {
-		t.Fatalf("expected ErrPeerResolution for user without hash, got %v", err)
+	if !errors.Is(err, peer.ErrAccessHashMissing) {
+		t.Fatalf("expected ErrAccessHashMissing for user without hash, got %v", err)
 	}
 
 	// 2. User resolution with entities
@@ -136,5 +135,21 @@ func TestDefaultResolver_Resolve(t *testing.T) {
 	res.InvalidatePeer(inputUser)
 	if _, ok := c.Get(peer.PeerKindUser, 42); ok {
 		t.Fatalf("expected user 42 to be removed after InvalidatePeer")
+	}
+
+	// 8. ReResolve after invalidation fails
+	_, err = res.ReResolve(ctx, inputUser)
+	if !errors.Is(err, peer.ErrAccessHashMissing) {
+		t.Fatalf("expected ErrAccessHashMissing on ReResolve after invalidation, got %v", err)
+	}
+
+	// Put back hash and verify ReResolve succeeds
+	c.Put(peer.PeerRecord{ID: 42, Kind: peer.PeerKindUser, AccessHash: 8888})
+	reresolved, err := res.ReResolve(ctx, inputUser)
+	if err != nil {
+		t.Fatalf("unexpected error on ReResolve: %v", err)
+	}
+	if inpUser, ok := reresolved.(*tg.InputPeerUser); !ok || inpUser.AccessHash != 8888 {
+		t.Fatalf("expected ReResolve with 8888, got %+v", reresolved)
 	}
 }

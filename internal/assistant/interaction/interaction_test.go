@@ -183,26 +183,43 @@ func TestInlineInteraction(t *testing.T) {
 	}
 }
 
-type fakePeerInvalidator struct {
+type fakePeerReResolver struct {
 	invalidatedPeer tg.InputPeerClass
+	reResolveCount  int
+	newPeer         tg.InputPeerClass
+	reResolveErr    error
 }
 
-func (f *fakePeerInvalidator) InvalidatePeer(peer tg.InputPeerClass) {
+func (f *fakePeerReResolver) InvalidatePeer(peer tg.InputPeerClass) {
 	f.invalidatedPeer = peer
 }
 
-func TestClientInteraction_StalePeerInvalidator(t *testing.T) {
+func (f *fakePeerReResolver) ReResolve(ctx context.Context, inputPeer tg.InputPeerClass) (tg.InputPeerClass, error) {
+	f.reResolveCount++
+	if f.reResolveErr != nil {
+		return nil, f.reResolveErr
+	}
+	if f.newPeer != nil {
+		return f.newPeer, nil
+	}
+	return inputPeer, nil
+}
+
+func TestClientInteraction_StalePeerRecovery(t *testing.T) {
 	mockAPI := &mockTelegramAPI{
 		editErr: errors.New("rpc error code 400: ACCESS_HASH_INVALID"),
 	}
 	ci := interaction.NewClientInteraction(mockAPI, zap.NewNop())
-	invalidator := &fakePeerInvalidator{}
-	ci.SetPeerInvalidator(invalidator)
+	userPeer := &tg.InputPeerUser{UserID: 12345, AccessHash: 999}
+	reResolver := &fakePeerReResolver{
+		newPeer: &tg.InputPeerUser{UserID: 12345, AccessHash: 1000},
+	}
+	ci.SetPeerReResolver(reResolver)
 
 	ctx := context.Background()
-	userPeer := &tg.InputPeerUser{UserID: 12345, AccessHash: 999}
 	target := interaction.NewMessageTarget(userPeer, 55, 100, 200)
 
+	// Since mockAPI still returns ACCESS_HASH_INVALID, retry should happen once and then fail
 	err := ci.Edit(ctx, target, "Hello", nil)
 	if err == nil {
 		t.Fatalf("expected error from ACCESS_HASH_INVALID")
@@ -210,7 +227,10 @@ func TestClientInteraction_StalePeerInvalidator(t *testing.T) {
 	if !errors.Is(err, interaction.ErrAccessHashStale) {
 		t.Fatalf("expected ErrAccessHashStale, got %v", err)
 	}
-	if invalidator.invalidatedPeer != userPeer {
-		t.Fatalf("expected invalidator to be called with userPeer, got %+v", invalidator.invalidatedPeer)
+	if reResolver.invalidatedPeer != userPeer {
+		t.Fatalf("expected invalidator to be called with userPeer, got %+v", reResolver.invalidatedPeer)
+	}
+	if reResolver.reResolveCount != 1 {
+		t.Fatalf("expected exactly 1 ReResolve attempt (MaxPeerRecoveryAttempts=1), got %d", reResolver.reResolveCount)
 	}
 }

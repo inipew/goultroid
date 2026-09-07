@@ -18,7 +18,7 @@ func TestTarget_MessageTarget(t *testing.T) {
 	if !mt.IsValid() {
 		t.Fatalf("expected MessageTarget to be valid")
 	}
-	if mt.Peer != peer || mt.MessageID != 42 || mt.ChatID != 100 || mt.ChatInstance != 200 {
+	if mt.Peer() != peer || mt.MessageID() != 42 || mt.ChatID() != 100 || mt.ChatInstance() != 200 {
 		t.Fatalf("fields did not match constructor arguments")
 	}
 
@@ -44,7 +44,7 @@ func TestTarget_InlineTarget(t *testing.T) {
 	if !it.IsValid() {
 		t.Fatalf("expected InlineTarget to be valid")
 	}
-	if it.QueryID != 777 || it.MessageID != inlineMsgID || it.ChatInstance != 555 {
+	if it.QueryID() != 777 || it.MessageID() != inlineMsgID || it.ChatInstance() != 555 {
 		t.Fatalf("fields did not match constructor arguments")
 	}
 
