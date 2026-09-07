@@ -27,21 +27,14 @@ type helpMenuState struct {
 	UserID   int64  `json:"u"`
 }
 
-// Plugin provides the help command and interactive module browser.
 type Plugin struct {
 	router     *core.Router
 	stateStore *callback.StateStore
 }
 
-// New creates a new help Plugin.
-func New(router *core.Router) *Plugin {
-	return &Plugin{router: router}
-}
+func New(router *core.Router) *Plugin { return &Plugin{router: router} }
 
-// SetStateStore configures the state store for interactive inline buttons.
-func (p *Plugin) SetStateStore(store *callback.StateStore) {
-	p.stateStore = store
-}
+func (p *Plugin) SetStateStore(store *callback.StateStore) { p.stateStore = store }
 
 func (p *Plugin) Name() string      { return "help" }
 func (p *Plugin) Namespace() string { return "help" }
@@ -52,7 +45,6 @@ func (p *Plugin) CallbackOptions() callback.CallbackHandlerOptions {
 
 func (p *Plugin) Init() error { return nil }
 
-// Capabilities declares the capabilities provided by this plugin (§4 bug16_1).
 func (p *Plugin) Capabilities() []execution.Capability {
 	return []execution.Capability{{
 		ID:          "help",
@@ -63,7 +55,6 @@ func (p *Plugin) Capabilities() []execution.Capability {
 	}}
 }
 
-// Commands returns the commands registered by this plugin.
 func (p *Plugin) Commands() []core.Command {
 	return []core.Command{{
 		Name:        "help",
@@ -77,8 +68,6 @@ func (p *Plugin) Commands() []core.Command {
 	}}
 }
 
-// sendResult edits the trigger message in-place; if the text is too long it
-// edits with the first chunk and replies with subsequent chunks.
 func sendResult(ctx *core.Context, text string) error {
 	return sendResultMarkup(ctx, text, nil)
 }
@@ -89,8 +78,6 @@ func sendResultMarkup(ctx *core.Context, text string, markup tg.ReplyMarkupClass
 		return nil
 	}
 
-	// Assistant commands originate from the bot itself. Do not attempt to edit
-	// the incoming command message; send the help response as a new message.
 	if ctx.IsAssistant() {
 		if markup != nil {
 			if err := ctx.ReplyMarkup(chunks[0], markup); err != nil {
@@ -135,12 +122,12 @@ func splitMessage(text string, maxLen int) []string {
 
 func (p *Plugin) handleHelp(ctx *core.Context) error {
 	prefix := p.router.Prefix()
+	source := ctx.Source.Surface()
 
 	if len(ctx.Args) > 0 {
 		target := strings.TrimPrefix(ctx.Args[0], prefix)
 
-		// Check if target matches a command name or alias on the current surface.
-		if cmd, exists := p.router.Find(target); exists && cmd.IsAvailableOn(ctx.Source) {
+		if cmd, exists := p.router.Find(target); exists && cmd.IsAvailableOn(source) {
 			var aliasesStr string
 			if len(cmd.Aliases) > 0 {
 				var prefixedAliases []string
@@ -194,8 +181,7 @@ func (p *Plugin) handleHelp(ctx *core.Context) error {
 			return sendResult(ctx, card.Render())
 		}
 
-		// Check if target matches a category/module on the current surface.
-		matchedCat, catCmds := p.getCategoryCommands(target, ctx.Source)
+		matchedCat, catCmds := p.getCategoryCommands(target, source)
 		if matchedCat != "" {
 			return sendResult(ctx, p.renderCategoryCard(matchedCat, catCmds, prefix))
 		}
@@ -203,17 +189,15 @@ func (p *Plugin) handleHelp(ctx *core.Context) error {
 		return sendResult(ctx, ui.Error(fmt.Sprintf("Command or module %q not found.", ctx.Args[0])))
 	}
 
-	// The overview is always the complete command catalog. Inline buttons are
-	// navigation aids and must never replace the visible module/command list.
-	categories, catNames := p.getCategoryNames(ctx.Source)
-	overviewText := p.renderOverviewWithCategories(prefix, categories, catNames, ctx.Source)
+	categories, catNames := p.getCategoryNames(source)
+	overviewText := p.renderOverviewWithCategories(prefix, categories, catNames, source)
 	if p.stateStore != nil {
 		return sendResultMarkup(ctx, overviewText, p.buildOverviewMarkup(catNames, ctx.SenderID()))
 	}
 	return sendResult(ctx, overviewText)
 }
 
-func (p *Plugin) commandsForSource(source execution.ExecutionSource) []core.Command {
+func (p *Plugin) commandsForSource(source execution.Source) []core.Command {
 	all := p.router.All()
 	res := make([]core.Command, 0, len(all))
 	for _, cmd := range all {
@@ -228,7 +212,7 @@ func (p *Plugin) userbotCommands() []core.Command {
 	return p.commandsForSource(execution.SourceUserbot)
 }
 
-func (p *Plugin) getCategoryNames(source execution.ExecutionSource) (map[string][]core.Command, []string) {
+func (p *Plugin) getCategoryNames(source execution.Source) (map[string][]core.Command, []string) {
 	all := p.commandsForSource(source)
 	categories := make(map[string][]core.Command)
 	for _, cmd := range all {
@@ -246,7 +230,7 @@ func (p *Plugin) getCategoryNames(source execution.ExecutionSource) (map[string]
 	return categories, catNames
 }
 
-func (p *Plugin) getCategoryCommands(target string, source execution.ExecutionSource) (string, []core.Command) {
+func (p *Plugin) getCategoryCommands(target string, source execution.Source) (string, []core.Command) {
 	all := p.commandsForSource(source)
 	var matchedCat string
 	var catCmds []core.Command
@@ -287,7 +271,7 @@ func (p *Plugin) renderOverview(prefix string) (string, []string) {
 	return p.renderOverviewWithCategories(prefix, categories, catNames, execution.SourceUserbot), catNames
 }
 
-func (p *Plugin) renderOverviewWithCategories(prefix string, categories map[string][]core.Command, catNames []string, source execution.ExecutionSource) string {
+func (p *Plugin) renderOverviewWithCategories(prefix string, categories map[string][]core.Command, catNames []string, source execution.Source) string {
 	all := p.commandsForSource(source)
 	var sb strings.Builder
 	sb.WriteString("📚 <b>GoUltroid Help</b>\n")
@@ -314,7 +298,6 @@ func (p *Plugin) renderOverviewWithCategories(prefix string, categories map[stri
 }
 
 func (p *Plugin) renderInteractiveOverview(prefix string, totalCmds, totalModules int) string {
-	// Retained for callback compatibility. New overviews use the full catalog.
 	return fmt.Sprintf(
 		"📚 <b>GoUltroid Help</b>\n\n<i>%d commands across %d modules.</i>\n\n<i>Select a module below to browse its commands:</i>\n\n💡 <i>Use <code>%shelp &lt;module&gt;</code> or <code>%shelp &lt;command&gt;</code> for details.</i>",
 		totalCmds, totalModules, prefix, prefix,
@@ -347,7 +330,6 @@ func (p *Plugin) buildOverviewMarkup(catNames []string, userID int64) tg.ReplyMa
 	return render.ToTelegramMarkup(ui.Markup{Rows: rows})
 }
 
-// HandleCallback handles interactive module browser navigation.
 func (p *Plugin) HandleCallback(ctx *callback.CallbackContext) error {
 	switch ctx.Action {
 	case "close":
