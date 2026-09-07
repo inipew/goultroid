@@ -47,6 +47,11 @@ func RegisterAlive(r *Router, usernameProvider func() string, uptimeProvider fun
 
 // AttachDefaultCommands registers /start, /help, /ping, /alive, and /status into the command Router.
 func AttachDefaultCommands(r *Router, getUsername func() string, getStartTime func() time.Time, renderer menu.RendererFunc) {
+	AttachDefaultCommandsWithStore(r, getUsername, getStartTime, renderer, nil)
+}
+
+// AttachDefaultCommandsWithStore registers commands with optional instance store for session tracking.
+func AttachDefaultCommandsWithStore(r *Router, getUsername func() string, getStartTime func() time.Time, renderer menu.RendererFunc, store menu.InstanceStore) {
 	if r == nil {
 		return
 	}
@@ -65,10 +70,10 @@ func AttachDefaultCommands(r *Router, getUsername func() string, getStartTime fu
 		return "GoUltroidBot"
 	}
 
-	RegisterStart(r, username, uptime, renderer)
-	RegisterHelp(r, username, renderer)
+	RegisterStart(r, username, uptime, renderer, store)
+	RegisterHelp(r, username, renderer, store)
 	RegisterPing(r)
-	RegisterStatus(r, username, uptime, renderer)
+	RegisterStatus(r, username, uptime, renderer, store)
 	RegisterAlive(r, username, uptime)
 }
 

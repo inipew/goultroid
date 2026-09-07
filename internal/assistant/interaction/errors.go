@@ -62,6 +62,12 @@ func ClassifyRPCError(err error) error {
 	if tgerr.Is(err, "QUERY_ID_INVALID") || tgerr.Is(err, "TIMEOUT") {
 		return ErrCallbackExpired
 	}
+	if tgerr.Is(err, "QUERY_ALREADY_ANSWERED") || tgerr.Is(err, "QUERY_ID_EMPTY") {
+		return ErrCallbackAlreadyAnswered
+	}
+	if tgerr.Is(err, "BOT_METHOD_INVALID") || tgerr.Is(err, "MESSAGE_DELETE_FORBIDDEN") {
+		return ErrUnsupportedTarget
+	}
 
 	// Fallback substring checks for wrapped errors
 	msg := err.Error()
@@ -73,6 +79,12 @@ func ClassifyRPCError(err error) error {
 	}
 	if strings.Contains(msg, "QUERY_ID_INVALID") {
 		return ErrCallbackExpired
+	}
+	if strings.Contains(msg, "QUERY_ALREADY_ANSWERED") || strings.Contains(msg, "QUERY_ID_EMPTY") {
+		return ErrCallbackAlreadyAnswered
+	}
+	if strings.Contains(msg, "BOT_METHOD_INVALID") || strings.Contains(msg, "MESSAGE_DELETE_FORBIDDEN") {
+		return ErrUnsupportedTarget
 	}
 
 	return err

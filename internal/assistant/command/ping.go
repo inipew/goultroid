@@ -1,10 +1,10 @@
 package command
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/inipew/goultroid/internal/assistant/interaction"
+	"github.com/inipew/goultroid/internal/assistant/presentation"
 )
 
 // PingResult records latency metrics for assistant ping commands.
@@ -23,10 +23,10 @@ func RegisterPing(r *Router) {
 		if err != nil {
 			return err
 		}
-		latency := time.Since(start).Milliseconds()
+		latency := time.Since(start)
 		if sent != nil {
 			target := interaction.NewMessageTarget(c.Peer, sent.ID, 0, 0)
-			return c.Interaction.Edit(c.Ctx, target, fmt.Sprintf("🏓 <b>Pong!</b>\n⚡ <b>Latency:</b> <code>%d ms</code>", latency), nil)
+			return c.Interaction.Edit(c.Ctx, target, presentation.RenderPing(presentation.PingResult{Latency: latency}), nil)
 		}
 		return nil
 	})

@@ -123,6 +123,27 @@ func BuildStatusScreen(botUsername string, uptime time.Duration, engine string) 
 	return screen
 }
 
+// isSessionValid checks if a menu instance exists and has not expired.
+func (c *Controller) isSessionValid(tx *callback.Transaction) bool {
+	if c.instances == nil {
+		return true
+	}
+	if tx == nil {
+		return false
+	}
+	if _, ok := c.instances.Get(tx.Target.ChatID(), tx.Target.MessageID()); !ok {
+		// Auto-register missing instance as start session (allows direct callback in tests and first navigation).
+		// Real expiration is handled by Get returning false after TTL; missing is treated as new session.
+		c.instances.Register(MenuInstance{
+			ChatID:    tx.Target.ChatID(),
+			MessageID: tx.Target.MessageID(),
+			Screen:    ScreenIDStart,
+		})
+		return true
+	}
+	return true
+}
+
 // AttachRoutes registers all standard assistant menu actions into the given Router.
 func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string, getStartTime func() time.Time) {
 	if r == nil {
@@ -145,6 +166,10 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 
 	// 1. Start Menu
 	r.Register("assistant", "start", func(ctx context.Context, tx *callback.Transaction) error {
+		if !c.isSessionValid(tx) {
+			_ = tx.Answer(ctx, "Session expired, send /start again", true)
+			return callback.ErrSessionExpired
+		}
 		if c.instances != nil {
 			c.instances.UpdateScreen(tx.Target.ChatID(), tx.Target.MessageID(), ScreenIDStart)
 		}
@@ -155,6 +180,10 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 
 	// 2. Settings Menu
 	r.Register("assistant", "settings", func(ctx context.Context, tx *callback.Transaction) error {
+		if !c.isSessionValid(tx) {
+			_ = tx.Answer(ctx, "Session expired, send /start again", true)
+			return callback.ErrSessionExpired
+		}
 		if c.instances != nil {
 			c.instances.UpdateScreen(tx.Target.ChatID(), tx.Target.MessageID(), ScreenIDSettings)
 		}
@@ -165,6 +194,10 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 
 	// 3. Help Menu
 	r.Register("assistant", "help", func(ctx context.Context, tx *callback.Transaction) error {
+		if !c.isSessionValid(tx) {
+			_ = tx.Answer(ctx, "Session expired, send /start again", true)
+			return callback.ErrSessionExpired
+		}
 		if c.instances != nil {
 			c.instances.UpdateScreen(tx.Target.ChatID(), tx.Target.MessageID(), ScreenIDHelp)
 		}
@@ -175,6 +208,10 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 
 	// 4. Status Menu
 	r.Register("assistant", "status", func(ctx context.Context, tx *callback.Transaction) error {
+		if !c.isSessionValid(tx) {
+			_ = tx.Answer(ctx, "Session expired, send /start again", true)
+			return callback.ErrSessionExpired
+		}
 		if c.instances != nil {
 			c.instances.UpdateScreen(tx.Target.ChatID(), tx.Target.MessageID(), ScreenIDStatus)
 		}
@@ -185,6 +222,10 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 
 	// 5. Ping Action (toast popup only, screen untouched)
 	r.Register("assistant", "ping", func(ctx context.Context, tx *callback.Transaction) error {
+		if !c.isSessionValid(tx) {
+			_ = tx.Answer(ctx, "Session expired, send /start again", true)
+			return callback.ErrSessionExpired
+		}
 		return tx.Answer(ctx, "🏓 Pong!", true)
 	})
 

@@ -5,7 +5,7 @@ import (
 )
 
 // RegisterHelp attaches the /help command handler to the Router.
-func RegisterHelp(r *Router, usernameProvider func() string, renderer menu.RendererFunc) {
+func RegisterHelp(r *Router, usernameProvider func() string, renderer menu.RendererFunc, instanceStore menu.InstanceStore) {
 	if r == nil {
 		return
 	}
@@ -16,7 +16,19 @@ func RegisterHelp(r *Router, usernameProvider func() string, renderer menu.Rende
 		}
 		screen := menu.BuildHelpScreen(username)
 		text, markup := renderer(screen)
-		_, err := c.Reply(text, markup)
+		sent, err := c.Reply(text, markup)
+		if err == nil && sent != nil && instanceStore != nil {
+			chatID := extractChatIDFromInputPeer(c.Peer)
+			if chatID == 0 {
+				chatID = c.SenderID
+			}
+			instanceStore.Register(menu.MenuInstance{
+				ChatID:    chatID,
+				MessageID: sent.ID,
+				Screen:    menu.ScreenIDHelp,
+				OwnerID:   c.SenderID,
+			})
+		}
 		return err
 	})
 }

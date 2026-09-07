@@ -77,6 +77,37 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		return nil
 	})
 
+	// 2a. Inline Query rate limiting (observe only, no handler yet — structural separation)
+	dispatcher.OnBotInlineQuery(func(ctx context.Context, e tg.Entities, update *tg.UpdateBotInlineQuery) error {
+		if deps.CacheEntities != nil {
+			deps.CacheEntities(e)
+		}
+		if deps.RateLimiter != nil && !deps.RateLimiter.Allow(update.UserID, "inline") {
+			logger.Warn("assistant: rate limit exceeded for inline", zap.Int64("user_id", update.UserID))
+			return nil
+		}
+		// Inline query handling is delegated to separate inline engine (future: assistant/inline/*)
+		return nil
+	})
+
+	dispatcher.OnInlineBotCallbackQuery(func(ctx context.Context, e tg.Entities, update *tg.UpdateInlineBotCallbackQuery) error {
+		if deps.CacheEntities != nil {
+			deps.CacheEntities(e)
+		}
+		if deps.RateLimiter != nil && !deps.RateLimiter.Allow(update.UserID, "callback") {
+			if deps.Interaction != nil {
+				_ = deps.Interaction.Answer(ctx, update.QueryID, "Too many requests. Please wait.", true)
+			}
+			return nil
+		}
+		// Inline callback uses InlineTarget — structurally separated from MessageTarget (§4)
+		inlineTarget := interaction.NewInlineTarget(update.QueryID, update.MsgID, update.ChatInstance)
+		_ = inlineTarget
+		logger.Debug("assistant: inline callback received (structural separation)", zap.Int64("query_id", update.QueryID))
+		// Inline edit via interaction.AsInline().Edit(...) when needed
+		return nil
+	})
+
 	// 2. Callback Query Dispatcher -> Callback Router
 	dispatcher.OnBotCallbackQuery(func(ctx context.Context, e tg.Entities, update *tg.UpdateBotCallbackQuery) error {
 		if deps.CacheEntities != nil {

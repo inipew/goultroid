@@ -86,7 +86,7 @@ func NewAssistantClient(appID int, appHash string, botToken string, logger *zap.
 	}
 
 	ctrl.AttachRoutes(cbR, c.Username, c.StartTime)
-	command.AttachDefaultCommands(cmdR, c.Username, c.StartTime, presentation.RenderScreen)
+	command.AttachDefaultCommandsWithStore(cmdR, c.Username, c.StartTime, presentation.RenderScreen, ctrl.Instances())
 
 	return c
 }
