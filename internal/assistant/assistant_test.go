@@ -33,13 +33,11 @@ func TestBridge(t *testing.T) {
 		Message: "Hello from bridge",
 	})
 
-	// Wait briefly for asynchronous dispatch
 	time.Sleep(50 * time.Millisecond)
 	if atomic.LoadInt32(&receivedCount) != 1 {
 		t.Errorf("expected 1 event received, got %d", receivedCount)
 	}
 
-	// Test unsubscribe
 	unsub()
 	b.Dispatch(ctx, assistant.Event{
 		Type:    assistant.EventNotification,
@@ -62,14 +60,12 @@ func TestBotClient_Initialization(t *testing.T) {
 		t.Errorf("expected empty username initially, got %s", client.Username())
 	}
 
-	// Should fail to start without bot token
 	ctx := context.Background()
 	err := client.Start(ctx)
 	if !errors.Is(err, assistant.ErrBotTokenRequired) {
 		t.Errorf("expected ErrBotTokenRequired, got %v", err)
 	}
 
-	// Test setters
 	cbStore := callback.NewStateStore()
 	cbRouter := callback.NewRouter(zap.NewNop(), cbStore)
 	client.SetCallbackRouter(cbRouter)
@@ -83,7 +79,6 @@ func TestBotClient_Initialization(t *testing.T) {
 		t.Errorf("expected set bridge to match")
 	}
 
-	// Test Stop on unstarted client
 	if err := client.Stop(ctx); err != nil {
 		t.Errorf("Stop failed: %v", err)
 	}
@@ -99,7 +94,6 @@ func TestAssistantMenu_Render(t *testing.T) {
 		t.Fatalf("expected 3 rows of buttons in start menu, got %d", len(markup.Rows))
 	}
 
-	// Verify all button callback data is valid v1 format
 	for rowIdx, row := range markup.Rows {
 		for btnIdx, btn := range row {
 			if len(btn.Data) > 0 {
@@ -109,6 +103,9 @@ func TestAssistantMenu_Render(t *testing.T) {
 				}
 				if ns == "" || act == "" || oid == "" {
 					t.Fatalf("empty fields in callback data: ns=%q act=%q oid=%q", ns, act, oid)
+				}
+				if ns != "assistant" {
+					t.Fatalf("assistant menu emitted foreign callback namespace %q for button %q", ns, btn.Text)
 				}
 			}
 		}
@@ -163,7 +160,6 @@ func TestAssistantHandler(t *testing.T) {
 	ctx := context.Background()
 	peer := &tg.InputPeerUser{UserID: 12345}
 
-	// 1. Test status action
 	cbCtx := &callback.CallbackContext{
 		Ctx:       ctx,
 		QueryID:   101,
@@ -185,22 +181,25 @@ func TestAssistantHandler(t *testing.T) {
 		t.Error("expected edited text on status action")
 	}
 
-	// 2. Test ping action
+	for _, action := range []string{"settings", "help", "start"} {
+		cbCtx.Action = action
+		if err := h.HandleCallback(cbCtx); err != nil {
+			t.Fatalf("HandleCallback %s failed: %v", action, err)
+		}
+	}
+
+	// Ping edits the menu but does not issue a second callback answer. The router's
+	// AutoAnswer option owns the acknowledgement lifecycle.
 	cbCtx.Action = "ping"
+	mockSvc.lastAnswer = ""
+	mockSvc.lastAlert = false
 	if err := h.HandleCallback(cbCtx); err != nil {
 		t.Fatalf("HandleCallback ping failed: %v", err)
 	}
-	if mockSvc.lastAnswer != "🏓 Pong!" || !mockSvc.lastAlert {
-		t.Errorf("expected ping alert answer, got text=%q alert=%v", mockSvc.lastAnswer, mockSvc.lastAlert)
+	if mockSvc.lastAnswer != "" || mockSvc.lastAlert {
+		t.Errorf("ping handler must not answer callback a second time, got text=%q alert=%v", mockSvc.lastAnswer, mockSvc.lastAlert)
 	}
 
-	// 3. Test start action
-	cbCtx.Action = "start"
-	if err := h.HandleCallback(cbCtx); err != nil {
-		t.Fatalf("HandleCallback start failed: %v", err)
-	}
-
-	// 4. Test close action
 	cbCtx.Action = "close"
 	if err := h.HandleCallback(cbCtx); err != nil {
 		t.Fatalf("HandleCallback close failed: %v", err)
@@ -241,7 +240,6 @@ func TestBotServiceAdapter_Unsupported(t *testing.T) {
 func TestBotClient_EntityAccessHashCache(t *testing.T) {
 	client := assistant.NewBotClient(1234, "hash", "token", zap.NewNop())
 
-	// Test initial empty state
 	if hash := client.GetUserAccessHash(999); hash != 0 {
 		t.Errorf("expected 0 for unrecorded user, got %d", hash)
 	}
@@ -249,7 +247,6 @@ func TestBotClient_EntityAccessHashCache(t *testing.T) {
 		t.Errorf("expected 0 for unrecorded channel, got %d", hash)
 	}
 
-	// Test SetUserAccessHash and SetChannelAccessHash
 	client.SetUserAccessHash(999, 123456789)
 	client.SetChannelAccessHash(888, 987654321)
 
@@ -260,7 +257,6 @@ func TestBotClient_EntityAccessHashCache(t *testing.T) {
 		t.Errorf("expected 987654321, got %d", hash)
 	}
 
-	// Test CacheEntities bulk cache
 	entities := tg.Entities{
 		Users: map[int64]*tg.User{
 			1001: {ID: 1001, AccessHash: 55555},
@@ -278,5 +274,3 @@ func TestBotClient_EntityAccessHashCache(t *testing.T) {
 		t.Errorf("expected 77777 for channel 2002, got %d", hash)
 	}
 }
-
-
