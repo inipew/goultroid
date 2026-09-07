@@ -336,37 +336,15 @@ func (r *Router) executeHandler(ctx context.Context, evt *core.CallbackQueryEven
 		}
 	}
 
-	// Build chain with timeout & recover middlewares
+	// Canonical single execution path: Recover (outermost) → Timeout → Handler
+	// Recover must wrap Timeout so panics from timeout/handler are both caught and metrics recorded in middleware.
+	timeout := r.timeout
+	if timeout <= 0 {
+		timeout = defaultCallbackTimeout
+	}
 	final := handler
-	chain := Chain(final, TimeoutMiddleware(r.timeout), RecoverMiddleware(r.logger))
-	// Chain wraps final; we need to run chain instead of direct handler, but keep metrics/panic handling
-	// Use explicit timeout+recover for now to preserve metrics tagging; chain demonstrates middleware composition
-	_ = chain
-
-	handleErr := func() (err error) {
-		defer func() {
-			if rec := recover(); rec != nil {
-				r.logger.Error("callback handler panic",
-					zap.Any("panic", rec),
-					zap.String("namespace", ns),
-					zap.String("action", action),
-					zap.Int64("query_id", evt.QueryID))
-				err = fmt.Errorf("%w: handler panic: %v", core.ErrInternal, rec)
-				if r.metrics != nil {
-					r.metrics.RecordCallback("handler_panic", time.Since(start), err)
-				}
-			}
-		}()
-		timeout := r.timeout
-		if timeout <= 0 {
-			timeout = defaultCallbackTimeout
-		}
-		hCtx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
-		cbCtx.Ctx = hCtx
-		err = handler.HandleCallback(cbCtx)
-		return err
-	}()
+	chain := Chain(final, RecoverMiddleware(r.logger, r.metrics, start), TimeoutMiddleware(timeout))
+	handleErr := chain.HandleCallback(cbCtx)
 
 	if r.metrics != nil {
 		status := "success"

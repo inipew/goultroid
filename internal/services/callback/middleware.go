@@ -2,8 +2,10 @@ package callback
 
 import (
 	"context"
+	"fmt"
 	"time"
 
+	"github.com/inipew/goultroid/internal/core"
 	"go.uber.org/zap"
 )
 
@@ -20,20 +22,29 @@ func Chain(final Handler, mws ...Middleware) Handler {
 	return h
 }
 
-// RecoverMiddleware returns a Middleware that recovers panics and converts them to ErrInternal.
-func RecoverMiddleware(logger *zap.Logger) Middleware {
+// RecoverMiddleware returns a Middleware that recovers panics, logs, records metrics, and converts them to ErrInternal.
+// It must be the outermost middleware so panics from inner middlewares (e.g. Timeout) are also caught.
+func RecoverMiddleware(logger *zap.Logger, metrics interface{ RecordCallback(string, time.Duration, error) }, start time.Time) Middleware {
 	return func(next Handler) Handler {
 		return handlerFunc{
 			ns: next.Namespace(),
-			fn: func(ctx *CallbackContext) error {
+			fn: func(ctx *CallbackContext) (err error) {
 				defer func() {
 					if rec := recover(); rec != nil {
 						if logger != nil {
-							logger.Error("callback handler panic (middleware)", zap.Any("panic", rec), zap.String("namespace", next.Namespace()))
+							logger.Error("callback handler panic (middleware)",
+								zap.Any("panic", rec),
+								zap.String("namespace", next.Namespace()),
+							)
+						}
+						err = fmt.Errorf("%w: handler panic: %v", core.ErrInternal, rec)
+						if metrics != nil {
+							metrics.RecordCallback("handler_panic", time.Since(start), err)
 						}
 					}
 				}()
-				return next.HandleCallback(ctx)
+				err = next.HandleCallback(ctx)
+				return err
 			},
 		}
 	}
