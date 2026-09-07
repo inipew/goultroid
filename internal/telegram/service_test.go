@@ -15,6 +15,42 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 )
 
+
+func TestParseHTML(t *testing.T) {
+	helpText := "📚 <b>GoUltroid Help</b>\n" +
+		"<i>80 commands across 15 modules.</i>\n\n" +
+		"📂 <b>AFK</b> <code>(1)</code>\n" +
+		"<code>.afk</code>\n\n" +
+		"💡 <i>Use <code>.help &lt;module&gt;</code> or <code>.help &lt;command&gt;</code> for details.</i>"
+
+	plain, ents := parseHTML(helpText)
+	if strings.Contains(plain, "<b>") || strings.Contains(plain, "</b>") || strings.Contains(plain, "<code>") {
+		t.Errorf("plain text still contains raw HTML tags: %s", plain)
+	}
+	if len(ents) == 0 {
+		t.Errorf("expected entities from HTML string, got 0")
+	}
+
+	// Config usage with escaped entities
+	configUsage := "⚙️ <b>GoUltroid CLI Configuration Subsystem</b>\n\n" +
+		"<b>Usage:</b>\n" +
+		"• <code>.config get &lt;namespace:key&gt;</code>\n" +
+		"• <code>.config set &lt;namespace:key&gt; &lt;value&gt;</code>\n"
+	p3, ents3 := parseHTML(configUsage)
+	if !strings.Contains(p3, ".config get <namespace:key>") {
+		t.Errorf("expected '.config get <namespace:key>', got: %s", p3)
+	}
+	if !strings.Contains(p3, ".config set <namespace:key> <value>") {
+		t.Errorf("expected '.config set <namespace:key> <value>', got: %s", p3)
+	}
+	if len(ents3) == 0 {
+		t.Errorf("expected entities for config usage, got 0")
+	}
+}
+
+
+
+
 // Ensure Service implements core.TelegramServicer.
 var _ core.TelegramServicer = (*Service)(nil)
 

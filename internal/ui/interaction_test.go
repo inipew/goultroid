@@ -17,7 +17,7 @@ func TestScreenRender(t *testing.T) {
 	)
 
 	text, markup := s.Render()
-	if text != "**My Title**\n\nThis is the screen body text." {
+	if text != "<b>My Title</b>\n\nThis is the screen body text." {
 		t.Errorf("unexpected rendered text: %q", text)
 	}
 	if markup == nil || len(markup.Rows) != 1 {

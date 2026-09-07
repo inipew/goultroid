@@ -12,7 +12,9 @@ import (
 
 	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/telegram/message"
+	"github.com/gotd/td/telegram/message/entity"
 	"github.com/gotd/td/telegram/message/html"
+	"github.com/gotd/td/telegram/message/styling"
 	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
@@ -371,6 +373,17 @@ func (s *Service) SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerCl
 	return res, err
 }
 
+// parseHTML parses text as HTML into plain text and Telegram message entities.
+// Falls back to returning original text without entities if parsing fails.
+func parseHTML(text string) (string, []tg.MessageEntityClass) {
+	var eb entity.Builder
+	if err := styling.Perform(&eb, html.String(nil, text)); err == nil {
+		plain, ents := eb.Complete()
+		return plain, ents
+	}
+	return text, nil
+}
+
 // EditMessageMarkup edits an existing message text and updates or sets its reply markup.
 func (s *Service) EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass, msgID int, text string, markup tg.ReplyMarkupClass) error {
 	if s.api == nil {
@@ -382,7 +395,12 @@ func (s *Service) EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass,
 		Peer: peer,
 		ID:   msgID,
 	}
-	req.SetMessage(text)
+	msgText, ents := parseHTML(text)
+	req.SetMessage(msgText)
+	if len(ents) > 0 {
+		req.SetEntities(ents)
+	}
+	req.SetNoWebpage(true)
 	if markup != nil {
 		req.SetReplyMarkup(markup)
 	}
@@ -431,7 +449,12 @@ func (s *Service) EditInlineBotMessage(ctx context.Context, inlineID tg.InputBot
 	req := &tg.MessagesEditInlineBotMessageRequest{
 		ID: inlineID,
 	}
-	req.SetMessage(text)
+	msgText, ents := parseHTML(text)
+	req.SetMessage(msgText)
+	if len(ents) > 0 {
+		req.SetEntities(ents)
+	}
+	req.SetNoWebpage(true)
 	if markup != nil {
 		req.SetReplyMarkup(markup)
 	}
@@ -440,6 +463,7 @@ func (s *Service) EditInlineBotMessage(ctx context.Context, inlineID tg.InputBot
 	})
 	return err
 }
+
 
 // EditInlineBotMessageMarkup updates only the reply markup of an inline message, preserving its text.
 func (s *Service) EditInlineBotMessageMarkup(ctx context.Context, inlineID tg.InputBotInlineMessageIDClass, markup tg.ReplyMarkupClass) error {

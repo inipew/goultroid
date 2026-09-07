@@ -197,16 +197,44 @@ func (p *Plugin) handleHelp(ctx *core.Context) error {
 		return sendResult(ctx, ui.Error(fmt.Sprintf("Command or module %q not found.", ctx.Args[0])))
 	}
 
-	// General overview: compact category list only (no per-command listing).
-	overviewText, catNames := p.renderOverview(prefix)
-
-	// If interactive state store is enabled, attach inline buttons
+	// General overview
+	categories, catNames := p.getCategoryNames()
 	if p.stateStore != nil {
+		all := p.router.All()
+		overviewText := p.renderInteractiveOverview(prefix, len(all), len(catNames))
 		markup := p.buildOverviewMarkup(catNames, ctx.SenderID())
 		return sendResultMarkup(ctx, overviewText, markup)
 	}
 
+	overviewText := p.renderOverviewWithCategories(prefix, categories, catNames)
 	return sendResult(ctx, overviewText)
+}
+
+func (p *Plugin) renderInteractiveOverview(prefix string, totalCmds, totalModules int) string {
+	var sb strings.Builder
+	sb.WriteString("📚 <b>GoUltroid Help</b>\n")
+	sb.WriteString(fmt.Sprintf("<i>%d commands across %d modules.</i>\n\n", totalCmds, totalModules))
+	sb.WriteString("<i>Select a module below to browse its commands:</i>\n\n")
+	sb.WriteString(fmt.Sprintf("💡 <i>Use <code>%shelp &lt;module&gt;</code> or <code>%shelp &lt;command&gt;</code> for details.</i>", prefix, prefix))
+	return strings.TrimSpace(sb.String())
+}
+
+func (p *Plugin) getCategoryNames() (map[string][]core.Command, []string) {
+	all := p.router.All()
+	categories := make(map[string][]core.Command)
+	for _, cmd := range all {
+		cat := cmd.Category
+		if cat == "" {
+			cat = "General"
+		}
+		categories[cat] = append(categories[cat], cmd)
+	}
+	var catNames []string
+	for cat := range categories {
+		catNames = append(catNames, cat)
+	}
+	sort.Strings(catNames)
+	return categories, catNames
 }
 
 func (p *Plugin) getCategoryCommands(target string) (string, []core.Command) {
@@ -249,23 +277,12 @@ func (p *Plugin) renderCategoryCard(cat string, cmds []core.Command, prefix stri
 }
 
 func (p *Plugin) renderOverview(prefix string) (string, []string) {
+	categories, catNames := p.getCategoryNames()
+	return p.renderOverviewWithCategories(prefix, categories, catNames), catNames
+}
+
+func (p *Plugin) renderOverviewWithCategories(prefix string, categories map[string][]core.Command, catNames []string) string {
 	all := p.router.All()
-	categories := make(map[string][]core.Command)
-
-	for _, cmd := range all {
-		cat := cmd.Category
-		if cat == "" {
-			cat = "General"
-		}
-		categories[cat] = append(categories[cat], cmd)
-	}
-
-	var catNames []string
-	for cat := range categories {
-		catNames = append(catNames, cat)
-	}
-	sort.Strings(catNames)
-
 	var sb strings.Builder
 	sb.WriteString("📚 <b>GoUltroid Help</b>\n")
 	sb.WriteString(fmt.Sprintf("<i>%d commands across %d modules.</i>\n\n", len(all), len(catNames)))
@@ -293,8 +310,9 @@ func (p *Plugin) renderOverview(prefix string) (string, []string) {
 		prefix, prefix,
 	))
 
-	return strings.TrimSpace(sb.String()), catNames
+	return strings.TrimSpace(sb.String())
 }
+
 
 func (p *Plugin) buildOverviewMarkup(catNames []string, userID int64) tg.ReplyMarkupClass {
 	if p.stateStore == nil {
@@ -332,7 +350,9 @@ func (p *Plugin) HandleCallback(ctx *callback.CallbackContext) error {
 
 	case "home":
 		prefix := p.router.Prefix()
-		overviewText, catNames := p.renderOverview(prefix)
+		all := p.router.All()
+		_, catNames := p.getCategoryNames()
+		overviewText := p.renderInteractiveOverview(prefix, len(all), len(catNames))
 		markup := p.buildOverviewMarkup(catNames, ctx.UserID)
 		return ctx.Edit(overviewText, markup)
 

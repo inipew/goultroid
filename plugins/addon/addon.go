@@ -105,7 +105,7 @@ func (p *Plugin) handleList(ctx *core.Context) error {
 		)
 	}
 
-	card.WithFooter("Use .addon info <name> for details")
+	card.WithFooter("<i>Use <code>.addon info &lt;name&gt;</code> for details.</i>")
 	return ctx.EditOrReply(card.Render())
 }
 

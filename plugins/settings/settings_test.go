@@ -257,14 +257,14 @@ func TestPlugin_CLIConfig(t *testing.T) {
 	// 1. Usage
 	ctx.Args = []string{}
 	_ = p.handleConfigCommand(ctx)
-	if !strings.Contains(tgSvc.lastText, "GoUltroid CLI Configuration Subsystem") {
-		t.Errorf("expected config usage text, got: %s", tgSvc.lastText)
+	if !strings.Contains(tgSvc.lastText, "GoUltroid CLI Configuration Subsystem") || !strings.Contains(tgSvc.lastText, "&lt;namespace:key&gt;") {
+		t.Errorf("expected config usage text with arguments, got: %s", tgSvc.lastText)
 	}
 
 	// 2. Get default prefix
 	ctx.Args = []string{"get", "core:prefix"}
 	_ = p.handleConfigCommand(ctx)
-	if !strings.Contains(tgSvc.lastText, "**core:prefix** = `.`") {
+	if !strings.Contains(tgSvc.lastText, "<b>core:prefix</b> = <code>.</code>") {
 		t.Errorf("expected '.' prefix, got: %s", tgSvc.lastText)
 	}
 
@@ -278,9 +278,10 @@ func TestPlugin_CLIConfig(t *testing.T) {
 	// Verify get returns "!"
 	ctx.Args = []string{"get", "core:prefix"}
 	_ = p.handleConfigCommand(ctx)
-	if !strings.Contains(tgSvc.lastText, "**core:prefix** = `!`") {
+	if !strings.Contains(tgSvc.lastText, "<b>core:prefix</b> = <code>!</code>") {
 		t.Errorf("expected '!' prefix, got: %s", tgSvc.lastText)
 	}
+
 
 	// 4. History
 	ctx.Args = []string{"history", "core:prefix"}

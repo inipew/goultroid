@@ -221,14 +221,15 @@ func (p *Plugin) renderCategoryScreen(ctx context.Context, state MenuState) *ui.
 	pagedDefs, totalPages := ui.PaginateSlice(defs, state.Page, pageSize)
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Category: **%s** | Scope: **%s**\n\n", strings.Title(state.Category), state.Scope))
+	sb.WriteString(fmt.Sprintf("Category: <b>%s</b> | Scope: <b>%s</b>\n\n", ui.EscapeHTML(strings.Title(state.Category)), ui.EscapeHTML(string(state.Scope))))
 
 	screen := ui.NewScreen("settings:cat", title, "")
 
 	for _, def := range pagedDefs {
 		// Resolve current value in scope
 		currentVal, _ := p.service.Resolve(ctx, state.OwnerID, state.ScopeID, def.Namespace, def.Key)
-		sb.WriteString(fmt.Sprintf("• **%s** (`%s:%s`)\n  Val: `%s` | _%s_\n", def.Title, def.Namespace, def.Key, currentVal, def.Description))
+		sb.WriteString(fmt.Sprintf("• <b>%s</b> (<code>%s:%s</code>)\n  Val: <code>%s</code> | <i>%s</i>\n",
+			ui.EscapeHTML(def.Title), ui.EscapeHTML(def.Namespace), ui.EscapeHTML(def.Key), ui.EscapeHTML(currentVal), ui.EscapeHTML(def.Description)))
 
 		fullKey := def.Namespace + ":" + def.Key
 		switch def.Type {
@@ -324,9 +325,10 @@ func (p *Plugin) renderSettingDetailScreen(ctx context.Context, state MenuState)
 	}
 
 	body := fmt.Sprintf(
-		"**%s**\n%s\n\n**Type:** `%s`\n**Current Value:** `%s`\n**Origin:** `%s`\n**Default:** `%s`\n**Scope:** `%s`\n",
-		def.Title, def.Description, def.Type, currentVal, originBadge, def.DefaultValue, state.Scope,
+		"<b>%s</b>\n%s\n\n<b>Type:</b> <code>%s</code>\n<b>Current Value:</b> <code>%s</code>\n<b>Origin:</b> %s\n<b>Default:</b> <code>%s</code>\n<b>Scope:</b> <code>%s</code>\n",
+		ui.EscapeHTML(def.Title), ui.EscapeHTML(def.Description), def.Type, ui.EscapeHTML(currentVal), originBadge, ui.EscapeHTML(def.DefaultValue), state.Scope,
 	)
+
 
 	screen := ui.NewScreen("settings:detail", title, body)
 	noopData := callback.EncodeCallbackData("settings", "noop", "noop")
@@ -495,32 +497,32 @@ func (p *Plugin) HandleCallback(ctx *callback.CallbackContext) error {
 
 func (p *Plugin) handleConfigCommand(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		return ctx.Reply("**GoUltroid CLI Configuration Subsystem**\n\n" +
-			"Usage:\n" +
-			"• `.config get <key>`\n" +
-			"• `.config set <key> <value>`\n" +
-			"• `.config reset <key>`\n" +
-			"• `.config list [category]`\n" +
-			"• `.config history <key>`\n" +
-			"• `.config export`\n")
+		return ctx.Reply("⚙️ <b>GoUltroid CLI Configuration Subsystem</b>\n\n" +
+			"<b>Usage:</b>\n" +
+			"• <code>.config get &lt;namespace:key&gt;</code>\n" +
+			"• <code>.config set &lt;namespace:key&gt; &lt;value&gt;</code>\n" +
+			"• <code>.config reset &lt;namespace:key&gt;</code>\n" +
+			"• <code>.config list [category]</code>\n" +
+			"• <code>.config history &lt;namespace:key&gt;</code>\n" +
+			"• <code>.config export</code>\n")
 	}
 
 	action := strings.ToLower(ctx.Args[0])
 	switch action {
 	case "get":
 		if len(ctx.Args) < 2 {
-			return ctx.Reply("⚠️ Usage: `.config get <namespace:key>`")
+			return ctx.Reply("⚠️ Usage: <code>.config get &lt;namespace:key&gt;</code>")
 		}
 		ns, key := parseFullKey(ctx.Args[1])
 		val, err := p.service.Resolve(ctx.Ctx, ctx.SenderID(), ctx.ChatID(), ns, key)
 		if err != nil {
-			return ctx.Reply(fmt.Sprintf("❌ Error: %v", err))
+			return ctx.Reply(fmt.Sprintf("❌ <b>Error:</b> %s", ui.EscapeHTML(err.Error())))
 		}
-		return ctx.Reply(fmt.Sprintf("⚙️ **%s:%s** = `%s`", ns, key, val))
+		return ctx.Reply(fmt.Sprintf("⚙️ <b>%s:%s</b> = <code>%s</code>", ui.EscapeHTML(ns), ui.EscapeHTML(key), ui.EscapeHTML(val)))
 
 	case "set":
 		if len(ctx.Args) < 3 {
-			return ctx.Reply("⚠️ Usage: `.config set <namespace:key> <value>`")
+			return ctx.Reply("⚠️ Usage: <code>.config set &lt;namespace:key&gt; &lt;value&gt;</code>")
 		}
 		ns, key := parseFullKey(ctx.Args[1])
 		val := strings.Join(ctx.Args[2:], " ")
@@ -528,19 +530,19 @@ func (p *Plugin) handleConfigCommand(ctx *core.Context) error {
 		scopeID := int64(0)
 
 		if err := p.service.Set(ctx.Ctx, scope, scopeID, ns, key, val, ctx.SenderID()); err != nil {
-			return ctx.Reply(fmt.Sprintf("❌ Failed to set **%s:%s**: %v", ns, key, err))
+			return ctx.Reply(fmt.Sprintf("❌ Failed to set <b>%s:%s</b>: %s", ui.EscapeHTML(ns), ui.EscapeHTML(key), ui.EscapeHTML(err.Error())))
 		}
-		return ctx.Reply(fmt.Sprintf("✅ Setting updated:\n**%s:%s** = `%s`", ns, key, val))
+		return ctx.Reply(fmt.Sprintf("✅ <b>Setting updated:</b>\n<code>%s:%s</code> = <code>%s</code>", ui.EscapeHTML(ns), ui.EscapeHTML(key), ui.EscapeHTML(val)))
 
 	case "reset":
 		if len(ctx.Args) < 2 {
-			return ctx.Reply("⚠️ Usage: `.config reset <namespace:key>`")
+			return ctx.Reply("⚠️ Usage: <code>.config reset &lt;namespace:key&gt;</code>")
 		}
 		ns, key := parseFullKey(ctx.Args[1])
 		if err := p.service.Reset(ctx.Ctx, settings.ScopeGlobal, 0, ns, key); err != nil {
-			return ctx.Reply(fmt.Sprintf("❌ Failed to reset **%s:%s**: %v", ns, key, err))
+			return ctx.Reply(fmt.Sprintf("❌ Failed to reset <b>%s:%s</b>: %s", ui.EscapeHTML(ns), ui.EscapeHTML(key), ui.EscapeHTML(err.Error())))
 		}
-		return ctx.Reply(fmt.Sprintf("✅ Setting **%s:%s** reset to default.", ns, key))
+		return ctx.Reply(fmt.Sprintf("✅ Setting <code>%s:%s</code> reset to default.", ui.EscapeHTML(ns), ui.EscapeHTML(key)))
 
 	case "list":
 		cat := ""
@@ -559,45 +561,45 @@ func (p *Plugin) handleConfigCommand(ctx *core.Context) error {
 		}
 
 		var sb strings.Builder
-		sb.WriteString("📋 **GoUltroid Configuration Schema**\n\n")
+		sb.WriteString("📋 <b>GoUltroid Configuration Schema</b>\n\n")
 		for _, d := range defs {
 			cur, _ := p.service.Resolve(ctx.Ctx, ctx.SenderID(), ctx.ChatID(), d.Namespace, d.Key)
-			sb.WriteString(fmt.Sprintf("• `%s:%s` = `%s` (default: `%s`) [%s]\n  _%s_\n",
-				d.Namespace, d.Key, cur, d.DefaultValue, d.Type, d.Description))
+			sb.WriteString(fmt.Sprintf("• <code>%s:%s</code> = <code>%s</code> (default: <code>%s</code>) [%s]\n  <i>%s</i>\n",
+				ui.EscapeHTML(d.Namespace), ui.EscapeHTML(d.Key), ui.EscapeHTML(cur), ui.EscapeHTML(d.DefaultValue), ui.EscapeHTML(string(d.Type)), ui.EscapeHTML(d.Description)))
 		}
 		return ctx.Reply(sb.String())
 
 	case "history":
 		if len(ctx.Args) < 2 {
-			return ctx.Reply("⚠️ Usage: `.config history <namespace:key>`")
+			return ctx.Reply("⚠️ Usage: <code>.config history &lt;namespace:key&gt;</code>")
 		}
 		ns, key := parseFullKey(ctx.Args[1])
 		history, err := p.service.GetHistory(ctx.Ctx, ns, key, 10)
 		if err != nil {
-			return ctx.Reply(fmt.Sprintf("❌ Error retrieving history: %v", err))
+			return ctx.Reply(fmt.Sprintf("❌ <b>Error retrieving history:</b> %s", ui.EscapeHTML(err.Error())))
 		}
 		if len(history) == 0 {
-			return ctx.Reply(fmt.Sprintf("No change history found for `%s:%s`.", ns, key))
+			return ctx.Reply(fmt.Sprintf("No change history found for <code>%s:%s</code>.", ui.EscapeHTML(ns), ui.EscapeHTML(key)))
 		}
 
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("📜 **Change History for `%s:%s`**\n\n", ns, key))
+		sb.WriteString(fmt.Sprintf("📜 <b>Change History for</b> <code>%s:%s</code>\n\n", ui.EscapeHTML(ns), ui.EscapeHTML(key)))
 		for _, h := range history {
-			sb.WriteString(fmt.Sprintf("• `%s` ➔ `%s` by user `%d` at `%s`\n",
-				h.OldVal, h.NewVal, h.ChangedBy, h.ChangedAt.Format("2006-01-02 15:04:05")))
+			sb.WriteString(fmt.Sprintf("• <code>%s</code> ➔ <code>%s</code> by user <code>%d</code> at <code>%s</code>\n",
+				ui.EscapeHTML(h.OldVal), ui.EscapeHTML(h.NewVal), h.ChangedBy, h.ChangedAt.Format("2006-01-02 15:04:05")))
 		}
 		return ctx.Reply(sb.String())
 
 	case "export":
 		exportData, err := p.service.Export(ctx.Ctx, settings.ScopeGlobal, 0)
 		if err != nil {
-			return ctx.Reply(fmt.Sprintf("❌ Export failed: %v", err))
+			return ctx.Reply(fmt.Sprintf("❌ <b>Export failed:</b> %s", ui.EscapeHTML(err.Error())))
 		}
 		bytes, _ := json.MarshalIndent(exportData, "", "  ")
-		return ctx.Reply(fmt.Sprintf("📤 **Global Settings Export**:\n```json\n%s\n```", string(bytes)))
+		return ctx.Reply(fmt.Sprintf("📤 <b>Global Settings Export:</b>\n<pre><code class=\"language-json\">%s</code></pre>", ui.EscapeHTML(string(bytes))))
 
 	default:
-		return ctx.Reply(fmt.Sprintf("⚠️ Unknown action `%s`. Use `.config` to see available commands.", action))
+		return ctx.Reply(fmt.Sprintf("⚠️ Unknown action <code>%s</code>. Use <code>.config</code> to see available commands.", ui.EscapeHTML(action)))
 	}
 }
 

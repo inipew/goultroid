@@ -43,9 +43,9 @@ func (s *Screen) Markup() Markup {
 func (s *Screen) Render() (string, *tg.ReplyInlineMarkup) {
 	var sb strings.Builder
 	if strings.TrimSpace(s.Title) != "" {
-		sb.WriteString("**")
-		sb.WriteString(strings.TrimSpace(s.Title))
-		sb.WriteString("**\n\n")
+		sb.WriteString("<b>")
+		sb.WriteString(EscapeHTML(strings.TrimSpace(s.Title)))
+		sb.WriteString("</b>\n\n")
 	}
 	sb.WriteString(s.Body)
 	text := sb.String()
