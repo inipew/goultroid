@@ -18,15 +18,17 @@ import (
 )
 
 type RendererFunc func(screen *Screen) (string, tg.ReplyMarkupClass)
-type CommandSource interface { CommandsForSurface(source execution.Source) []core.Command }
+type CommandSource interface {
+	CommandsForSurface(source execution.Source) []core.Command
+}
 
 type Controller struct {
-	renderer RendererFunc
+	renderer  RendererFunc
 	instances InstanceStore
 	cmdSource CommandSource
-	registry *Registry
+	registry  *Registry
 	pendingMu sync.Mutex
-	pending map[int64]pendingSettingInput
+	pending   map[int64]pendingSettingInput
 }
 
 func NewController(renderer RendererFunc) *Controller {
@@ -34,6 +36,7 @@ func NewController(renderer RendererFunc) *Controller {
 	c.registerDefaultScreens()
 	return c
 }
+
 func (c *Controller) SetCommandSource(cs CommandSource) { c.cmdSource = cs }
 func (c *Controller) Instances() InstanceStore { return c.instances }
 func (c *Controller) Registry() *Registry { return c.registry }
@@ -46,10 +49,7 @@ func (c *Controller) registerDefaultScreens() {
 	c.registry.Register(ScreenIDHelp, func(ctx ScreenContext) (*Screen, error) { return BuildHelpScreenWithCommands(ctx.Username, ctx.Commands), nil })
 	c.registry.Register(ScreenIDStatus, func(ctx ScreenContext) (*Screen, error) { return BuildStatusScreen(ctx.Username, ctx.Uptime, ctx.Engine), nil })
 }
-func (c *Controller) buildRegistered(id ScreenID, data ScreenContext) (*Screen, error) {
-	if c.registry == nil { return nil, fmt.Errorf("assistant/menu: screen registry is unavailable") }
-	return c.registry.Build(id, data)
-}
+func (c *Controller) buildRegistered(id ScreenID, data ScreenContext) (*Screen, error) { if c.registry == nil { return nil, fmt.Errorf("assistant/menu: screen registry is unavailable") }; return c.registry.Build(id, data) }
 func BuildStartScreen(botUsername string, uptime time.Duration) *Screen { return BuildStartScreenWithCommands(botUsername, uptime, nil) }
 func BuildStartScreenWithCommands(botUsername string, uptime time.Duration, cmds []core.Command) *Screen {
 	if botUsername == "" { botUsername = "GoUltroidBot" }
@@ -113,15 +113,15 @@ func buildHelpCommandScreen(cmd core.Command, moduleIndex int) *Screen {
 }
 func helpPagerButtons(action string, page, pages int) ui.ButtonRow {
 	row := ui.ButtonRow{}
-	if page > 0 { row = append(row, NewButton("◀️ Previous", "a1:"+action+":"+strconv.Itoa(page-1))) } else { row = append(row, NewButton("·", "a1:assistant:noop")) }
+	if page > 0 { row = append(row, NewButton("◀️ Previous", "a1:"+action+":"+strconv.Itoa(page-1))) }
 	row = append(row, NewButton(fmt.Sprintf("%d / %d", page+1, pages), "a1:assistant:noop"))
-	if page+1 < pages { row = append(row, NewButton("Next ▶️", "a1:"+action+":"+strconv.Itoa(page+1))) } else { row = append(row, NewButton("·", "a1:assistant:noop")) }; return row
+	if page+1 < pages { row = append(row, NewButton("Next ▶️", "a1:"+action+":"+strconv.Itoa(page+1))) }
+	return row
 }
 func maxPage(total, pageSize int) int { if total <= 0 { return 1 }; return (total+pageSize-1)/pageSize }
 func clampPage(page, pages int) int { if page < 0 { return 0 }; if page >= pages { return pages-1 }; return page }
 func min(a,b int) int { if a < b { return a }; return b }
 func truncateRunes(s string, max int) string { r := []rune(strings.TrimSpace(s)); if len(r) <= max { return string(r) }; if max <= 1 { return string(r[:max]) }; return string(r[:max-1])+"…" }
-
 func BuildStatusScreen(botUsername string, uptime time.Duration, engine string) *Screen {
 	if botUsername == "" { botUsername = "GoUltroidBot" }; if engine == "" { engine = "GoUltroid (MTProto)" }
 	body := ui.NewCard("System Status").WithIcon("📊").WithHeader("Assistant runtime health and transport information.").AddField("Assistant", "@"+botUsername).AddField("Status", "🟢 Operational").AddField("Uptime", appStatus.FormatDuration(uptime)).AddField("Engine", engine).AddField("Callbacks", "🟢 Active").WithFooter("<i>Refresh to read the latest runtime state.</i>").Render()
@@ -138,7 +138,7 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 	if r == nil { return }; uptime := func() time.Duration { if getStartTime != nil { return time.Since(getStartTime()) }; return 0 }; username := func() string { if getUsername != nil { return getUsername() }; return "GoUltroidBot" }; commands := func() []core.Command { if c.cmdSource == nil { return nil }; return sortedCommands(c.cmdSource.CommandsForSurface(execution.SourceAssistant)) }; contextData := func() ScreenContext { return ScreenContext{Username:username(),Uptime:uptime(),Engine:"GoUltroid (MTProto)",Commands:commands()} }
 	edit := func(ctx context.Context, tx *callback.Transaction, id ScreenID) error { if _,err:=c.validateSession(ctx,tx); err!=nil{return err}; unlock:=c.lockInstance(tx); defer unlock(); text,markup,err:=c.renderRegistered(id,contextData()); if err!=nil{return err}; if c.instances!=nil{c.instances.UpdateScreen(tx.Target.ChatID(),tx.Target.MessageID(),id)}; return tx.Edit(ctx,text,markup) }
 	r.Register("assistant","start",func(ctx context.Context,tx *callback.Transaction)error{return edit(ctx,tx,ScreenIDStart)}); r.Register("assistant","settings",func(ctx context.Context,tx *callback.Transaction)error{return edit(ctx,tx,ScreenIDSettings)}); r.Register("assistant","help",func(ctx context.Context,tx *callback.Transaction)error{return edit(ctx,tx,ScreenIDHelp)})
-	r.Register("assistant","help_page",func(ctx context.Context,tx *callback.Transaction)error{if _,err:=c.validateSession(ctx,tx);err!=nil{return err}; page,err:=strconv.Atoi(tx.Payload.State);if err!=nil{return fmt.Errorf("invalid help page: %w",err)};unlock:=c.lockInstance(tx);defer unlock();text,markup:=c.renderer(buildHelpPage(username(),commands(),page));return tx.Edit(ctx,text,markup)})
+	r.Register("assistant","help_page",func(ctx context.Context,tx *callback.Transaction)error{if _,err:=c.validateSession(ctx,tx);err!=nil{return err};page,err:=strconv.Atoi(tx.Payload.State);if err!=nil{return fmt.Errorf("invalid help page: %w",err)};unlock:=c.lockInstance(tx);defer unlock();text,markup:=c.renderer(buildHelpPage(username(),commands(),page));return tx.Edit(ctx,text,markup)})
 	r.Register("assistant","help_module",func(ctx context.Context,tx *callback.Transaction)error{if _,err:=c.validateSession(ctx,tx);err!=nil{return err};moduleIndex,err:=strconv.Atoi(tx.Payload.State);if err!=nil{return fmt.Errorf("invalid help module: %w",err)};unlock:=c.lockInstance(tx);defer unlock();text,markup:=c.renderer(buildHelpModulePage(commands(),moduleIndex,0));return tx.Edit(ctx,text,markup)})
 	r.Register("assistant","help_module_page",func(ctx context.Context,tx *callback.Transaction)error{if _,err:=c.validateSession(ctx,tx);err!=nil{return err};parts:=strings.Split(tx.Payload.State,":");if len(parts)!=2{return fmt.Errorf("invalid help module pagination state")};moduleIndex,err:=strconv.Atoi(parts[0]);if err!=nil{return err};page,err:=strconv.Atoi(parts[1]);if err!=nil{return err};unlock:=c.lockInstance(tx);defer unlock();text,markup:=c.renderer(buildHelpModulePage(commands(),moduleIndex,page));return tx.Edit(ctx,text,markup)})
 	r.Register("assistant","help_command",func(ctx context.Context,tx *callback.Transaction)error{if _,err:=c.validateSession(ctx,tx);err!=nil{return err};parts:=strings.Split(tx.Payload.State,":");if len(parts)!=2{return fmt.Errorf("invalid help command state")};moduleIndex,err:=strconv.Atoi(parts[0]);if err!=nil{return err};commandIndex,err:=strconv.Atoi(parts[1]);if err!=nil{return err};categories:=commandCategories(commands());if moduleIndex<0||moduleIndex>=len(categories){return fmt.Errorf("help module out of range")};moduleCommands:=commandsInCategory(commands(),categories[moduleIndex]);if commandIndex<0||commandIndex>=len(moduleCommands){return fmt.Errorf("help command out of range")};unlock:=c.lockInstance(tx);defer unlock();text,markup:=c.renderer(buildHelpCommandScreen(moduleCommands[commandIndex],moduleIndex));return tx.Edit(ctx,text,markup)})
