@@ -186,8 +186,8 @@ func TestScreen_RenderScreen(t *testing.T) {
 	if !strings.Contains(rendered.Text, "<b>Dashboard</b>") {
 		t.Errorf("expected title in rendered screen text, got: %s", rendered.Text)
 	}
-	if rendered.Markup == nil {
-		t.Errorf("expected non-nil markup in rendered screen")
+	if len(rendered.Markup.Rows) == 0 {
+		t.Errorf("expected non-empty markup in rendered screen")
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/services/ratelimit"
+	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/telegram"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -21,19 +22,20 @@ import (
 
 // App is the central root composition container coordinating all GoUltroid subsystems.
 type App struct {
-	cfg           *config.Config
-	logger        *zap.Logger
-	db            *database.DB
-	client        *telegram.Client
-	plugins       *plugin.Manager
-	router        *core.Router
-	sched         *scheduler.Engine
-	eventBus      *core.EventBus
-	assistant     assistant.Client
-	limiter       *ratelimit.Limiter
-	addonMgr      *addon.Manager
-	callbackStore *callback.StateStore
-	inlineEngine  *inline.Engine
+	cfg             *config.Config
+	logger          *zap.Logger
+	db              *database.DB
+	client          *telegram.Client
+	plugins         *plugin.Manager
+	router          *core.Router
+	sched           *scheduler.Engine
+	eventBus        *core.EventBus
+	assistant       assistant.Client
+	limiter         *ratelimit.Limiter
+	addonMgr        *addon.Manager
+	callbackStore   *callback.StateStore
+	inlineEngine    *inline.Engine
+	settingsService *settings.Service
 }
 
 // New initializes the full GoUltroid application stack through layered dependency injection.
@@ -85,19 +87,20 @@ func New(cfg *config.Config) (*App, error) {
 	}
 
 	return &App{
-		cfg:           cfg,
-		logger:        logger,
-		db:            coreDeps.db,
-		client:        tgRuntime.client,
-		plugins:       pluginManager,
-		router:        coreDeps.router,
-		sched:         domServices.schedEngine,
-		eventBus:      coreDeps.eventBus,
-		assistant:     tgRuntime.assistant,
-		limiter:       coreDeps.cmdLimiter,
-		addonMgr:      domServices.addonManager,
-		callbackStore: coreDeps.callbackStore,
-		inlineEngine:  coreDeps.inlineEngine,
+		cfg:             cfg,
+		logger:          logger,
+		db:              coreDeps.db,
+		client:          tgRuntime.client,
+		plugins:         pluginManager,
+		router:          coreDeps.router,
+		sched:           domServices.schedEngine,
+		eventBus:        coreDeps.eventBus,
+		assistant:       tgRuntime.assistant,
+		limiter:         coreDeps.cmdLimiter,
+		addonMgr:        domServices.addonManager,
+		callbackStore:   coreDeps.callbackStore,
+		inlineEngine:    coreDeps.inlineEngine,
+		settingsService: domServices.settingsService,
 	}, nil
 }
 

@@ -113,6 +113,20 @@ type SettingChangeRecord struct {
 	ChangedAt time.Time `json:"changed_at"`
 }
 
+// SettingOutboxEntry represents a durable outbox entry for transactional event publishing.
+type SettingOutboxEntry struct {
+	ID        int64     `json:"id"`
+	ScopeType string    `json:"scope_type"`
+	ScopeID   int64     `json:"scope_id"`
+	Namespace string    `json:"namespace"`
+	Key       string    `json:"key"`
+	OldVal    string    `json:"old_val"`
+	NewVal    string    `json:"new_val"`
+	ChangedBy int64     `json:"changed_by"`
+	CreatedAt time.Time `json:"created_at"`
+	Processed bool      `json:"processed"`
+}
+
 // Repository defines data access methods for GoUltroid.
 type Repository interface {
 	// Sudo
@@ -165,11 +179,14 @@ type Repository interface {
 
 	// Generic Settings
 	GetSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) (*SettingItem, error)
+	GetEffectiveSetting(ctx context.Context, namespace, key string, chatID, userID int64) (*SettingItem, error)
 	SetSetting(ctx context.Context, item *SettingItem) error
 	SetSettingsBatch(ctx context.Context, items []*SettingItem) error
 	DeleteSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) error
 	ListSettings(ctx context.Context, scopeType string, scopeID int64, namespace string) ([]SettingItem, error)
 	GetSettingHistory(ctx context.Context, namespace, key string, limit int) ([]SettingChangeRecord, error)
+	ListPendingOutbox(ctx context.Context, limit int) ([]SettingOutboxEntry, error)
+	MarkOutboxProcessed(ctx context.Context, id int64) error
 }
 
 // Ensure DB implements Repository.
@@ -1092,6 +1109,40 @@ func (d *DB) GetSetting(ctx context.Context, scopeType string, scopeID int64, na
 	return &item, nil
 }
 
+// GetEffectiveSetting retrieves the highest-priority setting for a key across chat, user, and global scopes in a single query.
+// Priority: chat > user > global. Returns (nil, nil) if no override found.
+func (d *DB) GetEffectiveSetting(ctx context.Context, namespace, key string, chatID, userID int64) (*SettingItem, error) {
+	query := `
+		SELECT scope_type, scope_id, namespace, key, value_type, value, updated_by, updated_at
+		FROM settings
+		WHERE namespace = ? AND key = ?
+		  AND (
+		    (scope_type = 'chat' AND scope_id = ?)
+		    OR (scope_type = 'user' AND scope_id = ?)
+		    OR (scope_type = 'global' AND scope_id = 0)
+		  )
+		ORDER BY CASE scope_type WHEN 'chat' THEN 1 WHEN 'user' THEN 2 WHEN 'global' THEN 3 ELSE 4 END
+		LIMIT 1`
+	var item SettingItem
+	err := d.QueryRowContext(ctx, query, namespace, key, chatID, userID).Scan(
+		&item.ScopeType,
+		&item.ScopeID,
+		&item.Namespace,
+		&item.Key,
+		&item.ValueType,
+		&item.Value,
+		&item.UpdatedBy,
+		&item.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get effective setting (%s:%s chat=%d user=%d): %w", namespace, key, chatID, userID, err)
+	}
+	return &item, nil
+}
+
 // SetSetting creates or updates a setting and appends a record to setting_changes audit log in a transaction.
 func (d *DB) SetSetting(ctx context.Context, item *SettingItem) error {
 	if item == nil {
@@ -1140,6 +1191,16 @@ func (d *DB) SetSetting(ctx context.Context, item *SettingItem) error {
 		return fmt.Errorf("failed to record setting change audit: %w", err)
 	}
 
+	// Insert outbox entry for durable event publishing
+	outboxQuery := `
+		INSERT INTO setting_outbox (scope_type, scope_id, namespace, key, old_val, new_val, changed_by, created_at, processed)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`
+	_, err = tx.ExecContext(ctx, outboxQuery,
+		item.ScopeType, item.ScopeID, item.Namespace, item.Key, oldVal, item.Value, item.UpdatedBy, item.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("failed to insert setting outbox: %w", err)
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit setting transaction: %w", err)
 	}
@@ -1186,6 +1247,14 @@ func (d *DB) SetSettingsBatch(ctx context.Context, items []*SettingItem) error {
 	}
 	defer changeStmt.Close()
 
+	outboxStmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO setting_outbox (scope_type, scope_id, namespace, key, old_val, new_val, changed_by, created_at, processed)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`)
+	if err != nil {
+		return fmt.Errorf("prepare outbox statement: %w", err)
+	}
+	defer outboxStmt.Close()
+
 	for _, item := range items {
 		if item == nil {
 			continue
@@ -1210,6 +1279,12 @@ func (d *DB) SetSettingsBatch(ctx context.Context, items []*SettingItem) error {
 			item.ScopeType, item.ScopeID, item.Namespace, item.Key, oldVal, item.Value, item.UpdatedBy, item.UpdatedAt)
 		if err != nil {
 			return fmt.Errorf("failed to record setting change audit for %s/%s: %w", item.Namespace, item.Key, err)
+		}
+
+		_, err = outboxStmt.ExecContext(ctx,
+			item.ScopeType, item.ScopeID, item.Namespace, item.Key, oldVal, item.Value, item.UpdatedBy, item.UpdatedAt)
+		if err != nil {
+			return fmt.Errorf("failed to insert setting outbox for %s/%s: %w", item.Namespace, item.Key, err)
 		}
 	}
 
@@ -1246,13 +1321,62 @@ func (d *DB) DeleteSetting(ctx context.Context, scopeType string, scopeID int64,
 	changeQuery := `
 		INSERT INTO setting_changes (scope_type, scope_id, namespace, key, old_val, new_val, changed_by, changed_at)
 		VALUES (?, ?, ?, ?, ?, '', 0, ?)`
-	_, err = tx.ExecContext(ctx, changeQuery, scopeType, scopeID, namespace, key, oldVal, time.Now().UTC())
+	now := time.Now().UTC()
+	_, err = tx.ExecContext(ctx, changeQuery, scopeType, scopeID, namespace, key, oldVal, now)
 	if err != nil {
 		return fmt.Errorf("failed to record setting deletion audit: %w", err)
 	}
 
+	outboxQuery := `
+		INSERT INTO setting_outbox (scope_type, scope_id, namespace, key, old_val, new_val, changed_by, created_at, processed)
+		VALUES (?, ?, ?, ?, ?, '', 0, ?, 0)`
+	_, err = tx.ExecContext(ctx, outboxQuery, scopeType, scopeID, namespace, key, oldVal, now)
+	if err != nil {
+		return fmt.Errorf("failed to insert setting outbox for deletion: %w", err)
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit setting deletion: %w", err)
+	}
+	return nil
+}
+
+// ListPendingOutbox retrieves unprocessed outbox entries for durable publishing.
+func (d *DB) ListPendingOutbox(ctx context.Context, limit int) ([]SettingOutboxEntry, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := d.QueryContext(ctx, `
+		SELECT id, scope_type, scope_id, namespace, key, old_val, new_val, changed_by, created_at, processed
+		FROM setting_outbox
+		WHERE processed = 0
+		ORDER BY created_at ASC
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query pending outbox: %w", err)
+	}
+	defer rows.Close()
+	var entries []SettingOutboxEntry
+	for rows.Next() {
+		var e SettingOutboxEntry
+		var processed int
+		if err := rows.Scan(&e.ID, &e.ScopeType, &e.ScopeID, &e.Namespace, &e.Key, &e.OldVal, &e.NewVal, &e.ChangedBy, &e.CreatedAt, &processed); err != nil {
+			return nil, fmt.Errorf("failed to scan outbox entry: %w", err)
+		}
+		e.Processed = processed != 0
+		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+// MarkOutboxProcessed marks an outbox entry as processed.
+func (d *DB) MarkOutboxProcessed(ctx context.Context, id int64) error {
+	_, err := d.ExecContext(ctx, `UPDATE setting_outbox SET processed = 1 WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("failed to mark outbox %d processed: %w", id, err)
 	}
 	return nil
 }

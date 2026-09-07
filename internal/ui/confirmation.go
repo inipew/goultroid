@@ -2,8 +2,6 @@ package ui
 
 import (
 	"sort"
-
-	"github.com/gotd/td/tg"
 )
 
 // BuildConfirmationCard formats an alert card and confirmation buttons for destructive actions.
@@ -15,7 +13,7 @@ func BuildConfirmationCard(
 	confirmData []byte,
 	cancelText string,
 	cancelData []byte,
-) (string, tg.ReplyMarkupClass) {
+) (string, Markup) {
 	if title == "" {
 		title = "Confirmation Required"
 	}
@@ -48,7 +46,7 @@ func BuildConfirmationCard(
 
 	confirmBtn := NewCallbackButton(confirmText, confirmData)
 	cancelBtn := NewCallbackButton(cancelText, cancelData)
-	markup := NewMarkup(ButtonRow{confirmBtn, cancelBtn}).ToTelegramMarkup()
+	markup := NewMarkup(ButtonRow{confirmBtn, cancelBtn})
 
 	return card.Render(), markup
 }
@@ -64,7 +62,7 @@ func BuildPreviewActionCard(
 	editText string,
 	editData []byte,
 	cancelData []byte,
-) (string, tg.ReplyMarkupClass) {
+) (string, Markup) {
 	if entityTitle == "" {
 		entityTitle = "Operation Preview"
 	}
@@ -103,6 +101,6 @@ func BuildPreviewActionCard(
 		row = append(row, NewCallbackButton("❌ Cancel", cancelData))
 	}
 
-	markup := NewMarkup(row).ToTelegramMarkup()
+	markup := NewMarkup(row)
 	return card.Render(), markup
 }

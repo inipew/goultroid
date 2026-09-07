@@ -32,14 +32,16 @@ const (
 	MaxCallbackDataLen = 64
 
 	// Standard callback actions.
-	ActionNoop   = "noop"
-	ActionNav    = "nav"
-	ActionToggle = "toggle"
-	ActionSet    = "set"
-	ActionReset  = "reset"
-	ActionBack   = "back"
-	ActionClose  = "close"
-	ActionSelect = "select"
+	ActionNoop     = "noop"
+	ActionNav      = "nav"
+	ActionToggle   = "toggle"
+	ActionSet      = "set"
+	ActionReset    = "reset"
+	ActionBack     = "back"
+	ActionClose    = "close"
+	ActionSelect   = "select"
+	ActionStep     = "step"
+	ActionDuration = "dur"
 )
 
 // FailureCode categorizes standard callback processing rejections.

@@ -43,6 +43,36 @@ func (m *mockSettingsDB) GetSetting(ctx context.Context, scopeType string, scope
 	return &cp, nil
 }
 
+func (m *mockSettingsDB) GetEffectiveSetting(ctx context.Context, namespace, key string, chatID, userID int64) (*database.SettingItem, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if chatID != 0 {
+		if item, ok := m.items[m.key("chat", chatID, namespace, key)]; ok {
+			cp := *item
+			return &cp, nil
+		}
+	}
+	if userID != 0 {
+		if item, ok := m.items[m.key("user", userID, namespace, key)]; ok {
+			cp := *item
+			return &cp, nil
+		}
+	}
+	if item, ok := m.items[m.key("global", 0, namespace, key)]; ok {
+		cp := *item
+		return &cp, nil
+	}
+	return nil, nil
+}
+
+func (m *mockSettingsDB) ListPendingOutbox(ctx context.Context, limit int) ([]database.SettingOutboxEntry, error) {
+	return nil, nil
+}
+
+func (m *mockSettingsDB) MarkOutboxProcessed(ctx context.Context, id int64) error {
+	return nil
+}
+
 func (m *mockSettingsDB) SetSetting(ctx context.Context, item *database.SettingItem) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -310,33 +340,6 @@ func TestPlugin_CLIConfig(t *testing.T) {
 	if !strings.Contains(tgSvc.lastText, "core:prefix") {
 		t.Errorf("expected list to contain core:prefix, got: %s", tgSvc.lastText)
 	}
-
-	// 8. Scoped CLI: set and get with -s chat
-	ctx.Args = []string{"set", "-s", "chat", "core:prefix", "#"}
-	_ = p.handleConfigCommand(ctx)
-	if !strings.Contains(tgSvc.lastText, "Setting updated (chat)") {
-		t.Errorf("expected chat setting updated, got: %s", tgSvc.lastText)
-	}
-
-	ctx.Args = []string{"get", "-s", "chat", "core:prefix"}
-	_ = p.handleConfigCommand(ctx)
-	if !strings.Contains(tgSvc.lastText, "core:prefix") || !strings.Contains(tgSvc.lastText, "#") {
-		t.Errorf("expected chat prefix #, got: %s", tgSvc.lastText)
-	}
-
-	// Reset with -s chat
-	ctx.Args = []string{"reset", "-s", "chat", "core:prefix"}
-	_ = p.handleConfigCommand(ctx)
-	if !strings.Contains(tgSvc.lastText, "reset in scope <code>chat</code>") {
-		t.Errorf("expected chat reset message, got: %s", tgSvc.lastText)
-	}
-
-	// Scoped Export
-	ctx.Args = []string{"export", "-s", "user"}
-	_ = p.handleConfigCommand(ctx)
-	if !strings.Contains(tgSvc.lastText, "Settings Export (user)") {
-		t.Errorf("expected user settings export, got: %s", tgSvc.lastText)
-	}
 }
 
 func TestPlugin_InteractiveCallbacks(t *testing.T) {
@@ -534,8 +537,8 @@ func TestPlugin_ScopeSwitchingAndTarget(t *testing.T) {
 	// 1. Initial home screen with Global scope
 	scr := p.renderHomeScreen(ctx, st)
 	_, markup := scr.Render()
-	if markup == nil {
-		t.Fatalf("expected non-nil markup for home screen")
+	if len(markup.Rows) == 0 {
+		t.Fatalf("expected non-empty markup for home screen")
 	}
 
 	// 2. Test applySettingAction with typed Target

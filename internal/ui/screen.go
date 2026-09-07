@@ -2,8 +2,6 @@ package ui
 
 import (
 	"strings"
-
-	"github.com/gotd/td/tg"
 )
 
 // Screen represents a single navigable UI view containing text and inline button rows.
@@ -39,8 +37,8 @@ func (s *Screen) Markup() Markup {
 	return Markup{Rows: s.Rows}
 }
 
-// Render builds the full message text and tg.ReplyMarkupClass.
-func (s *Screen) Render() (string, *tg.ReplyInlineMarkup) {
+// Text builds the full message text.
+func (s *Screen) Text() string {
 	var sb strings.Builder
 	if strings.TrimSpace(s.Title) != "" {
 		sb.WriteString("<b>")
@@ -48,24 +46,18 @@ func (s *Screen) Render() (string, *tg.ReplyInlineMarkup) {
 		sb.WriteString("</b>\n\n")
 	}
 	sb.WriteString(s.Body)
-	text := sb.String()
-
-	markupClass := Markup{Rows: s.Rows}.ToTelegramMarkup()
-	if markupClass == nil {
-		return text, nil
-	}
-
-	if inlineMarkup, ok := markupClass.(*tg.ReplyInlineMarkup); ok {
-		return text, inlineMarkup
-	}
-
-	return text, nil
+	return sb.String()
 }
 
-// RenderedScreen represents the rendered presentation output ready for transmission.
+// Render builds the text and Markup (Telegram-agnostic).
+func (s *Screen) Render() (string, Markup) {
+	return s.Text(), s.Markup()
+}
+
+// RenderedScreen represents the rendered presentation output ready for transmission (Telegram-agnostic).
 type RenderedScreen struct {
 	Text   string
-	Markup *tg.ReplyInlineMarkup
+	Markup Markup
 }
 
 // RenderScreen renders the screen into a structured RenderedScreen object.

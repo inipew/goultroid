@@ -3,7 +3,6 @@ package settings
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -15,6 +14,8 @@ import (
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/ui"
+	"github.com/inipew/goultroid/internal/ui/render"
+	"github.com/inipew/goultroid/plugins/settings/usecase"
 	"go.uber.org/zap"
 )
 
@@ -43,6 +44,16 @@ type MenuState struct {
 	ActionValue string                `json:"act_val,omitempty"`
 }
 
+// ScopeRef returns the typed scope reference for this menu state.
+func (s MenuState) ScopeRef() settings.ScopeRef {
+	return settings.ScopeRef{Type: s.Scope, ID: s.ScopeID}
+}
+
+// ValidateScope checks whether the current scope is consistent (e.g. chat scope must have non-zero ID).
+func (s MenuState) ValidateScope() error {
+	return s.ScopeRef().Validate()
+}
+
 // GetTarget extracts the namespace and key safely from Target or Selected.
 func (s *MenuState) GetTarget() (ns, key string) {
 	if s.Target != nil && s.Target.Namespace != "" && s.Target.Key != "" {
@@ -63,25 +74,14 @@ func (s *MenuState) SetTarget(ns, key string) {
 	s.Selected = ns + ":" + key
 }
 
-// EffectiveResolveIDs returns the appropriate user and chat IDs for resolution
-// given the active menu scope.
-func (s MenuState) EffectiveResolveIDs() (userID int64, chatID int64) {
-	switch s.Scope {
-	case settings.ScopeChat:
-		return s.OwnerID, s.ScopeID
-	case settings.ScopeUser:
-		return s.ScopeID, 0
-	default:
-		return 0, 0
-	}
-}
-
 // Plugin provides interactive settings management via dashboard and CLI.
 type Plugin struct {
 	service    *settings.Service
 	stateStore *callback.StateStore
 	logger     *zap.Logger
 	mu         sync.RWMutex
+	setUC      *usecase.SetSettingUseCase
+	resetUC    *usecase.ResetSettingUseCase
 }
 
 // New creates a new settings plugin instance.
@@ -93,6 +93,8 @@ func New(service *settings.Service, stateStore *callback.StateStore) *Plugin {
 		service:    service,
 		stateStore: stateStore,
 		logger:     zap.NewNop(),
+		setUC:      &usecase.SetSettingUseCase{Service: service},
+		resetUC:    &usecase.ResetSettingUseCase{Service: service},
 	}
 }
 
@@ -165,11 +167,12 @@ func (p *Plugin) handleSettingsCommand(ctx *core.Context) error {
 
 	screen := p.renderScreen(ctx.Ctx, state)
 	text, markup := screen.Render()
+	tgMarkup := render.ToTelegramMarkup(markup)
 
 	// If interactive inline buttons enabled
 	useButtons, _ := p.service.ResolveBool(ctx.Ctx, ctx.SenderID(), ctx.ChatID(), "ui", "inline_buttons")
-	if useButtons && markup != nil {
-		return ctx.ReplyMarkup(text, markup)
+	if useButtons && tgMarkup != nil {
+		return ctx.ReplyMarkup(text, tgMarkup)
 	}
 	return ctx.Reply(text)
 }
@@ -212,7 +215,7 @@ func (p *Plugin) renderHomeScreen(ctx context.Context, state MenuState) *ui.Scre
 		catState.Selected = ""
 		catOid := p.storeState(catState)
 
-		btn := ui.NewCallbackButton(label, callback.EncodeCallbackData("settings", "nav", catOid))
+		btn := ui.NewCallbackButton(label, callback.EncodeCallbackData("settings", callback.ActionNav, catOid))
 		row = append(row, btn)
 
 		if (i+1)%2 == 0 || i == len(categories)-1 {
@@ -224,40 +227,7 @@ func (p *Plugin) renderHomeScreen(ctx context.Context, state MenuState) *ui.Scre
 		screen.AddRow(row...)
 	}
 
-	// Scope switcher button
-	nextScope := settings.ScopeGlobal
-	var nextScopeID int64 = 0
-	scopeText := "Scope: 🌐 Global"
-	if state.Scope == settings.ScopeGlobal {
-		if state.ChatID != 0 {
-			nextScope = settings.ScopeChat
-			nextScopeID = state.ChatID
-			scopeText = "Scope: 🌐 Global [Click to Chat]"
-		} else if state.OwnerID != 0 {
-			nextScope = settings.ScopeUser
-			nextScopeID = state.OwnerID
-			scopeText = "Scope: 🌐 Global [Click to User]"
-		} else {
-			nextScope = settings.ScopeGlobal
-			nextScopeID = 0
-			scopeText = "Scope: 🌐 Global"
-		}
-	} else if state.Scope == settings.ScopeChat {
-		if state.OwnerID != 0 {
-			nextScope = settings.ScopeUser
-			nextScopeID = state.OwnerID
-			scopeText = "Scope: 💬 Chat [Click to User]"
-		} else {
-			nextScope = settings.ScopeGlobal
-			nextScopeID = 0
-			scopeText = "Scope: 💬 Chat [Click to Global]"
-		}
-	} else {
-		nextScope = settings.ScopeGlobal
-		nextScopeID = 0
-		scopeText = "Scope: 👤 User [Click to Global]"
-	}
-
+	nextScope, nextScopeID, scopeText := p.nextScope(state)
 	scopeState := state
 	scopeState.Scope = nextScope
 	scopeState.ScopeID = nextScopeID
@@ -265,8 +235,8 @@ func (p *Plugin) renderHomeScreen(ctx context.Context, state MenuState) *ui.Scre
 
 	closeOid := p.storeState(state)
 
-	screen.AddRow(ui.NewCallbackButton(scopeText, callback.EncodeCallbackData("settings", "nav", scopeOid)))
-	screen.AddRow(ui.NewCallbackButton("❌ Close", callback.EncodeCallbackData("settings", "close", closeOid)))
+	screen.AddRow(ui.NewCallbackButton(scopeText, callback.EncodeCallbackData("settings", callback.ActionNav, scopeOid)))
+	screen.AddRow(ui.NewCallbackButton("❌ Close", callback.EncodeCallbackData("settings", callback.ActionClose, closeOid)))
 
 	return screen
 }
@@ -280,7 +250,7 @@ func (p *Plugin) renderCategoryScreen(ctx context.Context, state MenuState) *ui.
 		homeState := state
 		homeState.Category = ""
 		homeOid := p.storeState(homeState)
-		screen.AddRow(ui.NewCallbackButton("🔙 Back", callback.EncodeCallbackData("settings", "nav", homeOid)))
+		screen.AddRow(ui.NewCallbackButton("🔙 Back", callback.EncodeCallbackData("settings", callback.ActionNav, homeOid)))
 		return screen
 	}
 
@@ -294,8 +264,7 @@ func (p *Plugin) renderCategoryScreen(ctx context.Context, state MenuState) *ui.
 
 	for _, def := range pagedDefs {
 		// Resolve current value in scope
-		uID, cID := state.EffectiveResolveIDs()
-		currentVal, _ := p.service.Resolve(ctx, uID, cID, def.Namespace, def.Key)
+		currentVal, _ := p.service.Resolve(ctx, state.OwnerID, state.ScopeID, def.Namespace, def.Key)
 		sb.WriteString(fmt.Sprintf("• <b>%s</b> (<code>%s:%s</code>)\n  Val: <code>%s</code> | <i>%s</i>\n",
 			ui.EscapeHTML(def.Title), ui.EscapeHTML(def.Namespace), ui.EscapeHTML(def.Key), ui.EscapeHTML(currentVal), ui.EscapeHTML(def.Description)))
 
@@ -306,7 +275,7 @@ func (p *Plugin) renderCategoryScreen(ctx context.Context, state MenuState) *ui.
 			toggleState.SetTarget(def.Namespace, def.Key)
 			toggleOid := p.storeState(toggleState)
 
-			btn := ui.BuildToggleSwitch(boolVal, def.Title, def.Title, callback.EncodeCallbackData("settings", "toggle", toggleOid))
+			btn := ui.BuildToggleSwitch(boolVal, def.Title, def.Title, callback.EncodeCallbackData("settings", callback.ActionToggle, toggleOid))
 			screen.AddRow(btn)
 
 		default:
@@ -314,7 +283,7 @@ func (p *Plugin) renderCategoryScreen(ctx context.Context, state MenuState) *ui.
 			editState.SetTarget(def.Namespace, def.Key)
 			editOid := p.storeState(editState)
 
-			btn := ui.NewCallbackButton("⚙️ Edit "+def.Title, callback.EncodeCallbackData("settings", "nav", editOid))
+			btn := ui.NewCallbackButton("⚙️ Edit "+def.Title, callback.EncodeCallbackData("settings", callback.ActionNav, editOid))
 			screen.AddRow(btn)
 		}
 	}
@@ -322,12 +291,12 @@ func (p *Plugin) renderCategoryScreen(ctx context.Context, state MenuState) *ui.
 	screen.Body = sb.String()
 
 	// Pagination row
-	noopData := callback.EncodeCallbackData("settings", "noop", "noop")
+	noopData := callback.EncodeCallbackData("settings", callback.ActionNoop, callback.ActionNoop)
 	pagRow := ui.BuildPaginationRow(state.Page, totalPages, func(targetPage int) []byte {
 		pState := state
 		pState.Page = targetPage
 		oid := p.storeState(pState)
-		return callback.EncodeCallbackData("settings", "nav", oid)
+		return callback.EncodeCallbackData("settings", callback.ActionNav, oid)
 	}, noopData)
 	if len(pagRow) > 0 {
 		screen.AddRow(pagRow...)
@@ -345,8 +314,8 @@ func (p *Plugin) renderCategoryScreen(ctx context.Context, state MenuState) *ui.
 	closeOid := p.storeState(state)
 
 	screen.AddRow(
-		ui.NewCallbackButton("🏠 Home", callback.EncodeCallbackData("settings", "nav", homeOid)),
-		ui.NewCallbackButton("❌ Close", callback.EncodeCallbackData("settings", "close", closeOid)),
+		ui.NewCallbackButton("🏠 Home", callback.EncodeCallbackData("settings", callback.ActionNav, homeOid)),
+		ui.NewCallbackButton("❌ Close", callback.EncodeCallbackData("settings", callback.ActionClose, closeOid)),
 	)
 
 	return screen
@@ -365,98 +334,85 @@ func (p *Plugin) renderSettingDetailScreen(ctx context.Context, state MenuState)
 		state.Target = nil
 		return p.renderCategoryScreen(ctx, state)
 	}
-
-	uID, cID := state.EffectiveResolveIDs()
-	currentVal, _ := p.service.Resolve(ctx, uID, cID, ns, key)
-	title := fmt.Sprintf("⚙️ %s (%s:%s)", def.Title, ns, key)
-
-	// Determine inheritance source
-	var originBadge string
-	if state.Scope == settings.ScopeChat && state.ScopeID != 0 {
-		if explicit, _ := p.service.Get(ctx, settings.ScopeChat, state.ScopeID, ns, key); explicit != nil {
-			originBadge = "💬 Chat Override"
-		}
-	}
-	if originBadge == "" && state.Scope != settings.ScopeGlobal && state.OwnerID != 0 {
-		if explicit, _ := p.service.Get(ctx, settings.ScopeUser, state.OwnerID, ns, key); explicit != nil {
-			originBadge = "👤 User Override"
-		}
-	}
-	if originBadge == "" {
-		if explicit, _ := p.service.Get(ctx, settings.ScopeGlobal, 0, ns, key); explicit != nil {
-			if state.Scope != settings.ScopeGlobal {
-				originBadge = "🌐 Inherited from Global"
-			} else {
-				originBadge = "🌐 Global Setting"
-			}
-		}
-	}
-	if originBadge == "" {
-		originBadge = "⚙️ Schema Default"
-	}
-
+	currentVal, _ := p.service.Resolve(ctx, state.OwnerID, state.ScopeID, ns, key)
+	originBadge := p.settingOriginBadge(ctx, state, ns, key)
 	body := fmt.Sprintf(
 		"<b>%s</b>\n%s\n\n<b>Type:</b> <code>%s</code>\n<b>Current Value:</b> <code>%s</code>\n<b>Origin:</b> %s\n<b>Default:</b> <code>%s</code>\n<b>Scope:</b> <code>%s</code>\n",
 		ui.EscapeHTML(def.Title), ui.EscapeHTML(def.Description), def.Type, ui.EscapeHTML(currentVal), originBadge, ui.EscapeHTML(def.DefaultValue), state.Scope,
 	)
+	screen := ui.NewScreen("settings:detail", fmt.Sprintf("⚙️ %s (%s:%s)", def.Title, ns, key), body)
+	noopData := callback.EncodeCallbackData("settings", callback.ActionNoop, callback.ActionNoop)
+	p.addSettingTypeControls(screen, state, ns, key, currentVal, *def, noopData)
+	p.addDetailFooter(screen, state, ns, key, originBadge, def.Category)
+	return screen
+}
 
-	screen := ui.NewScreen("settings:detail", title, body)
-	noopData := callback.EncodeCallbackData("settings", "noop", "noop")
+func (p *Plugin) settingOriginBadge(ctx context.Context, state MenuState, ns, key string) string {
+	if state.Scope == settings.ScopeChat && state.ScopeID != 0 {
+		if explicit, _ := p.service.Get(ctx, settings.ScopeChat, state.ScopeID, ns, key); explicit != nil {
+			return "💬 Chat Override"
+		}
+	}
+	if state.Scope == settings.ScopeUser || state.OwnerID != 0 {
+		if explicit, _ := p.service.Get(ctx, settings.ScopeUser, state.OwnerID, ns, key); explicit != nil {
+			return "👤 User Override"
+		}
+	}
+	if explicit, _ := p.service.Get(ctx, settings.ScopeGlobal, 0, ns, key); explicit != nil {
+		if state.Scope != settings.ScopeGlobal {
+			return "🌐 Inherited from Global"
+		}
+		return "🌐 Global Setting"
+	}
+	return "⚙️ Schema Default"
+}
 
+func (p *Plugin) addSettingTypeControls(screen *ui.Screen, state MenuState, ns, key, currentVal string, def settings.SettingDefinition, noopData []byte) {
 	switch def.Type {
 	case settings.TypeBool:
 		boolVal := strings.ToLower(currentVal) == "true"
 		toggleState := state
 		toggleState.SetTarget(ns, key)
 		toggleOid := p.storeState(toggleState)
-		screen.AddRow(ui.BuildStateToggle(boolVal, def.Title, callback.EncodeCallbackData("settings", "toggle", toggleOid)))
-
+		screen.AddRow(ui.BuildStateToggle(boolVal, def.Title, callback.EncodeCallbackData("settings", callback.ActionToggle, toggleOid)))
 	case settings.TypeInt:
 		intVal, _ := strconv.ParseInt(currentVal, 10, 64)
 		decState := state
 		decState.SetTarget(ns, key)
 		decState.ActionValue = fmt.Sprintf("%d", intVal-1)
-		decState.Selected = fmt.Sprintf("%s:%s:%d", ns, key, intVal-1)
 		decOid := p.storeState(decState)
-
 		incState := state
 		incState.SetTarget(ns, key)
 		incState.ActionValue = fmt.Sprintf("%d", intVal+1)
-		incState.Selected = fmt.Sprintf("%s:%s:%d", ns, key, intVal+1)
 		incOid := p.storeState(incState)
-
-		decData := callback.EncodeCallbackData("settings", "step", decOid)
-		incData := callback.EncodeCallbackData("settings", "step", incOid)
-
+		decData := callback.EncodeCallbackData("settings", callback.ActionStep, decOid)
+		incData := callback.EncodeCallbackData("settings", callback.ActionStep, incOid)
 		screen.AddRow(ui.BuildStepper(intVal, def.MinVal, def.MaxVal, decData, incData, noopData)...)
-
 	case settings.TypeDuration:
 		durVal, _ := time.ParseDuration(currentVal)
 		durRows := ui.BuildDurationPicker(nil, durVal, func(preset time.Duration) []byte {
 			durState := state
 			durState.SetTarget(ns, key)
 			durState.ActionValue = preset.String()
-			durState.Selected = fmt.Sprintf("%s:%s:%s", ns, key, preset.String())
 			oid := p.storeState(durState)
-			return callback.EncodeCallbackData("settings", "dur", oid)
+			return callback.EncodeCallbackData("settings", callback.ActionDuration, oid)
 		})
 		for _, r := range durRows {
 			screen.AddRow(r...)
 		}
-
 	case settings.TypeEnum:
 		selRow := ui.BuildSelector(def.AllowedValues, currentVal, func(opt string) []byte {
 			selState := state
 			selState.SetTarget(ns, key)
 			selState.ActionValue = opt
-			selState.Selected = fmt.Sprintf("%s:%s:%s", ns, key, opt)
 			oid := p.storeState(selState)
-			return callback.EncodeCallbackData("settings", "select", oid)
+			return callback.EncodeCallbackData("settings", callback.ActionSelect, oid)
 		})
 		screen.AddRow(selRow...)
 	}
+}
 
-	// Reset button
+func (p *Plugin) addDetailFooter(screen *ui.Screen, state MenuState, ns, key, originBadge, category string) {
 	resetState := state
 	resetState.SetTarget(ns, key)
 	resetOid := p.storeState(resetState)
@@ -464,17 +420,23 @@ func (p *Plugin) renderSettingDetailScreen(ctx context.Context, state MenuState)
 	if originBadge != "⚙️ Schema Default" && originBadge != "🌐 Global Setting" {
 		resetLabel = "↩ Reset Override"
 	}
-	screen.AddRow(ui.NewCallbackButton(resetLabel, callback.EncodeCallbackData("settings", "reset", resetOid)))
-
-	// Back button to category
+	screen.AddRow(ui.NewCallbackButton(resetLabel, callback.EncodeCallbackData("settings", callback.ActionReset, resetOid)))
 	catState := state
 	catState.Target = nil
 	catState.Selected = ""
 	catState.ActionValue = ""
 	catOid := p.storeState(catState)
-	screen.AddRow(ui.NewCallbackButton("🔙 Back to "+strings.Title(def.Category), callback.EncodeCallbackData("settings", "nav", catOid)))
+	screen.AddRow(ui.NewCallbackButton("🔙 Back to "+strings.Title(category), callback.EncodeCallbackData("settings", callback.ActionNav, catOid)))
+}
 
-	return screen
+func (p *Plugin) nextScope(state MenuState) (settings.SettingScope, int64, string) {
+	if state.Scope == settings.ScopeGlobal {
+		return settings.ScopeChat, state.ChatID, "Scope: 🌐 Global [Click to Chat]"
+	}
+	if state.Scope == settings.ScopeChat {
+		return settings.ScopeUser, state.OwnerID, "Scope: 💬 Chat [Click to User]"
+	}
+	return settings.ScopeGlobal, 0, "Scope: 👤 User [Click to Global]"
 }
 
 func (p *Plugin) storeState(st MenuState) string {
@@ -483,24 +445,36 @@ func (p *Plugin) storeState(st MenuState) string {
 
 // applySettingAction encapsulates setting mutation logic (toggle, step, dur, select, reset)
 // for both typed Target and backward-compatible Selected state formats.
+// Uses use-case layer so command and callback share the same validation path.
 func (p *Plugin) applySettingAction(ctx *callback.CallbackContext, state *MenuState, action string) error {
+	if p.setUC == nil {
+		p.setUC = &usecase.SetSettingUseCase{Service: p.service}
+	}
+	if p.resetUC == nil {
+		p.resetUC = &usecase.ResetSettingUseCase{Service: p.service}
+	}
 	ns, key := state.GetTarget()
 	if ns == "" || key == "" {
 		return nil
 	}
 
 	switch action {
-	case "toggle":
-		uID, cID := state.EffectiveResolveIDs()
-		currentVal, _ := p.service.Resolve(ctx.Ctx, uID, cID, ns, key)
+	case callback.ActionToggle:
+		currentVal, _ := p.service.Resolve(ctx.Ctx, state.OwnerID, state.ScopeID, ns, key)
 		newVal := "true"
 		if strings.ToLower(currentVal) == "true" {
 			newVal = "false"
 		}
-		if err := p.service.Set(ctx.Ctx, state.Scope, state.ScopeID, ns, key, newVal, ctx.UserID); err != nil {
-			return ui.AnswerErrorToast(ctx, "Failed: "+err.Error())
+		if err := state.ValidateScope(); err != nil {
+			return ui.AnswerErrorToast(ctx, "Invalid scope: "+err.Error())
 		}
-	case "step", "dur", "select", "set":
+		if err := p.setUC.Execute(ctx.Ctx, state.Scope, state.ScopeID, ns, key, newVal, ctx.UserID); err != nil {
+			return ui.AnswerErrorToast(ctx, ui.MapUserErrorMessage(err))
+		}
+	case callback.ActionStep, callback.ActionDuration, callback.ActionSelect, callback.ActionSet:
+		if err := state.ValidateScope(); err != nil {
+			return ui.AnswerErrorToast(ctx, "Invalid scope: "+err.Error())
+		}
 		targetVal := state.ActionValue
 		if targetVal == "" {
 			parts := strings.Split(state.Selected, ":")
@@ -509,14 +483,14 @@ func (p *Plugin) applySettingAction(ctx *callback.CallbackContext, state *MenuSt
 			}
 		}
 		if targetVal != "" {
-			if err := p.service.Set(ctx.Ctx, state.Scope, state.ScopeID, ns, key, targetVal, ctx.UserID); err != nil {
-				return ui.AnswerErrorToast(ctx, "Failed: "+err.Error())
+			if err := p.setUC.Execute(ctx.Ctx, state.Scope, state.ScopeID, ns, key, targetVal, ctx.UserID); err != nil {
+				return ui.AnswerErrorToast(ctx, ui.MapUserErrorMessage(err))
 			}
 			state.SetTarget(ns, key)
 		}
-	case "reset":
-		if err := p.service.Reset(ctx.Ctx, state.Scope, state.ScopeID, ns, key, ctx.UserID); err != nil {
-			return ui.AnswerErrorToast(ctx, "Reset failed: "+err.Error())
+	case callback.ActionReset:
+		if err := p.resetUC.Execute(ctx.Ctx, state.Scope, state.ScopeID, ns, key, ctx.UserID); err != nil {
+			return ui.AnswerErrorToast(ctx, ui.MapUserErrorMessage(err))
 		}
 	}
 	return nil
@@ -539,24 +513,24 @@ func (p *Plugin) HandleCallback(ctx *callback.CallbackContext) error {
 	}
 
 	switch ctx.Action {
-	case "close":
+	case callback.ActionClose:
 		return ctx.DisableButtons("✅ Settings dashboard closed.")
 
-	case "noop":
+	case callback.ActionNoop:
 		return nil
 
-	case "nav":
+	case callback.ActionNav:
 		screen := p.renderScreen(ctx.Ctx, state)
 		text, markup := screen.Render()
-		return ctx.Edit(text, markup)
+		return ctx.Edit(text, render.ToTelegramMarkup(markup))
 
-	case "toggle", "step", "dur", "select", "reset":
+	case callback.ActionToggle, callback.ActionStep, callback.ActionDuration, callback.ActionSelect, callback.ActionReset:
 		if err := p.applySettingAction(ctx, &state, ctx.Action); err != nil {
 			return err
 		}
 		screen := p.renderScreen(ctx.Ctx, state)
 		text, markup := screen.Render()
-		return ctx.Edit(text, markup)
+		return ctx.Edit(text, render.ToTelegramMarkup(markup))
 
 	default:
 		return fmt.Errorf("unknown settings callback action: %s", ctx.Action)
@@ -566,38 +540,30 @@ func (p *Plugin) HandleCallback(ctx *callback.CallbackContext) error {
 // =================== CLI .config Command Handler ===================
 
 func (p *Plugin) handleConfigCommand(ctx *core.Context) error {
+	if p.setUC == nil {
+		p.setUC = &usecase.SetSettingUseCase{Service: p.service}
+	}
+	if p.resetUC == nil {
+		p.resetUC = &usecase.ResetSettingUseCase{Service: p.service}
+	}
 	if len(ctx.Args) == 0 {
 		return ctx.Reply("⚙️ <b>GoUltroid CLI Configuration Subsystem</b>\n\n" +
 			"<b>Usage:</b>\n" +
-			"• <code>.config get [-s chat|user|global] &lt;namespace:key&gt;</code>\n" +
-			"• <code>.config set [-s chat|user|global] &lt;namespace:key&gt; &lt;value&gt;</code>\n" +
-			"• <code>.config reset [-s chat|user|global] &lt;namespace:key&gt;</code>\n" +
+			"• <code>.config get &lt;namespace:key&gt;</code>\n" +
+			"• <code>.config set &lt;namespace:key&gt; &lt;value&gt;</code>\n" +
+			"• <code>.config reset &lt;namespace:key&gt;</code>\n" +
 			"• <code>.config list [category]</code>\n" +
 			"• <code>.config history &lt;namespace:key&gt;</code>\n" +
-			"• <code>.config export [-s chat|user|global]</code>\n")
+			"• <code>.config export</code>\n")
 	}
 
 	action := strings.ToLower(ctx.Args[0])
 	switch action {
 	case "get":
-		scope, scopeID, remaining, err := parseScopeArgs(ctx.Args[1:], ctx)
-		if err != nil {
-			return ctx.Reply("❌ " + err.Error())
+		if len(ctx.Args) < 2 {
+			return ctx.Reply("⚠️ Usage: <code>.config get &lt;namespace:key&gt;</code>")
 		}
-		if len(remaining) < 1 {
-			return ctx.Reply("⚠️ Usage: <code>.config get [-s chat|user|global] &lt;namespace:key&gt;</code>")
-		}
-		ns, key := parseFullKey(remaining[0])
-		if len(ctx.Args) >= 3 && (ctx.Args[1] == "-s" || ctx.Args[1] == "--scope") {
-			item, err := p.service.Get(ctx.Ctx, scope, scopeID, ns, key)
-			if err != nil {
-				return ctx.Reply(fmt.Sprintf("❌ <b>Error:</b> %s", ui.EscapeHTML(err.Error())))
-			}
-			if item == nil {
-				return ctx.Reply(fmt.Sprintf("⚙️ <b>%s:%s</b> has no override in scope <code>%s</code>", ui.EscapeHTML(ns), ui.EscapeHTML(key), scope))
-			}
-			return ctx.Reply(fmt.Sprintf("⚙️ <b>%s:%s</b> (%s) = <code>%s</code>", ui.EscapeHTML(ns), ui.EscapeHTML(key), scope, ui.EscapeHTML(item.Value)))
-		}
+		ns, key := parseFullKey(ctx.Args[1])
 		val, err := p.service.Resolve(ctx.Ctx, ctx.SenderID(), ctx.ChatID(), ns, key)
 		if err != nil {
 			return ctx.Reply(fmt.Sprintf("❌ <b>Error:</b> %s", ui.EscapeHTML(err.Error())))
@@ -605,37 +571,28 @@ func (p *Plugin) handleConfigCommand(ctx *core.Context) error {
 		return ctx.Reply(fmt.Sprintf("⚙️ <b>%s:%s</b> = <code>%s</code>", ui.EscapeHTML(ns), ui.EscapeHTML(key), ui.EscapeHTML(val)))
 
 	case "set":
-		scope, scopeID, remaining, err := parseScopeArgs(ctx.Args[1:], ctx)
-		if err != nil {
-			return ctx.Reply("❌ " + err.Error())
+		if len(ctx.Args) < 3 {
+			return ctx.Reply("⚠️ Usage: <code>.config set &lt;namespace:key&gt; &lt;value&gt;</code>")
 		}
-		if len(remaining) < 2 {
-			return ctx.Reply("⚠️ Usage: <code>.config set [-s chat|user|global] &lt;namespace:key&gt; &lt;value&gt;</code>")
-		}
-		ns, key := parseFullKey(remaining[0])
-		val := strings.Join(remaining[1:], " ")
+		ns, key := parseFullKey(ctx.Args[1])
+		val := strings.Join(ctx.Args[2:], " ")
+		scope := settings.ScopeGlobal
+		scopeID := int64(0)
 
-		if err := p.service.Set(ctx.Ctx, scope, scopeID, ns, key, val, ctx.SenderID()); err != nil {
+		if err := p.setUC.Execute(ctx.Ctx, scope, scopeID, ns, key, val, ctx.SenderID()); err != nil {
 			return ctx.Reply(fmt.Sprintf("❌ Failed to set <b>%s:%s</b>: %s", ui.EscapeHTML(ns), ui.EscapeHTML(key), ui.EscapeHTML(err.Error())))
 		}
-		return ctx.Reply(fmt.Sprintf("✅ <b>Setting updated (%s):</b>\n<code>%s:%s</code> = <code>%s</code>", scope, ui.EscapeHTML(ns), ui.EscapeHTML(key), ui.EscapeHTML(val)))
+		return ctx.Reply(fmt.Sprintf("✅ <b>Setting updated:</b>\n<code>%s:%s</code> = <code>%s</code>", ui.EscapeHTML(ns), ui.EscapeHTML(key), ui.EscapeHTML(val)))
 
 	case "reset":
-		scope, scopeID, remaining, err := parseScopeArgs(ctx.Args[1:], ctx)
-		if err != nil {
-			return ctx.Reply("❌ " + err.Error())
+		if len(ctx.Args) < 2 {
+			return ctx.Reply("⚠️ Usage: <code>.config reset &lt;namespace:key&gt;</code>")
 		}
-		if len(remaining) < 1 {
-			return ctx.Reply("⚠️ Usage: <code>.config reset [-s chat|user|global] &lt;namespace:key&gt;</code>")
-		}
-		ns, key := parseFullKey(remaining[0])
-		if err := p.service.Reset(ctx.Ctx, scope, scopeID, ns, key, ctx.SenderID()); err != nil {
+		ns, key := parseFullKey(ctx.Args[1])
+		if err := p.resetUC.Execute(ctx.Ctx, settings.ScopeGlobal, 0, ns, key, ctx.SenderID()); err != nil {
 			return ctx.Reply(fmt.Sprintf("❌ Failed to reset <b>%s:%s</b>: %s", ui.EscapeHTML(ns), ui.EscapeHTML(key), ui.EscapeHTML(err.Error())))
 		}
-		if scope == settings.ScopeGlobal {
-			return ctx.Reply(fmt.Sprintf("✅ Setting <code>%s:%s</code> reset to default.", ui.EscapeHTML(ns), ui.EscapeHTML(key)))
-		}
-		return ctx.Reply(fmt.Sprintf("✅ Setting <code>%s:%s</code> reset in scope <code>%s</code>.", ui.EscapeHTML(ns), ui.EscapeHTML(key), scope))
+		return ctx.Reply(fmt.Sprintf("✅ Setting <code>%s:%s</code> reset to default.", ui.EscapeHTML(ns), ui.EscapeHTML(key)))
 
 	case "list":
 		cat := ""
@@ -684,54 +641,16 @@ func (p *Plugin) handleConfigCommand(ctx *core.Context) error {
 		return ctx.Reply(sb.String())
 
 	case "export":
-		scope, scopeID, _, err := parseScopeArgs(ctx.Args[1:], ctx)
-		if err != nil {
-			return ctx.Reply("❌ " + err.Error())
-		}
-		exportData, err := p.service.Export(ctx.Ctx, scope, scopeID)
+		exportData, err := p.service.Export(ctx.Ctx, settings.ScopeGlobal, 0)
 		if err != nil {
 			return ctx.Reply(fmt.Sprintf("❌ <b>Export failed:</b> %s", ui.EscapeHTML(err.Error())))
 		}
 		bytes, _ := json.MarshalIndent(exportData, "", "  ")
-		title := "Global Settings Export"
-		if scope != settings.ScopeGlobal {
-			title = fmt.Sprintf("Settings Export (%s)", scope)
-		}
-		return ctx.Reply(fmt.Sprintf("📤 <b>%s:</b>\n<pre><code class=\"language-json\">%s</code></pre>", title, ui.EscapeHTML(string(bytes))))
+		return ctx.Reply(fmt.Sprintf("📤 <b>Global Settings Export:</b>\n<pre><code class=\"language-json\">%s</code></pre>", ui.EscapeHTML(string(bytes))))
 
 	default:
 		return ctx.Reply(fmt.Sprintf("⚠️ Unknown action <code>%s</code>. Use <code>.config</code> to see available commands.", ui.EscapeHTML(action)))
 	}
-}
-
-func parseScopeArgs(args []string, ctx *core.Context) (settings.SettingScope, int64, []string, error) {
-	scope := settings.ScopeGlobal
-	scopeID := int64(0)
-	remaining := args
-
-	if len(remaining) >= 2 && (remaining[0] == "-s" || remaining[0] == "--scope") {
-		sc, err := settings.NormalizeScope(remaining[1])
-		if err != nil {
-			return "", 0, nil, err
-		}
-		scope = sc
-		remaining = remaining[2:]
-		switch scope {
-		case settings.ScopeChat:
-			if ctx.ChatID() == 0 {
-				return "", 0, nil, errors.New("chat scope requires a group or channel chat")
-			}
-			scopeID = ctx.ChatID()
-		case settings.ScopeUser:
-			if ctx.SenderID() == 0 {
-				return "", 0, nil, errors.New("user scope requires a sender ID")
-			}
-			scopeID = ctx.SenderID()
-		case settings.ScopeGlobal:
-			scopeID = 0
-		}
-	}
-	return scope, scopeID, remaining, nil
 }
 
 func parseFullKey(raw string) (string, string) {

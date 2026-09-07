@@ -10,6 +10,7 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/ui"
+	"github.com/inipew/goultroid/internal/ui/render"
 )
 
 const maxTelegramLen = 4096
@@ -339,7 +340,7 @@ func (p *Plugin) buildOverviewMarkup(catNames []string, userID int64) tg.ReplyMa
 	closeBtn := ui.NewCallbackButton("❌ Close", callback.EncodeCallbackData("help", "close", "noop"))
 	rows = append(rows, ui.ButtonRow{closeBtn})
 
-	return ui.Markup{Rows: rows}.ToTelegramMarkup()
+	return render.ToTelegramMarkup(ui.Markup{Rows: rows})
 }
 
 // HandleCallback handles interactive module browser navigation.
@@ -379,7 +380,7 @@ func (p *Plugin) HandleCallback(ctx *callback.CallbackContext) error {
 			ui.NewCallbackButton("🔙 Back", callback.EncodeCallbackData("help", "home", homeOid)),
 			ui.NewCallbackButton("❌ Close", callback.EncodeCallbackData("help", "close", "noop")),
 		}
-		markup := ui.Markup{Rows: []ui.ButtonRow{navRow}}.ToTelegramMarkup()
+		markup := render.ToTelegramMarkup(ui.Markup{Rows: []ui.ButtonRow{navRow}})
 
 		return ctx.Edit(cardText, markup)
 

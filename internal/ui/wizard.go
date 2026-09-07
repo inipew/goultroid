@@ -2,8 +2,6 @@ package ui
 
 import (
 	"fmt"
-
-	"github.com/gotd/td/tg"
 )
 
 // WizardStep represents a single step in a multi-step interactive flow.
@@ -16,10 +14,15 @@ type WizardStep struct {
 }
 
 // Wizard provides helpers for generating structured multi-step flow screens.
+// This is a stateless renderer; stateful wizard sessions belong to
+// internal/services/interaction.WizardEngine.
 type Wizard struct {
 	TotalSteps int
 	Title      string
 }
+
+// WizardRenderer is an alias for Wizard to clarify that this is a renderer, not an engine.
+type WizardRenderer = Wizard
 
 // NewWizard initializes a Wizard with a name and number of steps.
 func NewWizard(title string, totalSteps int) *Wizard {
@@ -42,7 +45,7 @@ func (w *Wizard) RenderStep(
 	backData []byte,
 	cancelData []byte,
 	nextData []byte,
-) (string, tg.ReplyMarkupClass) {
+) (string, Markup) {
 	card := NewCard(w.Title).
 		WithIcon("🧙").
 		WithHeader(fmt.Sprintf("<b>Step %d / %d: %s</b>", stepIndex, w.TotalSteps, stepTitle))
@@ -68,6 +71,6 @@ func (w *Wizard) RenderStep(
 		rows = append(rows, navRow)
 	}
 
-	markup := NewMarkup(rows...).ToTelegramMarkup()
+	markup := NewMarkup(rows...)
 	return card.Render(), markup
 }

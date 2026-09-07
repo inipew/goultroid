@@ -1,0 +1,60 @@
+version: "2"
+run:
+  timeout: 3m
+  go: "1.27"
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - errcheck
+    - misspell
+    - revive
+    - gocritic
+  settings:
+    errcheck:
+      check-blank: false
+      exclude-functions:
+        - (*github.com/inipew/goultroid/internal/core.EventBus).Close
+        - (*database/sql.DB).Close
+        - (net/http.ResponseWriter).Write
+    revive:
+      enable-all-rules: false
+      enable:
+        - var-naming
+        - package-comments
+        - dot-imports
+        - error-return
+        - error-strings
+        - error-naming
+        - increment-decrement
+        - var-declaration
+        - range
+        - receiver-naming
+        - time-naming
+        - indent-error-flow
+        - errorf
+        - empty-block
+        - superfluous-else
+        - unused-parameter
+        - unreachable-code
+    gocritic:
+      enable-all: false
+      disabled-checks:
+        - whyNoLint
+        - hugeParam
+  exclusions:
+    generated: lax
+    rules:
+      - linters:
+          - errcheck
+        path: ".*_test\\.go"
+formatters:
+  enable:
+    - gofmt
+    - goimports
+issues:
+  max-issues-per-linter: 50
+  max-same-issues: 20

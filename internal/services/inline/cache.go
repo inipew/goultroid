@@ -17,8 +17,7 @@ type Cache struct {
 	mu         sync.RWMutex
 	entries    map[string]cachedEntry
 	defaultTTL time.Duration
-	stopCh     chan struct{}
-	stopOnce   sync.Once
+	cancel     context.CancelFunc
 }
 
 // NewCache creates an initialized Cache.
@@ -180,12 +179,12 @@ func (c *Cache) Prune() int {
 // Start launches background prune loop (Fase 4 shutdown-aware).
 func (c *Cache) Start(ctx context.Context) {
 	c.mu.Lock()
-	if c.stopCh != nil {
+	if c.cancel != nil {
 		c.mu.Unlock()
 		return
 	}
-	c.stopCh = make(chan struct{})
-	stopCh := c.stopCh
+	runCtx, cancel := context.WithCancel(ctx)
+	c.cancel = cancel
 	c.mu.Unlock()
 	go func() {
 		ticker := time.NewTicker(60 * time.Second)
@@ -194,9 +193,7 @@ func (c *Cache) Start(ctx context.Context) {
 			select {
 			case <-ticker.C:
 				c.Prune()
-			case <-ctx.Done():
-				return
-			case <-stopCh:
+			case <-runCtx.Done():
 				return
 			}
 		}
@@ -206,14 +203,10 @@ func (c *Cache) Start(ctx context.Context) {
 // Stop terminates background prune loop.
 func (c *Cache) Stop() {
 	c.mu.Lock()
-	ch := c.stopCh
+	cancel := c.cancel
+	c.cancel = nil
 	c.mu.Unlock()
-	if ch == nil {
-		return
+	if cancel != nil {
+		cancel()
 	}
-	c.stopOnce.Do(func() { close(ch) })
-	c.mu.Lock()
-	c.stopCh = nil
-	c.stopOnce = sync.Once{}
-	c.mu.Unlock()
 }

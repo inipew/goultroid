@@ -28,28 +28,33 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	// 3. Stop addon external runtimes
+	// 3. Stop settings outbox worker before closing DB/event bus
+	if a.settingsService != nil {
+		a.settingsService.Stop()
+	}
+
+	// 4. Stop addon external runtimes
 	if a.addonMgr != nil {
 		if err := a.addonMgr.ShutdownRuntimes(); err != nil {
 			errs = append(errs, fmt.Errorf("addon runtimes: %w", err))
 		}
 	}
 
-	// 4. Shutdown plugins
+	// 5. Shutdown plugins
 	if a.plugins != nil {
 		if err := a.plugins.ShutdownWithContext(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("plugins: %w", err))
 		}
 	}
 
-	// 5. Close event bus to drain asynchronous event workers
+	// 6. Close event bus to drain asynchronous event workers
 	if a.eventBus != nil {
 		if err := a.eventBus.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("event bus: %w", err))
 		}
 	}
 
-	// 6. Stop interaction state stores (callbacks & inline cache)
+	// 7. Stop interaction state stores (callbacks & inline cache)
 	if a.callbackStore != nil {
 		a.callbackStore.Stop()
 	}
@@ -57,21 +62,21 @@ func (a *App) Shutdown(ctx context.Context) error {
 		a.inlineEngine.Cache().Stop()
 	}
 
-	// 7. Close command rate limiter
+	// 8. Close command rate limiter
 	if a.limiter != nil {
 		if err := a.limiter.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("rate limiter: %w", err))
 		}
 	}
 
-	// 8. Close database connection only after all background consumers are stopped
+	// 9. Close database connection only after all background consumers are stopped
 	if a.db != nil {
 		if err := a.db.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("database: %w", err))
 		}
 	}
 
-	// 9. Flush logger
+	// 10. Flush logger
 	if a.logger != nil {
 		if err := a.logger.Sync(); err != nil && !errors.Is(err, syscall.EINVAL) {
 			errs = append(errs, fmt.Errorf("logger: %w", err))

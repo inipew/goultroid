@@ -1,6 +1,7 @@
 package inline
 
 import (
+	"github.com/inipew/goultroid/internal/ui/render"
 	"strings"
 
 	"github.com/gotd/td/telegram/message/entity"
@@ -105,7 +106,7 @@ func sanitizeID(id string) string {
 
 func toTelegramMarkup(res InlineResult) tg.ReplyMarkupClass {
 	if res.Markup != nil {
-		return res.Markup.ToTelegramMarkup()
+		return render.ToTelegramMarkup(*res.Markup)
 	}
 	return nil
 }

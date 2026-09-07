@@ -4,8 +4,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/gotd/td/tg"
 )
 
 func TestScreenRender(t *testing.T) {
@@ -20,20 +18,20 @@ func TestScreenRender(t *testing.T) {
 	if text != "<b>My Title</b>\n\nThis is the screen body text." {
 		t.Errorf("unexpected rendered text: %q", text)
 	}
-	if markup == nil || len(markup.Rows) != 1 {
+	if len(markup.Rows) != 1 {
 		t.Fatalf("expected 1 markup row, got %v", markup)
 	}
-	if len(markup.Rows[0].Buttons) != 2 {
-		t.Fatalf("expected 2 buttons, got %d", len(markup.Rows[0].Buttons))
+	if len(markup.Rows[0]) != 2 {
+		t.Fatalf("expected 2 buttons, got %d", len(markup.Rows[0]))
 	}
 
-	cbBtn, ok := markup.Rows[0].Buttons[0].(*tg.KeyboardButtonCallback)
-	if !ok || cbBtn.Text != "Btn 1" || string(cbBtn.Data) != "v1:test:act1:noop" {
+	cbBtn := markup.Rows[0][0]
+	if cbBtn.Type != ButtonCallback || cbBtn.Text != "Btn 1" || string(cbBtn.Data) != "v1:test:act1:noop" {
 		t.Errorf("unexpected callback button: %+v", cbBtn)
 	}
 
-	urlBtn, ok := markup.Rows[0].Buttons[1].(*tg.KeyboardButtonURL)
-	if !ok || urlBtn.Text != "Link" || urlBtn.URL != "https://example.com" {
+	urlBtn := markup.Rows[0][1]
+	if urlBtn.Type != ButtonURL || urlBtn.Text != "Link" || urlBtn.URL != "https://example.com" {
 		t.Errorf("unexpected url button: %+v", urlBtn)
 	}
 
@@ -43,8 +41,8 @@ func TestScreenRender(t *testing.T) {
 	if text2 != "Plain text" {
 		t.Errorf("expected 'Plain text', got %q", text2)
 	}
-	if markup2 != nil {
-		t.Errorf("expected nil markup for screen with no rows, got %+v", markup2)
+	if len(markup2.Rows) != 0 {
+		t.Errorf("expected empty markup for screen with no rows, got %+v", markup2)
 	}
 }
 
@@ -306,7 +304,7 @@ func TestAdvancedUIPrimitives(t *testing.T) {
 		"Yes, Delete", []byte("confirm_del"),
 		"Cancel", []byte("cancel"),
 	)
-	if !strings.Contains(confText, "Delete All Jobs") || confMarkup == nil {
+	if !strings.Contains(confText, "Delete All Jobs") || len(confMarkup.Rows) == 0 {
 		t.Errorf("unexpected confirmation card output: %s", confText)
 	}
 
@@ -319,7 +317,7 @@ func TestAdvancedUIPrimitives(t *testing.T) {
 		"✏️ Edit", []byte("edit"),
 		[]byte("cancel"),
 	)
-	if !strings.Contains(prevText, "User Moderation") || prevMarkup == nil {
+	if !strings.Contains(prevText, "User Moderation") || len(prevMarkup.Rows) == 0 {
 		t.Errorf("unexpected preview action card: %s", prevText)
 	}
 
@@ -369,7 +367,7 @@ func TestAdvancedUIPrimitives(t *testing.T) {
 		[]byte("cancel"),
 		[]byte("next"),
 	)
-	if !strings.Contains(wizText, "Step 2 / 4: Choose Action") || wizMarkup == nil {
+	if !strings.Contains(wizText, "Step 2 / 4: Choose Action") || len(wizMarkup.Rows) == 0 {
 		t.Errorf("unexpected wizard step output: %s", wizText)
 	}
 }

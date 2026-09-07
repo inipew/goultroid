@@ -41,6 +41,36 @@ func (m *mockRepo) GetSetting(ctx context.Context, scopeType string, scopeID int
 	return &cp, nil
 }
 
+func (m *mockRepo) GetEffectiveSetting(ctx context.Context, namespace, key string, chatID, userID int64) (*database.SettingItem, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if chatID != 0 {
+		if item, ok := m.settings[m.key("chat", chatID, namespace, key)]; ok {
+			cp := *item
+			return &cp, nil
+		}
+	}
+	if userID != 0 {
+		if item, ok := m.settings[m.key("user", userID, namespace, key)]; ok {
+			cp := *item
+			return &cp, nil
+		}
+	}
+	if item, ok := m.settings[m.key("global", 0, namespace, key)]; ok {
+		cp := *item
+		return &cp, nil
+	}
+	return nil, nil
+}
+
+func (m *mockRepo) ListPendingOutbox(ctx context.Context, limit int) ([]database.SettingOutboxEntry, error) {
+	return nil, nil
+}
+
+func (m *mockRepo) MarkOutboxProcessed(ctx context.Context, id int64) error {
+	return nil
+}
+
 func (m *mockRepo) SetSetting(ctx context.Context, item *database.SettingItem) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -2,8 +2,6 @@ package ui
 
 import (
 	"fmt"
-
-	"github.com/gotd/td/tg"
 )
 
 // ButtonType identifies the behavior of an inline keyboard button.
@@ -182,50 +180,4 @@ func NewStandardActionRow(callbackData []byte, callbackText string, url string, 
 	return row
 }
 
-// ToTelegramMarkup converts the high-level Markup into a Telegram MTProto tg.ReplyMarkupClass.
-func (m Markup) ToTelegramMarkup() tg.ReplyMarkupClass {
-	if len(m.Rows) == 0 {
-		return nil
-	}
 
-	tgRows := make([]tg.KeyboardButtonRow, 0, len(m.Rows))
-	for _, row := range m.Rows {
-		if len(row) == 0 {
-			continue
-		}
-		tgButtons := make([]tg.KeyboardButtonClass, 0, len(row))
-		for _, btn := range row {
-			switch btn.Type {
-			case ButtonCallback:
-				tgButtons = append(tgButtons, &tg.KeyboardButtonCallback{
-					Text: btn.Text,
-					Data: btn.Data,
-				})
-			case ButtonURL:
-				tgButtons = append(tgButtons, &tg.KeyboardButtonURL{
-					Text: btn.Text,
-					URL:  btn.URL,
-				})
-			case ButtonSwitchInline:
-				tgButtons = append(tgButtons, &tg.KeyboardButtonSwitchInline{
-					Text:     btn.Text,
-					Query:    btn.InlineQuery,
-					SamePeer: btn.SamePeer,
-				})
-			}
-		}
-		if len(tgButtons) > 0 {
-			tgRows = append(tgRows, tg.KeyboardButtonRow{
-				Buttons: tgButtons,
-			})
-		}
-	}
-
-	if len(tgRows) == 0 {
-		return nil
-	}
-
-	return &tg.ReplyInlineMarkup{
-		Rows: tgRows,
-	}
-}

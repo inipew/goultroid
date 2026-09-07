@@ -497,10 +497,10 @@ func TestMigrations_Versioning(t *testing.T) {
 		}
 		migrations = append(migrations, m)
 	}
-	if len(migrations) != 13 {
-		t.Fatalf("expected 13 applied migrations, got %d", len(migrations))
+	if len(migrations) != 14 {
+		t.Fatalf("expected 14 applied migrations, got %d", len(migrations))
 	}
-	for i := 0; i < 13; i++ {
+	for i := 0; i < 14; i++ {
 		if migrations[i].version != i+1 {
 			t.Errorf("expected migration index %d to have version %d, got %d", i, i+1, migrations[i].version)
 		}

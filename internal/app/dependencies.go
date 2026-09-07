@@ -62,3 +62,32 @@ type domainServices struct {
 	startTime        time.Time
 	logger           *zap.Logger
 }
+
+// Dependencies is the unified composition root for cross-cutting infrastructure.
+// Used as explicit constructor argument to avoid touching bootstrap for new services.
+type Dependencies struct {
+	DB          *database.DB
+	EventBus    *core.EventBus
+	Permissions *core.Permissions
+	Settings    *settings.Service
+	Dispatcher  *telegram.Dispatcher
+	Callbacks   *callback.Router
+	Inline      *inline.Engine
+}
+
+// cleanupCore closes core resources on wiring failure. Logs close errors instead of silent ignore.
+func cleanupCore(core *coreDependencies, logger *zap.Logger) {
+	if core == nil {
+		return
+	}
+	if core.eventBus != nil {
+		if err := core.eventBus.Close(); err != nil && logger != nil {
+			logger.Warn("cleanup: failed to close event bus", zap.Error(err))
+		}
+	}
+	if core.db != nil {
+		if err := core.db.Close(); err != nil && logger != nil {
+			logger.Warn("cleanup: failed to close db", zap.Error(err))
+		}
+	}
+}

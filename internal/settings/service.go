@@ -3,7 +3,6 @@ package settings
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +23,9 @@ type Service struct {
 	bus     *core.EventBus
 	cacheMu sync.RWMutex
 	cache   map[string]map[resolveCacheKey]string // namespace:key -> resolveCacheKey -> value
+
+	outboxCancel context.CancelFunc
+	outboxWG     sync.WaitGroup
 }
 
 // NewService instantiates a new settings Service.
@@ -43,8 +45,56 @@ func NewService(repo database.Repository, reg *Registry, bus *core.EventBus) *Se
 				s.invalidate(e.Namespace, e.Key)
 			}
 		})
+		// Start durable outbox worker only for persistent DB (not mocks) to avoid goroutine leaks in tests.
+		if _, ok := s.repo.(*database.DB); ok {
+			ctx, cancel := context.WithCancel(context.Background())
+			s.outboxCancel = cancel
+			s.outboxWG.Add(1)
+			go s.runOutboxWorker(ctx)
+		}
 	}
 	return s
+}
+
+// runOutboxWorker periodically drains setting_outbox and republishes to EventBus for durability.
+func (s *Service) runOutboxWorker(ctx context.Context) {
+	defer s.outboxWG.Done()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			entries, err := s.repo.ListPendingOutbox(ctx, 100)
+			if err != nil {
+				continue
+			}
+			for _, e := range entries {
+				if s.bus != nil {
+					s.bus.Publish(&core.SettingChangedEvent{
+						At:        e.CreatedAt,
+						ScopeType: e.ScopeType,
+						ScopeID:   e.ScopeID,
+						Namespace: e.Namespace,
+						Key:       e.Key,
+						OldVal:    e.OldVal,
+						NewVal:    e.NewVal,
+						ChangedBy: e.ChangedBy,
+					})
+				}
+				_ = s.repo.MarkOutboxProcessed(ctx, e.ID)
+			}
+		}
+	}
+}
+
+// Stop gracefully shuts down the outbox worker.
+func (s *Service) Stop() {
+	if s.outboxCancel != nil {
+		s.outboxCancel()
+		s.outboxWG.Wait()
+	}
 }
 
 // Registry returns the underlying schema registry.
@@ -78,11 +128,12 @@ func (s *Service) putCache(cacheKey string, rKey resolveCacheKey, val string) {
 	byKey[rKey] = val
 }
 
-// Resolve applies the hierarchical fallback:
+// Resolve applies the hierarchical fallback with single-query batch optimization:
 // 1. Chat-level override (if chatID != 0)
 // 2. User-level override (if userID != 0)
 // 3. Global bot-level setting (scope_id = 0)
 // 4. Schema default value (if registered)
+// Uses GetEffectiveSetting batch query to reduce 3 round-trips to 1.
 func (s *Service) Resolve(ctx context.Context, userID, chatID int64, namespace, key string) (string, error) {
 	ns := strings.ToLower(strings.TrimSpace(namespace))
 	k := strings.ToLower(strings.TrimSpace(key))
@@ -98,34 +149,10 @@ func (s *Service) Resolve(ctx context.Context, userID, chatID int64, namespace, 
 	}
 	s.cacheMu.RUnlock()
 
-	// 1. Chat Scope
-	if chatID != 0 {
-		item, err := s.repo.GetSetting(ctx, string(ScopeChat), chatID, ns, k)
-		if err != nil {
-			return "", fmt.Errorf("failed to query chat setting (%d:%s:%s): %w", chatID, ns, k, err)
-		}
-		if item != nil {
-			s.putCache(cacheKey, rKey, item.Value)
-			return item.Value, nil
-		}
-	}
-
-	// 2. User Scope
-	if userID != 0 {
-		item, err := s.repo.GetSetting(ctx, string(ScopeUser), userID, ns, k)
-		if err != nil {
-			return "", fmt.Errorf("failed to query user setting (%d:%s:%s): %w", userID, ns, k, err)
-		}
-		if item != nil {
-			s.putCache(cacheKey, rKey, item.Value)
-			return item.Value, nil
-		}
-	}
-
-	// 3. Global Scope
-	item, err := s.repo.GetSetting(ctx, string(ScopeGlobal), 0, ns, k)
+	// Batch query: single round-trip for chat > user > global
+	item, err := s.repo.GetEffectiveSetting(ctx, ns, k, chatID, userID)
 	if err != nil {
-		return "", fmt.Errorf("failed to query global setting (0:%s:%s): %w", ns, k, err)
+		return "", fmt.Errorf("failed to query effective setting (%s:%s chat=%d user=%d): %w", ns, k, chatID, userID, err)
 	}
 	if item != nil {
 		s.putCache(cacheKey, rKey, item.Value)
@@ -142,46 +169,19 @@ func (s *Service) Resolve(ctx context.Context, userID, chatID int64, namespace, 
 	return "", nil
 }
 
-// ResolveBool returns the resolved boolean value.
+// ResolveBool returns the resolved boolean value via typed SettingValue.
 func (s *Service) ResolveBool(ctx context.Context, userID, chatID int64, namespace, key string) (bool, error) {
-	val, err := s.Resolve(ctx, userID, chatID, namespace, key)
-	if err != nil {
-		return false, err
-	}
-	lower := strings.ToLower(strings.TrimSpace(val))
-	return lower == "true" || lower == "1" || lower == "yes" || lower == "on", nil
+	return s.ResolveValue(ctx, userID, chatID, namespace, key).BoolE()
 }
 
-// ResolveInt returns the resolved integer value.
+// ResolveInt returns the resolved integer value via typed SettingValue.
 func (s *Service) ResolveInt(ctx context.Context, userID, chatID int64, namespace, key string) (int64, error) {
-	val, err := s.Resolve(ctx, userID, chatID, namespace, key)
-	if err != nil {
-		return 0, err
-	}
-	if strings.TrimSpace(val) == "" {
-		return 0, nil
-	}
-	parsed, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("setting %s:%s has non-integer value %q: %w", namespace, key, val, err)
-	}
-	return parsed, nil
+	return s.ResolveValue(ctx, userID, chatID, namespace, key).IntE()
 }
 
-// ResolveDuration returns the resolved time.Duration.
+// ResolveDuration returns the resolved time.Duration via typed SettingValue.
 func (s *Service) ResolveDuration(ctx context.Context, userID, chatID int64, namespace, key string) (time.Duration, error) {
-	val, err := s.Resolve(ctx, userID, chatID, namespace, key)
-	if err != nil {
-		return 0, err
-	}
-	if strings.TrimSpace(val) == "" {
-		return 0, nil
-	}
-	dur, err := time.ParseDuration(strings.TrimSpace(val))
-	if err != nil {
-		return 0, fmt.Errorf("setting %s:%s has non-duration value %q: %w", namespace, key, val, err)
-	}
-	return dur, nil
+	return s.ResolveValue(ctx, userID, chatID, namespace, key).DurationE()
 }
 
 // ResolveString returns the resolved string value.
@@ -189,10 +189,14 @@ func (s *Service) ResolveString(ctx context.Context, userID, chatID int64, names
 	return s.Resolve(ctx, userID, chatID, namespace, key)
 }
 
-// ResolveValue returns a SettingValue wrapping the resolved string and any lookup error.
+// ResolveValue returns a SettingValue wrapping the resolved string, any lookup error, and definition for typed parsing.
 func (s *Service) ResolveValue(ctx context.Context, userID, chatID int64, namespace, key string) SettingValue {
 	val, err := s.Resolve(ctx, userID, chatID, namespace, key)
-	return NewSettingValue(val, err)
+	var def *SettingDefinition
+	if d, ok := s.reg.Get(strings.ToLower(strings.TrimSpace(namespace)), strings.ToLower(strings.TrimSpace(key))); ok {
+		def = d
+	}
+	return NewSettingValueWithDef(val, err, def)
 }
 
 // Get retrieves an explicit setting from the repository for a given scope without inheritance.

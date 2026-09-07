@@ -277,6 +277,26 @@ var migrations = []migration{
 			`CREATE INDEX IF NOT EXISTS idx_setting_changes_key ON setting_changes(namespace, key, changed_at DESC);`,
 		},
 	},
+	{
+		version:     14,
+		description: "Settings transactional outbox for durable event publishing",
+		statements: []string{
+			`CREATE TABLE IF NOT EXISTS setting_outbox (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				scope_type TEXT NOT NULL,
+				scope_id INTEGER NOT NULL,
+				namespace TEXT NOT NULL,
+				key TEXT NOT NULL,
+				old_val TEXT NOT NULL DEFAULT '',
+				new_val TEXT NOT NULL DEFAULT '',
+				changed_by INTEGER NOT NULL,
+				created_at DATETIME NOT NULL,
+				processed BOOLEAN NOT NULL DEFAULT 0
+			);`,
+			`CREATE INDEX IF NOT EXISTS idx_setting_outbox_processed ON setting_outbox(processed, created_at);`,
+			`CREATE INDEX IF NOT EXISTS idx_setting_outbox_key ON setting_outbox(namespace, key);`,
+		},
+	},
 }
 
 // calculateMigrationChecksum produces a deterministic SHA-256 hash of a migration's SQL statements.

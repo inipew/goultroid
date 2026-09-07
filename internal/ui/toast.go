@@ -54,6 +54,10 @@ func MapUserErrorMessage(err error) string {
 	if errors.Is(err, callback.ErrHandlerNotFound) {
 		return "Feature not available."
 	}
-	return "❌ " + err.Error()
+	// Sanitize: only expose error text if it's user-safe (no internal details like sqlite)
+	if core.IsUserSafeText(err.Error()) {
+		return "❌ " + err.Error()
+	}
+	return "❌ Action failed. Please try again."
 }
 
