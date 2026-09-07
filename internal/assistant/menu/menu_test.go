@@ -131,6 +131,7 @@ func TestController_AttachRoutes(t *testing.T) {
 		ChatID:    100,
 		MessageID: 50,
 		Screen:    menu.ScreenIDStart,
+		OwnerID:   100,
 	})
 
 	// 1. Dispatch "start"

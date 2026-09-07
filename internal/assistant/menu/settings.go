@@ -53,7 +53,7 @@ func (c *Controller) AttachSettingsRoutes(r *callback.Router, svc *settings.Serv
 		}
 
 		def, ok := svc.Registry().Get(ns, key)
-		if !ok {
+		if !ok || def == nil {
 			_ = tx.Answer(ctx, "Setting is no longer available", true)
 			return fmt.Errorf("unknown setting %s:%s", ns, key)
 		}
@@ -164,7 +164,10 @@ func parseSettingState(state string) (string, string, string, error) {
 	return parts[0], parts[1], op, nil
 }
 
-func nextSettingValue(def settings.SettingDefinition, current, op string) (string, bool, error) {
+func nextSettingValue(def *settings.SettingDefinition, current, op string) (string, bool, error) {
+	if def == nil {
+		return "", false, fmt.Errorf("nil setting definition")
+	}
 	switch def.Type {
 	case settings.TypeBool:
 		v, err := strconv.ParseBool(current)

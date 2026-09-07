@@ -31,7 +31,7 @@ func TestIntegration_15ScenarioMatrix(t *testing.T) {
 
 		fake := NewFakeInteraction()
 		target := FixtureMessageTarget(100, 1)
-		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart})
+		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart, OwnerID: 100})
 		tx := callback.NewTransaction(1, 100, callback.ParsedPayload{Namespace: "assistant", Action: "start"}, target, fake)
 
 		if err := router.Dispatch(ctx, tx); err != nil {
@@ -49,7 +49,7 @@ func TestIntegration_15ScenarioMatrix(t *testing.T) {
 
 		fake := NewFakeInteraction()
 		target := FixtureMessageTarget(100, 1)
-		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart})
+		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart, OwnerID: 100})
 		tx := callback.NewTransaction(2, 100, callback.ParsedPayload{Namespace: "assistant", Action: "settings"}, target, fake)
 
 		if err := router.Dispatch(ctx, tx); err != nil {
@@ -67,7 +67,7 @@ func TestIntegration_15ScenarioMatrix(t *testing.T) {
 
 		fake := NewFakeInteraction()
 		target := FixtureMessageTarget(100, 1)
-		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart})
+		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart, OwnerID: 100})
 		tx := callback.NewTransaction(3, 100, callback.ParsedPayload{Namespace: "assistant", Action: "help"}, target, fake)
 
 		if err := router.Dispatch(ctx, tx); err != nil {
@@ -85,7 +85,7 @@ func TestIntegration_15ScenarioMatrix(t *testing.T) {
 
 		fake := NewFakeInteraction()
 		target := FixtureMessageTarget(100, 1)
-		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart})
+		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart, OwnerID: 100})
 		tx := callback.NewTransaction(4, 100, callback.ParsedPayload{Namespace: "assistant", Action: "status"}, target, fake)
 
 		if err := router.Dispatch(ctx, tx); err != nil {
@@ -103,7 +103,7 @@ func TestIntegration_15ScenarioMatrix(t *testing.T) {
 
 		fake := NewFakeInteraction()
 		target := FixtureMessageTarget(100, 1)
-		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart})
+		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart, OwnerID: 100})
 		tx := callback.NewTransaction(5, 100, callback.ParsedPayload{Namespace: "assistant", Action: "ping"}, target, fake)
 
 		if err := router.Dispatch(ctx, tx); err != nil {
@@ -136,7 +136,7 @@ func TestIntegration_15ScenarioMatrix(t *testing.T) {
 
 		fake := NewFakeInteraction()
 		target := FixtureMessageTarget(100, 1)
-		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart})
+		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart, OwnerID: 100})
 		tx := callback.NewTransaction(6, 100, callback.ParsedPayload{Namespace: "assistant", Action: "close"}, target, fake)
 
 		if err := router.Dispatch(ctx, tx); err != nil {
