@@ -337,7 +337,7 @@ func (p *Plugin) buildOverviewMarkup(catNames []string, userID int64) tg.ReplyMa
 		rows = append(rows, row)
 	}
 
-	closeBtn := ui.NewCallbackButton("❌ Close", callback.EncodeCallbackData("help", "close", "noop"))
+	closeBtn := ui.NewCallbackButton("❌ Close", callback.EncodeCallbackData("help", "close", callback.ActionNoop))
 	rows = append(rows, ui.ButtonRow{closeBtn})
 
 	return render.ToTelegramMarkup(ui.Markup{Rows: rows})
@@ -378,7 +378,7 @@ func (p *Plugin) HandleCallback(ctx *callback.CallbackContext) error {
 		homeOid := p.stateStore.Store(helpMenuState{UserID: ctx.UserID}, ctx.UserID, 15*time.Minute)
 		navRow := ui.ButtonRow{
 			ui.NewCallbackButton("🔙 Back", callback.EncodeCallbackData("help", "home", homeOid)),
-			ui.NewCallbackButton("❌ Close", callback.EncodeCallbackData("help", "close", "noop")),
+			ui.NewCallbackButton("❌ Close", callback.EncodeCallbackData("help", "close", callback.ActionNoop)),
 		}
 		markup := render.ToTelegramMarkup(ui.Markup{Rows: []ui.ButtonRow{navRow}})
 
