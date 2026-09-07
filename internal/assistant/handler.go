@@ -31,9 +31,8 @@ func (h *Handler) Namespace() string {
 	return "assistant"
 }
 
-// CallbackOptions disables automatic acknowledgement so each action owns its
-// callback lifecycle. Ping can show a visible toast, while Close acknowledges
-// before deleting the originating message.
+// CallbackOptions disables automatic acknowledgement so every assistant action
+// owns its callback lifecycle deterministically.
 func (h *Handler) CallbackOptions() callback.CallbackHandlerOptions {
 	return callback.CallbackHandlerOptions{
 		AutoAnswer: false,
@@ -51,34 +50,34 @@ func (h *Handler) HandleCallback(ctx *callback.CallbackContext) error {
 	case "start":
 		screen := RenderStartMenu(username, h.startTime)
 		text, markup := render.ToTelegram(screen)
-		if err := ctx.Edit(text, markup); err != nil {
+		if err := ctx.Answer("", false); err != nil {
 			return err
 		}
-		return ctx.Answer("", false)
+		return ctx.Edit(text, markup)
 
 	case "settings":
 		screen := RenderSettingsScreen(username, h.startTime)
 		text, markup := render.ToTelegram(screen)
-		if err := ctx.Edit(text, markup); err != nil {
+		if err := ctx.Answer("", false); err != nil {
 			return err
 		}
-		return ctx.Answer("", false)
+		return ctx.Edit(text, markup)
 
 	case "help":
 		screen := RenderHelpScreen(username, h.startTime)
 		text, markup := render.ToTelegram(screen)
-		if err := ctx.Edit(text, markup); err != nil {
+		if err := ctx.Answer("", false); err != nil {
 			return err
 		}
-		return ctx.Answer("", false)
+		return ctx.Edit(text, markup)
 
 	case "status":
 		screen := RenderStatusScreen(username, h.startTime)
 		text, markup := render.ToTelegram(screen)
-		if err := ctx.Edit(text, markup); err != nil {
+		if err := ctx.Answer("", false); err != nil {
 			return err
 		}
-		return ctx.Answer("", false)
+		return ctx.Edit(text, markup)
 
 	case "ping":
 		// Ping is toast-only. The original menu is deliberately left untouched,
