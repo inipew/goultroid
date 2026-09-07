@@ -9,7 +9,12 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/services/moderation"
+)
+
+var (
+	_ execution.CapabilityProvider = (*Plugin)(nil)
 )
 
 // Plugin provides group administration and moderation commands.
@@ -39,7 +44,21 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
+// Capabilities declares the capabilities provided by this plugin (§4, §28 bug16_1).
+func (p *Plugin) Capabilities() []execution.Capability {
+	return []execution.Capability{
+		{
+			ID:          "admin",
+			Name:        "Admin",
+			Description: "Group administration and moderation tools",
+			Category:    "Admin",
+			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
+		},
+	}
+}
+
 func (p *Plugin) Commands() []core.Command {
+	adminSurfaces := execution.SurfaceUserbot | execution.SurfaceAssistant
 	return []core.Command{
 		{
 			Name:        "ban",
@@ -48,6 +67,7 @@ func (p *Plugin) Commands() []core.Command {
 			Category:    "Admin",
 			Permission:  core.PermissionSudo,
 			GroupOnly:   true,
+			Surfaces:    adminSurfaces,
 			Handler:     p.handleBan,
 		},
 		{
@@ -57,6 +77,7 @@ func (p *Plugin) Commands() []core.Command {
 			Category:    "Admin",
 			Permission:  core.PermissionSudo,
 			GroupOnly:   true,
+			Surfaces:    adminSurfaces,
 			Handler:     p.handleUnban,
 		},
 		{
@@ -66,6 +87,7 @@ func (p *Plugin) Commands() []core.Command {
 			Category:    "Admin",
 			Permission:  core.PermissionSudo,
 			GroupOnly:   true,
+			Surfaces:    adminSurfaces,
 			Handler:     p.handleKick,
 		},
 		{
@@ -75,6 +97,7 @@ func (p *Plugin) Commands() []core.Command {
 			Category:    "Admin",
 			Permission:  core.PermissionSudo,
 			GroupOnly:   true,
+			Surfaces:    adminSurfaces,
 			Handler:     p.handleMute,
 		},
 		{
@@ -84,6 +107,7 @@ func (p *Plugin) Commands() []core.Command {
 			Category:    "Admin",
 			Permission:  core.PermissionSudo,
 			GroupOnly:   true,
+			Surfaces:    adminSurfaces,
 			Handler:     p.handleUnmute,
 		},
 		{
@@ -93,6 +117,7 @@ func (p *Plugin) Commands() []core.Command {
 			Category:    "Admin",
 			Permission:  core.PermissionSudo,
 			ReplyOnly:   true,
+			Surfaces:    adminSurfaces,
 			Handler:     p.handlePurge,
 		},
 		{
@@ -102,6 +127,7 @@ func (p *Plugin) Commands() []core.Command {
 			Category:    "Admin",
 			Permission:  core.PermissionSudo,
 			GroupOnly:   true,
+			Surfaces:    adminSurfaces,
 			Handler:     p.handlePromote,
 		},
 		{
@@ -111,6 +137,7 @@ func (p *Plugin) Commands() []core.Command {
 			Category:    "Admin",
 			Permission:  core.PermissionSudo,
 			GroupOnly:   true,
+			Surfaces:    adminSurfaces,
 			Handler:     p.handleDemote,
 		},
 		{
@@ -120,6 +147,7 @@ func (p *Plugin) Commands() []core.Command {
 			Category:    "Admin",
 			Permission:  core.PermissionSudo,
 			GroupOnly:   true,
+			Surfaces:    adminSurfaces,
 			Handler:     p.handleWarn,
 		},
 		{
@@ -129,6 +157,7 @@ func (p *Plugin) Commands() []core.Command {
 			Category:    "Admin",
 			Permission:  core.PermissionSudo,
 			GroupOnly:   true,
+			Surfaces:    adminSurfaces,
 			Handler:     p.handleWarns,
 		},
 		{
@@ -138,6 +167,7 @@ func (p *Plugin) Commands() []core.Command {
 			Category:    "Admin",
 			Permission:  core.PermissionSudo,
 			GroupOnly:   true,
+			Surfaces:    adminSurfaces,
 			Handler:     p.handleResetWarns,
 		},
 	}

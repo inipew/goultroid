@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gotd/td/tg"
+	"github.com/inipew/goultroid/internal/execution"
 )
 
 // TelegramServicer defines message, media, and chat actions on Telegram.
@@ -746,4 +747,64 @@ func (c *Context) BlockUser(peer tg.InputPeerClass) error {
 // UnblockUser unblocks the specified user.
 func (c *Context) UnblockUser(peer tg.InputPeerClass) error {
 	return c.Peer().UnblockUser(peer)
+}
+
+// ExecutionContext adapts this *Context into an execution.ExecutionContext (§28 bug16_1).
+func (c *Context) ExecutionContext(source execution.Source) *execution.ExecutionContext {
+	if c == nil {
+		return nil
+	}
+	var chatID int64
+	if c.Chat != nil {
+		chatID = c.Chat.ID
+	}
+	var actor execution.Actor
+	if c.Sender != nil {
+		actor = execution.NewActor(
+			c.Sender.ID,
+			chatID,
+			c.Perms != nil && c.Perms.IsOwner(c.Sender.ID),
+			c.Perms != nil && (c.Perms.IsSudo(c.Sender.ID) || c.Perms.IsOwner(c.Sender.ID)),
+		)
+		actor.Username = c.Sender.Username
+		actor.FirstName = c.Sender.FirstName
+	} else if c.Perms != nil {
+		actor = execution.NewActor(
+			0,
+			chatID,
+			c.Perms.IsOwner(0),
+			c.Perms.IsSudo(0) || c.Perms.IsOwner(0),
+		)
+	}
+
+	var msgID int
+	var rawText string
+	if c.Message != nil {
+		msgID = c.Message.ID
+		rawText = c.Message.Text
+	}
+
+	execCtx := execution.NewExecutionContext(
+		c.Ctx,
+		source,
+		actor,
+		chatID,
+		msgID,
+		rawText,
+		c.Args,
+	)
+
+	execCtx.SetHandlers(
+		func(text string) error {
+			return c.Reply(text)
+		},
+		func(text string) error {
+			return c.EditOrReply(text)
+		},
+		func(text string, alert bool) error {
+			return c.Reply(text)
+		},
+	)
+
+	return execCtx
 }

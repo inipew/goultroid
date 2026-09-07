@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/inipew/goultroid/internal/addon"
+	appCap "github.com/inipew/goultroid/internal/application/capability"
+	appCmd "github.com/inipew/goultroid/internal/application/command"
 	"github.com/inipew/goultroid/internal/assistant"
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
@@ -70,6 +72,16 @@ func New(cfg *config.Config) (*App, error) {
 	// 4. Build and register plugins
 	pluginManager := plugin.NewManager(coreDeps.router)
 	pluginManager.SetHookRegistrar(tgRuntime.dispatcher)
+
+	capRegistry := appCap.NewRegistry()
+	pluginManager.SetCapabilityRegistry(capRegistry)
+
+	unifiedCmdReg := appCmd.NewUnifiedRegistry()
+	pluginManager.SetUnifiedCommandRegistry(unifiedCmdReg)
+
+	if tgRuntime.assistant != nil {
+		tgRuntime.assistant.SetUnifiedRegistry(unifiedCmdReg)
+	}
 
 	pluginsList, err := buildPlugins(coreDeps, tgRuntime, domServices)
 	if err != nil {

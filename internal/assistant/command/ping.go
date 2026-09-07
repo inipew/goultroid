@@ -1,16 +1,12 @@
 package command
 
 import (
-	"time"
-
+	appPing "github.com/inipew/goultroid/internal/application/ping"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
-	"github.com/inipew/goultroid/internal/assistant/presentation"
 )
 
 // PingResult records latency metrics for assistant ping commands.
-type PingResult struct {
-	Latency time.Duration
-}
+type PingResult = appPing.Result
 
 // RegisterPing attaches the /ping command handler to the Router.
 func RegisterPing(r *Router) {
@@ -18,15 +14,24 @@ func RegisterPing(r *Router) {
 		return
 	}
 	r.Register("/ping", func(c *Context) error {
-		start := time.Now()
-		sent, err := c.Reply("🏓 ...", nil)
+		uc := appPing.NewUseCase()
+		var sentID int
+		res, err := uc.Execute(func() error {
+			sent, sErr := c.Reply("🏓 ...", nil)
+			if sErr != nil {
+				return sErr
+			}
+			if sent != nil {
+				sentID = sent.ID
+			}
+			return nil
+		})
 		if err != nil {
 			return err
 		}
-		latency := time.Since(start)
-		if sent != nil {
-			target := interaction.NewMessageTarget(c.Peer, sent.ID, 0, 0)
-			return c.Interaction.Edit(c.Ctx, target, presentation.RenderPing(presentation.PingResult{Latency: latency}), nil)
+		if sentID > 0 {
+			target := interaction.NewMessageTarget(c.Peer, sentID, 0, 0)
+			return c.Interaction.Edit(c.Ctx, target, appPing.FormatResult(res.Latency), nil)
 		}
 		return nil
 	})

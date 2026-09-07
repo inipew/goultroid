@@ -7,6 +7,11 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
+)
+
+var (
+	_ execution.CapabilityProvider = (*Plugin)(nil)
 )
 
 type Plugin struct{}
@@ -16,11 +21,25 @@ func (p *Plugin) Description() string { return "User and chat information inspec
 func (p *Plugin) Init() error { return nil }
 func (p *Plugin) Shutdown() error { return nil }
 
+// Capabilities declares the capabilities provided by this plugin (§4, §28 bug16_1).
+func (p *Plugin) Capabilities() []execution.Capability {
+	return []execution.Capability{
+		{
+			ID:          "info",
+			Name:        "Info",
+			Description: "User and chat information inspection utilities",
+			Category:    "Info",
+			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
+		},
+	}
+}
+
 func (p *Plugin) Commands() []core.Command {
+	infoSurfaces := execution.SurfaceUserbot | execution.SurfaceAssistant
 	return []core.Command{
-		{Name: "whois", Aliases: []string{"info", "userinfo"}, Description: "Display detailed profile information of a user", Usage: ".whois [username|id|reply]", Category: "Info", Permission: core.PermissionEveryone, Handler: p.handleWhois},
-		{Name: "chatinfo", Aliases: []string{"groupinfo", "cinfo"}, Description: "Display detailed metadata of the current chat/group/channel", Usage: ".chatinfo", Category: "Info", Permission: core.PermissionSudo, GroupOnly: true, Handler: p.handleChatInfo},
-		{Name: "id", Aliases: []string{"chatid"}, Description: "Display current chat ID, chat type, and sender ID", Usage: ".id", Category: "Info", Permission: core.PermissionEveryone, Handler: p.handleID},
+		{Name: "whois", Aliases: []string{"info", "userinfo"}, Description: "Display detailed profile information of a user", Usage: ".whois [username|id|reply]", Category: "Info", Permission: core.PermissionEveryone, Surfaces: infoSurfaces, Handler: p.handleWhois},
+		{Name: "chatinfo", Aliases: []string{"groupinfo", "cinfo"}, Description: "Display detailed metadata of the current chat/group/channel", Usage: ".chatinfo", Category: "Info", Permission: core.PermissionSudo, GroupOnly: true, Surfaces: infoSurfaces, Handler: p.handleChatInfo},
+		{Name: "id", Aliases: []string{"chatid"}, Description: "Display current chat ID, chat type, and sender ID", Usage: ".id", Category: "Info", Permission: core.PermissionEveryone, Surfaces: infoSurfaces, Handler: p.handleID},
 	}
 }
 

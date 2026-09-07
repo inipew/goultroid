@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/settings"
@@ -127,6 +128,19 @@ func (p *Plugin) CallbackOptions() callback.CallbackHandlerOptions {
 	}
 }
 
+// Capabilities declares the capabilities provided by this plugin (§4 bug16_1).
+func (p *Plugin) Capabilities() []execution.Capability {
+	return []execution.Capability{
+		{
+			ID:          "settings",
+			Name:        "Settings",
+			Description: "Hierarchical settings management and dashboard",
+			Category:    "Settings",
+			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
+		},
+	}
+}
+
 func (p *Plugin) Commands() []core.Command {
 	return []core.Command{
 		{
@@ -135,6 +149,7 @@ func (p *Plugin) Commands() []core.Command {
 			Usage:       ".settings [category]",
 			Category:    "Settings",
 			Permission:  core.PermissionOwner,
+			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
 			Handler:     p.handleSettingsCommand,
 		},
 		{
@@ -143,6 +158,7 @@ func (p *Plugin) Commands() []core.Command {
 			Usage:       ".config <get|set|reset|list|history|export> [args...]",
 			Category:    "Settings",
 			Permission:  core.PermissionOwner,
+			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
 			Handler:     p.handleConfigCommand,
 		},
 	}

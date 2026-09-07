@@ -219,6 +219,24 @@ func (c *AssistantClient) SetAuthorizer(auth callback.Authorizer) {
 	c.cbRouter.SetAuthorizer(auth)
 }
 
+// SetOwner configures the owner identity and optional sudo getter on routers.
+func (c *AssistantClient) SetOwner(ownerID int64, sudoGetter func() []int64) {
+	c.cbRouter.SetAuthorizer(callback.NewOwnerAuthorizer(ownerID, sudoGetter))
+	if c.cmdRouter != nil {
+		c.cmdRouter.SetOwner(ownerID, sudoGetter)
+	}
+}
+
+// SetUnifiedRegistry configures the unified command registry for the assistant router and menu controller.
+func (c *AssistantClient) SetUnifiedRegistry(reg command.CommandSource) {
+	if c.cmdRouter != nil {
+		c.cmdRouter.SetUnifiedRegistry(reg)
+	}
+	if c.menuCtrl != nil {
+		c.menuCtrl.SetCommandSource(reg)
+	}
+}
+
 // CacheEntities caches users and chats from incoming updates into the peer cache.
 func (c *AssistantClient) CacheEntities(e tg.Entities) {
 	if c.cache != nil {

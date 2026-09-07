@@ -15,6 +15,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/process"
 )
@@ -49,12 +50,24 @@ func (p *Plugin) Description() string { return "Shell command execution and user
 func (p *Plugin) Init() error { return nil }
 func (p *Plugin) Shutdown() error { return nil }
 
+func (p *Plugin) Capabilities() []execution.Capability {
+	return []execution.Capability{
+		{
+			ID:          "system",
+			Name:        "System Management",
+			Description: "Host health, update, and process lifecycle",
+			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
+		},
+	}
+}
+
 func (p *Plugin) Commands() []core.Command {
+	sysSurfaces := execution.SurfaceUserbot | execution.SurfaceAssistant
 	return []core.Command{
-		{Name: "exec", Aliases: []string{"sh", "bash", "cmd"}, Description: "Execute a shell command on the host machine (Owner Only)", Usage: ".exec <shell command>", Category: "System", Permission: core.PermissionOwner, Timeout: 65 * time.Second, Handler: p.handleExec},
-		{Name: "restart", Description: "Restart the GoUltroid userbot process (Owner Only)", Usage: ".restart", Category: "System", Permission: core.PermissionOwner, Handler: p.handleRestart},
-		{Name: "update", Aliases: []string{"gitupdate"}, Description: "Check for updates from git remote or pull and rebuild (Owner Only)", Usage: ".update [pull|now]", Category: "System", Permission: core.PermissionOwner, Timeout: 180 * time.Second, Handler: p.handleUpdate},
-		{Name: "health", Aliases: []string{"runtime", "memstats"}, Description: "Show runtime memory and goroutine health statistics (Owner Only)", Usage: ".health", Category: "System", Permission: core.PermissionOwner, Handler: p.handleHealth},
+		{Name: "exec", Aliases: []string{"sh", "bash", "cmd"}, Description: "Execute a shell command on the host machine (Owner Only)", Usage: ".exec <shell command>", Category: "System", Permission: core.PermissionOwner, Timeout: 65 * time.Second, Surfaces: execution.SurfaceUserbot, Handler: p.handleExec},
+		{Name: "restart", Description: "Restart the GoUltroid userbot process (Owner Only)", Usage: ".restart", Category: "System", Permission: core.PermissionOwner, Surfaces: sysSurfaces, Handler: p.handleRestart},
+		{Name: "update", Aliases: []string{"gitupdate"}, Description: "Check for updates from git remote or pull and rebuild (Owner Only)", Usage: ".update [pull|now]", Category: "System", Permission: core.PermissionOwner, Timeout: 180 * time.Second, Surfaces: sysSurfaces, Handler: p.handleUpdate},
+		{Name: "health", Aliases: []string{"runtime", "memstats"}, Description: "Show runtime memory and goroutine health statistics (Owner Only)", Usage: ".health", Category: "System", Permission: core.PermissionOwner, Surfaces: sysSurfaces, Handler: p.handleHealth},
 	}
 }
 

@@ -14,13 +14,15 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/plugin"
 	"go.uber.org/zap"
 )
 
 var (
-	_ plugin.MessageHookPlugin  = (*Plugin)(nil)
-	_ plugin.ContextInitializer = (*Plugin)(nil)
+	_ plugin.MessageHookPlugin   = (*Plugin)(nil)
+	_ plugin.ContextInitializer  = (*Plugin)(nil)
+	_ execution.CapabilityProvider = (*Plugin)(nil)
 )
 
 type afkState struct {
@@ -144,6 +146,19 @@ func (p *Plugin) MessageHookPriority() int {
 	return 50
 }
 
+// Capabilities declares the capabilities provided by this plugin (§4, §28 bug16_1).
+func (p *Plugin) Capabilities() []execution.Capability {
+	return []execution.Capability{
+		{
+			ID:          "afk",
+			Name:        "AFK",
+			Description: "Away From Keyboard status manager and intelligent auto-reply system",
+			Category:    "Utility",
+			Surfaces:    execution.SurfaceUserbot,
+		},
+	}
+}
+
 func (p *Plugin) Commands() []core.Command {
 	return []core.Command{
 		{
@@ -152,6 +167,7 @@ func (p *Plugin) Commands() []core.Command {
 			Usage:       ".afk [on|off|status|toggle|reason]",
 			Category:    "AFK",
 			Permission:  core.PermissionOwner,
+			Surfaces:    execution.SurfaceUserbot,
 			Handler:     p.handleAFKCommand,
 		},
 	}

@@ -1,13 +1,12 @@
 package ping
 
 import (
-	"fmt"
-	"time"
-
+	appPing "github.com/inipew/goultroid/internal/application/ping"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
 )
 
-// Plugin provides the ping command.
+// Plugin provides the ping command across Userbot and Assistant surfaces.
 type Plugin struct{}
 
 // New creates a new ping Plugin.
@@ -25,28 +24,43 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
+// Capabilities declares the capabilities provided by this plugin (§4 bug16_1).
+func (p *Plugin) Capabilities() []execution.Capability {
+	return []execution.Capability{
+		{
+			ID:          "ping",
+			Name:        "Ping",
+			Description: "Check response latency",
+			Category:    "Utility",
+			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
+		},
+	}
+}
+
 // Commands returns the commands registered by this plugin.
 func (p *Plugin) Commands() []core.Command {
 	return []core.Command{
 		{
 			Name:        "ping",
 			Aliases:     []string{"p", "latency"},
-			Description: "Check userbot response latency",
+			Description: "Check response latency",
 			Usage:       ".ping",
 			Category:    "Utility",
 			Permission:  core.PermissionEveryone,
+			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
 			Handler:     p.handlePing,
 		},
 	}
 }
 
 func (p *Plugin) handlePing(ctx *core.Context) error {
-	start := time.Now()
-
-	if err := ctx.EditOrReply("🏓 ..."); err != nil {
+	uc := appPing.NewUseCase()
+	res, err := uc.Execute(func() error {
+		return ctx.EditOrReply("🏓 ...")
+	})
+	if err != nil {
 		return err
 	}
-
-	latency := time.Since(start)
-	return ctx.Edit(fmt.Sprintf("🏓 <b>Pong!</b>\n⚡ <b>Latency:</b> <code>%d ms</code>", latency.Milliseconds()))
+	return ctx.Edit(appPing.FormatResult(res.Latency))
 }
+

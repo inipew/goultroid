@@ -122,6 +122,7 @@ func (e *CommandExecutor) execute(ctx *Context, cmd Command, source ExecutionSou
 		RecoveryMiddleware(e.logger),
 		CorrelationMiddleware(e.logger),
 		LoggingMiddleware(e.logger),
+		SurfaceMiddleware(cmd, source),
 		PermissionMiddleware(cmd),
 		FilterMiddlewareForSource(cmd, source),
 		CooldownMiddleware(cmd, e.cooldown),

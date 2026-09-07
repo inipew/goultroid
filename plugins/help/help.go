@@ -8,6 +8,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/ui"
 	"github.com/inipew/goultroid/internal/ui/render"
@@ -64,6 +65,19 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
+// Capabilities declares the capabilities provided by this plugin (§4 bug16_1).
+func (p *Plugin) Capabilities() []execution.Capability {
+	return []execution.Capability{
+		{
+			ID:          "help",
+			Name:        "Help",
+			Description: "Interactive help and command documentation browser",
+			Category:    "Utility",
+			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
+		},
+	}
+}
+
 // Commands returns the commands registered by this plugin.
 func (p *Plugin) Commands() []core.Command {
 	return []core.Command{
@@ -74,6 +88,7 @@ func (p *Plugin) Commands() []core.Command {
 			Usage:       ".help [command|module]",
 			Category:    "Utility",
 			Permission:  core.PermissionEveryone,
+			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
 			Handler:     p.handleHelp,
 		},
 	}
@@ -128,7 +143,7 @@ func (p *Plugin) handleHelp(ctx *core.Context) error {
 		target := strings.TrimPrefix(ctx.Args[0], prefix)
 
 		// 1. Check if target matches a command name or alias
-		if cmd, exists := p.router.Find(target); exists {
+		if cmd, exists := p.router.Find(target); exists && cmd.IsAvailableOn(execution.SourceUserbot) {
 			var aliasesStr string
 			if len(cmd.Aliases) > 0 {
 				var prefixedAliases []string
@@ -201,7 +216,7 @@ func (p *Plugin) handleHelp(ctx *core.Context) error {
 	// General overview
 	categories, catNames := p.getCategoryNames()
 	if p.stateStore != nil {
-		all := p.router.All()
+		all := p.userbotCommands()
 		overviewText := p.renderInteractiveOverview(prefix, len(all), len(catNames))
 		markup := p.buildOverviewMarkup(catNames, ctx.SenderID())
 		return sendResultMarkup(ctx, overviewText, markup)
@@ -209,6 +224,17 @@ func (p *Plugin) handleHelp(ctx *core.Context) error {
 
 	overviewText := p.renderOverviewWithCategories(prefix, categories, catNames)
 	return sendResult(ctx, overviewText)
+}
+
+func (p *Plugin) userbotCommands() []core.Command {
+	all := p.router.All()
+	var res []core.Command
+	for _, cmd := range all {
+		if cmd.IsAvailableOn(execution.SourceUserbot) {
+			res = append(res, cmd)
+		}
+	}
+	return res
 }
 
 func (p *Plugin) renderInteractiveOverview(prefix string, totalCmds, totalModules int) string {
@@ -221,7 +247,7 @@ func (p *Plugin) renderInteractiveOverview(prefix string, totalCmds, totalModule
 }
 
 func (p *Plugin) getCategoryNames() (map[string][]core.Command, []string) {
-	all := p.router.All()
+	all := p.userbotCommands()
 	categories := make(map[string][]core.Command)
 	for _, cmd := range all {
 		cat := cmd.Category
@@ -239,7 +265,7 @@ func (p *Plugin) getCategoryNames() (map[string][]core.Command, []string) {
 }
 
 func (p *Plugin) getCategoryCommands(target string) (string, []core.Command) {
-	all := p.router.All()
+	all := p.userbotCommands()
 	var matchedCat string
 	var catCmds []core.Command
 	for _, c := range all {
@@ -283,7 +309,7 @@ func (p *Plugin) renderOverview(prefix string) (string, []string) {
 }
 
 func (p *Plugin) renderOverviewWithCategories(prefix string, categories map[string][]core.Command, catNames []string) string {
-	all := p.router.All()
+	all := p.userbotCommands()
 	var sb strings.Builder
 	sb.WriteString("📚 <b>GoUltroid Help</b>\n")
 	sb.WriteString(fmt.Sprintf("<i>%d commands across %d modules.</i>\n\n", len(all), len(catNames)))

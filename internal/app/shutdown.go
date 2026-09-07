@@ -14,6 +14,13 @@ func (a *App) Shutdown(ctx context.Context) error {
 	}
 	var errs []error
 
+	// 0. Stop Assistant client to drain incoming assistant requests before shutting down dispatcher/services (§20 bug16_1)
+	if a.assistant != nil {
+		if err := a.assistant.Stop(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			errs = append(errs, fmt.Errorf("assistant: %w", err))
+		}
+	}
+
 	// 1. Stop Telegram dispatcher: drain peer worker pool and stop new update handling
 	if a.client != nil && a.client.Dispatcher() != nil {
 		if err := a.client.Dispatcher().Stop(ctx); err != nil && !errors.Is(err, context.Canceled) {

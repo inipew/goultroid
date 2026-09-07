@@ -7,7 +7,12 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/services/broadcast"
+)
+
+var (
+	_ execution.CapabilityProvider = (*Plugin)(nil)
 )
 
 // Plugin provides broadcast capabilities.
@@ -35,8 +40,22 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
+// Capabilities declares the capabilities provided by this plugin (§4, §28 bug16_1).
+func (p *Plugin) Capabilities() []execution.Capability {
+	return []execution.Capability{
+		{
+			ID:          "broadcast",
+			Name:        "Broadcast",
+			Description: "Mass messaging tool with target filtering",
+			Category:    "Admin",
+			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
+		},
+	}
+}
+
 // Commands returns the registered commands.
 func (p *Plugin) Commands() []core.Command {
+	bcastSurfaces := execution.SurfaceUserbot | execution.SurfaceAssistant
 	return []core.Command{
 		{
 			Name:        "broadcast",
@@ -46,6 +65,7 @@ func (p *Plugin) Commands() []core.Command {
 			Category:    "Admin",
 			Permission:  core.PermissionOwner,
 			Timeout:     30 * time.Minute,
+			Surfaces:    bcastSurfaces,
 			Handler:     p.handleBroadcast,
 		},
 		{
@@ -55,6 +75,7 @@ func (p *Plugin) Commands() []core.Command {
 			Usage:       ".cancelbroadcast",
 			Category:    "Admin",
 			Permission:  core.PermissionOwner,
+			Surfaces:    bcastSurfaces,
 			Handler:     p.handleCancelBroadcast,
 		},
 	}

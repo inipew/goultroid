@@ -7,6 +7,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/addon"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/ui"
 )
 
@@ -35,6 +36,18 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
+func (p *Plugin) Capabilities() []execution.Capability {
+	return []execution.Capability{
+		{
+			ID:          "addon",
+			Name:        "Addon Management",
+			Description: "Manage external userbot addons and capability permissions",
+			Category:    "Management",
+			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
+		},
+	}
+}
+
 // Commands returns the list of addon management commands.
 func (p *Plugin) Commands() []core.Command {
 	return []core.Command{
@@ -45,6 +58,7 @@ func (p *Plugin) Commands() []core.Command {
 			Usage:       ".addon [list|info|install|uninstall|enable|disable]",
 			Category:    "Addon",
 			Permission:  core.PermissionOwner,
+			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
 			Handler:     p.handleAddon,
 		},
 	}

@@ -10,7 +10,12 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/scheduler"
+)
+
+var (
+	_ execution.CapabilityProvider = (*Plugin)(nil)
 )
 
 // Plugin provides commands for scheduling messages, reminders, and periodic commands.
@@ -27,28 +32,42 @@ func (p *Plugin) Name() string { return "scheduler" }
 
 func (p *Plugin) Init() error { return nil }
 
+// Capabilities declares the capabilities provided by this plugin (§4, §28 bug16_1).
+func (p *Plugin) Capabilities() []execution.Capability {
+	return []execution.Capability{
+		{
+			ID:          "scheduler",
+			Name:        "Scheduler",
+			Description: "Message, reminder, and recurring command scheduler",
+			Category:    "Scheduler",
+			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
+		},
+	}
+}
+
 func (p *Plugin) Commands() []core.Command {
+	schedSurfaces := execution.SurfaceUserbot | execution.SurfaceAssistant
 	return []core.Command{
 		{
 			Name: "remind", Description: "Set a quick reminder in this chat",
 			Usage: ".remind <duration> <text> or reply to a message with .remind <duration>",
-			Category: "Scheduler", Permission: core.PermissionSudo, Handler: p.handleRemind,
+			Category: "Scheduler", Permission: core.PermissionSudo, Surfaces: schedSurfaces, Handler: p.handleRemind,
 		},
 		{
 			Name: "schedule", Description: "Schedule a message or command (e.g. .schedule in 30m text or .schedule every 1h .alive)",
-			Usage: ".schedule [in|every] <duration> <text/command>", Category: "Scheduler", Permission: core.PermissionSudo, Handler: p.handleSchedule,
+			Usage: ".schedule [in|every] <duration> <text/command>", Category: "Scheduler", Permission: core.PermissionSudo, Surfaces: schedSurfaces, Handler: p.handleSchedule,
 		},
 		{
 			Name: "schedules", Description: "List all active schedules in this chat", Usage: ".schedules",
-			Category: "Scheduler", Permission: core.PermissionSudo, Handler: p.handleList,
+			Category: "Scheduler", Permission: core.PermissionSudo, Surfaces: schedSurfaces, Handler: p.handleList,
 		},
 		{
 			Name: "cancelschedule", Aliases: []string{"unschedule", "delschedule", "delremind"},
-			Description: "Cancel a scheduled job by its ID", Usage: ".cancelschedule <id>", Category: "Scheduler", Permission: core.PermissionSudo, Handler: p.handleCancel,
+			Description: "Cancel a scheduled job by its ID", Usage: ".cancelschedule <id>", Category: "Scheduler", Permission: core.PermissionSudo, Surfaces: schedSurfaces, Handler: p.handleCancel,
 		},
 		{
 			Name: "schedhistory", Aliases: []string{"jobhistory", "schedlog"},
-			Description: "Show the last execution history entries for a scheduled job", Usage: ".schedhistory <id> [limit]", Category: "Scheduler", Permission: core.PermissionSudo, Handler: p.handleSchedHistory,
+			Description: "Show the last execution history entries for a scheduled job", Usage: ".schedhistory <id> [limit]", Category: "Scheduler", Permission: core.PermissionSudo, Surfaces: schedSurfaces, Handler: p.handleSchedHistory,
 		},
 	}
 }

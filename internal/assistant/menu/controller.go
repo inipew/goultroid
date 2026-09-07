@@ -3,19 +3,30 @@ package menu
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/gotd/td/tg"
+	appStatus "github.com/inipew/goultroid/internal/application/status"
 	"github.com/inipew/goultroid/internal/assistant/callback"
+	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
 )
 
 // RendererFunc renders a Screen into text and markup.
 type RendererFunc func(screen *Screen) (string, tg.ReplyMarkupClass)
 
+// CommandSource defines capability to query commands for a surface.
+type CommandSource interface {
+	CommandsForSurface(source execution.Source) []core.Command
+}
+
 // Controller manages the generation and transition between assistant interactive screens.
 type Controller struct {
 	renderer  RendererFunc
 	instances InstanceStore
+	cmdSource CommandSource
 }
 
 // NewController creates a menu Controller with instance tracking.
@@ -24,6 +35,11 @@ func NewController(renderer RendererFunc) *Controller {
 		renderer:  renderer,
 		instances: NewMemoryInstanceStore(DefaultMenuTTL),
 	}
+}
+
+// SetCommandSource configures the command source for dynamic help rendering.
+func (c *Controller) SetCommandSource(cs CommandSource) {
+	c.cmdSource = cs
 }
 
 // Instances returns the underlying instance store.
@@ -36,7 +52,7 @@ func BuildStartScreen(botUsername string, uptime time.Duration) *Screen {
 	if botUsername == "" {
 		botUsername = "GoUltroidBot"
 	}
-	uptimeStr := uptime.Truncate(time.Second).String()
+	uptimeStr := appStatus.FormatDuration(uptime)
 	body := fmt.Sprintf(
 		"👋 <b>Welcome to GoUltroid Assistant!</b>\n\n"+
 			"• <b>Bot:</b> @%s\n"+
@@ -69,7 +85,7 @@ func BuildSettingsScreen(botUsername string) *Screen {
 
 	screen := NewScreen(ScreenIDSettings, "⚙️ Assistant Settings", body)
 	screen.AddRow(
-		NewButton("📂 Settings Dashboard", "v1:settings:nav:noop"),
+		NewButton("📂 Settings Dashboard", "v1:settings:nav:home"),
 	)
 	screen.AddRow(
 		NewButton("« Back to Menu", "a1:assistant:start"),
@@ -77,15 +93,40 @@ func BuildSettingsScreen(botUsername string) *Screen {
 	return screen
 }
 
-// BuildHelpScreen constructs the help and commands index screen.
+// BuildHelpScreen constructs the help and commands index screen with defaults.
 func BuildHelpScreen(botUsername string) *Screen {
-	body := "<b>GoUltroid Assistant Commands</b>\n\n" +
-		"/start — open the interactive dashboard\n" +
-		"/help — show this help overview\n" +
-		"/ping — check responsiveness\n" +
-		"/status — view system status\n" +
-		"/alive — check assistant status\n\n" +
-		"<i>Browse all installed userbot modules below:</i>"
+	return BuildHelpScreenWithCommands(botUsername, nil)
+}
+
+// BuildHelpScreenWithCommands constructs the help screen with dynamic command listings.
+func BuildHelpScreenWithCommands(botUsername string, cmds []core.Command) *Screen {
+	var body string
+	if len(cmds) > 0 {
+		var sb strings.Builder
+		sb.WriteString("<b>GoUltroid Assistant Commands</b>\n\n")
+		sortedCmds := make([]core.Command, len(cmds))
+		copy(sortedCmds, cmds)
+		sort.Slice(sortedCmds, func(i, j int) bool {
+			return sortedCmds[i].Name < sortedCmds[j].Name
+		})
+		for _, cmd := range sortedCmds {
+			desc := cmd.Description
+			if desc == "" {
+				desc = "No description"
+			}
+			sb.WriteString(fmt.Sprintf("/%s — %s\n", cmd.Name, desc))
+		}
+		sb.WriteString("\n<i>Browse all installed userbot modules below:</i>")
+		body = sb.String()
+	} else {
+		body = "<b>GoUltroid Assistant Commands</b>\n\n" +
+			"/start — open the interactive dashboard\n" +
+			"/help — show this help overview\n" +
+			"/ping — check responsiveness\n" +
+			"/status — view system status\n" +
+			"/alive — check assistant status\n\n" +
+			"<i>Browse all installed userbot modules below:</i>"
+	}
 
 	screen := NewScreen(ScreenIDHelp, "📚 Help / Modules", body)
 	screen.AddRow(
@@ -105,7 +146,7 @@ func BuildStatusScreen(botUsername string, uptime time.Duration, engine string) 
 	if engine == "" {
 		engine = "GoUltroid (MTProto) v2"
 	}
-	uptimeStr := uptime.Truncate(time.Second).String()
+	uptimeStr := appStatus.FormatDuration(uptime)
 	body := fmt.Sprintf(
 		"• <b>Assistant Bot:</b> @%s\n"+
 			"• <b>Uptime:</b> %s\n"+
@@ -201,7 +242,11 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 		if c.instances != nil {
 			c.instances.UpdateScreen(tx.Target.ChatID(), tx.Target.MessageID(), ScreenIDHelp)
 		}
-		screen := BuildHelpScreen(username())
+		var cmds []core.Command
+		if c.cmdSource != nil {
+			cmds = c.cmdSource.CommandsForSurface(execution.SourceAssistant)
+		}
+		screen := BuildHelpScreenWithCommands(username(), cmds)
 		text, markup := c.renderer(screen)
 		return tx.Edit(ctx, text, markup)
 	})

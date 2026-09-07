@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/gotd/td/tg"
+	"github.com/inipew/goultroid/internal/execution"
 )
 
 // mockTelegramServicer implements TelegramServicer for unit tests.
@@ -738,5 +739,64 @@ func TestContext_LocalizationAndMarkup(t *testing.T) {
 	}
 	if err := ctx.EditMarkup("updated", &tg.ReplyInlineMarkup{}); err != nil {
 		t.Errorf("unexpected error in EditMarkup: %v", err)
+	}
+}
+
+func TestContext_ExecutionContext(t *testing.T) {
+	mockSvc := &mockTelegramServicer{}
+	ctx := &Context{
+		Ctx:    context.Background(),
+		PeerID: &tg.InputPeerChat{ChatID: 200},
+		Svc:    mockSvc,
+		Sender: &User{
+			ID:        12345,
+			Username:  "tester",
+			FirstName: "Alice",
+		},
+		Chat: &Chat{
+			ID: 200,
+		},
+		Message: &Message{
+			ID:   555,
+			Text: ".test arg1",
+		},
+		Args:  []string{"arg1"},
+		Perms: NewPermissions(12345, nil),
+	}
+
+	execCtx := ctx.ExecutionContext(execution.SourceUserbot)
+	if execCtx == nil {
+		t.Fatal("expected non-nil ExecutionContext")
+	}
+
+	if execCtx.Source != execution.SourceUserbot {
+		t.Errorf("expected SourceUserbot, got %v", execCtx.Source)
+	}
+	if execCtx.Actor.UserID != 12345 || !execCtx.Actor.IsOwner {
+		t.Errorf("expected owner actor with ID 12345, got %+v", execCtx.Actor)
+	}
+	if execCtx.Actor.Username != "tester" || execCtx.Actor.FirstName != "Alice" {
+		t.Errorf("expected username tester and Alice, got %+v", execCtx.Actor)
+	}
+	if execCtx.ChatID != 200 {
+		t.Errorf("expected chatID 200, got %d", execCtx.ChatID)
+	}
+	if execCtx.MessageID != 555 {
+		t.Errorf("expected messageID 555, got %d", execCtx.MessageID)
+	}
+
+	// Test Response closures
+	if err := execCtx.Reply("reply test"); err != nil {
+		t.Errorf("unexpected error in execCtx.Reply: %v", err)
+	}
+	if mockSvc.sentText != "reply test" {
+		t.Errorf("expected sentText 'reply test', got %q", mockSvc.sentText)
+	}
+
+	if err := execCtx.Edit("edit test"); err != nil {
+		t.Errorf("unexpected error in execCtx.Edit: %v", err)
+	}
+	if mockSvc.editedText != "edit test" {
+		t.Errorf("expected editedText 'edit test', got %q", mockSvc.editedText)
 	}
 }

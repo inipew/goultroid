@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inipew/goultroid/internal/execution"
 	"go.uber.org/zap"
 )
 
@@ -121,3 +122,41 @@ func TestCommandExecutor_WithMetrics(t *testing.T) {
 		t.Errorf("expected metric_test stats recorded, got %+v", st)
 	}
 }
+
+func TestCommandExecutor_SurfaceEnforcement(t *testing.T) {
+	logger := zap.NewNop()
+	exec := NewCommandExecutor(logger, nil, 5*time.Second)
+
+	// Command enabled ONLY for Assistant surface
+	cmd := Command{
+		Name:       "assistant_only",
+		Permission: PermissionEveryone,
+		Surfaces:   execution.SurfaceAssistant,
+		Handler: func(ctx *Context) error {
+			return nil
+		},
+	}
+
+	// 1. Invoked on Userbot (ExecutionInteractive) -> should be denied
+	ctxUserbot := &Context{
+		Ctx:     context.Background(),
+		Source:  ExecutionInteractive,
+		Command: "assistant_only",
+	}
+	err := exec.Execute(ctxUserbot, cmd)
+	if !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("expected ErrPermissionDenied when running assistant-only command on userbot, got: %v", err)
+	}
+
+	// 2. Invoked on Assistant (ExecutionAssistant) -> should succeed
+	ctxAssistant := &Context{
+		Ctx:     context.Background(),
+		Source:  ExecutionAssistant,
+		Command: "assistant_only",
+	}
+	err = exec.Execute(ctxAssistant, cmd)
+	if err != nil {
+		t.Fatalf("expected success when running assistant-only command on assistant, got: %v", err)
+	}
+}
+

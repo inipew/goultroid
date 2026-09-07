@@ -1,12 +1,10 @@
 package command
 
 import (
-	"fmt"
-	"runtime"
 	"time"
 
+	appStatus "github.com/inipew/goultroid/internal/application/status"
 	"github.com/inipew/goultroid/internal/assistant/menu"
-	"github.com/inipew/goultroid/internal/ui"
 )
 
 // RegisterAlive attaches the /alive command handler to the Router.
@@ -24,23 +22,12 @@ func RegisterAlive(r *Router, usernameProvider func() string, uptimeProvider fun
 			uptime = uptimeProvider()
 		}
 
-		var mem runtime.MemStats
-		runtime.ReadMemStats(&mem)
+		startTime := time.Now().Add(-uptime)
+		ownerID := r.OwnerID()
+		snapshot := appStatus.CollectSnapshot(startTime, ownerID)
+		cardText := appStatus.RenderAliveCard(snapshot, username)
 
-		allocMB := float64(mem.Alloc) / 1024 / 1024
-		sysMB := float64(mem.Sys) / 1024 / 1024
-
-		card := ui.NewCard("GoUltroid Assistant is Alive & Running!").
-			WithIcon("✨").
-			AddField("Bot", "@"+username).
-			AddField("Uptime", formatDuration(uptime)).
-			AddField("Go Version", ui.Code(runtime.Version())).
-			AddField("RAM Usage", fmt.Sprintf("%s (%.1f / %.1f MB)", ui.ProgressBar(int64(mem.Alloc), int64(mem.Sys), 8), allocMB, sysMB)).
-			AddField("Goroutines", ui.Code(fmt.Sprintf("%d", runtime.NumGoroutine()))).
-			AddField("Status", "🟢 Active & Running").
-			WithFooter("<i>Powered by Go & gotd</i>")
-
-		_, err := c.Reply(card.Render(), nil)
+		_, err := c.Reply(cardText, nil)
 		return err
 	})
 }
@@ -78,23 +65,5 @@ func AttachDefaultCommandsWithStore(r *Router, getUsername func() string, getSta
 }
 
 func formatDuration(d time.Duration) string {
-	d = d.Round(time.Second)
-	days := d / (24 * time.Hour)
-	d -= days * 24 * time.Hour
-	hours := d / time.Hour
-	d -= hours * time.Hour
-	mins := d / time.Minute
-	d -= mins * time.Minute
-	secs := d / time.Second
-
-	if days > 0 {
-		return fmt.Sprintf("%dd %dh %dm %ds", days, hours, mins, secs)
-	}
-	if hours > 0 {
-		return fmt.Sprintf("%dh %dm %ds", hours, mins, secs)
-	}
-	if mins > 0 {
-		return fmt.Sprintf("%dm %ds", mins, secs)
-	}
-	return fmt.Sprintf("%ds", secs)
+	return appStatus.FormatDuration(d)
 }

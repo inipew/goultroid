@@ -1,6 +1,10 @@
 package core
 
-import "time"
+import (
+	"time"
+
+	"github.com/inipew/goultroid/internal/execution"
+)
 
 // Permission represents the access tier required to execute a command.
 type Permission int
@@ -37,10 +41,21 @@ type Command struct {
 	Usage       string
 	Category    string
 	Permission  Permission
+	Surfaces    execution.SurfaceMask
 	GroupOnly   bool
 	PrivateOnly bool
 	ReplyOnly   bool
 	Cooldown    time.Duration
 	Timeout     time.Duration
 	Handler     CommandHandler
+}
+
+// IsAvailableOn reports whether this command is enabled on the specified execution source.
+// If Surfaces is 0 (unspecified), it defaults to SurfaceUserbot for backward compatibility.
+func (c Command) IsAvailableOn(s execution.Source) bool {
+	mask := c.Surfaces
+	if mask == 0 {
+		mask = execution.SurfaceUserbot
+	}
+	return mask.Supports(s)
 }

@@ -10,24 +10,32 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/command"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/assistant/presentation"
+	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
 	"go.uber.org/zap"
 )
 
 type fakeInteraction struct {
 	lastSentText   string
 	lastSentMarkup tg.ReplyMarkupClass
+	lastEditedText string
+	lastDeletedIDs []int
 }
 
 func (f *fakeInteraction) Answer(ctx context.Context, queryID int64, text string, alert bool) error {
 	return nil
 }
 func (f *fakeInteraction) Edit(ctx context.Context, target interaction.MessageTarget, text string, markup tg.ReplyMarkupClass) error {
+	f.lastEditedText = text
+	f.lastSentMarkup = markup
 	return nil
 }
 func (f *fakeInteraction) EditMarkup(ctx context.Context, target interaction.MessageTarget, markup tg.ReplyMarkupClass) error {
+	f.lastSentMarkup = markup
 	return nil
 }
 func (f *fakeInteraction) Delete(ctx context.Context, target interaction.MessageTarget) error {
+	f.lastDeletedIDs = append(f.lastDeletedIDs, target.MessageID())
 	return nil
 }
 func (f *fakeInteraction) GetMessage(ctx context.Context, target interaction.MessageTarget) (*tg.Message, error) {
@@ -87,3 +95,285 @@ func TestCommandRouter_Dispatch(t *testing.T) {
 		t.Fatalf("expected non-command to return nil, got %v", err)
 	}
 }
+
+type fakeUnifiedSource struct {
+	cmd core.Command
+}
+
+func (f *fakeUnifiedSource) FindForSurface(name string, s execution.Source) (core.Command, bool) {
+	if f.cmd.Name == name && f.cmd.IsAvailableOn(s) {
+		return f.cmd, true
+	}
+	return core.Command{}, false
+}
+
+func (f *fakeUnifiedSource) CommandsForSurface(s execution.Source) []core.Command {
+	if f.cmd.IsAvailableOn(s) {
+		return []core.Command{f.cmd}
+	}
+	return nil
+}
+
+func TestCommandRouter_UnifiedRegistryFallback(t *testing.T) {
+	r := command.NewRouter(zap.NewNop())
+	fake := &fakeInteraction{}
+	ctx := context.Background()
+	peer := &tg.InputPeerUser{UserID: 12345}
+
+	called := false
+	fakeSrc := &fakeUnifiedSource{
+		cmd: core.Command{
+			Name:     "customplugin",
+			Surfaces: execution.SurfaceAssistant,
+			Handler: func(c *core.Context) error {
+				called = true
+				return nil
+			},
+		},
+	}
+
+	r.SetUnifiedRegistry(fakeSrc)
+
+	err := r.Dispatch(ctx, 12345, peer, "/customplugin arg1", fake)
+	if err != nil {
+		t.Fatalf("unexpected error dispatching unified plugin command: %v", err)
+	}
+	if !called {
+		t.Fatalf("expected unified plugin handler to be called")
+	}
+
+	// Verify command not available on assistant surface
+	fakeSrcUserOnly := &fakeUnifiedSource{
+		cmd: core.Command{
+			Name:     "useronly",
+			Surfaces: execution.SurfaceUserbot,
+			Handler: func(c *core.Context) error {
+				return nil
+			},
+		},
+	}
+	r.SetUnifiedRegistry(fakeSrcUserOnly)
+	err = r.Dispatch(ctx, 12345, peer, "/useronly", fake)
+	if !errors.Is(err, command.ErrUnknownCommand) {
+		t.Fatalf("expected ErrUnknownCommand for user-only command on assistant, got %v", err)
+	}
+}
+
+func TestCommandRouter_UnifiedTakesPrecedenceOverLocal(t *testing.T) {
+	r := command.NewRouter(zap.NewNop())
+	fake := &fakeInteraction{}
+	ctx := context.Background()
+	peer := &tg.InputPeerUser{UserID: 12345}
+
+	localCalled := false
+	r.Register("/ping", func(c *command.Context) error {
+		localCalled = true
+		return nil
+	})
+
+	pluginCalled := false
+	fakeSrc := &fakeUnifiedSource{
+		cmd: core.Command{
+			Name:     "ping",
+			Surfaces: execution.SurfaceAssistant,
+			Handler: func(c *core.Context) error {
+				pluginCalled = true
+				return nil
+			},
+		},
+	}
+	r.SetUnifiedRegistry(fakeSrc)
+
+	err := r.Dispatch(ctx, 12345, peer, "/ping", fake)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !pluginCalled {
+		t.Fatal("expected plugin command to be called (unified precedence)")
+	}
+	if localCalled {
+		t.Fatal("expected local command NOT to be called when plugin command is present")
+	}
+}
+
+
+type fakeMultiSource struct {
+	cmds map[string]core.Command
+}
+
+func (f *fakeMultiSource) FindForSurface(name string, s execution.Source) (core.Command, bool) {
+	cmd, ok := f.cmds[name]
+	if ok && cmd.IsAvailableOn(s) {
+		return cmd, true
+	}
+	return core.Command{}, false
+}
+
+func (f *fakeMultiSource) CommandsForSurface(s execution.Source) []core.Command {
+	var res []core.Command
+	for _, cmd := range f.cmds {
+		if cmd.IsAvailableOn(s) {
+			res = append(res, cmd)
+		}
+	}
+	return res
+}
+
+func TestUnifiedCommandAdapter_Permissions(t *testing.T) {
+	r := command.NewRouter(zap.NewNop())
+	ownerID := int64(1001)
+	sudoID := int64(2002)
+	regularID := int64(3003)
+
+	r.SetOwner(ownerID, func() []int64 {
+		return []int64{sudoID}
+	})
+
+	adminCalled := false
+	sudoCalled := false
+	everyoneCalled := false
+
+	src := &fakeMultiSource{
+		cmds: map[string]core.Command{
+			"admincmd": {
+				Name:       "admincmd",
+				Permission: core.PermissionOwner,
+				Surfaces:   execution.SurfaceAssistant,
+				Handler: func(c *core.Context) error {
+					adminCalled = true
+					return nil
+				},
+			},
+			"sudocmd": {
+				Name:       "sudocmd",
+				Permission: core.PermissionSudo,
+				Surfaces:   execution.SurfaceAssistant,
+				Handler: func(c *core.Context) error {
+					sudoCalled = true
+					return nil
+				},
+			},
+			"allcmd": {
+				Name:       "allcmd",
+				Permission: core.PermissionEveryone,
+				Surfaces:   execution.SurfaceAssistant,
+				Handler: func(c *core.Context) error {
+					everyoneCalled = true
+					return nil
+				},
+			},
+		},
+	}
+	r.SetUnifiedRegistry(src)
+
+	ctx := context.Background()
+	fake := &fakeInteraction{}
+
+	// 1. Regular user calling owner-only command -> denied
+	peerRegular := &tg.InputPeerUser{UserID: regularID}
+	_ = r.Dispatch(ctx, regularID, peerRegular, "/admincmd", fake)
+	if adminCalled {
+		t.Fatal("expected regular user to be blocked from admincmd")
+	}
+	if fake.lastSentText == "" {
+		t.Fatal("expected rejection message for admincmd")
+	}
+
+	// 2. Regular user calling sudo command -> denied
+	fake.lastSentText = ""
+	_ = r.Dispatch(ctx, regularID, peerRegular, "/sudocmd", fake)
+	if sudoCalled {
+		t.Fatal("expected regular user to be blocked from sudocmd")
+	}
+	if fake.lastSentText == "" {
+		t.Fatal("expected rejection message for sudocmd")
+	}
+
+	// 3. Regular user calling everyone command -> allowed
+	_ = r.Dispatch(ctx, regularID, peerRegular, "/allcmd", fake)
+	if !everyoneCalled {
+		t.Fatal("expected regular user to be allowed on allcmd")
+	}
+
+	// 4. Sudo user calling sudocmd -> allowed
+	peerSudo := &tg.InputPeerUser{UserID: sudoID}
+	_ = r.Dispatch(ctx, sudoID, peerSudo, "/sudocmd", fake)
+	if !sudoCalled {
+		t.Fatal("expected sudo user to be allowed on sudocmd")
+	}
+
+	// 5. Owner calling admincmd -> allowed
+	peerOwner := &tg.InputPeerUser{UserID: ownerID}
+	_ = r.Dispatch(ctx, ownerID, peerOwner, "/admincmd", fake)
+	if !adminCalled {
+		t.Fatal("expected owner to be allowed on admincmd")
+	}
+}
+
+func TestUnifiedCommandAdapter_ContextMessaging(t *testing.T) {
+	r := command.NewRouter(zap.NewNop())
+	ownerID := int64(1001)
+	r.SetOwner(ownerID, nil)
+
+	var recordedSource core.ExecutionSource
+	var isAssistant bool
+	var recordedSenderID int64
+	var recordedChatID int64
+
+	src := &fakeMultiSource{
+		cmds: map[string]core.Command{
+			"echotest": {
+				Name:       "echotest",
+				Permission: core.PermissionEveryone,
+				Surfaces:   execution.SurfaceAssistant,
+				Handler: func(c *core.Context) error {
+					recordedSource = c.Source
+					isAssistant = c.IsAssistant()
+					recordedSenderID = c.SenderID()
+					recordedChatID = c.ChatID()
+
+					// Test Reply
+					if err := c.Reply("step 1: replying"); err != nil {
+						return err
+					}
+					// Test EditOrReply (which should edit step 1)
+					if err := c.EditOrReply("step 2: edited"); err != nil {
+						return err
+					}
+					return nil
+				},
+			},
+		},
+	}
+	r.SetUnifiedRegistry(src)
+
+	ctx := context.Background()
+	fake := &fakeInteraction{}
+	peer := &tg.InputPeerUser{UserID: ownerID}
+
+	err := r.Dispatch(ctx, ownerID, peer, "/echotest some args", fake)
+	if err != nil {
+		t.Fatalf("unexpected dispatch error: %v", err)
+	}
+
+	if recordedSource != core.ExecutionAssistant {
+		t.Errorf("expected ExecutionAssistant source, got %v", recordedSource)
+	}
+	if !isAssistant {
+		t.Errorf("expected c.IsAssistant() to be true")
+	}
+	if recordedSenderID != ownerID {
+		t.Errorf("expected senderID %d, got %d", ownerID, recordedSenderID)
+	}
+	if recordedChatID != ownerID {
+		t.Errorf("expected chatID %d, got %d", ownerID, recordedChatID)
+	}
+	if fake.lastSentText != "step 1: replying" {
+		t.Errorf("expected lastSentText 'step 1: replying', got %q", fake.lastSentText)
+	}
+	if fake.lastEditedText != "step 2: edited" {
+		t.Errorf("expected lastEditedText 'step 2: edited', got %q", fake.lastEditedText)
+	}
+}
+
+

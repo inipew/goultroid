@@ -8,8 +8,13 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/services/media"
 	"github.com/inipew/goultroid/internal/services/storage"
+)
+
+var (
+	_ execution.CapabilityProvider = (*Plugin)(nil)
 )
 
 // Plugin provides media inspection, audio extraction, and transcoding utilities.
@@ -60,8 +65,22 @@ func (p *Plugin) Shutdown() error {
 	return nil
 }
 
+// Capabilities declares the capabilities provided by this plugin (§4, §28 bug16_1).
+func (p *Plugin) Capabilities() []execution.Capability {
+	return []execution.Capability{
+		{
+			ID:          "media",
+			Name:        "Media",
+			Description: "Media inspection, extraction, and transcoding tools",
+			Category:    "Media",
+			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
+		},
+	}
+}
+
 // Commands returns the list of registered commands.
 func (p *Plugin) Commands() []core.Command {
+	mediaSurfaces := execution.SurfaceUserbot | execution.SurfaceAssistant
 	return []core.Command{
 		{
 			Name:        "mediainfo",
@@ -70,6 +89,7 @@ func (p *Plugin) Commands() []core.Command {
 			Usage:       ".mediainfo (or reply to media)",
 			Category:    "Media",
 			Permission:  core.PermissionEveryone,
+			Surfaces:    mediaSurfaces,
 			Handler:     p.handleMediaInfo,
 		},
 		{
@@ -80,6 +100,7 @@ func (p *Plugin) Commands() []core.Command {
 			Category:    "Media",
 			Permission:  core.PermissionSudo,
 			Timeout:     5 * time.Minute,
+			Surfaces:    mediaSurfaces,
 			Handler:     p.handleExtractAudio,
 		},
 		{
@@ -90,6 +111,7 @@ func (p *Plugin) Commands() []core.Command {
 			Category:    "Media",
 			Permission:  core.PermissionSudo,
 			Timeout:     5 * time.Minute,
+			Surfaces:    mediaSurfaces,
 			Handler:     p.handleConvert,
 		},
 		{
@@ -100,6 +122,7 @@ func (p *Plugin) Commands() []core.Command {
 			Category:    "Media",
 			Permission:  core.PermissionSudo,
 			Timeout:     5 * time.Minute,
+			Surfaces:    mediaSurfaces,
 			Handler:     p.handleConvertToGIF,
 		},
 		{
@@ -110,6 +133,7 @@ func (p *Plugin) Commands() []core.Command {
 			Category:    "Media",
 			Permission:  core.PermissionSudo,
 			Timeout:     5 * time.Minute,
+			Surfaces:    mediaSurfaces,
 			Handler:     p.handleConvertToSticker,
 		},
 	}

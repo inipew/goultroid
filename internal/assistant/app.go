@@ -6,6 +6,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/assistant/callback"
 	"github.com/inipew/goultroid/internal/assistant/client"
+	"github.com/inipew/goultroid/internal/assistant/command"
 	"go.uber.org/zap"
 )
 
@@ -16,6 +17,8 @@ type Client interface {
 	IsRunning() bool
 	Username() string
 	StartTime() time.Time
+	SetUnifiedRegistry(reg command.CommandSource)
+	SetOwner(ownerID int64, sudoGetter func() []int64)
 }
 
 // AssistantApp serves as the top-level application facade for the Assistant subsystem.
@@ -75,5 +78,10 @@ func (a *AssistantApp) SetAuthorizer(auth callback.Authorizer) {
 
 // SetOwner restricts actions to the specified bot owner and optional sudo users.
 func (a *AssistantApp) SetOwner(ownerID int64, sudoGetter func() []int64) {
-	a.client.SetAuthorizer(callback.NewOwnerAuthorizer(ownerID, sudoGetter))
+	a.client.SetOwner(ownerID, sudoGetter)
+}
+
+// SetUnifiedRegistry configures the unified command registry for surface parity.
+func (a *AssistantApp) SetUnifiedRegistry(reg command.CommandSource) {
+	a.client.SetUnifiedRegistry(reg)
 }
