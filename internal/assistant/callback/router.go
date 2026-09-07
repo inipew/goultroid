@@ -11,6 +11,11 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	callbackDedupTTL = time.Hour
+	callbackDedupMax = 4096
+)
+
 // ActionHandler defines the signature for a callback action handler function.
 type ActionHandler func(ctx context.Context, tx *Transaction) error
 
@@ -25,6 +30,7 @@ type Router struct {
 	authorizer     Authorizer
 	metrics        core.MetricsCollector
 	logger         *zap.Logger
+	seen           map[int64]time.Time
 }
 
 // NewRouter creates an initialized callback Router.
@@ -37,6 +43,7 @@ func NewRouter(logger *zap.Logger) *Router {
 		inlineHandlers: make(map[string]InlineHandler),
 		authorizer:     AllowAllAuthorizer{},
 		logger:         logger,
+		seen:           make(map[int64]time.Time),
 	}
 }
 
@@ -75,6 +82,45 @@ func (r *Router) RegisterInline(namespace, action string, handler InlineHandler)
 	r.inlineHandlers[key] = handler
 }
 
+// admitQuery atomically admits a Telegram callback query ID exactly once for the
+// lifetime of the deduplication window. A callback query ID of zero is not
+// deduplicated because it is not a valid stable identity.
+func (r *Router) admitQuery(queryID int64, now time.Time) bool {
+	if queryID == 0 {
+		return true
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for id, seenAt := range r.seen {
+		if now.Sub(seenAt) >= callbackDedupTTL {
+			delete(r.seen, id)
+		}
+	}
+
+	if _, exists := r.seen[queryID]; exists {
+		return false
+	}
+
+	// Keep the store bounded even if Telegram supplies a long stream of unique IDs.
+	if len(r.seen) >= callbackDedupMax {
+		var oldestID int64
+		var oldestAt time.Time
+		for id, seenAt := range r.seen {
+			if oldestAt.IsZero() || seenAt.Before(oldestAt) {
+				oldestID, oldestAt = id, seenAt
+			}
+		}
+		if !oldestAt.IsZero() {
+			delete(r.seen, oldestID)
+		}
+	}
+
+	r.seen[queryID] = now
+	return true
+}
+
 // Dispatch processes a CallbackTransaction through authorization, matching, and execution.
 func (r *Router) Dispatch(ctx context.Context, tx *Transaction) error {
 	if tx == nil {
@@ -84,6 +130,17 @@ func (r *Router) Dispatch(ctx context.Context, tx *Transaction) error {
 	start := time.Now()
 	correlationID := fmt.Sprintf("cb-%d-%d", tx.QueryID, start.UnixNano())
 	correlationKey := fmt.Sprintf("%s:%s", tx.Payload.Namespace, tx.Payload.Action)
+
+	if !r.admitQuery(tx.QueryID, start) {
+		if r.metrics != nil {
+			r.metrics.RecordCallback("duplicate", 0, ErrDuplicateCallback)
+		}
+		r.logger.Debug("assistant: duplicate callback query ignored",
+			zap.String("correlation_id", correlationID),
+			zap.Int64("query_id", tx.QueryID),
+		)
+		return ErrDuplicateCallback
+	}
 
 	// Enforce 15-second execution timeout if not already set
 	var cancel context.CancelFunc
@@ -197,6 +254,18 @@ func (r *Router) DispatchInline(ctx context.Context, tx *InlineTransaction) erro
 	start := time.Now()
 	correlationID := fmt.Sprintf("in-cb-%d-%d", tx.QueryID, start.UnixNano())
 	correlationKey := fmt.Sprintf("%s:%s", tx.Payload.Namespace, tx.Payload.Action)
+
+	if !r.admitQuery(tx.QueryID, start) {
+		if r.metrics != nil {
+			r.metrics.RecordCallback("duplicate", 0, ErrDuplicateCallback)
+			r.metrics.RecordInline(false, 0, 0, ErrDuplicateCallback)
+		}
+		r.logger.Debug("assistant: duplicate inline callback query ignored",
+			zap.String("correlation_id", correlationID),
+			zap.Int64("query_id", tx.QueryID),
+		)
+		return ErrDuplicateCallback
+	}
 
 	// Enforce 15-second execution timeout if not already set
 	var cancel context.CancelFunc
