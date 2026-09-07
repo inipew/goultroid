@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gotd/td/tg"
@@ -16,8 +17,14 @@ import (
 
 type RendererFunc func(screen *Screen) (string, tg.ReplyMarkupClass)
 type CommandSource interface { CommandsForSurface(source execution.Source) []core.Command }
-type Controller struct { renderer RendererFunc; instances InstanceStore; cmdSource CommandSource }
-func NewController(renderer RendererFunc) *Controller { return &Controller{renderer: renderer, instances: NewMemoryInstanceStore(DefaultMenuTTL)} }
+type Controller struct {
+	renderer RendererFunc
+	instances InstanceStore
+	cmdSource CommandSource
+	pendingMu sync.Mutex
+	pending map[int64]pendingSettingInput
+}
+func NewController(renderer RendererFunc) *Controller { return &Controller{renderer: renderer, instances: NewMemoryInstanceStore(DefaultMenuTTL), pending: make(map[int64]pendingSettingInput)} }
 func (c *Controller) SetCommandSource(cs CommandSource) { c.cmdSource = cs }
 func (c *Controller) Instances() InstanceStore { return c.instances }
 
