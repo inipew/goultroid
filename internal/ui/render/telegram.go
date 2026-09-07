@@ -50,12 +50,18 @@ func ToTelegramMarkup(m ui.Markup) tg.ReplyMarkupClass {
 	}
 }
 
-// RenderScreen builds text and Telegram markup from a ui.Screen.
-func RenderScreen(s *ui.Screen) (string, tg.ReplyMarkupClass) {
+// ToTelegram renders a ui.Screen to Telegram text and markup.
+// This is the Telegram adapter for ui.Screen; ui package itself remains Telegram-agnostic.
+func ToTelegram(s *ui.Screen) (string, tg.ReplyMarkupClass) {
 	if s == nil {
 		return "", nil
 	}
 	text := s.Text()
 	markup := ToTelegramMarkup(s.Markup())
 	return text, markup
+}
+
+// RenderScreen is deprecated: use ToTelegram instead.
+func RenderScreen(s *ui.Screen) (string, tg.ReplyMarkupClass) {
+	return ToTelegram(s)
 }
