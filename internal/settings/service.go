@@ -263,7 +263,7 @@ func (s *Service) Set(ctx context.Context, scope SettingScope, scopeID int64, na
 		canonicalVal = cVal
 	}
 
-	// Read previous value to report accurate event
+	// Read previous value to report accurate event and for idempotency
 	oldItem, err := s.repo.GetSetting(ctx, string(scope), scopeID, ns, k)
 	if err != nil {
 		return fmt.Errorf("failed to check existing setting: %w", err)
@@ -271,6 +271,10 @@ func (s *Service) Set(ctx context.Context, scope SettingScope, scopeID int64, na
 	var oldVal string
 	if oldItem != nil {
 		oldVal = oldItem.Value
+	}
+	// Idempotency: if value already equals canonical, no DB write, no outbox, no event.
+	if oldItem != nil && oldVal == canonicalVal {
+		return nil
 	}
 
 	item := &database.SettingItem{
