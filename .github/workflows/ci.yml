@@ -32,6 +32,12 @@ jobs:
       - name: Go Vet
         run: go vet ./...
 
+      - name: GolangCI-Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.62
+          args: --timeout=3m
+
   test:
     name: Unit & Race Tests
     runs-on: ubuntu-latest
