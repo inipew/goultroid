@@ -35,9 +35,7 @@ type Plugin struct {
 
 // New creates a new help Plugin.
 func New(router *core.Router) *Plugin {
-	return &Plugin{
-		router: router,
-	}
+	return &Plugin{router: router}
 }
 
 // SetStateStore configures the state store for interactive inline buttons.
@@ -45,53 +43,38 @@ func (p *Plugin) SetStateStore(store *callback.StateStore) {
 	p.stateStore = store
 }
 
-// Name returns the plugin identifier.
-func (p *Plugin) Name() string {
-	return "help"
-}
-
-func (p *Plugin) Namespace() string {
-	return "help"
-}
+func (p *Plugin) Name() string      { return "help" }
+func (p *Plugin) Namespace() string { return "help" }
 
 func (p *Plugin) CallbackOptions() callback.CallbackHandlerOptions {
-	return callback.CallbackHandlerOptions{
-		AutoAnswer: true,
-	}
+	return callback.CallbackHandlerOptions{AutoAnswer: true}
 }
 
-// Init initializes the plugin.
-func (p *Plugin) Init() error {
-	return nil
-}
+func (p *Plugin) Init() error { return nil }
 
 // Capabilities declares the capabilities provided by this plugin (§4 bug16_1).
 func (p *Plugin) Capabilities() []execution.Capability {
-	return []execution.Capability{
-		{
-			ID:          "help",
-			Name:        "Help",
-			Description: "Interactive help and command documentation browser",
-			Category:    "Utility",
-			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
-		},
-	}
+	return []execution.Capability{{
+		ID:          "help",
+		Name:        "Help",
+		Description: "Interactive help and command documentation browser",
+		Category:    "Utility",
+		Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
+	}}
 }
 
 // Commands returns the commands registered by this plugin.
 func (p *Plugin) Commands() []core.Command {
-	return []core.Command{
-		{
-			Name:        "help",
-			Aliases:     []string{"h", "commands"},
-			Description: "Show available commands or detailed info for a specific command/module",
-			Usage:       ".help [command|module]",
-			Category:    "Utility",
-			Permission:  core.PermissionEveryone,
-			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
-			Handler:     p.handleHelp,
-		},
-	}
+	return []core.Command{{
+		Name:        "help",
+		Aliases:     []string{"h", "commands"},
+		Description: "Show available commands or detailed info for a specific command/module",
+		Usage:       ".help [command|module]",
+		Category:    "Utility",
+		Permission:  core.PermissionEveryone,
+		Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
+		Handler:     p.handleHelp,
+	}}
 }
 
 // sendResult edits the trigger message in-place; if the text is too long it
@@ -106,6 +89,24 @@ func sendResultMarkup(ctx *core.Context, text string, markup tg.ReplyMarkupClass
 		return nil
 	}
 
+	// Assistant commands originate from the bot itself. Do not attempt to edit
+	// the incoming command message; send the help response as a new message.
+	if ctx.IsAssistant() {
+		if markup != nil {
+			if err := ctx.ReplyMarkup(chunks[0], markup); err != nil {
+				return err
+			}
+		} else if err := ctx.Reply(chunks[0]); err != nil {
+			return err
+		}
+		for _, chunk := range chunks[1:] {
+			if err := ctx.Reply(chunk); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
 	if markup != nil {
 		if err := ctx.EditMarkup(chunks[0], markup); err == nil {
 			for _, chunk := range chunks[1:] {
@@ -117,11 +118,9 @@ func sendResultMarkup(ctx *core.Context, text string, markup tg.ReplyMarkupClass
 		}
 	}
 
-	// Edit the command trigger message (edit-in-place userbot UX).
 	if err := ctx.Edit(chunks[0]); err != nil {
 		return err
 	}
-	// Overflow chunks sent as follow-up replies.
 	for _, chunk := range chunks[1:] {
 		if err := ctx.Reply(chunk); err != nil {
 			return err
@@ -130,7 +129,6 @@ func sendResultMarkup(ctx *core.Context, text string, markup tg.ReplyMarkupClass
 	return nil
 }
 
-// splitMessage splits text into chunks of at most maxLen runes on safe HTML boundaries.
 func splitMessage(text string, maxLen int) []string {
 	return core.SplitTelegramHTML(text, maxLen)
 }
@@ -138,12 +136,11 @@ func splitMessage(text string, maxLen int) []string {
 func (p *Plugin) handleHelp(ctx *core.Context) error {
 	prefix := p.router.Prefix()
 
-	// If specific command or category requested: e.g. .help ping or .help admin
 	if len(ctx.Args) > 0 {
 		target := strings.TrimPrefix(ctx.Args[0], prefix)
 
-		// 1. Check if target matches a command name or alias
-		if cmd, exists := p.router.Find(target); exists && cmd.IsAvailableOn(execution.SourceUserbot) {
+		// Check if target matches a command name or alias on the current surface.
+		if cmd, exists := p.router.Find(target); exists && cmd.IsAvailableOn(ctx.Source) {
 			var aliasesStr string
 			if len(cmd.Aliases) > 0 {
 				var prefixedAliases []string
@@ -159,19 +156,15 @@ func (p *Plugin) handleHelp(ctx *core.Context) error {
 			if category == "" {
 				category = "General"
 			}
-
 			usage := cmd.Usage
 			if usage == "" {
 				usage = prefix + cmd.Name
 			}
 
-			card := ui.NewCard(fmt.Sprintf("Command: %s%s", prefix, cmd.Name)).
-				WithIcon("📖")
-
+			card := ui.NewCard(fmt.Sprintf("Command: %s%s", prefix, cmd.Name)).WithIcon("📖")
 			if cmd.Description != "" {
 				card.WithHeader(cmd.Description)
 			}
-
 			card.AddField("Category", category).
 				AddField("Permission", ui.Badge(cmd.Permission)).
 				AddField("Usage", ui.Code(usage)).
@@ -197,57 +190,46 @@ func (p *Plugin) handleHelp(ctx *core.Context) error {
 			if len(scope) > 0 {
 				card.AddField("Constraints", strings.Join(scope, ", "))
 			}
-
 			card.WithFooter(fmt.Sprintf("<i>Run with <code>%s%s</code></i>", prefix, cmd.Name))
 			return sendResult(ctx, card.Render())
 		}
 
-		// 2. Check if target matches a category/module
-		matchedCat, catCmds := p.getCategoryCommands(target)
+		// Check if target matches a category/module on the current surface.
+		matchedCat, catCmds := p.getCategoryCommands(target, ctx.Source)
 		if matchedCat != "" {
-			cardText := p.renderCategoryCard(matchedCat, catCmds, prefix)
-			return sendResult(ctx, cardText)
+			return sendResult(ctx, p.renderCategoryCard(matchedCat, catCmds, prefix))
 		}
 
-		// 3. Not found
 		return sendResult(ctx, ui.Error(fmt.Sprintf("Command or module %q not found.", ctx.Args[0])))
 	}
 
-	// General overview
-	categories, catNames := p.getCategoryNames()
+	// The overview is always the complete command catalog. Inline buttons are
+	// navigation aids and must never replace the visible module/command list.
+	categories, catNames := p.getCategoryNames(ctx.Source)
+	overviewText := p.renderOverviewWithCategories(prefix, categories, catNames, ctx.Source)
 	if p.stateStore != nil {
-		all := p.userbotCommands()
-		overviewText := p.renderInteractiveOverview(prefix, len(all), len(catNames))
-		markup := p.buildOverviewMarkup(catNames, ctx.SenderID())
-		return sendResultMarkup(ctx, overviewText, markup)
+		return sendResultMarkup(ctx, overviewText, p.buildOverviewMarkup(catNames, ctx.SenderID()))
 	}
-
-	overviewText := p.renderOverviewWithCategories(prefix, categories, catNames)
 	return sendResult(ctx, overviewText)
 }
 
-func (p *Plugin) userbotCommands() []core.Command {
+func (p *Plugin) commandsForSource(source execution.ExecutionSource) []core.Command {
 	all := p.router.All()
-	var res []core.Command
+	res := make([]core.Command, 0, len(all))
 	for _, cmd := range all {
-		if cmd.IsAvailableOn(execution.SourceUserbot) {
+		if cmd.IsAvailableOn(source) {
 			res = append(res, cmd)
 		}
 	}
 	return res
 }
 
-func (p *Plugin) renderInteractiveOverview(prefix string, totalCmds, totalModules int) string {
-	var sb strings.Builder
-	sb.WriteString("📚 <b>GoUltroid Help</b>\n")
-	sb.WriteString(fmt.Sprintf("<i>%d commands across %d modules.</i>\n\n", totalCmds, totalModules))
-	sb.WriteString("<i>Select a module below to browse its commands:</i>\n\n")
-	sb.WriteString(fmt.Sprintf("💡 <i>Use <code>%shelp &lt;module&gt;</code> or <code>%shelp &lt;command&gt;</code> for details.</i>", prefix, prefix))
-	return strings.TrimSpace(sb.String())
+func (p *Plugin) userbotCommands() []core.Command {
+	return p.commandsForSource(execution.SourceUserbot)
 }
 
-func (p *Plugin) getCategoryNames() (map[string][]core.Command, []string) {
-	all := p.userbotCommands()
+func (p *Plugin) getCategoryNames(source execution.ExecutionSource) (map[string][]core.Command, []string) {
+	all := p.commandsForSource(source)
 	categories := make(map[string][]core.Command)
 	for _, cmd := range all {
 		cat := cmd.Category
@@ -256,7 +238,7 @@ func (p *Plugin) getCategoryNames() (map[string][]core.Command, []string) {
 		}
 		categories[cat] = append(categories[cat], cmd)
 	}
-	var catNames []string
+	catNames := make([]string, 0, len(categories))
 	for cat := range categories {
 		catNames = append(catNames, cat)
 	}
@@ -264,8 +246,8 @@ func (p *Plugin) getCategoryNames() (map[string][]core.Command, []string) {
 	return categories, catNames
 }
 
-func (p *Plugin) getCategoryCommands(target string) (string, []core.Command) {
-	all := p.userbotCommands()
+func (p *Plugin) getCategoryCommands(target string, source execution.ExecutionSource) (string, []core.Command) {
+	all := p.commandsForSource(source)
 	var matchedCat string
 	var catCmds []core.Command
 	for _, c := range all {
@@ -278,9 +260,7 @@ func (p *Plugin) getCategoryCommands(target string) (string, []core.Command) {
 			catCmds = append(catCmds, c)
 		}
 	}
-	sort.Slice(catCmds, func(i, j int) bool {
-		return catCmds[i].Name < catCmds[j].Name
-	})
+	sort.Slice(catCmds, func(i, j int) bool { return catCmds[i].Name < catCmds[j].Name })
 	return matchedCat, catCmds
 }
 
@@ -299,36 +279,30 @@ func (p *Plugin) renderCategoryCard(cat string, cmds []core.Command, prefix stri
 		WithHeader(fmt.Sprintf("%d commands available in this module:", len(cmds))).
 		WithRaw(sb.String()).
 		WithFooter(fmt.Sprintf("<i>Tip: Use <code>%shelp &lt;command&gt;</code> for details.</i>", prefix))
-
 	return card.Render()
 }
 
 func (p *Plugin) renderOverview(prefix string) (string, []string) {
-	categories, catNames := p.getCategoryNames()
-	return p.renderOverviewWithCategories(prefix, categories, catNames), catNames
+	categories, catNames := p.getCategoryNames(execution.SourceUserbot)
+	return p.renderOverviewWithCategories(prefix, categories, catNames, execution.SourceUserbot), catNames
 }
 
-func (p *Plugin) renderOverviewWithCategories(prefix string, categories map[string][]core.Command, catNames []string) string {
-	all := p.userbotCommands()
+func (p *Plugin) renderOverviewWithCategories(prefix string, categories map[string][]core.Command, catNames []string, source execution.ExecutionSource) string {
+	all := p.commandsForSource(source)
 	var sb strings.Builder
 	sb.WriteString("📚 <b>GoUltroid Help</b>\n")
 	sb.WriteString(fmt.Sprintf("<i>%d commands across %d modules.</i>\n\n", len(all), len(catNames)))
 
 	for _, cat := range catNames {
 		cmds := categories[cat]
-		sort.Slice(cmds, func(i, j int) bool {
-			return cmds[i].Name < cmds[j].Name
-		})
+		sort.Slice(cmds, func(i, j int) bool { return cmds[i].Name < cmds[j].Name })
 
-		// Build a compact preview: just the command names (no descriptions).
 		var names []string
 		for _, cmd := range cmds {
 			names = append(names, fmt.Sprintf("<code>%s%s</code>", prefix, cmd.Name))
 		}
-		preview := strings.Join(names, "  ")
-
 		sb.WriteString(fmt.Sprintf("📂 <b>%s</b> <code>(%d)</code>\n", cat, len(cmds)))
-		sb.WriteString(preview)
+		sb.WriteString(strings.Join(names, "  "))
 		sb.WriteString("\n\n")
 	}
 
@@ -336,10 +310,16 @@ func (p *Plugin) renderOverviewWithCategories(prefix string, categories map[stri
 		"💡 <i>Use <code>%shelp &lt;module&gt;</code> or <code>%shelp &lt;command&gt;</code> for details.</i>",
 		prefix, prefix,
 	))
-
 	return strings.TrimSpace(sb.String())
 }
 
+func (p *Plugin) renderInteractiveOverview(prefix string, totalCmds, totalModules int) string {
+	// Retained for callback compatibility. New overviews use the full catalog.
+	return fmt.Sprintf(
+		"📚 <b>GoUltroid Help</b>\n\n<i>%d commands across %d modules.</i>\n\n<i>Select a module below to browse its commands:</i>\n\n💡 <i>Use <code>%shelp &lt;module&gt;</code> or <code>%shelp &lt;command&gt;</code> for details.</i>",
+		totalCmds, totalModules, prefix, prefix,
+	)
+}
 
 func (p *Plugin) buildOverviewMarkup(catNames []string, userID int64) tg.ReplyMarkupClass {
 	if p.stateStore == nil {
@@ -348,12 +328,10 @@ func (p *Plugin) buildOverviewMarkup(catNames []string, userID int64) tg.ReplyMa
 
 	var rows []ui.ButtonRow
 	var row []ui.Button
-
 	for _, cat := range catNames {
 		st := helpMenuState{Category: cat, UserID: userID}
 		oid := p.stateStore.Store(st, userID, 15*time.Minute)
-		btn := ui.NewCallbackButton("📂 "+cat, callback.EncodeCallbackData("help", "cat", oid))
-		row = append(row, btn)
+		row = append(row, ui.NewCallbackButton("📂 "+cat, callback.EncodeCallbackData("help", "cat", oid)))
 		if len(row) == 2 {
 			rows = append(rows, row)
 			row = nil
@@ -366,7 +344,6 @@ func (p *Plugin) buildOverviewMarkup(catNames []string, userID int64) tg.ReplyMa
 	backBtn := ui.NewCallbackButton("« Back to Menu", callback.EncodeCallbackData("assistant", "start", callback.ActionNoop))
 	closeBtn := ui.NewCallbackButton("❌ Close", callback.EncodeCallbackData("help", "close", callback.ActionNoop))
 	rows = append(rows, ui.ButtonRow{backBtn, closeBtn})
-
 	return render.ToTelegramMarkup(ui.Markup{Rows: rows})
 }
 
@@ -378,9 +355,8 @@ func (p *Plugin) HandleCallback(ctx *callback.CallbackContext) error {
 
 	case "home":
 		prefix := p.router.Prefix()
-		all := p.router.All()
-		_, catNames := p.getCategoryNames()
-		overviewText := p.renderInteractiveOverview(prefix, len(all), len(catNames))
+		categories, catNames := p.getCategoryNames(execution.SourceUserbot)
+		overviewText := p.renderOverviewWithCategories(prefix, categories, catNames, execution.SourceUserbot)
 		markup := p.buildOverviewMarkup(catNames, ctx.UserID)
 		return ctx.Edit(overviewText, markup)
 
@@ -395,20 +371,18 @@ func (p *Plugin) HandleCallback(ctx *callback.CallbackContext) error {
 			return ctx.Answer("Module not found", false)
 		}
 
-		matchedCat, catCmds := p.getCategoryCommands(state.Category)
+		matchedCat, catCmds := p.getCategoryCommands(state.Category, execution.SourceUserbot)
 		if matchedCat == "" {
 			return ctx.Answer("Module not found", false)
 		}
 
 		cardText := p.renderCategoryCard(matchedCat, catCmds, p.router.Prefix())
-
 		homeOid := p.stateStore.Store(helpMenuState{UserID: ctx.UserID}, ctx.UserID, 15*time.Minute)
 		navRow := ui.ButtonRow{
 			ui.NewCallbackButton("🔙 Back", callback.EncodeCallbackData("help", "home", homeOid)),
 			ui.NewCallbackButton("❌ Close", callback.EncodeCallbackData("help", "close", callback.ActionNoop)),
 		}
 		markup := render.ToTelegramMarkup(ui.Markup{Rows: []ui.ButtonRow{navRow}})
-
 		return ctx.Edit(cardText, markup)
 
 	default:
