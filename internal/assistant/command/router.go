@@ -108,7 +108,7 @@ func (r *Router) findCommand(name string) (core.Command, bool) {
 }
 
 func chatTypeForPeer(peer tg.InputPeerClass) string {
-	switch p := peer.(type) {
+	switch peer.(type) {
 	case *tg.InputPeerUser, *tg.InputPeerSelf:
 		return "private"
 	case *tg.InputPeerChat:
