@@ -51,13 +51,25 @@ func (h *Handler) HandleCallback(ctx *callback.CallbackContext) error {
 		text, markup := render.ToTelegram(screen)
 		return ctx.Edit(text, markup)
 
+	case "settings":
+		screen := RenderSettingsScreen(username, h.startTime)
+		text, markup := render.ToTelegram(screen)
+		return ctx.Edit(text, markup)
+
+	case "help":
+		screen := RenderHelpScreen(username, h.startTime)
+		text, markup := render.ToTelegram(screen)
+		return ctx.Edit(text, markup)
+
 	case "status":
 		screen := RenderStatusScreen(username, h.startTime)
 		text, markup := render.ToTelegram(screen)
 		return ctx.Edit(text, markup)
 
 	case "ping":
-		_ = ctx.Answer("🏓 Pong!", true)
+		// AutoAnswer already acknowledges the callback before the handler runs.
+		// Do not answer it a second time; a second answer can race with Telegram's
+		// callback-query lifecycle and produce QUERY_ID_INVALID noise.
 		screen := RenderStartMenu(username, h.startTime)
 		text, markup := render.ToTelegram(screen)
 		return ctx.Edit(text, markup)
