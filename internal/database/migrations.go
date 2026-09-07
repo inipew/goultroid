@@ -247,6 +247,36 @@ var migrations = []migration{
 			`ALTER TABLE pm_permit_records ADD COLUMN warn_msg_ids TEXT NOT NULL DEFAULT '[]';`,
 		},
 	},
+	{
+		version:     13,
+		description: "Generic hierarchical settings and audit change log",
+		statements: []string{
+			`CREATE TABLE IF NOT EXISTS settings (
+				scope_type TEXT NOT NULL,
+				scope_id INTEGER NOT NULL,
+				namespace TEXT NOT NULL,
+				key TEXT NOT NULL,
+				value_type TEXT NOT NULL,
+				value TEXT NOT NULL,
+				updated_by INTEGER NOT NULL,
+				updated_at DATETIME NOT NULL,
+				PRIMARY KEY (scope_type, scope_id, namespace, key)
+			);`,
+			`CREATE INDEX IF NOT EXISTS idx_settings_lookup ON settings(scope_type, scope_id, namespace);`,
+			`CREATE TABLE IF NOT EXISTS setting_changes (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				scope_type TEXT NOT NULL,
+				scope_id INTEGER NOT NULL,
+				namespace TEXT NOT NULL,
+				key TEXT NOT NULL,
+				old_val TEXT NOT NULL DEFAULT '',
+				new_val TEXT NOT NULL DEFAULT '',
+				changed_by INTEGER NOT NULL,
+				changed_at DATETIME NOT NULL
+			);`,
+			`CREATE INDEX IF NOT EXISTS idx_setting_changes_key ON setting_changes(namespace, key, changed_at DESC);`,
+		},
+	},
 }
 
 // calculateMigrationChecksum produces a deterministic SHA-256 hash of a migration's SQL statements.

@@ -4,16 +4,31 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/ui"
 )
 
 const maxTelegramLen = 4096
 
-// Plugin provides the help command.
+var (
+	_ callback.Handler            = (*Plugin)(nil)
+	_ callback.HandlerWithOptions = (*Plugin)(nil)
+)
+
+type helpMenuState struct {
+	Category string `json:"c"`
+	Page     int    `json:"p"`
+	UserID   int64  `json:"u"`
+}
+
+// Plugin provides the help command and interactive module browser.
 type Plugin struct {
-	router *core.Router
+	router     *core.Router
+	stateStore *callback.StateStore
 }
 
 // New creates a new help Plugin.
@@ -23,9 +38,24 @@ func New(router *core.Router) *Plugin {
 	}
 }
 
+// SetStateStore configures the state store for interactive inline buttons.
+func (p *Plugin) SetStateStore(store *callback.StateStore) {
+	p.stateStore = store
+}
+
 // Name returns the plugin identifier.
 func (p *Plugin) Name() string {
 	return "help"
+}
+
+func (p *Plugin) Namespace() string {
+	return "help"
+}
+
+func (p *Plugin) CallbackOptions() callback.CallbackHandlerOptions {
+	return callback.CallbackHandlerOptions{
+		AutoAnswer: true,
+	}
 }
 
 // Init initializes the plugin.
@@ -51,10 +81,26 @@ func (p *Plugin) Commands() []core.Command {
 // sendResult edits the trigger message in-place; if the text is too long it
 // edits with the first chunk and replies with subsequent chunks.
 func sendResult(ctx *core.Context, text string) error {
+	return sendResultMarkup(ctx, text, nil)
+}
+
+func sendResultMarkup(ctx *core.Context, text string, markup tg.ReplyMarkupClass) error {
 	chunks := splitMessage(text, maxTelegramLen)
 	if len(chunks) == 0 {
 		return nil
 	}
+
+	if markup != nil {
+		if err := ctx.EditMarkup(chunks[0], markup); err == nil {
+			for _, chunk := range chunks[1:] {
+				if err := ctx.Reply(chunk); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}
+
 	// Edit the command trigger message (edit-in-place userbot UX).
 	if err := ctx.Edit(chunks[0]); err != nil {
 		return err
@@ -141,41 +187,10 @@ func (p *Plugin) handleHelp(ctx *core.Context) error {
 		}
 
 		// 2. Check if target matches a category/module
-		all := p.router.All()
-		var matchedCat string
-		var catCmds []core.Command
-		for _, c := range all {
-			cat := c.Category
-			if cat == "" {
-				cat = "General"
-			}
-			if strings.EqualFold(cat, target) {
-				matchedCat = cat
-				catCmds = append(catCmds, c)
-			}
-		}
-
+		matchedCat, catCmds := p.getCategoryCommands(target)
 		if matchedCat != "" {
-			sort.Slice(catCmds, func(i, j int) bool {
-				return catCmds[i].Name < catCmds[j].Name
-			})
-
-			var sb strings.Builder
-			for _, c := range catCmds {
-				desc := c.Description
-				if desc == "" {
-					desc = "No description"
-				}
-				sb.WriteString(fmt.Sprintf("• <code>%s%s</code> — %s\n", prefix, c.Name, ui.EscapeHTML(desc)))
-			}
-
-			card := ui.NewCard(fmt.Sprintf("Module: %s", matchedCat)).
-				WithIcon("📂").
-				WithHeader(fmt.Sprintf("%d commands available in this module:", len(catCmds))).
-				WithRaw(sb.String()).
-				WithFooter(fmt.Sprintf("<i>Tip: Use <code>%shelp &lt;command&gt;</code> for details.</i>", prefix))
-
-			return sendResult(ctx, card.Render())
+			cardText := p.renderCategoryCard(matchedCat, catCmds, prefix)
+			return sendResult(ctx, cardText)
 		}
 
 		// 3. Not found
@@ -183,8 +198,57 @@ func (p *Plugin) handleHelp(ctx *core.Context) error {
 	}
 
 	// General overview: compact category list only (no per-command listing).
-	// This keeps the message well within Telegram's 4096-char limit even with
-	// many plugins. Use `.help <module>` to expand a specific module.
+	overviewText, catNames := p.renderOverview(prefix)
+
+	// If interactive state store is enabled, attach inline buttons
+	if p.stateStore != nil {
+		markup := p.buildOverviewMarkup(catNames, ctx.SenderID())
+		return sendResultMarkup(ctx, overviewText, markup)
+	}
+
+	return sendResult(ctx, overviewText)
+}
+
+func (p *Plugin) getCategoryCommands(target string) (string, []core.Command) {
+	all := p.router.All()
+	var matchedCat string
+	var catCmds []core.Command
+	for _, c := range all {
+		cat := c.Category
+		if cat == "" {
+			cat = "General"
+		}
+		if strings.EqualFold(cat, target) {
+			matchedCat = cat
+			catCmds = append(catCmds, c)
+		}
+	}
+	sort.Slice(catCmds, func(i, j int) bool {
+		return catCmds[i].Name < catCmds[j].Name
+	})
+	return matchedCat, catCmds
+}
+
+func (p *Plugin) renderCategoryCard(cat string, cmds []core.Command, prefix string) string {
+	var sb strings.Builder
+	for _, c := range cmds {
+		desc := c.Description
+		if desc == "" {
+			desc = "No description"
+		}
+		sb.WriteString(fmt.Sprintf("• <code>%s%s</code> — %s\n", prefix, c.Name, ui.EscapeHTML(desc)))
+	}
+
+	card := ui.NewCard(fmt.Sprintf("Module: %s", cat)).
+		WithIcon("📂").
+		WithHeader(fmt.Sprintf("%d commands available in this module:", len(cmds))).
+		WithRaw(sb.String()).
+		WithFooter(fmt.Sprintf("<i>Tip: Use <code>%shelp &lt;command&gt;</code> for details.</i>", prefix))
+
+	return card.Render()
+}
+
+func (p *Plugin) renderOverview(prefix string) (string, []string) {
 	all := p.router.All()
 	categories := make(map[string][]core.Command)
 
@@ -229,5 +293,77 @@ func (p *Plugin) handleHelp(ctx *core.Context) error {
 		prefix, prefix,
 	))
 
-	return sendResult(ctx, strings.TrimSpace(sb.String()))
+	return strings.TrimSpace(sb.String()), catNames
+}
+
+func (p *Plugin) buildOverviewMarkup(catNames []string, userID int64) tg.ReplyMarkupClass {
+	if p.stateStore == nil {
+		return nil
+	}
+
+	var rows []ui.ButtonRow
+	var row []ui.Button
+
+	for _, cat := range catNames {
+		st := helpMenuState{Category: cat, UserID: userID}
+		oid := p.stateStore.Store(st, userID, 15*time.Minute)
+		btn := ui.NewCallbackButton("📂 "+cat, callback.EncodeCallbackData("help", "cat", oid))
+		row = append(row, btn)
+		if len(row) == 2 {
+			rows = append(rows, row)
+			row = nil
+		}
+	}
+	if len(row) > 0 {
+		rows = append(rows, row)
+	}
+
+	closeBtn := ui.NewCallbackButton("❌ Close", callback.EncodeCallbackData("help", "close", "noop"))
+	rows = append(rows, ui.ButtonRow{closeBtn})
+
+	return ui.Markup{Rows: rows}.ToTelegramMarkup()
+}
+
+// HandleCallback handles interactive module browser navigation.
+func (p *Plugin) HandleCallback(ctx *callback.CallbackContext) error {
+	switch ctx.Action {
+	case "close":
+		return ctx.DisableButtons("✅ Help menu closed.")
+
+	case "home":
+		prefix := p.router.Prefix()
+		overviewText, catNames := p.renderOverview(prefix)
+		markup := p.buildOverviewMarkup(catNames, ctx.UserID)
+		return ctx.Edit(overviewText, markup)
+
+	case "cat":
+		var state helpMenuState
+		if ctx.State != nil {
+			if s, ok := ctx.State.(helpMenuState); ok {
+				state = s
+			}
+		}
+		if state.Category == "" {
+			return ctx.Answer("Module not found", false)
+		}
+
+		matchedCat, catCmds := p.getCategoryCommands(state.Category)
+		if matchedCat == "" {
+			return ctx.Answer("Module not found", false)
+		}
+
+		cardText := p.renderCategoryCard(matchedCat, catCmds, p.router.Prefix())
+
+		homeOid := p.stateStore.Store(helpMenuState{UserID: ctx.UserID}, ctx.UserID, 15*time.Minute)
+		navRow := ui.ButtonRow{
+			ui.NewCallbackButton("🔙 Back", callback.EncodeCallbackData("help", "home", homeOid)),
+			ui.NewCallbackButton("❌ Close", callback.EncodeCallbackData("help", "close", "noop")),
+		}
+		markup := ui.Markup{Rows: []ui.ButtonRow{navRow}}.ToTelegramMarkup()
+
+		return ctx.Edit(cardText, markup)
+
+	default:
+		return nil
+	}
 }

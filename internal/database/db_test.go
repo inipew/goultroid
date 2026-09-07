@@ -497,10 +497,10 @@ func TestMigrations_Versioning(t *testing.T) {
 		}
 		migrations = append(migrations, m)
 	}
-	if len(migrations) != 12 {
-		t.Fatalf("expected 12 applied migrations, got %d", len(migrations))
+	if len(migrations) != 13 {
+		t.Fatalf("expected 13 applied migrations, got %d", len(migrations))
 	}
-	for i := 0; i < 12; i++ {
+	for i := 0; i < 13; i++ {
 		if migrations[i].version != i+1 {
 			t.Errorf("expected migration index %d to have version %d, got %d", i, i+1, migrations[i].version)
 		}
@@ -1512,3 +1512,127 @@ func TestAddonOperations(t *testing.T) {
 		t.Errorf("expected nil after delete, got %+v", gotDeleted)
 	}
 }
+
+func TestDBSettings(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	// 1. Get non-existent setting
+	item, err := db.GetSetting(ctx, "global", 0, "core", "prefix")
+	if err != nil {
+		t.Fatalf("expected nil error for missing setting, got: %v", err)
+	}
+	if item != nil {
+		t.Fatalf("expected nil item, got %+v", item)
+	}
+
+	// 2. Set new setting
+	now := time.Now().UTC()
+	toSet := &SettingItem{
+		ScopeType: "global",
+		ScopeID:   0,
+		Namespace: "core",
+		Key:       "prefix",
+		ValueType: "string",
+		Value:     ".",
+		UpdatedBy: 12345,
+		UpdatedAt: now,
+	}
+	if err := db.SetSetting(ctx, toSet); err != nil {
+		t.Fatalf("failed to set setting: %v", err)
+	}
+
+	// 3. Get setting
+	item, err = db.GetSetting(ctx, "global", 0, "core", "prefix")
+	if err != nil || item == nil {
+		t.Fatalf("expected to find setting, err: %v, item: %+v", err, item)
+	}
+	if item.Value != "." || item.ValueType != "string" || item.UpdatedBy != 12345 {
+		t.Errorf("unexpected setting content: %+v", item)
+	}
+
+	// 4. Update setting (generates second audit log)
+	toSet.Value = "!"
+	toSet.UpdatedBy = 67890
+	if err := db.SetSetting(ctx, toSet); err != nil {
+		t.Fatalf("failed to update setting: %v", err)
+	}
+
+	item, err = db.GetSetting(ctx, "global", 0, "core", "prefix")
+	if err != nil || item == nil {
+		t.Fatalf("failed to get updated setting: %v", err)
+	}
+	if item.Value != "!" || item.UpdatedBy != 67890 {
+		t.Errorf("expected updated value '!', got %s", item.Value)
+	}
+
+	// 5. Add another setting in another namespace and chat scope
+	chatItem := &SettingItem{
+		ScopeType: "chat",
+		ScopeID:   -100123456789,
+		Namespace: "antispam",
+		Key:       "enabled",
+		ValueType: "bool",
+		Value:     "true",
+		UpdatedBy: 12345,
+	}
+	if err := db.SetSetting(ctx, chatItem); err != nil {
+		t.Fatalf("failed to set chat setting: %v", err)
+	}
+
+	// 6. List settings
+	listGlobal, err := db.ListSettings(ctx, "global", 0, "")
+	if err != nil || len(listGlobal) != 1 {
+		t.Fatalf("expected 1 global setting, got %d (err=%v)", len(listGlobal), err)
+	}
+	if listGlobal[0].Key != "prefix" {
+		t.Errorf("expected prefix key, got %s", listGlobal[0].Key)
+	}
+
+	listChat, err := db.ListSettings(ctx, "chat", -100123456789, "antispam")
+	if err != nil || len(listChat) != 1 {
+		t.Fatalf("expected 1 chat setting, got %d (err=%v)", len(listChat), err)
+	}
+	if listChat[0].Key != "enabled" {
+		t.Errorf("expected enabled key, got %s", listChat[0].Key)
+	}
+
+	// 7. Check audit history
+	history, err := db.GetSettingHistory(ctx, "core", "prefix", 10)
+	if err != nil {
+		t.Fatalf("failed to get history: %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("expected 2 history records, got %d", len(history))
+	}
+	// Most recent first: old_val=".", new_val="!"
+	if history[0].OldVal != "." || history[0].NewVal != "!" || history[0].ChangedBy != 67890 {
+		t.Errorf("unexpected latest history entry: %+v", history[0])
+	}
+	// Initial create: old_val="", new_val="."
+	if history[1].OldVal != "" || history[1].NewVal != "." || history[1].ChangedBy != 12345 {
+		t.Errorf("unexpected initial history entry: %+v", history[1])
+	}
+
+	// 8. Delete setting
+	if err := db.DeleteSetting(ctx, "global", 0, "core", "prefix"); err != nil {
+		t.Fatalf("failed to delete setting: %v", err)
+	}
+	deletedItem, err := db.GetSetting(ctx, "global", 0, "core", "prefix")
+	if err != nil || deletedItem != nil {
+		t.Fatalf("expected nil after delete, got item=%+v err=%v", deletedItem, err)
+	}
+
+	// History should now have 3 records (including delete)
+	historyAfterDel, err := db.GetSettingHistory(ctx, "core", "prefix", 10)
+	if err != nil {
+		t.Fatalf("failed to get history after delete: %v", err)
+	}
+	if len(historyAfterDel) != 3 {
+		t.Fatalf("expected 3 history records after delete, got %d", len(historyAfterDel))
+	}
+	if historyAfterDel[0].OldVal != "!" || historyAfterDel[0].NewVal != "" {
+		t.Errorf("unexpected deletion history entry: %+v", historyAfterDel[0])
+	}
+}
+

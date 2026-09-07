@@ -37,6 +37,7 @@ import (
 	"github.com/inipew/goultroid/plugins/filters"
 	"github.com/inipew/goultroid/plugins/forward"
 	"github.com/inipew/goultroid/plugins/fun"
+	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/plugins/help"
 	"github.com/inipew/goultroid/plugins/info"
 	"github.com/inipew/goultroid/plugins/locks"
@@ -47,6 +48,7 @@ import (
 	"github.com/inipew/goultroid/plugins/pmpermit"
 	"github.com/inipew/goultroid/plugins/profile"
 	schedPlugin "github.com/inipew/goultroid/plugins/scheduler"
+	settingsPluginPkg "github.com/inipew/goultroid/plugins/settings"
 	"github.com/inipew/goultroid/plugins/sticker"
 	"github.com/inipew/goultroid/plugins/sudo"
 	"github.com/inipew/goultroid/plugins/system"
@@ -215,9 +217,20 @@ func New(cfg *config.Config) (*App, error) {
 		assistantClient = bot
 	}
 
+	helpPlugin := help.New(router)
+	helpPlugin.SetStateStore(callbackStore)
+	_ = callbackRouter.Register(helpPlugin)
+
+	settingsRegistry := settings.NewRegistry()
+	_ = settings.RegisterDefaultDefinitions(settingsRegistry)
+	settingsService := settings.NewService(db, settingsRegistry, eventBus)
+	settingsPlugin := settingsPluginPkg.New(settingsService, callbackStore)
+	settingsPlugin.SetLogger(logger)
+	_ = callbackRouter.Register(settingsPlugin)
+
 	plugins := []plugin.Plugin{
 		ping.New(),
-		help.New(router),
+		helpPlugin,
 		alive.New(time.Now()),
 		pin.New(),
 		forward.New(),
@@ -240,6 +253,7 @@ func New(cfg *config.Config) (*App, error) {
 		broadcastPlugin,
 		userlogPlugin,
 		addonPlugin,
+		settingsPlugin,
 	}
 
 	for _, p := range plugins {

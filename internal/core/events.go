@@ -19,6 +19,7 @@ const (
 	EventTypeInlineChosen    EventType = "inline.chosen"
 	EventTypeAdminAction     EventType = "admin.action"
 	EventTypePMPermit        EventType = "pmpermit.action"
+	EventTypeSettingChanged  EventType = "setting.changed"
 )
 
 type Event interface{ Type() EventType; Timestamp() time.Time }
@@ -146,6 +147,21 @@ type PMPermitEvent struct {
 
 func (e *PMPermitEvent) Type() EventType { return EventTypePMPermit }
 func (e *PMPermitEvent) Timestamp() time.Time { return e.At }
+
+// SettingChangedEvent is published when a setting is created, updated, or reset.
+type SettingChangedEvent struct {
+	At        time.Time
+	ScopeType string
+	ScopeID   int64
+	Namespace string
+	Key       string
+	OldVal    string
+	NewVal    string
+	ChangedBy int64
+}
+
+func (e *SettingChangedEvent) Type() EventType { return EventTypeSettingChanged }
+func (e *SettingChangedEvent) Timestamp() time.Time { return e.At }
 
 
 type EventHandler func(event Event)

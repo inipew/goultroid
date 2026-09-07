@@ -88,6 +88,31 @@ type JobHistoryEntry struct {
 	ErrorMsg   string    `json:"error_msg,omitempty"`
 }
 
+// SettingItem represents a persisted generic configuration entry.
+type SettingItem struct {
+	ScopeType string    `json:"scope_type"` // "global", "chat", "user"
+	ScopeID   int64     `json:"scope_id"`   // 0 for global, chatID or userID
+	Namespace string    `json:"namespace"`  // e.g. "core", "afk", "pmpermit"
+	Key       string    `json:"key"`        // e.g. "prefix", "cooldown"
+	ValueType string    `json:"value_type"` // "bool", "int", "string", "duration", "enum"
+	Value     string    `json:"value"`      // string serialized value
+	UpdatedBy int64     `json:"updated_by"` // user ID of updater
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// SettingChangeRecord represents an audit history log entry for setting mutations.
+type SettingChangeRecord struct {
+	ID        int64     `json:"id"`
+	ScopeType string    `json:"scope_type"`
+	ScopeID   int64     `json:"scope_id"`
+	Namespace string    `json:"namespace"`
+	Key       string    `json:"key"`
+	OldVal    string    `json:"old_val"`
+	NewVal    string    `json:"new_val"`
+	ChangedBy int64     `json:"changed_by"`
+	ChangedAt time.Time `json:"changed_at"`
+}
+
 // Repository defines data access methods for GoUltroid.
 type Repository interface {
 	// Sudo
@@ -137,6 +162,13 @@ type Repository interface {
 	AddBlacklist(ctx context.Context, chatID int64, word string) error
 	RemoveBlacklist(ctx context.Context, chatID int64, word string) error
 	ListBlacklists(ctx context.Context, chatID int64) ([]string, error)
+
+	// Generic Settings
+	GetSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) (*SettingItem, error)
+	SetSetting(ctx context.Context, item *SettingItem) error
+	DeleteSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) error
+	ListSettings(ctx context.Context, scopeType string, scopeID int64, namespace string) ([]SettingItem, error)
+	GetSettingHistory(ctx context.Context, namespace, key string, limit int) ([]SettingChangeRecord, error)
 }
 
 // Ensure DB implements Repository.
@@ -1029,3 +1061,194 @@ func (d *DB) FindPeerByUsername(ctx context.Context, username string) (string, i
 	}
 	return prefix, id, accessHash, true, nil
 }
+
+// =================== Settings Methods ===================
+
+// GetSetting retrieves a setting by its scope, namespace, and key.
+// If the setting does not exist, it returns (nil, nil).
+func (d *DB) GetSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) (*SettingItem, error) {
+	query := `
+		SELECT scope_type, scope_id, namespace, key, value_type, value, updated_by, updated_at
+		FROM settings
+		WHERE scope_type = ? AND scope_id = ? AND namespace = ? AND key = ?`
+	var item SettingItem
+	err := d.QueryRowContext(ctx, query, scopeType, scopeID, namespace, key).Scan(
+		&item.ScopeType,
+		&item.ScopeID,
+		&item.Namespace,
+		&item.Key,
+		&item.ValueType,
+		&item.Value,
+		&item.UpdatedBy,
+		&item.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get setting (%s:%d:%s:%s): %w", scopeType, scopeID, namespace, key, err)
+	}
+	return &item, nil
+}
+
+// SetSetting creates or updates a setting and appends a record to setting_changes audit log in a transaction.
+func (d *DB) SetSetting(ctx context.Context, item *SettingItem) error {
+	if item == nil {
+		return errors.New("item cannot be nil")
+	}
+	if item.UpdatedAt.IsZero() {
+		item.UpdatedAt = time.Now().UTC()
+	}
+
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Query old value if exists
+	var oldVal string
+	err = tx.QueryRowContext(ctx, `SELECT value FROM settings WHERE scope_type = ? AND scope_id = ? AND namespace = ? AND key = ?`,
+		item.ScopeType, item.ScopeID, item.Namespace, item.Key).Scan(&oldVal)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("failed to read previous setting value: %w", err)
+	}
+
+	// Upsert setting
+	upsertQuery := `
+		INSERT INTO settings (scope_type, scope_id, namespace, key, value_type, value, updated_by, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(scope_type, scope_id, namespace, key) DO UPDATE SET
+			value_type = excluded.value_type,
+			value = excluded.value,
+			updated_by = excluded.updated_by,
+			updated_at = excluded.updated_at`
+	_, err = tx.ExecContext(ctx, upsertQuery,
+		item.ScopeType, item.ScopeID, item.Namespace, item.Key, item.ValueType, item.Value, item.UpdatedBy, item.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("failed to upsert setting: %w", err)
+	}
+
+	// Insert audit record
+	changeQuery := `
+		INSERT INTO setting_changes (scope_type, scope_id, namespace, key, old_val, new_val, changed_by, changed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+	_, err = tx.ExecContext(ctx, changeQuery,
+		item.ScopeType, item.ScopeID, item.Namespace, item.Key, oldVal, item.Value, item.UpdatedBy, item.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("failed to record setting change audit: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit setting transaction: %w", err)
+	}
+	return nil
+}
+
+// DeleteSetting removes a setting and records the deletion in the audit log in a transaction.
+func (d *DB) DeleteSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) error {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var oldVal string
+	err = tx.QueryRowContext(ctx, `SELECT value FROM settings WHERE scope_type = ? AND scope_id = ? AND namespace = ? AND key = ?`,
+		scopeType, scopeID, namespace, key).Scan(&oldVal)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil // Nothing to delete
+		}
+		return fmt.Errorf("failed to read setting before deletion: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx, `DELETE FROM settings WHERE scope_type = ? AND scope_id = ? AND namespace = ? AND key = ?`,
+		scopeType, scopeID, namespace, key)
+	if err != nil {
+		return fmt.Errorf("failed to delete setting: %w", err)
+	}
+
+	changeQuery := `
+		INSERT INTO setting_changes (scope_type, scope_id, namespace, key, old_val, new_val, changed_by, changed_at)
+		VALUES (?, ?, ?, ?, ?, '', 0, ?)`
+	_, err = tx.ExecContext(ctx, changeQuery, scopeType, scopeID, namespace, key, oldVal, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("failed to record setting deletion audit: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit setting deletion: %w", err)
+	}
+	return nil
+}
+
+// ListSettings returns all settings for a scope, optionally filtered by namespace (if non-empty).
+func (d *DB) ListSettings(ctx context.Context, scopeType string, scopeID int64, namespace string) ([]SettingItem, error) {
+	var rows *sql.Rows
+	var err error
+	if namespace != "" {
+		query := `
+			SELECT scope_type, scope_id, namespace, key, value_type, value, updated_by, updated_at
+			FROM settings
+			WHERE scope_type = ? AND scope_id = ? AND namespace = ?
+			ORDER BY key ASC`
+		rows, err = d.QueryContext(ctx, query, scopeType, scopeID, namespace)
+	} else {
+		query := `
+			SELECT scope_type, scope_id, namespace, key, value_type, value, updated_by, updated_at
+			FROM settings
+			WHERE scope_type = ? AND scope_id = ?
+			ORDER BY namespace ASC, key ASC`
+		rows, err = d.QueryContext(ctx, query, scopeType, scopeID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to query settings: %w", err)
+	}
+	defer rows.Close()
+
+	var items []SettingItem
+	for rows.Next() {
+		var item SettingItem
+		if err := rows.Scan(&item.ScopeType, &item.ScopeID, &item.Namespace, &item.Key, &item.ValueType, &item.Value, &item.UpdatedBy, &item.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan setting item: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+// GetSettingHistory returns the latest audit log records for a setting key.
+func (d *DB) GetSettingHistory(ctx context.Context, namespace, key string, limit int) ([]SettingChangeRecord, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	query := `
+		SELECT id, scope_type, scope_id, namespace, key, old_val, new_val, changed_by, changed_at
+		FROM setting_changes
+		WHERE namespace = ? AND key = ?
+		ORDER BY changed_at DESC, id DESC
+		LIMIT ?`
+	rows, err := d.QueryContext(ctx, query, namespace, key, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query setting history: %w", err)
+	}
+	defer rows.Close()
+
+	var records []SettingChangeRecord
+	for rows.Next() {
+		var r SettingChangeRecord
+		if err := rows.Scan(&r.ID, &r.ScopeType, &r.ScopeID, &r.Namespace, &r.Key, &r.OldVal, &r.NewVal, &r.ChangedBy, &r.ChangedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan setting change record: %w", err)
+		}
+		records = append(records, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
