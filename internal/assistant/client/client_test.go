@@ -109,15 +109,18 @@ func TestUserRateLimiter_Concurrent(t *testing.T) {
 
 func TestUpdateHandlers_ShutdownBarrier(t *testing.T) {
 	dispatcher := tg.NewUpdateDispatcher()
-	var messageProcessed bool
+	processed := false
 
-	// Handler configured with IsShuttingDown returning true
+	// CacheEntities is the first observable side effect after the shutdown
+	// admission barrier. If the barrier is bypassed this callback becomes true.
 	deps := client.UpdateHandlerDeps{
 		IsShuttingDown: func() bool { return true },
+		CacheEntities: func(tg.Entities) {
+			processed = true
+		},
 	}
 	client.RegisterUpdateHandlers(&dispatcher, deps)
 
-	// Dispatch an update
 	update := &tg.UpdateNewMessage{
 		Message: &tg.Message{
 			ID:      123,
@@ -126,13 +129,12 @@ func TestUpdateHandlers_ShutdownBarrier(t *testing.T) {
 		},
 	}
 
-	err := dispatcher.Handle(context.Background(), &tg.Updates{
+	if err := dispatcher.Handle(context.Background(), &tg.Updates{
 		Updates: []tg.UpdateClass{update},
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if messageProcessed {
-		t.Fatalf("expected message to be rejected by shutdown barrier")
+	if processed {
+		t.Fatalf("expected update to be rejected before any handler-side effect")
 	}
 }
