@@ -172,7 +172,9 @@ func (p *Plugin) handleSettingsCommand(ctx *core.Context) error {
 	// If interactive inline buttons enabled
 	useButtons, _ := p.service.ResolveBool(ctx.Ctx, ctx.SenderID(), ctx.ChatID(), "ui", "inline_buttons")
 	if useButtons && tgMarkup != nil {
-		return ctx.ReplyMarkup(text, tgMarkup)
+		if err := ctx.ReplyMarkup(text, tgMarkup); err == nil {
+			return nil
+		}
 	}
 	return ctx.Reply(text)
 }

@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant"
+	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/services/inline"
 	"go.uber.org/zap"
@@ -86,3 +88,153 @@ func TestBotClient_Initialization(t *testing.T) {
 		t.Errorf("Stop failed: %v", err)
 	}
 }
+
+func TestAssistantMenu_Render(t *testing.T) {
+	startMenu := assistant.RenderStartMenu("TestBot", time.Now().Add(-10*time.Minute))
+	if startMenu == nil {
+		t.Fatal("expected non-nil start menu screen")
+	}
+	markup := startMenu.Markup()
+	if len(markup.Rows) != 3 {
+		t.Fatalf("expected 3 rows of buttons in start menu, got %d", len(markup.Rows))
+	}
+
+	// Verify all button callback data is valid v1 format
+	for rowIdx, row := range markup.Rows {
+		for btnIdx, btn := range row {
+			if len(btn.Data) > 0 {
+				ns, act, oid, err := callback.ParseCallbackData(btn.Data)
+				if err != nil {
+					t.Fatalf("invalid callback data on row %d btn %d (%s): %v", rowIdx, btnIdx, btn.Text, err)
+				}
+				if ns == "" || act == "" || oid == "" {
+					t.Fatalf("empty fields in callback data: ns=%q act=%q oid=%q", ns, act, oid)
+				}
+			}
+		}
+	}
+
+	statusMenu := assistant.RenderStatusScreen("TestBot", time.Now().Add(-10*time.Minute))
+	if statusMenu == nil {
+		t.Fatal("expected non-nil status menu screen")
+	}
+	if len(statusMenu.Markup().Rows) != 1 {
+		t.Fatalf("expected 1 row of buttons in status menu, got %d", len(statusMenu.Markup().Rows))
+	}
+}
+
+type mockTelegramServicer struct {
+	core.TelegramServicer
+	lastAnswer      string
+	lastAlert       bool
+	lastEditedText  string
+	lastDeletedPeer tg.InputPeerClass
+	lastDeletedIDs  []int
+}
+
+func (m *mockTelegramServicer) AnswerCallbackQuery(ctx context.Context, queryID int64, text string, alert bool) error {
+	m.lastAnswer = text
+	m.lastAlert = alert
+	return nil
+}
+
+func (m *mockTelegramServicer) EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass, msgID int, text string, markup tg.ReplyMarkupClass) error {
+	m.lastEditedText = text
+	return nil
+}
+
+func (m *mockTelegramServicer) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {
+	m.lastDeletedPeer = peer
+	m.lastDeletedIDs = msgIDs
+	return nil
+}
+
+func TestAssistantHandler(t *testing.T) {
+	mockSvc := &mockTelegramServicer{}
+	h := assistant.NewHandler(nil, time.Now().Add(-5*time.Minute))
+
+	if h.Namespace() != "assistant" {
+		t.Errorf("expected namespace 'assistant', got %q", h.Namespace())
+	}
+	if !h.CallbackOptions().AutoAnswer {
+		t.Errorf("expected AutoAnswer to be true")
+	}
+
+	ctx := context.Background()
+	peer := &tg.InputPeerUser{UserID: 12345}
+
+	// 1. Test status action
+	cbCtx := &callback.CallbackContext{
+		Ctx:       ctx,
+		QueryID:   101,
+		UserID:    12345,
+		Namespace: "assistant",
+		Action:    "status",
+		OpaqueID:  "noop",
+		Service:   mockSvc,
+		Target: core.CallbackTarget{
+			Origin:    core.CallbackOriginMessage,
+			Peer:      peer,
+			MessageID: 55,
+		},
+	}
+	if err := h.HandleCallback(cbCtx); err != nil {
+		t.Fatalf("HandleCallback status failed: %v", err)
+	}
+	if mockSvc.lastEditedText == "" {
+		t.Error("expected edited text on status action")
+	}
+
+	// 2. Test ping action
+	cbCtx.Action = "ping"
+	if err := h.HandleCallback(cbCtx); err != nil {
+		t.Fatalf("HandleCallback ping failed: %v", err)
+	}
+	if mockSvc.lastAnswer != "🏓 Pong!" || !mockSvc.lastAlert {
+		t.Errorf("expected ping alert answer, got text=%q alert=%v", mockSvc.lastAnswer, mockSvc.lastAlert)
+	}
+
+	// 3. Test start action
+	cbCtx.Action = "start"
+	if err := h.HandleCallback(cbCtx); err != nil {
+		t.Fatalf("HandleCallback start failed: %v", err)
+	}
+
+	// 4. Test close action
+	cbCtx.Action = "close"
+	if err := h.HandleCallback(cbCtx); err != nil {
+		t.Fatalf("HandleCallback close failed: %v", err)
+	}
+	if len(mockSvc.lastDeletedIDs) != 1 || mockSvc.lastDeletedIDs[0] != 55 {
+		t.Errorf("expected message 55 deleted on close, got %v", mockSvc.lastDeletedIDs)
+	}
+}
+
+func TestBotServiceAdapter_Unsupported(t *testing.T) {
+	adapter := assistant.NewBotServiceAdapter(nil, zap.NewNop())
+
+	if !adapter.IsBotSent(100) {
+		t.Error("expected IsBotSent to be true")
+	}
+
+	ctx := context.Background()
+	if err := adapter.BanUser(ctx, nil, nil, 0); !errors.Is(err, core.ErrUnsupported) {
+		t.Errorf("expected ErrUnsupported on BanUser, got %v", err)
+	}
+	if err := adapter.UnbanUser(ctx, nil, nil); !errors.Is(err, core.ErrUnsupported) {
+		t.Errorf("expected ErrUnsupported on UnbanUser, got %v", err)
+	}
+	if err := adapter.KickUser(ctx, nil, nil); !errors.Is(err, core.ErrUnsupported) {
+		t.Errorf("expected ErrUnsupported on KickUser, got %v", err)
+	}
+	if _, err := adapter.GetFullChat(ctx, nil); !errors.Is(err, core.ErrUnsupported) {
+		t.Errorf("expected ErrUnsupported on GetFullChat, got %v", err)
+	}
+	if _, err := adapter.GetContacts(ctx); !errors.Is(err, core.ErrUnsupported) {
+		t.Errorf("expected ErrUnsupported on GetContacts, got %v", err)
+	}
+	if _, err := adapter.GetDialogs(ctx, 10); !errors.Is(err, core.ErrUnsupported) {
+		t.Errorf("expected ErrUnsupported on GetDialogs, got %v", err)
+	}
+}
+

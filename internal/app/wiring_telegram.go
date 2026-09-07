@@ -40,6 +40,14 @@ func buildTelegramRuntime(cfg *config.Config, core *coreDependencies, logger *za
 		bot.SetCallbackRouter(core.callbackRouter)
 		bot.SetInlineEngine(core.inlineEngine)
 		bot.SetLocalizer(core.localizer)
+		bot.SetEventBus(core.eventBus)
+
+		// Register assistant callback handler so /start and status buttons are routed properly
+		assistantHandler := assistant.NewHandler(bot, bot.StartTime())
+		if err := core.callbackRouter.Register(assistantHandler); err != nil {
+			logger.Warn("failed to register assistant callback handler", zap.Error(err))
+		}
+
 		assistantClient = bot
 	}
 
