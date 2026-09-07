@@ -40,14 +40,16 @@ func (c *Context) Reply(text string, markup tg.ReplyMarkupClass) (*tg.Message, e
 // Handler defines the function signature for an assistant bot command handler.
 type Handler func(c *Context) error
 
-// Router dispatches incoming bot commands to registered handlers.
+// Router is the Assistant transport dispatcher. The canonical command registry
+// remains core.Router; handlers here are restricted to Assistant presentation
+// commands such as /start and are not an alternate plugin command registry.
 type Router struct {
-	handlers   map[string]Handler
-	coreRouter *core.Router
-	ownerID    int64
-	sudoGetter func() []int64
-	metrics    core.MetricsCollector
-	logger     *zap.Logger
+	presentationHandlers map[string]Handler
+	coreRouter           *core.Router
+	ownerID              int64
+	sudoGetter           func() []int64
+	metrics              core.MetricsCollector
+	logger               *zap.Logger
 }
 
 // NewRouter creates an initialized command Router.
@@ -56,8 +58,8 @@ func NewRouter(logger *zap.Logger) *Router {
 		logger = zap.NewNop()
 	}
 	return &Router{
-		handlers: make(map[string]Handler),
-		logger:   logger,
+		presentationHandlers: make(map[string]Handler),
+		logger:               logger,
 	}
 }
 
@@ -87,13 +89,15 @@ func (r *Router) CoreRouter() *core.Router {
 	return r.coreRouter
 }
 
-// Register attaches a handler to a command name (e.g. "/start").
+// Register attaches an Assistant presentation handler. It is intentionally
+// separate from plugin/core command registration and should only be used for
+// transport-specific UI entry points such as /start.
 func (r *Router) Register(cmd string, handler Handler) {
 	cmd = strings.ToLower(strings.TrimSpace(cmd))
 	if !strings.HasPrefix(cmd, "/") {
 		cmd = "/" + cmd
 	}
-	r.handlers[cmd] = handler
+	r.presentationHandlers[cmd] = handler
 }
 
 func (r *Router) findCommand(name string) (core.Command, bool) {
@@ -101,6 +105,19 @@ func (r *Router) findCommand(name string) (core.Command, bool) {
 		return r.coreRouter.Find(name)
 	}
 	return core.Command{}, false
+}
+
+func chatTypeForPeer(peer tg.InputPeerClass) string {
+	switch p := peer.(type) {
+	case *tg.InputPeerUser, *tg.InputPeerSelf:
+		return "private"
+	case *tg.InputPeerChat:
+		return "group"
+	case *tg.InputPeerChannel:
+		return "channel"
+	default:
+		return ""
+	}
 }
 
 // Dispatch parses the message text, extracts the command, and invokes the matching handler.
@@ -112,7 +129,7 @@ func (r *Router) Dispatch(ctx context.Context, senderID int64, peer tg.InputPeer
 
 	cmdRaw := strings.ToLower(fields[0])
 	if !strings.HasPrefix(cmdRaw, "/") {
-		return nil // Not a bot command
+		return nil
 	}
 
 	// Strip optional @botusername suffix (e.g. /start@GoUltroidBot -> /start)
@@ -131,13 +148,14 @@ func (r *Router) Dispatch(ctx context.Context, senderID int64, peer tg.InputPeer
 
 	cmdNameClean := strings.TrimPrefix(cmdRaw, "/")
 
-	// 1. Primary: Canonical command lookup from core.Router (or fallback unified source)
+	// Primary path: canonical command lookup from core.Router.
 	if cmd, ok := r.findCommand(cmdNameClean); ok && cmd.Handler != nil {
 		if !cmd.IsAvailableOn(execution.SourceAssistant) {
 			return fmt.Errorf("%w: %s", ErrUnknownCommand, cmdRaw)
 		}
 
-		// Permission check
+		// Permission check. The owner/sudo policy is kept explicit here until
+		// command execution authorization is fully centralized in core.
 		isOwner := r.ownerID != 0 && senderID != 0 && senderID == r.ownerID
 		isSudo := isOwner
 		var sudoList []int64
@@ -156,7 +174,7 @@ func (r *Router) Dispatch(ctx context.Context, senderID int64, peer tg.InputPeer
 				zap.String("command", cmdNameClean),
 				zap.Int64("sender_id", senderID),
 			)
-			if inter != nil {
+			if inter != nil && peer != nil {
 				_, _ = inter.SendMessage(ctx, peer, "⛔ <i>Privileged commands are disabled: bot owner is not configured.</i>", nil)
 			}
 			return nil
@@ -169,7 +187,7 @@ func (r *Router) Dispatch(ctx context.Context, senderID int64, peer tg.InputPeer
 					zap.String("command", cmdNameClean),
 					zap.Int64("sender_id", senderID),
 				)
-				if inter != nil {
+				if inter != nil && peer != nil {
 					_, _ = inter.SendMessage(ctx, peer, "⛔ <i>This command is restricted to the bot owner.</i>", nil)
 				}
 				return nil
@@ -180,24 +198,18 @@ func (r *Router) Dispatch(ctx context.Context, senderID int64, peer tg.InputPeer
 					zap.String("command", cmdNameClean),
 					zap.Int64("sender_id", senderID),
 				)
-				if inter != nil {
+				if inter != nil && peer != nil {
 					_, _ = inter.SendMessage(ctx, peer, "⛔ <i>This command requires sudo privileges.</i>", nil)
 				}
 				return nil
 			}
 		}
 
-		r.logger.Debug("assistant: executing canonical command",
-			zap.String("command", cmdNameClean),
-			zap.Int64("sender_id", senderID),
-		)
-
 		chatID := extractChatIDFromInputPeer(peer)
 		if chatID == 0 {
 			chatID = senderID
 		}
 
-		perms := core.NewPermissions(r.ownerID, sudoList)
 		principal := &core.Principal{
 			UserID:  senderID,
 			IsOwner: isOwner,
@@ -212,25 +224,29 @@ func (r *Router) Dispatch(ctx context.Context, senderID int64, peer tg.InputPeer
 			Args:          fields[1:],
 			RawArgs:       strings.Join(fields[1:], " "),
 			PeerID:        peer,
-			Message:       &core.Message{SenderID: senderID, Text: "/" + cmdNameClean + " " + strings.Join(fields[1:], " ")},
+			Message:       &core.Message{SenderID: senderID, Text: strings.TrimSpace(messageText)},
 			Sender:        &core.User{ID: senderID},
-			Chat:          &core.Chat{ID: chatID},
-			Perms:         perms,
+			Chat:          &core.Chat{ID: chatID, Type: chatTypeForPeer(peer)},
+			Perms:         core.NewPermissions(r.ownerID, sudoList),
 			Principal:     principal,
 			Svc:           &assistantServicerAdapter{inter: inter},
 		}
 
+		// Reuse the canonical surface restrictions so Assistant execution does
+		// not silently bypass GroupOnly/PrivateOnly/ReplyOnly semantics.
+		handler := core.FilterMiddlewareForSource(cmd, core.ExecutionAssistant)(cmd.Handler)
+
 		start := time.Now()
-		err := cmd.Handler(coreCtx)
+		err := handler(coreCtx)
 		if r.metrics != nil {
 			r.metrics.RecordCommand(cmdNameClean, time.Since(start), err)
 		}
 		return err
 	}
 
-	// 2. Fallback: Assistant-specific presentation handlers (e.g. /start dashboard menu)
-	if handler, ok := r.handlers[cmdRaw]; ok {
-		r.logger.Debug("assistant: executing local command",
+	// Presentation-only fallback. This must not become a second plugin command registry.
+	if handler, ok := r.presentationHandlers[cmdRaw]; ok {
+		r.logger.Debug("assistant: executing presentation command",
 			zap.String("command", cmdRaw),
 			zap.Int64("sender_id", senderID),
 		)
