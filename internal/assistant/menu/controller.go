@@ -14,14 +14,21 @@ type RendererFunc func(screen *Screen) (string, tg.ReplyMarkupClass)
 
 // Controller manages the generation and transition between assistant interactive screens.
 type Controller struct {
-	renderer RendererFunc
+	renderer  RendererFunc
+	instances InstanceStore
 }
 
-// NewController creates a menu Controller.
+// NewController creates a menu Controller with instance tracking.
 func NewController(renderer RendererFunc) *Controller {
 	return &Controller{
-		renderer: renderer,
+		renderer:  renderer,
+		instances: NewMemoryInstanceStore(DefaultMenuTTL),
 	}
+}
+
+// Instances returns the underlying instance store.
+func (c *Controller) Instances() InstanceStore {
+	return c.instances
 }
 
 // BuildStartScreen constructs the main assistant dashboard screen.
@@ -56,10 +63,14 @@ func BuildStartScreen(botUsername string, uptime time.Duration) *Screen {
 
 // BuildSettingsScreen constructs the settings navigation screen.
 func BuildSettingsScreen(botUsername string) *Screen {
-	body := "Settings storage and mutation are managed by the core settings subsystem.\n\n" +
-		"Use userbot settings commands or configure your userbot settings."
+	body := "⚙️ <b>GoUltroid Settings Subsystem</b>\n\n" +
+		"Manage your userbot configurations, privacy, security, and plugins.\n\n" +
+		"• Use <code>.set</code> commands in chat, or open the interactive dashboard below."
 
 	screen := NewScreen(ScreenIDSettings, "⚙️ Assistant Settings", body)
+	screen.AddRow(
+		NewButton("📂 Settings Dashboard", "v1:settings:nav:noop"),
+	)
 	screen.AddRow(
 		NewButton("« Back to Menu", "a1:assistant:start"),
 	)
@@ -68,13 +79,18 @@ func BuildSettingsScreen(botUsername string) *Screen {
 
 // BuildHelpScreen constructs the help and commands index screen.
 func BuildHelpScreen(botUsername string) *Screen {
-	body := "/start — open the interactive dashboard\n" +
+	body := "<b>GoUltroid Assistant Commands</b>\n\n" +
+		"/start — open the interactive dashboard\n" +
 		"/help — show this help overview\n" +
 		"/ping — check responsiveness\n" +
 		"/status — view system status\n" +
-		"/alive — check assistant status"
+		"/alive — check assistant status\n\n" +
+		"<i>Browse all installed userbot modules below:</i>"
 
 	screen := NewScreen(ScreenIDHelp, "📚 Help / Modules", body)
+	screen.AddRow(
+		NewButton("📚 Browse All Modules", "v1:help:cat:noop"),
+	)
 	screen.AddRow(
 		NewButton("« Back to Menu", "a1:assistant:start"),
 	)
@@ -130,6 +146,9 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 	// 1. Start Menu
 	r.Register("assistant", "start", func(ctx context.Context, tx *callback.Transaction) error {
 		_ = tx.Answer(ctx, "", false)
+		if c.instances != nil {
+			c.instances.UpdateScreen(tx.Target.ChatID, tx.Target.MessageID, ScreenIDStart)
+		}
 		screen := BuildStartScreen(username(), uptime())
 		text, markup := c.renderer(screen)
 		return tx.Edit(ctx, text, markup)
@@ -138,6 +157,9 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 	// 2. Settings Menu
 	r.Register("assistant", "settings", func(ctx context.Context, tx *callback.Transaction) error {
 		_ = tx.Answer(ctx, "", false)
+		if c.instances != nil {
+			c.instances.UpdateScreen(tx.Target.ChatID, tx.Target.MessageID, ScreenIDSettings)
+		}
 		screen := BuildSettingsScreen(username())
 		text, markup := c.renderer(screen)
 		return tx.Edit(ctx, text, markup)
@@ -146,6 +168,9 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 	// 3. Help Menu
 	r.Register("assistant", "help", func(ctx context.Context, tx *callback.Transaction) error {
 		_ = tx.Answer(ctx, "", false)
+		if c.instances != nil {
+			c.instances.UpdateScreen(tx.Target.ChatID, tx.Target.MessageID, ScreenIDHelp)
+		}
 		screen := BuildHelpScreen(username())
 		text, markup := c.renderer(screen)
 		return tx.Edit(ctx, text, markup)
@@ -154,6 +179,9 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 	// 4. Status Menu
 	r.Register("assistant", "status", func(ctx context.Context, tx *callback.Transaction) error {
 		_ = tx.Answer(ctx, "", false)
+		if c.instances != nil {
+			c.instances.UpdateScreen(tx.Target.ChatID, tx.Target.MessageID, ScreenIDStatus)
+		}
 		screen := BuildStatusScreen(username(), uptime(), "GoUltroid (MTProto) v2")
 		text, markup := c.renderer(screen)
 		return tx.Edit(ctx, text, markup)
@@ -167,6 +195,9 @@ func (c *Controller) AttachRoutes(r *callback.Router, getUsername func() string,
 	// 6. Close Action (idempotent delete)
 	r.Register("assistant", "close", func(ctx context.Context, tx *callback.Transaction) error {
 		_ = tx.Answer(ctx, "Menu closed", false)
+		if c.instances != nil {
+			c.instances.Invalidate(tx.Target.ChatID, tx.Target.MessageID)
+		}
 		return tx.Delete(ctx)
 	})
 }

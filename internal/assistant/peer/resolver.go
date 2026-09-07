@@ -11,6 +11,7 @@ import (
 // Resolver resolves Telegram generic Peer objects into MTProto InputPeerClass instances.
 type Resolver interface {
 	Resolve(ctx context.Context, peer tg.PeerClass, senderID int64, entities tg.Entities) (tg.InputPeerClass, error)
+	InvalidatePeer(inputPeer tg.InputPeerClass)
 	Cache() Cache
 }
 
@@ -32,6 +33,19 @@ func NewResolver(cache Cache) *DefaultResolver {
 // Cache returns the underlying peer cache.
 func (r *DefaultResolver) Cache() Cache {
 	return r.cache
+}
+
+// InvalidatePeer removes the cached record corresponding to an InputPeer.
+func (r *DefaultResolver) InvalidatePeer(inputPeer tg.InputPeerClass) {
+	if r.cache == nil || inputPeer == nil {
+		return
+	}
+	switch p := inputPeer.(type) {
+	case *tg.InputPeerUser:
+		r.cache.Invalidate(PeerKindUser, p.UserID)
+	case *tg.InputPeerChannel:
+		r.cache.Invalidate(PeerKindChannel, p.ChannelID)
+	}
 }
 
 // Resolve deterministically resolves a peer into an InputPeer.

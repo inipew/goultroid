@@ -166,6 +166,13 @@ func (c *BotClient) Bridge() *Bridge {
 	return c.bridge
 }
 
+// SetOwner configures the owner ID and sudo user lookup for callback authorization.
+func (c *BotClient) SetOwner(ownerID int64, sudoGetter func() []int64) {
+	if c.v2Router != nil && ownerID != 0 {
+		c.v2Router.SetAuthorizer(asstcb.NewOwnerAuthorizer(ownerID, sudoGetter))
+	}
+}
+
 func (c *BotClient) SetCallbackRouter(r *callback.Router) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -426,6 +433,9 @@ func (c *BotClient) Start(ctx context.Context) error {
 	client = telegram.NewClient(c.appID, c.appHash, telegram.Options{UpdateHandler: gaps})
 	adapter = NewBotServiceAdapter(client.API(), c.logger)
 	c.interaction = interaction.NewClientInteraction(client.API(), c.logger)
+	if c.resolver != nil {
+		c.interaction.SetPeerInvalidator(c.resolver)
+	}
 
 	c.logger.Info("starting assistant bot client (v2)...")
 	c.lifecycle.SetState(asstclient.StateRunning)

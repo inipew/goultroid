@@ -7,6 +7,11 @@ import (
 	"github.com/gotd/td/tgerr"
 )
 
+const (
+	// MaxPeerRecoveryAttempts defines the bounded retry limit for stale access hash recovery.
+	MaxPeerRecoveryAttempts = 1
+)
+
 var (
 	// ErrInvalidTarget occurs when an interaction is dispatched with an invalid or unresolvable target.
 	ErrInvalidTarget = errors.New("assistant/interaction: target is invalid or missing required coordinates")

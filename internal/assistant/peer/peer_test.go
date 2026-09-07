@@ -131,4 +131,10 @@ func TestDefaultResolver_Resolve(t *testing.T) {
 	if inputUser, ok := resolvedSender.(*tg.InputPeerUser); !ok || inputUser.UserID != 42 || inputUser.AccessHash != 9999 {
 		t.Fatalf("expected sender fallback to user 42 with 9999, got %+v", resolvedSender)
 	}
+
+	// 7. InvalidatePeer removes cached peer
+	res.InvalidatePeer(inputUser)
+	if _, ok := c.Get(peer.PeerKindUser, 42); ok {
+		t.Fatalf("expected user 42 to be removed after InvalidatePeer")
+	}
 }

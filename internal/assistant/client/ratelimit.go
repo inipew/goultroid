@@ -1,6 +1,7 @@
 package client
 
 import (
+	"strconv"
 	"sync"
 	"time"
 )
@@ -44,7 +45,7 @@ func (l *UserRateLimiter) Allow(userID int64, category string) bool {
 	defer l.mu.Unlock()
 
 	now := time.Now()
-	key := string(rune(userID)) + ":" + category
+	key := strconv.FormatInt(userID, 10) + ":" + category
 
 	b, ok := l.buckets[key]
 	if !ok {

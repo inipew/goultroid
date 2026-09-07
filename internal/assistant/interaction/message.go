@@ -15,10 +15,16 @@ import (
 	"go.uber.org/zap"
 )
 
+// StalePeerInvalidator invalidates cached authorization coordinates upon ACCESS_HASH_INVALID.
+type StalePeerInvalidator interface {
+	InvalidatePeer(peer tg.InputPeerClass)
+}
+
 // ClientInteraction implements MessageInteraction using MTProto TelegramAPI.
 type ClientInteraction struct {
-	api    TelegramAPI
-	logger *zap.Logger
+	api         TelegramAPI
+	logger      *zap.Logger
+	invalidator StalePeerInvalidator
 }
 
 var _ MessageInteraction = (*ClientInteraction)(nil)
@@ -32,6 +38,25 @@ func NewClientInteraction(api TelegramAPI, logger *zap.Logger) *ClientInteractio
 		api:    api,
 		logger: logger,
 	}
+}
+
+// SetPeerInvalidator configures an invalidator called when ACCESS_HASH_INVALID is detected.
+func (c *ClientInteraction) SetPeerInvalidator(invalidator StalePeerInvalidator) {
+	c.invalidator = invalidator
+}
+
+func (c *ClientInteraction) handleRPCError(target MessageTarget, err error) error {
+	if err == nil {
+		return nil
+	}
+	classified := ClassifyRPCError(err)
+	if errors.Is(classified, ErrAccessHashStale) && c.invalidator != nil {
+		c.logger.Warn("assistant: access hash stale, invalidating peer cache",
+			zap.String("peer_type", fmt.Sprintf("%T", target.Peer)),
+		)
+		c.invalidator.InvalidatePeer(target.Peer)
+	}
+	return classified
 }
 
 func parseHTML(text string) (string, []tg.MessageEntityClass) {
@@ -130,7 +155,7 @@ func (c *ClientInteraction) Edit(ctx context.Context, target MessageTarget, text
 
 	_, err := c.api.MessagesEditMessage(ctx, req)
 	if err != nil {
-		classified := ClassifyRPCError(err)
+		classified := c.handleRPCError(target, err)
 		if classified == nil {
 			return nil // MESSAGE_NOT_MODIFIED is a no-op success
 		}
@@ -158,7 +183,7 @@ func (c *ClientInteraction) EditMarkup(ctx context.Context, target MessageTarget
 
 	_, err := c.api.MessagesEditMessage(ctx, req)
 	if err != nil {
-		classified := ClassifyRPCError(err)
+		classified := c.handleRPCError(target, err)
 		if classified == nil {
 			return nil
 		}
@@ -192,7 +217,7 @@ func (c *ClientInteraction) Delete(ctx context.Context, target MessageTarget) er
 	}
 
 	if rpcErr != nil {
-		classified := ClassifyRPCError(rpcErr)
+		classified := c.handleRPCError(target, rpcErr)
 		// Idempotency: if message is already absent or was deleted concurrently, consider success
 		if errors.Is(classified, ErrMessageAlreadyDeleted) {
 			c.logger.Debug("assistant delete: message already absent, treating as success",
@@ -230,7 +255,7 @@ func (c *ClientInteraction) GetMessage(ctx context.Context, target MessageTarget
 	}
 
 	if rpcErr != nil {
-		return nil, ClassifyRPCError(rpcErr)
+		return nil, c.handleRPCError(target, rpcErr)
 	}
 
 	extractFirst := func(slice []tg.MessageClass) *tg.Message {

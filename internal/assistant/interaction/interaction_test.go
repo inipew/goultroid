@@ -182,3 +182,35 @@ func TestInlineInteraction(t *testing.T) {
 		t.Fatalf("unexpected inline edit request: %+v", mockAPI.editInlineReq)
 	}
 }
+
+type fakePeerInvalidator struct {
+	invalidatedPeer tg.InputPeerClass
+}
+
+func (f *fakePeerInvalidator) InvalidatePeer(peer tg.InputPeerClass) {
+	f.invalidatedPeer = peer
+}
+
+func TestClientInteraction_StalePeerInvalidator(t *testing.T) {
+	mockAPI := &mockTelegramAPI{
+		editErr: errors.New("rpc error code 400: ACCESS_HASH_INVALID"),
+	}
+	ci := interaction.NewClientInteraction(mockAPI, zap.NewNop())
+	invalidator := &fakePeerInvalidator{}
+	ci.SetPeerInvalidator(invalidator)
+
+	ctx := context.Background()
+	userPeer := &tg.InputPeerUser{UserID: 12345, AccessHash: 999}
+	target := interaction.NewMessageTarget(userPeer, 55, 100, 200)
+
+	err := ci.Edit(ctx, target, "Hello", nil)
+	if err == nil {
+		t.Fatalf("expected error from ACCESS_HASH_INVALID")
+	}
+	if !errors.Is(err, interaction.ErrAccessHashStale) {
+		t.Fatalf("expected ErrAccessHashStale, got %v", err)
+	}
+	if invalidator.invalidatedPeer != userPeer {
+		t.Fatalf("expected invalidator to be called with userPeer, got %+v", invalidator.invalidatedPeer)
+	}
+}

@@ -55,18 +55,56 @@ func TestMenuScreens(t *testing.T) {
 	}
 
 	settings := menu.BuildSettingsScreen("TestBot")
-	if settings.ID != menu.ScreenIDSettings || len(settings.Rows) != 1 {
+	if settings.ID != menu.ScreenIDSettings || len(settings.Rows) != 2 {
 		t.Fatalf("unexpected settings screen: %+v", settings)
 	}
 
 	help := menu.BuildHelpScreen("TestBot")
-	if help.ID != menu.ScreenIDHelp || len(help.Rows) != 1 {
+	if help.ID != menu.ScreenIDHelp || len(help.Rows) != 2 {
 		t.Fatalf("unexpected help screen: %+v", help)
 	}
 
 	status := menu.BuildStatusScreen("TestBot", 15*time.Minute, "v2")
 	if status.ID != menu.ScreenIDStatus || len(status.Rows) != 1 {
 		t.Fatalf("unexpected status screen: %+v", status)
+	}
+}
+
+func TestMemoryInstanceStore(t *testing.T) {
+	store := menu.NewMemoryInstanceStore(50 * time.Millisecond)
+
+	inst := menu.MenuInstance{
+		ID:        "inst1",
+		OwnerID:   123,
+		ChatID:    456,
+		MessageID: 789,
+		Screen:    menu.ScreenIDStart,
+	}
+	store.Register(inst)
+
+	got, ok := store.Get(456, 789)
+	if !ok || got == nil || got.Screen != menu.ScreenIDStart {
+		t.Fatalf("expected to get registered instance, got ok=%v, inst=%+v", ok, got)
+	}
+
+	store.UpdateScreen(456, 789, menu.ScreenIDSettings)
+	got, _ = store.Get(456, 789)
+	if got.Screen != menu.ScreenIDSettings {
+		t.Fatalf("expected updated screen to be settings, got %v", got.Screen)
+	}
+
+	// Expiration check
+	time.Sleep(60 * time.Millisecond)
+	_, ok = store.Get(456, 789)
+	if ok {
+		t.Fatalf("expected expired instance to be pruned")
+	}
+
+	// Invalidation
+	store.Register(inst)
+	store.Invalidate(456, 789)
+	if _, ok := store.Get(456, 789); ok {
+		t.Fatalf("expected invalidated instance to not be found")
 	}
 }
 

@@ -37,6 +37,11 @@ func buildTelegramRuntime(cfg *config.Config, core *coreDependencies, logger *za
 	var assistantClient assistant.Client
 	if cfg.BotToken != "" {
 		bot := assistant.NewBotClient(cfg.AppID, cfg.AppHash, cfg.BotToken, logger)
+		if core.perms != nil {
+			bot.SetOwner(core.perms.OwnerID, core.perms.ListSudo)
+		} else if cfg.OwnerID != 0 {
+			bot.SetOwner(cfg.OwnerID, nil)
+		}
 		bot.SetCallbackRouter(core.callbackRouter)
 		bot.SetInlineEngine(core.inlineEngine)
 		bot.SetLocalizer(core.localizer)
