@@ -1,5 +1,7 @@
 package menu
 
+import "github.com/inipew/goultroid/internal/ui"
+
 // ScreenID identifies a specific screen in the assistant navigation tree.
 type ScreenID string
 
@@ -10,28 +12,10 @@ const (
 	ScreenIDStatus   ScreenID = "status"
 )
 
-// Screen models an interactive screen decoupled from MTProto rendering.
-type Screen struct {
-	ID    ScreenID
-	Title string
-	Body  string
-	Rows  [][]Button
-}
+// Screen aliases the repository-wide Telegram-agnostic UI screen model.
+type Screen = ui.Screen
 
-// NewScreen creates an initialized Screen.
+// NewScreen creates a canonical UI screen while preserving the assistant menu API.
 func NewScreen(id ScreenID, title, body string) *Screen {
-	return &Screen{
-		ID:    id,
-		Title: title,
-		Body:  body,
-		Rows:  make([][]Button, 0),
-	}
-}
-
-// AddRow adds a row of buttons to the screen.
-func (s *Screen) AddRow(buttons ...Button) *Screen {
-	if len(buttons) > 0 {
-		s.Rows = append(s.Rows, buttons)
-	}
-	return s
+	return ui.NewScreen(string(id), title, body)
 }
