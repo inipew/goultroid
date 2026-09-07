@@ -24,14 +24,26 @@ type Router struct {
 
 // NewRouter creates a new command Router with the given prefix.
 func NewRouter(prefix string) *Router {
-	if prefix == "" { prefix = "." }
-	return &Router{prefix: prefix, commands: make(map[string]Command), all: make([]Command, 0)}
+	if prefix == "" {
+		prefix = "."
+	}
+	return &Router{
+		prefix:   prefix,
+		commands: make(map[string]Command),
+		all:      make([]Command, 0),
+	}
 }
 
-func (r *Router) Prefix() string { r.mu.RLock(); defer r.mu.RUnlock(); return r.prefix }
+func (r *Router) Prefix() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.prefix
+}
 
 // Register adds one command atomically.
-func (r *Router) Register(cmd Command) error { return r.RegisterBatch([]Command{cmd}) }
+func (r *Router) Register(cmd Command) error {
+	return r.RegisterBatch([]Command{cmd})
+}
 
 // RegisterBatch validates the complete batch before mutating the router. A
 // conflict therefore leaves the router exactly as it was before the call.
@@ -87,14 +99,18 @@ func (r *Router) Parse(text string) (*ParsedCommand, bool, error) {
 }
 
 func (r *Router) Find(name string) (Command, bool) {
-	r.mu.RLock(); defer r.mu.RUnlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	cmd, exists := r.commands[strings.ToLower(strings.TrimSpace(name))]
 	return cmd, exists
 }
 
 func (r *Router) All() []Command {
-	r.mu.RLock(); defer r.mu.RUnlock()
-	result := make([]Command, len(r.all)); copy(result, r.all); return result
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	result := make([]Command, len(r.all))
+	copy(result, r.all)
+	return result
 }
 
 // tokenize splits a string into whitespace-separated arguments, preserving
