@@ -100,11 +100,34 @@ func (s *Service) runOutboxWorker(ctx context.Context) {
 	}
 }
 
+// Start launches the durable outbox worker explicitly (Construct != Start).
+// It is idempotent; if already started via NewService, it returns nil.
+func (s *Service) Start(ctx context.Context) error {
+	if s.outboxCancel != nil {
+		return nil
+	}
+	if s.bus == nil {
+		return nil
+	}
+	if _, ok := s.repo.(*database.DB); !ok {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cctx, cancel := context.WithCancel(ctx)
+	s.outboxCancel = cancel
+	s.outboxWG.Add(1)
+	go s.runOutboxWorker(cctx)
+	return nil
+}
+
 // Stop gracefully shuts down the outbox worker.
 func (s *Service) Stop() {
 	if s.outboxCancel != nil {
 		s.outboxCancel()
 		s.outboxWG.Wait()
+		s.outboxCancel = nil
 	}
 }
 

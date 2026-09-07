@@ -232,6 +232,8 @@ type EventBus struct {
 	queue          chan eventJob
 	workers        sync.WaitGroup
 	closed         bool
+	started        bool
+	startOnce      sync.Once
 	publishedCount atomic.Int64
 	deliveredCount atomic.Int64
 	droppedCount   atomic.Int64
@@ -239,12 +241,33 @@ type EventBus struct {
 }
 
 func NewEventBus() *EventBus {
-	b := &EventBus{subscribers: make(map[EventType]map[uint64]EventHandler), queue: make(chan eventJob, eventQueueSize)}
+	b := &EventBus{
+		subscribers: make(map[EventType]map[uint64]EventHandler),
+		queue:       make(chan eventJob, eventQueueSize),
+	}
+	// Backward compat: auto-start with Background so existing callers that don't call Start still work.
+	// New code should call Start explicitly (Construct != Start).
+	_ = b.Start(context.Background())
+	return b
+}
+
+// Start launches the worker pool. Must be called after construction and before Publish.
+// Construct != Start: NewEventBus does not spawn goroutines.
+func (b *EventBus) Start(ctx context.Context) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return fmt.Errorf("event bus closed")
+	}
+	if b.started {
+		return nil
+	}
+	b.started = true
 	b.workers.Add(eventWorkers)
 	for i := 0; i < eventWorkers; i++ {
 		go b.worker()
 	}
-	return b
+	return nil
 }
 
 // Stats returns a snapshot of the event bus counters.

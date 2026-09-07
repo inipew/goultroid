@@ -9,8 +9,17 @@ import (
 )
 
 // startBackgroundServices starts all long-lived background loops bound to the application root context.
+// Explicit groups: Infrastructure → CoreRuntime → Services → Plugins (dependency-aware order).
 func (a *App) startBackgroundServices(ctx context.Context) {
-	// 1. Interaction state stores
+	// 0. Infrastructure
+	if a.eventBus != nil {
+		_ = a.eventBus.Start(ctx)
+	}
+	if a.settingsService != nil {
+		_ = a.settingsService.Start(ctx)
+	}
+
+	// 1. CoreRuntime: interaction state stores
 	if a.callbackStore != nil {
 		a.callbackStore.Start(ctx)
 	}
@@ -59,19 +68,11 @@ func (a *App) startBackgroundServices(ctx context.Context) {
 }
 
 // runLifecycle coordinates application execution and teardown of runtime background tasks.
+// Single owner is App.Shutdown; Run only starts, does not stop.
 func (a *App) runLifecycle(ctx context.Context) error {
 	a.logger.Info("starting GoUltroid...")
 
-	// Register teardown hooks for background caches/state
-	if a.callbackStore != nil {
-		defer a.callbackStore.Stop()
-	}
-	if a.inlineEngine != nil && a.inlineEngine.Cache() != nil {
-		defer a.inlineEngine.Cache().Stop()
-		defer func() { _ = a.inlineEngine.Cache().Prune() }()
-	}
-
-	// Start all background workers with the root context
+	// Start all background workers with the root context (Infrastructure → CoreRuntime → Services)
 	a.startBackgroundServices(ctx)
 
 	// Block on Telegram network client
