@@ -45,13 +45,6 @@ func NewService(repo database.SettingsRepository, reg *Registry, bus *core.Event
 				s.invalidate(e.Namespace, e.Key)
 			}
 		})
-		// Start durable outbox worker only for persistent DB (not mocks) to avoid goroutine leaks in tests.
-		if _, ok := s.repo.(*database.DB); ok {
-			ctx, cancel := context.WithCancel(context.Background())
-			s.outboxCancel = cancel
-			s.outboxWG.Add(1)
-			go s.runOutboxWorker(ctx)
-		}
 	}
 	return s
 }

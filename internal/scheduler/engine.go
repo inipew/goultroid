@@ -26,7 +26,7 @@ const (
 const maxCatchUpExecutions = 3
 
 type Engine struct {
-	db       database.Repository
+	db       database.SchedulerRepository
 	svcFunc  func() core.TelegramServicer
 	router   *core.Router
 	perms    *core.Permissions
@@ -53,7 +53,7 @@ type Engine struct {
 
 var _ Service = (*Engine)(nil)
 
-func NewEngine(db database.Repository, svcFunc func() core.TelegramServicer, router *core.Router, perms *core.Permissions, logger *zap.Logger) *Engine {
+func NewEngine(db database.SchedulerRepository, svcFunc func() core.TelegramServicer, router *core.Router, perms *core.Permissions, logger *zap.Logger) *Engine {
 	if logger == nil {
 		logger = zap.NewNop()
 	}

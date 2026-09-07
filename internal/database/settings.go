@@ -8,6 +8,58 @@ import (
 	"time"
 )
 
+// SettingItem represents a persisted generic configuration entry.
+type SettingItem struct {
+	ScopeType string    `json:"scope_type"` // "global", "chat", "user"
+	ScopeID   int64     `json:"scope_id"`   // 0 for global, chatID or userID
+	Namespace string    `json:"namespace"`  // e.g. "core", "afk", "pmpermit"
+	Key       string    `json:"key"`        // e.g. "prefix", "cooldown"
+	ValueType string    `json:"value_type"` // "bool", "int", "string", "duration", "enum"
+	Value     string    `json:"value"`      // string serialized value
+	UpdatedBy int64     `json:"updated_by"` // user ID of updater
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// SettingChangeRecord represents an audit history log entry for setting mutations.
+type SettingChangeRecord struct {
+	ID        int64     `json:"id"`
+	ScopeType string    `json:"scope_type"`
+	ScopeID   int64     `json:"scope_id"`
+	Namespace string    `json:"namespace"`
+	Key       string    `json:"key"`
+	OldVal    string    `json:"old_val"`
+	NewVal    string    `json:"new_val"`
+	ChangedBy int64     `json:"changed_by"`
+	ChangedAt time.Time `json:"changed_at"`
+}
+
+// SettingOutboxEntry represents a durable outbox entry for transactional event publishing.
+type SettingOutboxEntry struct {
+	ID        int64     `json:"id"`
+	ScopeType string    `json:"scope_type"`
+	ScopeID   int64     `json:"scope_id"`
+	Namespace string    `json:"namespace"`
+	Key       string    `json:"key"`
+	OldVal    string    `json:"old_val"`
+	NewVal    string    `json:"new_val"`
+	ChangedBy int64     `json:"changed_by"`
+	CreatedAt time.Time `json:"created_at"`
+	Processed bool      `json:"processed"`
+}
+
+// SettingsRepository is the minimal contract for the settings domain.
+type SettingsRepository interface {
+	GetSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) (*SettingItem, error)
+	GetEffectiveSetting(ctx context.Context, namespace, key string, chatID, userID int64) (*SettingItem, error)
+	SetSetting(ctx context.Context, item *SettingItem) error
+	SetSettingsBatch(ctx context.Context, items []*SettingItem) error
+	DeleteSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) error
+	ListSettings(ctx context.Context, scopeType string, scopeID int64, namespace string) ([]SettingItem, error)
+	GetSettingHistory(ctx context.Context, namespace, key string, limit int) ([]SettingChangeRecord, error)
+	ListPendingOutbox(ctx context.Context, limit int) ([]SettingOutboxEntry, error)
+	MarkOutboxProcessed(ctx context.Context, id int64) error
+}
+
 // GetSetting retrieves a setting by its scope, namespace, and key.
 func (d *DB) GetSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) (*SettingItem, error) {
 	query := `
