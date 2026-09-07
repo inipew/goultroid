@@ -3,7 +3,8 @@ package menu
 import "github.com/inipew/goultroid/internal/ui"
 
 // ScreenID identifies a specific screen in the assistant navigation tree.
-type ScreenID string
+// It aliases string so the canonical ui.Screen remains the single screen model.
+type ScreenID = string
 
 const (
 	ScreenIDStart    ScreenID = "start"
@@ -17,5 +18,5 @@ type Screen = ui.Screen
 
 // NewScreen creates a canonical UI screen while preserving the assistant menu API.
 func NewScreen(id ScreenID, title, body string) *Screen {
-	return ui.NewScreen(string(id), title, body)
+	return ui.NewScreen(id, title, body)
 }
