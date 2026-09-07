@@ -371,4 +371,3 @@ func TestAdvancedUIPrimitives(t *testing.T) {
 		t.Errorf("unexpected wizard step output: %s", wizText)
 	}
 }
-

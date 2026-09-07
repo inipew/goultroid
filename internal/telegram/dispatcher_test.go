@@ -908,4 +908,3 @@ func TestDispatcher_AFK_EndToEnd(t *testing.T) {
 		t.Fatalf("expected Welcome back message in private chat, got: %q", lastSent)
 	}
 }
-

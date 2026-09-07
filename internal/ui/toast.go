@@ -60,4 +60,3 @@ func MapUserErrorMessage(err error) string {
 	}
 	return "❌ Action failed. Please try again."
 }
-

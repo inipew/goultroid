@@ -126,4 +126,3 @@ func (m *MockTelegramServicer) GetContacts(ctx context.Context) ([]*User, error)
 func (m *MockTelegramServicer) IsBotSent(msgID int) bool {
 	return false
 }
-

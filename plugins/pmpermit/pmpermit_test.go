@@ -321,4 +321,3 @@ func TestPMPermitPlugin_DisapproveAndWarningDoNotAutoApprove(t *testing.T) {
 		t.Errorf("legitimate outgoing chat SHOULD auto-approve user")
 	}
 }
-

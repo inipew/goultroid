@@ -33,4 +33,3 @@ func (u *UseCase) Execute(probe func() error) (Result, error) {
 func FormatResult(latency time.Duration) string {
 	return fmt.Sprintf("🏓 <b>Pong!</b>\n⚡ <b>Latency:</b> <code>%d ms</code>", latency.Milliseconds())
 }
-

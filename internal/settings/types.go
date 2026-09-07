@@ -67,4 +67,3 @@ type SettingDefinition struct {
 	Order         int
 	Sensitive     bool
 }
-

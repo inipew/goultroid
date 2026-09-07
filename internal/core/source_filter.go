@@ -37,4 +37,3 @@ func FilterMiddlewareForSource(cmd Command, source ExecutionSource) Middleware {
 		}
 	}
 }
-

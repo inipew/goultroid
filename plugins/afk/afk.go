@@ -20,8 +20,8 @@ import (
 )
 
 var (
-	_ plugin.MessageHookPlugin   = (*Plugin)(nil)
-	_ plugin.ContextInitializer  = (*Plugin)(nil)
+	_ plugin.MessageHookPlugin     = (*Plugin)(nil)
+	_ plugin.ContextInitializer    = (*Plugin)(nil)
 	_ execution.CapabilityProvider = (*Plugin)(nil)
 )
 

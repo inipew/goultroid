@@ -312,7 +312,6 @@ func TestPlugin_CLIConfig(t *testing.T) {
 		t.Errorf("expected '!' prefix, got: %s", tgSvc.lastText)
 	}
 
-
 	// 4. History
 	ctx.Args = []string{"history", "core:prefix"}
 	_ = p.handleConfigCommand(ctx)
@@ -575,4 +574,3 @@ func TestPlugin_ScopeSwitchingAndTarget(t *testing.T) {
 		t.Errorf("expected fallback to default '.' after reset, got: %q", valReset)
 	}
 }
-

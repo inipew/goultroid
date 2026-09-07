@@ -33,5 +33,3 @@ func TestUseCase_Execute(t *testing.T) {
 		t.Errorf("expected latency >= 10ms, got %v", res.Latency)
 	}
 }
-
-

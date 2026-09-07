@@ -153,10 +153,10 @@ type rawCommandPlugin struct {
 	commands []core.Command
 }
 
-func (r *rawCommandPlugin) Name() string                { return r.name }
-func (r *rawCommandPlugin) Commands() []core.Command    { return r.commands }
-func (r *rawCommandPlugin) Init() error                 { return nil }
-func (r *rawCommandPlugin) Shutdown() error             { return nil }
+func (r *rawCommandPlugin) Name() string             { return r.name }
+func (r *rawCommandPlugin) Commands() []core.Command { return r.commands }
+func (r *rawCommandPlugin) Init() error              { return nil }
+func (r *rawCommandPlugin) Shutdown() error          { return nil }
 
 type mockHookPlugin struct {
 	dummyPlugin

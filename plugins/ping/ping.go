@@ -63,4 +63,3 @@ func (p *Plugin) handlePing(ctx *core.Context) error {
 	}
 	return ctx.Edit(appPing.FormatResult(res.Latency))
 }
-

@@ -372,5 +372,3 @@ func TestCommandRouter_CoreRouterDirect(t *testing.T) {
 		t.Fatalf("expected 'pong from core', got %q", fake.lastSentText)
 	}
 }
-
-

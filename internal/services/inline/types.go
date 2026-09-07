@@ -91,13 +91,13 @@ type InlineResult struct {
 
 // InlineResponse is returned by handlers; allows native pagination and response policy.
 type InlineResponse struct {
-	Results    []InlineResult
-	NextOffset string
-	Cache      CachePolicy
-	CacheTime  int // seconds; 0 uses engine default; negative disables
-	Gallery    bool
-	Private    bool
-	SwitchPM   *SwitchPM
+	Results       []InlineResult
+	NextOffset    string
+	Cache         CachePolicy
+	CacheTime     int // seconds; 0 uses engine default; negative disables
+	Gallery       bool
+	Private       bool
+	SwitchPM      *SwitchPM
 	SwitchWebView *SwitchWebView
 }
 

@@ -68,12 +68,12 @@ type TelegramServicer interface {
 
 // InlineAnswerOptions carries Telegram's inline response policy (gallery/private/switch_pm).
 type InlineAnswerOptions struct {
-	Results    []tg.InputBotInlineResultClass
-	NextOffset string
-	CacheTime  int
-	Gallery    bool
-	Private    bool
-	SwitchPM   *tg.InlineBotSwitchPM
+	Results       []tg.InputBotInlineResultClass
+	NextOffset    string
+	CacheTime     int
+	Gallery       bool
+	Private       bool
+	SwitchPM      *tg.InlineBotSwitchPM
 	SwitchWebView *tg.InlineBotWebView
 }
 

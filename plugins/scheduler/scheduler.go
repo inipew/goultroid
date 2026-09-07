@@ -50,7 +50,7 @@ func (p *Plugin) Commands() []core.Command {
 	return []core.Command{
 		{
 			Name: "remind", Description: "Set a quick reminder in this chat",
-			Usage: ".remind <duration> <text> or reply to a message with .remind <duration>",
+			Usage:    ".remind <duration> <text> or reply to a message with .remind <duration>",
 			Category: "Scheduler", Permission: core.PermissionSudo, Surfaces: schedSurfaces, Handler: p.handleRemind,
 		},
 		{
@@ -246,7 +246,9 @@ func (p *Plugin) handleSchedHistory(ctx *core.Context) error {
 	limit := 10
 	if len(ctx.Args) >= 2 {
 		if n, err := strconv.Atoi(ctx.Args[1]); err == nil && n > 0 {
-			if n > 50 { n = 50 }
+			if n > 50 {
+				n = 50
+			}
 			limit = n
 		}
 	}
@@ -267,7 +269,9 @@ func (p *Plugin) handleSchedHistory(ctx *core.Context) error {
 			icon = "❌"
 			if e.ErrorMsg != "" {
 				snippet := e.ErrorMsg
-				if len(snippet) > 60 { snippet = snippet[:57] + "..." }
+				if len(snippet) > 60 {
+					snippet = snippet[:57] + "..."
+				}
 				errPart = fmt.Sprintf("\n  └ <i>Error:</i> <code>%s</code>", html.EscapeString(snippet))
 			}
 		}
@@ -277,7 +281,9 @@ func (p *Plugin) handleSchedHistory(ctx *core.Context) error {
 }
 
 func getChatID(ctx *core.Context) int64 {
-	if ctx.Chat != nil && ctx.Chat.ID != 0 { return ctx.Chat.ID }
+	if ctx.Chat != nil && ctx.Chat.ID != 0 {
+		return ctx.Chat.ID
+	}
 	return ctx.SenderID()
 }
 

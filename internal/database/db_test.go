@@ -1696,5 +1696,3 @@ func TestDB_SetSettingsBatch(t *testing.T) {
 		t.Errorf("expected no error for empty batch, got: %v", err)
 	}
 }
-
-

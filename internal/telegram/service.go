@@ -464,7 +464,6 @@ func (s *Service) EditInlineBotMessage(ctx context.Context, inlineID tg.InputBot
 	return err
 }
 
-
 // EditInlineBotMessageMarkup updates only the reply markup of an inline message, preserving its text.
 func (s *Service) EditInlineBotMessageMarkup(ctx context.Context, inlineID tg.InputBotInlineMessageIDClass, markup tg.ReplyMarkupClass) error {
 	if s.api == nil {

@@ -378,5 +378,3 @@ func TestUserLogPlugin_PMPermitEvent(t *testing.T) {
 		t.Errorf("expected PMPERMIT BLOCK logged to userlog, got %s", mockTG.getSent())
 	}
 }
-
-

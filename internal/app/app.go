@@ -21,29 +21,42 @@ import (
 )
 
 type App struct {
-	cfg *config.Config
-	logger *zap.Logger
-	db *database.DB
-	client *telegram.Client
-	plugins *plugin.Manager
-	router *core.Router
-	sched *scheduler.Engine
-	eventBus *core.EventBus
-	assistant assistant.Client
-	limiter *ratelimit.Limiter
-	addonMgr *addon.Manager
-	callbackStore *callback.StateStore
-	inlineEngine *inline.Engine
+	cfg             *config.Config
+	logger          *zap.Logger
+	db              *database.DB
+	client          *telegram.Client
+	plugins         *plugin.Manager
+	router          *core.Router
+	sched           *scheduler.Engine
+	eventBus        *core.EventBus
+	assistant       assistant.Client
+	limiter         *ratelimit.Limiter
+	addonMgr        *addon.Manager
+	callbackStore   *callback.StateStore
+	inlineEngine    *inline.Engine
 	settingsService *settings.Service
 }
 
 func New(cfg *config.Config) (*App, error) {
-	if cfg == nil { return nil, fmt.Errorf("config cannot be nil") }
+	if cfg == nil {
+		return nil, fmt.Errorf("config cannot be nil")
+	}
 	logger, err := initLogger(cfg.LogLevel)
-	if err != nil { return nil, fmt.Errorf("failed to build logger: %w", err) }
-	coreDeps, err := buildCore(cfg, logger); if err != nil { return nil, err }
-	tgRuntime, err := buildTelegramRuntime(cfg, coreDeps, logger); if err != nil { return nil, err }
-	domServices, err := buildDomainServices(cfg, coreDeps, tgRuntime, logger); if err != nil { return nil, err }
+	if err != nil {
+		return nil, fmt.Errorf("failed to build logger: %w", err)
+	}
+	coreDeps, err := buildCore(cfg, logger)
+	if err != nil {
+		return nil, err
+	}
+	tgRuntime, err := buildTelegramRuntime(cfg, coreDeps, logger)
+	if err != nil {
+		return nil, err
+	}
+	domServices, err := buildDomainServices(cfg, coreDeps, tgRuntime, logger)
+	if err != nil {
+		return nil, err
+	}
 
 	pluginManager := plugin.NewManager(coreDeps.router)
 	pluginManager.SetHookRegistrar(tgRuntime.dispatcher)
@@ -54,9 +67,17 @@ func New(cfg *config.Config) (*App, error) {
 	}
 
 	pluginsList, err := buildPlugins(coreDeps, tgRuntime, domServices)
-	if err != nil { _ = coreDeps.eventBus.Close(); _ = coreDeps.db.Close(); return nil, err }
+	if err != nil {
+		_ = coreDeps.eventBus.Close()
+		_ = coreDeps.db.Close()
+		return nil, err
+	}
 	for _, p := range pluginsList {
-		if err := pluginManager.Register(p); err != nil { _ = coreDeps.eventBus.Close(); _ = coreDeps.db.Close(); return nil, fmt.Errorf("failed to register plugin %q: %w", p.Name(), err) }
+		if err := pluginManager.Register(p); err != nil {
+			_ = coreDeps.eventBus.Close()
+			_ = coreDeps.db.Close()
+			return nil, fmt.Errorf("failed to register plugin %q: %w", p.Name(), err)
+		}
 	}
 	return &App{cfg: cfg, logger: logger, db: coreDeps.db, client: tgRuntime.client, plugins: pluginManager, router: coreDeps.router, sched: domServices.schedEngine, eventBus: coreDeps.eventBus, assistant: tgRuntime.assistant, limiter: coreDeps.cmdLimiter, addonMgr: domServices.addonManager, callbackStore: coreDeps.callbackStore, inlineEngine: coreDeps.inlineEngine, settingsService: domServices.settingsService}, nil
 }
@@ -65,7 +86,17 @@ func (a *App) Run(ctx context.Context) error { return a.runLifecycle(ctx) }
 
 func initLogger(logLevel string) (*zap.Logger, error) {
 	var zapLevel zapcore.Level
-	switch logLevel { case "debug": zapLevel = zap.DebugLevel; case "warn": zapLevel = zap.WarnLevel; case "error": zapLevel = zap.ErrorLevel; default: zapLevel = zap.InfoLevel }
-	zapCfg := zap.NewDevelopmentConfig(); zapCfg.Level = zap.NewAtomicLevelAt(zapLevel)
+	switch logLevel {
+	case "debug":
+		zapLevel = zap.DebugLevel
+	case "warn":
+		zapLevel = zap.WarnLevel
+	case "error":
+		zapLevel = zap.ErrorLevel
+	default:
+		zapLevel = zap.InfoLevel
+	}
+	zapCfg := zap.NewDevelopmentConfig()
+	zapCfg.Level = zap.NewAtomicLevelAt(zapLevel)
 	return zapCfg.Build()
 }

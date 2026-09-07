@@ -480,6 +480,3 @@ func TestPMPermit_EventBus(t *testing.T) {
 		t.Errorf("expected event approve for 9988, got action=%s, user=%d", lastAction, lastUserID)
 	}
 }
-
-
-

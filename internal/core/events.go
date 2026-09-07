@@ -43,6 +43,7 @@ type MessageCreatedEvent struct {
 	ChatID   int64
 	PeerID   interface{}
 }
+
 func (e *MessageCreatedEvent) Type() EventType      { return EventTypeMessageCreated }
 func (e *MessageCreatedEvent) Timestamp() time.Time { return e.At }
 func (e *MessageCreatedEvent) Meta() EventMeta      { return e.MetaData }
@@ -54,6 +55,7 @@ type MessageEditedEvent struct {
 	ChatID   int64
 	Text     string
 }
+
 func (e *MessageEditedEvent) Type() EventType      { return EventTypeMessageEdited }
 func (e *MessageEditedEvent) Timestamp() time.Time { return e.At }
 func (e *MessageEditedEvent) Meta() EventMeta      { return e.MetaData }
@@ -137,6 +139,7 @@ type ReactionUpdatedEvent struct {
 	ChatID   int64
 	Reaction string
 }
+
 func (e *ReactionUpdatedEvent) Type() EventType      { return EventTypeReactionUpdated }
 func (e *ReactionUpdatedEvent) Timestamp() time.Time { return e.At }
 func (e *ReactionUpdatedEvent) Meta() EventMeta      { return e.MetaData }
@@ -208,10 +211,12 @@ func (e *SettingChangedEvent) Type() EventType      { return EventTypeSettingCha
 func (e *SettingChangedEvent) Timestamp() time.Time { return e.At }
 func (e *SettingChangedEvent) Meta() EventMeta      { return e.MetaData }
 
-
 type EventHandler func(event Event)
 
-type eventJob struct{ handler EventHandler; event Event }
+type eventJob struct {
+	handler EventHandler
+	event   Event
+}
 
 const (
 	eventQueueSize = 1024

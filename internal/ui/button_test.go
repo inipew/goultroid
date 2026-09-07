@@ -62,5 +62,3 @@ func TestConfirmCancelRow(t *testing.T) {
 		t.Errorf("unexpected cancel button: %+v", row[1])
 	}
 }
-
-

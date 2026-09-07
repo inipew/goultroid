@@ -643,4 +643,3 @@ func TestServiceResolverCacheAndInvalidation(t *testing.T) {
 		t.Fatalf("expected event-invalidated resolution '%%', got %q", val)
 	}
 }
-

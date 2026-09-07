@@ -11,14 +11,14 @@ import (
 )
 
 type mockTelegramAPI struct {
-	answerReq       *tg.MessagesSetBotCallbackAnswerRequest
-	editReq         *tg.MessagesEditMessageRequest
-	deleteMsgsReq   *tg.MessagesDeleteMessagesRequest
-	deleteChanReq   *tg.ChannelsDeleteMessagesRequest
-	getMsgsIDs      []tg.InputMessageClass
-	getChanReq      *tg.ChannelsGetMessagesRequest
-	sendMsgReq      *tg.MessagesSendMessageRequest
-	editInlineReq   *tg.MessagesEditInlineBotMessageRequest
+	answerReq     *tg.MessagesSetBotCallbackAnswerRequest
+	editReq       *tg.MessagesEditMessageRequest
+	deleteMsgsReq *tg.MessagesDeleteMessagesRequest
+	deleteChanReq *tg.ChannelsDeleteMessagesRequest
+	getMsgsIDs    []tg.InputMessageClass
+	getChanReq    *tg.ChannelsGetMessagesRequest
+	sendMsgReq    *tg.MessagesSendMessageRequest
+	editInlineReq *tg.MessagesEditInlineBotMessageRequest
 
 	// Injected errors
 	deleteErr     error

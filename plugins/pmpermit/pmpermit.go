@@ -374,4 +374,3 @@ func (p *Plugin) handleToggle(ctx *core.Context) error {
 		return ctx.EditOrReply("⚠️ Unknown option. Usage: <code>.pmpermit [on|off|status|test|list|unblock]</code>")
 	}
 }
-

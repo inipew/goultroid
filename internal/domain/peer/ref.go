@@ -7,9 +7,9 @@ type PeerKind uint8
 
 const (
 	PeerKindUser    PeerKind = iota // private user
-	PeerKindChat                   // legacy group
-	PeerKindChannel                // supergroup / channel
-	PeerKindSelf                   // self
+	PeerKindChat                    // legacy group
+	PeerKindChannel                 // supergroup / channel
+	PeerKindSelf                    // self
 )
 
 // PeerRef is the minimal stable identity for a Telegram peer.

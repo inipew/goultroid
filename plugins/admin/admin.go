@@ -614,4 +614,3 @@ func (p *Plugin) publishAdminAction(ctx *core.Context, action string, targetID i
 		Success:   true,
 	})
 }
-

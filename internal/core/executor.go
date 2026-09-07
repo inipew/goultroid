@@ -33,7 +33,7 @@ func NewCommandExecutor(logger *zap.Logger, cooldown *CooldownTracker, defaultTi
 }
 
 func (e *CommandExecutor) SetMetrics(metrics MetricsCollector) { e.metrics = metrics }
-func (e *CommandExecutor) Metrics() MetricsCollector            { return e.metrics }
+func (e *CommandExecutor) Metrics() MetricsCollector           { return e.metrics }
 func (e *CommandExecutor) SetRateLimiter(limiter CommandRateLimiter) {
 	e.rateLimiter = limiter
 }
@@ -60,19 +60,19 @@ func (e *CommandExecutor) ExecuteExecution(exec CommandExecution, cmd Command, s
 		exec.Command = cmd.Name
 	}
 	ctx := &Context{
-		Ctx:            exec.Ctx,
-		CorrelationID:  exec.CorrelationID,
-		Source:         exec.Source,
-		Command:        exec.Command,
-		Args:           append([]string(nil), exec.Args...),
-		RawArgs:        exec.RawArgs,
-		Message:        exec.TriggerMessage,
-		Chat:           exec.Chat,
-		Sender:         exec.Sender,
-		Principal:      exec.Principal,
-		Perms:          exec.Perms,
-		Svc:            svc,
-		PeerID:         exec.PeerID,
+		Ctx:           exec.Ctx,
+		CorrelationID: exec.CorrelationID,
+		Source:        exec.Source,
+		Command:       exec.Command,
+		Args:          append([]string(nil), exec.Args...),
+		RawArgs:       exec.RawArgs,
+		Message:       exec.TriggerMessage,
+		Chat:          exec.Chat,
+		Sender:        exec.Sender,
+		Principal:     exec.Principal,
+		Perms:         exec.Perms,
+		Svc:           svc,
+		PeerID:        exec.PeerID,
 	}
 	return e.execute(ctx, cmd, exec.Source)
 }

@@ -19,7 +19,7 @@ const (
 	StatusApproved = "approved"
 	StatusBlocked  = "blocked"
 
-	DefaultMaxWarns    = 4
+	DefaultMaxWarns     = 4
 	DefaultWarnCooldown = 2500 * time.Millisecond
 )
 
@@ -118,31 +118,71 @@ func (s *Service) IsBotSent(msgID int) bool {
 	return false
 }
 func (s *Service) OwnerID() int64 { return s.ownerID }
-func (s *Service) IsSudoID(userID int64) bool { if s.perms != nil && s.perms.IsSudo(userID) { return true }; return false }
-func (s *Service) getService() core.TelegramServicer { if s.svc != nil { return s.svc }; if s.svcFunc != nil { return s.svcFunc() }; return nil }
-func (s *Service) IsEnabled() bool { s.mu.RLock(); defer s.mu.RUnlock(); return s.enabled }
+func (s *Service) IsSudoID(userID int64) bool {
+	if s.perms != nil && s.perms.IsSudo(userID) {
+		return true
+	}
+	return false
+}
+func (s *Service) getService() core.TelegramServicer {
+	if s.svc != nil {
+		return s.svc
+	}
+	if s.svcFunc != nil {
+		return s.svcFunc()
+	}
+	return nil
+}
+func (s *Service) IsEnabled() bool         { s.mu.RLock(); defer s.mu.RUnlock(); return s.enabled }
 func (s *Service) SetEnabled(enabled bool) { s.mu.Lock(); s.enabled = enabled; s.mu.Unlock() }
-func (s *Service) SetMaxWarns(max int) { s.mu.Lock(); if max > 0 { s.maxWarns = max }; s.mu.Unlock() }
+func (s *Service) SetMaxWarns(max int) {
+	s.mu.Lock()
+	if max > 0 {
+		s.maxWarns = max
+	}
+	s.mu.Unlock()
+}
 
 func (s *Service) IsApproved(ctx context.Context, userID int64) (bool, error) {
-	if s.perms != nil && s.perms.IsSudo(userID) { return true, nil }
-	if userID == s.ownerID { return true, nil }
+	if s.perms != nil && s.perms.IsSudo(userID) {
+		return true, nil
+	}
+	if userID == s.ownerID {
+		return true, nil
+	}
 	if value, ok := s.approvedCache.Load(userID); ok {
 		entry := value.(approvalCacheEntry)
-		if entry.expiresAt.IsZero() || time.Now().UTC().Before(entry.expiresAt) { return true, nil }
+		if entry.expiresAt.IsZero() || time.Now().UTC().Before(entry.expiresAt) {
+			return true, nil
+		}
 		s.approvedCache.Delete(userID)
 	}
-	if s.db == nil { return false, fmt.Errorf("pm permit database is unavailable") }
+	if s.db == nil {
+		return false, fmt.Errorf("pm permit database is unavailable")
+	}
 	rec, err := s.db.GetPMRecord(ctx, userID)
-	if err != nil { return false, err }
-	if rec == nil || rec.Status != StatusApproved { return false, nil }
-	if rec.ExpiresAt != nil && time.Now().UTC().After(*rec.ExpiresAt) { _ = s.db.SetPMStatus(ctx, userID, StatusPending, "approval expired", nil); return false, nil }
-	entry := approvalCacheEntry{}; if rec.ExpiresAt != nil { entry.expiresAt = *rec.ExpiresAt }; s.approvedCache.Store(userID, entry)
+	if err != nil {
+		return false, err
+	}
+	if rec == nil || rec.Status != StatusApproved {
+		return false, nil
+	}
+	if rec.ExpiresAt != nil && time.Now().UTC().After(*rec.ExpiresAt) {
+		_ = s.db.SetPMStatus(ctx, userID, StatusPending, "approval expired", nil)
+		return false, nil
+	}
+	entry := approvalCacheEntry{}
+	if rec.ExpiresAt != nil {
+		entry.expiresAt = *rec.ExpiresAt
+	}
+	s.approvedCache.Store(userID, entry)
 	return true, nil
 }
 
 func (s *Service) addWarnID(userID int64, msgID int) {
-	if msgID == 0 { return }
+	if msgID == 0 {
+		return
+	}
 	s.warnMu.Lock()
 	s.warnIDs[userID] = append(s.warnIDs[userID], msgID)
 	if len(s.warnIDs[userID]) > 20 {
@@ -186,7 +226,9 @@ func (s *Service) clearWarnIDs(userID int64) {
 
 // IsWarnID returns true if msgID is a recorded warning message for userID.
 func (s *Service) IsWarnID(userID int64, msgID int) bool {
-	if msgID == 0 { return false }
+	if msgID == 0 {
+		return false
+	}
 	s.warnMu.Lock()
 	ids := s.warnIDs[userID]
 	for _, id := range ids {
@@ -210,7 +252,9 @@ func (s *Service) IsWarnID(userID int64, msgID int) bool {
 
 // IsPMPermitMessage checks if text matches any bot-generated PM permit warning or response.
 func (s *Service) IsPMPermitMessage(text string) bool {
-	if text == "" { return false }
+	if text == "" {
+		return false
+	}
 	signatures := []string{
 		"haven't approved you for private messaging",
 		"PM Permit Limit Reached",
@@ -231,7 +275,9 @@ func (s *Service) IsPMPermitMessage(text string) bool {
 
 // IsBlocked checks whether userID is currently marked as blocked in the database.
 func (s *Service) IsBlocked(ctx context.Context, userID int64) bool {
-	if s.db == nil { return false }
+	if s.db == nil {
+		return false
+	}
 	rec, err := s.db.GetPMRecord(ctx, userID)
 	return err == nil && rec != nil && rec.Status == StatusBlocked
 }

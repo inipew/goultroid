@@ -36,7 +36,7 @@ func (m *mockService) GetMessage(_ context.Context, _ tg.InputPeerClass, msgID i
 		return nil, nil
 	}
 	return &tg.Message{
-		ID:     50,
+		ID:      50,
 		ReplyTo: &tg.MessageReplyHeader{ReplyToMsgID: 50, ReplyToTopID: 42, ForumTopic: true},
 	}, nil
 }

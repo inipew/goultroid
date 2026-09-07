@@ -116,9 +116,9 @@ func handlerOptions(h Handler) CallbackHandlerOptions {
 // CallbackContext encapsulates the execution environment and metadata of an incoming callback query.
 // ChatID and MsgID are deprecated (C): use Origin/Target. They are kept populated from Target for compatibility.
 type CallbackContext struct {
-	Ctx       context.Context
-	QueryID   int64
-	UserID    int64
+	Ctx     context.Context
+	QueryID int64
+	UserID  int64
 	// Deprecated: use Target.Peer / Target.MessageID. Kept populated from Target for backward compat.
 	ChatID int64
 	// Deprecated: use Target.MessageID or Target.InlineID.
@@ -437,4 +437,3 @@ func isValidOpaqueID(s string) bool {
 func NewActionData(namespace, action, opaqueID string) ([]byte, error) {
 	return EncodeCallbackDataChecked(namespace, action, opaqueID)
 }
-

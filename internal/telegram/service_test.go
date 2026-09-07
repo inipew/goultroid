@@ -15,7 +15,6 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 )
 
-
 func TestParseHTML(t *testing.T) {
 	helpText := "📚 <b>GoUltroid Help</b>\n" +
 		"<i>80 commands across 15 modules.</i>\n\n" +
@@ -47,9 +46,6 @@ func TestParseHTML(t *testing.T) {
 		t.Errorf("expected entities for config usage, got 0")
 	}
 }
-
-
-
 
 // Ensure Service implements core.TelegramServicer.
 var _ core.TelegramServicer = (*Service)(nil)

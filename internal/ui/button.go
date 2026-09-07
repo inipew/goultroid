@@ -179,5 +179,3 @@ func NewStandardActionRow(callbackData []byte, callbackText string, url string, 
 	}
 	return row
 }
-
-

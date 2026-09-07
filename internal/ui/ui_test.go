@@ -208,4 +208,3 @@ func TestMapUserErrorMessage(t *testing.T) {
 		t.Errorf("expected invalid callback message, got: %s", got)
 	}
 }
-

@@ -24,7 +24,9 @@ func Chain(final Handler, mws ...Middleware) Handler {
 
 // RecoverMiddleware returns a Middleware that recovers panics, logs, records metrics, and converts them to ErrInternal.
 // It must be the outermost middleware so panics from inner middlewares (e.g. Timeout) are also caught.
-func RecoverMiddleware(logger *zap.Logger, metrics interface{ RecordCallback(string, time.Duration, error) }, start time.Time) Middleware {
+func RecoverMiddleware(logger *zap.Logger, metrics interface {
+	RecordCallback(string, time.Duration, error)
+}, start time.Time) Middleware {
 	return func(next Handler) Handler {
 		return handlerFunc{
 			ns: next.Namespace(),

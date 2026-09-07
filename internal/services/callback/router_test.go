@@ -30,11 +30,11 @@ func (m *mockHandler) HandleCallback(ctx *CallbackContext) error {
 
 type recordingService struct {
 	core.MockTelegramServicer
-	lastAnswerQueryID  int64
-	lastAnswerText     string
-	lastAnswerAlert    bool
-	lastEditInlineID   tg.InputBotInlineMessageIDClass
-	lastEditInlineText string
+	lastAnswerQueryID              int64
+	lastAnswerText                 string
+	lastAnswerAlert                bool
+	lastEditInlineID               tg.InputBotInlineMessageIDClass
+	lastEditInlineText             string
 	lastEditPeer                   tg.InputPeerClass
 	lastEditMsgID                  int
 	lastEditText                   string
@@ -646,5 +646,3 @@ func TestCallback_FailureAndNewActionData(t *testing.T) {
 		t.Errorf("unexpected parsed action data: ns=%s act=%s oid=%s", ns, act, oid)
 	}
 }
-
-

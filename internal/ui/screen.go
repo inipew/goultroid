@@ -68,4 +68,3 @@ func (s *Screen) RenderScreen() RenderedScreen {
 		Markup: markup,
 	}
 }
-

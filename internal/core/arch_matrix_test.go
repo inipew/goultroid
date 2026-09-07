@@ -15,12 +15,12 @@ func TestArchitecture_DependencyMatrix(t *testing.T) {
 	// Define allowed imports per package (relative to internal/) — reflects current architecture, not ideal future.
 	// Goal: prevent regression (e.g., core -> app/telegram, ui -> database, plugin -> raw DB).
 	rules := map[string][]string{
-		"core":                {}, // core should not import app, telegram, database, ui, plugins, services, settings
-		"settings":            {"github.com/inipew/goultroid/internal/core", "github.com/inipew/goultroid/internal/database"},
-		"services/callback":   {"github.com/inipew/goultroid/internal/core", "github.com/inipew/goultroid/internal/services/ratelimit"},
+		"core":                 {}, // core should not import app, telegram, database, ui, plugins, services, settings
+		"settings":             {"github.com/inipew/goultroid/internal/core", "github.com/inipew/goultroid/internal/database"},
+		"services/callback":    {"github.com/inipew/goultroid/internal/core", "github.com/inipew/goultroid/internal/services/ratelimit"},
 		"services/interaction": {"github.com/inipew/goultroid/internal/core", "github.com/inipew/goultroid/internal/ui"},
-		"telegram":            {"github.com/inipew/goultroid/internal/core", "github.com/inipew/goultroid/internal/domain/peer", "github.com/inipew/goultroid/internal/database", "github.com/inipew/goultroid/internal/services/callback", "github.com/inipew/goultroid/internal/services/inline"},
-		"ui":                  {"github.com/inipew/goultroid/internal/core", "github.com/inipew/goultroid/internal/services/interaction/navigation", "github.com/inipew/goultroid/internal/services/callback"},
+		"telegram":             {"github.com/inipew/goultroid/internal/core", "github.com/inipew/goultroid/internal/domain/peer", "github.com/inipew/goultroid/internal/database", "github.com/inipew/goultroid/internal/services/callback", "github.com/inipew/goultroid/internal/services/inline"},
+		"ui":                   {"github.com/inipew/goultroid/internal/core", "github.com/inipew/goultroid/internal/services/interaction/navigation", "github.com/inipew/goultroid/internal/services/callback"},
 	}
 
 	base := ".."

@@ -35,32 +35,34 @@ type Client interface {
 }
 
 type AssistantClient struct {
-	appID      int
-	appHash    string
-	botToken   string
-	logger     *zap.Logger
-	startTime  time.Time
-	self       *tg.User
-	mu         sync.RWMutex
-	cancel     context.CancelFunc
+	appID        int
+	appHash      string
+	botToken     string
+	logger       *zap.Logger
+	startTime    time.Time
+	self         *tg.User
+	mu           sync.RWMutex
+	cancel       context.CancelFunc
 	shuttingDown atomic.Bool
-	wg         sync.WaitGroup
-	lifecycle  *Lifecycle
-	rateLimiter RateLimiter
-	cache      *peer.MemoryCache
-	resolver   *peer.DefaultResolver
-	interaction *interaction.ClientInteraction
-	cmdRouter  *command.Router
-	cbRouter   *callback.Router
-	menuCtrl   *menu.Controller
-	metrics    core.MetricsCollector
-	settingsSvc *settings.Service
+	wg           sync.WaitGroup
+	lifecycle    *Lifecycle
+	rateLimiter  RateLimiter
+	cache        *peer.MemoryCache
+	resolver     *peer.DefaultResolver
+	interaction  *interaction.ClientInteraction
+	cmdRouter    *command.Router
+	cbRouter     *callback.Router
+	menuCtrl     *menu.Controller
+	metrics      core.MetricsCollector
+	settingsSvc  *settings.Service
 }
 
 var _ Client = (*AssistantClient)(nil)
 
 func NewAssistantClient(appID int, appHash string, botToken string, logger *zap.Logger) *AssistantClient {
-	if logger == nil { logger = zap.NewNop() }
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	cache := peer.NewMemoryCache()
 	res := peer.NewResolver(cache)
 	rl := NewUserRateLimiter(5, 2*time.Second)
@@ -78,8 +80,12 @@ func NewAssistantClient(appID int, appHash string, botToken string, logger *zap.
 }
 
 func (c *AssistantClient) Start(ctx context.Context) error {
-	if c.botToken == "" { return ErrBotTokenRequired }
-	if !c.lifecycle.TryStart() { return ErrAlreadyRunning }
+	if c.botToken == "" {
+		return ErrBotTokenRequired
+	}
+	if !c.lifecycle.TryStart() {
+		return ErrAlreadyRunning
+	}
 
 	runCtx, cancel := context.WithCancel(ctx)
 	c.mu.Lock()
@@ -92,7 +98,9 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	tdClient := telegram.NewClient(c.appID, c.appHash, telegram.Options{UpdateHandler: updateMgr})
 	c.resolver.SetEntityFetcher(peer.NewTelegramEntityFetcher(tdClient.API()))
 	c.interaction = interaction.NewClientInteraction(tdClient.API(), c.logger)
-	if c.metrics != nil { c.interaction.SetMetricsCollector(c.metrics) }
+	if c.metrics != nil {
+		c.interaction.SetMetricsCollector(c.metrics)
+	}
 	c.interaction.SetPeerReResolver(c.resolver)
 	c.shuttingDown.Store(false)
 
@@ -110,12 +118,18 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 		defer c.wg.Done()
 		err := tdClient.Run(runCtx, func(ctx context.Context) error {
 			status, err := tdClient.Auth().Status(ctx)
-			if err != nil { return err }
+			if err != nil {
+				return err
+			}
 			if !status.Authorized {
-				if _, err := tdClient.Auth().Bot(ctx, c.botToken); err != nil { return err }
+				if _, err := tdClient.Auth().Bot(ctx, c.botToken); err != nil {
+					return err
+				}
 			}
 			user, err := tdClient.Self(ctx)
-			if err != nil { return err }
+			if err != nil {
+				return err
+			}
 			c.mu.Lock()
 			c.self = user
 			c.mu.Unlock()
@@ -153,10 +167,15 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 }
 
 func (c *AssistantClient) Stop(ctx context.Context) error {
-	if !c.lifecycle.TryStop() { return nil }
+	if !c.lifecycle.TryStop() {
+		return nil
+	}
 	c.shuttingDown.Store(true)
 	c.mu.Lock()
-	if c.cancel != nil { c.cancel(); c.cancel = nil }
+	if c.cancel != nil {
+		c.cancel()
+		c.cancel = nil
+	}
 	c.mu.Unlock()
 	stopped := make(chan struct{})
 	go func() { c.wg.Wait(); close(stopped) }()
@@ -170,12 +189,55 @@ func (c *AssistantClient) Stop(ctx context.Context) error {
 }
 
 func (c *AssistantClient) IsShuttingDown() bool { return c.shuttingDown.Load() }
-func (c *AssistantClient) IsRunning() bool { return c.lifecycle.State() == StateRunning }
-func (c *AssistantClient) Username() string { c.mu.RLock(); defer c.mu.RUnlock(); if c.self != nil && c.self.Username != "" { return c.self.Username }; return "GoUltroidBot" }
-func (c *AssistantClient) StartTime() time.Time { c.mu.RLock(); defer c.mu.RUnlock(); return c.startTime }
+func (c *AssistantClient) IsRunning() bool      { return c.lifecycle.State() == StateRunning }
+func (c *AssistantClient) Username() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.self != nil && c.self.Username != "" {
+		return c.self.Username
+	}
+	return "GoUltroidBot"
+}
+func (c *AssistantClient) StartTime() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.startTime
+}
 func (c *AssistantClient) SetAuthorizer(auth callback.Authorizer) { c.cbRouter.SetAuthorizer(auth) }
-func (c *AssistantClient) SetOwner(ownerID int64, sudoGetter func() []int64) { c.cbRouter.SetAuthorizer(callback.NewOwnerAuthorizer(ownerID, sudoGetter)); if c.cmdRouter != nil { c.cmdRouter.SetOwner(ownerID, sudoGetter) } }
-func (c *AssistantClient) SetCoreRouter(router *core.Router) { if c.cmdRouter != nil { c.cmdRouter.SetCoreRouter(router) }; if c.menuCtrl != nil { c.menuCtrl.SetCommandSource(router) } }
-func (c *AssistantClient) SetSettingsService(svc *settings.Service) { c.settingsSvc = svc; if c.menuCtrl != nil && c.cbRouter != nil { c.menuCtrl.AttachSettingsRoutes(c.cbRouter, svc) } }
-func (c *AssistantClient) SetMetricsCollector(m core.MetricsCollector) { c.metrics = m; if c.cmdRouter != nil { c.cmdRouter.SetMetricsCollector(m) }; if c.cbRouter != nil { c.cbRouter.SetMetricsCollector(m) }; if c.interaction != nil { c.interaction.SetMetricsCollector(m) } }
-func (c *AssistantClient) CacheEntities(e tg.Entities) { if c.cache != nil { c.cache.CacheEntities(e) } }
+func (c *AssistantClient) SetOwner(ownerID int64, sudoGetter func() []int64) {
+	c.cbRouter.SetAuthorizer(callback.NewOwnerAuthorizer(ownerID, sudoGetter))
+	if c.cmdRouter != nil {
+		c.cmdRouter.SetOwner(ownerID, sudoGetter)
+	}
+}
+func (c *AssistantClient) SetCoreRouter(router *core.Router) {
+	if c.cmdRouter != nil {
+		c.cmdRouter.SetCoreRouter(router)
+	}
+	if c.menuCtrl != nil {
+		c.menuCtrl.SetCommandSource(router)
+	}
+}
+func (c *AssistantClient) SetSettingsService(svc *settings.Service) {
+	c.settingsSvc = svc
+	if c.menuCtrl != nil && c.cbRouter != nil {
+		c.menuCtrl.AttachSettingsRoutes(c.cbRouter, svc)
+	}
+}
+func (c *AssistantClient) SetMetricsCollector(m core.MetricsCollector) {
+	c.metrics = m
+	if c.cmdRouter != nil {
+		c.cmdRouter.SetMetricsCollector(m)
+	}
+	if c.cbRouter != nil {
+		c.cbRouter.SetMetricsCollector(m)
+	}
+	if c.interaction != nil {
+		c.interaction.SetMetricsCollector(m)
+	}
+}
+func (c *AssistantClient) CacheEntities(e tg.Entities) {
+	if c.cache != nil {
+		c.cache.CacheEntities(e)
+	}
+}

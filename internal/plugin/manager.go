@@ -33,7 +33,6 @@ func NewManager(router *core.Router) *Manager {
 	return &Manager{router: router, plugins: make(map[string]Plugin), metadata: make(map[string]Metadata), list: make([]Plugin, 0)}
 }
 
-
 // SetHookRegistrar attaches a hook registrar (e.g. Telegram Dispatcher) to this manager.
 func (m *Manager) SetHookRegistrar(registrar HookRegistrar) {
 	m.mu.Lock()
@@ -164,10 +163,34 @@ func (m *Manager) RegisterWithContext(ctx context.Context, p Plugin) error {
 	return nil
 }
 
-func (m *Manager) Plugins() []Plugin { m.mu.RLock(); defer m.mu.RUnlock(); res := make([]Plugin, len(m.list)); copy(res, m.list); return res }
-func (m *Manager) Find(name string) (Plugin, bool) { m.mu.RLock(); defer m.mu.RUnlock(); p, ok := m.plugins[strings.ToLower(strings.TrimSpace(name))]; return p, ok }
-func (m *Manager) GetMetadata(name string) (Metadata, bool) { m.mu.RLock(); defer m.mu.RUnlock(); meta, ok := m.metadata[strings.ToLower(strings.TrimSpace(name))]; return meta, ok }
-func (m *Manager) AllMetadata() map[string]Metadata { m.mu.RLock(); defer m.mu.RUnlock(); res := make(map[string]Metadata, len(m.metadata)); for k, v := range m.metadata { res[k] = v }; return res }
+func (m *Manager) Plugins() []Plugin {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	res := make([]Plugin, len(m.list))
+	copy(res, m.list)
+	return res
+}
+func (m *Manager) Find(name string) (Plugin, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	p, ok := m.plugins[strings.ToLower(strings.TrimSpace(name))]
+	return p, ok
+}
+func (m *Manager) GetMetadata(name string) (Metadata, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	meta, ok := m.metadata[strings.ToLower(strings.TrimSpace(name))]
+	return meta, ok
+}
+func (m *Manager) AllMetadata() map[string]Metadata {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	res := make(map[string]Metadata, len(m.metadata))
+	for k, v := range m.metadata {
+		res[k] = v
+	}
+	return res
+}
 
 func (m *Manager) Shutdown() error { return m.ShutdownWithContext(context.Background()) }
 
@@ -178,13 +201,19 @@ func (m *Manager) Shutdown() error { return m.ShutdownWithContext(context.Backgr
 // cancellation does not skip later plugins: every registered plugin gets one
 // shutdown attempt so a database or network resource is not left running.
 func (m *Manager) ShutdownWithContext(ctx context.Context) error {
-	if ctx == nil { ctx = context.Background() }
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	m.mu.Lock()
-	if m.shutdown { m.mu.Unlock(); return nil }
+	if m.shutdown {
+		m.mu.Unlock()
+		return nil
+	}
 	m.shutdown = true
 	cleanups := m.hookCleanups
 	m.hookCleanups = nil
-	plugins := make([]Plugin, len(m.list)); copy(plugins, m.list)
+	plugins := make([]Plugin, len(m.list))
+	copy(plugins, m.list)
 	m.mu.Unlock()
 
 	// 1. Detach all message hooks first so no incoming update hits shutting-down plugins
@@ -199,9 +228,17 @@ func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 	for i := len(plugins) - 1; i >= 0; i-- {
 		p := plugins[i]
 		var err error
-		if s, ok := p.(ContextShutdowner); ok { err = s.ShutdownContext(ctx) } else if s, ok := p.(Shutdowner); ok { err = s.Shutdown() }
-		if err != nil { errs = append(errs, fmt.Sprintf("%s: %v", p.Name(), err)) }
+		if s, ok := p.(ContextShutdowner); ok {
+			err = s.ShutdownContext(ctx)
+		} else if s, ok := p.(Shutdowner); ok {
+			err = s.Shutdown()
+		}
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", p.Name(), err))
+		}
 	}
-	if len(errs) > 0 { return fmt.Errorf("errors during plugin shutdown: %s", strings.Join(errs, "; ")) }
+	if len(errs) > 0 {
+		return fmt.Errorf("errors during plugin shutdown: %s", strings.Join(errs, "; "))
+	}
 	return nil
 }

@@ -13,7 +13,7 @@ import (
 
 type mockService struct {
 	core.MockTelegramServicer
-	sent string
+	sent       string
 	edited     string
 	lastMarkup tg.ReplyMarkupClass
 }
@@ -244,12 +244,12 @@ func TestHelpPlugin_Interactive(t *testing.T) {
 
 	// 3. Simulate clicking "Back" (home)
 	cbCtxHome := &callback.CallbackContext{
-		Ctx:      context.Background(),
-		QueryID:  102,
-		UserID:   12345,
-		Action:   "home",
-		Service:  svc,
-		Target:   core.CallbackTarget{Peer: &tg.InputPeerSelf{}, MessageID: 1},
+		Ctx:     context.Background(),
+		QueryID: 102,
+		UserID:  12345,
+		Action:  "home",
+		Service: svc,
+		Target:  core.CallbackTarget{Peer: &tg.InputPeerSelf{}, MessageID: 1},
 	}
 	if err := p.HandleCallback(cbCtxHome); err != nil {
 		t.Fatalf("HandleCallback home failed: %v", err)
@@ -274,4 +274,3 @@ func TestHelpPlugin_Interactive(t *testing.T) {
 		t.Errorf("expected closed text on close callback, got: %s", svc.edited)
 	}
 }
-

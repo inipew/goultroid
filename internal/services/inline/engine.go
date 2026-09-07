@@ -22,9 +22,9 @@ type Registry struct {
 }
 
 type registryEntry struct {
-	pattern string
-	handler InlineHandler
-	matcher InlineMatcher
+	pattern  string
+	handler  InlineHandler
+	matcher  InlineMatcher
 	priority int
 }
 
@@ -174,11 +174,11 @@ type Engine struct {
 }
 
 const (
-	defaultInlineTimeout   = 4 * time.Second
-	maxInlineTitleLen      = 256
-	maxInlineDescLen       = 512
-	maxInlineTextLen       = 4096
-	maxInlineIDLen         = 64
+	defaultInlineTimeout = 4 * time.Second
+	maxInlineTitleLen    = 256
+	maxInlineDescLen     = 512
+	maxInlineTextLen     = 4096
+	maxInlineIDLen       = 64
 )
 
 // NewEngine creates an initialized Engine.

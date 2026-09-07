@@ -159,4 +159,3 @@ func TestCommandExecutor_SurfaceEnforcement(t *testing.T) {
 		t.Fatalf("expected success when running assistant-only command on assistant, got: %v", err)
 	}
 }
-

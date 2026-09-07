@@ -21,8 +21,8 @@ import (
 )
 
 var (
-	_ plugin.Plugin           = (*Plugin)(nil)
-	_ callback.Handler        = (*Plugin)(nil)
+	_ plugin.Plugin               = (*Plugin)(nil)
+	_ callback.Handler            = (*Plugin)(nil)
 	_ callback.HandlerWithOptions = (*Plugin)(nil)
 )
 
