@@ -91,7 +91,7 @@ func (h *Handler) HandleCallback(ctx *callback.CallbackContext) error {
 			return err
 		}
 		if botService, ok := ctx.Service.(*BotServiceAdapter); ok {
-			return botService.deleteCallbackMessage(ctx.Ctx, ctx.Target.Peer, ctx.Target.MessageID)
+			return botService.DeleteMessage(ctx.Ctx, ctx.Target.Peer, []int{ctx.Target.MessageID})
 		}
 		return ctx.Delete()
 

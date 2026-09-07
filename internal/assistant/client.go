@@ -4,18 +4,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/updates"
 	"github.com/gotd/td/tg"
+	asstcb "github.com/inipew/goultroid/internal/assistant/callback"
+	asstclient "github.com/inipew/goultroid/internal/assistant/client"
+	"github.com/inipew/goultroid/internal/assistant/command"
+	"github.com/inipew/goultroid/internal/assistant/interaction"
+	"github.com/inipew/goultroid/internal/assistant/menu"
+	"github.com/inipew/goultroid/internal/assistant/peer"
+	"github.com/inipew/goultroid/internal/assistant/presentation"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/services/localization"
-	"github.com/inipew/goultroid/internal/ui/render"
 	"go.uber.org/zap"
 )
 
@@ -30,11 +35,6 @@ type Client interface {
 	IsRunning() bool
 	Username() string
 	StartTime() time.Time
-}
-
-type userRateBucket struct {
-	tokens int
-	last   time.Time
 }
 
 type BotClient struct {
@@ -52,12 +52,14 @@ type BotClient struct {
 	startTime      time.Time
 	mu             sync.RWMutex
 
-	limiterMu  sync.Mutex
-	rateLimits map[int64]*userRateBucket
-
-	hashesMu      sync.RWMutex
-	userHashes    map[int64]int64
-	channelHashes map[int64]int64
+	// Assistant v2 Subsystems
+	lifecycle   *asstclient.Lifecycle
+	rateLimiter asstclient.RateLimiter
+	resolver    peer.Resolver
+	v2Router    *asstcb.Router
+	cmdRouter   *command.Router
+	menuCtrl    *menu.Controller
+	interaction *interaction.ClientInteraction
 }
 
 var _ Client = (*BotClient)(nil)
@@ -66,32 +68,39 @@ func NewBotClient(appID int, appHash string, botToken string, logger *zap.Logger
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	return &BotClient{
-		appID:         appID,
-		appHash:       appHash,
-		botToken:      botToken,
-		logger:        logger,
-		bridge:        NewBridge(),
-		startTime:     time.Now(),
-		rateLimits:    make(map[int64]*userRateBucket),
-		userHashes:    make(map[int64]int64),
-		channelHashes: make(map[int64]int64),
+
+	cache := peer.NewMemoryCache()
+	res := peer.NewResolver(cache)
+	rl := asstclient.NewUserRateLimiter(5, 2*time.Second)
+	v2r := asstcb.NewRouter(logger)
+	cmdR := command.NewRouter(logger)
+	ctrl := menu.NewController(presentation.RenderScreen)
+
+	client := &BotClient{
+		appID:       appID,
+		appHash:     appHash,
+		botToken:    botToken,
+		logger:      logger,
+		bridge:      NewBridge(),
+		startTime:   time.Now(),
+		lifecycle:   asstclient.NewLifecycle(),
+		rateLimiter: rl,
+		resolver:    res,
+		v2Router:    v2r,
+		cmdRouter:   cmdR,
+		menuCtrl:    ctrl,
 	}
+
+	ctrl.AttachRoutes(v2r, client.Username, client.StartTime)
+	command.AttachDefaultCommands(cmdR, client.Username, client.StartTime, presentation.RenderScreen)
+
+	return client
 }
 
 // CacheEntities stores access hashes for users and channels from received update entities.
 func (c *BotClient) CacheEntities(e tg.Entities) {
-	c.hashesMu.Lock()
-	defer c.hashesMu.Unlock()
-	for id, u := range e.Users {
-		if u != nil && u.AccessHash != 0 {
-			c.userHashes[id] = u.AccessHash
-		}
-	}
-	for id, ch := range e.Channels {
-		if ch != nil && ch.AccessHash != 0 {
-			c.channelHashes[id] = ch.AccessHash
-		}
+	if c.resolver != nil && c.resolver.Cache() != nil {
+		c.resolver.Cache().CacheEntities(e)
 	}
 }
 
@@ -100,16 +109,24 @@ func (c *BotClient) SetUserAccessHash(userID int64, accessHash int64) {
 	if userID == 0 || accessHash == 0 {
 		return
 	}
-	c.hashesMu.Lock()
-	defer c.hashesMu.Unlock()
-	c.userHashes[userID] = accessHash
+	if c.resolver != nil && c.resolver.Cache() != nil {
+		c.resolver.Cache().Put(peer.PeerRecord{
+			ID:         userID,
+			Kind:       peer.PeerKindUser,
+			AccessHash: accessHash,
+			UpdatedAt:  time.Now(),
+		})
+	}
 }
 
 // GetUserAccessHash retrieves the cached access hash for a given user.
 func (c *BotClient) GetUserAccessHash(userID int64) int64 {
-	c.hashesMu.RLock()
-	defer c.hashesMu.RUnlock()
-	return c.userHashes[userID]
+	if c.resolver != nil && c.resolver.Cache() != nil {
+		if rec, ok := c.resolver.Cache().Get(peer.PeerKindUser, userID); ok {
+			return rec.AccessHash
+		}
+	}
+	return 0
 }
 
 // SetChannelAccessHash caches the access hash for a given channel.
@@ -117,16 +134,24 @@ func (c *BotClient) SetChannelAccessHash(channelID int64, accessHash int64) {
 	if channelID == 0 || accessHash == 0 {
 		return
 	}
-	c.hashesMu.Lock()
-	defer c.hashesMu.Unlock()
-	c.channelHashes[channelID] = accessHash
+	if c.resolver != nil && c.resolver.Cache() != nil {
+		c.resolver.Cache().Put(peer.PeerRecord{
+			ID:         channelID,
+			Kind:       peer.PeerKindChannel,
+			AccessHash: accessHash,
+			UpdatedAt:  time.Now(),
+		})
+	}
 }
 
 // GetChannelAccessHash retrieves the cached access hash for a given channel.
 func (c *BotClient) GetChannelAccessHash(channelID int64) int64 {
-	c.hashesMu.RLock()
-	defer c.hashesMu.RUnlock()
-	return c.channelHashes[channelID]
+	if c.resolver != nil && c.resolver.Cache() != nil {
+		if rec, ok := c.resolver.Cache().Get(peer.PeerKindChannel, channelID); ok {
+			return rec.AccessHash
+		}
+	}
+	return 0
 }
 
 func (c *BotClient) SetBridge(b *Bridge) {
@@ -172,9 +197,7 @@ func (c *BotClient) SetLocalizer(l localization.Localizer) {
 }
 
 func (c *BotClient) IsRunning() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.cancel != nil
+	return c.lifecycle.State() == asstclient.StateRunning
 }
 
 func (c *BotClient) Username() string {
@@ -195,24 +218,42 @@ func (c *BotClient) StartTime() time.Time {
 	return c.startTime
 }
 
+// V2Router returns the Assistant v2 callback Router.
+func (c *BotClient) V2Router() *asstcb.Router {
+	return c.v2Router
+}
+
+// CommandRouter returns the Assistant v2 command Router.
+func (c *BotClient) CommandRouter() *command.Router {
+	return c.cmdRouter
+}
+
+// PeerResolver returns the peer Resolver.
+func (c *BotClient) PeerResolver() peer.Resolver {
+	return c.resolver
+}
+
+// Start connects and runs the bot MTProto client loop.
 func (c *BotClient) Start(ctx context.Context) error {
 	if c.botToken == "" {
 		return ErrBotTokenRequired
 	}
-	c.mu.Lock()
-	if c.cancel != nil {
-		c.mu.Unlock()
+	if !c.lifecycle.TryStart() {
 		return ErrAlreadyRunning
 	}
+
+	c.mu.Lock()
 	runCtx, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
 	c.startTime = time.Now()
 	c.mu.Unlock()
+
 	defer func() {
 		c.mu.Lock()
 		c.cancel = nil
 		c.mu.Unlock()
 		cancel()
+		c.lifecycle.SetState(asstclient.StateStopped)
 	}()
 
 	var client *telegram.Client
@@ -226,20 +267,63 @@ func (c *BotClient) Start(ctx context.Context) error {
 		if !ok || msg.Out || client == nil {
 			return nil
 		}
-		return c.handleBotCommand(ctx, e, msg, client, adapter)
+
+		senderID := extractSenderID(msg)
+		if senderID == 0 {
+			return nil
+		}
+
+		if !c.rateLimiter.Allow(senderID, "command") {
+			c.logger.Warn("assistant: rate limit exceeded for user", zap.Int64("from_id", senderID))
+			return nil
+		}
+
+		inputPeer, err := c.resolver.Resolve(ctx, msg.PeerID, senderID, e)
+		if err != nil || inputPeer == nil {
+			c.logger.Warn("assistant: sender access hash missing, command ignored", zap.Int64("sender_id", senderID), zap.Error(err))
+			return nil
+		}
+
+		if c.interaction != nil {
+			err := c.cmdRouter.Dispatch(ctx, senderID, inputPeer, msg.Message, c.interaction)
+			if err != nil && !errors.Is(err, command.ErrUnknownCommand) {
+				c.logger.Warn("assistant: command error", zap.Error(err), zap.Int64("sender_id", senderID))
+			}
+		}
+		return nil
 	})
 
 	// 2. Bot Callback Query Handler (normal message buttons)
 	dispatcher.OnBotCallbackQuery(func(ctx context.Context, e tg.Entities, update *tg.UpdateBotCallbackQuery) error {
 		c.CacheEntities(e)
 		chatID := extractChatIDFromPeer(update.Peer)
-		inputPeer := c.callbackInputPeer(update.Peer, update.UserID, e)
-		target := core.CallbackTarget{
-			Origin:       core.CallbackOriginMessage,
-			Peer:         inputPeer,
-			MessageID:    update.MsgID,
-			ChatInstance: update.ChatInstance,
+		inputPeer, _ := c.resolver.Resolve(ctx, update.Peer, update.UserID, e)
+		target := interaction.NewMessageTarget(inputPeer, update.MsgID, chatID, update.ChatInstance)
+
+		// Check rate limit
+		if !c.rateLimiter.Allow(update.UserID, "callback") {
+			if c.interaction != nil {
+				_ = c.interaction.Answer(ctx, update.QueryID, "Too many requests. Please wait.", true)
+			}
+			return nil
 		}
+
+		// Try parsing Assistant v2 callback payload
+		payload, parseErr := asstcb.Parse(update.Data)
+		if parseErr == nil && payload.Namespace == "assistant" && c.interaction != nil {
+			tx := asstcb.NewTransaction(update.QueryID, update.UserID, *payload, target, c.interaction)
+			if err := c.v2Router.Dispatch(ctx, tx); err != nil {
+				c.logger.Warn("assistant: v2 callback error",
+					zap.Error(err),
+					zap.Int64("query_id", update.QueryID),
+					zap.Int64("user_id", update.UserID),
+					zap.String("action", payload.Action),
+				)
+			}
+			return nil
+		}
+
+		// Publish event to event bus
 		evt := &core.CallbackQueryEvent{
 			At:           time.Now(),
 			QueryID:      update.QueryID,
@@ -248,15 +332,22 @@ func (c *BotClient) Start(ctx context.Context) error {
 			MsgID:        update.MsgID,
 			Data:         update.Data,
 			Origin:       core.CallbackOriginMessage,
-			Target:       target,
+			Target: core.CallbackTarget{
+				Origin:       core.CallbackOriginMessage,
+				Peer:         inputPeer,
+				MessageID:    update.MsgID,
+				ChatInstance: update.ChatInstance,
+			},
 			ChatInstance: update.ChatInstance,
 		}
 		if bus := c.getEventBus(); bus != nil {
 			bus.Publish(evt)
 		}
+
+		// Fallback to legacy callback router (e.g. for settings / help plugins)
 		if c.callbackRouter != nil && adapter != nil {
 			if err := c.callbackRouter.Dispatch(ctx, evt, adapter); err != nil {
-				c.logger.Warn("assistant: callback dispatch returned error",
+				c.logger.Warn("assistant: legacy callback dispatch returned error",
 					zap.Error(err),
 					zap.Int64("query_id", update.QueryID),
 					zap.Int64("user_id", update.UserID),
@@ -334,15 +425,20 @@ func (c *BotClient) Start(ctx context.Context) error {
 	gaps := updates.New(updates.Config{Handler: dispatcher})
 	client = telegram.NewClient(c.appID, c.appHash, telegram.Options{UpdateHandler: gaps})
 	adapter = NewBotServiceAdapter(client.API(), c.logger)
+	c.interaction = interaction.NewClientInteraction(client.API(), c.logger)
 
-	c.logger.Info("starting assistant bot client...")
+	c.logger.Info("starting assistant bot client (v2)...")
+	c.lifecycle.SetState(asstclient.StateRunning)
+
 	return client.Run(runCtx, func(ctx context.Context) error {
 		status, err := client.Auth().Status(ctx)
 		if err != nil {
+			c.lifecycle.SetState(asstclient.StateFailed)
 			return fmt.Errorf("failed to check assistant auth status: %w", err)
 		}
 		if !status.Authorized {
 			if _, err := client.Auth().Bot(ctx, c.botToken); err != nil {
+				c.lifecycle.SetState(asstclient.StateFailed)
 				return fmt.Errorf("failed to authenticate assistant bot token: %w", err)
 			}
 		}
@@ -361,6 +457,7 @@ func (c *BotClient) Start(ctx context.Context) error {
 	})
 }
 
+// Stop terminates the running assistant bot client.
 func (c *BotClient) Stop(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -368,125 +465,7 @@ func (c *BotClient) Stop(ctx context.Context) error {
 		c.cancel()
 		c.cancel = nil
 	}
-	return nil
-}
-
-func (c *BotClient) allowUser(userID int64) bool {
-	c.limiterMu.Lock()
-	defer c.limiterMu.Unlock()
-	if c.rateLimits == nil {
-		c.rateLimits = make(map[int64]*userRateBucket)
-	}
-	now := time.Now()
-	b, ok := c.rateLimits[userID]
-	if !ok {
-		c.rateLimits[userID] = &userRateBucket{tokens: 4, last: now}
-		if len(c.rateLimits) > 1000 {
-			for id, bucket := range c.rateLimits {
-				if now.Sub(bucket.last) > 1*time.Minute {
-					delete(c.rateLimits, id)
-				}
-			}
-		}
-		return true
-	}
-	// Refill tokens: 1 token every 2 seconds, max 5 tokens
-	elapsed := now.Sub(b.last)
-	refill := int(elapsed / (2 * time.Second))
-	if refill > 0 {
-		b.tokens += refill
-		if b.tokens > 5 {
-			b.tokens = 5
-		}
-		b.last = now
-	}
-	if b.tokens > 0 {
-		b.tokens--
-		return true
-	}
-	return false
-}
-
-func (c *BotClient) handleBotCommand(ctx context.Context, e tg.Entities, msg *tg.Message, client *telegram.Client, adapter *BotServiceAdapter) error {
-	if msg == nil || client == nil {
-		return nil
-	}
-	command := strings.TrimSpace(msg.Message)
-	if !strings.HasPrefix(command, "/") {
-		return nil
-	}
-	fields := strings.Fields(command)
-	if len(fields) == 0 {
-		return nil
-	}
-	cmdName := strings.ToLower(fields[0])
-	if atIdx := strings.Index(cmdName, "@"); atIdx != -1 {
-		cmdName = cmdName[:atIdx]
-	}
-
-	if cmdName != "/start" && cmdName != "/help" && cmdName != "/ping" && cmdName != "/alive" && cmdName != "/status" {
-		return nil
-	}
-
-	senderID := extractSenderID(msg)
-	if senderID == 0 {
-		return nil
-	}
-
-	if !c.allowUser(senderID) {
-		c.logger.Warn("assistant: rate limit exceeded for user", zap.Int64("from_id", senderID), zap.String("command", cmdName))
-		return nil
-	}
-
-	var peer tg.InputPeerClass
-	if u, ok := e.Users[senderID]; ok && u != nil && u.AccessHash != 0 {
-		c.SetUserAccessHash(senderID, u.AccessHash)
-		peer = &tg.InputPeerUser{UserID: senderID, AccessHash: u.AccessHash}
-	} else if hash := c.GetUserAccessHash(senderID); hash != 0 {
-		peer = &tg.InputPeerUser{UserID: senderID, AccessHash: hash}
-	}
-	if peer == nil {
-		c.logger.Warn("assistant: sender user access hash missing, command ignored", zap.Int64("sender_id", senderID))
-		return nil
-	}
-
-	var reply string
-	var replyMarkup tg.ReplyMarkupClass
-
-	switch cmdName {
-	case "/start":
-		screen := RenderStartMenu(c.Username(), c.StartTime())
-		reply, replyMarkup = render.ToTelegram(screen)
-	case "/help":
-		reply = "<b>GoUltroid Assistant</b>\n\n/start — open the interactive dashboard\n/help — show this help\n/ping — check responsiveness\n/status — view system status\n/alive — check assistant status"
-	case "/ping":
-		reply = "🏓 <b>Pong!</b>"
-	case "/status":
-		screen := RenderStatusScreen(c.Username(), c.StartTime())
-		reply, replyMarkup = render.ToTelegram(screen)
-	case "/alive":
-		reply = fmt.Sprintf("✅ <b>Alive</b> — assistant @%s is running.", c.Username())
-	}
-
-	if adapter != nil {
-		_, err := adapter.SendMessageWithMarkup(ctx, peer, reply, replyMarkup)
-		if err != nil {
-			return fmt.Errorf("assistant send %s reply: %w", cmdName, err)
-		}
-	} else {
-		req := &tg.MessagesSendMessageRequest{
-			Peer:     peer,
-			Message:  reply,
-			RandomID: randomID(),
-		}
-		if replyMarkup != nil {
-			req.SetReplyMarkup(replyMarkup)
-		}
-		if _, err := client.API().MessagesSendMessage(ctx, req); err != nil {
-			return fmt.Errorf("assistant send %s reply: %w", cmdName, err)
-		}
-	}
-	c.logger.Debug("assistant handled command", zap.Int64("from_id", senderID), zap.String("command", cmdName))
+	c.lifecycle.SetState(asstclient.StateStopped)
 	return nil
 }
 
@@ -518,42 +497,4 @@ func extractChatIDFromPeer(peer tg.PeerClass) int64 {
 		return p.ChannelID
 	}
 	return 0
-}
-
-func (c *BotClient) callbackInputPeer(peer tg.PeerClass, userID int64, e tg.Entities) tg.InputPeerClass {
-	if peer == nil {
-		if userID != 0 {
-			if hash := c.GetUserAccessHash(userID); hash != 0 {
-				return &tg.InputPeerUser{UserID: userID, AccessHash: hash}
-			}
-		}
-		return nil
-	}
-	switch p := peer.(type) {
-	case *tg.PeerUser:
-		var accessHash int64
-		if u, ok := e.Users[p.UserID]; ok && u != nil && u.AccessHash != 0 {
-			accessHash = u.AccessHash
-			c.SetUserAccessHash(p.UserID, accessHash)
-		} else {
-			accessHash = c.GetUserAccessHash(p.UserID)
-		}
-		if accessHash == 0 && userID != 0 {
-			accessHash = c.GetUserAccessHash(userID)
-		}
-		return &tg.InputPeerUser{UserID: p.UserID, AccessHash: accessHash}
-	case *tg.PeerChat:
-		return &tg.InputPeerChat{ChatID: p.ChatID}
-	case *tg.PeerChannel:
-		var accessHash int64
-		if ch, ok := e.Channels[p.ChannelID]; ok && ch != nil && ch.AccessHash != 0 {
-			accessHash = ch.AccessHash
-			c.SetChannelAccessHash(p.ChannelID, accessHash)
-		} else {
-			accessHash = c.GetChannelAccessHash(p.ChannelID)
-		}
-		return &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: accessHash}
-	default:
-		return nil
-	}
 }

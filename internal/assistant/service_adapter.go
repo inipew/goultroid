@@ -13,6 +13,7 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"go.uber.org/zap"
+	"strings"
 )
 
 // BotServiceAdapter adapts a bot MTProto tg.Client to the core.TelegramServicer interface.
@@ -203,15 +204,32 @@ func (a *BotServiceAdapter) EditInlineBotMessageMarkup(ctx context.Context, inli
 	return nil
 }
 
-// DeleteMessage deletes messages by ID.
+// DeleteMessage deletes messages by ID using peer-aware MTProto RPC with idempotent semantics.
 func (a *BotServiceAdapter) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {
 	if a.api == nil {
 		return core.ErrInternal
 	}
-	_, err := a.api.MessagesDeleteMessages(ctx, &tg.MessagesDeleteMessagesRequest{
-		ID: msgIDs,
-	})
+	if len(msgIDs) == 0 {
+		return nil
+	}
+
+	var err error
+	switch p := peer.(type) {
+	case *tg.InputPeerChannel:
+		_, err = a.api.ChannelsDeleteMessages(ctx, &tg.ChannelsDeleteMessagesRequest{
+			Channel: &tg.InputChannel{ChannelID: p.ChannelID, AccessHash: p.AccessHash},
+			ID:      msgIDs,
+		})
+	default:
+		req := &tg.MessagesDeleteMessagesRequest{ID: msgIDs}
+		req.SetRevoke(true)
+		_, err = a.api.MessagesDeleteMessages(ctx, req)
+	}
+
 	if err != nil {
+		if strings.Contains(err.Error(), "MESSAGE_ID_INVALID") {
+			return nil // Idempotent: message already deleted
+		}
 		return fmt.Errorf("assistant bot DeleteMessage: %w", err)
 	}
 	return nil
@@ -289,24 +307,51 @@ func (a *BotServiceAdapter) React(ctx context.Context, peer tg.InputPeerClass, m
 	return err
 }
 
-// GetMessage fetches a single message by ID.
+// GetMessage fetches a single message by ID using peer-aware MTProto RPC.
 func (a *BotServiceAdapter) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) (*tg.Message, error) {
 	if a.api == nil {
 		return nil, core.ErrInternal
 	}
-	res, err := a.api.MessagesGetMessages(ctx, []tg.InputMessageClass{
-		&tg.InputMessageID{ID: msgID},
-	})
+
+	var res tg.MessagesMessagesClass
+	var err error
+
+	switch p := peer.(type) {
+	case *tg.InputPeerChannel:
+		res, err = a.api.ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
+			Channel: &tg.InputChannel{ChannelID: p.ChannelID, AccessHash: p.AccessHash},
+			ID:      []tg.InputMessageClass{&tg.InputMessageID{ID: msgID}},
+		})
+	default:
+		res, err = a.api.MessagesGetMessages(ctx, []tg.InputMessageClass{
+			&tg.InputMessageID{ID: msgID},
+		})
+	}
+
 	if err != nil {
 		return nil, err
 	}
-	if msgs, ok := res.(*tg.MessagesMessages); ok && len(msgs.Messages) > 0 {
-		if m, ok := msgs.Messages[0].(*tg.Message); ok {
+
+	extractFirst := func(slice []tg.MessageClass) *tg.Message {
+		if len(slice) > 0 {
+			if m, ok := slice[0].(*tg.Message); ok {
+				return m
+			}
+		}
+		return nil
+	}
+
+	switch msgs := res.(type) {
+	case *tg.MessagesMessages:
+		if m := extractFirst(msgs.Messages); m != nil {
 			return m, nil
 		}
-	}
-	if msgs, ok := res.(*tg.MessagesMessagesSlice); ok && len(msgs.Messages) > 0 {
-		if m, ok := msgs.Messages[0].(*tg.Message); ok {
+	case *tg.MessagesMessagesSlice:
+		if m := extractFirst(msgs.Messages); m != nil {
+			return m, nil
+		}
+	case *tg.MessagesChannelMessages:
+		if m := extractFirst(msgs.Messages); m != nil {
 			return m, nil
 		}
 	}
