@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sort"
 	"strings"
@@ -30,6 +31,9 @@ func RunFeatureMigrations(ctx context.Context, db *DB, providers ...MigrationPro
 	if db == nil {
 		return fmt.Errorf("database is nil")
 	}
+	if ctx == nil {
+		return fmt.Errorf("context is nil")
+	}
 	if _, err := db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS feature_schema_migrations (
 			id TEXT PRIMARY KEY,
@@ -51,6 +55,9 @@ func RunFeatureMigrations(ctx context.Context, db *DB, providers ...MigrationPro
 			continue
 		}
 		for _, raw := range provider.Migrations() {
+			if raw == nil {
+				return fmt.Errorf("migration provider returned nil migration")
+			}
 			migration, ok := raw.(FeatureMigration)
 			if !ok || migration == nil {
 				return fmt.Errorf("migration %T does not implement FeatureMigration", raw)
@@ -61,20 +68,43 @@ func RunFeatureMigrations(ctx context.Context, db *DB, providers ...MigrationPro
 	sort.Slice(migrations, func(i, j int) bool { return migrations[i].ID() < migrations[j].ID() })
 
 	seen := make(map[string]struct{}, len(migrations))
+	legacyOwners := make(map[int]string)
 	for _, migration := range migrations {
 		id := strings.TrimSpace(migration.ID())
 		if id == "" {
 			return fmt.Errorf("feature migration has empty ID")
+		}
+		if id != migration.ID() {
+			return fmt.Errorf("feature migration ID %q contains leading/trailing whitespace", migration.ID())
 		}
 		if _, exists := seen[id]; exists {
 			return fmt.Errorf("duplicate feature migration ID %q", id)
 		}
 		seen[id] = struct{}{}
 
+		if strings.TrimSpace(migration.Description()) == "" {
+			return fmt.Errorf("feature migration %q has empty description", id)
+		}
 		expected := migration.Checksum()
 		if expected == "" {
 			return fmt.Errorf("feature migration %q has empty checksum", id)
 		}
+
+		seenLegacy := make(map[int]struct{})
+		for _, version := range migration.LegacyVersions() {
+			if version <= 0 {
+				return fmt.Errorf("feature migration %q declares invalid legacy version %d", id, version)
+			}
+			if _, exists := seenLegacy[version]; exists {
+				return fmt.Errorf("feature migration %q declares duplicate legacy version %d", id, version)
+			}
+			seenLegacy[version] = struct{}{}
+			if owner, exists := legacyOwners[version]; exists && owner != id {
+				return fmt.Errorf("legacy migration version %d is claimed by both %q and %q", version, owner, id)
+			}
+			legacyOwners[version] = id
+		}
+
 		if saved, exists := applied[id]; exists {
 			if saved != expected {
 				return fmt.Errorf("feature migration checksum mismatch for %s: recorded %s, calculated %s", id, saved, expected)
@@ -112,6 +142,12 @@ func loadFeatureMigrations(ctx context.Context, db *DB) (map[string]string, erro
 		if err := rows.Scan(&id, &checksum); err != nil {
 			return nil, fmt.Errorf("failed to scan feature migration: %w", err)
 		}
+		if strings.TrimSpace(id) == "" || checksum == "" {
+			return nil, fmt.Errorf("feature_schema_migrations contains invalid record id=%q", id)
+		}
+		if _, exists := result[id]; exists {
+			return nil, fmt.Errorf("feature_schema_migrations contains duplicate id %q", id)
+		}
 		result[id] = checksum
 	}
 	if err := rows.Err(); err != nil {
@@ -122,13 +158,13 @@ func loadFeatureMigrations(ctx context.Context, db *DB) (map[string]string, erro
 
 func verifyLegacyAdoption(ctx context.Context, db *DB, versions []int) (bool, int, error) {
 	for _, version := range versions {
-		if version <= 0 {
-			continue
-		}
 		var recordedChecksum string
 		err := db.QueryRowContext(ctx, `SELECT checksum FROM schema_migrations WHERE version = ?`, version).Scan(&recordedChecksum)
 		if err != nil {
-			continue
+			if err == sql.ErrNoRows {
+				continue
+			}
+			return false, 0, fmt.Errorf("read legacy migration version %d: %w", version, err)
 		}
 
 		legacyInfo, found := LookupLegacyMigration(version)
