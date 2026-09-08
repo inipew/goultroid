@@ -23,7 +23,6 @@ type compiledFilter struct {
 	re        *regexp.Regexp
 }
 
-// Plugin manages automated chat keyword filters and auto-replies.
 type Plugin struct {
 	db          database.Repository
 	svcFunc     func() core.TelegramServicer
@@ -34,55 +33,19 @@ type Plugin struct {
 	lastReply   map[string]time.Time
 }
 
-// New creates a new filters plugin instance.
 func New(db database.Repository, svcFunc func() core.TelegramServicer) *Plugin {
-	return &Plugin{
-		db:          db,
-		svcFunc:     svcFunc,
-		chatFilters: make(map[int64][]compiledFilter),
-		chatAccess:  make(map[int64]time.Time),
-		lastReply:   make(map[string]time.Time),
-	}
+	return &Plugin{db: db, svcFunc: svcFunc, chatFilters: make(map[int64][]compiledFilter), chatAccess: make(map[int64]time.Time), lastReply: make(map[string]time.Time)}
 }
 
-func (p *Plugin) Name() string {
-	return "filters"
-}
-
-func (p *Plugin) Init() error {
-	return nil
-}
-
-// MessageHookPriority returns priority for the message hook (Moderation = 20).
-func (p *Plugin) MessageHookPriority() int {
-	return 20
-}
+func (p *Plugin) Name() string             { return "filters" }
+func (p *Plugin) Init() error              { return nil }
+func (p *Plugin) MessageHookPriority() int { return 20 }
 
 func (p *Plugin) Commands() []core.Command {
 	return []core.Command{
-		{
-			Name:        "filter",
-			Description: "Save an automated keyword filter in this chat",
-			Usage:       ".filter <keyword> <reply text> or reply to a message with .filter <keyword>",
-			Category:    "Filters",
-			Permission:  core.PermissionSudo,
-			Handler:     p.handleFilter,
-		},
-		{
-			Name:        "stop",
-			Description: "Stop and delete a chat filter",
-			Usage:       ".stop <keyword>",
-			Category:    "Filters",
-			Permission:  core.PermissionSudo,
-			Handler:     p.handleStop,
-		},
-		{
-			Name:        "filters",
-			Description: "List all active filters in this chat",
-			Category:    "Filters",
-			Permission:  core.PermissionSudo,
-			Handler:     p.handleList,
-		},
+		{Name: "filter", Description: "Save an automated keyword filter in this chat", Usage: ".filter <keyword> <reply text> or reply to a message with .filter <keyword>", Category: "Filters", Permission: core.PermissionSudo, GroupOnly: true, Handler: p.handleFilter},
+		{Name: "stop", Description: "Stop and delete a chat filter", Usage: ".stop <keyword>", Category: "Filters", Permission: core.PermissionSudo, GroupOnly: true, Handler: p.handleStop},
+		{Name: "filters", Description: "List all active filters in this chat", Category: "Filters", Permission: core.PermissionSudo, GroupOnly: true, Handler: p.handleList},
 	}
 }
 
@@ -98,10 +61,8 @@ func (p *Plugin) handleFilter(ctx *core.Context) error {
 		_ = ctx.EditOrReply("⚠️ Usage: <code>.filter &lt;keyword&gt; &lt;reply text&gt;</code> or reply to a message with <code>.filter &lt;keyword&gt;</code>")
 		return errors.New("missing arguments")
 	}
-
 	keyword := strings.ToLower(ctx.Args[0])
 	var replyText string
-
 	if len(ctx.Args) >= 2 {
 		replyText = strings.TrimSpace(strings.TrimPrefix(ctx.RawArgs, ctx.Args[0]))
 	} else {
@@ -112,18 +73,15 @@ func (p *Plugin) handleFilter(ctx *core.Context) error {
 		}
 		replyText = reply.Text
 	}
-
 	chatID := p.getChatID(ctx)
 	if err := p.db.SaveFilter(ctx.Ctx, chatID, keyword, replyText); err != nil {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to save filter: %v", err))
 		return err
 	}
-
 	p.cacheMu.Lock()
 	delete(p.chatFilters, chatID)
 	delete(p.chatAccess, chatID)
 	p.cacheMu.Unlock()
-
 	return ctx.EditOrReply(fmt.Sprintf("🎯 Filter <code>%s</code> saved successfully.", keyword))
 }
 
@@ -132,20 +90,16 @@ func (p *Plugin) handleStop(ctx *core.Context) error {
 		_ = ctx.EditOrReply("⚠️ Usage: <code>.stop &lt;keyword&gt;</code>")
 		return errors.New("missing filter keyword")
 	}
-
 	keyword := strings.ToLower(ctx.Args[0])
 	chatID := p.getChatID(ctx)
-
 	if err := p.db.DeleteFilter(ctx.Ctx, chatID, keyword); err != nil {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to stop filter: %v", err))
 		return err
 	}
-
 	p.cacheMu.Lock()
 	delete(p.chatFilters, chatID)
 	delete(p.chatAccess, chatID)
 	p.cacheMu.Unlock()
-
 	return ctx.EditOrReply(fmt.Sprintf("🗑️ Filter <code>%s</code> stopped.", keyword))
 }
 
@@ -156,34 +110,24 @@ func (p *Plugin) handleList(ctx *core.Context) error {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to list filters: %v", err))
 		return err
 	}
-
 	if len(list) == 0 {
 		return ctx.EditOrReply("ℹ️ No active filters in this chat.")
 	}
-
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "🎯 <b>Active Filters in this chat (%d):</b>\n", len(list))
 	for _, f := range list {
 		fmt.Fprintf(&sb, "• <code>%s</code>\n", f.Keyword)
 	}
-
 	return ctx.EditOrReply(sb.String())
 }
 
-// HandleIncomingMessage intercepts incoming non-command messages to evaluate chat keyword filters.
 func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *tg.Message, isCommand bool, cmdName string) error {
-	if isCommand || msg == nil || msg.Message == "" {
+	if isCommand || msg == nil || msg.Message == "" || msg.Out {
 		return nil
 	}
-	if msg.Out {
+	if decision := core.GetMessageDecision(ctx); decision != nil && (decision.IsSuppressedFilters() || decision.IsSuppressedAutomation()) {
 		return nil
 	}
-	if decision := core.GetMessageDecision(ctx); decision != nil {
-		if decision.IsSuppressedFilters() || decision.IsSuppressedAutomation() {
-			return nil
-		}
-	}
-	// Prevent bot loop: ignore messages sent by bot users
 	if msg.FromID != nil {
 		if uPeer, ok := msg.FromID.(*tg.PeerUser); ok {
 			if senderUser, found := e.Users[uPeer.UserID]; found && senderUser != nil && senderUser.Bot {
@@ -198,7 +142,6 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 	if svc == nil {
 		return nil
 	}
-
 	chatID := extractChatID(msg.PeerID)
 	if chatID == 0 {
 		return nil
@@ -207,11 +150,8 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 	p.cacheMu.RLock()
 	filters, ok := p.chatFilters[chatID]
 	p.cacheMu.RUnlock()
-
 	if !ok {
-		var rawFilters []database.Filter
-		var err error
-		rawFilters, err = p.db.ListFilters(ctx, chatID)
+		rawFilters, err := p.db.ListFilters(ctx, chatID)
 		if err != nil {
 			return nil
 		}
@@ -222,8 +162,7 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 			var oldestTime time.Time
 			for c, t := range p.chatAccess {
 				if oldestTime.IsZero() || t.Before(oldestTime) {
-					oldestTime = t
-					oldestChat = c
+					oldestTime, oldestChat = t, c
 				}
 			}
 			if oldestChat != 0 {
@@ -239,50 +178,46 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 		p.chatAccess[chatID] = time.Now()
 		p.cacheMu.Unlock()
 	}
-
 	if len(filters) == 0 {
 		return nil
 	}
 
 	lowerText := strings.ToLower(msg.Message)
 	for _, f := range filters {
-		matched := false
-		if f.re != nil {
-			matched = f.re.MatchString(lowerText)
-		} else if f.keyword != "" {
-			matched = strings.Contains(lowerText, f.keyword)
+		matched := (f.re != nil && f.re.MatchString(lowerText)) || (f.re == nil && f.keyword != "" && strings.Contains(lowerText, f.keyword))
+		if !matched {
+			continue
 		}
-		if matched {
-			// Cooldown to prevent reply storms
-			cooldownKey := fmt.Sprintf("%d:%s", chatID, f.keyword)
-			now := time.Now()
-			p.cooldownMu.Lock()
-			last, exists := p.lastReply[cooldownKey]
-			if exists && now.Sub(last) < 5*time.Second {
-				p.cooldownMu.Unlock()
-				break
-			}
-			p.lastReply[cooldownKey] = now
-			if len(p.lastReply) > 1000 {
-				for k, v := range p.lastReply {
-					if now.Sub(v) > 30*time.Second {
-						delete(p.lastReply, k)
-					}
-				}
-			}
+		cooldownKey := fmt.Sprintf("%d:%s", chatID, f.keyword)
+		now := time.Now()
+		p.cooldownMu.Lock()
+		last, exists := p.lastReply[cooldownKey]
+		if exists && now.Sub(last) < 5*time.Second {
 			p.cooldownMu.Unlock()
-
-			peer := extractPeerInput(msg.PeerID, e)
-			if peer != nil {
-				_, _ = svc.SendMessage(ctx, peer, f.replyText)
-			}
-			if decision := core.GetMessageDecision(ctx); decision != nil {
-				decision.SetSuppressAFK(true)
-			}
 			break
 		}
-	}
+		p.lastReply[cooldownKey] = now
+		if len(p.lastReply) > 1000 {
+			for k, v := range p.lastReply {
+				if now.Sub(v) > 30*time.Second {
+					delete(p.lastReply, k)
+				}
+			}
+		}
+		p.cooldownMu.Unlock()
 
+		peer := extractPeerInput(msg.PeerID, e)
+		if peer == nil {
+			return fmt.Errorf("filters: cannot resolve chat peer %d for reply", chatID)
+		}
+		if _, err := svc.SendMessage(ctx, peer, f.replyText); err != nil {
+			return fmt.Errorf("filters: send reply for %q: %w", f.keyword, err)
+		}
+		if decision := core.GetMessageDecision(ctx); decision != nil {
+			decision.SetSuppressAFK(true)
+		}
+		break
+	}
 	return nil
 }
 
