@@ -11,7 +11,7 @@ type migration001 struct{}
 func (migration001) ID() string { return "clone.001" }
 func (migration001) Description() string { return "Persistent clone profile snapshots" }
 func (migration001) Checksum() string {
-	return "8adfb1432cb5337d924f708b64367e1690a388b47e8291084e40eae20b7a6f22"
+	return "44a893d59f5ae3be68967d0eb630b4dc1f4ce356b6d19e628eda614010c1500a"
 }
 func (migration001) LegacyVersions() []int { return []int{15} }
 func (migration001) Up(ctx context.Context, tx database.SQLExecutor) error {
@@ -46,8 +46,6 @@ func Migrations() []database.Migration {
 	return []database.Migration{migration001{}, migration002{}}
 }
 
-var _ database.MigrationProvider = migrationProvider{}
+func (ModuleType) Migrations() []database.Migration { return Migrations() }
 
-type migrationProvider struct{}
-
-func (migrationProvider) Migrations() []database.Migration { return Migrations() }
+var _ database.MigrationProvider = ModuleType{}
