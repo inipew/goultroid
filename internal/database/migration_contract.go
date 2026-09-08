@@ -1,13 +1,20 @@
 package database
 
-import "context"
+import (
+	"context"
+	"database/sql"
+)
 
-// Migration is the feature-owned schema contract consumed by the migration
-// runner. New IDs must be namespaced by feature, for example clone.001.
+// SQLExecutor is the minimal transactional SQL surface exposed to migrations.
+type SQLExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+// Migration is the feature-owned schema contract consumed by the migration runner.
 type Migration interface {
 	ID() string
 	Description() string
-	Up(context.Context, *DB) error
+	Up(context.Context, SQLExecutor) error
 }
 
 // MigrationProvider is implemented by persistent feature modules. The returned
