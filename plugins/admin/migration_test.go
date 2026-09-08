@@ -15,6 +15,13 @@ func TestMigration001FreshDatabase(t *testing.T) {
 	}
 	defer db.Close()
 
+	if _, err := db.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version = 8`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `DROP TABLE moderation_warnings`); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := database.RunFeatureMigrations(ctx, db, Module); err != nil {
 		t.Fatal(err)
 	}
@@ -48,19 +55,12 @@ func TestMigration001LegacyAdoption(t *testing.T) {
 	if !ok {
 		t.Fatal("legacy migration 8 not registered")
 	}
-	if _, err := db.ExecContext(ctx, `
-		CREATE TABLE moderation_warnings (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			chat_id INTEGER NOT NULL,
-			user_id INTEGER NOT NULL,
-			reason TEXT NOT NULL DEFAULT '',
-			warned_by INTEGER NOT NULL,
-			created_at DATETIME NOT NULL
-		);`); err != nil {
+	var legacyCount int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 8`).Scan(&legacyCount); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO schema_migrations(version, description, checksum, applied_at) VALUES (?, ?, ?, datetime('now'))`, 8, legacy.Description, legacy.CanonicalChecksum); err != nil {
-		t.Fatal(err)
+	if legacyCount != 1 {
+		t.Fatalf("expected legacy migration 8, got %d records", legacyCount)
 	}
 
 	if err := database.RunFeatureMigrations(ctx, db, Module); err != nil {
@@ -73,5 +73,13 @@ func TestMigration001LegacyAdoption(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("expected adopted admin.001 migration record, got %d", count)
+	}
+
+	var description string
+	if err := db.QueryRowContext(ctx, `SELECT description FROM feature_schema_migrations WHERE id = 'admin.001'`).Scan(&description); err != nil {
+		t.Fatal(err)
+	}
+	if description == "" || legacy.Description == "" {
+		t.Fatal("expected non-empty migration descriptions")
 	}
 }
