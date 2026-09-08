@@ -14,52 +14,53 @@ import (
 )
 
 // Dispatcher processes incoming Telegram updates and routes them to userbot commands.
+// Composition root is split across dispatcher_*.go files (peer, handlers, accessors, callback, dispatch).
 type Dispatcher struct {
-	router *core.Router
-	perms *core.Permissions
-	svc core.TelegramServicer
-	logger *zap.Logger
-	cooldown *core.CooldownTracker
-	executor *core.CommandExecutor
-	selfID int64
-	resolver core.PeerResolver
-	rootCtx context.Context
-	eventBus *core.EventBus
-	albumBuffer *core.AlbumBuffer
-	localizer core.Localizer
+	router         *core.Router
+	perms          *core.Permissions
+	svc            core.TelegramServicer
+	logger         *zap.Logger
+	cooldown       *core.CooldownTracker
+	executor       *core.CommandExecutor
+	selfID         int64
+	resolver       core.PeerResolver
+	rootCtx        context.Context
+	eventBus       *core.EventBus
+	albumBuffer    *core.AlbumBuffer
+	localizer      core.Localizer
 	callbackRouter *callback.Router
-	inlineEngine *inline.Engine
+	inlineEngine   *inline.Engine
 
-	messageHandlers []prioritizedHandler
-	nextHandlerID uint64
+	messageHandlers  []prioritizedHandler
+	nextHandlerID    uint64
 	acceptingUpdates atomic.Bool
-	inFlight sync.WaitGroup
-	cmdWG sync.WaitGroup
-	cmdSem chan struct{}
-	runningCommands atomic.Int64
-	totalCommands atomic.Int64
-	mu sync.RWMutex
-	admissionMu sync.RWMutex
+	inFlight         sync.WaitGroup
+	cmdWG            sync.WaitGroup
+	cmdSem           chan struct{}
+	runningCommands  atomic.Int64
+	totalCommands    atomic.Int64
+	mu               sync.RWMutex
+	admissionMu      sync.RWMutex
 
-	peerQueue chan peerUpdateJob
-	peerWG sync.WaitGroup
-	peerStopOnce sync.Once
-	peerDropped atomic.Int64
-	peerEnqueued atomic.Int64
+	peerQueue      chan peerUpdateJob
+	peerWG         sync.WaitGroup
+	peerStopOnce   sync.Once
+	peerDropped    atomic.Int64
+	peerEnqueued   atomic.Int64
 	peerSaveFailed atomic.Int64
-	stopping atomic.Bool
+	stopping       atomic.Bool
 }
 
 type DispatcherDeps struct {
-	Router *core.Router
-	Permissions *core.Permissions
-	Service core.TelegramServicer
-	Logger *zap.Logger
-	EventBus *core.EventBus
-	Localizer core.Localizer
+	Router         *core.Router
+	Permissions    *core.Permissions
+	Service        core.TelegramServicer
+	Logger         *zap.Logger
+	EventBus       *core.EventBus
+	Localizer      core.Localizer
 	CallbackRouter *callback.Router
-	InlineEngine *inline.Engine
-	Resolver core.PeerResolver
+	InlineEngine   *inline.Engine
+	Resolver       core.PeerResolver
 }
 
 func NewDispatcherWithDeps(deps DispatcherDeps) (*Dispatcher, error) {
