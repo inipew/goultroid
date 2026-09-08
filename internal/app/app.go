@@ -67,6 +67,12 @@ func New(cfg *config.Config) (*App, error) {
 		tgRuntime.assistant.SetMetricsCollector(coreDeps.metrics)
 	}
 
+	if err := migrateBuiltinFeatures(context.Background(), coreDeps.db); err != nil {
+		_ = coreDeps.eventBus.Close()
+		_ = coreDeps.db.Close()
+		return nil, err
+	}
+
 	featureRuntime := &module.Runtime{
 		DB:      coreDeps.db,
 		OwnerID: coreDeps.perms.OwnerID,
