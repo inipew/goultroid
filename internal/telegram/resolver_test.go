@@ -28,16 +28,10 @@ func TestResolver_BasicParsing(t *testing.T) {
 		t.Errorf("expected ErrInvalidArgs for empty chat ref, got %v", err)
 	}
 
-	// 2. Numeric user ID fallback
-	uPeer, uid, err := resolver.ResolveUser(ctx, "12345678")
-	if err != nil {
-		t.Fatalf("unexpected error resolving numeric user: %v", err)
-	}
-	if uid != 12345678 {
-		t.Errorf("expected uid 12345678, got %d", uid)
-	}
-	if up, ok := uPeer.(*tg.InputPeerUser); !ok || up.UserID != 12345678 {
-		t.Errorf("expected *tg.InputPeerUser with ID 12345678, got %+v", uPeer)
+	// 2. Numeric user ID without access hash fails closed (§2 Bug 16/18)
+	_, _, err = resolver.ResolveUser(ctx, "12345678")
+	if !errors.Is(err, core.ErrAccessHashMissing) {
+		t.Fatalf("expected ErrAccessHashMissing for numeric user without access hash, got %v", err)
 	}
 
 	// 3. Numeric basic chat ID fallback
@@ -49,13 +43,10 @@ func TestResolver_BasicParsing(t *testing.T) {
 		t.Errorf("expected *tg.InputPeerChat with ID 888777, got %+v", cPeer)
 	}
 
-	// 4. Numeric supergroup/channel ID with -100 prefix
-	chPeer, err := resolver.ResolveChat(ctx, "-1001234567890")
-	if err != nil {
-		t.Fatalf("unexpected error resolving -100 channel: %v", err)
-	}
-	if chp, ok := chPeer.(*tg.InputPeerChannel); !ok || chp.ChannelID != 1234567890 {
-		t.Errorf("expected *tg.InputPeerChannel with ID 1234567890, got %+v", chPeer)
+	// 4. Numeric supergroup/channel ID without access hash fails closed
+	_, err = resolver.ResolveChat(ctx, "-1001234567890")
+	if !errors.Is(err, core.ErrAccessHashMissing) {
+		t.Fatalf("expected ErrAccessHashMissing for numeric channel without access hash, got %v", err)
 	}
 
 	// 4b. Numeric legacy basic chat ID with negative non--100 prefix (Bug 8 fix)
@@ -82,28 +73,28 @@ func TestResolver_BasicParsing(t *testing.T) {
 		t.Errorf("expected *tg.InputPeerSelf, got %T", selfPeer)
 	}
 
-	userPeer, err := resolver.Resolve(ctx, "999888")
+	// Basic group via unified Resolve (positive ID resolves to basic chat since user has no access hash)
+	basicPos, err := resolver.Resolve(ctx, "999888")
 	if err != nil {
-		t.Fatalf("unexpected error resolving user via unified Resolve: %v", err)
+		t.Fatalf("unexpected error resolving basic chat via unified Resolve: %v", err)
 	}
-	if up, ok := userPeer.(*tg.InputPeerUser); !ok || up.UserID != 999888 {
-		t.Errorf("expected *tg.InputPeerUser with ID 999888, got %+v", userPeer)
+	if cp, ok := basicPos.(*tg.InputPeerChat); !ok || cp.ChatID != 999888 {
+		t.Errorf("expected *tg.InputPeerChat with ID 999888, got %+v", basicPos)
 	}
 
-	channelPeer, err := resolver.Resolve(ctx, "-100987654321")
-	if err != nil {
-		t.Fatalf("unexpected error resolving channel via unified Resolve: %v", err)
-	}
-	if cp, ok := channelPeer.(*tg.InputPeerChannel); !ok || cp.ChannelID != 987654321 {
-		t.Errorf("expected *tg.InputPeerChannel with ID 987654321, got %+v", channelPeer)
-	}
-
+	// Negative basic group via unified Resolve
 	basicUnified, err := resolver.Resolve(ctx, "-54321")
 	if err != nil {
 		t.Fatalf("unexpected error resolving basic group via unified Resolve: %v", err)
 	}
 	if bp, ok := basicUnified.(*tg.InputPeerChat); !ok || bp.ChatID != 54321 {
 		t.Errorf("expected *tg.InputPeerChat with ID 54321, got %+v", basicUnified)
+	}
+
+	// Channel without access hash via unified Resolve fails
+	_, err = resolver.Resolve(ctx, "-100987654321")
+	if err == nil {
+		t.Fatalf("expected error resolving channel without access hash, got nil")
 	}
 }
 
