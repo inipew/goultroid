@@ -95,7 +95,6 @@ func New(cfg *config.Config) (*App, error) {
 			Storage:          domServices.storage,
 			DownloadRegistry: domServices.downloadRegistry,
 			MediaService:     domServices.mediaService,
-			ModService:       domServices.modService,
 			PMPermitService:  domServices.pmpermitService,
 			BroadcastService: domServices.broadcastService,
 			UserlogService:   domServices.userlogService,
