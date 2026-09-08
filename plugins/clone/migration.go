@@ -45,7 +45,3 @@ func (migration002) Up(ctx context.Context, tx database.SQLExecutor) error {
 func Migrations() []database.Migration {
 	return []database.Migration{migration001{}, migration002{}}
 }
-
-func (ModuleType) Migrations() []database.Migration { return Migrations() }
-
-var _ database.MigrationProvider = ModuleType{}
