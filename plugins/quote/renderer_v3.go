@@ -13,6 +13,7 @@ import (
 	"github.com/gotd/td/tg"
 	"golang.org/x/image/font"
 	"golang.org/x/image/math/fixed"
+	_ "golang.org/x/image/webp"
 
 	"github.com/inipew/goultroid/internal/core"
 )
