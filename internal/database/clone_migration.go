@@ -16,6 +16,10 @@ func init() {
 					updated_at DATETIME NOT NULL
 				);`,
 			},
+			legacyChecksums: []string{
+				"f23db64a47cbd211704582fac2557e3ad87386c35a61589080fac2f699989182",
+				"11a72db9e774e1043891bc77806785699c662e84f04aa1dbd8ba57b5f7c8c0da",
+			},
 		},
 		migration{
 			version:     16,

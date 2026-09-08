@@ -12,9 +12,10 @@ import (
 
 // migration defines a versioned schema update step.
 type migration struct {
-	version     int
-	description string
-	statements  []string
+	version         int
+	description     string
+	statements      []string
+	legacyChecksums []string
 }
 
 // migrations contains the chronological list of schema updates.
@@ -371,8 +372,19 @@ func (d *DB) migrate(ctx context.Context) error {
 		if savedChecksum, exists := applied[m.version]; exists {
 			// If a checksum was recorded, verify it hasn't been altered
 			if savedChecksum != "" && savedChecksum != expectedChecksum {
-				return fmt.Errorf("migration checksum mismatch for version %d (%s): recorded %s, calculated %s",
-					m.version, m.description, savedChecksum, expectedChecksum)
+				matchedLegacy := false
+				for _, legacy := range m.legacyChecksums {
+					if savedChecksum == legacy {
+						matchedLegacy = true
+						break
+					}
+				}
+				if !matchedLegacy {
+					return fmt.Errorf("migration checksum mismatch for version %d (%s): recorded %s, calculated %s",
+						m.version, m.description, savedChecksum, expectedChecksum)
+				}
+				// Normalize checksum to canonical expected checksum
+				_, _ = d.ExecContext(ctx, "UPDATE schema_migrations SET checksum = ? WHERE version = ?", expectedChecksum, m.version)
 			}
 			// Backfill checksum if it was empty from legacy schema
 			if savedChecksum == "" {

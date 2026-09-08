@@ -489,20 +489,20 @@ func TestMigrations_Versioning(t *testing.T) {
 		version int
 		desc    string
 	}
-	var migrations []mig
+	var appliedMigrations []mig
 	for rows.Next() {
 		var m mig
 		if err := rows.Scan(&m.version, &m.desc); err != nil {
 			t.Fatalf("failed to scan migration: %v", err)
 		}
-		migrations = append(migrations, m)
+		appliedMigrations = append(appliedMigrations, m)
 	}
-	if len(migrations) != 14 {
-		t.Fatalf("expected 14 applied migrations, got %d", len(migrations))
+	if len(appliedMigrations) != len(migrations) {
+		t.Fatalf("expected %d applied migrations, got %d", len(migrations), len(appliedMigrations))
 	}
-	for i := 0; i < 14; i++ {
-		if migrations[i].version != i+1 {
-			t.Errorf("expected migration index %d to have version %d, got %d", i, i+1, migrations[i].version)
+	for i := 0; i < len(appliedMigrations); i++ {
+		if appliedMigrations[i].version != i+1 {
+			t.Errorf("expected migration index %d to have version %d, got %d", i, i+1, appliedMigrations[i].version)
 		}
 	}
 
@@ -610,6 +610,15 @@ func TestMigrations_ChecksumValidation(t *testing.T) {
 	expected := calculateMigrationChecksum(migrations[0])
 	if backfilled != expected {
 		t.Errorf("expected backfilled checksum %s, got %s", expected, backfilled)
+	}
+
+	// 4. Legacy checksum adoption: version 15 with recorded legacy hash should succeed and normalize
+	_, err = db.ExecContext(ctx, "UPDATE schema_migrations SET checksum = 'f23db64a47cbd211704582fac2557e3ad87386c35a61589080fac2f699989182' WHERE version = 15")
+	if err != nil {
+		t.Fatalf("failed to update checksum for version 15: %v", err)
+	}
+	if err := db.migrate(ctx); err != nil {
+		t.Fatalf("migrate failed on legacy checksum for version 15: %v", err)
 	}
 }
 
