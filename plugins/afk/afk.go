@@ -112,7 +112,7 @@ func (p *Plugin) SetCooldown(duration time.Duration) {
 	}
 }
 func (p *Plugin) InitContext(ctx context.Context) error { return p.loadState(ctx) }
-func (p *Plugin) Init() error                            { return p.loadState(context.Background()) }
+func (p *Plugin) Init() error                           { return p.loadState(context.Background()) }
 
 func (p *Plugin) loadState(ctx context.Context) error {
 	if p.db == nil || p.ownerID == 0 {

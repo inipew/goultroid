@@ -8,13 +8,13 @@ import (
 
 // CloneState stores the self-profile snapshot required to safely revert a clone operation.
 type CloneState struct {
-	OwnerID         int64
-	OriginalFirst   string
-	OriginalLast    string
-	OriginalBio     string
-	OriginalPhoto   string
-	Active          bool
-	UpdatedAt       time.Time
+	OwnerID       int64
+	OriginalFirst string
+	OriginalLast  string
+	OriginalBio   string
+	OriginalPhoto string
+	Active        bool
+	UpdatedAt     time.Time
 }
 
 // CloneRepository persists clone/revert state independently from generic settings.

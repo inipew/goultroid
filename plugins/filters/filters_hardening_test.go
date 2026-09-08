@@ -12,7 +12,10 @@ func TestCommandsAreGroupOnly(t *testing.T) {
 }
 
 func TestMatchFilterUsesWholeTokenBoundaries(t *testing.T) {
-	cases := []struct{ text, keyword string; want bool }{
+	cases := []struct {
+		text, keyword string
+		want          bool
+	}{
 		{"hello foo world", "foo", true},
 		{"foobar", "foo", false},
 		{"FOO!", "foo", true},
