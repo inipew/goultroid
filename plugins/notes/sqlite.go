@@ -1,4 +1,4 @@
-package database
+package notes
 
 import (
 	"context"
@@ -6,26 +6,29 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/inipew/goultroid/internal/database"
 )
 
-// Note represents a saved note for a specific chat.
-type Note struct {
-	ChatID    int64     `json:"chat_id"`
-	Name      string    `json:"name"`
-	Content   string    `json:"content"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+// SQLiteRepository implements Repository using *database.DB.
+type SQLiteRepository struct {
+	db *database.DB
+}
+
+// NewSQLiteRepository constructs a SQLiteRepository.
+func NewSQLiteRepository(db *database.DB) *SQLiteRepository {
+	return &SQLiteRepository{db: db}
 }
 
 // SaveNote saves or updates a note for a chat.
-func (d *DB) SaveNote(ctx context.Context, chatID int64, name, content string) error {
+func (r *SQLiteRepository) SaveNote(ctx context.Context, chatID int64, name, content string) error {
 	now := time.Now().UTC()
 	query := `
 	INSERT INTO notes (chat_id, name, content, created_at, updated_at)
 	VALUES (?, ?, ?, ?, ?)
 	ON CONFLICT(chat_id, name) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at
 	`
-	_, err := d.ExecContext(ctx, query, chatID, name, content, now, now)
+	_, err := r.db.ExecContext(ctx, query, chatID, name, content, now, now)
 	if err != nil {
 		return fmt.Errorf("failed to save note: %w", err)
 	}
@@ -33,15 +36,15 @@ func (d *DB) SaveNote(ctx context.Context, chatID int64, name, content string) e
 }
 
 // GetNote retrieves a note by name in a chat.
-func (d *DB) GetNote(ctx context.Context, chatID int64, name string) (*Note, error) {
+func (r *SQLiteRepository) GetNote(ctx context.Context, chatID int64, name string) (*Note, error) {
 	query := "SELECT chat_id, name, content, created_at, updated_at FROM notes WHERE chat_id = ? AND name = ?"
-	row := d.QueryRowContext(ctx, query, chatID, name)
+	row := r.db.QueryRowContext(ctx, query, chatID, name)
 
 	var n Note
 	err := row.Scan(&n.ChatID, &n.Name, &n.Content, &n.CreatedAt, &n.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil // not found
+			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get note: %w", err)
 	}
@@ -49,8 +52,8 @@ func (d *DB) GetNote(ctx context.Context, chatID int64, name string) (*Note, err
 }
 
 // ListNotes lists all note names for a chat.
-func (d *DB) ListNotes(ctx context.Context, chatID int64) ([]string, error) {
-	rows, err := d.QueryContext(ctx, "SELECT name FROM notes WHERE chat_id = ? ORDER BY name ASC", chatID)
+func (r *SQLiteRepository) ListNotes(ctx context.Context, chatID int64) ([]string, error) {
+	rows, err := r.db.QueryContext(ctx, "SELECT name FROM notes WHERE chat_id = ? ORDER BY name ASC", chatID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list notes: %w", err)
 	}
@@ -71,8 +74,8 @@ func (d *DB) ListNotes(ctx context.Context, chatID int64) ([]string, error) {
 }
 
 // DeleteNote deletes a note by name in a chat.
-func (d *DB) DeleteNote(ctx context.Context, chatID int64, name string) error {
-	res, err := d.ExecContext(ctx, "DELETE FROM notes WHERE chat_id = ? AND name = ?", chatID, name)
+func (r *SQLiteRepository) DeleteNote(ctx context.Context, chatID int64, name string) error {
+	res, err := r.db.ExecContext(ctx, "DELETE FROM notes WHERE chat_id = ? AND name = ?", chatID, name)
 	if err != nil {
 		return fmt.Errorf("failed to delete note: %w", err)
 	}
@@ -85,3 +88,5 @@ func (d *DB) DeleteNote(ctx context.Context, chatID int64, name string) error {
 	}
 	return nil
 }
+
+var _ Repository = (*SQLiteRepository)(nil)

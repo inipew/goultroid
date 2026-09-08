@@ -88,7 +88,7 @@ func TestFiltersPlugin(t *testing.T) {
 	defer db.Close()
 
 	svc := &mockService{}
-	p := New(db, func() core.TelegramServicer { return svc })
+	p := New(NewSQLiteRepository(db), func() core.TelegramServicer { return svc })
 
 	if p.Name() != "filters" {
 		t.Errorf("expected name 'filters', got %s", p.Name())

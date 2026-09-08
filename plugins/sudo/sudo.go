@@ -7,15 +7,14 @@ import (
 	"strings"
 
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/database"
 )
 
 type Plugin struct {
-	db    database.Repository
+	db    Repository
 	perms *core.Permissions
 }
 
-func New(db database.Repository, perms *core.Permissions) *Plugin {
+func New(db Repository, perms *core.Permissions) *Plugin {
 	return &Plugin{db: db, perms: perms}
 }
 

@@ -26,6 +26,14 @@ func (m *mockService) EditChatDefaultBannedRights(ctx context.Context, peer tg.I
 	return nil
 }
 
+func (m *mockService) GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.MessagesChatFull, error) {
+	return &tg.MessagesChatFull{
+		Chats: []tg.ChatClass{
+			&tg.Channel{ID: 12345, DefaultBannedRights: m.rightsEdited},
+		},
+	}, nil
+}
+
 func TestLocksPlugin(t *testing.T) {
 	p := New()
 	if p.Name() != "locks" {

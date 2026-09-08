@@ -290,7 +290,8 @@ func (r *ExternalRuntime) Stop() error {
 	if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return err
 	}
-	return cmd.Wait()
+	_ = cmd.Wait()
+	return nil
 }
 
 func (r *ExternalRuntime) Running() bool {

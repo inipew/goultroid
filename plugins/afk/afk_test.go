@@ -108,7 +108,8 @@ func TestAFKPlugin(t *testing.T) {
 	svc := &mockService{}
 	ownerID := int64(1001)
 
-	p := New(db, ownerID, func() core.TelegramServicer { return svc })
+	repo := NewSQLiteRepository(db)
+	p := New(repo, ownerID, func() core.TelegramServicer { return svc })
 	if p.Name() != "afk" {
 		t.Errorf("expected name afk, got %s", p.Name())
 	}
@@ -142,7 +143,7 @@ func TestAFKPlugin(t *testing.T) {
 	}
 
 	// Verify DB state
-	status, err := db.GetAFK(ctx, ownerID)
+	status, err := repo.GetAFK(ctx, ownerID)
 	if err != nil || status == nil || !status.IsAFK {
 		t.Fatalf("expected owner to be AFK in DB, got: %+v (err=%v)", status, err)
 	}
@@ -191,7 +192,7 @@ func TestAFKPlugin(t *testing.T) {
 	if svc.sent != "" {
 		t.Errorf("expected no deactivation message on afk command, got: %s", svc.sent)
 	}
-	status, _ = db.GetAFK(ctx, ownerID)
+	status, _ = repo.GetAFK(ctx, ownerID)
 	if !status.IsAFK {
 		t.Errorf("owner should still be AFK")
 	}
@@ -212,7 +213,7 @@ func TestAFKPlugin(t *testing.T) {
 	}
 
 	// Verify DB state is now deactivated
-	status, _ = db.GetAFK(ctx, ownerID)
+	status, _ = repo.GetAFK(ctx, ownerID)
 	if status.IsAFK {
 		t.Errorf("expected AFK to be turned off in DB")
 	}
@@ -272,7 +273,7 @@ func TestAFKPlugin_NewCommands(t *testing.T) {
 
 	svc := &mockService{}
 	ownerID := int64(1001)
-	p := New(db, ownerID, func() core.TelegramServicer { return svc })
+	p := New(NewSQLiteRepository(db), ownerID, func() core.TelegramServicer { return svc })
 	_ = p.Init()
 
 	ctx := context.Background()
@@ -380,7 +381,7 @@ func TestAFKPlugin_BotSentMessageDoesNotTurnOffAFK(t *testing.T) {
 		},
 	}
 	ownerID := int64(1001)
-	p := New(db, ownerID, func() core.TelegramServicer { return svc })
+	p := New(NewSQLiteRepository(db), ownerID, func() core.TelegramServicer { return svc })
 	_ = p.Init()
 
 	ctx := context.Background()
@@ -440,7 +441,7 @@ func TestAFKPlugin_SilentUnAFKInGroups(t *testing.T) {
 
 	svc := &mockService{}
 	ownerID := int64(1001)
-	p := New(db, ownerID, func() core.TelegramServicer { return svc })
+	p := New(NewSQLiteRepository(db), ownerID, func() core.TelegramServicer { return svc })
 	p.SetWelcomePrivateOnly(true)
 	_ = p.Init()
 
@@ -477,7 +478,7 @@ func TestAFKPlugin_CompoundCooldown(t *testing.T) {
 
 	svc := &mockService{}
 	ownerID := int64(1001)
-	p := New(db, ownerID, func() core.TelegramServicer { return svc })
+	p := New(NewSQLiteRepository(db), ownerID, func() core.TelegramServicer { return svc })
 	p.SetCooldown(30 * time.Second)
 	_ = p.Init()
 
@@ -544,7 +545,7 @@ func TestAFKPlugin_MentionDetectionComplete(t *testing.T) {
 
 	svc := &mockService{}
 	ownerID := int64(1001)
-	p := New(db, ownerID, func() core.TelegramServicer { return svc })
+	p := New(NewSQLiteRepository(db), ownerID, func() core.TelegramServicer { return svc })
 	p.SetOwnerUsername("dhimas")
 	_ = p.Init()
 
@@ -589,7 +590,7 @@ func TestAFKPlugin_BotDMIgnored(t *testing.T) {
 
 	svc := &mockService{}
 	ownerID := int64(1001)
-	p := New(db, ownerID, func() core.TelegramServicer { return svc })
+	p := New(NewSQLiteRepository(db), ownerID, func() core.TelegramServicer { return svc })
 	_ = p.Init()
 
 	ctx := context.Background()
@@ -625,7 +626,7 @@ func TestAFKPlugin_ArbitrationSuppressed(t *testing.T) {
 
 	svc := &mockService{}
 	ownerID := int64(1001)
-	p := New(db, ownerID, func() core.TelegramServicer { return svc })
+	p := New(NewSQLiteRepository(db), ownerID, func() core.TelegramServicer { return svc })
 	_ = p.Init()
 
 	ctx := context.Background()
@@ -659,7 +660,7 @@ func TestAFKPlugin_ConcurrentOutgoingAtomicCAS(t *testing.T) {
 
 	svc := &mockService{}
 	ownerID := int64(1001)
-	p := New(db, ownerID, func() core.TelegramServicer { return svc })
+	p := New(NewSQLiteRepository(db), ownerID, func() core.TelegramServicer { return svc })
 	p.SetWelcomePrivateOnly(false) // allow private welcome
 	_ = p.Init()
 
@@ -709,7 +710,7 @@ func TestAFKPlugin_MentionDetectionUTF16Emojis(t *testing.T) {
 
 	svc := &mockService{}
 	ownerID := int64(1001)
-	p := New(db, ownerID, func() core.TelegramServicer { return svc })
+	p := New(NewSQLiteRepository(db), ownerID, func() core.TelegramServicer { return svc })
 	p.SetOwnerUsername("dhimas")
 	_ = p.Init()
 
@@ -763,7 +764,7 @@ func TestAFKPlugin_ForumTopicHandling(t *testing.T) {
 		},
 	}
 	ownerID := int64(1001)
-	p := New(db, ownerID, func() core.TelegramServicer { return svc })
+	p := New(NewSQLiteRepository(db), ownerID, func() core.TelegramServicer { return svc })
 	_ = p.Init()
 
 	ctx := context.Background()
@@ -830,7 +831,7 @@ func TestAFKPlugin_AnonymousChannelSender(t *testing.T) {
 
 	svc := &mockService{}
 	ownerID := int64(1001)
-	p := New(db, ownerID, func() core.TelegramServicer { return svc })
+	p := New(NewSQLiteRepository(db), ownerID, func() core.TelegramServicer { return svc })
 	p.SetCooldown(30 * time.Second)
 	_ = p.Init()
 
@@ -907,7 +908,7 @@ func TestAFKPlugin_AutoDiscoverOwnerUsername(t *testing.T) {
 	svc := &mockService{}
 	ownerID := int64(1001)
 	// Owner username is initially empty (not configured via SetOwnerUsername)
-	p := New(db, ownerID, func() core.TelegramServicer { return svc })
+	p := New(NewSQLiteRepository(db), ownerID, func() core.TelegramServicer { return svc })
 	_ = p.Init()
 
 	ctx := context.Background()
@@ -954,7 +955,7 @@ func TestAFKPlugin_IncomingDMOmittedFromID(t *testing.T) {
 
 	svc := &mockService{}
 	ownerID := int64(1001)
-	p := New(db, ownerID, func() core.TelegramServicer { return svc })
+	p := New(NewSQLiteRepository(db), ownerID, func() core.TelegramServicer { return svc })
 	_ = p.Init()
 
 	ctx := context.Background()

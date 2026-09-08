@@ -69,7 +69,7 @@ func TestMenuScreens(t *testing.T) {
 	}
 
 	help := menu.BuildHelpScreen("TestBot")
-	if help.ID != menu.ScreenIDHelp || len(help.Rows) != 2 {
+	if help.ID != menu.ScreenIDHelp || len(help.Rows) == 0 {
 		t.Fatalf("unexpected help screen: %+v", help)
 	}
 

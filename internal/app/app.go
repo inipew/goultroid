@@ -74,9 +74,29 @@ func New(cfg *config.Config) (*App, error) {
 	}
 
 	featureRuntime := &module.Runtime{
-		DB:      coreDeps.db,
-		OwnerID: coreDeps.perms.OwnerID,
-		Plugins: pluginManager,
+		DB:               coreDeps.db,
+		OwnerID:          coreDeps.perms.OwnerID,
+		Permissions:      coreDeps.perms,
+		Plugins:          pluginManager,
+		Router:           coreDeps.router,
+		EventBus:         coreDeps.eventBus,
+		Metrics:          coreDeps.metrics,
+		Logger:           domServices.logger,
+		StartTime:        domServices.startTime,
+		TelegramService:  tgRuntime.client.Service,
+		Resolver:         tgRuntime.dispatcher.Resolver(),
+		Callbacks:        coreDeps.callbackRouter,
+		CallbackStore:    coreDeps.callbackStore,
+		Storage:          domServices.storage,
+		DownloadRegistry: domServices.downloadRegistry,
+		MediaService:     domServices.mediaService,
+		ModService:       domServices.modService,
+		PMPermitService:  domServices.pmpermitService,
+		BroadcastService: domServices.broadcastService,
+		UserlogService:   domServices.userlogService,
+		AddonManager:     domServices.addonManager,
+		SettingsService:  domServices.settingsService,
+		SchedEngine:      domServices.schedEngine,
 	}
 	if err := registerBuiltinModules(context.Background(), featureRuntime); err != nil {
 		_ = coreDeps.eventBus.Close()

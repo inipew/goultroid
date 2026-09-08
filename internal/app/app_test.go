@@ -17,6 +17,7 @@ func TestApp_New(t *testing.T) {
 	// Valid config
 	tmpDir := t.TempDir()
 	cfg := &config.Config{
+		OwnerID:      123456,
 		AppID:        123456,
 		AppHash:      "hash123",
 		Phone:        "+628123456789",
@@ -37,8 +38,9 @@ func TestApp_New(t *testing.T) {
 
 	// Verify plugins were registered
 	plugins := app.plugins.Plugins()
-	if len(plugins) < 19 {
-		t.Errorf("expected at least 19 plugins registered, got %d", len(plugins))
+	t.Logf("registered plugins: %d", len(plugins))
+	if len(plugins) < 30 {
+		t.Errorf("expected at least 30 plugins registered, got %d", len(plugins))
 	}
 
 	// Test Shutdown with global budget

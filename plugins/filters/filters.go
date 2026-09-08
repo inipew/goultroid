@@ -11,7 +11,6 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/plugin"
 )
 
@@ -29,7 +28,7 @@ type compiledFilter struct {
 }
 
 type Plugin struct {
-	db          database.Repository
+	db          Repository
 	svcFunc     func() core.TelegramServicer
 	cacheMu     sync.RWMutex
 	chatFilters map[int64][]compiledFilter
@@ -38,7 +37,7 @@ type Plugin struct {
 	lastReply   map[string]time.Time
 }
 
-func New(db database.Repository, svcFunc func() core.TelegramServicer) *Plugin {
+func New(db Repository, svcFunc func() core.TelegramServicer) *Plugin {
 	return &Plugin{db: db, svcFunc: svcFunc, chatFilters: make(map[int64][]compiledFilter), chatAccess: make(map[int64]time.Time), lastReply: make(map[string]time.Time)}
 }
 
@@ -268,7 +267,7 @@ func (p *Plugin) markCooldown(key string) {
 	p.cooldownMu.Unlock()
 }
 
-func compileFilters(raw []database.Filter) []compiledFilter {
+func compileFilters(raw []Filter) []compiledFilter {
 	res := make([]compiledFilter, len(raw))
 	for i, f := range raw {
 		res[i] = compileFilterItem(f)
@@ -276,7 +275,7 @@ func compileFilters(raw []database.Filter) []compiledFilter {
 	return res
 }
 
-func compileFilterItem(f database.Filter) compiledFilter {
+func compileFilterItem(f Filter) compiledFilter {
 	kw := strings.ToLower(strings.TrimSpace(f.Keyword))
 	var re *regexp.Regexp
 	if kw != "" {
@@ -287,7 +286,7 @@ func compileFilterItem(f database.Filter) compiledFilter {
 }
 
 func matchFilter(text, keyword string) bool {
-	f := compileFilterItem(database.Filter{Keyword: keyword})
+	f := compileFilterItem(Filter{Keyword: keyword})
 	lowerText := strings.ToLower(text)
 	if f.re != nil {
 		return f.re.MatchString(lowerText)

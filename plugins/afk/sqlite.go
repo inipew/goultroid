@@ -1,4 +1,4 @@
-package database
+package afk
 
 import (
 	"context"
@@ -6,18 +6,22 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/inipew/goultroid/internal/database"
 )
 
-// AFK represents the AFK state of a user.
-type AFK struct {
-	UserID int64     `json:"user_id"`
-	IsAFK  bool      `json:"is_afk"`
-	Reason string    `json:"reason"`
-	Since  time.Time `json:"since"`
+// SQLiteRepository implements Repository using *database.DB.
+type SQLiteRepository struct {
+	db *database.DB
+}
+
+// NewSQLiteRepository constructs a SQLiteRepository.
+func NewSQLiteRepository(db *database.DB) *SQLiteRepository {
+	return &SQLiteRepository{db: db}
 }
 
 // SetAFK sets or deactivates AFK status for a user.
-func (d *DB) SetAFK(ctx context.Context, userID int64, isAFK bool, reason string) error {
+func (r *SQLiteRepository) SetAFK(ctx context.Context, userID int64, isAFK bool, reason string) error {
 	now := time.Now().UTC()
 	if isAFK {
 		query := `
@@ -25,7 +29,7 @@ func (d *DB) SetAFK(ctx context.Context, userID int64, isAFK bool, reason string
 		VALUES (?, 1, ?, ?)
 		ON CONFLICT(user_id) DO UPDATE SET is_afk = 1, reason = excluded.reason, since = excluded.since
 		`
-		_, err := d.ExecContext(ctx, query, userID, reason, now)
+		_, err := r.db.ExecContext(ctx, query, userID, reason, now)
 		if err != nil {
 			return fmt.Errorf("failed to update afk status: %w", err)
 		}
@@ -34,7 +38,7 @@ func (d *DB) SetAFK(ctx context.Context, userID int64, isAFK bool, reason string
 
 	// Atomic deactivate: update is_afk = 0 without overwriting the original since timestamp
 	query := `UPDATE afk_status SET is_afk = 0 WHERE user_id = ? AND is_afk = 1`
-	res, err := d.ExecContext(ctx, query, userID)
+	res, err := r.db.ExecContext(ctx, query, userID)
 	if err != nil {
 		return fmt.Errorf("failed to deactivate afk status: %w", err)
 	}
@@ -44,15 +48,15 @@ func (d *DB) SetAFK(ctx context.Context, userID int64, isAFK bool, reason string
 		VALUES (?, 0, ?, ?)
 		ON CONFLICT(user_id) DO UPDATE SET is_afk = 0
 		`
-		_, _ = d.ExecContext(ctx, insertQuery, userID, reason, now)
+		_, _ = r.db.ExecContext(ctx, insertQuery, userID, reason, now)
 	}
 	return nil
 }
 
 // GetAFK retrieves the AFK status of a user.
-func (d *DB) GetAFK(ctx context.Context, userID int64) (*AFK, error) {
+func (r *SQLiteRepository) GetAFK(ctx context.Context, userID int64) (*AFK, error) {
 	query := "SELECT user_id, is_afk, reason, since FROM afk_status WHERE user_id = ?"
-	row := d.QueryRowContext(ctx, query, userID)
+	row := r.db.QueryRowContext(ctx, query, userID)
 
 	var a AFK
 	err := row.Scan(&a.UserID, &a.IsAFK, &a.Reason, &a.Since)
@@ -64,3 +68,5 @@ func (d *DB) GetAFK(ctx context.Context, userID int64) (*AFK, error) {
 	}
 	return &a, nil
 }
+
+var _ Repository = (*SQLiteRepository)(nil)

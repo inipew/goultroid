@@ -12,7 +12,6 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/plugin"
 )
 
@@ -24,14 +23,14 @@ type compiledBlacklist struct {
 }
 
 type Plugin struct {
-	db            database.Repository
+	db            Repository
 	svcFunc       func() core.TelegramServicer
 	cacheMu       sync.RWMutex
 	chatBlacklist map[int64][]compiledBlacklist
 	chatAccess    map[int64]time.Time
 }
 
-func New(db database.Repository, svcFunc func() core.TelegramServicer) *Plugin {
+func New(db Repository, svcFunc func() core.TelegramServicer) *Plugin {
 	return &Plugin{db: db, svcFunc: svcFunc, chatBlacklist: make(map[int64][]compiledBlacklist), chatAccess: make(map[int64]time.Time)}
 }
 func (p *Plugin) Name() string             { return "blacklist" }

@@ -85,7 +85,8 @@ func TestNotesPlugin(t *testing.T) {
 	}
 	defer db.Close()
 
-	p := New(db)
+	repo := NewSQLiteRepository(db)
+	p := New(repo)
 	if p.Name() != "notes" {
 		t.Errorf("expected name notes, got %s", p.Name())
 	}

@@ -74,13 +74,14 @@ func (m *mockService) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerCl
 
 func newAdminTestContext(svc *mockService) *core.Context {
 	return &core.Context{
-		Ctx:     context.Background(),
-		Sender:  &core.User{ID: 2002},
-		Chat:    &core.Chat{ID: -100123456, Type: "supergroup"},
-		Message: &core.Message{ID: 100, IsOutgoing: true},
-		Perms:   core.NewPermissions(1001, []int64{2002}),
-		Svc:     svc,
-		PeerID:  &tg.InputPeerChannel{ChannelID: 123456},
+		Ctx:      context.Background(),
+		Sender:   &core.User{ID: 2002},
+		Chat:     &core.Chat{ID: -100123456, Type: "supergroup"},
+		Message:  &core.Message{ID: 100, IsOutgoing: true},
+		Perms:    core.NewPermissions(1001, []int64{2002}),
+		Svc:      svc,
+		PeerID:   &tg.InputPeerChannel{ChannelID: 123456},
+		Resolver: &core.MockPeerResolver{UserID: 5555, UserPeer: &tg.InputPeerUser{UserID: 5555, AccessHash: 12345}},
 	}
 }
 

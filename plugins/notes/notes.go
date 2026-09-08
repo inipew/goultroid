@@ -7,16 +7,15 @@ import (
 	"strings"
 
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/database"
 )
 
 // Plugin manages chat notes.
 type Plugin struct {
-	db database.Repository
+	db Repository
 }
 
 // New creates a new notes plugin instance.
-func New(db database.Repository) *Plugin {
+func New(db Repository) *Plugin {
 	return &Plugin{db: db}
 }
 

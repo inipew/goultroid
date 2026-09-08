@@ -1,7 +1,6 @@
 package architecture
 
 import (
-	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
@@ -27,10 +26,10 @@ func TestDependencyBoundaries(t *testing.T) {
 		}
 		if strings.HasPrefix(pkg, modulePath+"/plugins/") {
 			for dep := range deps {
-				if strings.HasPrefix(dep, modulePath+"/internal/app") {
+				if dep == modulePath+"/internal/app" || strings.HasPrefix(dep, modulePath+"/internal/app/") {
 					t.Errorf("feature package %s must not depend on app %s", pkg, dep)
 				}
-				if strings.HasPrefix(dep, modulePath+"/plugins/") && dep != pkg {
+				if strings.HasPrefix(dep, modulePath+"/plugins/") && dep != pkg && !strings.HasPrefix(dep, pkg+"/") && !strings.HasPrefix(pkg, dep+"/") {
 					t.Errorf("feature package %s must not depend on another feature %s", pkg, dep)
 				}
 			}

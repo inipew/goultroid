@@ -8,7 +8,7 @@ import (
 
 type migration001 struct{}
 
-func (migration001) ID() string { return "clone.001" }
+func (migration001) ID() string          { return "clone.001" }
 func (migration001) Description() string { return "Persistent clone profile snapshots" }
 func (migration001) Checksum() string {
 	return "44a893d59f5ae3be68967d0eb630b4dc1f4ce356b6d19e628eda614010c1500a"
@@ -30,7 +30,7 @@ func (migration001) Up(ctx context.Context, tx database.SQLExecutor) error {
 
 type migration002 struct{}
 
-func (migration002) ID() string { return "clone.002" }
+func (migration002) ID() string          { return "clone.002" }
 func (migration002) Description() string { return "Clone snapshot photo mutation tracking" }
 func (migration002) Checksum() string {
 	return "91fd1d917cf3673d4b2cf720800d457c82e360d9ddbd6bde5d053b88b3e2069d"

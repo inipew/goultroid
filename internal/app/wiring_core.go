@@ -12,6 +12,7 @@ import (
 	"github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/services/localization"
 	"github.com/inipew/goultroid/internal/services/ratelimit"
+	"github.com/inipew/goultroid/plugins/sudo"
 	"go.uber.org/zap"
 )
 
@@ -27,7 +28,8 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 
 	perms := core.NewPermissions(cfg.OwnerID, cfg.SudoUsers)
 	sudoCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	dbSudos, err := db.GetSudoUsers(sudoCtx)
+	sudoRepo := sudo.NewSQLiteRepository(db)
+	dbSudos, err := sudoRepo.GetSudoUsers(sudoCtx)
 	cancel()
 	if err != nil {
 		logger.Warn("failed to load sudo users from db", zap.Error(err))

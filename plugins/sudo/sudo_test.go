@@ -87,7 +87,7 @@ func TestSudoPlugin(t *testing.T) {
 
 	ownerID := int64(1001)
 	perms := core.NewPermissions(ownerID, nil)
-	p := New(db, perms)
+	p := New(NewSQLiteRepository(db), perms)
 
 	if p.Name() != "sudo" {
 		t.Errorf("expected name sudo, got %s", p.Name())

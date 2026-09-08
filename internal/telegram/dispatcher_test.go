@@ -765,7 +765,8 @@ func TestDispatcher_AFK_EndToEnd(t *testing.T) {
 	mgr := plugin.NewManager(router)
 	mgr.SetHookRegistrar(dispatcher)
 
-	afkPlugin := afk.New(db, ownerID, func() core.TelegramServicer { return svc })
+	afkRepo := afk.NewSQLiteRepository(db)
+	afkPlugin := afk.New(afkRepo, ownerID, func() core.TelegramServicer { return svc })
 	afkPlugin.SetLogger(logger)
 	afkPlugin.SetResolver(dispatcher.Resolver())
 	if err := mgr.Register(afkPlugin); err != nil {
@@ -790,7 +791,7 @@ func TestDispatcher_AFK_EndToEnd(t *testing.T) {
 	// Give command executor goroutine time to complete
 	time.Sleep(100 * time.Millisecond)
 
-	st, err := db.GetAFK(ctx, ownerID)
+	st, err := afkRepo.GetAFK(ctx, ownerID)
 	if err != nil || st == nil || !st.IsAFK {
 		t.Fatalf("expected AFK to be active in database, got: %+v, err: %v", st, err)
 	}
@@ -877,7 +878,7 @@ func TestDispatcher_AFK_EndToEnd(t *testing.T) {
 	}
 
 	// Verify still AFK
-	st, err = db.GetAFK(ctx, ownerID)
+	st, err = afkRepo.GetAFK(ctx, ownerID)
 	if err != nil || st == nil || !st.IsAFK {
 		t.Fatalf("expected AFK to remain active after automated bot message, got: %+v", st)
 	}
@@ -895,7 +896,7 @@ func TestDispatcher_AFK_EndToEnd(t *testing.T) {
 		t.Fatalf("OnNewMessage manual unAFK failed: %v", err)
 	}
 
-	st, err = db.GetAFK(ctx, ownerID)
+	st, err = afkRepo.GetAFK(ctx, ownerID)
 	if err != nil || (st != nil && st.IsAFK) {
 		t.Fatalf("expected AFK to be deactivated after manual message, got: %+v", st)
 	}

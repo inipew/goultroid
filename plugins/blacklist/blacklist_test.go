@@ -37,7 +37,7 @@ func TestBlacklistPlugin(t *testing.T) {
 	defer db.Close()
 
 	svc := &mockService{}
-	p := New(db, func() core.TelegramServicer { return svc })
+	p := New(NewSQLiteRepository(db), func() core.TelegramServicer { return svc })
 
 	if p.Name() != "blacklist" {
 		t.Errorf("expected name 'blacklist', got %s", p.Name())

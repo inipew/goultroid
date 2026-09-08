@@ -4,9 +4,67 @@ package app
 
 import (
 	"github.com/inipew/goultroid/internal/module"
-	"github.com/inipew/goultroid/plugins/clone"
+	addon "github.com/inipew/goultroid/plugins/addon"
+	admin "github.com/inipew/goultroid/plugins/admin"
+	afk "github.com/inipew/goultroid/plugins/afk"
+	alive "github.com/inipew/goultroid/plugins/alive"
+	blacklist "github.com/inipew/goultroid/plugins/blacklist"
+	broadcast "github.com/inipew/goultroid/plugins/broadcast"
+	clone "github.com/inipew/goultroid/plugins/clone"
+	downloader "github.com/inipew/goultroid/plugins/downloader"
+	filters "github.com/inipew/goultroid/plugins/filters"
+	forward "github.com/inipew/goultroid/plugins/forward"
+	fun "github.com/inipew/goultroid/plugins/fun"
+	help "github.com/inipew/goultroid/plugins/help"
+	info "github.com/inipew/goultroid/plugins/info"
+	locks "github.com/inipew/goultroid/plugins/locks"
+	media "github.com/inipew/goultroid/plugins/media"
+	notes "github.com/inipew/goultroid/plugins/notes"
+	ocr "github.com/inipew/goultroid/plugins/ocr"
+	pin "github.com/inipew/goultroid/plugins/pin"
+	ping "github.com/inipew/goultroid/plugins/ping"
+	pmpermit "github.com/inipew/goultroid/plugins/pmpermit"
+	profile "github.com/inipew/goultroid/plugins/profile"
+	quote "github.com/inipew/goultroid/plugins/quote"
+	scheduler "github.com/inipew/goultroid/plugins/scheduler"
+	settings "github.com/inipew/goultroid/plugins/settings"
+	sticker "github.com/inipew/goultroid/plugins/sticker"
+	sudo "github.com/inipew/goultroid/plugins/sudo"
+	system "github.com/inipew/goultroid/plugins/system"
+	userlog "github.com/inipew/goultroid/plugins/userlog"
+	voice "github.com/inipew/goultroid/plugins/voice"
+	wikipedia "github.com/inipew/goultroid/plugins/wikipedia"
 )
 
 var builtinModules = []module.Module{
+	addon.Module,
+	admin.Module,
+	afk.Module,
+	alive.Module,
+	blacklist.Module,
+	broadcast.Module,
 	clone.Module,
+	downloader.Module,
+	filters.Module,
+	forward.Module,
+	fun.Module,
+	help.Module,
+	info.Module,
+	locks.Module,
+	media.Module,
+	notes.Module,
+	ocr.Module,
+	pin.Module,
+	ping.Module,
+	pmpermit.Module,
+	profile.Module,
+	quote.Module,
+	scheduler.Module,
+	settings.Module,
+	sticker.Module,
+	sudo.Module,
+	system.Module,
+	userlog.Module,
+	voice.Module,
+	wikipedia.Module,
 }

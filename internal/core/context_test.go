@@ -3,7 +3,10 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/gotd/td/tg"
@@ -353,6 +356,36 @@ func TestContext_ExtendedActions(t *testing.T) {
 	}
 }
 
+type contextTestResolver struct {
+	svc TelegramServicer
+}
+
+func (r *contextTestResolver) Resolve(ctx context.Context, ref string) (tg.InputPeerClass, error) {
+	p, _, err := r.ResolveUser(ctx, ref)
+	return p, err
+}
+
+func (r *contextTestResolver) ResolveUser(ctx context.Context, ref string) (tg.InputPeerClass, int64, error) {
+	if uid, err := strconv.ParseInt(ref, 10, 64); err == nil {
+		return &tg.InputPeerUser{UserID: uid, AccessHash: 12345}, uid, nil
+	}
+	if r.svc != nil {
+		resolved, err := r.svc.ResolveUsername(ctx, strings.TrimPrefix(ref, "@"))
+		if err == nil && resolved != nil {
+			for _, u := range resolved.Users {
+				if user, ok := u.(*tg.User); ok {
+					return &tg.InputPeerUser{UserID: user.ID, AccessHash: user.AccessHash}, user.ID, nil
+				}
+			}
+		}
+	}
+	return nil, 0, fmt.Errorf("user not found: %s", ref)
+}
+
+func (r *contextTestResolver) ResolveChat(ctx context.Context, ref string) (tg.InputPeerClass, error) {
+	return &tg.InputPeerChat{ChatID: 123}, nil
+}
+
 func TestContext_ModerationActions(t *testing.T) {
 	mock := &mockTelegramServicer{
 		messageToGet: &tg.Message{
@@ -371,8 +404,9 @@ func TestContext_ModerationActions(t *testing.T) {
 			ReplyToID: 50,
 			TopicID:   42,
 		},
-		Svc:    mock,
-		PeerID: &tg.InputPeerChannel{ChannelID: 123},
+		Svc:      mock,
+		PeerID:   &tg.InputPeerChannel{ChannelID: 123},
+		Resolver: &contextTestResolver{svc: mock},
 	}
 
 	// 1. TopicID helper

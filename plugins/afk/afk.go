@@ -13,7 +13,6 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/plugin"
 	"go.uber.org/zap"
@@ -32,7 +31,7 @@ type afkState struct {
 }
 
 type Plugin struct {
-	db                 database.Repository
+	db                 Repository
 	ownerID            int64
 	ownerUsername      string
 	svcFunc            func() core.TelegramServicer
@@ -47,7 +46,7 @@ type Plugin struct {
 	cooldownDur        time.Duration
 }
 
-func New(db database.Repository, ownerID int64, svcFunc func() core.TelegramServicer) *Plugin {
+func New(db Repository, ownerID int64, svcFunc func() core.TelegramServicer) *Plugin {
 	p := &Plugin{
 		db:                 db,
 		ownerID:            ownerID,

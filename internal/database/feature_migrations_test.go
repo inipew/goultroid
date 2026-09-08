@@ -12,10 +12,10 @@ type testFeatureMigration struct {
 	legacy   []int
 }
 
-func (m testFeatureMigration) ID() string                 { return m.id }
-func (m testFeatureMigration) Description() string        { return "test migration" }
-func (m testFeatureMigration) Checksum() string           { return m.checksum }
-func (m testFeatureMigration) LegacyVersions() []int      { return m.legacy }
+func (m testFeatureMigration) ID() string                                   { return m.id }
+func (m testFeatureMigration) Description() string                          { return "test migration" }
+func (m testFeatureMigration) Checksum() string                             { return m.checksum }
+func (m testFeatureMigration) LegacyVersions() []int                        { return m.legacy }
 func (m testFeatureMigration) Up(ctx context.Context, tx SQLExecutor) error { return m.up(ctx, tx) }
 
 type testFeatureProvider struct{ migrations []Migration }

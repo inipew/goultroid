@@ -301,10 +301,11 @@ func TestHandleBlockAndUnblock(t *testing.T) {
 	svc := &mockService{}
 
 	ctx := &core.Context{
-		Ctx:    context.Background(),
-		Svc:    svc,
-		Args:   []string{"12345678"},
-		PeerID: &tg.InputPeerSelf{},
+		Ctx:      context.Background(),
+		Svc:      svc,
+		Args:     []string{"12345678"},
+		PeerID:   &tg.InputPeerSelf{},
+		Resolver: &core.MockPeerResolver{UserID: 12345678, UserPeer: &tg.InputPeerUser{UserID: 12345678, AccessHash: 12345}},
 	}
 
 	// 1. Block

@@ -70,11 +70,12 @@ func TestPMPermitPlugin(t *testing.T) {
 	}
 
 	ctx := &core.Context{
-		Ctx:     context.Background(),
-		Svc:     mockTG,
-		PeerID:  &tg.InputPeerUser{UserID: 88888},
-		Message: &core.Message{ID: 1, IsOutgoing: true},
-		Args:    []string{"88888"},
+		Ctx:      context.Background(),
+		Svc:      mockTG,
+		PeerID:   &tg.InputPeerUser{UserID: 88888},
+		Message:  &core.Message{ID: 1, IsOutgoing: true},
+		Args:     []string{"88888"},
+		Resolver: &core.MockPeerResolver{UserID: 88888, UserPeer: &tg.InputPeerUser{UserID: 88888, AccessHash: 12345}},
 	}
 
 	// 1. Approve command
