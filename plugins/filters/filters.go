@@ -15,6 +15,11 @@ import (
 	"github.com/inipew/goultroid/internal/plugin"
 )
 
+const (
+	filterCacheTTL = 10 * time.Minute
+	filterCooldown = 5 * time.Second
+)
+
 var _ plugin.MessageHookPlugin = (*Plugin)(nil)
 
 type compiledFilter struct {
@@ -37,9 +42,9 @@ func New(db database.Repository, svcFunc func() core.TelegramServicer) *Plugin {
 	return &Plugin{db: db, svcFunc: svcFunc, chatFilters: make(map[int64][]compiledFilter), chatAccess: make(map[int64]time.Time), lastReply: make(map[string]time.Time)}
 }
 
-func (p *Plugin) Name() string             { return "filters" }
-func (p *Plugin) Init() error              { return nil }
-func (p *Plugin) MessageHookPriority() int { return 20 }
+func (p *Plugin) Name() string              { return "filters" }
+func (p *Plugin) Init() error               { return nil }
+func (p *Plugin) MessageHookPriority() int  { return 20 }
 
 func (p *Plugin) Commands() []core.Command {
 	return []core.Command{
@@ -61,7 +66,11 @@ func (p *Plugin) handleFilter(ctx *core.Context) error {
 		_ = ctx.EditOrReply("⚠️ Usage: <code>.filter &lt;keyword&gt; &lt;reply text&gt;</code> or reply to a message with <code>.filter &lt;keyword&gt;</code>")
 		return errors.New("missing arguments")
 	}
-	keyword := strings.ToLower(ctx.Args[0])
+	keyword := strings.ToLower(strings.TrimSpace(ctx.Args[0]))
+	if keyword == "" {
+		_ = ctx.EditOrReply("⚠️ Filter keyword cannot be empty.")
+		return errors.New("empty filter keyword")
+	}
 	var replyText string
 	if len(ctx.Args) >= 2 {
 		replyText = strings.TrimSpace(strings.TrimPrefix(ctx.RawArgs, ctx.Args[0]))
@@ -73,15 +82,16 @@ func (p *Plugin) handleFilter(ctx *core.Context) error {
 		}
 		replyText = reply.Text
 	}
+	if replyText == "" {
+		_ = ctx.EditOrReply("⚠️ Filter reply cannot be empty.")
+		return errors.New("empty filter reply")
+	}
 	chatID := p.getChatID(ctx)
 	if err := p.db.SaveFilter(ctx.Ctx, chatID, keyword, replyText); err != nil {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to save filter: %v", err))
 		return err
 	}
-	p.cacheMu.Lock()
-	delete(p.chatFilters, chatID)
-	delete(p.chatAccess, chatID)
-	p.cacheMu.Unlock()
+	p.invalidateChat(chatID)
 	return ctx.EditOrReply(fmt.Sprintf("🎯 Filter <code>%s</code> saved successfully.", keyword))
 }
 
@@ -90,16 +100,13 @@ func (p *Plugin) handleStop(ctx *core.Context) error {
 		_ = ctx.EditOrReply("⚠️ Usage: <code>.stop &lt;keyword&gt;</code>")
 		return errors.New("missing filter keyword")
 	}
-	keyword := strings.ToLower(ctx.Args[0])
+	keyword := strings.ToLower(strings.TrimSpace(ctx.Args[0]))
 	chatID := p.getChatID(ctx)
 	if err := p.db.DeleteFilter(ctx.Ctx, chatID, keyword); err != nil {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to stop filter: %v", err))
 		return err
 	}
-	p.cacheMu.Lock()
-	delete(p.chatFilters, chatID)
-	delete(p.chatAccess, chatID)
-	p.cacheMu.Unlock()
+	p.invalidateChat(chatID)
 	return ctx.EditOrReply(fmt.Sprintf("🗑️ Filter <code>%s</code> stopped.", keyword))
 }
 
@@ -121,6 +128,13 @@ func (p *Plugin) handleList(ctx *core.Context) error {
 	return ctx.EditOrReply(sb.String())
 }
 
+func (p *Plugin) invalidateChat(chatID int64) {
+	p.cacheMu.Lock()
+	delete(p.chatFilters, chatID)
+	delete(p.chatAccess, chatID)
+	p.cacheMu.Unlock()
+}
+
 func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *tg.Message, isCommand bool, cmdName string) error {
 	if isCommand || msg == nil || msg.Message == "" || msg.Out {
 		return nil
@@ -135,7 +149,7 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 			}
 		}
 	}
-	if p.svcFunc == nil {
+	if p.svcFunc == nil || p.db == nil {
 		return nil
 	}
 	svc := p.svcFunc()
@@ -147,36 +161,14 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 		return nil
 	}
 
-	p.cacheMu.RLock()
-	filters, ok := p.chatFilters[chatID]
-	p.cacheMu.RUnlock()
+	filters, ok := p.getCachedFilters(chatID)
 	if !ok {
 		rawFilters, err := p.db.ListFilters(ctx, chatID)
 		if err != nil {
 			return nil
 		}
 		filters = compileFilters(rawFilters)
-		p.cacheMu.Lock()
-		if len(p.chatFilters) >= 500 {
-			var oldestChat int64
-			var oldestTime time.Time
-			for c, t := range p.chatAccess {
-				if oldestTime.IsZero() || t.Before(oldestTime) {
-					oldestTime, oldestChat = t, c
-				}
-			}
-			if oldestChat != 0 {
-				delete(p.chatFilters, oldestChat)
-				delete(p.chatAccess, oldestChat)
-			}
-		}
-		p.chatFilters[chatID] = filters
-		p.chatAccess[chatID] = time.Now()
-		p.cacheMu.Unlock()
-	} else {
-		p.cacheMu.Lock()
-		p.chatAccess[chatID] = time.Now()
-		p.cacheMu.Unlock()
+		p.cacheFilters(chatID, filters)
 	}
 	if len(filters) == 0 {
 		return nil
@@ -189,22 +181,9 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 			continue
 		}
 		cooldownKey := fmt.Sprintf("%d:%s", chatID, f.keyword)
-		now := time.Now()
-		p.cooldownMu.Lock()
-		last, exists := p.lastReply[cooldownKey]
-		if exists && now.Sub(last) < 5*time.Second {
-			p.cooldownMu.Unlock()
+		if p.cooldownActive(cooldownKey) {
 			break
 		}
-		p.lastReply[cooldownKey] = now
-		if len(p.lastReply) > 1000 {
-			for k, v := range p.lastReply {
-				if now.Sub(v) > 30*time.Second {
-					delete(p.lastReply, k)
-				}
-			}
-		}
-		p.cooldownMu.Unlock()
 
 		peer := extractPeerInput(msg.PeerID, e)
 		if peer == nil {
@@ -213,12 +192,68 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 		if _, err := svc.SendMessage(ctx, peer, f.replyText); err != nil {
 			return fmt.Errorf("filters: send reply for %q: %w", f.keyword, err)
 		}
+		p.markCooldown(cooldownKey)
 		if decision := core.GetMessageDecision(ctx); decision != nil {
 			decision.SetSuppressAFK(true)
 		}
 		break
 	}
 	return nil
+}
+
+func (p *Plugin) getCachedFilters(chatID int64) ([]compiledFilter, bool) {
+	p.cacheMu.RLock()
+	filters, ok := p.chatFilters[chatID]
+	accessed := p.chatAccess[chatID]
+	p.cacheMu.RUnlock()
+	if !ok || time.Since(accessed) >= filterCacheTTL {
+		return nil, false
+	}
+	p.cacheMu.Lock()
+	p.chatAccess[chatID] = time.Now()
+	p.cacheMu.Unlock()
+	return filters, true
+}
+
+func (p *Plugin) cacheFilters(chatID int64, filters []compiledFilter) {
+	p.cacheMu.Lock()
+	defer p.cacheMu.Unlock()
+	if len(p.chatFilters) >= 500 {
+		var oldestChat int64
+		var oldestTime time.Time
+		for c, t := range p.chatAccess {
+			if oldestTime.IsZero() || t.Before(oldestTime) {
+				oldestTime, oldestChat = t, c
+			}
+		}
+		if oldestChat != 0 {
+			delete(p.chatFilters, oldestChat)
+			delete(p.chatAccess, oldestChat)
+		}
+	}
+	p.chatFilters[chatID] = filters
+	p.chatAccess[chatID] = time.Now()
+}
+
+func (p *Plugin) cooldownActive(key string) bool {
+	p.cooldownMu.Lock()
+	defer p.cooldownMu.Unlock()
+	last, exists := p.lastReply[key]
+	return exists && time.Since(last) < filterCooldown
+}
+
+func (p *Plugin) markCooldown(key string) {
+	now := time.Now()
+	p.cooldownMu.Lock()
+	p.lastReply[key] = now
+	if len(p.lastReply) > 1000 {
+		for k, v := range p.lastReply {
+			if now.Sub(v) > 30*time.Second {
+				delete(p.lastReply, k)
+			}
+		}
+	}
+	p.cooldownMu.Unlock()
 }
 
 func compileFilters(raw []database.Filter) []compiledFilter {
@@ -269,7 +304,7 @@ func extractPeerInput(peer tg.PeerClass, e tg.Entities) tg.InputPeerClass {
 		if p.UserID == 0 {
 			return nil
 		}
-		if u, ok := e.Users[p.UserID]; ok {
+		if u, ok := e.Users[p.UserID]; ok && u != nil && u.AccessHash != 0 {
 			return &tg.InputPeerUser{UserID: p.UserID, AccessHash: u.AccessHash}
 		}
 		return nil
@@ -282,7 +317,7 @@ func extractPeerInput(peer tg.PeerClass, e tg.Entities) tg.InputPeerClass {
 		if p.ChannelID == 0 {
 			return nil
 		}
-		if ch, ok := e.Channels[p.ChannelID]; ok {
+		if ch, ok := e.Channels[p.ChannelID]; ok && ch != nil && ch.AccessHash != 0 {
 			return &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: ch.AccessHash}
 		}
 		return nil
