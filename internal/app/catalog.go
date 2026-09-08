@@ -49,10 +49,14 @@ func defaultPluginCatalog(core *coreDependencies, tg *telegramRuntime, dom *doma
 	addonPlugin := addonPluginPkg.New(dom.addonManager)
 	helpPlugin := help.New(core.router)
 	helpPlugin.SetStateStore(core.callbackStore)
-	if err := core.callbackRouter.Register(helpPlugin); err != nil { return nil, fmt.Errorf("register help callback handler: %w", err) }
+	if err := core.callbackRouter.Register(helpPlugin); err != nil {
+		return nil, fmt.Errorf("register help callback handler: %w", err)
+	}
 	settingsPlugin := settingsPluginPkg.New(dom.settingsService, core.callbackStore)
 	settingsPlugin.SetLogger(dom.logger)
-	if err := core.callbackRouter.Register(settingsPlugin); err != nil { return nil, fmt.Errorf("register settings callback handler: %w", err) }
+	if err := core.callbackRouter.Register(settingsPlugin); err != nil {
+		return nil, fmt.Errorf("register settings callback handler: %w", err)
+	}
 	return []plugin.Plugin{
 		ping.New(), helpPlugin, alive.New(dom.startTime), pin.New(), forward.New(), downloaderPlugin,
 		sudo.New(core.db, core.perms), notes.New(core.db), afkPlugin, admin.New(dom.modService), mediaPlugin,

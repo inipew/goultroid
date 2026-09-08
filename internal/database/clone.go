@@ -32,7 +32,9 @@ func (d *DB) GetCloneState(ctx context.Context, ownerID int64) (*CloneState, err
 		Scan(&s.OwnerID, &s.OriginalFirst, &s.OriginalLast, &s.OriginalBio,
 			&s.OriginalPhoto, &s.ClonedPhoto, &s.Active, &s.UpdatedAt)
 	if err != nil {
-		if err == sql.ErrNoRows { return nil, nil }
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return &s, nil
