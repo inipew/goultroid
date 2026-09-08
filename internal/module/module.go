@@ -13,7 +13,6 @@ import (
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/services/download"
 	mediaSvc "github.com/inipew/goultroid/internal/services/media"
-	"github.com/inipew/goultroid/internal/services/moderation"
 	pmpermitSvc "github.com/inipew/goultroid/internal/services/pmpermit"
 	"github.com/inipew/goultroid/internal/services/storage"
 	userlogSvc "github.com/inipew/goultroid/internal/services/userlog"
@@ -48,12 +47,11 @@ type TelegramRuntime struct {
 }
 
 // ServiceRuntime contains reusable cross-feature services. Feature-owned
-// persistence must not be added here; it belongs to the feature package.
+// persistence and feature-specific business services must not be added here.
 type ServiceRuntime struct {
 	Storage          storage.Storage
 	DownloadRegistry *download.Registry
 	MediaService     *mediaSvc.Service
-	ModService       *moderation.Service
 	PMPermitService  *pmpermitSvc.Service
 	BroadcastService *broadcastSvc.Service
 	UserlogService   *userlogSvc.Service
