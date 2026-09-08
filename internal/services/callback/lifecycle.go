@@ -7,6 +7,9 @@ import (
 
 // Prune sweeps through all items and removes expired states.
 func (s *StateStore) Prune() int {
+	if s == nil {
+		return 0
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -24,6 +27,12 @@ func (s *StateStore) Prune() int {
 // Start launches a background goroutine that periodically prunes expired entries.
 // It is safe to call multiple times; subsequent calls are no-op.
 func (s *StateStore) Start(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	s.mu.Lock()
 	if s.cancel != nil {
 		s.mu.Unlock()
@@ -49,6 +58,9 @@ func (s *StateStore) Start(ctx context.Context) {
 
 // Stop terminates the background pruning goroutine.
 func (s *StateStore) Stop() {
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
 	cancel := s.cancel
 	s.cancel = nil
