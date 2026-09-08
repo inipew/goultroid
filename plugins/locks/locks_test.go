@@ -182,3 +182,35 @@ func TestLocksPlugin_FailClosedOnGetFullChatError(t *testing.T) {
 		t.Errorf("expected EditChatDefaultBannedRights not to be called on failure")
 	}
 }
+
+type emptyFullChatService struct {
+	mockService
+}
+
+func (e *emptyFullChatService) GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.MessagesChatFull, error) {
+	return &tg.MessagesChatFull{}, nil
+}
+
+func TestLocksPlugin_FailClosedWhenChatEntityMissing(t *testing.T) {
+	p := New()
+	svc := &emptyFullChatService{}
+	peer := &tg.InputPeerChannel{ChannelID: 12345, AccessHash: 67890}
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		Command: "lock",
+		Args:    []string{"media"},
+		Svc:     svc,
+		PeerID:  peer,
+	}
+
+	err := p.Commands()[0].Handler(ctx)
+	if err == nil {
+		t.Fatal("expected error when GetFullChat returns no matching chat entity")
+	}
+	if !strings.Contains(err.Error(), "target chat entity not found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if svc.rightsEdited.SendMedia {
+		t.Fatal("expected no permission mutation when chat entity is missing")
+	}
+}
