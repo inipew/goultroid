@@ -10,8 +10,7 @@ import (
 )
 
 // ApproveWithPeer persists approval and performs Telegram cleanup using the
-// already-resolved peer. The caller must provide a usable peer; user peers
-// without an access hash are rejected instead of being sent to MTProto.
+// already-resolved peer. User/channel peers must carry an access hash.
 func (s *Service) ApproveWithPeer(ctx context.Context, peer tg.InputPeerClass, userID int64, reason string, duration time.Duration) error {
 	if userID == 0 {
 		return fmt.Errorf("invalid user id")
@@ -31,33 +30,37 @@ func (s *Service) ApproveWithPeer(ctx context.Context, peer tg.InputPeerClass, u
 		reason = "approved by user"
 	}
 
-	// Telegram state is the externally visible side effect. Do it before
-	// publishing success, while the durable DB state is still authoritative.
-	svc := s.getService()
-	if svc != nil {
+	if err := s.db.SetPMStatus(ctx, userID, StatusApproved, reason, exp); err != nil {
+		return err
+	}
+
+	// Telegram is an external side effect. If it fails, compensate the durable
+	// state so DB/cache do not claim approval that Telegram did not establish.
+	if svc := s.getService(); svc != nil {
 		if err := svc.UnblockUser(ctx, peer); err != nil {
+			s.approvedCache.Delete(userID)
+			if rollbackErr := s.db.SetPMStatus(ctx, userID, StatusPending, "approval Telegram side-effect failed", nil); rollbackErr != nil {
+				s.logger.Error("failed to rollback PM approval after Telegram failure", zap.Int64("user_id", userID), zap.Error(rollbackErr))
+			}
 			s.publishEvent("approve", userID, "", 0, reason, false, err.Error())
 			return fmt.Errorf("unblock user: %w", err)
 		}
 	}
 
-	if err := s.db.SetPMStatus(ctx, userID, StatusApproved, reason, exp); err != nil {
-		return err
-	}
 	if err := s.db.ResetPMWarn(ctx, userID); err != nil {
 		s.logger.Warn("failed to reset pm warn count", zap.Int64("user_id", userID), zap.Error(err))
 	}
-
 	entry := approvalCacheEntry{}
 	if exp != nil {
 		entry.expiresAt = *exp
 	}
 	s.approvedCache.Store(userID, entry)
 
-	ids := s.getWarnIDs(userID)
-	if len(ids) > 0 && svc != nil {
-		if err := svc.DeleteMessage(ctx, peer, ids); err != nil {
-			s.logger.Warn("failed to delete warning messages on approve", zap.Int64("user_id", userID), zap.Error(err))
+	if ids := s.getWarnIDs(userID); len(ids) > 0 {
+		if svc := s.getService(); svc != nil {
+			if err := svc.DeleteMessage(ctx, peer, ids); err != nil {
+				s.logger.Warn("failed to delete warning messages on approve", zap.Int64("user_id", userID), zap.Error(err))
+			}
 		}
 	}
 	s.clearWarnIDs(userID)
