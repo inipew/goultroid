@@ -55,7 +55,7 @@ func (r *Resolver) ResolveUser(ctx context.Context, ref string) (tg.InputPeerCla
 
 	if uid, err := strconv.ParseInt(ref, 10, 64); err == nil && uid > 0 {
 		if r.peerManager != nil {
-			if u, err := r.peerManager.ResolveUserID(ctx, uid); err == nil && u != nil {
+			if u, err := r.peerManager.ResolveUserID(ctx, uid); err == nil {
 				return u.InputPeer(), u.ID(), nil
 			}
 		}
