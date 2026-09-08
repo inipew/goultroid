@@ -34,8 +34,8 @@ func (s *Service) DownloadUserProfilePhoto(ctx context.Context, user tg.InputUse
 
 	var photoID int64
 	for _, item := range full.Users {
-		if candidate, ok := item.(*tg.User); ok && candidate.ID == u.UserID && candidate.ProfilePhoto != nil {
-			if photo, ok := candidate.ProfilePhoto.(*tg.UserProfilePhoto); ok {
+		if candidate, ok := item.(*tg.User); ok && candidate.ID == u.UserID && candidate.Photo != nil {
+			if photo, ok := candidate.Photo.(*tg.UserProfilePhoto); ok {
 				photoID = photo.PhotoID
 			}
 			break
