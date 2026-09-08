@@ -36,6 +36,7 @@ type App struct {
 	callbackStore   *callback.StateStore
 	inlineEngine    *inline.Engine
 	settingsService *settings.Service
+	lifecycle       *lifecycle
 }
 
 func New(cfg *config.Config) (*App, error) {
@@ -109,10 +110,11 @@ func New(cfg *config.Config) (*App, error) {
 		return nil, err
 	}
 
-	return &App{cfg: cfg, logger: logger, db: coreDeps.db, client: tgRuntime.client, plugins: pluginManager, router: coreDeps.router, sched: domServices.schedEngine, eventBus: coreDeps.eventBus, assistant: tgRuntime.assistant, limiter: coreDeps.cmdLimiter, addonMgr: domServices.addonManager, callbackStore: coreDeps.callbackStore, inlineEngine: coreDeps.inlineEngine, settingsService: domServices.settingsService}, nil
+	return &App{cfg: cfg, logger: logger, db: coreDeps.db, client: tgRuntime.client, plugins: pluginManager, router: coreDeps.router, sched: domServices.schedEngine, eventBus: coreDeps.eventBus, assistant: tgRuntime.assistant, limiter: coreDeps.cmdLimiter, addonMgr: domServices.addonManager, callbackStore: coreDeps.callbackStore, inlineEngine: coreDeps.inlineEngine, settingsService: domServices.settingsService, lifecycle: newLifecycle()}, nil
 }
 
 func (a *App) Run(ctx context.Context) error { return a.runLifecycle(ctx) }
+func (a *App) State() LifecycleState { if a == nil || a.lifecycle == nil { return LifecycleStopped }; return a.lifecycle.State() }
 
 func initLogger(logLevel string) (*zap.Logger, error) {
 	var zapLevel zapcore.Level
