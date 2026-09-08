@@ -114,3 +114,19 @@ func TestRunFeatureMigrationsRollsBackFailedMigration(t *testing.T) {
 		t.Fatal("failed feature migration left schema changes behind")
 	}
 }
+
+func TestRunFeatureMigrationsRejectsDuplicateLegacyOwnership(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	first := testFeatureMigration{id: "test.001", checksum: "checksum-v1", legacy: []int{8}, up: func(context.Context, SQLExecutor) error { return nil }}
+	second := testFeatureMigration{id: "test.002", checksum: "checksum-v2", legacy: []int{8}, up: func(context.Context, SQLExecutor) error { return nil }}
+
+	if err := RunFeatureMigrations(ctx, db, testFeatureProvider{migrations: []Migration{first, second}}); err == nil {
+		t.Fatal("expected duplicate legacy ownership to be rejected")
+	}
+}
