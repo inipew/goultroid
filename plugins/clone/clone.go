@@ -10,17 +10,16 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/database"
 )
 
 const cloneDataDir = "data/clone"
 
 type Plugin struct {
-	repo    database.CloneRepository
+	repo    Repository
 	ownerID int64
 }
 
-func New(repo database.CloneRepository, ownerID int64) *Plugin {
+func New(repo Repository, ownerID int64) *Plugin {
 	return &Plugin{repo: repo, ownerID: ownerID}
 }
 func (p *Plugin) Name() string { return "clone" }
@@ -79,7 +78,7 @@ func (p *Plugin) handleClone(ctx *core.Context) error {
 		clonedPhoto = true
 	}
 
-	snapshot := database.CloneState{OwnerID: p.ownerID, OriginalFirst: selfUser.FirstName, OriginalLast: selfUser.LastName, OriginalBio: selfFull.FullUser.About, OriginalPhoto: snapshotPath, ClonedPhoto: clonedPhoto, Active: true, UpdatedAt: time.Now().UTC()}
+	snapshot := CloneState{OwnerID: p.ownerID, OriginalFirst: selfUser.FirstName, OriginalLast: selfUser.LastName, OriginalBio: selfFull.FullUser.About, OriginalPhoto: snapshotPath, ClonedPhoto: clonedPhoto, Active: true, UpdatedAt: time.Now().UTC()}
 	if err := p.repo.SaveCloneState(ctx.Ctx, snapshot); err != nil {
 		if snapshotPath != "" {
 			_ = os.Remove(snapshotPath)
@@ -208,7 +207,7 @@ func (p *Plugin) downloadProfilePhoto(ctx *core.Context, peer tg.InputPeerClass,
 	return path, nil
 }
 
-func (p *Plugin) cloneFailure(ctx *core.Context, snapshot database.CloneState, cause error) error {
+func (p *Plugin) cloneFailure(ctx *core.Context, snapshot CloneState, cause error) error {
 	if ctx.Svc != nil {
 		if snapshot.ClonedPhoto {
 			_, _ = ctx.Svc.DeleteProfilePhotos(ctx.Ctx, 1)
