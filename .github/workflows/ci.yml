@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ main, master ]
 
+# Keep CI jobs independent, but reuse the expensive Go module/build caches.
+env:
+  GOTOOLCHAIN: local
+
 jobs:
   lint:
     name: Lint & Vet
@@ -19,6 +23,17 @@ jobs:
         with:
           go-version-file: 'go.mod'
           cache: true
+          cache-dependency-path: 'go.sum'
+
+      - name: Cache Go build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-build-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-build-
 
       - name: Check Formatting (gofmt)
         run: |
@@ -50,6 +65,18 @@ jobs:
         with:
           go-version-file: 'go.mod'
           cache: true
+          cache-dependency-path: 'go.sum'
+
+      - name: Cache Go build and test artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-race-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-race-
+            ${{ runner.os }}-go-build-
 
       - name: Run Tests with Race Detector
         run: go test -v -race ./...
@@ -66,6 +93,17 @@ jobs:
         with:
           go-version-file: 'go.mod'
           cache: true
+          cache-dependency-path: 'go.sum'
+
+      - name: Cache Go build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-build-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-build-
 
       - name: Build Application
         run: go build -v ./cmd/goultroid
