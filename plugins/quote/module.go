@@ -13,7 +13,7 @@ var Module ModuleType
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
 		ID:          "quote",
-		Version:     "1.1.0",
+		Version:     "1.2.0",
 		Description: "Render a replied message as a shareable quote image",
 	}
 }

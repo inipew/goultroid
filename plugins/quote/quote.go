@@ -3,9 +3,6 @@ package quote
 import (
 	"context"
 	"fmt"
-	"image"
-	"image/color"
-	"image/draw"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,10 +11,6 @@ import (
 	"unicode"
 
 	"github.com/gotd/td/tg"
-	"golang.org/x/image/font"
-	"golang.org/x/image/font/basicfont"
-	"golang.org/x/image/font/opentype"
-	"golang.org/x/image/math/fixed"
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
@@ -47,7 +40,7 @@ func (p *Plugin) handle(ctx *core.Context) error {
 	}
 	_ = ctx.EditOrReply("⏳ Generating quote...")
 
-	name := p.resolveAuthor(ctx, reply)
+	author := p.resolveAuthorInfo(ctx, reply)
 	text := strings.TrimSpace(reply.Text)
 	if len([]rune(text)) > 1200 {
 		text = string([]rune(text)[:1200]) + "…"
@@ -68,8 +61,30 @@ func (p *Plugin) handle(ctx *core.Context) error {
 		}
 	}
 
-	path := filepath.Join(p.dataDir, fmt.Sprintf("quote-%d.jpg", time.Now().UnixNano()))
-	if err := renderV3(path, name, text, reply, mediaPath, avatarPath); err != nil {
+	// Resolve reply-to message if the quoted message itself replied to another message
+	var replyPreview *ReplyPreview
+	if reply.ReplyToID != 0 {
+		replyPreview = p.resolveReplyPreview(ctx, reply.ReplyToID)
+	}
+
+	// Allow user to supply custom badge override via args (e.g. .qbot Bot Mirror)
+	badge := strings.TrimSpace(ctx.RawArgs)
+	if badge == "" {
+		badge = author.Badge
+	}
+
+	path := filepath.Join(p.dataDir, fmt.Sprintf("quote-%d.png", time.Now().UnixNano()))
+	if err := renderV3WithOpts(RenderOptions{
+		Path:         path,
+		Name:         author.Name,
+		Badge:        badge,
+		Text:         text,
+		Message:      reply,
+		MediaPath:    mediaPath,
+		AvatarPath:   avatarPath,
+		ReplyPreview: replyPreview,
+		SenderID:     reply.SenderID,
+	}); err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Quote rendering failed: %v", err))
 	}
 	defer os.Remove(path)
@@ -108,13 +123,26 @@ func (p *Plugin) downloadAvatar(ctx *core.Context, userID int64) string {
 	return path
 }
 
-func (p *Plugin) resolveAuthor(ctx *core.Context, reply *core.Message) string {
-	if reply == nil {
-		return "Unknown"
+type authorInfo struct {
+	Name       string
+	Badge      string
+	ColorIndex int
+	IsBot      bool
+}
+
+func (p *Plugin) resolveAuthorInfo(ctx *core.Context, reply *core.Message) authorInfo {
+	info := authorInfo{
+		Name:       "Unknown",
+		ColorIndex: 4, // Default Cyan
 	}
+	if reply == nil {
+		return info
+	}
+	info.ColorIndex = int(absInt64(reply.SenderID) % 7)
+
 	if ctx != nil && ctx.Sender != nil && ctx.Sender.ID == reply.SenderID {
 		if name := displayUserName(ctx.Sender.FirstName, ctx.Sender.LastName, ctx.Sender.Username); name != "" {
-			return name
+			info.Name = name
 		}
 	}
 	if ctx != nil && reply.SenderID != 0 && ctx.Resolver != nil {
@@ -126,7 +154,11 @@ func (p *Plugin) resolveAuthor(ctx *core.Context, reply *core.Message) string {
 					for _, item := range full.Users {
 						if u, ok := item.(*tg.User); ok && u.ID == reply.SenderID {
 							if name := displayUserName(u.FirstName, u.LastName, u.Username); name != "" {
-								return name
+								info.Name = name
+							}
+							if u.Bot {
+								info.IsBot = true
+								info.Badge = "bot"
 							}
 						}
 					}
@@ -134,10 +166,74 @@ func (p *Plugin) resolveAuthor(ctx *core.Context, reply *core.Message) string {
 			}
 		}
 	}
-	if reply.SenderID != 0 {
-		return fmt.Sprintf("User %d", reply.SenderID)
+	if info.Name == "Unknown" && reply.SenderID != 0 {
+		info.Name = fmt.Sprintf("User %d", reply.SenderID)
 	}
-	return "Unknown"
+	return info
+}
+
+func (p *Plugin) resolveAuthor(ctx *core.Context, reply *core.Message) string {
+	return p.resolveAuthorInfo(ctx, reply).Name
+}
+
+func (p *Plugin) resolveReplyPreview(ctx *core.Context, replyToID int) *ReplyPreview {
+	if ctx == nil || ctx.Svc == nil || replyToID == 0 {
+		return &ReplyPreview{Text: "Deleted message"}
+	}
+	msg, err := ctx.Svc.GetMessage(ctx.Ctx, ctx.PeerID, replyToID)
+	if err != nil || msg == nil {
+		return &ReplyPreview{Text: "Deleted message"}
+	}
+
+	author := ""
+	if msg.FromID != nil {
+		if u, ok := msg.FromID.(*tg.PeerUser); ok {
+			author = p.resolveUserName(ctx, u.UserID)
+		} else if ch, ok := msg.FromID.(*tg.PeerChannel); ok {
+			author = fmt.Sprintf("Channel %d", ch.ChannelID)
+		} else if ch, ok := msg.FromID.(*tg.PeerChat); ok {
+			author = fmt.Sprintf("Chat %d", ch.ChatID)
+		}
+	}
+	text := strings.TrimSpace(msg.Message)
+	if text == "" && msg.Media != nil {
+		text = mediaPlaceholder("")
+	}
+	if text == "" {
+		text = "Message"
+	}
+	if len([]rune(text)) > 60 {
+		text = string([]rune(text)[:57]) + "…"
+	}
+	return &ReplyPreview{
+		Author: author,
+		Text:   text,
+	}
+}
+
+func (p *Plugin) resolveUserName(ctx *core.Context, userID int64) string {
+	if ctx != nil && ctx.Sender != nil && ctx.Sender.ID == userID {
+		return displayUserName(ctx.Sender.FirstName, ctx.Sender.LastName, ctx.Sender.Username)
+	}
+	if ctx != nil && ctx.Resolver != nil {
+		peer, _, err := ctx.Resolver.ResolveUser(ctx.Ctx, strconv.FormatInt(userID, 10))
+		if err == nil {
+			if inputUser, ok := peerToInputUser(peer); ok && ctx.Svc != nil {
+				full, err := ctx.Svc.GetFullUser(ctx.Ctx, inputUser)
+				if err == nil && full != nil {
+					for _, item := range full.Users {
+						if u, ok := item.(*tg.User); ok && u.ID == userID {
+							return displayUserName(u.FirstName, u.LastName, u.Username)
+						}
+					}
+				}
+			}
+		}
+	}
+	if userID != 0 {
+		return fmt.Sprintf("User %d", userID)
+	}
+	return "User"
 }
 
 func peerToInputUser(peer tg.InputPeerClass) (tg.InputUserClass, bool) {
@@ -147,6 +243,7 @@ func peerToInputUser(peer tg.InputPeerClass) (tg.InputUserClass, bool) {
 	}
 	return &tg.InputUser{UserID: u.UserID, AccessHash: u.AccessHash}, true
 }
+
 func displayUserName(first, last, username string) string {
 	name := strings.TrimSpace(strings.TrimSpace(first + " " + last))
 	if name != "" {
@@ -157,6 +254,7 @@ func displayUserName(first, last, username string) string {
 	}
 	return ""
 }
+
 func mediaPlaceholder(mediaType string) string {
 	labels := map[string]string{"photo": "Photo", "video": "Video", "sticker": "Sticker", "audio": "Audio", "voice": "Voice message", "document": "Document"}
 	if label := labels[strings.ToLower(strings.TrimSpace(mediaType))]; label != "" {
@@ -165,39 +263,6 @@ func mediaPlaceholder(mediaType string) string {
 	return "[Media]"
 }
 
-type quoteTheme struct{ background, panel, primary, secondary, muted, accent color.RGBA }
-
-var quoteThemes = []quoteTheme{
-	{color.RGBA{18, 19, 23, 255}, color.RGBA{28, 30, 36, 255}, color.RGBA{244, 246, 250, 255}, color.RGBA{211, 214, 221, 255}, color.RGBA{132, 137, 150, 255}, color.RGBA{91, 157, 255, 255}},
-	{color.RGBA{19, 20, 24, 255}, color.RGBA{31, 30, 38, 255}, color.RGBA{245, 245, 250, 255}, color.RGBA{214, 211, 224, 255}, color.RGBA{139, 135, 153, 255}, color.RGBA{171, 103, 255, 255}},
-	{color.RGBA{18, 22, 22, 255}, color.RGBA{28, 34, 34, 255}, color.RGBA{242, 247, 245, 255}, color.RGBA{207, 220, 215, 255}, color.RGBA{126, 145, 137, 255}, color.RGBA{57, 190, 150, 255}},
-	{color.RGBA{22, 20, 18, 255}, color.RGBA{36, 31, 28, 255}, color.RGBA{249, 245, 239, 255}, color.RGBA{222, 212, 201, 255}, color.RGBA{151, 138, 125, 255}, color.RGBA{244, 157, 76, 255}},
-}
-
-func themeFor(id int64) quoteTheme {
-	if id < 0 {
-		id = -id
-	}
-	return quoteThemes[id%int64(len(quoteThemes))]
-}
-func loadFont(size float64) font.Face {
-	candidates := []string{"/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", "/usr/share/fonts/opentype/noto/NotoSans-Regular.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"}
-	for _, path := range candidates {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		f, err := opentype.Parse(data)
-		if err != nil {
-			continue
-		}
-		face, err := opentype.NewFace(f, &opentype.FaceOptions{Size: size, DPI: 72, Hinting: font.HintingFull})
-		if err == nil {
-			return face
-		}
-	}
-	return basicfont.Face7x13
-}
 func initialsFor(name string) string {
 	words := strings.Fields(name)
 	if len(words) == 0 {
@@ -215,84 +280,7 @@ func initialsFor(name string) string {
 	}
 	return string(out)
 }
-func drawCenteredString(dst draw.Image, s string, x, y int, face font.Face, c color.Color) {
-	w := font.MeasureString(face, s).Ceil()
-	d := &font.Drawer{Dst: dst, Src: image.NewUniform(c), Face: face, Dot: fixed.P(x-w/2, y)}
-	d.DrawString(s)
-}
-func drawCircle(dst draw.Image, center image.Point, radius int, c color.Color) {
-	r2 := radius * radius
-	for y := -radius; y <= radius; y++ {
-		for x := -radius; x <= radius; x++ {
-			if x*x+y*y <= r2 {
-				dst.Set(center.X+x, center.Y+y, c)
-			}
-		}
-	}
-}
-func drawRoundedRect(dst draw.Image, r image.Rectangle, radius int, c color.Color) {
-	if radius <= 0 {
-		draw.Draw(dst, r, &image.Uniform{C: c}, image.Point{}, draw.Src)
-		return
-	}
-	draw.Draw(dst, image.Rect(r.Min.X+radius, r.Min.Y, r.Max.X-radius, r.Max.Y), &image.Uniform{C: c}, image.Point{}, draw.Src)
-	draw.Draw(dst, image.Rect(r.Min.X, r.Min.Y+radius, r.Max.X, r.Max.Y-radius), &image.Uniform{C: c}, image.Point{}, draw.Src)
-	for _, center := range []image.Point{{r.Min.X + radius, r.Min.Y + radius}, {r.Max.X - radius - 1, r.Min.Y + radius}, {r.Min.X + radius, r.Max.Y - radius - 1}, {r.Max.X - radius - 1, r.Max.Y - radius - 1}} {
-		drawCircle(dst, center, radius, c)
-	}
-}
-func resizeNearest(src image.Image, width, height int) image.Image {
-	dst := image.NewRGBA(image.Rect(0, 0, width, height))
-	sb := src.Bounds()
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			dst.Set(x, y, src.At(sb.Min.X+x*sb.Dx()/width, sb.Min.Y+y*sb.Dy()/height))
-		}
-	}
-	return dst
-}
-func truncateToWidth(s string, face font.Face, maxWidth int) string {
-	if font.MeasureString(face, s).Ceil() <= maxWidth {
-		return s
-	}
-	for len(s) > 1 {
-		r := []rune(s)
-		s = string(r[:len(r)-1])
-		if font.MeasureString(face, s+"…").Ceil() <= maxWidth {
-			return s + "…"
-		}
-	}
-	return "…"
-}
-func wrapToWidth(s string, face font.Face, maxWidth int) []string {
-	paragraphs := strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n")
-	var out []string
-	for _, paragraph := range paragraphs {
-		words := strings.Fields(paragraph)
-		if len(words) == 0 {
-			out = append(out, "")
-			continue
-		}
-		line := ""
-		for _, word := range words {
-			if line == "" {
-				line = word
-				continue
-			}
-			candidate := line + " " + word
-			if font.MeasureString(face, candidate).Ceil() <= maxWidth {
-				line = candidate
-				continue
-			}
-			out = append(out, line)
-			line = word
-		}
-		if line != "" {
-			out = append(out, line)
-		}
-	}
-	return out
-}
+
 func render(path, name, text string, msg *core.Message, mediaPath string) error {
 	return renderV3(path, name, text, msg, mediaPath, "")
 }
