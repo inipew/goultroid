@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"time"
 
@@ -76,9 +75,6 @@ func (r *sqliteWarningRepository) ResetWarnings(ctx context.Context, chatID, use
 	}
 	_, err := r.db.ExecContext(ctx, `DELETE FROM moderation_warnings WHERE chat_id = ? AND user_id = ?`, chatID, userID)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil
-		}
 		return fmt.Errorf("failed to delete warnings: %w", err)
 	}
 	return nil
