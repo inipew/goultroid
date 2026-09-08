@@ -8,7 +8,6 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/database"
 	"go.uber.org/zap"
 )
 
@@ -20,6 +19,22 @@ const (
 	ActionBan            = "banned"
 )
 
+type WarningRecord struct {
+	ID        int
+	ChatID    int64
+	UserID    int64
+	Reason    string
+	WarnedBy  int64
+	CreatedAt time.Time
+}
+
+type WarningRepository interface {
+	AddWarning(context.Context, int64, int64, string, int64) error
+	GetWarnings(context.Context, int64, int64) ([]*WarningRecord, error)
+	GetWarningCount(context.Context, int64, int64) (int, error)
+	ResetWarnings(context.Context, int64, int64) error
+}
+
 type WarnResult struct {
 	CurrentCount int
 	Threshold    int
@@ -28,7 +43,7 @@ type WarnResult struct {
 
 type Moderator interface {
 	Warn(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, chatID, userID int64, reason string, warnedBy int64, threshold int, actionOnThreshold string) (*WarnResult, error)
-	GetWarnings(ctx context.Context, chatID, userID int64) ([]*database.WarningRecord, error)
+	GetWarnings(ctx context.Context, chatID, userID int64) ([]*WarningRecord, error)
 	GetWarningCount(ctx context.Context, chatID, userID int64) (int, error)
 	ResetWarnings(ctx context.Context, chatID, userID int64) error
 	Mute(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, duration time.Duration) error
@@ -39,7 +54,7 @@ type Moderator interface {
 }
 
 type Service struct {
-	db               *database.DB
+	repo             WarningRepository
 	svc              core.TelegramServicer
 	svcFunc          func() core.TelegramServicer
 	logger           *zap.Logger
@@ -56,11 +71,11 @@ func (s *Service) getService() core.TelegramServicer {
 	return nil
 }
 
-func NewService(db *database.DB, svc any, logger *zap.Logger) *Service {
+func NewService(repo WarningRepository, svc any, logger *zap.Logger) *Service {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	s := &Service{db: db, logger: logger, defaultThreshold: DefaultWarnThreshold}
+	s := &Service{repo: repo, logger: logger, defaultThreshold: DefaultWarnThreshold}
 	switch v := svc.(type) {
 	case core.TelegramServicer:
 		s.svc = v
@@ -77,16 +92,19 @@ func (s *Service) SetTelegramService(svc core.TelegramServicer) { s.svc = svc }
 // enforcement therefore remains visible and can be retried rather than being
 // silently erased.
 func (s *Service) Warn(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, chatID, userID int64, reason string, warnedBy int64, threshold int, actionOnThreshold string) (*WarnResult, error) {
+	if s.repo == nil {
+		return nil, fmt.Errorf("warning repository is nil")
+	}
 	if threshold <= 0 {
 		threshold = s.defaultThreshold
 	}
 	if actionOnThreshold == "" {
 		actionOnThreshold = ActionMute
 	}
-	if err := s.db.AddWarning(ctx, chatID, userID, reason, warnedBy); err != nil {
+	if err := s.repo.AddWarning(ctx, chatID, userID, reason, warnedBy); err != nil {
 		return nil, fmt.Errorf("failed to add warning record: %w", err)
 	}
-	count, err := s.db.GetWarningCount(ctx, chatID, userID)
+	count, err := s.repo.GetWarningCount(ctx, chatID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check warning count: %w", err)
 	}
@@ -118,22 +136,31 @@ func (s *Service) Warn(ctx context.Context, peer tg.InputPeerClass, user tg.Inpu
 		s.logger.Warn("automated moderation enforcement failed; warnings retained", zap.Error(actionErr), zap.Int64("chat_id", chatID), zap.Int64("user_id", userID), zap.String("action", actionOnThreshold), zap.Int("count", count))
 		return res, fmt.Errorf("threshold enforcement failed: %w", actionErr)
 	}
-	if err := s.db.ResetWarnings(ctx, chatID, userID); err != nil {
+	if err := s.repo.ResetWarnings(ctx, chatID, userID); err != nil {
 		return res, fmt.Errorf("punitive action succeeded but failed to reset warnings: %w", err)
 	}
 	return res, nil
 }
 
-func (s *Service) GetWarnings(ctx context.Context, chatID, userID int64) ([]*database.WarningRecord, error) {
-	return s.db.GetWarnings(ctx, chatID, userID)
+func (s *Service) GetWarnings(ctx context.Context, chatID, userID int64) ([]*WarningRecord, error) {
+	if s.repo == nil {
+		return nil, fmt.Errorf("warning repository is nil")
+	}
+	return s.repo.GetWarnings(ctx, chatID, userID)
 }
 
 func (s *Service) GetWarningCount(ctx context.Context, chatID, userID int64) (int, error) {
-	return s.db.GetWarningCount(ctx, chatID, userID)
+	if s.repo == nil {
+		return 0, fmt.Errorf("warning repository is nil")
+	}
+	return s.repo.GetWarningCount(ctx, chatID, userID)
 }
 
 func (s *Service) ResetWarnings(ctx context.Context, chatID, userID int64) error {
-	return s.db.ResetWarnings(ctx, chatID, userID)
+	if s.repo == nil {
+		return fmt.Errorf("warning repository is nil")
+	}
+	return s.repo.ResetWarnings(ctx, chatID, userID)
 }
 
 func (s *Service) Mute(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, duration time.Duration) error {
