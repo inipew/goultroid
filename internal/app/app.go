@@ -74,29 +74,35 @@ func New(cfg *config.Config) (*App, error) {
 	}
 
 	featureRuntime := &module.Runtime{
-		DB:               coreDeps.db,
-		OwnerID:          coreDeps.perms.OwnerID,
-		Permissions:      coreDeps.perms,
-		Plugins:          pluginManager,
-		Router:           coreDeps.router,
-		EventBus:         coreDeps.eventBus,
-		Metrics:          coreDeps.metrics,
-		Logger:           domServices.logger,
-		StartTime:        domServices.startTime,
-		TelegramService:  tgRuntime.client.Service,
-		Resolver:         tgRuntime.dispatcher.Resolver(),
-		Callbacks:        coreDeps.callbackRouter,
-		CallbackStore:    coreDeps.callbackStore,
-		Storage:          domServices.storage,
-		DownloadRegistry: domServices.downloadRegistry,
-		MediaService:     domServices.mediaService,
-		ModService:       domServices.modService,
-		PMPermitService:  domServices.pmpermitService,
-		BroadcastService: domServices.broadcastService,
-		UserlogService:   domServices.userlogService,
-		AddonManager:     domServices.addonManager,
-		SettingsService:  domServices.settingsService,
-		SchedEngine:      domServices.schedEngine,
+		OwnerID: coreDeps.perms.OwnerID,
+		Logger:  domServices.logger,
+		StartTime: domServices.startTime,
+		CoreRuntime: module.CoreRuntime{
+			DB:          coreDeps.db,
+			Permissions: coreDeps.perms,
+			Plugins:     pluginManager,
+			Router:      coreDeps.router,
+			EventBus:    coreDeps.eventBus,
+			Metrics:     coreDeps.metrics,
+		},
+		TelegramRuntime: module.TelegramRuntime{
+			TelegramService: tgRuntime.client.Service,
+			Resolver:        tgRuntime.dispatcher.Resolver(),
+			Callbacks:       coreDeps.callbackRouter,
+			CallbackStore:   coreDeps.callbackStore,
+		},
+		ServiceRuntime: module.ServiceRuntime{
+			Storage:          domServices.storage,
+			DownloadRegistry: domServices.downloadRegistry,
+			MediaService:     domServices.mediaService,
+			ModService:       domServices.modService,
+			PMPermitService:  domServices.pmpermitService,
+			BroadcastService: domServices.broadcastService,
+			UserlogService:   domServices.userlogService,
+			AddonManager:     domServices.addonManager,
+			SettingsService:  domServices.settingsService,
+			SchedEngine:      domServices.schedEngine,
+		},
 	}
 	if err := registerBuiltinModules(context.Background(), featureRuntime); err != nil {
 		_ = coreDeps.eventBus.Close()
@@ -104,22 +110,7 @@ func New(cfg *config.Config) (*App, error) {
 		return nil, err
 	}
 
-	pluginsList, err := buildPlugins(coreDeps, tgRuntime, domServices)
-	if err != nil {
-		_ = pluginManager.Shutdown()
-		_ = coreDeps.eventBus.Close()
-		_ = coreDeps.db.Close()
-		return nil, err
-	}
-	for _, p := range pluginsList {
-		if err := pluginManager.Register(p); err != nil {
-			_ = pluginManager.Shutdown()
-			_ = coreDeps.eventBus.Close()
-			_ = coreDeps.db.Close()
-			return nil, fmt.Errorf("failed to register plugin %q: %w", p.Name(), err)
-		}
-	}
-	return &App{cfg: cfg, logger: logger, db: coreDeps.db, client: tgRuntime.client, plugins: pluginManager, router: coreDeps.router, sched: domServices.schedEngine, eventBus: coreDeps.eventBus, assistant: tgRuntime.assistant, limiter: coreDeps.cmdLimiter, addonMgr: domServices.addonManager, callbackStore: coreDeps.callbackStore, inlineEngine: coreDeps.inlineEngine, settingsService: domServices.settingsService}, nil
+	return &App{cfg: cfg, logger: logger, db: coreDeps.db, client: tgRuntime.client, plugins: pluginManager, router: coreDeps.router, sched: domServices.schedEngine, eventBus: coreDeps.eventBus, assistant: tgRuntime.assistant, limiter: tgRuntime.cmdLimiter, addonMgr: domServices.addonManager, callbackStore: coreDeps.callbackStore, inlineEngine: coreDeps.inlineEngine, settingsService: domServices.settingsService}, nil
 }
 
 func (a *App) Run(ctx context.Context) error { return a.runLifecycle(ctx) }
