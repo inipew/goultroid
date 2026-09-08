@@ -27,6 +27,10 @@ type SchemaInvariantMigration interface {
 // RunFeatureMigrations applies feature-owned migrations deterministically.
 // Existing integer migrations are immutable history; matching legacy versions
 // are adopted only after verifying checksums and schema invariants instead of executing equivalent SQL twice.
+//
+// A single legacy migration may be claimed by multiple feature migrations. Legacy
+// migrations are aggregate historical schema steps, so one integer version can
+// legitimately contain tables now owned by several independent features.
 func RunFeatureMigrations(ctx context.Context, db *DB, providers ...MigrationProvider) error {
 	if db == nil {
 		return fmt.Errorf("database is nil")
@@ -68,7 +72,6 @@ func RunFeatureMigrations(ctx context.Context, db *DB, providers ...MigrationPro
 	sort.Slice(migrations, func(i, j int) bool { return migrations[i].ID() < migrations[j].ID() })
 
 	seen := make(map[string]struct{}, len(migrations))
-	legacyOwners := make(map[int]string)
 	for _, migration := range migrations {
 		id := strings.TrimSpace(migration.ID())
 		if id == "" {
@@ -99,10 +102,6 @@ func RunFeatureMigrations(ctx context.Context, db *DB, providers ...MigrationPro
 				return fmt.Errorf("feature migration %q declares duplicate legacy version %d", id, version)
 			}
 			seenLegacy[version] = struct{}{}
-			if owner, exists := legacyOwners[version]; exists && owner != id {
-				return fmt.Errorf("legacy migration version %d is claimed by both %q and %q", version, owner, id)
-			}
-			legacyOwners[version] = id
 		}
 
 		if saved, exists := applied[id]; exists {
