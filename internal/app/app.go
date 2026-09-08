@@ -9,6 +9,7 @@ import (
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/module"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/scheduler"
 	"github.com/inipew/goultroid/internal/services/callback"
@@ -66,14 +67,27 @@ func New(cfg *config.Config) (*App, error) {
 		tgRuntime.assistant.SetMetricsCollector(coreDeps.metrics)
 	}
 
+	featureRuntime := &module.Runtime{
+		DB:      coreDeps.db,
+		OwnerID: coreDeps.perms.OwnerID,
+		Plugins: pluginManager,
+	}
+	if err := registerBuiltinModules(context.Background(), featureRuntime); err != nil {
+		_ = coreDeps.eventBus.Close()
+		_ = coreDeps.db.Close()
+		return nil, err
+	}
+
 	pluginsList, err := buildPlugins(coreDeps, tgRuntime, domServices)
 	if err != nil {
+		_ = pluginManager.Shutdown()
 		_ = coreDeps.eventBus.Close()
 		_ = coreDeps.db.Close()
 		return nil, err
 	}
 	for _, p := range pluginsList {
 		if err := pluginManager.Register(p); err != nil {
+			_ = pluginManager.Shutdown()
 			_ = coreDeps.eventBus.Close()
 			_ = coreDeps.db.Close()
 			return nil, fmt.Errorf("failed to register plugin %q: %w", p.Name(), err)
