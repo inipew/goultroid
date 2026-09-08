@@ -12,7 +12,6 @@ import (
 	broadcastSvc "github.com/inipew/goultroid/internal/services/broadcast"
 	"github.com/inipew/goultroid/internal/services/download"
 	mediaSvc "github.com/inipew/goultroid/internal/services/media"
-	"github.com/inipew/goultroid/internal/services/moderation"
 	pmpermitSvc "github.com/inipew/goultroid/internal/services/pmpermit"
 	"github.com/inipew/goultroid/internal/services/process"
 	"github.com/inipew/goultroid/internal/services/storage"
@@ -32,7 +31,6 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 	}
 	settingsService := settings.NewService(core.db, settingsRegistry, core.eventBus)
 
-	modService := moderation.NewService(core.db, tg.client.Service, logger)
 	schedEngine := scheduler.NewEngine(core.db, tg.client.Service, core.router, core.perms, logger)
 	schedEngine.SetExecutor(tg.dispatcher.Executor())
 
@@ -71,7 +69,6 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 	return &domainServices{
 		settingsService:  settingsService,
 		settingsRegistry: settingsRegistry,
-		modService:       modService,
 		schedEngine:      schedEngine,
 		storage:          appStorage,
 		mediaService:     mediaService,
