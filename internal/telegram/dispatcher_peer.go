@@ -17,6 +17,9 @@ type peerUpdateJob struct {
 // Start initializes the bounded peer-cache worker pool. It must be called
 // with the application root context before any Telegram updates are dispatched.
 func (d *Dispatcher) Start(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.peerQueue != nil {
@@ -52,6 +55,9 @@ func (d *Dispatcher) peerWorker(ctx context.Context, q <-chan peerUpdateJob) {
 // Stop drains incoming in-flight handlers and the peer-cache queue, waiting
 // for workers to exit. It should be called before database close during application shutdown.
 func (d *Dispatcher) Stop(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var err error
 	d.peerStopOnce.Do(func() {
 		d.acceptingUpdates.Store(false)
