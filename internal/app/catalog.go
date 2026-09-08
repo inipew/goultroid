@@ -20,16 +20,19 @@ import (
 	"github.com/inipew/goultroid/plugins/locks"
 	"github.com/inipew/goultroid/plugins/media"
 	"github.com/inipew/goultroid/plugins/notes"
+	"github.com/inipew/goultroid/plugins/ocr"
 	"github.com/inipew/goultroid/plugins/pin"
 	"github.com/inipew/goultroid/plugins/ping"
 	"github.com/inipew/goultroid/plugins/pmpermit"
 	"github.com/inipew/goultroid/plugins/profile"
+	"github.com/inipew/goultroid/plugins/quote"
 	schedPlugin "github.com/inipew/goultroid/plugins/scheduler"
 	settingsPluginPkg "github.com/inipew/goultroid/plugins/settings"
 	"github.com/inipew/goultroid/plugins/sticker"
 	"github.com/inipew/goultroid/plugins/sudo"
 	"github.com/inipew/goultroid/plugins/system"
 	"github.com/inipew/goultroid/plugins/userlog"
+	"github.com/inipew/goultroid/plugins/wikipedia"
 )
 
 func defaultPluginCatalog(core *coreDependencies, tg *telegramRuntime, dom *domainServices) ([]plugin.Plugin, error) {
@@ -49,23 +52,17 @@ func defaultPluginCatalog(core *coreDependencies, tg *telegramRuntime, dom *doma
 	addonPlugin := addonPluginPkg.New(dom.addonManager)
 	helpPlugin := help.New(core.router)
 	helpPlugin.SetStateStore(core.callbackStore)
-	if err := core.callbackRouter.Register(helpPlugin); err != nil {
-		return nil, fmt.Errorf("register help callback handler: %w", err)
-	}
+	if err := core.callbackRouter.Register(helpPlugin); err != nil { return nil, fmt.Errorf("register help callback handler: %w", err) }
 	settingsPlugin := settingsPluginPkg.New(dom.settingsService, core.callbackStore)
 	settingsPlugin.SetLogger(dom.logger)
-	if err := core.callbackRouter.Register(settingsPlugin); err != nil {
-		return nil, fmt.Errorf("register settings callback handler: %w", err)
-	}
+	if err := core.callbackRouter.Register(settingsPlugin); err != nil { return nil, fmt.Errorf("register settings callback handler: %w", err) }
 	return []plugin.Plugin{
 		ping.New(), helpPlugin, alive.New(dom.startTime), pin.New(), forward.New(), downloaderPlugin,
 		sudo.New(core.db, core.perms), notes.New(core.db), afkPlugin, admin.New(dom.modService), mediaPlugin,
 		sticker.New(), info.New(), systemPlugin, filtersPlugin, fun.New(), schedPlugin.New(dom.schedEngine),
-		locks.New(), blacklistPlugin, profile.New(), clone.New(core.db, core.perms.OwnerID), pmpermitPlugin,
-		broadcastPlugin, userlogPlugin, addonPlugin, settingsPlugin,
+		locks.New(), blacklistPlugin, profile.New(), clone.New(core.db, core.perms.OwnerID),
+		ocr.New(), wikipedia.New(), quote.New(), pmpermitPlugin, broadcastPlugin, userlogPlugin, addonPlugin, settingsPlugin,
 	}, nil
 }
 
-func buildPlugins(core *coreDependencies, tg *telegramRuntime, dom *domainServices) ([]plugin.Plugin, error) {
-	return defaultPluginCatalog(core, tg, dom)
-}
+func buildPlugins(core *coreDependencies, tg *telegramRuntime, dom *domainServices) ([]plugin.Plugin, error) { return defaultPluginCatalog(core, tg, dom) }
