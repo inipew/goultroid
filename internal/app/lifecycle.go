@@ -8,32 +8,30 @@ import (
 	"go.uber.org/zap"
 )
 
-// startBackgroundServices starts all long-lived background loops bound to the application root context.
-// Explicit groups: Infrastructure → CoreRuntime → Services → Plugins (dependency-aware order).
-func (a *App) startBackgroundServices(ctx context.Context) {
-	// 0. Infrastructure
+// startBackgroundServices starts long-lived services in dependency order. App lifecycle
+// admission is controlled centrally; this function does not perform shutdown.
+func (a *App) startBackgroundServices(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if a.eventBus != nil {
-		_ = a.eventBus.Start(ctx)
+		if err := a.eventBus.Start(ctx); err != nil {
+			return fmt.Errorf("event bus: %w", err)
+		}
 	}
 	if a.settingsService != nil {
-		_ = a.settingsService.Start(ctx)
+		a.settingsService.Start(ctx)
 	}
-
-	// 1. CoreRuntime: interaction state stores
 	if a.callbackStore != nil {
 		a.callbackStore.Start(ctx)
 	}
 	if a.inlineEngine != nil && a.inlineEngine.Cache() != nil {
 		a.inlineEngine.Cache().Start(ctx)
 	}
-
-	// 2. Telegram dispatcher worker pool
 	if a.client != nil && a.client.Dispatcher() != nil {
 		a.client.Dispatcher().SetRootContext(ctx)
 		a.client.Dispatcher().Start(ctx)
 	}
-
-	// 3. Scheduler engine (readiness-gated to avoid claiming jobs before MTProto is connected)
 	if a.sched != nil {
 		if a.client != nil && a.client.Ready() != nil {
 			go func() {
@@ -43,7 +41,7 @@ func (a *App) startBackgroundServices(ctx context.Context) {
 				case <-a.client.Ready():
 				}
 				if err := a.sched.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
-					a.logger.Warn("scheduler failed to start after readiness gate", zap.Error(err))
+					a.logger.Warn("scheduler failed to start after Telegram readiness gate", zap.Error(err))
 				} else {
 					a.logger.Info("scheduler engine started after Telegram readiness gate")
 				}
@@ -56,8 +54,6 @@ func (a *App) startBackgroundServices(ctx context.Context) {
 			}()
 		}
 	}
-
-	// 4. Assistant bot client
 	if a.assistant != nil {
 		go func() {
 			if err := a.assistant.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -65,18 +61,30 @@ func (a *App) startBackgroundServices(ctx context.Context) {
 			}
 		}()
 	}
+	return nil
 }
 
-// runLifecycle coordinates application execution and teardown of runtime background tasks.
-// Single owner is App.Shutdown; Run only starts, does not stop.
+// runLifecycle is the single startup owner. Shutdown is deliberately separate so
+// cancellation can first quiesce ingress and then drain dependencies in reverse order.
 func (a *App) runLifecycle(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := a.beginStart(); err != nil {
+		return err
+	}
 	a.logger.Info("starting GoUltroid...")
-
-	// Start all background workers with the root context (Infrastructure → CoreRuntime → Services)
-	a.startBackgroundServices(ctx)
-
-	// Block on Telegram network client
+	if err := a.startBackgroundServices(ctx); err != nil {
+		a.lifecycleMu.Lock()
+		a.lifecycleState.Store(uint32(lifecycleFailed))
+		a.lifecycleMu.Unlock()
+		return err
+	}
+	a.markRunning()
 	if a.client == nil {
+		a.lifecycleMu.Lock()
+		a.lifecycleState.Store(uint32(lifecycleFailed))
+		a.lifecycleMu.Unlock()
 		return fmt.Errorf("telegram client is nil")
 	}
 	return a.client.Run(ctx)

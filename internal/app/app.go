@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"fmt"
+	"sync"
+	"sync/atomic"
 
 	"github.com/inipew/goultroid/internal/addon"
 	"github.com/inipew/goultroid/internal/assistant"
@@ -36,6 +38,11 @@ type App struct {
 	callbackStore   *callback.StateStore
 	inlineEngine    *inline.Engine
 	settingsService *settings.Service
+
+	lifecycleMu    sync.Mutex
+	lifecycleState atomic.Uint32
+	shutdownDone   chan struct{}
+	shutdownErr    error
 }
 
 func New(cfg *config.Config) (*App, error) {
@@ -109,7 +116,23 @@ func New(cfg *config.Config) (*App, error) {
 		return nil, err
 	}
 
-	return &App{cfg: cfg, logger: logger, db: coreDeps.db, client: tgRuntime.client, plugins: pluginManager, router: coreDeps.router, sched: domServices.schedEngine, eventBus: coreDeps.eventBus, assistant: tgRuntime.assistant, limiter: coreDeps.cmdLimiter, addonMgr: domServices.addonManager, callbackStore: coreDeps.callbackStore, inlineEngine: coreDeps.inlineEngine, settingsService: domServices.settingsService}, nil
+	return &App{
+		cfg:             cfg,
+		logger:          logger,
+		db:              coreDeps.db,
+		client:          tgRuntime.client,
+		plugins:         pluginManager,
+		router:          coreDeps.router,
+		sched:           domServices.schedEngine,
+		eventBus:        coreDeps.eventBus,
+		assistant:       tgRuntime.assistant,
+		limiter:         coreDeps.cmdLimiter,
+		addonMgr:        domServices.addonManager,
+		callbackStore:   coreDeps.callbackStore,
+		inlineEngine:    coreDeps.inlineEngine,
+		settingsService: domServices.settingsService,
+		shutdownDone:    make(chan struct{}),
+	}, nil
 }
 
 func (a *App) Run(ctx context.Context) error { return a.runLifecycle(ctx) }
@@ -129,4 +152,86 @@ func initLogger(logLevel string) (*zap.Logger, error) {
 	zapCfg := zap.NewDevelopmentConfig()
 	zapCfg.Level = zap.NewAtomicLevelAt(zapLevel)
 	return zapCfg.Build()
+}
+
+type lifecycleState uint32
+
+const (
+	lifecycleNew lifecycleState = iota
+	lifecycleStarting
+	lifecycleRunning
+	lifecycleQuiescing
+	lifecycleStopping
+	lifecycleStopped
+	lifecycleFailed
+)
+
+func (a *App) state() lifecycleState { return lifecycleState(a.lifecycleState.Load()) }
+
+func (a *App) beginStart() error {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	if s := lifecycleState(a.lifecycleState.Load()); s != lifecycleNew {
+		return fmt.Errorf("application cannot start from state %d", s)
+	}
+	a.lifecycleState.Store(uint32(lifecycleStarting))
+	return nil
+}
+
+func (a *App) markRunning() {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	if lifecycleState(a.lifecycleState.Load()) == lifecycleStarting {
+		a.lifecycleState.Store(uint32(lifecycleRunning))
+	}
+}
+
+func (a *App) beginQuiesce() bool {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	s := lifecycleState(a.lifecycleState.Load())
+	if s == lifecycleStopped || s == lifecycleStopping || s == lifecycleQuiescing {
+		return false
+	}
+	a.lifecycleState.Store(uint32(lifecycleQuiescing))
+	return true
+}
+
+func (a *App) markStopping() {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	a.lifecycleState.Store(uint32(lifecycleStopping))
+}
+
+func (a *App) markStopped(err error) {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	a.shutdownErr = err
+	a.lifecycleState.Store(uint32(lifecycleStopped))
+	select {
+	case <-a.shutdownDone:
+	default:
+		close(a.shutdownDone)
+	}
+}
+
+func (a *App) LifecycleState() string {
+	switch a.state() {
+	case lifecycleNew:
+		return "new"
+	case lifecycleStarting:
+		return "starting"
+	case lifecycleRunning:
+		return "running"
+	case lifecycleQuiescing:
+		return "quiescing"
+	case lifecycleStopping:
+		return "stopping"
+	case lifecycleStopped:
+		return "stopped"
+	case lifecycleFailed:
+		return "failed"
+	default:
+		return "unknown"
+	}
 }

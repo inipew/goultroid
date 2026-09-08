@@ -14,8 +14,6 @@ type peerUpdateJob struct {
 	chats    []*tg.Chat
 }
 
-// Start initializes the bounded peer-cache worker pool. It must be called
-// with the application root context before any Telegram updates are dispatched.
 func (d *Dispatcher) Start(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -34,10 +32,12 @@ func (d *Dispatcher) Start(ctx context.Context) {
 	}
 }
 
-func (d *Dispatcher) peerWorker(ctx context.Context, q <-chan peerUpdateJob) {
+func (d *Dispatcher) peerWorker(_ context.Context, q <-chan peerUpdateJob) {
 	defer d.peerWG.Done()
 	for job := range q {
-		saveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		// Shutdown may occur after the application root context is canceled. Peer
+		// cache persistence is drain work, so it gets its own bounded context.
+		saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		resolver := d.getResolver()
 		r, ok := resolver.(*Resolver)
 		if !ok || r == nil || r.storage == nil {
@@ -52,15 +52,18 @@ func (d *Dispatcher) peerWorker(ctx context.Context, q <-chan peerUpdateJob) {
 	}
 }
 
-// Stop drains incoming in-flight handlers and the peer-cache queue, waiting
-// for workers to exit. It should be called before database close during application shutdown.
+// Stop first closes ingress admission, then drains all in-flight dispatches, then
+// closes the peer queue. The admission transition and WaitGroup.Add are serialized
+// by d.mu so no new Add can occur after Wait starts.
 func (d *Dispatcher) Stop(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	var err error
 	d.peerStopOnce.Do(func() {
+		d.mu.Lock()
 		d.acceptingUpdates.Store(false)
+		d.mu.Unlock()
 
 		doneInFlight := make(chan struct{})
 		go func() {
@@ -96,7 +99,10 @@ func (d *Dispatcher) Stop(ctx context.Context) error {
 		}
 		close(q)
 		doneWorkers := make(chan struct{})
-		go func() { d.peerWG.Wait(); close(doneWorkers) }()
+		go func() {
+			d.peerWG.Wait()
+			close(doneWorkers)
+		}()
 		select {
 		case <-doneWorkers:
 		case <-ctx.Done():
@@ -108,7 +114,6 @@ func (d *Dispatcher) Stop(ctx context.Context) error {
 	return err
 }
 
-// PeerCacheStats returns atomic metrics for the dispatcher peer cache pipeline.
 func (d *Dispatcher) PeerCacheStats() (enqueued, dropped, saveFailed int64) {
 	return d.peerEnqueued.Load(), d.peerDropped.Load(), d.peerSaveFailed.Load()
 }
