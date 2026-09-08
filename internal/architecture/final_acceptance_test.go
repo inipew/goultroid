@@ -19,9 +19,8 @@ func TestFinalFeatureBoundaries(t *testing.T) {
 		if strings.HasPrefix(pkg, modulePath+"/plugins/") {
 			for dep := range deps {
 				if strings.HasPrefix(dep, modulePath+"/internal/app") ||
-					strings.HasPrefix(dep, modulePath+"/internal/application") ||
 					strings.HasPrefix(dep, modulePath+"/cmd/") {
-					t.Errorf("feature %s imports composition/application package %s", pkg, dep)
+					t.Errorf("feature %s imports composition package %s", pkg, dep)
 				}
 				if strings.HasPrefix(dep, modulePath+"/plugins/") &&
 					dep != pkg && !strings.HasPrefix(dep, pkg+"/") && !strings.HasPrefix(pkg, dep+"/") {
@@ -33,8 +32,7 @@ func TestFinalFeatureBoundaries(t *testing.T) {
 		if strings.HasPrefix(pkg, modulePath+"/internal/execution") {
 			for dep := range deps {
 				if strings.HasPrefix(dep, modulePath+"/plugins/") ||
-					strings.HasPrefix(dep, modulePath+"/internal/app") ||
-					strings.HasPrefix(dep, modulePath+"/internal/application") {
+					strings.HasPrefix(dep, modulePath+"/internal/app") {
 					t.Errorf("execution package %s must remain independent of feature/composition packages: %s", pkg, dep)
 				}
 			}
