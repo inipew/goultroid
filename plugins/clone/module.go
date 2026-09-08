@@ -3,6 +3,7 @@ package clone
 import (
 	"context"
 
+	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/module"
 )
 
@@ -29,5 +30,12 @@ func (ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	if rt.Plugins == nil {
 		return module.ErrNilPluginManager
 	}
-	return rt.Plugins.RegisterWithContext(ctx, New(rt.DB, rt.OwnerID))
+	return rt.Plugins.RegisterWithContext(ctx, New(NewSQLiteRepository(rt.DB), rt.OwnerID))
 }
+
+func (ModuleType) Migrations() []database.Migration {
+	return Migrations()
+}
+
+var _ module.Module = ModuleType{}
+var _ database.MigrationProvider = ModuleType{}
