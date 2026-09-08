@@ -12,7 +12,7 @@ type migration001 struct{}
 func (migration001) ID() string          { return "admin.001" }
 func (migration001) Description() string { return "Persistent moderation warnings" }
 func (migration001) Checksum() string {
-	return "0f2d4e50a3f0a2c0c3b9f0c4f2b6a6d8e9d0f0e2b7f5f1f4b6c1a3d2e8f4c9b7"
+	return "1a9b9b18a3a7b1e896e6ab0bdef774605f0d70ffbc0b3cb2c54985c86582692c"
 }
 func (migration001) LegacyVersions() []int { return []int{8} }
 
