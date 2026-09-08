@@ -15,8 +15,6 @@ import (
 
 const cloneDataDir = "data/clone"
 
-// Plugin implements native self-profile cloning without porting the Python implementation.
-// It snapshots the current identity before mutation and keeps the snapshot durable until revert.
 type Plugin struct {
 	repo    database.CloneRepository
 	ownerID int64
@@ -41,22 +39,8 @@ func (p *Plugin) Shutdown() error { return nil }
 
 func (p *Plugin) Commands() []core.Command {
 	return []core.Command{
-		{
-			Name:        "clone",
-			Description: "Clone a user's first name, last name, bio, and profile photo",
-			Usage:       ".clone [username|id] or reply to a user's message",
-			Category:    "Profile",
-			Permission:  core.PermissionOwner,
-			Handler:     p.handleClone,
-		},
-		{
-			Name:        "revert",
-			Description: "Restore the profile identity saved before the last clone",
-			Usage:       ".revert",
-			Category:    "Profile",
-			Permission:  core.PermissionOwner,
-			Handler:     p.handleRevert,
-		},
+		{Name: "clone", Description: "Clone a user's first name, last name, bio, and profile photo", Usage: ".clone [username|id] or reply to a user's message", Category: "Profile", Permission: core.PermissionOwner, Handler: p.handleClone},
+		{Name: "revert", Description: "Restore the profile identity saved before the last clone", Usage: ".revert", Category: "Profile", Permission: core.PermissionOwner, Handler: p.handleRevert},
 	}
 }
 
@@ -73,7 +57,8 @@ func (p *Plugin) handleClone(ctx *core.Context) error {
 	if err != nil {
 		return ctx.EditOrReply("⚠️ " + err.Error())
 	}
-	_ = targetPeer
+	_ = targetInput
+	_ = targetID
 
 	selfFull, selfUser, err := p.getSelf(ctx)
 	if err != nil {
@@ -88,12 +73,18 @@ func (p *Plugin) handleClone(ctx *core.Context) error {
 		}
 	}
 
+	clonedPhoto := false
+	if photo, ok := targetFull.FullUser.ProfilePhoto.(*tg.Photo); ok && photo.ID != 0 {
+		clonedPhoto = true
+	}
+
 	snapshot := database.CloneState{
 		OwnerID:       p.ownerID,
 		OriginalFirst: selfUser.FirstName,
 		OriginalLast:  selfUser.LastName,
 		OriginalBio:   selfFull.FullUser.About,
 		OriginalPhoto: snapshotPath,
+		ClonedPhoto:   clonedPhoto,
 		Active:        true,
 		UpdatedAt:     time.Now().UTC(),
 	}
@@ -104,14 +95,9 @@ func (p *Plugin) handleClone(ctx *core.Context) error {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to persist clone snapshot: %v", err))
 	}
 
-	// Resolve a complete InputUser so GetFullUser never relies on an ID without access_hash.
-	_ = targetInput
-	_ = targetID
-
 	firstName := sanitizeName(targetUser.FirstName)
 	lastName := sanitizeName(targetUser.LastName)
 	bio := targetFull.FullUser.About
-
 	if firstName == "" {
 		firstName = "User"
 	}
@@ -119,7 +105,8 @@ func (p *Plugin) handleClone(ctx *core.Context) error {
 		return p.cloneFailure(ctx, snapshot, fmt.Errorf("profile update failed: %w", err))
 	}
 
-	if photo, ok := targetFull.FullUser.ProfilePhoto.(*tg.Photo); ok && photo.ID != 0 {
+	if clonedPhoto {
+		photo, _ := targetFull.FullUser.ProfilePhoto.(*tg.Photo)
 		path, downloadErr := p.downloadProfilePhoto(ctx, targetPeer, photo.ID, "target")
 		if downloadErr != nil {
 			return p.cloneFailure(ctx, snapshot, fmt.Errorf("profile photo download failed: %w", downloadErr))
@@ -142,35 +129,33 @@ func (p *Plugin) handleRevert(ctx *core.Context) error {
 	if state == nil || !state.Active {
 		return ctx.EditOrReply("ℹ️ No active clone state exists.")
 	}
-
-	// Remove the currently active cloned photo first. If this fails, keep state intact so
-	// a retry cannot accidentally lose the durable snapshot.
 	if ctx.Svc == nil {
 		return ctx.EditOrReply("❌ Telegram service is not available.")
 	}
-	if _, err := ctx.Svc.DeleteProfilePhotos(ctx.Ctx, 1); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to remove cloned profile photo: %v", err))
-	}
 
-	if err := ctx.UpdateProfile(&state.OriginalFirst, &state.OriginalLast, &state.OriginalBio); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("⚠️ Photo reverted, but profile text restore failed: %v", err))
-	}
-
-	if state.OriginalPhoto != "" {
-		if _, err := os.Stat(state.OriginalPhoto); err == nil {
-			if err := ctx.Svc.UploadProfilePhoto(ctx.Ctx, state.OriginalPhoto); err != nil {
-				return ctx.EditOrReply(fmt.Sprintf("⚠️ Profile text restored, but original photo restore failed: %v", err))
-			}
+	if state.ClonedPhoto {
+		if _, err := ctx.Svc.DeleteProfilePhotos(ctx.Ctx, 1); err != nil {
+			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to remove cloned profile photo: %v", err))
 		}
 	}
 
+	if err := ctx.UpdateProfile(&state.OriginalFirst, &state.OriginalLast, &state.OriginalBio); err != nil {
+		return ctx.EditOrReply(fmt.Sprintf("⚠️ Profile photo state handled, but profile text restore failed: %v", err))
+	}
+
 	if state.OriginalPhoto != "" {
+		if _, err := os.Stat(state.OriginalPhoto); err != nil {
+			return ctx.EditOrReply(fmt.Sprintf("⚠️ Profile text restored, but original photo snapshot is missing: %v", err))
+		}
+		if err := ctx.Svc.UploadProfilePhoto(ctx.Ctx, state.OriginalPhoto); err != nil {
+			return ctx.EditOrReply(fmt.Sprintf("⚠️ Profile text restored, but original photo restore failed: %v", err))
+		}
 		_ = os.Remove(state.OriginalPhoto)
 	}
+
 	if err := p.repo.ClearCloneState(ctx.Ctx, p.ownerID); err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("⚠️ Profile restored, but clone state cleanup failed: %v", err))
 	}
-
 	return ctx.EditOrReply("✅ <b>Successfully reverted to your original profile.</b>")
 }
 
@@ -239,11 +224,11 @@ func (p *Plugin) downloadProfilePhoto(ctx *core.Context, peer tg.InputPeerClass,
 }
 
 func (p *Plugin) cloneFailure(ctx *core.Context, snapshot database.CloneState, cause error) error {
-	// Best-effort rollback. Keep the state active when rollback is incomplete.
 	if ctx.Svc != nil {
-		if snapshot.OriginalPhoto != "" {
+		if snapshot.ClonedPhoto {
 			_, _ = ctx.Svc.DeleteProfilePhotos(ctx.Ctx, 1)
 		}
+		_ = ctx.UpdateProfile(ctx, nil, nil, nil)
 		_ = ctx.UpdateProfile(&snapshot.OriginalFirst, &snapshot.OriginalLast, &snapshot.OriginalBio)
 		if snapshot.OriginalPhoto != "" {
 			_ = ctx.Svc.UploadProfilePhoto(ctx.Ctx, snapshot.OriginalPhoto)
