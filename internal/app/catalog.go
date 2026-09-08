@@ -10,7 +10,6 @@ import (
 	"github.com/inipew/goultroid/plugins/alive"
 	"github.com/inipew/goultroid/plugins/blacklist"
 	"github.com/inipew/goultroid/plugins/broadcast"
-	"github.com/inipew/goultroid/plugins/clone"
 	"github.com/inipew/goultroid/plugins/downloader"
 	"github.com/inipew/goultroid/plugins/filters"
 	"github.com/inipew/goultroid/plugins/forward"
@@ -22,7 +21,6 @@ import (
 	"github.com/inipew/goultroid/plugins/notes"
 	"github.com/inipew/goultroid/plugins/ocr"
 	"github.com/inipew/goultroid/plugins/pin"
-	"github.com/inipew/goultroid/plugins/ping"
 	"github.com/inipew/goultroid/plugins/pmpermit"
 	"github.com/inipew/goultroid/plugins/profile"
 	"github.com/inipew/goultroid/plugins/quote"
@@ -60,7 +58,7 @@ func defaultPluginCatalog(core *coreDependencies, tg *telegramRuntime, dom *doma
 		ping.New(), helpPlugin, alive.New(dom.startTime), pin.New(), forward.New(), downloaderPlugin,
 		sudo.New(core.db, core.perms), notes.New(core.db), afkPlugin, admin.New(dom.modService), mediaPlugin,
 		sticker.New(), info.New(), systemPlugin, filtersPlugin, fun.New(), schedPlugin.New(dom.schedEngine),
-		locks.New(), blacklistPlugin, profile.New(), clone.New(core.db, core.perms.OwnerID),
+		locks.New(), blacklistPlugin, profile.New(),
 		ocr.New(), wikipedia.New(), quote.New(), pmpermitPlugin, broadcastPlugin, userlogPlugin, addonPlugin, settingsPlugin,
 	}, nil
 }
