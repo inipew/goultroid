@@ -115,7 +115,7 @@ func TestRunFeatureMigrationsRollsBackFailedMigration(t *testing.T) {
 	}
 }
 
-func TestRunFeatureMigrationsRejectsDuplicateLegacyOwnership(t *testing.T) {
+func TestRunFeatureMigrationsAllowsSharedLegacyVersion(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(":memory:")
 	if err != nil {
@@ -126,7 +126,15 @@ func TestRunFeatureMigrationsRejectsDuplicateLegacyOwnership(t *testing.T) {
 	first := testFeatureMigration{id: "test.001", checksum: "checksum-v1", legacy: []int{8}, up: func(context.Context, SQLExecutor) error { return nil }}
 	second := testFeatureMigration{id: "test.002", checksum: "checksum-v2", legacy: []int{8}, up: func(context.Context, SQLExecutor) error { return nil }}
 
-	if err := RunFeatureMigrations(ctx, db, testFeatureProvider{migrations: []Migration{first, second}}); err == nil {
-		t.Fatal("expected duplicate legacy ownership to be rejected")
+	if err := RunFeatureMigrations(ctx, db, testFeatureProvider{migrations: []Migration{first, second}}); err != nil {
+		t.Fatalf("expected shared legacy version to be adopted by both features: %v", err)
+	}
+
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM feature_schema_migrations WHERE id IN ('test.001', 'test.002')`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("expected two adopted feature migrations, got %d", count)
 	}
 }
