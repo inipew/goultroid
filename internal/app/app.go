@@ -74,8 +74,8 @@ func New(cfg *config.Config) (*App, error) {
 	}
 
 	featureRuntime := &module.Runtime{
-		OwnerID: coreDeps.perms.OwnerID,
-		Logger:  domServices.logger,
+		OwnerID:   coreDeps.perms.OwnerID,
+		Logger:    domServices.logger,
 		StartTime: domServices.startTime,
 		CoreRuntime: module.CoreRuntime{
 			DB:          coreDeps.db,
@@ -110,7 +110,7 @@ func New(cfg *config.Config) (*App, error) {
 		return nil, err
 	}
 
-	return &App{cfg: cfg, logger: logger, db: coreDeps.db, client: tgRuntime.client, plugins: pluginManager, router: coreDeps.router, sched: domServices.schedEngine, eventBus: coreDeps.eventBus, assistant: tgRuntime.assistant, limiter: tgRuntime.cmdLimiter, addonMgr: domServices.addonManager, callbackStore: coreDeps.callbackStore, inlineEngine: coreDeps.inlineEngine, settingsService: domServices.settingsService}, nil
+	return &App{cfg: cfg, logger: logger, db: coreDeps.db, client: tgRuntime.client, plugins: pluginManager, router: coreDeps.router, sched: domServices.schedEngine, eventBus: coreDeps.eventBus, assistant: tgRuntime.assistant, limiter: coreDeps.cmdLimiter, addonMgr: domServices.addonManager, callbackStore: coreDeps.callbackStore, inlineEngine: coreDeps.inlineEngine, settingsService: domServices.settingsService}, nil
 }
 
 func (a *App) Run(ctx context.Context) error { return a.runLifecycle(ctx) }
