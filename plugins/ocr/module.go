@@ -13,8 +13,8 @@ var Module ModuleType
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
 		ID:          "ocr",
-		Version:     "1.0.0",
-		Description: "Extract text from a replied Telegram photo using OCR.Space",
+		Version:     "1.1.0",
+		Description: "Extract text from a replied Telegram image using OCR.Space",
 	}
 }
 
