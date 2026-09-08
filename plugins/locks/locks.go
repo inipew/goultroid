@@ -225,7 +225,7 @@ func getCurrentRights(ctx *core.Context) (tg.ChatBannedRights, error) {
 			}
 		}
 	}
-	return tg.ChatBannedRights{}, nil
+	return tg.ChatBannedRights{}, errors.New("failed to fetch chat permissions: target chat entity not found")
 }
 
 func formatLocks(r tg.ChatBannedRights) string {
