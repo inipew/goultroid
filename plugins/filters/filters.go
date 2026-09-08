@@ -42,9 +42,9 @@ func New(db database.Repository, svcFunc func() core.TelegramServicer) *Plugin {
 	return &Plugin{db: db, svcFunc: svcFunc, chatFilters: make(map[int64][]compiledFilter), chatAccess: make(map[int64]time.Time), lastReply: make(map[string]time.Time)}
 }
 
-func (p *Plugin) Name() string              { return "filters" }
-func (p *Plugin) Init() error               { return nil }
-func (p *Plugin) MessageHookPriority() int  { return 20 }
+func (p *Plugin) Name() string             { return "filters" }
+func (p *Plugin) Init() error              { return nil }
+func (p *Plugin) MessageHookPriority() int { return 20 }
 
 func (p *Plugin) Commands() []core.Command {
 	return []core.Command{
@@ -65,6 +65,10 @@ func (p *Plugin) handleFilter(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
 		_ = ctx.EditOrReply("⚠️ Usage: <code>.filter &lt;keyword&gt; &lt;reply text&gt;</code> or reply to a message with <code>.filter &lt;keyword&gt;</code>")
 		return errors.New("missing arguments")
+	}
+	if p.db == nil {
+		_ = ctx.EditOrReply("❌ Filters database is unavailable.")
+		return errors.New("filters: database is unavailable")
 	}
 	keyword := strings.ToLower(strings.TrimSpace(ctx.Args[0]))
 	if keyword == "" {
@@ -100,6 +104,10 @@ func (p *Plugin) handleStop(ctx *core.Context) error {
 		_ = ctx.EditOrReply("⚠️ Usage: <code>.stop &lt;keyword&gt;</code>")
 		return errors.New("missing filter keyword")
 	}
+	if p.db == nil {
+		_ = ctx.EditOrReply("❌ Filters database is unavailable.")
+		return errors.New("filters: database is unavailable")
+	}
 	keyword := strings.ToLower(strings.TrimSpace(ctx.Args[0]))
 	chatID := p.getChatID(ctx)
 	if err := p.db.DeleteFilter(ctx.Ctx, chatID, keyword); err != nil {
@@ -111,6 +119,10 @@ func (p *Plugin) handleStop(ctx *core.Context) error {
 }
 
 func (p *Plugin) handleList(ctx *core.Context) error {
+	if p.db == nil {
+		_ = ctx.EditOrReply("❌ Filters database is unavailable.")
+		return errors.New("filters: database is unavailable")
+	}
 	chatID := p.getChatID(ctx)
 	list, err := p.db.ListFilters(ctx.Ctx, chatID)
 	if err != nil {
