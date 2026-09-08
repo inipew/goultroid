@@ -23,7 +23,8 @@ func TestFinalFeatureBoundaries(t *testing.T) {
 					strings.HasPrefix(dep, modulePath+"/cmd/") {
 					t.Errorf("feature %s imports composition/application package %s", pkg, dep)
 				}
-				if strings.HasPrefix(dep, modulePath+"/plugins/") && dep != pkg {
+				if strings.HasPrefix(dep, modulePath+"/plugins/") &&
+					dep != pkg && !strings.HasPrefix(dep, pkg+"/") && !strings.HasPrefix(pkg, dep+"/") {
 					t.Errorf("feature %s imports another feature %s", pkg, dep)
 				}
 			}
