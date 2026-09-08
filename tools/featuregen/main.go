@@ -20,7 +20,11 @@ type entry struct {
 }
 
 func main() {
-	entries, err := discover("plugins")
+	root, err := repoRoot()
+	if err != nil {
+		panic(err)
+	}
+	entries, err := discover(filepath.Join(root, "plugins"), root)
 	if err != nil {
 		panic(err)
 	}
@@ -37,13 +41,31 @@ func main() {
 	}
 	b.WriteString("}\n")
 
-	if err := os.WriteFile("internal/app/generated_modules.go", []byte(b.String()), 0o644); err != nil {
+	output := filepath.Join(root, "internal", "app", "generated_modules.go")
+	if err := os.WriteFile(output, []byte(b.String()), 0o644); err != nil {
 		panic(err)
 	}
 }
 
-func discover(root string) ([]entry, error) {
+func repoRoot() (string, error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for dir := wd; ; dir = filepath.Dir(dir) {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("could not locate repository root from %s", wd)
+		}
+	}
+}
+
+func discover(root, repoRoot string) ([]entry, error) {
 	var result []entry
+	seenAliases := make(map[string]string)
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -77,7 +99,16 @@ func discover(root string) ([]entry, error) {
 			return nil
 		}
 		dir := filepath.ToSlash(filepath.Dir(path))
-		result = append(result, entry{alias: filepath.Base(dir), importPath: "github.com/inipew/goultroid/" + dir})
+		rel, err := filepath.Rel(repoRoot, dir)
+		if err != nil {
+			return err
+		}
+		alias := filepath.Base(dir)
+		if previous, exists := seenAliases[alias]; exists && previous != rel {
+			return fmt.Errorf("duplicate generated import alias %q for %s and %s", alias, previous, rel)
+		}
+		seenAliases[alias] = rel
+		result = append(result, entry{alias: alias, importPath: "github.com/inipew/goultroid/" + filepath.ToSlash(rel)})
 		return nil
 	})
 	if err != nil {
