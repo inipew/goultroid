@@ -149,7 +149,12 @@ func discover(root, repoRoot string) ([]entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].importPath < result[j].importPath })
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].id == result[j].id {
+			return result[i].importPath < result[j].importPath
+		}
+		return result[i].id < result[j].id
+	})
 	return result, nil
 }
 
