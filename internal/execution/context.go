@@ -5,12 +5,24 @@ import (
 	"fmt"
 )
 
+// ChatKind identifies the Telegram conversation class relevant to execution policy.
+type ChatKind uint8
+
+const (
+	ChatUnknown ChatKind = iota
+	ChatPrivate
+	ChatGroup
+	ChatSupergroup
+	ChatChannel
+)
+
 // ExecutionContext wraps execution parameters across userbot, assistant, and inline surfaces.
 type ExecutionContext struct {
 	Context      context.Context
 	Source       Source
 	Actor        Actor
 	ChatID       int64
+	ChatKind     ChatKind
 	MessageID    int
 	RawText      string
 	Args         []string
@@ -46,6 +58,13 @@ func NewExecutionContext(
 	}
 }
 
+// SetChatKind records the conversation class used by group/private policy checks.
+func (c *ExecutionContext) SetChatKind(kind ChatKind) {
+	if c != nil {
+		c.ChatKind = kind
+	}
+}
+
 // SetHandlers attaches transport response closures.
 func (c *ExecutionContext) SetHandlers(
 	reply func(string) error,
@@ -70,7 +89,6 @@ func (c *ExecutionContext) Edit(text string) error {
 	if c.editFunc != nil {
 		return c.editFunc(text)
 	}
-	// Fall back to Reply if edit is not directly supported
 	return c.Reply(text)
 }
 
