@@ -9,7 +9,6 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/database"
 	"go.uber.org/zap"
 )
 
@@ -32,7 +31,7 @@ type PMActor struct {
 }
 
 type Service struct {
-	db            *database.DB
+	repo          Repository
 	svc           core.TelegramServicer
 	svcFunc       func() core.TelegramServicer
 	ownerID       int64
@@ -56,12 +55,12 @@ type approvalCacheEntry struct {
 	expiresAt time.Time
 }
 
-func NewService(db *database.DB, svc any, ownerID int64, perms *core.Permissions, logger *zap.Logger) *Service {
+func NewService(repo Repository, svc any, ownerID int64, perms *core.Permissions, logger *zap.Logger) *Service {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 	s := &Service{
-		db:           db,
+		repo:         repo,
 		ownerID:      ownerID,
 		perms:        perms,
 		logger:       logger,
@@ -157,10 +156,10 @@ func (s *Service) IsApproved(ctx context.Context, userID int64) (bool, error) {
 		}
 		s.approvedCache.Delete(userID)
 	}
-	if s.db == nil {
+	if s.repo == nil {
 		return false, fmt.Errorf("pm permit database is unavailable")
 	}
-	rec, err := s.db.GetPMRecord(ctx, userID)
+	rec, err := s.repo.GetPMRecord(ctx, userID)
 	if err != nil {
 		return false, err
 	}
@@ -168,7 +167,7 @@ func (s *Service) IsApproved(ctx context.Context, userID int64) (bool, error) {
 		return false, nil
 	}
 	if rec.ExpiresAt != nil && time.Now().UTC().After(*rec.ExpiresAt) {
-		_ = s.db.SetPMStatus(ctx, userID, StatusPending, "approval expired", nil)
+		_ = s.repo.SetPMStatus(ctx, userID, StatusPending, "approval expired", nil)
 		return false, nil
 	}
 	entry := approvalCacheEntry{}
@@ -189,8 +188,8 @@ func (s *Service) addWarnID(userID int64, msgID int) {
 		s.warnIDs[userID] = s.warnIDs[userID][len(s.warnIDs[userID])-20:]
 	}
 	s.warnMu.Unlock()
-	if s.db != nil {
-		_ = s.db.AddWarnMsgID(context.Background(), userID, msgID)
+	if s.repo != nil {
+		_ = s.repo.AddWarnMsgID(context.Background(), userID, msgID)
 	}
 }
 
@@ -198,8 +197,8 @@ func (s *Service) getWarnIDs(userID int64) []int {
 	s.warnMu.Lock()
 	ids := append([]int(nil), s.warnIDs[userID]...)
 	s.warnMu.Unlock()
-	if len(ids) == 0 && s.db != nil {
-		if dbIDs, _ := s.db.GetWarnMsgIDs(context.Background(), userID); len(dbIDs) > 0 {
+	if len(ids) == 0 && s.repo != nil {
+		if dbIDs, _ := s.repo.GetWarnMsgIDs(context.Background(), userID); len(dbIDs) > 0 {
 			return dbIDs
 		}
 	}
@@ -219,8 +218,8 @@ func (s *Service) clearWarnIDs(userID int64) {
 	s.warnMu.Lock()
 	delete(s.warnIDs, userID)
 	s.warnMu.Unlock()
-	if s.db != nil {
-		_ = s.db.ClearWarnMsgIDs(context.Background(), userID)
+	if s.repo != nil {
+		_ = s.repo.ClearWarnMsgIDs(context.Background(), userID)
 	}
 }
 
@@ -238,8 +237,8 @@ func (s *Service) IsWarnID(userID int64, msgID int) bool {
 		}
 	}
 	s.warnMu.Unlock()
-	if s.db != nil {
-		if dbIDs, _ := s.db.GetWarnMsgIDs(context.Background(), userID); len(dbIDs) > 0 {
+	if s.repo != nil {
+		if dbIDs, _ := s.repo.GetWarnMsgIDs(context.Background(), userID); len(dbIDs) > 0 {
 			for _, id := range dbIDs {
 				if id == msgID {
 					return true
@@ -275,10 +274,10 @@ func (s *Service) IsPMPermitMessage(text string) bool {
 
 // IsBlocked checks whether userID is currently marked as blocked in the database.
 func (s *Service) IsBlocked(ctx context.Context, userID int64) bool {
-	if s.db == nil {
+	if s.repo == nil {
 		return false
 	}
-	rec, err := s.db.GetPMRecord(ctx, userID)
+	rec, err := s.repo.GetPMRecord(ctx, userID)
 	return err == nil && rec != nil && rec.Status == StatusBlocked
 }
 
@@ -296,10 +295,10 @@ func (s *Service) AutoApproveOutgoing(ctx context.Context, peer tg.InputPeerClas
 	if approved, _ := s.IsApproved(ctx, userID); approved {
 		return nil
 	}
-	if s.db == nil {
+	if s.repo == nil {
 		return fmt.Errorf("pm permit database is unavailable")
 	}
-	if err := s.db.SetPMStatus(ctx, userID, StatusApproved, "outgoing auto-approved", nil); err != nil {
+	if err := s.repo.SetPMStatus(ctx, userID, StatusApproved, "outgoing auto-approved", nil); err != nil {
 		s.logger.Error("failed to set pm status approved", zap.Int64("user_id", userID), zap.Error(err))
 		return err
 	}
@@ -313,7 +312,7 @@ func (s *Service) AutoApproveOutgoing(ctx context.Context, peer tg.InputPeerClas
 		}
 	}
 	s.clearWarnIDs(userID)
-	_ = s.db.ResetPMWarn(ctx, userID)
+	_ = s.repo.ResetPMWarn(ctx, userID)
 	if svc := s.getService(); svc != nil {
 		if err := svc.UnblockUser(ctx, peer); err != nil {
 			s.logger.Warn("failed to unblock user on auto-approve", zap.Int64("user_id", userID), zap.Error(err))
@@ -332,14 +331,14 @@ func (s *Service) Approve(ctx context.Context, userID int64, reason string, dura
 	if reason == "" {
 		reason = "approved by user"
 	}
-	if s.db == nil {
+	if s.repo == nil {
 		return fmt.Errorf("pm permit database is unavailable")
 	}
-	if err := s.db.SetPMStatus(ctx, userID, StatusApproved, reason, exp); err != nil {
+	if err := s.repo.SetPMStatus(ctx, userID, StatusApproved, reason, exp); err != nil {
 		s.logger.Error("failed to set pm status approved", zap.Int64("user_id", userID), zap.Error(err))
 		return err
 	}
-	if err := s.db.ResetPMWarn(ctx, userID); err != nil {
+	if err := s.repo.ResetPMWarn(ctx, userID); err != nil {
 		s.logger.Warn("failed to reset pm warn count", zap.Int64("user_id", userID), zap.Error(err))
 	}
 	entry := approvalCacheEntry{}
@@ -369,11 +368,11 @@ func (s *Service) Approve(ctx context.Context, userID int64, reason string, dura
 func (s *Service) Disapprove(ctx context.Context, userID int64) error {
 	s.approvedCache.Delete(userID)
 	s.clearWarnIDs(userID)
-	if s.db == nil {
+	if s.repo == nil {
 		return fmt.Errorf("pm permit database is unavailable")
 	}
-	_ = s.db.ResetPMWarn(ctx, userID)
-	if err := s.db.SetPMStatus(ctx, userID, StatusPending, "approval revoked", nil); err != nil {
+	_ = s.repo.ResetPMWarn(ctx, userID)
+	if err := s.repo.SetPMStatus(ctx, userID, StatusPending, "approval revoked", nil); err != nil {
 		s.logger.Error("failed to set pm status pending on disapprove", zap.Int64("user_id", userID), zap.Error(err))
 		return err
 	}
@@ -384,11 +383,11 @@ func (s *Service) Disapprove(ctx context.Context, userID int64) error {
 func (s *Service) Unblock(ctx context.Context, peer tg.InputPeerClass, userID int64) error {
 	s.approvedCache.Delete(userID)
 	s.clearWarnIDs(userID)
-	if s.db == nil {
+	if s.repo == nil {
 		return fmt.Errorf("pm permit database is unavailable")
 	}
-	_ = s.db.ResetPMWarn(ctx, userID)
-	if err := s.db.SetPMStatus(ctx, userID, StatusPending, "unblocked by user", nil); err != nil {
+	_ = s.repo.ResetPMWarn(ctx, userID)
+	if err := s.repo.SetPMStatus(ctx, userID, StatusPending, "unblocked by user", nil); err != nil {
 		s.logger.Error("failed to set pm status pending on unblock", zap.Int64("user_id", userID), zap.Error(err))
 		return err
 	}
@@ -413,10 +412,10 @@ func (s *Service) BlockWithPeer(ctx context.Context, peer tg.InputPeerClass, use
 	if reason == "" {
 		reason = "blocked by user"
 	}
-	if s.db == nil {
+	if s.repo == nil {
 		return fmt.Errorf("pm permit database is unavailable")
 	}
-	if err := s.db.SetPMStatus(ctx, userID, StatusBlocked, reason, nil); err != nil {
+	if err := s.repo.SetPMStatus(ctx, userID, StatusBlocked, reason, nil); err != nil {
 		s.logger.Error("failed to set pm status blocked", zap.Int64("user_id", userID), zap.Error(err))
 		return err
 	}
@@ -459,12 +458,12 @@ func (s *Service) HandleIncomingPM(ctx context.Context, peer tg.InputPeerClass, 
 	if approved {
 		return false, nil
 	}
-	if s.db == nil {
+	if s.repo == nil {
 		return true, nil
 	}
 
 	// 4. Blocked state handling: SILENT DROP (no reply loop!)
-	if rec, _ := s.db.GetPMRecord(ctx, senderID); rec != nil && rec.Status == StatusBlocked {
+	if rec, _ := s.repo.GetPMRecord(ctx, senderID); rec != nil && rec.Status == StatusBlocked {
 		return true, nil
 	}
 
@@ -486,7 +485,7 @@ func (s *Service) HandleIncomingPM(ctx context.Context, peer tg.InputPeerClass, 
 	}
 
 	// 6. Warning counter increment
-	warnCount, err := s.db.IncrementPMWarn(ctx, senderID)
+	warnCount, err := s.repo.IncrementPMWarn(ctx, senderID)
 	if err != nil {
 		s.logger.Warn("failed to increment pm warn", zap.Error(err))
 		return true, nil
@@ -522,30 +521,30 @@ func (s *Service) HandleIncomingPM(ctx context.Context, peer tg.InputPeerClass, 
 	return true, nil
 }
 
-func (s *Service) ListApproved(ctx context.Context, limit, offset int) ([]*database.PMPermitRecord, error) {
-	if s.db == nil {
+func (s *Service) ListApproved(ctx context.Context, limit, offset int) ([]*PMPermitRecord, error) {
+	if s.repo == nil {
 		return nil, fmt.Errorf("pm permit database is unavailable")
 	}
-	return s.db.ListPMRecords(ctx, StatusApproved, limit, offset)
+	return s.repo.ListPMRecords(ctx, StatusApproved, limit, offset)
 }
 
-func (s *Service) ListBlocked(ctx context.Context, limit, offset int) ([]*database.PMPermitRecord, error) {
-	if s.db == nil {
+func (s *Service) ListBlocked(ctx context.Context, limit, offset int) ([]*PMPermitRecord, error) {
+	if s.repo == nil {
 		return nil, fmt.Errorf("pm permit database is unavailable")
 	}
-	return s.db.ListPMRecords(ctx, StatusBlocked, limit, offset)
+	return s.repo.ListPMRecords(ctx, StatusBlocked, limit, offset)
 }
 
-func (s *Service) ListPending(ctx context.Context, limit, offset int) ([]*database.PMPermitRecord, error) {
-	if s.db == nil {
+func (s *Service) ListPending(ctx context.Context, limit, offset int) ([]*PMPermitRecord, error) {
+	if s.repo == nil {
 		return nil, fmt.Errorf("pm permit database is unavailable")
 	}
-	return s.db.ListPMRecords(ctx, StatusPending, limit, offset)
+	return s.repo.ListPMRecords(ctx, StatusPending, limit, offset)
 }
 
 func (s *Service) GetStats(ctx context.Context) (pending, approved, blocked int, err error) {
-	if s.db == nil {
+	if s.repo == nil {
 		return 0, 0, 0, fmt.Errorf("pm permit database is unavailable")
 	}
-	return s.db.CountPMRecords(ctx)
+	return s.repo.CountPMRecords(ctx)
 }

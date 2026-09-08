@@ -8,10 +8,128 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/services/pmpermit"
 	"go.uber.org/zap"
 )
+
+type mockRepo struct {
+	mu      sync.Mutex
+	records map[int64]*pmpermit.PMPermitRecord
+	warnIDs map[int64][]int
+}
+
+func newMockRepo() *mockRepo {
+	return &mockRepo{
+		records: make(map[int64]*pmpermit.PMPermitRecord),
+		warnIDs: make(map[int64][]int),
+	}
+}
+
+func (m *mockRepo) GetPMRecord(ctx context.Context, userID int64) (*pmpermit.PMPermitRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec, ok := m.records[userID]
+	if !ok {
+		return nil, nil
+	}
+	cp := *rec
+	return &cp, nil
+}
+
+func (m *mockRepo) SetPMStatus(ctx context.Context, userID int64, status string, reason string, expiresAt *time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec, ok := m.records[userID]
+	now := time.Now().UTC()
+	if !ok {
+		rec = &pmpermit.PMPermitRecord{
+			UserID:      userID,
+			FirstSeenAt: now,
+		}
+		m.records[userID] = rec
+	}
+	rec.Status = status
+	rec.Reason = reason
+	rec.ExpiresAt = expiresAt
+	rec.LastSeenAt = now
+	return nil
+}
+
+func (m *mockRepo) IncrementPMWarn(ctx context.Context, userID int64) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec, ok := m.records[userID]
+	now := time.Now().UTC()
+	if !ok {
+		rec = &pmpermit.PMPermitRecord{
+			UserID:      userID,
+			Status:      pmpermit.StatusPending,
+			FirstSeenAt: now,
+		}
+		m.records[userID] = rec
+	}
+	rec.WarnCount++
+	rec.LastSeenAt = now
+	return rec.WarnCount, nil
+}
+
+func (m *mockRepo) ResetPMWarn(ctx context.Context, userID int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if rec, ok := m.records[userID]; ok {
+		rec.WarnCount = 0
+	}
+	return nil
+}
+
+func (m *mockRepo) GetWarnMsgIDs(ctx context.Context, userID int64) ([]int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]int(nil), m.warnIDs[userID]...), nil
+}
+
+func (m *mockRepo) AddWarnMsgID(ctx context.Context, userID int64, msgID int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.warnIDs[userID] = append(m.warnIDs[userID], msgID)
+	return nil
+}
+
+func (m *mockRepo) ClearWarnMsgIDs(ctx context.Context, userID int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.warnIDs, userID)
+	return nil
+}
+
+func (m *mockRepo) ListPMRecords(ctx context.Context, status string, limit, offset int) ([]*pmpermit.PMPermitRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var res []*pmpermit.PMPermitRecord
+	for _, rec := range m.records {
+		if status == "" || rec.Status == status {
+			cp := *rec
+			res = append(res, &cp)
+		}
+	}
+	return res, nil
+}
+
+func (m *mockRepo) CountPMRecords(ctx context.Context) (pending, approved, blocked int, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, rec := range m.records {
+		switch rec.Status {
+		case pmpermit.StatusPending:
+			pending++
+		case pmpermit.StatusApproved:
+			approved++
+		case pmpermit.StatusBlocked:
+			blocked++
+		}
+	}
+	return pending, approved, blocked, nil
+}
 
 type mockTelegram struct {
 	core.MockTelegramServicer
@@ -47,16 +165,9 @@ func (m *mockTelegram) UnblockUser(ctx context.Context, peer tg.InputPeerClass) 
 	return nil
 }
 
-func setupTestDB(t *testing.T) *database.DB {
+func setupTestDB(t *testing.T) *mockRepo {
 	t.Helper()
-	db, err := database.Open(":memory:")
-	if err != nil {
-		t.Fatalf("failed to open in-memory db: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = db.Close()
-	})
-	return db
+	return newMockRepo()
 }
 
 func TestPMPermit_Bypass(t *testing.T) {

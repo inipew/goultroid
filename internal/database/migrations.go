@@ -298,6 +298,55 @@ var migrations = []migration{
 			`CREATE INDEX IF NOT EXISTS idx_setting_outbox_key ON setting_outbox(namespace, key);`,
 		},
 	},
+	{
+		version:     15,
+		description: "Persistent clone profile snapshots",
+		statements: []string{
+			`CREATE TABLE IF NOT EXISTS clone_state (
+				owner_id INTEGER PRIMARY KEY,
+				original_first_name TEXT NOT NULL DEFAULT '',
+				original_last_name TEXT NOT NULL DEFAULT '',
+				original_bio TEXT NOT NULL DEFAULT '',
+				original_photo_path TEXT NOT NULL DEFAULT '',
+				active BOOLEAN NOT NULL DEFAULT 0,
+				updated_at DATETIME NOT NULL
+			);`,
+		},
+		legacyChecksums: []string{
+			"f23db64a47cbd211704582fac2557e3ad87386c35a61589080fac2f699989182",
+			"11a72db9e774e1043891bc77806785699c662e84f04aa1dbd8ba57b5f7c8c0da",
+		},
+	},
+	{
+		version:     16,
+		description: "Clone snapshot photo mutation tracking",
+		statements: []string{
+			`ALTER TABLE clone_state ADD COLUMN cloned_photo BOOLEAN NOT NULL DEFAULT 0;`,
+		},
+	},
+}
+
+// LegacyMigrationInfo contains metadata and checksums for a canonical legacy migration.
+type LegacyMigrationInfo struct {
+	Version           int
+	Description       string
+	CanonicalChecksum string
+	LegacyChecksums   []string
+}
+
+// LookupLegacyMigration finds the canonical legacy migration for a given integer version.
+func LookupLegacyMigration(version int) (LegacyMigrationInfo, bool) {
+	for _, m := range migrations {
+		if m.version == version {
+			return LegacyMigrationInfo{
+				Version:           m.version,
+				Description:       m.description,
+				CanonicalChecksum: calculateMigrationChecksum(m),
+				LegacyChecksums:   m.legacyChecksums,
+			}, true
+		}
+	}
+	return LegacyMigrationInfo{}, false
 }
 
 // calculateMigrationChecksum produces a deterministic SHA-256 hash of a migration's SQL statements.

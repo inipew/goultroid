@@ -8,7 +8,6 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/database"
 	voiceSvc "github.com/inipew/goultroid/internal/voice"
 	"github.com/inipew/goultroid/plugins/voice"
 	"go.uber.org/zap"
@@ -30,23 +29,11 @@ func (m *mockTelegram) EditMessage(ctx context.Context, peer tg.InputPeerClass, 
 	return nil
 }
 
-func setupTestDB(t *testing.T) *database.DB {
-	t.Helper()
-	db, err := database.Open(":memory:")
-	if err != nil {
-		t.Fatalf("failed to open in-memory db: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = db.Close()
-	})
-	return db
-}
-
 func TestVoicePlugin(t *testing.T) {
 	db := setupTestDB(t)
 	mockBackend := voiceSvc.NewMockBackend()
 	resolver := voiceSvc.NewResolver(nil, nil)
-	svc := voiceSvc.NewService(mockBackend, db, resolver, zap.NewNop())
+	svc := voiceSvc.NewService(mockBackend, voice.NewSQLiteRepository(db), resolver, zap.NewNop())
 
 	p := voice.New(svc)
 	if p.Name() != "voice" {

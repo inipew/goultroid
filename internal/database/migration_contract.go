@@ -5,9 +5,11 @@ import (
 	"database/sql"
 )
 
-// SQLExecutor is the minimal transactional SQL surface exposed to migrations.
+// SQLExecutor is the transactional SQL surface exposed to migrations and schema checks.
 type SQLExecutor interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
 // Migration is the feature-owned schema contract consumed by the migration runner.

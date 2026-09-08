@@ -16,9 +16,16 @@ type FeatureMigration interface {
 	LegacyVersions() []int
 }
 
+// SchemaInvariantMigration is an optional interface for feature migrations that provides
+// physical verification of required database schema objects during legacy adoption.
+type SchemaInvariantMigration interface {
+	FeatureMigration
+	VerifySchema(ctx context.Context, db SQLExecutor) error
+}
+
 // RunFeatureMigrations applies feature-owned migrations deterministically.
 // Existing integer migrations are immutable history; matching legacy versions
-// are adopted instead of executing equivalent SQL twice.
+// are adopted only after verifying checksums and schema invariants instead of executing equivalent SQL twice.
 func RunFeatureMigrations(ctx context.Context, db *DB, providers ...MigrationProvider) error {
 	if db == nil {
 		return fmt.Errorf("database is nil")
@@ -74,12 +81,12 @@ func RunFeatureMigrations(ctx context.Context, db *DB, providers ...MigrationPro
 			}
 			continue
 		}
-		legacyApplied, err := anyLegacyVersionApplied(ctx, db, migration.LegacyVersions())
+		legacyApplied, legacyVer, err := verifyLegacyAdoption(ctx, db, migration.LegacyVersions())
 		if err != nil {
 			return fmt.Errorf("check legacy adoption for %s: %w", id, err)
 		}
 		if legacyApplied {
-			if err := recordFeatureMigration(ctx, db, migration, expected, "legacy adoption"); err != nil {
+			if err := adoptFeatureMigration(ctx, db, migration, expected, legacyVer); err != nil {
 				return fmt.Errorf("adopt feature migration %s: %w", id, err)
 			}
 			applied[id] = expected
@@ -113,20 +120,65 @@ func loadFeatureMigrations(ctx context.Context, db *DB) (map[string]string, erro
 	return result, nil
 }
 
-func anyLegacyVersionApplied(ctx context.Context, db *DB, versions []int) (bool, error) {
+func verifyLegacyAdoption(ctx context.Context, db *DB, versions []int) (bool, int, error) {
 	for _, version := range versions {
 		if version <= 0 {
 			continue
 		}
-		var count int
-		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations WHERE version = ?`, version).Scan(&count); err != nil {
-			return false, err
+		var recordedChecksum string
+		err := db.QueryRowContext(ctx, `SELECT checksum FROM schema_migrations WHERE version = ?`, version).Scan(&recordedChecksum)
+		if err != nil {
+			continue
 		}
-		if count > 0 {
-			return true, nil
+
+		legacyInfo, found := LookupLegacyMigration(version)
+		if !found {
+			return false, 0, fmt.Errorf("unknown legacy migration version %d claimed by feature migration", version)
+		}
+
+		matched := recordedChecksum == legacyInfo.CanonicalChecksum
+		if !matched {
+			for _, alt := range legacyInfo.LegacyChecksums {
+				if recordedChecksum == alt {
+					matched = true
+					break
+				}
+			}
+		}
+
+		if !matched {
+			return false, 0, fmt.Errorf("legacy migration checksum mismatch for version %d (%s): recorded %q, expected %q",
+				version, legacyInfo.Description, recordedChecksum, legacyInfo.CanonicalChecksum)
+		}
+
+		return true, version, nil
+	}
+	return false, 0, nil
+}
+
+func adoptFeatureMigration(ctx context.Context, db *DB, migration FeatureMigration, checksum string, legacyVer int) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if checker, ok := migration.(SchemaInvariantMigration); ok {
+		if err := checker.VerifySchema(ctx, tx); err != nil {
+			return fmt.Errorf("schema invariant check failed: %w", err)
 		}
 	}
-	return false, nil
+
+	note := fmt.Sprintf("legacy adoption: v%d", legacyVer)
+	desc := fmt.Sprintf("%s (%s)", migration.Description(), note)
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO feature_schema_migrations (id, description, checksum, applied_at)
+		VALUES (?, ?, ?, ?)`, migration.ID(), desc, checksum, time.Now().UTC()); err != nil {
+		return fmt.Errorf("record adopted migration: %w", err)
+	}
+
+	return tx.Commit()
 }
 
 func applyFeatureMigration(ctx context.Context, db *DB, migration FeatureMigration, checksum string) error {
@@ -144,11 +196,4 @@ func applyFeatureMigration(ctx context.Context, db *DB, migration FeatureMigrati
 		return fmt.Errorf("failed to record migration: %w", err)
 	}
 	return tx.Commit()
-}
-
-func recordFeatureMigration(ctx context.Context, db *DB, migration FeatureMigration, checksum, reason string) error {
-	_, err := db.ExecContext(ctx, `
-		INSERT INTO feature_schema_migrations (id, description, checksum, applied_at)
-		VALUES (?, ?, ?, ?)`, migration.ID(), migration.Description()+" ("+reason+")", checksum, time.Now().UTC())
-	return err
 }

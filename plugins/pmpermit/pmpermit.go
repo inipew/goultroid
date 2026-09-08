@@ -8,7 +8,6 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/pmpermit"
 )
@@ -192,7 +191,7 @@ func (p *Plugin) handleListApproved(ctx *core.Context) error {
 }
 
 func (p *Plugin) renderList(ctx *core.Context, statusFilter string) error {
-	var records []*database.PMPermitRecord
+	var records []*pmpermit.PMPermitRecord
 	var err error
 	switch statusFilter {
 	case "approved":

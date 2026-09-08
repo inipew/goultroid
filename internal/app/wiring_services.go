@@ -18,6 +18,7 @@ import (
 	"github.com/inipew/goultroid/internal/services/storage"
 	userlogSvc "github.com/inipew/goultroid/internal/services/userlog"
 	"github.com/inipew/goultroid/internal/settings"
+	pmpermitPlugin "github.com/inipew/goultroid/plugins/pmpermit"
 	"go.uber.org/zap"
 )
 
@@ -51,7 +52,8 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 	mediaGuard := mediaSvc.NewResourceGuard(2, 100*1024*1024)
 	mediaService := mediaSvc.NewService(processRunner, appStorage, mediaGuard)
 
-	pmpermitService := pmpermitSvc.NewService(core.db, tg.client.Service, cfg.OwnerID, core.perms, logger)
+	pmpermitRepo := pmpermitPlugin.NewSQLiteRepository(core.db)
+	pmpermitService := pmpermitSvc.NewService(pmpermitRepo, tg.client.Service, cfg.OwnerID, core.perms, logger)
 	pmpermitService.SetEventBus(core.eventBus)
 
 	broadcastService := broadcastSvc.NewService(tg.client.Service, logger)

@@ -6,14 +6,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/inipew/goultroid/internal/database"
 	"go.uber.org/zap"
 )
 
 // Service coordinates voice chat sessions, queue progression, and backend streaming.
 type Service struct {
 	backend     Backend
-	db          *database.DB
+	repo        Repository
 	resolver    *Resolver
 	logger      *zap.Logger
 	idleTimeout time.Duration
@@ -25,13 +24,13 @@ type Service struct {
 }
 
 // NewService creates a new voice Service coordinator.
-func NewService(backend Backend, db *database.DB, resolver *Resolver, logger *zap.Logger) *Service {
+func NewService(backend Backend, repo Repository, resolver *Resolver, logger *zap.Logger) *Service {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 	s := &Service{
 		backend:     backend,
-		db:          db,
+		repo:        repo,
 		resolver:    resolver,
 		logger:      logger.Named("voice"),
 		idleTimeout: 5 * time.Minute,
@@ -53,14 +52,14 @@ func (s *Service) GetOrCreateSession(chatID int64) *Session {
 
 	sess, ok := s.sessions[chatID]
 	if !ok {
-		q := NewQueue(chatID, s.db)
+		q := NewQueue(chatID, s.repo)
 		sess = NewSession(chatID, q)
 
 		// Check persisted session
-		if s.db != nil {
+		if s.repo != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			if r, err := s.db.GetVoiceSession(ctx, chatID); err == nil && r != nil {
+			if r, err := s.repo.GetVoiceSession(ctx, chatID); err == nil && r != nil {
 				_ = sess.SetVolume(r.Volume)
 				sess.SetRepeatMode(RepeatMode(r.RepeatMode))
 			}
@@ -311,13 +310,13 @@ func (s *Service) GetQueue(chatID int64) ([]Source, error) {
 }
 
 func (s *Service) persistSession(sess *Session) {
-	if s.db == nil || sess == nil {
+	if s.repo == nil || sess == nil {
 		return
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		_ = s.db.UpsertVoiceSession(ctx, &database.VoiceSessionRecord{
+		_ = s.repo.UpsertVoiceSession(ctx, &VoiceSessionRecord{
 			ChatID:     sess.ChatID(),
 			State:      string(sess.GetState()),
 			Volume:     sess.Volume(),

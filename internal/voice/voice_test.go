@@ -5,22 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/voice"
 	"go.uber.org/zap"
 )
-
-func setupTestDB(t *testing.T) *database.DB {
-	t.Helper()
-	db, err := database.Open(":memory:")
-	if err != nil {
-		t.Fatalf("failed to open in-memory db: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = db.Close()
-	})
-	return db
-}
 
 func TestSession_StateTransitions(t *testing.T) {
 	q := voice.NewQueue(-1001, nil)
@@ -61,8 +48,7 @@ func TestSession_StateTransitions(t *testing.T) {
 }
 
 func TestQueue_Operations(t *testing.T) {
-	db := setupTestDB(t)
-	q := voice.NewQueue(-1002, db)
+	q := voice.NewQueue(-1002, nil)
 
 	if q.Len() != 0 {
 		t.Fatalf("expected empty queue, got %d", q.Len())
@@ -112,10 +98,9 @@ func TestQueue_Operations(t *testing.T) {
 }
 
 func TestPlayerService_PlayAndQueue(t *testing.T) {
-	db := setupTestDB(t)
 	mockBackend := voice.NewMockBackend()
 	resolver := voice.NewResolver(nil, nil)
-	svc := voice.NewService(mockBackend, db, resolver, zap.NewNop())
+	svc := voice.NewService(mockBackend, nil, resolver, zap.NewNop())
 	ctx := context.Background()
 	chatID := int64(-1003)
 

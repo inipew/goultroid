@@ -1,6 +1,7 @@
 package architecture
 
 import (
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
@@ -17,20 +18,108 @@ func TestDependencyBoundaries(t *testing.T) {
 	imports := collectImports(t, root)
 
 	for pkg, deps := range imports {
+		// Tier 1 (internal/database, internal/core) must not import Tier 3 (plugins/*), Tier 2 (internal/services/*), or Tier 4 (internal/app/*)
 		if strings.HasPrefix(pkg, modulePath+"/internal/database") || strings.HasPrefix(pkg, modulePath+"/internal/core") {
 			for dep := range deps {
 				if strings.HasPrefix(dep, modulePath+"/plugins/") {
 					t.Errorf("%s must not depend on feature package %s", pkg, dep)
 				}
+				if strings.HasPrefix(dep, modulePath+"/internal/services/") {
+					t.Errorf("%s must not depend on services package %s", pkg, dep)
+				}
+				if strings.HasPrefix(dep, modulePath+"/internal/app") {
+					t.Errorf("%s must not depend on app package %s", pkg, dep)
+				}
 			}
 		}
+
+		// Tier 2 (internal/services/*) must not import Tier 3 (plugins/*) or Tier 4 (internal/app/*)
+		if strings.HasPrefix(pkg, modulePath+"/internal/services/") {
+			for dep := range deps {
+				if strings.HasPrefix(dep, modulePath+"/plugins/") {
+					t.Errorf("%s must not depend on feature package %s", pkg, dep)
+				}
+				if strings.HasPrefix(dep, modulePath+"/internal/app") {
+					t.Errorf("%s must not depend on app package %s", pkg, dep)
+				}
+			}
+		}
+
+		// Tier 3 (plugins/*) must not import Tier 4 (internal/app/*), cmd/*, or sibling plugins
 		if strings.HasPrefix(pkg, modulePath+"/plugins/") {
 			for dep := range deps {
 				if dep == modulePath+"/internal/app" || strings.HasPrefix(dep, modulePath+"/internal/app/") {
 					t.Errorf("feature package %s must not depend on app %s", pkg, dep)
 				}
+				if strings.HasPrefix(dep, modulePath+"/cmd/") {
+					t.Errorf("feature package %s must not depend on cmd package %s", pkg, dep)
+				}
 				if strings.HasPrefix(dep, modulePath+"/plugins/") && dep != pkg && !strings.HasPrefix(dep, pkg+"/") && !strings.HasPrefix(pkg, dep+"/") {
 					t.Errorf("feature package %s must not depend on another feature %s", pkg, dep)
+				}
+			}
+		}
+	}
+}
+
+func TestDatabaseGenericBoundary(t *testing.T) {
+	root := repositoryRoot(t)
+	dbDir := filepath.Join(root, "internal", "database")
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, dbDir, func(fi os.FileInfo) bool {
+		return !strings.HasSuffix(fi.Name(), "_test.go")
+	}, 0)
+	if err != nil {
+		t.Fatalf("parse database package: %v", err)
+	}
+
+	forbiddenKeywords := []string{
+		"clone",
+		"afk",
+		"note",
+		"filter",
+		"blacklist",
+		"sudo",
+		"pmpermit",
+		"voice",
+	}
+
+	for _, pkg := range pkgs {
+		for _, f := range pkg.Files {
+			for _, decl := range f.Decls {
+				// 1. Check methods on DB receiver
+				if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv != nil && len(fn.Recv.List) > 0 {
+					recvType := ""
+					switch rt := fn.Recv.List[0].Type.(type) {
+					case *ast.Ident:
+						recvType = rt.Name
+					case *ast.StarExpr:
+						if id, ok := rt.X.(*ast.Ident); ok {
+							recvType = id.Name
+						}
+					}
+					if recvType == "DB" {
+						methodLower := strings.ToLower(fn.Name.Name)
+						for _, kw := range forbiddenKeywords {
+							if strings.Contains(methodLower, kw) {
+								t.Errorf("internal/database.DB contains forbidden domain method %s (must belong to feature-owned repository)", fn.Name.Name)
+							}
+						}
+					}
+				}
+
+				// 2. Check type declarations in internal/database
+				if gd, ok := decl.(*ast.GenDecl); ok && gd.Tok == token.TYPE {
+					for _, spec := range gd.Specs {
+						if ts, ok := spec.(*ast.TypeSpec); ok {
+							typeLower := strings.ToLower(ts.Name.Name)
+							for _, kw := range forbiddenKeywords {
+								if strings.Contains(typeLower, kw) {
+									t.Errorf("internal/database declares forbidden domain type %s (must belong to feature-owned repository)", ts.Name.Name)
+								}
+							}
+						}
+					}
 				}
 			}
 		}

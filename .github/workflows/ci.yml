@@ -47,6 +47,11 @@ jobs:
       - name: Go Vet
         run: go vet ./...
 
+      - name: Verify Generated Modules Freshness
+        run: |
+          go run ./tools/featuregen
+          git diff --exit-code -- internal/app/generated_modules.go
+
       - name: GolangCI-Lint
         uses: golangci/golangci-lint-action@v6
         with:

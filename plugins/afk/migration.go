@@ -2,6 +2,7 @@ package afk
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/inipew/goultroid/internal/database"
 )
@@ -23,6 +24,17 @@ func (migration001) Up(ctx context.Context, tx database.SQLExecutor) error {
 			since DATETIME NOT NULL
 		);`)
 	return err
+}
+
+func (migration001) VerifySchema(ctx context.Context, tx database.SQLExecutor) error {
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='afk_status'`).Scan(&count); err != nil {
+		return err
+	}
+	if count == 0 {
+		return fmt.Errorf("required table afk_status does not exist")
+	}
+	return nil
 }
 
 func Migrations() []database.Migration {

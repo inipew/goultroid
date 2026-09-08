@@ -2,8 +2,14 @@ package clone
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/inipew/goultroid/internal/database"
+)
+
+var (
+	_ database.SchemaInvariantMigration = migration001{}
+	_ database.SchemaInvariantMigration = migration002{}
 )
 
 type migration001 struct{}
@@ -27,6 +33,16 @@ func (migration001) Up(ctx context.Context, tx database.SQLExecutor) error {
 		);`)
 	return err
 }
+func (migration001) VerifySchema(ctx context.Context, tx database.SQLExecutor) error {
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='clone_state'`).Scan(&count); err != nil {
+		return err
+	}
+	if count == 0 {
+		return fmt.Errorf("required table clone_state does not exist")
+	}
+	return nil
+}
 
 type migration002 struct{}
 
@@ -40,6 +56,16 @@ func (migration002) Up(ctx context.Context, tx database.SQLExecutor) error {
 	_, err := tx.ExecContext(ctx, `
 		ALTER TABLE clone_state ADD COLUMN cloned_photo BOOLEAN NOT NULL DEFAULT 0;`)
 	return err
+}
+func (migration002) VerifySchema(ctx context.Context, tx database.SQLExecutor) error {
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('clone_state') WHERE name='cloned_photo'`).Scan(&count); err != nil {
+		return err
+	}
+	if count == 0 {
+		return fmt.Errorf("required column cloned_photo in table clone_state does not exist")
+	}
+	return nil
 }
 
 func Migrations() []database.Migration {

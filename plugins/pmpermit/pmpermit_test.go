@@ -54,7 +54,7 @@ func TestPMPermitPlugin(t *testing.T) {
 	db := setupTestDB(t)
 	mockTG := &mockTelegram{}
 	perms := core.NewPermissions(12345, nil)
-	svc := pmpermitSvc.NewService(db, mockTG, 12345, perms, zap.NewNop())
+	svc := pmpermitSvc.NewService(pmpermit.NewSQLiteRepository(db), mockTG, 12345, perms, zap.NewNop())
 
 	p := pmpermit.New(svc)
 	if p.Name() != "pmpermit" {
@@ -178,7 +178,7 @@ func TestPMPermitPlugin_HandleIncomingMessage(t *testing.T) {
 	db := setupTestDB(t)
 	mockTG := &mockTelegram{}
 	perms := core.NewPermissions(12345, nil)
-	svc := pmpermitSvc.NewService(db, mockTG, 12345, perms, zap.NewNop())
+	svc := pmpermitSvc.NewService(pmpermit.NewSQLiteRepository(db), mockTG, 12345, perms, zap.NewNop())
 	p := pmpermit.New(svc)
 
 	ctx := context.Background()
@@ -235,7 +235,7 @@ func TestPMPermitPlugin_DisapproveAndWarningDoNotAutoApprove(t *testing.T) {
 		},
 	}
 	perms := core.NewPermissions(12345, nil)
-	svc := pmpermitSvc.NewService(db, mockTG, 12345, perms, zap.NewNop())
+	svc := pmpermitSvc.NewService(pmpermit.NewSQLiteRepository(db), mockTG, 12345, perms, zap.NewNop())
 	p := pmpermit.New(svc)
 
 	ctx := context.Background()

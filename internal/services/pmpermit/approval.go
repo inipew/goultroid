@@ -15,7 +15,7 @@ func (s *Service) ApproveWithPeer(ctx context.Context, peer tg.InputPeerClass, u
 	if userID == 0 {
 		return fmt.Errorf("invalid user id")
 	}
-	if s.db == nil {
+	if s.repo == nil {
 		return fmt.Errorf("pm permit database is unavailable")
 	}
 	if !usablePeer(peer) {
@@ -30,7 +30,7 @@ func (s *Service) ApproveWithPeer(ctx context.Context, peer tg.InputPeerClass, u
 		reason = "approved by user"
 	}
 
-	if err := s.db.SetPMStatus(ctx, userID, StatusApproved, reason, exp); err != nil {
+	if err := s.repo.SetPMStatus(ctx, userID, StatusApproved, reason, exp); err != nil {
 		return err
 	}
 
@@ -39,7 +39,7 @@ func (s *Service) ApproveWithPeer(ctx context.Context, peer tg.InputPeerClass, u
 	if svc := s.getService(); svc != nil {
 		if err := svc.UnblockUser(ctx, peer); err != nil {
 			s.approvedCache.Delete(userID)
-			if rollbackErr := s.db.SetPMStatus(ctx, userID, StatusPending, "approval Telegram side-effect failed", nil); rollbackErr != nil {
+			if rollbackErr := s.repo.SetPMStatus(ctx, userID, StatusPending, "approval Telegram side-effect failed", nil); rollbackErr != nil {
 				s.logger.Error("failed to rollback PM approval after Telegram failure", zap.Int64("user_id", userID), zap.Error(rollbackErr))
 			}
 			s.publishEvent("approve", userID, "", 0, reason, false, err.Error())
@@ -47,7 +47,7 @@ func (s *Service) ApproveWithPeer(ctx context.Context, peer tg.InputPeerClass, u
 		}
 	}
 
-	if err := s.db.ResetPMWarn(ctx, userID); err != nil {
+	if err := s.repo.ResetPMWarn(ctx, userID); err != nil {
 		s.logger.Warn("failed to reset pm warn count", zap.Int64("user_id", userID), zap.Error(err))
 	}
 	entry := approvalCacheEntry{}

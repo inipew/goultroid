@@ -5,8 +5,6 @@ import (
 	"math/rand"
 	"sync"
 	"time"
-
-	"github.com/inipew/goultroid/internal/database"
 )
 
 // Queue is a thread-safe FIFO playback queue.
@@ -14,22 +12,22 @@ type Queue struct {
 	mu     sync.RWMutex
 	chatID int64
 	tracks []Source
-	db     *database.DB
+	repo   Repository
 }
 
 // NewQueue creates a new Queue instance for a chat.
-func NewQueue(chatID int64, db *database.DB) *Queue {
+func NewQueue(chatID int64, repo Repository) *Queue {
 	q := &Queue{
 		chatID: chatID,
 		tracks: make([]Source, 0),
-		db:     db,
+		repo:   repo,
 	}
 
-	// Restore pending tracks from DB if available
-	if db != nil {
+	// Restore pending tracks from Repository if available
+	if repo != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		if records, err := db.GetVoiceQueue(ctx, chatID); err == nil {
+		if records, err := repo.GetVoiceQueue(ctx, chatID); err == nil {
 			for _, r := range records {
 				q.tracks = append(q.tracks, Source{
 					ID:          r.Title,
@@ -55,11 +53,11 @@ func (q *Queue) Enqueue(track Source) {
 	defer q.mu.Unlock()
 	q.tracks = append(q.tracks, track)
 
-	if q.db != nil {
+	if q.repo != nil {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			_ = q.db.AddVoiceQueueTrack(ctx, &database.VoiceQueueRecord{
+			_ = q.repo.AddVoiceQueueTrack(ctx, &VoiceQueueRecord{
 				ChatID:          track.ChatID,
 				Title:           track.Title,
 				Artist:          track.Artist,
@@ -86,11 +84,11 @@ func (q *Queue) Dequeue() (Source, bool) {
 	next := q.tracks[0]
 	q.tracks = q.tracks[1:]
 
-	if q.db != nil {
+	if q.repo != nil {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			_, _ = q.db.PopVoiceQueueTrack(ctx, q.chatID)
+			_, _ = q.repo.PopVoiceQueueTrack(ctx, q.chatID)
 		}()
 	}
 
@@ -129,11 +127,11 @@ func (q *Queue) Clear() {
 	defer q.mu.Unlock()
 	q.tracks = make([]Source, 0)
 
-	if q.db != nil {
+	if q.repo != nil {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			_ = q.db.ClearVoiceQueue(ctx, q.chatID)
+			_ = q.repo.ClearVoiceQueue(ctx, q.chatID)
 		}()
 	}
 }

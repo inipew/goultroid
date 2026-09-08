@@ -3,6 +3,7 @@ package pmpermit
 import (
 	"context"
 
+	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/module"
 )
 
@@ -18,6 +19,10 @@ func (ModuleType) Manifest() module.Manifest {
 	}
 }
 
+func (ModuleType) Migrations() []database.Migration {
+	return Migrations()
+}
+
 func (ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	if rt == nil {
 		return module.ErrNilRuntime
@@ -29,4 +34,7 @@ func (ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	return rt.Plugins.RegisterWithContext(ctx, p)
 }
 
-var _ module.Module = ModuleType{}
+var (
+	_ module.Module              = ModuleType{}
+	_ database.MigrationProvider = ModuleType{}
+)

@@ -3,7 +3,9 @@ package voice
 import (
 	"context"
 
+	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/module"
+	voiceSvc "github.com/inipew/goultroid/internal/voice"
 )
 
 type ModuleType struct{}
@@ -18,6 +20,10 @@ func (ModuleType) Manifest() module.Manifest {
 	}
 }
 
+func (ModuleType) Migrations() []database.Migration {
+	return Migrations()
+}
+
 func (ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	if rt == nil {
 		return module.ErrNilRuntime
@@ -25,8 +31,16 @@ func (ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	if rt.Plugins == nil {
 		return module.ErrNilPluginManager
 	}
+	var repo voiceSvc.Repository
+	if rt.DB != nil {
+		repo = NewSQLiteRepository(rt.DB)
+	}
+	_ = repo
 	p := New(nil)
 	return rt.Plugins.RegisterWithContext(ctx, p)
 }
 
-var _ module.Module = ModuleType{}
+var (
+	_ module.Module              = ModuleType{}
+	_ database.MigrationProvider = ModuleType{}
+)
