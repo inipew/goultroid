@@ -114,7 +114,12 @@ func New(cfg *config.Config) (*App, error) {
 }
 
 func (a *App) Run(ctx context.Context) error { return a.runLifecycle(ctx) }
-func (a *App) State() LifecycleState { if a == nil || a.lifecycle == nil { return LifecycleStopped }; return a.lifecycle.State() }
+func (a *App) State() LifecycleState {
+	if a == nil || a.lifecycle == nil {
+		return LifecycleStopped
+	}
+	return a.lifecycle.State()
+}
 
 func initLogger(logLevel string) (*zap.Logger, error) {
 	var zapLevel zapcore.Level

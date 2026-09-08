@@ -64,23 +64,41 @@ type DispatcherDeps struct {
 }
 
 func NewDispatcherWithDeps(deps DispatcherDeps) (*Dispatcher, error) {
-	if deps.Router == nil { return nil, fmt.Errorf("dispatcher: Router is required") }
-	if deps.Permissions == nil { return nil, fmt.Errorf("dispatcher: Permissions is required") }
-	if deps.Logger == nil { deps.Logger = zap.NewNop() }
+	if deps.Router == nil {
+		return nil, fmt.Errorf("dispatcher: Router is required")
+	}
+	if deps.Permissions == nil {
+		return nil, fmt.Errorf("dispatcher: Permissions is required")
+	}
+	if deps.Logger == nil {
+		deps.Logger = zap.NewNop()
+	}
 	d := NewDispatcher(deps.Router, deps.Permissions, deps.Service, deps.Logger)
-	if deps.EventBus != nil { d.SetEventBus(deps.EventBus) }
-	if deps.Localizer != nil { d.SetLocalizer(deps.Localizer) }
-	if deps.CallbackRouter != nil { d.SetCallbackRouter(deps.CallbackRouter) }
-	if deps.InlineEngine != nil { d.SetInlineEngine(deps.InlineEngine) }
-	if deps.Resolver != nil { d.SetResolver(deps.Resolver) }
+	if deps.EventBus != nil {
+		d.SetEventBus(deps.EventBus)
+	}
+	if deps.Localizer != nil {
+		d.SetLocalizer(deps.Localizer)
+	}
+	if deps.CallbackRouter != nil {
+		d.SetCallbackRouter(deps.CallbackRouter)
+	}
+	if deps.InlineEngine != nil {
+		d.SetInlineEngine(deps.InlineEngine)
+	}
+	if deps.Resolver != nil {
+		d.SetResolver(deps.Resolver)
+	}
 	return d, nil
 }
 
 func NewDispatcher(router *core.Router, perms *core.Permissions, svc core.TelegramServicer, logger *zap.Logger) *Dispatcher {
-	if logger == nil { logger = zap.NewNop() }
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	cooldown := core.NewCooldownTracker()
 	executor := core.NewCommandExecutor(logger, cooldown, 30*time.Second)
-	d := &Dispatcher{router: router, perms: perms, svc: svc, logger: logger, cooldown: cooldown, executor: executor, albumBuffer: core.NewAlbumBuffer(10*time.Minute), cmdSem: make(chan struct{}, 32)}
+	d := &Dispatcher{router: router, perms: perms, svc: svc, logger: logger, cooldown: cooldown, executor: executor, albumBuffer: core.NewAlbumBuffer(10 * time.Minute), cmdSem: make(chan struct{}, 32)}
 	d.acceptingUpdates.Store(true)
 	return d
 }

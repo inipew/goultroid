@@ -22,7 +22,7 @@ const defaultEndpoint = "https://api.ocr.space/parse/image"
 
 const (
 	maxResponseSize = 8 << 20
-	maxAttempts      = 3
+	maxAttempts     = 3
 )
 
 var supportedLanguages = map[string]struct{}{

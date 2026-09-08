@@ -21,8 +21,8 @@ const (
 
 var (
 	ErrLifecycleInvalidTransition = errors.New("invalid application lifecycle transition")
-	ErrLifecycleQuiescing        = errors.New("application is quiescing")
-	ErrLifecycleStopped          = errors.New("application is stopped")
+	ErrLifecycleQuiescing         = errors.New("application is quiescing")
+	ErrLifecycleStopped           = errors.New("application is stopped")
 )
 
 func (s LifecycleState) String() string {
