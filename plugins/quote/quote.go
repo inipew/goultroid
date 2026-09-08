@@ -1,7 +1,6 @@
 package quote
 
 import (
-	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -13,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gotd/td/tg"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/basicfont"
 	"golang.org/x/image/font/opentype"
@@ -64,8 +64,7 @@ func (p *Plugin) handle(ctx *core.Context) error {
 	}
 	defer os.Remove(path)
 
-	// MediaFacade.SendMedia takes (mediaType, filePath, caption). The old call
-	// passed these two arguments in reverse order and could never upload the image.
+	// MediaFacade.SendMedia takes (mediaType, filePath, caption).
 	if _, err := ctx.SendMedia("photo", path, ""); err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to send quote image: %v", err))
 	}
@@ -87,14 +86,11 @@ func (p *Plugin) resolveAuthor(ctx *core.Context, reply *core.Message) string {
 	if ctx != nil && reply.SenderID != 0 && ctx.Resolver != nil {
 		peer, _, err := ctx.Resolver.ResolveUser(ctx.Ctx, strconv.FormatInt(reply.SenderID, 10))
 		if err == nil {
-			if inputUser, ok := peer.(*tgInputPeerUser); ok {
-				_ = inputUser // kept as an explicit type boundary below
-			}
-			if user, ok := peerToInputUser(peer); ok && ctx.Svc != nil {
-				full, fullErr := ctx.Svc.GetFullUser(ctx.Ctx, user)
+			if inputUser, ok := peerToInputUser(peer); ok && ctx.Svc != nil {
+				full, fullErr := ctx.Svc.GetFullUser(ctx.Ctx, inputUser)
 				if fullErr == nil && full != nil {
 					for _, item := range full.Users {
-						if u, ok := item.(*tgUser); ok && u.ID == reply.SenderID {
+						if u, ok := item.(*tg.User); ok && u.ID == reply.SenderID {
 							if name := displayUserName(u.FirstName, u.LastName, u.Username); name != "" {
 								return name
 							}
@@ -110,12 +106,7 @@ func (p *Plugin) resolveAuthor(ctx *core.Context, reply *core.Message) string {
 	return "Unknown"
 }
 
-// These aliases keep the helper logic isolated from the generated gotd types.
-// They are replaced by the concrete aliases below to make the type assertions explicit.
-type tgInputPeerUser = tg.InputPeerUser
-type tgUser = tg.User
-
-func peerToInputUser(peer interface{}) (tg.InputUserClass, bool) {
+func peerToInputUser(peer tg.InputPeerClass) (tg.InputUserClass, bool) {
 	u, ok := peer.(*tg.InputPeerUser)
 	if !ok || u == nil || u.UserID == 0 || u.AccessHash == 0 {
 		return nil, false
@@ -255,6 +246,3 @@ func wrapToWidth(s string, face font.Face, maxWidth int) []string {
 	}
 	return out
 }
-
-// Keep this small helper local so quote never rewrites Unicode into ASCII '?'.
-func _unusedErrorsGuard() error { return errors.New("") }
