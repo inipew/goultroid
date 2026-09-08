@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -82,6 +83,7 @@ func TestDatabaseGenericBoundary(t *testing.T) {
 		"sudo",
 		"pmpermit",
 		"voice",
+		"moderation",
 	}
 
 	for _, pkg := range pkgs {
@@ -123,6 +125,44 @@ func TestDatabaseGenericBoundary(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestLegacyFeatureDatabaseSurfaceIsExplicit(t *testing.T) {
+	root := repositoryRoot(t)
+	dbDir := filepath.Join(root, "internal", "database")
+	entries, err := os.ReadDir(dbDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// These are known remaining legacy feature-owned persistence files. The list is
+	// intentionally explicit so a new feature cannot silently add persistence here.
+	allowedLegacy := map[string]struct{}{
+		"addon.go":     {},
+		"scheduler.go": {},
+		"settings.go":  {},
+		"userlog.go":   {},
+	}
+
+	var legacy []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		if _, ok := allowedLegacy[entry.Name()]; ok {
+			legacy = append(legacy, entry.Name())
+		}
+	}
+	sort.Strings(legacy)
+
+	want := make([]string, 0, len(allowedLegacy))
+	for name := range allowedLegacy {
+		want = append(want, name)
+	}
+	sort.Strings(want)
+	if !reflect.DeepEqual(legacy, want) {
+		t.Fatalf("legacy feature persistence surface changed unexpectedly: got %v, want %v; migrate an existing feature before adding another file", legacy, want)
 	}
 }
 
