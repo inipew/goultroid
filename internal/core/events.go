@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gotd/td/tg"
+	"github.com/inipew/goultroid/internal/runtime"
 )
 
 type EventType string
@@ -187,11 +188,25 @@ func (e *SettingChangedEvent) Type() EventType      { return EventTypeSettingCha
 func (e *SettingChangedEvent) Timestamp() time.Time { return e.At }
 func (e *SettingChangedEvent) Meta() EventMeta      { return e.MetaData }
 
+// ContextEventHandler defines the context-aware callback for event consumption.
+// It receives a bounded context and returns an error if delivery or handling failed.
+type ContextEventHandler func(ctx context.Context, event Event) error
+
 type EventHandler func(event Event)
 
+// DeadLetter represents a failed event dispatch attempt.
+type DeadLetter struct {
+	Event    Event     `json:"event"`
+	Owner    string    `json:"owner"`
+	Error    string    `json:"error"`
+	FailedAt time.Time `json:"failed_at"`
+}
+
 type eventSubscriber struct {
-	owner   string
-	handler EventHandler
+	owner          string
+	handler        EventHandler
+	contextHandler ContextEventHandler
+	timeout        time.Duration
 }
 
 // Subscription is an owned EventBus registration. Close is idempotent and
@@ -220,8 +235,8 @@ func (s *Subscription) Close() {
 }
 
 type eventJob struct {
-	handler EventHandler
-	event   Event
+	subscriber eventSubscriber
+	event      Event
 }
 
 const (
@@ -243,6 +258,9 @@ type EventBusStats struct {
 	QueueCapacity int
 }
 
+// Ensure EventBus implements runtime.Component.
+var _ runtime.Component = (*EventBus)(nil)
+
 type EventBus struct {
 	mu          sync.RWMutex
 	subscribers map[EventType]map[uint64]eventSubscriber
@@ -252,6 +270,9 @@ type EventBus struct {
 	workers     sync.WaitGroup
 	closed      bool
 	started     bool
+
+	dlqMu sync.RWMutex
+	dlq   []DeadLetter
 
 	publishedCount atomic.Int64
 	deliveredCount atomic.Int64
@@ -346,12 +367,64 @@ func (b *EventBus) worker() {
 
 func (b *EventBus) runJob(job eventJob) {
 	defer func() {
-		if recover() != nil {
+		if r := recover(); r != nil {
 			b.panicCount.Add(1)
+			b.recordDLQ(job.event, job.subscriber.owner, fmt.Errorf("panic in event handler: %v", r))
 		}
 	}()
-	job.handler(job.event)
-	b.deliveredCount.Add(1)
+
+	timeout := job.subscriber.timeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	var err error
+	if job.subscriber.contextHandler != nil {
+		err = job.subscriber.contextHandler(ctx, job.event)
+	} else if job.subscriber.handler != nil {
+		job.subscriber.handler(job.event)
+	}
+
+	if err != nil {
+		b.recordDLQ(job.event, job.subscriber.owner, err)
+	} else {
+		b.deliveredCount.Add(1)
+	}
+}
+
+func (b *EventBus) recordDLQ(ev Event, owner string, err error) {
+	b.dlqMu.Lock()
+	defer b.dlqMu.Unlock()
+
+	entry := DeadLetter{
+		Event:    ev,
+		Owner:    owner,
+		Error:    err.Error(),
+		FailedAt: time.Now().UTC(),
+	}
+	if len(b.dlq) >= 500 {
+		b.dlq = b.dlq[1:]
+	}
+	b.dlq = append(b.dlq, entry)
+}
+
+// DLQ returns a snapshot of recorded dead letter events.
+func (b *EventBus) DLQ() []DeadLetter {
+	b.dlqMu.RLock()
+	defer b.dlqMu.RUnlock()
+
+	result := make([]DeadLetter, len(b.dlq))
+	copy(result, b.dlq)
+	return result
+}
+
+// ClearDLQ clears the recorded dead letter entries.
+func (b *EventBus) ClearDLQ() {
+	b.dlqMu.Lock()
+	defer b.dlqMu.Unlock()
+	b.dlq = nil
 }
 
 func (b *EventBus) Subscribe(t EventType, handler EventHandler) func() {
@@ -380,6 +453,47 @@ func (b *EventBus) SubscribeOwned(owner string, t EventType, handler EventHandle
 	id := b.nextID
 	b.subscribers[t][id] = eventSubscriber{owner: owner, handler: handler}
 	return &Subscription{bus: b, eventType: t, id: id}
+}
+
+// SubscribeContextHandler registers a context-aware handler with an ownership label and timeout.
+func (b *EventBus) SubscribeContextHandler(owner string, t EventType, handler ContextEventHandler, timeout ...time.Duration) *Subscription {
+	if handler == nil {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return nil
+	}
+	if b.subscribers[t] == nil {
+		b.subscribers[t] = make(map[uint64]eventSubscriber)
+	}
+	b.nextID++
+	id := b.nextID
+	var to time.Duration
+	if len(timeout) > 0 {
+		to = timeout[0]
+	}
+	b.subscribers[t][id] = eventSubscriber{owner: owner, contextHandler: handler, timeout: to}
+	return &Subscription{bus: b, eventType: t, id: id}
+}
+
+// SubscribeContextHandlerWithCancel registers a context-aware handler that is cancelled when ctx is done.
+func (b *EventBus) SubscribeContextHandlerWithCancel(ctx context.Context, owner string, t EventType, handler ContextEventHandler, timeout ...time.Duration) *Subscription {
+	sub := b.SubscribeContextHandler(owner, t, handler, timeout...)
+	if sub == nil {
+		return nil
+	}
+	if ctx != nil && ctx.Done() != nil {
+		go func() {
+			select {
+			case <-ctx.Done():
+				sub.Close()
+			case <-b.stop:
+			}
+		}()
+	}
+	return sub
 }
 
 // SubscribeContext registers a handler that is automatically cancelled when ctx is done.
@@ -432,7 +546,7 @@ func (b *EventBus) Publish(event Event) {
 	}
 	for _, subscriber := range m {
 		select {
-		case b.queue <- eventJob{handler: subscriber.handler, event: event}:
+		case b.queue <- eventJob{subscriber: subscriber, event: event}:
 			b.publishedCount.Add(1)
 		default:
 			b.droppedCount.Add(1)
@@ -473,16 +587,66 @@ func (b *EventBus) PublishDurable(ctx context.Context, event Event) error {
 				if r := recover(); r != nil {
 					b.panicCount.Add(1)
 					handlerErr = fmt.Errorf("event handler panic: %v", r)
+					b.recordDLQ(event, subscriber.owner, handlerErr)
 				}
 			}()
-			subscriber.handler(event)
-			b.deliveredCount.Add(1)
+			if subscriber.contextHandler != nil {
+				handlerErr = subscriber.contextHandler(ctx, event)
+				if handlerErr != nil {
+					b.recordDLQ(event, subscriber.owner, handlerErr)
+				} else {
+					b.deliveredCount.Add(1)
+				}
+			} else if subscriber.handler != nil {
+				subscriber.handler(event)
+				b.deliveredCount.Add(1)
+			}
 		}()
 		if handlerErr != nil {
 			return handlerErr
 		}
 	}
 	return nil
+}
+
+// Name returns component name for runtime.Component.
+func (b *EventBus) Name() string {
+	return "eventbus"
+}
+
+// Dependencies returns empty dependencies for runtime.Component.
+func (b *EventBus) Dependencies() []string {
+	return nil
+}
+
+// Stop gracefully closes the event bus.
+func (b *EventBus) Stop(ctx context.Context) error {
+	return b.Close()
+}
+
+// Health evaluates EventBus health.
+func (b *EventBus) Health(ctx context.Context) runtime.ComponentHealth {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if b.closed {
+		return runtime.ComponentHealth{
+			Status:  runtime.HealthUnhealthy,
+			Details: "event bus closed",
+		}
+	}
+	if !b.started {
+		return runtime.ComponentHealth{
+			Status:  runtime.HealthDegraded,
+			Details: "event bus not started",
+		}
+	}
+	if b.droppedCount.Load() > 0 {
+		return runtime.ComponentHealth{
+			Status:  runtime.HealthDegraded,
+			Details: fmt.Sprintf("event bus dropped %d events", b.droppedCount.Load()),
+		}
+	}
+	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
 }
 
 // Close is idempotent and drains all accepted asynchronous jobs. The data queue

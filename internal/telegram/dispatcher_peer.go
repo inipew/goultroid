@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/gotd/td/tg"
+	"github.com/inipew/goultroid/internal/runtime"
 	"go.uber.org/zap"
 )
 
@@ -14,14 +15,38 @@ type peerUpdateJob struct {
 	chats    []*tg.Chat
 }
 
-func (d *Dispatcher) Start(ctx context.Context) {
+// Ensure Dispatcher implements runtime.Component.
+var _ runtime.Component = (*Dispatcher)(nil)
+
+// Name returns component identifier for runtime.Component.
+func (d *Dispatcher) Name() string {
+	return "dispatcher"
+}
+
+// Dependencies returns prerequisite components for runtime.Component.
+func (d *Dispatcher) Dependencies() []string {
+	return []string{"eventbus"}
+}
+
+// Health probes Dispatcher health.
+func (d *Dispatcher) Health(ctx context.Context) runtime.ComponentHealth {
+	if d.stopping.Load() {
+		return runtime.ComponentHealth{
+			Status:  runtime.HealthUnhealthy,
+			Details: "dispatcher stopping",
+		}
+	}
+	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
+}
+
+func (d *Dispatcher) Start(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.peerQueue != nil {
-		return
+		return nil
 	}
 	d.peerQueue = make(chan peerUpdateJob, 1024)
 	workers := 2
@@ -30,6 +55,7 @@ func (d *Dispatcher) Start(ctx context.Context) {
 	for i := 0; i < workers; i++ {
 		go d.peerWorker(ctx, q)
 	}
+	return nil
 }
 
 func (d *Dispatcher) peerWorker(_ context.Context, q <-chan peerUpdateJob) {

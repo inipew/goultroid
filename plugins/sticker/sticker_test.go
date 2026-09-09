@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"image/png"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -189,11 +190,12 @@ func TestCalculateStickerDimensions(t *testing.T) {
 
 func TestSticker_ConvertProcess(t *testing.T) {
 	// Create a dummy 200x100 PNG image
-	tmpFile, err := os.CreateTemp("", "test-img-*.png")
+	tmpPath := filepath.Join(t.TempDir(), "test-img.png")
+	tmpFile, err := os.Create(tmpPath)
 	if err != nil {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer tmpFile.Close()
 
 	img := image.NewRGBA(image.Rect(0, 0, 200, 100))
 	for x := 0; x < 200; x++ {

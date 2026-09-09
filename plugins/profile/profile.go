@@ -8,14 +8,40 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/platform/filesystem"
+	"github.com/inipew/goultroid/internal/plugin"
 )
 
 // Plugin provides self-user profile and contact management commands.
-type Plugin struct{}
+type Plugin struct {
+	files *filesystem.Manager
+}
 
 // New creates a new Profile plugin.
 func New() *Plugin {
 	return &Plugin{}
+}
+
+// InitPlugin initializes the plugin using capability-gated PluginContext.
+func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
+	fsMgr, err := pctx.Files()
+	if err != nil {
+		return err
+	}
+	p.files = fsMgr
+	return nil
+}
+
+// SetFiles sets the filesystem manager for the plugin.
+func (p *Plugin) SetFiles(fs *filesystem.Manager) {
+	p.files = fs
+}
+
+func (p *Plugin) getFiles() *filesystem.Manager {
+	if p.files == nil {
+		p.files, _ = filesystem.NewManager("data", "", "", nil)
+	}
+	return p.files
 }
 
 // Name returns the unique plugin identifier.
@@ -208,13 +234,14 @@ func (p *Plugin) handleSetPic(ctx *core.Context) error {
 
 	reply, err := ctx.GetReply()
 	if err == nil && reply != nil && reply.HasMedia() {
-		tempDir, err := os.MkdirTemp("", "goultroid-pfp-*")
+		files := p.getFiles()
+		tempDir, err := files.CreateTempDir("profile", "goultroid-pfp-*")
 		if err != nil {
 			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temporary directory: %v", err))
 		}
 		defer func() {
 			if cleanupTemp {
-				_ = os.RemoveAll(tempDir)
+				_ = files.RemoveTempDir(tempDir)
 			}
 		}()
 		cleanupTemp = true

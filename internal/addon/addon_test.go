@@ -137,8 +137,9 @@ func TestCapabilityGate_Enforcement(t *testing.T) {
 
 func TestManager_Lifecycle(t *testing.T) {
 	db := setupTestDB(t)
+	repo := addon.NewSQLiteRepository(db)
 	gate := addon.NewCapabilityGate()
-	mgr := addon.NewManager(db, gate, "1.5.0", zap.NewNop())
+	mgr := addon.NewManager(repo, gate, "1.5.0", zap.NewNop())
 	ctx := context.Background()
 
 	manifestContent := `
@@ -217,8 +218,9 @@ capabilities:
 
 func TestManager_ShutdownState(t *testing.T) {
 	db := setupTestDB(t)
+	repo := addon.NewSQLiteRepository(db)
 	gate := addon.NewCapabilityGate()
-	mgr := addon.NewManager(db, gate, "1.5.0", zap.NewNop())
+	mgr := addon.NewManager(repo, gate, "1.5.0", zap.NewNop())
 	ctx := context.Background()
 
 	if err := mgr.ShutdownRuntimes(); err != nil {

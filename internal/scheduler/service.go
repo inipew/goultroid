@@ -50,5 +50,5 @@ type Service interface {
 	JobHistoryScoped(ctx context.Context, requesterID, chatID, jobID int64, limit int) ([]database.JobHistoryEntry, error)
 
 	Start(ctx context.Context) error
-	Stop() error
+	Stop(ctx context.Context) error
 }

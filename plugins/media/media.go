@@ -9,6 +9,8 @@ import (
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
+	"github.com/inipew/goultroid/internal/platform/filesystem"
+	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/media"
 	"github.com/inipew/goultroid/internal/services/storage"
 )
@@ -20,6 +22,7 @@ var (
 // Plugin provides media inspection, audio extraction, and transcoding utilities.
 type Plugin struct {
 	mediaService *media.Service
+	files        *filesystem.Manager
 }
 
 // New creates a new Media plugin with optional dependencies.
@@ -32,6 +35,28 @@ func New(deps ...any) *Plugin {
 		}
 	}
 	return p
+}
+
+// InitPlugin initializes the plugin using capability-gated PluginContext.
+func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
+	fsMgr, err := pctx.Files()
+	if err != nil {
+		return err
+	}
+	p.files = fsMgr
+	return nil
+}
+
+// SetFiles sets the filesystem manager for the plugin.
+func (p *Plugin) SetFiles(fs *filesystem.Manager) {
+	p.files = fs
+}
+
+func (p *Plugin) getFiles() *filesystem.Manager {
+	if p.files == nil {
+		p.files, _ = filesystem.NewManager("data", "", "", nil)
+	}
+	return p.files
 }
 
 // SetMediaService sets the media service platform.
@@ -209,11 +234,12 @@ func (p *Plugin) handleExtractAudio(ctx *core.Context) error {
 
 	_ = ctx.EditOrReply("⏳ <i>Downloading and extracting audio...</i>")
 
-	tmpDir, err := os.MkdirTemp("", "goultroid-audio-*")
+	files := p.getFiles()
+	tmpDir, err := files.CreateTempDir("media", "goultroid-audio-*")
 	if err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
 	}
-	defer os.RemoveAll(tmpDir)
+	defer files.RemoveTempDir(tmpDir)
 
 	downloadedPath, err := ctx.DownloadMedia(tmpDir)
 	if err != nil {
@@ -270,11 +296,12 @@ func (p *Plugin) handleConvert(ctx *core.Context) error {
 
 	_ = ctx.EditOrReply(fmt.Sprintf("⏳ <i>Converting media to %s...</i>", core.EscapeHTML(targetFormat)))
 
-	tmpDir, err := os.MkdirTemp("", "goultroid-convert-*")
+	files := p.getFiles()
+	tmpDir, err := files.CreateTempDir("media", "goultroid-convert-*")
 	if err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
 	}
-	defer os.RemoveAll(tmpDir)
+	defer files.RemoveTempDir(tmpDir)
 
 	downloadedPath, err := ctx.DownloadMedia(tmpDir)
 	if err != nil {
@@ -334,11 +361,12 @@ func (p *Plugin) handleConvertToGIF(ctx *core.Context) error {
 
 	_ = ctx.EditOrReply("⏳ <i>Converting video to GIF...</i>")
 
-	tmpDir, err := os.MkdirTemp("", "goultroid-gif-*")
+	files := p.getFiles()
+	tmpDir, err := files.CreateTempDir("media", "goultroid-gif-*")
 	if err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
 	}
-	defer os.RemoveAll(tmpDir)
+	defer files.RemoveTempDir(tmpDir)
 
 	downloadedPath, err := ctx.DownloadMedia(tmpDir)
 	if err != nil {
@@ -382,11 +410,12 @@ func (p *Plugin) handleConvertToSticker(ctx *core.Context) error {
 
 	_ = ctx.EditOrReply("⏳ <i>Generating video sticker (WebM 512x512)...</i>")
 
-	tmpDir, err := os.MkdirTemp("", "goultroid-vstick-*")
+	files := p.getFiles()
+	tmpDir, err := files.CreateTempDir("media", "goultroid-vstick-*")
 	if err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
 	}
-	defer os.RemoveAll(tmpDir)
+	defer files.RemoveTempDir(tmpDir)
 
 	downloadedPath, err := ctx.DownloadMedia(tmpDir)
 	if err != nil {

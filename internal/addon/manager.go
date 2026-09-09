@@ -9,16 +9,17 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/platform/process"
 	"go.uber.org/zap"
 )
 
 // Manager coordinates addon installation, validation, capability gating,
 // external-process lifecycle, and database persistence.
 type Manager struct {
-	db           *database.DB
+	repo         Repository
 	gate         *CapabilityGate
 	broker       *CapabilityBroker
+	procMgr      *process.Manager
 	appVersion   string
 	logger       *zap.Logger
 	shuttingDown atomic.Bool
@@ -27,7 +28,7 @@ type Manager struct {
 	runtimes  map[string]*ExternalRuntime
 }
 
-func NewManager(db *database.DB, gate *CapabilityGate, appVersion string, logger *zap.Logger) *Manager {
+func NewManager(repo Repository, gate *CapabilityGate, appVersion string, logger *zap.Logger) *Manager {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -38,7 +39,7 @@ func NewManager(db *database.DB, gate *CapabilityGate, appVersion string, logger
 		appVersion = "1.0.0"
 	}
 	return &Manager{
-		db: db, gate: gate, broker: NewCapabilityBroker(gate), appVersion: appVersion,
+		repo: repo, gate: gate, broker: NewCapabilityBroker(gate), appVersion: appVersion,
 		logger: logger.Named("addon"), runtimes: make(map[string]*ExternalRuntime),
 	}
 }
@@ -46,11 +47,21 @@ func NewManager(db *database.DB, gate *CapabilityGate, appVersion string, logger
 func (m *Manager) Gate() *CapabilityGate     { return m.gate }
 func (m *Manager) Broker() *CapabilityBroker { return m.broker }
 
+// SetProcessManager attaches a process.Manager to supervise addon external processes.
+func (m *Manager) SetProcessManager(pm *process.Manager) {
+	m.runtimeMu.Lock()
+	defer m.runtimeMu.Unlock()
+	m.procMgr = pm
+	for _, rt := range m.runtimes {
+		rt.SetProcessManager(pm)
+	}
+}
+
 func (m *Manager) LoadInstalled(ctx context.Context) error {
-	if m.db == nil {
+	if m.repo == nil {
 		return nil
 	}
-	addons, err := m.db.ListAddons(ctx)
+	addons, err := m.repo.ListAddons(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to list installed addons: %w", err)
 	}
@@ -73,19 +84,19 @@ func (m *Manager) Install(ctx context.Context, rawManifest []byte, sourceURL str
 	if err := CheckCompatibility(manifest, m.appVersion); err != nil {
 		return nil, err
 	}
-	if m.db != nil {
-		existing, err := m.db.GetAddon(ctx, manifest.Name)
+	if m.repo != nil {
+		existing, err := m.repo.GetAddon(ctx, manifest.Name)
 		if err == nil && existing != nil {
 			return nil, fmt.Errorf("%w: addon %q is already installed", ErrAddonAlreadyInstalled, manifest.Name)
 		}
 		now := time.Now().UTC()
-		rec := &database.AddonRecord{
+		rec := &AddonRecord{
 			Name: manifest.Name, Version: manifest.Version, Description: manifest.Description,
 			Author: manifest.Author, SourceURL: sourceURL, Status: string(StatusActive),
 			Capabilities: joinCapabilities(manifest.Capabilities), MinVersion: manifest.MinGoUltroid,
 			InstalledAt: now, UpdatedAt: now,
 		}
-		if err := m.db.SaveAddon(ctx, rec); err != nil {
+		if err := m.repo.SaveAddon(ctx, rec); err != nil {
 			return nil, fmt.Errorf("failed to persist addon: %w", err)
 		}
 	}
@@ -116,6 +127,12 @@ func (m *Manager) StartRuntime(ctx context.Context, name, executable, expectedSH
 
 	runtime := NewExternalRuntime(*manifest, executable, m.broker)
 	runtime.SetLogger(m.logger)
+	m.runtimeMu.RLock()
+	pm := m.procMgr
+	m.runtimeMu.RUnlock()
+	if pm != nil {
+		runtime.SetProcessManager(pm)
+	}
 	if err := runtime.Start(ctx); err != nil {
 		return err
 	}
@@ -206,10 +223,10 @@ func (m *Manager) ShutdownRuntimes() error {
 }
 
 func (m *Manager) manifestForRuntime(ctx context.Context, name string) (*Manifest, error) {
-	if m.db == nil {
+	if m.repo == nil {
 		return nil, ErrAddonNotFound
 	}
-	rec, err := m.db.GetAddon(ctx, name)
+	rec, err := m.repo.GetAddon(ctx, name)
 	if err != nil || rec == nil {
 		return nil, ErrAddonNotFound
 	}
@@ -224,12 +241,12 @@ func (m *Manager) Uninstall(ctx context.Context, name string) error {
 	if err := m.StopRuntime(cleanName); err != nil {
 		return err
 	}
-	if m.db != nil {
-		existing, err := m.db.GetAddon(ctx, cleanName)
+	if m.repo != nil {
+		existing, err := m.repo.GetAddon(ctx, cleanName)
 		if err != nil || existing == nil {
 			return ErrAddonNotFound
 		}
-		if err := m.db.DeleteAddon(ctx, cleanName); err != nil {
+		if err := m.repo.DeleteAddon(ctx, cleanName); err != nil {
 			return fmt.Errorf("failed to delete addon from db: %w", err)
 		}
 	}
@@ -240,17 +257,17 @@ func (m *Manager) Uninstall(ctx context.Context, name string) error {
 
 func (m *Manager) Enable(ctx context.Context, name string) error {
 	cleanName := strings.ToLower(strings.TrimSpace(name))
-	if m.db == nil {
+	if m.repo == nil {
 		return nil
 	}
-	rec, err := m.db.GetAddon(ctx, cleanName)
+	rec, err := m.repo.GetAddon(ctx, cleanName)
 	if err != nil || rec == nil {
 		return ErrAddonNotFound
 	}
 	if rec.Status == string(StatusActive) {
 		return nil
 	}
-	if err := m.db.SetAddonStatus(ctx, cleanName, string(StatusActive)); err != nil {
+	if err := m.repo.SetAddonStatus(ctx, cleanName, string(StatusActive)); err != nil {
 		return err
 	}
 	m.gate.Register(cleanName, parseCapabilitiesString(rec.Capabilities))
@@ -263,17 +280,17 @@ func (m *Manager) Disable(ctx context.Context, name string) error {
 	if err := m.StopRuntime(cleanName); err != nil {
 		return err
 	}
-	if m.db == nil {
+	if m.repo == nil {
 		return nil
 	}
-	rec, err := m.db.GetAddon(ctx, cleanName)
+	rec, err := m.repo.GetAddon(ctx, cleanName)
 	if err != nil || rec == nil {
 		return ErrAddonNotFound
 	}
 	if rec.Status == string(StatusDisabled) {
 		return nil
 	}
-	if err := m.db.SetAddonStatus(ctx, cleanName, string(StatusDisabled)); err != nil {
+	if err := m.repo.SetAddonStatus(ctx, cleanName, string(StatusDisabled)); err != nil {
 		return err
 	}
 	m.gate.Unregister(cleanName)
@@ -281,18 +298,18 @@ func (m *Manager) Disable(ctx context.Context, name string) error {
 	return nil
 }
 
-func (m *Manager) List(ctx context.Context) ([]*database.AddonRecord, error) {
-	if m.db == nil {
+func (m *Manager) List(ctx context.Context) ([]*AddonRecord, error) {
+	if m.repo == nil {
 		return nil, nil
 	}
-	return m.db.ListAddons(ctx)
+	return m.repo.ListAddons(ctx)
 }
 
-func (m *Manager) Get(ctx context.Context, name string) (*database.AddonRecord, error) {
-	if m.db == nil {
+func (m *Manager) Get(ctx context.Context, name string) (*AddonRecord, error) {
+	if m.repo == nil {
 		return nil, ErrAddonNotFound
 	}
-	rec, err := m.db.GetAddon(ctx, name)
+	rec, err := m.repo.GetAddon(ctx, name)
 	if err != nil || rec == nil {
 		return nil, ErrAddonNotFound
 	}

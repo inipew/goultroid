@@ -192,7 +192,7 @@ func TestEngine_LifecycleAndTasks(t *testing.T) {
 	}
 
 	// 3. Stop engine
-	if err := engine.Stop(); err != nil {
+	if err := engine.Stop(context.Background()); err != nil {
 		t.Fatalf("failed to stop engine: %v", err)
 	}
 }
@@ -220,7 +220,7 @@ func TestEngine_ScheduleOnceAndRecurring(t *testing.T) {
 
 	ctx := context.Background()
 	_ = engine.Start(ctx)
-	defer engine.Stop()
+	defer func() { _ = engine.Stop(context.Background()) }()
 
 	chatID := int64(8888)
 
@@ -371,7 +371,7 @@ func TestExecuteCommand_ThroughMiddleware(t *testing.T) {
 
 	ctx := context.Background()
 	_ = engine.Start(ctx)
-	defer engine.Stop()
+	defer func() { _ = engine.Stop(context.Background()) }()
 
 	// Scheduling a panicking command must NOT crash the bot; RecoveryMiddleware catches it
 	_, err = engine.ScheduleOnce(ctx, 1234, "chat", 0, time.Now().Add(-10*time.Millisecond), ActionCommand, ".paniccmd", 1001)

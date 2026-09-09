@@ -12,7 +12,6 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/database"
 	"go.uber.org/zap"
 )
 
@@ -76,7 +75,7 @@ type ServiceStats struct {
 
 // Service manages event logging to a private log group or channel.
 type Service struct {
-	db      *database.DB
+	repo    Repository
 	svc     core.TelegramServicer
 	svcFunc func() core.TelegramServicer
 	logger  *zap.Logger
@@ -94,12 +93,12 @@ type Service struct {
 }
 
 // NewService creates a new UserLog service instance.
-func NewService(db *database.DB, svc any, logger *zap.Logger) *Service {
+func NewService(repo Repository, svc any, logger *zap.Logger) *Service {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 	s := &Service{
-		db:     db,
+		repo:   repo,
 		logger: logger,
 	}
 	switch v := svc.(type) {
@@ -180,7 +179,7 @@ func (s *Service) SetDestination(ctx context.Context, dest LogDestination) error
 	if err != nil {
 		return fmt.Errorf("marshal log destination: %w", err)
 	}
-	if err := s.db.SetUserLogSetting(ctx, SettingLogDestination, string(data)); err != nil {
+	if err := s.repo.SetUserLogSetting(ctx, SettingLogDestination, string(data)); err != nil {
 		return err
 	}
 
@@ -189,7 +188,7 @@ func (s *Service) SetDestination(ctx context.Context, dest LogDestination) error
 	if dest.Type == LogDestinationChannel {
 		legacyID = -dest.ID
 	}
-	_ = s.db.SetUserLogSetting(ctx, SettingLogChatID, strconv.FormatInt(legacyID, 10))
+	_ = s.repo.SetUserLogSetting(ctx, SettingLogChatID, strconv.FormatInt(legacyID, 10))
 
 	s.mu.Lock()
 	s.cachedDest = &dest
@@ -199,8 +198,8 @@ func (s *Service) SetDestination(ctx context.Context, dest LogDestination) error
 
 // ClearDestination removes configured destination.
 func (s *Service) ClearDestination(ctx context.Context) error {
-	_ = s.db.SetUserLogSetting(ctx, SettingLogDestination, "")
-	_ = s.db.SetUserLogSetting(ctx, SettingLogChatID, "")
+	_ = s.repo.SetUserLogSetting(ctx, SettingLogDestination, "")
+	_ = s.repo.SetUserLogSetting(ctx, SettingLogChatID, "")
 	s.mu.Lock()
 	s.cachedDest = nil
 	s.mu.Unlock()
@@ -217,7 +216,7 @@ func (s *Service) GetDestination(ctx context.Context) (*LogDestination, error) {
 	}
 	s.mu.RUnlock()
 
-	val, err := s.db.GetUserLogSetting(ctx, SettingLogDestination)
+	val, err := s.repo.GetUserLogSetting(ctx, SettingLogDestination)
 	if err != nil {
 		return nil, fmt.Errorf("get user log destination: %w", err)
 	}
@@ -232,7 +231,7 @@ func (s *Service) GetDestination(ctx context.Context) (*LogDestination, error) {
 	}
 
 	// Fallback to legacy SettingLogChatID
-	chatVal, err := s.db.GetUserLogSetting(ctx, SettingLogChatID)
+	chatVal, err := s.repo.GetUserLogSetting(ctx, SettingLogChatID)
 	if err != nil {
 		return nil, fmt.Errorf("get legacy log chat: %w", err)
 	}
@@ -330,12 +329,12 @@ func (s *Service) SetFeatureEnabled(ctx context.Context, feature string, enabled
 	if enabled {
 		val = "true"
 	}
-	return s.db.SetUserLogSetting(ctx, feature, val)
+	return s.repo.SetUserLogSetting(ctx, feature, val)
 }
 
 // IsFeatureEnabled returns whether a log category is active (defaults to true if log chat configured).
 func (s *Service) IsFeatureEnabled(ctx context.Context, feature string) (bool, error) {
-	val, err := s.db.GetUserLogSetting(ctx, feature)
+	val, err := s.repo.GetUserLogSetting(ctx, feature)
 	if err != nil {
 		return false, err
 	}

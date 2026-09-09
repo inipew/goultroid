@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/inipew/goultroid/internal/platform/process"
 	"go.uber.org/zap"
 )
 
@@ -70,6 +71,8 @@ type ExternalRuntime struct {
 	manifest   Manifest
 	broker     *CapabilityBroker
 	executable string
+	procMgr    *process.Manager
+	procID     string
 	cmd        *exec.Cmd
 	stdin      io.WriteCloser
 	stdout     *bufio.Reader
@@ -88,6 +91,12 @@ func (r *ExternalRuntime) SetLogger(logger *zap.Logger) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.logger = logger
+}
+
+func (r *ExternalRuntime) SetProcessManager(pm *process.Manager) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.procMgr = pm
 }
 
 func (r *ExternalRuntime) Manifest() Manifest { return r.manifest }
@@ -137,12 +146,25 @@ func (r *ExternalRuntime) Start(ctx context.Context) error {
 		r.mu.Unlock()
 		return fmt.Errorf("addon stderr: %w", err)
 	}
-	if err := cmd.Start(); err != nil {
-		_ = stdin.Close()
-		_ = stdout.Close()
-		_ = stderrPipe.Close()
-		r.mu.Unlock()
-		return fmt.Errorf("start addon: %w", err)
+
+	if r.procMgr != nil {
+		procID, err := r.procMgr.StartCmd(ctx, "addon:"+r.manifest.Name, cmd)
+		if err != nil {
+			_ = stdin.Close()
+			_ = stdout.Close()
+			_ = stderrPipe.Close()
+			r.mu.Unlock()
+			return fmt.Errorf("start addon via process manager: %w", err)
+		}
+		r.procID = procID
+	} else {
+		if err := cmd.Start(); err != nil {
+			_ = stdin.Close()
+			_ = stdout.Close()
+			_ = stderrPipe.Close()
+			r.mu.Unlock()
+			return fmt.Errorf("start addon: %w", err)
+		}
 	}
 
 	go func() {
@@ -291,6 +313,10 @@ func (r *ExternalRuntime) Stop() error {
 		return err
 	}
 	_ = cmd.Wait()
+	if r.procMgr != nil && r.procID != "" {
+		r.procMgr.ReleaseCmd(r.procID)
+		r.procID = ""
+	}
 	return nil
 }
 

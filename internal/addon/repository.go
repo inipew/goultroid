@@ -1,4 +1,4 @@
-package database
+package addon
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/inipew/goultroid/internal/database"
 )
 
 // AddonRecord represents an installed external addon in the persistent registry.
@@ -23,20 +25,66 @@ type AddonRecord struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+// Repository defines persistence operations for addon records.
+type Repository interface {
+	InitSchema(ctx context.Context) error
+	GetAddon(ctx context.Context, name string) (*AddonRecord, error)
+	ListAddons(ctx context.Context) ([]*AddonRecord, error)
+	SaveAddon(ctx context.Context, rec *AddonRecord) error
+	DeleteAddon(ctx context.Context, name string) error
+	SetAddonStatus(ctx context.Context, name, status string) error
+}
+
+// SQLiteRepository implements Repository backed by SQLExecutor.
+type SQLiteRepository struct {
+	db database.SQLExecutor
+}
+
+// NewSQLiteRepository creates a new SQLiteRepository.
+func NewSQLiteRepository(db database.SQLExecutor) *SQLiteRepository {
+	return &SQLiteRepository{db: db}
+}
+
+var _ Repository = (*SQLiteRepository)(nil)
+
+// InitSchema ensures the addon_registry table and indexes exist.
+func (r *SQLiteRepository) InitSchema(ctx context.Context) error {
+	query := `
+	CREATE TABLE IF NOT EXISTS addon_registry (
+		name TEXT PRIMARY KEY,
+		version TEXT NOT NULL,
+		description TEXT NOT NULL DEFAULT '',
+		author TEXT NOT NULL DEFAULT '',
+		source_url TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT 'active',
+		capabilities TEXT NOT NULL DEFAULT '',
+		min_version TEXT NOT NULL DEFAULT '',
+		installed_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_addon_registry_status ON addon_registry(status);
+	`
+	_, err := r.db.ExecContext(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to init addon_registry schema: %w", err)
+	}
+	return nil
+}
+
 // GetAddon retrieves an addon record by name.
-func (d *DB) GetAddon(ctx context.Context, name string) (*AddonRecord, error) {
+func (r *SQLiteRepository) GetAddon(ctx context.Context, name string) (*AddonRecord, error) {
 	query := `
 	SELECT name, version, description, author, source_url, status, capabilities, min_version, installed_at, updated_at
 	FROM addon_registry
 	WHERE name = ?
 	`
 	cleanName := strings.ToLower(strings.TrimSpace(name))
-	row := d.QueryRowContext(ctx, query, cleanName)
+	row := r.db.QueryRowContext(ctx, query, cleanName)
 
-	var r AddonRecord
+	var rec AddonRecord
 	err := row.Scan(
-		&r.Name, &r.Version, &r.Description, &r.Author, &r.SourceURL,
-		&r.Status, &r.Capabilities, &r.MinVersion, &r.InstalledAt, &r.UpdatedAt,
+		&rec.Name, &rec.Version, &rec.Description, &rec.Author, &rec.SourceURL,
+		&rec.Status, &rec.Capabilities, &rec.MinVersion, &rec.InstalledAt, &rec.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -44,17 +92,17 @@ func (d *DB) GetAddon(ctx context.Context, name string) (*AddonRecord, error) {
 		}
 		return nil, fmt.Errorf("failed to get addon %q: %w", name, err)
 	}
-	return &r, nil
+	return &rec, nil
 }
 
 // ListAddons returns all registered addons ordered by name ascending.
-func (d *DB) ListAddons(ctx context.Context) ([]*AddonRecord, error) {
+func (r *SQLiteRepository) ListAddons(ctx context.Context) ([]*AddonRecord, error) {
 	query := `
 	SELECT name, version, description, author, source_url, status, capabilities, min_version, installed_at, updated_at
 	FROM addon_registry
 	ORDER BY name ASC
 	`
-	rows, err := d.QueryContext(ctx, query)
+	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query addons: %w", err)
 	}
@@ -62,20 +110,20 @@ func (d *DB) ListAddons(ctx context.Context) ([]*AddonRecord, error) {
 
 	var records []*AddonRecord
 	for rows.Next() {
-		var r AddonRecord
+		var rec AddonRecord
 		if err := rows.Scan(
-			&r.Name, &r.Version, &r.Description, &r.Author, &r.SourceURL,
-			&r.Status, &r.Capabilities, &r.MinVersion, &r.InstalledAt, &r.UpdatedAt,
+			&rec.Name, &rec.Version, &rec.Description, &rec.Author, &rec.SourceURL,
+			&rec.Status, &rec.Capabilities, &rec.MinVersion, &rec.InstalledAt, &rec.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan addon row: %w", err)
 		}
-		records = append(records, &r)
+		records = append(records, &rec)
 	}
 	return records, rows.Err()
 }
 
 // SaveAddon creates or updates an addon registration.
-func (d *DB) SaveAddon(ctx context.Context, rec *AddonRecord) error {
+func (r *SQLiteRepository) SaveAddon(ctx context.Context, rec *AddonRecord) error {
 	query := `
 	INSERT INTO addon_registry (name, version, description, author, source_url, status, capabilities, min_version, installed_at, updated_at)
 	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -96,7 +144,7 @@ func (d *DB) SaveAddon(ctx context.Context, rec *AddonRecord) error {
 		installed = rec.InstalledAt.UTC()
 	}
 
-	_, err := d.ExecContext(
+	_, err := r.db.ExecContext(
 		ctx, query,
 		cleanName, rec.Version, rec.Description, rec.Author, rec.SourceURL,
 		rec.Status, rec.Capabilities, rec.MinVersion, installed, now,
@@ -108,21 +156,21 @@ func (d *DB) SaveAddon(ctx context.Context, rec *AddonRecord) error {
 }
 
 // DeleteAddon removes an addon from the registry.
-func (d *DB) DeleteAddon(ctx context.Context, name string) error {
+func (r *SQLiteRepository) DeleteAddon(ctx context.Context, name string) error {
 	query := `DELETE FROM addon_registry WHERE name = ?`
 	cleanName := strings.ToLower(strings.TrimSpace(name))
-	if _, err := d.ExecContext(ctx, query, cleanName); err != nil {
+	if _, err := r.db.ExecContext(ctx, query, cleanName); err != nil {
 		return fmt.Errorf("failed to delete addon %q: %w", cleanName, err)
 	}
 	return nil
 }
 
 // SetAddonStatus updates the active/disabled status of an addon.
-func (d *DB) SetAddonStatus(ctx context.Context, name, status string) error {
+func (r *SQLiteRepository) SetAddonStatus(ctx context.Context, name, status string) error {
 	query := `UPDATE addon_registry SET status = ?, updated_at = ? WHERE name = ?`
 	cleanName := strings.ToLower(strings.TrimSpace(name))
 	now := time.Now().UTC()
-	res, err := d.ExecContext(ctx, query, status, now, cleanName)
+	res, err := r.db.ExecContext(ctx, query, status, now, cleanName)
 	if err != nil {
 		return fmt.Errorf("failed to update addon status %q: %w", cleanName, err)
 	}

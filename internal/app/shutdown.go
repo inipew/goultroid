@@ -33,16 +33,6 @@ func (a *App) Shutdown(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("assistant: %w", err))
 		}
 	}
-	if a.client != nil && a.client.Dispatcher() != nil {
-		if err := a.client.Dispatcher().Stop(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			errs = append(errs, fmt.Errorf("dispatcher: %w", err))
-		}
-	}
-	if a.sched != nil {
-		if err := a.sched.Stop(); err != nil {
-			errs = append(errs, fmt.Errorf("scheduler: %w", err))
-		}
-	}
 	if a.settingsService != nil {
 		a.settingsService.Stop()
 	}
@@ -50,24 +40,6 @@ func (a *App) Shutdown(ctx context.Context) error {
 		if err := a.addonMgr.ShutdownRuntimes(); err != nil {
 			errs = append(errs, fmt.Errorf("addon runtimes: %w", err))
 		}
-	}
-	if a.plugins != nil {
-		if err := a.plugins.ShutdownWithContext(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			errs = append(errs, fmt.Errorf("plugins: %w", err))
-		}
-	}
-	if a.eventBus != nil {
-		if err := a.eventBus.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("event bus: %w", err))
-		}
-	}
-	if a.workers != nil {
-		if err := a.workers.Stop(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			errs = append(errs, fmt.Errorf("workers: %w", err))
-		}
-	}
-	if a.idemp != nil {
-		a.idemp.Close()
 	}
 	if a.callbackStore != nil {
 		a.callbackStore.Stop()
@@ -78,6 +50,14 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if a.limiter != nil {
 		if err := a.limiter.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("rate limiter: %w", err))
+		}
+	}
+	if a.idemp != nil {
+		a.idemp.Close()
+	}
+	if a.runtime != nil {
+		if err := a.runtime.Stop(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			errs = append(errs, fmt.Errorf("runtime: %w", err))
 		}
 	}
 	if a.db != nil {

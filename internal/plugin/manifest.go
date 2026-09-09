@@ -20,6 +20,7 @@ const (
 	CapWorkers   = "workers"
 	CapEvents    = "events"
 	CapTasks     = "tasks"
+	CapJobs      = "jobs"
 
 	CapHTTP      = "network.http"
 	CapWebSocket = "network.websocket"

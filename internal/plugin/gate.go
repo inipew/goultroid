@@ -38,6 +38,16 @@ func (g *CapabilityGate) RegisterManifest(m Manifest) error {
 	return nil
 }
 
+// Register registers a plugin ID with a list of capabilities.
+func (g *CapabilityGate) Register(pluginID string, capabilities []string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	m := g.manifests[pluginID]
+	m.ID = pluginID
+	m.Capabilities = capabilities
+	g.manifests[pluginID] = m
+}
+
 // AllowPrivileged grants explicit runtime permission for a privileged capability to a plugin.
 func (g *CapabilityGate) AllowPrivileged(pluginID, capName string) {
 	g.mu.Lock()

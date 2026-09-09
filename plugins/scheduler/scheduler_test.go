@@ -109,8 +109,8 @@ func (m *mockSchedulerService) JobHistoryScoped(ctx context.Context, requesterID
 	}
 	return m.JobHistory(ctx, jobID, limit)
 }
-func (m *mockSchedulerService) Start(ctx context.Context) error { return nil }
-func (m *mockSchedulerService) Stop() error                     { return nil }
+func (m *mockSchedulerService) Start(ctx context.Context) error        { return nil }
+func (m *mockSchedulerService) Stop(ctx context.Context) error         { return nil }
 
 type mockTelegramServicer struct {
 	core.MockTelegramServicer

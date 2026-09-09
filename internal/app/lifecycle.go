@@ -14,14 +14,12 @@ func (a *App) startBackgroundServices(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if a.workers != nil {
-		if err := a.workers.Start(ctx); err != nil {
-			return fmt.Errorf("worker manager: %w", err)
-		}
+	if a.client != nil && a.client.Dispatcher() != nil {
+		a.client.Dispatcher().SetRootContext(ctx)
 	}
-	if a.eventBus != nil {
-		if err := a.eventBus.Start(ctx); err != nil {
-			return fmt.Errorf("event bus: %w", err)
+	if a.runtime != nil {
+		if err := a.runtime.Start(ctx); err != nil {
+			return fmt.Errorf("runtime: %w", err)
 		}
 	}
 	if a.settingsService != nil {
@@ -32,32 +30,6 @@ func (a *App) startBackgroundServices(ctx context.Context) error {
 	}
 	if a.inlineEngine != nil && a.inlineEngine.Cache() != nil {
 		a.inlineEngine.Cache().Start(ctx)
-	}
-	if a.client != nil && a.client.Dispatcher() != nil {
-		a.client.Dispatcher().SetRootContext(ctx)
-		a.client.Dispatcher().Start(ctx)
-	}
-	if a.sched != nil {
-		if a.client != nil && a.client.Ready() != nil {
-			go func() {
-				select {
-				case <-ctx.Done():
-					return
-				case <-a.client.Ready():
-				}
-				if err := a.sched.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
-					a.logger.Warn("scheduler failed to start after Telegram readiness gate", zap.Error(err))
-				} else {
-					a.logger.Info("scheduler engine started after Telegram readiness gate")
-				}
-			}()
-		} else {
-			go func() {
-				if err := a.sched.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
-					a.logger.Warn("scheduler engine stopped with error", zap.Error(err))
-				}
-			}()
-		}
 	}
 	if a.assistant != nil {
 		go func() {

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,6 +15,9 @@ import (
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
+	"github.com/inipew/goultroid/internal/platform/filesystem"
+	"github.com/inipew/goultroid/internal/platform/network"
+	"github.com/inipew/goultroid/internal/plugin"
 )
 
 const defaultEndpoint = "https://api.ocr.space/parse/image"
@@ -33,49 +35,84 @@ var supportedLanguages = map[string]struct{}{
 	"spa": {}, "swe": {}, "tur": {}, "ukr": {}, "vie": {},
 }
 
-// HTTPDoer abstracts HTTP requests for plugins.
-type HTTPDoer interface {
-	Do(req *http.Request) (*http.Response, error)
-}
-
 type Plugin struct {
 	apiKey, endpoint string
-	client           HTTPDoer
+	http             *network.Service
+	files            *filesystem.Manager
 }
 
 func New() *Plugin {
 	return &Plugin{
 		apiKey:   strings.TrimSpace(os.Getenv("OCR_API")),
 		endpoint: defaultEndpoint,
-		client:   &http.Client{Timeout: 90 * time.Second},
 	}
 }
 
-func (p *Plugin) SetClient(c HTTPDoer) {
-	if c != nil {
-		p.client = c
+func (p *Plugin) Init() error { return nil }
+
+func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
+	netSvc, err := pctx.HTTP()
+	if err != nil {
+		return err
 	}
+	p.http = netSvc
+
+	fsMgr, err := pctx.Files()
+	if err != nil {
+		return err
+	}
+	p.files = fsMgr
+	return nil
+}
+
+func (p *Plugin) SetHTTP(svc *network.Service) {
+	p.http = svc
+}
+
+func (p *Plugin) SetFiles(fs *filesystem.Manager) {
+	p.files = fs
+}
+
+func (p *Plugin) getHTTP() *network.Service {
+	if p.http == nil {
+		p.http = network.NewService(nil, nil)
+	}
+	return p.http
+}
+
+func (p *Plugin) getFiles() *filesystem.Manager {
+	if p.files == nil {
+		p.files, _ = filesystem.NewManager("data", "", "", nil)
+	}
+	return p.files
 }
 
 func (p *Plugin) Name() string { return "ocr" }
+
 func (p *Plugin) Description() string {
-	return "Extract text from a replied Telegram image using OCR.Space"
+	return "Extract text from a replied image using OCR.Space"
 }
-func (p *Plugin) Init() error {
-	if p.client == nil {
-		p.client = &http.Client{Timeout: 90 * time.Second}
-	}
-	if p.endpoint == "" {
-		p.endpoint = defaultEndpoint
-	}
-	return nil
-}
-func (p *Plugin) Shutdown() error { return nil }
+
 func (p *Plugin) Capabilities() []execution.Capability {
-	return []execution.Capability{{ID: "ocr", Name: "OCR", Description: "Optical character recognition for images", Category: "Media", Surfaces: execution.SurfaceUserbot}}
+	return []execution.Capability{{
+		ID:          "ocr",
+		Name:        "Optical Character Recognition",
+		Description: "Extract text from replied image media",
+		Category:    "Media",
+		Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
+	}}
 }
+
 func (p *Plugin) Commands() []core.Command {
-	return []core.Command{{Name: "ocr", Description: "Recognize text from a replied image", Usage: ".ocr [language] (reply to photo/image)", Category: "Media", Permission: core.PermissionSudo, Surfaces: execution.SurfaceUserbot, Timeout: 2 * time.Minute, Handler: p.handle}}
+	return []core.Command{{
+		Name:        "ocr",
+		Description: "Extract text from a replied photo or image document",
+		Usage:       ".ocr [language]",
+		Category:    "Media",
+		Permission:  core.PermissionEveryone,
+		Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
+		Handler:     p.handle,
+	}}
 }
 
 func (p *Plugin) handle(ctx *core.Context) error {
@@ -99,11 +136,12 @@ func (p *Plugin) handle(ctx *core.Context) error {
 	}
 
 	_ = ctx.EditOrReply("⏳ Processing OCR...")
-	dir, err := os.MkdirTemp("", "goultroid-ocr-*")
+	files := p.getFiles()
+	dir, err := files.CreateTempDir("ocr", "goultroid-ocr-*")
 	if err != nil {
 		return fmt.Errorf("create OCR temp directory: %w", err)
 	}
-	defer os.RemoveAll(dir)
+	defer files.RemoveTempDir(dir)
 
 	path, err := ctx.DownloadMedia(dir)
 	if err != nil {
@@ -150,9 +188,6 @@ type response struct {
 func (p *Plugin) extract(ctx context.Context, path, language string) (string, error) {
 	if !validLanguage(language) {
 		return "", fmt.Errorf("unsupported OCR language %q", language)
-	}
-	if p.client == nil {
-		p.client = &http.Client{Timeout: 90 * time.Second}
 	}
 
 	var lastErr error
@@ -209,21 +244,18 @@ func (p *Plugin) extractOnce(ctx context.Context, path, language string) (string
 		return "", false, 0, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint, &body)
-	if err != nil {
-		return "", false, 0, err
-	}
-	req.Header.Set("apikey", p.apiKey)
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	resp, err := p.client.Do(req)
+	httpSvc := p.getHTTP()
+	resp, err := httpSvc.Post(ctx, "ocr", p.endpoint, mw.FormDataContentType(), &body, map[string]string{
+		"apikey": p.apiKey,
+	})
 	if err != nil {
 		return "", true, 0, err
 	}
-	defer resp.Body.Close()
+	defer resp.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		retryable := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
+		retryable := resp.StatusCode == network.StatusTooManyRequests || resp.StatusCode >= 500
 		return "", retryable, retryAfter(resp), fmt.Errorf("OCR service returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 
@@ -247,7 +279,10 @@ func (p *Plugin) extractOnce(ctx context.Context, path, language string) (string
 	return sb.String(), false, 0, nil
 }
 
-func retryAfter(resp *http.Response) time.Duration {
+func retryAfter(resp *network.Response) time.Duration {
+	if resp == nil {
+		return 0
+	}
 	value := strings.TrimSpace(resp.Header.Get("Retry-After"))
 	if value == "" {
 		return 0
@@ -255,7 +290,7 @@ func retryAfter(resp *http.Response) time.Duration {
 	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
 		return time.Duration(seconds) * time.Second
 	}
-	if when, err := http.ParseTime(value); err == nil {
+	if when, err := time.Parse(time.RFC1123, value); err == nil {
 		if d := time.Until(when); d > 0 {
 			return d
 		}

@@ -15,6 +15,7 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
+	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/process"
 )
@@ -33,8 +34,29 @@ type Plugin struct {
 	restartFunc      func(state RestartState) error
 	cmdRunner        func(ctx context.Context, name string, args ...string) ([]byte, error)
 	runner           process.Runner
+	files            *filesystem.Manager
 	startTime        time.Time
 	metrics          core.MetricsCollector
+}
+
+func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
+	fsMgr, err := pctx.Files()
+	if err != nil {
+		return err
+	}
+	p.files = fsMgr
+	return nil
+}
+
+func (p *Plugin) SetFiles(fs *filesystem.Manager) {
+	p.files = fs
+}
+
+func (p *Plugin) getFiles() *filesystem.Manager {
+	if p.files == nil {
+		p.files, _ = filesystem.NewManager("data", "", "", nil)
+	}
+	return p.files
 }
 
 func New() *Plugin {
@@ -141,11 +163,12 @@ func (p *Plugin) handleExec(ctx *core.Context) error {
 		sb.WriteString(fmt.Sprintf("<pre><code class=\"language-bash\">%s</code></pre>", escapeHTML(output)))
 		return ctx.EditOrReply(sb.String())
 	}
-	tmpFile, tmpErr := os.CreateTemp("", "exec-output-*.txt")
+	files := p.getFiles()
+	tmpFile, tmpErr := files.CreateTempFile("system", "exec-output-*.txt")
 	if tmpErr != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temp file for large output: %v", tmpErr))
 	}
-	defer os.Remove(tmpFile.Name())
+	defer files.RemoveTempFile(tmpFile.Name())
 	_, _ = tmpFile.WriteString(fmt.Sprintf("Command: %s\nDuration: %s\n\nOutput:\n%s", commandStr, elapsed, output))
 	_ = tmpFile.Close()
 	caption := fmt.Sprintf("📄 <b>Execution Output</b> (<code>%s</code>, took <i>%s</i>)", escapeHTML(commandStr), elapsed.Round(time.Millisecond))

@@ -45,8 +45,9 @@ func setupTestDB(t *testing.T) *database.DB {
 
 func TestUserLogService_Basic(t *testing.T) {
 	db := setupTestDB(t)
+	repo := userlog.NewSQLiteRepository(db)
 	mockTG := &mockTelegram{}
-	svc := userlog.NewService(db, mockTG, zap.NewNop())
+	svc := userlog.NewService(repo, mockTG, zap.NewNop())
 
 	ctx := context.Background()
 
@@ -95,8 +96,9 @@ func TestUserLogService_Basic(t *testing.T) {
 
 func TestUserLogService_StructuredDestination(t *testing.T) {
 	db := setupTestDB(t)
+	repo := userlog.NewSQLiteRepository(db)
 	mockTG := &mockTelegram{}
-	svc := userlog.NewService(db, mockTG, zap.NewNop())
+	svc := userlog.NewService(repo, mockTG, zap.NewNop())
 	ctx := context.Background()
 
 	dest := userlog.LogDestination{
@@ -142,12 +144,13 @@ func TestUserLogService_StructuredDestination(t *testing.T) {
 
 func TestUserLogService_LegacyFallback(t *testing.T) {
 	db := setupTestDB(t)
+	repo := userlog.NewSQLiteRepository(db)
 	mockTG := &mockTelegram{}
-	svc := userlog.NewService(db, mockTG, zap.NewNop())
+	svc := userlog.NewService(repo, mockTG, zap.NewNop())
 	ctx := context.Background()
 
 	// Simulate legacy database row: log_chat_id = -1001888888888
-	if err := db.SetUserLogSetting(ctx, userlog.SettingLogChatID, "-1001888888888"); err != nil {
+	if err := repo.SetUserLogSetting(ctx, userlog.SettingLogChatID, "-1001888888888"); err != nil {
 		t.Fatalf("failed to insert legacy setting: %v", err)
 	}
 
@@ -165,8 +168,9 @@ func TestUserLogService_LegacyFallback(t *testing.T) {
 
 func TestUserLogService_UnicodeRuneTruncation(t *testing.T) {
 	db := setupTestDB(t)
+	repo := userlog.NewSQLiteRepository(db)
 	mockTG := &mockTelegram{}
-	svc := userlog.NewService(db, mockTG, zap.NewNop())
+	svc := userlog.NewService(repo, mockTG, zap.NewNop())
 	ctx := context.Background()
 
 	_ = svc.SetDestination(ctx, userlog.LogDestination{Type: userlog.LogDestinationChat, ID: 777})
@@ -184,8 +188,9 @@ func TestUserLogService_UnicodeRuneTruncation(t *testing.T) {
 
 func TestUserLogService_DeliveryHealthAndStats(t *testing.T) {
 	db := setupTestDB(t)
+	repo := userlog.NewSQLiteRepository(db)
 	mockTG := &mockTelegram{}
-	svc := userlog.NewService(db, mockTG, zap.NewNop())
+	svc := userlog.NewService(repo, mockTG, zap.NewNop())
 	ctx := context.Background()
 
 	// 1. Initially unconfigured

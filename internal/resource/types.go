@@ -12,6 +12,7 @@ const (
 	TypeGoroutine    = "goroutine"
 	TypeProcess      = "process"
 	TypeTempFile     = "temp_file"
+	TypeTempDir      = "temp_dir"
 	TypeWebSocket    = "websocket"
 	TypeLock         = "lock"
 	TypeHTTPSession  = "http_session"

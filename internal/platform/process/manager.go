@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -107,4 +108,40 @@ func (m *Manager) Execute(ctx context.Context, owner, binary string, args ...str
 	}
 
 	return stdout.Bytes(), stderr.Bytes(), nil
+}
+
+// StartCmd starts a prepared exec.Cmd and registers it in the ResourceManager.
+// It returns the generated process ID that must be released upon termination.
+func (m *Manager) StartCmd(ctx context.Context, owner string, cmd *exec.Cmd) (string, error) {
+	if cmd == nil {
+		return "", errors.New("exec.Cmd cannot be nil")
+	}
+	binary := filepath.Base(cmd.Path)
+	procID := fmt.Sprintf("process:%s:%s:%d", owner, binary, m.procCounter.Add(1))
+	if m.resourceMgr != nil {
+		_ = m.resourceMgr.Register(resource.Resource{
+			ID:        procID,
+			Owner:     owner,
+			Type:      resource.TypeProcess,
+			CreatedAt: time.Now().UTC(),
+			Metadata: map[string]string{
+				"binary": binary,
+			},
+		})
+	}
+
+	if err := cmd.Start(); err != nil {
+		if m.resourceMgr != nil {
+			_ = m.resourceMgr.Release(procID)
+		}
+		return "", err
+	}
+	return procID, nil
+}
+
+// ReleaseCmd releases a process registration from the ResourceManager.
+func (m *Manager) ReleaseCmd(procID string) {
+	if m.resourceMgr != nil && procID != "" {
+		_ = m.resourceMgr.Release(procID)
+	}
 }

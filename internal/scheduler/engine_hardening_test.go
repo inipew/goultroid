@@ -58,7 +58,7 @@ func TestEngine_BoundedConcurrency(t *testing.T) {
 	}
 
 	_ = engine.Start(ctx)
-	defer engine.Stop()
+	defer func() { _ = engine.Stop(context.Background()) }()
 
 	// Wait for jobs to process across multiple ticks
 	time.Sleep(800 * time.Millisecond)

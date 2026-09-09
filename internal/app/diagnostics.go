@@ -4,6 +4,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/inipew/goultroid/internal/jobs"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/media"
 	processSvc "github.com/inipew/goultroid/internal/services/process"
@@ -21,6 +22,7 @@ type DiagnosticsSnapshot struct {
 	Plugins       []PluginDiagnostics
 	Media         media.DiagnosticsSnapshot
 	Process       processSvc.DiagnosticsSnapshot
+	Jobs          jobs.Diagnostics
 }
 
 type EventBusDiagnostics struct {
@@ -103,6 +105,9 @@ func (a *App) Diagnostics() DiagnosticsSnapshot {
 	}
 	if a.processRunner != nil {
 		snapshot.Process = a.processRunner.Diagnostics()
+	}
+	if a.jobs != nil {
+		snapshot.Jobs = a.jobs.Diagnostics()
 	}
 	return snapshot
 }

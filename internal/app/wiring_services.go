@@ -58,10 +58,12 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 	pmpermitService.SetEventBus(core.eventBus)
 
 	broadcastService := broadcastSvc.NewService(tg.client.Service, logger)
-	userlogService := userlogSvc.NewService(core.db, tg.client.Service, logger)
+	userlogRepo := userlogSvc.NewSQLiteRepository(core.db)
+	userlogService := userlogSvc.NewService(userlogRepo, tg.client.Service, logger)
 
 	addonGate := addon.NewCapabilityGate()
-	addonManager := addon.NewManager(core.db, addonGate, "1.0.0", logger)
+	addonRepo := addon.NewSQLiteRepository(core.db)
+	addonManager := addon.NewManager(addonRepo, addonGate, "1.0.0", logger)
 	addonCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	err = addonManager.LoadInstalled(addonCtx)
 	cancel()

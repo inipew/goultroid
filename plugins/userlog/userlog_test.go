@@ -62,8 +62,9 @@ func setupTestDB(t *testing.T) *database.DB {
 
 func TestUserLogPlugin(t *testing.T) {
 	db := setupTestDB(t)
+	repo := userlogSvc.NewSQLiteRepository(db)
 	mockTG := &mockTelegram{}
-	svc := userlogSvc.NewService(db, mockTG, zap.NewNop())
+	svc := userlogSvc.NewService(repo, mockTG, zap.NewNop())
 	p := userlog.New(svc, 12345)
 
 	if p.Name() != "userlog" {
@@ -156,8 +157,9 @@ func TestUserLogPlugin(t *testing.T) {
 
 func TestUserLogPlugin_HandleIncomingMessage(t *testing.T) {
 	db := setupTestDB(t)
+	repo := userlogSvc.NewSQLiteRepository(db)
 	mockTG := &mockTelegram{}
-	svc := userlogSvc.NewService(db, mockTG, zap.NewNop())
+	svc := userlogSvc.NewService(repo, mockTG, zap.NewNop())
 	_ = svc.SetLogChat(context.Background(), 777)
 	p := userlog.New(svc, 12345)
 
@@ -318,8 +320,9 @@ func TestUserLogPlugin_HandleIncomingMessage(t *testing.T) {
 
 func TestUserLogPlugin_AdminActionEvent(t *testing.T) {
 	db := setupTestDB(t)
+	repo := userlogSvc.NewSQLiteRepository(db)
 	mockTG := &mockTelegram{}
-	svc := userlogSvc.NewService(db, mockTG, zap.NewNop())
+	svc := userlogSvc.NewService(repo, mockTG, zap.NewNop())
 	_ = svc.SetLogChat(context.Background(), 777)
 	p := userlog.New(svc, 12345)
 
@@ -354,8 +357,9 @@ func TestUserLogPlugin_AdminActionEvent(t *testing.T) {
 
 func TestUserLogPlugin_PMPermitEvent(t *testing.T) {
 	db := setupTestDB(t)
+	repo := userlogSvc.NewSQLiteRepository(db)
 	mockTG := &mockTelegram{}
-	svc := userlogSvc.NewService(db, mockTG, zap.NewNop())
+	svc := userlogSvc.NewService(repo, mockTG, zap.NewNop())
 	_ = svc.SetLogChat(context.Background(), 777)
 	p := userlog.New(svc, 12345)
 

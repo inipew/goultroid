@@ -15,7 +15,10 @@ import (
 )
 
 const (
-	asyncLogWorkers = 16
+	// asyncLogWorkers is the number of goroutines that drain the log queue.
+	// 4 workers are sufficient for a single Telegram destination; logging is
+	// inherently serial (one chat), so high concurrency adds no throughput.
+	asyncLogWorkers = 4
 	queueCapacity   = 256
 )
 
@@ -30,7 +33,8 @@ type Plugin struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
-	once          sync.Once
+	once          sync.Once      // guards queue close on shutdown
+	startOnce     sync.Once      // guards lazy worker startup
 	subscriptions []*core.Subscription
 	scope         *plugin.Scope
 
@@ -39,14 +43,16 @@ type Plugin struct {
 	droppedCount   atomic.Int64
 }
 
-// New creates an initialized UserLog plugin with a bounded, thread-safe asynchronous worker queue.
+// New creates an initialized UserLog plugin. Workers are NOT spawned here;
+// they start lazily on the first enqueue or explicitly via startWorkers (called
+// by InitScope). This avoids idle goroutines when userlog is not configured.
 func New(svc *userlog.Service, ownerID int64, ownerUsername ...string) *Plugin {
 	ctx, cancel := context.WithCancel(context.Background())
 	username := ""
 	if len(ownerUsername) > 0 {
 		username = strings.TrimPrefix(ownerUsername[0], "@")
 	}
-	p := &Plugin{
+	return &Plugin{
 		svc:           svc,
 		ownerID:       ownerID,
 		ownerUsername: username,
@@ -54,11 +60,17 @@ func New(svc *userlog.Service, ownerID int64, ownerUsername ...string) *Plugin {
 		ctx:           ctx,
 		cancel:        cancel,
 	}
-	p.wg.Add(asyncLogWorkers)
-	for i := 0; i < asyncLogWorkers; i++ {
-		go p.worker()
-	}
-	return p
+}
+
+// startWorkers spawns the async worker goroutines exactly once. It is
+// idempotent and safe to call from multiple goroutines concurrently.
+func (p *Plugin) startWorkers() {
+	p.startOnce.Do(func() {
+		p.wg.Add(asyncLogWorkers)
+		for i := 0; i < asyncLogWorkers; i++ {
+			go p.worker()
+		}
+	})
 }
 
 // SetOwnerUsername configures the owner's Telegram username for @username mention detection.
@@ -141,6 +153,9 @@ func (p *Plugin) enqueue(job func()) {
 	if job == nil {
 		return
 	}
+	// Ensure workers are running before pushing the first job. This is the
+	// lazy-start path for callers that do not go through InitScope (e.g. tests).
+	p.startWorkers()
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if p.closing.Load() {
@@ -198,7 +213,8 @@ func (p *Plugin) Description() string {
 
 func (p *Plugin) Init() error { return nil }
 
-// InitScope binds plugin-owned EventBus subscriptions to the runtime scope.
+// InitScope binds plugin-owned EventBus subscriptions to the runtime scope
+// and starts the async worker goroutines if they have not been started yet.
 // New remains backward compatible for tests and legacy direct construction.
 func (p *Plugin) InitScope(ctx context.Context, scope *plugin.Scope) error {
 	if scope == nil {
@@ -214,6 +230,9 @@ func (p *Plugin) InitScope(ctx context.Context, scope *plugin.Scope) error {
 			return err
 		}
 	}
+	// Start workers here so they use the scope context. The startOnce guard
+	// makes this a no-op if enqueue already triggered the lazy start.
+	p.startWorkers()
 	return nil
 }
 

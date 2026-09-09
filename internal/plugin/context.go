@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/inipew/goultroid/internal/jobs"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/platform/network"
 	"github.com/inipew/goultroid/internal/platform/process"
@@ -24,6 +25,7 @@ type PluginContext interface {
 	Files() (*filesystem.Manager, error)
 	Secrets() (*secret.Manager, error)
 	Tasks() (*tasks.Manager, error)
+	Jobs() (*jobs.Manager, error)
 }
 
 type pluginContext struct {
@@ -36,6 +38,7 @@ type pluginContext struct {
 	files   *filesystem.Manager
 	secrets *secret.Manager
 	tasks   *tasks.Manager
+	jobs    *jobs.Manager
 }
 
 // ContextConfig bundles runtime services provided to a plugin context.
@@ -48,6 +51,7 @@ type ContextConfig struct {
 	Files   *filesystem.Manager
 	Secrets *secret.Manager
 	Tasks   *tasks.Manager
+	Jobs    *jobs.Manager
 }
 
 // NewPluginContext constructs a new PluginContext enforcing capability checks via the gate.
@@ -72,6 +76,7 @@ func NewPluginContext(baseCtx context.Context, cfg ContextConfig) PluginContext 
 		files:   cfg.Files,
 		secrets: cfg.Secrets,
 		tasks:   cfg.Tasks,
+		jobs:    cfg.Jobs,
 	}
 }
 
@@ -105,7 +110,9 @@ func (c *pluginContext) Process() (*process.Manager, error) {
 
 func (c *pluginContext) Files() (*filesystem.Manager, error) {
 	if err := c.gate.Check(c.owner, CapFilesystemData); err != nil {
-		return nil, fmt.Errorf("filesystem data access denied: %w", err)
+		if errTemp := c.gate.Check(c.owner, CapFilesystemTemp); errTemp != nil {
+			return nil, fmt.Errorf("filesystem access denied: requires %s or %s: %w", CapFilesystemData, CapFilesystemTemp, err)
+		}
 	}
 	if c.files == nil {
 		return nil, errors.New("filesystem manager not configured")
@@ -131,4 +138,16 @@ func (c *pluginContext) Tasks() (*tasks.Manager, error) {
 		return nil, errors.New("task manager not configured")
 	}
 	return c.tasks, nil
+}
+
+func (c *pluginContext) Jobs() (*jobs.Manager, error) {
+	if err := c.gate.Check(c.owner, CapJobs); err != nil {
+		if errSched := c.gate.Check(c.owner, CapScheduler); errSched != nil {
+			return nil, fmt.Errorf("jobs access denied: requires %s or %s: %w", CapJobs, CapScheduler, err)
+		}
+	}
+	if c.jobs == nil {
+		return nil, errors.New("jobs manager not configured")
+	}
+	return c.jobs, nil
 }

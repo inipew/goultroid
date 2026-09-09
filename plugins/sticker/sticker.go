@@ -13,17 +13,43 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/platform/filesystem"
+	"github.com/inipew/goultroid/internal/plugin"
 	"golang.org/x/image/draw"
 	"golang.org/x/image/webp"
 	"image/png"
 )
 
 // Plugin provides sticker creation and conversion utilities.
-type Plugin struct{}
+type Plugin struct {
+	files *filesystem.Manager
+}
 
 // New creates a new Sticker plugin.
 func New() *Plugin {
 	return &Plugin{}
+}
+
+// InitPlugin initializes the plugin using capability-gated PluginContext.
+func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
+	fsMgr, err := pctx.Files()
+	if err != nil {
+		return err
+	}
+	p.files = fsMgr
+	return nil
+}
+
+// SetFiles sets the filesystem manager for the plugin.
+func (p *Plugin) SetFiles(fs *filesystem.Manager) {
+	p.files = fs
+}
+
+func (p *Plugin) getFiles() *filesystem.Manager {
+	if p.files == nil {
+		p.files, _ = filesystem.NewManager("data", "", "", nil)
+	}
+	return p.files
 }
 
 // Name returns the plugin identifier.
@@ -76,11 +102,12 @@ func (p *Plugin) handleSticker(ctx *core.Context) error {
 
 	_ = ctx.EditOrReply("⏳ <i>Processing sticker...</i>")
 
-	tmpDir, err := os.MkdirTemp("", "goultroid-sticker-*")
+	files := p.getFiles()
+	tmpDir, err := files.CreateTempDir("sticker", "goultroid-sticker-*")
 	if err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
 	}
-	defer os.RemoveAll(tmpDir)
+	defer files.RemoveTempDir(tmpDir)
 
 	downloadedPath, err := ctx.DownloadMedia(tmpDir)
 	if err != nil {

@@ -8,6 +8,13 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/idempotency"
+	"github.com/inipew/goultroid/internal/jobs"
+	"github.com/inipew/goultroid/internal/platform/audit"
+	"github.com/inipew/goultroid/internal/platform/filesystem"
+	"github.com/inipew/goultroid/internal/platform/network"
+	"github.com/inipew/goultroid/internal/platform/process"
+	"github.com/inipew/goultroid/internal/platform/secret"
+	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/resource"
 	"github.com/inipew/goultroid/internal/scheduler"
 	broadcastSvc "github.com/inipew/goultroid/internal/services/broadcast"
@@ -43,8 +50,15 @@ type coreDependencies struct {
 	interLimiter    *ratelimit.Limiter
 	workerManager   *workers.Manager
 	taskManager     *tasks.Manager
+	jobsManager     *jobs.Manager
 	resourceManager *resource.Manager
 	idempManager    *idempotency.Manager
+	fsManager       *filesystem.Manager
+	procManager     *process.Manager
+	netService      *network.Service
+	secretManager   *secret.Manager
+	auditService    *audit.Service
+	capGate         *plugin.CapabilityGate
 }
 
 // telegramRuntime holds network client, message dispatcher, and optional assistant bot.
@@ -83,6 +97,7 @@ type Dependencies struct {
 	Inline          *inline.Engine
 	WorkerManager   *workers.Manager
 	TaskManager     *tasks.Manager
+	JobsManager     *jobs.Manager
 	ResourceManager *resource.Manager
 }
 

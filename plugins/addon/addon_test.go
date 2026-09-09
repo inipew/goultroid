@@ -43,8 +43,9 @@ func setupTestDB(t *testing.T) *database.DB {
 
 func TestAddonPlugin(t *testing.T) {
 	db := setupTestDB(t)
+	repo := addon.NewSQLiteRepository(db)
 	gate := addon.NewCapabilityGate()
-	mgr := addon.NewManager(db, gate, "1.0.0", zap.NewNop())
+	mgr := addon.NewManager(repo, gate, "1.0.0", zap.NewNop())
 
 	p := pluginAddon.New(mgr)
 	if p.Name() != "addon" {

@@ -5,42 +5,71 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
+	"github.com/inipew/goultroid/internal/platform/network"
+	"github.com/inipew/goultroid/internal/plugin"
 )
 
-// HTTPDoer abstracts HTTP requests for plugins.
-type HTTPDoer interface {
-	Do(req *http.Request) (*http.Response, error)
+type Plugin struct {
+	http *network.Service
 }
 
-type Plugin struct{ client HTTPDoer }
-
-func New() *Plugin                    { return &Plugin{client: &http.Client{Timeout: 20 * time.Second}} }
-func (p *Plugin) Name() string        { return "wikipedia" }
-func (p *Plugin) Description() string { return "Search and summarize Wikipedia articles" }
-func (p *Plugin) SetClient(c HTTPDoer) {
-	if c != nil {
-		p.client = c
-	}
+func New() *Plugin {
+	return &Plugin{}
 }
+
+func (p *Plugin) Name() string {
+	return "wikipedia"
+}
+
+func (p *Plugin) Description() string {
+	return "Search and summarize Wikipedia articles"
+}
+
 func (p *Plugin) Init() error {
-	if p.client == nil {
-		p.client = &http.Client{Timeout: 20 * time.Second}
-	}
 	return nil
 }
-func (p *Plugin) Shutdown() error { return nil }
-func (p *Plugin) Capabilities() []execution.Capability {
-	return []execution.Capability{{ID: "wikipedia", Name: "Wikipedia", Description: "Wikipedia article search and summaries", Category: "Information", Surfaces: execution.SurfaceUserbot | execution.SurfaceAssistant}}
+
+func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
+	svc, err := pctx.HTTP()
+	if err != nil {
+		return err
+	}
+	p.http = svc
+	return nil
 }
+
+func (p *Plugin) SetHTTP(svc *network.Service) {
+	p.http = svc
+}
+
+func (p *Plugin) Shutdown() error { return nil }
+
+func (p *Plugin) Capabilities() []execution.Capability {
+	return []execution.Capability{{
+		ID:          "wikipedia",
+		Name:        "Wikipedia",
+		Description: "Wikipedia article search and summaries",
+		Category:    "Information",
+		Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
+	}}
+}
+
 func (p *Plugin) Commands() []core.Command {
-	return []core.Command{{Name: "wiki", Aliases: []string{"wikipedia"}, Description: "Search Wikipedia and show an article summary", Usage: ".wiki <query>", Category: "Information", Permission: core.PermissionEveryone, Surfaces: execution.SurfaceUserbot | execution.SurfaceAssistant, Handler: p.handle}}
+	return []core.Command{{
+		Name:        "wiki",
+		Aliases:     []string{"wikipedia"},
+		Description: "Search Wikipedia and show an article summary",
+		Usage:       ".wiki <query>",
+		Category:    "Information",
+		Permission:  core.PermissionEveryone,
+		Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
+		Handler:     p.handle,
+	}}
 }
 
 type searchResponse struct {
@@ -48,6 +77,7 @@ type searchResponse struct {
 		Key string `json:"key"`
 	} `json:"pages"`
 }
+
 type summaryResponse struct {
 	Title       string `json:"title"`
 	Description string `json:"description"`
@@ -85,6 +115,7 @@ func (p *Plugin) handle(ctx *core.Context) error {
 	out += "\n\n" + core.EscapeHTML(text)
 	return ctx.EditOrReply(out)
 }
+
 func (p *Plugin) search(ctx context.Context, q string) (string, error) {
 	var out searchResponse
 	u := "https://en.wikipedia.org/w/rest.php/v1/search/page?q=" + url.QueryEscape(q) + "&limit=1"
@@ -96,23 +127,26 @@ func (p *Plugin) search(ctx context.Context, q string) (string, error) {
 	}
 	return out.Pages[0].Key, nil
 }
+
 func (p *Plugin) summary(ctx context.Context, title string) (summaryResponse, error) {
 	var out summaryResponse
 	u := "https://en.wikipedia.org/api/rest_v1/page/summary/" + url.PathEscape(title)
 	return out, p.getJSON(ctx, u, &out)
 }
+
 func (p *Plugin) getJSON(ctx context.Context, endpoint string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if p.http == nil {
+		p.http = network.NewService(nil, nil)
+	}
+	resp, err := p.http.Get(ctx, "wikipedia", endpoint, map[string]string{
+		"User-Agent": "Goultroid/1.0 (Wikipedia plugin)",
+		"Accept":     "application/json",
+	})
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", "Goultroid/1.0 (Wikipedia plugin)")
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	defer resp.Close()
+	if resp.StatusCode != network.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}

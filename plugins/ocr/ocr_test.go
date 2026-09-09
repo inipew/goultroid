@@ -9,6 +9,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/inipew/goultroid/internal/platform/filesystem"
+	"github.com/inipew/goultroid/internal/platform/network"
+	"github.com/inipew/goultroid/internal/plugin"
 )
 
 func TestValidLanguage(t *testing.T) {
@@ -40,10 +44,11 @@ func TestExtractRetriesTransientHTTPFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	netSvc := network.NewService(client, nil)
 	p := &Plugin{
 		apiKey:   "test-key",
 		endpoint: "https://ocr.example.test/parse/image",
-		client:   client,
+		http:     netSvc,
 	}
 	text, err := p.extract(context.Background(), path, "eng")
 	if err != nil {
@@ -54,6 +59,41 @@ func TestExtractRetriesTransientHTTPFailure(t *testing.T) {
 	}
 	if attempts != 2 {
 		t.Fatalf("expected 2 HTTP attempts, got %d", attempts)
+	}
+}
+
+func TestOCRPlugin_InitPluginCapabilities(t *testing.T) {
+	gate := plugin.NewCapabilityGate()
+	netSvc := network.NewService(nil, nil)
+	fsMgr, err := filesystem.NewManager(t.TempDir(), "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gate.Register("ocr", []string{})
+	pctxDenied := plugin.NewPluginContext(context.Background(), plugin.ContextConfig{
+		Owner:   "ocr",
+		Gate:    gate,
+		Network: netSvc,
+		Files:   fsMgr,
+	})
+	p := New()
+	if err := p.InitPlugin(pctxDenied); err == nil {
+		t.Fatal("expected error when CapHTTP is not registered")
+	}
+
+	gate.Register("ocr", []string{plugin.CapHTTP, plugin.CapFilesystemTemp})
+	pctxGranted := plugin.NewPluginContext(context.Background(), plugin.ContextConfig{
+		Owner:   "ocr",
+		Gate:    gate,
+		Network: netSvc,
+		Files:   fsMgr,
+	})
+	if err := p.InitPlugin(pctxGranted); err != nil {
+		t.Fatalf("unexpected error when capabilities granted: %v", err)
+	}
+	if p.http == nil || p.files == nil {
+		t.Fatal("expected http and files to be configured")
 	}
 }
 

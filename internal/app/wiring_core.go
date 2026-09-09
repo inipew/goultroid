@@ -3,12 +3,20 @@ package app
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/idempotency"
+	"github.com/inipew/goultroid/internal/jobs"
+	"github.com/inipew/goultroid/internal/platform/audit"
+	"github.com/inipew/goultroid/internal/platform/filesystem"
+	"github.com/inipew/goultroid/internal/platform/network"
+	"github.com/inipew/goultroid/internal/platform/process"
+	"github.com/inipew/goultroid/internal/platform/secret"
+	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/resource"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/services/inline"
@@ -83,6 +91,31 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 	resourceManager := resource.NewManager()
 	idempManager := idempotency.NewManager(1 * time.Minute)
 
+	jobsRepo := jobs.NewSQLiteRepository(db.DB)
+	if err := jobsRepo.InitSchema(context.Background()); err != nil {
+		logger.Warn("failed to initialize managed jobs schema", zap.Error(err))
+	}
+	jobsManager := jobs.NewManager(workerManager, jobsRepo)
+
+	dataDir := "data"
+	if cfg.DatabasePath != "" {
+		dataDir = filepath.Dir(cfg.DatabasePath)
+	}
+	fsManager, err := filesystem.NewManager(dataDir, "", "", resourceManager)
+	if err != nil {
+		logger.Warn("failed to create filesystem manager, using fallback", zap.Error(err))
+		fsManager, _ = filesystem.NewManager("data", "", "", resourceManager)
+	}
+	procManager := process.NewManager([]string{"ffmpeg", "ffprobe", "yt-dlp", "tesseract"}, 10*1024*1024, resourceManager)
+	netService := network.NewService(nil, resourceManager)
+	auditService := audit.NewService(logger.Named("audit"), 1000)
+	secretManager := secret.NewManager(map[string]string{
+		"APP_ID":    fmt.Sprintf("%d", cfg.AppID),
+		"APP_HASH":  cfg.AppHash,
+		"BOT_TOKEN": cfg.BotToken,
+	})
+	capGate := plugin.NewCapabilityGate()
+
 	return &coreDependencies{
 		db:              db,
 		perms:           perms,
@@ -97,7 +130,14 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 		interLimiter:    interLimiter,
 		workerManager:   workerManager,
 		taskManager:     taskManager,
+		jobsManager:     jobsManager,
 		resourceManager: resourceManager,
 		idempManager:    idempManager,
+		fsManager:       fsManager,
+		procManager:     procManager,
+		netService:      netService,
+		secretManager:   secretManager,
+		auditService:    auditService,
+		capGate:         capGate,
 	}, nil
 }

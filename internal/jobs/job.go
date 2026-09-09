@@ -39,6 +39,7 @@ type Job struct {
 	RecoveryPolicy RecoveryPolicy `json:"recovery_policy"`
 	IdempotencyKey string         `json:"idempotency_key,omitempty"`
 	Timeout        time.Duration  `json:"timeout"`
+	Pool           string         `json:"pool,omitempty"`
 
 	NextRun   time.Time `json:"next_run"`
 	LastRun   time.Time `json:"last_run"`
@@ -56,8 +57,8 @@ func (j *Job) Validate() error {
 	if strings.TrimSpace(j.Owner) == "" {
 		return errors.New("job Owner cannot be empty")
 	}
-	if j.Run == nil {
-		return errors.New("job Run handler cannot be nil")
+	if j.Run == nil && strings.TrimSpace(j.Type) == "" {
+		return errors.New("job must have either a Run handler or a Type")
 	}
 	return nil
 }

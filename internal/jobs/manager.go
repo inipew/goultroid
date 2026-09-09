@@ -6,28 +6,66 @@ import (
 	"sync"
 	"time"
 
+	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/workers"
 )
+
+// Ensure Manager implements runtime.Component.
+var _ runtime.Component = (*Manager)(nil)
 
 // TaskSubmitter is the interface used by JobManager to queue tasks into worker pools.
 type TaskSubmitter interface {
 	Submit(ctx context.Context, poolName string, task tasks.Task) error
 }
 
+// JobHandler executes work for a declarative job type.
+type JobHandler func(ctx context.Context, j *Job) error
+
+// Diagnostics provides runtime statistics for jobs.
+type Diagnostics struct {
+	Registered int `json:"registered"`
+	Running    int `json:"running"`
+	Completed  int `json:"completed"`
+	Failed     int `json:"failed"`
+	Cancelled  int `json:"cancelled"`
+	Total      int `json:"total"`
+}
+
 // Manager coordinates declarative jobs and delegates their execution to workers as tasks.
 type Manager struct {
 	mu        sync.RWMutex
 	jobs      map[string]*Job
+	handlers  map[string]JobHandler
 	submitter TaskSubmitter
+	repo      Repository
 }
 
-// NewManager creates a new JobManager backed by a task submitter (e.g. workers.Manager).
-func NewManager(submitter TaskSubmitter) *Manager {
-	return &Manager{
+// NewManager creates a new JobManager backed by a task submitter and optional repository.
+func NewManager(submitter TaskSubmitter, repo ...Repository) *Manager {
+	m := &Manager{
 		jobs:      make(map[string]*Job),
+		handlers:  make(map[string]JobHandler),
 		submitter: submitter,
 	}
+	if len(repo) > 0 && repo[0] != nil {
+		m.repo = repo[0]
+	}
+	return m
+}
+
+// SetRepository configures durable persistence for the manager.
+func (m *Manager) SetRepository(repo Repository) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.repo = repo
+}
+
+// RegisterHandler registers a typed execution handler for declarative jobs.
+func (m *Manager) RegisterHandler(jobType string, handler JobHandler) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.handlers[jobType] = handler
 }
 
 // Register registers a declarative job with the manager.
@@ -43,12 +81,33 @@ func (m *Manager) Register(j Job) error {
 		return fmt.Errorf("job %q already registered", j.ID)
 	}
 
+	if j.Run == nil && j.Type != "" {
+		if handler, ok := m.handlers[j.Type]; ok {
+			h := handler
+			j.Run = func(ctx context.Context) error {
+				return h(ctx, &j)
+			}
+		} else {
+			return fmt.Errorf("no handler registered for job type %q", j.Type)
+		}
+	}
+
+	if j.Pool == "" {
+		j.Pool = workers.PoolGeneral
+	}
 	j.State = StateRegistered
 	m.jobs[j.ID] = &j
+
+	if m.repo != nil {
+		if err := m.repo.Save(context.Background(), &j); err != nil {
+			return fmt.Errorf("failed to persist job %q: %w", j.ID, err)
+		}
+	}
+
 	return nil
 }
 
-// Trigger converts a triggered job into a concrete Task and queues it into the worker pool.
+// Trigger converts a registered job into a concrete Task and queues it into the worker pool.
 func (m *Manager) Trigger(ctx context.Context, jobID string) error {
 	m.mu.Lock()
 	job, exists := m.jobs[jobID]
@@ -63,7 +122,18 @@ func (m *Manager) Trigger(ctx context.Context, jobID string) error {
 	owner := job.Owner
 	timeout := job.Timeout
 	idempotencyKey := job.IdempotencyKey
+	pool := job.Pool
+	if pool == "" {
+		pool = workers.PoolGeneral
+	}
+	lastRun := job.LastRun
+	nextRun := job.NextRun
+	repo := m.repo
 	m.mu.Unlock()
+
+	if repo != nil {
+		_ = repo.UpdateState(ctx, jobID, StateTriggered, "", lastRun, nextRun)
+	}
 
 	if m.submitter == nil {
 		return fmt.Errorf("task submitter not configured")
@@ -75,17 +145,68 @@ func (m *Manager) Trigger(ctx context.Context, jobID string) error {
 		Name:           "job:" + jobID,
 		Timeout:        timeout,
 		IdempotencyKey: idempotencyKey,
-		Run:            runFn,
+		Run: func(taskCtx context.Context) error {
+			m.mu.Lock()
+			job.State = StateExecuting
+			m.mu.Unlock()
+			if repo != nil {
+				_ = repo.UpdateState(taskCtx, jobID, StateExecuting, "", job.LastRun, job.NextRun)
+			}
+
+			var err error
+			if runFn != nil {
+				err = runFn(taskCtx)
+			}
+
+			m.mu.Lock()
+			if err != nil {
+				job.State = StateFailed
+				job.LastError = err.Error()
+			} else {
+				job.State = StateCompleted
+				job.LastError = ""
+			}
+			jobState := job.State
+			jobErr := job.LastError
+			jLastRun := job.LastRun
+			jNextRun := job.NextRun
+			m.mu.Unlock()
+
+			if repo != nil {
+				_ = repo.UpdateState(context.Background(), jobID, jobState, jobErr, jLastRun, jNextRun)
+			}
+
+			return err
+		},
 	}
 
-	return m.submitter.Submit(ctx, workers.PoolGeneral, task)
+	return m.submitter.Submit(ctx, pool, task)
+}
+
+// Cancel cancels and removes a specific job.
+func (m *Manager) Cancel(ctx context.Context, jobID string) error {
+	m.mu.Lock()
+	job, exists := m.jobs[jobID]
+	if !exists {
+		m.mu.Unlock()
+		return fmt.Errorf("job %q not found", jobID)
+	}
+	job.State = StateCancelled
+	delete(m.jobs, jobID)
+	repo := m.repo
+	m.mu.Unlock()
+
+	if repo != nil {
+		if err := repo.Delete(ctx, jobID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // CancelByOwner cancels and removes all jobs belonging to a specific owner (e.g. on plugin disable).
 func (m *Manager) CancelByOwner(owner string) int {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	cancelled := 0
 	for id, j := range m.jobs {
 		if j.Owner == owner {
@@ -94,7 +215,107 @@ func (m *Manager) CancelByOwner(owner string) int {
 			cancelled++
 		}
 	}
+	repo := m.repo
+	m.mu.Unlock()
+
+	if repo != nil {
+		_, _ = repo.DeleteByOwner(context.Background(), owner)
+	}
 	return cancelled
+}
+
+// LoadAndReconcile loads persisted active jobs and recovers missed executions.
+func (m *Manager) LoadAndReconcile(ctx context.Context) error {
+	m.mu.RLock()
+	repo := m.repo
+	m.mu.RUnlock()
+
+	if repo == nil {
+		return nil
+	}
+
+	activeJobs, err := repo.ListActive(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list active jobs for reconciliation: %w", err)
+	}
+
+	now := time.Now().UTC()
+	var toTrigger []string
+
+	m.mu.Lock()
+	for _, j := range activeJobs {
+		if j.Run == nil && j.Type != "" {
+			if handler, ok := m.handlers[j.Type]; ok {
+				h := handler
+				jobRef := j
+				j.Run = func(runCtx context.Context) error {
+					return h(runCtx, jobRef)
+				}
+			}
+		}
+
+		if j.State == StateExecuting || j.State == StateTriggered {
+			// Job was interrupted mid-run
+			switch j.RecoveryPolicy {
+			case RecoveryRunImmediately:
+				j.State = StateRegistered
+				m.jobs[j.ID] = j
+				toTrigger = append(toTrigger, j.ID)
+			case RecoverySkip:
+				j.State = StateRegistered
+				m.jobs[j.ID] = j
+			case RecoveryRecalculate:
+				j.State = StateRegistered
+				m.jobs[j.ID] = j
+			default:
+				j.State = StateRegistered
+				m.jobs[j.ID] = j
+			}
+		} else {
+			// Registered / scheduled
+			if !j.NextRun.IsZero() && j.NextRun.Before(now) {
+				switch j.RecoveryPolicy {
+				case RecoveryRunImmediately:
+					m.jobs[j.ID] = j
+					toTrigger = append(toTrigger, j.ID)
+				default:
+					m.jobs[j.ID] = j
+				}
+			} else {
+				m.jobs[j.ID] = j
+			}
+		}
+	}
+	m.mu.Unlock()
+
+	for _, jobID := range toTrigger {
+		_ = m.Trigger(ctx, jobID)
+	}
+
+	return nil
+}
+
+// Diagnostics returns aggregate job execution statistics.
+func (m *Manager) Diagnostics() Diagnostics {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	d := Diagnostics{Total: len(m.jobs)}
+	for _, j := range m.jobs {
+		switch j.State {
+		case StateRegistered, StateScheduled:
+			d.Registered++
+		case StateTriggered, StateExecuting:
+			d.Running++
+		case StateCompleted:
+			d.Completed++
+		case StateFailed:
+			d.Failed++
+		case StateCancelled:
+			d.Cancelled++
+		}
+	}
+	return d
 }
 
 // Get returns the job by ID, if present.
@@ -132,4 +353,29 @@ func (m *Manager) All() []Job {
 		result = append(result, *j)
 	}
 	return result
+}
+
+// Name returns the component name for runtime.Component.
+func (m *Manager) Name() string {
+	return "jobs"
+}
+
+// Dependencies returns component prerequisites for runtime.Component.
+func (m *Manager) Dependencies() []string {
+	return []string{"workers"}
+}
+
+// Start reconciles active jobs on runtime startup.
+func (m *Manager) Start(ctx context.Context) error {
+	return m.LoadAndReconcile(ctx)
+}
+
+// Stop gracefully terminates job execution.
+func (m *Manager) Stop(ctx context.Context) error {
+	return nil
+}
+
+// Health probes job manager health.
+func (m *Manager) Health(ctx context.Context) runtime.ComponentHealth {
+	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
 }

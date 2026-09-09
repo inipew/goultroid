@@ -106,6 +106,42 @@ func (m *Manager) RemoveTempFile(path string) error {
 	return nil
 }
 
+// CreateTempDir creates a scoped temporary directory and tracks it in the ResourceManager.
+func (m *Manager) CreateTempDir(pluginID, pattern string) (string, error) {
+	dir, err := m.PluginTempDir(pluginID)
+	if err != nil {
+		return "", err
+	}
+
+	tempDir, err := os.MkdirTemp(dir, pattern)
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp dir: %w", err)
+	}
+
+	if m.resourceMgr != nil {
+		_ = m.resourceMgr.Register(resource.Resource{
+			ID:        tempDir,
+			Owner:     "plugin:" + pluginID,
+			Type:      resource.TypeTempDir,
+			CreatedAt: time.Now().UTC(),
+		})
+	}
+
+	return tempDir, nil
+}
+
+// RemoveTempDir recursively removes a tracked temporary directory and releases it from the ResourceManager.
+func (m *Manager) RemoveTempDir(path string) error {
+	err := os.RemoveAll(path)
+	if m.resourceMgr != nil {
+		_ = m.resourceMgr.Release(path)
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // SafePath confines a requested relative path within the plugin's root directory, preventing directory traversal.
 func (m *Manager) SafePath(rootDir, relPath string) (string, error) {
 	cleanRoot := filepath.Clean(rootDir)

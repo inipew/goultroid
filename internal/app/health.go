@@ -146,7 +146,20 @@ func (a *App) HealthContext(ctx context.Context) HealthSnapshot {
 			health.Reasons = append(health.Reasons, "media:temporary-resource-leak")
 		}
 	}
-	if a.workers != nil {
+	if a.runtime != nil {
+		rtHealth := a.runtime.Health(ctx)
+		for comp, status := range rtHealth.Components {
+			health.Subsystems[comp] = status
+		}
+		for _, reason := range rtHealth.Reasons {
+			health.Reasons = append(health.Reasons, reason)
+		}
+		if rtHealth.Status == runtime.HealthUnhealthy {
+			health.Status = HealthUnhealthy
+		} else if rtHealth.Status == runtime.HealthDegraded && health.Status != HealthUnhealthy {
+			health.Status = HealthDegraded
+		}
+	} else if a.workers != nil {
 		wHealth := a.workers.Health(ctx)
 		switch wHealth.Status {
 		case runtime.HealthHealthy:

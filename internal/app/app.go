@@ -13,9 +13,11 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/idempotency"
+	"github.com/inipew/goultroid/internal/jobs"
 	"github.com/inipew/goultroid/internal/module"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/resource"
+	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/scheduler"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/services/inline"
@@ -51,8 +53,10 @@ type App struct {
 
 	workers   *workers.Manager
 	tasks     *tasks.Manager
+	jobs      *jobs.Manager
 	resources *resource.Manager
 	idemp     *idempotency.Manager
+	runtime   *runtime.Runtime
 
 	lifecycleMu    sync.Mutex
 	lifecycleState atomic.Uint32
@@ -85,6 +89,18 @@ func New(cfg *config.Config) (*App, error) {
 	pluginManager.SetHookRegistrar(tgRuntime.dispatcher)
 	if coreDeps.resourceManager != nil {
 		pluginManager.SetResourceManager(coreDeps.resourceManager)
+	}
+	pluginManager.SetPlatformServices(
+		coreDeps.capGate,
+		coreDeps.netService,
+		coreDeps.procManager,
+		coreDeps.fsManager,
+		coreDeps.secretManager,
+		coreDeps.taskManager,
+		coreDeps.jobsManager,
+	)
+	if domServices.addonManager != nil {
+		domServices.addonManager.SetProcessManager(coreDeps.procManager)
 	}
 	if tgRuntime.assistant != nil {
 		tgRuntime.assistant.SetCoreRouter(coreDeps.router)
@@ -127,11 +143,43 @@ func New(cfg *config.Config) (*App, error) {
 			SettingsService:  domServices.settingsService,
 			SchedEngine:      domServices.schedEngine,
 		},
+		PlatformRuntime: module.PlatformRuntime{
+			Gate:      coreDeps.capGate,
+			Network:   coreDeps.netService,
+			Process:   coreDeps.procManager,
+			Files:     coreDeps.fsManager,
+			Secrets:   coreDeps.secretManager,
+			Audit:     coreDeps.auditService,
+			Resources: coreDeps.resourceManager,
+			Workers:   coreDeps.workerManager,
+			Tasks:     coreDeps.taskManager,
+			Jobs:      coreDeps.jobsManager,
+		},
 	}
 	if err := registerBuiltinModules(context.Background(), featureRuntime); err != nil {
 		_ = coreDeps.eventBus.Close()
 		_ = coreDeps.db.Close()
 		return nil, err
+	}
+
+	rt := runtime.New()
+	if err := rt.Register(coreDeps.eventBus); err != nil {
+		return nil, fmt.Errorf("register eventbus component: %w", err)
+	}
+	if err := rt.Register(coreDeps.workerManager); err != nil {
+		return nil, fmt.Errorf("register workers component: %w", err)
+	}
+	if err := rt.Register(coreDeps.jobsManager); err != nil {
+		return nil, fmt.Errorf("register jobs component: %w", err)
+	}
+	if err := rt.Register(domServices.schedEngine); err != nil {
+		return nil, fmt.Errorf("register scheduler component: %w", err)
+	}
+	if err := rt.Register(tgRuntime.dispatcher); err != nil {
+		return nil, fmt.Errorf("register dispatcher component: %w", err)
+	}
+	if err := rt.Register(pluginManager); err != nil {
+		return nil, fmt.Errorf("register plugins component: %w", err)
 	}
 
 	return &App{
@@ -154,8 +202,10 @@ func New(cfg *config.Config) (*App, error) {
 		startTime:       domServices.startTime,
 		workers:         coreDeps.workerManager,
 		tasks:           coreDeps.taskManager,
+		jobs:            coreDeps.jobsManager,
 		resources:       coreDeps.resourceManager,
 		idemp:           coreDeps.idempManager,
+		runtime:         rt,
 		shutdownDone:    make(chan struct{}),
 	}, nil
 }

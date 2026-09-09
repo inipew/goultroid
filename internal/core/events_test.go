@@ -2,6 +2,7 @@ package core_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -219,5 +220,95 @@ func TestEventBus_OwnedSubscriptionLifecycle(t *testing.T) {
 	sub.Close()
 	if got := bus.SubscriptionCount("plugin:test"); got != 0 {
 		t.Fatalf("subscription count after close = %d, want 0", got)
+	}
+}
+
+func TestEventBus_ContextHandlerAndTimeout(t *testing.T) {
+	bus := newStartedEventBus(t)
+	handled := make(chan struct{})
+
+	sub := bus.SubscribeContextHandler("plugin:ctx", core.EventTypeMessageCreated, func(ctx context.Context, e core.Event) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			close(handled)
+			return nil
+		}
+	}, 1*time.Second)
+	defer sub.Close()
+
+	bus.Publish(&core.MessageCreatedEvent{At: time.Now()})
+
+	select {
+	case <-handled:
+		// success
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for context-aware event handler")
+	}
+}
+
+func TestEventBus_DeadLetterQueueOnFailure(t *testing.T) {
+	bus := newStartedEventBus(t)
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	sub := bus.SubscribeContextHandler("plugin:failing", core.EventTypeMessageCreated, func(ctx context.Context, e core.Event) error {
+		defer wg.Done()
+		return errors.New("synthetic handler error")
+	})
+	defer sub.Close()
+
+	bus.Publish(&core.MessageCreatedEvent{At: time.Now()})
+	wg.Wait()
+	time.Sleep(20 * time.Millisecond)
+
+	dlq := bus.DLQ()
+	if len(dlq) == 0 {
+		t.Fatal("expected at least 1 dead letter entry")
+	}
+	if dlq[len(dlq)-1].Owner != "plugin:failing" {
+		t.Errorf("expected owner plugin:failing, got %s", dlq[len(dlq)-1].Owner)
+	}
+	if dlq[len(dlq)-1].Error != "synthetic handler error" {
+		t.Errorf("expected synthetic handler error, got %s", dlq[len(dlq)-1].Error)
+	}
+
+	bus.ClearDLQ()
+	if len(bus.DLQ()) != 0 {
+		t.Errorf("expected empty DLQ after ClearDLQ")
+	}
+}
+
+func TestEventBus_RuntimeComponent(t *testing.T) {
+	bus := core.NewEventBus()
+	if bus.Name() != "eventbus" {
+		t.Errorf("expected name eventbus, got %s", bus.Name())
+	}
+	if len(bus.Dependencies()) != 0 {
+		t.Errorf("expected empty dependencies, got %v", bus.Dependencies())
+	}
+
+	hBefore := bus.Health(context.Background())
+	if hBefore.Status != "degraded" {
+		t.Errorf("expected degraded before start, got %s", hBefore.Status)
+	}
+
+	if err := bus.Start(context.Background()); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+
+	hRunning := bus.Health(context.Background())
+	if hRunning.Status != "healthy" {
+		t.Errorf("expected healthy while running, got %s", hRunning.Status)
+	}
+
+	if err := bus.Stop(context.Background()); err != nil {
+		t.Fatalf("stop failed: %v", err)
+	}
+
+	hStopped := bus.Health(context.Background())
+	if hStopped.Status != "unhealthy" {
+		t.Errorf("expected unhealthy after stop, got %s", hStopped.Status)
 	}
 }

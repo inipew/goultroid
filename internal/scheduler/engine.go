@@ -12,6 +12,7 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/workers"
 	"go.uber.org/zap"
@@ -179,8 +180,36 @@ func (e *Engine) Start(parentCtx context.Context) error {
 	return nil
 }
 
-func (e *Engine) Stop() error {
-	return e.StopWithTimeout(10 * time.Second)
+// Ensure Engine implements runtime.Component.
+var _ runtime.Component = (*Engine)(nil)
+
+// Name returns component identifier for runtime.Component.
+func (e *Engine) Name() string {
+	return "scheduler"
+}
+
+// Dependencies returns component prerequisites for runtime.Component.
+func (e *Engine) Dependencies() []string {
+	return []string{"eventbus", "workers"}
+}
+
+// Stop gracefully stops the scheduler using the provided context.
+func (e *Engine) Stop(ctx context.Context) error {
+	return e.StopContext(ctx)
+}
+
+// Health evaluates Scheduler engine health.
+func (e *Engine) Health(ctx context.Context) runtime.ComponentHealth {
+	e.runMu.Lock()
+	running := e.running
+	e.runMu.Unlock()
+	if !running {
+		return runtime.ComponentHealth{
+			Status:  runtime.HealthDegraded,
+			Details: "scheduler engine is not running",
+		}
+	}
+	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
 }
 
 func (e *Engine) StopContext(ctx context.Context) error {

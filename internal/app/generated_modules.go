@@ -30,6 +30,7 @@ import (
 	settings "github.com/inipew/goultroid/plugins/settings"
 	sticker "github.com/inipew/goultroid/plugins/sticker"
 	sudo "github.com/inipew/goultroid/plugins/sudo"
+	sysinfo "github.com/inipew/goultroid/plugins/sysinfo"
 	system "github.com/inipew/goultroid/plugins/system"
 	userlog "github.com/inipew/goultroid/plugins/userlog"
 	voice "github.com/inipew/goultroid/plugins/voice"
@@ -63,6 +64,7 @@ var builtinModules = []module.Module{
 	settings.Module,
 	sticker.Module,
 	sudo.Module,
+	sysinfo.Module,
 	system.Module,
 	userlog.Module,
 	voice.Module,

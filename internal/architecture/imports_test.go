@@ -61,8 +61,55 @@ func TestDependencyBoundaries(t *testing.T) {
 				if dep == "os/exec" {
 					t.Errorf("feature package %s must not directly import os/exec (use managed process runner)", pkg)
 				}
+				if dep == "net/http" {
+					t.Errorf("feature package %s must not directly import net/http (use managed network service via PluginContext)", pkg)
+				}
 			}
 		}
+	}
+}
+
+func TestPluginsNoDirectTempCalls(t *testing.T) {
+	root := repositoryRoot(t)
+	pluginsDir := filepath.Join(root, "plugins")
+	fset := token.NewFileSet()
+
+	err := filepath.Walk(pluginsDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			pkgIdent, ok := sel.X.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			if pkgIdent.Name == "os" && (sel.Sel.Name == "CreateTemp" || sel.Sel.Name == "MkdirTemp") {
+				rel, _ := filepath.Rel(root, path)
+				t.Errorf("%s calls os.%s directly; must use files.CreateTempFile / files.CreateTempDir via PluginContext", rel, sel.Sel.Name)
+			}
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -87,6 +134,8 @@ func TestDatabaseGenericBoundary(t *testing.T) {
 		"pmpermit",
 		"voice",
 		"moderation",
+		"addon",
+		"userlog",
 	}
 
 	for _, pkg := range pkgs {
@@ -142,10 +191,8 @@ func TestLegacyFeatureDatabaseSurfaceIsExplicit(t *testing.T) {
 	// These are known remaining legacy feature-owned persistence files. The list is
 	// intentionally explicit so a new feature cannot silently add persistence here.
 	allowedLegacy := map[string]struct{}{
-		"addon.go":     {},
 		"scheduler.go": {},
 		"settings.go":  {},
-		"userlog.go":   {},
 	}
 
 	var legacy []string

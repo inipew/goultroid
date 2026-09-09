@@ -40,7 +40,7 @@ func TestEngine_WithWorkerManager(t *testing.T) {
 	if err := engine.Start(ctx); err != nil {
 		t.Fatalf("engine start: %v", err)
 	}
-	defer func() { _ = engine.Stop() }()
+	defer func() { _ = engine.Stop(context.Background()) }()
 
 	// Add a scheduled job
 	now := time.Now().UTC()

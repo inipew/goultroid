@@ -9,8 +9,20 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/jobs"
+	"github.com/inipew/goultroid/internal/platform/filesystem"
+	"github.com/inipew/goultroid/internal/platform/network"
+	"github.com/inipew/goultroid/internal/platform/process"
+	"github.com/inipew/goultroid/internal/platform/secret"
 	"github.com/inipew/goultroid/internal/resource"
+	"github.com/inipew/goultroid/internal/runtime"
+	"github.com/inipew/goultroid/internal/tasks"
 )
+
+// ManifestPlugin is an optional interface plugins can implement to declare their manifest directly.
+type ManifestPlugin interface {
+	Manifest() Manifest
+}
 
 // MessageHookHandler represents the raw Telegram message interceptor signature.
 type MessageHookHandler = func(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error
@@ -21,18 +33,25 @@ type HookRegistrar interface {
 }
 
 type Manager struct {
-	router          *core.Router
-	hookRegistrar   HookRegistrar
-	resourceManager *resource.Manager
-	plugins         map[string]Plugin
-	metadata        map[string]Metadata
-	scopes          map[string]*Scope
-	commands        map[string][]core.Command
-	disabled        map[string]bool
-	list            []Plugin
-	hookCleanups    []func()
-	mu              sync.RWMutex
-	shutdown        bool
+	router            *core.Router
+	hookRegistrar     HookRegistrar
+	resourceManager   *resource.Manager
+	gate              *CapabilityGate
+	networkService    *network.Service
+	processManager    *process.Manager
+	filesystemManager *filesystem.Manager
+	secretManager     *secret.Manager
+	taskManager       *tasks.Manager
+	jobsManager       *jobs.Manager
+	plugins           map[string]Plugin
+	metadata          map[string]Metadata
+	scopes            map[string]*Scope
+	commands          map[string][]core.Command
+	disabled          map[string]bool
+	list              []Plugin
+	hookCleanups      []func()
+	mu                sync.RWMutex
+	shutdown          bool
 }
 
 func NewManager(router *core.Router) *Manager {
@@ -47,6 +66,34 @@ func NewManager(router *core.Router) *Manager {
 	}
 }
 
+// SetPlatformServices attaches platform managers and capability gate to this manager.
+func (m *Manager) SetPlatformServices(
+	gate *CapabilityGate,
+	net *network.Service,
+	proc *process.Manager,
+	fs *filesystem.Manager,
+	sec *secret.Manager,
+	tsk *tasks.Manager,
+	jbs *jobs.Manager,
+) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.gate = gate
+	m.networkService = net
+	m.processManager = proc
+	m.filesystemManager = fs
+	m.secretManager = sec
+	m.taskManager = tsk
+	m.jobsManager = jbs
+}
+
+// Gate returns the capability gate if configured.
+func (m *Manager) Gate() *CapabilityGate {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.gate
+}
+
 // SetResourceManager sets the global resource manager used to track plugin scopes.
 func (m *Manager) SetResourceManager(mgr *resource.Manager) {
 	m.mu.Lock()
@@ -59,6 +106,47 @@ func (m *Manager) SetHookRegistrar(registrar HookRegistrar) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.hookRegistrar = registrar
+}
+
+func (m *Manager) buildPluginContext(baseCtx context.Context, name string, scope *Scope) PluginContext {
+	m.mu.RLock()
+	gate := m.gate
+	netSvc := m.networkService
+	procMgr := m.processManager
+	fsMgr := m.filesystemManager
+	secMgr := m.secretManager
+	taskMgr := m.taskManager
+	jobsMgr := m.jobsManager
+	m.mu.RUnlock()
+
+	return NewPluginContext(baseCtx, ContextConfig{
+		Scope:   scope,
+		Owner:   name,
+		Gate:    gate,
+		Network: netSvc,
+		Process: procMgr,
+		Files:   fsMgr,
+		Secrets: secMgr,
+		Tasks:   taskMgr,
+		Jobs:    jobsMgr,
+	})
+}
+
+// RegisterModule registers a plugin with its formal manifest declarations.
+func (m *Manager) RegisterModule(ctx context.Context, manifest Manifest, p Plugin) error {
+	if p == nil {
+		return fmt.Errorf("cannot register nil plugin")
+	}
+	name := strings.ToLower(strings.TrimSpace(p.Name()))
+	m.mu.RLock()
+	gate := m.gate
+	m.mu.RUnlock()
+
+	if gate != nil && len(manifest.Capabilities) > 0 {
+		gate.Register(name, manifest.Capabilities)
+	}
+
+	return m.RegisterWithContext(ctx, p)
 }
 
 func (m *Manager) Register(p Plugin) error {
@@ -77,6 +165,17 @@ func (m *Manager) RegisterWithContext(ctx context.Context, p Plugin) error {
 	name := strings.ToLower(strings.TrimSpace(p.Name()))
 	if name == "" {
 		return fmt.Errorf("plugin name cannot be empty")
+	}
+
+	// Register manifest capabilities if implemented directly on the plugin
+	if mp, ok := p.(ManifestPlugin); ok {
+		manifest := mp.Manifest()
+		m.mu.RLock()
+		gate := m.gate
+		m.mu.RUnlock()
+		if gate != nil && len(manifest.Capabilities) > 0 {
+			gate.Register(name, manifest.Capabilities)
+		}
 	}
 
 	// 1. Lightweight pre-check under lock (duplicate, shutdown, router nil)
@@ -119,8 +218,12 @@ func (m *Manager) RegisterWithContext(ctx context.Context, p Plugin) error {
 	} else {
 		scope = NewScope(ctx, "plugin:"+name)
 	}
+	pctx := m.buildPluginContext(scope.Context(), name, scope)
+
 	var initErr error
-	if si, ok := p.(ScopeInitializer); ok {
+	if pci, ok := p.(PluginContextInitializer); ok {
+		initErr = pci.InitPlugin(pctx)
+	} else if si, ok := p.(ScopeInitializer); ok {
 		initErr = si.InitScope(scope.Context(), scope)
 	} else if ci, ok := p.(ContextInitializer); ok {
 		initErr = ci.InitContext(ctx)
@@ -395,8 +498,12 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 		scope = NewScope(ctx, "plugin:"+key)
 	}
 
+	pctx := m.buildPluginContext(scope.Context(), key, scope)
+
 	var initErr error
-	if si, ok := p.(ScopeInitializer); ok {
+	if pci, ok := p.(PluginContextInitializer); ok {
+		initErr = pci.InitPlugin(pctx)
+	} else if si, ok := p.(ScopeInitializer); ok {
 		initErr = si.InitScope(scope.Context(), scope)
 	} else if ci, ok := p.(ContextInitializer); ok {
 		initErr = ci.InitContext(ctx)
@@ -446,4 +553,40 @@ func (m *Manager) DisabledPlugins() []string {
 	}
 	sort.Strings(list)
 	return list
+}
+
+// Ensure Manager implements runtime.Component.
+var _ runtime.Component = (*Manager)(nil)
+
+// Name returns component identifier for runtime.Component.
+func (m *Manager) Name() string {
+	return "plugins"
+}
+
+// Dependencies returns prerequisite components for runtime.Component.
+func (m *Manager) Dependencies() []string {
+	return []string{"dispatcher", "jobs"}
+}
+
+// Start validates plugin manager state.
+func (m *Manager) Start(ctx context.Context) error {
+	return nil
+}
+
+// Stop gracefully shuts down all managed plugins.
+func (m *Manager) Stop(ctx context.Context) error {
+	return m.ShutdownWithContext(ctx)
+}
+
+// Health evaluates plugin manager health.
+func (m *Manager) Health(ctx context.Context) runtime.ComponentHealth {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.shutdown {
+		return runtime.ComponentHealth{
+			Status:  runtime.HealthUnhealthy,
+			Details: "plugin manager is shut down",
+		}
+	}
+	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
 }
