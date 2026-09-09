@@ -35,26 +35,29 @@ type Client interface {
 }
 
 type AssistantClient struct {
-	appID        int
-	appHash      string
-	botToken     string
-	logger       *zap.Logger
-	startTime    time.Time
-	self         *tg.User
-	mu           sync.RWMutex
-	cancel       context.CancelFunc
-	shuttingDown atomic.Bool
-	wg           sync.WaitGroup
-	lifecycle    *Lifecycle
-	rateLimiter  RateLimiter
-	cache        *peer.MemoryCache
-	resolver     *peer.DefaultResolver
-	interaction  *interaction.ClientInteraction
-	cmdRouter    *command.Router
-	cbRouter     *callback.Router
-	menuCtrl     *menu.Controller
-	metrics      core.MetricsCollector
-	settingsSvc  *settings.Service
+	appID         int
+	appHash       string
+	botToken      string
+	logger        *zap.Logger
+	startTime     time.Time
+	self          *tg.User
+	mu            sync.RWMutex
+	cancel        context.CancelFunc
+	runDone       chan struct{}
+	ready         chan struct{}
+	startupResult chan error
+	lastError     error
+	shuttingDown  atomic.Bool
+	lifecycle     *Lifecycle
+	rateLimiter   RateLimiter
+	cache         *peer.MemoryCache
+	resolver      *peer.DefaultResolver
+	interaction   *interaction.ClientInteraction
+	cmdRouter     *command.Router
+	cbRouter      *callback.Router
+	menuCtrl      *menu.Controller
+	metrics       core.MetricsCollector
+	settingsSvc   *settings.Service
 }
 
 var _ Client = (*AssistantClient)(nil)
@@ -83,13 +86,38 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	if c.botToken == "" {
 		return ErrBotTokenRequired
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if c.lifecycle.State() == StateStopped {
+		c.mu.RLock()
+		previousDone := c.runDone
+		c.mu.RUnlock()
+		if previousDone != nil {
+			select {
+			case <-previousDone:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
 	if !c.lifecycle.TryStart() {
 		return ErrAlreadyRunning
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
+	runDone := make(chan struct{})
+	ready := make(chan struct{})
+	startupResult := make(chan error, 1)
 	c.mu.Lock()
 	c.cancel = cancel
+	c.runDone = runDone
+	c.ready = ready
+	c.startupResult = startupResult
+	c.lastError = nil
 	c.startTime = time.Now()
 	c.mu.Unlock()
 
@@ -112,10 +140,8 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	}
 	RegisterUpdateHandlers(&dispatcher, deps)
 
-	errCh := make(chan error, 1)
-	c.wg.Add(1)
 	go func() {
-		defer c.wg.Done()
+		defer close(runDone)
 		err := tdClient.Run(runCtx, func(ctx context.Context) error {
 			status, err := tdClient.Auth().Status(ctx)
 			if err != nil {
@@ -145,51 +171,94 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 
 			c.lifecycle.SetState(StateRunning)
 			c.logger.Info("assistant client running", zap.String("username", user.Username))
+			close(ready)
 			return updateMgr.Run(ctx, tdClient.API(), user.ID, updates.AuthOptions{IsBot: true})
 		})
 		if err != nil && !errors.Is(err, context.Canceled) {
+			c.mu.Lock()
+			c.lastError = err
+			c.mu.Unlock()
 			c.lifecycle.SetState(StateFailed)
-			errCh <- err
+			c.logger.Error("assistant client stopped with an error", zap.Error(err))
+			startupResult <- err
 		} else {
 			c.lifecycle.SetState(StateStopped)
-			errCh <- nil
+			startupResult <- err
 		}
 	}()
 
+	// The assistant is optional. Launching it must not delay the primary Telegram
+	// client; callers that require confirmed readiness can use WaitReady.
+	return nil
+}
+
+func waitForStartup(ctx context.Context, ready <-chan struct{}, errCh <-chan error) error {
 	select {
+	case <-ready:
+		return nil
 	case err := <-errCh:
 		return err
-	case <-time.After(100 * time.Millisecond):
-		return nil
-	case <-runCtx.Done():
-		return runCtx.Err()
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
+// WaitReady waits until the current assistant run has authenticated and can
+// receive updates, or returns its startup failure/caller cancellation.
+func (c *AssistantClient) WaitReady(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.mu.RLock()
+	ready := c.ready
+	startupResult := c.startupResult
+	c.mu.RUnlock()
+	if ready == nil || startupResult == nil {
+		return errors.New("assistant client has not been started")
+	}
+	return waitForStartup(ctx, ready, startupResult)
+}
+
 func (c *AssistantClient) Stop(ctx context.Context) error {
-	if !c.lifecycle.TryStop() {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	state := c.lifecycle.State()
+	if state == StateNew {
 		return nil
+	}
+	if state != StateStopping {
+		_ = c.lifecycle.TryStop()
 	}
 	c.shuttingDown.Store(true)
 	c.mu.Lock()
-	if c.cancel != nil {
-		c.cancel()
-		c.cancel = nil
-	}
+	cancel := c.cancel
+	done := c.runDone
 	c.mu.Unlock()
-	stopped := make(chan struct{})
-	go func() { c.wg.Wait(); close(stopped) }()
+	if cancel != nil {
+		cancel()
+	}
+	if done == nil {
+		c.lifecycle.SetState(StateStopped)
+		return nil
+	}
 	select {
-	case <-stopped:
+	case <-done:
+		return nil
 	case <-ctx.Done():
 		c.logger.Warn("assistant: shutdown timed out waiting for client loop")
+		return ctx.Err()
 	}
-	c.lifecycle.SetState(StateStopped)
-	return nil
 }
 
 func (c *AssistantClient) IsShuttingDown() bool { return c.shuttingDown.Load() }
 func (c *AssistantClient) IsRunning() bool      { return c.lifecycle.State() == StateRunning }
+func (c *AssistantClient) State() ClientState   { return c.lifecycle.State() }
+func (c *AssistantClient) LastError() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lastError
+}
 func (c *AssistantClient) Username() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

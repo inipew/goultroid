@@ -210,6 +210,9 @@ func (r *SQLiteRepository) ListPMRecords(ctx context.Context, status string, lim
 		}
 		records = append(records, &rec)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate pm records: %w", err)
+	}
 	return records, nil
 }
 

@@ -2,12 +2,59 @@ package settings
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
 )
+
+func TestServiceLifecycleConcurrent(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	bus := core.NewEventBus()
+	if err := bus.Start(context.Background()); err != nil {
+		t.Fatalf("start event bus: %v", err)
+	}
+	defer func() { _ = bus.Close() }()
+
+	svc := NewService(NewSQLiteRepository(db.DB), NewRegistry(), bus)
+	const callers = 32
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for range callers {
+		go func() {
+			defer wg.Done()
+			if err := svc.Start(context.Background()); err != nil {
+				t.Errorf("Start() error = %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	svc.lifecycleMu.Lock()
+	done := svc.outboxDone
+	svc.lifecycleMu.Unlock()
+	if done == nil {
+		t.Fatal("Start() did not create an outbox worker")
+	}
+
+	wg.Add(callers)
+	for range callers {
+		go func() {
+			defer wg.Done()
+			if err := svc.Stop(context.Background()); err != nil {
+				t.Errorf("Stop() error = %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+}
 
 // TestContract_SettingsHierarchy verifies chat > user > global > default fallback (bug13 #29, #42)
 func TestContract_SettingsHierarchy(t *testing.T) {

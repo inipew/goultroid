@@ -59,7 +59,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 
 	var shutdownErr error
 	if len(errs) > 0 {
-		shutdownErr = fmt.Errorf("shutdown completed with errors: %v", errs)
+		shutdownErr = fmt.Errorf("shutdown completed with errors: %w", errors.Join(errs...))
 	}
 	a.markStopped(shutdownErr)
 	return shutdownErr

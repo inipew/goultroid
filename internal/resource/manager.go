@@ -261,7 +261,7 @@ func (m *Manager) HandleLeaks(owner string) ([]Resource, error) {
 	case LeakPolicyForceCleanup:
 		errs := m.ForceCleanupOwner(owner)
 		if len(errs) > 0 {
-			return leaks, fmt.Errorf("force cleanup encountered errors: %v", errs)
+			return leaks, fmt.Errorf("force cleanup encountered errors: %w", errors.Join(errs...))
 		}
 		return leaks, nil
 	case LeakPolicyDegraded:

@@ -26,8 +26,10 @@ type Service struct {
 	cacheMu sync.RWMutex
 	cache   map[string]map[resolveCacheKey]string // namespace:key -> resolveCacheKey -> value
 
+	lifecycleMu  sync.Mutex
+	started      bool
 	outboxCancel context.CancelFunc
-	outboxWG     sync.WaitGroup
+	outboxDone   chan struct{}
 	unsubSetting func()
 }
 
@@ -42,16 +44,6 @@ func NewService(repo Repository, reg *Registry, bus *core.EventBus) *Service {
 		bus:   bus,
 		cache: make(map[string]map[resolveCacheKey]string),
 	}
-	if bus != nil {
-		sub := bus.SubscribeOwned("runtime:settings", core.EventTypeSettingChanged, func(event core.Event) {
-			if e, ok := event.(*core.SettingChangedEvent); ok {
-				s.invalidate(e.Namespace, e.Key)
-			}
-		})
-		if sub != nil {
-			s.unsubSetting = sub.Close
-		}
-	}
 	return s
 }
 
@@ -59,7 +51,6 @@ func NewService(repo Repository, reg *Registry, bus *core.EventBus) *Service {
 // Single ordered worker: processes pending outbox rows in created_at order, dispatches synchronously,
 // and only marks processed after successful delivery (no drop). Retries on next tick if dispatch fails.
 func (s *Service) runOutboxWorker(ctx context.Context) {
-	defer s.outboxWG.Done()
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -102,22 +93,49 @@ func (s *Service) runOutboxWorker(ctx context.Context) {
 // Start launches the durable outbox worker explicitly (Construct != Start).
 // It is idempotent; if already started via NewService, it returns nil.
 func (s *Service) Start(ctx context.Context) error {
-	if s.outboxCancel != nil {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.started {
 		return nil
 	}
 	if s.bus == nil {
 		return nil
 	}
-	if _, ok := s.repo.(*SQLiteRepository); !ok {
-		return nil
-	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	s.started = true
+	sub := s.bus.SubscribeOwned("runtime:settings", core.EventTypeSettingChanged, func(event core.Event) {
+		if e, ok := event.(*core.SettingChangedEvent); ok {
+			s.invalidate(e.Namespace, e.Key)
+		}
+	})
+	if sub != nil {
+		s.unsubSetting = sub.Close
+	}
+	if _, ok := s.repo.(*SQLiteRepository); !ok {
+		return nil
+	}
 	cctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	s.outboxCancel = cancel
-	s.outboxWG.Add(1)
-	go s.runOutboxWorker(cctx)
+	s.outboxDone = done
+	go func() {
+		s.runOutboxWorker(cctx)
+
+		s.lifecycleMu.Lock()
+		if s.outboxDone == done {
+			s.started = false
+			s.outboxCancel = nil
+			s.outboxDone = nil
+			if s.unsubSetting != nil {
+				s.unsubSetting()
+				s.unsubSetting = nil
+			}
+		}
+		close(done)
+		s.lifecycleMu.Unlock()
+	}()
 	return nil
 }
 
@@ -138,29 +156,34 @@ func (s *Service) Health(ctx context.Context) runtime.ComponentHealth {
 
 // Stop gracefully shuts down the outbox worker.
 func (s *Service) Stop(ctx context.Context) error {
-	if s.unsubSetting != nil {
-		s.unsubSetting()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.lifecycleMu.Lock()
+	if !s.started {
+		s.lifecycleMu.Unlock()
+		return nil
+	}
+	cancel := s.outboxCancel
+	done := s.outboxDone
+	if cancel == nil || done == nil {
+		unsub := s.unsubSetting
 		s.unsubSetting = nil
-	}
-	if s.outboxCancel != nil {
-		s.outboxCancel()
-		done := make(chan struct{})
-		go func() {
-			s.outboxWG.Wait()
-			close(done)
-		}()
-		if ctx != nil {
-			select {
-			case <-done:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		} else {
-			<-done
+		s.started = false
+		s.lifecycleMu.Unlock()
+		if unsub != nil {
+			unsub()
 		}
-		s.outboxCancel = nil
+		return nil
 	}
-	return nil
+	s.lifecycleMu.Unlock()
+	cancel()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Registry returns the underlying schema registry.

@@ -24,6 +24,8 @@ var (
 	_ execution.CapabilityProvider = (*Plugin)(nil)
 )
 
+const defaultWelcomeDeleteDelay = 2 * time.Second
+
 type afkState struct {
 	isAFK  bool
 	reason string
@@ -38,6 +40,7 @@ type Plugin struct {
 	resolver           core.PeerResolver
 	logger             *zap.Logger
 	welcomePrivateOnly bool
+	welcomeDeleteDelay time.Duration
 	stateMu            sync.RWMutex
 	state              atomic.Pointer[afkState]
 	transitionMu       sync.Mutex
@@ -54,6 +57,7 @@ func New(db Repository, ownerID int64, svcFunc func() core.TelegramServicer) *Pl
 		cooldownMap:        make(map[[2]int64]time.Time),
 		cooldownDur:        60 * time.Second,
 		welcomePrivateOnly: true,
+		welcomeDeleteDelay: defaultWelcomeDeleteDelay,
 	}
 	p.state.Store(&afkState{isAFK: false})
 	return p
@@ -102,6 +106,19 @@ func (p *Plugin) isWelcomePrivateOnly() bool {
 	p.stateMu.RLock()
 	defer p.stateMu.RUnlock()
 	return p.welcomePrivateOnly
+}
+
+// SetWelcomeDeleteDelay configures how long a welcome-back message remains visible.
+// A non-positive delay disables automatic deletion.
+func (p *Plugin) SetWelcomeDeleteDelay(delay time.Duration) {
+	p.stateMu.Lock()
+	p.welcomeDeleteDelay = delay
+	p.stateMu.Unlock()
+}
+func (p *Plugin) getWelcomeDeleteDelay() time.Duration {
+	p.stateMu.RLock()
+	defer p.stateMu.RUnlock()
+	return p.welcomeDeleteDelay
 }
 func (p *Plugin) SetCooldown(duration time.Duration) {
 	if duration > 0 {
@@ -302,10 +319,13 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 			peer := p.resolveInputPeer(ctx, msg.PeerID, e)
 			if peer != nil {
 				text := fmt.Sprintf("☀️ <b>Welcome back! AFK mode turned off.</b>\n<b>Away for:</b> <code>%s</code>", dur)
-				if _, err := svc.SendMessage(ctx, peer, text); err != nil {
+				sent, err := svc.SendMessage(ctx, peer, text)
+				if err != nil {
 					if logger := p.getLogger(); logger != nil {
 						logger.Warn("failed to send welcome back message", zap.Error(err))
 					}
+				} else if sent != nil && sent.ID > 0 {
+					p.deleteWelcomeAfter(svc, peer, sent.ID)
 				}
 			}
 		}
@@ -403,6 +423,22 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 		}
 	}
 	return nil
+}
+
+func (p *Plugin) deleteWelcomeAfter(svc core.TelegramServicer, peer tg.InputPeerClass, messageID int) {
+	delay := p.getWelcomeDeleteDelay()
+	if delay <= 0 || svc == nil || peer == nil || messageID <= 0 {
+		return
+	}
+	time.AfterFunc(delay, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := svc.DeleteMessage(ctx, peer, []int{messageID}); err != nil {
+			if logger := p.getLogger(); logger != nil {
+				logger.Warn("failed to auto-delete welcome back message", zap.Int("message_id", messageID), zap.Error(err))
+			}
+		}
+	})
 }
 
 func (p *Plugin) isCooldownActive(chatID, senderID int64) bool {

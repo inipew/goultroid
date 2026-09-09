@@ -56,6 +56,21 @@ func TestIdempotencyManager_CheckAndSet(t *testing.T) {
 	}
 }
 
+func TestIdempotencyManager_CloseConcurrent(t *testing.T) {
+	mgr := NewManager(time.Hour)
+
+	const callers = 32
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for range callers {
+		go func() {
+			defer wg.Done()
+			mgr.Close()
+		}()
+	}
+	wg.Wait()
+}
+
 func TestSQLiteIdempotencyPersistsAcrossManagers(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {

@@ -44,10 +44,19 @@ func (a *AssistantApp) IsCritical() bool {
 }
 
 func (a *AssistantApp) Health(ctx context.Context) runtime.ComponentHealth {
-	if a.IsRunning() {
+	switch state := a.client.State(); state {
+	case client.StateRunning:
 		return runtime.ComponentHealth{Status: runtime.HealthHealthy}
+	case client.StateFailed:
+		err := a.client.LastError()
+		return runtime.ComponentHealth{Status: runtime.HealthUnhealthy, Details: "assistant startup or runtime failed", Error: err}
+	case client.StateStarting:
+		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "assistant is starting asynchronously"}
+	case client.StateStopping:
+		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "assistant is stopping"}
+	default:
+		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "assistant not running"}
 	}
-	return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "assistant not running"}
 }
 
 func NewApp(appID int, appHash string, botToken string, logger *zap.Logger) *AssistantApp {
@@ -62,6 +71,7 @@ func NewBotClient(appID int, appHash string, botToken string, logger *zap.Logger
 func (a *AssistantApp) Start(ctx context.Context) error        { return a.client.Start(ctx) }
 func (a *AssistantApp) Stop(ctx context.Context) error         { return a.client.Stop(ctx) }
 func (a *AssistantApp) IsRunning() bool                        { return a.client.IsRunning() }
+func (a *AssistantApp) WaitReady(ctx context.Context) error    { return a.client.WaitReady(ctx) }
 func (a *AssistantApp) Username() string                       { return a.client.Username() }
 func (a *AssistantApp) StartTime() time.Time                   { return a.client.StartTime() }
 func (a *AssistantApp) SetAuthorizer(auth callback.Authorizer) { a.client.SetAuthorizer(auth) }

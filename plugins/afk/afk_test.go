@@ -19,6 +19,8 @@ type mockService struct {
 	sent         string
 	sentTo       tg.InputPeerClass
 	sentMessages []string
+	deletedIDs   []int
+	deleteCh     chan int
 	messages     map[int]*tg.Message
 }
 
@@ -37,6 +39,18 @@ func (m *mockService) EditMessage(ctx context.Context, peer tg.InputPeerClass, m
 	return nil
 }
 func (m *mockService) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {
+	m.mu.Lock()
+	m.deletedIDs = append(m.deletedIDs, msgIDs...)
+	deleteCh := m.deleteCh
+	m.mu.Unlock()
+	if deleteCh != nil {
+		for _, id := range msgIDs {
+			select {
+			case deleteCh <- id:
+			default:
+			}
+		}
+	}
 	return nil
 }
 func (m *mockService) React(ctx context.Context, peer tg.InputPeerClass, msgID int, emoji string) error {
@@ -110,6 +124,7 @@ func TestAFKPlugin(t *testing.T) {
 
 	repo := NewSQLiteRepository(db)
 	p := New(repo, ownerID, func() core.TelegramServicer { return svc })
+	p.SetWelcomeDeleteDelay(10 * time.Millisecond)
 	if p.Name() != "afk" {
 		t.Errorf("expected name afk, got %s", p.Name())
 	}
@@ -198,6 +213,9 @@ func TestAFKPlugin(t *testing.T) {
 	}
 
 	// 5. Normal outgoing message from owner -> deactivates AFK!
+	svc.mu.Lock()
+	svc.deleteCh = make(chan int, 1)
+	svc.mu.Unlock()
 	ownerChatMsg := &tg.Message{
 		ID:      22,
 		Out:     true,
@@ -210,6 +228,14 @@ func TestAFKPlugin(t *testing.T) {
 	}
 	if !strings.Contains(svc.sent, "Welcome back") || !strings.Contains(svc.sent, "turned off") {
 		t.Errorf("expected welcome back message, got: %s", svc.sent)
+	}
+	select {
+	case deletedID := <-svc.deleteCh:
+		if deletedID != 10 {
+			t.Fatalf("deleted message ID = %d, want welcome message ID 10", deletedID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("welcome back message was not auto-deleted")
 	}
 
 	// Verify DB state is now deactivated

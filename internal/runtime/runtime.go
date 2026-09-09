@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -131,7 +132,9 @@ func (r *Runtime) Start(ctx context.Context) error {
 				r.rootCancel()
 
 				if len(rollbackErrs) > 0 {
-					return fmt.Errorf("component %q failed to start: %w (rollback errors: %v)", comp.Name(), err, rollbackErrs)
+					causes := []error{fmt.Errorf("component %q failed to start: %w", comp.Name(), err)}
+					causes = append(causes, rollbackErrs...)
+					return fmt.Errorf("runtime startup and rollback failed: %w", errors.Join(causes...))
 				}
 				return fmt.Errorf("component %q failed to start: %w", comp.Name(), err)
 			}
@@ -206,7 +209,7 @@ func (r *Runtime) performStop(ctx context.Context) error {
 	_ = r.stateMachine.Transition(StateStopped)
 
 	if len(stopErrs) > 0 {
-		return fmt.Errorf("shutdown completed with errors: %v", stopErrs)
+		return fmt.Errorf("shutdown completed with errors: %w", errors.Join(stopErrs...))
 	}
 	return nil
 }

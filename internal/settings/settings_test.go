@@ -592,6 +592,10 @@ func TestServiceResolverCacheAndInvalidation(t *testing.T) {
 	}
 	defer func() { _ = bus.Close() }()
 	svc := NewService(repo, reg, bus)
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start settings service: %v", err)
+	}
+	defer func() { _ = svc.Stop(context.Background()) }()
 
 	// 1. Initial resolution populates cache with default
 	val, err := svc.Resolve(ctx, 10, 20, "core", "prefix")

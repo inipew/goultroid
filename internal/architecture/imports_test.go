@@ -6,7 +6,6 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -190,28 +189,73 @@ func TestLegacyFeatureDatabaseSurfaceIsExplicit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// All domain persistence has been completely migrated to feature-owned repositories!
+	// Infrastructure files are the complete intended production surface of the
+	// generic database package. Domain persistence belongs to feature-owned
+	// repositories and must be listed temporarily in allowedLegacy if migration
+	// cannot happen in the same change.
+	infrastructure := map[string]struct{}{
+		"db.go":                 {},
+		"feature_migrations.go": {},
+		"migration_contract.go": {},
+		"migrations.go":         {},
+		"peers.go":              {},
+		"repository.go":         {},
+	}
 	allowedLegacy := map[string]struct{}{}
 
-	legacy := make([]string, 0, len(allowedLegacy))
+	var names []string
+	foundLegacy := make(map[string]struct{}, len(allowedLegacy))
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+		if entry.IsDir() {
 			continue
 		}
+		names = append(names, entry.Name())
 		if _, ok := allowedLegacy[entry.Name()]; ok {
-			legacy = append(legacy, entry.Name())
+			foundLegacy[entry.Name()] = struct{}{}
 		}
 	}
-	sort.Strings(legacy)
+	unexpected := unexpectedDatabaseFiles(names, infrastructure, allowedLegacy)
+	if len(unexpected) > 0 {
+		t.Fatalf("internal/database contains unexpected production files %v; move domain persistence to its feature-owned repository or explicitly document it as legacy", unexpected)
+	}
 
-	want := make([]string, 0, len(allowedLegacy))
+	var missingLegacy []string
 	for name := range allowedLegacy {
-		want = append(want, name)
+		if _, ok := foundLegacy[name]; !ok {
+			missingLegacy = append(missingLegacy, name)
+		}
 	}
-	sort.Strings(want)
-	if !reflect.DeepEqual(legacy, want) {
-		t.Fatalf("legacy feature persistence surface changed unexpectedly: got %v, want %v; migrate an existing feature before adding another file", legacy, want)
+	sort.Strings(missingLegacy)
+	if len(missingLegacy) > 0 {
+		t.Fatalf("allowed legacy database files no longer exist: %v; remove stale allowlist entries", missingLegacy)
 	}
+}
+
+func TestUnexpectedDatabaseFilesRejectsDomainPersistence(t *testing.T) {
+	infrastructure := map[string]struct{}{"db.go": {}}
+	allowedLegacy := map[string]struct{}{}
+	got := unexpectedDatabaseFiles([]string{"db.go", "moderation.go", "db_test.go"}, infrastructure, allowedLegacy)
+	if len(got) != 1 || got[0] != "moderation.go" {
+		t.Fatalf("unexpectedDatabaseFiles() = %v, want [moderation.go]", got)
+	}
+}
+
+func unexpectedDatabaseFiles(names []string, infrastructure, allowedLegacy map[string]struct{}) []string {
+	var unexpected []string
+	for _, name := range names {
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		if _, ok := infrastructure[name]; ok {
+			continue
+		}
+		if _, ok := allowedLegacy[name]; ok {
+			continue
+		}
+		unexpected = append(unexpected, name)
+	}
+	sort.Strings(unexpected)
+	return unexpected
 }
 
 func TestAllModulesUseRegisterPlugin(t *testing.T) {

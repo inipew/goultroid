@@ -20,10 +20,11 @@ type entry struct {
 
 // Manager manages idempotency keys and deduplication windows to prevent duplicate side effects.
 type Manager struct {
-	mu      sync.RWMutex
-	entries map[string]entry
-	repo    Repository
-	stopCh  chan struct{}
+	mu       sync.RWMutex
+	entries  map[string]entry
+	repo     Repository
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 // NewManager creates an in-memory Idempotency Manager and starts a background eviction loop.
@@ -76,11 +77,9 @@ func (m *Manager) evictExpired() {
 
 // Close stops the background eviction loop.
 func (m *Manager) Close() {
-	select {
-	case <-m.stopCh:
-	default:
+	m.stopOnce.Do(func() {
 		close(m.stopCh)
-	}
+	})
 }
 
 // CheckAndSet returns true if the key was NOT previously seen within its TTL (i.e. first time),

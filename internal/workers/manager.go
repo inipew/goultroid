@@ -76,7 +76,7 @@ func (m *Manager) Stop(ctx context.Context) error {
 	}
 
 	if len(stopErrs) > 0 {
-		return fmt.Errorf("worker manager stop encountered errors: %v", stopErrs)
+		return fmt.Errorf("worker manager stop encountered errors: %w", errors.Join(stopErrs...))
 	}
 	return nil
 }

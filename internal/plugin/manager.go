@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -550,7 +551,7 @@ func (m *Manager) Disable(ctx context.Context, name string) error {
 	}
 
 	if len(errs) > 0 {
-		return fmt.Errorf("errors disabling plugin %s: %v", name, errs)
+		return fmt.Errorf("errors disabling plugin %s: %w", name, errors.Join(errs...))
 	}
 
 	m.mu.RLock()
