@@ -235,7 +235,7 @@ func (p *Plugin) handleBan(ctx *core.Context) error {
 	}
 	p.publishAdminAction(ctx, "ban", targetID, rawReason)
 
-	return ctx.EditOrReply(fmt.Sprintf("🔨 Banned user <code>%d</code>.%s", targetID, reason))
+	return ctx.EditOrReply(fmt.Sprintf("🔨 Banned user %s.%s", ctx.DisplayUser(targetPeer, targetID), reason))
 }
 
 func (p *Plugin) handleUnban(ctx *core.Context) error {
@@ -257,7 +257,7 @@ func (p *Plugin) handleUnban(ctx *core.Context) error {
 
 	p.publishAdminAction(ctx, "unban", targetID, "")
 
-	return ctx.EditOrReply(fmt.Sprintf("✅ Unbanned user <code>%d</code>.", targetID))
+	return ctx.EditOrReply(fmt.Sprintf("✅ Unbanned user %s.", ctx.DisplayUser(targetPeer, targetID)))
 }
 
 func (p *Plugin) handleKick(ctx *core.Context) error {
@@ -288,7 +288,7 @@ func (p *Plugin) handleKick(ctx *core.Context) error {
 	}
 	p.publishAdminAction(ctx, "kick", targetID, kickReason)
 
-	return ctx.EditOrReply(fmt.Sprintf("👢 Kicked user <code>%d</code>.", targetID))
+	return ctx.EditOrReply(fmt.Sprintf("👢 Kicked user %s.", ctx.DisplayUser(targetPeer, targetID)))
 }
 
 func (p *Plugin) handleMute(ctx *core.Context) error {
@@ -331,7 +331,7 @@ func (p *Plugin) handleMute(ctx *core.Context) error {
 
 	p.publishAdminAction(ctx, "mute", targetID, durStr)
 
-	return ctx.EditOrReply(fmt.Sprintf("🔇 Muted user <code>%d</code>%s.", targetID, durStr))
+	return ctx.EditOrReply(fmt.Sprintf("🔇 Muted user %s%s.", ctx.DisplayUser(targetPeer, targetID), durStr))
 }
 
 func (p *Plugin) handleUnmute(ctx *core.Context) error {
@@ -353,7 +353,7 @@ func (p *Plugin) handleUnmute(ctx *core.Context) error {
 
 	p.publishAdminAction(ctx, "unmute", targetID, "")
 
-	return ctx.EditOrReply(fmt.Sprintf("🔊 Unmuted user <code>%d</code>.", targetID))
+	return ctx.EditOrReply(fmt.Sprintf("🔊 Unmuted user %s.", ctx.DisplayUser(targetPeer, targetID)))
 }
 
 func (p *Plugin) handlePurge(ctx *core.Context) error {
@@ -420,7 +420,7 @@ func (p *Plugin) handlePromote(ctx *core.Context) error {
 		titleStr = fmt.Sprintf(" with title <i>%s</i>", core.EscapeHTML(title))
 	}
 
-	return ctx.EditOrReply(fmt.Sprintf("👑 Promoted user <code>%d</code>%s to admin.", targetID, titleStr))
+	return ctx.EditOrReply(fmt.Sprintf("👑 Promoted user %s%s to admin.", ctx.DisplayUser(targetPeer, targetID), titleStr))
 }
 
 func (p *Plugin) handleDemote(ctx *core.Context) error {
@@ -447,7 +447,7 @@ func (p *Plugin) handleDemote(ctx *core.Context) error {
 
 	p.publishAdminAction(ctx, "demote", targetID, "")
 
-	return ctx.EditOrReply(fmt.Sprintf("📉 Demoted admin <code>%d</code> to normal user.", targetID))
+	return ctx.EditOrReply(fmt.Sprintf("📉 Demoted admin %s to normal user.", ctx.DisplayUser(targetPeer, targetID)))
 }
 
 func parseDuration(s string) (time.Duration, error) {
@@ -507,7 +507,7 @@ func (p *Plugin) handleWarn(ctx *core.Context) error {
 		return err
 	}
 
-	targetStr := fmt.Sprintf("%d", targetID)
+	targetStr := ctx.DisplayUser(targetPeer, targetID)
 	text := ctx.T("admin.warned", targetStr, res.CurrentCount, res.Threshold, reason)
 	if res.ActionTaken != moderation.ActionNone {
 		text += "\n" + ctx.T("admin.warn_threshold_reached", targetStr, res.Threshold, res.ActionTaken)
@@ -526,7 +526,7 @@ func (p *Plugin) handleWarns(ctx *core.Context) error {
 		return fmt.Errorf("%w: moderation service is nil", core.ErrUnavailable)
 	}
 
-	_, targetID, err := ctx.ResolveTargetUser()
+	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
 		_ = ctx.EditOrReply("⚠️ " + err.Error())
 		return err
@@ -539,7 +539,7 @@ func (p *Plugin) handleWarns(ctx *core.Context) error {
 		return err
 	}
 
-	targetStr := fmt.Sprintf("%d", targetID)
+	targetStr := ctx.DisplayUser(targetPeer, targetID)
 	if len(records) == 0 {
 		return ctx.EditOrReply(fmt.Sprintf("User <b>%s</b> has 0 active warnings.", targetStr))
 	}
@@ -564,7 +564,7 @@ func (p *Plugin) handleResetWarns(ctx *core.Context) error {
 		return fmt.Errorf("%w: moderation service is nil", core.ErrUnavailable)
 	}
 
-	_, targetID, err := ctx.ResolveTargetUser()
+	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
 		_ = ctx.EditOrReply("⚠️ " + err.Error())
 		return err
@@ -576,7 +576,7 @@ func (p *Plugin) handleResetWarns(ctx *core.Context) error {
 		return err
 	}
 
-	targetStr := fmt.Sprintf("%d", targetID)
+	targetStr := ctx.DisplayUser(targetPeer, targetID)
 	return ctx.EditOrReply(ctx.T("admin.warns_cleared", targetStr))
 }
 

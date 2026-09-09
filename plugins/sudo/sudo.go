@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/plugin"
 )
@@ -96,23 +97,31 @@ func (p *Plugin) Commands() []core.Command {
 	}
 }
 
-func (p *Plugin) resolveTargetUser(ctx *core.Context) (int64, error) {
+func (p *Plugin) resolveTargetUser(ctx *core.Context) (tg.InputPeerClass, int64, error) {
 	if len(ctx.Args) > 0 {
-		id, err := strconv.ParseInt(ctx.Args[0], 10, 64)
-		if err == nil && id != 0 {
-			return id, nil
+		id, parseErr := strconv.ParseInt(ctx.Args[0], 10, 64)
+		if parseErr == nil && id > 0 {
+			peer, resolvedID, err := ctx.ResolveUser(ctx.Args[0])
+			if err == nil && resolvedID == id {
+				return peer, id, nil
+			}
+			return nil, id, nil
 		}
-		_, targetID, err := ctx.ResolveUser(ctx.Args[0])
+		peer, targetID, err := ctx.ResolveUser(ctx.Args[0])
 		if err == nil && targetID != 0 {
-			return targetID, nil
+			return peer, targetID, nil
 		}
 	}
 
 	reply, err := ctx.GetReply()
 	if err == nil && reply != nil && reply.SenderID != 0 {
-		return reply.SenderID, nil
+		peer, targetID, resolveErr := ctx.ResolveUser(strconv.FormatInt(reply.SenderID, 10))
+		if resolveErr == nil && targetID != 0 {
+			return peer, targetID, nil
+		}
+		return nil, reply.SenderID, nil
 	}
-	return 0, fmt.Errorf("please provide a valid user ID or reply to a user's message")
+	return nil, 0, fmt.Errorf("please provide a valid user ID or reply to a user's message")
 }
 
 func (p *Plugin) handleAddSudo(ctx *core.Context) error {
@@ -120,7 +129,7 @@ func (p *Plugin) handleAddSudo(ctx *core.Context) error {
 		return ctx.EditOrReply("❌ Sudo service is not configured.")
 	}
 
-	targetID, err := p.resolveTargetUser(ctx)
+	targetPeer, targetID, err := p.resolveTargetUser(ctx)
 	if err != nil {
 		_ = ctx.EditOrReply("⚠️ " + err.Error())
 		return err
@@ -130,14 +139,14 @@ func (p *Plugin) handleAddSudo(ctx *core.Context) error {
 		return fmt.Errorf("user %d is owner", targetID)
 	}
 	if p.perms.IsSudo(targetID) {
-		return ctx.EditOrReply(fmt.Sprintf("ℹ️ User <code>%d</code> is already a sudo user.", targetID))
+		return ctx.EditOrReply(fmt.Sprintf("ℹ️ %s is already a sudo user.", ctx.DisplayUser(targetPeer, targetID)))
 	}
 	if err := p.db.AddSudoUser(ctx.Ctx, targetID, ctx.SenderID()); err != nil {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to add sudo user: %v", err))
 		return err
 	}
 	p.perms.AddSudo(targetID)
-	return ctx.EditOrReply(fmt.Sprintf("✅ User <code>%d</code> added to sudo users.", targetID))
+	return ctx.EditOrReply(fmt.Sprintf("✅ %s added to sudo users.", ctx.DisplayUser(targetPeer, targetID)))
 }
 
 func (p *Plugin) handleDelSudo(ctx *core.Context) error {
@@ -145,7 +154,7 @@ func (p *Plugin) handleDelSudo(ctx *core.Context) error {
 		return ctx.EditOrReply("❌ Sudo service is not configured.")
 	}
 
-	targetID, err := p.resolveTargetUser(ctx)
+	targetPeer, targetID, err := p.resolveTargetUser(ctx)
 	if err != nil {
 		_ = ctx.EditOrReply("⚠️ " + err.Error())
 		return err
@@ -159,7 +168,7 @@ func (p *Plugin) handleDelSudo(ctx *core.Context) error {
 		return err
 	}
 	p.perms.RemoveSudo(targetID)
-	return ctx.EditOrReply(fmt.Sprintf("🗑️ User <code>%d</code> removed from sudo users.", targetID))
+	return ctx.EditOrReply(fmt.Sprintf("🗑️ %s removed from sudo users.", ctx.DisplayUser(targetPeer, targetID)))
 }
 
 func (p *Plugin) handleSudoList(ctx *core.Context) error {

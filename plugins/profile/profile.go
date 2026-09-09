@@ -312,7 +312,7 @@ func (p *Plugin) handleBlock(ctx *core.Context) error {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to block user: %v", err))
 	}
 
-	return ctx.EditOrReply(fmt.Sprintf("🚫 <b>User blocked:</b> <code>%d</code>", uid))
+	return ctx.EditOrReply(fmt.Sprintf("🚫 <b>User blocked:</b> %s", ctx.DisplayUser(peer, uid)))
 }
 
 // handleUnblock unblocks a user.
@@ -326,7 +326,7 @@ func (p *Plugin) handleUnblock(ctx *core.Context) error {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to unblock user: %v", err))
 	}
 
-	return ctx.EditOrReply(fmt.Sprintf("✅ <b>User unblocked:</b> <code>%d</code>", uid))
+	return ctx.EditOrReply(fmt.Sprintf("✅ <b>User unblocked:</b> %s", ctx.DisplayUser(peer, uid)))
 }
 
 // handleContacts lists saved contacts.

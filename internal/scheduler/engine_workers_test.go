@@ -28,6 +28,7 @@ func TestEngine_WithWorkerManager(t *testing.T) {
 
 	workerMgr := workers.NewManager()
 	taskMgr := tasks.NewManager()
+	workerMgr.SetTasksManager(taskMgr)
 	engine.SetWorkers(workerMgr, taskMgr)
 
 	ctx, cancel := context.WithCancel(context.Background())

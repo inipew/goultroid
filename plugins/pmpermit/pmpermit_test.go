@@ -227,6 +227,52 @@ func TestPMPermitPlugin_HandleIncomingMessage(t *testing.T) {
 	}
 }
 
+func TestPMPermitPlugin_HandleIncomingMessage_ResolvesMissingAccessHash(t *testing.T) {
+	db := setupTestDB(t)
+	mockTG := &mockTelegram{}
+	perms := core.NewPermissions(12345, nil)
+	svc := pmpermitSvc.NewService(pmpermit.NewSQLiteRepository(db), mockTG, 12345, perms, zap.NewNop())
+	p := pmpermit.New(svc)
+	p.SetResolver(&core.MockPeerResolver{
+		UserID:   9999,
+		UserPeer: &tg.InputPeerUser{UserID: 9999, AccessHash: 123456},
+	})
+
+	msg := &tg.Message{
+		ID:     3,
+		PeerID: &tg.PeerUser{UserID: 9999},
+		FromID: &tg.PeerUser{UserID: 9999},
+	}
+	entities := tg.Entities{Users: map[int64]*tg.User{
+		9999: {ID: 9999}, // Telegram min user: access hash is absent.
+	}}
+
+	err := p.HandleIncomingMessage(context.Background(), entities, msg, false, "")
+	if !errors.Is(err, core.ErrInterceptHandled) {
+		t.Fatalf("expected resolved PM to be intercepted, got %v", err)
+	}
+	if !strings.Contains(mockTG.sentText, "Warning") {
+		t.Fatalf("expected warning to be sent through resolved peer, got %q", mockTG.sentText)
+	}
+}
+
+func TestPMPermitPlugin_HandleIncomingMessage_UnresolvedSenderIsSafelyIntercepted(t *testing.T) {
+	db := setupTestDB(t)
+	perms := core.NewPermissions(12345, nil)
+	svc := pmpermitSvc.NewService(pmpermit.NewSQLiteRepository(db), &mockTelegram{}, 12345, perms, zap.NewNop())
+	p := pmpermit.New(svc)
+
+	msg := &tg.Message{
+		ID:     4,
+		PeerID: &tg.PeerUser{UserID: 9999},
+		FromID: &tg.PeerUser{UserID: 9999},
+	}
+	err := p.HandleIncomingMessage(context.Background(), tg.Entities{}, msg, false, "")
+	if !errors.Is(err, core.ErrInterceptHandled) {
+		t.Fatalf("expected unresolved PM to be safely intercepted, got %v", err)
+	}
+}
+
 func TestPMPermitPlugin_DisapproveAndWarningDoNotAutoApprove(t *testing.T) {
 	db := setupTestDB(t)
 	mockTG := &mockTelegram{

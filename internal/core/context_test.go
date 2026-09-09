@@ -111,6 +111,14 @@ func (m *mockTelegramServicer) SendMedia(ctx context.Context, peer tg.InputPeerC
 func (m *mockTelegramServicer) GetFullUser(ctx context.Context, user tg.InputUserClass) (*tg.UsersUserFull, error) {
 	return &tg.UsersUserFull{}, nil
 }
+
+type displayUserTelegramServicer struct{ mockTelegramServicer }
+
+func (m *displayUserTelegramServicer) GetFullUser(ctx context.Context, user tg.InputUserClass) (*tg.UsersUserFull, error) {
+	return &tg.UsersUserFull{Users: []tg.UserClass{
+		&tg.User{ID: 42, FirstName: "Alice &", LastName: "Bob", Username: "alice"},
+	}}, nil
+}
 func (m *mockTelegramServicer) ResolveUsername(ctx context.Context, username string) (*tg.ContactsResolvedPeer, error) {
 	if username == "targetuser" {
 		return &tg.ContactsResolvedPeer{
@@ -538,6 +546,18 @@ func TestContext_InfoHelpers(t *testing.T) {
 	}
 	if _, err := nilCtx.GetFullChat(); err == nil {
 		t.Errorf("expected error with nil service")
+	}
+}
+
+func TestContext_DisplayUser(t *testing.T) {
+	ctx := &Context{Ctx: context.Background(), Svc: &displayUserTelegramServicer{}}
+	peer := &tg.InputPeerUser{UserID: 42, AccessHash: 99}
+
+	if got := ctx.DisplayUser(peer, 42); got != `<a href="tg://user?id=42">Alice &amp; Bob</a>` {
+		t.Fatalf("unexpected display user: %q", got)
+	}
+	if got := ctx.DisplayUser(nil, 77); got != "<code>77</code>" {
+		t.Fatalf("expected numeric fallback, got %q", got)
 	}
 }
 

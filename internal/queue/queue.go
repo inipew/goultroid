@@ -129,20 +129,15 @@ func (q *Queue[T]) Push(ctx context.Context, item T) error {
 				return err
 			}
 
-			// Wait for room or context cancel
-			done := make(chan struct{})
-			go func() {
-				select {
-				case <-ctx.Done():
-					q.mu.Lock()
-					q.notFull.Broadcast()
-					q.mu.Unlock()
-				case <-done:
-				}
-			}()
-
+			// Register one cancellation callback without keeping an extra goroutine
+			// alive for every blocked producer.
+			stopWake := context.AfterFunc(ctx, func() {
+				q.mu.Lock()
+				q.notFull.Broadcast()
+				q.mu.Unlock()
+			})
 			q.notFull.Wait()
-			close(done)
+			stopWake()
 
 			if err := ctx.Err(); err != nil {
 				return err
@@ -179,19 +174,15 @@ func (q *Queue[T]) Pop(ctx context.Context) (T, error) {
 			return zero, err
 		}
 
-		done := make(chan struct{})
-		go func() {
-			select {
-			case <-ctx.Done():
-				q.mu.Lock()
-				q.notEmpty.Broadcast()
-				q.mu.Unlock()
-			case <-done:
-			}
-		}()
-
+		// Register one cancellation callback without keeping an extra goroutine
+		// alive for every idle consumer.
+		stopWake := context.AfterFunc(ctx, func() {
+			q.mu.Lock()
+			q.notEmpty.Broadcast()
+			q.mu.Unlock()
+		})
 		q.notEmpty.Wait()
-		close(done)
+		stopWake()
 
 		if err := ctx.Err(); err != nil {
 			return zero, err

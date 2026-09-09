@@ -53,6 +53,12 @@ func TestManager_ComponentAndPools(t *testing.T) {
 	if mgr.Name() != "workers" {
 		t.Errorf("expected name 'workers', got %s", mgr.Name())
 	}
+	if _, exists := mgr.Get("event"); exists {
+		t.Fatal("event pool duplicates the EventBus executor and must not be provisioned")
+	}
+	if got := len(mgr.AllStats()); got != 4 {
+		t.Fatalf("expected 4 workload pools, got %d", got)
+	}
 
 	ctx := context.Background()
 	if err := mgr.Start(ctx); err != nil {

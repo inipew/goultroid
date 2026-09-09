@@ -9,6 +9,39 @@ import (
 	"github.com/gotd/td/tg"
 )
 
+// DisplayUser returns an HTML-safe, clickable display name for a user. It
+// falls back to the numeric ID when Telegram cannot provide profile details.
+func (p *PeerFacade) DisplayUser(peer tg.InputPeerClass, userID int64) string {
+	fallback := fmt.Sprintf("<code>%d</code>", userID)
+	c := p.ctx
+	if c == nil || c.Svc == nil || userID == 0 {
+		return fallback
+	}
+	inputPeer, ok := peer.(*tg.InputPeerUser)
+	if !ok || inputPeer == nil || inputPeer.AccessHash == 0 {
+		return fallback
+	}
+	full, err := c.Svc.GetFullUser(c.Ctx, &tg.InputUser{UserID: inputPeer.UserID, AccessHash: inputPeer.AccessHash})
+	if err != nil || full == nil {
+		return fallback
+	}
+	for _, userClass := range full.Users {
+		user, ok := userClass.(*tg.User)
+		if !ok || user == nil || user.ID != userID {
+			continue
+		}
+		name := strings.TrimSpace(strings.Join([]string{user.FirstName, user.LastName}, " "))
+		if name == "" && user.Username != "" {
+			name = "@" + user.Username
+		}
+		if name == "" {
+			return fallback
+		}
+		return fmt.Sprintf("<a href=\"tg://user?id=%d\">%s</a>", userID, EscapeHTML(name))
+	}
+	return fallback
+}
+
 type PeerFacade struct{ ctx *Context }
 
 func (p *PeerFacade) ResolveUser(ref string) (tg.InputPeerClass, int64, error) {

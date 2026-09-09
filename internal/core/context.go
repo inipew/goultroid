@@ -567,6 +567,11 @@ func (c *Context) GetFullUser(user tg.InputUserClass) (*tg.UsersUserFull, error)
 	return c.Peer().GetFullUser(user)
 }
 
+// DisplayUser returns the target user's display name formatted for Telegram HTML.
+func (c *Context) DisplayUser(peer tg.InputPeerClass, userID int64) string {
+	return c.Peer().DisplayUser(peer, userID)
+}
+
 // ResolveUsername resolves a public username to user/chat entities.
 func (c *Context) ResolveUsername(username string) (*tg.ContactsResolvedPeer, error) {
 	return c.Peer().ResolveUsername(username)

@@ -3,6 +3,7 @@ package pmpermit
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,11 +16,13 @@ import (
 var _ plugin.MessageHookPlugin = (*Plugin)(nil)
 
 type Plugin struct {
-	svc *pmpermit.Service
+	svc      *pmpermit.Service
+	resolver core.PeerResolver
 }
 
-func New(svc *pmpermit.Service) *Plugin { return &Plugin{svc: svc} }
-func (p *Plugin) Name() string          { return "pmpermit" }
+func New(svc *pmpermit.Service) *Plugin                  { return &Plugin{svc: svc} }
+func (p *Plugin) SetResolver(resolver core.PeerResolver) { p.resolver = resolver }
+func (p *Plugin) Name() string                           { return "pmpermit" }
 func (p *Plugin) Description() string {
 	return "Anti-spam shield and private message access control system"
 }
@@ -77,12 +80,32 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 			senderID = u.UserID
 		}
 	}
-	user, ok := e.Users[senderID]
-	if !ok || user == nil || user.AccessHash == 0 {
-		return fmt.Errorf("pmpermit: cannot resolve sender %d to a usable InputPeerUser", senderID)
+	user := e.Users[senderID]
+	var peerInput *tg.InputPeerUser
+	if user != nil && user.AccessHash != 0 {
+		peerInput = &tg.InputPeerUser{UserID: senderID, AccessHash: user.AccessHash}
+	} else if p.resolver != nil {
+		peer, resolvedID, err := p.resolver.ResolveUser(ctx, strconv.FormatInt(senderID, 10))
+		if resolved, ok := peer.(*tg.InputPeerUser); err == nil && ok && resolved != nil &&
+			resolved.UserID == senderID && resolvedID == senderID && resolved.AccessHash != 0 {
+			peerInput = resolved
+		}
 	}
-	peerInput := &tg.InputPeerUser{UserID: senderID, AccessHash: user.AccessHash}
-	actor := pmpermit.PMActor{UserID: senderID, IsBot: user.Bot, Verified: user.Verified, IsSelf: user.Self}
+	actor := pmpermit.PMActor{UserID: senderID}
+	if user != nil {
+		actor.IsBot = user.Bot
+		actor.Verified = user.Verified
+		actor.IsSelf = user.Self
+	}
+	if actor.IsBot || actor.Verified || actor.IsSelf {
+		return nil
+	}
+	if peerInput == nil {
+		// Do not let an unapproved private message reach commands or other
+		// automation merely because Telegram supplied a min/incomplete user.
+		// A later update can retry after the peer cache has been populated.
+		return core.ErrInterceptHandled
+	}
 	handled, err := p.svc.HandleIncomingPM(ctx, peerInput, senderID, actor)
 	if err != nil {
 		return err
@@ -131,21 +154,21 @@ func (p *Plugin) handleApprove(ctx *core.Context) error {
 	if err := p.svc.ApproveWithPeer(ctx.Ctx, peer, target, reason, 0); err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to approve user: %v", err))
 	}
-	return ctx.EditOrReplyWithDelay(fmt.Sprintf("✅ <b>Approved</b> user <code>%d</code> for private messaging.", target), 4*time.Second)
+	return ctx.EditOrReplyWithDelay(fmt.Sprintf("✅ <b>Approved</b> %s for private messaging.", ctx.DisplayUser(peer, target)), 4*time.Second)
 }
 
 func (p *Plugin) handleDisapprove(ctx *core.Context) error {
 	if p.svc == nil {
 		return ctx.EditOrReply("⚠️ PM Permit service is not configured.")
 	}
-	_, target := p.resolveTargetUser(ctx)
+	peer, target := p.resolveTargetUser(ctx)
 	if target == 0 {
 		return ctx.EditOrReply("⚠️ Could not determine user. Reply to a message, run inside a PM, or provide user ID / @username.")
 	}
 	if err := p.svc.Disapprove(ctx.Ctx, target); err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to revoke approval: %v", err))
 	}
-	return ctx.EditOrReplyWithDelay(fmt.Sprintf("⚠️ <b>Revoked approval</b> for user <code>%d</code>.", target), 4*time.Second)
+	return ctx.EditOrReplyWithDelay(fmt.Sprintf("⚠️ <b>Revoked approval</b> for %s.", ctx.DisplayUser(peer, target)), 4*time.Second)
 }
 
 func (p *Plugin) handleBlock(ctx *core.Context) error {
@@ -166,7 +189,7 @@ func (p *Plugin) handleBlock(ctx *core.Context) error {
 	if err := p.svc.BlockWithPeer(ctx.Ctx, peer, target, reason); err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to block user: %v", err))
 	}
-	return ctx.EditOrReplyWithDelay(fmt.Sprintf("⛔ <b>Blocked</b> user <code>%d</code> from private messaging.", target), 4*time.Second)
+	return ctx.EditOrReplyWithDelay(fmt.Sprintf("⛔ <b>Blocked</b> %s from private messaging.", ctx.DisplayUser(peer, target)), 4*time.Second)
 }
 
 func (p *Plugin) handleUnblock(ctx *core.Context) error {
@@ -180,7 +203,7 @@ func (p *Plugin) handleUnblock(ctx *core.Context) error {
 	if err := p.svc.Unblock(ctx.Ctx, peer, target); err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to unblock user: %v", err))
 	}
-	return ctx.EditOrReplyWithDelay(fmt.Sprintf("✅ <b>Unblocked</b> user <code>%d</code>.", target), 4*time.Second)
+	return ctx.EditOrReplyWithDelay(fmt.Sprintf("✅ <b>Unblocked</b> %s.", ctx.DisplayUser(peer, target)), 4*time.Second)
 }
 
 func (p *Plugin) handleListApproved(ctx *core.Context) error {
@@ -253,7 +276,7 @@ func (p *Plugin) handleToggle(ctx *core.Context) error {
 		if err := p.svc.Unblock(ctx.Ctx, peer, target); err != nil {
 			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to unblock user: %v", err))
 		}
-		return ctx.EditOrReplyWithDelay(fmt.Sprintf("✅ <b>Unblocked</b> user <code>%d</code>.", target), 4*time.Second)
+		return ctx.EditOrReplyWithDelay(fmt.Sprintf("✅ <b>Unblocked</b> %s.", ctx.DisplayUser(peer, target)), 4*time.Second)
 	case "list":
 		statusFilter := "approved"
 		if len(ctx.Args) > 1 {

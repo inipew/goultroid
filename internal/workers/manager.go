@@ -13,7 +13,6 @@ import (
 )
 
 const (
-	PoolEvent        = "event"
 	PoolGeneral      = "general"
 	PoolDownload     = "download"
 	PoolMediaProcess = "media-process"
@@ -37,7 +36,6 @@ func NewManager() *Manager {
 	}
 
 	// Initialize default isolated pools per Blueprint §30
-	m.pools[PoolEvent] = NewPool(PoolEvent, 16, 500, queue.PolicyBlock)
 	m.pools[PoolGeneral] = NewPool(PoolGeneral, 8, 200, queue.PolicyBlock)
 	m.pools[PoolDownload] = NewPool(PoolDownload, 3, 50, queue.PolicyReject)
 	m.pools[PoolMediaProcess] = NewPool(PoolMediaProcess, 2, 20, queue.PolicyReject)

@@ -560,7 +560,10 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) {
 	if e.workers != nil {
 		if schedPool, ok := e.workers.Get(workers.PoolScheduler); ok {
 			stats := schedPool.Stats()
-			avail := stats.QueueStats.Capacity - stats.QueueStats.Depth
+			// Durable jobs should only be claimed when a worker can start them.
+			// Queue capacity is not execution capacity: claiming queued work starts
+			// its lease before it can run and can cause avoidable lease expiry.
+			avail := stats.Concurrency - stats.Busy
 			if avail < availableSlots {
 				availableSlots = avail
 			}
@@ -581,20 +584,20 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) {
 	for _, job := range claimedJobs {
 		j := job
 		if e.workers != nil {
+			select {
+			case e.sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			var reservationOnce sync.Once
+			releaseReservation := func() {
+				reservationOnce.Do(func() { <-e.sem })
+			}
 			taskID := fmt.Sprintf("sched-%d-%s", j.ID, j.ClaimToken)
 			jobCtx, cancel := context.WithCancel(e.ctx)
+			context.AfterFunc(jobCtx, releaseReservation)
 			e.registerActiveJob(j.ID, j.ClaimToken, cancel)
 			taskName := fmt.Sprintf("%s-%d", j.ActionType, j.ID)
-			if e.taskMgr != nil {
-				if regCtx, _, err := e.taskMgr.Register(jobCtx, tasks.Task{
-					ID:    taskID,
-					Owner: "scheduler",
-					Name:  taskName,
-					Run:   func(ctx context.Context) error { return nil },
-				}); err == nil {
-					jobCtx = regCtx
-				}
-			}
 
 			task := tasks.Task{
 				ID:        taskID,
@@ -603,15 +606,10 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) {
 				Timeout:   90 * time.Second,
 				CreatedAt: time.Now().UTC(),
 				Run: func(taskCtx context.Context) error {
-					if e.taskMgr != nil {
-						_, _ = e.taskMgr.Start(taskID)
-					}
 					defer func() {
+						releaseReservation()
 						e.unregisterActiveJob(j.ID, j.ClaimToken)
 						cancel()
-						if e.taskMgr != nil {
-							e.taskMgr.Finish(taskID, tasks.StateCompleted, nil)
-						}
 					}()
 					e.executeJob(taskCtx, j, cancel)
 					return nil
@@ -619,6 +617,7 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) {
 			}
 
 			if err := e.workers.Submit(ctx, workers.PoolScheduler, task); err != nil {
+				releaseReservation()
 				e.logger.Error("failed to submit scheduled job to worker pool", zap.Int64("job_id", j.ID), zap.Error(err))
 				e.unregisterActiveJob(j.ID, j.ClaimToken)
 				cancel()
