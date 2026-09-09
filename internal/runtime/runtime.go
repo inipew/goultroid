@@ -216,9 +216,10 @@ func (r *Runtime) performStop(ctx context.Context) error {
 // Health probes all registered components and returns an aggregated health report.
 func (r *Runtime) Health(ctx context.Context) AggregateHealth {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	currentState := r.stateMachine.Current()
+	components := append([]Component(nil), r.startedComps...)
+	r.mu.Unlock()
+
 	report := AggregateHealth{
 		Status:     HealthHealthy,
 		Ready:      currentState == StateRunning,
@@ -236,7 +237,7 @@ func (r *Runtime) Health(ctx context.Context) AggregateHealth {
 		}
 	}
 
-	for _, comp := range r.startedComps {
+	for _, comp := range components {
 		h := comp.Health(ctx)
 		status := h.Status
 		if status == "" {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 )
 
 type recordedCall struct {
@@ -20,6 +21,18 @@ type recordingComponent struct {
 	failStart    bool
 	failStop     bool
 	health       ComponentHealth
+}
+
+type blockingHealthComponent struct {
+	recordingComponent
+	healthStarted chan struct{}
+	releaseHealth chan struct{}
+}
+
+func (c *blockingHealthComponent) Health(context.Context) ComponentHealth {
+	close(c.healthStarted)
+	<-c.releaseHealth
+	return ComponentHealth{Status: HealthHealthy}
 }
 
 func (c *recordingComponent) Name() string           { return c.name }
@@ -207,4 +220,40 @@ func TestRuntime_HealthAggregation(t *testing.T) {
 	if h.Components["db"] != HealthHealthy || h.Components["cache"] != HealthDegraded {
 		t.Errorf("unexpected component health: %+v", h.Components)
 	}
+}
+
+func TestRuntime_HealthProbeDoesNotBlockStop(t *testing.T) {
+	r := New()
+	var calls []recordedCall
+	var mu sync.Mutex
+	comp := &blockingHealthComponent{
+		recordingComponent: recordingComponent{name: "slow-health", calls: &calls, mu: &mu},
+		healthStarted:      make(chan struct{}),
+		releaseHealth:      make(chan struct{}),
+	}
+	if err := r.Register(comp); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	healthDone := make(chan struct{})
+	go func() {
+		_ = r.Health(context.Background())
+		close(healthDone)
+	}()
+	<-comp.healthStarted
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- r.Stop(context.Background()) }()
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("slow health probe blocked lifecycle stop")
+	}
+	close(comp.releaseHealth)
+	<-healthDone
 }

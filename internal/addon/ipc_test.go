@@ -45,3 +45,32 @@ done
 		t.Fatalf("runtime stop failed: %v", err)
 	}
 }
+
+func TestExternalRuntimeDetectsUnexpectedProcessExit(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "exit-addon.sh")
+	content := `#!/bin/sh
+IFS= read -r line
+id=$(printf '%s\n' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+printf '{"id":"%s","ok":true,"result":{"protocol":1}}\n' "$id"
+exit 0
+`
+	if err := os.WriteFile(script, []byte(content), 0700); err != nil {
+		t.Fatalf("write addon fixture: %v", err)
+	}
+	runtime := NewExternalRuntime(Manifest{Name: "exiting", Version: "1.0.0"}, script, nil)
+	if err := runtime.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for runtime.Running() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if runtime.Running() {
+		t.Fatal("runtime still reports running after child process exited")
+	}
+	if _, err := runtime.Call(context.Background(), "test", nil); err == nil {
+		t.Fatal("Call() succeeded after child process exited")
+	}
+}

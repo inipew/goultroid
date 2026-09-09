@@ -80,7 +80,10 @@ type ExternalRuntime struct {
 	mu         sync.Mutex
 	callMu     sync.Mutex
 	running    bool
+	stopping   bool
 	seq        uint64
+	exitDone   chan struct{}
+	exitErr    error
 }
 
 func NewExternalRuntime(manifest Manifest, executable string, broker *CapabilityBroker) *ExternalRuntime {
@@ -184,13 +187,51 @@ func (r *ExternalRuntime) Start(ctx context.Context) error {
 	r.stdin = stdin
 	r.stdout = bufio.NewReader(io.LimitReader(stdout, 8<<20))
 	r.running = true
+	r.stopping = false
+	r.exitDone = make(chan struct{})
+	r.exitErr = nil
 	r.mu.Unlock()
+	go r.watchProcess(cmd)
 
 	if err := r.handshake(ctx); err != nil {
 		_ = r.Stop()
 		return err
 	}
 	return nil
+}
+
+func (r *ExternalRuntime) watchProcess(cmd *exec.Cmd) {
+	err := cmd.Wait()
+
+	r.mu.Lock()
+	if r.cmd != cmd {
+		r.mu.Unlock()
+		return
+	}
+	stdin := r.stdin
+	done := r.exitDone
+	procMgr := r.procMgr
+	procID := r.procID
+	logger := r.logger
+	unexpected := !r.stopping
+	r.running = false
+	r.cmd, r.stdin, r.stdout = nil, nil, nil
+	r.procID = ""
+	r.exitErr = err
+	r.mu.Unlock()
+
+	if stdin != nil {
+		_ = stdin.Close()
+	}
+	if procMgr != nil && procID != "" {
+		procMgr.ReleaseCmd(procID)
+	}
+	if done != nil {
+		close(done)
+	}
+	if unexpected && logger != nil {
+		logger.Warn("addon process exited", zap.String("addon", r.manifest.Name), zap.Error(err))
+	}
 }
 
 func (r *ExternalRuntime) handshake(ctx context.Context) error {
@@ -294,30 +335,29 @@ func (r *ExternalRuntime) callLocked(ctx context.Context, method string, params 
 
 func (r *ExternalRuntime) Stop() error {
 	r.mu.Lock()
-	if !r.running {
+	if r.exitDone == nil {
 		r.mu.Unlock()
 		return nil
 	}
 	cmd := r.cmd
 	stdin := r.stdin
+	done := r.exitDone
 	r.running = false
-	r.cmd, r.stdin, r.stdout = nil, nil, nil
+	r.stopping = true
 	r.mu.Unlock()
 	if stdin != nil {
 		_ = stdin.Close()
 	}
-	if cmd == nil || cmd.Process == nil {
-		return nil
+	var killErr error
+	if cmd != nil && cmd.Process != nil {
+		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			killErr = err
+		}
 	}
-	if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		return err
+	if done != nil {
+		<-done
 	}
-	_ = cmd.Wait()
-	if r.procMgr != nil && r.procID != "" {
-		r.procMgr.ReleaseCmd(r.procID)
-		r.procID = ""
-	}
-	return nil
+	return killErr
 }
 
 func (r *ExternalRuntime) Running() bool {

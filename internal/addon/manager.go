@@ -176,9 +176,9 @@ func (m *Manager) RuntimeRunning(name string) bool {
 	return runtime != nil && runtime.Running()
 }
 
-// CallRuntime performs an IPC request. Privileged calls must use
-// CallRuntimeWithCapability so the manifest gate is checked at the boundary.
-func (m *Manager) CallRuntime(ctx context.Context, name, method string, params any) (interface{}, error) {
+// callRuntime performs an already-authorized IPC request. Keeping this boundary
+// private prevents callers from bypassing the capability broker.
+func (m *Manager) callRuntime(ctx context.Context, name, method string, params any) (interface{}, error) {
 	if m.shuttingDown.Load() {
 		return nil, ErrAddonDisabled
 	}
@@ -201,7 +201,7 @@ func (m *Manager) CallRuntimeWithCapability(ctx context.Context, name string, ca
 	if err := m.broker.Authorize(cleanName, capability); err != nil {
 		return nil, err
 	}
-	return m.CallRuntime(ctx, cleanName, method, params)
+	return m.callRuntime(ctx, cleanName, method, params)
 }
 
 func (m *Manager) ShutdownRuntimes() error {

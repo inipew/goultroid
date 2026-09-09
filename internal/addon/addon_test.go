@@ -2,6 +2,7 @@ package addon_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/inipew/goultroid/internal/addon"
@@ -232,8 +233,16 @@ func TestManager_ShutdownState(t *testing.T) {
 		t.Errorf("expected error starting runtime after shutdown, got nil")
 	}
 
-	// Should reject CallRuntime after shutdown
-	if _, err := mgr.CallRuntime(ctx, "nonexistent", "hello", nil); err == nil {
+	// Should reject authorized runtime calls after shutdown
+	if _, err := mgr.CallRuntimeWithCapability(ctx, "nonexistent", addon.CapTelegramRead, "hello", nil); err == nil {
 		t.Errorf("expected error calling runtime after shutdown, got nil")
+	}
+}
+
+func TestManager_RuntimeCallRequiresCapability(t *testing.T) {
+	mgr := addon.NewManager(nil, addon.NewCapabilityGate(), "1.5.0", zap.NewNop())
+	_, err := mgr.CallRuntimeWithCapability(context.Background(), "untrusted", addon.CapProcessExecute, "exec", nil)
+	if !errors.Is(err, addon.ErrUnauthorizedCapability) {
+		t.Fatalf("CallRuntimeWithCapability() error = %v, want ErrUnauthorizedCapability", err)
 	}
 }

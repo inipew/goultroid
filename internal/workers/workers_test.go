@@ -3,6 +3,7 @@ package workers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -196,6 +197,7 @@ func TestManager_TasksManagerQuotaEnforcement(t *testing.T) {
 	defer mgr.Stop(ctx)
 
 	blockChan := make(chan struct{})
+	firstStarted := make(chan struct{})
 	defer close(blockChan)
 
 	// Task 1 (will be running)
@@ -203,6 +205,7 @@ func TestManager_TasksManagerQuotaEnforcement(t *testing.T) {
 		ID:    "t-1",
 		Owner: "plugin:greedy",
 		Run: func(c context.Context) error {
+			close(firstStarted)
 			<-blockChan
 			return nil
 		},
@@ -210,6 +213,7 @@ func TestManager_TasksManagerQuotaEnforcement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("task 1 failed to submit: %v", err)
 	}
+	<-firstStarted
 
 	// Task 2 (queued)
 	err = mgr.Submit(ctx, PoolGeneral, tasks.Task{
@@ -224,16 +228,27 @@ func TestManager_TasksManagerQuotaEnforcement(t *testing.T) {
 		t.Fatalf("task 2 failed to submit: %v", err)
 	}
 
-	// Task 3: Exceeds MaxQueued limit (2) -> MUST return ErrQuotaExceeded
+	// Task 3 fills the second queued slot while task 1 is running.
 	err = mgr.Submit(ctx, PoolGeneral, tasks.Task{
 		ID:    "t-3",
 		Owner: "plugin:greedy",
 		Run: func(c context.Context) error {
+			<-blockChan
 			return nil
 		},
 	})
-	if err == nil {
-		t.Fatalf("expected ErrQuotaExceeded on task 3, got nil")
+	if err != nil {
+		t.Fatalf("task 3 failed to submit: %v", err)
+	}
+
+	// Task 4 exceeds MaxQueued=2 and must be rejected.
+	err = mgr.Submit(ctx, PoolGeneral, tasks.Task{
+		ID:    "t-4",
+		Owner: "plugin:greedy",
+		Run:   func(context.Context) error { return nil },
+	})
+	if !errors.Is(err, tasks.ErrQuotaExceeded) {
+		t.Fatalf("expected ErrQuotaExceeded on task 4, got %v", err)
 	}
 
 	ownerStats, found := mgr.OwnerTaskStats("plugin:greedy")
@@ -308,4 +323,112 @@ func TestManager_AcceptedTaskWaitsWhenOwnerConcurrencyIsFull(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("accepted tasks were not completed: %+v", stats)
+}
+
+func TestManager_OwnerQuotaWaitDoesNotOccupyWorkerSlots(t *testing.T) {
+	mgr := NewManager()
+	tm := tasks.NewManager()
+	mgr.SetTasksManager(tm)
+	mgr.SetOwnerQuota("owner-a", tasks.Quota{MaxConcurrent: 1, MaxQueued: 16})
+	mgr.SetOwnerQuota("owner-b", tasks.Quota{MaxConcurrent: 1, MaxQueued: 2})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer func() { _ = mgr.Stop(context.Background()) }()
+
+	firstStarted := make(chan struct{})
+	releaseA := make(chan struct{})
+	if err := mgr.Submit(ctx, PoolGeneral, tasks.Task{
+		ID: "a-1", Owner: "owner-a", Run: func(context.Context) error {
+			close(firstStarted)
+			<-releaseA
+			return nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-firstStarted
+	for i := 2; i <= 9; i++ {
+		id := fmt.Sprintf("a-%d", i)
+		if err := mgr.Submit(ctx, PoolGeneral, tasks.Task{
+			ID: id, Owner: "owner-a", Run: func(context.Context) error {
+				<-releaseA
+				return nil
+			},
+		}); err != nil {
+			t.Fatalf("submit %s: %v", id, err)
+		}
+	}
+
+	bStarted := make(chan struct{})
+	if err := mgr.Submit(ctx, PoolGeneral, tasks.Task{
+		ID: "b-1", Owner: "owner-b", Run: func(context.Context) error {
+			close(bStarted)
+			return nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-bStarted:
+	case <-time.After(time.Second):
+		t.Fatal("owner B starved behind owner A quota waiters")
+	}
+	close(releaseA)
+}
+
+func TestManager_StopUnblocksPendingAdmissionSubmit(t *testing.T) {
+	mgr := NewManager()
+	pool := NewPool("bounded", 1, 1, queue.PolicyBlock)
+	if err := mgr.AddPool(pool); err != nil {
+		t.Fatal(err)
+	}
+	tm := tasks.NewManager()
+	mgr.SetTasksManager(tm)
+	mgr.SetOwnerQuota("owner", tasks.Quota{MaxConcurrent: 1, MaxQueued: 4})
+	if err := mgr.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	if err := mgr.Submit(context.Background(), "bounded", tasks.Task{
+		ID: "one", Owner: "owner", Run: func(context.Context) error {
+			close(started)
+			<-release
+			return nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if err := mgr.Submit(context.Background(), "bounded", tasks.Task{
+		ID: "two", Owner: "owner", Run: func(context.Context) error { return nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	submitDone := make(chan error, 1)
+	go func() {
+		submitDone <- mgr.Submit(context.Background(), "bounded", tasks.Task{
+			ID: "three", Owner: "owner", Run: func(context.Context) error { return nil },
+		})
+	}()
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- mgr.Stop(context.Background()) }()
+	select {
+	case err := <-submitDone:
+		if err == nil {
+			t.Fatal("Submit() succeeded after shutdown began")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("shutdown did not unblock pending admission submit")
+	}
+	close(release)
+	if err := <-stopDone; err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
 }

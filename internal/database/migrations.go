@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -375,9 +376,13 @@ func (d *DB) migrate(ctx context.Context) error {
 
 	// Backward compatibility: ensure checksum column exists on older schema_migrations
 	var colCount int
-	_ = d.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('schema_migrations') WHERE name='checksum'").Scan(&colCount)
+	if err := d.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('schema_migrations') WHERE name='checksum'").Scan(&colCount); err != nil {
+		return fmt.Errorf("failed to inspect schema_migrations checksum column: %w", err)
+	}
 	if colCount == 0 {
-		_, _ = d.ExecContext(ctx, "ALTER TABLE schema_migrations ADD COLUMN checksum TEXT NOT NULL DEFAULT ''")
+		if _, err := d.ExecContext(ctx, "ALTER TABLE schema_migrations ADD COLUMN checksum TEXT NOT NULL DEFAULT ''"); err != nil {
+			return fmt.Errorf("failed to add schema_migrations checksum column: %w", err)
+		}
 	}
 
 	// 2. Load already applied versions and checksums
@@ -405,13 +410,17 @@ func (d *DB) migrate(ctx context.Context) error {
 	if len(applied) == 0 {
 		var tableName string
 		err := d.QueryRowContext(ctx, "SELECT name FROM sqlite_master WHERE type='table' AND name='sudo_users'").Scan(&tableName)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("failed to inspect legacy schema: %w", err)
+		}
 		if err == nil && tableName == "sudo_users" {
 			// Legacy unversioned DB detected: adopt as version 1
 			cs1 := calculateMigrationChecksum(migrations[0])
 			_, err := d.ExecContext(ctx, "INSERT INTO schema_migrations (version, description, checksum, applied_at) VALUES (1, 'Legacy schema adoption', ?, ?)", cs1, time.Now())
-			if err == nil {
-				applied[1] = cs1
+			if err != nil {
+				return fmt.Errorf("failed to record legacy schema adoption: %w", err)
 			}
+			applied[1] = cs1
 		}
 	}
 
@@ -433,11 +442,15 @@ func (d *DB) migrate(ctx context.Context) error {
 						m.version, m.description, savedChecksum, expectedChecksum)
 				}
 				// Normalize checksum to canonical expected checksum
-				_, _ = d.ExecContext(ctx, "UPDATE schema_migrations SET checksum = ? WHERE version = ?", expectedChecksum, m.version)
+				if _, err := d.ExecContext(ctx, "UPDATE schema_migrations SET checksum = ? WHERE version = ?", expectedChecksum, m.version); err != nil {
+					return fmt.Errorf("failed to normalize migration checksum for version %d: %w", m.version, err)
+				}
 			}
 			// Backfill checksum if it was empty from legacy schema
 			if savedChecksum == "" {
-				_, _ = d.ExecContext(ctx, "UPDATE schema_migrations SET checksum = ? WHERE version = ?", expectedChecksum, m.version)
+				if _, err := d.ExecContext(ctx, "UPDATE schema_migrations SET checksum = ? WHERE version = ?", expectedChecksum, m.version); err != nil {
+					return fmt.Errorf("failed to backfill migration checksum for version %d: %w", m.version, err)
+				}
 			}
 			continue
 		}

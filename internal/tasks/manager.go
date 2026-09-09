@@ -157,8 +157,9 @@ func (m *Manager) Register(parentCtx context.Context, task Task) (context.Contex
 	return ctx, cancel, nil
 }
 
-// Start transitions a queued task to StateRunning, checking the concurrent execution quota.
-func (m *Manager) Start(taskID string) (context.Context, error) {
+// TryStart transitions a queued task immediately or returns ErrQuotaExceeded
+// when the owner's concurrency slot is unavailable.
+func (m *Manager) TryStart(taskID string) (context.Context, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.startLocked(taskID)

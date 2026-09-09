@@ -166,10 +166,14 @@ func doctorCommand(args []string, out io.Writer) error {
 }
 
 func loadConfig(path string) (*config.Config, error) {
-	if err := godotenv.Load(path); err != nil && !os.IsNotExist(err) {
-		return nil, err
+	values, err := godotenv.Read(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+		values = map[string]string{}
 	}
-	return config.Load()
+	return config.LoadFrom(func(key string) string { return values[key] })
 }
 
 func promptConfig(in io.Reader, out io.Writer) (*config.Config, error) {

@@ -25,7 +25,16 @@ type Config struct {
 
 // Load reads configuration from environment variables and validates all fields.
 func Load() (*Config, error) {
-	appIDStr := os.Getenv("APP_ID")
+	return LoadFrom(os.Getenv)
+}
+
+// LoadFrom reads configuration through an isolated lookup function. Callers
+// loading a specific file can avoid mutating or inheriting process-global state.
+func LoadFrom(lookup func(string) string) (*Config, error) {
+	if lookup == nil {
+		return nil, fmt.Errorf("configuration lookup is nil")
+	}
+	appIDStr := lookup("APP_ID")
 	if appIDStr == "" {
 		return nil, fmt.Errorf("APP_ID is required")
 	}
@@ -34,33 +43,33 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid APP_ID: must be a positive integer")
 	}
 
-	appHash := strings.TrimSpace(os.Getenv("APP_HASH"))
+	appHash := strings.TrimSpace(lookup("APP_HASH"))
 	if appHash == "" {
 		return nil, fmt.Errorf("APP_HASH is required")
 	}
 
-	phone, err := NormalizePhone(os.Getenv("PHONE"))
+	phone, err := NormalizePhone(lookup("PHONE"))
 	if err != nil {
 		return nil, err
 	}
 
-	sessionFile := strings.TrimSpace(os.Getenv("SESSION_FILE"))
+	sessionFile := strings.TrimSpace(lookup("SESSION_FILE"))
 	if sessionFile == "" {
 		sessionFile = "data/session.json"
 	}
 
-	databasePath := strings.TrimSpace(os.Getenv("DATABASE_PATH"))
+	databasePath := strings.TrimSpace(lookup("DATABASE_PATH"))
 	if databasePath == "" {
 		databasePath = "data/goultroid.db"
 	}
 
-	prefix := os.Getenv("PREFIX")
+	prefix := lookup("PREFIX")
 	if prefix == "" {
 		prefix = "."
 	}
 
 	var ownerID int64
-	if ownerStr := strings.TrimSpace(os.Getenv("OWNER_ID")); ownerStr != "" {
+	if ownerStr := strings.TrimSpace(lookup("OWNER_ID")); ownerStr != "" {
 		val, err := strconv.ParseInt(ownerStr, 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("invalid OWNER_ID: %w", err)
@@ -69,7 +78,7 @@ func Load() (*Config, error) {
 	}
 
 	var sudoUsers []int64
-	if sudoStr := strings.TrimSpace(os.Getenv("SUDO_USERS")); sudoStr != "" {
+	if sudoStr := strings.TrimSpace(lookup("SUDO_USERS")); sudoStr != "" {
 		parts := strings.Split(sudoStr, ",")
 		for _, part := range parts {
 			part = strings.TrimSpace(part)
@@ -84,13 +93,13 @@ func Load() (*Config, error) {
 		}
 	}
 
-	logLevel := strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL")))
+	logLevel := strings.ToLower(strings.TrimSpace(lookup("LOG_LEVEL")))
 	if logLevel == "" {
 		logLevel = "info"
 	}
 
-	botToken := strings.TrimSpace(os.Getenv("BOT_TOKEN"))
-	mode := strings.ToLower(strings.TrimSpace(os.Getenv("MODE")))
+	botToken := strings.TrimSpace(lookup("BOT_TOKEN"))
+	mode := strings.ToLower(strings.TrimSpace(lookup("MODE")))
 	if mode == "" {
 		if botToken != "" {
 			mode = "userbot+assistant"

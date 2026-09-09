@@ -27,6 +27,11 @@ type Manager struct {
 	mu           sync.RWMutex
 	pools        map[string]*Pool
 	tasksManager *tasks.Manager
+	accepting    bool
+	acceptingEnd chan struct{}
+	admissionCtx context.Context
+	admissionEnd context.CancelFunc
+	admissionWG  sync.WaitGroup
 }
 
 // NewManager creates a Manager initialized with standard workload pools.
@@ -54,10 +59,20 @@ func (m *Manager) Dependencies() []string {
 
 // Start starts all managed worker pools.
 func (m *Manager) Start(ctx context.Context) error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	m.mu.Lock()
+	m.admissionCtx, m.admissionEnd = context.WithCancel(ctx)
+	m.accepting = true
+	m.acceptingEnd = make(chan struct{})
+	pools := make([]*Pool, 0, len(m.pools))
 	for _, pool := range m.pools {
+		pools = append(pools, pool)
+	}
+	m.mu.Unlock()
+
+	for _, pool := range pools {
 		pool.Start(ctx)
 	}
 	return nil
@@ -65,11 +80,40 @@ func (m *Manager) Start(ctx context.Context) error {
 
 // Stop gracefully stops all managed worker pools.
 func (m *Manager) Stop(ctx context.Context) error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	m.mu.Lock()
+	if m.accepting {
+		m.accepting = false
+		close(m.acceptingEnd)
+	}
+	pools := make([]*Pool, 0, len(m.pools))
+	for _, pool := range m.pools {
+		pools = append(pools, pool)
+	}
+	admissionEnd := m.admissionEnd
+	m.mu.Unlock()
+	if admissionEnd != nil {
+		defer admissionEnd()
+	}
+
+	admissionsDone := make(chan struct{})
+	go func() {
+		m.admissionWG.Wait()
+		close(admissionsDone)
+	}()
+	select {
+	case <-admissionsDone:
+	case <-ctx.Done():
+		if admissionEnd != nil {
+			admissionEnd()
+		}
+		<-admissionsDone
+	}
 
 	var stopErrs []error
-	for _, pool := range m.pools {
+	for _, pool := range pools {
 		if err := pool.Stop(ctx); err != nil {
 			stopErrs = append(stopErrs, err)
 		}
@@ -179,42 +223,58 @@ func (m *Manager) OwnerTaskStats(owner string) (tasks.OwnerStats, bool) {
 
 // Submit dispatches a task to the designated worker pool with quota and lifecycle management.
 func (m *Manager) Submit(ctx context.Context, poolName string, task tasks.Task) error {
-	pool, ok := m.Get(poolName)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	m.mu.RLock()
+	pool, ok := m.pools[poolName]
 	if !ok {
+		m.mu.RUnlock()
 		return fmt.Errorf("worker pool %q not found", poolName)
 	}
-
-	m.mu.RLock()
 	tm := m.tasksManager
+	accepting := m.accepting
+	acceptingEnd := m.acceptingEnd
+	admissionCtx := m.admissionCtx
 	m.mu.RUnlock()
+	if !accepting {
+		return fmt.Errorf("worker manager is not accepting tasks")
+	}
 
 	if tm != nil {
+		if err := pool.reserveAdmission(ctx, acceptingEnd); err != nil {
+			return fmt.Errorf("pool %s admission rejected: %w", poolName, err)
+		}
+		m.mu.Lock()
+		if !m.accepting || m.acceptingEnd != acceptingEnd {
+			m.mu.Unlock()
+			pool.releaseAdmission()
+			return fmt.Errorf("worker manager is not accepting tasks")
+		}
 		if task.ID == "" {
 			task.ID = fmt.Sprintf("task:%s:%d", poolName, time.Now().UnixNano())
 		}
 		taskCtx, cancel, err := tm.Register(ctx, task)
 		if err != nil {
+			pool.releaseAdmission()
+			m.mu.Unlock()
 			return err
 		}
+		m.admissionWG.Add(1)
+		m.mu.Unlock()
 
 		origRun := task.Run
 		task.Run = func(runCtx context.Context) error {
 			defer cancel()
-			startCtx, err := tm.WaitStart(runCtx, task.ID)
-			if err != nil {
-				state := tasks.StateFailed
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					state = tasks.StateCancelled
-				}
-				tm.Finish(task.ID, state, err)
-				return err
-			}
-
-			execCtx, execCancel := context.WithCancel(startCtx)
+			execCtx, execCancel := context.WithCancel(taskCtx)
+			stopPoolCancel := context.AfterFunc(runCtx, execCancel)
+			defer stopPoolCancel()
 			defer execCancel()
 
 			var runErr error
-			if origRun != nil {
+			if err := execCtx.Err(); err != nil {
+				runErr = err
+			} else if origRun != nil {
 				runErr = origRun(execCtx)
 			}
 
@@ -230,15 +290,33 @@ func (m *Manager) Submit(ctx context.Context, poolName string, task tasks.Task) 
 			return runErr
 		}
 
-		if err := pool.Submit(taskCtx, task); err != nil {
-			cancel()
-			tm.Finish(task.ID, tasks.StateFailed, err)
-			return err
-		}
+		go m.admitTask(admissionCtx, pool, tm, taskCtx, cancel, task)
 		return nil
 	}
 
 	return pool.Submit(ctx, task)
+}
+
+func (m *Manager) admitTask(admissionCtx context.Context, pool *Pool, tm *tasks.Manager, taskCtx context.Context, cancel context.CancelFunc, task tasks.Task) {
+	defer m.admissionWG.Done()
+	defer pool.releaseAdmission()
+	startCtx, err := tm.WaitStart(admissionCtx, task.ID)
+	if err == nil {
+		enqueueCtx, enqueueCancel := context.WithCancel(startCtx)
+		stopAdmission := context.AfterFunc(admissionCtx, enqueueCancel)
+		err = pool.submitAccepted(enqueueCtx, task)
+		stopAdmission()
+		enqueueCancel()
+	}
+	if err == nil {
+		return
+	}
+	cancel()
+	state := tasks.StateFailed
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(taskCtx.Err(), context.Canceled) {
+		state = tasks.StateCancelled
+	}
+	tm.Finish(task.ID, state, err)
 }
 
 // AllStats returns statistics for all managed pools.

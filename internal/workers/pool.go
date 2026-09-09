@@ -27,6 +27,8 @@ type Pool struct {
 	name        string
 	concurrency int
 	queue       *queue.Queue[tasks.Task]
+	policy      queue.OverflowPolicy
+	admissions  chan struct{}
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -56,8 +58,39 @@ func NewPool(name string, concurrency int, queueCapacity int, policy queue.Overf
 		name:        name,
 		concurrency: concurrency,
 		queue:       queue.New[tasks.Task](queueCapacity, policy),
+		policy:      policy,
+		admissions:  make(chan struct{}, queueCapacity),
 		stopDone:    make(chan struct{}),
 	}
+}
+
+func (p *Pool) reserveAdmission(ctx context.Context, stopping <-chan struct{}) error {
+	if !p.running.Load() {
+		return errors.New("worker pool is not running")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if p.policy == queue.PolicyBlock {
+		select {
+		case p.admissions <- struct{}{}:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-stopping:
+			return errors.New("worker manager is stopping")
+		}
+	}
+	select {
+	case p.admissions <- struct{}{}:
+		return nil
+	default:
+		return queue.ErrQueueFull
+	}
+}
+
+func (p *Pool) releaseAdmission() {
+	<-p.admissions
 }
 
 // Name returns the name of this worker pool.
@@ -116,6 +149,19 @@ func (p *Pool) Submit(ctx context.Context, task tasks.Task) error {
 		task.State = tasks.StateFailed
 		task.Error = err
 		return fmt.Errorf("pool %s submit rejected: %w", p.name, err)
+	}
+	return nil
+}
+
+// submitAccepted queues work that has already passed logical admission. Unlike
+// Submit, it waits for physical capacity even on reject/drop configured pools.
+func (p *Pool) submitAccepted(ctx context.Context, task tasks.Task) error {
+	if !p.running.Load() {
+		return errors.New("worker pool is not running")
+	}
+	task.State = tasks.StateQueued
+	if err := p.queue.PushWait(ctx, task); err != nil {
+		return fmt.Errorf("pool %s accepted task enqueue failed: %w", p.name, err)
 	}
 	return nil
 }

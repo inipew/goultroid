@@ -75,12 +75,12 @@ func TestTaskManager_StartAndConcurrencyQuota(t *testing.T) {
 	}
 
 	// Start task1
-	if _, err := mgr.Start("b-1"); err != nil {
+	if _, err := mgr.TryStart("b-1"); err != nil {
 		t.Fatalf("unexpected error starting task 1: %v", err)
 	}
 
 	// Starting task2 should fail due to MaxConcurrent=1
-	if _, err := mgr.Start("b-2"); !errors.Is(err, ErrQuotaExceeded) {
+	if _, err := mgr.TryStart("b-2"); !errors.Is(err, ErrQuotaExceeded) {
 		t.Fatalf("expected ErrQuotaExceeded for concurrent task, got %v", err)
 	}
 
@@ -88,7 +88,7 @@ func TestTaskManager_StartAndConcurrencyQuota(t *testing.T) {
 	mgr.Finish("b-1", StateCompleted, nil)
 
 	// Now task2 should be startable
-	if _, err := mgr.Start("b-2"); err != nil {
+	if _, err := mgr.TryStart("b-2"); err != nil {
 		t.Fatalf("expected b-2 to start after b-1 finished, got: %v", err)
 	}
 
@@ -112,7 +112,7 @@ func TestTaskManager_WaitStartWaitsForConcurrencySlot(t *testing.T) {
 			t.Fatalf("Register(%s) error = %v", id, err)
 		}
 	}
-	if _, err := mgr.Start("wait-1"); err != nil {
+	if _, err := mgr.TryStart("wait-1"); err != nil {
 		t.Fatalf("Start(wait-1) error = %v", err)
 	}
 

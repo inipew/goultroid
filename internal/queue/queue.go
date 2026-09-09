@@ -98,6 +98,17 @@ func (q *Queue[T]) Stats() Stats {
 
 // Push adds an item to the queue in accordance with the configured overflow policy.
 func (q *Queue[T]) Push(ctx context.Context, item T) error {
+	return q.push(ctx, item, false)
+}
+
+// PushWait adds an item once capacity is available, regardless of the queue's
+// overflow policy. It is used for work that has already passed admission and
+// therefore must not be rejected or dropped due to transient physical pressure.
+func (q *Queue[T]) PushWait(ctx context.Context, item T) error {
+	return q.push(ctx, item, true)
+}
+
+func (q *Queue[T]) push(ctx context.Context, item T, waitForCapacity bool) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -106,7 +117,11 @@ func (q *Queue[T]) Push(ctx context.Context, item T) error {
 			return ErrQueueClosed
 		}
 
-		switch q.policy {
+		policy := q.policy
+		if waitForCapacity {
+			policy = PolicyBlock
+		}
+		switch policy {
 		case PolicyReject:
 			q.rejected.Add(1)
 			return ErrQueueFull
