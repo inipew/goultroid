@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -20,6 +21,31 @@ func clearEnv() {
 	}
 	for _, v := range vars {
 		os.Unsetenv(v)
+	}
+}
+
+func TestNormalizePhone_IndonesianLocal(t *testing.T) {
+	phone, err := NormalizePhone("0812-3456-7890")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phone != "+6281234567890" {
+		t.Fatalf("unexpected normalized phone: %s", phone)
+	}
+}
+
+func TestWriteEnv_SecureFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config", ".env")
+	cfg := &Config{AppID: 123, AppHash: "hash", Phone: "+62812", SessionFile: "data/session.json", DatabasePath: "data/app.db", Prefix: ".", OwnerID: 42, Mode: "userbot", LogLevel: "info"}
+	if err := WriteEnv(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("expected mode 0600, got %o", info.Mode().Perm())
 	}
 }
 

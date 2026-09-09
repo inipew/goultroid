@@ -65,32 +65,32 @@ Reimplementasi Telegram UserBot **Ultroid** dari Python/Telethon ke **Go** denga
 
 ## 📦 Instalasi & Penggunaan
 
-### 1. Clone & Setup Konfigurasi
+### 1. Build
 
 ```bash
-cp .env.example .env
-```
-
-Edit file `.env`:
-
-```env
-APP_ID=12345678
-APP_HASH=your_telegram_app_hash
-PHONE=+628123456789
-SESSION_FILE=data/session.json
-PREFIX=.
-OWNER_ID=123456789
-SUDO_USERS=
-LOG_LEVEL=info
+go build -o goultroid ./cmd/goultroid
 ```
 
 ### 2. Jalankan
 
 ```bash
-go run ./cmd/goultroid
+./goultroid run
 ```
 
-Saat pertama kali dijalankan, masukkan kode verifikasi Telegram yang dikirimkan ke aplikasi Telegram Anda (serta password 2FA jika aktif). Session akan tersimpan di `data/session.json`.
+Jika `.env` belum ada, `run` memulai setup interaktif. Nomor telepon dapat
+ditulis sebagai `+628...` atau `08...`. Setelah konfigurasi tersimpan, masukkan
+kode login Telegram dan password 2FA jika diminta. Session sensitif disimpan
+oleh gotd di `data/session.json`, bukan di `.env`.
+
+Perintah CLI lain:
+
+```bash
+./goultroid init                 # hanya membuat .env
+./goultroid doctor               # memvalidasi config tanpa menjalankan bot
+./goultroid whoami               # menampilkan akun dari session aktif
+./goultroid version
+./goultroid help
+```
 
 ---
 

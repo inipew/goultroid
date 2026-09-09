@@ -28,3 +28,4 @@ RUN mkdir -p data && chmod 700 data
 VOLUME ["/app/data"]
 
 ENTRYPOINT ["./goultroid"]
+CMD ["run"]

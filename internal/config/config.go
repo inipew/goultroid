@@ -39,7 +39,7 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("APP_HASH is required")
 	}
 
-	phone, err := cleanPhone(os.Getenv("PHONE"))
+	phone, err := NormalizePhone(os.Getenv("PHONE"))
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +114,8 @@ func Load() (*Config, error) {
 	}, nil
 }
 
-func cleanPhone(raw string) (string, error) {
+// NormalizePhone accepts international numbers and Indonesian local numbers.
+func NormalizePhone(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", fmt.Errorf("PHONE is required")
@@ -130,8 +131,10 @@ func cleanPhone(raw string) (string, error) {
 	}
 	phone := sb.String()
 
-	if strings.HasPrefix(phone, "0") {
-		return "", fmt.Errorf("invalid PHONE %q: must include country code (e.g. +628... instead of 08...)", raw)
+	if strings.HasPrefix(phone, "08") {
+		phone = "+62" + strings.TrimPrefix(phone, "0")
+	} else if strings.HasPrefix(phone, "0") {
+		return "", fmt.Errorf("invalid PHONE %q: local format must start with 08", raw)
 	}
 
 	if !strings.HasPrefix(phone, "+") {
