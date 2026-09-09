@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -54,7 +55,6 @@ func (g *DependencyGraph) Validate() error {
 			}
 		}
 	}
-
 	// Detect cycles via topological sort
 	_, err := g.StartupOrder()
 	return err
@@ -82,6 +82,9 @@ func (g *DependencyGraph) StartupOrder() ([]Component, error) {
 			inDegree[name]++
 		}
 	}
+	for name := range adjList {
+		sort.Strings(adjList[name])
+	}
 
 	var queue []string
 	for name, deg := range inDegree {
@@ -89,6 +92,7 @@ func (g *DependencyGraph) StartupOrder() ([]Component, error) {
 			queue = append(queue, name)
 		}
 	}
+	sort.Strings(queue)
 
 	var ordered []Component
 	visitedCount := 0
@@ -105,6 +109,7 @@ func (g *DependencyGraph) StartupOrder() ([]Component, error) {
 				queue = append(queue, dependent)
 			}
 		}
+		sort.Strings(queue)
 	}
 
 	if visitedCount != len(g.components) {
@@ -115,6 +120,7 @@ func (g *DependencyGraph) StartupOrder() ([]Component, error) {
 				cycleNodes = append(cycleNodes, name)
 			}
 		}
+		sort.Strings(cycleNodes)
 		return nil, fmt.Errorf("cyclic dependency detected among components: %v", cycleNodes)
 	}
 

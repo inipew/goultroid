@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -17,14 +18,65 @@ type mockSubmitter struct {
 	mu             sync.Mutex
 	submittedTasks []tasks.Task
 	submittedPools []string
+	err            error
 }
 
 func (m *mockSubmitter) Submit(ctx context.Context, poolName string, task tasks.Task) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.err != nil {
+		return m.err
+	}
 	m.submittedTasks = append(m.submittedTasks, task)
 	m.submittedPools = append(m.submittedPools, poolName)
 	return nil
+}
+
+func TestJobManager_TriggerRollsBackWhenSubmitFails(t *testing.T) {
+	mgr, submitter, repo := setupTestManagerWithDB(t)
+	submitErr := errors.New("queue full")
+	submitter.err = submitErr
+	job := Job{ID: "rollback-job", Owner: "test", Type: "test", Run: func(context.Context) error { return nil }}
+	if err := mgr.Register(job); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Trigger(context.Background(), job.ID); !errors.Is(err, submitErr) {
+		t.Fatalf("expected submit error, got %v", err)
+	}
+	got, _ := mgr.Get(job.ID)
+	if got.State != StateRegistered || !got.LastRun.IsZero() {
+		t.Fatalf("trigger state was not rolled back: %+v", got)
+	}
+	persisted, err := repo.Get(context.Background(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.State != StateRegistered || !persisted.LastRun.IsZero() {
+		t.Fatalf("persisted trigger state was not rolled back: %+v", persisted)
+	}
+}
+
+func TestJobManager_DuplicateIdempotencyDoesNotDeadlock(t *testing.T) {
+	mgr, submitter, _ := setupTestManagerWithDB(t)
+	idemp := &mockIdemp{claimed: map[string]bool{"duplicate": true}}
+	mgr.SetIdempotencyManager(idemp)
+	job := Job{ID: "duplicate-job", Owner: "test", Type: "test", IdempotencyKey: "duplicate", Run: func(context.Context) error { return errors.New("must not run") }}
+	if err := mgr.Register(job); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Trigger(context.Background(), job.ID); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- submitter.submittedTasks[0].Run(context.Background()) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("duplicate idempotency path deadlocked")
+	}
 }
 
 func (m *mockSubmitter) Count() int {
@@ -355,5 +407,30 @@ func TestJobManager_ReconciliationFailureHealth(t *testing.T) {
 	diag := mgr.Diagnostics()
 	if diag.RecoveryFailures != 1 {
 		t.Errorf("expected 1 recovery failure in diagnostics, got %d", diag.RecoveryFailures)
+	}
+}
+
+func TestJobManager_CleanupTerminalRetention(t *testing.T) {
+	mgr, submitter, repo := setupTestManagerWithDB(t)
+	mgr.SetRetention(time.Millisecond, time.Hour)
+	job := Job{ID: "expired-terminal", Owner: "test", Run: func(context.Context) error { return nil }}
+	if err := mgr.Register(job); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Trigger(context.Background(), job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := submitter.submittedTasks[0].Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	if _, err := mgr.CleanupTerminal(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := mgr.Get(job.ID); ok {
+		t.Fatal("terminal job remained in memory after retention cleanup")
+	}
+	if _, err := repo.Get(context.Background(), job.ID); err == nil {
+		t.Fatal("terminal job remained in repository after retention cleanup")
 	}
 }

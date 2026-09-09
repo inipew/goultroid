@@ -19,6 +19,7 @@ func ResolveOrder(modules []Module) ([]Module, error) {
 
 	byID := make(map[string]Module, len(modules))
 	deps := make(map[string][]string, len(modules))
+	conflicts := make(map[string][]string, len(modules))
 
 	// 1. Validate individual module manifests and check ID uniqueness
 	for _, m := range modules {
@@ -61,13 +62,47 @@ func ResolveOrder(modules []Module) ([]Module, error) {
 		// Sort dependencies deterministically
 		sort.Strings(cleanDeps)
 		deps[id] = cleanDeps
+
+		seenConflicts := make(map[string]struct{}, len(manifest.Conflicts))
+		var cleanConflicts []string
+		for _, conflict := range manifest.Conflicts {
+			conflict = strings.TrimSpace(conflict)
+			if conflict == "" {
+				continue
+			}
+			if conflict == id {
+				return nil, fmt.Errorf("module %q cannot conflict with itself", id)
+			}
+			if _, exists := seenConflicts[conflict]; exists {
+				return nil, fmt.Errorf("module %q has duplicate conflict %q", id, conflict)
+			}
+			seenConflicts[conflict] = struct{}{}
+			cleanConflicts = append(cleanConflicts, conflict)
+		}
+		sort.Strings(cleanConflicts)
+		conflicts[id] = cleanConflicts
 	}
 
-	// 2. Validate all declared dependencies exist
-	for id, depList := range deps {
+	allIDs := make([]string, 0, len(modules))
+	for id := range byID {
+		allIDs = append(allIDs, id)
+	}
+	sort.Strings(allIDs)
+
+	// 2. Validate all declared dependencies and active conflicts.
+	for _, id := range allIDs {
+		depList := deps[id]
 		for _, dep := range depList {
 			if _, exists := byID[dep]; !exists {
 				return nil, fmt.Errorf("module %q depends on unknown module %q", id, dep)
+			}
+		}
+	}
+	for _, id := range allIDs {
+		conflictList := conflicts[id]
+		for _, conflict := range conflictList {
+			if _, exists := byID[conflict]; exists {
+				return nil, fmt.Errorf("module %q conflicts with module %q", id, conflict)
 			}
 		}
 	}
@@ -114,12 +149,6 @@ func ResolveOrder(modules []Module) ([]Module, error) {
 	}
 
 	// Deterministic traversal order for cycle check
-	allIDs := make([]string, 0, len(modules))
-	for id := range byID {
-		allIDs = append(allIDs, id)
-	}
-	sort.Strings(allIDs)
-
 	for _, id := range allIDs {
 		if state[id] == unvisited {
 			if err := dfsCycle(id); err != nil {

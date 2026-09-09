@@ -10,6 +10,7 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/plugin"
 	userlogSvc "github.com/inipew/goultroid/internal/services/userlog"
 	"github.com/inipew/goultroid/plugins/userlog"
 	"go.uber.org/zap"
@@ -60,12 +61,27 @@ func setupTestDB(t *testing.T) *database.DB {
 	return db
 }
 
+func initializePlugin(t *testing.T, p *userlog.Plugin) {
+	t.Helper()
+	scope := plugin.NewScope(context.Background(), "test:userlog")
+	if err := p.InitScope(scope.Context(), scope); err != nil {
+		t.Fatalf("initialize userlog plugin: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = p.ShutdownContext(ctx)
+		_ = scope.Close(ctx)
+	})
+}
+
 func TestUserLogPlugin(t *testing.T) {
 	db := setupTestDB(t)
 	repo := userlogSvc.NewSQLiteRepository(db)
 	mockTG := &mockTelegram{}
 	svc := userlogSvc.NewService(repo, mockTG, zap.NewNop())
 	p := userlog.New(svc, 12345)
+	initializePlugin(t, p)
 
 	if p.Name() != "userlog" {
 		t.Errorf("expected plugin name userlog, got %s", p.Name())
@@ -162,6 +178,7 @@ func TestUserLogPlugin_HandleIncomingMessage(t *testing.T) {
 	svc := userlogSvc.NewService(repo, mockTG, zap.NewNop())
 	_ = svc.SetLogChat(context.Background(), 777)
 	p := userlog.New(svc, 12345)
+	initializePlugin(t, p)
 
 	ctx := context.Background()
 	e := tg.Entities{
@@ -325,6 +342,7 @@ func TestUserLogPlugin_AdminActionEvent(t *testing.T) {
 	svc := userlogSvc.NewService(repo, mockTG, zap.NewNop())
 	_ = svc.SetLogChat(context.Background(), 777)
 	p := userlog.New(svc, 12345)
+	initializePlugin(t, p)
 
 	eventBus := core.NewEventBus()
 	if err := eventBus.Start(context.Background()); err != nil {
@@ -362,6 +380,7 @@ func TestUserLogPlugin_PMPermitEvent(t *testing.T) {
 	svc := userlogSvc.NewService(repo, mockTG, zap.NewNop())
 	_ = svc.SetLogChat(context.Background(), 777)
 	p := userlog.New(svc, 12345)
+	initializePlugin(t, p)
 
 	eventBus := core.NewEventBus()
 	if err := eventBus.Start(context.Background()); err != nil {

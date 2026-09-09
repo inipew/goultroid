@@ -14,7 +14,7 @@ import (
 
 // Plugin provides self-user profile and contact management commands.
 type Plugin struct {
-	files *filesystem.Manager
+	files *filesystem.Scope
 }
 
 // New creates a new Profile plugin.
@@ -34,12 +34,13 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 
 // SetFiles sets the filesystem manager for the plugin.
 func (p *Plugin) SetFiles(fs *filesystem.Manager) {
-	p.files = fs
+	p.files = fs.ForOwner("profile")
 }
 
-func (p *Plugin) getFiles() *filesystem.Manager {
+func (p *Plugin) getFiles() *filesystem.Scope {
 	if p.files == nil {
-		p.files, _ = filesystem.NewManager("data", "", "", nil)
+		manager, _ := filesystem.NewManager("data", "", "", nil)
+		p.files = manager.ForOwner("profile")
 	}
 	return p.files
 }
@@ -235,7 +236,7 @@ func (p *Plugin) handleSetPic(ctx *core.Context) error {
 	reply, err := ctx.GetReply()
 	if err == nil && reply != nil && reply.HasMedia() {
 		files := p.getFiles()
-		tempDir, err := files.CreateTempDir("profile", "goultroid-pfp-*")
+		tempDir, err := files.CreateTempDir("goultroid-pfp-*")
 		if err != nil {
 			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temporary directory: %v", err))
 		}

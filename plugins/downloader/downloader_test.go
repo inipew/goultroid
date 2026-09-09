@@ -3,6 +3,7 @@ package downloader
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,8 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/jobs"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/services/download"
+	"github.com/inipew/goultroid/internal/services/storage"
 	"github.com/inipew/goultroid/internal/tasks"
 	_ "modernc.org/sqlite"
 )
@@ -176,6 +179,46 @@ type immediateSubmitter struct{}
 
 func (s *immediateSubmitter) Submit(ctx context.Context, poolName string, task tasks.Task) error {
 	return task.Run(ctx)
+}
+
+type recordingProvider struct{ url string }
+
+func (p *recordingProvider) Name() string      { return "recording" }
+func (p *recordingProvider) Match(string) bool { return true }
+func (p *recordingProvider) Download(_ context.Context, rawURL string, _ storage.Storage, _ download.DownloadOptions) (*storage.Asset, error) {
+	p.url = rawURL
+	return &storage.Asset{Name: "recovered.bin", Path: "recovered.bin", Size: 42}, nil
+}
+
+func TestDownloaderURLJobRecoversFromPayload(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	repo := jobs.NewSQLiteRepository(db)
+	if err := repo.InitSchema(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(downloadJobPayload{URL: "https://example.com/recovered"})
+	if err := repo.Save(context.Background(), &jobs.Job{
+		ID: "recover-download", Owner: "downloader", Type: "downloader.url", Payload: payload,
+		Pool: "download", RecoveryPolicy: jobs.RecoveryRunImmediately,
+		State: jobs.StateRegistered, NextRun: time.Now().Add(-time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := &recordingProvider{}
+	mgr := jobs.NewManager(&immediateSubmitter{}, repo)
+	p := New(download.NewRegistry(provider), storage.NewMemoryStorage(), mgr)
+	p.registerJobHandlers()
+	if err := mgr.LoadAndReconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if provider.url != "https://example.com/recovered" {
+		t.Fatalf("recovered handler used wrong URL: %q", provider.url)
+	}
 }
 
 func TestDownloaderPlugin_WithJobsManager(t *testing.T) {

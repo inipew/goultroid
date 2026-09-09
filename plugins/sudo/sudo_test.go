@@ -92,7 +92,7 @@ func TestSudoPlugin(t *testing.T) {
 	if p.Name() != "sudo" {
 		t.Errorf("expected name sudo, got %s", p.Name())
 	}
-	if err := p.Init(); err != nil {
+	if err := p.InitContext(context.Background()); err != nil {
 		t.Errorf("unexpected error in Init: %v", err)
 	}
 

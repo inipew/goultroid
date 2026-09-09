@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"reflect"
 	"testing"
 )
 
@@ -13,6 +14,37 @@ type mockComponent struct {
 	startErr     error
 	stopErr      error
 	health       ComponentHealth
+}
+
+func TestDependencyGraph_StartupOrderDeterministic(t *testing.T) {
+	g := NewDependencyGraph()
+	components := []Component{
+		&mockComponent{name: "worker-b", dependencies: []string{"database"}},
+		&mockComponent{name: "cache"},
+		&mockComponent{name: "worker-a", dependencies: []string{"database"}},
+		&mockComponent{name: "database"},
+		&mockComponent{name: "api", dependencies: []string{"cache", "worker-a", "worker-b"}},
+	}
+	for _, component := range components {
+		if err := g.Add(component); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	want := []string{"cache", "database", "worker-a", "worker-b", "api"}
+	for i := 0; i < 100; i++ {
+		order, err := g.StartupOrder()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := make([]string, len(order))
+		for j, component := range order {
+			got[j] = component.Name()
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("iteration %d: startup order = %v, want %v", i, got, want)
+		}
+	}
 }
 
 func (m *mockComponent) Name() string                               { return m.name }

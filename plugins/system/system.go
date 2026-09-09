@@ -35,9 +35,9 @@ type Plugin struct {
 	restartStatePath string
 	restartFunc      func(state RestartState) error
 	cmdRunner        func(ctx context.Context, name string, args ...string) ([]byte, error)
-	procMgr          *platprocess.Manager
+	procMgr          *platprocess.Executor
 	runner           process.Runner
-	files            *filesystem.Manager
+	files            *filesystem.Scope
 	pluginMgr        *plugin.Manager
 	startTime        time.Time
 	metrics          core.MetricsCollector
@@ -59,20 +59,21 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 }
 
 func (p *Plugin) SetProcessManager(pm *platprocess.Manager) {
-	p.procMgr = pm
+	p.procMgr = pm.ForOwner("system")
 }
 
 func (p *Plugin) SetFiles(fs *filesystem.Manager) {
-	p.files = fs
+	p.files = fs.ForOwner("system")
 }
 
 func (p *Plugin) SetPluginManager(pm *plugin.Manager) {
 	p.pluginMgr = pm
 }
 
-func (p *Plugin) getFiles() *filesystem.Manager {
+func (p *Plugin) getFiles() *filesystem.Scope {
 	if p.files == nil {
-		p.files, _ = filesystem.NewManager("data", "", "", nil)
+		manager, _ := filesystem.NewManager("data", "", "", nil)
+		p.files = manager.ForOwner("system")
 	}
 	return p.files
 }
@@ -97,7 +98,7 @@ func (p *Plugin) runCmd(ctx context.Context, name string, args ...string) ([]byt
 		return p.cmdRunner(ctx, name, args...)
 	}
 	if p.procMgr != nil {
-		stdout, stderr, err := p.procMgr.Execute(ctx, "system", name, args...)
+		stdout, stderr, err := p.procMgr.Execute(ctx, name, args...)
 		return append(stdout, stderr...), err
 	}
 	if p.runner != nil {
@@ -164,7 +165,7 @@ func (p *Plugin) handleExec(ctx *core.Context) error {
 
 	if p.procMgr != nil {
 		start := time.Now()
-		stdout, stderr, err := p.procMgr.Execute(ctx.Ctx, "system", cmdName, cmdArgs...)
+		stdout, stderr, err := p.procMgr.Execute(ctx.Ctx, cmdName, cmdArgs...)
 		elapsed = time.Since(start)
 		output = string(append(stdout, stderr...))
 		if output == "" {
@@ -203,7 +204,7 @@ func (p *Plugin) handleExec(ctx *core.Context) error {
 		return ctx.EditOrReply(sb.String())
 	}
 	files := p.getFiles()
-	tmpFile, tmpErr := files.CreateTempFile("system", "exec-output-*.txt")
+	tmpFile, tmpErr := files.CreateTempFile("exec-output-*.txt")
 	if tmpErr != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temp file for large output: %v", tmpErr))
 	}

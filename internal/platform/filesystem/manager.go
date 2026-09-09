@@ -20,6 +20,60 @@ type Manager struct {
 	resourceMgr  *resource.Manager
 }
 
+// Scope is a filesystem manager bound to a single immutable plugin owner.
+type Scope struct {
+	manager *Manager
+	owner   string
+}
+
+// ForOwner returns filesystem access permanently scoped to owner.
+func (m *Manager) ForOwner(owner string) *Scope {
+	return &Scope{manager: m, owner: strings.TrimSpace(owner)}
+}
+
+func (s *Scope) DataDir() (string, error) { return s.manager.PluginDataDir(s.owner) }
+func (s *Scope) TempDir() (string, error) { return s.manager.PluginTempDir(s.owner) }
+func (s *Scope) CreateTempFile(pattern string) (*os.File, error) {
+	return s.manager.CreateTempFile(s.owner, pattern)
+}
+func (s *Scope) RemoveTempFile(path string) error {
+	if err := s.validateTempPath(path); err != nil {
+		return err
+	}
+	return s.manager.RemoveTempFile(path)
+}
+func (s *Scope) CreateTempDir(pattern string) (string, error) {
+	return s.manager.CreateTempDir(s.owner, pattern)
+}
+func (s *Scope) RemoveTempDir(path string) error {
+	if err := s.validateTempPath(path); err != nil {
+		return err
+	}
+	return s.manager.RemoveTempDir(path)
+}
+func (s *Scope) SafePath(rootDir, relPath string) (string, error) {
+	return s.manager.SafePath(rootDir, relPath)
+}
+
+func (s *Scope) validateTempPath(path string) error {
+	root, err := s.manager.PluginTempDir(s.owner)
+	if err != nil {
+		return err
+	}
+	cleanRoot, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	cleanPath, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	if cleanPath == cleanRoot || !strings.HasPrefix(cleanPath, cleanRoot+string(filepath.Separator)) {
+		return fmt.Errorf("path %q is outside plugin %q temp scope", path, s.owner)
+	}
+	return nil
+}
+
 // NewManager creates a filesystem manager with root directories for data, cache, and temp files.
 func NewManager(baseData, baseCache, baseTemp string, rm *resource.Manager) (*Manager, error) {
 	if baseData == "" {

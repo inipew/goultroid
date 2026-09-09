@@ -141,3 +141,41 @@ func TestResolveOrder_DeterministicAlphabetical(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveOrder_RejectsActiveConflict(t *testing.T) {
+	mA := dummyModule{Manifest{ID: "a", Version: "1.0.0", Conflicts: []string{"b"}}}
+	mB := dummyModule{Manifest{ID: "b", Version: "1.0.0"}}
+
+	_, err := ResolveOrder([]Module{mB, mA})
+	if err == nil || !strings.Contains(err.Error(), `module "a" conflicts with module "b"`) {
+		t.Fatalf("expected active conflict error, got %v", err)
+	}
+}
+
+func TestResolveOrder_AllowsAbsentConflict(t *testing.T) {
+	mA := dummyModule{Manifest{ID: "a", Version: "1.0.0", Conflicts: []string{"b"}}}
+
+	if _, err := ResolveOrder([]Module{mA}); err != nil {
+		t.Fatalf("absent conflict should be allowed: %v", err)
+	}
+}
+
+func TestResolveOrder_RejectsInvalidConflictDeclarations(t *testing.T) {
+	tests := []struct {
+		name      string
+		conflicts []string
+		want      string
+	}{
+		{name: "self", conflicts: []string{"a"}, want: "cannot conflict with itself"},
+		{name: "duplicate", conflicts: []string{"b", " b "}, want: "duplicate conflict"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			module := dummyModule{Manifest{ID: "a", Version: "1.0.0", Conflicts: tt.conflicts}}
+			_, err := ResolveOrder([]Module{module})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected %q error, got %v", tt.want, err)
+			}
+		})
+	}
+}

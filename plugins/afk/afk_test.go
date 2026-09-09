@@ -113,7 +113,7 @@ func TestAFKPlugin(t *testing.T) {
 	if p.Name() != "afk" {
 		t.Errorf("expected name afk, got %s", p.Name())
 	}
-	if err := p.Init(); err != nil {
+	if err := p.InitContext(context.Background()); err != nil {
 		t.Errorf("unexpected error in Init: %v", err)
 	}
 

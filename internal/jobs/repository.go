@@ -18,6 +18,7 @@ type Repository interface {
 	ListByOwner(ctx context.Context, owner string) ([]*Job, error)
 	Delete(ctx context.Context, id string) error
 	DeleteByOwner(ctx context.Context, owner string) (int, error)
+	DeleteTerminalBefore(ctx context.Context, before time.Time) (int, error)
 }
 
 // SQLiteRepository is a SQLite-backed implementation of Repository.
@@ -217,6 +218,19 @@ func (r *SQLiteRepository) DeleteByOwner(ctx context.Context, owner string) (int
 		return 0, err
 	}
 	return int(rows), nil
+}
+
+// DeleteTerminalBefore removes completed, failed, and cancelled jobs older than before.
+func (r *SQLiteRepository) DeleteTerminalBefore(ctx context.Context, before time.Time) (int, error) {
+	result, err := r.db.ExecContext(ctx, `
+		DELETE FROM managed_jobs
+		WHERE state IN ('completed', 'failed', 'cancelled') AND updated_at < ?;
+	`, before.UTC())
+	if err != nil {
+		return 0, fmt.Errorf("delete expired terminal jobs: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	return int(rows), err
 }
 
 func (r *SQLiteRepository) queryJobs(ctx context.Context, query string, args ...any) ([]*Job, error) {

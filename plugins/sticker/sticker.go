@@ -22,7 +22,7 @@ import (
 
 // Plugin provides sticker creation and conversion utilities.
 type Plugin struct {
-	files *filesystem.Manager
+	files *filesystem.Scope
 }
 
 // New creates a new Sticker plugin.
@@ -42,12 +42,13 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 
 // SetFiles sets the filesystem manager for the plugin.
 func (p *Plugin) SetFiles(fs *filesystem.Manager) {
-	p.files = fs
+	p.files = fs.ForOwner("sticker")
 }
 
-func (p *Plugin) getFiles() *filesystem.Manager {
+func (p *Plugin) getFiles() *filesystem.Scope {
 	if p.files == nil {
-		p.files, _ = filesystem.NewManager("data", "", "", nil)
+		manager, _ := filesystem.NewManager("data", "", "", nil)
+		p.files = manager.ForOwner("sticker")
 	}
 	return p.files
 }
@@ -103,7 +104,7 @@ func (p *Plugin) handleSticker(ctx *core.Context) error {
 	_ = ctx.EditOrReply("⏳ <i>Processing sticker...</i>")
 
 	files := p.getFiles()
-	tmpDir, err := files.CreateTempDir("sticker", "goultroid-sticker-*")
+	tmpDir, err := files.CreateTempDir("goultroid-sticker-*")
 	if err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
 	}

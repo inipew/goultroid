@@ -91,7 +91,12 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 	taskManager := tasks.NewManager()
 	workerManager.SetTasksManager(taskManager)
 	resourceManager := resource.NewManager()
-	idempManager := idempotency.NewManager(1 * time.Minute)
+	idempRepo := idempotency.NewSQLiteRepository(db.DB)
+	if err := idempRepo.InitSchema(context.Background()); err != nil {
+		cleanupCore(&coreDependencies{db: db, eventBus: eventBus}, logger)
+		return nil, fmt.Errorf("initialize idempotency repository: %w", err)
+	}
+	idempManager := idempotency.NewManager(1*time.Minute, idempRepo)
 
 	jobsRepo := jobs.NewSQLiteRepository(db.DB)
 	if err := jobsRepo.InitSchema(context.Background()); err != nil {
@@ -109,7 +114,7 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 		logger.Warn("failed to create filesystem manager, using fallback", zap.Error(err))
 		fsManager, _ = filesystem.NewManager("data", "", "", resourceManager)
 	}
-	procManager := process.NewManager([]string{"ffmpeg", "ffprobe", "yt-dlp", "tesseract", "git", "sh", "bash", "*"}, 10*1024*1024, resourceManager)
+	procManager := process.NewManager([]string{"ffmpeg", "ffprobe", "yt-dlp", "tesseract", "git", "sh", "bash"}, 10*1024*1024, resourceManager)
 	netService := network.NewService(nil, resourceManager)
 	auditService := audit.NewService(logger.Named("audit"), 1000)
 	procManager.SetAuditor(auditService)

@@ -72,3 +72,20 @@ func TestFilesystemManager_TempFileLifecycle(t *testing.T) {
 		t.Errorf("expected temp file released from manager, got: %+v", res)
 	}
 }
+
+func TestFilesystemScopeRejectsAnotherOwnersPath(t *testing.T) {
+	mgr, err := NewManager(t.TempDir(), "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerA := mgr.ForOwner("a")
+	ownerB := mgr.ForOwner("b")
+	path, err := ownerA.CreateTempDir("owned-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ownerA.RemoveTempDir(path)
+	if err := ownerB.RemoveTempDir(path); err == nil {
+		t.Fatal("expected owner-bound filesystem scope to reject another owner's path")
+	}
+}

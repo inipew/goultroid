@@ -21,9 +21,9 @@ type PluginContext interface {
 	Owner() string
 
 	// Capability-gated service accessors
-	HTTP() (*network.Service, error)
-	Process() (*process.Manager, error)
-	Files() (*filesystem.Manager, error)
+	HTTP() (*network.Client, error)
+	Process() (*process.Executor, error)
+	Files() (*filesystem.Scope, error)
 	Secrets() (*secret.Manager, error)
 	Tasks() (*tasks.Manager, error)
 	Jobs() (*jobs.Manager, error)
@@ -93,27 +93,27 @@ func (c *pluginContext) Owner() string {
 	return c.owner
 }
 
-func (c *pluginContext) HTTP() (*network.Service, error) {
+func (c *pluginContext) HTTP() (*network.Client, error) {
 	if err := c.gate.Check(c.owner, CapHTTP); err != nil {
 		return nil, fmt.Errorf("http access denied: %w", err)
 	}
 	if c.network == nil {
 		return nil, errors.New("network service not configured")
 	}
-	return c.network, nil
+	return c.network.ForOwner(c.owner), nil
 }
 
-func (c *pluginContext) Process() (*process.Manager, error) {
+func (c *pluginContext) Process() (*process.Executor, error) {
 	if err := c.gate.Check(c.owner, CapProcessExecute); err != nil {
 		return nil, fmt.Errorf("process execution denied: %w", err)
 	}
 	if c.process == nil {
 		return nil, errors.New("process manager not configured")
 	}
-	return c.process, nil
+	return c.process.ForOwner(c.owner), nil
 }
 
-func (c *pluginContext) Files() (*filesystem.Manager, error) {
+func (c *pluginContext) Files() (*filesystem.Scope, error) {
 	if err := c.gate.Check(c.owner, CapFilesystemData); err != nil {
 		if errTemp := c.gate.Check(c.owner, CapFilesystemTemp); errTemp != nil {
 			return nil, fmt.Errorf("filesystem access denied: requires %s or %s: %w", CapFilesystemData, CapFilesystemTemp, err)
@@ -122,7 +122,7 @@ func (c *pluginContext) Files() (*filesystem.Manager, error) {
 	if c.files == nil {
 		return nil, errors.New("filesystem manager not configured")
 	}
-	return c.files, nil
+	return c.files.ForOwner(c.owner), nil
 }
 
 func (c *pluginContext) Secrets() (*secret.Manager, error) {

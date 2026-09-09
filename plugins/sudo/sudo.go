@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/plugin"
 )
 
 type Plugin struct {
@@ -21,14 +22,15 @@ func New(db Repository, perms *core.Permissions) *Plugin {
 func (p *Plugin) Name() string { return "sudo" }
 
 func (p *Plugin) Init() error {
-	if p.db == nil {
-		return fmt.Errorf("sudo: database is unavailable")
-	}
-	if p.perms == nil {
-		return fmt.Errorf("sudo: permissions are unavailable")
+	return p.validateDependencies()
+}
+
+func (p *Plugin) InitContext(ctx context.Context) error {
+	if err := p.validateDependencies(); err != nil {
+		return err
 	}
 
-	users, err := p.db.GetSudoUsers(context.Background())
+	users, err := p.db.GetSudoUsers(ctx)
 	if err != nil {
 		return fmt.Errorf("sudo: load persisted users: %w", err)
 	}
@@ -51,6 +53,19 @@ func (p *Plugin) Init() error {
 	}
 	return nil
 }
+
+func (p *Plugin) validateDependencies() error {
+	if p.db == nil {
+		return fmt.Errorf("sudo: database is unavailable")
+	}
+	if p.perms == nil {
+		return fmt.Errorf("sudo: permissions are unavailable")
+	}
+
+	return nil
+}
+
+var _ plugin.ContextInitializer = (*Plugin)(nil)
 
 func (p *Plugin) Commands() []core.Command {
 	return []core.Command{

@@ -2,10 +2,13 @@ package downloader
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
@@ -21,6 +24,11 @@ type Plugin struct {
 	registry *download.Registry
 	storage  storage.Storage
 	jobs     *jobs.Manager
+	jobUI    sync.Map // job ID -> *core.Context; transient notification only
+}
+
+type downloadJobPayload struct {
+	URL string `json:"url"`
 }
 
 // New creates a new downloader Plugin instance with optional dependencies.
@@ -69,11 +77,19 @@ func (p *Plugin) registerJobHandlers() {
 	if p.jobs == nil {
 		return
 	}
-	p.jobs.RegisterHandler("downloader.download", func(ctx context.Context, j *jobs.Job) error {
-		if j.Run != nil {
-			return j.Run(ctx)
+	p.jobs.RegisterHandler("downloader.url", func(ctx context.Context, j *jobs.Job) error {
+		var payload downloadJobPayload
+		if err := json.Unmarshal(j.Payload, &payload); err != nil {
+			return fmt.Errorf("decode downloader job payload: %w", err)
 		}
-		return nil
+		if strings.TrimSpace(payload.URL) == "" {
+			return errors.New("downloader job URL is empty")
+		}
+		var uiCtx *core.Context
+		if value, ok := p.jobUI.LoadAndDelete(j.ID); ok {
+			uiCtx, _ = value.(*core.Context)
+		}
+		return p.executeURLDownload(ctx, uiCtx, payload.URL)
 	})
 }
 
@@ -169,7 +185,7 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 		job := jobs.Job{
 			ID:             jobID,
 			Owner:          "downloader",
-			Type:           "downloader.download",
+			Type:           "downloader.telegram_media",
 			Pool:           workers.PoolDownload,
 			Timeout:        10 * time.Minute,
 			IdempotencyKey: idempKey,
@@ -236,20 +252,27 @@ func (p *Plugin) handleURLDownload(ctx *core.Context, rawURL string) error {
 	if p.jobs != nil {
 		jobID := fmt.Sprintf("dl-url-%d", time.Now().UnixNano())
 		idempKey := fmt.Sprintf("dl:url:%s", rawURL)
+		payload, err := json.Marshal(downloadJobPayload{URL: rawURL})
+		if err != nil {
+			return fmt.Errorf("encode download job: %w", err)
+		}
 		job := jobs.Job{
 			ID:             jobID,
 			Owner:          "downloader",
-			Type:           "downloader.download",
+			Type:           "downloader.url",
+			Payload:        payload,
 			Pool:           workers.PoolDownload,
 			Timeout:        10 * time.Minute,
 			IdempotencyKey: idempKey,
-			RecoveryPolicy: jobs.RecoverySkip,
-			Run: func(taskCtx context.Context) error {
-				return p.executeURLDownload(taskCtx, ctx, rawURL)
-			},
+			RecoveryPolicy: jobs.RecoveryRunImmediately,
 		}
 		if err := p.jobs.Register(job); err == nil {
-			return p.jobs.Trigger(ctx.Ctx, jobID)
+			p.jobUI.Store(jobID, ctx)
+			if err := p.jobs.Trigger(ctx.Ctx, jobID); err != nil {
+				p.jobUI.Delete(jobID)
+				return err
+			}
+			return nil
 		}
 	}
 
@@ -274,7 +297,10 @@ func (p *Plugin) executeURLDownload(taskCtx context.Context, ctx *core.Context, 
 
 	asset, err := p.registry.Download(taskCtx, rawURL, targetStore, opts)
 	if err != nil {
-		return ctx.Edit(fmt.Sprintf("❌ <b>URL Download Failed</b>: %v", err))
+		if ctx != nil {
+			return ctx.Edit(fmt.Sprintf("❌ <b>URL Download Failed</b>: %v", err))
+		}
+		return fmt.Errorf("URL download failed: %w", err)
 	}
 
 	duration := time.Since(start)
@@ -301,7 +327,10 @@ func (p *Plugin) executeURLDownload(taskCtx context.Context, ctx *core.Context, 
 		core.EscapeHTML(asset.Path),
 	)
 
-	return ctx.Edit(text)
+	if ctx != nil {
+		return ctx.Edit(text)
+	}
+	return nil
 }
 
 func formatBytes(b int64) string {

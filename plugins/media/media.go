@@ -22,7 +22,7 @@ var (
 // Plugin provides media inspection, audio extraction, and transcoding utilities.
 type Plugin struct {
 	mediaService *media.Service
-	files        *filesystem.Manager
+	files        *filesystem.Scope
 }
 
 // New creates a new Media plugin with optional dependencies.
@@ -49,12 +49,13 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 
 // SetFiles sets the filesystem manager for the plugin.
 func (p *Plugin) SetFiles(fs *filesystem.Manager) {
-	p.files = fs
+	p.files = fs.ForOwner("media")
 }
 
-func (p *Plugin) getFiles() *filesystem.Manager {
+func (p *Plugin) getFiles() *filesystem.Scope {
 	if p.files == nil {
-		p.files, _ = filesystem.NewManager("data", "", "", nil)
+		manager, _ := filesystem.NewManager("data", "", "", nil)
+		p.files = manager.ForOwner("media")
 	}
 	return p.files
 }
@@ -235,7 +236,7 @@ func (p *Plugin) handleExtractAudio(ctx *core.Context) error {
 	_ = ctx.EditOrReply("⏳ <i>Downloading and extracting audio...</i>")
 
 	files := p.getFiles()
-	tmpDir, err := files.CreateTempDir("media", "goultroid-audio-*")
+	tmpDir, err := files.CreateTempDir("goultroid-audio-*")
 	if err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
 	}
@@ -297,7 +298,7 @@ func (p *Plugin) handleConvert(ctx *core.Context) error {
 	_ = ctx.EditOrReply(fmt.Sprintf("⏳ <i>Converting media to %s...</i>", core.EscapeHTML(targetFormat)))
 
 	files := p.getFiles()
-	tmpDir, err := files.CreateTempDir("media", "goultroid-convert-*")
+	tmpDir, err := files.CreateTempDir("goultroid-convert-*")
 	if err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
 	}
@@ -362,7 +363,7 @@ func (p *Plugin) handleConvertToGIF(ctx *core.Context) error {
 	_ = ctx.EditOrReply("⏳ <i>Converting video to GIF...</i>")
 
 	files := p.getFiles()
-	tmpDir, err := files.CreateTempDir("media", "goultroid-gif-*")
+	tmpDir, err := files.CreateTempDir("goultroid-gif-*")
 	if err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
 	}
@@ -411,7 +412,7 @@ func (p *Plugin) handleConvertToSticker(ctx *core.Context) error {
 	_ = ctx.EditOrReply("⏳ <i>Generating video sticker (WebM 512x512)...</i>")
 
 	files := p.getFiles()
-	tmpDir, err := files.CreateTempDir("media", "goultroid-vstick-*")
+	tmpDir, err := files.CreateTempDir("goultroid-vstick-*")
 	if err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
 	}

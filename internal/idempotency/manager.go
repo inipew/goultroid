@@ -22,11 +22,12 @@ type entry struct {
 type Manager struct {
 	mu      sync.RWMutex
 	entries map[string]entry
+	repo    Repository
 	stopCh  chan struct{}
 }
 
 // NewManager creates an in-memory Idempotency Manager and starts a background eviction loop.
-func NewManager(cleanupInterval time.Duration) *Manager {
+func NewManager(cleanupInterval time.Duration, repositories ...Repository) *Manager {
 	if cleanupInterval <= 0 {
 		cleanupInterval = 1 * time.Minute
 	}
@@ -34,6 +35,9 @@ func NewManager(cleanupInterval time.Duration) *Manager {
 	m := &Manager{
 		entries: make(map[string]entry),
 		stopCh:  make(chan struct{}),
+	}
+	if len(repositories) > 0 {
+		m.repo = repositories[0]
 	}
 
 	go m.cleanupLoop(cleanupInterval)
@@ -56,6 +60,10 @@ func (m *Manager) cleanupLoop(interval time.Duration) {
 
 func (m *Manager) evictExpired() {
 	now := time.Now().UTC()
+	if m.repo != nil {
+		_, _ = m.repo.DeleteExpired(context.Background(), now)
+		return
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -88,6 +96,9 @@ func (m *Manager) CheckAndSet(ctx context.Context, key string, ttl time.Duration
 	}
 
 	now := time.Now().UTC()
+	if m.repo != nil {
+		return m.repo.Claim(ctx, cleanKey, now, now.Add(ttl))
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -111,6 +122,10 @@ func (m *Manager) IsProcessed(key string) bool {
 	if cleanKey == "" {
 		return false
 	}
+	if m.repo != nil {
+		processed, err := m.repo.IsProcessed(context.Background(), cleanKey, time.Now().UTC())
+		return err == nil && processed
+	}
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -124,6 +139,13 @@ func (m *Manager) IsProcessed(key string) bool {
 
 // Size returns the count of currently held keys.
 func (m *Manager) Size() int {
+	if m.repo != nil {
+		size, err := m.repo.Size(context.Background(), time.Now().UTC())
+		if err == nil {
+			return size
+		}
+		return 0
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.entries)

@@ -32,6 +32,26 @@ type Manager struct {
 	procCounter  atomic.Uint64
 }
 
+// Executor is a process manager scoped to a single immutable owner.
+// Plugin code receives this facade so resource and audit attribution cannot be spoofed.
+type Executor struct {
+	manager *Manager
+	owner   string
+}
+
+// ForOwner returns a process executor permanently bound to owner.
+func (m *Manager) ForOwner(owner string) *Executor {
+	return &Executor{manager: m, owner: strings.TrimSpace(owner)}
+}
+
+// Execute runs an approved binary and attributes it to the bound owner.
+func (e *Executor) Execute(ctx context.Context, binary string, args ...string) ([]byte, []byte, error) {
+	if e == nil || e.manager == nil {
+		return nil, nil, errors.New("process manager not configured")
+	}
+	return e.manager.Execute(ctx, e.owner, binary, args...)
+}
+
 // NewManager creates a ProcessManager with allowed binary names and max output limit.
 func NewManager(allowedBinaries []string, maxOutputLen int, rm *resource.Manager) *Manager {
 	if maxOutputLen <= 0 {

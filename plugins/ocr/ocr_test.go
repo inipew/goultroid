@@ -49,7 +49,7 @@ func TestExtractRetriesTransientHTTPFailure(t *testing.T) {
 	p := &Plugin{
 		apiKey:   "test-key",
 		endpoint: "https://ocr.example.test/parse/image",
-		http:     netSvc,
+		http:     netSvc.ForOwner("ocr"),
 	}
 	text, err := p.extract(context.Background(), path, "eng")
 	if err != nil {

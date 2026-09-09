@@ -50,19 +50,39 @@ type Manager struct {
 	idemp            IdempotencyClaimer
 	recoveryFailures int
 	recoveryErrors   []string
+	terminalAt       map[string]time.Time
+	retention        time.Duration
+	cleanupInterval  time.Duration
+	cleanupCancel    context.CancelFunc
+	cleanupWG        sync.WaitGroup
 }
 
 // NewManager creates a new JobManager backed by a task submitter and optional repository.
 func NewManager(submitter TaskSubmitter, repo ...Repository) *Manager {
 	m := &Manager{
-		jobs:      make(map[string]*Job),
-		handlers:  make(map[string]JobHandler),
-		submitter: submitter,
+		jobs:            make(map[string]*Job),
+		handlers:        make(map[string]JobHandler),
+		submitter:       submitter,
+		terminalAt:      make(map[string]time.Time),
+		retention:       7 * 24 * time.Hour,
+		cleanupInterval: time.Hour,
 	}
 	if len(repo) > 0 && repo[0] != nil {
 		m.repo = repo[0]
 	}
 	return m
+}
+
+// SetRetention configures how long terminal jobs are retained and how often cleanup runs.
+func (m *Manager) SetRetention(retention, cleanupInterval time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if retention > 0 {
+		m.retention = retention
+	}
+	if cleanupInterval > 0 {
+		m.cleanupInterval = cleanupInterval
+	}
 }
 
 // SetRepository configures durable persistence for the manager.
@@ -143,6 +163,8 @@ func (m *Manager) Trigger(ctx context.Context, jobID string) error {
 		return fmt.Errorf("job %q not found", jobID)
 	}
 
+	previousState := job.State
+	previousLastRun := job.LastRun
 	job.State = StateTriggered
 	job.LastRun = time.Now().UTC()
 	runFn := job.Run
@@ -164,6 +186,7 @@ func (m *Manager) Trigger(ctx context.Context, jobID string) error {
 	}
 
 	if m.submitter == nil {
+		m.rollbackTrigger(ctx, job, previousState, previousLastRun, "task submitter not configured")
 		return fmt.Errorf("task submitter not configured")
 	}
 
@@ -180,6 +203,7 @@ func (m *Manager) Trigger(ctx context.Context, jobID string) error {
 					m.mu.Lock()
 					job.State = StateCompleted
 					job.LastError = "skipped: duplicate execution detected by idempotency key"
+					m.terminalAt[jobID] = time.Now().UTC()
 					m.mu.Unlock()
 					if repo != nil {
 						_ = repo.UpdateState(context.Background(), jobID, StateCompleted, job.LastError, job.LastRun, job.NextRun)
@@ -208,6 +232,7 @@ func (m *Manager) Trigger(ctx context.Context, jobID string) error {
 				job.State = StateCompleted
 				job.LastError = ""
 			}
+			m.terminalAt[jobID] = time.Now().UTC()
 			jobState := job.State
 			jobErr := job.LastError
 			jLastRun := job.LastRun
@@ -222,7 +247,28 @@ func (m *Manager) Trigger(ctx context.Context, jobID string) error {
 		},
 	}
 
-	return m.submitter.Submit(ctx, pool, task)
+	if err := m.submitter.Submit(ctx, pool, task); err != nil {
+		m.rollbackTrigger(ctx, job, previousState, previousLastRun, err.Error())
+		return fmt.Errorf("submit job %q to pool %q: %w", jobID, pool, err)
+	}
+	return nil
+}
+
+func (m *Manager) rollbackTrigger(ctx context.Context, job *Job, state JobState, lastRun time.Time, reason string) {
+	m.mu.Lock()
+	job.State = state
+	job.LastRun = lastRun
+	job.LastError = reason
+	nextRun := job.NextRun
+	repo := m.repo
+	m.mu.Unlock()
+	if repo != nil {
+		persistCtx := context.Background()
+		if ctx != nil {
+			persistCtx = context.WithoutCancel(ctx)
+		}
+		_ = repo.UpdateState(persistCtx, job.ID, state, reason, lastRun, nextRun)
+	}
 }
 
 // Cancel cancels and removes a specific job.
@@ -425,12 +471,84 @@ func (m *Manager) Dependencies() []string {
 
 // Start reconciles active jobs on runtime startup.
 func (m *Manager) Start(ctx context.Context) error {
-	return m.LoadAndReconcile(ctx)
+	if err := m.LoadAndReconcile(ctx); err != nil {
+		return err
+	}
+	if _, err := m.CleanupTerminal(ctx); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	if m.cleanupCancel != nil {
+		m.mu.Unlock()
+		return nil
+	}
+	cleanupCtx, cancel := context.WithCancel(ctx)
+	m.cleanupCancel = cancel
+	interval := m.cleanupInterval
+	m.cleanupWG.Add(1)
+	m.mu.Unlock()
+	go m.cleanupLoop(cleanupCtx, interval)
+	return nil
 }
 
 // Stop gracefully terminates job execution.
 func (m *Manager) Stop(ctx context.Context) error {
-	return nil
+	m.mu.Lock()
+	cancel := m.cleanupCancel
+	m.cleanupCancel = nil
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	done := make(chan struct{})
+	go func() {
+		m.cleanupWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (m *Manager) cleanupLoop(ctx context.Context, interval time.Duration) {
+	defer m.cleanupWG.Done()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_, _ = m.CleanupTerminal(ctx)
+		}
+	}
+}
+
+// CleanupTerminal removes terminal jobs whose retention window has elapsed.
+func (m *Manager) CleanupTerminal(ctx context.Context) (int, error) {
+	m.mu.Lock()
+	cutoff := time.Now().UTC().Add(-m.retention)
+	removed := 0
+	for id, completedAt := range m.terminalAt {
+		if !completedAt.After(cutoff) {
+			delete(m.jobs, id)
+			delete(m.terminalAt, id)
+			removed++
+		}
+	}
+	repo := m.repo
+	m.mu.Unlock()
+	if repo != nil {
+		persisted, err := repo.DeleteTerminalBefore(ctx, cutoff)
+		removed += persisted
+		if err != nil {
+			return removed, err
+		}
+	}
+	return removed, nil
 }
 
 // Health probes job manager health.

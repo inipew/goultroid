@@ -82,6 +82,33 @@ type Service struct {
 	reqCounter  atomic.Uint64
 }
 
+// Client is a managed network service scoped to one immutable owner.
+type Client struct {
+	service *Service
+	owner   string
+}
+
+// ForOwner returns a network client permanently bound to owner.
+func (s *Service) ForOwner(owner string) *Client {
+	return &Client{service: s, owner: owner}
+}
+
+func (c *Client) Get(ctx context.Context, urlStr string, headers map[string]string) (*Response, error) {
+	return c.service.Get(ctx, c.owner, urlStr, headers)
+}
+
+func (c *Client) Post(ctx context.Context, urlStr, contentType string, body io.Reader, headers map[string]string) (*Response, error) {
+	return c.service.Post(ctx, c.owner, urlStr, contentType, body, headers)
+}
+
+func (c *Client) DoRequest(ctx context.Context, method, urlStr string, body io.Reader, headers map[string]string) (*Response, error) {
+	return c.service.DoRequest(ctx, c.owner, method, urlStr, body, headers)
+}
+
+func (c *Client) GetJSON(ctx context.Context, urlStr string, target any) error {
+	return c.service.GetJSON(ctx, c.owner, urlStr, target)
+}
+
 // NewService creates a managed network service with custom or default HTTP client.
 func NewService(client *http.Client, rm *resource.Manager) *Service {
 	if client == nil {

@@ -15,7 +15,7 @@ import (
 )
 
 type Plugin struct {
-	http *network.Service
+	http *network.Client
 }
 
 func New() *Plugin {
@@ -44,7 +44,7 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 }
 
 func (p *Plugin) SetHTTP(svc *network.Service) {
-	p.http = svc
+	p.http = svc.ForOwner("wikipedia")
 }
 
 func (p *Plugin) Shutdown() error { return nil }
@@ -136,9 +136,9 @@ func (p *Plugin) summary(ctx context.Context, title string) (summaryResponse, er
 
 func (p *Plugin) getJSON(ctx context.Context, endpoint string, out any) error {
 	if p.http == nil {
-		p.http = network.NewService(nil, nil)
+		p.http = network.NewService(nil, nil).ForOwner("wikipedia")
 	}
-	resp, err := p.http.Get(ctx, "wikipedia", endpoint, map[string]string{
+	resp, err := p.http.Get(ctx, endpoint, map[string]string{
 		"User-Agent": "Goultroid/1.0 (Wikipedia plugin)",
 		"Accept":     "application/json",
 	})

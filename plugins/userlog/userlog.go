@@ -34,7 +34,8 @@ type Plugin struct {
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
 	once          sync.Once // guards queue close on shutdown
-	startOnce     sync.Once // guards lazy worker startup
+	startOnce     sync.Once // guards worker startup
+	startErr      error
 	subscriptions []*core.Subscription
 	scope         *plugin.Scope
 
@@ -43,11 +44,9 @@ type Plugin struct {
 	droppedCount   atomic.Int64
 }
 
-// New creates an initialized UserLog plugin. Workers are NOT spawned here;
-// they start lazily on the first enqueue or explicitly via startWorkers (called
-// by InitScope). This avoids idle goroutines when userlog is not configured.
+// New constructs a UserLog plugin without creating a lifecycle context or
+// spawning workers. InitScope supplies both during managed registration.
 func New(svc *userlog.Service, ownerID int64, ownerUsername ...string) *Plugin {
-	ctx, cancel := context.WithCancel(context.Background())
 	username := ""
 	if len(ownerUsername) > 0 {
 		username = strings.TrimPrefix(ownerUsername[0], "@")
@@ -57,20 +56,29 @@ func New(svc *userlog.Service, ownerID int64, ownerUsername ...string) *Plugin {
 		ownerID:       ownerID,
 		ownerUsername: username,
 		queue:         make(chan func(), queueCapacity),
-		ctx:           ctx,
-		cancel:        cancel,
 	}
 }
 
 // startWorkers spawns the async worker goroutines exactly once. It is
 // idempotent and safe to call from multiple goroutines concurrently.
-func (p *Plugin) startWorkers() {
+func (p *Plugin) startWorkers() error {
 	p.startOnce.Do(func() {
+		p.mu.RLock()
+		scope := p.scope
+		p.mu.RUnlock()
+		if scope == nil {
+			p.startErr = fmt.Errorf("userlog plugin is not initialized with a scope")
+			return
+		}
 		p.wg.Add(asyncLogWorkers)
 		for i := 0; i < asyncLogWorkers; i++ {
-			go p.worker()
+			if err := scope.Go(p.worker); err != nil {
+				p.wg.Done()
+				p.startErr = fmt.Errorf("start userlog worker: %w", err)
+			}
 		}
 	})
+	return p.startErr
 }
 
 // SetOwnerUsername configures the owner's Telegram username for @username mention detection.
@@ -138,14 +146,22 @@ func (p *Plugin) SetEventBus(eb *core.EventBus) {
 	}))
 }
 
-func (p *Plugin) worker() {
+func (p *Plugin) worker(ctx context.Context) {
 	defer p.wg.Done()
-	for job := range p.queue {
-		func() {
-			defer func() { _ = recover() }()
-			job()
-		}()
-		p.deliveredCount.Add(1)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case job, ok := <-p.queue:
+			if !ok {
+				return
+			}
+			func() {
+				defer func() { _ = recover() }()
+				job()
+			}()
+			p.deliveredCount.Add(1)
+		}
 	}
 }
 
@@ -153,12 +169,10 @@ func (p *Plugin) enqueue(job func()) {
 	if job == nil {
 		return
 	}
-	// Ensure workers are running before pushing the first job. This is the
-	// lazy-start path for callers that do not go through InitScope (e.g. tests).
-	p.startWorkers()
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	if p.closing.Load() {
+	if p.closing.Load() || p.ctx == nil || p.startErr != nil {
+		p.droppedCount.Add(1)
 		return
 	}
 	select {
@@ -188,7 +202,9 @@ func (p *Plugin) ShutdownContext(ctx context.Context) error {
 	done := make(chan struct{})
 	go func() {
 		p.wg.Wait()
-		p.cancel()
+		if p.cancel != nil {
+			p.cancel()
+		}
 		close(done)
 	}()
 
@@ -213,16 +229,15 @@ func (p *Plugin) Description() string {
 
 func (p *Plugin) Init() error { return nil }
 
-// InitScope binds plugin-owned EventBus subscriptions to the runtime scope
-// and starts the async worker goroutines if they have not been started yet.
-// New remains backward compatible for tests and legacy direct construction.
+// InitScope binds plugin-owned EventBus subscriptions and workers to the
+// runtime scope.
 func (p *Plugin) InitScope(ctx context.Context, scope *plugin.Scope) error {
 	if scope == nil {
 		return fmt.Errorf("userlog plugin scope cannot be nil")
 	}
 	p.mu.Lock()
 	p.scope = scope
-	p.ctx = scope.Context()
+	p.ctx, p.cancel = context.WithCancel(ctx)
 	subscriptions := append([]*core.Subscription(nil), p.subscriptions...)
 	p.mu.Unlock()
 	for _, sub := range subscriptions {
@@ -230,10 +245,7 @@ func (p *Plugin) InitScope(ctx context.Context, scope *plugin.Scope) error {
 			return err
 		}
 	}
-	// Start workers here so they use the scope context. The startOnce guard
-	// makes this a no-op if enqueue already triggered the lazy start.
-	p.startWorkers()
-	return nil
+	return p.startWorkers()
 }
 
 // MessageHookPriority returns priority for the message hook (Observability = 90).

@@ -37,8 +37,8 @@ var supportedLanguages = map[string]struct{}{
 
 type Plugin struct {
 	apiKey, endpoint string
-	http             *network.Service
-	files            *filesystem.Manager
+	http             *network.Client
+	files            *filesystem.Scope
 }
 
 func New() *Plugin {
@@ -77,23 +77,24 @@ func (p *Plugin) SetAPIKey(key string) {
 }
 
 func (p *Plugin) SetHTTP(svc *network.Service) {
-	p.http = svc
+	p.http = svc.ForOwner("ocr")
 }
 
 func (p *Plugin) SetFiles(fs *filesystem.Manager) {
-	p.files = fs
+	p.files = fs.ForOwner("ocr")
 }
 
-func (p *Plugin) getHTTP() *network.Service {
+func (p *Plugin) getHTTP() *network.Client {
 	if p.http == nil {
-		p.http = network.NewService(nil, nil)
+		p.http = network.NewService(nil, nil).ForOwner("ocr")
 	}
 	return p.http
 }
 
-func (p *Plugin) getFiles() *filesystem.Manager {
+func (p *Plugin) getFiles() *filesystem.Scope {
 	if p.files == nil {
-		p.files, _ = filesystem.NewManager("data", "", "", nil)
+		manager, _ := filesystem.NewManager("data", "", "", nil)
+		p.files = manager.ForOwner("ocr")
 	}
 	return p.files
 }
@@ -148,7 +149,7 @@ func (p *Plugin) handle(ctx *core.Context) error {
 
 	_ = ctx.EditOrReply("⏳ Processing OCR...")
 	files := p.getFiles()
-	dir, err := files.CreateTempDir("ocr", "goultroid-ocr-*")
+	dir, err := files.CreateTempDir("goultroid-ocr-*")
 	if err != nil {
 		return fmt.Errorf("create OCR temp directory: %w", err)
 	}
@@ -256,7 +257,7 @@ func (p *Plugin) extractOnce(ctx context.Context, path, language string) (string
 	}
 
 	httpSvc := p.getHTTP()
-	resp, err := httpSvc.Post(ctx, "ocr", p.endpoint, mw.FormDataContentType(), &body, map[string]string{
+	resp, err := httpSvc.Post(ctx, p.endpoint, mw.FormDataContentType(), &body, map[string]string{
 		"apikey": p.apiKey,
 	})
 	if err != nil {
