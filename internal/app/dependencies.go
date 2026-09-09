@@ -7,6 +7,8 @@ import (
 	"github.com/inipew/goultroid/internal/assistant"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/idempotency"
+	"github.com/inipew/goultroid/internal/resource"
 	"github.com/inipew/goultroid/internal/scheduler"
 	broadcastSvc "github.com/inipew/goultroid/internal/services/broadcast"
 	"github.com/inipew/goultroid/internal/services/callback"
@@ -20,23 +22,29 @@ import (
 	"github.com/inipew/goultroid/internal/services/storage"
 	userlogSvc "github.com/inipew/goultroid/internal/services/userlog"
 	"github.com/inipew/goultroid/internal/settings"
+	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/telegram"
+	"github.com/inipew/goultroid/internal/workers"
 	"go.uber.org/zap"
 )
 
 // coreDependencies holds primary storage, routing, permission, and messaging bus components.
 type coreDependencies struct {
-	db             *database.DB
-	perms          *core.Permissions
-	router         *core.Router
-	eventBus       *core.EventBus
-	metrics        core.MetricsCollector
-	localizer      localization.Localizer
-	callbackStore  *callback.StateStore
-	callbackRouter *callback.Router
-	inlineEngine   *inline.Engine
-	cmdLimiter     *ratelimit.Limiter
-	interLimiter   *ratelimit.Limiter
+	db              *database.DB
+	perms           *core.Permissions
+	router          *core.Router
+	eventBus        *core.EventBus
+	metrics         core.MetricsCollector
+	localizer       localization.Localizer
+	callbackStore   *callback.StateStore
+	callbackRouter  *callback.Router
+	inlineEngine    *inline.Engine
+	cmdLimiter      *ratelimit.Limiter
+	interLimiter    *ratelimit.Limiter
+	workerManager   *workers.Manager
+	taskManager     *tasks.Manager
+	resourceManager *resource.Manager
+	idempManager    *idempotency.Manager
 }
 
 // telegramRuntime holds network client, message dispatcher, and optional assistant bot.
@@ -66,19 +74,25 @@ type domainServices struct {
 // Dependencies is the unified composition root for cross-cutting infrastructure.
 // Used as explicit constructor argument to avoid touching bootstrap for new services.
 type Dependencies struct {
-	DB          *database.DB
-	EventBus    *core.EventBus
-	Permissions *core.Permissions
-	Settings    *settings.Service
-	Dispatcher  *telegram.Dispatcher
-	Callbacks   *callback.Router
-	Inline      *inline.Engine
+	DB              *database.DB
+	EventBus        *core.EventBus
+	Permissions     *core.Permissions
+	Settings        *settings.Service
+	Dispatcher      *telegram.Dispatcher
+	Callbacks       *callback.Router
+	Inline          *inline.Engine
+	WorkerManager   *workers.Manager
+	TaskManager     *tasks.Manager
+	ResourceManager *resource.Manager
 }
 
 // cleanupCore closes core resources on wiring failure. Logs close errors instead of silent ignore.
 func cleanupCore(core *coreDependencies, logger *zap.Logger) {
 	if core == nil {
 		return
+	}
+	if core.idempManager != nil {
+		core.idempManager.Close()
 	}
 	if core.eventBus != nil {
 		if err := core.eventBus.Close(); err != nil && logger != nil {

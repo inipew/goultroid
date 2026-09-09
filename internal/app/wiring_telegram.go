@@ -27,6 +27,9 @@ func buildTelegramRuntime(cfg *config.Config, core *coreDependencies, logger *za
 	}
 	dispatcher.Executor().SetMetrics(core.metrics)
 	dispatcher.Executor().SetRateLimiter(commandRateLimiterAdapter{limiter: core.cmdLimiter})
+	if core.idempManager != nil {
+		dispatcher.SetIdempotency(core.idempManager)
+	}
 
 	client, err := telegram.NewClient(cfg, dispatcher, core.db, logger)
 	if err != nil {

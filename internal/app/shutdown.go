@@ -61,6 +61,14 @@ func (a *App) Shutdown(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("event bus: %w", err))
 		}
 	}
+	if a.workers != nil {
+		if err := a.workers.Stop(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			errs = append(errs, fmt.Errorf("workers: %w", err))
+		}
+	}
+	if a.idemp != nil {
+		a.idemp.Close()
+	}
 	if a.callbackStore != nil {
 		a.callbackStore.Stop()
 	}

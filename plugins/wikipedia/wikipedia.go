@@ -14,11 +14,21 @@ import (
 	"github.com/inipew/goultroid/internal/execution"
 )
 
-type Plugin struct{ client *http.Client }
+// HTTPDoer abstracts HTTP requests for plugins.
+type HTTPDoer interface {
+	Do(req *http.Request) (*http.Response, error)
+}
+
+type Plugin struct{ client HTTPDoer }
 
 func New() *Plugin                    { return &Plugin{client: &http.Client{Timeout: 20 * time.Second}} }
 func (p *Plugin) Name() string        { return "wikipedia" }
 func (p *Plugin) Description() string { return "Search and summarize Wikipedia articles" }
+func (p *Plugin) SetClient(c HTTPDoer) {
+	if c != nil {
+		p.client = c
+	}
+}
 func (p *Plugin) Init() error {
 	if p.client == nil {
 		p.client = &http.Client{Timeout: 20 * time.Second}

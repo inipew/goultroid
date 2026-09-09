@@ -177,6 +177,13 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 	if !d.acceptingUpdates.Load() {
 		return nil
 	}
+	if d.idempotencyMgr != nil {
+		key := fmt.Sprintf("cb:%d", update.QueryID)
+		isNew, err := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
+		if err == nil && !isNew {
+			return nil
+		}
+	}
 	chatID := extractChatIDFromPeer(update.Peer)
 	inputPeer := d.callbackInputPeer(ctx, update.Peer, e)
 	target := core.CallbackTarget{
@@ -213,6 +220,13 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities, update *tg.UpdateInlineBotCallbackQuery) error {
 	if !d.acceptingUpdates.Load() {
 		return nil
+	}
+	if d.idempotencyMgr != nil {
+		key := fmt.Sprintf("inline_cb:%d", update.QueryID)
+		isNew, err := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
+		if err == nil && !isNew {
+			return nil
+		}
 	}
 	target := core.CallbackTarget{
 		Origin:       core.CallbackOriginInline,

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/resource"
 )
 
 type lifecyclePlugin struct {
@@ -157,5 +158,28 @@ func TestScopeCancelsWorkAndRunsCleanup(t *testing.T) {
 	}
 	if len(scope.Resources()) != 1 {
 		t.Fatal("resource snapshot unexpectedly changed before explicit release")
+	}
+}
+
+func TestScopeWithManagerDetectsLeaks(t *testing.T) {
+	mgr := resource.NewManager()
+	scope := NewScopeWithManager(context.Background(), "plugin:leak_test", mgr)
+
+	// Track a resource that is NOT released before scope Close
+	if err := scope.Track(Resource{ID: "orphan-file", Type: resource.TypeTempFile}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	err := scope.Close(ctx)
+	if err == nil {
+		t.Fatal("expected Scope.Close to return an error when resources are leaked")
+	}
+
+	snap := mgr.OwnerSnapshot("plugin:leak_test")
+	if snap.Leaked != 1 {
+		t.Fatalf("expected 1 leaked resource in manager snapshot, got: %+v", snap)
 	}
 }

@@ -3,11 +3,13 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/resource"
 )
 
 // MessageHookHandler represents the raw Telegram message interceptor signature.
@@ -19,20 +21,37 @@ type HookRegistrar interface {
 }
 
 type Manager struct {
-	router        *core.Router
-	hookRegistrar HookRegistrar
-	plugins       map[string]Plugin
-	metadata      map[string]Metadata
-	scopes        map[string]*Scope
-	commands      map[string][]core.Command
-	list          []Plugin
-	hookCleanups  []func()
-	mu            sync.RWMutex
-	shutdown      bool
+	router          *core.Router
+	hookRegistrar   HookRegistrar
+	resourceManager *resource.Manager
+	plugins         map[string]Plugin
+	metadata        map[string]Metadata
+	scopes          map[string]*Scope
+	commands        map[string][]core.Command
+	disabled        map[string]bool
+	list            []Plugin
+	hookCleanups    []func()
+	mu              sync.RWMutex
+	shutdown        bool
 }
 
 func NewManager(router *core.Router) *Manager {
-	return &Manager{router: router, plugins: make(map[string]Plugin), metadata: make(map[string]Metadata), scopes: make(map[string]*Scope), commands: make(map[string][]core.Command), list: make([]Plugin, 0)}
+	return &Manager{
+		router:   router,
+		plugins:  make(map[string]Plugin),
+		metadata: make(map[string]Metadata),
+		scopes:   make(map[string]*Scope),
+		commands: make(map[string][]core.Command),
+		disabled: make(map[string]bool),
+		list:     make([]Plugin, 0),
+	}
+}
+
+// SetResourceManager sets the global resource manager used to track plugin scopes.
+func (m *Manager) SetResourceManager(mgr *resource.Manager) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.resourceManager = mgr
 }
 
 // SetHookRegistrar attaches a hook registrar (e.g. Telegram Dispatcher) to this manager.
@@ -90,7 +109,16 @@ func (m *Manager) RegisterWithContext(ctx context.Context, p Plugin) error {
 	}
 
 	// 3. Initialization without holding lock (may be long, may call manager)
-	scope := NewScope(ctx, "plugin:"+name)
+	m.mu.RLock()
+	resMgr := m.resourceManager
+	m.mu.RUnlock()
+
+	var scope *Scope
+	if resMgr != nil {
+		scope = NewScopeWithManager(ctx, "plugin:"+name, resMgr)
+	} else {
+		scope = NewScope(ctx, "plugin:"+name)
+	}
 	var initErr error
 	if si, ok := p.(ScopeInitializer); ok {
 		initErr = si.InitScope(scope.Context(), scope)
@@ -274,4 +302,148 @@ func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 		return fmt.Errorf("errors during plugin shutdown: %s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+// Disable unregisters commands, cancels work, and executes shutdown hooks for a single plugin.
+func (m *Manager) Disable(ctx context.Context, name string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	key := strings.ToLower(strings.TrimSpace(name))
+
+	m.mu.Lock()
+	if m.shutdown {
+		m.mu.Unlock()
+		return fmt.Errorf("plugin manager is shut down")
+	}
+	p, exists := m.plugins[key]
+	if !exists {
+		m.mu.Unlock()
+		return fmt.Errorf("plugin %q not found", name)
+	}
+	if m.disabled[key] {
+		m.mu.Unlock()
+		return nil // already disabled
+	}
+	cmds := append([]core.Command(nil), m.commands[key]...)
+	scope := m.scopes[key]
+	delete(m.scopes, key)
+	m.disabled[key] = true
+	router := m.router
+	m.mu.Unlock()
+
+	// Unregister commands from router
+	if router != nil && len(cmds) > 0 {
+		router.UnregisterBatch(cmds)
+	}
+
+	// Close scope and execute shutdown hooks
+	var errs []error
+	if s, ok := p.(ContextShutdowner); ok {
+		if err := s.ShutdownContext(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("shutdown %s: %w", name, err))
+		}
+	} else if s, ok := p.(Shutdowner); ok {
+		if err := s.Shutdown(); err != nil {
+			errs = append(errs, fmt.Errorf("shutdown %s: %w", name, err))
+		}
+	}
+
+	if scope != nil {
+		if err := scope.Close(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("close scope %s: %w", name, err))
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("errors disabling plugin %s: %v", name, errs)
+	}
+	return nil
+}
+
+// Enable re-initializes and registers a previously disabled plugin.
+func (m *Manager) Enable(ctx context.Context, name string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	key := strings.ToLower(strings.TrimSpace(name))
+
+	m.mu.Lock()
+	if m.shutdown {
+		m.mu.Unlock()
+		return fmt.Errorf("plugin manager is shut down")
+	}
+	p, exists := m.plugins[key]
+	if !exists {
+		m.mu.Unlock()
+		return fmt.Errorf("plugin %q not found", name)
+	}
+	if !m.disabled[key] {
+		m.mu.Unlock()
+		return nil // already enabled
+	}
+	cmds := append([]core.Command(nil), m.commands[key]...)
+	router := m.router
+	resMgr := m.resourceManager
+	m.mu.Unlock()
+
+	// Initialize scope and plugin
+	var scope *Scope
+	if resMgr != nil {
+		scope = NewScopeWithManager(ctx, "plugin:"+key, resMgr)
+	} else {
+		scope = NewScope(ctx, "plugin:"+key)
+	}
+
+	var initErr error
+	if si, ok := p.(ScopeInitializer); ok {
+		initErr = si.InitScope(scope.Context(), scope)
+	} else if ci, ok := p.(ContextInitializer); ok {
+		initErr = ci.InitContext(ctx)
+	} else {
+		initErr = p.Init()
+	}
+
+	if initErr != nil {
+		_ = scope.Close(ctx)
+		return fmt.Errorf("failed to re-initialize plugin %s: %w", name, initErr)
+	}
+
+	// Register commands back to router
+	if router != nil && len(cmds) > 0 {
+		if err := router.RegisterBatch(cmds); err != nil {
+			_ = scope.Close(ctx)
+			return fmt.Errorf("failed to re-register commands for plugin %s: %w", name, err)
+		}
+	}
+
+	m.mu.Lock()
+	m.scopes[key] = scope
+	delete(m.disabled, key)
+	m.mu.Unlock()
+
+	return nil
+}
+
+// IsEnabled reports whether the given plugin is currently enabled.
+func (m *Manager) IsEnabled(name string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	key := strings.ToLower(strings.TrimSpace(name))
+	_, exists := m.plugins[key]
+	return exists && !m.disabled[key]
+}
+
+// DisabledPlugins returns a list of names of currently disabled plugins.
+func (m *Manager) DisabledPlugins() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var list []string
+	for k, v := range m.disabled {
+		if v {
+			list = append(list, k)
+		}
+	}
+	sort.Strings(list)
+	return list
 }

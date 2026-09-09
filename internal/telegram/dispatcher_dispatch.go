@@ -24,6 +24,16 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	d.mu.Unlock()
 	defer d.inFlight.Done()
 
+	chatID := extractChatIDFromPeer(msg.PeerID)
+	if d.idempotencyMgr != nil {
+		key := fmt.Sprintf("msg:%d:%d", chatID, msg.ID)
+		isNew, err := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
+		if err == nil && !isNew {
+			d.logger.Debug("dispatcher: duplicate message dropped by idempotency manager", zap.String("key", key))
+			return nil
+		}
+	}
+
 	parsed, isCmd, err := d.router.Parse(msg.Message)
 	if err != nil {
 		d.logger.Warn("command parse syntax error", zap.Error(err), zap.String("text", msg.Message))
@@ -106,6 +116,17 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	if coreMsg.GroupedID != 0 && d.albumBuffer != nil {
 		d.albumBuffer.Add(coreMsg)
 	}
+
+	if bus := d.getEventBus(); bus != nil {
+		bus.Publish(&core.MessageCreatedEvent{
+			MetaData: core.EventMeta{ID: fmt.Sprintf("msg:%d:%d", chatID, msg.ID)},
+			At:       time.Now().UTC(),
+			Message:  coreMsg,
+			ChatID:   chatID,
+			PeerID:   msg.PeerID,
+		})
+	}
+
 	if !isCmd {
 		for _, h := range asyncHandlers {
 			_ = d.safeExecuteInterceptor(ctx, h, e, msg, isCmd, cmdName)

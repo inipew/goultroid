@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/inipew/goultroid/internal/runtime"
 )
 
 const (
@@ -142,6 +144,30 @@ func (a *App) HealthContext(ctx context.Context) HealthSnapshot {
 		}
 		if len(diagnostics.Media.ActiveTempDirectories) > 0 {
 			health.Reasons = append(health.Reasons, "media:temporary-resource-leak")
+		}
+	}
+	if a.workers != nil {
+		wHealth := a.workers.Health(ctx)
+		switch wHealth.Status {
+		case runtime.HealthHealthy:
+			health.Subsystems["workers"] = HealthHealthy
+		case runtime.HealthDegraded:
+			health.Subsystems["workers"] = HealthDegraded
+			health.Reasons = append(health.Reasons, "workers:degraded:"+wHealth.Details)
+		case runtime.HealthUnhealthy:
+			health.Subsystems["workers"] = HealthUnhealthy
+			health.Reasons = append(health.Reasons, "workers:unhealthy:"+wHealth.Details)
+		}
+	}
+	if a.resources != nil {
+		leaks := a.resources.AllSnapshots()
+		for _, snap := range leaks {
+			if snap.Leaked > 0 {
+				health.Reasons = append(health.Reasons, fmt.Sprintf("resources:leak:%s:%d", snap.Owner, snap.Leaked))
+				if health.Status == HealthHealthy {
+					health.Status = HealthDegraded
+				}
+			}
 		}
 	}
 	if len(health.Reasons) > 0 && health.Status == HealthHealthy {

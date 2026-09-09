@@ -8,10 +8,14 @@ import (
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/idempotency"
+	"github.com/inipew/goultroid/internal/resource"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/services/localization"
 	"github.com/inipew/goultroid/internal/services/ratelimit"
+	"github.com/inipew/goultroid/internal/tasks"
+	"github.com/inipew/goultroid/internal/workers"
 	"github.com/inipew/goultroid/plugins/sudo"
 	"go.uber.org/zap"
 )
@@ -74,17 +78,26 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 	inlineEngine.SetTimeout(4 * time.Second)
 	inlineEngine.SetPermissions(perms)
 
+	workerManager := workers.NewManager()
+	taskManager := tasks.NewManager()
+	resourceManager := resource.NewManager()
+	idempManager := idempotency.NewManager(1 * time.Minute)
+
 	return &coreDependencies{
-		db:             db,
-		perms:          perms,
-		router:         router,
-		eventBus:       eventBus,
-		metrics:        metrics,
-		localizer:      localizer,
-		callbackStore:  callbackStore,
-		callbackRouter: callbackRouter,
-		inlineEngine:   inlineEngine,
-		cmdLimiter:     cmdLimiter,
-		interLimiter:   interLimiter,
+		db:              db,
+		perms:           perms,
+		router:          router,
+		eventBus:        eventBus,
+		metrics:         metrics,
+		localizer:       localizer,
+		callbackStore:   callbackStore,
+		callbackRouter:  callbackRouter,
+		inlineEngine:    inlineEngine,
+		cmdLimiter:      cmdLimiter,
+		interLimiter:    interLimiter,
+		workerManager:   workerManager,
+		taskManager:     taskManager,
+		resourceManager: resourceManager,
+		idempManager:    idempManager,
 	}, nil
 }

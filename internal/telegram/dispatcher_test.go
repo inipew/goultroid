@@ -144,7 +144,7 @@ func TestDispatcher_OnNewChannelMessage(t *testing.T) {
 
 	entities := tg.Entities{
 		Channels: map[int64]*tg.Channel{
-			555: {ID: 555, Title: "SuperGroup", Megagroup: true},
+			555: {ID: 555, AccessHash: 12345, Title: "SuperGroup", Megagroup: true},
 		},
 	}
 

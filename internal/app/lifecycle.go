@@ -14,6 +14,11 @@ func (a *App) startBackgroundServices(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if a.workers != nil {
+		if err := a.workers.Start(ctx); err != nil {
+			return fmt.Errorf("worker manager: %w", err)
+		}
+	}
 	if a.eventBus != nil {
 		if err := a.eventBus.Start(ctx); err != nil {
 			return fmt.Errorf("event bus: %w", err)

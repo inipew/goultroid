@@ -382,6 +382,24 @@ func (b *EventBus) SubscribeOwned(owner string, t EventType, handler EventHandle
 	return &Subscription{bus: b, eventType: t, id: id}
 }
 
+// SubscribeContext registers a handler that is automatically cancelled when ctx is done.
+func (b *EventBus) SubscribeContext(ctx context.Context, owner string, t EventType, handler EventHandler) *Subscription {
+	sub := b.SubscribeOwned(owner, t, handler)
+	if sub == nil {
+		return nil
+	}
+	if ctx != nil && ctx.Done() != nil {
+		go func() {
+			select {
+			case <-ctx.Done():
+				sub.Close()
+			case <-b.stop:
+			}
+		}()
+	}
+	return sub
+}
+
 // SubscriptionCount reports active subscriptions, optionally filtered by owner.
 func (b *EventBus) SubscriptionCount(owner string) int {
 	b.mu.RLock()

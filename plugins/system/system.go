@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -57,7 +56,18 @@ func (p *Plugin) runCmd(ctx context.Context, name string, args ...string) ([]byt
 	if p.cmdRunner != nil {
 		return p.cmdRunner(ctx, name, args...)
 	}
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+	if p.runner == nil {
+		p.runner = process.NewOSRunner(3, 60*time.Second, 2*1024*1024)
+	}
+	res, err := p.runner.Run(ctx, process.Request{
+		Command: name,
+		Args:    args,
+		Timeout: 60 * time.Second,
+	})
+	if res != nil {
+		return []byte(res.Combined), err
+	}
+	return nil, err
 }
 func (p *Plugin) Name() string { return "system" }
 func (p *Plugin) Metadata() plugin.Metadata {

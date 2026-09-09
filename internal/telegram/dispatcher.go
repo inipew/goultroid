@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/idempotency"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/services/inline"
 	"go.uber.org/zap"
@@ -30,6 +31,8 @@ type Dispatcher struct {
 	localizer      core.Localizer
 	callbackRouter *callback.Router
 	inlineEngine   *inline.Engine
+	normalizer     *Normalizer
+	idempotencyMgr *idempotency.Manager
 
 	messageHandlers  []prioritizedHandler
 	nextHandlerID    uint64
@@ -114,7 +117,22 @@ func NewDispatcher(
 		executor:    executor,
 		albumBuffer: core.NewAlbumBuffer(10 * time.Minute),
 		cmdSem:      make(chan struct{}, 32),
+		normalizer:  NewNormalizer(),
 	}
 	d.acceptingUpdates.Store(true)
 	return d
+}
+
+// SetNormalizer configures a custom update normalizer.
+func (d *Dispatcher) SetNormalizer(n *Normalizer) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.normalizer = n
+}
+
+// SetIdempotency configures an idempotency manager for update deduplication.
+func (d *Dispatcher) SetIdempotency(mgr *idempotency.Manager) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.idempotencyMgr = mgr
 }

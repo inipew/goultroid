@@ -33,6 +33,9 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 
 	schedEngine := scheduler.NewEngine(core.db, tg.client.Service, core.router, core.perms, logger)
 	schedEngine.SetExecutor(tg.dispatcher.Executor())
+	if core.workerManager != nil {
+		schedEngine.SetWorkers(core.workerManager, core.taskManager)
+	}
 
 	storageDir := filepath.Join("data", "storage")
 	fileStorage, err := storage.NewFileStorage(storageDir, 10*1024*1024*1024)

@@ -12,8 +12,10 @@ import (
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/idempotency"
 	"github.com/inipew/goultroid/internal/module"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/resource"
 	"github.com/inipew/goultroid/internal/scheduler"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/services/inline"
@@ -21,7 +23,9 @@ import (
 	processSvc "github.com/inipew/goultroid/internal/services/process"
 	"github.com/inipew/goultroid/internal/services/ratelimit"
 	"github.com/inipew/goultroid/internal/settings"
+	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/telegram"
+	"github.com/inipew/goultroid/internal/workers"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -44,6 +48,11 @@ type App struct {
 	media           *mediaSvc.Service
 	processRunner   *processSvc.OSRunner
 	startTime       time.Time
+
+	workers   *workers.Manager
+	tasks     *tasks.Manager
+	resources *resource.Manager
+	idemp     *idempotency.Manager
 
 	lifecycleMu    sync.Mutex
 	lifecycleState atomic.Uint32
@@ -74,6 +83,9 @@ func New(cfg *config.Config) (*App, error) {
 
 	pluginManager := plugin.NewManager(coreDeps.router)
 	pluginManager.SetHookRegistrar(tgRuntime.dispatcher)
+	if coreDeps.resourceManager != nil {
+		pluginManager.SetResourceManager(coreDeps.resourceManager)
+	}
 	if tgRuntime.assistant != nil {
 		tgRuntime.assistant.SetCoreRouter(coreDeps.router)
 		tgRuntime.assistant.SetSettingsService(domServices.settingsService)
@@ -140,6 +152,10 @@ func New(cfg *config.Config) (*App, error) {
 		media:           domServices.mediaService,
 		processRunner:   domServices.processRunner,
 		startTime:       domServices.startTime,
+		workers:         coreDeps.workerManager,
+		tasks:           coreDeps.taskManager,
+		resources:       coreDeps.resourceManager,
+		idemp:           coreDeps.idempManager,
 		shutdownDone:    make(chan struct{}),
 	}, nil
 }

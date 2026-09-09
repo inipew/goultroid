@@ -12,6 +12,8 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/tasks"
+	"github.com/inipew/goultroid/internal/workers"
 	"go.uber.org/zap"
 )
 
@@ -32,6 +34,9 @@ type Engine struct {
 	perms    *core.Permissions
 	executor *core.CommandExecutor
 	logger   *zap.Logger
+
+	workers *workers.Manager
+	taskMgr *tasks.Manager
 
 	maxConcurrency int
 	sem            chan struct{}
@@ -117,6 +122,14 @@ func (e *Engine) SetMaxConcurrency(n int) {
 	}
 	e.maxConcurrency = n
 	e.sem = make(chan struct{}, n)
+}
+
+// SetWorkers configures runtime worker and task managers for job execution.
+func (e *Engine) SetWorkers(workers *workers.Manager, taskMgr *tasks.Manager) {
+	e.runMu.Lock()
+	defer e.runMu.Unlock()
+	e.workers = workers
+	e.taskMgr = taskMgr
 }
 
 func (e *Engine) SetMisfirePolicy(policy MisfirePolicy) {
@@ -484,6 +497,15 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) {
 		return
 	}
 	availableSlots := cap(e.sem) - len(e.sem)
+	if e.workers != nil {
+		if schedPool, ok := e.workers.Get(workers.PoolScheduler); ok {
+			stats := schedPool.Stats()
+			avail := stats.QueueStats.Capacity - stats.QueueStats.Depth
+			if avail < availableSlots {
+				availableSlots = avail
+			}
+		}
+	}
 	if availableSlots <= 0 {
 		return
 	}
@@ -498,6 +520,52 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) {
 	}
 	for _, job := range claimedJobs {
 		j := job
+		if e.workers != nil {
+			taskID := fmt.Sprintf("sched-%d-%s", j.ID, j.ClaimToken)
+			jobCtx, cancel := context.WithCancel(e.ctx)
+			e.registerActiveJob(j.ID, j.ClaimToken, cancel)
+			taskName := fmt.Sprintf("%s-%d", j.ActionType, j.ID)
+			if e.taskMgr != nil {
+				if regCtx, _, err := e.taskMgr.Register(jobCtx, tasks.Task{
+					ID:    taskID,
+					Owner: "scheduler",
+					Name:  taskName,
+					Run:   func(ctx context.Context) error { return nil },
+				}); err == nil {
+					jobCtx = regCtx
+				}
+			}
+
+			task := tasks.Task{
+				ID:        taskID,
+				Owner:     "scheduler",
+				Name:      taskName,
+				Timeout:   90 * time.Second,
+				CreatedAt: time.Now().UTC(),
+				Run: func(taskCtx context.Context) error {
+					if e.taskMgr != nil {
+						_, _ = e.taskMgr.Start(taskID)
+					}
+					defer func() {
+						e.unregisterActiveJob(j.ID, j.ClaimToken)
+						cancel()
+						if e.taskMgr != nil {
+							e.taskMgr.Finish(taskID, tasks.StateCompleted, nil)
+						}
+					}()
+					e.executeJob(taskCtx, j, cancel)
+					return nil
+				},
+			}
+
+			if err := e.workers.Submit(ctx, workers.PoolScheduler, task); err != nil {
+				e.logger.Error("failed to submit scheduled job to worker pool", zap.Int64("job_id", j.ID), zap.Error(err))
+				e.unregisterActiveJob(j.ID, j.ClaimToken)
+				cancel()
+			}
+			continue
+		}
+
 		select {
 		case e.sem <- struct{}{}:
 		case <-ctx.Done():

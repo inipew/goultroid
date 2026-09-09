@@ -22,7 +22,7 @@ const defaultEndpoint = "https://api.ocr.space/parse/image"
 
 const (
 	maxResponseSize = 8 << 20
-	maxAttempts      = 3
+	maxAttempts     = 3
 )
 
 var supportedLanguages = map[string]struct{}{
@@ -33,9 +33,14 @@ var supportedLanguages = map[string]struct{}{
 	"spa": {}, "swe": {}, "tur": {}, "ukr": {}, "vie": {},
 }
 
+// HTTPDoer abstracts HTTP requests for plugins.
+type HTTPDoer interface {
+	Do(req *http.Request) (*http.Response, error)
+}
+
 type Plugin struct {
 	apiKey, endpoint string
-	client           *http.Client
+	client           HTTPDoer
 }
 
 func New() *Plugin {
@@ -43,6 +48,12 @@ func New() *Plugin {
 		apiKey:   strings.TrimSpace(os.Getenv("OCR_API")),
 		endpoint: defaultEndpoint,
 		client:   &http.Client{Timeout: 90 * time.Second},
+	}
+}
+
+func (p *Plugin) SetClient(c HTTPDoer) {
+	if c != nil {
+		p.client = c
 	}
 }
 

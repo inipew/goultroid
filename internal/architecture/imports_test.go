@@ -46,7 +46,7 @@ func TestDependencyBoundaries(t *testing.T) {
 			}
 		}
 
-		// Tier 3 (plugins/*) must not import Tier 4 (internal/app/*), cmd/*, or sibling plugins
+		// Tier 3 (plugins/*) must not import Tier 4 (internal/app/*), cmd/*, sibling plugins, or os/exec
 		if strings.HasPrefix(pkg, modulePath+"/plugins/") {
 			for dep := range deps {
 				if dep == modulePath+"/internal/app" || strings.HasPrefix(dep, modulePath+"/internal/app/") {
@@ -57,6 +57,9 @@ func TestDependencyBoundaries(t *testing.T) {
 				}
 				if strings.HasPrefix(dep, modulePath+"/plugins/") && dep != pkg && !strings.HasPrefix(dep, pkg+"/") && !strings.HasPrefix(pkg, dep+"/") {
 					t.Errorf("feature package %s must not depend on another feature %s", pkg, dep)
+				}
+				if dep == "os/exec" {
+					t.Errorf("feature package %s must not directly import os/exec (use managed process runner)", pkg)
 				}
 			}
 		}
