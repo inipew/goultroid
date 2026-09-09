@@ -31,6 +31,8 @@ type Plugin struct {
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
 	once          sync.Once
+	subscriptions []*core.Subscription
+	scope         *plugin.Scope
 
 	enqueuedCount  atomic.Int64
 	deliveredCount atomic.Int64
@@ -69,7 +71,19 @@ func (p *Plugin) SetEventBus(eb *core.EventBus) {
 	if eb == nil {
 		return
 	}
-	eb.Subscribe(core.EventTypeAdminAction, func(event core.Event) {
+	addSubscription := func(sub *core.Subscription) {
+		if sub == nil {
+			return
+		}
+		p.mu.Lock()
+		p.subscriptions = append(p.subscriptions, sub)
+		scope := p.scope
+		p.mu.Unlock()
+		if scope != nil {
+			_ = scope.Defer(sub.Close)
+		}
+	}
+	addSubscription(eb.SubscribeOwned("plugin:userlog", core.EventTypeAdminAction, func(event core.Event) {
 		if evt, ok := event.(*core.AdminActionEvent); ok && p.svc != nil {
 			logCtx := p.ctx
 			p.enqueue(func() {
@@ -88,8 +102,8 @@ func (p *Plugin) SetEventBus(eb *core.EventBus) {
 				)
 			})
 		}
-	})
-	eb.Subscribe(core.EventTypePMPermit, func(event core.Event) {
+	}))
+	addSubscription(eb.SubscribeOwned("plugin:userlog", core.EventTypePMPermit, func(event core.Event) {
 		if evt, ok := event.(*core.PMPermitEvent); ok && p.svc != nil {
 			logCtx := p.ctx
 			p.enqueue(func() {
@@ -109,7 +123,7 @@ func (p *Plugin) SetEventBus(eb *core.EventBus) {
 				)
 			})
 		}
-	})
+	}))
 }
 
 func (p *Plugin) worker() {
@@ -142,6 +156,13 @@ func (p *Plugin) enqueue(job func()) {
 
 // ShutdownContext stops accepting new work, drains the bounded queue, and cancels worker context.
 func (p *Plugin) ShutdownContext(ctx context.Context) error {
+	p.mu.Lock()
+	subscriptions := append([]*core.Subscription(nil), p.subscriptions...)
+	p.subscriptions = nil
+	p.mu.Unlock()
+	for _, sub := range subscriptions {
+		sub.Close()
+	}
 	p.mu.Lock()
 	p.closing.Store(true)
 	p.once.Do(func() {
@@ -176,6 +197,25 @@ func (p *Plugin) Description() string {
 }
 
 func (p *Plugin) Init() error { return nil }
+
+// InitScope binds plugin-owned EventBus subscriptions to the runtime scope.
+// New remains backward compatible for tests and legacy direct construction.
+func (p *Plugin) InitScope(ctx context.Context, scope *plugin.Scope) error {
+	if scope == nil {
+		return fmt.Errorf("userlog plugin scope cannot be nil")
+	}
+	p.mu.Lock()
+	p.scope = scope
+	p.ctx = scope.Context()
+	subscriptions := append([]*core.Subscription(nil), p.subscriptions...)
+	p.mu.Unlock()
+	for _, sub := range subscriptions {
+		if err := scope.Defer(sub.Close); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // MessageHookPriority returns priority for the message hook (Observability = 90).
 func (p *Plugin) MessageHookPriority() int { return 90 }

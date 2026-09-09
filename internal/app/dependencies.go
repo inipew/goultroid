@@ -15,6 +15,7 @@ import (
 	"github.com/inipew/goultroid/internal/services/localization"
 	mediaSvc "github.com/inipew/goultroid/internal/services/media"
 	pmpermitSvc "github.com/inipew/goultroid/internal/services/pmpermit"
+	processSvc "github.com/inipew/goultroid/internal/services/process"
 	"github.com/inipew/goultroid/internal/services/ratelimit"
 	"github.com/inipew/goultroid/internal/services/storage"
 	userlogSvc "github.com/inipew/goultroid/internal/services/userlog"
@@ -52,6 +53,7 @@ type domainServices struct {
 	schedEngine      *scheduler.Engine
 	storage          storage.Storage
 	mediaService     *mediaSvc.Service
+	processRunner    *processSvc.OSRunner
 	downloadRegistry *download.Registry
 	pmpermitService  *pmpermitSvc.Service
 	broadcastService *broadcastSvc.Service

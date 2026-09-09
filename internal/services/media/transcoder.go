@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
@@ -16,11 +17,13 @@ import (
 
 // FFmpegTranscoder executes media conversions using the system FFmpeg binary.
 type FFmpegTranscoder struct {
-	runner  process.Runner
-	store   storage.Storage
-	guard   *ResourceGuard
-	prober  Prober
-	timeout time.Duration
+	runner      process.Runner
+	store       storage.Storage
+	guard       *ResourceGuard
+	prober      Prober
+	timeout     time.Duration
+	mu          sync.Mutex
+	activeTemps map[string]time.Time
 }
 
 // Ensure FFmpegTranscoder implements Transcoder.
@@ -38,12 +41,25 @@ func NewFFmpegTranscoder(runner process.Runner, store storage.Storage, guard *Re
 		prober = NewFFProber(runner)
 	}
 	return &FFmpegTranscoder{
-		runner:  runner,
-		store:   store,
-		guard:   guard,
-		prober:  prober,
-		timeout: 5 * time.Minute,
+		runner:      runner,
+		store:       store,
+		guard:       guard,
+		prober:      prober,
+		timeout:     5 * time.Minute,
+		activeTemps: make(map[string]time.Time),
 	}
+}
+
+// ActiveTempDirectories returns a snapshot of transcoder-owned temporary
+// directories currently awaiting cleanup.
+func (t *FFmpegTranscoder) ActiveTempDirectories() map[string]time.Time {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	result := make(map[string]time.Time, len(t.activeTemps))
+	for path, createdAt := range t.activeTemps {
+		result[path] = createdAt
+	}
+	return result
 }
 
 // IsAvailable checks if the ffmpeg binary is present on the host system.
@@ -74,7 +90,15 @@ func (t *FFmpegTranscoder) Run(ctx context.Context, input *storage.Asset, op Ope
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temporary working directory: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	t.mu.Lock()
+	t.activeTemps[tmpDir] = time.Now().UTC()
+	t.mu.Unlock()
+	defer func() {
+		_ = os.RemoveAll(tmpDir)
+		t.mu.Lock()
+		delete(t.activeTemps, tmpDir)
+		t.mu.Unlock()
+	}()
 
 	// Pre-flight disk space verification (requires 2x input size)
 	requiredSpace := input.Size * 2

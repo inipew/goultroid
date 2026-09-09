@@ -51,6 +51,13 @@ type ContextInitializer interface {
 	InitContext(context.Context) error
 }
 
+// ScopeInitializer is the preferred initialization hook for plugins that own
+// background work or other long-lived resources. The supplied scope provides
+// cancellation, cleanup registration, and resource tracking.
+type ScopeInitializer interface {
+	InitScope(context.Context, *Scope) error
+}
+
 // MessageHookPlugin is an optional interface for plugins that intercept raw Telegram messages.
 // The priority integer corresponds to HandlerPriority (Security=10, Moderation=20, Feature=50, Observability=90).
 type MessageHookPlugin interface {

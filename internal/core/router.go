@@ -95,6 +95,46 @@ func (r *Router) RegisterBatch(cmds []Command) error {
 	return nil
 }
 
+// UnregisterBatch removes commands and aliases previously registered as a
+// batch. Entries are removed only when they still point to the same command,
+// so a later replacement cannot be accidentally deleted.
+func (r *Router) UnregisterBatch(cmds []Command) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, cmd := range cmds {
+		name := strings.ToLower(strings.TrimSpace(cmd.Name))
+		if current, ok := r.commands[name]; ok && current.Name == cmd.Name {
+			delete(r.commands, name)
+		}
+		for _, alias := range cmd.Aliases {
+			alias = strings.ToLower(strings.TrimSpace(alias))
+			if alias == "" {
+				continue
+			}
+			if current, ok := r.commands[alias]; ok && current.Name == cmd.Name {
+				delete(r.commands, alias)
+			}
+		}
+	}
+	if len(cmds) == 0 {
+		return
+	}
+	remaining := r.all[:0]
+	for _, registered := range r.all {
+		remove := false
+		for _, cmd := range cmds {
+			if registered.Name == cmd.Name {
+				remove = true
+				break
+			}
+		}
+		if !remove {
+			remaining = append(remaining, registered)
+		}
+	}
+	r.all = remaining
+}
+
 // Parse checks if a text starts with prefix and parses it into ParsedCommand.
 func (r *Router) Parse(text string) (*ParsedCommand, bool, error) {
 	r.mu.RLock()

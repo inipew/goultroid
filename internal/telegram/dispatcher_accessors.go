@@ -30,6 +30,22 @@ func (d *Dispatcher) RunningCommands() int64 {
 	return d.runningCommands.Load()
 }
 
+// CommandConcurrencySnapshot exposes dispatcher command pressure without
+// leaking the internal semaphore.
+type CommandConcurrencySnapshot struct {
+	Capacity int
+	Active   int
+	Total    int64
+}
+
+func (d *Dispatcher) CommandConcurrency() CommandConcurrencySnapshot {
+	return CommandConcurrencySnapshot{
+		Capacity: cap(d.cmdSem),
+		Active:   len(d.cmdSem),
+		Total:    d.totalCommands.Load(),
+	}
+}
+
 // SetRootContext sets the application root context used for command lifetime coordination.
 func (d *Dispatcher) SetRootContext(ctx context.Context) {
 	d.mu.Lock()

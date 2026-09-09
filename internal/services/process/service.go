@@ -38,6 +38,13 @@ type Result struct {
 	Truncated bool
 }
 
+// DiagnosticsSnapshot describes process runner pressure without exposing the
+// semaphore or mutable runner internals.
+type DiagnosticsSnapshot struct {
+	Capacity int
+	Active   int
+}
+
 // Runner defines the contract for executing system processes with resource bounds.
 type Runner interface {
 	Run(ctx context.Context, req Request) (*Result, error)
@@ -49,6 +56,16 @@ type OSRunner struct {
 	defaultTimeout time.Duration
 	maxOutputBytes int64
 	mu             sync.Mutex
+}
+
+// Diagnostics returns current process concurrency usage.
+func (r *OSRunner) Diagnostics() DiagnosticsSnapshot {
+	if r == nil {
+		return DiagnosticsSnapshot{}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return DiagnosticsSnapshot{Capacity: cap(r.sem), Active: len(r.sem)}
 }
 
 var _ Runner = (*OSRunner)(nil)

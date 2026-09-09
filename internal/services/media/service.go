@@ -2,11 +2,18 @@ package media
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"github.com/inipew/goultroid/internal/services/process"
 	"github.com/inipew/goultroid/internal/services/storage"
 )
+
+// DiagnosticsSnapshot describes media resources that are expected to be
+// transient and therefore must be empty after an operation or shutdown.
+type DiagnosticsSnapshot struct {
+	ActiveTempDirectories []string
+}
 
 // Service provides a high-level API coordinating media inspection, transformation, and storage.
 type Service struct {
@@ -53,6 +60,19 @@ func (s *Service) Transcoder() Transcoder {
 // Guard returns the resource guard.
 func (s *Service) Guard() *ResourceGuard {
 	return s.guard
+}
+
+// Diagnostics returns a stable snapshot of active transcoder temporary
+// directories without exposing the concrete transcoder implementation.
+func (s *Service) Diagnostics() DiagnosticsSnapshot {
+	snapshot := DiagnosticsSnapshot{}
+	if transcoder, ok := s.transcoder.(*FFmpegTranscoder); ok {
+		for path := range transcoder.ActiveTempDirectories() {
+			snapshot.ActiveTempDirectories = append(snapshot.ActiveTempDirectories, path)
+		}
+		sort.Strings(snapshot.ActiveTempDirectories)
+	}
+	return snapshot
 }
 
 // Probe inspects an asset and returns its technical metadata.

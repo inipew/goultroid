@@ -13,6 +13,7 @@ type StateStore struct {
 	mu     sync.RWMutex
 	items  map[string]stateItem
 	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 const maxStateStoreEntries = 5000

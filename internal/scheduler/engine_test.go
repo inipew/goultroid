@@ -173,10 +173,17 @@ func TestEngine_LifecycleAndTasks(t *testing.T) {
 	if val < 2 {
 		t.Errorf("expected periodic task to run at least twice, ran %d times", val)
 	}
+	snapshots := engine.PeriodicTaskSnapshots()
+	if len(snapshots) != 1 || snapshots[0].Owner != "runtime" || snapshots[0].Runs < 2 {
+		t.Fatalf("unexpected periodic task diagnostics: %+v", snapshots)
+	}
 
 	// 2. Unregister periodic task
 	if err := engine.UnregisterPeriodicTask("heartbeat"); err != nil {
 		t.Fatalf("failed to unregister task: %v", err)
+	}
+	if got := len(engine.PeriodicTaskSnapshots()); got != 0 {
+		t.Fatalf("expected task diagnostics to be removed after unregister, got %d", got)
 	}
 	snap := atomic.LoadInt32(&counter)
 	time.Sleep(50 * time.Millisecond)
@@ -295,6 +302,31 @@ func TestRegisterPeriodicTask_NotRunning(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not running") {
 		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestRunPeriodicTaskOptionsTimeoutAndRetry(t *testing.T) {
+	var attempts atomic.Int32
+	err := runPeriodicTask(context.Background(), func(ctx context.Context) error {
+		attempts.Add(1)
+		if attempts.Load() == 1 {
+			return errors.New("temporary failure")
+		}
+		return nil
+	}, PeriodicTaskOptions{MaxAttempts: 2})
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got %v", err)
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts.Load())
+	}
+
+	err = runPeriodicTask(context.Background(), func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}, PeriodicTaskOptions{Timeout: 10 * time.Millisecond})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected timeout error, got %v", err)
 	}
 }
 

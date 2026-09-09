@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/inipew/goultroid/internal/addon"
 	"github.com/inipew/goultroid/internal/assistant"
@@ -16,6 +17,8 @@ import (
 	"github.com/inipew/goultroid/internal/scheduler"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/services/inline"
+	mediaSvc "github.com/inipew/goultroid/internal/services/media"
+	processSvc "github.com/inipew/goultroid/internal/services/process"
 	"github.com/inipew/goultroid/internal/services/ratelimit"
 	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/telegram"
@@ -38,6 +41,9 @@ type App struct {
 	callbackStore   *callback.StateStore
 	inlineEngine    *inline.Engine
 	settingsService *settings.Service
+	media           *mediaSvc.Service
+	processRunner   *processSvc.OSRunner
+	startTime       time.Time
 
 	lifecycleMu    sync.Mutex
 	lifecycleState atomic.Uint32
@@ -131,6 +137,9 @@ func New(cfg *config.Config) (*App, error) {
 		callbackStore:   coreDeps.callbackStore,
 		inlineEngine:    coreDeps.inlineEngine,
 		settingsService: domServices.settingsService,
+		media:           domServices.mediaService,
+		processRunner:   domServices.processRunner,
+		startTime:       domServices.startTime,
 		shutdownDone:    make(chan struct{}),
 	}, nil
 }

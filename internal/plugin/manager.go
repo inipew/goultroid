@@ -23,6 +23,8 @@ type Manager struct {
 	hookRegistrar HookRegistrar
 	plugins       map[string]Plugin
 	metadata      map[string]Metadata
+	scopes        map[string]*Scope
+	commands      map[string][]core.Command
 	list          []Plugin
 	hookCleanups  []func()
 	mu            sync.RWMutex
@@ -30,7 +32,7 @@ type Manager struct {
 }
 
 func NewManager(router *core.Router) *Manager {
-	return &Manager{router: router, plugins: make(map[string]Plugin), metadata: make(map[string]Metadata), list: make([]Plugin, 0)}
+	return &Manager{router: router, plugins: make(map[string]Plugin), metadata: make(map[string]Metadata), scopes: make(map[string]*Scope), commands: make(map[string][]core.Command), list: make([]Plugin, 0)}
 }
 
 // SetHookRegistrar attaches a hook registrar (e.g. Telegram Dispatcher) to this manager.
@@ -88,8 +90,11 @@ func (m *Manager) RegisterWithContext(ctx context.Context, p Plugin) error {
 	}
 
 	// 3. Initialization without holding lock (may be long, may call manager)
+	scope := NewScope(ctx, "plugin:"+name)
 	var initErr error
-	if ci, ok := p.(ContextInitializer); ok {
+	if si, ok := p.(ScopeInitializer); ok {
+		initErr = si.InitScope(scope.Context(), scope)
+	} else if ci, ok := p.(ContextInitializer); ok {
 		initErr = ci.InitContext(ctx)
 	} else {
 		initErr = p.Init()
@@ -101,6 +106,7 @@ func (m *Manager) RegisterWithContext(ctx context.Context, p Plugin) error {
 		} else if s, ok := p.(Shutdowner); ok {
 			_ = s.Shutdown()
 		}
+		_ = scope.Close(ctx)
 		return fmt.Errorf("failed to initialize plugin %s: %w", name, initErr)
 	}
 
@@ -108,6 +114,7 @@ func (m *Manager) RegisterWithContext(ctx context.Context, p Plugin) error {
 	m.mu.Lock()
 	if m.shutdown {
 		m.mu.Unlock()
+		_ = scope.Close(ctx)
 		if s, ok := p.(ContextShutdowner); ok {
 			_ = s.ShutdownContext(ctx)
 		} else if s, ok := p.(Shutdowner); ok {
@@ -117,6 +124,7 @@ func (m *Manager) RegisterWithContext(ctx context.Context, p Plugin) error {
 	}
 	if _, exists := m.plugins[name]; exists {
 		m.mu.Unlock()
+		_ = scope.Close(ctx)
 		if s, ok := p.(ContextShutdowner); ok {
 			_ = s.ShutdownContext(ctx)
 		} else if s, ok := p.(Shutdowner); ok {
@@ -126,6 +134,7 @@ func (m *Manager) RegisterWithContext(ctx context.Context, p Plugin) error {
 	}
 	if err := router.RegisterBatch(cmds); err != nil {
 		m.mu.Unlock()
+		_ = scope.Close(ctx)
 		if s, ok := p.(ContextShutdowner); ok {
 			_ = s.ShutdownContext(ctx)
 		} else if s, ok := p.(Shutdowner); ok {
@@ -155,12 +164,22 @@ func (m *Manager) RegisterWithContext(ctx context.Context, p Plugin) error {
 	}
 	m.plugins[name] = p
 	m.metadata[name] = meta
+	m.scopes[name] = scope
+	m.commands[name] = append([]core.Command(nil), cmds...)
 	m.list = append(m.list, p)
 	if hookCleanup != nil {
 		m.hookCleanups = append(m.hookCleanups, hookCleanup)
 	}
 	m.mu.Unlock()
 	return nil
+}
+
+// Scope returns the lifecycle scope owned by a registered plugin.
+func (m *Manager) Scope(name string) (*Scope, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	scope, ok := m.scopes[strings.ToLower(strings.TrimSpace(name))]
+	return scope, ok
 }
 
 func (m *Manager) Plugins() []Plugin {
@@ -214,6 +233,14 @@ func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 	m.hookCleanups = nil
 	plugins := make([]Plugin, len(m.list))
 	copy(plugins, m.list)
+	scopes := make(map[string]*Scope, len(m.scopes))
+	commands := make(map[string][]core.Command, len(m.commands))
+	for name, scope := range m.scopes {
+		scopes[name] = scope
+	}
+	for name, cmds := range m.commands {
+		commands[name] = append([]core.Command(nil), cmds...)
+	}
 	m.mu.Unlock()
 
 	// 1. Detach all message hooks first so no incoming update hits shutting-down plugins
@@ -236,6 +263,12 @@ func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", p.Name(), err))
 		}
+		if scope := scopes[strings.ToLower(strings.TrimSpace(p.Name()))]; scope != nil {
+			if err := scope.Close(ctx); err != nil {
+				errs = append(errs, fmt.Sprintf("%s scope: %v", p.Name(), err))
+			}
+		}
+		m.router.UnregisterBatch(commands[strings.ToLower(strings.TrimSpace(p.Name()))])
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("errors during plugin shutdown: %s", strings.Join(errs, "; "))

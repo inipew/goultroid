@@ -280,3 +280,11 @@ func TestService_Delegation(t *testing.T) {
 		t.Errorf("expected ID transcoded1, got %s", out.ID)
 	}
 }
+
+func TestService_DiagnosticsStartsEmpty(t *testing.T) {
+	svc := NewService(nil, storage.NewMemoryStorage(), NewResourceGuard(1, 10*1024*1024))
+	snapshot := svc.Diagnostics()
+	if len(snapshot.ActiveTempDirectories) != 0 {
+		t.Fatalf("expected no active temp directories, got %v", snapshot.ActiveTempDirectories)
+	}
+}

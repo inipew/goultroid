@@ -113,3 +113,11 @@ func TestSanitizeEnv(t *testing.T) {
 		}
 	}
 }
+
+func TestOSRunnerDiagnostics(t *testing.T) {
+	runner := NewOSRunner(3, time.Second, 1024)
+	snapshot := runner.Diagnostics()
+	if snapshot.Capacity != 3 || snapshot.Active != 0 {
+		t.Fatalf("unexpected process diagnostics: %+v", snapshot)
+	}
+}

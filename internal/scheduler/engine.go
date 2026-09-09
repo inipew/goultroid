@@ -37,8 +37,9 @@ type Engine struct {
 	sem            chan struct{}
 	misfirePolicy  MisfirePolicy
 
-	tasks   map[string]context.CancelFunc
-	tasksMu sync.RWMutex
+	tasks    map[string]context.CancelFunc
+	taskMeta map[string]*periodicTaskMeta
+	tasksMu  sync.RWMutex
 
 	activeJobs   map[int64]map[string]context.CancelFunc
 	activeJobsMu sync.Mutex
@@ -49,6 +50,35 @@ type Engine struct {
 
 	running bool
 	runMu   sync.Mutex
+}
+
+type periodicTaskMeta struct {
+	Owner     string
+	Name      string
+	Runs      int64
+	Failures  int64
+	LastRunAt time.Time
+	LastError string
+}
+
+// PeriodicTaskSnapshot exposes runtime diagnostics without exposing cancel
+// functions or internal scheduler state.
+type PeriodicTaskSnapshot struct {
+	Owner     string
+	Name      string
+	Runs      int64
+	Failures  int64
+	LastRunAt time.Time
+	LastError string
+}
+
+// PeriodicTaskOptions controls timeout and retry behavior for one periodic
+// task execution. MaxAttempts defaults to one; retries are opt-in.
+type PeriodicTaskOptions struct {
+	Owner       string
+	Timeout     time.Duration
+	MaxAttempts int
+	RetryDelay  time.Duration
 }
 
 var _ Service = (*Engine)(nil)
@@ -66,6 +96,7 @@ func NewEngine(db database.SchedulerRepository, svcFunc func() core.TelegramServ
 		executor:       core.NewCommandExecutor(logger, nil, 30*time.Second),
 		logger:         logger,
 		tasks:          make(map[string]context.CancelFunc),
+		taskMeta:       make(map[string]*periodicTaskMeta),
 		activeJobs:     make(map[int64]map[string]context.CancelFunc),
 		maxConcurrency: defaultConcurrency,
 		sem:            make(chan struct{}, defaultConcurrency),
@@ -98,6 +129,13 @@ func (e *Engine) MisfirePolicy() MisfirePolicy {
 	e.runMu.Lock()
 	defer e.runMu.Unlock()
 	return e.misfirePolicy
+}
+
+// IsRunning reports whether the scheduler lifecycle is active.
+func (e *Engine) IsRunning() bool {
+	e.runMu.Lock()
+	defer e.runMu.Unlock()
+	return e.running
 }
 
 func (e *Engine) SetExecutor(executor *core.CommandExecutor) {
@@ -150,6 +188,7 @@ func (e *Engine) StopContext(ctx context.Context) error {
 		cancelTask()
 	}
 	e.tasks = make(map[string]context.CancelFunc)
+	e.taskMeta = make(map[string]*periodicTaskMeta)
 	e.tasksMu.Unlock()
 
 	done := make(chan struct{})
@@ -178,6 +217,22 @@ func (e *Engine) StopWithTimeout(timeout time.Duration) error {
 
 // RegisterPeriodicTask registers a lifecycle-bound recurring task.
 func (e *Engine) RegisterPeriodicTask(name string, interval time.Duration, task TaskFunc) error {
+	return e.RegisterPeriodicTaskWithOptions(name, interval, PeriodicTaskOptions{Owner: "runtime"}, task)
+}
+
+// RegisterPeriodicTaskOwned registers a periodic task with an explicit owner
+// for diagnostics and future quota enforcement.
+func (e *Engine) RegisterPeriodicTaskOwned(owner, name string, interval time.Duration, task TaskFunc) error {
+	return e.RegisterPeriodicTaskWithOptions(name, interval, PeriodicTaskOptions{Owner: owner}, task)
+}
+
+// RegisterPeriodicTaskWithOptions registers a periodic task with explicit
+// ownership, timeout, and retry semantics.
+func (e *Engine) RegisterPeriodicTaskWithOptions(name string, interval time.Duration, options PeriodicTaskOptions, task TaskFunc) error {
+	owner := strings.TrimSpace(options.Owner)
+	if owner == "" {
+		owner = "runtime"
+	}
 	if name == "" {
 		return errors.New("task name cannot be empty")
 	}
@@ -186,6 +241,15 @@ func (e *Engine) RegisterPeriodicTask(name string, interval time.Duration, task 
 	}
 	if task == nil {
 		return errors.New("task function cannot be nil")
+	}
+	if options.MaxAttempts < 0 {
+		return errors.New("max attempts cannot be negative")
+	}
+	if options.MaxAttempts == 0 {
+		options.MaxAttempts = 1
+	}
+	if options.RetryDelay < 0 {
+		return errors.New("retry delay cannot be negative")
 	}
 
 	e.runMu.Lock()
@@ -199,6 +263,7 @@ func (e *Engine) RegisterPeriodicTask(name string, interval time.Duration, task 
 		cancelExisting()
 	}
 	e.tasks[name] = cancel
+	e.taskMeta[name] = &periodicTaskMeta{Owner: owner, Name: name}
 	e.wg.Add(1)
 	e.tasksMu.Unlock()
 	e.runMu.Unlock()
@@ -213,12 +278,18 @@ func (e *Engine) RegisterPeriodicTask(name string, interval time.Duration, task 
 				return
 			case <-ticker.C:
 				func() {
-					defer func() {
-						if r := recover(); r != nil {
-							e.logger.Error("periodic task panicked", zap.String("task", name), zap.Any("panic", r))
+					err := runPeriodicTask(taskCtx, task, options)
+					e.tasksMu.Lock()
+					if meta := e.taskMeta[name]; meta != nil {
+						meta.Runs++
+						meta.LastRunAt = time.Now().UTC()
+						if err != nil {
+							meta.Failures++
+							meta.LastError = err.Error()
 						}
-					}()
-					if err := task(taskCtx); err != nil {
+					}
+					e.tasksMu.Unlock()
+					if err != nil {
 						e.logger.Warn("periodic task execution error", zap.String("task", name), zap.Error(err))
 					}
 				}()
@@ -228,15 +299,70 @@ func (e *Engine) RegisterPeriodicTask(name string, interval time.Duration, task 
 	return nil
 }
 
+func runPeriodicTask(parent context.Context, task TaskFunc, options PeriodicTaskOptions) (err error) {
+	maxAttempts := options.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 1
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("periodic task panic: %v", recovered)
+		}
+	}()
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := parent.Err(); err != nil {
+			return err
+		}
+		attemptCtx := parent
+		cancel := func() {}
+		if options.Timeout > 0 {
+			attemptCtx, cancel = context.WithTimeout(parent, options.Timeout)
+		}
+		err = task(attemptCtx)
+		cancel()
+		if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || attempt == maxAttempts {
+			return err
+		}
+		if options.RetryDelay > 0 {
+			timer := time.NewTimer(options.RetryDelay)
+			select {
+			case <-parent.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return parent.Err()
+			case <-timer.C:
+			}
+		}
+	}
+	return err
+}
+
 func (e *Engine) UnregisterPeriodicTask(name string) error {
 	e.tasksMu.Lock()
 	defer e.tasksMu.Unlock()
 	if cancelTask, exists := e.tasks[name]; exists {
 		cancelTask()
 		delete(e.tasks, name)
+		delete(e.taskMeta, name)
 		return nil
 	}
 	return errors.New("task not found")
+}
+
+// PeriodicTaskSnapshots returns a stable copy of registered periodic task
+// diagnostics. It is safe to call while tasks are running.
+func (e *Engine) PeriodicTaskSnapshots() []PeriodicTaskSnapshot {
+	e.tasksMu.RLock()
+	defer e.tasksMu.RUnlock()
+	snapshots := make([]PeriodicTaskSnapshot, 0, len(e.taskMeta))
+	for _, meta := range e.taskMeta {
+		snapshots = append(snapshots, PeriodicTaskSnapshot{
+			Owner: meta.Owner, Name: meta.Name, Runs: meta.Runs,
+			Failures: meta.Failures, LastRunAt: meta.LastRunAt, LastError: meta.LastError,
+		})
+	}
+	return snapshots
 }
 
 func (e *Engine) ScheduleOnce(ctx context.Context, chatID int64, peerType string, accessHash int64, when time.Time, actionType string, payload string, creatorID ...int64) (*database.ScheduledJob, error) {

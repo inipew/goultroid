@@ -18,6 +18,7 @@ type Cache struct {
 	entries    map[string]cachedEntry
 	defaultTTL time.Duration
 	cancel     context.CancelFunc
+	wg         sync.WaitGroup
 }
 
 // NewCache creates an initialized Cache.
@@ -178,6 +179,9 @@ func (c *Cache) Prune() int {
 
 // Start launches background prune loop (Fase 4 shutdown-aware).
 func (c *Cache) Start(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	c.mu.Lock()
 	if c.cancel != nil {
 		c.mu.Unlock()
@@ -185,8 +189,10 @@ func (c *Cache) Start(ctx context.Context) {
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
+	c.wg.Add(1)
 	c.mu.Unlock()
 	go func() {
+		defer c.wg.Done()
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -208,5 +214,6 @@ func (c *Cache) Stop() {
 	c.mu.Unlock()
 	if cancel != nil {
 		cancel()
+		c.wg.Wait()
 	}
 }

@@ -47,7 +47,7 @@ type MessageCreatedEvent struct {
 
 func (e *MessageCreatedEvent) Type() EventType      { return EventTypeMessageCreated }
 func (e *MessageCreatedEvent) Timestamp() time.Time { return e.At }
-func (e *MessageCreatedEvent) Meta() EventMeta       { return e.MetaData }
+func (e *MessageCreatedEvent) Meta() EventMeta      { return e.MetaData }
 
 type MessageEditedEvent struct {
 	MetaData EventMeta
@@ -59,19 +59,19 @@ type MessageEditedEvent struct {
 
 func (e *MessageEditedEvent) Type() EventType      { return EventTypeMessageEdited }
 func (e *MessageEditedEvent) Timestamp() time.Time { return e.At }
-func (e *MessageEditedEvent) Meta() EventMeta       { return e.MetaData }
+func (e *MessageEditedEvent) Meta() EventMeta      { return e.MetaData }
 
 type MessagesDeletedEvent struct {
-	MetaData   EventMeta
-	At         time.Time
-	ChatID     int64
+	MetaData    EventMeta
+	At          time.Time
+	ChatID      int64
 	PeerUnknown bool
-	MsgIDs     []int
+	MsgIDs      []int
 }
 
 func (e *MessagesDeletedEvent) Type() EventType      { return EventTypeMessagesDeleted }
 func (e *MessagesDeletedEvent) Timestamp() time.Time { return e.At }
-func (e *MessagesDeletedEvent) Meta() EventMeta       { return e.MetaData }
+func (e *MessagesDeletedEvent) Meta() EventMeta      { return e.MetaData }
 
 type CallbackOrigin int
 
@@ -107,7 +107,7 @@ type CallbackQueryEvent struct {
 
 func (e *CallbackQueryEvent) Type() EventType      { return EventTypeCallbackQuery }
 func (e *CallbackQueryEvent) Timestamp() time.Time { return e.At }
-func (e *CallbackQueryEvent) Meta() EventMeta       { return e.MetaData }
+func (e *CallbackQueryEvent) Meta() EventMeta      { return e.MetaData }
 func (e *CallbackQueryEvent) IsInline() bool {
 	return e != nil && (e.Target.IsInline() || e.Origin == CallbackOriginInline)
 }
@@ -122,7 +122,7 @@ type ReactionUpdatedEvent struct {
 
 func (e *ReactionUpdatedEvent) Type() EventType      { return EventTypeReactionUpdated }
 func (e *ReactionUpdatedEvent) Timestamp() time.Time { return e.At }
-func (e *ReactionUpdatedEvent) Meta() EventMeta       { return e.MetaData }
+func (e *ReactionUpdatedEvent) Meta() EventMeta      { return e.MetaData }
 
 type InlineResultChosenEvent struct {
 	MetaData EventMeta
@@ -135,7 +135,7 @@ type InlineResultChosenEvent struct {
 
 func (e *InlineResultChosenEvent) Type() EventType      { return EventTypeInlineChosen }
 func (e *InlineResultChosenEvent) Timestamp() time.Time { return e.At }
-func (e *InlineResultChosenEvent) Meta() EventMeta       { return e.MetaData }
+func (e *InlineResultChosenEvent) Meta() EventMeta      { return e.MetaData }
 
 type AdminActionEvent struct {
 	MetaData   EventMeta
@@ -153,7 +153,7 @@ type AdminActionEvent struct {
 
 func (e *AdminActionEvent) Type() EventType      { return EventTypeAdminAction }
 func (e *AdminActionEvent) Timestamp() time.Time { return e.At }
-func (e *AdminActionEvent) Meta() EventMeta       { return e.MetaData }
+func (e *AdminActionEvent) Meta() EventMeta      { return e.MetaData }
 
 type PMPermitEvent struct {
 	MetaData   EventMeta
@@ -169,7 +169,7 @@ type PMPermitEvent struct {
 
 func (e *PMPermitEvent) Type() EventType      { return EventTypePMPermit }
 func (e *PMPermitEvent) Timestamp() time.Time { return e.At }
-func (e *PMPermitEvent) Meta() EventMeta       { return e.MetaData }
+func (e *PMPermitEvent) Meta() EventMeta      { return e.MetaData }
 
 type SettingChangedEvent struct {
 	MetaData  EventMeta
@@ -185,9 +185,39 @@ type SettingChangedEvent struct {
 
 func (e *SettingChangedEvent) Type() EventType      { return EventTypeSettingChanged }
 func (e *SettingChangedEvent) Timestamp() time.Time { return e.At }
-func (e *SettingChangedEvent) Meta() EventMeta       { return e.MetaData }
+func (e *SettingChangedEvent) Meta() EventMeta      { return e.MetaData }
 
 type EventHandler func(event Event)
+
+type eventSubscriber struct {
+	owner   string
+	handler EventHandler
+}
+
+// Subscription is an owned EventBus registration. Close is idempotent and
+// safe to call during EventBus shutdown.
+type Subscription struct {
+	bus       *EventBus
+	eventType EventType
+	id        uint64
+	once      sync.Once
+}
+
+func (s *Subscription) Close() {
+	if s == nil || s.bus == nil {
+		return
+	}
+	s.once.Do(func() {
+		s.bus.mu.Lock()
+		defer s.bus.mu.Unlock()
+		if m := s.bus.subscribers[s.eventType]; m != nil {
+			delete(m, s.id)
+			if len(m) == 0 {
+				delete(s.bus.subscribers, s.eventType)
+			}
+		}
+	})
+}
 
 type eventJob struct {
 	handler EventHandler
@@ -200,20 +230,22 @@ const (
 )
 
 var (
-	ErrEventBusClosed    = errors.New("event bus closed")
+	ErrEventBusClosed     = errors.New("event bus closed")
 	ErrEventBusNotStarted = errors.New("event bus not started")
 )
 
 type EventBusStats struct {
-	Published int64
-	Delivered int64
-	Dropped   int64
-	Panics    int64
+	Published     int64
+	Delivered     int64
+	Dropped       int64
+	Panics        int64
+	QueueDepth    int
+	QueueCapacity int
 }
 
 type EventBus struct {
 	mu          sync.RWMutex
-	subscribers map[EventType]map[uint64]EventHandler
+	subscribers map[EventType]map[uint64]eventSubscriber
 	nextID      uint64
 	queue       chan eventJob
 	stop        chan struct{}
@@ -230,7 +262,7 @@ type EventBus struct {
 // NewEventBus is a pure constructor. It does not spawn goroutines.
 func NewEventBus() *EventBus {
 	return &EventBus{
-		subscribers: make(map[EventType]map[uint64]EventHandler),
+		subscribers: make(map[EventType]map[uint64]eventSubscriber),
 		queue:       make(chan eventJob, eventQueueSize),
 		stop:        make(chan struct{}),
 	}
@@ -270,11 +302,27 @@ func (b *EventBus) Start(ctx context.Context) error {
 
 func (b *EventBus) Stats() EventBusStats {
 	return EventBusStats{
-		Published: b.publishedCount.Load(),
-		Delivered: b.deliveredCount.Load(),
-		Dropped:   b.droppedCount.Load(),
-		Panics:    b.panicCount.Load(),
+		Published:     b.publishedCount.Load(),
+		Delivered:     b.deliveredCount.Load(),
+		Dropped:       b.droppedCount.Load(),
+		Panics:        b.panicCount.Load(),
+		QueueDepth:    len(b.queue),
+		QueueCapacity: cap(b.queue),
 	}
+}
+
+// LifecycleState reports the EventBus lifecycle without exposing mutable
+// internals. Possible values are new, started, and closed.
+func (b *EventBus) LifecycleState() string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if b.closed {
+		return "closed"
+	}
+	if b.started {
+		return "started"
+	}
+	return "new"
 }
 
 func (b *EventBus) worker() {
@@ -307,31 +355,46 @@ func (b *EventBus) runJob(job eventJob) {
 }
 
 func (b *EventBus) Subscribe(t EventType, handler EventHandler) func() {
-	if handler == nil {
+	sub := b.SubscribeOwned("", t, handler)
+	if sub == nil {
 		return func() {}
+	}
+	return sub.Close
+}
+
+// SubscribeOwned registers a handler with an ownership label for diagnostics.
+// The returned subscription should be closed by the owning plugin scope.
+func (b *EventBus) SubscribeOwned(owner string, t EventType, handler EventHandler) *Subscription {
+	if handler == nil {
+		return nil
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closed {
-		return func() {}
+		return nil
 	}
 	if b.subscribers[t] == nil {
-		b.subscribers[t] = make(map[uint64]EventHandler)
+		b.subscribers[t] = make(map[uint64]eventSubscriber)
 	}
 	b.nextID++
 	id := b.nextID
-	b.subscribers[t][id] = handler
+	b.subscribers[t][id] = eventSubscriber{owner: owner, handler: handler}
+	return &Subscription{bus: b, eventType: t, id: id}
+}
 
-	return func() {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		if m := b.subscribers[t]; m != nil {
-			delete(m, id)
-			if len(m) == 0 {
-				delete(b.subscribers, t)
+// SubscriptionCount reports active subscriptions, optionally filtered by owner.
+func (b *EventBus) SubscriptionCount(owner string) int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	count := 0
+	for _, subscribers := range b.subscribers {
+		for _, subscriber := range subscribers {
+			if owner == "" || subscriber.owner == owner {
+				count++
 			}
 		}
 	}
+	return count
 }
 
 // Publish is best-effort and non-blocking. It serializes queue sends with
@@ -349,9 +412,9 @@ func (b *EventBus) Publish(event Event) {
 	if len(m) == 0 {
 		return
 	}
-	for _, h := range m {
+	for _, subscriber := range m {
 		select {
-		case b.queue <- eventJob{handler: h, event: event}:
+		case b.queue <- eventJob{handler: subscriber.handler, event: event}:
 			b.publishedCount.Add(1)
 		default:
 			b.droppedCount.Add(1)
@@ -380,7 +443,7 @@ func (b *EventBus) PublishDurable(ctx context.Context, event Event) error {
 	if len(m) == 0 {
 		return nil
 	}
-	for _, h := range m {
+	for _, subscriber := range m {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -394,7 +457,7 @@ func (b *EventBus) PublishDurable(ctx context.Context, event Event) error {
 					handlerErr = fmt.Errorf("event handler panic: %v", r)
 				}
 			}()
-			h(event)
+			subscriber.handler(event)
 			b.deliveredCount.Add(1)
 		}()
 		if handlerErr != nil {
@@ -415,7 +478,7 @@ func (b *EventBus) Close() error {
 		return nil
 	}
 	b.closed = true
-	b.subscribers = make(map[EventType]map[uint64]EventHandler)
+	b.subscribers = make(map[EventType]map[uint64]eventSubscriber)
 	if b.started {
 		close(b.stop)
 	}

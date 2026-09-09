@@ -40,9 +40,11 @@ func (s *StateStore) Start(ctx context.Context) {
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
+	s.wg.Add(1)
 	s.mu.Unlock()
 
 	go func() {
+		defer s.wg.Done()
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -68,5 +70,6 @@ func (s *StateStore) Stop() {
 
 	if cancel != nil {
 		cancel()
+		s.wg.Wait()
 	}
 }

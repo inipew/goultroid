@@ -26,6 +26,7 @@ type Service struct {
 
 	outboxCancel context.CancelFunc
 	outboxWG     sync.WaitGroup
+	unsubSetting func()
 }
 
 // NewService instantiates a new settings Service.
@@ -40,11 +41,14 @@ func NewService(repo database.SettingsRepository, reg *Registry, bus *core.Event
 		cache: make(map[string]map[resolveCacheKey]string),
 	}
 	if bus != nil {
-		bus.Subscribe(core.EventTypeSettingChanged, func(event core.Event) {
+		sub := bus.SubscribeOwned("runtime:settings", core.EventTypeSettingChanged, func(event core.Event) {
 			if e, ok := event.(*core.SettingChangedEvent); ok {
 				s.invalidate(e.Namespace, e.Key)
 			}
 		})
+		if sub != nil {
+			s.unsubSetting = sub.Close
+		}
 	}
 	return s
 }
@@ -117,6 +121,10 @@ func (s *Service) Start(ctx context.Context) error {
 
 // Stop gracefully shuts down the outbox worker.
 func (s *Service) Stop() {
+	if s.unsubSetting != nil {
+		s.unsubSetting()
+		s.unsubSetting = nil
+	}
 	if s.outboxCancel != nil {
 		s.outboxCancel()
 		s.outboxWG.Wait()

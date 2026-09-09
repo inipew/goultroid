@@ -114,6 +114,7 @@ type mockProvider struct {
 	matchURL string
 	resAsset *storage.Asset
 	err      error
+	calls    atomic.Int32
 }
 
 func (m *mockProvider) Name() string { return m.name }
@@ -121,10 +122,33 @@ func (m *mockProvider) Match(rawURL string) bool {
 	return strings.Contains(rawURL, m.matchURL)
 }
 func (m *mockProvider) Download(ctx context.Context, rawURL string, store storage.Storage, opts download.DownloadOptions) (*storage.Asset, error) {
+	m.calls.Add(1)
 	if opts.Progress != nil {
 		opts.Progress(100, 100)
 	}
 	return m.resAsset, m.err
+}
+
+func TestRegistry_RetryPolicyIsExplicit(t *testing.T) {
+	provider := &mockProvider{name: "retry", matchURL: "retry://", err: download.ErrDownloadFailed}
+	reg := download.NewRegistry(provider)
+	store := storage.NewMemoryStorage()
+	_, err := reg.Download(context.Background(), "retry://file", store, download.DownloadOptions{MaxAttempts: 3})
+	if !errors.Is(err, download.ErrDownloadFailed) {
+		t.Fatalf("expected download failure, got %v", err)
+	}
+	if got := provider.calls.Load(); got != 3 {
+		t.Fatalf("attempts = %d, want 3", got)
+	}
+
+	provider.calls.Store(0)
+	_, err = reg.Download(context.Background(), "retry://file", store, download.DownloadOptions{})
+	if !errors.Is(err, download.ErrDownloadFailed) {
+		t.Fatalf("expected download failure, got %v", err)
+	}
+	if got := provider.calls.Load(); got != 1 {
+		t.Fatalf("default attempts = %d, want 1", got)
+	}
 }
 
 func TestRegistry_MockDownloadWithProgress(t *testing.T) {

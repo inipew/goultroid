@@ -72,6 +72,7 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 		schedEngine:      schedEngine,
 		storage:          appStorage,
 		mediaService:     mediaService,
+		processRunner:    processRunner,
 		downloadRegistry: downloadRegistry,
 		pmpermitService:  pmpermitService,
 		broadcastService: broadcastService,

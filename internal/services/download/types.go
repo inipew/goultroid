@@ -24,6 +24,8 @@ type ProgressCallback func(downloaded, total int64)
 type DownloadOptions struct {
 	MaxBytes       int64
 	Timeout        time.Duration
+	MaxAttempts    int
+	RetryDelay     time.Duration
 	TargetFilename string
 	Progress       ProgressCallback
 }

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
@@ -32,6 +33,8 @@ var extractorDomains = []string{
 type ExtractorProvider struct {
 	runner        process.Runner
 	defaultMaxCap int64
+	mu            sync.Mutex
+	activeTemps   map[string]time.Time
 }
 
 // Ensure ExtractorProvider implements Provider.
@@ -48,7 +51,20 @@ func NewExtractorProvider(runner process.Runner, defaultMaxCap int64) *Extractor
 	return &ExtractorProvider{
 		runner:        runner,
 		defaultMaxCap: defaultMaxCap,
+		activeTemps:   make(map[string]time.Time),
 	}
+}
+
+// ActiveTempDirectories returns a snapshot of extractor-owned temporary
+// directories currently awaiting cleanup.
+func (p *ExtractorProvider) ActiveTempDirectories() map[string]time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	result := make(map[string]time.Time, len(p.activeTemps))
+	for path, createdAt := range p.activeTemps {
+		result[path] = createdAt
+	}
+	return result
 }
 
 // Name returns the provider identifier.
@@ -98,7 +114,15 @@ func (p *ExtractorProvider) Download(ctx context.Context, rawURL string, store s
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temporary extraction folder: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	p.mu.Lock()
+	p.activeTemps[tmpDir] = time.Now().UTC()
+	p.mu.Unlock()
+	defer func() {
+		_ = os.RemoveAll(tmpDir)
+		p.mu.Lock()
+		delete(p.activeTemps, tmpDir)
+		p.mu.Unlock()
+	}()
 
 	timeout := opts.Timeout
 	if timeout <= 0 {

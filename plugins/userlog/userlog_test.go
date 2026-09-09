@@ -384,3 +384,24 @@ func TestUserLogPlugin_PMPermitEvent(t *testing.T) {
 		t.Errorf("expected PMPERMIT BLOCK logged to userlog, got %s", mockTG.getSent())
 	}
 }
+
+func TestUserLogPlugin_OwnedSubscriptionsClose(t *testing.T) {
+	p := userlog.New(nil, 12345)
+	bus := core.NewEventBus()
+	if err := bus.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer bus.Close()
+	p.SetEventBus(bus)
+	if got := bus.SubscriptionCount("plugin:userlog"); got != 2 {
+		t.Fatalf("owned subscriptions = %d, want 2", got)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := p.ShutdownContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := bus.SubscriptionCount("plugin:userlog"); got != 0 {
+		t.Fatalf("owned subscriptions after shutdown = %d, want 0", got)
+	}
+}

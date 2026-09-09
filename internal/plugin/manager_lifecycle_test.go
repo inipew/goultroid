@@ -98,6 +98,9 @@ func TestManager_ShutdownIsReverseOrderAndIdempotent(t *testing.T) {
 	if _, err := func() (Plugin, error) { p := &lifecyclePlugin{name: "late"}; return p, mgr.Register(p) }(); err == nil {
 		t.Fatal("expected registration to be rejected after shutdown")
 	}
+	if _, ok := router.Find("first"); ok {
+		t.Fatal("plugin command remained registered after shutdown")
+	}
 }
 
 func TestManager_ContextShutdownerReceivesContext(t *testing.T) {
@@ -117,5 +120,42 @@ func TestManager_ContextShutdownerReceivesContext(t *testing.T) {
 	}
 	if p.shutdowns.Load() != 1 {
 		t.Fatalf("expected one context shutdown, got %d", p.shutdowns.Load())
+	}
+}
+
+func TestScopeCancelsWorkAndRunsCleanup(t *testing.T) {
+	scope := NewScope(context.Background(), "plugin:test")
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	if err := scope.Go(func(ctx context.Context) {
+		close(started)
+		<-ctx.Done()
+		close(finished)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	cleaned := atomic.Bool{}
+	if err := scope.Defer(func() { cleaned.Store(true) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := scope.Track(Resource{ID: "task-1", Type: "task"}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := scope.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("scoped goroutine did not stop")
+	}
+	if !cleaned.Load() {
+		t.Fatal("scope cleanup did not run")
+	}
+	if len(scope.Resources()) != 1 {
+		t.Fatal("resource snapshot unexpectedly changed before explicit release")
 	}
 }
