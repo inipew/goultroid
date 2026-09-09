@@ -26,6 +26,7 @@ type Runtime struct {
 
 	rootCtx    context.Context
 	rootCancel context.CancelFunc
+	opMu       sync.Mutex
 	stopOnce   sync.Once
 	stopDone   chan struct{}
 	stopErr    error
@@ -90,67 +91,84 @@ func (r *Runtime) Component(name string) Component {
 // If any critical component fails to start, previously started components are rolled back
 // in reverse order, and the runtime transitions to StateFailed.
 func (r *Runtime) Start(ctx context.Context) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r.opMu.Lock()
+	defer r.opMu.Unlock()
 
+	r.mu.Lock()
 	if err := r.stateMachine.Transition(StateInitializing); err != nil {
+		r.mu.Unlock()
 		return fmt.Errorf("runtime start failed: %w", err)
 	}
 
 	order, err := r.graph.StartupOrder()
 	if err != nil {
 		r.stateMachine.SetFailed()
+		r.mu.Unlock()
 		return fmt.Errorf("dependency graph validation failed: %w", err)
 	}
 
 	if err := r.stateMachine.Transition(StateStarting); err != nil {
 		r.stateMachine.SetFailed()
+		r.mu.Unlock()
 		return fmt.Errorf("runtime state transition failed: %w", err)
 	}
+	r.mu.Unlock()
 
 	var started []Component
 	for _, comp := range order {
-		select {
-		case <-ctx.Done():
-			r.stateMachine.SetFailed()
-			_ = r.graph.Rollback(context.Background(), started)
-			return fmt.Errorf("runtime startup cancelled: %w", ctx.Err())
-		default:
+		if err := ctx.Err(); err != nil {
+			return r.failStartAndRollback(fmt.Errorf("runtime startup cancelled: %w", err), started)
 		}
 
-		if err := comp.Start(r.rootCtx); err != nil {
+		componentCtx, componentCancel := context.WithCancel(r.rootCtx)
+		stopOperationCancel := context.AfterFunc(ctx, componentCancel)
+		err := comp.Start(componentCtx)
+		stopOperationCancel()
+		if err != nil {
+			componentCancel()
+			if operationErr := ctx.Err(); operationErr != nil {
+				err = operationErr
+			}
 			isCritical := true
 			if cc, ok := comp.(CriticalComponent); ok {
 				isCritical = cc.IsCritical()
 			}
 
 			if isCritical {
-				r.stateMachine.SetFailed()
-				rollbackCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				rollbackErrs := r.graph.Rollback(rollbackCtx, started)
-				r.rootCancel()
-
-				if len(rollbackErrs) > 0 {
-					causes := []error{fmt.Errorf("component %q failed to start: %w", comp.Name(), err)}
-					causes = append(causes, rollbackErrs...)
-					return fmt.Errorf("runtime startup and rollback failed: %w", errors.Join(causes...))
-				}
-				return fmt.Errorf("component %q failed to start: %w", comp.Name(), err)
+				return r.failStartAndRollback(fmt.Errorf("component %q failed to start: %w", comp.Name(), err), started)
 			}
 		} else {
 			started = append(started, comp)
 		}
 	}
 
-	r.startedComps = started
+	r.mu.Lock()
+	r.startedComps = append([]Component(nil), started...)
 	if err := r.stateMachine.Transition(StateRunning); err != nil {
 		r.stateMachine.SetFailed()
+		r.mu.Unlock()
 		return fmt.Errorf("failed to transition to running: %w", err)
 	}
 
 	r.startTime = time.Now()
+	r.mu.Unlock()
 	return nil
+}
+
+func (r *Runtime) failStartAndRollback(startErr error, started []Component) error {
+	r.stateMachine.SetFailed()
+	rollbackCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	rollbackErrs := r.graph.Rollback(rollbackCtx, started)
+	cancel()
+	r.rootCancel()
+	if len(rollbackErrs) == 0 {
+		return startErr
+	}
+	causes := append([]error{startErr}, rollbackErrs...)
+	return fmt.Errorf("runtime startup and rollback failed: %w", errors.Join(causes...))
 }
 
 // Stop gracefully stops all started components in reverse dependency order.
@@ -170,11 +188,13 @@ func (r *Runtime) Stop(ctx context.Context) error {
 }
 
 func (r *Runtime) performStop(ctx context.Context) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.opMu.Lock()
+	defer r.opMu.Unlock()
 
+	r.mu.Lock()
 	currentState := r.stateMachine.Current()
 	if currentState == StateStopped {
+		r.mu.Unlock()
 		return nil
 	}
 
@@ -190,8 +210,36 @@ func (r *Runtime) performStop(ctx context.Context) error {
 			stopOrder[n-1-i] = c
 		}
 	}
+	r.mu.Unlock()
 
 	var stopErrs []error
+	for _, phase := range []struct {
+		name string
+		run  func(Component) error
+	}{
+		{name: "quiesce", run: func(comp Component) error {
+			if q, ok := comp.(Quiescer); ok {
+				return q.Quiesce(ctx)
+			}
+			return nil
+		}},
+		{name: "drain", run: func(comp Component) error {
+			if d, ok := comp.(Drainer); ok {
+				return d.Drain(ctx)
+			}
+			return nil
+		}},
+	} {
+		for _, comp := range stopOrder {
+			if err := ctx.Err(); err != nil {
+				stopErrs = append(stopErrs, fmt.Errorf("%s deadline exceeded before component %q: %w", phase.name, comp.Name(), err))
+				break
+			}
+			if err := phase.run(comp); err != nil {
+				stopErrs = append(stopErrs, fmt.Errorf("component %q %s failed: %w", comp.Name(), phase.name, err))
+			}
+		}
+	}
 	for _, comp := range stopOrder {
 		if err := ctx.Err(); err != nil {
 			stopErrs = append(stopErrs, fmt.Errorf("stop deadline exceeded before stopping %q: %w", comp.Name(), err))

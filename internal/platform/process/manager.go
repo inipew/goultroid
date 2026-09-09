@@ -138,7 +138,7 @@ func (m *Manager) Execute(ctx context.Context, owner, binary string, args ...str
 
 	procID := fmt.Sprintf("process:%s:%s:%d", owner, binary, m.procCounter.Add(1))
 	if m.resourceMgr != nil {
-		_ = m.resourceMgr.Register(resource.Resource{
+		if err := m.resourceMgr.Register(resource.Resource{
 			ID:        procID,
 			Owner:     owner,
 			Type:      resource.TypeProcess,
@@ -146,7 +146,9 @@ func (m *Manager) Execute(ctx context.Context, owner, binary string, args ...str
 			Metadata: map[string]string{
 				"binary": binary,
 			},
-		})
+		}); err != nil {
+			return nil, nil, fmt.Errorf("track process resource: %w", err)
+		}
 		defer func() {
 			_ = m.resourceMgr.Release(procID)
 		}()
@@ -178,7 +180,7 @@ func (m *Manager) StartCmd(ctx context.Context, owner string, cmd *exec.Cmd) (st
 	binary := filepath.Base(cmd.Path)
 	procID := fmt.Sprintf("process:%s:%s:%d", owner, binary, m.procCounter.Add(1))
 	if m.resourceMgr != nil {
-		_ = m.resourceMgr.Register(resource.Resource{
+		if err := m.resourceMgr.Register(resource.Resource{
 			ID:        procID,
 			Owner:     owner,
 			Type:      resource.TypeProcess,
@@ -186,7 +188,9 @@ func (m *Manager) StartCmd(ctx context.Context, owner string, cmd *exec.Cmd) (st
 			Metadata: map[string]string{
 				"binary": binary,
 			},
-		})
+		}); err != nil {
+			return "", fmt.Errorf("track process resource: %w", err)
+		}
 	}
 
 	if err := cmd.Start(); err != nil {

@@ -182,10 +182,13 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	}
 
 	rt := runtime.New()
-	if err := rt.Register(coreDeps.eventBus); err != nil {
+	if err := rt.Register(&infrastructureComponent{core: coreDeps, domain: domServices}); err != nil {
+		return nil, fmt.Errorf("register infrastructure component: %w", err)
+	}
+	if err := rt.Register(dependencyComponent{Component: coreDeps.eventBus, dependencies: []string{"infrastructure"}}); err != nil {
 		return nil, fmt.Errorf("register eventbus component: %w", err)
 	}
-	if err := rt.Register(coreDeps.workerManager); err != nil {
+	if err := rt.Register(dependencyComponent{Component: coreDeps.workerManager, dependencies: []string{"infrastructure"}}); err != nil {
 		return nil, fmt.Errorf("register workers component: %w", err)
 	}
 	if err := rt.Register(coreDeps.jobsManager); err != nil {

@@ -89,6 +89,10 @@ func TestContract_SettingsHierarchy(t *testing.T) {
 	defer func() { _ = bus.Close() }()
 	svc := NewService(NewSQLiteRepository(db.DB), reg, bus)
 	ctx := context.Background()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start settings service: %v", err)
+	}
+	defer func() { _ = svc.Stop(context.Background()) }()
 
 	// 1. No override -> default
 	val, err := svc.Resolve(ctx, 111, 999, "contract", "level")
@@ -165,6 +169,10 @@ func TestContract_SettingsCacheInvalidation(t *testing.T) {
 	defer func() { _ = bus.Close() }()
 	svc := NewService(NewSQLiteRepository(db.DB), reg, bus)
 	ctx := context.Background()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start settings service: %v", err)
+	}
+	defer func() { _ = svc.Stop(context.Background()) }()
 
 	// Prime cache
 	_, _ = svc.Resolve(ctx, 1, 1, "contract", "cache")
@@ -198,6 +206,11 @@ func TestContract_SettingsCacheInvalidation(t *testing.T) {
 		}
 	case <-time.After(200 * time.Millisecond):
 		t.Fatalf("expected SettingChangedEvent to be published")
+	}
+	select {
+	case duplicate := <-events:
+		t.Fatalf("setting mutation published duplicate event: %+v", duplicate)
+	case <-time.After(30 * time.Millisecond):
 	}
 }
 

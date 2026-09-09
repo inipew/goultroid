@@ -72,3 +72,11 @@ func TestProcessManager_Auditor(t *testing.T) {
 		t.Fatalf("expected process.execute audit event, got %+v", recent)
 	}
 }
+
+func TestProcessManager_TrackingFailurePreventsStart(t *testing.T) {
+	rm := resource.NewManager()
+	mgr := NewManager([]string{"echo"}, 1024, rm)
+	if _, _, err := mgr.Execute(context.Background(), "", "echo", "must-not-run"); err == nil {
+		t.Fatal("Execute() ignored mandatory resource tracking failure")
+	}
+}

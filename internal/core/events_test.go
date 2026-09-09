@@ -510,3 +510,55 @@ func TestEventBus_SubscribeWithOptions_MinPriority(t *testing.T) {
 		t.Fatalf("expected 1 call for critical event, got %d", criticalOnly.Load())
 	}
 }
+
+func TestEventBus_PublishDurableAllowsSubscriberToCloseItself(t *testing.T) {
+	bus := core.NewEventBus()
+	if err := bus.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer bus.Close()
+	var sub *core.Subscription
+	sub = bus.SubscribeContextHandler("self-closing", core.EventTypeSettingChanged, func(context.Context, core.Event) error {
+		sub.Close()
+		return nil
+	})
+	done := make(chan error, 1)
+	go func() {
+		done <- bus.PublishDurable(context.Background(), &core.SettingChangedEvent{At: time.Now(), Key: "x"})
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("durable subscriber deadlocked while closing itself")
+	}
+}
+
+func TestEventBus_CloseContextHonorsDeadline(t *testing.T) {
+	bus := core.NewEventBus()
+	if err := bus.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	started := make(chan struct{})
+	bus.SubscribeContextHandler("blocked", core.EventTypeSettingChanged, func(context.Context, core.Event) error {
+		close(started)
+		<-release
+		return nil
+	})
+	go func() {
+		_ = bus.PublishDurable(context.Background(), &core.SettingChangedEvent{At: time.Now(), Key: "x"})
+	}()
+	<-started
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := bus.CloseContext(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("CloseContext() error = %v, want deadline exceeded", err)
+	}
+	close(release)
+	if err := bus.CloseContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

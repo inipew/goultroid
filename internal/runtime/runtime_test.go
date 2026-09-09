@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -27,6 +28,48 @@ type blockingHealthComponent struct {
 	recordingComponent
 	healthStarted chan struct{}
 	releaseHealth chan struct{}
+}
+
+type callbackComponent struct {
+	name    string
+	deps    []string
+	startFn func(context.Context) error
+	stopFn  func(context.Context) error
+}
+
+type phasedComponent struct {
+	recordingComponent
+}
+
+func (c *phasedComponent) Quiesce(context.Context) error {
+	c.mu.Lock()
+	*c.calls = append(*c.calls, recordedCall{component: c.name, action: "quiesce"})
+	c.mu.Unlock()
+	return nil
+}
+func (c *phasedComponent) Drain(context.Context) error {
+	c.mu.Lock()
+	*c.calls = append(*c.calls, recordedCall{component: c.name, action: "drain"})
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *callbackComponent) Name() string           { return c.name }
+func (c *callbackComponent) Dependencies() []string { return c.deps }
+func (c *callbackComponent) Start(ctx context.Context) error {
+	if c.startFn != nil {
+		return c.startFn(ctx)
+	}
+	return nil
+}
+func (c *callbackComponent) Stop(ctx context.Context) error {
+	if c.stopFn != nil {
+		return c.stopFn(ctx)
+	}
+	return nil
+}
+func (c *callbackComponent) Health(context.Context) ComponentHealth {
+	return ComponentHealth{Status: HealthHealthy}
 }
 
 func (c *blockingHealthComponent) Health(context.Context) ComponentHealth {
@@ -256,4 +299,87 @@ func TestRuntime_HealthProbeDoesNotBlockStop(t *testing.T) {
 	}
 	close(comp.releaseHealth)
 	<-healthDone
+}
+
+func TestRuntime_ComponentCallbacksDoNotRunUnderCoordinatorLock(t *testing.T) {
+	r := New()
+	comp := &callbackComponent{name: "callback"}
+	comp.startFn = func(context.Context) error {
+		if r.Component("callback") == nil {
+			return errors.New("component lookup failed during start")
+		}
+		return nil
+	}
+	comp.stopFn = func(context.Context) error {
+		_ = r.Uptime()
+		return nil
+	}
+	if err := r.Register(comp); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRuntime_StopUsesQuiesceDrainStopPhases(t *testing.T) {
+	r := New()
+	var calls []recordedCall
+	var mu sync.Mutex
+	db := &phasedComponent{recordingComponent{name: "db", calls: &calls, mu: &mu}}
+	app := &phasedComponent{recordingComponent{name: "app", dependencies: []string{"db"}, calls: &calls, mu: &mu}}
+	if err := r.Register(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register(app); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	calls = nil
+	mu.Unlock()
+	if err := r.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []recordedCall{
+		{component: "app", action: "quiesce"}, {component: "db", action: "quiesce"},
+		{component: "app", action: "drain"}, {component: "db", action: "drain"},
+		{component: "app", action: "stop"}, {component: "db", action: "stop"},
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("shutdown phases = %+v, want %+v", calls, want)
+	}
+}
+
+func TestRuntime_StartPropagatesOperationCancellationAndBoundsRollback(t *testing.T) {
+	r := New()
+	var calls []recordedCall
+	var mu sync.Mutex
+	if err := r.Register(&recordingComponent{name: "started", calls: &calls, mu: &mu}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register(&callbackComponent{name: "blocking", deps: []string{"started"}, startFn: func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err := r.Start(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Start() error = %v, want deadline exceeded", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 2 || calls[1].action != "stop" {
+		t.Fatalf("started component was not rolled back: %+v", calls)
+	}
 }

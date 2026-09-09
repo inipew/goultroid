@@ -2,13 +2,51 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/jobs"
 	"github.com/inipew/goultroid/internal/platform/audit"
+	"github.com/inipew/goultroid/internal/runtime"
 )
+
+type failingManifestPlugin struct{}
+
+func (*failingManifestPlugin) Name() string { return "failing-manifest" }
+func (*failingManifestPlugin) Manifest() Manifest {
+	return Manifest{ID: "failing-manifest", Name: "Failing", Version: "1.0.0", Capabilities: []string{CapSecretRead}}
+}
+func (*failingManifestPlugin) Init() error              { return errors.New("init failed") }
+func (*failingManifestPlugin) Commands() []core.Command { return nil }
+
+type blockingEnablePlugin struct {
+	initCalls atomic.Int32
+	block     atomic.Bool
+	entered   chan struct{}
+	release   chan struct{}
+}
+
+func (*blockingEnablePlugin) Name() string { return "blocking-enable" }
+func (p *blockingEnablePlugin) Init() error {
+	p.initCalls.Add(1)
+	if p.block.Load() {
+		close(p.entered)
+		<-p.release
+	}
+	return nil
+}
+func (*blockingEnablePlugin) Commands() []core.Command { return nil }
+
+type failedDisablePlugin struct{}
+
+func (*failedDisablePlugin) Name() string             { return "failed-disable" }
+func (*failedDisablePlugin) Init() error              { return nil }
+func (*failedDisablePlugin) Commands() []core.Command { return nil }
+func (*failedDisablePlugin) Shutdown() error          { return errors.New("shutdown failed") }
 
 type togglablePlugin struct {
 	name            string
@@ -106,6 +144,71 @@ func TestManager_EnableDisable(t *testing.T) {
 
 	if len(mgr.DisabledPlugins()) != 0 {
 		t.Fatalf("expected empty disabled list after re-enable, got %v", mgr.DisabledPlugins())
+	}
+}
+
+func TestManager_FailedRegistrationRollsBackManifestAndGate(t *testing.T) {
+	mgr := NewManager(core.NewRouter("."))
+	gate := NewCapabilityGate()
+	mgr.SetPlatformServices(gate, nil, nil, nil, nil, nil, nil)
+	err := mgr.RegisterWithContext(context.Background(), &failingManifestPlugin{})
+	if err == nil {
+		t.Fatal("expected registration failure")
+	}
+	if _, ok := mgr.Manifest("failing-manifest"); ok {
+		t.Fatal("failed plugin manifest remained visible")
+	}
+	if err := gate.Check("failing-manifest", CapSecretRead); !errors.Is(err, ErrCapabilityDenied) {
+		t.Fatalf("capability remained registered after failure: %v", err)
+	}
+}
+
+func TestManager_ConcurrentEnableInitializesOnce(t *testing.T) {
+	mgr := NewManager(core.NewRouter("."))
+	p := &blockingEnablePlugin{entered: make(chan struct{}), release: make(chan struct{})}
+	if err := mgr.Register(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Disable(context.Background(), p.Name()); err != nil {
+		t.Fatal(err)
+	}
+	p.block.Store(true)
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- mgr.Enable(context.Background(), p.Name()) }()
+	select {
+	case <-p.entered:
+	case <-time.After(time.Second):
+		t.Fatal("first enable did not enter initialization")
+	}
+	if err := mgr.Enable(context.Background(), p.Name()); err == nil {
+		t.Fatal("concurrent Enable() was not rejected")
+	}
+	close(p.release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if got := p.initCalls.Load(); got != 2 {
+		t.Fatalf("Init() calls = %d, want initial registration plus one enable", got)
+	}
+}
+
+func TestManager_FailedDisableIsObservableAndCannotReenable(t *testing.T) {
+	mgr := NewManager(core.NewRouter("."))
+	p := &failedDisablePlugin{}
+	if err := mgr.Register(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Disable(context.Background(), p.Name()); err == nil {
+		t.Fatal("expected disable failure")
+	}
+	if mgr.IsEnabled(p.Name()) {
+		t.Fatal("plugin remained logically enabled after failed teardown")
+	}
+	if health := mgr.Health(context.Background()); health.Status != runtime.HealthDegraded {
+		t.Fatalf("Health() = %+v, want degraded", health)
+	}
+	if err := mgr.Enable(context.Background(), p.Name()); err == nil {
+		t.Fatal("plugin with incomplete teardown was re-enabled")
 	}
 }
 

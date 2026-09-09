@@ -395,6 +395,9 @@ type EventBus struct {
 	middlewares   []EventMiddleware
 	stop          chan struct{}
 	workers       sync.WaitGroup
+	durable       sync.WaitGroup
+	closeOnce     sync.Once
+	closeDone     chan struct{}
 	closed        bool
 	started       bool
 
@@ -416,6 +419,7 @@ func NewEventBus() *EventBus {
 		queueHigh:     make(chan eventJob, priorityQueueSize),
 		queueLow:      make(chan eventJob, priorityQueueSize),
 		stop:          make(chan struct{}),
+		closeDone:     make(chan struct{}),
 	}
 	for i := 0; i < orderedPartitions; i++ {
 		b.orderedQueues[i] = make(chan eventJob, priorityQueueSize)
@@ -829,8 +833,8 @@ func (b *EventBus) Publish(event Event) {
 	}
 }
 
-// PublishDurable delivers synchronously and never silently drops. Close waits
-// for an in-flight durable publish because it holds the read lock for delivery.
+// PublishDurable delivers synchronously and never silently drops. Subscriber
+// and middleware callbacks run outside the EventBus coordinator lock.
 func (b *EventBus) PublishDurable(ctx context.Context, event Event) error {
 	if event == nil {
 		return nil
@@ -839,27 +843,34 @@ func (b *EventBus) PublishDurable(ctx context.Context, event Event) error {
 		ctx = context.Background()
 	}
 	b.mu.RLock()
-	defer b.mu.RUnlock()
 	if b.closed {
+		b.mu.RUnlock()
 		return ErrEventBusClosed
 	}
 	if !b.started {
+		b.mu.RUnlock()
 		return ErrEventBusNotStarted
 	}
 	m := b.subscribers[event.Type()]
 	if len(m) == 0 {
+		b.mu.RUnlock()
 		return nil
 	}
+	subscribers := make([]eventSubscriber, 0, len(m))
+	for _, subscriber := range m {
+		subscribers = append(subscribers, subscriber)
+	}
+	mws := append([]EventMiddleware(nil), b.middlewares...)
+	b.durable.Add(1)
+	b.mu.RUnlock()
+	defer b.durable.Done()
 
 	prio := PriorityNormal
 	if pe, ok := event.(PrioritizedEvent); ok {
 		prio = pe.Priority()
 	}
 
-	mws := make([]EventMiddleware, len(b.middlewares))
-	copy(mws, b.middlewares)
-
-	for _, subscriber := range m {
+	for _, subscriber := range subscribers {
 		if prio > subscriber.minPriority {
 			continue
 		}
@@ -922,7 +933,7 @@ func (b *EventBus) Dependencies() []string {
 
 // Stop gracefully closes the event bus.
 func (b *EventBus) Stop(ctx context.Context) error {
-	return b.Close()
+	return b.CloseContext(ctx)
 }
 
 // Health evaluates EventBus health.
@@ -954,18 +965,33 @@ func (b *EventBus) Health(ctx context.Context) runtime.ComponentHealth {
 // is intentionally never closed; stop is the lifecycle broadcast, eliminating
 // send/close races.
 func (b *EventBus) Close() error {
-	b.mu.Lock()
-	if b.closed {
+	return b.CloseContext(context.Background())
+}
+
+// CloseContext stops admission and waits for asynchronous workers and durable
+// deliveries without allowing an uncooperative handler to hold global shutdown.
+func (b *EventBus) CloseContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	b.closeOnce.Do(func() {
+		b.mu.Lock()
+		b.closed = true
+		b.subscribers = make(map[EventType]map[uint64]eventSubscriber)
+		if b.started {
+			close(b.stop)
+		}
 		b.mu.Unlock()
-		b.workers.Wait()
+		go func() {
+			b.workers.Wait()
+			b.durable.Wait()
+			close(b.closeDone)
+		}()
+	})
+	select {
+	case <-b.closeDone:
 		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("event bus close: %w", ctx.Err())
 	}
-	b.closed = true
-	b.subscribers = make(map[EventType]map[uint64]eventSubscriber)
-	if b.started {
-		close(b.stop)
-	}
-	b.mu.Unlock()
-	b.workers.Wait()
-	return nil
 }

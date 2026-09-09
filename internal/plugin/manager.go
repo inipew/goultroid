@@ -59,6 +59,9 @@ type Manager struct {
 	scopes            map[string]*Scope
 	commands          map[string][]core.Command
 	disabled          map[string]bool
+	transitions       map[string]string
+	teardownErrors    map[string]error
+	registering       map[string]bool
 	list              []Plugin
 	hookCleanups      []func()
 	auditor           audit.Auditor
@@ -68,14 +71,17 @@ type Manager struct {
 
 func NewManager(router *core.Router) *Manager {
 	return &Manager{
-		router:    router,
-		plugins:   make(map[string]Plugin),
-		metadata:  make(map[string]Metadata),
-		manifests: make(map[string]Manifest),
-		scopes:    make(map[string]*Scope),
-		commands:  make(map[string][]core.Command),
-		disabled:  make(map[string]bool),
-		list:      make([]Plugin, 0),
+		router:         router,
+		plugins:        make(map[string]Plugin),
+		metadata:       make(map[string]Metadata),
+		manifests:      make(map[string]Manifest),
+		scopes:         make(map[string]*Scope),
+		commands:       make(map[string][]core.Command),
+		disabled:       make(map[string]bool),
+		transitions:    make(map[string]string),
+		teardownErrors: make(map[string]error),
+		registering:    make(map[string]bool),
+		list:           make([]Plugin, 0),
 	}
 }
 
@@ -184,18 +190,7 @@ func (m *Manager) RegisterModule(ctx context.Context, manifest Manifest, p Plugi
 		return fmt.Errorf("invalid manifest for plugin %s: %w", name, err)
 	}
 
-	m.mu.Lock()
-	m.manifests[name] = manifest
-	gate := m.gate
-	m.mu.Unlock()
-
-	if gate != nil {
-		if err := gate.RegisterManifest(manifest); err != nil {
-			return fmt.Errorf("gate rejected manifest for plugin %s: %w", name, err)
-		}
-	}
-
-	return m.RegisterWithContext(ctx, p)
+	return m.registerWithContext(ctx, p, &manifest)
 }
 
 func (m *Manager) Register(p Plugin) error {
@@ -205,6 +200,10 @@ func (m *Manager) Register(p Plugin) error {
 // RegisterWithContext registers and initializes a plugin using the provided startup context.
 // It is transactional: no partial registration is visible on failure, and manager mutex is never held while invoking plugin code.
 func (m *Manager) RegisterWithContext(ctx context.Context, p Plugin) error {
+	return m.registerWithContext(ctx, p, nil)
+}
+
+func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedManifest *Manifest) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -215,28 +214,6 @@ func (m *Manager) RegisterWithContext(ctx context.Context, p Plugin) error {
 	if name == "" {
 		return fmt.Errorf("plugin name cannot be empty")
 	}
-
-	// Register manifest capabilities if implemented directly on the plugin
-	if mp, ok := p.(ManifestPlugin); ok {
-		manifest := mp.Manifest()
-		if manifest.ID == "" {
-			manifest.ID = name
-		}
-		if err := manifest.Validate(); err != nil {
-			return fmt.Errorf("invalid manifest for plugin %s: %w", name, err)
-		}
-		m.mu.Lock()
-		m.manifests[name] = manifest
-		gate := m.gate
-		m.mu.Unlock()
-		if gate != nil {
-			if err := gate.RegisterManifest(manifest); err != nil {
-				return fmt.Errorf("gate rejected manifest for plugin %s: %w", name, err)
-			}
-		}
-	}
-
-	// 1. Lightweight pre-check under lock (duplicate, shutdown, router nil)
 	m.mu.Lock()
 	if m.shutdown {
 		m.mu.Unlock()
@@ -250,9 +227,53 @@ func (m *Manager) RegisterWithContext(ctx context.Context, p Plugin) error {
 		m.mu.Unlock()
 		return fmt.Errorf("plugin already registered: %s", name)
 	}
-	// Copy router reference for validate without holding lock
+	if m.registering[name] {
+		m.mu.Unlock()
+		return fmt.Errorf("plugin %s registration already in progress", name)
+	}
+	m.registering[name] = true
 	router := m.router
 	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		delete(m.registering, name)
+		m.mu.Unlock()
+	}()
+
+	rollbackManifest := func() {}
+	manifestStaged := false
+	// Stage manifest capabilities for InitPlugin and compensate on every failure.
+	var manifest *Manifest
+	if suppliedManifest != nil {
+		copy := *suppliedManifest
+		manifest = &copy
+	} else if mp, ok := p.(ManifestPlugin); ok {
+		copy := mp.Manifest()
+		manifest = &copy
+	}
+	if manifest != nil {
+		if manifest.ID == "" {
+			manifest.ID = name
+		}
+		if manifest.Name == "" {
+			manifest.Name = p.Name()
+		}
+		if err := manifest.Validate(); err != nil {
+			return fmt.Errorf("invalid manifest for plugin %s: %w", name, err)
+		}
+		var err error
+		rollbackManifest, err = m.stageManifest(name, *manifest)
+		if err != nil {
+			return fmt.Errorf("gate rejected manifest for plugin %s: %w", name, err)
+		}
+		manifestStaged = true
+	}
+	committed := false
+	defer func() {
+		if manifestStaged && !committed {
+			rollbackManifest()
+		}
+	}()
 
 	// 2. Validate commands outside lock
 	cmds := p.Commands()
@@ -299,43 +320,29 @@ func (m *Manager) RegisterWithContext(ctx context.Context, p Plugin) error {
 		return fmt.Errorf("failed to initialize plugin %s: %w", name, initErr)
 	}
 
-	// 4. Atomic commit under lock: re-check, register commands, hooks, metadata
-	m.mu.Lock()
-	if m.shutdown {
-		m.mu.Unlock()
-		_ = scope.Close(ctx)
+	cleanupPlugin := func() {
 		if s, ok := p.(ContextShutdowner); ok {
 			_ = s.ShutdownContext(ctx)
 		} else if s, ok := p.(Shutdowner); ok {
 			_ = s.Shutdown()
 		}
-		return fmt.Errorf("plugin manager is shutting down")
-	}
-	if _, exists := m.plugins[name]; exists {
-		m.mu.Unlock()
 		_ = scope.Close(ctx)
-		if s, ok := p.(ContextShutdowner); ok {
-			_ = s.ShutdownContext(ctx)
-		} else if s, ok := p.(Shutdowner); ok {
-			_ = s.Shutdown()
-		}
-		return fmt.Errorf("plugin already registered: %s", name)
 	}
+
+	// 4. Prepare router, hooks, and metadata outside the manager lock. The
+	// registration reservation prevents a competing commit for the same name.
 	if err := router.RegisterBatch(cmds); err != nil {
-		m.mu.Unlock()
-		_ = scope.Close(ctx)
-		if s, ok := p.(ContextShutdowner); ok {
-			_ = s.ShutdownContext(ctx)
-		} else if s, ok := p.(Shutdowner); ok {
-			_ = s.Shutdown()
-		}
+		cleanupPlugin()
 		return fmt.Errorf("plugin %s command registration failed: %w", name, err)
 	}
 
 	var hookCleanup func()
-	if m.hookRegistrar != nil {
+	m.mu.RLock()
+	hookRegistrar := m.hookRegistrar
+	m.mu.RUnlock()
+	if hookRegistrar != nil {
 		if mhp, ok := p.(MessageHookPlugin); ok {
-			hookCleanup = m.hookRegistrar.AddPrioritizedMessageHandler(mhp.MessageHookPriority(), mhp.HandleIncomingMessage)
+			hookCleanup = hookRegistrar.AddPrioritizedMessageHandler(mhp.MessageHookPriority(), mhp.HandleIncomingMessage)
 		}
 	}
 
@@ -351,7 +358,30 @@ func (m *Manager) RegisterWithContext(ctx context.Context, p Plugin) error {
 	if meta.Version == "" {
 		meta.Version = "1.0.0"
 	}
+
+	m.mu.Lock()
+	if m.shutdown {
+		m.mu.Unlock()
+		if hookCleanup != nil {
+			hookCleanup()
+		}
+		router.UnregisterBatch(cmds)
+		cleanupPlugin()
+		return fmt.Errorf("plugin manager is shutting down")
+	}
+	if _, exists := m.plugins[name]; exists {
+		m.mu.Unlock()
+		if hookCleanup != nil {
+			hookCleanup()
+		}
+		router.UnregisterBatch(cmds)
+		cleanupPlugin()
+		return fmt.Errorf("plugin already registered: %s", name)
+	}
 	m.plugins[name] = p
+	if manifest != nil {
+		m.manifests[name] = *manifest
+	}
 	m.metadata[name] = meta
 	m.scopes[name] = scope
 	m.commands[name] = append([]core.Command(nil), cmds...)
@@ -360,7 +390,28 @@ func (m *Manager) RegisterWithContext(ctx context.Context, p Plugin) error {
 		m.hookCleanups = append(m.hookCleanups, hookCleanup)
 	}
 	m.mu.Unlock()
+	committed = true
 	return nil
+}
+
+func (m *Manager) stageManifest(name string, manifest Manifest) (func(), error) {
+	m.mu.RLock()
+	previous, existed := m.manifests[name]
+	gate := m.gate
+	m.mu.RUnlock()
+	if gate != nil {
+		if err := gate.RegisterManifest(manifest); err != nil {
+			return nil, err
+		}
+	}
+	return func() {
+		if gate != nil {
+			gate.UnregisterManifest(name)
+			if existed {
+				_ = gate.RegisterManifest(previous)
+			}
+		}
+	}, nil
 }
 
 // Scope returns the lifecycle scope owned by a registered plugin.
@@ -505,10 +556,15 @@ func (m *Manager) Disable(ctx context.Context, name string) error {
 		m.mu.Unlock()
 		return nil // already disabled
 	}
+	if transition := m.transitions[key]; transition != "" {
+		m.mu.Unlock()
+		return fmt.Errorf("plugin %q is currently %s", name, transition)
+	}
 	cmds := append([]core.Command(nil), m.commands[key]...)
 	scope := m.scopes[key]
 	delete(m.scopes, key)
 	m.disabled[key] = true
+	m.transitions[key] = "disabling"
 	router := m.router
 	m.mu.Unlock()
 
@@ -551,8 +607,17 @@ func (m *Manager) Disable(ctx context.Context, name string) error {
 	}
 
 	if len(errs) > 0 {
-		return fmt.Errorf("errors disabling plugin %s: %w", name, errors.Join(errs...))
+		disableErr := fmt.Errorf("errors disabling plugin %s: %w", name, errors.Join(errs...))
+		m.mu.Lock()
+		delete(m.transitions, key)
+		m.teardownErrors[key] = disableErr
+		m.mu.Unlock()
+		return disableErr
 	}
+	m.mu.Lock()
+	delete(m.transitions, key)
+	delete(m.teardownErrors, key)
+	m.mu.Unlock()
 
 	m.mu.RLock()
 	auditor := m.auditor
@@ -587,6 +652,15 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 		m.mu.Unlock()
 		return nil // already enabled
 	}
+	if transition := m.transitions[key]; transition != "" {
+		m.mu.Unlock()
+		return fmt.Errorf("plugin %q is currently %s", name, transition)
+	}
+	if teardownErr := m.teardownErrors[key]; teardownErr != nil {
+		m.mu.Unlock()
+		return fmt.Errorf("plugin %q has incomplete teardown: %w", name, teardownErr)
+	}
+	m.transitions[key] = "enabling"
 	cmds := append([]core.Command(nil), m.commands[key]...)
 	router := m.router
 	resMgr := m.resourceManager
@@ -615,6 +689,9 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 
 	if initErr != nil {
 		_ = scope.Close(ctx)
+		m.mu.Lock()
+		delete(m.transitions, key)
+		m.mu.Unlock()
 		return fmt.Errorf("failed to re-initialize plugin %s: %w", name, initErr)
 	}
 
@@ -622,6 +699,9 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 	if router != nil && len(cmds) > 0 {
 		if err := router.RegisterBatch(cmds); err != nil {
 			_ = scope.Close(ctx)
+			m.mu.Lock()
+			delete(m.transitions, key)
+			m.mu.Unlock()
 			return fmt.Errorf("failed to re-register commands for plugin %s: %w", name, err)
 		}
 	}
@@ -629,6 +709,7 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 	m.mu.Lock()
 	m.scopes[key] = scope
 	delete(m.disabled, key)
+	delete(m.transitions, key)
 	auditor := m.auditor
 	m.mu.Unlock()
 
@@ -697,6 +778,9 @@ func (m *Manager) Health(ctx context.Context) runtime.ComponentHealth {
 			Status:  runtime.HealthUnhealthy,
 			Details: "plugin manager is shut down",
 		}
+	}
+	if len(m.teardownErrors) > 0 {
+		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "one or more plugins have incomplete teardown"}
 	}
 	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
 }

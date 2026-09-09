@@ -49,6 +49,32 @@ func TestPool_ExecuteTask(t *testing.T) {
 	}
 }
 
+func TestPool_TaskPanicDoesNotTerminateWorker(t *testing.T) {
+	pool := NewPool("panic-boundary", 1, 2, queue.PolicyBlock)
+	pool.Start(context.Background())
+	defer func() { _ = pool.Stop(context.Background()) }()
+	if err := pool.Submit(context.Background(), tasks.Task{
+		ID: "panic", Owner: "test", Run: func(context.Context) error { panic("boom") },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ran := make(chan struct{})
+	if err := pool.Submit(context.Background(), tasks.Task{
+		ID: "after-panic", Owner: "test", Run: func(context.Context) error { close(ran); return nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ran:
+	case <-time.After(time.Second):
+		t.Fatal("worker stopped after task panic")
+	}
+	stats := pool.Stats()
+	if stats.TasksFailed != 1 || stats.TasksSuccess != 1 {
+		t.Fatalf("unexpected panic recovery stats: %+v", stats)
+	}
+}
+
 func TestPool_StopDrainsAcceptedTasks(t *testing.T) {
 	pool := NewPool("drain", 1, 4, queue.PolicyBlock)
 	pool.Start(context.Background())

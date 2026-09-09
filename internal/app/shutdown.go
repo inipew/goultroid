@@ -28,32 +28,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.markStopping()
 
 	var errs []error
-	if a.addonMgr != nil {
-		if err := a.addonMgr.ShutdownRuntimes(); err != nil {
-			errs = append(errs, fmt.Errorf("addon runtimes: %w", err))
-		}
-	}
-	if a.limiter != nil {
-		if err := a.limiter.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("rate limiter: %w", err))
-		}
-	}
-	if a.interLimiter != nil {
-		if err := a.interLimiter.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("interaction rate limiter: %w", err))
-		}
-	}
-	if a.idemp != nil {
-		a.idemp.Close()
-	}
 	if a.runtime != nil {
 		if err := a.runtime.Stop(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			errs = append(errs, fmt.Errorf("runtime: %w", err))
-		}
-	}
-	if a.db != nil {
-		if err := a.db.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("database: %w", err))
 		}
 	}
 	if a.logger != nil {

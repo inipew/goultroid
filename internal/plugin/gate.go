@@ -84,6 +84,15 @@ func (g *CapabilityGate) RegisterManifest(m Manifest) error {
 	return nil
 }
 
+// UnregisterManifest removes a manifest installed during a failed or removed
+// plugin registration.
+func (g *CapabilityGate) UnregisterManifest(pluginID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.manifests, pluginID)
+	delete(g.privilegedMap, pluginID)
+}
+
 // Register registers a plugin ID with a list of capabilities.
 func (g *CapabilityGate) Register(pluginID string, capabilities []string) {
 	g.mu.Lock()

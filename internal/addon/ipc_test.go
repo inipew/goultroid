@@ -74,3 +74,30 @@ exit 0
 		t.Fatal("Call() succeeded after child process exited")
 	}
 }
+
+func TestExternalRuntimeLifetimeOutlivesStartupContext(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "long-lived-addon.sh")
+	content := `#!/bin/sh
+while IFS= read -r line; do
+    id=$(printf '%s\n' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+    printf '{"id":"%s","ok":true,"result":{"protocol":1}}\n' "$id"
+done
+`
+	if err := os.WriteFile(script, []byte(content), 0700); err != nil {
+		t.Fatal(err)
+	}
+	startupCtx, cancel := context.WithCancel(context.Background())
+	runtime := NewExternalRuntime(Manifest{Name: "long-lived", Version: "1.0.0"}, script, nil)
+	if err := runtime.Start(startupCtx); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	time.Sleep(20 * time.Millisecond)
+	if !runtime.Running() {
+		t.Fatal("startup operation context terminated addon lifetime")
+	}
+	if err := runtime.Stop(); err != nil {
+		t.Fatal(err)
+	}
+}

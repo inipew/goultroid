@@ -35,6 +35,16 @@ type Component interface {
 	Health(ctx context.Context) ComponentHealth
 }
 
+// Quiescer optionally closes a component's admission path before draining.
+type Quiescer interface {
+	Quiesce(context.Context) error
+}
+
+// Drainer optionally waits for work accepted before quiescing to finish.
+type Drainer interface {
+	Drain(context.Context) error
+}
+
 // CriticalComponent can be implemented by components to specify whether startup
 // failure should abort the runtime (critical) or only log/mark degraded (optional).
 // Default is critical if not implemented.

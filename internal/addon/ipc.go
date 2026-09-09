@@ -68,22 +68,23 @@ func (b *CapabilityBroker) Authorize(addon string, capability Capability) error 
 // ExternalRuntime manages one isolated addon process and a JSON-lines IPC
 // channel. The runtime intentionally does not use Go's plugin package.
 type ExternalRuntime struct {
-	manifest   Manifest
-	broker     *CapabilityBroker
-	executable string
-	procMgr    *process.Manager
-	procID     string
-	cmd        *exec.Cmd
-	stdin      io.WriteCloser
-	stdout     *bufio.Reader
-	logger     *zap.Logger
-	mu         sync.Mutex
-	callMu     sync.Mutex
-	running    bool
-	stopping   bool
-	seq        uint64
-	exitDone   chan struct{}
-	exitErr    error
+	manifest    Manifest
+	broker      *CapabilityBroker
+	executable  string
+	procMgr     *process.Manager
+	procID      string
+	cmd         *exec.Cmd
+	stdin       io.WriteCloser
+	stdout      *bufio.Reader
+	logger      *zap.Logger
+	mu          sync.Mutex
+	callMu      sync.Mutex
+	running     bool
+	stopping    bool
+	seq         uint64
+	exitDone    chan struct{}
+	exitErr     error
+	lifetimeEnd context.CancelFunc
 }
 
 func NewExternalRuntime(manifest Manifest, executable string, broker *CapabilityBroker) *ExternalRuntime {
@@ -123,7 +124,8 @@ func (r *ExternalRuntime) Start(ctx context.Context) error {
 		return err
 	}
 
-	cmd := exec.CommandContext(ctx, path)
+	lifetimeCtx, lifetimeEnd := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(lifetimeCtx, path)
 	runtimeDir := filepath.Join("data", "addons", "runtime", r.manifest.Name)
 	if err := os.MkdirAll(runtimeDir, 0700); err == nil {
 		cmd.Dir = runtimeDir
@@ -133,17 +135,20 @@ func (r *ExternalRuntime) Start(ctx context.Context) error {
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "GOUTROID_ADDON_NAME=" + r.manifest.Name, "GOUTROID_ADDON_VERSION=" + r.manifest.Version}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		lifetimeEnd()
 		r.mu.Unlock()
 		return fmt.Errorf("addon stdin: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		lifetimeEnd()
 		_ = stdin.Close()
 		r.mu.Unlock()
 		return fmt.Errorf("addon stdout: %w", err)
 	}
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
+		lifetimeEnd()
 		_ = stdin.Close()
 		_ = stdout.Close()
 		r.mu.Unlock()
@@ -153,6 +158,7 @@ func (r *ExternalRuntime) Start(ctx context.Context) error {
 	if r.procMgr != nil {
 		procID, err := r.procMgr.StartCmd(ctx, "addon:"+r.manifest.Name, cmd)
 		if err != nil {
+			lifetimeEnd()
 			_ = stdin.Close()
 			_ = stdout.Close()
 			_ = stderrPipe.Close()
@@ -162,6 +168,7 @@ func (r *ExternalRuntime) Start(ctx context.Context) error {
 		r.procID = procID
 	} else {
 		if err := cmd.Start(); err != nil {
+			lifetimeEnd()
 			_ = stdin.Close()
 			_ = stdout.Close()
 			_ = stderrPipe.Close()
@@ -190,6 +197,7 @@ func (r *ExternalRuntime) Start(ctx context.Context) error {
 	r.stopping = false
 	r.exitDone = make(chan struct{})
 	r.exitErr = nil
+	r.lifetimeEnd = lifetimeEnd
 	r.mu.Unlock()
 	go r.watchProcess(cmd)
 
@@ -217,6 +225,7 @@ func (r *ExternalRuntime) watchProcess(cmd *exec.Cmd) {
 	r.running = false
 	r.cmd, r.stdin, r.stdout = nil, nil, nil
 	r.procID = ""
+	r.lifetimeEnd = nil
 	r.exitErr = err
 	r.mu.Unlock()
 
@@ -342,9 +351,13 @@ func (r *ExternalRuntime) Stop() error {
 	cmd := r.cmd
 	stdin := r.stdin
 	done := r.exitDone
+	lifetimeEnd := r.lifetimeEnd
 	r.running = false
 	r.stopping = true
 	r.mu.Unlock()
+	if lifetimeEnd != nil {
+		lifetimeEnd()
+	}
 	if stdin != nil {
 		_ = stdin.Close()
 	}

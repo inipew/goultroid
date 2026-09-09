@@ -31,6 +31,9 @@ type Service struct {
 	outboxCancel context.CancelFunc
 	outboxDone   chan struct{}
 	unsubSetting func()
+	outboxWake   chan struct{}
+	outboxErrMu  sync.RWMutex
+	outboxErr    error
 }
 
 // NewService instantiates a new settings Service.
@@ -39,54 +42,86 @@ func NewService(repo Repository, reg *Registry, bus *core.EventBus) *Service {
 		reg = NewRegistry()
 	}
 	s := &Service{
-		repo:  repo,
-		reg:   reg,
-		bus:   bus,
-		cache: make(map[string]map[resolveCacheKey]string),
+		repo:       repo,
+		reg:        reg,
+		bus:        bus,
+		cache:      make(map[string]map[resolveCacheKey]string),
+		outboxWake: make(chan struct{}, 1),
 	}
 	return s
 }
 
-// runOutboxWorker periodically drains setting_outbox and republishes via durable dispatch.
+// runOutboxWorker drains setting_outbox on local commit notifications, with a
+// slow fallback poll for recovery. Delivery is intentionally at-least-once:
+// consumers that perform side effects must deduplicate by EventMeta.ID.
 // Single ordered worker: processes pending outbox rows in created_at order, dispatches synchronously,
 // and only marks processed after successful delivery (no drop). Retries on next tick if dispatch fails.
 func (s *Service) runOutboxWorker(ctx context.Context) {
-	ticker := time.NewTicker(500 * time.Millisecond)
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
+	s.drainOutbox(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-s.outboxWake:
+			s.drainOutbox(ctx)
 		case <-ticker.C:
-			entries, err := s.repo.ListPendingOutbox(ctx, 100)
-			if err != nil {
-				continue
-			}
-			for _, e := range entries {
-				if s.bus == nil {
-					continue
-				}
-				evt := &core.SettingChangedEvent{
-					MetaData: core.EventMeta{
-						ID: fmt.Sprintf("outbox:setting:%d", e.ID),
-					},
-					At:        e.CreatedAt,
-					ScopeType: e.ScopeType,
-					ScopeID:   e.ScopeID,
-					Namespace: e.Namespace,
-					Key:       e.Key,
-					OldVal:    e.OldVal,
-					NewVal:    e.NewVal,
-					ChangedBy: e.ChangedBy,
-				}
-				// Durable dispatch: synchronous, no queue drop, panic recovered. Only mark on success.
-				if err := s.bus.PublishDurable(ctx, evt); err != nil {
-					// Delivery failed (bus closed, ctx cancelled, or handler panic) — retry next tick.
-					continue
-				}
-				_ = s.repo.MarkOutboxProcessed(ctx, e.ID)
-			}
+			s.drainOutbox(ctx)
 		}
+	}
+}
+
+func (s *Service) drainOutbox(ctx context.Context) {
+	entries, err := s.repo.ListPendingOutbox(ctx, 100)
+	if err != nil {
+		s.setOutboxError(err)
+		return
+	}
+	for _, e := range entries {
+		if s.bus == nil {
+			return
+		}
+		evt := &core.SettingChangedEvent{
+			MetaData: core.EventMeta{
+				ID: fmt.Sprintf("outbox:setting:%d", e.ID),
+			},
+			At:        e.CreatedAt,
+			ScopeType: e.ScopeType,
+			ScopeID:   e.ScopeID,
+			Namespace: e.Namespace,
+			Key:       e.Key,
+			OldVal:    e.OldVal,
+			NewVal:    e.NewVal,
+			ChangedBy: e.ChangedBy,
+		}
+		if err := s.bus.PublishDurable(ctx, evt); err != nil {
+			s.setOutboxError(err)
+			return
+		}
+		if err := s.repo.MarkOutboxProcessed(ctx, e.ID); err != nil {
+			s.setOutboxError(err)
+			return
+		}
+	}
+	s.setOutboxError(nil)
+}
+
+func (s *Service) setOutboxError(err error) {
+	s.outboxErrMu.Lock()
+	s.outboxErr = err
+	s.outboxErrMu.Unlock()
+}
+
+func (s *Service) usesDurableOutbox() bool {
+	_, ok := s.repo.(*SQLiteRepository)
+	return ok
+}
+
+func (s *Service) wakeOutbox() {
+	select {
+	case s.outboxWake <- struct{}{}:
+	default:
 	}
 }
 
@@ -151,6 +186,12 @@ func (s *Service) Dependencies() []string {
 
 // Health probes the health status of the settings service.
 func (s *Service) Health(ctx context.Context) runtime.ComponentHealth {
+	s.outboxErrMu.RLock()
+	err := s.outboxErr
+	s.outboxErrMu.RUnlock()
+	if err != nil {
+		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "settings outbox delivery failed", Error: err}
+	}
 	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
 }
 
@@ -348,8 +389,11 @@ func (s *Service) Set(ctx context.Context, scope SettingScope, scopeID int64, na
 	}
 
 	s.invalidate(ns, k)
+	if s.usesDurableOutbox() {
+		s.wakeOutbox()
+		return nil
+	}
 
-	// Publish SettingChangedEvent
 	if s.bus != nil {
 		s.bus.Publish(&core.SettingChangedEvent{
 			At:        time.Now().UTC(),
@@ -389,6 +433,10 @@ func (s *Service) Reset(ctx context.Context, scope SettingScope, scopeID int64, 
 	}
 
 	s.invalidate(ns, k)
+	if s.usesDurableOutbox() {
+		s.wakeOutbox()
+		return nil
+	}
 
 	if s.bus != nil {
 		s.bus.Publish(&core.SettingChangedEvent{
@@ -498,6 +546,10 @@ func (s *Service) Import(ctx context.Context, scope SettingScope, scopeID int64,
 
 	for _, p := range prepared {
 		s.invalidate(p.ns, p.k)
+	}
+	if s.usesDurableOutbox() {
+		s.wakeOutbox()
+		return len(prepared), nil
 	}
 
 	// Phase 3: Publish events

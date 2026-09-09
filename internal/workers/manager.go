@@ -80,14 +80,29 @@ func (m *Manager) Start(ctx context.Context) error {
 
 // Stop gracefully stops all managed worker pools.
 func (m *Manager) Stop(ctx context.Context) error {
-	if ctx == nil {
-		ctx = context.Background()
+	if err := m.Quiesce(ctx); err != nil {
+		return err
 	}
+	return m.Drain(ctx)
+}
+
+// Quiesce closes task admission without interrupting already accepted work.
+func (m *Manager) Quiesce(context.Context) error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.accepting {
 		m.accepting = false
 		close(m.acceptingEnd)
 	}
+	return nil
+}
+
+// Drain waits for logical admission and then drains every physical pool.
+func (m *Manager) Drain(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	m.mu.Lock()
 	pools := make([]*Pool, 0, len(m.pools))
 	for _, pool := range m.pools {
 		pools = append(pools, pool)
@@ -127,9 +142,6 @@ func (m *Manager) Stop(ctx context.Context) error {
 
 // Health probes the health status of all worker pools.
 func (m *Manager) Health(ctx context.Context) runtime.ComponentHealth {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
 	stats := m.AllStats()
 	for _, s := range stats {
 		if s.QueueStats.Capacity > 0 && s.QueueStats.Depth >= s.QueueStats.Capacity {
