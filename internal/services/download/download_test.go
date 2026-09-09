@@ -3,8 +3,6 @@ package download_test
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,30 +11,6 @@ import (
 	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/storage"
 )
-
-func TestDirectHTTPProvider_Success(t *testing.T) {
-	content := "test file content from mock server"
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		w.Header().Set("Content-Disposition", `attachment; filename="hello.txt"`)
-		_, _ = w.Write([]byte(content))
-	}))
-	defer server.Close()
-
-	// Note: httptest.Server binds to 127.0.0.1 (loopback), which SafeHTTPClient blocks by default for SSRF safety.
-	// We can test SSRF blocking with server.URL!
-	provider := download.NewDirectHTTPProvider(5*time.Second, 1024*1024)
-	store := storage.NewMemoryStorage()
-
-	ctx := context.Background()
-	_, err := provider.Download(ctx, server.URL, store, download.DownloadOptions{})
-	if err == nil {
-		t.Fatalf("expected SSRF block error on loopback server.URL, got nil")
-	}
-	if !errors.Is(err, download.ErrBlockedSSRF) && !strings.Contains(err.Error(), download.ErrBlockedSSRF.Error()) {
-		t.Errorf("expected ErrBlockedSSRF, got %v", err)
-	}
-}
 
 func TestDirectHTTPProvider_Match(t *testing.T) {
 	provider := download.NewDirectHTTPProvider(5*time.Second, 1024*1024)

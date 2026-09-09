@@ -36,6 +36,9 @@ func TestContract_SettingsHierarchy(t *testing.T) {
 	}
 
 	bus := core.NewEventBus()
+	if err := bus.Start(context.Background()); err != nil {
+		t.Fatalf("start event bus: %v", err)
+	}
 	defer func() { _ = bus.Close() }()
 	svc := NewService(db, reg, bus)
 	ctx := context.Background()
@@ -109,6 +112,9 @@ func TestContract_SettingsCacheInvalidation(t *testing.T) {
 	}
 
 	bus := core.NewEventBus()
+	if err := bus.Start(context.Background()); err != nil {
+		t.Fatalf("start event bus: %v", err)
+	}
 	defer func() { _ = bus.Close() }()
 	svc := NewService(db, reg, bus)
 	ctx := context.Background()

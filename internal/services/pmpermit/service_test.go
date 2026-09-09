@@ -557,6 +557,9 @@ func TestPMPermit_EventBus(t *testing.T) {
 	svc.SetWarnCooldown(0)
 
 	bus := core.NewEventBus()
+	if err := bus.Start(context.Background()); err != nil {
+		t.Fatalf("start event bus: %v", err)
+	}
 	defer bus.Close()
 	svc.SetEventBus(bus)
 

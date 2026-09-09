@@ -328,6 +328,9 @@ func TestDispatcher_OnBotCallbackQuery_MessageTarget(t *testing.T) {
 	dispatcher := NewDispatcher(router, nil, nil, logger)
 
 	bus := core.NewEventBus()
+	if err := bus.Start(context.Background()); err != nil {
+		t.Fatalf("start event bus: %v", err)
+	}
 	defer bus.Close()
 	dispatcher.SetEventBus(bus)
 
@@ -392,6 +395,9 @@ func TestDispatcher_OnInlineBotCallbackQuery_InlineTarget(t *testing.T) {
 	dispatcher := NewDispatcher(router, nil, nil, logger)
 
 	bus := core.NewEventBus()
+	if err := bus.Start(context.Background()); err != nil {
+		t.Fatalf("start event bus: %v", err)
+	}
 	defer bus.Close()
 	dispatcher.SetEventBus(bus)
 
@@ -446,6 +452,9 @@ func TestDispatcher_OnBotInlineSend_FeedbackEvent(t *testing.T) {
 	dispatcher := NewDispatcher(router, nil, nil, logger)
 
 	bus := core.NewEventBus()
+	if err := bus.Start(context.Background()); err != nil {
+		t.Fatalf("start event bus: %v", err)
+	}
 	defer bus.Close()
 	dispatcher.SetEventBus(bus)
 

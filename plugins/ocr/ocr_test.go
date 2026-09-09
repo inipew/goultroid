@@ -2,10 +2,11 @@ package ocr
 
 import (
 	"context"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -25,16 +26,13 @@ func TestValidLanguage(t *testing.T) {
 
 func TestExtractRetriesTransientHTTPFailure(t *testing.T) {
 	attempts := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := &http.Client{Timeout: 2 * time.Second, Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		attempts++
 		if attempts == 1 {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
+			return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader("temporary failure")), Header: make(http.Header), Request: r}, nil
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"IsErroredOnProcessing":false,"ParsedResults":[{"ParsedText":"hello"}]}`))
-	}))
-	defer server.Close()
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"IsErroredOnProcessing":false,"ParsedResults":[{"ParsedText":"hello"}]}`)), Header: http.Header{"Content-Type": []string{"application/json"}}, Request: r}, nil
+	})}
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "image.jpg")
@@ -44,8 +42,8 @@ func TestExtractRetriesTransientHTTPFailure(t *testing.T) {
 
 	p := &Plugin{
 		apiKey:   "test-key",
-		endpoint: server.URL,
-		client:   &http.Client{Timeout: 2 * time.Second},
+		endpoint: "https://ocr.example.test/parse/image",
+		client:   client,
 	}
 	text, err := p.extract(context.Background(), path, "eng")
 	if err != nil {
@@ -58,3 +56,7 @@ func TestExtractRetriesTransientHTTPFailure(t *testing.T) {
 		t.Fatalf("expected 2 HTTP attempts, got %d", attempts)
 	}
 }
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

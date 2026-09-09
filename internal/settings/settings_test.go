@@ -321,6 +321,10 @@ func TestServiceInheritanceAndOperations(t *testing.T) {
 	_ = RegisterDefaultDefinitions(reg)
 
 	bus := core.NewEventBus()
+	if err := bus.Start(context.Background()); err != nil {
+		t.Fatalf("start event bus: %v", err)
+	}
+	defer func() { _ = bus.Close() }()
 	svc := NewService(repo, reg, bus)
 	ctx := context.Background()
 
@@ -585,6 +589,10 @@ func TestServiceResolverCacheAndInvalidation(t *testing.T) {
 	reg := NewRegistry()
 	_ = RegisterDefaultDefinitions(reg)
 	bus := core.NewEventBus()
+	if err := bus.Start(context.Background()); err != nil {
+		t.Fatalf("start event bus: %v", err)
+	}
+	defer func() { _ = bus.Close() }()
 	svc := NewService(repo, reg, bus)
 
 	// 1. Initial resolution populates cache with default

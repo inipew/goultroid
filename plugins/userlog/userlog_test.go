@@ -324,6 +324,9 @@ func TestUserLogPlugin_AdminActionEvent(t *testing.T) {
 	p := userlog.New(svc, 12345)
 
 	eventBus := core.NewEventBus()
+	if err := eventBus.Start(context.Background()); err != nil {
+		t.Fatalf("start event bus: %v", err)
+	}
 	defer eventBus.Close()
 	p.SetEventBus(eventBus)
 
@@ -357,6 +360,9 @@ func TestUserLogPlugin_PMPermitEvent(t *testing.T) {
 	p := userlog.New(svc, 12345)
 
 	eventBus := core.NewEventBus()
+	if err := eventBus.Start(context.Background()); err != nil {
+		t.Fatalf("start event bus: %v", err)
+	}
 	defer eventBus.Close()
 	p.SetEventBus(eventBus)
 

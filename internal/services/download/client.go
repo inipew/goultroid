@@ -90,22 +90,27 @@ func ValidateURL(rawURL string) (*url.URL, error) {
 	return u, nil
 }
 
+// validateDialAddress rejects literal prohibited IPs before a connection is
+// attempted. Hostnames are resolved by the operating system after this point;
+// the Dialer.Control hook applies the same check to the resolved address.
+func validateDialAddress(address string) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		host = address
+	}
+	if ip := net.ParseIP(host); ip != nil && IsPrivateOrProhibitedIP(ip) {
+		return fmt.Errorf("%w: ip %s", ErrBlockedSSRF, ip.String())
+	}
+	return nil
+}
+
 // NewSafeTransport constructs an http.Transport with DNS resolution verification against SSRF.
 func NewSafeTransport() *http.Transport {
 	dialer := &net.Dialer{
 		Timeout:   15 * time.Second,
 		KeepAlive: 30 * time.Second,
 		Control: func(network, address string, c syscall.RawConn) error {
-			host, _, err := net.SplitHostPort(address)
-			if err != nil {
-				host = address
-			}
-
-			ip := net.ParseIP(host)
-			if ip != nil && IsPrivateOrProhibitedIP(ip) {
-				return fmt.Errorf("%w: ip %s", ErrBlockedSSRF, ip.String())
-			}
-			return nil
+			return validateDialAddress(address)
 		},
 	}
 
