@@ -69,15 +69,15 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 
 	inlineRegistry := inline.NewRegistry()
 	if err := inlineRegistry.Register(&defaultCatchAllInlineHandler{router: router, startTime: time.Now()}); err != nil {
-		cleanupCore(&coreDependencies{db: db, eventBus: eventBus}, logger)
+		cleanupCore(&coreDependencies{db: db, eventBus: eventBus, cmdLimiter: cmdLimiter, interLimiter: interLimiter}, logger)
 		return nil, fmt.Errorf("register catch-all inline handler: %w", err)
 	}
 	if err := inlineRegistry.Register(&defaultHelpInlineHandler{router: router}); err != nil {
-		cleanupCore(&coreDependencies{db: db, eventBus: eventBus}, logger)
+		cleanupCore(&coreDependencies{db: db, eventBus: eventBus, cmdLimiter: cmdLimiter, interLimiter: interLimiter}, logger)
 		return nil, fmt.Errorf("register help inline handler: %w", err)
 	}
 	if err := inlineRegistry.Register(&defaultPingInlineHandler{startTime: time.Now()}); err != nil {
-		cleanupCore(&coreDependencies{db: db, eventBus: eventBus}, logger)
+		cleanupCore(&coreDependencies{db: db, eventBus: eventBus, cmdLimiter: cmdLimiter, interLimiter: interLimiter}, logger)
 		return nil, fmt.Errorf("register ping inline handler: %w", err)
 	}
 
@@ -93,7 +93,7 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 	resourceManager := resource.NewManager()
 	idempRepo := idempotency.NewSQLiteRepository(db.DB)
 	if err := idempRepo.InitSchema(context.Background()); err != nil {
-		cleanupCore(&coreDependencies{db: db, eventBus: eventBus}, logger)
+		cleanupCore(&coreDependencies{db: db, eventBus: eventBus, cmdLimiter: cmdLimiter, interLimiter: interLimiter}, logger)
 		return nil, fmt.Errorf("initialize idempotency repository: %w", err)
 	}
 	idempManager := idempotency.NewManager(1*time.Minute, idempRepo)

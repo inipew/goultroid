@@ -26,7 +26,6 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 
 	settingsRegistry := settings.NewRegistry()
 	if err := settings.RegisterDefaultDefinitions(settingsRegistry); err != nil {
-		cleanupCore(core, logger)
 		return nil, fmt.Errorf("register default settings definitions: %w", err)
 	}
 	settingsRepo := settings.NewSQLiteRepository(core.db.DB)

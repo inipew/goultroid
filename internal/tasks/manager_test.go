@@ -103,6 +103,42 @@ func TestTaskManager_StartAndConcurrencyQuota(t *testing.T) {
 	}
 }
 
+func TestTaskManager_WaitStartWaitsForConcurrencySlot(t *testing.T) {
+	mgr := NewManager()
+	mgr.SetOwnerQuota("plugin-wait", Quota{MaxConcurrent: 1, MaxQueued: 2})
+	ctx := context.Background()
+	for _, id := range []string{"wait-1", "wait-2"} {
+		if _, _, err := mgr.Register(ctx, Task{ID: id, Owner: "plugin-wait", Run: func(context.Context) error { return nil }}); err != nil {
+			t.Fatalf("Register(%s) error = %v", id, err)
+		}
+	}
+	if _, err := mgr.Start("wait-1"); err != nil {
+		t.Fatalf("Start(wait-1) error = %v", err)
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := mgr.WaitStart(ctx, "wait-2")
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		t.Fatalf("WaitStart returned while slot was full: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	mgr.Finish("wait-1", StateCompleted, nil)
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("WaitStart error after slot release = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WaitStart did not acquire released slot")
+	}
+	mgr.Finish("wait-2", StateCompleted, nil)
+}
+
 func TestTaskManager_CancelAndCancelByOwner(t *testing.T) {
 	mgr := NewManager()
 

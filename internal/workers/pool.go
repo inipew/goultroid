@@ -39,6 +39,7 @@ type Pool struct {
 
 	startOnce sync.Once
 	stopOnce  sync.Once
+	stopDone  chan struct{}
 	running   atomic.Bool
 }
 
@@ -55,6 +56,7 @@ func NewPool(name string, concurrency int, queueCapacity int, policy queue.Overf
 		name:        name,
 		concurrency: concurrency,
 		queue:       queue.New[tasks.Task](queueCapacity, policy),
+		stopDone:    make(chan struct{}),
 	}
 }
 
@@ -133,29 +135,29 @@ func (p *Pool) Stats() PoolStats {
 
 // Stop gracefully drains or stops the worker pool.
 func (p *Pool) Stop(ctx context.Context) error {
-	var stopErr error
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	p.stopOnce.Do(func() {
 		p.running.Store(false)
 		p.queue.Close()
+		go func() {
+			p.wg.Wait()
+			close(p.stopDone)
+		}()
+	})
+
+	select {
+	case <-p.stopDone:
 		if p.cancel != nil {
 			p.cancel()
 		}
-
-		done := make(chan struct{})
-		go func() {
-			p.wg.Wait()
-			close(done)
-		}()
-
-		if ctx == nil {
-			ctx = context.Background()
+		return nil
+	case <-ctx.Done():
+		if p.cancel != nil {
+			p.cancel()
 		}
-
-		select {
-		case <-done:
-		case <-ctx.Done():
-			stopErr = fmt.Errorf("pool %s stop timed out: %w", p.name, ctx.Err())
-		}
-	})
-	return stopErr
+		return fmt.Errorf("pool %s stop timed out: %w", p.name, ctx.Err())
+	}
 }

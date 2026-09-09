@@ -165,6 +165,9 @@ func (q *Queue[T]) Pop(ctx context.Context) (T, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		return zero, err
+	}
 
 	for len(q.items) == 0 {
 		if q.closed {

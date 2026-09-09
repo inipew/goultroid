@@ -200,9 +200,13 @@ func (m *Manager) Submit(ctx context.Context, poolName string, task tasks.Task) 
 		origRun := task.Run
 		task.Run = func(runCtx context.Context) error {
 			defer cancel()
-			startCtx, err := tm.Start(task.ID)
+			startCtx, err := tm.WaitStart(runCtx, task.ID)
 			if err != nil {
-				tm.Finish(task.ID, tasks.StateFailed, err)
+				state := tasks.StateFailed
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					state = tasks.StateCancelled
+				}
+				tm.Finish(task.ID, state, err)
 				return err
 			}
 
@@ -226,7 +230,12 @@ func (m *Manager) Submit(ctx context.Context, poolName string, task tasks.Task) 
 			return runErr
 		}
 
-		return pool.Submit(taskCtx, task)
+		if err := pool.Submit(taskCtx, task); err != nil {
+			cancel()
+			tm.Finish(task.ID, tasks.StateFailed, err)
+			return err
+		}
+		return nil
 	}
 
 	return pool.Submit(ctx, task)

@@ -111,6 +111,16 @@ func cleanupCore(core *coreDependencies, logger *zap.Logger) {
 	if core.idempManager != nil {
 		core.idempManager.Close()
 	}
+	if core.cmdLimiter != nil {
+		if err := core.cmdLimiter.Close(); err != nil && logger != nil {
+			logger.Warn("cleanup: failed to close command rate limiter", zap.Error(err))
+		}
+	}
+	if core.interLimiter != nil {
+		if err := core.interLimiter.Close(); err != nil && logger != nil {
+			logger.Warn("cleanup: failed to close interaction rate limiter", zap.Error(err))
+		}
+	}
 	if core.eventBus != nil {
 		if err := core.eventBus.Close(); err != nil && logger != nil {
 			logger.Warn("cleanup: failed to close event bus", zap.Error(err))

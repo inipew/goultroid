@@ -193,10 +193,9 @@ func (r *Runtime) performStop(ctx context.Context) error {
 
 	var stopErrs []error
 	for _, comp := range stopOrder {
-		select {
-		case <-ctx.Done():
-			stopErrs = append(stopErrs, fmt.Errorf("stop deadline exceeded before stopping %q: %w", comp.Name(), ctx.Err()))
-		default:
+		if err := ctx.Err(); err != nil {
+			stopErrs = append(stopErrs, fmt.Errorf("stop deadline exceeded before stopping %q: %w", comp.Name(), err))
+			break
 		}
 
 		if err := comp.Stop(ctx); err != nil {

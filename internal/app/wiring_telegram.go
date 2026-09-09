@@ -22,7 +22,6 @@ func buildTelegramRuntime(cfg *config.Config, core *coreDependencies, logger *za
 	}
 	dispatcher, err := telegram.NewDispatcherWithDeps(dispatcherDeps)
 	if err != nil {
-		cleanupCore(core, logger)
 		return nil, fmt.Errorf("create dispatcher: %w", err)
 	}
 	dispatcher.Executor().SetMetrics(core.metrics)
@@ -33,7 +32,6 @@ func buildTelegramRuntime(cfg *config.Config, core *coreDependencies, logger *za
 
 	client, err := telegram.NewClient(cfg, dispatcher, core.db, logger)
 	if err != nil {
-		cleanupCore(core, logger)
 		return nil, fmt.Errorf("create telegram client: %w", err)
 	}
 

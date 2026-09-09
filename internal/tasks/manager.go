@@ -63,6 +63,7 @@ type Manager struct {
 
 	activeTasks map[string]*trackedTask
 	ownerCounts map[string]*OwnerStats
+	slotChanged chan struct{}
 
 	totalCompleted int64
 	totalFailed    int64
@@ -77,6 +78,7 @@ func NewManager() *Manager {
 		quotas:       make(map[string]Quota),
 		activeTasks:  make(map[string]*trackedTask),
 		ownerCounts:  make(map[string]*OwnerStats),
+		slotChanged:  make(chan struct{}),
 	}
 }
 
@@ -85,6 +87,7 @@ func (m *Manager) SetDefaultQuota(q Quota) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.defaultQuota = q
+	m.notifySlotChangeLocked()
 }
 
 // SetOwnerQuota sets quota limits for a specific owner.
@@ -92,6 +95,7 @@ func (m *Manager) SetOwnerQuota(owner string, q Quota) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.quotas[owner] = q
+	m.notifySlotChangeLocked()
 }
 
 // GetQuota returns the quota for an owner.
@@ -157,31 +161,88 @@ func (m *Manager) Register(parentCtx context.Context, task Task) (context.Contex
 func (m *Manager) Start(taskID string) (context.Context, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.startLocked(taskID)
+}
 
+// WaitStart waits until the task can consume an owner concurrency slot. A task
+// that has already been admitted to the queue is held instead of being failed
+// merely because another task from the same owner is still running.
+func (m *Manager) WaitStart(waitCtx context.Context, taskID string) (context.Context, error) {
+	if waitCtx == nil {
+		waitCtx = context.Background()
+	}
+	for {
+		m.mu.Lock()
+		tracked, exists := m.activeTasks[taskID]
+		if !exists {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("%w: %s", ErrTaskNotFound, taskID)
+		}
+		if err := waitCtx.Err(); err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
+		if err := tracked.ctx.Err(); err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
+
+		quota := m.quotaLocked(tracked.task.Owner)
+		ownerStats := m.getOwnerStatsLocked(tracked.task.Owner)
+		if quota.MaxConcurrent <= 0 || ownerStats.Running < quota.MaxConcurrent {
+			ctx, err := m.startLocked(taskID)
+			m.mu.Unlock()
+			return ctx, err
+		}
+
+		slotChanged := m.slotChanged
+		taskCtx := tracked.ctx
+		m.mu.Unlock()
+		select {
+		case <-slotChanged:
+		case <-taskCtx.Done():
+			return nil, taskCtx.Err()
+		case <-waitCtx.Done():
+			return nil, waitCtx.Err()
+		}
+	}
+}
+
+func (m *Manager) startLocked(taskID string) (context.Context, error) {
 	tracked, exists := m.activeTasks[taskID]
 	if !exists {
 		return nil, fmt.Errorf("%w: %s", ErrTaskNotFound, taskID)
 	}
 
-	quota := m.defaultQuota
-	if q, ok := m.quotas[tracked.task.Owner]; ok {
-		quota = q
+	if tracked.task.State != StateQueued {
+		return nil, fmt.Errorf("task %s cannot start from state %s", taskID, tracked.task.State)
 	}
+	quota := m.quotaLocked(tracked.task.Owner)
 
 	ownerStats := m.getOwnerStatsLocked(tracked.task.Owner)
 	if quota.MaxConcurrent > 0 && ownerStats.Running >= quota.MaxConcurrent {
 		return nil, fmt.Errorf("%w: max concurrent limit %d reached for %s", ErrQuotaExceeded, quota.MaxConcurrent, tracked.task.Owner)
 	}
 
-	if tracked.task.State == StateQueued {
-		ownerStats.Queued--
-	}
+	ownerStats.Queued--
 	ownerStats.Running++
 
 	tracked.task.State = StateRunning
 	tracked.task.StartedAt = time.Now().UTC()
 
 	return tracked.ctx, nil
+}
+
+func (m *Manager) quotaLocked(owner string) Quota {
+	if q, ok := m.quotas[owner]; ok {
+		return q
+	}
+	return m.defaultQuota
+}
+
+func (m *Manager) notifySlotChangeLocked() {
+	close(m.slotChanged)
+	m.slotChanged = make(chan struct{})
 }
 
 // Finish records task completion, updates metrics, and releases quota.
@@ -197,6 +258,7 @@ func (m *Manager) Finish(taskID string, finalState TaskState, err error) {
 	ownerStats := m.getOwnerStatsLocked(tracked.task.Owner)
 	if tracked.task.State == StateRunning {
 		ownerStats.Running--
+		m.notifySlotChangeLocked()
 	} else if tracked.task.State == StateQueued {
 		ownerStats.Queued--
 	}

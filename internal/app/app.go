@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/inipew/goultroid/internal/addon"
@@ -43,6 +45,7 @@ type App struct {
 	eventBus        *core.EventBus
 	assistant       assistant.Client
 	limiter         *ratelimit.Limiter
+	interLimiter    *ratelimit.Limiter
 	addonMgr        *addon.Manager
 	callbackStore   *callback.StateStore
 	inlineEngine    *inline.Engine
@@ -64,7 +67,7 @@ type App struct {
 	shutdownErr    error
 }
 
-func New(cfg *config.Config) (*App, error) {
+func New(cfg *config.Config) (_ *App, retErr error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
@@ -72,7 +75,18 @@ func New(cfg *config.Config) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to build logger: %w", err)
 	}
-	coreDeps, err := buildCore(cfg, logger)
+	var coreDeps *coreDependencies
+	defer func() {
+		if retErr == nil {
+			return
+		}
+		cleanupCore(coreDeps, logger)
+		if err := logger.Sync(); err != nil && !errors.Is(err, syscall.EINVAL) {
+			retErr = errors.Join(retErr, fmt.Errorf("sync logger after construction failure: %w", err))
+		}
+	}()
+
+	coreDeps, err = buildCore(cfg, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -118,8 +132,6 @@ func New(cfg *config.Config) (*App, error) {
 	}
 
 	if err := migrateBuiltinFeatures(context.Background(), coreDeps.db); err != nil {
-		_ = coreDeps.eventBus.Close()
-		_ = coreDeps.db.Close()
 		return nil, err
 	}
 
@@ -166,8 +178,6 @@ func New(cfg *config.Config) (*App, error) {
 		},
 	}
 	if err := registerBuiltinModules(context.Background(), featureRuntime); err != nil {
-		_ = coreDeps.eventBus.Close()
-		_ = coreDeps.db.Close()
 		return nil, err
 	}
 
@@ -222,6 +232,7 @@ func New(cfg *config.Config) (*App, error) {
 		eventBus:        coreDeps.eventBus,
 		assistant:       tgRuntime.assistant,
 		limiter:         coreDeps.cmdLimiter,
+		interLimiter:    coreDeps.interLimiter,
 		addonMgr:        domServices.addonManager,
 		callbackStore:   coreDeps.callbackStore,
 		inlineEngine:    coreDeps.inlineEngine,

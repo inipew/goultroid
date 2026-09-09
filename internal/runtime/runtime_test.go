@@ -104,6 +104,35 @@ func TestRuntime_LifecycleAndOrdering(t *testing.T) {
 	}
 }
 
+func TestRuntime_StopDoesNotInvokeComponentsAfterDeadline(t *testing.T) {
+	r := New()
+	var calls []recordedCall
+	var mu sync.Mutex
+
+	_ = r.Register(&recordingComponent{name: "first", calls: &calls, mu: &mu})
+	_ = r.Register(&recordingComponent{name: "second", dependencies: []string{"first"}, calls: &calls, mu: &mu})
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatalf("runtime start failed: %v", err)
+	}
+
+	mu.Lock()
+	calls = nil
+	mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := r.Stop(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Stop() error = %v, want context.Canceled", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 0 {
+		t.Fatalf("components invoked after stop context expired: %+v", calls)
+	}
+}
+
 func TestRuntime_SingleUseStart(t *testing.T) {
 	r := New()
 	_ = r.Register(&mockComponent{name: "comp"})

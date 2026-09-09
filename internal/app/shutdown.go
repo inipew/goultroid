@@ -38,6 +38,11 @@ func (a *App) Shutdown(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("rate limiter: %w", err))
 		}
 	}
+	if a.interLimiter != nil {
+		if err := a.interLimiter.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("interaction rate limiter: %w", err))
+		}
+	}
 	if a.idemp != nil {
 		a.idemp.Close()
 	}
