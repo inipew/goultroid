@@ -5,6 +5,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/module"
+	"github.com/inipew/goultroid/internal/plugin"
 )
 
 type ModuleType struct{}
@@ -13,9 +14,10 @@ var Module ModuleType
 
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
-		ID:          "pmpermit",
-		Version:     "1.0.0",
-		Description: "Anti-spam shield and private message access control system",
+		ID:           "pmpermit",
+		Version:      "1.0.0",
+		Description:  "Anti-spam shield and private message access control system",
+		Capabilities: []string{plugin.CapTelegramSendMessage, plugin.CapStorageRead, plugin.CapStorageWrite, plugin.CapEvents},
 	}
 }
 
@@ -23,15 +25,12 @@ func (ModuleType) Migrations() []database.Migration {
 	return Migrations()
 }
 
-func (ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
+func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	if rt == nil {
 		return module.ErrNilRuntime
 	}
-	if rt.Plugins == nil {
-		return module.ErrNilPluginManager
-	}
 	p := New(rt.PMPermitService)
-	return rt.Plugins.RegisterWithContext(ctx, p)
+	return rt.RegisterPlugin(ctx, m.Manifest(), p)
 }
 
 var (

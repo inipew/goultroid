@@ -76,6 +76,14 @@ func (r *Runtime) Register(c Component) error {
 	return r.graph.Add(c)
 }
 
+// Component returns a registered component by name, or nil if not registered.
+func (r *Runtime) Component(name string) Component {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	c, _ := r.graph.Get(name)
+	return c
+}
+
 // Start validates the component dependency graph, deterministically starts components
 // in topological order, and transitions the runtime to StateRunning.
 // If any critical component fails to start, previously started components are rolled back

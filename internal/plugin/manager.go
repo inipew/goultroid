@@ -10,10 +10,12 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/jobs"
+	"github.com/inipew/goultroid/internal/platform/audit"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/platform/network"
 	"github.com/inipew/goultroid/internal/platform/process"
 	"github.com/inipew/goultroid/internal/platform/secret"
+	"github.com/inipew/goultroid/internal/platform/storage"
 	"github.com/inipew/goultroid/internal/resource"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/tasks"
@@ -32,9 +34,15 @@ type HookRegistrar interface {
 	AddPrioritizedMessageHandler(priority int, h MessageHookHandler) func()
 }
 
+// SchedulerTaskCleaner allows the plugin manager to unregister periodic tasks owned by disabled plugins.
+type SchedulerTaskCleaner interface {
+	UnregisterPeriodicTasksByOwner(owner string) int
+}
+
 type Manager struct {
 	router            *core.Router
 	hookRegistrar     HookRegistrar
+	schedCleaner      SchedulerTaskCleaner
 	resourceManager   *resource.Manager
 	gate              *CapabilityGate
 	networkService    *network.Service
@@ -43,26 +51,30 @@ type Manager struct {
 	secretManager     *secret.Manager
 	taskManager       *tasks.Manager
 	jobsManager       *jobs.Manager
+	storageManager    *storage.Manager
 	plugins           map[string]Plugin
 	metadata          map[string]Metadata
+	manifests         map[string]Manifest
 	scopes            map[string]*Scope
 	commands          map[string][]core.Command
 	disabled          map[string]bool
 	list              []Plugin
 	hookCleanups      []func()
+	auditor           audit.Auditor
 	mu                sync.RWMutex
 	shutdown          bool
 }
 
 func NewManager(router *core.Router) *Manager {
 	return &Manager{
-		router:   router,
-		plugins:  make(map[string]Plugin),
-		metadata: make(map[string]Metadata),
-		scopes:   make(map[string]*Scope),
-		commands: make(map[string][]core.Command),
-		disabled: make(map[string]bool),
-		list:     make([]Plugin, 0),
+		router:    router,
+		plugins:   make(map[string]Plugin),
+		metadata:  make(map[string]Metadata),
+		manifests: make(map[string]Manifest),
+		scopes:    make(map[string]*Scope),
+		commands:  make(map[string][]core.Command),
+		disabled:  make(map[string]bool),
+		list:      make([]Plugin, 0),
 	}
 }
 
@@ -108,6 +120,27 @@ func (m *Manager) SetHookRegistrar(registrar HookRegistrar) {
 	m.hookRegistrar = registrar
 }
 
+// SetSchedulerCleaner attaches a scheduler task cleaner to this manager.
+func (m *Manager) SetSchedulerCleaner(cleaner SchedulerTaskCleaner) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.schedCleaner = cleaner
+}
+
+// SetAuditor attaches an audit logger to record plugin lifecycle events.
+func (m *Manager) SetAuditor(a audit.Auditor) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.auditor = a
+}
+
+// SetStorageManager attaches a storage manager to this plugin manager.
+func (m *Manager) SetStorageManager(mgr *storage.Manager) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.storageManager = mgr
+}
+
 func (m *Manager) buildPluginContext(baseCtx context.Context, name string, scope *Scope) PluginContext {
 	m.mu.RLock()
 	gate := m.gate
@@ -117,6 +150,7 @@ func (m *Manager) buildPluginContext(baseCtx context.Context, name string, scope
 	secMgr := m.secretManager
 	taskMgr := m.taskManager
 	jobsMgr := m.jobsManager
+	storageMgr := m.storageManager
 	m.mu.RUnlock()
 
 	return NewPluginContext(baseCtx, ContextConfig{
@@ -129,6 +163,7 @@ func (m *Manager) buildPluginContext(baseCtx context.Context, name string, scope
 		Secrets: secMgr,
 		Tasks:   taskMgr,
 		Jobs:    jobsMgr,
+		Storage: storageMgr,
 	})
 }
 
@@ -138,12 +173,25 @@ func (m *Manager) RegisterModule(ctx context.Context, manifest Manifest, p Plugi
 		return fmt.Errorf("cannot register nil plugin")
 	}
 	name := strings.ToLower(strings.TrimSpace(p.Name()))
-	m.mu.RLock()
-	gate := m.gate
-	m.mu.RUnlock()
+	if manifest.ID == "" {
+		manifest.ID = name
+	}
+	if manifest.Name == "" {
+		manifest.Name = p.Name()
+	}
+	if err := manifest.Validate(); err != nil {
+		return fmt.Errorf("invalid manifest for plugin %s: %w", name, err)
+	}
 
-	if gate != nil && len(manifest.Capabilities) > 0 {
-		gate.Register(name, manifest.Capabilities)
+	m.mu.Lock()
+	m.manifests[name] = manifest
+	gate := m.gate
+	m.mu.Unlock()
+
+	if gate != nil {
+		if err := gate.RegisterManifest(manifest); err != nil {
+			return fmt.Errorf("gate rejected manifest for plugin %s: %w", name, err)
+		}
 	}
 
 	return m.RegisterWithContext(ctx, p)
@@ -170,11 +218,20 @@ func (m *Manager) RegisterWithContext(ctx context.Context, p Plugin) error {
 	// Register manifest capabilities if implemented directly on the plugin
 	if mp, ok := p.(ManifestPlugin); ok {
 		manifest := mp.Manifest()
-		m.mu.RLock()
+		if manifest.ID == "" {
+			manifest.ID = name
+		}
+		if err := manifest.Validate(); err != nil {
+			return fmt.Errorf("invalid manifest for plugin %s: %w", name, err)
+		}
+		m.mu.Lock()
+		m.manifests[name] = manifest
 		gate := m.gate
-		m.mu.RUnlock()
-		if gate != nil && len(manifest.Capabilities) > 0 {
-			gate.Register(name, manifest.Capabilities)
+		m.mu.Unlock()
+		if gate != nil {
+			if err := gate.RegisterManifest(manifest); err != nil {
+				return fmt.Errorf("gate rejected manifest for plugin %s: %w", name, err)
+			}
 		}
 	}
 
@@ -342,6 +399,25 @@ func (m *Manager) AllMetadata() map[string]Metadata {
 	return res
 }
 
+// Manifest returns the declared manifest for the given plugin if registered.
+func (m *Manager) Manifest(name string) (Manifest, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	manifest, ok := m.manifests[strings.ToLower(strings.TrimSpace(name))]
+	return manifest, ok
+}
+
+// AllManifests returns a snapshot of all registered plugin manifests.
+func (m *Manager) AllManifests() map[string]Manifest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	res := make(map[string]Manifest, len(m.manifests))
+	for k, v := range m.manifests {
+		res[k] = v
+	}
+	return res
+}
+
 func (m *Manager) Shutdown() error { return m.ShutdownWithContext(context.Background()) }
 
 // ShutdownWithContext shuts plugins down in reverse registration order. A
@@ -440,6 +516,21 @@ func (m *Manager) Disable(ctx context.Context, name string) error {
 		router.UnregisterBatch(cmds)
 	}
 
+	// Cancel owned declarative jobs and periodic scheduler tasks
+	m.mu.RLock()
+	jbsMgr := m.jobsManager
+	schedCl := m.schedCleaner
+	m.mu.RUnlock()
+
+	if jbsMgr != nil {
+		jbsMgr.CancelByOwner(key)
+		jbsMgr.CancelByOwner("plugin:" + key)
+	}
+	if schedCl != nil {
+		schedCl.UnregisterPeriodicTasksByOwner(key)
+		schedCl.UnregisterPeriodicTasksByOwner("plugin:" + key)
+	}
+
 	// Close scope and execute shutdown hooks
 	var errs []error
 	if s, ok := p.(ContextShutdowner); ok {
@@ -460,6 +551,16 @@ func (m *Manager) Disable(ctx context.Context, name string) error {
 
 	if len(errs) > 0 {
 		return fmt.Errorf("errors disabling plugin %s: %v", name, errs)
+	}
+
+	m.mu.RLock()
+	auditor := m.auditor
+	m.mu.RUnlock()
+	if auditor != nil {
+		_ = auditor.Record(ctx, audit.AuditEvent{
+			Action: "plugin.disable",
+			Target: key,
+		})
 	}
 	return nil
 }
@@ -527,7 +628,15 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 	m.mu.Lock()
 	m.scopes[key] = scope
 	delete(m.disabled, key)
+	auditor := m.auditor
 	m.mu.Unlock()
+
+	if auditor != nil {
+		_ = auditor.Record(ctx, audit.AuditEvent{
+			Action: "plugin.enable",
+			Target: key,
+		})
+	}
 
 	return nil
 }

@@ -33,8 +33,8 @@ type Plugin struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
-	once          sync.Once      // guards queue close on shutdown
-	startOnce     sync.Once      // guards lazy worker startup
+	once          sync.Once // guards queue close on shutdown
+	startOnce     sync.Once // guards lazy worker startup
 	subscriptions []*core.Subscription
 	scope         *plugin.Scope
 

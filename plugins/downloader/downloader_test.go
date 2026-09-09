@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,10 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/jobs"
+	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/tasks"
+	_ "modernc.org/sqlite"
 )
 
 type mockService struct {
@@ -164,5 +169,58 @@ func TestFormatBytes(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("formatBytes(%d) = %q, want %q", tt.b, got, tt.want)
 		}
+	}
+}
+
+type immediateSubmitter struct{}
+
+func (s *immediateSubmitter) Submit(ctx context.Context, poolName string, task tasks.Task) error {
+	return task.Run(ctx)
+}
+
+func TestDownloaderPlugin_WithJobsManager(t *testing.T) {
+	gate := plugin.NewCapabilityGate()
+	gate.Register("downloader", []string{plugin.CapJobs})
+
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	repo := jobs.NewSQLiteRepository(db)
+	if err := repo.InitSchema(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	jobsMgr := jobs.NewManager(&immediateSubmitter{}, repo)
+
+	pctx := plugin.NewPluginContext(context.Background(), plugin.ContextConfig{
+		Owner: "downloader",
+		Gate:  gate,
+		Jobs:  jobsMgr,
+	})
+
+	p := New()
+	if err := p.InitPlugin(pctx); err != nil {
+		t.Fatalf("InitPlugin failed: %v", err)
+	}
+	if p.jobs == nil {
+		t.Fatal("expected jobs manager to be injected")
+	}
+
+	svc := &mockService{}
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		Message: &core.Message{ID: 10, ReplyToID: 42, IsOutgoing: true},
+		Svc:     svc,
+		PeerID:  &tg.InputPeerSelf{},
+	}
+
+	if err := p.handleDownload(ctx); err != nil {
+		t.Fatalf("handleDownload failed: %v", err)
+	}
+
+	if !strings.Contains(svc.edited, "Download Complete") || !strings.Contains(svc.edited, "sample.mp4") {
+		t.Errorf("expected final edit to report complete and filename, got %s", svc.edited)
 	}
 }

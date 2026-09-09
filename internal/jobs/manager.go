@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,26 +20,36 @@ type TaskSubmitter interface {
 	Submit(ctx context.Context, poolName string, task tasks.Task) error
 }
 
+// IdempotencyClaimer is the interface used by JobManager to claim and deduplicate job execution.
+type IdempotencyClaimer interface {
+	CheckAndSet(ctx context.Context, key string, ttl time.Duration) (bool, error)
+}
+
 // JobHandler executes work for a declarative job type.
 type JobHandler func(ctx context.Context, j *Job) error
 
 // Diagnostics provides runtime statistics for jobs.
 type Diagnostics struct {
-	Registered int `json:"registered"`
-	Running    int `json:"running"`
-	Completed  int `json:"completed"`
-	Failed     int `json:"failed"`
-	Cancelled  int `json:"cancelled"`
-	Total      int `json:"total"`
+	Registered       int      `json:"registered"`
+	Running          int      `json:"running"`
+	Completed        int      `json:"completed"`
+	Failed           int      `json:"failed"`
+	Cancelled        int      `json:"cancelled"`
+	Total            int      `json:"total"`
+	RecoveryFailures int      `json:"recovery_failures"`
+	RecoveryErrors   []string `json:"recovery_errors,omitempty"`
 }
 
 // Manager coordinates declarative jobs and delegates their execution to workers as tasks.
 type Manager struct {
-	mu        sync.RWMutex
-	jobs      map[string]*Job
-	handlers  map[string]JobHandler
-	submitter TaskSubmitter
-	repo      Repository
+	mu               sync.RWMutex
+	jobs             map[string]*Job
+	handlers         map[string]JobHandler
+	submitter        TaskSubmitter
+	repo             Repository
+	idemp            IdempotencyClaimer
+	recoveryFailures int
+	recoveryErrors   []string
 }
 
 // NewManager creates a new JobManager backed by a task submitter and optional repository.
@@ -61,6 +72,13 @@ func (m *Manager) SetRepository(repo Repository) {
 	m.repo = repo
 }
 
+// SetIdempotencyManager configures an idempotency manager for deduplicating job execution.
+func (m *Manager) SetIdempotencyManager(idemp IdempotencyClaimer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.idemp = idemp
+}
+
 // RegisterHandler registers a typed execution handler for declarative jobs.
 func (m *Manager) RegisterHandler(jobType string, handler JobHandler) {
 	m.mu.Lock()
@@ -79,6 +97,15 @@ func (m *Manager) Register(j Job) error {
 
 	if _, exists := m.jobs[j.ID]; exists {
 		return fmt.Errorf("job %q already registered", j.ID)
+	}
+
+	if j.IdempotencyKey != "" {
+		for _, existing := range m.jobs {
+			if existing.IdempotencyKey == j.IdempotencyKey &&
+				(existing.State == StateRegistered || existing.State == StateTriggered || existing.State == StateExecuting) {
+				return fmt.Errorf("active job with idempotency key %q already exists: %s", j.IdempotencyKey, existing.ID)
+			}
+		}
 	}
 
 	if j.Run == nil && j.Type != "" {
@@ -122,6 +149,7 @@ func (m *Manager) Trigger(ctx context.Context, jobID string) error {
 	owner := job.Owner
 	timeout := job.Timeout
 	idempotencyKey := job.IdempotencyKey
+	idemp := m.idemp
 	pool := job.Pool
 	if pool == "" {
 		pool = workers.PoolGeneral
@@ -146,6 +174,20 @@ func (m *Manager) Trigger(ctx context.Context, jobID string) error {
 		Timeout:        timeout,
 		IdempotencyKey: idempotencyKey,
 		Run: func(taskCtx context.Context) error {
+			if idemp != nil && idempotencyKey != "" {
+				first, err := idemp.CheckAndSet(taskCtx, idempotencyKey, 1*time.Hour)
+				if err == nil && !first {
+					m.mu.Lock()
+					job.State = StateCompleted
+					job.LastError = "skipped: duplicate execution detected by idempotency key"
+					m.mu.Unlock()
+					if repo != nil {
+						_ = repo.UpdateState(context.Background(), jobID, StateCompleted, job.LastError, job.LastRun, job.NextRun)
+					}
+					return nil
+				}
+			}
+
 			m.mu.Lock()
 			job.State = StateExecuting
 			m.mu.Unlock()
@@ -289,7 +331,16 @@ func (m *Manager) LoadAndReconcile(ctx context.Context) error {
 	m.mu.Unlock()
 
 	for _, jobID := range toTrigger {
-		_ = m.Trigger(ctx, jobID)
+		if err := m.Trigger(ctx, jobID); err != nil {
+			m.mu.Lock()
+			m.recoveryFailures++
+			m.recoveryErrors = append(m.recoveryErrors, fmt.Sprintf("%s: %v", jobID, err))
+			m.mu.Unlock()
+		}
+	}
+
+	if m.recoveryFailures > 0 {
+		return fmt.Errorf("reconciliation completed with %d failure(s)", m.recoveryFailures)
 	}
 
 	return nil
@@ -300,7 +351,14 @@ func (m *Manager) Diagnostics() Diagnostics {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	d := Diagnostics{Total: len(m.jobs)}
+	recErrs := make([]string, len(m.recoveryErrors))
+	copy(recErrs, m.recoveryErrors)
+
+	d := Diagnostics{
+		Total:            len(m.jobs),
+		RecoveryFailures: m.recoveryFailures,
+		RecoveryErrors:   recErrs,
+	}
 	for _, j := range m.jobs {
 		switch j.State {
 		case StateRegistered, StateScheduled:
@@ -377,5 +435,15 @@ func (m *Manager) Stop(ctx context.Context) error {
 
 // Health probes job manager health.
 func (m *Manager) Health(ctx context.Context) runtime.ComponentHealth {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.recoveryFailures > 0 {
+		return runtime.ComponentHealth{
+			Status:  runtime.HealthDegraded,
+			Details: fmt.Sprintf("%d job recovery failure(s): %s", m.recoveryFailures, strings.Join(m.recoveryErrors, "; ")),
+			Error:   fmt.Errorf("job reconciliation completed with %d failure(s)", m.recoveryFailures),
+		}
+	}
 	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
 }

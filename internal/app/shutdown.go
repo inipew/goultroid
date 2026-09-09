@@ -28,24 +28,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.markStopping()
 
 	var errs []error
-	if a.assistant != nil {
-		if err := a.assistant.Stop(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			errs = append(errs, fmt.Errorf("assistant: %w", err))
-		}
-	}
-	if a.settingsService != nil {
-		a.settingsService.Stop()
-	}
 	if a.addonMgr != nil {
 		if err := a.addonMgr.ShutdownRuntimes(); err != nil {
 			errs = append(errs, fmt.Errorf("addon runtimes: %w", err))
 		}
-	}
-	if a.callbackStore != nil {
-		a.callbackStore.Stop()
-	}
-	if a.inlineEngine != nil && a.inlineEngine.Cache() != nil {
-		a.inlineEngine.Cache().Stop()
 	}
 	if a.limiter != nil {
 		if err := a.limiter.Close(); err != nil {

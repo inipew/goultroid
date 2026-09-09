@@ -2,10 +2,7 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
-
-	"go.uber.org/zap"
 )
 
 // startBackgroundServices starts long-lived services in dependency order. App lifecycle
@@ -21,22 +18,6 @@ func (a *App) startBackgroundServices(ctx context.Context) error {
 		if err := a.runtime.Start(ctx); err != nil {
 			return fmt.Errorf("runtime: %w", err)
 		}
-	}
-	if a.settingsService != nil {
-		a.settingsService.Start(ctx)
-	}
-	if a.callbackStore != nil {
-		a.callbackStore.Start(ctx)
-	}
-	if a.inlineEngine != nil && a.inlineEngine.Cache() != nil {
-		a.inlineEngine.Cache().Start(ctx)
-	}
-	if a.assistant != nil {
-		go func() {
-			if err := a.assistant.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				a.logger.Warn("assistant bot stopped with error", zap.Error(err))
-			}
-		}()
 	}
 	return nil
 }

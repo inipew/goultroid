@@ -5,6 +5,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/module"
+	"github.com/inipew/goultroid/internal/plugin"
 )
 
 type ModuleType struct{}
@@ -13,24 +14,22 @@ var Module ModuleType
 
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
-		ID:          "filters",
-		Version:     "1.0.0",
-		Description: "Chat-specific auto-reply keyword filters",
+		ID:           "filters",
+		Version:      "1.0.0",
+		Description:  "Chat-specific auto-reply keyword filters",
+		Capabilities: []string{plugin.CapTelegramSendMessage, plugin.CapStorageRead, plugin.CapStorageWrite, plugin.CapEvents},
 	}
 }
 
-func (ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
+func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	if rt == nil {
 		return module.ErrNilRuntime
 	}
 	if rt.DB == nil {
 		return module.ErrNilDatabase
 	}
-	if rt.Plugins == nil {
-		return module.ErrNilPluginManager
-	}
 	repo := NewSQLiteRepository(rt.DB)
-	return rt.Plugins.RegisterWithContext(ctx, New(repo, rt.TelegramService))
+	return rt.RegisterPlugin(ctx, m.Manifest(), New(repo, rt.TelegramService))
 }
 
 func (ModuleType) Migrations() []database.Migration {

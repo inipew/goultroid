@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/inipew/goultroid/internal/platform/audit"
 	"github.com/inipew/goultroid/internal/resource"
 )
 
@@ -27,6 +28,7 @@ type Manager struct {
 	allowlist    map[string]bool
 	maxOutputLen int
 	resourceMgr  *resource.Manager
+	auditor      audit.Auditor
 	procCounter  atomic.Uint64
 }
 
@@ -48,6 +50,13 @@ func NewManager(allowedBinaries []string, maxOutputLen int, rm *resource.Manager
 	}
 }
 
+// SetAuditor attaches an audit logger to record process executions.
+func (m *Manager) SetAuditor(a audit.Auditor) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.auditor = a
+}
+
 // Allow adds a binary name to the allowlist.
 func (m *Manager) Allow(binary string) {
 	m.mu.Lock()
@@ -59,17 +68,47 @@ func (m *Manager) Allow(binary string) {
 func (m *Manager) IsAllowed(binary string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	if m.allowlist["*"] {
+		return true
+	}
 	return m.allowlist[strings.TrimSpace(binary)]
 }
 
 // Execute runs an approved binary with tracking in ResourceManager and bounded output.
 func (m *Manager) Execute(ctx context.Context, owner, binary string, args ...string) ([]byte, []byte, error) {
 	if !m.IsAllowed(binary) {
+		m.mu.RLock()
+		auditor := m.auditor
+		m.mu.RUnlock()
+		if auditor != nil {
+			_ = auditor.Record(ctx, audit.AuditEvent{
+				Action: "process.execute.denied",
+				Target: binary,
+				Details: map[string]any{
+					"owner": owner,
+					"args":  args,
+				},
+			})
+		}
 		return nil, nil, fmt.Errorf("%w: %s", ErrBinaryNotAllowed, binary)
 	}
 
 	if ctx == nil {
 		ctx = context.Background()
+	}
+
+	m.mu.RLock()
+	auditor := m.auditor
+	m.mu.RUnlock()
+	if auditor != nil {
+		_ = auditor.Record(ctx, audit.AuditEvent{
+			Action: "process.execute",
+			Target: binary,
+			Details: map[string]any{
+				"owner": owner,
+				"args":  args,
+			},
+		})
 	}
 
 	cmd := exec.CommandContext(ctx, binary, args...)

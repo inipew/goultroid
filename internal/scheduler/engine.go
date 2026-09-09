@@ -11,7 +11,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/jobs"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/workers"
@@ -29,7 +29,7 @@ const (
 const maxCatchUpExecutions = 3
 
 type Engine struct {
-	db       database.SchedulerRepository
+	db       Repository
 	svcFunc  func() core.TelegramServicer
 	router   *core.Router
 	perms    *core.Permissions
@@ -38,6 +38,7 @@ type Engine struct {
 
 	workers *workers.Manager
 	taskMgr *tasks.Manager
+	jobsMgr *jobs.Manager
 
 	maxConcurrency int
 	sem            chan struct{}
@@ -89,7 +90,7 @@ type PeriodicTaskOptions struct {
 
 var _ Service = (*Engine)(nil)
 
-func NewEngine(db database.SchedulerRepository, svcFunc func() core.TelegramServicer, router *core.Router, perms *core.Permissions, logger *zap.Logger) *Engine {
+func NewEngine(db Repository, svcFunc func() core.TelegramServicer, router *core.Router, perms *core.Permissions, logger *zap.Logger) *Engine {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -131,6 +132,13 @@ func (e *Engine) SetWorkers(workers *workers.Manager, taskMgr *tasks.Manager) {
 	defer e.runMu.Unlock()
 	e.workers = workers
 	e.taskMgr = taskMgr
+}
+
+// SetJobsManager configures the declarative jobs manager for managed job dispatch.
+func (e *Engine) SetJobsManager(jobsMgr *jobs.Manager) {
+	e.runMu.Lock()
+	defer e.runMu.Unlock()
+	e.jobsMgr = jobsMgr
 }
 
 func (e *Engine) SetMisfirePolicy(policy MisfirePolicy) {
@@ -392,6 +400,29 @@ func (e *Engine) UnregisterPeriodicTask(name string) error {
 	return errors.New("task not found")
 }
 
+// UnregisterPeriodicTasksByOwner cancels and removes all periodic tasks registered by the specified owner.
+func (e *Engine) UnregisterPeriodicTasksByOwner(owner string) int {
+	cleanOwner := strings.TrimSpace(owner)
+	if cleanOwner == "" {
+		return 0
+	}
+	e.tasksMu.Lock()
+	defer e.tasksMu.Unlock()
+
+	count := 0
+	for name, meta := range e.taskMeta {
+		if meta != nil && (meta.Owner == cleanOwner || meta.Owner == "plugin:"+cleanOwner) {
+			if cancelTask, exists := e.tasks[name]; exists {
+				cancelTask()
+				delete(e.tasks, name)
+				delete(e.taskMeta, name)
+				count++
+			}
+		}
+	}
+	return count
+}
+
 // PeriodicTaskSnapshots returns a stable copy of registered periodic task
 // diagnostics. It is safe to call while tasks are running.
 func (e *Engine) PeriodicTaskSnapshots() []PeriodicTaskSnapshot {
@@ -407,7 +438,7 @@ func (e *Engine) PeriodicTaskSnapshots() []PeriodicTaskSnapshot {
 	return snapshots
 }
 
-func (e *Engine) ScheduleOnce(ctx context.Context, chatID int64, peerType string, accessHash int64, when time.Time, actionType string, payload string, creatorID ...int64) (*database.ScheduledJob, error) {
+func (e *Engine) ScheduleOnce(ctx context.Context, chatID int64, peerType string, accessHash int64, when time.Time, actionType string, payload string, creatorID ...int64) (*ScheduledJob, error) {
 	if err := validateActionType(actionType); err != nil {
 		return nil, err
 	}
@@ -418,16 +449,16 @@ func (e *Engine) ScheduleOnce(ctx context.Context, chatID int64, peerType string
 	if len(creatorID) > 0 {
 		createdBy = creatorID[0]
 	}
-	job := &database.ScheduledJob{
+	job := &ScheduledJob{
 		ChatID: chatID, PeerType: peerType, AccessHash: accessHash,
 		ActionType: actionType, Payload: payload, IntervalSeconds: 0,
 		NextRunAt: when, CreatedAt: time.Now().UTC(), CreatedBy: createdBy,
-		Status: database.JobStatusPending, MaxAttempts: 3,
+		Status: JobStatusPending, MaxAttempts: 3,
 	}
 	return e.db.CreateScheduledJob(ctx, job)
 }
 
-func (e *Engine) ScheduleRecurring(ctx context.Context, chatID int64, peerType string, accessHash int64, interval time.Duration, actionType string, payload string, creatorID ...int64) (*database.ScheduledJob, error) {
+func (e *Engine) ScheduleRecurring(ctx context.Context, chatID int64, peerType string, accessHash int64, interval time.Duration, actionType string, payload string, creatorID ...int64) (*ScheduledJob, error) {
 	if err := validateActionType(actionType); err != nil {
 		return nil, err
 	}
@@ -442,11 +473,11 @@ func (e *Engine) ScheduleRecurring(ctx context.Context, chatID int64, peerType s
 		createdBy = creatorID[0]
 	}
 	sec := int64(interval.Seconds())
-	job := &database.ScheduledJob{
+	job := &ScheduledJob{
 		ChatID: chatID, PeerType: peerType, AccessHash: accessHash,
 		ActionType: actionType, Payload: payload, IntervalSeconds: sec,
 		NextRunAt: time.Now().UTC().Add(interval), CreatedAt: time.Now().UTC(),
-		CreatedBy: createdBy, Status: database.JobStatusPending, MaxAttempts: 3,
+		CreatedBy: createdBy, Status: JobStatusPending, MaxAttempts: 3,
 	}
 	return e.db.CreateScheduledJob(ctx, job)
 }
@@ -465,11 +496,11 @@ func (e *Engine) Cancel(ctx context.Context, jobID int64) error {
 	return nil
 }
 
-func (e *Engine) List(ctx context.Context, chatID int64) ([]database.ScheduledJob, error) {
+func (e *Engine) List(ctx context.Context, chatID int64) ([]ScheduledJob, error) {
 	return e.db.ListScheduledJobs(ctx, chatID)
 }
 
-func (e *Engine) JobHistory(ctx context.Context, jobID int64, limit int) ([]database.JobHistoryEntry, error) {
+func (e *Engine) JobHistory(ctx context.Context, jobID int64, limit int) ([]JobHistoryEntry, error) {
 	return e.db.GetJobHistory(ctx, jobID, limit)
 }
 
@@ -601,7 +632,7 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) {
 			return
 		}
 		e.wg.Add(1)
-		go func(targetJob database.ScheduledJob) {
+		go func(targetJob ScheduledJob) {
 			defer func() { <-e.sem; e.wg.Done() }()
 			jobCtx, cancel := context.WithCancel(e.ctx)
 			e.registerActiveJob(targetJob.ID, targetJob.ClaimToken, cancel)
@@ -619,7 +650,7 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) {
 // cannot roll back a Telegram side effect that succeeded immediately before a
 // worker crash or lease loss. Callers must therefore treat scheduled actions
 // as potentially duplicated across crash recovery.
-func (e *Engine) executeJob(ctx context.Context, job database.ScheduledJob, cancel context.CancelFunc) {
+func (e *Engine) executeJob(ctx context.Context, job ScheduledJob, cancel context.CancelFunc) {
 	defer func() {
 		if r := recover(); r != nil {
 			e.logger.Error("scheduled job execution panicked", zap.Int64("job_id", job.ID), zap.Any("panic", r))
@@ -661,7 +692,7 @@ func (e *Engine) executeJob(ctx context.Context, job database.ScheduledJob, canc
 				e.logger.Warn("recurring scheduled job misfired: skipping execution", zap.Int64("job_id", job.ID), zap.Time("next_run_at", job.NextRunAt))
 				stateCtx, stateCancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer stateCancel()
-				if err := e.db.CompleteScheduledJob(stateCtx, job.ID, job.ClaimToken, 0, time.Now().UTC()); err != nil && !errors.Is(err, database.ErrJobLeaseLost) {
+				if err := e.db.CompleteScheduledJob(stateCtx, job.ID, job.ClaimToken, 0, time.Now().UTC()); err != nil && !errors.Is(err, ErrJobLeaseLost) {
 					e.logger.Warn("failed to advance skipped recurring job", zap.Int64("job_id", job.ID), zap.Error(err))
 				}
 				return
@@ -672,24 +703,32 @@ func (e *Engine) executeJob(ctx context.Context, job database.ScheduledJob, canc
 					missed = maxCatchUpExecutions
 				}
 				runs = missed
+			case MisfireRunOnce:
+				runs = 1
 			}
 		}
 	}
 
 	var execErr error
-	for i := 0; i < runs; i++ {
-		if err := ctx.Err(); err != nil {
-			execErr = err
+	for r := 0; r < runs; r++ {
+		select {
+		case <-ctx.Done():
+			execErr = ctx.Err()
 			break
+		default:
 		}
+
 		switch job.ActionType {
 		case ActionMessage:
 			execErr = e.executeSendMessage(ctx, job)
 		case ActionCommand:
 			execErr = e.executeCommand(ctx, job)
+		case ActionJob:
+			execErr = e.executeManagedJob(ctx, job)
 		default:
-			execErr = fmt.Errorf("unknown action type: %s", job.ActionType)
+			execErr = fmt.Errorf("unknown scheduled job action type: %s", job.ActionType)
 		}
+
 		if execErr != nil {
 			break
 		}
@@ -701,7 +740,7 @@ func (e *Engine) executeJob(ctx context.Context, job database.ScheduledJob, canc
 		stateCtx, stateCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer stateCancel()
 		if err := e.db.CompleteScheduledJob(stateCtx, job.ID, job.ClaimToken, durationMs, now); err != nil {
-			if errors.Is(err, database.ErrJobLeaseLost) {
+			if errors.Is(err, ErrJobLeaseLost) {
 				e.logger.Warn("scheduled job lease lost or cancelled before completion", zap.Int64("job_id", job.ID))
 			} else {
 				e.logger.Error("failed to complete scheduled job", zap.Int64("job_id", job.ID), zap.Error(err))
@@ -734,7 +773,7 @@ func (e *Engine) executeJob(ctx context.Context, job database.ScheduledJob, canc
 	stateCtx, stateCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer stateCancel()
 	if err := e.db.FailScheduledJob(stateCtx, job.ID, job.ClaimToken, execErr.Error(), durationMs, retryDelay, isPermanent, now); err != nil {
-		if errors.Is(err, database.ErrJobLeaseLost) {
+		if errors.Is(err, ErrJobLeaseLost) {
 			e.logger.Warn("scheduled job lease lost or claimed by another worker on fail", zap.Int64("job_id", job.ID))
 		} else {
 			e.logger.Error("failed to record scheduled job failure", zap.Int64("job_id", job.ID), zap.Error(err))
@@ -742,7 +781,7 @@ func (e *Engine) executeJob(ctx context.Context, job database.ScheduledJob, canc
 	}
 }
 
-func (e *Engine) executeSendMessage(ctx context.Context, job database.ScheduledJob) error {
+func (e *Engine) executeSendMessage(ctx context.Context, job ScheduledJob) error {
 	if e.svcFunc == nil {
 		return errors.New("cannot execute scheduled message: servicer function is nil")
 	}
@@ -762,7 +801,7 @@ func (e *Engine) executeSendMessage(ctx context.Context, job database.ScheduledJ
 	return nil
 }
 
-func (e *Engine) executeCommand(ctx context.Context, job database.ScheduledJob) error {
+func (e *Engine) executeCommand(ctx context.Context, job ScheduledJob) error {
 	if e.router == nil {
 		return errors.New("cannot execute scheduled command: router is nil")
 	}
@@ -808,6 +847,25 @@ func (e *Engine) executeCommand(ctx context.Context, job database.ScheduledJob) 
 		CorrelationID: fmt.Sprintf("sched-%d-%d", job.ID, time.Now().UnixMilli()),
 	}
 	return e.executor.ExecuteExecution(exec, cmd, svc)
+}
+
+func (e *Engine) executeManagedJob(ctx context.Context, job ScheduledJob) error {
+	if e.jobsMgr == nil {
+		return errors.New("jobs manager not configured on scheduler engine")
+	}
+	jobID := strings.TrimSpace(job.Payload)
+	if jobID == "" {
+		return errors.New("empty job id in scheduled managed job payload")
+	}
+	return e.jobsMgr.Trigger(ctx, jobID)
+}
+
+// ScheduleManagedJob schedules a declarative job from jobs.Manager to run at when, optionally recurring.
+func (e *Engine) ScheduleManagedJob(ctx context.Context, jobID string, when time.Time, interval time.Duration) (*ScheduledJob, error) {
+	if interval <= 0 {
+		return e.ScheduleOnce(ctx, 0, "internal", 0, when, ActionJob, jobID)
+	}
+	return e.ScheduleRecurring(ctx, 0, "internal", 0, interval, ActionJob, jobID)
 }
 
 func reconstructInputPeer(peerType string, chatID int64, accessHash int64) tg.InputPeerClass {

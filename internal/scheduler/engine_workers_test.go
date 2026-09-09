@@ -23,7 +23,8 @@ func TestEngine_WithWorkerManager(t *testing.T) {
 	router := core.NewRouter(".")
 	perms := core.NewPermissions(12345, nil)
 
-	engine := NewEngine(db, func() core.TelegramServicer { return svc }, router, perms, zap.NewNop())
+	repo := NewSQLiteRepository(db.DB)
+	engine := NewEngine(repo, func() core.TelegramServicer { return svc }, router, perms, zap.NewNop())
 
 	workerMgr := workers.NewManager()
 	taskMgr := tasks.NewManager()
@@ -44,15 +45,15 @@ func TestEngine_WithWorkerManager(t *testing.T) {
 
 	// Add a scheduled job
 	now := time.Now().UTC()
-	job := database.ScheduledJob{
+	job := ScheduledJob{
 		ChatID:          100,
 		ActionType:      "message",
 		Payload:         "hello from worker pool",
 		IntervalSeconds: 0,
 		NextRunAt:       now.Add(-time.Second),
-		Status:          database.JobStatusPending,
+		Status:          JobStatusPending,
 	}
-	created, err := db.CreateScheduledJob(ctx, &job)
+	created, err := repo.CreateScheduledJob(ctx, &job)
 	if err != nil {
 		t.Fatalf("create scheduled job: %v", err)
 	}
@@ -74,7 +75,7 @@ func TestEngine_WithWorkerManager(t *testing.T) {
 	}
 
 	// Verify job is recorded in history as completed
-	history, err := db.GetJobHistory(ctx, created.ID, 1)
+	history, err := repo.GetJobHistory(ctx, created.ID, 1)
 	if err != nil {
 		t.Fatalf("get job history: %v", err)
 	}

@@ -23,8 +23,8 @@ type mockDAGComponent struct {
 	health runtime.ComponentHealth
 }
 
-func (m *mockDAGComponent) Name() string                   { return m.name }
-func (m *mockDAGComponent) Dependencies() []string         { return m.deps }
+func (m *mockDAGComponent) Name() string           { return m.name }
+func (m *mockDAGComponent) Dependencies() []string { return m.deps }
 func (m *mockDAGComponent) Start(ctx context.Context) error {
 	if m.start != nil {
 		return m.start(ctx)

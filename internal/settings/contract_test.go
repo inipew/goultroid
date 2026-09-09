@@ -40,7 +40,7 @@ func TestContract_SettingsHierarchy(t *testing.T) {
 		t.Fatalf("start event bus: %v", err)
 	}
 	defer func() { _ = bus.Close() }()
-	svc := NewService(db, reg, bus)
+	svc := NewService(NewSQLiteRepository(db.DB), reg, bus)
 	ctx := context.Background()
 
 	// 1. No override -> default
@@ -116,7 +116,7 @@ func TestContract_SettingsCacheInvalidation(t *testing.T) {
 		t.Fatalf("start event bus: %v", err)
 	}
 	defer func() { _ = bus.Close() }()
-	svc := NewService(db, reg, bus)
+	svc := NewService(NewSQLiteRepository(db.DB), reg, bus)
 	ctx := context.Background()
 
 	// Prime cache
@@ -163,7 +163,7 @@ func TestContract_ScopeValidation(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	reg := NewRegistry()
-	svc := NewService(db, reg, nil)
+	svc := NewService(NewSQLiteRepository(db.DB), reg, nil)
 	ctx := context.Background()
 
 	// Global with non-zero ID must fail
@@ -210,7 +210,7 @@ func TestContract_ImportAtomic(t *testing.T) {
 	if err := reg.Register(def); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	svc := NewService(db, reg, nil)
+	svc := NewService(NewSQLiteRepository(db.DB), reg, nil)
 	ctx := context.Background()
 
 	// Set initial value

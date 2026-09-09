@@ -40,6 +40,6 @@ func TestStateStoreSingleUseIsAtomic(t *testing.T) {
 
 func TestStateStoreStartAcceptsNilContext(t *testing.T) {
 	s := NewStateStore()
-	s.Start(nil)
-	s.Stop()
+	_ = s.Start(nil)
+	_ = s.Stop(nil)
 }

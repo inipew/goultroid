@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -136,6 +137,37 @@ func (s *Scope) SubscribeEvent(bus *core.EventBus, eventType core.EventType, han
 		})
 	}
 	return sub
+}
+
+// TrackWebSocket registers a managed WebSocket connection within this scope.
+// When the scope closes, closeFn is automatically invoked to gracefully disconnect the socket.
+func (s *Scope) TrackWebSocket(wsID, url string, closeFn func() error) error {
+	cleanID := strings.TrimSpace(wsID)
+	if cleanID == "" {
+		return errors.New("websocket id cannot be empty")
+	}
+	resID := fmt.Sprintf("ws:%s:%s", s.owner, cleanID)
+	meta := make(map[string]string)
+	if url != "" {
+		meta["url"] = url
+	}
+	r := Resource{
+		ID:        resID,
+		Owner:     s.owner,
+		Type:      resource.TypeWebSocket,
+		CreatedAt: time.Now().UTC(),
+		Metadata:  meta,
+	}
+	if err := s.Track(r); err != nil {
+		return err
+	}
+	if closeFn != nil {
+		_ = s.Defer(func() {
+			_ = closeFn()
+			s.Release(resID)
+		})
+	}
+	return nil
 }
 
 // Track registers an active resource with this scope and the global ResourceManager.

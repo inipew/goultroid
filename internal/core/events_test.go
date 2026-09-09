@@ -312,3 +312,201 @@ func TestEventBus_RuntimeComponent(t *testing.T) {
 		t.Errorf("expected unhealthy after stop, got %s", hStopped.Status)
 	}
 }
+
+func TestEventBus_PriorityDispatch(t *testing.T) {
+	bus := newStartedEventBus(t)
+
+	var highReceived atomic.Int32
+	var normalReceived atomic.Int32
+
+	bus.Subscribe(core.EventTypeAdminAction, func(e core.Event) {
+		highReceived.Add(1)
+	})
+	bus.Subscribe(core.EventTypeMessageCreated, func(e core.Event) {
+		normalReceived.Add(1)
+	})
+
+	// AdminActionEvent implements Priority() == PriorityHigh
+	adminEv := &core.AdminActionEvent{At: time.Now(), Action: "ban", ChatID: 10}
+	if adminEv.Priority() != core.PriorityHigh {
+		t.Fatalf("expected admin action priority high, got %v", adminEv.Priority())
+	}
+	bus.Publish(adminEv)
+
+	msgEv := &core.MessageCreatedEvent{At: time.Now(), ChatID: 10}
+	bus.Publish(msgEv)
+
+	time.Sleep(50 * time.Millisecond)
+
+	if highReceived.Load() != 1 {
+		t.Errorf("expected 1 high priority event received, got %d", highReceived.Load())
+	}
+	if normalReceived.Load() != 1 {
+		t.Errorf("expected 1 normal priority event received, got %d", normalReceived.Load())
+	}
+}
+
+func TestEventBus_OrderedEvents(t *testing.T) {
+	bus := newStartedEventBus(t)
+
+	const count = 50
+	var mu sync.Mutex
+	var processed []int
+
+	var wg sync.WaitGroup
+	wg.Add(count)
+
+	bus.SubscribeContextHandler("test", core.EventTypeMessageEdited, func(ctx context.Context, ev core.Event) error {
+		defer wg.Done()
+		ed, ok := ev.(*core.MessageEditedEvent)
+		if !ok {
+			return nil
+		}
+		mu.Lock()
+		processed = append(processed, ed.MsgID)
+		mu.Unlock()
+		return nil
+	})
+
+	// Publish 50 message edited events for the same ChatID
+	for i := 0; i < count; i++ {
+		bus.Publish(&core.MessageEditedEvent{
+			At:     time.Now(),
+			ChatID: 999, // Same OrderingKey: "chat:999"
+			MsgID:  i,
+		})
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for ordered events")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(processed) != count {
+		t.Fatalf("expected %d events, got %d", count, len(processed))
+	}
+
+	// Strictly sequential FIFO order check
+	for i := 0; i < count; i++ {
+		if processed[i] != i {
+			t.Fatalf("ordering violated at index %d: expected msgID %d, got %d (sequence: %v)", i, i, processed[i], processed[:min(10, len(processed))])
+		}
+	}
+}
+
+func TestEventBus_Middleware(t *testing.T) {
+	bus := core.NewEventBus()
+
+	var order []string
+	var mu sync.Mutex
+
+	mw1 := func(next core.ContextEventHandler) core.ContextEventHandler {
+		return func(ctx context.Context, event core.Event) error {
+			mu.Lock()
+			order = append(order, "mw1_before")
+			mu.Unlock()
+			err := next(ctx, event)
+			mu.Lock()
+			order = append(order, "mw1_after")
+			mu.Unlock()
+			return err
+		}
+	}
+
+	mw2 := func(next core.ContextEventHandler) core.ContextEventHandler {
+		return func(ctx context.Context, event core.Event) error {
+			mu.Lock()
+			order = append(order, "mw2_before")
+			mu.Unlock()
+			err := next(ctx, event)
+			mu.Lock()
+			order = append(order, "mw2_after")
+			mu.Unlock()
+			return err
+		}
+	}
+
+	bus.Use(mw1, mw2)
+	if err := bus.Start(context.Background()); err != nil {
+		t.Fatalf("start bus: %v", err)
+	}
+	defer bus.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	bus.SubscribeContextHandler("test", core.EventTypeSettingChanged, func(ctx context.Context, ev core.Event) error {
+		defer wg.Done()
+		mu.Lock()
+		order = append(order, "handler")
+		mu.Unlock()
+		return nil
+	})
+
+	bus.Publish(&core.SettingChangedEvent{At: time.Now(), Key: "theme"})
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for middleware handler")
+	}
+
+	// Wait briefly for trailing mw1_after
+	time.Sleep(20 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	expected := []string{"mw1_before", "mw2_before", "handler", "mw2_after", "mw1_after"}
+	if len(order) != len(expected) {
+		t.Fatalf("expected order %v, got %v", expected, order)
+	}
+	for i, v := range expected {
+		if order[i] != v {
+			t.Errorf("at index %d: expected %s, got %s", i, v, order[i])
+		}
+	}
+}
+
+func TestEventBus_SubscribeWithOptions_MinPriority(t *testing.T) {
+	bus := newStartedEventBus(t)
+
+	var criticalOnly atomic.Int32
+
+	bus.SubscribeWithOptions(core.EventTypeMessageCreated, func(ctx context.Context, ev core.Event) error {
+		criticalOnly.Add(1)
+		return nil
+	}, core.SubscribeOptions{
+		Owner:       "critical-listener",
+		MinPriority: core.PriorityCritical, // Only receives Critical (0)
+	})
+
+	// 1. Normal priority event should be ignored by critical-only subscriber
+	normalEv := &core.MessageCreatedEvent{At: time.Now(), ChatID: 1}
+	bus.Publish(normalEv)
+	time.Sleep(30 * time.Millisecond)
+	if criticalOnly.Load() != 0 {
+		t.Fatalf("expected 0 calls for normal event, got %d", criticalOnly.Load())
+	}
+
+	// 2. Critical priority event should be delivered
+	critEv := core.WithPriority(&core.MessageCreatedEvent{At: time.Now(), ChatID: 2}, core.PriorityCritical)
+	bus.Publish(critEv)
+	time.Sleep(30 * time.Millisecond)
+	if criticalOnly.Load() != 1 {
+		t.Fatalf("expected 1 call for critical event, got %d", criticalOnly.Load())
+	}
+}

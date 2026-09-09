@@ -38,6 +38,66 @@ type Event interface {
 	Meta() EventMeta
 }
 
+// EventPriority represents the relative urgency of an event.
+type EventPriority int
+
+const (
+	PriorityCritical EventPriority = 0
+	PriorityHigh     EventPriority = 1
+	PriorityNormal   EventPriority = 2
+	PriorityLow      EventPriority = 3
+)
+
+func (p EventPriority) String() string {
+	switch p {
+	case PriorityCritical:
+		return "critical"
+	case PriorityHigh:
+		return "high"
+	case PriorityNormal:
+		return "normal"
+	case PriorityLow:
+		return "low"
+	default:
+		return "normal"
+	}
+}
+
+// PrioritizedEvent is an optional interface events can implement to declare dispatch priority.
+type PrioritizedEvent interface {
+	Priority() EventPriority
+}
+
+// OrderedEvent is an optional interface events can implement to declare per-source ordering.
+// Events with the same non-empty OrderingKey are guaranteed to be processed in chronological order.
+type OrderedEvent interface {
+	OrderingKey() string
+}
+
+type prioritizedEventWrapper struct {
+	Event
+	priority EventPriority
+}
+
+func (w *prioritizedEventWrapper) Priority() EventPriority {
+	return w.priority
+}
+
+func (w *prioritizedEventWrapper) OrderingKey() string {
+	if oe, ok := w.Event.(OrderedEvent); ok {
+		return oe.OrderingKey()
+	}
+	return ""
+}
+
+// WithPriority wraps an event with an explicit priority.
+func WithPriority(ev Event, p EventPriority) Event {
+	if ev == nil {
+		return nil
+	}
+	return &prioritizedEventWrapper{Event: ev, priority: p}
+}
+
 type MessageCreatedEvent struct {
 	MetaData EventMeta
 	At       time.Time
@@ -49,6 +109,12 @@ type MessageCreatedEvent struct {
 func (e *MessageCreatedEvent) Type() EventType      { return EventTypeMessageCreated }
 func (e *MessageCreatedEvent) Timestamp() time.Time { return e.At }
 func (e *MessageCreatedEvent) Meta() EventMeta      { return e.MetaData }
+func (e *MessageCreatedEvent) OrderingKey() string {
+	if e != nil && e.ChatID != 0 {
+		return fmt.Sprintf("chat:%d", e.ChatID)
+	}
+	return ""
+}
 
 type MessageEditedEvent struct {
 	MetaData EventMeta
@@ -61,6 +127,12 @@ type MessageEditedEvent struct {
 func (e *MessageEditedEvent) Type() EventType      { return EventTypeMessageEdited }
 func (e *MessageEditedEvent) Timestamp() time.Time { return e.At }
 func (e *MessageEditedEvent) Meta() EventMeta      { return e.MetaData }
+func (e *MessageEditedEvent) OrderingKey() string {
+	if e != nil && e.ChatID != 0 {
+		return fmt.Sprintf("chat:%d", e.ChatID)
+	}
+	return ""
+}
 
 type MessagesDeletedEvent struct {
 	MetaData    EventMeta
@@ -73,6 +145,12 @@ type MessagesDeletedEvent struct {
 func (e *MessagesDeletedEvent) Type() EventType      { return EventTypeMessagesDeleted }
 func (e *MessagesDeletedEvent) Timestamp() time.Time { return e.At }
 func (e *MessagesDeletedEvent) Meta() EventMeta      { return e.MetaData }
+func (e *MessagesDeletedEvent) OrderingKey() string {
+	if e != nil && e.ChatID != 0 {
+		return fmt.Sprintf("chat:%d", e.ChatID)
+	}
+	return ""
+}
 
 type CallbackOrigin int
 
@@ -109,6 +187,12 @@ type CallbackQueryEvent struct {
 func (e *CallbackQueryEvent) Type() EventType      { return EventTypeCallbackQuery }
 func (e *CallbackQueryEvent) Timestamp() time.Time { return e.At }
 func (e *CallbackQueryEvent) Meta() EventMeta      { return e.MetaData }
+func (e *CallbackQueryEvent) OrderingKey() string {
+	if e != nil && e.ChatID != 0 {
+		return fmt.Sprintf("chat:%d", e.ChatID)
+	}
+	return ""
+}
 func (e *CallbackQueryEvent) IsInline() bool {
 	return e != nil && (e.Target.IsInline() || e.Origin == CallbackOriginInline)
 }
@@ -124,6 +208,12 @@ type ReactionUpdatedEvent struct {
 func (e *ReactionUpdatedEvent) Type() EventType      { return EventTypeReactionUpdated }
 func (e *ReactionUpdatedEvent) Timestamp() time.Time { return e.At }
 func (e *ReactionUpdatedEvent) Meta() EventMeta      { return e.MetaData }
+func (e *ReactionUpdatedEvent) OrderingKey() string {
+	if e != nil && e.ChatID != 0 {
+		return fmt.Sprintf("chat:%d", e.ChatID)
+	}
+	return ""
+}
 
 type InlineResultChosenEvent struct {
 	MetaData EventMeta
@@ -152,9 +242,16 @@ type AdminActionEvent struct {
 	Error      string
 }
 
-func (e *AdminActionEvent) Type() EventType      { return EventTypeAdminAction }
-func (e *AdminActionEvent) Timestamp() time.Time { return e.At }
-func (e *AdminActionEvent) Meta() EventMeta      { return e.MetaData }
+func (e *AdminActionEvent) Type() EventType         { return EventTypeAdminAction }
+func (e *AdminActionEvent) Timestamp() time.Time    { return e.At }
+func (e *AdminActionEvent) Meta() EventMeta         { return e.MetaData }
+func (e *AdminActionEvent) Priority() EventPriority { return PriorityHigh }
+func (e *AdminActionEvent) OrderingKey() string {
+	if e != nil && e.ChatID != 0 {
+		return fmt.Sprintf("chat:%d", e.ChatID)
+	}
+	return ""
+}
 
 type PMPermitEvent struct {
 	MetaData   EventMeta
@@ -207,6 +304,7 @@ type eventSubscriber struct {
 	handler        EventHandler
 	contextHandler ContextEventHandler
 	timeout        time.Duration
+	minPriority    EventPriority
 }
 
 // Subscription is an owned EventBus registration. Close is idempotent and
@@ -237,12 +335,36 @@ func (s *Subscription) Close() {
 type eventJob struct {
 	subscriber eventSubscriber
 	event      Event
+	priority   EventPriority
 }
 
+// SubscribeOptions specifies options when registering an event handler.
+type SubscribeOptions struct {
+	Owner       string
+	Timeout     time.Duration
+	MinPriority EventPriority
+}
+
+// EventMiddleware intercepts event execution before handler invocation.
+type EventMiddleware func(next ContextEventHandler) ContextEventHandler
+
 const (
-	eventQueueSize = 1024
-	eventWorkers   = 8
+	eventQueueSize    = 1024
+	priorityQueueSize = 256
+	eventWorkers      = 8
+	orderedPartitions = 4
 )
+
+func partitionIndex(key string, n int) int {
+	if n <= 1 {
+		return 0
+	}
+	var h uint32
+	for i := 0; i < len(key); i++ {
+		h = 31*h + uint32(key[i])
+	}
+	return int(h % uint32(n))
+}
 
 var (
 	ErrEventBusClosed     = errors.New("event bus closed")
@@ -262,14 +384,19 @@ type EventBusStats struct {
 var _ runtime.Component = (*EventBus)(nil)
 
 type EventBus struct {
-	mu          sync.RWMutex
-	subscribers map[EventType]map[uint64]eventSubscriber
-	nextID      uint64
-	queue       chan eventJob
-	stop        chan struct{}
-	workers     sync.WaitGroup
-	closed      bool
-	started     bool
+	mu            sync.RWMutex
+	subscribers   map[EventType]map[uint64]eventSubscriber
+	nextID        uint64
+	queue         chan eventJob
+	queueCritical chan eventJob
+	queueHigh     chan eventJob
+	queueLow      chan eventJob
+	orderedQueues [orderedPartitions]chan eventJob
+	middlewares   []EventMiddleware
+	stop          chan struct{}
+	workers       sync.WaitGroup
+	closed        bool
+	started       bool
 
 	dlqMu sync.RWMutex
 	dlq   []DeadLetter
@@ -282,11 +409,18 @@ type EventBus struct {
 
 // NewEventBus is a pure constructor. It does not spawn goroutines.
 func NewEventBus() *EventBus {
-	return &EventBus{
-		subscribers: make(map[EventType]map[uint64]eventSubscriber),
-		queue:       make(chan eventJob, eventQueueSize),
-		stop:        make(chan struct{}),
+	b := &EventBus{
+		subscribers:   make(map[EventType]map[uint64]eventSubscriber),
+		queue:         make(chan eventJob, eventQueueSize),
+		queueCritical: make(chan eventJob, priorityQueueSize),
+		queueHigh:     make(chan eventJob, priorityQueueSize),
+		queueLow:      make(chan eventJob, priorityQueueSize),
+		stop:          make(chan struct{}),
 	}
+	for i := 0; i < orderedPartitions; i++ {
+		b.orderedQueues[i] = make(chan eventJob, priorityQueueSize)
+	}
+	return b
 }
 
 // Start launches workers exactly once. Cancellation of ctx requests a graceful
@@ -306,9 +440,12 @@ func (b *EventBus) Start(ctx context.Context) error {
 		return nil
 	}
 	b.started = true
-	b.workers.Add(eventWorkers)
+	b.workers.Add(eventWorkers + orderedPartitions)
 	for i := 0; i < eventWorkers; i++ {
 		go b.worker()
+	}
+	for i := 0; i < orderedPartitions; i++ {
+		go b.orderedWorker(b.orderedQueues[i])
 	}
 	b.mu.Unlock()
 
@@ -322,13 +459,19 @@ func (b *EventBus) Start(ctx context.Context) error {
 }
 
 func (b *EventBus) Stats() EventBusStats {
+	depth := len(b.queue) + len(b.queueCritical) + len(b.queueHigh) + len(b.queueLow)
+	capSum := cap(b.queue) + cap(b.queueCritical) + cap(b.queueHigh) + cap(b.queueLow)
+	for i := 0; i < orderedPartitions; i++ {
+		depth += len(b.orderedQueues[i])
+		capSum += cap(b.orderedQueues[i])
+	}
 	return EventBusStats{
 		Published:     b.publishedCount.Load(),
 		Delivered:     b.deliveredCount.Load(),
 		Dropped:       b.droppedCount.Load(),
 		Panics:        b.panicCount.Load(),
-		QueueDepth:    len(b.queue),
-		QueueCapacity: cap(b.queue),
+		QueueDepth:    depth,
+		QueueCapacity: capSum,
 	}
 }
 
@@ -346,21 +489,83 @@ func (b *EventBus) LifecycleState() string {
 	return "new"
 }
 
+// Use attaches event middleware into the dispatch pipeline.
+func (b *EventBus) Use(mw ...EventMiddleware) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.middlewares = append(b.middlewares, mw...)
+}
+
 func (b *EventBus) worker() {
 	defer b.workers.Done()
 	for {
+		// Non-blocking priority drain checks
 		select {
+		case job := <-b.queueCritical:
+			b.runJob(job)
+			continue
+		default:
+		}
+
+		select {
+		case job := <-b.queueCritical:
+			b.runJob(job)
+			continue
+		case job := <-b.queueHigh:
+			b.runJob(job)
+			continue
+		default:
+		}
+
+		// Blocking priority select
+		select {
+		case job := <-b.queueCritical:
+			b.runJob(job)
+		case job := <-b.queueHigh:
+			b.runJob(job)
 		case job := <-b.queue:
+			b.runJob(job)
+		case job := <-b.queueLow:
+			b.runJob(job)
+		case <-b.stop:
+			b.drainQueues()
+			return
+		}
+	}
+}
+
+func (b *EventBus) orderedWorker(ch <-chan eventJob) {
+	defer b.workers.Done()
+	for {
+		select {
+		case job := <-ch:
 			b.runJob(job)
 		case <-b.stop:
 			for {
 				select {
-				case job := <-b.queue:
+				case job := <-ch:
 					b.runJob(job)
 				default:
 					return
 				}
 			}
+		}
+	}
+}
+
+func (b *EventBus) drainQueues() {
+	for {
+		select {
+		case job := <-b.queueCritical:
+			b.runJob(job)
+		case job := <-b.queueHigh:
+			b.runJob(job)
+		case job := <-b.queue:
+			b.runJob(job)
+		case job := <-b.queueLow:
+			b.runJob(job)
+		default:
+			return
 		}
 	}
 }
@@ -380,13 +585,31 @@ func (b *EventBus) runJob(job eventJob) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	var err error
+	b.mu.RLock()
+	mws := make([]EventMiddleware, len(b.middlewares))
+	copy(mws, b.middlewares)
+	b.mu.RUnlock()
+
+	var handler ContextEventHandler
 	if job.subscriber.contextHandler != nil {
-		err = job.subscriber.contextHandler(ctx, job.event)
+		handler = job.subscriber.contextHandler
 	} else if job.subscriber.handler != nil {
-		job.subscriber.handler(job.event)
+		h := job.subscriber.handler
+		handler = func(c context.Context, ev Event) error {
+			h(ev)
+			return nil
+		}
 	}
 
+	if handler == nil {
+		return
+	}
+
+	for i := len(mws) - 1; i >= 0; i-- {
+		handler = mws[i](handler)
+	}
+
+	err := handler(ctx, job.event)
 	if err != nil {
 		b.recordDLQ(job.event, job.subscriber.owner, err)
 	} else {
@@ -441,22 +664,30 @@ func (b *EventBus) SubscribeOwned(owner string, t EventType, handler EventHandle
 	if handler == nil {
 		return nil
 	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.closed {
+	return b.SubscribeWithOptions(t, func(ctx context.Context, event Event) error {
+		handler(event)
 		return nil
-	}
-	if b.subscribers[t] == nil {
-		b.subscribers[t] = make(map[uint64]eventSubscriber)
-	}
-	b.nextID++
-	id := b.nextID
-	b.subscribers[t][id] = eventSubscriber{owner: owner, handler: handler}
-	return &Subscription{bus: b, eventType: t, id: id}
+	}, SubscribeOptions{
+		Owner:       owner,
+		MinPriority: PriorityLow,
+	})
 }
 
 // SubscribeContextHandler registers a context-aware handler with an ownership label and timeout.
 func (b *EventBus) SubscribeContextHandler(owner string, t EventType, handler ContextEventHandler, timeout ...time.Duration) *Subscription {
+	var to time.Duration
+	if len(timeout) > 0 {
+		to = timeout[0]
+	}
+	return b.SubscribeWithOptions(t, handler, SubscribeOptions{
+		Owner:       owner,
+		Timeout:     to,
+		MinPriority: PriorityLow,
+	})
+}
+
+// SubscribeWithOptions registers a context-aware handler with custom options (ownership, timeout, min priority).
+func (b *EventBus) SubscribeWithOptions(t EventType, handler ContextEventHandler, opts SubscribeOptions) *Subscription {
 	if handler == nil {
 		return nil
 	}
@@ -470,11 +701,16 @@ func (b *EventBus) SubscribeContextHandler(owner string, t EventType, handler Co
 	}
 	b.nextID++
 	id := b.nextID
-	var to time.Duration
-	if len(timeout) > 0 {
-		to = timeout[0]
+	minPrio := opts.MinPriority
+	if minPrio < PriorityCritical || minPrio > PriorityLow {
+		minPrio = PriorityLow
 	}
-	b.subscribers[t][id] = eventSubscriber{owner: owner, contextHandler: handler, timeout: to}
+	b.subscribers[t][id] = eventSubscriber{
+		owner:          opts.Owner,
+		contextHandler: handler,
+		timeout:        opts.Timeout,
+		minPriority:    minPrio,
+	}
 	return &Subscription{bus: b, eventType: t, id: id}
 }
 
@@ -544,9 +780,48 @@ func (b *EventBus) Publish(event Event) {
 	if len(m) == 0 {
 		return
 	}
+
+	prio := PriorityNormal
+	if pe, ok := event.(PrioritizedEvent); ok {
+		prio = pe.Priority()
+	}
+
+	var ordKey string
+	if oe, ok := event.(OrderedEvent); ok {
+		ordKey = oe.OrderingKey()
+	}
+
 	for _, subscriber := range m {
+		if prio > subscriber.minPriority {
+			continue
+		}
+
+		job := eventJob{subscriber: subscriber, event: event, priority: prio}
+		if ordKey != "" {
+			idx := partitionIndex(ordKey, orderedPartitions)
+			select {
+			case b.orderedQueues[idx] <- job:
+				b.publishedCount.Add(1)
+			default:
+				b.droppedCount.Add(1)
+			}
+			continue
+		}
+
+		var targetChan chan eventJob
+		switch prio {
+		case PriorityCritical:
+			targetChan = b.queueCritical
+		case PriorityHigh:
+			targetChan = b.queueHigh
+		case PriorityLow:
+			targetChan = b.queueLow
+		default:
+			targetChan = b.queue
+		}
+
 		select {
-		case b.queue <- eventJob{subscriber: subscriber, event: event}:
+		case targetChan <- job:
 			b.publishedCount.Add(1)
 		default:
 			b.droppedCount.Add(1)
@@ -575,12 +850,26 @@ func (b *EventBus) PublishDurable(ctx context.Context, event Event) error {
 	if len(m) == 0 {
 		return nil
 	}
+
+	prio := PriorityNormal
+	if pe, ok := event.(PrioritizedEvent); ok {
+		prio = pe.Priority()
+	}
+
+	mws := make([]EventMiddleware, len(b.middlewares))
+	copy(mws, b.middlewares)
+
 	for _, subscriber := range m {
+		if prio > subscriber.minPriority {
+			continue
+		}
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
+
 		var handlerErr error
 		func() {
 			defer func() {
@@ -590,16 +879,28 @@ func (b *EventBus) PublishDurable(ctx context.Context, event Event) error {
 					b.recordDLQ(event, subscriber.owner, handlerErr)
 				}
 			}()
+
+			var handler ContextEventHandler
 			if subscriber.contextHandler != nil {
-				handlerErr = subscriber.contextHandler(ctx, event)
+				handler = subscriber.contextHandler
+			} else if subscriber.handler != nil {
+				h := subscriber.handler
+				handler = func(c context.Context, ev Event) error {
+					h(ev)
+					return nil
+				}
+			}
+
+			if handler != nil {
+				for i := len(mws) - 1; i >= 0; i-- {
+					handler = mws[i](handler)
+				}
+				handlerErr = handler(ctx, event)
 				if handlerErr != nil {
 					b.recordDLQ(event, subscriber.owner, handlerErr)
 				} else {
 					b.deliveredCount.Add(1)
 				}
-			} else if subscriber.handler != nil {
-				subscriber.handler(event)
-				b.deliveredCount.Add(1)
 			}
 		}()
 		if handlerErr != nil {

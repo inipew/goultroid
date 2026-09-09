@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/inipew/goultroid/internal/module"
+	"github.com/inipew/goultroid/internal/plugin"
 )
 
 type ModuleType struct{}
@@ -12,20 +13,18 @@ var Module ModuleType
 
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
-		ID:          "alive",
-		Version:     "1.0.0",
-		Description: "Check uptime and userbot status",
+		ID:           "alive",
+		Version:      "1.0.0",
+		Description:  "Check uptime and userbot status",
+		Capabilities: []string{plugin.CapTelegramSendMessage},
 	}
 }
 
-func (ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
+func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	if rt == nil {
 		return module.ErrNilRuntime
 	}
-	if rt.Plugins == nil {
-		return module.ErrNilPluginManager
-	}
-	return rt.Plugins.RegisterWithContext(ctx, New(rt.StartTime))
+	return rt.RegisterPlugin(ctx, m.Manifest(), New(rt.StartTime))
 }
 
 var _ module.Module = ModuleType{}

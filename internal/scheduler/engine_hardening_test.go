@@ -22,7 +22,8 @@ func TestEngine_BoundedConcurrency(t *testing.T) {
 	svc := &mockService{}
 	router := core.NewRouter(".")
 	perms := core.NewPermissions(1001, nil)
-	engine := NewEngine(db, func() core.TelegramServicer { return svc }, router, perms, zap.NewNop())
+	repo := NewSQLiteRepository(db.DB)
+	engine := NewEngine(repo, func() core.TelegramServicer { return svc }, router, perms, zap.NewNop())
 
 	// Set concurrency to 2 workers
 	engine.SetMaxConcurrency(2)
@@ -94,7 +95,8 @@ func TestEngine_MisfirePolicy_Skip(t *testing.T) {
 
 	router := core.NewRouter(".")
 	perms := core.NewPermissions(1001, nil)
-	engine := NewEngine(db, svcFn, router, perms, zap.NewNop())
+	repo := NewSQLiteRepository(db.DB)
+	engine := NewEngine(repo, svcFn, router, perms, zap.NewNop())
 	engine.SetMisfirePolicy(MisfireSkip)
 
 	if engine.MisfirePolicy() != MisfireSkip {
@@ -115,7 +117,7 @@ func TestEngine_MisfirePolicy_Skip(t *testing.T) {
 		t.Fatalf("failed to update next_run_at: %v", err)
 	}
 
-	claimed, err := db.ClaimDueScheduledJobs(ctx, time.Now(), 1, 30*time.Second)
+	claimed, err := repo.ClaimDueScheduledJobs(ctx, time.Now(), 1, 30*time.Second)
 	if err != nil || len(claimed) == 0 {
 		t.Fatalf("expected to claim overdue job")
 	}

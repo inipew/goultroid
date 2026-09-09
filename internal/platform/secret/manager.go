@@ -1,10 +1,13 @@
 package secret
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
 	"sync"
+
+	"github.com/inipew/goultroid/internal/platform/audit"
 )
 
 var (
@@ -14,8 +17,9 @@ var (
 // Manager provides controlled access to secrets and credential stores,
 // preventing secrets from leaking into logs or diagnostic snapshots.
 type Manager struct {
-	mu     sync.RWMutex
-	values map[string]string
+	mu      sync.RWMutex
+	values  map[string]string
+	auditor audit.Auditor
 }
 
 // NewManager creates a SecretManager with optional initial static secrets.
@@ -29,6 +33,13 @@ func NewManager(initial map[string]string) *Manager {
 	return m
 }
 
+// SetAuditor attaches an audit logger to record secret access.
+func (m *Manager) SetAuditor(a audit.Auditor) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.auditor = a
+}
+
 // Get retrieves a secret value by key, checking in-memory storage first and
 // falling back to environment variables.
 func (m *Manager) Get(key string) (string, error) {
@@ -39,13 +50,29 @@ func (m *Manager) Get(key string) (string, error) {
 
 	m.mu.RLock()
 	val, ok := m.values[cleanKey]
+	auditor := m.auditor
 	m.mu.RUnlock()
+
+	found := ok && val != ""
+	envVal := ""
+	if !found {
+		envVal = os.Getenv(cleanKey)
+		found = envVal != ""
+	}
+
+	if auditor != nil {
+		_ = auditor.Record(context.Background(), audit.AuditEvent{
+			Action: "secret.read",
+			Target: cleanKey,
+			Details: map[string]any{
+				"found": found,
+			},
+		})
+	}
 
 	if ok && val != "" {
 		return val, nil
 	}
-
-	envVal := os.Getenv(cleanKey)
 	if envVal != "" {
 		return envVal, nil
 	}
@@ -55,9 +82,32 @@ func (m *Manager) Get(key string) (string, error) {
 
 // Set stores or overrides a secret in memory.
 func (m *Manager) Set(key, val string) {
+	cleanKey := strings.TrimSpace(key)
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.values[strings.TrimSpace(key)] = val
+	m.values[cleanKey] = val
+	auditor := m.auditor
+	m.mu.Unlock()
+
+	if auditor != nil {
+		_ = auditor.Record(context.Background(), audit.AuditEvent{
+			Action: "secret.write",
+			Target: cleanKey,
+			Details: map[string]any{
+				"redacted": Redact(val),
+			},
+		})
+	}
+}
+
+// Keys returns the list of secret keys stored in memory (for diagnostics without leaking values).
+func (m *Manager) Keys() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	keys := make([]string, 0, len(m.values))
+	for k := range m.values {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // Redact replaces sensitive characters of a secret with asterisks for safe display.

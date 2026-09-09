@@ -607,16 +607,16 @@ func TestStateStore_StartStopCancel(t *testing.T) {
 	defer cancel()
 
 	// Calling Start multiple times should be safe
-	store.Start(ctx)
-	store.Start(ctx)
+	_ = store.Start(ctx)
+	_ = store.Start(ctx)
 
 	// Calling Stop multiple times should be safe
-	store.Stop()
-	store.Stop()
+	_ = store.Stop(ctx)
+	_ = store.Stop(ctx)
 
 	// Calling Start again after Stop should work without panic
-	store.Start(ctx)
-	store.Stop()
+	_ = store.Start(ctx)
+	_ = store.Stop(ctx)
 }
 
 func TestCallback_FailureAndNewActionData(t *testing.T) {

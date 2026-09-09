@@ -11,6 +11,9 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/module"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/resource"
+	"github.com/inipew/goultroid/internal/tasks"
+	"github.com/inipew/goultroid/internal/workers"
 	"github.com/inipew/goultroid/plugins/sysinfo"
 )
 
@@ -67,17 +70,18 @@ func TestSysinfo_MetadataAndCommands(t *testing.T) {
 	}
 
 	cmds := p.Commands()
-	if len(cmds) != 6 {
-		t.Fatalf("expected 6 commands, got %d", len(cmds))
+	if len(cmds) != 7 {
+		t.Fatalf("expected 7 commands, got %d", len(cmds))
 	}
 
 	expectedCmds := map[string]bool{
-		"sysinfo":  true,
-		"cpuinfo":  true,
-		"meminfo":  true,
-		"diskinfo": true,
-		"netinfo":  true,
-		"botinfo":  true,
+		"sysinfo":     true,
+		"cpuinfo":     true,
+		"meminfo":     true,
+		"diskinfo":    true,
+		"netinfo":     true,
+		"botinfo":     true,
+		"diagnostics": true,
 	}
 
 	for _, c := range cmds {
@@ -266,5 +270,90 @@ func TestModule_ManifestAndRegistration(t *testing.T) {
 	registered := mgr.Plugins()
 	if len(registered) != 1 || registered[0].Name() != "sysinfo" {
 		t.Errorf("expected sysinfo registered in plugin manager, got %v", registered)
+	}
+}
+
+func TestSysinfo_DiagnosticsCommand(t *testing.T) {
+	p := sysinfo.New()
+
+	workersMgr := workers.NewManager()
+	tasksMgr := tasks.NewManager()
+	workersMgr.SetTasksManager(tasksMgr)
+
+	resMgr := resource.NewManager()
+	_ = resMgr.Register(resource.Resource{
+		ID:    "res-1",
+		Owner: "plugin:downloader",
+		Type:  resource.TypeTempFile,
+	})
+
+	eventBus := core.NewEventBus()
+	_ = eventBus.Start(context.Background())
+	defer eventBus.Close()
+
+	p.SetWorkers(workersMgr)
+	p.SetTasks(tasksMgr)
+	p.SetResources(resMgr)
+	p.SetEventBus(eventBus)
+
+	// Set a custom quota and submit a task
+	workersMgr.SetOwnerQuota("plugin:downloader", tasks.Quota{
+		MaxConcurrent: 3,
+		MaxQueued:     10,
+	})
+
+	ctx := context.Background()
+	_ = workersMgr.Start(ctx)
+	defer workersMgr.Stop(ctx)
+
+	_ = workersMgr.Submit(ctx, workers.PoolDownload, tasks.Task{
+		ID:    "down-1",
+		Owner: "plugin:downloader",
+		Run: func(c context.Context) error {
+			return nil
+		},
+	})
+	time.Sleep(30 * time.Millisecond)
+
+	mockTG := &mockTelegram{}
+	cmdCtx := &core.Context{
+		Ctx:     context.Background(),
+		Svc:     mockTG,
+		PeerID:  &tg.InputPeerChat{ChatID: 123},
+		Message: &core.Message{ID: 1, IsOutgoing: true},
+	}
+
+	cmdMap := make(map[string]core.Command)
+	for _, c := range p.Commands() {
+		cmdMap[c.Name] = c
+	}
+
+	diagCmd, ok := cmdMap["diagnostics"]
+	if !ok {
+		t.Fatalf("diagnostics command not found")
+	}
+
+	if err := diagCmd.Handler(cmdCtx); err != nil {
+		t.Fatalf("diagnostics handler returned error: %v", err)
+	}
+
+	output := mockTG.getText()
+	if !strings.Contains(output, "GoUltroid Runtime Diagnostics") {
+		t.Errorf("expected header in output, got: %s", output)
+	}
+	if !strings.Contains(output, "Worker Pools") {
+		t.Errorf("expected Worker Pools in output, got: %s", output)
+	}
+	if !strings.Contains(output, "Task Summary") {
+		t.Errorf("expected Task Summary in output, got: %s", output)
+	}
+	if !strings.Contains(output, "Per-Plugin Task Quotas") {
+		t.Errorf("expected Per-Plugin Task Quotas in output, got: %s", output)
+	}
+	if !strings.Contains(output, "Active Tracked Resources") {
+		t.Errorf("expected Active Tracked Resources in output, got: %s", output)
+	}
+	if !strings.Contains(output, "EventBus Telemetry") {
+		t.Errorf("expected EventBus Telemetry in output, got: %s", output)
 	}
 }

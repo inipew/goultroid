@@ -12,6 +12,8 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/jobs"
+	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
 
@@ -149,7 +151,7 @@ func TestEngine_LifecycleAndTasks(t *testing.T) {
 	svc := &mockService{}
 	router := core.NewRouter(".")
 	perms := core.NewPermissions(1001, []int64{1002})
-	engine := NewEngine(db, func() core.TelegramServicer { return svc }, router, perms, zap.NewNop())
+	engine := NewEngine(NewSQLiteRepository(db.DB), func() core.TelegramServicer { return svc }, router, perms, zap.NewNop())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -216,7 +218,7 @@ func TestEngine_ScheduleOnceAndRecurring(t *testing.T) {
 	})
 
 	perms := core.NewPermissions(1001, []int64{})
-	engine := NewEngine(db, func() core.TelegramServicer { return svc }, router, perms, zap.NewNop())
+	engine := NewEngine(NewSQLiteRepository(db.DB), func() core.TelegramServicer { return svc }, router, perms, zap.NewNop())
 
 	ctx := context.Background()
 	_ = engine.Start(ctx)
@@ -291,7 +293,7 @@ func TestRegisterPeriodicTask_NotRunning(t *testing.T) {
 	svc := &mockService{}
 	router := core.NewRouter(".")
 	perms := core.NewPermissions(1001, []int64{})
-	engine := NewEngine(db, func() core.TelegramServicer { return svc }, router, perms, zap.NewNop())
+	engine := NewEngine(NewSQLiteRepository(db.DB), func() core.TelegramServicer { return svc }, router, perms, zap.NewNop())
 
 	// Calling RegisterPeriodicTask BEFORE Start() should return an error and NOT panic
 	err = engine.RegisterPeriodicTask("early_task", 1*time.Second, func(ctx context.Context) error {
@@ -367,7 +369,7 @@ func TestExecuteCommand_ThroughMiddleware(t *testing.T) {
 	})
 
 	perms := core.NewPermissions(1001, []int64{})
-	engine := NewEngine(db, func() core.TelegramServicer { return svc }, router, perms, zap.NewNop())
+	engine := NewEngine(NewSQLiteRepository(db.DB), func() core.TelegramServicer { return svc }, router, perms, zap.NewNop())
 
 	ctx := context.Background()
 	_ = engine.Start(ctx)
@@ -408,12 +410,12 @@ func TestExecuteCommand_WithCreatorID(t *testing.T) {
 	ownerID := int64(1001)
 	strangerID := int64(3003)
 	perms := core.NewPermissions(ownerID, []int64{})
-	engine := NewEngine(db, func() core.TelegramServicer { return svc }, router, perms, zap.NewNop())
+	engine := NewEngine(NewSQLiteRepository(db.DB), func() core.TelegramServicer { return svc }, router, perms, zap.NewNop())
 
 	ctx := context.Background()
 
 	// 1. Non-owner tries to execute owner-only command via scheduler
-	jobStranger := database.ScheduledJob{
+	jobStranger := ScheduledJob{
 		ID:         1,
 		ChatID:     123,
 		PeerType:   "chat",
@@ -428,7 +430,7 @@ func TestExecuteCommand_WithCreatorID(t *testing.T) {
 	}
 
 	// 2. Owner executes owner-only command via scheduler
-	jobOwner := database.ScheduledJob{
+	jobOwner := ScheduledJob{
 		ID:         2,
 		ChatID:     123,
 		PeerType:   "chat",
@@ -443,7 +445,7 @@ func TestExecuteCommand_WithCreatorID(t *testing.T) {
 	}
 
 	// 3. Security Boundary: CreatedBy == 0 must NOT default to owner and must NOT run owner commands
-	jobAnonymous := database.ScheduledJob{
+	jobAnonymous := ScheduledJob{
 		ID:         3,
 		ChatID:     123,
 		PeerType:   "chat",
@@ -474,7 +476,8 @@ func TestJob_RecordsFailure(t *testing.T) {
 	})
 
 	perms := core.NewPermissions(1001, []int64{})
-	engine := NewEngine(db, func() core.TelegramServicer { return &mockService{} }, router, perms, zap.NewNop())
+	repo := NewSQLiteRepository(db.DB)
+	engine := NewEngine(repo, func() core.TelegramServicer { return &mockService{} }, router, perms, zap.NewNop())
 
 	ctx := context.Background()
 
@@ -485,7 +488,7 @@ func TestJob_RecordsFailure(t *testing.T) {
 	}
 
 	// Claim and execute job
-	claimed, err := db.ClaimDueScheduledJobs(ctx, time.Now().Add(time.Hour), 1, 30*time.Second)
+	claimed, err := repo.ClaimDueScheduledJobs(ctx, time.Now().Add(time.Hour), 1, 30*time.Second)
 	if err != nil || len(claimed) == 0 {
 		t.Fatalf("failed to claim job: %v", err)
 	}
@@ -494,7 +497,7 @@ func TestJob_RecordsFailure(t *testing.T) {
 	engine.executeJob(ctx, claimed[0], cancel2)
 
 	// Fetch from DB to verify failure was recorded and status is pending with backoff
-	updated, err := db.GetScheduledJob(ctx, saved.ID)
+	updated, err := repo.GetScheduledJob(ctx, saved.ID)
 	if err != nil {
 		t.Fatalf("failed to get updated job: %v", err)
 	}
@@ -504,7 +507,7 @@ func TestJob_RecordsFailure(t *testing.T) {
 	if updated.LastError != "command intentional failure" {
 		t.Errorf("expected LastError 'command intentional failure', got %q", updated.LastError)
 	}
-	if updated.Status != database.JobStatusPending {
+	if updated.Status != JobStatusPending {
 		t.Errorf("expected Status 'pending' after first failure, got %q", updated.Status)
 	}
 }
@@ -518,7 +521,7 @@ func TestEngine_ValidationAndInterval(t *testing.T) {
 
 	router := core.NewRouter(".")
 	perms := core.NewPermissions(1001, []int64{})
-	engine := NewEngine(db, func() core.TelegramServicer { return &mockService{} }, router, perms, zap.NewNop())
+	engine := NewEngine(NewSQLiteRepository(db.DB), func() core.TelegramServicer { return &mockService{} }, router, perms, zap.NewNop())
 
 	ctx := context.Background()
 
@@ -563,7 +566,8 @@ func TestEngine_DynamicPrincipalRevocation(t *testing.T) {
 		},
 	})
 
-	engine := NewEngine(db, func() core.TelegramServicer { return &mockService{} }, router, perms, zap.NewNop())
+	repo := NewSQLiteRepository(db.DB)
+	engine := NewEngine(repo, func() core.TelegramServicer { return &mockService{} }, router, perms, zap.NewNop())
 	ctx := context.Background()
 
 	// Schedule a command created by sudo user 777
@@ -576,7 +580,7 @@ func TestEngine_DynamicPrincipalRevocation(t *testing.T) {
 	perms.RemoveSudo(sudoID)
 
 	// Claim and execute job
-	claimed, err := db.ClaimDueScheduledJobs(ctx, time.Now(), 1, 90*time.Second)
+	claimed, err := repo.ClaimDueScheduledJobs(ctx, time.Now(), 1, 90*time.Second)
 	if err != nil || len(claimed) == 0 {
 		t.Fatalf("failed to claim job: %v", err)
 	}
@@ -589,7 +593,7 @@ func TestEngine_DynamicPrincipalRevocation(t *testing.T) {
 	}
 
 	// Verify job failed closed with permission denied
-	updated, err := db.GetScheduledJob(ctx, job.ID)
+	updated, err := repo.GetScheduledJob(ctx, job.ID)
 	if err != nil {
 		t.Fatalf("failed to get job: %v", err)
 	}
@@ -607,7 +611,7 @@ func TestEngine_StopWithTimeout_Bounded(t *testing.T) {
 
 	router := core.NewRouter(".")
 	perms := core.NewPermissions(1001, nil)
-	engine := NewEngine(db, func() core.TelegramServicer { return &mockService{} }, router, perms, zap.NewNop())
+	engine := NewEngine(NewSQLiteRepository(db.DB), func() core.TelegramServicer { return &mockService{} }, router, perms, zap.NewNop())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -630,5 +634,139 @@ func TestEngine_StopWithTimeout_Bounded(t *testing.T) {
 	}
 	if elapsed > 500*time.Millisecond {
 		t.Errorf("StopWithTimeout hung longer than bounded timeout: took %v", elapsed)
+	}
+}
+
+type mockTaskSubmitter struct {
+	mu    sync.Mutex
+	tasks []tasks.Task
+}
+
+func (m *mockTaskSubmitter) Submit(ctx context.Context, poolName string, task tasks.Task) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tasks = append(m.tasks, task)
+	return nil
+}
+
+func TestEngine_ActionJob(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+	defer db.Close()
+
+	router := core.NewRouter(".")
+	perms := core.NewPermissions(1001, nil)
+	repo := NewSQLiteRepository(db.DB)
+	engine := NewEngine(repo, func() core.TelegramServicer { return &mockService{} }, router, perms, zap.NewNop())
+
+	submitter := &mockTaskSubmitter{}
+	jobsMgr := jobs.NewManager(submitter)
+
+	var jobRan bool
+	err = jobsMgr.Register(jobs.Job{
+		ID:    "sync-cache",
+		Owner: "plugin:cache",
+		Run: func(ctx context.Context) error {
+			jobRan = true
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to register job: %v", err)
+	}
+
+	engine.SetJobsManager(jobsMgr)
+
+	ctx := context.Background()
+	schedJob, err := engine.ScheduleManagedJob(ctx, "sync-cache", time.Now().Add(-time.Second), 0)
+	if err != nil {
+		t.Fatalf("failed to schedule managed job: %v", err)
+	}
+	if schedJob.ActionType != ActionJob {
+		t.Errorf("expected ActionType %q, got %q", ActionJob, schedJob.ActionType)
+	}
+	if schedJob.Payload != "sync-cache" {
+		t.Errorf("expected payload %q, got %q", "sync-cache", schedJob.Payload)
+	}
+
+	// Claim and execute
+	claimed, err := repo.ClaimDueScheduledJobs(ctx, time.Now(), 1, 90*time.Second)
+	if err != nil || len(claimed) == 0 {
+		t.Fatalf("failed to claim due job: %v", err)
+	}
+
+	_, cancel := context.WithCancel(ctx)
+	defer cancel()
+	engine.executeJob(ctx, claimed[0], cancel)
+
+	submitter.mu.Lock()
+	defer submitter.mu.Unlock()
+	if len(submitter.tasks) != 1 {
+		t.Fatalf("expected 1 task submitted, got %d", len(submitter.tasks))
+	}
+	if submitter.tasks[0].Name != "job:sync-cache" {
+		t.Errorf("expected task name 'job:sync-cache', got %q", submitter.tasks[0].Name)
+	}
+
+	// Run the submitted task
+	if err := submitter.tasks[0].Run(ctx); err != nil {
+		t.Fatalf("task run failed: %v", err)
+	}
+	if !jobRan {
+		t.Fatalf("expected jobRan to be true")
+	}
+}
+
+func TestEngine_UnregisterPeriodicTasksByOwner(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+	defer db.Close()
+
+	router := core.NewRouter(".")
+	perms := core.NewPermissions(1001, nil)
+	engine := NewEngine(NewSQLiteRepository(db.DB), func() core.TelegramServicer { return &mockService{} }, router, perms, zap.NewNop())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := engine.Start(ctx); err != nil {
+		t.Fatalf("start engine: %v", err)
+	}
+	defer engine.Stop(context.Background())
+
+	err = engine.RegisterPeriodicTaskOwned("testplugin", "task1", time.Hour, func(ctx context.Context) error { return nil })
+	if err != nil {
+		t.Fatalf("register task1: %v", err)
+	}
+
+	err = engine.RegisterPeriodicTaskOwned("plugin:testplugin", "task2", time.Hour, func(ctx context.Context) error { return nil })
+	if err != nil {
+		t.Fatalf("register task2: %v", err)
+	}
+
+	err = engine.RegisterPeriodicTaskOwned("otherplugin", "task3", time.Hour, func(ctx context.Context) error { return nil })
+	if err != nil {
+		t.Fatalf("register task3: %v", err)
+	}
+
+	if len(engine.PeriodicTaskSnapshots()) != 3 {
+		t.Fatalf("expected 3 tasks, got %d", len(engine.PeriodicTaskSnapshots()))
+	}
+
+	// Unregister testplugin tasks
+	removed := engine.UnregisterPeriodicTasksByOwner("testplugin")
+	if removed != 2 {
+		t.Fatalf("expected 2 tasks removed, got %d", removed)
+	}
+
+	snaps := engine.PeriodicTaskSnapshots()
+	if len(snaps) != 1 {
+		t.Fatalf("expected 1 task remaining, got %d", len(snaps))
+	}
+	if snaps[0].Name != "task3" {
+		t.Errorf("expected remaining task 'task3', got %q", snaps[0].Name)
 	}
 }

@@ -8,8 +8,10 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/runtime"
 )
+
+var _ runtime.Component = (*Service)(nil)
 
 type resolveCacheKey struct {
 	userID int64
@@ -18,7 +20,7 @@ type resolveCacheKey struct {
 
 // Service provides a unified management and resolution interface for settings.
 type Service struct {
-	repo    database.SettingsRepository
+	repo    Repository
 	reg     *Registry
 	bus     *core.EventBus
 	cacheMu sync.RWMutex
@@ -30,7 +32,7 @@ type Service struct {
 }
 
 // NewService instantiates a new settings Service.
-func NewService(repo database.SettingsRepository, reg *Registry, bus *core.EventBus) *Service {
+func NewService(repo Repository, reg *Registry, bus *core.EventBus) *Service {
 	if reg == nil {
 		reg = NewRegistry()
 	}
@@ -106,7 +108,7 @@ func (s *Service) Start(ctx context.Context) error {
 	if s.bus == nil {
 		return nil
 	}
-	if _, ok := s.repo.(*database.DB); !ok {
+	if _, ok := s.repo.(*SQLiteRepository); !ok {
 		return nil
 	}
 	if ctx == nil {
@@ -119,17 +121,46 @@ func (s *Service) Start(ctx context.Context) error {
 	return nil
 }
 
+// Name returns the component name for runtime.Component.
+func (s *Service) Name() string {
+	return "settings"
+}
+
+// Dependencies returns component prerequisites for runtime.Component.
+func (s *Service) Dependencies() []string {
+	return []string{"eventbus"}
+}
+
+// Health probes the health status of the settings service.
+func (s *Service) Health(ctx context.Context) runtime.ComponentHealth {
+	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
+}
+
 // Stop gracefully shuts down the outbox worker.
-func (s *Service) Stop() {
+func (s *Service) Stop(ctx context.Context) error {
 	if s.unsubSetting != nil {
 		s.unsubSetting()
 		s.unsubSetting = nil
 	}
 	if s.outboxCancel != nil {
 		s.outboxCancel()
-		s.outboxWG.Wait()
+		done := make(chan struct{})
+		go func() {
+			s.outboxWG.Wait()
+			close(done)
+		}()
+		if ctx != nil {
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		} else {
+			<-done
+		}
 		s.outboxCancel = nil
 	}
+	return nil
 }
 
 // Registry returns the underlying schema registry.
@@ -235,7 +266,7 @@ func (s *Service) ResolveValue(ctx context.Context, userID, chatID int64, namesp
 }
 
 // Get retrieves an explicit setting from the repository for a given scope without inheritance.
-func (s *Service) Get(ctx context.Context, scope SettingScope, scopeID int64, namespace, key string) (*database.SettingItem, error) {
+func (s *Service) Get(ctx context.Context, scope SettingScope, scopeID int64, namespace, key string) (*SettingItem, error) {
 	if err := (ScopeRef{Type: scope, ID: scopeID}).Validate(); err != nil {
 		return nil, err
 	}
@@ -278,7 +309,7 @@ func (s *Service) Set(ctx context.Context, scope SettingScope, scopeID int64, na
 		return nil
 	}
 
-	item := &database.SettingItem{
+	item := &SettingItem{
 		ScopeType: string(scope),
 		ScopeID:   scopeID,
 		Namespace: ns,
@@ -353,7 +384,7 @@ func (s *Service) Reset(ctx context.Context, scope SettingScope, scopeID int64, 
 }
 
 // ListByScope lists all configured settings for a specific scope.
-func (s *Service) ListByScope(ctx context.Context, scope SettingScope, scopeID int64, namespace string) ([]database.SettingItem, error) {
+func (s *Service) ListByScope(ctx context.Context, scope SettingScope, scopeID int64, namespace string) ([]SettingItem, error) {
 	if err := (ScopeRef{Type: scope, ID: scopeID}).Validate(); err != nil {
 		return nil, err
 	}
@@ -424,9 +455,9 @@ func (s *Service) Import(ctx context.Context, scope SettingScope, scopeID int64,
 
 	// Phase 2: Batch Transaction
 	now := time.Now().UTC()
-	dbItems := make([]*database.SettingItem, 0, len(prepared))
+	dbItems := make([]*SettingItem, 0, len(prepared))
 	for _, p := range prepared {
-		dbItems = append(dbItems, &database.SettingItem{
+		dbItems = append(dbItems, &SettingItem{
 			ScopeType: string(scope),
 			ScopeID:   scopeID,
 			Namespace: p.ns,
@@ -465,6 +496,6 @@ func (s *Service) Import(ctx context.Context, scope SettingScope, scopeID int64,
 }
 
 // GetHistory retrieves the audit log for a setting.
-func (s *Service) GetHistory(ctx context.Context, namespace, key string, limit int) ([]database.SettingChangeRecord, error) {
+func (s *Service) GetHistory(ctx context.Context, namespace, key string, limit int) ([]SettingChangeRecord, error) {
 	return s.repo.GetSettingHistory(ctx, strings.ToLower(namespace), strings.ToLower(key), limit)
 }

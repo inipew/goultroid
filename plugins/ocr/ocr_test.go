@@ -12,6 +12,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/platform/network"
+	"github.com/inipew/goultroid/internal/platform/secret"
 	"github.com/inipew/goultroid/internal/plugin"
 )
 
@@ -82,18 +83,24 @@ func TestOCRPlugin_InitPluginCapabilities(t *testing.T) {
 		t.Fatal("expected error when CapHTTP is not registered")
 	}
 
-	gate.Register("ocr", []string{plugin.CapHTTP, plugin.CapFilesystemTemp})
+	gate.AllowPrivileged("ocr", plugin.CapSecretRead)
+	gate.Register("ocr", []string{plugin.CapHTTP, plugin.CapFilesystemTemp, plugin.CapSecretRead})
+	secMgr := secret.NewManager(map[string]string{"OCR_API": "test-key-123"})
 	pctxGranted := plugin.NewPluginContext(context.Background(), plugin.ContextConfig{
 		Owner:   "ocr",
 		Gate:    gate,
 		Network: netSvc,
 		Files:   fsMgr,
+		Secrets: secMgr,
 	})
 	if err := p.InitPlugin(pctxGranted); err != nil {
 		t.Fatalf("unexpected error when capabilities granted: %v", err)
 	}
 	if p.http == nil || p.files == nil {
 		t.Fatal("expected http and files to be configured")
+	}
+	if p.apiKey != "test-key-123" {
+		t.Fatalf("expected apiKey 'test-key-123', got %q", p.apiKey)
 	}
 }
 

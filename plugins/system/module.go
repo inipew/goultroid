@@ -28,6 +28,9 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	if rt.Metrics != nil {
 		p.SetMetrics(rt.Metrics)
 	}
+	if rt.Plugins != nil {
+		p.SetPluginManager(rt.Plugins)
+	}
 	return rt.RegisterPlugin(ctx, m.Manifest(), p)
 }
 

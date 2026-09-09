@@ -8,19 +8,18 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/scheduler"
 )
 
 type mockSchedulerService struct {
-	jobs     map[int64]*database.ScheduledJob
+	jobs     map[int64]*scheduler.ScheduledJob
 	nextID   int64
 	canceled []int64
 }
 
 func newMockSchedulerService() *mockSchedulerService {
 	return &mockSchedulerService{
-		jobs:   make(map[int64]*database.ScheduledJob),
+		jobs:   make(map[int64]*scheduler.ScheduledJob),
 		nextID: 1,
 	}
 }
@@ -31,14 +30,14 @@ func (m *mockSchedulerService) RegisterPeriodicTask(name string, interval time.D
 func (m *mockSchedulerService) UnregisterPeriodicTask(name string) error {
 	return nil
 }
-func (m *mockSchedulerService) ScheduleOnce(ctx context.Context, chatID int64, peerType string, accessHash int64, when time.Time, actionType string, payload string, creatorID ...int64) (*database.ScheduledJob, error) {
+func (m *mockSchedulerService) ScheduleOnce(ctx context.Context, chatID int64, peerType string, accessHash int64, when time.Time, actionType string, payload string, creatorID ...int64) (*scheduler.ScheduledJob, error) {
 	id := m.nextID
 	m.nextID++
 	var createdBy int64
 	if len(creatorID) > 0 {
 		createdBy = creatorID[0]
 	}
-	job := &database.ScheduledJob{
+	job := &scheduler.ScheduledJob{
 		ID:         id,
 		ChatID:     chatID,
 		PeerType:   peerType,
@@ -51,14 +50,14 @@ func (m *mockSchedulerService) ScheduleOnce(ctx context.Context, chatID int64, p
 	m.jobs[id] = job
 	return job, nil
 }
-func (m *mockSchedulerService) ScheduleRecurring(ctx context.Context, chatID int64, peerType string, accessHash int64, interval time.Duration, actionType string, payload string, creatorID ...int64) (*database.ScheduledJob, error) {
+func (m *mockSchedulerService) ScheduleRecurring(ctx context.Context, chatID int64, peerType string, accessHash int64, interval time.Duration, actionType string, payload string, creatorID ...int64) (*scheduler.ScheduledJob, error) {
 	id := m.nextID
 	m.nextID++
 	var createdBy int64
 	if len(creatorID) > 0 {
 		createdBy = creatorID[0]
 	}
-	job := &database.ScheduledJob{
+	job := &scheduler.ScheduledJob{
 		ID:              id,
 		ChatID:          chatID,
 		PeerType:        peerType,
@@ -87,8 +86,8 @@ func (m *mockSchedulerService) CancelScoped(ctx context.Context, requesterID, ch
 	}
 	return m.Cancel(ctx, jobID)
 }
-func (m *mockSchedulerService) List(ctx context.Context, chatID int64) ([]database.ScheduledJob, error) {
-	var list []database.ScheduledJob
+func (m *mockSchedulerService) List(ctx context.Context, chatID int64) ([]scheduler.ScheduledJob, error) {
+	var list []scheduler.ScheduledJob
 	for _, j := range m.jobs {
 		if j.ChatID == chatID {
 			list = append(list, *j)
@@ -96,10 +95,10 @@ func (m *mockSchedulerService) List(ctx context.Context, chatID int64) ([]databa
 	}
 	return list, nil
 }
-func (m *mockSchedulerService) JobHistory(ctx context.Context, jobID int64, limit int) ([]database.JobHistoryEntry, error) {
+func (m *mockSchedulerService) JobHistory(ctx context.Context, jobID int64, limit int) ([]scheduler.JobHistoryEntry, error) {
 	return nil, nil
 }
-func (m *mockSchedulerService) JobHistoryScoped(ctx context.Context, requesterID, chatID, jobID int64, limit int) ([]database.JobHistoryEntry, error) {
+func (m *mockSchedulerService) JobHistoryScoped(ctx context.Context, requesterID, chatID, jobID int64, limit int) ([]scheduler.JobHistoryEntry, error) {
 	job, ok := m.jobs[jobID]
 	if !ok {
 		return nil, core.ErrNotFound
@@ -109,8 +108,8 @@ func (m *mockSchedulerService) JobHistoryScoped(ctx context.Context, requesterID
 	}
 	return m.JobHistory(ctx, jobID, limit)
 }
-func (m *mockSchedulerService) Start(ctx context.Context) error        { return nil }
-func (m *mockSchedulerService) Stop(ctx context.Context) error         { return nil }
+func (m *mockSchedulerService) Start(ctx context.Context) error { return nil }
+func (m *mockSchedulerService) Stop(ctx context.Context) error  { return nil }
 
 type mockTelegramServicer struct {
 	core.MockTelegramServicer

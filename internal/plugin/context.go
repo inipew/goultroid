@@ -10,6 +10,7 @@ import (
 	"github.com/inipew/goultroid/internal/platform/network"
 	"github.com/inipew/goultroid/internal/platform/process"
 	"github.com/inipew/goultroid/internal/platform/secret"
+	"github.com/inipew/goultroid/internal/platform/storage"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -26,6 +27,7 @@ type PluginContext interface {
 	Secrets() (*secret.Manager, error)
 	Tasks() (*tasks.Manager, error)
 	Jobs() (*jobs.Manager, error)
+	Storage() (storage.KVStore, error)
 }
 
 type pluginContext struct {
@@ -39,6 +41,7 @@ type pluginContext struct {
 	secrets *secret.Manager
 	tasks   *tasks.Manager
 	jobs    *jobs.Manager
+	storage *storage.Manager
 }
 
 // ContextConfig bundles runtime services provided to a plugin context.
@@ -52,6 +55,7 @@ type ContextConfig struct {
 	Secrets *secret.Manager
 	Tasks   *tasks.Manager
 	Jobs    *jobs.Manager
+	Storage *storage.Manager
 }
 
 // NewPluginContext constructs a new PluginContext enforcing capability checks via the gate.
@@ -77,6 +81,7 @@ func NewPluginContext(baseCtx context.Context, cfg ContextConfig) PluginContext 
 		secrets: cfg.Secrets,
 		tasks:   cfg.Tasks,
 		jobs:    cfg.Jobs,
+		storage: cfg.Storage,
 	}
 }
 
@@ -150,4 +155,17 @@ func (c *pluginContext) Jobs() (*jobs.Manager, error) {
 		return nil, errors.New("jobs manager not configured")
 	}
 	return c.jobs, nil
+}
+
+func (c *pluginContext) Storage() (storage.KVStore, error) {
+	canRead := c.gate.Check(c.owner, CapStorageRead) == nil
+	canWrite := c.gate.Check(c.owner, CapStorageWrite) == nil
+
+	if !canRead && !canWrite {
+		return nil, fmt.Errorf("storage access denied: requires %s or %s: %w", CapStorageRead, CapStorageWrite, ErrCapabilityDenied)
+	}
+	if c.storage == nil {
+		return nil, errors.New("storage manager not configured")
+	}
+	return c.storage.Store(c.owner, canRead, canWrite), nil
 }

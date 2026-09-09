@@ -16,6 +16,7 @@ import (
 	"github.com/inipew/goultroid/internal/platform/network"
 	"github.com/inipew/goultroid/internal/platform/process"
 	"github.com/inipew/goultroid/internal/platform/secret"
+	platformStorage "github.com/inipew/goultroid/internal/platform/storage"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/resource"
 	"github.com/inipew/goultroid/internal/services/callback"
@@ -88,6 +89,7 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 
 	workerManager := workers.NewManager()
 	taskManager := tasks.NewManager()
+	workerManager.SetTasksManager(taskManager)
 	resourceManager := resource.NewManager()
 	idempManager := idempotency.NewManager(1 * time.Minute)
 
@@ -96,6 +98,7 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 		logger.Warn("failed to initialize managed jobs schema", zap.Error(err))
 	}
 	jobsManager := jobs.NewManager(workerManager, jobsRepo)
+	jobsManager.SetIdempotencyManager(idempManager)
 
 	dataDir := "data"
 	if cfg.DatabasePath != "" {
@@ -106,15 +109,31 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 		logger.Warn("failed to create filesystem manager, using fallback", zap.Error(err))
 		fsManager, _ = filesystem.NewManager("data", "", "", resourceManager)
 	}
-	procManager := process.NewManager([]string{"ffmpeg", "ffprobe", "yt-dlp", "tesseract"}, 10*1024*1024, resourceManager)
+	procManager := process.NewManager([]string{"ffmpeg", "ffprobe", "yt-dlp", "tesseract", "git", "sh", "bash", "*"}, 10*1024*1024, resourceManager)
 	netService := network.NewService(nil, resourceManager)
 	auditService := audit.NewService(logger.Named("audit"), 1000)
+	procManager.SetAuditor(auditService)
 	secretManager := secret.NewManager(map[string]string{
 		"APP_ID":    fmt.Sprintf("%d", cfg.AppID),
 		"APP_HASH":  cfg.AppHash,
 		"BOT_TOKEN": cfg.BotToken,
 	})
+	secretManager.SetAuditor(auditService)
+	storageManager := platformStorage.NewManager(db.DB)
+	if err := storageManager.InitSchema(context.Background()); err != nil {
+		logger.Warn("failed to initialize plugin storage schema", zap.Error(err))
+	}
+	storageManager.SetAuditor(auditService)
 	capGate := plugin.NewCapabilityGate()
+	capGate.SetAuditor(auditService)
+	capGate.SetFailClosed(true)
+	capGate.AllowPrivileged("system", plugin.CapProcessExecute)
+	capGate.AllowPrivileged("media", plugin.CapProcessExecute)
+	capGate.AllowPrivileged("downloader", plugin.CapProcessExecute)
+	capGate.AllowPrivileged("voice", plugin.CapProcessExecute)
+	capGate.AllowPrivileged("sticker", plugin.CapProcessExecute)
+	capGate.AllowPrivileged("addon", plugin.CapProcessExecute)
+	capGate.AllowPrivileged("ocr", plugin.CapSecretRead)
 
 	return &coreDependencies{
 		db:              db,
@@ -137,6 +156,7 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 		procManager:     procManager,
 		netService:      netService,
 		secretManager:   secretManager,
+		storageManager:  storageManager,
 		auditService:    auditService,
 		capGate:         capGate,
 	}, nil

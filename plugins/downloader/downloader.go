@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,14 +9,18 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/jobs"
+	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/storage"
+	"github.com/inipew/goultroid/internal/workers"
 )
 
 // Plugin provides media download capabilities for Telegram media and external URLs.
 type Plugin struct {
 	registry *download.Registry
 	storage  storage.Storage
+	jobs     *jobs.Manager
 }
 
 // New creates a new downloader Plugin instance with optional dependencies.
@@ -27,6 +32,8 @@ func New(deps ...any) *Plugin {
 			p.registry = v
 		case storage.Storage:
 			p.storage = v
+		case *jobs.Manager:
+			p.jobs = v
 		}
 	}
 	return p
@@ -40,6 +47,34 @@ func (p *Plugin) SetRegistry(reg *download.Registry) {
 // SetStorage sets the storage manager.
 func (p *Plugin) SetStorage(store storage.Storage) {
 	p.storage = store
+}
+
+// SetJobsManager sets the jobs manager and registers typed download handlers.
+func (p *Plugin) SetJobsManager(jm *jobs.Manager) {
+	p.jobs = jm
+	p.registerJobHandlers()
+}
+
+// InitPlugin initializes the plugin using PluginContext.
+func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
+	jobsMgr, err := pctx.Jobs()
+	if err == nil && jobsMgr != nil {
+		p.jobs = jobsMgr
+		p.registerJobHandlers()
+	}
+	return nil
+}
+
+func (p *Plugin) registerJobHandlers() {
+	if p.jobs == nil {
+		return
+	}
+	p.jobs.RegisterHandler("downloader.download", func(ctx context.Context, j *jobs.Job) error {
+		if j.Run != nil {
+			return j.Run(ctx)
+		}
+		return nil
+	})
 }
 
 // Name returns the plugin identifier.
@@ -125,6 +160,33 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 		return err
 	}
 
+	if p.jobs != nil {
+		jobID := fmt.Sprintf("dl-media-%d", time.Now().UnixNano())
+		idempKey := ""
+		if ctx.Message != nil {
+			idempKey = fmt.Sprintf("dl:msg:%d:%d", ctx.ChatID(), ctx.Message.ID)
+		}
+		job := jobs.Job{
+			ID:             jobID,
+			Owner:          "downloader",
+			Type:           "downloader.download",
+			Pool:           workers.PoolDownload,
+			Timeout:        10 * time.Minute,
+			IdempotencyKey: idempKey,
+			RecoveryPolicy: jobs.RecoverySkip,
+			Run: func(taskCtx context.Context) error {
+				return p.executeMediaDownload(taskCtx, ctx, saveDir, mediaSize)
+			},
+		}
+		if err := p.jobs.Register(job); err == nil {
+			return p.jobs.Trigger(ctx.Ctx, jobID)
+		}
+	}
+
+	return p.executeMediaDownload(ctx.Ctx, ctx, saveDir, mediaSize)
+}
+
+func (p *Plugin) executeMediaDownload(taskCtx context.Context, ctx *core.Context, saveDir string, mediaSize int64) error {
 	start := time.Now()
 
 	filePath, err := ctx.DownloadMedia(saveDir)
@@ -171,6 +233,30 @@ func (p *Plugin) handleURLDownload(ctx *core.Context, rawURL string) error {
 		return err
 	}
 
+	if p.jobs != nil {
+		jobID := fmt.Sprintf("dl-url-%d", time.Now().UnixNano())
+		idempKey := fmt.Sprintf("dl:url:%s", rawURL)
+		job := jobs.Job{
+			ID:             jobID,
+			Owner:          "downloader",
+			Type:           "downloader.download",
+			Pool:           workers.PoolDownload,
+			Timeout:        10 * time.Minute,
+			IdempotencyKey: idempKey,
+			RecoveryPolicy: jobs.RecoverySkip,
+			Run: func(taskCtx context.Context) error {
+				return p.executeURLDownload(taskCtx, ctx, rawURL)
+			},
+		}
+		if err := p.jobs.Register(job); err == nil {
+			return p.jobs.Trigger(ctx.Ctx, jobID)
+		}
+	}
+
+	return p.executeURLDownload(ctx.Ctx, ctx, rawURL)
+}
+
+func (p *Plugin) executeURLDownload(taskCtx context.Context, ctx *core.Context, rawURL string) error {
 	if p.registry == nil {
 		_ = p.Init()
 	}
@@ -186,7 +272,7 @@ func (p *Plugin) handleURLDownload(ctx *core.Context, rawURL string) error {
 		MaxBytes: 500 * 1024 * 1024,
 	}
 
-	asset, err := p.registry.Download(ctx.Ctx, rawURL, targetStore, opts)
+	asset, err := p.registry.Download(taskCtx, rawURL, targetStore, opts)
 	if err != nil {
 		return ctx.Edit(fmt.Sprintf("❌ <b>URL Download Failed</b>: %v", err))
 	}

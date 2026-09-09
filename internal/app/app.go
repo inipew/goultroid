@@ -90,6 +90,12 @@ func New(cfg *config.Config) (*App, error) {
 	if coreDeps.resourceManager != nil {
 		pluginManager.SetResourceManager(coreDeps.resourceManager)
 	}
+	if coreDeps.auditService != nil {
+		pluginManager.SetAuditor(coreDeps.auditService)
+	}
+	if coreDeps.storageManager != nil {
+		pluginManager.SetStorageManager(coreDeps.storageManager)
+	}
 	pluginManager.SetPlatformServices(
 		coreDeps.capGate,
 		coreDeps.netService,
@@ -99,6 +105,9 @@ func New(cfg *config.Config) (*App, error) {
 		coreDeps.taskManager,
 		coreDeps.jobsManager,
 	)
+	if domServices.schedEngine != nil {
+		pluginManager.SetSchedulerCleaner(domServices.schedEngine)
+	}
 	if domServices.addonManager != nil {
 		domServices.addonManager.SetProcessManager(coreDeps.procManager)
 	}
@@ -175,8 +184,28 @@ func New(cfg *config.Config) (*App, error) {
 	if err := rt.Register(domServices.schedEngine); err != nil {
 		return nil, fmt.Errorf("register scheduler component: %w", err)
 	}
+	if coreDeps.callbackStore != nil {
+		if err := rt.Register(coreDeps.callbackStore); err != nil {
+			return nil, fmt.Errorf("register callback_store component: %w", err)
+		}
+	}
+	if coreDeps.inlineEngine != nil && coreDeps.inlineEngine.Cache() != nil {
+		if err := rt.Register(coreDeps.inlineEngine.Cache()); err != nil {
+			return nil, fmt.Errorf("register inline_cache component: %w", err)
+		}
+	}
+	if domServices.settingsService != nil {
+		if err := rt.Register(domServices.settingsService); err != nil {
+			return nil, fmt.Errorf("register settings component: %w", err)
+		}
+	}
 	if err := rt.Register(tgRuntime.dispatcher); err != nil {
 		return nil, fmt.Errorf("register dispatcher component: %w", err)
+	}
+	if tgRuntime.assistant != nil {
+		if err := rt.Register(tgRuntime.assistant); err != nil {
+			return nil, fmt.Errorf("register assistant component: %w", err)
+		}
 	}
 	if err := rt.Register(pluginManager); err != nil {
 		return nil, fmt.Errorf("register plugins component: %w", err)

@@ -9,13 +9,20 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/resource"
+	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/ui"
+	"github.com/inipew/goultroid/internal/workers"
 )
 
 // Plugin provides rich system, hardware, network, and bot runtime metrics.
 type Plugin struct {
 	startTime time.Time
 	collector *Collector
+	resources *resource.Manager
+	workers   *workers.Manager
+	tasks     *tasks.Manager
+	eventBus  *core.EventBus
 }
 
 // New creates a new Sysinfo plugin instance.
@@ -29,6 +36,18 @@ func New(startTime ...time.Time) *Plugin {
 		collector: NewCollector(start),
 	}
 }
+
+// SetResources attaches the resource manager.
+func (p *Plugin) SetResources(rm *resource.Manager) { p.resources = rm }
+
+// SetWorkers attaches the worker pool manager.
+func (p *Plugin) SetWorkers(wm *workers.Manager) { p.workers = wm }
+
+// SetTasks attaches the task manager.
+func (p *Plugin) SetTasks(tm *tasks.Manager) { p.tasks = tm }
+
+// SetEventBus attaches the event bus.
+func (p *Plugin) SetEventBus(eb *core.EventBus) { p.eventBus = eb }
 
 // Name returns the unique plugin identifier.
 func (p *Plugin) Name() string {
@@ -136,6 +155,16 @@ func (p *Plugin) Commands() []core.Command {
 			Permission:  core.PermissionOwner,
 			Surfaces:    surfaces,
 			Handler:     p.handleBotInfo,
+		},
+		{
+			Name:        "diagnostics",
+			Aliases:     []string{"diag", "quotas", "quotainfo", "resources"},
+			Description: "Runtime worker pools, per-plugin task quotas, resource leaks, and event telemetry",
+			Usage:       ".diagnostics",
+			Category:    "System",
+			Permission:  core.PermissionOwner,
+			Surfaces:    surfaces,
+			Handler:     p.handleDiagnostics,
 		},
 	}
 }
@@ -370,5 +399,77 @@ func (p *Plugin) handleBotInfo(ctx *core.Context) error {
 
 	card.WithFooter("<i>Internal runtime profiling from Go runtime and OS process descriptor.</i>")
 
+	return ctx.EditOrReply(card.Render())
+}
+
+func (p *Plugin) handleDiagnostics(ctx *core.Context) error {
+	card := ui.NewCard("GoUltroid Runtime Diagnostics & Quotas").WithIcon("🔬")
+
+	// 1. Worker Pools
+	if p.workers != nil {
+		stats := p.workers.AllStats()
+		var sb strings.Builder
+		for _, s := range stats {
+			sb.WriteString(fmt.Sprintf("• <b>%s</b>: %d/%d workers | q <code>%d/%d</code> (done: %d, err: %d)\n",
+				ui.EscapeHTML(s.Name), s.Busy, s.Concurrency, s.QueueStats.Depth, s.QueueStats.Capacity, s.TasksExecuted, s.TasksFailed))
+		}
+		if sb.Len() > 0 {
+			card.AddField("⚙️ Worker Pools", strings.TrimRight(sb.String(), "\n"))
+		}
+	}
+
+	// 2. Task Quotas
+	if p.tasks != nil {
+		tStats := p.tasks.Stats()
+		card.AddField("📋 Task Summary", fmt.Sprintf("Queued: <code>%d</code> | Running: <code>%d</code> | Completed: <code>%d</code> | Failed: <code>%d</code>",
+			tStats.TotalQueued, tStats.TotalRunning, tStats.TotalCompleted, tStats.TotalFailed))
+
+		if len(tStats.Owners) > 0 {
+			var sb strings.Builder
+			for owner, os := range tStats.Owners {
+				q := p.tasks.GetQuota(owner)
+				sb.WriteString(fmt.Sprintf("• <b>%s</b>: run %d/%d | q %d/%d (done: %d)\n",
+					ui.EscapeHTML(owner), os.Running, q.MaxConcurrent, os.Queued, q.MaxQueued, os.Completed))
+			}
+			card.AddField("📊 Per-Plugin Task Quotas", strings.TrimRight(sb.String(), "\n"))
+		}
+	}
+
+	// 3. Tracked Resources & Leaks
+	if p.resources != nil {
+		snaps := p.resources.AllSnapshots()
+		leakedTotal := 0
+		for _, s := range snaps {
+			leakedTotal += s.Leaked
+		}
+		leakStr := "🟢 None"
+		if leakedTotal > 0 {
+			leakStr = fmt.Sprintf("🔴 <b>%d leaked!</b>", leakedTotal)
+		}
+		card.AddField("🛡️ Resource Leaks", leakStr)
+
+		if len(snaps) > 0 {
+			var sb strings.Builder
+			for _, s := range snaps {
+				var typeParts []string
+				for tName, count := range s.CountsByType {
+					typeParts = append(typeParts, fmt.Sprintf("%s: %d", tName, count))
+				}
+				sb.WriteString(fmt.Sprintf("• <b>%s</b>: %d active (%s)\n",
+					ui.EscapeHTML(s.Owner), s.TotalActive, strings.Join(typeParts, ", ")))
+			}
+			card.AddField("📦 Active Tracked Resources", strings.TrimRight(sb.String(), "\n"))
+		}
+	}
+
+	// 4. EventBus
+	if p.eventBus != nil {
+		ebStats := p.eventBus.Stats()
+		dlqLen := len(p.eventBus.DLQ())
+		card.AddField("🛰️ EventBus Telemetry", fmt.Sprintf("Pub: <code>%d</code> | Deliv: <code>%d</code> | Drop: <code>%d</code> | DLQ: <code>%d</code>",
+			ebStats.Published, ebStats.Delivered, ebStats.Dropped, dlqLen))
+	}
+
+	card.WithFooter("<i>Telemetry aggregated across workers, tasks, resources, and eventbus.</i>")
 	return ctx.EditOrReply(card.Render())
 }

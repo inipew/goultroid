@@ -3,6 +3,8 @@ package secret
 import (
 	"os"
 	"testing"
+
+	"github.com/inipew/goultroid/internal/platform/audit"
 )
 
 func TestSecretManager_GetAndRedact(t *testing.T) {
@@ -28,5 +30,27 @@ func TestSecretManager_GetAndRedact(t *testing.T) {
 	redacted := Redact("abcdefghijkl")
 	if redacted != "ab********kl" {
 		t.Errorf("expected ab********kl, got: %s", redacted)
+	}
+}
+
+func TestSecretManager_Auditor(t *testing.T) {
+	auditor := audit.NewService(nil, 10)
+	mgr := NewManager(map[string]string{
+		"SECRET_TOKEN": "my-secret-val",
+	})
+	mgr.SetAuditor(auditor)
+
+	// Read secret
+	_, _ = mgr.Get("SECRET_TOKEN")
+	recent := auditor.Recent(5)
+	if len(recent) != 1 || recent[0].Action != "secret.read" {
+		t.Fatalf("expected 1 secret.read audit event, got %+v", recent)
+	}
+
+	// Write secret
+	mgr.Set("NEW_SECRET", "supersecret123")
+	recent = auditor.Recent(5)
+	if len(recent) != 2 || recent[0].Action != "secret.write" {
+		t.Fatalf("expected secret.write audit event, got %+v", recent)
 	}
 }

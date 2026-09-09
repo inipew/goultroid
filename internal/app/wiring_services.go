@@ -29,12 +29,17 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 		cleanupCore(core, logger)
 		return nil, fmt.Errorf("register default settings definitions: %w", err)
 	}
-	settingsService := settings.NewService(core.db, settingsRegistry, core.eventBus)
+	settingsRepo := settings.NewSQLiteRepository(core.db.DB)
+	settingsService := settings.NewService(settingsRepo, settingsRegistry, core.eventBus)
 
-	schedEngine := scheduler.NewEngine(core.db, tg.client.Service, core.router, core.perms, logger)
+	schedRepo := scheduler.NewSQLiteRepository(core.db.DB)
+	schedEngine := scheduler.NewEngine(schedRepo, tg.client.Service, core.router, core.perms, logger)
 	schedEngine.SetExecutor(tg.dispatcher.Executor())
 	if core.workerManager != nil {
 		schedEngine.SetWorkers(core.workerManager, core.taskManager)
+	}
+	if core.jobsManager != nil {
+		schedEngine.SetJobsManager(core.jobsManager)
 	}
 
 	storageDir := filepath.Join("data", "storage")

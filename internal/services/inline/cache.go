@@ -5,7 +5,11 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/inipew/goultroid/internal/runtime"
 )
+
+var _ runtime.Component = (*Cache)(nil)
 
 type cachedEntry struct {
 	results   []InlineResult
@@ -177,15 +181,33 @@ func (c *Cache) Prune() int {
 	return pruned
 }
 
+// Name returns component identifier for runtime.Component.
+func (c *Cache) Name() string {
+	return "inline_cache"
+}
+
+// Dependencies returns prerequisite components for runtime.Component.
+func (c *Cache) Dependencies() []string {
+	return []string{"workers"}
+}
+
+// Health probes the health status of the inline cache.
+func (c *Cache) Health(ctx context.Context) runtime.ComponentHealth {
+	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
+}
+
 // Start launches background prune loop (Fase 4 shutdown-aware).
-func (c *Cache) Start(ctx context.Context) {
+func (c *Cache) Start(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	c.mu.Lock()
 	if c.cancel != nil {
 		c.mu.Unlock()
-		return
+		return nil
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
@@ -204,16 +226,34 @@ func (c *Cache) Start(ctx context.Context) {
 			}
 		}
 	}()
+	return nil
 }
 
 // Stop terminates background prune loop.
-func (c *Cache) Stop() {
+func (c *Cache) Stop(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
 	c.mu.Lock()
 	cancel := c.cancel
 	c.cancel = nil
 	c.mu.Unlock()
 	if cancel != nil {
 		cancel()
-		c.wg.Wait()
+		done := make(chan struct{})
+		go func() {
+			c.wg.Wait()
+			close(done)
+		}()
+		if ctx != nil {
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		} else {
+			<-done
+		}
 	}
+	return nil
 }

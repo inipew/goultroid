@@ -183,3 +183,35 @@ func TestScopeWithManagerDetectsLeaks(t *testing.T) {
 		t.Fatalf("expected 1 leaked resource in manager snapshot, got: %+v", snap)
 	}
 }
+
+func TestScope_TrackWebSocket(t *testing.T) {
+	mgr := resource.NewManager()
+	scope := NewScopeWithManager(context.Background(), "plugin:ws_test", mgr)
+
+	closedCalled := false
+	err := scope.TrackWebSocket("conn-1", "wss://example.com/ws", func() error {
+		closedCalled = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error tracking websocket: %v", err)
+	}
+
+	snap := mgr.OwnerSnapshot("plugin:ws_test")
+	if snap.TotalActive != 1 || snap.CountsByType[resource.TypeWebSocket] != 1 {
+		t.Fatalf("expected 1 active websocket in manager snapshot, got: %+v", snap)
+	}
+
+	if err := scope.Close(context.Background()); err != nil {
+		t.Fatalf("unexpected error closing scope: %v", err)
+	}
+
+	if !closedCalled {
+		t.Fatalf("expected closeFn to be called upon scope close")
+	}
+
+	snapAfter := mgr.OwnerSnapshot("plugin:ws_test")
+	if snapAfter.TotalActive != 0 || snapAfter.Leaked != 0 {
+		t.Fatalf("expected 0 active/leaked resources after close, got: %+v", snapAfter)
+	}
+}

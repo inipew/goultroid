@@ -8,21 +8,19 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/database"
 )
 
-// mockRepo is an in-memory database.Repository stub for settings tests.
+// mockRepo is an in-memory Repository stub for settings tests.
 type mockRepo struct {
-	database.Repository
 	mu       sync.Mutex
-	settings map[string]*database.SettingItem
-	history  []database.SettingChangeRecord
+	settings map[string]*SettingItem
+	history  []SettingChangeRecord
 	idGen    int64
 }
 
 func newMockRepo() *mockRepo {
 	return &mockRepo{
-		settings: make(map[string]*database.SettingItem),
+		settings: make(map[string]*SettingItem),
 	}
 }
 
@@ -30,7 +28,7 @@ func (m *mockRepo) key(scopeType string, scopeID int64, ns, k string) string {
 	return scopeType + ":" + string(rune(scopeID)) + ":" + ns + ":" + k
 }
 
-func (m *mockRepo) GetSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) (*database.SettingItem, error) {
+func (m *mockRepo) GetSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) (*SettingItem, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	item, ok := m.settings[m.key(scopeType, scopeID, namespace, key)]
@@ -41,7 +39,7 @@ func (m *mockRepo) GetSetting(ctx context.Context, scopeType string, scopeID int
 	return &cp, nil
 }
 
-func (m *mockRepo) GetEffectiveSetting(ctx context.Context, namespace, key string, chatID, userID int64) (*database.SettingItem, error) {
+func (m *mockRepo) GetEffectiveSetting(ctx context.Context, namespace, key string, chatID, userID int64) (*SettingItem, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if chatID != 0 {
@@ -63,7 +61,7 @@ func (m *mockRepo) GetEffectiveSetting(ctx context.Context, namespace, key strin
 	return nil, nil
 }
 
-func (m *mockRepo) ListPendingOutbox(ctx context.Context, limit int) ([]database.SettingOutboxEntry, error) {
+func (m *mockRepo) ListPendingOutbox(ctx context.Context, limit int) ([]SettingOutboxEntry, error) {
 	return nil, nil
 }
 
@@ -71,7 +69,7 @@ func (m *mockRepo) MarkOutboxProcessed(ctx context.Context, id int64) error {
 	return nil
 }
 
-func (m *mockRepo) SetSetting(ctx context.Context, item *database.SettingItem) error {
+func (m *mockRepo) SetSetting(ctx context.Context, item *SettingItem) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	k := m.key(item.ScopeType, item.ScopeID, item.Namespace, item.Key)
@@ -83,7 +81,7 @@ func (m *mockRepo) SetSetting(ctx context.Context, item *database.SettingItem) e
 	m.settings[k] = &cp
 
 	m.idGen++
-	m.history = append([]database.SettingChangeRecord{{
+	m.history = append([]SettingChangeRecord{{
 		ID:        m.idGen,
 		ScopeType: item.ScopeType,
 		ScopeID:   item.ScopeID,
@@ -97,7 +95,7 @@ func (m *mockRepo) SetSetting(ctx context.Context, item *database.SettingItem) e
 	return nil
 }
 
-func (m *mockRepo) SetSettingsBatch(ctx context.Context, items []*database.SettingItem) error {
+func (m *mockRepo) SetSettingsBatch(ctx context.Context, items []*SettingItem) error {
 	for _, item := range items {
 		if err := m.SetSetting(ctx, item); err != nil {
 			return err
@@ -115,7 +113,7 @@ func (m *mockRepo) DeleteSetting(ctx context.Context, scopeType string, scopeID 
 		oldVal = prev.Value
 		delete(m.settings, k)
 		m.idGen++
-		m.history = append([]database.SettingChangeRecord{{
+		m.history = append([]SettingChangeRecord{{
 			ID:        m.idGen,
 			ScopeType: scopeType,
 			ScopeID:   scopeID,
@@ -130,10 +128,10 @@ func (m *mockRepo) DeleteSetting(ctx context.Context, scopeType string, scopeID 
 	return nil
 }
 
-func (m *mockRepo) ListSettings(ctx context.Context, scopeType string, scopeID int64, namespace string) ([]database.SettingItem, error) {
+func (m *mockRepo) ListSettings(ctx context.Context, scopeType string, scopeID int64, namespace string) ([]SettingItem, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var res []database.SettingItem
+	var res []SettingItem
 	for _, item := range m.settings {
 		if item.ScopeType == scopeType && item.ScopeID == scopeID {
 			if namespace == "" || item.Namespace == namespace {
@@ -144,10 +142,10 @@ func (m *mockRepo) ListSettings(ctx context.Context, scopeType string, scopeID i
 	return res, nil
 }
 
-func (m *mockRepo) GetSettingHistory(ctx context.Context, namespace, key string, limit int) ([]database.SettingChangeRecord, error) {
+func (m *mockRepo) GetSettingHistory(ctx context.Context, namespace, key string, limit int) ([]SettingChangeRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var res []database.SettingChangeRecord
+	var res []SettingChangeRecord
 	for _, r := range m.history {
 		if r.Namespace == namespace && r.Key == key {
 			res = append(res, r)
@@ -638,7 +636,7 @@ func TestServiceResolverCacheAndInvalidation(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	// Cache was invalidated, now query returns repo/new setting if we updated repo
-	_ = repo.SetSetting(ctx, &database.SettingItem{
+	_ = repo.SetSetting(ctx, &SettingItem{
 		ScopeType: string(ScopeGlobal),
 		ScopeID:   0,
 		Namespace: "core",

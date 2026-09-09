@@ -84,3 +84,75 @@ func TestManager_ComponentAndPools(t *testing.T) {
 		t.Errorf("expected healthy status, got: %s", h.Status)
 	}
 }
+
+func TestManager_TasksManagerQuotaEnforcement(t *testing.T) {
+	mgr := NewManager()
+	tm := tasks.NewManager()
+	mgr.SetTasksManager(tm)
+
+	// Set a tight quota for greedy plugin: max 2 queued tasks
+	mgr.SetOwnerQuota("plugin:greedy", tasks.Quota{
+		MaxConcurrent: 1,
+		MaxQueued:     2,
+	})
+
+	q, ok := mgr.GetOwnerQuota("plugin:greedy")
+	if !ok || q.MaxQueued != 2 || q.MaxConcurrent != 1 {
+		t.Fatalf("expected quota 1/2, got %+v", q)
+	}
+
+	ctx := context.Background()
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	defer mgr.Stop(ctx)
+
+	blockChan := make(chan struct{})
+	defer close(blockChan)
+
+	// Task 1 (will be running)
+	err := mgr.Submit(ctx, PoolGeneral, tasks.Task{
+		ID:    "t-1",
+		Owner: "plugin:greedy",
+		Run: func(c context.Context) error {
+			<-blockChan
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("task 1 failed to submit: %v", err)
+	}
+
+	// Task 2 (queued)
+	err = mgr.Submit(ctx, PoolGeneral, tasks.Task{
+		ID:    "t-2",
+		Owner: "plugin:greedy",
+		Run: func(c context.Context) error {
+			<-blockChan
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("task 2 failed to submit: %v", err)
+	}
+
+	// Task 3: Exceeds MaxQueued limit (2) -> MUST return ErrQuotaExceeded
+	err = mgr.Submit(ctx, PoolGeneral, tasks.Task{
+		ID:    "t-3",
+		Owner: "plugin:greedy",
+		Run: func(c context.Context) error {
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected ErrQuotaExceeded on task 3, got nil")
+	}
+
+	ownerStats, found := mgr.OwnerTaskStats("plugin:greedy")
+	if !found {
+		t.Fatalf("expected owner stats for plugin:greedy")
+	}
+	if ownerStats.Queued+ownerStats.Running == 0 {
+		t.Errorf("expected active tasks for plugin:greedy, got %+v", ownerStats)
+	}
+}

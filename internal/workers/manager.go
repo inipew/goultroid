@@ -2,8 +2,10 @@ package workers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/inipew/goultroid/internal/queue"
 	"github.com/inipew/goultroid/internal/runtime"
@@ -23,8 +25,9 @@ var _ runtime.Component = (*Manager)(nil)
 
 // Manager coordinates isolated worker pools across the application runtime.
 type Manager struct {
-	mu    sync.RWMutex
-	pools map[string]*Pool
+	mu           sync.RWMutex
+	pools        map[string]*Pool
+	tasksManager *tasks.Manager
 }
 
 // NewManager creates a Manager initialized with standard workload pools.
@@ -126,12 +129,108 @@ func (m *Manager) Get(name string) (*Pool, bool) {
 	return p, ok
 }
 
-// Submit dispatches a task to the designated worker pool.
+// SetTasksManager attaches the task manager for quota enforcement and lifecycle tracking.
+func (m *Manager) SetTasksManager(tm *tasks.Manager) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tasksManager = tm
+}
+
+// TasksManager returns the configured task manager if attached.
+func (m *Manager) TasksManager() *tasks.Manager {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.tasksManager
+}
+
+// SetOwnerQuota sets task execution and queue quota for a specific owner.
+func (m *Manager) SetOwnerQuota(owner string, q tasks.Quota) {
+	m.mu.RLock()
+	tm := m.tasksManager
+	m.mu.RUnlock()
+	if tm != nil {
+		tm.SetOwnerQuota(owner, q)
+	}
+}
+
+// GetOwnerQuota returns the quota for a specific owner.
+func (m *Manager) GetOwnerQuota(owner string) (tasks.Quota, bool) {
+	m.mu.RLock()
+	tm := m.tasksManager
+	m.mu.RUnlock()
+	if tm == nil {
+		return tasks.DefaultQuota, false
+	}
+	return tm.GetQuota(owner), true
+}
+
+// OwnerTaskStats returns execution metrics for a specific task owner.
+func (m *Manager) OwnerTaskStats(owner string) (tasks.OwnerStats, bool) {
+	m.mu.RLock()
+	tm := m.tasksManager
+	m.mu.RUnlock()
+	if tm == nil {
+		return tasks.OwnerStats{}, false
+	}
+	stats := tm.Stats()
+	if os, ok := stats.Owners[owner]; ok {
+		return os, true
+	}
+	return tasks.OwnerStats{Owner: owner}, true
+}
+
+// Submit dispatches a task to the designated worker pool with quota and lifecycle management.
 func (m *Manager) Submit(ctx context.Context, poolName string, task tasks.Task) error {
 	pool, ok := m.Get(poolName)
 	if !ok {
 		return fmt.Errorf("worker pool %q not found", poolName)
 	}
+
+	m.mu.RLock()
+	tm := m.tasksManager
+	m.mu.RUnlock()
+
+	if tm != nil {
+		if task.ID == "" {
+			task.ID = fmt.Sprintf("task:%s:%d", poolName, time.Now().UnixNano())
+		}
+		taskCtx, cancel, err := tm.Register(ctx, task)
+		if err != nil {
+			return err
+		}
+
+		origRun := task.Run
+		task.Run = func(runCtx context.Context) error {
+			defer cancel()
+			startCtx, err := tm.Start(task.ID)
+			if err != nil {
+				tm.Finish(task.ID, tasks.StateFailed, err)
+				return err
+			}
+
+			execCtx, execCancel := context.WithCancel(startCtx)
+			defer execCancel()
+
+			var runErr error
+			if origRun != nil {
+				runErr = origRun(execCtx)
+			}
+
+			state := tasks.StateCompleted
+			if runErr != nil {
+				if errors.Is(runErr, context.Canceled) {
+					state = tasks.StateCancelled
+				} else {
+					state = tasks.StateFailed
+				}
+			}
+			tm.Finish(task.ID, state, runErr)
+			return runErr
+		}
+
+		return pool.Submit(taskCtx, task)
+	}
+
 	return pool.Submit(ctx, task)
 }
 

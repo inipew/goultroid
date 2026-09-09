@@ -1,4 +1,4 @@
-package database
+package settings
 
 import (
 	"context"
@@ -47,8 +47,8 @@ type SettingOutboxEntry struct {
 	Processed bool      `json:"processed"`
 }
 
-// SettingsRepository is the minimal contract for the settings domain.
-type SettingsRepository interface {
+// Repository is the minimal persistence contract for the settings domain.
+type Repository interface {
 	GetSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) (*SettingItem, error)
 	GetEffectiveSetting(ctx context.Context, namespace, key string, chatID, userID int64) (*SettingItem, error)
 	SetSetting(ctx context.Context, item *SettingItem) error
@@ -60,14 +60,70 @@ type SettingsRepository interface {
 	MarkOutboxProcessed(ctx context.Context, id int64) error
 }
 
+// SQLiteRepository is a SQLite-backed implementation of Repository.
+type SQLiteRepository struct {
+	db *sql.DB
+}
+
+// NewSQLiteRepository creates a new SQLite-backed settings repository.
+func NewSQLiteRepository(db *sql.DB) *SQLiteRepository {
+	return &SQLiteRepository{db: db}
+}
+
+var _ Repository = (*SQLiteRepository)(nil)
+
+// InitSchema creates the settings, setting_changes, and setting_outbox tables if they do not exist.
+func (r *SQLiteRepository) InitSchema(ctx context.Context) error {
+	schema := `
+	CREATE TABLE IF NOT EXISTS settings (
+		scope_type TEXT NOT NULL,
+		scope_id INTEGER NOT NULL,
+		namespace TEXT NOT NULL,
+		key TEXT NOT NULL,
+		value_type TEXT NOT NULL,
+		value TEXT NOT NULL,
+		updated_by INTEGER NOT NULL,
+		updated_at DATETIME NOT NULL,
+		PRIMARY KEY (scope_type, scope_id, namespace, key)
+	);
+	CREATE TABLE IF NOT EXISTS setting_changes (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		scope_type TEXT NOT NULL,
+		scope_id INTEGER NOT NULL,
+		namespace TEXT NOT NULL,
+		key TEXT NOT NULL,
+		old_val TEXT NOT NULL,
+		new_val TEXT NOT NULL,
+		changed_by INTEGER NOT NULL,
+		changed_at DATETIME NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_setting_changes_lookup ON setting_changes(namespace, key, changed_at);
+	CREATE TABLE IF NOT EXISTS setting_outbox (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		scope_type TEXT NOT NULL,
+		scope_id INTEGER NOT NULL,
+		namespace TEXT NOT NULL,
+		key TEXT NOT NULL,
+		old_val TEXT NOT NULL,
+		new_val TEXT NOT NULL,
+		changed_by INTEGER NOT NULL,
+		created_at DATETIME NOT NULL,
+		processed INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE INDEX IF NOT EXISTS idx_setting_outbox_unprocessed ON setting_outbox(processed, created_at);
+	`
+	_, err := r.db.ExecContext(ctx, schema)
+	return err
+}
+
 // GetSetting retrieves a setting by its scope, namespace, and key.
-func (d *DB) GetSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) (*SettingItem, error) {
+func (r *SQLiteRepository) GetSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) (*SettingItem, error) {
 	query := `
 		SELECT scope_type, scope_id, namespace, key, value_type, value, updated_by, updated_at
 		FROM settings
 		WHERE scope_type = ? AND scope_id = ? AND namespace = ? AND key = ?`
 	var item SettingItem
-	err := d.QueryRowContext(ctx, query, scopeType, scopeID, namespace, key).Scan(
+	err := r.db.QueryRowContext(ctx, query, scopeType, scopeID, namespace, key).Scan(
 		&item.ScopeType,
 		&item.ScopeID,
 		&item.Namespace,
@@ -87,7 +143,7 @@ func (d *DB) GetSetting(ctx context.Context, scopeType string, scopeID int64, na
 }
 
 // GetEffectiveSetting retrieves the highest-priority setting for a key across chat, user, and global scopes in a single query.
-func (d *DB) GetEffectiveSetting(ctx context.Context, namespace, key string, chatID, userID int64) (*SettingItem, error) {
+func (r *SQLiteRepository) GetEffectiveSetting(ctx context.Context, namespace, key string, chatID, userID int64) (*SettingItem, error) {
 	query := `
 		SELECT scope_type, scope_id, namespace, key, value_type, value, updated_by, updated_at
 		FROM settings
@@ -100,7 +156,7 @@ func (d *DB) GetEffectiveSetting(ctx context.Context, namespace, key string, cha
 		ORDER BY CASE scope_type WHEN 'chat' THEN 1 WHEN 'user' THEN 2 WHEN 'global' THEN 3 ELSE 4 END
 		LIMIT 1`
 	var item SettingItem
-	err := d.QueryRowContext(ctx, query, namespace, key, chatID, userID).Scan(
+	err := r.db.QueryRowContext(ctx, query, namespace, key, chatID, userID).Scan(
 		&item.ScopeType,
 		&item.ScopeID,
 		&item.Namespace,
@@ -120,7 +176,7 @@ func (d *DB) GetEffectiveSetting(ctx context.Context, namespace, key string, cha
 }
 
 // SetSetting creates or updates a setting and appends a record to setting_changes audit log in a transaction.
-func (d *DB) SetSetting(ctx context.Context, item *SettingItem) error {
+func (r *SQLiteRepository) SetSetting(ctx context.Context, item *SettingItem) error {
 	if item == nil {
 		return errors.New("item cannot be nil")
 	}
@@ -128,7 +184,7 @@ func (d *DB) SetSetting(ctx context.Context, item *SettingItem) error {
 		item.UpdatedAt = time.Now().UTC()
 	}
 
-	tx, err := d.BeginTx(ctx, nil)
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -180,12 +236,12 @@ func (d *DB) SetSetting(ctx context.Context, item *SettingItem) error {
 }
 
 // SetSettingsBatch creates or updates multiple settings atomically within a single transaction.
-func (d *DB) SetSettingsBatch(ctx context.Context, items []*SettingItem) error {
+func (r *SQLiteRepository) SetSettingsBatch(ctx context.Context, items []*SettingItem) error {
 	if len(items) == 0 {
 		return nil
 	}
 	now := time.Now().UTC()
-	tx, err := d.BeginTx(ctx, nil)
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin batch settings transaction: %w", err)
 	}
@@ -266,8 +322,8 @@ func (d *DB) SetSettingsBatch(ctx context.Context, items []*SettingItem) error {
 }
 
 // DeleteSetting removes a setting and records the deletion in the audit log in a transaction.
-func (d *DB) DeleteSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) error {
-	tx, err := d.BeginTx(ctx, nil)
+func (r *SQLiteRepository) DeleteSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -313,11 +369,11 @@ func (d *DB) DeleteSetting(ctx context.Context, scopeType string, scopeID int64,
 }
 
 // ListPendingOutbox retrieves unprocessed outbox entries for durable publishing.
-func (d *DB) ListPendingOutbox(ctx context.Context, limit int) ([]SettingOutboxEntry, error) {
+func (r *SQLiteRepository) ListPendingOutbox(ctx context.Context, limit int) ([]SettingOutboxEntry, error) {
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := d.QueryContext(ctx, `
+	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, scope_type, scope_id, namespace, key, old_val, new_val, changed_by, created_at, processed
 		FROM setting_outbox
 		WHERE processed = 0
@@ -344,8 +400,8 @@ func (d *DB) ListPendingOutbox(ctx context.Context, limit int) ([]SettingOutboxE
 }
 
 // MarkOutboxProcessed marks an outbox entry as processed.
-func (d *DB) MarkOutboxProcessed(ctx context.Context, id int64) error {
-	_, err := d.ExecContext(ctx, `UPDATE setting_outbox SET processed = 1 WHERE id = ?`, id)
+func (r *SQLiteRepository) MarkOutboxProcessed(ctx context.Context, id int64) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE setting_outbox SET processed = 1 WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("failed to mark outbox %d processed: %w", id, err)
 	}
@@ -353,7 +409,7 @@ func (d *DB) MarkOutboxProcessed(ctx context.Context, id int64) error {
 }
 
 // ListSettings returns all settings for a scope, optionally filtered by namespace (if non-empty).
-func (d *DB) ListSettings(ctx context.Context, scopeType string, scopeID int64, namespace string) ([]SettingItem, error) {
+func (r *SQLiteRepository) ListSettings(ctx context.Context, scopeType string, scopeID int64, namespace string) ([]SettingItem, error) {
 	var rows *sql.Rows
 	var err error
 	if namespace != "" {
@@ -362,14 +418,14 @@ func (d *DB) ListSettings(ctx context.Context, scopeType string, scopeID int64, 
 			FROM settings
 			WHERE scope_type = ? AND scope_id = ? AND namespace = ?
 			ORDER BY key ASC`
-		rows, err = d.QueryContext(ctx, query, scopeType, scopeID, namespace)
+		rows, err = r.db.QueryContext(ctx, query, scopeType, scopeID, namespace)
 	} else {
 		query := `
 			SELECT scope_type, scope_id, namespace, key, value_type, value, updated_by, updated_at
 			FROM settings
 			WHERE scope_type = ? AND scope_id = ?
 			ORDER BY namespace ASC, key ASC`
-		rows, err = d.QueryContext(ctx, query, scopeType, scopeID)
+		rows, err = r.db.QueryContext(ctx, query, scopeType, scopeID)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to query settings: %w", err)
@@ -391,7 +447,7 @@ func (d *DB) ListSettings(ctx context.Context, scopeType string, scopeID int64, 
 }
 
 // GetSettingHistory retrieves the audit history for a setting.
-func (d *DB) GetSettingHistory(ctx context.Context, namespace, key string, limit int) ([]SettingChangeRecord, error) {
+func (r *SQLiteRepository) GetSettingHistory(ctx context.Context, namespace, key string, limit int) ([]SettingChangeRecord, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -401,7 +457,7 @@ func (d *DB) GetSettingHistory(ctx context.Context, namespace, key string, limit
 		WHERE namespace = ? AND key = ?
 		ORDER BY changed_at DESC, id DESC
 		LIMIT ?`
-	rows, err := d.QueryContext(ctx, query, namespace, key, limit)
+	rows, err := r.db.QueryContext(ctx, query, namespace, key, limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query setting history: %w", err)
 	}

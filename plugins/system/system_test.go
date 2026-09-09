@@ -10,6 +10,9 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/platform/filesystem"
+	platprocess "github.com/inipew/goultroid/internal/platform/process"
+	"github.com/inipew/goultroid/internal/plugin"
 )
 
 type mockService struct {
@@ -102,8 +105,8 @@ func TestSystemPlugin_Metadata(t *testing.T) {
 	}
 
 	cmds := p.Commands()
-	if len(cmds) != 4 {
-		t.Fatalf("expected 4 commands, got %d", len(cmds))
+	if len(cmds) != 6 {
+		t.Fatalf("expected 6 commands, got %d", len(cmds))
 	}
 
 	for _, c := range cmds {
@@ -472,5 +475,182 @@ func TestHealth_WithMetrics(t *testing.T) {
 	}
 	if !strings.Contains(svc.edited, "Commands:") {
 		t.Errorf("expected Commands count in output, got: %s", svc.edited)
+	}
+}
+
+type mockDummyPlugin struct {
+	name string
+}
+
+func (m *mockDummyPlugin) Name() string        { return m.name }
+func (m *mockDummyPlugin) Description() string { return "test plugin" }
+func (m *mockDummyPlugin) Init() error         { return nil }
+func (m *mockDummyPlugin) Shutdown() error     { return nil }
+func (m *mockDummyPlugin) Commands() []core.Command {
+	return []core.Command{
+		{Name: m.name + "cmd", Handler: func(ctx *core.Context) error { return nil }},
+	}
+}
+
+func TestSystemPlugin_Plugins_Command(t *testing.T) {
+	p := New()
+	svc := &mockService{}
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		PeerID:  &tg.InputPeerChat{ChatID: 100},
+		Message: &core.Message{ID: 1, IsOutgoing: true},
+		Svc:     svc,
+	}
+
+	// 1. When plugin manager is not configured
+	_ = p.handlePlugins(ctx)
+	if !strings.Contains(svc.edited, "Plugin manager is not available") {
+		t.Fatalf("expected unavailable message, got %s", svc.edited)
+	}
+
+	// 2. When plugin manager has plugins
+	router := core.NewRouter(".")
+	pluginMgr := plugin.NewManager(router)
+	dummy := &mockDummyPlugin{name: "sample"}
+	if err := pluginMgr.Register(dummy); err != nil {
+		t.Fatalf("register dummy: %v", err)
+	}
+	p.SetPluginManager(pluginMgr)
+
+	if err := p.handlePlugins(ctx); err != nil {
+		t.Fatalf("handlePlugins failed: %v", err)
+	}
+	if !strings.Contains(svc.edited, "Loaded Userbot Plugins (1)") {
+		t.Errorf("expected Loaded Userbot Plugins (1), got %s", svc.edited)
+	}
+	if !strings.Contains(svc.edited, "sample") {
+		t.Errorf("expected sample plugin listed, got %s", svc.edited)
+	}
+	if !strings.Contains(svc.edited, "enabled") {
+		t.Errorf("expected enabled status, got %s", svc.edited)
+	}
+}
+
+func TestSystemPlugin_PluginToggle_Command(t *testing.T) {
+	p := New()
+	router := core.NewRouter(".")
+	pluginMgr := plugin.NewManager(router)
+	dummy := &mockDummyPlugin{name: "sample"}
+	if err := pluginMgr.Register(dummy); err != nil {
+		t.Fatalf("register dummy: %v", err)
+	}
+	p.SetPluginManager(pluginMgr)
+
+	svc := &mockService{}
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		PeerID:  &tg.InputPeerChat{ChatID: 100},
+		Message: &core.Message{ID: 1, IsOutgoing: true},
+		Svc:     svc,
+	}
+
+	// 1. Missing args
+	ctx.Args = []string{}
+	_ = p.handlePluginToggle(ctx)
+	if !strings.Contains(svc.edited, "Usage:") {
+		t.Fatalf("expected usage message, got %s", svc.edited)
+	}
+
+	// 2. Prevent self-disabling system plugin
+	ctx.Args = []string{"disable", "system"}
+	_ = p.handlePluginToggle(ctx)
+	if !strings.Contains(svc.edited, "Cannot toggle the <b>system</b> plugin") {
+		t.Fatalf("expected lockout warning, got %s", svc.edited)
+	}
+
+	// 3. Disable sample plugin
+	ctx.Args = []string{"disable", "sample"}
+	if err := p.handlePluginToggle(ctx); err != nil {
+		t.Fatalf("disable failed: %v", err)
+	}
+	if !strings.Contains(svc.edited, "disabled and resources cleaned up") {
+		t.Fatalf("expected disabled response, got %s", svc.edited)
+	}
+	if pluginMgr.IsEnabled("sample") {
+		t.Fatalf("expected sample to be disabled in pluginMgr")
+	}
+
+	// Disable again -> already disabled
+	_ = p.handlePluginToggle(ctx)
+	if !strings.Contains(svc.edited, "already disabled") {
+		t.Fatalf("expected already disabled response, got %s", svc.edited)
+	}
+
+	// 4. Enable sample plugin
+	ctx.Args = []string{"enable", "sample"}
+	if err := p.handlePluginToggle(ctx); err != nil {
+		t.Fatalf("enable failed: %v", err)
+	}
+	if !strings.Contains(svc.edited, "successfully enabled") {
+		t.Fatalf("expected enabled response, got %s", svc.edited)
+	}
+	if !pluginMgr.IsEnabled("sample") {
+		t.Fatalf("expected sample to be enabled in pluginMgr")
+	}
+
+	// Enable again -> already enabled
+	_ = p.handlePluginToggle(ctx)
+	if !strings.Contains(svc.edited, "already enabled") {
+		t.Fatalf("expected already enabled response, got %s", svc.edited)
+	}
+}
+
+func TestSystemPlugin_InitPluginProcessManager(t *testing.T) {
+	gate := plugin.NewCapabilityGate()
+	gate.AllowPrivileged("system", plugin.CapProcessExecute)
+	gate.Register("system", []string{plugin.CapProcessExecute, plugin.CapFilesystemTemp})
+
+	fsMgr, err := filesystem.NewManager(t.TempDir(), "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	procMgr := platprocess.NewManager([]string{"echo"}, 1024*1024, nil)
+
+	pctx := plugin.NewPluginContext(context.Background(), plugin.ContextConfig{
+		Owner:   "system",
+		Gate:    gate,
+		Files:   fsMgr,
+		Process: procMgr,
+	})
+
+	p := New()
+	if err := p.InitPlugin(pctx); err != nil {
+		t.Fatalf("InitPlugin failed: %v", err)
+	}
+	if p.procMgr == nil {
+		t.Fatal("expected procMgr to be injected")
+	}
+
+	// Verify handleExec executes via procMgr
+	svc := &mockService{}
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		PeerID:  &tg.InputPeerChat{ChatID: 100},
+		Message: &core.Message{ID: 1, Text: ".exec echo ManagedEcho", IsOutgoing: true},
+		Args:    []string{"echo", "ManagedEcho"},
+		Svc:     svc,
+	}
+	if err := p.handleExec(ctx); err != nil {
+		t.Fatalf("handleExec failed: %v", err)
+	}
+	if !strings.Contains(svc.edited, "ManagedEcho") {
+		t.Fatalf("expected output 'ManagedEcho', got %s", svc.edited)
+	}
+}
+
+func TestSystemPlugin_ProcessLockdown(t *testing.T) {
+	p := New()
+	// No cmdRunner, no procMgr, no runner set
+	_, err := p.runCmd(context.Background(), "echo", "test")
+	if err == nil {
+		t.Fatal("expected error when running command without process manager")
+	}
+	if !strings.Contains(err.Error(), "process manager not configured") {
+		t.Fatalf("unexpected error message: %v", err)
 	}
 }

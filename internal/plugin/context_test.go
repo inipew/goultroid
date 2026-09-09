@@ -7,6 +7,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/platform/network"
 	"github.com/inipew/goultroid/internal/platform/process"
+	"github.com/inipew/goultroid/internal/platform/storage"
 )
 
 func TestPluginContext_CapabilityEnforcement(t *testing.T) {
@@ -60,5 +61,72 @@ func TestPluginContext_CapabilityEnforcement(t *testing.T) {
 	}
 	if proc == nil {
 		t.Fatalf("expected non-nil process manager")
+	}
+}
+
+func TestPluginContext_StorageCapability(t *testing.T) {
+	gate := NewCapabilityGate()
+	storageMgr := storage.NewManager(nil) // memory fallback
+
+	_ = gate.RegisterManifest(Manifest{
+		ID:           "test_plugin",
+		Name:         "Test Plugin",
+		Version:      "1.0.0",
+		Capabilities: []string{CapStorageRead},
+	})
+
+	ctx := NewPluginContext(context.Background(), ContextConfig{
+		Owner:   "test_plugin",
+		Gate:    gate,
+		Storage: storageMgr,
+	})
+
+	// Storage should succeed because CapStorageRead is granted
+	store, err := ctx.Storage()
+	if err != nil {
+		t.Fatalf("expected Storage to succeed, got %v", err)
+	}
+
+	// Should be read-only
+	err = store.Set(context.Background(), "k", []byte("v"))
+	if !errors.Is(err, storage.ErrReadOnly) {
+		t.Fatalf("expected ErrReadOnly, got %v", err)
+	}
+
+	// Now register with write as well
+	_ = gate.RegisterManifest(Manifest{
+		ID:           "test_plugin",
+		Name:         "Test Plugin",
+		Version:      "1.0.0",
+		Capabilities: []string{CapStorageRead, CapStorageWrite},
+	})
+
+	store2, err := ctx.Storage()
+	if err != nil {
+		t.Fatalf("expected Storage to succeed, got %v", err)
+	}
+	if err := store2.Set(context.Background(), "k", []byte("hello")); err != nil {
+		t.Fatalf("expected Set to succeed with CapStorageWrite, got %v", err)
+	}
+	val, err := store2.Get(context.Background(), "k")
+	if err != nil || string(val) != "hello" {
+		t.Fatalf("expected hello, got %s (err: %v)", string(val), err)
+	}
+
+	// An unprivileged plugin with no storage capabilities
+	_ = gate.RegisterManifest(Manifest{
+		ID:           "unprivileged",
+		Name:         "Unprivileged",
+		Version:      "1.0.0",
+		Capabilities: []string{},
+	})
+	ctxUnpriv := NewPluginContext(context.Background(), ContextConfig{
+		Owner:   "unprivileged",
+		Gate:    gate,
+		Storage: storageMgr,
+	})
+	_, err = ctxUnpriv.Storage()
+	if !errors.Is(err, ErrCapabilityDenied) {
+		t.Fatalf("expected ErrCapabilityDenied for unprivileged plugin, got %v", err)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/inipew/goultroid/internal/module"
+	"github.com/inipew/goultroid/internal/plugin"
 )
 
 type ModuleType struct{}
@@ -12,21 +13,19 @@ var Module ModuleType
 
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
-		ID:          "scheduler",
-		Version:     "1.0.0",
-		Description: "Message, reminder, and recurring command scheduler",
+		ID:           "scheduler",
+		Version:      "1.0.0",
+		Description:  "Message, reminder, and recurring command scheduler",
+		Capabilities: []string{plugin.CapScheduler, plugin.CapJobs, plugin.CapTelegramSendMessage},
 	}
 }
 
-func (ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
+func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	if rt == nil {
 		return module.ErrNilRuntime
 	}
-	if rt.Plugins == nil {
-		return module.ErrNilPluginManager
-	}
 	p := New(rt.SchedEngine)
-	return rt.Plugins.RegisterWithContext(ctx, p)
+	return rt.RegisterPlugin(ctx, m.Manifest(), p)
 }
 
 var _ module.Module = ModuleType{}

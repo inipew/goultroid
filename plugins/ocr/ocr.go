@@ -43,7 +43,6 @@ type Plugin struct {
 
 func New() *Plugin {
 	return &Plugin{
-		apiKey:   strings.TrimSpace(os.Getenv("OCR_API")),
 		endpoint: defaultEndpoint,
 	}
 }
@@ -62,7 +61,19 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 		return err
 	}
 	p.files = fsMgr
+
+	secMgr, err := pctx.Secrets()
+	if err != nil {
+		return err
+	}
+	if key, err := secMgr.Get("OCR_API"); err == nil && strings.TrimSpace(key) != "" {
+		p.apiKey = strings.TrimSpace(key)
+	}
 	return nil
+}
+
+func (p *Plugin) SetAPIKey(key string) {
+	p.apiKey = strings.TrimSpace(key)
 }
 
 func (p *Plugin) SetHTTP(svc *network.Service) {

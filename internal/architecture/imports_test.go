@@ -136,6 +136,8 @@ func TestDatabaseGenericBoundary(t *testing.T) {
 		"moderation",
 		"addon",
 		"userlog",
+		"scheduler",
+		"settings",
 	}
 
 	for _, pkg := range pkgs {
@@ -188,14 +190,10 @@ func TestLegacyFeatureDatabaseSurfaceIsExplicit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// These are known remaining legacy feature-owned persistence files. The list is
-	// intentionally explicit so a new feature cannot silently add persistence here.
-	allowedLegacy := map[string]struct{}{
-		"scheduler.go": {},
-		"settings.go":  {},
-	}
+	// All domain persistence has been completely migrated to feature-owned repositories!
+	allowedLegacy := map[string]struct{}{}
 
-	var legacy []string
+	legacy := make([]string, 0, len(allowedLegacy))
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
 			continue
@@ -213,6 +211,100 @@ func TestLegacyFeatureDatabaseSurfaceIsExplicit(t *testing.T) {
 	sort.Strings(want)
 	if !reflect.DeepEqual(legacy, want) {
 		t.Fatalf("legacy feature persistence surface changed unexpectedly: got %v, want %v; migrate an existing feature before adding another file", legacy, want)
+	}
+}
+
+func TestAllModulesUseRegisterPlugin(t *testing.T) {
+	root := repositoryRoot(t)
+	pluginsDir := filepath.Join(root, "plugins")
+	fset := token.NewFileSet()
+
+	err := filepath.Walk(pluginsDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || info.Name() != "module.go" {
+			return nil
+		}
+
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+
+		hasRegisterPlugin := false
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			if sel.Sel.Name == "RegisterPlugin" {
+				hasRegisterPlugin = true
+			}
+			// Must not call RegisterWithContext directly
+			if sel.Sel.Name == "RegisterWithContext" {
+				rel, _ := filepath.Rel(root, path)
+				t.Errorf("%s calls rt.Plugins.RegisterWithContext directly; must call rt.RegisterPlugin(ctx, m.Manifest(), p)", rel)
+			}
+			return true
+		})
+
+		if !hasRegisterPlugin {
+			rel, _ := filepath.Rel(root, path)
+			t.Errorf("%s must call rt.RegisterPlugin(ctx, m.Manifest(), ...)", rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPluginsNoDirectExecCalls(t *testing.T) {
+	root := repositoryRoot(t)
+	pluginsDir := filepath.Join(root, "plugins")
+	fset := token.NewFileSet()
+
+	err := filepath.Walk(pluginsDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			pkgIdent, ok := sel.X.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			if pkgIdent.Name == "exec" && (sel.Sel.Name == "Command" || sel.Sel.Name == "CommandContext") {
+				rel, _ := filepath.Rel(root, path)
+				t.Errorf("%s calls exec.%s directly; must use managed process runner via PluginContext", rel, sel.Sel.Name)
+			}
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

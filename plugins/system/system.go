@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
+	platprocess "github.com/inipew/goultroid/internal/platform/process"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/process"
 )
@@ -33,8 +35,10 @@ type Plugin struct {
 	restartStatePath string
 	restartFunc      func(state RestartState) error
 	cmdRunner        func(ctx context.Context, name string, args ...string) ([]byte, error)
+	procMgr          *platprocess.Manager
 	runner           process.Runner
 	files            *filesystem.Manager
+	pluginMgr        *plugin.Manager
 	startTime        time.Time
 	metrics          core.MetricsCollector
 }
@@ -45,11 +49,25 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 		return err
 	}
 	p.files = fsMgr
+
+	procMgr, err := pctx.Process()
+	if err != nil {
+		return err
+	}
+	p.procMgr = procMgr
 	return nil
+}
+
+func (p *Plugin) SetProcessManager(pm *platprocess.Manager) {
+	p.procMgr = pm
 }
 
 func (p *Plugin) SetFiles(fs *filesystem.Manager) {
 	p.files = fs
+}
+
+func (p *Plugin) SetPluginManager(pm *plugin.Manager) {
+	p.pluginMgr = pm
 }
 
 func (p *Plugin) getFiles() *filesystem.Manager {
@@ -60,10 +78,10 @@ func (p *Plugin) getFiles() *filesystem.Manager {
 }
 
 func New() *Plugin {
-	return &Plugin{restartStatePath: "data/restart.json", startTime: time.Now(), runner: process.NewOSRunner(3, 60*time.Second, 2*1024*1024)}
+	return &Plugin{restartStatePath: "data/restart.json", startTime: time.Now()}
 }
 func NewWithCustomRestart(statePath string, restartFn func(state RestartState) error) *Plugin {
-	return &Plugin{restartStatePath: statePath, restartFunc: restartFn, runner: process.NewOSRunner(3, 60*time.Second, 2*1024*1024)}
+	return &Plugin{restartStatePath: statePath, restartFunc: restartFn}
 }
 func (p *Plugin) SetRunner(r process.Runner) {
 	if r != nil {
@@ -78,18 +96,22 @@ func (p *Plugin) runCmd(ctx context.Context, name string, args ...string) ([]byt
 	if p.cmdRunner != nil {
 		return p.cmdRunner(ctx, name, args...)
 	}
-	if p.runner == nil {
-		p.runner = process.NewOSRunner(3, 60*time.Second, 2*1024*1024)
+	if p.procMgr != nil {
+		stdout, stderr, err := p.procMgr.Execute(ctx, "system", name, args...)
+		return append(stdout, stderr...), err
 	}
-	res, err := p.runner.Run(ctx, process.Request{
-		Command: name,
-		Args:    args,
-		Timeout: 60 * time.Second,
-	})
-	if res != nil {
-		return []byte(res.Combined), err
+	if p.runner != nil {
+		res, err := p.runner.Run(ctx, process.Request{
+			Command: name,
+			Args:    args,
+			Timeout: 60 * time.Second,
+		})
+		if res != nil {
+			return []byte(res.Combined), err
+		}
+		return nil, err
 	}
-	return nil, err
+	return nil, errors.New("process manager not configured or process.execute capability denied")
 }
 func (p *Plugin) Name() string { return "system" }
 func (p *Plugin) Metadata() plugin.Metadata {
@@ -119,6 +141,8 @@ func (p *Plugin) Commands() []core.Command {
 		{Name: "restart", Description: "Restart the GoUltroid userbot process (Owner Only)", Usage: ".restart", Category: "System", Permission: core.PermissionOwner, Surfaces: sysSurfaces, Handler: p.handleRestart},
 		{Name: "update", Aliases: []string{"gitupdate"}, Description: "Check for updates from git remote or pull and rebuild (Owner Only)", Usage: ".update [pull|now]", Category: "System", Permission: core.PermissionOwner, Timeout: 180 * time.Second, Surfaces: sysSurfaces, Handler: p.handleUpdate},
 		{Name: "health", Aliases: []string{"runtime", "memstats"}, Description: "Show runtime memory and goroutine health statistics (Owner Only)", Usage: ".health", Category: "System", Permission: core.PermissionOwner, Surfaces: sysSurfaces, Handler: p.handleHealth},
+		{Name: "plugins", Aliases: []string{"modules"}, Description: "List all loaded userbot plugins and their enabled/disabled status (Owner Only)", Usage: ".plugins", Category: "System", Permission: core.PermissionOwner, Surfaces: sysSurfaces, Handler: p.handlePlugins},
+		{Name: "plugin", Aliases: []string{"mod"}, Description: "Dynamically enable or disable a userbot plugin at runtime (Owner Only)", Usage: ".plugin <enable|disable> <plugin_name>", Category: "System", Permission: core.PermissionOwner, Surfaces: sysSurfaces, Handler: p.handlePluginToggle},
 	}
 }
 
@@ -128,31 +152,46 @@ func (p *Plugin) handleExec(ctx *core.Context) error {
 	}
 	commandStr := strings.Join(ctx.Args, " ")
 	_ = ctx.EditOrReply("⏳ <i>Executing command...</i>")
-	if p.runner == nil {
-		p.runner = process.NewOSRunner(3, 60*time.Second, 2*1024*1024)
-	}
-	// P0-02: Use direct argv execution instead of shell. The router already
-	// handles quoted arguments, so ctx.Args is already properly split.
+
 	cmdName := ctx.Args[0]
 	cmdArgs := []string{}
 	if len(ctx.Args) > 1 {
 		cmdArgs = ctx.Args[1:]
 	}
-	res, err := p.runner.Run(ctx.Ctx, process.Request{Command: cmdName, Args: cmdArgs, Timeout: 60 * time.Second})
+
 	var output string
 	var elapsed time.Duration
-	if res != nil {
-		output = res.Combined
-		elapsed = res.Duration
-		if res.Truncated {
-			output += "\n\n[output truncated after 2MB]"
+
+	if p.procMgr != nil {
+		start := time.Now()
+		stdout, stderr, err := p.procMgr.Execute(ctx.Ctx, "system", cmdName, cmdArgs...)
+		elapsed = time.Since(start)
+		output = string(append(stdout, stderr...))
+		if output == "" {
+			if err != nil {
+				output = fmt.Sprintf("Error: %v", err)
+			} else {
+				output = "(no output)"
+			}
 		}
-	}
-	if output == "" {
-		if err != nil {
-			output = fmt.Sprintf("Error: %v", err)
-		} else {
-			output = "(no output)"
+	} else {
+		if p.runner == nil {
+			p.runner = process.NewOSRunner(3, 60*time.Second, 2*1024*1024)
+		}
+		res, err := p.runner.Run(ctx.Ctx, process.Request{Command: cmdName, Args: cmdArgs, Timeout: 60 * time.Second})
+		if res != nil {
+			output = res.Combined
+			elapsed = res.Duration
+			if res.Truncated {
+				output += "\n\n[output truncated after 2MB]"
+			}
+		}
+		if output == "" {
+			if err != nil {
+				output = fmt.Sprintf("Error: %v", err)
+			} else {
+				output = "(no output)"
+			}
 		}
 	}
 	if len(output) <= 3500 {
@@ -345,6 +384,109 @@ func (p *Plugin) handleHealth(ctx *core.Context) error {
 		msg += fmt.Sprintf("\n\n📊 <b>Operational Telemetry</b>\n"+"• <b>Commands:</b> <code>%d</code> (errors: <code>%d</code>)\n"+"• <b>Scheduled Jobs:</b> <code>%d</code> (failed: <code>%d</code>)\n"+"• <b>Telegram Reqs:</b> <code>%d</code> (errors: <code>%d</code>)", snap.TotalCommands, snap.TotalErrors, snap.SchedulerJobsRun, snap.SchedulerJobsFail, snap.TelegramRequests, snap.TelegramErrors)
 	}
 	return ctx.EditOrReply(msg)
+}
+
+func (p *Plugin) handlePlugins(ctx *core.Context) error {
+	if p.pluginMgr == nil {
+		return ctx.EditOrReply("❌ Plugin manager is not available.")
+	}
+
+	plugins := p.pluginMgr.Plugins()
+	if len(plugins) == 0 {
+		return ctx.EditOrReply("ℹ️ No plugins registered.")
+	}
+
+	type item struct {
+		name    string
+		desc    string
+		version string
+		enabled bool
+	}
+	items := make([]item, 0, len(plugins))
+	for _, pl := range plugins {
+		name := pl.Name()
+		enabled := p.pluginMgr.IsEnabled(name)
+		meta, ok := p.pluginMgr.GetMetadata(name)
+		ver := "1.0.0"
+		desc := ""
+		if ok {
+			if meta.Version != "" {
+				ver = meta.Version
+			}
+			if meta.Description != "" {
+				desc = meta.Description
+			}
+		}
+		items = append(items, item{
+			name:    name,
+			desc:    desc,
+			version: ver,
+			enabled: enabled,
+		})
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].name < items[j].name
+	})
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("🧩 <b>Loaded Userbot Plugins (%d)</b>\n\n", len(items)))
+
+	enabledCount := 0
+	disabledCount := 0
+	for _, it := range items {
+		status := "🟢 <code>enabled</code>"
+		if !it.enabled {
+			status = "🔴 <code>disabled</code>"
+			disabledCount++
+		} else {
+			enabledCount++
+		}
+		b.WriteString(fmt.Sprintf("• <b>%s</b> (v%s) — %s\n", escapeHTML(it.name), escapeHTML(it.version), status))
+	}
+
+	b.WriteString(fmt.Sprintf("\n📊 <i>Total: %d | Active: %d | Inactive: %d</i>", len(items), enabledCount, disabledCount))
+	b.WriteString("\n\n💡 <i>Toggle:</i> <code>.plugin enable &lt;name&gt;</code> or <code>.plugin disable &lt;name&gt;</code>")
+	return ctx.EditOrReply(b.String())
+}
+
+func (p *Plugin) handlePluginToggle(ctx *core.Context) error {
+	if p.pluginMgr == nil {
+		return ctx.EditOrReply("❌ Plugin manager is not available.")
+	}
+	if len(ctx.Args) < 2 {
+		return ctx.EditOrReply("⚠️ <b>Usage:</b> <code>.plugin &lt;enable|disable&gt; &lt;plugin_name&gt;</code>\nExample: <code>.plugin disable fun</code>")
+	}
+
+	action := strings.ToLower(strings.TrimSpace(ctx.Args[0]))
+	target := strings.ToLower(strings.TrimSpace(ctx.Args[1]))
+
+	if target == "system" {
+		return ctx.EditOrReply("⚠️ Cannot toggle the <b>system</b> plugin itself to prevent lockouts.")
+	}
+
+	switch action {
+	case "enable", "on":
+		if p.pluginMgr.IsEnabled(target) {
+			return ctx.EditOrReply(fmt.Sprintf("ℹ️ Plugin <b>%s</b> is already enabled.", escapeHTML(target)))
+		}
+		if err := p.pluginMgr.Enable(ctx.Ctx, target); err != nil {
+			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to enable plugin <b>%s</b>: %v", escapeHTML(target), err))
+		}
+		return ctx.EditOrReply(fmt.Sprintf("✅ Plugin <b>%s</b> successfully enabled and initialized!", escapeHTML(target)))
+
+	case "disable", "off":
+		if !p.pluginMgr.IsEnabled(target) {
+			return ctx.EditOrReply(fmt.Sprintf("ℹ️ Plugin <b>%s</b> is already disabled.", escapeHTML(target)))
+		}
+		if err := p.pluginMgr.Disable(ctx.Ctx, target); err != nil {
+			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to disable plugin <b>%s</b>: %v", escapeHTML(target), err))
+		}
+		return ctx.EditOrReply(fmt.Sprintf("🛑 Plugin <b>%s</b> disabled and resources cleaned up!", escapeHTML(target)))
+
+	default:
+		return ctx.EditOrReply("⚠️ <b>Invalid action!</b> Use <code>enable</code> or <code>disable</code>.")
+	}
 }
 
 func buildSanitizedEnv() []string { return process.SanitizeEnv(nil) }

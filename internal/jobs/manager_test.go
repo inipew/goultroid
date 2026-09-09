@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/workers"
 	_ "modernc.org/sqlite"
@@ -243,5 +244,116 @@ func TestJobManager_LoadAndReconcile(t *testing.T) {
 	diag := mgr.Diagnostics()
 	if diag.Total != 2 {
 		t.Errorf("expected 2 total jobs in diagnostics, got %d", diag.Total)
+	}
+}
+
+type mockIdemp struct {
+	claimed map[string]bool
+}
+
+func (m *mockIdemp) CheckAndSet(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+	if m.claimed[key] {
+		return false, nil
+	}
+	m.claimed[key] = true
+	return true, nil
+}
+
+func TestJobManager_IdempotencyDeduplication(t *testing.T) {
+	mgr, submitter, _ := setupTestManagerWithDB(t)
+	idemp := &mockIdemp{claimed: make(map[string]bool)}
+	mgr.SetIdempotencyManager(idemp)
+
+	job1 := Job{
+		ID:             "job-dedup-1",
+		Owner:          "test",
+		Pool:           workers.PoolGeneral,
+		IdempotencyKey: "idem-key-1",
+		Run:            func(ctx context.Context) error { return nil },
+	}
+	if err := mgr.Register(job1); err != nil {
+		t.Fatalf("register job1 failed: %v", err)
+	}
+
+	// Active duplicate with same IdempotencyKey should fail Register
+	job2 := Job{
+		ID:             "job-dedup-2",
+		Owner:          "test",
+		Pool:           workers.PoolGeneral,
+		IdempotencyKey: "idem-key-1",
+		Run:            func(ctx context.Context) error { return nil },
+	}
+	if err := mgr.Register(job2); err == nil {
+		t.Fatal("expected error registering active duplicate idempotency key, got nil")
+	}
+
+	// Trigger job1 and execute
+	ctx := context.Background()
+	if err := mgr.Trigger(ctx, "job-dedup-1"); err != nil {
+		t.Fatalf("trigger job1 failed: %v", err)
+	}
+	task := submitter.submittedTasks[0]
+	if err := task.Run(ctx); err != nil {
+		t.Fatalf("task run failed: %v", err)
+	}
+
+	// Second execution with same idempotency key in idemp manager should be skipped cleanly
+	ranSecond := false
+	jobSecond := Job{
+		ID:             "job-dedup-second",
+		Owner:          "test",
+		Pool:           workers.PoolGeneral,
+		IdempotencyKey: "idem-key-1", // already claimed
+		Run:            func(ctx context.Context) error { ranSecond = true; return nil },
+	}
+	mgr.mu.Lock()
+	mgr.jobs[jobSecond.ID] = &jobSecond
+	mgr.mu.Unlock()
+
+	if err := mgr.Trigger(ctx, "job-dedup-second"); err != nil {
+		t.Fatalf("trigger second failed: %v", err)
+	}
+	taskSecond := submitter.submittedTasks[1]
+	if err := taskSecond.Run(ctx); err != nil {
+		t.Fatalf("taskSecond run failed: %v", err)
+	}
+	if ranSecond {
+		t.Errorf("expected duplicate task execution to be skipped by idempotency manager")
+	}
+}
+
+func TestJobManager_ReconciliationFailureHealth(t *testing.T) {
+	_, _, repo := setupTestManagerWithDB(t)
+
+	pastJob := &Job{
+		ID:             "fail-job",
+		Owner:          "test",
+		Type:           "test_type",
+		Schedule:       "@hourly",
+		RecoveryPolicy: RecoveryRunImmediately,
+		NextRun:        time.Now().UTC().Add(-10 * time.Minute),
+		State:          StateRegistered,
+	}
+	_ = repo.Save(context.Background(), pastJob)
+
+	// Create manager with nil submitter so Trigger fails during reconciliation
+	mgr := NewManager(nil, repo)
+
+	err := mgr.LoadAndReconcile(context.Background())
+	if err == nil {
+		t.Fatal("expected LoadAndReconcile to fail when trigger fails")
+	}
+
+	h := mgr.Health(context.Background())
+	if h.Status != runtime.HealthDegraded {
+		t.Errorf("expected health status degraded, got %s", h.Status)
+	}
+	if h.Error == nil {
+		t.Errorf("expected non-nil error in ComponentHealth")
+	}
+
+	diag := mgr.Diagnostics()
+	if diag.RecoveryFailures != 1 {
+		t.Errorf("expected 1 recovery failure in diagnostics, got %d", diag.RecoveryFailures)
 	}
 }

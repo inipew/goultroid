@@ -5,6 +5,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/module"
+	"github.com/inipew/goultroid/internal/plugin"
 )
 
 type ModuleType struct{}
@@ -13,21 +14,19 @@ var Module ModuleType
 
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
-		ID:          "afk",
-		Version:     "1.0.0",
-		Description: "Away From Keyboard status manager and intelligent auto-reply system",
+		ID:           "afk",
+		Version:      "1.0.0",
+		Description:  "Away From Keyboard status manager and intelligent auto-reply system",
+		Capabilities: []string{plugin.CapTelegramSendMessage, plugin.CapStorageRead, plugin.CapStorageWrite, plugin.CapEvents},
 	}
 }
 
-func (ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
+func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	if rt == nil {
 		return module.ErrNilRuntime
 	}
 	if rt.DB == nil {
 		return module.ErrNilDatabase
-	}
-	if rt.Plugins == nil {
-		return module.ErrNilPluginManager
 	}
 	repo := NewSQLiteRepository(rt.DB)
 	p := New(repo, rt.OwnerID, rt.TelegramService)
@@ -37,7 +36,7 @@ func (ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	if rt.Resolver != nil {
 		p.SetResolver(rt.Resolver)
 	}
-	return rt.Plugins.RegisterWithContext(ctx, p)
+	return rt.RegisterPlugin(ctx, m.Manifest(), p)
 }
 
 func (ModuleType) Migrations() []database.Migration {

@@ -7,13 +7,13 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/callback"
 	"github.com/inipew/goultroid/internal/assistant/client"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/settings"
 	"go.uber.org/zap"
 )
 
 type Client interface {
-	Start(ctx context.Context) error
-	Stop(ctx context.Context) error
+	runtime.Component
 	IsRunning() bool
 	Username() string
 	StartTime() time.Time
@@ -29,6 +29,26 @@ type AssistantApp struct {
 }
 
 var _ Client = (*AssistantApp)(nil)
+var _ runtime.CriticalComponent = (*AssistantApp)(nil)
+
+func (a *AssistantApp) Name() string {
+	return "assistant"
+}
+
+func (a *AssistantApp) Dependencies() []string {
+	return []string{"dispatcher", "settings"}
+}
+
+func (a *AssistantApp) IsCritical() bool {
+	return false
+}
+
+func (a *AssistantApp) Health(ctx context.Context) runtime.ComponentHealth {
+	if a.IsRunning() {
+		return runtime.ComponentHealth{Status: runtime.HealthHealthy}
+	}
+	return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "assistant not running"}
+}
 
 func NewApp(appID int, appHash string, botToken string, logger *zap.Logger) *AssistantApp {
 	if logger == nil {

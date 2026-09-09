@@ -14,6 +14,7 @@ import (
 	"github.com/inipew/goultroid/internal/platform/network"
 	"github.com/inipew/goultroid/internal/platform/process"
 	"github.com/inipew/goultroid/internal/platform/secret"
+	platformStorage "github.com/inipew/goultroid/internal/platform/storage"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/resource"
 	"github.com/inipew/goultroid/internal/scheduler"
@@ -57,6 +58,7 @@ type coreDependencies struct {
 	procManager     *process.Manager
 	netService      *network.Service
 	secretManager   *secret.Manager
+	storageManager  *platformStorage.Manager
 	auditService    *audit.Service
 	capGate         *plugin.CapabilityGate
 }

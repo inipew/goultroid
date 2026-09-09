@@ -9,22 +9,20 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/settings"
 )
 
 type mockSettingsDB struct {
-	database.Repository
 	mu      sync.Mutex
-	items   map[string]*database.SettingItem
-	history []database.SettingChangeRecord
+	items   map[string]*settings.SettingItem
+	history []settings.SettingChangeRecord
 	idGen   int64
 }
 
 func newMockSettingsDB() *mockSettingsDB {
 	return &mockSettingsDB{
-		items: make(map[string]*database.SettingItem),
+		items: make(map[string]*settings.SettingItem),
 	}
 }
 
@@ -32,7 +30,7 @@ func (m *mockSettingsDB) key(scopeType string, scopeID int64, ns, k string) stri
 	return scopeType + ":" + string(rune(scopeID)) + ":" + ns + ":" + k
 }
 
-func (m *mockSettingsDB) GetSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) (*database.SettingItem, error) {
+func (m *mockSettingsDB) GetSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) (*settings.SettingItem, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	item, ok := m.items[m.key(scopeType, scopeID, namespace, key)]
@@ -43,7 +41,7 @@ func (m *mockSettingsDB) GetSetting(ctx context.Context, scopeType string, scope
 	return &cp, nil
 }
 
-func (m *mockSettingsDB) GetEffectiveSetting(ctx context.Context, namespace, key string, chatID, userID int64) (*database.SettingItem, error) {
+func (m *mockSettingsDB) GetEffectiveSetting(ctx context.Context, namespace, key string, chatID, userID int64) (*settings.SettingItem, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if chatID != 0 {
@@ -65,7 +63,7 @@ func (m *mockSettingsDB) GetEffectiveSetting(ctx context.Context, namespace, key
 	return nil, nil
 }
 
-func (m *mockSettingsDB) ListPendingOutbox(ctx context.Context, limit int) ([]database.SettingOutboxEntry, error) {
+func (m *mockSettingsDB) ListPendingOutbox(ctx context.Context, limit int) ([]settings.SettingOutboxEntry, error) {
 	return nil, nil
 }
 
@@ -73,7 +71,7 @@ func (m *mockSettingsDB) MarkOutboxProcessed(ctx context.Context, id int64) erro
 	return nil
 }
 
-func (m *mockSettingsDB) SetSetting(ctx context.Context, item *database.SettingItem) error {
+func (m *mockSettingsDB) SetSetting(ctx context.Context, item *settings.SettingItem) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	k := m.key(item.ScopeType, item.ScopeID, item.Namespace, item.Key)
@@ -84,7 +82,7 @@ func (m *mockSettingsDB) SetSetting(ctx context.Context, item *database.SettingI
 	cp := *item
 	m.items[k] = &cp
 	m.idGen++
-	m.history = append([]database.SettingChangeRecord{{
+	m.history = append([]settings.SettingChangeRecord{{
 		ID:        m.idGen,
 		ScopeType: item.ScopeType,
 		ScopeID:   item.ScopeID,
@@ -98,6 +96,15 @@ func (m *mockSettingsDB) SetSetting(ctx context.Context, item *database.SettingI
 	return nil
 }
 
+func (m *mockSettingsDB) SetSettingsBatch(ctx context.Context, items []*settings.SettingItem) error {
+	for _, item := range items {
+		if err := m.SetSetting(ctx, item); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (m *mockSettingsDB) DeleteSetting(ctx context.Context, scopeType string, scopeID int64, namespace, key string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -105,7 +112,7 @@ func (m *mockSettingsDB) DeleteSetting(ctx context.Context, scopeType string, sc
 	if prev, ok := m.items[k]; ok {
 		delete(m.items, k)
 		m.idGen++
-		m.history = append([]database.SettingChangeRecord{{
+		m.history = append([]settings.SettingChangeRecord{{
 			ID:        m.idGen,
 			ScopeType: scopeType,
 			ScopeID:   scopeID,
@@ -120,10 +127,10 @@ func (m *mockSettingsDB) DeleteSetting(ctx context.Context, scopeType string, sc
 	return nil
 }
 
-func (m *mockSettingsDB) ListSettings(ctx context.Context, scopeType string, scopeID int64, namespace string) ([]database.SettingItem, error) {
+func (m *mockSettingsDB) ListSettings(ctx context.Context, scopeType string, scopeID int64, namespace string) ([]settings.SettingItem, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var res []database.SettingItem
+	var res []settings.SettingItem
 	for _, item := range m.items {
 		if item.ScopeType == scopeType && item.ScopeID == scopeID {
 			if namespace == "" || item.Namespace == namespace {
@@ -134,10 +141,10 @@ func (m *mockSettingsDB) ListSettings(ctx context.Context, scopeType string, sco
 	return res, nil
 }
 
-func (m *mockSettingsDB) GetSettingHistory(ctx context.Context, namespace, key string, limit int) ([]database.SettingChangeRecord, error) {
+func (m *mockSettingsDB) GetSettingHistory(ctx context.Context, namespace, key string, limit int) ([]settings.SettingChangeRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var res []database.SettingChangeRecord
+	var res []settings.SettingChangeRecord
 	for _, r := range m.history {
 		if r.Namespace == namespace && r.Key == key {
 			res = append(res, r)
