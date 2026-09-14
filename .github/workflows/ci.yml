@@ -6,9 +6,6 @@ on:
   pull_request:
     branches: [ main, master ]
 
-permissions:
-  contents: write
-
 env:
   GOTOOLCHAIN: local
 
@@ -24,6 +21,7 @@ jobs:
           python3 tools/normalize_p0_p1_source.py
           python3 tools/apply_p0_p1_execution_redesign.py
           python3 tools/fix_p0_p1_generated.py
+          python3 tools/fix_p0_p1_tests.py
           gofmt -w internal/workers internal/telegram internal/jobs internal/scheduler internal/app
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -41,21 +39,8 @@ jobs:
         run: |
           go run ./tools/featuregen
           git diff --exit-code -- internal/app/generated_modules.go
-      - name: Capture GolangCI-Lint
-        id: lintcheck
-        continue-on-error: true
-        run: |
-          set -o pipefail
-          go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run --timeout=3m 2>&1 | tee lint.log
-      - name: Upload lint diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: p0-p1-lint-diagnostics
-          path: lint.log
-      - name: Require clean lint
-        if: steps.lintcheck.outcome != 'success'
-        run: exit 1
+      - name: GolangCI-Lint
+        run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run --timeout=3m
 
   test:
     name: Focused Unit & Race Tests
@@ -68,6 +53,7 @@ jobs:
           python3 tools/normalize_p0_p1_source.py
           python3 tools/apply_p0_p1_execution_redesign.py
           python3 tools/fix_p0_p1_generated.py
+          python3 tools/fix_p0_p1_tests.py
           gofmt -w internal/workers internal/telegram internal/jobs internal/scheduler internal/app
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -76,55 +62,15 @@ jobs:
           cache: true
           cache-dependency-path: 'go.sum'
       - name: Race workers
-        id: race_workers
-        continue-on-error: true
-        run: |
-          set -o pipefail
-          go test -v -race -timeout=3m ./internal/workers 2>&1 | tee race-workers.log
+        run: go test -race -timeout=3m ./internal/workers
       - name: Race jobs
-        id: race_jobs
-        continue-on-error: true
-        run: |
-          set -o pipefail
-          go test -v -race -timeout=3m ./internal/jobs 2>&1 | tee race-jobs.log
+        run: go test -race -timeout=3m ./internal/jobs
       - name: Race scheduler
-        id: race_scheduler
-        continue-on-error: true
-        run: |
-          set -o pipefail
-          go test -v -race -timeout=3m ./internal/scheduler 2>&1 | tee race-scheduler.log
+        run: go test -race -timeout=3m ./internal/scheduler
       - name: Race telegram
-        id: race_telegram
-        continue-on-error: true
-        run: |
-          set -o pipefail
-          go test -v -race -timeout=3m ./internal/telegram 2>&1 | tee race-telegram.log
+        run: go test -race -timeout=3m ./internal/telegram
       - name: Race app
-        id: race_app
-        continue-on-error: true
-        run: |
-          set -o pipefail
-          go test -v -race -timeout=3m ./internal/app 2>&1 | tee race-app.log
-      - name: Upload focused race diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: p0-p1-focused-race-diagnostics
-          path: race-*.log
-      - name: Persist focused race diagnostics
-        if: steps.race_workers.outcome != 'success' || steps.race_jobs.outcome != 'success' || steps.race_scheduler.outcome != 'success' || steps.race_telegram.outcome != 'success' || steps.race_app.outcome != 'success'
-        run: |
-          cat race-workers.log race-jobs.log race-scheduler.log race-telegram.log race-app.log > race-diagnostics.txt
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add race-diagnostics.txt
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: persist focused race diagnostics"
-            git push origin HEAD:${GITHUB_HEAD_REF}
-          fi
-      - name: Require clean focused race tests
-        if: steps.race_workers.outcome != 'success' || steps.race_jobs.outcome != 'success' || steps.race_scheduler.outcome != 'success' || steps.race_telegram.outcome != 'success' || steps.race_app.outcome != 'success'
-        run: exit 1
+        run: go test -race -timeout=3m ./internal/app
 
   build:
     name: Build Binary
@@ -137,6 +83,7 @@ jobs:
           python3 tools/normalize_p0_p1_source.py
           python3 tools/apply_p0_p1_execution_redesign.py
           python3 tools/fix_p0_p1_generated.py
+          python3 tools/fix_p0_p1_tests.py
           gofmt -w internal/workers internal/telegram internal/jobs internal/scheduler internal/app
       - name: Setup Go
         uses: actions/setup-go@v5
