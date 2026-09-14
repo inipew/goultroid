@@ -193,11 +193,14 @@ func (e *Engine) Started(permit tasks.PhysicalPermit, at time.Time) error {
 	return result
 }
 
+// Completed publishes into a bounded inbox whose slot was reserved at
+// admission. It deliberately does not wait for coordinator acknowledgement so
+// a synchronous test/double callback from Assign cannot re-enter and deadlock
+// the coordinator. Stale/mismatched results are rejected when dequeued.
 func (e *Engine) Completed(permit tasks.PhysicalPermit, result tasks.TaskResult) error {
 	if permit.IsZero() || result.TaskID() == "" {
 		return errors.New("worker completion event is invalid")
 	}
-	response := make(chan error, 1)
 	e.mu.RLock()
 	running := e.running
 	results := e.results
@@ -207,15 +210,11 @@ func (e *Engine) Completed(permit tasks.PhysicalPermit, result tasks.TaskResult)
 		return ErrEngineNotRunning
 	}
 	select {
-	case results <- completedEvent{permit: permit, result: result, response: response}:
+	case results <- completedEvent{permit: permit, result: result}:
+		return nil
 	case <-done:
 		return ErrEngineNotRunning
 	}
-	resultErr, ok := waitResponse(response, done)
-	if !ok {
-		return ErrEngineNotRunning
-	}
-	return resultErr
 }
 
 func (e *Engine) sendBeforeLinearization(ctx context.Context, message any) error {
