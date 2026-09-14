@@ -13,8 +13,9 @@ import (
 )
 
 var (
-	ErrEngineNotRunning = errors.New("task engine is not running")
-	ErrTaskNotFound     = errors.New("task was not found")
+	ErrEngineNotRunning   = errors.New("task engine is not running")
+	ErrTaskNotFound       = errors.New("task was not found")
+	ErrWorkerEventInvalid = errors.New("worker event rejected")
 )
 
 type slotPhase uint8
@@ -167,13 +168,15 @@ type closeScopeRequest struct {
 }
 
 type startedEvent struct {
-	permit tasks.PhysicalPermit
-	at     time.Time
+	permit   tasks.PhysicalPermit
+	at       time.Time
+	response chan error
 }
 
 type completedEvent struct {
-	permit tasks.PhysicalPermit
-	result tasks.TaskResult
+	permit   tasks.PhysicalPermit
+	result   tasks.TaskResult
+	response chan error
 }
 
 // Engine is the single writer for mutable task state, logical admission,
