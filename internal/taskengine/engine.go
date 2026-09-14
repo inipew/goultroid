@@ -185,6 +185,7 @@ type Engine struct {
 	cfg     Config
 	catalog *Catalog
 	workers tasks.PhysicalWorkers
+	clock   Clock
 
 	mu      sync.RWMutex
 	started bool
@@ -220,6 +221,10 @@ type Engine struct {
 }
 
 func New(cfg Config, catalog *Catalog, workers tasks.PhysicalWorkers) (*Engine, error) {
+	return newWithClock(cfg, catalog, workers, systemClock{})
+}
+
+func newWithClock(cfg Config, catalog *Catalog, workers tasks.PhysicalWorkers, clock Clock) (*Engine, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -228,6 +233,9 @@ func New(cfg Config, catalog *Catalog, workers tasks.PhysicalWorkers) (*Engine, 
 	}
 	if workers == nil {
 		return nil, errors.New("physical workers are required")
+	}
+	if clock == nil {
+		return nil, errors.New("task engine clock is required")
 	}
 	ready, err := admission.NewReady(cfg.ClassQuantum, cfg.DefaultOwner.Weight)
 	if err != nil {
@@ -248,6 +256,7 @@ func New(cfg Config, catalog *Catalog, workers tasks.PhysicalWorkers) (*Engine, 
 		cfg:           cfg,
 		catalog:       catalog,
 		workers:       workers,
+		clock:         clock,
 		control:       make(chan any, cfg.ControlInboxCapacity),
 		startedEvents: make(chan startedEvent, totalWorkers(cfg)),
 		results:       make(chan completedEvent, cfg.ResultCredits),
