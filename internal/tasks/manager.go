@@ -29,6 +29,7 @@ var DefaultQuota = Quota{
 // OwnerStats summarizes current activity and historical results for an owner.
 type OwnerStats struct {
 	Owner     string `json:"owner"`
+	Admitted  int    `json:"admitted"`
 	Queued    int    `json:"queued"`
 	Running   int    `json:"running"`
 	Completed int64  `json:"completed"`
@@ -39,6 +40,7 @@ type OwnerStats struct {
 
 // TaskStats summarizes aggregate execution metrics across all tasks.
 type TaskStats struct {
+	TotalAdmitted  int                   `json:"total_admitted"`
 	TotalQueued    int                   `json:"total_queued"`
 	TotalRunning   int                   `json:"total_running"`
 	TotalCompleted int64                 `json:"total_completed"`
@@ -63,6 +65,10 @@ type Manager struct {
 
 	activeTasks map[string]*trackedTask
 	ownerCounts map[string]*OwnerStats
+	// ownerActive tracks owner concurrency reservations. A reservation is held
+	// from Queued through Running so physical workers never have to block after
+	// popping work merely to acquire an owner slot.
+	ownerActive map[string]int
 	slotChanged chan struct{}
 
 	totalCompleted int64
@@ -78,6 +84,7 @@ func NewManager() *Manager {
 		quotas:       make(map[string]Quota),
 		activeTasks:  make(map[string]*trackedTask),
 		ownerCounts:  make(map[string]*OwnerStats),
+		ownerActive:  make(map[string]int),
 		slotChanged:  make(chan struct{}),
 	}
 }
@@ -117,11 +124,14 @@ func (m *Manager) getOwnerStatsLocked(owner string) *OwnerStats {
 	return stats
 }
 
-// Register registers a task in StateQueued and allocates a cancellable child context.
-// Returns an error if the owner exceeds their queue quota or if the task is already registered.
+// Register accepts a task into logical admission. It does not claim an owner
+// execution slot and it does not imply physical queueing or execution.
 func (m *Manager) Register(parentCtx context.Context, task Task) (context.Context, context.CancelFunc, error) {
 	if err := task.Validate(); err != nil {
 		return nil, nil, err
+	}
+	if parentCtx == nil {
+		parentCtx = context.Background()
 	}
 
 	m.mu.Lock()
@@ -131,43 +141,103 @@ func (m *Manager) Register(parentCtx context.Context, task Task) (context.Contex
 		return nil, nil, fmt.Errorf("%w: %s", ErrTaskExists, task.ID)
 	}
 
-	quota := m.defaultQuota
-	if q, ok := m.quotas[task.Owner]; ok {
-		quota = q
-	}
-
+	quota := m.quotaLocked(task.Owner)
 	ownerStats := m.getOwnerStatsLocked(task.Owner)
-	if quota.MaxQueued > 0 && ownerStats.Queued >= quota.MaxQueued {
+	// MaxQueued limits work that has not started physically. Admitted work and
+	// physically queued work both consume this queue budget; Running does not.
+	if quota.MaxQueued > 0 && ownerStats.Admitted+ownerStats.Queued >= quota.MaxQueued {
 		return nil, nil, fmt.Errorf("%w: max queued limit %d reached for %s", ErrQuotaExceeded, quota.MaxQueued, task.Owner)
 	}
 
-	task.State = StateQueued
-	task.CreatedAt = time.Now().UTC()
+	now := time.Now().UTC()
+	if task.CreatedAt.IsZero() {
+		task.CreatedAt = now
+	}
+	task.AdmittedAt = now
+	task.State = StateAdmitted
 
 	ctx, cancel := context.WithCancel(parentCtx)
-	tracked := &trackedTask{
-		task:   task,
-		ctx:    ctx,
-		cancel: cancel,
-	}
-
-	m.activeTasks[task.ID] = tracked
-	ownerStats.Queued++
-
+	m.activeTasks[task.ID] = &trackedTask{task: task, ctx: ctx, cancel: cancel}
+	ownerStats.Admitted++
 	return ctx, cancel, nil
 }
 
-// TryStart transitions a queued task immediately or returns ErrQuotaExceeded
-// when the owner's concurrency slot is unavailable.
+// TryQueue reserves one owner concurrency slot and transitions an admitted task
+// into the physical-queue lifecycle state. It never waits.
+func (m *Manager) TryQueue(taskID string) (context.Context, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.queueLocked(taskID)
+}
+
+func (m *Manager) queueLocked(taskID string) (context.Context, error) {
+	tracked, exists := m.activeTasks[taskID]
+	if !exists {
+		return nil, fmt.Errorf("%w: %s", ErrTaskNotFound, taskID)
+	}
+	if err := tracked.ctx.Err(); err != nil {
+		return nil, err
+	}
+	if tracked.task.State != StateAdmitted {
+		return nil, fmt.Errorf("task %s cannot queue from state %s", taskID, tracked.task.State)
+	}
+
+	quota := m.quotaLocked(tracked.task.Owner)
+	active := m.ownerActive[tracked.task.Owner]
+	if quota.MaxConcurrent > 0 && active >= quota.MaxConcurrent {
+		return nil, fmt.Errorf("%w: max concurrent limit %d reached for %s", ErrQuotaExceeded, quota.MaxConcurrent, tracked.task.Owner)
+	}
+
+	ownerStats := m.getOwnerStatsLocked(tracked.task.Owner)
+	ownerStats.Admitted--
+	ownerStats.Queued++
+	m.ownerActive[tracked.task.Owner] = active + 1
+	tracked.task.State = StateQueued
+	tracked.task.QueuedAt = time.Now().UTC()
+	return tracked.ctx, nil
+}
+
+// MarkRunning records physical execution start. This must be called only after
+// a worker has popped the task and is about to enter its execution body.
+func (m *Manager) MarkRunning(taskID string) (context.Context, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.markRunningLocked(taskID)
+}
+
+func (m *Manager) markRunningLocked(taskID string) (context.Context, error) {
+	tracked, exists := m.activeTasks[taskID]
+	if !exists {
+		return nil, fmt.Errorf("%w: %s", ErrTaskNotFound, taskID)
+	}
+	if err := tracked.ctx.Err(); err != nil {
+		return nil, err
+	}
+	if tracked.task.State != StateQueued {
+		return nil, fmt.Errorf("task %s cannot run from state %s", taskID, tracked.task.State)
+	}
+	ownerStats := m.getOwnerStatsLocked(tracked.task.Owner)
+	ownerStats.Queued--
+	ownerStats.Running++
+	tracked.task.State = StateRunning
+	tracked.task.StartedAt = time.Now().UTC()
+	return tracked.ctx, nil
+}
+
+// TryStart is retained for direct TaskManager users. Production WorkerManager
+// uses TryQueue followed by MarkRunning so Running reflects physical execution.
 func (m *Manager) TryStart(taskID string) (context.Context, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.startLocked(taskID)
+	if _, err := m.queueLocked(taskID); err != nil {
+		return nil, err
+	}
+	return m.markRunningLocked(taskID)
 }
 
-// WaitStart waits until the task can consume an owner concurrency slot. A task
-// that has already been admitted to the queue is held instead of being failed
-// merely because another task from the same owner is still running.
+// WaitStart is retained as a compatibility API for direct TaskManager users.
+// WorkerManager no longer creates one waiter per task; its bounded admission
+// controllers use TryQueue and SlotChanges instead.
 func (m *Manager) WaitStart(waitCtx context.Context, taskID string) (context.Context, error) {
 	if waitCtx == nil {
 		waitCtx = context.Background()
@@ -189,9 +259,11 @@ func (m *Manager) WaitStart(waitCtx context.Context, taskID string) (context.Con
 		}
 
 		quota := m.quotaLocked(tracked.task.Owner)
-		ownerStats := m.getOwnerStatsLocked(tracked.task.Owner)
-		if quota.MaxConcurrent <= 0 || ownerStats.Running < quota.MaxConcurrent {
-			ctx, err := m.startLocked(taskID)
+		if quota.MaxConcurrent <= 0 || m.ownerActive[tracked.task.Owner] < quota.MaxConcurrent {
+			ctx, err := m.queueLocked(taskID)
+			if err == nil {
+				ctx, err = m.markRunningLocked(taskID)
+			}
 			m.mu.Unlock()
 			return ctx, err
 		}
@@ -209,29 +281,13 @@ func (m *Manager) WaitStart(waitCtx context.Context, taskID string) (context.Con
 	}
 }
 
-func (m *Manager) startLocked(taskID string) (context.Context, error) {
-	tracked, exists := m.activeTasks[taskID]
-	if !exists {
-		return nil, fmt.Errorf("%w: %s", ErrTaskNotFound, taskID)
-	}
-
-	if tracked.task.State != StateQueued {
-		return nil, fmt.Errorf("task %s cannot start from state %s", taskID, tracked.task.State)
-	}
-	quota := m.quotaLocked(tracked.task.Owner)
-
-	ownerStats := m.getOwnerStatsLocked(tracked.task.Owner)
-	if quota.MaxConcurrent > 0 && ownerStats.Running >= quota.MaxConcurrent {
-		return nil, fmt.Errorf("%w: max concurrent limit %d reached for %s", ErrQuotaExceeded, quota.MaxConcurrent, tracked.task.Owner)
-	}
-
-	ownerStats.Queued--
-	ownerStats.Running++
-
-	tracked.task.State = StateRunning
-	tracked.task.StartedAt = time.Now().UTC()
-
-	return tracked.ctx, nil
+// SlotChanges returns a generation channel closed whenever owner execution
+// capacity or quota configuration changes. A fixed number of admission
+// controllers wait on this channel instead of one waiter per task.
+func (m *Manager) SlotChanges() <-chan struct{} {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.slotChanged
 }
 
 func (m *Manager) quotaLocked(owner string) Quota {
@@ -246,7 +302,7 @@ func (m *Manager) notifySlotChangeLocked() {
 	m.slotChanged = make(chan struct{})
 }
 
-// Finish records task completion, updates metrics, and releases quota.
+// Finish records task completion, updates metrics, and releases any owner slot.
 func (m *Manager) Finish(taskID string, finalState TaskState, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -257,11 +313,24 @@ func (m *Manager) Finish(taskID string, finalState TaskState, err error) {
 	}
 
 	ownerStats := m.getOwnerStatsLocked(tracked.task.Owner)
-	if tracked.task.State == StateRunning {
-		ownerStats.Running--
-		m.notifySlotChangeLocked()
-	} else if tracked.task.State == StateQueued {
+	releaseSlot := false
+	switch tracked.task.State {
+	case StateAdmitted:
+		ownerStats.Admitted--
+	case StateQueued:
 		ownerStats.Queued--
+		releaseSlot = true
+	case StateRunning:
+		ownerStats.Running--
+		releaseSlot = true
+	}
+	if releaseSlot {
+		if active := m.ownerActive[tracked.task.Owner]; active > 1 {
+			m.ownerActive[tracked.task.Owner] = active - 1
+		} else {
+			delete(m.ownerActive, tracked.task.Owner)
+		}
+		m.notifySlotChangeLocked()
 	}
 
 	tracked.task.CompletedAt = time.Now().UTC()
@@ -291,17 +360,14 @@ func (m *Manager) Cancel(taskID string) bool {
 	m.mu.RLock()
 	tracked, exists := m.activeTasks[taskID]
 	m.mu.RUnlock()
-
 	if !exists {
 		return false
 	}
-
 	tracked.cancel()
 	return true
 }
 
-// CancelByOwner cancels all active (running or queued) tasks for the given owner.
-// Returns the number of tasks cancelled.
+// CancelByOwner cancels all active tasks for the given owner.
 func (m *Manager) CancelByOwner(owner string) int {
 	m.mu.RLock()
 	var cancels []context.CancelFunc
@@ -311,7 +377,6 @@ func (m *Manager) CancelByOwner(owner string) int {
 		}
 	}
 	m.mu.RUnlock()
-
 	for _, cancel := range cancels {
 		cancel()
 	}
@@ -319,8 +384,6 @@ func (m *Manager) CancelByOwner(owner string) int {
 }
 
 // CancelByCorrelationID cancels every active task sharing correlationID.
-// Execution producers use this to cancel logical work without owning physical
-// worker cancel functions or maintaining a parallel active-execution registry.
 func (m *Manager) CancelByCorrelationID(correlationID string) int {
 	if correlationID == "" {
 		return 0
@@ -343,7 +406,6 @@ func (m *Manager) CancelByCorrelationID(correlationID string) int {
 func (m *Manager) GetTask(taskID string) (Task, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-
 	tracked, ok := m.activeTasks[taskID]
 	if !ok {
 		return Task{}, false
@@ -356,17 +418,18 @@ func (m *Manager) Stats() TaskStats {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	totalAdmitted := 0
 	totalQueued := 0
 	totalRunning := 0
 	ownerCopies := make(map[string]OwnerStats, len(m.ownerCounts))
-
 	for k, v := range m.ownerCounts {
 		ownerCopies[k] = *v
+		totalAdmitted += v.Admitted
 		totalQueued += v.Queued
 		totalRunning += v.Running
 	}
-
 	return TaskStats{
+		TotalAdmitted:  totalAdmitted,
 		TotalQueued:    totalQueued,
 		TotalRunning:   totalRunning,
 		TotalCompleted: m.totalCompleted,
