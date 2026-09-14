@@ -21,6 +21,7 @@ jobs:
       - name: Apply ownership fixes
         run: |
           python3 tools/fix_execution_ownership.py
+          python3 tools/fix_execution_ownership_test.py
           gofmt -w internal/tasks internal/workers internal/jobs internal/scheduler
       - uses: actions/setup-go@v5
         with:
@@ -45,6 +46,7 @@ jobs:
       - name: Apply ownership fixes
         run: |
           python3 tools/fix_execution_ownership.py
+          python3 tools/fix_execution_ownership_test.py
           gofmt -w internal/tasks internal/workers internal/jobs internal/scheduler
       - uses: actions/setup-go@v5
         with:
@@ -61,6 +63,7 @@ jobs:
       - name: Apply ownership fixes
         run: |
           python3 tools/fix_execution_ownership.py
+          python3 tools/fix_execution_ownership_test.py
           gofmt -w internal/tasks internal/workers internal/jobs internal/scheduler
       - uses: actions/setup-go@v5
         with:
@@ -82,8 +85,9 @@ jobs:
       - name: Materialize and clean validation scaffolding
         run: |
           python3 tools/fix_execution_ownership.py
+          python3 tools/fix_execution_ownership_test.py
           gofmt -w internal/tasks internal/workers internal/jobs internal/scheduler
-          rm -f tools/fix_execution_ownership.py .github/workflows/execution-ownership-fixes.yml
+          rm -f tools/fix_execution_ownership.py tools/fix_execution_ownership_test.py .github/workflows/execution-ownership-fixes.yml
           git fetch origin main
           git checkout origin/main -- .github/workflows/ci.yml
           git config user.name "github-actions[bot]"
