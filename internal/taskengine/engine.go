@@ -194,6 +194,7 @@ type Engine struct {
 	cancel  context.CancelFunc
 	done    chan struct{}
 
+	admissions    chan submitRequest
 	control       chan any
 	startedEvents chan startedEvent
 	results       chan completedEvent
@@ -257,6 +258,7 @@ func newWithClock(cfg Config, catalog *Catalog, workers tasks.PhysicalWorkers, c
 		catalog:       catalog,
 		workers:       workers,
 		clock:         clock,
+		admissions:    make(chan submitRequest, cfg.ControlInboxCapacity),
 		control:       make(chan any, cfg.ControlInboxCapacity),
 		startedEvents: make(chan startedEvent, totalWorkers(cfg)),
 		results:       make(chan completedEvent, cfg.ResultCredits),
