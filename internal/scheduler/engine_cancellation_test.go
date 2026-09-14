@@ -55,6 +55,14 @@ func TestEngineCancelDelegatesExecutionCancellationToTaskManager(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("scheduler cancellation did not cancel correlated task")
 	}
+
+	remaining, err := repo.GetScheduledJob(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remaining != nil {
+		t.Fatalf("cancelled scheduled job still persisted: %+v", remaining)
+	}
 }
 
 func TestScheduledTaskCorrelationIsPerJob(t *testing.T) {
