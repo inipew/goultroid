@@ -85,6 +85,7 @@ func (e *Engine) leaveWaiting(record *taskRecord) {
 	} else {
 		owner.waitingBytes = 0
 	}
+	e.deleteOwnerIfIdle(record.spec.QuotaOwner())
 }
 
 func (e *Engine) ownerLimits(id tasks.QuotaOwner) OwnerLimits {
@@ -101,6 +102,16 @@ func (e *Engine) owner(id tasks.QuotaOwner) *ownerUsage {
 		e.owners[id] = usage
 	}
 	return usage
+}
+
+func (e *Engine) deleteOwnerIfIdle(id tasks.QuotaOwner) {
+	usage := e.owners[id]
+	if usage == nil {
+		return
+	}
+	if usage.waiting == 0 && usage.waitingBytes == 0 && usage.reserved == 0 && usage.running == 0 {
+		delete(e.owners, id)
+	}
 }
 
 func (e *Engine) snapshot(taskID tasks.TaskID) (tasks.TaskSnapshot, bool) {
@@ -186,6 +197,8 @@ func (e *Engine) expireDue(now time.Time, budget int) {
 func (e *Engine) stats() Stats {
 	stats := Stats{
 		Accepting: e.accepting, Tasks: len(e.records), ResultCreditsUsed: e.resultCreditsUsed, ResultCapacity: e.cfg.ResultCredits,
+		CommitPending: 0, ReadyQueued: e.ready.Len(), QueueDeadlines: e.deadlines.Len(), RetentionEntries: e.retentions.Len(),
+		OrderingLocks: len(e.ordering), ClosedScopeOwners: len(e.closedScopes),
 		Pools: make(map[tasks.PoolID]PoolStats, len(e.cfg.Pools)), Owners: make(map[tasks.QuotaOwner]OwnerStats, len(e.owners)), Resources: make(map[string]ResourceStats, len(e.cfg.ResourceCapacity)),
 	}
 	for pool, usage := range e.pools {
@@ -205,7 +218,10 @@ func (e *Engine) stats() Stats {
 		stats.Pools[pool] = poolStats
 	}
 	for owner, usage := range e.owners {
-		stats.Owners[owner] = OwnerStats{Waiting: usage.waiting, WaitingBytes: usage.waitingBytes, Active: usage.active}
+		stats.Owners[owner] = OwnerStats{
+			Waiting: usage.waiting, WaitingBytes: usage.waitingBytes,
+			Reserved: usage.reserved, Running: usage.running, Active: usage.reserved,
+		}
 	}
 	for name, capacity := range e.cfg.ResourceCapacity {
 		stats.Resources[name] = ResourceStats{Capacity: capacity, Used: e.resources[name]}
