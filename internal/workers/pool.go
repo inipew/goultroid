@@ -81,6 +81,16 @@ func (p *Pool) reserveAdmission(ctx context.Context, stopping <-chan struct{}) e
 			return errors.New("worker manager is stopping")
 		}
 	}
+	return p.tryReserveAdmission()
+}
+
+// tryReserveAdmission reserves logical admission without ever blocking the
+// caller. It is used by nested/orchestration paths that must fail fast rather
+// than occupy a physical worker while waiting for the same pool to free space.
+func (p *Pool) tryReserveAdmission() error {
+	if !p.running.Load() {
+		return errors.New("worker pool is not running")
+	}
 	select {
 	case p.admissions <- struct{}{}:
 		return nil

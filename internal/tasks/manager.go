@@ -51,9 +51,10 @@ type TaskStats struct {
 }
 
 type trackedTask struct {
-	task   Task
-	ctx    context.Context
-	cancel context.CancelFunc
+	task           Task
+	ctx            context.Context
+	cancel         context.CancelFunc
+	stopCancelWake func() bool
 }
 
 // Manager tracks task lifecycles, enforces per-owner execution quotas,
@@ -157,7 +158,12 @@ func (m *Manager) Register(parentCtx context.Context, task Task) (context.Contex
 	task.State = StateAdmitted
 
 	ctx, cancel := context.WithCancel(parentCtx)
-	m.activeTasks[task.ID] = &trackedTask{task: task, ctx: ctx, cancel: cancel}
+	tracked := &trackedTask{task: task, ctx: ctx, cancel: cancel}
+	// Parent cancellation must wake the fixed admission controllers. Without
+	// this notification, an admitted task blocked only by owner quota could keep
+	// its admission token until some unrelated task completed or arrived.
+	tracked.stopCancelWake = context.AfterFunc(ctx, m.notifySlotChange)
+	m.activeTasks[task.ID] = tracked
 	ownerStats.Admitted++
 	return ctx, cancel, nil
 }
@@ -282,8 +288,9 @@ func (m *Manager) WaitStart(waitCtx context.Context, taskID string) (context.Con
 }
 
 // SlotChanges returns a generation channel closed whenever owner execution
-// capacity or quota configuration changes. A fixed number of admission
-// controllers wait on this channel instead of one waiter per task.
+// capacity, quota configuration, or pending-task cancellation changes. A fixed
+// number of admission controllers wait on this channel instead of one waiter
+// per task.
 func (m *Manager) SlotChanges() <-chan struct{} {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -295,6 +302,12 @@ func (m *Manager) quotaLocked(owner string) Quota {
 		return q
 	}
 	return m.defaultQuota
+}
+
+func (m *Manager) notifySlotChange() {
+	m.mu.Lock()
+	m.notifySlotChangeLocked()
+	m.mu.Unlock()
 }
 
 func (m *Manager) notifySlotChangeLocked() {
@@ -310,6 +323,9 @@ func (m *Manager) Finish(taskID string, finalState TaskState, err error) {
 	tracked, exists := m.activeTasks[taskID]
 	if !exists {
 		return
+	}
+	if tracked.stopCancelWake != nil {
+		tracked.stopCancelWake()
 	}
 
 	ownerStats := m.getOwnerStatsLocked(tracked.task.Owner)

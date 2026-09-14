@@ -254,7 +254,14 @@ func (m *Manager) OwnerTaskStats(owner string) (tasks.OwnerStats, bool) {
 
 // Submit dispatches a task to the designated worker pool with quota and lifecycle management.
 func (m *Manager) Submit(ctx context.Context, poolName string, task tasks.Task) error {
-	return m.submit(ctx, poolName, task, nil)
+	return m.submit(ctx, poolName, task, nil, false)
+}
+
+// TrySubmit performs the same lifecycle handoff as Submit but never waits for
+// logical admission capacity. It is intended for nested/orchestration paths
+// where blocking a worker on the same target pool could create starvation.
+func (m *Manager) TrySubmit(ctx context.Context, poolName string, task tasks.Task) error {
+	return m.submit(ctx, poolName, task, nil, true)
 }
 
 // SubmitReserved submits work backed by a physical execution reservation.
@@ -264,10 +271,10 @@ func (m *Manager) SubmitReserved(ctx context.Context, poolName string, task task
 	if reservation == nil {
 		return errors.New("execution reservation is nil")
 	}
-	return m.submit(ctx, poolName, task, reservation)
+	return m.submit(ctx, poolName, task, reservation, false)
 }
 
-func (m *Manager) submit(ctx context.Context, poolName string, task tasks.Task, reservation *ExecutionReservation) error {
+func (m *Manager) submit(ctx context.Context, poolName string, task tasks.Task, reservation *ExecutionReservation, nonBlockingAdmission bool) error {
 	reservationAccepted := false
 	defer func() {
 		if reservation != nil && !reservationAccepted {
@@ -296,11 +303,20 @@ func (m *Manager) submit(ctx context.Context, poolName string, task tasks.Task, 
 		if reservation != nil {
 			return errors.New("execution reservation requires TaskManager lifecycle tracking")
 		}
+		if nonBlockingAdmission {
+			return errors.New("non-blocking admission requires TaskManager lifecycle tracking")
+		}
 		return pool.Submit(ctx, task)
 	}
 
-	if err := pool.reserveAdmission(ctx, acceptingEnd); err != nil {
-		return fmt.Errorf("pool %s admission rejected: %w", poolName, err)
+	var admissionErr error
+	if nonBlockingAdmission {
+		admissionErr = pool.tryReserveAdmission()
+	} else {
+		admissionErr = pool.reserveAdmission(ctx, acceptingEnd)
+	}
+	if admissionErr != nil {
+		return fmt.Errorf("pool %s admission rejected: %w", poolName, admissionErr)
 	}
 
 	// Hold the manager lock across registration and the buffered controller

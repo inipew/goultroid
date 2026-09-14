@@ -20,6 +20,12 @@ type TaskSubmitter interface {
 	Submit(ctx context.Context, poolName string, task tasks.Task) error
 }
 
+// NonBlockingTaskSubmitter is implemented by worker backends that can reject
+// logical admission immediately instead of blocking for capacity.
+type NonBlockingTaskSubmitter interface {
+	TrySubmit(ctx context.Context, poolName string, task tasks.Task) error
+}
+
 // IdempotencyClaimer is the interface used by JobManager to claim and deduplicate job execution.
 type IdempotencyClaimer interface {
 	CheckAndSet(ctx context.Context, key string, ttl time.Duration) (bool, error)
@@ -161,6 +167,17 @@ func (m *Manager) Register(j Job) error {
 
 // Trigger converts a registered job into a concrete Task and queues it into the worker pool.
 func (m *Manager) Trigger(ctx context.Context, jobID string) error {
+	return m.trigger(ctx, jobID, false)
+}
+
+// TryTrigger triggers one job using fail-fast logical admission. It is intended
+// for orchestration running inside worker pools, where waiting for admission to
+// the same pool could recreate a nested-pool starvation cycle.
+func (m *Manager) TryTrigger(ctx context.Context, jobID string) error {
+	return m.trigger(ctx, jobID, true)
+}
+
+func (m *Manager) trigger(ctx context.Context, jobID string, nonBlockingAdmission bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -196,6 +213,16 @@ func (m *Manager) Trigger(ctx context.Context, jobID string) error {
 	if m.submitter == nil {
 		m.rollbackTrigger(ctx, job, previousState, previousLastRun, "task submitter not configured")
 		return fmt.Errorf("task submitter not configured")
+	}
+
+	submitTask := m.submitter.Submit
+	if nonBlockingAdmission {
+		trySubmitter, ok := m.submitter.(NonBlockingTaskSubmitter)
+		if !ok {
+			m.rollbackTrigger(ctx, job, previousState, previousLastRun, "task submitter does not support non-blocking admission")
+			return fmt.Errorf("task submitter does not support non-blocking admission")
+		}
+		submitTask = trySubmitter.TrySubmit
 	}
 
 	taskID := fmt.Sprintf("task:%s:%d", jobID, time.Now().UnixNano())
@@ -271,7 +298,7 @@ func (m *Manager) Trigger(ctx context.Context, jobID string) error {
 		},
 	}
 
-	if err := m.submitter.Submit(attemptCtx, pool, task); err != nil {
+	if err := submitTask(attemptCtx, pool, task); err != nil {
 		stopAttemptWatch()
 		m.unregisterActiveAttempt(jobID, taskID)
 		attemptCancel()
@@ -365,8 +392,8 @@ func (m *Manager) notifyCompletion(jobID string, runErr error) {
 }
 
 // TriggerAndWait triggers one managed job and waits for the concrete Task to
-// reach a terminal state. Scheduler uses this so durable schedule completion
-// reflects execution, not merely successful admission to a worker queue.
+// reach a terminal state. It remains available for synchronous callers, but
+// Scheduler deliberately uses TryTrigger so it never waits inside its pool.
 func (m *Manager) TriggerAndWait(ctx context.Context, jobID string) error {
 	if ctx == nil {
 		ctx = context.Background()

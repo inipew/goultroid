@@ -858,9 +858,10 @@ func (e *Engine) executeManagedJob(ctx context.Context, job ScheduledJob) error 
 	}
 	// Scheduler owns timing and durable trigger state, not managed-job execution.
 	// The managed attempt must outlive this short-lived scheduler wrapper, so it
-	// is parented to the Scheduler engine lifecycle. JobManager then owns the
-	// attempt and WorkerManager owns its physical execution/cancellation.
-	return e.jobsMgr.Trigger(e.ctx, jobID)
+	// is parented to the Scheduler engine lifecycle. Fail-fast admission is
+	// required here as well: a scheduler worker must never block waiting for
+	// logical capacity in PoolScheduler while dispatching another job there.
+	return e.jobsMgr.TryTrigger(e.ctx, jobID)
 }
 
 // ScheduleManagedJob schedules a declarative job from jobs.Manager to run at when, optionally recurring.
