@@ -172,24 +172,50 @@ func (e *Engine) Started(permit tasks.PhysicalPermit, at time.Time) error {
 	if permit.IsZero() || at.IsZero() {
 		return errors.New("worker start event is invalid")
 	}
-	select {
-	case e.startedEvents <- startedEvent{permit: permit, at: at}:
-		return nil
-	case <-e.doneChannel():
+	response := make(chan error, 1)
+	e.mu.RLock()
+	running := e.running
+	startedEvents := e.startedEvents
+	done := e.done
+	e.mu.RUnlock()
+	if !running || done == nil {
 		return ErrEngineNotRunning
 	}
+	select {
+	case startedEvents <- startedEvent{permit: permit, at: at, response: response}:
+	case <-done:
+		return ErrEngineNotRunning
+	}
+	result, ok := waitResponse(response, done)
+	if !ok {
+		return ErrEngineNotRunning
+	}
+	return result
 }
 
 func (e *Engine) Completed(permit tasks.PhysicalPermit, result tasks.TaskResult) error {
 	if permit.IsZero() || result.TaskID() == "" {
 		return errors.New("worker completion event is invalid")
 	}
-	select {
-	case e.results <- completedEvent{permit: permit, result: result}:
-		return nil
-	case <-e.doneChannel():
+	response := make(chan error, 1)
+	e.mu.RLock()
+	running := e.running
+	results := e.results
+	done := e.done
+	e.mu.RUnlock()
+	if !running || done == nil {
 		return ErrEngineNotRunning
 	}
+	select {
+	case results <- completedEvent{permit: permit, result: result, response: response}:
+	case <-done:
+		return ErrEngineNotRunning
+	}
+	resultErr, ok := waitResponse(response, done)
+	if !ok {
+		return ErrEngineNotRunning
+	}
+	return resultErr
 }
 
 func (e *Engine) sendBeforeLinearization(ctx context.Context, message any) error {
