@@ -103,7 +103,10 @@ func (e *Engine) handleControl(message any) {
 		}
 		request.response <- waiter
 	case closeScopeRequest:
-		e.closedScopes[request.scope] = struct{}{}
+		owner := request.scope.Owner()
+		if request.scope.Generation() > e.closedScopes[owner] {
+			e.closedScopes[owner] = request.scope.Generation()
+		}
 		count := 0
 		now := time.Now().UTC()
 		for id, record := range e.records {
@@ -156,7 +159,7 @@ func (e *Engine) handleSubmit(request submitRequest) {
 		respondReject(tasks.RejectInvalidSpec, errors.New("durable prepare protocol is not configured in P2 executor"))
 		return
 	}
-	if _, closed := e.closedScopes[request.spec.Scope()]; closed {
+	if closedGeneration, closed := e.closedScopes[request.spec.Scope().Owner()]; closed && request.spec.Scope().Generation() <= closedGeneration {
 		respondReject(tasks.RejectScopeClosed, nil)
 		return
 	}
@@ -176,7 +179,10 @@ func (e *Engine) handleSubmit(request submitRequest) {
 
 	poolLimits := e.cfg.Pools[request.spec.Pool()]
 	pool := e.pools[request.spec.Pool()]
-	owner := e.owner(request.spec.QuotaOwner())
+	owner := e.owners[request.spec.QuotaOwner()]
+	if owner == nil {
+		owner = &ownerUsage{}
+	}
 	payloadBytes := int64(request.spec.Input().Size())
 	if pool.waiting >= poolLimits.MaxWaiting {
 		respondReject(tasks.RejectPoolBacklogFull, nil)
@@ -206,6 +212,9 @@ func (e *Engine) handleSubmit(request submitRequest) {
 	e.resultCreditsUsed++
 	pool.waiting++
 	pool.waitingBytes += payloadBytes
+	if e.owners[request.spec.QuotaOwner()] == nil {
+		e.owners[request.spec.QuotaOwner()] = owner
+	}
 	owner.waiting++
 	owner.waitingBytes += payloadBytes
 
@@ -236,4 +245,5 @@ func (e *Engine) rollbackAdmission(record *taskRecord) {
 	owner := e.owner(record.spec.QuotaOwner())
 	owner.waiting--
 	owner.waitingBytes -= payloadBytes
+	e.deleteOwnerIfIdle(record.spec.QuotaOwner())
 }
