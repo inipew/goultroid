@@ -6,7 +6,6 @@ on:
   pull_request:
     branches: [ main, master ]
 
-# Keep CI jobs independent, but reuse the expensive Go module/build caches.
 env:
   GOTOOLCHAIN: local
 
@@ -17,53 +16,42 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-
       - name: Apply P0-P1 execution redesign
         run: |
           python3 tools/normalize_p0_p1_source.py
           python3 tools/apply_p0_p1_execution_redesign.py
           gofmt -w internal/workers internal/telegram internal/jobs internal/scheduler internal/app
-          git diff -- internal/workers internal/telegram internal/jobs internal/scheduler internal/app
-
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version-file: 'go.mod'
           cache: true
           cache-dependency-path: 'go.sum'
-
-      - name: Cache Go build artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-build-${{ hashFiles('go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-build-
-
       - name: Check Formatting (gofmt)
         run: |
           unformatted=$(gofmt -l .)
-          if [ -n "$unformatted" ]; then
-            echo "The following files are not formatted properly:"
-            echo "$unformatted"
-            exit 1
-          fi
-
+          if [ -n "$unformatted" ]; then echo "$unformatted"; exit 1; fi
       - name: Go Vet
         run: go vet ./...
-
       - name: Verify Generated Modules Freshness
         run: |
           go run ./tools/featuregen
           git diff --exit-code -- internal/app/generated_modules.go
-
-      - name: GolangCI-Lint
-        uses: golangci/golangci-lint-action@v9
+      - name: Capture GolangCI-Lint
+        id: lintcheck
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run --timeout=3m 2>&1 | tee lint.log
+      - name: Upload lint diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          version: v2.13.2
-          args: --timeout=3m
+          name: p0-p1-lint-diagnostics
+          path: lint.log
+      - name: Require clean lint
+        if: steps.lintcheck.outcome != 'success'
+        run: exit 1
 
   test:
     name: Unit & Race Tests
@@ -71,33 +59,32 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-
       - name: Apply P0-P1 execution redesign
         run: |
           python3 tools/normalize_p0_p1_source.py
           python3 tools/apply_p0_p1_execution_redesign.py
           gofmt -w internal/workers internal/telegram internal/jobs internal/scheduler internal/app
-
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version-file: 'go.mod'
           cache: true
           cache-dependency-path: 'go.sum'
-
-      - name: Cache Go build and test artifacts
-        uses: actions/cache@v4
+      - name: Capture Race Tests
+        id: racecheck
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          go test -v -race ./... 2>&1 | tee race.log
+      - name: Upload race diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-race-${{ hashFiles('go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-race-
-            ${{ runner.os }}-go-build-
-
-      - name: Run Tests with Race Detector
-        run: go test -v -race ./...
+          name: p0-p1-race-diagnostics
+          path: race.log
+      - name: Require clean race tests
+        if: steps.racecheck.outcome != 'success'
+        run: exit 1
 
   build:
     name: Build Binary
@@ -105,29 +92,16 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-
       - name: Apply P0-P1 execution redesign
         run: |
           python3 tools/normalize_p0_p1_source.py
           python3 tools/apply_p0_p1_execution_redesign.py
           gofmt -w internal/workers internal/telegram internal/jobs internal/scheduler internal/app
-
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version-file: 'go.mod'
           cache: true
           cache-dependency-path: 'go.sum'
-
-      - name: Cache Go build artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-build-${{ hashFiles('go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-build-
-
       - name: Build Application
         run: go build -v ./cmd/goultroid
