@@ -29,14 +29,14 @@ type ownerQueue struct {
 	weight  int
 	deficit int
 	items   list.List
-	index   int
+	index   int // -1 while quota-blocked/inactive
 }
 
 type classQueue struct {
 	class   tasks.PriorityClass
 	quantum int
 	deficit int
-	owners  []*ownerQueue
+	owners  []*ownerQueue // active/eligible owners only
 	byOwner map[tasks.QuotaOwner]*ownerQueue
 	cursor  int
 }
@@ -48,12 +48,15 @@ type poolQueue struct {
 }
 
 // Ready implements hierarchical deficit round-robin: class DRR followed by
-// quota-owner DRR, with FIFO order inside each owner queue.
+// quota-owner DRR, with FIFO order inside each owner queue. Owners blocked by a
+// global MaxActive quota are removed from the active rings until explicitly
+// unblocked, so dispatch does not repeatedly scan known-ineligible owners.
 type Ready struct {
 	pools         map[tasks.PoolID]*poolQueue
 	items         map[tasks.TaskID]*indexedItem
 	classQuantum  map[tasks.PriorityClass]int
 	ownerWeight   map[tasks.QuotaOwner]int
+	blockedOwners map[tasks.QuotaOwner]struct{}
 	defaultWeight int
 }
 
@@ -74,6 +77,7 @@ func NewReady(classQuantum map[tasks.PriorityClass]int, defaultOwnerWeight int) 
 		items:         make(map[tasks.TaskID]*indexedItem),
 		classQuantum:  copyQuantum,
 		ownerWeight:   make(map[tasks.QuotaOwner]int),
+		blockedOwners: make(map[tasks.QuotaOwner]struct{}),
 		defaultWeight: defaultOwnerWeight,
 	}, nil
 }
@@ -96,6 +100,46 @@ func (r *Ready) SetOwnerWeight(owner tasks.QuotaOwner, weight int) error {
 	return nil
 }
 
+// BlockOwner removes every queue for owner from active DRR rings while keeping
+// its FIFO items indexed for exact cancellation/deadline removal.
+func (r *Ready) BlockOwner(owner tasks.QuotaOwner) {
+	if owner == "" {
+		return
+	}
+	if _, blocked := r.blockedOwners[owner]; blocked {
+		return
+	}
+	r.blockedOwners[owner] = struct{}{}
+	for _, pool := range r.pools {
+		for _, class := range pool.classes {
+			if oq := class.byOwner[owner]; oq != nil && oq.index >= 0 {
+				r.deactivateOwner(class, oq)
+			}
+		}
+	}
+}
+
+// UnblockOwner reactivates non-empty queues for owner after global capacity is
+// returned. Old deficit is reset on block/deactivation to avoid credit bursts.
+func (r *Ready) UnblockOwner(owner tasks.QuotaOwner) {
+	if _, blocked := r.blockedOwners[owner]; !blocked {
+		return
+	}
+	delete(r.blockedOwners, owner)
+	for _, pool := range r.pools {
+		for _, class := range pool.classes {
+			if oq := class.byOwner[owner]; oq != nil && oq.items.Len() > 0 && oq.index < 0 {
+				r.activateOwner(class, oq)
+			}
+		}
+	}
+}
+
+func (r *Ready) OwnerBlocked(owner tasks.QuotaOwner) bool {
+	_, blocked := r.blockedOwners[owner]
+	return blocked
+}
+
 func (r *Ready) Enqueue(item Item) error {
 	if item.TaskID == "" || item.Pool == "" || item.Owner == "" || !item.Class.Valid() || item.PayloadBytes < 0 {
 		return errors.New("invalid ready item")
@@ -111,9 +155,11 @@ func (r *Ready) Enqueue(item Item) error {
 		if weight <= 0 {
 			weight = r.defaultWeight
 		}
-		owner = &ownerQueue{owner: item.Owner, weight: weight, index: len(class.owners)}
-		class.owners = append(class.owners, owner)
+		owner = &ownerQueue{owner: item.Owner, weight: weight, index: -1}
 		class.byOwner[item.Owner] = owner
+		if _, blocked := r.blockedOwners[item.Owner]; !blocked {
+			r.activateOwner(class, owner)
+		}
 	}
 	elem := owner.items.PushBack(item)
 	r.items[item.TaskID] = &indexedItem{item: item, owner: owner, elem: elem}
@@ -145,7 +191,7 @@ func (r *Ready) LenPool(pool tasks.PoolID) int {
 	}
 	total := 0
 	for _, class := range pq.classes {
-		for _, owner := range class.owners {
+		for _, owner := range class.byOwner {
 			total += owner.items.Len()
 		}
 	}
@@ -239,10 +285,21 @@ func (r *Ready) ensurePool(id tasks.PoolID) *poolQueue {
 	return pool
 }
 
-func (r *Ready) removeOwner(class *classQueue, owner *ownerQueue) {
+func (r *Ready) activateOwner(class *classQueue, owner *ownerQueue) {
+	if owner.index >= 0 {
+		return
+	}
+	owner.index = len(class.owners)
+	owner.deficit = 0
+	class.owners = append(class.owners, owner)
+}
+
+func (r *Ready) deactivateOwner(class *classQueue, owner *ownerQueue) {
 	idx := owner.index
 	last := len(class.owners) - 1
 	if idx < 0 || idx > last {
+		owner.index = -1
+		owner.deficit = 0
 		return
 	}
 	if idx != last {
@@ -251,7 +308,6 @@ func (r *Ready) removeOwner(class *classQueue, owner *ownerQueue) {
 		moved.index = idx
 	}
 	class.owners = class.owners[:last]
-	delete(class.byOwner, owner.owner)
 	owner.index = -1
 	owner.deficit = 0
 	if len(class.owners) == 0 {
@@ -265,4 +321,13 @@ func (r *Ready) removeOwner(class *classQueue, owner *ownerQueue) {
 	if class.cursor >= len(class.owners) {
 		class.cursor = 0
 	}
+}
+
+func (r *Ready) removeOwner(class *classQueue, owner *ownerQueue) {
+	if owner.index >= 0 {
+		r.deactivateOwner(class, owner)
+	}
+	delete(class.byOwner, owner.owner)
+	owner.index = -1
+	owner.deficit = 0
 }
