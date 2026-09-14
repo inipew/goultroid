@@ -196,8 +196,10 @@ func TestEngine_GlobalQuotaUsesBlockedOwnerIndex(t *testing.T) {
 		}
 	}
 	<-starts
-	if !h.engine.ready.OwnerBlocked("shared") {
-		t.Fatal("quota-saturated owner was not removed from active DRR rings")
+	select {
+	case second := <-starts:
+		t.Fatalf("quota-blocked owner started second task: %s", second)
+	case <-time.After(25 * time.Millisecond):
 	}
 	assertP2Conservation(t, h.engine.Stats())
 	releases <- struct{}{}
