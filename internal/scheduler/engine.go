@@ -853,10 +853,14 @@ func (e *Engine) executeManagedJob(ctx context.Context, job ScheduledJob) error 
 	if jobID == "" {
 		return errors.New("empty job id in scheduled managed job payload")
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Scheduler owns timing and durable trigger state, not managed-job execution.
-	// Return after admission so a scheduler worker never waits for work that may
-	// itself require PoolScheduler capacity.
-	return e.jobsMgr.Trigger(ctx, jobID)
+	// The managed attempt must outlive this short-lived scheduler wrapper, so it
+	// is parented to the Scheduler engine lifecycle. JobManager then owns the
+	// attempt and WorkerManager owns its physical execution/cancellation.
+	return e.jobsMgr.Trigger(e.ctx, jobID)
 }
 
 // ScheduleManagedJob schedules a declarative job from jobs.Manager to run at when, optionally recurring.
