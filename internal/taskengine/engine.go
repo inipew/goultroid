@@ -174,9 +174,8 @@ type startedEvent struct {
 }
 
 type completedEvent struct {
-	permit   tasks.PhysicalPermit
-	result   tasks.TaskResult
-	response chan error
+	permit tasks.PhysicalPermit
+	result tasks.TaskResult
 }
 
 // Engine is the single writer for mutable task state, logical admission,
