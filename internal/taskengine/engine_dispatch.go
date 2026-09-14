@@ -83,9 +83,18 @@ func (e *Engine) dispatchEligible(record *taskRecord) bool {
 			return false
 		}
 	}
+
+	// Aggregate duplicate resource entries before comparing with the shared
+	// inventory. Catalog validation guarantees aggregate demand fits the static
+	// capacity; this check adds current usage without uint32 overflow.
+	required := make(map[string]uint64, len(record.spec.Resources()))
 	for _, request := range record.spec.Resources() {
-		capacity := e.cfg.ResourceCapacity[request.Name()]
-		if e.resources[request.Name()]+request.Units() > capacity {
+		required[request.Name()] += uint64(request.Units())
+	}
+	for name, units := range required {
+		capacity := uint64(e.cfg.ResourceCapacity[name])
+		used := uint64(e.resources[name])
+		if units > capacity || used > capacity-units {
 			return false
 		}
 	}
