@@ -18,6 +18,12 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Apply P0-P1 execution redesign
+        run: |
+          python3 tools/apply_p0_p1_execution_redesign.py
+          gofmt -w internal/workers internal/telegram internal/jobs internal/scheduler internal/app
+          git diff -- internal/workers internal/telegram internal/jobs internal/scheduler internal/app
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -65,6 +71,11 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Apply P0-P1 execution redesign
+        run: |
+          python3 tools/apply_p0_p1_execution_redesign.py
+          gofmt -w internal/workers internal/telegram internal/jobs internal/scheduler internal/app
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -92,6 +103,11 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      - name: Apply P0-P1 execution redesign
+        run: |
+          python3 tools/apply_p0_p1_execution_redesign.py
+          gofmt -w internal/workers internal/telegram internal/jobs internal/scheduler internal/app
 
       - name: Setup Go
         uses: actions/setup-go@v5
