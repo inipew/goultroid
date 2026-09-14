@@ -75,22 +75,46 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
           cache-dependency-path: 'go.sum'
-      - name: Capture Focused Race Tests
-        id: racecheck
+      - name: Race workers
+        id: race_workers
         continue-on-error: true
         run: |
           set -o pipefail
-          go test -v -race ./internal/workers ./internal/jobs ./internal/scheduler ./internal/telegram ./internal/app 2>&1 | tee race.log
+          go test -v -race -timeout=3m ./internal/workers 2>&1 | tee race-workers.log
+      - name: Race jobs
+        id: race_jobs
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          go test -v -race -timeout=3m ./internal/jobs 2>&1 | tee race-jobs.log
+      - name: Race scheduler
+        id: race_scheduler
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          go test -v -race -timeout=3m ./internal/scheduler 2>&1 | tee race-scheduler.log
+      - name: Race telegram
+        id: race_telegram
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          go test -v -race -timeout=3m ./internal/telegram 2>&1 | tee race-telegram.log
+      - name: Race app
+        id: race_app
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          go test -v -race -timeout=3m ./internal/app 2>&1 | tee race-app.log
       - name: Upload focused race diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: p0-p1-focused-race-diagnostics
-          path: race.log
+          path: race-*.log
       - name: Persist focused race diagnostics
-        if: steps.racecheck.outcome != 'success'
+        if: steps.race_workers.outcome != 'success' || steps.race_jobs.outcome != 'success' || steps.race_scheduler.outcome != 'success' || steps.race_telegram.outcome != 'success' || steps.race_app.outcome != 'success'
         run: |
-          cp race.log race-diagnostics.txt
+          cat race-workers.log race-jobs.log race-scheduler.log race-telegram.log race-app.log > race-diagnostics.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add race-diagnostics.txt
@@ -99,7 +123,7 @@ jobs:
             git push origin HEAD:${GITHUB_HEAD_REF}
           fi
       - name: Require clean focused race tests
-        if: steps.racecheck.outcome != 'success'
+        if: steps.race_workers.outcome != 'success' || steps.race_jobs.outcome != 'success' || steps.race_scheduler.outcome != 'success' || steps.race_telegram.outcome != 'success' || steps.race_app.outcome != 'success'
         run: exit 1
 
   build:
