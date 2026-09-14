@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -36,8 +38,15 @@ func Open(dsn string) (*DB, error) {
 	}
 
 	// Configure pool for SQLite
-	db.SetMaxOpenConns(1) // SQLite works best with single writer or WAL mode
-	db.SetMaxIdleConns(1)
+	if dsn == ":memory:" || strings.Contains(dsn, "mode=memory") {
+		// Single connection for in-memory DB so tables persist across queries
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
+	} else {
+		// Multi-reader pool enabled for WAL mode
+		db.SetMaxOpenConns(max(4, runtime.NumCPU()*2))
+		db.SetMaxIdleConns(max(2, runtime.NumCPU()))
+	}
 	db.SetConnMaxLifetime(time.Hour)
 
 	// Set pragmas

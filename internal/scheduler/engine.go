@@ -41,8 +41,13 @@ type Engine struct {
 	jobsMgr *jobs.Manager
 
 	maxConcurrency int
-	sem            chan struct{}
 	misfirePolicy  MisfirePolicy
+
+	wakeChan chan struct{}
+
+	claimMu   sync.Mutex
+	claimWG   sync.WaitGroup
+	quiescing bool
 
 	tasks    map[string]context.CancelFunc
 	taskMeta map[string]*periodicTaskMeta
@@ -106,8 +111,18 @@ func NewEngine(db Repository, svcFunc func() core.TelegramServicer, router *core
 		taskMeta:       make(map[string]*periodicTaskMeta),
 		activeJobs:     make(map[int64]map[string]context.CancelFunc),
 		maxConcurrency: defaultConcurrency,
-		sem:            make(chan struct{}, defaultConcurrency),
 		misfirePolicy:  MisfireRunOnce,
+		wakeChan:       make(chan struct{}, 1),
+	}
+}
+
+func (e *Engine) notifyWake() {
+	if e == nil || e.wakeChan == nil {
+		return
+	}
+	select {
+	case e.wakeChan <- struct{}{}:
+	default:
 	}
 }
 
@@ -123,7 +138,6 @@ func (e *Engine) SetMaxConcurrency(n int) {
 		return
 	}
 	e.maxConcurrency = n
-	e.sem = make(chan struct{}, n)
 }
 
 // SetWorkers configures runtime worker and task managers for job execution.
@@ -181,6 +195,9 @@ func (e *Engine) Start(parentCtx context.Context) error {
 		parentCtx = context.Background()
 	}
 	e.ctx, e.cancel = context.WithCancel(parentCtx)
+	e.claimMu.Lock()
+	e.quiescing = false
+	e.claimMu.Unlock()
 	e.running = true
 	e.wg.Add(1)
 	go e.runLoop(e.ctx)
@@ -206,6 +223,45 @@ func (e *Engine) Stop(ctx context.Context) error {
 	return e.StopContext(ctx)
 }
 
+func (e *Engine) beginClaimBatch() bool {
+	e.claimMu.Lock()
+	defer e.claimMu.Unlock()
+	if e.quiescing {
+		return false
+	}
+	e.claimWG.Add(1)
+	return true
+}
+
+func (e *Engine) endClaimBatch() {
+	e.claimWG.Done()
+}
+
+// Quiesce stops new durable claims and waits for any claim->submit handoff that
+// already started. This runs before WorkerManager.Quiesce via the runtime DAG,
+// preventing fresh leases from being claimed after worker admission closes.
+func (e *Engine) Quiesce(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	e.claimMu.Lock()
+	e.quiescing = true
+	e.claimMu.Unlock()
+	e.notifyWake()
+
+	done := make(chan struct{})
+	go func() {
+		e.claimWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // Health evaluates Scheduler engine health.
 func (e *Engine) Health(ctx context.Context) runtime.ComponentHealth {
 	e.runMu.Lock()
@@ -223,6 +279,9 @@ func (e *Engine) Health(ctx context.Context) runtime.ComponentHealth {
 func (e *Engine) StopContext(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if err := e.Quiesce(ctx); err != nil {
+		return err
 	}
 	e.runMu.Lock()
 	if !e.running {
@@ -455,7 +514,11 @@ func (e *Engine) ScheduleOnce(ctx context.Context, chatID int64, peerType string
 		NextRunAt: when, CreatedAt: time.Now().UTC(), CreatedBy: createdBy,
 		Status: JobStatusPending, MaxAttempts: 3,
 	}
-	return e.db.CreateScheduledJob(ctx, job)
+	res, err := e.db.CreateScheduledJob(ctx, job)
+	if err == nil {
+		e.notifyWake()
+	}
+	return res, err
 }
 
 func (e *Engine) ScheduleRecurring(ctx context.Context, chatID int64, peerType string, accessHash int64, interval time.Duration, actionType string, payload string, creatorID ...int64) (*ScheduledJob, error) {
@@ -479,7 +542,11 @@ func (e *Engine) ScheduleRecurring(ctx context.Context, chatID int64, peerType s
 		NextRunAt: time.Now().UTC().Add(interval), CreatedAt: time.Now().UTC(),
 		CreatedBy: createdBy, Status: JobStatusPending, MaxAttempts: 3,
 	}
-	return e.db.CreateScheduledJob(ctx, job)
+	res, err := e.db.CreateScheduledJob(ctx, job)
+	if err == nil {
+		e.notifyWake()
+	}
+	return res, err
 }
 
 // Cancel removes the durable job first, then cancels every local execution for
@@ -493,6 +560,7 @@ func (e *Engine) Cancel(ctx context.Context, jobID int64) error {
 		return err
 	}
 	e.cancelActiveJob(jobID)
+	e.notifyWake()
 	return nil
 }
 
@@ -539,63 +607,134 @@ func (e *Engine) cancelActiveJob(jobID int64) {
 
 func (e *Engine) runLoop(ctx context.Context) {
 	defer e.wg.Done()
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
+
+	// idleHeartbeat ensures periodic check even if an external DB change occurred without notifyWake.
+	const idleHeartbeat = 60 * time.Second
+
+	timer := time.NewTimer(idleHeartbeat)
+	defer timer.Stop()
+
 	for {
+		now := time.Now()
+		var nextDelay time.Duration
+
+		earliest, found, err := e.db.GetEarliestDueTime(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+				return
+			}
+			e.logger.Error("failed to query earliest due scheduled job", zap.Error(err))
+			nextDelay = 1 * time.Second
+		} else if !found {
+			nextDelay = idleHeartbeat
+		} else {
+			if earliest.Before(now) || earliest.Equal(now) {
+				nextDelay = 0
+			} else {
+				nextDelay = earliest.Sub(now)
+				if nextDelay > idleHeartbeat {
+					nextDelay = idleHeartbeat
+				}
+			}
+		}
+
+		if nextDelay <= 0 {
+			claimed := e.processDueJobs(ctx, now)
+			if claimed == 0 {
+				// Due jobs exist but could not be claimed (e.g. workers busy or Telegram not ready).
+				// Sleep a short backoff to prevent tight CPU spin.
+				nextDelay = 250 * time.Millisecond
+			} else {
+				// Loop immediately to re-check for any more due jobs or compute the new next delay
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					continue
+				}
+			}
+		}
+
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(nextDelay)
+
 		select {
 		case <-ctx.Done():
 			return
-		case now := <-ticker.C:
-			e.processDueJobs(ctx, now)
+		case <-e.wakeChan:
+			// Recalculate deadline immediately
+		case fireTime := <-timer.C:
+			e.processDueJobs(ctx, fireTime)
 		}
 	}
 }
 
-func (e *Engine) processDueJobs(ctx context.Context, now time.Time) {
-	// P1-01: Do not claim jobs before Telegram service is ready.
+func (e *Engine) processDueJobs(ctx context.Context, now time.Time) int {
+	if !e.beginClaimBatch() {
+		return 0
+	}
+	defer e.endClaimBatch()
+
+	// Do not claim jobs before Telegram service is ready.
 	if e.svcFunc != nil && e.svcFunc() == nil {
-		return
+		return 0
 	}
-	availableSlots := cap(e.sem) - len(e.sem)
-	if e.workers != nil {
-		if schedPool, ok := e.workers.Get(workers.PoolScheduler); ok {
-			stats := schedPool.Stats()
-			// Durable jobs should only be claimed when a worker can start them.
-			// Queue capacity is not execution capacity: claiming queued work starts
-			// its lease before it can run and can cause avoidable lease expiry.
-			avail := stats.Concurrency - stats.Busy
-			if avail < availableSlots {
-				availableSlots = avail
-			}
-		}
+
+	claimBatch := e.maxConcurrency
+	if claimBatch <= 0 {
+		claimBatch = 1
 	}
-	if availableSlots <= 0 {
-		return
-	}
-	claimBatch := availableSlots
 	if claimBatch > 10 {
 		claimBatch = 10
 	}
+
+	var reservations []*workers.ExecutionReservation
+	if e.workers != nil {
+		for len(reservations) < 10 {
+			reservation, err := e.workers.TryReserveExecution(workers.PoolScheduler)
+			if errors.Is(err, workers.ErrNoExecutionCapacity) {
+				break
+			}
+			if err != nil {
+				e.logger.Debug("scheduler execution capacity unavailable", zap.Error(err))
+				break
+			}
+			reservations = append(reservations, reservation)
+		}
+		claimBatch = len(reservations)
+	}
+	if claimBatch <= 0 {
+		return 0
+	}
+
 	claimedJobs, err := e.db.ClaimDueScheduledJobs(ctx, now, claimBatch, 90*time.Second)
 	if err != nil {
+		for _, reservation := range reservations {
+			reservation.Release()
+		}
 		e.logger.Error("failed to claim due scheduled jobs", zap.Error(err))
-		return
+		return 0
 	}
-	for _, job := range claimedJobs {
+
+	for i := len(claimedJobs); i < len(reservations); i++ {
+		reservations[i].Release()
+	}
+	if len(reservations) > len(claimedJobs) {
+		reservations = reservations[:len(claimedJobs)]
+	}
+
+	for i, job := range claimedJobs {
 		j := job
 		if e.workers != nil {
-			select {
-			case e.sem <- struct{}{}:
-			case <-ctx.Done():
-				return
-			}
-			var reservationOnce sync.Once
-			releaseReservation := func() {
-				reservationOnce.Do(func() { <-e.sem })
-			}
+			reservation := reservations[i]
 			taskID := fmt.Sprintf("sched-%d-%s", j.ID, j.ClaimToken)
 			jobCtx, cancel := context.WithCancel(e.ctx)
-			context.AfterFunc(jobCtx, releaseReservation)
+			stopReservationWatch := context.AfterFunc(jobCtx, reservation.Release)
 			e.registerActiveJob(j.ID, j.ClaimToken, cancel)
 			taskName := fmt.Sprintf("%s-%d", j.ActionType, j.ID)
 
@@ -606,18 +745,23 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) {
 				Timeout:   90 * time.Second,
 				CreatedAt: time.Now().UTC(),
 				Run: func(taskCtx context.Context) error {
+					// The physical worker has incremented Busy before Run, so the
+					// reservation can now transition to the real busy accounting.
+					reservation.Release()
+					stopReservationWatch()
 					defer func() {
-						releaseReservation()
 						e.unregisterActiveJob(j.ID, j.ClaimToken)
 						cancel()
+						e.notifyWake()
 					}()
 					e.executeJob(taskCtx, j, cancel)
 					return nil
 				},
 			}
 
-			if err := e.workers.Submit(ctx, workers.PoolScheduler, task); err != nil {
-				releaseReservation()
+			if err := e.workers.Submit(jobCtx, workers.PoolScheduler, task); err != nil {
+				stopReservationWatch()
+				reservation.Release()
 				e.logger.Error("failed to submit scheduled job to worker pool", zap.Int64("job_id", j.ID), zap.Error(err))
 				e.unregisterActiveJob(j.ID, j.ClaimToken)
 				cancel()
@@ -625,23 +769,15 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) {
 			continue
 		}
 
-		select {
-		case e.sem <- struct{}{}:
-		case <-ctx.Done():
-			return
-		}
-		e.wg.Add(1)
-		go func(targetJob ScheduledJob) {
-			defer func() { <-e.sem; e.wg.Done() }()
-			jobCtx, cancel := context.WithCancel(e.ctx)
-			e.registerActiveJob(targetJob.ID, targetJob.ClaimToken, cancel)
-			defer func() {
-				e.unregisterActiveJob(targetJob.ID, targetJob.ClaimToken)
-				cancel()
-			}()
-			e.executeJob(jobCtx, targetJob, cancel)
-		}(j)
+		// Compatibility path for tests/embedders without WorkerManager. It is
+		// intentionally synchronous: Scheduler no longer owns physical concurrency.
+		jobCtx, cancel := context.WithCancel(e.ctx)
+		e.registerActiveJob(j.ID, j.ClaimToken, cancel)
+		e.executeJob(jobCtx, j, cancel)
+		e.unregisterActiveJob(j.ID, j.ClaimToken)
+		cancel()
 	}
+	return len(claimedJobs)
 }
 
 // executeJob deliberately uses an at-least-once external execution model.
@@ -743,6 +879,7 @@ func (e *Engine) executeJob(ctx context.Context, job ScheduledJob, cancel contex
 				e.logger.Error("failed to complete scheduled job", zap.Int64("job_id", job.ID), zap.Error(err))
 			}
 		}
+		e.notifyWake()
 		return
 	}
 
@@ -776,6 +913,7 @@ func (e *Engine) executeJob(ctx context.Context, job ScheduledJob, cancel contex
 			e.logger.Error("failed to record scheduled job failure", zap.Int64("job_id", job.ID), zap.Error(err))
 		}
 	}
+	e.notifyWake()
 }
 
 func (e *Engine) executeSendMessage(ctx context.Context, job ScheduledJob) error {
@@ -854,7 +992,7 @@ func (e *Engine) executeManagedJob(ctx context.Context, job ScheduledJob) error 
 	if jobID == "" {
 		return errors.New("empty job id in scheduled managed job payload")
 	}
-	return e.jobsMgr.Trigger(ctx, jobID)
+	return e.jobsMgr.TriggerAndWait(ctx, jobID)
 }
 
 // ScheduleManagedJob schedules a declarative job from jobs.Manager to run at when, optionally recurring.

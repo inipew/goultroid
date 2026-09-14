@@ -71,6 +71,7 @@ type Repository interface {
 	RenewJobLease(ctx context.Context, id int64, claimToken string, extension time.Duration, now time.Time) error
 	RecordJobRun(ctx context.Context, entry *JobHistoryEntry) error
 	GetJobHistory(ctx context.Context, jobID int64, limit int) ([]JobHistoryEntry, error)
+	GetEarliestDueTime(ctx context.Context) (time.Time, bool, error)
 }
 
 // SQLiteRepository is a SQLite-backed implementation of Repository.
@@ -168,7 +169,7 @@ func (r *SQLiteRepository) CreateScheduledJob(ctx context.Context, job *Schedule
 		return nil, errors.New("job cannot be nil")
 	}
 	if job.CreatedAt.IsZero() {
-		job.CreatedAt = time.Now().UTC()
+		job.CreatedAt = time.Now()
 	}
 	if job.Status == "" {
 		job.Status = JobStatusPending
@@ -259,6 +260,66 @@ func (r *SQLiteRepository) ListDueScheduledJobs(ctx context.Context, before time
 		jobs = append(jobs, *job)
 	}
 	return jobs, rows.Err()
+}
+
+func parseSQLiteTime(val any) (time.Time, bool, error) {
+	if val == nil {
+		return time.Time{}, false, nil
+	}
+	switch v := val.(type) {
+	case time.Time:
+		return v, true, nil
+	case string:
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return time.Time{}, false, nil
+		}
+		if idx := strings.Index(v, " m="); idx != -1 {
+			v = v[:idx]
+		}
+		layouts := []string{
+			"2006-01-02 15:04:05.999999999 -0700 MST",
+			"2006-01-02 15:04:05.999999999 -0700 -07",
+			"2006-01-02 15:04:05 -0700 MST",
+			time.RFC3339Nano,
+			time.RFC3339,
+			"2006-01-02 15:04:05.999999999-07:00",
+			"2006-01-02 15:04:05.999999999Z07:00",
+			"2006-01-02 15:04:05.999999999",
+			"2006-01-02 15:04:05-07:00",
+			"2006-01-02 15:04:05Z07:00",
+			"2006-01-02 15:04:05",
+			"2006-01-02T15:04:05",
+		}
+		for _, layout := range layouts {
+			if t, err := time.Parse(layout, v); err == nil {
+				return t, true, nil
+			}
+		}
+		return time.Time{}, false, fmt.Errorf("unable to parse SQLite time string %q", v)
+	case []byte:
+		return parseSQLiteTime(string(v))
+	default:
+		return time.Time{}, false, fmt.Errorf("unexpected time column type %T: %v", val, val)
+	}
+}
+
+// GetEarliestDueTime returns the earliest time when a pending or expired-lease running job is due.
+func (r *SQLiteRepository) GetEarliestDueTime(ctx context.Context) (time.Time, bool, error) {
+	query := `SELECT MIN(due_time) FROM (
+		SELECT next_run_at AS due_time FROM scheduled_jobs WHERE status = 'pending' AND next_run_at IS NOT NULL
+		UNION ALL
+		SELECT lease_until AS due_time FROM scheduled_jobs WHERE status = 'running' AND lease_until IS NOT NULL
+	)`
+	var rawVal any
+	err := r.db.QueryRowContext(ctx, query).Scan(&rawVal)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return time.Time{}, false, nil
+		}
+		return time.Time{}, false, fmt.Errorf("failed to query earliest due scheduled job: %w", err)
+	}
+	return parseSQLiteTime(rawVal)
 }
 
 func generateClaimToken() string {

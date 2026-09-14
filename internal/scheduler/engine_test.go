@@ -644,8 +644,9 @@ type mockTaskSubmitter struct {
 
 func (m *mockTaskSubmitter) Submit(ctx context.Context, poolName string, task tasks.Task) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.tasks = append(m.tasks, task)
+	m.mu.Unlock()
+	go func() { _ = task.Run(ctx) }()
 	return nil
 }
 
