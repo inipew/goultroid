@@ -44,10 +44,10 @@ func (e *Engine) loop() {
 			e.handleControl(message)
 		case event := <-e.startedEvents:
 			e.stopTimer(timer, hasDeadline)
-			e.handleStarted(event)
+			event.response <- e.handleStarted(event)
 		case event := <-e.results:
 			e.stopTimer(timer, hasDeadline)
-			e.handleCompleted(event)
+			event.response <- e.handleCompleted(event)
 		case now := <-timerC:
 			e.expireDue(now.UTC(), 64)
 		case <-rootDone:
