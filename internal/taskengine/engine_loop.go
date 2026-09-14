@@ -108,13 +108,16 @@ func (e *Engine) handleControl(message any) {
 		request.response <- waiter
 	case closeScopeRequest:
 		owner := request.scope.Owner()
-		if request.scope.Generation() > e.closedScopes[owner] {
-			e.closedScopes[owner] = request.scope.Generation()
+		closedGeneration := e.closedScopes[owner]
+		if request.scope.Generation() > closedGeneration {
+			closedGeneration = request.scope.Generation()
+			e.closedScopes[owner] = closedGeneration
 		}
 		count := 0
 		now := e.clock.Now().UTC()
 		for id, record := range e.records {
-			if record.spec.Scope() != request.scope || record.state.Terminal() {
+			scope := record.spec.Scope()
+			if scope.Owner() != owner || scope.Generation() > closedGeneration || record.state.Terminal() {
 				continue
 			}
 			if _, err := e.cancelTask(id, tasks.CancelScopeClosed, now); err == nil {
