@@ -152,6 +152,10 @@ func TestEngine_LifecycleAndTasks(t *testing.T) {
 	router := core.NewRouter(".")
 	perms := core.NewPermissions(1001, []int64{1002})
 	engine := NewEngine(NewSQLiteRepository(db.DB), func() core.TelegramServicer { return svc }, router, perms, zap.NewNop())
+	// Periodic execution is worker-routed after the scheduler redesign. This
+	// lifecycle unit test uses the lightweight test submitter; the dedicated
+	// integration test covers the real WorkerManager/TaskManager path.
+	engine.periodic.SetSubmitter(testPeriodicSubmitter{})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -170,10 +174,21 @@ func TestEngine_LifecycleAndTasks(t *testing.T) {
 		t.Fatalf("failed to register periodic task: %v", err)
 	}
 
-	time.Sleep(70 * time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		snapshots := engine.PeriodicTaskSnapshots()
+		if atomic.LoadInt32(&counter) >= 2 && len(snapshots) == 1 && snapshots[0].Runs >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("periodic task did not complete twice before deadline: counter=%d snapshots=%+v", atomic.LoadInt32(&counter), snapshots)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
 	val := atomic.LoadInt32(&counter)
 	if val < 2 {
-		t.Errorf("expected periodic task to run at least twice, ran %d times", val)
+		t.Fatalf("expected periodic task to run at least twice, ran %d times", val)
 	}
 	snapshots := engine.PeriodicTaskSnapshots()
 	if len(snapshots) != 1 || snapshots[0].Owner != "runtime" || snapshots[0].Runs < 2 {
