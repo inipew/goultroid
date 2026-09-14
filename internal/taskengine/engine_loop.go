@@ -47,7 +47,7 @@ func (e *Engine) loop() {
 			event.response <- e.handleStarted(event)
 		case event := <-e.results:
 			e.stopTimer(timer, hasDeadline)
-			event.response <- e.handleCompleted(event)
+			_ = e.handleCompleted(event)
 		case now := <-timerC:
 			e.expireDue(now.UTC(), 64)
 		case <-rootDone:
