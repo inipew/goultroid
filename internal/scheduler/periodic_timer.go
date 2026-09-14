@@ -18,6 +18,10 @@ type periodicTaskSubmitter interface {
 	Submit(ctx context.Context, poolName string, task tasks.Task) error
 }
 
+type periodicNonBlockingTaskSubmitter interface {
+	TrySubmit(ctx context.Context, poolName string, task tasks.Task) error
+}
+
 type periodicRegistration struct {
 	Owner      string
 	Name       string
@@ -362,7 +366,15 @@ func (c *periodicCoordinator) startExecution(run periodicDueRun) {
 			return err
 		},
 	}
-	if err := submitter.Submit(run.ctx, workers.PoolGeneral, task); err != nil {
+
+	// The coordinator is the shared timer for every periodic registration, so
+	// it must never wait behind a saturated worker admission queue. WorkerManager
+	// provides TrySubmit; test/dummy submitters can keep the legacy Submit path.
+	submit := submitter.Submit
+	if trySubmitter, ok := submitter.(periodicNonBlockingTaskSubmitter); ok {
+		submit = trySubmitter.TrySubmit
+	}
+	if err := submit(run.ctx, workers.PoolGeneral, task); err != nil {
 		c.finishExecution(run, err)
 	}
 }
