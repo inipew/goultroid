@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/tasks"
+	"github.com/inipew/goultroid/internal/workers"
 )
 
 type manualClock struct {
@@ -165,7 +166,7 @@ func TestEngine_PreStartCancelIsExactlyOneTerminalResult(t *testing.T) {
 	if err != nil || !ok || second.Outcome() != tasks.OutcomeCancelled {
 		t.Fatalf("second ConsumeResult() outcome=%v ok=%v err=%v", second.Outcome(), ok, err)
 	}
-	if h.engine.Stats().ResultCreditsUsed != 1 { // first task still holds its credit
+	if h.engine.Stats().ResultCreditsUsed != 1 {
 		t.Fatalf("result credits after repeated consume=%d want 1", h.engine.Stats().ResultCreditsUsed)
 	}
 	assertP2Conservation(t, h.engine.Stats())
@@ -218,7 +219,7 @@ func TestEngine_RepeatedRetentionPurgeReturnsStateToBaseline(t *testing.T) {
 	resolver := &engineResolver{handlers: map[string]tasks.HandlerFunc{
 		"test.run": func(context.Context, tasks.PayloadRef) (tasks.ResultRef, error) { return tasks.ResultRef{}, nil },
 	}}
-	executor, err := newTestPhysicalExecutor(cfg, resolver)
+	executor, err := workers.NewPhysicalExecutor(workerCounts(cfg), resolver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,10 +266,6 @@ func TestEngine_RepeatedRetentionPurgeReturnsStateToBaseline(t *testing.T) {
 			t.Fatalf("burst %d retained state: tasks=%d credits=%d retention=%d owners=%d", burst, stats.Tasks, stats.ResultCreditsUsed, stats.RetentionEntries, len(stats.Owners))
 		}
 	}
-}
-
-func newTestPhysicalExecutor(cfg Config, resolver tasks.HandlerResolver) (*physicalWorkersAdapter, error) {
-	return newPhysicalWorkersAdapter(workerCounts(cfg), resolver)
 }
 
 func testCatalog(t *testing.T, cfg Config) (*Catalog, tasks.HandlerRef) {
