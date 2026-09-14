@@ -20,6 +20,7 @@ jobs:
 
       - name: Apply P0-P1 execution redesign
         run: |
+          python3 tools/normalize_p0_p1_source.py
           python3 tools/apply_p0_p1_execution_redesign.py
           gofmt -w internal/workers internal/telegram internal/jobs internal/scheduler internal/app
           git diff -- internal/workers internal/telegram internal/jobs internal/scheduler internal/app
@@ -73,6 +74,7 @@ jobs:
 
       - name: Apply P0-P1 execution redesign
         run: |
+          python3 tools/normalize_p0_p1_source.py
           python3 tools/apply_p0_p1_execution_redesign.py
           gofmt -w internal/workers internal/telegram internal/jobs internal/scheduler internal/app
 
@@ -106,6 +108,7 @@ jobs:
 
       - name: Apply P0-P1 execution redesign
         run: |
+          python3 tools/normalize_p0_p1_source.py
           python3 tools/apply_p0_p1_execution_redesign.py
           gofmt -w internal/workers internal/telegram internal/jobs internal/scheduler internal/app
 
