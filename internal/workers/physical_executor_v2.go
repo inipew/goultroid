@@ -290,7 +290,17 @@ func (e *PhysicalExecutor) execute(executorCtx context.Context, slot *physicalSl
 	}
 	spec := envelope.assignment.Spec()
 	started := time.Now().UTC()
-	_ = envelope.events.Started(permit, started)
+	if err := envelope.events.Started(permit, started); err != nil {
+		result, resultErr := tasks.NewTaskResult(tasks.TaskResultParams{
+			TaskID: spec.ID(), Outcome: tasks.OutcomeAbortedBeforeStart, Cause: tasks.ResultCauseInvalidPermit,
+			FinishedAt: time.Now().UTC(), Failure: tasks.FailureInfo{Code: "start_rejected", Message: err.Error()},
+		})
+		releaseSlot()
+		if resultErr == nil {
+			_ = envelope.events.Completed(permit, result)
+		}
+		return
+	}
 
 	baseCtx, cancelBase := context.WithCancel(envelope.ctx)
 	defer cancelBase()
