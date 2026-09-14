@@ -33,8 +33,10 @@ type StoreTx interface {
 	Rollback() error
 }
 
-// Repository owns transaction creation; application services own transaction
-// boundaries rather than leaking database handles into the domain model.
-type Repository interface {
+// TransactionalRepository owns transaction creation for the redesigned Jobs
+// store. The distinct name is intentional while the legacy Repository remains
+// live during migration; application services own transaction boundaries rather
+// than leaking database handles into the domain model.
+type TransactionalRepository interface {
 	Begin(context.Context) (StoreTx, error)
 }
