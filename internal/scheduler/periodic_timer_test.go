@@ -127,3 +127,50 @@ func TestPeriodicCoordinatorUnregisterCancelsActiveRun(t *testing.T) {
 		t.Fatal("active run was not cancelled")
 	}
 }
+
+func TestPeriodicCoordinatorReregisterCancelsPreviousGeneration(t *testing.T) {
+	c := newPeriodicCoordinator(zap.NewNop())
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Stop(context.Background()) }()
+
+	oldStarted := make(chan struct{})
+	oldStopped := make(chan struct{})
+	if err := c.Register("replace", time.Millisecond, PeriodicTaskOptions{}, func(ctx context.Context) error {
+		close(oldStarted)
+		<-ctx.Done()
+		close(oldStopped)
+		return ctx.Err()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-oldStarted:
+	case <-time.After(time.Second):
+		t.Fatal("old generation did not start")
+	}
+
+	var replacementRuns atomic.Int32
+	if err := c.Register("replace", 5*time.Millisecond, PeriodicTaskOptions{}, func(context.Context) error {
+		replacementRuns.Add(1)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-oldStopped:
+	case <-time.After(time.Second):
+		t.Fatal("re-register did not cancel previous generation")
+	}
+
+	deadline := time.After(time.Second)
+	for replacementRuns.Load() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("replacement generation did not run")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
