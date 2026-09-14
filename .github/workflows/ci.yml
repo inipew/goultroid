@@ -20,6 +20,7 @@ jobs:
         run: |
           python3 tools/normalize_p0_p1_source.py
           python3 tools/apply_p0_p1_execution_redesign.py
+          python3 tools/fix_p0_p1_generated.py
           gofmt -w internal/workers internal/telegram internal/jobs internal/scheduler internal/app
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -63,6 +64,7 @@ jobs:
         run: |
           python3 tools/normalize_p0_p1_source.py
           python3 tools/apply_p0_p1_execution_redesign.py
+          python3 tools/fix_p0_p1_generated.py
           gofmt -w internal/workers internal/telegram internal/jobs internal/scheduler internal/app
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -96,6 +98,7 @@ jobs:
         run: |
           python3 tools/normalize_p0_p1_source.py
           python3 tools/apply_p0_p1_execution_redesign.py
+          python3 tools/fix_p0_p1_generated.py
           gofmt -w internal/workers internal/telegram internal/jobs internal/scheduler internal/app
       - name: Setup Go
         uses: actions/setup-go@v5
