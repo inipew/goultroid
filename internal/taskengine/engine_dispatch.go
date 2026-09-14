@@ -178,6 +178,9 @@ func (e *Engine) handleStarted(event startedEvent) error {
 	if record.state != tasks.LifecycleDispatching {
 		return fmt.Errorf("%w: task is not dispatching", ErrWorkerEventInvalid)
 	}
+	if record.cancelled {
+		return fmt.Errorf("%w: task was cancelled before start", ErrWorkerEventInvalid)
+	}
 	slot := e.slotByID[event.permit.WorkerID()]
 	if slot == nil || slot.task != record.spec.ID() || slot.phase != slotAssigned {
 		return fmt.Errorf("%w: worker slot does not own assignment", ErrWorkerEventInvalid)
@@ -216,10 +219,30 @@ func (e *Engine) handleCompleted(event completedEvent) error {
 	slot.phase = slotIdle
 	slot.task = ""
 	e.releaseLogical(record)
-	record.finishedAt = event.result.FinishedAt()
+
 	result := event.result
+	if record.cancelled && record.startedAt.IsZero() && event.result.StartedAt().IsZero() {
+		cause := tasks.ResultCauseCancellation
+		switch record.cancelReason {
+		case tasks.CancelScopeClosed:
+			cause = tasks.ResultCauseScopeClosed
+		case tasks.CancelShutdown:
+			cause = tasks.ResultCauseEngineShutdown
+		}
+		normalized, err := tasks.NewTaskResult(tasks.TaskResultParams{
+			TaskID: record.spec.ID(), Outcome: tasks.OutcomeCancelled, Cause: cause,
+			FinishedAt: event.result.FinishedAt(), Failure: tasks.FailureInfo{
+				Code: "cancelled_before_start", Message: string(record.cancelReason),
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("normalize pre-start cancellation: %w", err)
+		}
+		result = normalized
+	}
+	record.finishedAt = result.FinishedAt()
 	record.result = &result
-	record.state = lifecycleForOutcome(event.result.Outcome())
+	record.state = lifecycleForOutcome(result.Outcome())
 	e.scheduleRetention(record, e.clock.Now().UTC())
 	return nil
 }
