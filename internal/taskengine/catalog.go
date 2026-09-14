@@ -33,7 +33,7 @@ type ValidationError struct {
 func (e *ValidationError) Error() string { return fmt.Sprintf("invalid work spec: %s", e.Code) }
 
 // HandlerDescriptor contains only metadata. The executable handler function is
-// intentionally not part of the P1 model and will be owned by TaskEngine in P2.
+// intentionally not part of the immutable WorkSpec model.
 type HandlerDescriptor struct {
 	Ref             tasks.HandlerRef
 	PayloadKind     string
@@ -160,12 +160,18 @@ func (c *Catalog) ValidateSpec(spec tasks.WorkSpec) error {
 	if _, ok := metadata.allowedClasses[spec.Class()]; !ok {
 		return &ValidationError{Code: ValidationClassNotAllowed}
 	}
+
+	// Resource requests are additive even when a caller supplies the same name
+	// more than once. Validate the aggregate using uint64 so duplicate entries
+	// cannot bypass capacity or overflow uint32 arithmetic in dispatch.
+	requested := make(map[string]uint64, len(spec.Resources()))
 	for _, request := range spec.Resources() {
 		capacity, ok := c.resources[request.Name()]
 		if !ok {
 			return &ValidationError{Code: ValidationUnknownResource}
 		}
-		if request.Units() > capacity {
+		requested[request.Name()] += uint64(request.Units())
+		if requested[request.Name()] > uint64(capacity) {
 			return &ValidationError{Code: ValidationResourceTooLarge}
 		}
 	}
