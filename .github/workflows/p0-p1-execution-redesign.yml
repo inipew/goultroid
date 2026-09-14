@@ -1,0 +1,41 @@
+name: P0-P1 execution redesign
+
+on:
+  push:
+    branches:
+      - audit-p0-p1-execution-redesign
+
+permissions:
+  contents: write
+
+jobs:
+  rewrite-and-validate:
+    if: github.event.head_commit.message == 'chore: run p0-p1 execution rewrite'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: audit-p0-p1-execution-redesign
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Apply scoped redesign
+        run: python3 tools/apply_p0_p1_execution_redesign.py
+      - name: Format
+        run: gofmt -w internal/workers internal/telegram internal/jobs internal/scheduler internal/app
+      - name: Focused tests
+        run: go test ./internal/workers ./internal/jobs ./internal/scheduler ./internal/telegram ./internal/app
+      - name: Vet
+        run: go vet ./...
+      - name: Race tests
+        run: go test -race ./...
+      - name: Commit validated changes
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: unify execution admission and scheduler claims'
+          git push origin HEAD:audit-p0-p1-execution-redesign
