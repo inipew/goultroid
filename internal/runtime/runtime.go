@@ -24,13 +24,14 @@ type Runtime struct {
 	graph        *DependencyGraph
 	startedComps []Component
 
-	rootCtx    context.Context
-	rootCancel context.CancelFunc
-	opMu       sync.Mutex
-	stopOnce   sync.Once
-	stopDone   chan struct{}
-	stopErr    error
-	startTime  time.Time
+	rootCtx     context.Context
+	rootCancel  context.CancelFunc
+	opMu        sync.Mutex
+	stopOnce    sync.Once
+	stopDone    chan struct{}
+	stopErr     error
+	stopTimeout time.Duration
+	startTime   time.Time
 }
 
 // New creates a new Runtime instance in the StateCreated state.
@@ -42,6 +43,7 @@ func New() *Runtime {
 		rootCtx:      ctx,
 		rootCancel:   cancel,
 		stopDone:     make(chan struct{}),
+		stopTimeout:  30 * time.Second,
 	}
 }
 
@@ -174,9 +176,16 @@ func (r *Runtime) failStartAndRollback(startErr error, started []Component) erro
 // Stop gracefully stops all started components in reverse dependency order.
 // Stop is idempotent; concurrent callers wait on the initial shutdown completion.
 func (r *Runtime) Stop(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	r.stopOnce.Do(func() {
-		r.stopErr = r.performStop(ctx)
-		close(r.stopDone)
+		go func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), r.stopTimeout)
+			defer cancel()
+			r.stopErr = r.performStop(shutdownCtx)
+			close(r.stopDone)
+		}()
 	})
 
 	select {
@@ -252,12 +261,13 @@ func (r *Runtime) performStop(ctx context.Context) error {
 	}
 
 	// Cancel root context after components have stopped or attempted to stop
-	r.rootCancel()
-	_ = r.stateMachine.Transition(StateStopped)
-
 	if len(stopErrs) > 0 {
+		r.rootCancel()
+		r.stateMachine.SetFailed()
 		return fmt.Errorf("shutdown completed with errors: %w", errors.Join(stopErrs...))
 	}
+	r.rootCancel()
+	_ = r.stateMachine.Transition(StateStopped)
 	return nil
 }
 

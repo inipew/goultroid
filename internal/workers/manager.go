@@ -32,6 +32,8 @@ type Manager struct {
 	admissionCtx context.Context
 	admissionEnd context.CancelFunc
 	admissionWG  sync.WaitGroup
+	drainMu      sync.Mutex
+	drained      bool
 }
 
 // NewManager creates a Manager initialized with standard workload pools.
@@ -102,6 +104,11 @@ func (m *Manager) Drain(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	m.drainMu.Lock()
+	defer m.drainMu.Unlock()
+	if m.drained {
+		return nil
+	}
 	m.mu.Lock()
 	pools := make([]*Pool, 0, len(m.pools))
 	for _, pool := range m.pools {
@@ -124,7 +131,7 @@ func (m *Manager) Drain(ctx context.Context) error {
 		if admissionEnd != nil {
 			admissionEnd()
 		}
-		<-admissionsDone
+		return ctx.Err()
 	}
 
 	var stopErrs []error
@@ -137,6 +144,7 @@ func (m *Manager) Drain(ctx context.Context) error {
 	if len(stopErrs) > 0 {
 		return fmt.Errorf("worker manager stop encountered errors: %w", errors.Join(stopErrs...))
 	}
+	m.drained = true
 	return nil
 }
 

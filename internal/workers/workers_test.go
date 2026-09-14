@@ -49,6 +49,23 @@ func TestPool_ExecuteTask(t *testing.T) {
 	}
 }
 
+func TestManager_DrainHonorsDeadlineWhileAdmissionIsBlocked(t *testing.T) {
+	mgr := NewManager()
+	mgr.admissionCtx, mgr.admissionEnd = context.WithCancel(context.Background())
+	mgr.admissionWG.Add(1)
+	defer mgr.admissionWG.Done()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := mgr.Drain(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Drain() error = %v, want deadline exceeded", err)
+	}
+	if time.Since(started) > 200*time.Millisecond {
+		t.Fatal("Drain() waited without bound after deadline")
+	}
+}
+
 func TestPool_TaskPanicDoesNotTerminateWorker(t *testing.T) {
 	pool := NewPool("panic-boundary", 1, 2, queue.PolicyBlock)
 	pool.Start(context.Background())

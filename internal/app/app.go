@@ -182,13 +182,22 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	}
 
 	rt := runtime.New()
-	if err := rt.Register(&infrastructureComponent{core: coreDeps, domain: domServices}); err != nil {
-		return nil, fmt.Errorf("register infrastructure component: %w", err)
+	resources := []resourceComponent{
+		{name: "database", stop: coreDeps.db.Close},
+		{name: "idempotency", dependencies: []string{"database"}, stop: func() error { coreDeps.idempManager.Close(); return nil }},
+		{name: "command-rate-limiter", dependencies: []string{"database"}, stop: coreDeps.cmdLimiter.Close},
+		{name: "interaction-rate-limiter", dependencies: []string{"database"}, stop: coreDeps.interLimiter.Close},
+		{name: "addon-runtimes", dependencies: []string{"database"}, stop: domServices.addonManager.ShutdownRuntimes},
 	}
-	if err := rt.Register(dependencyComponent{Component: coreDeps.eventBus, dependencies: []string{"infrastructure"}}); err != nil {
+	for _, resource := range resources {
+		if err := rt.Register(resource); err != nil {
+			return nil, fmt.Errorf("register %s component: %w", resource.name, err)
+		}
+	}
+	if err := rt.Register(dependencyComponent{Component: coreDeps.eventBus, dependencies: []string{"database"}}); err != nil {
 		return nil, fmt.Errorf("register eventbus component: %w", err)
 	}
-	if err := rt.Register(dependencyComponent{Component: coreDeps.workerManager, dependencies: []string{"infrastructure"}}); err != nil {
+	if err := rt.Register(dependencyComponent{Component: coreDeps.workerManager, dependencies: []string{"database"}}); err != nil {
 		return nil, fmt.Errorf("register workers component: %w", err)
 	}
 	if err := rt.Register(coreDeps.jobsManager); err != nil {
@@ -220,7 +229,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 			return nil, fmt.Errorf("register assistant component: %w", err)
 		}
 	}
-	if err := rt.Register(pluginManager); err != nil {
+	if err := rt.Register(dependencyComponent{Component: pluginManager, dependencies: []string{"dispatcher", "jobs", "addon-runtimes"}}); err != nil {
 		return nil, fmt.Errorf("register plugins component: %w", err)
 	}
 

@@ -52,25 +52,6 @@ func (g *CapabilityGate) IsFailClosed() bool {
 	return g.failClosed
 }
 
-func (g *CapabilityGate) recordAudit(pluginID, capName string, granted bool, reason string) {
-	if g.auditor == nil {
-		return
-	}
-	action := "capability.granted"
-	if !granted {
-		action = "capability.denied"
-	}
-	_ = g.auditor.Record(context.Background(), audit.AuditEvent{
-		Action: action,
-		Target: pluginID,
-		Details: map[string]any{
-			"capability": capName,
-			"granted":    granted,
-			"reason":     reason,
-		},
-	})
-}
-
 // RegisterManifest registers a plugin's manifest with the gate.
 func (g *CapabilityGate) RegisterManifest(m Manifest) error {
 	if err := m.Validate(); err != nil {
@@ -91,6 +72,45 @@ func (g *CapabilityGate) UnregisterManifest(pluginID string) {
 	defer g.mu.Unlock()
 	delete(g.manifests, pluginID)
 	delete(g.privilegedMap, pluginID)
+}
+
+// StageManifest atomically replaces a manifest and returns a lossless rollback
+// that restores all gate state owned by the plugin.
+func (g *CapabilityGate) StageManifest(m Manifest) (func(), error) {
+	if err := m.Validate(); err != nil {
+		return nil, err
+	}
+	g.mu.Lock()
+	previous, existed := g.manifests[m.ID]
+	previousPrivileged := clonePrivileges(g.privilegedMap[m.ID])
+	g.manifests[m.ID] = m
+	g.mu.Unlock()
+
+	return func() {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		if existed {
+			g.manifests[m.ID] = previous
+		} else {
+			delete(g.manifests, m.ID)
+		}
+		if previousPrivileged == nil {
+			delete(g.privilegedMap, m.ID)
+		} else {
+			g.privilegedMap[m.ID] = previousPrivileged
+		}
+	}, nil
+}
+
+func clonePrivileges(source map[string]bool) map[string]bool {
+	if source == nil {
+		return nil
+	}
+	clone := make(map[string]bool, len(source))
+	for capability, allowed := range source {
+		clone[capability] = allowed
+	}
+	return clone
 }
 
 // Register registers a plugin ID with a list of capabilities.
@@ -117,40 +137,51 @@ func (g *CapabilityGate) AllowPrivileged(pluginID, capName string) {
 // Check verifies that the plugin declares the capability and, if privileged, is allowlisted.
 func (g *CapabilityGate) Check(pluginID, capName string) error {
 	g.mu.RLock()
-	defer g.mu.RUnlock()
-
 	m, ok := g.manifests[pluginID]
+	failClosed := g.failClosed
+	allowedPrivileged := g.privilegedMap[pluginID] != nil && g.privilegedMap[pluginID][capName]
+	auditor := g.auditor
+	g.mu.RUnlock()
+	record := func(granted bool, reason string) {
+		if auditor == nil {
+			return
+		}
+		action := "capability.granted"
+		if !granted {
+			action = "capability.denied"
+		}
+		_ = auditor.Record(context.Background(), audit.AuditEvent{Action: action, Target: pluginID, Details: map[string]any{"capability": capName, "granted": granted, "reason": reason}})
+	}
 	if !ok {
-		if g.failClosed {
+		if failClosed {
 			err := fmt.Errorf("%w: plugin %q has no manifest", ErrCapabilityDenied, pluginID)
-			g.recordAudit(pluginID, capName, false, err.Error())
+			record(false, err.Error())
 			return err
 		}
 		// Legacy plugins without manifest: allow non-privileged capabilities
 		if IsPrivilegedCapability(capName) {
 			err := fmt.Errorf("%w: plugin %q has no manifest and cannot use privileged capability %s", ErrCapabilityDenied, pluginID, capName)
-			g.recordAudit(pluginID, capName, false, err.Error())
+			record(false, err.Error())
 			return err
 		}
-		g.recordAudit(pluginID, capName, true, "legacy allow non-privileged")
+		record(true, "legacy allow non-privileged")
 		return nil
 	}
 
 	if !m.HasCapability(capName) {
 		err := fmt.Errorf("%w: plugin %q does not declare capability %s", ErrCapabilityDenied, pluginID, capName)
-		g.recordAudit(pluginID, capName, false, err.Error())
+		record(false, err.Error())
 		return err
 	}
 
 	if IsPrivilegedCapability(capName) {
-		allowed := g.privilegedMap[pluginID] != nil && g.privilegedMap[pluginID][capName]
-		if !allowed {
+		if !allowedPrivileged {
 			err := fmt.Errorf("%w: privileged capability %s is not allowlisted for plugin %q", ErrCapabilityDenied, capName, pluginID)
-			g.recordAudit(pluginID, capName, false, err.Error())
+			record(false, err.Error())
 			return err
 		}
 	}
 
-	g.recordAudit(pluginID, capName, true, "granted")
+	record(true, "granted")
 	return nil
 }

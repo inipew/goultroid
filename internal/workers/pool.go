@@ -126,16 +126,25 @@ func (p *Pool) workerLoop(workerID int) {
 
 		p.busy.Add(1)
 		p.tasksExecuted.Add(1)
-
-		taskErr := task.Execute(p.ctx)
-		if taskErr == nil {
-			p.tasksSuccess.Add(1)
-		} else {
-			p.tasksFailed.Add(1)
-		}
-
-		p.busy.Add(-1)
+		func() {
+			defer p.busy.Add(-1)
+			taskErr := executeTaskSafely(p.ctx, &task)
+			if taskErr == nil {
+				p.tasksSuccess.Add(1)
+			} else {
+				p.tasksFailed.Add(1)
+			}
+		}()
 	}
+}
+
+func executeTaskSafely(ctx context.Context, task *tasks.Task) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("worker task panicked: %v", recovered)
+		}
+	}()
+	return task.Execute(ctx)
 }
 
 // Submit queues a task for execution in this worker pool.

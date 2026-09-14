@@ -1,12 +1,34 @@
 package addon
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestReadBoundedFrameLimitAppliesPerFrame(t *testing.T) {
+	reader := bufio.NewReader(bytes.NewBufferString("first\nsecond\n"))
+	for _, want := range []string{"first\n", "second\n"} {
+		got, err := readBoundedFrame(reader, 7)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != want {
+			t.Fatalf("frame = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestReadBoundedFrameRejectsOversizedFrame(t *testing.T) {
+	_, err := readBoundedFrame(bufio.NewReader(bytes.NewBufferString("oversized\n")), 5)
+	if err == nil {
+		t.Fatal("readBoundedFrame succeeded for oversized frame")
+	}
+}
 
 func TestExternalRuntimeStartHandshakeDoesNotDeadlock(t *testing.T) {
 	dir := t.TempDir()

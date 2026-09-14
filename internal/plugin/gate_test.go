@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/inipew/goultroid/internal/platform/audit"
 )
@@ -93,5 +94,47 @@ func TestCapabilityGate_Auditor(t *testing.T) {
 	}
 	if aud.events[1].Action != "capability.denied" {
 		t.Errorf("expected second action capability.denied, got %s", aud.events[1].Action)
+	}
+}
+
+func TestCapabilityGate_StageManifestRollbackRestoresPrivileges(t *testing.T) {
+	gate := NewCapabilityGate()
+	original := Manifest{ID: "plug", Name: "Plug", Version: "1.0.0", Capabilities: []string{CapProcessExecute}}
+	if err := gate.RegisterManifest(original); err != nil {
+		t.Fatal(err)
+	}
+	gate.AllowPrivileged("plug", CapProcessExecute)
+	rollback, err := gate.StageManifest(Manifest{ID: "plug", Name: "Plug", Version: "2.0.0", Capabilities: []string{CapHTTP}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollback()
+	if err := gate.Check("plug", CapProcessExecute); err != nil {
+		t.Fatalf("rollback lost privileged grant: %v", err)
+	}
+}
+
+type mutatingAuditor struct{ gate *CapabilityGate }
+
+func (a mutatingAuditor) Record(context.Context, audit.AuditEvent) error {
+	a.gate.AllowPrivileged("plug", CapProcessExecute)
+	return nil
+}
+
+func (mutatingAuditor) Recent(int) []audit.AuditEvent { return nil }
+
+func TestCapabilityGate_CheckCallsAuditorOutsideLock(t *testing.T) {
+	gate := NewCapabilityGate()
+	gate.Register("plug", []string{CapHTTP})
+	gate.SetAuditor(mutatingAuditor{gate: gate})
+	done := make(chan error, 1)
+	go func() { done <- gate.Check("plug", CapHTTP) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Check deadlocked while auditor mutated gate")
 	}
 }

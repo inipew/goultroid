@@ -396,22 +396,16 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 
 func (m *Manager) stageManifest(name string, manifest Manifest) (func(), error) {
 	m.mu.RLock()
-	previous, existed := m.manifests[name]
 	gate := m.gate
 	m.mu.RUnlock()
 	if gate != nil {
-		if err := gate.RegisterManifest(manifest); err != nil {
+		rollback, err := gate.StageManifest(manifest)
+		if err != nil {
 			return nil, err
 		}
+		return rollback, nil
 	}
-	return func() {
-		if gate != nil {
-			gate.UnregisterManifest(name)
-			if existed {
-				_ = gate.RegisterManifest(previous)
-			}
-		}
-	}, nil
+	return func() {}, nil
 }
 
 // Scope returns the lifecycle scope owned by a registered plugin.

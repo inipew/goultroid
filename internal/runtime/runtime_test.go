@@ -160,7 +160,7 @@ func TestRuntime_LifecycleAndOrdering(t *testing.T) {
 	}
 }
 
-func TestRuntime_StopDoesNotInvokeComponentsAfterDeadline(t *testing.T) {
+func TestRuntime_StopCanceledCallerDoesNotCancelShutdown(t *testing.T) {
 	r := New()
 	var calls []recordedCall
 	var mu sync.Mutex
@@ -182,10 +182,55 @@ func TestRuntime_StopDoesNotInvokeComponentsAfterDeadline(t *testing.T) {
 		t.Fatalf("Stop() error = %v, want context.Canceled", err)
 	}
 
+	if err := r.Stop(context.Background()); err != nil {
+		t.Fatalf("shutdown did not complete: %v", err)
+	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(calls) != 0 {
-		t.Fatalf("components invoked after stop context expired: %+v", calls)
+	if len(calls) != 2 || calls[0].component != "second" || calls[1].component != "first" {
+		t.Fatalf("shutdown did not continue in reverse order: %+v", calls)
+	}
+}
+
+func TestRuntime_StopCallerTimeoutDoesNotCancelShutdown(t *testing.T) {
+	release := make(chan struct{})
+	stopped := make(chan struct{})
+	r := New()
+	r.stopTimeout = time.Second
+	_ = r.Register(&callbackComponent{name: "slow", stopFn: func(context.Context) error {
+		<-release
+		close(stopped)
+		return nil
+	}})
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	if err := r.Stop(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Stop() error = %v, want caller deadline", err)
+	}
+	close(release)
+	if err := r.Stop(context.Background()); err != nil {
+		t.Fatalf("shutdown did not continue after caller timeout: %v", err)
+	}
+	<-stopped
+	if r.State() != StateStopped {
+		t.Fatalf("state = %s, want stopped", r.State())
+	}
+}
+
+func TestRuntime_ShutdownFailureSetsFailed(t *testing.T) {
+	r := New()
+	_ = r.Register(&callbackComponent{name: "broken", stopFn: func(context.Context) error { return errors.New("boom") }})
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Stop(context.Background()); err == nil {
+		t.Fatal("Stop() succeeded, want error")
+	}
+	if r.State() != StateFailed {
+		t.Fatalf("state = %s, want failed", r.State())
 	}
 }
 

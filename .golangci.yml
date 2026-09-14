@@ -22,24 +22,24 @@ linters:
         - (net/http.ResponseWriter).Write
     revive:
       enable-all-rules: false
-      enable:
-        - var-naming
-        - package-comments
-        - dot-imports
-        - error-return
-        - error-strings
-        - error-naming
-        - increment-decrement
-        - var-declaration
-        - range
-        - receiver-naming
-        - time-naming
-        - indent-error-flow
-        - errorf
-        - empty-block
-        - superfluous-else
-        - unused-parameter
-        - unreachable-code
+      rules:
+        - name: var-naming
+        - name: package-comments
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: increment-decrement
+        - name: var-declaration
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: indent-error-flow
+        - name: errorf
+        - name: empty-block
+        - name: superfluous-else
+        - name: unused-parameter
+        - name: unreachable-code
     gocritic:
       enable-all: false
       disabled-checks:

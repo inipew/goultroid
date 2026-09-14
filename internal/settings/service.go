@@ -73,38 +73,44 @@ func (s *Service) runOutboxWorker(ctx context.Context) {
 }
 
 func (s *Service) drainOutbox(ctx context.Context) {
-	entries, err := s.repo.ListPendingOutbox(ctx, 100)
-	if err != nil {
-		s.setOutboxError(err)
-		return
-	}
-	for _, e := range entries {
-		if s.bus == nil {
-			return
-		}
-		evt := &core.SettingChangedEvent{
-			MetaData: core.EventMeta{
-				ID: fmt.Sprintf("outbox:setting:%d", e.ID),
-			},
-			At:        e.CreatedAt,
-			ScopeType: e.ScopeType,
-			ScopeID:   e.ScopeID,
-			Namespace: e.Namespace,
-			Key:       e.Key,
-			OldVal:    e.OldVal,
-			NewVal:    e.NewVal,
-			ChangedBy: e.ChangedBy,
-		}
-		if err := s.bus.PublishDurable(ctx, evt); err != nil {
+	const batchSize = 100
+	for {
+		entries, err := s.repo.ListPendingOutbox(ctx, batchSize)
+		if err != nil {
 			s.setOutboxError(err)
 			return
 		}
-		if err := s.repo.MarkOutboxProcessed(ctx, e.ID); err != nil {
-			s.setOutboxError(err)
+		for _, e := range entries {
+			if s.bus == nil {
+				return
+			}
+			evt := &core.SettingChangedEvent{
+				MetaData: core.EventMeta{
+					ID: fmt.Sprintf("outbox:setting:%d", e.ID),
+				},
+				At:        e.CreatedAt,
+				ScopeType: e.ScopeType,
+				ScopeID:   e.ScopeID,
+				Namespace: e.Namespace,
+				Key:       e.Key,
+				OldVal:    e.OldVal,
+				NewVal:    e.NewVal,
+				ChangedBy: e.ChangedBy,
+			}
+			if err := s.bus.PublishDurable(ctx, evt); err != nil {
+				s.setOutboxError(err)
+				return
+			}
+			if err := s.repo.MarkOutboxProcessed(ctx, e.ID); err != nil {
+				s.setOutboxError(err)
+				return
+			}
+		}
+		s.setOutboxError(nil)
+		if len(entries) < batchSize {
 			return
 		}
 	}
-	s.setOutboxError(nil)
 }
 
 func (s *Service) setOutboxError(err error) {

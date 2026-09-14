@@ -19,7 +19,11 @@ import (
 	"go.uber.org/zap"
 )
 
-const AddonProtocolVersion = 1
+const (
+	AddonProtocolVersion = 1
+	maxIPCFrameSize      = 8 << 20
+	maxStderrLineSize    = 1 << 20
+)
 
 type IPCRequest struct {
 	ID     string          `json:"id"`
@@ -179,6 +183,7 @@ func (r *ExternalRuntime) Start(ctx context.Context) error {
 
 	go func() {
 		scanner := bufio.NewScanner(stderrPipe)
+		scanner.Buffer(make([]byte, 64*1024), maxStderrLineSize)
 		for scanner.Scan() {
 			line := scanner.Text()
 			r.mu.Lock()
@@ -188,11 +193,19 @@ func (r *ExternalRuntime) Start(ctx context.Context) error {
 				l.Warn("addon stderr", zap.String("addon", r.manifest.Name), zap.String("line", line))
 			}
 		}
+		if err := scanner.Err(); err != nil {
+			r.mu.Lock()
+			l := r.logger
+			r.mu.Unlock()
+			if l != nil {
+				l.Warn("addon stderr drain failed", zap.String("addon", r.manifest.Name), zap.Error(err))
+			}
+		}
 	}()
 
 	r.cmd = cmd
 	r.stdin = stdin
-	r.stdout = bufio.NewReader(io.LimitReader(stdout, 8<<20))
+	r.stdout = bufio.NewReader(stdout)
 	r.running = true
 	r.stopping = false
 	r.exitDone = make(chan struct{})
@@ -284,11 +297,22 @@ func (r *ExternalRuntime) callLocked(ctx context.Context, method string, params 
 	r.seq++
 	id := fmt.Sprintf("%d-%d", time.Now().UnixNano(), r.seq)
 	request, _ := json.Marshal(IPCRequest{ID: id, Method: method, Params: params})
-	_, err := r.stdin.Write(append(request, '\n'))
+	stdin := r.stdin
 	stdout := r.stdout
 	r.mu.Unlock()
-	if err != nil {
-		return nil, fmt.Errorf("write addon IPC request: %w", err)
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := stdin.Write(append(request, '\n'))
+		writeDone <- err
+	}()
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			return nil, fmt.Errorf("write addon IPC request: %w", err)
+		}
+	case <-ctx.Done():
+		_ = r.Stop()
+		return nil, ctx.Err()
 	}
 
 	resultCh := make(chan struct {
@@ -296,7 +320,7 @@ func (r *ExternalRuntime) callLocked(ctx context.Context, method string, params 
 		err      error
 	}, 1)
 	go func() {
-		line, err := stdout.ReadBytes('\n')
+		line, err := readBoundedFrame(stdout, maxIPCFrameSize)
 		if err != nil {
 			resultCh <- struct {
 				response IPCResponse
@@ -333,12 +357,33 @@ func (r *ExternalRuntime) callLocked(ctx context.Context, method string, params 
 		return nil, ctx.Err()
 	case result := <-resultCh:
 		if result.err != nil {
+			_ = r.Stop()
 			return nil, result.err
 		}
 		if !result.response.OK {
 			return nil, errors.New(result.response.Error)
 		}
 		return result.response.Result, nil
+	}
+}
+
+func readBoundedFrame(reader *bufio.Reader, limit int) ([]byte, error) {
+	if limit <= 0 {
+		return nil, errors.New("IPC frame limit must be positive")
+	}
+	frame := make([]byte, 0, min(limit, 64*1024))
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(frame)+len(fragment) > limit {
+			return nil, fmt.Errorf("addon IPC response exceeds %d bytes", limit)
+		}
+		frame = append(frame, fragment...)
+		if err == nil {
+			return frame, nil
+		}
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return nil, err
+		}
 	}
 }
 

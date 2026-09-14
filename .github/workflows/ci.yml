@@ -53,9 +53,9 @@ jobs:
           git diff --exit-code -- internal/app/generated_modules.go
 
       - name: GolangCI-Lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
-          version: v1.62
+          version: v2.13.2
           args: --timeout=3m
 
   test:
