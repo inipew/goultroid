@@ -1,0 +1,44 @@
+name: Execution ownership fixes
+
+on:
+  push:
+    branches:
+      - redesign/execution-ownership-fixes-p1
+
+permissions:
+  contents: write
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  apply-test-materialize:
+    if: github.event.head_commit.message == 'ci: validate execution ownership fixes'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: redesign/execution-ownership-fixes-p1
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Apply ownership fixes
+        run: |
+          python3 tools/fix_execution_ownership.py
+          gofmt -w internal/tasks internal/workers internal/jobs internal/scheduler
+      - name: Focused tests
+        run: go test -race -timeout=4m ./internal/tasks ./internal/workers ./internal/jobs ./internal/scheduler ./internal/app
+      - name: Vet
+        run: go vet ./...
+      - name: Lint
+        run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run --timeout=3m
+      - name: Materialize validated source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add internal/tasks internal/workers internal/jobs internal/scheduler
+          git commit -m "fix: centralize execution cancellation ownership"
+          git push origin HEAD:redesign/execution-ownership-fixes-p1
