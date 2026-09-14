@@ -18,9 +18,12 @@ func (e *Engine) loop() {
 	}()
 
 	rootDone := e.ctx.Done()
-	timer := time.NewTimer(time.Hour)
+	timer := e.clock.NewTimer(time.Hour)
 	if !timer.Stop() {
-		<-timer.C
+		select {
+		case <-timer.C():
+		default:
+		}
 	}
 	defer timer.Stop()
 
@@ -28,14 +31,14 @@ func (e *Engine) loop() {
 		e.dispatchAvailable()
 		e.notifyDrainedIfSettled()
 
-		wait, hasDeadline := e.nextTimerWait(time.Now().UTC())
+		wait, hasDeadline := e.nextTimerWait(e.clock.Now().UTC())
 		var timerC <-chan time.Time
 		if hasDeadline {
 			if wait < 0 {
 				wait = 0
 			}
 			timer.Reset(wait)
-			timerC = timer.C
+			timerC = timer.C()
 		}
 
 		select {
@@ -64,13 +67,13 @@ func (e *Engine) loop() {
 	}
 }
 
-func (e *Engine) stopTimer(timer *time.Timer, armed bool) {
+func (e *Engine) stopTimer(timer Timer, armed bool) {
 	if !armed {
 		return
 	}
 	if !timer.Stop() {
 		select {
-		case <-timer.C:
+		case <-timer.C():
 		default:
 		}
 	}
@@ -81,7 +84,7 @@ func (e *Engine) handleControl(message any) {
 	case submitRequest:
 		e.handleSubmit(request)
 	case cancelRequest:
-		receipt, err := e.cancelTask(request.taskID, request.reason, time.Now().UTC())
+		receipt, err := e.cancelTask(request.taskID, request.reason, e.clock.Now().UTC())
 		request.response <- cancelResponse{receipt: receipt, err: err}
 	case snapshotRequest:
 		snapshot, ok := e.snapshot(request.taskID)
@@ -108,7 +111,7 @@ func (e *Engine) handleControl(message any) {
 			e.closedScopes[owner] = request.scope.Generation()
 		}
 		count := 0
-		now := time.Now().UTC()
+		now := e.clock.Now().UTC()
 		for id, record := range e.records {
 			if record.spec.Scope() != request.scope || record.state.Terminal() {
 				continue
@@ -122,7 +125,7 @@ func (e *Engine) handleControl(message any) {
 }
 
 func (e *Engine) handleSubmit(request submitRequest) {
-	now := time.Now().UTC()
+	now := e.clock.Now().UTC()
 	respondReject := func(reason tasks.RejectionReason, cause error) {
 		err := error(&tasks.AdmissionError{Reason: reason})
 		if cause != nil {
