@@ -12,7 +12,7 @@ func (e *Engine) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Admissi
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	requestedAt := time.Now().UTC()
+	requestedAt := e.clock.Now().UTC()
 	response := make(chan submitResponse, 1)
 	req := submitRequest{ctx: ctx, spec: spec, requestedAt: requestedAt, response: response}
 	if err := e.sendBeforeLinearization(ctx, req); err != nil {
