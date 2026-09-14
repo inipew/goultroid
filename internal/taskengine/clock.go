@@ -25,6 +25,8 @@ func (systemClock) NewTimer(delay time.Duration) Timer {
 
 type systemTimer struct{ timer *time.Timer }
 
-func (t *systemTimer) C() <-chan time.Time          { return t.timer.C }
-func (t *systemTimer) Reset(delay time.Duration) bool { return t.timer.Reset(delay) }
-func (t *systemTimer) Stop() bool                    { return t.timer.Stop() }
+func (t *systemTimer) C() <-chan time.Time { return t.timer.C }
+func (t *systemTimer) Reset(delay time.Duration) bool {
+	return t.timer.Reset(delay)
+}
+func (t *systemTimer) Stop() bool { return t.timer.Stop() }
