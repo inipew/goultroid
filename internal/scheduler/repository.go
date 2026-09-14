@@ -373,11 +373,26 @@ func (r *SQLiteRepository) claimDueScheduledJobsOnce(ctx context.Context, now ti
 		lease = 90 * time.Second
 	}
 
-	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{})
+	// Claiming is a read-then-write operation. Acquire SQLite's writer intent at
+	// transaction start so competing claimers serialize before reading the same
+	// candidate rows instead of racing a DEFERRED read-to-write lock upgrade.
+	conn, err := r.db.Conn(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to begin claim transaction: %w", err)
+		return nil, fmt.Errorf("failed to acquire claim connection: %w", err)
 	}
-	defer tx.Rollback()
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return nil, fmt.Errorf("failed to begin immediate claim transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		rollbackCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_, _ = conn.ExecContext(rollbackCtx, "ROLLBACK")
+	}()
 
 	query := `SELECT ` + scheduledJobColumns + `
 	          FROM scheduled_jobs
@@ -386,7 +401,7 @@ func (r *SQLiteRepository) claimDueScheduledJobsOnce(ctx context.Context, now ti
 	          ORDER BY next_run_at ASC
 	          LIMIT ?`
 
-	rows, err := tx.QueryContext(ctx, query, now, now, limit)
+	rows, err := conn.QueryContext(ctx, query, now, now, limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query due scheduled jobs for claim: %w", err)
 	}
@@ -409,7 +424,7 @@ func (r *SQLiteRepository) claimDueScheduledJobsOnce(ctx context.Context, now ti
 	}
 
 	leaseUntil := now.Add(lease)
-	updateStmt, err := tx.PrepareContext(ctx, `
+	updateStmt, err := conn.PrepareContext(ctx, `
 		UPDATE scheduled_jobs
 		SET status = 'running',
 		    lease_until = ?,
@@ -426,7 +441,7 @@ func (r *SQLiteRepository) claimDueScheduledJobsOnce(ctx context.Context, now ti
 	}
 	defer updateStmt.Close()
 
-	histStmt, err := tx.PrepareContext(ctx, `
+	histStmt, err := conn.PrepareContext(ctx, `
 		INSERT INTO scheduled_job_history (job_id, ran_at, duration_ms, success, error_msg)
 		VALUES (?, ?, ?, 0, ?)
 	`)
@@ -466,9 +481,10 @@ func (r *SQLiteRepository) claimDueScheduledJobsOnce(ctx context.Context, now ti
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return nil, fmt.Errorf("failed to commit claim transaction: %w", err)
 	}
+	committed = true
 
 	return claimedJobs, nil
 }
