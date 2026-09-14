@@ -126,11 +126,14 @@ func (e *Engine) SetMaxConcurrency(n int) {
 }
 
 // SetWorkers configures runtime worker and task managers for job execution.
-func (e *Engine) SetWorkers(workers *workers.Manager, taskMgr *tasks.Manager) {
+func (e *Engine) SetWorkers(workerMgr *workers.Manager, taskMgr *tasks.Manager) {
 	e.runMu.Lock()
 	defer e.runMu.Unlock()
-	e.workers = workers
+	e.workers = workerMgr
 	e.taskMgr = taskMgr
+	if e.periodic != nil {
+		e.periodic.SetSubmitter(workerMgr)
+	}
 }
 
 // SetJobsManager configures the declarative jobs manager for managed job dispatch.
@@ -850,7 +853,10 @@ func (e *Engine) executeManagedJob(ctx context.Context, job ScheduledJob) error 
 	if jobID == "" {
 		return errors.New("empty job id in scheduled managed job payload")
 	}
-	return e.jobsMgr.TriggerAndWait(ctx, jobID)
+	// Scheduler owns timing and durable trigger state, not managed-job execution.
+	// Return after admission so a scheduler worker never waits for work that may
+	// itself require PoolScheduler capacity.
+	return e.jobsMgr.Trigger(ctx, jobID)
 }
 
 // ScheduleManagedJob schedules a declarative job from jobs.Manager to run at when, optionally recurring.
