@@ -28,8 +28,9 @@ type physicalSlot struct {
 	generation uint64
 	mailbox    chan assignmentEnvelope
 
-	mu   sync.Mutex
-	busy bool
+	mu     sync.Mutex
+	busy   bool
+	online bool
 }
 
 // PhysicalExecutor owns fixed physical worker slots. Each slot has exactly one
@@ -99,6 +100,7 @@ func (e *PhysicalExecutor) Start(ctx context.Context) error {
 		slot.generation++
 		generation := slot.generation
 		slot.busy = false
+		slot.online = true
 		slot.mu.Unlock()
 		e.wg.Add(1)
 		go e.workerLoop(e.ctx, slot, generation)
@@ -106,7 +108,12 @@ func (e *PhysicalExecutor) Start(ctx context.Context) error {
 	done := e.done
 	go func() {
 		e.wg.Wait()
+		e.mu.Lock()
+		if e.done == done {
+			e.running = false
+		}
 		close(done)
+		e.mu.Unlock()
 	}()
 	return nil
 }
@@ -157,51 +164,60 @@ func (e *PhysicalExecutor) Assign(ctx context.Context, assignment tasks.WorkerAs
 		return errors.New("worker events sink is required")
 	}
 	permit := assignment.Permit()
+
+	// Keep the executor read lock through the non-blocking mailbox handoff. Stop
+	// therefore cannot cancel the generation between the running check and the
+	// handoff. The per-slot online bit covers independent parent-context
+	// cancellation: a worker marks itself offline before its final mailbox drain.
 	e.mu.RLock()
-	running := e.running
-	slot := e.byID[permit.WorkerID()]
-	executorCtx := e.ctx
-	e.mu.RUnlock()
-	if !running {
+	if !e.running {
+		e.mu.RUnlock()
 		return ErrExecutorNotRunning
 	}
+	slot := e.byID[permit.WorkerID()]
+	executorCtx := e.ctx
 	if slot == nil || slot.pool != permit.Pool() {
+		e.mu.RUnlock()
 		return ErrInvalidPermit
 	}
+
 	slot.mu.Lock()
 	if slot.generation != permit.WorkerGeneration() {
 		slot.mu.Unlock()
+		e.mu.RUnlock()
 		return ErrInvalidPermit
+	}
+	if !slot.online {
+		slot.mu.Unlock()
+		e.mu.RUnlock()
+		return ErrExecutorNotRunning
 	}
 	if slot.busy {
 		slot.mu.Unlock()
+		e.mu.RUnlock()
 		return ErrWorkerBusy
 	}
 	slot.busy = true
-	slot.mu.Unlock()
 
 	envelope := assignmentEnvelope{ctx: ctx, assignment: assignment, events: events}
+	var err error
 	select {
 	case slot.mailbox <- envelope:
-		return nil
 	case <-ctx.Done():
-		slot.mu.Lock()
 		slot.busy = false
-		slot.mu.Unlock()
-		return ctx.Err()
+		err = ctx.Err()
 	case <-executorCtx.Done():
-		slot.mu.Lock()
 		slot.busy = false
-		slot.mu.Unlock()
-		return ErrExecutorNotRunning
+		err = ErrExecutorNotRunning
 	default:
 		// busy=true should make this impossible unless internal accounting has
 		// drifted. Fail closed rather than create a hidden physical backlog.
-		slot.mu.Lock()
 		slot.busy = false
-		slot.mu.Unlock()
-		return ErrWorkerBusy
+		err = ErrWorkerBusy
 	}
+	slot.mu.Unlock()
+	e.mu.RUnlock()
+	return err
 }
 
 func (e *PhysicalExecutor) workerLoop(executorCtx context.Context, slot *physicalSlot, generation uint64) {
@@ -210,11 +226,16 @@ func (e *PhysicalExecutor) workerLoop(executorCtx context.Context, slot *physica
 		select {
 		case envelope := <-slot.mailbox:
 			if executorCtx.Err() != nil {
+				e.markOffline(slot, generation)
 				e.abortBeforeStart(slot, generation, envelope)
 				return
 			}
 			e.execute(executorCtx, slot, generation, envelope)
 		case <-executorCtx.Done():
+			// Fence Assign before the final drain. Assign holds slot.mu through
+			// the mailbox send, so either this offline transition wins and the
+			// assignment is rejected, or the send wins and the drain observes it.
+			e.markOffline(slot, generation)
 			select {
 			case envelope := <-slot.mailbox:
 				e.abortBeforeStart(slot, generation, envelope)
@@ -223,6 +244,14 @@ func (e *PhysicalExecutor) workerLoop(executorCtx context.Context, slot *physica
 			return
 		}
 	}
+}
+
+func (e *PhysicalExecutor) markOffline(slot *physicalSlot, generation uint64) {
+	slot.mu.Lock()
+	if slot.generation == generation {
+		slot.online = false
+	}
+	slot.mu.Unlock()
 }
 
 func (e *PhysicalExecutor) abortBeforeStart(slot *physicalSlot, generation uint64, envelope assignmentEnvelope) {
