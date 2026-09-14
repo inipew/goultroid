@@ -48,6 +48,9 @@ type Task struct {
 	Error       error     `json:"error,omitempty"`
 
 	Run func(ctx context.Context) error `json:"-"`
+	// OnComplete receives the terminal result, including panic and cancellation
+	// before execution. Executors must invoke it exactly once for accepted work.
+	OnComplete func(error) `json:"-"`
 }
 
 // Validate checks that required fields on the task are populated.
@@ -67,58 +70,48 @@ func (t *Task) Validate() error {
 // Execute runs the task using the provided base context, applying timeout.
 // A Task represents strictly one execution attempt; retries are handled
 // by orchestrators (such as JobManager or Scheduler), not inside the physical task execution.
-func (t *Task) Execute(parentCtx context.Context) error {
-	if err := t.Validate(); err != nil {
-		t.State = StateFailed
+func (t *Task) Execute(parentCtx context.Context) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("task panicked: %v", r)
+		}
+		t.CompletedAt = time.Now().UTC()
 		t.Error = err
+		t.State = ResultState(err)
+		if t.OnComplete != nil {
+			t.OnComplete(err)
+		}
+	}()
+	if err := t.Validate(); err != nil {
 		return err
 	}
-
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	if err := parentCtx.Err(); err != nil {
+		return err
+	}
 	t.StartedAt = time.Now().UTC()
 	t.State = StateRunning
-
-	select {
-	case <-parentCtx.Done():
-		t.State = StateCancelled
-		t.CompletedAt = time.Now().UTC()
-		t.Error = parentCtx.Err()
-		return parentCtx.Err()
-	default:
-	}
-
 	ctx := parentCtx
-	var cancel context.CancelFunc
 	if t.Timeout > 0 {
+		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(parentCtx, t.Timeout)
+		defer cancel()
 	}
+	return t.Run(ctx)
+}
 
-	err := func() (runErr error) {
-		defer func() {
-			if r := recover(); r != nil {
-				runErr = fmt.Errorf("task panicked: %v", r)
-			}
-		}()
-		return t.Run(ctx)
-	}()
-
-	if cancel != nil {
-		cancel()
+// ResultState maps a concrete attempt result to its terminal lifecycle state.
+func ResultState(err error) TaskState {
+	switch {
+	case err == nil:
+		return StateCompleted
+	case errors.Is(err, context.DeadlineExceeded):
+		return StateTimedOut
+	case errors.Is(err, context.Canceled):
+		return StateCancelled
+	default:
+		return StateFailed
 	}
-
-	t.CompletedAt = time.Now().UTC()
-	if err == nil {
-		t.State = StateCompleted
-		t.Error = nil
-		return nil
-	}
-
-	t.Error = err
-	if errors.Is(err, context.DeadlineExceeded) {
-		t.State = StateTimedOut
-	} else if errors.Is(err, context.Canceled) {
-		t.State = StateCancelled
-	} else {
-		t.State = StateFailed
-	}
-	return err
 }

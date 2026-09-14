@@ -38,6 +38,33 @@ Persistent Jobs store data, schedule, recovery policy, and execution identity;
 never a function pointer. Restart policy is `run_immediately`, `skip`, or
 `recalculate`, protected by execution idempotency/lease.
 
+### Admission and completion refinement
+
+WorkerManager uses one bounded admission controller per pool. Controllers sample
+capacity notifications before inspecting owner quotas and physical queue space.
+They never block while pushing into the physical queue; task cancellation also
+wakes admission, including cancellation inherited from the producer context.
+
+Timers and scheduled managed-job wrappers use `TrySubmit` / `TryTrigger`.
+Saturation returns an error instead of making a worker wait for its own pool.
+The producer retains responsibility for rejected work: durable schedules record
+a retry, while periodic registrations record the failure and schedule their next
+attempt. Accepted managed attempts retain the engine lifecycle context, rather
+than the short-lived wrapper context. Custom managed-job submitters must provide
+`TrySubmit` to support scheduled triggering; there is no blocking fallback.
+
+`Task.Execute` owns the one-attempt result, including panic recovery and
+cancellation before `Run`. Its `OnComplete` callback is the reliable completion
+path, independent of best-effort events. WorkerManager finalizes accepted tasks
+exactly once, including admission failure and physical queue abandonment, and
+releases owner quota before forwarding completion to JobManager or the periodic
+coordinator. Rejected submissions do not invoke completion. Custom executors and
+test submitters must use `Execute`, rather than calling `Run` directly.
+
+Periodic retries are separate Tasks with distinct IDs. Retry delay is a deadline
+in the shared coordinator, so it consumes no physical worker. Periodic run and
+failure counters count individual attempts, including rejected submissions.
+
 ## Consequences
 
 - Backpressure and heavy-work isolation become measurable.

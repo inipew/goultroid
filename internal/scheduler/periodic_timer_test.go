@@ -12,7 +12,7 @@ import (
 
 type testPeriodicSubmitter struct{}
 
-func (testPeriodicSubmitter) Submit(ctx context.Context, _ string, task tasks.Task) error {
+func (testPeriodicSubmitter) TrySubmit(ctx context.Context, _ string, task tasks.Task) error {
 	go func() { _ = task.Execute(ctx) }()
 	return nil
 }

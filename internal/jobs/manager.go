@@ -161,6 +161,16 @@ func (m *Manager) Register(j Job) error {
 
 // Trigger converts a registered job into a concrete Task and queues it into the worker pool.
 func (m *Manager) Trigger(ctx context.Context, jobID string) error {
+	return m.trigger(ctx, jobID, false)
+}
+
+// TryTrigger hands off one attempt without waiting for worker admission. The
+// supplied context remains the attempt lifetime after successful admission.
+func (m *Manager) TryTrigger(ctx context.Context, jobID string) error {
+	return m.trigger(ctx, jobID, true)
+}
+
+func (m *Manager) trigger(ctx context.Context, jobID string, nonblocking bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -205,73 +215,80 @@ func (m *Manager) Trigger(ctx context.Context, jobID string) error {
 		m.unregisterActiveAttempt(jobID, taskID)
 	})
 
+	skipped := false
 	task := tasks.Task{
-		ID:             taskID,
-		Owner:          owner,
-		Name:           "job:" + jobID,
-		Timeout:        timeout,
-		IdempotencyKey: idempotencyKey,
+		ID: taskID, Owner: owner, Name: "job:" + jobID,
+		Timeout: timeout, IdempotencyKey: idempotencyKey,
 		Run: func(taskCtx context.Context) error {
+			if idemp != nil && idempotencyKey != "" {
+				first, err := idemp.CheckAndSet(taskCtx, idempotencyKey, time.Hour)
+				if err == nil && !first {
+					skipped = true
+					return nil
+				}
+			}
+			m.mu.Lock()
+			if job.State == StateCancelled {
+				m.mu.Unlock()
+				return context.Canceled
+			}
+			job.State = StateExecuting
+			lastRun, nextRun := job.LastRun, job.NextRun
+			m.mu.Unlock()
+			if repo != nil {
+				_ = repo.UpdateState(taskCtx, jobID, StateExecuting, "", lastRun, nextRun)
+			}
+			if runFn != nil {
+				return runFn(taskCtx)
+			}
+			return nil
+		},
+		OnComplete: func(err error) {
 			defer func() {
 				stopAttemptWatch()
 				m.unregisterActiveAttempt(jobID, taskID)
 				attemptCancel()
 			}()
-			if idemp != nil && idempotencyKey != "" {
-				first, err := idemp.CheckAndSet(taskCtx, idempotencyKey, 1*time.Hour)
-				if err == nil && !first {
-					m.mu.Lock()
-					job.State = StateCompleted
-					job.LastError = "skipped: duplicate execution detected by idempotency key"
-					m.terminalAt[jobID] = time.Now().UTC()
-					m.mu.Unlock()
-					if repo != nil {
-						_ = repo.UpdateState(context.Background(), jobID, StateCompleted, job.LastError, job.LastRun, job.NextRun)
-					}
-					m.notifyCompletion(jobID, nil)
-					return nil
-				}
-			}
-
-			m.mu.Lock()
-			job.State = StateExecuting
-			m.mu.Unlock()
-			if repo != nil {
-				_ = repo.UpdateState(taskCtx, jobID, StateExecuting, "", job.LastRun, job.NextRun)
-			}
-
-			var err error
-			if runFn != nil {
-				err = runFn(taskCtx)
-			}
-
 			m.mu.Lock()
 			if job.State == StateCancelled {
-				job.LastError = context.Canceled.Error()
+				err = context.Canceled
+				job.LastError = err.Error()
 			} else if err != nil {
 				job.State = StateFailed
 				job.LastError = err.Error()
 			} else {
 				job.State = StateCompleted
 				job.LastError = ""
+				if skipped {
+					job.LastError = "skipped: duplicate execution detected by idempotency key"
+				}
 			}
 			m.terminalAt[jobID] = time.Now().UTC()
-			jobState := job.State
-			jobErr := job.LastError
-			jLastRun := job.LastRun
-			jNextRun := job.NextRun
+			jobState, jobErr := job.State, job.LastError
+			lastRun, nextRun := job.LastRun, job.NextRun
 			m.mu.Unlock()
-
 			if repo != nil {
-				_ = repo.UpdateState(context.Background(), jobID, jobState, jobErr, jLastRun, jNextRun)
+				_ = repo.UpdateState(context.Background(), jobID, jobState, jobErr, lastRun, nextRun)
 			}
-
 			m.notifyCompletion(jobID, err)
-			return err
 		},
 	}
 
-	if err := m.submitter.Submit(attemptCtx, pool, task); err != nil {
+	submit := m.submitter.Submit
+	if nonblocking {
+		target, ok := m.submitter.(interface {
+			TrySubmit(context.Context, string, tasks.Task) error
+		})
+		if !ok {
+			stopAttemptWatch()
+			m.unregisterActiveAttempt(jobID, taskID)
+			attemptCancel()
+			m.rollbackTrigger(ctx, job, previousState, previousLastRun, "nonblocking task submission is not supported")
+			return fmt.Errorf("nonblocking task submission is not supported")
+		}
+		submit = target.TrySubmit
+	}
+	if err := submit(attemptCtx, pool, task); err != nil {
 		stopAttemptWatch()
 		m.unregisterActiveAttempt(jobID, taskID)
 		attemptCancel()
@@ -365,8 +382,7 @@ func (m *Manager) notifyCompletion(jobID string, runErr error) {
 }
 
 // TriggerAndWait triggers one managed job and waits for the concrete Task to
-// reach a terminal state. Scheduler uses this so durable schedule completion
-// reflects execution, not merely successful admission to a worker queue.
+// reach a terminal state. Do not call from a worker that shares the target pool.
 func (m *Manager) TriggerAndWait(ctx context.Context, jobID string) error {
 	if ctx == nil {
 		ctx = context.Background()

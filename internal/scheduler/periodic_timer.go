@@ -15,7 +15,7 @@ import (
 )
 
 type periodicTaskSubmitter interface {
-	Submit(ctx context.Context, poolName string, task tasks.Task) error
+	TrySubmit(ctx context.Context, poolName string, task tasks.Task) error
 }
 
 type periodicRegistration struct {
@@ -27,6 +27,7 @@ type periodicRegistration struct {
 	NextRun    time.Time
 	Generation uint64
 	Running    bool
+	Attempt    int
 	RunCancel  context.CancelFunc
 	Runs       int64
 	Failures   int64
@@ -185,15 +186,17 @@ func (c *periodicCoordinator) Register(name string, interval time.Duration, opti
 func (c *periodicCoordinator) Unregister(name string) error {
 	c.mu.Lock()
 	entry, ok := c.entries[name]
+	var runCancel context.CancelFunc
 	if ok {
+		runCancel = entry.RunCancel
 		delete(c.entries, name)
 	}
 	c.mu.Unlock()
 	if !ok {
 		return errors.New("task not found")
 	}
-	if entry.RunCancel != nil {
-		entry.RunCancel()
+	if runCancel != nil {
+		runCancel()
 	}
 	c.notify()
 	return nil
@@ -330,6 +333,7 @@ func (c *periodicCoordinator) collectDueLocked(now time.Time) []periodicDueRun {
 		}
 		runCtx, runCancel := context.WithCancel(c.ctx)
 		entry.Running = true
+		entry.Attempt++
 		entry.RunCancel = runCancel
 		entry.NextRun = now.Add(entry.Interval)
 		due = append(due, periodicDueRun{
@@ -357,12 +361,11 @@ func (c *periodicCoordinator) startExecution(run periodicDueRun) {
 		Name:          "periodic:" + run.name,
 		CorrelationID: fmt.Sprintf("periodic:%s:%d", run.name, run.generation),
 		Run: func(ctx context.Context) error {
-			err := runPeriodicTask(ctx, run.task, run.options)
-			c.finishExecution(run, err)
-			return err
+			return runPeriodicTask(ctx, run.task, run.options)
 		},
+		OnComplete: func(err error) { c.finishExecution(run, err) },
 	}
-	if err := submitter.Submit(run.ctx, workers.PoolGeneral, task); err != nil {
+	if err := submitter.TrySubmit(run.ctx, workers.PoolGeneral, task); err != nil {
 		c.finishExecution(run, err)
 	}
 }
@@ -385,9 +388,16 @@ func (c *periodicCoordinator) finishExecution(run periodicDueRun, err error) {
 		} else {
 			entry.LastError = ""
 		}
+		// Retry timing belongs to the coordinator; each Task is one attempt.
+		retry := err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && entry.Attempt < entry.Options.MaxAttempts
+		if retry {
+			entry.NextRun = finishedAt.Add(entry.Options.RetryDelay)
+		} else {
+			entry.Attempt = 0
+		}
 		// Long-running or admission-delayed executions do not catch up missed
 		// ticks. One periodic task therefore cannot monopolize a worker pool.
-		if !entry.NextRun.After(finishedAt) {
+		if !retry && !entry.NextRun.After(finishedAt) {
 			entry.NextRun = finishedAt.Add(entry.Interval)
 		}
 	}

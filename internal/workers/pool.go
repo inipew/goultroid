@@ -24,11 +24,12 @@ type PoolStats struct {
 
 // Pool manages a dedicated set of worker goroutines fed by a bounded queue.
 type Pool struct {
-	name        string
-	concurrency int
-	queue       *queue.Queue[tasks.Task]
-	policy      queue.OverflowPolicy
-	admissions  chan struct{}
+	name          string
+	concurrency   int
+	queue         *queue.Queue[tasks.Task]
+	policy        queue.OverflowPolicy
+	admissions    chan struct{}
+	admissionWake chan struct{}
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -55,23 +56,27 @@ func NewPool(name string, concurrency int, queueCapacity int, policy queue.Overf
 	}
 
 	return &Pool{
-		name:        name,
-		concurrency: concurrency,
-		queue:       queue.New[tasks.Task](queueCapacity, policy),
-		policy:      policy,
-		admissions:  make(chan struct{}, queueCapacity),
-		stopDone:    make(chan struct{}),
+		name:          name,
+		concurrency:   concurrency,
+		queue:         queue.New[tasks.Task](queueCapacity, policy),
+		policy:        policy,
+		admissions:    make(chan struct{}, queueCapacity),
+		admissionWake: make(chan struct{}, 1),
+		stopDone:      make(chan struct{}),
 	}
 }
 
-func (p *Pool) reserveAdmission(ctx context.Context, stopping <-chan struct{}) error {
+func (p *Pool) reserveAdmission(ctx context.Context, stopping <-chan struct{}, nonblocking bool) error {
 	if !p.running.Load() {
 		return errors.New("worker pool is not running")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if p.policy == queue.PolicyBlock {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if p.policy == queue.PolicyBlock && !nonblocking {
 		select {
 		case p.admissions <- struct{}{}:
 			return nil
@@ -120,7 +125,19 @@ func (p *Pool) workerLoop(workerID int) {
 	for {
 		task, err := p.queue.Pop(p.ctx)
 		if err != nil {
-			// Pool cancelled or queue closed
+			// Cancelled pools must finalize accepted work even when its Run
+			// body will never be entered. Closing fences concurrent producers.
+			if p.ctx.Err() != nil {
+				p.running.Store(false)
+				p.queue.Close()
+				for {
+					abandoned, popErr := p.queue.Pop(context.Background())
+					if popErr != nil {
+						break
+					}
+					_ = executeTaskSafely(p.ctx, &abandoned)
+				}
+			}
 			return
 		}
 
@@ -158,19 +175,6 @@ func (p *Pool) Submit(ctx context.Context, task tasks.Task) error {
 		task.State = tasks.StateFailed
 		task.Error = err
 		return fmt.Errorf("pool %s submit rejected: %w", p.name, err)
-	}
-	return nil
-}
-
-// submitAccepted queues work that has already passed logical admission. Unlike
-// Submit, it waits for physical capacity even on reject/drop configured pools.
-func (p *Pool) submitAccepted(ctx context.Context, task tasks.Task) error {
-	if !p.running.Load() {
-		return errors.New("worker pool is not running")
-	}
-	task.State = tasks.StateQueued
-	if err := p.queue.PushWait(ctx, task); err != nil {
-		return fmt.Errorf("pool %s accepted task enqueue failed: %w", p.name, err)
 	}
 	return nil
 }
@@ -215,4 +219,19 @@ func (p *Pool) Stop(ctx context.Context) error {
 		}
 		return fmt.Errorf("pool %s stop timed out: %w", p.name, ctx.Err())
 	}
+}
+
+func (p *Pool) wakeAdmission() {
+	select {
+	case p.admissionWake <- struct{}{}:
+	default:
+	}
+}
+
+// TrySubmit rejects saturation without blocking the caller.
+func (p *Pool) TrySubmit(ctx context.Context, task tasks.Task) error {
+	if !p.running.Load() {
+		return errors.New("worker pool is not running")
+	}
+	return p.queue.TryPush(ctx, task)
 }

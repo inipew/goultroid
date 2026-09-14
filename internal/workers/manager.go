@@ -23,11 +23,11 @@ const (
 var _ runtime.Component = (*Manager)(nil)
 
 type admissionRequest struct {
-	tm          *tasks.Manager
-	taskCtx     context.Context
-	cancel      context.CancelFunc
-	task        tasks.Task
-	reservation *ExecutionReservation
+	tm       *tasks.Manager
+	taskCtx  context.Context
+	task     tasks.Task
+	queued   bool
+	stopWake func() bool
 }
 
 // Manager coordinates isolated worker pools across the application runtime.
@@ -150,6 +150,9 @@ func (m *Manager) Drain(ctx context.Context) error {
 		if admissionEnd != nil {
 			admissionEnd()
 		}
+		for _, pool := range pools {
+			_ = pool.Stop(ctx)
+		}
 		return ctx.Err()
 	}
 
@@ -254,7 +257,7 @@ func (m *Manager) OwnerTaskStats(owner string) (tasks.OwnerStats, bool) {
 
 // Submit dispatches a task to the designated worker pool with quota and lifecycle management.
 func (m *Manager) Submit(ctx context.Context, poolName string, task tasks.Task) error {
-	return m.submit(ctx, poolName, task, nil)
+	return m.submit(ctx, poolName, task, nil, false)
 }
 
 // SubmitReserved submits work backed by a physical execution reservation.
@@ -264,10 +267,10 @@ func (m *Manager) SubmitReserved(ctx context.Context, poolName string, task task
 	if reservation == nil {
 		return errors.New("execution reservation is nil")
 	}
-	return m.submit(ctx, poolName, task, reservation)
+	return m.submit(ctx, poolName, task, reservation, true)
 }
 
-func (m *Manager) submit(ctx context.Context, poolName string, task tasks.Task, reservation *ExecutionReservation) error {
+func (m *Manager) submit(ctx context.Context, poolName string, task tasks.Task, reservation *ExecutionReservation, nonblocking bool) error {
 	reservationAccepted := false
 	defer func() {
 		if reservation != nil && !reservationAccepted {
@@ -296,10 +299,13 @@ func (m *Manager) submit(ctx context.Context, poolName string, task tasks.Task, 
 		if reservation != nil {
 			return errors.New("execution reservation requires TaskManager lifecycle tracking")
 		}
+		if nonblocking {
+			return pool.TrySubmit(ctx, task)
+		}
 		return pool.Submit(ctx, task)
 	}
 
-	if err := pool.reserveAdmission(ctx, acceptingEnd); err != nil {
+	if err := pool.reserveAdmission(ctx, acceptingEnd, nonblocking); err != nil {
 		return fmt.Errorf("pool %s admission rejected: %w", poolName, err)
 	}
 
@@ -307,7 +313,7 @@ func (m *Manager) submit(ctx context.Context, poolName string, task tasks.Task, 
 	// handoff. Quiesce therefore cannot close ingress between "accepted" and
 	// enqueueing the admission request.
 	m.mu.Lock()
-	if !m.accepting || m.acceptingEnd != acceptingEnd {
+	if !m.accepting || m.acceptingEnd != acceptingEnd || m.admissionCtx.Err() != nil {
 		m.mu.Unlock()
 		pool.releaseAdmission()
 		return fmt.Errorf("worker manager is not accepting tasks")
@@ -329,58 +335,53 @@ func (m *Manager) submit(ctx context.Context, poolName string, task tasks.Task, 
 	}
 
 	origRun := task.Run
+	originalCompletion := task.OnComplete
+	var completed sync.Once
+	task.OnComplete = func(err error) {
+		completed.Do(func() {
+			tm.Finish(task.ID, tasks.ResultState(err), err)
+			cancel()
+			if reservation != nil {
+				reservation.Release()
+			}
+			if originalCompletion != nil {
+				originalCompletion(err)
+			}
+		})
+	}
 	task.Run = func(runCtx context.Context) error {
-		startCtx, startErr := tm.MarkRunning(task.ID)
+		startCtx, err := tm.MarkRunning(task.ID)
 		if reservation != nil {
 			reservation.Release()
 		}
-		if startErr != nil {
-			cancel()
-			state := tasks.StateFailed
-			if errors.Is(startErr, context.Canceled) {
-				state = tasks.StateCancelled
-			} else if errors.Is(startErr, context.DeadlineExceeded) {
-				state = tasks.StateTimedOut
-			}
-			tm.Finish(task.ID, state, startErr)
-			return startErr
+		if err != nil {
+			return err
 		}
-		defer cancel()
-
-		execCtx, execCancel := context.WithCancel(startCtx)
-		stopPoolCancel := context.AfterFunc(runCtx, execCancel)
+		execCtx, execCancel := context.WithCancelCause(startCtx)
+		stopPoolCancel := context.AfterFunc(runCtx, func() { execCancel(context.Cause(runCtx)) })
 		defer stopPoolCancel()
-		defer execCancel()
-
-		var runErr error
-		if err := execCtx.Err(); err != nil {
-			runErr = err
-		} else if origRun != nil {
-			runErr = origRun(execCtx)
+		defer execCancel(nil)
+		if runCtx.Err() != nil {
+			return context.Cause(runCtx)
 		}
-		// Preserve the physical execution deadline instead of collapsing it into
-		// context.Canceled through the merged task context.
-		if errors.Is(runErr, context.Canceled) && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-			runErr = context.DeadlineExceeded
+		if execCtx.Err() != nil {
+			return context.Cause(execCtx)
 		}
-
-		state := tasks.StateCompleted
-		if runErr != nil {
-			switch {
-			case errors.Is(runErr, context.DeadlineExceeded):
-				state = tasks.StateTimedOut
-			case errors.Is(runErr, context.Canceled):
-				state = tasks.StateCancelled
-			default:
-				state = tasks.StateFailed
+		err = origRun(execCtx)
+		if errors.Is(err, context.Canceled) {
+			if runCtx.Err() != nil {
+				return context.Cause(runCtx)
+			}
+			if cause := context.Cause(execCtx); cause != nil {
+				return cause
 			}
 		}
-		tm.Finish(task.ID, state, runErr)
-		return runErr
+		return err
 	}
 
 	request := admissionRequest{
-		tm: tm, taskCtx: taskCtx, cancel: cancel, task: task, reservation: reservation,
+		tm: tm, taskCtx: taskCtx, task: task,
+		stopWake: context.AfterFunc(taskCtx, pool.wakeAdmission),
 	}
 	// Every request owns one pool admission token and this channel has exactly
 	// that bounded capacity, so the handoff cannot exceed the configured limit.
@@ -402,6 +403,16 @@ func (m *Manager) admissionLoop(ctx context.Context, acceptingEnd <-chan struct{
 	}
 
 	for {
+		// Subscribe before inspecting capacity: a completion during the scan must
+		// close the generation we will wait on, not a generation already discarded.
+		m.mu.RLock()
+		tm := m.tasksManager
+		m.mu.RUnlock()
+		var slotChanged <-chan struct{}
+		if tm != nil {
+			slotChanged = tm.SlotChanges()
+		}
+		spaceChanged := pool.queue.SpaceChanges()
 		// First absorb every request already handed off so one owner blocked by
 		// quota cannot prevent later owners from being considered.
 		for {
@@ -424,36 +435,37 @@ func (m *Manager) admissionLoop(ctx context.Context, acceptingEnd <-chan struct{
 				continue
 			}
 
-			queueCtx, err := req.tm.TryQueue(req.task.ID)
-			if errors.Is(err, tasks.ErrQuotaExceeded) {
+			// Do not block the controller on a full physical queue: cancellation
+			// and other owners must still be serviced while workers are occupied.
+			if pool.queue.Depth() >= pool.queue.Capacity() {
+				i++
+				continue
+			}
+			if !req.queued {
+				_, err := req.tm.TryQueue(req.task.ID)
+				if errors.Is(err, tasks.ErrQuotaExceeded) {
+					i++
+					continue
+				}
+				if err != nil {
+					m.failAdmission(pool, req, err)
+					removePending(i)
+					progressed = true
+					continue
+				}
+				req.queued = true
+				pending[i] = req
+			}
+			err := pool.TrySubmit(req.taskCtx, req.task)
+			if errors.Is(err, queue.ErrQueueFull) {
 				i++
 				continue
 			}
 			if err != nil {
 				m.failAdmission(pool, req, err)
-				removePending(i)
-				progressed = true
-				continue
-			}
-
-			enqueueCtx, enqueueCancel := context.WithCancel(queueCtx)
-			stopAdmission := context.AfterFunc(ctx, enqueueCancel)
-			err = pool.submitAccepted(enqueueCtx, req.task)
-			stopAdmission()
-			enqueueCancel()
-			pool.releaseAdmission()
-			if err != nil {
-				if req.reservation != nil {
-					req.reservation.Release()
-				}
-				req.cancel()
-				state := tasks.StateFailed
-				if errors.Is(err, context.Canceled) {
-					state = tasks.StateCancelled
-				} else if errors.Is(err, context.DeadlineExceeded) {
-					state = tasks.StateTimedOut
-				}
-				req.tm.Finish(req.task.ID, state, err)
+			} else {
+				req.stopWake()
+				pool.releaseAdmission()
 			}
 			removePending(i)
 			progressed = true
@@ -466,21 +478,18 @@ func (m *Manager) admissionLoop(ctx context.Context, acceptingEnd <-chan struct{
 			continue
 		}
 
-		var slotChanged <-chan struct{}
-		m.mu.RLock()
-		tm := m.tasksManager
-		m.mu.RUnlock()
-		if tm != nil {
-			slotChanged = tm.SlotChanges()
-		}
 		select {
 		case req := <-input:
 			pending = append(pending, req)
 		case <-slotChanged:
+		case <-spaceChanged:
+		case <-pool.admissionWake:
 		case <-acceptingEnd:
 			quiescing = true
 			acceptingEnd = nil
 		case <-ctx.Done():
+			// Fence concurrent registration before draining the final handoffs.
+			_ = m.Quiesce(ctx)
 			for _, req := range pending {
 				m.failAdmission(pool, req, ctx.Err())
 			}
@@ -497,18 +506,15 @@ func (m *Manager) admissionLoop(ctx context.Context, acceptingEnd <-chan struct{
 }
 
 func (m *Manager) failAdmission(pool *Pool, req admissionRequest, err error) {
+	req.stopWake()
 	pool.releaseAdmission()
-	if req.reservation != nil {
-		req.reservation.Release()
-	}
-	req.cancel()
-	state := tasks.StateFailed
-	if errors.Is(err, context.Canceled) {
-		state = tasks.StateCancelled
-	} else if errors.Is(err, context.DeadlineExceeded) {
-		state = tasks.StateTimedOut
-	}
-	req.tm.Finish(req.task.ID, state, err)
+	req.task.OnComplete(err)
+}
+
+// TrySubmit accepts work without waiting for admission capacity. Saturation is
+// returned to the producer so a timer or worker never waits on its own pool.
+func (m *Manager) TrySubmit(ctx context.Context, poolName string, task tasks.Task) error {
+	return m.submit(ctx, poolName, task, nil, true)
 }
 
 // AllStats returns statistics for all managed pools.
