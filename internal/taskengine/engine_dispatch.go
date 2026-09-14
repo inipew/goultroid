@@ -3,14 +3,13 @@ package taskengine
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/inipew/goultroid/internal/admission"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
 func (e *Engine) dispatchAvailable() {
-	now := time.Now().UTC()
+	now := e.clock.Now().UTC()
 	for _, poolID := range e.poolOrder {
 		for {
 			slot := e.nextIdleSlot(poolID)
@@ -67,7 +66,7 @@ func (e *Engine) dispatchAvailable() {
 				slot.phase = slotIdle
 				slot.task = ""
 				e.releaseLogical(record)
-				e.finishBeforeStart(record, tasks.OutcomeAbortedBeforeStart, tasks.ResultCauseInvalidPermit, "assignment_failed", err.Error(), time.Now().UTC())
+				e.finishBeforeStart(record, tasks.OutcomeAbortedBeforeStart, tasks.ResultCauseInvalidPermit, "assignment_failed", err.Error(), e.clock.Now().UTC())
 				continue
 			}
 		}
@@ -221,7 +220,7 @@ func (e *Engine) handleCompleted(event completedEvent) error {
 	result := event.result
 	record.result = &result
 	record.state = lifecycleForOutcome(event.result.Outcome())
-	e.scheduleRetention(record, time.Now().UTC())
+	e.scheduleRetention(record, e.clock.Now().UTC())
 	return nil
 }
 
