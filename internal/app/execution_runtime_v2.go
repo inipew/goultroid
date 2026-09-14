@@ -4,62 +4,25 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
+	"sort"
 	"time"
 
+	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/taskengine"
 	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/workers"
 )
 
-type executionHandlerKey struct {
-	name    string
-	version uint16
-}
-
-// executionHandlerRegistry is an instance-owned executable capability table.
-// WorkSpec only carries stable HandlerRef values; executable closures never
-// enter task state or persisted job values.
-type executionHandlerRegistry struct {
-	mu       sync.RWMutex
-	handlers map[executionHandlerKey]tasks.HandlerFunc
-}
-
-func newExecutionHandlerRegistry() *executionHandlerRegistry {
-	return &executionHandlerRegistry{handlers: make(map[executionHandlerKey]tasks.HandlerFunc)}
-}
-
-func (r *executionHandlerRegistry) ResolveHandler(ref tasks.HandlerRef) (tasks.HandlerFunc, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	handler, ok := r.handlers[executionHandlerKey{name: ref.Name(), version: ref.Version()}]
-	return handler, ok
-}
-
-func (r *executionHandlerRegistry) register(ref tasks.HandlerRef, handler tasks.HandlerFunc) error {
-	if ref.IsZero() || handler == nil {
-		return errors.New("handler reference and implementation are required")
-	}
-	key := executionHandlerKey{name: ref.Name(), version: ref.Version()}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, exists := r.handlers[key]; exists {
-		return fmt.Errorf("execution handler already registered: %s@%d", ref.Name(), ref.Version())
-	}
-	r.handlers[key] = handler
-	return nil
-}
-
 // executionRuntimeV2 is the production composition seam for the replacement
-// execution core. Producers remain on the legacy path until their ownership
-// partition is migrated; this component never mirrors legacy task lifecycle
-// state and therefore cannot become a second execution authority accidentally.
+// execution core. Compatibility producers translate one-way into TaskEngine;
+// no legacy lifecycle state is mirrored back into the old managers.
 type executionRuntimeV2 struct {
-	catalog  *taskengine.Catalog
-	handlers *executionHandlerRegistry
-	executor *workers.PhysicalExecutor
-	engine   *taskengine.Engine
+	catalog   *taskengine.Catalog
+	registry  *execution.Registry
+	executor  *workers.PhysicalExecutor
+	engine    *taskengine.Engine
+	submitter *execution.LegacySubmitter
 }
 
 func newExecutionRuntimeV2() (*executionRuntimeV2, error) {
@@ -68,8 +31,11 @@ func newExecutionRuntimeV2() (*executionRuntimeV2, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create execution catalog: %w", err)
 	}
-	handlers := newExecutionHandlerRegistry()
-	executor, err := workers.NewPhysicalExecutor(executionWorkerCounts(cfg), handlers)
+	registry, err := execution.NewRegistry(catalog)
+	if err != nil {
+		return nil, fmt.Errorf("create execution registry: %w", err)
+	}
+	executor, err := workers.NewPhysicalExecutor(executionWorkerCounts(cfg), registry)
 	if err != nil {
 		return nil, fmt.Errorf("create physical executor: %w", err)
 	}
@@ -77,7 +43,18 @@ func newExecutionRuntimeV2() (*executionRuntimeV2, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create task engine: %w", err)
 	}
-	return &executionRuntimeV2{catalog: catalog, handlers: handlers, executor: executor, engine: engine}, nil
+	pools := make([]tasks.PoolID, 0, len(cfg.Pools))
+	for pool := range cfg.Pools {
+		pools = append(pools, pool)
+	}
+	sort.Slice(pools, func(i, j int) bool { return pools[i] < pools[j] })
+	submitter, err := execution.NewLegacySubmitter(engine, registry, pools)
+	if err != nil {
+		return nil, fmt.Errorf("create compatibility submitter: %w", err)
+	}
+	return &executionRuntimeV2{
+		catalog: catalog, registry: registry, executor: executor, engine: engine, submitter: submitter,
+	}, nil
 }
 
 func productionExecutionConfig() taskengine.Config {
@@ -119,14 +96,13 @@ func executionWorkerCounts(cfg taskengine.Config) map[tasks.PoolID]int {
 }
 
 func (e *executionRuntimeV2) registerHandler(descriptor taskengine.HandlerDescriptor, handler tasks.HandlerFunc) error {
-	if err := e.catalog.RegisterHandler(descriptor); err != nil {
-		return err
-	}
-	if err := e.handlers.register(descriptor.Ref, handler); err != nil {
-		return fmt.Errorf("register executable handler: %w", err)
-	}
-	return nil
+	return e.registry.Register(descriptor, handler)
 }
+
+func (e *executionRuntimeV2) Submitter() *execution.LegacySubmitter { return e.submitter }
+func (e *executionRuntimeV2) Engine() *taskengine.Engine             { return e.engine }
+func (e *executionRuntimeV2) Catalog() *taskengine.Catalog           { return e.catalog }
+func (e *executionRuntimeV2) Registry() *execution.Registry          { return e.registry }
 
 func (e *executionRuntimeV2) Name() string { return "execution-v2" }
 
@@ -141,21 +117,57 @@ func (e *executionRuntimeV2) Start(ctx context.Context) error {
 		defer cancel()
 		return errors.Join(fmt.Errorf("start task engine: %w", err), e.executor.Stop(stopCtx))
 	}
+	if err := e.submitter.Start(ctx); err != nil {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return errors.Join(
+			fmt.Errorf("start execution submitter: %w", err),
+			e.engine.Stop(stopCtx),
+			e.executor.Stop(stopCtx),
+		)
+	}
 	return nil
 }
 
 func (e *executionRuntimeV2) Quiesce(ctx context.Context) error { return e.engine.Quiesce(ctx) }
 
-func (e *executionRuntimeV2) Drain(ctx context.Context) error { return e.engine.Drain(ctx) }
+func (e *executionRuntimeV2) Drain(ctx context.Context) error {
+	if err := e.engine.Drain(ctx); err != nil {
+		return err
+	}
+	return e.submitter.Drain(ctx)
+}
 
 func (e *executionRuntimeV2) Stop(ctx context.Context) error {
-	return errors.Join(e.engine.Stop(ctx), e.executor.Stop(ctx))
+	// Runtime calls Quiesce/Drain first, but keep Stop self-contained for startup
+	// rollback and direct component tests.
+	var errs []error
+	if err := e.engine.Quiesce(ctx); err != nil {
+		errs = append(errs, err)
+	} else if err := e.engine.Drain(ctx); err != nil {
+		errs = append(errs, err)
+	} else if err := e.submitter.Drain(ctx); err != nil {
+		errs = append(errs, err)
+	}
+	if err := e.submitter.Stop(ctx); err != nil {
+		errs = append(errs, err)
+	}
+	if err := e.engine.Stop(ctx); err != nil {
+		errs = append(errs, err)
+	}
+	if err := e.executor.Stop(ctx); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 func (e *executionRuntimeV2) Health(context.Context) runtime.ComponentHealth {
 	stats := e.engine.Stats()
 	if stats.ResultCapacity == 0 {
 		return runtime.ComponentHealth{Status: runtime.HealthUnhealthy, Details: "task engine is not running"}
+	}
+	if stats.ResultCreditsUsed == stats.ResultCapacity {
+		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "task result credits exhausted"}
 	}
 	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
 }
