@@ -742,3 +742,40 @@ func TestScheduledJob_RenewJobLease(t *testing.T) {
 		t.Errorf("expected ErrJobLeaseLost for invalid token, got %v", err)
 	}
 }
+
+func TestGetEarliestDueTime(t *testing.T) {
+	repo, _ := setupTestSchedulerRepo(t)
+	ctx := context.Background()
+
+	// 1. Empty DB
+	earliest, found, err := repo.GetEarliestDueTime(ctx)
+	if err != nil {
+		t.Fatalf("GetEarliestDueTime err: %v", err)
+	}
+	if found {
+		t.Fatalf("expected found=false, got %v", earliest)
+	}
+
+	// 2. Add job
+	target := time.Now().Add(-10 * time.Millisecond).UTC()
+	job := &ScheduledJob{
+		ChatID:     123,
+		ActionType: "message",
+		Payload:    "hi",
+		NextRunAt:  target,
+		Status:     JobStatusPending,
+	}
+	_, err = repo.CreateScheduledJob(ctx, job)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	earliest, found, err = repo.GetEarliestDueTime(ctx)
+	if err != nil {
+		t.Fatalf("GetEarliestDueTime with job err: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected found=true")
+	}
+	t.Logf("earliest found: %v", earliest)
+}

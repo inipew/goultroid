@@ -44,6 +44,7 @@ func NewManager() *Manager {
 
 	// Initialize default isolated pools per Blueprint §30
 	m.pools[PoolGeneral] = NewPool(PoolGeneral, 8, 200, queue.PolicyBlock)
+	m.pools[PoolInteractive] = NewPool(PoolInteractive, 32, 128, queue.PolicyReject)
 	m.pools[PoolDownload] = NewPool(PoolDownload, 3, 50, queue.PolicyReject)
 	m.pools[PoolMediaProcess] = NewPool(PoolMediaProcess, 2, 20, queue.PolicyReject)
 	m.pools[PoolScheduler] = NewPool(PoolScheduler, 4, 100, queue.PolicyBlock)
@@ -243,6 +244,26 @@ func (m *Manager) OwnerTaskStats(owner string) (tasks.OwnerStats, bool) {
 
 // Submit dispatches a task to the designated worker pool with quota and lifecycle management.
 func (m *Manager) Submit(ctx context.Context, poolName string, task tasks.Task) error {
+	return m.submit(ctx, poolName, task, nil)
+}
+
+// SubmitReserved submits work backed by a physical execution reservation.
+// WorkerManager owns the reservation after this call: it is released when the
+// task physically starts, or on any admission/cancellation failure before then.
+func (m *Manager) SubmitReserved(ctx context.Context, poolName string, task tasks.Task, reservation *ExecutionReservation) error {
+	if reservation == nil {
+		return errors.New("execution reservation is nil")
+	}
+	return m.submit(ctx, poolName, task, reservation)
+}
+
+func (m *Manager) submit(ctx context.Context, poolName string, task tasks.Task, reservation *ExecutionReservation) error {
+	reservationAccepted := false
+	defer func() {
+		if reservation != nil && !reservationAccepted {
+			reservation.Release()
+		}
+	}()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -285,6 +306,9 @@ func (m *Manager) Submit(ctx context.Context, poolName string, task tasks.Task) 
 
 		origRun := task.Run
 		task.Run = func(runCtx context.Context) error {
+			if reservation != nil {
+				reservation.Release()
+			}
 			defer cancel()
 			execCtx, execCancel := context.WithCancel(taskCtx)
 			stopPoolCancel := context.AfterFunc(runCtx, execCancel)
@@ -310,14 +334,18 @@ func (m *Manager) Submit(ctx context.Context, poolName string, task tasks.Task) 
 			return runErr
 		}
 
-		go m.admitTask(admissionCtx, pool, tm, taskCtx, cancel, task)
+		reservationAccepted = true
+		go m.admitTask(admissionCtx, pool, tm, taskCtx, cancel, task, reservation)
 		return nil
 	}
 
+	if reservation != nil {
+		return errors.New("execution reservation requires TaskManager lifecycle tracking")
+	}
 	return pool.Submit(ctx, task)
 }
 
-func (m *Manager) admitTask(admissionCtx context.Context, pool *Pool, tm *tasks.Manager, taskCtx context.Context, cancel context.CancelFunc, task tasks.Task) {
+func (m *Manager) admitTask(admissionCtx context.Context, pool *Pool, tm *tasks.Manager, taskCtx context.Context, cancel context.CancelFunc, task tasks.Task, reservation *ExecutionReservation) {
 	defer m.admissionWG.Done()
 	defer pool.releaseAdmission()
 	startCtx, err := tm.WaitStart(admissionCtx, task.ID)
@@ -330,6 +358,9 @@ func (m *Manager) admitTask(admissionCtx context.Context, pool *Pool, tm *tasks.
 	}
 	if err == nil {
 		return
+	}
+	if reservation != nil {
+		reservation.Release()
 	}
 	cancel()
 	state := tasks.StateFailed

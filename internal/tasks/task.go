@@ -61,7 +61,9 @@ func (t *Task) Validate() error {
 	return nil
 }
 
-// Execute runs the task using the provided base context, applying timeout and retries.
+// Execute runs the task using the provided base context, applying timeout.
+// A Task represents strictly one execution attempt; retries are handled
+// by orchestrators (such as JobManager or Scheduler), not inside the physical task execution.
 func (t *Task) Execute(parentCtx context.Context) error {
 	if err := t.Validate(); err != nil {
 		t.State = StateFailed
@@ -72,74 +74,48 @@ func (t *Task) Execute(parentCtx context.Context) error {
 	t.StartedAt = time.Now().UTC()
 	t.State = StateRunning
 
-	maxAttempts := t.Retry.MaxAttempts
-	if maxAttempts <= 0 {
-		maxAttempts = 1
+	select {
+	case <-parentCtx.Done():
+		t.State = StateCancelled
+		t.CompletedAt = time.Now().UTC()
+		t.Error = parentCtx.Err()
+		return parentCtx.Err()
+	default:
 	}
 
-	var lastErr error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		select {
-		case <-parentCtx.Done():
-			t.State = StateCancelled
-			t.CompletedAt = time.Now().UTC()
-			t.Error = parentCtx.Err()
-			return parentCtx.Err()
-		default:
-		}
+	ctx := parentCtx
+	var cancel context.CancelFunc
+	if t.Timeout > 0 {
+		ctx, cancel = context.WithTimeout(parentCtx, t.Timeout)
+	}
 
-		ctx := parentCtx
-		var cancel context.CancelFunc
-		if t.Timeout > 0 {
-			ctx, cancel = context.WithTimeout(parentCtx, t.Timeout)
-		}
-
-		err := func() (runErr error) {
-			defer func() {
-				if r := recover(); r != nil {
-					runErr = fmt.Errorf("task panicked: %v", r)
-				}
-			}()
-			return t.Run(ctx)
-		}()
-
-		if cancel != nil {
-			cancel()
-		}
-
-		if err == nil {
-			t.State = StateCompleted
-			t.CompletedAt = time.Now().UTC()
-			t.Error = nil
-			return nil
-		}
-
-		lastErr = err
-		if errors.Is(err, context.DeadlineExceeded) {
-			t.State = StateTimedOut
-		} else if errors.Is(err, context.Canceled) {
-			t.State = StateCancelled
-			t.CompletedAt = time.Now().UTC()
-			t.Error = err
-			return err
-		}
-
-		if attempt < maxAttempts && t.Retry.Delay > 0 {
-			select {
-			case <-time.After(t.Retry.Delay):
-			case <-parentCtx.Done():
-				t.State = StateCancelled
-				t.CompletedAt = time.Now().UTC()
-				t.Error = parentCtx.Err()
-				return parentCtx.Err()
+	err := func() (runErr error) {
+		defer func() {
+			if r := recover(); r != nil {
+				runErr = fmt.Errorf("task panicked: %v", r)
 			}
-		}
+		}()
+		return t.Run(ctx)
+	}()
+
+	if cancel != nil {
+		cancel()
 	}
 
-	if t.State != StateTimedOut {
+	t.CompletedAt = time.Now().UTC()
+	if err == nil {
+		t.State = StateCompleted
+		t.Error = nil
+		return nil
+	}
+
+	t.Error = err
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.State = StateTimedOut
+	} else if errors.Is(err, context.Canceled) {
+		t.State = StateCancelled
+	} else {
 		t.State = StateFailed
 	}
-	t.CompletedAt = time.Now().UTC()
-	t.Error = lastErr
-	return lastErr
+	return err
 }

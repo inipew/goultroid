@@ -56,34 +56,31 @@ func TestTask_ExecuteTimeout(t *testing.T) {
 	}
 }
 
-func TestTask_ExecuteRetry(t *testing.T) {
+func TestTask_ExecuteStrictlyOneAttempt(t *testing.T) {
 	var attempts atomic.Int32
 	task := Task{
 		ID:    "t-3",
 		Owner: "plugin:test",
-		Name:  "retryable",
+		Name:  "strictly-one-attempt",
 		Retry: RetryPolicy{
 			MaxAttempts: 3,
 			Delay:       5 * time.Millisecond,
 		},
 		Run: func(ctx context.Context) error {
-			count := attempts.Add(1)
-			if count < 3 {
-				return errors.New("transient error")
-			}
-			return nil
+			attempts.Add(1)
+			return errors.New("transient error")
 		},
 	}
 
 	err := task.Execute(context.Background())
-	if err != nil {
-		t.Fatalf("expected eventual success, got: %v", err)
+	if err == nil {
+		t.Fatalf("expected error from failed single attempt, got nil")
 	}
-	if attempts.Load() != 3 {
-		t.Errorf("expected 3 attempts, got %d", attempts.Load())
+	if attempts.Load() != 1 {
+		t.Errorf("expected strictly 1 attempt, got %d", attempts.Load())
 	}
-	if task.State != StateCompleted {
-		t.Errorf("expected StateCompleted, got %s", task.State)
+	if task.State != StateFailed {
+		t.Errorf("expected StateFailed, got %s", task.State)
 	}
 }
 

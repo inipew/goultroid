@@ -318,6 +318,27 @@ func (m *Manager) CancelByOwner(owner string) int {
 	return len(cancels)
 }
 
+// CancelByCorrelationID cancels every active task sharing correlationID.
+// Execution producers use this to cancel logical work without owning physical
+// worker cancel functions or maintaining a parallel active-execution registry.
+func (m *Manager) CancelByCorrelationID(correlationID string) int {
+	if correlationID == "" {
+		return 0
+	}
+	m.mu.RLock()
+	var cancels []context.CancelFunc
+	for _, tracked := range m.activeTasks {
+		if tracked.task.CorrelationID == correlationID {
+			cancels = append(cancels, tracked.cancel)
+		}
+	}
+	m.mu.RUnlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+	return len(cancels)
+}
+
 // GetTask returns a copy of the active task if found.
 func (m *Manager) GetTask(taskID string) (Task, bool) {
 	m.mu.RLock()
