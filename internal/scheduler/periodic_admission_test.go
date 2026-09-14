@@ -2,7 +2,6 @@ package scheduler
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/inipew/goultroid/internal/queue"
@@ -16,7 +15,7 @@ type periodicTrySubmitter struct {
 
 func (s *periodicTrySubmitter) Submit(context.Context, string, tasks.Task) error {
 	s.submitCalls++
-	return errors.New("blocking Submit path must not be used")
+	return queue.ErrQueueFull
 }
 
 func (s *periodicTrySubmitter) TrySubmit(context.Context, string, tasks.Task) error {
@@ -50,9 +49,7 @@ func TestPeriodicCoordinatorUsesNonBlockingAdmissionWhenAvailable(t *testing.T) 
 	if entry.Running {
 		t.Fatal("failed non-blocking admission left periodic registration running")
 	}
-	if entry.Failures != 1 || !errors.Is(errors.New(entry.LastError), queue.ErrQueueFull) {
-		if entry.Failures != 1 || entry.LastError != queue.ErrQueueFull.Error() {
-			t.Fatalf("periodic admission failure not recorded: %+v", entry)
-		}
+	if entry.Failures != 1 || entry.LastError != queue.ErrQueueFull.Error() {
+		t.Fatalf("periodic admission failure not recorded: %+v", entry)
 	}
 }
