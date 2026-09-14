@@ -35,7 +35,8 @@ type slotRecord struct {
 type ownerUsage struct {
 	waiting      int
 	waitingBytes int64
-	active       int
+	reserved     int
+	running      int
 }
 
 type poolUsage struct {
@@ -58,8 +59,9 @@ type taskRecord struct {
 	cancelled     bool
 	cancelReason  tasks.CancelReason
 
-	permit    tasks.PhysicalPermit
-	runCancel context.CancelFunc
+	permit           tasks.PhysicalPermit
+	runCancel        context.CancelFunc
+	runningAccounted bool
 
 	result     *tasks.TaskResult
 	creditHeld bool
@@ -77,10 +79,14 @@ type PoolStats struct {
 	WaitingBytes int64
 }
 
-// OwnerStats separates logical waiting from dispatch/running reservation.
+// OwnerStats separates logical waiting, dispatch reservation, and actual
+// physical running state. Active is retained as a migration projection and is
+// equal to Reserved.
 type OwnerStats struct {
 	Waiting      int
 	WaitingBytes int64
+	Reserved     int
+	Running      int
 	Active       int
 }
 
@@ -96,6 +102,12 @@ type Stats struct {
 	Tasks             int
 	ResultCreditsUsed int
 	ResultCapacity    int
+	CommitPending     int
+	ReadyQueued       int
+	QueueDeadlines    int
+	RetentionEntries  int
+	OrderingLocks     int
+	ClosedScopeOwners int
 	Pools             map[tasks.PoolID]PoolStats
 	Owners            map[tasks.QuotaOwner]OwnerStats
 	Resources         map[string]ResourceStats
@@ -188,7 +200,7 @@ type Engine struct {
 	retentions *admission.Deadlines
 
 	records      map[tasks.TaskID]*taskRecord
-	closedScopes map[tasks.ScopeIdentity]struct{}
+	closedScopes map[tasks.ScopeOwner]uint64
 	owners       map[tasks.QuotaOwner]*ownerUsage
 	pools        map[tasks.PoolID]*poolUsage
 	resources    map[string]uint32
@@ -241,7 +253,7 @@ func New(cfg Config, catalog *Catalog, workers tasks.PhysicalWorkers) (*Engine, 
 		deadlines:     admission.NewDeadlines(),
 		retentions:    admission.NewDeadlines(),
 		records:       make(map[tasks.TaskID]*taskRecord),
-		closedScopes:  make(map[tasks.ScopeIdentity]struct{}),
+		closedScopes:  make(map[tasks.ScopeOwner]uint64),
 		owners:        make(map[tasks.QuotaOwner]*ownerUsage),
 		pools:         make(map[tasks.PoolID]*poolUsage, len(cfg.Pools)),
 		resources:     make(map[string]uint32, len(cfg.ResourceCapacity)),
