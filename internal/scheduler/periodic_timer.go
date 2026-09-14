@@ -3,13 +3,20 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/inipew/goultroid/internal/tasks"
+	"github.com/inipew/goultroid/internal/workers"
 	"go.uber.org/zap"
 )
+
+type periodicTaskSubmitter interface {
+	Submit(ctx context.Context, poolName string, task tasks.Task) error
+}
 
 type periodicRegistration struct {
 	Owner      string
@@ -28,18 +35,19 @@ type periodicRegistration struct {
 }
 
 // periodicCoordinator multiplexes all runtime periodic tasks onto a single
-// deadline timer. Registered tasks do not own permanent goroutines or tickers;
-// goroutines exist only while concrete executions are running.
+// deadline timer. It decides WHEN work is due; physical execution is delegated
+// to WorkerManager through submitter and never owns an execution goroutine.
 type periodicCoordinator struct {
-	mu      sync.Mutex
-	entries map[string]*periodicRegistration
-	wake    chan struct{}
-	ctx     context.Context
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
-	running bool
-	seq     uint64
-	logger  *zap.Logger
+	mu        sync.Mutex
+	entries   map[string]*periodicRegistration
+	wake      chan struct{}
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	running   bool
+	seq       uint64
+	logger    *zap.Logger
+	submitter periodicTaskSubmitter
 }
 
 func newPeriodicCoordinator(logger *zap.Logger) *periodicCoordinator {
@@ -51,6 +59,13 @@ func newPeriodicCoordinator(logger *zap.Logger) *periodicCoordinator {
 		wake:    make(chan struct{}, 1),
 		logger:  logger,
 	}
+}
+
+func (c *periodicCoordinator) SetSubmitter(submitter periodicTaskSubmitter) {
+	c.mu.Lock()
+	c.submitter = submitter
+	c.mu.Unlock()
+	c.notify()
 }
 
 func (c *periodicCoordinator) notify() {
@@ -326,39 +341,60 @@ func (c *periodicCoordinator) collectDueLocked(now time.Time) []periodicDueRun {
 }
 
 func (c *periodicCoordinator) startExecution(run periodicDueRun) {
-	c.wg.Add(1)
-	go func() {
-		defer c.wg.Done()
-		err := runPeriodicTask(run.ctx, run.task, run.options)
-		finishedAt := time.Now().UTC()
+	c.mu.Lock()
+	submitter := c.submitter
+	c.mu.Unlock()
+	if submitter == nil {
+		err := errors.New("periodic task worker submitter is not configured")
+		c.finishExecution(run, err)
+		return
+	}
 
-		c.mu.Lock()
-		entry := c.entries[run.name]
-		if entry != nil && entry.Generation == run.generation {
-			if entry.RunCancel != nil {
-				entry.RunCancel()
-				entry.RunCancel = nil
-			}
-			entry.Running = false
-			entry.Runs++
-			entry.LastRunAt = finishedAt
-			if err != nil {
-				entry.Failures++
-				entry.LastError = err.Error()
-			} else {
-				entry.LastError = ""
-			}
-			// Long-running executions do not catch up missed ticks. This keeps
-			// one task from monopolizing the coordinator after a stall.
-			if !entry.NextRun.After(finishedAt) {
-				entry.NextRun = finishedAt.Add(entry.Interval)
-			}
-		}
-		c.mu.Unlock()
+	taskID := fmt.Sprintf("periodic:%s:%d:%d", run.name, run.generation, time.Now().UnixNano())
+	task := tasks.Task{
+		ID:            taskID,
+		Owner:         run.options.Owner,
+		Name:          "periodic:" + run.name,
+		CorrelationID: fmt.Sprintf("periodic:%s:%d", run.name, run.generation),
+		Run: func(ctx context.Context) error {
+			err := runPeriodicTask(ctx, run.task, run.options)
+			c.finishExecution(run, err)
+			return err
+		},
+	}
+	if err := submitter.Submit(run.ctx, workers.PoolGeneral, task); err != nil {
+		c.finishExecution(run, err)
+	}
+}
 
-		if err != nil && !errors.Is(err, context.Canceled) {
-			c.logger.Warn("periodic task execution error", zap.String("task", run.name), zap.Error(err))
+func (c *periodicCoordinator) finishExecution(run periodicDueRun, err error) {
+	finishedAt := time.Now().UTC()
+	c.mu.Lock()
+	entry := c.entries[run.name]
+	if entry != nil && entry.Generation == run.generation {
+		if entry.RunCancel != nil {
+			entry.RunCancel()
+			entry.RunCancel = nil
 		}
-		c.notify()
-	}()
+		entry.Running = false
+		entry.Runs++
+		entry.LastRunAt = finishedAt
+		if err != nil {
+			entry.Failures++
+			entry.LastError = err.Error()
+		} else {
+			entry.LastError = ""
+		}
+		// Long-running or admission-delayed executions do not catch up missed
+		// ticks. One periodic task therefore cannot monopolize a worker pool.
+		if !entry.NextRun.After(finishedAt) {
+			entry.NextRun = finishedAt.Add(entry.Interval)
+		}
+	}
+	c.mu.Unlock()
+
+	if err != nil && !errors.Is(err, context.Canceled) {
+		c.logger.Warn("periodic task execution error", zap.String("task", run.name), zap.Error(err))
+	}
+	c.notify()
 }
