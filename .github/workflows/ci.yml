@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ main, master ]
 
+permissions:
+  contents: write
+
 env:
   GOTOOLCHAIN: local
 
@@ -84,6 +87,17 @@ jobs:
         with:
           name: p0-p1-focused-race-diagnostics
           path: race.log
+      - name: Persist focused race diagnostics
+        if: steps.racecheck.outcome != 'success'
+        run: |
+          cp race.log race-diagnostics.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add race-diagnostics.txt
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: persist focused race diagnostics"
+            git push origin HEAD:${GITHUB_HEAD_REF}
+          fi
       - name: Require clean focused race tests
         if: steps.racecheck.outcome != 'success'
         run: exit 1
