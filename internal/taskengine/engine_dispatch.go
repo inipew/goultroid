@@ -2,6 +2,7 @@ package taskengine
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/inipew/goultroid/internal/admission"
@@ -167,17 +168,20 @@ func (e *Engine) nextIdleSlot(pool tasks.PoolID) *slotRecord {
 	return nil
 }
 
-func (e *Engine) handleStarted(event startedEvent) {
+func (e *Engine) handleStarted(event startedEvent) error {
 	record := e.records[event.permit.TaskID()]
-	if record == nil || !samePermit(record.permit, event.permit) {
-		return
+	if record == nil {
+		return fmt.Errorf("%w: task not found", ErrWorkerEventInvalid)
+	}
+	if !samePermit(record.permit, event.permit) {
+		return fmt.Errorf("%w: stale or mismatched start permit", ErrWorkerEventInvalid)
 	}
 	if record.state != tasks.LifecycleDispatching {
-		return
+		return fmt.Errorf("%w: task is not dispatching", ErrWorkerEventInvalid)
 	}
 	slot := e.slotByID[event.permit.WorkerID()]
 	if slot == nil || slot.task != record.spec.ID() || slot.phase != slotAssigned {
-		return
+		return fmt.Errorf("%w: worker slot does not own assignment", ErrWorkerEventInvalid)
 	}
 	record.state = tasks.LifecycleRunning
 	record.startedAt = event.at
@@ -185,15 +189,19 @@ func (e *Engine) handleStarted(event startedEvent) {
 	owner := e.owner(record.spec.QuotaOwner())
 	owner.running++
 	record.runningAccounted = true
+	return nil
 }
 
-func (e *Engine) handleCompleted(event completedEvent) {
+func (e *Engine) handleCompleted(event completedEvent) error {
 	record := e.records[event.permit.TaskID()]
-	if record == nil || !samePermit(record.permit, event.permit) || event.result.TaskID() != record.spec.ID() {
-		return
+	if record == nil {
+		return fmt.Errorf("%w: task not found", ErrWorkerEventInvalid)
+	}
+	if !samePermit(record.permit, event.permit) || event.result.TaskID() != record.spec.ID() {
+		return fmt.Errorf("%w: stale or mismatched completion permit", ErrWorkerEventInvalid)
 	}
 	if record.state != tasks.LifecycleDispatching && record.state != tasks.LifecycleRunning {
-		return
+		return fmt.Errorf("%w: task is not active", ErrWorkerEventInvalid)
 	}
 	if record.state == tasks.LifecycleDispatching && !event.result.StartedAt().IsZero() {
 		record.startedAt = event.result.StartedAt()
@@ -203,16 +211,18 @@ func (e *Engine) handleCompleted(event completedEvent) {
 		record.runCancel = nil
 	}
 	slot := e.slotByID[event.permit.WorkerID()]
-	if slot != nil && slot.task == record.spec.ID() {
-		slot.phase = slotIdle
-		slot.task = ""
+	if slot == nil || slot.task != record.spec.ID() {
+		return fmt.Errorf("%w: worker slot lost assignment ownership", ErrWorkerEventInvalid)
 	}
+	slot.phase = slotIdle
+	slot.task = ""
 	e.releaseLogical(record)
 	record.finishedAt = event.result.FinishedAt()
 	result := event.result
 	record.result = &result
 	record.state = lifecycleForOutcome(event.result.Outcome())
 	e.scheduleRetention(record, time.Now().UTC())
+	return nil
 }
 
 func lifecycleForOutcome(outcome tasks.Outcome) tasks.LifecycleState {
