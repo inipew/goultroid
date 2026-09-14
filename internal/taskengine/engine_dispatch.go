@@ -74,8 +74,12 @@ func (e *Engine) dispatchAvailable() {
 }
 
 func (e *Engine) dispatchEligible(record *taskRecord) bool {
-	owner := e.owner(record.spec.QuotaOwner())
-	if owner.reserved >= e.ownerLimits(record.spec.QuotaOwner()).MaxActive {
+	ownerID := record.spec.QuotaOwner()
+	owner := e.owner(ownerID)
+	if owner.reserved >= e.ownerLimits(ownerID).MaxActive {
+		// Safety net for any queue that predates a quota transition. Normal quota
+		// transitions proactively remove the owner from the active DRR rings.
+		e.ready.BlockOwner(ownerID)
 		return false
 	}
 	if key := record.spec.OrderingKey(); key != "" {
@@ -102,8 +106,12 @@ func (e *Engine) dispatchEligible(record *taskRecord) bool {
 }
 
 func (e *Engine) reserveLogical(record *taskRecord) {
-	owner := e.owner(record.spec.QuotaOwner())
+	ownerID := record.spec.QuotaOwner()
+	owner := e.owner(ownerID)
 	owner.reserved++
+	if owner.reserved >= e.ownerLimits(ownerID).MaxActive {
+		e.ready.BlockOwner(ownerID)
+	}
 	if key := record.spec.OrderingKey(); key != "" {
 		e.ordering[key] = record.spec.ID()
 	}
@@ -113,7 +121,8 @@ func (e *Engine) reserveLogical(record *taskRecord) {
 }
 
 func (e *Engine) releaseLogical(record *taskRecord) {
-	owner := e.owner(record.spec.QuotaOwner())
+	ownerID := record.spec.QuotaOwner()
+	owner := e.owner(ownerID)
 	if record.runningAccounted {
 		if owner.running > 0 {
 			owner.running--
@@ -122,6 +131,9 @@ func (e *Engine) releaseLogical(record *taskRecord) {
 	}
 	if owner.reserved > 0 {
 		owner.reserved--
+	}
+	if owner.reserved < e.ownerLimits(ownerID).MaxActive {
+		e.ready.UnblockOwner(ownerID)
 	}
 	if key := record.spec.OrderingKey(); key != "" {
 		if holder, held := e.ordering[key]; held && holder == record.spec.ID() {
@@ -136,7 +148,7 @@ func (e *Engine) releaseLogical(record *taskRecord) {
 			e.resources[request.Name()] = used - request.Units()
 		}
 	}
-	e.deleteOwnerIfIdle(record.spec.QuotaOwner())
+	e.deleteOwnerIfIdle(ownerID)
 }
 
 func (e *Engine) nextIdleSlot(pool tasks.PoolID) *slotRecord {
