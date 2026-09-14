@@ -15,7 +15,7 @@ func (e *Engine) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Admissi
 	requestedAt := e.clock.Now().UTC()
 	response := make(chan submitResponse, 1)
 	req := submitRequest{ctx: ctx, spec: spec, requestedAt: requestedAt, response: response}
-	if err := e.sendBeforeLinearization(ctx, req); err != nil {
+	if err := e.sendAdmissionBeforeLinearization(ctx, req); err != nil {
 		return tasks.AdmissionTicket{}, err
 	}
 	result, ok := waitResponse(response, e.doneChannel())
@@ -212,6 +212,25 @@ func (e *Engine) Completed(permit tasks.PhysicalPermit, result tasks.TaskResult)
 	select {
 	case results <- completedEvent{permit: permit, result: result}:
 		return nil
+	case <-done:
+		return ErrEngineNotRunning
+	}
+}
+
+func (e *Engine) sendAdmissionBeforeLinearization(ctx context.Context, request submitRequest) error {
+	e.mu.RLock()
+	running := e.running
+	admissions := e.admissions
+	done := e.done
+	e.mu.RUnlock()
+	if !running || done == nil {
+		return ErrEngineNotRunning
+	}
+	select {
+	case admissions <- request:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	case <-done:
 		return ErrEngineNotRunning
 	}
