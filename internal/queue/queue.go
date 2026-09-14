@@ -195,10 +195,10 @@ func (q *Queue[T]) Pop(ctx context.Context) (T, error) {
 		// Register one cancellation callback without keeping an extra goroutine
 		// alive for every idle consumer.
 		stopWake := context.AfterFunc(ctx, func() {
-				q.mu.Lock()
-				q.notEmpty.Broadcast()
-				q.mu.Unlock()
-			})
+			q.mu.Lock()
+			q.notEmpty.Broadcast()
+			q.mu.Unlock()
+		})
 		q.notEmpty.Wait()
 		stopWake()
 
