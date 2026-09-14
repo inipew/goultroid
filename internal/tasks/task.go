@@ -13,6 +13,7 @@ type TaskState string
 
 const (
 	StateCreated   TaskState = "created"
+	StateAdmitted  TaskState = "admitted"
 	StateQueued    TaskState = "queued"
 	StateRunning   TaskState = "running"
 	StateCompleted TaskState = "completed"
@@ -39,6 +40,8 @@ type Task struct {
 	CorrelationID  string        `json:"correlation_id,omitempty"`
 
 	CreatedAt   time.Time `json:"created_at"`
+	AdmittedAt  time.Time `json:"admitted_at"`
+	QueuedAt    time.Time `json:"queued_at"`
 	StartedAt   time.Time `json:"started_at"`
 	CompletedAt time.Time `json:"completed_at"`
 	State       TaskState `json:"state"`
