@@ -250,7 +250,7 @@ func (e *Engine) notifyDrainedIfSettled() {
 }
 
 func (e *Engine) cancelAcceptedForShutdown() {
-	now := time.Now().UTC()
+	now := e.clock.Now().UTC()
 	ids := make([]tasks.TaskID, 0, len(e.records))
 	for id, record := range e.records {
 		if !record.state.Terminal() {
