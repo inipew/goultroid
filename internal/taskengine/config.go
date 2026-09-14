@@ -35,6 +35,7 @@ type Config struct {
 	PrepareQueueCapacity   int
 	PersistenceCapacity    int
 	DefaultOwner           OwnerLimits
+	Owners                 map[tasks.QuotaOwner]OwnerLimits
 	AdmissionDecisionLimit time.Duration
 	QueueTimeout           time.Duration
 	PrepareTimeout         time.Duration
@@ -69,6 +70,14 @@ func (c Config) Validate() error {
 	}
 	if c.DefaultOwner.MaxWaiting <= 0 || c.DefaultOwner.MaxActive <= 0 || c.DefaultOwner.MaxWaitingBytes <= 0 || c.DefaultOwner.Weight <= 0 {
 		return errors.New("default owner limits must be positive")
+	}
+	for owner, limits := range c.Owners {
+		if strings.TrimSpace(string(owner)) == "" {
+			return errors.New("owner override requires a non-empty owner")
+		}
+		if limits.MaxWaiting <= 0 || limits.MaxActive <= 0 || limits.MaxWaitingBytes <= 0 || limits.Weight <= 0 {
+			return fmt.Errorf("owner %q limits must be positive", owner)
+		}
 	}
 	if c.AdmissionDecisionLimit <= 0 || c.QueueTimeout <= 0 || c.PrepareTimeout <= 0 || c.ExecutionTimeout <= 0 || c.ResultRetention <= 0 {
 		return errors.New("execution deadlines and retention must be positive")

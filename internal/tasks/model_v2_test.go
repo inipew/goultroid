@@ -124,3 +124,26 @@ func TestWorkerAssignment_BindsPermitToTaskAndPool(t *testing.T) {
 		t.Fatal("expected pool-mismatched permit to be rejected")
 	}
 }
+
+func TestWorkSpec_WithExecutionTimeoutReturnsCopy(t *testing.T) {
+	scope, _ := NewScopeIdentity("scope:test", 1)
+	handler, _ := NewHandlerRef("test", 1)
+	payload, _ := NewPayloadRef("test", 1, nil)
+	spec, err := NewWorkSpec(WorkSpecParams{
+		ID: "task-timeout-copy", Scope: scope, QuotaOwner: "owner", Pool: "general",
+		Class: PriorityNormal, Cause: CauseManual, Handler: handler, Input: payload,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	copySpec, err := spec.WithExecutionTimeout(time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.ExecutionTimeout() != 0 {
+		t.Fatalf("original WorkSpec mutated: %v", spec.ExecutionTimeout())
+	}
+	if copySpec.ExecutionTimeout() != time.Second {
+		t.Fatalf("copy timeout = %v want 1s", copySpec.ExecutionTimeout())
+	}
+}

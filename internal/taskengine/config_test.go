@@ -66,3 +66,13 @@ func TestConfigValidate_PoolWaitingBytesMustBeBounded(t *testing.T) {
 		t.Fatal("expected zero waiting-byte limit to be rejected")
 	}
 }
+
+func TestConfigValidate_OwnerOverrideMustBeBounded(t *testing.T) {
+	cfg := validConfig()
+	cfg.Owners = map[tasks.QuotaOwner]OwnerLimits{
+		"actor:1": {MaxWaiting: 1, MaxActive: 0, MaxWaitingBytes: 1024, Weight: 1},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid owner override to be rejected")
+	}
+}

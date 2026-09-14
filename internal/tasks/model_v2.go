@@ -306,7 +306,19 @@ func (s WorkSpec) Cause() SubmissionCause          { return s.cause }
 func (s WorkSpec) OrderingKey() string             { return s.orderingKey }
 func (s WorkSpec) QueueDeadline() time.Time        { return s.queueDeadline }
 func (s WorkSpec) ExecutionTimeout() time.Duration { return s.executionTimeout }
-func (s WorkSpec) Handler() HandlerRef             { return s.handler }
+
+// WithExecutionTimeout returns a copy with an explicit execution deadline.
+// TaskEngine uses this to materialize its validated default without mutating
+// the caller-owned immutable WorkSpec.
+func (s WorkSpec) WithExecutionTimeout(timeout time.Duration) (WorkSpec, error) {
+	if timeout <= 0 {
+		return WorkSpec{}, errors.New("execution timeout must be positive")
+	}
+	copySpec := s
+	copySpec.executionTimeout = timeout
+	return copySpec, nil
+}
+func (s WorkSpec) Handler() HandlerRef { return s.handler }
 func (s WorkSpec) Input() PayloadRef {
 	copyInput, _ := NewPayloadRef(s.input.kind, s.input.version, s.input.data)
 	return copyInput
