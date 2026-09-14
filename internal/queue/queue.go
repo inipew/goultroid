@@ -98,17 +98,25 @@ func (q *Queue[T]) Stats() Stats {
 
 // Push adds an item to the queue in accordance with the configured overflow policy.
 func (q *Queue[T]) Push(ctx context.Context, item T) error {
-	return q.push(ctx, item, false)
+	return q.push(ctx, item, false, nil)
 }
 
 // PushWait adds an item once capacity is available, regardless of the queue's
 // overflow policy. It is used for work that has already passed admission and
 // therefore must not be rejected or dropped due to transient physical pressure.
 func (q *Queue[T]) PushWait(ctx context.Context, item T) error {
-	return q.push(ctx, item, true)
+	return q.push(ctx, item, true, nil)
 }
 
-func (q *Queue[T]) push(ctx context.Context, item T, waitForCapacity bool) error {
+// PushWaitWithCommit waits for physical capacity, then runs commit while the
+// queue lock is still held and before item becomes visible to consumers. If
+// commit fails, item is not enqueued. This lets callers atomically align their
+// lifecycle state with physical queue visibility without racing a fast pop.
+func (q *Queue[T]) PushWaitWithCommit(ctx context.Context, item T, commit func() error) error {
+	return q.push(ctx, item, true, commit)
+}
+
+func (q *Queue[T]) push(ctx context.Context, item T, waitForCapacity bool, commit func() error) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -163,6 +171,11 @@ func (q *Queue[T]) push(ctx context.Context, item T, waitForCapacity bool) error
 	if q.closed {
 		return ErrQueueClosed
 	}
+	if commit != nil {
+		if err := commit(); err != nil {
+			return err
+		}
+	}
 
 	q.items = append(q.items, item)
 	q.enqueued.Add(1)
@@ -197,8 +210,8 @@ func (q *Queue[T]) Pop(ctx context.Context) (T, error) {
 		stopWake := context.AfterFunc(ctx, func() {
 			q.mu.Lock()
 			q.notEmpty.Broadcast()
-			q.mu.Unlock()
-		})
+				q.mu.Unlock()
+			})
 		q.notEmpty.Wait()
 		stopWake()
 
