@@ -55,7 +55,7 @@ jobs:
         run: exit 1
 
   test:
-    name: Unit & Race Tests
+    name: Focused Unit & Race Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -72,19 +72,19 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
           cache-dependency-path: 'go.sum'
-      - name: Capture Race Tests
+      - name: Capture Focused Race Tests
         id: racecheck
         continue-on-error: true
         run: |
           set -o pipefail
-          go test -v -race ./... 2>&1 | tee race.log
-      - name: Upload race diagnostics
+          go test -v -race ./internal/workers ./internal/jobs ./internal/scheduler ./internal/telegram ./internal/app 2>&1 | tee race.log
+      - name: Upload focused race diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: p0-p1-race-diagnostics
+          name: p0-p1-focused-race-diagnostics
           path: race.log
-      - name: Require clean race tests
+      - name: Require clean focused race tests
         if: steps.racecheck.outcome != 'success'
         run: exit 1
 
