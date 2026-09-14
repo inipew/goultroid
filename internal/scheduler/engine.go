@@ -49,9 +49,7 @@ type Engine struct {
 	claimWG   sync.WaitGroup
 	quiescing bool
 
-	tasks    map[string]context.CancelFunc
-	taskMeta map[string]*periodicTaskMeta
-	tasksMu  sync.RWMutex
+	periodic *periodicCoordinator
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -59,15 +57,6 @@ type Engine struct {
 
 	running bool
 	runMu   sync.Mutex
-}
-
-type periodicTaskMeta struct {
-	Owner     string
-	Name      string
-	Runs      int64
-	Failures  int64
-	LastRunAt time.Time
-	LastError string
 }
 
 // PeriodicTaskSnapshot exposes runtime diagnostics without exposing cancel
@@ -97,19 +86,19 @@ func NewEngine(db Repository, svcFunc func() core.TelegramServicer, router *core
 		logger = zap.NewNop()
 	}
 	const defaultConcurrency = 4
-	return &Engine{
+	engine := &Engine{
 		db:             db,
 		svcFunc:        svcFunc,
 		router:         router,
 		perms:          perms,
 		executor:       core.NewCommandExecutor(logger, nil, 30*time.Second),
 		logger:         logger,
-		tasks:          make(map[string]context.CancelFunc),
-		taskMeta:       make(map[string]*periodicTaskMeta),
 		maxConcurrency: defaultConcurrency,
 		misfirePolicy:  MisfireRunOnce,
 		wakeChan:       make(chan struct{}, 1),
 	}
+	engine.periodic = newPeriodicCoordinator(logger)
+	return engine
 }
 
 func (e *Engine) notifyWake() {
@@ -191,6 +180,12 @@ func (e *Engine) Start(parentCtx context.Context) error {
 		parentCtx = context.Background()
 	}
 	e.ctx, e.cancel = context.WithCancel(parentCtx)
+	if e.periodic != nil {
+		if err := e.periodic.Start(e.ctx); err != nil {
+			e.cancel()
+			return fmt.Errorf("start periodic coordinator: %w", err)
+		}
+	}
 	e.claimMu.Lock()
 	e.quiescing = false
 	e.claimMu.Unlock()
@@ -288,13 +283,11 @@ func (e *Engine) StopContext(ctx context.Context) error {
 	e.cancel()
 	e.runMu.Unlock()
 
-	e.tasksMu.Lock()
-	for _, cancelTask := range e.tasks {
-		cancelTask()
+	if e.periodic != nil {
+		if err := e.periodic.Stop(ctx); err != nil {
+			return fmt.Errorf("stop periodic coordinator: %w", err)
+		}
 	}
-	e.tasks = make(map[string]context.CancelFunc)
-	e.taskMeta = make(map[string]*periodicTaskMeta)
-	e.tasksMu.Unlock()
 
 	done := make(chan struct{})
 	go func() {
@@ -334,74 +327,10 @@ func (e *Engine) RegisterPeriodicTaskOwned(owner, name string, interval time.Dur
 // RegisterPeriodicTaskWithOptions registers a periodic task with explicit
 // ownership, timeout, and retry semantics.
 func (e *Engine) RegisterPeriodicTaskWithOptions(name string, interval time.Duration, options PeriodicTaskOptions, task TaskFunc) error {
-	owner := strings.TrimSpace(options.Owner)
-	if owner == "" {
-		owner = "runtime"
+	if e.periodic == nil {
+		return errors.New("periodic coordinator is not configured")
 	}
-	if name == "" {
-		return errors.New("task name cannot be empty")
-	}
-	if interval <= 0 {
-		return errors.New("interval must be positive")
-	}
-	if task == nil {
-		return errors.New("task function cannot be nil")
-	}
-	if options.MaxAttempts < 0 {
-		return errors.New("max attempts cannot be negative")
-	}
-	if options.MaxAttempts == 0 {
-		options.MaxAttempts = 1
-	}
-	if options.RetryDelay < 0 {
-		return errors.New("retry delay cannot be negative")
-	}
-
-	e.runMu.Lock()
-	if !e.running || e.ctx == nil || e.cancel == nil {
-		e.runMu.Unlock()
-		return errors.New("scheduler engine is not running: call Start() first")
-	}
-	taskCtx, cancel := context.WithCancel(e.ctx)
-	e.tasksMu.Lock()
-	if cancelExisting, exists := e.tasks[name]; exists {
-		cancelExisting()
-	}
-	e.tasks[name] = cancel
-	e.taskMeta[name] = &periodicTaskMeta{Owner: owner, Name: name}
-	e.wg.Add(1)
-	e.tasksMu.Unlock()
-	e.runMu.Unlock()
-
-	go func() {
-		defer e.wg.Done()
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-taskCtx.Done():
-				return
-			case <-ticker.C:
-				func() {
-					err := runPeriodicTask(taskCtx, task, options)
-					e.tasksMu.Lock()
-					if meta := e.taskMeta[name]; meta != nil {
-						meta.Runs++
-						meta.LastRunAt = time.Now().UTC()
-						if err != nil {
-							meta.Failures++
-							meta.LastError = err.Error()
-						}
-					}
-					e.tasksMu.Unlock()
-					if err != nil {
-						e.logger.Warn("periodic task execution error", zap.String("task", name), zap.Error(err))
-					}
-				}()
-			}
-		}
-	}()
-	return nil
+	return e.periodic.Register(name, interval, options, task)
 }
 
 func runPeriodicTask(parent context.Context, task TaskFunc, options PeriodicTaskOptions) (err error) {
@@ -444,53 +373,27 @@ func runPeriodicTask(parent context.Context, task TaskFunc, options PeriodicTask
 }
 
 func (e *Engine) UnregisterPeriodicTask(name string) error {
-	e.tasksMu.Lock()
-	defer e.tasksMu.Unlock()
-	if cancelTask, exists := e.tasks[name]; exists {
-		cancelTask()
-		delete(e.tasks, name)
-		delete(e.taskMeta, name)
-		return nil
+	if e.periodic == nil {
+		return errors.New("periodic coordinator is not configured")
 	}
-	return errors.New("task not found")
+	return e.periodic.Unregister(name)
 }
 
 // UnregisterPeriodicTasksByOwner cancels and removes all periodic tasks registered by the specified owner.
 func (e *Engine) UnregisterPeriodicTasksByOwner(owner string) int {
-	cleanOwner := strings.TrimSpace(owner)
-	if cleanOwner == "" {
+	if e.periodic == nil {
 		return 0
 	}
-	e.tasksMu.Lock()
-	defer e.tasksMu.Unlock()
-
-	count := 0
-	for name, meta := range e.taskMeta {
-		if meta != nil && (meta.Owner == cleanOwner || meta.Owner == "plugin:"+cleanOwner) {
-			if cancelTask, exists := e.tasks[name]; exists {
-				cancelTask()
-				delete(e.tasks, name)
-				delete(e.taskMeta, name)
-				count++
-			}
-		}
-	}
-	return count
+	return e.periodic.UnregisterByOwner(owner)
 }
 
 // PeriodicTaskSnapshots returns a stable copy of registered periodic task
 // diagnostics. It is safe to call while tasks are running.
 func (e *Engine) PeriodicTaskSnapshots() []PeriodicTaskSnapshot {
-	e.tasksMu.RLock()
-	defer e.tasksMu.RUnlock()
-	snapshots := make([]PeriodicTaskSnapshot, 0, len(e.taskMeta))
-	for _, meta := range e.taskMeta {
-		snapshots = append(snapshots, PeriodicTaskSnapshot{
-			Owner: meta.Owner, Name: meta.Name, Runs: meta.Runs,
-			Failures: meta.Failures, LastRunAt: meta.LastRunAt, LastError: meta.LastError,
-		})
+	if e.periodic == nil {
+		return nil
 	}
-	return snapshots
+	return e.periodic.Snapshots()
 }
 
 func (e *Engine) ScheduleOnce(ctx context.Context, chatID int64, peerType string, accessHash int64, when time.Time, actionType string, payload string, creatorID ...int64) (*ScheduledJob, error) {
