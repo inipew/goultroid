@@ -185,7 +185,7 @@ func (p *Plugin) getSelf(ctx *core.Context) (*tg.UsersUserFull, *tg.User, error)
 			return full, u, nil
 		}
 	}
-	return nil, nil, errors.New("Telegram did not return the current user")
+	return nil, nil, errors.New("telegram did not return the current user")
 }
 
 func (p *Plugin) downloadProfilePhoto(ctx *core.Context, peer tg.InputPeerClass, photoID int64, prefix string) (string, error) {

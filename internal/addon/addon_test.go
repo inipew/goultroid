@@ -211,7 +211,7 @@ capabilities:
 	if gate.HasCapability("quote-generator", addon.CapTelegramSend) {
 		t.Fatalf("expected capability revoked after uninstall")
 	}
-	rec, err = mgr.Get(ctx, "quote-generator")
+	rec, _ = mgr.Get(ctx, "quote-generator")
 	if rec != nil {
 		t.Errorf("expected nil after uninstall, got %+v", rec)
 	}

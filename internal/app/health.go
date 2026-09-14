@@ -151,9 +151,7 @@ func (a *App) HealthContext(ctx context.Context) HealthSnapshot {
 		for comp, status := range rtHealth.Components {
 			health.Subsystems[comp] = status
 		}
-		for _, reason := range rtHealth.Reasons {
-			health.Reasons = append(health.Reasons, reason)
-		}
+		health.Reasons = append(health.Reasons, rtHealth.Reasons...)
 		if rtHealth.Status == runtime.HealthUnhealthy {
 			health.Status = HealthUnhealthy
 		} else if rtHealth.Status == runtime.HealthDegraded && health.Status != HealthUnhealthy {

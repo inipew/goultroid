@@ -1,12 +1,13 @@
 package inline
 
 import (
-	"github.com/inipew/goultroid/internal/ui/render"
 	"strings"
 
 	"github.com/gotd/td/telegram/message/entity"
 	"github.com/gotd/td/telegram/message/html"
 	"github.com/gotd/td/tg"
+
+	"github.com/inipew/goultroid/internal/ui/render"
 )
 
 // ResultSerializer converts a domain InlineResult into a Telegram MTProto InputBotInlineResultClass.

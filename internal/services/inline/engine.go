@@ -352,7 +352,7 @@ func (e *Engine) ExecuteWithPeerType(ctx context.Context, svc core.TelegramServi
 			}
 			if svc != nil {
 				fallback := fallbackHelpResults("rate_limited")
-				tgRes := serializeResults(fallback)
+				tgRes := e.serializeResults(fallback)
 				_ = svc.AnswerInlineQueryOptions(ctx, queryID, tgRes, core.InlineAnswerOptions{NextOffset: "", CacheTime: 1})
 			}
 			return fmt.Errorf("%w: inline rate limited", core.ErrRateLimited)
@@ -368,7 +368,7 @@ func (e *Engine) ExecuteWithPeerType(ctx context.Context, svc core.TelegramServi
 		}
 		if svc != nil {
 			fallback := fallbackHelpResults(trimmed)
-			tgRes := serializeResults(fallback)
+			tgRes := e.serializeResults(fallback)
 			_ = svc.AnswerInlineQueryOptions(ctx, queryID, tgRes, core.InlineAnswerOptions{NextOffset: "", CacheTime: 5})
 		}
 		return ErrNoMatchingHandler
@@ -391,7 +391,7 @@ func (e *Engine) ExecuteWithPeerType(ctx context.Context, svc core.TelegramServi
 			}
 			if svc != nil {
 				fallback := fallbackUnauthorizedResults(handler.Pattern())
-				tgRes := serializeResults(fallback)
+				tgRes := e.serializeResults(fallback)
 				_ = svc.AnswerInlineQueryOptions(ctx, queryID, tgRes, core.InlineAnswerOptions{NextOffset: "", CacheTime: 1, SwitchPM: &tg.InlineBotSwitchPM{Text: "Unauthorized", StartParam: ""}})
 			}
 			return fmt.Errorf("unauthorized inline query")
@@ -402,9 +402,7 @@ func (e *Engine) ExecuteWithPeerType(ctx context.Context, svc core.TelegramServi
 	// Locale/version included in key per audit  handler/version + query + offset + user/chat/locale
 	locale := "" // future: from InlineContext or user settings; empty for now keeps compat
 	version := HandlerVersion(handler)
-	if policy == CacheNone {
-		// skip cache
-	} else {
+	if policy != CacheNone {
 		// Check scoped cache with locale/version.
 		// The unpaginated result set is stored under key with offset "", so we look up with "".
 		scopedKey := ScopedKeyEx(handler.Pattern(), trimmed, "", policy, userID, 0, locale, version)
@@ -421,7 +419,7 @@ func (e *Engine) ExecuteWithPeerType(ctx context.Context, svc core.TelegramServi
 				e.metrics.RecordInline(true, len(cached), time.Since(start), nil)
 			}
 			pageResults, nextOffset := e.paginator.Paginate(cached, offset)
-			tgResults := serializeResults(pageResults)
+			tgResults := e.serializeResults(pageResults)
 			if len(tgResults) > 50 {
 				tgResults = tgResults[:50]
 			}
@@ -454,10 +452,9 @@ func (e *Engine) ExecuteWithPeerType(ctx context.Context, svc core.TelegramServi
 
 	var resp *InlineResponse
 	var results []InlineResult
-	var handlerErr error
 
 	// Timeout + panic recovery around handler (Fase 4 hardening)
-	handlerErr = func() (err error) {
+	handlerErr := func() (err error) {
 		defer func() {
 			if rec := recover(); rec != nil {
 				e.logger.Error("inline handler panic", zap.Any("panic", rec), zap.String("pattern", handler.Pattern()), zap.String("correlation_id", correlationID))
@@ -491,7 +488,7 @@ func (e *Engine) ExecuteWithPeerType(ctx context.Context, svc core.TelegramServi
 		}
 		if svc != nil {
 			fallback := fallbackErrorResults(handlerErr)
-			tgRes := serializeResults(fallback)
+			tgRes := e.serializeResults(fallback)
 			_ = svc.AnswerInlineQueryOptions(ctx, queryID, tgRes, core.InlineAnswerOptions{NextOffset: "", CacheTime: 1})
 		}
 		return handlerErr
@@ -548,7 +545,7 @@ func (e *Engine) ExecuteWithPeerType(ctx context.Context, svc core.TelegramServi
 		}
 	}
 
-	tgResults := serializeResults(pageResults)
+	tgResults := e.serializeResults(pageResults)
 	if len(tgResults) > 50 {
 		tgResults = tgResults[:50]
 	}
@@ -603,10 +600,6 @@ func (e *Engine) serializeResults(results []InlineResult) []tg.InputBotInlineRes
 	if e != nil && e.serializers != nil {
 		return e.serializers.SerializeAll(results)
 	}
-	return defaultSerializers.SerializeAll(results)
-}
-
-func serializeResults(results []InlineResult) []tg.InputBotInlineResultClass {
 	return defaultSerializers.SerializeAll(results)
 }
 

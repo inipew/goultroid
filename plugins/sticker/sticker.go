@@ -5,19 +5,19 @@ import (
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
-	_ "image/png"
+	"image/png"
 	"io"
 	"math"
 	"os"
 	"path/filepath"
 	"time"
 
+	"golang.org/x/image/draw"
+	"golang.org/x/image/webp"
+
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/plugin"
-	"golang.org/x/image/draw"
-	"golang.org/x/image/webp"
-	"image/png"
 )
 
 // Plugin provides sticker creation and conversion utilities.

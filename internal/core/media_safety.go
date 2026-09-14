@@ -57,12 +57,12 @@ func CheckDiskSpace(path string, requiredBytes int64) error {
 	found := false
 
 	for {
-		if err := syscall.Statfs(current, &stat); err == nil {
+		err := syscall.Statfs(current, &stat)
+		if err == nil {
 			found = true
 			break
-		} else {
-			statErr = err
 		}
+		statErr = err
 		parent := filepath.Dir(current)
 		if parent == current || parent == "." {
 			if err := syscall.Statfs(".", &stat); err == nil {

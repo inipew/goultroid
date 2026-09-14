@@ -736,7 +736,7 @@ func styledSegments(text string, entities []tg.MessageEntityClass) []styledSegme
 		if !ok {
 			continue
 		}
-		style := styleNormal
+		var style entityStyle
 		switch entity.(type) {
 		case *tg.MessageEntityPre, *tg.MessageEntityCode:
 			style = styleCode

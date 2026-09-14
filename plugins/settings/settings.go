@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
@@ -80,7 +79,6 @@ type Plugin struct {
 	service    *settings.Service
 	stateStore *callback.StateStore
 	logger     *zap.Logger
-	mu         sync.RWMutex
 	setUC      *usecase.SetSettingUseCase
 	resetUC    *usecase.ResetSettingUseCase
 }

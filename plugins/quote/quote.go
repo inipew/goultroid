@@ -172,10 +172,6 @@ func (p *Plugin) resolveAuthorInfo(ctx *core.Context, reply *core.Message) autho
 	return info
 }
 
-func (p *Plugin) resolveAuthor(ctx *core.Context, reply *core.Message) string {
-	return p.resolveAuthorInfo(ctx, reply).Name
-}
-
 func (p *Plugin) resolveReplyPreview(ctx *core.Context, replyToID int) *ReplyPreview {
 	if ctx == nil || ctx.Svc == nil || replyToID == 0 {
 		return &ReplyPreview{Text: "Deleted message"}

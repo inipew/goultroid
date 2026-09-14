@@ -158,7 +158,7 @@ func (p *DirectHTTPProvider) Download(ctx context.Context, rawURL string, store 
 	// Bounded limit reader to prevent streaming beyond quota
 	limitedStream := io.LimitReader(resp.Body, maxBytes+1)
 
-	var reader io.Reader = limitedStream
+	reader := limitedStream
 	if opts.Progress != nil {
 		reader = &progressReader{
 			reader: limitedStream,

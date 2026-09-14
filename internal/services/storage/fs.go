@@ -102,23 +102,6 @@ func storageSizeAt(baseDir string) (int64, error) {
 	return total, err
 }
 
-// storageSize is retained for reconciliation/debugging. Normal Put/Delete paths
-// use the cached usage counter so quota admission does not scan the whole tree.
-func (f *FileStorage) storageSize() (int64, error) {
-	return storageSizeAt(f.baseDir)
-}
-
-func (f *FileStorage) reconcileUsage() error {
-	usage, err := f.storageSize()
-	if err != nil {
-		return err
-	}
-	f.mu.Lock()
-	f.usage = usage
-	f.mu.Unlock()
-	return nil
-}
-
 type contextReader struct {
 	ctx context.Context
 	r   io.Reader

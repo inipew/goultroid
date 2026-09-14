@@ -75,7 +75,7 @@ func (r *SQLiteRepository) SetPMStatus(ctx context.Context, userID int64, status
 			expires_at = excluded.expires_at,
 			reason = excluded.reason;
 	`
-	var expVal any = nil
+	var expVal any
 	if expiresAt != nil {
 		expVal = expiresAt.UTC()
 	}

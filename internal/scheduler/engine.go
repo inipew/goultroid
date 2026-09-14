@@ -710,11 +710,9 @@ func (e *Engine) executeJob(ctx context.Context, job ScheduledJob, cancel contex
 
 	var execErr error
 	for r := 0; r < runs; r++ {
-		select {
-		case <-ctx.Done():
-			execErr = ctx.Err()
+		if err := ctx.Err(); err != nil {
+			execErr = err
 			break
-		default:
 		}
 
 		switch job.ActionType {

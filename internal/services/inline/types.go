@@ -135,13 +135,6 @@ type InlineMatcher interface {
 	Match(query string) (args []string, ok bool)
 }
 
-type exactMatcher struct{ keyword string }
-
-func (m *exactMatcher) Match(query string) ([]string, bool) {
-	// exact handled via Registry directly; this is fallback for interface users
-	return nil, false
-}
-
 type prefixMatcher struct{ prefix string }
 
 func (m *prefixMatcher) Match(query string) ([]string, bool) {

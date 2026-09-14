@@ -53,13 +53,16 @@ func TestPeerStorage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to find updated peer: %v", err)
 	}
+	if !found {
+		t.Fatalf("expected updated peer to be found")
+	}
 	if val.AccessHash != 1122334455 {
 		t.Errorf("expected updated AccessHash=1122334455, got %d", val.AccessHash)
 	}
 
 	// 4. Test Phone mapping
 	phone := "+1234567890"
-	pKey, pVal, pFound, err := storage.FindPhone(ctx, phone)
+	_, _, pFound, err := storage.FindPhone(ctx, phone)
 	if err != nil {
 		t.Fatalf("unexpected error finding phone: %v", err)
 	}
@@ -72,7 +75,7 @@ func TestPeerStorage(t *testing.T) {
 		t.Fatalf("failed to save phone: %v", err)
 	}
 
-	pKey, pVal, pFound, err = storage.FindPhone(ctx, phone)
+	pKey, pVal, pFound, err := storage.FindPhone(ctx, phone)
 	if err != nil {
 		t.Fatalf("failed to find saved phone: %v", err)
 	}

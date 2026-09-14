@@ -208,10 +208,6 @@ func (p *Plugin) commandsForSource(source execution.Source) []core.Command {
 	return res
 }
 
-func (p *Plugin) userbotCommands() []core.Command {
-	return p.commandsForSource(execution.SourceUserbot)
-}
-
 func (p *Plugin) getCategoryNames(source execution.Source) (map[string][]core.Command, []string) {
 	all := p.commandsForSource(source)
 	categories := make(map[string][]core.Command)
@@ -266,11 +262,6 @@ func (p *Plugin) renderCategoryCard(cat string, cmds []core.Command, prefix stri
 	return card.Render()
 }
 
-func (p *Plugin) renderOverview(prefix string) (string, []string) {
-	categories, catNames := p.getCategoryNames(execution.SourceUserbot)
-	return p.renderOverviewWithCategories(prefix, categories, catNames, execution.SourceUserbot), catNames
-}
-
 func (p *Plugin) renderOverviewWithCategories(prefix string, categories map[string][]core.Command, catNames []string, source execution.Source) string {
 	all := p.commandsForSource(source)
 	var sb strings.Builder
@@ -295,13 +286,6 @@ func (p *Plugin) renderOverviewWithCategories(prefix string, categories map[stri
 		prefix, prefix,
 	))
 	return strings.TrimSpace(sb.String())
-}
-
-func (p *Plugin) renderInteractiveOverview(prefix string, totalCmds, totalModules int) string {
-	return fmt.Sprintf(
-		"📚 <b>GoUltroid Help</b>\n\n<i>%d commands across %d modules.</i>\n\n<i>Select a module below to browse its commands:</i>\n\n💡 <i>Use <code>%shelp &lt;module&gt;</code> or <code>%shelp &lt;command&gt;</code> for details.</i>",
-		totalCmds, totalModules, prefix, prefix,
-	)
 }
 
 func (p *Plugin) buildOverviewMarkup(catNames []string, userID int64) tg.ReplyMarkupClass {

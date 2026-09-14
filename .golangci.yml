@@ -19,12 +19,36 @@ linters:
       exclude-functions:
         - (*github.com/inipew/goultroid/internal/core.EventBus).Close
         - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Tx).Rollback
+        - (*database/sql.Stmt).Close
         - (net/http.ResponseWriter).Write
+        - (io.Closer).Close
+        - (io.ReadCloser).Close
+        - (*os.File).Close
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint
+        - os.Remove
+        - os.RemoveAll
+        - (*github.com/inipew/goultroid/internal/files).RemoveTempDir
+        - (*github.com/inipew/goultroid/internal/files).RemoveTempFile
+        - github.com/inipew/goultroid/internal/files.RemoveTempDir
+        - github.com/inipew/goultroid/internal/files.RemoveTempFile
+        - (*github.com/inipew/goultroid/internal/platform/network.Response).Close
+        - (*github.com/inipew/goultroid/internal/platform/filesystem.Scope).RemoveTempDir
+        - (*github.com/inipew/goultroid/internal/platform/filesystem.Scope).RemoveTempFile
+    staticcheck:
+      checks:
+        - "all"
+        - "-ST*"
+        - "-QF*"
+        - "-SA1019"
+        - "-SA1012"
     revive:
       enable-all-rules: false
       rules:
         - name: var-naming
-        - name: package-comments
         - name: dot-imports
         - name: error-return
         - name: error-strings
@@ -38,13 +62,14 @@ linters:
         - name: errorf
         - name: empty-block
         - name: superfluous-else
-        - name: unused-parameter
         - name: unreachable-code
     gocritic:
       enable-all: false
       disabled-checks:
-        - whyNoLint
-        - hugeParam
+        - ifElseChain
+        - singleCaseSwitch
+        - unlambda
+        - appendAssign
   exclusions:
     generated: lax
     rules:

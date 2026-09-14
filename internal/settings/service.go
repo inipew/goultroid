@@ -352,7 +352,7 @@ func (s *Service) Set(ctx context.Context, scope SettingScope, scopeID int64, na
 	ns := strings.ToLower(strings.TrimSpace(namespace))
 	k := strings.ToLower(strings.TrimSpace(key))
 
-	var valType string = string(TypeString)
+	valType := string(TypeString)
 	canonicalVal := strings.TrimSpace(value)
 
 	// Validate against definition if registered
