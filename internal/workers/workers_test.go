@@ -182,8 +182,11 @@ func TestManager_ComponentAndPools(t *testing.T) {
 	if _, exists := mgr.Get("event"); exists {
 		t.Fatal("event pool duplicates the EventBus executor and must not be provisioned")
 	}
-	if got := len(mgr.AllStats()); got != 4 {
-		t.Fatalf("expected 4 workload pools, got %d", got)
+	if got := len(mgr.AllStats()); got != 5 {
+		t.Fatalf("expected 5 workload pools, got %d", got)
+	}
+	if _, exists := mgr.Get(PoolInteractive); !exists {
+		t.Fatal("interactive pool must be provisioned")
 	}
 
 	ctx := context.Background()

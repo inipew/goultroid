@@ -26,6 +26,7 @@ func buildTelegramRuntime(cfg *config.Config, core *coreDependencies, logger *za
 	}
 	dispatcher.Executor().SetMetrics(core.metrics)
 	dispatcher.Executor().SetRateLimiter(commandRateLimiterAdapter{limiter: core.cmdLimiter})
+	dispatcher.SetWorkers(core.workerManager)
 	if core.idempManager != nil {
 		dispatcher.SetIdempotency(core.idempManager)
 	}

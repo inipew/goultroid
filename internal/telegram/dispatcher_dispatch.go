@@ -205,24 +205,19 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		EventBus:  d.getEventBus(),
 	}
 
-	select {
-	case d.cmdSem <- struct{}{}:
-	case <-execCtx.Done():
-		cancel()
-		return nil
+	taskOwner := fmt.Sprintf("telegram:user:%d", sender.ID)
+	if sender.ID == 0 {
+		taskOwner = "telegram:unknown"
 	}
-	d.cmdWG.Add(1)
-	d.runningCommands.Add(1)
-	d.totalCommands.Add(1)
-	go func() {
-		defer func() {
-			d.runningCommands.Add(-1)
-			<-d.cmdSem
-			d.cmdWG.Done()
-			cancel()
-		}()
-		_ = d.executor.Execute(coreCtx, cmd)
-	}()
+	taskID := fmt.Sprintf("cmd:%d:%d", chat.ID, msg.ID)
+	correlationID := fmt.Sprintf("msg:%d:%d", chat.ID, msg.ID)
+	if err := d.submitInteractiveCommand(execCtx, cancel, coreCtx, cmd, taskID, taskOwner, correlationID); err != nil {
+		d.logger.Warn("interactive command admission rejected",
+			zap.String("command", cmdName),
+			zap.Int64("chat_id", chat.ID),
+			zap.Error(err),
+		)
+	}
 
 	for _, h := range asyncHandlers {
 		_ = d.safeExecuteInterceptor(ctx, h, e, msg, isCmd, cmdName)

@@ -699,20 +699,40 @@ func TestEngine_ActionJob(t *testing.T) {
 
 	_, cancel := context.WithCancel(ctx)
 	defer cancel()
-	engine.executeJob(ctx, claimed[0], cancel)
+	executeDone := make(chan struct{})
+	go func() {
+		engine.executeJob(ctx, claimed[0], cancel)
+		close(executeDone)
+	}()
 
-	submitter.mu.Lock()
-	defer submitter.mu.Unlock()
-	if len(submitter.tasks) != 1 {
-		t.Fatalf("expected 1 task submitted, got %d", len(submitter.tasks))
+	var submitted tasks.Task
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		submitter.mu.Lock()
+		if len(submitter.tasks) == 1 {
+			submitted = submitter.tasks[0]
+			submitter.mu.Unlock()
+			break
+		}
+		submitter.mu.Unlock()
+		time.Sleep(time.Millisecond)
 	}
-	if submitter.tasks[0].Name != "job:sync-cache" {
-		t.Errorf("expected task name 'job:sync-cache', got %q", submitter.tasks[0].Name)
+	if submitted.Run == nil {
+		t.Fatal("expected one task to be submitted")
+	}
+	if submitted.Name != "job:sync-cache" {
+		t.Errorf("expected task name 'job:sync-cache', got %q", submitted.Name)
 	}
 
-	// Run the submitted task
-	if err := submitter.tasks[0].Run(ctx); err != nil {
+	// TriggerAndWait now waits for the concrete task result, so the fixture
+	// executes the submitted task while executeJob is waiting for completion.
+	if err := submitted.Run(ctx); err != nil {
 		t.Fatalf("task run failed: %v", err)
+	}
+	select {
+	case <-executeDone:
+	case <-time.After(time.Second):
+		t.Fatal("executeJob did not observe managed job completion")
 	}
 	if !jobRan {
 		t.Fatalf("expected jobRan to be true")

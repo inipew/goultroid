@@ -44,6 +44,7 @@ func NewManager() *Manager {
 
 	// Initialize default isolated pools per Blueprint §30
 	m.pools[PoolGeneral] = NewPool(PoolGeneral, 8, 200, queue.PolicyBlock)
+	m.pools[PoolInteractive] = NewPool(PoolInteractive, 32, 128, queue.PolicyReject)
 	m.pools[PoolDownload] = NewPool(PoolDownload, 3, 50, queue.PolicyReject)
 	m.pools[PoolMediaProcess] = NewPool(PoolMediaProcess, 2, 20, queue.PolicyReject)
 	m.pools[PoolScheduler] = NewPool(PoolScheduler, 4, 100, queue.PolicyBlock)

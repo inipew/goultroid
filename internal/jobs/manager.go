@@ -42,30 +42,33 @@ type Diagnostics struct {
 
 // Manager coordinates declarative jobs and delegates their execution to workers as tasks.
 type Manager struct {
-	mu               sync.RWMutex
-	jobs             map[string]*Job
-	handlers         map[string]JobHandler
-	submitter        TaskSubmitter
-	repo             Repository
-	idemp            IdempotencyClaimer
-	recoveryFailures int
-	recoveryErrors   []string
-	terminalAt       map[string]time.Time
-	retention        time.Duration
-	cleanupInterval  time.Duration
-	cleanupCancel    context.CancelFunc
-	cleanupWG        sync.WaitGroup
+	mu                sync.RWMutex
+	jobs              map[string]*Job
+	handlers          map[string]JobHandler
+	submitter         TaskSubmitter
+	repo              Repository
+	idemp             IdempotencyClaimer
+	recoveryFailures  int
+	recoveryErrors    []string
+	terminalAt        map[string]time.Time
+	retention         time.Duration
+	cleanupInterval   time.Duration
+	cleanupCancel     context.CancelFunc
+	cleanupWG         sync.WaitGroup
+	completionSeq     uint64
+	completionWaiters map[string]map[uint64]chan error
 }
 
 // NewManager creates a new JobManager backed by a task submitter and optional repository.
 func NewManager(submitter TaskSubmitter, repo ...Repository) *Manager {
 	m := &Manager{
-		jobs:            make(map[string]*Job),
-		handlers:        make(map[string]JobHandler),
-		submitter:       submitter,
-		terminalAt:      make(map[string]time.Time),
-		retention:       7 * 24 * time.Hour,
-		cleanupInterval: time.Hour,
+		jobs:              make(map[string]*Job),
+		handlers:          make(map[string]JobHandler),
+		submitter:         submitter,
+		terminalAt:        make(map[string]time.Time),
+		completionWaiters: make(map[string]map[uint64]chan error),
+		retention:         7 * 24 * time.Hour,
+		cleanupInterval:   time.Hour,
 	}
 	if len(repo) > 0 && repo[0] != nil {
 		m.repo = repo[0]
@@ -208,6 +211,7 @@ func (m *Manager) Trigger(ctx context.Context, jobID string) error {
 					if repo != nil {
 						_ = repo.UpdateState(context.Background(), jobID, StateCompleted, job.LastError, job.LastRun, job.NextRun)
 					}
+					m.notifyCompletion(jobID, nil)
 					return nil
 				}
 			}
@@ -243,6 +247,7 @@ func (m *Manager) Trigger(ctx context.Context, jobID string) error {
 				_ = repo.UpdateState(context.Background(), jobID, jobState, jobErr, jLastRun, jNextRun)
 			}
 
+			m.notifyCompletion(jobID, err)
 			return err
 		},
 	}
@@ -252,6 +257,66 @@ func (m *Manager) Trigger(ctx context.Context, jobID string) error {
 		return fmt.Errorf("submit job %q to pool %q: %w", jobID, pool, err)
 	}
 	return nil
+}
+
+func (m *Manager) registerCompletionWaiter(jobID string) (uint64, <-chan error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.completionSeq++
+	id := m.completionSeq
+	waiters := m.completionWaiters[jobID]
+	if waiters == nil {
+		waiters = make(map[uint64]chan error)
+		m.completionWaiters[jobID] = waiters
+	}
+	ch := make(chan error, 1)
+	waiters[id] = ch
+	return id, ch
+}
+
+func (m *Manager) unregisterCompletionWaiter(jobID string, waiterID uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	waiters := m.completionWaiters[jobID]
+	if waiters == nil {
+		return
+	}
+	delete(waiters, waiterID)
+	if len(waiters) == 0 {
+		delete(m.completionWaiters, jobID)
+	}
+}
+
+func (m *Manager) notifyCompletion(jobID string, runErr error) {
+	m.mu.Lock()
+	waiters := m.completionWaiters[jobID]
+	delete(m.completionWaiters, jobID)
+	m.mu.Unlock()
+	for _, ch := range waiters {
+		ch <- runErr
+		close(ch)
+	}
+}
+
+// TriggerAndWait triggers one managed job and waits for the concrete Task to
+// reach a terminal state. Scheduler uses this so durable schedule completion
+// reflects execution, not merely successful admission to a worker queue.
+func (m *Manager) TriggerAndWait(ctx context.Context, jobID string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	waiterID, result := m.registerCompletionWaiter(jobID)
+	if err := m.Trigger(ctx, jobID); err != nil {
+		m.unregisterCompletionWaiter(jobID, waiterID)
+		return err
+	}
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		m.unregisterCompletionWaiter(jobID, waiterID)
+		return ctx.Err()
+	}
 }
 
 func (m *Manager) rollbackTrigger(ctx context.Context, job *Job, state JobState, lastRun time.Time, reason string) {
