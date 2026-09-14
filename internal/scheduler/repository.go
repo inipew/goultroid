@@ -380,7 +380,7 @@ func (r *SQLiteRepository) claimDueScheduledJobsOnce(ctx context.Context, now ti
 	if err != nil {
 		return nil, fmt.Errorf("failed to acquire claim connection: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
 		return nil, fmt.Errorf("failed to begin immediate claim transaction: %w", err)
 	}
