@@ -23,15 +23,35 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Apply scoped redesign
-        run: python3 tools/apply_p0_p1_execution_redesign.py
+        run: python3 tools/normalize_p0_p1_source.py && python3 tools/apply_p0_p1_execution_redesign.py
       - name: Format
         run: gofmt -w internal/workers internal/telegram internal/jobs internal/scheduler internal/app
       - name: Focused tests
         run: go test ./internal/workers ./internal/jobs ./internal/scheduler ./internal/telegram ./internal/app
       - name: Vet
         run: go vet ./...
-      - name: Race tests
-        run: go test -race ./...
+      - name: Capture lint
+        id: lint
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          golangci-lint run ./... 2>&1 | tee /tmp/lint.log
+      - name: Capture race tests
+        id: race
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          go test -race ./... 2>&1 | tee /tmp/race.log
+      - name: Upload diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: p0-p1-diagnostics
+          path: |
+            /tmp/lint.log
+            /tmp/race.log
+      - name: Require clean validation
+        if: steps.lint.outcome != 'success' || steps.race.outcome != 'success'
+        run: exit 1
       - name: Commit validated changes
         run: |
           git config user.name 'github-actions[bot]'
