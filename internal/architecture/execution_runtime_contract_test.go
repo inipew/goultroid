@@ -45,6 +45,11 @@ func TestExecutionRuntimeNewFilesRespectDependencyBoundary(t *testing.T) {
 		filepath.Join(root, "internal", "jobs", "contracts_v2.go"),
 		filepath.Join(root, "internal", "taskengine", "config.go"),
 		filepath.Join(root, "internal", "taskengine", "catalog.go"),
+		filepath.Join(root, "internal", "taskengine", "engine.go"),
+		filepath.Join(root, "internal", "taskengine", "engine_api.go"),
+		filepath.Join(root, "internal", "taskengine", "engine_loop.go"),
+		filepath.Join(root, "internal", "taskengine", "engine_dispatch.go"),
+		filepath.Join(root, "internal", "taskengine", "engine_state.go"),
 	}
 	forbidden := []string{
 		modulePath + "/internal/app",
@@ -125,4 +130,79 @@ func importsInFile(t *testing.T, path string) []string {
 		imports = append(imports, path)
 	}
 	return imports
+}
+
+func TestExecutionRuntimeP2DependencyBoundaries(t *testing.T) {
+	root := repositoryRoot(t)
+	cases := []struct {
+		path      string
+		forbidden []string
+	}{
+		{
+			path: filepath.Join(root, "internal", "admission", "ready.go"),
+			forbidden: []string{
+				modulePath + "/internal/app",
+				modulePath + "/internal/database",
+				modulePath + "/internal/jobs",
+				modulePath + "/internal/plugin",
+				modulePath + "/internal/scheduler",
+				modulePath + "/internal/taskengine",
+				modulePath + "/internal/telegram",
+				modulePath + "/internal/workers",
+				modulePath + "/plugins/",
+			},
+		},
+		{
+			path: filepath.Join(root, "internal", "admission", "deadline.go"),
+			forbidden: []string{
+				modulePath + "/internal/app",
+				modulePath + "/internal/database",
+				modulePath + "/internal/jobs",
+				modulePath + "/internal/plugin",
+				modulePath + "/internal/scheduler",
+				modulePath + "/internal/taskengine",
+				modulePath + "/internal/telegram",
+				modulePath + "/internal/workers",
+				modulePath + "/plugins/",
+			},
+		},
+		{
+			path: filepath.Join(root, "internal", "taskengine", "engine.go"),
+			forbidden: []string{
+				modulePath + "/internal/app",
+				modulePath + "/internal/database",
+				modulePath + "/internal/jobs",
+				modulePath + "/internal/plugin",
+				modulePath + "/internal/scheduler",
+				modulePath + "/internal/telegram",
+				modulePath + "/internal/workers",
+				modulePath + "/plugins/",
+			},
+		},
+		{
+			path: filepath.Join(root, "internal", "workers", "physical_executor_v2.go"),
+			forbidden: []string{
+				modulePath + "/internal/admission",
+				modulePath + "/internal/app",
+				modulePath + "/internal/database",
+				modulePath + "/internal/jobs",
+				modulePath + "/internal/plugin",
+				modulePath + "/internal/scheduler",
+				modulePath + "/internal/taskengine",
+				modulePath + "/internal/telegram",
+				modulePath + "/plugins/",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		for _, dep := range importsInFile(t, tc.path) {
+			for _, prefix := range tc.forbidden {
+				if dep == prefix || strings.HasPrefix(dep, prefix) {
+					rel, _ := filepath.Rel(root, tc.path)
+					t.Errorf("%s crosses P2 execution boundary via %s", rel, dep)
+				}
+			}
+		}
+	}
 }
