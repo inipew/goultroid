@@ -6,9 +6,7 @@ on:
   pull_request:
     branches: [ main, master ]
 
-permissions:
-  contents: write
-
+# Keep CI jobs independent, but reuse the expensive Go module/build caches.
 env:
   GOTOOLCHAIN: local
 
@@ -17,81 +15,100 @@ jobs:
     name: Lint & Vet
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Apply ownership fixes
-        run: |
-          python3 tools/fix_execution_ownership.py
-          python3 tools/fix_execution_ownership_test.py
-          gofmt -w internal/tasks internal/workers internal/jobs internal/scheduler
-      - uses: actions/setup-go@v5
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: 'go.mod'
           cache: true
-      - name: Formatting
-        run: test -z "$(gofmt -l .)"
-      - name: Vet
+          cache-dependency-path: 'go.sum'
+
+      - name: Cache Go build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-build-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-build-
+
+      - name: Check Formatting (gofmt)
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not formatted properly:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Go Vet
         run: go vet ./...
-      - name: Generated modules freshness
+
+      - name: Verify Generated Modules Freshness
         run: |
           go run ./tools/featuregen
           git diff --exit-code -- internal/app/generated_modules.go
-      - name: Lint
-        run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run --timeout=3m
+
+      - name: GolangCI-Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13.2
+          args: --timeout=3m
 
   test:
     name: Unit & Race Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Apply ownership fixes
-        run: |
-          python3 tools/fix_execution_ownership.py
-          python3 tools/fix_execution_ownership_test.py
-          gofmt -w internal/tasks internal/workers internal/jobs internal/scheduler
-      - uses: actions/setup-go@v5
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: 'go.mod'
           cache: true
-      - name: Full race suite
-        run: go test -v -race -timeout=12m ./...
+          cache-dependency-path: 'go.sum'
+
+      - name: Cache Go build and test artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-race-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-race-
+            ${{ runner.os }}-go-build-
+
+      - name: Run Tests with Race Detector
+        run: go test -v -race ./...
 
   build:
     name: Build Binary
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Apply ownership fixes
-        run: |
-          python3 tools/fix_execution_ownership.py
-          python3 tools/fix_execution_ownership_test.py
-          gofmt -w internal/tasks internal/workers internal/jobs internal/scheduler
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Build
-        run: go build -v ./cmd/goultroid
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-  materialize:
-    name: Materialize validated ownership source
-    needs: [lint, test, build]
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
-          ref: ${{ github.head_ref }}
-          fetch-depth: 0
-      - name: Materialize and clean validation scaffolding
-        run: |
-          python3 tools/fix_execution_ownership.py
-          python3 tools/fix_execution_ownership_test.py
-          gofmt -w internal/tasks internal/workers internal/jobs internal/scheduler
-          rm -f tools/fix_execution_ownership.py tools/fix_execution_ownership_test.py .github/workflows/execution-ownership-fixes.yml
-          git fetch origin main
-          git checkout origin/main -- .github/workflows/ci.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "fix: centralize execution cancellation ownership"
-          git push origin HEAD:${{ github.head_ref }}
+          go-version-file: 'go.mod'
+          cache: true
+          cache-dependency-path: 'go.sum'
+
+      - name: Cache Go build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-build-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-build-
+
+      - name: Build Application
+        run: go build -v ./cmd/goultroid

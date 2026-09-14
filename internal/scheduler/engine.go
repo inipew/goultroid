@@ -53,9 +53,6 @@ type Engine struct {
 	taskMeta map[string]*periodicTaskMeta
 	tasksMu  sync.RWMutex
 
-	activeJobs   map[int64]map[string]context.CancelFunc
-	activeJobsMu sync.Mutex
-
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -109,7 +106,6 @@ func NewEngine(db Repository, svcFunc func() core.TelegramServicer, router *core
 		logger:         logger,
 		tasks:          make(map[string]context.CancelFunc),
 		taskMeta:       make(map[string]*periodicTaskMeta),
-		activeJobs:     make(map[int64]map[string]context.CancelFunc),
 		maxConcurrency: defaultConcurrency,
 		misfirePolicy:  MisfireRunOnce,
 		wakeChan:       make(chan struct{}, 1),
@@ -559,7 +555,9 @@ func (e *Engine) Cancel(ctx context.Context, jobID int64) error {
 	if err := e.db.DeleteScheduledJob(ctx, jobID); err != nil {
 		return err
 	}
-	e.cancelActiveJob(jobID)
+	if e.taskMgr != nil {
+		e.taskMgr.CancelByCorrelationID(scheduledTaskCorrelation(jobID))
+	}
 	e.notifyWake()
 	return nil
 }
@@ -572,37 +570,8 @@ func (e *Engine) JobHistory(ctx context.Context, jobID int64, limit int) ([]JobH
 	return e.db.GetJobHistory(ctx, jobID, limit)
 }
 
-func (e *Engine) registerActiveJob(jobID int64, claimToken string, cancel context.CancelFunc) {
-	e.activeJobsMu.Lock()
-	defer e.activeJobsMu.Unlock()
-	workers := e.activeJobs[jobID]
-	if workers == nil {
-		workers = make(map[string]context.CancelFunc)
-		e.activeJobs[jobID] = workers
-	}
-	workers[claimToken] = cancel
-}
-
-func (e *Engine) unregisterActiveJob(jobID int64, claimToken string) {
-	e.activeJobsMu.Lock()
-	defer e.activeJobsMu.Unlock()
-	workers := e.activeJobs[jobID]
-	if workers == nil {
-		return
-	}
-	delete(workers, claimToken)
-	if len(workers) == 0 {
-		delete(e.activeJobs, jobID)
-	}
-}
-
-func (e *Engine) cancelActiveJob(jobID int64) {
-	e.activeJobsMu.Lock()
-	workers := e.activeJobs[jobID]
-	for _, cancel := range workers {
-		cancel()
-	}
-	e.activeJobsMu.Unlock()
+func scheduledTaskCorrelation(jobID int64) string {
+	return fmt.Sprintf("scheduler:job:%d", jobID)
 }
 
 func (e *Engine) runLoop(ctx context.Context) {
@@ -733,38 +702,26 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) int {
 		if e.workers != nil {
 			reservation := reservations[i]
 			taskID := fmt.Sprintf("sched-%d-%s", j.ID, j.ClaimToken)
-			jobCtx, cancel := context.WithCancel(e.ctx)
-			stopReservationWatch := context.AfterFunc(jobCtx, reservation.Release)
-			e.registerActiveJob(j.ID, j.ClaimToken, cancel)
 			taskName := fmt.Sprintf("%s-%d", j.ActionType, j.ID)
 
 			task := tasks.Task{
-				ID:        taskID,
-				Owner:     "scheduler",
-				Name:      taskName,
-				Timeout:   90 * time.Second,
-				CreatedAt: time.Now().UTC(),
+				ID:            taskID,
+				Owner:         "scheduler",
+				Name:          taskName,
+				CorrelationID: scheduledTaskCorrelation(j.ID),
+				Timeout:       90 * time.Second,
+				CreatedAt:     time.Now().UTC(),
 				Run: func(taskCtx context.Context) error {
-					// The physical worker has incremented Busy before Run, so the
-					// reservation can now transition to the real busy accounting.
-					reservation.Release()
-					stopReservationWatch()
-					defer func() {
-						e.unregisterActiveJob(j.ID, j.ClaimToken)
-						cancel()
-						e.notifyWake()
-					}()
-					e.executeJob(taskCtx, j, cancel)
+					execCtx, cancel := context.WithCancel(taskCtx)
+					defer cancel()
+					defer e.notifyWake()
+					e.executeJob(execCtx, j, cancel)
 					return nil
 				},
 			}
 
-			if err := e.workers.Submit(jobCtx, workers.PoolScheduler, task); err != nil {
-				stopReservationWatch()
-				reservation.Release()
+			if err := e.workers.SubmitReserved(e.ctx, workers.PoolScheduler, task, reservation); err != nil {
 				e.logger.Error("failed to submit scheduled job to worker pool", zap.Int64("job_id", j.ID), zap.Error(err))
-				e.unregisterActiveJob(j.ID, j.ClaimToken)
-				cancel()
 			}
 			continue
 		}
@@ -772,9 +729,7 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) int {
 		// Compatibility path for tests/embedders without WorkerManager. It is
 		// intentionally synchronous: Scheduler no longer owns physical concurrency.
 		jobCtx, cancel := context.WithCancel(e.ctx)
-		e.registerActiveJob(j.ID, j.ClaimToken, cancel)
 		e.executeJob(jobCtx, j, cancel)
-		e.unregisterActiveJob(j.ID, j.ClaimToken)
 		cancel()
 	}
 	return len(claimedJobs)

@@ -57,6 +57,7 @@ type Manager struct {
 	cleanupWG         sync.WaitGroup
 	completionSeq     uint64
 	completionWaiters map[string]map[uint64]chan error
+	activeAttempts    map[string]map[string]context.CancelFunc
 }
 
 // NewManager creates a new JobManager backed by a task submitter and optional repository.
@@ -67,6 +68,7 @@ func NewManager(submitter TaskSubmitter, repo ...Repository) *Manager {
 		submitter:         submitter,
 		terminalAt:        make(map[string]time.Time),
 		completionWaiters: make(map[string]map[uint64]chan error),
+		activeAttempts:    make(map[string]map[string]context.CancelFunc),
 		retention:         7 * 24 * time.Hour,
 		cleanupInterval:   time.Hour,
 	}
@@ -159,6 +161,9 @@ func (m *Manager) Register(j Job) error {
 
 // Trigger converts a registered job into a concrete Task and queues it into the worker pool.
 func (m *Manager) Trigger(ctx context.Context, jobID string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	m.mu.Lock()
 	job, exists := m.jobs[jobID]
 	if !exists {
@@ -193,13 +198,25 @@ func (m *Manager) Trigger(ctx context.Context, jobID string) error {
 		return fmt.Errorf("task submitter not configured")
 	}
 
+	taskID := fmt.Sprintf("task:%s:%d", jobID, time.Now().UnixNano())
+	attemptCtx, attemptCancel := context.WithCancel(ctx)
+	m.registerActiveAttempt(jobID, taskID, attemptCancel)
+	stopAttemptWatch := context.AfterFunc(attemptCtx, func() {
+		m.unregisterActiveAttempt(jobID, taskID)
+	})
+
 	task := tasks.Task{
-		ID:             fmt.Sprintf("task:%s:%d", jobID, time.Now().UnixNano()),
+		ID:             taskID,
 		Owner:          owner,
 		Name:           "job:" + jobID,
 		Timeout:        timeout,
 		IdempotencyKey: idempotencyKey,
 		Run: func(taskCtx context.Context) error {
+			defer func() {
+				stopAttemptWatch()
+				m.unregisterActiveAttempt(jobID, taskID)
+				attemptCancel()
+			}()
 			if idemp != nil && idempotencyKey != "" {
 				first, err := idemp.CheckAndSet(taskCtx, idempotencyKey, 1*time.Hour)
 				if err == nil && !first {
@@ -229,7 +246,9 @@ func (m *Manager) Trigger(ctx context.Context, jobID string) error {
 			}
 
 			m.mu.Lock()
-			if err != nil {
+			if job.State == StateCancelled {
+				job.LastError = context.Canceled.Error()
+			} else if err != nil {
 				job.State = StateFailed
 				job.LastError = err.Error()
 			} else {
@@ -252,11 +271,58 @@ func (m *Manager) Trigger(ctx context.Context, jobID string) error {
 		},
 	}
 
-	if err := m.submitter.Submit(ctx, pool, task); err != nil {
+	if err := m.submitter.Submit(attemptCtx, pool, task); err != nil {
+		stopAttemptWatch()
+		m.unregisterActiveAttempt(jobID, taskID)
+		attemptCancel()
 		m.rollbackTrigger(ctx, job, previousState, previousLastRun, err.Error())
 		return fmt.Errorf("submit job %q to pool %q: %w", jobID, pool, err)
 	}
 	return nil
+}
+
+func (m *Manager) registerActiveAttempt(jobID, taskID string, cancel context.CancelFunc) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	attempts := m.activeAttempts[jobID]
+	if attempts == nil {
+		attempts = make(map[string]context.CancelFunc)
+		m.activeAttempts[jobID] = attempts
+	}
+	attempts[taskID] = cancel
+}
+
+func (m *Manager) unregisterActiveAttempt(jobID, taskID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	attempts := m.activeAttempts[jobID]
+	if attempts == nil {
+		return
+	}
+	delete(attempts, taskID)
+	if len(attempts) == 0 {
+		delete(m.activeAttempts, jobID)
+	}
+}
+
+func (m *Manager) detachActiveAttemptsLocked(jobID string) []context.CancelFunc {
+	attempts := m.activeAttempts[jobID]
+	if len(attempts) == 0 {
+		delete(m.activeAttempts, jobID)
+		return nil
+	}
+	cancels := make([]context.CancelFunc, 0, len(attempts))
+	for _, cancel := range attempts {
+		cancels = append(cancels, cancel)
+	}
+	delete(m.activeAttempts, jobID)
+	return cancels
+}
+
+func cancelAttempts(cancels []context.CancelFunc) {
+	for _, cancel := range cancels {
+		cancel()
+	}
 }
 
 func (m *Manager) registerCompletionWaiter(jobID string) (uint64, <-chan error) {
@@ -336,8 +402,11 @@ func (m *Manager) rollbackTrigger(ctx context.Context, job *Job, state JobState,
 	}
 }
 
-// Cancel cancels and removes a specific job.
+// Cancel cancels the active Task attempt hierarchy before removing the durable job.
 func (m *Manager) Cancel(ctx context.Context, jobID string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	m.mu.Lock()
 	job, exists := m.jobs[jobID]
 	if !exists {
@@ -345,10 +414,14 @@ func (m *Manager) Cancel(ctx context.Context, jobID string) error {
 		return fmt.Errorf("job %q not found", jobID)
 	}
 	job.State = StateCancelled
+	job.LastError = context.Canceled.Error()
+	cancels := m.detachActiveAttemptsLocked(jobID)
 	delete(m.jobs, jobID)
 	repo := m.repo
 	m.mu.Unlock()
 
+	cancelAttempts(cancels)
+	m.notifyCompletion(jobID, context.Canceled)
 	if repo != nil {
 		if err := repo.Delete(ctx, jobID); err != nil {
 			return err
@@ -357,13 +430,18 @@ func (m *Manager) Cancel(ctx context.Context, jobID string) error {
 	return nil
 }
 
-// CancelByOwner cancels and removes all jobs belonging to a specific owner (e.g. on plugin disable).
+// CancelByOwner cancels active attempts and removes all jobs belonging to owner.
 func (m *Manager) CancelByOwner(owner string) int {
 	m.mu.Lock()
 	cancelled := 0
+	var cancels []context.CancelFunc
+	var jobIDs []string
 	for id, j := range m.jobs {
 		if j.Owner == owner {
 			j.State = StateCancelled
+			j.LastError = context.Canceled.Error()
+			cancels = append(cancels, m.detachActiveAttemptsLocked(id)...)
+			jobIDs = append(jobIDs, id)
 			delete(m.jobs, id)
 			cancelled++
 		}
@@ -371,6 +449,10 @@ func (m *Manager) CancelByOwner(owner string) int {
 	repo := m.repo
 	m.mu.Unlock()
 
+	cancelAttempts(cancels)
+	for _, jobID := range jobIDs {
+		m.notifyCompletion(jobID, context.Canceled)
+	}
 	if repo != nil {
 		_, _ = repo.DeleteByOwner(context.Background(), owner)
 	}
