@@ -45,6 +45,9 @@ func (e *Engine) loop() {
 		case message := <-e.control:
 			e.stopTimer(timer, hasDeadline)
 			e.handleControl(message)
+		case request := <-e.admissions:
+			e.stopTimer(timer, hasDeadline)
+			e.handleSubmit(request)
 		case event := <-e.startedEvents:
 			e.stopTimer(timer, hasDeadline)
 			event.response <- e.handleStarted(event)
@@ -81,8 +84,6 @@ func (e *Engine) stopTimer(timer Timer, armed bool) {
 
 func (e *Engine) handleControl(message any) {
 	switch request := message.(type) {
-	case submitRequest:
-		e.handleSubmit(request)
 	case cancelRequest:
 		receipt, err := e.cancelTask(request.taskID, request.reason, e.clock.Now().UTC())
 		request.response <- cancelResponse{receipt: receipt, err: err}
