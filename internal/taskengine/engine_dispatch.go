@@ -75,7 +75,7 @@ func (e *Engine) dispatchAvailable() {
 
 func (e *Engine) dispatchEligible(record *taskRecord) bool {
 	owner := e.owner(record.spec.QuotaOwner())
-	if owner.active >= e.ownerLimits(record.spec.QuotaOwner()).MaxActive {
+	if owner.reserved >= e.ownerLimits(record.spec.QuotaOwner()).MaxActive {
 		return false
 	}
 	if key := record.spec.OrderingKey(); key != "" {
@@ -103,7 +103,7 @@ func (e *Engine) dispatchEligible(record *taskRecord) bool {
 
 func (e *Engine) reserveLogical(record *taskRecord) {
 	owner := e.owner(record.spec.QuotaOwner())
-	owner.active++
+	owner.reserved++
 	if key := record.spec.OrderingKey(); key != "" {
 		e.ordering[key] = record.spec.ID()
 	}
@@ -114,8 +114,14 @@ func (e *Engine) reserveLogical(record *taskRecord) {
 
 func (e *Engine) releaseLogical(record *taskRecord) {
 	owner := e.owner(record.spec.QuotaOwner())
-	if owner.active > 0 {
-		owner.active--
+	if record.runningAccounted {
+		if owner.running > 0 {
+			owner.running--
+		}
+		record.runningAccounted = false
+	}
+	if owner.reserved > 0 {
+		owner.reserved--
 	}
 	if key := record.spec.OrderingKey(); key != "" {
 		if holder, held := e.ordering[key]; held && holder == record.spec.ID() {
@@ -130,6 +136,7 @@ func (e *Engine) releaseLogical(record *taskRecord) {
 			e.resources[request.Name()] = used - request.Units()
 		}
 	}
+	e.deleteOwnerIfIdle(record.spec.QuotaOwner())
 }
 
 func (e *Engine) nextIdleSlot(pool tasks.PoolID) *slotRecord {
@@ -163,6 +170,9 @@ func (e *Engine) handleStarted(event startedEvent) {
 	record.state = tasks.LifecycleRunning
 	record.startedAt = event.at
 	slot.phase = slotRunning
+	owner := e.owner(record.spec.QuotaOwner())
+	owner.running++
+	record.runningAccounted = true
 }
 
 func (e *Engine) handleCompleted(event completedEvent) {
