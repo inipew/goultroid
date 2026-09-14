@@ -54,12 +54,13 @@ type App struct {
 	processRunner   *processSvc.OSRunner
 	startTime       time.Time
 
-	workers   *workers.Manager
-	tasks     *tasks.Manager
-	jobs      *jobs.Manager
-	resources *resource.Manager
-	idemp     *idempotency.Manager
-	runtime   *runtime.Runtime
+	workers     *workers.Manager
+	tasks       *tasks.Manager
+	jobs        *jobs.Manager
+	executionV2 *executionRuntimeV2
+	resources   *resource.Manager
+	idemp       *idempotency.Manager
+	runtime     *runtime.Runtime
 
 	lifecycleMu    sync.Mutex
 	lifecycleState atomic.Uint32
@@ -89,6 +90,10 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	coreDeps, err = buildCore(cfg, logger)
 	if err != nil {
 		return nil, err
+	}
+	executionV2, err := newExecutionRuntimeV2()
+	if err != nil {
+		return nil, fmt.Errorf("build v2 execution runtime: %w", err)
 	}
 	tgRuntime, err := buildTelegramRuntime(cfg, coreDeps, logger)
 	if err != nil {
@@ -197,6 +202,9 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	if err := rt.Register(dependencyComponent{Component: coreDeps.eventBus, dependencies: []string{"database"}}); err != nil {
 		return nil, fmt.Errorf("register eventbus component: %w", err)
 	}
+	if err := rt.Register(executionV2); err != nil {
+		return nil, fmt.Errorf("register v2 execution runtime: %w", err)
+	}
 	if err := rt.Register(dependencyComponent{Component: coreDeps.workerManager, dependencies: []string{"database"}}); err != nil {
 		return nil, fmt.Errorf("register workers component: %w", err)
 	}
@@ -255,6 +263,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		workers:         coreDeps.workerManager,
 		tasks:           coreDeps.taskManager,
 		jobs:            coreDeps.jobsManager,
+		executionV2:     executionV2,
 		resources:       coreDeps.resourceManager,
 		idemp:           coreDeps.idempManager,
 		runtime:         rt,
