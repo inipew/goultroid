@@ -74,6 +74,7 @@ func periodicDefinitionID(owner, name string) string {
 
 const periodicHandlerType = "periodic.task"
 const periodicPruneWindow = time.Hour
+const periodicReconcileInterval = 100 * time.Millisecond
 
 func newPeriodicCoordinator(logger *zap.Logger) *periodicCoordinator {
 	if logger == nil {
@@ -480,7 +481,8 @@ func (c *periodicCoordinator) loop() {
 			continue
 		}
 
-		if !hasEarliest {
+		inflight := c.inflightCount() > 0
+		if !hasEarliest && !inflight {
 			select {
 			case <-ctx.Done():
 				return
@@ -489,12 +491,15 @@ func (c *periodicCoordinator) loop() {
 			}
 		}
 
-		delay := earliest.Deadline.Sub(now)
-		if delay < 0 {
-			delay = 0
-		}
-		if delay > time.Second && c.inflightCount() > 0 {
-			delay = time.Second
+		delay := periodicReconcileInterval
+		if hasEarliest {
+			delay = earliest.Deadline.Sub(now)
+			if delay < 0 {
+				delay = 0
+			}
+			if inflight && delay > periodicReconcileInterval {
+				delay = periodicReconcileInterval
+			}
 		}
 		if !timer.Stop() {
 			select {
@@ -567,8 +572,8 @@ func (c *periodicCoordinator) submitExecution(jobsMgr *jobs.Manager, run periodi
 	}
 
 	// Materialization happens before TaskEngine admission. An admission error may
-	// therefore already have a canonical occurrence/attempt that recovery owns.
-	// Resolve it by the same stable key instead of minting a second logical tick.
+	// therefore already have a canonical occurrence that recovery owns. Resolve
+	// it by the same stable key instead of minting a second logical tick.
 	stateCtx, cancel := c.operationContext(10 * time.Second)
 	occ, lookupErr := jobsMgr.OccurrenceByKey(stateCtx, occurrenceKey)
 	cancel()
