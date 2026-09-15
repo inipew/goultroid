@@ -35,6 +35,7 @@ const (
 type trackedClaim struct {
 	jobID        int64
 	claimToken   string
+	definitionID string
 	occurrenceID string
 }
 
@@ -54,18 +55,20 @@ type Engine struct {
 
 	wakeChan chan struct{}
 
-	claimMu   sync.Mutex
-	claimWG   sync.WaitGroup
-	quiescing bool
+	claimMu     sync.Mutex
+	claimActive int
+	claimZero   chan struct{}
+	quiescing   bool
 
 	claimsMu sync.Mutex
 	claims   map[int64]*trackedClaim
 
 	periodic *periodicCoordinator
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	runDone chan struct{}
 
 	running bool
 	runMu   sync.Mutex
@@ -104,6 +107,8 @@ func NewEngine(db Repository, svcFunc func() core.TelegramServicer, router *core
 	}
 	engine.periodic = newPeriodicCoordinator(logger)
 	engine.claims = make(map[int64]*trackedClaim)
+	engine.claimZero = make(chan struct{})
+	close(engine.claimZero)
 	return engine
 }
 
@@ -211,19 +216,44 @@ func (e *Engine) Start(parentCtx context.Context) error {
 	}
 	e.claimMu.Lock()
 	e.quiescing = false
+	e.claimActive = 0
+	e.claimZero = make(chan struct{})
+	close(e.claimZero)
 	e.claimMu.Unlock()
 	e.running = true
+	e.runDone = make(chan struct{})
 	e.wg.Add(1)
+	runDone := e.runDone
+	go func() {
+		e.wg.Wait()
+		close(runDone)
+	}()
 	go e.runLoop(e.ctx)
 	e.logger.Info("scheduler engine started")
 	return nil
 }
 
-var _ runtime.Component = (*Engine)(nil)
+var (
+	_ runtime.Component     = (*Engine)(nil)
+	_ runtime.ForcedStopper = (*Engine)(nil)
+)
 
 func (e *Engine) Name() string                   { return "scheduler" }
 func (e *Engine) Dependencies() []string         { return []string{"jobs", "taskengine"} }
 func (e *Engine) Stop(ctx context.Context) error { return e.StopContext(ctx) }
+
+func (e *Engine) ForceStop(context.Context) error {
+	e.claimMu.Lock()
+	e.quiescing = true
+	e.claimMu.Unlock()
+	e.runMu.Lock()
+	if e.cancel != nil {
+		e.cancel()
+	}
+	e.running = false
+	e.runMu.Unlock()
+	return nil
+}
 
 func (e *Engine) beginClaimBatch() bool {
 	e.claimMu.Lock()
@@ -231,11 +261,24 @@ func (e *Engine) beginClaimBatch() bool {
 	if e.quiescing {
 		return false
 	}
-	e.claimWG.Add(1)
+	if e.claimActive == 0 {
+		e.claimZero = make(chan struct{})
+	}
+	e.claimActive++
 	return true
 }
 
-func (e *Engine) endClaimBatch() { e.claimWG.Done() }
+func (e *Engine) endClaimBatch() {
+	e.claimMu.Lock()
+	defer e.claimMu.Unlock()
+	if e.claimActive <= 0 {
+		return
+	}
+	e.claimActive--
+	if e.claimActive == 0 {
+		close(e.claimZero)
+	}
+}
 
 func (e *Engine) Quiesce(ctx context.Context) error {
 	if ctx == nil {
@@ -243,14 +286,13 @@ func (e *Engine) Quiesce(ctx context.Context) error {
 	}
 	e.claimMu.Lock()
 	e.quiescing = true
+	done := e.claimZero
 	e.claimMu.Unlock()
 	e.notifyWake()
 
-	done := make(chan struct{})
-	go func() {
-		e.claimWG.Wait()
-		close(done)
-	}()
+	if done == nil {
+		return nil
+	}
 	select {
 	case <-done:
 		return nil
@@ -291,11 +333,12 @@ func (e *Engine) StopContext(ctx context.Context) error {
 		}
 	}
 
-	done := make(chan struct{})
-	go func() {
-		e.wg.Wait()
-		close(done)
-	}()
+	e.runMu.Lock()
+	done := e.runDone
+	e.runMu.Unlock()
+	if done == nil {
+		return nil
+	}
 	select {
 	case <-done:
 		e.logger.Info("scheduler engine stopped gracefully")
@@ -468,7 +511,7 @@ func (e *Engine) Cancel(ctx context.Context, jobID int64) error {
 	}
 	e.claimsMu.Unlock()
 	if tracked && e.jobsMgr != nil {
-		cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		_ = e.jobsMgr.CancelOccurrence(cctx, claim.occurrenceID, "scheduled job cancelled")
 	}
@@ -555,9 +598,6 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) int {
 	}
 	defer e.endClaimBatch()
 
-	if e.svcFunc != nil && e.svcFunc() == nil {
-		return 0
-	}
 	claimBatch := e.claimBatchSize
 	if claimBatch <= 0 {
 		claimBatch = 1
@@ -582,7 +622,7 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) int {
 		// JobOccurrence/JobAttempt so a skipped slot consumes no execution budget.
 		if e.shouldSkipMisfire(j) {
 			e.logger.Warn("recurring scheduled job misfired: skipping execution", zap.Int64("job_id", j.ID), zap.Time("next_run_at", j.NextRunAt))
-			stateCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			stateCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			cerr := e.db.CompleteScheduledJob(stateCtx, j.ID, j.ClaimToken, 0, time.Now().UTC())
 			cancel()
 			if cerr != nil && !errors.Is(cerr, ErrJobLeaseLost) {
@@ -611,13 +651,17 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) int {
 			e.onSubmitRejected(ctx, j, occurrenceKey, submitErr)
 			continue
 		}
-		e.trackClaim(j.ID, j.ClaimToken, occurrenceID)
+		e.trackClaim(j.ID, j.ClaimToken, definitionID, occurrenceID)
 	}
 	return len(claimedJobs)
 }
 
 func (e *Engine) onSubmitRejected(ctx context.Context, job ScheduledJob, occurrenceKey string, submitErr error) {
-	stateCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	definitionID := scheduledDefinitionID(job.ID)
+	if job.ActionType == ActionJob {
+		definitionID = strings.TrimSpace(job.Payload)
+	}
+	stateCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if occ, oerr := e.jobsMgr.OccurrenceByKey(stateCtx, occurrenceKey); oerr == nil && occ != nil {
 		switch occ.State {
@@ -625,7 +669,7 @@ func (e *Engine) onSubmitRejected(ctx context.Context, job ScheduledJob, occurre
 			if rerr := e.db.RenewJobLease(stateCtx, job.ID, job.ClaimToken, schedulerClaimLease, time.Now().UTC()); rerr != nil && !errors.Is(rerr, ErrJobLeaseLost) {
 				e.logger.Error("failed to renew lease for live scheduled occurrence", zap.Int64("job_id", job.ID), zap.Error(rerr))
 			} else {
-				e.trackClaim(job.ID, job.ClaimToken, occ.ID)
+				e.trackClaim(job.ID, job.ClaimToken, definitionID, occ.ID)
 			}
 			return
 		case jobs.OccurrenceCompleted, jobs.OccurrenceFailed, jobs.OccurrenceCancelled:
@@ -633,7 +677,7 @@ func (e *Engine) onSubmitRejected(ctx context.Context, job ScheduledJob, occurre
 			// quickly (e.g. aborted-before-start + automatic recovery). Track the
 			// canonical terminal occurrence so row reconciliation records the real
 			// outcome instead of releasing the slot and creating another logical run.
-			e.trackClaim(job.ID, job.ClaimToken, occ.ID)
+			e.trackClaim(job.ID, job.ClaimToken, definitionID, occ.ID)
 			return
 		}
 	}
@@ -643,13 +687,13 @@ func (e *Engine) onSubmitRejected(ctx context.Context, job ScheduledJob, occurre
 	}
 }
 
-func (e *Engine) trackClaim(jobID int64, claimToken, occurrenceID string) {
+func (e *Engine) trackClaim(jobID int64, claimToken, definitionID, occurrenceID string) {
 	e.claimsMu.Lock()
 	defer e.claimsMu.Unlock()
 	if e.claims == nil {
 		e.claims = make(map[int64]*trackedClaim)
 	}
-	e.claims[jobID] = &trackedClaim{jobID: jobID, claimToken: claimToken, occurrenceID: occurrenceID}
+	e.claims[jobID] = &trackedClaim{jobID: jobID, claimToken: claimToken, definitionID: definitionID, occurrenceID: occurrenceID}
 }
 
 func (e *Engine) untrackClaim(jobID int64) {
@@ -680,7 +724,7 @@ func (e *Engine) reconcileSettledClaims(ctx context.Context) {
 }
 
 func (e *Engine) reconcileClaim(ctx context.Context, c *trackedClaim) {
-	stateCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	stateCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	row, err := e.db.GetScheduledJob(stateCtx, c.jobID)
 	if err != nil || row == nil {
@@ -702,7 +746,7 @@ func (e *Engine) reconcileClaim(ctx context.Context, c *trackedClaim) {
 			e.logger.Error("failed to complete scheduled job", zap.Int64("job_id", c.jobID), zap.Error(cerr))
 			return
 		}
-		e.pruneSettledOccurrences(c.jobID)
+		e.pruneSettledOccurrences(ctx, c.definitionID)
 		e.untrackClaim(c.jobID)
 		e.notifyWake()
 	case jobs.OccurrenceFailed:
@@ -710,7 +754,7 @@ func (e *Engine) reconcileClaim(ctx context.Context, c *trackedClaim) {
 			e.logger.Error("failed to record scheduled job failure", zap.Int64("job_id", c.jobID), zap.Error(ferr))
 			return
 		}
-		e.pruneSettledOccurrences(c.jobID)
+		e.pruneSettledOccurrences(ctx, c.definitionID)
 		e.untrackClaim(c.jobID)
 		e.notifyWake()
 	case jobs.OccurrenceCancelled:
@@ -718,19 +762,19 @@ func (e *Engine) reconcileClaim(ctx context.Context, c *trackedClaim) {
 			e.logger.Error("failed to advance cancelled scheduled job", zap.Int64("job_id", c.jobID), zap.Error(cerr))
 			return
 		}
-		e.pruneSettledOccurrences(c.jobID)
+		e.pruneSettledOccurrences(ctx, c.definitionID)
 		e.untrackClaim(c.jobID)
 		e.notifyWake()
 	}
 }
 
-func (e *Engine) pruneSettledOccurrences(jobID int64) {
-	if e.jobsMgr == nil {
+func (e *Engine) pruneSettledOccurrences(ctx context.Context, definitionID string) {
+	if e.jobsMgr == nil || definitionID == "" {
 		return
 	}
-	pctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	_, _ = e.jobsMgr.PruneOccurrences(pctx, scheduledDefinitionID(jobID), time.Now().UTC().Add(-24*time.Hour), 500)
+	_, _ = e.jobsMgr.PruneOccurrences(pctx, definitionID, time.Now().UTC().Add(-24*time.Hour), 500)
 }
 
 func occurrenceDurationMs(ctx context.Context, jobsMgr *jobs.Manager, occurrenceID string) int64 {

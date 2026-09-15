@@ -36,14 +36,15 @@ type Store interface {
 // Manager owns definitions and creates a distinct occurrence and TaskID for
 // every trigger. Physical execution is exclusively delegated to TaskEngine.
 type Manager struct {
-	mu          sync.RWMutex
-	client      tasks.Client
-	store       Store
-	pump        *PersistencePump
-	definitions map[string]JobDefinition
-	handlers    map[string]Handler
-	sequence    atomic.Uint64
-	accepting   bool
+	mu             sync.RWMutex
+	registrationMu sync.Mutex
+	client         tasks.Client
+	store          Store
+	pump           *PersistencePump
+	definitions    map[string]JobDefinition
+	handlers       map[string]Handler
+	sequence       atomic.Uint64
+	accepting      bool
 
 	retryQueue   chan retryItem
 	recoveryWake chan struct{}
@@ -52,6 +53,7 @@ type Manager struct {
 	baseCtx      context.Context
 	baseCancel   context.CancelFunc
 	wg           sync.WaitGroup
+	done         chan struct{}
 	tracked      map[string]*trackedOccurrence
 }
 
@@ -96,7 +98,10 @@ type Diagnostics struct {
 	Accepting   bool
 }
 
-var _ runtime.Component = (*Manager)(nil)
+var (
+	_ runtime.Component     = (*Manager)(nil)
+	_ runtime.ForcedStopper = (*Manager)(nil)
+)
 
 func NewManager(client tasks.Client, store Store, pump *PersistencePump) *Manager {
 	return &Manager{
@@ -110,7 +115,10 @@ func NewManager(client tasks.Client, store Store, pump *PersistencePump) *Manage
 func (m *Manager) Name() string           { return "jobs" }
 func (m *Manager) Dependencies() []string { return []string{"taskengine"} }
 
-func (m *Manager) Start(context.Context) error {
+func (m *Manager) Start(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.client == nil || m.store == nil || m.pump == nil {
@@ -127,7 +135,10 @@ func (m *Manager) Start(context.Context) error {
 		m.stopCh = make(chan struct{})
 	}
 	if m.baseCtx == nil {
-		m.baseCtx, m.baseCancel = context.WithCancel(context.Background())
+		m.baseCtx, m.baseCancel = context.WithCancel(ctx)
+	}
+	if m.done == nil {
+		m.done = make(chan struct{})
 	}
 	if m.tracked == nil {
 		m.tracked = make(map[string]*trackedOccurrence)
@@ -140,6 +151,11 @@ func (m *Manager) Start(context.Context) error {
 		}
 		m.wg.Add(1)
 		go m.recoveryLoop()
+		done := m.done
+		go func() {
+			m.wg.Wait()
+			close(done)
+		}()
 		// Startup recovery is a bounded wake, not a caller responsibility.
 		select {
 		case m.recoveryWake <- struct{}{}:
@@ -158,7 +174,7 @@ func (m *Manager) Quiesce(context.Context) error {
 
 func (m *Manager) Drain(context.Context) error { return nil }
 
-func (m *Manager) Stop(ctx context.Context) error {
+func (m *Manager) beginStop() {
 	_ = m.Quiesce(context.Background())
 	m.stopOnce.Do(func() {
 		m.mu.RLock()
@@ -172,11 +188,24 @@ func (m *Manager) Stop(ctx context.Context) error {
 			close(stopCh)
 		}
 	})
-	done := make(chan struct{})
-	go func() {
-		m.wg.Wait()
-		close(done)
-	}()
+}
+
+func (m *Manager) ForceStop(context.Context) error {
+	m.beginStop()
+	return nil
+}
+
+func (m *Manager) Stop(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	m.beginStop()
+	m.mu.RLock()
+	done := m.done
+	m.mu.RUnlock()
+	if done == nil {
+		return nil
+	}
 	select {
 	case <-done:
 		return nil
@@ -199,11 +228,13 @@ func (m *Manager) RegisterHandler(handlerType string, handler Handler) error {
 		return errors.New("job handler type and handler are required")
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if _, exists := m.handlers[handlerType]; exists {
+		m.mu.Unlock()
 		return fmt.Errorf("job handler already registered: %s", handlerType)
 	}
 	m.handlers[handlerType] = handler
+	m.mu.Unlock()
+	m.signalRecovery()
 	return nil
 }
 
@@ -224,18 +255,32 @@ func (m *Manager) Register(def JobDefinition) error {
 		def.Enabled = true
 	}
 	def.Payload = append([]byte(nil), def.Payload...)
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, exists := m.definitions[def.ID]; exists {
+
+	// Serialize duplicate definition creation without holding m.mu across
+	// storage I/O. ForceStop/Quiesce must always be able to acquire lifecycle
+	// state even if a backend stalls while persisting a definition.
+	m.registrationMu.Lock()
+	defer m.registrationMu.Unlock()
+	m.mu.RLock()
+	_, exists := m.definitions[def.ID]
+	_, handlerExists := m.handlers[def.HandlerType]
+	m.mu.RUnlock()
+	if exists {
 		return fmt.Errorf("job definition already registered: %s", def.ID)
 	}
-	if _, exists := m.handlers[def.HandlerType]; !exists {
+	if !handlerExists {
 		return fmt.Errorf("unknown job handler: %s", def.HandlerType)
 	}
-	if err := m.store.SaveDefinition(context.Background(), &def); err != nil {
+	regCtx, cancel := context.WithTimeout(m.rootContext(), 10*time.Second)
+	err := m.store.SaveDefinition(regCtx, &def)
+	cancel()
+	if err != nil {
 		return fmt.Errorf("save job definition: %w", err)
 	}
+	m.mu.Lock()
 	m.definitions[def.ID] = def
+	m.mu.Unlock()
+	m.signalRecovery()
 	return nil
 }
 
@@ -267,6 +312,8 @@ func (m *Manager) CancelByOwner(owner string) int {
 		tracked = append(tracked, pendingCancel{occurrenceID: occID, scopeOwner: tr.def.ScopeOwner})
 	}
 	m.mu.RUnlock()
+	cancelCtx, cancel := context.WithTimeout(m.rootContext(), 10*time.Second)
+	defer cancel()
 	cancelled := 0
 	for _, definition := range definitions {
 		if definition.ScopeOwner == owner || definition.ScopeOwner == "plugin:"+owner {
@@ -275,7 +322,7 @@ func (m *Manager) CancelByOwner(owner string) int {
 	}
 	for _, tr := range tracked {
 		if tr.scopeOwner == owner || tr.scopeOwner == "plugin:"+owner {
-			if err := store.CancelOccurrence(context.Background(), tr.occurrenceID, "owner cancelled"); err == nil {
+			if err := store.CancelOccurrence(cancelCtx, tr.occurrenceID, "owner cancelled"); err == nil {
 				cancelled++
 			}
 			m.untrack(tr.occurrenceID)
@@ -308,6 +355,16 @@ func (m *Manager) untrack(occurrenceID string) {
 	m.mu.Unlock()
 }
 
+func (m *Manager) rootContext() context.Context {
+	m.mu.RLock()
+	ctx := m.baseCtx
+	m.mu.RUnlock()
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
 func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey string) (tasks.Ticket, string, error) {
 	m.mu.RLock()
 	if !m.accepting {
@@ -333,7 +390,6 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey str
 	}
 	now := time.Now().UTC()
 	occurrenceID := tasks.OccurrenceID(fmt.Sprintf("occ:%s:%d:%d", jobID, now.UnixNano(), sequence))
-	taskID := tasks.TaskID(fmt.Sprintf("task:%s:1", occurrenceID))
 	occurrence := &JobOccurrence{ID: string(occurrenceID), JobID: jobID, OccurrenceKey: occurrenceKey, ScheduledFor: now, ReadyAt: now, State: OccurrenceReady}
 	if err := m.store.MaterializeOccurrence(ctx, occurrence); err != nil {
 		return nil, "", fmt.Errorf("materialize job occurrence: %w", err)
@@ -341,7 +397,7 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey str
 	// Materialization is idempotent on occurrence_key and rewrites occurrence.ID
 	// to the canonical identity when this logical run already exists.
 	occurrenceID = tasks.OccurrenceID(occurrence.ID)
-	taskID = tasks.TaskID(fmt.Sprintf("task:%s:1", occurrenceID))
+	taskID := tasks.TaskID(fmt.Sprintf("task:%s:1", occurrenceID))
 	attempt, err := m.store.PrepareAttemptLease(ctx, occurrence.ID, string(taskID), leaseDurationFor(definition))
 	if err != nil {
 		return nil, "", fmt.Errorf("prepare job attempt: %w", err)
@@ -465,6 +521,8 @@ func (m *Manager) retryLoop() {
 		select {
 		case <-stopCh:
 			return
+		case <-baseCtx.Done():
+			return
 		case item := <-queue:
 			m.watchAttempt(baseCtx, item)
 		}
@@ -500,6 +558,12 @@ func (m *Manager) recoveryLoop() {
 }
 
 func (m *Manager) runRecoveryPass(baseCtx context.Context) {
+	m.mu.RLock()
+	accepting := m.accepting
+	m.mu.RUnlock()
+	if !accepting {
+		return
+	}
 	ctx, cancel := context.WithTimeout(baseCtx, recoveryTimeout)
 	defer cancel()
 	_, _ = m.Recover(ctx, recoveryScanLimit)
@@ -556,7 +620,7 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		return
 	default:
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(m.rootContext(), 10*time.Second)
 	defer cancel()
 
 	occ, err := m.store.GetOccurrence(ctx, item.occurrenceID)
@@ -615,6 +679,12 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		m.untrack(item.occurrenceID)
 		return
 	}
+	m.mu.RLock()
+	accepting := m.accepting
+	m.mu.RUnlock()
+	if !accepting {
+		return
+	}
 	if err := m.driveAttempt(ctx, item.occurrenceID, tr.def, tr.handler); err != nil {
 		m.untrack(item.occurrenceID)
 		m.signalRecovery()
@@ -651,7 +721,7 @@ func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def Job
 		Commit:           commit,
 	})
 	if err != nil {
-		abortCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		abortCtx, cancel := context.WithTimeout(m.rootContext(), 10*time.Second)
 		commitErr := m.store.CommitAttemptResult(abortCtx, attempt.ID, attempt.LeaseEpoch, AttemptAbortedBeforeStart, nil, err.Error())
 		cancel()
 		m.signalRecovery()
@@ -724,7 +794,7 @@ func (m *Manager) persistAttemptResult(attempt *JobAttempt, result tasks.TaskRes
 	if attempt == nil || m.store == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(m.rootContext(), 10*time.Second)
 	err := m.store.CommitAttemptResult(ctx, attempt.ID, attempt.LeaseEpoch, attemptState(result.Outcome), nil, result.Failure.Message)
 	cancel()
 	// Whether commit succeeded or became uncertain, wake durable recovery. A

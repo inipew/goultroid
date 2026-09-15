@@ -152,6 +152,9 @@ func (p *PersistencePump) Quiesce(ctx context.Context) error {
 
 // Drain waits for in-flight persistence requests to be committed.
 func (p *PersistencePump) Drain(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	p.mu.Lock()
 	if p.done == nil {
 		p.mu.Unlock()
@@ -174,6 +177,9 @@ func (p *PersistencePump) Drain(ctx context.Context) error {
 
 // Stop terminates the pump.
 func (p *PersistencePump) Stop(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	err := p.Drain(ctx)
 	p.mu.Lock()
 	if p.cancel != nil {
@@ -196,8 +202,7 @@ func (p *PersistencePump) Health(ctx context.Context) runtime.ComponentHealth {
 	if len(p.requests) >= p.queueCap {
 		return runtime.ComponentHealth{
 			Status:  runtime.HealthDegraded,
-			Details: fmt.Sprintf("persistence queue saturated (%d/%d)", len(p.requests), p.queueCap),
-		}
+			Details: fmt.Sprintf("persistence queue saturated (%d/%d)", len(p.requests), p.queueCap)}
 	}
 	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
 }

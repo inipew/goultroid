@@ -26,6 +26,7 @@ type periodicCoordinator struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
+	done    chan struct{}
 	running bool
 	seq     uint64
 	logger  *zap.Logger
@@ -101,20 +102,21 @@ func (c *periodicCoordinator) SetClock(nowFn func() time.Time) {
 	c.notify()
 }
 
-func (c *periodicCoordinator) now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.nowFn != nil {
-		return c.nowFn()
-	}
-	return time.Now()
-}
-
 func (c *periodicCoordinator) notify() {
 	select {
 	case c.wake <- struct{}{}:
 	default:
 	}
+}
+
+func (c *periodicCoordinator) operationContext(timeout time.Duration) (context.Context, context.CancelFunc) {
+	c.mu.Lock()
+	base := c.ctx
+	c.mu.Unlock()
+	if base == nil {
+		base = context.Background()
+	}
+	return context.WithTimeout(base, timeout)
 }
 
 func (c *periodicCoordinator) Start(parent context.Context) error {
@@ -128,8 +130,14 @@ func (c *periodicCoordinator) Start(parent context.Context) error {
 	}
 	c.ctx, c.cancel = context.WithCancel(parent)
 	c.running = true
+	c.done = make(chan struct{})
 	c.wg.Add(1)
+	done := c.done
 	c.mu.Unlock()
+	go func() {
+		c.wg.Wait()
+		close(done)
+	}()
 	go c.loop()
 	return nil
 }
@@ -140,8 +148,17 @@ func (c *periodicCoordinator) Stop(ctx context.Context) error {
 	}
 	c.mu.Lock()
 	if !c.running {
+		done := c.done
 		c.mu.Unlock()
-		return nil
+		if done == nil {
+			return nil
+		}
+		select {
+		case <-done:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	c.running = false
 	cancel := c.cancel
@@ -153,6 +170,7 @@ func (c *periodicCoordinator) Stop(ctx context.Context) error {
 		}
 	}
 	jobsMgr := c.jobsMgr
+	done := c.done
 	c.entries = make(map[string]*periodicRegistration)
 	c.heap = NewIndexedHeap()
 	c.mu.Unlock()
@@ -161,19 +179,16 @@ func (c *periodicCoordinator) Stop(ctx context.Context) error {
 		cancel()
 	}
 	for _, in := range pending {
-		if jobsMgr != nil {
-			cctx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = jobsMgr.CancelOccurrence(cctx, in.occurrenceID, "periodic coordinator stopping")
-			ccancel()
+		if jobsMgr == nil || ctx.Err() != nil {
+			break
 		}
+		_ = jobsMgr.CancelOccurrence(ctx, in.occurrenceID, "periodic coordinator stopping")
 	}
 	c.notify()
 
-	done := make(chan struct{})
-	go func() {
-		c.wg.Wait()
-		close(done)
-	}()
+	if done == nil {
+		return nil
+	}
 	select {
 	case <-done:
 		return nil
@@ -237,7 +252,10 @@ func (c *periodicCoordinator) Register(name string, interval time.Duration, opti
 		Enabled: true,
 	}
 	if err := jobsMgr.Register(def); err != nil {
-		if uerr := jobsMgr.UpdateDefinition(context.Background(), def); uerr != nil {
+		uctx, ucancel := c.operationContext(10 * time.Second)
+		uerr := jobsMgr.UpdateDefinition(uctx, def)
+		ucancel()
+		if uerr != nil {
 			return fmt.Errorf("register periodic job: %w", uerr)
 		}
 	}
@@ -279,7 +297,7 @@ func (c *periodicCoordinator) Register(name string, interval time.Duration, opti
 	// Re-registration cancellation is bounded and synchronous. Repeated
 	// registrations cannot accumulate detached cancellation goroutines.
 	if oldOccurrenceID != "" {
-		cctx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cctx, ccancel := c.operationContext(5 * time.Second)
 		_ = jobsMgr.CancelOccurrence(cctx, oldOccurrenceID, "periodic task re-registered")
 		ccancel()
 	}
@@ -304,12 +322,6 @@ func (c *periodicCoordinator) runTaskFunc(ctx context.Context, defID string) err
 		return errors.New("periodic task is not registered")
 	}
 	return fn(ctx)
-}
-
-func (c *periodicCoordinator) forgetDef(defID string) {
-	c.mu.Lock()
-	delete(c.jobDefs, defID)
-	c.mu.Unlock()
 }
 
 func (c *periodicCoordinator) Unregister(name string) error {
@@ -347,7 +359,7 @@ func (c *periodicCoordinator) Unregister(name string) error {
 		return errors.New("task not found")
 	}
 	if occurrenceID != "" && jobsMgr != nil {
-		cctx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cctx, ccancel := c.operationContext(5 * time.Second)
 		defer ccancel()
 		_ = jobsMgr.CancelOccurrence(cctx, occurrenceID, "periodic task unregistered")
 	}
@@ -377,7 +389,7 @@ func (c *periodicCoordinator) UnregisterOwned(owner, name string) error {
 		return errors.New("task not found")
 	}
 	if occurrenceID != "" && jobsMgr != nil {
-		cctx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cctx, ccancel := c.operationContext(5 * time.Second)
 		defer ccancel()
 		_ = jobsMgr.CancelOccurrence(cctx, occurrenceID, "periodic task unregistered")
 	}
@@ -412,7 +424,7 @@ func (c *periodicCoordinator) UnregisterByOwner(owner string) int {
 	c.mu.Unlock()
 	for _, in := range pending {
 		if jobsMgr != nil {
-			cctx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)
+			cctx, ccancel := c.operationContext(5 * time.Second)
 			_ = jobsMgr.CancelOccurrence(cctx, in.occurrenceID, "periodic tasks unregistered by owner")
 			ccancel()
 		}
@@ -596,7 +608,7 @@ func (c *periodicCoordinator) submitExecution(jobsMgr *jobs.Manager, run periodi
 	// Materialization happens before TaskEngine admission. An admission error may
 	// therefore already have a canonical occurrence/attempt that recovery owns.
 	// Resolve it by the same stable key instead of minting a second logical tick.
-	stateCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	stateCtx, cancel := c.operationContext(10 * time.Second)
 	occ, lookupErr := jobsMgr.OccurrenceByKey(stateCtx, occurrenceKey)
 	cancel()
 	if lookupErr == nil && occ != nil {
@@ -625,7 +637,7 @@ func (c *periodicCoordinator) bindOccurrence(jobsMgr *jobs.Manager, run periodic
 	if occurrenceID == "" || jobsMgr == nil {
 		return
 	}
-	cctx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)
+	cctx, ccancel := c.operationContext(5 * time.Second)
 	_ = jobsMgr.CancelOccurrence(cctx, occurrenceID, "periodic registration changed during submit")
 	ccancel()
 }
@@ -681,7 +693,7 @@ type pendingReconcile struct {
 }
 
 func (c *periodicCoordinator) reconcileOne(jobsMgr *jobs.Manager, in pendingReconcile) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := c.operationContext(10 * time.Second)
 	defer cancel()
 	occ, err := jobsMgr.GetOccurrence(ctx, in.occurrenceID)
 	if err != nil || occ == nil {
@@ -728,7 +740,7 @@ func (c *periodicCoordinator) reconcileOne(jobsMgr *jobs.Manager, in pendingReco
 	}
 	c.mu.Unlock()
 
-	pctx, pcancel := context.WithTimeout(context.Background(), 10*time.Second)
+	pctx, pcancel := c.operationContext(10 * time.Second)
 	_, _ = jobsMgr.PruneOccurrences(pctx, in.defID, finished.Add(-periodicPruneWindow), 500)
 	pcancel()
 	c.notify()

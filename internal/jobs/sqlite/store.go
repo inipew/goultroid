@@ -562,11 +562,9 @@ func (s *Store) CommitAttemptResult(ctx context.Context, attemptID string, lease
 	// (or recovery) can prepare a further attempt or finalize explicitly.
 	// FinalizeOccurrence owns the failed/cancelled terminal transition.
 	if outcome == jobs.AttemptCompleted || outcome == jobs.AttemptCancelled {
-		occFinalState := jobs.OccurrenceFailed
+		occFinalState := jobs.OccurrenceCancelled
 		if outcome == jobs.AttemptCompleted {
 			occFinalState = jobs.OccurrenceCompleted
-		} else {
-			occFinalState = jobs.OccurrenceCancelled
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE job_occurrences SET state = ?, revision = revision + 1, updated_at = ? WHERE id = ?`, string(occFinalState), now, occID); err != nil {
 			return err
@@ -892,11 +890,9 @@ func (s *Store) CommitAttemptResultWithOutbox(ctx context.Context, attemptID str
 	// Same retry-aware finalization as CommitAttemptResult: only completed
 	// and cancelled attempts close the occurrence.
 	if outcome == jobs.AttemptCompleted || outcome == jobs.AttemptCancelled {
-		occFinalState := jobs.OccurrenceFailed
+		occFinalState := jobs.OccurrenceCancelled
 		if outcome == jobs.AttemptCompleted {
 			occFinalState = jobs.OccurrenceCompleted
-		} else {
-			occFinalState = jobs.OccurrenceCancelled
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE job_occurrences SET state = ?, revision = revision + 1, updated_at = ? WHERE id = ?`, string(occFinalState), now, occID); err != nil {
 			return err
