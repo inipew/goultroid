@@ -9,7 +9,6 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/tasks"
-	"github.com/inipew/goultroid/internal/workers"
 	"go.uber.org/zap"
 )
 
@@ -225,32 +224,29 @@ func (d *Dispatcher) dispatchAsyncHandlers(ctx context.Context, handlers []Messa
 	if len(handlers) == 0 {
 		return
 	}
-	manager := d.workerManager()
-	if manager != nil {
-		d.inFlight.Add(1)
-		task := tasks.Task{
-			ID:            fmt.Sprintf("async_handlers:%d:%d", extractChatIDFromPeer(msg.PeerID), msg.ID),
-			Owner:         "telegram:observability",
-			Name:          "message:observers",
-			OnComplete:    func(error) { d.inFlight.Done() },
-			Priority:      10,
-			CorrelationID: fmt.Sprintf("msg:%d:%d", extractChatIDFromPeer(msg.PeerID), msg.ID),
-			Timeout:       10 * time.Second,
-			Run: func(taskCtx context.Context) error {
-				for _, h := range handlers {
-					_ = d.safeExecuteInterceptor(taskCtx, h, e, msg, isCmd, cmdName)
-				}
-				return nil
-			},
-		}
-		if err := manager.TrySubmit(ctx, workers.PoolGeneral, task); err != nil {
-			d.inFlight.Done()
-			d.logger.Debug("async handlers submission rejected", zap.Error(err))
-		}
+	client := d.taskClient()
+	if client == nil {
+		d.logger.Warn("observer execution unavailable", zap.Error(ErrTasksNotConfigured))
 		return
 	}
-	for _, h := range handlers {
-		_ = d.safeExecuteInterceptor(ctx, h, e, msg, isCmd, cmdName)
+	d.inFlight.Add(1)
+	_, err := client.Submit(ctx, tasks.WorkSpec{
+		ID:               tasks.TaskID(fmt.Sprintf("observer:%d:%d", extractChatIDFromPeer(msg.PeerID), msg.ID)),
+		QuotaOwner:       "telegram:observability",
+		Pool:             "general",
+		Class:            tasks.PriorityBackground,
+		ExecutionTimeout: 10 * time.Second,
+		Handler: func(taskCtx context.Context) error {
+			for _, handler := range handlers {
+				_ = d.safeExecuteInterceptor(taskCtx, handler, e, msg, isCmd, cmdName)
+			}
+			return nil
+		},
+		OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
+	})
+	if err != nil {
+		d.inFlight.Done()
+		d.logger.Debug("observer admission rejected", zap.Error(err))
 	}
 }
 

@@ -28,9 +28,7 @@ import (
 	"github.com/inipew/goultroid/internal/services/ratelimit"
 	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/taskengine"
-	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/telegram"
-	"github.com/inipew/goultroid/internal/workers"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -55,8 +53,6 @@ type App struct {
 	processRunner   *processSvc.OSRunner
 	startTime       time.Time
 
-	workers         *workers.Manager
-	tasks           *tasks.Manager
 	jobs            *jobs.Manager
 	taskEngine      *taskengine.Engine
 	persistencePump *jobs.PersistencePump
@@ -122,7 +118,6 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		coreDeps.procManager,
 		coreDeps.fsManager,
 		coreDeps.secretManager,
-		coreDeps.taskManager,
 		coreDeps.jobsManager,
 	)
 	pluginManager.SetTaskClient(coreDeps.taskEngine)
@@ -172,17 +167,14 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 			SchedEngine:      domServices.schedEngine,
 		},
 		PlatformRuntime: module.PlatformRuntime{
-			Gate:       coreDeps.capGate,
-			Network:    coreDeps.netService,
-			Process:    coreDeps.procManager,
-			Files:      coreDeps.fsManager,
-			Secrets:    coreDeps.secretManager,
-			Audit:      coreDeps.auditService,
-			Resources:  coreDeps.resourceManager,
-			Workers:    coreDeps.workerManager,
-			Tasks:      coreDeps.taskManager,
-			Jobs:       coreDeps.jobsManager,
-			TaskClient: coreDeps.taskEngine,
+			Gate:      coreDeps.capGate,
+			Network:   coreDeps.netService,
+			Process:   coreDeps.procManager,
+			Files:     coreDeps.fsManager,
+			Secrets:   coreDeps.secretManager,
+			Audit:     coreDeps.auditService,
+			Resources: coreDeps.resourceManager,
+			Jobs:      coreDeps.jobsManager,
 		},
 	}
 	if err := registerBuiltinModules(context.Background(), featureRuntime); err != nil {
@@ -205,16 +197,13 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	if err := rt.Register(dependencyComponent{Component: coreDeps.eventBus, dependencies: []string{"database"}}); err != nil {
 		return nil, fmt.Errorf("register eventbus component: %w", err)
 	}
-	if err := rt.Register(dependencyComponent{Component: coreDeps.workerManager, dependencies: []string{"database"}}); err != nil {
-		return nil, fmt.Errorf("register workers component: %w", err)
-	}
 	if coreDeps.persistencePump != nil {
 		if err := rt.Register(coreDeps.persistencePump); err != nil {
 			return nil, fmt.Errorf("register persistence-pump component: %w", err)
 		}
 	}
 	if coreDeps.taskEngine != nil {
-		if err := rt.Register(dependencyComponent{Component: coreDeps.taskEngine, dependencies: []string{"workers"}}); err != nil {
+		if err := rt.Register(dependencyComponent{Component: coreDeps.taskEngine, dependencies: []string{"persistence-pump"}}); err != nil {
 			return nil, fmt.Errorf("register taskengine component: %w", err)
 		}
 	}
@@ -270,8 +259,6 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		media:           domServices.mediaService,
 		processRunner:   domServices.processRunner,
 		startTime:       domServices.startTime,
-		workers:         coreDeps.workerManager,
-		tasks:           coreDeps.taskManager,
 		jobs:            coreDeps.jobsManager,
 		taskEngine:      coreDeps.taskEngine,
 		persistencePump: coreDeps.persistencePump,

@@ -49,10 +49,10 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 		return nil
 	}
 	d.peerQueue = make(chan peerUpdateJob, 1024)
-	workers := 2
-	d.peerWG.Add(workers)
+	peerProcessors := 2
+	d.peerWG.Add(peerProcessors)
 	q := d.peerQueue
-	for i := 0; i < workers; i++ {
+	for i := 0; i < peerProcessors; i++ {
 		go d.peerWorker(ctx, q)
 	}
 	return nil
@@ -126,13 +126,7 @@ func (d *Dispatcher) Stop(ctx context.Context) error {
 		d.mu.Lock()
 		q := d.peerQueue
 		d.peerQueue = nil
-		ownedWorkers := d.workers
-		isOwned := d.ownsWorkers
 		d.mu.Unlock()
-
-		if isOwned && ownedWorkers != nil {
-			_ = ownedWorkers.Stop(ctx)
-		}
 
 		if q == nil {
 			return

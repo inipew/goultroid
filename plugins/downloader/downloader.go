@@ -16,7 +16,6 @@ import (
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/storage"
-	"github.com/inipew/goultroid/internal/workers"
 )
 
 // Plugin provides media download capabilities for Telegram media and external URLs.
@@ -29,6 +28,11 @@ type Plugin struct {
 
 type downloadJobPayload struct {
 	URL string `json:"url"`
+}
+
+type mediaJobPayload struct {
+	SaveDir   string `json:"save_dir"`
+	MediaSize int64  `json:"media_size"`
 }
 
 // New creates a new downloader Plugin instance with optional dependencies.
@@ -77,7 +81,7 @@ func (p *Plugin) registerJobHandlers() {
 	if p.jobs == nil {
 		return
 	}
-	p.jobs.RegisterHandler("downloader.url", func(ctx context.Context, j *jobs.Job) error {
+	_ = p.jobs.RegisterHandler("downloader.url", func(ctx context.Context, j jobs.JobDefinition) error {
 		var payload downloadJobPayload
 		if err := json.Unmarshal(j.Payload, &payload); err != nil {
 			return fmt.Errorf("decode downloader job payload: %w", err)
@@ -90,6 +94,21 @@ func (p *Plugin) registerJobHandlers() {
 			uiCtx, _ = value.(*core.Context)
 		}
 		return p.executeURLDownload(ctx, uiCtx, payload.URL)
+	})
+	_ = p.jobs.RegisterHandler("downloader.telegram_media", func(ctx context.Context, j jobs.JobDefinition) error {
+		var payload mediaJobPayload
+		if err := json.Unmarshal(j.Payload, &payload); err != nil {
+			return fmt.Errorf("decode downloader media payload: %w", err)
+		}
+		value, ok := p.jobUI.LoadAndDelete(j.ID)
+		if !ok {
+			return errors.New("downloader media context expired")
+		}
+		uiCtx, _ := value.(*core.Context)
+		if uiCtx == nil {
+			return errors.New("downloader media context missing")
+		}
+		return p.executeMediaDownload(ctx, uiCtx, payload.SaveDir, payload.MediaSize)
 	})
 }
 
@@ -182,19 +201,14 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 		if ctx.Message != nil {
 			idempKey = fmt.Sprintf("dl:msg:%d:%d", ctx.ChatID(), ctx.Message.ID)
 		}
-		job := jobs.Job{
-			ID:             jobID,
-			Owner:          "downloader",
-			Type:           "downloader.telegram_media",
-			Pool:           workers.PoolDownload,
-			Timeout:        10 * time.Minute,
-			IdempotencyKey: idempKey,
-			RecoveryPolicy: jobs.RecoverySkip,
-			Run: func(taskCtx context.Context) error {
-				return p.executeMediaDownload(taskCtx, ctx, saveDir, mediaSize)
-			},
+		payload, err := json.Marshal(mediaJobPayload{SaveDir: saveDir, MediaSize: mediaSize})
+		if err != nil {
+			return fmt.Errorf("encode media download job: %w", err)
 		}
+		job := jobs.JobDefinition{ID: jobID, ScopeOwner: "plugin:downloader", QuotaOwner: "telegram:download", HandlerType: "downloader.telegram_media", Payload: payload, Pool: "download", Class: "normal", Timeout: 10 * time.Minute, Enabled: true}
+		_ = idempKey
 		if err := p.jobs.Register(job); err == nil {
+			p.jobUI.Store(jobID, ctx)
 			return p.jobs.Trigger(ctx.Ctx, jobID)
 		}
 	}
@@ -256,16 +270,8 @@ func (p *Plugin) handleURLDownload(ctx *core.Context, rawURL string) error {
 		if err != nil {
 			return fmt.Errorf("encode download job: %w", err)
 		}
-		job := jobs.Job{
-			ID:             jobID,
-			Owner:          "downloader",
-			Type:           "downloader.url",
-			Payload:        payload,
-			Pool:           workers.PoolDownload,
-			Timeout:        10 * time.Minute,
-			IdempotencyKey: idempKey,
-			RecoveryPolicy: jobs.RecoveryRunImmediately,
-		}
+		job := jobs.JobDefinition{ID: jobID, ScopeOwner: "plugin:downloader", QuotaOwner: "telegram:download", HandlerType: "downloader.url", Payload: payload, Pool: "download", Class: "normal", Timeout: 10 * time.Minute, Enabled: true}
+		_ = idempKey
 		if err := p.jobs.Register(job); err == nil {
 			p.jobUI.Store(jobID, ctx)
 			if err := p.jobs.Trigger(ctx.Ctx, jobID); err != nil {

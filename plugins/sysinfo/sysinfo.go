@@ -10,9 +10,7 @@ import (
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/resource"
-	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/ui"
-	"github.com/inipew/goultroid/internal/workers"
 )
 
 // Plugin provides rich system, hardware, network, and bot runtime metrics.
@@ -20,8 +18,6 @@ type Plugin struct {
 	startTime time.Time
 	collector *Collector
 	resources *resource.Manager
-	workers   *workers.Manager
-	tasks     *tasks.Manager
 	eventBus  *core.EventBus
 }
 
@@ -39,12 +35,6 @@ func New(startTime ...time.Time) *Plugin {
 
 // SetResources attaches the resource manager.
 func (p *Plugin) SetResources(rm *resource.Manager) { p.resources = rm }
-
-// SetWorkers attaches the worker pool manager.
-func (p *Plugin) SetWorkers(wm *workers.Manager) { p.workers = wm }
-
-// SetTasks attaches the task manager.
-func (p *Plugin) SetTasks(tm *tasks.Manager) { p.tasks = tm }
 
 // SetEventBus attaches the event bus.
 func (p *Plugin) SetEventBus(eb *core.EventBus) { p.eventBus = eb }
@@ -405,37 +395,7 @@ func (p *Plugin) handleBotInfo(ctx *core.Context) error {
 func (p *Plugin) handleDiagnostics(ctx *core.Context) error {
 	card := ui.NewCard("GoUltroid Runtime Diagnostics & Quotas").WithIcon("🔬")
 
-	// 1. Worker Pools
-	if p.workers != nil {
-		stats := p.workers.AllStats()
-		var sb strings.Builder
-		for _, s := range stats {
-			sb.WriteString(fmt.Sprintf("• <b>%s</b>: %d/%d workers | q <code>%d/%d</code> (done: %d, err: %d)\n",
-				ui.EscapeHTML(s.Name), s.Busy, s.Concurrency, s.QueueStats.Depth, s.QueueStats.Capacity, s.TasksExecuted, s.TasksFailed))
-		}
-		if sb.Len() > 0 {
-			card.AddField("⚙️ Worker Pools", strings.TrimRight(sb.String(), "\n"))
-		}
-	}
-
-	// 2. Task Quotas
-	if p.tasks != nil {
-		tStats := p.tasks.Stats()
-		card.AddField("📋 Task Summary", fmt.Sprintf("Queued: <code>%d</code> | Running: <code>%d</code> | Completed: <code>%d</code> | Failed: <code>%d</code>",
-			tStats.TotalQueued, tStats.TotalRunning, tStats.TotalCompleted, tStats.TotalFailed))
-
-		if len(tStats.Owners) > 0 {
-			var sb strings.Builder
-			for owner, os := range tStats.Owners {
-				q := p.tasks.GetQuota(owner)
-				sb.WriteString(fmt.Sprintf("• <b>%s</b>: run %d/%d | q %d/%d (done: %d)\n",
-					ui.EscapeHTML(owner), os.Running, q.MaxConcurrent, os.Queued, q.MaxQueued, os.Completed))
-			}
-			card.AddField("📊 Per-Plugin Task Quotas", strings.TrimRight(sb.String(), "\n"))
-		}
-	}
-
-	// 3. Tracked Resources & Leaks
+	// 1. Tracked Resources & Leaks
 	if p.resources != nil {
 		snaps := p.resources.AllSnapshots()
 		leakedTotal := 0
@@ -462,7 +422,7 @@ func (p *Plugin) handleDiagnostics(ctx *core.Context) error {
 		}
 	}
 
-	// 4. EventBus
+	// 2. EventBus
 	if p.eventBus != nil {
 		ebStats := p.eventBus.Stats()
 		dlqLen := len(p.eventBus.DLQ())
@@ -470,6 +430,6 @@ func (p *Plugin) handleDiagnostics(ctx *core.Context) error {
 			ebStats.Published, ebStats.Delivered, ebStats.Dropped, dlqLen))
 	}
 
-	card.WithFooter("<i>Telemetry aggregated across workers, tasks, resources, and eventbus.</i>")
+	card.WithFooter("<i>Telemetry aggregated across task execution, resources, and eventbus.</i>")
 	return ctx.EditOrReply(card.Render())
 }

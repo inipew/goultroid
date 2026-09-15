@@ -24,8 +24,6 @@ import (
 	"github.com/inipew/goultroid/internal/services/storage"
 	userlogSvc "github.com/inipew/goultroid/internal/services/userlog"
 	"github.com/inipew/goultroid/internal/settings"
-	"github.com/inipew/goultroid/internal/tasks"
-	"github.com/inipew/goultroid/internal/workers"
 	"go.uber.org/zap"
 )
 
@@ -67,17 +65,14 @@ type ServiceRuntime struct {
 
 // PlatformRuntime contains capability-gated platform accessors.
 type PlatformRuntime struct {
-	Gate       *plugin.CapabilityGate
-	Network    *network.Service
-	Process    *process.Manager
-	Files      *filesystem.Manager
-	Secrets    *secret.Manager
-	Audit      *audit.Service
-	Resources  *resource.Manager
-	Workers    *workers.Manager
-	Tasks      *tasks.Manager
-	Jobs       *jobs.Manager
-	TaskClient tasks.Client
+	Gate      *plugin.CapabilityGate
+	Network   *network.Service
+	Process   *process.Manager
+	Files     *filesystem.Manager
+	Secrets   *secret.Manager
+	Audit     *audit.Service
+	Resources *resource.Manager
+	Jobs      *jobs.Manager
 }
 
 // Runtime is the composition context supplied to feature modules.

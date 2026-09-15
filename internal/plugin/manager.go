@@ -50,7 +50,6 @@ type Manager struct {
 	processManager    *process.Manager
 	filesystemManager *filesystem.Manager
 	secretManager     *secret.Manager
-	taskManager       *tasks.Manager
 	taskClient        tasks.Client
 	jobsManager       *jobs.Manager
 	storageManager    *storage.Manager
@@ -93,7 +92,6 @@ func (m *Manager) SetPlatformServices(
 	proc *process.Manager,
 	fs *filesystem.Manager,
 	sec *secret.Manager,
-	tsk *tasks.Manager,
 	jbs *jobs.Manager,
 ) {
 	m.mu.Lock()
@@ -103,7 +101,6 @@ func (m *Manager) SetPlatformServices(
 	m.processManager = proc
 	m.filesystemManager = fs
 	m.secretManager = sec
-	m.taskManager = tsk
 	m.jobsManager = jbs
 }
 
@@ -163,7 +160,6 @@ func (m *Manager) buildPluginContext(baseCtx context.Context, name string, scope
 	procMgr := m.processManager
 	fsMgr := m.filesystemManager
 	secMgr := m.secretManager
-	taskMgr := m.taskManager
 	taskClient := m.taskClient
 	jobsMgr := m.jobsManager
 	storageMgr := m.storageManager
@@ -177,7 +173,6 @@ func (m *Manager) buildPluginContext(baseCtx context.Context, name string, scope
 		Process:    procMgr,
 		Files:      fsMgr,
 		Secrets:    secMgr,
-		Tasks:      taskMgr,
 		Jobs:       jobsMgr,
 		TaskClient: taskClient,
 		Storage:    storageMgr,

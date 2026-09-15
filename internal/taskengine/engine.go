@@ -10,7 +10,6 @@ import (
 	"github.com/inipew/goultroid/internal/admission"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/tasks"
-	"github.com/inipew/goultroid/internal/workers"
 )
 
 // Ensure Engine implements tasks.Client and runtime.Component.
@@ -47,7 +46,7 @@ var DefaultConfig = Config{
 type taskRecord struct {
 	spec       tasks.WorkSpec
 	state      tasks.TaskState
-	permit     *workers.Permit
+	permit     *permit
 	result     tasks.TaskResult
 	done       chan struct{}
 	ticket     *engineTicket
@@ -404,7 +403,7 @@ func (e *Engine) tryDispatchLocked(pool tasks.PoolID) {
 		e.dispatchEpoch++
 
 		gen := e.poolGenerations[pool]
-		permit := workers.NewPermit(pool, slotID, gen, rec.spec.ID, e.dispatchEpoch, func() {
+		permit := newPermit(pool, slotID, gen, rec.spec.ID, e.dispatchEpoch, func() {
 			e.onPermitReleased(pool, slotID)
 		})
 
@@ -426,12 +425,8 @@ func (e *Engine) onPermitReleased(pool tasks.PoolID, slotID int) {
 	e.tryDispatchLocked(pool)
 }
 
-func (e *Engine) executeAssignment(rec *taskRecord, spec tasks.WorkSpec, permit *workers.Permit, taskCtx context.Context) {
-	res := workers.ExecuteAssignment(workers.Assignment{
-		Spec:   spec,
-		Permit: permit,
-		Ctx:    taskCtx,
-	})
+func (e *Engine) executeAssignment(rec *taskRecord, spec tasks.WorkSpec, permit *permit, taskCtx context.Context) {
+	res := executeAssignment(taskCtx, spec, permit)
 
 	e.mu.Lock()
 	defer e.mu.Unlock()

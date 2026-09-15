@@ -20,10 +20,11 @@ type Resource = resource.Resource
 // Scope owns cancellable plugin work and cleanup callbacks. It is safe for
 // concurrent use and can be closed repeatedly.
 type Scope struct {
-	owner   string
-	ctx     context.Context
-	cancel  context.CancelFunc
-	manager *resource.Manager
+	owner      string
+	generation uint64
+	ctx        context.Context
+	cancel     context.CancelFunc
+	manager    *resource.Manager
 
 	mu        sync.Mutex
 	closed    bool
@@ -32,6 +33,8 @@ type Scope struct {
 	wg        sync.WaitGroup
 	goCounter atomic.Uint64
 }
+
+var scopeGeneration atomic.Uint64
 
 // NewScope creates a child lifecycle scope. A nil parent is treated as a
 // background context for compatibility with legacy callers.
@@ -46,16 +49,18 @@ func NewScopeWithManager(parent context.Context, owner string, manager *resource
 	}
 	ctx, cancel := context.WithCancel(parent)
 	return &Scope{
-		owner:     owner,
-		ctx:       ctx,
-		cancel:    cancel,
-		manager:   manager,
-		resources: make(map[string]Resource),
+		owner:      owner,
+		generation: scopeGeneration.Add(1),
+		ctx:        ctx,
+		cancel:     cancel,
+		manager:    manager,
+		resources:  make(map[string]Resource),
 	}
 }
 
 func (s *Scope) Context() context.Context { return s.ctx }
 func (s *Scope) Owner() string            { return s.owner }
+func (s *Scope) Generation() uint64       { return s.generation }
 
 // SetManager binds a ResourceManager to this scope.
 func (s *Scope) SetManager(m *resource.Manager) {

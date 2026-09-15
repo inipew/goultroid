@@ -17,9 +17,20 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/taskengine"
 	"github.com/inipew/goultroid/plugins/afk"
 	"go.uber.org/zap"
 )
+
+func configureDispatcherTasks(t *testing.T, dispatcher *Dispatcher) {
+	t.Helper()
+	engine := taskengine.NewEngine(taskengine.DefaultConfig)
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher.SetTasks(engine)
+	t.Cleanup(func() { _ = engine.Stop(context.Background()) })
+}
 
 func TestDispatcher_OnNewMessage(t *testing.T) {
 	logger := zap.NewNop()
@@ -52,6 +63,7 @@ func TestDispatcher_OnNewMessage(t *testing.T) {
 	}
 
 	dispatcher := NewDispatcher(router, perms, nil, logger)
+	configureDispatcherTasks(t, dispatcher)
 	dispatcher.SetSelfID(1001)
 
 	entities := tg.Entities{
@@ -97,6 +109,7 @@ func TestDispatcher_IgnoredUpdates(t *testing.T) {
 	logger := zap.NewNop()
 	router := core.NewRouter(".")
 	dispatcher := NewDispatcher(router, nil, nil, logger)
+	configureDispatcherTasks(t, dispatcher)
 
 	// Non-message update
 	err := dispatcher.OnNewMessage(context.Background(), tg.Entities{}, &tg.UpdateNewMessage{
@@ -141,6 +154,7 @@ func TestDispatcher_OnNewChannelMessage(t *testing.T) {
 	})
 
 	dispatcher := NewDispatcher(router, nil, nil, logger)
+	configureDispatcherTasks(t, dispatcher)
 
 	entities := tg.Entities{
 		Channels: map[int64]*tg.Channel{
@@ -202,6 +216,7 @@ func TestDispatcher_MessageHandler(t *testing.T) {
 	logger := zap.NewNop()
 	router := core.NewRouter(".")
 	dispatcher := NewDispatcher(router, nil, nil, logger)
+	configureDispatcherTasks(t, dispatcher)
 
 	called := false
 	var gotCmd bool
@@ -284,6 +299,7 @@ func TestDispatcher_RootContextCancellation(t *testing.T) {
 	logger := zap.NewNop()
 	router := core.NewRouter(".")
 	dispatcher := NewDispatcher(router, nil, nil, logger)
+	configureDispatcherTasks(t, dispatcher)
 
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	dispatcher.SetRootContext(rootCtx)
@@ -500,6 +516,7 @@ func TestDispatcher_PrioritizedInterceptors(t *testing.T) {
 	logger := zap.NewNop()
 	router := core.NewRouter(".")
 	dispatcher := NewDispatcher(router, nil, nil, logger)
+	configureDispatcherTasks(t, dispatcher)
 
 	var mu sync.Mutex
 	var executionOrder []string
@@ -646,6 +663,7 @@ func TestDispatcher_StopWaitsForRunningCommand(t *testing.T) {
 	logger := zap.NewNop()
 	router := core.NewRouter(".")
 	dispatcher := NewDispatcher(router, nil, nil, logger)
+	configureDispatcherTasks(t, dispatcher)
 
 	commandFinished := atomic.Bool{}
 	commandStarted := make(chan struct{})
@@ -779,6 +797,7 @@ func TestDispatcher_AFK_EndToEnd(t *testing.T) {
 	}
 
 	dispatcher := NewDispatcher(router, perms, nil, logger)
+	configureDispatcherTasks(t, dispatcher)
 	dispatcher.SetSelfID(ownerID)
 	dispatcher.SetService(svc)
 

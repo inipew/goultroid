@@ -1,6 +1,8 @@
 package architecture
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -25,6 +27,31 @@ func TestExecutionRedesignFoundations(t *testing.T) {
 					t.Errorf("%s imports forbidden dependency %s", pkg, dep)
 				}
 			}
+		}
+	}
+}
+
+func TestLegacyExecutionPackagesAreRemoved(t *testing.T) {
+	root := repositoryRoot(t)
+	for _, path := range []string{
+		"internal/tasks/manager.go",
+		"internal/tasks/task.go",
+		"internal/jobs/job.go",
+		"internal/jobs/repository.go",
+	} {
+		if _, err := os.Stat(filepath.Join(root, path)); err == nil {
+			t.Errorf("legacy execution implementation remains: %s", path)
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "internal/workers"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read legacy workers directory: %v", err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".go") {
+			t.Errorf("legacy execution implementation remains: internal/workers/%s", entry.Name())
 		}
 	}
 }

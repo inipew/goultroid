@@ -16,7 +16,7 @@ func (s *StateStore) Name() string {
 
 // Dependencies returns prerequisite components for runtime.Component.
 func (s *StateStore) Dependencies() []string {
-	return []string{"workers"}
+	return []string{"taskengine"}
 }
 
 // Health probes the health status of the state store.

@@ -11,7 +11,7 @@ import (
 	"github.com/inipew/goultroid/internal/idempotency"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/services/inline"
-	"github.com/inipew/goultroid/internal/workers"
+	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
 
@@ -34,15 +34,13 @@ type Dispatcher struct {
 	inlineEngine   *inline.Engine
 	normalizer     *Normalizer
 	idempotencyMgr *idempotency.Manager
-	workers        *workers.Manager
-	ownsWorkers    bool
+	tasks          tasks.Client
 
 	messageHandlers  []prioritizedHandler
 	nextHandlerID    uint64
 	acceptingUpdates atomic.Bool
 	inFlight         sync.WaitGroup
 	cmdWG            sync.WaitGroup
-	cmdSem           chan struct{}
 	runningCommands  atomic.Int64
 	totalCommands    atomic.Int64
 	mu               sync.RWMutex
@@ -67,7 +65,7 @@ type DispatcherDeps struct {
 	CallbackRouter *callback.Router
 	InlineEngine   *inline.Engine
 	Resolver       core.PeerResolver
-	Workers        *workers.Manager
+	Tasks          tasks.Client
 }
 
 // NewDispatcherWithDeps constructs a Dispatcher with all available dependencies.
@@ -82,8 +80,8 @@ func NewDispatcherWithDeps(deps DispatcherDeps) (*Dispatcher, error) {
 		deps.Logger = zap.NewNop()
 	}
 	d := NewDispatcher(deps.Router, deps.Permissions, deps.Service, deps.Logger)
-	if deps.Workers != nil {
-		d.SetWorkers(deps.Workers)
+	if deps.Tasks != nil {
+		d.SetTasks(deps.Tasks)
 	}
 	if deps.EventBus != nil {
 		d.SetEventBus(deps.EventBus)
@@ -115,8 +113,6 @@ func NewDispatcher(
 	}
 	cooldown := core.NewCooldownTracker()
 	executor := core.NewCommandExecutor(logger, cooldown, 30*time.Second)
-	defaultWorkers := workers.NewManager()
-	_ = defaultWorkers.Start(context.Background())
 	d := &Dispatcher{
 		router:      router,
 		perms:       perms,
@@ -125,10 +121,7 @@ func NewDispatcher(
 		cooldown:    cooldown,
 		executor:    executor,
 		albumBuffer: core.NewAlbumBuffer(10 * time.Minute),
-		cmdSem:      make(chan struct{}, 32),
 		normalizer:  NewNormalizer(),
-		workers:     defaultWorkers,
-		ownsWorkers: true,
 	}
 	d.acceptingUpdates.Store(true)
 	return d

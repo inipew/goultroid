@@ -11,6 +11,7 @@ import (
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/idempotency"
 	"github.com/inipew/goultroid/internal/jobs"
+	jobsqlite "github.com/inipew/goultroid/internal/jobs/sqlite"
 	"github.com/inipew/goultroid/internal/platform/audit"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/platform/network"
@@ -24,8 +25,6 @@ import (
 	"github.com/inipew/goultroid/internal/services/localization"
 	"github.com/inipew/goultroid/internal/services/ratelimit"
 	"github.com/inipew/goultroid/internal/taskengine"
-	"github.com/inipew/goultroid/internal/tasks"
-	"github.com/inipew/goultroid/internal/workers"
 	"github.com/inipew/goultroid/plugins/sudo"
 	"go.uber.org/zap"
 )
@@ -88,9 +87,7 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 	inlineEngine.SetTimeout(4 * time.Second)
 	inlineEngine.SetPermissions(perms)
 
-	workerManager := workers.NewManager()
-	taskManager := tasks.NewManager()
-	workerManager.SetTasksManager(taskManager)
+	taskEngine := taskengine.NewEngine(taskengine.DefaultConfig)
 	resourceManager := resource.NewManager()
 	idempRepo := idempotency.NewSQLiteRepository(db.DB)
 	if err := idempRepo.InitSchema(context.Background()); err != nil {
@@ -99,15 +96,12 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 	}
 	idempManager := idempotency.NewManager(1*time.Minute, idempRepo)
 
-	jobsRepo := jobs.NewSQLiteRepository(db.DB)
-	if err := jobsRepo.InitSchema(context.Background()); err != nil {
-		logger.Warn("failed to initialize managed jobs schema", zap.Error(err))
+	if err := jobsqlite.InitSchema(context.Background(), db.DB); err != nil {
+		cleanupCore(&coreDependencies{db: db, eventBus: eventBus, cmdLimiter: cmdLimiter, interLimiter: interLimiter}, logger)
+		return nil, fmt.Errorf("initialize job schema: %w", err)
 	}
-	jobsManager := jobs.NewManager(workerManager, jobsRepo)
-	jobsManager.SetIdempotencyManager(idempManager)
-
-	taskEngine := taskengine.NewEngine(taskengine.DefaultConfig)
 	persistencePump := jobs.NewPersistencePump(2, 256)
+	jobsManager := jobs.NewManager(taskEngine, jobsqlite.NewStore(db.DB), persistencePump)
 
 	dataDir := "data"
 	if cfg.DatabasePath != "" {
@@ -156,8 +150,6 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 		inlineEngine:    inlineEngine,
 		cmdLimiter:      cmdLimiter,
 		interLimiter:    interLimiter,
-		workerManager:   workerManager,
-		taskManager:     taskManager,
 		jobsManager:     jobsManager,
 		taskEngine:      taskEngine,
 		persistencePump: persistencePump,

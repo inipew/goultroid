@@ -22,7 +22,7 @@ type persistenceRequest struct {
 }
 
 // PersistencePump is a dedicated service with bounded concurrency that commits durable results (ADR 0006 §3.3).
-// It does NOT borrow feature worker slots, preventing cycles where workers wait on other workers to persist.
+// It does NOT borrow feature execution slots, preventing cycles where tasks wait on persistence to finish.
 type PersistencePump struct {
 	mu          sync.Mutex
 	concurrency int

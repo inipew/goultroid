@@ -148,6 +148,7 @@ func TestPluginContext_TaskClientCapability(t *testing.T) {
 	client := &dummyTaskClient{}
 	ctx := NewPluginContext(context.Background(), ContextConfig{
 		Owner:      "worker_plugin",
+		Scope:      NewScope(context.Background(), "worker_plugin"),
 		Gate:       gate,
 		TaskClient: client,
 	})
@@ -156,8 +157,8 @@ func TestPluginContext_TaskClientCapability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected TaskClient to succeed, got %v", err)
 	}
-	if tc != client {
-		t.Fatalf("expected client %v, got %v", client, tc)
+	if tc == client {
+		t.Fatal("expected plugin-scoped task client")
 	}
 
 	// Without CapTasks
@@ -169,6 +170,7 @@ func TestPluginContext_TaskClientCapability(t *testing.T) {
 	})
 	ctxDenied := NewPluginContext(context.Background(), ContextConfig{
 		Owner:      "no_tasks",
+		Scope:      NewScope(context.Background(), "no_tasks"),
 		Gate:       gate,
 		TaskClient: client,
 	})

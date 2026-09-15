@@ -31,9 +31,7 @@ import (
 	userlogSvc "github.com/inipew/goultroid/internal/services/userlog"
 	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/taskengine"
-	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/telegram"
-	"github.com/inipew/goultroid/internal/workers"
 	"go.uber.org/zap"
 )
 
@@ -50,8 +48,6 @@ type coreDependencies struct {
 	inlineEngine    *inline.Engine
 	cmdLimiter      *ratelimit.Limiter
 	interLimiter    *ratelimit.Limiter
-	workerManager   *workers.Manager
-	taskManager     *tasks.Manager
 	jobsManager     *jobs.Manager
 	taskEngine      *taskengine.Engine
 	persistencePump *jobs.PersistencePump
@@ -100,12 +96,9 @@ type Dependencies struct {
 	Dispatcher      *telegram.Dispatcher
 	Callbacks       *callback.Router
 	Inline          *inline.Engine
-	WorkerManager   *workers.Manager
-	TaskManager     *tasks.Manager
 	JobsManager     *jobs.Manager
 	TaskEngine      *taskengine.Engine
 	PersistencePump *jobs.PersistencePump
-	TaskClient      tasks.Client
 	ResourceManager *resource.Manager
 }
 

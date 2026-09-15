@@ -8,7 +8,24 @@ Checkpoint yang diaudit: `8c02d7ed0f302ee0638937e302846cbc7ba25026`, setelah com
 
 **Implementasi belum memenuhi ADR 0006 dan belum layak disebut redesign selesai.** Ada fondasi baru, tetapi producer utama masih memakai execution legacy. TaskEngine dan persistence pump didaftarkan ke Runtime; pendaftaran itu belum membuktikan integrasi execution/prepare/commit. Patch audit ini memperbaiki bug terisolasi dengan tes regresi. Gap arsitektur, migrasi, dan bukti operasional di bagian berikut tetap terbuka.
 
-Audit meliputi domain/types, admission, worker/permit, TaskEngine, JobManager/store/pump, scheduler/periodic, wiring App/Runtime, Telegram ingress, plugin scope, resource media, diagnostics, architecture tests, dan deliverable migrasi/performance. Inventaris producer dilakukan melalui source search; ini bukan pembuktian semua interleaving maupun pengujian live Telegram. Tidak ada perubahan database produksi atau cutover producer dalam patch audit.
+Audit meliputi domain/types, admission, worker/permit, TaskEngine, JobManager/store/pump, scheduler/periodic, wiring App/Runtime, Telegram ingress, plugin scope, resource media, diagnostics, architecture tests, dan deliverable migrasi/performance. Inventaris producer dilakukan melalui source search; ini bukan pembuktian semua interleaving maupun pengujian live Telegram. Update cutover workspace dicatat pada bagian berikut.
+
+## Update cutover workspace — 15 September 2026
+
+Patch lanjutan setelah audit ini menghapus implementation path lama dan memindahkan ingress aktif ke kontrak redesign.
+
+| Area | Kode lama yang dihapus | Pengganti yang aktif |
+|---|---|---|
+| Execution runtime | `internal/workers`, `tasks.Manager`, mutable `tasks.Task` | `taskengine.Engine` dengan `tasks.WorkSpec`, permit privat, dan result `TaskResult` |
+| Telegram | `Dispatcher.SetWorkers`, worker/direct fallback callback dan observer | `tasks.Client` wajib untuk command, callback, inline, dan observer |
+| Jobs | `jobs.Job`, repository lama, waiter per JobID | `JobDefinition` → `JobOccurrence` → `JobAttempt`; TaskID dan lease epoch per attempt |
+| Persistence | schema yang tidak dipakai oleh manager | definition disimpan saat register; trigger mematerialisasi occurrence, menyiapkan lease, dan completion dikomit melalui `PersistencePump` |
+| Scheduler | submit langsung ke executor legacy | due row diserahkan ke `jobs.Manager.SubmitOccurrence`; JobManager yang masuk ke TaskEngine |
+| Plugin boundary | client global tanpa scope | scoped client memaksa owner/generation dan membatasi cancel/snapshot ke scope sendiri |
+
+`TestLegacyExecutionPackagesAreRemoved` mencegah `internal/workers`, `tasks.Manager`, mutable `tasks.Task`, serta model/repository Job lama muncul kembali. `TestManagerPersistsOccurrenceAttemptAndCompletion` memverifikasi satu trigger membentuk identity durable dan completion dicatat sebagai terminal attempt/occurrence.
+
+Masih ada pekerjaan ADR yang tidak boleh diklaim selesai hanya karena cutover ini lolos build: TaskEngine belum memakai inbox control-loop bounded/fixed worker mailbox (B02–B03), payload/retention belum seluruhnya bounded (B04), completion persistence belum menahan result credit hingga acknowledgement (B05), store belum memiliki seluruh schedule/recovery/cancel protocol (B07), dan periodic scheduler masih memiliki policy retry sendiri (B10). Bagian tersebut tetap backlog desain, bukan jalur legacy yang aktif.
 
 ## 1. Temuan yang diperbaiki pada patch audit
 

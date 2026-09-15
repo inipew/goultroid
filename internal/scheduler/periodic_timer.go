@@ -10,12 +10,11 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/tasks"
-	"github.com/inipew/goultroid/internal/workers"
 	"go.uber.org/zap"
 )
 
 type periodicTaskSubmitter interface {
-	TrySubmit(ctx context.Context, poolName string, task tasks.Task) error
+	Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket, error)
 }
 
 type periodicRegistration struct {
@@ -44,7 +43,7 @@ func periodicKey(owner, name string) string {
 }
 
 // periodicCoordinator multiplexes all runtime periodic tasks onto an indexed min-heap timer.
-// It decides WHEN work is due; physical execution is delegated to WorkerManager through submitter
+// It decides WHEN work is due; physical execution is delegated to TaskEngine through submitter
 // and never owns an execution goroutine (ADR 0006 §8).
 type periodicCoordinator struct {
 	mu        sync.Mutex
@@ -466,19 +465,21 @@ func (c *periodicCoordinator) startExecution(run periodicDueRun) {
 	}
 
 	taskID := fmt.Sprintf("periodic:%s:%s:%d:%d", run.owner, run.name, run.generation, time.Now().UnixNano())
-	task := tasks.Task{
-		ID:            taskID,
-		Owner:         run.options.Owner,
-		Name:          "periodic:" + run.name,
-		CorrelationID: fmt.Sprintf("periodic:%s:%s:%d", run.owner, run.name, run.generation),
-		Run: func(ctx context.Context) error {
+	_, err := submitter.Submit(run.ctx, tasks.WorkSpec{
+		ID: tasks.TaskID(taskID), Scope: tasks.ScopeIdentity{Owner: run.owner, Generation: run.generation}, QuotaOwner: tasks.OwnerID(run.options.Owner), Pool: "general", Class: tasks.PriorityMaintenance,
+		ExecutionTimeout: run.options.Timeout,
+		Handler: func(ctx context.Context) error {
 			return runPeriodicTask(ctx, run.task, run.options)
 		},
-		OnComplete: func(err error) {
-			c.finishExecution(run, err, true)
+		OnComplete: func(result tasks.TaskResult) {
+			var completionErr error
+			if !result.IsSuccess() {
+				completionErr = errors.New(result.Failure.Message)
+			}
+			c.finishExecution(run, completionErr, true)
 		},
-	}
-	if err := submitter.TrySubmit(run.ctx, workers.PoolGeneral, task); err != nil {
+	})
+	if err != nil {
 		c.finishExecution(run, err, false)
 	}
 }
