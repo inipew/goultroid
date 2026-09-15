@@ -32,8 +32,12 @@ type Config struct {
 	ResultCapacity      int
 	MaxTerminalRetained int
 	DecisionTimeout     time.Duration
-	// InboxCapacity bounds the single-writer control inbox. Zero means default.
+	// InboxCapacity bounds public submit requests. Zero means default.
 	InboxCapacity int
+	// ControlInboxCapacity bounds cancellation, worker completion, durability,
+	// lifecycle, and diagnostic control traffic. It is deliberately separate
+	// from Submit so a producer flood cannot starve completion/cancellation.
+	ControlInboxCapacity int
 	// MaxRetainedBytes caps admitted-but-unevicted memory (payload + bounded
 	// output + failure text + per-record overhead). Zero means default.
 	MaxRetainedBytes int64
@@ -61,14 +65,15 @@ var DefaultConfig = Config{
 		"media-process": {Concurrency: 2, BacklogLimit: 20, PayloadBudget: 200 * 1024 * 1024},
 		"scheduler":     {Concurrency: 4, BacklogLimit: 100, PayloadBudget: 50 * 1024 * 1024},
 	},
-	ResultCapacity:      1000,
-	MaxTerminalRetained: 1000,
-	DecisionTimeout:     5 * time.Second,
-	InboxCapacity:       2048,
-	MaxRetainedBytes:    DefaultMaxRetainedBytes,
-	MaxOutputBytes:      DefaultMaxOutputBytes,
-	MaxFailureBytes:     DefaultMaxFailureBytes,
-	DeliveryConcurrency: DefaultDeliveryConcurrency,
+	ResultCapacity:       1000,
+	MaxTerminalRetained:  1000,
+	DecisionTimeout:      5 * time.Second,
+	InboxCapacity:        2048,
+	ControlInboxCapacity: 1024,
+	MaxRetainedBytes:     DefaultMaxRetainedBytes,
+	MaxOutputBytes:       DefaultMaxOutputBytes,
+	MaxFailureBytes:      DefaultMaxFailureBytes,
+	DeliveryConcurrency:  DefaultDeliveryConcurrency,
 }
 
 type workerAssignment struct {
@@ -226,19 +231,24 @@ type Engine struct {
 
 	decisionTimeout time.Duration
 	inboxCap        int
+	controlInboxCap int
 
 	// ---- lifecycle handles ----
-	inbox       chan engineRequest
-	delivery    *completionDelivery
-	durability  *durabilityLane
-	accepting   bool
-	quiesced    bool
-	drained     bool
-	rootCtx     context.Context
-	rootCancel  context.CancelFunc
-	activeTasks int
-	drainDone   chan struct{}
-	runStarted  bool
+	// inbox is public Submit traffic. controlInbox is reserved for lifecycle,
+	// cancellation, worker events and durability acks so completion cannot be
+	// starved by a saturated producer queue.
+	inbox        chan engineRequest
+	controlInbox chan engineRequest
+	delivery     *completionDelivery
+	durability   *durabilityLane
+	accepting    bool
+	quiesced     bool
+	drained      bool
+	rootCtx      context.Context
+	rootCancel   context.CancelFunc
+	activeTasks  int
+	drainDone    chan struct{}
+	runStarted   bool
 
 	runtimeRemaining atomic.Int64
 	runtimeDone      chan struct{}
@@ -255,6 +265,9 @@ func ValidateConfig(cfg Config) error {
 	}
 	if cfg.InboxCapacity < 0 {
 		return errors.New("taskengine: InboxCapacity cannot be negative")
+	}
+	if cfg.ControlInboxCapacity < 0 {
+		return errors.New("taskengine: ControlInboxCapacity cannot be negative")
 	}
 	if cfg.MaxRetainedBytes < 0 {
 		return errors.New("taskengine: MaxRetainedBytes cannot be negative")
@@ -326,6 +339,13 @@ func NewEngine(cfg Config) *Engine {
 			inboxCap = 2048
 		}
 	}
+	controlInboxCap := cfg.ControlInboxCapacity
+	if controlInboxCap <= 0 {
+		controlInboxCap = DefaultConfig.ControlInboxCapacity
+		if controlInboxCap <= 0 {
+			controlInboxCap = 1024
+		}
+	}
 	maxRetained := cfg.MaxRetainedBytes
 	if maxRetained <= 0 {
 		maxRetained = DefaultMaxRetainedBytes
@@ -385,6 +405,7 @@ func NewEngine(cfg Config) *Engine {
 		terminalTTL:         cfg.TerminalTTL,
 		decisionTimeout:     decisionTimeout,
 		inboxCap:            inboxCap,
+		controlInboxCap:     controlInboxCap,
 		delivery:            newCompletionDelivery(deliveryWorkers, deliveryCap),
 		durability:          newDurabilityLane(defaultDurabilityConcurrency, cfg.ResultCapacity),
 		drainDone:           make(chan struct{}),
@@ -412,7 +433,9 @@ func (e *Engine) Start(ctx context.Context) error {
 	e.drained = false
 	e.drainDone = make(chan struct{})
 	e.inbox = make(chan engineRequest, e.inboxCap)
-	inbox := e.inbox
+	e.controlInbox = make(chan engineRequest, e.controlInboxCap)
+	submitInbox := e.inbox
+	controlInbox := e.controlInbox
 	rootCtx := e.rootCtx
 	e.runStarted = true
 	if e.delivery == nil {
@@ -433,7 +456,7 @@ func (e *Engine) Start(ctx context.Context) error {
 	e.runtimeRemaining.Store(int64(runtimeLoops))
 	go func() {
 		defer e.runtimeLoopDone()
-		e.runLoop(rootCtx, inbox)
+		e.runLoop(rootCtx, submitInbox, controlInbox)
 	}()
 	for poolID, mboxes := range e.workerMailboxes {
 		for slotID, ch := range mboxes {
@@ -452,8 +475,10 @@ func (e *Engine) runtimeLoopDone() {
 	}
 }
 
-// runLoop is the sole writer of execution state.
-func (e *Engine) runLoop(ctx context.Context, inbox <-chan engineRequest) {
+// runLoop is the sole writer of execution state. Control events receive a
+// reserved lane and are checked before public Submit traffic. This keeps worker
+// completion, cancellation and shutdown responsive under submit saturation.
+func (e *Engine) runLoop(ctx context.Context, submitInbox, controlInbox <-chan engineRequest) {
 	sweepTimer := time.NewTimer(time.Hour)
 	if !sweepTimer.Stop() {
 		select {
@@ -486,11 +511,34 @@ func (e *Engine) runLoop(ctx context.Context, inbox <-chan engineRequest) {
 	armSweeper()
 
 	for {
+		// Priority probe: at most one control item is consumed here, then the
+		// regular select gives Submit/timer a chance. This is priority without
+		// an unbounded control-drain loop.
 		select {
 		case <-ctx.Done():
 			e.applyStopFinalize()
 			return
-		case req, ok := <-inbox:
+		case req, ok := <-controlInbox:
+			if !ok {
+				return
+			}
+			e.handleRequest(ctx, req)
+			armSweeper()
+			continue
+		default:
+		}
+
+		select {
+		case <-ctx.Done():
+			e.applyStopFinalize()
+			return
+		case req, ok := <-controlInbox:
+			if !ok {
+				return
+			}
+			e.handleRequest(ctx, req)
+			armSweeper()
+		case req, ok := <-submitInbox:
 			if !ok {
 				return
 			}
@@ -598,10 +646,10 @@ func (e *Engine) physicalWorker(pool tasks.PoolID, slotID int, mailbox <-chan wo
 	}
 }
 
-// sendInternal delivers worker-originated events to the control loop.
+// sendInternal delivers worker-originated events to the reserved control lane.
 func (e *Engine) sendInternal(req engineRequest) {
 	e.mu.Lock()
-	inbox := e.inbox
+	inbox := e.controlInbox
 	rootCtx := e.rootCtx
 	e.mu.Unlock()
 	if inbox == nil || rootCtx == nil {
@@ -613,12 +661,12 @@ func (e *Engine) sendInternal(req engineRequest) {
 	}
 }
 
-// sendControl handles non-submit producer requests. Submit has a stronger
-// decision-cell protocol below because cancellation after inbox handoff must
-// not hide an admission decision.
+// sendControl handles non-submit producer requests on the reserved control
+// lane. Submit has a stronger decision-cell protocol below because cancellation
+// after inbox handoff must not hide an admission decision.
 func (e *Engine) sendControl(ctx context.Context, req engineRequest) (engineReply, error) {
 	e.mu.Lock()
-	inbox := e.inbox
+	inbox := e.controlInbox
 	rootCtx := e.rootCtx
 	timeout := e.decisionTimeout
 	e.mu.Unlock()
@@ -947,16 +995,23 @@ func (e *Engine) applyWorkerCompleted(res tasks.TaskResult, grant *permit) {
 	if grant.generation != rec.poolGeneration || grant.dispatchEpoch != rec.dispatchEpoch {
 		return
 	}
+
+	// Cancellation is a request, not a fabricated physical outcome. Preserve
+	// what the handler actually did. If the handler cooperated and returned a
+	// cancelled outcome, attach the coordinator's exact cause. If it succeeded
+	// or failed after the request, keep that outcome and record late cancellation
+	// metadata so side effects are never falsely reported as cancelled.
+	if rec.cancelRequested {
+		res.CancelRequested = true
+		res.CancelCause = rec.cancelReason
+		if res.Outcome == tasks.OutcomeCancelled {
+			res.Cause = rec.cancelReason
+		} else {
+			res.LateCancellation = true
+		}
+	}
 	rec.result = res
 	rec.finishedAt = res.FinishedAt
-	if rec.cancelRequested && res.Outcome != tasks.OutcomeCancelled {
-		res.Outcome = tasks.OutcomeCancelled
-		res.Cause = rec.cancelReason
-		if res.Failure.Message == "" {
-			res.Failure.Message = fmt.Sprintf("late cancellation applied: %s", rec.cancelReason)
-		}
-		rec.result = res
-	}
 	spec := rec.spec
 	e.adm.OnTaskTerminal(spec)
 	if rec.cancelFunc != nil {
@@ -1003,7 +1058,10 @@ func (e *Engine) applyCancel(id tasks.TaskID, reason tasks.Cause) (tasks.CancelR
 		rec.cancelRequested = true
 		rec.cancelReason = reason
 		rec.finishedAt = time.Now().UTC()
-		rec.result = tasks.TaskResult{TaskID: id, Outcome: tasks.OutcomeCancelled, Cause: reason, FinishedAt: rec.finishedAt}
+		rec.result = tasks.TaskResult{
+			TaskID: id, Outcome: tasks.OutcomeCancelled, Cause: reason, FinishedAt: rec.finishedAt,
+			CancelRequested: true, CancelCause: reason,
+		}
 		bounded, delta := e.boundResult(rec.result)
 		rec.result = bounded
 		rec.retainedBytes += delta
@@ -1071,6 +1129,8 @@ func (e *Engine) applySnapshot(id tasks.TaskID) (tasks.TaskSnapshot, bool) {
 		Pool: rec.spec.Pool, Class: rec.spec.Class, State: rec.state,
 		AdmittedAt: rec.admittedAt, QueuedAt: rec.queuedAt, StartedAt: rec.startedAt,
 		FinishedAt: rec.finishedAt, Error: rec.errorMsg,
+		CancelRequested: rec.cancelRequested, CancelCause: rec.cancelReason,
+		LateCancellation: rec.result.LateCancellation,
 	}, true
 }
 
@@ -1128,6 +1188,7 @@ func (e *Engine) forceCancelInFlight(rec *taskRecord) {
 		TaskID: rec.spec.ID, Outcome: tasks.OutcomeCancelled, Cause: tasks.CauseShutdown,
 		StartedAt: rec.startedAt, FinishedAt: now,
 		Failure: tasks.FailureInfo{Message: failureMessage},
+		CancelRequested: true, CancelCause: tasks.CauseShutdown,
 	}
 	if rec.spec.Job != nil {
 		res.AttemptID = rec.spec.Job.AttemptID
@@ -1209,7 +1270,7 @@ func (e *Engine) Quiesce(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	e.mu.Lock()
-	inbox := e.inbox
+	inbox := e.controlInbox
 	rootCtx := e.rootCtx
 	e.mu.Unlock()
 	if inbox == nil || rootCtx == nil {
@@ -1271,15 +1332,15 @@ func (e *Engine) Health(ctx context.Context) runtime.ComponentHealth {
 		ctx = context.Background()
 	}
 	e.mu.Lock()
-	inbox := e.inbox
+	controlInbox := e.controlInbox
 	rootCtx := e.rootCtx
 	e.mu.Unlock()
-	if inbox == nil || rootCtx == nil {
+	if controlInbox == nil || rootCtx == nil {
 		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "task engine not running"}
 	}
 	reply := make(chan engineReply, 1)
 	select {
-	case inbox <- engineRequest{op: opStats, reply: reply}:
+	case controlInbox <- engineRequest{op: opStats, reply: reply}:
 		timeout := 200 * time.Millisecond
 		if dl, ok := ctx.Deadline(); ok {
 			if d := time.Until(dl); d < timeout {
@@ -1318,14 +1379,14 @@ func (e *Engine) Health(ctx context.Context) runtime.ComponentHealth {
 	case <-ctx.Done():
 		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "health check cancelled"}
 	default:
-		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "task engine inbox saturated"}
+		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "task engine control inbox saturated"}
 	}
 }
 
 // SetOwnerLimits sets quota and weight limits for an owner.
 func (e *Engine) SetOwnerLimits(owner tasks.OwnerID, limits admission.OwnerLimits) {
 	e.mu.Lock()
-	inbox := e.inbox
+	inbox := e.controlInbox
 	rootCtx := e.rootCtx
 	e.mu.Unlock()
 	if inbox == nil {
