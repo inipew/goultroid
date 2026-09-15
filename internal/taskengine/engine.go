@@ -76,6 +76,8 @@ var DefaultConfig = Config{
 	DeliveryConcurrency:  DefaultDeliveryConcurrency,
 }
 
+const maxExpiredPerTurn = 128
+
 type workerAssignment struct {
 	rec     *taskRecord
 	spec    tasks.WorkSpec
@@ -197,8 +199,9 @@ type engineStats struct {
 type Engine struct {
 	mu sync.Mutex
 
-	config Config
-	adm    *admission.Controller
+	config    Config
+	configErr error
+	adm       *admission.Controller
 
 	// ---- runLoop-owned execution state ----
 	idleSlots         map[tasks.PoolID][]int
@@ -260,6 +263,9 @@ func ValidateConfig(cfg Config) error {
 	if cfg.ResultCapacity < 0 {
 		return errors.New("taskengine: ResultCapacity cannot be negative")
 	}
+	if cfg.MaxTerminalRetained < 0 {
+		return errors.New("taskengine: MaxTerminalRetained cannot be negative")
+	}
 	if cfg.DecisionTimeout < 0 {
 		return errors.New("taskengine: DecisionTimeout cannot be negative")
 	}
@@ -304,8 +310,11 @@ func ValidateConfig(cfg Config) error {
 	return nil
 }
 
-// NewEngine constructs a TaskEngine with the specified configuration.
+// NewEngine constructs a TaskEngine with the specified configuration. Invalid
+// negative limits are remembered and rejected by Start before any goroutine is
+// launched; zero-valued limits retain their documented default semantics.
 func NewEngine(cfg Config) *Engine {
+	configErr := ValidateConfig(cfg)
 	if cfg.ResultCapacity <= 0 {
 		cfg.ResultCapacity = DefaultConfig.ResultCapacity
 	}
@@ -390,6 +399,7 @@ func NewEngine(cfg Config) *Engine {
 
 	return &Engine{
 		config:              cfg,
+		configErr:           configErr,
 		adm:                 admission.NewController(admPoolConfigs),
 		idleSlots:           idleSlots,
 		poolConcurrencies:   concurrencies,
@@ -426,6 +436,9 @@ func (e *Engine) Start(ctx context.Context) error {
 	defer e.mu.Unlock()
 	if e.runStarted {
 		return errors.New("task engine already started")
+	}
+	if e.configErr != nil {
+		return e.configErr
 	}
 	e.rootCtx, e.rootCancel = context.WithCancel(ctx)
 	e.accepting = true
@@ -892,7 +905,7 @@ func (e *Engine) settleTerminal(rec *taskRecord) {
 }
 
 func (e *Engine) sweepExpired(pool tasks.PoolID, now time.Time) {
-	expired := e.adm.PopExpired(pool, now)
+	expired := e.adm.PopExpiredN(pool, now, maxExpiredPerTurn)
 	for _, entry := range expired {
 		rec, ok := e.registry[entry.Spec.ID]
 		if !ok || rec.state != tasks.StateQueued {
@@ -1187,7 +1200,7 @@ func (e *Engine) forceCancelInFlight(rec *taskRecord) {
 	res := tasks.TaskResult{
 		TaskID: rec.spec.ID, Outcome: tasks.OutcomeCancelled, Cause: tasks.CauseShutdown,
 		StartedAt: rec.startedAt, FinishedAt: now,
-		Failure: tasks.FailureInfo{Message: failureMessage},
+		Failure:         tasks.FailureInfo{Message: failureMessage},
 		CancelRequested: true, CancelCause: tasks.CauseShutdown,
 	}
 	if rec.spec.Job != nil {
