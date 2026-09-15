@@ -281,8 +281,11 @@ func (s *Store) LatestAttempt(ctx context.Context, occurrenceID string) (*jobs.J
 	return &a, nil
 }
 
-// ListUnresolvedOccurrences returns a bounded page of dispatched occurrences
-// whose final disposition is still unknown (crash/retry/recovery scan input).
+// ListUnresolvedOccurrences returns a bounded page of recoverable occurrences:
+// Ready intents that have not acquired an execution lease yet and Dispatched
+// occurrences whose final disposition is still unknown. This makes admission
+// rejection/crash-before-prepare durably recoverable without consuming an
+// attempt budget.
 func (s *Store) ListUnresolvedOccurrences(ctx context.Context, limit int) ([]*jobs.JobOccurrence, error) {
 	if limit <= 0 {
 		limit = 50
@@ -293,11 +296,11 @@ func (s *Store) ListUnresolvedOccurrences(ctx context.Context, limit int) ([]*jo
 	query := `
 	SELECT id, job_id, schedule_id, scheduled_for, occurrence_key, state, ready_at, cancel_epoch, revision
 	FROM job_occurrences
-	WHERE state = 'dispatched'
+	WHERE state IN ('ready', 'dispatched') AND ready_at <= ?
 	ORDER BY ready_at ASC, id ASC
 	LIMIT ?;
 	`
-	rows, err := s.db.QueryContext(ctx, query, limit)
+	rows, err := s.db.QueryContext(ctx, query, time.Now().UTC(), limit)
 	if err != nil {
 		return nil, fmt.Errorf("list unresolved occurrences: %w", err)
 	}
