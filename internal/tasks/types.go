@@ -1,8 +1,6 @@
 package tasks
 
-import (
-	"time"
-)
+import "time"
 
 // Typed identifiers for the execution runtime (ADR 0006).
 type TaskID string
@@ -86,4 +84,8 @@ type TaskSnapshot struct {
 	StartedAt  time.Time     `json:"started_at"`
 	FinishedAt time.Time     `json:"finished_at"`
 	Error      string        `json:"error,omitempty"`
+
+	CancelRequested  bool  `json:"cancel_requested,omitempty"`
+	CancelCause      Cause `json:"cancel_cause,omitempty"`
+	LateCancellation bool  `json:"late_cancellation,omitempty"`
 }
