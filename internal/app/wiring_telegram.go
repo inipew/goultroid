@@ -9,7 +9,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func buildTelegramRuntime(cfg *config.Config, core *coreDependencies, logger *zap.Logger) (*telegramRuntime, error) {
+func buildTelegramRuntime(cfg *config.Config, core *coreDependencies, executionV2 *executionRuntimeV2, logger *zap.Logger) (*telegramRuntime, error) {
 	dispatcherDeps := telegram.DispatcherDeps{
 		Router:         core.router,
 		Permissions:    core.perms,
@@ -26,7 +26,11 @@ func buildTelegramRuntime(cfg *config.Config, core *coreDependencies, logger *za
 	}
 	dispatcher.Executor().SetMetrics(core.metrics)
 	dispatcher.Executor().SetRateLimiter(commandRateLimiterAdapter{limiter: core.cmdLimiter})
-	dispatcher.SetWorkers(core.workerManager)
+	if executionV2 != nil {
+		dispatcher.SetTaskSubmitter(executionV2.Submitter())
+	} else {
+		dispatcher.SetWorkers(core.workerManager)
+	}
 	if core.idempManager != nil {
 		dispatcher.SetIdempotency(core.idempManager)
 	}
