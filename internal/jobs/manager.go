@@ -48,11 +48,14 @@ type Manager struct {
 
 	retryQueue   chan retryItem
 	recoveryWake chan struct{}
+	quiesceCh    chan struct{}
 	stopCh       chan struct{}
 	stopOnce     sync.Once
 	baseCtx      context.Context
 	baseCancel   context.CancelFunc
 	wg           sync.WaitGroup
+	producerWG   sync.WaitGroup
+	attemptWG    sync.WaitGroup
 	done         chan struct{}
 	tracked      map[string]*trackedOccurrence
 }
@@ -131,6 +134,9 @@ func (m *Manager) Start(ctx context.Context) error {
 	if m.recoveryWake == nil {
 		m.recoveryWake = make(chan struct{}, 1)
 	}
+	if m.quiesceCh == nil {
+		m.quiesceCh = make(chan struct{})
+	}
 	if m.stopCh == nil {
 		m.stopCh = make(chan struct{})
 	}
@@ -167,12 +173,46 @@ func (m *Manager) Start(ctx context.Context) error {
 
 func (m *Manager) Quiesce(context.Context) error {
 	m.mu.Lock()
-	m.accepting = false
+	if m.accepting {
+		m.accepting = false
+		if m.quiesceCh != nil {
+			close(m.quiesceCh)
+		}
+	}
 	m.mu.Unlock()
 	return nil
 }
 
-func (m *Manager) Drain(context.Context) error { return nil }
+// Drain fences admission, waits for producers that crossed the admission
+// boundary before Quiesce, then waits for all accepted attempt monitors. It
+// deliberately does not wait for future retry timers: retry-pending
+// occurrences remain durable and are converged by startup recovery.
+func (m *Manager) Drain(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := m.Quiesce(ctx); err != nil {
+		return err
+	}
+	if err := waitGroupContext(ctx, &m.producerWG); err != nil {
+		return err
+	}
+	return waitGroupContext(ctx, &m.attemptWG)
+}
+
+func waitGroupContext(ctx context.Context, wg *sync.WaitGroup) error {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 
 func (m *Manager) beginStop() {
 	_ = m.Quiesce(context.Background())
@@ -371,10 +411,12 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey str
 		m.mu.RUnlock()
 		return nil, "", errors.New("job admission is closed")
 	}
+	m.producerWG.Add(1)
 	definition, found := m.definitions[jobID]
 	handler := m.handlers[definition.HandlerType]
 	client := m.client
 	m.mu.RUnlock()
+	defer m.producerWG.Done()
 	if !found {
 		return nil, "", fmt.Errorf("job definition not found: %s", jobID)
 	}
@@ -495,6 +537,11 @@ func (m *Manager) signalRecovery() {
 func (m *Manager) enqueueRetry(item retryItem) {
 	m.mu.RLock()
 	queue := m.retryQueue
+	if queue != nil {
+		// Every successfully queued monitor owns one attemptWG count until
+		// watchAttempt has completed its terminal persistence/retry decision.
+		m.attemptWG.Add(1)
+	}
 	m.mu.RUnlock()
 	if queue == nil {
 		m.signalRecovery()
@@ -503,6 +550,7 @@ func (m *Manager) enqueueRetry(item retryItem) {
 	select {
 	case queue <- item:
 	default:
+		m.attemptWG.Done()
 		m.signalRecovery()
 	}
 }
@@ -604,8 +652,10 @@ func leaseDurationFor(def JobDefinition) time.Duration {
 
 // watchAttempt waits for one attempt's ticket and drives the retry protocol.
 func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
+	defer m.attemptWG.Done()
 	m.mu.RLock()
 	stopCh := m.stopCh
+	quiesceCh := m.quiesceCh
 	tr, tracked := m.tracked[item.occurrenceID]
 	m.mu.RUnlock()
 	if !tracked {
@@ -659,16 +709,38 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		m.untrack(item.occurrenceID)
 		return
 	}
+
+	// A failed attempt with retry budget remaining is durable. Once admission is
+	// quiesced, leave it unresolved for startup recovery rather than holding
+	// Drain on a future retry timer.
+	m.mu.RLock()
+	accepting := m.accepting
+	m.mu.RUnlock()
+	if !accepting {
+		return
+	}
 	if delay := retryDelay(tr.def.RetryPolicy, attempts); delay > 0 {
 		timer := time.NewTimer(delay)
 		defer timer.Stop()
 		select {
 		case <-stopCh:
 			return
+		case <-quiesceCh:
+			return
 		case <-baseCtx.Done():
 			return
 		case <-timer.C:
 		}
+	}
+
+	// Quiesce is also checked after backoff, before any retry-side storage
+	// mutation. A retry admitted just before Quiesce remains represented by this
+	// attemptWG count, so Drain cannot race past it.
+	m.mu.RLock()
+	accepting = m.accepting
+	m.mu.RUnlock()
+	if !accepting {
+		return
 	}
 	// Re-read after backoff: cancellation wins over retry.
 	if occ2, err := m.store.GetOccurrence(ctx, item.occurrenceID); err != nil {
@@ -680,7 +752,7 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		return
 	}
 	m.mu.RLock()
-	accepting := m.accepting
+	accepting = m.accepting
 	m.mu.RUnlock()
 	if !accepting {
 		return
@@ -738,6 +810,15 @@ func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def Job
 // Recover scans unresolved occurrences and converges each one. Repeated calls converge; limit bounds each scan.
 func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error) {
 	var report RecoverReport
+	m.mu.RLock()
+	if !m.accepting {
+		m.mu.RUnlock()
+		return report, errors.New("job admission is closed")
+	}
+	m.producerWG.Add(1)
+	m.mu.RUnlock()
+	defer m.producerWG.Done()
+
 	unresolved, err := m.store.ListUnresolvedOccurrences(ctx, limit)
 	if err != nil {
 		return report, err
