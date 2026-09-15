@@ -73,22 +73,30 @@ func TestManagerPersistsOccurrenceAttemptAndCompletion(t *testing.T) {
 	client.mu.Lock()
 	spec := client.spec
 	client.mu.Unlock()
-	if spec.Job == nil || spec.Job.AttemptID == "" || spec.Job.OccurrenceID == "" {
-		t.Fatalf("durable identity missing from submitted work: %#v", spec.Job)
+	if spec.Job != nil {
+		t.Fatalf("attempt was leased before physical permit: %#v", spec.Job)
 	}
-	if spec.Commit == nil {
-		t.Fatalf("durable commit hook missing from submitted work")
+	if spec.Prepare == nil || spec.Commit == nil {
+		t.Fatalf("post-permit prepare/commit hooks missing")
 	}
-	// Simulate the engine's durable commit path: physical completion followed
-	// by exactly one Commit invocation.
-	if err := spec.Commit(context.Background(), tasks.TaskResult{TaskID: spec.ID, Outcome: tasks.OutcomeCompleted, FinishedAt: time.Now().UTC()}); err != nil {
+
+	// Simulate the fixed worker boundary: a physical permit has already been
+	// consumed when Prepare is invoked. Only now may the durable attempt exist.
+	ref, err := spec.Prepare(context.Background(), spec.ID)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if ref == nil || ref.AttemptID == "" || ref.OccurrenceID == "" {
+		t.Fatalf("durable identity missing after prepare: %#v", ref)
+	}
+	if err := spec.Commit(context.Background(), tasks.TaskResult{TaskID: spec.ID, AttemptID: ref.AttemptID, Outcome: tasks.OutcomeCompleted, FinishedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
 
 	deadline := time.Now().Add(time.Second)
 	for {
 		var state string
-		err = db.DB.QueryRow(`SELECT state FROM job_attempts WHERE id = ?`, spec.Job.AttemptID).Scan(&state)
+		err = db.DB.QueryRow(`SELECT state FROM job_attempts WHERE id = ?`, ref.AttemptID).Scan(&state)
 		if err == nil && state == string(jobs.AttemptCompleted) {
 			break
 		}
@@ -98,7 +106,7 @@ func TestManagerPersistsOccurrenceAttemptAndCompletion(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	var occurrenceState string
-	if err := db.DB.QueryRow(`SELECT state FROM job_occurrences WHERE id = ?`, spec.Job.OccurrenceID).Scan(&occurrenceState); err != nil && err != sql.ErrNoRows {
+	if err := db.DB.QueryRow(`SELECT state FROM job_occurrences WHERE id = ?`, ref.OccurrenceID).Scan(&occurrenceState); err != nil && err != sql.ErrNoRows {
 		t.Fatal(err)
 	}
 	if occurrenceState != string(jobs.OccurrenceCompleted) {
@@ -106,7 +114,7 @@ func TestManagerPersistsOccurrenceAttemptAndCompletion(t *testing.T) {
 	}
 }
 
-func TestManagerPersistsOccurrenceAttempt_PumpFallback(t *testing.T) {
+func TestManagerPrepareFailureDoesNotConsumeAttemptBudget(t *testing.T) {
 	db, err := database.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -115,7 +123,6 @@ func TestManagerPersistsOccurrenceAttempt_PumpFallback(t *testing.T) {
 	if err := jobsqlite.InitSchema(context.Background(), db.DB); err != nil {
 		t.Fatal(err)
 	}
-	// Start pump, then stop it so enqueue fails, triggering the fallback path
 	pump := jobs.NewPersistencePump(1, 1)
 	if err := pump.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -133,37 +140,37 @@ func TestManagerPersistsOccurrenceAttempt_PumpFallback(t *testing.T) {
 	if err := manager.Register(jobs.JobDefinition{ID: "job-fb", ScopeOwner: "plugin:test", QuotaOwner: "user:1", HandlerType: "fallback", Pool: "general"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := manager.SubmitOccurrence(context.Background(), "job-fb", "manual:fb"); err != nil {
+	if _, occurrenceID, err := manager.SubmitOccurrence(context.Background(), "job-fb", "manual:fb"); err != nil {
 		t.Fatal(err)
+	} else if occurrenceID == "" {
+		t.Fatal("missing occurrence id")
 	}
 	client.mu.Lock()
 	spec := client.spec
 	client.mu.Unlock()
-	if spec.Job == nil || spec.Job.AttemptID == "" {
-		t.Fatalf("durable identity missing: %#v", spec.Job)
+	if spec.Job != nil {
+		t.Fatalf("attempt was leased during admission: %#v", spec.Job)
 	}
-	if spec.Commit == nil {
-		t.Fatalf("durable commit hook missing")
+	if spec.Prepare == nil {
+		t.Fatal("prepare hook missing")
 	}
-
-	// The commit hook is a pure store function: it persists even though the
-	// pump is stopped, which is exactly what the engine's bounded direct
-	// fallback relies on when the pump is saturated or down.
-	if err := spec.Commit(context.Background(), tasks.TaskResult{TaskID: spec.ID, Outcome: tasks.OutcomeCompleted, FinishedAt: time.Now().UTC()}); err != nil {
-		t.Fatalf("commit: %v", err)
+	if _, err := spec.Prepare(context.Background(), spec.ID); err == nil {
+		t.Fatal("expected prepare to fail while persistence pump is stopped")
 	}
 
-	deadline := time.Now().Add(time.Second)
-	for {
-		var state string
-		err = db.DB.QueryRow(`SELECT state FROM job_attempts WHERE id = ?`, spec.Job.AttemptID).Scan(&state)
-		if err == nil && state == string(jobs.AttemptCompleted) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("fallback attempt completion was not persisted, state=%q err=%v", state, err)
-		}
-		time.Sleep(time.Millisecond)
+	var attempts int
+	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM job_attempts`).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 0 {
+		t.Fatalf("pre-start prepare failure consumed %d execution attempts, want 0", attempts)
+	}
+	var occurrenceState string
+	if err := db.DB.QueryRow(`SELECT state FROM job_occurrences WHERE occurrence_key = 'manual:fb'`).Scan(&occurrenceState); err != nil {
+		t.Fatal(err)
+	}
+	if occurrenceState != string(jobs.OccurrenceReady) {
+		t.Fatalf("occurrence state=%q, want ready for redrive", occurrenceState)
 	}
 }
 
@@ -221,6 +228,9 @@ func TestEngineBackedOccurrenceCommitsBeforeTicketResolves(t *testing.T) {
 	}
 	if res.Outcome != tasks.OutcomeCompleted {
 		t.Fatalf("outcome=%s, want completed", res.Outcome)
+	}
+	if res.AttemptID == "" {
+		t.Fatal("worker result is missing post-permit attempt identity")
 	}
 	// The ticket resolved, so the commit must already be durable: read the
 	// store synchronously with no polling.
