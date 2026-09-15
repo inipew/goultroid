@@ -310,7 +310,18 @@ func (m *Manager) submit(ctx context.Context, poolName string, task tasks.Task, 
 				reservation.Release()
 			}
 			defer cancel()
-			execCtx, execCancel := context.WithCancel(taskCtx)
+
+			startCtx, startErr := tm.StartPermitted(task.ID)
+			if startErr != nil {
+				state := tasks.StateFailed
+				if errors.Is(startErr, context.Canceled) || errors.Is(startErr, context.DeadlineExceeded) || errors.Is(taskCtx.Err(), context.Canceled) {
+					state = tasks.StateCancelled
+				}
+				tm.Finish(task.ID, state, startErr)
+				return startErr
+			}
+
+			execCtx, execCancel := context.WithCancel(startCtx)
 			stopPoolCancel := context.AfterFunc(runCtx, execCancel)
 			defer stopPoolCancel()
 			defer execCancel()
@@ -348,9 +359,9 @@ func (m *Manager) submit(ctx context.Context, poolName string, task tasks.Task, 
 func (m *Manager) admitTask(admissionCtx context.Context, pool *Pool, tm *tasks.Manager, taskCtx context.Context, cancel context.CancelFunc, task tasks.Task, reservation *ExecutionReservation) {
 	defer m.admissionWG.Done()
 	defer pool.releaseAdmission()
-	startCtx, err := tm.WaitStart(admissionCtx, task.ID)
+	permitCtx, err := tm.WaitStartPermit(admissionCtx, task.ID)
 	if err == nil {
-		enqueueCtx, enqueueCancel := context.WithCancel(startCtx)
+		enqueueCtx, enqueueCancel := context.WithCancel(permitCtx)
 		stopAdmission := context.AfterFunc(admissionCtx, enqueueCancel)
 		err = pool.submitAccepted(enqueueCtx, task)
 		stopAdmission()
