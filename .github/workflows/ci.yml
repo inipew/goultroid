@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, fix/test-next-jobs-drain ]
   pull_request:
     branches: [ main, master ]
 
