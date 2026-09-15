@@ -13,17 +13,11 @@ import (
 )
 
 func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Message) error {
-	// Admission and WaitGroup.Add are serialized with Stop through d.mu. This is
-	// required by sync.WaitGroup: a positive Add that starts from zero must happen
-	// before Wait begins.
-	d.mu.Lock()
-	if !d.acceptingUpdates.Load() {
-		d.mu.Unlock()
+	release, accepted := d.admitIngress()
+	if !accepted {
 		return nil
 	}
-	d.inFlight.Add(1)
-	d.mu.Unlock()
-	defer d.inFlight.Done()
+	defer release()
 
 	chatID := extractChatIDFromPeer(msg.PeerID)
 	if d.idempotencyMgr != nil {
@@ -68,27 +62,21 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 			for _, c := range e.Chats {
 				job.chats = append(job.chats, c)
 			}
-			if !d.stopping.Load() {
-				d.mu.RLock()
-				if !d.stopping.Load() && d.peerQueue != nil {
-					select {
-					case d.peerQueue <- job:
-						d.peerEnqueued.Add(1)
-					default:
-						d.peerDropped.Add(1)
-					}
-					d.mu.RUnlock()
-				} else {
-					d.mu.RUnlock()
-					if !d.stopping.Load() {
-						go func() {
-							bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-							defer cancel()
-							_ = r.storage.SaveEntitiesBatch(bgCtx, job.users, job.channels, job.chats)
-						}()
-					}
+			d.mu.RLock()
+			if !d.stopping.Load() && d.peerQueue != nil {
+				select {
+				case d.peerQueue <- job:
+					d.peerEnqueued.Add(1)
+				default:
+					d.peerDropped.Add(1)
 				}
+			} else if !d.stopping.Load() {
+				// Start normally creates the bounded peer queue before transport
+				// ingress begins. If lifecycle wiring is incomplete, fail boundedly
+				// instead of spawning an untracked persistence goroutine.
+				d.peerDropped.Add(1)
 			}
+			d.mu.RUnlock()
 		}
 	}
 
@@ -229,6 +217,8 @@ func (d *Dispatcher) dispatchAsyncHandlers(ctx context.Context, handlers []Messa
 		d.logger.Warn("observer execution unavailable", zap.Error(ErrTasksNotConfigured))
 		return
 	}
+	// This child Add is safe while Drain is waiting because dispatch itself
+	// still owns one in-flight reference until this function returns.
 	d.inFlight.Add(1)
 	_, err := client.Submit(ctx, tasks.WorkSpec{
 		ID:               tasks.TaskID(fmt.Sprintf("observer:%d:%d", extractChatIDFromPeer(msg.PeerID), msg.ID)),

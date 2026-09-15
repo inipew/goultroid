@@ -25,7 +25,7 @@ func (d *Dispatcher) Name() string {
 
 // Dependencies returns prerequisite components for runtime.Component.
 func (d *Dispatcher) Dependencies() []string {
-	return []string{"eventbus"}
+	return []string{"eventbus", "taskengine"}
 }
 
 // Health probes Dispatcher health.
@@ -49,32 +49,48 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 		return nil
 	}
 	d.peerQueue = make(chan peerUpdateJob, 1024)
+	peerCtx, peerCancel := context.WithCancel(ctx)
+	d.peerCancel = peerCancel
+	d.peerDone = make(chan struct{})
 	peerProcessors := 2
 	d.peerWG.Add(peerProcessors)
 	q := d.peerQueue
+	done := d.peerDone
 	for i := 0; i < peerProcessors; i++ {
-		go d.peerWorker(ctx, q)
+		go d.peerWorker(peerCtx, q)
 	}
+	// One lifecycle-owned reaper per Dispatcher start. Stop/Drain never create
+	// waiter goroutines, so caller deadlines cannot accumulate detached joins.
+	go func() {
+		d.peerWG.Wait()
+		close(done)
+	}()
 	return nil
 }
 
-func (d *Dispatcher) peerWorker(_ context.Context, q <-chan peerUpdateJob) {
+func (d *Dispatcher) peerWorker(ctx context.Context, q <-chan peerUpdateJob) {
 	defer d.peerWG.Done()
-	for job := range q {
-		// Shutdown may occur after the application root context is canceled. Peer
-		// cache persistence is drain work, so it gets its own bounded context.
-		saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		resolver := d.getResolver()
-		r, ok := resolver.(*Resolver)
-		if !ok || r == nil || r.storage == nil {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case job, ok := <-q:
+			if !ok {
+				return
+			}
+			saveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			resolver := d.getResolver()
+			r, ok := resolver.(*Resolver)
+			if !ok || r == nil || r.storage == nil {
+				cancel()
+				continue
+			}
+			if err := r.storage.SaveEntitiesBatch(saveCtx, job.users, job.channels, job.chats); err != nil && ctx.Err() == nil {
+				d.peerSaveFailed.Add(1)
+				d.logger.Warn("failed to save entities batch to storage", zap.Error(err))
+			}
 			cancel()
-			continue
 		}
-		if err := r.storage.SaveEntitiesBatch(saveCtx, job.users, job.channels, job.chats); err != nil {
-			d.peerSaveFailed.Add(1)
-			d.logger.Warn("failed to save entities batch to storage", zap.Error(err))
-		}
-		cancel()
 	}
 }
 
@@ -87,65 +103,86 @@ func (d *Dispatcher) Quiesce(ctx context.Context) error {
 	return nil
 }
 
-// Stop first closes ingress admission, then drains all in-flight dispatches, then
-// closes the peer queue. The admission transition and WaitGroup.Add are serialized
-// by d.mu so no new Add can occur after Wait starts.
+// Drain waits for ingress accepted before Quiesce to leave the dispatch path,
+// then waits for command callbacks. Both counters are context-aware, so a
+// shutdown deadline never leaves a detached waiter goroutine behind.
+func (d *Dispatcher) Drain(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_ = d.Quiesce(ctx)
+	if err := d.inFlight.WaitContext(ctx); err != nil {
+		return err
+	}
+	return d.cmdWG.WaitContext(ctx)
+}
+
+func (d *Dispatcher) beginPeerStop() {
+	d.stopping.Store(true)
+	d.mu.Lock()
+	q := d.peerQueue
+	d.peerQueue = nil
+	done := d.peerDone
+	d.mu.Unlock()
+	d.peerStopOnce.Do(func() {
+		if q != nil {
+			close(q)
+			return
+		}
+		// Stop-before-Start: no worker reaper exists, so complete the already
+		// empty peer lifecycle synchronously.
+		if done != nil {
+			select {
+			case <-done:
+			default:
+				close(done)
+			}
+		}
+	})
+}
+
+// Stop uses the explicit Drain phase and never lets peer-cache workers
+// outlive an expired shutdown budget while retaining DB access.
 func (d *Dispatcher) Stop(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	var err error
-	d.peerStopOnce.Do(func() {
-		_ = d.Quiesce(ctx)
-
-		doneInFlight := make(chan struct{})
-		go func() {
-			d.inFlight.Wait()
-			close(doneInFlight)
-		}()
-		select {
-		case <-doneInFlight:
-		case <-ctx.Done():
-			err = ctx.Err()
+	drainErr := d.Drain(ctx)
+	d.beginPeerStop()
+	select {
+	case <-d.peerDone:
+		d.mu.RLock()
+		cancel := d.peerCancel
+		d.mu.RUnlock()
+		if cancel != nil {
+			cancel()
 		}
-
-		doneCmds := make(chan struct{})
-		go func() {
-			d.cmdWG.Wait()
-			close(doneCmds)
-		}()
-		select {
-		case <-doneCmds:
-		case <-ctx.Done():
-			if err == nil {
-				err = ctx.Err()
-			}
+		return drainErr
+	case <-ctx.Done():
+		d.mu.RLock()
+		cancel := d.peerCancel
+		d.mu.RUnlock()
+		if cancel != nil {
+			cancel()
 		}
-
-		d.stopping.Store(true)
-		d.mu.Lock()
-		q := d.peerQueue
-		d.peerQueue = nil
-		d.mu.Unlock()
-
-		if q == nil {
-			return
+		if drainErr != nil {
+			return drainErr
 		}
-		close(q)
-		doneWorkers := make(chan struct{})
-		go func() {
-			d.peerWG.Wait()
-			close(doneWorkers)
-		}()
-		select {
-		case <-doneWorkers:
-		case <-ctx.Done():
-			if err == nil {
-				err = ctx.Err()
-			}
-		}
-	})
-	return err
+		return ctx.Err()
+	}
+}
+
+// ForceStop is the runtime emergency path after graceful budget expiry.
+func (d *Dispatcher) ForceStop(context.Context) error {
+	_ = d.Quiesce(context.Background())
+	d.beginPeerStop()
+	d.mu.RLock()
+	cancel := d.peerCancel
+	d.mu.RUnlock()
+	if cancel != nil {
+		cancel()
+	}
+	return nil
 }
 
 func (d *Dispatcher) PeerCacheStats() (enqueued, dropped, saveFailed int64) {

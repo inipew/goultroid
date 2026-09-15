@@ -39,8 +39,8 @@ type Dispatcher struct {
 	messageHandlers  []prioritizedHandler
 	nextHandlerID    uint64
 	acceptingUpdates atomic.Bool
-	inFlight         sync.WaitGroup
-	cmdWG            sync.WaitGroup
+	inFlight         lifecycleCounter
+	cmdWG            lifecycleCounter
 	runningCommands  atomic.Int64
 	totalCommands    atomic.Int64
 	mu               sync.RWMutex
@@ -48,6 +48,8 @@ type Dispatcher struct {
 	peerQueue      chan peerUpdateJob
 	peerWG         sync.WaitGroup
 	peerStopOnce   sync.Once
+	peerDone       chan struct{}
+	peerCancel     context.CancelFunc
 	peerDropped    atomic.Int64
 	peerEnqueued   atomic.Int64
 	peerSaveFailed atomic.Int64
@@ -122,6 +124,7 @@ func NewDispatcher(
 		executor:    executor,
 		albumBuffer: core.NewAlbumBuffer(10 * time.Minute),
 		normalizer:  NewNormalizer(),
+		peerDone:    make(chan struct{}),
 	}
 	d.acceptingUpdates.Store(true)
 	return d

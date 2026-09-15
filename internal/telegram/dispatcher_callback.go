@@ -46,9 +46,12 @@ func (d *Dispatcher) OnNewChannelMessage(ctx context.Context, e tg.Entities, upd
 
 // OnEditMessage handles edits in private chats and standard groups.
 func (d *Dispatcher) OnEditMessage(ctx context.Context, e tg.Entities, update *tg.UpdateEditMessage) error {
-	if !d.acceptingUpdates.Load() {
+	release, accepted := d.admitIngress()
+	if !accepted {
 		return nil
 	}
+	defer release()
+
 	bus := d.getEventBus()
 	if bus == nil {
 		return nil
@@ -69,9 +72,12 @@ func (d *Dispatcher) OnEditMessage(ctx context.Context, e tg.Entities, update *t
 
 // OnEditChannelMessage handles edits in supergroups and channels.
 func (d *Dispatcher) OnEditChannelMessage(ctx context.Context, e tg.Entities, update *tg.UpdateEditChannelMessage) error {
-	if !d.acceptingUpdates.Load() {
+	release, accepted := d.admitIngress()
+	if !accepted {
 		return nil
 	}
+	defer release()
+
 	bus := d.getEventBus()
 	if bus == nil {
 		return nil
@@ -92,9 +98,12 @@ func (d *Dispatcher) OnEditChannelMessage(ctx context.Context, e tg.Entities, up
 
 // OnDeleteMessages handles bulk message deletions in private chats and standard groups.
 func (d *Dispatcher) OnDeleteMessages(ctx context.Context, e tg.Entities, update *tg.UpdateDeleteMessages) error {
-	if !d.acceptingUpdates.Load() {
+	release, accepted := d.admitIngress()
+	if !accepted {
 		return nil
 	}
+	defer release()
+
 	bus := d.getEventBus()
 	if bus == nil {
 		return nil
@@ -110,9 +119,12 @@ func (d *Dispatcher) OnDeleteMessages(ctx context.Context, e tg.Entities, update
 
 // OnDeleteChannelMessages handles bulk message deletions in supergroups and channels.
 func (d *Dispatcher) OnDeleteChannelMessages(ctx context.Context, e tg.Entities, update *tg.UpdateDeleteChannelMessages) error {
-	if !d.acceptingUpdates.Load() {
+	release, accepted := d.admitIngress()
+	if !accepted {
 		return nil
 	}
+	defer release()
+
 	bus := d.getEventBus()
 	if bus == nil {
 		return nil
@@ -176,9 +188,12 @@ func (d *Dispatcher) callbackInputPeer(ctx context.Context, peer tg.PeerClass, e
 
 // OnBotCallbackQuery handles inline keyboard button callback queries.
 func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, update *tg.UpdateBotCallbackQuery) error {
-	if !d.acceptingUpdates.Load() {
+	release, accepted := d.admitIngress()
+	if !accepted {
 		return nil
 	}
+	defer release()
+
 	if d.idempotencyMgr != nil {
 		key := fmt.Sprintf("cb:%d", update.QueryID)
 		isNew, err := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
@@ -246,9 +261,12 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 
 // OnInlineBotCallbackQuery handles inline message button callback queries.
 func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities, update *tg.UpdateInlineBotCallbackQuery) error {
-	if !d.acceptingUpdates.Load() {
+	release, accepted := d.admitIngress()
+	if !accepted {
 		return nil
 	}
+	defer release()
+
 	if d.idempotencyMgr != nil {
 		key := fmt.Sprintf("inline_cb:%d", update.QueryID)
 		isNew, err := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
@@ -313,9 +331,12 @@ func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities
 
 // OnBotInlineQuery handles incoming inline search query requests.
 func (d *Dispatcher) OnBotInlineQuery(ctx context.Context, e tg.Entities, update *tg.UpdateBotInlineQuery) error {
-	if !d.acceptingUpdates.Load() {
+	release, accepted := d.admitIngress()
+	if !accepted {
 		return nil
 	}
+	defer release()
+
 	engine := d.getInlineEngine()
 	if engine == nil {
 		return nil
@@ -346,9 +367,12 @@ func (d *Dispatcher) OnBotInlineQuery(ctx context.Context, e tg.Entities, update
 
 // OnBotInlineSend handles inline result chosen feedback (observational only).
 func (d *Dispatcher) OnBotInlineSend(ctx context.Context, e tg.Entities, update *tg.UpdateBotInlineSend) error {
-	if !d.acceptingUpdates.Load() {
+	release, accepted := d.admitIngress()
+	if !accepted {
 		return nil
 	}
+	defer release()
+
 	bus := d.getEventBus()
 	if bus != nil {
 		var inlineID tg.InputBotInlineMessageIDClass
@@ -370,9 +394,12 @@ func (d *Dispatcher) OnBotInlineSend(ctx context.Context, e tg.Entities, update 
 
 // OnMessageReactions handles reaction updates on messages.
 func (d *Dispatcher) OnMessageReactions(ctx context.Context, e tg.Entities, update *tg.UpdateMessageReactions) error {
-	if !d.acceptingUpdates.Load() {
+	release, accepted := d.admitIngress()
+	if !accepted {
 		return nil
 	}
+	defer release()
+
 	bus := d.getEventBus()
 	if bus == nil {
 		return nil
