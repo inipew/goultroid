@@ -2,8 +2,12 @@ package telegram
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
+
+	"github.com/inipew/goultroid/internal/tasks"
+	"github.com/inipew/goultroid/internal/workers"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
@@ -43,5 +47,45 @@ func TestDispatcherStopClosesAdmissionBeforeWait(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Stop did not finish")
+	}
+}
+
+func TestObserverCancelledBeforeStartDoesNotLeakInFlight(t *testing.T) {
+	manager := workers.NewManager()
+	manager.SetTasksManager(tasks.NewManager())
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	started := make(chan struct{}, 8)
+	for i := 0; i < 8; i++ {
+		if err := manager.TrySubmit(context.Background(), workers.PoolGeneral, tasks.Task{ID: fmt.Sprintf("block-%d", i), Owner: fmt.Sprintf("owner-%d", i), Run: func(context.Context) error { started <- struct{}{}; <-release; return nil }}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 8; i++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			close(release)
+			t.Fatal("blocker did not start")
+		}
+	}
+	d := NewDispatcher(core.NewRouter("."), core.NewPermissions(1, nil), nil, zap.NewNop())
+	d.SetWorkers(manager)
+	ctx, cancel := context.WithCancel(context.Background())
+	d.dispatchAsyncHandlers(ctx, []MessageHandler{func(context.Context, tg.Entities, *tg.Message, bool, string) error {
+		t.Error("cancelled observer executed")
+		return nil
+	}}, tg.Entities{}, &tg.Message{ID: 123, PeerID: &tg.PeerChat{ChatID: 1}}, false, "")
+	cancel()
+	close(release)
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
+	defer stopCancel()
+	if err := manager.Stop(stopCtx); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Stop(stopCtx); err != nil {
+		t.Fatalf("observer leaked in-flight counter: %v", err)
 	}
 }

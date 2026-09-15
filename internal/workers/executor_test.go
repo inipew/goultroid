@@ -144,3 +144,29 @@ func TestExecuteAssignment_Timeout(t *testing.T) {
 		t.Errorf("expected permit to be released after timeout")
 	}
 }
+
+func TestExecuteAssignmentRejectsInvalidPermitsAndUnresolvedHandler(t *testing.T) {
+	for _, scenario := range []string{"released", "wrong-pool", "wrong-task", "nil-handler", "expired"} {
+		t.Run(scenario, func(t *testing.T) {
+			p := NewPermit("general", 0, 1, "task", 1, nil)
+			spec := tasks.WorkSpec{ID: "task", Pool: "general", Handler: func(context.Context) error { t.Fatal("invalid assignment executed"); return nil }}
+			switch scenario {
+			case "released":
+				p.Release()
+			case "wrong-pool":
+				spec.Pool = "other"
+			case "wrong-task":
+				spec.ID = "other"
+			case "nil-handler":
+				spec.Handler = nil
+				spec.HandlerRef = "unresolved"
+			case "expired":
+				spec.QueueDeadline = time.Now().Add(-time.Second)
+			}
+			result := ExecuteAssignment(Assignment{Spec: spec, Permit: p})
+			if result.IsSuccess() || !result.StartedAt.IsZero() {
+				t.Fatalf("invalid pre-start result: %+v", result)
+			}
+		})
+	}
+}

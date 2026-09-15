@@ -240,7 +240,7 @@ func (c *Controller) SelectCandidate(pool tasks.PoolID) (*QueueEntry, error) {
 	}
 
 	classCount := len(ps.activeClasses)
-	for classTries := 0; classTries < classCount; classTries++ {
+	for classTries := 0; classTries < classCount && len(ps.activeClasses) > 0; classTries++ {
 		if ps.classCursor >= len(ps.activeClasses) {
 			ps.classCursor = 0
 		}
@@ -249,11 +249,14 @@ func (c *Controller) SelectCandidate(pool tasks.PoolID) (*QueueEntry, error) {
 		if quantum <= 0 {
 			quantum = 1
 		}
-		ps.classDeficits[class] += quantum
+		if ps.classDeficits[class] <= 0 {
+			ps.classDeficits[class] = quantum
+		}
 
 		// Traverse active owners for this class
 		owners := ps.activeOwners[class]
 		if len(owners) == 0 {
+			ps.classDeficits[class] = 0
 			// Remove empty class from active with slot zeroing
 			n := len(ps.activeClasses)
 			copy(ps.activeClasses[ps.classCursor:], ps.activeClasses[ps.classCursor+1:])
@@ -264,7 +267,7 @@ func (c *Controller) SelectCandidate(pool tasks.PoolID) (*QueueEntry, error) {
 
 		ownerCount := len(owners)
 		cursor := ps.ownerCursor[class]
-		for ownerTries := 0; ownerTries < ownerCount; ownerTries++ {
+		for ownerTries := 0; ownerTries < ownerCount && len(owners) > 0; ownerTries++ {
 			if cursor >= len(owners) {
 				cursor = 0
 			}
@@ -273,10 +276,15 @@ func (c *Controller) SelectCandidate(pool tasks.PoolID) (*QueueEntry, error) {
 			if ownerQuantum <= 0 {
 				ownerQuantum = 1
 			}
-			ps.ownerDeficits[class][owner] += ownerQuantum
+			if ps.ownerDeficits[class][owner] <= 0 {
+				ps.ownerDeficits[class][owner] = ownerQuantum
+			}
 
 			rq := ps.queues[class][owner]
 			if rq == nil || rq.Len() == 0 {
+				delete(ps.ownerDeficits[class], owner)
+				delete(ps.ownerQuantums[class], owner)
+				delete(ps.queues[class], owner)
 				// Remove empty owner from active with slot zeroing
 				n := len(owners)
 				copy(owners[cursor:], owners[cursor+1:])
@@ -337,11 +345,19 @@ func (c *Controller) SelectCandidate(pool tasks.PoolID) (*QueueEntry, error) {
 				c.orderingLocks[candidate.Spec.OrderingKey] = candidate.Spec.ID
 			}
 
-			ps.ownerCursor[class] = cursor + 1
+			ps.ownerCursor[class] = cursor
+			if ps.ownerDeficits[class][owner] <= 0 || rq.Len() == 0 {
+				ps.ownerCursor[class]++
+				ps.ownerDeficits[class][owner] = 0
+			}
+			if ps.classDeficits[class] <= 0 {
+				ps.classCursor++
+			}
 			return candidate, nil
 		}
 
 		ps.ownerCursor[class] = cursor
+		ps.classDeficits[class] = 0
 		ps.classCursor++
 	}
 

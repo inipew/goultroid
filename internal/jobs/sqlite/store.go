@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -51,7 +52,10 @@ func (s *Store) SaveDefinition(ctx context.Context, def *jobs.JobDefinition) err
 		revision = revision + 1,
 		updated_at = excluded.updated_at;
 	`
-	retryPolicyBytes, _ := json.Marshal(def.RetryPolicy)
+	retryPolicyBytes, err := json.Marshal(def.RetryPolicy)
+	if err != nil {
+		return fmt.Errorf("encode retry policy: %w", err)
+	}
 	now := time.Now().UTC()
 	timeoutMs := def.Timeout.Milliseconds()
 	enabledInt := 0
@@ -59,7 +63,7 @@ func (s *Store) SaveDefinition(ctx context.Context, def *jobs.JobDefinition) err
 		enabledInt = 1
 	}
 
-	_, err := s.db.ExecContext(ctx, query,
+	_, err = s.db.ExecContext(ctx, query,
 		def.ID, def.ScopeOwner, def.QuotaOwner, def.HandlerType, def.Version, def.Payload,
 		def.Pool, def.Class, timeoutMs, string(retryPolicyBytes), enabledInt, def.Revision, now,
 	)
@@ -95,7 +99,9 @@ func (s *Store) GetDefinition(ctx context.Context, id string) (*jobs.JobDefiniti
 
 	def.Timeout = time.Duration(timeoutMs) * time.Millisecond
 	def.Enabled = enabledInt == 1
-	_ = json.Unmarshal([]byte(retryPolicyStr), &def.RetryPolicy)
+	if err := json.Unmarshal([]byte(retryPolicyStr), &def.RetryPolicy); err != nil {
+		return nil, fmt.Errorf("decode retry policy: %w", err)
+	}
 	return &def, nil
 }
 
@@ -131,25 +137,34 @@ func (s *Store) MaterializeOccurrence(ctx context.Context, occ *jobs.JobOccurren
 
 // PrepareAttemptLease atomically creates an attempt and leases the occurrence under writer intent (ADR 0006 §7.3 & §7.4).
 func (s *Store) PrepareAttemptLease(ctx context.Context, occurrenceID, taskID string, leaseDuration time.Duration) (*jobs.JobAttempt, error) {
+	if leaseDuration <= 0 || taskID == "" {
+		return nil, errors.New("invalid attempt lease request")
+	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("begin prepare attempt lease: %w", err)
 	}
 	defer tx.Rollback()
 
+	// Acquire writer intent before any reads to avoid SQLite read-to-write upgrades.
+	if _, err := tx.ExecContext(ctx, `UPDATE job_occurrences SET revision = revision WHERE id = ?`, occurrenceID); err != nil {
+		return nil, fmt.Errorf("acquire prepare writer intent: %w", err)
+	}
+
 	// Check occurrence state and cancel epoch
 	var occState string
 	var cancelEpoch uint64
 	var occRev uint64
-	checkQuery := `SELECT state, cancel_epoch, revision FROM job_occurrences WHERE id = ?;`
-	if err := tx.QueryRowContext(ctx, checkQuery, occurrenceID).Scan(&occState, &cancelEpoch, &occRev); err != nil {
+	var readyAt time.Time
+	checkQuery := `SELECT state, cancel_epoch, revision, ready_at FROM job_occurrences WHERE id = ?;`
+	if err := tx.QueryRowContext(ctx, checkQuery, occurrenceID).Scan(&occState, &cancelEpoch, &occRev, &readyAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrOccurrenceNotFound
 		}
 		return nil, err
 	}
 
-	if occState != string(jobs.OccurrenceReady) {
+	if occState != string(jobs.OccurrenceReady) || readyAt.After(time.Now().UTC()) {
 		return nil, fmt.Errorf("%w: occurrence state is %s", ErrOccurrenceNotReady, occState)
 	}
 
@@ -162,7 +177,7 @@ func (s *Store) PrepareAttemptLease(ctx context.Context, occurrenceID, taskID st
 	attemptNo := attemptCount + 1
 
 	now := time.Now().UTC()
-	leaseEpoch := uint64(now.UnixNano())
+	leaseEpoch := uint64(attemptNo)
 	leaseUntil := now.Add(leaseDuration)
 	attemptID := fmt.Sprintf("attempt:%s:%d", occurrenceID, attemptNo)
 
@@ -178,9 +193,9 @@ func (s *Store) PrepareAttemptLease(ctx context.Context, occurrenceID, taskID st
 	}
 
 	updateOcc := `
-	UPDATE job_occurrences SET state = ?, updated_at = ? WHERE id = ?;
+	UPDATE job_occurrences SET state = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND state = 'ready' AND revision = ? AND cancel_epoch = ?;
 	`
-	if _, err := tx.ExecContext(ctx, updateOcc, string(jobs.OccurrenceDispatched), now, occurrenceID); err != nil {
+	if _, err := tx.ExecContext(ctx, updateOcc, string(jobs.OccurrenceDispatched), now, occurrenceID, occRev, cancelEpoch); err != nil {
 		return nil, fmt.Errorf("update occurrence state: %w", err)
 	}
 
@@ -207,34 +222,52 @@ func (s *Store) CommitAttemptResult(ctx context.Context, attemptID string, lease
 	}
 	defer tx.Rollback()
 
-	now := time.Now().UTC()
-	updateAttempt := `
-	UPDATE job_attempts SET
-		state = ?, result = ?, error = ?, finished_at = ?
-	WHERE id = ? AND lease_epoch = ?;
-	`
-	res, err := tx.ExecContext(ctx, updateAttempt, string(outcome), result, errStr, now, attemptID, leaseEpoch)
-	if err != nil {
-		return fmt.Errorf("commit attempt update: %w", err)
+	switch outcome {
+	case jobs.AttemptCompleted, jobs.AttemptFailed, jobs.AttemptTimedOut, jobs.AttemptCancelled, jobs.AttemptAbortedBeforeStart:
+	default:
+		return errors.New("attempt result must be terminal")
 	}
-	affected, _ := res.RowsAffected()
-	if affected == 0 {
-		return ErrLeaseFencingLost
+	if _, err := tx.ExecContext(ctx, `UPDATE job_attempts SET lease_epoch = lease_epoch WHERE id = ?`, attemptID); err != nil {
+		return fmt.Errorf("acquire completion writer intent: %w", err)
 	}
-
-	// Update parent occurrence state
-	var occID string
-	if err := tx.QueryRowContext(ctx, `SELECT occurrence_id FROM job_attempts WHERE id = ?;`, attemptID).Scan(&occID); err != nil {
+	var occID, state, oldError string
+	var epoch uint64
+	var oldResult []byte
+	var attemptNo int
+	if err := tx.QueryRowContext(ctx, `SELECT occurrence_id, lease_epoch, state, result, COALESCE(error, ''), attempt_no FROM job_attempts WHERE id = ?`, attemptID).Scan(&occID, &epoch, &state, &oldResult, &oldError, &attemptNo); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrLeaseFencingLost
+		}
 		return err
 	}
-
-	occFinalState := jobs.OccurrenceCompleted
-	if outcome != jobs.AttemptCompleted {
-		occFinalState = jobs.OccurrenceFailed
+	if epoch != leaseEpoch {
+		return ErrLeaseFencingLost
 	}
-
-	updateOcc := `UPDATE job_occurrences SET state = ?, updated_at = ? WHERE id = ?;`
-	if _, err := tx.ExecContext(ctx, updateOcc, string(occFinalState), now, occID); err != nil {
+	if state != string(jobs.AttemptLeased) && state != string(jobs.AttemptRunning) {
+		if state == string(outcome) && bytes.Equal(oldResult, result) && oldError == errStr {
+			return tx.Commit() // Lost acknowledgement replay; preserve the original result and timestamps.
+		}
+		return ErrLeaseFencingLost
+	}
+	var latest int
+	var occState string
+	if err := tx.QueryRowContext(ctx, `SELECT state, (SELECT MAX(attempt_no) FROM job_attempts WHERE occurrence_id = ?) FROM job_occurrences WHERE id = ?`, occID, occID).Scan(&occState, &latest); err != nil {
+		return err
+	}
+	if latest != attemptNo || occState != string(jobs.OccurrenceDispatched) {
+		return ErrLeaseFencingLost
+	}
+	now := time.Now().UTC()
+	if _, err := tx.ExecContext(ctx, `UPDATE job_attempts SET state = ?, result = ?, error = ?, finished_at = ? WHERE id = ? AND lease_epoch = ?`, string(outcome), result, errStr, now, attemptID, leaseEpoch); err != nil {
+		return fmt.Errorf("commit attempt update: %w", err)
+	}
+	occFinalState := jobs.OccurrenceFailed
+	if outcome == jobs.AttemptCompleted {
+		occFinalState = jobs.OccurrenceCompleted
+	} else if outcome == jobs.AttemptCancelled {
+		occFinalState = jobs.OccurrenceCancelled
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE job_occurrences SET state = ?, revision = revision + 1, updated_at = ? WHERE id = ?`, string(occFinalState), now, occID); err != nil {
 		return err
 	}
 
@@ -246,14 +279,17 @@ func (s *Store) ListReadyOccurrences(ctx context.Context, limit int) ([]*jobs.Jo
 	if limit <= 0 {
 		limit = 50
 	}
+	if limit > 500 {
+		limit = 500
+	}
 	query := `
 	SELECT id, job_id, schedule_id, scheduled_for, occurrence_key, state, ready_at, cancel_epoch, revision
 	FROM job_occurrences
-	WHERE state = 'ready'
-	ORDER BY ready_at ASC
+	WHERE state = 'ready' AND ready_at <= ?
+	ORDER BY ready_at ASC, id ASC
 	LIMIT ?;
 	`
-	rows, err := s.db.QueryContext(ctx, query, limit)
+	rows, err := s.db.QueryContext(ctx, query, time.Now().UTC(), limit)
 	if err != nil {
 		return nil, fmt.Errorf("list ready occurrences: %w", err)
 	}

@@ -82,13 +82,13 @@ type Engine struct {
 	registry map[tasks.TaskID]*taskRecord
 
 	// Lifecycle
-	accepting  bool
-	quiesced   bool
-	drained    bool
-	rootCtx    context.Context
-	rootCancel context.CancelFunc
-	activeWG   sync.WaitGroup
-	drainDone  chan struct{}
+	accepting   bool
+	quiesced    bool
+	drained     bool
+	rootCtx     context.Context
+	rootCancel  context.CancelFunc
+	activeTasks int
+	drainDone   chan struct{}
 }
 
 // NewEngine constructs a TaskEngine with the specified configuration.
@@ -146,6 +146,9 @@ func (e *Engine) Start(ctx context.Context) error {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.rootCtx != nil {
+		return errors.New("task engine already started")
+	}
 	e.rootCtx, e.rootCancel = context.WithCancel(ctx)
 	e.accepting = true
 	e.quiesced = false
@@ -179,6 +182,7 @@ func (e *Engine) Quiesce(ctx context.Context) error {
 	defer e.mu.Unlock()
 	e.accepting = false
 	e.quiesced = true
+	e.checkDrainedLocked()
 	return nil
 }
 
@@ -186,44 +190,24 @@ func (e *Engine) Quiesce(ctx context.Context) error {
 func (e *Engine) Drain(ctx context.Context) error {
 	_ = e.Quiesce(ctx)
 
-	e.mu.Lock()
-	if e.drained {
-		e.mu.Unlock()
-		return nil
-	}
-	activeTasks := 0
-	for _, rec := range e.registry {
-		if rec.state != tasks.StateCompleted &&
-			rec.state != tasks.StateFailed &&
-			rec.state != tasks.StateCancelled &&
-			rec.state != tasks.StateTimedOut {
-			activeTasks++
-		}
-	}
-	e.mu.Unlock()
-
-	if activeTasks == 0 {
-		e.mu.Lock()
-		e.drained = true
-		e.mu.Unlock()
-		return nil
-	}
-
-	done := make(chan struct{})
-	go func() {
-		e.activeWG.Wait()
-		close(done)
-	}()
-
 	select {
-	case <-done:
-		e.mu.Lock()
-		e.drained = true
-		e.mu.Unlock()
+	case <-e.drainDone:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+func (e *Engine) checkDrainedLocked() {
+	if e.quiesced && e.activeTasks == 0 && !e.drained {
+		e.drained = true
+		close(e.drainDone)
+	}
+}
+
+func (e *Engine) taskSettledLocked() {
+	e.activeTasks--
+	e.checkDrainedLocked()
 }
 
 // Stop terminates the engine and cancels residual tasks if drain timed out.
@@ -234,7 +218,16 @@ func (e *Engine) Stop(ctx context.Context) error {
 	if e.rootCancel != nil {
 		e.rootCancel()
 	}
+	var pending []tasks.TaskID
+	for id, rec := range e.registry {
+		if rec.state == tasks.StateQueued {
+			pending = append(pending, id)
+		}
+	}
 	e.mu.Unlock()
+	for _, id := range pending {
+		_, _ = e.Cancel(id, tasks.CauseShutdown)
+	}
 	return err
 }
 
@@ -279,6 +272,19 @@ func (e *Engine) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket,
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if _, exists := e.registry[spec.ID]; exists {
+		return nil, errors.New("task id already registered")
+	}
+	if spec.Handler == nil {
+		return nil, tasks.NewAdmissionError(tasks.ReasonUnknownHandler, tasks.ErrUnknownHandler)
+	}
+	if !spec.QueueDeadline.IsZero() && !time.Now().Before(spec.QueueDeadline) {
+		return nil, tasks.NewAdmissionError(tasks.ReasonDeadlineExpired, tasks.ErrDeadlineExpired)
+	}
+
 	if !e.accepting {
 		return nil, tasks.NewAdmissionError(tasks.ReasonEngineQuiescing, tasks.ErrEngineQuiescing)
 	}
@@ -295,6 +301,14 @@ func (e *Engine) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket,
 	}
 	if err := e.adm.CanAdmit(spec, payloadBytes); err != nil {
 		return nil, err
+	}
+
+	if input, ok := spec.Input.([]byte); ok {
+		spec.Input = append([]byte(nil), input...)
+	}
+	if spec.Job != nil {
+		ref := *spec.Job
+		spec.Job = &ref
 	}
 
 	// 3. Atomically register task
@@ -316,7 +330,7 @@ func (e *Engine) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket,
 	}
 	e.registry[spec.ID] = rec
 	e.resultSlotsHeld++
-	e.activeWG.Add(1)
+	e.activeTasks++
 
 	// Transition to Queued and enqueue into ready queues
 	rec.state = tasks.StateQueued
@@ -355,7 +369,7 @@ func (e *Engine) sweepExpiredLocked(pool tasks.PoolID, now time.Time) {
 			e.resultSlotsHeld--
 		}
 		close(rec.done)
-		e.activeWG.Done()
+		e.taskSettledLocked()
 		if rec.spec.OnComplete != nil {
 			fn := rec.spec.OnComplete
 			res := rec.result
@@ -368,6 +382,9 @@ func (e *Engine) sweepExpiredLocked(pool tasks.PoolID, now time.Time) {
 }
 
 func (e *Engine) tryDispatchLocked(pool tasks.PoolID) {
+	if e.rootCtx.Err() != nil {
+		return
+	}
 	e.sweepExpiredLocked(pool, time.Now().UTC())
 
 	for len(e.idleSlots[pool]) > 0 {
@@ -436,11 +453,19 @@ func (e *Engine) executeAssignment(rec *taskRecord, spec tasks.WorkSpec, permit 
 	}
 
 	e.adm.OnTaskTerminal(spec)
+	if rec.cancelFunc != nil {
+		rec.cancelFunc()
+	}
+	rec.startedAt = res.StartedAt
+	// Owner and ordering constraints are global, so every pool may now be eligible.
+	for pool := range e.config.Pools {
+		e.tryDispatchLocked(pool)
+	}
 	if e.resultSlotsHeld > 0 {
 		e.resultSlotsHeld--
 	}
 	close(rec.done)
-	e.activeWG.Done()
+	e.taskSettledLocked()
 
 	if rec.spec.OnComplete != nil {
 		fn := rec.spec.OnComplete
@@ -476,9 +501,13 @@ func (e *Engine) Cancel(id tasks.TaskID, reason tasks.Cause) (tasks.CancelReceip
 			e.resultSlotsHeld--
 		}
 		close(rec.done)
-		e.activeWG.Done()
+		e.taskSettledLocked()
 		if rec.spec.OnComplete != nil {
-			go rec.spec.OnComplete(rec.result)
+			fn, result := rec.spec.OnComplete, rec.result
+			go func() {
+				defer func() { _ = recover() }()
+				fn(result)
+			}()
 		}
 		return tasks.CancelReceipt{TaskID: id, Accepted: true, State: tasks.StateCancelled, Reason: reason}, nil
 

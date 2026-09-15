@@ -80,6 +80,10 @@ func (ih *IndexedHeap) Push(entry *TimerEntry) {
 	if entry == nil || entry.Deadline.IsZero() {
 		return
 	}
+	if entry.HeapIndex >= 0 && entry.HeapIndex < len(ih.h) && ih.h[entry.HeapIndex] == entry {
+		heap.Fix(&ih.h, entry.HeapIndex)
+		return
+	}
 	ih.seq++
 	entry.Sequence = ih.seq
 	heap.Push(&ih.h, entry)
@@ -87,7 +91,7 @@ func (ih *IndexedHeap) Push(entry *TimerEntry) {
 
 // Remove removes an entry from the heap in O(log N).
 func (ih *IndexedHeap) Remove(entry *TimerEntry) {
-	if entry == nil || entry.HeapIndex < 0 || entry.HeapIndex >= len(ih.h) {
+	if entry == nil || entry.HeapIndex < 0 || entry.HeapIndex >= len(ih.h) || ih.h[entry.HeapIndex] != entry {
 		return
 	}
 	heap.Remove(&ih.h, entry.HeapIndex)

@@ -52,12 +52,16 @@ func (d *DeadlineIndex) Push(entry *QueueEntry) {
 		}
 		return
 	}
+	if entry.HeapIndex >= 0 && entry.HeapIndex < len(d.h) && d.h[entry.HeapIndex] == entry {
+		heap.Fix(&d.h, entry.HeapIndex)
+		return
+	}
 	heap.Push(&d.h, entry)
 }
 
 // Remove removes an entry from the min-heap in O(log N).
 func (d *DeadlineIndex) Remove(entry *QueueEntry) {
-	if entry == nil || entry.HeapIndex < 0 || entry.HeapIndex >= len(d.h) {
+	if entry == nil || entry.HeapIndex < 0 || entry.HeapIndex >= len(d.h) || d.h[entry.HeapIndex] != entry {
 		return
 	}
 	heap.Remove(&d.h, entry.HeapIndex)

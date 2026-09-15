@@ -1,6 +1,7 @@
 package admission
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -176,5 +177,51 @@ func TestAdmission_RemoveTask(t *testing.T) {
 	_, err := ctrl.SelectCandidate("general")
 	if err != ErrNoEligibleTask {
 		t.Errorf("expected ErrNoEligibleTask after removal, got: %v", err)
+	}
+}
+
+func TestControllerWeightedClassesDoNotStarve(t *testing.T) {
+	c := NewController(map[tasks.PoolID]PoolConfig{"general": {}})
+	classes := []tasks.PriorityClass{tasks.PriorityInteractive, tasks.PriorityNormal, tasks.PriorityBackground, tasks.PriorityMaintenance}
+	for _, class := range classes {
+		for i := 0; i < 100; i++ {
+			c.Enqueue(&QueueEntry{Spec: tasks.WorkSpec{ID: tasks.TaskID(fmt.Sprintf("%s-%d", class, i)), Pool: "general", Class: class, QuotaOwner: "owner"}})
+		}
+	}
+	counts := map[tasks.PriorityClass]int{}
+	for i := 0; i < 60; i++ {
+		entry, err := c.SelectCandidate("general")
+		if err != nil {
+			t.Fatal(err)
+		}
+		counts[entry.Spec.Class]++
+		c.OnTaskTerminal(entry.Spec)
+	}
+	for class, want := range map[tasks.PriorityClass]int{tasks.PriorityInteractive: 32, tasks.PriorityNormal: 16, tasks.PriorityBackground: 8, tasks.PriorityMaintenance: 4} {
+		if counts[class] != want {
+			t.Errorf("%s dispatches = %d, want %d", class, counts[class], want)
+		}
+	}
+}
+
+func TestControllerWeightedOwners(t *testing.T) {
+	c := NewController(map[tasks.PoolID]PoolConfig{"general": {}})
+	c.SetOwnerLimits("heavy", OwnerLimits{Weight: 3})
+	for _, owner := range []tasks.OwnerID{"light", "heavy"} {
+		for i := 0; i < 100; i++ {
+			c.Enqueue(&QueueEntry{Spec: tasks.WorkSpec{ID: tasks.TaskID(fmt.Sprintf("%s-%d", owner, i)), Pool: "general", Class: tasks.PriorityNormal, QuotaOwner: owner}})
+		}
+	}
+	counts := map[tasks.OwnerID]int{}
+	for i := 0; i < 40; i++ {
+		entry, err := c.SelectCandidate("general")
+		if err != nil {
+			t.Fatal(err)
+		}
+		counts[entry.Spec.QuotaOwner]++
+		c.OnTaskTerminal(entry.Spec)
+	}
+	if counts["heavy"] != 30 || counts["light"] != 10 {
+		t.Fatal(counts)
 	}
 }

@@ -75,3 +75,63 @@ func TestPersistencePump_QueueSaturation(t *testing.T) {
 		t.Errorf("expected ErrPumpQueueFull, got: %v", err)
 	}
 }
+
+func TestPersistencePumpConcurrentDrainAndCancellation(t *testing.T) {
+	p := NewPersistencePump(1, 10)
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	result, err := p.Enqueue(context.Background(), func(ctx context.Context) error { close(started); <-ctx.Done(); return ctx.Err() })
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := p.Drain(ctx); err == nil {
+		t.Fatal("drain completed while operation active")
+	}
+	if err := p.Drain(ctx); err == nil {
+		t.Fatal("repeated drain falsely reported completion")
+	}
+	_ = p.Stop(ctx)
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("operation not cancelled")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pump lifetime not propagated")
+	}
+	if err := p.Drain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPersistencePumpPanicDoesNotKillWorker(t *testing.T) {
+	p := NewPersistencePump(1, 10)
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer p.Stop(context.Background())
+	result, err := p.Enqueue(context.Background(), func(context.Context) error { panic("failed operation") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-result; err == nil {
+		t.Fatal("panic not reported")
+	}
+	next, err := p.Enqueue(context.Background(), func(ctx context.Context) error {
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("missing operation deadline")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-next; err != nil {
+		t.Fatal(err)
+	}
+}

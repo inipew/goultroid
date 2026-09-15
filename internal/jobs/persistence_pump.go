@@ -15,16 +15,7 @@ var (
 	ErrPumpQueueFull = errors.New("persistence pump queue is saturated")
 )
 
-type persistenceOp int
-
-const (
-	opCommitAttempt persistenceOp = iota
-	opSaveDefinition
-	opMaterializeOccurrence
-)
-
 type persistenceRequest struct {
-	op       persistenceOp
 	ctx      context.Context
 	execute  func(ctx context.Context) error
 	resultCh chan error
@@ -42,6 +33,7 @@ type PersistencePump struct {
 	cancel      context.CancelFunc
 	running     bool
 	accepting   bool
+	done        chan struct{}
 }
 
 var _ runtime.Component = (*PersistencePump)(nil)
@@ -67,7 +59,7 @@ func (p *PersistencePump) Dependencies() []string { return []string{"database"} 
 func (p *PersistencePump) Start(parent context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.running {
+	if p.ctx != nil {
 		return errors.New("persistence pump already running")
 	}
 	if parent == nil {
@@ -75,6 +67,7 @@ func (p *PersistencePump) Start(parent context.Context) error {
 	}
 	p.ctx, p.cancel = context.WithCancel(parent)
 	p.requests = make(chan persistenceRequest, p.queueCap)
+	p.done = make(chan struct{})
 	p.running = true
 	p.accepting = true
 
@@ -82,6 +75,10 @@ func (p *PersistencePump) Start(parent context.Context) error {
 		p.wg.Add(1)
 		go p.workerLoop()
 	}
+	go func() {
+		p.wg.Wait()
+		close(p.done)
+	}()
 	return nil
 }
 
@@ -96,12 +93,25 @@ func (p *PersistencePump) workerLoop() {
 	}
 }
 
-func (p *PersistencePump) processRequest(req persistenceRequest) error {
-	opCtx := req.ctx
-	if opCtx == nil {
-		var cancel context.CancelFunc
-		opCtx, cancel = context.WithTimeout(p.ctx, 10*time.Second)
-		defer cancel()
+func (p *PersistencePump) processRequest(req persistenceRequest) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("persistence operation panic: %v", recovered)
+		}
+	}()
+	parent := req.ctx
+	if parent == nil {
+		parent = p.ctx
+	}
+	opCtx, cancel := context.WithTimeout(parent, 10*time.Second)
+	defer cancel()
+	stop := context.AfterFunc(p.ctx, cancel)
+	defer stop()
+	if p.ctx.Err() != nil {
+		cancel()
+	}
+	if err := opCtx.Err(); err != nil {
+		return err
 	}
 	if req.execute != nil {
 		return req.execute(opCtx)
@@ -143,21 +153,17 @@ func (p *PersistencePump) Quiesce(ctx context.Context) error {
 // Drain waits for in-flight persistence requests to be committed.
 func (p *PersistencePump) Drain(ctx context.Context) error {
 	p.mu.Lock()
-	if !p.running {
+	if p.done == nil {
 		p.mu.Unlock()
 		return nil
 	}
-	p.accepting = false
-	close(p.requests)
-	p.running = false
+	if p.running {
+		p.accepting = false
+		close(p.requests)
+		p.running = false
+	}
+	done := p.done
 	p.mu.Unlock()
-
-	done := make(chan struct{})
-	go func() {
-		p.wg.Wait()
-		close(done)
-	}()
-
 	select {
 	case <-done:
 		return nil

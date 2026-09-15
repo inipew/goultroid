@@ -23,7 +23,7 @@ type Permit struct {
 	TaskID        tasks.TaskID
 	DispatchEpoch uint64
 
-	used      atomic.Bool
+	state     atomic.Uint32
 	onRelease func()
 	once      sync.Once
 }
@@ -45,7 +45,10 @@ func (p *Permit) Use() error {
 	if p == nil {
 		return ErrPermitInvalid
 	}
-	if !p.used.CompareAndSwap(false, true) {
+	if !p.state.CompareAndSwap(0, 1) {
+		if p.state.Load() == 2 {
+			return ErrPermitExpired
+		}
 		return ErrPermitAlreadyUsed
 	}
 	return nil
@@ -56,7 +59,7 @@ func (p *Permit) IsUsed() bool {
 	if p == nil {
 		return false
 	}
-	return p.used.Load()
+	return p.state.Load() == 1
 }
 
 // Release returns the reserved slot capacity back to the inventory if not used or upon finish.
@@ -64,6 +67,7 @@ func (p *Permit) Release() {
 	if p == nil {
 		return
 	}
+	p.state.Store(2)
 	p.once.Do(func() {
 		if p.onRelease != nil {
 			p.onRelease()

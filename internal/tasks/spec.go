@@ -33,7 +33,7 @@ type WorkSpec struct {
 // Validate checks that required fields on the work specification are present.
 func (s *WorkSpec) Validate() error {
 	if strings.TrimSpace(string(s.ID)) == "" {
-		return errors.New("task ID cannot be empty")
+		return errors.New("task id cannot be empty")
 	}
 	if strings.TrimSpace(string(s.QuotaOwner)) == "" {
 		return errors.New("quota owner cannot be empty")
@@ -46,6 +46,14 @@ func (s *WorkSpec) Validate() error {
 	}
 	if s.Class == "" {
 		s.Class = PriorityNormal
+	}
+	switch s.Class {
+	case PriorityInteractive, PriorityNormal, PriorityBackground, PriorityMaintenance:
+	default:
+		return errors.New("invalid priority class")
+	}
+	if s.ExecutionTimeout < 0 {
+		return errors.New("execution timeout cannot be negative")
 	}
 	return nil
 }

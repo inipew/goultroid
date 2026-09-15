@@ -54,3 +54,25 @@ func TestIndexedHeap_Remove(t *testing.T) {
 		t.Errorf("expected e2 as earliest, got %s", earliest.ID)
 	}
 }
+
+func TestIndexedHeapUpdateAndForeignRemoval(t *testing.T) {
+	h := NewIndexedHeap()
+	now := time.Now()
+	first := &TimerEntry{ID: "first", Deadline: now.Add(time.Hour)}
+	second := &TimerEntry{ID: "second", Deadline: now.Add(time.Minute)}
+	h.Push(first)
+	h.Push(second)
+	h.Remove(&TimerEntry{HeapIndex: 0})
+	if h.Len() != 2 {
+		t.Fatal("foreign entry removed an existing timer")
+	}
+	first.Deadline = now
+	h.Push(first)
+	if h.Len() != 2 {
+		t.Fatal("update inserted duplicate timer")
+	}
+	due := h.PopDue(now, 10)
+	if len(due) != 1 || due[0] != first {
+		t.Fatal("updated timer did not fire")
+	}
+}

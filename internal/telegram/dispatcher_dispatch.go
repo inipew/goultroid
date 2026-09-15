@@ -232,11 +232,11 @@ func (d *Dispatcher) dispatchAsyncHandlers(ctx context.Context, handlers []Messa
 			ID:            fmt.Sprintf("async_handlers:%d:%d", extractChatIDFromPeer(msg.PeerID), msg.ID),
 			Owner:         "telegram:observability",
 			Name:          "message:observers",
+			OnComplete:    func(error) { d.inFlight.Done() },
 			Priority:      10,
 			CorrelationID: fmt.Sprintf("msg:%d:%d", extractChatIDFromPeer(msg.PeerID), msg.ID),
 			Timeout:       10 * time.Second,
 			Run: func(taskCtx context.Context) error {
-				defer d.inFlight.Done()
 				for _, h := range handlers {
 					_ = d.safeExecuteInterceptor(taskCtx, h, e, msg, isCmd, cmdName)
 				}

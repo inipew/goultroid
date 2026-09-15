@@ -115,3 +115,72 @@ func TestStore_OccurrenceAndAttemptProtocol(t *testing.T) {
 		t.Fatalf("CommitAttemptResult failed: %v", err)
 	}
 }
+
+func TestStoreCompletionReplayCannotOverwriteResult(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	s := NewStore(db)
+	ctx := context.Background()
+	if err := s.MaterializeOccurrence(ctx, &jobs.JobOccurrence{ID: "occ", JobID: "job", OccurrenceKey: "key"}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.PrepareAttemptLease(ctx, "occ", "task", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CommitAttemptResult(ctx, a.ID, a.LeaseEpoch, jobs.AttemptCompleted, []byte("original"), ""); err != nil {
+		t.Fatal(err)
+	}
+	var before time.Time
+	if err := db.QueryRow(`SELECT finished_at FROM job_attempts WHERE id = ?`, a.ID).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CommitAttemptResult(ctx, a.ID, a.LeaseEpoch, jobs.AttemptCompleted, []byte("original"), ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CommitAttemptResult(ctx, a.ID, a.LeaseEpoch, jobs.AttemptFailed, nil, "late failure"); !errors.Is(err, ErrLeaseFencingLost) {
+		t.Fatal(err)
+	}
+	var after time.Time
+	var state string
+	if err := db.QueryRow(`SELECT finished_at, state FROM job_attempts WHERE id = ?`, a.ID).Scan(&after, &state); err != nil {
+		t.Fatal(err)
+	}
+	if !before.Equal(after) || state != string(jobs.AttemptCompleted) {
+		t.Fatalf("replay changed result: %s %v %v", state, before, after)
+	}
+}
+
+func TestStoreFutureReadyAndCancelledOutcome(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	s := NewStore(db)
+	ctx := context.Background()
+	if err := s.MaterializeOccurrence(ctx, &jobs.JobOccurrence{ID: "occ", JobID: "job", OccurrenceKey: "key", ReadyAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	ready, err := s.ListReadyOccurrences(ctx, 10)
+	if err != nil || len(ready) != 0 {
+		t.Fatalf("future occurrence exposed: %v %v", ready, err)
+	}
+	if _, err := s.PrepareAttemptLease(ctx, "occ", "early", time.Minute); !errors.Is(err, ErrOccurrenceNotReady) {
+		t.Fatalf("future lease: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE job_occurrences SET ready_at = ? WHERE id = 'occ'`, time.Now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.PrepareAttemptLease(ctx, "occ", "task", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CommitAttemptResult(ctx, a.ID, a.LeaseEpoch, jobs.AttemptCancelled, nil, "cancelled"); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	if err := db.QueryRow(`SELECT state FROM job_occurrences WHERE id = 'occ'`).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != string(jobs.OccurrenceCancelled) {
+		t.Fatal(state)
+	}
+}
