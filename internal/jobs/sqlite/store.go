@@ -312,3 +312,300 @@ func (s *Store) ListReadyOccurrences(ctx context.Context, limit int) ([]*jobs.Jo
 	}
 	return occurrences, rows.Err()
 }
+
+// SaveSchedule saves or updates a JobSchedule.
+func (s *Store) SaveSchedule(ctx context.Context, sched *jobs.JobSchedule) error {
+	query := `
+	INSERT INTO job_schedules (
+		id, job_id, recurrence, interval_seconds, timezone, next_due_at,
+		misfire_policy, overlap_policy, enabled, revision, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(id) DO UPDATE SET
+		job_id = excluded.job_id,
+		recurrence = excluded.recurrence,
+		interval_seconds = excluded.interval_seconds,
+		timezone = excluded.timezone,
+		next_due_at = excluded.next_due_at,
+		misfire_policy = excluded.misfire_policy,
+		overlap_policy = excluded.overlap_policy,
+		enabled = excluded.enabled,
+		revision = revision + 1,
+		updated_at = excluded.updated_at;
+	`
+	now := time.Now().UTC()
+	enabledInt := 0
+	if sched.Enabled {
+		enabledInt = 1
+	}
+	intervalSec := int64(sched.Interval.Seconds())
+	tz := sched.Timezone
+	if tz == "" {
+		tz = "UTC"
+	}
+	misfire := string(sched.MisfirePolicy)
+	if misfire == "" {
+		misfire = string(jobs.MisfireRunOnce)
+	}
+	overlap := string(sched.OverlapPolicy)
+	if overlap == "" {
+		overlap = string(jobs.OverlapForbid)
+	}
+
+	_, err := s.db.ExecContext(ctx, query,
+		sched.ID, sched.JobID, sched.Recurrence, intervalSec, tz, sched.NextDueAt.UTC(),
+		misfire, overlap, enabledInt, sched.Revision, now,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to save job schedule %s: %w", sched.ID, err)
+	}
+	return nil
+}
+
+// GetSchedule loads a JobSchedule by ID.
+func (s *Store) GetSchedule(ctx context.Context, id string) (*jobs.JobSchedule, error) {
+	query := `
+	SELECT id, job_id, recurrence, interval_seconds, timezone, next_due_at,
+	       misfire_policy, overlap_policy, enabled, revision
+	FROM job_schedules WHERE id = ?;
+	`
+	row := s.db.QueryRowContext(ctx, query, id)
+	var sched jobs.JobSchedule
+	var intervalSec int64
+	var misfireStr, overlapStr string
+	var enabledInt int
+
+	err := row.Scan(
+		&sched.ID, &sched.JobID, &sched.Recurrence, &intervalSec, &sched.Timezone, &sched.NextDueAt,
+		&misfireStr, &overlapStr, &enabledInt, &sched.Revision,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrScheduleNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to query job schedule %s: %w", id, err)
+	}
+	sched.Interval = time.Duration(intervalSec) * time.Second
+	sched.MisfirePolicy = jobs.MisfirePolicy(misfireStr)
+	sched.OverlapPolicy = jobs.OverlapPolicy(overlapStr)
+	sched.Enabled = enabledInt == 1
+	return &sched, nil
+}
+
+// MaterializeDueSchedule atomically creates an occurrence from a due schedule and advances next_due_at (ADR 0006 §7.3).
+func (s *Store) MaterializeDueSchedule(ctx context.Context, scheduleID string, nextDue time.Time) (*jobs.JobOccurrence, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("begin materialize due schedule tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Writer intent
+	if _, err := tx.ExecContext(ctx, `UPDATE job_schedules SET revision = revision WHERE id = ?`, scheduleID); err != nil {
+		return nil, fmt.Errorf("acquire schedule writer intent: %w", err)
+	}
+
+	var schedID, jobID, recurrence, tz, misfire, overlap string
+	var intervalSec int64
+	var nextDueAt time.Time
+	var enabledInt int
+	var rev uint64
+	query := `
+	SELECT id, job_id, recurrence, interval_seconds, timezone, next_due_at,
+	       misfire_policy, overlap_policy, enabled, revision
+	FROM job_schedules WHERE id = ?;
+	`
+	if err := tx.QueryRowContext(ctx, query, scheduleID).Scan(
+		&schedID, &jobID, &recurrence, &intervalSec, &tz, &nextDueAt,
+		&misfire, &overlap, &enabledInt, &rev,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrScheduleNotFound
+		}
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	if enabledInt == 0 || nextDueAt.After(now) {
+		return nil, errors.New("schedule is not enabled or not due")
+	}
+
+	// Overlap check
+	if jobs.OverlapPolicy(overlap) == jobs.OverlapForbid {
+		var activeCount int
+		checkActive := `SELECT COUNT(*) FROM job_occurrences WHERE job_id = ? AND state IN ('ready', 'dispatched');`
+		if err := tx.QueryRowContext(ctx, checkActive, jobID).Scan(&activeCount); err != nil {
+			return nil, err
+		}
+		if activeCount > 0 {
+			// Advance schedule next_due_at without creating a duplicate active occurrence
+			if _, err := tx.ExecContext(ctx, `UPDATE job_schedules SET next_due_at = ?, revision = revision + 1, updated_at = ? WHERE id = ?`, nextDue.UTC(), now, scheduleID); err != nil {
+				return nil, err
+			}
+			return nil, tx.Commit()
+		}
+	}
+
+	occurrenceKey := fmt.Sprintf("sched:%s:%s", scheduleID, nextDueAt.UTC().Format(time.RFC3339Nano))
+	occID := fmt.Sprintf("occ:%s:%d", scheduleID, nextDueAt.UTC().UnixNano())
+	insertOcc := `
+	INSERT INTO job_occurrences (
+		id, job_id, schedule_id, scheduled_for, occurrence_key, state, ready_at, cancel_epoch, revision, updated_at
+	) VALUES (?, ?, ?, ?, ?, 'ready', ?, 0, 1, ?)
+	ON CONFLICT(occurrence_key) DO UPDATE SET updated_at = excluded.updated_at;
+	`
+	if _, err := tx.ExecContext(ctx, insertOcc, occID, jobID, scheduleID, nextDueAt, occurrenceKey, now, now); err != nil {
+		return nil, fmt.Errorf("materialize occurrence: %w", err)
+	}
+
+	// Advance schedule
+	if _, err := tx.ExecContext(ctx, `UPDATE job_schedules SET next_due_at = ?, revision = revision + 1, updated_at = ? WHERE id = ?`, nextDue.UTC(), now, scheduleID); err != nil {
+		return nil, fmt.Errorf("advance schedule next due: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	return &jobs.JobOccurrence{
+		ID:            occID,
+		JobID:         jobID,
+		ScheduleID:    scheduleID,
+		ScheduledFor:  nextDueAt,
+		OccurrenceKey: occurrenceKey,
+		State:         jobs.OccurrenceReady,
+		ReadyAt:       now,
+		Revision:      1,
+	}, nil
+}
+
+// CancelOccurrence cancels a job occurrence, bumps its cancel epoch to fence in-flight attempts,
+// and records an outbox event (ADR 0006 §7.2).
+func (s *Store) CancelOccurrence(ctx context.Context, occurrenceID string, reason string) error {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin cancel occurrence tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `UPDATE job_occurrences SET revision = revision WHERE id = ?`, occurrenceID); err != nil {
+		return fmt.Errorf("acquire cancel writer intent: %w", err)
+	}
+
+	var state string
+	var cancelEpoch, rev uint64
+	if err := tx.QueryRowContext(ctx, `SELECT state, cancel_epoch, revision FROM job_occurrences WHERE id = ?`, occurrenceID).Scan(&state, &cancelEpoch, &rev); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrOccurrenceNotFound
+		}
+		return err
+	}
+
+	if state == string(jobs.OccurrenceCompleted) || state == string(jobs.OccurrenceFailed) || state == string(jobs.OccurrenceCancelled) {
+		return nil // Already terminal
+	}
+
+	now := time.Now().UTC()
+	newState := jobs.OccurrenceCancelled
+	newCancelEpoch := cancelEpoch + 1
+
+	if _, err := tx.ExecContext(ctx, `UPDATE job_occurrences SET state = ?, cancel_epoch = ?, revision = revision + 1, updated_at = ? WHERE id = ?`, string(newState), newCancelEpoch, now, occurrenceID); err != nil {
+		return fmt.Errorf("update occurrence cancel: %w", err)
+	}
+
+	// Record outbox event for cancellation
+	eventID := fmt.Sprintf("outbox:cancel:%s:%d", occurrenceID, newCancelEpoch)
+	payload := []byte(fmt.Sprintf(`{"occurrence_id":%q,"reason":%q,"cancel_epoch":%d}`, occurrenceID, reason, newCancelEpoch))
+	insertOutbox := `
+	INSERT INTO job_outbox (event_id, occurrence_id, kind, payload, committed_at, delivery_state)
+	VALUES (?, ?, 'occurrence_cancelled', ?, ?, 'pending');
+	`
+	if _, err := tx.ExecContext(ctx, insertOutbox, eventID, occurrenceID, payload, now); err != nil {
+		return fmt.Errorf("insert cancel outbox event: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// RecordOutboxEvent inserts an outbox event for asynchronous reliable delivery (ADR 0006 §7.1).
+func (s *Store) RecordOutboxEvent(ctx context.Context, eventID, occurrenceID, kind string, payload []byte) error {
+	query := `
+	INSERT INTO job_outbox (event_id, occurrence_id, kind, payload, committed_at, delivery_state)
+	VALUES (?, ?, ?, ?, ?, 'pending');
+	`
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, query, eventID, occurrenceID, kind, payload, now)
+	if err != nil {
+		return fmt.Errorf("record outbox event: %w", err)
+	}
+	return nil
+}
+
+// CommitAttemptResultWithOutbox atomically commits an attempt result and enqueues an outbox event.
+func (s *Store) CommitAttemptResultWithOutbox(ctx context.Context, attemptID string, leaseEpoch uint64, outcome jobs.AttemptState, result []byte, errStr string, outboxEventID string, outboxKind string, outboxPayload []byte) error {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin commit attempt result with outbox: %w", err)
+	}
+	defer tx.Rollback()
+
+	switch outcome {
+	case jobs.AttemptCompleted, jobs.AttemptFailed, jobs.AttemptTimedOut, jobs.AttemptCancelled, jobs.AttemptAbortedBeforeStart:
+	default:
+		return errors.New("attempt result must be terminal")
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE job_attempts SET lease_epoch = lease_epoch WHERE id = ?`, attemptID); err != nil {
+		return fmt.Errorf("acquire completion writer intent: %w", err)
+	}
+	var occID, state, oldError string
+	var epoch uint64
+	var oldResult []byte
+	var attemptNo int
+	if err := tx.QueryRowContext(ctx, `SELECT occurrence_id, lease_epoch, state, result, COALESCE(error, ''), attempt_no FROM job_attempts WHERE id = ?`, attemptID).Scan(&occID, &epoch, &state, &oldResult, &oldError, &attemptNo); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrLeaseFencingLost
+		}
+		return err
+	}
+	if epoch != leaseEpoch {
+		return ErrLeaseFencingLost
+	}
+	if state != string(jobs.AttemptLeased) && state != string(jobs.AttemptRunning) {
+		if state == string(outcome) && bytes.Equal(oldResult, result) && oldError == errStr {
+			return tx.Commit()
+		}
+		return ErrLeaseFencingLost
+	}
+	var latest int
+	var occState string
+	if err := tx.QueryRowContext(ctx, `SELECT state, (SELECT MAX(attempt_no) FROM job_attempts WHERE occurrence_id = ?) FROM job_occurrences WHERE id = ?`, occID, occID).Scan(&occState, &latest); err != nil {
+		return err
+	}
+	if latest != attemptNo || occState != string(jobs.OccurrenceDispatched) {
+		return ErrLeaseFencingLost
+	}
+	now := time.Now().UTC()
+	if _, err := tx.ExecContext(ctx, `UPDATE job_attempts SET state = ?, result = ?, error = ?, finished_at = ? WHERE id = ? AND lease_epoch = ?`, string(outcome), result, errStr, now, attemptID, leaseEpoch); err != nil {
+		return fmt.Errorf("commit attempt update: %w", err)
+	}
+	occFinalState := jobs.OccurrenceFailed
+	if outcome == jobs.AttemptCompleted {
+		occFinalState = jobs.OccurrenceCompleted
+	} else if outcome == jobs.AttemptCancelled {
+		occFinalState = jobs.OccurrenceCancelled
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE job_occurrences SET state = ?, revision = revision + 1, updated_at = ? WHERE id = ?`, string(occFinalState), now, occID); err != nil {
+		return err
+	}
+
+	if outboxEventID != "" && outboxKind != "" {
+		insertOutbox := `
+		INSERT INTO job_outbox (event_id, occurrence_id, kind, payload, committed_at, delivery_state)
+		VALUES (?, ?, ?, ?, ?, 'pending');
+		`
+		if _, err := tx.ExecContext(ctx, insertOutbox, outboxEventID, occID, outboxKind, outboxPayload, now); err != nil {
+			return fmt.Errorf("insert completion outbox: %w", err)
+		}
+	}
+
+	return tx.Commit()
+}

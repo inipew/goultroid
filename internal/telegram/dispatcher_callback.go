@@ -230,9 +230,15 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 			})
 			if err != nil {
 				d.logger.Warn("callback dispatch admission rejected", zap.Int64("query_id", evt.QueryID), zap.Error(err))
+				if svc := d.getService(); svc != nil {
+					_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Server is overloaded, please try again shortly.", false)
+				}
 			}
 		} else {
 			d.logger.Warn("callback execution unavailable", zap.Error(ErrTasksNotConfigured))
+			if svc := d.getService(); svc != nil {
+				_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Service unavailable.", false)
+			}
 		}
 	}
 	return nil
@@ -291,9 +297,15 @@ func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities
 			})
 			if err != nil {
 				d.logger.Warn("inline callback dispatch admission rejected", zap.Int64("query_id", evt.QueryID), zap.Error(err))
+				if svc := d.getService(); svc != nil {
+					_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Server is overloaded, please try again shortly.", false)
+				}
 			}
 		} else {
 			d.logger.Warn("inline callback execution unavailable", zap.Error(ErrTasksNotConfigured))
+			if svc := d.getService(); svc != nil {
+				_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Service unavailable.", false)
+			}
 		}
 	}
 	return nil

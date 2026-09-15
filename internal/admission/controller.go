@@ -444,3 +444,18 @@ func (c *Controller) WaitingCount(pool tasks.PoolID) int {
 	}
 	return 0
 }
+
+// EarliestDeadline inspects the roots of all pool deadline min-heaps and returns the earliest queue deadline.
+func (c *Controller) EarliestDeadline() (time.Time, bool) {
+	var earliest time.Time
+	hasEarliest := false
+	for _, ps := range c.pools {
+		if entry, ok := ps.deadlineIndex.PeekEarliest(); ok {
+			if !hasEarliest || entry.Spec.QueueDeadline.Before(earliest) {
+				earliest = entry.Spec.QueueDeadline
+				hasEarliest = true
+			}
+		}
+	}
+	return earliest, hasEarliest
+}

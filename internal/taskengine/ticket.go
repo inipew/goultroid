@@ -10,6 +10,7 @@ type engineTicket struct {
 	taskID tasks.TaskID
 	engine *Engine
 	done   chan struct{}
+	rec    *taskRecord
 }
 
 func (t *engineTicket) TaskID() tasks.TaskID {
@@ -17,6 +18,9 @@ func (t *engineTicket) TaskID() tasks.TaskID {
 }
 
 func (t *engineTicket) State() tasks.TaskState {
+	if t.rec != nil && t.rec.isTerminal() {
+		return t.rec.state
+	}
 	return t.engine.taskState(t.taskID)
 }
 
@@ -25,6 +29,9 @@ func (t *engineTicket) Done() <-chan struct{} {
 }
 
 func (t *engineTicket) Result() (tasks.TaskResult, bool) {
+	if t.rec != nil && t.rec.isTerminal() {
+		return t.rec.result, true
+	}
 	return t.engine.taskResult(t.taskID)
 }
 
@@ -34,6 +41,9 @@ func (t *engineTicket) Wait(ctx context.Context) (tasks.TaskResult, error) {
 	}
 	select {
 	case <-t.done:
+		if t.rec != nil {
+			return t.rec.result, nil
+		}
 		res, _ := t.engine.taskResult(t.taskID)
 		return res, nil
 	case <-ctx.Done():

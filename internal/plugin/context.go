@@ -171,6 +171,10 @@ func (c scopedTaskClient) Submit(ctx context.Context, spec tasks.WorkSpec) (task
 	return c.client.Submit(ctx, spec)
 }
 func (c scopedTaskClient) Cancel(id tasks.TaskID, cause tasks.Cause) (tasks.CancelReceipt, error) {
+	snapshot, ok := c.client.Snapshot(id)
+	if !ok || snapshot.Scope != c.scope {
+		return tasks.CancelReceipt{TaskID: id, Accepted: false, Reason: cause}, tasks.ErrTaskNotFound
+	}
 	return c.client.Cancel(id, cause)
 }
 func (c scopedTaskClient) CancelScope(scope tasks.ScopeIdentity, cause tasks.Cause) int {

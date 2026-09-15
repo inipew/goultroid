@@ -27,8 +27,9 @@ type PoolEngineConfig struct {
 
 // Config configures the central execution coordinator (ADR 0006 §3.1).
 type Config struct {
-	Pools          map[tasks.PoolID]PoolEngineConfig
-	ResultCapacity int
+	Pools               map[tasks.PoolID]PoolEngineConfig
+	ResultCapacity      int
+	MaxTerminalRetained int
 }
 
 // DefaultConfig provides standard execution coordinator settings.
@@ -40,23 +41,40 @@ var DefaultConfig = Config{
 		"media-process": {Concurrency: 2, BacklogLimit: 20, PayloadBudget: 200 * 1024 * 1024},
 		"scheduler":     {Concurrency: 4, BacklogLimit: 100, PayloadBudget: 50 * 1024 * 1024},
 	},
-	ResultCapacity: 1000,
+	ResultCapacity:      1000,
+	MaxTerminalRetained: 1000,
+}
+
+type workerAssignment struct {
+	rec     *taskRecord
+	spec    tasks.WorkSpec
+	permit  *permit
+	taskCtx context.Context
 }
 
 type taskRecord struct {
-	spec       tasks.WorkSpec
-	state      tasks.TaskState
-	permit     *permit
-	result     tasks.TaskResult
-	done       chan struct{}
-	ticket     *engineTicket
-	cancelFunc context.CancelFunc
+	spec            tasks.WorkSpec
+	state           tasks.TaskState
+	permit          *permit
+	result          tasks.TaskResult
+	done            chan struct{}
+	ticket          *engineTicket
+	cancelFunc      context.CancelFunc
+	cancelRequested bool
+	cancelReason    tasks.Cause
 
 	admittedAt time.Time
 	queuedAt   time.Time
 	startedAt  time.Time
 	finishedAt time.Time
 	errorMsg   string
+}
+
+func (r *taskRecord) isTerminal() bool {
+	if r == nil {
+		return false
+	}
+	return r.state == tasks.StateCompleted || r.state == tasks.StateFailed || r.state == tasks.StateTimedOut || r.state == tasks.StateCancelled
 }
 
 // Engine coordinates admission, fairness, physical worker permits, result credits, and lifecycles.
@@ -73,12 +91,21 @@ type Engine struct {
 	poolGenerations   map[tasks.PoolID]uint64
 	dispatchEpoch     uint64
 
+	// Physical worker mailboxes per pool: pool -> slotID -> channel
+	workerMailboxes map[tasks.PoolID][]chan workerAssignment
+
 	// Result capacity reservation
 	resultCapacity  int
 	resultSlotsHeld int
 
-	// Task registry
-	registry map[tasks.TaskID]*taskRecord
+	// Task registry & memory retention
+	registry            map[tasks.TaskID]*taskRecord
+	cancelledScopes     map[tasks.ScopeIdentity]tasks.Cause
+	terminalOrder       []tasks.TaskID
+	maxTerminalRetained int
+
+	// Dynamic deadline sweeper wake
+	wakeSweeper chan struct{}
 
 	// Lifecycle
 	accepting   bool
@@ -90,20 +117,56 @@ type Engine struct {
 	drainDone   chan struct{}
 }
 
+// ValidateConfig checks that pool and engine limits are non-negative.
+func ValidateConfig(cfg Config) error {
+	if cfg.ResultCapacity < 0 {
+		return errors.New("taskengine: ResultCapacity cannot be negative")
+	}
+	for poolID, pcfg := range cfg.Pools {
+		if poolID == "" {
+			return errors.New("taskengine: pool ID cannot be empty")
+		}
+		if pcfg.Concurrency < 0 {
+			return fmt.Errorf("taskengine: pool %s concurrency cannot be negative", poolID)
+		}
+		if pcfg.BacklogLimit < 0 {
+			return fmt.Errorf("taskengine: pool %s backlog limit cannot be negative", poolID)
+		}
+		if pcfg.PayloadBudget < 0 {
+			return fmt.Errorf("taskengine: pool %s payload budget cannot be negative", poolID)
+		}
+	}
+	return nil
+}
+
 // NewEngine constructs a TaskEngine with the specified configuration.
 func NewEngine(cfg Config) *Engine {
 	if cfg.ResultCapacity <= 0 {
 		cfg.ResultCapacity = DefaultConfig.ResultCapacity
 	}
-	if len(cfg.Pools) == 0 {
-		cfg.Pools = DefaultConfig.Pools
+	poolsSource := cfg.Pools
+	if len(poolsSource) == 0 {
+		poolsSource = DefaultConfig.Pools
 	}
+
+	// Defensive copy of pools to isolate engine configuration from caller mutation
+	copiedPools := make(map[tasks.PoolID]PoolEngineConfig, len(poolsSource))
+	for k, v := range poolsSource {
+		copiedPools[k] = v
+	}
+	cfg.Pools = copiedPools
 
 	admPoolConfigs := make(map[tasks.PoolID]admission.PoolConfig, len(cfg.Pools))
 	idleSlots := make(map[tasks.PoolID][]int, len(cfg.Pools))
 	concurrencies := make(map[tasks.PoolID]int, len(cfg.Pools))
 	generations := make(map[tasks.PoolID]uint64, len(cfg.Pools))
 
+	maxTerminal := cfg.MaxTerminalRetained
+	if maxTerminal <= 0 {
+		maxTerminal = 1000
+	}
+
+	mailboxes := make(map[tasks.PoolID][]chan workerAssignment, len(cfg.Pools))
 	for poolID, pcfg := range cfg.Pools {
 		if pcfg.Concurrency <= 0 {
 			pcfg.Concurrency = 4
@@ -112,10 +175,13 @@ func NewEngine(cfg Config) *Engine {
 		generations[poolID] = 1
 
 		slots := make([]int, pcfg.Concurrency)
+		mboxes := make([]chan workerAssignment, pcfg.Concurrency)
 		for i := 0; i < pcfg.Concurrency; i++ {
 			slots[i] = i
+			mboxes[i] = make(chan workerAssignment, 1)
 		}
 		idleSlots[poolID] = slots
+		mailboxes[poolID] = mboxes
 
 		admPoolConfigs[poolID] = admission.PoolConfig{
 			BacklogLimit:  pcfg.BacklogLimit,
@@ -124,21 +190,25 @@ func NewEngine(cfg Config) *Engine {
 	}
 
 	return &Engine{
-		config:            cfg,
-		adm:               admission.NewController(admPoolConfigs),
-		idleSlots:         idleSlots,
-		poolConcurrencies: concurrencies,
-		poolGenerations:   generations,
-		resultCapacity:    cfg.ResultCapacity,
-		registry:          make(map[tasks.TaskID]*taskRecord),
-		drainDone:         make(chan struct{}),
+		config:              cfg,
+		adm:                 admission.NewController(admPoolConfigs),
+		idleSlots:           idleSlots,
+		poolConcurrencies:   concurrencies,
+		poolGenerations:     generations,
+		workerMailboxes:     mailboxes,
+		resultCapacity:      cfg.ResultCapacity,
+		registry:            make(map[tasks.TaskID]*taskRecord),
+		cancelledScopes:     make(map[tasks.ScopeIdentity]tasks.Cause),
+		maxTerminalRetained: maxTerminal,
+		wakeSweeper:         make(chan struct{}, 1),
+		drainDone:           make(chan struct{}),
 	}
 }
 
 func (e *Engine) Name() string           { return "taskengine" }
 func (e *Engine) Dependencies() []string { return nil }
 
-// Start initializes the engine lifecycle.
+// Start initializes the engine lifecycle and starts fixed physical worker loops.
 func (e *Engine) Start(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -153,24 +223,85 @@ func (e *Engine) Start(ctx context.Context) error {
 	e.quiesced = false
 	e.drained = false
 
+	for poolID, mboxes := range e.workerMailboxes {
+		for slotID, ch := range mboxes {
+			go e.physicalWorker(poolID, slotID, ch, e.rootCtx)
+		}
+	}
+
 	go e.sweepLoop(e.rootCtx)
 	return nil
 }
 
-func (e *Engine) sweepLoop(ctx context.Context) {
-	ticker := time.NewTicker(250 * time.Millisecond)
-	defer ticker.Stop()
-
+func (e *Engine) physicalWorker(pool tasks.PoolID, slotID int, mailbox <-chan workerAssignment, ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case now := <-ticker.C:
-			e.mu.Lock()
-			for poolID := range e.config.Pools {
-				e.sweepExpiredLocked(poolID, now.UTC())
+		case assignment, ok := <-mailbox:
+			if !ok {
+				return
 			}
-			e.mu.Unlock()
+			e.executeAssignment(assignment.rec, assignment.spec, assignment.permit, assignment.taskCtx)
+			e.onWorkerIdle(pool, slotID)
+		}
+	}
+}
+
+func (e *Engine) onWorkerIdle(pool tasks.PoolID, slotID int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.idleSlots[pool] = append(e.idleSlots[pool], slotID)
+	for p := range e.config.Pools {
+		e.tryDispatchLocked(p)
+	}
+}
+
+func (e *Engine) sweepLoop(ctx context.Context) {
+	timer := time.NewTimer(time.Hour)
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	defer timer.Stop()
+
+	for {
+		e.mu.Lock()
+		now := time.Now().UTC()
+		for poolID := range e.config.Pools {
+			e.sweepExpiredLocked(poolID, now)
+		}
+		earliest, hasEarliest := e.adm.EarliestDeadline()
+		e.mu.Unlock()
+
+		if !hasEarliest {
+			select {
+			case <-ctx.Done():
+				return
+			case <-e.wakeSweeper:
+				continue
+			}
+		}
+
+		delay := time.Until(earliest)
+		if delay < 0 {
+			delay = 0
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(delay)
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-e.wakeSweeper:
+		case <-timer.C:
 		}
 	}
 }
@@ -204,9 +335,27 @@ func (e *Engine) checkDrainedLocked() {
 	}
 }
 
-func (e *Engine) taskSettledLocked() {
+func (e *Engine) taskSettledLocked(rec *taskRecord) {
 	e.activeTasks--
+	if rec != nil && rec.isTerminal() {
+		e.terminalOrder = append(e.terminalOrder, rec.spec.ID)
+		e.evictTerminalRecordsLocked()
+	}
 	e.checkDrainedLocked()
+}
+
+func (e *Engine) evictTerminalRecordsLocked() {
+	if e.maxTerminalRetained <= 0 {
+		return
+	}
+	for len(e.terminalOrder) > e.maxTerminalRetained {
+		oldestID := e.terminalOrder[0]
+		e.terminalOrder[0] = ""
+		e.terminalOrder = e.terminalOrder[1:]
+		if oldRec, ok := e.registry[oldestID]; ok && oldRec.isTerminal() {
+			delete(e.registry, oldestID)
+		}
+	}
 }
 
 // Stop terminates the engine and cancels residual tasks if drain timed out.
@@ -288,6 +437,15 @@ func (e *Engine) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket,
 		return nil, tasks.NewAdmissionError(tasks.ReasonEngineQuiescing, tasks.ErrEngineQuiescing)
 	}
 
+	if spec.Scope.Owner != "" {
+		if cause, closed := e.cancelledScopes[spec.Scope]; closed {
+			return nil, tasks.NewAdmissionError(tasks.ReasonScopeClosed, fmt.Errorf("%w: scope %s (generation %d) is closed (%s)", tasks.ErrScopeClosed, spec.Scope.Owner, spec.Scope.Generation, cause))
+		}
+		if cause, closed := e.cancelledScopes[tasks.ScopeIdentity{Owner: spec.Scope.Owner, Generation: 0}]; closed {
+			return nil, tasks.NewAdmissionError(tasks.ReasonScopeClosed, fmt.Errorf("%w: scope %s is closed (%s)", tasks.ErrScopeClosed, spec.Scope.Owner, cause))
+		}
+	}
+
 	// 1. Result capacity reservation check
 	if e.resultCapacity > 0 && e.resultSlotsHeld >= e.resultCapacity {
 		return nil, tasks.NewAdmissionError(tasks.ReasonResultBackpressure, tasks.ErrResultBackpressure)
@@ -313,20 +471,20 @@ func (e *Engine) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket,
 	// 3. Atomically register task
 	now := time.Now().UTC()
 	doneCh := make(chan struct{})
-	ticket := &engineTicket{
-		taskID: spec.ID,
-		engine: e,
-		done:   doneCh,
-	}
-
 	rec := &taskRecord{
 		spec:       spec,
 		state:      tasks.StateAdmitted,
 		done:       doneCh,
-		ticket:     ticket,
 		admittedAt: now,
 		queuedAt:   now,
 	}
+	ticket := &engineTicket{
+		taskID: spec.ID,
+		engine: e,
+		done:   doneCh,
+		rec:    rec,
+	}
+	rec.ticket = ticket
 	e.registry[spec.ID] = rec
 	e.resultSlotsHeld++
 	e.activeTasks++
@@ -338,6 +496,13 @@ func (e *Engine) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket,
 		EnqueuedAt:  now,
 		PayloadSize: payloadBytes,
 	})
+
+	if !spec.QueueDeadline.IsZero() {
+		select {
+		case e.wakeSweeper <- struct{}{}:
+		default:
+		}
+	}
 
 	// Attempt physical dispatch if slots are idle
 	e.tryDispatchLocked(spec.Pool)
@@ -368,7 +533,7 @@ func (e *Engine) sweepExpiredLocked(pool tasks.PoolID, now time.Time) {
 			e.resultSlotsHeld--
 		}
 		close(rec.done)
-		e.taskSettledLocked()
+		e.taskSettledLocked(rec)
 		if rec.spec.OnComplete != nil {
 			fn := rec.spec.OnComplete
 			res := rec.result
@@ -381,7 +546,7 @@ func (e *Engine) sweepExpiredLocked(pool tasks.PoolID, now time.Time) {
 }
 
 func (e *Engine) tryDispatchLocked(pool tasks.PoolID) {
-	if e.rootCtx.Err() != nil {
+	if e.rootCtx == nil || e.rootCtx.Err() != nil {
 		return
 	}
 	e.sweepExpiredLocked(pool, time.Now().UTC())
@@ -403,9 +568,7 @@ func (e *Engine) tryDispatchLocked(pool tasks.PoolID) {
 		e.dispatchEpoch++
 
 		gen := e.poolGenerations[pool]
-		permit := newPermit(pool, slotID, gen, rec.spec.ID, e.dispatchEpoch, func() {
-			e.onPermitReleased(pool, slotID)
-		})
+		permit := newPermit(pool, slotID, gen, rec.spec.ID, e.dispatchEpoch, nil)
 
 		rec.permit = permit
 		rec.state = tasks.StateRunning
@@ -414,15 +577,13 @@ func (e *Engine) tryDispatchLocked(pool tasks.PoolID) {
 		taskCtx, cancel := context.WithCancel(e.rootCtx)
 		rec.cancelFunc = cancel
 
-		go e.executeAssignment(rec, candidate.Spec, permit, taskCtx)
+		e.workerMailboxes[pool][slotID] <- workerAssignment{
+			rec:     rec,
+			spec:    candidate.Spec,
+			permit:  permit,
+			taskCtx: taskCtx,
+		}
 	}
-}
-
-func (e *Engine) onPermitReleased(pool tasks.PoolID, slotID int) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.idleSlots[pool] = append(e.idleSlots[pool], slotID)
-	e.tryDispatchLocked(pool)
 }
 
 func (e *Engine) executeAssignment(rec *taskRecord, spec tasks.WorkSpec, permit *permit, taskCtx context.Context) {
@@ -433,6 +594,14 @@ func (e *Engine) executeAssignment(rec *taskRecord, spec tasks.WorkSpec, permit 
 
 	rec.result = res
 	rec.finishedAt = res.FinishedAt
+	if rec.cancelRequested && res.Outcome != tasks.OutcomeCancelled {
+		res.Outcome = tasks.OutcomeCancelled
+		res.Cause = rec.cancelReason
+		if res.Failure.Message == "" {
+			res.Failure.Message = fmt.Sprintf("late cancellation applied: %s", rec.cancelReason)
+		}
+		rec.result = res
+	}
 	switch res.Outcome {
 	case tasks.OutcomeCompleted:
 		rec.state = tasks.StateCompleted
@@ -460,7 +629,7 @@ func (e *Engine) executeAssignment(rec *taskRecord, spec tasks.WorkSpec, permit 
 		e.resultSlotsHeld--
 	}
 	close(rec.done)
-	e.taskSettledLocked()
+	e.taskSettledLocked(rec)
 
 	if rec.spec.OnComplete != nil {
 		fn := rec.spec.OnComplete
@@ -478,7 +647,7 @@ func (e *Engine) Cancel(id tasks.TaskID, reason tasks.Cause) (tasks.CancelReceip
 
 	rec, exists := e.registry[id]
 	if !exists {
-		return tasks.CancelReceipt{TaskID: id, Accepted: false, State: "", Reason: reason}, errors.New("task not found")
+		return tasks.CancelReceipt{TaskID: id, Accepted: false, State: "", Reason: reason}, tasks.ErrTaskNotFound
 	}
 
 	switch rec.state {
@@ -496,7 +665,7 @@ func (e *Engine) Cancel(id tasks.TaskID, reason tasks.Cause) (tasks.CancelReceip
 			e.resultSlotsHeld--
 		}
 		close(rec.done)
-		e.taskSettledLocked()
+		e.taskSettledLocked(rec)
 		if rec.spec.OnComplete != nil {
 			fn, result := rec.spec.OnComplete, rec.result
 			go func() {
@@ -507,6 +676,8 @@ func (e *Engine) Cancel(id tasks.TaskID, reason tasks.Cause) (tasks.CancelReceip
 		return tasks.CancelReceipt{TaskID: id, Accepted: true, State: tasks.StateCancelled, Reason: reason}, nil
 
 	case tasks.StateRunning:
+		rec.cancelRequested = true
+		rec.cancelReason = reason
 		if rec.cancelFunc != nil {
 			rec.cancelFunc()
 		}
@@ -518,9 +689,14 @@ func (e *Engine) Cancel(id tasks.TaskID, reason tasks.Cause) (tasks.CancelReceip
 	}
 }
 
-// CancelScope cancels all active and queued tasks matching scope owner and generation.
+// CancelScope cancels all active and queued tasks matching scope owner and generation,
+// and sets a scope barrier to prevent future submissions on this scope.
 func (e *Engine) CancelScope(scope tasks.ScopeIdentity, reason tasks.Cause) int {
 	e.mu.Lock()
+	if e.cancelledScopes == nil {
+		e.cancelledScopes = make(map[tasks.ScopeIdentity]tasks.Cause)
+	}
+	e.cancelledScopes[scope] = reason
 	var toCancel []tasks.TaskID
 	for id, rec := range e.registry {
 		if rec.spec.Scope.Owner == scope.Owner &&

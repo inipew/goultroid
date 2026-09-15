@@ -3,6 +3,7 @@ package taskengine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -169,5 +170,228 @@ func TestEngineCopiesAdmittedPayloadAndOccurrence(t *testing.T) {
 	defer e.mu.Unlock()
 	if string(e.registry["copy"].spec.Input.([]byte)) != "original" {
 		t.Fatal("caller changed admitted payload")
+	}
+}
+
+func TestEngineCancelScopeBarrierBlocksSubsequentSubmit(t *testing.T) {
+	e := auditEngine(t)
+	scope := tasks.ScopeIdentity{Owner: "plugin:weather", Generation: 1}
+
+	// 1. Submit initial task under scope
+	ticket1, err := e.Submit(context.Background(), tasks.WorkSpec{
+		ID:         "task-pre",
+		Scope:      scope,
+		QuotaOwner: "plugin:weather",
+		Pool:       "a",
+		Handler:    func(context.Context) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("unexpected submit error: %v", err)
+	}
+	_ = waitAuditTicket(t, ticket1)
+
+	// 2. Cancel scope
+	_ = e.CancelScope(scope, tasks.CauseScopeClosed)
+
+	// 3. Submit after CancelScope must be immediately rejected at admission barrier
+	_, err = e.Submit(context.Background(), tasks.WorkSpec{
+		ID:         "task-post",
+		Scope:      scope,
+		QuotaOwner: "plugin:weather",
+		Pool:       "a",
+		Handler:    func(context.Context) error { return nil },
+	})
+	if !errors.Is(err, tasks.ErrScopeClosed) {
+		t.Fatalf("expected ErrScopeClosed for late submit on cancelled scope, got: %v", err)
+	}
+}
+
+func TestEngineLateCancellationAuditing(t *testing.T) {
+	e := auditEngine(t)
+	taskStarted := make(chan struct{})
+	allowFinish := make(chan struct{})
+
+	ticket, err := e.Submit(context.Background(), tasks.WorkSpec{
+		ID:         "task-running-cancel",
+		QuotaOwner: "owner-late",
+		Pool:       "a",
+		Handler: func(ctx context.Context) error {
+			close(taskStarted)
+			<-allowFinish
+			// Return nil (success), simulating handler that finished without checking ctx
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	<-taskStarted
+
+	// Cancel while running
+	receipt, err := e.Cancel("task-running-cancel", tasks.CauseUserCancel)
+	if err != nil || !receipt.Accepted || receipt.State != tasks.StateRunning {
+		t.Fatalf("expected running cancel accepted, got receipt=%+v, err=%v", receipt, err)
+	}
+
+	// Allow handler to finish (simulating late finish)
+	close(allowFinish)
+
+	res := waitAuditTicket(t, ticket)
+	if res.Outcome != tasks.OutcomeCancelled || res.Cause != tasks.CauseUserCancel {
+		t.Fatalf("expected late cancellation to preserve OutcomeCancelled and CauseUserCancel, got: %+v", res)
+	}
+}
+
+func TestEngineConfigValidationAndDefensiveCopy(t *testing.T) {
+	// 1. Validation of negative parameters
+	invalidCfg := Config{
+		Pools: map[tasks.PoolID]PoolEngineConfig{
+			"bad": {Concurrency: -1},
+		},
+	}
+	if err := ValidateConfig(invalidCfg); err == nil {
+		t.Fatal("expected error for negative concurrency")
+	}
+
+	invalidCap := Config{
+		ResultCapacity: -5,
+	}
+	if err := ValidateConfig(invalidCap); err == nil {
+		t.Fatal("expected error for negative result capacity")
+	}
+
+	// 2. Defensive copy of pools
+	poolsMap := map[tasks.PoolID]PoolEngineConfig{
+		"pool1": {Concurrency: 5, BacklogLimit: 20},
+	}
+	cfg := Config{
+		Pools:          poolsMap,
+		ResultCapacity: 50,
+	}
+	eng := NewEngine(cfg)
+
+	// Mutate external map
+	poolsMap["pool1"] = PoolEngineConfig{Concurrency: 999}
+	delete(poolsMap, "pool1")
+
+	// Verify engine's internal config was not mutated
+	eng.mu.Lock()
+	defer eng.mu.Unlock()
+	if eng.config.Pools["pool1"].Concurrency != 5 {
+		t.Fatalf("engine pool config was mutated by caller: got %d, expected 5", eng.config.Pools["pool1"].Concurrency)
+	}
+}
+
+func TestEngineTerminalRecordEviction(t *testing.T) {
+	cfg := Config{
+		Pools: map[tasks.PoolID]PoolEngineConfig{
+			"test": {Concurrency: 2, BacklogLimit: 20},
+		},
+		MaxTerminalRetained: 2,
+	}
+	e := NewEngine(cfg)
+	if err := e.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer e.Stop(context.Background())
+
+	// Submit 4 tasks that finish immediately
+	for i := 1; i <= 4; i++ {
+		taskID := tasks.TaskID(fmt.Sprintf("evict-task-%d", i))
+		ticket, err := e.Submit(context.Background(), tasks.WorkSpec{
+			ID:         taskID,
+			Pool:       "test",
+			QuotaOwner: "test-owner",
+			Handler:    func(ctx context.Context) error { return nil },
+		})
+		if err != nil {
+			t.Fatalf("failed to submit task %d: %v", i, err)
+		}
+		res, err := ticket.Wait(context.Background())
+		if err != nil || !res.IsSuccess() {
+			t.Fatalf("task %d failed: res=%+v err=%v", i, res, err)
+		}
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// Only at most 2 terminal tasks should be retained in the registry
+	if len(e.registry) > 2 {
+		t.Fatalf("expected registry size <= 2, got %d", len(e.registry))
+	}
+	// The oldest tasks (1 and 2) should have been evicted
+	if _, exists := e.registry["evict-task-1"]; exists {
+		t.Fatalf("expected evict-task-1 to be evicted")
+	}
+	if _, exists := e.registry["evict-task-2"]; exists {
+		t.Fatalf("expected evict-task-2 to be evicted")
+	}
+	// The newest tasks (3 and 4) should still be in the registry
+	if _, exists := e.registry["evict-task-3"]; !exists {
+		t.Fatalf("expected evict-task-3 to be present")
+	}
+	if _, exists := e.registry["evict-task-4"]; !exists {
+		t.Fatalf("expected evict-task-4 to be present")
+	}
+}
+
+func TestEngineEventDrivenDeadlineSweeper(t *testing.T) {
+	cfg := Config{
+		Pools: map[tasks.PoolID]PoolEngineConfig{
+			"p": {Concurrency: 1, BacklogLimit: 10},
+		},
+	}
+	e := NewEngine(cfg)
+	if err := e.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer e.Stop(context.Background())
+
+	blockerStarted := make(chan struct{})
+	blockerRelease := make(chan struct{})
+	defer close(blockerRelease)
+
+	// Block worker 0
+	_, err := e.Submit(context.Background(), tasks.WorkSpec{
+		ID:         "blocker",
+		Pool:       "p",
+		QuotaOwner: "test-owner",
+		Handler: func(ctx context.Context) error {
+			close(blockerStarted)
+			<-blockerRelease
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-blockerStarted
+
+	// Submit queued task with a very short queue deadline (50ms)
+	expiredTicket, err := e.Submit(context.Background(), tasks.WorkSpec{
+		ID:            "queued-deadline-task",
+		Pool:          "p",
+		QuotaOwner:    "test-owner",
+		QueueDeadline: time.Now().UTC().Add(50 * time.Millisecond),
+		Handler: func(ctx context.Context) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait should observe timeout caused by the dynamic sweepLoop wakeup
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	res, err := expiredTicket.Wait(ctx)
+	if err != nil {
+		t.Fatalf("wait failed: %v", err)
+	}
+	if res.Outcome != tasks.OutcomeTimedOut || res.Cause != tasks.CauseQueueExpired {
+		t.Fatalf("expected OutcomeTimedOut with CauseQueueExpired, got %+v", res)
 	}
 }

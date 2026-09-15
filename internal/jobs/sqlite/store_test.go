@@ -184,3 +184,169 @@ func TestStoreFutureReadyAndCancelledOutcome(t *testing.T) {
 		t.Fatal(state)
 	}
 }
+
+func TestStoreScheduleLifecycleAndMaterializeDue(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	s := NewStore(db)
+	ctx := context.Background()
+
+	def := &jobs.JobDefinition{
+		ID:          "job-sched-test",
+		ScopeOwner:  "system",
+		QuotaOwner:  "admin",
+		HandlerType: "test.run",
+		Enabled:     true,
+	}
+	if err := s.SaveDefinition(ctx, def); err != nil {
+		t.Fatal(err)
+	}
+
+	dueTime := time.Now().UTC().Add(-10 * time.Second)
+	sched := &jobs.JobSchedule{
+		ID:            "sched-1",
+		JobID:         "job-sched-test",
+		Recurrence:    "@hourly",
+		Interval:      time.Hour,
+		NextDueAt:     dueTime,
+		MisfirePolicy: jobs.MisfireRunOnce,
+		OverlapPolicy: jobs.OverlapForbid,
+		Enabled:       true,
+		Revision:      1,
+	}
+	if err := s.SaveSchedule(ctx, sched); err != nil {
+		t.Fatalf("SaveSchedule failed: %v", err)
+	}
+
+	loadedSched, err := s.GetSchedule(ctx, "sched-1")
+	if err != nil {
+		t.Fatalf("GetSchedule failed: %v", err)
+	}
+	if loadedSched.ID != "sched-1" || loadedSched.Interval != time.Hour {
+		t.Fatalf("loaded schedule mismatch: %+v", loadedSched)
+	}
+
+	// Materialize due schedule
+	nextDue := time.Now().UTC().Add(time.Hour)
+	occ, err := s.MaterializeDueSchedule(ctx, "sched-1", nextDue)
+	if err != nil {
+		t.Fatalf("MaterializeDueSchedule failed: %v", err)
+	}
+	if occ.JobID != "job-sched-test" || occ.ScheduleID != "sched-1" || occ.State != jobs.OccurrenceReady {
+		t.Fatalf("materialized occurrence mismatch: %+v", occ)
+	}
+
+	// Schedule next_due_at should have been advanced
+	updatedSched, err := s.GetSchedule(ctx, "sched-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updatedSched.NextDueAt.Equal(nextDue.Truncate(time.Second)) && !updatedSched.NextDueAt.Equal(nextDue) {
+		t.Fatalf("schedule next_due_at was not advanced: got %v, expected %v", updatedSched.NextDueAt, nextDue)
+	}
+
+	// Forbid overlap: when occurrence is still ready, materializing again does not duplicate occurrence
+	occ2, err := s.MaterializeDueSchedule(ctx, "sched-1", nextDue.Add(time.Hour))
+	if err == nil && occ2 != nil {
+		t.Fatalf("expected overlap forbid to return nil occurrence, got %+v", occ2)
+	}
+}
+
+func TestStoreCancelOccurrenceAndEpochFencing(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	s := NewStore(db)
+	ctx := context.Background()
+
+	def := &jobs.JobDefinition{
+		ID:          "job-cancel-test",
+		ScopeOwner:  "system",
+		QuotaOwner:  "admin",
+		HandlerType: "test.cancel",
+		Enabled:     true,
+	}
+	_ = s.SaveDefinition(ctx, def)
+
+	now := time.Now().UTC()
+	occ := &jobs.JobOccurrence{
+		ID:            "occ-cancel-1",
+		JobID:         "job-cancel-test",
+		ScheduledFor:  now,
+		OccurrenceKey: "key-cancel-1",
+		State:         jobs.OccurrenceReady,
+		ReadyAt:       now,
+	}
+	if err := s.MaterializeOccurrence(ctx, occ); err != nil {
+		t.Fatal(err)
+	}
+
+	attempt, err := s.PrepareAttemptLease(ctx, "occ-cancel-1", "task-cancel-1", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Cancel the occurrence
+	if err := s.CancelOccurrence(ctx, "occ-cancel-1", "user requested"); err != nil {
+		t.Fatalf("CancelOccurrence failed: %v", err)
+	}
+
+	// Attempt commit should now be rejected due to cancel epoch bump and occurrence state != dispatched
+	err = s.CommitAttemptResult(ctx, attempt.ID, attempt.LeaseEpoch, jobs.AttemptCompleted, []byte("res"), "")
+	if !errors.Is(err, ErrLeaseFencingLost) {
+		t.Fatalf("expected ErrLeaseFencingLost after cancel, got: %v", err)
+	}
+
+	// Outbox should contain cancellation event
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM job_outbox WHERE kind = 'occurrence_cancelled' AND occurrence_id = 'occ-cancel-1'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 cancellation outbox event, got %d", count)
+	}
+}
+
+func TestStoreCommitAttemptResultWithOutbox(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	s := NewStore(db)
+	ctx := context.Background()
+
+	def := &jobs.JobDefinition{
+		ID:          "job-outbox-test",
+		ScopeOwner:  "system",
+		QuotaOwner:  "admin",
+		HandlerType: "test.outbox",
+		Enabled:     true,
+	}
+	_ = s.SaveDefinition(ctx, def)
+
+	now := time.Now().UTC()
+	occ := &jobs.JobOccurrence{
+		ID:            "occ-outbox-1",
+		JobID:         "job-outbox-test",
+		ScheduledFor:  now,
+		OccurrenceKey: "key-outbox-1",
+		State:         jobs.OccurrenceReady,
+		ReadyAt:       now,
+	}
+	_ = s.MaterializeOccurrence(ctx, occ)
+
+	attempt, err := s.PrepareAttemptLease(ctx, "occ-outbox-1", "task-outbox-1", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = s.CommitAttemptResultWithOutbox(ctx, attempt.ID, attempt.LeaseEpoch, jobs.AttemptCompleted, []byte("ok"), "", "event-1", "job_finished", []byte(`{"status":"success"}`))
+	if err != nil {
+		t.Fatalf("CommitAttemptResultWithOutbox failed: %v", err)
+	}
+
+	var eventCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM job_outbox WHERE event_id = 'event-1' AND kind = 'job_finished'`).Scan(&eventCount); err != nil {
+		t.Fatal(err)
+	}
+	if eventCount != 1 {
+		t.Fatalf("expected 1 outbox event, got %d", eventCount)
+	}
+}

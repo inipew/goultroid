@@ -15,6 +15,8 @@ var (
 	ErrScopeClosed         = errors.New("caller scope is closed")
 	ErrUnknownHandler      = errors.New("unknown handler reference")
 	ErrLinearizationCancel = errors.New("submission cancelled during admission decision")
+	ErrTaskNotFound        = errors.New("task not found")
+	ErrPermissionDenied    = errors.New("permission denied")
 )
 
 const (
