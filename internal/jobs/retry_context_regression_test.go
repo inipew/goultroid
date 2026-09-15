@@ -12,10 +12,10 @@ import (
 
 type retryContextTicket struct{}
 
-func (retryContextTicket) TaskID() tasks.TaskID                { return "task:occ:1" }
-func (retryContextTicket) State() tasks.TaskState              { return tasks.StateFailed }
-func (retryContextTicket) Done() <-chan struct{}                { ch := make(chan struct{}); close(ch); return ch }
-func (retryContextTicket) Result() (tasks.TaskResult, bool)     { return tasks.TaskResult{TaskID: "task:occ:1", Outcome: tasks.OutcomeFailed}, true }
+func (retryContextTicket) TaskID() tasks.TaskID            { return "task:occ:1" }
+func (retryContextTicket) State() tasks.TaskState          { return tasks.StateFailed }
+func (retryContextTicket) Done() <-chan struct{}            { ch := make(chan struct{}); close(ch); return ch }
+func (retryContextTicket) Result() (tasks.TaskResult, bool) { return tasks.TaskResult{TaskID: "task:occ:1", Outcome: tasks.OutcomeFailed}, true }
 func (retryContextTicket) Wait(context.Context) (tasks.TaskResult, error) {
 	return tasks.TaskResult{TaskID: "task:occ:1", Outcome: tasks.OutcomeFailed}, nil
 }
@@ -29,7 +29,9 @@ func (retryContextClient) Cancel(tasks.TaskID, tasks.Cause) (tasks.CancelReceipt
 	return tasks.CancelReceipt{}, nil
 }
 func (retryContextClient) CancelScope(tasks.ScopeIdentity, tasks.Cause) int { return 0 }
-func (retryContextClient) Snapshot(tasks.TaskID) (tasks.TaskSnapshot, bool)  { return tasks.TaskSnapshot{}, false }
+func (retryContextClient) Snapshot(tasks.TaskID) (tasks.TaskSnapshot, bool) {
+	return tasks.TaskSnapshot{}, false
+}
 
 type retryContextStore struct {
 	getCalls    atomic.Int32
@@ -64,7 +66,7 @@ func (s *retryContextStore) GetOccurrence(ctx context.Context, id string) (*JobO
 func (s *retryContextStore) GetOccurrenceByKey(context.Context, string) (*JobOccurrence, error) {
 	return nil, errors.New("unused")
 }
-func (s *retryContextStore) CountAttempts(ctx context.Context, string) (int, error) {
+func (s *retryContextStore) CountAttempts(ctx context.Context, _ string) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
