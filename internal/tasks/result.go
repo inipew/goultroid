@@ -19,9 +19,9 @@ type TaskResult struct {
 	Output     any         `json:"output,omitempty"`
 	Failure    FailureInfo `json:"failure,omitempty"`
 
-	CancelRequested bool  `json:"cancel_requested,omitempty"`
-	CancelCause     Cause `json:"cancel_cause,omitempty"`
-	LateCancellation bool `json:"late_cancellation,omitempty"`
+	CancelRequested  bool  `json:"cancel_requested,omitempty"`
+	CancelCause      Cause `json:"cancel_cause,omitempty"`
+	LateCancellation bool  `json:"late_cancellation,omitempty"`
 }
 
 // IsSuccess returns true if the task completed normally. A late cancellation
