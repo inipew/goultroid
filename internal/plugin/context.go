@@ -70,6 +70,16 @@ func NewPluginContext(baseCtx context.Context, cfg ContextConfig) PluginContext 
 		cfg.Gate = NewCapabilityGate()
 	}
 
+	// Accepted TaskEngine work deliberately outlives the Submit caller context.
+	// Bind the exact plugin generation to Scope cancellation explicitly so
+	// disable/reload/global shutdown cannot leave old-generation work alive.
+	if cfg.Scope != nil && cfg.TaskClient != nil {
+		scopeID := tasks.ScopeIdentity{Owner: "plugin:" + cfg.Owner, Generation: cfg.Scope.Generation()}
+		_ = cfg.Scope.OnCancel(func() {
+			cfg.TaskClient.CancelScope(scopeID, tasks.CauseScopeCancel)
+		})
+	}
+
 	return &pluginContext{
 		Context:    baseCtx,
 		scope:      cfg.Scope,
