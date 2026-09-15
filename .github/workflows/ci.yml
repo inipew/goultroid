@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, test-next ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ main, master, test-next ]
 
 # Keep CI jobs independent, but reuse the expensive Go module/build caches.
 env:
