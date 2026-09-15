@@ -30,10 +30,14 @@ type completionDelivery struct {
 	pending      atomic.Int64
 	active       atomic.Int64
 	failed       atomic.Int64
+	stopping     atomic.Bool
+	remaining    atomic.Int64
 
-	wg     sync.WaitGroup
-	stopCh chan struct{}
-	stopOs sync.Once
+	wg       sync.WaitGroup
+	stopCh   chan struct{}
+	stopOs   sync.Once
+	done     chan struct{}
+	doneOnce sync.Once
 }
 
 func newCompletionDelivery(workers, queueCap int) *completionDelivery {
@@ -48,18 +52,30 @@ func newCompletionDelivery(workers, queueCap int) *completionDelivery {
 		reservations: make(chan struct{}, queueCap),
 		workers:      workers,
 		stopCh:       make(chan struct{}),
+		done:         make(chan struct{}),
 	}
 }
 
 func (d *completionDelivery) start() {
+	if d == nil {
+		return
+	}
+	d.remaining.Store(int64(d.workers))
 	for i := 0; i < d.workers; i++ {
 		d.wg.Add(1)
 		go d.loop()
 	}
 }
 
+func (d *completionDelivery) workerDone() {
+	d.wg.Done()
+	if d.remaining.Add(-1) == 0 {
+		d.doneOnce.Do(func() { close(d.done) })
+	}
+}
+
 func (d *completionDelivery) loop() {
-	defer d.wg.Done()
+	defer d.workerDone()
 	for {
 		select {
 		case <-d.stopCh:
@@ -84,11 +100,15 @@ func (d *completionDelivery) loop() {
 // reserve claims one callback-delivery credit. It is intentionally
 // non-blocking because admission must remain bounded and explicit.
 func (d *completionDelivery) reserve() bool {
-	if d == nil {
+	if d == nil || d.stopping.Load() {
 		return false
 	}
 	select {
 	case d.reservations <- struct{}{}:
+		if d.stopping.Load() {
+			d.releaseReservation()
+			return false
+		}
 		return true
 	default:
 		return false
@@ -110,13 +130,18 @@ func (d *completionDelivery) releaseReservation() {
 // enqueueReserved hands off a callback whose delivery credit was reserved at
 // admission. Since reservations are bounded by queue capacity and each
 // reservation can have at most one queued callback, the non-blocking send must
-// succeed. If it does not, fail closed: release the credit and count the
-// invariant violation instead of creating a goroutine.
+// succeed. If shutdown has started or the invariant is violated, fail closed:
+// release the credit and count the failure instead of creating a goroutine.
 func (d *completionDelivery) enqueueReserved(fn func(tasks.TaskResult), res tasks.TaskResult) bool {
 	if d == nil || fn == nil {
 		if d != nil {
 			d.releaseReservation()
 		}
+		return false
+	}
+	if d.stopping.Load() {
+		d.failed.Add(1)
+		d.releaseReservation()
 		return false
 	}
 	d.pending.Add(1)
@@ -131,24 +156,14 @@ func (d *completionDelivery) enqueueReserved(fn func(tasks.TaskResult), res task
 	}
 }
 
-// enqueue is retained for internal compatibility. New TaskEngine completion
-// paths reserve at admission and call enqueueReserved. Callers without a prior
-// reservation receive the same bounded failure policy.
-func (d *completionDelivery) enqueue(fn func(tasks.TaskResult), res tasks.TaskResult) bool {
-	if d == nil || fn == nil || !d.reserve() {
-		if d != nil && fn != nil {
-			d.failed.Add(1)
-		}
-		return false
-	}
-	return d.enqueueReserved(fn, res)
-}
-
 // drain waits until all enqueued callbacks have been dequeued and all active
 // callbacks have returned, or ctx expires.
 func (d *completionDelivery) drain(ctx context.Context) error {
 	if d == nil {
 		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
@@ -164,13 +179,28 @@ func (d *completionDelivery) drain(ctx context.Context) error {
 	}
 }
 
-// stop signals workers to exit after Stop has drained the queue.
-func (d *completionDelivery) stop() {
+// stop prevents new delivery reservations, signals workers, and waits only as
+// long as ctx allows. A user callback is arbitrary code and cannot be killed in
+// Go; a wedged callback therefore must not turn Engine.Stop into an unbounded
+// join. The worker exits naturally if/when that callback returns.
+func (d *completionDelivery) stop(ctx context.Context) error {
 	if d == nil {
-		return
+		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	d.stopping.Store(true)
 	d.stopOs.Do(func() { close(d.stopCh) })
-	d.wg.Wait()
+	if d.remaining.Load() == 0 {
+		d.doneOnce.Do(func() { close(d.done) })
+	}
+	select {
+	case <-d.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (d *completionDelivery) queueLen() int {
@@ -185,13 +215,6 @@ func (d *completionDelivery) queueCap() int {
 		return 0
 	}
 	return cap(d.queue)
-}
-
-func (d *completionDelivery) reservationLen() int {
-	if d == nil {
-		return 0
-	}
-	return len(d.reservations)
 }
 
 // fallbackCount keeps the existing diagnostics field/API name while its

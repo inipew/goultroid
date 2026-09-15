@@ -17,15 +17,19 @@ const defaultDurabilityConcurrency = 4
 // sized to ResultCapacity, so the number of durability-required tasks that can
 // reach this lane is itself bounded by the same credit budget.
 type durabilityLane struct {
-	queue   chan func()
-	workers int
-	pending atomic.Int64
-	active  atomic.Int64
-	failed  atomic.Int64
+	queue     chan func()
+	workers   int
+	pending   atomic.Int64
+	active    atomic.Int64
+	failed    atomic.Int64
+	stopping  atomic.Bool
+	remaining atomic.Int64
 
 	wg       sync.WaitGroup
 	stopCh   chan struct{}
 	stopOnce sync.Once
+	done     chan struct{}
+	doneOnce sync.Once
 }
 
 func newDurabilityLane(workers, queueCap int) *durabilityLane {
@@ -39,6 +43,7 @@ func newDurabilityLane(workers, queueCap int) *durabilityLane {
 		queue:   make(chan func(), queueCap),
 		workers: workers,
 		stopCh:  make(chan struct{}),
+		done:    make(chan struct{}),
 	}
 }
 
@@ -46,14 +51,22 @@ func (d *durabilityLane) start() {
 	if d == nil {
 		return
 	}
+	d.remaining.Store(int64(d.workers))
 	for i := 0; i < d.workers; i++ {
 		d.wg.Add(1)
 		go d.loop()
 	}
 }
 
+func (d *durabilityLane) workerDone() {
+	d.wg.Done()
+	if d.remaining.Add(-1) == 0 {
+		d.doneOnce.Do(func() { close(d.done) })
+	}
+}
+
 func (d *durabilityLane) loop() {
-	defer d.wg.Done()
+	defer d.workerDone()
 	for {
 		select {
 		case <-d.stopCh:
@@ -73,7 +86,10 @@ func (d *durabilityLane) loop() {
 }
 
 func (d *durabilityLane) enqueue(fn func()) bool {
-	if d == nil || fn == nil {
+	if d == nil || fn == nil || d.stopping.Load() {
+		if d != nil && fn != nil {
+			d.failed.Add(1)
+		}
 		return false
 	}
 	d.pending.Add(1)
@@ -87,30 +103,27 @@ func (d *durabilityLane) enqueue(fn func()) bool {
 	}
 }
 
-func (d *durabilityLane) drain(ctx context.Context) error {
+// stop prevents new durability work, signals workers, and joins only until ctx
+// expires. A Commit implementation is external code and may ignore its context;
+// shutdown must still remain bounded when that happens.
+func (d *durabilityLane) stop(ctx context.Context) error {
 	if d == nil {
 		return nil
 	}
-	ticker := time.NewTicker(time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if d.pending.Load() == 0 && d.active.Load() == 0 && len(d.queue) == 0 {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
+	if ctx == nil {
+		ctx = context.Background()
 	}
-}
-
-func (d *durabilityLane) stop() {
-	if d == nil {
-		return
-	}
+	d.stopping.Store(true)
 	d.stopOnce.Do(func() { close(d.stopCh) })
-	d.wg.Wait()
+	if d.remaining.Load() == 0 {
+		d.doneOnce.Do(func() { close(d.done) })
+	}
+	select {
+	case <-d.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (d *durabilityLane) queueLen() int {

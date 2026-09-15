@@ -239,6 +239,10 @@ type Engine struct {
 	activeTasks int
 	drainDone   chan struct{}
 	runStarted  bool
+
+	runtimeRemaining atomic.Int64
+	runtimeDone      chan struct{}
+	runtimeDoneOnce  sync.Once
 }
 
 // ValidateConfig checks that pool and engine limits are non-negative.
@@ -384,6 +388,7 @@ func NewEngine(cfg Config) *Engine {
 		delivery:            newCompletionDelivery(deliveryWorkers, deliveryCap),
 		durability:          newDurabilityLane(defaultDurabilityConcurrency, cfg.ResultCapacity),
 		drainDone:           make(chan struct{}),
+		runtimeDone:         make(chan struct{}),
 	}
 }
 
@@ -421,13 +426,30 @@ func (e *Engine) Start(ctx context.Context) error {
 	delivery.start()
 	durability.start()
 
-	go e.runLoop(rootCtx, inbox)
+	runtimeLoops := 1
+	for _, mboxes := range e.workerMailboxes {
+		runtimeLoops += len(mboxes)
+	}
+	e.runtimeRemaining.Store(int64(runtimeLoops))
+	go func() {
+		defer e.runtimeLoopDone()
+		e.runLoop(rootCtx, inbox)
+	}()
 	for poolID, mboxes := range e.workerMailboxes {
 		for slotID, ch := range mboxes {
-			go e.physicalWorker(poolID, slotID, ch, rootCtx)
+			go func(pool tasks.PoolID, slot int, mailbox <-chan workerAssignment) {
+				defer e.runtimeLoopDone()
+				e.physicalWorker(pool, slot, mailbox, rootCtx)
+			}(poolID, slotID, ch)
 		}
 	}
 	return nil
+}
+
+func (e *Engine) runtimeLoopDone() {
+	if e.runtimeRemaining.Add(-1) == 0 {
+		e.runtimeDoneOnce.Do(func() { close(e.runtimeDone) })
+	}
 }
 
 // runLoop is the sole writer of execution state.
@@ -466,6 +488,7 @@ func (e *Engine) runLoop(ctx context.Context, inbox <-chan engineRequest) {
 	for {
 		select {
 		case <-ctx.Done():
+			e.applyStopFinalize()
 			return
 		case req, ok := <-inbox:
 			if !ok {
@@ -671,7 +694,7 @@ func (e *Engine) sendSubmitControl(ctx context.Context, spec tasks.WorkSpec) (en
 			return rep, nil
 		case <-ctxDone:
 			if decision.decide(decisionCancelled) {
-				return engineReply{}, tasks.NewAdmissionError(tasks.ReasonLinearizationCancel, fmt.Errorf("%w: %v", tasks.ErrLinearizationCancel, ctx.Err()))
+				return engineReply{}, tasks.NewAdmissionError(tasks.ReasonLinearizationCancel, errors.Join(tasks.ErrLinearizationCancel, ctx.Err()))
 			}
 			// Coordinator already published accepted/rejected; cancellation can
 			// no longer mask it. Disable this closed channel and wait for reply.
@@ -688,7 +711,7 @@ func (e *Engine) sendSubmitControl(ctx context.Context, spec tasks.WorkSpec) (en
 func (e *Engine) admitSubmit(loopCtx context.Context, callerCtx context.Context, spec tasks.WorkSpec, decision *submitCell) (tasks.Ticket, error) {
 	if callerCtx != nil {
 		if err := callerCtx.Err(); err != nil {
-			return nil, tasks.NewAdmissionError(tasks.ReasonLinearizationCancel, fmt.Errorf("%w: %v", tasks.ErrLinearizationCancel, err))
+			return nil, tasks.NewAdmissionError(tasks.ReasonLinearizationCancel, errors.Join(tasks.ErrLinearizationCancel, err))
 		}
 	}
 	if err := spec.Validate(); err != nil {
@@ -748,7 +771,7 @@ func (e *Engine) admitSubmit(loopCtx context.Context, callerCtx context.Context,
 	// published admission decision.
 	if callerCtx != nil {
 		if err := callerCtx.Err(); err != nil {
-			return nil, tasks.NewAdmissionError(tasks.ReasonLinearizationCancel, fmt.Errorf("%w: %v", tasks.ErrLinearizationCancel, err))
+			return nil, tasks.NewAdmissionError(tasks.ReasonLinearizationCancel, errors.Join(tasks.ErrLinearizationCancel, err))
 		}
 	}
 
@@ -1058,14 +1081,63 @@ func (e *Engine) applyQuiesce() {
 }
 
 func (e *Engine) applyStopFinalize() {
+	e.accepting = false
+	e.quiesced = true
 	for id, rec := range e.registry {
 		switch rec.state {
-		case tasks.StateQueued, tasks.StateDispatching:
+		case tasks.StateQueued:
 			_, _ = e.applyCancel(id, tasks.CauseShutdown)
+		case tasks.StateDispatching, tasks.StateRunning:
+			e.forceCancelInFlight(rec)
 		case tasks.StateCommitPending:
 			e.abandonPending(rec, "shutdown")
 		}
 	}
+}
+
+// forceCancelInFlight is used only after graceful drain has failed (or
+// ForceStop was requested). It releases admission/permit ownership and
+// fences any later worker completion by moving the record terminal first.
+func (e *Engine) forceCancelInFlight(rec *taskRecord) {
+	if rec == nil || (rec.state != tasks.StateDispatching && rec.state != tasks.StateRunning) {
+		return
+	}
+	rec.cancelRequested = true
+	rec.cancelReason = tasks.CauseShutdown
+	if rec.cancelFunc != nil {
+		rec.cancelFunc()
+	}
+	if rec.permit != nil {
+		rec.permit.release()
+	}
+	e.adm.OnTaskTerminal(rec.spec)
+
+	now := time.Now().UTC()
+	rec.state = tasks.StateCancelled
+	rec.finishedAt = now
+	failureMessage := "task cancelled by forced shutdown"
+	if rec.spec.RequiresDurability() {
+		// The physical handler may have crossed its external side-effect boundary
+		// before the hard shutdown deadline. Without a durable acknowledgement we
+		// must preserve that uncertainty instead of claiming cancellation was
+		// committed. The persisted attempt/lease remains the recovery authority.
+		rec.state = tasks.StateRecoveryRequired
+		failureMessage = "durable in-flight task abandoned by forced shutdown; effect unknown; recovery required"
+	}
+	res := tasks.TaskResult{
+		TaskID: rec.spec.ID, Outcome: tasks.OutcomeCancelled, Cause: tasks.CauseShutdown,
+		StartedAt: rec.startedAt, FinishedAt: now,
+		Failure: tasks.FailureInfo{Message: failureMessage},
+	}
+	if rec.spec.Job != nil {
+		res.AttemptID = rec.spec.Job.AttemptID
+	}
+	bounded, delta := e.boundResult(res)
+	rec.result = bounded
+	rec.errorMsg = bounded.Failure.Message
+	rec.retainedBytes += delta
+	e.retainedBytes += delta
+	e.settleTerminal(rec)
 }
 
 func (e *Engine) onTaskSettled(rec *taskRecord) {
@@ -1164,12 +1236,16 @@ func (e *Engine) Quiesce(ctx context.Context) error {
 
 // Drain waits until all admitted tasks and completion callbacks settle.
 func (e *Engine) Drain(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	_ = e.Quiesce(ctx)
 	e.mu.Lock()
+	rootCtx := e.rootCtx
 	drainDone := e.drainDone
 	delivery := e.delivery
 	e.mu.Unlock()
-	if drainDone == nil {
+	if rootCtx == nil || drainDone == nil {
 		return nil
 	}
 	select {
@@ -1183,43 +1259,10 @@ func (e *Engine) Drain(ctx context.Context) error {
 	return delivery.drain(ctx)
 }
 
-// Stop terminates the engine and cancels residual tasks if drain timed out.
+// Stop quiesces and drains normally, then performs bounded forced cleanup.
+// A caller deadline is never replaced by fixed background waits.
 func (e *Engine) Stop(ctx context.Context) error {
-	_ = e.Quiesce(ctx)
-	err := e.Drain(ctx)
-	e.mu.Lock()
-	inbox := e.inbox
-	delivery := e.delivery
-	durability := e.durability
-	rootCancel := e.rootCancel
-	e.mu.Unlock()
-	if inbox != nil {
-		reply := make(chan engineReply, 1)
-		select {
-		case inbox <- engineRequest{op: opStopFinalize, reply: reply}:
-			select {
-			case <-reply:
-			case <-time.After(2 * time.Second):
-			}
-		default:
-		}
-	}
-	if durability != nil {
-		drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = durability.drain(drainCtx)
-		cancel()
-		durability.stop()
-	}
-	if delivery != nil {
-		drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = delivery.drain(drainCtx)
-		cancel()
-		delivery.stop()
-	}
-	if rootCancel != nil {
-		rootCancel()
-	}
-	return err
+	return e.stopEngine(ctx, true)
 }
 
 // Health probes the health status of the task engine.
@@ -1318,13 +1361,6 @@ func (c *submitCell) decide(next submitDecisionState) bool {
 		return false
 	}
 	return c.state.CompareAndSwap(uint32(decisionPending), uint32(next))
-}
-
-func (c *submitCell) decision() submitDecisionState {
-	if c == nil {
-		return decisionPending
-	}
-	return submitDecisionState(c.state.Load())
 }
 
 // Submit validates, reserves capacity, and enqueues work into the coordinator.

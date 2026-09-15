@@ -29,9 +29,6 @@ const (
 	taskOverheadBytes int64 = 512
 	// jobRefBytes charges the fixed-size durable occurrence reference.
 	jobRefBytes int64 = 128
-	// opaqueValueBytes remains only for result outputs. Unknown outputs are
-	// dropped by capOutput before retention when the output cap is enabled.
-	opaqueValueBytes int64 = 256
 
 	// DefaultMaxRetainedBytes caps admitted-but-unevicted memory per engine.
 	DefaultMaxRetainedBytes int64 = 256 << 20 // 256 MB
@@ -88,31 +85,6 @@ func freezePayload(input any) (any, error) {
 	// Strings and scalar/array values are immutable or copied-by-value in safe
 	// Go, so retaining the interface value cannot be mutated through the caller.
 	return input, nil
-}
-
-// measurePayload returns the accountable byte size of a supported Input. It is
-// retained for package-level tests/helpers; unsupported values return zero and
-// are rejected by admission through payloadSize.
-func measurePayload(input any) int64 {
-	n, err := payloadSize(input)
-	if err != nil {
-		return 0
-	}
-	return n
-}
-
-// measureOutput returns the accountable byte size of a TaskResult.Output value.
-func measureOutput(output any) int64 {
-	switch v := output.(type) {
-	case nil:
-		return 0
-	case []byte:
-		return int64(len(v))
-	case string:
-		return int64(len(v))
-	default:
-		return opaqueValueBytes
-	}
 }
 
 // capOutput enforces maxBytes on a result output: []byte/string are copied or
