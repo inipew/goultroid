@@ -3,6 +3,7 @@ package taskengine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -427,4 +428,168 @@ func TestEngine_QueueDeadlineExpirySweep(t *testing.T) {
 	}
 
 	close(blockerRelease)
+}
+
+func TestEngineMultiPoolSaturationAndFairness(t *testing.T) {
+	cfg := Config{
+		Pools: map[tasks.PoolID]PoolEngineConfig{
+			"pool-fast": {Concurrency: 3, BacklogLimit: 5, PayloadBudget: 1000},
+			"pool-slow": {Concurrency: 1, BacklogLimit: 2, PayloadBudget: 1000},
+		},
+		ResultCapacity: 50,
+	}
+	engine := NewEngine(cfg)
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start engine: %v", err)
+	}
+	defer engine.Stop(context.Background())
+
+	var fastActive, slowActive atomic.Int32
+	var fastMax, slowMax atomic.Int32
+
+	blocker := make(chan struct{})
+	fastTickets := make([]tasks.Ticket, 0, 8)
+	slowTickets := make([]tasks.Ticket, 0, 3)
+
+	// Fill pool-fast up to concurrency (3) with blocking tasks
+	for i := 0; i < 3; i++ {
+		idx := i
+		spec := tasks.WorkSpec{
+			ID:         tasks.TaskID(fmt.Sprintf("fast-block-%d", idx)),
+			QuotaOwner: "user-fast",
+			Pool:       "pool-fast",
+			Class:      tasks.PriorityNormal,
+			Handler: func(ctx context.Context) error {
+				curr := fastActive.Add(1)
+				for {
+					max := fastMax.Load()
+					if curr <= max || fastMax.CompareAndSwap(max, curr) {
+						break
+					}
+				}
+				<-blocker
+				fastActive.Add(-1)
+				return nil
+			},
+		}
+		ticket, err := engine.Submit(context.Background(), spec)
+		if err != nil {
+			t.Fatalf("fast submit %d error: %v", idx, err)
+		}
+		fastTickets = append(fastTickets, ticket)
+	}
+
+	// Fill pool-slow with 1 running task
+	slowSpec := tasks.WorkSpec{
+		ID:         "slow-block-0",
+		QuotaOwner: "user-slow",
+		Pool:       "pool-slow",
+		Class:      tasks.PriorityNormal,
+		Handler: func(ctx context.Context) error {
+			curr := slowActive.Add(1)
+			for {
+				max := slowMax.Load()
+				if curr <= max || slowMax.CompareAndSwap(max, curr) {
+					break
+				}
+			}
+			<-blocker
+			slowActive.Add(-1)
+			return nil
+		},
+	}
+	st, err := engine.Submit(context.Background(), slowSpec)
+	if err != nil {
+		t.Fatalf("slow submit error: %v", err)
+	}
+	slowTickets = append(slowTickets, st)
+
+	// Wait until active workers reach expected concurrency
+	deadline := time.Now().Add(time.Second)
+	for fastActive.Load() < 3 || slowActive.Load() < 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("workers did not start in time: fast=%d, slow=%d", fastActive.Load(), slowActive.Load())
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	// Now queue backlog items in pool-slow (capacity = 2)
+	for i := 1; i <= 2; i++ {
+		idx := i
+		spec := tasks.WorkSpec{
+			ID:         tasks.TaskID(fmt.Sprintf("slow-queue-%d", idx)),
+			QuotaOwner: "user-slow",
+			Pool:       "pool-slow",
+			Class:      tasks.PriorityNormal,
+			Handler: func(ctx context.Context) error {
+				return nil
+			},
+		}
+		ticket, err := engine.Submit(context.Background(), spec)
+		if err != nil {
+			t.Fatalf("slow queue submit %d error: %v", idx, err)
+		}
+		slowTickets = append(slowTickets, ticket)
+	}
+
+	// One more submission to pool-slow should exceed capacity and fail admission
+	overflowSpec := tasks.WorkSpec{
+		ID:         "slow-overflow",
+		QuotaOwner: "user-slow",
+		Pool:       "pool-slow",
+		Class:      tasks.PriorityNormal,
+		Handler: func(ctx context.Context) error {
+			return nil
+		},
+	}
+	_, err = engine.Submit(context.Background(), overflowSpec)
+	if err == nil {
+		t.Errorf("expected overflow submit to pool-slow to fail due to capacity")
+	}
+
+	// But pool-fast should still accept backlog items independently
+	for i := 3; i < 6; i++ {
+		idx := i
+		spec := tasks.WorkSpec{
+			ID:         tasks.TaskID(fmt.Sprintf("fast-queue-%d", idx)),
+			QuotaOwner: "user-fast",
+			Pool:       "pool-fast",
+			Class:      tasks.PriorityNormal,
+			Handler: func(ctx context.Context) error {
+				return nil
+			},
+		}
+		ticket, err := engine.Submit(context.Background(), spec)
+		if err != nil {
+			t.Fatalf("fast queue submit %d error: %v", idx, err)
+		}
+		fastTickets = append(fastTickets, ticket)
+	}
+
+	// Unblock all running tasks
+	close(blocker)
+
+	// Verify all fast tickets complete successfully
+	for _, ticket := range fastTickets {
+		res, err := ticket.Wait(context.Background())
+		if err != nil || !res.IsSuccess() {
+			t.Errorf("fast ticket %v failed: res=%v, err=%v", ticket.TaskID(), res, err)
+		}
+	}
+
+	// Verify all slow tickets complete successfully
+	for _, ticket := range slowTickets {
+		res, err := ticket.Wait(context.Background())
+		if err != nil || !res.IsSuccess() {
+			t.Errorf("slow ticket %v failed: res=%v, err=%v", ticket.TaskID(), res, err)
+		}
+	}
+
+	// Concurrency should not exceed max
+	if fastMax.Load() > 3 {
+		t.Errorf("pool-fast concurrency exceeded: max observed %d > limit 3", fastMax.Load())
+	}
+	if slowMax.Load() > 1 {
+		t.Errorf("pool-slow concurrency exceeded: max observed %d > limit 1", slowMax.Load())
+	}
 }

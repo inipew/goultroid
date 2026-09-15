@@ -1,7 +1,11 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"testing"
+
+	"github.com/inipew/goultroid/internal/runtime"
 )
 
 func TestAppLifecycleStateTransitions(t *testing.T) {
@@ -39,5 +43,24 @@ func TestAppLifecycleStartOnlyOnce(t *testing.T) {
 	}
 	if err := a.beginStart(); err == nil {
 		t.Fatal("second start should fail")
+	}
+}
+
+func TestAppShutdown_CapturesRuntimeError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-canceled
+
+	rt := runtime.New()
+	a := &App{
+		shutdownDone: make(chan struct{}),
+		runtime:      rt,
+	}
+
+	err := a.Shutdown(ctx)
+	if err == nil {
+		t.Fatal("expected error when context is pre-canceled, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled wrapped in err, got %v", err)
 	}
 }

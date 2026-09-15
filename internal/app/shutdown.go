@@ -35,7 +35,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 
 	var errs []error
 	if a.runtime != nil {
-		if err := a.runtime.Stop(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		if err := a.runtime.Stop(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("runtime: %w", err))
 		}
 	}

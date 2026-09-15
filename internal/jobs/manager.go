@@ -215,14 +215,27 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey str
 }
 
 func (m *Manager) persistAttemptResult(attempt *JobAttempt, result tasks.TaskResult) {
-	if attempt == nil || m.pump == nil || m.store == nil {
+	if attempt == nil || m.store == nil {
 		return
 	}
 	outcome := attemptState(result.Outcome)
 	errText := result.Failure.Message
-	_, _ = m.pump.Enqueue(context.Background(), func(ctx context.Context) error {
+	commitFn := func(ctx context.Context) error {
 		return m.store.CommitAttemptResult(ctx, attempt.ID, attempt.LeaseEpoch, outcome, nil, errText)
-	})
+	}
+
+	if m.pump != nil {
+		if _, err := m.pump.Enqueue(context.Background(), commitFn); err == nil {
+			return
+		}
+	}
+
+	// Fallback to direct background commit so durable completion evidence is never lost
+	go func() {
+		commitCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = commitFn(commitCtx)
+	}()
 }
 
 func attemptState(outcome tasks.Outcome) AttemptState {
