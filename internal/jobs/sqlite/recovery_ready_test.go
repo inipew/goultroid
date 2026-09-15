@@ -19,6 +19,18 @@ func TestListUnresolvedOccurrencesIncludesReadyIntent(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := NewStore(db.DB)
+	if err := store.SaveDefinition(context.Background(), &jobs.JobDefinition{
+		ID:          "job:ready",
+		ScopeOwner:  "plugin:test",
+		QuotaOwner:  "user:test",
+		HandlerType: "test",
+		Version:     1,
+		Pool:        "general",
+		Class:       "normal",
+		Enabled:     true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	occ := &jobs.JobOccurrence{
 		ID:            "occ:ready",
 		JobID:         "job:ready",
