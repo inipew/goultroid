@@ -362,6 +362,14 @@ func (e *Engine) UnregisterPeriodicTask(name string) error {
 	return e.periodic.Unregister(name)
 }
 
+// UnregisterPeriodicTaskOwned unregisters a specific periodic task registered with an explicit owner.
+func (e *Engine) UnregisterPeriodicTaskOwned(owner, name string) error {
+	if e.periodic == nil {
+		return errors.New("periodic coordinator is not configured")
+	}
+	return e.periodic.UnregisterOwned(owner, name)
+}
+
 // UnregisterPeriodicTasksByOwner cancels and removes all periodic tasks registered by the specified owner.
 func (e *Engine) UnregisterPeriodicTasksByOwner(owner string) int {
 	if e.periodic == nil {

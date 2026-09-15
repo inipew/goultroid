@@ -11,6 +11,7 @@ import (
 	"github.com/inipew/goultroid/internal/idempotency"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/services/inline"
+	"github.com/inipew/goultroid/internal/workers"
 	"go.uber.org/zap"
 )
 
@@ -33,6 +34,8 @@ type Dispatcher struct {
 	inlineEngine   *inline.Engine
 	normalizer     *Normalizer
 	idempotencyMgr *idempotency.Manager
+	workers        *workers.Manager
+	ownsWorkers    bool
 
 	messageHandlers  []prioritizedHandler
 	nextHandlerID    uint64
@@ -64,6 +67,7 @@ type DispatcherDeps struct {
 	CallbackRouter *callback.Router
 	InlineEngine   *inline.Engine
 	Resolver       core.PeerResolver
+	Workers        *workers.Manager
 }
 
 // NewDispatcherWithDeps constructs a Dispatcher with all available dependencies.
@@ -78,6 +82,9 @@ func NewDispatcherWithDeps(deps DispatcherDeps) (*Dispatcher, error) {
 		deps.Logger = zap.NewNop()
 	}
 	d := NewDispatcher(deps.Router, deps.Permissions, deps.Service, deps.Logger)
+	if deps.Workers != nil {
+		d.SetWorkers(deps.Workers)
+	}
 	if deps.EventBus != nil {
 		d.SetEventBus(deps.EventBus)
 	}
@@ -108,6 +115,8 @@ func NewDispatcher(
 	}
 	cooldown := core.NewCooldownTracker()
 	executor := core.NewCommandExecutor(logger, cooldown, 30*time.Second)
+	defaultWorkers := workers.NewManager()
+	_ = defaultWorkers.Start(context.Background())
 	d := &Dispatcher{
 		router:      router,
 		perms:       perms,
@@ -118,6 +127,8 @@ func NewDispatcher(
 		albumBuffer: core.NewAlbumBuffer(10 * time.Minute),
 		cmdSem:      make(chan struct{}, 32),
 		normalizer:  NewNormalizer(),
+		workers:     defaultWorkers,
+		ownsWorkers: true,
 	}
 	d.acceptingUpdates.Store(true)
 	return d

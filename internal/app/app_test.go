@@ -128,6 +128,8 @@ func TestApp_UnifiedDAGComponents(t *testing.T) {
 	expectedComponents := []string{
 		"eventbus",
 		"workers",
+		"persistence-pump",
+		"taskengine",
 		"jobs",
 		"scheduler",
 		"callback_store",

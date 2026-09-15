@@ -501,23 +501,29 @@ func TestDispatcher_PrioritizedInterceptors(t *testing.T) {
 	router := core.NewRouter(".")
 	dispatcher := NewDispatcher(router, nil, nil, logger)
 
+	var mu sync.Mutex
 	var executionOrder []string
+	add := func(name string) {
+		mu.Lock()
+		defer mu.Unlock()
+		executionOrder = append(executionOrder, name)
+	}
 
 	// Register in reverse order
 	dispatcher.AddPrioritizedMessageHandler(PriorityObservability, func(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error {
-		executionOrder = append(executionOrder, "observability")
+		add("observability")
 		return nil
 	})
 	dispatcher.AddPrioritizedMessageHandler(PriorityFeature, func(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error {
-		executionOrder = append(executionOrder, "feature")
+		add("feature")
 		return nil
 	})
 	dispatcher.AddPrioritizedMessageHandler(PriorityModeration, func(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error {
-		executionOrder = append(executionOrder, "moderation")
+		add("moderation")
 		return nil
 	})
 	dispatcher.AddPrioritizedMessageHandler(PrioritySecurity, func(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error {
-		executionOrder = append(executionOrder, "security")
+		add("security")
 		return nil
 	})
 
@@ -528,6 +534,11 @@ func TestDispatcher_PrioritizedInterceptors(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	// Drain in-flight asynchronous observability handlers
+	_ = dispatcher.Stop(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
 	expected := []string{"security", "moderation", "feature", "observability"}
 	if len(executionOrder) != len(expected) {
 		t.Fatalf("expected %d handlers, got %d", len(expected), len(executionOrder))

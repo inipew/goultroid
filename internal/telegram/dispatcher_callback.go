@@ -7,6 +7,9 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/tasks"
+	"github.com/inipew/goultroid/internal/workers"
+	"go.uber.org/zap"
 )
 
 // RegisterHooks binds message, edit, delete, callback query, inline query, and reaction handlers to a tg.UpdateDispatcher.
@@ -211,7 +214,27 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 
 	cbRouter := d.getCallbackRouter()
 	if cbRouter != nil {
-		_ = cbRouter.Dispatch(ctx, evt, d.getService())
+		manager := d.workerManager()
+		if manager != nil {
+			taskID := fmt.Sprintf("cb:%d", evt.QueryID)
+			owner := fmt.Sprintf("telegram:user:%d", evt.UserID)
+			task := tasks.Task{
+				ID:            taskID,
+				Owner:         owner,
+				Name:          fmt.Sprintf("callback:%d", evt.Origin),
+				Priority:      90,
+				CorrelationID: fmt.Sprintf("cb:%d", evt.QueryID),
+				Timeout:       15 * time.Second,
+				Run: func(taskCtx context.Context) error {
+					return cbRouter.Dispatch(taskCtx, evt, d.getService())
+				},
+			}
+			if err := manager.TrySubmit(ctx, workers.PoolInteractive, task); err != nil {
+				d.logger.Warn("callback dispatch admission rejected", zap.Int64("query_id", evt.QueryID), zap.Error(err))
+			}
+		} else {
+			_ = cbRouter.Dispatch(ctx, evt, d.getService())
+		}
 	}
 	return nil
 }
@@ -252,7 +275,27 @@ func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities
 
 	cbRouter := d.getCallbackRouter()
 	if cbRouter != nil {
-		_ = cbRouter.Dispatch(ctx, evt, d.getService())
+		manager := d.workerManager()
+		if manager != nil {
+			taskID := fmt.Sprintf("inline_cb:%d", evt.QueryID)
+			owner := fmt.Sprintf("telegram:user:%d", evt.UserID)
+			task := tasks.Task{
+				ID:            taskID,
+				Owner:         owner,
+				Name:          fmt.Sprintf("inline_callback:%d", evt.Origin),
+				Priority:      90,
+				CorrelationID: fmt.Sprintf("inline_cb:%d", evt.QueryID),
+				Timeout:       15 * time.Second,
+				Run: func(taskCtx context.Context) error {
+					return cbRouter.Dispatch(taskCtx, evt, d.getService())
+				},
+			}
+			if err := manager.TrySubmit(ctx, workers.PoolInteractive, task); err != nil {
+				d.logger.Warn("inline callback dispatch admission rejected", zap.Int64("query_id", evt.QueryID), zap.Error(err))
+			}
+		} else {
+			_ = cbRouter.Dispatch(ctx, evt, d.getService())
+		}
 	}
 	return nil
 }
@@ -266,7 +309,30 @@ func (d *Dispatcher) OnBotInlineQuery(ctx context.Context, e tg.Entities, update
 	if engine == nil {
 		return nil
 	}
-	return engine.ExecuteWithPeerType(ctx, d.getService(), update.QueryID, update.UserID, update.Query, update.Offset, update.PeerType)
+	manager := d.workerManager()
+	if manager != nil {
+		taskID := fmt.Sprintf("inline:%d", update.QueryID)
+		owner := fmt.Sprintf("telegram:user:%d", update.UserID)
+		task := tasks.Task{
+			ID:            taskID,
+			Owner:         owner,
+			Name:          "inline:query",
+			Priority:      110,
+			CorrelationID: fmt.Sprintf("inline:%d", update.QueryID),
+			Timeout:       5 * time.Second,
+			Run: func(taskCtx context.Context) error {
+				return engine.ExecuteWithPeerType(taskCtx, d.getService(), update.QueryID, update.UserID, update.Query, update.Offset, update.PeerType)
+			},
+		}
+		if err := manager.TrySubmit(ctx, workers.PoolInteractive, task); err != nil {
+			d.logger.Warn("inline query admission rejected", zap.Int64("query_id", update.QueryID), zap.Error(err))
+			return err
+		}
+		return nil
+	}
+	inlineCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return engine.ExecuteWithPeerType(inlineCtx, d.getService(), update.QueryID, update.UserID, update.Query, update.Offset, update.PeerType)
 }
 
 // OnBotInlineSend handles inline result chosen feedback (observational only).

@@ -27,35 +27,38 @@ type PluginContext interface {
 	Secrets() (*secret.Manager, error)
 	Tasks() (*tasks.Manager, error)
 	Jobs() (*jobs.Manager, error)
+	TaskClient() (tasks.Client, error)
 	Storage() (storage.KVStore, error)
 }
 
 type pluginContext struct {
 	context.Context
-	scope   *Scope
-	owner   string
-	gate    *CapabilityGate
-	network *network.Service
-	process *process.Manager
-	files   *filesystem.Manager
-	secrets *secret.Manager
-	tasks   *tasks.Manager
-	jobs    *jobs.Manager
-	storage *storage.Manager
+	scope      *Scope
+	owner      string
+	gate       *CapabilityGate
+	network    *network.Service
+	process    *process.Manager
+	files      *filesystem.Manager
+	secrets    *secret.Manager
+	tasks      *tasks.Manager
+	jobs       *jobs.Manager
+	taskClient tasks.Client
+	storage    *storage.Manager
 }
 
 // ContextConfig bundles runtime services provided to a plugin context.
 type ContextConfig struct {
-	Scope   *Scope
-	Owner   string
-	Gate    *CapabilityGate
-	Network *network.Service
-	Process *process.Manager
-	Files   *filesystem.Manager
-	Secrets *secret.Manager
-	Tasks   *tasks.Manager
-	Jobs    *jobs.Manager
-	Storage *storage.Manager
+	Scope      *Scope
+	Owner      string
+	Gate       *CapabilityGate
+	Network    *network.Service
+	Process    *process.Manager
+	Files      *filesystem.Manager
+	Secrets    *secret.Manager
+	Tasks      *tasks.Manager
+	Jobs       *jobs.Manager
+	TaskClient tasks.Client
+	Storage    *storage.Manager
 }
 
 // NewPluginContext constructs a new PluginContext enforcing capability checks via the gate.
@@ -71,17 +74,18 @@ func NewPluginContext(baseCtx context.Context, cfg ContextConfig) PluginContext 
 	}
 
 	return &pluginContext{
-		Context: baseCtx,
-		scope:   cfg.Scope,
-		owner:   cfg.Owner,
-		gate:    cfg.Gate,
-		network: cfg.Network,
-		process: cfg.Process,
-		files:   cfg.Files,
-		secrets: cfg.Secrets,
-		tasks:   cfg.Tasks,
-		jobs:    cfg.Jobs,
-		storage: cfg.Storage,
+		Context:    baseCtx,
+		scope:      cfg.Scope,
+		owner:      cfg.Owner,
+		gate:       cfg.Gate,
+		network:    cfg.Network,
+		process:    cfg.Process,
+		files:      cfg.Files,
+		secrets:    cfg.Secrets,
+		tasks:      cfg.Tasks,
+		jobs:       cfg.Jobs,
+		taskClient: cfg.TaskClient,
+		storage:    cfg.Storage,
 	}
 }
 
@@ -155,6 +159,16 @@ func (c *pluginContext) Jobs() (*jobs.Manager, error) {
 		return nil, errors.New("jobs manager not configured")
 	}
 	return c.jobs, nil
+}
+
+func (c *pluginContext) TaskClient() (tasks.Client, error) {
+	if err := c.gate.Check(c.owner, CapTasks); err != nil {
+		return nil, fmt.Errorf("task client access denied: %w", err)
+	}
+	if c.taskClient == nil {
+		return nil, errors.New("task client not configured")
+	}
+	return c.taskClient, nil
 }
 
 func (c *pluginContext) Storage() (storage.KVStore, error) {

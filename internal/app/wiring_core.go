@@ -23,6 +23,7 @@ import (
 	"github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/services/localization"
 	"github.com/inipew/goultroid/internal/services/ratelimit"
+	"github.com/inipew/goultroid/internal/taskengine"
 	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/workers"
 	"github.com/inipew/goultroid/plugins/sudo"
@@ -105,6 +106,9 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 	jobsManager := jobs.NewManager(workerManager, jobsRepo)
 	jobsManager.SetIdempotencyManager(idempManager)
 
+	taskEngine := taskengine.NewEngine(taskengine.DefaultConfig)
+	persistencePump := jobs.NewPersistencePump(2, 256)
+
 	dataDir := "data"
 	if cfg.DatabasePath != "" {
 		dataDir = filepath.Dir(cfg.DatabasePath)
@@ -155,6 +159,8 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 		workerManager:   workerManager,
 		taskManager:     taskManager,
 		jobsManager:     jobsManager,
+		taskEngine:      taskEngine,
+		persistencePump: persistencePump,
 		resourceManager: resourceManager,
 		idempManager:    idempManager,
 		fsManager:       fsManager,

@@ -2,14 +2,14 @@ package telegram
 
 import (
 	"context"
-	"sync"
+	"errors"
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/workers"
 )
 
-var dispatcherWorkers sync.Map // map[*Dispatcher]*workers.Manager
+var ErrWorkersNotConfigured = errors.New("dispatcher: worker manager is required for command execution")
 
 // SetWorkers attaches the shared physical execution authority used by command
 // dispatch. It is wired by the application composition root.
@@ -17,22 +17,22 @@ func (d *Dispatcher) SetWorkers(manager *workers.Manager) {
 	if d == nil {
 		return
 	}
-	if manager == nil {
-		dispatcherWorkers.Delete(d)
-		return
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.ownsWorkers && d.workers != nil && d.workers != manager {
+		_ = d.workers.Stop(context.Background())
+		d.ownsWorkers = false
 	}
-	dispatcherWorkers.Store(d, manager)
+	d.workers = manager
 }
 
 func (d *Dispatcher) workerManager() *workers.Manager {
 	if d == nil {
 		return nil
 	}
-	value, ok := dispatcherWorkers.Load(d)
-	if !ok {
-		return nil
-	}
-	return value.(*workers.Manager)
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.workers
 }
 
 func (d *Dispatcher) submitInteractiveCommand(
@@ -46,20 +46,11 @@ func (d *Dispatcher) submitInteractiveCommand(
 ) error {
 	manager := d.workerManager()
 	if manager == nil {
-		// Standalone dispatcher tests and embedders may not wire the runtime
-		// worker manager. Keep an asynchronous fallback path tracked by cmdWG.
-		d.runningCommands.Add(1)
-		d.totalCommands.Add(1)
-		d.cmdWG.Add(1)
-		go func() {
-			defer d.runningCommands.Add(-1)
-			defer d.cmdWG.Done()
-			defer cancel()
-			_ = d.executor.Execute(coreCtx, cmd)
-		}()
-		return nil
+		cancel()
+		return ErrWorkersNotConfigured
 	}
 
+	d.cmdWG.Add(1)
 	task := tasks.Task{
 		ID:            taskID,
 		Owner:         owner,
@@ -69,10 +60,19 @@ func (d *Dispatcher) submitInteractiveCommand(
 		Run: func(taskCtx context.Context) error {
 			d.runningCommands.Add(1)
 			defer d.runningCommands.Add(-1)
+			defer d.cmdWG.Done()
 			defer cancel()
 
+			runCtx, runCancel := context.WithCancel(taskCtx)
+			defer runCancel()
+
+			stopWatching := context.AfterFunc(coreCtx.Ctx, func() {
+				runCancel()
+			})
+			defer stopWatching()
+
 			execCtx := *coreCtx
-			execCtx.Ctx = taskCtx
+			execCtx.Ctx = runCtx
 			return d.executor.Execute(&execCtx, cmd)
 		},
 	}
@@ -80,6 +80,7 @@ func (d *Dispatcher) submitInteractiveCommand(
 		task.Timeout = cmd.Timeout
 	}
 	if err := manager.Submit(ctx, workers.PoolInteractive, task); err != nil {
+		d.cmdWG.Done()
 		cancel()
 		return err
 	}

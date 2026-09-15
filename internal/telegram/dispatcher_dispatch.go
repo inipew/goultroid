@@ -8,6 +8,8 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/tasks"
+	"github.com/inipew/goultroid/internal/workers"
 	"go.uber.org/zap"
 )
 
@@ -128,17 +130,13 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	}
 
 	if !isCmd {
-		for _, h := range asyncHandlers {
-			_ = d.safeExecuteInterceptor(ctx, h, e, msg, isCmd, cmdName)
-		}
+		d.dispatchAsyncHandlers(ctx, asyncHandlers, e, msg, isCmd, cmdName)
 		return nil
 	}
 
 	cmd, exists := d.router.Find(parsed.Name)
 	if !exists {
-		for _, h := range asyncHandlers {
-			_ = d.safeExecuteInterceptor(ctx, h, e, msg, isCmd, cmdName)
-		}
+		d.dispatchAsyncHandlers(ctx, asyncHandlers, e, msg, isCmd, cmdName)
 		return nil
 	}
 
@@ -219,10 +217,41 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		)
 	}
 
-	for _, h := range asyncHandlers {
+	d.dispatchAsyncHandlers(ctx, asyncHandlers, e, msg, isCmd, cmdName)
+	return nil
+}
+
+func (d *Dispatcher) dispatchAsyncHandlers(ctx context.Context, handlers []MessageHandler, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) {
+	if len(handlers) == 0 {
+		return
+	}
+	manager := d.workerManager()
+	if manager != nil {
+		d.inFlight.Add(1)
+		task := tasks.Task{
+			ID:            fmt.Sprintf("async_handlers:%d:%d", extractChatIDFromPeer(msg.PeerID), msg.ID),
+			Owner:         "telegram:observability",
+			Name:          "message:observers",
+			Priority:      10,
+			CorrelationID: fmt.Sprintf("msg:%d:%d", extractChatIDFromPeer(msg.PeerID), msg.ID),
+			Timeout:       10 * time.Second,
+			Run: func(taskCtx context.Context) error {
+				defer d.inFlight.Done()
+				for _, h := range handlers {
+					_ = d.safeExecuteInterceptor(taskCtx, h, e, msg, isCmd, cmdName)
+				}
+				return nil
+			},
+		}
+		if err := manager.TrySubmit(ctx, workers.PoolGeneral, task); err != nil {
+			d.inFlight.Done()
+			d.logger.Debug("async handlers submission rejected", zap.Error(err))
+		}
+		return
+	}
+	for _, h := range handlers {
 		_ = d.safeExecuteInterceptor(ctx, h, e, msg, isCmd, cmdName)
 	}
-	return nil
 }
 
 func (d *Dispatcher) resolveDispatchChat(e tg.Entities, msg *tg.Message) *core.Chat {

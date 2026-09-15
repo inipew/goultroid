@@ -78,6 +78,15 @@ func (d *Dispatcher) peerWorker(_ context.Context, q <-chan peerUpdateJob) {
 	}
 }
 
+// Quiesce shuts the ingress gate immediately, preventing new updates, messages,
+// callbacks, or inline queries from entering the dispatch pipeline (ADR 0006 §3.4).
+func (d *Dispatcher) Quiesce(ctx context.Context) error {
+	d.mu.Lock()
+	d.acceptingUpdates.Store(false)
+	d.mu.Unlock()
+	return nil
+}
+
 // Stop first closes ingress admission, then drains all in-flight dispatches, then
 // closes the peer queue. The admission transition and WaitGroup.Add are serialized
 // by d.mu so no new Add can occur after Wait starts.
@@ -87,9 +96,7 @@ func (d *Dispatcher) Stop(ctx context.Context) error {
 	}
 	var err error
 	d.peerStopOnce.Do(func() {
-		d.mu.Lock()
-		d.acceptingUpdates.Store(false)
-		d.mu.Unlock()
+		_ = d.Quiesce(ctx)
 
 		doneInFlight := make(chan struct{})
 		go func() {
@@ -119,7 +126,14 @@ func (d *Dispatcher) Stop(ctx context.Context) error {
 		d.mu.Lock()
 		q := d.peerQueue
 		d.peerQueue = nil
+		ownedWorkers := d.workers
+		isOwned := d.ownsWorkers
 		d.mu.Unlock()
+
+		if isOwned && ownedWorkers != nil {
+			_ = ownedWorkers.Stop(ctx)
+		}
+
 		if q == nil {
 			return
 		}

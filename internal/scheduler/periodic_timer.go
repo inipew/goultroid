@@ -33,14 +33,23 @@ type periodicRegistration struct {
 	Failures   int64
 	LastRunAt  time.Time
 	LastError  string
+	heapEntry  *TimerEntry
 }
 
-// periodicCoordinator multiplexes all runtime periodic tasks onto a single
-// deadline timer. It decides WHEN work is due; physical execution is delegated
-// to WorkerManager through submitter and never owns an execution goroutine.
+func periodicKey(owner, name string) string {
+	if owner == "" || owner == "runtime" {
+		return name
+	}
+	return owner + "/" + name
+}
+
+// periodicCoordinator multiplexes all runtime periodic tasks onto an indexed min-heap timer.
+// It decides WHEN work is due; physical execution is delegated to WorkerManager through submitter
+// and never owns an execution goroutine (ADR 0006 §8).
 type periodicCoordinator struct {
 	mu        sync.Mutex
 	entries   map[string]*periodicRegistration
+	heap      *IndexedHeap
 	wake      chan struct{}
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -57,6 +66,7 @@ func newPeriodicCoordinator(logger *zap.Logger) *periodicCoordinator {
 	}
 	return &periodicCoordinator{
 		entries: make(map[string]*periodicRegistration),
+		heap:    NewIndexedHeap(),
 		wake:    make(chan struct{}, 1),
 		logger:  logger,
 	}
@@ -111,6 +121,7 @@ func (c *periodicCoordinator) Stop(ctx context.Context) error {
 		}
 	}
 	c.entries = make(map[string]*periodicRegistration)
+	c.heap = NewIndexedHeap()
 	c.mu.Unlock()
 
 	if cancel != nil {
@@ -167,15 +178,40 @@ func (c *periodicCoordinator) Register(name string, interval time.Duration, opti
 	}
 	c.seq++
 	generation := c.seq
+	key := periodicKey(owner, name)
+
 	var oldCancel context.CancelFunc
-	if old := c.entries[name]; old != nil {
+	if old := c.entries[key]; old != nil {
 		oldCancel = old.RunCancel
+		if old.heapEntry != nil {
+			c.heap.Remove(old.heapEntry)
+			old.heapEntry = nil
+		}
 	}
-	c.entries[name] = &periodicRegistration{
-		Owner: owner, Name: name, Interval: interval, Options: options, Task: task,
-		NextRun: time.Now().Add(interval), Generation: generation,
+
+	nextRun := time.Now().Add(interval)
+	reg := &periodicRegistration{
+		Owner:      owner,
+		Name:       name,
+		Interval:   interval,
+		Options:    options,
+		Task:       task,
+		NextRun:    nextRun,
+		Generation: generation,
 	}
+	timerEntry := &TimerEntry{
+		Kind:       TimerScheduleOccurrence,
+		Owner:      owner,
+		ID:         key,
+		Generation: generation,
+		Deadline:   nextRun,
+		Data:       reg,
+	}
+	reg.heapEntry = timerEntry
+	c.heap.Push(timerEntry)
+	c.entries[key] = reg
 	c.mu.Unlock()
+
 	if oldCancel != nil {
 		oldCancel()
 	}
@@ -184,12 +220,60 @@ func (c *periodicCoordinator) Register(name string, interval time.Duration, opti
 }
 
 func (c *periodicCoordinator) Unregister(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("task name cannot be empty")
+	}
 	c.mu.Lock()
+	// Direct key match first (matches default runtime owner or exact key)
 	entry, ok := c.entries[name]
+	targetKey := name
+	if !ok {
+		// Search across registrations for entry.Name == name
+		for k, e := range c.entries {
+			if e.Name == name {
+				entry = e
+				targetKey = k
+				ok = true
+				break
+			}
+		}
+	}
+
 	var runCancel context.CancelFunc
 	if ok {
+		if entry.heapEntry != nil {
+			c.heap.Remove(entry.heapEntry)
+			entry.heapEntry = nil
+		}
 		runCancel = entry.RunCancel
-		delete(c.entries, name)
+		delete(c.entries, targetKey)
+	}
+	c.mu.Unlock()
+	if !ok {
+		return errors.New("task not found")
+	}
+	if runCancel != nil {
+		runCancel()
+	}
+	c.notify()
+	return nil
+}
+
+func (c *periodicCoordinator) UnregisterOwned(owner, name string) error {
+	owner = strings.TrimSpace(owner)
+	name = strings.TrimSpace(name)
+	key := periodicKey(owner, name)
+	c.mu.Lock()
+	entry, ok := c.entries[key]
+	var runCancel context.CancelFunc
+	if ok {
+		if entry.heapEntry != nil {
+			c.heap.Remove(entry.heapEntry)
+			entry.heapEntry = nil
+		}
+		runCancel = entry.RunCancel
+		delete(c.entries, key)
 	}
 	c.mu.Unlock()
 	if !ok {
@@ -210,12 +294,16 @@ func (c *periodicCoordinator) UnregisterByOwner(owner string) int {
 	c.mu.Lock()
 	var cancels []context.CancelFunc
 	count := 0
-	for name, entry := range c.entries {
+	for key, entry := range c.entries {
 		if entry.Owner == cleanOwner || entry.Owner == "plugin:"+cleanOwner {
+			if entry.heapEntry != nil {
+				c.heap.Remove(entry.heapEntry)
+				entry.heapEntry = nil
+			}
 			if entry.RunCancel != nil {
 				cancels = append(cancels, entry.RunCancel)
 			}
-			delete(c.entries, name)
+			delete(c.entries, key)
 			count++
 		}
 	}
@@ -234,13 +322,40 @@ func (c *periodicCoordinator) Snapshots() []PeriodicTaskSnapshot {
 	snapshots := make([]PeriodicTaskSnapshot, 0, len(c.entries))
 	for _, entry := range c.entries {
 		snapshots = append(snapshots, PeriodicTaskSnapshot{
-			Owner: entry.Owner, Name: entry.Name, Runs: entry.Runs,
-			Failures: entry.Failures, LastRunAt: entry.LastRunAt, LastError: entry.LastError,
+			Owner:     entry.Owner,
+			Name:      entry.Name,
+			Runs:      entry.Runs,
+			Failures:  entry.Failures,
+			LastRunAt: entry.LastRunAt,
+			LastError: entry.LastError,
 		})
 	}
 	c.mu.Unlock()
 	sort.Slice(snapshots, func(i, j int) bool { return snapshots[i].Name < snapshots[j].Name })
 	return snapshots
+}
+
+func (c *periodicCoordinator) syncHeapLocked() {
+	for _, entry := range c.entries {
+		if entry.Running {
+			continue
+		}
+		if entry.heapEntry == nil {
+			entry.heapEntry = &TimerEntry{
+				Kind:       TimerScheduleOccurrence,
+				Owner:      entry.Owner,
+				ID:         periodicKey(entry.Owner, entry.Name),
+				Generation: entry.Generation,
+				Deadline:   entry.NextRun,
+				Data:       entry,
+			}
+			c.heap.Push(entry.heapEntry)
+		} else if !entry.heapEntry.Deadline.Equal(entry.NextRun) {
+			c.heap.Remove(entry.heapEntry)
+			entry.heapEntry.Deadline = entry.NextRun
+			c.heap.Push(entry.heapEntry)
+		}
+	}
 }
 
 func (c *periodicCoordinator) loop() {
@@ -258,12 +373,11 @@ func (c *periodicCoordinator) loop() {
 			c.mu.Unlock()
 			return
 		}
+
+		c.syncHeapLocked()
 		now := time.Now()
-		next, found := c.nextDeadlineLocked()
 		due := c.collectDueLocked(now)
-		if len(due) > 0 {
-			next, found = c.nextDeadlineLocked()
-		}
+		earliest, hasEarliest := c.heap.PeekEarliest()
 		c.mu.Unlock()
 
 		for _, run := range due {
@@ -273,7 +387,7 @@ func (c *periodicCoordinator) loop() {
 			continue
 		}
 
-		if !found {
+		if !hasEarliest {
 			select {
 			case <-ctx.Done():
 				return
@@ -282,7 +396,7 @@ func (c *periodicCoordinator) loop() {
 			}
 		}
 
-		delay := time.Until(next)
+		delay := time.Until(earliest.Deadline)
 		if delay < 0 {
 			delay = 0
 		}
@@ -303,6 +417,7 @@ func (c *periodicCoordinator) loop() {
 }
 
 type periodicDueRun struct {
+	owner      string
 	name       string
 	generation uint64
 	task       TaskFunc
@@ -310,35 +425,31 @@ type periodicDueRun struct {
 	ctx        context.Context
 }
 
-func (c *periodicCoordinator) nextDeadlineLocked() (time.Time, bool) {
-	var next time.Time
-	found := false
-	for _, entry := range c.entries {
-		if entry.Running {
+func (c *periodicCoordinator) collectDueLocked(now time.Time) []periodicDueRun {
+	dueEntries := c.heap.PopDue(now, 100)
+	if len(dueEntries) == 0 {
+		return nil
+	}
+	var due []periodicDueRun
+	for _, item := range dueEntries {
+		entry, ok := item.Data.(*periodicRegistration)
+		if !ok || entry == nil {
 			continue
 		}
-		if !found || entry.NextRun.Before(next) {
-			next = entry.NextRun
-			found = true
-		}
-	}
-	return next, found
-}
-
-func (c *periodicCoordinator) collectDueLocked(now time.Time) []periodicDueRun {
-	var due []periodicDueRun
-	for _, entry := range c.entries {
-		if entry.Running || entry.NextRun.After(now) {
+		if entry.Generation != item.Generation || entry.Running {
 			continue
 		}
 		runCtx, runCancel := context.WithCancel(c.ctx)
 		entry.Running = true
-		entry.Attempt++
 		entry.RunCancel = runCancel
-		entry.NextRun = now.Add(entry.Interval)
+		entry.heapEntry = nil // removed from heap while active
 		due = append(due, periodicDueRun{
-			name: entry.Name, generation: entry.Generation, task: entry.Task,
-			options: entry.Options, ctx: runCtx,
+			owner:      entry.Owner,
+			name:       entry.Name,
+			generation: entry.Generation,
+			task:       entry.Task,
+			options:    entry.Options,
+			ctx:        runCtx,
 		})
 	}
 	return due
@@ -350,37 +461,39 @@ func (c *periodicCoordinator) startExecution(run periodicDueRun) {
 	c.mu.Unlock()
 	if submitter == nil {
 		err := errors.New("periodic task worker submitter is not configured")
-		c.finishExecution(run, err)
+		c.finishExecution(run, err, false)
 		return
 	}
 
-	taskID := fmt.Sprintf("periodic:%s:%d:%d", run.name, run.generation, time.Now().UnixNano())
+	taskID := fmt.Sprintf("periodic:%s:%s:%d:%d", run.owner, run.name, run.generation, time.Now().UnixNano())
 	task := tasks.Task{
 		ID:            taskID,
 		Owner:         run.options.Owner,
 		Name:          "periodic:" + run.name,
-		CorrelationID: fmt.Sprintf("periodic:%s:%d", run.name, run.generation),
+		CorrelationID: fmt.Sprintf("periodic:%s:%s:%d", run.owner, run.name, run.generation),
 		Run: func(ctx context.Context) error {
 			return runPeriodicTask(ctx, run.task, run.options)
 		},
-		OnComplete: func(err error) { c.finishExecution(run, err) },
+		OnComplete: func(err error) {
+			c.finishExecution(run, err, true)
+		},
 	}
 	if err := submitter.TrySubmit(run.ctx, workers.PoolGeneral, task); err != nil {
-		c.finishExecution(run, err)
+		c.finishExecution(run, err, false)
 	}
 }
 
-func (c *periodicCoordinator) finishExecution(run periodicDueRun, err error) {
+func (c *periodicCoordinator) finishExecution(run periodicDueRun, err error, executed bool) {
 	finishedAt := time.Now().UTC()
 	c.mu.Lock()
-	entry := c.entries[run.name]
+	key := periodicKey(run.owner, run.name)
+	entry := c.entries[key]
 	if entry != nil && entry.Generation == run.generation {
 		if entry.RunCancel != nil {
 			entry.RunCancel()
 			entry.RunCancel = nil
 		}
 		entry.Running = false
-		entry.Runs++
 		entry.LastRunAt = finishedAt
 		if err != nil {
 			entry.Failures++
@@ -388,17 +501,43 @@ func (c *periodicCoordinator) finishExecution(run periodicDueRun, err error) {
 		} else {
 			entry.LastError = ""
 		}
-		// Retry timing belongs to the coordinator; each Task is one attempt.
-		retry := err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && entry.Attempt < entry.Options.MaxAttempts
-		if retry {
-			entry.NextRun = finishedAt.Add(entry.Options.RetryDelay)
+
+		if executed {
+			entry.Runs++
+			entry.Attempt++
+			// Retry timing belongs to the coordinator; each Task is one attempt.
+			retry := err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && entry.Attempt < entry.Options.MaxAttempts
+			if retry {
+				entry.NextRun = finishedAt.Add(entry.Options.RetryDelay)
+			} else {
+				entry.Attempt = 0
+				entry.NextRun = finishedAt.Add(entry.Interval)
+			}
 		} else {
-			entry.Attempt = 0
+			// Submitter rejected or saturated: do NOT burn the task retry budget.
+			// Set next run to retry delay or short backoff to let workers drain.
+			backoff := entry.Options.RetryDelay
+			if backoff <= 0 {
+				backoff = 200 * time.Millisecond
+			}
+			entry.NextRun = finishedAt.Add(backoff)
 		}
-		// Long-running or admission-delayed executions do not catch up missed
-		// ticks. One periodic task therefore cannot monopolize a worker pool.
-		if !retry && !entry.NextRun.After(finishedAt) {
-			entry.NextRun = finishedAt.Add(entry.Interval)
+
+		// Re-insert into min-heap with updated deadline
+		if entry.heapEntry == nil {
+			entry.heapEntry = &TimerEntry{
+				Kind:       TimerScheduleOccurrence,
+				Owner:      entry.Owner,
+				ID:         key,
+				Generation: entry.Generation,
+				Deadline:   entry.NextRun,
+				Data:       entry,
+			}
+			c.heap.Push(entry.heapEntry)
+		} else {
+			c.heap.Remove(entry.heapEntry)
+			entry.heapEntry.Deadline = entry.NextRun
+			c.heap.Push(entry.heapEntry)
 		}
 	}
 	c.mu.Unlock()

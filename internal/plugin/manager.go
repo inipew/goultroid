@@ -51,6 +51,7 @@ type Manager struct {
 	filesystemManager *filesystem.Manager
 	secretManager     *secret.Manager
 	taskManager       *tasks.Manager
+	taskClient        tasks.Client
 	jobsManager       *jobs.Manager
 	storageManager    *storage.Manager
 	plugins           map[string]Plugin
@@ -148,6 +149,13 @@ func (m *Manager) SetStorageManager(mgr *storage.Manager) {
 	m.storageManager = mgr
 }
 
+// SetTaskClient attaches an execution task client to this plugin manager.
+func (m *Manager) SetTaskClient(client tasks.Client) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.taskClient = client
+}
+
 func (m *Manager) buildPluginContext(baseCtx context.Context, name string, scope *Scope) PluginContext {
 	m.mu.RLock()
 	gate := m.gate
@@ -156,21 +164,23 @@ func (m *Manager) buildPluginContext(baseCtx context.Context, name string, scope
 	fsMgr := m.filesystemManager
 	secMgr := m.secretManager
 	taskMgr := m.taskManager
+	taskClient := m.taskClient
 	jobsMgr := m.jobsManager
 	storageMgr := m.storageManager
 	m.mu.RUnlock()
 
 	return NewPluginContext(baseCtx, ContextConfig{
-		Scope:   scope,
-		Owner:   name,
-		Gate:    gate,
-		Network: netSvc,
-		Process: procMgr,
-		Files:   fsMgr,
-		Secrets: secMgr,
-		Tasks:   taskMgr,
-		Jobs:    jobsMgr,
-		Storage: storageMgr,
+		Scope:      scope,
+		Owner:      name,
+		Gate:       gate,
+		Network:    netSvc,
+		Process:    procMgr,
+		Files:      fsMgr,
+		Secrets:    secMgr,
+		Tasks:      taskMgr,
+		Jobs:       jobsMgr,
+		TaskClient: taskClient,
+		Storage:    storageMgr,
 	})
 }
 

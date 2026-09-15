@@ -8,6 +8,7 @@ import (
 	"github.com/inipew/goultroid/internal/platform/network"
 	"github.com/inipew/goultroid/internal/platform/process"
 	"github.com/inipew/goultroid/internal/platform/storage"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 func TestPluginContext_CapabilityEnforcement(t *testing.T) {
@@ -128,5 +129,51 @@ func TestPluginContext_StorageCapability(t *testing.T) {
 	_, err = ctxUnpriv.Storage()
 	if !errors.Is(err, ErrCapabilityDenied) {
 		t.Fatalf("expected ErrCapabilityDenied for unprivileged plugin, got %v", err)
+	}
+}
+
+type dummyTaskClient struct {
+	tasks.Client
+}
+
+func TestPluginContext_TaskClientCapability(t *testing.T) {
+	gate := NewCapabilityGate()
+	_ = gate.RegisterManifest(Manifest{
+		ID:           "worker_plugin",
+		Name:         "Worker Plugin",
+		Version:      "1.0.0",
+		Capabilities: []string{CapTasks},
+	})
+
+	client := &dummyTaskClient{}
+	ctx := NewPluginContext(context.Background(), ContextConfig{
+		Owner:      "worker_plugin",
+		Gate:       gate,
+		TaskClient: client,
+	})
+
+	tc, err := ctx.TaskClient()
+	if err != nil {
+		t.Fatalf("expected TaskClient to succeed, got %v", err)
+	}
+	if tc != client {
+		t.Fatalf("expected client %v, got %v", client, tc)
+	}
+
+	// Without CapTasks
+	_ = gate.RegisterManifest(Manifest{
+		ID:           "no_tasks",
+		Name:         "No Tasks",
+		Version:      "1.0.0",
+		Capabilities: []string{},
+	})
+	ctxDenied := NewPluginContext(context.Background(), ContextConfig{
+		Owner:      "no_tasks",
+		Gate:       gate,
+		TaskClient: client,
+	})
+	_, err = ctxDenied.TaskClient()
+	if !errors.Is(err, ErrCapabilityDenied) {
+		t.Fatalf("expected ErrCapabilityDenied, got %v", err)
 	}
 }

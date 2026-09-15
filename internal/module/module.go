@@ -67,16 +67,17 @@ type ServiceRuntime struct {
 
 // PlatformRuntime contains capability-gated platform accessors.
 type PlatformRuntime struct {
-	Gate      *plugin.CapabilityGate
-	Network   *network.Service
-	Process   *process.Manager
-	Files     *filesystem.Manager
-	Secrets   *secret.Manager
-	Audit     *audit.Service
-	Resources *resource.Manager
-	Workers   *workers.Manager
-	Tasks     *tasks.Manager
-	Jobs      *jobs.Manager
+	Gate       *plugin.CapabilityGate
+	Network    *network.Service
+	Process    *process.Manager
+	Files      *filesystem.Manager
+	Secrets    *secret.Manager
+	Audit      *audit.Service
+	Resources  *resource.Manager
+	Workers    *workers.Manager
+	Tasks      *tasks.Manager
+	Jobs       *jobs.Manager
+	TaskClient tasks.Client
 }
 
 // Runtime is the composition context supplied to feature modules.

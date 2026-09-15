@@ -1,6 +1,6 @@
 # ADR 0006: Redesign execution runtime dari prinsip dasar
 
-- Status: **Proposed — belum diimplementasikan atau diterima sebagai pengganti ADR lama**.
+- Status: **Accepted**.
 - Tanggal: 14 September 2026.
 - Baseline: `fix/execution-admission-periodic`, awalnya HEAD `03ed71c` beserta patch perbaikan lokal, kemudian tercatat sebagai `bfe7f0d` saat finalisasi; lihat [analisa teknikal](../design/execution-redesign/01-technical-analysis.md).
 - Rencana penerapan: [implementation plan](../design/execution-redesign/03-implementation-plan.md).

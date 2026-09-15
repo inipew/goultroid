@@ -27,6 +27,7 @@ import (
 	processSvc "github.com/inipew/goultroid/internal/services/process"
 	"github.com/inipew/goultroid/internal/services/ratelimit"
 	"github.com/inipew/goultroid/internal/settings"
+	"github.com/inipew/goultroid/internal/taskengine"
 	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/telegram"
 	"github.com/inipew/goultroid/internal/workers"
@@ -54,12 +55,17 @@ type App struct {
 	processRunner   *processSvc.OSRunner
 	startTime       time.Time
 
-	workers   *workers.Manager
-	tasks     *tasks.Manager
-	jobs      *jobs.Manager
-	resources *resource.Manager
-	idemp     *idempotency.Manager
-	runtime   *runtime.Runtime
+	workers         *workers.Manager
+	tasks           *tasks.Manager
+	jobs            *jobs.Manager
+	taskEngine      *taskengine.Engine
+	persistencePump *jobs.PersistencePump
+	resources       *resource.Manager
+	idemp           *idempotency.Manager
+	runtime         *runtime.Runtime
+
+	appCancel       context.CancelFunc
+	transportCancel context.CancelFunc
 
 	lifecycleMu    sync.Mutex
 	lifecycleState atomic.Uint32
@@ -119,6 +125,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		coreDeps.taskManager,
 		coreDeps.jobsManager,
 	)
+	pluginManager.SetTaskClient(coreDeps.taskEngine)
 	if domServices.schedEngine != nil {
 		pluginManager.SetSchedulerCleaner(domServices.schedEngine)
 	}
@@ -165,16 +172,17 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 			SchedEngine:      domServices.schedEngine,
 		},
 		PlatformRuntime: module.PlatformRuntime{
-			Gate:      coreDeps.capGate,
-			Network:   coreDeps.netService,
-			Process:   coreDeps.procManager,
-			Files:     coreDeps.fsManager,
-			Secrets:   coreDeps.secretManager,
-			Audit:     coreDeps.auditService,
-			Resources: coreDeps.resourceManager,
-			Workers:   coreDeps.workerManager,
-			Tasks:     coreDeps.taskManager,
-			Jobs:      coreDeps.jobsManager,
+			Gate:       coreDeps.capGate,
+			Network:    coreDeps.netService,
+			Process:    coreDeps.procManager,
+			Files:      coreDeps.fsManager,
+			Secrets:    coreDeps.secretManager,
+			Audit:      coreDeps.auditService,
+			Resources:  coreDeps.resourceManager,
+			Workers:    coreDeps.workerManager,
+			Tasks:      coreDeps.taskManager,
+			Jobs:       coreDeps.jobsManager,
+			TaskClient: coreDeps.taskEngine,
 		},
 	}
 	if err := registerBuiltinModules(context.Background(), featureRuntime); err != nil {
@@ -199,6 +207,16 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	}
 	if err := rt.Register(dependencyComponent{Component: coreDeps.workerManager, dependencies: []string{"database"}}); err != nil {
 		return nil, fmt.Errorf("register workers component: %w", err)
+	}
+	if coreDeps.persistencePump != nil {
+		if err := rt.Register(coreDeps.persistencePump); err != nil {
+			return nil, fmt.Errorf("register persistence-pump component: %w", err)
+		}
+	}
+	if coreDeps.taskEngine != nil {
+		if err := rt.Register(dependencyComponent{Component: coreDeps.taskEngine, dependencies: []string{"workers"}}); err != nil {
+			return nil, fmt.Errorf("register taskengine component: %w", err)
+		}
 	}
 	if err := rt.Register(coreDeps.jobsManager); err != nil {
 		return nil, fmt.Errorf("register jobs component: %w", err)
@@ -255,6 +273,8 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		workers:         coreDeps.workerManager,
 		tasks:           coreDeps.taskManager,
 		jobs:            coreDeps.jobsManager,
+		taskEngine:      coreDeps.taskEngine,
+		persistencePump: coreDeps.persistencePump,
 		resources:       coreDeps.resourceManager,
 		idemp:           coreDeps.idempManager,
 		runtime:         rt,
