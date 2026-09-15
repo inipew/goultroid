@@ -48,7 +48,7 @@ func (e *Engine) stopEngine(ctx context.Context, graceful bool) error {
 	}
 
 	e.mu.Lock()
-	inbox := e.inbox
+	controlInbox := e.controlInbox
 	rootCtx := e.rootCtx
 	rootCancel := e.rootCancel
 	delivery := e.delivery
@@ -63,12 +63,12 @@ func (e *Engine) stopEngine(ctx context.Context, graceful bool) error {
 		return errors.Join(errs...)
 	}
 
-	if inbox != nil && rootCtx.Err() == nil {
+	if controlInbox != nil && rootCtx.Err() == nil {
 		reply := make(chan engineReply, 1)
 		req := engineRequest{op: opStopFinalize, reply: reply}
 		sent := false
 		select {
-		case inbox <- req:
+		case controlInbox <- req:
 			sent = true
 		case <-ctx.Done():
 			errs = append(errs, fmt.Errorf("taskengine force-finalize enqueue: %w", ctx.Err()))
