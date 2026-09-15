@@ -40,7 +40,7 @@ type Engine struct {
 	taskMgr *tasks.Manager
 	jobsMgr *jobs.Manager
 
-	maxConcurrency int
+	claimBatchSize int
 	misfirePolicy  MisfirePolicy
 
 	wakeChan chan struct{}
@@ -85,7 +85,7 @@ func NewEngine(db Repository, svcFunc func() core.TelegramServicer, router *core
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	const defaultConcurrency = 4
+	const defaultBatchSize = 4
 	engine := &Engine{
 		db:             db,
 		svcFunc:        svcFunc,
@@ -93,7 +93,7 @@ func NewEngine(db Repository, svcFunc func() core.TelegramServicer, router *core
 		perms:          perms,
 		executor:       core.NewCommandExecutor(logger, nil, 30*time.Second),
 		logger:         logger,
-		maxConcurrency: defaultConcurrency,
+		claimBatchSize: defaultBatchSize,
 		misfirePolicy:  MisfireRunOnce,
 		wakeChan:       make(chan struct{}, 1),
 	}
@@ -111,8 +111,8 @@ func (e *Engine) notifyWake() {
 	}
 }
 
-// SetMaxConcurrency changes the concurrency limit only while the engine is stopped.
-// Replacing a live semaphore would split accounting between old and new workers.
+// SetMaxConcurrency is deprecated. Physical scheduler concurrency is governed
+// by the worker manager pool (PoolScheduler). In standalone/test mode, this configures the claim batch size.
 func (e *Engine) SetMaxConcurrency(n int) {
 	if n <= 0 {
 		n = 1
@@ -122,7 +122,7 @@ func (e *Engine) SetMaxConcurrency(n int) {
 	if e.running {
 		return
 	}
-	e.maxConcurrency = n
+	e.claimBatchSize = n
 }
 
 // SetWorkers configures runtime worker and task managers for job execution.
@@ -548,7 +548,7 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) int {
 		return 0
 	}
 
-	claimBatch := e.maxConcurrency
+	claimBatch := e.claimBatchSize
 	if claimBatch <= 0 {
 		claimBatch = 1
 	}

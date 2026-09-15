@@ -51,8 +51,9 @@ func (q *ReadyQueue) Pop() *QueueEntry {
 		return nil
 	}
 	node := q.head
+	entry := node.entry
 	q.removeNode(node)
-	return node.entry
+	return entry
 }
 
 // Remove deletes an entry by TaskID in O(1).
@@ -61,8 +62,9 @@ func (q *ReadyQueue) Remove(id tasks.TaskID) *QueueEntry {
 	if !ok {
 		return nil
 	}
+	entry := node.entry
 	q.removeNode(node)
-	return node.entry
+	return entry
 }
 
 func (q *ReadyQueue) removeNode(node *queueNode) {
@@ -81,6 +83,7 @@ func (q *ReadyQueue) removeNode(node *queueNode) {
 		q.tail = node.prev
 	}
 
+	node.entry = nil
 	node.prev = nil
 	node.next = nil
 }

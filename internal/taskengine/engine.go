@@ -150,7 +150,27 @@ func (e *Engine) Start(ctx context.Context) error {
 	e.accepting = true
 	e.quiesced = false
 	e.drained = false
+
+	go e.sweepLoop(e.rootCtx)
 	return nil
+}
+
+func (e *Engine) sweepLoop(ctx context.Context) {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			e.mu.Lock()
+			for poolID := range e.config.Pools {
+				e.sweepExpiredLocked(poolID, now.UTC())
+			}
+			e.mu.Unlock()
+		}
+	}
 }
 
 // Quiesce stops accepting new tasks while letting already admitted tasks run.
@@ -312,7 +332,44 @@ func (e *Engine) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket,
 	return ticket, nil
 }
 
+func (e *Engine) sweepExpiredLocked(pool tasks.PoolID, now time.Time) {
+	expired := e.adm.PopExpired(pool, now)
+	for _, entry := range expired {
+		rec, ok := e.registry[entry.Spec.ID]
+		if !ok || rec.state != tasks.StateQueued {
+			continue
+		}
+		rec.state = tasks.StateTimedOut
+		rec.finishedAt = now
+		rec.errorMsg = "queue deadline expired before execution"
+		rec.result = tasks.TaskResult{
+			TaskID:     entry.Spec.ID,
+			Outcome:    tasks.OutcomeTimedOut,
+			Cause:      tasks.CauseQueueExpired,
+			FinishedAt: now,
+			Failure: tasks.FailureInfo{
+				Message: rec.errorMsg,
+			},
+		}
+		if e.resultSlotsHeld > 0 {
+			e.resultSlotsHeld--
+		}
+		close(rec.done)
+		e.activeWG.Done()
+		if rec.spec.OnComplete != nil {
+			fn := rec.spec.OnComplete
+			res := rec.result
+			go func() {
+				defer func() { _ = recover() }()
+				fn(res)
+			}()
+		}
+	}
+}
+
 func (e *Engine) tryDispatchLocked(pool tasks.PoolID) {
+	e.sweepExpiredLocked(pool, time.Now().UTC())
+
 	for len(e.idleSlots[pool]) > 0 {
 		candidate, err := e.adm.SelectCandidate(pool)
 		if err != nil {
@@ -384,6 +441,14 @@ func (e *Engine) executeAssignment(rec *taskRecord, spec tasks.WorkSpec, permit 
 	}
 	close(rec.done)
 	e.activeWG.Done()
+
+	if rec.spec.OnComplete != nil {
+		fn := rec.spec.OnComplete
+		go func(r tasks.TaskResult) {
+			defer func() { _ = recover() }()
+			fn(r)
+		}(res)
+	}
 }
 
 // Cancel cancels an execution attempt by ID (ADR 0006 §5.1).

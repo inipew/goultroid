@@ -254,8 +254,11 @@ func (c *Controller) SelectCandidate(pool tasks.PoolID) (*QueueEntry, error) {
 		// Traverse active owners for this class
 		owners := ps.activeOwners[class]
 		if len(owners) == 0 {
-			// Remove empty class from active
-			ps.activeClasses = append(ps.activeClasses[:ps.classCursor], ps.activeClasses[ps.classCursor+1:]...)
+			// Remove empty class from active with slot zeroing
+			n := len(ps.activeClasses)
+			copy(ps.activeClasses[ps.classCursor:], ps.activeClasses[ps.classCursor+1:])
+			ps.activeClasses[n-1] = ""
+			ps.activeClasses = ps.activeClasses[:n-1]
 			continue
 		}
 
@@ -274,14 +277,24 @@ func (c *Controller) SelectCandidate(pool tasks.PoolID) (*QueueEntry, error) {
 
 			rq := ps.queues[class][owner]
 			if rq == nil || rq.Len() == 0 {
-				// Remove empty owner from active
-				owners = append(owners[:cursor], owners[cursor+1:]...)
+				// Remove empty owner from active with slot zeroing
+				n := len(owners)
+				copy(owners[cursor:], owners[cursor+1:])
+				owners[n-1] = ""
+				owners = owners[:n-1]
 				ps.activeOwners[class] = owners
 				continue
 			}
 
 			head := rq.Peek()
 			if head == nil {
+				cursor++
+				continue
+			}
+
+			// Validate QueueDeadline (strict pre-dispatch check, ADR 0006 §5.2)
+			now := time.Now().UTC()
+			if !head.Spec.QueueDeadline.IsZero() && now.After(head.Spec.QueueDeadline) {
 				cursor++
 				continue
 			}

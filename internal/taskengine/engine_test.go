@@ -288,3 +288,143 @@ func TestEngine_CancelScope(t *testing.T) {
 
 	close(blockerRelease)
 }
+
+func TestEngine_GuaranteedOnCompleteInvocation(t *testing.T) {
+	cfg := Config{
+		Pools: map[tasks.PoolID]PoolEngineConfig{
+			"general": {Concurrency: 2, BacklogLimit: 10, PayloadBudget: 1000},
+		},
+		ResultCapacity: 10,
+	}
+	engine := NewEngine(cfg)
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start engine: %v", err)
+	}
+	defer engine.Stop(context.Background())
+
+	// 1. Success case
+	completeCh := make(chan tasks.TaskResult, 1)
+	specSuccess := tasks.WorkSpec{
+		ID:         "task-success",
+		QuotaOwner: "owner-1",
+		Pool:       "general",
+		Handler:    func(ctx context.Context) error { return nil },
+		OnComplete: func(res tasks.TaskResult) {
+			completeCh <- res
+		},
+	}
+	ticket, err := engine.Submit(context.Background(), specSuccess)
+	if err != nil {
+		t.Fatalf("submit error: %v", err)
+	}
+	_, _ = ticket.Wait(context.Background())
+
+	select {
+	case res := <-completeCh:
+		if res.Outcome != tasks.OutcomeCompleted {
+			t.Errorf("expected OutcomeCompleted, got %v", res.Outcome)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for OnComplete callback on success")
+	}
+
+	// 2. Failure case
+	failCh := make(chan tasks.TaskResult, 1)
+	specFail := tasks.WorkSpec{
+		ID:         "task-fail",
+		QuotaOwner: "owner-1",
+		Pool:       "general",
+		Handler:    func(ctx context.Context) error { return errors.New("boom") },
+		OnComplete: func(res tasks.TaskResult) {
+			failCh <- res
+		},
+	}
+	ticketFail, err := engine.Submit(context.Background(), specFail)
+	if err != nil {
+		t.Fatalf("submit fail error: %v", err)
+	}
+	_, _ = ticketFail.Wait(context.Background())
+
+	select {
+	case res := <-failCh:
+		if res.Outcome != tasks.OutcomeFailed {
+			t.Errorf("expected OutcomeFailed, got %v", res.Outcome)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for OnComplete callback on failure")
+	}
+}
+
+func TestEngine_QueueDeadlineExpirySweep(t *testing.T) {
+	cfg := Config{
+		Pools: map[tasks.PoolID]PoolEngineConfig{
+			"general": {Concurrency: 1, BacklogLimit: 10, PayloadBudget: 1000},
+		},
+		ResultCapacity: 10,
+	}
+	engine := NewEngine(cfg)
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start engine: %v", err)
+	}
+	defer engine.Stop(context.Background())
+
+	blockerStarted := make(chan struct{})
+	blockerRelease := make(chan struct{})
+
+	specBlocker := tasks.WorkSpec{
+		ID:         "blocker",
+		QuotaOwner: "user-blocker",
+		Pool:       "general",
+		Handler: func(ctx context.Context) error {
+			close(blockerStarted)
+			<-blockerRelease
+			return nil
+		},
+	}
+	_, err := engine.Submit(context.Background(), specBlocker)
+	if err != nil {
+		t.Fatalf("submit blocker error: %v", err)
+	}
+	<-blockerStarted
+
+	expiredOnComplete := make(chan tasks.TaskResult, 1)
+	specExpiring := tasks.WorkSpec{
+		ID:            "expiring-task",
+		QuotaOwner:    "user-expiring",
+		Pool:          "general",
+		QueueDeadline: time.Now().UTC().Add(30 * time.Millisecond),
+		Handler:       func(ctx context.Context) error { return nil },
+		OnComplete: func(res tasks.TaskResult) {
+			expiredOnComplete <- res
+		},
+	}
+
+	ticket, err := engine.Submit(context.Background(), specExpiring)
+	if err != nil {
+		t.Fatalf("submit expiring error: %v", err)
+	}
+
+	// Wait for queue deadline to expire
+	res, err := ticket.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("wait error: %v", err)
+	}
+
+	if res.Outcome != tasks.OutcomeTimedOut {
+		t.Errorf("expected OutcomeTimedOut, got: %s", res.Outcome)
+	}
+	if res.Cause != tasks.CauseQueueExpired {
+		t.Errorf("expected CauseQueueExpired, got: %s", res.Cause)
+	}
+
+	select {
+	case callbackRes := <-expiredOnComplete:
+		if callbackRes.Outcome != tasks.OutcomeTimedOut {
+			t.Errorf("expected callback OutcomeTimedOut, got %v", callbackRes.Outcome)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for OnComplete callback on queue expiration")
+	}
+
+	close(blockerRelease)
+}
