@@ -70,6 +70,16 @@ func NewPluginContext(baseCtx context.Context, cfg ContextConfig) PluginContext 
 		cfg.Gate = NewCapabilityGate()
 	}
 
+	// Accepted TaskEngine work deliberately outlives the Submit caller context.
+	// Bind the exact plugin generation to Scope cancellation explicitly so
+	// disable/reload/global shutdown cannot leave old-generation work alive.
+	if cfg.Scope != nil && cfg.TaskClient != nil {
+		scopeID := tasks.ScopeIdentity{Owner: "plugin:" + cfg.Owner, Generation: cfg.Scope.Generation()}
+		_ = cfg.Scope.OnCancel(func() {
+			cfg.TaskClient.CancelScope(scopeID, tasks.CauseScopeClosed)
+		})
+	}
+
 	return &pluginContext{
 		Context:    baseCtx,
 		scope:      cfg.Scope,
@@ -85,121 +95,65 @@ func NewPluginContext(baseCtx context.Context, cfg ContextConfig) PluginContext 
 	}
 }
 
-func (c *pluginContext) Scope() *Scope {
-	return c.scope
-}
-
-func (c *pluginContext) Owner() string {
-	return c.owner
-}
+func (c *pluginContext) Scope() *Scope { return c.scope }
+func (c *pluginContext) Owner() string { return c.owner }
 
 func (c *pluginContext) HTTP() (*network.Client, error) {
-	if err := c.gate.Check(c.owner, CapHTTP); err != nil {
-		return nil, fmt.Errorf("http access denied: %w", err)
-	}
-	if c.network == nil {
-		return nil, errors.New("network service not configured")
-	}
+	if err := c.gate.Check(c.owner, CapHTTP); err != nil { return nil, fmt.Errorf("http access denied: %w", err) }
+	if c.network == nil { return nil, errors.New("network service not configured") }
 	return c.network.ForOwner(c.owner), nil
 }
 
 func (c *pluginContext) Process() (*process.Executor, error) {
-	if err := c.gate.Check(c.owner, CapProcessExecute); err != nil {
-		return nil, fmt.Errorf("process execution denied: %w", err)
-	}
-	if c.process == nil {
-		return nil, errors.New("process manager not configured")
-	}
+	if err := c.gate.Check(c.owner, CapProcessExecute); err != nil { return nil, fmt.Errorf("process execution denied: %w", err) }
+	if c.process == nil { return nil, errors.New("process manager not configured") }
 	return c.process.ForOwner(c.owner), nil
 }
 
 func (c *pluginContext) Files() (*filesystem.Scope, error) {
 	if err := c.gate.Check(c.owner, CapFilesystemData); err != nil {
-		if errTemp := c.gate.Check(c.owner, CapFilesystemTemp); errTemp != nil {
-			return nil, fmt.Errorf("filesystem access denied: requires %s or %s: %w", CapFilesystemData, CapFilesystemTemp, err)
-		}
+		if errTemp := c.gate.Check(c.owner, CapFilesystemTemp); errTemp != nil { return nil, fmt.Errorf("filesystem access denied: requires %s or %s: %w", CapFilesystemData, CapFilesystemTemp, err) }
 	}
-	if c.files == nil {
-		return nil, errors.New("filesystem manager not configured")
-	}
+	if c.files == nil { return nil, errors.New("filesystem manager not configured") }
 	return c.files.ForOwner(c.owner), nil
 }
 
 func (c *pluginContext) Secrets() (*secret.Manager, error) {
-	if err := c.gate.Check(c.owner, CapSecretRead); err != nil {
-		return nil, fmt.Errorf("secret access denied: %w", err)
-	}
-	if c.secrets == nil {
-		return nil, errors.New("secret manager not configured")
-	}
+	if err := c.gate.Check(c.owner, CapSecretRead); err != nil { return nil, fmt.Errorf("secret access denied: %w", err) }
+	if c.secrets == nil { return nil, errors.New("secret manager not configured") }
 	return c.secrets, nil
 }
 
 func (c *pluginContext) Jobs() (*jobs.Manager, error) {
 	if err := c.gate.Check(c.owner, CapJobs); err != nil {
-		if errSched := c.gate.Check(c.owner, CapScheduler); errSched != nil {
-			return nil, fmt.Errorf("jobs access denied: requires %s or %s: %w", CapJobs, CapScheduler, err)
-		}
+		if errSched := c.gate.Check(c.owner, CapScheduler); errSched != nil { return nil, fmt.Errorf("jobs access denied: requires %s or %s: %w", CapJobs, CapScheduler, err) }
 	}
-	if c.jobs == nil {
-		return nil, errors.New("jobs manager not configured")
-	}
+	if c.jobs == nil { return nil, errors.New("jobs manager not configured") }
 	return c.jobs, nil
 }
 
 func (c *pluginContext) TaskClient() (tasks.Client, error) {
-	if err := c.gate.Check(c.owner, CapTasks); err != nil {
-		return nil, fmt.Errorf("task client access denied: %w", err)
-	}
-	if c.taskClient == nil {
-		return nil, errors.New("task client not configured")
-	}
-	if c.scope == nil {
-		return nil, errors.New("plugin scope not configured")
-	}
+	if err := c.gate.Check(c.owner, CapTasks); err != nil { return nil, fmt.Errorf("task client access denied: %w", err) }
+	if c.taskClient == nil { return nil, errors.New("task client not configured") }
+	if c.scope == nil { return nil, errors.New("plugin scope not configured") }
 	return scopedTaskClient{client: c.taskClient, scope: tasks.ScopeIdentity{Owner: "plugin:" + c.owner, Generation: c.scope.Generation()}, owner: tasks.OwnerID("plugin:" + c.owner)}, nil
 }
 
-type scopedTaskClient struct {
-	client tasks.Client
-	scope  tasks.ScopeIdentity
-	owner  tasks.OwnerID
-}
+type scopedTaskClient struct { client tasks.Client; scope tasks.ScopeIdentity; owner tasks.OwnerID }
 
-func (c scopedTaskClient) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket, error) {
-	spec.Scope, spec.QuotaOwner = c.scope, c.owner
-	return c.client.Submit(ctx, spec)
-}
+func (c scopedTaskClient) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket, error) { spec.Scope, spec.QuotaOwner = c.scope, c.owner; return c.client.Submit(ctx, spec) }
 func (c scopedTaskClient) Cancel(id tasks.TaskID, cause tasks.Cause) (tasks.CancelReceipt, error) {
 	snapshot, ok := c.client.Snapshot(id)
-	if !ok || snapshot.Scope != c.scope {
-		return tasks.CancelReceipt{TaskID: id, Accepted: false, Reason: cause}, tasks.ErrTaskNotFound
-	}
+	if !ok || snapshot.Scope != c.scope { return tasks.CancelReceipt{TaskID: id, Accepted: false, Reason: cause}, tasks.ErrTaskNotFound }
 	return c.client.Cancel(id, cause)
 }
-func (c scopedTaskClient) CancelScope(scope tasks.ScopeIdentity, cause tasks.Cause) int {
-	if scope != c.scope {
-		return 0
-	}
-	return c.client.CancelScope(scope, cause)
-}
-func (c scopedTaskClient) Snapshot(id tasks.TaskID) (tasks.TaskSnapshot, bool) {
-	snapshot, ok := c.client.Snapshot(id)
-	if !ok || snapshot.Scope != c.scope {
-		return tasks.TaskSnapshot{}, false
-	}
-	return snapshot, true
-}
+func (c scopedTaskClient) CancelScope(scope tasks.ScopeIdentity, cause tasks.Cause) int { if scope != c.scope { return 0 }; return c.client.CancelScope(scope, cause) }
+func (c scopedTaskClient) Snapshot(id tasks.TaskID) (tasks.TaskSnapshot, bool) { snapshot, ok := c.client.Snapshot(id); if !ok || snapshot.Scope != c.scope { return tasks.TaskSnapshot{}, false }; return snapshot, true }
 
 func (c *pluginContext) Storage() (storage.KVStore, error) {
 	canRead := c.gate.Check(c.owner, CapStorageRead) == nil
 	canWrite := c.gate.Check(c.owner, CapStorageWrite) == nil
-
-	if !canRead && !canWrite {
-		return nil, fmt.Errorf("storage access denied: requires %s or %s: %w", CapStorageRead, CapStorageWrite, ErrCapabilityDenied)
-	}
-	if c.storage == nil {
-		return nil, errors.New("storage manager not configured")
-	}
+	if !canRead && !canWrite { return nil, fmt.Errorf("storage access denied: requires %s or %s: %w", CapStorageRead, CapStorageWrite, ErrCapabilityDenied) }
+	if c.storage == nil { return nil, errors.New("storage manager not configured") }
 	return c.storage.Store(c.owner, canRead, canWrite), nil
 }

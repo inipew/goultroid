@@ -4,7 +4,6 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 const defaultDurabilityConcurrency = 4

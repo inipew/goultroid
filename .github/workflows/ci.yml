@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, test-next ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ main, master, test-next ]
 
 # Keep CI jobs independent, but reuse the expensive Go module/build caches.
 env:
@@ -37,12 +37,15 @@ jobs:
 
       - name: Check Formatting (gofmt)
         run: |
-          unformatted=$(gofmt -l .)
-          if [ -n "$unformatted" ]; then
-            echo "The following files are not formatted properly:"
-            echo "$unformatted"
-            exit 1
-          fi
+          gofmt -d . | tee gofmt.diff
+          test ! -s gofmt.diff
+
+      - name: Upload formatting diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gofmt-diff
+          path: gofmt.diff
 
       - name: Go Vet
         run: go vet ./...
@@ -84,7 +87,17 @@ jobs:
             ${{ runner.os }}-go-build-
 
       - name: Run Tests with Race Detector
-        run: go test -v -race ./...
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -v -race ./... 2>&1 | tee test.log
+
+      - name: Upload test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-log
+          path: test.log
 
   build:
     name: Build Binary
@@ -111,4 +124,14 @@ jobs:
             ${{ runner.os }}-go-build-
 
       - name: Build Application
-        run: go build -v ./cmd/goultroid
+        shell: bash
+        run: |
+          set -o pipefail
+          go build -v ./cmd/goultroid 2>&1 | tee build.log
+
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log

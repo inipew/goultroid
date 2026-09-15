@@ -113,14 +113,12 @@ func TestEngineCompletionRunsOnceOutsideWorker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitAuditTicket(t, ticket) // A blocked callback must not block the physical result.
+	waitAuditTicket(t, ticket)
 	select {
 	case <-callbackStarted:
 	case <-time.After(time.Second):
 		t.Fatal("missing callback")
 	}
-	// Drain covers bounded delivery (Phase B5): release the blocking callback
-	// first, then drain. The panic must be isolated and delivered exactly once.
 	close(release)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -168,9 +166,6 @@ func TestEngineCopiesAdmittedPayloadAndOccurrence(t *testing.T) {
 	if result.AttemptID != "original" {
 		t.Fatal("caller changed admitted attempt identity")
 	}
-	// The ticket's record pointer is stable from admission; after Wait the
-	// done-close edge makes the immutable spec bytes safe to read without
-	// touching the runLoop-owned registry map.
 	et, ok := ticket.(*engineTicket)
 	if !ok {
 		t.Fatal("expected engine ticket")
@@ -183,8 +178,6 @@ func TestEngineCopiesAdmittedPayloadAndOccurrence(t *testing.T) {
 func TestEngineCancelScopeBarrierBlocksSubsequentSubmit(t *testing.T) {
 	e := auditEngine(t)
 	scope := tasks.ScopeIdentity{Owner: "plugin:weather", Generation: 1}
-
-	// 1. Submit initial task under scope
 	ticket1, err := e.Submit(context.Background(), tasks.WorkSpec{
 		ID:         "task-pre",
 		Scope:      scope,
@@ -196,11 +189,7 @@ func TestEngineCancelScopeBarrierBlocksSubsequentSubmit(t *testing.T) {
 		t.Fatalf("unexpected submit error: %v", err)
 	}
 	_ = waitAuditTicket(t, ticket1)
-
-	// 2. Cancel scope
 	_ = e.CancelScope(scope, tasks.CauseScopeClosed)
-
-	// 3. Submit after CancelScope must be immediately rejected at admission barrier
 	_, err = e.Submit(context.Background(), tasks.WorkSpec{
 		ID:         "task-post",
 		Scope:      scope,
@@ -225,33 +214,35 @@ func TestEngineLateCancellationAuditing(t *testing.T) {
 		Handler: func(ctx context.Context) error {
 			close(taskStarted)
 			<-allowFinish
-			// Return nil (success), simulating handler that finished without checking ctx
+			// Deliberately ignore ctx and finish the side effect successfully.
 			return nil
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	<-taskStarted
 
-	// Cancel while running
 	receipt, err := e.Cancel("task-running-cancel", tasks.CauseUserCancel)
 	if err != nil || !receipt.Accepted || receipt.State != tasks.StateRunning {
 		t.Fatalf("expected running cancel accepted, got receipt=%+v, err=%v", receipt, err)
 	}
-
-	// Allow handler to finish (simulating late finish)
 	close(allowFinish)
 
 	res := waitAuditTicket(t, ticket)
-	if res.Outcome != tasks.OutcomeCancelled || res.Cause != tasks.CauseUserCancel {
-		t.Fatalf("expected late cancellation to preserve OutcomeCancelled and CauseUserCancel, got: %+v", res)
+	if res.Outcome != tasks.OutcomeCompleted || res.Cause != tasks.CauseNone {
+		t.Fatalf("late cancellation must preserve actual successful outcome, got: %+v", res)
+	}
+	if !res.CancelRequested || !res.LateCancellation || res.CancelCause != tasks.CauseUserCancel {
+		t.Fatalf("missing late-cancellation metadata: %+v", res)
+	}
+	snap, ok := e.Snapshot("task-running-cancel")
+	if !ok || !snap.CancelRequested || !snap.LateCancellation || snap.CancelCause != tasks.CauseUserCancel {
+		t.Fatalf("snapshot lost cancellation metadata: %+v found=%v", snap, ok)
 	}
 }
 
 func TestEngineConfigValidationAndDefensiveCopy(t *testing.T) {
-	// 1. Validation of negative parameters
 	invalidCfg := Config{
 		Pools: map[tasks.PoolID]PoolEngineConfig{
 			"bad": {Concurrency: -1},
@@ -261,28 +252,22 @@ func TestEngineConfigValidationAndDefensiveCopy(t *testing.T) {
 		t.Fatal("expected error for negative concurrency")
 	}
 
-	invalidCap := Config{
-		ResultCapacity: -5,
-	}
+	invalidCap := Config{ResultCapacity: -5}
 	if err := ValidateConfig(invalidCap); err == nil {
 		t.Fatal("expected error for negative result capacity")
 	}
+	invalidControl := Config{ControlInboxCapacity: -1}
+	if err := ValidateConfig(invalidControl); err == nil {
+		t.Fatal("expected error for negative control inbox capacity")
+	}
 
-	// 2. Defensive copy of pools
 	poolsMap := map[tasks.PoolID]PoolEngineConfig{
 		"pool1": {Concurrency: 5, BacklogLimit: 20},
 	}
-	cfg := Config{
-		Pools:          poolsMap,
-		ResultCapacity: 50,
-	}
+	cfg := Config{Pools: poolsMap, ResultCapacity: 50}
 	eng := NewEngine(cfg)
-
-	// Mutate external map
 	poolsMap["pool1"] = PoolEngineConfig{Concurrency: 999}
 	delete(poolsMap, "pool1")
-
-	// Verify engine's internal config was not mutated
 	eng.mu.Lock()
 	defer eng.mu.Unlock()
 	if eng.config.Pools["pool1"].Concurrency != 5 {
@@ -303,7 +288,6 @@ func TestEngineTerminalRecordEviction(t *testing.T) {
 	}
 	defer e.Stop(context.Background())
 
-	// Submit 4 tasks that finish immediately
 	for i := 1; i <= 4; i++ {
 		taskID := tasks.TaskID(fmt.Sprintf("evict-task-%d", i))
 		ticket, err := e.Submit(context.Background(), tasks.WorkSpec{
@@ -321,9 +305,6 @@ func TestEngineTerminalRecordEviction(t *testing.T) {
 		}
 	}
 
-	// Only at most 2 terminal tasks should be retained in the registry.
-	// Registry is runLoop-owned (single writer); assert through the public
-	// Snapshot API instead of poking internals.
 	retained := 0
 	for i := 1; i <= 4; i++ {
 		if _, ok := e.Snapshot(tasks.TaskID(fmt.Sprintf("evict-task-%d", i))); ok {
@@ -333,14 +314,12 @@ func TestEngineTerminalRecordEviction(t *testing.T) {
 	if retained > 2 {
 		t.Fatalf("expected retained snapshots <= 2, got %d", retained)
 	}
-	// The oldest tasks (1 and 2) should have been evicted
 	if _, exists := e.Snapshot("evict-task-1"); exists {
 		t.Fatalf("expected evict-task-1 to be evicted")
 	}
 	if _, exists := e.Snapshot("evict-task-2"); exists {
 		t.Fatalf("expected evict-task-2 to be evicted")
 	}
-	// The newest tasks (3 and 4) should still be in the registry
 	if _, exists := e.Snapshot("evict-task-3"); !exists {
 		t.Fatalf("expected evict-task-3 to be present")
 	}
@@ -364,8 +343,6 @@ func TestEngineEventDrivenDeadlineSweeper(t *testing.T) {
 	blockerStarted := make(chan struct{})
 	blockerRelease := make(chan struct{})
 	defer close(blockerRelease)
-
-	// Block worker 0
 	_, err := e.Submit(context.Background(), tasks.WorkSpec{
 		ID:         "blocker",
 		Pool:       "p",
@@ -381,24 +358,18 @@ func TestEngineEventDrivenDeadlineSweeper(t *testing.T) {
 	}
 	<-blockerStarted
 
-	// Submit queued task with a very short queue deadline (50ms)
 	expiredTicket, err := e.Submit(context.Background(), tasks.WorkSpec{
 		ID:            "queued-deadline-task",
 		Pool:          "p",
 		QuotaOwner:    "test-owner",
 		QueueDeadline: time.Now().UTC().Add(50 * time.Millisecond),
-		Handler: func(ctx context.Context) error {
-			return nil
-		},
+		Handler:       func(ctx context.Context) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	// Wait should observe timeout caused by the dynamic sweepLoop wakeup
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-
 	res, err := expiredTicket.Wait(ctx)
 	if err != nil {
 		t.Fatalf("wait failed: %v", err)
@@ -421,7 +392,6 @@ func TestEngineDecisionTimeoutAndLinearizationCancel(t *testing.T) {
 	}
 	defer e.Stop(context.Background())
 
-	// 1. Submit with already-cancelled context
 	cancelledCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err := e.Submit(cancelledCtx, tasks.WorkSpec{
@@ -434,7 +404,6 @@ func TestEngineDecisionTimeoutAndLinearizationCancel(t *testing.T) {
 		t.Fatalf("expected context.Canceled, got: %v", err)
 	}
 
-	// 2. Normal submit within decision timeout succeeds
 	ticket, err := e.Submit(context.Background(), tasks.WorkSpec{
 		ID:         "valid-decision",
 		Pool:       "p",
