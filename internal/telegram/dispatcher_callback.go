@@ -7,6 +7,8 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/tasks"
+	"go.uber.org/zap"
 )
 
 // RegisterHooks binds message, edit, delete, callback query, inline query, and reaction handlers to a tg.UpdateDispatcher.
@@ -211,7 +213,33 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 
 	cbRouter := d.getCallbackRouter()
 	if cbRouter != nil {
-		_ = cbRouter.Dispatch(ctx, evt, d.getService())
+		client := d.taskClient()
+		if client != nil {
+			taskID := fmt.Sprintf("cb:%d", evt.QueryID)
+			owner := fmt.Sprintf("telegram:user:%d", evt.UserID)
+			_, err := client.Submit(ctx, tasks.WorkSpec{
+				ID:               tasks.TaskID(taskID),
+				QuotaOwner:       tasks.OwnerID(owner),
+				Pool:             "interactive",
+				Class:            tasks.PriorityInteractive,
+				OrderingKey:      fmt.Sprintf("callback:%d", evt.QueryID),
+				ExecutionTimeout: 15 * time.Second,
+				Handler: func(taskCtx context.Context) error {
+					return cbRouter.Dispatch(taskCtx, evt, d.getService())
+				},
+			})
+			if err != nil {
+				d.logger.Warn("callback dispatch admission rejected", zap.Int64("query_id", evt.QueryID), zap.Error(err))
+				if svc := d.getService(); svc != nil {
+					_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Server is overloaded, please try again shortly.", false)
+				}
+			}
+		} else {
+			d.logger.Warn("callback execution unavailable", zap.Error(ErrTasksNotConfigured))
+			if svc := d.getService(); svc != nil {
+				_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Service unavailable.", false)
+			}
+		}
 	}
 	return nil
 }
@@ -252,7 +280,33 @@ func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities
 
 	cbRouter := d.getCallbackRouter()
 	if cbRouter != nil {
-		_ = cbRouter.Dispatch(ctx, evt, d.getService())
+		client := d.taskClient()
+		if client != nil {
+			taskID := fmt.Sprintf("inline_cb:%d", evt.QueryID)
+			owner := fmt.Sprintf("telegram:user:%d", evt.UserID)
+			_, err := client.Submit(ctx, tasks.WorkSpec{
+				ID:               tasks.TaskID(taskID),
+				QuotaOwner:       tasks.OwnerID(owner),
+				Pool:             "interactive",
+				Class:            tasks.PriorityInteractive,
+				OrderingKey:      fmt.Sprintf("inline_callback:%d", evt.QueryID),
+				ExecutionTimeout: 15 * time.Second,
+				Handler: func(taskCtx context.Context) error {
+					return cbRouter.Dispatch(taskCtx, evt, d.getService())
+				},
+			})
+			if err != nil {
+				d.logger.Warn("inline callback dispatch admission rejected", zap.Int64("query_id", evt.QueryID), zap.Error(err))
+				if svc := d.getService(); svc != nil {
+					_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Server is overloaded, please try again shortly.", false)
+				}
+			}
+		} else {
+			d.logger.Warn("inline callback execution unavailable", zap.Error(ErrTasksNotConfigured))
+			if svc := d.getService(); svc != nil {
+				_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Service unavailable.", false)
+			}
+		}
 	}
 	return nil
 }
@@ -266,7 +320,28 @@ func (d *Dispatcher) OnBotInlineQuery(ctx context.Context, e tg.Entities, update
 	if engine == nil {
 		return nil
 	}
-	return engine.ExecuteWithPeerType(ctx, d.getService(), update.QueryID, update.UserID, update.Query, update.Offset, update.PeerType)
+	client := d.taskClient()
+	if client != nil {
+		taskID := fmt.Sprintf("inline:%d", update.QueryID)
+		owner := fmt.Sprintf("telegram:user:%d", update.UserID)
+		_, err := client.Submit(ctx, tasks.WorkSpec{
+			ID:               tasks.TaskID(taskID),
+			QuotaOwner:       tasks.OwnerID(owner),
+			Pool:             "interactive",
+			Class:            tasks.PriorityInteractive,
+			OrderingKey:      fmt.Sprintf("inline:%d", update.QueryID),
+			ExecutionTimeout: 5 * time.Second,
+			Handler: func(taskCtx context.Context) error {
+				return engine.ExecuteWithPeerType(taskCtx, d.getService(), update.QueryID, update.UserID, update.Query, update.Offset, update.PeerType)
+			},
+		})
+		if err != nil {
+			d.logger.Warn("inline query admission rejected", zap.Int64("query_id", update.QueryID), zap.Error(err))
+			return err
+		}
+		return nil
+	}
+	return ErrTasksNotConfigured
 }
 
 // OnBotInlineSend handles inline result chosen feedback (observational only).

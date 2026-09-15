@@ -25,13 +25,25 @@ func (a *App) Shutdown(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+	if a.client != nil && a.client.Dispatcher() != nil {
+		_ = a.client.Dispatcher().Quiesce(ctx)
+	}
+	if a.taskEngine != nil {
+		_ = a.taskEngine.Quiesce(ctx)
+	}
 	a.markStopping()
 
 	var errs []error
 	if a.runtime != nil {
-		if err := a.runtime.Stop(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		if err := a.runtime.Stop(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("runtime: %w", err))
 		}
+	}
+	if a.transportCancel != nil {
+		a.transportCancel()
+	}
+	if a.appCancel != nil {
+		a.appCancel()
 	}
 	if a.logger != nil {
 		if err := a.logger.Sync(); err != nil && !errors.Is(err, syscall.EINVAL) {

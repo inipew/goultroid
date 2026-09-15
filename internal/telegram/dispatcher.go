@@ -11,6 +11,7 @@ import (
 	"github.com/inipew/goultroid/internal/idempotency"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/services/inline"
+	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
 
@@ -33,13 +34,13 @@ type Dispatcher struct {
 	inlineEngine   *inline.Engine
 	normalizer     *Normalizer
 	idempotencyMgr *idempotency.Manager
+	tasks          tasks.Client
 
 	messageHandlers  []prioritizedHandler
 	nextHandlerID    uint64
 	acceptingUpdates atomic.Bool
 	inFlight         sync.WaitGroup
 	cmdWG            sync.WaitGroup
-	cmdSem           chan struct{}
 	runningCommands  atomic.Int64
 	totalCommands    atomic.Int64
 	mu               sync.RWMutex
@@ -64,6 +65,7 @@ type DispatcherDeps struct {
 	CallbackRouter *callback.Router
 	InlineEngine   *inline.Engine
 	Resolver       core.PeerResolver
+	Tasks          tasks.Client
 }
 
 // NewDispatcherWithDeps constructs a Dispatcher with all available dependencies.
@@ -78,6 +80,9 @@ func NewDispatcherWithDeps(deps DispatcherDeps) (*Dispatcher, error) {
 		deps.Logger = zap.NewNop()
 	}
 	d := NewDispatcher(deps.Router, deps.Permissions, deps.Service, deps.Logger)
+	if deps.Tasks != nil {
+		d.SetTasks(deps.Tasks)
+	}
 	if deps.EventBus != nil {
 		d.SetEventBus(deps.EventBus)
 	}
@@ -116,7 +121,6 @@ func NewDispatcher(
 		cooldown:    cooldown,
 		executor:    executor,
 		albumBuffer: core.NewAlbumBuffer(10 * time.Minute),
-		cmdSem:      make(chan struct{}, 32),
 		normalizer:  NewNormalizer(),
 	}
 	d.acceptingUpdates.Store(true)

@@ -2,654 +2,179 @@ package jobs
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/tasks"
-	"github.com/inipew/goultroid/internal/workers"
 )
 
-// Ensure Manager implements runtime.Component.
+// Handler resolves a versioned job definition at execution time. It receives a
+// value copy, never a mutable manager record.
+type Handler func(context.Context, JobDefinition) error
+
+// Store is the durable boundary for a job definition and each of its occurrences.
+type Store interface {
+	SaveDefinition(context.Context, *JobDefinition) error
+	UpdateDefinitionCAS(context.Context, *JobDefinition, uint64) error
+	MaterializeOccurrence(context.Context, *JobOccurrence) error
+	PrepareAttemptLease(context.Context, string, string, time.Duration) (*JobAttempt, error)
+	CommitAttemptResult(context.Context, string, uint64, AttemptState, []byte, string) error
+	FinalizeOccurrence(context.Context, string, OccurrenceState) error
+	CancelOccurrence(context.Context, string, string) error
+	GetOccurrence(context.Context, string) (*JobOccurrence, error)
+	GetOccurrenceByKey(context.Context, string) (*JobOccurrence, error)
+	CountAttempts(context.Context, string) (int, error)
+	LatestAttempt(context.Context, string) (*JobAttempt, error)
+	ListUnresolvedOccurrences(context.Context, int) ([]*JobOccurrence, error)
+	DeleteTerminalOccurrences(context.Context, string, time.Time, int) (int64, error)
+}
+
+// Manager owns definitions and creates a distinct occurrence and TaskID for
+// every trigger. Physical execution is exclusively delegated to TaskEngine.
+type Manager struct {
+	mu          sync.RWMutex
+	client      tasks.Client
+	store       Store
+	pump        *PersistencePump
+	definitions map[string]JobDefinition
+	handlers    map[string]Handler
+	sequence    atomic.Uint64
+	accepting   bool
+
+	retryQueue   chan retryItem
+	recoveryWake chan struct{}
+	stopCh       chan struct{}
+	stopOnce     sync.Once
+	baseCtx      context.Context
+	baseCancel   context.CancelFunc
+	wg           sync.WaitGroup
+	tracked      map[string]*trackedOccurrence
+}
+
+// retryItem watches one submitted attempt for retry/recovery decisions.
+type retryItem struct {
+	occurrenceID string
+	ticket       tasks.Ticket
+}
+
+// trackedOccurrence remembers the latest attempt driver of an occurrence.
+type trackedOccurrence struct {
+	def     JobDefinition
+	handler Handler
+	taskID  tasks.TaskID
+}
+
+const (
+	retryQueueCap = 256
+	retryWorkers  = 4
+
+	// Automatic recovery is deliberately low-frequency as a safety scan; fast
+	// convergence comes from bounded wake signals emitted on monitor overflow or
+	// uncertain retry-driver errors.
+	recoveryScanLimit = 256
+	recoveryInterval  = 30 * time.Second
+	recoveryTimeout   = 20 * time.Second
+)
+
+// RecoverReport summarizes one recovery scan over unresolved occurrences.
+type RecoverReport struct {
+	Scanned   int
+	Redriven  int
+	Finalized int
+	Stale     int
+	Orphaned  int
+}
+
+// Diagnostics is a read-only count of declarative job registrations.
+type Diagnostics struct {
+	Definitions int
+	Handlers    int
+	Accepting   bool
+}
+
 var _ runtime.Component = (*Manager)(nil)
 
-// TaskSubmitter is the interface used by JobManager to queue tasks into worker pools.
-type TaskSubmitter interface {
-	Submit(ctx context.Context, poolName string, task tasks.Task) error
-}
-
-// IdempotencyClaimer is the interface used by JobManager to claim and deduplicate job execution.
-type IdempotencyClaimer interface {
-	CheckAndSet(ctx context.Context, key string, ttl time.Duration) (bool, error)
-}
-
-// JobHandler executes work for a declarative job type.
-type JobHandler func(ctx context.Context, j *Job) error
-
-// Diagnostics provides runtime statistics for jobs.
-type Diagnostics struct {
-	Registered       int      `json:"registered"`
-	Running          int      `json:"running"`
-	Completed        int      `json:"completed"`
-	Failed           int      `json:"failed"`
-	Cancelled        int      `json:"cancelled"`
-	Total            int      `json:"total"`
-	RecoveryFailures int      `json:"recovery_failures"`
-	RecoveryErrors   []string `json:"recovery_errors,omitempty"`
-}
-
-// Manager coordinates declarative jobs and delegates their execution to workers as tasks.
-type Manager struct {
-	mu                sync.RWMutex
-	jobs              map[string]*Job
-	handlers          map[string]JobHandler
-	submitter         TaskSubmitter
-	repo              Repository
-	idemp             IdempotencyClaimer
-	recoveryFailures  int
-	recoveryErrors    []string
-	terminalAt        map[string]time.Time
-	retention         time.Duration
-	cleanupInterval   time.Duration
-	cleanupCancel     context.CancelFunc
-	cleanupWG         sync.WaitGroup
-	completionSeq     uint64
-	completionWaiters map[string]map[uint64]chan error
-	activeAttempts    map[string]map[string]context.CancelFunc
-}
-
-// NewManager creates a new JobManager backed by a task submitter and optional repository.
-func NewManager(submitter TaskSubmitter, repo ...Repository) *Manager {
-	m := &Manager{
-		jobs:              make(map[string]*Job),
-		handlers:          make(map[string]JobHandler),
-		submitter:         submitter,
-		terminalAt:        make(map[string]time.Time),
-		completionWaiters: make(map[string]map[uint64]chan error),
-		activeAttempts:    make(map[string]map[string]context.CancelFunc),
-		retention:         7 * 24 * time.Hour,
-		cleanupInterval:   time.Hour,
+func NewManager(client tasks.Client, store Store, pump *PersistencePump) *Manager {
+	return &Manager{
+		client: client, store: store, pump: pump,
+		definitions: make(map[string]JobDefinition),
+		handlers: make(map[string]Handler),
+		tracked: make(map[string]*trackedOccurrence),
 	}
-	if len(repo) > 0 && repo[0] != nil {
-		m.repo = repo[0]
-	}
-	return m
 }
 
-// SetRetention configures how long terminal jobs are retained and how often cleanup runs.
-func (m *Manager) SetRetention(retention, cleanupInterval time.Duration) {
+func (m *Manager) Name() string           { return "jobs" }
+func (m *Manager) Dependencies() []string { return []string{"taskengine"} }
+
+func (m *Manager) Start(context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if retention > 0 {
-		m.retention = retention
+	if m.client == nil || m.store == nil || m.pump == nil {
+		return errors.New("jobs requires task client, durable store, and persistence pump")
 	}
-	if cleanupInterval > 0 {
-		m.cleanupInterval = cleanupInterval
+	firstStart := m.retryQueue == nil
+	if m.retryQueue == nil {
+		m.retryQueue = make(chan retryItem, retryQueueCap)
 	}
-}
-
-// SetRepository configures durable persistence for the manager.
-func (m *Manager) SetRepository(repo Repository) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.repo = repo
-}
-
-// SetIdempotencyManager configures an idempotency manager for deduplicating job execution.
-func (m *Manager) SetIdempotencyManager(idemp IdempotencyClaimer) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.idemp = idemp
-}
-
-// RegisterHandler registers a typed execution handler for declarative jobs.
-func (m *Manager) RegisterHandler(jobType string, handler JobHandler) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.handlers[jobType] = handler
-}
-
-// Register registers a declarative job with the manager.
-func (m *Manager) Register(j Job) error {
-	if err := j.Validate(); err != nil {
-		return err
+	if m.recoveryWake == nil {
+		m.recoveryWake = make(chan struct{}, 1)
 	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if _, exists := m.jobs[j.ID]; exists {
-		return fmt.Errorf("job %q already registered", j.ID)
+	if m.stopCh == nil {
+		m.stopCh = make(chan struct{})
 	}
-
-	if j.IdempotencyKey != "" {
-		for _, existing := range m.jobs {
-			if existing.IdempotencyKey == j.IdempotencyKey &&
-				(existing.State == StateRegistered || existing.State == StateTriggered || existing.State == StateExecuting) {
-				return fmt.Errorf("active job with idempotency key %q already exists: %s", j.IdempotencyKey, existing.ID)
-			}
+	if m.baseCtx == nil {
+		m.baseCtx, m.baseCancel = context.WithCancel(context.Background())
+	}
+	if m.tracked == nil {
+		m.tracked = make(map[string]*trackedOccurrence)
+	}
+	m.accepting = true
+	if firstStart {
+		for i := 0; i < retryWorkers; i++ {
+			m.wg.Add(1)
+			go m.retryLoop()
 		}
-	}
-
-	if j.Run == nil && j.Type != "" {
-		if handler, ok := m.handlers[j.Type]; ok {
-			h := handler
-			j.Run = func(ctx context.Context) error {
-				return h(ctx, &j)
-			}
-		} else {
-			return fmt.Errorf("no handler registered for job type %q", j.Type)
-		}
-	}
-
-	if j.Pool == "" {
-		j.Pool = workers.PoolGeneral
-	}
-	j.State = StateRegistered
-	m.jobs[j.ID] = &j
-
-	if m.repo != nil {
-		if err := m.repo.Save(context.Background(), &j); err != nil {
-			return fmt.Errorf("failed to persist job %q: %w", j.ID, err)
-		}
-	}
-
-	return nil
-}
-
-// Trigger converts a registered job into a concrete Task and queues it into the worker pool.
-func (m *Manager) Trigger(ctx context.Context, jobID string) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	m.mu.Lock()
-	job, exists := m.jobs[jobID]
-	if !exists {
-		m.mu.Unlock()
-		return fmt.Errorf("job %q not found", jobID)
-	}
-
-	previousState := job.State
-	previousLastRun := job.LastRun
-	job.State = StateTriggered
-	job.LastRun = time.Now().UTC()
-	runFn := job.Run
-	owner := job.Owner
-	timeout := job.Timeout
-	idempotencyKey := job.IdempotencyKey
-	idemp := m.idemp
-	pool := job.Pool
-	if pool == "" {
-		pool = workers.PoolGeneral
-	}
-	lastRun := job.LastRun
-	nextRun := job.NextRun
-	repo := m.repo
-	m.mu.Unlock()
-
-	if repo != nil {
-		_ = repo.UpdateState(ctx, jobID, StateTriggered, "", lastRun, nextRun)
-	}
-
-	if m.submitter == nil {
-		m.rollbackTrigger(ctx, job, previousState, previousLastRun, "task submitter not configured")
-		return fmt.Errorf("task submitter not configured")
-	}
-
-	taskID := fmt.Sprintf("task:%s:%d", jobID, time.Now().UnixNano())
-	attemptCtx, attemptCancel := context.WithCancel(ctx)
-	m.registerActiveAttempt(jobID, taskID, attemptCancel)
-	stopAttemptWatch := context.AfterFunc(attemptCtx, func() {
-		m.unregisterActiveAttempt(jobID, taskID)
-	})
-
-	task := tasks.Task{
-		ID:             taskID,
-		Owner:          owner,
-		Name:           "job:" + jobID,
-		Timeout:        timeout,
-		IdempotencyKey: idempotencyKey,
-		Run: func(taskCtx context.Context) error {
-			defer func() {
-				stopAttemptWatch()
-				m.unregisterActiveAttempt(jobID, taskID)
-				attemptCancel()
-			}()
-			if idemp != nil && idempotencyKey != "" {
-				first, err := idemp.CheckAndSet(taskCtx, idempotencyKey, 1*time.Hour)
-				if err == nil && !first {
-					m.mu.Lock()
-					job.State = StateCompleted
-					job.LastError = "skipped: duplicate execution detected by idempotency key"
-					m.terminalAt[jobID] = time.Now().UTC()
-					m.mu.Unlock()
-					if repo != nil {
-						_ = repo.UpdateState(context.Background(), jobID, StateCompleted, job.LastError, job.LastRun, job.NextRun)
-					}
-					m.notifyCompletion(jobID, nil)
-					return nil
-				}
-			}
-
-			m.mu.Lock()
-			job.State = StateExecuting
-			m.mu.Unlock()
-			if repo != nil {
-				_ = repo.UpdateState(taskCtx, jobID, StateExecuting, "", job.LastRun, job.NextRun)
-			}
-
-			var err error
-			if runFn != nil {
-				err = runFn(taskCtx)
-			}
-
-			m.mu.Lock()
-			if job.State == StateCancelled {
-				job.LastError = context.Canceled.Error()
-			} else if err != nil {
-				job.State = StateFailed
-				job.LastError = err.Error()
-			} else {
-				job.State = StateCompleted
-				job.LastError = ""
-			}
-			m.terminalAt[jobID] = time.Now().UTC()
-			jobState := job.State
-			jobErr := job.LastError
-			jLastRun := job.LastRun
-			jNextRun := job.NextRun
-			m.mu.Unlock()
-
-			if repo != nil {
-				_ = repo.UpdateState(context.Background(), jobID, jobState, jobErr, jLastRun, jNextRun)
-			}
-
-			m.notifyCompletion(jobID, err)
-			return err
-		},
-	}
-
-	if err := m.submitter.Submit(attemptCtx, pool, task); err != nil {
-		stopAttemptWatch()
-		m.unregisterActiveAttempt(jobID, taskID)
-		attemptCancel()
-		m.rollbackTrigger(ctx, job, previousState, previousLastRun, err.Error())
-		return fmt.Errorf("submit job %q to pool %q: %w", jobID, pool, err)
-	}
-	return nil
-}
-
-func (m *Manager) registerActiveAttempt(jobID, taskID string, cancel context.CancelFunc) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	attempts := m.activeAttempts[jobID]
-	if attempts == nil {
-		attempts = make(map[string]context.CancelFunc)
-		m.activeAttempts[jobID] = attempts
-	}
-	attempts[taskID] = cancel
-}
-
-func (m *Manager) unregisterActiveAttempt(jobID, taskID string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	attempts := m.activeAttempts[jobID]
-	if attempts == nil {
-		return
-	}
-	delete(attempts, taskID)
-	if len(attempts) == 0 {
-		delete(m.activeAttempts, jobID)
-	}
-}
-
-func (m *Manager) detachActiveAttemptsLocked(jobID string) []context.CancelFunc {
-	attempts := m.activeAttempts[jobID]
-	if len(attempts) == 0 {
-		delete(m.activeAttempts, jobID)
-		return nil
-	}
-	cancels := make([]context.CancelFunc, 0, len(attempts))
-	for _, cancel := range attempts {
-		cancels = append(cancels, cancel)
-	}
-	delete(m.activeAttempts, jobID)
-	return cancels
-}
-
-func cancelAttempts(cancels []context.CancelFunc) {
-	for _, cancel := range cancels {
-		cancel()
-	}
-}
-
-func (m *Manager) registerCompletionWaiter(jobID string) (uint64, <-chan error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.completionSeq++
-	id := m.completionSeq
-	waiters := m.completionWaiters[jobID]
-	if waiters == nil {
-		waiters = make(map[uint64]chan error)
-		m.completionWaiters[jobID] = waiters
-	}
-	ch := make(chan error, 1)
-	waiters[id] = ch
-	return id, ch
-}
-
-func (m *Manager) unregisterCompletionWaiter(jobID string, waiterID uint64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	waiters := m.completionWaiters[jobID]
-	if waiters == nil {
-		return
-	}
-	delete(waiters, waiterID)
-	if len(waiters) == 0 {
-		delete(m.completionWaiters, jobID)
-	}
-}
-
-func (m *Manager) notifyCompletion(jobID string, runErr error) {
-	m.mu.Lock()
-	waiters := m.completionWaiters[jobID]
-	delete(m.completionWaiters, jobID)
-	m.mu.Unlock()
-	for _, ch := range waiters {
-		ch <- runErr
-		close(ch)
-	}
-}
-
-// TriggerAndWait triggers one managed job and waits for the concrete Task to
-// reach a terminal state. Scheduler uses this so durable schedule completion
-// reflects execution, not merely successful admission to a worker queue.
-func (m *Manager) TriggerAndWait(ctx context.Context, jobID string) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	waiterID, result := m.registerCompletionWaiter(jobID)
-	if err := m.Trigger(ctx, jobID); err != nil {
-		m.unregisterCompletionWaiter(jobID, waiterID)
-		return err
-	}
-	select {
-	case err := <-result:
-		return err
-	case <-ctx.Done():
-		m.unregisterCompletionWaiter(jobID, waiterID)
-		return ctx.Err()
-	}
-}
-
-func (m *Manager) rollbackTrigger(ctx context.Context, job *Job, state JobState, lastRun time.Time, reason string) {
-	m.mu.Lock()
-	job.State = state
-	job.LastRun = lastRun
-	job.LastError = reason
-	nextRun := job.NextRun
-	repo := m.repo
-	m.mu.Unlock()
-	if repo != nil {
-		persistCtx := context.Background()
-		if ctx != nil {
-			persistCtx = context.WithoutCancel(ctx)
-		}
-		_ = repo.UpdateState(persistCtx, job.ID, state, reason, lastRun, nextRun)
-	}
-}
-
-// Cancel cancels the active Task attempt hierarchy before removing the durable job.
-func (m *Manager) Cancel(ctx context.Context, jobID string) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	m.mu.Lock()
-	job, exists := m.jobs[jobID]
-	if !exists {
-		m.mu.Unlock()
-		return fmt.Errorf("job %q not found", jobID)
-	}
-	job.State = StateCancelled
-	job.LastError = context.Canceled.Error()
-	cancels := m.detachActiveAttemptsLocked(jobID)
-	delete(m.jobs, jobID)
-	repo := m.repo
-	m.mu.Unlock()
-
-	cancelAttempts(cancels)
-	m.notifyCompletion(jobID, context.Canceled)
-	if repo != nil {
-		if err := repo.Delete(ctx, jobID); err != nil {
-			return err
+		m.wg.Add(1)
+		go m.recoveryLoop()
+		// Startup recovery is a bounded wake, not a caller responsibility.
+		select {
+		case m.recoveryWake <- struct{}{}:
+		default:
 		}
 	}
 	return nil
 }
 
-// CancelByOwner cancels active attempts and removes all jobs belonging to owner.
-func (m *Manager) CancelByOwner(owner string) int {
+func (m *Manager) Quiesce(context.Context) error {
 	m.mu.Lock()
-	cancelled := 0
-	var cancels []context.CancelFunc
-	var jobIDs []string
-	for id, j := range m.jobs {
-		if j.Owner == owner {
-			j.State = StateCancelled
-			j.LastError = context.Canceled.Error()
-			cancels = append(cancels, m.detachActiveAttemptsLocked(id)...)
-			jobIDs = append(jobIDs, id)
-			delete(m.jobs, id)
-			cancelled++
-		}
-	}
-	repo := m.repo
+	m.accepting = false
 	m.mu.Unlock()
-
-	cancelAttempts(cancels)
-	for _, jobID := range jobIDs {
-		m.notifyCompletion(jobID, context.Canceled)
-	}
-	if repo != nil {
-		_, _ = repo.DeleteByOwner(context.Background(), owner)
-	}
-	return cancelled
-}
-
-// LoadAndReconcile loads persisted active jobs and recovers missed executions.
-func (m *Manager) LoadAndReconcile(ctx context.Context) error {
-	m.mu.RLock()
-	repo := m.repo
-	m.mu.RUnlock()
-
-	if repo == nil {
-		return nil
-	}
-
-	activeJobs, err := repo.ListActive(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to list active jobs for reconciliation: %w", err)
-	}
-
-	now := time.Now().UTC()
-	var toTrigger []string
-
-	m.mu.Lock()
-	for _, j := range activeJobs {
-		if j.Run == nil && j.Type != "" {
-			if handler, ok := m.handlers[j.Type]; ok {
-				h := handler
-				jobRef := j
-				j.Run = func(runCtx context.Context) error {
-					return h(runCtx, jobRef)
-				}
-			}
-		}
-
-		if j.State == StateExecuting || j.State == StateTriggered {
-			// Job was interrupted mid-run
-			switch j.RecoveryPolicy {
-			case RecoveryRunImmediately:
-				j.State = StateRegistered
-				m.jobs[j.ID] = j
-				toTrigger = append(toTrigger, j.ID)
-			case RecoverySkip:
-				j.State = StateRegistered
-				m.jobs[j.ID] = j
-			case RecoveryRecalculate:
-				j.State = StateRegistered
-				m.jobs[j.ID] = j
-			default:
-				j.State = StateRegistered
-				m.jobs[j.ID] = j
-			}
-		} else {
-			// Registered / scheduled
-			if !j.NextRun.IsZero() && j.NextRun.Before(now) {
-				switch j.RecoveryPolicy {
-				case RecoveryRunImmediately:
-					m.jobs[j.ID] = j
-					toTrigger = append(toTrigger, j.ID)
-				default:
-					m.jobs[j.ID] = j
-				}
-			} else {
-				m.jobs[j.ID] = j
-			}
-		}
-	}
-	m.mu.Unlock()
-
-	for _, jobID := range toTrigger {
-		if err := m.Trigger(ctx, jobID); err != nil {
-			m.mu.Lock()
-			m.recoveryFailures++
-			m.recoveryErrors = append(m.recoveryErrors, fmt.Sprintf("%s: %v", jobID, err))
-			m.mu.Unlock()
-		}
-	}
-
-	if m.recoveryFailures > 0 {
-		return fmt.Errorf("reconciliation completed with %d failure(s)", m.recoveryFailures)
-	}
-
 	return nil
 }
 
-// Diagnostics returns aggregate job execution statistics.
-func (m *Manager) Diagnostics() Diagnostics {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+func (m *Manager) Drain(context.Context) error { return nil }
 
-	recErrs := make([]string, len(m.recoveryErrors))
-	copy(recErrs, m.recoveryErrors)
-
-	d := Diagnostics{
-		Total:            len(m.jobs),
-		RecoveryFailures: m.recoveryFailures,
-		RecoveryErrors:   recErrs,
-	}
-	for _, j := range m.jobs {
-		switch j.State {
-		case StateRegistered, StateScheduled:
-			d.Registered++
-		case StateTriggered, StateExecuting:
-			d.Running++
-		case StateCompleted:
-			d.Completed++
-		case StateFailed:
-			d.Failed++
-		case StateCancelled:
-			d.Cancelled++
-		}
-	}
-	return d
-}
-
-// Get returns the job by ID, if present.
-func (m *Manager) Get(jobID string) (Job, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	j, exists := m.jobs[jobID]
-	if !exists {
-		return Job{}, false
-	}
-	return *j, true
-}
-
-// ByOwner returns all jobs for a specific owner.
-func (m *Manager) ByOwner(owner string) []Job {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	var result []Job
-	for _, j := range m.jobs {
-		if j.Owner == owner {
-			result = append(result, *j)
-		}
-	}
-	return result
-}
-
-// All returns a slice of all registered jobs.
-func (m *Manager) All() []Job {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	result := make([]Job, 0, len(m.jobs))
-	for _, j := range m.jobs {
-		result = append(result, *j)
-	}
-	return result
-}
-
-// Name returns the component name for runtime.Component.
-func (m *Manager) Name() string {
-	return "jobs"
-}
-
-// Dependencies returns component prerequisites for runtime.Component.
-func (m *Manager) Dependencies() []string {
-	return []string{"workers"}
-}
-
-// Start reconciles active jobs on runtime startup.
-func (m *Manager) Start(ctx context.Context) error {
-	if err := m.LoadAndReconcile(ctx); err != nil {
-		return err
-	}
-	if _, err := m.CleanupTerminal(ctx); err != nil {
-		return err
-	}
-	m.mu.Lock()
-	if m.cleanupCancel != nil {
-		m.mu.Unlock()
-		return nil
-	}
-	cleanupCtx, cancel := context.WithCancel(ctx)
-	m.cleanupCancel = cancel
-	interval := m.cleanupInterval
-	m.cleanupWG.Add(1)
-	m.mu.Unlock()
-	go m.cleanupLoop(cleanupCtx, interval)
-	return nil
-}
-
-// Stop gracefully terminates job execution.
 func (m *Manager) Stop(ctx context.Context) error {
-	m.mu.Lock()
-	cancel := m.cleanupCancel
-	m.cleanupCancel = nil
-	m.mu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
+	_ = m.Quiesce(context.Background())
+	m.stopOnce.Do(func() {
+		m.mu.RLock()
+		stopCh := m.stopCh
+		cancel := m.baseCancel
+		m.mu.RUnlock()
+		if cancel != nil {
+			cancel()
+		}
+		if stopCh != nil {
+			close(stopCh)
+		}
+	})
 	done := make(chan struct{})
 	go func() {
-		m.cleanupWG.Wait()
+		m.wg.Wait()
 		close(done)
 	}()
 	select {
@@ -660,55 +185,580 @@ func (m *Manager) Stop(ctx context.Context) error {
 	}
 }
 
-func (m *Manager) cleanupLoop(ctx context.Context, interval time.Duration) {
-	defer m.cleanupWG.Done()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			_, _ = m.CleanupTerminal(ctx)
-		}
-	}
-}
-
-// CleanupTerminal removes terminal jobs whose retention window has elapsed.
-func (m *Manager) CleanupTerminal(ctx context.Context) (int, error) {
-	m.mu.Lock()
-	cutoff := time.Now().UTC().Add(-m.retention)
-	removed := 0
-	for id, completedAt := range m.terminalAt {
-		if !completedAt.After(cutoff) {
-			delete(m.jobs, id)
-			delete(m.terminalAt, id)
-			removed++
-		}
-	}
-	repo := m.repo
-	m.mu.Unlock()
-	if repo != nil {
-		persisted, err := repo.DeleteTerminalBefore(ctx, cutoff)
-		removed += persisted
-		if err != nil {
-			return removed, err
-		}
-	}
-	return removed, nil
-}
-
-// Health probes job manager health.
-func (m *Manager) Health(ctx context.Context) runtime.ComponentHealth {
+func (m *Manager) Health(context.Context) runtime.ComponentHealth {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-
-	if m.recoveryFailures > 0 {
-		return runtime.ComponentHealth{
-			Status:  runtime.HealthDegraded,
-			Details: fmt.Sprintf("%d job recovery failure(s): %s", m.recoveryFailures, strings.Join(m.recoveryErrors, "; ")),
-			Error:   fmt.Errorf("job reconciliation completed with %d failure(s)", m.recoveryFailures),
-		}
+	if !m.accepting {
+		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "job admission is closed"}
 	}
 	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
+}
+
+func (m *Manager) RegisterHandler(handlerType string, handler Handler) error {
+	if handlerType == "" || handler == nil {
+		return errors.New("job handler type and handler are required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.handlers[handlerType]; exists {
+		return fmt.Errorf("job handler already registered: %s", handlerType)
+	}
+	m.handlers[handlerType] = handler
+	return nil
+}
+
+func (m *Manager) Register(def JobDefinition) error {
+	if def.ID == "" || def.ScopeOwner == "" || def.QuotaOwner == "" || def.HandlerType == "" {
+		return errors.New("job definition id, scope owner, quota owner, and handler type are required")
+	}
+	if def.Pool == "" {
+		def.Pool = "general"
+	}
+	if def.Class == "" {
+		def.Class = string(tasks.PriorityNormal)
+	}
+	if def.Version <= 0 {
+		def.Version = 1
+	}
+	if !def.Enabled {
+		def.Enabled = true
+	}
+	def.Payload = append([]byte(nil), def.Payload...)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.definitions[def.ID]; exists {
+		return fmt.Errorf("job definition already registered: %s", def.ID)
+	}
+	if _, exists := m.handlers[def.HandlerType]; !exists {
+		return fmt.Errorf("unknown job handler: %s", def.HandlerType)
+	}
+	if err := m.store.SaveDefinition(context.Background(), &def); err != nil {
+		return fmt.Errorf("save job definition: %w", err)
+	}
+	m.definitions[def.ID] = def
+	return nil
+}
+
+// Trigger returns after admission. Completion belongs to the occurrence ticket.
+func (m *Manager) Trigger(ctx context.Context, jobID string) error {
+	_, _, err := m.SubmitOccurrence(ctx, jobID, "")
+	return err
+}
+
+// TryTrigger is retained as an admission-only spelling for timer producers.
+func (m *Manager) TryTrigger(ctx context.Context, jobID string) error { return m.Trigger(ctx, jobID) }
+
+// CancelByOwner fences queued work through the scope identity and closes the
+// durable record of every tracked occurrence under that owner.
+func (m *Manager) CancelByOwner(owner string) int {
+	m.mu.RLock()
+	client := m.client
+	store := m.store
+	definitions := make([]JobDefinition, 0, len(m.definitions))
+	for _, definition := range m.definitions {
+		definitions = append(definitions, definition)
+	}
+	type pendingCancel struct {
+		occurrenceID string
+		scopeOwner   string
+	}
+	var tracked []pendingCancel
+	for occID, tr := range m.tracked {
+		tracked = append(tracked, pendingCancel{occurrenceID: occID, scopeOwner: tr.def.ScopeOwner})
+	}
+	m.mu.RUnlock()
+	cancelled := 0
+	for _, definition := range definitions {
+		if definition.ScopeOwner == owner || definition.ScopeOwner == "plugin:"+owner {
+			cancelled += client.CancelScope(tasks.ScopeIdentity{Owner: definition.ScopeOwner, Generation: uint64(definition.Version)}, tasks.CauseScopeClosed)
+		}
+	}
+	for _, tr := range tracked {
+		if tr.scopeOwner == owner || tr.scopeOwner == "plugin:"+owner {
+			if err := store.CancelOccurrence(context.Background(), tr.occurrenceID, "owner cancelled"); err == nil {
+				cancelled++
+			}
+			m.untrack(tr.occurrenceID)
+		}
+	}
+	return cancelled
+}
+
+// CancelOccurrence durably cancels one occurrence and requests cancellation of its latest task.
+func (m *Manager) CancelOccurrence(ctx context.Context, occurrenceID, reason string) error {
+	m.mu.RLock()
+	var taskID tasks.TaskID
+	if tr, ok := m.tracked[occurrenceID]; ok {
+		taskID = tr.taskID
+	}
+	m.mu.RUnlock()
+	if err := m.store.CancelOccurrence(ctx, occurrenceID, reason); err != nil {
+		return err
+	}
+	if taskID != "" {
+		_, _ = m.client.Cancel(taskID, tasks.CauseUserCancel)
+	}
+	m.untrack(occurrenceID)
+	return nil
+}
+
+func (m *Manager) untrack(occurrenceID string) {
+	m.mu.Lock()
+	delete(m.tracked, occurrenceID)
+	m.mu.Unlock()
+}
+
+func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey string) (tasks.Ticket, string, error) {
+	m.mu.RLock()
+	if !m.accepting {
+		m.mu.RUnlock()
+		return nil, "", errors.New("job admission is closed")
+	}
+	definition, found := m.definitions[jobID]
+	handler := m.handlers[definition.HandlerType]
+	client := m.client
+	m.mu.RUnlock()
+	if !found {
+		return nil, "", fmt.Errorf("job definition not found: %s", jobID)
+	}
+	if handler == nil {
+		return nil, "", fmt.Errorf("unknown job handler: %s", definition.HandlerType)
+	}
+	if !definition.Enabled {
+		return nil, "", fmt.Errorf("job definition is disabled: %s", jobID)
+	}
+	sequence := m.sequence.Add(1)
+	if occurrenceKey == "" {
+		occurrenceKey = fmt.Sprintf("manual:%s:%d", jobID, sequence)
+	}
+	now := time.Now().UTC()
+	occurrenceID := tasks.OccurrenceID(fmt.Sprintf("occ:%s:%d:%d", jobID, now.UnixNano(), sequence))
+	taskID := tasks.TaskID(fmt.Sprintf("task:%s:1", occurrenceID))
+	occurrence := &JobOccurrence{ID: string(occurrenceID), JobID: jobID, OccurrenceKey: occurrenceKey, ScheduledFor: now, ReadyAt: now, State: OccurrenceReady}
+	if err := m.store.MaterializeOccurrence(ctx, occurrence); err != nil {
+		return nil, "", fmt.Errorf("materialize job occurrence: %w", err)
+	}
+	// Materialization is idempotent on occurrence_key and rewrites occurrence.ID
+	// to the canonical identity when this logical run already exists.
+	occurrenceID = tasks.OccurrenceID(occurrence.ID)
+	taskID = tasks.TaskID(fmt.Sprintf("task:%s:1", occurrenceID))
+	attempt, err := m.store.PrepareAttemptLease(ctx, occurrence.ID, string(taskID), leaseDurationFor(definition))
+	if err != nil {
+		return nil, "", fmt.Errorf("prepare job attempt: %w", err)
+	}
+	copyDef := definition
+	copyDef.Payload = append([]byte(nil), definition.Payload...)
+	ticket, err := client.Submit(ctx, tasks.WorkSpec{
+		ID:               taskID,
+		Scope:            tasks.ScopeIdentity{Owner: copyDef.ScopeOwner, Generation: uint64(copyDef.Version)},
+		QuotaOwner:       tasks.OwnerID(copyDef.QuotaOwner),
+		Pool:             tasks.PoolID(copyDef.Pool),
+		Class:            tasks.PriorityClass(copyDef.Class),
+		ExecutionTimeout: copyDef.Timeout,
+		HandlerRef:       copyDef.HandlerType,
+		Input:            append([]byte(nil), copyDef.Payload...),
+		Job:              &tasks.OccurrenceRef{JobID: copyDef.ID, OccurrenceID: occurrenceID, AttemptID: tasks.AttemptID(attempt.ID), LeaseEpoch: attempt.LeaseEpoch},
+		Handler:          func(runCtx context.Context) error { return handler(runCtx, copyDef) },
+		Commit: func(commitCtx context.Context, res tasks.TaskResult) error {
+			return m.store.CommitAttemptResult(commitCtx, attempt.ID, attempt.LeaseEpoch, attemptState(res.Outcome), nil, res.Failure.Message)
+		},
+	})
+	if err != nil {
+		m.persistAttemptResult(attempt, tasks.TaskResult{
+			TaskID: taskID, Outcome: tasks.OutcomeAbortedBeforeStart,
+			Cause: tasks.CausePersistenceFailure, FinishedAt: time.Now().UTC(),
+			Failure: tasks.FailureInfo{Message: err.Error()},
+		})
+		return nil, "", err
+	}
+	m.track(occurrence.ID, copyDef, handler, taskID)
+	m.enqueueRetry(retryItem{occurrenceID: occurrence.ID, ticket: ticket})
+	return ticket, occurrence.ID, nil
+}
+
+func (m *Manager) GetOccurrence(ctx context.Context, occurrenceID string) (*JobOccurrence, error) {
+	return m.store.GetOccurrence(ctx, occurrenceID)
+}
+func (m *Manager) OccurrenceByKey(ctx context.Context, occurrenceKey string) (*JobOccurrence, error) {
+	return m.store.GetOccurrenceByKey(ctx, occurrenceKey)
+}
+func (m *Manager) LatestAttempt(ctx context.Context, occurrenceID string) (*JobAttempt, error) {
+	return m.store.LatestAttempt(ctx, occurrenceID)
+}
+
+func (m *Manager) UpdateDefinition(ctx context.Context, def JobDefinition) error {
+	if def.ID == "" {
+		return errors.New("job definition id is required")
+	}
+	m.mu.RLock()
+	current, found := m.definitions[def.ID]
+	m.mu.RUnlock()
+	if !found {
+		return fmt.Errorf("job definition not found: %s", def.ID)
+	}
+	def.Revision = current.Revision
+	if err := m.store.UpdateDefinitionCAS(ctx, &def, current.Revision); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.definitions[def.ID] = def
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Manager) PruneOccurrences(ctx context.Context, jobID string, before time.Time, limit int) (int64, error) {
+	return m.store.DeleteTerminalOccurrences(ctx, jobID, before, limit)
+}
+
+func (m *Manager) track(occurrenceID string, def JobDefinition, handler Handler, taskID tasks.TaskID) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.tracked == nil {
+		m.tracked = make(map[string]*trackedOccurrence)
+	}
+	m.tracked[occurrenceID] = &trackedOccurrence{def: def, handler: handler, taskID: taskID}
+}
+
+// signalRecovery coalesces arbitrarily many recovery hints into one bounded wake.
+func (m *Manager) signalRecovery() {
+	m.mu.RLock()
+	wake := m.recoveryWake
+	m.mu.RUnlock()
+	if wake == nil {
+		return
+	}
+	select {
+	case wake <- struct{}{}:
+	default:
+	}
+}
+
+// enqueueRetry hands an attempt to the bounded monitor pool. Queue saturation
+// is never silent: durability remains authoritative and the recovery loop is
+// woken to converge the occurrence once the attempt becomes terminal.
+func (m *Manager) enqueueRetry(item retryItem) {
+	m.mu.RLock()
+	queue := m.retryQueue
+	m.mu.RUnlock()
+	if queue == nil {
+		m.signalRecovery()
+		return
+	}
+	select {
+	case queue <- item:
+	default:
+		m.signalRecovery()
+	}
+}
+
+func (m *Manager) retryLoop() {
+	defer m.wg.Done()
+	for {
+		m.mu.RLock()
+		queue := m.retryQueue
+		stopCh := m.stopCh
+		baseCtx := m.baseCtx
+		m.mu.RUnlock()
+		if queue == nil || stopCh == nil {
+			return
+		}
+		select {
+		case <-stopCh:
+			return
+		case item := <-queue:
+			m.watchAttempt(baseCtx, item)
+		}
+	}
+}
+
+// recoveryLoop owns startup/restart convergence and provides a low-frequency
+// safety scan. Overflow/error paths only wake this one bounded goroutine.
+func (m *Manager) recoveryLoop() {
+	defer m.wg.Done()
+	ticker := time.NewTicker(recoveryInterval)
+	defer ticker.Stop()
+	for {
+		m.mu.RLock()
+		stopCh := m.stopCh
+		baseCtx := m.baseCtx
+		wake := m.recoveryWake
+		m.mu.RUnlock()
+		if stopCh == nil || baseCtx == nil || wake == nil {
+			return
+		}
+		select {
+		case <-stopCh:
+			return
+		case <-baseCtx.Done():
+			return
+		case <-wake:
+			m.runRecoveryPass(baseCtx)
+		case <-ticker.C:
+			m.runRecoveryPass(baseCtx)
+		}
+	}
+}
+
+func (m *Manager) runRecoveryPass(baseCtx context.Context) {
+	ctx, cancel := context.WithTimeout(baseCtx, recoveryTimeout)
+	defer cancel()
+	_, _ = m.Recover(ctx, recoveryScanLimit)
+}
+
+func maxAttempts(policy JobRetryPolicy) int {
+	if policy.MaxAttempts <= 0 {
+		return 1
+	}
+	return policy.MaxAttempts
+}
+
+func retryDelay(policy JobRetryPolicy, attemptsMade int) time.Duration {
+	if policy.InitialDelay <= 0 {
+		return 0
+	}
+	mult := policy.BackoffMultiplier
+	if mult <= 0 {
+		mult = 1
+	}
+	delay := float64(policy.InitialDelay)
+	for i := 1; i < attemptsMade; i++ {
+		delay *= mult
+	}
+	if policy.MaxDelay > 0 && delay > float64(policy.MaxDelay) {
+		delay = float64(policy.MaxDelay)
+	}
+	return time.Duration(delay)
+}
+
+func leaseDurationFor(def JobDefinition) time.Duration {
+	leaseDuration := def.Timeout + time.Minute
+	if leaseDuration < time.Minute {
+		leaseDuration = time.Minute
+	}
+	return leaseDuration
+}
+
+// watchAttempt waits for one attempt's ticket and drives the retry protocol.
+func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
+	m.mu.RLock()
+	stopCh := m.stopCh
+	tr, tracked := m.tracked[item.occurrenceID]
+	m.mu.RUnlock()
+	if !tracked {
+		return
+	}
+	res, werr := item.ticket.Wait(baseCtx)
+	if werr != nil {
+		return // Manager is stopping.
+	}
+	select {
+	case <-stopCh:
+		return
+	default:
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	occ, err := m.store.GetOccurrence(ctx, item.occurrenceID)
+	if err == nil {
+		switch occ.State {
+		case OccurrenceCancelled, OccurrenceCompleted, OccurrenceFailed:
+			m.untrack(item.occurrenceID)
+			return
+		}
+	} else {
+		m.signalRecovery()
+	}
+	if res.Outcome == tasks.OutcomeCompleted {
+		m.untrack(item.occurrenceID)
+		return
+	}
+	switch res.Outcome {
+	case tasks.OutcomeFailed, tasks.OutcomeTimedOut, tasks.OutcomeCancelled,
+		tasks.OutcomePanic, tasks.OutcomeAbortedBeforeStart:
+		// Retryable physical outcomes.
+	default:
+		m.untrack(item.occurrenceID)
+		m.signalRecovery()
+		return
+	}
+	attempts, err := m.store.CountAttempts(ctx, item.occurrenceID)
+	if err != nil {
+		m.signalRecovery()
+		return
+	}
+	if attempts >= maxAttempts(tr.def.RetryPolicy) {
+		if err := m.store.FinalizeOccurrence(ctx, item.occurrenceID, OccurrenceFailed); err != nil {
+			m.signalRecovery()
+			return
+		}
+		m.untrack(item.occurrenceID)
+		return
+	}
+	if delay := retryDelay(tr.def.RetryPolicy, attempts); delay > 0 {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-stopCh:
+			return
+		case <-baseCtx.Done():
+			return
+		case <-timer.C:
+		}
+	}
+	// Re-read after backoff: cancellation wins over retry.
+	if occ2, err := m.store.GetOccurrence(ctx, item.occurrenceID); err != nil {
+		m.untrack(item.occurrenceID)
+		m.signalRecovery()
+		return
+	} else if occ2.State == OccurrenceCancelled {
+		m.untrack(item.occurrenceID)
+		return
+	}
+	if err := m.driveAttempt(ctx, item.occurrenceID, tr.def, tr.handler); err != nil {
+		m.untrack(item.occurrenceID)
+		m.signalRecovery()
+	}
+}
+
+// driveAttempt prepares the next attempt lease and submits its task, then re-arms the monitor.
+func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def JobDefinition, handler Handler) error {
+	attempts, err := m.store.CountAttempts(ctx, occurrenceID)
+	if err != nil {
+		return err
+	}
+	nextTaskID := tasks.TaskID(fmt.Sprintf("task:%s:%d", occurrenceID, attempts+1))
+	attempt, err := m.store.PrepareAttemptLease(ctx, occurrenceID, string(nextTaskID), leaseDurationFor(def))
+	if err != nil {
+		return err
+	}
+	copyDef := def
+	copyDef.Payload = append([]byte(nil), def.Payload...)
+	commit := func(commitCtx context.Context, res tasks.TaskResult) error {
+		return m.store.CommitAttemptResult(commitCtx, attempt.ID, attempt.LeaseEpoch, attemptState(res.Outcome), nil, res.Failure.Message)
+	}
+	ticket, err := m.client.Submit(ctx, tasks.WorkSpec{
+		ID:               nextTaskID,
+		Scope:            tasks.ScopeIdentity{Owner: copyDef.ScopeOwner, Generation: uint64(copyDef.Version)},
+		QuotaOwner:       tasks.OwnerID(copyDef.QuotaOwner),
+		Pool:             tasks.PoolID(copyDef.Pool),
+		Class:            tasks.PriorityClass(copyDef.Class),
+		ExecutionTimeout: copyDef.Timeout,
+		HandlerRef:       copyDef.HandlerType,
+		Input:            append([]byte(nil), copyDef.Payload...),
+		Job:              &tasks.OccurrenceRef{JobID: copyDef.ID, OccurrenceID: tasks.OccurrenceID(occurrenceID), AttemptID: tasks.AttemptID(attempt.ID), LeaseEpoch: attempt.LeaseEpoch},
+		Handler:          func(runCtx context.Context) error { return handler(runCtx, copyDef) },
+		Commit:           commit,
+	})
+	if err != nil {
+		abortCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		commitErr := m.store.CommitAttemptResult(abortCtx, attempt.ID, attempt.LeaseEpoch, AttemptAbortedBeforeStart, nil, err.Error())
+		cancel()
+		m.signalRecovery()
+		if commitErr != nil {
+			return fmt.Errorf("submit retry attempt: %w (persist abort: %v)", err, commitErr)
+		}
+		return err
+	}
+	m.track(occurrenceID, copyDef, handler, nextTaskID)
+	m.enqueueRetry(retryItem{occurrenceID: occurrenceID, ticket: ticket})
+	return nil
+}
+
+// Recover scans unresolved occurrences and converges each one. Repeated calls converge; limit bounds each scan.
+func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error) {
+	var report RecoverReport
+	unresolved, err := m.store.ListUnresolvedOccurrences(ctx, limit)
+	if err != nil {
+		return report, err
+	}
+	for _, occ := range unresolved {
+		report.Scanned++
+		m.mu.RLock()
+		def, found := m.definitions[occ.JobID]
+		handler := m.handlers[def.HandlerType]
+		m.mu.RUnlock()
+		if !found || !def.Enabled || handler == nil {
+			report.Orphaned++
+			continue
+		}
+		latest, err := m.store.LatestAttempt(ctx, occ.ID)
+		if err != nil {
+			report.Stale++
+			continue
+		}
+		switch latest.State {
+		case AttemptCompleted, AttemptFailed, AttemptTimedOut, AttemptCancelled, AttemptAbortedBeforeStart:
+		default:
+			report.Stale++
+			continue
+		}
+		attempts, err := m.store.CountAttempts(ctx, occ.ID)
+		if err != nil {
+			report.Stale++
+			continue
+		}
+		if attempts >= maxAttempts(def.RetryPolicy) {
+			if ferr := m.store.FinalizeOccurrence(ctx, occ.ID, OccurrenceFailed); ferr != nil {
+				report.Stale++
+				continue
+			}
+			m.untrack(occ.ID)
+			report.Finalized++
+			continue
+		}
+		if derr := m.driveAttempt(ctx, occ.ID, def, handler); derr != nil {
+			report.Stale++
+			continue
+		}
+		report.Redriven++
+	}
+	return report, nil
+}
+
+// persistAttemptResult is used only when a lease was created but TaskEngine
+// admission failed. Persist synchronously under a hard timeout: this path is
+// already an error path, and bounded caller backpressure is preferable to an
+// unbounded rescue goroutine or an occurrence left permanently dispatched.
+func (m *Manager) persistAttemptResult(attempt *JobAttempt, result tasks.TaskResult) {
+	if attempt == nil || m.store == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	err := m.store.CommitAttemptResult(ctx, attempt.ID, attempt.LeaseEpoch, attemptState(result.Outcome), nil, result.Failure.Message)
+	cancel()
+	// Whether commit succeeded or became uncertain, wake durable recovery. A
+	// successful abort is immediately retryable; an uncertain one is revisited
+	// by the periodic safety scan.
+	_ = err
+	m.signalRecovery()
+}
+
+func attemptState(outcome tasks.Outcome) AttemptState {
+	switch outcome {
+	case tasks.OutcomeCompleted:
+		return AttemptCompleted
+	case tasks.OutcomeTimedOut:
+		return AttemptTimedOut
+	case tasks.OutcomeCancelled:
+		return AttemptCancelled
+	case tasks.OutcomeAbortedBeforeStart:
+		return AttemptAbortedBeforeStart
+	default:
+		return AttemptFailed
+	}
+}
+
+func (m *Manager) Definition(id string) (JobDefinition, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	def, ok := m.definitions[id]
+	def.Payload = append([]byte(nil), def.Payload...)
+	return def, ok
+}
+
+func (m *Manager) Diagnostics() Diagnostics {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return Diagnostics{Definitions: len(m.definitions), Handlers: len(m.handlers), Accepting: m.accepting}
 }

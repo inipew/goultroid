@@ -34,7 +34,7 @@ func (e *Engine) authorizeJobAccess(ctx context.Context, requesterID, chatID, jo
 
 // CancelScoped is the only scheduler cancellation path exposed to plugins.
 // It binds requester identity and chat scope to the durable job ID before the
-// existing cancellation path removes the row and stops local workers.
+// existing cancellation path removes the row and stops local task execution.
 func (e *Engine) CancelScoped(ctx context.Context, requesterID, chatID, jobID int64) error {
 	if _, err := e.authorizeJobAccess(ctx, requesterID, chatID, jobID); err != nil {
 		return err

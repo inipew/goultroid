@@ -215,3 +215,38 @@ func TestScope_TrackWebSocket(t *testing.T) {
 		t.Fatalf("expected 0 active/leaked resources after close, got: %+v", snapAfter)
 	}
 }
+
+func TestScope_GoroutineBudgetEnforcement(t *testing.T) {
+	scope := NewScope(context.Background(), "plugin:budget_test")
+	scope.SetMaxGoroutines(2)
+
+	release := make(chan struct{})
+	started1 := make(chan struct{})
+	started2 := make(chan struct{})
+
+	if err := scope.Go(func(ctx context.Context) {
+		close(started1)
+		<-release
+	}); err != nil {
+		t.Fatalf("unexpected error on goroutine 1: %v", err)
+	}
+
+	if err := scope.Go(func(ctx context.Context) {
+		close(started2)
+		<-release
+	}); err != nil {
+		t.Fatalf("unexpected error on goroutine 2: %v", err)
+	}
+
+	<-started1
+	<-started2
+
+	// Third goroutine should exceed budget
+	err := scope.Go(func(ctx context.Context) {})
+	if err == nil {
+		t.Fatal("expected goroutine budget error, got nil")
+	}
+
+	close(release)
+	_ = scope.Close(context.Background())
+}

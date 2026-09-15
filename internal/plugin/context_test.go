@@ -8,6 +8,7 @@ import (
 	"github.com/inipew/goultroid/internal/platform/network"
 	"github.com/inipew/goultroid/internal/platform/process"
 	"github.com/inipew/goultroid/internal/platform/storage"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 func TestPluginContext_CapabilityEnforcement(t *testing.T) {
@@ -128,5 +129,134 @@ func TestPluginContext_StorageCapability(t *testing.T) {
 	_, err = ctxUnpriv.Storage()
 	if !errors.Is(err, ErrCapabilityDenied) {
 		t.Fatalf("expected ErrCapabilityDenied for unprivileged plugin, got %v", err)
+	}
+}
+
+type dummyTaskClient struct {
+	tasks.Client
+}
+
+func TestPluginContext_TaskClientCapability(t *testing.T) {
+	gate := NewCapabilityGate()
+	_ = gate.RegisterManifest(Manifest{
+		ID:           "worker_plugin",
+		Name:         "Worker Plugin",
+		Version:      "1.0.0",
+		Capabilities: []string{CapTasks},
+	})
+
+	client := &dummyTaskClient{}
+	ctx := NewPluginContext(context.Background(), ContextConfig{
+		Owner:      "worker_plugin",
+		Scope:      NewScope(context.Background(), "worker_plugin"),
+		Gate:       gate,
+		TaskClient: client,
+	})
+
+	tc, err := ctx.TaskClient()
+	if err != nil {
+		t.Fatalf("expected TaskClient to succeed, got %v", err)
+	}
+	if tc == client {
+		t.Fatal("expected plugin-scoped task client")
+	}
+
+	// Without CapTasks
+	_ = gate.RegisterManifest(Manifest{
+		ID:           "no_tasks",
+		Name:         "No Tasks",
+		Version:      "1.0.0",
+		Capabilities: []string{},
+	})
+	ctxDenied := NewPluginContext(context.Background(), ContextConfig{
+		Owner:      "no_tasks",
+		Scope:      NewScope(context.Background(), "no_tasks"),
+		Gate:       gate,
+		TaskClient: client,
+	})
+	_, err = ctxDenied.TaskClient()
+	if !errors.Is(err, ErrCapabilityDenied) {
+		t.Fatalf("expected ErrCapabilityDenied, got %v", err)
+	}
+}
+
+type mockTaskClient struct {
+	tasks.Client
+	snapshots map[tasks.TaskID]tasks.TaskSnapshot
+	cancelled map[tasks.TaskID]bool
+}
+
+func (m *mockTaskClient) Snapshot(id tasks.TaskID) (tasks.TaskSnapshot, bool) {
+	s, ok := m.snapshots[id]
+	return s, ok
+}
+
+func (m *mockTaskClient) Cancel(id tasks.TaskID, cause tasks.Cause) (tasks.CancelReceipt, error) {
+	if m.cancelled == nil {
+		m.cancelled = make(map[tasks.TaskID]bool)
+	}
+	m.cancelled[id] = true
+	return tasks.CancelReceipt{TaskID: id, Accepted: true, Reason: cause}, nil
+}
+
+func TestPluginContext_ScopedTaskClient_ScopeIsolation(t *testing.T) {
+	gate := NewCapabilityGate()
+	_ = gate.RegisterManifest(Manifest{
+		ID:           "plugin_a",
+		Name:         "Plugin A",
+		Version:      "1.0.0",
+		Capabilities: []string{CapTasks},
+	})
+
+	scopeA := NewScope(context.Background(), "plugin_a")
+	scopeB := NewScope(context.Background(), "plugin_b")
+
+	client := &mockTaskClient{
+		snapshots: map[tasks.TaskID]tasks.TaskSnapshot{
+			"task_a": {
+				ID:    "task_a",
+				Scope: tasks.ScopeIdentity{Owner: "plugin:plugin_a", Generation: scopeA.Generation()},
+			},
+			"task_b": {
+				ID:    "task_b",
+				Scope: tasks.ScopeIdentity{Owner: "plugin:plugin_b", Generation: scopeB.Generation()},
+			},
+		},
+	}
+
+	ctx := NewPluginContext(context.Background(), ContextConfig{
+		Owner:      "plugin_a",
+		Scope:      scopeA,
+		Gate:       gate,
+		TaskClient: client,
+	})
+
+	tc, err := ctx.TaskClient()
+	if err != nil {
+		t.Fatalf("failed to get task client: %v", err)
+	}
+
+	// 1. Cancel own task (task_a) should succeed
+	receipt, err := tc.Cancel("task_a", tasks.CauseUserCancel)
+	if err != nil || !receipt.Accepted {
+		t.Fatalf("expected cancel own task to succeed, got receipt=%+v, err=%v", receipt, err)
+	}
+	if !client.cancelled["task_a"] {
+		t.Errorf("expected task_a to be recorded as cancelled in backend")
+	}
+
+	// 2. Cancel foreign task (task_b) should be rejected
+	receiptB, errB := tc.Cancel("task_b", tasks.CauseUserCancel)
+	if !errors.Is(errB, tasks.ErrTaskNotFound) {
+		t.Fatalf("expected ErrTaskNotFound when cancelling foreign task, got receipt=%+v, err=%v", receiptB, errB)
+	}
+	if client.cancelled["task_b"] {
+		t.Errorf("foreign task_b must not be cancelled by plugin_a")
+	}
+
+	// 3. Snapshot foreign task should return false
+	_, ok := tc.Snapshot("task_b")
+	if ok {
+		t.Errorf("foreign task snapshot must not be visible to plugin_a")
 	}
 }

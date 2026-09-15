@@ -8,6 +8,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
 
@@ -128,17 +129,13 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	}
 
 	if !isCmd {
-		for _, h := range asyncHandlers {
-			_ = d.safeExecuteInterceptor(ctx, h, e, msg, isCmd, cmdName)
-		}
+		d.dispatchAsyncHandlers(ctx, asyncHandlers, e, msg, isCmd, cmdName)
 		return nil
 	}
 
 	cmd, exists := d.router.Find(parsed.Name)
 	if !exists {
-		for _, h := range asyncHandlers {
-			_ = d.safeExecuteInterceptor(ctx, h, e, msg, isCmd, cmdName)
-		}
+		d.dispatchAsyncHandlers(ctx, asyncHandlers, e, msg, isCmd, cmdName)
 		return nil
 	}
 
@@ -219,10 +216,38 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		)
 	}
 
-	for _, h := range asyncHandlers {
-		_ = d.safeExecuteInterceptor(ctx, h, e, msg, isCmd, cmdName)
-	}
+	d.dispatchAsyncHandlers(ctx, asyncHandlers, e, msg, isCmd, cmdName)
 	return nil
+}
+
+func (d *Dispatcher) dispatchAsyncHandlers(ctx context.Context, handlers []MessageHandler, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) {
+	if len(handlers) == 0 {
+		return
+	}
+	client := d.taskClient()
+	if client == nil {
+		d.logger.Warn("observer execution unavailable", zap.Error(ErrTasksNotConfigured))
+		return
+	}
+	d.inFlight.Add(1)
+	_, err := client.Submit(ctx, tasks.WorkSpec{
+		ID:               tasks.TaskID(fmt.Sprintf("observer:%d:%d", extractChatIDFromPeer(msg.PeerID), msg.ID)),
+		QuotaOwner:       "telegram:observability",
+		Pool:             "general",
+		Class:            tasks.PriorityBackground,
+		ExecutionTimeout: 10 * time.Second,
+		Handler: func(taskCtx context.Context) error {
+			for _, handler := range handlers {
+				_ = d.safeExecuteInterceptor(taskCtx, handler, e, msg, isCmd, cmdName)
+			}
+			return nil
+		},
+		OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
+	})
+	if err != nil {
+		d.inFlight.Done()
+		d.logger.Debug("observer admission rejected", zap.Error(err))
+	}
 }
 
 func (d *Dispatcher) resolveDispatchChat(e tg.Entities, msg *tg.Message) *core.Chat {

@@ -24,8 +24,6 @@ import (
 	"github.com/inipew/goultroid/internal/services/storage"
 	userlogSvc "github.com/inipew/goultroid/internal/services/userlog"
 	"github.com/inipew/goultroid/internal/settings"
-	"github.com/inipew/goultroid/internal/tasks"
-	"github.com/inipew/goultroid/internal/workers"
 	"go.uber.org/zap"
 )
 
@@ -74,8 +72,6 @@ type PlatformRuntime struct {
 	Secrets   *secret.Manager
 	Audit     *audit.Service
 	Resources *resource.Manager
-	Workers   *workers.Manager
-	Tasks     *tasks.Manager
 	Jobs      *jobs.Manager
 }
 

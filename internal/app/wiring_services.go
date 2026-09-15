@@ -34,8 +34,8 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 	schedRepo := scheduler.NewSQLiteRepository(core.db.DB)
 	schedEngine := scheduler.NewEngine(schedRepo, tg.client.Service, core.router, core.perms, logger)
 	schedEngine.SetExecutor(tg.dispatcher.Executor())
-	if core.workerManager != nil {
-		schedEngine.SetWorkers(core.workerManager, core.taskManager)
+	if core.taskEngine != nil {
+		schedEngine.SetTasks(core.taskEngine)
 	}
 	if core.jobsManager != nil {
 		schedEngine.SetJobsManager(core.jobsManager)

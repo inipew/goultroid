@@ -17,7 +17,6 @@ const (
 	CapStorageWrite = "storage.write"
 
 	CapScheduler = "scheduler"
-	CapWorkers   = "workers"
 	CapEvents    = "events"
 	CapTasks     = "tasks"
 	CapJobs      = "jobs"
