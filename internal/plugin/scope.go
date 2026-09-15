@@ -21,7 +21,9 @@ type Resource = resource.Resource
 const DefaultMaxScopeGoroutines = 64
 
 // Scope owns cancellable plugin work and cleanup callbacks. It is safe for
-// concurrent use and can be closed repeatedly.
+// concurrent use and can be closed repeatedly. Cancellation hooks run before
+// the join phase so external execution domains (TaskEngine, jobs, etc.) can be
+// fenced before resources are released.
 type Scope struct {
 	owner      string
 	generation uint64
@@ -31,6 +33,10 @@ type Scope struct {
 
 	mu               sync.Mutex
 	closed           bool
+	closeStarted     bool
+	closeDone        chan struct{}
+	closeErr         error
+	cancelHooks      []func()
 	cleanups         []func()
 	resources        map[string]Resource
 	activeGoroutines int
@@ -61,6 +67,7 @@ func NewScopeWithManager(parent context.Context, owner string, manager *resource
 		manager:       manager,
 		maxGoroutines: DefaultMaxScopeGoroutines,
 		resources:     make(map[string]Resource),
+		closeDone:     make(chan struct{}),
 	}
 }
 
@@ -82,8 +89,10 @@ func (s *Scope) SetMaxGoroutines(max int) {
 	s.maxGoroutines = max
 }
 
-// Go starts work with the scope context, tracks the goroutine in the ResourceManager,
-// and waits for it during Close. It enforces the maximum goroutine budget.
+// Go starts long-lived/service work with the scope context, tracks the
+// goroutine in the ResourceManager, and joins it during Close. Finite units of
+// execution should use TaskClient instead so admission, fairness and accounting
+// remain centralized in TaskEngine.
 func (s *Scope) Go(fn func(context.Context)) error {
 	if fn == nil {
 		return errors.New("scope goroutine cannot be nil")
@@ -129,6 +138,23 @@ func (s *Scope) Go(fn func(context.Context)) error {
 		}()
 		fn(s.ctx)
 	}()
+	return nil
+}
+
+// OnCancel registers a hook that executes exactly once immediately after the
+// scope context is cancelled and before Close waits for children. This is used
+// to fence external execution domains that are not children of s.ctx after
+// admission (for example accepted TaskEngine work).
+func (s *Scope) OnCancel(fn func()) error {
+	if fn == nil {
+		return errors.New("scope cancel hook cannot be nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errors.New("plugin scope is closed")
+	}
+	s.cancelHooks = append(s.cancelHooks, fn)
 	return nil
 }
 
@@ -250,61 +276,84 @@ func (s *Scope) Resources() []Resource {
 	return resources
 }
 
-// Close cancels child work, waits up to ctx's deadline, runs cleanup callbacks in
-// reverse order, and detects residual resource leaks.
+// Close cancels child/external work exactly once, joins it under the caller's
+// deadline, runs cleanup callbacks, and detects residual resource leaks.
+// If one caller times out, later callers join the same teardown instead of
+// spawning another waiter or reporting a false success.
 func (s *Scope) Close(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
 	s.mu.Lock()
-	if s.closed {
+	if s.closeStarted {
+		done := s.closeDone
 		s.mu.Unlock()
-		return nil
+		select {
+		case <-done:
+			s.mu.Lock()
+			err := s.closeErr
+			s.mu.Unlock()
+			return err
+		case <-ctx.Done():
+			return fmt.Errorf("close plugin scope %s: %w", s.owner, ctx.Err())
+		}
 	}
+	s.closeStarted = true
 	s.closed = true
+	cancelHooks := append([]func(){}, s.cancelHooks...)
+	s.cancelHooks = nil
 	cleanups := append([]func(){}, s.cleanups...)
 	s.cleanups = nil
 	mgr := s.manager
+	done := s.closeDone
 	s.mu.Unlock()
 
 	s.cancel()
-	done := make(chan struct{})
-	go func() {
-		s.wg.Wait()
-		close(done)
-	}()
-
-	var waitErr error
-	select {
-	case <-done:
-	case <-ctx.Done():
-		waitErr = ctx.Err()
-	}
-
-	for i := len(cleanups) - 1; i >= 0; i-- {
+	for i := len(cancelHooks) - 1; i >= 0; i-- {
 		func() {
 			defer func() { _ = recover() }()
-			cleanups[i]()
+			cancelHooks[i]()
 		}()
 	}
 
-	if mgr != nil {
-		leaks := mgr.DetectLeaks(s.owner)
-		if len(leaks) > 0 {
-			var leakIDs []string
-			for _, l := range leaks {
-				leakIDs = append(leakIDs, l.ID)
-			}
-			leakErr := fmt.Errorf("plugin scope %s leaked %d resource(s): %v", s.owner, len(leaks), leakIDs)
-			if waitErr != nil {
-				return fmt.Errorf("%w; %v", waitErr, leakErr)
-			}
-			return leakErr
-		}
-	}
+	// Only the first Close owns this waiter. It may outlive the first caller's
+	// deadline, but repeated Close calls share it and therefore cannot leak one
+	// goroutine per timeout.
+	go func() {
+		s.wg.Wait()
 
-	if waitErr != nil {
-		return fmt.Errorf("close plugin scope %s: %w", s.owner, waitErr)
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			func() {
+				defer func() { _ = recover() }()
+				cleanups[i]()
+			}()
+		}
+
+		var finalErr error
+		if mgr != nil {
+			leaks := mgr.DetectLeaks(s.owner)
+			if len(leaks) > 0 {
+				leakIDs := make([]string, 0, len(leaks))
+				for _, l := range leaks {
+					leakIDs = append(leakIDs, l.ID)
+				}
+				finalErr = fmt.Errorf("plugin scope %s leaked %d resource(s): %v", s.owner, len(leaks), leakIDs)
+			}
+		}
+		s.mu.Lock()
+		s.closeErr = finalErr
+		s.mu.Unlock()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		s.mu.Lock()
+		err := s.closeErr
+		s.mu.Unlock()
+		return err
+	case <-ctx.Done():
+		return fmt.Errorf("close plugin scope %s: %w", s.owner, ctx.Err())
 	}
-	return nil
 }
