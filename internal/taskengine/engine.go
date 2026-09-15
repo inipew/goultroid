@@ -34,6 +34,24 @@ type Config struct {
 	DecisionTimeout     time.Duration
 	// InboxCapacity bounds the single-writer control inbox. Zero means default.
 	InboxCapacity int
+	// MaxRetainedBytes caps admitted-but-unevicted memory (payload + bounded
+	// output + failure text + per-record overhead). Zero means default.
+	// Admission is rejected with tasks.ErrRetainedBudget past the cap, so a
+	// stalled downstream (Phase C CommitPending) becomes backpressure, not OOM.
+	MaxRetainedBytes int64
+	// MaxOutputBytes caps a single stored TaskResult.Output. Zero = default.
+	MaxOutputBytes int64
+	// MaxFailureBytes caps one stored failure message/detail. Zero = default.
+	MaxFailureBytes int
+	// DeliveryConcurrency is the fixed completion-callback worker count.
+	// Zero means default.
+	DeliveryConcurrency int
+	// DeliveryQueueCap bounds pending completion callbacks. Zero means
+	// max(ResultCapacity, 256).
+	DeliveryQueueCap int
+	// TerminalTTL evicts terminal records older than the TTL on the sweep
+	// path. Zero disables TTL eviction (count/byte eviction still applies).
+	TerminalTTL time.Duration
 }
 
 // DefaultConfig provides standard execution coordinator settings.
@@ -49,6 +67,10 @@ var DefaultConfig = Config{
 	MaxTerminalRetained: 1000,
 	DecisionTimeout:     5 * time.Second,
 	InboxCapacity:       2048,
+	MaxRetainedBytes:    DefaultMaxRetainedBytes,
+	MaxOutputBytes:      DefaultMaxOutputBytes,
+	MaxFailureBytes:     DefaultMaxFailureBytes,
+	DeliveryConcurrency: DefaultDeliveryConcurrency,
 }
 
 type workerAssignment struct {
@@ -70,6 +92,10 @@ type taskRecord struct {
 	cancelFunc      context.CancelFunc
 	cancelRequested bool
 	cancelReason    tasks.Cause
+
+	// retainedBytes is the accountable memory owned by this record
+	// (payload + bounded output + failure text + overhead), released at eviction.
+	retainedBytes int64
 
 	admittedAt time.Time
 	queuedAt   time.Time
@@ -139,6 +165,12 @@ type engineStats struct {
 	activeTasks     int
 	accepting       bool
 	quiesced        bool
+	retainedBytes   int64
+	retainedCap     int64
+	terminalCount   int
+	deliveryQueued  int
+	deliveryCap     int
+	deliveryFailed  int64
 }
 
 // Engine coordinates admission, fairness, physical worker permits, result credits, and lifecycles.
@@ -170,11 +202,19 @@ type Engine struct {
 	terminalOrder       []tasks.TaskID
 	maxTerminalRetained int
 
+	// ---- runLoop-owned memory accounting (Phase B) ----
+	retainedBytes    int64
+	maxRetainedBytes int64
+	maxOutputBytes   int64
+	maxFailureBytes  int
+	terminalTTL      time.Duration
+
 	decisionTimeout time.Duration
 	inboxCap        int
 
 	// ---- lifecycle (mu-protected) ----
 	inbox       chan engineRequest
+	delivery    *completionDelivery
 	accepting   bool
 	quiesced    bool
 	drained     bool
@@ -195,6 +235,24 @@ func ValidateConfig(cfg Config) error {
 	}
 	if cfg.InboxCapacity < 0 {
 		return errors.New("taskengine: InboxCapacity cannot be negative")
+	}
+	if cfg.MaxRetainedBytes < 0 {
+		return errors.New("taskengine: MaxRetainedBytes cannot be negative")
+	}
+	if cfg.MaxOutputBytes < 0 {
+		return errors.New("taskengine: MaxOutputBytes cannot be negative")
+	}
+	if cfg.MaxFailureBytes < 0 {
+		return errors.New("taskengine: MaxFailureBytes cannot be negative")
+	}
+	if cfg.DeliveryConcurrency < 0 {
+		return errors.New("taskengine: DeliveryConcurrency cannot be negative")
+	}
+	if cfg.DeliveryQueueCap < 0 {
+		return errors.New("taskengine: DeliveryQueueCap cannot be negative")
+	}
+	if cfg.TerminalTTL < 0 {
+		return errors.New("taskengine: TerminalTTL cannot be negative")
 	}
 	for poolID, pcfg := range cfg.Pools {
 		if poolID == "" {
@@ -253,6 +311,30 @@ func NewEngine(cfg Config) *Engine {
 		}
 	}
 
+	maxRetained := cfg.MaxRetainedBytes
+	if maxRetained <= 0 {
+		maxRetained = DefaultMaxRetainedBytes
+	}
+	maxOutput := cfg.MaxOutputBytes
+	if maxOutput <= 0 {
+		maxOutput = DefaultMaxOutputBytes
+	}
+	maxFailure := cfg.MaxFailureBytes
+	if maxFailure <= 0 {
+		maxFailure = DefaultMaxFailureBytes
+	}
+	deliveryWorkers := cfg.DeliveryConcurrency
+	if deliveryWorkers <= 0 {
+		deliveryWorkers = DefaultDeliveryConcurrency
+	}
+	deliveryCap := cfg.DeliveryQueueCap
+	if deliveryCap <= 0 {
+		deliveryCap = cfg.ResultCapacity
+		if deliveryCap < 256 {
+			deliveryCap = 256
+		}
+	}
+
 	mailboxes := make(map[tasks.PoolID][]chan workerAssignment, len(cfg.Pools))
 	for poolID, pcfg := range cfg.Pools {
 		if pcfg.Concurrency <= 0 {
@@ -287,8 +369,13 @@ func NewEngine(cfg Config) *Engine {
 		registry:            make(map[tasks.TaskID]*taskRecord),
 		cancelledScopes:     make(map[tasks.ScopeIdentity]tasks.Cause),
 		maxTerminalRetained: maxTerminal,
+		maxRetainedBytes:    maxRetained,
+		maxOutputBytes:      maxOutput,
+		maxFailureBytes:     maxFailure,
+		terminalTTL:         cfg.TerminalTTL,
 		decisionTimeout:     decisionTimeout,
 		inboxCap:            inboxCap,
+		delivery:            newCompletionDelivery(deliveryWorkers, deliveryCap),
 		drainDone:           make(chan struct{}),
 	}
 }
@@ -316,6 +403,11 @@ func (e *Engine) Start(ctx context.Context) error {
 	inbox := e.inbox
 	rootCtx := e.rootCtx
 	e.runStarted = true
+	if e.delivery == nil {
+		e.delivery = newCompletionDelivery(DefaultDeliveryConcurrency, 256)
+	}
+	delivery := e.delivery
+	delivery.start()
 
 	go e.runLoop(rootCtx, inbox)
 	for poolID, mboxes := range e.workerMailboxes {
@@ -406,6 +498,12 @@ func (e *Engine) handleRequest(ctx context.Context, req engineRequest) {
 			activeTasks:     e.activeTasks,
 			accepting:       e.lifecycleAccepting(),
 			quiesced:        e.lifecycleQuiesced(),
+			retainedBytes:   e.retainedBytes,
+			retainedCap:     e.maxRetainedBytes,
+			terminalCount:   len(e.terminalOrder),
+			deliveryQueued:  e.delivery.queueLen(),
+			deliveryCap:     e.delivery.queueCap(),
+			deliveryFailed:  e.delivery.fallbackCount(),
 		}}
 	case opWorkerIdle:
 		e.markWorkerIdle(req.pool, req.slotID)
@@ -550,12 +648,19 @@ func (e *Engine) admitSubmit(loopCtx context.Context, callerCtx context.Context,
 	if e.resultCapacity > 0 && e.resultSlotsHeld >= e.resultCapacity {
 		return nil, tasks.NewAdmissionError(tasks.ReasonResultBackpressure, tasks.ErrResultBackpressure)
 	}
-	payloadBytes := int64(0)
-	if b, ok := spec.Input.([]byte); ok {
-		payloadBytes = int64(len(b))
+	// B1/B2: accountable payload size covers []byte and string inputs (plus a
+	// fixed charge for the durable occurrence reference). The record keeps the
+	// charge until eviction, not just until dispatch.
+	payloadBytes := measurePayload(spec.Input)
+	if spec.Job != nil {
+		payloadBytes += jobRefBytes
 	}
 	if err := e.adm.CanAdmit(spec, payloadBytes); err != nil {
 		return nil, err
+	}
+	retainedCharge := taskOverheadBytes + payloadBytes
+	if e.maxRetainedBytes > 0 && e.retainedBytes+retainedCharge > e.maxRetainedBytes {
+		return nil, tasks.NewAdmissionError(tasks.ReasonRetainedBudget, tasks.ErrRetainedBudget)
 	}
 	if input, ok := spec.Input.([]byte); ok {
 		spec.Input = append([]byte(nil), input...)
@@ -574,11 +679,12 @@ func (e *Engine) admitSubmit(loopCtx context.Context, callerCtx context.Context,
 	now := time.Now().UTC()
 	doneCh := make(chan struct{})
 	rec := &taskRecord{
-		spec:       spec,
-		state:      tasks.StateAdmitted,
-		done:       doneCh,
-		admittedAt: now,
-		queuedAt:   now,
+		spec:          spec,
+		state:         tasks.StateAdmitted,
+		done:          doneCh,
+		retainedBytes: retainedCharge,
+		admittedAt:    now,
+		queuedAt:      now,
 	}
 	ticket := &engineTicket{
 		taskID: spec.ID,
@@ -589,6 +695,7 @@ func (e *Engine) admitSubmit(loopCtx context.Context, callerCtx context.Context,
 	rec.ticket = ticket
 	e.registry[spec.ID] = rec
 	e.resultSlotsHeld++
+	e.retainedBytes += retainedCharge
 	e.syncActiveTasks(1)
 	rec.state = tasks.StateQueued
 	e.adm.Enqueue(&admission.QueueEntry{
@@ -605,6 +712,32 @@ func (e *Engine) admitSubmit(loopCtx context.Context, callerCtx context.Context,
 // copy exists only for fast lifecycle reads. Called only from runLoop.
 func (e *Engine) syncActiveTasks(delta int) {
 	e.activeTasks += delta
+}
+
+// boundResult enforces the B3 output/failure caps on a terminal result and
+// returns the accountable completion delta (bounded output + failure text).
+func (e *Engine) boundResult(res tasks.TaskResult) (tasks.TaskResult, int64) {
+	out, outBytes := capOutput(res.Output, e.maxOutputBytes)
+	res.Output = out
+	res.Failure.Message = truncateField(res.Failure.Message, e.maxFailureBytes)
+	res.Failure.Detail = truncateField(res.Failure.Detail, e.maxFailureBytes)
+	return res, outBytes + int64(len(res.Failure.Message)+len(res.Failure.Detail))
+}
+
+// settleTerminal performs the shared terminal tail for every completion path:
+// release the result credit, charge retained completion bytes, hand the
+// callback to the bounded delivery pool (B5), close the ticket, then settle
+// (active count, eviction, drain). Delivery is enqueued BEFORE the drain check
+// so Drain, once released, is guaranteed to observe every pending callback.
+func (e *Engine) settleTerminal(rec *taskRecord) {
+	if e.resultSlotsHeld > 0 {
+		e.resultSlotsHeld--
+	}
+	if rec.spec.OnComplete != nil {
+		e.delivery.enqueue(rec.spec.OnComplete, rec.result)
+	}
+	close(rec.done)
+	e.onTaskSettled(rec)
 }
 
 func (e *Engine) sweepExpired(pool tasks.PoolID, now time.Time) {
@@ -626,20 +759,13 @@ func (e *Engine) sweepExpired(pool tasks.PoolID, now time.Time) {
 				Message: rec.errorMsg,
 			},
 		}
-		if e.resultSlotsHeld > 0 {
-			e.resultSlotsHeld--
-		}
-		close(rec.done)
-		e.onTaskSettled(rec)
-		if rec.spec.OnComplete != nil {
-			fn := rec.spec.OnComplete
-			res := rec.result
-			go func() {
-				defer func() { _ = recover() }()
-				fn(res)
-			}()
-		}
+		bounded, delta := e.boundResult(rec.result)
+		rec.result = bounded
+		rec.retainedBytes += delta
+		e.retainedBytes += delta
+		e.settleTerminal(rec)
 	}
+	e.evictExpiredTerminal(now)
 }
 
 // tryDispatch runs only inside runLoop. Assignment means "worker may run this",
@@ -766,19 +892,14 @@ func (e *Engine) applyWorkerCompleted(res tasks.TaskResult) {
 	for pool := range e.config.Pools {
 		e.tryDispatch(pool)
 	}
-	if e.resultSlotsHeld > 0 {
-		e.resultSlotsHeld--
+	bounded, delta := e.boundResult(rec.result)
+	rec.result = bounded
+	if rec.errorMsg != "" {
+		rec.errorMsg = truncateField(rec.errorMsg, e.maxFailureBytes)
 	}
-	close(rec.done)
-	e.onTaskSettled(rec)
-
-	if spec.OnComplete != nil {
-		fn := spec.OnComplete
-		go func(r tasks.TaskResult) {
-			defer func() { _ = recover() }()
-			fn(r)
-		}(res)
-	}
+	rec.retainedBytes += delta
+	e.retainedBytes += delta
+	e.settleTerminal(rec)
 }
 
 // applyCancel is the single linearization point for cancellation vs dispatch,
@@ -803,18 +924,11 @@ func (e *Engine) applyCancel(id tasks.TaskID, reason tasks.Cause) (tasks.CancelR
 			Cause:      reason,
 			FinishedAt: rec.finishedAt,
 		}
-		if e.resultSlotsHeld > 0 {
-			e.resultSlotsHeld--
-		}
-		close(rec.done)
-		e.onTaskSettled(rec)
-		if rec.spec.OnComplete != nil {
-			fn, result := rec.spec.OnComplete, rec.result
-			go func() {
-				defer func() { _ = recover() }()
-				fn(result)
-			}()
-		}
+		bounded, delta := e.boundResult(rec.result)
+		rec.result = bounded
+		rec.retainedBytes += delta
+		e.retainedBytes += delta
+		e.settleTerminal(rec)
 		return tasks.CancelReceipt{TaskID: id, Accepted: true, State: tasks.StateCancelled, Reason: reason}, nil
 	case tasks.StateDispatching, tasks.StateRunning:
 		rec.cancelRequested = true
@@ -911,14 +1025,52 @@ func (e *Engine) onTaskSettled(rec *taskRecord) {
 }
 
 func (e *Engine) evictTerminalRecords() {
-	if e.maxTerminalRetained <= 0 {
+	e.evictTerminalHead(func() bool {
+		if e.maxTerminalRetained > 0 && len(e.terminalOrder) > e.maxTerminalRetained {
+			return true
+		}
+		if e.maxRetainedBytes > 0 && e.retainedBytes > e.maxRetainedBytes {
+			return true
+		}
+		return false
+	})
+}
+
+// evictExpiredTerminal drops terminal records older than TerminalTTL. The
+// terminal order is finish-ordered, so the scan stops at the first live
+// record. Zero TTL disables expiry (count/byte eviction still applies).
+func (e *Engine) evictExpiredTerminal(now time.Time) {
+	if e.terminalTTL <= 0 {
 		return
 	}
-	for len(e.terminalOrder) > e.maxTerminalRetained {
+	e.evictTerminalHead(func() bool {
+		if len(e.terminalOrder) == 0 {
+			return false
+		}
+		rec, ok := e.registry[e.terminalOrder[0]]
+		if !ok {
+			return true
+		}
+		if !rec.isTerminal() {
+			return true
+		}
+		return now.Sub(rec.finishedAt) > e.terminalTTL
+	})
+}
+
+func (e *Engine) evictTerminalHead(shouldEvict func() bool) {
+	for shouldEvict() {
+		if len(e.terminalOrder) == 0 {
+			return
+		}
 		oldestID := e.terminalOrder[0]
 		e.terminalOrder[0] = ""
 		e.terminalOrder = e.terminalOrder[1:]
 		if oldRec, ok := e.registry[oldestID]; ok && oldRec.isTerminal() {
+			e.retainedBytes -= oldRec.retainedBytes
+			if e.retainedBytes < 0 {
+				e.retainedBytes = 0
+			}
 			delete(e.registry, oldestID)
 		}
 	}
@@ -972,21 +1124,26 @@ func (e *Engine) Quiesce(ctx context.Context) error {
 	}
 }
 
-// Drain waits until all admitted and in-flight tasks have reached a terminal outcome.
+// Drain waits until all admitted and in-flight tasks have reached a terminal outcome
+// and all completion callbacks have been delivered (or ctx expires).
 func (e *Engine) Drain(ctx context.Context) error {
 	_ = e.Quiesce(ctx)
 	e.mu.Lock()
 	drainDone := e.drainDone
+	delivery := e.delivery
 	e.mu.Unlock()
 	if drainDone == nil {
 		return nil
 	}
 	select {
 	case <-drainDone:
-		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+	if delivery == nil {
+		return nil
+	}
+	return delivery.drain(ctx)
 }
 
 // Stop terminates the engine and cancels residual tasks if drain timed out.
@@ -995,6 +1152,7 @@ func (e *Engine) Stop(ctx context.Context) error {
 	err := e.Drain(ctx)
 	e.mu.Lock()
 	inbox := e.inbox
+	delivery := e.delivery
 	rootCancel := e.rootCancel
 	e.mu.Unlock()
 	if inbox != nil {
@@ -1007,6 +1165,12 @@ func (e *Engine) Stop(ctx context.Context) error {
 			}
 		default:
 		}
+	}
+	if delivery != nil {
+		drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = delivery.drain(drainCtx)
+		cancel()
+		delivery.stop()
 	}
 	if rootCancel != nil {
 		rootCancel()
@@ -1049,6 +1213,18 @@ func (e *Engine) Health(ctx context.Context) runtime.ComponentHealth {
 				return runtime.ComponentHealth{
 					Status:  runtime.HealthDegraded,
 					Details: fmt.Sprintf("result capacity saturated (%d/%d)", rep.stats.resultSlotsHeld, rep.stats.resultCapacity),
+				}
+			}
+			if rep.stats.retainedCap > 0 && rep.stats.retainedBytes >= rep.stats.retainedCap {
+				return runtime.ComponentHealth{
+					Status:  runtime.HealthDegraded,
+					Details: fmt.Sprintf("retained memory saturated (%d/%d bytes)", rep.stats.retainedBytes, rep.stats.retainedCap),
+				}
+			}
+			if rep.stats.deliveryCap > 0 && rep.stats.deliveryQueued >= rep.stats.deliveryCap {
+				return runtime.ComponentHealth{
+					Status:  runtime.HealthDegraded,
+					Details: fmt.Sprintf("completion delivery saturated (%d/%d)", rep.stats.deliveryQueued, rep.stats.deliveryCap),
 				}
 			}
 			return runtime.ComponentHealth{Status: runtime.HealthHealthy}

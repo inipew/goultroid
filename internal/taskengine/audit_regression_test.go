@@ -101,7 +101,6 @@ func TestEngineRejectsDuplicateAndInvalidAdmission(t *testing.T) {
 func TestEngineCompletionRunsOnceOutsideWorker(t *testing.T) {
 	e := auditEngine(t)
 	callbackStarted, release := make(chan struct{}), make(chan struct{})
-	defer close(release)
 	var calls atomic.Int32
 	spec := tasks.WorkSpec{ID: "callback", Pool: "a", QuotaOwner: "owner", Handler: func(context.Context) error { return nil }, OnComplete: func(tasks.TaskResult) {
 		if calls.Add(1) == 1 {
@@ -120,7 +119,10 @@ func TestEngineCompletionRunsOnceOutsideWorker(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("missing callback")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	// Drain covers bounded delivery (Phase B5): release the blocking callback
+	// first, then drain. The panic must be isolated and delivered exactly once.
+	close(release)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := e.Drain(ctx); err != nil {
 		t.Fatal(err)
@@ -166,9 +168,14 @@ func TestEngineCopiesAdmittedPayloadAndOccurrence(t *testing.T) {
 	if result.AttemptID != "original" {
 		t.Fatal("caller changed admitted attempt identity")
 	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if string(e.registry["copy"].spec.Input.([]byte)) != "original" {
+	// The ticket's record pointer is stable from admission; after Wait the
+	// done-close edge makes the immutable spec bytes safe to read without
+	// touching the runLoop-owned registry map.
+	et, ok := ticket.(*engineTicket)
+	if !ok {
+		t.Fatal("expected engine ticket")
+	}
+	if string(et.rec.spec.Input.([]byte)) != "original" {
 		t.Fatal("caller changed admitted payload")
 	}
 }
@@ -314,25 +321,30 @@ func TestEngineTerminalRecordEviction(t *testing.T) {
 		}
 	}
 
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	// Only at most 2 terminal tasks should be retained in the registry
-	if len(e.registry) > 2 {
-		t.Fatalf("expected registry size <= 2, got %d", len(e.registry))
+	// Only at most 2 terminal tasks should be retained in the registry.
+	// Registry is runLoop-owned (single writer); assert through the public
+	// Snapshot API instead of poking internals.
+	retained := 0
+	for i := 1; i <= 4; i++ {
+		if _, ok := e.Snapshot(tasks.TaskID(fmt.Sprintf("evict-task-%d", i))); ok {
+			retained++
+		}
+	}
+	if retained > 2 {
+		t.Fatalf("expected retained snapshots <= 2, got %d", retained)
 	}
 	// The oldest tasks (1 and 2) should have been evicted
-	if _, exists := e.registry["evict-task-1"]; exists {
+	if _, exists := e.Snapshot("evict-task-1"); exists {
 		t.Fatalf("expected evict-task-1 to be evicted")
 	}
-	if _, exists := e.registry["evict-task-2"]; exists {
+	if _, exists := e.Snapshot("evict-task-2"); exists {
 		t.Fatalf("expected evict-task-2 to be evicted")
 	}
 	// The newest tasks (3 and 4) should still be in the registry
-	if _, exists := e.registry["evict-task-3"]; !exists {
+	if _, exists := e.Snapshot("evict-task-3"); !exists {
 		t.Fatalf("expected evict-task-3 to be present")
 	}
-	if _, exists := e.registry["evict-task-4"]; !exists {
+	if _, exists := e.Snapshot("evict-task-4"); !exists {
 		t.Fatalf("expected evict-task-4 to be present")
 	}
 }

@@ -15,6 +15,7 @@ var (
 	ErrScopeClosed         = errors.New("caller scope is closed")
 	ErrUnknownHandler      = errors.New("unknown handler reference")
 	ErrLinearizationCancel = errors.New("submission cancelled during admission decision")
+	ErrRetainedBudget      = errors.New("engine retained memory budget exceeded")
 	ErrTaskNotFound        = errors.New("task not found")
 	ErrPermissionDenied    = errors.New("permission denied")
 )
@@ -29,6 +30,7 @@ const (
 	ReasonEngineQuiescing     = "engine_quiescing"
 	ReasonUnknownHandler      = "unknown_handler"
 	ReasonLinearizationCancel = "linearization_cancel"
+	ReasonRetainedBudget      = "retained_budget"
 )
 
 // AdmissionError carries structured rejection details (ADR 0006 §5.1).

@@ -31,21 +31,11 @@ func (t *engineTicket) Result() (tasks.TaskResult, bool) {
 	select {
 	case <-t.done:
 		// done is closed by runLoop after the terminal result write, so the
-		// read below observes the happens-before edge of channel close.
-		// Re-validate via control loop in case the record was evicted.
+		// read below observes the happens-before edge of channel close. The
+		// record is never mutated after that point, which keeps this valid
+		// even after registry eviction (Phase B4).
 		if t.rec != nil {
-			select {
-			case <-t.done:
-				// Copy under happens-before; rec is never mutated after done.
-				res := t.rec.result
-				state := t.engine.taskState(t.taskID)
-				if state == tasks.StateCompleted || state == tasks.StateFailed ||
-					state == tasks.StateCancelled || state == tasks.StateTimedOut {
-					return res, true
-				}
-				// Evicted: fall through to control-loop fetch (will miss).
-			default:
-			}
+			return t.rec.result, true
 		}
 		return t.engine.taskResult(t.taskID)
 	default:
@@ -60,10 +50,6 @@ func (t *engineTicket) Wait(ctx context.Context) (tasks.TaskResult, error) {
 	select {
 	case <-t.done:
 		if t.rec != nil {
-			res, ok := t.engine.taskResult(t.taskID)
-			if ok {
-				return res, nil
-			}
 			return t.rec.result, nil
 		}
 		res, _ := t.engine.taskResult(t.taskID)

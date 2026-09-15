@@ -392,11 +392,16 @@ func BenchmarkB7_MemoryRetentionAndHeapPlateau(b *testing.B) {
 		}
 	}
 
-	// Verify terminal memory is strictly bounded
+	// Verify terminal memory is strictly bounded via control-loop stats
+	// (terminalOrder is runLoop-owned; mu does not protect it).
 	runtime.GC()
-	engine.mu.Lock()
-	count := len(engine.terminalOrder)
-	engine.mu.Unlock()
+	statsCtx, statsCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer statsCancel()
+	rep, err := engine.sendControl(statsCtx, engineRequest{op: opStats, reply: make(chan engineReply, 1)})
+	if err != nil {
+		b.Fatalf("stats error: %v", err)
+	}
+	count := rep.stats.terminalCount
 
 	if count > maxRetained {
 		b.Errorf("terminal order count %d exceeded MaxTerminalRetained %d", count, maxRetained)
