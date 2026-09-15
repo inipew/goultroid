@@ -92,7 +92,7 @@ func TestRetrySucceedsAfterFailure(t *testing.T) {
 		},
 		jobs.JobRetryPolicy{MaxAttempts: 3, InitialDelay: 10 * time.Millisecond, MaxDelay: 100 * time.Millisecond, BackoffMultiplier: 2},
 	)
-	ticket, err := manager.SubmitOccurrence(context.Background(), "job-retry", "manual:retry-ok")
+	ticket, _, err := manager.SubmitOccurrence(context.Background(), "job-retry", "manual:retry-ok")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestRetryExhaustsAndFinalizes(t *testing.T) {
 		func(context.Context, jobs.JobDefinition) error { return errTestFailure },
 		jobs.JobRetryPolicy{MaxAttempts: 2, InitialDelay: time.Millisecond},
 	)
-	if _, err := manager.SubmitOccurrence(context.Background(), "job-retry", "manual:retry-out"); err != nil {
+	if _, _, err := manager.SubmitOccurrence(context.Background(), "job-retry", "manual:retry-out"); err != nil {
 		t.Fatal(err)
 	}
 	occ, err := store.GetOccurrenceByKey(context.Background(), "manual:retry-out")
@@ -146,7 +146,7 @@ func TestCancelOccurrenceStopsRetry(t *testing.T) {
 		func(context.Context, jobs.JobDefinition) error { return errTestFailure },
 		jobs.JobRetryPolicy{MaxAttempts: 5, InitialDelay: 20 * time.Millisecond},
 	)
-	if _, err := manager.SubmitOccurrence(context.Background(), "job-retry", "manual:cancel-me"); err != nil {
+	if _, _, err := manager.SubmitOccurrence(context.Background(), "job-retry", "manual:cancel-me"); err != nil {
 		t.Fatal(err)
 	}
 	occ, err := store.GetOccurrenceByKey(context.Background(), "manual:cancel-me")
@@ -253,7 +253,7 @@ func TestConcurrentDuplicateTriggerSingleRun(t *testing.T) {
 	results := make(chan outcome, racers)
 	for i := 0; i < racers; i++ {
 		go func() {
-			_, err := manager.SubmitOccurrence(context.Background(), "job-retry", "manual:dedup")
+			_, _, err := manager.SubmitOccurrence(context.Background(), "job-retry", "manual:dedup")
 			results <- outcome{err}
 		}()
 	}

@@ -188,10 +188,10 @@ type engineStats struct {
 
 // Engine coordinates admission, fairness, physical worker permits, result credits, and lifecycles.
 // All mutable execution state below is owned exclusively by the runLoop goroutine
-// (single writer). Producers interact only through the bounded inbox, so the
-// DecisionTimeout bounds the full admission decision including queueing delay.
-// The mu mutex protects lifecycle fields only (rootCtx, accepting flags,
-// inbox handle), never the execution registry.
+// (single writer), including accepting/quiesced/activeTasks. Producers interact
+// only through the bounded inbox, so the DecisionTimeout bounds the full
+// admission decision including queueing delay. The mu mutex protects handles
+// only (inbox, root context, delivery, config snapshots), never execution state.
 type Engine struct {
 	mu sync.Mutex
 
@@ -1165,11 +1165,9 @@ func (e *Engine) Quiesce(ctx context.Context) error {
 			return nil
 		}
 	case <-ctx.Done():
-		// Best effort: mark quiesced under lifecycle lock so Drain still ends.
-		e.mu.Lock()
-		e.accepting = false
-		e.quiesced = true
-		e.mu.Unlock()
+		// Do not mutate lifecycle flags here: accepting/quiesced are
+		// runLoop-owned (single writer). The op is already queued or the
+		// caller gave up; Drain still observes drainDone either way.
 		return ctx.Err()
 	case <-rootCtx.Done():
 		return nil
@@ -1237,16 +1235,13 @@ func (e *Engine) Health(ctx context.Context) runtime.ComponentHealth {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// Lifecycle flags are runLoop-owned; only the inbox/root handles are
+	// read here. Liveness comes from the control-loop stats round-trip below.
 	e.mu.Lock()
 	inbox := e.inbox
 	rootCtx := e.rootCtx
-	accepting := e.accepting
-	quiesced := e.quiesced
 	e.mu.Unlock()
 	if inbox == nil || rootCtx == nil {
-		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "task engine not running"}
-	}
-	if !accepting && !quiesced {
 		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "task engine not running"}
 	}
 	reply := make(chan engineReply, 1)

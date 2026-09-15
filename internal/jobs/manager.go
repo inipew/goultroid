@@ -27,9 +27,11 @@ type Store interface {
 	FinalizeOccurrence(context.Context, string, OccurrenceState) error
 	CancelOccurrence(context.Context, string, string) error
 	GetOccurrence(context.Context, string) (*JobOccurrence, error)
+	GetOccurrenceByKey(context.Context, string) (*JobOccurrence, error)
 	CountAttempts(context.Context, string) (int, error)
 	LatestAttempt(context.Context, string) (*JobAttempt, error)
 	ListUnresolvedOccurrences(context.Context, int) ([]*JobOccurrence, error)
+	DeleteTerminalOccurrences(context.Context, string, time.Time, int) (int64, error)
 }
 
 // Manager owns definitions and creates a distinct occurrence and TaskID for
@@ -219,7 +221,7 @@ func (m *Manager) Register(def JobDefinition) error {
 
 // Trigger returns after admission. Completion belongs to the occurrence ticket.
 func (m *Manager) Trigger(ctx context.Context, jobID string) error {
-	_, err := m.SubmitOccurrence(ctx, jobID, "")
+	_, _, err := m.SubmitOccurrence(ctx, jobID, "")
 	return err
 }
 
@@ -294,24 +296,24 @@ func (m *Manager) untrack(occurrenceID string) {
 	m.mu.Unlock()
 }
 
-func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey string) (tasks.Ticket, error) {
+func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey string) (tasks.Ticket, string, error) {
 	m.mu.RLock()
 	if !m.accepting {
 		m.mu.RUnlock()
-		return nil, errors.New("job admission is closed")
+		return nil, "", errors.New("job admission is closed")
 	}
 	definition, found := m.definitions[jobID]
 	handler := m.handlers[definition.HandlerType]
 	client := m.client
 	m.mu.RUnlock()
 	if !found {
-		return nil, fmt.Errorf("job definition not found: %s", jobID)
+		return nil, "", fmt.Errorf("job definition not found: %s", jobID)
 	}
 	if handler == nil {
-		return nil, fmt.Errorf("unknown job handler: %s", definition.HandlerType)
+		return nil, "", fmt.Errorf("unknown job handler: %s", definition.HandlerType)
 	}
 	if !definition.Enabled {
-		return nil, fmt.Errorf("job definition is disabled: %s", jobID)
+		return nil, "", fmt.Errorf("job definition is disabled: %s", jobID)
 	}
 	sequence := m.sequence.Add(1)
 	if occurrenceKey == "" {
@@ -321,15 +323,19 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey str
 	taskID := tasks.TaskID(fmt.Sprintf("task:%s:1", occurrenceID))
 	occurrence := &JobOccurrence{ID: string(occurrenceID), JobID: jobID, OccurrenceKey: occurrenceKey, ScheduledFor: time.Now().UTC(), ReadyAt: time.Now().UTC(), State: OccurrenceReady}
 	if err := m.store.MaterializeOccurrence(ctx, occurrence); err != nil {
-		return nil, fmt.Errorf("materialize job occurrence: %w", err)
+		return nil, "", fmt.Errorf("materialize job occurrence: %w", err)
 	}
+	// Materialization is idempotent on occurrence_key: a duplicate trigger
+	// resolves to the canonical identity, which the lease below single-flights.
+	occurrenceID = tasks.OccurrenceID(occurrence.ID)
+	taskID = tasks.TaskID(fmt.Sprintf("task:%s:1", occurrenceID))
 	leaseDuration := definition.Timeout + time.Minute
 	if leaseDuration < time.Minute {
 		leaseDuration = time.Minute
 	}
 	attempt, err := m.store.PrepareAttemptLease(ctx, occurrence.ID, string(taskID), leaseDuration)
 	if err != nil {
-		return nil, fmt.Errorf("prepare job attempt: %w", err)
+		return nil, "", fmt.Errorf("prepare job attempt: %w", err)
 	}
 	copyDef := definition
 	copyDef.Payload = append([]byte(nil), definition.Payload...)
@@ -354,11 +360,58 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey str
 	})
 	if err != nil {
 		m.persistAttemptResult(attempt, tasks.TaskResult{TaskID: taskID, Outcome: tasks.OutcomeAbortedBeforeStart, Cause: tasks.CausePersistenceFailure, FinishedAt: time.Now().UTC(), Failure: tasks.FailureInfo{Message: err.Error()}})
-		return nil, err
+		return nil, "", err
 	}
 	m.track(occurrence.ID, copyDef, handler, taskID)
 	m.enqueueRetry(retryItem{occurrenceID: occurrence.ID, ticket: ticket})
-	return ticket, nil
+	return ticket, occurrence.ID, nil
+}
+
+// GetOccurrence reads one durable occurrence for timing-layer reconciliation.
+func (m *Manager) GetOccurrence(ctx context.Context, occurrenceID string) (*JobOccurrence, error) {
+	return m.store.GetOccurrence(ctx, occurrenceID)
+}
+
+// OccurrenceByKey resolves an occurrence through its idempotency key, for
+// reclaim paths where the ID was never returned (admission rejected after a
+// concurrent trigger materialized the same logical run).
+func (m *Manager) OccurrenceByKey(ctx context.Context, occurrenceKey string) (*JobOccurrence, error) {
+	return m.store.GetOccurrenceByKey(ctx, occurrenceKey)
+}
+
+// LatestAttempt reads the newest attempt of an occurrence for diagnostics.
+func (m *Manager) LatestAttempt(ctx context.Context, occurrenceID string) (*JobAttempt, error) {
+	return m.store.LatestAttempt(ctx, occurrenceID)
+}
+
+// UpdateDefinition replaces a registered definition through a store
+// revision CAS, so concurrent policy updates cannot silently overwrite each
+// other. The in-memory copy is refreshed from the CAS winner.
+func (m *Manager) UpdateDefinition(ctx context.Context, def JobDefinition) error {
+	if def.ID == "" {
+		return errors.New("job definition id is required")
+	}
+	m.mu.RLock()
+	current, found := m.definitions[def.ID]
+	m.mu.RUnlock()
+	if !found {
+		return fmt.Errorf("job definition not found: %s", def.ID)
+	}
+	def.Revision = current.Revision
+	if err := m.store.UpdateDefinitionCAS(ctx, &def, current.Revision); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.definitions[def.ID] = def
+	m.mu.Unlock()
+	return nil
+}
+
+// PruneOccurrences deletes terminal occurrences of one job older than before,
+// bounding durable growth for high-frequency (e.g. periodic) definitions.
+// History UX lives in the caller's own tables; pruned rows already settled.
+func (m *Manager) PruneOccurrences(ctx context.Context, jobID string, before time.Time, limit int) (int64, error) {
+	return m.store.DeleteTerminalOccurrences(ctx, jobID, before, limit)
 }
 
 // track remembers the latest attempt driver of an occurrence for retry,

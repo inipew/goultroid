@@ -67,7 +67,7 @@ func TestManagerPersistsOccurrenceAttemptAndCompletion(t *testing.T) {
 	if err := manager.Register(jobs.JobDefinition{ID: "job-1", ScopeOwner: "plugin:test", QuotaOwner: "user:1", HandlerType: "test", Pool: "general"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.SubmitOccurrence(context.Background(), "job-1", "manual:one"); err != nil {
+	if _, _, err := manager.SubmitOccurrence(context.Background(), "job-1", "manual:one"); err != nil {
 		t.Fatal(err)
 	}
 	client.mu.Lock()
@@ -133,7 +133,7 @@ func TestManagerPersistsOccurrenceAttempt_PumpFallback(t *testing.T) {
 	if err := manager.Register(jobs.JobDefinition{ID: "job-fb", ScopeOwner: "plugin:test", QuotaOwner: "user:1", HandlerType: "fallback", Pool: "general"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.SubmitOccurrence(context.Background(), "job-fb", "manual:fb"); err != nil {
+	if _, _, err := manager.SubmitOccurrence(context.Background(), "job-fb", "manual:fb"); err != nil {
 		t.Fatal(err)
 	}
 	client.mu.Lock()
@@ -209,7 +209,7 @@ func TestEngineBackedOccurrenceCommitsBeforeTicketResolves(t *testing.T) {
 	if err := manager.Register(jobs.JobDefinition{ID: "job-e2e", ScopeOwner: "plugin:test", QuotaOwner: "user:1", HandlerType: "e2e", Pool: "general"}); err != nil {
 		t.Fatal(err)
 	}
-	ticket, err := manager.SubmitOccurrence(context.Background(), "job-e2e", "manual:e2e")
+	ticket, _, err := manager.SubmitOccurrence(context.Background(), "job-e2e", "manual:e2e")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -320,6 +320,38 @@ func (s *Store) ListUnresolvedOccurrences(ctx context.Context, limit int) ([]*jo
 	return out, rows.Err()
 }
 
+// DeleteTerminalOccurrences removes terminal occurrences of one job older
+// than before, bounding durable growth for high-frequency definitions.
+// Attempts cascade via foreign keys where enforced; callers keep their own
+// history elsewhere. Returns the number of occurrence rows removed.
+func (s *Store) DeleteTerminalOccurrences(ctx context.Context, jobID string, before time.Time, limit int) (int64, error) {
+	if jobID == "" {
+		return 0, errors.New("job id is required for pruning")
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	if limit > 5000 {
+		limit = 5000
+	}
+	res, err := s.db.ExecContext(ctx, `
+	DELETE FROM job_occurrences
+	WHERE id IN (
+		SELECT id FROM job_occurrences
+		WHERE job_id = ? AND state IN ('completed', 'failed', 'cancelled') AND updated_at < ?
+		ORDER BY updated_at ASC
+		LIMIT ?
+	);`, jobID, before.UTC(), limit)
+	if err != nil {
+		return 0, fmt.Errorf("prune terminal occurrences: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("prune rows affected: %w", err)
+	}
+	return n, nil
+}
+
 // FinalizeOccurrence closes a dispatched occurrence with a terminal state
 // (failed or cancelled) once its attempt budget is exhausted or an operator
 // intervenes. Completed and cancelled-by-commit occurrences are already final;
