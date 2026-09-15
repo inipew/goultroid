@@ -18,9 +18,8 @@ func (t *engineTicket) TaskID() tasks.TaskID {
 }
 
 func (t *engineTicket) State() tasks.TaskState {
-	if t.rec != nil && t.rec.isTerminal() {
-		return t.rec.state
-	}
+	// Always linearize through the control loop; direct rec.state reads would
+	// race the single writer.
 	return t.engine.taskState(t.taskID)
 }
 
@@ -29,10 +28,29 @@ func (t *engineTicket) Done() <-chan struct{} {
 }
 
 func (t *engineTicket) Result() (tasks.TaskResult, bool) {
-	if t.rec != nil && t.rec.isTerminal() {
-		return t.rec.result, true
+	select {
+	case <-t.done:
+		// done is closed by runLoop after the terminal result write, so the
+		// read below observes the happens-before edge of channel close.
+		// Re-validate via control loop in case the record was evicted.
+		if t.rec != nil {
+			select {
+			case <-t.done:
+				// Copy under happens-before; rec is never mutated after done.
+				res := t.rec.result
+				state := t.engine.taskState(t.taskID)
+				if state == tasks.StateCompleted || state == tasks.StateFailed ||
+					state == tasks.StateCancelled || state == tasks.StateTimedOut {
+					return res, true
+				}
+				// Evicted: fall through to control-loop fetch (will miss).
+			default:
+			}
+		}
+		return t.engine.taskResult(t.taskID)
+	default:
+		return t.engine.taskResult(t.taskID)
 	}
-	return t.engine.taskResult(t.taskID)
 }
 
 func (t *engineTicket) Wait(ctx context.Context) (tasks.TaskResult, error) {
@@ -42,6 +60,10 @@ func (t *engineTicket) Wait(ctx context.Context) (tasks.TaskResult, error) {
 	select {
 	case <-t.done:
 		if t.rec != nil {
+			res, ok := t.engine.taskResult(t.taskID)
+			if ok {
+				return res, nil
+			}
 			return t.rec.result, nil
 		}
 		res, _ := t.engine.taskResult(t.taskID)

@@ -4,12 +4,13 @@ package tasks
 type TaskState string
 
 const (
-	StateCreated   TaskState = "created"
-	StateAdmitted  TaskState = "admitted"
-	StateQueued    TaskState = "queued"
-	StateRunning   TaskState = "running"
-	StateCompleted TaskState = "completed"
-	StateFailed    TaskState = "failed"
-	StateCancelled TaskState = "cancelled"
-	StateTimedOut  TaskState = "timed_out"
+	StateCreated     TaskState = "created"
+	StateAdmitted    TaskState = "admitted"
+	StateQueued      TaskState = "queued"
+	StateDispatching TaskState = "dispatching"
+	StateRunning     TaskState = "running"
+	StateCompleted   TaskState = "completed"
+	StateFailed      TaskState = "failed"
+	StateCancelled   TaskState = "cancelled"
+	StateTimedOut    TaskState = "timed_out"
 )

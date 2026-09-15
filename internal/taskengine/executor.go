@@ -9,7 +9,7 @@ import (
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
-func executeAssignment(ctx context.Context, spec tasks.WorkSpec, grant *permit) (result tasks.TaskResult) {
+func executeAssignment(ctx context.Context, spec tasks.WorkSpec, grant *permit, onStarted func(time.Time)) (result tasks.TaskResult) {
 	defer grant.release()
 	result.TaskID = spec.ID
 	if spec.Job != nil {
@@ -54,6 +54,9 @@ func executeAssignment(ctx context.Context, spec tasks.WorkSpec, grant *permit) 
 		defer cancel()
 	}
 	result.StartedAt = time.Now().UTC()
+	if onStarted != nil {
+		onStarted(result.StartedAt)
+	}
 	err := spec.Handler(runCtx)
 	switch {
 	case err == nil:
