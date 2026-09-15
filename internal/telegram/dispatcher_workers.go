@@ -9,30 +9,43 @@ import (
 	"github.com/inipew/goultroid/internal/workers"
 )
 
-var dispatcherWorkers sync.Map // map[*Dispatcher]*workers.Manager
+// TaskSubmitter is the narrow finite-execution surface consumed by Telegram.
+// TaskEngine compatibility adapters and the legacy WorkerManager both satisfy
+// this contract, which keeps dispatch independent from physical worker ownership.
+type TaskSubmitter interface {
+	Submit(ctx context.Context, poolName string, task tasks.Task) error
+}
 
-// SetWorkers attaches the shared physical execution authority used by command
-// dispatch. It is wired by the application composition root.
-func (d *Dispatcher) SetWorkers(manager *workers.Manager) {
+var dispatcherSubmitters sync.Map // map[*Dispatcher]TaskSubmitter
+
+// SetTaskSubmitter attaches the finite execution authority used by command
+// dispatch. Production wiring points this at the one-way TaskEngine adapter.
+func (d *Dispatcher) SetTaskSubmitter(submitter TaskSubmitter) {
 	if d == nil {
 		return
 	}
-	if manager == nil {
-		dispatcherWorkers.Delete(d)
+	if submitter == nil {
+		dispatcherSubmitters.Delete(d)
 		return
 	}
-	dispatcherWorkers.Store(d, manager)
+	dispatcherSubmitters.Store(d, submitter)
 }
 
-func (d *Dispatcher) workerManager() *workers.Manager {
+// SetWorkers is retained for embedders during migration. It delegates to the
+// narrow submitter contract and does not make Dispatcher depend on worker state.
+func (d *Dispatcher) SetWorkers(manager *workers.Manager) {
+	d.SetTaskSubmitter(manager)
+}
+
+func (d *Dispatcher) taskSubmitter() TaskSubmitter {
 	if d == nil {
 		return nil
 	}
-	value, ok := dispatcherWorkers.Load(d)
+	value, ok := dispatcherSubmitters.Load(d)
 	if !ok {
 		return nil
 	}
-	return value.(*workers.Manager)
+	return value.(TaskSubmitter)
 }
 
 func (d *Dispatcher) submitInteractiveCommand(
@@ -44,10 +57,10 @@ func (d *Dispatcher) submitInteractiveCommand(
 	owner string,
 	correlationID string,
 ) error {
-	manager := d.workerManager()
-	if manager == nil {
+	submitter := d.taskSubmitter()
+	if submitter == nil {
 		// Standalone dispatcher tests and embedders may not wire the runtime
-		// worker manager. Keep an asynchronous fallback path tracked by cmdWG.
+		// execution authority. Keep an asynchronous fallback path tracked by cmdWG.
 		d.runningCommands.Add(1)
 		d.totalCommands.Add(1)
 		d.cmdWG.Add(1)
@@ -79,7 +92,7 @@ func (d *Dispatcher) submitInteractiveCommand(
 	if cmd.Timeout > 0 {
 		task.Timeout = cmd.Timeout
 	}
-	if err := manager.Submit(ctx, workers.PoolInteractive, task); err != nil {
+	if err := submitter.Submit(ctx, string(workers.PoolInteractive), task); err != nil {
 		cancel()
 		return err
 	}
