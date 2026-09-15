@@ -12,10 +12,12 @@ import (
 
 type retryContextTicket struct{}
 
-func (retryContextTicket) TaskID() tasks.TaskID            { return "task:occ:1" }
-func (retryContextTicket) State() tasks.TaskState          { return tasks.StateFailed }
-func (retryContextTicket) Done() <-chan struct{}            { ch := make(chan struct{}); close(ch); return ch }
-func (retryContextTicket) Result() (tasks.TaskResult, bool) { return tasks.TaskResult{TaskID: "task:occ:1", Outcome: tasks.OutcomeFailed}, true }
+func (retryContextTicket) TaskID() tasks.TaskID   { return "task:occ:1" }
+func (retryContextTicket) State() tasks.TaskState { return tasks.StateFailed }
+func (retryContextTicket) Done() <-chan struct{}  { ch := make(chan struct{}); close(ch); return ch }
+func (retryContextTicket) Result() (tasks.TaskResult, bool) {
+	return tasks.TaskResult{TaskID: "task:occ:1", Outcome: tasks.OutcomeFailed}, true
+}
 func (retryContextTicket) Wait(context.Context) (tasks.TaskResult, error) {
 	return tasks.TaskResult{TaskID: "task:occ:1", Outcome: tasks.OutcomeFailed}, nil
 }
