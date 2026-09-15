@@ -10,6 +10,7 @@ import (
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/jobs"
 	jobsqlite "github.com/inipew/goultroid/internal/jobs/sqlite"
+	"github.com/inipew/goultroid/internal/taskengine"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -75,7 +76,14 @@ func TestManagerPersistsOccurrenceAttemptAndCompletion(t *testing.T) {
 	if spec.Job == nil || spec.Job.AttemptID == "" || spec.Job.OccurrenceID == "" {
 		t.Fatalf("durable identity missing from submitted work: %#v", spec.Job)
 	}
-	spec.OnComplete(tasks.TaskResult{TaskID: spec.ID, Outcome: tasks.OutcomeCompleted, FinishedAt: time.Now().UTC()})
+	if spec.Commit == nil {
+		t.Fatalf("durable commit hook missing from submitted work")
+	}
+	// Simulate the engine's durable commit path: physical completion followed
+	// by exactly one Commit invocation.
+	if err := spec.Commit(context.Background(), tasks.TaskResult{TaskID: spec.ID, Outcome: tasks.OutcomeCompleted, FinishedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
 
 	deadline := time.Now().Add(time.Second)
 	for {
@@ -134,8 +142,16 @@ func TestManagerPersistsOccurrenceAttempt_PumpFallback(t *testing.T) {
 	if spec.Job == nil || spec.Job.AttemptID == "" {
 		t.Fatalf("durable identity missing: %#v", spec.Job)
 	}
+	if spec.Commit == nil {
+		t.Fatalf("durable commit hook missing")
+	}
 
-	spec.OnComplete(tasks.TaskResult{TaskID: spec.ID, Outcome: tasks.OutcomeCompleted, FinishedAt: time.Now().UTC()})
+	// The commit hook is a pure store function: it persists even though the
+	// pump is stopped, which is exactly what the engine's bounded direct
+	// fallback relies on when the pump is saturated or down.
+	if err := spec.Commit(context.Background(), tasks.TaskResult{TaskID: spec.ID, Outcome: tasks.OutcomeCompleted, FinishedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
 
 	deadline := time.Now().Add(time.Second)
 	for {
@@ -148,5 +164,81 @@ func TestManagerPersistsOccurrenceAttempt_PumpFallback(t *testing.T) {
 			t.Fatalf("fallback attempt completion was not persisted, state=%q err=%v", state, err)
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestEngineBackedOccurrenceCommitsBeforeTicketResolves is the end-to-end
+// proof that the durable commit protocol closes the crash window: with a real
+// TaskEngine, real PersistencePump, and real sqlite store, the occurrence
+// ticket resolves only after the attempt commit is durable, and the engine
+// never reports success from memory alone.
+func TestEngineBackedOccurrenceCommitsBeforeTicketResolves(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := jobsqlite.InitSchema(context.Background(), db.DB); err != nil {
+		t.Fatal(err)
+	}
+	pump := jobs.NewPersistencePump(2, 16)
+	if err := pump.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer pump.Stop(context.Background())
+	engine := taskengine.NewEngine(taskengine.Config{
+		Pools: map[tasks.PoolID]taskengine.PoolEngineConfig{
+			"general": {Concurrency: 2, BacklogLimit: 10, PayloadBudget: 1 << 20},
+		},
+		ResultCapacity:      10,
+		MaxTerminalRetained: 10,
+		DecisionTimeout:     5 * time.Second,
+	})
+	engine.SetCommitPump(pump)
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Stop(context.Background())
+	manager := jobs.NewManager(engine, jobsqlite.NewStore(db.DB), pump)
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RegisterHandler("e2e", func(context.Context, jobs.JobDefinition) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Register(jobs.JobDefinition{ID: "job-e2e", ScopeOwner: "plugin:test", QuotaOwner: "user:1", HandlerType: "e2e", Pool: "general"}); err != nil {
+		t.Fatal(err)
+	}
+	ticket, err := manager.SubmitOccurrence(context.Background(), "job-e2e", "manual:e2e")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := ticket.Wait(ctx)
+	if err != nil {
+		t.Fatalf("ticket wait: %v", err)
+	}
+	if res.Outcome != tasks.OutcomeCompleted {
+		t.Fatalf("outcome=%s, want completed", res.Outcome)
+	}
+	// The ticket resolved, so the commit must already be durable: read the
+	// store synchronously with no polling.
+	var attemptState, occurrenceState string
+	if err := db.DB.QueryRow(`SELECT state FROM job_attempts WHERE task_id = ?`, string(res.TaskID)).Scan(&attemptState); err != nil {
+		t.Fatalf("attempt not durably committed at ticket resolution: %v", err)
+	}
+	if attemptState != string(jobs.AttemptCompleted) {
+		t.Fatalf("attempt state=%q, want completed", attemptState)
+	}
+	var occurrenceID string
+	if err := db.DB.QueryRow(`SELECT occurrence_id FROM job_attempts WHERE task_id = ?`, string(res.TaskID)).Scan(&occurrenceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DB.QueryRow(`SELECT state FROM job_occurrences WHERE id = ?`, occurrenceID).Scan(&occurrenceState); err != nil {
+		t.Fatal(err)
+	}
+	if occurrenceState != string(jobs.OccurrenceCompleted) {
+		t.Fatalf("occurrence state=%q, want completed", occurrenceState)
 	}
 }

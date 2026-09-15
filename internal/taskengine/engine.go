@@ -97,6 +97,14 @@ type taskRecord struct {
 	// (payload + bounded output + failure text + overhead), released at eviction.
 	retainedBytes int64
 
+	// Durability phase (Phase C). durability is durNone for tasks without a
+	// Commit func; pendingResult/execOutcome carry the bounded physical
+	// result while CommitPending; commitSeq fences acknowledgements.
+	durability    durabilityState
+	pendingResult tasks.TaskResult
+	execOutcome   tasks.Outcome
+	commitSeq     uint64
+
 	admittedAt time.Time
 	queuedAt   time.Time
 	startedAt  time.Time
@@ -108,7 +116,7 @@ func (r *taskRecord) isTerminal() bool {
 	if r == nil {
 		return false
 	}
-	return r.state == tasks.StateCompleted || r.state == tasks.StateFailed || r.state == tasks.StateTimedOut || r.state == tasks.StateCancelled
+	return r.state == tasks.StateCompleted || r.state == tasks.StateFailed || r.state == tasks.StateTimedOut || r.state == tasks.StateCancelled || r.state == tasks.StateRecoveryRequired
 }
 
 // opKind identifies a control message delivered to the single-writer runLoop.
@@ -123,6 +131,7 @@ const (
 	opWorkerIdle
 	opWorkerStarted
 	opWorkerCompleted
+	opCommitAck
 	opSweep
 	opQuiesce
 	opSetOwnerLimits
@@ -142,9 +151,12 @@ type engineRequest struct {
 	permit  *permit
 	result  tasks.TaskResult
 	started time.Time
-	owner   tasks.OwnerID
-	limits  admission.OwnerLimits
-	reply   chan engineReply
+	// commitSeq + ackErr carry the fenced durability acknowledgement.
+	commitSeq uint64
+	ackErr    error
+	owner     tasks.OwnerID
+	limits    admission.OwnerLimits
+	reply     chan engineReply
 }
 
 type engineReply struct {
@@ -168,6 +180,7 @@ type engineStats struct {
 	retainedBytes   int64
 	retainedCap     int64
 	terminalCount   int
+	commitPending   int
 	deliveryQueued  int
 	deliveryCap     int
 	deliveryFailed  int64
@@ -208,6 +221,14 @@ type Engine struct {
 	maxOutputBytes   int64
 	maxFailureBytes  int
 	terminalTTL      time.Duration
+
+	// ---- runLoop-owned durability (Phase C) ----
+	commitPump    CommitPump
+	commitSeq     uint64
+	commitPending int
+	// commitWaiters cancels parked commit waits on resolution or abandonment
+	// so delivery shutdown never blocks on a stalled pump.
+	commitWaiters map[uint64]context.CancelFunc
 
 	decisionTimeout time.Duration
 	inboxCap        int
@@ -501,6 +522,7 @@ func (e *Engine) handleRequest(ctx context.Context, req engineRequest) {
 			retainedBytes:   e.retainedBytes,
 			retainedCap:     e.maxRetainedBytes,
 			terminalCount:   len(e.terminalOrder),
+			commitPending:   e.commitPending,
 			deliveryQueued:  e.delivery.queueLen(),
 			deliveryCap:     e.delivery.queueCap(),
 			deliveryFailed:  e.delivery.fallbackCount(),
@@ -511,6 +533,8 @@ func (e *Engine) handleRequest(ctx context.Context, req engineRequest) {
 		e.applyWorkerStarted(req.taskID, req.permit, req.started)
 	case opWorkerCompleted:
 		e.applyWorkerCompleted(req.result)
+	case opCommitAck:
+		e.applyCommitAck(req.taskID, req.commitSeq, req.ackErr)
 	case opSweep:
 		now := time.Now().UTC()
 		for poolID := range e.config.Pools {
@@ -678,11 +702,13 @@ func (e *Engine) admitSubmit(loopCtx context.Context, callerCtx context.Context,
 	}
 	now := time.Now().UTC()
 	doneCh := make(chan struct{})
+	e.commitSeq++
 	rec := &taskRecord{
 		spec:          spec,
 		state:         tasks.StateAdmitted,
 		done:          doneCh,
 		retainedBytes: retainedCharge,
+		commitSeq:     e.commitSeq,
 		admittedAt:    now,
 		queuedAt:      now,
 	}
@@ -850,6 +876,18 @@ func (e *Engine) applyWorkerStarted(id tasks.TaskID, grant *permit, startedAt ti
 	rec.startedAt = startedAt
 }
 
+// SetCommitPump installs the durable-commit transport. It must be called
+// before Start; calls after Start are ignored because the runLoop owns the
+// handle from that point on.
+func (e *Engine) SetCommitPump(p CommitPump) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.runStarted {
+		return
+	}
+	e.commitPump = p
+}
+
 func (e *Engine) applyWorkerCompleted(res tasks.TaskResult) {
 	rec, ok := e.registry[res.TaskID]
 	if !ok {
@@ -867,19 +905,6 @@ func (e *Engine) applyWorkerCompleted(res tasks.TaskResult) {
 			res.Failure.Message = fmt.Sprintf("late cancellation applied: %s", rec.cancelReason)
 		}
 		rec.result = res
-	}
-	switch res.Outcome {
-	case tasks.OutcomeCompleted:
-		rec.state = tasks.StateCompleted
-	case tasks.OutcomeTimedOut:
-		rec.state = tasks.StateTimedOut
-		rec.errorMsg = res.Failure.Message
-	case tasks.OutcomeCancelled:
-		rec.state = tasks.StateCancelled
-		rec.errorMsg = res.Failure.Message
-	default:
-		rec.state = tasks.StateFailed
-		rec.errorMsg = res.Failure.Message
 	}
 	spec := rec.spec
 	e.adm.OnTaskTerminal(spec)
@@ -899,7 +924,25 @@ func (e *Engine) applyWorkerCompleted(res tasks.TaskResult) {
 	}
 	rec.retainedBytes += delta
 	e.retainedBytes += delta
-	e.settleTerminal(rec)
+
+	if !spec.RequiresDurability() {
+		// Fast path (Phase C recommendation 2): no durability promise was
+		// requested, so the result credit is released at physical completion
+		// and the ticket resolves immediately.
+		rec.state = terminalStateFor(rec.result.Outcome)
+		switch rec.state {
+		case tasks.StateTimedOut, tasks.StateCancelled, tasks.StateFailed:
+			rec.errorMsg = rec.result.Failure.Message
+		}
+		e.settleTerminal(rec)
+		return
+	}
+	// Durable path: hold the result credit until the persistence
+	// acknowledgement arrives. Physical quota was already released above, so
+	// slow commits never starve physical capacity.
+	rec.execOutcome = rec.result.Outcome
+	rec.pendingResult = rec.result
+	e.beginCommit(rec)
 }
 
 // applyCancel is the single linearization point for cancellation vs dispatch,
@@ -937,6 +980,12 @@ func (e *Engine) applyCancel(id tasks.TaskID, reason tasks.Cause) (tasks.CancelR
 			rec.cancelFunc()
 		}
 		return tasks.CancelReceipt{TaskID: id, Accepted: true, State: rec.state, Reason: reason}, nil
+	case tasks.StateCommitPending:
+		// Physical execution already finished; there is nothing left to
+		// cancel. The commit runs to its acknowledgement and the ticket
+		// resolves there. Report the pending state without claiming the
+		// cancellation.
+		return tasks.CancelReceipt{TaskID: id, Accepted: false, State: rec.state, Reason: reason}, nil
 	default:
 		return tasks.CancelReceipt{TaskID: id, Accepted: false, State: rec.state, Reason: reason}, nil
 	}
@@ -957,7 +1006,7 @@ func (e *Engine) applyCancelScope(scope tasks.ScopeIdentity, reason tasks.Cause)
 		if scope.Generation != 0 && rec.spec.Scope.Generation != scope.Generation {
 			continue
 		}
-		if rec.isTerminal() {
+		if rec.isTerminal() || rec.state == tasks.StateCommitPending {
 			continue
 		}
 		receipt, err := e.applyCancel(id, reason)
@@ -974,7 +1023,7 @@ func (e *Engine) applyResult(id tasks.TaskID) (tasks.TaskResult, bool) {
 		return tasks.TaskResult{}, false
 	}
 	switch rec.state {
-	case tasks.StateCompleted, tasks.StateFailed, tasks.StateCancelled, tasks.StateTimedOut:
+	case tasks.StateCompleted, tasks.StateFailed, tasks.StateCancelled, tasks.StateTimedOut, tasks.StateRecoveryRequired:
 		return rec.result, true
 	default:
 		return tasks.TaskResult{}, false
@@ -1009,8 +1058,11 @@ func (e *Engine) applyQuiesce() {
 
 func (e *Engine) applyStopFinalize() {
 	for id, rec := range e.registry {
-		if rec.state == tasks.StateQueued || rec.state == tasks.StateDispatching {
+		switch rec.state {
+		case tasks.StateQueued, tasks.StateDispatching:
 			_, _ = e.applyCancel(id, tasks.CauseShutdown)
+		case tasks.StateCommitPending:
+			e.abandonPending(rec, "shutdown")
 		}
 	}
 }
@@ -1147,6 +1199,8 @@ func (e *Engine) Drain(ctx context.Context) error {
 }
 
 // Stop terminates the engine and cancels residual tasks if drain timed out.
+// StopFinalize abandons CommitPending records (releasing their commit
+// waiters), so the delivery shutdown below is prompt even with a stalled pump.
 func (e *Engine) Stop(ctx context.Context) error {
 	_ = e.Quiesce(ctx)
 	err := e.Drain(ctx)

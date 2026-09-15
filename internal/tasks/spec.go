@@ -10,6 +10,13 @@ import (
 // HandlerFunc is the physical execution body of a task.
 type HandlerFunc func(ctx context.Context) error
 
+// CommitFunc persists the physical execution result to the durable store.
+// The engine invokes it exactly once per durability-required task, after
+// physical completion, and holds the result credit until it returns (or the
+// wait is abandoned). The outcome/cause/failure of res describe the physical
+// attempt; the commit must fence on its own lease identity.
+type CommitFunc func(ctx context.Context, res TaskResult) error
+
 // WorkSpec defines an immutable specification for a unit of work submitted to admission (ADR 0006 §5.1).
 type WorkSpec struct {
 	ID               TaskID         `json:"id"`
@@ -26,8 +33,19 @@ type WorkSpec struct {
 
 	// Handler is the execution body.
 	Handler HandlerFunc `json:"-"`
+	// Commit persists the physical result. Non-nil Commit opts the task into
+	// the durable commit protocol (CommitPending until acknowledgement).
+	// Tasks without Commit (e.g. interactive Telegram work) release their
+	// result credit at physical completion.
+	Commit CommitFunc `json:"-"`
 	// OnComplete receives the final terminal TaskResult.
 	OnComplete func(TaskResult) `json:"-"`
+}
+
+// RequiresDurability reports whether the task opts into the durable commit
+// protocol (CommitPending until the persistence acknowledgement).
+func (s *WorkSpec) RequiresDurability() bool {
+	return s != nil && s.Commit != nil
 }
 
 // Validate checks that required fields on the work specification are present.

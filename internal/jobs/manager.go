@@ -203,8 +203,12 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey str
 		Input:            append([]byte(nil), copyDef.Payload...),
 		Job:              &tasks.OccurrenceRef{JobID: copyDef.ID, OccurrenceID: occurrenceID, AttemptID: tasks.AttemptID(attempt.ID), LeaseEpoch: attempt.LeaseEpoch},
 		Handler:          func(runCtx context.Context) error { return handler(runCtx, copyDef) },
-		OnComplete: func(result tasks.TaskResult) {
-			m.persistAttemptResult(attempt, result)
+		// Durable commit (Phase C): the engine holds the result credit in
+		// CommitPending until this runs on the persistence pump and the
+		// acknowledgement resolves the ticket. No OnComplete hook is needed;
+		// persistence is engine-driven, not callback-driven.
+		Commit: func(commitCtx context.Context, res tasks.TaskResult) error {
+			return m.store.CommitAttemptResult(commitCtx, attempt.ID, attempt.LeaseEpoch, attemptState(res.Outcome), nil, res.Failure.Message)
 		},
 	})
 	if err != nil {
