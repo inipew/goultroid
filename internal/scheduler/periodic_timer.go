@@ -119,6 +119,35 @@ func (c *periodicCoordinator) operationContext(timeout time.Duration) (context.C
 	return context.WithTimeout(base, timeout)
 }
 
+func (c *periodicCoordinator) nowLocked() time.Time {
+	if c.nowFn != nil {
+		return c.nowFn()
+	}
+	return time.Now()
+}
+
+// scheduleLocked installs exactly one immutable timer reference for a
+// registration. The heap must not retain handlers or mutable registration
+// state; authoritative state remains in entries and is resolved by key and
+// generation when the timer fires.
+func (c *periodicCoordinator) scheduleLocked(entry *periodicRegistration) {
+	if entry == nil || entry.Running || entry.NextRun.IsZero() {
+		return
+	}
+	if entry.heapEntry != nil {
+		c.heap.Remove(entry.heapEntry)
+	}
+	timerEntry := &TimerEntry{
+		Kind:       TimerScheduleOccurrence,
+		Owner:      entry.Owner,
+		ID:         periodicKey(entry.Owner, entry.Name),
+		Generation: entry.Generation,
+		Deadline:   entry.NextRun,
+	}
+	entry.heapEntry = timerEntry
+	c.heap.Push(timerEntry)
+}
+
 func (c *periodicCoordinator) Start(parent context.Context) error {
 	if parent == nil {
 		parent = context.Background()
@@ -275,23 +304,14 @@ func (c *periodicCoordinator) Register(name string, interval time.Duration, opti
 		}
 	}
 
-	now := time.Now()
-	if c.nowFn != nil {
-		now = c.nowFn()
-	}
-	nextRun := now.Add(interval)
+	nextRun := c.nowLocked().Add(interval)
 	reg := &periodicRegistration{
 		Owner: owner, Name: name, Interval: interval, Options: options, Task: task,
 		ScheduledFor: nextRun, NextRun: nextRun, Generation: generation,
 	}
-	timerEntry := &TimerEntry{
-		Kind: TimerScheduleOccurrence, Owner: owner, ID: key,
-		Generation: generation, Deadline: nextRun, Data: reg,
-	}
-	reg.heapEntry = timerEntry
-	c.heap.Push(timerEntry)
 	c.entries[key] = reg
 	c.jobDefs[defID] = periodicIdentity{owner: owner, name: name}
+	c.scheduleLocked(reg)
 	c.mu.Unlock()
 
 	// Re-registration cancellation is bounded and synchronous. Repeated
@@ -324,47 +344,14 @@ func (c *periodicCoordinator) runTaskFunc(ctx context.Context, defID string) err
 	return fn(ctx)
 }
 
+// Unregister removes a runtime-owned periodic task. Owner-scoped callers must
+// use UnregisterOwned so a bare name can never select another owner's entry.
 func (c *periodicCoordinator) Unregister(name string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return errors.New("task name cannot be empty")
 	}
-	c.mu.Lock()
-	entry, ok := c.entries[name]
-	targetKey := name
-	if !ok {
-		for k, e := range c.entries {
-			if e.Name == name {
-				entry = e
-				targetKey = k
-				ok = true
-				break
-			}
-		}
-	}
-	var occurrenceID, defID string
-	if ok {
-		if entry.heapEntry != nil {
-			c.heap.Remove(entry.heapEntry)
-			entry.heapEntry = nil
-		}
-		occurrenceID = entry.OccurrenceID
-		defID = periodicDefinitionID(entry.Owner, entry.Name)
-		delete(c.entries, targetKey)
-		delete(c.jobDefs, defID)
-	}
-	jobsMgr := c.jobsMgr
-	c.mu.Unlock()
-	if !ok {
-		return errors.New("task not found")
-	}
-	if occurrenceID != "" && jobsMgr != nil {
-		cctx, ccancel := c.operationContext(5 * time.Second)
-		defer ccancel()
-		_ = jobsMgr.CancelOccurrence(cctx, occurrenceID, "periodic task unregistered")
-	}
-	c.notify()
-	return nil
+	return c.UnregisterOwned("runtime", name)
 }
 
 func (c *periodicCoordinator) UnregisterOwned(owner, name string) error {
@@ -464,26 +451,6 @@ func (c *periodicCoordinator) Snapshots() []PeriodicTaskSnapshot {
 	return snapshots
 }
 
-func (c *periodicCoordinator) syncHeapLocked() {
-	for _, entry := range c.entries {
-		if entry.Running {
-			continue
-		}
-		if entry.heapEntry == nil {
-			entry.heapEntry = &TimerEntry{
-				Kind: TimerScheduleOccurrence, Owner: entry.Owner,
-				ID: periodicKey(entry.Owner, entry.Name), Generation: entry.Generation,
-				Deadline: entry.NextRun, Data: entry,
-			}
-			c.heap.Push(entry.heapEntry)
-		} else if !entry.heapEntry.Deadline.Equal(entry.NextRun) {
-			c.heap.Remove(entry.heapEntry)
-			entry.heapEntry.Deadline = entry.NextRun
-			c.heap.Push(entry.heapEntry)
-		}
-	}
-}
-
 func (c *periodicCoordinator) loop() {
 	defer c.wg.Done()
 	timer := time.NewTimer(time.Hour)
@@ -500,13 +467,7 @@ func (c *periodicCoordinator) loop() {
 			return
 		}
 		jobsMgr := c.jobsMgr
-		c.syncHeapLocked()
-		var now time.Time
-		if c.nowFn != nil {
-			now = c.nowFn()
-		} else {
-			now = time.Now()
-		}
+		now := c.nowLocked()
 		due := c.collectDueLocked(now)
 		earliest, hasEarliest := c.heap.PeekEarliest()
 		c.mu.Unlock()
@@ -528,7 +489,7 @@ func (c *periodicCoordinator) loop() {
 			}
 		}
 
-		delay := time.Until(earliest.Deadline)
+		delay := earliest.Deadline.Sub(now)
 		if delay < 0 {
 			delay = 0
 		}
@@ -567,15 +528,15 @@ func (c *periodicCoordinator) collectDueLocked(now time.Time) []periodicDueRun {
 	}
 	var due []periodicDueRun
 	for _, item := range dueEntries {
-		entry, ok := item.Data.(*periodicRegistration)
-		if !ok || entry == nil {
+		entry := c.entries[item.ID]
+		if entry == nil || entry.heapEntry != item {
 			continue
 		}
-		if entry.Generation != item.Generation || entry.Running {
+		entry.heapEntry = nil
+		if entry.Owner != item.Owner || entry.Generation != item.Generation || entry.Running {
 			continue
 		}
 		entry.Running = true
-		entry.heapEntry = nil
 		scheduledFor := entry.ScheduledFor
 		if scheduledFor.IsZero() {
 			scheduledFor = entry.NextRun
@@ -650,16 +611,11 @@ func (c *periodicCoordinator) finishSubmission(run periodicDueRun) {
 	key := periodicKey(run.owner, run.name)
 	if entry := c.entries[key]; entry != nil && entry.Generation == run.generation && entry.Running && entry.OccurrenceID == "" {
 		entry.Running = false
-		var now time.Time
-		if c.nowFn != nil {
-			now = c.nowFn()
-		} else {
-			now = time.Now().UTC()
-		}
-		entry.NextRun = now.Add(200 * time.Millisecond)
+		entry.NextRun = c.nowLocked().Add(200 * time.Millisecond)
 		if entry.ScheduledFor.IsZero() {
 			entry.ScheduledFor = run.scheduledFor
 		}
+		c.scheduleLocked(entry)
 	}
 	c.mu.Unlock()
 	c.notify()
@@ -716,11 +672,9 @@ func (c *periodicCoordinator) reconcileOne(jobsMgr *jobs.Manager, in pendingReco
 		return
 	}
 	if finished.IsZero() {
-		if c.nowFn != nil {
-			finished = c.nowFn()
-		} else {
-			finished = time.Now().UTC()
-		}
+		c.mu.Lock()
+		finished = c.nowLocked()
+		c.mu.Unlock()
 	}
 	c.mu.Lock()
 	if entry := c.entries[in.key]; entry != nil && entry.Running && entry.OccurrenceID == in.occurrenceID {
@@ -737,6 +691,7 @@ func (c *periodicCoordinator) reconcileOne(jobsMgr *jobs.Manager, in pendingReco
 		nextSlot := finished.Add(in.interval)
 		entry.ScheduledFor = nextSlot
 		entry.NextRun = nextSlot
+		c.scheduleLocked(entry)
 	}
 	c.mu.Unlock()
 
