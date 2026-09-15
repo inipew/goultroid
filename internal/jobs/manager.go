@@ -46,15 +46,16 @@ type Manager struct {
 	sequence       atomic.Uint64
 	accepting      bool
 
-	retryQueue   chan retryItem
-	recoveryWake chan struct{}
-	stopCh       chan struct{}
-	stopOnce     sync.Once
-	baseCtx      context.Context
-	baseCancel   context.CancelFunc
-	wg           sync.WaitGroup
-	done         chan struct{}
-	tracked      map[string]*trackedOccurrence
+	retryQueue       chan retryItem
+	recoveryWake     chan struct{}
+	stopCh           chan struct{}
+	stopOnce         sync.Once
+	baseCtx          context.Context
+	baseCancel       context.CancelFunc
+	wg               sync.WaitGroup
+	done             chan struct{}
+	tracked          map[string]*trackedOccurrence
+	operationTimeout time.Duration
 }
 
 // retryItem watches one submitted attempt for retry/recovery decisions.
@@ -77,9 +78,10 @@ const (
 	// Automatic recovery is deliberately low-frequency as a safety scan; fast
 	// convergence comes from bounded wake signals emitted on monitor overflow or
 	// uncertain retry-driver errors.
-	recoveryScanLimit = 256
-	recoveryInterval  = 30 * time.Second
-	recoveryTimeout   = 20 * time.Second
+	recoveryScanLimit       = 256
+	recoveryInterval        = 30 * time.Second
+	recoveryTimeout         = 20 * time.Second
+	defaultOperationTimeout = 10 * time.Second
 )
 
 // RecoverReport summarizes one recovery scan over unresolved occurrences.
@@ -106,9 +108,10 @@ var (
 func NewManager(client tasks.Client, store Store, pump *PersistencePump) *Manager {
 	return &Manager{
 		client: client, store: store, pump: pump,
-		definitions: make(map[string]JobDefinition),
-		handlers:    make(map[string]Handler),
-		tracked:     make(map[string]*trackedOccurrence),
+		definitions:     make(map[string]JobDefinition),
+		handlers:        make(map[string]Handler),
+		tracked:         make(map[string]*trackedOccurrence),
+		operationTimeout: defaultOperationTimeout,
 	}
 }
 
@@ -271,7 +274,7 @@ func (m *Manager) Register(def JobDefinition) error {
 	if !handlerExists {
 		return fmt.Errorf("unknown job handler: %s", def.HandlerType)
 	}
-	regCtx, cancel := context.WithTimeout(m.rootContext(), 10*time.Second)
+	regCtx, cancel := m.operationContext()
 	err := m.store.SaveDefinition(regCtx, &def)
 	cancel()
 	if err != nil {
@@ -312,7 +315,7 @@ func (m *Manager) CancelByOwner(owner string) int {
 		tracked = append(tracked, pendingCancel{occurrenceID: occID, scopeOwner: tr.def.ScopeOwner})
 	}
 	m.mu.RUnlock()
-	cancelCtx, cancel := context.WithTimeout(m.rootContext(), 10*time.Second)
+	cancelCtx, cancel := m.operationContext()
 	defer cancel()
 	cancelled := 0
 	for _, definition := range definitions {
@@ -363,6 +366,16 @@ func (m *Manager) rootContext() context.Context {
 		return context.Background()
 	}
 	return ctx
+}
+
+func (m *Manager) operationContext() (context.Context, context.CancelFunc) {
+	m.mu.RLock()
+	timeout := m.operationTimeout
+	m.mu.RUnlock()
+	if timeout <= 0 {
+		timeout = defaultOperationTimeout
+	}
+	return context.WithTimeout(m.rootContext(), timeout)
 }
 
 func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey string) (tasks.Ticket, string, error) {
@@ -620,13 +633,15 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		return
 	default:
 	}
-	ctx, cancel := context.WithTimeout(m.rootContext(), 10*time.Second)
-	defer cancel()
 
+	// Storage timeouts apply to one storage phase only. In particular, do not
+	// carry a 10-second context across a potentially minutes-long retry backoff.
+	ctx, cancel := m.operationContext()
 	occ, err := m.store.GetOccurrence(ctx, item.occurrenceID)
 	if err == nil {
 		switch occ.State {
 		case OccurrenceCancelled, OccurrenceCompleted, OccurrenceFailed:
+			cancel()
 			m.untrack(item.occurrenceID)
 			return
 		}
@@ -634,6 +649,7 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		m.signalRecovery()
 	}
 	if res.Outcome == tasks.OutcomeCompleted {
+		cancel()
 		m.untrack(item.occurrenceID)
 		return
 	}
@@ -642,23 +658,29 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		tasks.OutcomePanic, tasks.OutcomeAbortedBeforeStart:
 		// Retryable physical outcomes.
 	default:
+		cancel()
 		m.untrack(item.occurrenceID)
 		m.signalRecovery()
 		return
 	}
 	attempts, err := m.store.CountAttempts(ctx, item.occurrenceID)
 	if err != nil {
+		cancel()
 		m.signalRecovery()
 		return
 	}
 	if attempts >= maxAttempts(tr.def.RetryPolicy) {
-		if err := m.store.FinalizeOccurrence(ctx, item.occurrenceID, OccurrenceFailed); err != nil {
+		err := m.store.FinalizeOccurrence(ctx, item.occurrenceID, OccurrenceFailed)
+		cancel()
+		if err != nil {
 			m.signalRecovery()
 			return
 		}
 		m.untrack(item.occurrenceID)
 		return
 	}
+	cancel()
+
 	if delay := retryDelay(tr.def.RetryPolicy, attempts); delay > 0 {
 		timer := time.NewTimer(delay)
 		defer timer.Stop()
@@ -670,8 +692,12 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		case <-timer.C:
 		}
 	}
-	// Re-read after backoff: cancellation wins over retry.
-	if occ2, err := m.store.GetOccurrence(ctx, item.occurrenceID); err != nil {
+
+	// Re-read with a fresh operation context after backoff: cancellation wins
+	// over retry, and a long backoff cannot poison the next storage operation.
+	retryCtx, retryCancel := m.operationContext()
+	defer retryCancel()
+	if occ2, err := m.store.GetOccurrence(retryCtx, item.occurrenceID); err != nil {
 		m.untrack(item.occurrenceID)
 		m.signalRecovery()
 		return
@@ -685,7 +711,7 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 	if !accepting {
 		return
 	}
-	if err := m.driveAttempt(ctx, item.occurrenceID, tr.def, tr.handler); err != nil {
+	if err := m.driveAttempt(retryCtx, item.occurrenceID, tr.def, tr.handler); err != nil {
 		m.untrack(item.occurrenceID)
 		m.signalRecovery()
 	}
@@ -721,7 +747,7 @@ func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def Job
 		Commit:           commit,
 	})
 	if err != nil {
-		abortCtx, cancel := context.WithTimeout(m.rootContext(), 10*time.Second)
+		abortCtx, cancel := m.operationContext()
 		commitErr := m.store.CommitAttemptResult(abortCtx, attempt.ID, attempt.LeaseEpoch, AttemptAbortedBeforeStart, nil, err.Error())
 		cancel()
 		m.signalRecovery()
@@ -794,7 +820,7 @@ func (m *Manager) persistAttemptResult(attempt *JobAttempt, result tasks.TaskRes
 	if attempt == nil || m.store == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(m.rootContext(), 10*time.Second)
+	ctx, cancel := m.operationContext()
 	err := m.store.CommitAttemptResult(ctx, attempt.ID, attempt.LeaseEpoch, attemptState(result.Outcome), nil, result.Failure.Message)
 	cancel()
 	// Whether commit succeeded or became uncertain, wake durable recovery. A
