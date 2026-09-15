@@ -20,14 +20,15 @@ var (
 )
 
 const (
-	ReasonOwnerQueueFull     = "owner_queue_full"
-	ReasonPoolBacklogFull    = "pool_backlog_full"
-	ReasonPayloadBudget      = "payload_budget"
-	ReasonResultBackpressure = "result_backpressure"
-	ReasonDeadlineExpired    = "deadline_expired"
-	ReasonScopeClosed        = "scope_closed"
-	ReasonEngineQuiescing    = "engine_quiescing"
-	ReasonUnknownHandler     = "unknown_handler"
+	ReasonOwnerQueueFull      = "owner_queue_full"
+	ReasonPoolBacklogFull     = "pool_backlog_full"
+	ReasonPayloadBudget       = "payload_budget"
+	ReasonResultBackpressure  = "result_backpressure"
+	ReasonDeadlineExpired     = "deadline_expired"
+	ReasonScopeClosed         = "scope_closed"
+	ReasonEngineQuiescing     = "engine_quiescing"
+	ReasonUnknownHandler      = "unknown_handler"
+	ReasonLinearizationCancel = "linearization_cancel"
 )
 
 // AdmissionError carries structured rejection details (ADR 0006 §5.1).

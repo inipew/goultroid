@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/inipew/goultroid/internal/admission"
@@ -30,6 +31,7 @@ type Config struct {
 	Pools               map[tasks.PoolID]PoolEngineConfig
 	ResultCapacity      int
 	MaxTerminalRetained int
+	DecisionTimeout     time.Duration
 }
 
 // DefaultConfig provides standard execution coordinator settings.
@@ -43,6 +45,7 @@ var DefaultConfig = Config{
 	},
 	ResultCapacity:      1000,
 	MaxTerminalRetained: 1000,
+	DecisionTimeout:     5 * time.Second,
 }
 
 type workerAssignment struct {
@@ -107,6 +110,9 @@ type Engine struct {
 	// Dynamic deadline sweeper wake
 	wakeSweeper chan struct{}
 
+	// Decision timeout
+	decisionTimeout time.Duration
+
 	// Lifecycle
 	accepting   bool
 	quiesced    bool
@@ -121,6 +127,9 @@ type Engine struct {
 func ValidateConfig(cfg Config) error {
 	if cfg.ResultCapacity < 0 {
 		return errors.New("taskengine: ResultCapacity cannot be negative")
+	}
+	if cfg.DecisionTimeout < 0 {
+		return errors.New("taskengine: DecisionTimeout cannot be negative")
 	}
 	for poolID, pcfg := range cfg.Pools {
 		if poolID == "" {
@@ -166,6 +175,11 @@ func NewEngine(cfg Config) *Engine {
 		maxTerminal = 1000
 	}
 
+	decisionTimeout := cfg.DecisionTimeout
+	if decisionTimeout <= 0 {
+		decisionTimeout = 5 * time.Second
+	}
+
 	mailboxes := make(map[tasks.PoolID][]chan workerAssignment, len(cfg.Pools))
 	for poolID, pcfg := range cfg.Pools {
 		if pcfg.Concurrency <= 0 {
@@ -200,6 +214,7 @@ func NewEngine(cfg Config) *Engine {
 		registry:            make(map[tasks.TaskID]*taskRecord),
 		cancelledScopes:     make(map[tasks.ScopeIdentity]tasks.Cause),
 		maxTerminalRetained: maxTerminal,
+		decisionTimeout:     decisionTimeout,
 		wakeSweeper:         make(chan struct{}, 1),
 		drainDone:           make(chan struct{}),
 	}
@@ -405,10 +420,32 @@ func (e *Engine) SetOwnerLimits(owner tasks.OwnerID, limits admission.OwnerLimit
 	e.adm.SetOwnerLimits(owner, limits)
 }
 
+type submitDecisionState uint32
+
+const (
+	decisionPending submitDecisionState = iota
+	decisionAccepted
+	decisionRejected
+	decisionCancelled
+)
+
+type submitCell struct {
+	state atomic.Uint32
+}
+
 // Submit validates, reserves capacity, and enqueues work into the coordinator (ADR 0006 §5.1).
 func (e *Engine) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	timeout := e.decisionTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -417,37 +454,47 @@ func (e *Engine) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket,
 		return nil, fmt.Errorf("invalid work spec: %w", err)
 	}
 
+	cell := &submitCell{}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	if err := ctx.Err(); err != nil {
+		cell.state.Store(uint32(decisionCancelled))
 		return nil, err
 	}
 	if _, exists := e.registry[spec.ID]; exists {
+		cell.state.Store(uint32(decisionRejected))
 		return nil, errors.New("task id already registered")
 	}
 	if spec.Handler == nil {
+		cell.state.Store(uint32(decisionRejected))
 		return nil, tasks.NewAdmissionError(tasks.ReasonUnknownHandler, tasks.ErrUnknownHandler)
 	}
 	if !spec.QueueDeadline.IsZero() && !time.Now().Before(spec.QueueDeadline) {
+		cell.state.Store(uint32(decisionRejected))
 		return nil, tasks.NewAdmissionError(tasks.ReasonDeadlineExpired, tasks.ErrDeadlineExpired)
 	}
 
 	if !e.accepting {
+		cell.state.Store(uint32(decisionRejected))
 		return nil, tasks.NewAdmissionError(tasks.ReasonEngineQuiescing, tasks.ErrEngineQuiescing)
 	}
 
 	if spec.Scope.Owner != "" {
 		if cause, closed := e.cancelledScopes[spec.Scope]; closed {
+			cell.state.Store(uint32(decisionRejected))
 			return nil, tasks.NewAdmissionError(tasks.ReasonScopeClosed, fmt.Errorf("%w: scope %s (generation %d) is closed (%s)", tasks.ErrScopeClosed, spec.Scope.Owner, spec.Scope.Generation, cause))
 		}
 		if cause, closed := e.cancelledScopes[tasks.ScopeIdentity{Owner: spec.Scope.Owner, Generation: 0}]; closed {
+			cell.state.Store(uint32(decisionRejected))
 			return nil, tasks.NewAdmissionError(tasks.ReasonScopeClosed, fmt.Errorf("%w: scope %s is closed (%s)", tasks.ErrScopeClosed, spec.Scope.Owner, cause))
 		}
 	}
 
 	// 1. Result capacity reservation check
 	if e.resultCapacity > 0 && e.resultSlotsHeld >= e.resultCapacity {
+		cell.state.Store(uint32(decisionRejected))
 		return nil, tasks.NewAdmissionError(tasks.ReasonResultBackpressure, tasks.ErrResultBackpressure)
 	}
 
@@ -457,6 +504,7 @@ func (e *Engine) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket,
 		payloadBytes = int64(len(b))
 	}
 	if err := e.adm.CanAdmit(spec, payloadBytes); err != nil {
+		cell.state.Store(uint32(decisionRejected))
 		return nil, err
 	}
 
@@ -466,6 +514,12 @@ func (e *Engine) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket,
 	if spec.Job != nil {
 		ref := *spec.Job
 		spec.Job = &ref
+	}
+
+	// Linearization cancellation check right before publication
+	if err := ctx.Err(); err != nil {
+		cell.state.Store(uint32(decisionCancelled))
+		return nil, tasks.NewAdmissionError(tasks.ReasonLinearizationCancel, fmt.Errorf("%w: %v", tasks.ErrLinearizationCancel, err))
 	}
 
 	// 3. Atomically register task
@@ -496,6 +550,8 @@ func (e *Engine) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket,
 		EnqueuedAt:  now,
 		PayloadSize: payloadBytes,
 	})
+
+	cell.state.Store(uint32(decisionAccepted))
 
 	if !spec.QueueDeadline.IsZero() {
 		select {

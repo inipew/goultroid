@@ -395,3 +395,45 @@ func TestEngineEventDrivenDeadlineSweeper(t *testing.T) {
 		t.Fatalf("expected OutcomeTimedOut with CauseQueueExpired, got %+v", res)
 	}
 }
+
+func TestEngineDecisionTimeoutAndLinearizationCancel(t *testing.T) {
+	cfg := Config{
+		Pools: map[tasks.PoolID]PoolEngineConfig{
+			"p": {Concurrency: 1, BacklogLimit: 10},
+		},
+		DecisionTimeout: 50 * time.Millisecond,
+	}
+	e := NewEngine(cfg)
+	if err := e.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer e.Stop(context.Background())
+
+	// 1. Submit with already-cancelled context
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := e.Submit(cancelledCtx, tasks.WorkSpec{
+		ID:         "cancelled-early",
+		Pool:       "p",
+		QuotaOwner: "owner",
+		Handler:    func(ctx context.Context) error { return nil },
+	})
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got: %v", err)
+	}
+
+	// 2. Normal submit within decision timeout succeeds
+	ticket, err := e.Submit(context.Background(), tasks.WorkSpec{
+		ID:         "valid-decision",
+		Pool:       "p",
+		QuotaOwner: "owner",
+		Handler:    func(ctx context.Context) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("unexpected error on valid submit: %v", err)
+	}
+	res, err := ticket.Wait(context.Background())
+	if err != nil || !res.IsSuccess() {
+		t.Fatalf("expected success, got res=%+v err=%v", res, err)
+	}
+}
