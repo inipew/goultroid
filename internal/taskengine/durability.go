@@ -2,6 +2,7 @@ package taskengine
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/inipew/goultroid/internal/tasks"
@@ -21,6 +22,8 @@ import (
 //     otherwise. A stalled store therefore surfaces as admission
 //     backpressure (Phase B retained/result budgets), not silent loss.
 //   - Retention: released only at eviction, as before.
+//   - Persistence waits/direct fallbacks use a dedicated bounded durability
+//     lane, never the user completion-callback delivery workers.
 //
 // A task opts into durability with a non-nil Commit func. Tasks without one
 // (interactive Telegram work, observers, periodic maintenance) resolve their
@@ -56,8 +59,8 @@ const (
 // before reporting an uncertain acknowledgement.
 const commitWaitTimeout = 30 * time.Second
 
-// directCommitTimeout bounds the fallback path that runs the commit inline in
-// the delivery pool when the pump is missing or saturated.
+// directCommitTimeout bounds the fallback path that runs the commit in the
+// dedicated durability lane when the pump is missing or saturated.
 const directCommitTimeout = 15 * time.Second
 
 // terminalStateFor maps a physical outcome to its public terminal state.
@@ -75,7 +78,7 @@ func terminalStateFor(outcome tasks.Outcome) tasks.TaskState {
 }
 
 // beginCommit moves a physically complete record into CommitPending and hands
-// its commit operation to the pump (or the bounded direct fallback). The
+// its acknowledgement wait/direct commit to the bounded durability lane. The
 // caller must have stored the bounded physical result in rec.pendingResult,
 // released quota/ordering, and dispatched further work already.
 func (e *Engine) beginCommit(rec *taskRecord) {
@@ -92,10 +95,6 @@ func (e *Engine) beginCommit(rec *taskRecord) {
 	commitOp := func(ctx context.Context) error {
 		return rec.spec.Commit(ctx, rec.pendingResult)
 	}
-	// waitPump blocks for the pump result, then forwards the acknowledgement.
-	// Returning without an ack is only safe when the wait was abandoned
-	// (shutdown: abandonPending already resolved the record) or the engine is
-	// gone (a late ack would be fenced off anyway).
 	waitPump := func(resCh <-chan error) {
 		var ackErr error
 		select {
@@ -109,16 +108,24 @@ func (e *Engine) beginCommit(rec *taskRecord) {
 		}
 		e.sendInternal(engineRequest{op: opCommitAck, taskID: rec.spec.ID, commitSeq: rec.commitSeq, ackErr: ackErr})
 	}
+
 	if e.commitPump != nil {
 		if resCh, err := e.commitPump.Enqueue(context.Background(), commitOp); err == nil {
-			e.delivery.enqueue(func(tasks.TaskResult) { waitPump(resCh) }, rec.pendingResult)
+			if e.durability != nil && e.durability.enqueue(func() { waitPump(resCh) }) {
+				return
+			}
+			// The pump request may already be executing. Its result channel is
+			// buffered, so failing the local acknowledgement lane cannot wedge the
+			// pump. Resolve as uncertain and let durable recovery reconcile it.
+			e.applyCommitAck(rec.spec.ID, rec.commitSeq, errors.New("durability acknowledgement lane saturated"))
 			return
 		}
 	}
-	// Fallback: pump missing or saturated. Run the commit inline in the
-	// bounded delivery pool so durable evidence is still attempted without
-	// blocking the control loop or spawning unbounded goroutines.
-	e.delivery.enqueue(func(tasks.TaskResult) {
+
+	// Pump missing or saturated: attempt the commit in the separate bounded
+	// durability lane. No completion-callback worker and no detached goroutine
+	// is consumed by this path.
+	if e.durability != nil && e.durability.enqueue(func() {
 		commitCtx, cancel := context.WithTimeout(context.Background(), directCommitTimeout)
 		defer cancel()
 		ackErr := commitOp(commitCtx)
@@ -128,7 +135,13 @@ func (e *Engine) beginCommit(rec *taskRecord) {
 		default:
 		}
 		e.sendInternal(engineRequest{op: opCommitAck, taskID: rec.spec.ID, commitSeq: rec.commitSeq, ackErr: ackErr})
-	}, rec.pendingResult)
+	}) {
+		return
+	}
+
+	// Fail closed when even the bounded durability lane is saturated. This is
+	// explicit RecoveryRequired state, never an unbounded rescue goroutine.
+	e.applyCommitAck(rec.spec.ID, rec.commitSeq, errors.New("durability commit lane saturated"))
 }
 
 // applyCommitAck resolves a CommitPending record. Success preserves the
@@ -187,7 +200,7 @@ func (e *Engine) abandonPending(rec *taskRecord, reason string) {
 		return
 	}
 	// Release the commit waiter first: its late ack (if any) is fenced off by
-	// the state transition below, and this unblocks delivery shutdown.
+	// the state transition below, and this unblocks durability shutdown.
 	e.releaseCommitWaiter(rec.commitSeq)
 	e.commitPending--
 	rec.durability = durRecovery

@@ -11,32 +11,25 @@ import (
 
 // Bounded completion-callback delivery (Phase B5).
 //
-// The old engine spawned one unbounded goroutine per terminal task
-// (`go fn(res)`). Under burst load that is unbounded goroutine/memory growth,
-// and a blocking callback was invisible to Drain. This delivery service uses a
-// fixed worker pool over a bounded queue:
-//
-//   - enqueue is non-blocking for the single-writer runLoop; the queue is
-//     sized to at least ResultCapacity so every admitted task always has a
-//     delivery slot without blocking the control loop. Only a pathological
-//     divergence (workers permanently stuck AND queue full) falls back to a
-//     detached goroutine, counted in fallbacks for observability.
-//   - drain lets Stop/Drain wait for in-flight callbacks under a context
-//     deadline instead of returning while user callbacks still run.
-//   - every callback runs under panic isolation so one bad consumer cannot
-//     kill a delivery worker.
-
+// Delivery capacity is reserved at task admission for every WorkSpec with an
+// OnComplete callback. A reservation is held until that callback returns. This
+// turns a blocked callback consumer into admission backpressure and guarantees
+// that terminal settlement never needs an unbounded detached-goroutine escape
+// hatch. Queue overflow after a valid reservation is therefore an invariant
+// violation: the callback is failed closed and counted, never spawned.
 type deliveryItem struct {
-	fn  func(tasks.TaskResult)
-	res tasks.TaskResult
+	fn      func(tasks.TaskResult)
+	res     tasks.TaskResult
+	release bool
 }
 
 type completionDelivery struct {
-	queue    chan deliveryItem
-	workers  int
-	pending  atomic.Int64
-	active   atomic.Int64
-	fallback atomic.Int64
+	queue        chan deliveryItem
+	reservations chan struct{}
+	workers      int
+	pending      atomic.Int64
+	active       atomic.Int64
+	failed       atomic.Int64
 
 	wg     sync.WaitGroup
 	stopCh chan struct{}
@@ -51,9 +44,10 @@ func newCompletionDelivery(workers, queueCap int) *completionDelivery {
 		queueCap = 256
 	}
 	return &completionDelivery{
-		queue:   make(chan deliveryItem, queueCap),
-		workers: workers,
-		stopCh:  make(chan struct{}),
+		queue:        make(chan deliveryItem, queueCap),
+		reservations: make(chan struct{}, queueCap),
+		workers:      workers,
+		stopCh:       make(chan struct{}),
 	}
 }
 
@@ -74,33 +68,80 @@ func (d *completionDelivery) loop() {
 			d.pending.Add(-1)
 			d.active.Add(1)
 			func() {
-				defer func() { _ = recover() }()
-				defer d.active.Add(-1)
+				defer func() {
+					_ = recover()
+					d.active.Add(-1)
+					if item.release {
+						d.releaseReservation()
+					}
+				}()
 				item.fn(item.res)
 			}()
 		}
 	}
 }
 
-// enqueue hands a callback to the delivery pool without blocking the caller.
-// The bounded queue always has room in steady state (sized >= result
-// capacity); on overflow it degrades to a detached isolated goroutine and
-// counts the event.
-func (d *completionDelivery) enqueue(fn func(tasks.TaskResult), res tasks.TaskResult) {
-	if d == nil || fn == nil {
+// reserve claims one callback-delivery credit. It is intentionally
+// non-blocking because admission must remain bounded and explicit.
+func (d *completionDelivery) reserve() bool {
+	if d == nil {
+		return false
+	}
+	select {
+	case d.reservations <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (d *completionDelivery) releaseReservation() {
+	if d == nil {
 		return
+	}
+	select {
+	case <-d.reservations:
+	default:
+		// Defensive only: a missing reservation is an internal invariant bug.
+		d.failed.Add(1)
+	}
+}
+
+// enqueueReserved hands off a callback whose delivery credit was reserved at
+// admission. Since reservations are bounded by queue capacity and each
+// reservation can have at most one queued callback, the non-blocking send must
+// succeed. If it does not, fail closed: release the credit and count the
+// invariant violation instead of creating a goroutine.
+func (d *completionDelivery) enqueueReserved(fn func(tasks.TaskResult), res tasks.TaskResult) bool {
+	if d == nil || fn == nil {
+		if d != nil {
+			d.releaseReservation()
+		}
+		return false
 	}
 	d.pending.Add(1)
 	select {
-	case d.queue <- deliveryItem{fn: fn, res: res}:
+	case d.queue <- deliveryItem{fn: fn, res: res, release: true}:
+		return true
 	default:
-		d.fallback.Add(1)
-		go func() {
-			defer func() { _ = recover() }()
-			defer d.pending.Add(-1)
-			fn(res)
-		}()
+		d.pending.Add(-1)
+		d.failed.Add(1)
+		d.releaseReservation()
+		return false
 	}
+}
+
+// enqueue is retained for internal compatibility. New TaskEngine completion
+// paths reserve at admission and call enqueueReserved. Callers without a prior
+// reservation receive the same bounded failure policy.
+func (d *completionDelivery) enqueue(fn func(tasks.TaskResult), res tasks.TaskResult) bool {
+	if d == nil || fn == nil || !d.reserve() {
+		if d != nil && fn != nil {
+			d.failed.Add(1)
+		}
+		return false
+	}
+	return d.enqueueReserved(fn, res)
 }
 
 // drain waits until all enqueued callbacks have been dequeued and all active
@@ -146,9 +187,19 @@ func (d *completionDelivery) queueCap() int {
 	return cap(d.queue)
 }
 
+func (d *completionDelivery) reservationLen() int {
+	if d == nil {
+		return 0
+	}
+	return len(d.reservations)
+}
+
+// fallbackCount keeps the existing diagnostics field/API name while its
+// semantics are now bounded delivery failures; detached fallbacks no longer
+// exist.
 func (d *completionDelivery) fallbackCount() int64 {
 	if d == nil {
 		return 0
 	}
-	return d.fallback.Load()
+	return d.failed.Load()
 }

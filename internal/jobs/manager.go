@@ -16,8 +16,7 @@ import (
 // value copy, never a mutable manager record.
 type Handler func(context.Context, JobDefinition) error
 
-// Store is the durable boundary for a job definition and each of its
-// occurrences. Implementations fence attempts by lease epoch.
+// Store is the durable boundary for a job definition and each of its occurrences.
 type Store interface {
 	SaveDefinition(context.Context, *JobDefinition) error
 	UpdateDefinitionCAS(context.Context, *JobDefinition, uint64) error
@@ -36,9 +35,6 @@ type Store interface {
 
 // Manager owns definitions and creates a distinct occurrence and TaskID for
 // every trigger. Physical execution is exclusively delegated to TaskEngine.
-// Failed attempts are retried per the definition RetryPolicy through a
-// bounded monitor pool; CancelOccurrence/CancelByOwner close the durable
-// record so retries can never resurrect cancelled work.
 type Manager struct {
 	mu          sync.RWMutex
 	client      tasks.Client
@@ -49,13 +45,14 @@ type Manager struct {
 	sequence    atomic.Uint64
 	accepting   bool
 
-	retryQueue chan retryItem
-	stopCh     chan struct{}
-	stopOnce   sync.Once
-	baseCtx    context.Context
-	baseCancel context.CancelFunc
-	wg         sync.WaitGroup
-	tracked    map[string]*trackedOccurrence
+	retryQueue   chan retryItem
+	recoveryWake chan struct{}
+	stopCh       chan struct{}
+	stopOnce     sync.Once
+	baseCtx      context.Context
+	baseCancel   context.CancelFunc
+	wg           sync.WaitGroup
+	tracked      map[string]*trackedOccurrence
 }
 
 // retryItem watches one submitted attempt for retry/recovery decisions.
@@ -72,12 +69,15 @@ type trackedOccurrence struct {
 }
 
 const (
-	// retryQueueCap bounds pending retry monitors. When full, tracking is
-	// dropped (durability is unaffected: the attempt result is already
-	// committed by the engine) and recovery converges later via Recover.
 	retryQueueCap = 256
-	// retryWorkers is the fixed monitor pool size.
-	retryWorkers = 4
+	retryWorkers  = 4
+
+	// Automatic recovery is deliberately low-frequency as a safety scan; fast
+	// convergence comes from bounded wake signals emitted on monitor overflow or
+	// uncertain retry-driver errors.
+	recoveryScanLimit = 256
+	recoveryInterval  = 30 * time.Second
+	recoveryTimeout   = 20 * time.Second
 )
 
 // RecoverReport summarizes one recovery scan over unresolved occurrences.
@@ -99,11 +99,17 @@ type Diagnostics struct {
 var _ runtime.Component = (*Manager)(nil)
 
 func NewManager(client tasks.Client, store Store, pump *PersistencePump) *Manager {
-	return &Manager{client: client, store: store, pump: pump, definitions: make(map[string]JobDefinition), handlers: make(map[string]Handler), tracked: make(map[string]*trackedOccurrence)}
+	return &Manager{
+		client: client, store: store, pump: pump,
+		definitions: make(map[string]JobDefinition),
+		handlers: make(map[string]Handler),
+		tracked: make(map[string]*trackedOccurrence),
+	}
 }
 
 func (m *Manager) Name() string           { return "jobs" }
 func (m *Manager) Dependencies() []string { return []string{"taskengine"} }
+
 func (m *Manager) Start(context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -113,6 +119,9 @@ func (m *Manager) Start(context.Context) error {
 	firstStart := m.retryQueue == nil
 	if m.retryQueue == nil {
 		m.retryQueue = make(chan retryItem, retryQueueCap)
+	}
+	if m.recoveryWake == nil {
+		m.recoveryWake = make(chan struct{}, 1)
 	}
 	if m.stopCh == nil {
 		m.stopCh = make(chan struct{})
@@ -129,16 +138,26 @@ func (m *Manager) Start(context.Context) error {
 			m.wg.Add(1)
 			go m.retryLoop()
 		}
+		m.wg.Add(1)
+		go m.recoveryLoop()
+		// Startup recovery is a bounded wake, not a caller responsibility.
+		select {
+		case m.recoveryWake <- struct{}{}:
+		default:
+		}
 	}
 	return nil
 }
+
 func (m *Manager) Quiesce(context.Context) error {
 	m.mu.Lock()
 	m.accepting = false
 	m.mu.Unlock()
 	return nil
 }
+
 func (m *Manager) Drain(context.Context) error { return nil }
+
 func (m *Manager) Stop(ctx context.Context) error {
 	_ = m.Quiesce(context.Background())
 	m.stopOnce.Do(func() {
@@ -165,6 +184,7 @@ func (m *Manager) Stop(ctx context.Context) error {
 		return ctx.Err()
 	}
 }
+
 func (m *Manager) Health(context.Context) runtime.ComponentHealth {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -226,13 +246,10 @@ func (m *Manager) Trigger(ctx context.Context, jobID string) error {
 }
 
 // TryTrigger is retained as an admission-only spelling for timer producers.
-// TaskEngine Submit itself never waits for a physical worker slot.
 func (m *Manager) TryTrigger(ctx context.Context, jobID string) error { return m.Trigger(ctx, jobID) }
 
 // CancelByOwner fences queued work through the scope identity and closes the
-// durable record of every tracked occurrence under that owner, so the retry
-// driver can never resurrect cancelled work. Definitions are immutable
-// records; cancellation does not erase durable history.
+// durable record of every tracked occurrence under that owner.
 func (m *Manager) CancelByOwner(owner string) int {
 	m.mu.RLock()
 	client := m.client
@@ -256,9 +273,6 @@ func (m *Manager) CancelByOwner(owner string) int {
 			cancelled += client.CancelScope(tasks.ScopeIdentity{Owner: definition.ScopeOwner, Generation: uint64(definition.Version)}, tasks.CauseScopeClosed)
 		}
 	}
-	// Durably close tracked occurrences under the cancelled scopes. The retry
-	// monitor observes the cancelled record and drops the occurrence; the
-	// engine commit of an in-flight attempt is fenced by the epoch bump.
 	for _, tr := range tracked {
 		if tr.scopeOwner == owner || tr.scopeOwner == "plugin:"+owner {
 			if err := store.CancelOccurrence(context.Background(), tr.occurrenceID, "owner cancelled"); err == nil {
@@ -270,9 +284,7 @@ func (m *Manager) CancelByOwner(owner string) int {
 	return cancelled
 }
 
-// CancelOccurrence durably cancels one occurrence (cancel epoch bump +
-// tombstone record) and requests cancellation of its latest task, if any.
-// Terminal occurrences resolve to nil; unknown IDs return an error.
+// CancelOccurrence durably cancels one occurrence and requests cancellation of its latest task.
 func (m *Manager) CancelOccurrence(ctx context.Context, occurrenceID, reason string) error {
 	m.mu.RLock()
 	var taskID tasks.TaskID
@@ -319,21 +331,18 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey str
 	if occurrenceKey == "" {
 		occurrenceKey = fmt.Sprintf("manual:%s:%d", jobID, sequence)
 	}
-	occurrenceID := tasks.OccurrenceID(fmt.Sprintf("occ:%s:%d:%d", jobID, time.Now().UTC().UnixNano(), sequence))
+	now := time.Now().UTC()
+	occurrenceID := tasks.OccurrenceID(fmt.Sprintf("occ:%s:%d:%d", jobID, now.UnixNano(), sequence))
 	taskID := tasks.TaskID(fmt.Sprintf("task:%s:1", occurrenceID))
-	occurrence := &JobOccurrence{ID: string(occurrenceID), JobID: jobID, OccurrenceKey: occurrenceKey, ScheduledFor: time.Now().UTC(), ReadyAt: time.Now().UTC(), State: OccurrenceReady}
+	occurrence := &JobOccurrence{ID: string(occurrenceID), JobID: jobID, OccurrenceKey: occurrenceKey, ScheduledFor: now, ReadyAt: now, State: OccurrenceReady}
 	if err := m.store.MaterializeOccurrence(ctx, occurrence); err != nil {
 		return nil, "", fmt.Errorf("materialize job occurrence: %w", err)
 	}
-	// Materialization is idempotent on occurrence_key: a duplicate trigger
-	// resolves to the canonical identity, which the lease below single-flights.
+	// Materialization is idempotent on occurrence_key and rewrites occurrence.ID
+	// to the canonical identity when this logical run already exists.
 	occurrenceID = tasks.OccurrenceID(occurrence.ID)
 	taskID = tasks.TaskID(fmt.Sprintf("task:%s:1", occurrenceID))
-	leaseDuration := definition.Timeout + time.Minute
-	if leaseDuration < time.Minute {
-		leaseDuration = time.Minute
-	}
-	attempt, err := m.store.PrepareAttemptLease(ctx, occurrence.ID, string(taskID), leaseDuration)
+	attempt, err := m.store.PrepareAttemptLease(ctx, occurrence.ID, string(taskID), leaseDurationFor(definition))
 	if err != nil {
 		return nil, "", fmt.Errorf("prepare job attempt: %w", err)
 	}
@@ -350,16 +359,16 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey str
 		Input:            append([]byte(nil), copyDef.Payload...),
 		Job:              &tasks.OccurrenceRef{JobID: copyDef.ID, OccurrenceID: occurrenceID, AttemptID: tasks.AttemptID(attempt.ID), LeaseEpoch: attempt.LeaseEpoch},
 		Handler:          func(runCtx context.Context) error { return handler(runCtx, copyDef) },
-		// Durable commit (Phase C): the engine holds the result credit in
-		// CommitPending until this runs on the persistence pump and the
-		// acknowledgement resolves the ticket. No OnComplete hook is needed;
-		// persistence is engine-driven, not callback-driven.
 		Commit: func(commitCtx context.Context, res tasks.TaskResult) error {
 			return m.store.CommitAttemptResult(commitCtx, attempt.ID, attempt.LeaseEpoch, attemptState(res.Outcome), nil, res.Failure.Message)
 		},
 	})
 	if err != nil {
-		m.persistAttemptResult(attempt, tasks.TaskResult{TaskID: taskID, Outcome: tasks.OutcomeAbortedBeforeStart, Cause: tasks.CausePersistenceFailure, FinishedAt: time.Now().UTC(), Failure: tasks.FailureInfo{Message: err.Error()}})
+		m.persistAttemptResult(attempt, tasks.TaskResult{
+			TaskID: taskID, Outcome: tasks.OutcomeAbortedBeforeStart,
+			Cause: tasks.CausePersistenceFailure, FinishedAt: time.Now().UTC(),
+			Failure: tasks.FailureInfo{Message: err.Error()},
+		})
 		return nil, "", err
 	}
 	m.track(occurrence.ID, copyDef, handler, taskID)
@@ -367,26 +376,16 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey str
 	return ticket, occurrence.ID, nil
 }
 
-// GetOccurrence reads one durable occurrence for timing-layer reconciliation.
 func (m *Manager) GetOccurrence(ctx context.Context, occurrenceID string) (*JobOccurrence, error) {
 	return m.store.GetOccurrence(ctx, occurrenceID)
 }
-
-// OccurrenceByKey resolves an occurrence through its idempotency key, for
-// reclaim paths where the ID was never returned (admission rejected after a
-// concurrent trigger materialized the same logical run).
 func (m *Manager) OccurrenceByKey(ctx context.Context, occurrenceKey string) (*JobOccurrence, error) {
 	return m.store.GetOccurrenceByKey(ctx, occurrenceKey)
 }
-
-// LatestAttempt reads the newest attempt of an occurrence for diagnostics.
 func (m *Manager) LatestAttempt(ctx context.Context, occurrenceID string) (*JobAttempt, error) {
 	return m.store.LatestAttempt(ctx, occurrenceID)
 }
 
-// UpdateDefinition replaces a registered definition through a store
-// revision CAS, so concurrent policy updates cannot silently overwrite each
-// other. The in-memory copy is refreshed from the CAS winner.
 func (m *Manager) UpdateDefinition(ctx context.Context, def JobDefinition) error {
 	if def.ID == "" {
 		return errors.New("job definition id is required")
@@ -407,15 +406,10 @@ func (m *Manager) UpdateDefinition(ctx context.Context, def JobDefinition) error
 	return nil
 }
 
-// PruneOccurrences deletes terminal occurrences of one job older than before,
-// bounding durable growth for high-frequency (e.g. periodic) definitions.
-// History UX lives in the caller's own tables; pruned rows already settled.
 func (m *Manager) PruneOccurrences(ctx context.Context, jobID string, before time.Time, limit int) (int64, error) {
 	return m.store.DeleteTerminalOccurrences(ctx, jobID, before, limit)
 }
 
-// track remembers the latest attempt driver of an occurrence for retry,
-// cancel, and recovery decisions.
 func (m *Manager) track(occurrenceID string, def JobDefinition, handler Handler, taskID tasks.TaskID) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -425,23 +419,38 @@ func (m *Manager) track(occurrenceID string, def JobDefinition, handler Handler,
 	m.tracked[occurrenceID] = &trackedOccurrence{def: def, handler: handler, taskID: taskID}
 }
 
-// enqueueRetry hands an attempt to the bounded monitor pool. If the queue is
-// full the occurrence is left untracked for later Recover convergence;
-// durability is unaffected because the attempt result commits via the engine.
+// signalRecovery coalesces arbitrarily many recovery hints into one bounded wake.
+func (m *Manager) signalRecovery() {
+	m.mu.RLock()
+	wake := m.recoveryWake
+	m.mu.RUnlock()
+	if wake == nil {
+		return
+	}
+	select {
+	case wake <- struct{}{}:
+	default:
+	}
+}
+
+// enqueueRetry hands an attempt to the bounded monitor pool. Queue saturation
+// is never silent: durability remains authoritative and the recovery loop is
+// woken to converge the occurrence once the attempt becomes terminal.
 func (m *Manager) enqueueRetry(item retryItem) {
 	m.mu.RLock()
 	queue := m.retryQueue
 	m.mu.RUnlock()
 	if queue == nil {
+		m.signalRecovery()
 		return
 	}
 	select {
 	case queue <- item:
 	default:
+		m.signalRecovery()
 	}
 }
 
-// retryLoop is the fixed monitor pool worker (Phase D3).
 func (m *Manager) retryLoop() {
 	defer m.wg.Done()
 	for {
@@ -462,8 +471,40 @@ func (m *Manager) retryLoop() {
 	}
 }
 
-// maxAttempts normalizes the retry budget: non-positive means exactly one
-// attempt (no retry).
+// recoveryLoop owns startup/restart convergence and provides a low-frequency
+// safety scan. Overflow/error paths only wake this one bounded goroutine.
+func (m *Manager) recoveryLoop() {
+	defer m.wg.Done()
+	ticker := time.NewTicker(recoveryInterval)
+	defer ticker.Stop()
+	for {
+		m.mu.RLock()
+		stopCh := m.stopCh
+		baseCtx := m.baseCtx
+		wake := m.recoveryWake
+		m.mu.RUnlock()
+		if stopCh == nil || baseCtx == nil || wake == nil {
+			return
+		}
+		select {
+		case <-stopCh:
+			return
+		case <-baseCtx.Done():
+			return
+		case <-wake:
+			m.runRecoveryPass(baseCtx)
+		case <-ticker.C:
+			m.runRecoveryPass(baseCtx)
+		}
+	}
+}
+
+func (m *Manager) runRecoveryPass(baseCtx context.Context) {
+	ctx, cancel := context.WithTimeout(baseCtx, recoveryTimeout)
+	defer cancel()
+	_, _ = m.Recover(ctx, recoveryScanLimit)
+}
+
 func maxAttempts(policy JobRetryPolicy) int {
 	if policy.MaxAttempts <= 0 {
 		return 1
@@ -471,7 +512,6 @@ func maxAttempts(policy JobRetryPolicy) int {
 	return policy.MaxAttempts
 }
 
-// retryDelay computes exponential backoff for the attemptsMade-th failure.
 func retryDelay(policy JobRetryPolicy, attemptsMade int) time.Duration {
 	if policy.InitialDelay <= 0 {
 		return 0
@@ -498,11 +538,7 @@ func leaseDurationFor(def JobDefinition) time.Duration {
 	return leaseDuration
 }
 
-// watchAttempt waits for one attempt's ticket and drives the retry protocol:
-// success or cancellation ends tracking; retryable failure prepares and
-// submits the next attempt within budget; exhaustion finalizes the occurrence
-// as failed. Every decision re-reads the durable record, so cancellation and
-// recovery converge even across races.
+// watchAttempt waits for one attempt's ticket and drives the retry protocol.
 func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 	m.mu.RLock()
 	stopCh := m.stopCh
@@ -513,7 +549,7 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 	}
 	res, werr := item.ticket.Wait(baseCtx)
 	if werr != nil {
-		return // Manager is stopping; drop the watch.
+		return // Manager is stopping.
 	}
 	select {
 	case <-stopCh:
@@ -530,55 +566,62 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 			m.untrack(item.occurrenceID)
 			return
 		}
+	} else {
+		m.signalRecovery()
 	}
 	if res.Outcome == tasks.OutcomeCompleted {
-		// The commit finalized the occurrence as completed.
 		m.untrack(item.occurrenceID)
 		return
 	}
 	switch res.Outcome {
 	case tasks.OutcomeFailed, tasks.OutcomeTimedOut, tasks.OutcomeCancelled,
 		tasks.OutcomePanic, tasks.OutcomeAbortedBeforeStart:
-		// Retryable physical outcomes: fall through to the budget check.
+		// Retryable physical outcomes.
 	default:
-		// Unknown outcome (cannot happen with a real engine ticket): drop
-		// tracking and let Recover converge on the durable record.
 		m.untrack(item.occurrenceID)
+		m.signalRecovery()
 		return
 	}
 	attempts, err := m.store.CountAttempts(ctx, item.occurrenceID)
 	if err != nil {
-		return // Leave tracking; Recover converges on the durable record.
+		m.signalRecovery()
+		return
 	}
 	if attempts >= maxAttempts(tr.def.RetryPolicy) {
-		_ = m.store.FinalizeOccurrence(ctx, item.occurrenceID, OccurrenceFailed)
+		if err := m.store.FinalizeOccurrence(ctx, item.occurrenceID, OccurrenceFailed); err != nil {
+			m.signalRecovery()
+			return
+		}
 		m.untrack(item.occurrenceID)
 		return
 	}
 	if delay := retryDelay(tr.def.RetryPolicy, attempts); delay > 0 {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
 		select {
 		case <-stopCh:
 			return
 		case <-baseCtx.Done():
 			return
-		case <-time.After(delay):
+		case <-timer.C:
 		}
 	}
-	// Re-read the record after the backoff: a concurrent cancel wins here.
-	if occ2, err := m.store.GetOccurrence(ctx, item.occurrenceID); err != nil || occ2.State == OccurrenceCancelled {
+	// Re-read after backoff: cancellation wins over retry.
+	if occ2, err := m.store.GetOccurrence(ctx, item.occurrenceID); err != nil {
+		m.untrack(item.occurrenceID)
+		m.signalRecovery()
+		return
+	} else if occ2.State == OccurrenceCancelled {
 		m.untrack(item.occurrenceID)
 		return
 	}
 	if err := m.driveAttempt(ctx, item.occurrenceID, tr.def, tr.handler); err != nil {
-		// Fenced (cancelled, superseded, or concurrently retried): tracking
-		// ends; the durable record is the source of truth.
 		m.untrack(item.occurrenceID)
+		m.signalRecovery()
 	}
 }
 
-// driveAttempt prepares the next attempt lease and submits its task, then
-// re-arms the monitor. It returns an error when no further driving is
-// possible (cancelled, fenced, or undeliverable).
+// driveAttempt prepares the next attempt lease and submits its task, then re-arms the monitor.
 func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def JobDefinition, handler Handler) error {
 	attempts, err := m.store.CountAttempts(ctx, occurrenceID)
 	if err != nil {
@@ -608,12 +651,13 @@ func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def Job
 		Commit:           commit,
 	})
 	if err != nil {
-		// The lease is held but no task will run it: record the abort
-		// directly so the attempt never dangles as leased. The occurrence
-		// stays dispatched for later recovery.
 		abortCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = m.store.CommitAttemptResult(abortCtx, attempt.ID, attempt.LeaseEpoch, AttemptAbortedBeforeStart, nil, err.Error())
+		commitErr := m.store.CommitAttemptResult(abortCtx, attempt.ID, attempt.LeaseEpoch, AttemptAbortedBeforeStart, nil, err.Error())
+		cancel()
+		m.signalRecovery()
+		if commitErr != nil {
+			return fmt.Errorf("submit retry attempt: %w (persist abort: %v)", err, commitErr)
+		}
 		return err
 	}
 	m.track(occurrenceID, copyDef, handler, nextTaskID)
@@ -621,11 +665,7 @@ func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def Job
 	return nil
 }
 
-// Recover scans unresolved (dispatched) occurrences and converges each one:
-// terminal attempts within budget are re-driven, exhausted ones are
-// finalized as failed, and occurrences with non-terminal attempts are
-// reported stale and left untouched (unknown effect must not be retried
-// blindly). Repeated calls converge; limit bounds each scan.
+// Recover scans unresolved occurrences and converges each one. Repeated calls converge; limit bounds each scan.
 func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error) {
 	var report RecoverReport
 	unresolved, err := m.store.ListUnresolvedOccurrences(ctx, limit)
@@ -650,8 +690,6 @@ func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error)
 		switch latest.State {
 		case AttemptCompleted, AttemptFailed, AttemptTimedOut, AttemptCancelled, AttemptAbortedBeforeStart:
 		default:
-			// Live or crashed-orphan attempt with unknown effect: do not
-			// re-drive automatically.
 			report.Stale++
 			continue
 		}
@@ -678,28 +716,22 @@ func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error)
 	return report, nil
 }
 
+// persistAttemptResult is used only when a lease was created but TaskEngine
+// admission failed. Persist synchronously under a hard timeout: this path is
+// already an error path, and bounded caller backpressure is preferable to an
+// unbounded rescue goroutine or an occurrence left permanently dispatched.
 func (m *Manager) persistAttemptResult(attempt *JobAttempt, result tasks.TaskResult) {
 	if attempt == nil || m.store == nil {
 		return
 	}
-	outcome := attemptState(result.Outcome)
-	errText := result.Failure.Message
-	commitFn := func(ctx context.Context) error {
-		return m.store.CommitAttemptResult(ctx, attempt.ID, attempt.LeaseEpoch, outcome, nil, errText)
-	}
-
-	if m.pump != nil {
-		if _, err := m.pump.Enqueue(context.Background(), commitFn); err == nil {
-			return
-		}
-	}
-
-	// Fallback to direct background commit so durable completion evidence is never lost
-	go func() {
-		commitCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = commitFn(commitCtx)
-	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	err := m.store.CommitAttemptResult(ctx, attempt.ID, attempt.LeaseEpoch, attemptState(result.Outcome), nil, result.Failure.Message)
+	cancel()
+	// Whether commit succeeded or became uncertain, wake durable recovery. A
+	// successful abort is immediately retryable; an uncertain one is revisited
+	// by the periodic safety scan.
+	_ = err
+	m.signalRecovery()
 }
 
 func attemptState(outcome tasks.Outcome) AttemptState {

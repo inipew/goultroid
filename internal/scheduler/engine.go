@@ -26,21 +26,12 @@ const (
 )
 
 const (
-	// actionTimeout bounds one scheduled action attempt inside TaskEngine.
 	actionTimeout = 90 * time.Second
-	// schedulerClaimLease covers a full attempt lifetime (execution timeout
-	// plus commit slack) so the claim lease can never expire mid-execution.
-	// The per-execution heartbeat is gone: execution fits inside the lease
-	// by construction, and retries belong to the JobManager attempt protocol.
 	schedulerClaimLease = 3 * time.Minute
-	// misfireThreshold bounds staleness: a due slot older than this is a
-	// misfire (bot was offline) rather than normal scheduling jitter.
 	misfireThreshold = time.Minute
 )
 
 // trackedClaim follows one claimed row until its occurrence settles durably.
-// Settlement is observed by polling the durable occurrence (timing-layer
-// reconciliation), never by ad-hoc per-execution goroutines.
 type trackedClaim struct {
 	jobID        int64
 	claimToken   string
@@ -67,7 +58,6 @@ type Engine struct {
 	claimWG   sync.WaitGroup
 	quiescing bool
 
-	// claimsMu guards tracked in-flight claims (row ID -> claim).
 	claimsMu sync.Mutex
 	claims   map[int64]*trackedClaim
 
@@ -81,8 +71,7 @@ type Engine struct {
 	runMu   sync.Mutex
 }
 
-// PeriodicTaskSnapshot exposes runtime diagnostics without exposing cancel
-// functions or internal scheduler state.
+// PeriodicTaskSnapshot exposes runtime diagnostics without exposing cancel functions or internal scheduler state.
 type PeriodicTaskSnapshot struct {
 	Owner     string
 	Name      string
@@ -92,8 +81,7 @@ type PeriodicTaskSnapshot struct {
 	LastError string
 }
 
-// PeriodicTaskOptions controls timeout and retry behavior for one periodic
-// task execution. MaxAttempts defaults to one; retries are opt-in.
+// PeriodicTaskOptions controls timeout and retry behavior for one periodic task execution.
 type PeriodicTaskOptions struct {
 	Owner       string
 	Timeout     time.Duration
@@ -109,15 +97,10 @@ func NewEngine(db Repository, svcFunc func() core.TelegramServicer, router *core
 	}
 	const defaultBatchSize = 4
 	engine := &Engine{
-		db:             db,
-		svcFunc:        svcFunc,
-		router:         router,
-		perms:          perms,
-		executor:       core.NewCommandExecutor(logger, nil, 30*time.Second),
-		logger:         logger,
-		claimBatchSize: defaultBatchSize,
-		misfirePolicy:  MisfireRunOnce,
-		wakeChan:       make(chan struct{}, 1),
+		db: db, svcFunc: svcFunc, router: router, perms: perms,
+		executor: core.NewCommandExecutor(logger, nil, 30*time.Second),
+		logger: logger, claimBatchSize: defaultBatchSize,
+		misfirePolicy: MisfireRunOnce, wakeChan: make(chan struct{}, 1),
 	}
 	engine.periodic = newPeriodicCoordinator(logger)
 	engine.claims = make(map[int64]*trackedClaim)
@@ -134,8 +117,7 @@ func (e *Engine) notifyWake() {
 	}
 }
 
-// SetMaxConcurrency is deprecated. Physical scheduler concurrency is governed
-// by the worker manager pool (PoolScheduler). In standalone/test mode, this configures the claim batch size.
+// SetMaxConcurrency is deprecated. Physical scheduler concurrency is governed by TaskEngine.
 func (e *Engine) SetMaxConcurrency(n int) {
 	if n <= 0 {
 		n = 1
@@ -148,14 +130,12 @@ func (e *Engine) SetMaxConcurrency(n int) {
 	e.claimBatchSize = n
 }
 
-// SetTasks configures the sole execution authority for due occurrences.
 func (e *Engine) SetTasks(client tasks.Client) {
 	e.runMu.Lock()
 	defer e.runMu.Unlock()
 	e.tasks = client
 }
 
-// SetJobsManager configures the declarative jobs manager for managed job dispatch.
 func (e *Engine) SetJobsManager(jobsMgr *jobs.Manager) {
 	e.runMu.Lock()
 	defer e.runMu.Unlock()
@@ -163,6 +143,9 @@ func (e *Engine) SetJobsManager(jobsMgr *jobs.Manager) {
 	if jobsMgr == nil {
 		return
 	}
+	// scheduler.action remains registered for message/command schedules and
+	// for recovery of legacy managed-wrapper occurrences created before the
+	// direct ActionJob cutover.
 	if err := jobsMgr.RegisterHandler("scheduler.action", e.runScheduledAction); err != nil {
 		e.logger.Warn("register scheduler action handler", zap.Error(err))
 	}
@@ -174,9 +157,6 @@ func (e *Engine) SetJobsManager(jobsMgr *jobs.Manager) {
 	}
 }
 
-// runPeriodicAction dispatches one periodic attempt to the currently
-// registered function. Timing, retry, and durability belong to the
-// coordinator loop and JobManager; this only bridges into the TaskFunc.
 func (e *Engine) runPeriodicAction(ctx context.Context, definition jobs.JobDefinition) error {
 	if e.periodic == nil {
 		return errors.New("periodic coordinator is not configured")
@@ -196,7 +176,6 @@ func (e *Engine) MisfirePolicy() MisfirePolicy {
 	return e.misfirePolicy
 }
 
-// IsRunning reports whether the scheduler lifecycle is active.
 func (e *Engine) IsRunning() bool {
 	e.runMu.Lock()
 	defer e.runMu.Unlock()
@@ -240,23 +219,11 @@ func (e *Engine) Start(parentCtx context.Context) error {
 	return nil
 }
 
-// Ensure Engine implements runtime.Component.
 var _ runtime.Component = (*Engine)(nil)
 
-// Name returns component identifier for runtime.Component.
-func (e *Engine) Name() string {
-	return "scheduler"
-}
-
-// Dependencies returns component prerequisites for runtime.Component.
-func (e *Engine) Dependencies() []string {
-	return []string{"jobs", "taskengine"}
-}
-
-// Stop gracefully stops the scheduler using the provided context.
-func (e *Engine) Stop(ctx context.Context) error {
-	return e.StopContext(ctx)
-}
+func (e *Engine) Name() string { return "scheduler" }
+func (e *Engine) Dependencies() []string { return []string{"jobs", "taskengine"} }
+func (e *Engine) Stop(ctx context.Context) error { return e.StopContext(ctx) }
 
 func (e *Engine) beginClaimBatch() bool {
 	e.claimMu.Lock()
@@ -268,13 +235,8 @@ func (e *Engine) beginClaimBatch() bool {
 	return true
 }
 
-func (e *Engine) endClaimBatch() {
-	e.claimWG.Done()
-}
+func (e *Engine) endClaimBatch() { e.claimWG.Done() }
 
-// Quiesce stops new durable claims and waits for any claim->submit handoff that
-// already started. This runs before TaskEngine quiesces via the runtime DAG,
-// preventing fresh leases from being claimed after worker admission closes.
 func (e *Engine) Quiesce(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -297,16 +259,12 @@ func (e *Engine) Quiesce(ctx context.Context) error {
 	}
 }
 
-// Health evaluates Scheduler engine health.
 func (e *Engine) Health(ctx context.Context) runtime.ComponentHealth {
 	e.runMu.Lock()
 	running := e.running
 	e.runMu.Unlock()
 	if !running {
-		return runtime.ComponentHealth{
-			Status:  runtime.HealthDegraded,
-			Details: "scheduler engine is not running",
-		}
+		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "scheduler engine is not running"}
 	}
 	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
 }
@@ -357,19 +315,14 @@ func (e *Engine) StopWithTimeout(timeout time.Duration) error {
 	return e.StopContext(ctx)
 }
 
-// RegisterPeriodicTask registers a lifecycle-bound recurring task.
 func (e *Engine) RegisterPeriodicTask(name string, interval time.Duration, task TaskFunc) error {
 	return e.RegisterPeriodicTaskWithOptions(name, interval, PeriodicTaskOptions{Owner: "runtime"}, task)
 }
 
-// RegisterPeriodicTaskOwned registers a periodic task with an explicit owner
-// for diagnostics and future quota enforcement.
 func (e *Engine) RegisterPeriodicTaskOwned(owner, name string, interval time.Duration, task TaskFunc) error {
 	return e.RegisterPeriodicTaskWithOptions(name, interval, PeriodicTaskOptions{Owner: owner}, task)
 }
 
-// RegisterPeriodicTaskWithOptions registers a periodic task with explicit
-// ownership, timeout, and retry semantics.
 func (e *Engine) RegisterPeriodicTaskWithOptions(name string, interval time.Duration, options PeriodicTaskOptions, task TaskFunc) error {
 	if e.periodic == nil {
 		return errors.New("periodic coordinator is not configured")
@@ -384,7 +337,6 @@ func (e *Engine) UnregisterPeriodicTask(name string) error {
 	return e.periodic.Unregister(name)
 }
 
-// UnregisterPeriodicTaskOwned unregisters a specific periodic task registered with an explicit owner.
 func (e *Engine) UnregisterPeriodicTaskOwned(owner, name string) error {
 	if e.periodic == nil {
 		return errors.New("periodic coordinator is not configured")
@@ -392,7 +344,6 @@ func (e *Engine) UnregisterPeriodicTaskOwned(owner, name string) error {
 	return e.periodic.UnregisterOwned(owner, name)
 }
 
-// UnregisterPeriodicTasksByOwner cancels and removes all periodic tasks registered by the specified owner.
 func (e *Engine) UnregisterPeriodicTasksByOwner(owner string) int {
 	if e.periodic == nil {
 		return 0
@@ -400,8 +351,6 @@ func (e *Engine) UnregisterPeriodicTasksByOwner(owner string) int {
 	return e.periodic.UnregisterByOwner(owner)
 }
 
-// PeriodicTaskSnapshots returns a stable copy of registered periodic task
-// diagnostics. It is safe to call while tasks are running.
 func (e *Engine) PeriodicTaskSnapshots() []PeriodicTaskSnapshot {
 	if e.periodic == nil {
 		return nil
@@ -477,6 +426,18 @@ func (e *Engine) registerScheduledDefinition(job *ScheduledJob) error {
 	if job == nil || e.jobsMgr == nil {
 		return errors.New("scheduler jobs manager is not configured")
 	}
+	if job.ActionType == ActionJob {
+		targetID := strings.TrimSpace(job.Payload)
+		if targetID == "" {
+			return errors.New("empty job id in scheduled managed job payload")
+		}
+		if _, ok := e.jobsMgr.Definition(targetID); !ok {
+			return fmt.Errorf("managed job definition not found: %s", targetID)
+		}
+		// No scheduler.action wrapper definition: the timing row will submit a
+		// target occurrence directly when its due slot is claimed.
+		return nil
+	}
 	return e.jobsMgr.Register(jobs.JobDefinition{
 		ID:          scheduledDefinitionID(job.ID),
 		ScopeOwner:  scheduledTaskScope(job.ID),
@@ -485,19 +446,11 @@ func (e *Engine) registerScheduledDefinition(job *ScheduledJob) error {
 		Pool:        "scheduler",
 		Class:       string(tasks.PriorityMaintenance),
 		Timeout:     actionTimeout,
-		// No scheduler-level retries: a failed attempt is retried by the
-		// JobManager attempt protocol, and the row only advances when the
-		// occurrence settles durably (reconcileSettledClaims).
 		RetryPolicy: jobs.JobRetryPolicy{MaxAttempts: 1},
 		Enabled:     true,
 	})
 }
 
-// Cancel removes the durable job first, then cancels every local execution for
-// the job. Removing it from the DB prevents it from being reclaimed by another
-// worker while the context cancellation stops in-flight Telegram operations.
-// A tracked in-flight occurrence is also cancelled durably so the JobManager
-// retry driver can never resurrect it.
 func (e *Engine) Cancel(ctx context.Context, jobID int64) error {
 	if jobID <= 0 {
 		return errors.New("invalid scheduled job ID")
@@ -531,25 +484,17 @@ func (e *Engine) JobHistory(ctx context.Context, jobID int64, limit int) ([]JobH
 	return e.db.GetJobHistory(ctx, jobID, limit)
 }
 
-func scheduledTaskScope(jobID int64) string {
-	return fmt.Sprintf("scheduler:job:%d", jobID)
-}
+func scheduledTaskScope(jobID int64) string { return fmt.Sprintf("scheduler:job:%d", jobID) }
 
 func (e *Engine) runLoop(ctx context.Context) {
 	defer e.wg.Done()
-
-	// idleHeartbeat ensures periodic check even if an external DB change occurred without notifyWake.
 	const idleHeartbeat = 60 * time.Second
-
 	timer := time.NewTimer(idleHeartbeat)
 	defer timer.Stop()
 
 	for {
 		now := time.Now()
 		var nextDelay time.Duration
-
-		// Timing-layer reconciliation first: advance rows whose occurrences
-		// settled durably since the last pass (including across restarts).
 		e.reconcileSettledClaims(ctx)
 
 		earliest, found, err := e.db.GetEarliestDueTime(ctx)
@@ -558,28 +503,23 @@ func (e *Engine) runLoop(ctx context.Context) {
 				return
 			}
 			e.logger.Error("failed to query earliest due scheduled job", zap.Error(err))
-			nextDelay = 1 * time.Second
+			nextDelay = time.Second
 		} else if !found {
 			nextDelay = idleHeartbeat
+		} else if earliest.Before(now) || earliest.Equal(now) {
+			nextDelay = 0
 		} else {
-			if earliest.Before(now) || earliest.Equal(now) {
-				nextDelay = 0
-			} else {
-				nextDelay = earliest.Sub(now)
-				if nextDelay > idleHeartbeat {
-					nextDelay = idleHeartbeat
-				}
+			nextDelay = earliest.Sub(now)
+			if nextDelay > idleHeartbeat {
+				nextDelay = idleHeartbeat
 			}
 		}
 
 		if nextDelay <= 0 {
 			claimed := e.processDueJobs(ctx, now)
 			if claimed == 0 {
-				// Due jobs exist but could not be claimed (e.g. workers busy or Telegram not ready).
-				// Sleep a short backoff to prevent tight CPU spin.
 				nextDelay = 250 * time.Millisecond
 			} else {
-				// Loop immediately to re-check for any more due jobs or compute the new next delay
 				select {
 				case <-ctx.Done():
 					return
@@ -595,18 +535,14 @@ func (e *Engine) runLoop(ctx context.Context) {
 			default:
 			}
 		}
-		// While claims are in flight, settlement must be observed promptly:
-		// cap the sleep so reconciliation cannot starve behind the timer.
 		if nextDelay > time.Second && e.trackedClaimCount() > 0 {
 			nextDelay = time.Second
 		}
 		timer.Reset(nextDelay)
-
 		select {
 		case <-ctx.Done():
 			return
 		case <-e.wakeChan:
-			// Recalculate deadline immediately
 		case fireTime := <-timer.C:
 			e.processDueJobs(ctx, fireTime)
 		}
@@ -619,11 +555,9 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) int {
 	}
 	defer e.endClaimBatch()
 
-	// Do not claim jobs before Telegram service is ready.
 	if e.svcFunc != nil && e.svcFunc() == nil {
 		return 0
 	}
-
 	claimBatch := e.claimBatchSize
 	if claimBatch <= 0 {
 		claimBatch = 1
@@ -631,7 +565,6 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) int {
 	if claimBatch > 10 {
 		claimBatch = 10
 	}
-
 	if e.jobsMgr == nil {
 		e.logger.Error("scheduler jobs manager is not configured")
 		return 0
@@ -645,11 +578,35 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) int {
 
 	for _, job := range claimedJobs {
 		j := job
-		// Stable occurrence key per (row, due slot): a lease-expiry reclaim
-		// of the same slot collapses onto the same logical occurrence, and
-		// the lease single-flights it instead of duplicating execution.
+		// Misfire is a WHEN policy. Resolve it before materializing any
+		// JobOccurrence/JobAttempt so a skipped slot consumes no execution budget.
+		if e.shouldSkipMisfire(j) {
+			e.logger.Warn("recurring scheduled job misfired: skipping execution", zap.Int64("job_id", j.ID), zap.Time("next_run_at", j.NextRunAt))
+			stateCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			cerr := e.db.CompleteScheduledJob(stateCtx, j.ID, j.ClaimToken, 0, time.Now().UTC())
+			cancel()
+			if cerr != nil && !errors.Is(cerr, ErrJobLeaseLost) {
+				e.logger.Warn("failed to advance skipped recurring job", zap.Int64("job_id", j.ID), zap.Error(cerr))
+			}
+			e.notifyWake()
+			continue
+		}
+
 		occurrenceKey := fmt.Sprintf("sched:%d:%d", j.ID, j.NextRunAt.UTC().UnixNano())
-		_, occurrenceID, submitErr := e.jobsMgr.SubmitOccurrence(e.ctx, scheduledDefinitionID(j.ID), occurrenceKey)
+		definitionID := scheduledDefinitionID(j.ID)
+		if j.ActionType == ActionJob {
+			definitionID = strings.TrimSpace(j.Payload)
+			if definitionID == "" {
+				e.onSubmitRejected(ctx, j, occurrenceKey, errors.New("empty job id in scheduled managed job payload"))
+				continue
+			}
+			if _, ok := e.jobsMgr.Definition(definitionID); !ok {
+				e.onSubmitRejected(ctx, j, occurrenceKey, fmt.Errorf("managed job definition not found: %s", definitionID))
+				continue
+			}
+		}
+
+		_, occurrenceID, submitErr := e.jobsMgr.SubmitOccurrence(e.ctx, definitionID, occurrenceKey)
 		if submitErr != nil {
 			e.onSubmitRejected(ctx, j, occurrenceKey, submitErr)
 			continue
@@ -659,23 +616,24 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) int {
 	return len(claimedJobs)
 }
 
-// onSubmitRejected handles a claim whose occurrence could not be admitted.
-// A still-active occurrence (reclaim of a live slot) only needs its lease
-// extended; anything else re-pends the row for a later timing pass.
 func (e *Engine) onSubmitRejected(ctx context.Context, job ScheduledJob, occurrenceKey string, submitErr error) {
 	stateCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if occ, oerr := e.jobsMgr.OccurrenceByKey(stateCtx, occurrenceKey); oerr == nil && occ != nil {
 		switch occ.State {
 		case jobs.OccurrenceReady, jobs.OccurrenceDispatched:
-			// Live occurrence holds the slot: extend the lease one-shot so
-			// the row is not reclaimed while the attempt runs. No heartbeat
-			// goroutine; the attempt fits inside the renewed lease.
 			if rerr := e.db.RenewJobLease(stateCtx, job.ID, job.ClaimToken, schedulerClaimLease, time.Now().UTC()); rerr != nil && !errors.Is(rerr, ErrJobLeaseLost) {
 				e.logger.Error("failed to renew lease for live scheduled occurrence", zap.Int64("job_id", job.ID), zap.Error(rerr))
 			} else {
 				e.trackClaim(job.ID, job.ClaimToken, occ.ID)
 			}
+			return
+		case jobs.OccurrenceCompleted, jobs.OccurrenceFailed, jobs.OccurrenceCancelled:
+			// Admission may fail after canonical materialization and then settle
+			// quickly (e.g. aborted-before-start + automatic recovery). Track the
+			// canonical terminal occurrence so row reconciliation records the real
+			// outcome instead of releasing the slot and creating another logical run.
+			e.trackClaim(job.ID, job.ClaimToken, occ.ID)
 			return
 		}
 	}
@@ -700,18 +658,12 @@ func (e *Engine) untrackClaim(jobID int64) {
 	delete(e.claims, jobID)
 }
 
-// trackedClaimCount reports in-flight claims whose settlement the timing
-// loop must observe promptly (bounds runLoop sleep while any exist).
 func (e *Engine) trackedClaimCount() int {
 	e.claimsMu.Lock()
 	defer e.claimsMu.Unlock()
 	return len(e.claims)
 }
 
-// reconcileSettledClaims advances schedule rows whose occurrences reached a
-// durable terminal state. This is the timing layer's only completion path:
-// attempts, retries, and commits belong to JobManager/TaskEngine. It runs on
-// every runLoop pass, so no per-claim goroutine ever exists.
 func (e *Engine) reconcileSettledClaims(ctx context.Context) {
 	e.claimsMu.Lock()
 	pending := make([]*trackedClaim, 0, len(e.claims))
@@ -719,9 +671,6 @@ func (e *Engine) reconcileSettledClaims(ctx context.Context) {
 		pending = append(pending, c)
 	}
 	e.claimsMu.Unlock()
-	if len(pending) == 0 {
-		return
-	}
 	for _, c := range pending {
 		if ctx.Err() != nil {
 			return
@@ -735,18 +684,16 @@ func (e *Engine) reconcileClaim(ctx context.Context, c *trackedClaim) {
 	defer cancel()
 	row, err := e.db.GetScheduledJob(stateCtx, c.jobID)
 	if err != nil || row == nil {
-		// Row deleted (Cancel path): nothing left to advance.
 		e.untrackClaim(c.jobID)
 		return
 	}
 	if row.ClaimToken != c.claimToken {
-		// Superseded claim (re-claimed or reset elsewhere).
 		e.untrackClaim(c.jobID)
 		return
 	}
 	occ, err := e.jobsMgr.GetOccurrence(stateCtx, c.occurrenceID)
 	if err != nil || occ == nil {
-		return // Not materialized yet or store hiccup; keep tracking.
+		return
 	}
 	now := time.Now().UTC()
 	switch occ.State {
@@ -767,8 +714,6 @@ func (e *Engine) reconcileClaim(ctx context.Context, c *trackedClaim) {
 		e.untrackClaim(c.jobID)
 		e.notifyWake()
 	case jobs.OccurrenceCancelled:
-		// Cancelled attempts must not retry: advance/delete the row without
-		// recording a failure.
 		if cerr := e.db.CompleteScheduledJob(stateCtx, c.jobID, c.claimToken, 0, now); cerr != nil && !errors.Is(cerr, ErrJobLeaseLost) {
 			e.logger.Error("failed to advance cancelled scheduled job", zap.Int64("job_id", c.jobID), zap.Error(cerr))
 			return
@@ -776,14 +721,9 @@ func (e *Engine) reconcileClaim(ctx context.Context, c *trackedClaim) {
 		e.pruneSettledOccurrences(c.jobID)
 		e.untrackClaim(c.jobID)
 		e.notifyWake()
-	default:
-		// Ready/dispatched: attempts still running or retrying under the JobManager.
 	}
 }
 
-// pruneSettledOccurrences bounds durable growth for one schedule definition:
-// rows older than a day are removed best-effort. User-facing history lives in
-// the scheduler history table, which settling already appended.
 func (e *Engine) pruneSettledOccurrences(jobID int64) {
 	if e.jobsMgr == nil {
 		return
@@ -815,17 +755,9 @@ func occurrenceError(ctx context.Context, jobsMgr *jobs.Manager, occurrenceID st
 	return latest.Error
 }
 
-// runScheduledAction is the JobManager handler ("scheduler.action") for one
-// scheduled occurrence. It is timing-agnostic and owns no retry, lease, or
-// completion state: it performs exactly one action and reports its outcome.
-// Attempts, retries, lease fencing, and durable commits belong to
-// JobManager/TaskEngine; row advancement happens in reconcileSettledClaims
-// once the occurrence settles durably.
-//
-// Execution is at-least-once: database fencing stops stale workers from
-// mutating durable state, but a Telegram side effect that succeeded just
-// before a crash cannot be rolled back. A retry after such a crash may
-// duplicate the message or command.
+// runScheduledAction executes message/command wrappers. ActionJob is retained
+// only for recovery compatibility with wrapper occurrences materialized before
+// the direct managed-job cutover; new ActionJob rows bypass this handler.
 func (e *Engine) runScheduledAction(ctx context.Context, definition jobs.JobDefinition) error {
 	jobIDText := strings.TrimPrefix(definition.ID, "scheduler:job:")
 	jobID, err := strconv.ParseInt(jobIDText, 10, 64)
@@ -842,15 +774,8 @@ func (e *Engine) runScheduledAction(ctx context.Context, definition jobs.JobDefi
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if e.shouldSkipMisfire(*job) {
-		e.logger.Warn("recurring scheduled job misfired: skipping execution", zap.Int64("job_id", job.ID), zap.Time("next_run_at", job.NextRunAt))
-		stateCtx, stateCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer stateCancel()
-		if cerr := e.db.CompleteScheduledJob(stateCtx, job.ID, job.ClaimToken, 0, time.Now().UTC()); cerr != nil && !errors.Is(cerr, ErrJobLeaseLost) {
-			e.logger.Warn("failed to advance skipped recurring job", zap.Int64("job_id", job.ID), zap.Error(cerr))
-		}
-		return nil
-	}
+	// Misfire is intentionally absent here. It is timing policy and is resolved
+	// in processDueJobs before occurrence materialization.
 	switch job.ActionType {
 	case ActionMessage:
 		return e.executeSendMessage(ctx, *job)
@@ -863,9 +788,6 @@ func (e *Engine) runScheduledAction(ctx context.Context, definition jobs.JobDefi
 	}
 }
 
-// shouldSkipMisfire reports whether an overdue recurring slot must be skipped
-// without execution. Catch-up is a single compensating run: missed slots
-// collapse into the current occurrence instead of multiplying executions.
 func (e *Engine) shouldSkipMisfire(job ScheduledJob) bool {
 	if job.IntervalSeconds <= 0 {
 		return false
@@ -924,26 +846,19 @@ func (e *Engine) executeCommand(ctx context.Context, job ScheduledJob) error {
 	if e.perms != nil {
 		principal, _ = e.perms.Resolve(ctx, callerID)
 	}
-	// P0-03/P0-04: Use explicit ExecutionScheduled source without synthetic
-	// Message{ID:0,IsOutgoing:true}. This ensures Follow-Up policy uses
-	// FilterMiddlewareForSource (no outgoing bypass) and EditOrReply falls
-	// back to Reply instead of attempting to edit a non-existent message.
 	exec := core.CommandExecution{
-		Ctx:           ctx,
-		Source:        core.ExecutionScheduled,
-		Command:       parsed.Name,
-		Args:          parsed.Args,
-		RawArgs:       parsed.RawArgs,
-		Principal:     principal,
-		Perms:         e.perms,
-		Chat:          &core.Chat{ID: job.ChatID, Type: job.PeerType},
-		Sender:        &core.User{ID: callerID},
-		PeerID:        peer,
+		Ctx: ctx, Source: core.ExecutionScheduled, Command: parsed.Name,
+		Args: parsed.Args, RawArgs: parsed.RawArgs, Principal: principal,
+		Perms: e.perms, Chat: &core.Chat{ID: job.ChatID, Type: job.PeerType},
+		Sender: &core.User{ID: callerID}, PeerID: peer,
 		CorrelationID: fmt.Sprintf("sched-%d-%d", job.ID, time.Now().UnixMilli()),
 	}
 	return e.executor.ExecuteExecution(exec, cmd, svc)
 }
 
+// executeManagedJob is legacy compatibility for already-materialized
+// scheduler.action occurrences. New managed schedules submit the target
+// JobOccurrence directly from processDueJobs and never call this wrapper.
 func (e *Engine) executeManagedJob(ctx context.Context, job ScheduledJob) error {
 	if e.jobsMgr == nil {
 		return errors.New("jobs manager not configured on scheduler engine")
@@ -955,14 +870,9 @@ func (e *Engine) executeManagedJob(ctx context.Context, job ScheduledJob) error 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// Scheduler owns timing and durable trigger state, not managed-job execution.
-	// The managed attempt must outlive this short-lived scheduler wrapper, so it
-	// is parented to the Scheduler engine lifecycle. JobManager then owns the
-	// attempt and TaskEngine owns its physical execution/cancellation.
 	return e.jobsMgr.TryTrigger(e.ctx, jobID)
 }
 
-// ScheduleManagedJob schedules a declarative job from jobs.Manager to run at when, optionally recurring.
 func (e *Engine) ScheduleManagedJob(ctx context.Context, jobID string, when time.Time, interval time.Duration) (*ScheduledJob, error) {
 	if interval <= 0 {
 		return e.ScheduleOnce(ctx, 0, "internal", 0, when, ActionJob, jobID)
