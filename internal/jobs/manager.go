@@ -33,6 +33,14 @@ type Store interface {
 	DeleteTerminalOccurrences(context.Context, string, time.Time, int) (int64, error)
 }
 
+// occurrenceBlocker is an optional durable capability. Keeping it out of Store
+// preserves compatibility with non-SQLite test doubles while production can
+// make missing/disabled handlers explicitly visible instead of retry-looping an
+// occurrence that can never execute.
+type occurrenceBlocker interface {
+	BlockOccurrence(context.Context, string, string) error
+}
+
 // Manager owns definitions and creates a distinct occurrence and TaskID for
 // every trigger. Physical execution is exclusively delegated to TaskEngine.
 type Manager struct {
@@ -48,6 +56,7 @@ type Manager struct {
 
 	retryQueue       chan retryItem
 	recoveryWake     chan struct{}
+	drainWake        chan struct{}
 	stopCh           chan struct{}
 	stopOnce         sync.Once
 	baseCtx          context.Context
@@ -64,7 +73,9 @@ type retryItem struct {
 	ticket       tasks.Ticket
 }
 
-// trackedOccurrence remembers the latest attempt driver of an occurrence.
+// trackedOccurrence remembers the latest admitted execution intent of an
+// occurrence. Presence in this map is also the Manager's in-memory single-flight
+// fence: at most one TaskEngine admission may own an occurrence at a time.
 type trackedOccurrence struct {
 	def     JobDefinition
 	handler Handler
@@ -136,6 +147,7 @@ type RecoverReport struct {
 	Scanned   int
 	Redriven  int
 	Finalized int
+	Blocked   int
 	Stale     int
 	Orphaned  int
 }
@@ -183,6 +195,9 @@ func (m *Manager) Start(ctx context.Context) error {
 	if m.recoveryWake == nil {
 		m.recoveryWake = make(chan struct{}, 1)
 	}
+	if m.drainWake == nil {
+		m.drainWake = make(chan struct{}, 1)
+	}
 	if m.stopCh == nil {
 		m.stopCh = make(chan struct{})
 	}
@@ -221,10 +236,37 @@ func (m *Manager) Quiesce(context.Context) error {
 	m.mu.Lock()
 	m.accepting = false
 	m.mu.Unlock()
+	m.signalDrain()
 	return nil
 }
 
-func (m *Manager) Drain(context.Context) error { return nil }
+// Drain waits for every execution intent that this Manager admitted before
+// Quiesce to reach a terminal/hand-off point. It does not stop TaskEngine; the
+// runtime dependency order keeps TaskEngine alive while Jobs drains. Failed
+// attempts are not retried once admission is closed, so their durable state is
+// intentionally left for startup recovery rather than extending shutdown.
+func (m *Manager) Drain(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		m.mu.RLock()
+		remaining := len(m.tracked)
+		wake := m.drainWake
+		m.mu.RUnlock()
+		if remaining == 0 {
+			return nil
+		}
+		if wake == nil {
+			return errors.New("jobs drain wake is not initialized")
+		}
+		select {
+		case <-wake:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
 
 func (m *Manager) beginStop() {
 	_ = m.Quiesce(context.Background())
@@ -410,10 +452,42 @@ func (m *Manager) CancelOccurrence(ctx context.Context, occurrenceID, reason str
 	return nil
 }
 
+func (m *Manager) signalDrain() {
+	m.mu.RLock()
+	wake := m.drainWake
+	m.mu.RUnlock()
+	if wake == nil {
+		return
+	}
+	select {
+	case wake <- struct{}{}:
+	default:
+	}
+}
+
+func (m *Manager) claimOccurrence(occurrenceID string, def JobDefinition, handler Handler, taskID tasks.TaskID) bool {
+	m.mu.Lock()
+	if _, exists := m.tracked[occurrenceID]; exists {
+		m.mu.Unlock()
+		return false
+	}
+	if m.tracked == nil {
+		m.tracked = make(map[string]*trackedOccurrence)
+	}
+	m.tracked[occurrenceID] = &trackedOccurrence{def: def, handler: handler, taskID: taskID}
+	m.mu.Unlock()
+	m.signalDrain()
+	return true
+}
+
 func (m *Manager) untrack(occurrenceID string) {
 	m.mu.Lock()
+	_, existed := m.tracked[occurrenceID]
 	delete(m.tracked, occurrenceID)
 	m.mu.Unlock()
+	if existed {
+		m.signalDrain()
+	}
 }
 
 func (m *Manager) rootContext() context.Context {
@@ -556,14 +630,17 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey str
 	// TaskEngine first performs fair admission and reserves a real physical
 	// permit. WorkSpec.Prepare runs at the worker boundary before Started.
 	taskID := m.nextTaskID(occurrence.ID)
+	if !m.claimOccurrence(occurrence.ID, definition, handler, taskID) {
+		return nil, occurrence.ID, fmt.Errorf("occurrence %s already has an admitted execution intent", occurrence.ID)
+	}
 	ticket, err := client.Submit(ctx, m.workSpecForOccurrence(definition, handler, occurrence.ID, taskID))
 	if err != nil {
+		m.untrack(occurrence.ID)
 		// No durable attempt exists yet, so admission rejection cannot consume
 		// retry budget. Keep the occurrence Ready and wake recovery/redrive.
 		m.signalRecovery()
 		return nil, occurrence.ID, err
 	}
-	m.track(occurrence.ID, definition, handler, taskID)
 	m.enqueueRetry(retryItem{occurrenceID: occurrence.ID, ticket: ticket})
 	return ticket, occurrence.ID, nil
 }
@@ -600,15 +677,6 @@ func (m *Manager) UpdateDefinition(ctx context.Context, def JobDefinition) error
 
 func (m *Manager) PruneOccurrences(ctx context.Context, jobID string, before time.Time, limit int) (int64, error) {
 	return m.store.DeleteTerminalOccurrences(ctx, jobID, before, limit)
-}
-
-func (m *Manager) track(occurrenceID string, def JobDefinition, handler Handler, taskID tasks.TaskID) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.tracked == nil {
-		m.tracked = make(map[string]*trackedOccurrence)
-	}
-	m.tracked[occurrenceID] = &trackedOccurrence{def: def, handler: handler, taskID: taskID}
 }
 
 // signalRecovery coalesces arbitrarily many recovery hints into one bounded wake.
@@ -746,7 +814,7 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 	stopCh := m.stopCh
 	tr, tracked := m.tracked[item.occurrenceID]
 	m.mu.RUnlock()
-	if !tracked {
+	if !tracked || tr.taskID != item.ticket.TaskID() {
 		return
 	}
 	res, werr := item.ticket.Wait(baseCtx)
@@ -791,6 +859,7 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 	attempts, err := m.store.CountAttempts(ctx, item.occurrenceID)
 	if err != nil {
 		cancel()
+		m.untrack(item.occurrenceID)
 		m.signalRecovery()
 		return
 	}
@@ -820,8 +889,10 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		defer timer.Stop()
 		select {
 		case <-stopCh:
+			m.untrack(item.occurrenceID)
 			return
 		case <-baseCtx.Done():
+			m.untrack(item.occurrenceID)
 			return
 		case <-timer.C:
 		}
@@ -843,10 +914,15 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 	accepting := m.accepting
 	m.mu.RUnlock()
 	if !accepting {
+		m.untrack(item.occurrenceID)
 		return
 	}
+
+	// Release ownership of the completed intent before claiming the retry. This
+	// preserves the one-admitted-intent-per-occurrence invariant even when a
+	// recovery pass runs concurrently with retry handling.
+	m.untrack(item.occurrenceID)
 	if err := m.driveAttempt(retryCtx, item.occurrenceID, tr.def, tr.handler); err != nil {
-		m.untrack(item.occurrenceID)
 		m.signalRecovery()
 	}
 }
@@ -856,14 +932,30 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 // physical permit is granted by TaskEngine.
 func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def JobDefinition, handler Handler) error {
 	nextTaskID := m.nextTaskID(occurrenceID)
+	if !m.claimOccurrence(occurrenceID, def, handler, nextTaskID) {
+		return fmt.Errorf("occurrence %s already has an admitted execution intent", occurrenceID)
+	}
 	ticket, err := m.client.Submit(ctx, m.workSpecForOccurrence(def, handler, occurrenceID, nextTaskID))
 	if err != nil {
+		m.untrack(occurrenceID)
 		m.signalRecovery()
 		return err
 	}
-	m.track(occurrenceID, def, handler, nextTaskID)
 	m.enqueueRetry(retryItem{occurrenceID: occurrenceID, ticket: ticket})
 	return nil
+}
+
+func (m *Manager) blockUnrecoverable(ctx context.Context, occ *JobOccurrence, reason string) bool {
+	blocker, ok := m.store.(occurrenceBlocker)
+	if !ok || occ == nil {
+		return false
+	}
+	if err := blocker.BlockOccurrence(ctx, occ.ID, reason); err != nil {
+		m.signalRecovery()
+		return false
+	}
+	m.untrack(occ.ID)
+	return true
 }
 
 // Recover scans recoverable Ready/Dispatched occurrences and converges each
@@ -879,9 +971,33 @@ func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error)
 		m.mu.RLock()
 		def, found := m.definitions[occ.JobID]
 		handler := m.handlers[def.HandlerType]
+		_, alreadyTracked := m.tracked[occ.ID]
 		m.mu.RUnlock()
-		if !found || !def.Enabled || handler == nil {
-			report.Orphaned++
+		if alreadyTracked {
+			continue
+		}
+		if !found {
+			if m.blockUnrecoverable(ctx, occ, "job definition is unavailable") {
+				report.Blocked++
+			} else {
+				report.Orphaned++
+			}
+			continue
+		}
+		if !def.Enabled {
+			if m.blockUnrecoverable(ctx, occ, "job definition is disabled") {
+				report.Blocked++
+			} else {
+				report.Orphaned++
+			}
+			continue
+		}
+		if handler == nil {
+			if m.blockUnrecoverable(ctx, occ, "job handler is unavailable") {
+				report.Blocked++
+			} else {
+				report.Orphaned++
+			}
 			continue
 		}
 
