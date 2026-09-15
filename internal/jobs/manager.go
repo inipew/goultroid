@@ -71,6 +71,53 @@ type trackedOccurrence struct {
 	taskID  tasks.TaskID
 }
 
+// attemptBinding bridges post-permit prepare and post-execution commit without
+// exposing mutable persistence state through WorkSpec. The prepare operation
+// resolves it exactly once, including when the worker stops waiting before the
+// persistence pump finishes. Commit can therefore distinguish "no attempt was
+// ever created" from an acknowledgement whose durable effect is uncertain.
+type attemptBinding struct {
+	once    sync.Once
+	ready   chan struct{}
+	mu      sync.RWMutex
+	attempt *JobAttempt
+	err     error
+}
+
+func newAttemptBinding() *attemptBinding {
+	return &attemptBinding{ready: make(chan struct{})}
+}
+
+func (b *attemptBinding) resolve(attempt *JobAttempt, err error) {
+	if b == nil {
+		return
+	}
+	b.once.Do(func() {
+		b.mu.Lock()
+		b.attempt = attempt
+		b.err = err
+		b.mu.Unlock()
+		close(b.ready)
+	})
+}
+
+func (b *attemptBinding) wait(ctx context.Context) (*JobAttempt, error) {
+	if b == nil {
+		return nil, errors.New("durable attempt binding is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-b.ready:
+		b.mu.RLock()
+		defer b.mu.RUnlock()
+		return b.attempt, b.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 const (
 	retryQueueCap = 256
 	retryWorkers  = 4
@@ -107,10 +154,12 @@ var (
 
 func NewManager(client tasks.Client, store Store, pump *PersistencePump) *Manager {
 	return &Manager{
-		client: client, store: store, pump: pump,
-		definitions:     make(map[string]JobDefinition),
-		handlers:        make(map[string]Handler),
-		tracked:         make(map[string]*trackedOccurrence),
+		client:           client,
+		store:            store,
+		pump:             pump,
+		definitions:      make(map[string]JobDefinition),
+		handlers:         make(map[string]Handler),
+		tracked:          make(map[string]*trackedOccurrence),
 		operationTimeout: defaultOperationTimeout,
 	}
 }
@@ -315,8 +364,7 @@ func (m *Manager) CancelByOwner(owner string) int {
 		tracked = append(tracked, pendingCancel{occurrenceID: occID, scopeOwner: tr.def.ScopeOwner})
 	}
 	m.mu.RUnlock()
-	cancelCtx, cancel := m.operationContext()
-	defer cancel()
+
 	cancelled := 0
 	for _, definition := range definitions {
 		if definition.ScopeOwner == owner || definition.ScopeOwner == "plugin:"+owner {
@@ -324,12 +372,22 @@ func (m *Manager) CancelByOwner(owner string) int {
 		}
 	}
 	for _, tr := range tracked {
-		if tr.scopeOwner == owner || tr.scopeOwner == "plugin:"+owner {
-			if err := store.CancelOccurrence(cancelCtx, tr.occurrenceID, "owner cancelled"); err == nil {
-				cancelled++
-			}
-			m.untrack(tr.occurrenceID)
+		if tr.scopeOwner != owner && tr.scopeOwner != "plugin:"+owner {
+			continue
 		}
+		// Give every durable cancellation its own bounded operation context. A
+		// large owner cannot let one slow row expire the shared context for all
+		// subsequent rows. More importantly, do not forget an occurrence when
+		// durable cancellation failed: recovery still owns that record.
+		cancelCtx, cancel := m.operationContext()
+		err := store.CancelOccurrence(cancelCtx, tr.occurrenceID, "owner cancelled")
+		cancel()
+		if err != nil {
+			m.signalRecovery()
+			continue
+		}
+		cancelled++
+		m.untrack(tr.occurrenceID)
 	}
 	return cancelled
 }
@@ -378,6 +436,86 @@ func (m *Manager) operationContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(m.rootContext(), timeout)
 }
 
+func (m *Manager) nextTaskID(occurrenceID string) tasks.TaskID {
+	return tasks.TaskID(fmt.Sprintf("task:%s:%d", occurrenceID, m.sequence.Add(1)))
+}
+
+// prepareAttempt is invoked by the fixed physical worker only after its permit
+// has been consumed. The database operation itself runs on the dedicated
+// persistence pump, keeping persistence concurrency bounded and independent of
+// feature handlers while the reserved physical slot provides the ADR fencing
+// point for execution leasing.
+func (m *Manager) prepareAttempt(ctx context.Context, occurrenceID string, taskID tasks.TaskID, def JobDefinition, binding *attemptBinding) (*tasks.OccurrenceRef, error) {
+	if m.pump == nil {
+		err := errors.New("persistence pump is not configured")
+		binding.resolve(nil, err)
+		return nil, err
+	}
+	resCh, err := m.pump.Enqueue(ctx, func(opCtx context.Context) error {
+		attempt, prepareErr := m.store.PrepareAttemptLease(opCtx, occurrenceID, string(taskID), leaseDurationFor(def))
+		binding.resolve(attempt, prepareErr)
+		return prepareErr
+	})
+	if err != nil {
+		binding.resolve(nil, err)
+		return nil, err
+	}
+	select {
+	case err = <-resCh:
+		if err != nil {
+			return nil, err
+		}
+		attempt, bindErr := binding.wait(ctx)
+		if bindErr != nil {
+			return nil, bindErr
+		}
+		if attempt == nil {
+			return nil, errors.New("persistence prepare completed without an attempt")
+		}
+		return &tasks.OccurrenceRef{
+			JobID:        def.ID,
+			OccurrenceID: tasks.OccurrenceID(occurrenceID),
+			AttemptID:    tasks.AttemptID(attempt.ID),
+			LeaseEpoch:   attempt.LeaseEpoch,
+		}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (m *Manager) workSpecForOccurrence(def JobDefinition, handler Handler, occurrenceID string, taskID tasks.TaskID) tasks.WorkSpec {
+	copyDef := def
+	copyDef.Payload = append([]byte(nil), def.Payload...)
+	binding := newAttemptBinding()
+	return tasks.WorkSpec{
+		ID:               taskID,
+		Scope:            tasks.ScopeIdentity{Owner: copyDef.ScopeOwner, Generation: uint64(copyDef.Version)},
+		QuotaOwner:       tasks.OwnerID(copyDef.QuotaOwner),
+		Pool:             tasks.PoolID(copyDef.Pool),
+		Class:            tasks.PriorityClass(copyDef.Class),
+		ExecutionTimeout: copyDef.Timeout,
+		HandlerRef:       copyDef.HandlerType,
+		Input:            append([]byte(nil), copyDef.Payload...),
+		Handler:          func(runCtx context.Context) error { return handler(runCtx, copyDef) },
+		Prepare: func(prepareCtx context.Context, id tasks.TaskID) (*tasks.OccurrenceRef, error) {
+			return m.prepareAttempt(prepareCtx, occurrenceID, id, copyDef, binding)
+		},
+		Commit: func(commitCtx context.Context, res tasks.TaskResult) error {
+			attempt, err := binding.wait(commitCtx)
+			if err != nil {
+				return err
+			}
+			// No durable attempt means prepare failed before a lease existed. There
+			// is deliberately nothing to commit and no execution retry budget was
+			// consumed; the occurrence remains Ready for redrive.
+			if attempt == nil {
+				return nil
+			}
+			return m.store.CommitAttemptResult(commitCtx, attempt.ID, attempt.LeaseEpoch, attemptState(res.Outcome), nil, res.Failure.Message)
+		},
+	}
+}
+
 func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey string) (tasks.Ticket, string, error) {
 	m.mu.RLock()
 	if !m.accepting {
@@ -410,37 +548,22 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey str
 	// Materialization is idempotent on occurrence_key and rewrites occurrence.ID
 	// to the canonical identity when this logical run already exists.
 	occurrenceID = tasks.OccurrenceID(occurrence.ID)
-	taskID := tasks.TaskID(fmt.Sprintf("task:%s:1", occurrenceID))
-	attempt, err := m.store.PrepareAttemptLease(ctx, occurrence.ID, string(taskID), leaseDurationFor(definition))
-	if err != nil {
-		return nil, "", fmt.Errorf("prepare job attempt: %w", err)
+	if occurrence.State != OccurrenceReady {
+		return nil, occurrence.ID, fmt.Errorf("occurrence %s is not ready for admission: %s", occurrence.ID, occurrence.State)
 	}
-	copyDef := definition
-	copyDef.Payload = append([]byte(nil), definition.Payload...)
-	ticket, err := client.Submit(ctx, tasks.WorkSpec{
-		ID:               taskID,
-		Scope:            tasks.ScopeIdentity{Owner: copyDef.ScopeOwner, Generation: uint64(copyDef.Version)},
-		QuotaOwner:       tasks.OwnerID(copyDef.QuotaOwner),
-		Pool:             tasks.PoolID(copyDef.Pool),
-		Class:            tasks.PriorityClass(copyDef.Class),
-		ExecutionTimeout: copyDef.Timeout,
-		HandlerRef:       copyDef.HandlerType,
-		Input:            append([]byte(nil), copyDef.Payload...),
-		Job:              &tasks.OccurrenceRef{JobID: copyDef.ID, OccurrenceID: occurrenceID, AttemptID: tasks.AttemptID(attempt.ID), LeaseEpoch: attempt.LeaseEpoch},
-		Handler:          func(runCtx context.Context) error { return handler(runCtx, copyDef) },
-		Commit: func(commitCtx context.Context, res tasks.TaskResult) error {
-			return m.store.CommitAttemptResult(commitCtx, attempt.ID, attempt.LeaseEpoch, attemptState(res.Outcome), nil, res.Failure.Message)
-		},
-	})
+
+	// Crucial ADR 0006 boundary: do NOT prepare an execution lease here. The
+	// TaskEngine first performs fair admission and reserves a real physical
+	// permit. WorkSpec.Prepare runs at the worker boundary before Started.
+	taskID := m.nextTaskID(occurrence.ID)
+	ticket, err := client.Submit(ctx, m.workSpecForOccurrence(definition, handler, occurrence.ID, taskID))
 	if err != nil {
-		m.persistAttemptResult(attempt, tasks.TaskResult{
-			TaskID: taskID, Outcome: tasks.OutcomeAbortedBeforeStart,
-			Cause: tasks.CausePersistenceFailure, FinishedAt: time.Now().UTC(),
-			Failure: tasks.FailureInfo{Message: err.Error()},
-		})
-		return nil, "", err
+		// No durable attempt exists yet, so admission rejection cannot consume
+		// retry budget. Keep the occurrence Ready and wake recovery/redrive.
+		m.signalRecovery()
+		return nil, occurrence.ID, err
 	}
-	m.track(occurrence.ID, copyDef, handler, taskID)
+	m.track(occurrence.ID, definition, handler, taskID)
 	m.enqueueRetry(retryItem{occurrenceID: occurrence.ID, ticket: ticket})
 	return ticket, occurrence.ID, nil
 }
@@ -615,7 +738,9 @@ func leaseDurationFor(def JobDefinition) time.Duration {
 	return leaseDuration
 }
 
-// watchAttempt waits for one attempt's ticket and drives the retry protocol.
+// watchAttempt waits for one execution intent's ticket and drives the
+// retry/recovery protocol. A failed pre-start prepare may have zero durable
+// attempts; such deferrals are retried without consuming execution budget.
 func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 	m.mu.RLock()
 	stopCh := m.stopCh
@@ -640,7 +765,7 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 	occ, err := m.store.GetOccurrence(ctx, item.occurrenceID)
 	if err == nil {
 		switch occ.State {
-		case OccurrenceCancelled, OccurrenceCompleted, OccurrenceFailed:
+		case OccurrenceCancelled, OccurrenceCompleted, OccurrenceFailed, OccurrenceBlocked:
 			cancel()
 			m.untrack(item.occurrenceID)
 			return
@@ -656,7 +781,7 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 	switch res.Outcome {
 	case tasks.OutcomeFailed, tasks.OutcomeTimedOut, tasks.OutcomeCancelled,
 		tasks.OutcomePanic, tasks.OutcomeAbortedBeforeStart:
-		// Retryable physical outcomes.
+		// Retryable physical/pre-start outcomes.
 	default:
 		cancel()
 		m.untrack(item.occurrenceID)
@@ -681,7 +806,16 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 	}
 	cancel()
 
-	if delay := retryDelay(tr.def.RetryPolicy, attempts); delay > 0 {
+	var delay time.Duration
+	if attempts == 0 {
+		// Admission/prepare deferral is control-plane backpressure, not an
+		// execution attempt. Use a small bounded retry delay rather than the
+		// job's execution retry backoff/budget.
+		delay = 200 * time.Millisecond
+	} else {
+		delay = retryDelay(tr.def.RetryPolicy, attempts)
+	}
+	if delay > 0 {
 		timer := time.NewTimer(delay)
 		defer timer.Stop()
 		select {
@@ -701,7 +835,7 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		m.untrack(item.occurrenceID)
 		m.signalRecovery()
 		return
-	} else if occ2.State == OccurrenceCancelled {
+	} else if occ2.State == OccurrenceCancelled || occ2.State == OccurrenceBlocked {
 		m.untrack(item.occurrenceID)
 		return
 	}
@@ -717,51 +851,23 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 	}
 }
 
-// driveAttempt prepares the next attempt lease and submits its task, then re-arms the monitor.
+// driveAttempt re-admits an execution intent. The durable attempt lease is
+// intentionally NOT created here; WorkSpec.Prepare creates it only after a
+// physical permit is granted by TaskEngine.
 func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def JobDefinition, handler Handler) error {
-	attempts, err := m.store.CountAttempts(ctx, occurrenceID)
+	nextTaskID := m.nextTaskID(occurrenceID)
+	ticket, err := m.client.Submit(ctx, m.workSpecForOccurrence(def, handler, occurrenceID, nextTaskID))
 	if err != nil {
-		return err
-	}
-	nextTaskID := tasks.TaskID(fmt.Sprintf("task:%s:%d", occurrenceID, attempts+1))
-	attempt, err := m.store.PrepareAttemptLease(ctx, occurrenceID, string(nextTaskID), leaseDurationFor(def))
-	if err != nil {
-		return err
-	}
-	copyDef := def
-	copyDef.Payload = append([]byte(nil), def.Payload...)
-	commit := func(commitCtx context.Context, res tasks.TaskResult) error {
-		return m.store.CommitAttemptResult(commitCtx, attempt.ID, attempt.LeaseEpoch, attemptState(res.Outcome), nil, res.Failure.Message)
-	}
-	ticket, err := m.client.Submit(ctx, tasks.WorkSpec{
-		ID:               nextTaskID,
-		Scope:            tasks.ScopeIdentity{Owner: copyDef.ScopeOwner, Generation: uint64(copyDef.Version)},
-		QuotaOwner:       tasks.OwnerID(copyDef.QuotaOwner),
-		Pool:             tasks.PoolID(copyDef.Pool),
-		Class:            tasks.PriorityClass(copyDef.Class),
-		ExecutionTimeout: copyDef.Timeout,
-		HandlerRef:       copyDef.HandlerType,
-		Input:            append([]byte(nil), copyDef.Payload...),
-		Job:              &tasks.OccurrenceRef{JobID: copyDef.ID, OccurrenceID: tasks.OccurrenceID(occurrenceID), AttemptID: tasks.AttemptID(attempt.ID), LeaseEpoch: attempt.LeaseEpoch},
-		Handler:          func(runCtx context.Context) error { return handler(runCtx, copyDef) },
-		Commit:           commit,
-	})
-	if err != nil {
-		abortCtx, cancel := m.operationContext()
-		commitErr := m.store.CommitAttemptResult(abortCtx, attempt.ID, attempt.LeaseEpoch, AttemptAbortedBeforeStart, nil, err.Error())
-		cancel()
 		m.signalRecovery()
-		if commitErr != nil {
-			return fmt.Errorf("submit retry attempt: %w (persist abort: %v)", err, commitErr)
-		}
 		return err
 	}
-	m.track(occurrenceID, copyDef, handler, nextTaskID)
+	m.track(occurrenceID, def, handler, nextTaskID)
 	m.enqueueRetry(retryItem{occurrenceID: occurrenceID, ticket: ticket})
 	return nil
 }
 
-// Recover scans unresolved occurrences and converges each one. Repeated calls converge; limit bounds each scan.
+// Recover scans recoverable Ready/Dispatched occurrences and converges each
+// one. Repeated calls converge; limit bounds each scan.
 func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error) {
 	var report RecoverReport
 	unresolved, err := m.store.ListUnresolvedOccurrences(ctx, limit)
@@ -778,6 +884,18 @@ func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error)
 			report.Orphaned++
 			continue
 		}
+
+		// A Ready occurrence has no execution lease yet. Re-admit it directly;
+		// this is the durable recovery path for overload/crash before prepare.
+		if occ.State == OccurrenceReady {
+			if derr := m.driveAttempt(ctx, occ.ID, def, handler); derr != nil {
+				report.Stale++
+				continue
+			}
+			report.Redriven++
+			continue
+		}
+
 		latest, err := m.store.LatestAttempt(ctx, occ.ID)
 		if err != nil {
 			report.Stale++
@@ -810,24 +928,6 @@ func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error)
 		report.Redriven++
 	}
 	return report, nil
-}
-
-// persistAttemptResult is used only when a lease was created but TaskEngine
-// admission failed. Persist synchronously under a hard timeout: this path is
-// already an error path, and bounded caller backpressure is preferable to an
-// unbounded rescue goroutine or an occurrence left permanently dispatched.
-func (m *Manager) persistAttemptResult(attempt *JobAttempt, result tasks.TaskResult) {
-	if attempt == nil || m.store == nil {
-		return
-	}
-	ctx, cancel := m.operationContext()
-	err := m.store.CommitAttemptResult(ctx, attempt.ID, attempt.LeaseEpoch, attemptState(result.Outcome), nil, result.Failure.Message)
-	cancel()
-	// Whether commit succeeded or became uncertain, wake durable recovery. A
-	// successful abort is immediately retryable; an uncertain one is revisited
-	// by the periodic safety scan.
-	_ = err
-	m.signalRecovery()
 }
 
 func attemptState(outcome tasks.Outcome) AttemptState {
