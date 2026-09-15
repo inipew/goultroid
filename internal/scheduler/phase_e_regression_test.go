@@ -32,9 +32,14 @@ func TestPeriodicAdmissionBackoffPreservesScheduledSlot(t *testing.T) {
 	if !reg.NextRun.After(base) {
 		t.Fatalf("expected backoff wake after slot, got %s", reg.NextRun)
 	}
+	if reg.heapEntry == nil {
+		t.Fatal("backoff did not reschedule the registration immediately")
+	}
+	if reg.heapEntry.Data != nil {
+		t.Fatal("timer heap retained mutable registration data")
+	}
 
 	c.mu.Lock()
-	c.syncHeapLocked()
 	due := c.collectDueLocked(reg.NextRun.Add(time.Millisecond))
 	c.mu.Unlock()
 	if len(due) != 1 {
@@ -42,6 +47,19 @@ func TestPeriodicAdmissionBackoffPreservesScheduledSlot(t *testing.T) {
 	}
 	if !due[0].scheduledFor.Equal(base) {
 		t.Fatalf("retry minted a new slot %s, want %s", due[0].scheduledFor, base)
+	}
+}
+
+func TestPeriodicBareUnregisterCannotSelectAnotherOwner(t *testing.T) {
+	c := newPeriodicCoordinator(nil)
+	pluginKey := periodicKey("plugin:alpha", "same-name")
+	c.entries[pluginKey] = &periodicRegistration{Owner: "plugin:alpha", Name: "same-name", Generation: 1}
+
+	if err := c.Unregister("same-name"); err == nil {
+		t.Fatal("bare runtime unregister unexpectedly removed another owner's task")
+	}
+	if _, ok := c.entries[pluginKey]; !ok {
+		t.Fatal("plugin-owned registration was removed by bare-name unregister")
 	}
 }
 
