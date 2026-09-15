@@ -47,6 +47,42 @@ func executeAssignment(ctx context.Context, spec tasks.WorkSpec, grant *permit, 
 		return result
 	}
 
+	// Durable execution prepare happens only after a real physical permit has
+	// been successfully consumed, but before the Started boundary. This keeps
+	// durable occurrence materialization separate from execution leasing: queue
+	// saturation/cancellation before physical dispatch cannot consume an attempt.
+	if spec.Prepare != nil {
+		ref, err := spec.Prepare(ctx, spec.ID)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				result.Outcome = tasks.OutcomeCancelled
+				result.Cause = tasks.CauseShutdown
+				result.Failure = tasks.FailureInfo{Message: ctxErr.Error()}
+				return result
+			}
+			result.Outcome = tasks.OutcomeAbortedBeforeStart
+			result.Cause = tasks.CausePersistenceFailure
+			result.Failure = tasks.FailureInfo{Message: err.Error()}
+			return result
+		}
+		if ref == nil || ref.AttemptID == "" || ref.OccurrenceID == "" || ref.LeaseEpoch == 0 {
+			result.Outcome = tasks.OutcomeAbortedBeforeStart
+			result.Cause = tasks.CausePersistenceFailure
+			result.Failure = tasks.FailureInfo{Message: "durable prepare returned incomplete attempt identity"}
+			return result
+		}
+		prepared := *ref
+		spec.Job = &prepared
+		result.AttemptID = prepared.AttemptID
+	}
+
+	if err := ctx.Err(); err != nil {
+		result.Outcome = tasks.OutcomeCancelled
+		result.Cause = tasks.CauseShutdown
+		result.Failure = tasks.FailureInfo{Message: err.Error()}
+		return result
+	}
+
 	runCtx := ctx
 	if spec.ExecutionTimeout > 0 {
 		var cancel context.CancelFunc
