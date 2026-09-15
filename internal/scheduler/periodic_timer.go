@@ -17,16 +17,6 @@ import (
 // periodicCoordinator multiplexes all runtime periodic tasks onto an indexed
 // min-heap timer. It decides WHEN work is due; execution, retries, and
 // durability belong to JobManager/TaskEngine (Phase E collapse).
-//
-// Collapse mapping:
-//   - one registration = one JobDefinition ("periodic:owner:name") whose
-//     RetryPolicy derives from PeriodicTaskOptions (MaxAttempts,
-//     RetryDelay -> InitialDelay). There is exactly one retry engine.
-//   - each due tick submits one occurrence; single-flight per registration.
-//   - Runs/Failures/LastRunAt/LastError are reconciled from the durable
-//     occurrence by the timing loop, never by ad-hoc completion callbacks.
-//   - terminal occurrences are pruned (1h window): periodic ticks must not
-//     grow durable storage without bound.
 type periodicCoordinator struct {
 	mu      sync.Mutex
 	entries map[string]*periodicRegistration
@@ -49,16 +39,18 @@ type periodicIdentity struct {
 }
 
 type periodicRegistration struct {
-	Owner      string
-	Name       string
-	Interval   time.Duration
-	Options    PeriodicTaskOptions
-	Task       TaskFunc
-	NextRun    time.Time
-	Generation uint64
-	// Running reserves the registration from due collection while an
-	// occurrence is submitted or in flight. OccurrenceID follows the
-	// durable run; empty while idle.
+	Owner    string
+	Name     string
+	Interval time.Duration
+	Options  PeriodicTaskOptions
+	Task     TaskFunc
+	// ScheduledFor is the immutable logical identity of the current tick. It
+	// remains unchanged while admission is retried/backed off. NextRun is only
+	// the next timing-loop wake deadline and may move temporarily on backpressure.
+	ScheduledFor time.Time
+	NextRun      time.Time
+	Generation   uint64
+
 	Running      bool
 	OccurrenceID string
 	Runs         int64
@@ -79,11 +71,7 @@ func periodicDefinitionID(owner, name string) string {
 	return fmt.Sprintf("periodic:%s:%s", owner, name)
 }
 
-// periodicHandlerType is the single JobManager handler for all periodic
-// ticks; it dispatches to the currently registered TaskFunc.
 const periodicHandlerType = "periodic.task"
-
-// pruneWindow bounds durable growth of periodic occurrences.
 const periodicPruneWindow = time.Hour
 
 func newPeriodicCoordinator(logger *zap.Logger) *periodicCoordinator {
@@ -99,7 +87,6 @@ func newPeriodicCoordinator(logger *zap.Logger) *periodicCoordinator {
 	}
 }
 
-// SetJobsManager wires the declarative owner of periodic execution.
 func (c *periodicCoordinator) SetJobsManager(jobsMgr *jobs.Manager) {
 	c.mu.Lock()
 	c.jobsMgr = jobsMgr
@@ -107,8 +94,6 @@ func (c *periodicCoordinator) SetJobsManager(jobsMgr *jobs.Manager) {
 	c.notify()
 }
 
-// SetClock injects the timing source (defaults to wall clock). Timer sleeps
-// still use the system clock; the injected source drives due computation.
 func (c *periodicCoordinator) SetClock(nowFn func() time.Time) {
 	c.mu.Lock()
 	c.nowFn = nowFn
@@ -160,9 +145,7 @@ func (c *periodicCoordinator) Stop(ctx context.Context) error {
 	}
 	c.running = false
 	cancel := c.cancel
-	type inflight struct {
-		occurrenceID string
-	}
+	type inflight struct{ occurrenceID string }
 	var pending []inflight
 	for _, entry := range c.entries {
 		if entry.Running && entry.OccurrenceID != "" {
@@ -177,8 +160,6 @@ func (c *periodicCoordinator) Stop(ctx context.Context) error {
 	if cancel != nil {
 		cancel()
 	}
-	// In-flight occurrences are cancelled durably so the retry driver cannot
-	// resurrect them after shutdown. Best effort: the engine may be gone.
 	for _, in := range pending {
 		if jobsMgr != nil {
 			cctx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -256,8 +237,6 @@ func (c *periodicCoordinator) Register(name string, interval time.Duration, opti
 		Enabled: true,
 	}
 	if err := jobsMgr.Register(def); err != nil {
-		// Re-registration reuses the definition: refresh policy/timeout
-		// through the revision CAS instead of leaking definitions.
 		if uerr := jobsMgr.UpdateDefinition(context.Background(), def); uerr != nil {
 			return fmt.Errorf("register periodic job: %w", uerr)
 		}
@@ -267,22 +246,14 @@ func (c *periodicCoordinator) Register(name string, interval time.Duration, opti
 	c.seq++
 	generation := c.seq
 	key := periodicKey(owner, name)
-
+	var oldOccurrenceID string
 	if old := c.entries[key]; old != nil {
 		if old.heapEntry != nil {
 			c.heap.Remove(old.heapEntry)
 			old.heapEntry = nil
 		}
-		// An in-flight occurrence keeps running under the previous
-		// generation; cancel it so retries cannot resurrect stale work.
 		if old.Running && old.OccurrenceID != "" {
-			if jobsMgr != nil {
-				go func(occID string) {
-					cctx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)
-					defer ccancel()
-					_ = jobsMgr.CancelOccurrence(cctx, occID, "periodic task re-registered")
-				}(old.OccurrenceID)
-			}
+			oldOccurrenceID = old.OccurrenceID
 		}
 	}
 
@@ -292,21 +263,12 @@ func (c *periodicCoordinator) Register(name string, interval time.Duration, opti
 	}
 	nextRun := now.Add(interval)
 	reg := &periodicRegistration{
-		Owner:      owner,
-		Name:       name,
-		Interval:   interval,
-		Options:    options,
-		Task:       task,
-		NextRun:    nextRun,
-		Generation: generation,
+		Owner: owner, Name: name, Interval: interval, Options: options, Task: task,
+		ScheduledFor: nextRun, NextRun: nextRun, Generation: generation,
 	}
 	timerEntry := &TimerEntry{
-		Kind:       TimerScheduleOccurrence,
-		Owner:      owner,
-		ID:         key,
-		Generation: generation,
-		Deadline:   nextRun,
-		Data:       reg,
+		Kind: TimerScheduleOccurrence, Owner: owner, ID: key,
+		Generation: generation, Deadline: nextRun, Data: reg,
 	}
 	reg.heapEntry = timerEntry
 	c.heap.Push(timerEntry)
@@ -314,13 +276,17 @@ func (c *periodicCoordinator) Register(name string, interval time.Duration, opti
 	c.jobDefs[defID] = periodicIdentity{owner: owner, name: name}
 	c.mu.Unlock()
 
+	// Re-registration cancellation is bounded and synchronous. Repeated
+	// registrations cannot accumulate detached cancellation goroutines.
+	if oldOccurrenceID != "" {
+		cctx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = jobsMgr.CancelOccurrence(cctx, oldOccurrenceID, "periodic task re-registered")
+		ccancel()
+	}
 	c.notify()
 	return nil
 }
 
-// runTaskFunc executes the currently registered function for one job attempt.
-// The attempt's timeout is enforced by TaskEngine (definition Timeout); panics
-// are isolated there and surface as failed attempts under the job retry policy.
 func (c *periodicCoordinator) runTaskFunc(ctx context.Context, defID string) error {
 	c.mu.Lock()
 	id, ok := c.jobDefs[defID]
@@ -352,11 +318,9 @@ func (c *periodicCoordinator) Unregister(name string) error {
 		return errors.New("task name cannot be empty")
 	}
 	c.mu.Lock()
-	// Direct key match first (matches default runtime owner or exact key)
 	entry, ok := c.entries[name]
 	targetKey := name
 	if !ok {
-		// Search across registrations for entry.Name == name
 		for k, e := range c.entries {
 			if e.Name == name {
 				entry = e
@@ -366,7 +330,6 @@ func (c *periodicCoordinator) Unregister(name string) error {
 			}
 		}
 	}
-
 	var occurrenceID, defID string
 	if ok {
 		if entry.heapEntry != nil {
@@ -428,9 +391,7 @@ func (c *periodicCoordinator) UnregisterByOwner(owner string) int {
 		return 0
 	}
 	c.mu.Lock()
-	type inflight struct {
-		occurrenceID string
-	}
+	type inflight struct{ occurrenceID string }
 	var pending []inflight
 	count := 0
 	for key, entry := range c.entries {
@@ -456,8 +417,6 @@ func (c *periodicCoordinator) UnregisterByOwner(owner string) int {
 			ccancel()
 		}
 	}
-	// Owner-wide cancellation also fences the scope so late retries cannot
-	// resurrect the owner's work.
 	if jobsMgr != nil && count > 0 {
 		jobsMgr.CancelByOwner(cleanOwner)
 	}
@@ -467,8 +426,6 @@ func (c *periodicCoordinator) UnregisterByOwner(owner string) int {
 	return count
 }
 
-// inflightCount reports registrations with a submitted occurrence whose
-// settlement the timing loop must observe promptly.
 func (c *periodicCoordinator) inflightCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -486,12 +443,8 @@ func (c *periodicCoordinator) Snapshots() []PeriodicTaskSnapshot {
 	snapshots := make([]PeriodicTaskSnapshot, 0, len(c.entries))
 	for _, entry := range c.entries {
 		snapshots = append(snapshots, PeriodicTaskSnapshot{
-			Owner:     entry.Owner,
-			Name:      entry.Name,
-			Runs:      entry.Runs,
-			Failures:  entry.Failures,
-			LastRunAt: entry.LastRunAt,
-			LastError: entry.LastError,
+			Owner: entry.Owner, Name: entry.Name, Runs: entry.Runs,
+			Failures: entry.Failures, LastRunAt: entry.LastRunAt, LastError: entry.LastError,
 		})
 	}
 	c.mu.Unlock()
@@ -506,12 +459,9 @@ func (c *periodicCoordinator) syncHeapLocked() {
 		}
 		if entry.heapEntry == nil {
 			entry.heapEntry = &TimerEntry{
-				Kind:       TimerScheduleOccurrence,
-				Owner:      entry.Owner,
-				ID:         periodicKey(entry.Owner, entry.Name),
-				Generation: entry.Generation,
-				Deadline:   entry.NextRun,
-				Data:       entry,
+				Kind: TimerScheduleOccurrence, Owner: entry.Owner,
+				ID: periodicKey(entry.Owner, entry.Name), Generation: entry.Generation,
+				Deadline: entry.NextRun, Data: entry,
 			}
 			c.heap.Push(entry.heapEntry)
 		} else if !entry.heapEntry.Deadline.Equal(entry.NextRun) {
@@ -570,9 +520,6 @@ func (c *periodicCoordinator) loop() {
 		if delay < 0 {
 			delay = 0
 		}
-		// While occurrences are in flight, their settlement must be observed
-		// promptly: cap the sleep so reconciliation cannot starve behind a
-		// distant heap deadline.
 		if delay > time.Second && c.inflightCount() > 0 {
 			delay = time.Second
 		}
@@ -593,11 +540,12 @@ func (c *periodicCoordinator) loop() {
 }
 
 type periodicDueRun struct {
-	owner      string
-	name       string
-	generation uint64
-	interval   time.Duration
-	ctx        context.Context
+	owner        string
+	name         string
+	generation   uint64
+	interval     time.Duration
+	scheduledFor time.Time
+	ctx          context.Context
 }
 
 func (c *periodicCoordinator) collectDueLocked(now time.Time) []periodicDueRun {
@@ -615,35 +563,57 @@ func (c *periodicCoordinator) collectDueLocked(now time.Time) []periodicDueRun {
 			continue
 		}
 		entry.Running = true
-		entry.heapEntry = nil // removed from heap while in flight
+		entry.heapEntry = nil
+		scheduledFor := entry.ScheduledFor
+		if scheduledFor.IsZero() {
+			scheduledFor = entry.NextRun
+			entry.ScheduledFor = scheduledFor
+		}
 		due = append(due, periodicDueRun{
-			owner:      entry.Owner,
-			name:       entry.Name,
-			generation: entry.Generation,
-			interval:   entry.Interval,
-			ctx:        c.ctx,
+			owner: entry.Owner, name: entry.Name, generation: entry.Generation,
+			interval: entry.Interval, scheduledFor: scheduledFor, ctx: c.ctx,
 		})
 	}
 	return due
 }
 
-// submitExecution hands one due tick to JobManager as a single occurrence.
-// Admission rejection is timing backpressure, not an attempt: the tick is
-// re-armed with a short backoff without burning retry budget.
+// submitExecution hands one logical due tick to JobManager. occurrenceKey is
+// derived from definition + registration generation + immutable scheduled slot,
+// never from the wall clock at submit time.
 func (c *periodicCoordinator) submitExecution(jobsMgr *jobs.Manager, run periodicDueRun) {
 	if jobsMgr == nil {
 		c.finishSubmission(run)
 		return
 	}
 	defID := periodicDefinitionID(run.owner, run.name)
-	slot := time.Now().UTC().UnixNano()
-	occurrenceKey := fmt.Sprintf("periodic:%s:%d", defID, slot)
+	occurrenceKey := fmt.Sprintf("periodic:%s:%d:%d", defID, run.generation, run.scheduledFor.UTC().UnixNano())
 	_, occurrenceID, err := jobsMgr.SubmitOccurrence(run.ctx, defID, occurrenceKey)
-	if err != nil {
-		c.logger.Warn("periodic occurrence admission rejected", zap.String("task", run.name), zap.Error(err))
-		c.finishSubmission(run)
+	if err == nil {
+		c.bindOccurrence(jobsMgr, run, occurrenceID)
 		return
 	}
+
+	// Materialization happens before TaskEngine admission. An admission error may
+	// therefore already have a canonical occurrence/attempt that recovery owns.
+	// Resolve it by the same stable key instead of minting a second logical tick.
+	stateCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	occ, lookupErr := jobsMgr.OccurrenceByKey(stateCtx, occurrenceKey)
+	cancel()
+	if lookupErr == nil && occ != nil {
+		c.logger.Warn("periodic admission rejected after materialization; tracking canonical occurrence",
+			zap.String("task", run.name), zap.String("occurrence_id", occ.ID), zap.Error(err))
+		c.bindOccurrence(jobsMgr, run, occ.ID)
+		return
+	}
+
+	c.logger.Warn("periodic occurrence admission rejected", zap.String("task", run.name), zap.Error(err))
+	c.finishSubmission(run)
+}
+
+// bindOccurrence attaches a canonical durable occurrence to the current
+// registration. If the registration changed during submission, close the stray
+// occurrence synchronously under a bounded context.
+func (c *periodicCoordinator) bindOccurrence(jobsMgr *jobs.Manager, run periodicDueRun, occurrenceID string) {
 	c.mu.Lock()
 	key := periodicKey(run.owner, run.name)
 	if entry := c.entries[key]; entry != nil && entry.Generation == run.generation && entry.Running {
@@ -652,13 +622,17 @@ func (c *periodicCoordinator) submitExecution(jobsMgr *jobs.Manager, run periodi
 		return
 	}
 	c.mu.Unlock()
-	// Registration changed under the submission: cancel the stray occurrence.
+	if occurrenceID == "" || jobsMgr == nil {
+		return
+	}
 	cctx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer ccancel()
 	_ = jobsMgr.CancelOccurrence(cctx, occurrenceID, "periodic registration changed during submit")
+	ccancel()
 }
 
-// finishSubmission re-arms a tick whose occurrence was never admitted.
+// finishSubmission backs off a tick whose occurrence was not materialized. It
+// changes only the wake deadline; ScheduledFor stays fixed so the next attempt
+// uses exactly the same idempotency key.
 func (c *periodicCoordinator) finishSubmission(run periodicDueRun) {
 	c.mu.Lock()
 	key := periodicKey(run.owner, run.name)
@@ -671,14 +645,14 @@ func (c *periodicCoordinator) finishSubmission(run periodicDueRun) {
 			now = time.Now().UTC()
 		}
 		entry.NextRun = now.Add(200 * time.Millisecond)
+		if entry.ScheduledFor.IsZero() {
+			entry.ScheduledFor = run.scheduledFor
+		}
 	}
 	c.mu.Unlock()
 	c.notify()
 }
 
-// reconcileInflight settles registrations whose occurrences reached a durable
-// terminal state. Retries between attempts are owned by JobManager; the next
-// tick is armed only when the occurrence is final.
 func (c *periodicCoordinator) reconcileInflight(jobsMgr *jobs.Manager) {
 	if jobsMgr == nil {
 		return
@@ -687,13 +661,13 @@ func (c *periodicCoordinator) reconcileInflight(jobsMgr *jobs.Manager) {
 	var inflight []pendingReconcile
 	for key, entry := range c.entries {
 		if entry.Running && entry.OccurrenceID != "" {
-			inflight = append(inflight, pendingReconcile{key: key, occurrenceID: entry.OccurrenceID, defID: periodicDefinitionID(entry.Owner, entry.Name), interval: entry.Interval})
+			inflight = append(inflight, pendingReconcile{
+				key: key, occurrenceID: entry.OccurrenceID,
+				defID: periodicDefinitionID(entry.Owner, entry.Name), interval: entry.Interval,
+			})
 		}
 	}
 	c.mu.Unlock()
-	if len(inflight) == 0 {
-		return
-	}
 	for _, in := range inflight {
 		c.reconcileOne(jobsMgr, in)
 	}
@@ -727,7 +701,7 @@ func (c *periodicCoordinator) reconcileOne(jobsMgr *jobs.Manager, in pendingReco
 			}
 		}
 	default:
-		return // attempts still running or retrying under JobManager.
+		return
 	}
 	if finished.IsZero() {
 		if c.nowFn != nil {
@@ -748,12 +722,14 @@ func (c *periodicCoordinator) reconcileOne(jobsMgr *jobs.Manager, in pendingReco
 			entry.LastError = ""
 		}
 		entry.Runs++
-		entry.NextRun = finished.Add(in.interval)
+		nextSlot := finished.Add(in.interval)
+		entry.ScheduledFor = nextSlot
+		entry.NextRun = nextSlot
 	}
 	c.mu.Unlock()
-	// Bound durable growth: periodic ticks settle constantly; keep an hour.
+
 	pctx, pcancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer pcancel()
 	_, _ = jobsMgr.PruneOccurrences(pctx, in.defID, finished.Add(-periodicPruneWindow), 500)
+	pcancel()
 	c.notify()
 }
