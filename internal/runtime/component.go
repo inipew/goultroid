@@ -45,6 +45,12 @@ type Drainer interface {
 	Drain(context.Context) error
 }
 
+// ForcedStopper performs non-blocking/bounded safety fencing after the
+// graceful shutdown deadline has elapsed. It must not wait indefinitely.
+type ForcedStopper interface {
+	ForceStop(context.Context) error
+}
+
 // CriticalComponent can be implemented by components to specify whether startup
 // failure should abort the runtime (critical) or only log/mark degraded (optional).
 // Default is critical if not implemented.

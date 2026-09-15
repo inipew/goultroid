@@ -394,8 +394,8 @@ func TestRuntime_StopUsesQuiesceDrainStopPhases(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	want := []recordedCall{
-		{component: "app", action: "quiesce"}, {component: "db", action: "quiesce"},
-		{component: "app", action: "drain"}, {component: "db", action: "drain"},
+		{component: "app", action: "quiesce"}, {component: "app", action: "drain"},
+		{component: "db", action: "quiesce"}, {component: "db", action: "drain"},
 		{component: "app", action: "stop"}, {component: "db", action: "stop"},
 	}
 	if !reflect.DeepEqual(calls, want) {

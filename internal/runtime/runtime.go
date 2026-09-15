@@ -196,23 +196,38 @@ func (r *Runtime) Stop(ctx context.Context) error {
 	}
 }
 
+const forcedStopReserve = 250 * time.Millisecond
+
+func reserveForcedStopBudget(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		return context.Background(), func() {}
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return ctx, func() {}
+	}
+	cutoff := deadline.Add(-forcedStopReserve)
+	if time.Until(cutoff) <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithDeadline(ctx, cutoff)
+}
+
 func (r *Runtime) performStop(ctx context.Context) error {
 	r.opMu.Lock()
 	defer r.opMu.Unlock()
 
+	graceCtx, cancelGrace := reserveForcedStopBudget(ctx)
+	defer cancelGrace()
+
 	r.mu.Lock()
-	currentState := r.stateMachine.Current()
-	if currentState == StateStopped {
+	if r.stateMachine.Current() == StateStopped {
 		r.mu.Unlock()
 		return nil
 	}
-
 	_ = r.stateMachine.Transition(StateStopping)
-
-	// Determine shutdown order
 	var stopOrder []Component
 	if len(r.startedComps) > 0 {
-		// Stop only what was started, in reverse order
 		n := len(r.startedComps)
 		stopOrder = make([]Component, n)
 		for i, c := range r.startedComps {
@@ -222,51 +237,61 @@ func (r *Runtime) performStop(ctx context.Context) error {
 	r.mu.Unlock()
 
 	var stopErrs []error
-	for _, phase := range []struct {
-		name string
-		run  func(Component) error
-	}{
-		{name: "quiesce", run: func(comp Component) error {
-			if q, ok := comp.(Quiescer); ok {
-				return q.Quiesce(ctx)
-			}
-			return nil
-		}},
-		{name: "drain", run: func(comp Component) error {
-			if d, ok := comp.(Drainer); ok {
-				return d.Drain(ctx)
-			}
-			return nil
-		}},
-	} {
-		for _, comp := range stopOrder {
-			if err := ctx.Err(); err != nil {
-				stopErrs = append(stopErrs, fmt.Errorf("%s deadline exceeded before component %q: %w", phase.name, comp.Name(), err))
-				break
-			}
-			if err := phase.run(comp); err != nil {
-				stopErrs = append(stopErrs, fmt.Errorf("component %q %s failed: %w", comp.Name(), phase.name, err))
-			}
-		}
-	}
+	graceExhausted := false
 	for _, comp := range stopOrder {
-		if err := ctx.Err(); err != nil {
-			stopErrs = append(stopErrs, fmt.Errorf("stop deadline exceeded before stopping %q: %w", comp.Name(), err))
+		if err := graceCtx.Err(); err != nil {
+			stopErrs = append(stopErrs, fmt.Errorf("graceful shutdown budget exhausted before component %q: %w", comp.Name(), err))
+			graceExhausted = true
 			break
 		}
-
-		if err := comp.Stop(ctx); err != nil {
-			stopErrs = append(stopErrs, fmt.Errorf("component %q stop failed: %w", comp.Name(), err))
+		if q, ok := comp.(Quiescer); ok {
+			if err := q.Quiesce(graceCtx); err != nil {
+				stopErrs = append(stopErrs, fmt.Errorf("component %q quiesce failed: %w", comp.Name(), err))
+			}
+		}
+		if err := graceCtx.Err(); err != nil {
+			stopErrs = append(stopErrs, fmt.Errorf("graceful shutdown budget exhausted after quiescing %q: %w", comp.Name(), err))
+			graceExhausted = true
+			break
+		}
+		if d, ok := comp.(Drainer); ok {
+			if err := d.Drain(graceCtx); err != nil {
+				stopErrs = append(stopErrs, fmt.Errorf("component %q drain failed: %w", comp.Name(), err))
+			}
+		}
+		if graceCtx.Err() != nil {
+			graceExhausted = true
+			break
 		}
 	}
 
-	// Cancel root context after components have stopped or attempted to stop
+	forceMode := graceExhausted || graceCtx.Err() != nil
+	for _, comp := range stopOrder {
+		if !forceMode {
+			if err := comp.Stop(graceCtx); err != nil {
+				stopErrs = append(stopErrs, fmt.Errorf("component %q stop failed: %w", comp.Name(), err))
+			}
+			if graceCtx.Err() == nil {
+				continue
+			}
+			forceMode = true
+			stopErrs = append(stopErrs, fmt.Errorf("graceful shutdown budget exhausted while stopping %q: %w", comp.Name(), graceCtx.Err()))
+		}
+		if forced, ok := comp.(ForcedStopper); ok && ctx.Err() == nil {
+			if err := forced.ForceStop(ctx); err != nil {
+				stopErrs = append(stopErrs, fmt.Errorf("component %q forced stop failed: %w", comp.Name(), err))
+			}
+		}
+	}
+
+	r.rootCancel()
+	if ctx.Err() != nil {
+		stopErrs = append(stopErrs, fmt.Errorf("shutdown hard deadline exceeded: %w", ctx.Err()))
+	}
 	if len(stopErrs) > 0 {
-		r.rootCancel()
 		r.stateMachine.SetFailed()
 		return fmt.Errorf("shutdown completed with errors: %w", errors.Join(stopErrs...))
 	}
-	r.rootCancel()
 	_ = r.stateMachine.Transition(StateStopped)
 	return nil
 }

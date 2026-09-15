@@ -31,6 +31,17 @@ func (c dependencyComponent) Drain(ctx context.Context) error {
 	return nil
 }
 
+// ForceStop preserves emergency lifecycle capability across the composition
+// wrapper. Components that do not expose an explicit forced path remain a
+// no-op here; Runtime must never call an arbitrary potentially blocking Stop
+// after the graceful budget has expired.
+func (c dependencyComponent) ForceStop(ctx context.Context) error {
+	if component, ok := c.Component.(runtime.ForcedStopper); ok {
+		return component.ForceStop(ctx)
+	}
+	return nil
+}
+
 type resourceComponent struct {
 	name         string
 	dependencies []string
@@ -45,7 +56,14 @@ func (c resourceComponent) Start(context.Context) error { return nil }
 func (c resourceComponent) Health(context.Context) runtime.ComponentHealth {
 	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
 }
-func (c resourceComponent) Stop(context.Context) error {
+func (c resourceComponent) Stop(ctx context.Context) error {
+	if ctx != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+	}
 	if c.stop == nil {
 		return nil
 	}
