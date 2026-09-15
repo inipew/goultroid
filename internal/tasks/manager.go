@@ -9,9 +9,11 @@ import (
 )
 
 var (
-	ErrQuotaExceeded = errors.New("task quota exceeded for owner")
-	ErrTaskNotFound  = errors.New("task not found")
-	ErrTaskExists    = errors.New("task already registered")
+	ErrQuotaExceeded       = errors.New("task quota exceeded for owner")
+	ErrTaskNotFound        = errors.New("task not found")
+	ErrTaskExists          = errors.New("task already registered")
+	ErrStartPermitNotHeld  = errors.New("task start permit not held")
+	ErrStartPermitAlreadyHeld = errors.New("task start permit already held")
 )
 
 // Quota defines concurrency and queue limits for a task owner (e.g. a plugin).
@@ -49,9 +51,10 @@ type TaskStats struct {
 }
 
 type trackedTask struct {
-	task   Task
-	ctx    context.Context
-	cancel context.CancelFunc
+	task           Task
+	ctx            context.Context
+	cancel         context.CancelFunc
+	startPermitted bool
 }
 
 // Manager tracks task lifecycles, enforces per-owner execution quotas,
@@ -61,9 +64,10 @@ type Manager struct {
 	defaultQuota Quota
 	quotas       map[string]Quota
 
-	activeTasks map[string]*trackedTask
-	ownerCounts map[string]*OwnerStats
-	slotChanged chan struct{}
+	activeTasks  map[string]*trackedTask
+	ownerCounts  map[string]*OwnerStats
+	ownerPermits map[string]int
+	slotChanged  chan struct{}
 
 	totalCompleted int64
 	totalFailed    int64
@@ -78,6 +82,7 @@ func NewManager() *Manager {
 		quotas:       make(map[string]Quota),
 		activeTasks:  make(map[string]*trackedTask),
 		ownerCounts:  make(map[string]*OwnerStats),
+		ownerPermits: make(map[string]int),
 		slotChanged:  make(chan struct{}),
 	}
 }
@@ -158,7 +163,8 @@ func (m *Manager) Register(parentCtx context.Context, task Task) (context.Contex
 }
 
 // TryStart transitions a queued task immediately or returns ErrQuotaExceeded
-// when the owner's concurrency slot is unavailable.
+// when the owner's concurrency slot is unavailable. Start permits reserved by
+// WorkerManager count against the same concurrency budget.
 func (m *Manager) TryStart(taskID string) (context.Context, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -168,6 +174,9 @@ func (m *Manager) TryStart(taskID string) (context.Context, error) {
 // WaitStart waits until the task can consume an owner concurrency slot. A task
 // that has already been admitted to the queue is held instead of being failed
 // merely because another task from the same owner is still running.
+//
+// WorkerManager should use WaitStartPermit + StartPermitted instead. WaitStart
+// remains the direct transition API for callers that execute work themselves.
 func (m *Manager) WaitStart(waitCtx context.Context, taskID string) (context.Context, error) {
 	if waitCtx == nil {
 		waitCtx = context.Background()
@@ -189,8 +198,7 @@ func (m *Manager) WaitStart(waitCtx context.Context, taskID string) (context.Con
 		}
 
 		quota := m.quotaLocked(tracked.task.Owner)
-		ownerStats := m.getOwnerStatsLocked(tracked.task.Owner)
-		if quota.MaxConcurrent <= 0 || ownerStats.Running < quota.MaxConcurrent {
+		if m.hasConcurrencySlotLocked(tracked.task.Owner, quota) {
 			ctx, err := m.startLocked(taskID)
 			m.mu.Unlock()
 			return ctx, err
@@ -209,6 +217,91 @@ func (m *Manager) WaitStart(waitCtx context.Context, taskID string) (context.Con
 	}
 }
 
+// WaitStartPermit waits for and reserves one owner concurrency slot while
+// keeping the task in StateQueued. This lets admission wait outside physical
+// worker goroutines without claiming that the task is already executing.
+func (m *Manager) WaitStartPermit(waitCtx context.Context, taskID string) (context.Context, error) {
+	if waitCtx == nil {
+		waitCtx = context.Background()
+	}
+	for {
+		m.mu.Lock()
+		tracked, exists := m.activeTasks[taskID]
+		if !exists {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("%w: %s", ErrTaskNotFound, taskID)
+		}
+		if err := waitCtx.Err(); err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
+		if err := tracked.ctx.Err(); err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
+		if tracked.task.State != StateQueued {
+			state := tracked.task.State
+			m.mu.Unlock()
+			return nil, fmt.Errorf("task %s cannot reserve start permit from state %s", taskID, state)
+		}
+		if tracked.startPermitted {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("%w: %s", ErrStartPermitAlreadyHeld, taskID)
+		}
+
+		quota := m.quotaLocked(tracked.task.Owner)
+		if m.hasConcurrencySlotLocked(tracked.task.Owner, quota) {
+			tracked.startPermitted = true
+			m.ownerPermits[tracked.task.Owner]++
+			ctx := tracked.ctx
+			m.mu.Unlock()
+			return ctx, nil
+		}
+
+		slotChanged := m.slotChanged
+		taskCtx := tracked.ctx
+		m.mu.Unlock()
+		select {
+		case <-slotChanged:
+		case <-taskCtx.Done():
+			return nil, taskCtx.Err()
+		case <-waitCtx.Done():
+			return nil, waitCtx.Err()
+		}
+	}
+}
+
+// StartPermitted performs the Queued -> Running transition for a task whose
+// owner concurrency slot was reserved by WaitStartPermit. WorkerManager calls
+// this only after a physical worker has dequeued the task.
+func (m *Manager) StartPermitted(taskID string) (context.Context, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	tracked, exists := m.activeTasks[taskID]
+	if !exists {
+		return nil, fmt.Errorf("%w: %s", ErrTaskNotFound, taskID)
+	}
+	if tracked.task.State != StateQueued {
+		return nil, fmt.Errorf("task %s cannot start from state %s", taskID, tracked.task.State)
+	}
+	if !tracked.startPermitted {
+		return nil, fmt.Errorf("%w: %s", ErrStartPermitNotHeld, taskID)
+	}
+	if err := tracked.ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	m.releaseStartPermitLocked(tracked)
+	ownerStats := m.getOwnerStatsLocked(tracked.task.Owner)
+	ownerStats.Queued--
+	ownerStats.Running++
+	tracked.task.State = StateRunning
+	tracked.task.StartedAt = time.Now().UTC()
+
+	return tracked.ctx, nil
+}
+
 func (m *Manager) startLocked(taskID string) (context.Context, error) {
 	tracked, exists := m.activeTasks[taskID]
 	if !exists {
@@ -218,13 +311,15 @@ func (m *Manager) startLocked(taskID string) (context.Context, error) {
 	if tracked.task.State != StateQueued {
 		return nil, fmt.Errorf("task %s cannot start from state %s", taskID, tracked.task.State)
 	}
+	if tracked.startPermitted {
+		return nil, fmt.Errorf("%w: %s", ErrStartPermitAlreadyHeld, taskID)
+	}
 	quota := m.quotaLocked(tracked.task.Owner)
-
-	ownerStats := m.getOwnerStatsLocked(tracked.task.Owner)
-	if quota.MaxConcurrent > 0 && ownerStats.Running >= quota.MaxConcurrent {
+	if !m.hasConcurrencySlotLocked(tracked.task.Owner, quota) {
 		return nil, fmt.Errorf("%w: max concurrent limit %d reached for %s", ErrQuotaExceeded, quota.MaxConcurrent, tracked.task.Owner)
 	}
 
+	ownerStats := m.getOwnerStatsLocked(tracked.task.Owner)
 	ownerStats.Queued--
 	ownerStats.Running++
 
@@ -239,6 +334,27 @@ func (m *Manager) quotaLocked(owner string) Quota {
 		return q
 	}
 	return m.defaultQuota
+}
+
+func (m *Manager) hasConcurrencySlotLocked(owner string, quota Quota) bool {
+	if quota.MaxConcurrent <= 0 {
+		return true
+	}
+	ownerStats := m.getOwnerStatsLocked(owner)
+	return ownerStats.Running+m.ownerPermits[owner] < quota.MaxConcurrent
+}
+
+func (m *Manager) releaseStartPermitLocked(tracked *trackedTask) {
+	if tracked == nil || !tracked.startPermitted {
+		return
+	}
+	tracked.startPermitted = false
+	owner := tracked.task.Owner
+	if permits := m.ownerPermits[owner]; permits > 1 {
+		m.ownerPermits[owner] = permits - 1
+	} else {
+		delete(m.ownerPermits, owner)
+	}
 }
 
 func (m *Manager) notifySlotChangeLocked() {
@@ -262,6 +378,10 @@ func (m *Manager) Finish(taskID string, finalState TaskState, err error) {
 		m.notifySlotChangeLocked()
 	} else if tracked.task.State == StateQueued {
 		ownerStats.Queued--
+		if tracked.startPermitted {
+			m.releaseStartPermitLocked(tracked)
+			m.notifySlotChangeLocked()
+		}
 	}
 
 	tracked.task.CompletedAt = time.Now().UTC()
