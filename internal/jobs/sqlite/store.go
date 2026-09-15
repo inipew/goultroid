@@ -19,6 +19,7 @@ var (
 	ErrAttemptNotFound    = errors.New("job attempt not found")
 	ErrLeaseFencingLost   = errors.New("lease fencing lost or stale epoch")
 	ErrOccurrenceNotReady = errors.New("occurrence is not in ready state")
+	ErrRevisionConflict   = errors.New("revision conflict: definition changed concurrently")
 )
 
 // Store provides persistence transactions for redesigned job definitions, schedules, occurrences, and attempts.
@@ -73,6 +74,52 @@ func (s *Store) SaveDefinition(ctx context.Context, def *jobs.JobDefinition) err
 	return nil
 }
 
+// UpdateDefinitionCAS updates a JobDefinition only if its revision still
+// matches expectedRevision (compare-and-swap). Concurrent writers lose with
+// ErrRevisionConflict instead of silently overwriting each other; the winner's
+// revision is assigned back onto def.
+func (s *Store) UpdateDefinitionCAS(ctx context.Context, def *jobs.JobDefinition, expectedRevision uint64) error {
+	retryPolicyBytes, err := json.Marshal(def.RetryPolicy)
+	if err != nil {
+		return fmt.Errorf("encode retry policy: %w", err)
+	}
+	now := time.Now().UTC()
+	timeoutMs := def.Timeout.Milliseconds()
+	enabledInt := 0
+	if def.Enabled {
+		enabledInt = 1
+	}
+	query := `
+	UPDATE job_definitions SET
+		scope_owner = ?, quota_owner = ?, handler_type = ?, version = ?,
+		payload = ?, pool = ?, class = ?, timeout_ms = ?,
+		retry_policy = ?, enabled = ?,
+		revision = revision + 1, updated_at = ?
+	WHERE id = ? AND revision = ?;
+	`
+	res, err := s.db.ExecContext(ctx, query,
+		def.ScopeOwner, def.QuotaOwner, def.HandlerType, def.Version,
+		def.Payload, def.Pool, def.Class, timeoutMs,
+		string(retryPolicyBytes), enabledInt, now,
+		def.ID, expectedRevision,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update job definition %s: %w", def.ID, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("revision CAS rows affected: %w", err)
+	}
+	if affected == 0 {
+		if _, gerr := s.GetDefinition(ctx, def.ID); gerr != nil {
+			return gerr
+		}
+		return fmt.Errorf("%w: job definition %s", ErrRevisionConflict, def.ID)
+	}
+	def.Revision = expectedRevision + 1
+	return nil
+}
+
 // GetDefinition loads a JobDefinition by ID.
 func (s *Store) GetDefinition(ctx context.Context, id string) (*jobs.JobDefinition, error) {
 	query := `
@@ -106,6 +153,10 @@ func (s *Store) GetDefinition(ctx context.Context, id string) (*jobs.JobDefiniti
 }
 
 // MaterializeOccurrence inserts a unique occurrence for a scheduled or manual trigger (ADR 0006 §7.3).
+// It is idempotent on occurrence_key: concurrent duplicate triggers resolve
+// to the same canonical identity instead of failing, so at-most-one logical
+// run exists per key. On a key conflict the passed occurrence is populated
+// with the stored identity and nil is returned.
 func (s *Store) MaterializeOccurrence(ctx context.Context, occ *jobs.JobOccurrence) error {
 	query := `
 	INSERT INTO job_occurrences (
@@ -129,13 +180,196 @@ func (s *Store) MaterializeOccurrence(ctx context.Context, occ *jobs.JobOccurren
 		occ.ID, occ.JobID, schedID, occ.ScheduledFor, occ.OccurrenceKey,
 		string(occ.State), occ.ReadyAt, occ.CancelEpoch, occ.Revision, now,
 	)
-	if err != nil {
+	if err == nil {
+		return nil
+	}
+	// Resolve identity instead of failing: a duplicate key means another
+	// trigger already materialized this logical run.
+	existing, gerr := s.GetOccurrenceByKey(ctx, occ.OccurrenceKey)
+	if gerr != nil {
 		return fmt.Errorf("failed to materialize occurrence %s: %w", occ.ID, err)
 	}
+	*occ = *existing
 	return nil
 }
 
+// GetOccurrence loads a JobOccurrence by ID.
+func (s *Store) GetOccurrence(ctx context.Context, occurrenceID string) (*jobs.JobOccurrence, error) {
+	query := `
+	SELECT id, job_id, schedule_id, scheduled_for, occurrence_key, state, ready_at, cancel_epoch, revision
+	FROM job_occurrences WHERE id = ?;
+	`
+	return s.scanOccurrence(ctx, query, occurrenceID)
+}
+
+// GetOccurrenceByKey loads a JobOccurrence by its idempotency key.
+func (s *Store) GetOccurrenceByKey(ctx context.Context, occurrenceKey string) (*jobs.JobOccurrence, error) {
+	query := `
+	SELECT id, job_id, schedule_id, scheduled_for, occurrence_key, state, ready_at, cancel_epoch, revision
+	FROM job_occurrences WHERE occurrence_key = ?;
+	`
+	return s.scanOccurrence(ctx, query, occurrenceKey)
+}
+
+func (s *Store) scanOccurrence(ctx context.Context, query, arg string) (*jobs.JobOccurrence, error) {
+	var occ jobs.JobOccurrence
+	var schedID sql.NullString
+	var stateStr string
+	err := s.db.QueryRowContext(ctx, query, arg).Scan(
+		&occ.ID, &occ.JobID, &schedID, &occ.ScheduledFor, &occ.OccurrenceKey,
+		&stateStr, &occ.ReadyAt, &occ.CancelEpoch, &occ.Revision,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrOccurrenceNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query job occurrence: %w", err)
+	}
+	occ.ScheduleID = schedID.String
+	occ.State = jobs.OccurrenceState(stateStr)
+	return &occ, nil
+}
+
+// CountAttempts returns the number of attempts recorded for an occurrence.
+func (s *Store) CountAttempts(ctx context.Context, occurrenceID string) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM job_attempts WHERE occurrence_id = ?`, occurrenceID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count job attempts: %w", err)
+	}
+	return n, nil
+}
+
+// LatestAttempt returns the highest-numbered attempt of an occurrence.
+func (s *Store) LatestAttempt(ctx context.Context, occurrenceID string) (*jobs.JobAttempt, error) {
+	// NOTE: time columns are selected directly (not wrapped in COALESCE):
+	// the driver converts declared DATETIME columns to time.Time but
+	// returns expressions as strings, which do not scan into time.Time.
+	query := `
+	SELECT id, occurrence_id, attempt_no, task_id, lease_epoch, lease_until, state,
+	       started_at, finished_at, created_at,
+	       COALESCE(result, ''), COALESCE(error, '')
+	FROM job_attempts WHERE occurrence_id = ? ORDER BY attempt_no DESC LIMIT 1;
+	`
+	var a jobs.JobAttempt
+	var stateStr string
+	var started, finished sql.NullTime
+	var created time.Time
+	var result []byte
+	var errStr string
+	err := s.db.QueryRowContext(ctx, query, occurrenceID).Scan(
+		&a.ID, &a.OccurrenceID, &a.AttemptNo, &a.TaskID, &a.LeaseEpoch,
+		&a.LeaseUntil, &stateStr, &started, &finished, &created,
+		&result, &errStr,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrAttemptNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query latest job attempt: %w", err)
+	}
+	a.State = jobs.AttemptState(stateStr)
+	a.StartedAt = created
+	if started.Valid {
+		a.StartedAt = started.Time
+	}
+	a.FinishedAt = created
+	if finished.Valid {
+		a.FinishedAt = finished.Time
+	}
+	a.Result = result
+	a.Error = errStr
+	return &a, nil
+}
+
+// ListUnresolvedOccurrences returns a bounded page of dispatched occurrences
+// whose final disposition is still unknown (crash/retry/recovery scan input).
+func (s *Store) ListUnresolvedOccurrences(ctx context.Context, limit int) ([]*jobs.JobOccurrence, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	query := `
+	SELECT id, job_id, schedule_id, scheduled_for, occurrence_key, state, ready_at, cancel_epoch, revision
+	FROM job_occurrences
+	WHERE state = 'dispatched'
+	ORDER BY ready_at ASC, id ASC
+	LIMIT ?;
+	`
+	rows, err := s.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list unresolved occurrences: %w", err)
+	}
+	defer rows.Close()
+	var out []*jobs.JobOccurrence
+	for rows.Next() {
+		var occ jobs.JobOccurrence
+		var schedID sql.NullString
+		var stateStr string
+		if err := rows.Scan(
+			&occ.ID, &occ.JobID, &schedID, &occ.ScheduledFor, &occ.OccurrenceKey,
+			&stateStr, &occ.ReadyAt, &occ.CancelEpoch, &occ.Revision,
+		); err != nil {
+			return nil, err
+		}
+		occ.ScheduleID = schedID.String
+		occ.State = jobs.OccurrenceState(stateStr)
+		out = append(out, &occ)
+	}
+	return out, rows.Err()
+}
+
+// FinalizeOccurrence closes a dispatched occurrence with a terminal state
+// (failed or cancelled) once its attempt budget is exhausted or an operator
+// intervenes. Completed and cancelled-by-commit occurrences are already final;
+// finalizing them again with the same state is a no-op, any other transition
+// from a terminal state is rejected.
+func (s *Store) FinalizeOccurrence(ctx context.Context, occurrenceID string, state jobs.OccurrenceState) error {
+	if state != jobs.OccurrenceFailed && state != jobs.OccurrenceCancelled {
+		return fmt.Errorf("finalize occurrence %s: state must be failed or cancelled, got %s", occurrenceID, state)
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin finalize occurrence: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE job_occurrences SET revision = revision WHERE id = ?`, occurrenceID); err != nil {
+		return fmt.Errorf("acquire finalize writer intent: %w", err)
+	}
+	var current string
+	if err := tx.QueryRowContext(ctx, `SELECT state FROM job_occurrences WHERE id = ?`, occurrenceID).Scan(&current); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrOccurrenceNotFound
+		}
+		return err
+	}
+	if current == string(state) {
+		return tx.Commit()
+	}
+	if current != string(jobs.OccurrenceDispatched) {
+		return fmt.Errorf("%w: occurrence %s is %s", ErrLeaseFencingLost, occurrenceID, current)
+	}
+	now := time.Now().UTC()
+	res, err := tx.ExecContext(ctx, `UPDATE job_occurrences SET state = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND state = 'dispatched'`, string(state), now, occurrenceID)
+	if err != nil {
+		return fmt.Errorf("finalize occurrence update: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("finalize rows affected: %w", err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("%w: occurrence %s changed concurrently", ErrLeaseFencingLost, occurrenceID)
+	}
+	return tx.Commit()
+}
+
 // PrepareAttemptLease atomically creates an attempt and leases the occurrence under writer intent (ADR 0006 §7.3 & §7.4).
+// The first attempt requires a ready occurrence; retries require a dispatched
+// occurrence whose latest attempt is already terminal, so two live attempts
+// for one occurrence can never exist. The occurrence transition is fenced on
+// revision + cancel_epoch and the affected row is verified.
 func (s *Store) PrepareAttemptLease(ctx context.Context, occurrenceID, taskID string, leaseDuration time.Duration) (*jobs.JobAttempt, error) {
 	if leaseDuration <= 0 || taskID == "" {
 		return nil, errors.New("invalid attempt lease request")
@@ -164,15 +398,37 @@ func (s *Store) PrepareAttemptLease(ctx context.Context, occurrenceID, taskID st
 		return nil, err
 	}
 
-	if occState != string(jobs.OccurrenceReady) || readyAt.After(time.Now().UTC()) {
-		return nil, fmt.Errorf("%w: occurrence state is %s", ErrOccurrenceNotReady, occState)
-	}
-
 	// Count existing attempts to determine attempt_no
 	var attemptCount int
 	countQuery := `SELECT COUNT(*) FROM job_attempts WHERE occurrence_id = ?;`
 	if err := tx.QueryRowContext(ctx, countQuery, occurrenceID).Scan(&attemptCount); err != nil {
 		return nil, err
+	}
+
+	switch occState {
+	case string(jobs.OccurrenceReady):
+		if readyAt.After(time.Now().UTC()) {
+			return nil, fmt.Errorf("%w: occurrence state is %s", ErrOccurrenceNotReady, occState)
+		}
+		if attemptCount != 0 {
+			return nil, fmt.Errorf("%w: ready occurrence already has attempts", ErrLeaseFencingLost)
+		}
+	case string(jobs.OccurrenceDispatched):
+		// Retry path: the previous attempt must be terminal, otherwise a live
+		// attempt is still holding the lease. Stale non-terminal attempts
+		// (crashed owner, unknown effect) are deliberately NOT overridden
+		// here; recovery reports them instead of risking duplicate execution.
+		var latestState string
+		if err := tx.QueryRowContext(ctx, `SELECT state FROM job_attempts WHERE occurrence_id = ? ORDER BY attempt_no DESC LIMIT 1`, occurrenceID).Scan(&latestState); err != nil {
+			return nil, fmt.Errorf("latest attempt state: %w", err)
+		}
+		switch jobs.AttemptState(latestState) {
+		case jobs.AttemptCompleted, jobs.AttemptFailed, jobs.AttemptTimedOut, jobs.AttemptCancelled, jobs.AttemptAbortedBeforeStart:
+		default:
+			return nil, fmt.Errorf("%w: previous attempt %s still active", ErrOccurrenceNotReady, latestState)
+		}
+	default:
+		return nil, fmt.Errorf("%w: occurrence state is %s", ErrOccurrenceNotReady, occState)
 	}
 	attemptNo := attemptCount + 1
 
@@ -193,10 +449,18 @@ func (s *Store) PrepareAttemptLease(ctx context.Context, occurrenceID, taskID st
 	}
 
 	updateOcc := `
-	UPDATE job_occurrences SET state = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND state = 'ready' AND revision = ? AND cancel_epoch = ?;
+	UPDATE job_occurrences SET state = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ? AND cancel_epoch = ? AND state IN ('ready', 'dispatched');
 	`
-	if _, err := tx.ExecContext(ctx, updateOcc, string(jobs.OccurrenceDispatched), now, occurrenceID, occRev, cancelEpoch); err != nil {
+	res, err := tx.ExecContext(ctx, updateOcc, string(jobs.OccurrenceDispatched), now, occurrenceID, occRev, cancelEpoch)
+	if err != nil {
 		return nil, fmt.Errorf("update occurrence state: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("prepare rows affected: %w", err)
+	}
+	if affected == 0 {
+		return nil, fmt.Errorf("%w: occurrence %s changed concurrently", ErrLeaseFencingLost, occurrenceID)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -261,14 +525,20 @@ func (s *Store) CommitAttemptResult(ctx context.Context, attemptID string, lease
 	if _, err := tx.ExecContext(ctx, `UPDATE job_attempts SET state = ?, result = ?, error = ?, finished_at = ? WHERE id = ? AND lease_epoch = ?`, string(outcome), result, errStr, now, attemptID, leaseEpoch); err != nil {
 		return fmt.Errorf("commit attempt update: %w", err)
 	}
-	occFinalState := jobs.OccurrenceFailed
-	if outcome == jobs.AttemptCompleted {
-		occFinalState = jobs.OccurrenceCompleted
-	} else if outcome == jobs.AttemptCancelled {
-		occFinalState = jobs.OccurrenceCancelled
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE job_occurrences SET state = ?, revision = revision + 1, updated_at = ? WHERE id = ?`, string(occFinalState), now, occID); err != nil {
-		return err
+	// Only completed and cancelled attempts close the occurrence. Failed,
+	// timed-out, and aborted attempts leave it dispatched so the retry driver
+	// (or recovery) can prepare a further attempt or finalize explicitly.
+	// FinalizeOccurrence owns the failed/cancelled terminal transition.
+	if outcome == jobs.AttemptCompleted || outcome == jobs.AttemptCancelled {
+		occFinalState := jobs.OccurrenceFailed
+		if outcome == jobs.AttemptCompleted {
+			occFinalState = jobs.OccurrenceCompleted
+		} else {
+			occFinalState = jobs.OccurrenceCancelled
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE job_occurrences SET state = ?, revision = revision + 1, updated_at = ? WHERE id = ?`, string(occFinalState), now, occID); err != nil {
+			return err
+		}
 	}
 
 	return tx.Commit()
@@ -587,14 +857,18 @@ func (s *Store) CommitAttemptResultWithOutbox(ctx context.Context, attemptID str
 	if _, err := tx.ExecContext(ctx, `UPDATE job_attempts SET state = ?, result = ?, error = ?, finished_at = ? WHERE id = ? AND lease_epoch = ?`, string(outcome), result, errStr, now, attemptID, leaseEpoch); err != nil {
 		return fmt.Errorf("commit attempt update: %w", err)
 	}
-	occFinalState := jobs.OccurrenceFailed
-	if outcome == jobs.AttemptCompleted {
-		occFinalState = jobs.OccurrenceCompleted
-	} else if outcome == jobs.AttemptCancelled {
-		occFinalState = jobs.OccurrenceCancelled
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE job_occurrences SET state = ?, revision = revision + 1, updated_at = ? WHERE id = ?`, string(occFinalState), now, occID); err != nil {
-		return err
+	// Same retry-aware finalization as CommitAttemptResult: only completed
+	// and cancelled attempts close the occurrence.
+	if outcome == jobs.AttemptCompleted || outcome == jobs.AttemptCancelled {
+		occFinalState := jobs.OccurrenceFailed
+		if outcome == jobs.AttemptCompleted {
+			occFinalState = jobs.OccurrenceCompleted
+		} else {
+			occFinalState = jobs.OccurrenceCancelled
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE job_occurrences SET state = ?, revision = revision + 1, updated_at = ? WHERE id = ?`, string(occFinalState), now, occID); err != nil {
+			return err
+		}
 	}
 
 	if outboxEventID != "" && outboxKind != "" {
