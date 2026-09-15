@@ -78,8 +78,16 @@ func (d *DeadlineIndex) PeekEarliest() (*QueueEntry, bool) {
 
 // PopExpired removes and returns all entries whose deadlines are before or equal to now.
 func (d *DeadlineIndex) PopExpired(now time.Time) []*QueueEntry {
+	return d.PopExpiredN(now, 0)
+}
+
+// PopExpiredN removes up to limit expired entries. A non-positive limit means
+// unbounded and is retained only for compatibility with focused tests. Runtime
+// callers should pass an explicit work budget so a deadline storm cannot hold
+// the coordinator for an unbounded turn.
+func (d *DeadlineIndex) PopExpiredN(now time.Time, limit int) []*QueueEntry {
 	var expired []*QueueEntry
-	for len(d.h) > 0 {
+	for len(d.h) > 0 && (limit <= 0 || len(expired) < limit) {
 		top := d.h[0]
 		if top.Spec.QueueDeadline.After(now) {
 			break
