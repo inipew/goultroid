@@ -62,6 +62,7 @@ type App struct {
 
 	appCancel       context.CancelFunc
 	transportCancel context.CancelFunc
+	transportDone   <-chan struct{}
 
 	lifecycleMu    sync.Mutex
 	lifecycleState atomic.Uint32
