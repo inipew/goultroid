@@ -152,6 +152,10 @@ func TestEngine_LifecycleAndTasks(t *testing.T) {
 	router := core.NewRouter(".")
 	perms := core.NewPermissions(1001, []int64{1002})
 	engine := NewEngine(NewSQLiteRepository(db.DB), func() core.TelegramServicer { return svc }, router, perms, zap.NewNop())
+	// Periodic execution is worker-routed after the scheduler redesign. This
+	// lifecycle unit test uses the lightweight test submitter; the dedicated
+	// integration test covers the real WorkerManager/TaskManager path.
+	engine.periodic.SetSubmitter(testPeriodicSubmitter{})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -170,10 +174,21 @@ func TestEngine_LifecycleAndTasks(t *testing.T) {
 		t.Fatalf("failed to register periodic task: %v", err)
 	}
 
-	time.Sleep(70 * time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		snapshots := engine.PeriodicTaskSnapshots()
+		if atomic.LoadInt32(&counter) >= 2 && len(snapshots) == 1 && snapshots[0].Runs >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("periodic task did not complete twice before deadline: counter=%d snapshots=%+v", atomic.LoadInt32(&counter), snapshots)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
 	val := atomic.LoadInt32(&counter)
 	if val < 2 {
-		t.Errorf("expected periodic task to run at least twice, ran %d times", val)
+		t.Fatalf("expected periodic task to run at least twice, ran %d times", val)
 	}
 	snapshots := engine.PeriodicTaskSnapshots()
 	if len(snapshots) != 1 || snapshots[0].Owner != "runtime" || snapshots[0].Runs < 2 {
@@ -307,7 +322,7 @@ func TestRegisterPeriodicTask_NotRunning(t *testing.T) {
 	}
 }
 
-func TestRunPeriodicTaskOptionsTimeoutAndRetry(t *testing.T) {
+func TestRunPeriodicTaskRunsOneAttemptWithTimeout(t *testing.T) {
 	var attempts atomic.Int32
 	err := runPeriodicTask(context.Background(), func(ctx context.Context) error {
 		attempts.Add(1)
@@ -316,11 +331,11 @@ func TestRunPeriodicTaskOptionsTimeoutAndRetry(t *testing.T) {
 		}
 		return nil
 	}, PeriodicTaskOptions{MaxAttempts: 2})
-	if err != nil {
-		t.Fatalf("expected retry to succeed, got %v", err)
+	if err == nil {
+		t.Fatal("expected first attempt failure")
 	}
-	if attempts.Load() != 2 {
-		t.Fatalf("attempts = %d, want 2", attempts.Load())
+	if attempts.Load() != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts.Load())
 	}
 
 	err = runPeriodicTask(context.Background(), func(ctx context.Context) error {
@@ -646,7 +661,7 @@ func (m *mockTaskSubmitter) Submit(ctx context.Context, poolName string, task ta
 	m.mu.Lock()
 	m.tasks = append(m.tasks, task)
 	m.mu.Unlock()
-	go func() { _ = task.Run(ctx) }()
+	go func() { _ = task.Execute(ctx) }()
 	return nil
 }
 
@@ -712,7 +727,7 @@ func TestEngine_ActionJob(t *testing.T) {
 	}
 
 	// Run the submitted task
-	if err := submitter.tasks[0].Run(ctx); err != nil {
+	if err := submitter.tasks[0].Execute(ctx); err != nil {
 		t.Fatalf("task run failed: %v", err)
 	}
 	if !jobRan {
@@ -770,4 +785,8 @@ func TestEngine_UnregisterPeriodicTasksByOwner(t *testing.T) {
 	if snaps[0].Name != "task3" {
 		t.Errorf("expected remaining task 'task3', got %q", snaps[0].Name)
 	}
+}
+
+func (m *mockTaskSubmitter) TrySubmit(ctx context.Context, pool string, task tasks.Task) error {
+	return m.Submit(ctx, pool, task)
 }

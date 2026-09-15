@@ -38,11 +38,12 @@ type Stats struct {
 
 // Queue is a thread-safe, bounded FIFO queue supporting configurable overflow policies.
 type Queue[T any] struct {
-	mu       sync.Mutex
-	items    []T
-	capacity int
-	policy   OverflowPolicy
-	closed   bool
+	mu           sync.Mutex
+	items        []T
+	capacity     int
+	policy       OverflowPolicy
+	closed       bool
+	spaceChanged chan struct{}
 
 	notEmpty *sync.Cond
 	notFull  *sync.Cond
@@ -59,9 +60,10 @@ func New[T any](capacity int, policy OverflowPolicy) *Queue[T] {
 		capacity = 100
 	}
 	q := &Queue[T]{
-		items:    make([]T, 0, capacity),
-		capacity: capacity,
-		policy:   policy,
+		items:        make([]T, 0, capacity),
+		capacity:     capacity,
+		policy:       policy,
+		spaceChanged: make(chan struct{}),
 	}
 	q.notEmpty = sync.NewCond(&q.mu)
 	q.notFull = sync.NewCond(&q.mu)
@@ -98,29 +100,28 @@ func (q *Queue[T]) Stats() Stats {
 
 // Push adds an item to the queue in accordance with the configured overflow policy.
 func (q *Queue[T]) Push(ctx context.Context, item T) error {
-	return q.push(ctx, item, false)
+	return q.push(ctx, item, q.policy)
 }
 
 // PushWait adds an item once capacity is available, regardless of the queue's
 // overflow policy. It is used for work that has already passed admission and
 // therefore must not be rejected or dropped due to transient physical pressure.
 func (q *Queue[T]) PushWait(ctx context.Context, item T) error {
-	return q.push(ctx, item, true)
+	return q.push(ctx, item, PolicyBlock)
 }
 
-func (q *Queue[T]) push(ctx context.Context, item T, waitForCapacity bool) error {
+func (q *Queue[T]) push(ctx context.Context, item T, policy OverflowPolicy) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
 
 	for len(q.items) >= q.capacity {
 		if q.closed {
 			return ErrQueueClosed
 		}
 
-		policy := q.policy
-		if waitForCapacity {
-			policy = PolicyBlock
-		}
 		switch policy {
 		case PolicyReject:
 			q.rejected.Add(1)
@@ -132,6 +133,8 @@ func (q *Queue[T]) push(ctx context.Context, item T, waitForCapacity bool) error
 
 		case PolicyDropOldest:
 			if len(q.items) > 0 {
+				var zero T
+				q.items[0] = zero
 				q.items = q.items[1:]
 				q.dropped.Add(1)
 			}
@@ -212,6 +215,9 @@ func (q *Queue[T]) Pop(ctx context.Context) (T, error) {
 	}
 
 	item := q.items[0]
+	q.items[0] = zero
+	close(q.spaceChanged)
+	q.spaceChanged = make(chan struct{})
 	q.items = q.items[1:]
 	q.dequeued.Add(1)
 	q.notFull.Signal()
@@ -224,7 +230,21 @@ func (q *Queue[T]) Close() {
 	defer q.mu.Unlock()
 	if !q.closed {
 		q.closed = true
+		close(q.spaceChanged)
+		q.spaceChanged = make(chan struct{})
 		q.notEmpty.Broadcast()
 		q.notFull.Broadcast()
 	}
+}
+
+// TryPush rejects full queues without waiting, regardless of overflow policy.
+func (q *Queue[T]) TryPush(ctx context.Context, item T) error {
+	return q.push(ctx, item, PolicyReject)
+}
+
+// SpaceChanges must be sampled before attempting a push to avoid lost wakeups.
+func (q *Queue[T]) SpaceChanges() <-chan struct{} {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.spaceChanged
 }

@@ -68,7 +68,7 @@ func TestJobManager_DuplicateIdempotencyDoesNotDeadlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- submitter.submittedTasks[0].Run(context.Background()) }()
+	go func() { done <- submitter.submittedTasks[0].Execute(context.Background()) }()
 	select {
 	case err := <-done:
 		if err != nil {
@@ -146,7 +146,7 @@ func TestJobManager_RegisterAndTrigger(t *testing.T) {
 
 	// Execute task to verify lifecycle state transition
 	task := submitter.submittedTasks[0]
-	if err := task.Run(ctx); err != nil {
+	if err := task.Execute(ctx); err != nil {
 		t.Fatalf("task execution failed: %v", err)
 	}
 
@@ -183,7 +183,7 @@ func TestJobManager_TypedHandler(t *testing.T) {
 	}
 
 	task := submitter.submittedTasks[0]
-	if err := task.Run(ctx); err != nil {
+	if err := task.Execute(ctx); err != nil {
 		t.Fatalf("task run failed: %v", err)
 	}
 
@@ -345,7 +345,7 @@ func TestJobManager_IdempotencyDeduplication(t *testing.T) {
 		t.Fatalf("trigger job1 failed: %v", err)
 	}
 	task := submitter.submittedTasks[0]
-	if err := task.Run(ctx); err != nil {
+	if err := task.Execute(ctx); err != nil {
 		t.Fatalf("task run failed: %v", err)
 	}
 
@@ -366,7 +366,7 @@ func TestJobManager_IdempotencyDeduplication(t *testing.T) {
 		t.Fatalf("trigger second failed: %v", err)
 	}
 	taskSecond := submitter.submittedTasks[1]
-	if err := taskSecond.Run(ctx); err != nil {
+	if err := taskSecond.Execute(ctx); err != nil {
 		t.Fatalf("taskSecond run failed: %v", err)
 	}
 	if ranSecond {
@@ -420,7 +420,7 @@ func TestJobManager_CleanupTerminalRetention(t *testing.T) {
 	if err := mgr.Trigger(context.Background(), job.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := submitter.submittedTasks[0].Run(context.Background()); err != nil {
+	if err := submitter.submittedTasks[0].Execute(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(2 * time.Millisecond)

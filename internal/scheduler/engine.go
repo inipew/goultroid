@@ -126,11 +126,14 @@ func (e *Engine) SetMaxConcurrency(n int) {
 }
 
 // SetWorkers configures runtime worker and task managers for job execution.
-func (e *Engine) SetWorkers(workers *workers.Manager, taskMgr *tasks.Manager) {
+func (e *Engine) SetWorkers(workerMgr *workers.Manager, taskMgr *tasks.Manager) {
 	e.runMu.Lock()
 	defer e.runMu.Unlock()
-	e.workers = workers
+	e.workers = workerMgr
 	e.taskMgr = taskMgr
+	if e.periodic != nil {
+		e.periodic.SetSubmitter(workerMgr)
+	}
 }
 
 // SetJobsManager configures the declarative jobs manager for managed job dispatch.
@@ -333,43 +336,23 @@ func (e *Engine) RegisterPeriodicTaskWithOptions(name string, interval time.Dura
 	return e.periodic.Register(name, interval, options, task)
 }
 
+// runPeriodicTask executes one attempt. The coordinator schedules retries.
 func runPeriodicTask(parent context.Context, task TaskFunc, options PeriodicTaskOptions) (err error) {
-	maxAttempts := options.MaxAttempts
-	if maxAttempts <= 0 {
-		maxAttempts = 1
-	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = fmt.Errorf("periodic task panic: %v", recovered)
 		}
 	}()
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		if err := parent.Err(); err != nil {
-			return err
-		}
-		attemptCtx := parent
-		cancel := func() {}
-		if options.Timeout > 0 {
-			attemptCtx, cancel = context.WithTimeout(parent, options.Timeout)
-		}
-		err = task(attemptCtx)
-		cancel()
-		if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || attempt == maxAttempts {
-			return err
-		}
-		if options.RetryDelay > 0 {
-			timer := time.NewTimer(options.RetryDelay)
-			select {
-			case <-parent.Done():
-				if !timer.Stop() {
-					<-timer.C
-				}
-				return parent.Err()
-			case <-timer.C:
-			}
-		}
+	if err := parent.Err(); err != nil {
+		return err
 	}
-	return err
+	ctx := parent
+	if options.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(parent, options.Timeout)
+		defer cancel()
+	}
+	return task(ctx)
 }
 
 func (e *Engine) UnregisterPeriodicTask(name string) error {
@@ -625,6 +608,12 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) int {
 
 			if err := e.workers.SubmitReserved(e.ctx, workers.PoolScheduler, task, reservation); err != nil {
 				e.logger.Error("failed to submit scheduled job to worker pool", zap.Int64("job_id", j.ID), zap.Error(err))
+				stateCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				failErr := e.db.FailScheduledJob(stateCtx, j.ID, j.ClaimToken, err.Error(), 0, time.Second, false, time.Now().UTC())
+				cancel()
+				if failErr != nil && !errors.Is(failErr, ErrJobLeaseLost) {
+					e.logger.Error("failed to release rejected scheduled claim", zap.Int64("job_id", j.ID), zap.Error(failErr))
+				}
 			}
 			continue
 		}
@@ -850,7 +839,14 @@ func (e *Engine) executeManagedJob(ctx context.Context, job ScheduledJob) error 
 	if jobID == "" {
 		return errors.New("empty job id in scheduled managed job payload")
 	}
-	return e.jobsMgr.TriggerAndWait(ctx, jobID)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Scheduler owns timing and durable trigger state, not managed-job execution.
+	// The managed attempt must outlive this short-lived scheduler wrapper, so it
+	// is parented to the Scheduler engine lifecycle. JobManager then owns the
+	// attempt and WorkerManager owns its physical execution/cancellation.
+	return e.jobsMgr.TryTrigger(e.ctx, jobID)
 }
 
 // ScheduleManagedJob schedules a declarative job from jobs.Manager to run at when, optionally recurring.

@@ -222,7 +222,7 @@ func TestManager_TasksManagerQuotaEnforcement(t *testing.T) {
 	tm := tasks.NewManager()
 	mgr.SetTasksManager(tm)
 
-	// Set a tight quota for greedy plugin: max 2 queued tasks
+	// Set a tight quota for greedy plugin: max 2 queued/admitted tasks.
 	mgr.SetOwnerQuota("plugin:greedy", tasks.Quota{
 		MaxConcurrent: 1,
 		MaxQueued:     2,
@@ -258,7 +258,8 @@ func TestManager_TasksManagerQuotaEnforcement(t *testing.T) {
 	}
 	<-firstStarted
 
-	// Task 2 (queued)
+	// Tasks 2 and 3 are accepted; with owner concurrency full they may remain
+	// Admitted until a logical execution slot is available.
 	err = mgr.Submit(ctx, PoolGeneral, tasks.Task{
 		ID:    "t-2",
 		Owner: "plugin:greedy",
@@ -271,7 +272,6 @@ func TestManager_TasksManagerQuotaEnforcement(t *testing.T) {
 		t.Fatalf("task 2 failed to submit: %v", err)
 	}
 
-	// Task 3 fills the second queued slot while task 1 is running.
 	err = mgr.Submit(ctx, PoolGeneral, tasks.Task{
 		ID:    "t-3",
 		Owner: "plugin:greedy",
@@ -298,7 +298,7 @@ func TestManager_TasksManagerQuotaEnforcement(t *testing.T) {
 	if !found {
 		t.Fatalf("expected owner stats for plugin:greedy")
 	}
-	if ownerStats.Queued+ownerStats.Running == 0 {
+	if ownerStats.Admitted+ownerStats.Queued+ownerStats.Running == 0 {
 		t.Errorf("expected active tasks for plugin:greedy, got %+v", ownerStats)
 	}
 }
@@ -346,7 +346,7 @@ func TestManager_AcceptedTaskWaitsWhenOwnerConcurrencyIsFull(t *testing.T) {
 	case <-time.After(20 * time.Millisecond):
 	}
 	stats, ok := mgr.OwnerTaskStats("plugin:serial")
-	if !ok || stats.Running != 1 || stats.Queued != 1 || stats.Failed != 0 {
+	if !ok || stats.Running != 1 || stats.Admitted != 1 || stats.Queued != 0 || stats.Failed != 0 {
 		t.Fatalf("unexpected saturated owner stats: %+v, found=%v", stats, ok)
 	}
 

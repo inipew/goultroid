@@ -22,6 +22,14 @@ const (
 // Ensure Manager implements runtime.Component.
 var _ runtime.Component = (*Manager)(nil)
 
+type admissionRequest struct {
+	tm       *tasks.Manager
+	taskCtx  context.Context
+	task     tasks.Task
+	queued   bool
+	stopWake func() bool
+}
+
 // Manager coordinates isolated worker pools across the application runtime.
 type Manager struct {
 	mu           sync.RWMutex
@@ -31,16 +39,18 @@ type Manager struct {
 	acceptingEnd chan struct{}
 	admissionCtx context.Context
 	admissionEnd context.CancelFunc
-	admissionWG  sync.WaitGroup
-	drainMu      sync.Mutex
-	drained      bool
+	// admissionQueues are bounded one-per-pool producer queues. A fixed
+	// controller goroutine drains each queue; accepted tasks never allocate a
+	// dedicated admission waiter goroutine.
+	admissionQueues map[string]chan admissionRequest
+	admissionWG     sync.WaitGroup
+	drainMu         sync.Mutex
+	drained         bool
 }
 
 // NewManager creates a Manager initialized with standard workload pools.
 func NewManager() *Manager {
-	m := &Manager{
-		pools: make(map[string]*Pool),
-	}
+	m := &Manager{pools: make(map[string]*Pool)}
 
 	// Initialize default isolated pools per Blueprint §30
 	m.pools[PoolGeneral] = NewPool(PoolGeneral, 8, 200, queue.PolicyBlock)
@@ -52,15 +62,11 @@ func NewManager() *Manager {
 	return m
 }
 
-func (m *Manager) Name() string {
-	return "workers"
-}
+func (m *Manager) Name() string { return "workers" }
 
-func (m *Manager) Dependencies() []string {
-	return nil
-}
+func (m *Manager) Dependencies() []string { return nil }
 
-// Start starts all managed worker pools.
+// Start starts all managed worker pools and their fixed admission controllers.
 func (m *Manager) Start(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -69,14 +75,26 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.admissionCtx, m.admissionEnd = context.WithCancel(ctx)
 	m.accepting = true
 	m.acceptingEnd = make(chan struct{})
-	pools := make([]*Pool, 0, len(m.pools))
-	for _, pool := range m.pools {
-		pools = append(pools, pool)
+	m.admissionQueues = make(map[string]chan admissionRequest, len(m.pools))
+	m.drained = false
+	pools := make(map[string]*Pool, len(m.pools))
+	for name, pool := range m.pools {
+		pools[name] = pool
+		m.admissionQueues[name] = make(chan admissionRequest, cap(pool.admissions))
 	}
+	admissionCtx := m.admissionCtx
+	acceptingEnd := m.acceptingEnd
 	m.mu.Unlock()
 
 	for _, pool := range pools {
 		pool.Start(ctx)
+	}
+	for name, pool := range pools {
+		m.mu.RLock()
+		input := m.admissionQueues[name]
+		m.mu.RUnlock()
+		m.admissionWG.Add(1)
+		go m.admissionLoop(admissionCtx, acceptingEnd, pool, input)
 	}
 	return nil
 }
@@ -132,6 +150,9 @@ func (m *Manager) Drain(ctx context.Context) error {
 		if admissionEnd != nil {
 			admissionEnd()
 		}
+		for _, pool := range pools {
+			_ = pool.Stop(ctx)
+		}
 		return ctx.Err()
 	}
 
@@ -141,7 +162,6 @@ func (m *Manager) Drain(ctx context.Context) error {
 			stopErrs = append(stopErrs, err)
 		}
 	}
-
 	if len(stopErrs) > 0 {
 		return fmt.Errorf("worker manager stop encountered errors: %w", errors.Join(stopErrs...))
 	}
@@ -160,10 +180,7 @@ func (m *Manager) Health(ctx context.Context) runtime.ComponentHealth {
 			}
 		}
 	}
-
-	return runtime.ComponentHealth{
-		Status: runtime.HealthHealthy,
-	}
+	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
 }
 
 // AddPool registers a custom worker pool.
@@ -171,14 +188,11 @@ func (m *Manager) AddPool(pool *Pool) error {
 	if pool == nil {
 		return fmt.Errorf("cannot add nil worker pool")
 	}
-
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
 	if _, exists := m.pools[pool.Name()]; exists {
 		return fmt.Errorf("worker pool %q already exists", pool.Name())
 	}
-
 	m.pools[pool.Name()] = pool
 	return nil
 }
@@ -187,7 +201,6 @@ func (m *Manager) AddPool(pool *Pool) error {
 func (m *Manager) Get(name string) (*Pool, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-
 	p, ok := m.pools[name]
 	return p, ok
 }
@@ -244,7 +257,7 @@ func (m *Manager) OwnerTaskStats(owner string) (tasks.OwnerStats, bool) {
 
 // Submit dispatches a task to the designated worker pool with quota and lifecycle management.
 func (m *Manager) Submit(ctx context.Context, poolName string, task tasks.Task) error {
-	return m.submit(ctx, poolName, task, nil)
+	return m.submit(ctx, poolName, task, nil, false)
 }
 
 // SubmitReserved submits work backed by a physical execution reservation.
@@ -254,10 +267,10 @@ func (m *Manager) SubmitReserved(ctx context.Context, poolName string, task task
 	if reservation == nil {
 		return errors.New("execution reservation is nil")
 	}
-	return m.submit(ctx, poolName, task, reservation)
+	return m.submit(ctx, poolName, task, reservation, true)
 }
 
-func (m *Manager) submit(ctx context.Context, poolName string, task tasks.Task, reservation *ExecutionReservation) error {
+func (m *Manager) submit(ctx context.Context, poolName string, task tasks.Task, reservation *ExecutionReservation, nonblocking bool) error {
 	reservationAccepted := false
 	defer func() {
 		if reservation != nil && !reservationAccepted {
@@ -267,6 +280,7 @@ func (m *Manager) submit(ctx context.Context, poolName string, task tasks.Task, 
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
 	m.mu.RLock()
 	pool, ok := m.pools[poolName]
 	if !ok {
@@ -276,105 +290,237 @@ func (m *Manager) submit(ctx context.Context, poolName string, task tasks.Task, 
 	tm := m.tasksManager
 	accepting := m.accepting
 	acceptingEnd := m.acceptingEnd
-	admissionCtx := m.admissionCtx
 	m.mu.RUnlock()
 	if !accepting {
 		return fmt.Errorf("worker manager is not accepting tasks")
 	}
 
-	if tm != nil {
-		if err := pool.reserveAdmission(ctx, acceptingEnd); err != nil {
-			return fmt.Errorf("pool %s admission rejected: %w", poolName, err)
+	if tm == nil {
+		if reservation != nil {
+			return errors.New("execution reservation requires TaskManager lifecycle tracking")
 		}
-		m.mu.Lock()
-		if !m.accepting || m.acceptingEnd != acceptingEnd {
-			m.mu.Unlock()
-			pool.releaseAdmission()
-			return fmt.Errorf("worker manager is not accepting tasks")
+		if nonblocking {
+			return pool.TrySubmit(ctx, task)
 		}
-		if task.ID == "" {
-			task.ID = fmt.Sprintf("task:%s:%d", poolName, time.Now().UnixNano())
-		}
-		taskCtx, cancel, err := tm.Register(ctx, task)
-		if err != nil {
-			pool.releaseAdmission()
-			m.mu.Unlock()
-			return err
-		}
-		m.admissionWG.Add(1)
-		m.mu.Unlock()
+		return pool.Submit(ctx, task)
+	}
 
-		origRun := task.Run
-		task.Run = func(runCtx context.Context) error {
+	if err := pool.reserveAdmission(ctx, acceptingEnd, nonblocking); err != nil {
+		return fmt.Errorf("pool %s admission rejected: %w", poolName, err)
+	}
+
+	// Hold the manager lock across registration and the buffered controller
+	// handoff. Quiesce therefore cannot close ingress between "accepted" and
+	// enqueueing the admission request.
+	m.mu.Lock()
+	if !m.accepting || m.acceptingEnd != acceptingEnd || m.admissionCtx.Err() != nil {
+		m.mu.Unlock()
+		pool.releaseAdmission()
+		return fmt.Errorf("worker manager is not accepting tasks")
+	}
+	admissionQueue := m.admissionQueues[poolName]
+	if admissionQueue == nil {
+		m.mu.Unlock()
+		pool.releaseAdmission()
+		return fmt.Errorf("pool %s admission controller is not running", poolName)
+	}
+	if task.ID == "" {
+		task.ID = fmt.Sprintf("task:%s:%d", poolName, time.Now().UnixNano())
+	}
+	taskCtx, cancel, err := tm.Register(ctx, task)
+	if err != nil {
+		m.mu.Unlock()
+		pool.releaseAdmission()
+		return err
+	}
+
+	origRun := task.Run
+	originalCompletion := task.OnComplete
+	var completed sync.Once
+	task.OnComplete = func(err error) {
+		completed.Do(func() {
+			tm.Finish(task.ID, tasks.ResultState(err), err)
+			cancel()
 			if reservation != nil {
 				reservation.Release()
 			}
-			defer cancel()
-			execCtx, execCancel := context.WithCancel(taskCtx)
-			stopPoolCancel := context.AfterFunc(runCtx, execCancel)
-			defer stopPoolCancel()
-			defer execCancel()
-
-			var runErr error
-			if err := execCtx.Err(); err != nil {
-				runErr = err
-			} else if origRun != nil {
-				runErr = origRun(execCtx)
+			if originalCompletion != nil {
+				originalCompletion(err)
 			}
-
-			state := tasks.StateCompleted
-			if runErr != nil {
-				if errors.Is(runErr, context.Canceled) {
-					state = tasks.StateCancelled
-				} else {
-					state = tasks.StateFailed
-				}
-			}
-			tm.Finish(task.ID, state, runErr)
-			return runErr
+		})
+	}
+	task.Run = func(runCtx context.Context) error {
+		startCtx, err := tm.MarkRunning(task.ID)
+		if reservation != nil {
+			reservation.Release()
 		}
-
-		reservationAccepted = true
-		go m.admitTask(admissionCtx, pool, tm, taskCtx, cancel, task, reservation)
-		return nil
+		if err != nil {
+			return err
+		}
+		execCtx, execCancel := context.WithCancelCause(startCtx)
+		stopPoolCancel := context.AfterFunc(runCtx, func() { execCancel(context.Cause(runCtx)) })
+		defer stopPoolCancel()
+		defer execCancel(nil)
+		if runCtx.Err() != nil {
+			return context.Cause(runCtx)
+		}
+		if execCtx.Err() != nil {
+			return context.Cause(execCtx)
+		}
+		err = origRun(execCtx)
+		if errors.Is(err, context.Canceled) {
+			if runCtx.Err() != nil {
+				return context.Cause(runCtx)
+			}
+			if cause := context.Cause(execCtx); cause != nil {
+				return cause
+			}
+		}
+		return err
 	}
 
-	if reservation != nil {
-		return errors.New("execution reservation requires TaskManager lifecycle tracking")
+	request := admissionRequest{
+		tm: tm, taskCtx: taskCtx, task: task,
+		stopWake: context.AfterFunc(taskCtx, pool.wakeAdmission),
 	}
-	return pool.Submit(ctx, task)
+	// Every request owns one pool admission token and this channel has exactly
+	// that bounded capacity, so the handoff cannot exceed the configured limit.
+	admissionQueue <- request
+	reservationAccepted = true
+	m.mu.Unlock()
+	return nil
 }
 
-func (m *Manager) admitTask(admissionCtx context.Context, pool *Pool, tm *tasks.Manager, taskCtx context.Context, cancel context.CancelFunc, task tasks.Task, reservation *ExecutionReservation) {
+func (m *Manager) admissionLoop(ctx context.Context, acceptingEnd <-chan struct{}, pool *Pool, input <-chan admissionRequest) {
 	defer m.admissionWG.Done()
-	defer pool.releaseAdmission()
-	startCtx, err := tm.WaitStart(admissionCtx, task.ID)
-	if err == nil {
-		enqueueCtx, enqueueCancel := context.WithCancel(startCtx)
-		stopAdmission := context.AfterFunc(admissionCtx, enqueueCancel)
-		err = pool.submitAccepted(enqueueCtx, task)
-		stopAdmission()
-		enqueueCancel()
+	pending := make([]admissionRequest, 0, cap(pool.admissions))
+	quiescing := false
+
+	removePending := func(i int) {
+		copy(pending[i:], pending[i+1:])
+		pending[len(pending)-1] = admissionRequest{}
+		pending = pending[:len(pending)-1]
 	}
-	if err == nil {
-		return
+
+	for {
+		// Subscribe before inspecting capacity: a completion during the scan must
+		// close the generation we will wait on, not a generation already discarded.
+		m.mu.RLock()
+		tm := m.tasksManager
+		m.mu.RUnlock()
+		var slotChanged <-chan struct{}
+		if tm != nil {
+			slotChanged = tm.SlotChanges()
+		}
+		spaceChanged := pool.queue.SpaceChanges()
+		// First absorb every request already handed off so one owner blocked by
+		// quota cannot prevent later owners from being considered.
+		for {
+			select {
+			case req := <-input:
+				pending = append(pending, req)
+			default:
+				goto dispatch
+			}
+		}
+
+	dispatch:
+		progressed := false
+		for i := 0; i < len(pending); {
+			req := pending[i]
+			if err := req.taskCtx.Err(); err != nil {
+				m.failAdmission(pool, req, err)
+				removePending(i)
+				progressed = true
+				continue
+			}
+
+			// Do not block the controller on a full physical queue: cancellation
+			// and other owners must still be serviced while workers are occupied.
+			if pool.queue.Depth() >= pool.queue.Capacity() {
+				i++
+				continue
+			}
+			if !req.queued {
+				_, err := req.tm.TryQueue(req.task.ID)
+				if errors.Is(err, tasks.ErrQuotaExceeded) {
+					i++
+					continue
+				}
+				if err != nil {
+					m.failAdmission(pool, req, err)
+					removePending(i)
+					progressed = true
+					continue
+				}
+				req.queued = true
+				pending[i] = req
+			}
+			err := pool.TrySubmit(req.taskCtx, req.task)
+			if errors.Is(err, queue.ErrQueueFull) {
+				i++
+				continue
+			}
+			if err != nil {
+				m.failAdmission(pool, req, err)
+			} else {
+				req.stopWake()
+				pool.releaseAdmission()
+			}
+			removePending(i)
+			progressed = true
+		}
+
+		if quiescing && len(pending) == 0 && len(input) == 0 {
+			return
+		}
+		if progressed {
+			continue
+		}
+
+		select {
+		case req := <-input:
+			pending = append(pending, req)
+		case <-slotChanged:
+		case <-spaceChanged:
+		case <-pool.admissionWake:
+		case <-acceptingEnd:
+			quiescing = true
+			acceptingEnd = nil
+		case <-ctx.Done():
+			// Fence concurrent registration before draining the final handoffs.
+			_ = m.Quiesce(ctx)
+			for _, req := range pending {
+				m.failAdmission(pool, req, ctx.Err())
+			}
+			for {
+				select {
+				case req := <-input:
+					m.failAdmission(pool, req, ctx.Err())
+				default:
+					return
+				}
+			}
+		}
 	}
-	if reservation != nil {
-		reservation.Release()
-	}
-	cancel()
-	state := tasks.StateFailed
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(taskCtx.Err(), context.Canceled) {
-		state = tasks.StateCancelled
-	}
-	tm.Finish(task.ID, state, err)
+}
+
+func (m *Manager) failAdmission(pool *Pool, req admissionRequest, err error) {
+	req.stopWake()
+	pool.releaseAdmission()
+	req.task.OnComplete(err)
+}
+
+// TrySubmit accepts work without waiting for admission capacity. Saturation is
+// returned to the producer so a timer or worker never waits on its own pool.
+func (m *Manager) TrySubmit(ctx context.Context, poolName string, task tasks.Task) error {
+	return m.submit(ctx, poolName, task, nil, true)
 }
 
 // AllStats returns statistics for all managed pools.
 func (m *Manager) AllStats() []PoolStats {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-
 	result := make([]PoolStats, 0, len(m.pools))
 	for _, pool := range m.pools {
 		result = append(result, pool.Stats())

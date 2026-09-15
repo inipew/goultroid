@@ -6,11 +6,25 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
 
-func TestPeriodicCoordinatorRunsMultipleTasksFromSharedLoop(t *testing.T) {
+type testPeriodicSubmitter struct{}
+
+func (testPeriodicSubmitter) TrySubmit(ctx context.Context, _ string, task tasks.Task) error {
+	go func() { _ = task.Execute(ctx) }()
+	return nil
+}
+
+func newTestPeriodicCoordinator() *periodicCoordinator {
 	c := newPeriodicCoordinator(zap.NewNop())
+	c.SetSubmitter(testPeriodicSubmitter{})
+	return c
+}
+
+func TestPeriodicCoordinatorRunsMultipleTasksFromSharedLoop(t *testing.T) {
+	c := newTestPeriodicCoordinator()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := c.Start(ctx); err != nil {
@@ -50,7 +64,7 @@ func TestPeriodicCoordinatorRunsMultipleTasksFromSharedLoop(t *testing.T) {
 }
 
 func TestPeriodicCoordinatorPreventsSameTaskOverlap(t *testing.T) {
-	c := newPeriodicCoordinator(zap.NewNop())
+	c := newTestPeriodicCoordinator()
 	if err := c.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +111,7 @@ func TestPeriodicCoordinatorPreventsSameTaskOverlap(t *testing.T) {
 }
 
 func TestPeriodicCoordinatorUnregisterCancelsActiveRun(t *testing.T) {
-	c := newPeriodicCoordinator(zap.NewNop())
+	c := newTestPeriodicCoordinator()
 	if err := c.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +143,7 @@ func TestPeriodicCoordinatorUnregisterCancelsActiveRun(t *testing.T) {
 }
 
 func TestPeriodicCoordinatorReregisterCancelsPreviousGeneration(t *testing.T) {
-	c := newPeriodicCoordinator(zap.NewNop())
+	c := newTestPeriodicCoordinator()
 	if err := c.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
