@@ -10,6 +10,13 @@ import (
 // HandlerFunc is the physical execution body of a task.
 type HandlerFunc func(ctx context.Context) error
 
+// PrepareFunc performs the durable execution-prepare step after TaskEngine has
+// reserved a real physical permit but before the worker reports Started. It
+// returns the immutable durable occurrence/attempt identity attached to this
+// physical execution. A prepare failure is an aborted-before-start execution
+// intent and must not be reported as handler execution.
+type PrepareFunc func(ctx context.Context, taskID TaskID) (*OccurrenceRef, error)
+
 // CommitFunc persists the physical execution result to the durable store.
 // The engine invokes it exactly once per durability-required task, after
 // physical completion, and holds the result credit until it returns (or the
@@ -33,6 +40,9 @@ type WorkSpec struct {
 
 	// Handler is the execution body.
 	Handler HandlerFunc `json:"-"`
+	// Prepare lazily acquires the durable attempt/lease after TaskEngine has
+	// granted a physical worker permit and before Started is published.
+	Prepare PrepareFunc `json:"-"`
 	// Commit persists the physical result. Non-nil Commit opts the task into
 	// the durable commit protocol (CommitPending until acknowledgement).
 	// Tasks without Commit (e.g. interactive Telegram work) release their
@@ -61,6 +71,12 @@ func (s *WorkSpec) Validate() error {
 	}
 	if s.Handler == nil && strings.TrimSpace(s.HandlerRef) == "" {
 		return errors.New("work spec must specify a handler function or handler reference")
+	}
+	if s.Prepare != nil && s.Commit == nil {
+		return errors.New("prepared durable work requires a commit function")
+	}
+	if s.Prepare != nil && s.Job != nil {
+		return errors.New("work spec cannot contain both lazy prepare and a pre-existing job attempt")
 	}
 	if s.Class == "" {
 		s.Class = PriorityNormal
