@@ -564,9 +564,10 @@ func (e *Engine) spawnWorker(pool tasks.PoolID, slot int, ctx context.Context) b
 	running[slot] = true
 	e.runtimeRemaining.Add(1)
 	mailbox := e.workerMailboxes[pool][slot]
+	idleTimeout := e.poolIdleTimeouts[pool]
 	go func() {
 		defer e.runtimeLoopDone()
-		e.physicalWorker(pool, slot, mailbox, ctx)
+		e.physicalWorker(pool, slot, mailbox, idleTimeout, ctx)
 	}()
 	return true
 }
@@ -735,8 +736,7 @@ func (e *Engine) handleRequest(ctx context.Context, req engineRequest) {
 func (e *Engine) lifecycleAccepting() bool { return e.accepting }
 func (e *Engine) lifecycleQuiesced() bool  { return e.quiesced }
 
-func (e *Engine) physicalWorker(pool tasks.PoolID, slotID int, mailbox <-chan workerAssignment, ctx context.Context) {
-	idleTimeout := e.poolIdleTimeouts[pool]
+func (e *Engine) physicalWorker(pool tasks.PoolID, slotID int, mailbox <-chan workerAssignment, idleTimeout time.Duration, ctx context.Context) {
 	if idleTimeout <= 0 {
 		idleTimeout = 30 * time.Second
 	}

@@ -19,6 +19,7 @@ import (
 	info "github.com/inipew/goultroid/plugins/info"
 	locks "github.com/inipew/goultroid/plugins/locks"
 	media "github.com/inipew/goultroid/plugins/media"
+	myxl "github.com/inipew/goultroid/plugins/myxl"
 	notes "github.com/inipew/goultroid/plugins/notes"
 	ocr "github.com/inipew/goultroid/plugins/ocr"
 	pin "github.com/inipew/goultroid/plugins/pin"
@@ -53,6 +54,7 @@ var builtinModules = []module.Module{
 	info.Module,
 	locks.Module,
 	media.Module,
+	myxl.Module,
 	notes.Module,
 	ocr.Module,
 	pin.Module,
