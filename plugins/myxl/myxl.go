@@ -30,6 +30,25 @@ type Plugin struct {
 	stateStore *callback.StateStore
 }
 
+const myxlCallbackTTL = 10 * time.Minute
+
+type quotaRefreshState struct {
+	MSISDN string
+	Masked bool
+}
+
+type purchaseDraftState struct {
+	MSISDN            string
+	OptionCode        string
+	PackageName       string
+	Price             int64
+	TokenConfirmation string
+	Method            string
+	WalletNumber      string
+	OverwritePrice    int64
+	HasOverwrite      bool
+}
+
 // New creates a new MyXL plugin instance.
 func New(repo Repository, client *Client) *Plugin {
 	if client == nil {
@@ -502,8 +521,13 @@ func (p *Plugin) handleShowQuota(ctx *core.Context, args []string) error {
 	respText := FormatQuotaResponse(acc, balance, quota, maskMSISDN)
 
 	// Attach an interactive refresh callback button
-	if p.stateStore != nil {
-		markup := buildRefreshMarkup(acc.MSISDN)
+	if p.stateStore != nil && ctx.SenderID() > 0 {
+		markup := p.buildRefreshMarkup(quotaRefreshState{MSISDN: acc.MSISDN, Masked: maskMSISDN}, callback.StateScope{
+			UserID: ctx.SenderID(), ChatID: ctx.ChatID(), Namespace: p.Namespace(),
+		})
+		if markup == nil {
+			return ctx.EditOrReply(respText)
+		}
 		if err := ctx.Messages().ReplyMarkup(respText, markup); err == nil {
 			return nil
 		}
@@ -519,9 +543,16 @@ func condMask(s string, mask bool) string {
 	return s
 }
 
-func buildRefreshMarkup(msisdn string) tg.ReplyMarkupClass {
+func (p *Plugin) buildRefreshMarkup(state quotaRefreshState, scope callback.StateScope) tg.ReplyMarkupClass {
+	if p.stateStore == nil || scope.UserID <= 0 {
+		return nil
+	}
+	oid := p.stateStore.StoreWithScope(state, scope, myxlCallbackTTL)
+	if oid == "" {
+		return nil
+	}
 	row := ui.ButtonRow{
-		ui.NewCallbackButton("🔄 Perbarui Kuota", callback.EncodeCallbackData("myxl", "refresh", msisdn)),
+		ui.NewCallbackButton("🔄 Perbarui Kuota", callback.EncodeCallbackData("myxl", "refresh", oid)),
 	}
 	return render.ToTelegramMarkup(ui.Markup{Rows: []ui.ButtonRow{row}})
 }
@@ -534,18 +565,14 @@ func (p *Plugin) HandleCallback(cbCtx *callback.CallbackContext) error {
 
 	switch cbCtx.Action {
 	case "refresh":
-		targetMSISDN := cbCtx.OpaqueID
+		state, ok := cbCtx.State.(quotaRefreshState)
+		if !ok || state.MSISDN == "" {
+			return cbCtx.Answer("Tombol tidak valid atau sudah kedaluwarsa", true)
+		}
 		cCtx, cancel := context.WithTimeout(cbCtx.Ctx, 25*time.Second)
 		defer cancel()
 
-		var acc *Account
-		var err error
-		if targetMSISDN != "" && targetMSISDN != callback.ActionNoop {
-			acc, err = p.repo.GetByMSISDN(cCtx, targetMSISDN)
-		}
-		if acc == nil || err != nil {
-			acc, err = p.repo.GetActive(cCtx)
-		}
+		acc, err := p.repo.GetByMSISDN(cCtx, state.MSISDN)
 		if acc == nil || err != nil {
 			return cbCtx.Answer("Akun tidak ditemukan", true)
 		}
@@ -556,9 +583,25 @@ func (p *Plugin) HandleCallback(cbCtx *callback.CallbackContext) error {
 			return cbCtx.Answer(fmt.Sprintf("Gagal update: %v", bErr), true)
 		}
 
-		text := FormatQuotaResponse(acc, balance, quota, false)
-		markup := buildRefreshMarkup(acc.MSISDN)
+		text := FormatQuotaResponse(acc, balance, quota, state.Masked)
+		markup := p.buildRefreshMarkup(state, callback.StateScope{
+			UserID: cbCtx.UserID, ChatID: cbCtx.ChatID, MessageID: cbCtx.Target.MessageID,
+			Namespace: p.Namespace(),
+		})
 		return cbCtx.Edit(text, markup)
+
+	case "buy_confirm":
+		state, ok := cbCtx.State.(purchaseDraftState)
+		if !ok || state.MSISDN == "" || state.OptionCode == "" || state.TokenConfirmation == "" {
+			return cbCtx.Answer("Draft pembelian tidak valid atau sudah kedaluwarsa", true)
+		}
+		return p.confirmPurchase(cbCtx, state)
+
+	case "buy_cancel":
+		if _, ok := cbCtx.State.(purchaseDraftState); !ok {
+			return cbCtx.Answer("Draft pembelian tidak valid atau sudah kedaluwarsa", true)
+		}
+		return cbCtx.Edit("✅ Pembelian dibatalkan.", nil)
 
 	default:
 		return nil
@@ -799,6 +842,9 @@ func (p *Plugin) handleBuy(ctx *core.Context, args []string) error {
 		}
 
 		if val, err := strconv.ParseInt(low, 10, 64); err == nil {
+			if val < 0 {
+				return ctx.EditOrReply("❌ Nominal overwrite tidak boleh negatif.")
+			}
 			overwritePrice = &val
 			continue
 		}
@@ -833,29 +879,109 @@ func (p *Plugin) handleBuy(ctx *core.Context, args []string) error {
 		effectivePrice = *overwritePrice
 	}
 
-	var res *SettlementResult
-	switch method {
+	if p.stateStore == nil || ctx.SenderID() <= 0 {
+		return ctx.EditOrReply("❌ Konfirmasi pembelian tidak tersedia pada sesi ini. Transaksi tidak dijalankan.")
+	}
+
+	draft := purchaseDraftState{
+		MSISDN: acc.MSISDN, OptionCode: optionCode, PackageName: pkgName, Price: price,
+		TokenConfirmation: targetItem.TokenConfirmation, Method: method, WalletNumber: walletNumber,
+		HasOverwrite: overwritePrice != nil,
+	}
+	if overwritePrice != nil {
+		draft.OverwritePrice = *overwritePrice
+	}
+	oid := p.stateStore.StoreWithScope(draft, callback.StateScope{
+		UserID: ctx.SenderID(), ChatID: ctx.ChatID(), Namespace: p.Namespace(), SingleUse: true,
+	}, 5*time.Minute)
+	if oid == "" {
+		return ctx.EditOrReply("❌ Gagal membuat sesi konfirmasi. Transaksi tidak dijalankan.")
+	}
+
+	preview := fmt.Sprintf(
+		"⚠️ <b>Konfirmasi Pembelian MyXL</b>\n\n<b>Paket:</b> %s\n<b>Kode:</b> <code>%s</code>\n<b>Metode:</b> <code>%s</code>\n<b>Nominal:</b> Rp %s\n\nTekan <b>Konfirmasi</b> untuk menjalankan transaksi satu kali.",
+		html.EscapeString(pkgName), html.EscapeString(optionCode), html.EscapeString(strings.ToUpper(method)), formatRupiah(effectivePrice),
+	)
+	markup := render.ToTelegramMarkup(ui.Markup{Rows: []ui.ButtonRow{{
+		ui.NewCallbackButton("✅ Konfirmasi", callback.EncodeCallbackData("myxl", "buy_confirm", oid)),
+		ui.NewCallbackButton("❌ Batal", callback.EncodeCallbackData("myxl", "buy_cancel", oid)),
+	}}})
+	return ctx.Messages().ReplyMarkup(preview, markup)
+}
+
+func (p *Plugin) confirmPurchase(cbCtx *callback.CallbackContext, draft purchaseDraftState) error {
+	cCtx, cancel := context.WithTimeout(cbCtx.Ctx, 45*time.Second)
+	defer cancel()
+
+	acc, err := p.repo.GetByMSISDN(cCtx, draft.MSISDN)
+	if err != nil || acc == nil {
+		return cbCtx.Edit("❌ Akun untuk draft pembelian tidak ditemukan.", nil)
+	}
+
+	key := fmt.Sprintf("%s:%s:%s", draft.MSISDN, draft.OptionCode, time.Now().UTC().Format("2006-01-02"))
+	reserved, err := p.repo.ReservePurchase(cCtx, key, draft.MSISDN, draft.OptionCode, draft.Method)
+	if err != nil {
+		return cbCtx.Edit("❌ Gagal mengamankan transaksi. Pembelian tidak dijalankan.", nil)
+	}
+	if !reserved {
+		return cbCtx.Edit("⏳ Pembelian paket ini sudah dikonfirmasi hari ini dan tidak dijalankan ulang.", nil)
+	}
+
+	item := PurchaseItem{
+		ItemCode: draft.OptionCode, ItemPrice: draft.Price, ItemName: draft.PackageName,
+		TokenConfirmation: draft.TokenConfirmation,
+	}
+	var overwrite *int64
+	if draft.HasOverwrite {
+		overwrite = &draft.OverwritePrice
+	}
+
+	var result *SettlementResult
+	switch draft.Method {
 	case "balance":
-		res, err = p.client.SettlementBalance(cCtx, acc, targetItem, overwritePrice)
+		result, err = p.client.SettlementBalance(cCtx, acc, item, overwrite)
 	case "qris":
-		res, err = p.client.SettlementQRIS(cCtx, acc, targetItem, overwritePrice)
+		result, err = p.client.SettlementQRIS(cCtx, acc, item, overwrite)
 	case "gopay", "ovo", "dana", "shopeepay":
-		res, err = p.client.SettlementMultipayment(cCtx, acc, targetItem, strings.ToUpper(method), walletNumber, overwritePrice)
+		result, err = p.client.SettlementMultipayment(cCtx, acc, item, strings.ToUpper(draft.Method), draft.WalletNumber, overwrite)
 	case "decoy_balance":
-		res, err = p.client.SettlementDecoy(cCtx, acc, targetItem, "balance", overwritePrice)
+		result, err = p.client.SettlementDecoy(cCtx, acc, item, "balance", overwrite)
 	case "decoy_qris":
-		res, err = p.client.SettlementDecoy(cCtx, acc, targetItem, "qris", overwritePrice)
+		result, err = p.client.SettlementDecoy(cCtx, acc, item, "qris", overwrite)
 	case "decoy_qris0":
-		res, err = p.client.SettlementDecoy(cCtx, acc, targetItem, "qris0", overwritePrice)
+		result, err = p.client.SettlementDecoy(cCtx, acc, item, "qris0", overwrite)
 	default:
-		return ctx.EditOrReply(fmt.Sprintf("❌ Metode pembayaran <code>%s</code> tidak didukung.", html.EscapeString(method)))
+		err = fmt.Errorf("unsupported payment method %q", draft.Method)
 	}
 
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Transaksi gagal:\n<code>%s</code>", html.EscapeString(err.Error())))
+		persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(cCtx), 5*time.Second)
+		_ = p.repo.FinishPurchase(persistCtx, key, "UNKNOWN", "", err.Error())
+		persistCancel()
+		return cbCtx.Edit("⚠️ Hasil transaksi tidak dapat dipastikan. Transaksi tidak akan diulang otomatis; periksa riwayat MyXL sebelum mencoba lagi.", nil)
+	}
+	if result == nil {
+		persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(cCtx), 5*time.Second)
+		_ = p.repo.FinishPurchase(persistCtx, key, "UNKNOWN", "", "empty settlement result")
+		persistCancel()
+		return cbCtx.Edit("⚠️ Hasil transaksi kosong dan tidak dapat dipastikan. Periksa riwayat MyXL sebelum mencoba lagi.", nil)
+	}
+	status := "FAILED"
+	if result.IsSuccess {
+		status = "SUCCESS"
+	}
+	persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(cCtx), 5*time.Second)
+	finishErr := p.repo.FinishPurchase(persistCtx, key, status, result.TransactionCode, result.Message)
+	persistCancel()
+	if finishErr != nil {
+		return cbCtx.Edit("⚠️ Transaksi selesai tetapi hasilnya gagal dicatat. Periksa riwayat MyXL sebelum mencoba lagi.", nil)
 	}
 
-	return ctx.EditOrReply(FormatPurchaseResult(res, pkgName, effectivePrice, strings.ToUpper(method)))
+	effectivePrice := draft.Price
+	if draft.HasOverwrite {
+		effectivePrice = draft.OverwritePrice
+	}
+	return cbCtx.Edit(FormatPurchaseResult(result, draft.PackageName, effectivePrice, strings.ToUpper(draft.Method)), nil)
 }
 
 func truncateString(s string, n int) string {

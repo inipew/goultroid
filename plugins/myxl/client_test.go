@@ -105,6 +105,12 @@ func (m *mockRepo) GetSavedPackage(ctx context.Context, msisdn, optionCode strin
 func (m *mockRepo) DeleteSavedPackage(ctx context.Context, msisdn, optionCode string) error {
 	return nil
 }
+func (m *mockRepo) ReservePurchase(ctx context.Context, key, msisdn, optionCode, paymentMethod string) (bool, error) {
+	return true, nil
+}
+func (m *mockRepo) FinishPurchase(ctx context.Context, key, status, transactionCode, message string) error {
+	return nil
+}
 func (m *mockRepo) GetDecoy(ctx context.Context, key string) (*DecoyConfig, error) {
 	return nil, nil
 }

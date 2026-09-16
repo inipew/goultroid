@@ -165,7 +165,50 @@ func (migration004) VerifySchema(ctx context.Context, tx database.SQLExecutor) e
 	return nil
 }
 
+var _ database.SchemaInvariantMigration = migration005{}
+
+type migration005 struct{}
+
+func (migration005) ID() string { return "myxl.005" }
+func (migration005) Description() string {
+	return "Persistent idempotency records for confirmed purchases"
+}
+func (migration005) Checksum() string {
+	return "38e27ef761b1ea86cbe4945993e92c8484ea3cd90071b8c66a585356d72d6294"
+}
+func (migration005) LegacyVersions() []int { return nil }
+
+func (migration005) Up(ctx context.Context, tx database.SQLExecutor) error {
+	_, err := tx.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS myxl_purchase_requests (
+			idempotency_key TEXT PRIMARY KEY,
+			msisdn TEXT NOT NULL,
+			option_code TEXT NOT NULL,
+			payment_method TEXT NOT NULL,
+			status TEXT NOT NULL,
+			transaction_code TEXT NOT NULL DEFAULT '',
+			message TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_myxl_purchase_requests_account
+		ON myxl_purchase_requests(msisdn, created_at);
+	`)
+	return err
+}
+
+func (migration005) VerifySchema(ctx context.Context, tx database.SQLExecutor) error {
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='myxl_purchase_requests'`).Scan(&count); err != nil {
+		return err
+	}
+	if count == 0 {
+		return fmt.Errorf("required table myxl_purchase_requests does not exist")
+	}
+	return nil
+}
+
 // Migrations returns the database migrations for the myxl plugin.
 func Migrations() []database.Migration {
-	return []database.Migration{migration001{}, migration002{}, migration003{}, migration004{}}
+	return []database.Migration{migration001{}, migration002{}, migration003{}, migration004{}, migration005{}}
 }

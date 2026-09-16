@@ -27,9 +27,51 @@ type Repository interface {
 	GetSavedPackage(ctx context.Context, msisdn, optionCode string) (*SavedPackage, error)
 	DeleteSavedPackage(ctx context.Context, msisdn, optionCode string) error
 
+	// Purchase idempotency
+	ReservePurchase(ctx context.Context, key, msisdn, optionCode, paymentMethod string) (bool, error)
+	FinishPurchase(ctx context.Context, key, status, transactionCode, message string) error
+
 	// Decoy configurations
 	GetDecoy(ctx context.Context, key string) (*DecoyConfig, error)
 	UpsertDecoy(ctx context.Context, decoy *DecoyConfig) error
+}
+
+// ReservePurchase atomically reserves an idempotency key. It returns false if
+// the same purchase has already been reserved.
+func (r *SQLiteRepository) ReservePurchase(ctx context.Context, key, msisdn, optionCode, paymentMethod string) (bool, error) {
+	res, err := r.db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO myxl_purchase_requests (
+			idempotency_key, msisdn, option_code, payment_method, status, created_at, updated_at
+		) VALUES (?, ?, ?, ?, 'PENDING', ?, ?)
+	`, key, msisdn, optionCode, paymentMethod, time.Now().UTC(), time.Now().UTC())
+	if err != nil {
+		return false, fmt.Errorf("reserve purchase: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read purchase reservation result: %w", err)
+	}
+	return rows == 1, nil
+}
+
+// FinishPurchase records the terminal or uncertain outcome of a reserved purchase.
+func (r *SQLiteRepository) FinishPurchase(ctx context.Context, key, status, transactionCode, message string) error {
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE myxl_purchase_requests
+		SET status = ?, transaction_code = ?, message = ?, updated_at = ?
+		WHERE idempotency_key = ?
+	`, status, transactionCode, message, time.Now().UTC(), key)
+	if err != nil {
+		return fmt.Errorf("finish purchase: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read purchase completion result: %w", err)
+	}
+	if rows == 0 {
+		return errors.New("purchase reservation not found")
+	}
+	return nil
 }
 
 // SQLiteRepository implements Repository using *database.DB.

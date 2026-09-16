@@ -18,7 +18,8 @@ import (
 
 type mockTgService struct {
 	core.MockTelegramServicer
-	sent string
+	sent       string
+	lastMarkup tg.ReplyMarkupClass
 }
 
 func (m *mockTgService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
@@ -33,11 +34,13 @@ func (m *mockTgService) EditMessage(ctx context.Context, peer tg.InputPeerClass,
 
 func (m *mockTgService) SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
 	m.sent = text
+	m.lastMarkup = markup
 	return &tg.Message{ID: 10, Message: text}, nil
 }
 
 func (m *mockTgService) EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass, msgID int, text string, markup tg.ReplyMarkupClass) error {
 	m.sent = text
+	m.lastMarkup = markup
 	return nil
 }
 
@@ -118,6 +121,7 @@ func TestMyXLPlugin_Commands(t *testing.T) {
 	netCli := network.NewService(server.Client(), nil).ForOwner("myxl")
 	client := NewClient(cfg, repo, netCli)
 	plugin := New(repo, client)
+	plugin.SetStateStore(callback.NewStateStore())
 
 	if plugin.Name() != "myxl" {
 		t.Errorf("expected name myxl, got %s", plugin.Name())
@@ -240,14 +244,39 @@ func TestMyXLPlugin_Commands(t *testing.T) {
 	ctxBuy := *baseCtx
 	ctxBuy.Args = []string{"buy", "OPT-FLEX-S", "pulsa", "0"}
 	_ = cmdMap["myxl"].Handler(&ctxBuy)
+	if !strings.Contains(svc.sent, "Konfirmasi Pembelian") {
+		t.Errorf("expected purchase confirmation, got %s", svc.sent)
+	}
+	_, purchaseEntry := callbackEntryFromMarkup(t, plugin.stateStore, svc.lastMarkup)
+	if !purchaseEntry.Scope.SingleUse || purchaseEntry.Scope.UserID != 1001 || purchaseEntry.Scope.ChatID != 1001 {
+		t.Fatalf("purchase confirmation is not single-use and scoped: %#v", purchaseEntry.Scope)
+	}
+	_ = plugin.HandleCallback(&callback.CallbackContext{
+		Ctx: ctx, Action: "buy_confirm", UserID: 1001, Service: svc,
+		Target: core.CallbackTarget{Peer: &tg.InputPeerUser{UserID: 1001}, MessageID: 10},
+		State: purchaseDraftState{
+			MSISDN: "6281912345678", OptionCode: "OPT-FLEX-S", PackageName: "Flex S 10GB",
+			Price: 35000, TokenConfirmation: "CONFIRM-TOKEN-123", Method: "balance",
+			HasOverwrite: true, OverwritePrice: 0,
+		},
+	})
 	if !strings.Contains(svc.sent, "TRX-BAL-123") {
 		t.Errorf("expected balance purchase transaction code, got %s", svc.sent)
 	}
 
 	// 14. .beli OPT-FLEX-S qris 1000
 	ctxBeli := *baseCtx
-	ctxBeli.Args = []string{"OPT-FLEX-S", "qris", "1000"}
+	ctxBeli.Args = []string{"OPT-FLEX-Q", "qris", "1000"}
 	_ = cmdMap["beli"].Handler(&ctxBeli)
+	_ = plugin.HandleCallback(&callback.CallbackContext{
+		Ctx: ctx, Action: "buy_confirm", UserID: 1001, Service: svc,
+		Target: core.CallbackTarget{Peer: &tg.InputPeerUser{UserID: 1001}, MessageID: 10},
+		State: purchaseDraftState{
+			MSISDN: "6281912345678", OptionCode: "OPT-FLEX-Q", PackageName: "Flex Q",
+			Price: 35000, TokenConfirmation: "CONFIRM-TOKEN-123", Method: "qris",
+			HasOverwrite: true, OverwritePrice: 1000,
+		},
+	})
 	if !strings.Contains(svc.sent, "TRX-QR-456") || !strings.Contains(svc.sent, "0002010102122659...") {
 		t.Errorf("expected QRIS transaction code and QR string, got %s", svc.sent)
 	}
@@ -276,7 +305,7 @@ func TestMyXLPlugin_Commands(t *testing.T) {
 	cbCtx := &callback.CallbackContext{
 		Ctx:       ctx,
 		Action:    "refresh",
-		OpaqueID:  "6281912345678",
+		State:     quotaRefreshState{MSISDN: "6281912345678", Masked: true},
 		Target:    core.CallbackTarget{Peer: &tg.InputPeerUser{UserID: 1001}, MessageID: 1},
 		Namespace: "myxl",
 		UserID:    1001,
@@ -293,4 +322,41 @@ func TestMyXLPlugin_Commands(t *testing.T) {
 	if !strings.Contains(svc.sent, "berhasil dihapus") {
 		t.Errorf("expected deleted message, got %s", svc.sent)
 	}
+}
+
+func TestRefreshMarkupStoresScopedMaskedState(t *testing.T) {
+	store := callback.NewStateStore()
+	p := &Plugin{stateStore: store}
+	markup := p.buildRefreshMarkup(quotaRefreshState{MSISDN: "6281912345678", Masked: true}, callback.StateScope{
+		UserID: 42, ChatID: -10099, Namespace: "myxl",
+	})
+	_, entry := callbackEntryFromMarkup(t, store, markup)
+	state, ok := entry.Data.(quotaRefreshState)
+	if !ok || !state.Masked || state.MSISDN != "6281912345678" {
+		t.Fatalf("unexpected refresh state: %#v", entry.Data)
+	}
+	if entry.Scope.UserID != 42 || entry.Scope.ChatID != -10099 || entry.Scope.Namespace != "myxl" {
+		t.Fatalf("unexpected callback scope: %#v", entry.Scope)
+	}
+}
+
+func callbackEntryFromMarkup(t *testing.T, store *callback.StateStore, markup tg.ReplyMarkupClass) (string, callback.StateEntry) {
+	t.Helper()
+	inline, ok := markup.(*tg.ReplyInlineMarkup)
+	if !ok || len(inline.Rows) == 0 || len(inline.Rows[0].Buttons) == 0 {
+		t.Fatalf("unexpected refresh markup: %#v", markup)
+	}
+	button, ok := inline.Rows[0].Buttons[0].(*tg.KeyboardButtonCallback)
+	if !ok {
+		t.Fatalf("unexpected button type: %T", inline.Rows[0].Buttons[0])
+	}
+	_, _, oid, err := callback.ParseCallbackData(button.Data)
+	if err != nil {
+		t.Fatalf("parse callback data: %v", err)
+	}
+	entry, err := store.GetEntry(oid)
+	if err != nil {
+		t.Fatalf("get callback state: %v", err)
+	}
+	return oid, entry
 }

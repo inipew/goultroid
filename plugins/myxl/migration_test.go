@@ -21,6 +21,17 @@ func TestMyXLFeatureMigrationFreshDatabase(t *testing.T) {
 	}
 
 	repo := NewSQLiteRepository(db)
+	reserved, err := repo.ReservePurchase(ctx, "daily-key", "6281900000001", "OPT-1", "balance")
+	if err != nil || !reserved {
+		t.Fatalf("reserve first purchase: reserved=%v err=%v", reserved, err)
+	}
+	reserved, err = repo.ReservePurchase(ctx, "daily-key", "6281900000001", "OPT-1", "balance")
+	if err != nil || reserved {
+		t.Fatalf("duplicate purchase reservation must be rejected: reserved=%v err=%v", reserved, err)
+	}
+	if err := repo.FinishPurchase(ctx, "daily-key", "SUCCESS", "TRX-1", "ok"); err != nil {
+		t.Fatalf("finish purchase: %v", err)
+	}
 
 	acc1 := &Account{
 		MSISDN:       "6281900000001",
