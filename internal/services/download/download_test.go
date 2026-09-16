@@ -199,3 +199,21 @@ func TestDirectHTTPProvider_ResourceLimit(t *testing.T) {
 		t.Errorf("expected ErrInvalidScheme, got %v", err)
 	}
 }
+
+func TestResourceContext(t *testing.T) {
+	ctx := context.Background()
+	if download.HasResource(ctx, "process") {
+		t.Errorf("expected HasResource false for empty context")
+	}
+	if download.HasResource(nil, "process") {
+		t.Errorf("expected HasResource false for nil context")
+	}
+
+	ctxWithProcess := download.WithResource(ctx, "process")
+	if !download.HasResource(ctxWithProcess, "process") {
+		t.Errorf("expected HasResource true for process")
+	}
+	if download.HasResource(ctxWithProcess, "download") {
+		t.Errorf("expected HasResource false for download")
+	}
+}

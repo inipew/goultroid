@@ -39,3 +39,19 @@ type Provider interface {
 	// Download fetches the remote asset and persists it into storage.
 	Download(ctx context.Context, rawURL string, store storage.Storage, opts DownloadOptions) (*storage.Asset, error)
 }
+
+type resourceContextKey struct{ name string }
+
+// WithResource marks a context as already holding the named execution resource.
+func WithResource(ctx context.Context, name string) context.Context {
+	return context.WithValue(ctx, resourceContextKey{name: name}, true)
+}
+
+// HasResource reports whether the context was marked as holding the named execution resource.
+func HasResource(ctx context.Context, name string) bool {
+	if ctx == nil {
+		return false
+	}
+	v, ok := ctx.Value(resourceContextKey{name: name}).(bool)
+	return ok && v
+}

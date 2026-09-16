@@ -61,8 +61,12 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 
 	processRunner := process.NewOSRunner(3, 5*time.Minute, 4*1024*1024)
 	processRunner.UseExternalConcurrencyControl()
+	extractorProvider := download.NewExtractorProvider(processRunner, 500*1024*1024)
+	if core.taskEngine != nil {
+		extractorProvider.SetTasks(core.taskEngine)
+	}
 	downloadRegistry := download.NewRegistry(
-		download.NewExtractorProvider(processRunner, 500*1024*1024),
+		extractorProvider,
 		download.NewDirectHTTPProvider(5*time.Minute, 500*1024*1024),
 	)
 	mediaGuard := mediaSvc.NewResourceGuard(2, 100*1024*1024)

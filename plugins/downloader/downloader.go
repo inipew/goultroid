@@ -94,7 +94,13 @@ func (p *Plugin) registerJobHandlers() {
 		if value, ok := p.jobUI.LoadAndDelete(j.ID); ok {
 			uiCtx, _ = value.(*core.Context)
 		}
-		return p.executeURLDownload(ctx, uiCtx, payload.URL)
+		reqCtx := ctx
+		for _, r := range j.Resources {
+			if r.Amount > 0 {
+				reqCtx = download.WithResource(reqCtx, r.Name)
+			}
+		}
+		return p.executeURLDownload(reqCtx, uiCtx, payload.URL)
 	})
 	_ = p.jobs.RegisterHandler("downloader.telegram_media", func(ctx context.Context, j jobs.JobDefinition) error {
 		var payload mediaJobPayload
@@ -148,7 +154,7 @@ func (p *Plugin) Commands() []core.Command {
 			ReplyOnly:   false,
 			Cooldown:    3 * time.Second,
 			Timeout:     10 * time.Minute,
-			Resources:   []tasks.ResourceRequirement{{Name: "download", Amount: 1}, {Name: "process", Amount: 1}},
+			Resources:   []tasks.ResourceRequirement{{Name: "download", Amount: 1}},
 			Handler:     p.handleDownload,
 		},
 	}
@@ -207,7 +213,7 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 		if err != nil {
 			return fmt.Errorf("encode media download job: %w", err)
 		}
-		job := jobs.JobDefinition{ID: jobID, ScopeOwner: "plugin:downloader", QuotaOwner: "telegram:download", HandlerType: "downloader.telegram_media", Payload: payload, Pool: "download", Class: "normal", Timeout: 10 * time.Minute, Enabled: true}
+		job := jobs.JobDefinition{ID: jobID, ScopeOwner: "plugin:downloader", QuotaOwner: "telegram:download", HandlerType: "downloader.telegram_media", Payload: payload, Pool: "download", Class: "normal", Timeout: 10 * time.Minute, Resources: []tasks.ResourceRequirement{{Name: "download", Amount: 1}}, Enabled: true}
 		_ = idempKey
 		if err := p.jobs.Register(job); err == nil {
 			p.jobUI.Store(jobID, ctx)
@@ -272,7 +278,13 @@ func (p *Plugin) handleURLDownload(ctx *core.Context, rawURL string) error {
 		if err != nil {
 			return fmt.Errorf("encode download job: %w", err)
 		}
-		job := jobs.JobDefinition{ID: jobID, ScopeOwner: "plugin:downloader", QuotaOwner: "telegram:download", HandlerType: "downloader.url", Payload: payload, Pool: "download", Class: "normal", Timeout: 10 * time.Minute, Enabled: true}
+		reqResources := []tasks.ResourceRequirement{{Name: "download", Amount: 1}}
+		if p.registry != nil {
+			if prov := p.registry.Resolve(rawURL); prov != nil && prov.Name() == "extractor" {
+				reqResources = append(reqResources, tasks.ResourceRequirement{Name: "process", Amount: 1})
+			}
+		}
+		job := jobs.JobDefinition{ID: jobID, ScopeOwner: "plugin:downloader", QuotaOwner: "telegram:download", HandlerType: "downloader.url", Payload: payload, Pool: "download", Class: "normal", Timeout: 10 * time.Minute, Resources: reqResources, Enabled: true}
 		_ = idempKey
 		if err := p.jobs.Register(job); err == nil {
 			p.jobUI.Store(jobID, ctx)
