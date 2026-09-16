@@ -21,7 +21,13 @@ var (
 
 // PoolEngineConfig sets concurrency and queue parameters for a pool in TaskEngine.
 type PoolEngineConfig struct {
-	Concurrency   int
+	Concurrency int
+	// MinConcurrency enables adaptive sizing when positive and lower than
+	// Concurrency. Zero preserves the historical fixed-size pool behavior.
+	MinConcurrency int
+	// IdleTimeout retires adaptive workers above MinConcurrency. Zero uses the
+	// default timeout.
+	IdleTimeout   time.Duration
 	BacklogLimit  int
 	PayloadBudget int64
 }
@@ -60,11 +66,11 @@ type Config struct {
 // DefaultConfig provides standard execution coordinator settings.
 var DefaultConfig = Config{
 	Pools: map[tasks.PoolID]PoolEngineConfig{
-		"general":       {Concurrency: 8, BacklogLimit: 200, PayloadBudget: 100 * 1024 * 1024},
-		"interactive":   {Concurrency: 32, BacklogLimit: 128, PayloadBudget: 50 * 1024 * 1024},
-		"download":      {Concurrency: 3, BacklogLimit: 50, PayloadBudget: 200 * 1024 * 1024},
-		"media-process": {Concurrency: 2, BacklogLimit: 20, PayloadBudget: 200 * 1024 * 1024},
-		"scheduler":     {Concurrency: 4, BacklogLimit: 100, PayloadBudget: 50 * 1024 * 1024},
+		"general":       {Concurrency: 8, MinConcurrency: 1, IdleTimeout: 30 * time.Second, BacklogLimit: 200, PayloadBudget: 100 * 1024 * 1024},
+		"interactive":   {Concurrency: 32, MinConcurrency: 2, IdleTimeout: 30 * time.Second, BacklogLimit: 128, PayloadBudget: 50 * 1024 * 1024},
+		"download":      {Concurrency: 3, MinConcurrency: 1, IdleTimeout: 45 * time.Second, BacklogLimit: 50, PayloadBudget: 200 * 1024 * 1024},
+		"media-process": {Concurrency: 2, MinConcurrency: 1, IdleTimeout: time.Minute, BacklogLimit: 20, PayloadBudget: 200 * 1024 * 1024},
+		"scheduler":     {Concurrency: 4, MinConcurrency: 1, IdleTimeout: time.Minute, BacklogLimit: 100, PayloadBudget: 50 * 1024 * 1024},
 	},
 	ResultCapacity:      1000,
 	MaxTerminalRetained: 1000,
@@ -138,12 +144,15 @@ const (
 	opSnapshot
 	opResult
 	opWorkerIdle
+	opWorkerRetire
 	opWorkerStarted
 	opWorkerCompleted
 	opCommitAck
 	opSweep
 	opQuiesce
 	opSetOwnerLimits
+	opConfigurePool
+	opSetResourceCapacity
 	opStats
 	opStopFinalize
 )
@@ -162,11 +171,14 @@ type engineRequest struct {
 	started  time.Time
 	decision *submitCell
 	// commitSeq + ackErr carry the fenced durability acknowledgement.
-	commitSeq uint64
-	ackErr    error
-	owner     tasks.OwnerID
-	limits    admission.OwnerLimits
-	reply     chan engineReply
+	commitSeq        uint64
+	ackErr           error
+	owner            tasks.OwnerID
+	limits           admission.OwnerLimits
+	poolConfig       PoolEngineConfig
+	resourceName     string
+	resourceCapacity int64
+	reply            chan engineReply
 }
 
 type engineReply struct {
@@ -198,7 +210,20 @@ type engineStats struct {
 	durabilityCap   int
 	durabilityFail  int64
 	scopeTombstones int
+	pools           map[tasks.PoolID]PoolRuntimeStats
+	resources       map[string]ResourceRuntimeStats
 }
+
+type PoolRuntimeStats struct {
+	Workers      int
+	MinWorkers   int
+	MaxWorkers   int
+	IdleWorkers  int
+	Waiting      int
+	WaitingBytes int64
+}
+
+type ResourceRuntimeStats struct{ Used, Capacity int64 }
 
 // RuntimeStats is a bounded-cardinality snapshot of execution coordination.
 type RuntimeStats struct {
@@ -216,6 +241,8 @@ type RuntimeStats struct {
 	DurabilityCap   int
 	DurabilityFail  int64
 	ScopeTombstones int
+	Pools           map[tasks.PoolID]PoolRuntimeStats
+	Resources       map[string]ResourceRuntimeStats
 }
 
 // Engine coordinates admission, fairness, physical worker permits, result credits, and lifecycles.
@@ -230,6 +257,9 @@ type Engine struct {
 	// ---- runLoop-owned execution state ----
 	idleSlots         map[tasks.PoolID][]int
 	poolConcurrencies map[tasks.PoolID]int
+	poolMinWorkers    map[tasks.PoolID]int
+	poolIdleTimeouts  map[tasks.PoolID]time.Duration
+	workerRunning     map[tasks.PoolID][]bool
 	poolGenerations   map[tasks.PoolID]uint64
 	resourceCapacity  map[string]int64
 	resourceUsed      map[string]int64
@@ -321,6 +351,12 @@ func ValidateConfig(cfg Config) error {
 		if pcfg.Concurrency < 0 {
 			return fmt.Errorf("taskengine: pool %s concurrency cannot be negative", poolID)
 		}
+		if pcfg.MinConcurrency < 0 || (pcfg.Concurrency > 0 && pcfg.MinConcurrency > pcfg.Concurrency) {
+			return fmt.Errorf("taskengine: pool %s minimum concurrency is invalid", poolID)
+		}
+		if pcfg.IdleTimeout < 0 {
+			return fmt.Errorf("taskengine: pool %s idle timeout cannot be negative", poolID)
+		}
 		if pcfg.BacklogLimit < 0 {
 			return fmt.Errorf("taskengine: pool %s backlog limit cannot be negative", poolID)
 		}
@@ -360,6 +396,9 @@ func NewEngine(cfg Config) *Engine {
 	admPoolConfigs := make(map[tasks.PoolID]admission.PoolConfig, len(cfg.Pools))
 	idleSlots := make(map[tasks.PoolID][]int, len(cfg.Pools))
 	concurrencies := make(map[tasks.PoolID]int, len(cfg.Pools))
+	minimums := make(map[tasks.PoolID]int, len(cfg.Pools))
+	idleTimeouts := make(map[tasks.PoolID]time.Duration, len(cfg.Pools))
+	workerRunning := make(map[tasks.PoolID][]bool, len(cfg.Pools))
 	generations := make(map[tasks.PoolID]uint64, len(cfg.Pools))
 
 	maxTerminal := cfg.MaxTerminalRetained
@@ -411,6 +450,16 @@ func NewEngine(cfg Config) *Engine {
 			pcfg.Concurrency = 4
 		}
 		concurrencies[poolID] = pcfg.Concurrency
+		minimum := pcfg.MinConcurrency
+		if minimum <= 0 {
+			minimum = pcfg.Concurrency
+		}
+		minimums[poolID] = minimum
+		idleTimeout := pcfg.IdleTimeout
+		if idleTimeout <= 0 {
+			idleTimeout = 30 * time.Second
+		}
+		idleTimeouts[poolID] = idleTimeout
 		generations[poolID] = 1
 		slots := make([]int, pcfg.Concurrency)
 		mboxes := make([]chan workerAssignment, pcfg.Concurrency)
@@ -418,8 +467,9 @@ func NewEngine(cfg Config) *Engine {
 			slots[i] = i
 			mboxes[i] = make(chan workerAssignment, 1)
 		}
-		idleSlots[poolID] = slots
+		idleSlots[poolID] = slots[:0]
 		mailboxes[poolID] = mboxes
+		workerRunning[poolID] = make([]bool, pcfg.Concurrency)
 		admPoolConfigs[poolID] = admission.PoolConfig{BacklogLimit: pcfg.BacklogLimit, PayloadBudget: pcfg.PayloadBudget}
 	}
 
@@ -428,6 +478,9 @@ func NewEngine(cfg Config) *Engine {
 		adm:                 admission.NewController(admPoolConfigs),
 		idleSlots:           idleSlots,
 		poolConcurrencies:   concurrencies,
+		poolMinWorkers:      minimums,
+		poolIdleTimeouts:    idleTimeouts,
+		workerRunning:       workerRunning,
 		poolGenerations:     generations,
 		resourceCapacity:    resourceCapacities,
 		resourceUsed:        make(map[string]int64, len(resourceCapacities)),
@@ -488,24 +541,32 @@ func (e *Engine) Start(ctx context.Context) error {
 	delivery.start()
 	durability.start()
 
-	runtimeLoops := 1
-	for _, mboxes := range e.workerMailboxes {
-		runtimeLoops += len(mboxes)
-	}
-	e.runtimeRemaining.Store(int64(runtimeLoops))
+	e.runtimeRemaining.Store(1)
 	go func() {
 		defer e.runtimeLoopDone()
 		e.runLoop(rootCtx, inbox)
 	}()
-	for poolID, mboxes := range e.workerMailboxes {
-		for slotID, ch := range mboxes {
-			go func(pool tasks.PoolID, slot int, mailbox <-chan workerAssignment) {
-				defer e.runtimeLoopDone()
-				e.physicalWorker(pool, slot, mailbox, rootCtx)
-			}(poolID, slotID, ch)
+	for poolID := range e.workerMailboxes {
+		for slotID := 0; slotID < e.poolMinWorkers[poolID]; slotID++ {
+			e.spawnWorker(poolID, slotID, rootCtx)
 		}
 	}
 	return nil
+}
+
+func (e *Engine) spawnWorker(pool tasks.PoolID, slot int, ctx context.Context) bool {
+	running := e.workerRunning[pool]
+	if slot < 0 || slot >= len(running) || running[slot] {
+		return false
+	}
+	running[slot] = true
+	e.runtimeRemaining.Add(1)
+	mailbox := e.workerMailboxes[pool][slot]
+	go func() {
+		defer e.runtimeLoopDone()
+		e.physicalWorker(pool, slot, mailbox, ctx)
+	}()
+	return true
 }
 
 func (e *Engine) runtimeLoopDone() {
@@ -589,6 +650,21 @@ func (e *Engine) handleRequest(ctx context.Context, req engineRequest) {
 		res, found := e.applyResult(req.taskID)
 		req.reply <- engineReply{result: res, hasResult: found, found: found}
 	case opStats:
+		pools := make(map[tasks.PoolID]PoolRuntimeStats, len(e.poolConcurrencies))
+		for pool, maximum := range e.poolConcurrencies {
+			waiting, waitingBytes := e.adm.PoolStats(pool)
+			workers := 0
+			for _, running := range e.workerRunning[pool] {
+				if running {
+					workers++
+				}
+			}
+			pools[pool] = PoolRuntimeStats{Workers: workers, MinWorkers: e.poolMinWorkers[pool], MaxWorkers: maximum, IdleWorkers: len(e.idleSlots[pool]), Waiting: waiting, WaitingBytes: waitingBytes}
+		}
+		resources := make(map[string]ResourceRuntimeStats, len(e.resourceCapacity))
+		for name, capacity := range e.resourceCapacity {
+			resources[name] = ResourceRuntimeStats{Used: e.resourceUsed[name], Capacity: capacity}
+		}
 		req.reply <- engineReply{stats: engineStats{
 			resultSlotsHeld: e.resultSlotsHeld,
 			resultCapacity:  e.resultCapacity,
@@ -606,9 +682,15 @@ func (e *Engine) handleRequest(ctx context.Context, req engineRequest) {
 			durabilityCap:   e.durability.queueCap(),
 			durabilityFail:  e.durability.failureCount(),
 			scopeTombstones: len(e.cancelledScopes),
+			pools:           pools, resources: resources,
 		}}
 	case opWorkerIdle:
 		e.markWorkerIdle(req.pool, req.slotID)
+	case opWorkerRetire:
+		retired := e.retireIdleWorker(req.pool, req.slotID)
+		if req.reply != nil {
+			req.reply <- engineReply{found: retired}
+		}
 	case opWorkerStarted:
 		e.applyWorkerStarted(req.taskID, req.permit, req.started)
 	case opWorkerCompleted:
@@ -630,6 +712,16 @@ func (e *Engine) handleRequest(ctx context.Context, req engineRequest) {
 		if req.reply != nil {
 			req.reply <- engineReply{}
 		}
+	case opConfigurePool:
+		err := e.applyPoolConfig(req.pool, req.poolConfig)
+		if req.reply != nil {
+			req.reply <- engineReply{err: err}
+		}
+	case opSetResourceCapacity:
+		err := e.applyResourceCapacity(req.resourceName, req.resourceCapacity)
+		if req.reply != nil {
+			req.reply <- engineReply{err: err}
+		}
 	case opStopFinalize:
 		e.applyStopFinalize()
 		if req.reply != nil {
@@ -642,10 +734,22 @@ func (e *Engine) lifecycleAccepting() bool { return e.accepting }
 func (e *Engine) lifecycleQuiesced() bool  { return e.quiesced }
 
 func (e *Engine) physicalWorker(pool tasks.PoolID, slotID int, mailbox <-chan workerAssignment, ctx context.Context) {
+	idleTimeout := e.poolIdleTimeouts[pool]
+	if idleTimeout <= 0 {
+		idleTimeout = 30 * time.Second
+	}
+	timer := time.NewTimer(idleTimeout)
+	defer timer.Stop()
+	e.sendInternal(engineRequest{op: opWorkerIdle, pool: pool, slotID: slotID})
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-timer.C:
+			if e.requestWorkerRetire(ctx, pool, slotID) {
+				return
+			}
+			timer.Reset(idleTimeout)
 		case assignment, ok := <-mailbox:
 			if !ok {
 				return
@@ -657,7 +761,40 @@ func (e *Engine) physicalWorker(pool tasks.PoolID, slotID int, mailbox <-chan wo
 			// alone is never sufficient because terminal eviction permits ID reuse.
 			e.sendInternal(engineRequest{op: opWorkerCompleted, result: res, permit: assignment.permit})
 			e.sendInternal(engineRequest{op: opWorkerIdle, pool: pool, slotID: slotID})
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(idleTimeout)
 		}
+	}
+}
+
+func (e *Engine) requestWorkerRetire(ctx context.Context, pool tasks.PoolID, slot int) bool {
+	e.mu.Lock()
+	inbox := e.inbox
+	root := e.rootCtx
+	e.mu.Unlock()
+	if inbox == nil || root == nil {
+		return true
+	}
+	reply := make(chan engineReply, 1)
+	select {
+	case inbox <- engineRequest{op: opWorkerRetire, pool: pool, slotID: slot, reply: reply}:
+	case <-ctx.Done():
+		return true
+	case <-root.Done():
+		return true
+	}
+	select {
+	case result := <-reply:
+		return result.found
+	case <-ctx.Done():
+		return true
+	case <-root.Done():
+		return true
 	}
 }
 
@@ -946,6 +1083,9 @@ func (e *Engine) tryDispatch(pool tasks.PoolID) {
 		return
 	}
 	e.sweepExpired(pool, time.Now().UTC())
+	if waiting, _ := e.adm.PoolStats(pool); waiting > 0 && len(e.idleSlots[pool]) == 0 {
+		e.spawnNextWorker(pool)
+	}
 	for len(e.idleSlots[pool]) > 0 {
 		candidate, err := e.adm.SelectCandidateEligible(pool, e.resourcesAvailable)
 		if err != nil {
@@ -973,6 +1113,79 @@ func (e *Engine) tryDispatch(pool tasks.PoolID) {
 			cancel()
 		}
 	}
+	if waiting, _ := e.adm.PoolStats(pool); waiting > 0 && len(e.idleSlots[pool]) == 0 {
+		e.spawnNextWorker(pool)
+	}
+}
+
+func (e *Engine) spawnNextWorker(pool tasks.PoolID) bool {
+	runningCount := 0
+	for _, running := range e.workerRunning[pool] {
+		if running {
+			runningCount++
+		}
+	}
+	if runningCount >= e.poolConcurrencies[pool] {
+		return false
+	}
+	for slot, running := range e.workerRunning[pool] {
+		if !running {
+			return e.spawnWorker(pool, slot, e.rootCtx)
+		}
+	}
+	return false
+}
+
+func (e *Engine) applyPoolConfig(pool tasks.PoolID, cfg PoolEngineConfig) error {
+	hardMax := len(e.workerMailboxes[pool])
+	if hardMax == 0 {
+		return fmt.Errorf("taskengine: unknown pool %s", pool)
+	}
+	if cfg.Concurrency <= 0 || cfg.Concurrency > hardMax || cfg.MinConcurrency < 0 || cfg.MinConcurrency > cfg.Concurrency {
+		return errors.New("taskengine: invalid live pool bounds")
+	}
+	if cfg.MinConcurrency == 0 {
+		cfg.MinConcurrency = 1
+	}
+	if cfg.IdleTimeout <= 0 {
+		cfg.IdleTimeout = e.poolIdleTimeouts[pool]
+	}
+	if err := e.adm.SetPoolConfig(pool, admission.PoolConfig{BacklogLimit: cfg.BacklogLimit, PayloadBudget: cfg.PayloadBudget}); err != nil {
+		return err
+	}
+	e.poolConcurrencies[pool] = cfg.Concurrency
+	e.poolMinWorkers[pool] = cfg.MinConcurrency
+	e.poolIdleTimeouts[pool] = cfg.IdleTimeout
+	for runningCount(e.workerRunning[pool]) < cfg.MinConcurrency {
+		if !e.spawnNextWorker(pool) {
+			break
+		}
+	}
+	return nil
+}
+
+func runningCount(slots []bool) int {
+	count := 0
+	for _, running := range slots {
+		if running {
+			count++
+		}
+	}
+	return count
+}
+
+func (e *Engine) applyResourceCapacity(name string, capacity int64) error {
+	if name == "" || capacity <= 0 {
+		return errors.New("taskengine: resource name and positive capacity required")
+	}
+	if used := e.resourceUsed[name]; capacity < used {
+		return fmt.Errorf("taskengine: resource %s currently uses %d", name, used)
+	}
+	e.resourceCapacity[name] = capacity
+	for pool := range e.config.Pools {
+		e.tryDispatch(pool)
+	}
+	return nil
 }
 
 func (e *Engine) resourcesAvailable(spec tasks.WorkSpec) bool {
@@ -1000,10 +1213,43 @@ func (e *Engine) releaseResources(spec tasks.WorkSpec) {
 }
 
 func (e *Engine) markWorkerIdle(pool tasks.PoolID, slotID int) {
+	if slotID < 0 || slotID >= len(e.workerRunning[pool]) || !e.workerRunning[pool][slotID] {
+		return
+	}
+	for _, existing := range e.idleSlots[pool] {
+		if existing == slotID {
+			return
+		}
+	}
 	e.idleSlots[pool] = append(e.idleSlots[pool], slotID)
 	for p := range e.config.Pools {
 		e.tryDispatch(p)
 	}
+}
+
+func (e *Engine) retireIdleWorker(pool tasks.PoolID, slotID int) bool {
+	runningCount := 0
+	for _, running := range e.workerRunning[pool] {
+		if running {
+			runningCount++
+		}
+	}
+	if runningCount <= e.poolMinWorkers[pool] {
+		return false
+	}
+	index := -1
+	for i, idle := range e.idleSlots[pool] {
+		if idle == slotID {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return false
+	}
+	e.idleSlots[pool] = append(e.idleSlots[pool][:index], e.idleSlots[pool][index+1:]...)
+	e.workerRunning[pool][slotID] = false
+	return true
 }
 
 // applyWorkerStarted is the fencing point for Dispatching -> Running.
@@ -1405,6 +1651,7 @@ func (e *Engine) Stats(ctx context.Context) (RuntimeStats, error) {
 		DeliveryQueued: s.deliveryQueued, DeliveryCap: s.deliveryCap, DeliveryFailed: s.deliveryFailed,
 		DurabilityQueue: s.durabilityQueue, DurabilityCap: s.durabilityCap, DurabilityFail: s.durabilityFail,
 		ScopeTombstones: s.scopeTombstones,
+		Pools:           s.pools, Resources: s.resources,
 	}, nil
 }
 
@@ -1483,6 +1730,25 @@ func (e *Engine) SetOwnerLimits(owner tasks.OwnerID, limits admission.OwnerLimit
 		}
 	default:
 	}
+}
+
+// ConfigurePool adjusts an adaptive pool within the startup hard maximum.
+func (e *Engine) ConfigurePool(ctx context.Context, pool tasks.PoolID, cfg PoolEngineConfig) error {
+	reply, err := e.sendControl(ctx, engineRequest{op: opConfigurePool, pool: pool, poolConfig: cfg})
+	if err != nil {
+		return err
+	}
+	return reply.err
+}
+
+// SetResourceCapacity adjusts a named reservation budget without allowing the
+// new limit to fall below current usage.
+func (e *Engine) SetResourceCapacity(ctx context.Context, name string, capacity int64) error {
+	reply, err := e.sendControl(ctx, engineRequest{op: opSetResourceCapacity, resourceName: name, resourceCapacity: capacity})
+	if err != nil {
+		return err
+	}
+	return reply.err
 }
 
 type submitDecisionState uint32

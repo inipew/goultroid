@@ -168,14 +168,15 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 			SchedEngine:      domServices.schedEngine,
 		},
 		PlatformRuntime: module.PlatformRuntime{
-			Gate:      coreDeps.capGate,
-			Network:   coreDeps.netService,
-			Process:   coreDeps.procManager,
-			Files:     coreDeps.fsManager,
-			Secrets:   coreDeps.secretManager,
-			Audit:     coreDeps.auditService,
-			Resources: coreDeps.resourceManager,
-			Jobs:      coreDeps.jobsManager,
+			Gate:       coreDeps.capGate,
+			Network:    coreDeps.netService,
+			Process:    coreDeps.procManager,
+			Files:      coreDeps.fsManager,
+			Secrets:    coreDeps.secretManager,
+			Audit:      coreDeps.auditService,
+			Resources:  coreDeps.resourceManager,
+			Jobs:       coreDeps.jobsManager,
+			TaskEngine: coreDeps.taskEngine,
 		},
 	}
 	if err := registerBuiltinModules(context.Background(), featureRuntime); err != nil {

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/execution"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 // Permission represents the access tier required to execute a command.
@@ -47,6 +48,7 @@ type Command struct {
 	ReplyOnly   bool
 	Cooldown    time.Duration
 	Timeout     time.Duration
+	Resources   []tasks.ResourceRequirement
 	Handler     CommandHandler
 }
 

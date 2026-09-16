@@ -41,6 +41,7 @@ func (d *Dispatcher) submitInteractiveCommand(ctx context.Context, cancel contex
 		Class:            tasks.PriorityInteractive,
 		OrderingKey:      correlationID,
 		ExecutionTimeout: cmd.Timeout,
+		Resources:        append([]tasks.ResourceRequirement(nil), cmd.Resources...),
 		Handler: func(taskCtx context.Context) error {
 			d.runningCommands.Add(1)
 			defer d.runningCommands.Add(-1)

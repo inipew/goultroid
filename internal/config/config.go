@@ -5,7 +5,11 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
+
+	"github.com/inipew/goultroid/internal/taskengine"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 // Config holds all configuration values for the application.
@@ -21,6 +25,7 @@ type Config struct {
 	LogLevel     string
 	BotToken     string
 	Mode         string
+	TaskEngine   taskengine.Config
 }
 
 // Load reads configuration from environment variables and validates all fields.
@@ -107,6 +112,10 @@ func LoadFrom(lookup func(string) string) (*Config, error) {
 			mode = "userbot"
 		}
 	}
+	taskEngine, err := loadTaskEngineConfig(lookup)
+	if err != nil {
+		return nil, err
+	}
 
 	return &Config{
 		AppID:        appID,
@@ -120,7 +129,78 @@ func LoadFrom(lookup func(string) string) (*Config, error) {
 		LogLevel:     logLevel,
 		BotToken:     botToken,
 		Mode:         mode,
+		TaskEngine:   taskEngine,
 	}, nil
+}
+
+func loadTaskEngineConfig(lookup func(string) string) (taskengine.Config, error) {
+	cfg := taskengine.DefaultConfig
+	cfg.Pools = make(map[tasks.PoolID]taskengine.PoolEngineConfig, len(taskengine.DefaultConfig.Pools))
+	for id, pool := range taskengine.DefaultConfig.Pools {
+		cfg.Pools[id] = pool
+	}
+	cfg.ResourceCapacities = map[string]int64{"process": 2, "media": 2, "download": 3}
+	for id, pool := range cfg.Pools {
+		prefix := "TASKENGINE_POOL_" + strings.ToUpper(strings.ReplaceAll(string(id), "-", "_")) + "_"
+		var err error
+		if pool.Concurrency, err = optionalInt(lookup, prefix+"MAX", pool.Concurrency); err != nil {
+			return cfg, err
+		}
+		if pool.MinConcurrency, err = optionalInt(lookup, prefix+"MIN", pool.MinConcurrency); err != nil {
+			return cfg, err
+		}
+		if pool.BacklogLimit, err = optionalInt(lookup, prefix+"BACKLOG", pool.BacklogLimit); err != nil {
+			return cfg, err
+		}
+		idleSeconds, err := optionalInt(lookup, prefix+"IDLE_SECONDS", int(pool.IdleTimeout/time.Second))
+		if err != nil {
+			return cfg, err
+		}
+		pool.IdleTimeout = time.Duration(idleSeconds) * time.Second
+		cfg.Pools[id] = pool
+	}
+	var err error
+	if cfg.ResultCapacity, err = optionalInt(lookup, "TASKENGINE_RESULT_CAPACITY", cfg.ResultCapacity); err != nil {
+		return cfg, err
+	}
+	if cfg.MaxTerminalRetained, err = optionalInt(lookup, "TASKENGINE_MAX_TERMINAL", cfg.MaxTerminalRetained); err != nil {
+		return cfg, err
+	}
+	retainedMB, err := optionalInt(lookup, "TASKENGINE_RETAINED_MB", int(cfg.MaxRetainedBytes>>20))
+	if err != nil {
+		return cfg, err
+	}
+	cfg.MaxRetainedBytes = int64(retainedMB) << 20
+	if raw := strings.TrimSpace(lookup("TASKENGINE_RESOURCE_CAPACITIES")); raw != "" {
+		cfg.ResourceCapacities = make(map[string]int64)
+		for _, item := range strings.Split(raw, ",") {
+			parts := strings.SplitN(strings.TrimSpace(item), "=", 2)
+			if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
+				return cfg, fmt.Errorf("invalid TASKENGINE_RESOURCE_CAPACITIES entry %q", item)
+			}
+			value, parseErr := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
+			if parseErr != nil || value <= 0 {
+				return cfg, fmt.Errorf("invalid resource capacity %q", item)
+			}
+			cfg.ResourceCapacities[strings.TrimSpace(parts[0])] = value
+		}
+	}
+	if err := taskengine.ValidateConfig(cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+func optionalInt(lookup func(string) string, key string, fallback int) (int, error) {
+	raw := strings.TrimSpace(lookup(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		return 0, fmt.Errorf("invalid %s: must be a non-negative integer", key)
+	}
+	return value, nil
 }
 
 // NormalizePhone accepts international numbers and Indonesian local numbers.

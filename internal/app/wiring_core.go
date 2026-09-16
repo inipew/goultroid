@@ -87,7 +87,7 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 	inlineEngine.SetTimeout(4 * time.Second)
 	inlineEngine.SetPermissions(perms)
 
-	taskEngine := taskengine.NewEngine(taskengine.DefaultConfig)
+	taskEngine := taskengine.NewEngine(cfg.TaskEngine)
 	resourceManager := resource.NewManager()
 	idempRepo := idempotency.NewSQLiteRepository(db.DB)
 	if err := idempRepo.InitSchema(context.Background()); err != nil {

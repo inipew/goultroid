@@ -87,6 +87,10 @@ func NewOSRunner(maxConcurrent int, defaultTimeout time.Duration, maxOutputBytes
 	}
 }
 
+// UseExternalConcurrencyControl disables the local semaphore when the caller
+// is already enclosed by TaskEngine resource reservations.
+func (r *OSRunner) UseExternalConcurrencyControl() { r.mu.Lock(); r.sem = nil; r.mu.Unlock() }
+
 type limitedBuffer struct {
 	buf       *bytes.Buffer
 	remain    int64
@@ -144,11 +148,16 @@ func (r *OSRunner) Run(ctx context.Context, req Request) (*Result, error) {
 		return nil, fmt.Errorf("%w: process command cannot be empty", core.ErrInvalidArgs)
 	}
 
-	select {
-	case r.sem <- struct{}{}:
-		defer func() { <-r.sem }()
-	case <-ctx.Done():
-		return nil, fmt.Errorf("%w: %v", core.ErrTimeout, ctx.Err())
+	r.mu.Lock()
+	sem := r.sem
+	r.mu.Unlock()
+	if sem != nil {
+		select {
+		case sem <- struct{}{}:
+			defer func() { <-sem }()
+		case <-ctx.Done():
+			return nil, fmt.Errorf("%w: %v", core.ErrTimeout, ctx.Err())
+		}
 	}
 
 	timeout := req.Timeout

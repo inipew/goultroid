@@ -528,6 +528,7 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey str
 		ExecutionTimeout: copyDef.Timeout,
 		HandlerRef:       copyDef.HandlerType,
 		Input:            append([]byte(nil), copyDef.Payload...),
+		Resources:        definitionResources(copyDef),
 		Job:              &tasks.OccurrenceRef{JobID: copyDef.ID, OccurrenceID: occurrenceID, AttemptID: tasks.AttemptID(attempt.ID), LeaseEpoch: attempt.LeaseEpoch},
 		Handler:          func(runCtx context.Context) error { return handler(runCtx, copyDef) },
 		Commit: func(commitCtx context.Context, res tasks.TaskResult) error {
@@ -912,6 +913,7 @@ func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def Job
 		ExecutionTimeout: copyDef.Timeout,
 		HandlerRef:       copyDef.HandlerType,
 		Input:            append([]byte(nil), copyDef.Payload...),
+		Resources:        definitionResources(copyDef),
 		Job:              &tasks.OccurrenceRef{JobID: copyDef.ID, OccurrenceID: tasks.OccurrenceID(occurrenceID), AttemptID: tasks.AttemptID(attempt.ID), LeaseEpoch: attempt.LeaseEpoch},
 		Handler:          func(runCtx context.Context) error { return handler(runCtx, copyDef) },
 		Commit:           commit,
@@ -929,6 +931,17 @@ func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def Job
 	m.track(occurrenceID, copyDef, handler, nextTaskID)
 	m.enqueueRetry(retryItem{occurrenceID: occurrenceID, ticket: ticket})
 	return nil
+}
+
+func definitionResources(def JobDefinition) []tasks.ResourceRequirement {
+	switch def.Pool {
+	case "media-process":
+		return []tasks.ResourceRequirement{{Name: "process", Amount: 1}, {Name: "media", Amount: 1}}
+	case "download":
+		return []tasks.ResourceRequirement{{Name: "download", Amount: 1}}
+	default:
+		return nil
+	}
 }
 
 // Recover scans unresolved occurrences and converges each one. Repeated calls converge; limit bounds each scan.

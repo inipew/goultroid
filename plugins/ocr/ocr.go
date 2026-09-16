@@ -18,6 +18,7 @@ import (
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/platform/network"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 const defaultEndpoint = "https://api.ocr.space/parse/image"
@@ -123,6 +124,7 @@ func (p *Plugin) Commands() []core.Command {
 		Category:    "Media",
 		Permission:  core.PermissionEveryone,
 		Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
+		Resources:   []tasks.ResourceRequirement{{Name: "download", Amount: 1}},
 		Handler:     p.handle,
 	}}
 }

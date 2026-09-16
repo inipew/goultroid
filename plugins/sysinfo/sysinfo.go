@@ -1,8 +1,10 @@
 package sysinfo
 
 import (
+	"context"
 	"fmt"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -10,15 +12,18 @@ import (
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/resource"
+	"github.com/inipew/goultroid/internal/taskengine"
+	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/ui"
 )
 
 // Plugin provides rich system, hardware, network, and bot runtime metrics.
 type Plugin struct {
-	startTime time.Time
-	collector *Collector
-	resources *resource.Manager
-	eventBus  *core.EventBus
+	startTime  time.Time
+	collector  *Collector
+	resources  *resource.Manager
+	eventBus   *core.EventBus
+	taskEngine *taskengine.Engine
 }
 
 // New creates a new Sysinfo plugin instance.
@@ -37,7 +42,8 @@ func New(startTime ...time.Time) *Plugin {
 func (p *Plugin) SetResources(rm *resource.Manager) { p.resources = rm }
 
 // SetEventBus attaches the event bus.
-func (p *Plugin) SetEventBus(eb *core.EventBus) { p.eventBus = eb }
+func (p *Plugin) SetEventBus(eb *core.EventBus)           { p.eventBus = eb }
+func (p *Plugin) SetTaskEngine(engine *taskengine.Engine) { p.taskEngine = engine }
 
 // Name returns the unique plugin identifier.
 func (p *Plugin) Name() string {
@@ -423,6 +429,38 @@ func (p *Plugin) handleDiagnostics(ctx *core.Context) error {
 	}
 
 	// 2. EventBus
+	if p.taskEngine != nil {
+		statsCtx, cancel := context.WithTimeout(ctx.Ctx, 200*time.Millisecond)
+		stats, err := p.taskEngine.Stats(statsCtx)
+		cancel()
+		if err == nil {
+			poolNames := make([]string, 0, len(stats.Pools))
+			for name := range stats.Pools {
+				poolNames = append(poolNames, string(name))
+			}
+			sort.Strings(poolNames)
+			var lines strings.Builder
+			for _, name := range poolNames {
+				pool := stats.Pools[tasks.PoolID(name)]
+				fmt.Fprintf(&lines, "• <b>%s</b>: workers %d (%d-%d), idle %d, queued %d / %s\n", ui.EscapeHTML(name), pool.Workers, pool.MinWorkers, pool.MaxWorkers, pool.IdleWorkers, pool.Waiting, ui.FormatBytes(pool.WaitingBytes))
+			}
+			card.AddField("⚙️ Task Pools", strings.TrimSpace(lines.String()))
+			resourceNames := make([]string, 0, len(stats.Resources))
+			for name := range stats.Resources {
+				resourceNames = append(resourceNames, name)
+			}
+			sort.Strings(resourceNames)
+			var resourceLines strings.Builder
+			for _, name := range resourceNames {
+				value := stats.Resources[name]
+				fmt.Fprintf(&resourceLines, "• <b>%s</b>: %d/%d\n", ui.EscapeHTML(name), value.Used, value.Capacity)
+			}
+			card.AddField("🧮 Execution Resources", strings.TrimSpace(resourceLines.String()))
+			card.AddField("🧠 Task Memory", fmt.Sprintf("Retained: %s / %s | Results: %d/%d", ui.FormatBytes(stats.RetainedBytes), ui.FormatBytes(stats.RetainedCap), stats.ResultSlotsHeld, stats.ResultCapacity))
+		}
+	}
+
+	// 3. EventBus
 	if p.eventBus != nil {
 		ebStats := p.eventBus.Stats()
 		dlqLen := len(p.eventBus.DLQ())

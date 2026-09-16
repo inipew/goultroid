@@ -93,6 +93,24 @@ type Controller struct {
 	taskByID      map[tasks.TaskID]*QueueEntry
 }
 
+// PoolStats returns bounded aggregate queue accounting for diagnostics and
+// adaptive worker decisions. Controller callers serialize access.
+func (c *Controller) PoolStats(pool tasks.PoolID) (waiting int, waitingBytes int64) {
+	if state := c.pools[pool]; state != nil {
+		return state.totalWaiting, state.totalBytes
+	}
+	return 0, 0
+}
+
+func (c *Controller) SetPoolConfig(pool tasks.PoolID, cfg PoolConfig) error {
+	state := c.pools[pool]
+	if state == nil {
+		return ErrPoolNotConfigured
+	}
+	state.config = cfg
+	return nil
+}
+
 // NewController constructs an admission controller initialized with standard pool configs.
 func NewController(poolConfigs map[tasks.PoolID]PoolConfig) *Controller {
 	c := &Controller{

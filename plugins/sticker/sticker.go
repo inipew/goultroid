@@ -18,6 +18,7 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 // Plugin provides sticker creation and conversion utilities.
@@ -84,6 +85,7 @@ func (p *Plugin) Commands() []core.Command {
 			Category:    "Media",
 			Permission:  core.PermissionSudo,
 			Timeout:     60 * time.Second,
+			Resources:   []tasks.ResourceRequirement{{Name: "media", Amount: 1}},
 			Handler:     p.handleSticker,
 		},
 	}

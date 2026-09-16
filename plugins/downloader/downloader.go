@@ -16,6 +16,7 @@ import (
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/storage"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 // Plugin provides media download capabilities for Telegram media and external URLs.
@@ -147,6 +148,7 @@ func (p *Plugin) Commands() []core.Command {
 			ReplyOnly:   false,
 			Cooldown:    3 * time.Second,
 			Timeout:     10 * time.Minute,
+			Resources:   []tasks.ResourceRequirement{{Name: "download", Amount: 1}, {Name: "process", Amount: 1}},
 			Handler:     p.handleDownload,
 		},
 	}

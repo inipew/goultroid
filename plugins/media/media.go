@@ -13,6 +13,7 @@ import (
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/media"
 	"github.com/inipew/goultroid/internal/services/storage"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 var (
@@ -107,6 +108,7 @@ func (p *Plugin) Capabilities() []execution.Capability {
 // Commands returns the list of registered commands.
 func (p *Plugin) Commands() []core.Command {
 	mediaSurfaces := execution.SurfaceUserbot | execution.SurfaceAssistant
+	resources := []tasks.ResourceRequirement{{Name: "process", Amount: 1}, {Name: "media", Amount: 1}}
 	return []core.Command{
 		{
 			Name:        "mediainfo",
@@ -116,6 +118,7 @@ func (p *Plugin) Commands() []core.Command {
 			Category:    "Media",
 			Permission:  core.PermissionEveryone,
 			Surfaces:    mediaSurfaces,
+			Resources:   resources,
 			Handler:     p.handleMediaInfo,
 		},
 		{
@@ -127,6 +130,7 @@ func (p *Plugin) Commands() []core.Command {
 			Permission:  core.PermissionSudo,
 			Timeout:     5 * time.Minute,
 			Surfaces:    mediaSurfaces,
+			Resources:   resources,
 			Handler:     p.handleExtractAudio,
 		},
 		{
@@ -138,6 +142,7 @@ func (p *Plugin) Commands() []core.Command {
 			Permission:  core.PermissionSudo,
 			Timeout:     5 * time.Minute,
 			Surfaces:    mediaSurfaces,
+			Resources:   resources,
 			Handler:     p.handleConvert,
 		},
 		{
@@ -149,6 +154,7 @@ func (p *Plugin) Commands() []core.Command {
 			Permission:  core.PermissionSudo,
 			Timeout:     5 * time.Minute,
 			Surfaces:    mediaSurfaces,
+			Resources:   resources,
 			Handler:     p.handleConvertToGIF,
 		},
 		{
@@ -160,6 +166,7 @@ func (p *Plugin) Commands() []core.Command {
 			Permission:  core.PermissionSudo,
 			Timeout:     5 * time.Minute,
 			Surfaces:    mediaSurfaces,
+			Resources:   resources,
 			Handler:     p.handleConvertToSticker,
 		},
 	}

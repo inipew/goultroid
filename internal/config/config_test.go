@@ -89,6 +89,19 @@ func TestLoad_ValidMinimal(t *testing.T) {
 	}
 }
 
+func TestLoad_TaskEngineOverrides(t *testing.T) {
+	values := map[string]string{
+		"APP_ID": "123", "APP_HASH": "hash", "PHONE": "+62123",
+		"TASKENGINE_POOL_INTERACTIVE_MIN": "3", "TASKENGINE_POOL_INTERACTIVE_MAX": "12",
+		"TASKENGINE_RETAINED_MB": "128", "TASKENGINE_RESOURCE_CAPACITIES": "process=4,media=2",
+	}
+	cfg, err := LoadFrom(func(key string) string { return values[key] })
+	if err != nil { t.Fatal(err) }
+	pool := cfg.TaskEngine.Pools["interactive"]
+	if pool.MinConcurrency != 3 || pool.Concurrency != 12 { t.Fatalf("unexpected pool: %+v", pool) }
+	if cfg.TaskEngine.MaxRetainedBytes != 128<<20 || cfg.TaskEngine.ResourceCapacities["process"] != 4 { t.Fatalf("unexpected task config: %+v", cfg.TaskEngine) }
+}
+
 func TestLoad_ValidFull(t *testing.T) {
 	clearEnv()
 	os.Setenv("APP_ID", "999")

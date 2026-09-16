@@ -25,6 +25,7 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	p := New(rt.StartTime)
 	p.SetResources(rt.Resources)
 	p.SetEventBus(rt.EventBus)
+	p.SetTaskEngine(rt.TaskEngine)
 	return rt.RegisterPlugin(ctx, m.Manifest(), p)
 }
 
