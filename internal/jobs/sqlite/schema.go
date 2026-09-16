@@ -143,12 +143,20 @@ func ensureJobDefinitionResources(ctx context.Context, db *sql.DB) error {
 		return nil
 	}
 
-	if _, err := db.ExecContext(ctx, `ALTER TABLE job_definitions ADD COLUMN resources TEXT NOT NULL DEFAULT '[]'`); err != nil {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin job definition resources migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE job_definitions ADD COLUMN resources TEXT NOT NULL DEFAULT '[]'`); err != nil {
 		return fmt.Errorf("add job definition resources column: %w", err)
 	}
 	// Preserve the old effective capacity semantics for existing durable rows,
-	// but materialize them as explicit data exactly once during migration.
-	if _, err := db.ExecContext(ctx, `
+	// but materialize them as explicit data exactly once during migration. Keep
+	// the schema change and backfill in the same transaction so a crash cannot
+	// leave a present-but-uninitialized resources column.
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE job_definitions
 		SET resources = CASE
 			WHEN pool = 'media-process' THEN '[{"name":"process","amount":1},{"name":"media","amount":1}]'
@@ -156,6 +164,9 @@ func ensureJobDefinitionResources(ctx context.Context, db *sql.DB) error {
 			ELSE '[]'
 		END`); err != nil {
 		return fmt.Errorf("backfill job definition resources: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit job definition resources migration: %w", err)
 	}
 	return nil
 }

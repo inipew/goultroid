@@ -88,7 +88,11 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 	inlineEngine.SetPermissions(perms)
 
 	taskEngine := taskengine.NewEngine(cfg.TaskEngine)
-	if err := taskEngine.SetDurabilityConcurrency(cfg.TaskEngineDurabilityConcurrency); err != nil {
+	durabilityConcurrency := cfg.TaskEngineDurabilityConcurrency
+	if durabilityConcurrency == 0 {
+		durabilityConcurrency = 4
+	}
+	if err := taskEngine.SetDurabilityConcurrency(durabilityConcurrency); err != nil {
 		cleanupCore(&coreDependencies{db: db, eventBus: eventBus, cmdLimiter: cmdLimiter, interLimiter: interLimiter}, logger)
 		return nil, fmt.Errorf("configure taskengine durability concurrency: %w", err)
 	}
