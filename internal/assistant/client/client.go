@@ -410,7 +410,7 @@ func (c *AssistantClient) SetCallbackRouter(coreRouter CoreCallbackDispatcher) {
 			taskID := fmt.Sprintf("asst:cb:%d", evt.QueryID)
 			owner := fmt.Sprintf("telegram:user:%d", evt.UserID)
 			doneCh := make(chan error, 1)
-			_, err := taskClient.Submit(ctx, tasks.WorkSpec{
+			ticket, err := taskClient.Submit(ctx, tasks.WorkSpec{
 				ID:               tasks.TaskID(taskID),
 				Scope:            scope,
 				QuotaOwner:       tasks.OwnerID(owner),
@@ -428,10 +428,34 @@ func (c *AssistantClient) SetCallbackRouter(coreRouter CoreCallbackDispatcher) {
 				_ = tx.Answer(ctx, "Interaction busy. Please retry.", true)
 				return fmt.Errorf("task submission failed: %w", err)
 			}
+			var ticketDone <-chan struct{}
+			if ticket != nil {
+				ticketDone = ticket.Done()
+			}
 			select {
 			case dErr := <-doneCh:
 				return dErr
+			case <-ticketDone:
+				select {
+				case dErr := <-doneCh:
+					return dErr
+				default:
+				}
+				if ticket != nil {
+					res, _ := ticket.Result()
+					if res.IsSuccess() {
+						return nil
+					}
+					if res.Failure.Message != "" {
+						return errors.New(res.Failure.Message)
+					}
+					return fmt.Errorf("task finished with outcome %s (%s)", res.Outcome, res.Cause)
+				}
+				return nil
 			case <-ctx.Done():
+				if ticket != nil {
+					_, _ = taskClient.Cancel(ticket.TaskID(), tasks.CauseTimeout)
+				}
 				return ctx.Err()
 			}
 		}
@@ -485,7 +509,7 @@ func (c *AssistantClient) SetCallbackRouter(coreRouter CoreCallbackDispatcher) {
 			taskID := fmt.Sprintf("asst:cb:inline:%d", evt.QueryID)
 			owner := fmt.Sprintf("telegram:user:%d", evt.UserID)
 			doneCh := make(chan error, 1)
-			_, err := taskClient.Submit(ctx, tasks.WorkSpec{
+			ticket, err := taskClient.Submit(ctx, tasks.WorkSpec{
 				ID:               tasks.TaskID(taskID),
 				Scope:            scope,
 				QuotaOwner:       tasks.OwnerID(owner),
@@ -503,10 +527,34 @@ func (c *AssistantClient) SetCallbackRouter(coreRouter CoreCallbackDispatcher) {
 				_ = tx.Answer(ctx, "Interaction busy. Please retry.", true)
 				return fmt.Errorf("task submission failed: %w", err)
 			}
+			var ticketDone <-chan struct{}
+			if ticket != nil {
+				ticketDone = ticket.Done()
+			}
 			select {
 			case dErr := <-doneCh:
 				return dErr
+			case <-ticketDone:
+				select {
+				case dErr := <-doneCh:
+					return dErr
+				default:
+				}
+				if ticket != nil {
+					res, _ := ticket.Result()
+					if res.IsSuccess() {
+						return nil
+					}
+					if res.Failure.Message != "" {
+						return errors.New(res.Failure.Message)
+					}
+					return fmt.Errorf("task finished with outcome %s (%s)", res.Outcome, res.Cause)
+				}
+				return nil
 			case <-ctx.Done():
+				if ticket != nil {
+					_, _ = taskClient.Cancel(ticket.TaskID(), tasks.CauseTimeout)
+				}
 				return ctx.Err()
 			}
 		}

@@ -130,6 +130,9 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			tx.RawData = update.Data
 			if err := dispatchInlineSafely(ctx, deps.CallbackRouter, tx, logger); err != nil {
 				logger.Warn("assistant: inline callback router error", zap.Error(err), zap.Int64("query_id", update.QueryID), zap.Int64("user_id", update.UserID), zap.String("action", payload.Action))
+				if !tx.IsAnswered() {
+					_ = tx.Answer(ctx, "Action failed. Please retry.", false)
+				}
 			}
 		}
 		return nil
@@ -180,6 +183,9 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			tx.RawData = update.Data
 			if err := dispatchCallbackSafely(ctx, deps.CallbackRouter, tx, logger); err != nil {
 				logger.Warn("assistant: callback router error", zap.Error(err), zap.Int64("query_id", update.QueryID), zap.Int64("user_id", update.UserID), zap.String("action", payload.Action))
+				if !tx.IsAnswered() {
+					_ = tx.Answer(ctx, "Action failed. Please retry.", false)
+				}
 			}
 		}
 		return nil
@@ -194,6 +200,9 @@ func dispatchCallbackSafely(ctx context.Context, router *callback.Router, tx *ca
 		if recovered := recover(); recovered != nil {
 			tx.SetState(callback.StateFailed)
 			err = fmt.Errorf("callback handler panic: %v", recovered)
+			if !tx.IsAnswered() {
+				_ = tx.Answer(ctx, "Internal server error.", true)
+			}
 			if logger != nil {
 				logger.Error("assistant: callback panic recovered", zap.Int64("query_id", tx.QueryID), zap.String("namespace", tx.Payload.Namespace), zap.String("action", tx.Payload.Action), zap.Any("panic", recovered))
 			}
@@ -210,6 +219,9 @@ func dispatchInlineSafely(ctx context.Context, router *callback.Router, tx *call
 		if recovered := recover(); recovered != nil {
 			tx.SetState(callback.StateFailed)
 			err = fmt.Errorf("inline callback handler panic: %v", recovered)
+			if !tx.IsAnswered() {
+				_ = tx.Answer(ctx, "Internal server error.", true)
+			}
 			if logger != nil {
 				logger.Error("assistant: inline callback panic recovered", zap.Int64("query_id", tx.QueryID), zap.String("namespace", tx.Payload.Namespace), zap.String("action", tx.Payload.Action), zap.Any("panic", recovered))
 			}

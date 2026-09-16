@@ -655,3 +655,171 @@ func TestAssistantClient_Updates_SpinnerProtection(t *testing.T) {
 		t.Errorf("expected Invalid callback inline answer, got %+v", api.answerReq)
 	}
 }
+
+func TestAssistantClient_CallbackBridge_UnsupportedMethodsFailClosed(t *testing.T) {
+	msgSvc := &assistantCallbackServicer{}
+	inlineSvc := &assistantInlineCallbackServicer{}
+	ctx := context.Background()
+
+	// In message callback servicer: inline methods must return ErrUnsupported
+	if err := msgSvc.EditInlineBotMessage(ctx, nil, "text", nil); !errors.Is(err, core.ErrUnsupported) {
+		t.Errorf("expected ErrUnsupported for EditInlineBotMessage, got %v", err)
+	}
+	if err := msgSvc.EditInlineBotMessageMarkup(ctx, nil, nil); !errors.Is(err, core.ErrUnsupported) {
+		t.Errorf("expected ErrUnsupported for EditInlineBotMessageMarkup, got %v", err)
+	}
+	if err := msgSvc.PinMessage(ctx, nil, 1, false); !errors.Is(err, core.ErrUnsupported) {
+		t.Errorf("expected ErrUnsupported for PinMessage, got %v", err)
+	}
+	if err := msgSvc.React(ctx, nil, 1, "👍"); !errors.Is(err, core.ErrUnsupported) {
+		t.Errorf("expected ErrUnsupported for React, got %v", err)
+	}
+
+	// In inline callback servicer: delete message and normal message edits must return ErrUnsupported
+	if err := inlineSvc.DeleteMessage(ctx, nil, []int{1}); !errors.Is(err, core.ErrUnsupported) {
+		t.Errorf("expected ErrUnsupported for inline DeleteMessage, got %v", err)
+	}
+	if err := inlineSvc.EditMessage(ctx, nil, 1, "text"); !errors.Is(err, core.ErrUnsupported) {
+		t.Errorf("expected ErrUnsupported for inline EditMessage, got %v", err)
+	}
+	if _, err := inlineSvc.SendMessage(ctx, nil, "text"); !errors.Is(err, core.ErrUnsupported) {
+		t.Errorf("expected ErrUnsupported for inline SendMessage, got %v", err)
+	}
+}
+
+type testCancelledTicket struct {
+	done chan struct{}
+}
+
+func (t *testCancelledTicket) TaskID() tasks.TaskID   { return "asst:cb:888" }
+func (t *testCancelledTicket) State() tasks.TaskState { return tasks.StateCancelled }
+func (t *testCancelledTicket) Done() <-chan struct{}  { return t.done }
+func (t *testCancelledTicket) Result() (tasks.TaskResult, bool) {
+	return tasks.TaskResult{
+		TaskID:  "asst:cb:888",
+		Outcome: tasks.OutcomeCancelled,
+		Cause:   tasks.CauseUserCancel,
+		Failure: tasks.FailureInfo{Message: "scope cancelled"},
+	}, true
+}
+func (t *testCancelledTicket) Wait(ctx context.Context) (tasks.TaskResult, error) {
+	res, _ := t.Result()
+	return res, nil
+}
+
+type testCancelledTaskClient struct {
+	ticket tasks.Ticket
+}
+
+func (c *testCancelledTaskClient) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket, error) {
+	// TaskEngine cancelled in queue: spec.Handler is NEVER executed
+	return c.ticket, nil
+}
+func (c *testCancelledTaskClient) Cancel(tasks.TaskID, tasks.Cause) (tasks.CancelReceipt, error) {
+	return tasks.CancelReceipt{}, nil
+}
+func (c *testCancelledTaskClient) CancelScope(tasks.ScopeIdentity, tasks.Cause) int { return 0 }
+func (c *testCancelledTaskClient) Snapshot(tasks.TaskID) (tasks.TaskSnapshot, bool) {
+	return tasks.TaskSnapshot{}, false
+}
+
+func TestAssistantClient_CallbackBridge_TaskEngineCancellationUnblocks(t *testing.T) {
+	asst := NewAssistantClient(1, "hash", "token", zap.NewNop())
+	cancelledTicket := &testCancelledTicket{done: make(chan struct{})}
+	close(cancelledTicket.done) // Already done/cancelled
+	asst.SetTasks(&testCancelledTaskClient{ticket: cancelledTicket})
+
+	asst.SetPluginScopeResolver(func(owner string) (tasks.ScopeIdentity, bool) {
+		return tasks.ScopeIdentity{Owner: "plugin:myxl", Generation: 1}, true
+	})
+
+	coreRouter := &mockCoreDispatcher{
+		hasHandlerFunc: func(namespace string) bool { return true },
+		taskScopeFunc: func(data []byte, resolve func(string) (tasks.ScopeIdentity, bool)) (tasks.ScopeIdentity, bool) {
+			return resolve("myxl")
+		},
+		dispatchFunc: func(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer) error {
+			t.Fatalf("dispatch should not be called when task is cancelled in queue")
+			return nil
+		},
+	}
+	asst.SetCallbackRouter(coreRouter)
+
+	mockInter := &mockInteraction{}
+	target := interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 589287392}, 100, 589287392, 12345)
+	payload := callback.ParsedPayload{
+		Version:   "v1",
+		Namespace: "myxl",
+		Action:    "refresh",
+		State:     "123",
+	}
+	tx := callback.NewTransaction(888, 589287392, payload, target, mockInter)
+	tx.RawData = []byte("v1:myxl:refresh:123")
+
+	cbRouter := asst.CallbackRouter()
+	ctx := context.Background()
+
+	// Should unblock promptly and return an error without deadlocking
+	err := cbRouter.Dispatch(ctx, tx)
+	if err == nil {
+		t.Fatalf("expected error from cancelled task, got nil")
+	}
+	if !strings.Contains(err.Error(), "scope cancelled") {
+		t.Errorf("expected 'scope cancelled' error, got %v", err)
+	}
+}
+
+func TestAssistantClient_Updates_SpinnerProtection_OnErrorAndPanic(t *testing.T) {
+	api := &mockTelegramAPI{}
+	clientInter := interaction.NewClientInteraction(api, zap.NewNop())
+	cbRouter := callback.NewRouter(zap.NewNop())
+
+	// Register a handler that fails without answering
+	cbRouter.Register("test", "fail", func(ctx context.Context, tx *callback.Transaction) error {
+		return errors.New("business error before answering")
+	})
+
+	// Register a handler that panics without answering
+	cbRouter.Register("test", "panic", func(ctx context.Context, tx *callback.Transaction) error {
+		panic("boom")
+	})
+
+	dispatcher := tg.NewUpdateDispatcher()
+	deps := UpdateHandlerDeps{
+		Logger:         zap.NewNop(),
+		Interaction:    clientInter,
+		CallbackRouter: cbRouter,
+	}
+	RegisterUpdateHandlers(&dispatcher, deps)
+	ctx := context.Background()
+
+	// 1. Handler error without answering stops spinner
+	api.answerReq = nil
+	_ = dispatcher.Handle(ctx, &tg.Updates{
+		Updates: []tg.UpdateClass{
+			&tg.UpdateBotCallbackQuery{
+				QueryID: 301,
+				UserID:  1,
+				Data:    []byte("a1:test:fail"),
+			},
+		},
+	})
+	if api.answerReq == nil || api.answerReq.QueryID != 301 {
+		t.Errorf("expected query 301 answered to dismiss spinner, got %+v", api.answerReq)
+	}
+
+	// 2. Handler panic without answering stops spinner
+	api.answerReq = nil
+	_ = dispatcher.Handle(ctx, &tg.Updates{
+		Updates: []tg.UpdateClass{
+			&tg.UpdateBotCallbackQuery{
+				QueryID: 302,
+				UserID:  1,
+				Data:    []byte("a1:test:panic"),
+			},
+		},
+	})
+	if api.answerReq == nil || api.answerReq.QueryID != 302 {
+		t.Errorf("expected query 302 answered to dismiss spinner, got %+v", api.answerReq)
+	}
+}
