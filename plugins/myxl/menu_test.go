@@ -112,6 +112,11 @@ func setupTestMyXLEnv(t *testing.T) (*Plugin, *httptest.Server, *SQLiteRepositor
 			xtime := time.Now().UnixMilli()
 			xdata, _ := EncryptXData(payload, xtime, DefaultXDataKey)
 			_ = json.NewEncoder(w).Encode(EncryptedBody{XData: xdata, XTime: xtime})
+		case "/api/v8/xl-stores/options/list":
+			payload := `{"status":"SUCCESS","message":"","data":{"package_family":{"name":"Xtra Combo Flex","package_family_code":"FAM-FLEX"},"package_variants":[{"name":"Flex Basic","package_variant_code":"VAR-1","package_options":[{"name":"Flex S 10GB","package_option_code":"OPT-1","price":30000},{"name":"Flex M 20GB","package_option_code":"OPT-2","price":50000},{"name":"Flex L 30GB","package_option_code":"OPT-3","price":70000},{"name":"Flex XL 50GB","package_option_code":"OPT-4","price":100000},{"name":"Flex XXL 80GB","package_option_code":"OPT-5","price":140000},{"name":"Flex Max 100GB","package_option_code":"OPT-6","price":180000},{"name":"Flex Ultra 150GB","package_option_code":"OPT-7","price":230000}]}]}}`
+			xtime := time.Now().UnixMilli()
+			xdata, _ := EncryptXData(payload, xtime, DefaultXDataKey)
+			_ = json.NewEncoder(w).Encode(EncryptedBody{XData: xdata, XTime: xtime})
 		case "/api/v8/xl-stores/options/detail":
 			payload := `{"status":"SUCCESS","message":"","data":{"package_family":{"name":"Xtra Combo","package_family_code":"FAM-1"},"package_option":{"name":"Combo 10GB","package_option_code":"OPT-10GB","price":25000},"token_confirmation":"TOK-CONFIRM-123"}}`
 			xtime := time.Now().UnixMilli()
@@ -293,6 +298,26 @@ func TestMenuManager_Screens(t *testing.T) {
 	if err != nil || !strings.Contains(aliasScreen.Body, "Ubah Alias") {
 		t.Errorf("expected alias pick screen")
 	}
+
+	// 11. Family packages screen (page 1 and page 2)
+	famScreen1, err := plugin.menuMgr.BuildFamilyPackagesScreen(ctx, acc, "FAM-FLEX", 1)
+	if err != nil {
+		t.Fatalf("BuildFamilyPackagesScreen page 1 failed: %v", err)
+	}
+	if !strings.Contains(famScreen1.Body, "Paket Xtra Combo Flex") || !strings.Contains(famScreen1.Body, "1 dari 2") {
+		t.Errorf("unexpected famScreen1 body: %s", famScreen1.Body)
+	}
+	if !strings.Contains(famScreen1.Body, "[1] Flex S 10GB") || !strings.Contains(famScreen1.Body, "[5] Flex XXL 80GB") {
+		t.Errorf("expected items 1-5 on page 1, got: %s", famScreen1.Body)
+	}
+
+	famScreen2, err := plugin.menuMgr.BuildFamilyPackagesScreen(ctx, acc, "FAM-FLEX", 2)
+	if err != nil {
+		t.Fatalf("BuildFamilyPackagesScreen page 2 failed: %v", err)
+	}
+	if !strings.Contains(famScreen2.Body, "2 dari 2") || !strings.Contains(famScreen2.Body, "[6] Flex Max 100GB") {
+		t.Errorf("expected items 6-7 on page 2, got: %s", famScreen2.Body)
+	}
 }
 
 func TestMenuManager_Wizards(t *testing.T) {
@@ -410,6 +435,19 @@ func TestMenuManager_Wizards(t *testing.T) {
 	if _, ok = plugin.menuMgr.GetSession(userID); ok {
 		t.Errorf("expected custom price wizard completed")
 	}
+
+	// 6. Family Code Wizard
+	plugin.menuMgr.SetSession(userID, &wizardSession{
+		Type:   wizardFamilyCode,
+		Target: target,
+	})
+	handled, err = plugin.menuMgr.HandleTextMessage(ctx, userID, chatID, "FAM-FLEX", inter)
+	if !handled || err != nil {
+		t.Fatalf("expected family code handled: %v", err)
+	}
+	if _, ok = plugin.menuMgr.GetSession(userID); ok {
+		t.Errorf("expected family code wizard cleared after lookup")
+	}
 }
 
 func TestMenuManager_Callbacks(t *testing.T) {
@@ -459,6 +497,8 @@ func TestMenuManager_Callbacks(t *testing.T) {
 		{name: "Switch Account", action: "switch:6281987654321", senderID: 12345, wantErr: false},
 		{name: "Noop", action: "noop", senderID: 12345, wantErr: false},
 		{name: "Bookmark Add", action: "bookmark_add:OPT-10GB", senderID: 12345, wantErr: false},
+		{name: "Family Input", action: "fam_input", senderID: 12345, wantErr: false},
+		{name: "Family Page", action: "fam_page:FAM-FLEX:1", senderID: 12345, wantErr: false},
 	}
 
 	svc := &mockTgService{}

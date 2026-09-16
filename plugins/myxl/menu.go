@@ -24,6 +24,7 @@ const (
 	wizardSetAlias    = 3
 	wizardOptionCode  = 4
 	wizardCustomPrice = 5
+	wizardFamilyCode  = 6
 )
 
 type wizardSession struct {
@@ -118,6 +119,8 @@ func (m *MenuManager) HandleTextMessage(ctx context.Context, userID, chatID int6
 		return m.handleWizardOptionCode(ctx, userID, trimmed, sess, inter)
 	case wizardCustomPrice:
 		return m.handleWizardCustomPrice(ctx, userID, trimmed, sess, inter)
+	case wizardFamilyCode:
+		return m.handleWizardFamilyCode(ctx, userID, trimmed, sess, inter)
 	default:
 		m.ClearSession(userID)
 		return false, nil
@@ -355,6 +358,44 @@ func (m *MenuManager) handleWizardCustomPrice(ctx context.Context, userID int64,
 	return true, sendErr
 }
 
+func (m *MenuManager) handleWizardFamilyCode(ctx context.Context, userID int64, input string, sess *wizardSession, inter interaction.MessageInteraction) (bool, error) {
+	familyCode := strings.TrimSpace(input)
+	if familyCode == "" {
+		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(),
+			"⚠️ Family Code tidak boleh kosong.\n\nContoh: <code>FAM-FLEX</code> atau <code>FAM-AKRAB</code>.\nKirimkan kode atau ketik <code>/cancel</code> untuk batal.",
+			nil)
+		return true, sendErr
+	}
+
+	acc, err := m.plugin.repo.GetActive(ctx)
+	if err != nil || acc == nil {
+		m.ClearSession(userID)
+		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), "❌ Tidak ada akun aktif terhubung.", nil)
+		return true, sendErr
+	}
+
+	cCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+
+	screen, err := m.BuildFamilyPackagesScreen(cCtx, acc, familyCode, 1)
+	if err != nil {
+		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(),
+			fmt.Sprintf("⚠️ <b>Gagal mencari paket:</b> %v\n\nPastikan Family Code benar (contoh: <code>FAM-FLEX</code>) atau ketik <code>/cancel</code> untuk batal.", err),
+			nil)
+		return true, sendErr
+	}
+
+	m.ClearSession(userID)
+	text, markup := render.ToTelegram(screen)
+	if sess.Target.IsValid() {
+		if editErr := inter.Edit(ctx, sess.Target, text, markup); editErr == nil {
+			return true, nil
+		}
+	}
+	_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), text, markup)
+	return true, sendErr
+}
+
 // ==================== SCREEN BUILDERS ====================
 
 func (m *MenuManager) BuildDashboardScreen(ctx context.Context, mask bool) (*ui.Screen, error) {
@@ -562,12 +603,14 @@ func (m *MenuManager) BuildStoreScreen(ctx context.Context) (*ui.Screen, error) 
 
 	card.WithRaw(
 		"• <b>Paket Favorit:</b> Akses cepat paket yang sudah Anda simpan.\n" +
+			"• <b>Family Code:</b> Cari paket berdasarkan grup paket (misal: <code>FAM-FLEX</code>).\n" +
 			"• <b>Input Option Code:</b> Masukkan Option Code secara langsung (misal: <code>OPT12345</code>).\n",
 	)
 	card.WithFooter("<i>Pilih salah satu metode di bawah.</i>")
 
 	screen := menu.NewScreen("myxl:store", "", card.Render())
 	screen.AddRow(menu.NewButton("⭐ Paket Favorit Tersimpan", "a1:myxl:saved"))
+	screen.AddRow(menu.NewButton("🔍 Cari dari Family Code", "a1:myxl:fam_input"))
 	screen.AddRow(menu.NewButton("⚡ Masukkan Option Code", "a1:myxl:buy_opt_input"))
 	screen.AddRow(menu.NewButton("🔙 Kembali ke MyXL", "a1:myxl:home"))
 	return screen, nil
@@ -787,5 +830,115 @@ func (m *MenuManager) BuildAliasPickScreen(ctx context.Context) (*ui.Screen, err
 		)
 	}
 	screen.AddRow(menu.NewButton("🔙 Batal", "a1:myxl:accounts"))
+	return screen, nil
+}
+
+// familyOptionItem holds a flattened option with its parent variant name.
+type familyOptionItem struct {
+	VariantName string
+	Option      PackageOption
+}
+
+// BuildFamilyPackagesScreen renders a paginated list of packages belonging to a family code,
+// with numbered selection buttons and Prev/Next pagination controls.
+func (m *MenuManager) BuildFamilyPackagesScreen(ctx context.Context, acc *Account, familyCode string, page int) (*ui.Screen, error) {
+	if acc == nil {
+		return nil, fmt.Errorf("no active account")
+	}
+
+	res, err := m.plugin.client.GetPackagesByFamily(ctx, acc, familyCode)
+	if err != nil {
+		return nil, fmt.Errorf("lookup family: %w", err)
+	}
+	if res == nil || len(res.PackageVariants) == 0 {
+		return nil, fmt.Errorf("tidak ada paket ditemukan untuk family '%s'", familyCode)
+	}
+
+	var allOptions []familyOptionItem
+	for _, v := range res.PackageVariants {
+		for _, opt := range v.PackageOptions {
+			allOptions = append(allOptions, familyOptionItem{
+				VariantName: v.Name,
+				Option:      opt,
+			})
+		}
+	}
+
+	if len(allOptions) == 0 {
+		return nil, fmt.Errorf("tidak ada opsi paket tersedia dalam family '%s'", familyCode)
+	}
+
+	const pageSize = 5
+	totalItems := len(allOptions)
+	totalPages := (totalItems + pageSize - 1) / pageSize
+	if page < 1 {
+		page = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+
+	startIdx := (page - 1) * pageSize
+	endIdx := startIdx + pageSize
+	if endIdx > totalItems {
+		endIdx = totalItems
+	}
+	pageItems := allOptions[startIdx:endIdx]
+
+	famTitle := res.PackageFamily.Name
+	if famTitle == "" {
+		famTitle = familyCode
+	}
+
+	card := ui.NewCard(fmt.Sprintf("Paket %s", famTitle)).
+		WithIcon("📦").
+		WithHeader(fmt.Sprintf("Daftar paket untuk Family <code>%s</code>", html.EscapeString(familyCode))).
+		AddField("Halaman", fmt.Sprintf("%d dari %d (Total %d paket)", page, totalPages, totalItems))
+
+	var listBuf strings.Builder
+	for i, item := range pageItems {
+		globalNum := startIdx + i + 1
+		priceStr := formatRupiah(int64(item.Option.Price))
+		listBuf.WriteString(fmt.Sprintf("<b>[%d] %s</b>\n", globalNum, html.EscapeString(item.Option.Name)))
+		if item.VariantName != "" && item.VariantName != item.Option.Name {
+			listBuf.WriteString(fmt.Sprintf("    <i>Varian: %s</i>\n", html.EscapeString(item.VariantName)))
+		}
+		listBuf.WriteString(fmt.Sprintf("    Harga: <code>Rp %s</code>\n", priceStr))
+		listBuf.WriteString(fmt.Sprintf("    Kode: <code>%s</code>\n\n", html.EscapeString(item.Option.PackageOptionCode)))
+	}
+	listBuf.WriteString("<i>Pilih nomor paket di bawah untuk melihat rincian & checkout.</i>")
+	card.WithRaw(listBuf.String())
+
+	screen := menu.NewScreen("myxl:fam_list", "", card.Render())
+
+	// 1. Number selection buttons row: [ 1 ] [ 2 ] [ 3 ] [ 4 ] [ 5 ]
+	var numRow []menu.Button
+	for i, item := range pageItems {
+		globalNum := startIdx + i + 1
+		label := fmt.Sprintf("%d", globalNum)
+		numRow = append(numRow, menu.NewButton(label, fmt.Sprintf("a1:myxl:buy_opt:%s", item.Option.PackageOptionCode)))
+	}
+	if len(numRow) > 0 {
+		screen.AddRow(numRow...)
+	}
+
+	// 2. Pagination row: [◀️ Prev] [📄 X/Y] [▶️ Next]
+	var navRow []menu.Button
+	if page > 1 {
+		navRow = append(navRow, menu.NewButton("◀️ Prev", fmt.Sprintf("a1:myxl:fam_page:%s:%d", familyCode, page-1)))
+	} else {
+		navRow = append(navRow, menu.NewButton("⏮️", "a1:myxl:noop"))
+	}
+	navRow = append(navRow, menu.NewButton(fmt.Sprintf("📄 %d/%d", page, totalPages), "a1:myxl:noop"))
+	if page < totalPages {
+		navRow = append(navRow, menu.NewButton("▶️ Next", fmt.Sprintf("a1:myxl:fam_page:%s:%d", familyCode, page+1)))
+	} else {
+		navRow = append(navRow, menu.NewButton("⏭️", "a1:myxl:noop"))
+	}
+	screen.AddRow(navRow...)
+
+	// 3. Back button
+	screen.AddRow(menu.NewButton("🔙 Kembali ke Store", "a1:myxl:store"))
+
 	return screen, nil
 }

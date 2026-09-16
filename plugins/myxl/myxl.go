@@ -853,6 +853,47 @@ func (p *Plugin) HandleCallback(cbCtx *callback.CallbackContext) error {
 		text, markup := render.ToTelegram(screen)
 		return cbCtx.Edit(text, markup)
 
+	case "fam_input":
+		if p.menuMgr == nil {
+			return cbCtx.Answer("Menu manager unavailable", true)
+		}
+		p.menuMgr.SetSession(cbCtx.UserID, &wizardSession{
+			Type:   wizardFamilyCode,
+			Target: interaction.NewMessageTarget(cbCtx.Target.Peer, cbCtx.Target.MessageID, cbCtx.ChatID, cbCtx.ChatInstance),
+		})
+		_ = cbCtx.Answer("Kirimkan Family Code...", false)
+		prompt := "🔍 <b>Input Family Code Paket</b>\n\n" +
+			"Silakan kirimkan Family Code paket yang ingin Anda telusuri (contoh: <code>FAM-FLEX</code>, <code>FAM-AKRAB</code>):\n\n" +
+			"<i>Ketik <code>/cancel</code> untuk membatalkan.</i>"
+		markup := render.ToTelegramMarkup(ui.Markup{Rows: []ui.ButtonRow{{
+			ui.NewCallbackButton("❌ Batal", []byte("a1:myxl:cancel_wizard")),
+		}}})
+		return cbCtx.Edit(prompt, markup)
+
+	case "fam_page":
+		parts := strings.Split(cbCtx.OpaqueID, ":")
+		if len(parts) < 2 {
+			return cbCtx.Answer("Data halaman tidak lengkap", true)
+		}
+		familyCode := parts[0]
+		page, _ := strconv.Atoi(parts[1])
+		if page < 1 {
+			page = 1
+		}
+		acc, err := p.repo.GetActive(cbCtx.Ctx)
+		if err != nil || acc == nil {
+			return cbCtx.Answer("Tidak ada akun aktif", true)
+		}
+		if p.menuMgr == nil {
+			return cbCtx.Answer("Menu manager unavailable", true)
+		}
+		screen, err := p.menuMgr.BuildFamilyPackagesScreen(cbCtx.Ctx, acc, familyCode, page)
+		if err != nil {
+			return cbCtx.Answer(fmt.Sprintf("Gagal memuat paket family: %v", err), true)
+		}
+		text, markup := render.ToTelegram(screen)
+		return cbCtx.Edit(text, markup)
+
 	case "buy_opt_input":
 		if p.menuMgr == nil {
 			return cbCtx.Answer("Menu manager unavailable", true)
