@@ -548,7 +548,9 @@ func (e *Engine) Start(ctx context.Context) error {
 	}()
 	for poolID := range e.workerMailboxes {
 		for slotID := 0; slotID < e.poolMinWorkers[poolID]; slotID++ {
-			e.spawnWorker(poolID, slotID, rootCtx)
+			if e.spawnWorker(poolID, slotID, rootCtx) {
+				e.idleSlots[poolID] = append(e.idleSlots[poolID], slotID)
+			}
 		}
 	}
 	return nil
@@ -1130,7 +1132,11 @@ func (e *Engine) spawnNextWorker(pool tasks.PoolID) bool {
 	}
 	for slot, running := range e.workerRunning[pool] {
 		if !running {
-			return e.spawnWorker(pool, slot, e.rootCtx)
+			if e.spawnWorker(pool, slot, e.rootCtx) {
+				e.idleSlots[pool] = append(e.idleSlots[pool], slot)
+				return true
+			}
+			return false
 		}
 	}
 	return false
@@ -1717,7 +1723,7 @@ func (e *Engine) SetOwnerLimits(owner tasks.OwnerID, limits admission.OwnerLimit
 	inbox := e.inbox
 	rootCtx := e.rootCtx
 	e.mu.Unlock()
-	if inbox == nil {
+	if inbox == nil || rootCtx == nil {
 		return
 	}
 	reply := make(chan engineReply, 1)
@@ -1728,7 +1734,7 @@ func (e *Engine) SetOwnerLimits(owner tasks.OwnerID, limits admission.OwnerLimit
 		case <-time.After(2 * time.Second):
 		case <-rootCtx.Done():
 		}
-	default:
+	case <-rootCtx.Done():
 	}
 }
 

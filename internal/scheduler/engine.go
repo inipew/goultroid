@@ -558,12 +558,21 @@ func (e *Engine) runLoop(ctx context.Context) {
 	defer timer.Stop()
 
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		now := time.Now()
 		var nextDelay time.Duration
 		e.reconcileSettledClaims(ctx)
+		if ctx.Err() != nil {
+			return
+		}
 
 		redesigned, modeErr := e.jobsMgr.ScheduleCutoverActive(ctx)
 		if modeErr != nil {
+			if errors.Is(modeErr, context.Canceled) || ctx.Err() != nil {
+				return
+			}
 			e.logger.Error("read scheduler cutover mode", zap.Error(modeErr))
 		}
 		var earliest time.Time
