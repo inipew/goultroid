@@ -56,3 +56,37 @@ func TestLegacyExecutionPackagesAreRemoved(t *testing.T) {
 		}
 	}
 }
+
+func TestArchitecture_ResourceCommandsGateInvariants(t *testing.T) {
+	root := repositoryRoot(t)
+
+	// 1. Check telegram dispatcher uses submitInteractiveCommand for all interactive commands
+	dispDispatchPath := filepath.Join(root, "internal", "telegram", "dispatcher_dispatch.go")
+	dispContent, err := os.ReadFile(dispDispatchPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", dispDispatchPath, err)
+	}
+	if !strings.Contains(string(dispContent), "d.submitInteractiveCommand") {
+		t.Errorf("%s must invoke submitInteractiveCommand to route commands via TaskEngine", dispDispatchPath)
+	}
+
+	// 2. Check assistant router guards resources with ErrTasksNotConfigured
+	asstRouterPath := filepath.Join(root, "internal", "assistant", "command", "router.go")
+	asstContent, err := os.ReadFile(asstRouterPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", asstRouterPath, err)
+	}
+	if !strings.Contains(string(asstContent), "if len(cmd.Resources) > 0") || !strings.Contains(string(asstContent), "ErrTasksNotConfigured") {
+		t.Errorf("%s must guard resource-bearing commands with ErrTasksNotConfigured when task engine is unconfigured", asstRouterPath)
+	}
+
+	// 3. Check scheduled_action.go guards command.Resources with tasks client requirement
+	schedActionPath := filepath.Join(root, "internal", "app", "scheduled_action.go")
+	schedContent, err := os.ReadFile(schedActionPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", schedActionPath, err)
+	}
+	if !strings.Contains(string(schedContent), "if len(command.Resources) == 0") || !strings.Contains(string(schedContent), "h.tasks == nil") {
+		t.Errorf("%s must enforce TaskEngine client for resource-bearing scheduled commands", schedActionPath)
+	}
+}

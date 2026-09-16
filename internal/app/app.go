@@ -22,6 +22,7 @@ import (
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/scheduler"
 	"github.com/inipew/goultroid/internal/services/callback"
+	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/inline"
 	mediaSvc "github.com/inipew/goultroid/internal/services/media"
 	processSvc "github.com/inipew/goultroid/internal/services/process"
@@ -34,24 +35,25 @@ import (
 )
 
 type App struct {
-	cfg             *config.Config
-	logger          *zap.Logger
-	db              *database.DB
-	client          *telegram.Client
-	plugins         *plugin.Manager
-	router          *core.Router
-	sched           *scheduler.Engine
-	eventBus        *core.EventBus
-	assistant       assistant.Client
-	limiter         *ratelimit.Limiter
-	interLimiter    *ratelimit.Limiter
-	addonMgr        *addon.Manager
-	callbackStore   *callback.StateStore
-	inlineEngine    *inline.Engine
-	settingsService *settings.Service
-	media           *mediaSvc.Service
-	processRunner   *processSvc.OSRunner
-	startTime       time.Time
+	cfg              *config.Config
+	logger           *zap.Logger
+	db               *database.DB
+	client           *telegram.Client
+	plugins          *plugin.Manager
+	router           *core.Router
+	sched            *scheduler.Engine
+	eventBus         *core.EventBus
+	assistant        assistant.Client
+	limiter          *ratelimit.Limiter
+	interLimiter     *ratelimit.Limiter
+	addonMgr         *addon.Manager
+	callbackStore    *callback.StateStore
+	inlineEngine     *inline.Engine
+	settingsService  *settings.Service
+	media            *mediaSvc.Service
+	downloadRegistry *download.Registry
+	processRunner    *processSvc.OSRunner
+	startTime        time.Time
 
 	jobs            *jobs.Manager
 	taskEngine      *taskengine.Engine
@@ -243,31 +245,32 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	}
 
 	return &App{
-		cfg:             cfg,
-		logger:          logger,
-		db:              coreDeps.db,
-		client:          tgRuntime.client,
-		plugins:         pluginManager,
-		router:          coreDeps.router,
-		sched:           domServices.schedEngine,
-		eventBus:        coreDeps.eventBus,
-		assistant:       tgRuntime.assistant,
-		limiter:         coreDeps.cmdLimiter,
-		interLimiter:    coreDeps.interLimiter,
-		addonMgr:        domServices.addonManager,
-		callbackStore:   coreDeps.callbackStore,
-		inlineEngine:    coreDeps.inlineEngine,
-		settingsService: domServices.settingsService,
-		media:           domServices.mediaService,
-		processRunner:   domServices.processRunner,
-		startTime:       domServices.startTime,
-		jobs:            coreDeps.jobsManager,
-		taskEngine:      coreDeps.taskEngine,
-		persistencePump: coreDeps.persistencePump,
-		resources:       coreDeps.resourceManager,
-		idemp:           coreDeps.idempManager,
-		runtime:         rt,
-		shutdownDone:    make(chan struct{}),
+		cfg:              cfg,
+		logger:           logger,
+		db:               coreDeps.db,
+		client:           tgRuntime.client,
+		plugins:          pluginManager,
+		router:           coreDeps.router,
+		sched:            domServices.schedEngine,
+		eventBus:         coreDeps.eventBus,
+		assistant:        tgRuntime.assistant,
+		limiter:          coreDeps.cmdLimiter,
+		interLimiter:     coreDeps.interLimiter,
+		addonMgr:         domServices.addonManager,
+		callbackStore:    coreDeps.callbackStore,
+		inlineEngine:     coreDeps.inlineEngine,
+		settingsService:  domServices.settingsService,
+		media:            domServices.mediaService,
+		downloadRegistry: domServices.downloadRegistry,
+		processRunner:    domServices.processRunner,
+		startTime:        domServices.startTime,
+		jobs:             coreDeps.jobsManager,
+		taskEngine:       coreDeps.taskEngine,
+		persistencePump:  coreDeps.persistencePump,
+		resources:        coreDeps.resourceManager,
+		idemp:            coreDeps.idempManager,
+		runtime:          rt,
+		shutdownDone:     make(chan struct{}),
 	}, nil
 }
 
