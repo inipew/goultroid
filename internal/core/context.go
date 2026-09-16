@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/execution"
@@ -115,18 +116,41 @@ func (m *Message) IsAlbum() bool {
 	return m != nil && m.GroupedID != 0
 }
 
+func telegramEntityText(text string, offset, length int) (string, bool) {
+	if offset < 0 || length < 0 {
+		return "", false
+	}
+	units := utf16.Encode([]rune(text))
+	if offset > len(units) || length > len(units)-offset {
+		return "", false
+	}
+	end := offset + length
+	if splitsUTF16SurrogatePair(units, offset) || splitsUTF16SurrogatePair(units, end) {
+		return "", false
+	}
+	return string(utf16.Decode(units[offset:end])), true
+}
+
+func splitsUTF16SurrogatePair(units []uint16, index int) bool {
+	if index <= 0 || index >= len(units) {
+		return false
+	}
+	prev := units[index-1]
+	next := units[index]
+	return prev >= 0xD800 && prev <= 0xDBFF && next >= 0xDC00 && next <= 0xDFFF
+}
+
 // Mentions returns all usernames and text mentions parsed from message entities or plain text.
 func (m *Message) Mentions() []string {
 	if m == nil {
 		return nil
 	}
 	var mentions []string
-	runes := []rune(m.Text)
 	for _, ent := range m.Entities {
 		switch e := ent.(type) {
 		case *tg.MessageEntityMention:
-			if e.Offset >= 0 && e.Offset+e.Length <= len(runes) {
-				mentions = append(mentions, string(runes[e.Offset:e.Offset+e.Length]))
+			if value, ok := telegramEntityText(m.Text, e.Offset, e.Length); ok {
+				mentions = append(mentions, value)
 			}
 		case *tg.MessageEntityMentionName:
 			mentions = append(mentions, strconv.FormatInt(e.UserID, 10))
@@ -149,12 +173,11 @@ func (m *Message) URLs() []string {
 		return nil
 	}
 	var urls []string
-	runes := []rune(m.Text)
 	for _, ent := range m.Entities {
 		switch e := ent.(type) {
 		case *tg.MessageEntityURL:
-			if e.Offset >= 0 && e.Offset+e.Length <= len(runes) {
-				urls = append(urls, string(runes[e.Offset:e.Offset+e.Length]))
+			if value, ok := telegramEntityText(m.Text, e.Offset, e.Length); ok {
+				urls = append(urls, value)
 			}
 		case *tg.MessageEntityTextURL:
 			urls = append(urls, e.URL)

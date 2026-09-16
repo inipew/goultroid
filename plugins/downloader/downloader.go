@@ -176,12 +176,18 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 	if ctx.Message != nil && ctx.Message.Media != nil && ctx.Message.Media.Location != nil {
 		targetMedia = ctx.Message.Media
 		mediaSize = targetMedia.Size
-	} else if reply, err := ctx.GetReply(); err == nil && reply != nil {
-		if reply.Media != nil && reply.Media.Location != nil {
-			targetMedia = reply.Media
-			mediaSize = targetMedia.Size
-		} else if len(reply.URLs()) > 0 {
-			return p.handleURLDownload(ctx, reply.URLs()[0])
+	} else {
+		reply, err := ctx.GetReply()
+		if err != nil {
+			return fmt.Errorf("resolve replied message: %w", err)
+		}
+		if reply != nil {
+			if reply.Media != nil && reply.Media.Location != nil {
+				targetMedia = reply.Media
+				mediaSize = targetMedia.Size
+			} else if urls := reply.URLs(); len(urls) > 0 {
+				return p.handleURLDownload(ctx, urls[0])
+			}
 		}
 	}
 
