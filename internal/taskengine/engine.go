@@ -742,7 +742,6 @@ func (e *Engine) physicalWorker(pool tasks.PoolID, slotID int, mailbox <-chan wo
 	}
 	timer := time.NewTimer(idleTimeout)
 	defer timer.Stop()
-	e.sendInternal(engineRequest{op: opWorkerIdle, pool: pool, slotID: slotID})
 	for {
 		select {
 		case <-ctx.Done():
