@@ -691,6 +691,7 @@ func (e *Engine) handleRequest(ctx context.Context, req engineRequest) {
 		e.applyWorkerStarted(req.taskID, req.permit, req.started)
 	case opWorkerCompleted:
 		e.applyWorkerCompleted(req.result, req.permit)
+		e.markWorkerIdle(req.pool, req.slotID)
 	case opCommitAck:
 		e.applyCommitAck(req.taskID, req.commitSeq, req.ackErr)
 	case opSweep:
@@ -751,10 +752,12 @@ func (e *Engine) physicalWorker(pool tasks.PoolID, slotID int, mailbox <-chan wo
 			res := executeAssignment(assignment.taskCtx, assignment.spec, assignment.permit, func(startedAt time.Time) {
 				e.sendInternal(engineRequest{op: opWorkerStarted, taskID: assignment.spec.ID, permit: assignment.permit, started: startedAt})
 			})
-			// Completion carries the same physical permit used for Started. TaskID
-			// alone is never sufficient because terminal eviction permits ID reuse.
-			e.sendInternal(engineRequest{op: opWorkerCompleted, result: res, permit: assignment.permit})
-			e.sendInternal(engineRequest{op: opWorkerIdle, pool: pool, slotID: slotID})
+			// Completion and return-to-idle are one control-loop transition so
+			// diagnostics never expose a live worker in an unclassified gap.
+			e.sendInternal(engineRequest{
+				op: opWorkerCompleted, result: res, permit: assignment.permit,
+				pool: pool, slotID: slotID,
+			})
 			if !timer.Stop() {
 				select {
 				case <-timer.C:
