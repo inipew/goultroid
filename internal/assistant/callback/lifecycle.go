@@ -60,6 +60,7 @@ type Transaction struct {
 	QueryID     int64
 	UserID      int64
 	Payload     ParsedPayload
+	RawData     []byte
 	Target      interaction.MessageTarget
 	Interaction interaction.MessageInteraction
 

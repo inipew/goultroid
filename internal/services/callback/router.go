@@ -128,6 +128,14 @@ func (r *Router) GetHandler(namespace string) (Handler, bool) {
 	return reg.handler, ok
 }
 
+// HasHandler checks whether a handler is registered for the namespace.
+func (r *Router) HasHandler(namespace string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.handlers[namespace]
+	return ok
+}
+
 // TaskScope resolves callback payload ownership before task admission.
 func (r *Router) TaskScope(data []byte, resolve func(string) (tasks.ScopeIdentity, bool)) (tasks.ScopeIdentity, bool) {
 	ns, _, _, err := ParseCallbackData(data)

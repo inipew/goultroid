@@ -144,6 +144,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		tgRuntime.assistant.SetCoreRouter(coreDeps.router)
 		tgRuntime.assistant.SetSettingsService(domServices.settingsService)
 		tgRuntime.assistant.SetMetricsCollector(coreDeps.metrics)
+		tgRuntime.assistant.SetCallbackRouter(coreDeps.callbackRouter)
 	}
 
 	if err := migrateBuiltinFeatures(context.Background(), coreDeps.db); err != nil {

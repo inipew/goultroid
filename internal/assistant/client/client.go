@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -273,6 +274,9 @@ func (c *AssistantClient) StartTime() time.Time {
 	defer c.mu.RUnlock()
 	return c.startTime
 }
+func (c *AssistantClient) CallbackRouter() *callback.Router {
+	return c.cbRouter
+}
 func (c *AssistantClient) SetAuthorizer(auth callback.Authorizer) { c.cbRouter.SetAuthorizer(auth) }
 func (c *AssistantClient) SetOwner(ownerID int64, sudoGetter func() []int64) {
 	c.cbRouter.SetAuthorizer(callback.NewOwnerAuthorizer(ownerID, sudoGetter))
@@ -315,4 +319,75 @@ func (c *AssistantClient) CacheEntities(e tg.Entities) {
 	if c.cache != nil {
 		c.cache.CacheEntities(e)
 	}
+}
+
+// SetCallbackRouter wires a CoreCallbackDispatcher as fallback handler on the assistant callback router.
+func (c *AssistantClient) SetCallbackRouter(coreRouter CoreCallbackDispatcher) {
+	if c.cbRouter == nil || coreRouter == nil {
+		return
+	}
+	c.cbRouter.SetFallbackHandler(func(ctx context.Context, tx *callback.Transaction) error {
+		if !coreRouter.HasHandler(tx.Payload.Namespace) {
+			_ = tx.Answer(ctx, "Unknown button action", false)
+			return fmt.Errorf("%w: %s:%s", callback.ErrUnknownAction, tx.Payload.Namespace, tx.Payload.Action)
+		}
+		rawData := tx.RawData
+		if len(rawData) == 0 {
+			if tx.Payload.State != "" {
+				rawData = []byte(fmt.Sprintf("%s:%s:%s:%s", tx.Payload.Version, tx.Payload.Namespace, tx.Payload.Action, tx.Payload.State))
+			} else {
+				rawData = []byte(fmt.Sprintf("%s:%s:%s", tx.Payload.Version, tx.Payload.Namespace, tx.Payload.Action))
+			}
+		}
+		evt := &core.CallbackQueryEvent{
+			At:      time.Now(),
+			QueryID: tx.QueryID,
+			UserID:  tx.UserID,
+			ChatID:  tx.Target.ChatID(),
+			MsgID:   tx.Target.MessageID(),
+			Data:    rawData,
+			Origin:  core.CallbackOriginMessage,
+			Target: core.CallbackTarget{
+				Origin:       core.CallbackOriginMessage,
+				Peer:         tx.Target.Peer(),
+				MessageID:    tx.Target.MessageID(),
+				ChatInstance: tx.Target.ChatInstance(),
+			},
+			ChatInstance: tx.Target.ChatInstance(),
+		}
+		svc := &assistantCallbackServicer{tx: tx}
+		return coreRouter.Dispatch(ctx, evt, svc)
+	})
+
+	c.cbRouter.SetFallbackInlineHandler(func(ctx context.Context, tx *callback.InlineTransaction) error {
+		if !coreRouter.HasHandler(tx.Payload.Namespace) {
+			_ = tx.Answer(ctx, "Action no longer available", false)
+			return fmt.Errorf("%w: %s:%s", callback.ErrUnknownAction, tx.Payload.Namespace, tx.Payload.Action)
+		}
+		rawData := tx.RawData
+		if len(rawData) == 0 {
+			if tx.Payload.State != "" {
+				rawData = []byte(fmt.Sprintf("%s:%s:%s:%s", tx.Payload.Version, tx.Payload.Namespace, tx.Payload.Action, tx.Payload.State))
+			} else {
+				rawData = []byte(fmt.Sprintf("%s:%s:%s", tx.Payload.Version, tx.Payload.Namespace, tx.Payload.Action))
+			}
+		}
+		evt := &core.CallbackQueryEvent{
+			At:      time.Now(),
+			QueryID: tx.QueryID,
+			UserID:  tx.UserID,
+			ChatID:  0,
+			MsgID:   0,
+			Data:    rawData,
+			Origin:  core.CallbackOriginInline,
+			Target: core.CallbackTarget{
+				Origin:       core.CallbackOriginInline,
+				InlineID:     tx.Target.MessageID(),
+				ChatInstance: tx.Target.ChatInstance(),
+			},
+			ChatInstance: tx.Target.ChatInstance(),
+		}
+		svc := &assistantInlineCallbackServicer{tx: tx}
+		return coreRouter.Dispatch(ctx, evt, svc)
+	})
 }

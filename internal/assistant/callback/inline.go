@@ -14,6 +14,7 @@ type InlineTransaction struct {
 	QueryID     int64
 	UserID      int64
 	Payload     ParsedPayload
+	RawData     []byte
 	Target      interaction.InlineTarget
 	Interaction interaction.InlineInteraction
 

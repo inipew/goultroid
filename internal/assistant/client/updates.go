@@ -118,6 +118,7 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		}
 		if deps.CallbackRouter != nil && deps.Interaction != nil {
 			tx := callback.NewInlineTransaction(update.QueryID, update.UserID, *payload, inlineTarget, deps.Interaction.AsInline())
+			tx.RawData = update.Data
 			if err := dispatchInlineSafely(ctx, deps.CallbackRouter, tx, logger); err != nil {
 				logger.Warn("assistant: inline callback router error", zap.Error(err), zap.Int64("query_id", update.QueryID), zap.Int64("user_id", update.UserID), zap.String("action", payload.Action))
 			}
@@ -155,6 +156,7 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		}
 		if deps.CallbackRouter != nil && deps.Interaction != nil {
 			tx := callback.NewTransaction(update.QueryID, update.UserID, *payload, target, deps.Interaction)
+			tx.RawData = update.Data
 			if err := dispatchCallbackSafely(ctx, deps.CallbackRouter, tx, logger); err != nil {
 				logger.Warn("assistant: callback router error", zap.Error(err), zap.Int64("query_id", update.QueryID), zap.Int64("user_id", update.UserID), zap.String("action", payload.Action))
 			}

@@ -231,3 +231,35 @@ func TestRouter_Dispatch_WildcardAndUnknown(t *testing.T) {
 		t.Fatalf("expected ErrUnknownAction, got %v", err)
 	}
 }
+
+func TestRouter_Dispatch_Fallback(t *testing.T) {
+	fake := &fakeInteraction{}
+	r := callback.NewRouter(zap.NewNop())
+
+	fallbackCalled := false
+	r.SetFallbackHandler(func(ctx context.Context, tx *callback.Transaction) error {
+		fallbackCalled = true
+		if tx.Payload.Namespace != "myxl" || tx.Payload.Action != "refresh" {
+			t.Errorf("unexpected fallback payload: %+v", tx.Payload)
+		}
+		return tx.Answer(ctx, "Refreshed", false)
+	})
+
+	ctx := context.Background()
+	tx := callback.NewTransaction(
+		3, 589287392,
+		callback.ParsedPayload{Namespace: "myxl", Action: "refresh", State: "628123456789"},
+		interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 589287392}, 10, 589287392, 1),
+		fake,
+	)
+
+	if err := r.Dispatch(ctx, tx); err != nil {
+		t.Fatalf("unexpected dispatch error with fallback: %v", err)
+	}
+	if !fallbackCalled {
+		t.Fatalf("expected fallback handler to be called")
+	}
+	if tx.State() != callback.StateCompleted {
+		t.Fatalf("expected StateCompleted, got %v", tx.State())
+	}
+}

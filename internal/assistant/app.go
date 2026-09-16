@@ -22,6 +22,7 @@ type Client interface {
 	SetOwner(ownerID int64, sudoGetter func() []int64)
 	SetSettingsService(svc *settings.Service)
 	SetMetricsCollector(m core.MetricsCollector)
+	SetCallbackRouter(router client.CoreCallbackDispatcher)
 }
 
 type AssistantApp struct {
@@ -83,3 +84,6 @@ func (a *AssistantApp) SetCoreRouter(router *core.Router)           { a.client.S
 func (a *AssistantApp) SetTasks(client tasks.Client)                { a.client.SetTasks(client) }
 func (a *AssistantApp) SetSettingsService(svc *settings.Service)    { a.client.SetSettingsService(svc) }
 func (a *AssistantApp) SetMetricsCollector(m core.MetricsCollector) { a.client.SetMetricsCollector(m) }
+func (a *AssistantApp) SetCallbackRouter(router client.CoreCallbackDispatcher) {
+	a.client.SetCallbackRouter(router)
+}
