@@ -10,6 +10,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/runtime"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 type EventType string
@@ -317,6 +318,7 @@ type DeadLetter struct {
 
 type eventSubscriber struct {
 	owner          string
+	scope          tasks.ScopeIdentity
 	handler        EventHandler
 	contextHandler ContextEventHandler
 	timeout        time.Duration
@@ -357,6 +359,7 @@ type eventJob struct {
 // SubscribeOptions specifies options when registering an event handler.
 type SubscribeOptions struct {
 	Owner       string
+	Scope       tasks.ScopeIdentity
 	Timeout     time.Duration
 	MinPriority EventPriority
 }
@@ -412,6 +415,9 @@ type EventBus struct {
 	stop          chan struct{}
 	workers       sync.WaitGroup
 	durable       sync.WaitGroup
+	taskWG        sync.WaitGroup
+	taskClient    tasks.Client
+	taskSequence  atomic.Uint64
 	closeOnce     sync.Once
 	closeDone     chan struct{}
 	closed        bool
@@ -424,6 +430,13 @@ type EventBus struct {
 	deliveredCount atomic.Int64
 	droppedCount   atomic.Int64
 	panicCount     atomic.Int64
+}
+
+// SetTasks routes asynchronous subscriber execution through the shared runtime.
+func (b *EventBus) SetTasks(client tasks.Client) {
+	b.mu.Lock()
+	b.taskClient = client
+	b.mu.Unlock()
 }
 
 // NewEventBus is a pure constructor. It does not spawn goroutines.
@@ -591,6 +604,50 @@ func (b *EventBus) drainQueues() {
 }
 
 func (b *EventBus) runJob(job eventJob) {
+	b.mu.RLock()
+	client := b.taskClient
+	b.mu.RUnlock()
+	if client == nil {
+		b.executeJob(context.Background(), job)
+		return
+	}
+	owner := tasks.OwnerID(job.subscriber.owner)
+	if owner == "" {
+		owner = "eventbus"
+	}
+	class := tasks.PriorityNormal
+	if job.priority == PriorityLow {
+		class = tasks.PriorityBackground
+	} else if job.priority == PriorityCritical || job.priority == PriorityHigh {
+		class = tasks.PriorityInteractive
+	}
+	orderingKey := ""
+	if ordered, ok := job.event.(OrderedEvent); ok {
+		orderingKey = ordered.OrderingKey()
+	}
+	b.taskWG.Add(1)
+	_, err := client.Submit(context.Background(), tasks.WorkSpec{
+		ID:               tasks.TaskID(fmt.Sprintf("event:%d", b.taskSequence.Add(1))),
+		Scope:            job.subscriber.scope,
+		QuotaOwner:       owner,
+		Pool:             "general",
+		Class:            class,
+		OrderingKey:      orderingKey,
+		ExecutionTimeout: job.subscriber.timeout,
+		Handler: func(taskCtx context.Context) error {
+			b.executeJob(taskCtx, job)
+			return nil
+		},
+		OnComplete: func(tasks.TaskResult) { b.taskWG.Done() },
+	})
+	if err != nil {
+		b.taskWG.Done()
+		b.droppedCount.Add(1)
+		b.recordDLQ(job.event, job.subscriber.owner, fmt.Errorf("event task admission: %w", err))
+	}
+}
+
+func (b *EventBus) executeJob(base context.Context, job eventJob) {
 	defer func() {
 		if r := recover(); r != nil {
 			b.panicCount.Add(1)
@@ -602,7 +659,7 @@ func (b *EventBus) runJob(job eventJob) {
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(base, timeout)
 	defer cancel()
 
 	b.mu.RLock()
@@ -727,6 +784,7 @@ func (b *EventBus) SubscribeWithOptions(t EventType, handler ContextEventHandler
 	}
 	b.subscribers[t][id] = eventSubscriber{
 		owner:          opts.Owner,
+		scope:          opts.Scope,
 		contextHandler: handler,
 		timeout:        opts.Timeout,
 		minPriority:    minPrio,
@@ -759,6 +817,27 @@ func (b *EventBus) SubscribeContext(ctx context.Context, owner string, t EventTy
 		return nil
 	}
 	if ctx != nil && ctx.Done() != nil {
+		go func() {
+			select {
+			case <-ctx.Done():
+				sub.Close()
+			case <-b.stop:
+			}
+		}()
+	}
+	return sub
+}
+
+// SubscribeContextScoped registers a plugin-generation-owned event handler.
+func (b *EventBus) SubscribeContextScoped(ctx context.Context, owner string, scope tasks.ScopeIdentity, t EventType, handler EventHandler) *Subscription {
+	if handler == nil {
+		return nil
+	}
+	sub := b.SubscribeWithOptions(t, func(_ context.Context, event Event) error {
+		handler(event)
+		return nil
+	}, SubscribeOptions{Owner: owner, Scope: scope, MinPriority: PriorityLow})
+	if sub != nil && ctx != nil && ctx.Done() != nil {
 		go func() {
 			select {
 			case <-ctx.Done():
@@ -1000,6 +1079,7 @@ func (b *EventBus) CloseContext(ctx context.Context) error {
 		b.mu.Unlock()
 		go func() {
 			b.workers.Wait()
+			b.taskWG.Wait()
 			b.durable.Wait()
 			close(b.closeDone)
 		}()

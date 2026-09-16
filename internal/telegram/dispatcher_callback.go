@@ -228,12 +228,21 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 
 	cbRouter := d.getCallbackRouter()
 	if cbRouter != nil {
+		scope, available := cbRouter.TaskScope(evt.Data, d.resolvePluginScope)
+		if !available {
+			if svc := d.getService(); svc != nil {
+				_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Feature not available.", false)
+			}
+			return nil
+		}
 		client := d.taskClient()
 		if client != nil {
 			taskID := fmt.Sprintf("cb:%d", evt.QueryID)
 			owner := fmt.Sprintf("telegram:user:%d", evt.UserID)
+			d.inFlight.Add(1)
 			_, err := client.Submit(ctx, tasks.WorkSpec{
 				ID:               tasks.TaskID(taskID),
+				Scope:            scope,
 				QuotaOwner:       tasks.OwnerID(owner),
 				Pool:             "interactive",
 				Class:            tasks.PriorityInteractive,
@@ -242,8 +251,10 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 				Handler: func(taskCtx context.Context) error {
 					return cbRouter.Dispatch(taskCtx, evt, d.getService())
 				},
+				OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
 			})
 			if err != nil {
+				d.inFlight.Done()
 				d.logger.Warn("callback dispatch admission rejected", zap.Int64("query_id", evt.QueryID), zap.Error(err))
 				if svc := d.getService(); svc != nil {
 					_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Server is overloaded, please try again shortly.", false)
@@ -298,12 +309,21 @@ func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities
 
 	cbRouter := d.getCallbackRouter()
 	if cbRouter != nil {
+		scope, available := cbRouter.TaskScope(evt.Data, d.resolvePluginScope)
+		if !available {
+			if svc := d.getService(); svc != nil {
+				_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Feature not available.", false)
+			}
+			return nil
+		}
 		client := d.taskClient()
 		if client != nil {
 			taskID := fmt.Sprintf("inline_cb:%d", evt.QueryID)
 			owner := fmt.Sprintf("telegram:user:%d", evt.UserID)
+			d.inFlight.Add(1)
 			_, err := client.Submit(ctx, tasks.WorkSpec{
 				ID:               tasks.TaskID(taskID),
+				Scope:            scope,
 				QuotaOwner:       tasks.OwnerID(owner),
 				Pool:             "interactive",
 				Class:            tasks.PriorityInteractive,
@@ -312,8 +332,10 @@ func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities
 				Handler: func(taskCtx context.Context) error {
 					return cbRouter.Dispatch(taskCtx, evt, d.getService())
 				},
+				OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
 			})
 			if err != nil {
+				d.inFlight.Done()
 				d.logger.Warn("inline callback dispatch admission rejected", zap.Int64("query_id", evt.QueryID), zap.Error(err))
 				if svc := d.getService(); svc != nil {
 					_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Server is overloaded, please try again shortly.", false)
@@ -345,6 +367,7 @@ func (d *Dispatcher) OnBotInlineQuery(ctx context.Context, e tg.Entities, update
 	if client != nil {
 		taskID := fmt.Sprintf("inline:%d", update.QueryID)
 		owner := fmt.Sprintf("telegram:user:%d", update.UserID)
+		d.inFlight.Add(1)
 		_, err := client.Submit(ctx, tasks.WorkSpec{
 			ID:               tasks.TaskID(taskID),
 			QuotaOwner:       tasks.OwnerID(owner),
@@ -355,8 +378,10 @@ func (d *Dispatcher) OnBotInlineQuery(ctx context.Context, e tg.Entities, update
 			Handler: func(taskCtx context.Context) error {
 				return engine.ExecuteWithPeerType(taskCtx, d.getService(), update.QueryID, update.UserID, update.Query, update.Offset, update.PeerType)
 			},
+			OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
 		})
 		if err != nil {
+			d.inFlight.Done()
 			d.logger.Warn("inline query admission rejected", zap.Int64("query_id", update.QueryID), zap.Error(err))
 			return err
 		}

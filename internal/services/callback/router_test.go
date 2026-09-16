@@ -240,6 +240,22 @@ func TestRouter_RegisterValidation(t *testing.T) {
 	}
 }
 
+func TestRouter_RegisterOwnedClose(t *testing.T) {
+	router := NewRouter(zap.NewNop(), nil)
+	registration, err := router.RegisterOwned("feature", &mockHandler{namespace: "owned"})
+	if err != nil {
+		t.Fatalf("RegisterOwned: %v", err)
+	}
+	if _, ok := router.GetHandler("owned"); !ok {
+		t.Fatal("owned handler was not registered")
+	}
+	registration.Close()
+	registration.Close()
+	if _, ok := router.GetHandler("owned"); ok {
+		t.Fatal("owned handler remained after close")
+	}
+}
+
 func TestRouter_Dispatch_RawNoop(t *testing.T) {
 	router := NewRouter(zap.NewNop(), nil)
 	svc := &recordingService{}

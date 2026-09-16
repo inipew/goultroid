@@ -9,18 +9,48 @@ import (
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/services/ratelimit"
+	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
 
 // Router routes incoming callback query events to registered namespace handlers.
 type Router struct {
-	handlers   map[string]Handler
+	handlers   map[string]registration
 	stateStore *StateStore
 	logger     *zap.Logger
 	metrics    core.MetricsCollector
 	limiter    *ratelimit.Limiter
 	timeout    time.Duration
+	nextID     uint64
 	mu         sync.RWMutex
+}
+
+type registration struct {
+	handler Handler
+	owner   string
+	id      uint64
+}
+
+// Registration is an idempotent callback handler lease.
+type Registration struct {
+	router    *Router
+	namespace string
+	id        uint64
+	once      sync.Once
+}
+
+// Close unregisters this exact handler without removing a later replacement.
+func (r *Registration) Close() {
+	if r == nil || r.router == nil {
+		return
+	}
+	r.once.Do(func() {
+		r.router.mu.Lock()
+		if current, ok := r.router.handlers[r.namespace]; ok && current.id == r.id {
+			delete(r.router.handlers, r.namespace)
+		}
+		r.router.mu.Unlock()
+	})
 }
 
 const (
@@ -37,7 +67,7 @@ func NewRouter(logger *zap.Logger, stateStore *StateStore) *Router {
 		stateStore = NewStateStore()
 	}
 	return &Router{
-		handlers:   make(map[string]Handler),
+		handlers:   make(map[string]registration),
 		stateStore: stateStore,
 		logger:     logger,
 		timeout:    defaultCallbackTimeout,
@@ -64,31 +94,56 @@ func (r *Router) StateStore() *StateStore {
 
 // Register registers a new callback handler for its designated namespace.
 func (r *Router) Register(h Handler) error {
+	_, err := r.RegisterOwned("", h)
+	return err
+}
+
+// RegisterOwned registers a handler together with its lifecycle owner.
+func (r *Router) RegisterOwned(owner string, h Handler) (*Registration, error) {
 	if h == nil {
-		return fmt.Errorf("handler cannot be nil")
+		return nil, fmt.Errorf("handler cannot be nil")
 	}
 	ns := h.Namespace()
 	if ns == "" {
-		return fmt.Errorf("handler namespace cannot be empty")
+		return nil, fmt.Errorf("handler namespace cannot be empty")
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if _, exists := r.handlers[ns]; exists {
-		return fmt.Errorf("callback handler for namespace %q is already registered", ns)
+		return nil, fmt.Errorf("callback handler for namespace %q is already registered", ns)
 	}
 
-	r.handlers[ns] = h
-	return nil
+	r.nextID++
+	r.handlers[ns] = registration{handler: h, owner: owner, id: r.nextID}
+	return &Registration{router: r, namespace: ns, id: r.nextID}, nil
 }
 
 // GetHandler retrieves the registered handler for a namespace.
 func (r *Router) GetHandler(namespace string) (Handler, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	h, ok := r.handlers[namespace]
-	return h, ok
+	reg, ok := r.handlers[namespace]
+	return reg.handler, ok
+}
+
+// TaskScope resolves callback payload ownership before task admission.
+func (r *Router) TaskScope(data []byte, resolve func(string) (tasks.ScopeIdentity, bool)) (tasks.ScopeIdentity, bool) {
+	ns, _, _, err := ParseCallbackData(data)
+	if err != nil {
+		return tasks.ScopeIdentity{}, true // invalid payload is handled by the router itself
+	}
+	r.mu.RLock()
+	reg, ok := r.handlers[ns]
+	r.mu.RUnlock()
+	if !ok || reg.owner == "" {
+		return tasks.ScopeIdentity{}, true
+	}
+	if resolve == nil {
+		return tasks.ScopeIdentity{}, false
+	}
+	return resolve(reg.owner)
 }
 
 // checkRateLimit enforces per-user callback rate limiting. Returns reject error if limited.

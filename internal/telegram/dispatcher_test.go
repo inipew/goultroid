@@ -854,12 +854,19 @@ func TestDispatcher_AFK_EndToEnd(t *testing.T) {
 		t.Fatalf("OnNewMessage DM failed: %v", err)
 	}
 
-	svc.mu.Lock()
 	lastSent := ""
-	if len(svc.sentMessages) > 0 {
-		lastSent = svc.sentMessages[len(svc.sentMessages)-1]
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		svc.mu.Lock()
+		if len(svc.sentMessages) > 0 {
+			lastSent = svc.sentMessages[len(svc.sentMessages)-1]
+		}
+		svc.mu.Unlock()
+		if strings.Contains(lastSent, "currently AFK") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	svc.mu.Unlock()
 
 	if !strings.Contains(lastSent, "currently AFK") {
 		t.Fatalf("expected AFK responder to reply to DM, got: %q", lastSent)
@@ -891,9 +898,16 @@ func TestDispatcher_AFK_EndToEnd(t *testing.T) {
 		t.Fatalf("OnNewChannelMessage mention failed: %v", err)
 	}
 
-	svc.mu.Lock()
-	lastSent = svc.sentMessages[len(svc.sentMessages)-1]
-	svc.mu.Unlock()
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		svc.mu.Lock()
+		lastSent = svc.sentMessages[len(svc.sentMessages)-1]
+		svc.mu.Unlock()
+		if strings.Contains(lastSent, "currently AFK") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	if !strings.Contains(lastSent, "currently AFK") {
 		t.Fatalf("expected AFK responder to reply to group mention, got: %q", lastSent)
@@ -935,7 +949,14 @@ func TestDispatcher_AFK_EndToEnd(t *testing.T) {
 		t.Fatalf("OnNewMessage manual unAFK failed: %v", err)
 	}
 
-	st, err = afkRepo.GetAFK(ctx, ownerID)
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		st, err = afkRepo.GetAFK(ctx, ownerID)
+		if err == nil && (st == nil || !st.IsAFK) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if err != nil || (st != nil && st.IsAFK) {
 		t.Fatalf("expected AFK to be deactivated after manual message, got: %+v", st)
 	}

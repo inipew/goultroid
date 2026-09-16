@@ -29,6 +29,7 @@ import (
 	"github.com/inipew/goultroid/internal/services/ratelimit"
 	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/taskengine"
+	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/telegram"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -105,7 +106,16 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	}
 
 	pluginManager := plugin.NewManager(coreDeps.router)
+	coreDeps.eventBus.SetTasks(coreDeps.taskEngine)
 	pluginManager.SetHookRegistrar(tgRuntime.dispatcher)
+	pluginManager.SetCallbackRegistrar(coreDeps.callbackRouter)
+	tgRuntime.dispatcher.SetPluginScopeResolver(func(owner string) (tasks.ScopeIdentity, bool) {
+		scope, ok := pluginManager.Scope(owner)
+		if !ok {
+			return tasks.ScopeIdentity{}, false
+		}
+		return tasks.ScopeIdentity{Owner: scope.Owner(), Generation: scope.Generation()}, true
+	})
 	if coreDeps.resourceManager != nil {
 		pluginManager.SetResourceManager(coreDeps.resourceManager)
 	}
@@ -198,7 +208,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 			return nil, fmt.Errorf("register %s component: %w", resource.name, err)
 		}
 	}
-	if err := rt.Register(dependencyComponent{Component: coreDeps.eventBus, dependencies: []string{"database"}}); err != nil {
+	if err := rt.Register(dependencyComponent{Component: coreDeps.eventBus, dependencies: []string{"database", "taskengine"}}); err != nil {
 		return nil, fmt.Errorf("register eventbus component: %w", err)
 	}
 	if coreDeps.persistencePump != nil {

@@ -2,8 +2,6 @@ package myxl
 
 import (
 	"context"
-	"fmt"
-
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/module"
 	"github.com/inipew/goultroid/internal/plugin"
@@ -42,12 +40,6 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	if rt.CallbackStore != nil {
 		p.SetStateStore(rt.CallbackStore)
 	}
-	if rt.Callbacks != nil {
-		if err := rt.Callbacks.Register(p); err != nil {
-			return fmt.Errorf("register myxl callback handler: %w", err)
-		}
-	}
-
 	return rt.RegisterPlugin(ctx, m.Manifest(), p)
 }
 

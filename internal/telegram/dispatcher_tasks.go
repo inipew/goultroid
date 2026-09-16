@@ -36,6 +36,7 @@ func (d *Dispatcher) submitInteractiveCommand(ctx context.Context, cancel contex
 	d.cmdWG.Add(1)
 	_, err := client.Submit(ctx, tasks.WorkSpec{
 		ID:               tasks.TaskID(taskID),
+		Scope:            cmd.Scope,
 		QuotaOwner:       tasks.OwnerID(owner),
 		Pool:             "interactive",
 		Class:            tasks.PriorityInteractive,

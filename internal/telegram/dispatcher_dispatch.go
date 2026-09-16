@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/gotd/td/tg"
@@ -81,21 +82,19 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	}
 
 	d.mu.RLock()
-	var syncHandlers []MessageHandler
-	var asyncHandlers []MessageHandler
+	var syncHandlers []prioritizedHandler
+	var asyncHandlers []prioritizedHandler
 	for _, ph := range d.messageHandlers {
-		if ph.priority >= PriorityObservability {
-			asyncHandlers = append(asyncHandlers, ph.handler)
+		if ph.priority >= PriorityObservability || (ph.priority >= PriorityFeature && !ph.scope.IsZero()) {
+			asyncHandlers = append(asyncHandlers, ph)
 		} else {
-			syncHandlers = append(syncHandlers, ph.handler)
+			syncHandlers = append(syncHandlers, ph)
 		}
 	}
 	d.mu.RUnlock()
 
-	for _, h := range syncHandlers {
-		if d.safeExecuteInterceptor(ctx, h, e, msg, isCmd, cmdName) {
-			return nil
-		}
+	if d.executeDecisionHandlers(ctx, syncHandlers, e, msg, isCmd, cmdName) {
+		return nil
 	}
 	if decision.IsHandled() || decision.IsSuppressedCommands() {
 		return nil
@@ -208,7 +207,57 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	return nil
 }
 
-func (d *Dispatcher) dispatchAsyncHandlers(ctx context.Context, handlers []MessageHandler, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) {
+// executeDecisionHandlers preserves the synchronous security/moderation
+// decision contract while routing plugin code through TaskEngine. One shared
+// deadline bounds total update-loop latency regardless of handler count.
+func (d *Dispatcher) executeDecisionHandlers(ctx context.Context, handlers []prioritizedHandler, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) bool {
+	decisionCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	for _, registered := range handlers {
+		if registered.scope.IsZero() { // compatibility for local/test handlers
+			if d.safeExecuteInterceptor(decisionCtx, registered.handler, e, msg, isCmd, cmdName) {
+				return true
+			}
+			continue
+		}
+		client := d.taskClient()
+		if client == nil {
+			d.logger.Warn("decision handler execution unavailable", zap.Error(ErrTasksNotConfigured))
+			return true // fail closed for security/moderation handlers
+		}
+		var handled atomic.Bool
+		d.inFlight.Add(1)
+		ticket, err := client.Submit(decisionCtx, tasks.WorkSpec{
+			ID:               tasks.TaskID(fmt.Sprintf("decision:%d:%d:%d", registered.id, extractChatIDFromPeer(msg.PeerID), msg.ID)),
+			Scope:            registered.scope,
+			QuotaOwner:       tasks.OwnerID(registered.scope.Owner),
+			Pool:             "interactive",
+			Class:            tasks.PriorityInteractive,
+			OrderingKey:      fmt.Sprintf("chat:%d", extractChatIDFromPeer(msg.PeerID)),
+			ExecutionTimeout: 5 * time.Second,
+			Handler: func(taskCtx context.Context) error {
+				handled.Store(d.safeExecuteInterceptor(taskCtx, registered.handler, e, msg, isCmd, cmdName))
+				return nil
+			},
+			OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
+		})
+		if err != nil {
+			d.inFlight.Done()
+			d.logger.Warn("decision handler admission rejected", zap.Uint64("handler_id", registered.id), zap.Error(err))
+			return true
+		}
+		if _, err := ticket.Wait(decisionCtx); err != nil {
+			d.logger.Warn("decision handler deadline exceeded", zap.Uint64("handler_id", registered.id), zap.Error(err))
+			return true
+		}
+		if handled.Load() {
+			return true
+		}
+	}
+	return false
+}
+
+func (d *Dispatcher) dispatchAsyncHandlers(ctx context.Context, handlers []prioritizedHandler, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) {
 	if len(handlers) == 0 {
 		return
 	}
@@ -217,26 +266,36 @@ func (d *Dispatcher) dispatchAsyncHandlers(ctx context.Context, handlers []Messa
 		d.logger.Warn("observer execution unavailable", zap.Error(ErrTasksNotConfigured))
 		return
 	}
-	// This child Add is safe while Drain is waiting because dispatch itself
-	// still owns one in-flight reference until this function returns.
-	d.inFlight.Add(1)
-	_, err := client.Submit(ctx, tasks.WorkSpec{
-		ID:               tasks.TaskID(fmt.Sprintf("observer:%d:%d", extractChatIDFromPeer(msg.PeerID), msg.ID)),
-		QuotaOwner:       "telegram:observability",
-		Pool:             "general",
-		Class:            tasks.PriorityBackground,
-		ExecutionTimeout: 10 * time.Second,
-		Handler: func(taskCtx context.Context) error {
-			for _, handler := range handlers {
-				_ = d.safeExecuteInterceptor(taskCtx, handler, e, msg, isCmd, cmdName)
-			}
-			return nil
-		},
-		OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
-	})
-	if err != nil {
-		d.inFlight.Done()
-		d.logger.Debug("observer admission rejected", zap.Error(err))
+	for _, registered := range handlers {
+		registered := registered
+		d.inFlight.Add(1)
+		owner := tasks.OwnerID("telegram:feature")
+		class := tasks.PriorityNormal
+		if registered.priority >= PriorityObservability {
+			owner = "telegram:observability"
+			class = tasks.PriorityBackground
+		}
+		if !registered.scope.IsZero() {
+			owner = tasks.OwnerID(registered.scope.Owner)
+		}
+		_, err := client.Submit(ctx, tasks.WorkSpec{
+			ID:               tasks.TaskID(fmt.Sprintf("hook:%d:%d:%d", registered.id, extractChatIDFromPeer(msg.PeerID), msg.ID)),
+			Scope:            registered.scope,
+			QuotaOwner:       owner,
+			Pool:             "general",
+			Class:            class,
+			OrderingKey:      fmt.Sprintf("chat:%d", extractChatIDFromPeer(msg.PeerID)),
+			ExecutionTimeout: 10 * time.Second,
+			Handler: func(taskCtx context.Context) error {
+				_ = d.safeExecuteInterceptor(taskCtx, registered.handler, e, msg, isCmd, cmdName)
+				return nil
+			},
+			OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
+		})
+		if err != nil {
+			d.inFlight.Done()
+			d.logger.Debug("message hook admission rejected", zap.Uint64("handler_id", registered.id), zap.Error(err))
+		}
 	}
 }
 

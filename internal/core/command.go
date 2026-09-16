@@ -49,7 +49,10 @@ type Command struct {
 	Cooldown    time.Duration
 	Timeout     time.Duration
 	Resources   []tasks.ResourceRequirement
-	Handler     CommandHandler
+	// Scope identifies the plugin generation that owns this command. It is
+	// populated by the plugin manager, not by feature implementations.
+	Scope   tasks.ScopeIdentity
+	Handler CommandHandler
 }
 
 // IsAvailableOn reports whether this command is enabled on the specified execution source.

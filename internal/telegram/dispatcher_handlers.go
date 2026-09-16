@@ -7,6 +7,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
 
@@ -24,6 +25,7 @@ type prioritizedHandler struct {
 	id       uint64
 	priority HandlerPriority
 	handler  MessageHandler
+	scope    tasks.ScopeIdentity
 }
 
 // MessageHandler is invoked for each incoming message.
@@ -36,13 +38,18 @@ func (d *Dispatcher) AddMessageHandler(h MessageHandler) {
 
 // AddPrioritizedMessageHandler registers an interceptor with an explicit priority.
 func (d *Dispatcher) AddPrioritizedMessageHandler(priority HandlerPriority, h MessageHandler) func() {
+	return d.AddScopedMessageHandler(priority, tasks.ScopeIdentity{}, h)
+}
+
+// AddScopedMessageHandler registers a handler owned by a plugin generation.
+func (d *Dispatcher) AddScopedMessageHandler(priority HandlerPriority, scope tasks.ScopeIdentity, h MessageHandler) func() {
 	if h == nil {
 		return func() {}
 	}
 	d.mu.Lock()
 	d.nextHandlerID++
 	id := d.nextHandlerID
-	d.messageHandlers = append(d.messageHandlers, prioritizedHandler{id: id, priority: priority, handler: h})
+	d.messageHandlers = append(d.messageHandlers, prioritizedHandler{id: id, priority: priority, handler: h, scope: scope})
 	sort.SliceStable(d.messageHandlers, func(i, j int) bool {
 		return d.messageHandlers[i].priority < d.messageHandlers[j].priority
 	})

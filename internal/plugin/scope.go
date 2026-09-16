@@ -11,6 +11,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/resource"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 // Resource describes a long-lived resource owned by a plugin scope.
@@ -153,7 +154,7 @@ func (s *Scope) SubscribeEvent(bus *core.EventBus, eventType core.EventType, han
 	if bus == nil || handler == nil {
 		return nil
 	}
-	sub := bus.SubscribeContext(s.ctx, s.owner, eventType, handler)
+	sub := bus.SubscribeContextScoped(s.ctx, s.owner, tasks.ScopeIdentity{Owner: s.owner, Generation: s.generation}, eventType, handler)
 	if sub != nil {
 		subID := fmt.Sprintf("sub:%s:%s", s.owner, eventType)
 		_ = s.Track(Resource{
