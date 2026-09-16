@@ -57,10 +57,12 @@ func New(repo Repository, client *Client) *Plugin {
 	if client == nil {
 		client = NewClient(DefaultClientConfig(), repo, nil)
 	}
-	return &Plugin{
+	p := &Plugin{
 		repo:   repo,
 		client: client,
 	}
+	p.menuMgr = NewMenuManager(p, nil)
+	return p
 }
 
 // SetStateStore configures the callback state store.
@@ -70,7 +72,14 @@ func (p *Plugin) SetStateStore(store *callback.StateStore) {
 
 // SetAssistantMenu configures the assistant interactive menu controller.
 func (p *Plugin) SetAssistantMenu(ctrl *menu.Controller) {
-	p.menuMgr = NewMenuManager(p, ctrl)
+	if p.menuMgr == nil {
+		p.menuMgr = NewMenuManager(p, ctrl)
+	} else {
+		p.menuMgr.menuCtrl = ctrl
+		if ctrl != nil {
+			ctrl.RegisterTextHandler(p.menuMgr)
+		}
+	}
 }
 
 // MenuManager returns the MenuManager instance.
@@ -173,7 +182,7 @@ func (p *Plugin) Commands() []core.Command {
 		{
 			Name:        "myxl",
 			Aliases:     []string{"xlcli"},
-			Description: "MyXL account manager and utilities",
+			Description: "MyXL account manager and interactive menu",
 			Usage:       ".myxl [login|otp|refresh|accounts|use|alias|status|del|kuota|family|paket|saved|buy]",
 			Category:    "Utility",
 			Permission:  core.PermissionOwner,
@@ -218,8 +227,9 @@ func isGroupChat(chat *core.Chat) bool {
 }
 
 func (p *Plugin) handleMyXL(ctx *core.Context) error {
+	showInteractive := ctx.Source == core.ExecutionAssistant || (len(ctx.Args) == 1 && strings.EqualFold(ctx.Args[0], "menu"))
 	if len(ctx.Args) == 0 || (len(ctx.Args) == 1 && strings.EqualFold(ctx.Args[0], "menu")) {
-		if p.menuMgr != nil {
+		if showInteractive && p.menuMgr != nil {
 			cCtx, cancel := context.WithTimeout(getContext(ctx), 25*time.Second)
 			defer cancel()
 			mask := isGroupChat(ctx.Chat)
@@ -227,20 +237,23 @@ func (p *Plugin) handleMyXL(ctx *core.Context) error {
 			if err == nil {
 				text, markup := render.ToTelegram(screen)
 				sErr := ctx.Messages().ReplyMarkup(text, markup)
-				if sErr == nil && ctx.LastResponseID > 0 && p.menuMgr.menuCtrl != nil && ctx.SenderID() > 0 {
-					p.menuMgr.menuCtrl.RegisterInstance(menu.MenuInstance{
-						ID:        fmt.Sprintf("menu:%d:%d", ctx.ChatID(), ctx.LastResponseID),
-						ChatID:    ctx.ChatID(),
-						MessageID: ctx.LastResponseID,
-						Screen:    menu.ScreenIDMyXL,
-						OwnerID:   ctx.SenderID(),
-					})
+				if sErr == nil {
+					if ctx.LastResponseID > 0 && p.menuMgr.menuCtrl != nil && ctx.SenderID() > 0 {
+						p.menuMgr.menuCtrl.RegisterInstance(menu.MenuInstance{
+							ID:        fmt.Sprintf("menu:%d:%d", ctx.ChatID(), ctx.LastResponseID),
+							ChatID:    ctx.ChatID(),
+							MessageID: ctx.LastResponseID,
+							Screen:    menu.ScreenIDMyXL,
+							OwnerID:   ctx.SenderID(),
+						})
+					}
+					return nil
 				}
-				return sErr
 			}
 		}
 		return ctx.EditOrReply(
 			"📱 <b>MyXL Plugin Menu</b>\n\n" +
+				"• <code>.myxl menu</code> - Buka menu interaktif dengan tombol\n" +
 				"• <code>.myxl login &lt;nomor&gt;</code> - Minta kode OTP SMS\n" +
 				"• <code>.myxl otp &lt;nomor&gt; &lt;kode&gt;</code> - Masukkan kode OTP dan simpan akun\n" +
 				"• <code>.myxl refresh [nomor/alias]</code> - Force refresh token CIAM\n" +

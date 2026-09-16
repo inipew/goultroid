@@ -372,7 +372,7 @@ func (m *MenuManager) BuildDashboardScreen(ctx context.Context, mask bool) (*ui.
 			WithFooter("<i>Tekan tombol Login di bawah untuk memulai.</i>")
 		screen := menu.NewScreen(menu.ScreenIDMyXL, "", card.Render())
 		screen.AddRow(menu.NewButton("➕ Login Akun Baru (OTP)", "a1:myxl:login_req"))
-		screen.AddRow(menu.NewButton("🏠 Menu Utama", "a1:assistant:start"), menu.NewButton("❌ Tutup", "a1:assistant:close"))
+		screen.AddRow(menu.NewButton("❌ Tutup", "a1:assistant:close"))
 		return screen, nil
 	}
 
@@ -441,9 +441,6 @@ func (m *MenuManager) BuildDashboardScreen(ctx context.Context, mask bool) (*ui.
 	)
 	screen.AddRow(
 		menu.NewButton("⭐ Paket Favorit", "a1:myxl:saved"),
-		menu.NewButton("🏠 Menu Utama", "a1:assistant:start"),
-	)
-	screen.AddRow(
 		menu.NewButton("❌ Tutup Menu", "a1:assistant:close"),
 	)
 	return screen, nil

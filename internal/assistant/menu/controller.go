@@ -99,7 +99,7 @@ func BuildStartScreenWithCommands(botUsername string, uptime time.Duration, cmds
 	screen := NewScreen(ScreenIDStart, "", card.Render())
 	screen.AddRow(NewButton("⚙️ Settings", "a1:assistant:settings"), NewButton("📚 Help", "a1:assistant:help"))
 	screen.AddRow(NewButton("📊 Status", "a1:assistant:status"), NewButton("🏓 Ping", "a1:assistant:ping"))
-	screen.AddRow(NewButton("📱 MyXL", "a1:myxl:home"), NewButton("❌ Close", "a1:assistant:close"))
+	screen.AddRow(NewButton("❌ Close", "a1:assistant:close"))
 	return screen
 }
 func BuildSettingsScreen(botUsername string) *Screen {

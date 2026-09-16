@@ -485,3 +485,97 @@ func TestMenuManager_Callbacks(t *testing.T) {
 		})
 	}
 }
+
+func TestMenuManager_HandleMyXLEntrypoint(t *testing.T) {
+	plugin, server, repo, menuCtrl := setupTestMyXLEnv(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	now := time.Now()
+	acc := &Account{
+		MSISDN:         "6281987654321",
+		IsActive:       true,
+		AccessToken:    "acc_tok",
+		RefreshToken:   "ref_tok",
+		TokenExpiresAt: now.Add(time.Hour),
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := repo.Save(ctx, acc); err != nil {
+		t.Fatalf("save account failed: %v", err)
+	}
+
+	svc := &mockTgService{}
+
+	// 1. Assistant /myxl without args -> should render interactive dashboard with buttons
+	asstCtx := &core.Context{
+		Ctx:       ctx,
+		Source:    core.ExecutionAssistant,
+		Command:   "myxl",
+		Args:      []string{},
+		PeerID:    &tg.InputPeerUser{UserID: 12345},
+		Sender:    &core.User{ID: 12345},
+		Chat:      &core.Chat{ID: 12345, Type: "private"},
+		Svc:       svc,
+		Principal: &core.Principal{UserID: 12345, IsOwner: true},
+	}
+	err := plugin.handleMyXL(asstCtx)
+	if err != nil {
+		t.Fatalf("handleMyXL in Assistant failed: %v", err)
+	}
+	if svc.lastMarkup == nil {
+		t.Errorf("expected inline markup buttons from /myxl in Assistant")
+	}
+	if !strings.Contains(svc.sent, "MyXL Control Center") {
+		t.Errorf("expected dashboard title, got: %s", svc.sent)
+	}
+	// Verify instance registered
+	inst, ok := menuCtrl.Instances().Get(12345, 10)
+	if !ok || inst == nil {
+		t.Errorf("expected menu instance registered for assistant interaction")
+	}
+
+	// 2. Userbot .myxl without args -> should reply with text CLI help
+	userCtx := &core.Context{
+		Ctx:       ctx,
+		Source:    core.ExecutionInteractive,
+		Command:   "myxl",
+		Args:      []string{},
+		PeerID:    &tg.InputPeerUser{UserID: 12345},
+		Sender:    &core.User{ID: 12345},
+		Chat:      &core.Chat{ID: 12345, Type: "private"},
+		Svc:       svc,
+		Principal: &core.Principal{UserID: 12345, IsOwner: true},
+	}
+	svc.lastMarkup = nil
+	err = plugin.handleMyXL(userCtx)
+	if err != nil {
+		t.Fatalf("handleMyXL in Userbot failed: %v", err)
+	}
+	if svc.lastMarkup != nil {
+		t.Errorf("expected no markup from plain .myxl in Userbot")
+	}
+	if !strings.Contains(svc.sent, "MyXL Plugin Menu") {
+		t.Errorf("expected text menu help, got: %s", svc.sent)
+	}
+
+	// 3. Userbot .myxl menu -> should trigger interactive screen
+	userMenuCtx := &core.Context{
+		Ctx:       ctx,
+		Source:    core.ExecutionInteractive,
+		Command:   "myxl",
+		Args:      []string{"menu"},
+		PeerID:    &tg.InputPeerUser{UserID: 12345},
+		Sender:    &core.User{ID: 12345},
+		Chat:      &core.Chat{ID: 12345, Type: "private"},
+		Svc:       svc,
+		Principal: &core.Principal{UserID: 12345, IsOwner: true},
+	}
+	err = plugin.handleMyXL(userMenuCtx)
+	if err != nil {
+		t.Fatalf("handleMyXL .myxl menu failed: %v", err)
+	}
+	if svc.lastMarkup == nil {
+		t.Errorf("expected markup from .myxl menu")
+	}
+}
