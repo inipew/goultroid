@@ -3,6 +3,7 @@ package myxl
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -41,13 +42,18 @@ func TestNormalizeMSISDN(t *testing.T) {
 }
 
 type mockRepo struct {
-	mu    sync.Mutex
-	saved *Account
+	mu      sync.Mutex
+	saved   *Account
+	saveErr error
+	getErr  error
 }
 
 func (m *mockRepo) GetActive(ctx context.Context) (*Account, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.getErr != nil {
+		return nil, m.getErr
+	}
 	if m.saved == nil {
 		return nil, nil
 	}
@@ -57,6 +63,9 @@ func (m *mockRepo) GetActive(ctx context.Context) (*Account, error) {
 func (m *mockRepo) GetByMSISDN(ctx context.Context, id string) (*Account, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.getErr != nil {
+		return nil, m.getErr
+	}
 	if m.saved == nil {
 		return nil, nil
 	}
@@ -75,6 +84,9 @@ func (m *mockRepo) List(ctx context.Context) ([]*Account, error) {
 func (m *mockRepo) Save(ctx context.Context, acc *Account) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.saveErr != nil {
+		return m.saveErr
+	}
 	clone := *acc
 	m.saved = &clone
 	return nil
@@ -512,8 +524,9 @@ func TestClient_SingleflightConcurrency(t *testing.T) {
 	}
 }
 
-func TestClient_SendPayment_AutoRefresh(t *testing.T) {
+func TestClient_Settlement_RebuildPayloadOn401(t *testing.T) {
 	refreshCalled := false
+	optCallCount := 0
 	paymentCallCount := 0
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -526,9 +539,31 @@ func TestClient_SendPayment_AutoRefresh(t *testing.T) {
 				RefreshToken: "fresh_payment_refresh_token",
 				ExpiresIn:    3600,
 			})
-		case "/payments/api/v8/settlement-test":
+		case "/payments/api/v8/payment-methods-option":
+			optCallCount++
+			var ts float64 = 1000
+			tp := "TP-1"
+			if optCallCount == 2 {
+				ts = 2000
+				tp = "TP-2"
+			}
+			data := PaymentMethodsOptionData{
+				TokenPayment: tp,
+				Timestamp:    ts,
+			}
+			b, _ := json.Marshal(data)
+			_ = json.NewEncoder(w).Encode(APIResponse{
+				Status:  "SUCCESS",
+				Message: "",
+				Data:    b,
+			})
+		case "/payments/api/v8/settlement-multipayment":
 			paymentCallCount++
+			authHeader := r.Header.Get("authorization")
 			if paymentCallCount == 1 {
+				if authHeader != "Bearer expired_id_token" {
+					t.Errorf("call 1: expected Bearer expired_id_token, got %s", authHeader)
+				}
 				// First payment call rejected with 401
 				_ = json.NewEncoder(w).Encode(APIResponse{
 					Status:  "401",
@@ -536,8 +571,40 @@ func TestClient_SendPayment_AutoRefresh(t *testing.T) {
 				})
 				return
 			}
-			// Second attempt succeeds
-			payload := `{"status":"SUCCESS","message":"Payment Successful","data":{"transaction_code":"TRX-RETRY-999"}}`
+
+			// Call 2: Must be rebuilt with fresh tokens and matching fresh timestamp!
+			if authHeader != "Bearer fresh_payment_id_token" {
+				t.Errorf("call 2: expected Bearer fresh_payment_id_token, got %s", authHeader)
+			}
+			sigTime := r.Header.Get("x-signature-time")
+			if sigTime != "2000" {
+				t.Errorf("call 2: expected x-signature-time 2000, got %s", sigTime)
+			}
+
+			// Read body and verify inner JSON has fresh access token & fresh timestamp
+			var env EncryptedBody
+			_ = json.NewDecoder(r.Body).Decode(&env)
+			decrypted, err := DecryptXData(env.XData, env.XTime, DefaultXDataKey)
+			if err != nil {
+				t.Fatalf("decrypt payment body: %v", err)
+			}
+
+			var req SettlementBalanceRequest
+			if err := json.Unmarshal([]byte(decrypted), &req); err != nil {
+				t.Fatalf("unmarshal decrypted payment body: %v", err)
+			}
+
+			if req.AccessToken != "fresh_payment_access_token" {
+				t.Errorf("call 2: expected body access_token fresh_payment_access_token, got %s", req.AccessToken)
+			}
+			if req.Timestamp != 2000 {
+				t.Errorf("call 2: expected body timestamp 2000, got %d", req.Timestamp)
+			}
+			if req.TokenPayment != "TP-2" {
+				t.Errorf("call 2: expected body token_payment TP-2, got %s", req.TokenPayment)
+			}
+
+			payload := `{"status":"SUCCESS","message":"Payment Successful","data":{"transaction_code":"TRX-REBUILD-OK"}}`
 			xtime := time.Now().UnixMilli()
 			xdata, _ := EncryptXData(payload, xtime, DefaultXDataKey)
 			_ = json.NewEncoder(w).Encode(EncryptedBody{
@@ -566,32 +633,205 @@ func TestClient_SendPayment_AutoRefresh(t *testing.T) {
 	}
 	repo.saved = acc
 
-	params := PaymentSignatureParams{
-		AccessToken:    acc.AccessToken,
-		SigTimeSec:     time.Now().Unix(),
-		PackageCode:    "OPT-TEST",
-		TokenPayment:   "PAY-123",
-		PaymentMethod:  "BALANCE",
-		PaymentFor:     "BUY_PACKAGE",
-		Path:           "payments/api/v8/settlement-test",
-		XAPIBaseSecret: cfg.XAPIBaseSecret,
-	}
-
-	resp, err := client.SendPayment(context.Background(), acc, "payments/api/v8/settlement-test", map[string]string{"foo": "bar"}, params)
+	res, err := client.SettlementBalance(context.Background(), acc, PurchaseItem{
+		ItemCode:          "OPT-TEST",
+		ItemPrice:         50000,
+		ItemName:          "Test Package",
+		TokenConfirmation: "CONF-999",
+	}, nil)
 	if err != nil {
-		t.Fatalf("SendPayment failed: %v", err)
+		t.Fatalf("SettlementBalance failed: %v", err)
 	}
 
 	if !refreshCalled {
-		t.Fatal("expected SendPayment to trigger token refresh on 401")
+		t.Fatal("expected settlement retry to trigger token refresh on 401")
+	}
+	if optCallCount != 2 {
+		t.Fatalf("expected 2 GetPaymentMethodsOption calls (initial + rebuild), got %d", optCallCount)
 	}
 	if paymentCallCount != 2 {
 		t.Fatalf("expected 2 payment calls (initial + retry), got %d", paymentCallCount)
 	}
-	if !resp.IsSuccess() {
-		t.Fatalf("expected success response after retry, got: %#v", resp)
+	if !res.IsSuccess || res.TransactionCode != "TRX-REBUILD-OK" {
+		t.Fatalf("expected successful settlement with TRX-REBUILD-OK, got: %#v", res)
 	}
 	if acc.AccessToken != "fresh_payment_access_token" {
 		t.Fatalf("expected updated access token on account, got %s", acc.AccessToken)
+	}
+}
+
+func TestClient_Refresh_RepoSaveFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(Tokens{
+			AccessToken:  "token_new",
+			IDToken:      "id_new",
+			RefreshToken: "rt_new",
+			ExpiresIn:    3600,
+		})
+	}))
+	defer server.Close()
+
+	cfg := DefaultClientConfig()
+	cfg.BaseCIAMURL = server.URL
+	repo := &mockRepo{
+		saveErr: errors.New("disk full: sqlite save failed"),
+	}
+	netCli := network.NewService(server.Client(), nil).ForOwner("myxl")
+	client := NewClient(cfg, repo, netCli)
+
+	acc := &Account{
+		MSISDN:       "6281900011122",
+		RefreshToken: "rt_old",
+	}
+	repo.saved = acc
+
+	_, err := client.RefreshToken(context.Background(), acc)
+	if err == nil {
+		t.Fatal("expected error when repo.Save fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "persist refreshed account") {
+		t.Fatalf("expected persist error, got: %v", err)
+	}
+}
+
+func TestClient_Refresh_RepoGetFailure(t *testing.T) {
+	cfg := DefaultClientConfig()
+	repo := &mockRepo{
+		getErr: errors.New("sqlite connection busy"),
+	}
+	netCli := network.NewService(nil, nil).ForOwner("myxl")
+	client := NewClient(cfg, repo, netCli)
+
+	acc := &Account{
+		MSISDN:       "6281900011122",
+		RefreshToken: "rt_old",
+	}
+
+	_, err := client.RefreshToken(context.Background(), acc)
+	if err == nil {
+		t.Fatal("expected error when repo.GetByMSISDN fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "read account from repository") {
+		t.Fatalf("expected repository read error, got: %v", err)
+	}
+}
+
+func TestClient_Sequential401_StaleTokenGeneration(t *testing.T) {
+	refreshCount := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&refreshCount, 1)
+		_ = json.NewEncoder(w).Encode(Tokens{
+			AccessToken:  "gen1_access_token",
+			IDToken:      "gen1_id_token",
+			RefreshToken: "gen1_refresh_token",
+			ExpiresIn:    3600,
+		})
+	}))
+	defer server.Close()
+
+	cfg := DefaultClientConfig()
+	cfg.BaseCIAMURL = server.URL
+	repo := &mockRepo{}
+	netCli := network.NewService(server.Client(), nil).ForOwner("myxl")
+	client := NewClient(cfg, repo, netCli)
+
+	acc := &Account{
+		MSISDN:       "6281977766655",
+		IDToken:      "gen0_id_token",
+		RefreshToken: "gen0_refresh_token",
+	}
+	repo.saved = acc
+
+	// Request 1: Fails with gen0_id_token -> triggers refresh
+	res1, err := client.refreshAfterUnauthorized(context.Background(), acc, "gen0_id_token")
+	if err != nil || res1.IDToken != "gen1_id_token" {
+		t.Fatalf("refresh 1 failed: %v", err)
+	}
+
+	// Requests 2..5: Arrive sequentially, each having failed with gen0_id_token
+	for i := 2; i <= 5; i++ {
+		reqAcc := Account{
+			MSISDN:       "6281977766655",
+			IDToken:      "gen0_id_token",
+			RefreshToken: "gen0_refresh_token",
+		}
+		res, err := client.refreshAfterUnauthorized(context.Background(), &reqAcc, "gen0_id_token")
+		if err != nil {
+			t.Fatalf("request %d failed: %v", i, err)
+		}
+		if res.IDToken != "gen1_id_token" {
+			t.Fatalf("request %d: expected gen1_id_token, got %s", i, res.IDToken)
+		}
+	}
+
+	// CRITICAL: Across all 5 sequential 401 requests with gen0_id_token, exactly 1 CIAM refresh must occur!
+	if calls := atomic.LoadInt32(&refreshCount); calls != 1 {
+		t.Fatalf("stale generation check failed! Expected exactly 1 CIAM refresh, got %d", calls)
+	}
+}
+
+func TestClient_LeaderContextCancellation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond) // Slow network
+		_ = json.NewEncoder(w).Encode(Tokens{
+			AccessToken:  "coalesced_access_token",
+			IDToken:      "coalesced_id_token",
+			RefreshToken: "coalesced_refresh_token",
+			ExpiresIn:    3600,
+		})
+	}))
+	defer server.Close()
+
+	cfg := DefaultClientConfig()
+	cfg.BaseCIAMURL = server.URL
+	repo := &mockRepo{}
+	netCli := network.NewService(server.Client(), nil).ForOwner("myxl")
+	client := NewClient(cfg, repo, netCli)
+
+	acc := &Account{
+		MSISDN:         "6281955544433",
+		RefreshToken:   "rt_valid",
+		TokenExpiresAt: time.Now().Add(-1 * time.Hour), // Expired
+	}
+	repo.saved = acc
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	var leaderErr, waiterErr error
+	var waiterAcc Account
+
+	// Leader: short 10ms context that cancels while refresh is running
+	go func() {
+		defer wg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		defer cancel()
+		leaderAcc := *acc
+		leaderErr = client.EnsureFreshToken(ctx, &leaderAcc)
+	}()
+
+	// Waiter: healthy 3-second context
+	go func() {
+		defer wg.Done()
+		time.Sleep(5 * time.Millisecond) // Ensure leader initiates flight first
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		waiterAcc = *acc
+		waiterErr = client.EnsureFreshToken(ctx, &waiterAcc)
+	}()
+
+	wg.Wait()
+
+	// Leader must fail with context cancellation/deadline
+	if leaderErr == nil {
+		t.Error("expected leader to fail with context cancellation")
+	}
+
+	// Waiter MUST succeed! Leader's timeout must not poison waiter
+	if waiterErr != nil {
+		t.Fatalf("waiter failed due to leader context poisoning: %v", waiterErr)
+	}
+	if waiterAcc.AccessToken != "coalesced_access_token" {
+		t.Fatalf("expected waiter to receive fresh access token, got %s", waiterAcc.AccessToken)
 	}
 }

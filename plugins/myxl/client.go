@@ -318,17 +318,23 @@ func (c *Client) doRefreshToken(ctx context.Context, acc *Account) (*Tokens, err
 	return nil, errors.New("refresh token and extend session both failed")
 }
 
-func (c *Client) refreshSingleflight(ctx context.Context, acc *Account, force bool) (*Account, error) {
+func (c *Client) refreshSingleflight(ctx context.Context, acc *Account, force bool, failedIDToken string) (*Account, error) {
 	if acc == nil {
 		return nil, errors.New("account is nil")
 	}
 
 	msisdn := acc.MSISDN
-	val, err, _ := c.refreshGroup.Do(msisdn, func() (any, error) {
+	ch := c.refreshGroup.DoChan(msisdn, func() (any, error) {
+		refreshCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		defer cancel()
+
 		var targetAcc *Account
 		if c.repo != nil && msisdn != "" {
-			dbAcc, err := c.repo.GetByMSISDN(ctx, msisdn)
-			if err == nil && dbAcc != nil {
+			dbAcc, err := c.repo.GetByMSISDN(refreshCtx, msisdn)
+			if err != nil {
+				return nil, fmt.Errorf("read account from repository: %w", err)
+			}
+			if dbAcc != nil {
 				targetAcc = dbAcc
 			}
 		}
@@ -337,12 +343,19 @@ func (c *Client) refreshSingleflight(ctx context.Context, acc *Account, force bo
 			targetAcc = &clone
 		}
 
-		// If not forced, check if token was already refreshed by another concurrent request
-		if !force && !targetAcc.TokenExpiresAt.IsZero() && time.Now().Add(DefaultTokenRefreshSkew).Before(targetAcc.TokenExpiresAt) {
+		// Stale 401 generation check:
+		// If another request already refreshed this account since our failure,
+		// the database already holds a newer token than failedIDToken.
+		if !force && failedIDToken != "" && targetAcc.IDToken != "" && targetAcc.IDToken != failedIDToken {
 			return targetAcc, nil
 		}
 
-		tokens, err := c.doRefreshToken(ctx, targetAcc)
+		// Proactive freshness check (when not forced and not handling 401 recovery):
+		if !force && failedIDToken == "" && !targetAcc.TokenExpiresAt.IsZero() && time.Now().Add(DefaultTokenRefreshSkew).Before(targetAcc.TokenExpiresAt) {
+			return targetAcc, nil
+		}
+
+		tokens, err := c.doRefreshToken(refreshCtx, targetAcc)
 		if err != nil {
 			return nil, err
 		}
@@ -350,27 +363,31 @@ func (c *Client) refreshSingleflight(ctx context.Context, acc *Account, force bo
 		applyTokensToAccount(targetAcc, tokens)
 
 		if c.repo != nil {
-			_ = c.repo.Save(ctx, targetAcc)
+			if err := c.repo.Save(refreshCtx, targetAcc); err != nil {
+				return nil, fmt.Errorf("persist refreshed account to repository: %w", err)
+			}
 		}
 
 		return targetAcc, nil
 	})
 
-	if err != nil {
-		return nil, err
-	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		resAcc, ok := res.Val.(*Account)
+		if !ok {
+			return nil, errors.New("unexpected singleflight result")
+		}
 
-	resAcc, ok := val.(*Account)
-	if !ok {
-		return nil, errors.New("unexpected singleflight result")
+		if acc != resAcc {
+			*acc = *resAcc
+		}
+		return resAcc, nil
 	}
-
-	// Synchronize caller's account object
-	if acc != resAcc {
-		*acc = *resAcc
-	}
-
-	return resAcc, nil
 }
 
 // EnsureFreshToken checks if the account token is near expiry or expired,
@@ -385,7 +402,7 @@ func (c *Client) EnsureFreshToken(ctx context.Context, acc *Account) error {
 		return nil
 	}
 
-	refreshed, err := c.refreshSingleflight(ctx, acc, false)
+	refreshed, err := c.refreshSingleflight(ctx, acc, false, "")
 	if err != nil {
 		return err
 	}
@@ -393,12 +410,26 @@ func (c *Client) EnsureFreshToken(ctx context.Context, acc *Account) error {
 	return nil
 }
 
+// refreshAfterUnauthorized handles recovery after receiving 401/unauthorized.
+// It checks the token generation to avoid sequential refresh storms.
+func (c *Client) refreshAfterUnauthorized(ctx context.Context, acc *Account, failedIDToken string) (*Account, error) {
+	if acc == nil {
+		return nil, errors.New("account is nil")
+	}
+	refreshed, err := c.refreshSingleflight(ctx, acc, false, failedIDToken)
+	if err != nil {
+		return nil, err
+	}
+	*acc = *refreshed
+	return refreshed, nil
+}
+
 // RefreshToken exchanges a refresh token for new credentials with singleflight concurrency protection.
 func (c *Client) RefreshToken(ctx context.Context, acc *Account) (*Tokens, error) {
 	if acc == nil {
 		return nil, errors.New("account is nil")
 	}
-	refreshed, err := c.refreshSingleflight(ctx, acc, true)
+	refreshed, err := c.refreshSingleflight(ctx, acc, true, "")
 	if err != nil {
 		return nil, err
 	}
@@ -488,13 +519,14 @@ func (c *Client) ExecuteEngsel(ctx context.Context, acc *Account, method, path s
 	}
 
 	resp, err := c.executeEngselOnce(ctx, acc, method, path, payload)
-	if err == nil && !resp.IsUnauthorized() {
+	if err == nil && (resp == nil || !resp.IsUnauthorized()) {
 		return resp, nil
 	}
 
-	// Reactive check: if unauthorized or error indicating expired token, force-refresh and retry once
-	if (err != nil && strings.Contains(err.Error(), "unauthorized")) || (resp != nil && resp.IsUnauthorized()) {
-		refreshed, refreshErr := c.refreshSingleflight(ctx, acc, true)
+	// Reactive check: if unauthorized or token expired, recover using generation check and retry once
+	if errors.Is(err, ErrUnauthorized) || (err != nil && strings.Contains(strings.ToLower(err.Error()), "unauthorized")) || (resp != nil && resp.IsUnauthorized()) {
+		failedID := acc.IDToken
+		refreshed, refreshErr := c.refreshAfterUnauthorized(ctx, acc, failedID)
 		if refreshErr != nil {
 			if err != nil {
 				return nil, fmt.Errorf("api request failed (%w) and token refresh also failed: %v", err, refreshErr)
@@ -562,6 +594,10 @@ func (c *Client) executeEngselOnce(ctx context.Context, acc *Account, method, pa
 		return nil, fmt.Errorf("http request: %w", err)
 	}
 
+	if httpResp.StatusCode == 401 {
+		return nil, ErrUnauthorized
+	}
+
 	respBody, err := httpResp.Bytes()
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
@@ -578,6 +614,9 @@ func (c *Client) parseEngselResponse(body []byte) (*APIResponse, error) {
 		if err == nil {
 			var apiResp APIResponse
 			if err := json.Unmarshal([]byte(decrypted), &apiResp); err == nil {
+				if apiResp.IsUnauthorized() {
+					return &apiResp, ErrUnauthorized
+				}
 				return &apiResp, nil
 			}
 		}
@@ -586,6 +625,9 @@ func (c *Client) parseEngselResponse(body []byte) (*APIResponse, error) {
 	// 2. Try parsing directly as plain APIResponse
 	var apiResp APIResponse
 	if err := json.Unmarshal(body, &apiResp); err == nil && (apiResp.Status != "" || apiResp.Message != "") {
+		if apiResp.IsUnauthorized() {
+			return &apiResp, ErrUnauthorized
+		}
 		return &apiResp, nil
 	}
 
@@ -779,37 +821,9 @@ func (c *Client) GetPaymentMethodsOption(ctx context.Context, acc *Account, toke
 	return &data, nil
 }
 
-// SendPayment executes an encrypted payment request with payment-specific signature,
-// proactive freshness verification, and automatic retry on token expiry.
+// SendPayment executes an encrypted payment request with payment-specific signature.
 func (c *Client) SendPayment(ctx context.Context, acc *Account, path string, payload any, params PaymentSignatureParams) (*APIResponse, error) {
-	if err := c.EnsureFreshToken(ctx, acc); err != nil {
-		return nil, fmt.Errorf("ensure fresh token for payment: %w", err)
-	}
-	params.AccessToken = acc.AccessToken
-
-	resp, err := c.sendPaymentOnce(ctx, acc, path, payload, params)
-	if err == nil && !resp.IsUnauthorized() {
-		return resp, nil
-	}
-
-	// Reactive check: if unauthorized or token expired, force-refresh and retry once
-	if (err != nil && strings.Contains(err.Error(), "unauthorized")) || (resp != nil && resp.IsUnauthorized()) {
-		refreshed, refreshErr := c.refreshSingleflight(ctx, acc, true)
-		if refreshErr != nil {
-			if err != nil {
-				return nil, fmt.Errorf("payment request failed (%w) and token refresh also failed: %v", err, refreshErr)
-			}
-			return resp, fmt.Errorf("payment session expired and token refresh failed: %w", refreshErr)
-		}
-		*acc = *refreshed
-
-		// Update payment signature params with new AccessToken and fresh timestamp
-		params.AccessToken = acc.AccessToken
-		params.SigTimeSec = time.Now().Unix()
-		return c.sendPaymentOnce(ctx, acc, path, payload, params)
-	}
-
-	return resp, err
+	return c.sendPaymentOnce(ctx, acc, path, payload, params)
 }
 
 func (c *Client) sendPaymentOnce(ctx context.Context, acc *Account, path string, payload any, params PaymentSignatureParams) (*APIResponse, error) {
@@ -853,6 +867,10 @@ func (c *Client) sendPaymentOnce(ctx context.Context, acc *Account, path string,
 		return nil, fmt.Errorf("payment http request: %w", err)
 	}
 
+	if httpResp.StatusCode == 401 {
+		return nil, ErrUnauthorized
+	}
+
 	respBody, err := httpResp.Bytes()
 	if err != nil {
 		return nil, fmt.Errorf("read payment response: %w", err)
@@ -861,52 +879,93 @@ func (c *Client) sendPaymentOnce(ctx context.Context, acc *Account, path string,
 	return c.parseEngselResponse(respBody)
 }
 
-// SettlementBalance executes purchase using main credit / pulsa (BALANCE).
-func (c *Client) SettlementBalance(ctx context.Context, acc *Account, req PurchaseItem, overwriteAmount *int64) (*SettlementResult, error) {
-	payMethods, err := c.GetPaymentMethodsOption(ctx, acc, req.TokenConfirmation, req.ItemCode)
-	if err != nil {
-		return nil, fmt.Errorf("get payment methods: %w", err)
+func (c *Client) executeSettlementWithRetry(ctx context.Context, acc *Account, buildFn func(curAcc *Account) (path string, payload any, params PaymentSignatureParams, err error)) (*APIResponse, error) {
+	if err := c.EnsureFreshToken(ctx, acc); err != nil {
+		return nil, fmt.Errorf("ensure fresh token for settlement: %w", err)
 	}
 
+	path, payload, params, err := buildFn(acc)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.SendPayment(ctx, acc, path, payload, params)
+	if err == nil && (resp == nil || !resp.IsUnauthorized()) {
+		return resp, nil
+	}
+
+	// Reactive check: if 401 / unauthorized, refresh token with stale generation check and rebuild settlement
+	if errors.Is(err, ErrUnauthorized) || (err != nil && strings.Contains(strings.ToLower(err.Error()), "unauthorized")) || (resp != nil && resp.IsUnauthorized()) {
+		failedID := acc.IDToken
+		refreshed, refreshErr := c.refreshAfterUnauthorized(ctx, acc, failedID)
+		if refreshErr != nil {
+			if err != nil {
+				return nil, fmt.Errorf("settlement failed (%w) and token refresh also failed: %v", err, refreshErr)
+			}
+			return resp, fmt.Errorf("settlement session expired and token refresh failed: %w", refreshErr)
+		}
+		*acc = *refreshed
+
+		// Rebuild settlement options, payload (with fresh access_token & timestamp), and params
+		path, payload, params, err = buildFn(acc)
+		if err != nil {
+			return nil, fmt.Errorf("rebuild settlement options after refresh: %w", err)
+		}
+
+		return c.SendPayment(ctx, acc, path, payload, params)
+	}
+
+	return resp, err
+}
+
+// SettlementBalance executes purchase using main credit / pulsa (BALANCE).
+func (c *Client) SettlementBalance(ctx context.Context, acc *Account, req PurchaseItem, overwriteAmount *int64) (*SettlementResult, error) {
 	totalAmount := req.ItemPrice
 	if overwriteAmount != nil {
 		totalAmount = *overwriteAmount
 	}
 
-	encryptedPaymentToken := BuildEncryptedFieldWithKey(c.cfg.EncryptedFieldKey, true)
-	encryptedAuthID := BuildEncryptedFieldWithKey(c.cfg.EncryptedFieldKey, true)
+	apiResp, err := c.executeSettlementWithRetry(ctx, acc, func(curAcc *Account) (string, any, PaymentSignatureParams, error) {
+		payMethods, err := c.GetPaymentMethodsOption(ctx, curAcc, req.TokenConfirmation, req.ItemCode)
+		if err != nil {
+			return "", nil, PaymentSignatureParams{}, fmt.Errorf("get payment methods: %w", err)
+		}
 
-	settlementReq := SettlementBalanceRequest{
-		TotalDiscount:             0,
-		IsEnterprise:              false,
-		TokenPayment:              payMethods.TokenPayment,
-		EncryptedPaymentToken:     encryptedPaymentToken,
-		EncryptedAuthenticationID: encryptedAuthID,
-		AccessToken:               acc.AccessToken,
-		PaymentMethod:             "BALANCE",
-		Timestamp:                 int64(payMethods.Timestamp),
-		PaymentFor:                "BUY_PACKAGE",
-		TotalAmount:               totalAmount,
-		Items:                     []PurchaseItem{req},
-		AdditionalData: BalanceAdditionalData{
-			OriginalPrice: req.ItemPrice,
-			BalanceType:   "PREPAID_BALANCE",
-		},
-	}
+		encryptedPaymentToken := BuildEncryptedFieldWithKey(c.cfg.EncryptedFieldKey, true)
+		encryptedAuthID := BuildEncryptedFieldWithKey(c.cfg.EncryptedFieldKey, true)
 
-	path := "payments/api/v8/settlement-multipayment"
-	params := PaymentSignatureParams{
-		AccessToken:    acc.AccessToken,
-		SigTimeSec:     int64(payMethods.Timestamp),
-		PackageCode:    req.ItemCode,
-		TokenPayment:   payMethods.TokenPayment,
-		PaymentMethod:  "BALANCE",
-		PaymentFor:     "BUY_PACKAGE",
-		Path:           path,
-		XAPIBaseSecret: c.cfg.XAPIBaseSecret,
-	}
+		settlementReq := SettlementBalanceRequest{
+			TotalDiscount:             0,
+			IsEnterprise:              false,
+			TokenPayment:              payMethods.TokenPayment,
+			EncryptedPaymentToken:     encryptedPaymentToken,
+			EncryptedAuthenticationID: encryptedAuthID,
+			AccessToken:               curAcc.AccessToken,
+			PaymentMethod:             "BALANCE",
+			Timestamp:                 int64(payMethods.Timestamp),
+			PaymentFor:                "BUY_PACKAGE",
+			TotalAmount:               totalAmount,
+			Items:                     []PurchaseItem{req},
+			AdditionalData: BalanceAdditionalData{
+				OriginalPrice: req.ItemPrice,
+				BalanceType:   "PREPAID_BALANCE",
+			},
+		}
 
-	apiResp, err := c.SendPayment(ctx, acc, path, settlementReq, params)
+		path := "payments/api/v8/settlement-multipayment"
+		params := PaymentSignatureParams{
+			AccessToken:    curAcc.AccessToken,
+			SigTimeSec:     int64(payMethods.Timestamp),
+			PackageCode:    req.ItemCode,
+			TokenPayment:   payMethods.TokenPayment,
+			PaymentMethod:  "BALANCE",
+			PaymentFor:     "BUY_PACKAGE",
+			Path:           path,
+			XAPIBaseSecret: c.cfg.XAPIBaseSecret,
+		}
+
+		return path, settlementReq, params, nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -929,48 +988,50 @@ func (c *Client) SettlementBalance(ctx context.Context, acc *Account, req Purcha
 
 // SettlementMultipayment executes purchase using e-wallets (GOPAY, OVO, DANA, SHOPEEPAY).
 func (c *Client) SettlementMultipayment(ctx context.Context, acc *Account, req PurchaseItem, paymentMethod, walletNumber string, overwriteAmount *int64) (*SettlementResult, error) {
-	payMethods, err := c.GetPaymentMethodsOption(ctx, acc, req.TokenConfirmation, req.ItemCode)
-	if err != nil {
-		return nil, fmt.Errorf("get payment methods: %w", err)
-	}
-
 	totalAmount := req.ItemPrice
 	if overwriteAmount != nil {
 		totalAmount = *overwriteAmount
 	}
 
-	settlementReq := SettlementMultipaymentRequest{
-		CanTriggerRating:  false,
-		TotalDiscount:     0,
-		PaymentFor:        "BUY_PACKAGE",
-		IsEnterprise:      false,
-		AccessToken:       acc.AccessToken,
-		IsMyXLWallet:      false,
-		WalletNumber:      strings.TrimSpace(walletNumber),
-		AdditionalData:    map[string]any{},
-		TotalAmount:       totalAmount,
-		TotalFee:          0,
-		IsUsePoint:        false,
-		Lang:              "en",
-		Items:             []PurchaseItem{req},
-		VerificationToken: payMethods.TokenPayment,
-		PaymentMethod:     paymentMethod,
-		Timestamp:         int64(payMethods.Timestamp),
-	}
+	apiResp, err := c.executeSettlementWithRetry(ctx, acc, func(curAcc *Account) (string, any, PaymentSignatureParams, error) {
+		payMethods, err := c.GetPaymentMethodsOption(ctx, curAcc, req.TokenConfirmation, req.ItemCode)
+		if err != nil {
+			return "", nil, PaymentSignatureParams{}, fmt.Errorf("get payment methods: %w", err)
+		}
 
-	path := "payments/api/v8/settlement-multipayment/ewallet"
-	params := PaymentSignatureParams{
-		AccessToken:    acc.AccessToken,
-		SigTimeSec:     int64(payMethods.Timestamp),
-		PackageCode:    req.ItemCode,
-		TokenPayment:   payMethods.TokenPayment,
-		PaymentMethod:  "EWALLET",
-		PaymentFor:     "BUY_PACKAGE",
-		Path:           path,
-		XAPIBaseSecret: c.cfg.XAPIBaseSecret,
-	}
+		settlementReq := SettlementMultipaymentRequest{
+			CanTriggerRating:  false,
+			TotalDiscount:     0,
+			PaymentFor:        "BUY_PACKAGE",
+			IsEnterprise:      false,
+			AccessToken:       curAcc.AccessToken,
+			IsMyXLWallet:      false,
+			WalletNumber:      strings.TrimSpace(walletNumber),
+			AdditionalData:    map[string]any{},
+			TotalAmount:       totalAmount,
+			TotalFee:          0,
+			IsUsePoint:        false,
+			Lang:              "en",
+			Items:             []PurchaseItem{req},
+			VerificationToken: payMethods.TokenPayment,
+			PaymentMethod:     paymentMethod,
+			Timestamp:         int64(payMethods.Timestamp),
+		}
 
-	apiResp, err := c.SendPayment(ctx, acc, path, settlementReq, params)
+		path := "payments/api/v8/settlement-multipayment/ewallet"
+		params := PaymentSignatureParams{
+			AccessToken:    curAcc.AccessToken,
+			SigTimeSec:     int64(payMethods.Timestamp),
+			PackageCode:    req.ItemCode,
+			TokenPayment:   payMethods.TokenPayment,
+			PaymentMethod:  "EWALLET",
+			PaymentFor:     "BUY_PACKAGE",
+			Path:           path,
+			XAPIBaseSecret: c.cfg.XAPIBaseSecret,
+		}
+
+		return path, settlementReq, params, nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -994,47 +1055,49 @@ func (c *Client) SettlementMultipayment(ctx context.Context, acc *Account, req P
 
 // SettlementQRIS executes purchase using QRIS and retrieves the QR payload code.
 func (c *Client) SettlementQRIS(ctx context.Context, acc *Account, req PurchaseItem, overwriteAmount *int64) (*SettlementResult, error) {
-	payMethods, err := c.GetPaymentMethodsOption(ctx, acc, req.TokenConfirmation, req.ItemCode)
-	if err != nil {
-		return nil, fmt.Errorf("get payment methods: %w", err)
-	}
-
 	totalAmount := req.ItemPrice
 	if overwriteAmount != nil {
 		totalAmount = *overwriteAmount
 	}
 
-	settlementReq := SettlementQrisRequest{
-		CanTriggerRating:  false,
-		TotalDiscount:     0,
-		PaymentFor:        "BUY_PACKAGE",
-		IsEnterprise:      false,
-		AccessToken:       acc.AccessToken,
-		IsMyXLWallet:      false,
-		AdditionalData:    QrisAdditionalData{OriginalPrice: req.ItemPrice},
-		TotalAmount:       totalAmount,
-		TotalFee:          0,
-		IsUsePoint:        false,
-		Lang:              "en",
-		Items:             []PurchaseItem{req},
-		VerificationToken: payMethods.TokenPayment,
-		PaymentMethod:     "QRIS",
-		Timestamp:         int64(payMethods.Timestamp),
-	}
+	apiResp, err := c.executeSettlementWithRetry(ctx, acc, func(curAcc *Account) (string, any, PaymentSignatureParams, error) {
+		payMethods, err := c.GetPaymentMethodsOption(ctx, curAcc, req.TokenConfirmation, req.ItemCode)
+		if err != nil {
+			return "", nil, PaymentSignatureParams{}, fmt.Errorf("get payment methods: %w", err)
+		}
 
-	path := "payments/api/v8/settlement-multipayment/qris"
-	params := PaymentSignatureParams{
-		AccessToken:    acc.AccessToken,
-		SigTimeSec:     int64(payMethods.Timestamp),
-		PackageCode:    req.ItemCode,
-		TokenPayment:   payMethods.TokenPayment,
-		PaymentMethod:  "QRIS",
-		PaymentFor:     "BUY_PACKAGE",
-		Path:           path,
-		XAPIBaseSecret: c.cfg.XAPIBaseSecret,
-	}
+		settlementReq := SettlementQrisRequest{
+			CanTriggerRating:  false,
+			TotalDiscount:     0,
+			PaymentFor:        "BUY_PACKAGE",
+			IsEnterprise:      false,
+			AccessToken:       curAcc.AccessToken,
+			IsMyXLWallet:      false,
+			AdditionalData:    QrisAdditionalData{OriginalPrice: req.ItemPrice},
+			TotalAmount:       totalAmount,
+			TotalFee:          0,
+			IsUsePoint:        false,
+			Lang:              "en",
+			Items:             []PurchaseItem{req},
+			VerificationToken: payMethods.TokenPayment,
+			PaymentMethod:     "QRIS",
+			Timestamp:         int64(payMethods.Timestamp),
+		}
 
-	apiResp, err := c.SendPayment(ctx, acc, path, settlementReq, params)
+		path := "payments/api/v8/settlement-multipayment/qris"
+		params := PaymentSignatureParams{
+			AccessToken:    curAcc.AccessToken,
+			SigTimeSec:     int64(payMethods.Timestamp),
+			PackageCode:    req.ItemCode,
+			TokenPayment:   payMethods.TokenPayment,
+			PaymentMethod:  "QRIS",
+			PaymentFor:     "BUY_PACKAGE",
+			Path:           path,
+			XAPIBaseSecret: c.cfg.XAPIBaseSecret,
+		}
+
+		return path, settlementReq, params, nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -1173,103 +1236,89 @@ func (c *Client) SettlementDecoy(ctx context.Context, acc *Account, req Purchase
 		totalAmount = *overwriteAmount
 	}
 
-	// For decoy: call GetPaymentMethodsOption with index 1 (decoy's token_confirmation & option_code)
-	payMethods, err := c.GetPaymentMethodsOption(ctx, acc, decoy.TokenConfirmation, decoy.OptionCode)
-	if err != nil {
-		return nil, fmt.Errorf("get decoy payment methods: %w", err)
-	}
-
 	packageCodes := fmt.Sprintf("%s;%s", targetItem.ItemCode, decoyItem.ItemCode)
 	norm := strings.ToLower(strings.TrimSpace(decoyPaymentType))
 	if norm == "pulsa" {
 		norm = "balance"
 	}
 
-	if norm == "balance" {
-		path := "payments/api/v8/settlement-multipayment"
-		encryptedPaymentToken := BuildEncryptedFieldWithKey(c.cfg.EncryptedFieldKey, true)
-		encryptedAuthID := BuildEncryptedFieldWithKey(c.cfg.EncryptedFieldKey, true)
+	apiResp, err := c.executeSettlementWithRetry(ctx, acc, func(curAcc *Account) (string, any, PaymentSignatureParams, error) {
+		// For decoy: call GetPaymentMethodsOption with index 1 (decoy's token_confirmation & option_code)
+		payMethods, err := c.GetPaymentMethodsOption(ctx, curAcc, decoy.TokenConfirmation, decoy.OptionCode)
+		if err != nil {
+			return "", nil, PaymentSignatureParams{}, fmt.Errorf("get decoy payment methods: %w", err)
+		}
 
-		settlementReq := SettlementBalanceRequest{
-			TotalDiscount:             0,
-			IsEnterprise:              false,
-			TokenPayment:              payMethods.TokenPayment,
-			EncryptedPaymentToken:     encryptedPaymentToken,
-			EncryptedAuthenticationID: encryptedAuthID,
-			AccessToken:               acc.AccessToken,
-			PaymentMethod:             "BALANCE",
-			Timestamp:                 int64(payMethods.Timestamp),
-			PaymentFor:                "SHARE_PACKAGE",
-			TotalAmount:               totalAmount,
-			Items:                     items,
-			AdditionalData: BalanceAdditionalData{
-				OriginalPrice: req.ItemPrice,
-				BalanceType:   "PREPAID_BALANCE",
-			},
+		if norm == "balance" {
+			path := "payments/api/v8/settlement-multipayment"
+			encryptedPaymentToken := BuildEncryptedFieldWithKey(c.cfg.EncryptedFieldKey, true)
+			encryptedAuthID := BuildEncryptedFieldWithKey(c.cfg.EncryptedFieldKey, true)
+
+			settlementReq := SettlementBalanceRequest{
+				TotalDiscount:             0,
+				IsEnterprise:              false,
+				TokenPayment:              payMethods.TokenPayment,
+				EncryptedPaymentToken:     encryptedPaymentToken,
+				EncryptedAuthenticationID: encryptedAuthID,
+				AccessToken:               curAcc.AccessToken,
+				PaymentMethod:             "BALANCE",
+				Timestamp:                 int64(payMethods.Timestamp),
+				PaymentFor:                "SHARE_PACKAGE",
+				TotalAmount:               totalAmount,
+				Items:                     items,
+				AdditionalData: BalanceAdditionalData{
+					OriginalPrice: req.ItemPrice,
+					BalanceType:   "PREPAID_BALANCE",
+				},
+			}
+
+			params := PaymentSignatureParams{
+				AccessToken:    curAcc.AccessToken,
+				SigTimeSec:     int64(payMethods.Timestamp),
+				PackageCode:    packageCodes,
+				TokenPayment:   payMethods.TokenPayment,
+				PaymentMethod:  "BALANCE",
+				PaymentFor:     "SHARE_PACKAGE",
+				Path:           path,
+				XAPIBaseSecret: c.cfg.XAPIBaseSecret,
+			}
+
+			return path, settlementReq, params, nil
+		}
+
+		// QRIS / QRIS0 decoy
+		path := "payments/api/v8/settlement-multipayment/qris"
+		settlementReq := SettlementQrisRequest{
+			CanTriggerRating:  false,
+			TotalDiscount:     0,
+			PaymentFor:        "SHARE_PACKAGE",
+			IsEnterprise:      false,
+			AccessToken:       curAcc.AccessToken,
+			IsMyXLWallet:      false,
+			AdditionalData:    QrisAdditionalData{OriginalPrice: req.ItemPrice},
+			TotalAmount:       totalAmount,
+			TotalFee:          0,
+			IsUsePoint:        false,
+			Lang:              "en",
+			Items:             items,
+			VerificationToken: payMethods.TokenPayment,
+			PaymentMethod:     "QRIS",
+			Timestamp:         int64(payMethods.Timestamp),
 		}
 
 		params := PaymentSignatureParams{
-			AccessToken:    acc.AccessToken,
+			AccessToken:    curAcc.AccessToken,
 			SigTimeSec:     int64(payMethods.Timestamp),
 			PackageCode:    packageCodes,
 			TokenPayment:   payMethods.TokenPayment,
-			PaymentMethod:  "BALANCE",
+			PaymentMethod:  "QRIS",
 			PaymentFor:     "SHARE_PACKAGE",
 			Path:           path,
 			XAPIBaseSecret: c.cfg.XAPIBaseSecret,
 		}
 
-		apiResp, err := c.SendPayment(ctx, acc, path, settlementReq, params)
-		if err != nil {
-			return nil, err
-		}
-
-		res := &SettlementResult{
-			IsSuccess: apiResp.IsSuccess(),
-			Status:    apiResp.Status,
-			Message:   apiResp.Message,
-		}
-		if apiResp.IsSuccess() {
-			var stData SettlementData
-			if err := json.Unmarshal(apiResp.Data, &stData); err == nil {
-				res.TransactionCode = stData.TransactionCode
-			}
-		}
-		return res, nil
-	}
-
-	// QRIS / QRIS0 decoy
-	path := "payments/api/v8/settlement-multipayment/qris"
-	settlementReq := SettlementQrisRequest{
-		CanTriggerRating:  false,
-		TotalDiscount:     0,
-		PaymentFor:        "SHARE_PACKAGE",
-		IsEnterprise:      false,
-		AccessToken:       acc.AccessToken,
-		IsMyXLWallet:      false,
-		AdditionalData:    QrisAdditionalData{OriginalPrice: req.ItemPrice},
-		TotalAmount:       totalAmount,
-		TotalFee:          0,
-		IsUsePoint:        false,
-		Lang:              "en",
-		Items:             items,
-		VerificationToken: payMethods.TokenPayment,
-		PaymentMethod:     "QRIS",
-		Timestamp:         int64(payMethods.Timestamp),
-	}
-
-	params := PaymentSignatureParams{
-		AccessToken:    acc.AccessToken,
-		SigTimeSec:     int64(payMethods.Timestamp),
-		PackageCode:    packageCodes,
-		TokenPayment:   payMethods.TokenPayment,
-		PaymentMethod:  "QRIS",
-		PaymentFor:     "SHARE_PACKAGE",
-		Path:           path,
-		XAPIBaseSecret: c.cfg.XAPIBaseSecret,
-	}
-
-	apiResp, err := c.SendPayment(ctx, acc, path, settlementReq, params)
+		return path, settlementReq, params, nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -1284,7 +1333,7 @@ func (c *Client) SettlementDecoy(ctx context.Context, acc *Account, req Purchase
 		var stData SettlementData
 		if err := json.Unmarshal(apiResp.Data, &stData); err == nil {
 			res.TransactionCode = stData.TransactionCode
-			if stData.TransactionCode != "" {
+			if stData.TransactionCode != "" && norm != "balance" {
 				qr, err := c.GetQRISCode(ctx, acc, stData.TransactionCode)
 				if err == nil {
 					res.QRCode = qr

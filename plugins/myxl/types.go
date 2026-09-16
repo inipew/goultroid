@@ -2,9 +2,13 @@ package myxl
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 )
+
+// ErrUnauthorized indicates that an API or HTTP request was rejected due to an invalid or expired token.
+var ErrUnauthorized = errors.New("unauthorized: token expired or invalid")
 
 // Account represents a stored MyXL account in the database.
 type Account struct {
