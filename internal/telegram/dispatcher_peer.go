@@ -39,6 +39,11 @@ func (d *Dispatcher) Health(ctx context.Context) runtime.ComponentHealth {
 	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
 }
 
+const (
+	peerBatchTimeout = 100 * time.Millisecond
+	peerBatchMaxSize = 50
+)
+
 func (d *Dispatcher) Start(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -52,7 +57,7 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 	peerCtx, peerCancel := context.WithCancel(ctx)
 	d.peerCancel = peerCancel
 	d.peerDone = make(chan struct{})
-	peerProcessors := 2
+	peerProcessors := 1
 	d.peerWG.Add(peerProcessors)
 	q := d.peerQueue
 	done := d.peerDone
@@ -70,26 +75,99 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 
 func (d *Dispatcher) peerWorker(ctx context.Context, q <-chan peerUpdateJob) {
 	defer d.peerWG.Done()
+
+	users := make(map[int64]*tg.User)
+	channels := make(map[int64]*tg.Channel)
+	chats := make(map[int64]*tg.Chat)
+
+	flush := func() {
+		if len(users) == 0 && len(channels) == 0 && len(chats) == 0 {
+			return
+		}
+		uList := make([]*tg.User, 0, len(users))
+		for _, u := range users {
+			uList = append(uList, u)
+		}
+		chList := make([]*tg.Channel, 0, len(channels))
+		for _, ch := range channels {
+			chList = append(chList, ch)
+		}
+		cList := make([]*tg.Chat, 0, len(chats))
+		for _, c := range chats {
+			cList = append(cList, c)
+		}
+
+		users = make(map[int64]*tg.User)
+		channels = make(map[int64]*tg.Channel)
+		chats = make(map[int64]*tg.Chat)
+
+		saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		resolver := d.getResolver()
+		r, ok := resolver.(*Resolver)
+		if !ok || r == nil || r.storage == nil {
+			return
+		}
+		if err := r.storage.SaveEntitiesBatch(saveCtx, uList, chList, cList); err != nil {
+			d.peerSaveFailed.Add(1)
+			d.logger.Warn("failed to save entities batch to storage", zap.Error(err))
+		}
+	}
+
+	timer := time.NewTimer(peerBatchTimeout)
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timerActive := false
+
 	for {
 		select {
 		case <-ctx.Done():
+			flush()
 			return
+
 		case job, ok := <-q:
 			if !ok {
+				flush()
 				return
 			}
-			saveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			resolver := d.getResolver()
-			r, ok := resolver.(*Resolver)
-			if !ok || r == nil || r.storage == nil {
-				cancel()
-				continue
+			for _, u := range job.users {
+				if u != nil {
+					users[u.ID] = u
+				}
 			}
-			if err := r.storage.SaveEntitiesBatch(saveCtx, job.users, job.channels, job.chats); err != nil && ctx.Err() == nil {
-				d.peerSaveFailed.Add(1)
-				d.logger.Warn("failed to save entities batch to storage", zap.Error(err))
+			for _, ch := range job.channels {
+				if ch != nil {
+					channels[ch.ID] = ch
+				}
 			}
-			cancel()
+			for _, c := range job.chats {
+				if c != nil {
+					chats[c.ID] = c
+				}
+			}
+
+			if len(users)+len(channels)+len(chats) >= peerBatchMaxSize {
+				if timerActive && !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timerActive = false
+				flush()
+			} else if !timerActive {
+				timer.Reset(peerBatchTimeout)
+				timerActive = true
+			}
+
+		case <-timer.C:
+			timerActive = false
+			flush()
 		}
 	}
 }

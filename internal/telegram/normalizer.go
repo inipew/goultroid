@@ -83,9 +83,10 @@ func (n *Normalizer) Normalize(ctx context.Context, e tg.Entities, update tg.Upd
 
 	case *tg.UpdateDeleteMessages:
 		return &core.MessagesDeletedEvent{
-			MetaData: core.EventMeta{ID: fmt.Sprintf("del:%d", now.UnixNano())},
-			At:       now,
-			MsgIDs:   u.Messages,
+			MetaData:    core.EventMeta{ID: fmt.Sprintf("del:%d", now.UnixNano())},
+			At:          now,
+			PeerUnknown: true,
+			MsgIDs:      u.Messages,
 		}, nil
 
 	case *tg.UpdateDeleteChannelMessages:
@@ -94,6 +95,15 @@ func (n *Normalizer) Normalize(ctx context.Context, e tg.Entities, update tg.Upd
 			At:       now,
 			ChatID:   u.ChannelID,
 			MsgIDs:   u.Messages,
+		}, nil
+
+	case *tg.UpdateMessageReactions:
+		chatID := extractChatIDFromPeer(u.Peer)
+		return &core.ReactionUpdatedEvent{
+			MetaData: core.EventMeta{ID: fmt.Sprintf("reaction:%d:%d", chatID, u.MsgID)},
+			At:       now,
+			MsgID:    u.MsgID,
+			ChatID:   chatID,
 		}, nil
 
 	case *tg.UpdateBotCallbackQuery:

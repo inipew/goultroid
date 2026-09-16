@@ -56,17 +56,12 @@ func (d *Dispatcher) OnEditMessage(ctx context.Context, e tg.Entities, update *t
 	if bus == nil {
 		return nil
 	}
-	msg, ok := update.Message.(*tg.Message)
-	if !ok {
-		return nil
+	if d.normalizer != nil {
+		evt, err := d.normalizer.Normalize(ctx, e, update)
+		if err == nil && evt != nil {
+			bus.Publish(evt)
+		}
 	}
-	chatID := extractChatIDFromPeer(msg.PeerID)
-	bus.Publish(&core.MessageEditedEvent{
-		At:     time.Now(),
-		MsgID:  msg.ID,
-		ChatID: chatID,
-		Text:   msg.Message,
-	})
 	return nil
 }
 
@@ -82,17 +77,12 @@ func (d *Dispatcher) OnEditChannelMessage(ctx context.Context, e tg.Entities, up
 	if bus == nil {
 		return nil
 	}
-	msg, ok := update.Message.(*tg.Message)
-	if !ok {
-		return nil
+	if d.normalizer != nil {
+		evt, err := d.normalizer.Normalize(ctx, e, update)
+		if err == nil && evt != nil {
+			bus.Publish(evt)
+		}
 	}
-	chatID := extractChatIDFromPeer(msg.PeerID)
-	bus.Publish(&core.MessageEditedEvent{
-		At:     time.Now(),
-		MsgID:  msg.ID,
-		ChatID: chatID,
-		Text:   msg.Message,
-	})
 	return nil
 }
 
@@ -108,12 +98,12 @@ func (d *Dispatcher) OnDeleteMessages(ctx context.Context, e tg.Entities, update
 	if bus == nil {
 		return nil
 	}
-	bus.Publish(&core.MessagesDeletedEvent{
-		At:          time.Now(),
-		ChatID:      0,
-		PeerUnknown: true,
-		MsgIDs:      update.Messages,
-	})
+	if d.normalizer != nil {
+		evt, err := d.normalizer.Normalize(ctx, e, update)
+		if err == nil && evt != nil {
+			bus.Publish(evt)
+		}
+	}
 	return nil
 }
 
@@ -129,11 +119,12 @@ func (d *Dispatcher) OnDeleteChannelMessages(ctx context.Context, e tg.Entities,
 	if bus == nil {
 		return nil
 	}
-	bus.Publish(&core.MessagesDeletedEvent{
-		At:     time.Now(),
-		ChatID: update.ChannelID,
-		MsgIDs: update.Messages,
-	})
+	if d.normalizer != nil {
+		evt, err := d.normalizer.Normalize(ctx, e, update)
+		if err == nil && evt != nil {
+			bus.Publish(evt)
+		}
+	}
 	return nil
 }
 
@@ -227,44 +218,49 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 	}
 
 	cbRouter := d.getCallbackRouter()
-	if cbRouter != nil {
-		scope, available := cbRouter.TaskScope(evt.Data, d.resolvePluginScope)
-		if !available {
-			if svc := d.getService(); svc != nil {
-				_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Feature not available.", false)
-			}
-			return nil
+	if cbRouter == nil {
+		if svc := d.getService(); svc != nil {
+			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Interaction service unavailable.", false)
 		}
-		client := d.taskClient()
-		if client != nil {
-			taskID := fmt.Sprintf("cb:%d", evt.QueryID)
-			owner := fmt.Sprintf("telegram:user:%d", evt.UserID)
-			d.inFlight.Add(1)
-			_, err := client.Submit(ctx, tasks.WorkSpec{
-				ID:               tasks.TaskID(taskID),
-				Scope:            scope,
-				QuotaOwner:       tasks.OwnerID(owner),
-				Pool:             "interactive",
-				Class:            tasks.PriorityInteractive,
-				OrderingKey:      fmt.Sprintf("callback:%d", evt.QueryID),
-				ExecutionTimeout: 15 * time.Second,
-				Handler: func(taskCtx context.Context) error {
-					return cbRouter.Dispatch(taskCtx, evt, d.getService())
-				},
-				OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
-			})
-			if err != nil {
-				d.inFlight.Done()
-				d.logger.Warn("callback dispatch admission rejected", zap.Int64("query_id", evt.QueryID), zap.Error(err))
-				if svc := d.getService(); svc != nil {
-					_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Server is overloaded, please try again shortly.", false)
-				}
-			}
-		} else {
-			d.logger.Warn("callback execution unavailable", zap.Error(ErrTasksNotConfigured))
+		return nil
+	}
+
+	scope, available := cbRouter.TaskScope(evt.Data, d.resolvePluginScope)
+	if !available {
+		if svc := d.getService(); svc != nil {
+			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Feature not available.", false)
+		}
+		return nil
+	}
+	client := d.taskClient()
+	if client != nil {
+		taskID := fmt.Sprintf("cb:%d", evt.QueryID)
+		owner := fmt.Sprintf("telegram:user:%d", evt.UserID)
+		d.inFlight.Add(1)
+		_, err := client.Submit(ctx, tasks.WorkSpec{
+			ID:               tasks.TaskID(taskID),
+			Scope:            scope,
+			QuotaOwner:       tasks.OwnerID(owner),
+			Pool:             "interactive",
+			Class:            tasks.PriorityInteractive,
+			OrderingKey:      callbackOrderingKey(evt),
+			ExecutionTimeout: 15 * time.Second,
+			Handler: func(taskCtx context.Context) error {
+				return cbRouter.Dispatch(taskCtx, evt, d.getService())
+			},
+			OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
+		})
+		if err != nil {
+			d.inFlight.Done()
+			d.logger.Warn("callback dispatch admission rejected", zap.Int64("query_id", evt.QueryID), zap.Error(err))
 			if svc := d.getService(); svc != nil {
-				_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Service unavailable.", false)
+				_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Server is overloaded, please try again shortly.", false)
 			}
+		}
+	} else {
+		d.logger.Warn("callback execution unavailable", zap.Error(ErrTasksNotConfigured))
+		if svc := d.getService(); svc != nil {
+			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Service unavailable.", false)
 		}
 	}
 	return nil
@@ -308,44 +304,49 @@ func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities
 	}
 
 	cbRouter := d.getCallbackRouter()
-	if cbRouter != nil {
-		scope, available := cbRouter.TaskScope(evt.Data, d.resolvePluginScope)
-		if !available {
-			if svc := d.getService(); svc != nil {
-				_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Feature not available.", false)
-			}
-			return nil
+	if cbRouter == nil {
+		if svc := d.getService(); svc != nil {
+			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Interaction service unavailable.", false)
 		}
-		client := d.taskClient()
-		if client != nil {
-			taskID := fmt.Sprintf("inline_cb:%d", evt.QueryID)
-			owner := fmt.Sprintf("telegram:user:%d", evt.UserID)
-			d.inFlight.Add(1)
-			_, err := client.Submit(ctx, tasks.WorkSpec{
-				ID:               tasks.TaskID(taskID),
-				Scope:            scope,
-				QuotaOwner:       tasks.OwnerID(owner),
-				Pool:             "interactive",
-				Class:            tasks.PriorityInteractive,
-				OrderingKey:      fmt.Sprintf("inline_callback:%d", evt.QueryID),
-				ExecutionTimeout: 15 * time.Second,
-				Handler: func(taskCtx context.Context) error {
-					return cbRouter.Dispatch(taskCtx, evt, d.getService())
-				},
-				OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
-			})
-			if err != nil {
-				d.inFlight.Done()
-				d.logger.Warn("inline callback dispatch admission rejected", zap.Int64("query_id", evt.QueryID), zap.Error(err))
-				if svc := d.getService(); svc != nil {
-					_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Server is overloaded, please try again shortly.", false)
-				}
-			}
-		} else {
-			d.logger.Warn("inline callback execution unavailable", zap.Error(ErrTasksNotConfigured))
+		return nil
+	}
+
+	scope, available := cbRouter.TaskScope(evt.Data, d.resolvePluginScope)
+	if !available {
+		if svc := d.getService(); svc != nil {
+			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Feature not available.", false)
+		}
+		return nil
+	}
+	client := d.taskClient()
+	if client != nil {
+		taskID := fmt.Sprintf("inline_cb:%d", evt.QueryID)
+		owner := fmt.Sprintf("telegram:user:%d", evt.UserID)
+		d.inFlight.Add(1)
+		_, err := client.Submit(ctx, tasks.WorkSpec{
+			ID:               tasks.TaskID(taskID),
+			Scope:            scope,
+			QuotaOwner:       tasks.OwnerID(owner),
+			Pool:             "interactive",
+			Class:            tasks.PriorityInteractive,
+			OrderingKey:      callbackOrderingKey(evt),
+			ExecutionTimeout: 15 * time.Second,
+			Handler: func(taskCtx context.Context) error {
+				return cbRouter.Dispatch(taskCtx, evt, d.getService())
+			},
+			OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
+		})
+		if err != nil {
+			d.inFlight.Done()
+			d.logger.Warn("inline callback dispatch admission rejected", zap.Int64("query_id", evt.QueryID), zap.Error(err))
 			if svc := d.getService(); svc != nil {
-				_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Service unavailable.", false)
+				_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Server is overloaded, please try again shortly.", false)
 			}
+		}
+	} else {
+		d.logger.Warn("inline callback execution unavailable", zap.Error(ErrTasksNotConfigured))
+		if svc := d.getService(); svc != nil {
+			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Service unavailable.", false)
 		}
 	}
 	return nil
@@ -399,20 +400,14 @@ func (d *Dispatcher) OnBotInlineSend(ctx context.Context, e tg.Entities, update 
 	defer release()
 
 	bus := d.getEventBus()
-	if bus != nil {
-		var inlineID tg.InputBotInlineMessageIDClass
-		if msgID, ok := update.GetMsgID(); ok {
-			inlineID = msgID
-		} else if update.MsgID != nil {
-			inlineID = update.MsgID
+	if bus == nil {
+		return nil
+	}
+	if d.normalizer != nil {
+		evt, err := d.normalizer.Normalize(ctx, e, update)
+		if err == nil && evt != nil {
+			bus.Publish(evt)
 		}
-		bus.Publish(&core.InlineResultChosenEvent{
-			At:       time.Now(),
-			UserID:   update.UserID,
-			Query:    update.Query,
-			ResultID: update.ID,
-			InlineID: inlineID,
-		})
 	}
 	return nil
 }
@@ -429,13 +424,40 @@ func (d *Dispatcher) OnMessageReactions(ctx context.Context, e tg.Entities, upda
 	if bus == nil {
 		return nil
 	}
-	chatID := extractChatIDFromPeer(update.Peer)
-	bus.Publish(&core.ReactionUpdatedEvent{
-		At:     time.Now(),
-		MsgID:  update.MsgID,
-		ChatID: chatID,
-	})
+	if d.normalizer != nil {
+		evt, err := d.normalizer.Normalize(ctx, e, update)
+		if err == nil && evt != nil {
+			bus.Publish(evt)
+		}
+	}
 	return nil
+}
+
+func callbackOrderingKey(evt *core.CallbackQueryEvent) string {
+	if evt == nil {
+		return ""
+	}
+	if !evt.IsInline() {
+		if evt.ChatID != 0 && evt.MsgID != 0 {
+			return fmt.Sprintf("callback:msg:%d:%d", evt.ChatID, evt.MsgID)
+		}
+		if evt.MsgID != 0 {
+			return fmt.Sprintf("callback:msg:%d", evt.MsgID)
+		}
+		return fmt.Sprintf("callback:%d", evt.QueryID)
+	}
+	if evt.Target.InlineID != nil {
+		switch id := evt.Target.InlineID.(type) {
+		case *tg.InputBotInlineMessageID:
+			return fmt.Sprintf("callback:inline_msg:%d:%d", id.DCID, id.ID)
+		case *tg.InputBotInlineMessageID64:
+			return fmt.Sprintf("callback:inline_msg:%d:%d", id.DCID, id.ID)
+		}
+	}
+	if evt.ChatInstance != 0 {
+		return fmt.Sprintf("callback:instance:%d", evt.ChatInstance)
+	}
+	return fmt.Sprintf("inline_callback:%d", evt.QueryID)
 }
 
 // extractChatIDFromPeer returns a numeric chat ID for the given peer class.

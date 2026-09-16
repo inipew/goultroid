@@ -26,4 +26,5 @@ type stateItem struct {
 	scope     StateScope
 	expiresAt time.Time
 	consumed  bool
+	sizeBytes int64
 }

@@ -10,13 +10,39 @@ import (
 
 // StateStore is a thread-safe in-memory cache for temporary callback payload states.
 type StateStore struct {
-	mu     sync.RWMutex
-	items  map[string]stateItem
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	mu            sync.RWMutex
+	items         map[string]stateItem
+	retainedBytes int64
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
 }
 
-const maxStateStoreEntries = 5000
+const (
+	maxStateStoreEntries = 5000
+	maxStateStoreBytes   = 8 * 1024 * 1024 // 8MB budget
+	maxStateItemBytes    = 64 * 1024       // 64KB max per entry
+)
+
+func cloneStateData(data any) any {
+	if b, ok := data.([]byte); ok {
+		cpy := make([]byte, len(b))
+		copy(cpy, b)
+		return cpy
+	}
+	return data
+}
+
+func estimateStateSize(data any) int64 {
+	const baseOverhead = 64
+	switch v := data.(type) {
+	case []byte:
+		return int64(len(v)) + baseOverhead
+	case string:
+		return int64(len(v)) + baseOverhead
+	default:
+		return 256
+	}
+}
 
 // NewStateStore creates an initialized StateStore.
 func NewStateStore() *StateStore {
@@ -34,6 +60,12 @@ func (s *StateStore) Store(data any, allowedUserID int64, ttl time.Duration) str
 
 // StoreWithScope records state with full scope metadata.
 func (s *StateStore) StoreWithScope(data any, scope StateScope, ttl time.Duration) string {
+	size := estimateStateSize(data)
+	if size > maxStateItemBytes {
+		return ""
+	}
+	cloned := cloneStateData(data)
+
 	if ttl <= 0 {
 		ttl = 15 * time.Minute
 	}
@@ -47,14 +79,15 @@ func (s *StateStore) StoreWithScope(data any, scope StateScope, ttl time.Duratio
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if len(s.items) >= maxStateStoreEntries {
+	if len(s.items) >= maxStateStoreEntries || s.retainedBytes+size > maxStateStoreBytes {
 		now := time.Now()
 		for id, item := range s.items {
 			if now.After(item.expiresAt) {
+				s.retainedBytes -= item.sizeBytes
 				delete(s.items, id)
 			}
 		}
-		if len(s.items) >= maxStateStoreEntries {
+		for len(s.items) >= maxStateStoreEntries || (len(s.items) > 0 && s.retainedBytes+size > maxStateStoreBytes) {
 			var oldestID string
 			var oldestTime time.Time
 			first := true
@@ -66,16 +99,21 @@ func (s *StateStore) StoreWithScope(data any, scope StateScope, ttl time.Duratio
 				}
 			}
 			if oldestID != "" {
+				s.retainedBytes -= s.items[oldestID].sizeBytes
 				delete(s.items, oldestID)
+			} else {
+				break
 			}
 		}
 	}
 
 	s.items[opaqueID] = stateItem{
-		data:      data,
+		data:      cloned,
 		scope:     scope,
 		expiresAt: expiresAt,
+		sizeBytes: size,
 	}
+	s.retainedBytes += size
 	return opaqueID
 }
 
@@ -84,6 +122,13 @@ func (s *StateStore) Len() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.items)
+}
+
+// RetainedBytes returns current retained byte size (for metrics/testing).
+func (s *StateStore) RetainedBytes() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.retainedBytes
 }
 
 // Get retrieves the stored state if not expired. Returns ErrStateNotFound or ErrStateExpired.
@@ -111,7 +156,7 @@ func (s *StateStore) GetEntry(opaqueID string) (StateEntry, error) {
 	if item.consumed {
 		return StateEntry{}, ErrStateConsumed
 	}
-	return StateEntry{Data: item.data, Scope: item.scope}, nil
+	return StateEntry{Data: cloneStateData(item.data), Scope: item.scope}, nil
 }
 
 // Consume atomically retrieves and marks a single-use entry as consumed.
@@ -124,6 +169,7 @@ func (s *StateStore) Consume(opaqueID string) (StateEntry, error) {
 		return StateEntry{}, ErrStateNotFound
 	}
 	if time.Now().After(item.expiresAt) {
+		s.retainedBytes -= item.sizeBytes
 		delete(s.items, opaqueID)
 		return StateEntry{}, ErrStateExpired
 	}
@@ -134,12 +180,15 @@ func (s *StateStore) Consume(opaqueID string) (StateEntry, error) {
 		item.consumed = true
 		s.items[opaqueID] = item
 	}
-	return StateEntry{Data: item.data, Scope: item.scope}, nil
+	return StateEntry{Data: cloneStateData(item.data), Scope: item.scope}, nil
 }
 
 // Delete removes an item from the store.
 func (s *StateStore) Delete(opaqueID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.items, opaqueID)
+	if item, exists := s.items[opaqueID]; exists {
+		s.retainedBytes -= item.sizeBytes
+		delete(s.items, opaqueID)
+	}
 }

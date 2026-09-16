@@ -14,15 +14,47 @@ var _ runtime.Component = (*Cache)(nil)
 type cachedEntry struct {
 	results   []InlineResult
 	expiresAt time.Time
+	sizeBytes int64
 }
 
 // Cache provides thread-safe short-lived caching for inline results.
 type Cache struct {
-	mu         sync.RWMutex
-	entries    map[string]cachedEntry
-	defaultTTL time.Duration
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
+	mu            sync.RWMutex
+	entries       map[string]cachedEntry
+	retainedBytes int64
+	defaultTTL    time.Duration
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
+}
+
+const (
+	maxInlineCacheEntries = 500
+	maxInlineCacheBytes   = 8 * 1024 * 1024 // 8MB budget
+	maxSingleEntryBytes   = 256 * 1024      // 256KB max per entry
+)
+
+func cloneInlineResults(results []InlineResult) []InlineResult {
+	if results == nil {
+		return nil
+	}
+	cloned := make([]InlineResult, len(results))
+	copy(cloned, results)
+	return cloned
+}
+
+func estimateResultSize(r *InlineResult) int64 {
+	return int64(len(r.ID) + len(r.Type) + len(r.Title) + len(r.Description) +
+		len(r.Text) + len(r.ThumbURL) + len(r.URL) + len(r.MediaURL) +
+		len(r.MediaMimeType) + len(r.GameShortName) + len(r.Address) +
+		len(r.PhoneNumber) + len(r.FirstName) + len(r.LastName) + len(r.VCard) + 256)
+}
+
+func estimateResultsSliceSize(results []InlineResult) int64 {
+	var total int64 = 64
+	for i := range results {
+		total += estimateResultSize(&results[i])
+	}
+	return total
 }
 
 // NewCache creates an initialized Cache.
@@ -97,7 +129,7 @@ func (c *Cache) GetScoped(key string) ([]InlineResult, bool) {
 		return nil, false
 	}
 
-	return entry.results, true
+	return cloneInlineResults(entry.results), true
 }
 
 // Set stores inline results in the cache with the default or specified TTL.
@@ -105,13 +137,17 @@ func (c *Cache) Set(query string, results []InlineResult, ttl time.Duration) {
 	c.SetScoped(query, results, ttl)
 }
 
-const maxInlineCacheEntries = 500
-
 // SetScoped stores by full scoped key.
 func (c *Cache) SetScoped(key string, results []InlineResult, ttl time.Duration) {
 	if key == "" {
 		return
 	}
+	size := estimateResultsSliceSize(results)
+	if size > maxSingleEntryBytes {
+		return
+	}
+	cloned := cloneInlineResults(results)
+
 	if ttl <= 0 {
 		ttl = c.defaultTTL
 	}
@@ -119,15 +155,21 @@ func (c *Cache) SetScoped(key string, results []InlineResult, ttl time.Duration)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if len(c.entries) >= maxInlineCacheEntries {
+	if old, exists := c.entries[key]; exists {
+		c.retainedBytes -= old.sizeBytes
+		delete(c.entries, key)
+	}
+
+	if len(c.entries) >= maxInlineCacheEntries || c.retainedBytes+size > maxInlineCacheBytes {
 		// evict expired first
 		now := time.Now()
 		for k, e := range c.entries {
 			if now.After(e.expiresAt) {
+				c.retainedBytes -= e.sizeBytes
 				delete(c.entries, k)
 			}
 		}
-		if len(c.entries) >= maxInlineCacheEntries {
+		for len(c.entries) >= maxInlineCacheEntries || (len(c.entries) > 0 && c.retainedBytes+size > maxInlineCacheBytes) {
 			// evict oldest
 			var oldestKey string
 			var oldestTime time.Time
@@ -140,15 +182,20 @@ func (c *Cache) SetScoped(key string, results []InlineResult, ttl time.Duration)
 				}
 			}
 			if oldestKey != "" {
+				c.retainedBytes -= c.entries[oldestKey].sizeBytes
 				delete(c.entries, oldestKey)
+			} else {
+				break
 			}
 		}
 	}
 
 	c.entries[key] = cachedEntry{
-		results:   results,
+		results:   cloned,
 		expiresAt: time.Now().Add(ttl),
+		sizeBytes: size,
 	}
+	c.retainedBytes += size
 }
 
 // Len returns entry count.
@@ -158,11 +205,21 @@ func (c *Cache) Len() int {
 	return len(c.entries)
 }
 
+// RetainedBytes returns current retained byte size (for metrics/testing).
+func (c *Cache) RetainedBytes() int64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.retainedBytes
+}
+
 // Delete removes a specific query from the cache.
 func (c *Cache) Delete(query string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.entries, query)
+	if entry, exists := c.entries[query]; exists {
+		c.retainedBytes -= entry.sizeBytes
+		delete(c.entries, query)
+	}
 }
 
 // Prune removes all expired entries from the cache.
@@ -174,6 +231,7 @@ func (c *Cache) Prune() int {
 	pruned := 0
 	for q, entry := range c.entries {
 		if now.After(entry.expiresAt) {
+			c.retainedBytes -= entry.sizeBytes
 			delete(c.entries, q)
 			pruned++
 		}

@@ -36,6 +36,7 @@ func (s *StateStore) Prune() int {
 	pruned := 0
 	for id, item := range s.items {
 		if now.After(item.expiresAt) {
+			s.retainedBytes -= item.sizeBytes
 			delete(s.items, id)
 			pruned++
 		}
