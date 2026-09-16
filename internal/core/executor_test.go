@@ -1,13 +1,16 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/inipew/goultroid/internal/execution"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 func TestCommandExecutor_Success(t *testing.T) {
@@ -157,5 +160,43 @@ func TestCommandExecutor_SurfaceEnforcement(t *testing.T) {
 	err = exec.Execute(ctxAssistant, cmd)
 	if err != nil {
 		t.Fatalf("expected success when running assistant-only command on assistant, got: %v", err)
+	}
+}
+
+func TestCommandExecutor_UsageErrorNotLoggedAsFailure(t *testing.T) {
+	var buf bytes.Buffer
+	coreEncoder := zapcore.NewConsoleEncoder(zap.NewDevelopmentEncoderConfig())
+	coreWriter := zapcore.AddSync(&buf)
+	logger := zap.New(zapcore.NewCore(coreEncoder, coreWriter, zap.DebugLevel))
+
+	exec := NewCommandExecutor(logger, nil, 5*time.Second)
+
+	cmd := Command{
+		Name:       "schedule",
+		Permission: PermissionEveryone,
+		Handler: func(ctx *Context) error {
+			return NewUsageError("missing arguments")
+		},
+	}
+
+	ctx := &Context{
+		Ctx:     context.Background(),
+		Command: "schedule",
+	}
+
+	err := exec.Execute(ctx, cmd)
+	if !errors.Is(err, ErrInvalidArgs) {
+		t.Fatalf("expected ErrInvalidArgs, got: %v", err)
+	}
+
+	output := buf.String()
+	if strings.Contains(output, "command failed") {
+		t.Errorf("expected usage error NOT to be logged as 'command failed', but got:\n%s", output)
+	}
+	if strings.Contains(output, "command executed with error") {
+		t.Errorf("expected usage error NOT to be logged as 'command executed with error' (warn), but got:\n%s", output)
+	}
+	if !strings.Contains(output, "command rejected due to client or usage constraint") {
+		t.Errorf("expected debug log 'command rejected due to client or usage constraint', but got:\n%s", output)
 	}
 }

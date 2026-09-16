@@ -141,6 +141,9 @@ func (e *CommandExecutor) execute(ctx *Context, cmd Command, source ExecutionSou
 			_ = ctx.Reply("⚠️ " + err.Error())
 			return err
 		}
+		if errors.Is(err, ErrInvalidArgs) || CategoryOf(err) == CategoryInvalidInput {
+			return err
+		}
 		if e.logger != nil {
 			e.logger.Error("command failed",
 				zap.String("correlation_id", ctx.CorrelationID),
