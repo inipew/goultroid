@@ -442,7 +442,8 @@ func (p *Plugin) handleDiagnostics(ctx *core.Context) error {
 			var lines strings.Builder
 			for _, name := range poolNames {
 				pool := stats.Pools[tasks.PoolID(name)]
-				fmt.Fprintf(&lines, "• <b>%s</b>: workers %d (%d-%d), idle %d, queued %d / %s\n", ui.EscapeHTML(name), pool.Workers, pool.MinWorkers, pool.MaxWorkers, pool.IdleWorkers, pool.Waiting, ui.FormatBytes(pool.WaitingBytes))
+				lines.WriteString(formatPoolRuntimeStats(name, pool))
+				lines.WriteByte('\n')
 			}
 			card.AddField("⚙️ Task Pools", strings.TrimSpace(lines.String()))
 			resourceNames := make([]string, 0, len(stats.Resources))
@@ -470,4 +471,10 @@ func (p *Plugin) handleDiagnostics(ctx *core.Context) error {
 
 	card.WithFooter("<i>Telemetry aggregated across task execution, resources, and eventbus.</i>")
 	return ctx.EditOrReply(card.Render())
+}
+
+func formatPoolRuntimeStats(name string, pool taskengine.PoolRuntimeStats) string {
+	return fmt.Sprintf("• <b>%s</b>: running %d, dispatching %d, idle %d, waiting %d / %s | workers %d (%d-%d)",
+		ui.EscapeHTML(name), pool.Running, pool.Dispatching, pool.Idle, pool.Waiting, ui.FormatBytes(pool.WaitingBytes),
+		pool.Workers, pool.MinWorkers, pool.MaxWorkers)
 }
