@@ -913,6 +913,9 @@ func (p *Plugin) HandleCallback(cbCtx *callback.CallbackContext) error {
 
 	case "buy_opt":
 		optionCode := cbCtx.OpaqueID
+		if p.menuMgr != nil {
+			optionCode = p.menuMgr.ResolveOptionCode(optionCode)
+		}
 		if optionCode == "" {
 			return cbCtx.Answer("Kode paket tidak valid", true)
 		}
@@ -935,7 +938,11 @@ func (p *Plugin) HandleCallback(cbCtx *callback.CallbackContext) error {
 		if len(parts) < 2 {
 			return cbCtx.Answer("Data metode tidak lengkap", true)
 		}
-		method, optionCode := parts[0], parts[1]
+		method, optKey := parts[0], parts[1]
+		optionCode := optKey
+		if p.menuMgr != nil {
+			optionCode = p.menuMgr.ResolveOptionCode(optKey)
+		}
 		acc, err := p.repo.GetActive(cbCtx.Ctx)
 		if err != nil || acc == nil {
 			return cbCtx.Answer("Tidak ada akun aktif", true)
@@ -971,6 +978,9 @@ func (p *Plugin) HandleCallback(cbCtx *callback.CallbackContext) error {
 
 	case "custom_price":
 		optionCode := cbCtx.OpaqueID
+		if p.menuMgr != nil {
+			optionCode = p.menuMgr.ResolveOptionCode(optionCode)
+		}
 		if p.menuMgr == nil {
 			return cbCtx.Answer("Menu manager unavailable", true)
 		}
@@ -1013,6 +1023,9 @@ func (p *Plugin) HandleCallback(cbCtx *callback.CallbackContext) error {
 
 	case "bookmark_add":
 		optionCode := cbCtx.OpaqueID
+		if p.menuMgr != nil {
+			optionCode = p.menuMgr.ResolveOptionCode(optionCode)
+		}
 		acc, err := p.repo.GetActive(cbCtx.Ctx)
 		if err != nil || acc == nil {
 			return cbCtx.Answer("Tidak ada akun aktif", true)
@@ -1037,6 +1050,9 @@ func (p *Plugin) HandleCallback(cbCtx *callback.CallbackContext) error {
 
 	case "bookmark_del":
 		optionCode := cbCtx.OpaqueID
+		if p.menuMgr != nil {
+			optionCode = p.menuMgr.ResolveOptionCode(optionCode)
+		}
 		acc, _ := p.repo.GetActive(cbCtx.Ctx)
 		if acc != nil {
 			_ = p.repo.DeleteSavedPackage(cbCtx.Ctx, acc.MSISDN, optionCode)

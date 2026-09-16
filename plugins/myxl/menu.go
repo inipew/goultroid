@@ -2,6 +2,8 @@ package myxl
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"html"
 	"strconv"
@@ -43,6 +45,9 @@ type MenuManager struct {
 	menuCtrl   *menu.Controller
 	sessionsMu sync.Mutex
 	sessions   map[int64]*wizardSession
+	optKeysMu  sync.RWMutex
+	optKeys    map[string]string
+	optToKey   map[string]string
 }
 
 func NewMenuManager(p *Plugin, ctrl *menu.Controller) *MenuManager {
@@ -50,11 +55,62 @@ func NewMenuManager(p *Plugin, ctrl *menu.Controller) *MenuManager {
 		plugin:   p,
 		menuCtrl: ctrl,
 		sessions: make(map[int64]*wizardSession),
+		optKeys:  make(map[string]string),
+		optToKey: make(map[string]string),
 	}
 	if ctrl != nil {
 		ctrl.RegisterTextHandler(m)
 	}
 	return m
+}
+
+// RegisterOptionCode returns a compact key for optionCode safe for Telegram's 64-byte callback limit.
+func (m *MenuManager) RegisterOptionCode(optCode string) string {
+	if optCode == "" {
+		return ""
+	}
+	if len(optCode) <= 24 && !strings.Contains(optCode, ":") {
+		return optCode
+	}
+
+	m.optKeysMu.Lock()
+	defer m.optKeysMu.Unlock()
+	if key, ok := m.optToKey[optCode]; ok {
+		return key
+	}
+
+	h := sha256.Sum256([]byte(optCode))
+	key := hex.EncodeToString(h[:8]) // 16 hex chars
+	m.optKeys[key] = optCode
+	m.optToKey[optCode] = key
+	if m.plugin != nil && m.plugin.stateStore != nil {
+		_ = m.plugin.stateStore.StoreWithScope(optCode, coreCallback.StateScope{
+			Namespace: m.plugin.Namespace(),
+		}, 24*time.Hour)
+	}
+	return key
+}
+
+// ResolveOptionCode resolves an option key or raw code back to the canonical full option code.
+func (m *MenuManager) ResolveOptionCode(keyOrCode string) string {
+	if keyOrCode == "" {
+		return ""
+	}
+	m.optKeysMu.RLock()
+	if full, ok := m.optKeys[keyOrCode]; ok {
+		m.optKeysMu.RUnlock()
+		return full
+	}
+	m.optKeysMu.RUnlock()
+
+	if m.plugin != nil && m.plugin.stateStore != nil {
+		if val, _, ok := m.plugin.stateStore.Get(keyOrCode); ok {
+			if s, ok := val.(string); ok && s != "" {
+				return s
+			}
+		}
+	}
+	return keyOrCode
 }
 
 func (m *MenuManager) SetSession(userID int64, sess *wizardSession) {
@@ -374,14 +430,26 @@ func (m *MenuManager) handleWizardFamilyCode(ctx context.Context, userID int64, 
 		return true, sendErr
 	}
 
+	// Immediate progress feedback
+	if sess.Target.IsValid() {
+		_ = inter.Edit(ctx, sess.Target,
+			fmt.Sprintf("⏳ <b>Mencari daftar paket...</b>\n\nFamily: <code>%s</code>\nMohon tunggu sebentar...", html.EscapeString(familyCode)),
+			nil)
+	}
+
 	cCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 
 	screen, err := m.BuildFamilyPackagesScreen(cCtx, acc, familyCode, 1)
 	if err != nil {
-		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(),
-			fmt.Sprintf("⚠️ <b>Gagal mencari paket:</b> %v\n\nPastikan Family Code benar (contoh: <code>7658c955-a0b9-405f-bb17-de7f43d1a946</code>) atau ketik <code>/cancel</code> untuk batal.", err),
-			nil)
+		m.ClearSession(userID)
+		msg := fmt.Sprintf("⚠️ <b>Gagal mencari paket:</b> %v\n\nPastikan Family Code benar (contoh: <code>7658c955-a0b9-405f-bb17-de7f43d1a946</code>) atau ketik <code>/cancel</code> untuk batal.", err)
+		if sess.Target.IsValid() {
+			if editErr := inter.Edit(ctx, sess.Target, msg, nil); editErr == nil {
+				return true, nil
+			}
+		}
+		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), msg, nil)
 		return true, sendErr
 	}
 
@@ -650,9 +718,10 @@ func (m *MenuManager) BuildSavedPackagesScreen(ctx context.Context) (*ui.Screen,
 	screen := menu.NewScreen("myxl:saved", "", card.Render())
 	for _, sp := range saved {
 		label := truncateString(sp.Name, 18)
+		optKey := m.RegisterOptionCode(sp.OptionCode)
 		screen.AddRow(
-			menu.NewButton("🛒 "+label, fmt.Sprintf("a1:myxl:buy_opt:%s", sp.OptionCode)),
-			menu.NewButton("❌ Hapus", fmt.Sprintf("a1:myxl:bookmark_del:%s", sp.OptionCode)),
+			menu.NewButton("🛒 "+label, fmt.Sprintf("a1:myxl:buy_opt:%s", optKey)),
+			menu.NewButton("❌ Hapus", fmt.Sprintf("a1:myxl:bookmark_del:%s", optKey)),
 		)
 	}
 	screen.AddRow(menu.NewButton("🔙 Kembali ke Store", "a1:myxl:store"))
@@ -685,26 +754,28 @@ func (m *MenuManager) BuildPackageDetailScreen(ctx context.Context, acc *Account
 
 	card.WithFooter("<i>Pilih salah satu metode pembayaran di bawah untuk melanjutkan.</i>")
 
+	optKey := m.RegisterOptionCode(optionCode)
+
 	screen := menu.NewScreen("myxl:pkg_detail", "", card.Render())
 	screen.AddRow(
-		menu.NewButton("💰 Pulsa", fmt.Sprintf("a1:myxl:method:balance:%s", optionCode)),
-		menu.NewButton("📱 QRIS", fmt.Sprintf("a1:myxl:method:qris:%s", optionCode)),
+		menu.NewButton("💰 Pulsa", fmt.Sprintf("a1:myxl:method:balance:%s", optKey)),
+		menu.NewButton("📱 QRIS", fmt.Sprintf("a1:myxl:method:qris:%s", optKey)),
 	)
 	screen.AddRow(
-		menu.NewButton("🟢 GoPay", fmt.Sprintf("a1:myxl:method:gopay:%s", optionCode)),
-		menu.NewButton("🟣 OVO", fmt.Sprintf("a1:myxl:method:ovo:%s", optionCode)),
+		menu.NewButton("🟢 GoPay", fmt.Sprintf("a1:myxl:method:gopay:%s", optKey)),
+		menu.NewButton("🟣 OVO", fmt.Sprintf("a1:myxl:method:ovo:%s", optKey)),
 	)
 	screen.AddRow(
-		menu.NewButton("🔵 DANA", fmt.Sprintf("a1:myxl:method:dana:%s", optionCode)),
-		menu.NewButton("🟠 ShopeePay", fmt.Sprintf("a1:myxl:method:shopeepay:%s", optionCode)),
+		menu.NewButton("🔵 DANA", fmt.Sprintf("a1:myxl:method:dana:%s", optKey)),
+		menu.NewButton("🟠 ShopeePay", fmt.Sprintf("a1:myxl:method:shopeepay:%s", optKey)),
 	)
 	screen.AddRow(
-		menu.NewButton("⚡ Decoy Pulsa", fmt.Sprintf("a1:myxl:method:decoy_balance:%s", optionCode)),
-		menu.NewButton("⚡ Decoy QRIS", fmt.Sprintf("a1:myxl:method:decoy_qris:%s", optionCode)),
+		menu.NewButton("⚡ Decoy Pulsa", fmt.Sprintf("a1:myxl:method:decoy_balance:%s", optKey)),
+		menu.NewButton("⚡ Decoy QRIS", fmt.Sprintf("a1:myxl:method:decoy_qris:%s", optKey)),
 	)
 	screen.AddRow(
-		menu.NewButton("✏️ Overwrite Harga", fmt.Sprintf("a1:myxl:custom_price:%s", optionCode)),
-		menu.NewButton("⭐ Simpan Favorit", fmt.Sprintf("a1:myxl:bookmark_add:%s", optionCode)),
+		menu.NewButton("✏️ Overwrite Harga", fmt.Sprintf("a1:myxl:custom_price:%s", optKey)),
+		menu.NewButton("⭐ Simpan Favorit", fmt.Sprintf("a1:myxl:bookmark_add:%s", optKey)),
 	)
 	screen.AddRow(
 		menu.NewButton("🔙 Batal / Kembali", "a1:myxl:store"),
@@ -780,8 +851,9 @@ func (m *MenuManager) BuildPurchaseResultScreen(result *SettlementResult, packag
 	}
 
 	screen := menu.NewScreen("myxl:result", "", card.Render())
+	optKey := m.RegisterOptionCode(optionCode)
 	screen.AddRow(
-		menu.NewButton("⭐ Simpan ke Favorit", fmt.Sprintf("a1:myxl:bookmark_add:%s", optionCode)),
+		menu.NewButton("⭐ Simpan ke Favorit", fmt.Sprintf("a1:myxl:bookmark_add:%s", optKey)),
 		menu.NewButton("📱 Buka Dashboard", "a1:myxl:home"),
 	)
 	return screen
@@ -916,7 +988,8 @@ func (m *MenuManager) BuildFamilyPackagesScreen(ctx context.Context, acc *Accoun
 	for i, item := range pageItems {
 		globalNum := startIdx + i + 1
 		label := fmt.Sprintf("%d", globalNum)
-		numRow = append(numRow, menu.NewButton(label, fmt.Sprintf("a1:myxl:buy_opt:%s", item.Option.PackageOptionCode)))
+		optKey := m.RegisterOptionCode(item.Option.PackageOptionCode)
+		numRow = append(numRow, menu.NewButton(label, fmt.Sprintf("a1:myxl:buy_opt:%s", optKey)))
 	}
 	if len(numRow) > 0 {
 		screen.AddRow(numRow...)
