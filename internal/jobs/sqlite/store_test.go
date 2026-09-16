@@ -267,6 +267,53 @@ func TestStoreScheduleLifecycleAndMaterializeDue(t *testing.T) {
 	}
 }
 
+func TestStoreSchedulePoliciesFailClosedAndSkipWithoutOccurrence(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	s := NewStore(db)
+	ctx := context.Background()
+	def := &jobs.JobDefinition{ID: "job-policy", ScopeOwner: "system", QuotaOwner: "system", HandlerType: "test", Enabled: true}
+	if err := s.SaveDefinition(ctx, def); err != nil {
+		t.Fatal(err)
+	}
+	base := jobs.JobSchedule{ID: "sched-policy", JobID: def.ID, Recurrence: "interval", Interval: time.Minute, NextDueAt: time.Now().UTC().Add(-2 * time.Minute), Enabled: true}
+
+	unsupported := base
+	unsupported.MisfirePolicy = jobs.MisfireCatchUpBounded
+	if err := s.SaveSchedule(ctx, &unsupported); err == nil {
+		t.Fatal("unsupported catch-up policy was accepted")
+	}
+	unsupported = base
+	unsupported.OverlapPolicy = jobs.OverlapReplace
+	if err := s.SaveSchedule(ctx, &unsupported); err == nil {
+		t.Fatal("unsupported replace policy was accepted")
+	}
+
+	base.MisfirePolicy = jobs.MisfireSkip
+	base.OverlapPolicy = jobs.OverlapForbid
+	if err := s.SaveSchedule(ctx, &base); err != nil {
+		t.Fatal(err)
+	}
+	next := time.Now().UTC().Add(time.Minute)
+	if err := s.SkipDueSchedule(ctx, base.ID, next); err != nil {
+		t.Fatal(err)
+	}
+	var occurrences int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM job_occurrences WHERE schedule_id = ?`, base.ID).Scan(&occurrences); err != nil {
+		t.Fatal(err)
+	}
+	if occurrences != 0 {
+		t.Fatalf("skip materialized %d occurrences", occurrences)
+	}
+	updated, err := s.GetSchedule(ctx, base.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.NextDueAt.Before(next.Add(-time.Second)) {
+		t.Fatalf("skip did not advance schedule: got %v want %v", updated.NextDueAt, next)
+	}
+}
+
 func TestStoreCancelOccurrenceAndEpochFencing(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()

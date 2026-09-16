@@ -174,6 +174,40 @@ func TestTerminalEvictionBoundsMemoryAndKeepsTicketResult(t *testing.T) {
 	}
 }
 
+func TestTerminalRecordDropsExecutionReferences(t *testing.T) {
+	e := NewEngine(Config{
+		Pools: map[tasks.PoolID]PoolEngineConfig{
+			"p": {Concurrency: 1, BacklogLimit: 4, PayloadBudget: 1 << 20},
+		},
+		ResultCapacity: 4, MaxTerminalRetained: 4,
+	})
+	if err := e.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer e.Stop(context.Background())
+
+	payload := make([]byte, 256<<10)
+	ticket, err := e.Submit(context.Background(), tasks.WorkSpec{
+		ID: "drop-runtime-refs", Pool: "p", QuotaOwner: "owner", Input: payload,
+		Handler:    func(context.Context) error { _ = payload; return nil },
+		OnComplete: func(tasks.TaskResult) { _ = payload },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ticket.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := e.registry["drop-runtime-refs"]
+	if rec == nil {
+		t.Fatal("terminal record was not retained")
+	}
+	if rec.spec.Handler != nil || rec.spec.Commit != nil || rec.spec.OnComplete != nil {
+		t.Fatalf("terminal record retained execution references: %+v", rec.spec)
+	}
+}
+
 // B5: bounded delivery serves every callback exactly once under burst load
 // without fallback goroutines, and Drain covers delivery.
 func TestCompletionDeliveryBurstExactlyOnce(t *testing.T) {

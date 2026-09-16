@@ -115,6 +115,31 @@ func TestRetrySucceedsAfterFailure(t *testing.T) {
 	}
 }
 
+func TestRetryHonorsConfiguredBackoff(t *testing.T) {
+	var firstFailure time.Time
+	var secondAttempt time.Time
+	var calls atomic.Int32
+	manager, store, _ := engineBackedManager(t,
+		func(context.Context, jobs.JobDefinition) error {
+			if calls.Add(1) == 1 {
+				firstFailure = time.Now()
+				return errTestFailure
+			}
+			secondAttempt = time.Now()
+			return nil
+		},
+		jobs.JobRetryPolicy{MaxAttempts: 2, InitialDelay: 150 * time.Millisecond},
+	)
+	_, occurrenceID, err := manager.SubmitOccurrence(context.Background(), "job-retry", "manual:retry-backoff")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pollOccurrenceState(t, store, occurrenceID, jobs.OccurrenceCompleted, 10*time.Second)
+	if elapsed := secondAttempt.Sub(firstFailure); elapsed < 130*time.Millisecond {
+		t.Fatalf("retry ran before configured backoff: %v", elapsed)
+	}
+}
+
 // D3: exhaustion finalizes the occurrence as failed with one attempt per
 // budget slot.
 func TestRetryExhaustsAndFinalizes(t *testing.T) {

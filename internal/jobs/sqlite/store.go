@@ -650,6 +650,17 @@ func (s *Store) ListReadyOccurrences(ctx context.Context, limit int) ([]*jobs.Jo
 
 // SaveSchedule saves or updates a JobSchedule.
 func (s *Store) SaveSchedule(ctx context.Context, sched *jobs.JobSchedule) error {
+	if sched == nil {
+		return errors.New("job schedule is required")
+	}
+	switch sched.MisfirePolicy {
+	case "", jobs.MisfireRunOnce, jobs.MisfireSkip:
+	default:
+		return fmt.Errorf("unsupported misfire policy %q", sched.MisfirePolicy)
+	}
+	if sched.OverlapPolicy != "" && sched.OverlapPolicy != jobs.OverlapForbid {
+		return fmt.Errorf("unsupported overlap policy %q", sched.OverlapPolicy)
+	}
 	query := `
 	INSERT INTO job_schedules (
 		id, job_id, recurrence, interval_seconds, timezone, next_due_at,
@@ -694,6 +705,34 @@ func (s *Store) SaveSchedule(ctx context.Context, sched *jobs.JobSchedule) error
 		return fmt.Errorf("failed to save job schedule %s: %w", sched.ID, err)
 	}
 	return nil
+}
+
+// SkipDueSchedule advances a still-due schedule without materializing an
+// occurrence. Writer intent serializes concurrent scheduler instances.
+func (s *Store) SkipDueSchedule(ctx context.Context, scheduleID string, nextDue time.Time) error {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin skip due schedule: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE job_schedules SET revision = revision WHERE id = ?`, scheduleID); err != nil {
+		return fmt.Errorf("acquire skipped schedule writer intent: %w", err)
+	}
+	var enabled int
+	var current time.Time
+	if err := tx.QueryRowContext(ctx, `SELECT enabled, next_due_at FROM job_schedules WHERE id = ?`, scheduleID).Scan(&enabled, &current); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrScheduleNotFound
+		}
+		return err
+	}
+	if enabled == 0 || current.After(time.Now().UTC()) {
+		return errors.New("schedule is not enabled or not due")
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE job_schedules SET next_due_at = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND enabled = 1`, nextDue.UTC(), time.Now().UTC(), scheduleID); err != nil {
+		return fmt.Errorf("advance skipped schedule: %w", err)
+	}
+	return tx.Commit()
 }
 
 // DisableSchedule prevents future materialization without deleting audit

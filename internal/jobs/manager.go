@@ -49,6 +49,7 @@ type scheduleStore interface {
 	ListDueSchedules(context.Context, time.Time, int) ([]JobSchedule, error)
 	EarliestScheduleDue(context.Context) (time.Time, bool, error)
 	MaterializeDueSchedule(context.Context, string, time.Time) (*JobOccurrence, error)
+	SkipDueSchedule(context.Context, string, time.Time) error
 	CutoverActive(context.Context) (bool, error)
 }
 
@@ -612,11 +613,34 @@ func (m *Manager) PruneOccurrences(ctx context.Context, jobID string, before tim
 }
 
 func (m *Manager) SaveSchedule(ctx context.Context, schedule JobSchedule) error {
+	if err := validateSchedulePolicy(schedule); err != nil {
+		return err
+	}
 	store, ok := m.store.(scheduleStore)
 	if !ok {
 		return errors.New("job schedule store is not configured")
 	}
 	return store.SaveSchedule(ctx, &schedule)
+}
+
+func validateSchedulePolicy(schedule JobSchedule) error {
+	switch schedule.MisfirePolicy {
+	case "", MisfireRunOnce, MisfireSkip:
+	case MisfireCatchUpBounded:
+		return errors.New("catch_up_bounded misfire policy is not supported")
+	default:
+		return fmt.Errorf("invalid misfire policy %q", schedule.MisfirePolicy)
+	}
+	switch schedule.OverlapPolicy {
+	case "", OverlapForbid:
+	case OverlapReplace:
+		return errors.New("replace overlap policy is not supported")
+	case OverlapAllowBounded:
+		return errors.New("allow_bounded overlap policy is not supported")
+	default:
+		return fmt.Errorf("invalid overlap policy %q", schedule.OverlapPolicy)
+	}
+	return nil
 }
 
 // DisableSchedule atomically removes a schedule from timing ownership while
@@ -658,6 +682,14 @@ func (m *Manager) ProcessDueSchedules(ctx context.Context, now time.Time, limit 
 	}
 	processed := 0
 	for _, schedule := range schedules {
+		if err := validateSchedulePolicy(schedule); err != nil {
+			// Quarantine persisted policies this binary cannot honor. Leaving the
+			// row due would turn a configuration error into a tight scheduler loop.
+			if disableErr := store.DisableSchedule(ctx, schedule.ID); disableErr != nil {
+				return processed, fmt.Errorf("schedule %s policy invalid (%v), disable: %w", schedule.ID, err, disableErr)
+			}
+			return processed, fmt.Errorf("schedule %s: %w", schedule.ID, err)
+		}
 		nextDue := schedule.NextDueAt
 		if schedule.Recurrence != "once" {
 			interval := schedule.Interval
@@ -667,6 +699,16 @@ func (m *Manager) ProcessDueSchedules(ctx context.Context, now time.Time, limit 
 			nextDue = schedule.NextDueAt.Add(interval)
 			for !nextDue.After(now) {
 				nextDue = nextDue.Add(interval)
+			}
+			// A recurring slot is a misfire only after at least one complete
+			// interval has elapsed. Skip advances timing ownership atomically
+			// without consuming occurrence or attempt capacity.
+			if schedule.MisfirePolicy == MisfireSkip && !now.Before(schedule.NextDueAt.Add(interval)) {
+				if err := store.SkipDueSchedule(ctx, schedule.ID, nextDue); err != nil {
+					return processed, err
+				}
+				processed++
+				continue
 			}
 		}
 		occurrence, err := store.MaterializeDueSchedule(ctx, schedule.ID, nextDue)
@@ -846,10 +888,9 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		return
 	default:
 	}
-	ctx, cancel := context.WithTimeout(m.rootContext(), 10*time.Second)
-	defer cancel()
-
-	occ, err := m.store.GetOccurrence(ctx, item.occurrenceID)
+	stateCtx, stateCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
+	occ, err := m.store.GetOccurrence(stateCtx, item.occurrenceID)
+	stateCancel()
 	if err == nil {
 		switch occ.State {
 		case OccurrenceCancelled, OccurrenceCompleted, OccurrenceFailed:
@@ -872,13 +913,18 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		m.signalRecovery()
 		return
 	}
-	attempts, err := m.store.CountAttempts(ctx, item.occurrenceID)
+	countCtx, countCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
+	attempts, err := m.store.CountAttempts(countCtx, item.occurrenceID)
+	countCancel()
 	if err != nil {
 		m.signalRecovery()
 		return
 	}
 	if attempts >= maxAttempts(tr.def.RetryPolicy) {
-		if err := m.store.FinalizeOccurrence(ctx, item.occurrenceID, OccurrenceFailed); err != nil {
+		finalizeCtx, finalizeCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
+		err := m.store.FinalizeOccurrence(finalizeCtx, item.occurrenceID, OccurrenceFailed)
+		finalizeCancel()
+		if err != nil {
 			m.signalRecovery()
 			return
 		}
@@ -897,7 +943,13 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		}
 	}
 	// Re-read after backoff: cancellation wins over retry.
-	if occ2, err := m.store.GetOccurrence(ctx, item.occurrenceID); err != nil {
+	// The backoff may be much longer than a store-operation timeout. Always
+	// create a fresh context after waiting; reusing a pre-backoff deadline makes
+	// long retry policies collapse into immediate recovery retries.
+	refreshCtx, refreshCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
+	occ2, refreshErr := m.store.GetOccurrence(refreshCtx, item.occurrenceID)
+	refreshCancel()
+	if refreshErr != nil {
 		m.untrack(item.occurrenceID)
 		m.signalRecovery()
 		return
@@ -911,7 +963,10 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 	if !accepting {
 		return
 	}
-	if err := m.driveAttempt(ctx, item.occurrenceID, tr.def, tr.handler); err != nil {
+	driveCtx, driveCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
+	err = m.driveAttempt(driveCtx, item.occurrenceID, tr.def, tr.handler)
+	driveCancel()
+	if err != nil {
 		m.untrack(item.occurrenceID)
 		m.signalRecovery()
 	}

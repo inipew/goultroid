@@ -1026,6 +1026,13 @@ func (e *Engine) settleTerminal(rec *taskRecord) {
 		_ = e.delivery.enqueueReserved(rec.spec.OnComplete, rec.result)
 		rec.callbackReserved = false
 	}
+	// Terminal records retain only diagnostic identity and bounded results.
+	// Execution closures may capture arbitrarily large object graphs and must
+	// not remain reachable for the terminal retention window.
+	rec.spec.Handler = nil
+	rec.spec.Commit = nil
+	rec.spec.OnComplete = nil
+	rec.pendingResult = tasks.TaskResult{}
 	close(rec.done)
 	e.onTaskSettled(rec)
 }

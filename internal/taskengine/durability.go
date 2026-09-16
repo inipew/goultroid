@@ -92,8 +92,13 @@ func (e *Engine) beginCommit(rec *taskRecord) {
 		e.commitWaiters = make(map[uint64]context.CancelFunc)
 	}
 	e.commitWaiters[rec.commitSeq] = waitCancel
+	// Snapshot the callback and result. The task record can drop execution
+	// closures as soon as it settles without extending their lifetime through
+	// the durability transport.
+	commit := rec.spec.Commit
+	pendingResult := rec.pendingResult
 	commitOp := func(ctx context.Context) error {
-		return rec.spec.Commit(ctx, rec.pendingResult)
+		return commit(ctx, pendingResult)
 	}
 	waitPump := func(resCh <-chan error) {
 		var ackErr error
