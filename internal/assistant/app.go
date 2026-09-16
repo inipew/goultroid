@@ -23,6 +23,8 @@ type Client interface {
 	SetSettingsService(svc *settings.Service)
 	SetMetricsCollector(m core.MetricsCollector)
 	SetCallbackRouter(router client.CoreCallbackDispatcher)
+	SetTasks(client tasks.Client)
+	SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool))
 }
 
 type AssistantApp struct {
@@ -86,4 +88,7 @@ func (a *AssistantApp) SetSettingsService(svc *settings.Service)    { a.client.S
 func (a *AssistantApp) SetMetricsCollector(m core.MetricsCollector) { a.client.SetMetricsCollector(m) }
 func (a *AssistantApp) SetCallbackRouter(router client.CoreCallbackDispatcher) {
 	a.client.SetCallbackRouter(router)
+}
+func (a *AssistantApp) SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool)) {
+	a.client.SetPluginScopeResolver(resolver)
 }

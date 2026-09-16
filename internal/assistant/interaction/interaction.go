@@ -20,6 +20,7 @@ type MessageInteraction interface {
 type InlineInteraction interface {
 	Answer(ctx context.Context, queryID int64, text string, alert bool) error
 	Edit(ctx context.Context, target InlineTarget, text string, markup tg.ReplyMarkupClass) error
+	EditMarkup(ctx context.Context, target InlineTarget, markup tg.ReplyMarkupClass) error
 }
 
 // TelegramAPI defines the MTProto RPC method signatures required by Assistant interactions.

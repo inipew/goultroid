@@ -97,6 +97,9 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 	})
 	dispatcher.OnInlineBotCallbackQuery(func(ctx context.Context, e tg.Entities, update *tg.UpdateInlineBotCallbackQuery) error {
 		if deps.IsShuttingDown != nil && deps.IsShuttingDown() {
+			if deps.Interaction != nil {
+				_ = deps.Interaction.Answer(ctx, update.QueryID, "Bot is shutting down. Please retry later.", true)
+			}
 			return nil
 		}
 		if deps.CacheEntities != nil {
@@ -116,7 +119,13 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			}
 			return nil
 		}
-		if deps.CallbackRouter != nil && deps.Interaction != nil {
+		if deps.CallbackRouter == nil {
+			if deps.Interaction != nil {
+				_ = deps.Interaction.Answer(ctx, update.QueryID, "Interaction service unavailable.", false)
+			}
+			return nil
+		}
+		if deps.Interaction != nil {
 			tx := callback.NewInlineTransaction(update.QueryID, update.UserID, *payload, inlineTarget, deps.Interaction.AsInline())
 			tx.RawData = update.Data
 			if err := dispatchInlineSafely(ctx, deps.CallbackRouter, tx, logger); err != nil {
@@ -127,6 +136,9 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 	})
 	dispatcher.OnBotCallbackQuery(func(ctx context.Context, e tg.Entities, update *tg.UpdateBotCallbackQuery) error {
 		if deps.IsShuttingDown != nil && deps.IsShuttingDown() {
+			if deps.Interaction != nil {
+				_ = deps.Interaction.Answer(ctx, update.QueryID, "Bot is shutting down. Please retry later.", true)
+			}
 			return nil
 		}
 		if deps.CacheEntities != nil {
@@ -152,9 +164,18 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		target := interaction.NewMessageTarget(inputPeer, update.MsgID, extractChatID(update.Peer), update.ChatInstance)
 		payload, parseErr := callback.Parse(update.Data)
 		if parseErr != nil {
+			if deps.Interaction != nil {
+				_ = deps.Interaction.Answer(ctx, update.QueryID, "Invalid callback", false)
+			}
 			return nil
 		}
-		if deps.CallbackRouter != nil && deps.Interaction != nil {
+		if deps.CallbackRouter == nil {
+			if deps.Interaction != nil {
+				_ = deps.Interaction.Answer(ctx, update.QueryID, "Interaction service unavailable.", false)
+			}
+			return nil
+		}
+		if deps.Interaction != nil {
 			tx := callback.NewTransaction(update.QueryID, update.UserID, *payload, target, deps.Interaction)
 			tx.RawData = update.Data
 			if err := dispatchCallbackSafely(ctx, deps.CallbackRouter, tx, logger); err != nil {

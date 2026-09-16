@@ -35,6 +35,11 @@ func (f *fakeInlineInteraction) Edit(ctx context.Context, target interaction.Inl
 	return nil
 }
 
+func (f *fakeInlineInteraction) EditMarkup(ctx context.Context, target interaction.InlineTarget, markup tg.ReplyMarkupClass) error {
+	f.edited = true
+	return nil
+}
+
 func TestInlineTransaction_LifecycleAndAnswering(t *testing.T) {
 	ctx := context.Background()
 	fake := &fakeInlineInteraction{}

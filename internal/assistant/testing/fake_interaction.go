@@ -107,3 +107,9 @@ func (f *FakeInlineInteraction) Edit(ctx context.Context, target interaction.Inl
 	f.LastEditedText = text
 	return f.EditErr
 }
+
+func (f *FakeInlineInteraction) EditMarkup(ctx context.Context, target interaction.InlineTarget, markup tg.ReplyMarkupClass) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.EditErr
+}

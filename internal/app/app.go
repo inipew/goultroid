@@ -145,6 +145,14 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		tgRuntime.assistant.SetSettingsService(domServices.settingsService)
 		tgRuntime.assistant.SetMetricsCollector(coreDeps.metrics)
 		tgRuntime.assistant.SetCallbackRouter(coreDeps.callbackRouter)
+		tgRuntime.assistant.SetTasks(coreDeps.taskEngine)
+		tgRuntime.assistant.SetPluginScopeResolver(func(owner string) (tasks.ScopeIdentity, bool) {
+			scope, ok := pluginManager.Scope(owner)
+			if !ok {
+				return tasks.ScopeIdentity{}, false
+			}
+			return tasks.ScopeIdentity{Owner: scope.Owner(), Generation: scope.Generation()}, true
+		})
 	}
 
 	if err := migrateBuiltinFeatures(context.Background(), coreDeps.db); err != nil {

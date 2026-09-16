@@ -436,3 +436,35 @@ func (i *InlineClientInteraction) Edit(ctx context.Context, target InlineTarget,
 	}
 	return nil
 }
+
+// EditMarkup updates only the inline markup of an inline bot message, preserving the text on Telegram.
+func (i *InlineClientInteraction) EditMarkup(ctx context.Context, target InlineTarget, markup tg.ReplyMarkupClass) (retErr error) {
+	if i.ci == nil || i.ci.api == nil || !target.IsValid() {
+		return ErrInvalidTarget
+	}
+	start := time.Now()
+	defer func() {
+		if i.ci != nil && i.ci.metrics != nil {
+			i.ci.metrics.RecordTelegramRequest("MessagesEditInlineBotMessage", time.Since(start), retErr)
+		}
+	}()
+
+	req := &tg.MessagesEditInlineBotMessageRequest{
+		ID: target.MessageID(),
+	}
+	req.SetNoWebpage(true)
+	if markup != nil {
+		req.SetReplyMarkup(markup)
+	}
+
+	_, err := i.ci.api.MessagesEditInlineBotMessage(ctx, req)
+	if err != nil {
+		classified := ClassifyRPCError(err)
+		if classified == nil {
+			return nil
+		}
+		retErr = fmt.Errorf("assistant edit inline message markup: %w", classified)
+		return retErr
+	}
+	return nil
+}
