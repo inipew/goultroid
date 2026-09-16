@@ -126,6 +126,21 @@ func newTimingHarness(t *testing.T) *timingHarness {
 	return &timingHarness{sched: sched, repo: repo, svc: svc, jobs: jobsMgr, store: store, jobDB: jobDB.DB}
 }
 
+func TestEngineStartRequiresExecutionDependencies(t *testing.T) {
+	if err := NewEngine(nil, nil).Start(context.Background()); err == nil {
+		t.Fatal("scheduler started without repository")
+	}
+	repo := NewSQLiteRepository(nil)
+	sched := NewEngine(repo, nil)
+	if err := sched.Start(context.Background()); err == nil {
+		t.Fatal("scheduler started without task client")
+	}
+	sched.SetTasks(taskengine.NewEngine(taskengine.DefaultConfig))
+	if err := sched.Start(context.Background()); err == nil {
+		t.Fatal("scheduler started without jobs manager")
+	}
+}
+
 func pollRowStatus(t *testing.T, h *timingHarness, chatID int64, wantCount int, timeout time.Duration) []ScheduledJob {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

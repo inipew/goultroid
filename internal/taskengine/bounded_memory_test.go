@@ -208,6 +208,33 @@ func TestTerminalRecordDropsExecutionReferences(t *testing.T) {
 	}
 }
 
+func TestTerminalTTLEvictsWhileEngineIdle(t *testing.T) {
+	e := boundedTestEngine(t, Config{
+		Pools: map[tasks.PoolID]PoolEngineConfig{
+			"p": {Concurrency: 1, MinConcurrency: 1, IdleTimeout: time.Hour, BacklogLimit: 4, PayloadBudget: 1 << 20},
+		},
+		ResultCapacity: 4, MaxTerminalRetained: 4, TerminalTTL: 30 * time.Millisecond,
+	})
+	ticket, err := e.Submit(context.Background(), tasks.WorkSpec{
+		ID: "ttl-idle", Pool: "p", QuotaOwner: "owner",
+		Handler: func(context.Context) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ticket.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := e.Snapshot("ttl-idle"); !ok {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("terminal record survived TTL while engine was idle")
+}
+
 // B5: bounded delivery serves every callback exactly once under burst load
 // without fallback goroutines, and Drain covers delivery.
 func TestCompletionDeliveryBurstExactlyOnce(t *testing.T) {

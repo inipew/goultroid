@@ -61,6 +61,10 @@ func TestManagerPersistsOccurrenceAttemptAndCompletion(t *testing.T) {
 	if err := manager.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	defer manager.Stop(context.Background())
+	if err := manager.Start(context.Background()); err == nil {
+		t.Fatal("second manager start was accepted")
+	}
 	if err := manager.RegisterHandler("test", func(context.Context, jobs.JobDefinition) error { return nil }); err != nil {
 		t.Fatal(err)
 	}

@@ -230,8 +230,11 @@ func TestRecoverRedrivesTerminalUnresolved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Scanned != 1 || report.Redriven != 1 {
-		t.Fatalf("report=%+v, want scanned=1 redriven=1", report)
+	// Startup recovery may win the race and already own the redrive. In that
+	// case an explicit concurrent pass must report it stale rather than create a
+	// duplicate attempt.
+	if report.Scanned != 1 || report.Redriven+report.Stale != 1 {
+		t.Fatalf("report=%+v, want one redrive or one already-owned occurrence", report)
 	}
 	pollOccurrenceState(t, store, "occ-crash", jobs.OccurrenceCompleted, 10*time.Second)
 }

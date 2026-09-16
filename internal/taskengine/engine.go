@@ -617,6 +617,12 @@ func (e *Engine) runLoop(ctx context.Context, inbox <-chan engineRequest) {
 				hasEarliest = true
 			}
 		}
+		if ttlEarliest, hasTTL := e.earliestTerminalExpiry(); hasTTL {
+			if !hasEarliest || ttlEarliest.Before(earliest) {
+				earliest = ttlEarliest
+				hasEarliest = true
+			}
+		}
 
 		if !hasEarliest {
 			sweepTimerCh = nil
@@ -1581,6 +1587,20 @@ func (e *Engine) evictExpiredTerminal(now time.Time) {
 		}
 		return now.Sub(rec.finishedAt) > e.terminalTTL
 	})
+}
+
+func (e *Engine) earliestTerminalExpiry() (time.Time, bool) {
+	if e.terminalTTL <= 0 {
+		return time.Time{}, false
+	}
+	for _, id := range e.terminalOrder {
+		rec, ok := e.registry[id]
+		if !ok || !rec.isTerminal() || rec.finishedAt.IsZero() {
+			continue
+		}
+		return rec.finishedAt.Add(e.terminalTTL), true
+	}
+	return time.Time{}, false
 }
 
 func (e *Engine) evictTerminalHead(shouldEvict func() bool) {

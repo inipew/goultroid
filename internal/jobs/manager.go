@@ -69,6 +69,7 @@ type Manager struct {
 	handlers       map[string]Handler
 	sequence       atomic.Uint64
 	accepting      bool
+	started        bool
 
 	retryQueue   chan retryItem
 	recoveryWake chan struct{}
@@ -167,6 +168,9 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.started {
+		return errors.New("jobs manager already started")
+	}
 	if m.client == nil || m.store == nil || m.pump == nil {
 		return errors.New("jobs requires task client, durable store, and persistence pump")
 	}
@@ -210,6 +214,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		m.tracked = make(map[string]*trackedOccurrence)
 	}
 	m.accepting = true
+	m.started = true
 	if firstStart {
 		for i := 0; i < retryWorkers; i++ {
 			m.wg.Add(1)
@@ -624,6 +629,31 @@ func (m *Manager) SaveSchedule(ctx context.Context, schedule JobSchedule) error 
 }
 
 func validateSchedulePolicy(schedule JobSchedule) error {
+	if strings.TrimSpace(schedule.ID) == "" || strings.TrimSpace(schedule.JobID) == "" {
+		return errors.New("schedule id and job id are required")
+	}
+	switch schedule.Recurrence {
+	case "once":
+		if schedule.Interval != 0 {
+			return errors.New("one-shot schedule interval must be zero")
+		}
+	case "interval":
+		if schedule.Interval < time.Second {
+			return errors.New("recurring schedule interval must be at least one second")
+		}
+	default:
+		return fmt.Errorf("unsupported recurrence %q", schedule.Recurrence)
+	}
+	if schedule.NextDueAt.IsZero() {
+		return errors.New("schedule next due time is required")
+	}
+	tz := schedule.Timezone
+	if tz == "" {
+		tz = "UTC"
+	}
+	if _, err := time.LoadLocation(tz); err != nil {
+		return fmt.Errorf("invalid schedule timezone %q: %w", tz, err)
+	}
 	switch schedule.MisfirePolicy {
 	case "", MisfireRunOnce, MisfireSkip:
 	case MisfireCatchUpBounded:

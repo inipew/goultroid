@@ -206,7 +206,7 @@ func TestStoreScheduleLifecycleAndMaterializeDue(t *testing.T) {
 	sched := &jobs.JobSchedule{
 		ID:            "sched-1",
 		JobID:         "job-sched-test",
-		Recurrence:    "@hourly",
+		Recurrence:    "interval",
 		Interval:      time.Hour,
 		NextDueAt:     dueTime,
 		MisfirePolicy: jobs.MisfireRunOnce,
@@ -279,6 +279,16 @@ func TestStoreSchedulePoliciesFailClosedAndSkipWithoutOccurrence(t *testing.T) {
 	base := jobs.JobSchedule{ID: "sched-policy", JobID: def.ID, Recurrence: "interval", Interval: time.Minute, NextDueAt: time.Now().UTC().Add(-2 * time.Minute), Enabled: true}
 
 	unsupported := base
+	unsupported.Recurrence = "typo"
+	if err := s.SaveSchedule(ctx, &unsupported); err == nil {
+		t.Fatal("unsupported recurrence was accepted")
+	}
+	unsupported = base
+	unsupported.Timezone = "not/a-zone"
+	if err := s.SaveSchedule(ctx, &unsupported); err == nil {
+		t.Fatal("invalid timezone was accepted")
+	}
+	unsupported = base
 	unsupported.MisfirePolicy = jobs.MisfireCatchUpBounded
 	if err := s.SaveSchedule(ctx, &unsupported); err == nil {
 		t.Fatal("unsupported catch-up policy was accepted")

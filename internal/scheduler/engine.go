@@ -196,6 +196,15 @@ func (e *Engine) Start(parentCtx context.Context) error {
 	if e.running {
 		return errors.New("scheduler engine already running")
 	}
+	if e.db == nil {
+		return errors.New("scheduler repository is required")
+	}
+	if e.tasks == nil {
+		return errors.New("scheduler task client is required")
+	}
+	if e.jobsMgr == nil {
+		return errors.New("scheduler jobs manager is required")
+	}
 	if parentCtx == nil {
 		parentCtx = context.Background()
 	}

@@ -653,6 +653,31 @@ func (s *Store) SaveSchedule(ctx context.Context, sched *jobs.JobSchedule) error
 	if sched == nil {
 		return errors.New("job schedule is required")
 	}
+	if strings.TrimSpace(sched.ID) == "" || strings.TrimSpace(sched.JobID) == "" {
+		return errors.New("schedule id and job id are required")
+	}
+	switch sched.Recurrence {
+	case "once":
+		if sched.Interval != 0 {
+			return errors.New("one-shot schedule interval must be zero")
+		}
+	case "interval":
+		if sched.Interval < time.Second {
+			return errors.New("recurring schedule interval must be at least one second")
+		}
+	default:
+		return fmt.Errorf("unsupported recurrence %q", sched.Recurrence)
+	}
+	if sched.NextDueAt.IsZero() {
+		return errors.New("schedule next due time is required")
+	}
+	tz := sched.Timezone
+	if tz == "" {
+		tz = "UTC"
+	}
+	if _, err := time.LoadLocation(tz); err != nil {
+		return fmt.Errorf("invalid schedule timezone %q: %w", tz, err)
+	}
 	switch sched.MisfirePolicy {
 	case "", jobs.MisfireRunOnce, jobs.MisfireSkip:
 	default:
@@ -684,10 +709,6 @@ func (s *Store) SaveSchedule(ctx context.Context, sched *jobs.JobSchedule) error
 		enabledInt = 1
 	}
 	intervalSec := int64(sched.Interval.Seconds())
-	tz := sched.Timezone
-	if tz == "" {
-		tz = "UTC"
-	}
 	misfire := string(sched.MisfirePolicy)
 	if misfire == "" {
 		misfire = string(jobs.MisfireRunOnce)
