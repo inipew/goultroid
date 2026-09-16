@@ -362,7 +362,7 @@ func (m *MenuManager) handleWizardFamilyCode(ctx context.Context, userID int64, 
 	familyCode := strings.TrimSpace(input)
 	if familyCode == "" {
 		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(),
-			"⚠️ Family Code tidak boleh kosong.\n\nContoh: <code>FAM-FLEX</code> atau <code>FAM-AKRAB</code>.\nKirimkan kode atau ketik <code>/cancel</code> untuk batal.",
+			"⚠️ Family Code tidak boleh kosong.\n\nContoh: <code>7658c955-a0b9-405f-bb17-de7f43d1a946</code>.\nKirimkan kode atau ketik <code>/cancel</code> untuk batal.",
 			nil)
 		return true, sendErr
 	}
@@ -380,7 +380,7 @@ func (m *MenuManager) handleWizardFamilyCode(ctx context.Context, userID int64, 
 	screen, err := m.BuildFamilyPackagesScreen(cCtx, acc, familyCode, 1)
 	if err != nil {
 		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(),
-			fmt.Sprintf("⚠️ <b>Gagal mencari paket:</b> %v\n\nPastikan Family Code benar (contoh: <code>FAM-FLEX</code>) atau ketik <code>/cancel</code> untuk batal.", err),
+			fmt.Sprintf("⚠️ <b>Gagal mencari paket:</b> %v\n\nPastikan Family Code benar (contoh: <code>7658c955-a0b9-405f-bb17-de7f43d1a946</code>) atau ketik <code>/cancel</code> untuk batal.", err),
 			nil)
 		return true, sendErr
 	}
@@ -603,7 +603,7 @@ func (m *MenuManager) BuildStoreScreen(ctx context.Context) (*ui.Screen, error) 
 
 	card.WithRaw(
 		"• <b>Paket Favorit:</b> Akses cepat paket yang sudah Anda simpan.\n" +
-			"• <b>Family Code:</b> Cari paket berdasarkan grup paket (misal: <code>FAM-FLEX</code>).\n" +
+			"• <b>Family Code:</b> Cari paket berdasarkan ID grup paket (contoh: <code>7658c955-a0b9-405f-bb17-de7f43d1a946</code>).\n" +
 			"• <b>Input Option Code:</b> Masukkan Option Code secara langsung (misal: <code>OPT12345</code>).\n",
 	)
 	card.WithFooter("<i>Pilih salah satu metode di bawah.</i>")

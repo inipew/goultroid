@@ -499,6 +499,7 @@ func TestMenuManager_Callbacks(t *testing.T) {
 		{name: "Bookmark Add", action: "bookmark_add:OPT-10GB", senderID: 12345, wantErr: false},
 		{name: "Family Input", action: "fam_input", senderID: 12345, wantErr: false},
 		{name: "Family Page", action: "fam_page:FAM-FLEX:1", senderID: 12345, wantErr: false},
+		{name: "Family Page UUID", action: "fam_page:7658c955-a0b9-405f-bb17-de7f43d1a946:1", senderID: 12345, wantErr: false},
 	}
 
 	svc := &mockTgService{}

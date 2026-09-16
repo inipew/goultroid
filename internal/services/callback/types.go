@@ -347,8 +347,8 @@ func EncodeCallbackDataChecked(namespace, action, opaqueID string) ([]byte, erro
 	if opaqueID == "" {
 		return nil, fmt.Errorf("%w: opaque id cannot be empty", ErrInvalidCallbackData)
 	}
-	if len(opaqueID) > 32 || !isHexID(opaqueID) {
-		// opaqueID from StateStore is hex16, but allow up to 32 hex chars for future signed mode
+	if len(opaqueID) > 48 || !isHexID(opaqueID) {
+		// opaqueID from StateStore is hex16, but allow up to 48 chars for UUIDs, composite tokens, or signed mode
 		// for now enforce hex; "noop" is handled earlier by router, not via validation here
 		if opaqueID != "noop" && !isValidOpaqueID(opaqueID) {
 			return nil, fmt.Errorf("%w: invalid opaque id %q", ErrInvalidCallbackData, opaqueID)
@@ -424,7 +424,7 @@ func isValidOpaqueID(s string) bool {
 	if s == "noop" || s == "" {
 		return true
 	}
-	if len(s) > 32 {
+	if len(s) > 48 {
 		return false
 	}
 	// allow hex or base64url-like without padding for future; for now hex, alnum, _ - . :

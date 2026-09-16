@@ -863,7 +863,7 @@ func (p *Plugin) HandleCallback(cbCtx *callback.CallbackContext) error {
 		})
 		_ = cbCtx.Answer("Kirimkan Family Code...", false)
 		prompt := "🔍 <b>Input Family Code Paket</b>\n\n" +
-			"Silakan kirimkan Family Code paket yang ingin Anda telusuri (contoh: <code>FAM-FLEX</code>, <code>FAM-AKRAB</code>):\n\n" +
+			"Silakan kirimkan Family Code paket yang ingin Anda telusuri (contoh: <code>7658c955-a0b9-405f-bb17-de7f43d1a946</code>):\n\n" +
 			"<i>Ketik <code>/cancel</code> untuk membatalkan.</i>"
 		markup := render.ToTelegramMarkup(ui.Markup{Rows: []ui.ButtonRow{{
 			ui.NewCallbackButton("❌ Batal", []byte("a1:myxl:cancel_wizard")),
