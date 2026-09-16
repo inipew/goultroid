@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/inipew/goultroid/internal/database"
@@ -17,6 +18,7 @@ type Repository interface {
 	List(ctx context.Context) ([]*Account, error)
 	Save(ctx context.Context, acc *Account) error
 	SetActive(ctx context.Context, msisdn string) error
+	SetAlias(ctx context.Context, identifier, alias string) error
 	Delete(ctx context.Context, msisdn string) error
 }
 
@@ -172,6 +174,24 @@ func (r *SQLiteRepository) SetActive(ctx context.Context, identifier string) err
 	}
 
 	return tx.Commit()
+}
+
+// SetAlias updates the alias for an account identified by MSISDN or current alias.
+func (r *SQLiteRepository) SetAlias(ctx context.Context, identifier, alias string) error {
+	query := `
+	UPDATE myxl_accounts
+	SET alias = ?, updated_at = ?
+	WHERE msisdn = ? OR alias = ?
+	`
+	res, err := r.db.ExecContext(ctx, query, strings.TrimSpace(alias), time.Now().UTC(), identifier, identifier)
+	if err != nil {
+		return fmt.Errorf("failed to set alias: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil || rows == 0 {
+		return errors.New("account not found")
+	}
+	return nil
 }
 
 // Delete removes an account. If the removed account was active, another account is promoted to active.

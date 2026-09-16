@@ -91,4 +91,13 @@ func TestMyXLFeatureMigrationFreshDatabase(t *testing.T) {
 	if activeAfter == nil || activeAfter.MSISDN != "6281900000001" {
 		t.Fatalf("expected account 1 to be promoted to active, got: %#v", activeAfter)
 	}
+
+	// Test SetAlias
+	if err := repo.SetAlias(ctx, "6281900000001", "WorkSIM"); err != nil {
+		t.Fatalf("set alias failed: %v", err)
+	}
+	updated, err := repo.GetByMSISDN(ctx, "WorkSIM")
+	if err != nil || updated == nil || updated.Alias != "WorkSIM" {
+		t.Fatalf("expected account retrieved by new alias WorkSIM, got: %#v (err: %v)", updated, err)
+	}
 }

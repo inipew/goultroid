@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -54,9 +56,11 @@ func DefaultClientConfig() ClientConfig {
 
 // Client manages communications with MyXL CIAM and Engsel APIs.
 type Client struct {
+	mu      sync.Mutex
 	cfg     ClientConfig
 	httpCli *network.Client
 	repo    Repository
+	lastOTP map[string]time.Time
 }
 
 // NewClient constructs a new MyXL API client.
@@ -68,15 +72,27 @@ func NewClient(cfg ClientConfig, repo Repository, httpCli *network.Client) *Clie
 		cfg:     cfg,
 		httpCli: httpCli,
 		repo:    repo,
+		lastOTP: make(map[string]time.Time),
 	}
 }
 
 // SetHTTP sets the managed network client.
 func (c *Client) SetHTTP(httpCli *network.Client) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.httpCli = httpCli
 }
 
+// UpdateConfig updates the client configuration dynamically.
+func (c *Client) UpdateConfig(fn func(cfg *ClientConfig)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fn(&c.cfg)
+}
+
 func (c *Client) getHTTP() *network.Client {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.httpCli == nil {
 		c.httpCli = network.NewService(nil, nil).ForOwner("myxl")
 	}
@@ -122,6 +138,18 @@ func (c *Client) RequestOTP(ctx context.Context, msisdn string) (string, error) 
 	if err != nil {
 		return "", err
 	}
+
+	c.mu.Lock()
+	if last, exists := c.lastOTP[cleanMSISDN]; exists {
+		elapsed := time.Since(last)
+		if elapsed < 60*time.Second {
+			c.mu.Unlock()
+			waitSec := int(math.Ceil((60*time.Second - elapsed).Seconds()))
+			return "", fmt.Errorf("mohon tunggu %d detik sebelum meminta kode OTP kembali", waitSec)
+		}
+	}
+	c.lastOTP[cleanMSISDN] = time.Now()
+	c.mu.Unlock()
 
 	reqURL := fmt.Sprintf("%s/realms/xl-ciam/auth/otp?contact=%s&contactType=SMS&alternateContact=false",
 		c.cfg.BaseCIAMURL, url.QueryEscape(cleanMSISDN))

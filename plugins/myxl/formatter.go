@@ -81,12 +81,28 @@ func FormatWIBTime(epoch float64) string {
 	return t.Format("02 Jan 2006 15:04 WIB")
 }
 
+// MaskMSISDN masks middle digits of an MSISDN for privacy (e.g. 6281912345678 -> 6281****5678).
+func MaskMSISDN(msisdn string) string {
+	s := strings.TrimSpace(msisdn)
+	if len(s) <= 7 {
+		return s
+	}
+	prefix := s[:4]
+	suffix := s[len(s)-4:]
+	return prefix + "****" + suffix
+}
+
 // FormatQuotaResponse builds the Telegram HTML message for balance and quota.
-func FormatQuotaResponse(account *Account, balance *BalanceData, quota *QuotaDetailsData) string {
+func FormatQuotaResponse(account *Account, balance *BalanceData, quota *QuotaDetailsData, maskMSISDN bool) string {
 	var b strings.Builder
 
+	displayNum := account.MSISDN
+	if maskMSISDN {
+		displayNum = MaskMSISDN(account.MSISDN)
+	}
+
 	b.WriteString("📱 <b>MyXL Account:</b> <code>")
-	b.WriteString(html.EscapeString(account.MSISDN))
+	b.WriteString(html.EscapeString(displayNum))
 	b.WriteString("</code>")
 	if account.Alias != "" {
 		b.WriteString(" (")

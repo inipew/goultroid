@@ -54,9 +54,26 @@ func TestRenderProgressBar(t *testing.T) {
 	}
 }
 
+func TestMaskMSISDN(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"6281912345678", "6281****5678"},
+		{"081912345678", "0819****5678"},
+		{"1234", "1234"},
+	}
+	for _, tc := range tests {
+		got := MaskMSISDN(tc.input)
+		if got != tc.want {
+			t.Errorf("MaskMSISDN(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
 func TestFormatQuotaResponse(t *testing.T) {
 	acc := &Account{
-		MSISDN: "6281900000000",
+		MSISDN: "6281900001234",
 		Alias:  "Main",
 	}
 	bal := &BalanceData{
@@ -80,17 +97,27 @@ func TestFormatQuotaResponse(t *testing.T) {
 		},
 	}
 
-	res := FormatQuotaResponse(acc, bal, quota)
-	if !strings.Contains(res, "6281900000000") {
-		t.Error("expected output to contain MSISDN")
+	// Unmasked (Private Chat)
+	resUnmasked := FormatQuotaResponse(acc, bal, quota, false)
+	if !strings.Contains(resUnmasked, "6281900001234") {
+		t.Error("expected unmasked output to contain full MSISDN")
 	}
-	if !strings.Contains(res, "Rp 50.000") {
+	if !strings.Contains(resUnmasked, "Rp 50.000") {
 		t.Error("expected output to contain formatted rupiah Rp 50.000")
 	}
-	if !strings.Contains(res, "Xtra Combo Flex") {
+	if !strings.Contains(resUnmasked, "Xtra Combo Flex") {
 		t.Error("expected output to contain package name")
 	}
-	if !strings.Contains(res, "10.00 GB / 20.00 GB") {
+	if !strings.Contains(resUnmasked, "10.00 GB / 20.00 GB") {
 		t.Error("expected output to contain 10.00 GB / 20.00 GB")
+	}
+
+	// Masked (Group Chat)
+	resMasked := FormatQuotaResponse(acc, bal, quota, true)
+	if strings.Contains(resMasked, "6281900001234") {
+		t.Error("expected masked output to NOT contain full MSISDN")
+	}
+	if !strings.Contains(resMasked, "6281****1234") {
+		t.Error("expected masked output to contain 6281****1234")
 	}
 }
