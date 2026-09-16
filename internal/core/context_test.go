@@ -62,6 +62,9 @@ func (m *mockTelegramServicer) React(ctx context.Context, peer tg.InputPeerClass
 }
 
 func (m *mockTelegramServicer) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) (*tg.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if m.errToGet != nil {
 		return nil, m.errToGet
 	}
@@ -852,5 +855,218 @@ func TestContext_ExecutionContext(t *testing.T) {
 	}
 	if mockSvc.editedText != "edit test" {
 		t.Errorf("expected editedText 'edit test', got %q", mockSvc.editedText)
+	}
+}
+
+func TestExtractMediaFromTG_WebPageAndPaidMediaAndStory(t *testing.T) {
+	// 1. WebPage with embedded audio document
+	wpAudio := &tg.MessageMediaWebPage{
+		Webpage: &tg.WebPage{
+			URL: "https://example.com/audio",
+			Document: &tg.Document{
+				ID:       101,
+				MimeType: "audio/mpeg",
+				Size:     2048,
+				Attributes: []tg.DocumentAttributeClass{
+					&tg.DocumentAttributeAudio{
+						Duration: 180,
+						Title:    "Track 1",
+					},
+					&tg.DocumentAttributeFilename{
+						FileName: "song.mp3",
+					},
+				},
+			},
+		},
+	}
+	infoAudio := ExtractMediaFromTG(wpAudio)
+	if infoAudio == nil {
+		t.Fatal("expected non-nil MediaInfo for webpage with audio document")
+	}
+	if infoAudio.Type != "audio" || infoAudio.FileName != "song.mp3" || infoAudio.WebURL != "https://example.com/audio" {
+		t.Errorf("unexpected MediaInfo for audio webpage: %+v", infoAudio)
+	}
+	if infoAudio.Location == nil {
+		t.Error("expected non-nil Location for audio webpage document")
+	}
+
+	// 2. WebPage with embedded photo
+	wpPhoto := &tg.MessageMediaWebPage{
+		Webpage: &tg.WebPage{
+			URL: "https://example.com/pic",
+			Photo: &tg.Photo{
+				ID: 202,
+				Sizes: []tg.PhotoSizeClass{
+					&tg.PhotoSize{Type: "x", W: 800, H: 600, Size: 50000},
+				},
+			},
+		},
+	}
+	infoPhoto := ExtractMediaFromTG(wpPhoto)
+	if infoPhoto == nil {
+		t.Fatal("expected non-nil MediaInfo for webpage with photo")
+	}
+	if infoPhoto.Type != "photo" || infoPhoto.WebURL != "https://example.com/pic" {
+		t.Errorf("unexpected MediaInfo for photo webpage: %+v", infoPhoto)
+	}
+
+	// 3. WebPage without file attachment but with URL
+	wpURL := &tg.MessageMediaWebPage{
+		Webpage: &tg.WebPage{
+			URL: "https://example.com/post",
+		},
+	}
+	infoURL := ExtractMediaFromTG(wpURL)
+	if infoURL == nil {
+		t.Fatal("expected non-nil MediaInfo for webpage with URL")
+	}
+	if infoURL.Type != "webpage" || infoURL.WebURL != "https://example.com/post" || infoURL.Location != nil {
+		t.Errorf("unexpected MediaInfo for URL webpage: %+v", infoURL)
+	}
+
+	// 4. Paid media with purchased document
+	paidMedia := &tg.MessageMediaPaidMedia{
+		ExtendedMedia: []tg.MessageExtendedMediaClass{
+			&tg.MessageExtendedMedia{
+				Media: &tg.MessageMediaDocument{
+					Document: &tg.Document{
+						ID:       303,
+						MimeType: "video/mp4",
+						Size:     1048576,
+						Attributes: []tg.DocumentAttributeClass{
+							&tg.DocumentAttributeVideo{
+								Duration: 60,
+								W:        1920,
+								H:        1080,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	infoPaid := ExtractMediaFromTG(paidMedia)
+	if infoPaid == nil {
+		t.Fatal("expected non-nil MediaInfo for paid media")
+	}
+	if infoPaid.Type != "video" || infoPaid.Size != 1048576 {
+		t.Errorf("unexpected MediaInfo for paid media: %+v", infoPaid)
+	}
+
+	// 5. Story media
+	storyMedia := &tg.MessageMediaStory{
+		Story: &tg.StoryItem{
+			ID: 404,
+			Media: &tg.MessageMediaPhoto{
+				Photo: &tg.Photo{
+					ID: 405,
+					Sizes: []tg.PhotoSizeClass{
+						&tg.PhotoSize{Type: "m", W: 320, H: 240, Size: 15000},
+					},
+				},
+			},
+		},
+	}
+	infoStory := ExtractMediaFromTG(storyMedia)
+	if infoStory == nil {
+		t.Fatal("expected non-nil MediaInfo for story media")
+	}
+	if infoStory.Type != "photo" || infoStory.Size != 15000 {
+		t.Errorf("unexpected MediaInfo for story media: %+v", infoStory)
+	}
+}
+
+func TestContext_WithContextAndWithMedia(t *testing.T) {
+	ctx1 := context.Background()
+	ctx2, cancel := context.WithCancel(ctx1)
+	defer cancel()
+
+	orig := &Context{
+		Ctx:           ctx1,
+		CorrelationID: "corr-123",
+		Command:       "download",
+		Message: &Message{
+			ID:   1,
+			Text: ".download",
+		},
+	}
+
+	// WithContext
+	updatedCtx := orig.WithContext(ctx2)
+	if updatedCtx == orig {
+		t.Fatal("expected shallow copy from WithContext")
+	}
+	if updatedCtx.Ctx != ctx2 {
+		t.Errorf("expected updated context %v, got %v", ctx2, updatedCtx.Ctx)
+	}
+	if updatedCtx.CorrelationID != "corr-123" || updatedCtx.Command != "download" {
+		t.Errorf("fields corrupted after WithContext: %+v", updatedCtx)
+	}
+
+	// WithMedia
+	media := &MediaInfo{
+		Type:     "audio",
+		FileName: "song.mp3",
+		Size:     1024,
+	}
+	withMediaCtx := orig.WithMedia(media)
+	if withMediaCtx.Message.Media != media {
+		t.Errorf("expected message media to be set, got %+v", withMediaCtx.Message.Media)
+	}
+	if withMediaCtx.Message.MediaType != "audio" {
+		t.Errorf("expected media type audio, got %s", withMediaCtx.Message.MediaType)
+	}
+	// Verify original is untouched
+	if orig.Message.Media != nil {
+		t.Error("original message media was modified")
+	}
+}
+
+func TestMessage_URLs_WebURL(t *testing.T) {
+	msg := &Message{
+		Text: "check out this link",
+		Media: &MediaInfo{
+			Type:   "webpage",
+			WebURL: "https://example.com/webpage",
+		},
+	}
+
+	urls := msg.URLs()
+	if len(urls) != 1 || urls[0] != "https://example.com/webpage" {
+		t.Fatalf("expected [https://example.com/webpage], got %v", urls)
+	}
+
+	// Deduplication when entity has same URL
+	msg.Text = "https://example.com/webpage"
+	msg.Entities = []tg.MessageEntityClass{
+		&tg.MessageEntityURL{Offset: 0, Length: 27},
+	}
+	urlsDedup := msg.URLs()
+	if len(urlsDedup) != 1 {
+		t.Fatalf("expected 1 deduplicated URL, got %v", urlsDedup)
+	}
+}
+
+func TestDownloadMedia_PropagatesGetReplyError(t *testing.T) {
+	deadCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	mockSvc := &mockTelegramServicer{}
+	ctx := &Context{
+		Ctx:    deadCtx,
+		Svc:    mockSvc,
+		PeerID: &tg.InputPeerSelf{},
+		Message: &Message{
+			ID:        1,
+			ReplyToID: 42,
+		},
+	}
+
+	_, err := ctx.DownloadMedia(t.TempDir())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, context.Canceled) && !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("expected context canceled error to be propagated, got: %v", err)
 	}
 }

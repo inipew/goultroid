@@ -24,14 +24,19 @@ func (m *MediaFacade) DownloadMedia(destDir string) (string, error) {
 	}
 
 	var media *MediaInfo
-	if c.Message != nil && c.Message.Media != nil {
+	if c.Message != nil && c.Message.Media != nil && c.Message.Media.Location != nil {
 		media = c.Message.Media
 	}
 
-	if media == nil || media.Location == nil {
-		replied, err := c.GetReply()
-		if err == nil && replied != nil && replied.Media != nil {
-			media = replied.Media
+	if media == nil {
+		if c.Message != nil && c.Message.ReplyToID != 0 {
+			replied, err := c.GetReply()
+			if err != nil {
+				return "", fmt.Errorf("failed to fetch replied message: %w", err)
+			}
+			if replied != nil && replied.Media != nil && replied.Media.Location != nil {
+				media = replied.Media
+			}
 		}
 	}
 
@@ -85,6 +90,19 @@ func (m *MediaFacade) DownloadMedia(destDir string) (string, error) {
 			ext = ".webp"
 		}
 		fileName = fmt.Sprintf("media_%d%s", time.Now().UnixNano(), ext)
+	} else if filepath.Ext(fileName) == "" {
+		switch media.Type {
+		case "photo":
+			fileName += ".jpg"
+		case "video":
+			fileName += ".mp4"
+		case "audio":
+			fileName += ".mp3"
+		case "voice":
+			fileName += ".ogg"
+		case "sticker":
+			fileName += ".webp"
+		}
 	}
 
 	fileName = SanitizeFileName(fileName)

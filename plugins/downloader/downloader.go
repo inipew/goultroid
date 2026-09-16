@@ -170,12 +170,22 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 	}
 
 	// 2. Otherwise, check for media in replied or current message
+	var targetMedia *core.MediaInfo
 	var mediaSize int64
-	if ctx.Message != nil && ctx.Message.Media != nil {
-		mediaSize = ctx.Message.Media.Size
-	} else if reply, err := ctx.GetReply(); err == nil && reply != nil && reply.Media != nil {
-		mediaSize = reply.Media.Size
-	} else {
+
+	if ctx.Message != nil && ctx.Message.Media != nil && ctx.Message.Media.Location != nil {
+		targetMedia = ctx.Message.Media
+		mediaSize = targetMedia.Size
+	} else if reply, err := ctx.GetReply(); err == nil && reply != nil {
+		if reply.Media != nil && reply.Media.Location != nil {
+			targetMedia = reply.Media
+			mediaSize = targetMedia.Size
+		} else if len(reply.URLs()) > 0 {
+			return p.handleURLDownload(ctx, reply.URLs()[0])
+		}
+	}
+
+	if targetMedia == nil {
 		return ctx.EditOrReply("⚠️ <b>No media or URL found!</b> Reply to a media message or provide a valid download URL.")
 	}
 
@@ -203,6 +213,11 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 		return err
 	}
 
+	uiCtx := ctx
+	if targetMedia != nil {
+		uiCtx = uiCtx.WithMedia(targetMedia)
+	}
+
 	if p.jobs != nil {
 		jobID := fmt.Sprintf("dl-media-%d", time.Now().UnixNano())
 		idempKey := ""
@@ -216,20 +231,30 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 		job := jobs.JobDefinition{ID: jobID, ScopeOwner: "plugin:downloader", QuotaOwner: "telegram:download", HandlerType: "downloader.telegram_media", Payload: payload, Pool: "download", Class: "normal", Timeout: 10 * time.Minute, Resources: []tasks.ResourceRequirement{{Name: "download", Amount: 1}}, Enabled: true}
 		_ = idempKey
 		if err := p.jobs.Register(job); err == nil {
-			p.jobUI.Store(jobID, ctx)
-			return p.jobs.Trigger(ctx.Ctx, jobID)
+			p.jobUI.Store(jobID, uiCtx)
+			if err := p.jobs.Trigger(ctx.Ctx, jobID); err != nil {
+				p.jobUI.Delete(jobID)
+				return err
+			}
+			return nil
 		}
 	}
 
-	return p.executeMediaDownload(ctx.Ctx, ctx, saveDir, mediaSize)
+	return p.executeMediaDownload(ctx.Ctx, uiCtx, saveDir, mediaSize)
 }
 
 func (p *Plugin) executeMediaDownload(taskCtx context.Context, ctx *core.Context, saveDir string, mediaSize int64) error {
+	if taskCtx != nil && ctx != nil {
+		ctx = ctx.WithContext(taskCtx)
+	}
 	start := time.Now()
 
 	filePath, err := ctx.DownloadMedia(saveDir)
 	if err != nil {
-		return ctx.Edit(fmt.Sprintf("❌ Download failed: %v", err))
+		if ctx != nil {
+			return ctx.Edit(fmt.Sprintf("❌ Download failed: %v", err))
+		}
+		return fmt.Errorf("download failed: %w", err)
 	}
 
 	duration := time.Since(start)
@@ -300,6 +325,9 @@ func (p *Plugin) handleURLDownload(ctx *core.Context, rawURL string) error {
 }
 
 func (p *Plugin) executeURLDownload(taskCtx context.Context, ctx *core.Context, rawURL string) error {
+	if taskCtx != nil && ctx != nil {
+		ctx = ctx.WithContext(taskCtx)
+	}
 	if p.registry == nil {
 		_ = p.Init()
 	}
