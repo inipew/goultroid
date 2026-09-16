@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/runtime"
+	"github.com/inipew/goultroid/internal/ui"
 )
 
 var _ runtime.Component = (*Cache)(nil)
@@ -39,14 +40,39 @@ func cloneInlineResults(results []InlineResult) []InlineResult {
 	}
 	cloned := make([]InlineResult, len(results))
 	copy(cloned, results)
+	for i := range cloned {
+		if results[i].Markup == nil {
+			continue
+		}
+		markup := *results[i].Markup
+		markup.Rows = make([]ui.ButtonRow, len(results[i].Markup.Rows))
+		for rowIndex, row := range results[i].Markup.Rows {
+			markup.Rows[rowIndex] = make(ui.ButtonRow, len(row))
+			copy(markup.Rows[rowIndex], row)
+			for buttonIndex := range markup.Rows[rowIndex] {
+				markup.Rows[rowIndex][buttonIndex].Data = append([]byte(nil), row[buttonIndex].Data...)
+			}
+		}
+		cloned[i].Markup = &markup
+	}
 	return cloned
 }
 
 func estimateResultSize(r *InlineResult) int64 {
-	return int64(len(r.ID) + len(r.Type) + len(r.Title) + len(r.Description) +
+	size := int64(len(r.ID) + len(r.Type) + len(r.Title) + len(r.Description) +
 		len(r.Text) + len(r.ThumbURL) + len(r.URL) + len(r.MediaURL) +
 		len(r.MediaMimeType) + len(r.GameShortName) + len(r.Address) +
 		len(r.PhoneNumber) + len(r.FirstName) + len(r.LastName) + len(r.VCard) + 256)
+	if r.Markup != nil {
+		size += 64
+		for _, row := range r.Markup.Rows {
+			size += 24
+			for _, button := range row {
+				size += int64(len(button.Text)+len(button.Data)+len(button.URL)+len(button.InlineQuery)) + 64
+			}
+		}
+	}
+	return size
 }
 
 func estimateResultsSliceSize(results []InlineResult) int64 {

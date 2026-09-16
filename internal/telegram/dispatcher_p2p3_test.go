@@ -271,3 +271,23 @@ func TestDispatcher_PeerCoalescingDeduplication(t *testing.T) {
 		t.Fatalf("expected user 1001 in storage with hash 5555, found=%v, val=%+v, err=%v", found, val, err)
 	}
 }
+
+func TestDispatcher_PeerCoalescingBurstDoesNotDropRepeatedPeer(t *testing.T) {
+	dispatcher := NewDispatcher(core.NewRouter("."), nil, nil, zap.NewNop())
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	entities := tg.Entities{Users: map[int64]*tg.User{1001: {ID: 1001, AccessHash: 55}}}
+	for i := 0; i < 5000; i++ {
+		dispatcher.enqueuePeerEntities(entities)
+	}
+	_, dropped, _ := dispatcher.PeerCacheStats()
+	if dropped != 0 {
+		t.Fatalf("repeated peer burst dropped %d updates", dropped)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := dispatcher.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}

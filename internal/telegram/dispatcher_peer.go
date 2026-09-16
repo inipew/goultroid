@@ -9,12 +9,6 @@ import (
 	"go.uber.org/zap"
 )
 
-type peerUpdateJob struct {
-	users    []*tg.User
-	channels []*tg.Channel
-	chats    []*tg.Chat
-}
-
 // Ensure Dispatcher implements runtime.Component.
 var _ runtime.Component = (*Dispatcher)(nil)
 
@@ -42,6 +36,7 @@ func (d *Dispatcher) Health(ctx context.Context) runtime.ComponentHealth {
 const (
 	peerBatchTimeout = 100 * time.Millisecond
 	peerBatchMaxSize = 50
+	peerPendingLimit = 4096
 )
 
 func (d *Dispatcher) Start(ctx context.Context) error {
@@ -50,19 +45,22 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.peerQueue != nil {
+	if d.peerSignal != nil {
 		return nil
 	}
-	d.peerQueue = make(chan peerUpdateJob, 1024)
+	d.peerSignal = make(chan struct{}, 1)
+	d.peerUsers = make(map[int64]*tg.User)
+	d.peerChannels = make(map[int64]*tg.Channel)
+	d.peerChats = make(map[int64]*tg.Chat)
 	peerCtx, peerCancel := context.WithCancel(ctx)
 	d.peerCancel = peerCancel
 	d.peerDone = make(chan struct{})
 	peerProcessors := 1
 	d.peerWG.Add(peerProcessors)
-	q := d.peerQueue
+	signal := d.peerSignal
 	done := d.peerDone
 	for i := 0; i < peerProcessors; i++ {
-		go d.peerWorker(peerCtx, q)
+		go d.peerWorker(peerCtx, signal)
 	}
 	// One lifecycle-owned reaper per Dispatcher start. Stop/Drain never create
 	// waiter goroutines, so caller deadlines cannot accumulate detached joins.
@@ -73,33 +71,87 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 	return nil
 }
 
-func (d *Dispatcher) peerWorker(ctx context.Context, q <-chan peerUpdateJob) {
+func (d *Dispatcher) enqueuePeerEntities(e tg.Entities) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.stopping.Load() || d.peerSignal == nil {
+		if !d.stopping.Load() {
+			d.peerDropped.Add(1)
+		}
+		return
+	}
+	accepted := false
+	for id, user := range e.Users {
+		if user == nil {
+			continue
+		}
+		if _, exists := d.peerUsers[id]; exists || len(d.peerUsers)+len(d.peerChannels)+len(d.peerChats) < peerPendingLimit {
+			d.peerUsers[id] = user
+			accepted = true
+		} else {
+			d.peerDropped.Add(1)
+		}
+	}
+	for id, channel := range e.Channels {
+		if channel == nil {
+			continue
+		}
+		if _, exists := d.peerChannels[id]; exists || len(d.peerUsers)+len(d.peerChannels)+len(d.peerChats) < peerPendingLimit {
+			d.peerChannels[id] = channel
+			accepted = true
+		} else {
+			d.peerDropped.Add(1)
+		}
+	}
+	for id, chat := range e.Chats {
+		if chat == nil {
+			continue
+		}
+		if _, exists := d.peerChats[id]; exists || len(d.peerUsers)+len(d.peerChannels)+len(d.peerChats) < peerPendingLimit {
+			d.peerChats[id] = chat
+			accepted = true
+		} else {
+			d.peerDropped.Add(1)
+		}
+	}
+	if accepted {
+		d.peerEnqueued.Add(1)
+		select {
+		case d.peerSignal <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (d *Dispatcher) takePendingPeers() ([]*tg.User, []*tg.Channel, []*tg.Chat) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	users := make([]*tg.User, 0, len(d.peerUsers))
+	for _, user := range d.peerUsers {
+		users = append(users, user)
+	}
+	channels := make([]*tg.Channel, 0, len(d.peerChannels))
+	for _, channel := range d.peerChannels {
+		channels = append(channels, channel)
+	}
+	chats := make([]*tg.Chat, 0, len(d.peerChats))
+	for _, chat := range d.peerChats {
+		chats = append(chats, chat)
+	}
+	d.peerUsers = make(map[int64]*tg.User)
+	d.peerChannels = make(map[int64]*tg.Channel)
+	d.peerChats = make(map[int64]*tg.Chat)
+	return users, channels, chats
+}
+
+func (d *Dispatcher) peerWorker(ctx context.Context, signal <-chan struct{}) {
 	defer d.peerWG.Done()
 
-	users := make(map[int64]*tg.User)
-	channels := make(map[int64]*tg.Channel)
-	chats := make(map[int64]*tg.Chat)
-
 	flush := func() {
-		if len(users) == 0 && len(channels) == 0 && len(chats) == 0 {
+		uList, chList, cList := d.takePendingPeers()
+		if len(uList) == 0 && len(chList) == 0 && len(cList) == 0 {
 			return
 		}
-		uList := make([]*tg.User, 0, len(users))
-		for _, u := range users {
-			uList = append(uList, u)
-		}
-		chList := make([]*tg.Channel, 0, len(channels))
-		for _, ch := range channels {
-			chList = append(chList, ch)
-		}
-		cList := make([]*tg.Chat, 0, len(chats))
-		for _, c := range chats {
-			cList = append(cList, c)
-		}
-
-		users = make(map[int64]*tg.User)
-		channels = make(map[int64]*tg.Channel)
-		chats = make(map[int64]*tg.Chat)
 
 		saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -130,28 +182,15 @@ func (d *Dispatcher) peerWorker(ctx context.Context, q <-chan peerUpdateJob) {
 			flush()
 			return
 
-		case job, ok := <-q:
+		case _, ok := <-signal:
 			if !ok {
 				flush()
 				return
 			}
-			for _, u := range job.users {
-				if u != nil {
-					users[u.ID] = u
-				}
-			}
-			for _, ch := range job.channels {
-				if ch != nil {
-					channels[ch.ID] = ch
-				}
-			}
-			for _, c := range job.chats {
-				if c != nil {
-					chats[c.ID] = c
-				}
-			}
-
-			if len(users)+len(channels)+len(chats) >= peerBatchMaxSize {
+			d.mu.RLock()
+			pending := len(d.peerUsers) + len(d.peerChannels) + len(d.peerChats)
+			d.mu.RUnlock()
+			if pending >= peerBatchMaxSize {
 				if timerActive && !timer.Stop() {
 					select {
 					case <-timer.C:
@@ -198,13 +237,13 @@ func (d *Dispatcher) Drain(ctx context.Context) error {
 func (d *Dispatcher) beginPeerStop() {
 	d.stopping.Store(true)
 	d.mu.Lock()
-	q := d.peerQueue
-	d.peerQueue = nil
+	signal := d.peerSignal
+	d.peerSignal = nil
 	done := d.peerDone
 	d.mu.Unlock()
 	d.peerStopOnce.Do(func() {
-		if q != nil {
-			close(q)
+		if signal != nil {
+			close(signal)
 			return
 		}
 		// Stop-before-Start: no worker reaper exists, so complete the already

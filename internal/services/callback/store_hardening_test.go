@@ -92,6 +92,32 @@ func TestStateStore_DefensiveCopy(t *testing.T) {
 	}
 }
 
+func TestStateStore_DefensiveCopyNestedGraph(t *testing.T) {
+	s := NewStateStore()
+	original := map[string][]byte{"token": []byte("secret")}
+	id := s.Store(original, 1001, time.Minute)
+	if id == "" {
+		t.Fatal("expected nested state to be accepted")
+	}
+	original["token"][0] = 'X'
+	entry, err := s.GetEntry(id)
+	if err != nil {
+		t.Fatalf("GetEntry: %v", err)
+	}
+	got := entry.Data.(map[string][]byte)
+	if string(got["token"]) != "secret" {
+		t.Fatalf("input mutation reached store: %q", got["token"])
+	}
+	got["token"][0] = 'Y'
+	entry, err = s.GetEntry(id)
+	if err != nil {
+		t.Fatalf("second GetEntry: %v", err)
+	}
+	if value := string(entry.Data.(map[string][]byte)["token"]); value != "secret" {
+		t.Fatalf("returned mutation reached store: %q", value)
+	}
+}
+
 func TestStateStore_RetainedBytesTrackingAndEviction(t *testing.T) {
 	s := NewStateStore()
 	payload := []byte("sample-data-payload")

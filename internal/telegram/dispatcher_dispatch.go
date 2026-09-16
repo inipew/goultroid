@@ -53,31 +53,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	if len(e.Users) > 0 || len(e.Channels) > 0 || len(e.Chats) > 0 {
 		resolver := d.getResolver()
 		if r, ok := resolver.(*Resolver); ok && r.storage != nil {
-			job := peerUpdateJob{}
-			for _, u := range e.Users {
-				job.users = append(job.users, u)
-			}
-			for _, ch := range e.Channels {
-				job.channels = append(job.channels, ch)
-			}
-			for _, c := range e.Chats {
-				job.chats = append(job.chats, c)
-			}
-			d.mu.RLock()
-			if !d.stopping.Load() && d.peerQueue != nil {
-				select {
-				case d.peerQueue <- job:
-					d.peerEnqueued.Add(1)
-				default:
-					d.peerDropped.Add(1)
-				}
-			} else if !d.stopping.Load() {
-				// Start normally creates the bounded peer queue before transport
-				// ingress begins. If lifecycle wiring is incomplete, fail boundedly
-				// instead of spawning an untracked persistence goroutine.
-				d.peerDropped.Add(1)
-			}
-			d.mu.RUnlock()
+			d.enqueuePeerEntities(e)
 		}
 	}
 

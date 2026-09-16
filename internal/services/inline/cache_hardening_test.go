@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/inipew/goultroid/internal/ui"
 )
 
 func TestCache_DefensiveCopy(t *testing.T) {
@@ -34,6 +36,28 @@ func TestCache_DefensiveCopy(t *testing.T) {
 	}
 	if cached2[0].Title != "Original Title" {
 		t.Fatalf("expected 'Original Title', got '%s' (cache corrupted by return slice mutation)", cached2[0].Title)
+	}
+}
+
+func TestCache_DefensiveCopyMarkup(t *testing.T) {
+	c := NewCache(time.Minute)
+	data := []byte("action")
+	markup := ui.NewMarkup(ui.ButtonRow{ui.NewCallbackButton("Run", data)})
+	results := []InlineResult{{ID: "res-1", Markup: &markup}}
+	c.SetScoped("markup", results, time.Minute)
+	data[0] = 'X'
+	results[0].Markup.Rows[0][0].Text = "Changed"
+	cached, ok := c.GetScoped("markup")
+	if !ok {
+		t.Fatal("expected cached markup")
+	}
+	if cached[0].Markup.Rows[0][0].Text != "Run" || string(cached[0].Markup.Rows[0][0].Data) != "action" {
+		t.Fatalf("input mutation reached cache: %+v", cached[0].Markup.Rows[0][0])
+	}
+	cached[0].Markup.Rows[0][0].Data[0] = 'Y'
+	again, _ := c.GetScoped("markup")
+	if string(again[0].Markup.Rows[0][0].Data) != "action" {
+		t.Fatal("returned markup mutation reached cache")
 	}
 }
 

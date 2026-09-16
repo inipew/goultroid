@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/idempotency"
 	"github.com/inipew/goultroid/internal/services/callback"
@@ -46,7 +47,10 @@ type Dispatcher struct {
 	totalCommands    atomic.Int64
 	mu               sync.RWMutex
 
-	peerQueue      chan peerUpdateJob
+	peerSignal     chan struct{}
+	peerUsers      map[int64]*tg.User
+	peerChannels   map[int64]*tg.Channel
+	peerChats      map[int64]*tg.Chat
 	peerWG         sync.WaitGroup
 	peerStopOnce   sync.Once
 	peerDone       chan struct{}
