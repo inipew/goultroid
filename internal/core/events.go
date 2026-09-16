@@ -24,6 +24,7 @@ const (
 	EventTypeAdminAction     EventType = "admin.action"
 	EventTypePMPermit        EventType = "pmpermit.action"
 	EventTypeSettingChanged  EventType = "setting.changed"
+	EventTypeJobLifecycle    EventType = "job.lifecycle"
 )
 
 type EventMeta struct {
@@ -37,6 +38,21 @@ type Event interface {
 	Timestamp() time.Time
 	Meta() EventMeta
 }
+
+// JobLifecycleEvent is the application-facing projection of a durable jobs
+// outbox row. Payload remains versioned opaque data owned by the producer.
+type JobLifecycleEvent struct {
+	MetaData     EventMeta
+	At           time.Time
+	OccurrenceID string
+	Kind         string
+	Payload      []byte
+}
+
+func (e *JobLifecycleEvent) Type() EventType      { return EventTypeJobLifecycle }
+func (e *JobLifecycleEvent) Timestamp() time.Time { return e.At }
+func (e *JobLifecycleEvent) Meta() EventMeta      { return e.MetaData }
+func (e *JobLifecycleEvent) OrderingKey() string  { return "job:" + e.OccurrenceID }
 
 // EventPriority represents the relative urgency of an event.
 type EventPriority int

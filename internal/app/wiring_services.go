@@ -32,8 +32,17 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 	settingsService := settings.NewService(settingsRepo, settingsRegistry, core.eventBus)
 
 	schedRepo := scheduler.NewSQLiteRepository(core.db.DB)
-	schedEngine := scheduler.NewEngine(schedRepo, tg.client.Service, core.router, core.perms, logger)
-	schedEngine.SetExecutor(tg.dispatcher.Executor())
+	schedEngine := scheduler.NewEngine(schedRepo, logger)
+	schedEngine.SetPrivilegedChecker(core.perms)
+	if core.jobsManager != nil {
+		actionHandler := scheduledActionHandler{
+			repo: schedRepo, service: tg.client.Service, router: core.router,
+			perms: core.perms, executor: tg.dispatcher.Executor(), jobs: core.jobsManager,
+		}
+		if err := core.jobsManager.RegisterHandler("scheduler.action", actionHandler.run); err != nil {
+			return nil, fmt.Errorf("register scheduled action handler: %w", err)
+		}
+	}
 	if core.taskEngine != nil {
 		schedEngine.SetTasks(core.taskEngine)
 	}

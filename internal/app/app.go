@@ -208,7 +208,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 			return nil, fmt.Errorf("register taskengine component: %w", err)
 		}
 	}
-	if err := rt.Register(coreDeps.jobsManager); err != nil {
+	if err := rt.Register(dependencyComponent{Component: coreDeps.jobsManager, dependencies: []string{"taskengine", "eventbus"}}); err != nil {
 		return nil, fmt.Errorf("register jobs component: %w", err)
 	}
 	if err := rt.Register(domServices.schedEngine); err != nil {

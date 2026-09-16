@@ -26,7 +26,10 @@ func (e *Engine) authorizeJobAccess(ctx context.Context, requesterID, chatID, jo
 	if job.CreatedBy == requesterID {
 		return job, nil
 	}
-	if e.perms != nil && e.perms.IsSudo(requesterID) {
+	e.runMu.Lock()
+	access := e.access
+	e.runMu.Unlock()
+	if access != nil && access.IsSudo(requesterID) {
 		return job, nil
 	}
 	return nil, core.ErrPermissionDenied

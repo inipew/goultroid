@@ -349,4 +349,15 @@ func TestStoreCommitAttemptResultWithOutbox(t *testing.T) {
 	if eventCount != 1 {
 		t.Fatalf("expected 1 outbox event, got %d", eventCount)
 	}
+	events, err := s.ListPendingOutbox(ctx, 10)
+	if err != nil || len(events) != 1 || events[0].ID != "event-1" {
+		t.Fatalf("pending outbox = %+v, %v", events, err)
+	}
+	if err := s.MarkOutboxDelivered(ctx, "event-1"); err != nil {
+		t.Fatalf("mark outbox delivered: %v", err)
+	}
+	events, err = s.ListPendingOutbox(ctx, 10)
+	if err != nil || len(events) != 0 {
+		t.Fatalf("delivered outbox remained pending: %+v, %v", events, err)
+	}
 }

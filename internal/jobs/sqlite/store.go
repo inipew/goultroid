@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/inipew/goultroid/internal/jobs"
@@ -30,6 +31,40 @@ type Store struct {
 // NewStore creates a new Store instance.
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
+}
+
+// ListDefinitions restores durable definitions before recovery starts.
+func (s *Store) ListDefinitions(ctx context.Context) ([]jobs.JobDefinition, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, scope_owner, quota_owner, handler_type, version, payload,
+		       pool, class, timeout_ms, retry_policy, enabled, revision
+		FROM job_definitions ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("list job definitions: %w", err)
+	}
+	defer rows.Close()
+	var definitions []jobs.JobDefinition
+	for rows.Next() {
+		var definition jobs.JobDefinition
+		var timeoutMS int64
+		var retryJSON string
+		var enabled int
+		if err := rows.Scan(&definition.ID, &definition.ScopeOwner, &definition.QuotaOwner,
+			&definition.HandlerType, &definition.Version, &definition.Payload, &definition.Pool,
+			&definition.Class, &timeoutMS, &retryJSON, &enabled, &definition.Revision); err != nil {
+			return nil, fmt.Errorf("scan job definition: %w", err)
+		}
+		definition.Timeout = time.Duration(timeoutMS) * time.Millisecond
+		definition.Enabled = enabled != 0
+		if retryJSON != "" {
+			if err := json.Unmarshal([]byte(retryJSON), &definition.RetryPolicy); err != nil {
+				return nil, fmt.Errorf("decode retry policy for %s: %w", definition.ID, err)
+			}
+		}
+		definition.Payload = append([]byte(nil), definition.Payload...)
+		definitions = append(definitions, definition)
+	}
+	return definitions, rows.Err()
 }
 
 // SaveDefinition saves or updates a JobDefinition.
@@ -661,6 +696,20 @@ func (s *Store) SaveSchedule(ctx context.Context, sched *jobs.JobSchedule) error
 	return nil
 }
 
+// DisableSchedule prevents future materialization without deleting audit
+// history or invalidating occurrences that have already been materialized.
+func (s *Store) DisableSchedule(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE job_schedules
+		SET enabled = 0, revision = revision + 1, updated_at = ?
+		WHERE id = ? AND enabled = 1`, time.Now().UTC(), id)
+	if err != nil {
+		return fmt.Errorf("disable job schedule %s: %w", id, err)
+	}
+	_, err = result.RowsAffected()
+	return err
+}
+
 // GetSchedule loads a JobSchedule by ID.
 func (s *Store) GetSchedule(ctx context.Context, id string) (*jobs.JobSchedule, error) {
 	query := `
@@ -689,6 +738,93 @@ func (s *Store) GetSchedule(ctx context.Context, id string) (*jobs.JobSchedule, 
 	sched.OverlapPolicy = jobs.OverlapPolicy(overlapStr)
 	sched.Enabled = enabledInt == 1
 	return &sched, nil
+}
+
+func (s *Store) ListDueSchedules(ctx context.Context, now time.Time, limit int) ([]jobs.JobSchedule, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, job_id, recurrence, interval_seconds, timezone, next_due_at,
+		       misfire_policy, overlap_policy, enabled, revision
+		FROM job_schedules WHERE enabled = 1 AND next_due_at <= ?
+		ORDER BY next_due_at, id LIMIT ?`, now.UTC(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list due job schedules: %w", err)
+	}
+	defer rows.Close()
+	var schedules []jobs.JobSchedule
+	for rows.Next() {
+		var schedule jobs.JobSchedule
+		var intervalSeconds int64
+		var misfire, overlap string
+		var enabled int
+		if err := rows.Scan(&schedule.ID, &schedule.JobID, &schedule.Recurrence, &intervalSeconds,
+			&schedule.Timezone, &schedule.NextDueAt, &misfire, &overlap, &enabled, &schedule.Revision); err != nil {
+			return nil, err
+		}
+		schedule.Interval = time.Duration(intervalSeconds) * time.Second
+		schedule.MisfirePolicy = jobs.MisfirePolicy(misfire)
+		schedule.OverlapPolicy = jobs.OverlapPolicy(overlap)
+		schedule.Enabled = enabled != 0
+		schedules = append(schedules, schedule)
+	}
+	return schedules, rows.Err()
+}
+
+func (s *Store) EarliestScheduleDue(ctx context.Context) (time.Time, bool, error) {
+	// SQLite aggregate expressions lose the declared DATETIME column type and
+	// modernc/sqlite consequently returns MIN(...) as text rather than time.Time.
+	var raw any
+	if err := s.db.QueryRowContext(ctx, `SELECT MIN(next_due_at) FROM job_schedules WHERE enabled = 1`).Scan(&raw); err != nil {
+		return time.Time{}, false, err
+	}
+	return parseAggregateTime(raw)
+}
+
+func parseAggregateTime(raw any) (time.Time, bool, error) {
+	if raw == nil {
+		return time.Time{}, false, nil
+	}
+	if value, ok := raw.(time.Time); ok {
+		return value, true, nil
+	}
+	var value string
+	switch typed := raw.(type) {
+	case string:
+		value = typed
+	case []byte:
+		value = string(typed)
+	default:
+		return time.Time{}, false, fmt.Errorf("unexpected aggregate time type %T", raw)
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false, nil
+	}
+	if index := strings.Index(value, " m="); index >= 0 {
+		value = value[:index]
+	}
+	for _, layout := range []string{
+		"2006-01-02 15:04:05.999999999 -0700 MST",
+		time.RFC3339Nano,
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05",
+	} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed, true, nil
+		}
+	}
+	return time.Time{}, false, fmt.Errorf("parse aggregate schedule time %q", value)
+}
+
+func (s *Store) CutoverActive(ctx context.Context) (bool, error) {
+	var mode string
+	if err := s.db.QueryRowContext(ctx, `SELECT mode FROM execution_runtime_state WHERE id = 1`).Scan(&mode); err != nil {
+		return false, err
+	}
+	return mode == "redesigned", nil
 }
 
 // MaterializeDueSchedule atomically creates an occurrence from a due schedule and advances next_due_at (ADR 0006 §7.3).
@@ -757,8 +893,12 @@ func (s *Store) MaterializeDueSchedule(ctx context.Context, scheduleID string, n
 		return nil, fmt.Errorf("materialize occurrence: %w", err)
 	}
 
-	// Advance schedule
-	if _, err := tx.ExecContext(ctx, `UPDATE job_schedules SET next_due_at = ?, revision = revision + 1, updated_at = ? WHERE id = ?`, nextDue.UTC(), now, scheduleID); err != nil {
+	// Advance recurring schedules; one-shot schedules are disabled atomically.
+	enabledAfter := 1
+	if recurrence == "once" {
+		enabledAfter = 0
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE job_schedules SET next_due_at = ?, enabled = ?, revision = revision + 1, updated_at = ? WHERE id = ?`, nextDue.UTC(), enabledAfter, now, scheduleID); err != nil {
 		return nil, fmt.Errorf("advance schedule next due: %w", err)
 	}
 
@@ -836,6 +976,46 @@ func (s *Store) RecordOutboxEvent(ctx context.Context, eventID, occurrenceID, ki
 	_, err := s.db.ExecContext(ctx, query, eventID, occurrenceID, kind, payload, now)
 	if err != nil {
 		return fmt.Errorf("record outbox event: %w", err)
+	}
+	return nil
+}
+
+// ListPendingOutbox returns a bounded ordered delivery batch.
+func (s *Store) ListPendingOutbox(ctx context.Context, limit int) ([]jobs.OutboxEvent, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT event_id, occurrence_id, kind, payload, committed_at
+		FROM job_outbox WHERE delivery_state = 'pending'
+		ORDER BY committed_at, event_id LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pending job outbox: %w", err)
+	}
+	defer rows.Close()
+	events := make([]jobs.OutboxEvent, 0, limit)
+	for rows.Next() {
+		var event jobs.OutboxEvent
+		if err := rows.Scan(&event.ID, &event.OccurrenceID, &event.Kind, &event.Payload, &event.CommittedAt); err != nil {
+			return nil, fmt.Errorf("scan pending job outbox: %w", err)
+		}
+		event.Payload = append([]byte(nil), event.Payload...)
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
+func (s *Store) MarkOutboxDelivered(ctx context.Context, eventID string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE job_outbox SET delivery_state = 'delivered' WHERE event_id = ? AND delivery_state = 'pending'`, eventID)
+	if err != nil {
+		return fmt.Errorf("mark job outbox delivered: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return errors.New("job outbox event is not pending")
 	}
 	return nil
 }

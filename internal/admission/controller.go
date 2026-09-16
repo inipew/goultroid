@@ -234,6 +234,12 @@ func (c *Controller) ensureActiveOwner(ps *poolState, class tasks.PriorityClass,
 // SelectCandidate chooses the next eligible QueueEntry for dispatch using hierarchical DRR (ADR 0006 §6.2).
 // Returns ErrNoEligibleTask if no candidates are currently eligible (e.g. owners at MaxActive or ordering blocked).
 func (c *Controller) SelectCandidate(pool tasks.PoolID) (*QueueEntry, error) {
+	return c.SelectCandidateEligible(pool, nil)
+}
+
+// SelectCandidateEligible applies an additional coordinator-owned resource
+// predicate before mutating queue, quota, or ordering state.
+func (c *Controller) SelectCandidateEligible(pool tasks.PoolID, eligible func(tasks.WorkSpec) bool) (*QueueEntry, error) {
 	ps, ok := c.pools[pool]
 	if !ok || len(ps.activeClasses) == 0 {
 		return nil, ErrNoEligibleTask
@@ -323,6 +329,10 @@ func (c *Controller) SelectCandidate(pool tasks.PoolID) (*QueueEntry, error) {
 					continue
 				}
 			}
+			if eligible != nil && !eligible(head.Spec) {
+				cursor++
+				continue
+			}
 
 			// Found eligible candidate!
 			// Debit cost = 1 from class deficit and owner deficit
@@ -337,6 +347,7 @@ func (c *Controller) SelectCandidate(pool tasks.PoolID) (*QueueEntry, error) {
 
 			c.ownerWaitingCount[owner]--
 			c.ownerWaitingBytes[owner] -= candidate.PayloadSize
+			c.compactOwnerCounters(owner)
 			delete(c.taskByID, candidate.Spec.ID)
 
 			// Record active dispatch
@@ -370,10 +381,23 @@ func (c *Controller) OnTaskTerminal(spec tasks.WorkSpec) {
 	if c.ownerActiveCount[owner] > 0 {
 		c.ownerActiveCount[owner]--
 	}
+	c.compactOwnerCounters(owner)
 	if spec.OrderingKey != "" {
 		if c.orderingLocks[spec.OrderingKey] == spec.ID {
 			delete(c.orderingLocks, spec.OrderingKey)
 		}
+	}
+}
+
+func (c *Controller) compactOwnerCounters(owner tasks.OwnerID) {
+	if c.ownerWaitingCount[owner] == 0 {
+		delete(c.ownerWaitingCount, owner)
+	}
+	if c.ownerWaitingBytes[owner] == 0 {
+		delete(c.ownerWaitingBytes, owner)
+	}
+	if c.ownerActiveCount[owner] == 0 {
+		delete(c.ownerActiveCount, owner)
 	}
 }
 
@@ -404,6 +428,7 @@ func (c *Controller) RemoveTask(id tasks.TaskID) (*QueueEntry, bool) {
 
 	c.ownerWaitingCount[spec.QuotaOwner]--
 	c.ownerWaitingBytes[spec.QuotaOwner] -= entry.PayloadSize
+	c.compactOwnerCounters(spec.QuotaOwner)
 	delete(c.taskByID, id)
 
 	return entry, true
@@ -432,6 +457,7 @@ func (c *Controller) PopExpired(pool tasks.PoolID, now time.Time) []*QueueEntry 
 
 		c.ownerWaitingCount[spec.QuotaOwner]--
 		c.ownerWaitingBytes[spec.QuotaOwner] -= entry.PayloadSize
+		c.compactOwnerCounters(spec.QuotaOwner)
 		delete(c.taskByID, spec.ID)
 	}
 	return expired

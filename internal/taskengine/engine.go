@@ -50,6 +50,11 @@ type Config struct {
 	// TerminalTTL evicts terminal records older than the TTL on the sweep
 	// path. Zero disables TTL eviction (count/byte eviction still applies).
 	TerminalTTL time.Duration
+	// MaxScopeTombstones bounds revoked scope generations retained to fence
+	// late submissions. Zero means the default.
+	MaxScopeTombstones int
+	// ResourceCapacities defines dispatch-time resource budgets by stable name.
+	ResourceCapacities map[string]int64
 }
 
 // DefaultConfig provides standard execution coordinator settings.
@@ -69,6 +74,7 @@ var DefaultConfig = Config{
 	MaxOutputBytes:      DefaultMaxOutputBytes,
 	MaxFailureBytes:     DefaultMaxFailureBytes,
 	DeliveryConcurrency: DefaultDeliveryConcurrency,
+	MaxScopeTombstones:  4096,
 }
 
 type workerAssignment struct {
@@ -76,6 +82,12 @@ type workerAssignment struct {
 	spec    tasks.WorkSpec
 	permit  *permit
 	taskCtx context.Context
+}
+
+// HandlerResolver turns a stable handler reference plus immutable input into
+// the physical execution closure. Resolution happens during admission.
+type HandlerResolver interface {
+	ResolveHandler(string, any) (tasks.HandlerFunc, error)
 }
 
 type taskRecord struct {
@@ -185,6 +197,25 @@ type engineStats struct {
 	durabilityQueue int
 	durabilityCap   int
 	durabilityFail  int64
+	scopeTombstones int
+}
+
+// RuntimeStats is a bounded-cardinality snapshot of execution coordination.
+type RuntimeStats struct {
+	ResultSlotsHeld int
+	ResultCapacity  int
+	ActiveTasks     int
+	RetainedBytes   int64
+	RetainedCap     int64
+	TerminalCount   int
+	CommitPending   int
+	DeliveryQueued  int
+	DeliveryCap     int
+	DeliveryFailed  int64
+	DurabilityQueue int
+	DurabilityCap   int
+	DurabilityFail  int64
+	ScopeTombstones int
 }
 
 // Engine coordinates admission, fairness, physical worker permits, result credits, and lifecycles.
@@ -192,13 +223,16 @@ type engineStats struct {
 type Engine struct {
 	mu sync.Mutex
 
-	config Config
-	adm    *admission.Controller
+	config    Config
+	configErr error
+	adm       *admission.Controller
 
 	// ---- runLoop-owned execution state ----
 	idleSlots         map[tasks.PoolID][]int
 	poolConcurrencies map[tasks.PoolID]int
 	poolGenerations   map[tasks.PoolID]uint64
+	resourceCapacity  map[string]int64
+	resourceUsed      map[string]int64
 	dispatchEpoch     uint64
 
 	workerMailboxes map[tasks.PoolID][]chan workerAssignment
@@ -208,6 +242,8 @@ type Engine struct {
 
 	registry            map[tasks.TaskID]*taskRecord
 	cancelledScopes     map[tasks.ScopeIdentity]tasks.Cause
+	cancelledScopeOrder []tasks.ScopeIdentity
+	maxScopeTombstones  int
 	terminalOrder       []tasks.TaskID
 	maxTerminalRetained int
 
@@ -219,10 +255,11 @@ type Engine struct {
 	terminalTTL      time.Duration
 
 	// ---- runLoop-owned durability ----
-	commitPump    CommitPump
-	commitSeq     uint64
-	commitPending int
-	commitWaiters map[uint64]context.CancelFunc
+	commitPump      CommitPump
+	handlerResolver HandlerResolver
+	commitSeq       uint64
+	commitPending   int
+	commitWaiters   map[uint64]context.CancelFunc
 
 	decisionTimeout time.Duration
 	inboxCap        int
@@ -274,6 +311,9 @@ func ValidateConfig(cfg Config) error {
 	if cfg.TerminalTTL < 0 {
 		return errors.New("taskengine: TerminalTTL cannot be negative")
 	}
+	if cfg.MaxScopeTombstones < 0 {
+		return errors.New("taskengine: MaxScopeTombstones cannot be negative")
+	}
 	for poolID, pcfg := range cfg.Pools {
 		if poolID == "" {
 			return errors.New("taskengine: pool ID cannot be empty")
@@ -288,11 +328,17 @@ func ValidateConfig(cfg Config) error {
 			return fmt.Errorf("taskengine: pool %s payload budget cannot be negative", poolID)
 		}
 	}
+	for name, capacity := range cfg.ResourceCapacities {
+		if name == "" || capacity <= 0 {
+			return errors.New("taskengine: resource capacities need a name and positive capacity")
+		}
+	}
 	return nil
 }
 
 // NewEngine constructs a TaskEngine with the specified configuration.
 func NewEngine(cfg Config) *Engine {
+	configErr := ValidateConfig(cfg)
 	if cfg.ResultCapacity <= 0 {
 		cfg.ResultCapacity = DefaultConfig.ResultCapacity
 	}
@@ -305,6 +351,11 @@ func NewEngine(cfg Config) *Engine {
 		copiedPools[k] = v
 	}
 	cfg.Pools = copiedPools
+	resourceCapacities := make(map[string]int64, len(cfg.ResourceCapacities))
+	for name, capacity := range cfg.ResourceCapacities {
+		resourceCapacities[name] = capacity
+	}
+	cfg.ResourceCapacities = resourceCapacities
 
 	admPoolConfigs := make(map[tasks.PoolID]admission.PoolConfig, len(cfg.Pools))
 	idleSlots := make(map[tasks.PoolID][]int, len(cfg.Pools))
@@ -337,6 +388,10 @@ func NewEngine(cfg Config) *Engine {
 	maxFailure := cfg.MaxFailureBytes
 	if maxFailure <= 0 {
 		maxFailure = DefaultMaxFailureBytes
+	}
+	maxScopeTombstones := cfg.MaxScopeTombstones
+	if maxScopeTombstones <= 0 {
+		maxScopeTombstones = DefaultConfig.MaxScopeTombstones
 	}
 	deliveryWorkers := cfg.DeliveryConcurrency
 	if deliveryWorkers <= 0 {
@@ -374,10 +429,13 @@ func NewEngine(cfg Config) *Engine {
 		idleSlots:           idleSlots,
 		poolConcurrencies:   concurrencies,
 		poolGenerations:     generations,
+		resourceCapacity:    resourceCapacities,
+		resourceUsed:        make(map[string]int64, len(resourceCapacities)),
 		workerMailboxes:     mailboxes,
 		resultCapacity:      cfg.ResultCapacity,
 		registry:            make(map[tasks.TaskID]*taskRecord),
 		cancelledScopes:     make(map[tasks.ScopeIdentity]tasks.Cause),
+		maxScopeTombstones:  maxScopeTombstones,
 		maxTerminalRetained: maxTerminal,
 		maxRetainedBytes:    maxRetained,
 		maxOutputBytes:      maxOutput,
@@ -389,6 +447,7 @@ func NewEngine(cfg Config) *Engine {
 		durability:          newDurabilityLane(defaultDurabilityConcurrency, cfg.ResultCapacity),
 		drainDone:           make(chan struct{}),
 		runtimeDone:         make(chan struct{}),
+		configErr:           configErr,
 	}
 }
 
@@ -403,6 +462,9 @@ func (e *Engine) Start(ctx context.Context) error {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.configErr != nil {
+		return e.configErr
+	}
 	if e.runStarted {
 		return errors.New("task engine already started")
 	}
@@ -543,6 +605,7 @@ func (e *Engine) handleRequest(ctx context.Context, req engineRequest) {
 			durabilityQueue: e.durability.queueLen(),
 			durabilityCap:   e.durability.queueCap(),
 			durabilityFail:  e.durability.failureCount(),
+			scopeTombstones: len(e.cancelledScopes),
 		}}
 	case opWorkerIdle:
 		e.markWorkerIdle(req.pool, req.slotID)
@@ -720,6 +783,13 @@ func (e *Engine) admitSubmit(loopCtx context.Context, callerCtx context.Context,
 	if _, exists := e.registry[spec.ID]; exists {
 		return nil, errors.New("task id already registered")
 	}
+	if spec.Handler == nil && spec.HandlerRef != "" && e.handlerResolver != nil {
+		handler, err := e.handlerResolver.ResolveHandler(spec.HandlerRef, spec.Input)
+		if err != nil || handler == nil {
+			return nil, tasks.NewAdmissionError(tasks.ReasonUnknownHandler, errors.Join(tasks.ErrUnknownHandler, err))
+		}
+		spec.Handler = handler
+	}
 	if spec.Handler == nil {
 		return nil, tasks.NewAdmissionError(tasks.ReasonUnknownHandler, tasks.ErrUnknownHandler)
 	}
@@ -748,6 +818,12 @@ func (e *Engine) admitSubmit(loopCtx context.Context, callerCtx context.Context,
 	if spec.Job != nil {
 		payloadBytes += jobRefBytes
 	}
+	for _, requirement := range spec.Resources {
+		capacity, configured := e.resourceCapacity[requirement.Name]
+		if !configured || requirement.Amount > capacity {
+			return nil, tasks.NewAdmissionError(tasks.ReasonResourceUnavailable, tasks.ErrResourceUnavailable)
+		}
+	}
 	if err := e.adm.CanAdmit(spec, payloadBytes); err != nil {
 		return nil, err
 	}
@@ -766,6 +842,7 @@ func (e *Engine) admitSubmit(loopCtx context.Context, callerCtx context.Context,
 		ref := *spec.Job
 		spec.Job = &ref
 	}
+	spec.Resources = append([]tasks.ResourceRequirement(nil), spec.Resources...)
 
 	// Final caller-state check before any completion-delivery reservation or
 	// published admission decision.
@@ -870,7 +947,7 @@ func (e *Engine) tryDispatch(pool tasks.PoolID) {
 	}
 	e.sweepExpired(pool, time.Now().UTC())
 	for len(e.idleSlots[pool]) > 0 {
-		candidate, err := e.adm.SelectCandidate(pool)
+		candidate, err := e.adm.SelectCandidateEligible(pool, e.resourcesAvailable)
 		if err != nil {
 			break
 		}
@@ -887,12 +964,37 @@ func (e *Engine) tryDispatch(pool tasks.PoolID) {
 		rec.dispatchEpoch = e.dispatchEpoch
 		rec.poolGeneration = gen
 		rec.state = tasks.StateDispatching
+		e.reserveResources(rec.spec)
 
 		taskCtx, cancel := context.WithCancel(e.rootCtx)
 		rec.cancelFunc = cancel
 		e.workerMailboxes[pool][slotID] <- workerAssignment{rec: rec, spec: candidate.Spec, permit: permit, taskCtx: taskCtx}
 		if rec.cancelRequested {
 			cancel()
+		}
+	}
+}
+
+func (e *Engine) resourcesAvailable(spec tasks.WorkSpec) bool {
+	for _, requirement := range spec.Resources {
+		if e.resourceUsed[requirement.Name]+requirement.Amount > e.resourceCapacity[requirement.Name] {
+			return false
+		}
+	}
+	return true
+}
+
+func (e *Engine) reserveResources(spec tasks.WorkSpec) {
+	for _, requirement := range spec.Resources {
+		e.resourceUsed[requirement.Name] += requirement.Amount
+	}
+}
+
+func (e *Engine) releaseResources(spec tasks.WorkSpec) {
+	for _, requirement := range spec.Resources {
+		e.resourceUsed[requirement.Name] -= requirement.Amount
+		if e.resourceUsed[requirement.Name] <= 0 {
+			delete(e.resourceUsed, requirement.Name)
 		}
 	}
 }
@@ -930,6 +1032,15 @@ func (e *Engine) SetCommitPump(p CommitPump) {
 	e.commitPump = p
 }
 
+// SetHandlerResolver installs the stable-reference resolver before Start.
+func (e *Engine) SetHandlerResolver(resolver HandlerResolver) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.runStarted {
+		e.handlerResolver = resolver
+	}
+}
+
 // applyWorkerCompleted accepts completion only from the physical grant that
 // owns the current dispatch generation/epoch. This mirrors Started fencing and
 // prevents a late completion from an evicted/reused TaskID mutating a new task.
@@ -958,6 +1069,7 @@ func (e *Engine) applyWorkerCompleted(res tasks.TaskResult, grant *permit) {
 		rec.result = res
 	}
 	spec := rec.spec
+	e.releaseResources(spec)
 	e.adm.OnTaskTerminal(spec)
 	if rec.cancelFunc != nil {
 		rec.cancelFunc()
@@ -1028,7 +1140,16 @@ func (e *Engine) applyCancelScope(scope tasks.ScopeIdentity, reason tasks.Cause)
 	if e.cancelledScopes == nil {
 		e.cancelledScopes = make(map[tasks.ScopeIdentity]tasks.Cause)
 	}
+	if _, exists := e.cancelledScopes[scope]; !exists {
+		e.cancelledScopeOrder = append(e.cancelledScopeOrder, scope)
+	}
 	e.cancelledScopes[scope] = reason
+	for e.maxScopeTombstones > 0 && len(e.cancelledScopeOrder) > e.maxScopeTombstones {
+		oldest := e.cancelledScopeOrder[0]
+		e.cancelledScopeOrder[0] = tasks.ScopeIdentity{}
+		e.cancelledScopeOrder = e.cancelledScopeOrder[1:]
+		delete(e.cancelledScopes, oldest)
+	}
 	cancelled := 0
 	for id, rec := range e.registry {
 		if rec.spec.Scope.Owner != scope.Owner {
@@ -1266,6 +1387,27 @@ func (e *Engine) Stop(ctx context.Context) error {
 }
 
 // Health probes the health status of the task engine.
+// Stats returns aggregate execution diagnostics through the coordinator so the
+// snapshot is internally consistent.
+func (e *Engine) Stats(ctx context.Context) (RuntimeStats, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	rep, err := e.sendControl(ctx, engineRequest{op: opStats, reply: make(chan engineReply, 1)})
+	if err != nil {
+		return RuntimeStats{}, err
+	}
+	s := rep.stats
+	return RuntimeStats{
+		ResultSlotsHeld: s.resultSlotsHeld, ResultCapacity: s.resultCapacity,
+		ActiveTasks: s.activeTasks, RetainedBytes: s.retainedBytes, RetainedCap: s.retainedCap,
+		TerminalCount: s.terminalCount, CommitPending: s.commitPending,
+		DeliveryQueued: s.deliveryQueued, DeliveryCap: s.deliveryCap, DeliveryFailed: s.deliveryFailed,
+		DurabilityQueue: s.durabilityQueue, DurabilityCap: s.durabilityCap, DurabilityFail: s.durabilityFail,
+		ScopeTombstones: s.scopeTombstones,
+	}, nil
+}
+
 func (e *Engine) Health(ctx context.Context) runtime.ComponentHealth {
 	if ctx == nil {
 		ctx = context.Background()

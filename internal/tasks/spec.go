@@ -17,19 +17,27 @@ type HandlerFunc func(ctx context.Context) error
 // attempt; the commit must fence on its own lease identity.
 type CommitFunc func(ctx context.Context, res TaskResult) error
 
+// ResourceRequirement declares capacity that must be reserved atomically
+// before a task is dispatched to a physical worker.
+type ResourceRequirement struct {
+	Name   string `json:"name"`
+	Amount int64  `json:"amount"`
+}
+
 // WorkSpec defines an immutable specification for a unit of work submitted to admission (ADR 0006 §5.1).
 type WorkSpec struct {
-	ID               TaskID         `json:"id"`
-	Scope            ScopeIdentity  `json:"scope"`
-	QuotaOwner       OwnerID        `json:"quota_owner"`
-	Pool             PoolID         `json:"pool"`
-	Class            PriorityClass  `json:"class"`
-	OrderingKey      string         `json:"ordering_key,omitempty"`
-	QueueDeadline    time.Time      `json:"queue_deadline,omitempty"`
-	ExecutionTimeout time.Duration  `json:"execution_timeout,omitempty"`
-	HandlerRef       string         `json:"handler_ref,omitempty"`
-	Input            any            `json:"input,omitempty"`
-	Job              *OccurrenceRef `json:"job,omitempty"`
+	ID               TaskID                `json:"id"`
+	Scope            ScopeIdentity         `json:"scope"`
+	QuotaOwner       OwnerID               `json:"quota_owner"`
+	Pool             PoolID                `json:"pool"`
+	Class            PriorityClass         `json:"class"`
+	OrderingKey      string                `json:"ordering_key,omitempty"`
+	QueueDeadline    time.Time             `json:"queue_deadline,omitempty"`
+	ExecutionTimeout time.Duration         `json:"execution_timeout,omitempty"`
+	HandlerRef       string                `json:"handler_ref,omitempty"`
+	Input            any                   `json:"input,omitempty"`
+	Job              *OccurrenceRef        `json:"job,omitempty"`
+	Resources        []ResourceRequirement `json:"resources,omitempty"`
 
 	// Handler is the execution body.
 	Handler HandlerFunc `json:"-"`
@@ -72,6 +80,16 @@ func (s *WorkSpec) Validate() error {
 	}
 	if s.ExecutionTimeout < 0 {
 		return errors.New("execution timeout cannot be negative")
+	}
+	seenResources := make(map[string]struct{}, len(s.Resources))
+	for _, requirement := range s.Resources {
+		if strings.TrimSpace(requirement.Name) == "" || requirement.Amount <= 0 {
+			return errors.New("resource requirements need a name and positive amount")
+		}
+		if _, exists := seenResources[requirement.Name]; exists {
+			return errors.New("resource requirement names must be unique")
+		}
+		seenResources[requirement.Name] = struct{}{}
 	}
 	return nil
 }

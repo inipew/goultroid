@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"sort"
 	"time"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/media"
 	processSvc "github.com/inipew/goultroid/internal/services/process"
+	"github.com/inipew/goultroid/internal/taskengine"
 )
 
 // DiagnosticsSnapshot is a read-only view of runtime coordination state.
@@ -23,6 +25,7 @@ type DiagnosticsSnapshot struct {
 	Media         media.DiagnosticsSnapshot
 	Process       processSvc.DiagnosticsSnapshot
 	Jobs          jobs.Diagnostics
+	TaskEngine    taskengine.RuntimeStats
 }
 
 type EventBusDiagnostics struct {
@@ -108,6 +111,13 @@ func (a *App) Diagnostics() DiagnosticsSnapshot {
 	}
 	if a.jobs != nil {
 		snapshot.Jobs = a.jobs.Diagnostics()
+	}
+	if a.taskEngine != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		if stats, err := a.taskEngine.Stats(ctx); err == nil {
+			snapshot.TaskEngine = stats
+		}
+		cancel()
 	}
 	return snapshot
 }

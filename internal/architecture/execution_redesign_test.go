@@ -15,10 +15,11 @@ func TestExecutionRedesignFoundations(t *testing.T) {
 		"admission":  {"internal/telegram", "internal/jobs", "internal/workers", "internal/taskengine", "internal/app", "plugins"},
 		"workers":    {"internal/telegram", "internal/jobs", "internal/scheduler", "internal/admission", "internal/taskengine", "internal/app", "plugins"},
 		"taskengine": {"internal/telegram", "internal/jobs", "internal/app", "plugins"},
+		"scheduler":  {"internal/telegram", "internal/app", "plugins"},
 	}
 	for pkg, paths := range forbidden {
 		for dep := range imports[modulePath+"/internal/"+pkg] {
-			if dep == "database/sql" || strings.HasPrefix(dep, "github.com/gotd/") || strings.HasPrefix(dep, "modernc.org/sqlite") {
+			if (pkg != "scheduler" && dep == "database/sql") || strings.HasPrefix(dep, "github.com/gotd/") || strings.HasPrefix(dep, "modernc.org/sqlite") {
 				t.Errorf("%s imports infrastructure %s", pkg, dep)
 			}
 			for _, path := range paths {

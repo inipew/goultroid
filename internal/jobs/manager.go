@@ -33,6 +33,28 @@ type Store interface {
 	DeleteTerminalOccurrences(context.Context, string, time.Time, int) (int64, error)
 }
 
+type outboxStore interface {
+	ListPendingOutbox(context.Context, int) ([]OutboxEvent, error)
+	MarkOutboxDelivered(context.Context, string) error
+}
+
+type definitionLoader interface {
+	ListDefinitions(context.Context) ([]JobDefinition, error)
+}
+
+type scheduleStore interface {
+	SaveSchedule(context.Context, *JobSchedule) error
+	DisableSchedule(context.Context, string) error
+	ListDueSchedules(context.Context, time.Time, int) ([]JobSchedule, error)
+	EarliestScheduleDue(context.Context) (time.Time, bool, error)
+	MaterializeDueSchedule(context.Context, string, time.Time) (*JobOccurrence, error)
+	CutoverActive(context.Context) (bool, error)
+}
+
+// OutboxSink accepts one durable job notification. Returning nil acknowledges
+// it; errors leave the row pending for retry.
+type OutboxSink func(context.Context, OutboxEvent) error
+
 // Manager owns definitions and creates a distinct occurrence and TaskID for
 // every trigger. Physical execution is exclusively delegated to TaskEngine.
 type Manager struct {
@@ -48,6 +70,8 @@ type Manager struct {
 
 	retryQueue   chan retryItem
 	recoveryWake chan struct{}
+	outboxWake   chan struct{}
+	outboxSink   OutboxSink
 	stopCh       chan struct{}
 	stopOnce     sync.Once
 	baseCtx      context.Context
@@ -124,12 +148,30 @@ func (m *Manager) Start(ctx context.Context) error {
 	if m.client == nil || m.store == nil || m.pump == nil {
 		return errors.New("jobs requires task client, durable store, and persistence pump")
 	}
+	if loader, ok := m.store.(definitionLoader); ok {
+		loadCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		definitions, err := loader.ListDefinitions(loadCtx)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("load job definitions: %w", err)
+		}
+		for _, definition := range definitions {
+			if _, exists := m.definitions[definition.ID]; exists {
+				continue
+			}
+			definition.Payload = append([]byte(nil), definition.Payload...)
+			m.definitions[definition.ID] = definition
+		}
+	}
 	firstStart := m.retryQueue == nil
 	if m.retryQueue == nil {
 		m.retryQueue = make(chan retryItem, retryQueueCap)
 	}
 	if m.recoveryWake == nil {
 		m.recoveryWake = make(chan struct{}, 1)
+	}
+	if m.outboxWake == nil {
+		m.outboxWake = make(chan struct{}, 1)
 	}
 	if m.stopCh == nil {
 		m.stopCh = make(chan struct{})
@@ -151,6 +193,10 @@ func (m *Manager) Start(ctx context.Context) error {
 		}
 		m.wg.Add(1)
 		go m.recoveryLoop()
+		if _, ok := m.store.(outboxStore); ok {
+			m.wg.Add(1)
+			go m.outboxLoop()
+		}
 		done := m.done
 		go func() {
 			m.wg.Wait()
@@ -163,6 +209,74 @@ func (m *Manager) Start(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// SetOutboxSink connects durable job notifications to application delivery.
+func (m *Manager) SetOutboxSink(sink OutboxSink) {
+	m.mu.Lock()
+	m.outboxSink = sink
+	m.mu.Unlock()
+	m.signalOutbox()
+}
+
+func (m *Manager) signalOutbox() {
+	m.mu.RLock()
+	wake := m.outboxWake
+	m.mu.RUnlock()
+	if wake == nil {
+		return
+	}
+	select {
+	case wake <- struct{}{}:
+	default:
+	}
+}
+
+func (m *Manager) outboxLoop() {
+	defer m.wg.Done()
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		m.mu.RLock()
+		stopCh, baseCtx, wake := m.stopCh, m.baseCtx, m.outboxWake
+		m.mu.RUnlock()
+		select {
+		case <-stopCh:
+			return
+		case <-baseCtx.Done():
+			return
+		case <-ticker.C:
+		case <-wake:
+		}
+		m.drainOutbox(baseCtx)
+	}
+}
+
+func (m *Manager) drainOutbox(base context.Context) {
+	store, ok := m.store.(outboxStore)
+	if !ok {
+		return
+	}
+	m.mu.RLock()
+	sink := m.outboxSink
+	m.mu.RUnlock()
+	if sink == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(base, 10*time.Second)
+	defer cancel()
+	events, err := store.ListPendingOutbox(ctx, 100)
+	if err != nil {
+		return
+	}
+	for _, event := range events {
+		if err := sink(ctx, event); err != nil {
+			return
+		}
+		if err := store.MarkOutboxDelivered(ctx, event.ID); err != nil {
+			return
+		}
+	}
 }
 
 func (m *Manager) Quiesce(context.Context) error {
@@ -342,6 +456,7 @@ func (m *Manager) CancelOccurrence(ctx context.Context, occurrenceID, reason str
 	if err := m.store.CancelOccurrence(ctx, occurrenceID, reason); err != nil {
 		return err
 	}
+	m.signalOutbox()
 	if taskID != "" {
 		_, _ = m.client.Cancel(taskID, tasks.CauseUserCancel)
 	}
@@ -464,6 +579,87 @@ func (m *Manager) UpdateDefinition(ctx context.Context, def JobDefinition) error
 
 func (m *Manager) PruneOccurrences(ctx context.Context, jobID string, before time.Time, limit int) (int64, error) {
 	return m.store.DeleteTerminalOccurrences(ctx, jobID, before, limit)
+}
+
+func (m *Manager) SaveSchedule(ctx context.Context, schedule JobSchedule) error {
+	store, ok := m.store.(scheduleStore)
+	if !ok {
+		return errors.New("job schedule store is not configured")
+	}
+	return store.SaveSchedule(ctx, &schedule)
+}
+
+// DisableSchedule atomically removes a schedule from timing ownership while
+// retaining its durable definition and occurrence history for diagnostics.
+func (m *Manager) DisableSchedule(ctx context.Context, scheduleID string) error {
+	store, ok := m.store.(scheduleStore)
+	if !ok {
+		return errors.New("job schedule store is not configured")
+	}
+	return store.DisableSchedule(ctx, scheduleID)
+}
+
+func (m *Manager) ScheduleCutoverActive(ctx context.Context) (bool, error) {
+	store, ok := m.store.(scheduleStore)
+	if !ok {
+		return false, nil
+	}
+	return store.CutoverActive(ctx)
+}
+
+func (m *Manager) EarliestScheduleDue(ctx context.Context) (time.Time, bool, error) {
+	store, ok := m.store.(scheduleStore)
+	if !ok {
+		return time.Time{}, false, nil
+	}
+	return store.EarliestScheduleDue(ctx)
+}
+
+// ProcessDueSchedules materializes a bounded batch and delegates every
+// physical attempt to TaskEngine. Scheduler calls this timing-only API.
+func (m *Manager) ProcessDueSchedules(ctx context.Context, now time.Time, limit int) (int, error) {
+	store, ok := m.store.(scheduleStore)
+	if !ok {
+		return 0, errors.New("job schedule store is not configured")
+	}
+	schedules, err := store.ListDueSchedules(ctx, now, limit)
+	if err != nil {
+		return 0, err
+	}
+	processed := 0
+	for _, schedule := range schedules {
+		nextDue := schedule.NextDueAt
+		if schedule.Recurrence != "once" {
+			interval := schedule.Interval
+			if interval <= 0 {
+				interval = time.Minute
+			}
+			nextDue = schedule.NextDueAt.Add(interval)
+			for !nextDue.After(now) {
+				nextDue = nextDue.Add(interval)
+			}
+		}
+		occurrence, err := store.MaterializeDueSchedule(ctx, schedule.ID, nextDue)
+		if err != nil {
+			return processed, err
+		}
+		processed++
+		if occurrence == nil {
+			continue
+		}
+		m.mu.RLock()
+		definition, found := m.definitions[occurrence.JobID]
+		handler := m.handlers[definition.HandlerType]
+		m.mu.RUnlock()
+		if !found || handler == nil {
+			m.signalRecovery()
+			continue
+		}
+		if err := m.driveAttempt(ctx, occurrence.ID, definition, handler); err != nil {
+			m.signalRecovery()
+		}
+	}
+	return processed, nil
 }
 
 func (m *Manager) track(occurrenceID string, def JobDefinition, handler Handler, taskID tasks.TaskID) {
@@ -745,9 +941,19 @@ func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error)
 	for _, occ := range unresolved {
 		report.Scanned++
 		m.mu.RLock()
+		_, activelyTracked := m.tracked[occ.ID]
 		def, found := m.definitions[occ.JobID]
 		handler := m.handlers[def.HandlerType]
 		m.mu.RUnlock()
+		// A tracked occurrence already has exactly one retry worker responsible
+		// for observing its current ticket and deciding whether to finalize or
+		// create the next attempt.  Recovery must never race that owner: doing so
+		// can lease two sequential attempts from the same terminal predecessor
+		// and exceed the retry budget.
+		if activelyTracked {
+			report.Stale++
+			continue
+		}
 		if !found || !def.Enabled || handler == nil {
 			report.Orphaned++
 			continue

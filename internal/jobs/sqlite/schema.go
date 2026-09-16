@@ -9,6 +9,14 @@ import (
 // InitSchema creates the redesigned durable jobs tables, indexes, and foreign keys (ADR 0006 §7.1).
 func InitSchema(ctx context.Context, db *sql.DB) error {
 	queries := []string{
+		`CREATE TABLE IF NOT EXISTS execution_runtime_state (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			mode TEXT NOT NULL,
+			generation INTEGER NOT NULL,
+			updated_at DATETIME NOT NULL
+		);`,
+		`INSERT OR IGNORE INTO execution_runtime_state (id, mode, generation, updated_at)
+		 VALUES (1, 'legacy', 0, CURRENT_TIMESTAMP);`,
 		`CREATE TABLE IF NOT EXISTS job_definitions (
 			id TEXT PRIMARY KEY,
 			scope_owner TEXT NOT NULL,

@@ -112,3 +112,12 @@ type JobAttempt struct {
 	Result       []byte       `json:"result,omitempty"`
 	Error        string       `json:"error,omitempty"`
 }
+
+// OutboxEvent is a durable notification committed with a job state change.
+type OutboxEvent struct {
+	ID           string
+	OccurrenceID string
+	Kind         string
+	Payload      []byte
+	CommittedAt  time.Time
+}

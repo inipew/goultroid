@@ -11,6 +11,7 @@ var (
 	ErrPoolBacklogFull      = errors.New("pool backlog limit reached")
 	ErrPayloadBudget        = errors.New("payload size exceeds budget")
 	ErrUnsupportedPayload   = errors.New("unsupported mutable or opaque task payload")
+	ErrResourceUnavailable  = errors.New("required execution resource is unavailable")
 	ErrResultBackpressure   = errors.New("result capacity saturated")
 	ErrDeliveryBackpressure = errors.New("completion delivery capacity saturated")
 	ErrDeadlineExpired      = errors.New("queue deadline expired before admission")
@@ -27,6 +28,7 @@ const (
 	ReasonPoolBacklogFull      = "pool_backlog_full"
 	ReasonPayloadBudget        = "payload_budget"
 	ReasonUnsupportedPayload   = "unsupported_payload"
+	ReasonResourceUnavailable  = "resource_unavailable"
 	ReasonResultBackpressure   = "result_backpressure"
 	ReasonDeliveryBackpressure = "delivery_backpressure"
 	ReasonDeadlineExpired      = "deadline_expired"

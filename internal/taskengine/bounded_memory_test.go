@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inipew/goultroid/internal/admission"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -184,6 +185,7 @@ func TestCompletionDeliveryBurstExactlyOnce(t *testing.T) {
 		DeliveryConcurrency: 4,
 		DecisionTimeout:     5 * time.Second,
 	})
+	e.SetOwnerLimits("owner", admission.OwnerLimits{MaxWaiting: n, MaxActive: n, Weight: 1, MaxPayloadByte: 1 << 20})
 	var mu sync.Mutex
 	seen := make(map[tasks.TaskID]int)
 	var wg sync.WaitGroup

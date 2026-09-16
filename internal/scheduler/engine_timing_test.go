@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -49,6 +51,7 @@ type timingHarness struct {
 	svc   *captureSvc
 	jobs  *jobs.Manager
 	store *jobsqlite.Store
+	jobDB *sql.DB
 }
 
 func newTimingHarness(t *testing.T) *timingHarness {
@@ -99,15 +102,28 @@ func newTimingHarness(t *testing.T) *timingHarness {
 	t.Cleanup(func() { _ = jobsMgr.Stop(context.Background()) })
 
 	svc := &captureSvc{}
-	svcFunc := func() core.TelegramServicer { return svc }
-	sched := NewEngine(repo, svcFunc, core.NewRouter("."), core.NewPermissions(0, nil), nil)
+	if err := jobsMgr.RegisterHandler("scheduler.action", func(ctx context.Context, definition jobs.JobDefinition) error {
+		id, err := strconv.ParseInt(strings.TrimPrefix(definition.ID, "scheduler:job:"), 10, 64)
+		if err != nil {
+			return err
+		}
+		job, err := repo.GetScheduledJob(ctx, id)
+		if err != nil {
+			return err
+		}
+		_, err = svc.SendMessage(ctx, &tg.InputPeerChat{ChatID: job.ChatID}, job.Payload)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sched := NewEngine(repo, nil)
 	sched.SetTasks(engine)
 	sched.SetJobsManager(jobsMgr)
 	if err := sched.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = sched.Stop(context.Background()) })
-	return &timingHarness{sched: sched, repo: repo, svc: svc, jobs: jobsMgr, store: store}
+	return &timingHarness{sched: sched, repo: repo, svc: svc, jobs: jobsMgr, store: store, jobDB: jobDB.DB}
 }
 
 func pollRowStatus(t *testing.T, h *timingHarness, chatID int64, wantCount int, timeout time.Duration) []ScheduledJob {
@@ -150,6 +166,35 @@ func TestScheduledMessageExecutesOnceAndCompletes(t *testing.T) {
 		t.Fatalf("unresolved occurrences left: %d", len(unresolved))
 	}
 	_ = job
+}
+
+func TestCutoverExecutesFromRedesignedSchedule(t *testing.T) {
+	h := newTimingHarness(t)
+	ctx := context.Background()
+	if _, err := h.jobDB.ExecContext(ctx, `UPDATE execution_runtime_state SET mode = 'redesigned' WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	job, err := h.sched.ScheduleOnce(ctx, 91, "chat", 0, time.Now().UTC().Add(100*time.Millisecond), ActionMessage, "redesigned")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for h.svc.count() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if h.svc.count() != 1 {
+		schedule, scheduleErr := h.store.GetSchedule(ctx, redesignedScheduleID(job.ID))
+		unresolved, _ := h.store.ListUnresolvedOccurrences(ctx, 20)
+		active, modeErr := h.jobs.ScheduleCutoverActive(ctx)
+		t.Fatalf("deliveries=%d, want exactly 1; schedule=%+v scheduleErr=%v unresolved=%+v cutover=%t modeErr=%v wake=%d", h.svc.count(), schedule, scheduleErr, unresolved, active, modeErr, len(h.sched.wakeChan))
+	}
+	schedule, err := h.store.GetSchedule(ctx, redesignedScheduleID(job.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if schedule.Enabled {
+		t.Fatal("one-shot redesigned schedule remained enabled")
+	}
 }
 
 // E1: a failing one-shot exhausts the job budget and fails the row
@@ -278,7 +323,13 @@ func TestPeriodicRunsThroughJobOccurrences(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for calls.Load() < 2 {
 		if time.Now().After(deadline) {
-			t.Fatal("periodic tick never ran")
+			unresolved, _ := h.store.ListUnresolvedOccurrences(context.Background(), 20)
+			h.sched.periodic.mu.Lock()
+			heapLen := h.sched.periodic.heap.Len()
+			entry := h.sched.periodic.entries["tick"]
+			running := h.sched.periodic.running
+			h.sched.periodic.mu.Unlock()
+			t.Fatalf("periodic tick never ran: snapshots=%+v jobs=%+v unresolved=%+v heap=%d running=%t entry=%+v", h.sched.PeriodicTaskSnapshots(), h.jobs.Diagnostics(), unresolved, heapLen, running, entry)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -348,9 +399,6 @@ func TestPeriodicRetryCollapsesToJobPolicy(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if calls.Load() != 3 {
-		t.Fatalf("task executed %d times, want exactly 3 (one retry engine)", calls.Load())
-	}
 	deadline = time.Now().Add(10 * time.Second)
 	for {
 		occ, err := h.store.GetOccurrence(context.Background(), occID)
@@ -361,5 +409,8 @@ func TestPeriodicRetryCollapsesToJobPolicy(t *testing.T) {
 			t.Fatalf("occurrence never finalized as failed: %+v %v", occ, err)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("task executed %d times, want exactly 3 (one retry engine)", calls.Load())
 	}
 }

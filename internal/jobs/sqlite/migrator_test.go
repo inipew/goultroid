@@ -3,6 +3,7 @@ package sqlite_test
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,6 +112,29 @@ func TestMigrator_DryRunAndBlockedRecords(t *testing.T) {
 	}
 }
 
+func TestMigrator_DryRunDoesNotCreateMissingRedesignSchema(t *testing.T) {
+	db, migrator := setupLegacyAndNewDB(t)
+	defer db.Close()
+	ctx := context.Background()
+	if _, err := db.DB.ExecContext(ctx, `DROP TABLE job_migration_map`); err != nil {
+		t.Fatal(err)
+	}
+	insertLegacyJob(t, db.DB, 5, "message", "read only", 0, time.Now().UTC(), "pending")
+
+	report, err := migrator.DryRun(ctx)
+	if err != nil {
+		t.Fatalf("DryRun without redesign schema: %v", err)
+	}
+	if report.MappedCount != 1 {
+		t.Fatalf("mapped=%d, want 1", report.MappedCount)
+	}
+	var count int
+	err = db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM job_migration_map`).Scan(&count)
+	if err == nil || !strings.Contains(err.Error(), "no such table") {
+		t.Fatalf("dry run recreated mapping table: count=%d err=%v", count, err)
+	}
+}
+
 func TestMigrator_FullTransactionalMigrationAndIdempotency(t *testing.T) {
 	db, migrator := setupLegacyAndNewDB(t)
 	defer db.Close()
@@ -211,5 +235,26 @@ func TestMigrator_DeltaValidationAndReverseProjection(t *testing.T) {
 	}
 	if !updatedNextRun.Equal(futureTime) {
 		t.Errorf("expected next_run_at %v, got %v", futureTime, updatedNextRun)
+	}
+}
+
+func TestMigrator_ActivateCutoverAfterValidation(t *testing.T) {
+	db, migrator := setupLegacyAndNewDB(t)
+	defer db.Close()
+	ctx := context.Background()
+	insertLegacyJob(t, db.DB, 300, "message", "cut over", 0, time.Now().UTC(), "pending")
+	if _, err := migrator.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrator.ActivateCutover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var mode string
+	var generation int
+	if err := db.DB.QueryRowContext(ctx, `SELECT mode, generation FROM execution_runtime_state WHERE id = 1`).Scan(&mode, &generation); err != nil {
+		t.Fatal(err)
+	}
+	if mode != "redesigned" || generation != 1 {
+		t.Fatalf("mode=%q generation=%d", mode, generation)
 	}
 }

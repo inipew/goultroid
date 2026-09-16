@@ -29,6 +29,7 @@ func run() error {
 	dryRun := flag.Bool("dry-run", false, "Analyze and produce migration report without modifying database")
 	validate := flag.Bool("validate", false, "Validate delta checksums and counts between legacy and new tables")
 	rollback := flag.Bool("rollback", false, "Reverse project state from new schema back to legacy schema")
+	activate := flag.Bool("activate", false, "Activate the redesigned scheduler after successful validation")
 	flag.Parse()
 
 	if *dbPath == "" {
@@ -42,12 +43,21 @@ func run() error {
 	defer db.Close()
 
 	ctx := context.Background()
-	if err := jobsqlite.InitSchema(ctx, db.DB); err != nil {
-		return fmt.Errorf("initialize jobs schema: %w", err)
+	// A dry run is strictly read-only, including schema creation. The migrator
+	// tolerates an absent mapping table and reports every legacy row as unmapped.
+	if !*dryRun {
+		if err := jobsqlite.InitSchema(ctx, db.DB); err != nil {
+			return fmt.Errorf("initialize jobs schema: %w", err)
+		}
 	}
 
 	migrator := jobsqlite.NewMigrator(db.DB)
 	switch {
+	case *activate:
+		if err := migrator.ActivateCutover(ctx); err != nil {
+			return fmt.Errorf("activate cutover: %w", err)
+		}
+		fmt.Println("Redesigned execution cutover activated.")
 	case *validate:
 		delta, err := migrator.ValidateDelta(ctx)
 		if err != nil {

@@ -81,6 +81,21 @@ type Migrator struct {
 	db *sql.DB
 }
 
+// ActivateCutover atomically fences the redesigned runtime generation after a
+// successful delta validation. Legacy-aware deployment tooling must refuse to
+// start when this marker is active.
+func (m *Migrator) ActivateCutover(ctx context.Context) error {
+	report, err := m.ValidateDelta(ctx)
+	if err != nil {
+		return err
+	}
+	if !report.ChecksumMatch {
+		return errors.New("cannot activate cutover with migration discrepancies")
+	}
+	_, err = m.db.ExecContext(ctx, `UPDATE execution_runtime_state SET mode = 'redesigned', generation = generation + 1, updated_at = ? WHERE id = 1`, time.Now().UTC())
+	return err
+}
+
 // NewMigrator returns a new Migrator instance.
 func NewMigrator(db *sql.DB) *Migrator {
 	return &Migrator{db: db}
@@ -158,7 +173,7 @@ func (m *Migrator) DryRun(ctx context.Context) (*MigrationReport, error) {
 				Reason:     "already migrated in job_migration_map",
 			})
 			continue
-		} else if !errors.Is(err, sql.ErrNoRows) {
+		} else if !errors.Is(err, sql.ErrNoRows) && !isMissingTable(err) {
 			return nil, fmt.Errorf("check migration map: %w", err)
 		}
 
@@ -177,6 +192,10 @@ func (m *Migrator) DryRun(ctx context.Context) (*MigrationReport, error) {
 	return report, nil
 }
 
+func isMissingTable(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "no such table")
+}
+
 func (m *Migrator) validateLegacyRecord(r LegacyJobRecord) JobMappingResult {
 	newJobID := fmt.Sprintf("job:scheduled:%d", r.ID)
 	newSchedID := fmt.Sprintf("sched:scheduled:%d", r.ID)
@@ -188,7 +207,7 @@ func (m *Migrator) validateLegacyRecord(r LegacyJobRecord) JobMappingResult {
 			Reason: "empty action_type",
 		}
 	}
-	if cleanAction != "message" && cleanAction != "command" && cleanAction != "action" {
+	if cleanAction != "message" && cleanAction != "command" && cleanAction != "action" && cleanAction != "job" {
 		return JobMappingResult{
 			LegacyID: r.ID, ActionType: r.ActionType, Status: StatusBlocked,
 			Reason: fmt.Sprintf("unrecognized legacy action_type: %q", r.ActionType),

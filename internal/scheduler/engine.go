@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -9,8 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gotd/td/tg"
-	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/jobs"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/tasks"
@@ -40,12 +39,9 @@ type trackedClaim struct {
 }
 
 type Engine struct {
-	db       Repository
-	svcFunc  func() core.TelegramServicer
-	router   *core.Router
-	perms    *core.Permissions
-	executor *core.CommandExecutor
-	logger   *zap.Logger
+	db     Repository
+	logger *zap.Logger
+	access privilegedChecker
 
 	tasks   tasks.Client
 	jobsMgr *jobs.Manager
@@ -74,6 +70,16 @@ type Engine struct {
 	runMu   sync.Mutex
 }
 
+type privilegedChecker interface {
+	IsSudo(int64) bool
+}
+
+func (e *Engine) SetPrivilegedChecker(checker privilegedChecker) {
+	e.runMu.Lock()
+	e.access = checker
+	e.runMu.Unlock()
+}
+
 // PeriodicTaskSnapshot exposes runtime diagnostics without exposing cancel functions or internal scheduler state.
 type PeriodicTaskSnapshot struct {
 	Owner     string
@@ -94,15 +100,13 @@ type PeriodicTaskOptions struct {
 
 var _ Service = (*Engine)(nil)
 
-func NewEngine(db Repository, svcFunc func() core.TelegramServicer, router *core.Router, perms *core.Permissions, logger *zap.Logger) *Engine {
+func NewEngine(db Repository, logger *zap.Logger) *Engine {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 	const defaultBatchSize = 4
 	engine := &Engine{
-		db: db, svcFunc: svcFunc, router: router, perms: perms,
-		executor: core.NewCommandExecutor(logger, nil, 30*time.Second),
-		logger:   logger, claimBatchSize: defaultBatchSize,
+		db: db, logger: logger, claimBatchSize: defaultBatchSize,
 		misfirePolicy: MisfireRunOnce, wakeChan: make(chan struct{}, 1),
 	}
 	engine.periodic = newPeriodicCoordinator(logger)
@@ -148,12 +152,6 @@ func (e *Engine) SetJobsManager(jobsMgr *jobs.Manager) {
 	if jobsMgr == nil {
 		return
 	}
-	// scheduler.action remains registered for message/command schedules and
-	// for recovery of legacy managed-wrapper occurrences created before the
-	// direct ActionJob cutover.
-	if err := jobsMgr.RegisterHandler("scheduler.action", e.runScheduledAction); err != nil {
-		e.logger.Warn("register scheduler action handler", zap.Error(err))
-	}
 	if err := jobsMgr.RegisterHandler(periodicHandlerType, e.runPeriodicAction); err != nil {
 		e.logger.Warn("register periodic action handler", zap.Error(err))
 	}
@@ -185,12 +183,6 @@ func (e *Engine) IsRunning() bool {
 	e.runMu.Lock()
 	defer e.runMu.Unlock()
 	return e.running
-}
-
-func (e *Engine) SetExecutor(executor *core.CommandExecutor) {
-	if executor != nil {
-		e.executor = executor
-	}
 }
 
 func validateActionType(actionType string) error {
@@ -422,7 +414,7 @@ func (e *Engine) ScheduleOnce(ctx context.Context, chatID int64, peerType string
 	if err != nil {
 		return nil, err
 	}
-	if err := e.registerScheduledDefinition(res); err != nil {
+	if err := e.registerScheduledDefinition(ctx, res); err != nil {
 		_ = e.db.DeleteScheduledJob(ctx, res.ID)
 		return nil, err
 	}
@@ -435,7 +427,7 @@ func (e *Engine) ScheduleRecurring(ctx context.Context, chatID int64, peerType s
 		return nil, err
 	}
 	if interval < time.Second {
-		return nil, fmt.Errorf("%w: recurring interval must be at least 1 second (got %v)", core.ErrInvalidArgs, interval)
+		return nil, fmt.Errorf("recurring interval must be at least 1 second (got %v)", interval)
 	}
 	if peerType == "" {
 		peerType = "chat"
@@ -455,7 +447,7 @@ func (e *Engine) ScheduleRecurring(ctx context.Context, chatID int64, peerType s
 	if err != nil {
 		return nil, err
 	}
-	if err := e.registerScheduledDefinition(res); err != nil {
+	if err := e.registerScheduledDefinition(ctx, res); err != nil {
 		_ = e.db.DeleteScheduledJob(ctx, res.ID)
 		return nil, err
 	}
@@ -464,8 +456,9 @@ func (e *Engine) ScheduleRecurring(ctx context.Context, chatID int64, peerType s
 }
 
 func scheduledDefinitionID(jobID int64) string { return fmt.Sprintf("scheduler:job:%d", jobID) }
+func redesignedScheduleID(jobID int64) string  { return fmt.Sprintf("sched:scheduled:%d", jobID) }
 
-func (e *Engine) registerScheduledDefinition(job *ScheduledJob) error {
+func (e *Engine) registerScheduledDefinition(ctx context.Context, job *ScheduledJob) error {
 	if job == nil || e.jobsMgr == nil {
 		return errors.New("scheduler jobs manager is not configured")
 	}
@@ -479,18 +472,42 @@ func (e *Engine) registerScheduledDefinition(job *ScheduledJob) error {
 		}
 		// No scheduler.action wrapper definition: the timing row will submit a
 		// target occurrence directly when its due slot is claimed.
-		return nil
+		return e.saveRedesignedSchedule(ctx, job, targetID)
 	}
-	return e.jobsMgr.Register(jobs.JobDefinition{
-		ID:          scheduledDefinitionID(job.ID),
+	payload, err := json.Marshal(job)
+	if err != nil {
+		return fmt.Errorf("encode scheduled action: %w", err)
+	}
+	definitionID := scheduledDefinitionID(job.ID)
+	if err := e.jobsMgr.Register(jobs.JobDefinition{
+		ID:          definitionID,
 		ScopeOwner:  scheduledTaskScope(job.ID),
 		QuotaOwner:  "scheduler",
 		HandlerType: "scheduler.action",
+		Payload:     payload,
 		Pool:        "scheduler",
 		Class:       string(tasks.PriorityMaintenance),
 		Timeout:     actionTimeout,
 		RetryPolicy: jobs.JobRetryPolicy{MaxAttempts: 1},
 		Enabled:     true,
+	}); err != nil {
+		return err
+	}
+	return e.saveRedesignedSchedule(ctx, job, definitionID)
+}
+
+func (e *Engine) saveRedesignedSchedule(ctx context.Context, job *ScheduledJob, definitionID string) error {
+	recurrence := "once"
+	interval := time.Duration(0)
+	if job.IntervalSeconds > 0 {
+		recurrence = "interval"
+		interval = time.Duration(job.IntervalSeconds) * time.Second
+	}
+	return e.jobsMgr.SaveSchedule(ctx, jobs.JobSchedule{
+		ID: redesignedScheduleID(job.ID), JobID: definitionID,
+		Recurrence: recurrence, Interval: interval, Timezone: "UTC", NextDueAt: job.NextRunAt,
+		MisfirePolicy: jobs.MisfireRunOnce, OverlapPolicy: jobs.OverlapForbid,
+		Enabled: true, Revision: 1,
 	})
 }
 
@@ -500,6 +517,11 @@ func (e *Engine) Cancel(ctx context.Context, jobID int64) error {
 	}
 	if err := e.db.DeleteScheduledJob(ctx, jobID); err != nil {
 		return err
+	}
+	if e.jobsMgr != nil {
+		if err := e.jobsMgr.DisableSchedule(ctx, redesignedScheduleID(jobID)); err != nil {
+			return fmt.Errorf("disable redesigned schedule: %w", err)
+		}
 	}
 	if e.tasks != nil {
 		e.tasks.CancelScope(tasks.ScopeIdentity{Owner: scheduledTaskScope(jobID), Generation: 1}, tasks.CauseUserCancel)
@@ -540,7 +562,18 @@ func (e *Engine) runLoop(ctx context.Context) {
 		var nextDelay time.Duration
 		e.reconcileSettledClaims(ctx)
 
-		earliest, found, err := e.db.GetEarliestDueTime(ctx)
+		redesigned, modeErr := e.jobsMgr.ScheduleCutoverActive(ctx)
+		if modeErr != nil {
+			e.logger.Error("read scheduler cutover mode", zap.Error(modeErr))
+		}
+		var earliest time.Time
+		var found bool
+		var err error
+		if redesigned {
+			earliest, found, err = e.jobsMgr.EarliestScheduleDue(ctx)
+		} else {
+			earliest, found, err = e.db.GetEarliestDueTime(ctx)
+		}
 		if err != nil {
 			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 				return
@@ -559,7 +592,12 @@ func (e *Engine) runLoop(ctx context.Context) {
 		}
 
 		if nextDelay <= 0 {
-			claimed := e.processDueJobs(ctx, now)
+			claimed := 0
+			if redesigned {
+				claimed = e.processRedesignedSchedules(ctx, now)
+			} else {
+				claimed = e.processDueJobs(ctx, now)
+			}
 			if claimed == 0 {
 				nextDelay = 250 * time.Millisecond
 			} else {
@@ -586,10 +624,26 @@ func (e *Engine) runLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-e.wakeChan:
-		case fireTime := <-timer.C:
-			e.processDueJobs(ctx, fireTime)
+		case <-timer.C:
 		}
 	}
+}
+
+func (e *Engine) processRedesignedSchedules(ctx context.Context, now time.Time) int {
+	if !e.beginClaimBatch() {
+		return 0
+	}
+	defer e.endClaimBatch()
+	limit := e.claimBatchSize
+	if limit <= 0 {
+		limit = 1
+	}
+	processed, err := e.jobsMgr.ProcessDueSchedules(ctx, now, limit)
+	if err != nil {
+		e.logger.Error("process redesigned schedules", zap.Error(err))
+		return 0
+	}
+	return processed
 }
 
 func (e *Engine) processDueJobs(ctx context.Context, now time.Time) int {
@@ -799,39 +853,6 @@ func occurrenceError(ctx context.Context, jobsMgr *jobs.Manager, occurrenceID st
 	return latest.Error
 }
 
-// runScheduledAction executes message/command wrappers. ActionJob is retained
-// only for recovery compatibility with wrapper occurrences materialized before
-// the direct managed-job cutover; new ActionJob rows bypass this handler.
-func (e *Engine) runScheduledAction(ctx context.Context, definition jobs.JobDefinition) error {
-	jobIDText := strings.TrimPrefix(definition.ID, "scheduler:job:")
-	jobID, err := strconv.ParseInt(jobIDText, 10, 64)
-	if err != nil || jobID <= 0 {
-		return fmt.Errorf("invalid scheduler job definition: %s", definition.ID)
-	}
-	job, err := e.db.GetScheduledJob(ctx, jobID)
-	if err != nil {
-		return err
-	}
-	if job == nil || job.ClaimToken == "" {
-		return errors.New("scheduled job is no longer claimed")
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	// Misfire is intentionally absent here. It is timing policy and is resolved
-	// in processDueJobs before occurrence materialization.
-	switch job.ActionType {
-	case ActionMessage:
-		return e.executeSendMessage(ctx, *job)
-	case ActionCommand:
-		return e.executeCommand(ctx, *job)
-	case ActionJob:
-		return e.executeManagedJob(ctx, *job)
-	default:
-		return fmt.Errorf("unknown scheduled job action type: %s", job.ActionType)
-	}
-}
-
 func (e *Engine) shouldSkipMisfire(job ScheduledJob) bool {
 	if job.IntervalSeconds <= 0 {
 		return false
@@ -842,99 +863,11 @@ func (e *Engine) shouldSkipMisfire(job ScheduledJob) bool {
 	return e.MisfirePolicy() == MisfireSkip
 }
 
-func (e *Engine) executeSendMessage(ctx context.Context, job ScheduledJob) error {
-	if e.svcFunc == nil {
-		return errors.New("cannot execute scheduled message: servicer function is nil")
-	}
-	svc := e.svcFunc()
-	if svc == nil {
-		return errors.New("cannot execute scheduled message: servicer is nil")
-	}
-	peer := reconstructInputPeer(job.PeerType, job.ChatID, job.AccessHash)
-	text := job.Payload
-	if job.IntervalSeconds == 0 && time.Since(job.NextRunAt) > time.Minute {
-		text = "⏰ <b>Reminder</b> (<i>delayed, bot was offline</i>):\n" + job.Payload
-	}
-	if _, err := svc.SendMessage(ctx, peer, text); err != nil {
-		e.logger.Warn("failed to send scheduled message", zap.Int64("chat_id", job.ChatID), zap.Error(err))
-		return err
-	}
-	return nil
-}
-
-func (e *Engine) executeCommand(ctx context.Context, job ScheduledJob) error {
-	if e.router == nil {
-		return errors.New("cannot execute scheduled command: router is nil")
-	}
-	if e.svcFunc == nil {
-		return errors.New("cannot execute scheduled command: servicer function is nil")
-	}
-	svc := e.svcFunc()
-	if svc == nil {
-		return errors.New("cannot execute scheduled command: servicer is nil")
-	}
-	parsed, isCmd, err := e.router.Parse(job.Payload)
-	if err != nil {
-		return fmt.Errorf("%w: %v", core.ErrInvalidArgs, err)
-	}
-	if !isCmd {
-		return fmt.Errorf("scheduled command payload is not a command: %s", job.Payload)
-	}
-	cmd, exists := e.router.Find(parsed.Name)
-	if !exists {
-		return fmt.Errorf("scheduled command not found in router: %s", parsed.Name)
-	}
-	peer := reconstructInputPeer(job.PeerType, job.ChatID, job.AccessHash)
-	callerID := job.CreatedBy
-	var principal *core.Principal
-	if e.perms != nil {
-		principal, _ = e.perms.Resolve(ctx, callerID)
-	}
-	exec := core.CommandExecution{
-		Ctx: ctx, Source: core.ExecutionScheduled, Command: parsed.Name,
-		Args: parsed.Args, RawArgs: parsed.RawArgs, Principal: principal,
-		Perms: e.perms, Chat: &core.Chat{ID: job.ChatID, Type: job.PeerType},
-		Sender: &core.User{ID: callerID}, PeerID: peer,
-		CorrelationID: fmt.Sprintf("sched-%d-%d", job.ID, time.Now().UnixMilli()),
-	}
-	return e.executor.ExecuteExecution(exec, cmd, svc)
-}
-
-// executeManagedJob is legacy compatibility for already-materialized
-// scheduler.action occurrences. New managed schedules submit the target
-// JobOccurrence directly from processDueJobs and never call this wrapper.
-func (e *Engine) executeManagedJob(ctx context.Context, job ScheduledJob) error {
-	if e.jobsMgr == nil {
-		return errors.New("jobs manager not configured on scheduler engine")
-	}
-	jobID := strings.TrimSpace(job.Payload)
-	if jobID == "" {
-		return errors.New("empty job id in scheduled managed job payload")
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return e.jobsMgr.TryTrigger(e.ctx, jobID)
-}
-
 func (e *Engine) ScheduleManagedJob(ctx context.Context, jobID string, when time.Time, interval time.Duration) (*ScheduledJob, error) {
 	if interval <= 0 {
 		return e.ScheduleOnce(ctx, 0, "internal", 0, when, ActionJob, jobID)
 	}
 	return e.ScheduleRecurring(ctx, 0, "internal", 0, interval, ActionJob, jobID)
-}
-
-func reconstructInputPeer(peerType string, chatID int64, accessHash int64) tg.InputPeerClass {
-	switch peerType {
-	case "self":
-		return &tg.InputPeerSelf{}
-	case "user":
-		return &tg.InputPeerUser{UserID: chatID, AccessHash: accessHash}
-	case "channel", "supergroup":
-		return &tg.InputPeerChannel{ChannelID: chatID, AccessHash: accessHash}
-	default:
-		return &tg.InputPeerChat{ChatID: chatID}
-	}
 }
 
 func ParseDuration(s string) (time.Duration, error) {

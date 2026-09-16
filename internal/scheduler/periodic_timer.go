@@ -520,6 +520,27 @@ func (c *periodicCoordinator) loop() {
 		}
 
 		if !hasEarliest {
+			// Running entries are intentionally absent from the timing heap, but
+			// their durable occurrences still need reconciliation.  Waiting only
+			// on wake here can strand a completed occurrence forever when it is
+			// the sole registration: task completion does not signal this local
+			// coordinator.
+			if c.inflightCount() > 0 {
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(time.Second)
+				select {
+				case <-ctx.Done():
+					return
+				case <-c.wake:
+				case <-timer.C:
+				}
+				continue
+			}
 			select {
 			case <-ctx.Done():
 				return
