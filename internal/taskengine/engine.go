@@ -144,7 +144,6 @@ const (
 	opSnapshot
 	opResult
 	opWorkerIdle
-	opWorkerRetire
 	opWorkerStarted
 	opWorkerCompleted
 	opCommitAck
@@ -263,6 +262,8 @@ type Engine struct {
 	poolMinWorkers    map[tasks.PoolID]int
 	poolIdleTimeouts  map[tasks.PoolID]time.Duration
 	workerRunning     map[tasks.PoolID][]bool
+	workerIdleSince   map[tasks.PoolID][]time.Time
+	workerCancels     map[tasks.PoolID][]context.CancelFunc
 	poolGenerations   map[tasks.PoolID]uint64
 	resourceCapacity  map[string]int64
 	resourceUsed      map[string]int64
@@ -402,6 +403,8 @@ func NewEngine(cfg Config) *Engine {
 	minimums := make(map[tasks.PoolID]int, len(cfg.Pools))
 	idleTimeouts := make(map[tasks.PoolID]time.Duration, len(cfg.Pools))
 	workerRunning := make(map[tasks.PoolID][]bool, len(cfg.Pools))
+	workerIdleSince := make(map[tasks.PoolID][]time.Time, len(cfg.Pools))
+	workerCancels := make(map[tasks.PoolID][]context.CancelFunc, len(cfg.Pools))
 	generations := make(map[tasks.PoolID]uint64, len(cfg.Pools))
 
 	maxTerminal := cfg.MaxTerminalRetained
@@ -473,6 +476,8 @@ func NewEngine(cfg Config) *Engine {
 		idleSlots[poolID] = slots[:0]
 		mailboxes[poolID] = mboxes
 		workerRunning[poolID] = make([]bool, pcfg.Concurrency)
+		workerIdleSince[poolID] = make([]time.Time, pcfg.Concurrency)
+		workerCancels[poolID] = make([]context.CancelFunc, pcfg.Concurrency)
 		admPoolConfigs[poolID] = admission.PoolConfig{BacklogLimit: pcfg.BacklogLimit, PayloadBudget: pcfg.PayloadBudget}
 	}
 
@@ -484,6 +489,8 @@ func NewEngine(cfg Config) *Engine {
 		poolMinWorkers:      minimums,
 		poolIdleTimeouts:    idleTimeouts,
 		workerRunning:       workerRunning,
+		workerIdleSince:     workerIdleSince,
+		workerCancels:       workerCancels,
 		poolGenerations:     generations,
 		resourceCapacity:    resourceCapacities,
 		resourceUsed:        make(map[string]int64, len(resourceCapacities)),
@@ -545,10 +552,6 @@ func (e *Engine) Start(ctx context.Context) error {
 	durability.start()
 
 	e.runtimeRemaining.Store(1)
-	go func() {
-		defer e.runtimeLoopDone()
-		e.runLoop(rootCtx, inbox)
-	}()
 	for poolID := range e.workerMailboxes {
 		for slotID := 0; slotID < e.poolMinWorkers[poolID]; slotID++ {
 			if e.spawnWorker(poolID, slotID, rootCtx) {
@@ -556,6 +559,10 @@ func (e *Engine) Start(ctx context.Context) error {
 			}
 		}
 	}
+	go func() {
+		defer e.runtimeLoopDone()
+		e.runLoop(rootCtx, inbox)
+	}()
 	return nil
 }
 
@@ -565,12 +572,14 @@ func (e *Engine) spawnWorker(pool tasks.PoolID, slot int, ctx context.Context) b
 		return false
 	}
 	running[slot] = true
+	workerCtx, cancel := context.WithCancel(ctx)
+	e.workerCancels[pool][slot] = cancel
+	e.workerIdleSince[pool][slot] = time.Now().UTC()
 	e.runtimeRemaining.Add(1)
 	mailbox := e.workerMailboxes[pool][slot]
-	idleTimeout := e.poolIdleTimeouts[pool]
 	go func() {
 		defer e.runtimeLoopDone()
-		e.physicalWorker(pool, slot, mailbox, idleTimeout, ctx)
+		e.physicalWorker(pool, slot, mailbox, workerCtx)
 	}()
 	return true
 }
@@ -594,7 +603,21 @@ func (e *Engine) runLoop(ctx context.Context, inbox <-chan engineRequest) {
 	var sweepTimerCh <-chan time.Time
 
 	armSweeper := func() {
-		earliest, hasEarliest := e.adm.EarliestDeadline()
+		now := time.Now().UTC()
+		var earliest time.Time
+		hasEarliest := false
+
+		if admEarliest, hasAdm := e.adm.EarliestDeadline(); hasAdm {
+			earliest = admEarliest
+			hasEarliest = true
+		}
+		if retEarliest, hasRet := e.earliestRetirementDeadline(now); hasRet {
+			if !hasEarliest || retEarliest.Before(earliest) {
+				earliest = retEarliest
+				hasEarliest = true
+			}
+		}
+
 		if !hasEarliest {
 			sweepTimerCh = nil
 			return
@@ -630,6 +653,7 @@ func (e *Engine) runLoop(ctx context.Context, inbox <-chan engineRequest) {
 			for poolID := range e.config.Pools {
 				e.sweepExpired(poolID, now)
 			}
+			e.sweepIdleWorkers(now)
 			armSweeper()
 		}
 	}
@@ -682,11 +706,6 @@ func (e *Engine) handleRequest(ctx context.Context, req engineRequest) {
 		}}
 	case opWorkerIdle:
 		e.markWorkerIdle(req.pool, req.slotID)
-	case opWorkerRetire:
-		retired := e.retireIdleWorker(req.pool, req.slotID)
-		if req.reply != nil {
-			req.reply <- engineReply{found: retired}
-		}
 	case opWorkerStarted:
 		e.applyWorkerStarted(req.taskID, req.permit, req.started)
 	case opWorkerCompleted:
@@ -730,21 +749,11 @@ func (e *Engine) handleRequest(ctx context.Context, req engineRequest) {
 func (e *Engine) lifecycleAccepting() bool { return e.accepting }
 func (e *Engine) lifecycleQuiesced() bool  { return e.quiesced }
 
-func (e *Engine) physicalWorker(pool tasks.PoolID, slotID int, mailbox <-chan workerAssignment, idleTimeout time.Duration, ctx context.Context) {
-	if idleTimeout <= 0 {
-		idleTimeout = 30 * time.Second
-	}
-	timer := time.NewTimer(idleTimeout)
-	defer timer.Stop()
+func (e *Engine) physicalWorker(pool tasks.PoolID, slotID int, mailbox <-chan workerAssignment, ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-timer.C:
-			if e.requestWorkerRetire(ctx, pool, slotID) {
-				return
-			}
-			timer.Reset(idleTimeout)
 		case assignment, ok := <-mailbox:
 			if !ok {
 				return
@@ -758,40 +767,7 @@ func (e *Engine) physicalWorker(pool tasks.PoolID, slotID int, mailbox <-chan wo
 				op: opWorkerCompleted, result: res, permit: assignment.permit,
 				pool: pool, slotID: slotID,
 			})
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			timer.Reset(idleTimeout)
 		}
-	}
-}
-
-func (e *Engine) requestWorkerRetire(ctx context.Context, pool tasks.PoolID, slot int) bool {
-	e.mu.Lock()
-	inbox := e.inbox
-	root := e.rootCtx
-	e.mu.Unlock()
-	if inbox == nil || root == nil {
-		return true
-	}
-	reply := make(chan engineReply, 1)
-	select {
-	case inbox <- engineRequest{op: opWorkerRetire, pool: pool, slotID: slot, reply: reply}:
-	case <-ctx.Done():
-		return true
-	case <-root.Done():
-		return true
-	}
-	select {
-	case result := <-reply:
-		return result.found
-	case <-ctx.Done():
-		return true
-	case <-root.Done():
-		return true
 	}
 }
 
@@ -1094,6 +1070,7 @@ func (e *Engine) tryDispatch(pool tasks.PoolID) {
 		}
 		slotID := e.idleSlots[pool][0]
 		e.idleSlots[pool] = e.idleSlots[pool][1:]
+		e.workerIdleSince[pool][slotID] = time.Time{}
 		e.dispatchEpoch++
 		gen := e.poolGenerations[pool]
 		permit := newPermit(pool, slotID, gen, rec.spec.ID, e.dispatchEpoch, nil)
@@ -1157,6 +1134,8 @@ func (e *Engine) applyPoolConfig(pool tasks.PoolID, cfg PoolEngineConfig) error 
 	e.poolConcurrencies[pool] = cfg.Concurrency
 	e.poolMinWorkers[pool] = cfg.MinConcurrency
 	e.poolIdleTimeouts[pool] = cfg.IdleTimeout
+	now := time.Now().UTC()
+	e.sweepIdleWorkers(now)
 	for runningCount(e.workerRunning[pool]) < cfg.MinConcurrency {
 		if !e.spawnNextWorker(pool) {
 			break
@@ -1217,6 +1196,7 @@ func (e *Engine) markWorkerIdle(pool tasks.PoolID, slotID int) {
 	if slotID < 0 || slotID >= len(e.workerRunning[pool]) || !e.workerRunning[pool][slotID] {
 		return
 	}
+	e.workerIdleSince[pool][slotID] = time.Now().UTC()
 	for _, existing := range e.idleSlots[pool] {
 		if existing == slotID {
 			return
@@ -1228,13 +1208,8 @@ func (e *Engine) markWorkerIdle(pool tasks.PoolID, slotID int) {
 	}
 }
 
-func (e *Engine) retireIdleWorker(pool tasks.PoolID, slotID int) bool {
-	runningCount := 0
-	for _, running := range e.workerRunning[pool] {
-		if running {
-			runningCount++
-		}
-	}
+func (e *Engine) retireWorker(pool tasks.PoolID, slotID int) bool {
+	runningCount := runningCount(e.workerRunning[pool])
 	if runningCount <= e.poolMinWorkers[pool] {
 		return false
 	}
@@ -1250,7 +1225,66 @@ func (e *Engine) retireIdleWorker(pool tasks.PoolID, slotID int) bool {
 	}
 	e.idleSlots[pool] = append(e.idleSlots[pool][:index], e.idleSlots[pool][index+1:]...)
 	e.workerRunning[pool][slotID] = false
+	e.workerIdleSince[pool][slotID] = time.Time{}
+	if cancel := e.workerCancels[pool][slotID]; cancel != nil {
+		cancel()
+		e.workerCancels[pool][slotID] = nil
+	}
 	return true
+}
+
+func (e *Engine) sweepIdleWorkers(now time.Time) {
+	for poolID := range e.config.Pools {
+		minWorkers := e.poolMinWorkers[poolID]
+		idleTimeout := e.poolIdleTimeouts[poolID]
+		if idleTimeout <= 0 {
+			idleTimeout = 30 * time.Second
+		}
+		running := runningCount(e.workerRunning[poolID])
+		if running <= minWorkers {
+			continue
+		}
+		for i := len(e.idleSlots[poolID]) - 1; i >= 0 && running > minWorkers; i-- {
+			slotID := e.idleSlots[poolID][i]
+			idleSince := e.workerIdleSince[poolID][slotID]
+			if idleSince.IsZero() {
+				continue
+			}
+			if now.Sub(idleSince) >= idleTimeout {
+				if e.retireWorker(poolID, slotID) {
+					running--
+				}
+			}
+		}
+	}
+}
+
+func (e *Engine) earliestRetirementDeadline(now time.Time) (time.Time, bool) {
+	var earliest time.Time
+	hasAny := false
+	for poolID := range e.config.Pools {
+		minWorkers := e.poolMinWorkers[poolID]
+		idleTimeout := e.poolIdleTimeouts[poolID]
+		if idleTimeout <= 0 {
+			idleTimeout = 30 * time.Second
+		}
+		running := runningCount(e.workerRunning[poolID])
+		if running <= minWorkers {
+			continue
+		}
+		for _, slotID := range e.idleSlots[poolID] {
+			idleSince := e.workerIdleSince[poolID][slotID]
+			if idleSince.IsZero() {
+				continue
+			}
+			deadline := idleSince.Add(idleTimeout)
+			if !hasAny || deadline.Before(earliest) {
+				earliest = deadline
+				hasAny = true
+			}
+		}
+	}
+	return earliest, hasAny
 }
 
 // applyWorkerStarted is the fencing point for Dispatching -> Running.
