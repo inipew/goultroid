@@ -239,6 +239,7 @@ func TestRecurringRowAdvancesAfterSuccess(t *testing.T) {
 	if err := h.repo.UpdateScheduledJobNextRun(ctx, job.ID, time.Now().UTC().Add(-10*time.Second)); err != nil {
 		t.Fatal(err)
 	}
+	h.sched.notifyWake()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		rows, _ := h.repo.ListScheduledJobs(ctx, 44)
@@ -267,6 +268,7 @@ func TestMisfireSkipAdvancesWithoutExecution(t *testing.T) {
 	if err := h.repo.UpdateScheduledJobNextRun(ctx, job.ID, time.Now().UTC().Add(-10*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
+	h.sched.notifyWake()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		rows, _ := h.repo.ListScheduledJobs(ctx, 45)
@@ -295,6 +297,7 @@ func TestCancelDeletesRowAndClosesOccurrence(t *testing.T) {
 	if err := h.repo.UpdateScheduledJobNextRun(ctx, job.ID, time.Now().UTC().Add(-time.Second)); err != nil {
 		t.Fatal(err)
 	}
+	h.sched.notifyWake()
 	// Wait until claimed (running) or settled, then cancel.
 	time.Sleep(500 * time.Millisecond)
 	if err := h.sched.Cancel(ctx, job.ID); err != nil {

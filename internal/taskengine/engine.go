@@ -218,7 +218,10 @@ type PoolRuntimeStats struct {
 	Workers      int
 	MinWorkers   int
 	MaxWorkers   int
+	Idle         int
 	IdleWorkers  int
+	Running      int
+	Dispatching  int
 	Waiting      int
 	WaitingBytes int64
 }
@@ -653,17 +656,7 @@ func (e *Engine) handleRequest(ctx context.Context, req engineRequest) {
 		res, found := e.applyResult(req.taskID)
 		req.reply <- engineReply{result: res, hasResult: found, found: found}
 	case opStats:
-		pools := make(map[tasks.PoolID]PoolRuntimeStats, len(e.poolConcurrencies))
-		for pool, maximum := range e.poolConcurrencies {
-			waiting, waitingBytes := e.adm.PoolStats(pool)
-			workers := 0
-			for _, running := range e.workerRunning[pool] {
-				if running {
-					workers++
-				}
-			}
-			pools[pool] = PoolRuntimeStats{Workers: workers, MinWorkers: e.poolMinWorkers[pool], MaxWorkers: maximum, IdleWorkers: len(e.idleSlots[pool]), Waiting: waiting, WaitingBytes: waitingBytes}
-		}
+		pools := e.snapshotPoolRuntimeStats()
 		resources := make(map[string]ResourceRuntimeStats, len(e.resourceCapacity))
 		for name, capacity := range e.resourceCapacity {
 			resources[name] = ResourceRuntimeStats{Used: e.resourceUsed[name], Capacity: capacity}
