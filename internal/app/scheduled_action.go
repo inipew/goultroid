@@ -32,7 +32,7 @@ func (h scheduledActionHandler) run(ctx context.Context, definition jobs.JobDefi
 	if len(definition.Payload) > 0 {
 		var job scheduler.ScheduledJob
 		if err := json.Unmarshal(definition.Payload, &job); err == nil && job.ID > 0 {
-			return h.execute(ctx, job)
+			return h.execute(ctx, job, true)
 		}
 		var migrated struct {
 			LegacyID   int64  `json:"legacy_id"`
@@ -46,7 +46,7 @@ func (h scheduledActionHandler) run(ctx context.Context, definition jobs.JobDefi
 			return h.execute(ctx, scheduler.ScheduledJob{
 				ID: migrated.LegacyID, ChatID: migrated.ChatID, PeerType: migrated.PeerType,
 				AccessHash: migrated.AccessHash, ActionType: migrated.ActionType, Payload: migrated.Payload,
-			})
+			}, true)
 		}
 	}
 	jobID, err := strconv.ParseInt(strings.TrimPrefix(definition.ID, "scheduler:job:"), 10, 64)
@@ -60,26 +60,46 @@ func (h scheduledActionHandler) run(ctx context.Context, definition jobs.JobDefi
 	if job == nil || job.ClaimToken == "" {
 		return errors.New("scheduled job is no longer claimed")
 	}
-	return h.execute(ctx, *job)
+	return h.execute(ctx, *job, false)
 }
 
-func (h scheduledActionHandler) execute(ctx context.Context, job scheduler.ScheduledJob) error {
+func (h scheduledActionHandler) execute(ctx context.Context, job scheduler.ScheduledJob, reconcileProjection bool) error {
 	if job.ActionType == "action" {
 		job.ActionType = scheduler.ActionJob
 	}
+	var err error
 	switch job.ActionType {
 	case scheduler.ActionMessage:
-		return h.sendMessage(ctx, job)
+		err = h.sendMessage(ctx, job)
 	case scheduler.ActionCommand:
-		return h.executeCommand(ctx, job)
+		err = h.executeCommand(ctx, job)
 	case scheduler.ActionJob:
 		if h.jobs == nil {
 			return errors.New("jobs manager is not configured")
 		}
-		return h.jobs.TryTrigger(ctx, strings.TrimSpace(job.Payload))
+		err = h.jobs.TryTrigger(ctx, strings.TrimSpace(job.Payload))
 	default:
 		return fmt.Errorf("unknown scheduled job action type: %s", job.ActionType)
 	}
+	if err != nil {
+		return err
+	}
+	// During redesigned cutover scheduled_jobs is a compatibility projection,
+	// not an execution owner. Reconcile it after the side effect so list/access
+	// APIs do not expose an already-completed one-shot forever.
+	if reconcileProjection && h.repo != nil && job.ID > 0 {
+		if job.IntervalSeconds <= 0 {
+			_ = h.repo.DeleteScheduledJob(ctx, job.ID)
+		} else {
+			next := job.NextRunAt
+			step := time.Duration(job.IntervalSeconds) * time.Second
+			for !next.After(time.Now().UTC()) {
+				next = next.Add(step)
+			}
+			_ = h.repo.UpdateScheduledJobNextRun(ctx, job.ID, next)
+		}
+	}
+	return nil
 }
 
 func (h scheduledActionHandler) sendMessage(ctx context.Context, job scheduler.ScheduledJob) error {

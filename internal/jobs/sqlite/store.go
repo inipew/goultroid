@@ -873,8 +873,14 @@ func (s *Store) MaterializeDueSchedule(ctx context.Context, scheduleID string, n
 			return nil, err
 		}
 		if activeCount > 0 {
-			// Advance schedule next_due_at without creating a duplicate active occurrence
-			if _, err := tx.ExecContext(ctx, `UPDATE job_schedules SET next_due_at = ?, revision = revision + 1, updated_at = ? WHERE id = ?`, nextDue.UTC(), now, scheduleID); err != nil {
+			// A one-shot has no future slot: close it instead of leaving the same
+			// due deadline enabled (which would make the scheduler spin). Recurring
+			// schedules advance to the caller-computed future slot.
+			enabledAfter := 1
+			if recurrence == "once" {
+				enabledAfter = 0
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE job_schedules SET next_due_at = ?, enabled = ?, revision = revision + 1, updated_at = ? WHERE id = ?`, nextDue.UTC(), enabledAfter, now, scheduleID); err != nil {
 				return nil, err
 			}
 			return nil, tx.Commit()

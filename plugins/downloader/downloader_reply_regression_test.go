@@ -20,7 +20,7 @@ type recordingDownloadProvider struct {
 	gotURL string
 }
 
-func (p *recordingDownloadProvider) Name() string       { return "recording" }
+func (p *recordingDownloadProvider) Name() string      { return "recording" }
 func (p *recordingDownloadProvider) Match(string) bool { return true }
 func (p *recordingDownloadProvider) Download(_ context.Context, rawURL string, _ storage.Storage, _ download.DownloadOptions) (*storage.Asset, error) {
 	p.gotURL = rawURL

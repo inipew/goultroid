@@ -250,6 +250,21 @@ func TestStoreScheduleLifecycleAndMaterializeDue(t *testing.T) {
 	if err == nil && occ2 != nil {
 		t.Fatalf("expected overlap forbid to return nil occurrence, got %+v", occ2)
 	}
+
+	once := &jobs.JobSchedule{ID: "sched-once-overlap", JobID: def.ID, Recurrence: "once", NextDueAt: dueTime, OverlapPolicy: jobs.OverlapForbid, Enabled: true, Revision: 1}
+	if err := s.SaveSchedule(ctx, once); err != nil {
+		t.Fatal(err)
+	}
+	if occurrence, err := s.MaterializeDueSchedule(ctx, once.ID, dueTime); err != nil || occurrence != nil {
+		t.Fatalf("overlap one-shot occurrence=%+v err=%v", occurrence, err)
+	}
+	closed, err := s.GetSchedule(ctx, once.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closed.Enabled {
+		t.Fatal("overlapped one-shot remained enabled and due")
+	}
 }
 
 func TestStoreCancelOccurrenceAndEpochFencing(t *testing.T) {
