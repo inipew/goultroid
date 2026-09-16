@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,14 +41,42 @@ func TestNormalizeMSISDN(t *testing.T) {
 }
 
 type mockRepo struct {
+	mu    sync.Mutex
 	saved *Account
 }
 
-func (m *mockRepo) GetActive(ctx context.Context) (*Account, error)              { return m.saved, nil }
-func (m *mockRepo) GetByMSISDN(ctx context.Context, id string) (*Account, error) { return m.saved, nil }
-func (m *mockRepo) List(ctx context.Context) ([]*Account, error)                 { return []*Account{m.saved}, nil }
+func (m *mockRepo) GetActive(ctx context.Context) (*Account, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.saved == nil {
+		return nil, nil
+	}
+	clone := *m.saved
+	return &clone, nil
+}
+func (m *mockRepo) GetByMSISDN(ctx context.Context, id string) (*Account, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.saved == nil {
+		return nil, nil
+	}
+	clone := *m.saved
+	return &clone, nil
+}
+func (m *mockRepo) List(ctx context.Context) ([]*Account, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.saved == nil {
+		return nil, nil
+	}
+	clone := *m.saved
+	return []*Account{&clone}, nil
+}
 func (m *mockRepo) Save(ctx context.Context, acc *Account) error {
-	m.saved = acc
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	clone := *acc
+	m.saved = &clone
 	return nil
 }
 func (m *mockRepo) SetActive(ctx context.Context, id string) error       { return nil }
@@ -159,9 +189,10 @@ func TestClient_ExecuteEngsel_AutoRefreshOn401(t *testing.T) {
 	client := NewClient(cfg, repo, netCli)
 
 	acc := &Account{
-		MSISDN:       "6281912345678",
-		IDToken:      "expired_id_token",
-		RefreshToken: "valid_refresh_token",
+		MSISDN:         "6281912345678",
+		IDToken:        "expired_id_token",
+		RefreshToken:   "valid_refresh_token",
+		TokenExpiresAt: time.Now().Add(1 * time.Hour),
 	}
 
 	bal, err := client.GetBalance(context.Background(), acc)
@@ -356,5 +387,211 @@ func TestClient_SearchAndSettlements(t *testing.T) {
 	}
 	if repo.saved.AccessToken != "new_access_token" {
 		t.Fatalf("expected updated access token in repo, got %s", repo.saved.AccessToken)
+	}
+}
+
+func TestClient_EnsureFreshToken_Proactive(t *testing.T) {
+	refreshCount := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/realms/xl-ciam/protocol/openid-connect/token" {
+			atomic.AddInt32(&refreshCount, 1)
+			_ = json.NewEncoder(w).Encode(Tokens{
+				AccessToken:  "proactive_access_token",
+				IDToken:      "proactive_id_token",
+				RefreshToken: "proactive_refresh_token",
+				ExpiresIn:    3600,
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	cfg := DefaultClientConfig()
+	cfg.BaseCIAMURL = server.URL
+	repo := &mockRepo{}
+	netCli := network.NewService(server.Client(), nil).ForOwner("myxl")
+	client := NewClient(cfg, repo, netCli)
+
+	// Token expires in 60 seconds (< DefaultTokenRefreshSkew = 2m) -> should trigger proactive refresh
+	acc := &Account{
+		MSISDN:         "6281911122233",
+		AccessToken:    "old_access_token",
+		IDToken:        "old_id_token",
+		RefreshToken:   "old_refresh_token",
+		TokenExpiresAt: time.Now().Add(60 * time.Second),
+	}
+	repo.saved = acc
+
+	if err := client.EnsureFreshToken(context.Background(), acc); err != nil {
+		t.Fatalf("EnsureFreshToken failed: %v", err)
+	}
+
+	if atomic.LoadInt32(&refreshCount) != 1 {
+		t.Fatalf("expected 1 proactive refresh call, got %d", refreshCount)
+	}
+	if acc.AccessToken != "proactive_access_token" {
+		t.Fatalf("expected updated access token, got %s", acc.AccessToken)
+	}
+	if time.Until(acc.TokenExpiresAt) < 3000*time.Second {
+		t.Fatalf("expected TokenExpiresAt ~3600s in future, got %v", time.Until(acc.TokenExpiresAt))
+	}
+
+	// Immediate second call: token is still valid (> 2m) -> should NOT refresh again
+	if err := client.EnsureFreshToken(context.Background(), acc); err != nil {
+		t.Fatalf("second EnsureFreshToken failed: %v", err)
+	}
+	if atomic.LoadInt32(&refreshCount) != 1 {
+		t.Fatalf("expected still 1 refresh call, got %d", refreshCount)
+	}
+}
+
+func TestClient_SingleflightConcurrency(t *testing.T) {
+	refreshCount := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/realms/xl-ciam/protocol/openid-connect/token" {
+			atomic.AddInt32(&refreshCount, 1)
+			time.Sleep(50 * time.Millisecond) // simulate network latency
+			_ = json.NewEncoder(w).Encode(Tokens{
+				AccessToken:  "singleflight_access_token",
+				IDToken:      "singleflight_id_token",
+				RefreshToken: "singleflight_refresh_token",
+				ExpiresIn:    3600,
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	cfg := DefaultClientConfig()
+	cfg.BaseCIAMURL = server.URL
+	repo := &mockRepo{}
+	netCli := network.NewService(server.Client(), nil).ForOwner("myxl")
+	client := NewClient(cfg, repo, netCli)
+
+	acc := &Account{
+		MSISDN:         "6281999988877",
+		AccessToken:    "expired_token",
+		RefreshToken:   "rt_valid",
+		TokenExpiresAt: time.Now().Add(-10 * time.Minute), // expired
+	}
+	repo.saved = acc
+
+	var wg sync.WaitGroup
+	concurrentRequests := 20
+	errChan := make(chan error, concurrentRequests)
+
+	for i := 0; i < concurrentRequests; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			reqAcc := Account{
+				MSISDN:         "6281999988877",
+				AccessToken:    "expired_token",
+				RefreshToken:   "rt_valid",
+				TokenExpiresAt: time.Now().Add(-10 * time.Minute),
+			}
+			err := client.EnsureFreshToken(context.Background(), &reqAcc)
+			if err != nil {
+				errChan <- err
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errChan)
+
+	for err := range errChan {
+		t.Fatalf("concurrent EnsureFreshToken returned error: %v", err)
+	}
+
+	// Critical check: Singleflight must have coalesced all 20 calls into EXACTLY 1 refresh!
+	if calls := atomic.LoadInt32(&refreshCount); calls != 1 {
+		t.Fatalf("singleflight failed! Expected exactly 1 CIAM refresh call, got %d", calls)
+	}
+}
+
+func TestClient_SendPayment_AutoRefresh(t *testing.T) {
+	refreshCalled := false
+	paymentCallCount := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/realms/xl-ciam/protocol/openid-connect/token":
+			refreshCalled = true
+			_ = json.NewEncoder(w).Encode(Tokens{
+				AccessToken:  "fresh_payment_access_token",
+				IDToken:      "fresh_payment_id_token",
+				RefreshToken: "fresh_payment_refresh_token",
+				ExpiresIn:    3600,
+			})
+		case "/payments/api/v8/settlement-test":
+			paymentCallCount++
+			if paymentCallCount == 1 {
+				// First payment call rejected with 401
+				_ = json.NewEncoder(w).Encode(APIResponse{
+					Status:  "401",
+					Message: "Payment Token Expired",
+				})
+				return
+			}
+			// Second attempt succeeds
+			payload := `{"status":"SUCCESS","message":"Payment Successful","data":{"transaction_code":"TRX-RETRY-999"}}`
+			xtime := time.Now().UnixMilli()
+			xdata, _ := EncryptXData(payload, xtime, DefaultXDataKey)
+			_ = json.NewEncoder(w).Encode(EncryptedBody{
+				XData: xdata,
+				XTime: xtime,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg := DefaultClientConfig()
+	cfg.BaseCIAMURL = server.URL
+	cfg.BaseAPIURL = server.URL
+	repo := &mockRepo{}
+	netCli := network.NewService(server.Client(), nil).ForOwner("myxl")
+	client := NewClient(cfg, repo, netCli)
+
+	acc := &Account{
+		MSISDN:         "6281988877766",
+		AccessToken:    "expired_access_token",
+		IDToken:        "expired_id_token",
+		RefreshToken:   "valid_refresh_token",
+		TokenExpiresAt: time.Now().Add(1 * time.Hour), // client assumed valid, server rejected with 401
+	}
+	repo.saved = acc
+
+	params := PaymentSignatureParams{
+		AccessToken:    acc.AccessToken,
+		SigTimeSec:     time.Now().Unix(),
+		PackageCode:    "OPT-TEST",
+		TokenPayment:   "PAY-123",
+		PaymentMethod:  "BALANCE",
+		PaymentFor:     "BUY_PACKAGE",
+		Path:           "payments/api/v8/settlement-test",
+		XAPIBaseSecret: cfg.XAPIBaseSecret,
+	}
+
+	resp, err := client.SendPayment(context.Background(), acc, "payments/api/v8/settlement-test", map[string]string{"foo": "bar"}, params)
+	if err != nil {
+		t.Fatalf("SendPayment failed: %v", err)
+	}
+
+	if !refreshCalled {
+		t.Fatal("expected SendPayment to trigger token refresh on 401")
+	}
+	if paymentCallCount != 2 {
+		t.Fatalf("expected 2 payment calls (initial + retry), got %d", paymentCallCount)
+	}
+	if !resp.IsSuccess() {
+		t.Fatalf("expected success response after retry, got: %#v", resp)
+	}
+	if acc.AccessToken != "fresh_payment_access_token" {
+		t.Fatalf("expected updated access token on account, got %s", acc.AccessToken)
 	}
 }

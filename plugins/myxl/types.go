@@ -16,6 +16,7 @@ type Account struct {
 	RefreshToken     string    `json:"refresh_token"`
 	SubscriberID     string    `json:"subscriber_id"`
 	SubscriptionType string    `json:"subscription_type"`
+	TokenExpiresAt   time.Time `json:"token_expires_at"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }

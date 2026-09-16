@@ -46,7 +46,7 @@ func NewSQLiteRepository(db *database.DB) *SQLiteRepository {
 func (r *SQLiteRepository) GetActive(ctx context.Context) (*Account, error) {
 	query := `
 	SELECT msisdn, alias, is_active, access_token, id_token, refresh_token,
-	       subscriber_id, subscription_type, created_at, updated_at
+	       subscriber_id, subscription_type, token_expires_at, created_at, updated_at
 	FROM myxl_accounts
 	WHERE is_active = 1
 	LIMIT 1
@@ -66,7 +66,7 @@ func (r *SQLiteRepository) GetActive(ctx context.Context) (*Account, error) {
 func (r *SQLiteRepository) GetByMSISDN(ctx context.Context, identifier string) (*Account, error) {
 	query := `
 	SELECT msisdn, alias, is_active, access_token, id_token, refresh_token,
-	       subscriber_id, subscription_type, created_at, updated_at
+	       subscriber_id, subscription_type, token_expires_at, created_at, updated_at
 	FROM myxl_accounts
 	WHERE msisdn = ? OR alias = ?
 	LIMIT 1
@@ -86,7 +86,7 @@ func (r *SQLiteRepository) GetByMSISDN(ctx context.Context, identifier string) (
 func (r *SQLiteRepository) List(ctx context.Context) ([]*Account, error) {
 	query := `
 	SELECT msisdn, alias, is_active, access_token, id_token, refresh_token,
-	       subscriber_id, subscription_type, created_at, updated_at
+	       subscriber_id, subscription_type, token_expires_at, created_at, updated_at
 	FROM myxl_accounts
 	ORDER BY is_active DESC, created_at ASC
 	`
@@ -125,11 +125,16 @@ func (r *SQLiteRepository) Save(ctx context.Context, acc *Account) error {
 		acc.IsActive = true
 	}
 
+	tokenExpiresAt := acc.TokenExpiresAt
+	if tokenExpiresAt.IsZero() {
+		tokenExpiresAt = time.Unix(0, 0).UTC()
+	}
+
 	query := `
 	INSERT INTO myxl_accounts (
 		msisdn, alias, is_active, access_token, id_token, refresh_token,
-		subscriber_id, subscription_type, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		subscriber_id, subscription_type, token_expires_at, created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(msisdn) DO UPDATE SET
 		alias = excluded.alias,
 		is_active = CASE WHEN excluded.is_active = 1 THEN 1 ELSE myxl_accounts.is_active END,
@@ -138,6 +143,7 @@ func (r *SQLiteRepository) Save(ctx context.Context, acc *Account) error {
 		refresh_token = excluded.refresh_token,
 		subscriber_id = excluded.subscriber_id,
 		subscription_type = excluded.subscription_type,
+		token_expires_at = excluded.token_expires_at,
 		updated_at = excluded.updated_at
 	`
 	isActiveInt := 0
@@ -147,7 +153,7 @@ func (r *SQLiteRepository) Save(ctx context.Context, acc *Account) error {
 
 	_, err := r.db.ExecContext(ctx, query,
 		acc.MSISDN, acc.Alias, isActiveInt, acc.AccessToken, acc.IDToken, acc.RefreshToken,
-		acc.SubscriberID, acc.SubscriptionType, acc.CreatedAt, acc.UpdatedAt,
+		acc.SubscriberID, acc.SubscriptionType, tokenExpiresAt, acc.CreatedAt, acc.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save account: %w", err)
@@ -242,7 +248,7 @@ func scanAccount(row *sql.Row) (*Account, error) {
 	var isActiveInt int
 	err := row.Scan(
 		&acc.MSISDN, &acc.Alias, &isActiveInt, &acc.AccessToken, &acc.IDToken, &acc.RefreshToken,
-		&acc.SubscriberID, &acc.SubscriptionType, &acc.CreatedAt, &acc.UpdatedAt,
+		&acc.SubscriberID, &acc.SubscriptionType, &acc.TokenExpiresAt, &acc.CreatedAt, &acc.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -256,7 +262,7 @@ func scanAccountRow(rows *sql.Rows) (*Account, error) {
 	var isActiveInt int
 	err := rows.Scan(
 		&acc.MSISDN, &acc.Alias, &isActiveInt, &acc.AccessToken, &acc.IDToken, &acc.RefreshToken,
-		&acc.SubscriberID, &acc.SubscriptionType, &acc.CreatedAt, &acc.UpdatedAt,
+		&acc.SubscriberID, &acc.SubscriptionType, &acc.TokenExpiresAt, &acc.CreatedAt, &acc.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err

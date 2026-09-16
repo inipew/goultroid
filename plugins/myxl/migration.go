@@ -137,7 +137,35 @@ func (migration003) VerifySchema(ctx context.Context, tx database.SQLExecutor) e
 	return nil
 }
 
+var _ database.SchemaInvariantMigration = migration004{}
+
+type migration004 struct{}
+
+func (migration004) ID() string          { return "myxl.004" }
+func (migration004) Description() string { return "Persistent token expiration timestamp" }
+func (migration004) Checksum() string {
+	return "e9c6a3fc56679b01d475185bef9fd0d35c38b5e02f6a9b166b07005c1bbaa4e2"
+}
+func (migration004) LegacyVersions() []int { return nil }
+
+func (migration004) Up(ctx context.Context, tx database.SQLExecutor) error {
+	query := `ALTER TABLE myxl_accounts ADD COLUMN token_expires_at DATETIME NOT NULL DEFAULT '1970-01-01 00:00:00';`
+	_, err := tx.ExecContext(ctx, query)
+	return err
+}
+
+func (migration004) VerifySchema(ctx context.Context, tx database.SQLExecutor) error {
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('myxl_accounts') WHERE name='token_expires_at'`).Scan(&count); err != nil {
+		return err
+	}
+	if count == 0 {
+		return fmt.Errorf("required column token_expires_at in table myxl_accounts does not exist")
+	}
+	return nil
+}
+
 // Migrations returns the database migrations for the myxl plugin.
 func Migrations() []database.Migration {
-	return []database.Migration{migration001{}, migration002{}, migration003{}}
+	return []database.Migration{migration001{}, migration002{}, migration003{}, migration004{}}
 }

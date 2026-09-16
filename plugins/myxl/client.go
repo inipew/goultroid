@@ -17,6 +17,14 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/inipew/goultroid/internal/platform/network"
+	"golang.org/x/sync/singleflight"
+)
+
+const (
+	// DefaultTokenRefreshSkew is the safety window before expiry where proactive refresh occurs.
+	DefaultTokenRefreshSkew = 2 * time.Minute
+	// DefaultTokenExpiryFallback is used if CIAM does not return an expires_in value.
+	DefaultTokenExpiryFallback = 60 * time.Minute
 )
 
 // ClientConfig holds configuration for the MyXL API client.
@@ -63,11 +71,12 @@ func DefaultClientConfig() ClientConfig {
 
 // Client manages communications with MyXL CIAM and Engsel APIs.
 type Client struct {
-	mu      sync.Mutex
-	cfg     ClientConfig
-	httpCli *network.Client
-	repo    Repository
-	lastOTP map[string]time.Time
+	mu           sync.Mutex
+	cfg          ClientConfig
+	httpCli      *network.Client
+	repo         Repository
+	lastOTP      map[string]time.Time
+	refreshGroup singleflight.Group
 }
 
 // NewClient constructs a new MyXL API client.
@@ -262,42 +271,39 @@ func (c *Client) SubmitOTP(ctx context.Context, msisdn, code string) (*Tokens, e
 	return nil, fmt.Errorf("OTP submission failed (HTTP %d): %s", resp.StatusCode, string(body))
 }
 
-// RefreshToken exchanges a refresh token for new credentials, with automatic extend_session fallback.
-func (c *Client) RefreshToken(ctx context.Context, acc *Account) (*Tokens, error) {
-	if acc.RefreshToken == "" {
-		return nil, errors.New("no refresh token available")
+func applyTokensToAccount(acc *Account, tokens *Tokens) {
+	acc.AccessToken = tokens.AccessToken
+	acc.IDToken = tokens.IDToken
+	if tokens.RefreshToken != "" {
+		acc.RefreshToken = tokens.RefreshToken
 	}
-
-	reqURL := fmt.Sprintf("%s/realms/xl-ciam/protocol/openid-connect/token", c.cfg.BaseCIAMURL)
-	formData := url.Values{}
-	formData.Set("grant_type", "refresh_token")
-	formData.Set("refresh_token", acc.RefreshToken)
-
-	headers := c.buildCIAMHeaders(FormatMyXLHeaderTS(time.Now()))
-	headers["Content-Type"] = "application/x-www-form-urlencoded"
-
-	resp, err := c.getHTTP().DoRequest(ctx, network.MethodPost, reqURL, strings.NewReader(formData.Encode()), headers)
-	if err != nil {
-		return nil, fmt.Errorf("refresh token request: %w", err)
+	if tokens.ExpiresIn > 0 {
+		acc.TokenExpiresAt = time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second)
+	} else {
+		acc.TokenExpiresAt = time.Now().Add(DefaultTokenExpiryFallback)
 	}
+	acc.UpdatedAt = time.Now().UTC()
+}
 
-	body, err := resp.Bytes()
-	if err != nil {
-		return nil, fmt.Errorf("read refresh response: %w", err)
-	}
+func (c *Client) doRefreshToken(ctx context.Context, acc *Account) (*Tokens, error) {
+	if acc.RefreshToken != "" {
+		reqURL := fmt.Sprintf("%s/realms/xl-ciam/protocol/openid-connect/token", c.cfg.BaseCIAMURL)
+		formData := url.Values{}
+		formData.Set("grant_type", "refresh_token")
+		formData.Set("refresh_token", acc.RefreshToken)
 
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		var tokens Tokens
-		if err := json.Unmarshal(body, &tokens); err == nil && tokens.IDToken != "" {
-			acc.AccessToken = tokens.AccessToken
-			acc.IDToken = tokens.IDToken
-			if tokens.RefreshToken != "" {
-				acc.RefreshToken = tokens.RefreshToken
+		headers := c.buildCIAMHeaders(FormatMyXLHeaderTS(time.Now()))
+		headers["Content-Type"] = "application/x-www-form-urlencoded"
+
+		resp, err := c.getHTTP().DoRequest(ctx, network.MethodPost, reqURL, strings.NewReader(formData.Encode()), headers)
+		if err == nil {
+			body, readErr := resp.Bytes()
+			if readErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				var tokens Tokens
+				if jsonErr := json.Unmarshal(body, &tokens); jsonErr == nil && tokens.IDToken != "" {
+					return &tokens, nil
+				}
 			}
-			if c.repo != nil {
-				_ = c.repo.Save(ctx, acc)
-			}
-			return &tokens, nil
 		}
 	}
 
@@ -305,19 +311,104 @@ func (c *Client) RefreshToken(ctx context.Context, acc *Account) (*Tokens, error
 	if acc.SubscriberID != "" {
 		tokens, err := c.extendSession(ctx, acc.SubscriberID)
 		if err == nil && tokens != nil && tokens.IDToken != "" {
-			acc.AccessToken = tokens.AccessToken
-			acc.IDToken = tokens.IDToken
-			if tokens.RefreshToken != "" {
-				acc.RefreshToken = tokens.RefreshToken
-			}
-			if c.repo != nil {
-				_ = c.repo.Save(ctx, acc)
-			}
 			return tokens, nil
 		}
 	}
 
-	return nil, fmt.Errorf("refresh token failed (HTTP %d): %s", resp.StatusCode, string(body))
+	return nil, errors.New("refresh token and extend session both failed")
+}
+
+func (c *Client) refreshSingleflight(ctx context.Context, acc *Account, force bool) (*Account, error) {
+	if acc == nil {
+		return nil, errors.New("account is nil")
+	}
+
+	msisdn := acc.MSISDN
+	val, err, _ := c.refreshGroup.Do(msisdn, func() (any, error) {
+		var targetAcc *Account
+		if c.repo != nil && msisdn != "" {
+			dbAcc, err := c.repo.GetByMSISDN(ctx, msisdn)
+			if err == nil && dbAcc != nil {
+				targetAcc = dbAcc
+			}
+		}
+		if targetAcc == nil {
+			clone := *acc
+			targetAcc = &clone
+		}
+
+		// If not forced, check if token was already refreshed by another concurrent request
+		if !force && !targetAcc.TokenExpiresAt.IsZero() && time.Now().Add(DefaultTokenRefreshSkew).Before(targetAcc.TokenExpiresAt) {
+			return targetAcc, nil
+		}
+
+		tokens, err := c.doRefreshToken(ctx, targetAcc)
+		if err != nil {
+			return nil, err
+		}
+
+		applyTokensToAccount(targetAcc, tokens)
+
+		if c.repo != nil {
+			_ = c.repo.Save(ctx, targetAcc)
+		}
+
+		return targetAcc, nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	resAcc, ok := val.(*Account)
+	if !ok {
+		return nil, errors.New("unexpected singleflight result")
+	}
+
+	// Synchronize caller's account object
+	if acc != resAcc {
+		*acc = *resAcc
+	}
+
+	return resAcc, nil
+}
+
+// EnsureFreshToken checks if the account token is near expiry or expired,
+// and refreshes it cooperatively using singleflight if needed.
+func (c *Client) EnsureFreshToken(ctx context.Context, acc *Account) error {
+	if acc == nil {
+		return errors.New("account is nil")
+	}
+
+	// If token has expiry recorded and is still valid with skew buffer, no refresh needed
+	if !acc.TokenExpiresAt.IsZero() && time.Now().Add(DefaultTokenRefreshSkew).Before(acc.TokenExpiresAt) {
+		return nil
+	}
+
+	refreshed, err := c.refreshSingleflight(ctx, acc, false)
+	if err != nil {
+		return err
+	}
+	*acc = *refreshed
+	return nil
+}
+
+// RefreshToken exchanges a refresh token for new credentials with singleflight concurrency protection.
+func (c *Client) RefreshToken(ctx context.Context, acc *Account) (*Tokens, error) {
+	if acc == nil {
+		return nil, errors.New("account is nil")
+	}
+	refreshed, err := c.refreshSingleflight(ctx, acc, true)
+	if err != nil {
+		return nil, err
+	}
+	*acc = *refreshed
+	return &Tokens{
+		AccessToken:  refreshed.AccessToken,
+		IDToken:      refreshed.IDToken,
+		RefreshToken: refreshed.RefreshToken,
+		ExpiresIn:    int(time.Until(refreshed.TokenExpiresAt).Seconds()),
+	}, nil
 }
 
 func (c *Client) extendSession(ctx context.Context, subscriberID string) (*Tokens, error) {
@@ -390,22 +481,27 @@ func (c *Client) submitDeviceIDToken(ctx context.Context, b64Contact, exchangeCo
 	return &tokens, nil
 }
 
-// ExecuteEngsel sends an encrypted request to the MyXL Engsel API with automatic retry on token expiry.
+// ExecuteEngsel sends an encrypted request to the MyXL Engsel API with proactive freshness check and retry on token expiry.
 func (c *Client) ExecuteEngsel(ctx context.Context, acc *Account, method, path string, payload any) (*APIResponse, error) {
+	if err := c.EnsureFreshToken(ctx, acc); err != nil {
+		return nil, fmt.Errorf("ensure fresh token: %w", err)
+	}
+
 	resp, err := c.executeEngselOnce(ctx, acc, method, path, payload)
 	if err == nil && !resp.IsUnauthorized() {
 		return resp, nil
 	}
 
-	// If unauthorized or error indicating expired token, refresh token and retry once
+	// Reactive check: if unauthorized or error indicating expired token, force-refresh and retry once
 	if (err != nil && strings.Contains(err.Error(), "unauthorized")) || (resp != nil && resp.IsUnauthorized()) {
-		_, refreshErr := c.RefreshToken(ctx, acc)
+		refreshed, refreshErr := c.refreshSingleflight(ctx, acc, true)
 		if refreshErr != nil {
 			if err != nil {
 				return nil, fmt.Errorf("api request failed (%w) and token refresh also failed: %v", err, refreshErr)
 			}
 			return resp, fmt.Errorf("session expired and token refresh failed: %w", refreshErr)
 		}
+		*acc = *refreshed
 
 		// Retry with updated tokens
 		return c.executeEngselOnce(ctx, acc, method, path, payload)
@@ -539,7 +635,17 @@ func (c *Client) GetQuotaDetails(ctx context.Context, acc *Account) (*QuotaDetai
 
 // ForceRefreshToken forces an immediate token renewal via CIAM and persists it to the database.
 func (c *Client) ForceRefreshToken(ctx context.Context, identifier string) (*Tokens, error) {
-	acc, err := c.repo.GetByMSISDN(ctx, identifier)
+	var acc *Account
+	var err error
+	if identifier == "" {
+		if c.repo != nil {
+			acc, err = c.repo.GetActive(ctx)
+		}
+	} else {
+		if c.repo != nil {
+			acc, err = c.repo.GetByMSISDN(ctx, identifier)
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("get account: %w", err)
 	}
@@ -547,27 +653,7 @@ func (c *Client) ForceRefreshToken(ctx context.Context, identifier string) (*Tok
 		return nil, errors.New("account not found")
 	}
 
-	tokens, err := c.RefreshToken(ctx, acc)
-	if err != nil {
-		// Fallback to extend session using SubscriberID if available
-		if acc.SubscriberID != "" {
-			tokens, err = c.extendSession(ctx, acc.SubscriberID)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("force refresh token failed: %w", err)
-		}
-	}
-
-	acc.AccessToken = tokens.AccessToken
-	acc.IDToken = tokens.IDToken
-	acc.RefreshToken = tokens.RefreshToken
-	acc.UpdatedAt = time.Now()
-
-	if err := c.repo.Save(ctx, acc); err != nil {
-		return nil, fmt.Errorf("save refreshed tokens: %w", err)
-	}
-
-	return tokens, nil
+	return c.RefreshToken(ctx, acc)
 }
 
 // GetPackagesByFamily queries available packages for a given family code across multiple migration configurations.
@@ -693,8 +779,40 @@ func (c *Client) GetPaymentMethodsOption(ctx context.Context, acc *Account, toke
 	return &data, nil
 }
 
-// SendPayment executes an encrypted payment request with payment-specific signature.
+// SendPayment executes an encrypted payment request with payment-specific signature,
+// proactive freshness verification, and automatic retry on token expiry.
 func (c *Client) SendPayment(ctx context.Context, acc *Account, path string, payload any, params PaymentSignatureParams) (*APIResponse, error) {
+	if err := c.EnsureFreshToken(ctx, acc); err != nil {
+		return nil, fmt.Errorf("ensure fresh token for payment: %w", err)
+	}
+	params.AccessToken = acc.AccessToken
+
+	resp, err := c.sendPaymentOnce(ctx, acc, path, payload, params)
+	if err == nil && !resp.IsUnauthorized() {
+		return resp, nil
+	}
+
+	// Reactive check: if unauthorized or token expired, force-refresh and retry once
+	if (err != nil && strings.Contains(err.Error(), "unauthorized")) || (resp != nil && resp.IsUnauthorized()) {
+		refreshed, refreshErr := c.refreshSingleflight(ctx, acc, true)
+		if refreshErr != nil {
+			if err != nil {
+				return nil, fmt.Errorf("payment request failed (%w) and token refresh also failed: %v", err, refreshErr)
+			}
+			return resp, fmt.Errorf("payment session expired and token refresh failed: %w", refreshErr)
+		}
+		*acc = *refreshed
+
+		// Update payment signature params with new AccessToken and fresh timestamp
+		params.AccessToken = acc.AccessToken
+		params.SigTimeSec = time.Now().Unix()
+		return c.sendPaymentOnce(ctx, acc, path, payload, params)
+	}
+
+	return resp, err
+}
+
+func (c *Client) sendPaymentOnce(ctx context.Context, acc *Account, path string, payload any, params PaymentSignatureParams) (*APIResponse, error) {
 	plainBodyBytes, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal payment payload: %w", err)

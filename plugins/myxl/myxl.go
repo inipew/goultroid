@@ -301,6 +301,11 @@ func (p *Plugin) handleOTP(ctx *core.Context, args []string) error {
 	acc.AccessToken = tokens.AccessToken
 	acc.IDToken = tokens.IDToken
 	acc.RefreshToken = tokens.RefreshToken
+	if tokens.ExpiresIn > 0 {
+		acc.TokenExpiresAt = time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second)
+	} else {
+		acc.TokenExpiresAt = time.Now().Add(DefaultTokenExpiryFallback)
+	}
 	acc.IsActive = true
 
 	if err := p.repo.Save(cCtx, acc); err != nil {

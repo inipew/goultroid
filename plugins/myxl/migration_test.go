@@ -3,6 +3,7 @@ package myxl
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/inipew/goultroid/internal/database"
 )
@@ -145,5 +146,19 @@ func TestMyXLFeatureMigrationFreshDatabase(t *testing.T) {
 	updatedDecoy, err := repo.GetDecoy(ctx, "default-balance")
 	if err != nil || updatedDecoy == nil || updatedDecoy.OptionCode != "OPT-DECOY-777" {
 		t.Fatalf("expected updated decoy with option code, got %#v (err: %v)", updatedDecoy, err)
+	}
+
+	// Test TokenExpiresAt persistence (migration004)
+	targetTime := time.Date(2026, 10, 15, 12, 30, 0, 0, time.UTC)
+	acc1.TokenExpiresAt = targetTime
+	if err := repo.Save(ctx, acc1); err != nil {
+		t.Fatalf("save account with TokenExpiresAt: %v", err)
+	}
+	fetched, err := repo.GetByMSISDN(ctx, "6281900000001")
+	if err != nil || fetched == nil {
+		t.Fatalf("get account 1 failed: %v", err)
+	}
+	if !fetched.TokenExpiresAt.Equal(targetTime) {
+		t.Fatalf("expected TokenExpiresAt %v, got %v", targetTime, fetched.TokenExpiresAt)
 	}
 }
