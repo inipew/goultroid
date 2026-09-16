@@ -2,6 +2,8 @@ package jobs
 
 import (
 	"time"
+
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 // OverlapPolicy controls what happens when a new occurrence is due while a previous occurrence is still active.
@@ -55,20 +57,22 @@ type JobRetryPolicy struct {
 	BackoffMultiplier float64       `json:"backoff_multiplier"`
 }
 
-// JobDefinition represents WHAT work to do, its handler reference, version, and policy (ADR 0006 §7.1).
+// JobDefinition represents WHAT work to do, its handler reference, version, policy,
+// and explicit execution-resource requirements (ADR 0006 §7.1).
 type JobDefinition struct {
-	ID          string         `json:"id"`
-	ScopeOwner  string         `json:"scope_owner"`
-	QuotaOwner  string         `json:"quota_owner"`
-	HandlerType string         `json:"handler_type"`
-	Version     int            `json:"version"`
-	Payload     []byte         `json:"payload,omitempty"`
-	Pool        string         `json:"pool"`
-	Class       string         `json:"class"`
-	Timeout     time.Duration  `json:"timeout"`
-	RetryPolicy JobRetryPolicy `json:"retry_policy"`
-	Enabled     bool           `json:"enabled"`
-	Revision    uint64         `json:"revision"`
+	ID          string                      `json:"id"`
+	ScopeOwner  string                      `json:"scope_owner"`
+	QuotaOwner  string                      `json:"quota_owner"`
+	HandlerType string                      `json:"handler_type"`
+	Version     int                         `json:"version"`
+	Payload     []byte                      `json:"payload,omitempty"`
+	Pool        string                      `json:"pool"`
+	Class       string                      `json:"class"`
+	Timeout     time.Duration               `json:"timeout"`
+	Resources   []tasks.ResourceRequirement `json:"resources,omitempty"`
+	RetryPolicy JobRetryPolicy              `json:"retry_policy"`
+	Enabled     bool                        `json:"enabled"`
+	Revision    uint64                      `json:"revision"`
 }
 
 // JobSchedule represents WHEN an occurrence is materialized.

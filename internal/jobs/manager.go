@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -127,6 +128,26 @@ var (
 	_ runtime.ForcedStopper = (*Manager)(nil)
 )
 
+func cloneDefinition(def JobDefinition) JobDefinition {
+	def.Payload = append([]byte(nil), def.Payload...)
+	def.Resources = append([]tasks.ResourceRequirement(nil), def.Resources...)
+	return def
+}
+
+func validateJobResources(resources []tasks.ResourceRequirement) error {
+	seen := make(map[string]struct{}, len(resources))
+	for _, requirement := range resources {
+		if requirement.Name == "" || requirement.Name != strings.TrimSpace(requirement.Name) || requirement.Amount <= 0 {
+			return errors.New("job resources require a trimmed name and positive amount")
+		}
+		if _, duplicate := seen[requirement.Name]; duplicate {
+			return fmt.Errorf("duplicate job resource %q", requirement.Name)
+		}
+		seen[requirement.Name] = struct{}{}
+	}
+	return nil
+}
+
 func NewManager(client tasks.Client, store Store, pump *PersistencePump) *Manager {
 	return &Manager{
 		client: client, store: store, pump: pump,
@@ -156,11 +177,13 @@ func (m *Manager) Start(ctx context.Context) error {
 			return fmt.Errorf("load job definitions: %w", err)
 		}
 		for _, definition := range definitions {
+			if err := validateJobResources(definition.Resources); err != nil {
+				return fmt.Errorf("load job definition %s resources: %w", definition.ID, err)
+			}
 			if _, exists := m.definitions[definition.ID]; exists {
 				continue
 			}
-			definition.Payload = append([]byte(nil), definition.Payload...)
-			m.definitions[definition.ID] = definition
+			m.definitions[definition.ID] = cloneDefinition(definition)
 		}
 	}
 	firstStart := m.retryQueue == nil
@@ -356,6 +379,9 @@ func (m *Manager) Register(def JobDefinition) error {
 	if def.ID == "" || def.ScopeOwner == "" || def.QuotaOwner == "" || def.HandlerType == "" {
 		return errors.New("job definition id, scope owner, quota owner, and handler type are required")
 	}
+	if err := validateJobResources(def.Resources); err != nil {
+		return fmt.Errorf("invalid job definition resources: %w", err)
+	}
 	if def.Pool == "" {
 		def.Pool = "general"
 	}
@@ -368,7 +394,7 @@ func (m *Manager) Register(def JobDefinition) error {
 	if !def.Enabled {
 		def.Enabled = true
 	}
-	def.Payload = append([]byte(nil), def.Payload...)
+	def = cloneDefinition(def)
 
 	// Serialize duplicate definition creation without holding m.mu across
 	// storage I/O. ForceStop/Quiesce must always be able to acquire lifecycle
@@ -392,7 +418,7 @@ func (m *Manager) Register(def JobDefinition) error {
 		return fmt.Errorf("save job definition: %w", err)
 	}
 	m.mu.Lock()
-	m.definitions[def.ID] = def
+	m.definitions[def.ID] = cloneDefinition(def)
 	m.mu.Unlock()
 	m.signalRecovery()
 	return nil
@@ -517,8 +543,7 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey str
 	if err != nil {
 		return nil, "", fmt.Errorf("prepare job attempt: %w", err)
 	}
-	copyDef := definition
-	copyDef.Payload = append([]byte(nil), definition.Payload...)
+	copyDef := cloneDefinition(definition)
 	ticket, err := client.Submit(ctx, tasks.WorkSpec{
 		ID:               taskID,
 		Scope:            tasks.ScopeIdentity{Owner: copyDef.ScopeOwner, Generation: uint64(copyDef.Version)},
@@ -562,18 +587,22 @@ func (m *Manager) UpdateDefinition(ctx context.Context, def JobDefinition) error
 	if def.ID == "" {
 		return errors.New("job definition id is required")
 	}
+	if err := validateJobResources(def.Resources); err != nil {
+		return fmt.Errorf("invalid job definition resources: %w", err)
+	}
 	m.mu.RLock()
 	current, found := m.definitions[def.ID]
 	m.mu.RUnlock()
 	if !found {
 		return fmt.Errorf("job definition not found: %s", def.ID)
 	}
+	def = cloneDefinition(def)
 	def.Revision = current.Revision
 	if err := m.store.UpdateDefinitionCAS(ctx, &def, current.Revision); err != nil {
 		return err
 	}
 	m.mu.Lock()
-	m.definitions[def.ID] = def
+	m.definitions[def.ID] = cloneDefinition(def)
 	m.mu.Unlock()
 	return nil
 }
@@ -669,7 +698,7 @@ func (m *Manager) track(occurrenceID string, def JobDefinition, handler Handler,
 	if m.tracked == nil {
 		m.tracked = make(map[string]*trackedOccurrence)
 	}
-	m.tracked[occurrenceID] = &trackedOccurrence{def: def, handler: handler, taskID: taskID}
+	m.tracked[occurrenceID] = &trackedOccurrence{def: cloneDefinition(def), handler: handler, taskID: taskID}
 }
 
 // signalRecovery coalesces arbitrarily many recovery hints into one bounded wake.
@@ -899,8 +928,7 @@ func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def Job
 	if err != nil {
 		return err
 	}
-	copyDef := def
-	copyDef.Payload = append([]byte(nil), def.Payload...)
+	copyDef := cloneDefinition(def)
 	commit := func(commitCtx context.Context, res tasks.TaskResult) error {
 		return m.store.CommitAttemptResult(commitCtx, attempt.ID, attempt.LeaseEpoch, attemptState(res.Outcome), nil, res.Failure.Message)
 	}
@@ -934,14 +962,7 @@ func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def Job
 }
 
 func definitionResources(def JobDefinition) []tasks.ResourceRequirement {
-	switch def.Pool {
-	case "media-process":
-		return []tasks.ResourceRequirement{{Name: "process", Amount: 1}, {Name: "media", Amount: 1}}
-	case "download":
-		return []tasks.ResourceRequirement{{Name: "download", Amount: 1}}
-	default:
-		return nil
-	}
+	return append([]tasks.ResourceRequirement(nil), def.Resources...)
 }
 
 // Recover scans unresolved occurrences and converges each one. Repeated calls converge; limit bounds each scan.
@@ -960,7 +981,7 @@ func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error)
 		m.mu.RUnlock()
 		// A tracked occurrence already has exactly one retry worker responsible
 		// for observing its current ticket and deciding whether to finalize or
-		// create the next attempt.  Recovery must never race that owner: doing so
+		// create the next attempt. Recovery must never race that owner: doing so
 		// can lease two sequential attempts from the same terminal predecessor
 		// and exceed the retry budget.
 		if activelyTracked {
@@ -1042,8 +1063,7 @@ func (m *Manager) Definition(id string) (JobDefinition, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	def, ok := m.definitions[id]
-	def.Payload = append([]byte(nil), def.Payload...)
-	return def, ok
+	return cloneDefinition(def), ok
 }
 
 func (m *Manager) Diagnostics() Diagnostics {

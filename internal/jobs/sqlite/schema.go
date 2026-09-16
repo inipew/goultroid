@@ -27,6 +27,7 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 			pool TEXT NOT NULL DEFAULT 'general',
 			class TEXT NOT NULL DEFAULT 'normal',
 			timeout_ms INTEGER NOT NULL DEFAULT 0,
+			resources TEXT NOT NULL DEFAULT '[]',
 			retry_policy TEXT NOT NULL DEFAULT '',
 			enabled INTEGER NOT NULL DEFAULT 1,
 			revision INTEGER NOT NULL DEFAULT 1,
@@ -107,6 +108,54 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 		if _, err := db.ExecContext(ctx, query); err != nil {
 			return fmt.Errorf("init job schema query failed: %w", err)
 		}
+	}
+	if err := ensureJobDefinitionResources(ctx, db); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureJobDefinitionResources upgrades pre-resource schemas in place. Pool
+// inference is used only once as migration compatibility: after the column is
+// present, runtime execution reads the persisted resources field exclusively.
+func ensureJobDefinitionResources(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(job_definitions)`)
+	if err != nil {
+		return fmt.Errorf("inspect job_definitions schema: %w", err)
+	}
+	hasResources := false
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, typ string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan job_definitions schema: %w", err)
+		}
+		if name == "resources" {
+			hasResources = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close job_definitions schema rows: %w", err)
+	}
+	if hasResources {
+		return nil
+	}
+
+	if _, err := db.ExecContext(ctx, `ALTER TABLE job_definitions ADD COLUMN resources TEXT NOT NULL DEFAULT '[]'`); err != nil {
+		return fmt.Errorf("add job definition resources column: %w", err)
+	}
+	// Preserve the old effective capacity semantics for existing durable rows,
+	// but materialize them as explicit data exactly once during migration.
+	if _, err := db.ExecContext(ctx, `
+		UPDATE job_definitions
+		SET resources = CASE
+			WHEN pool = 'media-process' THEN '[{"name":"process","amount":1},{"name":"media","amount":1}]'
+			WHEN pool = 'download' THEN '[{"name":"download","amount":1}]'
+			ELSE '[]'
+		END`); err != nil {
+		return fmt.Errorf("backfill job definition resources: %w", err)
 	}
 	return nil
 }

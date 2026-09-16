@@ -88,6 +88,10 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 	inlineEngine.SetPermissions(perms)
 
 	taskEngine := taskengine.NewEngine(cfg.TaskEngine)
+	if err := taskEngine.SetDurabilityConcurrency(cfg.TaskEngineDurabilityConcurrency); err != nil {
+		cleanupCore(&coreDependencies{db: db, eventBus: eventBus, cmdLimiter: cmdLimiter, interLimiter: interLimiter}, logger)
+		return nil, fmt.Errorf("configure taskengine durability concurrency: %w", err)
+	}
 	resourceManager := resource.NewManager()
 	idempRepo := idempotency.NewSQLiteRepository(db.DB)
 	if err := idempRepo.InitSchema(context.Background()); err != nil {
@@ -104,7 +108,7 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 	// Durable commit transport (Phase C): the engine holds CommitPending
 	// result credits until the pump acknowledges each attempt commit.
 	taskEngine.SetCommitPump(persistencePump)
-	jobsManager := jobs.NewManager(taskEngine, jobsqlite.NewStore(db.DB), persistencePump)
+	jobsManager := jobs.NewManager(taskEngine, jobsqlite.NewResourceStore(db.DB), persistencePump)
 	jobsManager.SetOutboxSink(func(ctx context.Context, event jobs.OutboxEvent) error {
 		return eventBus.PublishDurable(ctx, &core.JobLifecycleEvent{
 			MetaData: core.EventMeta{ID: event.ID}, At: event.CommittedAt,
