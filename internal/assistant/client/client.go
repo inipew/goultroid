@@ -24,8 +24,9 @@ import (
 )
 
 var (
-	ErrBotTokenRequired = errors.New("assistant/client: BOT_TOKEN is required")
-	ErrAlreadyRunning   = errors.New("assistant/client: client already running")
+	ErrBotTokenRequired           = errors.New("assistant/client: BOT_TOKEN is required")
+	ErrAlreadyRunning             = errors.New("assistant/client: client already running")
+	ErrCallbackTasksNotConfigured = errors.New("assistant/client: task client is required for callback execution")
 )
 
 type Client interface {
@@ -460,7 +461,8 @@ func (c *AssistantClient) SetCallbackRouter(coreRouter CoreCallbackDispatcher) {
 			}
 		}
 
-		return coreRouter.Dispatch(ctx, evt, svc)
+		_ = tx.Answer(ctx, "Interaction service unavailable.", true)
+		return ErrCallbackTasksNotConfigured
 	})
 
 	c.cbRouter.SetFallbackInlineHandler(func(ctx context.Context, tx *callback.InlineTransaction) error {
@@ -559,6 +561,7 @@ func (c *AssistantClient) SetCallbackRouter(coreRouter CoreCallbackDispatcher) {
 			}
 		}
 
-		return coreRouter.Dispatch(ctx, evt, svc)
+		_ = tx.Answer(ctx, "Interaction service unavailable.", true)
+		return ErrCallbackTasksNotConfigured
 	})
 }

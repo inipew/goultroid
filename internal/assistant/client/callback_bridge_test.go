@@ -177,6 +177,7 @@ func (m *mockTelegramAPI) MessagesEditInlineBotMessage(ctx context.Context, req 
 
 func TestAssistantClient_CallbackBridge_DispatchToCoreRouter(t *testing.T) {
 	asst := NewAssistantClient(1, "hash", "token", zap.NewNop())
+	asst.SetTasks(&testTaskClient{})
 
 	var receivedEvt *core.CallbackQueryEvent
 	dispatched := false
@@ -332,6 +333,28 @@ func TestAssistantClient_CallbackBridge_TaskScopeUnavailable(t *testing.T) {
 	}
 }
 
+func TestAssistantClient_CallbackBridge_RequiresTaskEngine(t *testing.T) {
+	asst := NewAssistantClient(1, "hash", "token", zap.NewNop())
+	coreRouter := &mockCoreDispatcher{
+		hasHandlerFunc: func(string) bool { return true },
+		dispatchFunc: func(context.Context, *core.CallbackQueryEvent, core.TelegramServicer) error {
+			t.Fatal("core callback must not execute without TaskEngine")
+			return nil
+		},
+	}
+	asst.SetCallbackRouter(coreRouter)
+	inter := &mockInteraction{}
+	tx := callback.NewTransaction(112, 42, callback.ParsedPayload{Version: "v1", Namespace: "myxl", Action: "refresh", State: "1"}, interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 42}, 1, 42, 1), inter)
+	tx.RawData = []byte("v1:myxl:refresh:1")
+	err := asst.CallbackRouter().Dispatch(context.Background(), tx)
+	if !errors.Is(err, ErrCallbackTasksNotConfigured) {
+		t.Fatalf("expected ErrCallbackTasksNotConfigured, got %v", err)
+	}
+	if !inter.answered || inter.answer != "Interaction service unavailable." {
+		t.Fatalf("expected unavailable acknowledgement, got answered=%v text=%q", inter.answered, inter.answer)
+	}
+}
+
 func TestAssistantClient_CallbackBridge_UnhandledNamespaceReturnsError(t *testing.T) {
 	asst := NewAssistantClient(1, "hash", "token", zap.NewNop())
 
@@ -366,6 +389,7 @@ func TestAssistantClient_CallbackBridge_UnhandledNamespaceReturnsError(t *testin
 
 func TestAssistantClient_CallbackBridge_DispatchInlineToCoreRouter(t *testing.T) {
 	asst := NewAssistantClient(1, "hash", "token", zap.NewNop())
+	asst.SetTasks(&testTaskClient{})
 
 	var receivedEvt *core.CallbackQueryEvent
 	dispatched := false
@@ -424,6 +448,7 @@ func TestAssistantClient_CallbackBridge_DispatchInlineToCoreRouter(t *testing.T)
 
 func TestAssistantClient_CallbackBridge_EditInlineBotMessageMarkup_PreservesText(t *testing.T) {
 	asst := NewAssistantClient(1, "hash", "token", zap.NewNop())
+	asst.SetTasks(&testTaskClient{})
 
 	coreRouter := &mockCoreDispatcher{
 		hasHandlerFunc: func(namespace string) bool { return namespace == "help" },
@@ -461,6 +486,7 @@ func TestAssistantClient_CallbackBridge_EditInlineBotMessageMarkup_PreservesText
 
 func TestAssistantClient_CallbackBridge_PartialTargetMerging(t *testing.T) {
 	asst := NewAssistantClient(1, "hash", "token", zap.NewNop())
+	asst.SetTasks(&testTaskClient{})
 
 	originalPeer := &tg.InputPeerUser{UserID: 12345, AccessHash: 9999}
 	originalMsgID := 10
@@ -516,6 +542,7 @@ func TestAssistantClient_CallbackBridge_PartialTargetMerging(t *testing.T) {
 
 func TestAssistantClient_CallbackBridge_DeleteMessage_MultipleIDs(t *testing.T) {
 	asst := NewAssistantClient(1, "hash", "token", zap.NewNop())
+	asst.SetTasks(&testTaskClient{})
 
 	originalPeer := &tg.InputPeerUser{UserID: 12345, AccessHash: 9999}
 	mockInter := &mockInteraction{}
