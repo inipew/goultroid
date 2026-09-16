@@ -100,4 +100,50 @@ func TestMyXLFeatureMigrationFreshDatabase(t *testing.T) {
 	if err != nil || updated == nil || updated.Alias != "WorkSIM" {
 		t.Fatalf("expected account retrieved by new alias WorkSIM, got: %#v (err: %v)", updated, err)
 	}
+
+	// Test Saved Packages
+	pkg := &SavedPackage{
+		MSISDN:     "6281900000001",
+		OptionCode: "OPT-12345",
+		Name:       "Xtra Combo 10GB",
+		Price:      50000,
+		FamilyCode: "FAM-999",
+	}
+	if err := repo.SavePackage(ctx, pkg); err != nil {
+		t.Fatalf("save package: %v", err)
+	}
+	savedList, err := repo.GetSavedPackages(ctx, "6281900000001")
+	if err != nil || len(savedList) != 1 {
+		t.Fatalf("expected 1 saved package, got %d (err: %v)", len(savedList), err)
+	}
+	singlePkg, err := repo.GetSavedPackage(ctx, "6281900000001", "OPT-12345")
+	if err != nil || singlePkg == nil || singlePkg.Name != "Xtra Combo 10GB" {
+		t.Fatalf("get single package failed: %#v (err: %v)", singlePkg, err)
+	}
+	if err := repo.DeleteSavedPackage(ctx, "6281900000001", "OPT-12345"); err != nil {
+		t.Fatalf("delete saved package: %v", err)
+	}
+	savedListAfter, err := repo.GetSavedPackages(ctx, "6281900000001")
+	if err != nil || len(savedListAfter) != 0 {
+		t.Fatalf("expected 0 saved packages after delete, got %d", len(savedListAfter))
+	}
+
+	// Test Decoy Configs (seeded from migration003)
+	decoy, err := repo.GetDecoy(ctx, "default-balance")
+	if err != nil || decoy == nil {
+		t.Fatalf("expected seeded decoy 'default-balance', got nil (err: %v)", err)
+	}
+	if decoy.Price != 889750 || !decoy.IsEnterprise {
+		t.Fatalf("unexpected decoy values: %#v", decoy)
+	}
+	decoy.OptionCode = "OPT-DECOY-777"
+	decoy.TokenConfirmation = "CONFIRM-TOKEN-XYZ"
+	decoy.LastFetchedAt = 1234567890
+	if err := repo.UpsertDecoy(ctx, decoy); err != nil {
+		t.Fatalf("upsert decoy: %v", err)
+	}
+	updatedDecoy, err := repo.GetDecoy(ctx, "default-balance")
+	if err != nil || updatedDecoy == nil || updatedDecoy.OptionCode != "OPT-DECOY-777" {
+		t.Fatalf("expected updated decoy with option code, got %#v (err: %v)", updatedDecoy, err)
+	}
 }

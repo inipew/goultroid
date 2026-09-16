@@ -63,3 +63,32 @@ func TestFormatMyXLHeaderTS(t *testing.T) {
 		t.Fatalf("timestamp too short: %s", ts)
 	}
 }
+
+func TestMakeXSignaturePaymentParams(t *testing.T) {
+	params := PaymentSignatureParams{
+		AccessToken:    "mock_access_token",
+		SigTimeSec:     1700000000,
+		PackageCode:    "PKG_123",
+		TokenPayment:   "TOK_PAY_456",
+		PaymentMethod:  "PULSA",
+		PaymentFor:     "BUY_PACKAGE",
+		Path:           "payments/api/v8/settlement",
+		XAPIBaseSecret: "mock_secret_base",
+	}
+	sig := MakeXSignaturePaymentParams(params, "ae-hei_9Tee6he+Ik3Gais5=")
+	if len(sig) != 128 {
+		t.Fatalf("expected 128 hex chars for SHA-512 signature, got %d", len(sig))
+	}
+}
+
+func TestBuildEncryptedFieldWithKey(t *testing.T) {
+	efURLSafe := BuildEncryptedFieldWithKey("5dccbf08920a5527", true)
+	if len(efURLSafe) < 16 {
+		t.Fatalf("expected urlsafe encrypted field to be >= 16 chars, got %d", len(efURLSafe))
+	}
+
+	efStd := BuildEncryptedFieldWithKey("5dccbf08920a5527", false)
+	if len(efStd) < 16 {
+		t.Fatalf("expected std encrypted field to be >= 16 chars, got %d", len(efStd))
+	}
+}

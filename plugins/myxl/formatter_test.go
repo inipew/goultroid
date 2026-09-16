@@ -121,3 +121,53 @@ func TestFormatQuotaResponse(t *testing.T) {
 		t.Error("expected masked output to contain 6281****1234")
 	}
 }
+
+func TestFormatFamilyAndDetails(t *testing.T) {
+	fam := &PackageListResponse{
+		PackageFamily: PackageFamily{Name: "Xtra Combo", PackageFamilyCode: "FAM-99"},
+		PackageVariants: []PackageVariant{
+			{
+				Name:               "Flex S",
+				PackageVariantCode: "VAR-1",
+				PackageOptions: []PackageOption{
+					{Name: "Flex S 10GB", PackageOptionCode: "OPT-10", Price: 35000},
+				},
+			},
+		},
+	}
+	outFam := FormatFamilyPackages(fam)
+	if !strings.Contains(outFam, "Xtra Combo") || !strings.Contains(outFam, "Rp 35.000") || !strings.Contains(outFam, "OPT-10") {
+		t.Fatalf("unexpected family format output: %s", outFam)
+	}
+
+	detail := &PackageDetailsData{
+		PackageFamily: PackageFamily{Name: "Xtra Combo"},
+		PackageOption: &PackageOption{Name: "Flex S 10GB", PackageOptionCode: "OPT-10", Price: 35000},
+	}
+	outDetail := FormatPackageDetails(detail)
+	if !strings.Contains(outDetail, "Flex S 10GB") || !strings.Contains(outDetail, "Rp 35.000") {
+		t.Fatalf("unexpected detail format output: %s", outDetail)
+	}
+}
+
+func TestFormatSavedAndPurchase(t *testing.T) {
+	pkgs := []*SavedPackage{
+		{MSISDN: "6281900001234", OptionCode: "OPT-10", Name: "Flex S 10GB", Price: 35000, FamilyCode: "FAM-99"},
+	}
+	outSaved := FormatSavedPackages(pkgs)
+	if !strings.Contains(outSaved, "Flex S 10GB") || !strings.Contains(outSaved, "Rp 35.000") {
+		t.Fatalf("unexpected saved format output: %s", outSaved)
+	}
+
+	res := &SettlementResult{
+		IsSuccess:       true,
+		Status:          "SUCCESS",
+		TransactionCode: "TRX-777",
+		Deeplink:        "https://pay.ovo.id/777",
+		QRCode:          "000201...",
+	}
+	outPurchase := FormatPurchaseResult(res, "Flex S 10GB", 35000, "OVO")
+	if !strings.Contains(outPurchase, "TRX-777") || !strings.Contains(outPurchase, "https://pay.ovo.id/777") || !strings.Contains(outPurchase, "000201...") {
+		t.Fatalf("unexpected purchase result output: %s", outPurchase)
+	}
+}

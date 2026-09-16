@@ -11,7 +11,7 @@ import (
 	"github.com/inipew/goultroid/internal/database"
 )
 
-// Repository defines operations for managing MyXL accounts.
+// Repository defines operations for managing MyXL accounts, saved packages, and decoy targets.
 type Repository interface {
 	GetActive(ctx context.Context) (*Account, error)
 	GetByMSISDN(ctx context.Context, msisdn string) (*Account, error)
@@ -20,6 +20,16 @@ type Repository interface {
 	SetActive(ctx context.Context, msisdn string) error
 	SetAlias(ctx context.Context, identifier, alias string) error
 	Delete(ctx context.Context, msisdn string) error
+
+	// Saved packages
+	SavePackage(ctx context.Context, pkg *SavedPackage) error
+	GetSavedPackages(ctx context.Context, msisdn string) ([]*SavedPackage, error)
+	GetSavedPackage(ctx context.Context, msisdn, optionCode string) (*SavedPackage, error)
+	DeleteSavedPackage(ctx context.Context, msisdn, optionCode string) error
+
+	// Decoy configurations
+	GetDecoy(ctx context.Context, key string) (*DecoyConfig, error)
+	UpsertDecoy(ctx context.Context, decoy *DecoyConfig) error
 }
 
 // SQLiteRepository implements Repository using *database.DB.
@@ -253,4 +263,145 @@ func scanAccountRow(rows *sql.Rows) (*Account, error) {
 	}
 	acc.IsActive = isActiveInt == 1
 	return &acc, nil
+}
+
+// SavePackage persists or updates a bookmarked package.
+func (r *SQLiteRepository) SavePackage(ctx context.Context, pkg *SavedPackage) error {
+	if pkg == nil || pkg.OptionCode == "" {
+		return errors.New("invalid package: option_code is required")
+	}
+	query := `
+	INSERT INTO myxl_saved_packages (msisdn, option_code, name, price, family_code)
+	VALUES (?, ?, ?, ?, ?)
+	ON CONFLICT(msisdn, option_code) DO UPDATE SET
+		name = excluded.name,
+		price = excluded.price,
+		family_code = excluded.family_code
+	`
+	_, err := r.db.ExecContext(ctx, query, pkg.MSISDN, pkg.OptionCode, pkg.Name, pkg.Price, pkg.FamilyCode)
+	if err != nil {
+		return fmt.Errorf("failed to save package: %w", err)
+	}
+	return nil
+}
+
+// GetSavedPackages retrieves all saved packages for an account (or global packages if msisdn is "").
+func (r *SQLiteRepository) GetSavedPackages(ctx context.Context, msisdn string) ([]*SavedPackage, error) {
+	query := `
+	SELECT msisdn, option_code, name, price, family_code
+	FROM myxl_saved_packages
+	WHERE msisdn = ? OR msisdn = ''
+	ORDER BY rowid ASC
+	`
+	rows, err := r.db.QueryContext(ctx, query, msisdn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list saved packages: %w", err)
+	}
+	defer rows.Close()
+
+	var result []*SavedPackage
+	for rows.Next() {
+		var p SavedPackage
+		if err := rows.Scan(&p.MSISDN, &p.OptionCode, &p.Name, &p.Price, &p.FamilyCode); err != nil {
+			return nil, fmt.Errorf("failed to scan saved package: %w", err)
+		}
+		result = append(result, &p)
+	}
+	return result, rows.Err()
+}
+
+// GetSavedPackage retrieves a single saved package by MSISDN and option code.
+func (r *SQLiteRepository) GetSavedPackage(ctx context.Context, msisdn, optionCode string) (*SavedPackage, error) {
+	query := `
+	SELECT msisdn, option_code, name, price, family_code
+	FROM myxl_saved_packages
+	WHERE (msisdn = ? OR msisdn = '') AND option_code = ?
+	LIMIT 1
+	`
+	var p SavedPackage
+	err := r.db.QueryRowContext(ctx, query, msisdn, optionCode).Scan(&p.MSISDN, &p.OptionCode, &p.Name, &p.Price, &p.FamilyCode)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get saved package: %w", err)
+	}
+	return &p, nil
+}
+
+// DeleteSavedPackage deletes a bookmarked package.
+func (r *SQLiteRepository) DeleteSavedPackage(ctx context.Context, msisdn, optionCode string) error {
+	query := `DELETE FROM myxl_saved_packages WHERE (msisdn = ? OR msisdn = '') AND option_code = ?`
+	res, err := r.db.ExecContext(ctx, query, msisdn, optionCode)
+	if err != nil {
+		return fmt.Errorf("failed to delete saved package: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err == nil && affected == 0 {
+		return errors.New("saved package not found")
+	}
+	return nil
+}
+
+// GetDecoy retrieves a decoy target configuration by key (e.g. "default-balance", "default-qris").
+func (r *SQLiteRepository) GetDecoy(ctx context.Context, key string) (*DecoyConfig, error) {
+	query := `
+	SELECT key, family_code, variant_code, order_no, price, option_code,
+	       token_confirmation, last_fetched_at, is_enterprise, migration_type, updated_at
+	FROM myxl_decoy_configs
+	WHERE key = ?
+	LIMIT 1
+	`
+	var d DecoyConfig
+	var isEntInt int
+	err := r.db.QueryRowContext(ctx, query, key).Scan(
+		&d.Key, &d.FamilyCode, &d.VariantCode, &d.OrderNo, &d.Price, &d.OptionCode,
+		&d.TokenConfirmation, &d.LastFetchedAt, &isEntInt, &d.MigrationType, &d.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get decoy config: %w", err)
+	}
+	d.IsEnterprise = isEntInt == 1
+	return &d, nil
+}
+
+// UpsertDecoy creates or updates a decoy configuration entry.
+func (r *SQLiteRepository) UpsertDecoy(ctx context.Context, decoy *DecoyConfig) error {
+	if decoy == nil || decoy.Key == "" {
+		return errors.New("invalid decoy config: key is required")
+	}
+	query := `
+	INSERT INTO myxl_decoy_configs (
+		key, family_code, variant_code, order_no, price, option_code,
+		token_confirmation, last_fetched_at, is_enterprise, migration_type, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+	ON CONFLICT(key) DO UPDATE SET
+		family_code = excluded.family_code,
+		variant_code = excluded.variant_code,
+		order_no = excluded.order_no,
+		price = excluded.price,
+		option_code = excluded.option_code,
+		token_confirmation = excluded.token_confirmation,
+		last_fetched_at = excluded.last_fetched_at,
+		is_enterprise = excluded.is_enterprise,
+		migration_type = excluded.migration_type,
+		updated_at = CURRENT_TIMESTAMP
+	`
+	isEntInt := 0
+	if decoy.IsEnterprise {
+		isEntInt = 1
+	}
+	_, err := r.db.ExecContext(
+		ctx, query,
+		decoy.Key, decoy.FamilyCode, decoy.VariantCode, decoy.OrderNo, decoy.Price,
+		decoy.OptionCode, decoy.TokenConfirmation, decoy.LastFetchedAt, isEntInt,
+		decoy.MigrationType,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to upsert decoy config: %w", err)
+	}
+	return nil
 }

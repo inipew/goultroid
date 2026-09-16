@@ -5,6 +5,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/base64"
@@ -14,23 +15,28 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Default API constants for MyXL.
 const (
-	DefaultBaseAPIURL     = "https://api.myxl.xlaxiata.co.id"
-	DefaultBaseCIAMURL    = "https://gede.ciam.xlaxiata.co.id"
-	DefaultAPIKey         = "vT8tINqHaOxXbGE7eOWAhA=="
-	DefaultBasicAuth      = "OWZjOTdlZDEtNmEzMC00OGQ1LTk1MTYtNjBjNTNjZTNhMTM1OllEV21GNExKajlYSUt3UW56eTJlMmxiMHRKUWIyOW8z"
-	DefaultUA             = "myXL / 8.9.0(1202); com.android.vending; (samsung; SM-N935F; SDK 33; Android 13)"
-	DefaultAxFPKey        = "18b4d589826af50241177961590e6693"
-	DefaultAxDeviceID     = "a1b2c3d4e5f6g7h8"
-	DefaultXDataKey       = "5dccbf08920a5527b99e222789c34bb7"
-	DefaultAxAPISigKey    = "18b4d589826af50241177961590e6693"
-	DefaultXAPIBaseSecret = "mU1Y4n1vBjf3M7tMnRkFU08mVyUJHed8B5En3EAniu1mXLixeuASmBmKnkyzVziOye7rG5nIekMdthensbQMcOJ6SLnrkGyfXALD7mrBC6vuWv6G01pmD3XlU5rT7Tzx"
-	DefaultXVersionApp    = "8.9.0"
-	DefaultAxDevice       = "samsung"
-	DefaultAxDeviceModel  = "SM-N935F"
+	DefaultBaseAPIURL        = "https://api.myxl.xlaxiata.co.id"
+	DefaultBaseCIAMURL       = "https://gede.ciam.xlaxiata.co.id"
+	DefaultAPIKey            = "vT8tINqHaOxXbGE7eOWAhA=="
+	DefaultBasicAuth         = "OWZjOTdlZDEtNmEzMC00OGQ1LTk1MTYtNjBjNTNjZTNhMTM1OllEV21GNExKajlYSUt3UW56eTJlMmxiMHRKUWIyOW8z"
+	DefaultUA                = "myXL / 8.9.0(1202); com.android.vending; (samsung; SM-N935F; SDK 33; Android 13)"
+	DefaultAxFPKey           = "18b4d589826af50241177961590e6693"
+	DefaultAxDeviceID        = "a1b2c3d4e5f6g7h8"
+	DefaultXDataKey          = "5dccbf08920a5527b99e222789c34bb7"
+	DefaultAxAPISigKey       = "18b4d589826af50241177961590e6693"
+	DefaultXAPIBaseSecret    = "mU1Y4n1vBjf3M7tMnRkFU08mVyUJHed8B5En3EAniu1mXLixeuASmBmKnkyzVziOye7rG5nIekMdthensbQMcOJ6SLnrkGyfXALD7mrBC6vuWv6G01pmD3XlU5rT7Tzx"
+	DefaultPaymentSigSecret  = "ae-hei_9Tee6he+Ik3Gais5="
+	DefaultEncryptedFieldKey = "5dccbf08920a5527"
+	DefaultCircleMSISDNKey   = "5dccbf08920a5527"
+	DefaultXVersionApp       = "8.9.0"
+	DefaultAxDevice          = "samsung"
+	DefaultAxDeviceModel     = "SM-N935F"
 )
 
 // DeriveIV generates a 16-byte ASCII hex IV from xtimeMs using SHA-256:
@@ -227,4 +233,79 @@ func decodeBase64Flexible(s string) ([]byte, error) {
 	}
 
 	return nil, errors.New("failed to decode base64 in any known encoding")
+}
+
+// PaymentSignatureParams holds parameters for generating payment signatures.
+type PaymentSignatureParams struct {
+	AccessToken    string
+	SigTimeSec     int64
+	PackageCode    string
+	TokenPayment   string
+	PaymentMethod  string
+	PaymentFor     string
+	Path           string
+	XAPIBaseSecret string
+}
+
+// MakeXSignaturePaymentParams generates the HMAC-SHA512 signature for payment / settlement APIs.
+func MakeXSignaturePaymentParams(params PaymentSignatureParams, paymentSigSecret string) string {
+	sigTimeStr := strconv.FormatInt(params.SigTimeSec, 10)
+	keyStr := fmt.Sprintf(
+		"%s;%s#%s;POST;%s;%s",
+		params.XAPIBaseSecret, sigTimeStr, paymentSigSecret, params.Path, sigTimeStr,
+	)
+
+	mac := hmac.New(sha512.New, []byte(keyStr))
+	mac.Write([]byte(params.AccessToken))
+	mac.Write([]byte(";"))
+	mac.Write([]byte(params.TokenPayment))
+	mac.Write([]byte(";"))
+	mac.Write([]byte(sigTimeStr))
+	mac.Write([]byte(";"))
+	mac.Write([]byte(params.PaymentFor))
+	mac.Write([]byte(";"))
+	mac.Write([]byte(params.PaymentMethod))
+	mac.Write([]byte(";"))
+	mac.Write([]byte(params.PackageCode))
+	mac.Write([]byte(";"))
+
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// BuildEncryptedFieldWithKey generates an encrypted field value with AES-128-CBC using a random 16-hex IV.
+// Format: base64(ciphertext) + ivHex
+func BuildEncryptedFieldWithKey(key string, urlsafe bool) string {
+	var randBytes [8]byte
+	if _, err := rand.Read(randBytes[:]); err != nil {
+		copy(randBytes[:], uuid.New().String()[:8])
+	}
+	ivHex := hex.EncodeToString(randBytes[:])
+	iv := []byte(ivHex)
+
+	keyBytes := []byte(key)
+	var key16 [16]byte
+	copyLen := len(keyBytes)
+	if copyLen > 16 {
+		copyLen = 16
+	}
+	copy(key16[:copyLen], keyBytes[:copyLen])
+
+	block, err := aes.NewCipher(key16[:])
+	if err != nil {
+		return ""
+	}
+
+	mode := cipher.NewCBCEncrypter(block, iv)
+	padded := PKCS7Pad([]byte(""), aes.BlockSize)
+	ciphertext := make([]byte, len(padded))
+	mode.CryptBlocks(ciphertext, padded)
+
+	var b64Str string
+	if urlsafe {
+		b64Str = base64.RawURLEncoding.EncodeToString(ciphertext)
+	} else {
+		b64Str = base64.StdEncoding.EncodeToString(ciphertext)
+	}
+
+	return b64Str + ivHex
 }

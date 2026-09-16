@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"strconv"
 	"strings"
 	"time"
 
@@ -110,6 +111,12 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 			if fp, err := secMgr.Get("MYXL_AX_FP_KEY"); err == nil && strings.TrimSpace(fp) != "" {
 				cfg.AxFPKey = strings.TrimSpace(fp)
 			}
+			if pss, err := secMgr.Get("MYXL_PAYMENT_SIG_SECRET"); err == nil && strings.TrimSpace(pss) != "" {
+				cfg.PaymentSigSecret = strings.TrimSpace(pss)
+			}
+			if ef, err := secMgr.Get("MYXL_ENCRYPTED_FIELD_KEY"); err == nil && strings.TrimSpace(ef) != "" {
+				cfg.EncryptedFieldKey = strings.TrimSpace(ef)
+			}
 		})
 	}
 	return nil
@@ -122,7 +129,7 @@ func (p *Plugin) Commands() []core.Command {
 			Name:        "myxl",
 			Aliases:     []string{"xlcli"},
 			Description: "MyXL account manager and utilities",
-			Usage:       ".myxl [login|otp|accounts|use|alias|status|del|kuota]",
+			Usage:       ".myxl [login|otp|refresh|accounts|use|alias|status|del|kuota|family|paket|saved|buy]",
 			Category:    "Utility",
 			Permission:  core.PermissionOwner,
 			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
@@ -137,6 +144,16 @@ func (p *Plugin) Commands() []core.Command {
 			Permission:  core.PermissionOwner,
 			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
 			Handler:     p.handleKuotaShortcut,
+		},
+		{
+			Name:        "beli",
+			Aliases:     []string{"buy"},
+			Description: "Beli paket MyXL langsung",
+			Usage:       ".beli <option_code> [metode] [overwrite_harga] [nomor_ewallet]",
+			Category:    "Utility",
+			Permission:  core.PermissionOwner,
+			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
+			Handler:     p.handleBuyShortcut,
 		},
 	}
 }
@@ -159,14 +176,19 @@ func (p *Plugin) handleMyXL(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
 		return ctx.EditOrReply(
 			"📱 <b>MyXL Plugin Menu</b>\n\n" +
-				"• <code>.myxl login &lt;nomor&gt;</code> - Minta kode OTP SMS (PM saja)\n" +
-				"• <code>.myxl otp &lt;nomor&gt; &lt;kode&gt;</code> - Masukkan kode OTP dan simpan akun (PM saja)\n" +
+				"• <code>.myxl login &lt;nomor&gt;</code> - Minta kode OTP SMS\n" +
+				"• <code>.myxl otp &lt;nomor&gt; &lt;kode&gt;</code> - Masukkan kode OTP dan simpan akun\n" +
+				"• <code>.myxl refresh [nomor/alias]</code> - Force refresh token CIAM\n" +
 				"• <code>.myxl accounts</code> - Daftar semua akun tersimpan\n" +
 				"• <code>.myxl use &lt;nomor/alias&gt;</code> - Ganti akun aktif\n" +
 				"• <code>.myxl alias &lt;nomor&gt; &lt;nama_alias&gt;</code> - Berikan nama alias akun\n" +
 				"• <code>.myxl status</code> - Cek status akun aktif saat ini\n" +
 				"• <code>.myxl del &lt;nomor/alias&gt;</code> - Hapus akun tersimpan\n" +
 				"• <code>.myxl kuota</code> - Cek sisa kuota dan pulsa\n" +
+				"• <code>.myxl family &lt;family_code&gt;</code> - Cari daftar paket dalam family\n" +
+				"• <code>.myxl paket &lt;option_code&gt;</code> - Cek rincian detail paket\n" +
+				"• <code>.myxl saved [list|add|del|buy]</code> - Kelola / beli paket tersimpan\n" +
+				"• <code>.myxl buy &lt;option_code&gt; [metode] [harga] [nomor]</code> - Beli paket langsung\n" +
 				"• <code>.kuota</code> - Shortcut cepat periksa kuota",
 		)
 	}
@@ -179,6 +201,8 @@ func (p *Plugin) handleMyXL(ctx *core.Context) error {
 		return p.handleLogin(ctx, args)
 	case "otp":
 		return p.handleOTP(ctx, args)
+	case "refresh":
+		return p.handleRefreshToken(ctx, args)
 	case "accounts", "list":
 		return p.handleListAccounts(ctx)
 	case "use", "switch":
@@ -191,16 +215,20 @@ func (p *Plugin) handleMyXL(ctx *core.Context) error {
 		return p.handleDeleteAccount(ctx, args)
 	case "kuota", "quota", "balance":
 		return p.handleShowQuota(ctx, args)
+	case "family", "cari", "search":
+		return p.handleSearchFamily(ctx, args)
+	case "paket", "package", "detail":
+		return p.handlePackageDetail(ctx, args)
+	case "saved", "bookmark", "bm":
+		return p.handleSavedPackages(ctx, args)
+	case "buy", "beli":
+		return p.handleBuy(ctx, args)
 	default:
 		return ctx.EditOrReply(fmt.Sprintf("⚠️ Subcommand <code>%s</code> tidak dikenal. Ketik <code>.myxl</code> untuk bantuan.", html.EscapeString(subCmd)))
 	}
 }
 
 func (p *Plugin) handleLogin(ctx *core.Context, args []string) error {
-	if isGroupChat(ctx.Chat) {
-		return ctx.EditOrReply("⚠️ <b>Perhatian Keamanan:</b> Perintah login hanya dapat dilakukan di <b>Private Message (PM)</b> untuk melindungi kerahasiaan nomor Anda.")
-	}
-
 	if len(args) == 0 {
 		return ctx.EditOrReply("⚠️ Format salah! Gunakan: <code>.myxl login &lt;nomor_hp&gt;</code>\nContoh: <code>.myxl login 081912345678</code>")
 	}
@@ -242,10 +270,6 @@ func (p *Plugin) handleLogin(ctx *core.Context, args []string) error {
 }
 
 func (p *Plugin) handleOTP(ctx *core.Context, args []string) error {
-	if isGroupChat(ctx.Chat) {
-		return ctx.EditOrReply("⚠️ <b>Perhatian Keamanan:</b> Verifikasi kode OTP hanya boleh dilakukan di <b>Private Message (PM)</b> demi keamanan akun Anda.")
-	}
-
 	if len(args) < 2 {
 		return ctx.EditOrReply("⚠️ Format salah! Gunakan: <code>.myxl otp &lt;nomor_hp&gt; &lt;kode_otp&gt;</code>\nContoh: <code>.myxl otp 081912345678 123456</code>")
 	}
@@ -472,8 +496,8 @@ func (p *Plugin) handleShowQuota(ctx *core.Context, args []string) error {
 
 	respText := FormatQuotaResponse(acc, balance, quota, maskMSISDN)
 
-	// In private chats, attach an interactive refresh callback button
-	if !isGroupChat(ctx.Chat) && p.stateStore != nil {
+	// Attach an interactive refresh callback button
+	if p.stateStore != nil {
 		markup := buildRefreshMarkup(acc.MSISDN)
 		if err := ctx.Messages().ReplyMarkup(respText, markup); err == nil {
 			return nil
@@ -534,6 +558,306 @@ func (p *Plugin) HandleCallback(cbCtx *callback.CallbackContext) error {
 	default:
 		return nil
 	}
+}
+
+func (p *Plugin) handleRefreshToken(ctx *core.Context, args []string) error {
+	cCtx, cancel := context.WithTimeout(getContext(ctx), 30*time.Second)
+	defer cancel()
+
+	var acc *Account
+	var err error
+	if len(args) > 0 {
+		target := args[0]
+		if norm, nErr := NormalizeMSISDN(target); nErr == nil {
+			target = norm
+		}
+		acc, err = p.repo.GetByMSISDN(cCtx, target)
+	} else {
+		acc, err = p.repo.GetActive(cCtx)
+	}
+	if err != nil {
+		return ctx.EditOrReply(fmt.Sprintf("❌ Gagal membaca akun: %v", err))
+	}
+	if acc == nil {
+		return ctx.EditOrReply("⚠️ Tidak ada akun MyXL yang aktif. Silakan login terlebih dahulu.")
+	}
+
+	_ = ctx.EditOrReply(fmt.Sprintf("⏳ Me-refresh token CIAM untuk <code>%s</code>...", html.EscapeString(acc.MSISDN)))
+
+	tokens, err := p.client.ForceRefreshToken(cCtx, acc.MSISDN)
+	if err != nil {
+		return ctx.EditOrReply(fmt.Sprintf("❌ Gagal me-refresh token:\n<code>%s</code>", html.EscapeString(err.Error())))
+	}
+
+	return ctx.EditOrReply(
+		fmt.Sprintf(
+			"<b>✅ Token CIAM Berhasil Diperbarui!</b>\n\n"+
+				"<b>Akun:</b> <code>%s</code>\n"+
+				"<b>Access Token:</b> <code>%s...</code>\n"+
+				"<b>ID Token:</b> <code>%s...</code>\n"+
+				"<b>Refresh Token:</b> <code>%s...</code>\n"+
+				"<b>Waktu:</b> %s",
+			html.EscapeString(acc.MSISDN),
+			html.EscapeString(truncateString(tokens.AccessToken, 20)),
+			html.EscapeString(truncateString(tokens.IDToken, 20)),
+			html.EscapeString(truncateString(tokens.RefreshToken, 20)),
+			time.Now().Format("2006-01-02 15:04:05 WIB"),
+		),
+	)
+}
+
+func (p *Plugin) handleSearchFamily(ctx *core.Context, args []string) error {
+	if len(args) == 0 {
+		return ctx.EditOrReply("⚠️ Format salah! Gunakan: <code>.myxl family &lt;family_code&gt;</code>")
+	}
+	cCtx, cancel := context.WithTimeout(getContext(ctx), 30*time.Second)
+	defer cancel()
+
+	acc, err := p.repo.GetActive(cCtx)
+	if err != nil || acc == nil {
+		return ctx.EditOrReply("⚠️ Tidak ada akun MyXL yang aktif. Silakan login terlebih dahulu.")
+	}
+
+	familyCode := strings.TrimSpace(args[0])
+	_ = ctx.EditOrReply(fmt.Sprintf("⏳ Mencari daftar paket dalam family <code>%s</code>...", html.EscapeString(familyCode)))
+
+	res, err := p.client.GetPackagesByFamily(cCtx, acc, familyCode)
+	if err != nil {
+		return ctx.EditOrReply(fmt.Sprintf("❌ Gagal memuat paket family:\n<code>%s</code>", html.EscapeString(err.Error())))
+	}
+
+	return ctx.EditOrReply(FormatFamilyPackages(res))
+}
+
+func (p *Plugin) handlePackageDetail(ctx *core.Context, args []string) error {
+	if len(args) == 0 {
+		return ctx.EditOrReply("⚠️ Format salah! Gunakan: <code>.myxl paket &lt;option_code&gt;</code>")
+	}
+	cCtx, cancel := context.WithTimeout(getContext(ctx), 30*time.Second)
+	defer cancel()
+
+	acc, err := p.repo.GetActive(cCtx)
+	if err != nil || acc == nil {
+		return ctx.EditOrReply("⚠️ Tidak ada akun MyXL yang aktif. Silakan login terlebih dahulu.")
+	}
+
+	optionCode := strings.TrimSpace(args[0])
+	_ = ctx.EditOrReply(fmt.Sprintf("⏳ Memuat rincian paket <code>%s</code>...", html.EscapeString(optionCode)))
+
+	details, err := p.client.GetPackageDetails(cCtx, acc, optionCode)
+	if err != nil {
+		return ctx.EditOrReply(fmt.Sprintf("❌ Gagal memuat detail paket:\n<code>%s</code>", html.EscapeString(err.Error())))
+	}
+
+	return ctx.EditOrReply(FormatPackageDetails(details))
+}
+
+func (p *Plugin) handleSavedPackages(ctx *core.Context, args []string) error {
+	cCtx, cancel := context.WithTimeout(getContext(ctx), 30*time.Second)
+	defer cancel()
+
+	acc, err := p.repo.GetActive(cCtx)
+	if err != nil || acc == nil {
+		return ctx.EditOrReply("⚠️ Tidak ada akun MyXL yang aktif. Silakan login terlebih dahulu.")
+	}
+
+	action := "list"
+	if len(args) > 0 {
+		action = strings.ToLower(args[0])
+	}
+
+	switch action {
+	case "list", "show":
+		pkgs, err := p.repo.GetSavedPackages(cCtx, acc.MSISDN)
+		if err != nil {
+			return ctx.EditOrReply(fmt.Sprintf("❌ Gagal membaca bookmark: %v", err))
+		}
+		return ctx.EditOrReply(FormatSavedPackages(pkgs))
+
+	case "add", "save":
+		if len(args) < 2 {
+			return ctx.EditOrReply("⚠️ Format salah! Gunakan: <code>.myxl saved add &lt;option_code&gt; [nama] [harga]</code>")
+		}
+		optCode := strings.TrimSpace(args[1])
+		_ = ctx.EditOrReply(fmt.Sprintf("⏳ Mengambil data paket <code>%s</code>...", html.EscapeString(optCode)))
+
+		pkgName := optCode
+		var price int64
+		familyCode := ""
+
+		if details, err := p.client.GetPackageDetails(cCtx, acc, optCode); err == nil && details.PackageOption != nil {
+			pkgName = details.PackageOption.Name
+			price = int64(details.PackageOption.Price)
+			familyCode = details.PackageFamily.Name
+		}
+		if len(args) >= 3 {
+			pkgName = args[2]
+		}
+		if len(args) >= 4 {
+			if pr, err := strconv.ParseInt(args[3], 10, 64); err == nil {
+				price = pr
+			}
+		}
+
+		item := &SavedPackage{
+			MSISDN:     acc.MSISDN,
+			OptionCode: optCode,
+			Name:       pkgName,
+			Price:      price,
+			FamilyCode: familyCode,
+		}
+		if err := p.repo.SavePackage(cCtx, item); err != nil {
+			return ctx.EditOrReply(fmt.Sprintf("❌ Gagal menyimpan bookmark: %v", err))
+		}
+		return ctx.EditOrReply(fmt.Sprintf("✅ Paket <b>%s</b> (<code>%s</code>) berhasil disimpan ke bookmark!", html.EscapeString(pkgName), html.EscapeString(optCode)))
+
+	case "del", "delete", "rm":
+		if len(args) < 2 {
+			return ctx.EditOrReply("⚠️ Format salah! Gunakan: <code>.myxl saved del &lt;option_code&gt;</code>")
+		}
+		optCode := strings.TrimSpace(args[1])
+		if err := p.repo.DeleteSavedPackage(cCtx, acc.MSISDN, optCode); err != nil {
+			return ctx.EditOrReply(fmt.Sprintf("❌ Gagal menghapus bookmark: %v", err))
+		}
+		return ctx.EditOrReply(fmt.Sprintf("✅ Paket <code>%s</code> berhasil dihapus dari bookmark.", html.EscapeString(optCode)))
+
+	case "buy", "beli":
+		if len(args) < 2 {
+			return ctx.EditOrReply("⚠️ Format salah! Gunakan: <code>.myxl saved buy &lt;option_code&gt; [metode] [overwrite_harga] [nomor]</code>")
+		}
+		return p.handleBuy(ctx, args[1:])
+
+	default:
+		pkgs, err := p.repo.GetSavedPackages(cCtx, acc.MSISDN)
+		if err != nil {
+			return ctx.EditOrReply(fmt.Sprintf("❌ Gagal membaca bookmark: %v", err))
+		}
+		return ctx.EditOrReply(FormatSavedPackages(pkgs))
+	}
+}
+
+func (p *Plugin) handleBuyShortcut(ctx *core.Context) error {
+	return p.handleBuy(ctx, ctx.Args)
+}
+
+func (p *Plugin) handleBuy(ctx *core.Context, args []string) error {
+	if len(args) == 0 {
+		return ctx.EditOrReply(
+			"⚠️ Format salah! Gunakan:\n" +
+				"<code>.myxl buy &lt;option_code&gt; [metode] [overwrite_harga] [nomor_ewallet]</code>\n\n" +
+				"<b>Pilihan metode:</b>\n" +
+				"• <code>pulsa</code> / <code>balance</code> (default)\n" +
+				"• <code>qris</code>\n" +
+				"• <code>gopay</code> / <code>ovo</code> / <code>dana</code> / <code>shopeepay</code>\n" +
+				"• <code>decoy_balance</code> / <code>decoy_qris</code> / <code>decoy_qris0</code>\n\n" +
+				"<b>Contoh:</b>\n" +
+				"• <code>.myxl buy OPT12345 pulsa 0</code> (beli pulsa rewrite Rp 0)\n" +
+				"• <code>.myxl buy OPT12345 qris 1000</code>\n" +
+				"• <code>.myxl buy OPT12345 decoy_balance 0</code>\n" +
+				"• <code>.myxl buy OPT12345 dana 0 0812345678</code>",
+		)
+	}
+
+	cCtx, cancel := context.WithTimeout(getContext(ctx), 45*time.Second)
+	defer cancel()
+
+	acc, err := p.repo.GetActive(cCtx)
+	if err != nil || acc == nil {
+		return ctx.EditOrReply("⚠️ Tidak ada akun MyXL yang aktif. Login terlebih dahulu.")
+	}
+
+	optionCode := strings.TrimSpace(args[0])
+
+	method := "balance"
+	var overwritePrice *int64
+	walletNumber := acc.MSISDN
+
+	for _, a := range args[1:] {
+		low := strings.ToLower(strings.TrimSpace(a))
+		if low == "pulsa" || low == "balance" || low == "qris" || low == "qris0" ||
+			low == "gopay" || low == "ovo" || low == "dana" || low == "shopeepay" ||
+			low == "decoy_balance" || low == "decoy-balance" || low == "decoy-pulsa" || low == "decoy_pulsa" ||
+			low == "decoy_qris" || low == "decoy-qris" || low == "decoy_qris0" || low == "decoy-qris0" {
+			if strings.Contains(low, "pulsa") {
+				low = strings.ReplaceAll(low, "pulsa", "balance")
+			}
+			low = strings.ReplaceAll(low, "-", "_")
+			method = low
+			continue
+		}
+
+		if strings.HasPrefix(low, "08") || strings.HasPrefix(low, "628") || strings.HasPrefix(low, "+62") {
+			if clean, err := NormalizeMSISDN(low); err == nil {
+				walletNumber = clean
+				continue
+			}
+		}
+
+		if val, err := strconv.ParseInt(low, 10, 64); err == nil {
+			overwritePrice = &val
+			continue
+		}
+	}
+
+	_ = ctx.EditOrReply(fmt.Sprintf("⏳ Menyiapkan pembelian paket <code>%s</code> (metode: <code>%s</code>)...", html.EscapeString(optionCode), html.EscapeString(method)))
+
+	// Fetch package details to get confirmation token and real price
+	details, err := p.client.GetPackageDetails(cCtx, acc, optionCode)
+	if err != nil {
+		return ctx.EditOrReply(fmt.Sprintf("❌ Gagal memuat detail paket:\n<code>%s</code>", html.EscapeString(err.Error())))
+	}
+	if details.TokenConfirmation == "" {
+		return ctx.EditOrReply("❌ Token konfirmasi paket tidak ditemukan.")
+	}
+
+	pkgName := optionCode
+	var price int64
+	if details.PackageOption != nil {
+		pkgName = details.PackageOption.Name
+		price = int64(details.PackageOption.Price)
+	}
+	targetItem := PurchaseItem{
+		ItemCode:          optionCode,
+		ItemPrice:         price,
+		ItemName:          pkgName,
+		TokenConfirmation: details.TokenConfirmation,
+	}
+
+	effectivePrice := price
+	if overwritePrice != nil {
+		effectivePrice = *overwritePrice
+	}
+
+	var res *SettlementResult
+	switch method {
+	case "balance":
+		res, err = p.client.SettlementBalance(cCtx, acc, targetItem, overwritePrice)
+	case "qris":
+		res, err = p.client.SettlementQRIS(cCtx, acc, targetItem, overwritePrice)
+	case "gopay", "ovo", "dana", "shopeepay":
+		res, err = p.client.SettlementMultipayment(cCtx, acc, targetItem, strings.ToUpper(method), walletNumber, overwritePrice)
+	case "decoy_balance":
+		res, err = p.client.SettlementDecoy(cCtx, acc, targetItem, "balance", overwritePrice)
+	case "decoy_qris":
+		res, err = p.client.SettlementDecoy(cCtx, acc, targetItem, "qris", overwritePrice)
+	case "decoy_qris0":
+		res, err = p.client.SettlementDecoy(cCtx, acc, targetItem, "qris0", overwritePrice)
+	default:
+		return ctx.EditOrReply(fmt.Sprintf("❌ Metode pembayaran <code>%s</code> tidak didukung.", html.EscapeString(method)))
+	}
+
+	if err != nil {
+		return ctx.EditOrReply(fmt.Sprintf("❌ Transaksi gagal:\n<code>%s</code>", html.EscapeString(err.Error())))
+	}
+
+	return ctx.EditOrReply(FormatPurchaseResult(res, pkgName, effectivePrice, strings.ToUpper(method)))
+}
+
+func truncateString(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }
 
 // Module registration helpers

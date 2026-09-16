@@ -75,6 +75,36 @@ func TestMyXLPlugin_Commands(t *testing.T) {
 			xtime := time.Now().UnixMilli()
 			xdata, _ := EncryptXData(payload, xtime, DefaultXDataKey)
 			_ = json.NewEncoder(w).Encode(EncryptedBody{XData: xdata, XTime: xtime})
+		case "/api/v8/xl-stores/options/list":
+			payload := `{"status":"SUCCESS","message":"","data":{"package_family":{"name":"Xtra Combo Flex","package_family_code":"FAM-FLEX"},"package_variants":[{"name":"Flex S","package_variant_code":"VAR-S","package_options":[{"name":"Flex S 10GB","package_option_code":"OPT-FLEX-S","price":35000}]}]}}`
+			xtime := time.Now().UnixMilli()
+			xdata, _ := EncryptXData(payload, xtime, DefaultXDataKey)
+			_ = json.NewEncoder(w).Encode(EncryptedBody{XData: xdata, XTime: xtime})
+		case "/api/v8/xl-stores/options/detail":
+			payload := `{"status":"SUCCESS","message":"","data":{"package_family":{"name":"Xtra Combo Flex","package_family_code":"FAM-FLEX"},"package_option":{"name":"Flex S 10GB","package_option_code":"OPT-FLEX-S","price":35000},"token_confirmation":"CONFIRM-TOKEN-123"}}`
+			xtime := time.Now().UnixMilli()
+			xdata, _ := EncryptXData(payload, xtime, DefaultXDataKey)
+			_ = json.NewEncoder(w).Encode(EncryptedBody{XData: xdata, XTime: xtime})
+		case "/payments/api/v8/payment-methods-option":
+			payload := `{"status":"SUCCESS","message":"","data":{"token_payment":"TOK-PAY-999","payment_for":"BUY_PACKAGE","payment_method":"BALANCE","price":35000,"timestamp":1700000000}}`
+			xtime := time.Now().UnixMilli()
+			xdata, _ := EncryptXData(payload, xtime, DefaultXDataKey)
+			_ = json.NewEncoder(w).Encode(EncryptedBody{XData: xdata, XTime: xtime})
+		case "/payments/api/v8/settlement-multipayment":
+			payload := `{"status":"SUCCESS","message":"","data":{"transaction_code":"TRX-BAL-123"}}`
+			xtime := time.Now().UnixMilli()
+			xdata, _ := EncryptXData(payload, xtime, DefaultXDataKey)
+			_ = json.NewEncoder(w).Encode(EncryptedBody{XData: xdata, XTime: xtime})
+		case "/payments/api/v8/settlement-multipayment/qris":
+			payload := `{"status":"SUCCESS","message":"","data":{"transaction_code":"TRX-QR-456"}}`
+			xtime := time.Now().UnixMilli()
+			xdata, _ := EncryptXData(payload, xtime, DefaultXDataKey)
+			_ = json.NewEncoder(w).Encode(EncryptedBody{XData: xdata, XTime: xtime})
+		case "/payments/api/v8/pending-detail":
+			payload := `{"status":"SUCCESS","message":"","data":{"qr_code":"0002010102122659..."}}`
+			xtime := time.Now().UnixMilli()
+			xdata, _ := EncryptXData(payload, xtime, DefaultXDataKey)
+			_ = json.NewEncoder(w).Encode(EncryptedBody{XData: xdata, XTime: xtime})
 		default:
 			http.NotFound(w, r)
 		}
@@ -141,13 +171,13 @@ func TestMyXLPlugin_Commands(t *testing.T) {
 		t.Errorf("expected login successful message, got %s", svc.sent)
 	}
 
-	// 5. Group chat security check: login should be blocked in group chats
+	// 5. Group chat operation: allowed in group chats without blocker
 	ctxGroup := *baseCtx
 	ctxGroup.Chat = &core.Chat{ID: -100123456, Type: "supergroup"}
-	ctxGroup.Args = []string{"login", "081912345678"}
+	ctxGroup.Args = []string{"status"}
 	_ = cmdMap["myxl"].Handler(&ctxGroup)
-	if !strings.Contains(svc.sent, "Private Message") {
-		t.Errorf("expected group block security alert, got %s", svc.sent)
+	if !strings.Contains(svc.sent, "6281****5678") {
+		t.Errorf("expected status execution in group with masked MSISDN, got %s", svc.sent)
 	}
 
 	// 6. .myxl alias 081912345678 ModemHome
@@ -166,15 +196,63 @@ func TestMyXLPlugin_Commands(t *testing.T) {
 		t.Errorf("expected status output with alias, got %s", svc.sent)
 	}
 
-	// 8. .myxl accounts (should show 1 active account with alias)
-	ctxAcc2 := *baseCtx
-	ctxAcc2.Args = []string{"accounts"}
-	_ = cmdMap["myxl"].Handler(&ctxAcc2)
-	if !strings.Contains(svc.sent, "6281912345678") || !strings.Contains(svc.sent, "ModemHome") {
-		t.Errorf("expected active account listed with alias, got %s", svc.sent)
+	// 8. .myxl refresh
+	ctxRefresh := *baseCtx
+	ctxRefresh.Args = []string{"refresh"}
+	_ = cmdMap["myxl"].Handler(&ctxRefresh)
+	if !strings.Contains(svc.sent, "Token CIAM Berhasil Diperbarui") {
+		t.Errorf("expected refreshed token confirmation, got %s", svc.sent)
 	}
 
-	// 9. .kuota (shortcut)
+	// 9. .myxl family FAM-FLEX
+	ctxFamily := *baseCtx
+	ctxFamily.Args = []string{"family", "FAM-FLEX"}
+	_ = cmdMap["myxl"].Handler(&ctxFamily)
+	if !strings.Contains(svc.sent, "Xtra Combo Flex") || !strings.Contains(svc.sent, "OPT-FLEX-S") {
+		t.Errorf("expected family packages output, got %s", svc.sent)
+	}
+
+	// 10. .myxl paket OPT-FLEX-S
+	ctxPaket := *baseCtx
+	ctxPaket.Args = []string{"paket", "OPT-FLEX-S"}
+	_ = cmdMap["myxl"].Handler(&ctxPaket)
+	if !strings.Contains(svc.sent, "Flex S 10GB") || !strings.Contains(svc.sent, "35.000") {
+		t.Errorf("expected package detail output, got %s", svc.sent)
+	}
+
+	// 11. .myxl saved add OPT-FLEX-S
+	ctxSave := *baseCtx
+	ctxSave.Args = []string{"saved", "add", "OPT-FLEX-S"}
+	_ = cmdMap["myxl"].Handler(&ctxSave)
+	if !strings.Contains(svc.sent, "berhasil disimpan ke bookmark") {
+		t.Errorf("expected saved confirmation, got %s", svc.sent)
+	}
+
+	// 12. .myxl saved list
+	ctxSavedList := *baseCtx
+	ctxSavedList.Args = []string{"saved", "list"}
+	_ = cmdMap["myxl"].Handler(&ctxSavedList)
+	if !strings.Contains(svc.sent, "Flex S 10GB") {
+		t.Errorf("expected saved package listed, got %s", svc.sent)
+	}
+
+	// 13. .myxl buy OPT-FLEX-S pulsa 0
+	ctxBuy := *baseCtx
+	ctxBuy.Args = []string{"buy", "OPT-FLEX-S", "pulsa", "0"}
+	_ = cmdMap["myxl"].Handler(&ctxBuy)
+	if !strings.Contains(svc.sent, "TRX-BAL-123") {
+		t.Errorf("expected balance purchase transaction code, got %s", svc.sent)
+	}
+
+	// 14. .beli OPT-FLEX-S qris 1000
+	ctxBeli := *baseCtx
+	ctxBeli.Args = []string{"OPT-FLEX-S", "qris", "1000"}
+	_ = cmdMap["beli"].Handler(&ctxBeli)
+	if !strings.Contains(svc.sent, "TRX-QR-456") || !strings.Contains(svc.sent, "0002010102122659...") {
+		t.Errorf("expected QRIS transaction code and QR string, got %s", svc.sent)
+	}
+
+	// 15. .kuota (shortcut)
 	ctxKuota := *baseCtx
 	ctxKuota.Args = []string{}
 	_ = cmdMap["kuota"].Handler(&ctxKuota)
@@ -188,13 +266,13 @@ func TestMyXLPlugin_Commands(t *testing.T) {
 		t.Errorf("expected quota 5.00 GB / 10.00 GB, got %s", svc.sent)
 	}
 
-	// 10. Test Capabilities declaration
+	// 16. Test Capabilities declaration
 	caps := plugin.Capabilities()
 	if len(caps) == 0 || caps[0].ID != "myxl" {
 		t.Errorf("expected capability myxl, got %#v", caps)
 	}
 
-	// 11. Test Callback handler
+	// 17. Test Callback handler
 	cbCtx := &callback.CallbackContext{
 		Ctx:       ctx,
 		Action:    "refresh",
@@ -208,7 +286,7 @@ func TestMyXLPlugin_Commands(t *testing.T) {
 		t.Errorf("HandleCallback failed: %v", err)
 	}
 
-	// 12. .myxl del 081912345678
+	// 18. .myxl del 081912345678
 	ctxDel := *baseCtx
 	ctxDel.Args = []string{"del", "081912345678"}
 	_ = cmdMap["myxl"].Handler(&ctxDel)

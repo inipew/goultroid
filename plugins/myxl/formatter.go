@@ -200,3 +200,102 @@ func formatRupiah(amount int64) string {
 	}
 	return res.String()
 }
+
+// FormatFamilyPackages formats the package family list with variants and options.
+func FormatFamilyPackages(res *PackageListResponse) string {
+	if res == nil || len(res.PackageVariants) == 0 {
+		return "<i>Tidak ada paket ditemukan dalam family ini.</i>"
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("<b>📦 Family: %s</b>\n", html.EscapeString(res.PackageFamily.Name)))
+	if res.PackageFamily.PackageFamilyCode != "" {
+		b.WriteString(fmt.Sprintf("<code>%s</code>\n\n", html.EscapeString(res.PackageFamily.PackageFamilyCode)))
+	}
+
+	idx := 1
+	for _, v := range res.PackageVariants {
+		b.WriteString(fmt.Sprintf("📁 <b>%s</b> (<code>%s</code>)\n", html.EscapeString(v.Name), html.EscapeString(v.PackageVariantCode)))
+		for _, opt := range v.PackageOptions {
+			priceStr := formatRupiah(int64(opt.Price))
+			b.WriteString(fmt.Sprintf("  %d. <b>%s</b> — <code>Rp %s</code>\n", idx, html.EscapeString(opt.Name), priceStr))
+			b.WriteString(fmt.Sprintf("     Kode: <code>%s</code>\n", html.EscapeString(opt.PackageOptionCode)))
+			idx++
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("<i>Gunakan <code>.myxl paket &lt;kode&gt;</code> untuk melihat detail paket.</i>")
+	return b.String()
+}
+
+// FormatPackageDetails renders details for a package option.
+func FormatPackageDetails(details *PackageDetailsData) string {
+	if details == nil {
+		return "<i>Detail paket tidak tersedia.</i>"
+	}
+	var b strings.Builder
+	b.WriteString("<b>📦 Detail Paket MyXL</b>\n\n")
+	if details.PackageFamily.Name != "" {
+		b.WriteString(fmt.Sprintf("<b>Family:</b> %s\n", html.EscapeString(details.PackageFamily.Name)))
+	}
+	if details.PackageOption != nil {
+		b.WriteString(fmt.Sprintf("<b>Nama:</b> %s\n", html.EscapeString(details.PackageOption.Name)))
+		b.WriteString(fmt.Sprintf("<b>Harga Resmi:</b> Rp %s\n", formatRupiah(int64(details.PackageOption.Price))))
+		b.WriteString(fmt.Sprintf("<b>Option Code:</b> <code>%s</code>\n", html.EscapeString(details.PackageOption.PackageOptionCode)))
+	}
+	if details.TokenConfirmation != "" {
+		b.WriteString("<b>Status Konfirmasi:</b> Tersedia\n")
+	}
+	if details.PackageOption != nil {
+		b.WriteString("\n<i>Beli via: <code>.myxl buy " + details.PackageOption.PackageOptionCode + " [pulsa/qris/gopay/ovo/dana/shopeepay] [harga]</code></i>")
+	}
+	return b.String()
+}
+
+// FormatSavedPackages renders the list of bookmarked packages.
+func FormatSavedPackages(pkgs []*SavedPackage) string {
+	if len(pkgs) == 0 {
+		return "<i>Belum ada paket tersimpan (bookmark).\nGunakan <code>.myxl saved add &lt;option_code&gt;</code> untuk menyimpan paket.</i>"
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("<b>📑 Daftar Paket Tersimpan (%d)</b>\n\n", len(pkgs)))
+	for i, p := range pkgs {
+		b.WriteString(fmt.Sprintf("%d. <b>%s</b> — <code>Rp %s</code>\n", i+1, html.EscapeString(p.Name), formatRupiah(p.Price)))
+		b.WriteString(fmt.Sprintf("   Kode: <code>%s</code>", html.EscapeString(p.OptionCode)))
+		if p.FamilyCode != "" {
+			b.WriteString(fmt.Sprintf(" | Family: <code>%s</code>", html.EscapeString(p.FamilyCode)))
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("\n<i>Beli langsung: <code>.myxl saved buy &lt;kode&gt; [metode] [harga]</code></i>")
+	return b.String()
+}
+
+// FormatPurchaseResult renders the result of a purchase/settlement attempt.
+func FormatPurchaseResult(res *SettlementResult, pkgName string, price int64, method string) string {
+	var b strings.Builder
+	if res.IsSuccess {
+		b.WriteString("<b>✅ Transaksi Berhasil Diajukan!</b>\n\n")
+	} else {
+		b.WriteString(fmt.Sprintf("<b>❌ Pembelian Gagal: %s</b>\n\n", html.EscapeString(res.Status)))
+	}
+	if pkgName != "" {
+		b.WriteString(fmt.Sprintf("<b>Paket:</b> %s\n", html.EscapeString(pkgName)))
+	}
+	b.WriteString(fmt.Sprintf("<b>Nominal Tagihan:</b> Rp %s\n", formatRupiah(price)))
+	b.WriteString(fmt.Sprintf("<b>Metode Pembayaran:</b> <code>%s</code>\n", html.EscapeString(method)))
+	if res.TransactionCode != "" {
+		b.WriteString(fmt.Sprintf("<b>ID Transaksi:</b> <code>%s</code>\n", html.EscapeString(res.TransactionCode)))
+	}
+	if res.Message != "" {
+		b.WriteString(fmt.Sprintf("<b>Pesan:</b> %s\n", html.EscapeString(res.Message)))
+	}
+	if res.Deeplink != "" {
+		b.WriteString(fmt.Sprintf("\n🔗 <a href=\"%s\">Klik Disini untuk Bayar via E-Wallet</a>\n", html.EscapeString(res.Deeplink)))
+	}
+	if res.QRCode != "" {
+		b.WriteString("\n<b>📱 QRIS String:</b>\n")
+		b.WriteString(fmt.Sprintf("<code>%s</code>\n", html.EscapeString(res.QRCode)))
+		b.WriteString("<i>Salin kode QRIS di atas ke aplikasi e-wallet / mobile banking yang mendukung paste QRIS.</i>\n")
+	}
+	return b.String()
+}
