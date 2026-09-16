@@ -13,6 +13,7 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/jobs"
 	"github.com/inipew/goultroid/internal/scheduler"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 // scheduledActionHandler is the application adapter for scheduled message and
@@ -24,6 +25,7 @@ type scheduledActionHandler struct {
 	perms    *core.Permissions
 	executor *core.CommandExecutor
 	jobs     *jobs.Manager
+	tasks    tasks.Client
 }
 
 func (h scheduledActionHandler) run(ctx context.Context, definition jobs.JobDefinition) error {
@@ -92,6 +94,32 @@ func (h scheduledActionHandler) sendMessage(ctx context.Context, job scheduler.S
 	return err
 }
 
+func scheduledCommandPool(resources []tasks.ResourceRequirement) tasks.PoolID {
+	hasDownload := false
+	for _, requirement := range resources {
+		switch requirement.Name {
+		case "media":
+			return "media-process"
+		case "download":
+			hasDownload = true
+		}
+	}
+	if hasDownload {
+		return "download"
+	}
+	return "general"
+}
+
+func scheduledCommandResultError(res tasks.TaskResult) error {
+	if res.IsSuccess() {
+		return nil
+	}
+	if res.Failure.Message != "" {
+		return errors.New(res.Failure.Message)
+	}
+	return fmt.Errorf("scheduled command task %s finished with outcome %s (%s)", res.TaskID, res.Outcome, res.Cause)
+}
+
 func (h scheduledActionHandler) executeCommand(ctx context.Context, job scheduler.ScheduledJob) error {
 	if h.router == nil || h.executor == nil || h.service == nil || h.service() == nil {
 		return errors.New("scheduled command dependencies are not configured")
@@ -118,7 +146,48 @@ func (h scheduledActionHandler) executeCommand(ctx context.Context, job schedule
 		Sender: &core.User{ID: job.CreatedBy}, PeerID: scheduledPeer(job),
 		CorrelationID: fmt.Sprintf("sched-%d-%d", job.ID, time.Now().UnixMilli()),
 	}
-	return h.executor.ExecuteExecution(execution, command, h.service())
+
+	if len(command.Resources) == 0 {
+		return h.executor.ExecuteExecution(execution, command, h.service())
+	}
+	if h.tasks == nil {
+		return errors.New("scheduled command task client is not configured")
+	}
+
+	owner := "scheduler"
+	if job.CreatedBy != 0 {
+		owner = fmt.Sprintf("scheduler:user:%d", job.CreatedBy)
+	}
+	workSpec := tasks.WorkSpec{
+		ID:               tasks.TaskID(fmt.Sprintf("scheduled-command:%d:%d", job.ID, time.Now().UnixNano())),
+		QuotaOwner:       tasks.OwnerID(owner),
+		Pool:             scheduledCommandPool(command.Resources),
+		Class:            tasks.PriorityMaintenance,
+		OrderingKey:      fmt.Sprintf("scheduled-command:%d", job.ID),
+		ExecutionTimeout: command.Timeout,
+		Resources:        append([]tasks.ResourceRequirement(nil), command.Resources...),
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		workSpec.QueueDeadline = deadline
+	}
+	workSpec.Handler = func(taskCtx context.Context) error {
+		runCtx, cancel := context.WithCancel(taskCtx)
+		defer cancel()
+		stopWatching := context.AfterFunc(ctx, cancel)
+		defer stopWatching()
+		return h.executor.ExecuteExecution(execution.WithContext(runCtx), command, h.service())
+	}
+
+	ticket, err := h.tasks.Submit(ctx, workSpec)
+	if err != nil {
+		return err
+	}
+	res, waitErr := ticket.Wait(ctx)
+	if waitErr != nil {
+		_, _ = h.tasks.Cancel(ticket.TaskID(), tasks.CauseTimeout)
+		return waitErr
+	}
+	return scheduledCommandResultError(res)
 }
 
 func scheduledPeer(job scheduler.ScheduledJob) tg.InputPeerClass {

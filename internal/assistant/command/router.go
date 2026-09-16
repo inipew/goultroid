@@ -5,18 +5,23 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
+	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
 
 var (
 	// ErrUnknownCommand indicates no registered handler matched the requested command.
 	ErrUnknownCommand = errors.New("assistant/command: unknown command")
+	// ErrTasksNotConfigured indicates a resource-bearing Assistant command cannot
+	// be admitted through the shared TaskEngine execution authority.
+	ErrTasksNotConfigured = errors.New("assistant/command: task client is required for command execution")
 )
 
 // Context provides the command arguments, sender coordinates, and interaction primitives.
@@ -46,10 +51,12 @@ type Handler func(c *Context) error
 type Router struct {
 	presentationHandlers map[string]Handler
 	coreRouter           *core.Router
+	tasks                tasks.Client
 	ownerID              int64
 	sudoGetter           func() []int64
 	metrics              core.MetricsCollector
 	logger               *zap.Logger
+	taskSeq              atomic.Uint64
 }
 
 // NewRouter creates an initialized command Router.
@@ -62,6 +69,10 @@ func NewRouter(logger *zap.Logger) *Router {
 		logger:               logger,
 	}
 }
+
+// SetTasks attaches the shared TaskEngine client used by canonical Assistant
+// commands. Resource-bearing commands fail closed when this dependency is absent.
+func (r *Router) SetTasks(client tasks.Client) { r.tasks = client }
 
 // SetOwner configures the owner identity and optional sudo getter for permission enforcement.
 func (r *Router) SetOwner(ownerID int64, sudoGetter func() []int64) {
@@ -118,6 +129,77 @@ func chatTypeForPeer(peer tg.InputPeerClass) string {
 	default:
 		return ""
 	}
+}
+
+func taskResultError(res tasks.TaskResult) error {
+	if res.IsSuccess() {
+		return nil
+	}
+	if res.Failure.Message != "" {
+		return errors.New(res.Failure.Message)
+	}
+	return fmt.Errorf("assistant/command: task %s finished with outcome %s (%s)", res.TaskID, res.Outcome, res.Cause)
+}
+
+func (r *Router) executeCanonicalDirect(cmd core.Command, coreCtx *core.Context, cmdName string) error {
+	handler := core.FilterMiddlewareForSource(cmd, core.ExecutionAssistant)(cmd.Handler)
+	start := time.Now()
+	err := handler(coreCtx)
+	if r.metrics != nil {
+		r.metrics.RecordCommand(cmdName, time.Since(start), err)
+	}
+	return err
+}
+
+func (r *Router) executeCanonicalTask(ctx context.Context, senderID int64, cmd core.Command, coreCtx *core.Context, cmdName string) error {
+	if r.tasks == nil {
+		// Preserve lightweight embedding/test compatibility, but never let a
+		// resource-bearing command bypass TaskEngine reservations.
+		if len(cmd.Resources) > 0 {
+			return ErrTasksNotConfigured
+		}
+		return r.executeCanonicalDirect(cmd, coreCtx, cmdName)
+	}
+
+	sequence := r.taskSeq.Add(1)
+	taskID := tasks.TaskID(fmt.Sprintf("assistant:%d:%d", senderID, sequence))
+	correlationID := coreCtx.CorrelationID
+	handler := core.FilterMiddlewareForSource(cmd, core.ExecutionAssistant)(cmd.Handler)
+
+	ticket, err := r.tasks.Submit(ctx, tasks.WorkSpec{
+		ID:               taskID,
+		QuotaOwner:       tasks.OwnerID(fmt.Sprintf("assistant:user:%d", senderID)),
+		Pool:             "interactive",
+		Class:            tasks.PriorityInteractive,
+		OrderingKey:      correlationID,
+		ExecutionTimeout: cmd.Timeout,
+		Resources:        append([]tasks.ResourceRequirement(nil), cmd.Resources...),
+		Handler: func(taskCtx context.Context) error {
+			runCtx, cancel := context.WithCancel(taskCtx)
+			defer cancel()
+			stopWatching := context.AfterFunc(ctx, cancel)
+			defer stopWatching()
+
+			execCtx := *coreCtx
+			execCtx.Ctx = runCtx
+			start := time.Now()
+			err := handler(&execCtx)
+			if r.metrics != nil {
+				r.metrics.RecordCommand(cmdName, time.Since(start), err)
+			}
+			return err
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	res, waitErr := ticket.Wait(ctx)
+	if waitErr != nil {
+		_, _ = r.tasks.Cancel(ticket.TaskID(), tasks.CauseTimeout)
+		return waitErr
+	}
+	return taskResultError(res)
 }
 
 // Dispatch parses the message text, extracts the command, and invokes the matching handler.
@@ -232,16 +314,7 @@ func (r *Router) Dispatch(ctx context.Context, senderID int64, peer tg.InputPeer
 			Svc:           &assistantServicerAdapter{inter: inter},
 		}
 
-		// Reuse the canonical surface restrictions so Assistant execution does
-		// not silently bypass GroupOnly/PrivateOnly/ReplyOnly semantics.
-		handler := core.FilterMiddlewareForSource(cmd, core.ExecutionAssistant)(cmd.Handler)
-
-		start := time.Now()
-		err := handler(coreCtx)
-		if r.metrics != nil {
-			r.metrics.RecordCommand(cmdNameClean, time.Since(start), err)
-		}
-		return err
+		return r.executeCanonicalTask(ctx, senderID, cmd, coreCtx, cmdNameClean)
 	}
 
 	// Presentation-only fallback. This must not become a second plugin command registry.

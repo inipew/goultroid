@@ -18,6 +18,7 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/presentation"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/settings"
+	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
 
@@ -285,6 +286,11 @@ func (c *AssistantClient) SetCoreRouter(router *core.Router) {
 	}
 	if c.menuCtrl != nil {
 		c.menuCtrl.SetCommandSource(router)
+	}
+}
+func (c *AssistantClient) SetTasks(client tasks.Client) {
+	if c.cmdRouter != nil {
+		c.cmdRouter.SetTasks(client)
 	}
 }
 func (c *AssistantClient) SetSettingsService(svc *settings.Service) {

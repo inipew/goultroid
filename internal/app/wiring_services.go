@@ -38,6 +38,7 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 		actionHandler := scheduledActionHandler{
 			repo: schedRepo, service: tg.client.Service, router: core.router,
 			perms: core.perms, executor: tg.dispatcher.Executor(), jobs: core.jobsManager,
+			tasks: core.taskEngine,
 		}
 		if err := core.jobsManager.RegisterHandler("scheduler.action", actionHandler.run); err != nil {
 			return nil, fmt.Errorf("register scheduled action handler: %w", err)

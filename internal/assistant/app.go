@@ -9,6 +9,7 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/settings"
+	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
 
@@ -36,7 +37,7 @@ func (a *AssistantApp) Name() string {
 }
 
 func (a *AssistantApp) Dependencies() []string {
-	return []string{"dispatcher", "settings"}
+	return []string{"dispatcher", "settings", "taskengine"}
 }
 
 func (a *AssistantApp) IsCritical() bool {
@@ -79,5 +80,6 @@ func (a *AssistantApp) SetOwner(ownerID int64, sudoGetter func() []int64) {
 	a.client.SetOwner(ownerID, sudoGetter)
 }
 func (a *AssistantApp) SetCoreRouter(router *core.Router)           { a.client.SetCoreRouter(router) }
+func (a *AssistantApp) SetTasks(client tasks.Client)                { a.client.SetTasks(client) }
 func (a *AssistantApp) SetSettingsService(svc *settings.Service)    { a.client.SetSettingsService(svc) }
 func (a *AssistantApp) SetMetricsCollector(m core.MetricsCollector) { a.client.SetMetricsCollector(m) }
