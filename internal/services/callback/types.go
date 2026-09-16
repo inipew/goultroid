@@ -368,18 +368,22 @@ func ParseCallbackData(data []byte) (namespace, action, opaqueID string, err err
 	}
 	str := string(data)
 	parts := strings.SplitN(str, ":", 4)
-	if len(parts) != 4 || parts[0] != CallbackVersion1 {
+	if len(parts) < 3 || (parts[0] != CallbackVersion1 && parts[0] != "a1") {
 		return "", "", "", ErrInvalidCallbackData
 	}
-	ns, act, oid := parts[1], parts[2], parts[3]
+	ns, act := parts[1], parts[2]
 	if err := validateCallbackField(ns, "namespace"); err != nil {
 		return "", "", "", err
 	}
 	if err := validateCallbackField(act, "action"); err != nil {
 		return "", "", "", err
 	}
-	if oid == "" {
-		return "", "", "", ErrInvalidCallbackData
+	oid := "noop"
+	if len(parts) == 4 {
+		oid = parts[3]
+		if oid == "" {
+			oid = "noop"
+		}
 	}
 	if !isValidOpaqueID(oid) {
 		return "", "", "", ErrInvalidCallbackData
@@ -417,15 +421,15 @@ func isHexID(s string) bool {
 }
 
 func isValidOpaqueID(s string) bool {
-	if s == "noop" {
+	if s == "noop" || s == "" {
 		return true
 	}
 	if len(s) > 32 {
 		return false
 	}
-	// allow hex or base64url-like without padding for future; for now hex or alnum_-.
+	// allow hex or base64url-like without padding for future; for now hex, alnum, _ - . :
 	for _, r := range s {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' || r == ':' {
 			continue
 		}
 		return false

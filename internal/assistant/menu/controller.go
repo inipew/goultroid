@@ -12,6 +12,7 @@ import (
 	"github.com/gotd/td/tg"
 	appStatus "github.com/inipew/goultroid/internal/application/status"
 	"github.com/inipew/goultroid/internal/assistant/callback"
+	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/ui"
@@ -22,19 +23,36 @@ type CommandSource interface {
 	CommandsForSurface(source execution.Source) []core.Command
 }
 
+// TextHandler handles conversational or free-form text input from an assistant user.
+type TextHandler interface {
+	HandleTextMessage(ctx context.Context, userID, chatID int64, text string, inter interaction.MessageInteraction) (bool, error)
+}
+
 type Controller struct {
-	renderer  RendererFunc
-	instances InstanceStore
-	cmdSource CommandSource
-	registry  *Registry
-	pendingMu sync.Mutex
-	pending   map[int64]pendingSettingInput
+	renderer       RendererFunc
+	instances      InstanceStore
+	cmdSource      CommandSource
+	registry       *Registry
+	pendingMu      sync.Mutex
+	pending        map[int64]pendingSettingInput
+	textHandlersMu sync.RWMutex
+	textHandlers   []TextHandler
 }
 
 func NewController(renderer RendererFunc) *Controller {
 	c := &Controller{renderer: renderer, instances: NewMemoryInstanceStore(DefaultMenuTTL), registry: NewRegistry(), pending: make(map[int64]pendingSettingInput)}
 	c.registerDefaultScreens()
 	return c
+}
+
+// RegisterTextHandler registers a handler for conversational or free-form text input.
+func (c *Controller) RegisterTextHandler(h TextHandler) {
+	if h == nil {
+		return
+	}
+	c.textHandlersMu.Lock()
+	defer c.textHandlersMu.Unlock()
+	c.textHandlers = append(c.textHandlers, h)
 }
 
 func (c *Controller) SetCommandSource(cs CommandSource) { c.cmdSource = cs }
@@ -81,7 +99,7 @@ func BuildStartScreenWithCommands(botUsername string, uptime time.Duration, cmds
 	screen := NewScreen(ScreenIDStart, "", card.Render())
 	screen.AddRow(NewButton("⚙️ Settings", "a1:assistant:settings"), NewButton("📚 Help", "a1:assistant:help"))
 	screen.AddRow(NewButton("📊 Status", "a1:assistant:status"), NewButton("🏓 Ping", "a1:assistant:ping"))
-	screen.AddRow(NewButton("❌ Close", "a1:assistant:close"))
+	screen.AddRow(NewButton("📱 MyXL", "a1:myxl:home"), NewButton("❌ Close", "a1:assistant:close"))
 	return screen
 }
 func BuildSettingsScreen(botUsername string) *Screen {
@@ -298,6 +316,12 @@ func (c *Controller) lockInstance(tx *callback.Transaction) func() {
 	}
 	return func() {}
 }
+
+// LockInstance locks the transaction target instance and returns an unlock func.
+func (c *Controller) LockInstance(tx *callback.Transaction) func() {
+	return c.lockInstance(tx)
+}
+
 func (c *Controller) validateSession(ctx context.Context, tx *callback.Transaction) (*MenuInstance, error) {
 	if c.instances == nil {
 		return nil, callback.ErrSessionExpired
@@ -318,6 +342,26 @@ func (c *Controller) validateSession(ctx context.Context, tx *callback.Transacti
 		return nil, callback.ErrUnauthorized
 	}
 	return inst, nil
+}
+
+// ValidateSession validates that the transaction matches an active instance owned by the caller.
+func (c *Controller) ValidateSession(ctx context.Context, tx *callback.Transaction) (*MenuInstance, error) {
+	return c.validateSession(ctx, tx)
+}
+
+// EditScreen renders and edits a screen in the current transaction.
+func (c *Controller) EditScreen(ctx context.Context, tx *callback.Transaction, screen *Screen) error {
+	if screen == nil {
+		return fmt.Errorf("screen is nil")
+	}
+	if c.instances != nil && tx != nil && tx.Target.IsValid() {
+		c.instances.UpdateScreen(tx.Target.ChatID(), tx.Target.MessageID(), screen.ID)
+	}
+	if c.renderer == nil {
+		return tx.Edit(ctx, screen.Text(), nil)
+	}
+	text, markup := c.renderer(screen)
+	return tx.Edit(ctx, text, markup)
 }
 func (c *Controller) RegisterInstance(inst MenuInstance) {
 	if c.instances != nil {

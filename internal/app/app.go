@@ -11,6 +11,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/addon"
 	"github.com/inipew/goultroid/internal/assistant"
+	"github.com/inipew/goultroid/internal/assistant/menu"
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
@@ -176,6 +177,12 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 			Resolver:        tgRuntime.dispatcher.Resolver(),
 			Callbacks:       coreDeps.callbackRouter,
 			CallbackStore:   coreDeps.callbackStore,
+			AssistantMenu: func() *menu.Controller {
+				if tgRuntime.assistant != nil {
+					return tgRuntime.assistant.MenuController()
+				}
+				return nil
+			}(),
 		},
 		ServiceRuntime: module.ServiceRuntime{
 			Storage:          domServices.storage,

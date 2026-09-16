@@ -332,6 +332,10 @@ func (c *AssistantClient) CacheEntities(e tg.Entities) {
 	}
 }
 
+func (c *AssistantClient) MenuController() *menu.Controller {
+	return c.menuCtrl
+}
+
 func callbackOrderingKey(evt *core.CallbackQueryEvent) string {
 	if evt == nil {
 		return ""

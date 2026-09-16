@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/addon"
+	"github.com/inipew/goultroid/internal/assistant/menu"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/jobs"
@@ -48,6 +49,7 @@ type TelegramRuntime struct {
 	Resolver        core.PeerResolver
 	Callbacks       *callback.Router
 	CallbackStore   *callback.StateStore
+	AssistantMenu   *menu.Controller
 }
 
 // ServiceRuntime contains reusable cross-feature services. Feature-owned

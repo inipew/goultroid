@@ -1,0 +1,487 @@
+package myxl
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gotd/td/tg"
+	"github.com/inipew/goultroid/internal/assistant/interaction"
+	"github.com/inipew/goultroid/internal/assistant/menu"
+	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/platform/network"
+	"github.com/inipew/goultroid/internal/services/callback"
+)
+
+type mockAssistantMessenger struct {
+	sentText   string
+	lastMarkup tg.ReplyMarkupClass
+	editTarget interaction.MessageTarget
+}
+
+func (m *mockAssistantMessenger) SendTextMessage(ctx context.Context, target interaction.MessageTarget, text string) error {
+	m.sentText = text
+	m.editTarget = target
+	return nil
+}
+
+func (m *mockAssistantMessenger) SendScreen(ctx context.Context, target interaction.MessageTarget, screen *menu.Screen) error {
+	return nil
+}
+
+func (m *mockAssistantMessenger) EditScreen(ctx context.Context, target interaction.MessageTarget, screen *menu.Screen) error {
+	m.editTarget = target
+	return nil
+}
+
+func (m *mockAssistantMessenger) DeleteMessage(ctx context.Context, target interaction.MessageTarget) error {
+	return nil
+}
+
+func (m *mockAssistantMessenger) SendToast(ctx context.Context, queryID int64, text string, alert bool) error {
+	return nil
+}
+
+type mockInteraction struct {
+	sentText string
+}
+
+func (m *mockInteraction) Answer(ctx context.Context, queryID int64, text string, alert bool) error {
+	return nil
+}
+
+func (m *mockInteraction) Edit(ctx context.Context, target interaction.MessageTarget, text string, markup tg.ReplyMarkupClass) error {
+	m.sentText = text
+	return nil
+}
+
+func (m *mockInteraction) EditMarkup(ctx context.Context, target interaction.MessageTarget, markup tg.ReplyMarkupClass) error {
+	return nil
+}
+
+func (m *mockInteraction) Delete(ctx context.Context, target interaction.MessageTarget) error {
+	return nil
+}
+
+func (m *mockInteraction) GetMessage(ctx context.Context, target interaction.MessageTarget) (*tg.Message, error) {
+	return &tg.Message{ID: target.MessageID()}, nil
+}
+
+func (m *mockInteraction) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
+	m.sentText = text
+	return &tg.Message{ID: 10, Message: text}, nil
+}
+
+func setupTestMyXLEnv(t *testing.T) (*Plugin, *httptest.Server, *SQLiteRepository, *menu.Controller) {
+	t.Helper()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open in-memory db: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := database.RunFeatureMigrations(ctx, db, Module); err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+
+	repo := NewSQLiteRepository(db)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/realms/xl-ciam/auth/otp":
+			_ = json.NewEncoder(w).Encode(map[string]any{"subscriber_id": "SUB-TEST-1"})
+		case "/realms/xl-ciam/protocol/openid-connect/token":
+			_ = json.NewEncoder(w).Encode(Tokens{
+				AccessToken:  "mock_acc_token",
+				IDToken:      "mock_id_token",
+				RefreshToken: "mock_ref_token",
+				ExpiresIn:    3600,
+			})
+		case "/api/v8/packages/balance-and-credit":
+			payload := `{"status":"SUCCESS","message":"","data":{"balance":{"remaining":50000,"expired_at":1735689600}}}`
+			xtime := time.Now().UnixMilli()
+			xdata, _ := EncryptXData(payload, xtime, DefaultXDataKey)
+			_ = json.NewEncoder(w).Encode(EncryptedBody{XData: xdata, XTime: xtime})
+		case "/api/v8/packages/quota-details":
+			payload := `{"status":"SUCCESS","message":"","data":{"quotas":[{"name":"Akrab","expired_at":1735689600,"benefits":[{"name":"Utama","data_type":"DATA","remaining":2147483648,"total":5368709120}]}]}}`
+			xtime := time.Now().UnixMilli()
+			xdata, _ := EncryptXData(payload, xtime, DefaultXDataKey)
+			_ = json.NewEncoder(w).Encode(EncryptedBody{XData: xdata, XTime: xtime})
+		case "/api/v8/xl-stores/options/detail":
+			payload := `{"status":"SUCCESS","message":"","data":{"package_family":{"name":"Xtra Combo","package_family_code":"FAM-1"},"package_option":{"name":"Combo 10GB","package_option_code":"OPT-10GB","price":25000},"token_confirmation":"TOK-CONFIRM-123"}}`
+			xtime := time.Now().UnixMilli()
+			xdata, _ := EncryptXData(payload, xtime, DefaultXDataKey)
+			_ = json.NewEncoder(w).Encode(EncryptedBody{XData: xdata, XTime: xtime})
+		case "/payments/api/v8/payment-methods-option":
+			payload := `{"status":"SUCCESS","message":"","data":{"token_payment":"TOK-PAY-123","payment_for":"BUY_PACKAGE","payment_method":"BALANCE","price":25000,"timestamp":1700000000}}`
+			xtime := time.Now().UnixMilli()
+			xdata, _ := EncryptXData(payload, xtime, DefaultXDataKey)
+			_ = json.NewEncoder(w).Encode(EncryptedBody{XData: xdata, XTime: xtime})
+		case "/payments/api/v8/settlement-multipayment":
+			payload := `{"status":"SUCCESS","message":"","data":{"transaction_code":"TRX-BAL-OK"}}`
+			xtime := time.Now().UnixMilli()
+			xdata, _ := EncryptXData(payload, xtime, DefaultXDataKey)
+			_ = json.NewEncoder(w).Encode(EncryptedBody{XData: xdata, XTime: xtime})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+
+	cfg := DefaultClientConfig()
+	cfg.BaseCIAMURL = server.URL
+	cfg.BaseAPIURL = server.URL
+
+	netCli := network.NewService(server.Client(), nil).ForOwner("myxl")
+	client := NewClient(cfg, repo, netCli)
+	plugin := New(repo, client)
+
+	stateStore := callback.NewStateStore()
+	plugin.SetStateStore(stateStore)
+
+	menuCtrl := menu.NewController(func(s *menu.Screen) (string, tg.ReplyMarkupClass) {
+		return s.Body, nil
+	})
+	plugin.SetAssistantMenu(menuCtrl)
+
+	return plugin, server, repo, menuCtrl
+}
+
+func TestMenuManager_Screens(t *testing.T) {
+	plugin, server, repo, _ := setupTestMyXLEnv(t)
+	defer server.Close()
+
+	ctx := context.Background()
+
+	// 1. Dashboard without active account
+	screen, err := plugin.menuMgr.BuildDashboardScreen(ctx, false)
+	if err != nil {
+		t.Fatalf("BuildDashboardScreen failed: %v", err)
+	}
+	if !strings.Contains(screen.Body, "Belum ada akun") {
+		t.Errorf("expected 'Belum ada akun' screen, got: %s", screen.Body)
+	}
+
+	// Add an account
+	now := time.Now()
+	acc := &Account{
+		MSISDN:         "6281987654321",
+		IsActive:       true,
+		AccessToken:    "acc_tok",
+		RefreshToken:   "ref_tok",
+		TokenExpiresAt: now.Add(time.Hour),
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := repo.Save(ctx, acc); err != nil {
+		t.Fatalf("save account failed: %v", err)
+	}
+
+	// 2. Dashboard with active account (masked vs unmasked)
+	screenUnmasked, err := plugin.menuMgr.BuildDashboardScreen(ctx, false)
+	if err != nil {
+		t.Fatalf("BuildDashboardScreen failed: %v", err)
+	}
+	if !strings.Contains(screenUnmasked.Body, "6281987654321") {
+		t.Errorf("expected unmasked msisdn in private, got: %s", screenUnmasked.Body)
+	}
+
+	screenMasked, err := plugin.menuMgr.BuildDashboardScreen(ctx, true)
+	if err != nil {
+		t.Fatalf("BuildDashboardScreen failed: %v", err)
+	}
+	if strings.Contains(screenMasked.Body, "6281987654321") || !strings.Contains(screenMasked.Body, "6281****4321") {
+		t.Errorf("expected masked msisdn in group, got: %s", screenMasked.Body)
+	}
+
+	// 3. Quota Detail screen
+	quotaScreen, err := plugin.menuMgr.BuildQuotaDetailScreen(ctx, false)
+	if err != nil {
+		t.Fatalf("BuildQuotaDetailScreen failed: %v", err)
+	}
+	if !strings.Contains(quotaScreen.Body, "Akrab") {
+		t.Errorf("expected quota name Akrab, got: %s", quotaScreen.Body)
+	}
+
+	// 4. Accounts screen
+	accScreen, err := plugin.menuMgr.BuildAccountsScreen(ctx)
+	if err != nil {
+		t.Fatalf("BuildAccountsScreen failed: %v", err)
+	}
+	if !strings.Contains(accScreen.Body, "6281987654321") {
+		t.Errorf("expected account msisdn in accounts screen, got: %s", accScreen.Body)
+	}
+
+	// 5. Store screen
+	storeScreen, err := plugin.menuMgr.BuildStoreScreen(ctx)
+	if err != nil {
+		t.Fatalf("BuildStoreScreen failed: %v", err)
+	}
+	if !strings.Contains(storeScreen.Body, "Beli Paket") {
+		t.Errorf("expected Beli Paket in store screen, got: %s", storeScreen.Body)
+	}
+
+	// 6. Saved packages (empty then populated)
+	savedEmpty, err := plugin.menuMgr.BuildSavedPackagesScreen(ctx)
+	if err != nil {
+		t.Fatalf("BuildSavedPackagesScreen failed: %v", err)
+	}
+	if !strings.Contains(savedEmpty.Body, "Belum ada paket") {
+		t.Errorf("expected empty saved packages, got: %s", savedEmpty.Body)
+	}
+
+	_ = repo.SavePackage(ctx, &SavedPackage{
+		MSISDN:     acc.MSISDN,
+		OptionCode: "OPT-SAVED-1",
+		Name:       "Paket Hemat 50GB",
+		Price:      50000,
+		FamilyCode: "FAM-1",
+	})
+
+	savedPopulated, err := plugin.menuMgr.BuildSavedPackagesScreen(ctx)
+	if err != nil {
+		t.Fatalf("BuildSavedPackagesScreen populated failed: %v", err)
+	}
+	if !strings.Contains(savedPopulated.Body, "Paket Hemat 50GB") {
+		t.Errorf("expected saved package name in list, got: %s", savedPopulated.Body)
+	}
+
+	// 7. Package Detail screen
+	detailScreen, err := plugin.menuMgr.BuildPackageDetailScreen(ctx, acc, "OPT-10GB")
+	if err != nil {
+		t.Fatalf("BuildPackageDetailScreen failed: %v", err)
+	}
+	if !strings.Contains(detailScreen.Body, "Combo 10GB") {
+		t.Errorf("expected package Combo 10GB in detail, got: %s", detailScreen.Body)
+	}
+
+	// 8. Checkout screen
+	draft := purchaseDraftState{
+		MSISDN:            acc.MSISDN,
+		OptionCode:        "OPT-10GB",
+		PackageName:       "Combo 10GB",
+		Price:             25000,
+		TokenConfirmation: "TOK-CONFIRM-123",
+		Method:            "BALANCE",
+		WalletNumber:      acc.MSISDN,
+	}
+	checkoutScreen, err := plugin.menuMgr.BuildCheckoutScreen(draft, 12345, 100)
+	if err != nil || checkoutScreen == nil || !strings.Contains(checkoutScreen.Body, "Konfirmasi Pembelian") {
+		t.Errorf("expected checkout screen confirmation")
+	}
+
+	// 9. Result screen
+	resScreen := plugin.menuMgr.BuildPurchaseResultScreen(&SettlementResult{
+		IsSuccess:       true,
+		TransactionCode: "TRX-TEST-OK",
+	}, "Combo 10GB", 25000, "BALANCE", "OPT-10GB")
+	if !strings.Contains(resScreen.Body, "Pembelian Berhasil") {
+		t.Errorf("expected purchase success screen, got: %s", resScreen.Body)
+	}
+
+	// 10. Delete pick & Alias pick screens
+	delScreen, err := plugin.menuMgr.BuildDeletePickScreen(ctx)
+	if err != nil || !strings.Contains(delScreen.Body, "Hapus Akun") {
+		t.Errorf("expected delete pick screen")
+	}
+
+	aliasScreen, err := plugin.menuMgr.BuildAliasPickScreen(ctx)
+	if err != nil || !strings.Contains(aliasScreen.Body, "Ubah Alias") {
+		t.Errorf("expected alias pick screen")
+	}
+}
+
+func TestMenuManager_Wizards(t *testing.T) {
+	plugin, server, repo, _ := setupTestMyXLEnv(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	inter := &mockInteraction{}
+	target := interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 12345}, 200, 100, 0)
+	userID := int64(12345)
+	chatID := int64(100)
+
+	// 1. Cancel wizard
+	plugin.menuMgr.SetSession(userID, &wizardSession{
+		Type:   wizardLoginMSISDN,
+		Target: target,
+	})
+	handled, err := plugin.menuMgr.HandleTextMessage(ctx, userID, chatID, "/cancel", inter)
+	if !handled || err != nil {
+		t.Fatalf("expected /cancel to be handled cleanly: %v", err)
+	}
+	if _, ok := plugin.menuMgr.GetSession(userID); ok {
+		t.Errorf("expected wizard to be nil after cancel")
+	}
+
+	// 2. Login Wizard full flow
+	plugin.menuMgr.SetSession(userID, &wizardSession{
+		Type:   wizardLoginMSISDN,
+		Target: target,
+	})
+	// Invalid phone
+	handled, err = plugin.menuMgr.HandleTextMessage(ctx, userID, chatID, "hello", inter)
+	if !handled || err != nil {
+		t.Fatalf("expected text handled for invalid phone: %v", err)
+	}
+	sess, ok := plugin.menuMgr.GetSession(userID)
+	if !ok || sess == nil || sess.Type != wizardLoginMSISDN {
+		t.Fatalf("expected still in loginMSISDN step")
+	}
+
+	// Valid phone
+	handled, err = plugin.menuMgr.HandleTextMessage(ctx, userID, chatID, "081987654321", inter)
+	if !handled || err != nil {
+		t.Fatalf("expected valid phone handled: %v", err)
+	}
+	sess, ok = plugin.menuMgr.GetSession(userID)
+	if !ok || sess == nil || sess.Type != wizardLoginOTP {
+		t.Fatalf("expected transition to loginOTP step")
+	}
+
+	// Submit OTP
+	handled, err = plugin.menuMgr.HandleTextMessage(ctx, userID, chatID, "123456", inter)
+	if !handled || err != nil {
+		t.Fatalf("expected OTP handled: %v", err)
+	}
+	if _, ok = plugin.menuMgr.GetSession(userID); ok {
+		t.Errorf("expected wizard cleared after successful OTP")
+	}
+	acc, err := repo.GetByMSISDN(ctx, "6281987654321")
+	if err != nil || acc == nil {
+		t.Fatalf("expected account 6281987654321 saved in repository")
+	}
+
+	// 3. Alias Wizard
+	plugin.menuMgr.SetSession(userID, &wizardSession{
+		Type:   wizardSetAlias,
+		MSISDN: "6281987654321",
+		Target: target,
+	})
+	handled, err = plugin.menuMgr.HandleTextMessage(ctx, userID, chatID, "RouterUtama", inter)
+	if !handled || err != nil {
+		t.Fatalf("expected alias handled: %v", err)
+	}
+	acc, _ = repo.GetByMSISDN(ctx, "6281987654321")
+	if acc.Alias != "RouterUtama" {
+		t.Errorf("expected alias RouterUtama, got: %s", acc.Alias)
+	}
+
+	// 4. Option Code Wizard
+	plugin.menuMgr.SetSession(userID, &wizardSession{
+		Type:   wizardOptionCode,
+		Target: target,
+	})
+	handled, err = plugin.menuMgr.HandleTextMessage(ctx, userID, chatID, "OPT-10GB", inter)
+	if !handled || err != nil {
+		t.Fatalf("expected option code handled: %v", err)
+	}
+	if _, ok = plugin.menuMgr.GetSession(userID); ok {
+		t.Errorf("expected wizard cleared after option code lookup")
+	}
+
+	// 5. Custom Price Wizard
+	plugin.menuMgr.SetSession(userID, &wizardSession{
+		Type:        wizardCustomPrice,
+		OptionCode:  "OPT-10GB",
+		PackageName: "Combo 10GB",
+		Price:       25000,
+		Method:      "BALANCE",
+		Target:      target,
+	})
+	// Invalid numeric price
+	handled, err = plugin.menuMgr.HandleTextMessage(ctx, userID, chatID, "free", inter)
+	if !handled || err != nil {
+		t.Fatalf("expected invalid price handled: %v", err)
+	}
+	sess, ok = plugin.menuMgr.GetSession(userID)
+	if !ok || sess == nil || sess.Type != wizardCustomPrice {
+		t.Fatalf("expected still in custom price wizard")
+	}
+	// Valid numeric price
+	handled, err = plugin.menuMgr.HandleTextMessage(ctx, userID, chatID, "20000", inter)
+	if !handled || err != nil {
+		t.Fatalf("expected valid price handled: %v", err)
+	}
+	if _, ok = plugin.menuMgr.GetSession(userID); ok {
+		t.Errorf("expected custom price wizard completed")
+	}
+}
+
+func TestMenuManager_Callbacks(t *testing.T) {
+	plugin, server, repo, menuCtrl := setupTestMyXLEnv(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	now := time.Now()
+	acc := &Account{
+		MSISDN:         "6281987654321",
+		IsActive:       true,
+		AccessToken:    "acc_tok",
+		RefreshToken:   "ref_tok",
+		TokenExpiresAt: now.Add(time.Hour),
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := repo.Save(ctx, acc); err != nil {
+		t.Fatalf("save account failed: %v", err)
+	}
+
+	menuCtrl.RegisterInstance(menu.MenuInstance{
+		ID:        "menu:100:200",
+		ChatID:    100,
+		MessageID: 200,
+		Screen:    menu.ScreenIDMyXL,
+		OwnerID:   12345,
+	})
+
+	type testCase struct {
+		name     string
+		action   string
+		senderID int64
+		wantErr  bool
+	}
+
+	cases := []testCase{
+		{name: "Unauthorized user", action: "home", senderID: 99999, wantErr: false},
+		{name: "Home", action: "home", senderID: 12345, wantErr: false},
+		{name: "Quota", action: "quota", senderID: 12345, wantErr: false},
+		{name: "Accounts", action: "accounts", senderID: 12345, wantErr: false},
+		{name: "Store", action: "store", senderID: 12345, wantErr: false},
+		{name: "Saved", action: "saved", senderID: 12345, wantErr: false},
+		{name: "Token Refresh", action: "token_refresh", senderID: 12345, wantErr: false},
+		{name: "Delete Pick", action: "del_pick", senderID: 12345, wantErr: false},
+		{name: "Alias Pick", action: "alias_pick", senderID: 12345, wantErr: false},
+		{name: "Switch Account", action: "switch:6281987654321", senderID: 12345, wantErr: false},
+		{name: "Noop", action: "noop", senderID: 12345, wantErr: false},
+		{name: "Bookmark Add", action: "bookmark_add:OPT-10GB", senderID: 12345, wantErr: false},
+	}
+
+	svc := &mockTgService{}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cbCtx := &callback.CallbackContext{
+				Ctx:     ctx,
+				QueryID: 1001,
+				UserID:  tc.senderID,
+				ChatID:  100,
+				MsgID:   200,
+				Action:  tc.action,
+				Service: svc,
+				Target: core.CallbackTarget{
+					Peer:      &tg.InputPeerChat{ChatID: 100},
+					MessageID: 200,
+				},
+			}
+			err := plugin.HandleCallback(cbCtx)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("HandleCallback(%s) error = %v, wantErr %v", tc.action, err, tc.wantErr)
+			}
+		})
+	}
+}

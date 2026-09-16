@@ -11,6 +11,7 @@ const (
 	ScreenIDSettings ScreenID = "settings"
 	ScreenIDHelp     ScreenID = "help"
 	ScreenIDStatus   ScreenID = "status"
+	ScreenIDMyXL     ScreenID = "myxl"
 )
 
 // Screen aliases the repository-wide Telegram-agnostic UI screen model.

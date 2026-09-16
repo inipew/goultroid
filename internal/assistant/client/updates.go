@@ -64,7 +64,7 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			logger.Warn("assistant: sender access hash missing, message ignored", zap.Int64("sender_id", senderID), zap.Error(err))
 			return nil
 		}
-		if deps.MenuController != nil && deps.SettingsService != nil {
+		if deps.MenuController != nil {
 			if handled, hErr := deps.MenuController.HandleTextMessage(ctx, senderID, extractChatID(msg.PeerID), msg.Message, deps.Interaction, deps.SettingsService); handled {
 				return hErr
 			}

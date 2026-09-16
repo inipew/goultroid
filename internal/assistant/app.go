@@ -6,6 +6,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/assistant/callback"
 	"github.com/inipew/goultroid/internal/assistant/client"
+	"github.com/inipew/goultroid/internal/assistant/menu"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/settings"
@@ -25,6 +26,7 @@ type Client interface {
 	SetCallbackRouter(router client.CoreCallbackDispatcher)
 	SetTasks(client tasks.Client)
 	SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool))
+	MenuController() *menu.Controller
 }
 
 type AssistantApp struct {
@@ -91,4 +93,10 @@ func (a *AssistantApp) SetCallbackRouter(router client.CoreCallbackDispatcher) {
 }
 func (a *AssistantApp) SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool)) {
 	a.client.SetPluginScopeResolver(resolver)
+}
+func (a *AssistantApp) MenuController() *menu.Controller {
+	if a.client == nil {
+		return nil
+	}
+	return a.client.MenuController()
 }

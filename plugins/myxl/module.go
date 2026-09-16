@@ -40,6 +40,9 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	if rt.CallbackStore != nil {
 		p.SetStateStore(rt.CallbackStore)
 	}
+	if rt.AssistantMenu != nil {
+		p.SetAssistantMenu(rt.AssistantMenu)
+	}
 	return rt.RegisterPlugin(ctx, m.Manifest(), p)
 }
 
