@@ -918,6 +918,21 @@ func (c *Client) executeSettlementWithRetry(ctx context.Context, acc *Account, b
 	return resp, err
 }
 
+func parseValidAmount(msg string) (int64, bool) {
+	// format: "Bizz-err.Amount.Total=12345" or "... = 12345"
+	idx := strings.LastIndex(msg, "=")
+	if idx == -1 {
+		return 0, false
+	}
+	valStr := strings.TrimSpace(msg[idx+1:])
+	valStr = strings.TrimRight(valStr, ".;,\"' ")
+	val, err := strconv.ParseInt(valStr, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return val, true
+}
+
 // SettlementBalance executes purchase using main credit / pulsa (BALANCE).
 func (c *Client) SettlementBalance(ctx context.Context, acc *Account, req PurchaseItem, overwriteAmount *int64) (*SettlementResult, error) {
 	totalAmount := req.ItemPrice
@@ -968,6 +983,57 @@ func (c *Client) SettlementBalance(ctx context.Context, acc *Account, req Purcha
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	// If server reports Bizz-err.Amount.Total, retry with valid server amount
+	if apiResp != nil && !apiResp.IsSuccess() && strings.Contains(apiResp.Message, "Bizz-err.Amount.Total") {
+		if valid, ok := parseValidAmount(apiResp.Message); ok {
+			totalAmount = valid
+			apiResp, err = c.executeSettlementWithRetry(ctx, acc, func(curAcc *Account) (string, any, PaymentSignatureParams, error) {
+				payMethods, pErr := c.GetPaymentMethodsOption(ctx, curAcc, req.TokenConfirmation, req.ItemCode)
+				if pErr != nil {
+					return "", nil, PaymentSignatureParams{}, fmt.Errorf("get payment methods: %w", pErr)
+				}
+
+				encryptedPaymentToken := BuildEncryptedFieldWithKey(c.cfg.EncryptedFieldKey, true)
+				encryptedAuthID := BuildEncryptedFieldWithKey(c.cfg.EncryptedFieldKey, true)
+
+				settlementReq := SettlementBalanceRequest{
+					TotalDiscount:             0,
+					IsEnterprise:              false,
+					TokenPayment:              payMethods.TokenPayment,
+					EncryptedPaymentToken:     encryptedPaymentToken,
+					EncryptedAuthenticationID: encryptedAuthID,
+					AccessToken:               curAcc.AccessToken,
+					PaymentMethod:             "BALANCE",
+					Timestamp:                 int64(payMethods.Timestamp),
+					PaymentFor:                "BUY_PACKAGE",
+					TotalAmount:               totalAmount,
+					Items:                     []PurchaseItem{req},
+					AdditionalData: BalanceAdditionalData{
+						OriginalPrice: req.ItemPrice,
+						BalanceType:   "PREPAID_BALANCE",
+					},
+				}
+
+				path := "payments/api/v8/settlement-multipayment"
+				params := PaymentSignatureParams{
+					AccessToken:    curAcc.AccessToken,
+					SigTimeSec:     int64(payMethods.Timestamp),
+					PackageCode:    req.ItemCode,
+					TokenPayment:   payMethods.TokenPayment,
+					PaymentMethod:  "BALANCE",
+					PaymentFor:     "BUY_PACKAGE",
+					Path:           path,
+					XAPIBaseSecret: c.cfg.XAPIBaseSecret,
+				}
+
+				return path, settlementReq, params, nil
+			})
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	res := &SettlementResult{
@@ -1321,6 +1387,57 @@ func (c *Client) SettlementDecoy(ctx context.Context, acc *Account, req Purchase
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	// If server reports Bizz-err.Amount.Total, retry with valid server amount
+	if apiResp != nil && !apiResp.IsSuccess() && strings.Contains(apiResp.Message, "Bizz-err.Amount.Total") && norm == "balance" {
+		if valid, ok := parseValidAmount(apiResp.Message); ok {
+			totalAmount = valid
+			apiResp, err = c.executeSettlementWithRetry(ctx, acc, func(curAcc *Account) (string, any, PaymentSignatureParams, error) {
+				payMethods, pErr := c.GetPaymentMethodsOption(ctx, curAcc, decoy.TokenConfirmation, decoy.OptionCode)
+				if pErr != nil {
+					return "", nil, PaymentSignatureParams{}, fmt.Errorf("get decoy payment methods: %w", pErr)
+				}
+
+				path := "payments/api/v8/settlement-multipayment"
+				encryptedPaymentToken := BuildEncryptedFieldWithKey(c.cfg.EncryptedFieldKey, true)
+				encryptedAuthID := BuildEncryptedFieldWithKey(c.cfg.EncryptedFieldKey, true)
+
+				settlementReq := SettlementBalanceRequest{
+					TotalDiscount:             0,
+					IsEnterprise:              false,
+					TokenPayment:              payMethods.TokenPayment,
+					EncryptedPaymentToken:     encryptedPaymentToken,
+					EncryptedAuthenticationID: encryptedAuthID,
+					AccessToken:               curAcc.AccessToken,
+					PaymentMethod:             "BALANCE",
+					Timestamp:                 int64(payMethods.Timestamp),
+					PaymentFor:                "SHARE_PACKAGE",
+					TotalAmount:               totalAmount,
+					Items:                     items,
+					AdditionalData: BalanceAdditionalData{
+						OriginalPrice: req.ItemPrice,
+						BalanceType:   "PREPAID_BALANCE",
+					},
+				}
+
+				params := PaymentSignatureParams{
+					AccessToken:    curAcc.AccessToken,
+					SigTimeSec:     int64(payMethods.Timestamp),
+					PackageCode:    packageCodes,
+					TokenPayment:   payMethods.TokenPayment,
+					PaymentMethod:  "BALANCE",
+					PaymentFor:     "SHARE_PACKAGE",
+					Path:           path,
+					XAPIBaseSecret: c.cfg.XAPIBaseSecret,
+				}
+
+				return path, settlementReq, params, nil
+			})
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	res := &SettlementResult{

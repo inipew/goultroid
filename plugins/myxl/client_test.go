@@ -835,3 +835,110 @@ func TestClient_LeaderContextCancellation(t *testing.T) {
 		t.Fatalf("expected waiter to receive fresh access token, got %s", waiterAcc.AccessToken)
 	}
 }
+
+func TestParseValidAmount(t *testing.T) {
+	tests := []struct {
+		input   string
+		wantVal int64
+		wantOk  bool
+	}{
+		{"Bizz-err.Amount.Total=12345", 12345, true},
+		{"Bizz-err.Amount.Total = 15000", 15000, true},
+		{"Error: Bizz-err.Amount.Total=0.", 0, true},
+		{"Bizz-err.Amount.Total=99000;", 99000, true},
+		{"No equals sign here", 0, false},
+		{"Bizz-err.Amount.Total=not_a_number", 0, false},
+	}
+
+	for _, tc := range tests {
+		val, ok := parseValidAmount(tc.input)
+		if ok != tc.wantOk || val != tc.wantVal {
+			t.Errorf("parseValidAmount(%q) = (%d, %v), want (%d, %v)", tc.input, val, ok, tc.wantVal, tc.wantOk)
+		}
+	}
+}
+
+func TestClient_Settlement_BizzErrAmountTotal_Retry(t *testing.T) {
+	settleCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/payments/api/v8/payment-methods-option":
+			data := PaymentMethodsOptionData{
+				TokenPayment: "TP-BIZZ",
+				Timestamp:    1234567,
+			}
+			b, _ := json.Marshal(data)
+			_ = json.NewEncoder(w).Encode(APIResponse{
+				Status: "SUCCESS",
+				Data:   b,
+			})
+		case "/payments/api/v8/settlement-multipayment":
+			settleCalls++
+			var env EncryptedBody
+			_ = json.NewDecoder(r.Body).Decode(&env)
+			plain, _ := DecryptXData(env.XData, env.XTime, DefaultXDataKey)
+
+			var req SettlementBalanceRequest
+			_ = json.Unmarshal([]byte(plain), &req)
+
+			if settleCalls == 1 {
+				// Initial call with overwrite amount 0 fails with Bizz-err
+				if req.TotalAmount != 0 {
+					t.Errorf("expected first call total_amount 0, got %d", req.TotalAmount)
+				}
+				_ = json.NewEncoder(w).Encode(APIResponse{
+					Status:  "FAILED",
+					Message: "Bizz-err.Amount.Total=35000",
+				})
+				return
+			}
+
+			// Retry call should have total_amount = 35000
+			if req.TotalAmount != 35000 {
+				t.Errorf("expected retry call total_amount 35000, got %d", req.TotalAmount)
+			}
+			stData, _ := json.Marshal(SettlementData{TransactionCode: "TRX-BIZZ-OK"})
+			_ = json.NewEncoder(w).Encode(APIResponse{
+				Status:  "SUCCESS",
+				Message: "Payment Accepted",
+				Data:    stData,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg := DefaultClientConfig()
+	cfg.BaseAPIURL = server.URL
+	repo := &mockRepo{}
+	netCli := network.NewService(server.Client(), nil).ForOwner("myxl")
+	client := NewClient(cfg, repo, netCli)
+
+	acc := &Account{
+		MSISDN:         "6281988899900",
+		AccessToken:    "acc_token",
+		IDToken:        "id_token",
+		TokenExpiresAt: time.Now().Add(1 * time.Hour),
+	}
+	repo.saved = acc
+
+	zero := int64(0)
+	res, err := client.SettlementBalance(context.Background(), acc, PurchaseItem{
+		ItemCode:          "OPT-BIZZ",
+		ItemPrice:         50000,
+		ItemName:          "Package Bizz",
+		TokenConfirmation: "CONF-BIZZ",
+	}, &zero)
+
+	if err != nil {
+		t.Fatalf("SettlementBalance failed: %v", err)
+	}
+	if settleCalls != 2 {
+		t.Fatalf("expected 2 settlement calls (initial + retry), got %d", settleCalls)
+	}
+	if !res.IsSuccess || res.TransactionCode != "TRX-BIZZ-OK" {
+		t.Fatalf("expected success with TRX-BIZZ-OK, got: %#v", res)
+	}
+}
