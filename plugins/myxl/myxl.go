@@ -668,7 +668,7 @@ func (p *Plugin) HandleCallback(cbCtx *callback.CallbackContext) error {
 		}
 		return cbCtx.Answer("Tombol tidak valid atau sudah kedaluwarsa", true)
 
-	case "detail":
+	case "detail", "quota":
 		if p.menuMgr == nil {
 			return cbCtx.Answer("Menu manager unavailable", true)
 		}
@@ -813,9 +813,15 @@ func (p *Plugin) HandleCallback(cbCtx *callback.CallbackContext) error {
 		if targetMSISDN == "" {
 			return cbCtx.Answer("Nomor HP tidak valid", true)
 		}
-		_, err := p.client.RequestOTP(cbCtx.Ctx, targetMSISDN)
+		subID, err := p.client.RequestOTP(cbCtx.Ctx, targetMSISDN)
 		if err != nil {
 			return cbCtx.Answer(fmt.Sprintf("Gagal kirim ulang OTP: %v", err), true)
+		}
+		if subID != "" {
+			if existing, _ := p.repo.GetByMSISDN(cbCtx.Ctx, targetMSISDN); existing != nil {
+				existing.SubscriberID = subID
+				_ = p.repo.Save(cbCtx.Ctx, existing)
+			}
 		}
 		return cbCtx.Answer("📩 Kode OTP telah dikirim ulang via SMS!", true)
 
@@ -1071,7 +1077,7 @@ func (p *Plugin) HandleCallback(cbCtx *callback.CallbackContext) error {
 		return cbCtx.Answer("", false)
 
 	default:
-		return nil
+		return cbCtx.Answer("Tombol tidak dikenali atau belum didukung", true)
 	}
 }
 

@@ -321,6 +321,11 @@ func (m *MenuManager) handleWizardSetAlias(ctx context.Context, userID int64, in
 		ui.NewCallbackButton("👥 Kelola Akun", []byte("a1:myxl:accounts")),
 		ui.NewCallbackButton("📱 Dashboard", []byte("a1:myxl:home")),
 	}}})
+	if sess.Target.IsValid() {
+		if editErr := inter.Edit(ctx, sess.Target, msg, markup); editErr == nil {
+			return true, nil
+		}
+	}
 	_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), msg, markup)
 	return true, sendErr
 }
@@ -344,15 +349,24 @@ func (m *MenuManager) handleWizardOptionCode(ctx context.Context, userID int64, 
 
 	screen, err := m.BuildPackageDetailScreen(cCtx, acc, optCode)
 	if err != nil {
-		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(),
-			fmt.Sprintf("❌ Gagal memuat paket <code>%s</code>:\n<code>%s</code>", html.EscapeString(optCode), html.EscapeString(err.Error())),
-			nil)
 		m.ClearSession(userID)
+		msg := fmt.Sprintf("❌ Gagal memuat paket <code>%s</code>:\n<code>%s</code>", html.EscapeString(optCode), html.EscapeString(err.Error()))
+		if sess.Target.IsValid() {
+			if editErr := inter.Edit(ctx, sess.Target, msg, nil); editErr == nil {
+				return true, nil
+			}
+		}
+		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), msg, nil)
 		return true, sendErr
 	}
 	m.ClearSession(userID)
 
 	text, markup := render.ToTelegram(screen)
+	if sess.Target.IsValid() {
+		if editErr := inter.Edit(ctx, sess.Target, text, markup); editErr == nil {
+			return true, nil
+		}
+	}
 	_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), text, markup)
 	return true, sendErr
 }
@@ -405,11 +419,22 @@ func (m *MenuManager) handleWizardCustomPrice(ctx context.Context, userID int64,
 
 	screen, err := m.BuildCheckoutScreen(draft, userID, sess.Target.ChatID())
 	if err != nil {
-		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), fmt.Sprintf("❌ Gagal membuat sesi checkout: %v", err), nil)
+		msg := fmt.Sprintf("❌ Gagal membuat sesi checkout: %v", err)
+		if sess.Target.IsValid() {
+			if editErr := inter.Edit(ctx, sess.Target, msg, nil); editErr == nil {
+				return true, nil
+			}
+		}
+		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), msg, nil)
 		return true, sendErr
 	}
 
 	text, markup := render.ToTelegram(screen)
+	if sess.Target.IsValid() {
+		if editErr := inter.Edit(ctx, sess.Target, text, markup); editErr == nil {
+			return true, nil
+		}
+	}
 	_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), text, markup)
 	return true, sendErr
 }

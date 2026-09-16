@@ -480,40 +480,90 @@ func TestMenuManager_Callbacks(t *testing.T) {
 	type testCase struct {
 		name     string
 		action   string
+		opaqueID string
+		state    any
 		senderID int64
 		wantErr  bool
 	}
 
+	optKey := plugin.menuMgr.RegisterOptionCode("OPT-10GB")
+
 	cases := []testCase{
 		{name: "Unauthorized user", action: "home", senderID: 99999, wantErr: false},
 		{name: "Home", action: "home", senderID: 12345, wantErr: false},
-		{name: "Quota", action: "quota", senderID: 12345, wantErr: false},
+		{name: "Refresh", action: "refresh", senderID: 12345, wantErr: false},
+		{name: "Detail", action: "detail", senderID: 12345, wantErr: false},
+		{name: "Quota alias", action: "quota", senderID: 12345, wantErr: false},
 		{name: "Accounts", action: "accounts", senderID: 12345, wantErr: false},
 		{name: "Store", action: "store", senderID: 12345, wantErr: false},
 		{name: "Saved", action: "saved", senderID: 12345, wantErr: false},
 		{name: "Token Refresh", action: "token_refresh", senderID: 12345, wantErr: false},
 		{name: "Delete Pick", action: "del_pick", senderID: 12345, wantErr: false},
+		{name: "Delete Ask", action: "del_ask", opaqueID: "6281987654321", senderID: 12345, wantErr: false},
+		{name: "Delete Exec", action: "del_exec", opaqueID: "6281987654321", senderID: 12345, wantErr: false},
 		{name: "Alias Pick", action: "alias_pick", senderID: 12345, wantErr: false},
-		{name: "Switch Account", action: "switch:6281987654321", senderID: 12345, wantErr: false},
-		{name: "Noop", action: "noop", senderID: 12345, wantErr: false},
-		{name: "Bookmark Add", action: "bookmark_add:OPT-10GB", senderID: 12345, wantErr: false},
+		{name: "Alias Req", action: "alias_req", opaqueID: "6281987654321", senderID: 12345, wantErr: false},
+		{name: "Login Req", action: "login_req", senderID: 12345, wantErr: false},
+		{name: "Resend OTP", action: "resend_otp", opaqueID: "6281987654321", senderID: 12345, wantErr: false},
+		{name: "Cancel Wizard", action: "cancel_wizard", senderID: 12345, wantErr: false},
+		{name: "Switch Account", action: "switch", opaqueID: "6281987654321", senderID: 12345, wantErr: false},
+		{name: "Switch Noop", action: "switch", opaqueID: "noop", senderID: 12345, wantErr: false},
 		{name: "Family Input", action: "fam_input", senderID: 12345, wantErr: false},
-		{name: "Family Page", action: "fam_page:FAM-FLEX:1", senderID: 12345, wantErr: false},
-		{name: "Family Page UUID", action: "fam_page:7658c955-a0b9-405f-bb17-de7f43d1a946:1", senderID: 12345, wantErr: false},
+		{name: "Family Page", action: "fam_page", opaqueID: "FAM-FLEX:1", senderID: 12345, wantErr: false},
+		{name: "Family Page UUID", action: "fam_page", opaqueID: "7658c955-a0b9-405f-bb17-de7f43d1a946:1", senderID: 12345, wantErr: false},
+		{name: "Buy Option Input", action: "buy_opt_input", senderID: 12345, wantErr: false},
+		{name: "Buy Option Plain", action: "buy_opt", opaqueID: "OPT-10GB", senderID: 12345, wantErr: false},
+		{name: "Buy Option Mapped Key", action: "buy_opt", opaqueID: optKey, senderID: 12345, wantErr: false},
+		{name: "Method Balance", action: "method", opaqueID: "balance:OPT-10GB", senderID: 12345, wantErr: false},
+		{name: "Method Mapped Key", action: "method", opaqueID: "balance:" + optKey, senderID: 12345, wantErr: false},
+		{name: "Custom Price", action: "custom_price", opaqueID: optKey, senderID: 12345, wantErr: false},
+		{
+			name:   "Checkout with valid draft",
+			action: "checkout",
+			state: purchaseDraftState{
+				MSISDN:            "6281987654321",
+				OptionCode:        "OPT-10GB",
+				PackageName:       "Combo 10GB",
+				Price:             25000,
+				TokenConfirmation: "TOK-CONFIRM-123",
+				Method:            "balance",
+			},
+			senderID: 12345,
+			wantErr:  false,
+		},
+		{name: "Cancel Draft", action: "cancel_draft", senderID: 12345, wantErr: false},
+		{name: "Bookmark Add", action: "bookmark_add", opaqueID: "OPT-10GB", senderID: 12345, wantErr: false},
+		{name: "Bookmark Add Mapped", action: "bookmark_add", opaqueID: optKey, senderID: 12345, wantErr: false},
+		{name: "Bookmark Del", action: "bookmark_del", opaqueID: "OPT-10GB", senderID: 12345, wantErr: false},
+		{name: "Noop", action: "noop", senderID: 12345, wantErr: false},
+		{name: "Unknown Action", action: "unknown_action_xyz", senderID: 12345, wantErr: false},
 	}
 
 	svc := &mockTgService{}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			_ = repo.Save(ctx, acc)
+			_ = repo.SetActive(ctx, acc.MSISDN)
+
+			action := tc.action
+			opaqueID := tc.opaqueID
+			if opaqueID == "" && strings.Contains(action, ":") {
+				parts := strings.SplitN(action, ":", 2)
+				action = parts[0]
+				opaqueID = parts[1]
+			}
+
 			cbCtx := &callback.CallbackContext{
-				Ctx:     ctx,
-				QueryID: 1001,
-				UserID:  tc.senderID,
-				ChatID:  100,
-				MsgID:   200,
-				Action:  tc.action,
-				Service: svc,
+				Ctx:      ctx,
+				QueryID:  1001,
+				UserID:   tc.senderID,
+				ChatID:   100,
+				MsgID:    200,
+				Action:   action,
+				OpaqueID: opaqueID,
+				State:    tc.state,
+				Service:  svc,
 				Target: core.CallbackTarget{
 					Peer:      &tg.InputPeerChat{ChatID: 100},
 					MessageID: 200,
@@ -521,7 +571,7 @@ func TestMenuManager_Callbacks(t *testing.T) {
 			}
 			err := plugin.HandleCallback(cbCtx)
 			if (err != nil) != tc.wantErr {
-				t.Errorf("HandleCallback(%s) error = %v, wantErr %v", tc.action, err, tc.wantErr)
+				t.Errorf("HandleCallback(%s, %s) error = %v, wantErr %v", action, opaqueID, err, tc.wantErr)
 			}
 		})
 	}
