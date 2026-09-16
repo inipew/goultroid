@@ -113,7 +113,14 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 		p.client.SetHTTP(netSvc)
 	}
 
-	if secMgr, err := pctx.Secrets(); err == nil && secMgr != nil && p.client != nil {
+	secMgr, err := pctx.Secrets()
+	if err != nil {
+		return fmt.Errorf("initialize MyXL secrets: %w", err)
+	}
+	if secMgr == nil {
+		return fmt.Errorf("initialize MyXL secrets: secret manager is nil")
+	}
+	if p.client != nil {
 		p.client.UpdateConfig(func(cfg *ClientConfig) {
 			if k, err := secMgr.Get("MYXL_API_KEY"); err == nil && strings.TrimSpace(k) != "" {
 				cfg.APIKey = strings.TrimSpace(k)
@@ -130,11 +137,17 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 			if fp, err := secMgr.Get("MYXL_AX_FP_KEY"); err == nil && strings.TrimSpace(fp) != "" {
 				cfg.AxFPKey = strings.TrimSpace(fp)
 			}
+			if sig, err := secMgr.Get("MYXL_AX_API_SIG_KEY"); err == nil && strings.TrimSpace(sig) != "" {
+				cfg.AxAPISigKey = strings.TrimSpace(sig)
+			}
 			if pss, err := secMgr.Get("MYXL_PAYMENT_SIG_SECRET"); err == nil && strings.TrimSpace(pss) != "" {
 				cfg.PaymentSigSecret = strings.TrimSpace(pss)
 			}
 			if ef, err := secMgr.Get("MYXL_ENCRYPTED_FIELD_KEY"); err == nil && strings.TrimSpace(ef) != "" {
 				cfg.EncryptedFieldKey = strings.TrimSpace(ef)
+			}
+			if circle, err := secMgr.Get("MYXL_CIRCLE_MSISDN_KEY"); err == nil && strings.TrimSpace(circle) != "" {
+				cfg.CircleMSISDNKey = strings.TrimSpace(circle)
 			}
 		})
 	}

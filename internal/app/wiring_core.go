@@ -155,6 +155,7 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 	capGate.AllowPrivileged("sticker", plugin.CapProcessExecute)
 	capGate.AllowPrivileged("addon", plugin.CapProcessExecute)
 	capGate.AllowPrivileged("ocr", plugin.CapSecretRead)
+	capGate.AllowPrivileged("myxl", plugin.CapSecretRead)
 
 	return &coreDependencies{
 		db:              db,

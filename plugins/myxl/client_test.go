@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/platform/network"
+	"github.com/inipew/goultroid/internal/platform/secret"
+	platformPlugin "github.com/inipew/goultroid/internal/plugin"
 )
 
 func TestNormalizeMSISDN(t *testing.T) {
@@ -38,6 +40,43 @@ func TestNormalizeMSISDN(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("NormalizeMSISDN(%q) = %q, want %q", tc.input, got, tc.want)
 		}
+	}
+}
+
+func TestPluginInitLoadsCapabilityGatedSecrets(t *testing.T) {
+	gate := platformPlugin.NewCapabilityGate()
+	gate.SetFailClosed(true)
+	manifest := Module.Manifest()
+	manifest.Name = "MyXL"
+	if err := gate.RegisterManifest(manifest); err != nil {
+		t.Fatalf("register manifest: %v", err)
+	}
+	secrets := secret.NewManager(map[string]string{
+		"MYXL_API_KEY":           "rotated-api-key",
+		"MYXL_XDATA_KEY":         "0123456789abcdef0123456789abcdef",
+		"MYXL_AX_API_SIG_KEY":    "rotated-signature-key",
+		"MYXL_CIRCLE_MSISDN_KEY": "rotated-circle-key",
+	})
+	client := NewClient(DefaultClientConfig(), &mockRepo{}, nil)
+	p := New(&mockRepo{}, client)
+	newContext := func() platformPlugin.PluginContext {
+		return platformPlugin.NewPluginContext(context.Background(), platformPlugin.ContextConfig{
+			Owner: "myxl", Gate: gate, Network: network.NewService(nil, nil), Secrets: secrets,
+		})
+	}
+
+	if err := p.InitPlugin(newContext()); err == nil {
+		t.Fatal("expected secret capability denial before privileged allowlist")
+	}
+	gate.AllowPrivileged("myxl", platformPlugin.CapSecretRead)
+	if err := p.InitPlugin(newContext()); err != nil {
+		t.Fatalf("init plugin with secret capability: %v", err)
+	}
+	if client.cfg.APIKey != "rotated-api-key" ||
+		client.cfg.XDataKey != "0123456789abcdef0123456789abcdef" ||
+		client.cfg.AxAPISigKey != "rotated-signature-key" ||
+		client.cfg.CircleMSISDNKey != "rotated-circle-key" {
+		t.Fatalf("MyXL secret overrides were not loaded")
 	}
 }
 

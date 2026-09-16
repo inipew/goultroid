@@ -69,6 +69,9 @@ func TestMyXLFeatureMigrationFreshDatabase(t *testing.T) {
 	if len(list) != 2 {
 		t.Fatalf("expected 2 accounts, got %d", len(list))
 	}
+	if _, err := db.ExecContext(ctx, "UPDATE myxl_accounts SET is_active = 1 WHERE msisdn = ?", acc2.MSISDN); err == nil {
+		t.Fatal("expected unique active-account invariant to reject a second active account")
+	}
 
 	// Switch active to acc2
 	if err := repo.SetActive(ctx, "Secondary"); err != nil {
@@ -171,5 +174,52 @@ func TestMyXLFeatureMigrationFreshDatabase(t *testing.T) {
 	}
 	if !fetched.TokenExpiresAt.Equal(targetTime) {
 		t.Fatalf("expected TokenExpiresAt %v, got %v", targetTime, fetched.TokenExpiresAt)
+	}
+}
+
+func TestMigration006RepairsMultipleActiveAccounts(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE myxl_accounts (
+			msisdn TEXT PRIMARY KEY,
+			is_active INTEGER NOT NULL,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL
+		);
+		INSERT INTO myxl_accounts VALUES
+			('6281900000001', 1, '2026-01-01 00:00:00', '2026-01-01 00:00:00'),
+			('6281900000002', 1, '2026-01-02 00:00:00', '2026-01-03 00:00:00');
+	`); err != nil {
+		t.Fatalf("prepare legacy accounts: %v", err)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (migration006{}).Up(ctx, tx); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("apply migration006: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit migration006: %v", err)
+	}
+
+	var activeCount int
+	var activeMSISDN string
+	if err := db.QueryRowContext(ctx, "SELECT count(*), max(msisdn) FROM myxl_accounts WHERE is_active = 1").Scan(&activeCount, &activeMSISDN); err != nil {
+		t.Fatal(err)
+	}
+	if activeCount != 1 || activeMSISDN != "6281900000002" {
+		t.Fatalf("expected newest account to be the sole active account, count=%d msisdn=%s", activeCount, activeMSISDN)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE myxl_accounts SET is_active = 1 WHERE msisdn = '6281900000001'"); err == nil {
+		t.Fatal("expected unique index to reject a second active account")
 	}
 }

@@ -208,7 +208,49 @@ func (migration005) VerifySchema(ctx context.Context, tx database.SQLExecutor) e
 	return nil
 }
 
+var _ database.SchemaInvariantMigration = migration006{}
+
+type migration006 struct{}
+
+func (migration006) ID() string { return "myxl.006" }
+func (migration006) Description() string {
+	return "Enforce a single active MyXL account"
+}
+func (migration006) Checksum() string {
+	return "6df6f6c281a5c010f899261f950267540860c02124870bf85c8dcce28ef3077c"
+}
+func (migration006) LegacyVersions() []int { return nil }
+
+func (migration006) Up(ctx context.Context, tx database.SQLExecutor) error {
+	_, err := tx.ExecContext(ctx, `
+		UPDATE myxl_accounts
+		SET is_active = 0
+		WHERE is_active = 1
+		  AND msisdn <> (
+			SELECT msisdn
+			FROM myxl_accounts
+			WHERE is_active = 1
+			ORDER BY updated_at DESC, created_at ASC, msisdn ASC
+			LIMIT 1
+		  );
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_myxl_accounts_single_active
+		ON myxl_accounts(is_active) WHERE is_active = 1;
+	`)
+	return err
+}
+
+func (migration006) VerifySchema(ctx context.Context, tx database.SQLExecutor) error {
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_myxl_accounts_single_active'`).Scan(&count); err != nil {
+		return err
+	}
+	if count == 0 {
+		return fmt.Errorf("required unique active-account index does not exist")
+	}
+	return nil
+}
+
 // Migrations returns the database migrations for the myxl plugin.
 func Migrations() []database.Migration {
-	return []database.Migration{migration001{}, migration002{}, migration003{}, migration004{}, migration005{}}
+	return []database.Migration{migration001{}, migration002{}, migration003{}, migration004{}, migration005{}, migration006{}}
 }

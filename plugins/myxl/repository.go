@@ -154,17 +154,34 @@ func (r *SQLiteRepository) List(ctx context.Context) ([]*Account, error) {
 
 // Save inserts or updates an account. If no active account exists, sets this account as active.
 func (r *SQLiteRepository) Save(ctx context.Context, acc *Account) error {
+	if acc == nil || strings.TrimSpace(acc.MSISDN) == "" {
+		return errors.New("invalid account: msisdn is required")
+	}
 	now := time.Now().UTC()
 	if acc.CreatedAt.IsZero() {
 		acc.CreatedAt = now
 	}
 	acc.UpdatedAt = now
 
-	// Check if any active account already exists
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin save account transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Resolve the default-active decision in the same write transaction as the
+	// upsert. The partial unique index remains the final concurrency backstop.
 	var activeCount int
-	_ = r.db.QueryRowContext(ctx, "SELECT count(*) FROM myxl_accounts WHERE is_active = 1").Scan(&activeCount)
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM myxl_accounts WHERE is_active = 1").Scan(&activeCount); err != nil {
+		return fmt.Errorf("count active accounts: %w", err)
+	}
 	if activeCount == 0 {
 		acc.IsActive = true
+	}
+	if acc.IsActive {
+		if _, err := tx.ExecContext(ctx, "UPDATE myxl_accounts SET is_active = 0 WHERE is_active = 1"); err != nil {
+			return fmt.Errorf("deactivate current account: %w", err)
+		}
 	}
 
 	tokenExpiresAt := acc.TokenExpiresAt
@@ -193,12 +210,15 @@ func (r *SQLiteRepository) Save(ctx context.Context, acc *Account) error {
 		isActiveInt = 1
 	}
 
-	_, err := r.db.ExecContext(ctx, query,
+	_, err = tx.ExecContext(ctx, query,
 		acc.MSISDN, acc.Alias, isActiveInt, acc.AccessToken, acc.IDToken, acc.RefreshToken,
 		acc.SubscriberID, acc.SubscriptionType, tokenExpiresAt, acc.CreatedAt, acc.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save account: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit saved account: %w", err)
 	}
 	return nil
 }
