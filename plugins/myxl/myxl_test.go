@@ -366,3 +366,72 @@ func callbackEntryFromMarkup(t *testing.T, store *callback.StateStore, markup tg
 	}
 	return oid, entry
 }
+
+func TestReservePurchase_ConcurrencyAndDebounce(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open in-memory db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := database.RunFeatureMigrations(ctx, db, Module); err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+
+	repo := NewSQLiteRepository(db)
+	msisdn := "6287711223344"
+	opt1 := "OPT-PACKAGE-A"
+	opt2 := "OPT-PACKAGE-B"
+
+	// 1. First reservation succeeds
+	key1 := "tx-token-1"
+	reserved, err := repo.ReservePurchase(ctx, key1, msisdn, opt1, "balance")
+	if err != nil || !reserved {
+		t.Fatalf("expected first purchase to be reserved: %v", err)
+	}
+
+	// 2. Duplicate click with same key while pending must be rejected
+	reserved, err = repo.ReservePurchase(ctx, key1, msisdn, opt1, "balance")
+	if err != nil || reserved {
+		t.Fatalf("expected duplicate key reservation to be rejected")
+	}
+
+	// 3. Concurrent purchase on same MSISDN with different key while pending must be rejected
+	key2 := "tx-token-2"
+	reserved, err = repo.ReservePurchase(ctx, key2, msisdn, opt2, "balance")
+	if err != nil || reserved {
+		t.Fatalf("expected in-flight concurrent purchase on same MSISDN to be rejected")
+	}
+
+	// 4. Finish first purchase as SUCCESS
+	if err := repo.FinishPurchase(ctx, key1, "SUCCESS", "TRX-OK", "success"); err != nil {
+		t.Fatalf("failed to finish purchase: %v", err)
+	}
+
+	// 5. Immediate re-purchase of the SAME package (opt1) within 30s cooldown must be rejected
+	key3 := "tx-token-3"
+	reserved, err = repo.ReservePurchase(ctx, key3, msisdn, opt1, "balance")
+	if err != nil || reserved {
+		t.Fatalf("expected re-purchase of same package within 30s cooldown to be rejected")
+	}
+
+	// 6. Purchase of a DIFFERENT package (opt2) after first is finished must be allowed
+	key4 := "tx-token-4"
+	reserved, err = repo.ReservePurchase(ctx, key4, msisdn, opt2, "balance")
+	if err != nil || !reserved {
+		t.Fatalf("expected purchase of different package to be allowed: %v", err)
+	}
+
+	// 7. Finish opt2 as FAILED
+	if err := repo.FinishPurchase(ctx, key4, "FAILED", "", "insufficient balance"); err != nil {
+		t.Fatalf("failed to finish purchase: %v", err)
+	}
+
+	// 8. Purchase of opt2 again after failure must be allowed immediately (no cooldown penalty on failure)
+	key5 := "tx-token-5"
+	reserved, err = repo.ReservePurchase(ctx, key5, msisdn, opt2, "balance")
+	if err != nil || !reserved {
+		t.Fatalf("expected retry after failure to be allowed: %v", err)
+	}
+}

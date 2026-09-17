@@ -2,6 +2,7 @@ package myxl
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"html"
 	"strconv"
@@ -1421,13 +1422,19 @@ func (p *Plugin) confirmPurchase(cbCtx *callback.CallbackContext, draft purchase
 		return cbCtx.Edit("❌ Akun untuk draft pembelian tidak ditemukan.", nil)
 	}
 
-	key := fmt.Sprintf("%s:%s:%s", draft.MSISDN, draft.OptionCode, time.Now().UTC().Format("2006-01-02"))
+	tokenKey := draft.TokenConfirmation
+	if tokenKey == "" {
+		tokenKey = fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	tokenHash := sha256.Sum256([]byte(tokenKey))
+	key := fmt.Sprintf("%s:%s:%x", draft.MSISDN, draft.OptionCode, tokenHash[:16])
+
 	reserved, err := p.repo.ReservePurchase(cCtx, key, draft.MSISDN, draft.OptionCode, draft.Method)
 	if err != nil {
 		return cbCtx.Edit("❌ Gagal mengamankan transaksi. Pembelian tidak dijalankan.", nil)
 	}
 	if !reserved {
-		return cbCtx.Edit("⏳ Pembelian paket ini sudah dikonfirmasi hari ini dan tidak dijalankan ulang.", nil)
+		return cbCtx.Edit("⏳ Transaksi sedang diproses atau baru saja dikonfirmasi. Mohon tunggu sejenak untuk mencegah saldo/pulsa terpotong dua kali.", nil)
 	}
 
 	item := PurchaseItem{

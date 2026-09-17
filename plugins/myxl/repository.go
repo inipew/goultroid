@@ -37,13 +37,52 @@ type Repository interface {
 }
 
 // ReservePurchase atomically reserves an idempotency key. It returns false if
-// the same purchase has already been reserved.
+// a purchase for the same token is already registered, an in-flight purchase is
+// currently pending for this account, or the same package was completed within
+// the rapid-purchase cooldown window.
 func (r *SQLiteRepository) ReservePurchase(ctx context.Context, key, msisdn, optionCode, paymentMethod string) (bool, error) {
+	now := time.Now().UTC()
+
+	// 1. Clean up stale in-flight requests (> 2 min) and check if an in-flight PENDING purchase exists
+	pendingCutoff := now.Add(-2 * time.Minute)
+	_, _ = r.db.ExecContext(ctx, `
+		UPDATE myxl_purchase_requests
+		SET status = 'TIMEOUT', updated_at = ?
+		WHERE msisdn = ? AND status = 'PENDING' AND created_at <= ?
+	`, now, msisdn, pendingCutoff)
+
+	var pendingCount int
+	err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM myxl_purchase_requests
+		WHERE msisdn = ? AND status = 'PENDING' AND created_at > ?
+	`, msisdn, pendingCutoff).Scan(&pendingCount)
+	if err != nil {
+		return false, fmt.Errorf("check pending purchase: %w", err)
+	}
+	if pendingCount > 0 {
+		return false, nil
+	}
+
+	// 2. Debounce cooldown: prevent rapid consecutive duplicate purchases of the same package (30s window)
+	cooldownCutoff := now.Add(-30 * time.Second)
+	var recentCount int
+	err = r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM myxl_purchase_requests
+		WHERE msisdn = ? AND option_code = ? AND status = 'SUCCESS' AND updated_at > ?
+	`, msisdn, optionCode, cooldownCutoff).Scan(&recentCount)
+	if err != nil {
+		return false, fmt.Errorf("check recent purchase cooldown: %w", err)
+	}
+	if recentCount > 0 {
+		return false, nil
+	}
+
+	// 3. Atomically insert reservation with unique key (prevents replay / double-click of same token)
 	res, err := r.db.ExecContext(ctx, `
 		INSERT OR IGNORE INTO myxl_purchase_requests (
 			idempotency_key, msisdn, option_code, payment_method, status, created_at, updated_at
 		) VALUES (?, ?, ?, ?, 'PENDING', ?, ?)
-	`, key, msisdn, optionCode, paymentMethod, time.Now().UTC(), time.Now().UTC())
+	`, key, msisdn, optionCode, paymentMethod, now, now)
 	if err != nil {
 		return false, fmt.Errorf("reserve purchase: %w", err)
 	}
