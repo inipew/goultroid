@@ -230,6 +230,9 @@ func (p *Plugin) handleMyXL(ctx *core.Context) error {
 	showInteractive := ctx.Source == core.ExecutionAssistant || (len(ctx.Args) == 1 && strings.EqualFold(ctx.Args[0], "menu"))
 	if len(ctx.Args) == 0 || (len(ctx.Args) == 1 && strings.EqualFold(ctx.Args[0], "menu")) {
 		if showInteractive && p.menuMgr != nil {
+			if isGroupChat(ctx.Chat) {
+				return ctx.EditOrReply("🔒 Menu interaktif MyXL hanya tersedia di chat pribadi karena memuat nomor akun, OTP, dan tindakan pembelian.")
+			}
 			cCtx, cancel := context.WithTimeout(getContext(ctx), 25*time.Second)
 			defer cancel()
 			mask := isGroupChat(ctx.Chat)
@@ -620,6 +623,30 @@ func (p *Plugin) buildRefreshMarkup(state quotaRefreshState, scope callback.Stat
 func (p *Plugin) HandleCallback(cbCtx *callback.CallbackContext) error {
 	if cbCtx == nil {
 		return nil
+	}
+	requiresMenuSession := true
+	switch cbCtx.Action {
+	case "refresh":
+		_, legacy := cbCtx.State.(quotaRefreshState)
+		requiresMenuSession = !legacy
+	case "buy_confirm", "buy_cancel":
+		_, legacy := cbCtx.State.(purchaseDraftState)
+		requiresMenuSession = !legacy
+	}
+	if requiresMenuSession {
+		if p.menuMgr == nil || p.menuMgr.menuCtrl == nil || cbCtx.Target.MessageID == 0 {
+			return cbCtx.Answer("Sesi menu tidak valid atau sudah kedaluwarsa", true)
+		}
+		inst, ok := p.menuMgr.menuCtrl.Instances().Get(cbCtx.ChatID, cbCtx.Target.MessageID)
+		if !ok || inst == nil {
+			return cbCtx.Answer("Sesi menu tidak valid atau sudah kedaluwarsa", true)
+		}
+		if inst.OwnerID != 0 && inst.OwnerID != cbCtx.UserID {
+			return cbCtx.Answer("Anda tidak diizinkan menggunakan menu ini", true)
+		}
+		if cbCtx.ChatID < 0 {
+			return cbCtx.Answer("Menu MyXL hanya dapat digunakan di chat pribadi", true)
+		}
 	}
 
 	switch cbCtx.Action {

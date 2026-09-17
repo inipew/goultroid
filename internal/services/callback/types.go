@@ -371,6 +371,11 @@ func ParseCallbackData(data []byte) (namespace, action, opaqueID string, err err
 	if len(parts) < 3 || (parts[0] != CallbackVersion1 && parts[0] != "a1") {
 		return "", "", "", ErrInvalidCallbackData
 	}
+	// The canonical v1 protocol always carries an opaque ID. The assistant a1
+	// protocol also permits a three-field stateless action.
+	if parts[0] == CallbackVersion1 && len(parts) != 4 {
+		return "", "", "", ErrInvalidCallbackData
+	}
 	ns, act := parts[1], parts[2]
 	if err := validateCallbackField(ns, "namespace"); err != nil {
 		return "", "", "", err
@@ -382,7 +387,7 @@ func ParseCallbackData(data []byte) (namespace, action, opaqueID string, err err
 	if len(parts) == 4 {
 		oid = parts[3]
 		if oid == "" {
-			oid = "noop"
+			return "", "", "", ErrInvalidCallbackData
 		}
 	}
 	if !isValidOpaqueID(oid) {
@@ -421,7 +426,7 @@ func isHexID(s string) bool {
 }
 
 func isValidOpaqueID(s string) bool {
-	if s == "noop" || s == "" {
+	if s == "noop" {
 		return true
 	}
 	if len(s) > 48 {

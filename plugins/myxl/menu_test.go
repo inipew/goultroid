@@ -3,6 +3,7 @@ package myxl
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -554,6 +555,10 @@ func TestMenuManager_Callbacks(t *testing.T) {
 				opaqueID = parts[1]
 			}
 
+			rawData := []byte(fmt.Sprintf("a1:myxl:%s", action))
+			if opaqueID != "" {
+				rawData = []byte(fmt.Sprintf("a1:myxl:%s:%s", action, opaqueID))
+			}
 			cbCtx := &callback.CallbackContext{
 				Ctx:      ctx,
 				QueryID:  1001,
@@ -562,6 +567,7 @@ func TestMenuManager_Callbacks(t *testing.T) {
 				MsgID:    200,
 				Action:   action,
 				OpaqueID: opaqueID,
+				RawData:  rawData,
 				State:    tc.state,
 				Service:  svc,
 				Target: core.CallbackTarget{
@@ -574,6 +580,46 @@ func TestMenuManager_Callbacks(t *testing.T) {
 				t.Errorf("HandleCallback(%s, %s) error = %v, wantErr %v", action, opaqueID, err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestMenuManager_RejectsCallbackFromNonOwner(t *testing.T) {
+	plugin, server, repo, menuCtrl := setupTestMyXLEnv(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	acc := &Account{MSISDN: "6281987654321", IsActive: true}
+	if err := repo.Save(ctx, acc); err != nil {
+		t.Fatal(err)
+	}
+	menuCtrl.RegisterInstance(menu.MenuInstance{
+		ChatID: 100, MessageID: 200, OwnerID: 12345, Screen: menu.ScreenIDMyXL,
+	})
+
+	err := plugin.HandleCallback(&callback.CallbackContext{
+		Ctx: ctx, QueryID: 1, UserID: 99999, ChatID: 100,
+		Action: "del_exec", OpaqueID: acc.MSISDN, Service: &mockTgService{},
+		Target: core.CallbackTarget{Peer: &tg.InputPeerUser{UserID: 100}, MessageID: 200},
+	})
+	if err != nil {
+		t.Fatalf("rejection should be delivered as a callback answer: %v", err)
+	}
+	if got, _ := repo.GetByMSISDN(ctx, acc.MSISDN); got == nil {
+		t.Fatal("unauthorized callback deleted the account")
+	}
+}
+
+func TestMenuManager_LongOptionCodeUsesStateToken(t *testing.T) {
+	plugin, server, _, _ := setupTestMyXLEnv(t)
+	defer server.Close()
+
+	code := "7658c955-a0b9-405f-bb17-de7f43d1a946:OPTION-LONG"
+	key := plugin.menuMgr.RegisterOptionCode(code)
+	if key == "" || key == code || len(key) > 24 {
+		t.Fatalf("unexpected compact option key %q", key)
+	}
+	if got := plugin.menuMgr.ResolveOptionCode(key); got != code {
+		t.Fatalf("ResolveOptionCode(%q) = %q, want %q", key, got, code)
 	}
 }
 

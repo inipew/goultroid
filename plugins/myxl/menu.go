@@ -2,8 +2,6 @@ package myxl
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"html"
 	"strconv"
@@ -11,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/assistant/menu"
 	coreCallback "github.com/inipew/goultroid/internal/services/callback"
@@ -45,9 +44,6 @@ type MenuManager struct {
 	menuCtrl   *menu.Controller
 	sessionsMu sync.Mutex
 	sessions   map[int64]*wizardSession
-	optKeysMu  sync.RWMutex
-	optKeys    map[string]string
-	optToKey   map[string]string
 }
 
 func NewMenuManager(p *Plugin, ctrl *menu.Controller) *MenuManager {
@@ -55,8 +51,6 @@ func NewMenuManager(p *Plugin, ctrl *menu.Controller) *MenuManager {
 		plugin:   p,
 		menuCtrl: ctrl,
 		sessions: make(map[int64]*wizardSession),
-		optKeys:  make(map[string]string),
-		optToKey: make(map[string]string),
 	}
 	if ctrl != nil {
 		ctrl.RegisterTextHandler(m)
@@ -73,22 +67,12 @@ func (m *MenuManager) RegisterOptionCode(optCode string) string {
 		return optCode
 	}
 
-	m.optKeysMu.Lock()
-	defer m.optKeysMu.Unlock()
-	if key, ok := m.optToKey[optCode]; ok {
-		return key
-	}
-
-	h := sha256.Sum256([]byte(optCode))
-	key := hex.EncodeToString(h[:8]) // 16 hex chars
-	m.optKeys[key] = optCode
-	m.optToKey[optCode] = key
 	if m.plugin != nil && m.plugin.stateStore != nil {
-		_ = m.plugin.stateStore.StoreWithScope(optCode, coreCallback.StateScope{
+		return m.plugin.stateStore.StoreWithScope(optCode, coreCallback.StateScope{
 			Namespace: m.plugin.Namespace(),
 		}, 24*time.Hour)
 	}
-	return key
+	return ""
 }
 
 // ResolveOptionCode resolves an option key or raw code back to the canonical full option code.
@@ -96,13 +80,6 @@ func (m *MenuManager) ResolveOptionCode(keyOrCode string) string {
 	if keyOrCode == "" {
 		return ""
 	}
-	m.optKeysMu.RLock()
-	if full, ok := m.optKeys[keyOrCode]; ok {
-		m.optKeysMu.RUnlock()
-		return full
-	}
-	m.optKeysMu.RUnlock()
-
 	if m.plugin != nil && m.plugin.stateStore != nil {
 		if val, _, ok := m.plugin.stateStore.Get(keyOrCode); ok {
 			if s, ok := val.(string); ok && s != "" {
@@ -142,6 +119,28 @@ func (m *MenuManager) ClearSession(userID int64) {
 	m.sessionsMu.Lock()
 	defer m.sessionsMu.Unlock()
 	delete(m.sessions, userID)
+}
+
+func (m *MenuManager) registerMessageInstance(userID int64, msg *tg.Message) {
+	if m.menuCtrl == nil || msg == nil || msg.ID == 0 {
+		return
+	}
+	chatID := userID
+	switch p := msg.PeerID.(type) {
+	case *tg.PeerUser:
+		chatID = p.UserID
+	case *tg.PeerChat:
+		chatID = p.ChatID
+	case *tg.PeerChannel:
+		chatID = p.ChannelID
+	}
+	m.menuCtrl.RegisterInstance(menu.MenuInstance{
+		ID:        fmt.Sprintf("menu:%d:%d", chatID, msg.ID),
+		OwnerID:   userID,
+		ChatID:    chatID,
+		MessageID: msg.ID,
+		Screen:    menu.ScreenIDMyXL,
+	})
 }
 
 // HandleTextMessage implements menu.TextHandler for multi-step wizards.
@@ -232,7 +231,10 @@ func (m *MenuManager) handleWizardLoginMSISDN(ctx context.Context, userID int64,
 		ui.NewCallbackButton("🔄 Kirim Ulang OTP", []byte(fmt.Sprintf("a1:myxl:resend_otp:%s", msisdn))),
 		ui.NewCallbackButton("❌ Batal", []byte("a1:myxl:cancel_wizard")),
 	}}})
-	_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), prompt, markup)
+	msg, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), prompt, markup)
+	if sendErr == nil {
+		m.registerMessageInstance(userID, msg)
+	}
 	return true, sendErr
 }
 
@@ -258,9 +260,12 @@ func (m *MenuManager) handleWizardLoginOTP(ctx context.Context, userID int64, in
 			ui.NewCallbackButton("🔄 Kirim Ulang OTP", []byte(fmt.Sprintf("a1:myxl:resend_otp:%s", sess.MSISDN))),
 			ui.NewCallbackButton("❌ Batal", []byte("a1:myxl:cancel_wizard")),
 		}}})
-		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(),
+		msg, sendErr := inter.SendMessage(ctx, sess.Target.Peer(),
 			fmt.Sprintf("❌ <b>Verifikasi OTP Gagal:</b>\n<code>%s</code>\n\nPeriksa kembali kode SMS Anda atau kirim ulang OTP.", html.EscapeString(err.Error())),
 			markup)
+		if sendErr == nil {
+			m.registerMessageInstance(userID, msg)
+		}
 		return true, sendErr
 	}
 
@@ -291,7 +296,10 @@ func (m *MenuManager) handleWizardLoginOTP(ctx context.Context, userID int64, in
 	markup := render.ToTelegramMarkup(ui.Markup{Rows: []ui.ButtonRow{{
 		ui.NewCallbackButton("📱 Buka Dashboard MyXL", []byte("a1:myxl:home")),
 	}}})
-	_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), successMsg, markup)
+	msg, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), successMsg, markup)
+	if sendErr == nil {
+		m.registerMessageInstance(userID, msg)
+	}
 	return true, sendErr
 }
 

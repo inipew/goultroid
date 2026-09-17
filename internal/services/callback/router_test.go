@@ -111,6 +111,13 @@ func TestCallback_DataEncodingAndParsing(t *testing.T) {
 		t.Errorf("unexpected parsed UUID fields: %s, %s, %s", ns, action, opaqueID)
 	}
 
+	if _, _, _, err = ParseCallbackData([]byte("v1:myxl:home")); !errors.Is(err, ErrInvalidCallbackData) {
+		t.Fatalf("expected canonical v1 payload without opaque id to be rejected, got %v", err)
+	}
+	if _, _, _, err = ParseCallbackData([]byte("v1:myxl:home:")); !errors.Is(err, ErrInvalidCallbackData) {
+		t.Fatalf("expected empty opaque id to be rejected, got %v", err)
+	}
+
 	// Invalid format
 	_, _, _, err = ParseCallbackData([]byte("invalid"))
 	if !errors.Is(err, ErrInvalidCallbackData) {
