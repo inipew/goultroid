@@ -90,6 +90,34 @@ func (m *MenuManager) ResolveOptionCode(keyOrCode string) string {
 	return keyOrCode
 }
 
+// RegisterQR registers a QR payload in the state store with a short key safe for callback data.
+func (m *MenuManager) RegisterQR(qrPayload string) string {
+	if qrPayload == "" {
+		return ""
+	}
+	if m.plugin != nil && m.plugin.stateStore != nil {
+		return m.plugin.stateStore.StoreWithScope(qrPayload, coreCallback.StateScope{
+			Namespace: m.plugin.Namespace(),
+		}, 24*time.Hour)
+	}
+	return ""
+}
+
+// ResolveQR resolves a registered QR key back to the raw QR payload string.
+func (m *MenuManager) ResolveQR(key string) string {
+	if key == "" {
+		return ""
+	}
+	if m.plugin != nil && m.plugin.stateStore != nil {
+		if val, _, ok := m.plugin.stateStore.Get(key); ok {
+			if s, ok := val.(string); ok && s != "" {
+				return s
+			}
+		}
+	}
+	return key
+}
+
 func (m *MenuManager) SetSession(userID int64, sess *wizardSession) {
 	m.sessionsMu.Lock()
 	defer m.sessionsMu.Unlock()
@@ -879,14 +907,28 @@ func (m *MenuManager) BuildPurchaseResultScreen(result *SettlementResult, packag
 			card.AddField("Pesan Operator", html.EscapeString(result.Message))
 		}
 		if result.QRCode != "" {
-			card.WithRaw("📱 <b>String QRIS:</b>\n<code>" + html.EscapeString(result.QRCode) + "</code>")
+			if qrText, err := RenderQRCompact(result.QRCode); err == nil && qrText != "" {
+				card.WithRaw("<pre>" + qrText + "</pre>\n\n" +
+					"📱 <b>String QRIS:</b>\n<code>" + html.EscapeString(result.QRCode) + "</code>\n" +
+					"<i>💡 Screenshot tampilan QR di atas atau salin kode QRIS untuk discan di aplikasi e-wallet / mobile banking.</i>")
+			} else {
+				card.WithRaw("📱 <b>String QRIS:</b>\n<code>" + html.EscapeString(result.QRCode) + "</code>")
+			}
 		}
 	}
 
 	screen := menu.NewScreen("myxl:result", "", card.Render())
 	optKey := m.RegisterOptionCode(optionCode)
+	var firstRow []ui.Button
+	firstRow = append(firstRow, menu.NewButton("⭐ Simpan ke Favorit", fmt.Sprintf("a1:myxl:bookmark_add:%s", optKey)))
+	if result != nil && result.QRCode != "" {
+		qrKey := m.RegisterQR(result.QRCode)
+		if qrKey != "" {
+			firstRow = append(firstRow, menu.NewButton("🖼️ Kirim Foto QRIS", fmt.Sprintf("a1:myxl:qris_img:%s", qrKey)))
+		}
+	}
+	screen.AddRow(firstRow...)
 	screen.AddRow(
-		menu.NewButton("⭐ Simpan ke Favorit", fmt.Sprintf("a1:myxl:bookmark_add:%s", optKey)),
 		menu.NewButton("📱 Buka Dashboard", "a1:myxl:home"),
 	)
 	return screen

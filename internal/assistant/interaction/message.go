@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/big"
 	"time"
+	"unicode/utf16"
 
 	"github.com/gotd/td/telegram/message/entity"
 	"github.com/gotd/td/telegram/message/html"
@@ -57,9 +58,49 @@ func parseHTML(text string) (string, []tg.MessageEntityClass) {
 	var eb entity.Builder
 	if err := styling.Perform(&eb, html.String(nil, text)); err == nil {
 		plain, ents := eb.Complete()
-		return plain, ents
+		return plain, sanitizeEntities(plain, ents)
 	}
 	return text, nil
+}
+
+// sanitizeEntities ensures that entities stay within valid UTF-16 bounds and removes
+// duplicate MessageEntityCode instances that overlap identically with MessageEntityPre
+// (which triggers Telegram rpc 400 ENTITY_BOUNDS_INVALID).
+func sanitizeEntities(plain string, ents []tg.MessageEntityClass) []tg.MessageEntityClass {
+	if len(ents) == 0 {
+		return ents
+	}
+	u16Len := len(utf16.Encode([]rune(plain)))
+
+	valid := make([]tg.MessageEntityClass, 0, len(ents))
+	for _, e := range ents {
+		offset := e.GetOffset()
+		length := e.GetLength()
+		if offset < 0 || length <= 0 || offset+length > u16Len {
+			continue
+		}
+		valid = append(valid, e)
+	}
+
+	cleaned := make([]tg.MessageEntityClass, 0, len(valid))
+	for _, e := range valid {
+		if code, ok := e.(*tg.MessageEntityCode); ok {
+			isDuplicate := false
+			for _, other := range valid {
+				if pre, isPre := other.(*tg.MessageEntityPre); isPre {
+					if pre.Offset == code.Offset && pre.Length == code.Length {
+						isDuplicate = true
+						break
+					}
+				}
+			}
+			if isDuplicate {
+				continue
+			}
+		}
+		cleaned = append(cleaned, e)
+	}
+	return cleaned
 }
 
 func randomID() int64 {

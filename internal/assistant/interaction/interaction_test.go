@@ -234,3 +234,31 @@ func TestClientInteraction_StalePeerRecovery(t *testing.T) {
 		t.Fatalf("expected exactly 1 ReResolve attempt (MaxPeerRecoveryAttempts=1), got %d", reResolver.reResolveCount)
 	}
 }
+
+func TestParseHTML_SanitizeEntities(t *testing.T) {
+	mockAPI := &mockTelegramAPI{}
+	ci := interaction.NewClientInteraction(mockAPI, zap.NewNop())
+	ctx := context.Background()
+
+	target := interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 100}, 55, 100, 200)
+
+	// HTML with nested <pre><code> which normally produces duplicate entities in gotd
+	text := "<pre><code>hello world</code></pre>"
+	if err := ci.Edit(ctx, target, text, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if mockAPI.editReq == nil {
+		t.Fatal("expected editReq to be sent")
+	}
+
+	// Verify that entities only contains MessageEntityPre and NOT duplicate MessageEntityCode
+	ents := mockAPI.editReq.Entities
+	if len(ents) != 1 {
+		t.Fatalf("expected exactly 1 entity after sanitization, got %d: %+v", len(ents), ents)
+	}
+	if _, ok := ents[0].(*tg.MessageEntityPre); !ok {
+		t.Fatalf("expected MessageEntityPre, got %T", ents[0])
+	}
+}
+

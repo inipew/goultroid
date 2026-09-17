@@ -3,6 +3,7 @@ package myxl
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"html"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/menu"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
+	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/ui"
@@ -32,6 +34,7 @@ type Plugin struct {
 	client     *Client
 	stateStore *callback.StateStore
 	menuMgr    *MenuManager
+	files      *filesystem.Scope
 }
 
 const myxlCallbackTTL = 10 * time.Minute
@@ -137,6 +140,10 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 	}
 	if p.client != nil {
 		p.client.SetHTTP(netSvc)
+	}
+
+	if fs, err := pctx.Files(); err == nil && fs != nil {
+		p.files = fs
 	}
 
 	secMgr, err := pctx.Secrets()
@@ -1058,6 +1065,26 @@ func (p *Plugin) HandleCallback(cbCtx *callback.CallbackContext) error {
 		}
 		return cbCtx.Edit("✅ Pembelian dibatalkan.", nil)
 
+	case "qris_img":
+		qrCode := ""
+		if p.menuMgr != nil {
+			qrCode = p.menuMgr.ResolveQR(cbCtx.OpaqueID)
+		}
+		if qrCode == "" {
+			return cbCtx.Answer("Kode QRIS tidak ditemukan atau sudah kedaluwarsa", true)
+		}
+		if cbCtx.Service == nil || cbCtx.Target.Peer == nil {
+			return cbCtx.Answer("Layanan pengiriman foto tidak tersedia", true)
+		}
+		err := p.sendQRPhoto(cbCtx.Ctx, cbCtx.Service, cbCtx.Target.Peer, qrCode, "QRIS MyXL", 0)
+		if err != nil {
+			if errors.Is(err, core.ErrUnsupported) {
+				return cbCtx.Answer("⚠️ Bot asisten belum mendukung kirim foto langsung. Anda dapat screenshot tampilan QR di pesan untuk discan dari galeri!", true)
+			}
+			return cbCtx.Answer(fmt.Sprintf("Gagal mengirim foto QRIS: %v", err), true)
+		}
+		return cbCtx.Answer("✅ Foto QRIS berhasil dikirim!", false)
+
 	case "bookmark_add":
 		optionCode := cbCtx.OpaqueID
 		if p.menuMgr != nil {
@@ -1494,9 +1521,67 @@ func (p *Plugin) confirmPurchase(cbCtx *callback.CallbackContext, draft purchase
 	if p.menuMgr != nil {
 		screen := p.menuMgr.BuildPurchaseResultScreen(result, draft.PackageName, effectivePrice, draft.Method, draft.OptionCode)
 		text, markup := render.ToTelegram(screen)
-		return cbCtx.Edit(text, markup)
+		if err := cbCtx.Edit(text, markup); err != nil {
+			return err
+		}
+		if result.QRCode != "" && cbCtx.Service != nil && cbCtx.Target.Peer != nil {
+			_ = p.sendQRPhoto(cbCtx.Ctx, cbCtx.Service, cbCtx.Target.Peer, result.QRCode, draft.PackageName, effectivePrice)
+		}
+		return nil
 	}
-	return cbCtx.Edit(FormatPurchaseResult(result, draft.PackageName, effectivePrice, strings.ToUpper(draft.Method)), nil)
+	resText := FormatPurchaseResult(result, draft.PackageName, effectivePrice, strings.ToUpper(draft.Method))
+	if err := cbCtx.Edit(resText, nil); err != nil {
+		return err
+	}
+	if result.QRCode != "" && cbCtx.Service != nil && cbCtx.Target.Peer != nil {
+		_ = p.sendQRPhoto(cbCtx.Ctx, cbCtx.Service, cbCtx.Target.Peer, result.QRCode, draft.PackageName, effectivePrice)
+	}
+	return nil
+}
+
+func (p *Plugin) getFiles() *filesystem.Scope {
+	if p.files == nil {
+		manager, _ := filesystem.NewManager("data", "", "", nil)
+		p.files = manager.ForOwner("myxl")
+	}
+	return p.files
+}
+
+func (p *Plugin) sendQRPhoto(ctx context.Context, svc core.TelegramServicer, peer tg.InputPeerClass, qrCode, pkgName string, price int64) error {
+	if svc == nil || peer == nil || qrCode == "" {
+		return nil
+	}
+	pngBytes, err := GenerateQRPNG(qrCode)
+	if err != nil {
+		return err
+	}
+
+	files := p.getFiles()
+	if files == nil {
+		return fmt.Errorf("filesystem manager not available")
+	}
+
+	tmpFile, err := files.CreateTempFile("qris-*.png")
+	if err != nil {
+		return err
+	}
+	defer files.RemoveTempFile(tmpFile.Name())
+
+	if _, err := tmpFile.Write(pngBytes); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+
+	caption := fmt.Sprintf("📱 <b>QRIS Pembayaran MyXL</b>\n<b>Paket:</b> %s\n<b>Nominal:</b> Rp %s\n<i>Scan atau upload gambar ini dari galeri aplikasi e-wallet / mobile banking.</i>",
+		html.EscapeString(pkgName),
+		formatRupiah(price),
+	)
+
+	_, err = svc.SendMedia(ctx, peer, "photo", tmpFile.Name(), caption)
+	return err
 }
 
 func truncateString(s string, n int) string {
@@ -1514,3 +1599,4 @@ func (p *Plugin) Repo() Repository {
 func (p *Plugin) SetClient(client *Client) {
 	p.client = client
 }
+

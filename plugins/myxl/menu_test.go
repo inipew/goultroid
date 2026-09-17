@@ -289,6 +289,28 @@ func TestMenuManager_Screens(t *testing.T) {
 		t.Errorf("expected purchase success screen, got: %s", resScreen.Body)
 	}
 
+	// 9b. Result screen with QRIS
+	qrisPayload := "00020101021226570011ID.CO.QRIS.WWW01189360002140000000001030301UBE51440014ID.LINKAJA.WWW0215ID20201770500670303UBE52040000530336054031005802ID5921TEST MERCHANT QRIS6013JAKARTA PUSAT610512345630421A6"
+	qrisScreen := plugin.menuMgr.BuildPurchaseResultScreen(&SettlementResult{
+		IsSuccess:       true,
+		TransactionCode: "TRX-QRIS-OK",
+		QRCode:          qrisPayload,
+	}, "Combo QRIS 10GB", 25000, "QRIS", "OPT-QRIS")
+	if !strings.Contains(qrisScreen.Body, "<pre>") || !strings.Contains(qrisScreen.Body, "String QRIS") {
+		t.Errorf("expected QRIS screen to contain compact QR block, got: %s", qrisScreen.Body)
+	}
+	hasPhotoBtn := false
+	for _, row := range qrisScreen.Rows {
+		for _, b := range row {
+			if strings.Contains(b.Text, "Kirim Foto QRIS") {
+				hasPhotoBtn = true
+			}
+		}
+	}
+	if !hasPhotoBtn {
+		t.Errorf("expected Kirim Foto QRIS button in qrisScreen")
+	}
+
 	// 10. Delete pick & Alias pick screens
 	delScreen, err := plugin.menuMgr.BuildDeletePickScreen(ctx)
 	if err != nil || !strings.Contains(delScreen.Body, "Hapus Akun") {
@@ -488,6 +510,7 @@ func TestMenuManager_Callbacks(t *testing.T) {
 	}
 
 	optKey := plugin.menuMgr.RegisterOptionCode("OPT-10GB")
+	qrKey := plugin.menuMgr.RegisterQR("00020101021226570011ID.CO.QRIS.WWW01189360002140000000001030301UBE51440014ID.LINKAJA.WWW0215ID20201770500670303UBE52040000530336054031005802ID5921TEST MERCHANT QRIS6013JAKARTA PUSAT610512345630421A6")
 
 	cases := []testCase{
 		{name: "Unauthorized user", action: "home", senderID: 99999, wantErr: false},
@@ -536,6 +559,8 @@ func TestMenuManager_Callbacks(t *testing.T) {
 		{name: "Bookmark Add", action: "bookmark_add", opaqueID: "OPT-10GB", senderID: 12345, wantErr: false},
 		{name: "Bookmark Add Mapped", action: "bookmark_add", opaqueID: optKey, senderID: 12345, wantErr: false},
 		{name: "Bookmark Del", action: "bookmark_del", opaqueID: "OPT-10GB", senderID: 12345, wantErr: false},
+		{name: "QRIS Image Send", action: "qris_img", opaqueID: qrKey, senderID: 12345, wantErr: false},
+		{name: "QRIS Image Missing", action: "qris_img", opaqueID: "missing_qr", senderID: 12345, wantErr: false},
 		{name: "Noop", action: "noop", senderID: 12345, wantErr: false},
 		{name: "Unknown Action", action: "unknown_action_xyz", senderID: 12345, wantErr: false},
 	}

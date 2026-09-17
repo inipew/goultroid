@@ -293,9 +293,14 @@ func FormatPurchaseResult(res *SettlementResult, pkgName string, price int64, me
 		b.WriteString(fmt.Sprintf("\n🔗 <a href=\"%s\">Klik Disini untuk Bayar via E-Wallet</a>\n", html.EscapeString(res.Deeplink)))
 	}
 	if res.QRCode != "" {
+		if qrText, err := RenderQRCompact(res.QRCode); err == nil && qrText != "" {
+			b.WriteString("\n<b>📱 QR Code (Scan Langsung):</b>\n")
+			b.WriteString(fmt.Sprintf("<pre>%s</pre>\n", qrText))
+		}
 		b.WriteString("\n<b>📱 QRIS String:</b>\n")
 		b.WriteString(fmt.Sprintf("<code>%s</code>\n", html.EscapeString(res.QRCode)))
-		b.WriteString("<i>Salin kode QRIS di atas ke aplikasi e-wallet / mobile banking yang mendukung paste QRIS.</i>\n")
+		b.WriteString("<i>Salin kode QRIS di atas atau screenshot layar untuk discan langsung dari galeri aplikasi e-wallet / mobile banking.</i>\n")
 	}
 	return b.String()
 }
+
