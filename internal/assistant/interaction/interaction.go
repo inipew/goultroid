@@ -14,6 +14,7 @@ type MessageInteraction interface {
 	Delete(ctx context.Context, target MessageTarget) error
 	GetMessage(ctx context.Context, target MessageTarget) (*tg.Message, error)
 	SendMessage(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error)
+	SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error)
 }
 
 // InlineInteraction defines primitives for interacting with inline-sent messages.

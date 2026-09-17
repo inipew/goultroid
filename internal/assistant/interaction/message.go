@@ -6,12 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"os"
 	"time"
 	"unicode/utf16"
 
+	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/telegram/message/entity"
 	"github.com/gotd/td/telegram/message/html"
 	"github.com/gotd/td/telegram/message/styling"
+	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"go.uber.org/zap"
@@ -23,12 +26,19 @@ type PeerReResolver interface {
 	ReResolve(ctx context.Context, inputPeer tg.InputPeerClass) (tg.InputPeerClass, error)
 }
 
+// MediaUploader defines the upload contract for Telegram media files.
+type MediaUploader interface {
+	FromPath(ctx context.Context, path string) (tg.InputFileClass, error)
+}
+
 // ClientInteraction implements MessageInteraction using MTProto TelegramAPI.
 type ClientInteraction struct {
 	api        TelegramAPI
 	logger     *zap.Logger
 	reResolver PeerReResolver
 	metrics    core.MetricsCollector
+	sender     *message.Sender
+	uploader   MediaUploader
 }
 
 var _ MessageInteraction = (*ClientInteraction)(nil)
@@ -38,10 +48,21 @@ func NewClientInteraction(api TelegramAPI, logger *zap.Logger) *ClientInteractio
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	return &ClientInteraction{
+	ci := &ClientInteraction{
 		api:    api,
 		logger: logger,
 	}
+	if tgClient, ok := api.(*tg.Client); ok {
+		ci.sender = message.NewSender(tgClient)
+		ci.uploader = uploader.NewUploader(tgClient)
+	}
+	return ci
+}
+
+// SetMediaSender sets custom media sender and uploader components.
+func (c *ClientInteraction) SetMediaSender(sender *message.Sender, upl MediaUploader) {
+	c.sender = sender
+	c.uploader = upl
 }
 
 // SetMetricsCollector configures optional runtime metrics collection.
@@ -421,6 +442,65 @@ func (c *ClientInteraction) SendMessage(ctx context.Context, peer tg.InputPeerCl
 		retErr = fmt.Errorf("assistant SendMessage: %w", ClassifyRPCError(err))
 		return nil, retErr
 	}
+	return extractMessage(updates), nil
+}
+
+// SendMedia uploads and sends media (photo, sticker, audio, video, file) to the specified peer.
+func (c *ClientInteraction) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (_ *tg.Message, retErr error) {
+	if c.sender == nil || c.uploader == nil {
+		return nil, fmt.Errorf("%w: assistant media upload is not configured", core.ErrUnsupported)
+	}
+	if peer == nil {
+		return nil, ErrInvalidTarget
+	}
+	stat, err := os.Stat(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to inspect file %q: %w", filePath, err)
+	}
+	if stat.Size() > core.DefaultMaxUploadSize {
+		return nil, fmt.Errorf("%w: file size (%d bytes) exceeds maximum upload limit (500MB)", core.ErrMediaTooLarge, stat.Size())
+	}
+
+	start := time.Now()
+	defer func() {
+		if c.metrics != nil {
+			c.metrics.RecordTelegramRequest("SendMedia", time.Since(start), retErr)
+		}
+	}()
+
+	inputFile, err := c.uploader.FromPath(ctx, filePath)
+	if err != nil {
+		retErr = fmt.Errorf("failed to upload file %q: %w", filePath, err)
+		return nil, retErr
+	}
+
+	builder := c.sender.To(peer)
+	var styledCaption []message.StyledTextOption
+	if caption != "" {
+		styledCaption = append(styledCaption, html.String(nil, caption))
+	}
+
+	var updates tg.UpdatesClass
+	switch mediaType {
+	case "photo":
+		updates, err = builder.UploadedPhoto(ctx, inputFile, styledCaption...)
+	case "sticker":
+		updates, err = builder.UploadedSticker(ctx, inputFile, styledCaption...)
+	case "audio":
+		updates, err = builder.Audio(ctx, inputFile, styledCaption...)
+	case "video":
+		updates, err = builder.Video(ctx, inputFile, styledCaption...)
+	case "file", "document":
+		fallthrough
+	default:
+		updates, err = builder.File(ctx, inputFile, styledCaption...)
+	}
+
+	if err != nil {
+		retErr = fmt.Errorf("failed to send media (%s): %w", mediaType, ClassifyRPCError(err))
+		return nil, retErr
+	}
+
 	return extractMessage(updates), nil
 }
 

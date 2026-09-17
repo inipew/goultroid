@@ -46,6 +46,9 @@ func (f *fakeInteraction) SendMessage(ctx context.Context, peer tg.InputPeerClas
 	f.lastSentMarkup = markup
 	return &tg.Message{ID: 100}, nil
 }
+func (f *fakeInteraction) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
+	return &tg.Message{ID: 101}, nil
+}
 
 func TestCommandRouter_Dispatch(t *testing.T) {
 	r := command.NewRouter(zap.NewNop())

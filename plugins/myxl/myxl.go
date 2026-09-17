@@ -1599,4 +1599,3 @@ func (p *Plugin) Repo() Repository {
 func (p *Plugin) SetClient(client *Client) {
 	p.client = client
 }
-

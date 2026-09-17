@@ -87,6 +87,10 @@ func (m *mockInteraction) SendMessage(ctx context.Context, peer tg.InputPeerClas
 	return &tg.Message{ID: 1}, nil
 }
 
+func (m *mockInteraction) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
+	return &tg.Message{ID: 1}, nil
+}
+
 type mockInlineInteraction struct {
 	answered     bool
 	answer       string
@@ -667,6 +671,9 @@ func TestAssistantClient_CallbackBridge_ExplicitErrors(t *testing.T) {
 		t.Errorf("expected ErrInternal, got %v", err)
 	}
 	if _, err := svc.SendMessage(ctx, nil, "test"); !errors.Is(err, core.ErrInternal) {
+		t.Errorf("expected ErrInternal, got %v", err)
+	}
+	if _, err := svc.SendMedia(ctx, nil, "photo", "a.png", "cap"); !errors.Is(err, core.ErrInternal) {
 		t.Errorf("expected ErrInternal, got %v", err)
 	}
 

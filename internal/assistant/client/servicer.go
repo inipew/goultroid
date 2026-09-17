@@ -266,6 +266,16 @@ func (s *assistantCallbackServicer) SendMessageWithMarkup(ctx context.Context, p
 	return s.tx.Interaction.SendMessage(ctx, peer, text, markup)
 }
 
+func (s *assistantCallbackServicer) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
+	if s.tx == nil || s.tx.Interaction == nil {
+		return nil, core.ErrInternal
+	}
+	if peer == nil {
+		peer = s.tx.Target.Peer()
+	}
+	return s.tx.Interaction.SendMedia(ctx, peer, mediaType, filePath, caption)
+}
+
 // assistantInlineCallbackServicer adapts an assistant InlineTransaction into a core.TelegramServicer.
 type assistantInlineCallbackServicer struct {
 	unsupportedTelegramServicer

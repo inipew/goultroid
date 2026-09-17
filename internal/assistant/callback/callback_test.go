@@ -94,6 +94,9 @@ func (r *retryInteraction) GetMessage(context.Context, interaction.MessageTarget
 func (r *retryInteraction) SendMessage(context.Context, tg.InputPeerClass, string, tg.ReplyMarkupClass) (*tg.Message, error) {
 	return nil, nil
 }
+func (r *retryInteraction) SendMedia(context.Context, tg.InputPeerClass, string, string, string) (*tg.Message, error) {
+	return nil, nil
+}
 
 func TestTransaction_AnswerRetriesAfterRPCFailure(t *testing.T) {
 	inter := &retryInteraction{}
@@ -132,6 +135,9 @@ func (f *fakeInteraction) GetMessage(ctx context.Context, target interaction.Mes
 	return &tg.Message{ID: target.MessageID()}, nil
 }
 func (f *fakeInteraction) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
+	return &tg.Message{ID: 1}, nil
+}
+func (f *fakeInteraction) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
 	return &tg.Message{ID: 1}, nil
 }
 

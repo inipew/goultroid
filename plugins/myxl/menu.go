@@ -907,13 +907,8 @@ func (m *MenuManager) BuildPurchaseResultScreen(result *SettlementResult, packag
 			card.AddField("Pesan Operator", html.EscapeString(result.Message))
 		}
 		if result.QRCode != "" {
-			if qrText, err := RenderQRCompact(result.QRCode); err == nil && qrText != "" {
-				card.WithRaw("<pre>" + qrText + "</pre>\n\n" +
-					"📱 <b>String QRIS:</b>\n<code>" + html.EscapeString(result.QRCode) + "</code>\n" +
-					"<i>💡 Screenshot tampilan QR di atas atau salin kode QRIS untuk discan di aplikasi e-wallet / mobile banking.</i>")
-			} else {
-				card.WithRaw("📱 <b>String QRIS:</b>\n<code>" + html.EscapeString(result.QRCode) + "</code>")
-			}
+			card.WithRaw("📱 <b>Kode / String QRIS:</b>\n<code>" + html.EscapeString(result.QRCode) + "</code>\n\n" +
+				"<i>💡 Foto QRIS dikirimkan di bawah ini. Anda dapat scan langsung atau upload dari galeri aplikasi e-wallet / mobile banking.</i>")
 		}
 	}
 

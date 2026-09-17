@@ -148,4 +148,3 @@ func TestQRHTMLParse(t *testing.T) {
 		}
 	}
 }
-

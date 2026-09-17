@@ -78,6 +78,10 @@ func (m *mockInteraction) SendMessage(ctx context.Context, peer tg.InputPeerClas
 	return &tg.Message{ID: 10, Message: text}, nil
 }
 
+func (m *mockInteraction) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
+	return &tg.Message{ID: 11, Message: caption}, nil
+}
+
 func setupTestMyXLEnv(t *testing.T) (*Plugin, *httptest.Server, *SQLiteRepository, *menu.Controller) {
 	t.Helper()
 	db, err := database.Open(":memory:")
@@ -296,8 +300,8 @@ func TestMenuManager_Screens(t *testing.T) {
 		TransactionCode: "TRX-QRIS-OK",
 		QRCode:          qrisPayload,
 	}, "Combo QRIS 10GB", 25000, "QRIS", "OPT-QRIS")
-	if !strings.Contains(qrisScreen.Body, "<pre>") || !strings.Contains(qrisScreen.Body, "String QRIS") {
-		t.Errorf("expected QRIS screen to contain compact QR block, got: %s", qrisScreen.Body)
+	if !strings.Contains(qrisScreen.Body, "Kode / String QRIS") || !strings.Contains(qrisScreen.Body, "Foto QRIS dikirimkan") {
+		t.Errorf("expected QRIS screen to contain QRIS info and photo notice, got: %s", qrisScreen.Body)
 	}
 	hasPhotoBtn := false
 	for _, row := range qrisScreen.Rows {

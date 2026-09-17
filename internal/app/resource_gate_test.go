@@ -130,6 +130,9 @@ func (g *gateInteraction) GetMessage(ctx context.Context, target interaction.Mes
 func (g *gateInteraction) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
 	return &tg.Message{ID: 100}, nil
 }
+func (g *gateInteraction) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
+	return &tg.Message{ID: 100}, nil
+}
 
 func createTestApp(t *testing.T) *App {
 	t.Helper()
