@@ -46,6 +46,7 @@ type AssistantClient struct {
 	startTime           time.Time
 	self                *tg.User
 	mu                  sync.RWMutex
+	lifecycleOpMu       sync.Mutex
 	cancel              context.CancelFunc
 	runDone             chan struct{}
 	ready               chan struct{}
@@ -90,6 +91,9 @@ func NewAssistantClient(appID int, appHash string, botToken string, logger *zap.
 }
 
 func (c *AssistantClient) Start(ctx context.Context) error {
+	c.lifecycleOpMu.Lock()
+	defer c.lifecycleOpMu.Unlock()
+
 	if c.botToken == "" {
 		return ErrBotTokenRequired
 	}
@@ -99,7 +103,11 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if c.lifecycle.State() == StateStopped {
+	state := c.lifecycle.State()
+	if state == StateStarting || state == StateRunning || state == StateStopping {
+		return ErrAlreadyRunning
+	}
+	if state == StateStopped || state == StateFailed {
 		c.mu.RLock()
 		previousDone := c.runDone
 		c.mu.RUnlock()
@@ -229,14 +237,17 @@ func (c *AssistantClient) WaitReady(ctx context.Context) error {
 }
 
 func (c *AssistantClient) Stop(ctx context.Context) error {
+	c.lifecycleOpMu.Lock()
+	defer c.lifecycleOpMu.Unlock()
+
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	state := c.lifecycle.State()
-	if state == StateNew {
+	if state == StateNew || state == StateStopped {
 		return nil
 	}
-	if state != StateStopping {
+	if state == StateStarting || state == StateRunning {
 		_ = c.lifecycle.TryStop()
 	}
 	c.shuttingDown.Store(true)
@@ -253,6 +264,7 @@ func (c *AssistantClient) Stop(ctx context.Context) error {
 	}
 	select {
 	case <-done:
+		c.lifecycle.SetState(StateStopped)
 		return nil
 	case <-ctx.Done():
 		c.logger.Warn("assistant: shutdown timed out waiting for client loop")
