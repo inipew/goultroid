@@ -12,6 +12,8 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
+	"github.com/inipew/goultroid/internal/presentation"
+	"github.com/inipew/goultroid/internal/services/deeplink"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
@@ -57,6 +59,13 @@ type Router struct {
 	metrics              core.MetricsCollector
 	logger               *zap.Logger
 	taskSeq              atomic.Uint64
+	presentation         *presentation.Service
+	deepLinks            DeepLinkConsumer
+}
+
+// DeepLinkConsumer defines the interface for consuming a deep link token during /start.
+type DeepLinkConsumer interface {
+	Consume(ctx context.Context, token string, actor execution.Actor) (deeplink.Claim, error)
 }
 
 // NewRouter creates an initialized command Router.
@@ -98,6 +107,26 @@ func (r *Router) SetCoreRouter(router *core.Router) {
 // CoreRouter returns the attached canonical core.Router.
 func (r *Router) CoreRouter() *core.Router {
 	return r.coreRouter
+}
+
+// SetPresentation attaches the shared presentation.Service.
+func (r *Router) SetPresentation(svc *presentation.Service) {
+	r.presentation = svc
+}
+
+// Presentation returns the attached presentation.Service.
+func (r *Router) Presentation() *presentation.Service {
+	return r.presentation
+}
+
+// SetDeepLinks attaches the DeepLinkConsumer used for token redemption.
+func (r *Router) SetDeepLinks(consumer DeepLinkConsumer) {
+	r.deepLinks = consumer
+}
+
+// DeepLinks returns the attached DeepLinkConsumer.
+func (r *Router) DeepLinks() DeepLinkConsumer {
+	return r.deepLinks
 }
 
 // Register attaches an Assistant presentation handler. It is intentionally

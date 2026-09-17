@@ -18,6 +18,7 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/peer"
 	"github.com/inipew/goultroid/internal/assistant/presentation"
 	"github.com/inipew/goultroid/internal/core"
+	appPresentation "github.com/inipew/goultroid/internal/presentation"
 	inlineService "github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/tasks"
@@ -66,6 +67,7 @@ type AssistantClient struct {
 	tasks               tasks.Client
 	pluginScopeResolver func(string) (tasks.ScopeIdentity, bool)
 	inlineEngine        *inlineService.Engine
+	deepLinks           command.DeepLinkConsumer
 }
 
 var _ Client = (*AssistantClient)(nil)
@@ -175,7 +177,14 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 			}
 			c.mu.Lock()
 			c.self = user
+			dl := c.deepLinks
 			c.mu.Unlock()
+
+			if dl != nil && user.Username != "" {
+				if u, ok := dl.(interface{ SetAssistantUsername(string) }); ok {
+					u.SetAssistantUsername(user.Username)
+				}
+			}
 
 			// Telegram's native command menu is generated from the canonical
 			// Assistant command surface. Registration is best-effort so a
@@ -328,6 +337,19 @@ func (c *AssistantClient) SetInlineEngine(engine *inlineService.Engine) {
 	c.mu.Lock()
 	c.inlineEngine = engine
 	c.mu.Unlock()
+}
+func (c *AssistantClient) SetPresentation(svc *appPresentation.Service) {
+	if c.cmdRouter != nil {
+		c.cmdRouter.SetPresentation(svc)
+	}
+}
+func (c *AssistantClient) SetDeepLinks(consumer command.DeepLinkConsumer) {
+	c.mu.Lock()
+	c.deepLinks = consumer
+	c.mu.Unlock()
+	if c.cmdRouter != nil {
+		c.cmdRouter.SetDeepLinks(consumer)
+	}
 }
 func (c *AssistantClient) SetSettingsService(svc *settings.Service) {
 	c.settingsSvc = svc

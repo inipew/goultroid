@@ -2,20 +2,24 @@ package help
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/services/callback"
 )
 
 type mockService struct {
 	core.MockTelegramServicer
-	sent       string
-	edited     string
-	lastMarkup tg.ReplyMarkupClass
+	sent          string
+	edited        string
+	lastMarkup    tg.ReplyMarkupClass
+	editMarkupErr error
+	sendMarkupErr error
 }
 
 func TestPlugin_CallbackOptions_HandlerOwnsAnswer(t *testing.T) {
@@ -29,12 +33,23 @@ func (m *mockService) SendMessage(ctx context.Context, peer tg.InputPeerClass, t
 	m.lastMarkup = nil
 	return &tg.Message{ID: 10, Message: text}, nil
 }
+func (m *mockService) SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
+	if m.sendMarkupErr != nil {
+		return nil, m.sendMarkupErr
+	}
+	m.sent = text
+	m.lastMarkup = markup
+	return &tg.Message{ID: 10, Message: text}, nil
+}
 func (m *mockService) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
 	m.edited = text
 	m.lastMarkup = nil
 	return nil
 }
 func (m *mockService) EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass, msgID int, text string, markup tg.ReplyMarkupClass) error {
+	if m.editMarkupErr != nil {
+		return m.editMarkupErr
+	}
 	m.edited = text
 	m.lastMarkup = markup
 	return nil
@@ -278,5 +293,114 @@ func TestHelpPlugin_Interactive(t *testing.T) {
 	}
 	if !strings.Contains(svc.edited, "Help menu closed") {
 		t.Errorf("expected closed text on close callback, got: %s", svc.edited)
+	}
+}
+
+type fakeHandoffClient struct {
+	lastReq presentation.HandoffRequest
+}
+
+func (f *fakeHandoffClient) Handoff(ctx context.Context, req presentation.HandoffRequest) (presentation.HandoffResult, error) {
+	f.lastReq = req
+	return presentation.HandoffResult{
+		Mode:        presentation.HandoffDeepLink,
+		DeepLinkURL: "https://t.me/GoUltroidBot?start=mock_deep_link_123",
+	}, nil
+}
+
+func TestHelpPlugin_UserbotHandoff(t *testing.T) {
+	router := core.NewRouter(".")
+	p := New(router)
+	fakeHandoff := &fakeHandoffClient{}
+	p.SetHandoffs(fakeHandoff)
+
+	svc := &mockService{}
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		Source:  core.ExecutionInteractive,
+		Svc:     svc,
+		PeerID:  &tg.InputPeerSelf{},
+		Message: &core.Message{ID: 1},
+		Sender:  &core.User{ID: 12345},
+	}
+
+	cmd, ok := router.Find("help")
+	if !ok {
+		for _, c := range p.Commands() {
+			if c.Name == "help" {
+				cmd = c
+				ok = true
+				break
+			}
+		}
+	}
+	if !ok {
+		t.Fatal("help command not found")
+	}
+
+	err := cmd.Handler(ctx)
+	if err != nil {
+		t.Fatalf("help handler failed: %v", err)
+	}
+
+	if fakeHandoff.lastReq.Screen.Name != "help" {
+		t.Errorf("expected handoff screen 'help', got: %+v", fakeHandoff.lastReq.Screen)
+	}
+	if !strings.Contains(svc.edited, "Interactive Help Browser") {
+		t.Errorf("expected handoff prompt in message, got: %s", svc.edited)
+	}
+	if svc.lastMarkup != nil {
+		t.Fatal("userbot handoff must not rely on bot reply markup")
+	}
+	if !strings.Contains(svc.edited, "https://t.me/GoUltroidBot?start=mock_deep_link_123") {
+		t.Fatalf("expected actionable deep-link in userbot text, got: %s", svc.edited)
+	}
+}
+
+func TestHelpPlugin_UserbotHandoff_MarkupFailure_FallbackContainsURL(t *testing.T) {
+	router := core.NewRouter(".")
+	p := New(router)
+	fakeHandoff := &fakeHandoffClient{}
+	p.SetHandoffs(fakeHandoff)
+
+	svc := &mockService{
+		editMarkupErr: errors.New("USERBOT_MARKUP_UNSUPPORTED"),
+	}
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		Source:  core.ExecutionInteractive,
+		Svc:     svc,
+		PeerID:  &tg.InputPeerSelf{},
+		Message: &core.Message{ID: 1, IsOutgoing: true},
+		Sender:  &core.User{ID: 12345},
+	}
+
+	cmd, ok := router.Find("help")
+	if !ok {
+		for _, c := range p.Commands() {
+			if c.Name == "help" {
+				cmd = c
+				ok = true
+				break
+			}
+		}
+	}
+	if !ok {
+		t.Fatal("help command not found")
+	}
+
+	err := cmd.Handler(ctx)
+	if err != nil {
+		t.Fatalf("help handler should succeed via fallback, got error: %v", err)
+	}
+
+	if !strings.Contains(svc.edited, "https://t.me/GoUltroidBot?start=mock_deep_link_123") {
+		t.Fatalf("expected fallback edited message to contain deep-link URL, got: %s", svc.edited)
+	}
+	if !strings.Contains(svc.edited, "<a href=") {
+		t.Fatalf("expected fallback edited message to contain HTML anchor, got: %s", svc.edited)
+	}
+	if strings.Contains(svc.edited, "USERBOT_MARKUP_UNSUPPORTED") {
+		t.Fatalf("user message must not contain raw internal error: %s", svc.edited)
 	}
 }

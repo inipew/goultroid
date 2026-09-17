@@ -27,6 +27,9 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	if rt.Logger != nil {
 		p.SetLogger(rt.Logger)
 	}
+	if rt.Handoffs != nil {
+		p.SetHandoffs(rt.Handoffs)
+	}
 	return rt.RegisterPlugin(ctx, m.Manifest(), p)
 }
 

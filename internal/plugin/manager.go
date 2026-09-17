@@ -49,35 +49,53 @@ type SchedulerTaskCleaner interface {
 	UnregisterPeriodicTasksByOwner(owner string) int
 }
 
+// PresentationRevoker revokes presentation screens for an owner and generation.
+type PresentationRevoker interface {
+	RevokeOwner(owner string, generation uint64) int
+}
+
+// InlineRevoker revokes inline capability definitions for an owner and generation.
+type InlineRevoker interface {
+	RevokeOwner(owner string, generation uint64) int
+}
+
+// DeepLinkRevoker revokes deep-link tokens for an owner and generation.
+type DeepLinkRevoker interface {
+	RevokeOwner(ctx context.Context, owner string, generation uint64) (int64, error)
+}
+
 type Manager struct {
-	router            *core.Router
-	hookRegistrar     HookRegistrar
-	callbackRegistrar callbackRegistrar
-	schedCleaner      SchedulerTaskCleaner
-	resourceManager   *resource.Manager
-	gate              *CapabilityGate
-	networkService    *network.Service
-	processManager    *process.Manager
-	filesystemManager *filesystem.Manager
-	secretManager     *secret.Manager
-	taskClient        tasks.Client
-	jobsManager       *jobs.Manager
-	storageManager    *storage.Manager
-	plugins           map[string]Plugin
-	metadata          map[string]Metadata
-	manifests         map[string]Manifest
-	scopes            map[string]*Scope
-	commands          map[string][]core.Command
-	disabled          map[string]bool
-	transitions       map[string]string
-	teardownErrors    map[string]error
-	registering       map[string]bool
-	list              []Plugin
-	hookCleanups      map[string]func()
-	callbackCleanups  map[string]func()
-	auditor           audit.Auditor
-	mu                sync.RWMutex
-	shutdown          bool
+	router              *core.Router
+	hookRegistrar       HookRegistrar
+	callbackRegistrar   callbackRegistrar
+	schedCleaner        SchedulerTaskCleaner
+	resourceManager     *resource.Manager
+	gate                *CapabilityGate
+	networkService      *network.Service
+	processManager      *process.Manager
+	filesystemManager   *filesystem.Manager
+	secretManager       *secret.Manager
+	taskClient          tasks.Client
+	jobsManager         *jobs.Manager
+	storageManager      *storage.Manager
+	presentationRevoker PresentationRevoker
+	inlineRevoker       InlineRevoker
+	deepLinkRevoker     DeepLinkRevoker
+	plugins             map[string]Plugin
+	metadata            map[string]Metadata
+	manifests           map[string]Manifest
+	scopes              map[string]*Scope
+	commands            map[string][]core.Command
+	disabled            map[string]bool
+	transitions         map[string]string
+	teardownErrors      map[string]error
+	registering         map[string]bool
+	list                []Plugin
+	hookCleanups        map[string]func()
+	callbackCleanups    map[string]func()
+	auditor             audit.Auditor
+	mu                  sync.RWMutex
+	shutdown            bool
 }
 
 func NewManager(router *core.Router) *Manager {
@@ -171,6 +189,27 @@ func (m *Manager) SetTaskClient(client tasks.Client) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.taskClient = client
+}
+
+// SetPresentationRevoker attaches a presentation screen revoker on plugin unload.
+func (m *Manager) SetPresentationRevoker(r PresentationRevoker) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.presentationRevoker = r
+}
+
+// SetInlineRevoker attaches an inline capability revoker on plugin unload.
+func (m *Manager) SetInlineRevoker(r InlineRevoker) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.inlineRevoker = r
+}
+
+// SetDeepLinkRevoker attaches a deep link token revoker on plugin unload.
+func (m *Manager) SetDeepLinkRevoker(r DeepLinkRevoker) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deepLinkRevoker = r
 }
 
 func (m *Manager) buildPluginContext(baseCtx context.Context, name string, scope *Scope) PluginContext {
@@ -472,8 +511,15 @@ func (m *Manager) stageManifest(name string, manifest Manifest) (func(), error) 
 func (m *Manager) Scope(name string) (*Scope, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	scope, ok := m.scopes[strings.ToLower(strings.TrimSpace(name))]
-	return scope, ok
+	key := strings.ToLower(strings.TrimSpace(name))
+	if scope, ok := m.scopes[key]; ok {
+		return scope, true
+	}
+	if strings.HasPrefix(key, "plugin:") {
+		scope, ok := m.scopes[strings.TrimPrefix(key, "plugin:")]
+		return scope, ok
+	}
+	return nil, false
 }
 
 func (m *Manager) Plugins() []Plugin {
@@ -486,14 +532,28 @@ func (m *Manager) Plugins() []Plugin {
 func (m *Manager) Find(name string) (Plugin, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	p, ok := m.plugins[strings.ToLower(strings.TrimSpace(name))]
-	return p, ok
+	key := strings.ToLower(strings.TrimSpace(name))
+	if p, ok := m.plugins[key]; ok {
+		return p, true
+	}
+	if strings.HasPrefix(key, "plugin:") {
+		p, ok := m.plugins[strings.TrimPrefix(key, "plugin:")]
+		return p, ok
+	}
+	return nil, false
 }
 func (m *Manager) GetMetadata(name string) (Metadata, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	meta, ok := m.metadata[strings.ToLower(strings.TrimSpace(name))]
-	return meta, ok
+	key := strings.ToLower(strings.TrimSpace(name))
+	if meta, ok := m.metadata[key]; ok {
+		return meta, true
+	}
+	if strings.HasPrefix(key, "plugin:") {
+		meta, ok := m.metadata[strings.TrimPrefix(key, "plugin:")]
+		return meta, ok
+	}
+	return Metadata{}, false
 }
 func (m *Manager) AllMetadata() map[string]Metadata {
 	m.mu.RLock()
@@ -594,7 +654,27 @@ func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 				errs = append(errs, fmt.Sprintf("%s scope: %v", p.Name(), err))
 			}
 		}
-		m.router.UnregisterBatch(commands[strings.ToLower(strings.TrimSpace(p.Name()))])
+		pName := strings.ToLower(strings.TrimSpace(p.Name()))
+		m.router.UnregisterBatch(commands[pName])
+
+		m.mu.RLock()
+		pRev := m.presentationRevoker
+		iRev := m.inlineRevoker
+		dRev := m.deepLinkRevoker
+		m.mu.RUnlock()
+
+		if pRev != nil {
+			pRev.RevokeOwner(pName, 0)
+			pRev.RevokeOwner("plugin:"+pName, 0)
+		}
+		if iRev != nil {
+			iRev.RevokeOwner(pName, 0)
+			iRev.RevokeOwner("plugin:"+pName, 0)
+		}
+		if dRev != nil {
+			_, _ = dRev.RevokeOwner(ctx, pName, 0)
+			_, _ = dRev.RevokeOwner(ctx, "plugin:"+pName, 0)
+		}
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("errors during plugin shutdown: %s", strings.Join(errs, "; "))
@@ -663,6 +743,25 @@ func (m *Manager) Disable(ctx context.Context, name string) error {
 	if schedCl != nil {
 		schedCl.UnregisterPeriodicTasksByOwner(key)
 		schedCl.UnregisterPeriodicTasksByOwner("plugin:" + key)
+	}
+
+	m.mu.RLock()
+	pRev := m.presentationRevoker
+	iRev := m.inlineRevoker
+	dRev := m.deepLinkRevoker
+	m.mu.RUnlock()
+
+	if pRev != nil {
+		pRev.RevokeOwner(key, 0)
+		pRev.RevokeOwner("plugin:"+key, 0)
+	}
+	if iRev != nil {
+		iRev.RevokeOwner(key, 0)
+		iRev.RevokeOwner("plugin:"+key, 0)
+	}
+	if dRev != nil {
+		_, _ = dRev.RevokeOwner(ctx, key, 0)
+		_, _ = dRev.RevokeOwner(ctx, "plugin:"+key, 0)
 	}
 
 	// Close scope and execute shutdown hooks

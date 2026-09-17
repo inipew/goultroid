@@ -6,6 +6,7 @@ import (
 	"regexp"
 
 	"github.com/gotd/td/tg"
+	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/ui"
 )
 
@@ -130,6 +131,44 @@ type InlineAccessPolicy struct {
 	AllowedChatTypes []InlineChatType
 }
 
+// CapabilityID uniquely identifies an inline feature.
+type CapabilityID string
+
+// Capability provides rich discovery, authorization, and caching metadata for an inline handler.
+type Capability struct {
+	ID               CapabilityID
+	Owner            string
+	Generation       uint64
+	Pattern          string
+	Title            string
+	Description      string
+	Usage            string
+	Keywords         []string
+	Surfaces         execution.SurfaceMask
+	Access           InlineAccessPolicy
+	Cache            CachePolicy
+	ResultKinds      []InlineResultType
+	DefaultCacheTime int
+	Priority         int
+	Hidden           bool
+	Version          uint16
+}
+
+// Definition bundles a Capability's metadata, pattern matcher, and execution handler.
+type Definition struct {
+	Capability Capability
+	Matcher    InlineMatcher
+	Handler    InlineHandler
+}
+
+// CatalogQuery defines parameters for filtering and discovering available capabilities.
+type CatalogQuery struct {
+	Actor      execution.Actor
+	PeerType   tg.InlineQueryPeerTypeClass
+	Search     string
+	IncludeAll bool
+}
+
 // InlineMatcher abstracts query matching.
 type InlineMatcher interface {
 	Match(query string) (args []string, ok bool)
@@ -179,12 +218,17 @@ type InlineHandler interface {
 	HandleInline(ctx *InlineContext) ([]InlineResult, error)
 }
 
+// InlineAuthorizer is optionally implemented by handlers to declare access restrictions.
+type InlineAuthorizer interface {
+	AccessPolicy() InlineAccessPolicy
+}
+
 // InlineHandlerV2 is extended handler supporting InlineResponse, matching and policy.
 // Existing handlers implementing InlineHandler still work via adapter.
 type InlineHandlerV2 interface {
 	InlineHandler
+	InlineAuthorizer
 	Matcher() InlineMatcher
-	AccessPolicy() InlineAccessPolicy
 	CachePolicy() CachePolicy
 	HandleInlineV2(ctx *InlineContext) (*InlineResponse, error)
 }

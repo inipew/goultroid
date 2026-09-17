@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"time"
 
 	"github.com/inipew/goultroid/internal/addon"
@@ -16,10 +17,12 @@ import (
 	"github.com/inipew/goultroid/internal/platform/secret"
 	platformStorage "github.com/inipew/goultroid/internal/platform/storage"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/resource"
 	"github.com/inipew/goultroid/internal/scheduler"
 	broadcastSvc "github.com/inipew/goultroid/internal/services/broadcast"
 	"github.com/inipew/goultroid/internal/services/callback"
+	"github.com/inipew/goultroid/internal/services/deeplink"
 	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/services/localization"
@@ -37,29 +40,32 @@ import (
 
 // coreDependencies holds primary storage, routing, permission, and messaging bus components.
 type coreDependencies struct {
-	db              *database.DB
-	perms           *core.Permissions
-	router          *core.Router
-	eventBus        *core.EventBus
-	metrics         core.MetricsCollector
-	localizer       localization.Localizer
-	callbackStore   *callback.StateStore
-	callbackRouter  *callback.Router
-	inlineEngine    *inline.Engine
-	cmdLimiter      *ratelimit.Limiter
-	interLimiter    *ratelimit.Limiter
-	jobsManager     *jobs.Manager
-	taskEngine      *taskengine.Engine
-	persistencePump *jobs.PersistencePump
-	resourceManager *resource.Manager
-	idempManager    *idempotency.Manager
-	fsManager       *filesystem.Manager
-	procManager     *process.Manager
-	netService      *network.Service
-	secretManager   *secret.Manager
-	storageManager  *platformStorage.Manager
-	auditService    *audit.Service
-	capGate         *plugin.CapabilityGate
+	db                  *database.DB
+	perms               *core.Permissions
+	router              *core.Router
+	eventBus            *core.EventBus
+	metrics             core.MetricsCollector
+	localizer           localization.Localizer
+	callbackStore       *callback.StateStore
+	callbackRouter      *callback.Router
+	inlineEngine        *inline.Engine
+	cmdLimiter          *ratelimit.Limiter
+	interLimiter        *ratelimit.Limiter
+	jobsManager         *jobs.Manager
+	taskEngine          *taskengine.Engine
+	persistencePump     *jobs.PersistencePump
+	resourceManager     *resource.Manager
+	idempManager        *idempotency.Manager
+	fsManager           *filesystem.Manager
+	procManager         *process.Manager
+	netService          *network.Service
+	secretManager       *secret.Manager
+	storageManager      *platformStorage.Manager
+	auditService        *audit.Service
+	capGate             *plugin.CapabilityGate
+	deeplinkService     *deeplink.Service
+	presentationService *presentation.Service
+	presentationHandoff presentation.HandoffClient
 }
 
 // telegramRuntime holds network client, message dispatcher, and optional assistant bot.
@@ -106,6 +112,9 @@ type Dependencies struct {
 func cleanupCore(core *coreDependencies, logger *zap.Logger) {
 	if core == nil {
 		return
+	}
+	if core.deeplinkService != nil {
+		_ = core.deeplinkService.Stop(context.Background())
 	}
 	if core.idempManager != nil {
 		core.idempManager.Close()

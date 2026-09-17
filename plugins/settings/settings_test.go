@@ -2,6 +2,7 @@ package settings
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/settings"
 )
@@ -167,6 +169,7 @@ type mockTelegramService struct {
 	lastMarkup    tg.ReplyMarkupClass
 	answeredText  string
 	answeredAlert bool
+	errOnMarkup   error
 }
 
 func (m *mockTelegramService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
@@ -180,6 +183,9 @@ func (m *mockTelegramService) SendMessage(ctx context.Context, peer tg.InputPeer
 func (m *mockTelegramService) SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.errOnMarkup != nil {
+		return nil, m.errOnMarkup
+	}
 	m.lastText = text
 	m.lastMarkup = markup
 	return &tg.Message{ID: 100, Message: text}, nil
@@ -196,6 +202,9 @@ func (m *mockTelegramService) EditMessage(ctx context.Context, peer tg.InputPeer
 func (m *mockTelegramService) EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass, msgID int, text string, markup tg.ReplyMarkupClass) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.errOnMarkup != nil {
+		return m.errOnMarkup
+	}
 	m.lastText = text
 	m.lastMarkup = markup
 	return nil
@@ -585,5 +594,113 @@ func TestPlugin_ScopeSwitchingAndTarget(t *testing.T) {
 	valReset, _ := svc.Resolve(ctx, 888, -100777, "core", "prefix")
 	if valReset != "." {
 		t.Errorf("expected fallback to default '.' after reset, got: %q", valReset)
+	}
+}
+
+type fakeHandoffClient struct {
+	lastReq presentation.HandoffRequest
+}
+
+func (f *fakeHandoffClient) Handoff(ctx context.Context, req presentation.HandoffRequest) (presentation.HandoffResult, error) {
+	f.lastReq = req
+	return presentation.HandoffResult{
+		Mode:        presentation.HandoffDeepLink,
+		DeepLinkURL: "https://t.me/GoUltroidBot?start=settings_token_123",
+	}, nil
+}
+
+func TestPlugin_UserbotHandoff(t *testing.T) {
+	p, _, _, tgSvc := setupTestPlugin(t)
+	fakeHandoff := &fakeHandoffClient{}
+	p.SetHandoffs(fakeHandoff)
+
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		Source:  core.ExecutionInteractive,
+		Svc:     tgSvc,
+		Message: &core.Message{ID: 1, SenderID: 12345},
+		Sender:  &core.User{ID: 12345},
+		Chat:    &core.Chat{ID: -100123, Type: "supergroup"},
+		PeerID:  &tg.InputPeerChat{ChatID: 100123},
+	}
+
+	cmds := p.Commands()
+	var settingsCmd core.Command
+	for _, c := range cmds {
+		if c.Name == "settings" {
+			settingsCmd = c
+			break
+		}
+	}
+	if settingsCmd.Handler == nil {
+		t.Fatal("settings command handler not found")
+	}
+
+	err := settingsCmd.Handler(ctx)
+	if err != nil {
+		t.Fatalf("settings command handler failed: %v", err)
+	}
+
+	if fakeHandoff.lastReq.Screen.Name != "settings" {
+		t.Errorf("expected handoff screen 'settings', got: %+v", fakeHandoff.lastReq.Screen)
+	}
+	if fakeHandoff.lastReq.ChatType != presentation.ChatTypeGroup {
+		t.Errorf("expected chat type group, got: %v", fakeHandoff.lastReq.ChatType)
+	}
+	if !strings.Contains(tgSvc.lastText, "Settings Dashboard") {
+		t.Errorf("expected settings dashboard prompt in reply, got: %s", tgSvc.lastText)
+	}
+	if tgSvc.lastMarkup != nil {
+		t.Fatal("userbot handoff must not rely on bot reply markup")
+	}
+	if !strings.Contains(tgSvc.lastText, "https://t.me/GoUltroidBot?start=settings_token_123") {
+		t.Fatalf("expected actionable deep-link in userbot text, got: %s", tgSvc.lastText)
+	}
+	if fakeHandoff.lastReq.PreferredMode != presentation.HandoffDeepLink {
+		t.Fatalf("expected settings to request deep-link handoff, got: %v", fakeHandoff.lastReq.PreferredMode)
+	}
+}
+
+func TestPlugin_UserbotHandoff_MarkupFailure_FallbackContainsURL(t *testing.T) {
+	p, _, _, tgSvc := setupTestPlugin(t)
+	tgSvc.errOnMarkup = fmt.Errorf("BOT_METHOD_INVALID: inline keyboard not allowed for user")
+	fakeHandoff := &fakeHandoffClient{}
+	p.SetHandoffs(fakeHandoff)
+
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		Source:  core.ExecutionInteractive,
+		Svc:     tgSvc,
+		Message: &core.Message{ID: 1, SenderID: 12345},
+		Sender:  &core.User{ID: 12345},
+		Chat:    &core.Chat{ID: -100123, Type: "supergroup"},
+		PeerID:  &tg.InputPeerChat{ChatID: 100123},
+	}
+
+	cmds := p.Commands()
+	var settingsCmd core.Command
+	for _, c := range cmds {
+		if c.Name == "settings" {
+			settingsCmd = c
+			break
+		}
+	}
+	if settingsCmd.Handler == nil {
+		t.Fatal("settings command handler not found")
+	}
+
+	err := settingsCmd.Handler(ctx)
+	if err != nil {
+		t.Fatalf("settings command handler failed: %v", err)
+	}
+
+	if tgSvc.lastMarkup != nil {
+		t.Error("expected markup to be nil on text fallback delivery")
+	}
+	if !strings.Contains(tgSvc.lastText, "https://t.me/GoUltroidBot?start=settings_token_123") {
+		t.Errorf("expected fallback text to contain deep-link URL, got: %s", tgSvc.lastText)
+	}
+	if !strings.Contains(tgSvc.lastText, `<a href="https://t.me/GoUltroidBot?start=settings_token_123">`) {
+		t.Errorf("expected fallback text to contain HTML link tag, got: %s", tgSvc.lastText)
 	}
 }

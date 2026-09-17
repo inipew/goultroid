@@ -65,6 +65,42 @@ func TestDependencyBoundaries(t *testing.T) {
 				}
 			}
 		}
+
+		// internal/ui must not depend on telegram, database, taskengine, or plugins
+		if pkg == modulePath+"/internal/ui" {
+			for dep := range deps {
+				if strings.HasPrefix(dep, modulePath+"/internal/telegram") {
+					t.Errorf("%s must not depend on telegram package %s", pkg, dep)
+				}
+				if strings.HasPrefix(dep, modulePath+"/internal/database") {
+					t.Errorf("%s must not depend on database package %s", pkg, dep)
+				}
+				if strings.HasPrefix(dep, modulePath+"/internal/taskengine") {
+					t.Errorf("%s must not depend on taskengine package %s", pkg, dep)
+				}
+				if strings.HasPrefix(dep, modulePath+"/plugins/") {
+					t.Errorf("%s must not depend on feature package %s", pkg, dep)
+				}
+				if dep == "github.com/gotd/td/tg" {
+					t.Errorf("%s must not depend on raw telegram client %s", pkg, dep)
+				}
+			}
+		}
+
+		// internal/presentation must not depend on raw telegram client, app, or plugins
+		if strings.HasPrefix(pkg, modulePath+"/internal/presentation") {
+			for dep := range deps {
+				if strings.HasPrefix(dep, modulePath+"/internal/app") {
+					t.Errorf("%s must not depend on app package %s", pkg, dep)
+				}
+				if strings.HasPrefix(dep, modulePath+"/plugins/") {
+					t.Errorf("%s must not depend on feature package %s", pkg, dep)
+				}
+				if dep == "github.com/gotd/td/tg" {
+					t.Errorf("%s must not depend on raw telegram client %s", pkg, dep)
+				}
+			}
+		}
 	}
 }
 

@@ -91,6 +91,7 @@ func (p *defaultPingInlineHandler) HandleInline(ctx *inline.InlineContext) ([]in
 type defaultCatchAllInlineHandler struct {
 	router    *core.Router
 	startTime time.Time
+	catalog   *inline.CatalogHandler
 }
 
 func (c *defaultCatchAllInlineHandler) Pattern() string {
@@ -110,7 +111,7 @@ func (c *defaultCatchAllInlineHandler) HandleInline(ctx *inline.InlineContext) (
 		ui.NewSwitchInlineButton("🏓 Ping Status", "ping", false),
 	})
 
-	return []inline.InlineResult{
+	results := []inline.InlineResult{
 		{
 			ID:          "default_menu",
 			Title:       "GoUltroid Assistant",
@@ -118,5 +119,16 @@ func (c *defaultCatchAllInlineHandler) HandleInline(ctx *inline.InlineContext) (
 			Text:        text,
 			Markup:      &markup,
 		},
-	}, nil
+	}
+
+	if c.catalog != nil {
+		catResults, _ := c.catalog.HandleInline(ctx)
+		for _, item := range catResults {
+			if item.ID != "catalog_empty" {
+				results = append(results, item)
+			}
+		}
+	}
+
+	return results, nil
 }

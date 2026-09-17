@@ -3,6 +3,7 @@ package myxl
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,14 +13,21 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/execution"
+	"github.com/inipew/goultroid/internal/module"
 	"github.com/inipew/goultroid/internal/platform/network"
+	"github.com/inipew/goultroid/internal/platform/secret"
+	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/services/callback"
 )
 
 type mockTgService struct {
 	core.MockTelegramServicer
-	sent       string
-	lastMarkup tg.ReplyMarkupClass
+	sent          string
+	lastMarkup    tg.ReplyMarkupClass
+	editMarkupErr error
+	sendMarkupErr error
 }
 
 func TestPlugin_CallbackOptions_HandlerOwnsAnswer(t *testing.T) {
@@ -39,12 +47,18 @@ func (m *mockTgService) EditMessage(ctx context.Context, peer tg.InputPeerClass,
 }
 
 func (m *mockTgService) SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
+	if m.sendMarkupErr != nil {
+		return nil, m.sendMarkupErr
+	}
 	m.sent = text
 	m.lastMarkup = markup
 	return &tg.Message{ID: 10, Message: text}, nil
 }
 
 func (m *mockTgService) EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass, msgID int, text string, markup tg.ReplyMarkupClass) error {
+	if m.editMarkupErr != nil {
+		return m.editMarkupErr
+	}
 	m.sent = text
 	m.lastMarkup = markup
 	return nil
@@ -365,4 +379,195 @@ func callbackEntryFromMarkup(t *testing.T, store *callback.StateStore, markup tg
 		t.Fatalf("get callback state: %v", err)
 	}
 	return oid, entry
+}
+
+type fakeHandoffClient struct {
+	lastReq presentation.HandoffRequest
+}
+
+func (f *fakeHandoffClient) Handoff(ctx context.Context, req presentation.HandoffRequest) (presentation.HandoffResult, error) {
+	f.lastReq = req
+	return presentation.HandoffResult{
+		Mode:        presentation.HandoffDeepLink,
+		DeepLinkURL: "https://t.me/GoUltroidBot?start=myxl_token_123",
+	}, nil
+}
+
+func TestMyXL_CanonicalBuilderAndHandoff(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := database.RunFeatureMigrations(context.Background(), db, Module); err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+
+	repo := NewSQLiteRepository(db)
+	client := NewClient(DefaultClientConfig(), repo, nil)
+	p := New(repo, client)
+
+	// 1. Test canonical dashboardScreenBuilder
+	builder := &dashboardScreenBuilder{p: p}
+	if builder.Key() != (presentation.ScreenKey{Namespace: "myxl", Name: "dashboard", Version: 1}) {
+		t.Errorf("unexpected builder key: %v", builder.Key())
+	}
+	res, err := builder.Build(context.Background(), presentation.BuildRequest{
+		Key:      builder.Key(),
+		Actor:    execution.NewActor(12345, 12345, true, false),
+		Source:   execution.SourceAssistant,
+		ChatType: presentation.ChatTypePrivate,
+	})
+	if err != nil {
+		t.Fatalf("builder build failed: %v", err)
+	}
+	if res.Screen == nil {
+		t.Fatal("expected non-nil screen from builder")
+	}
+	if res.Sensitivity != presentation.SensitivitySensitive {
+		t.Errorf("expected SensitivitySensitive, got: %v", res.Sensitivity)
+	}
+
+	// 2. Test Userbot Handoff
+	fakeHandoff := &fakeHandoffClient{}
+	p.SetHandoffs(fakeHandoff)
+
+	svc := &mockTgService{}
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		Source:  core.ExecutionInteractive,
+		Svc:     svc,
+		PeerID:  &tg.InputPeerChat{ChatID: 100},
+		Chat:    &core.Chat{ID: -100, Type: "group"},
+		Message: &core.Message{ID: 1, SenderID: 12345},
+		Sender:  &core.User{ID: 12345},
+	}
+
+	err = p.handleMyXL(ctx)
+	if err != nil {
+		t.Fatalf("handleMyXL error: %v", err)
+	}
+
+	if fakeHandoff.lastReq.Screen.Namespace != "myxl" || fakeHandoff.lastReq.Screen.Name != "dashboard" {
+		t.Errorf("expected handoff screen myxl:dashboard, got: %+v", fakeHandoff.lastReq.Screen)
+	}
+	if fakeHandoff.lastReq.ChatType != presentation.ChatTypeGroup {
+		t.Errorf("expected ChatTypeGroup, got: %v", fakeHandoff.lastReq.ChatType)
+	}
+	if !strings.Contains(svc.sent, "MyXL Account & Quota") {
+		t.Errorf("expected prompt text in message, got: %s", svc.sent)
+	}
+	if svc.lastMarkup != nil {
+		t.Fatal("userbot handoff must not rely on bot reply markup")
+	}
+	if !strings.Contains(svc.sent, "https://t.me/GoUltroidBot?start=myxl_token_123") {
+		t.Fatalf("expected actionable deep-link in userbot text, got: %s", svc.sent)
+	}
+}
+
+func TestMyXL_UserbotHandoff_MarkupFailure_FallbackContainsURL(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := database.RunFeatureMigrations(context.Background(), db, Module); err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+
+	repo := NewSQLiteRepository(db)
+	client := NewClient(DefaultClientConfig(), repo, nil)
+	p := New(repo, client)
+
+	fakeHandoff := &fakeHandoffClient{}
+	p.SetHandoffs(fakeHandoff)
+
+	svc := &mockTgService{
+		editMarkupErr: errors.New("USERBOT_CANNOT_ATTACH_MARKUP"),
+	}
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		Source:  core.ExecutionInteractive,
+		Svc:     svc,
+		PeerID:  &tg.InputPeerChat{ChatID: 100},
+		Chat:    &core.Chat{ID: -100, Type: "group"},
+		Message: &core.Message{ID: 1, SenderID: 12345},
+		Sender:  &core.User{ID: 12345},
+	}
+
+	err = p.handleMyXL(ctx)
+	if err != nil {
+		t.Fatalf("handleMyXL should succeed via fallback, got error: %v", err)
+	}
+
+	if !strings.Contains(svc.sent, "https://t.me/GoUltroidBot?start=myxl_token_123") {
+		t.Fatalf("expected deep-link URL in fallback text, got: %s", svc.sent)
+	}
+	if !strings.Contains(svc.sent, "<a href=") {
+		t.Fatalf("expected HTML anchor in fallback text, got: %s", svc.sent)
+	}
+	if strings.Contains(svc.sent, "USERBOT_CANNOT_ATTACH_MARKUP") {
+		t.Fatalf("user message must not contain raw internal error: %s", svc.sent)
+	}
+}
+
+func TestMyXL_ModuleRegister_ScopedScreenAndRevocation(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := database.RunFeatureMigrations(context.Background(), db, Module); err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+
+	router := core.NewRouter(".")
+	pluginMgr := plugin.NewManager(router)
+	presRegistry := presentation.NewRegistry()
+	evaluator := presentation.NewEvaluator(100, nil)
+	presSvc := presentation.NewService(presRegistry, evaluator)
+
+	pluginMgr.SetPresentationRevoker(presRegistry)
+	gate := plugin.NewCapabilityGate()
+	gate.AllowPrivileged("myxl", plugin.CapSecretRead)
+	secrets := secret.NewManager(map[string]string{})
+	pluginMgr.SetPlatformServices(gate, network.NewService(nil, nil), nil, nil, secrets, nil)
+
+	rt := &module.Runtime{
+		CoreRuntime: module.CoreRuntime{
+			DB:      db,
+			Plugins: pluginMgr,
+			Router:  router,
+		},
+		TelegramRuntime: module.TelegramRuntime{
+			Presentation: presSvc,
+		},
+	}
+
+	ctx := context.Background()
+	if err := Module.Register(ctx, rt); err != nil {
+		t.Fatalf("Module.Register failed: %v", err)
+	}
+
+	// Verify screen is registered with proper Owner and Generation
+	dashboardKey := presentation.ScreenKey{Namespace: "myxl", Name: "dashboard", Version: 1}
+	reg, ok := presRegistry.Resolve(dashboardKey)
+	if !ok {
+		t.Fatal("expected myxl:dashboard:v1 to be registered in presentation registry")
+	}
+	if reg.Owner != "plugin:myxl" {
+		t.Errorf("expected reg.Owner to be 'plugin:myxl', got: %q", reg.Owner)
+	}
+	if reg.Generation == 0 {
+		t.Errorf("expected reg.Generation > 0, got: %d", reg.Generation)
+	}
+
+	// Now disable the plugin -> screen should be revoked
+	if err := pluginMgr.Disable(ctx, "myxl"); err != nil {
+		t.Fatalf("Disable myxl plugin failed: %v", err)
+	}
+
+	if _, ok := presRegistry.Resolve(dashboardKey); ok {
+		t.Fatal("expected myxl:dashboard:v1 to be revoked after plugin disabled")
+	}
 }
