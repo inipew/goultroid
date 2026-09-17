@@ -565,6 +565,8 @@ func TestMenuManager_Callbacks(t *testing.T) {
 		{name: "Bookmark Del", action: "bookmark_del", opaqueID: "OPT-10GB", senderID: 12345, wantErr: false},
 		{name: "QRIS Image Send", action: "qris_img", opaqueID: qrKey, senderID: 12345, wantErr: false},
 		{name: "QRIS Image Missing", action: "qris_img", opaqueID: "missing_qr", senderID: 12345, wantErr: false},
+		{name: "Pending QRIS", action: "pending_qris", senderID: 12345, wantErr: false},
+		{name: "QRIS Cancel", action: "qris_cancel", opaqueID: "TRX-12345", senderID: 12345, wantErr: false},
 		{name: "Noop", action: "noop", senderID: 12345, wantErr: false},
 		{name: "Unknown Action", action: "unknown_action_xyz", senderID: 12345, wantErr: false},
 	}
@@ -743,5 +745,114 @@ func TestMenuManager_HandleMyXLEntrypoint(t *testing.T) {
 	}
 	if svc.lastMarkup == nil {
 		t.Errorf("expected markup from .myxl menu")
+	}
+}
+
+func TestMenuManager_PendingQRISScreen(t *testing.T) {
+	plugin, server, repo, _ := setupTestMyXLEnv(t)
+	defer server.Close()
+
+	ctx := context.Background()
+
+	// 1. No active account
+	screen, err := plugin.menuMgr.BuildPendingQRISScreen(ctx)
+	if err == nil || screen != nil {
+		t.Fatalf("expected error for no active account, got screen: %v, err: %v", screen, err)
+	}
+
+	// 2. Active account, but no pending QRIS
+	now := time.Now().UTC()
+	acc := &Account{
+		MSISDN:         "6281987654321",
+		IsActive:       true,
+		AccessToken:    "acc_tok",
+		RefreshToken:   "ref_tok",
+		TokenExpiresAt: now.Add(time.Hour),
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := repo.Save(ctx, acc); err != nil {
+		t.Fatalf("save account failed: %v", err)
+	}
+
+	screen, err = plugin.menuMgr.BuildPendingQRISScreen(ctx)
+	if err != nil {
+		t.Fatalf("BuildPendingQRISScreen failed: %v", err)
+	}
+	if !strings.Contains(screen.Body, "Tidak ada transaksi QRIS aktif") {
+		t.Errorf("expected empty pending QRIS message, got: %s", screen.Body)
+	}
+
+	// Dashboard should not have QRIS banner
+	dash, err := plugin.menuMgr.BuildDashboardScreen(ctx, false)
+	if err != nil {
+		t.Fatalf("BuildDashboardScreen failed: %v", err)
+	}
+	if strings.Contains(dash.Body, "Tagihan QRIS Menunggu Pembayaran") {
+		t.Errorf("expected no QRIS banner on dashboard when none pending")
+	}
+
+	// 3. Save an active pending QRIS (valid for 5 minutes)
+	pending := &PendingQRIS{
+		TransactionCode: "TRX-QRIS-999",
+		IdempotencyKey:  "idemp-key-1",
+		MSISDN:          acc.MSISDN,
+		OptionCode:      "OPT-COMBO",
+		PackageName:     "Combo VIP 50GB",
+		Price:           50000,
+		QRCode:          "00020101021226570011ID.CO.QRIS.WWW...",
+		Status:          "PENDING",
+		CreatedAt:       now,
+		ExpiresAt:       now.Add(5 * time.Minute),
+	}
+	if err := repo.SavePendingQRIS(ctx, pending); err != nil {
+		t.Fatalf("SavePendingQRIS failed: %v", err)
+	}
+
+	// BuildPendingQRISScreen with active pending QRIS
+	screen, err = plugin.menuMgr.BuildPendingQRISScreen(ctx)
+	if err != nil {
+		t.Fatalf("BuildPendingQRISScreen failed: %v", err)
+	}
+	if !strings.Contains(screen.Body, "Combo VIP 50GB") || !strings.Contains(screen.Body, "TRX-QRIS-999") {
+		t.Errorf("expected package name and tx code in screen, got: %s", screen.Body)
+	}
+	if !strings.Contains(screen.Body, "00020101021226570011ID.CO.QRIS.WWW...") {
+		t.Errorf("expected raw QRIS string in screen, got: %s", screen.Body)
+	}
+
+	// Dashboard should now show banner
+	dash, err = plugin.menuMgr.BuildDashboardScreen(ctx, false)
+	if err != nil {
+		t.Fatalf("BuildDashboardScreen failed: %v", err)
+	}
+	if !strings.Contains(dash.Body, "Tagihan QRIS Menunggu Pembayaran") {
+		t.Errorf("expected QRIS banner on dashboard")
+	}
+
+	// 4. Test expired pending QRIS (> 5 minutes old)
+	expiredPending := &PendingQRIS{
+		TransactionCode: "TRX-EXPIRED",
+		IdempotencyKey:  "idemp-expired",
+		MSISDN:          acc.MSISDN,
+		OptionCode:      "OPT-OLD",
+		PackageName:     "Paket Lama",
+		Price:           10000,
+		QRCode:          "00020101...",
+		Status:          "PENDING",
+		CreatedAt:       now.Add(-10 * time.Minute),
+		ExpiresAt:       now.Add(-5 * time.Minute),
+	}
+	_ = repo.DeletePendingQRIS(ctx, pending.TransactionCode)
+	if err := repo.SavePendingQRIS(ctx, expiredPending); err != nil {
+		t.Fatalf("SavePendingQRIS expired failed: %v", err)
+	}
+
+	screen, err = plugin.menuMgr.BuildPendingQRISScreen(ctx)
+	if err != nil {
+		t.Fatalf("BuildPendingQRISScreen failed: %v", err)
+	}
+	if !strings.Contains(screen.Body, "Tidak ada transaksi QRIS aktif") {
+		t.Errorf("expected empty pending QRIS screen for expired item, got: %s", screen.Body)
 	}
 }

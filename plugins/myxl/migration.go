@@ -250,7 +250,51 @@ func (migration006) VerifySchema(ctx context.Context, tx database.SQLExecutor) e
 	return nil
 }
 
+var _ database.SchemaInvariantMigration = migration007{}
+
+type migration007 struct{}
+
+func (migration007) ID() string { return "myxl.007" }
+func (migration007) Description() string {
+	return "Persistent storage for active pending QRIS transactions with 5-minute expiration"
+}
+func (migration007) Checksum() string {
+	return "f7c12024c590c2dbee5c55d5f19655104d0b5855a1029ca13bd087bd4e3bf1d2"
+}
+func (migration007) LegacyVersions() []int { return nil }
+
+func (migration007) Up(ctx context.Context, tx database.SQLExecutor) error {
+	_, err := tx.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS myxl_pending_qris (
+			transaction_code TEXT PRIMARY KEY,
+			idempotency_key TEXT NOT NULL DEFAULT '',
+			msisdn TEXT NOT NULL,
+			option_code TEXT NOT NULL,
+			package_name TEXT NOT NULL,
+			price INTEGER NOT NULL,
+			qr_code TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'PENDING',
+			created_at DATETIME NOT NULL,
+			expires_at DATETIME NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_myxl_pending_qris_lookup
+		ON myxl_pending_qris(msisdn, status, expires_at);
+	`)
+	return err
+}
+
+func (migration007) VerifySchema(ctx context.Context, tx database.SQLExecutor) error {
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='myxl_pending_qris'`).Scan(&count); err != nil {
+		return err
+	}
+	if count == 0 {
+		return fmt.Errorf("required table myxl_pending_qris does not exist")
+	}
+	return nil
+}
+
 // Migrations returns the database migrations for the myxl plugin.
 func Migrations() []database.Migration {
-	return []database.Migration{migration001{}, migration002{}, migration003{}, migration004{}, migration005{}, migration006{}}
+	return []database.Migration{migration001{}, migration002{}, migration003{}, migration004{}, migration005{}, migration006{}, migration007{}}
 }

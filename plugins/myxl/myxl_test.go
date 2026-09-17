@@ -435,3 +435,219 @@ func TestReservePurchase_ConcurrencyAndDebounce(t *testing.T) {
 		t.Fatalf("expected retry after failure to be allowed: %v", err)
 	}
 }
+
+func TestPendingQRIS_RepositoryStorageExpiryAndPruning(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open in-memory db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := database.RunFeatureMigrations(ctx, db, Module); err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+
+	repo := NewSQLiteRepository(db)
+	msisdn := "6281234567890"
+	now := time.Now().UTC()
+
+	// 1. Save valid pending QRIS (expires in 5 minutes)
+	item1 := &PendingQRIS{
+		TransactionCode: "TX-VALID-1",
+		IdempotencyKey:  "IDEMP-1",
+		MSISDN:          msisdn,
+		OptionCode:      "OPT-1",
+		PackageName:     "Paket A 10GB",
+		Price:           25000,
+		QRCode:          "00020101021226570011ID.CO.QRIS.WWW...",
+		Status:          "PENDING",
+		CreatedAt:       now,
+		ExpiresAt:       now.Add(5 * time.Minute),
+	}
+	if err := repo.SavePendingQRIS(ctx, item1); err != nil {
+		t.Fatalf("SavePendingQRIS failed: %v", err)
+	}
+
+	// 2. Query pending QRIS -> should return item1
+	got, err := repo.GetPendingQRIS(ctx, msisdn)
+	if err != nil || got == nil {
+		t.Fatalf("GetPendingQRIS failed: %v, got: %v", err, got)
+	}
+	if got.TransactionCode != "TX-VALID-1" || got.PackageName != "Paket A 10GB" {
+		t.Errorf("unexpected got: %+v", got)
+	}
+
+	// 3. Delete pending QRIS
+	if err := repo.DeletePendingQRIS(ctx, "TX-VALID-1"); err != nil {
+		t.Fatalf("DeletePendingQRIS failed: %v", err)
+	}
+	got, err = repo.GetPendingQRIS(ctx, msisdn)
+	if err != nil || got != nil {
+		t.Fatalf("expected nil after delete, got: %v", got)
+	}
+
+	// 4. Save expired pending QRIS (expired 1 minute ago)
+	itemExpired := &PendingQRIS{
+		TransactionCode: "TX-EXPIRED-1",
+		IdempotencyKey:  "IDEMP-EXP-1",
+		MSISDN:          msisdn,
+		OptionCode:      "OPT-EXP",
+		PackageName:     "Paket Expired",
+		Price:           15000,
+		QRCode:          "00020101...",
+		Status:          "PENDING",
+		CreatedAt:       now.Add(-6 * time.Minute),
+		ExpiresAt:       now.Add(-1 * time.Minute),
+	}
+	if err := repo.SavePendingQRIS(ctx, itemExpired); err != nil {
+		t.Fatalf("SavePendingQRIS failed: %v", err)
+	}
+
+	// 5. Query pending QRIS -> Auto-pruning should remove it and return nil
+	got, err = repo.GetPendingQRIS(ctx, msisdn)
+	if err != nil || got != nil {
+		t.Fatalf("expected nil for expired QRIS due to auto-prune, got: %v, err: %v", got, err)
+	}
+
+	// Verify database row was physically pruned
+	var count int
+	err = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM myxl_pending_qris WHERE transaction_code = ?", "TX-EXPIRED-1").Scan(&count)
+	if err != nil || count != 0 {
+		t.Errorf("expected expired row to be deleted from table, count: %d, err: %v", count, err)
+	}
+
+	// 6. Test PruneExpiredQRIS directly
+	_ = repo.SavePendingQRIS(ctx, &PendingQRIS{
+		TransactionCode: "TX-EXP-A",
+		IdempotencyKey:  "IDEMP-A",
+		MSISDN:          msisdn,
+		OptionCode:      "OPT-A",
+		PackageName:     "Paket A",
+		Price:           10000,
+		QRCode:          "00020101...",
+		Status:          "PENDING",
+		CreatedAt:       now.Add(-10 * time.Minute),
+		ExpiresAt:       now.Add(-5 * time.Minute),
+	})
+	_ = repo.SavePendingQRIS(ctx, &PendingQRIS{
+		TransactionCode: "TX-EXP-B",
+		IdempotencyKey:  "IDEMP-B",
+		MSISDN:          msisdn,
+		OptionCode:      "OPT-B",
+		PackageName:     "Paket B",
+		Price:           20000,
+		QRCode:          "00020101...",
+		Status:          "PENDING",
+		CreatedAt:       now.Add(-8 * time.Minute),
+		ExpiresAt:       now.Add(-3 * time.Minute),
+	})
+	_ = repo.SavePendingQRIS(ctx, &PendingQRIS{
+		TransactionCode: "TX-ACTIVE-C",
+		IdempotencyKey:  "IDEMP-C",
+		MSISDN:          msisdn,
+		OptionCode:      "OPT-C",
+		PackageName:     "Paket C",
+		Price:           30000,
+		QRCode:          "00020101...",
+		Status:          "PENDING",
+		CreatedAt:       now,
+		ExpiresAt:       now.Add(5 * time.Minute),
+	})
+
+	pruned, err := repo.PruneExpiredQRIS(ctx)
+	if err != nil {
+		t.Fatalf("PruneExpiredQRIS failed: %v", err)
+	}
+	if pruned != 2 {
+		t.Errorf("expected 2 pruned rows, got: %d", pruned)
+	}
+
+	active, err := repo.GetPendingQRIS(ctx, msisdn)
+	if err != nil || active == nil || active.TransactionCode != "TX-ACTIVE-C" {
+		t.Errorf("expected TX-ACTIVE-C to remain active, got: %v", active)
+	}
+}
+
+func TestMyXLPlugin_PendingQRISCommand(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open in-memory db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := database.RunFeatureMigrations(ctx, db, Module); err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+
+	repo := NewSQLiteRepository(db)
+	plugin := New(repo, nil)
+
+	svc := &mockTgService{}
+	baseCtx := &core.Context{
+		Ctx:     ctx,
+		Sender:  &core.User{ID: 1001},
+		Chat:    &core.Chat{ID: 1001},
+		Message: &core.Message{ID: 1},
+		Svc:     svc,
+		PeerID:  &tg.InputPeerUser{UserID: 1001},
+	}
+
+	// 1. .myxl qris without active account
+	ctxQRIS := *baseCtx
+	ctxQRIS.Args = []string{"qris"}
+	_ = plugin.handlePendingQRIS(&ctxQRIS, []string{})
+	if !strings.Contains(svc.sent, "Tidak ada akun MyXL yang aktif") {
+		t.Errorf("expected no active account message, got %s", svc.sent)
+	}
+
+	// Save active account
+	now := time.Now().UTC()
+	acc := &Account{
+		MSISDN:         "6281234567890",
+		IsActive:       true,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		TokenExpiresAt: now.Add(time.Hour),
+	}
+	_ = repo.Save(ctx, acc)
+
+	// 2. .myxl qris with active account, but no pending QRIS
+	_ = plugin.handlePendingQRIS(&ctxQRIS, []string{})
+	if !strings.Contains(svc.sent, "Tidak ada transaksi QRIS aktif") {
+		t.Errorf("expected no pending QRIS message, got %s", svc.sent)
+	}
+
+	// 3. Save active QRIS
+	_ = repo.SavePendingQRIS(ctx, &PendingQRIS{
+		TransactionCode: "TX-CMD-QRIS",
+		IdempotencyKey:  "IDEMP-CMD",
+		MSISDN:          acc.MSISDN,
+		OptionCode:      "OPT-X",
+		PackageName:     "Paket Kilat 5GB",
+		Price:           15000,
+		QRCode:          "00020101021226570011ID.CO.QRIS.WWW...",
+		Status:          "PENDING",
+		CreatedAt:       now,
+		ExpiresAt:       now.Add(5 * time.Minute),
+	})
+
+	// .myxl qris -> should show active QRIS details
+	_ = plugin.handlePendingQRIS(&ctxQRIS, []string{})
+	if !strings.Contains(svc.sent, "TRANSAKSI QRIS AKTIF") || !strings.Contains(svc.sent, "Paket Kilat 5GB") {
+		t.Errorf("expected active QRIS details, got %s", svc.sent)
+	}
+
+	// 4. .myxl qris cancel -> cancels transaction
+	_ = plugin.handlePendingQRIS(&ctxQRIS, []string{"cancel"})
+	if !strings.Contains(svc.sent, "berhasil dibatalkan") {
+		t.Errorf("expected cancellation message, got %s", svc.sent)
+	}
+
+	// Verify it got deleted from repo
+	p, err := repo.GetPendingQRIS(ctx, acc.MSISDN)
+	if err != nil || p != nil {
+		t.Errorf("expected pending QRIS to be cancelled, got: %v", p)
+	}
+}

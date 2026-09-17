@@ -34,6 +34,12 @@ type Repository interface {
 	// Decoy configurations
 	GetDecoy(ctx context.Context, key string) (*DecoyConfig, error)
 	UpsertDecoy(ctx context.Context, decoy *DecoyConfig) error
+
+	// Pending QRIS storage (5-minute TTL)
+	SavePendingQRIS(ctx context.Context, item *PendingQRIS) error
+	GetPendingQRIS(ctx context.Context, msisdn string) (*PendingQRIS, error)
+	DeletePendingQRIS(ctx context.Context, transactionCode string) error
+	PruneExpiredQRIS(ctx context.Context) (int64, error)
 }
 
 // ReservePurchase atomically reserves an idempotency key. It returns false if
@@ -511,4 +517,91 @@ func (r *SQLiteRepository) UpsertDecoy(ctx context.Context, decoy *DecoyConfig) 
 		return fmt.Errorf("failed to upsert decoy config: %w", err)
 	}
 	return nil
+}
+
+// SavePendingQRIS stores or updates an active pending QRIS transaction.
+func (r *SQLiteRepository) SavePendingQRIS(ctx context.Context, item *PendingQRIS) error {
+	if item == nil || item.TransactionCode == "" || item.QRCode == "" {
+		return errors.New("invalid pending qris: transaction_code and qr_code required")
+	}
+	now := time.Now().UTC()
+	if item.CreatedAt.IsZero() {
+		item.CreatedAt = now
+	}
+	if item.ExpiresAt.IsZero() {
+		item.ExpiresAt = now.Add(5 * time.Minute)
+	}
+
+	query := `
+	INSERT INTO myxl_pending_qris (
+		transaction_code, idempotency_key, msisdn, option_code,
+		package_name, price, qr_code, status, created_at, expires_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(transaction_code) DO UPDATE SET
+		package_name = excluded.package_name,
+		price = excluded.price,
+		qr_code = excluded.qr_code,
+		status = excluded.status,
+		expires_at = excluded.expires_at
+	`
+	_, err := r.db.ExecContext(ctx, query,
+		item.TransactionCode, item.IdempotencyKey, item.MSISDN, item.OptionCode,
+		item.PackageName, item.Price, item.QRCode, item.Status, item.CreatedAt, item.ExpiresAt,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to save pending qris: %w", err)
+	}
+	return nil
+}
+
+// GetPendingQRIS returns the latest unexpired pending QRIS transaction for the account,
+// automatically purging any transactions that have exceeded their 5-minute expiration time.
+func (r *SQLiteRepository) GetPendingQRIS(ctx context.Context, msisdn string) (*PendingQRIS, error) {
+	now := time.Now().UTC()
+
+	// 1. Auto prune expired QRIS transactions
+	_, _ = r.PruneExpiredQRIS(ctx)
+
+	// 2. Query active pending QRIS
+	query := `
+	SELECT transaction_code, idempotency_key, msisdn, option_code,
+	       package_name, price, qr_code, status, created_at, expires_at
+	FROM myxl_pending_qris
+	WHERE msisdn = ? AND status = 'PENDING' AND expires_at > ?
+	ORDER BY created_at DESC
+	LIMIT 1
+	`
+	var item PendingQRIS
+	err := r.db.QueryRowContext(ctx, query, msisdn, now).Scan(
+		&item.TransactionCode, &item.IdempotencyKey, &item.MSISDN, &item.OptionCode,
+		&item.PackageName, &item.Price, &item.QRCode, &item.Status, &item.CreatedAt, &item.ExpiresAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get pending qris: %w", err)
+	}
+	return &item, nil
+}
+
+// DeletePendingQRIS deletes a pending QRIS record by transaction code.
+func (r *SQLiteRepository) DeletePendingQRIS(ctx context.Context, transactionCode string) error {
+	query := `DELETE FROM myxl_pending_qris WHERE transaction_code = ?`
+	_, err := r.db.ExecContext(ctx, query, transactionCode)
+	if err != nil {
+		return fmt.Errorf("failed to delete pending qris: %w", err)
+	}
+	return nil
+}
+
+// PruneExpiredQRIS deletes all pending QRIS records whose expiration time has passed.
+func (r *SQLiteRepository) PruneExpiredQRIS(ctx context.Context) (int64, error) {
+	now := time.Now().UTC()
+	query := `DELETE FROM myxl_pending_qris WHERE expires_at <= ?`
+	res, err := r.db.ExecContext(ctx, query, now)
+	if err != nil {
+		return 0, fmt.Errorf("failed to prune expired qris: %w", err)
+	}
+	return res.RowsAffected()
 }

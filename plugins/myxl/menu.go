@@ -599,8 +599,26 @@ func (m *MenuManager) BuildDashboardScreen(ctx context.Context, mask bool) (*ui.
 		card.WithRaw("<i>Tidak ada kuota data aktif yang terdeteksi.</i>")
 	}
 
+	var pendingQR *PendingQRIS
+	if m.plugin != nil && m.plugin.repo != nil {
+		pendingQR, _ = m.plugin.repo.GetPendingQRIS(ctx, acc.MSISDN)
+	}
+	if pendingQR != nil {
+		rem := time.Until(pendingQR.ExpiresAt).Round(time.Second)
+		if rem > 0 {
+			card.WithRaw(fmt.Sprintf("⏳ <b>Tagihan QRIS Menunggu Pembayaran:</b>\n• <b>Paket:</b> %s\n• <b>Nominal:</b> Rp %s\n• <b>Sisa Waktu:</b> %s (s/d %s)\n",
+				html.EscapeString(pendingQR.PackageName), formatRupiah(pendingQR.Price), FormatRemainingDuration(rem), FormatWIBClock(pendingQR.ExpiresAt)))
+		}
+	}
+
 	card.WithFooter("<i>Pilih menu di bawah untuk rincian kuota, akun, atau belanja paket.</i>")
 	screen := menu.NewScreen(menu.ScreenIDMyXL, "", card.Render())
+	if pendingQR != nil && time.Now().UTC().Before(pendingQR.ExpiresAt) {
+		rem := time.Until(pendingQR.ExpiresAt).Round(time.Second)
+		screen.AddRow(
+			menu.NewButton("📱 Lihat QRIS Aktif ("+FormatRemainingDuration(rem)+")", "a1:myxl:pending_qris"),
+		)
+	}
 	screen.AddRow(
 		menu.NewButton("🔄 Perbarui Kuota", "a1:myxl:refresh"),
 		menu.NewButton("📊 Rincian Kuota", "a1:myxl:detail"),
@@ -907,8 +925,11 @@ func (m *MenuManager) BuildPurchaseResultScreen(result *SettlementResult, packag
 			card.AddField("Pesan Operator", html.EscapeString(result.Message))
 		}
 		if result.QRCode != "" {
+			wibLoc := time.FixedZone("WIB", 7*3600)
+			expireWIB := time.Now().UTC().Add(5 * time.Minute).In(wibLoc).Format("15:04:05")
+			card.AddField("Batas Waktu", fmt.Sprintf("5 Menit (s/d %s WIB)", expireWIB))
 			card.WithRaw("📱 <b>Kode / String QRIS:</b>\n<code>" + html.EscapeString(result.QRCode) + "</code>\n\n" +
-				"<i>💡 Foto QRIS dikirimkan di bawah ini. Anda dapat scan langsung atau upload dari galeri aplikasi e-wallet / mobile banking.</i>")
+				"<i>💡 Foto QRIS dikirimkan di bawah ini. QRIS berlaku 5 menit dan dapat dilihat kembali di Dashboard atau perintah <code>.myxl qris</code> selama belum dibayar.</i>")
 		}
 	}
 
@@ -927,6 +948,55 @@ func (m *MenuManager) BuildPurchaseResultScreen(result *SettlementResult, packag
 		menu.NewButton("📱 Buka Dashboard", "a1:myxl:home"),
 	)
 	return screen
+}
+
+// BuildPendingQRISScreen renders the screen for active unexpired pending QRIS.
+func (m *MenuManager) BuildPendingQRISScreen(ctx context.Context) (*ui.Screen, error) {
+	acc, err := m.plugin.repo.GetActive(ctx)
+	if err != nil || acc == nil {
+		return nil, fmt.Errorf("no active account")
+	}
+
+	pending, err := m.plugin.repo.GetPendingQRIS(ctx, acc.MSISDN)
+	if err != nil || pending == nil {
+		card := ui.NewCard("Tagihan QRIS").
+			WithIcon("ℹ️").
+			WithRaw("<i>Tidak ada transaksi QRIS aktif yang menunggu pembayaran.\nTransaksi QRIS otomatis kedaluwarsa setelah 5 menit.</i>")
+		screen := menu.NewScreen("myxl:pending_qris", "", card.Render())
+		screen.AddRow(menu.NewButton("🔙 Kembali ke Dashboard", "a1:myxl:home"))
+		return screen, nil
+	}
+
+	rem := time.Until(pending.ExpiresAt).Round(time.Second)
+	remStr := FormatRemainingDuration(rem)
+	expireWIB := FormatWIBClock(pending.ExpiresAt)
+
+	card := ui.NewCard("Tagihan QRIS Menunggu Pembayaran").
+		WithIcon("⏳").
+		AddField("Paket", html.EscapeString(pending.PackageName)).
+		AddField("Nominal", fmt.Sprintf("Rp %s", formatRupiah(pending.Price))).
+		AddField("Batas Waktu", fmt.Sprintf("%s (Sisa: %s)", expireWIB, remStr))
+
+	if pending.TransactionCode != "" {
+		card.AddField("Kode Transaksi", "<code>"+html.EscapeString(pending.TransactionCode)+"</code>")
+	}
+
+	card.WithRaw("📱 <b>Kode / String QRIS:</b>\n<code>" + html.EscapeString(pending.QRCode) + "</code>\n\n" +
+		"<i>💡 Foto QRIS dikirimkan ke chat. Anda dapat scan langsung atau upload dari galeri aplikasi e-wallet / mobile banking.</i>")
+
+	screen := menu.NewScreen("myxl:pending_qris", "", card.Render())
+	qrKey := m.RegisterQR(pending.QRCode)
+	var actionRow []ui.Button
+	if qrKey != "" {
+		actionRow = append(actionRow, menu.NewButton("🖼️ Kirim Foto QRIS", fmt.Sprintf("a1:myxl:qris_img:%s", qrKey)))
+	}
+	actionRow = append(actionRow, menu.NewButton("🗑️ Batalkan", fmt.Sprintf("a1:myxl:qris_cancel:%s", pending.TransactionCode)))
+	screen.AddRow(actionRow...)
+	screen.AddRow(
+		menu.NewButton("🔄 Cek Status", "a1:myxl:pending_qris"),
+		menu.NewButton("🔙 Kembali ke Dashboard", "a1:myxl:home"),
+	)
+	return screen, nil
 }
 
 // BuildDeletePickScreen lets user choose which account to delete.

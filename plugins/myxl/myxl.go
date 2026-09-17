@@ -281,6 +281,7 @@ func (p *Plugin) handleMyXL(ctx *core.Context) error {
 				"• <code>.myxl paket &lt;option_code&gt;</code> - Cek rincian detail paket\n" +
 				"• <code>.myxl saved [list|add|del|buy]</code> - Kelola / beli paket tersimpan\n" +
 				"• <code>.myxl buy &lt;option_code&gt; [metode] [harga] [nomor]</code> - Beli paket langsung\n" +
+				"• <code>.myxl qris [cancel]</code> - Cek / batalkan tagihan QRIS aktif (berlaku 5 menit)\n" +
 				"• <code>.kuota</code> - Shortcut cepat periksa kuota",
 		)
 	}
@@ -315,6 +316,8 @@ func (p *Plugin) handleMyXL(ctx *core.Context) error {
 		return p.handleSavedPackages(ctx, args)
 	case "buy", "beli":
 		return p.handleBuy(ctx, args)
+	case "qris", "pending":
+		return p.handlePendingQRIS(ctx, args)
 	default:
 		return ctx.EditOrReply(fmt.Sprintf("⚠️ Subcommand <code>%s</code> tidak dikenal. Ketik <code>.myxl</code> untuk bantuan.", html.EscapeString(subCmd)))
 	}
@@ -1065,13 +1068,47 @@ func (p *Plugin) HandleCallback(cbCtx *callback.CallbackContext) error {
 		}
 		return cbCtx.Edit("✅ Pembelian dibatalkan.", nil)
 
+	case "pending_qris":
+		if p.menuMgr == nil {
+			return cbCtx.Answer("Menu manager unavailable", true)
+		}
+		screen, err := p.menuMgr.BuildPendingQRISScreen(cbCtx.Ctx)
+		if err != nil {
+			return cbCtx.Answer(fmt.Sprintf("Gagal memuat QRIS: %v", err), true)
+		}
+		text, markup := render.ToTelegram(screen)
+		return cbCtx.Edit(text, markup)
+
+	case "qris_cancel":
+		txCode := cbCtx.OpaqueID
+		if txCode != "" {
+			_ = p.repo.DeletePendingQRIS(cbCtx.Ctx, txCode)
+		}
+		_ = cbCtx.Answer("✅ Transaksi QRIS dibatalkan", false)
+		if p.menuMgr != nil {
+			screen, err := p.menuMgr.BuildDashboardScreen(cbCtx.Ctx, false)
+			if err == nil {
+				text, markup := render.ToTelegram(screen)
+				return cbCtx.Edit(text, markup)
+			}
+		}
+		return cbCtx.Edit("✅ Transaksi QRIS dibatalkan.", nil)
+
 	case "qris_img":
 		qrCode := ""
 		if p.menuMgr != nil {
 			qrCode = p.menuMgr.ResolveQR(cbCtx.OpaqueID)
 		}
+		if qrCode == "" || qrCode == cbCtx.OpaqueID {
+			acc, _ := p.repo.GetActive(cbCtx.Ctx)
+			if acc != nil {
+				if pending, _ := p.repo.GetPendingQRIS(cbCtx.Ctx, acc.MSISDN); pending != nil {
+					qrCode = pending.QRCode
+				}
+			}
+		}
 		if qrCode == "" {
-			return cbCtx.Answer("Kode QRIS tidak ditemukan atau sudah kedaluwarsa", true)
+			return cbCtx.Answer("Kode QRIS tidak ditemukan atau sudah kedaluwarsa (5 menit)", true)
 		}
 		if cbCtx.Service == nil || cbCtx.Target.Peer == nil {
 			return cbCtx.Answer("Layanan pengiriman foto tidak tersedia", true)
@@ -1319,6 +1356,65 @@ func (p *Plugin) handleBuyShortcut(ctx *core.Context) error {
 	return p.handleBuy(ctx, ctx.Args)
 }
 
+func (p *Plugin) handlePendingQRIS(ctx *core.Context, args []string) error {
+	cCtx, cancel := context.WithTimeout(getContext(ctx), 15*time.Second)
+	defer cancel()
+
+	acc, err := p.repo.GetActive(cCtx)
+	if err != nil || acc == nil {
+		return ctx.EditOrReply("⚠️ Tidak ada akun MyXL yang aktif. Login terlebih dahulu.")
+	}
+
+	if len(args) > 0 {
+		sub := strings.ToLower(strings.TrimSpace(args[0]))
+		if sub == "cancel" || sub == "batal" || sub == "del" {
+			pending, err := p.repo.GetPendingQRIS(cCtx, acc.MSISDN)
+			if err != nil || pending == nil {
+				return ctx.EditOrReply("ℹ️ Tidak ada transaksi QRIS aktif yang dapat dibatalkan.")
+			}
+			if err := p.repo.DeletePendingQRIS(cCtx, pending.TransactionCode); err != nil {
+				return ctx.EditOrReply(fmt.Sprintf("❌ Gagal membatalkan transaksi QRIS: %v", err))
+			}
+			return ctx.EditOrReply("✅ Transaksi QRIS berhasil dibatalkan dan dihapus dari penyimpanan.")
+		}
+	}
+
+	pending, err := p.repo.GetPendingQRIS(cCtx, acc.MSISDN)
+	if err != nil {
+		return ctx.EditOrReply(fmt.Sprintf("❌ Gagal memeriksa transaksi QRIS: %v", err))
+	}
+	if pending == nil {
+		return ctx.EditOrReply("ℹ️ Tidak ada transaksi QRIS aktif yang menunggu pembayaran.\nTransaksi QRIS otomatis kedaluwarsa setelah 5 menit.")
+	}
+
+	remaining := time.Until(pending.ExpiresAt)
+	if remaining <= 0 {
+		return ctx.EditOrReply("⏳ Transaksi QRIS ini sudah kedaluwarsa (lebih dari 5 menit). Silakan lakukan pemesanan ulang.")
+	}
+
+	var sb strings.Builder
+	sb.WriteString("📱 <b>TRANSAKSI QRIS AKTIF</b>\n\n")
+	sb.WriteString(fmt.Sprintf("• <b>Nomor:</b> <code>%s</code>\n", html.EscapeString(pending.MSISDN)))
+	sb.WriteString(fmt.Sprintf("• <b>Paket:</b> %s\n", html.EscapeString(pending.PackageName)))
+	sb.WriteString(fmt.Sprintf("• <b>Total Bayar:</b> Rp %s\n", formatRupiah(pending.Price)))
+	if pending.TransactionCode != "" {
+		sb.WriteString(fmt.Sprintf("• <b>ID Transaksi:</b> <code>%s</code>\n", html.EscapeString(pending.TransactionCode)))
+	}
+	sb.WriteString(fmt.Sprintf("• <b>Batas Waktu:</b> %s (sisa <b>%s</b>)\n\n", FormatWIBClock(pending.ExpiresAt), FormatRemainingDuration(remaining)))
+	sb.WriteString("<b>Kode QRIS (Raw Text):</b>\n")
+	sb.WriteString(fmt.Sprintf("<code>%s</code>\n\n", html.EscapeString(pending.QRCode)))
+	sb.WriteString("💡 <i>Salin string QRIS di atas atau scan gambar QR yang dikirimkan. QRIS hanya berlaku 5 menit. Ketik <code>.myxl qris cancel</code> untuk membatalkan.</i>")
+
+	if err := ctx.EditOrReply(sb.String()); err != nil {
+		return err
+	}
+
+	if ctx.Svc != nil && ctx.PeerID != nil && pending.QRCode != "" {
+		_ = p.sendQRPhoto(ctx.Ctx, ctx.Svc, ctx.PeerID, pending.QRCode, pending.PackageName, pending.Price)
+	}
+	return nil
+}
+
 func (p *Plugin) handleBuy(ctx *core.Context, args []string) error {
 	if len(args) == 0 {
 		return ctx.EditOrReply(
@@ -1518,6 +1614,24 @@ func (p *Plugin) confirmPurchase(cbCtx *callback.CallbackContext, draft purchase
 	if draft.HasOverwrite {
 		effectivePrice = draft.OverwritePrice
 	}
+
+	if result.QRCode != "" && p.repo != nil {
+		now := time.Now().UTC()
+		pending := &PendingQRIS{
+			TransactionCode: result.TransactionCode,
+			IdempotencyKey:  key,
+			MSISDN:          draft.MSISDN,
+			OptionCode:      draft.OptionCode,
+			PackageName:     draft.PackageName,
+			Price:           effectivePrice,
+			QRCode:          result.QRCode,
+			Status:          "PENDING",
+			CreatedAt:       now,
+			ExpiresAt:       now.Add(5 * time.Minute),
+		}
+		_ = p.repo.SavePendingQRIS(cCtx, pending)
+	}
+
 	if p.menuMgr != nil {
 		screen := p.menuMgr.BuildPurchaseResultScreen(result, draft.PackageName, effectivePrice, draft.Method, draft.OptionCode)
 		text, markup := render.ToTelegram(screen)

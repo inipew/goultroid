@@ -81,6 +81,26 @@ func FormatWIBTime(epoch float64) string {
 	return t.Format("02 Jan 2006 15:04 WIB")
 }
 
+// FormatWIBClock formats a time.Time to "15:04:05 WIB".
+func FormatWIBClock(t time.Time) string {
+	wib := time.FixedZone("WIB", 7*3600)
+	return t.In(wib).Format("15:04:05 WIB")
+}
+
+// FormatRemainingDuration formats a remaining duration into friendly "Xm Ys" format.
+func FormatRemainingDuration(d time.Duration) string {
+	if d <= 0 {
+		return "Sudah Kedaluwarsa"
+	}
+	d = d.Round(time.Second)
+	m := int(d.Minutes())
+	s := int(d.Seconds()) % 60
+	if m > 0 {
+		return fmt.Sprintf("%dm %ds", m, s)
+	}
+	return fmt.Sprintf("%ds", s)
+}
+
 // MaskMSISDN masks middle digits of an MSISDN for privacy (e.g. 6281912345678 -> 6281****5678).
 func MaskMSISDN(msisdn string) string {
 	s := strings.TrimSpace(msisdn)

@@ -156,6 +156,18 @@ func (m *mockRepo) GetDecoy(ctx context.Context, key string) (*DecoyConfig, erro
 func (m *mockRepo) UpsertDecoy(ctx context.Context, decoy *DecoyConfig) error {
 	return nil
 }
+func (m *mockRepo) SavePendingQRIS(ctx context.Context, pending *PendingQRIS) error {
+	return nil
+}
+func (m *mockRepo) GetPendingQRIS(ctx context.Context, msisdn string) (*PendingQRIS, error) {
+	return nil, nil
+}
+func (m *mockRepo) DeletePendingQRIS(ctx context.Context, transactionCode string) error {
+	return nil
+}
+func (m *mockRepo) PruneExpiredQRIS(ctx context.Context) (int64, error) {
+	return 0, nil
+}
 
 func TestClient_RequestAndSubmitOTP(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

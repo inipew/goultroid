@@ -359,3 +359,17 @@ type SettlementResult struct {
 	Deeplink        string `json:"deeplink,omitempty"`
 	QRCode          string `json:"qr_code,omitempty"`
 }
+
+// PendingQRIS represents an active QRIS transaction waiting for payment with a 5-minute TTL.
+type PendingQRIS struct {
+	TransactionCode string    `json:"transaction_code"`
+	IdempotencyKey  string    `json:"idempotency_key"`
+	MSISDN          string    `json:"msisdn"`
+	OptionCode      string    `json:"option_code"`
+	PackageName     string    `json:"package_name"`
+	Price           int64     `json:"price"`
+	QRCode          string    `json:"qr_code"`
+	Status          string    `json:"status"`
+	CreatedAt       time.Time `json:"created_at"`
+	ExpiresAt       time.Time `json:"expires_at"`
+}
