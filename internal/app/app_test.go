@@ -53,20 +53,6 @@ func TestApp_New(t *testing.T) {
 	}
 }
 
-func TestResolvePresentationGeneration_Core(t *testing.T) {
-	generation, ok := resolvePresentationGeneration(nil, "core")
-	if !ok {
-		t.Fatal("core presentation owner must resolve without a plugin scope")
-	}
-	if generation != corePresentationGeneration {
-		t.Fatalf("core generation = %d, want %d", generation, corePresentationGeneration)
-	}
-
-	if _, ok := resolvePresentationGeneration(nil, "unknown"); ok {
-		t.Fatal("unknown owner must not resolve without a plugin scope")
-	}
-}
-
 func TestApp_NewRollsBackResourcesAfterFeatureMigrationFailure(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "invalid-feature-migration.db")
 	db, err := database.Open(dbPath)

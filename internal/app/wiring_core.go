@@ -9,7 +9,6 @@ import (
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
-	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/idempotency"
 	"github.com/inipew/goultroid/internal/jobs"
 	jobsqlite "github.com/inipew/goultroid/internal/jobs/sqlite"
@@ -20,11 +19,8 @@ import (
 	"github.com/inipew/goultroid/internal/platform/secret"
 	platformStorage "github.com/inipew/goultroid/internal/platform/storage"
 	"github.com/inipew/goultroid/internal/plugin"
-	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/resource"
 	"github.com/inipew/goultroid/internal/services/callback"
-	"github.com/inipew/goultroid/internal/services/deeplink"
-	deeplinksqlite "github.com/inipew/goultroid/internal/services/deeplink/sqlite"
 	"github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/services/localization"
 	"github.com/inipew/goultroid/internal/services/ratelimit"
@@ -72,37 +68,15 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 	callbackRouter.SetTimeout(15 * time.Second)
 
 	inlineRegistry := inline.NewRegistry()
-	catalogHandler := inline.NewCatalogHandler(inlineRegistry, "GoUltroidBot")
-	catalogHandler.SetAuthorizer(perms)
-	if err := inlineRegistry.Register(&defaultCatchAllInlineHandler{router: router, startTime: time.Now(), catalog: catalogHandler}); err != nil {
+	if err := inlineRegistry.Register(&defaultCatchAllInlineHandler{router: router, startTime: time.Now()}); err != nil {
 		cleanupCore(&coreDependencies{db: db, eventBus: eventBus, cmdLimiter: cmdLimiter, interLimiter: interLimiter}, logger)
 		return nil, fmt.Errorf("register catch-all inline handler: %w", err)
 	}
-	if _, err := inlineRegistry.RegisterDefinition(inline.Definition{
-		Capability: inline.Capability{
-			ID:          "help",
-			Pattern:     "help",
-			Title:       "Search Commands",
-			Description: "Search and inspect available userbot commands",
-			Usage:       "@GoUltroidBot help <query>",
-			Surfaces:    execution.SurfaceInline,
-		},
-		Handler: &defaultHelpInlineHandler{router: router},
-	}); err != nil {
+	if err := inlineRegistry.Register(&defaultHelpInlineHandler{router: router}); err != nil {
 		cleanupCore(&coreDependencies{db: db, eventBus: eventBus, cmdLimiter: cmdLimiter, interLimiter: interLimiter}, logger)
 		return nil, fmt.Errorf("register help inline handler: %w", err)
 	}
-	if _, err := inlineRegistry.RegisterDefinition(inline.Definition{
-		Capability: inline.Capability{
-			ID:          "ping",
-			Pattern:     "ping",
-			Title:       "Ping & Latency",
-			Description: "Check bot latency and operational status",
-			Usage:       "@GoUltroidBot ping",
-			Surfaces:    execution.SurfaceInline,
-		},
-		Handler: &defaultPingInlineHandler{startTime: time.Now()},
-	}); err != nil {
+	if err := inlineRegistry.Register(&defaultPingInlineHandler{startTime: time.Now()}); err != nil {
 		cleanupCore(&coreDependencies{db: db, eventBus: eventBus, cmdLimiter: cmdLimiter, interLimiter: interLimiter}, logger)
 		return nil, fmt.Errorf("register ping inline handler: %w", err)
 	}
@@ -183,49 +157,29 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 	capGate.AllowPrivileged("ocr", plugin.CapSecretRead)
 	capGate.AllowPrivileged("myxl", plugin.CapSecretRead)
 
-	if err := deeplinksqlite.InitSchema(context.Background(), db.DB); err != nil {
-		cleanupCore(&coreDependencies{db: db, eventBus: eventBus, cmdLimiter: cmdLimiter, interLimiter: interLimiter}, logger)
-		return nil, fmt.Errorf("initialize deeplink schema: %w", err)
-	}
-	deeplinkRepo := deeplinksqlite.NewRepository(db.DB)
-	deeplinkSvc := deeplink.NewService(deeplinkRepo, "GoUltroidBot", logger)
-
-	presEval := presentation.NewEvaluator(cfg.OwnerID, perms.ListSudo)
-	presReg := presentation.NewRegistry()
-	presSvc := presentation.NewService(presReg, presEval)
-	presHandoff := presentation.NewHandoffService(presSvc, deeplinkSvc)
-
-	if err := registerDefaultScreens(presReg, router, time.Now()); err != nil {
-		cleanupCore(&coreDependencies{db: db, eventBus: eventBus, cmdLimiter: cmdLimiter, interLimiter: interLimiter}, logger)
-		return nil, fmt.Errorf("register default screens: %w", err)
-	}
-
 	return &coreDependencies{
-		db:                  db,
-		perms:               perms,
-		router:              router,
-		eventBus:            eventBus,
-		metrics:             metrics,
-		localizer:           localizer,
-		callbackStore:       callbackStore,
-		callbackRouter:      callbackRouter,
-		inlineEngine:        inlineEngine,
-		cmdLimiter:          cmdLimiter,
-		interLimiter:        interLimiter,
-		jobsManager:         jobsManager,
-		taskEngine:          taskEngine,
-		persistencePump:     persistencePump,
-		resourceManager:     resourceManager,
-		idempManager:        idempManager,
-		fsManager:           fsManager,
-		procManager:         procManager,
-		netService:          netService,
-		secretManager:       secretManager,
-		storageManager:      storageManager,
-		auditService:        auditService,
-		capGate:             capGate,
-		deeplinkService:     deeplinkSvc,
-		presentationService: presSvc,
-		presentationHandoff: presHandoff,
+		db:              db,
+		perms:           perms,
+		router:          router,
+		eventBus:        eventBus,
+		metrics:         metrics,
+		localizer:       localizer,
+		callbackStore:   callbackStore,
+		callbackRouter:  callbackRouter,
+		inlineEngine:    inlineEngine,
+		cmdLimiter:      cmdLimiter,
+		interLimiter:    interLimiter,
+		jobsManager:     jobsManager,
+		taskEngine:      taskEngine,
+		persistencePump: persistencePump,
+		resourceManager: resourceManager,
+		idempManager:    idempManager,
+		fsManager:       fsManager,
+		procManager:     procManager,
+		netService:      netService,
+		secretManager:   secretManager,
+		storageManager:  storageManager,
+		auditService:    auditService,
+		capGate:         capGate,
 	}, nil
 }

@@ -11,7 +11,6 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/plugin"
-	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/ui"
@@ -79,7 +78,6 @@ func (s *MenuState) SetTarget(ns, key string) {
 type Plugin struct {
 	service    *settings.Service
 	stateStore *callback.StateStore
-	handoffs   presentation.HandoffClient
 	logger     *zap.Logger
 	setUC      *usecase.SetSettingUseCase
 	resetUC    *usecase.ResetSettingUseCase
@@ -97,11 +95,6 @@ func New(service *settings.Service, stateStore *callback.StateStore) *Plugin {
 		setUC:      &usecase.SetSettingUseCase{Service: service},
 		resetUC:    &usecase.ResetSettingUseCase{Service: service},
 	}
-}
-
-// SetHandoffs sets the presentation handoff client.
-func (p *Plugin) SetHandoffs(h presentation.HandoffClient) {
-	p.handoffs = h
 }
 
 // SetLogger sets the structured logger.
@@ -177,24 +170,6 @@ func (p *Plugin) handleSettingsCommand(ctx *core.Context) error {
 	cat := ""
 	if len(ctx.Args) > 0 {
 		cat = strings.ToLower(ctx.Args[0])
-	}
-
-	if p.handoffs != nil && !ctx.IsAssistant() {
-		actor := execution.NewActor(ctx.SenderID(), ctx.ChatID(), ctx.IsOwner(), ctx.IsSudo())
-		chatType := presentation.ChatTypePrivate
-		if ctx.Chat != nil && (ctx.Chat.Type == "group" || ctx.Chat.Type == "supergroup" || ctx.Chat.Type == "channel") {
-			chatType = presentation.ChatTypeGroup
-		}
-		hRes, err := p.handoffs.Handoff(ctx.Ctx, presentation.HandoffRequest{
-			Screen:        presentation.ScreenKey{Namespace: "core", Name: "settings", Version: 1},
-			Actor:         actor,
-			Source:        execution.SourceUserbot,
-			ChatType:      chatType,
-			PreferredMode: presentation.HandoffDeepLink,
-		})
-		if err == nil {
-			return render.DeliverHandoff(ctx, hRes, "Settings Dashboard", "⚙️ <b>Settings Dashboard</b>\n\nOpen interactive settings dashboard in the assistant bot:")
-		}
 	}
 
 	state := MenuState{

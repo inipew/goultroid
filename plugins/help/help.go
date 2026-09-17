@@ -9,7 +9,6 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
-	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/ui"
 	"github.com/inipew/goultroid/internal/ui/render"
@@ -31,13 +30,11 @@ type helpMenuState struct {
 type Plugin struct {
 	router     *core.Router
 	stateStore *callback.StateStore
-	handoffs   presentation.HandoffClient
 }
 
 func New(router *core.Router) *Plugin { return &Plugin{router: router} }
 
 func (p *Plugin) SetStateStore(store *callback.StateStore) { p.stateStore = store }
-func (p *Plugin) SetHandoffs(h presentation.HandoffClient) { p.handoffs = h }
 
 func (p *Plugin) Name() string      { return "help" }
 func (p *Plugin) Namespace() string { return "help" }
@@ -192,24 +189,6 @@ func (p *Plugin) handleHelp(ctx *core.Context) error {
 		}
 
 		return sendResult(ctx, ui.Error(fmt.Sprintf("Command or module %q not found.", ctx.Args[0])))
-	}
-
-	if p.handoffs != nil && !ctx.IsAssistant() {
-		actor := execution.NewActor(ctx.SenderID(), ctx.ChatID(), ctx.IsOwner(), ctx.IsSudo())
-		chatType := presentation.ChatTypeGroup
-		if ctx.Chat == nil || ctx.Chat.Type == "private" || ctx.Chat.Type == "" {
-			chatType = presentation.ChatTypePrivate
-		}
-		hRes, err := p.handoffs.Handoff(ctx.Ctx, presentation.HandoffRequest{
-			Screen:        presentation.ScreenKey{Namespace: "core", Name: "help", Version: 1},
-			Actor:         actor,
-			Source:        execution.SourceUserbot,
-			ChatType:      chatType,
-			PreferredMode: presentation.HandoffDeepLink,
-		})
-		if err == nil {
-			return render.DeliverHandoff(ctx, hRes, "Help Browser", "📖 <b>Interactive Help Browser</b>\n\nOpen interactive help in the assistant bot:")
-		}
 	}
 
 	categories, catNames := p.getCategoryNames(source)

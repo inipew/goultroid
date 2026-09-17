@@ -5,12 +5,10 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/services/ratelimit"
 	"github.com/inipew/goultroid/internal/ui"
 	"go.uber.org/zap"
@@ -24,28 +22,10 @@ type Registry struct {
 }
 
 type registryEntry struct {
-	pattern    string
-	handler    InlineHandler
-	matcher    InlineMatcher
-	priority   int
-	capability Capability
-}
-
-// DefinitionLease manages deterministic unregistration of an inline capability.
-type DefinitionLease struct {
-	def      Definition
-	registry *Registry
-	closed   atomic.Bool
-}
-
-// Close unregisters the inline capability from its registry.
-func (l *DefinitionLease) Close() {
-	if l == nil || !l.closed.CompareAndSwap(false, true) {
-		return
-	}
-	if l.registry != nil {
-		l.registry.unregister(l.def)
-	}
+	pattern  string
+	handler  InlineHandler
+	matcher  InlineMatcher
+	priority int
 }
 
 func matcherForPattern(pattern string) InlineMatcher {
@@ -77,78 +57,7 @@ func NewRegistry() *Registry {
 	}
 }
 
-// RegisterDefinition registers a complete inline capability definition with metadata and matcher.
-func (r *Registry) RegisterDefinition(def Definition) (*DefinitionLease, error) {
-	if def.Handler == nil {
-		return nil, fmt.Errorf("inline handler cannot be nil")
-	}
-	pattern := strings.ToLower(strings.TrimSpace(def.Capability.Pattern))
-	if pattern == "" {
-		pattern = strings.ToLower(strings.TrimSpace(def.Handler.Pattern()))
-		def.Capability.Pattern = pattern
-	}
-
-	if def.Capability.ID == "" {
-		if pattern != "" {
-			def.Capability.ID = CapabilityID(pattern)
-		} else {
-			def.Capability.ID = "default"
-		}
-	}
-	if def.Capability.Title == "" {
-		if pattern != "" {
-			def.Capability.Title = strings.ToUpper(pattern[:1]) + pattern[1:]
-		} else {
-			def.Capability.Title = "Assistant"
-		}
-	}
-	if def.Capability.Description == "" {
-		def.Capability.Description = def.Handler.Description()
-	}
-	if def.Capability.Surfaces == 0 {
-		def.Capability.Surfaces = execution.SurfaceInline
-	}
-	if def.Matcher == nil {
-		if v2, ok := def.Handler.(InlineHandlerV2); ok {
-			def.Matcher = v2.Matcher()
-		}
-		if def.Matcher == nil {
-			def.Matcher = matcherForPattern(pattern)
-		}
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if _, exists := r.handlers[pattern]; exists {
-		return nil, fmt.Errorf("inline handler for pattern %q is already registered", pattern)
-	}
-
-	r.handlers[pattern] = def.Handler
-	r.entries = append(r.entries, registryEntry{
-		pattern:    pattern,
-		handler:    def.Handler,
-		matcher:    def.Matcher,
-		priority:   def.Capability.Priority,
-		capability: def.Capability,
-	})
-
-	// sort by priority descending, then pattern length descending for determinism
-	for i := len(r.entries) - 1; i > 0; i-- {
-		if r.entries[i].priority > r.entries[i-1].priority || (r.entries[i].priority == r.entries[i-1].priority && len(r.entries[i].pattern) > len(r.entries[i-1].pattern)) {
-			r.entries[i], r.entries[i-1] = r.entries[i-1], r.entries[i]
-		} else {
-			break
-		}
-	}
-
-	return &DefinitionLease{
-		def:      def,
-		registry: r,
-	}, nil
-}
-
-// Register registers an InlineHandler for its pattern or keyword (backward compatible wrapper).
+// Register registers an InlineHandler for its pattern or keyword.
 func (r *Registry) Register(h InlineHandler) error {
 	return r.RegisterWithPriority(h, 0)
 }
@@ -159,29 +68,33 @@ func (r *Registry) RegisterWithPriority(h InlineHandler, priority int) error {
 		return fmt.Errorf("inline handler cannot be nil")
 	}
 	pattern := strings.ToLower(strings.TrimSpace(h.Pattern()))
-	var access InlineAccessPolicy
-	if ah, ok := h.(InlineAuthorizer); ok {
-		access = ah.AccessPolicy()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, exists := r.handlers[pattern]; exists {
+		return fmt.Errorf("inline handler for pattern %q is already registered", pattern)
 	}
+
 	var matcher InlineMatcher
 	if v2, ok := h.(InlineHandlerV2); ok {
 		matcher = v2.Matcher()
 	}
-	_, err := r.RegisterDefinition(Definition{
-		Capability: Capability{
-			ID:          CapabilityID(pattern),
-			Pattern:     pattern,
-			Title:       pattern,
-			Description: h.Description(),
-			Surfaces:    execution.SurfaceInline,
-			Access:      access,
-			Priority:    priority,
-			Version:     1,
-		},
-		Matcher: matcher,
-		Handler: h,
-	})
-	return err
+	if matcher == nil {
+		matcher = matcherForPattern(pattern)
+	}
+
+	r.handlers[pattern] = h
+	r.entries = append(r.entries, registryEntry{pattern: pattern, handler: h, matcher: matcher, priority: priority})
+	// sort by priority descending, then pattern length descending for determinism
+	for i := len(r.entries) - 1; i > 0; i-- {
+		if r.entries[i].priority > r.entries[i-1].priority || (r.entries[i].priority == r.entries[i-1].priority && len(r.entries[i].pattern) > len(r.entries[i-1].pattern)) {
+			r.entries[i], r.entries[i-1] = r.entries[i-1], r.entries[i]
+		} else {
+			break
+		}
+	}
+	return nil
 }
 
 // RegisterMatcher registers a handler with a custom matcher (prefix/regex).
@@ -189,166 +102,35 @@ func (r *Registry) RegisterMatcher(pattern string, matcher InlineMatcher, h Inli
 	if h == nil || matcher == nil {
 		return fmt.Errorf("matcher and handler cannot be nil")
 	}
-	pattern = strings.ToLower(strings.TrimSpace(pattern))
-	var access InlineAccessPolicy
-	if ah, ok := h.(InlineAuthorizer); ok {
-		access = ah.AccessPolicy()
-	}
-	_, err := r.RegisterDefinition(Definition{
-		Capability: Capability{
-			ID:          CapabilityID(pattern),
-			Pattern:     pattern,
-			Title:       pattern,
-			Description: h.Description(),
-			Surfaces:    execution.SurfaceInline,
-			Access:      access,
-			Priority:    priority,
-			Version:     1,
-		},
-		Matcher: matcher,
-		Handler: h,
-	})
-	return err
-}
-
-func (r *Registry) unregister(def Definition) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
-	pattern := strings.ToLower(strings.TrimSpace(def.Capability.Pattern))
-	for i, e := range r.entries {
-		if (def.Capability.ID != "" && e.capability.ID == def.Capability.ID) || e.pattern == pattern {
-			r.entries = append(r.entries[:i], r.entries[i+1:]...)
-			delete(r.handlers, pattern)
+	key := strings.ToLower(strings.TrimSpace(pattern))
+	if _, exists := r.handlers[key]; exists {
+		return fmt.Errorf("inline handler for pattern %q is already registered", key)
+	}
+	r.handlers[key] = h
+	r.entries = append(r.entries, registryEntry{pattern: key, handler: h, matcher: matcher, priority: priority})
+	for i := len(r.entries) - 1; i > 0; i-- {
+		if r.entries[i].priority > r.entries[i-1].priority {
+			r.entries[i], r.entries[i-1] = r.entries[i-1], r.entries[i]
+		} else {
 			break
 		}
 	}
+	return nil
 }
 
-// RevokeOwner unregisters all inline handlers belonging to a specific plugin owner and generation.
-func (r *Registry) RevokeOwner(owner string, generation uint64) int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	revoked := 0
-	filtered := make([]registryEntry, 0, len(r.entries))
-	for _, e := range r.entries {
-		if e.capability.Owner == owner && (generation == 0 || e.capability.Generation == generation) {
-			delete(r.handlers, e.pattern)
-			revoked++
-		} else {
-			filtered = append(filtered, e)
-		}
-	}
-	r.entries = filtered
-	return revoked
-}
-
-// ListCapabilities discovers active inline capabilities filtered by caller permissions and search query.
-func (r *Registry) ListCapabilities(query CatalogQuery) []Capability {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	var results []Capability
-	search := strings.ToLower(strings.TrimSpace(query.Search))
-
-	for _, e := range r.entries {
-		cap := e.capability
-		if cap.ID == "" {
-			continue
-		}
-
-		if !query.IncludeAll {
-			if cap.Hidden {
-				continue
-			}
-
-			// Authorization enforcement
-			if cap.Access.OwnerOnly && !query.Actor.IsOwner {
-				continue
-			}
-			if cap.Access.SudoOnly && !query.Actor.IsOwner && !query.Actor.IsSudo {
-				continue
-			}
-			if len(cap.Access.AllowedUsers) > 0 {
-				allowed := false
-				for _, uid := range cap.Access.AllowedUsers {
-					if uid == query.Actor.UserID || query.Actor.IsOwner {
-						allowed = true
-						break
-					}
-				}
-				if !allowed {
-					continue
-				}
-			}
-			if len(cap.Access.AllowedChatTypes) > 0 && query.PeerType != nil {
-				peerMatch := false
-				var currentChatType InlineChatType
-				switch query.PeerType.(type) {
-				case *tg.InlineQueryPeerTypePM:
-					currentChatType = ChatTypePrivate
-				case *tg.InlineQueryPeerTypeChat:
-					currentChatType = ChatTypeGroup
-				case *tg.InlineQueryPeerTypeMegagroup:
-					currentChatType = ChatTypeSupergroup
-				case *tg.InlineQueryPeerTypeBroadcast:
-					currentChatType = ChatTypeChannel
-				}
-				for _, ct := range cap.Access.AllowedChatTypes {
-					if ct == currentChatType {
-						peerMatch = true
-						break
-					}
-				}
-				if !peerMatch {
-					continue
-				}
-			}
-		}
-
-		if search != "" {
-			match := strings.Contains(strings.ToLower(cap.Pattern), search) ||
-				strings.Contains(strings.ToLower(cap.Title), search) ||
-				strings.Contains(strings.ToLower(cap.Description), search)
-			if !match {
-				for _, kw := range cap.Keywords {
-					if strings.Contains(strings.ToLower(kw), search) {
-						match = true
-						break
-					}
-				}
-			}
-			if !match {
-				continue
-			}
-		}
-
-		results = append(results, cap)
-	}
-	return results
-}
-
-// ResolveDefinition looks up the matched Definition with capability metadata and splits arguments.
-func (r *Registry) ResolveDefinition(query string) (Definition, []string, bool) {
+// Resolve looks up the appropriate InlineHandler and splits query arguments.
+func (r *Registry) Resolve(query string) (InlineHandler, []string, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	trimmed := strings.TrimSpace(query)
 	if trimmed == "" {
-		for _, e := range r.entries {
-			if e.pattern == "" {
-				return Definition{
-					Capability: e.capability,
-					Matcher:    e.matcher,
-					Handler:    e.handler,
-				}, nil, true
-			}
-		}
 		if h, ok := r.handlers[""]; ok {
-			return Definition{Handler: h}, nil, true
+			return h, nil, true
 		}
-		return Definition{}, nil, false
+		return nil, nil, false
 	}
 
 	// Try entries in priority order where matcher matches
@@ -358,53 +140,23 @@ func (r *Registry) ResolveDefinition(query string) (Definition, []string, bool) 
 		}
 		if e.matcher != nil {
 			if args, ok := e.matcher.Match(trimmed); ok {
-				return Definition{
-					Capability: e.capability,
-					Matcher:    e.matcher,
-					Handler:    e.handler,
-				}, args, true
+				return e.handler, args, true
 			}
 		}
 	}
-
 	// Fallback keyword exact already covered via matcher, but keep legacy fast path
 	fields := strings.Fields(trimmed)
 	if len(fields) > 0 {
 		kw := strings.ToLower(fields[0])
-		for _, e := range r.entries {
-			if e.pattern == kw {
-				return Definition{
-					Capability: e.capability,
-					Matcher:    e.matcher,
-					Handler:    e.handler,
-				}, fields[1:], true
-			}
-		}
 		if h, ok := r.handlers[kw]; ok {
-			return Definition{Handler: h}, fields[1:], true
+			return h, fields[1:], true
 		}
 	}
-
 	// catch-all
-	for _, e := range r.entries {
-		if e.pattern == "" {
-			return Definition{
-				Capability: e.capability,
-				Matcher:    e.matcher,
-				Handler:    e.handler,
-			}, strings.Fields(trimmed), true
-		}
-	}
 	if h, ok := r.handlers[""]; ok {
-		return Definition{Handler: h}, strings.Fields(trimmed), true
+		return h, strings.Fields(trimmed), true
 	}
-	return Definition{}, nil, false
-}
-
-// Resolve looks up the appropriate InlineHandler and splits query arguments.
-func (r *Registry) Resolve(query string) (InlineHandler, []string, bool) {
-	def, args, ok := r.ResolveDefinition(query)
-	return def.Handler, args, ok
+	return nil, nil, false
 }
 
 // Engine coordinates inline query execution, caching, pagination, and MTProto serialization.
@@ -607,8 +359,8 @@ func (e *Engine) ExecuteWithPeerType(ctx context.Context, svc core.TelegramServi
 		}
 	}
 
-	// Resolve handler and capability definition first
-	def, args, ok := e.registry.ResolveDefinition(trimmed)
+	// Resolve handler first to know cache policy
+	handler, args, ok := e.registry.Resolve(trimmed)
 	if !ok {
 		e.logger.Debug("no inline handler matched query", zap.String("query", trimmed), zap.String("correlation_id", correlationID))
 		if e.metrics != nil {
@@ -622,18 +374,12 @@ func (e *Engine) ExecuteWithPeerType(ctx context.Context, svc core.TelegramServi
 		return ErrNoMatchingHandler
 	}
 
-	handler := def.Handler
-	policy := def.Capability.Cache
-	access := def.Capability.Access
-
-	// Fallback to InlineHandlerV2 if legacy interface was used and capability fields were unpopulated
+	// Determine cache policy
+	policy := CacheGlobal
+	var access InlineAccessPolicy
 	if v2, ok := handler.(InlineHandlerV2); ok {
-		if policy == CacheGlobal && def.Capability.ID == "" {
-			policy = v2.CachePolicy()
-		}
-		if !access.OwnerOnly && !access.SudoOnly && len(access.AllowedUsers) == 0 && len(access.AllowedChats) == 0 && len(access.AllowedChatTypes) == 0 {
-			access = v2.AccessPolicy()
-		}
+		policy = v2.CachePolicy()
+		access = v2.AccessPolicy()
 	}
 
 	// Authorization before cache/handler execution (P2 auth policy)
@@ -656,9 +402,6 @@ func (e *Engine) ExecuteWithPeerType(ctx context.Context, svc core.TelegramServi
 	// Locale/version included in key per audit  handler/version + query + offset + user/chat/locale
 	locale := "" // future: from InlineContext or user settings; empty for now keeps compat
 	version := HandlerVersion(handler)
-	if def.Capability.Version > 0 || def.Capability.Generation > 0 {
-		version = fmt.Sprintf("%s-v%d-g%d", version, def.Capability.Version, def.Capability.Generation)
-	}
 	if policy != CacheNone {
 		// Check scoped cache with locale/version.
 		// The unpaginated result set is stored under key with offset "", so we look up with "".
@@ -792,9 +535,6 @@ func (e *Engine) ExecuteWithPeerType(ctx context.Context, svc core.TelegramServi
 		if effectivePolicy != CacheNone && len(allResults) > 0 {
 			locale := "" // inlineCtx.Locale if set; empty keeps compat
 			version := HandlerVersion(handler)
-			if def.Capability.Version > 0 || def.Capability.Generation > 0 {
-				version = fmt.Sprintf("%s-v%d-g%d", version, def.Capability.Version, def.Capability.Generation)
-			}
 			scopedKey := ScopedKeyEx(handler.Pattern(), trimmed, "", effectivePolicy, userID, 0, locale, version)
 			e.cache.SetScoped(scopedKey, allResults, 30*time.Second)
 		}

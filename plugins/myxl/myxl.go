@@ -14,7 +14,6 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/plugin"
-	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/ui"
 	"github.com/inipew/goultroid/internal/ui/render"
@@ -28,12 +27,10 @@ var (
 
 // Plugin provides MyXL account management and quota viewing commands.
 type Plugin struct {
-	repo            Repository
-	client          *Client
-	stateStore      *callback.StateStore
-	menuMgr         *MenuManager
-	presentationSvc *presentation.Service
-	handoffs        presentation.HandoffClient
+	repo       Repository
+	client     *Client
+	stateStore *callback.StateStore
+	menuMgr    *MenuManager
 }
 
 const myxlCallbackTTL = 10 * time.Minute
@@ -83,16 +80,6 @@ func (p *Plugin) SetAssistantMenu(ctrl *menu.Controller) {
 			ctrl.RegisterTextHandler(p.menuMgr)
 		}
 	}
-}
-
-// SetPresentation configures the presentation service.
-func (p *Plugin) SetPresentation(svc *presentation.Service) {
-	p.presentationSvc = svc
-}
-
-// SetHandoffs configures the presentation handoff client.
-func (p *Plugin) SetHandoffs(h presentation.HandoffClient) {
-	p.handoffs = h
 }
 
 // MenuManager returns the MenuManager instance.
@@ -243,24 +230,6 @@ func isGroupChat(chat *core.Chat) bool {
 }
 
 func (p *Plugin) handleMyXL(ctx *core.Context) error {
-	if p.handoffs != nil && !ctx.IsAssistant() && (len(ctx.Args) == 0 || (len(ctx.Args) == 1 && strings.EqualFold(ctx.Args[0], "menu"))) {
-		actor := execution.NewActor(ctx.SenderID(), ctx.ChatID(), ctx.IsOwner(), ctx.IsSudo())
-		chatType := presentation.ChatTypePrivate
-		if isGroupChat(ctx.Chat) {
-			chatType = presentation.ChatTypeGroup
-		}
-		hRes, err := p.handoffs.Handoff(ctx.Ctx, presentation.HandoffRequest{
-			Screen:        presentation.ScreenKey{Namespace: "myxl", Name: "dashboard", Version: 1},
-			Actor:         actor,
-			Source:        execution.SourceUserbot,
-			ChatType:      chatType,
-			PreferredMode: presentation.HandoffAuto,
-		})
-		if err == nil {
-			return render.DeliverHandoff(ctx, hRes, "MyXL Dashboard", "🔒 <b>MyXL Account & Quota</b>\n\nOpen interactive MyXL dashboard securely in the assistant bot:")
-		}
-	}
-
 	showInteractive := ctx.Source == core.ExecutionAssistant || (len(ctx.Args) == 1 && strings.EqualFold(ctx.Args[0], "menu"))
 	if len(ctx.Args) == 0 || (len(ctx.Args) == 1 && strings.EqualFold(ctx.Args[0], "menu")) {
 		if showInteractive && p.menuMgr != nil {

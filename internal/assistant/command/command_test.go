@@ -3,7 +3,6 @@ package command_test
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -13,9 +12,6 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/presentation"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
-	appPresentation "github.com/inipew/goultroid/internal/presentation"
-	"github.com/inipew/goultroid/internal/services/deeplink"
-	"github.com/inipew/goultroid/internal/ui"
 	"go.uber.org/zap"
 )
 
@@ -374,90 +370,5 @@ func TestCommandRouter_CoreRouterDirect(t *testing.T) {
 	}
 	if fake.lastSentText != "pong from core" {
 		t.Fatalf("expected 'pong from core', got %q", fake.lastSentText)
-	}
-}
-
-type mockDeepLinkConsumer struct {
-	consumeFunc func(ctx context.Context, token string, actor execution.Actor) (deeplink.Claim, error)
-}
-
-func (m *mockDeepLinkConsumer) Consume(ctx context.Context, token string, actor execution.Actor) (deeplink.Claim, error) {
-	if m.consumeFunc != nil {
-		return m.consumeFunc(ctx, token, actor)
-	}
-	return deeplink.Claim{}, deeplink.ErrTokenNotFound
-}
-
-type mockScreenBuilder struct {
-	key appPresentation.ScreenKey
-}
-
-func (m *mockScreenBuilder) Key() appPresentation.ScreenKey { return m.key }
-func (m *mockScreenBuilder) Build(ctx context.Context, req appPresentation.BuildRequest) (appPresentation.BuildResult, error) {
-	s := ui.NewScreen("custom_screen", "Custom Title", "Custom Screen Content")
-	return appPresentation.BuildResult{Screen: s}, nil
-}
-
-func TestCommandRouter_StartWithDeepLinkToken(t *testing.T) {
-	r := command.NewRouter(zap.NewNop())
-	startTime := time.Now().Add(-10 * time.Minute)
-	command.AttachDefaultCommands(r, func() string { return "TestBot" }, func() time.Time { return startTime }, presentation.RenderScreen)
-
-	screenKey := appPresentation.ScreenKey{Namespace: "settings", Name: "main"}
-	presRegistry := appPresentation.NewRegistry()
-	_, _ = presRegistry.Register(appPresentation.Registration{
-		Owner:      "settings",
-		Generation: 1,
-		Builder:    &mockScreenBuilder{key: screenKey},
-		Policy:     appPresentation.PublicPolicy(),
-	})
-	presSvc := appPresentation.NewService(presRegistry, appPresentation.NewEvaluator(0, nil))
-	r.SetPresentation(presSvc)
-
-	consumer := &mockDeepLinkConsumer{
-		consumeFunc: func(ctx context.Context, token string, actor execution.Actor) (deeplink.Claim, error) {
-			if token == "valid-token" {
-				return deeplink.Claim{
-					ID:        "claim-1",
-					Purpose:   deeplink.PurposeOpenScreen,
-					UserID:    actor.UserID,
-					Screen:    screenKey,
-					ExpiresAt: time.Now().Add(5 * time.Minute),
-				}, nil
-			}
-			return deeplink.Claim{}, deeplink.ErrTokenExpired
-		},
-	}
-	r.SetDeepLinks(consumer)
-
-	fake := &fakeInteraction{}
-	ctx := context.Background()
-	peer := &tg.InputPeerUser{UserID: 42}
-
-	// 1. Valid deep link token
-	err := r.Dispatch(ctx, 42, peer, "/start valid-token", fake)
-	if err != nil {
-		t.Fatalf("dispatch valid token: %v", err)
-	}
-	if fake.lastSentText == "" || !strings.Contains(fake.lastSentText, "Custom Screen Content") {
-		t.Fatalf("expected custom screen content, got %q", fake.lastSentText)
-	}
-
-	// 2. Expired deep link token
-	err = r.Dispatch(ctx, 42, peer, "/start invalid-token", fake)
-	if err != nil {
-		t.Fatalf("dispatch invalid token: %v", err)
-	}
-	if !strings.Contains(fake.lastSentText, "link has expired") {
-		t.Fatalf("expected expired link notice, got %q", fake.lastSentText)
-	}
-
-	// 3. Bare /start (no token) -> standard dashboard
-	err = r.Dispatch(ctx, 42, peer, "/start", fake)
-	if err != nil {
-		t.Fatalf("dispatch bare start: %v", err)
-	}
-	if !strings.Contains(fake.lastSentText, "GoUltroid Assistant") {
-		t.Fatalf("expected standard dashboard, got %q", fake.lastSentText)
 	}
 }

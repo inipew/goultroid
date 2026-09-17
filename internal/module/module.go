@@ -2,8 +2,6 @@ package module
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"time"
 
 	"github.com/inipew/goultroid/internal/addon"
@@ -17,12 +15,10 @@ import (
 	"github.com/inipew/goultroid/internal/platform/process"
 	"github.com/inipew/goultroid/internal/platform/secret"
 	"github.com/inipew/goultroid/internal/plugin"
-	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/resource"
 	"github.com/inipew/goultroid/internal/scheduler"
 	broadcastSvc "github.com/inipew/goultroid/internal/services/broadcast"
 	"github.com/inipew/goultroid/internal/services/callback"
-	"github.com/inipew/goultroid/internal/services/deeplink"
 	"github.com/inipew/goultroid/internal/services/download"
 	mediaSvc "github.com/inipew/goultroid/internal/services/media"
 	pmpermitSvc "github.com/inipew/goultroid/internal/services/pmpermit"
@@ -54,9 +50,6 @@ type TelegramRuntime struct {
 	Callbacks       *callback.Router
 	CallbackStore   *callback.StateStore
 	AssistantMenu   *menu.Controller
-	Presentation    *presentation.Service
-	Handoffs        presentation.HandoffClient
-	DeepLinks       *deeplink.Service
 }
 
 // ServiceRuntime contains reusable cross-feature services. Feature-owned
@@ -113,31 +106,6 @@ func (rt *Runtime) RegisterPlugin(ctx context.Context, manifest Manifest, p plug
 		return ErrNilPluginManager
 	}
 	return rt.Plugins.RegisterModule(ctx, manifest, p)
-}
-
-// RegisterScreen registers a presentation screen bound to the plugin lifecycle scope.
-func (rt *Runtime) RegisterScreen(pluginID string, reg presentation.Registration) (*presentation.Lease, error) {
-	if rt == nil || rt.Presentation == nil {
-		return nil, errors.New("presentation service not available")
-	}
-	if pluginID != "" {
-		if rt.Plugins == nil {
-			return nil, errors.New("plugin manager not available for scoped screen registration")
-		}
-		scope, ok := rt.Plugins.Scope(pluginID)
-		if !ok {
-			return nil, fmt.Errorf("plugin scope %q not found for screen registration", pluginID)
-		}
-		reg.Owner = scope.Owner()
-		reg.Generation = scope.Generation()
-		lease, err := rt.Presentation.Registry().Register(reg)
-		if err != nil {
-			return nil, err
-		}
-		_ = scope.Defer(lease.Close)
-		return lease, nil
-	}
-	return rt.Presentation.Registry().Register(reg)
 }
 
 type Module interface {

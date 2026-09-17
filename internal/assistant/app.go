@@ -6,10 +6,8 @@ import (
 
 	"github.com/inipew/goultroid/internal/assistant/callback"
 	"github.com/inipew/goultroid/internal/assistant/client"
-	"github.com/inipew/goultroid/internal/assistant/command"
 	"github.com/inipew/goultroid/internal/assistant/menu"
 	"github.com/inipew/goultroid/internal/core"
-	appPresentation "github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/settings"
@@ -28,8 +26,6 @@ type Client interface {
 	SetMetricsCollector(m core.MetricsCollector)
 	SetCallbackRouter(router client.CoreCallbackDispatcher)
 	SetInlineEngine(engine *inline.Engine)
-	SetPresentation(svc *appPresentation.Service)
-	SetDeepLinks(consumer command.DeepLinkConsumer)
 	SetTasks(client tasks.Client)
 	SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool))
 	MenuController() *menu.Controller
@@ -98,12 +94,6 @@ func (a *AssistantApp) SetCallbackRouter(router client.CoreCallbackDispatcher) {
 	a.client.SetCallbackRouter(router)
 }
 func (a *AssistantApp) SetInlineEngine(engine *inline.Engine) { a.client.SetInlineEngine(engine) }
-func (a *AssistantApp) SetPresentation(svc *appPresentation.Service) {
-	a.client.SetPresentation(svc)
-}
-func (a *AssistantApp) SetDeepLinks(consumer command.DeepLinkConsumer) {
-	a.client.SetDeepLinks(consumer)
-}
 func (a *AssistantApp) SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool)) {
 	a.client.SetPluginScopeResolver(resolver)
 }

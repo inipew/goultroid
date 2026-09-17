@@ -19,12 +19,10 @@ import (
 	"github.com/inipew/goultroid/internal/jobs"
 	"github.com/inipew/goultroid/internal/module"
 	"github.com/inipew/goultroid/internal/plugin"
-	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/resource"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/scheduler"
 	"github.com/inipew/goultroid/internal/services/callback"
-	"github.com/inipew/goultroid/internal/services/deeplink"
 	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/inline"
 	mediaSvc "github.com/inipew/goultroid/internal/services/media"
@@ -58,9 +56,6 @@ type App struct {
 	downloadRegistry *download.Registry
 	processRunner    *processSvc.OSRunner
 	startTime        time.Time
-	deeplink         *deeplink.Service
-	presentation     *presentation.Service
-	handoff          presentation.HandoffClient
 
 	jobs            *jobs.Manager
 	taskEngine      *taskengine.Engine
@@ -143,15 +138,6 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	if domServices.schedEngine != nil {
 		pluginManager.SetSchedulerCleaner(domServices.schedEngine)
 	}
-	if coreDeps.presentationService != nil {
-		pluginManager.SetPresentationRevoker(coreDeps.presentationService.Registry())
-	}
-	if coreDeps.inlineEngine != nil {
-		pluginManager.SetInlineRevoker(coreDeps.inlineEngine.Registry())
-	}
-	if coreDeps.deeplinkService != nil {
-		pluginManager.SetDeepLinkRevoker(coreDeps.deeplinkService)
-	}
 	if domServices.addonManager != nil {
 		domServices.addonManager.SetProcessManager(coreDeps.procManager)
 	}
@@ -162,19 +148,12 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		tgRuntime.assistant.SetCallbackRouter(coreDeps.callbackRouter)
 		tgRuntime.assistant.SetInlineEngine(coreDeps.inlineEngine)
 		tgRuntime.assistant.SetTasks(coreDeps.taskEngine)
-		tgRuntime.assistant.SetPresentation(coreDeps.presentationService)
-		tgRuntime.assistant.SetDeepLinks(coreDeps.deeplinkService)
 		tgRuntime.assistant.SetPluginScopeResolver(func(owner string) (tasks.ScopeIdentity, bool) {
 			scope, ok := pluginManager.Scope(owner)
 			if !ok {
 				return tasks.ScopeIdentity{}, false
 			}
 			return tasks.ScopeIdentity{Owner: scope.Owner(), Generation: scope.Generation()}, true
-		})
-	}
-	if coreDeps.deeplinkService != nil {
-		coreDeps.deeplinkService.SetActiveGenerationResolver(func(owner string) (uint64, bool) {
-			return resolvePresentationGeneration(pluginManager, owner)
 		})
 	}
 
@@ -199,9 +178,6 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 			Resolver:        tgRuntime.dispatcher.Resolver(),
 			Callbacks:       coreDeps.callbackRouter,
 			CallbackStore:   coreDeps.callbackStore,
-			Presentation:    coreDeps.presentationService,
-			Handoffs:        coreDeps.presentationHandoff,
-			DeepLinks:       coreDeps.deeplinkService,
 			AssistantMenu: func() *menu.Controller {
 				if tgRuntime.assistant != nil {
 					return tgRuntime.assistant.MenuController()
@@ -283,11 +259,6 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 			return nil, fmt.Errorf("register settings component: %w", err)
 		}
 	}
-	if coreDeps.deeplinkService != nil {
-		if err := rt.Register(coreDeps.deeplinkService); err != nil {
-			return nil, fmt.Errorf("register deeplink component: %w", err)
-		}
-	}
 	if err := rt.Register(tgRuntime.dispatcher); err != nil {
 		return nil, fmt.Errorf("register dispatcher component: %w", err)
 	}
@@ -320,9 +291,6 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		downloadRegistry: domServices.downloadRegistry,
 		processRunner:    domServices.processRunner,
 		startTime:        domServices.startTime,
-		deeplink:         coreDeps.deeplinkService,
-		presentation:     coreDeps.presentationService,
-		handoff:          coreDeps.presentationHandoff,
 		jobs:             coreDeps.jobsManager,
 		taskEngine:       coreDeps.taskEngine,
 		persistencePump:  coreDeps.persistencePump,
