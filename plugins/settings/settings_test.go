@@ -20,6 +20,12 @@ type mockSettingsDB struct {
 	idGen   int64
 }
 
+func TestPlugin_CallbackOptions_HandlerOwnsAnswer(t *testing.T) {
+	if opts := (&Plugin{}).CallbackOptions(); opts.AutoAnswer {
+		t.Fatal("settings callbacks must not be pre-answered before action-specific feedback")
+	}
+}
+
 func newMockSettingsDB() *mockSettingsDB {
 	return &mockSettingsDB{
 		items: make(map[string]*settings.SettingItem),

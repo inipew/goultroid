@@ -99,7 +99,10 @@ func (p *Plugin) Namespace() string {
 
 // CallbackOptions configures immediate ack behavior for callback interactions.
 func (p *Plugin) CallbackOptions() callback.CallbackHandlerOptions {
-	return callback.CallbackHandlerOptions{AutoAnswer: true}
+	// MyXL handlers return action-specific callback answers. Pre-answering here
+	// would consume Telegram's single callback acknowledgement and turn the
+	// handler's later Answer call into ErrCallbackAlreadyAnswered on Assistant.
+	return callback.CallbackHandlerOptions{AutoAnswer: false}
 }
 
 // Description returns a summary of the plugin functionality.

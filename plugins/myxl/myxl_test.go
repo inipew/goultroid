@@ -22,6 +22,12 @@ type mockTgService struct {
 	lastMarkup tg.ReplyMarkupClass
 }
 
+func TestPlugin_CallbackOptions_HandlerOwnsAnswer(t *testing.T) {
+	if opts := (&Plugin{}).CallbackOptions(); opts.AutoAnswer {
+		t.Fatal("MyXL callbacks must not be pre-answered before action-specific feedback")
+	}
+}
+
 func (m *mockTgService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
 	m.sent = text
 	return &tg.Message{ID: 10, Message: text}, nil

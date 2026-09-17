@@ -122,7 +122,9 @@ func (p *Plugin) Namespace() string {
 
 func (p *Plugin) CallbackOptions() callback.CallbackHandlerOptions {
 	return callback.CallbackHandlerOptions{
-		AutoAnswer: true,
+		// Settings handlers own their success and error acknowledgements. The
+		// router still sends a silent fallback answer when a handler only edits.
+		AutoAnswer: false,
 	}
 }
 
