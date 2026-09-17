@@ -146,6 +146,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		tgRuntime.assistant.SetSettingsService(domServices.settingsService)
 		tgRuntime.assistant.SetMetricsCollector(coreDeps.metrics)
 		tgRuntime.assistant.SetCallbackRouter(coreDeps.callbackRouter)
+		tgRuntime.assistant.SetInlineEngine(coreDeps.inlineEngine)
 		tgRuntime.assistant.SetTasks(coreDeps.taskEngine)
 		tgRuntime.assistant.SetPluginScopeResolver(func(owner string) (tasks.ScopeIdentity, bool) {
 			scope, ok := pluginManager.Scope(owner)

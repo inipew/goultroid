@@ -136,12 +136,13 @@ func (c *testTaskClient) Snapshot(tasks.TaskID) (tasks.TaskSnapshot, bool) {
 }
 
 type mockTelegramAPI struct {
-	answerReq     *tg.MessagesSetBotCallbackAnswerRequest
-	editReq       *tg.MessagesEditMessageRequest
-	deleteMsgsReq *tg.MessagesDeleteMessagesRequest
-	deleteChanReq *tg.ChannelsDeleteMessagesRequest
-	sendMsgReq    *tg.MessagesSendMessageRequest
-	editInlineReq *tg.MessagesEditInlineBotMessageRequest
+	answerReq       *tg.MessagesSetBotCallbackAnswerRequest
+	editReq         *tg.MessagesEditMessageRequest
+	deleteMsgsReq   *tg.MessagesDeleteMessagesRequest
+	deleteChanReq   *tg.ChannelsDeleteMessagesRequest
+	sendMsgReq      *tg.MessagesSendMessageRequest
+	editInlineReq   *tg.MessagesEditInlineBotMessageRequest
+	inlineResultReq *tg.MessagesSetInlineBotResultsRequest
 }
 
 func (m *mockTelegramAPI) MessagesSetBotCallbackAnswer(ctx context.Context, req *tg.MessagesSetBotCallbackAnswerRequest) (bool, error) {
@@ -173,6 +174,79 @@ func (m *mockTelegramAPI) MessagesSendMessage(ctx context.Context, req *tg.Messa
 func (m *mockTelegramAPI) MessagesEditInlineBotMessage(ctx context.Context, req *tg.MessagesEditInlineBotMessageRequest) (bool, error) {
 	m.editInlineReq = req
 	return true, nil
+}
+func (m *mockTelegramAPI) MessagesSetInlineBotResults(ctx context.Context, req *tg.MessagesSetInlineBotResultsRequest) (bool, error) {
+	m.inlineResultReq = req
+	return true, nil
+}
+
+type recordingInlineExecutor struct {
+	called   bool
+	queryID  int64
+	userID   int64
+	query    string
+	offset   string
+	peerType tg.InlineQueryPeerTypeClass
+}
+
+func (e *recordingInlineExecutor) ExecuteWithPeerType(ctx context.Context, svc core.TelegramServicer, queryID, userID int64, query, offset string, peerType tg.InlineQueryPeerTypeClass) error {
+	e.called, e.queryID, e.userID, e.query, e.offset, e.peerType = true, queryID, userID, query, offset, peerType
+	return svc.AnswerInlineQueryOptions(ctx, queryID, []tg.InputBotInlineResultClass{
+		&tg.InputBotInlineResult{ID: "result-1", Type: "article", Title: "Result"},
+	}, core.InlineAnswerOptions{NextOffset: "next", CacheTime: 7, Private: true})
+}
+
+func TestUpdateHandlers_InlineQueryExecutesThroughTaskEngine(t *testing.T) {
+	dispatcher := tg.NewUpdateDispatcher()
+	api := &mockTelegramAPI{}
+	executor := &recordingInlineExecutor{}
+	taskClient := &testTaskClient{}
+	RegisterUpdateHandlers(&dispatcher, UpdateHandlerDeps{
+		InlineEngine:  executor,
+		InlineService: newAssistantInlineQueryServicer(api),
+		Tasks:         taskClient,
+	})
+
+	peerType := &tg.InlineQueryPeerTypePM{}
+	update := &tg.UpdateBotInlineQuery{QueryID: 77, UserID: 42, Query: "help ping", Offset: "20", PeerType: peerType}
+	if err := dispatcher.Handle(context.Background(), &tg.Updates{Updates: []tg.UpdateClass{update}}); err != nil {
+		t.Fatalf("handle inline query: %v", err)
+	}
+	if !executor.called {
+		t.Fatal("expected inline engine execution")
+	}
+	if executor.queryID != 77 || executor.userID != 42 || executor.query != "help ping" || executor.offset != "20" || executor.peerType != peerType {
+		t.Fatalf("unexpected inline coordinates: %+v", executor)
+	}
+	if taskClient.last.ID != "asst:inline:77" || taskClient.last.Pool != "interactive" || taskClient.last.Class != tasks.PriorityInteractive {
+		t.Fatalf("unexpected work spec: %+v", taskClient.last)
+	}
+	if api.inlineResultReq == nil {
+		t.Fatal("expected Telegram inline result answer")
+	}
+	if api.inlineResultReq.QueryID != 77 || api.inlineResultReq.NextOffset != "next" || api.inlineResultReq.CacheTime != 7 || !api.inlineResultReq.Private || len(api.inlineResultReq.Results) != 1 {
+		t.Fatalf("unexpected inline answer: %+v", api.inlineResultReq)
+	}
+}
+
+func TestUpdateHandlers_InlineQueryWithoutTaskEngineAnswersEmpty(t *testing.T) {
+	dispatcher := tg.NewUpdateDispatcher()
+	api := &mockTelegramAPI{}
+	RegisterUpdateHandlers(&dispatcher, UpdateHandlerDeps{
+		InlineEngine:  &recordingInlineExecutor{},
+		InlineService: newAssistantInlineQueryServicer(api),
+	})
+
+	update := &tg.UpdateBotInlineQuery{QueryID: 88, UserID: 42, Query: "help"}
+	if err := dispatcher.Handle(context.Background(), &tg.Updates{Updates: []tg.UpdateClass{update}}); err != nil {
+		t.Fatalf("handle inline query: %v", err)
+	}
+	if api.inlineResultReq == nil || api.inlineResultReq.QueryID != 88 {
+		t.Fatalf("expected terminal empty answer, got %+v", api.inlineResultReq)
+	}
+	if len(api.inlineResultReq.Results) != 0 || api.inlineResultReq.CacheTime != 1 || !api.inlineResultReq.Private {
+		t.Fatalf("unexpected unavailable answer: %+v", api.inlineResultReq)
+	}
 }
 
 func TestAssistantClient_CallbackBridge_DispatchToCoreRouter(t *testing.T) {

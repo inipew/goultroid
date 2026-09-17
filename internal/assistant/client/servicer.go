@@ -17,6 +17,42 @@ type CoreCallbackDispatcher interface {
 	Dispatch(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer) error
 }
 
+type inlineQueryAPI interface {
+	MessagesSetInlineBotResults(context.Context, *tg.MessagesSetInlineBotResultsRequest) (bool, error)
+}
+
+type assistantInlineQueryServicer struct {
+	unsupportedTelegramServicer
+	api inlineQueryAPI
+}
+
+func newAssistantInlineQueryServicer(api inlineQueryAPI) *assistantInlineQueryServicer {
+	return &assistantInlineQueryServicer{api: api}
+}
+
+func (s *assistantInlineQueryServicer) AnswerInlineQuery(ctx context.Context, queryID int64, results []tg.InputBotInlineResultClass, nextOffset string, cacheTime int) error {
+	return s.AnswerInlineQueryOptions(ctx, queryID, results, core.InlineAnswerOptions{NextOffset: nextOffset, CacheTime: cacheTime})
+}
+
+func (s *assistantInlineQueryServicer) AnswerInlineQueryOptions(ctx context.Context, queryID int64, results []tg.InputBotInlineResultClass, opts core.InlineAnswerOptions) error {
+	if s == nil || s.api == nil {
+		return core.ErrInternal
+	}
+	if results == nil {
+		results = opts.Results
+	}
+	req := &tg.MessagesSetInlineBotResultsRequest{QueryID: queryID, Results: results, CacheTime: opts.CacheTime, NextOffset: opts.NextOffset, Gallery: opts.Gallery, Private: opts.Private}
+	if opts.SwitchPM != nil {
+		req.SwitchPm = *opts.SwitchPM
+	}
+	if opts.SwitchWebView != nil {
+		req.SwitchWebview = *opts.SwitchWebView
+	}
+	req.SetFlags()
+	_, err := s.api.MessagesSetInlineBotResults(ctx, req)
+	return err
+}
+
 func resolveMessageTarget(base interaction.MessageTarget, peer tg.InputPeerClass, msgID int) interaction.MessageTarget {
 	tPeer := base.Peer()
 	if peer != nil {

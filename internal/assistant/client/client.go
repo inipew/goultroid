@@ -18,6 +18,7 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/peer"
 	"github.com/inipew/goultroid/internal/assistant/presentation"
 	"github.com/inipew/goultroid/internal/core"
+	inlineService "github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
@@ -63,6 +64,7 @@ type AssistantClient struct {
 	settingsSvc         *settings.Service
 	tasks               tasks.Client
 	pluginScopeResolver func(string) (tasks.ScopeIdentity, bool)
+	inlineEngine        *inlineService.Engine
 }
 
 var _ Client = (*AssistantClient)(nil)
@@ -135,6 +137,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 		c.interaction.SetMetricsCollector(c.metrics)
 	}
 	c.interaction.SetPeerReResolver(c.resolver)
+	inlineQueryService := newAssistantInlineQueryServicer(tdClient.API())
 	c.shuttingDown.Store(false)
 
 	deps := UpdateHandlerDeps{
@@ -142,6 +145,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 		CmdRouter: c.cmdRouter, CallbackRouter: c.cbRouter, Interaction: c.interaction,
 		CacheEntities: c.CacheEntities, IsShuttingDown: c.shuttingDown.Load,
 		MenuController: c.menuCtrl, SettingsService: c.settingsSvc,
+		InlineEngine: c.inlineEngine, InlineService: inlineQueryService, Tasks: c.tasks,
 	}
 	RegisterUpdateHandlers(&dispatcher, deps)
 
@@ -307,6 +311,11 @@ func (c *AssistantClient) SetPluginScopeResolver(resolver func(string) (tasks.Sc
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.pluginScopeResolver = resolver
+}
+func (c *AssistantClient) SetInlineEngine(engine *inlineService.Engine) {
+	c.mu.Lock()
+	c.inlineEngine = engine
+	c.mu.Unlock()
 }
 func (c *AssistantClient) SetSettingsService(svc *settings.Service) {
 	c.settingsSvc = svc

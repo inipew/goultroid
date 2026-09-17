@@ -9,6 +9,7 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/menu"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/runtime"
+	"github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
@@ -24,6 +25,7 @@ type Client interface {
 	SetSettingsService(svc *settings.Service)
 	SetMetricsCollector(m core.MetricsCollector)
 	SetCallbackRouter(router client.CoreCallbackDispatcher)
+	SetInlineEngine(engine *inline.Engine)
 	SetTasks(client tasks.Client)
 	SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool))
 	MenuController() *menu.Controller
@@ -91,6 +93,7 @@ func (a *AssistantApp) SetMetricsCollector(m core.MetricsCollector) { a.client.S
 func (a *AssistantApp) SetCallbackRouter(router client.CoreCallbackDispatcher) {
 	a.client.SetCallbackRouter(router)
 }
+func (a *AssistantApp) SetInlineEngine(engine *inline.Engine) { a.client.SetInlineEngine(engine) }
 func (a *AssistantApp) SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool)) {
 	a.client.SetPluginScopeResolver(resolver)
 }
