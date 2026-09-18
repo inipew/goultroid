@@ -40,7 +40,6 @@ func (m *mockTelegram) SendMessage(ctx context.Context, peer tg.InputPeerClass, 
 	return &tg.Message{ID: int(atomic.LoadInt32(&m.sentCount)), Message: text}, nil
 }
 
-
 func newBroadcastService(t *testing.T, telegram core.TelegramServicer) *broadcast.Service {
 	t.Helper()
 	engine := taskengine.NewEngine(taskengine.Config{
