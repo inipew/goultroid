@@ -147,7 +147,7 @@ func NewClient(cfg *config.Config, dispatcher *Dispatcher, db *database.DB, logg
 	limiter := NewHierarchicalRPCLimiter(DefaultHierarchicalLimiterConfig())
 	executor, err := NewRPCExecutor(RPCExecutorConfig{
 		Limiter:       limiter,
-		DefaultPolicy: DefaultExecutorPolicy,
+		DefaultPolicy: defaultExecutorPolicy(),
 		Metrics:       NewInMemoryRPCMetrics(),
 	})
 	if err != nil {
@@ -262,7 +262,7 @@ func (c *Client) Run(ctx context.Context) error {
 			svc.SetStorage(c.peerStorage)
 		}
 		c.dispatcher.SetService(svc)
-		resolver := NewResolverWithContext(ctx, c.raw.API(), c.peerManager, DefaultResolverCacheConfig)
+		resolver := NewResolverWithContext(ctx, c.raw.API(), c.peerManager, defaultResolverCacheConfig())
 		defer resolver.Close()
 		if c.logger != nil {
 			resolver.SetLogger(c.logger.Named("resolver"))

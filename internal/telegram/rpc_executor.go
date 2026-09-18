@@ -131,15 +131,21 @@ func (f *RPCFailure) Unwrap() error {
 	return f.Err
 }
 
-// DefaultExecutorPolicy is the standard retry configuration for runtime RPCs.
-var DefaultExecutorPolicy = RetryPolicy{
-	MaxAttempts:        3,
-	BaseDelay:          250 * time.Millisecond,
-	MaxDelay:           30 * time.Second,
-	MaxElapsed:         45 * time.Second,
-	InlineFloodWaitMax: 5 * time.Second,
-	JitterFraction:     0.5,
+func defaultExecutorPolicy() RetryPolicy {
+	return RetryPolicy{
+		MaxAttempts:        3,
+		BaseDelay:          250 * time.Millisecond,
+		MaxDelay:           30 * time.Second,
+		MaxElapsed:         45 * time.Second,
+		InlineFloodWaitMax: 5 * time.Second,
+		JitterFraction:     0.5,
+	}
 }
+
+// DefaultExecutorPolicy is retained for compatibility. Internal runtime
+// construction uses defaultExecutorPolicy so mutations cannot alter later
+// production executors.
+var DefaultExecutorPolicy = defaultExecutorPolicy()
 
 // RPCExecutor coordinates timeout, rate limiting, error classification, retry, and FloodWait.
 type RPCExecutor struct {
@@ -166,7 +172,7 @@ type RPCExecutorConfig struct {
 func NewRPCExecutor(cfg RPCExecutorConfig) (*RPCExecutor, error) {
 	policy := cfg.DefaultPolicy
 	if policy.MaxAttempts == 0 {
-		policy = DefaultExecutorPolicy
+		policy = defaultExecutorPolicy()
 	}
 	if err := policy.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid default policy: %w", err)

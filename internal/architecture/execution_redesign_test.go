@@ -174,6 +174,19 @@ func TestIdleCachesAvoidPeriodicWakeupsAndRemainBounded(t *testing.T) {
 		}
 	}
 
+
+
+	clientPath := filepath.Join(root, "internal", "telegram", "client.go")
+	clientData, err := os.ReadFile(clientPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"DefaultResolverCacheConfig", "DefaultExecutorPolicy"} {
+		if strings.Contains(string(clientData), forbidden) {
+			t.Errorf("%s must use immutable runtime defaults, found %q", clientPath, forbidden)
+		}
+	}
+
 	peerStorage := filepath.Join(root, "internal", "telegram", "peer_storage.go")
 	peerData, err := os.ReadFile(peerStorage)
 	if err != nil {

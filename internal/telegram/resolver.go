@@ -38,10 +38,10 @@ func NewResolverWithContext(parent context.Context, api *tg.Client, peerManager 
 		parent = context.Background()
 	}
 	if cfg.MaxConcurrentNetwork <= 0 {
-		cfg.MaxConcurrentNetwork = DefaultResolverCacheConfig.MaxConcurrentNetwork
+		cfg.MaxConcurrentNetwork = defaultResolverCacheConfig().MaxConcurrentNetwork
 	}
 	ctx, cancel := context.WithCancel(parent)
-	executor, _ := NewRPCExecutor(RPCExecutorConfig{DefaultPolicy: DefaultExecutorPolicy})
+	executor, _ := NewRPCExecutor(RPCExecutorConfig{DefaultPolicy: defaultExecutorPolicy()})
 	return &Resolver{
 		api:             api,
 		peerManager:     peerManager,
@@ -60,7 +60,7 @@ func NewResolverWithConfig(api *tg.Client, peerManager *peers.Manager, cfg Resol
 }
 
 func NewResolver(api *tg.Client, peerManager *peers.Manager) *Resolver {
-	return NewResolverWithConfig(api, peerManager, DefaultResolverCacheConfig)
+	return NewResolverWithConfig(api, peerManager, defaultResolverCacheConfig())
 }
 
 // SetLogger sets the logger for recording resolver warnings and diagnostics.

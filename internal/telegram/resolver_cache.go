@@ -28,13 +28,19 @@ type ResolverCacheConfig struct {
 	Clock                Clock
 }
 
-// DefaultResolverCacheConfig defines conservative production defaults.
-var DefaultResolverCacheConfig = ResolverCacheConfig{
-	MaxEntries:           1000,
-	MaxConcurrentNetwork: 16,
-	PositiveTTL:          15 * time.Minute,
-	NegativeTTL:          30 * time.Second,
+func defaultResolverCacheConfig() ResolverCacheConfig {
+	return ResolverCacheConfig{
+		MaxEntries:           1000,
+		MaxConcurrentNetwork: 16,
+		PositiveTTL:          15 * time.Minute,
+		NegativeTTL:          30 * time.Second,
+	}
 }
+
+// DefaultResolverCacheConfig is retained for compatibility. Runtime defaults
+// use defaultResolverCacheConfig so mutating this exported value cannot alter
+// future production resolver/cache construction.
+var DefaultResolverCacheConfig = defaultResolverCacheConfig()
 
 // PeerCache is a bounded, concurrency-safe in-memory cache for resolved Telegram peers.
 type PeerCache struct {
@@ -47,17 +53,18 @@ type PeerCache struct {
 
 // NewPeerCache initializes a bounded peer cache.
 func NewPeerCache(cfg ResolverCacheConfig) *PeerCache {
+	defaults := defaultResolverCacheConfig()
 	if cfg.MaxEntries <= 0 {
-		cfg.MaxEntries = DefaultResolverCacheConfig.MaxEntries
+		cfg.MaxEntries = defaults.MaxEntries
 	}
 	if cfg.MaxConcurrentNetwork <= 0 {
-		cfg.MaxConcurrentNetwork = DefaultResolverCacheConfig.MaxConcurrentNetwork
+		cfg.MaxConcurrentNetwork = defaults.MaxConcurrentNetwork
 	}
 	if cfg.PositiveTTL <= 0 {
-		cfg.PositiveTTL = DefaultResolverCacheConfig.PositiveTTL
+		cfg.PositiveTTL = defaults.PositiveTTL
 	}
 	if cfg.NegativeTTL <= 0 {
-		cfg.NegativeTTL = DefaultResolverCacheConfig.NegativeTTL
+		cfg.NegativeTTL = defaults.NegativeTTL
 	}
 	clock := cfg.Clock
 	if clock == nil {
