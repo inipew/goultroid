@@ -230,4 +230,16 @@ func TestUserLogService_DeliveryHealthAndStats(t *testing.T) {
 	if stats.Status != userlog.StatusDegraded || stats.FailedCount != 1 {
 		t.Errorf("unexpected degraded stats: %+v", stats)
 	}
+
+	// 4. Transient-looking errors are also delegated once. The concrete
+	// Telegram service owns retries through the shared RPCExecutor.
+	mockTG.attempts = 0
+	mockTG.sendErr = errors.New("read: connection reset by peer")
+	err = svc.LogPM(ctx, "Transient", 1000, "Hello")
+	if err == nil {
+		t.Fatal("expected transient delivery error")
+	}
+	if mockTG.attempts != 1 {
+		t.Fatalf("userlog introduced a second retry policy: attempts=%d", mockTG.attempts)
+	}
 }

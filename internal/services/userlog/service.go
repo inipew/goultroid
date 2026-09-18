@@ -362,48 +362,23 @@ func (s *Service) sendToLogChat(ctx context.Context, text string) error {
 		return err
 	}
 
-	peer := dest.InputPeer()
-
-	// Transient error retry logic with backoff
-	var sendErr error
-	maxRetries := 2
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(time.Duration(attempt*150) * time.Millisecond):
-			}
-		}
-
-		_, sendErr = svc.SendMessage(ctx, peer, text)
-		if sendErr == nil {
-			s.recordSuccess()
-			return nil
-		}
-
-		errStr := sendErr.Error()
-		if strings.Contains(errStr, "CHAT_WRITE_FORBIDDEN") ||
-			strings.Contains(errStr, "CHANNEL_PRIVATE") ||
-			strings.Contains(errStr, "PEER_ID_INVALID") ||
-			strings.Contains(errStr, "USER_BANNED_IN_CHANNEL") {
-			s.logger.Warn("userlog permanent delivery rejection",
-				zap.String("destination_type", string(dest.Type)),
-				zap.Int64("destination_id", dest.ID),
-				zap.Error(sendErr),
-			)
-			s.recordFailure(sendErr)
-			return sendErr
-		}
+	// TelegramServicer is the centralized physical-RPC boundary. Retry,
+	// FloodWait, stale-peer refresh, and mutation ambiguity belong to its shared
+	// RPCExecutor; retrying again here would create a second policy layer and can
+	// multiply physical sends after an ambiguous failure.
+	_, err = svc.SendMessage(ctx, dest.InputPeer(), text)
+	if err == nil {
+		s.recordSuccess()
+		return nil
 	}
 
-	s.logger.Error("userlog delivery failed after retries",
+	s.logger.Warn("userlog delivery failed",
 		zap.String("destination_type", string(dest.Type)),
 		zap.Int64("destination_id", dest.ID),
-		zap.Error(sendErr),
+		zap.Error(err),
 	)
-	s.recordFailure(sendErr)
-	return sendErr
+	s.recordFailure(err)
+	return err
 }
 
 // SendTestMessage sends a test notification to verify delivery and write permissions.
