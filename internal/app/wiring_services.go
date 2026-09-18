@@ -76,6 +76,9 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 	pmpermitService.SetEventBus(core.eventBus)
 
 	broadcastService := broadcastSvc.NewService(tg.client.Service, logger)
+	if core.taskEngine != nil {
+		broadcastService.SetTasks(core.taskEngine)
+	}
 	userlogRepo := userlogSvc.NewSQLiteRepository(core.db)
 	userlogService := userlogSvc.NewService(userlogRepo, tg.client.Service, logger)
 
