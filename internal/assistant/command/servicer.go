@@ -29,6 +29,13 @@ func (a *assistantServicerAdapter) SendMessageWithMarkup(ctx context.Context, pe
 	return a.MockTelegramServicer.SendMessageWithMarkup(ctx, peer, text, markup)
 }
 
+func (a *assistantServicerAdapter) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
+	if a.inter != nil {
+		return a.inter.SendMedia(ctx, peer, mediaType, filePath, caption)
+	}
+	return a.MockTelegramServicer.SendMedia(ctx, peer, mediaType, filePath, caption)
+}
+
 func (a *assistantServicerAdapter) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
 	if a.inter != nil {
 		chatID := extractChatIDFromInputPeer(peer)

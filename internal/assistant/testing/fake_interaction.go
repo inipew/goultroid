@@ -2,6 +2,7 @@ package testing
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/gotd/td/tg"
@@ -75,6 +76,13 @@ func (f *FakeInteraction) SendMessage(ctx context.Context, peer tg.InputPeerClas
 	return &tg.Message{ID: 100}, nil
 }
 
+func (f *FakeInteraction) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.SentMessages = append(f.SentMessages, fmt.Sprintf("media:%s:%s", mediaType, caption))
+	return &tg.Message{ID: 101}, nil
+}
+
 // FakeInlineInteraction is a mock implementation of InlineInteraction.
 type FakeInlineInteraction struct {
 	mu             sync.RWMutex
@@ -105,5 +113,11 @@ func (f *FakeInlineInteraction) Edit(ctx context.Context, target interaction.Inl
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.LastEditedText = text
+	return f.EditErr
+}
+
+func (f *FakeInlineInteraction) EditMarkup(ctx context.Context, target interaction.InlineTarget, markup tg.ReplyMarkupClass) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.EditErr
 }

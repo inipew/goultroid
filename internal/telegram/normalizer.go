@@ -28,30 +28,14 @@ func (n *Normalizer) Normalize(ctx context.Context, e tg.Entities, update tg.Upd
 		if !ok {
 			return nil, nil
 		}
-		coreMsg := extractCoreMessage(msg)
-		chatID := extractChatIDFromPeer(msg.PeerID)
-		return &core.MessageCreatedEvent{
-			MetaData: core.EventMeta{ID: fmt.Sprintf("msg:%d:%d", chatID, msg.ID)},
-			At:       now,
-			Message:  coreMsg,
-			ChatID:   chatID,
-			PeerID:   msg.PeerID,
-		}, nil
+		return canonicalMessageCreatedEvent(msg, extractCoreMessage(msg), now), nil
 
 	case *tg.UpdateNewChannelMessage:
 		msg, ok := u.Message.(*tg.Message)
 		if !ok {
 			return nil, nil
 		}
-		coreMsg := extractCoreMessage(msg)
-		chatID := extractChatIDFromPeer(msg.PeerID)
-		return &core.MessageCreatedEvent{
-			MetaData: core.EventMeta{ID: fmt.Sprintf("channel_msg:%d:%d", chatID, msg.ID)},
-			At:       now,
-			Message:  coreMsg,
-			ChatID:   chatID,
-			PeerID:   msg.PeerID,
-		}, nil
+		return canonicalMessageCreatedEvent(msg, extractCoreMessage(msg), now), nil
 
 	case *tg.UpdateEditMessage:
 		msg, ok := u.Message.(*tg.Message)
@@ -83,9 +67,10 @@ func (n *Normalizer) Normalize(ctx context.Context, e tg.Entities, update tg.Upd
 
 	case *tg.UpdateDeleteMessages:
 		return &core.MessagesDeletedEvent{
-			MetaData: core.EventMeta{ID: fmt.Sprintf("del:%d", now.UnixNano())},
-			At:       now,
-			MsgIDs:   u.Messages,
+			MetaData:    core.EventMeta{ID: fmt.Sprintf("del:%d", now.UnixNano())},
+			At:          now,
+			PeerUnknown: true,
+			MsgIDs:      u.Messages,
 		}, nil
 
 	case *tg.UpdateDeleteChannelMessages:
@@ -96,40 +81,20 @@ func (n *Normalizer) Normalize(ctx context.Context, e tg.Entities, update tg.Upd
 			MsgIDs:   u.Messages,
 		}, nil
 
-	case *tg.UpdateBotCallbackQuery:
-		target := core.CallbackTarget{
-			Origin:       core.CallbackOriginMessage,
-			Peer:         normalizeInputPeer(u.Peer, e),
-			MessageID:    u.MsgID,
-			ChatInstance: u.ChatInstance,
-		}
-		return &core.CallbackQueryEvent{
-			MetaData:     core.EventMeta{ID: fmt.Sprintf("cb:%d", u.QueryID)},
-			At:           now,
-			Data:         u.Data,
-			QueryID:      u.QueryID,
-			UserID:       u.UserID,
-			ChatInstance: u.ChatInstance,
-			Origin:       core.CallbackOriginMessage,
-			Target:       target,
+	case *tg.UpdateMessageReactions:
+		chatID := extractChatIDFromPeer(u.Peer)
+		return &core.ReactionUpdatedEvent{
+			MetaData: core.EventMeta{ID: fmt.Sprintf("reaction:%d:%d", chatID, u.MsgID)},
+			At:       now,
+			MsgID:    u.MsgID,
+			ChatID:   chatID,
 		}, nil
 
+	case *tg.UpdateBotCallbackQuery:
+		return canonicalCallbackQueryEvent(u, normalizeInputPeer(u.Peer, e), now), nil
+
 	case *tg.UpdateInlineBotCallbackQuery:
-		target := core.CallbackTarget{
-			Origin:       core.CallbackOriginInline,
-			InlineID:     u.MsgID,
-			ChatInstance: u.ChatInstance,
-		}
-		return &core.CallbackQueryEvent{
-			MetaData:     core.EventMeta{ID: fmt.Sprintf("inline_cb:%d", u.QueryID)},
-			At:           now,
-			Data:         u.Data,
-			QueryID:      u.QueryID,
-			UserID:       u.UserID,
-			ChatInstance: u.ChatInstance,
-			Origin:       core.CallbackOriginInline,
-			Target:       target,
-		}, nil
+		return canonicalInlineCallbackQueryEvent(u, now), nil
 
 	case *tg.UpdateBotInlineSend:
 		return &core.InlineResultChosenEvent{
@@ -143,6 +108,69 @@ func (n *Normalizer) Normalize(ctx context.Context, e tg.Entities, update tg.Upd
 	}
 
 	return nil, nil
+}
+
+func canonicalMessageCreatedEvent(msg *tg.Message, coreMsg *core.Message, now time.Time) *core.MessageCreatedEvent {
+	if msg == nil {
+		return nil
+	}
+	if coreMsg == nil {
+		coreMsg = extractCoreMessage(msg)
+	}
+	chatID := extractChatIDFromPeer(msg.PeerID)
+	return &core.MessageCreatedEvent{
+		MetaData: core.EventMeta{ID: fmt.Sprintf("msg:%d:%d", chatID, msg.ID)},
+		At:       now.UTC(),
+		Message:  coreMsg,
+		ChatID:   chatID,
+		PeerID:   msg.PeerID,
+	}
+}
+
+func canonicalCallbackQueryEvent(update *tg.UpdateBotCallbackQuery, inputPeer tg.InputPeerClass, now time.Time) *core.CallbackQueryEvent {
+	if update == nil {
+		return nil
+	}
+	chatID := extractChatIDFromPeer(update.Peer)
+	target := core.CallbackTarget{
+		Origin:       core.CallbackOriginMessage,
+		Peer:         inputPeer,
+		MessageID:    update.MsgID,
+		ChatInstance: update.ChatInstance,
+	}
+	return &core.CallbackQueryEvent{
+		MetaData:     core.EventMeta{ID: fmt.Sprintf("cb:%d", update.QueryID)},
+		At:           now.UTC(),
+		QueryID:      update.QueryID,
+		UserID:       update.UserID,
+		ChatID:       chatID,
+		MsgID:        update.MsgID,
+		Data:         update.Data,
+		Origin:       core.CallbackOriginMessage,
+		Target:       target,
+		ChatInstance: update.ChatInstance,
+	}
+}
+
+func canonicalInlineCallbackQueryEvent(update *tg.UpdateInlineBotCallbackQuery, now time.Time) *core.CallbackQueryEvent {
+	if update == nil {
+		return nil
+	}
+	target := core.CallbackTarget{
+		Origin:       core.CallbackOriginInline,
+		InlineID:     update.MsgID,
+		ChatInstance: update.ChatInstance,
+	}
+	return &core.CallbackQueryEvent{
+		MetaData:     core.EventMeta{ID: fmt.Sprintf("inline_cb:%d", update.QueryID)},
+		At:           now.UTC(),
+		QueryID:      update.QueryID,
+		UserID:       update.UserID,
+		Data:         update.Data,
+		Origin:       core.CallbackOriginInline,
+		Target:       target,
+		ChatInstance: update.ChatInstance,
+	}
 }
 
 func normalizeInputPeer(peer tg.PeerClass, e tg.Entities) tg.InputPeerClass {

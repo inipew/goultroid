@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
@@ -36,6 +37,12 @@ func (m *mockTelegram) IsBotSent(msgID int) bool {
 		return true
 	}
 	return false
+}
+
+type noOpDelayedActions struct{}
+
+func (noOpDelayedActions) Schedule(context.Context, time.Duration, func(context.Context) error) error {
+	return nil
 }
 
 func setupTestDB(t *testing.T) *database.DB {
@@ -70,12 +77,13 @@ func TestPMPermitPlugin(t *testing.T) {
 	}
 
 	ctx := &core.Context{
-		Ctx:      context.Background(),
-		Svc:      mockTG,
-		PeerID:   &tg.InputPeerUser{UserID: 88888},
-		Message:  &core.Message{ID: 1, IsOutgoing: true},
-		Args:     []string{"88888"},
-		Resolver: &core.MockPeerResolver{UserID: 88888, UserPeer: &tg.InputPeerUser{UserID: 88888, AccessHash: 12345}},
+		Ctx:            context.Background(),
+		Svc:            mockTG,
+		PeerID:         &tg.InputPeerUser{UserID: 88888},
+		Message:        &core.Message{ID: 1, IsOutgoing: true},
+		Args:           []string{"88888"},
+		Resolver:       &core.MockPeerResolver{UserID: 88888, UserPeer: &tg.InputPeerUser{UserID: 88888, AccessHash: 12345}},
+		DelayedActions: noOpDelayedActions{},
 	}
 
 	// 1. Approve command
@@ -112,10 +120,11 @@ func TestPMPermitPlugin(t *testing.T) {
 
 	// 5. ListApproved command
 	listCtx := &core.Context{
-		Ctx:     context.Background(),
-		Svc:     mockTG,
-		PeerID:  &tg.InputPeerUser{UserID: 88888},
-		Message: &core.Message{ID: 1, IsOutgoing: true},
+		Ctx:            context.Background(),
+		Svc:            mockTG,
+		PeerID:         &tg.InputPeerUser{UserID: 88888},
+		Message:        &core.Message{ID: 1, IsOutgoing: true},
+		DelayedActions: noOpDelayedActions{},
 	}
 	_ = svc.Approve(context.Background(), 88888, "approved test", 0)
 	if err := cmds[4].Handler(listCtx); err != nil {
@@ -160,11 +169,12 @@ func TestPMPermitPlugin(t *testing.T) {
 
 	// Test self-test
 	testCtx := &core.Context{
-		Ctx:     context.Background(),
-		Svc:     mockTG,
-		PeerID:  &tg.InputPeerUser{UserID: 88888},
-		Message: &core.Message{ID: 1, IsOutgoing: true},
-		Args:    []string{"test"},
+		Ctx:            context.Background(),
+		Svc:            mockTG,
+		PeerID:         &tg.InputPeerUser{UserID: 88888},
+		Message:        &core.Message{ID: 1, IsOutgoing: true},
+		Args:           []string{"test"},
+		DelayedActions: noOpDelayedActions{},
 	}
 	if err := cmds[5].Handler(testCtx); err != nil {
 		t.Fatalf("test subcommand failed: %v", err)

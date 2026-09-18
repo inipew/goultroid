@@ -2,6 +2,7 @@ package callback
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -24,13 +25,15 @@ type InlineHandler func(ctx context.Context, tx *InlineTransaction) error
 
 // Router dispatches incoming callback transactions to registered handlers with validation and authorization.
 type Router struct {
-	mu             sync.RWMutex
-	handlers       map[string]ActionHandler
-	inlineHandlers map[string]InlineHandler
-	authorizer     Authorizer
-	metrics        core.MetricsCollector
-	logger         *zap.Logger
-	seen           map[int64]time.Time
+	mu                    sync.RWMutex
+	handlers              map[string]ActionHandler
+	inlineHandlers        map[string]InlineHandler
+	fallbackHandler       ActionHandler
+	fallbackInlineHandler InlineHandler
+	authorizer            Authorizer
+	metrics               core.MetricsCollector
+	logger                *zap.Logger
+	seen                  map[int64]time.Time
 }
 
 // NewRouter creates an initialized callback Router.
@@ -80,6 +83,20 @@ func (r *Router) RegisterInline(namespace, action string, handler InlineHandler)
 
 	key := fmt.Sprintf("%s:%s", namespace, action)
 	r.inlineHandlers[key] = handler
+}
+
+// SetFallbackHandler sets a fallback handler invoked when no registered action matches.
+func (r *Router) SetFallbackHandler(handler ActionHandler) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fallbackHandler = handler
+}
+
+// SetFallbackInlineHandler sets a fallback inline handler invoked when no registered inline action matches.
+func (r *Router) SetFallbackInlineHandler(handler InlineHandler) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fallbackInlineHandler = handler
 }
 
 // admitQuery atomically admits a Telegram callback query ID exactly once for the
@@ -162,40 +179,21 @@ func (r *Router) Dispatch(ctx context.Context, tx *Transaction) error {
 
 	_ = tx.Transition(StateValidated)
 
-	// 1. Authorization check
-	r.mu.RLock()
-	authorizer := r.authorizer
-	r.mu.RUnlock()
-
-	actor := Actor{
-		UserID: tx.UserID,
-		ChatID: tx.Target.ChatID(),
-	}
-
-	if err := authorizer.Authorize(ctx, actor, tx.Payload.Action); err != nil {
-		_ = tx.Answer(ctx, "⚠️ This is OWNER's bot!!", true)
-		r.logger.Warn("assistant: unauthorized callback rejected",
-			zap.String("correlation_id", correlationID),
-			zap.Int64("user_id", tx.UserID),
-			zap.String("action", tx.Payload.Action),
-			zap.Int64("query_id", tx.QueryID),
-		)
-		tx.SetState(StateFailed)
-		if r.metrics != nil {
-			r.metrics.RecordCallback("unauthorized", time.Since(start), err)
-		}
-		return ErrUnauthorized
-	}
-
-	_ = tx.Transition(StateAuthorized)
-
-	// 2. Resolve handler
+	// 1. Resolve handler
 	r.mu.RLock()
 	handler, ok := r.handlers[correlationKey]
 	if !ok {
 		// Try wildcard namespace handler
 		handler, ok = r.handlers[fmt.Sprintf("%s:*", tx.Payload.Namespace)]
 	}
+	fallback := r.fallbackHandler
+	isFallback := false
+	if !ok && fallback != nil {
+		handler = fallback
+		ok = true
+		isFallback = true
+	}
+	authorizer := r.authorizer
 	r.mu.RUnlock()
 
 	if !ok {
@@ -212,6 +210,31 @@ func (r *Router) Dispatch(ctx context.Context, tx *Transaction) error {
 		return fmt.Errorf("%w: %s", ErrUnknownAction, correlationKey)
 	}
 
+	// 2. Authorization check (enforced on assistant native actions)
+	if !isFallback {
+		actor := Actor{
+			UserID: tx.UserID,
+			ChatID: tx.Target.ChatID(),
+		}
+
+		if err := authorizer.Authorize(ctx, actor, tx.Payload.Action); err != nil {
+			_ = tx.Answer(ctx, "⚠️ This is OWNER's bot!!", true)
+			r.logger.Warn("assistant: unauthorized callback rejected",
+				zap.String("correlation_id", correlationID),
+				zap.Int64("user_id", tx.UserID),
+				zap.String("action", tx.Payload.Action),
+				zap.Int64("query_id", tx.QueryID),
+			)
+			tx.SetState(StateFailed)
+			if r.metrics != nil {
+				r.metrics.RecordCallback("unauthorized", time.Since(start), err)
+			}
+			return ErrUnauthorized
+		}
+	}
+
+	_ = tx.Transition(StateAuthorized)
+
 	// 3. Execute handler
 	_ = tx.Transition(StateExecuting)
 	err := handler(ctx, tx)
@@ -219,6 +242,17 @@ func (r *Router) Dispatch(ctx context.Context, tx *Transaction) error {
 	duration := time.Since(start)
 	if err != nil {
 		tx.SetState(StateFailed)
+		if errors.Is(err, ErrUnknownAction) {
+			r.logger.Warn("assistant: unknown callback action",
+				zap.String("correlation_id", correlationID),
+				zap.String("key", correlationKey),
+				zap.Int64("query_id", tx.QueryID),
+			)
+			if r.metrics != nil {
+				r.metrics.RecordCallback("invalid", duration, err)
+			}
+			return err
+		}
 		r.logger.Error("assistant: callback handler failed",
 			zap.String("correlation_id", correlationID),
 			zap.String("key", correlationKey),
@@ -287,41 +321,21 @@ func (r *Router) DispatchInline(ctx context.Context, tx *InlineTransaction) erro
 
 	_ = tx.Transition(StateValidated)
 
-	// 1. Authorization check
-	r.mu.RLock()
-	authorizer := r.authorizer
-	r.mu.RUnlock()
-
-	actor := Actor{
-		UserID: tx.UserID,
-		ChatID: 0,
-	}
-
-	if err := authorizer.Authorize(ctx, actor, tx.Payload.Action); err != nil {
-		_ = tx.Answer(ctx, "⚠️ This is OWNER's bot!!", true)
-		r.logger.Warn("assistant: unauthorized inline callback rejected",
-			zap.String("correlation_id", correlationID),
-			zap.Int64("user_id", tx.UserID),
-			zap.String("action", tx.Payload.Action),
-			zap.Int64("query_id", tx.QueryID),
-		)
-		tx.SetState(StateFailed)
-		if r.metrics != nil {
-			r.metrics.RecordCallback("unauthorized", time.Since(start), err)
-			r.metrics.RecordInline(false, 0, time.Since(start), err)
-		}
-		return ErrUnauthorized
-	}
-
-	_ = tx.Transition(StateAuthorized)
-
-	// 2. Resolve inline handler
+	// 1. Resolve inline handler
 	r.mu.RLock()
 	handler, ok := r.inlineHandlers[correlationKey]
 	if !ok {
 		// Try wildcard namespace handler
 		handler, ok = r.inlineHandlers[fmt.Sprintf("%s:*", tx.Payload.Namespace)]
 	}
+	fallback := r.fallbackInlineHandler
+	isFallback := false
+	if !ok && fallback != nil {
+		handler = fallback
+		ok = true
+		isFallback = true
+	}
+	authorizer := r.authorizer
 	r.mu.RUnlock()
 
 	if !ok {
@@ -339,6 +353,32 @@ func (r *Router) DispatchInline(ctx context.Context, tx *InlineTransaction) erro
 		return fmt.Errorf("%w: %s", ErrUnknownAction, correlationKey)
 	}
 
+	// 2. Authorization check (enforced on assistant native actions)
+	if !isFallback {
+		actor := Actor{
+			UserID: tx.UserID,
+			ChatID: 0,
+		}
+
+		if err := authorizer.Authorize(ctx, actor, tx.Payload.Action); err != nil {
+			_ = tx.Answer(ctx, "⚠️ This is OWNER's bot!!", true)
+			r.logger.Warn("assistant: unauthorized inline callback rejected",
+				zap.String("correlation_id", correlationID),
+				zap.Int64("user_id", tx.UserID),
+				zap.String("action", tx.Payload.Action),
+				zap.Int64("query_id", tx.QueryID),
+			)
+			tx.SetState(StateFailed)
+			if r.metrics != nil {
+				r.metrics.RecordCallback("unauthorized", time.Since(start), err)
+				r.metrics.RecordInline(false, 0, time.Since(start), err)
+			}
+			return ErrUnauthorized
+		}
+	}
+
+	_ = tx.Transition(StateAuthorized)
+
 	// 3. Execute handler
 	_ = tx.Transition(StateExecuting)
 	err := handler(ctx, tx)
@@ -346,6 +386,18 @@ func (r *Router) DispatchInline(ctx context.Context, tx *InlineTransaction) erro
 	duration := time.Since(start)
 	if err != nil {
 		tx.SetState(StateFailed)
+		if errors.Is(err, ErrUnknownAction) {
+			r.logger.Warn("assistant: unknown inline callback action",
+				zap.String("correlation_id", correlationID),
+				zap.String("key", correlationKey),
+				zap.Int64("query_id", tx.QueryID),
+			)
+			if r.metrics != nil {
+				r.metrics.RecordCallback("invalid", duration, err)
+				r.metrics.RecordInline(false, 0, duration, err)
+			}
+			return err
+		}
 		r.logger.Error("assistant: inline callback handler failed",
 			zap.String("correlation_id", correlationID),
 			zap.String("key", correlationKey),

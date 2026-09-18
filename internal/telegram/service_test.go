@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/database"
 )
 
 func TestParseHTML(t *testing.T) {
@@ -174,12 +176,18 @@ func TestMapTelegramError(t *testing.T) {
 	if !errors.Is(mappedChat, core.ErrNotFound) {
 		t.Errorf("expected mappedChat to match ErrNotFound, got %v", mappedChat)
 	}
+	if !errors.Is(mappedChat, chatInvalidErr) {
+		t.Errorf("expected mappedChat to preserve raw Telegram error cause, got %v", mappedChat)
+	}
 
 	// 4. Permission denied errors
 	adminReqErr := tgerr.New(400, "CHAT_ADMIN_REQUIRED")
 	mappedAdmin := mapTelegramError(adminReqErr)
 	if !errors.Is(mappedAdmin, core.ErrPermissionDenied) {
 		t.Errorf("expected mappedAdmin to match ErrPermissionDenied, got %v", mappedAdmin)
+	}
+	if !errors.Is(mappedAdmin, adminReqErr) {
+		t.Errorf("expected mappedAdmin to preserve raw Telegram error cause, got %v", mappedAdmin)
 	}
 
 	// 4b. Idempotent success errors (RIGHTS_NOT_MODIFIED, CHAT_NOT_MODIFIED)
@@ -198,26 +206,8 @@ func TestMapTelegramError(t *testing.T) {
 	if !errors.Is(mappedGen, core.ErrTelegram) {
 		t.Errorf("expected mappedGen to match ErrTelegram, got %v", mappedGen)
 	}
-}
-
-func TestRetryOnFloodWait_ExceedsLimit(t *testing.T) {
-	ctx := context.Background()
-	callCount := 0
-	floodErr := tgerr.New(420, "FLOOD_WAIT_60")
-
-	res, err := retryOnFloodWait(ctx, func() (string, error) {
-		callCount++
-		return "", floodErr
-	})
-
-	if res != "" {
-		t.Errorf("expected empty result, got %q", res)
-	}
-	if callCount != 1 {
-		t.Errorf("expected exactly 1 call when flood wait exceeds limit, got %d", callCount)
-	}
-	if !errors.Is(err, core.ErrRateLimited) {
-		t.Errorf("expected ErrRateLimited, got %v", err)
+	if !errors.Is(mappedGen, genErr) {
+		t.Errorf("expected mappedGen to preserve raw Telegram error cause, got %v", mappedGen)
 	}
 }
 
@@ -345,18 +335,233 @@ func (m *mockInvalidatingStorage) Invalidate(key peers.Key) error {
 	return nil
 }
 
+func (m *mockInvalidatingStorage) InvalidateContext(_ context.Context, key peers.Key) error {
+	return m.Invalidate(key)
+}
+
 func TestService_InvalidatePeerOnInvalid(t *testing.T) {
 	svc := NewService(nil)
 	storage := &mockInvalidatingStorage{}
 	svc.SetStorage(storage)
 
 	peer := &tg.InputPeerChannel{ChannelID: 12345, AccessHash: 9999}
-	svc.checkPeerError(tgerr.New(400, "CHANNEL_INVALID"), peer)
+	svc.checkPeerError(context.Background(), tgerr.New(400, "CHANNEL_INVALID"), peer)
 
 	if len(storage.invalidated) != 1 {
 		t.Fatalf("expected 1 invalidated key, got %d", len(storage.invalidated))
 	}
 	if storage.invalidated[0].Prefix != "channel" || storage.invalidated[0].ID != 12345 {
 		t.Errorf("unexpected invalidated key: %+v", storage.invalidated[0])
+	}
+}
+
+type rotatingPeerStorage struct {
+	hash  int64
+	calls int
+}
+
+func (m *rotatingPeerStorage) Save(context.Context, peers.Key, peers.Value) error { return nil }
+func (m *rotatingPeerStorage) Find(context.Context, peers.Key) (peers.Value, bool, error) {
+	return peers.Value{AccessHash: m.hash}, true, nil
+}
+func (m *rotatingPeerStorage) SavePhone(context.Context, string, peers.Key) error { return nil }
+func (m *rotatingPeerStorage) FindPhone(context.Context, string) (peers.Key, peers.Value, bool, error) {
+	return peers.Key{}, peers.Value{}, false, nil
+}
+func (m *rotatingPeerStorage) GetContactsHash(context.Context) (int64, error) { return 0, nil }
+func (m *rotatingPeerStorage) SaveContactsHash(context.Context, int64) error { return nil }
+
+func TestService_PeerAwareRetryReloadsAccessHashPerAttempt(t *testing.T) {
+	storage := &rotatingPeerStorage{hash: 111}
+	svc := NewService(nil)
+	svc.SetStorage(storage)
+	exec := newTestExecutor(nil, NewFakeClock(time.Now()), &FakeSleeper{}, nil)
+	svc.SetExecutor(exec)
+
+	var seen []int64
+	err := svc.execIdempotentPeer(context.Background(), "messages.editMessage", &tg.InputPeerUser{UserID: 42, AccessHash: 111}, func(_ context.Context, current tg.InputPeerClass) error {
+		u := current.(*tg.InputPeerUser)
+		seen = append(seen, u.AccessHash)
+		storage.calls++
+		if storage.calls == 1 {
+			storage.hash = 222
+			return tgerr.New(500, "RPC_CALL_FAIL")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected peer-aware retry error: %v", err)
+	}
+	if len(seen) != 2 || seen[0] != 111 || seen[1] != 222 {
+		t.Fatalf("expected access hashes [111 222], got %v", seen)
+	}
+}
+
+func TestService_NonIdempotentMutationNoRetryOnTransient(t *testing.T) {
+	svc := NewService(nil)
+	clock := NewFakeClock(time.Now())
+	sleeper := &FakeSleeper{}
+	exec := newTestExecutor(nil, clock, sleeper, nil)
+	svc.SetExecutor(exec)
+
+	var attempts int
+	err := svc.execNonIdempotent(context.Background(), "messages.sendMessage", func(opCtx context.Context) error {
+		attempts++
+		return tgerr.New(500, "RPC_CALL_FAIL")
+	})
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if attempts != 1 {
+		t.Fatalf("expected exactly 1 attempt for non-idempotent mutation, got %d", attempts)
+	}
+}
+
+func TestService_ContextPropagationToExecutor(t *testing.T) {
+	svc := NewService(nil)
+	clock := NewFakeClock(time.Now())
+	sleeper := &FakeSleeper{}
+	exec := newTestExecutor(nil, clock, sleeper, nil)
+	svc.SetExecutor(exec)
+
+	var hasDeadline bool
+	err := svc.execReadOnly(context.Background(), "users.getMe", func(opCtx context.Context) error {
+		_, hasDeadline = opCtx.Deadline()
+		return nil
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hasDeadline {
+		t.Fatal("expected opCtx passed to operation to have a deadline derived from executor")
+	}
+}
+
+func TestService_SetExecutor(t *testing.T) {
+	svc := NewService(nil)
+	exec, err := NewRPCExecutor(RPCExecutorConfig{
+		DefaultPolicy: DefaultExecutorPolicy,
+	})
+	if err != nil {
+		t.Fatalf("failed to create executor: %v", err)
+	}
+	svc.SetExecutor(exec)
+	if svc.getExecutor() != exec {
+		t.Fatal("expected configured executor to be returned")
+	}
+}
+
+func TestService_StalePeerAutoRefreshRecovery(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(fmt.Sprintf("file:stale_recovery_test_%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("failed to open in-memory db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	storage := NewPeerStorage(db)
+	_ = storage.Save(ctx, peers.Key{Prefix: "user", ID: 12345}, peers.Value{AccessHash: 88888})
+	_ = storage.SaveEntity(ctx, "user", 12345, "target", "", "", "", "")
+
+	svc := NewService(nil)
+	exec, err := NewRPCExecutor(RPCExecutorConfig{
+		DefaultPolicy: RetryPolicy{
+			MaxAttempts: 3,
+			BaseDelay:   10 * time.Millisecond,
+			MaxDelay:    50 * time.Millisecond,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create executor: %v", err)
+	}
+	svc.SetExecutor(exec)
+
+	resolver := NewResolver(nil, nil)
+	resolver.SetStorage(storage)
+	svc.SetResolver(resolver)
+	svc.SetStorage(storage)
+
+	// Populate cache with stale hash for @target
+	resolver.cache.Set("user", "target", "user", 12345, 99999)
+
+	// Request starts with stale access hash 99999
+	req := &tg.InputPeerUser{UserID: 12345, AccessHash: 99999}
+	var calls int
+	var executedHashes []int64
+
+	meta := RPCMeta{
+		Method:  "users.getFullUser",
+		Kind:    RPCReadOnly,
+		PeerKey: "@target",
+		RefreshPeer: func(context.Context) error {
+			// This fixture models the case where persistence already observed a
+			// newer access hash than the request-local peer. The production
+			// default refresh path intentionally forces network refresh when the
+			// persistent hash itself may be stale.
+			resolver.cache.Invalidate("user", "target")
+			return nil
+		},
+	}
+
+	res, err := executeServiceRPC(context.Background(), svc, meta, func(opCtx context.Context) (string, error) {
+		calls++
+		// Re-evaluate peer access hash from service on retry attempts (stale recovery flow)
+		if calls > 1 {
+			refreshed := svc.RefreshPeerAccessHash(opCtx, req)
+			if u, ok := refreshed.(*tg.InputPeerUser); ok {
+				req.AccessHash = u.AccessHash
+			}
+		}
+		executedHashes = append(executedHashes, req.AccessHash)
+
+		// The mock Telegram RPC server strictly rejects the stale hash 99999
+		if req.AccessHash != 88888 {
+			return "", tgerr.New(400, "PEER_ID_INVALID")
+		}
+		return "recovered", nil
+	})
+
+	if err != nil {
+		t.Fatalf("expected successful recovery, got: %v", err)
+	}
+	if res != "recovered" {
+		t.Fatalf("expected result 'recovered', got %q", res)
+	}
+	if calls != 2 {
+		t.Fatalf("expected exactly 2 calls (fail then retry), got %d", calls)
+	}
+	// Verify that first attempt executed with 99999 and second attempt executed with updated fresh hash 88888
+	if len(executedHashes) != 2 || executedHashes[0] != 99999 || executedHashes[1] != 88888 {
+		t.Fatalf("expected executed hashes [99999, 88888], got %v", executedHashes)
+	}
+	// Check that cache was invalidated and repopulated during refresh
+	if entry, hit := resolver.cache.Get("user", "target"); hit && entry.AccessHash == 99999 {
+		t.Fatalf("expected cached entry with old hash to be invalidated, but still found: %+v", entry)
+	}
+}
+
+func TestService_BotSentTrackingIsPeerScoped(t *testing.T) {
+	svc := NewService(nil)
+	svc.recordBotSent(&tg.InputPeerChat{ChatID: 10}, 77)
+
+	if !svc.IsBotSentForPeer(&tg.PeerChat{ChatID: 10}, 77, 0) {
+		t.Fatal("expected exact peer/message pair to be recognized")
+	}
+	if svc.IsBotSentForPeer(&tg.PeerChat{ChatID: 11}, 77, 0) {
+		t.Fatal("same message id in another chat must not be classified as bot-sent")
+	}
+}
+
+func TestService_BotSentTrackingSupportsSavedMessages(t *testing.T) {
+	svc := NewService(nil)
+	svc.recordBotSent(&tg.InputPeerSelf{}, 88)
+
+	if !svc.IsBotSentForPeer(&tg.PeerUser{UserID: 1234}, 88, 1234) {
+		t.Fatal("expected InputPeerSelf record to match current self peer")
+	}
+	if svc.IsBotSentForPeer(&tg.PeerUser{UserID: 9999}, 88, 1234) {
+		t.Fatal("InputPeerSelf record must not match a different user peer")
 	}
 }

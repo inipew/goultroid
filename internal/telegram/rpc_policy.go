@@ -2,18 +2,19 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/gotd/td/tgerr"
-	"github.com/inipew/goultroid/internal/core"
 )
 
 type RPCErrorClass uint8
 
 const (
 	RPCUnknown RPCErrorClass = iota
+	RPCSuccess
 	RPCTransient
 	RPCFloodWait
 	RPCStalePeer
@@ -21,6 +22,27 @@ const (
 	RPCAuth
 	RPCInvalidRequest
 )
+
+func (c RPCErrorClass) String() string {
+	switch c {
+	case RPCSuccess:
+		return "success"
+	case RPCTransient:
+		return "transient"
+	case RPCFloodWait:
+		return "flood_wait"
+	case RPCStalePeer:
+		return "stale_peer"
+	case RPCPermission:
+		return "permission"
+	case RPCAuth:
+		return "auth"
+	case RPCInvalidRequest:
+		return "invalid_request"
+	default:
+		return "unknown"
+	}
+}
 
 type RPCPolicy struct {
 	MaxAttempts int
@@ -36,7 +58,7 @@ var DefaultRPCPolicy = RPCPolicy{
 
 func ClassifyRPCError(err error) RPCErrorClass {
 	if err == nil {
-		return RPCUnknown
+		return RPCSuccess
 	}
 	if _, ok := tgerr.AsFloodWait(err); ok {
 		return RPCFloodWait
@@ -52,6 +74,9 @@ func ClassifyRPCError(err error) RPCErrorClass {
 	}
 	if tgerr.Is(err, "MESSAGE_ID_INVALID", "MESSAGE_TOO_LONG", "USERNAME_INVALID", "USERNAME_NOT_OCCUPIED", "USER_NOT_FOUND") {
 		return RPCInvalidRequest
+	}
+	if tgerr.Is(err, "RPC_CALL_FAIL") {
+		return RPCTransient
 	}
 	text := strings.ToUpper(err.Error())
 	if strings.Contains(text, "TIMEOUT") || strings.Contains(text, "CONNECTION RESET") || strings.Contains(text, "TEMPORAR") || strings.Contains(text, "EOF") {
@@ -76,45 +101,32 @@ func RetryRPC(ctx context.Context, policy RPCPolicy, op func(context.Context) er
 		policy.MaxDelay = 30 * time.Second
 	}
 
-	var last error
-	for attempt := 1; attempt <= policy.MaxAttempts; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		err := op(ctx)
-		if err == nil {
-			return nil
-		}
-		last = err
-
-		switch ClassifyRPCError(err) {
-		case RPCFloodWait:
-			wait, _ := tgerr.AsFloodWait(err)
-			if wait <= 0 {
-				return err
-			}
-			if wait > policy.MaxDelay {
-				return core.NewRateLimitError(wait, err)
-			}
-			if err := sleepContext(ctx, wait); err != nil {
-				return err
-			}
-		case RPCTransient:
-			if attempt == policy.MaxAttempts {
-				break
-			}
-			delay := policy.BaseDelay * time.Duration(1<<(attempt-1))
-			if delay > policy.MaxDelay {
-				delay = policy.MaxDelay
-			}
-			if err := sleepContext(ctx, delay); err != nil {
-				return err
-			}
-		default:
-			return err
-		}
+	exec, err := NewRPCExecutor(RPCExecutorConfig{
+		DefaultPolicy: RetryPolicy{
+			MaxAttempts:        policy.MaxAttempts,
+			BaseDelay:          policy.BaseDelay,
+			MaxDelay:           policy.MaxDelay,
+			MaxElapsed:         time.Duration(policy.MaxAttempts+1) * (policy.MaxDelay + policy.BaseDelay),
+			InlineFloodWaitMax: policy.MaxDelay,
+			JitterFraction:     0.0,
+		},
+	})
+	if err != nil {
+		return err
 	}
-	return last
+
+	err = exec.Do(ctx, RPCMeta{
+		Method: "legacy.RetryRPC",
+		Kind:   RPCReadOnly,
+	}, op)
+	if err != nil {
+		var failure *RPCFailure
+		if errors.As(err, &failure) {
+			return failure.Err
+		}
+		return err
+	}
+	return nil
 }
 
 func sleepContext(ctx context.Context, d time.Duration) error {

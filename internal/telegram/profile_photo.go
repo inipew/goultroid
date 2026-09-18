@@ -24,7 +24,9 @@ func (s *Service) DownloadUserProfilePhoto(ctx context.Context, user tg.InputUse
 		return fmt.Errorf("%w: user must be a resolved InputUser with access hash", core.ErrInvalidArgs)
 	}
 
-	full, err := s.api.UsersGetFullUser(ctx, user)
+	full, err := s.execReadOnlyVal(ctx, "users.getFullUser", func(opCtx context.Context) (*tg.UsersUserFull, error) {
+		return s.api.UsersGetFullUser(opCtx, user)
+	})
 	if err != nil {
 		return mapTelegramError(err)
 	}

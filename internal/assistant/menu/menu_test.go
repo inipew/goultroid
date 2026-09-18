@@ -57,6 +57,10 @@ func (f *fakeInteraction) SendMessage(ctx context.Context, peer tg.InputPeerClas
 	return &tg.Message{ID: 1}, nil
 }
 
+func (f *fakeInteraction) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
+	return &tg.Message{ID: 1}, nil
+}
+
 func TestMenuScreens(t *testing.T) {
 	start := menu.BuildStartScreen("TestBot", 15*time.Minute)
 	if start.ID != menu.ScreenIDStart || len(start.Rows) != 3 {

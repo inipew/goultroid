@@ -23,6 +23,7 @@ type CommandExecutor struct {
 	defaultTimeout time.Duration
 	metrics        MetricsCollector
 	rateLimiter    CommandRateLimiter
+	delayedActions DelayedActionScheduler
 }
 
 func NewCommandExecutor(logger *zap.Logger, cooldown *CooldownTracker, defaultTimeout time.Duration) *CommandExecutor {
@@ -38,6 +39,10 @@ func (e *CommandExecutor) SetRateLimiter(limiter CommandRateLimiter) {
 	e.rateLimiter = limiter
 }
 func (e *CommandExecutor) RateLimiter() CommandRateLimiter { return e.rateLimiter }
+func (e *CommandExecutor) SetDelayedActions(scheduler DelayedActionScheduler) {
+	e.delayedActions = scheduler
+}
+func (e *CommandExecutor) DelayedActions() DelayedActionScheduler { return e.delayedActions }
 
 // Execute preserves the legacy Context-based entry point. Scheduler callers
 // that still provide a compatibility context are recognized as scheduled by
@@ -85,6 +90,9 @@ func (e *CommandExecutor) execute(ctx *Context, cmd Command, source ExecutionSou
 		ctx.Ctx = context.Background()
 	}
 	ctx.Source = source
+	if ctx.DelayedActions == nil {
+		ctx.DelayedActions = e.delayedActions
+	}
 	if ctx.Message != nil && ctx.Chat != nil && ConsumeMessageHandled(ctx.Chat.ID, ctx.Message.ID) {
 		return nil
 	}
@@ -139,6 +147,9 @@ func (e *CommandExecutor) execute(ctx *Context, cmd Command, source ExecutionSou
 		}
 		if errors.Is(err, ErrGroupOnly) || errors.Is(err, ErrPrivateOnly) || errors.Is(err, ErrReplyRequired) {
 			_ = ctx.Reply("⚠️ " + err.Error())
+			return err
+		}
+		if errors.Is(err, ErrInvalidArgs) || CategoryOf(err) == CategoryInvalidInput {
 			return err
 		}
 		if e.logger != nil {

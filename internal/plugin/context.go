@@ -25,37 +25,37 @@ type PluginContext interface {
 	Process() (*process.Executor, error)
 	Files() (*filesystem.Scope, error)
 	Secrets() (*secret.Manager, error)
-	Tasks() (*tasks.Manager, error)
 	Jobs() (*jobs.Manager, error)
+	TaskClient() (tasks.Client, error)
 	Storage() (storage.KVStore, error)
 }
 
 type pluginContext struct {
 	context.Context
-	scope   *Scope
-	owner   string
-	gate    *CapabilityGate
-	network *network.Service
-	process *process.Manager
-	files   *filesystem.Manager
-	secrets *secret.Manager
-	tasks   *tasks.Manager
-	jobs    *jobs.Manager
-	storage *storage.Manager
+	scope      *Scope
+	owner      string
+	gate       *CapabilityGate
+	network    *network.Service
+	process    *process.Manager
+	files      *filesystem.Manager
+	secrets    *secret.Manager
+	jobs       *jobs.Manager
+	taskClient tasks.Client
+	storage    *storage.Manager
 }
 
 // ContextConfig bundles runtime services provided to a plugin context.
 type ContextConfig struct {
-	Scope   *Scope
-	Owner   string
-	Gate    *CapabilityGate
-	Network *network.Service
-	Process *process.Manager
-	Files   *filesystem.Manager
-	Secrets *secret.Manager
-	Tasks   *tasks.Manager
-	Jobs    *jobs.Manager
-	Storage *storage.Manager
+	Scope      *Scope
+	Owner      string
+	Gate       *CapabilityGate
+	Network    *network.Service
+	Process    *process.Manager
+	Files      *filesystem.Manager
+	Secrets    *secret.Manager
+	Jobs       *jobs.Manager
+	TaskClient tasks.Client
+	Storage    *storage.Manager
 }
 
 // NewPluginContext constructs a new PluginContext enforcing capability checks via the gate.
@@ -71,17 +71,17 @@ func NewPluginContext(baseCtx context.Context, cfg ContextConfig) PluginContext 
 	}
 
 	return &pluginContext{
-		Context: baseCtx,
-		scope:   cfg.Scope,
-		owner:   cfg.Owner,
-		gate:    cfg.Gate,
-		network: cfg.Network,
-		process: cfg.Process,
-		files:   cfg.Files,
-		secrets: cfg.Secrets,
-		tasks:   cfg.Tasks,
-		jobs:    cfg.Jobs,
-		storage: cfg.Storage,
+		Context:    baseCtx,
+		scope:      cfg.Scope,
+		owner:      cfg.Owner,
+		gate:       cfg.Gate,
+		network:    cfg.Network,
+		process:    cfg.Process,
+		files:      cfg.Files,
+		secrets:    cfg.Secrets,
+		jobs:       cfg.Jobs,
+		taskClient: cfg.TaskClient,
+		storage:    cfg.Storage,
 	}
 }
 
@@ -135,16 +135,6 @@ func (c *pluginContext) Secrets() (*secret.Manager, error) {
 	return c.secrets, nil
 }
 
-func (c *pluginContext) Tasks() (*tasks.Manager, error) {
-	if err := c.gate.Check(c.owner, CapTasks); err != nil {
-		return nil, fmt.Errorf("task access denied: %w", err)
-	}
-	if c.tasks == nil {
-		return nil, errors.New("task manager not configured")
-	}
-	return c.tasks, nil
-}
-
 func (c *pluginContext) Jobs() (*jobs.Manager, error) {
 	if err := c.gate.Check(c.owner, CapJobs); err != nil {
 		if errSched := c.gate.Check(c.owner, CapScheduler); errSched != nil {
@@ -155,6 +145,50 @@ func (c *pluginContext) Jobs() (*jobs.Manager, error) {
 		return nil, errors.New("jobs manager not configured")
 	}
 	return c.jobs, nil
+}
+
+func (c *pluginContext) TaskClient() (tasks.Client, error) {
+	if err := c.gate.Check(c.owner, CapTasks); err != nil {
+		return nil, fmt.Errorf("task client access denied: %w", err)
+	}
+	if c.taskClient == nil {
+		return nil, errors.New("task client not configured")
+	}
+	if c.scope == nil {
+		return nil, errors.New("plugin scope not configured")
+	}
+	return scopedTaskClient{client: c.taskClient, scope: tasks.ScopeIdentity{Owner: "plugin:" + c.owner, Generation: c.scope.Generation()}, owner: tasks.OwnerID("plugin:" + c.owner)}, nil
+}
+
+type scopedTaskClient struct {
+	client tasks.Client
+	scope  tasks.ScopeIdentity
+	owner  tasks.OwnerID
+}
+
+func (c scopedTaskClient) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket, error) {
+	spec.Scope, spec.QuotaOwner = c.scope, c.owner
+	return c.client.Submit(ctx, spec)
+}
+func (c scopedTaskClient) Cancel(id tasks.TaskID, cause tasks.Cause) (tasks.CancelReceipt, error) {
+	snapshot, ok := c.client.Snapshot(id)
+	if !ok || snapshot.Scope != c.scope {
+		return tasks.CancelReceipt{TaskID: id, Accepted: false, Reason: cause}, tasks.ErrTaskNotFound
+	}
+	return c.client.Cancel(id, cause)
+}
+func (c scopedTaskClient) CancelScope(scope tasks.ScopeIdentity, cause tasks.Cause) int {
+	if scope != c.scope {
+		return 0
+	}
+	return c.client.CancelScope(scope, cause)
+}
+func (c scopedTaskClient) Snapshot(id tasks.TaskID) (tasks.TaskSnapshot, bool) {
+	snapshot, ok := c.client.Snapshot(id)
+	if !ok || snapshot.Scope != c.scope {
+		return tasks.TaskSnapshot{}, false
+	}
+	return snapshot, true
 }
 
 func (c *pluginContext) Storage() (storage.KVStore, error) {

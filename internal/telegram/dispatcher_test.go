@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,9 +18,20 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/taskengine"
 	"github.com/inipew/goultroid/plugins/afk"
 	"go.uber.org/zap"
 )
+
+func configureDispatcherTasks(t *testing.T, dispatcher *Dispatcher) {
+	t.Helper()
+	engine := taskengine.NewEngine(taskengine.DefaultConfig)
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher.SetTasks(engine)
+	t.Cleanup(func() { _ = engine.Stop(context.Background()) })
+}
 
 func TestDispatcher_OnNewMessage(t *testing.T) {
 	logger := zap.NewNop()
@@ -52,6 +64,7 @@ func TestDispatcher_OnNewMessage(t *testing.T) {
 	}
 
 	dispatcher := NewDispatcher(router, perms, nil, logger)
+	configureDispatcherTasks(t, dispatcher)
 	dispatcher.SetSelfID(1001)
 
 	entities := tg.Entities{
@@ -97,6 +110,7 @@ func TestDispatcher_IgnoredUpdates(t *testing.T) {
 	logger := zap.NewNop()
 	router := core.NewRouter(".")
 	dispatcher := NewDispatcher(router, nil, nil, logger)
+	configureDispatcherTasks(t, dispatcher)
 
 	// Non-message update
 	err := dispatcher.OnNewMessage(context.Background(), tg.Entities{}, &tg.UpdateNewMessage{
@@ -141,6 +155,7 @@ func TestDispatcher_OnNewChannelMessage(t *testing.T) {
 	})
 
 	dispatcher := NewDispatcher(router, nil, nil, logger)
+	configureDispatcherTasks(t, dispatcher)
 
 	entities := tg.Entities{
 		Channels: map[int64]*tg.Channel{
@@ -202,6 +217,7 @@ func TestDispatcher_MessageHandler(t *testing.T) {
 	logger := zap.NewNop()
 	router := core.NewRouter(".")
 	dispatcher := NewDispatcher(router, nil, nil, logger)
+	configureDispatcherTasks(t, dispatcher)
 
 	called := false
 	var gotCmd bool
@@ -280,10 +296,55 @@ func TestDispatcher_InterceptorPanicIsolation(t *testing.T) {
 	}
 }
 
+func TestDispatcher_SecurityInterceptorPanicFailsClosed(t *testing.T) {
+	dispatcher := NewDispatcher(core.NewRouter("."), core.NewPermissions(1, nil), nil, zap.NewNop())
+
+	var featureRan atomic.Bool
+	dispatcher.AddPrioritizedMessageHandler(PrioritySecurity, func(context.Context, tg.Entities, *tg.Message, bool, string) error {
+		panic("security backend invariant failed")
+	})
+	dispatcher.AddPrioritizedMessageHandler(PriorityFeature, func(context.Context, tg.Entities, *tg.Message, bool, string) error {
+		featureRan.Store(true)
+		return nil
+	})
+
+	if err := dispatcher.OnNewMessage(context.Background(), tg.Entities{}, &tg.UpdateNewMessage{
+		Message: &tg.Message{ID: 1, PeerID: &tg.PeerChat{ChatID: 10}, Message: "hello"},
+	}); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if featureRan.Load() {
+		t.Fatal("feature handler ran after security interceptor panic")
+	}
+}
+
+func TestDispatcher_SecurityInterceptorErrorFailsClosed(t *testing.T) {
+	dispatcher := NewDispatcher(core.NewRouter("."), core.NewPermissions(1, nil), nil, zap.NewNop())
+
+	var featureRan atomic.Bool
+	dispatcher.AddPrioritizedMessageHandler(PrioritySecurity, func(context.Context, tg.Entities, *tg.Message, bool, string) error {
+		return errors.New("security store unavailable")
+	})
+	dispatcher.AddPrioritizedMessageHandler(PriorityFeature, func(context.Context, tg.Entities, *tg.Message, bool, string) error {
+		featureRan.Store(true)
+		return nil
+	})
+
+	if err := dispatcher.OnNewMessage(context.Background(), tg.Entities{}, &tg.UpdateNewMessage{
+		Message: &tg.Message{ID: 2, PeerID: &tg.PeerChat{ChatID: 10}, Message: "hello"},
+	}); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if featureRan.Load() {
+		t.Fatal("feature handler ran after security interceptor error")
+	}
+}
+
 func TestDispatcher_RootContextCancellation(t *testing.T) {
 	logger := zap.NewNop()
 	router := core.NewRouter(".")
 	dispatcher := NewDispatcher(router, nil, nil, logger)
+	configureDispatcherTasks(t, dispatcher)
 
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	dispatcher.SetRootContext(rootCtx)
@@ -500,24 +561,31 @@ func TestDispatcher_PrioritizedInterceptors(t *testing.T) {
 	logger := zap.NewNop()
 	router := core.NewRouter(".")
 	dispatcher := NewDispatcher(router, nil, nil, logger)
+	configureDispatcherTasks(t, dispatcher)
 
+	var mu sync.Mutex
 	var executionOrder []string
+	add := func(name string) {
+		mu.Lock()
+		defer mu.Unlock()
+		executionOrder = append(executionOrder, name)
+	}
 
 	// Register in reverse order
 	dispatcher.AddPrioritizedMessageHandler(PriorityObservability, func(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error {
-		executionOrder = append(executionOrder, "observability")
+		add("observability")
 		return nil
 	})
 	dispatcher.AddPrioritizedMessageHandler(PriorityFeature, func(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error {
-		executionOrder = append(executionOrder, "feature")
+		add("feature")
 		return nil
 	})
 	dispatcher.AddPrioritizedMessageHandler(PriorityModeration, func(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error {
-		executionOrder = append(executionOrder, "moderation")
+		add("moderation")
 		return nil
 	})
 	dispatcher.AddPrioritizedMessageHandler(PrioritySecurity, func(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error {
-		executionOrder = append(executionOrder, "security")
+		add("security")
 		return nil
 	})
 
@@ -528,6 +596,11 @@ func TestDispatcher_PrioritizedInterceptors(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	// Drain in-flight asynchronous observability handlers
+	_ = dispatcher.Stop(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
 	expected := []string{"security", "moderation", "feature", "observability"}
 	if len(executionOrder) != len(expected) {
 		t.Fatalf("expected %d handlers, got %d", len(expected), len(executionOrder))
@@ -635,6 +708,7 @@ func TestDispatcher_StopWaitsForRunningCommand(t *testing.T) {
 	logger := zap.NewNop()
 	router := core.NewRouter(".")
 	dispatcher := NewDispatcher(router, nil, nil, logger)
+	configureDispatcherTasks(t, dispatcher)
 
 	commandFinished := atomic.Bool{}
 	commandStarted := make(chan struct{})
@@ -768,6 +842,7 @@ func TestDispatcher_AFK_EndToEnd(t *testing.T) {
 	}
 
 	dispatcher := NewDispatcher(router, perms, nil, logger)
+	configureDispatcherTasks(t, dispatcher)
 	dispatcher.SetSelfID(ownerID)
 	dispatcher.SetService(svc)
 
@@ -824,12 +899,19 @@ func TestDispatcher_AFK_EndToEnd(t *testing.T) {
 		t.Fatalf("OnNewMessage DM failed: %v", err)
 	}
 
-	svc.mu.Lock()
 	lastSent := ""
-	if len(svc.sentMessages) > 0 {
-		lastSent = svc.sentMessages[len(svc.sentMessages)-1]
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		svc.mu.Lock()
+		if len(svc.sentMessages) > 0 {
+			lastSent = svc.sentMessages[len(svc.sentMessages)-1]
+		}
+		svc.mu.Unlock()
+		if strings.Contains(lastSent, "currently AFK") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	svc.mu.Unlock()
 
 	if !strings.Contains(lastSent, "currently AFK") {
 		t.Fatalf("expected AFK responder to reply to DM, got: %q", lastSent)
@@ -861,9 +943,16 @@ func TestDispatcher_AFK_EndToEnd(t *testing.T) {
 		t.Fatalf("OnNewChannelMessage mention failed: %v", err)
 	}
 
-	svc.mu.Lock()
-	lastSent = svc.sentMessages[len(svc.sentMessages)-1]
-	svc.mu.Unlock()
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		svc.mu.Lock()
+		lastSent = svc.sentMessages[len(svc.sentMessages)-1]
+		svc.mu.Unlock()
+		if strings.Contains(lastSent, "currently AFK") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	if !strings.Contains(lastSent, "currently AFK") {
 		t.Fatalf("expected AFK responder to reply to group mention, got: %q", lastSent)
@@ -905,7 +994,14 @@ func TestDispatcher_AFK_EndToEnd(t *testing.T) {
 		t.Fatalf("OnNewMessage manual unAFK failed: %v", err)
 	}
 
-	st, err = afkRepo.GetAFK(ctx, ownerID)
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		st, err = afkRepo.GetAFK(ctx, ownerID)
+		if err == nil && (st == nil || !st.IsAFK) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if err != nil || (st != nil && st.IsAFK) {
 		t.Fatalf("expected AFK to be deactivated after manual message, got: %+v", st)
 	}

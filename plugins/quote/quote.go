@@ -14,6 +14,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 type Plugin struct{ dataDir string }
@@ -27,7 +28,7 @@ func (p *Plugin) Capabilities() []execution.Capability {
 	return []execution.Capability{{ID: "quote", Name: "Quote", Description: "Generate quote images from Telegram messages", Category: "Media", Surfaces: execution.SurfaceUserbot}}
 }
 func (p *Plugin) Commands() []core.Command {
-	return []core.Command{{Name: "qbot", Aliases: []string{"quote", "q"}, Description: "Create a quote image from a replied message", Usage: ".qbot (reply to a message)", Category: "Media", Permission: core.PermissionSudo, Surfaces: execution.SurfaceUserbot, Timeout: 2 * time.Minute, Handler: p.handle}}
+	return []core.Command{{Name: "qbot", Aliases: []string{"quote", "q"}, Description: "Create a quote image from a replied message", Usage: ".qbot (reply to a message)", Category: "Media", Permission: core.PermissionSudo, Surfaces: execution.SurfaceUserbot, Timeout: 2 * time.Minute, Resources: []tasks.ResourceRequirement{{Name: "media", Amount: 1}}, Handler: p.handle}}
 }
 
 func (p *Plugin) handle(ctx *core.Context) error {

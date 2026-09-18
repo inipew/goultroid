@@ -160,7 +160,18 @@ func (c *Controller) beginStringInput(ctx context.Context, tx *callback.Transact
 
 // HandleTextMessage consumes a pending free-form setting input. It returns true when the message was consumed.
 func (c *Controller) HandleTextMessage(ctx context.Context, userID, chatID int64, text string, inter interaction.MessageInteraction, svc *settings.Service) (bool, error) {
-	if userID == 0 || svc == nil || inter == nil {
+	if userID == 0 || inter == nil {
+		return false, nil
+	}
+	c.textHandlersMu.RLock()
+	handlers := append([]TextHandler(nil), c.textHandlers...)
+	c.textHandlersMu.RUnlock()
+	for _, h := range handlers {
+		if handled, err := h.HandleTextMessage(ctx, userID, chatID, text, inter); handled {
+			return true, err
+		}
+	}
+	if svc == nil {
 		return false, nil
 	}
 	c.pendingMu.Lock()
@@ -214,17 +225,7 @@ func (c *Controller) clearPending(userID int64) {
 }
 
 func (c *Controller) editScreen(ctx context.Context, tx *callback.Transaction, screen *Screen) error {
-	if screen == nil {
-		return fmt.Errorf("settings screen is nil")
-	}
-	if c.instances != nil {
-		c.instances.UpdateScreen(tx.Target.ChatID(), tx.Target.MessageID(), ScreenIDSettings)
-	}
-	if c.renderer == nil {
-		return tx.Edit(ctx, screen.Text(), nil)
-	}
-	text, markup := c.renderer(screen)
-	return tx.Edit(ctx, text, markup)
+	return c.EditScreen(ctx, tx, screen)
 }
 
 func buildSettingsHome(reg *settings.Registry) *Screen {

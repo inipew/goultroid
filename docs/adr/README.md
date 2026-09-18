@@ -11,3 +11,4 @@ pengganti.
 | [0003](0003-task-queue-worker-job-semantics.md) | Task, queue, worker, and job semantics | Accepted |
 | [0004](0004-plugin-capability-and-platform-boundaries.md) | Plugin capability and platform boundaries | Accepted |
 | [0005](0005-storage-migration-and-namespace-compatibility.md) | Storage, migration, and namespace compatibility | Accepted |
+| [0006](0006-execution-runtime-redesign.md) | Execution runtime redesign: admission, workers, occurrences, attempts, and lifecycle | Proposed |

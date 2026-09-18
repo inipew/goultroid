@@ -14,13 +14,14 @@ type InlineTransaction struct {
 	QueryID     int64
 	UserID      int64
 	Payload     ParsedPayload
+	RawData     []byte
 	Target      interaction.InlineTarget
 	Interaction interaction.InlineInteraction
 
-	answerOnce sync.Once
-	answerErr  error
-	answered   uint32
-	state      uint32
+	answerMu  sync.Mutex
+	answering bool
+	answered  uint32
+	state     uint32
 }
 
 // NewInlineTransaction creates an initialized inline callback transaction in StateReceived.
@@ -70,25 +71,32 @@ func (t *InlineTransaction) IsAnswered() bool {
 }
 
 // Answer sends an acknowledgement or alert to Telegram for the inline query.
-// It is single-flight and guaranteed to execute RPC answering at most once.
-// Subsequent calls return interaction.ErrCallbackAlreadyAnswered.
+// It permits one in-flight RPC and allows a retry only when that RPC fails.
 func (t *InlineTransaction) Answer(ctx context.Context, text string, alert bool) error {
-	var firstCall bool
-	t.answerOnce.Do(func() {
-		firstCall = true
-		atomic.StoreUint32(&t.answered, 1)
-		_ = t.Transition(StateAnswering)
-		if t.Interaction != nil && t.QueryID != 0 {
-			t.answerErr = t.Interaction.Answer(ctx, t.QueryID, text, alert)
-		}
-		if t.answerErr == nil {
-			_ = t.Transition(StateAnswered)
-		}
-	})
-	if !firstCall {
+	t.answerMu.Lock()
+	if t.IsAnswered() || t.answering {
+		t.answerMu.Unlock()
 		return interaction.ErrCallbackAlreadyAnswered
 	}
-	return t.answerErr
+	t.answering = true
+	t.answerMu.Unlock()
+
+	_ = t.Transition(StateAnswering)
+	var err error
+	if t.Interaction == nil || t.QueryID == 0 {
+		err = interaction.ErrInvalidTarget
+	} else {
+		err = t.Interaction.Answer(ctx, t.QueryID, text, alert)
+	}
+
+	t.answerMu.Lock()
+	t.answering = false
+	if err == nil {
+		atomic.StoreUint32(&t.answered, 1)
+		_ = t.Transition(StateAnswered)
+	}
+	t.answerMu.Unlock()
+	return err
 }
 
 // Edit mutates the text and reply markup of the inline bot message.

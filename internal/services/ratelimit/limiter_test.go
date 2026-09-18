@@ -137,3 +137,48 @@ func TestLimiter_ConcurrentAccess(t *testing.T) {
 		t.Fatalf("expected at most 100 allowed requests (burst limit), got %d", allowedCount)
 	}
 }
+
+func TestLimiter_Lifecycle(t *testing.T) {
+	policy := ratelimit.Policy{
+		Limit:  10,
+		Window: time.Minute,
+		Burst:  10,
+	}
+	l := ratelimit.New(policy, 10*time.Millisecond)
+
+	// Stop without start should be safe
+	if err := l.Stop(context.Background()); err != nil {
+		t.Fatalf("expected Stop without Start to return nil, got: %v", err)
+	}
+
+	// Create a new limiter and start it
+	l2 := ratelimit.New(policy, 10*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	if err := l2.Start(ctx); err != nil {
+		t.Fatalf("expected Start to succeed, got: %v", err)
+	}
+
+	// Starting again should be idempotent and return nil
+	if err := l2.Start(ctx); err != nil {
+		t.Fatalf("expected second Start to be idempotent and return nil, got: %v", err)
+	}
+
+	// Stop with context should succeed
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
+	defer stopCancel()
+	if err := l2.Stop(stopCtx); err != nil {
+		t.Fatalf("expected Stop to succeed, got: %v", err)
+	}
+
+	// Second stop should be idempotent
+	if err := l2.Stop(stopCtx); err != nil {
+		t.Fatalf("expected second Stop to be idempotent, got: %v", err)
+	}
+
+	// Close should also be idempotent
+	if err := l2.Close(); err != nil {
+		t.Fatalf("expected Close to succeed, got: %v", err)
+	}
+}

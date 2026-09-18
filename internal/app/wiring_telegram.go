@@ -19,6 +19,7 @@ func buildTelegramRuntime(cfg *config.Config, core *coreDependencies, logger *za
 		Localizer:      core.localizer,
 		CallbackRouter: core.callbackRouter,
 		InlineEngine:   core.inlineEngine,
+		Tasks:          core.taskEngine,
 	}
 	dispatcher, err := telegram.NewDispatcherWithDeps(dispatcherDeps)
 	if err != nil {
@@ -26,7 +27,6 @@ func buildTelegramRuntime(cfg *config.Config, core *coreDependencies, logger *za
 	}
 	dispatcher.Executor().SetMetrics(core.metrics)
 	dispatcher.Executor().SetRateLimiter(commandRateLimiterAdapter{limiter: core.cmdLimiter})
-	dispatcher.SetWorkers(core.workerManager)
 	if core.idempManager != nil {
 		dispatcher.SetIdempotency(core.idempManager)
 	}
@@ -39,6 +39,8 @@ func buildTelegramRuntime(cfg *config.Config, core *coreDependencies, logger *za
 	var assistantClient assistant.Client
 	if cfg.BotToken != "" {
 		app := assistant.NewApp(cfg.AppID, cfg.AppHash, cfg.BotToken, logger)
+		app.SetRPCExecutor(assistantRPCExecutor{executor: client.Executor()})
+		app.SetTasks(core.taskEngine)
 		if core.perms != nil {
 			app.SetOwner(core.perms.OwnerID, core.perms.ListSudo)
 		} else if cfg.OwnerID != 0 {

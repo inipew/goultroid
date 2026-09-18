@@ -2,8 +2,6 @@ package help
 
 import (
 	"context"
-	"fmt"
-
 	"github.com/inipew/goultroid/internal/module"
 	"github.com/inipew/goultroid/internal/plugin"
 )
@@ -28,11 +26,6 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	p := New(rt.Router)
 	if rt.CallbackStore != nil {
 		p.SetStateStore(rt.CallbackStore)
-	}
-	if rt.Callbacks != nil {
-		if err := rt.Callbacks.Register(p); err != nil {
-			return fmt.Errorf("register help callback handler: %w", err)
-		}
 	}
 	return rt.RegisterPlugin(ctx, m.Manifest(), p)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -11,27 +12,38 @@ import (
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/resource"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 // Resource describes a long-lived resource owned by a plugin scope.
 // Aliased to resource.Resource for unified platform tracking and backward compatibility.
 type Resource = resource.Resource
 
+// DefaultMaxScopeGoroutines is the maximum concurrent unmanaged goroutines permitted per scope.
+const DefaultMaxScopeGoroutines = 64
+
 // Scope owns cancellable plugin work and cleanup callbacks. It is safe for
 // concurrent use and can be closed repeatedly.
 type Scope struct {
-	owner   string
-	ctx     context.Context
-	cancel  context.CancelFunc
-	manager *resource.Manager
+	owner         string
+	generation    uint64
+	ctx           context.Context
+	cancel        context.CancelFunc
+	manager       *resource.Manager
+	panicReporter core.PanicReporter
 
-	mu        sync.Mutex
-	closed    bool
-	cleanups  []func()
-	resources map[string]Resource
-	wg        sync.WaitGroup
-	goCounter atomic.Uint64
+	mu               sync.Mutex
+	closed           bool
+	cleanups         []func()
+	resources        map[string]Resource
+	activeGoroutines int
+	maxGoroutines    int
+	wg               sync.WaitGroup
+	goCounter        atomic.Uint64
+	panicCount       atomic.Uint64
 }
+
+var scopeGeneration atomic.Uint64
 
 // NewScope creates a child lifecycle scope. A nil parent is treated as a
 // background context for compatibility with legacy callers.
@@ -46,16 +58,19 @@ func NewScopeWithManager(parent context.Context, owner string, manager *resource
 	}
 	ctx, cancel := context.WithCancel(parent)
 	return &Scope{
-		owner:     owner,
-		ctx:       ctx,
-		cancel:    cancel,
-		manager:   manager,
-		resources: make(map[string]Resource),
+		owner:         owner,
+		generation:    scopeGeneration.Add(1),
+		ctx:           ctx,
+		cancel:        cancel,
+		manager:       manager,
+		maxGoroutines: DefaultMaxScopeGoroutines,
+		resources:     make(map[string]Resource),
 	}
 }
 
 func (s *Scope) Context() context.Context { return s.ctx }
 func (s *Scope) Owner() string            { return s.owner }
+func (s *Scope) Generation() uint64       { return s.generation }
 
 // SetManager binds a ResourceManager to this scope.
 func (s *Scope) SetManager(m *resource.Manager) {
@@ -64,8 +79,15 @@ func (s *Scope) SetManager(m *resource.Manager) {
 	s.manager = m
 }
 
+// SetMaxGoroutines sets the maximum concurrent goroutines allowed in Scope.Go.
+func (s *Scope) SetMaxGoroutines(max int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.maxGoroutines = max
+}
+
 // Go starts work with the scope context, tracks the goroutine in the ResourceManager,
-// and waits for it during Close.
+// and waits for it during Close. It enforces the maximum goroutine budget.
 func (s *Scope) Go(fn func(context.Context)) error {
 	if fn == nil {
 		return errors.New("scope goroutine cannot be nil")
@@ -75,6 +97,15 @@ func (s *Scope) Go(fn func(context.Context)) error {
 		s.mu.Unlock()
 		return errors.New("plugin scope is closed")
 	}
+	limit := s.maxGoroutines
+	if limit <= 0 {
+		limit = DefaultMaxScopeGoroutines
+	}
+	if s.activeGoroutines >= limit {
+		s.mu.Unlock()
+		return fmt.Errorf("plugin scope goroutine limit exceeded (%d/%d)", s.activeGoroutines, limit)
+	}
+	s.activeGoroutines++
 	s.wg.Add(1)
 	mgr := s.manager
 	s.mu.Unlock()
@@ -92,6 +123,24 @@ func (s *Scope) Go(fn func(context.Context)) error {
 
 	go func() {
 		defer func() {
+			if r := recover(); r != nil {
+				s.panicCount.Add(1)
+				s.mu.Lock()
+				reporter := s.panicReporter
+				s.mu.Unlock()
+				if reporter != nil {
+					reporter.ReportPanic(core.PanicReport{
+						Owner:     s.owner,
+						Component: "plugin.Scope.Go",
+						Value:     r,
+						Stack:     debug.Stack(),
+						At:        time.Now().UTC(),
+					})
+				}
+			}
+			s.mu.Lock()
+			s.activeGoroutines--
+			s.mu.Unlock()
 			if rID != "" && mgr != nil {
 				_ = mgr.Release(rID)
 			}
@@ -100,6 +149,25 @@ func (s *Scope) Go(fn func(context.Context)) error {
 		fn(s.ctx)
 	}()
 	return nil
+}
+
+// SetPanicReporter configures the reporter for recovered goroutine panics.
+func (s *Scope) SetPanicReporter(reporter core.PanicReporter) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.panicReporter = reporter
+}
+
+// Panics returns the total number of panics recovered by this scope.
+func (s *Scope) Panics() uint64 {
+	return s.panicCount.Load()
+}
+
+// ActiveGoroutines returns the number of currently running goroutines in this scope.
+func (s *Scope) ActiveGoroutines() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activeGoroutines
 }
 
 // Defer registers an idempotent-at-scope cleanup callback. Callbacks execute
@@ -123,7 +191,7 @@ func (s *Scope) SubscribeEvent(bus *core.EventBus, eventType core.EventType, han
 	if bus == nil || handler == nil {
 		return nil
 	}
-	sub := bus.SubscribeContext(s.ctx, s.owner, eventType, handler)
+	sub := bus.SubscribeContextScoped(s.ctx, s.owner, tasks.ScopeIdentity{Owner: s.owner, Generation: s.generation}, eventType, handler)
 	if sub != nil {
 		subID := fmt.Sprintf("sub:%s:%s", s.owner, eventType)
 		_ = s.Track(Resource{
@@ -253,7 +321,23 @@ func (s *Scope) Close(ctx context.Context) error {
 
 	for i := len(cleanups) - 1; i >= 0; i-- {
 		func() {
-			defer func() { _ = recover() }()
+			defer func() {
+				if r := recover(); r != nil {
+					s.panicCount.Add(1)
+					s.mu.Lock()
+					reporter := s.panicReporter
+					s.mu.Unlock()
+					if reporter != nil {
+						reporter.ReportPanic(core.PanicReport{
+							Owner:     s.owner,
+							Component: "plugin.Scope.Close",
+							Value:     r,
+							Stack:     debug.Stack(),
+							At:        time.Now().UTC(),
+						})
+					}
+				}
+			}()
 			cleanups[i]()
 		}()
 	}

@@ -19,6 +19,7 @@ import (
 	"github.com/inipew/goultroid/internal/platform/storage"
 	"github.com/inipew/goultroid/internal/resource"
 	"github.com/inipew/goultroid/internal/runtime"
+	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -35,6 +36,14 @@ type HookRegistrar interface {
 	AddPrioritizedMessageHandler(priority int, h MessageHookHandler) func()
 }
 
+type scopedHookRegistrar interface {
+	AddScopedMessageHandler(priority int, scope tasks.ScopeIdentity, h MessageHookHandler) func()
+}
+
+type callbackRegistrar interface {
+	RegisterOwned(string, callback.Handler) (*callback.Registration, error)
+}
+
 // SchedulerTaskCleaner allows the plugin manager to unregister periodic tasks owned by disabled plugins.
 type SchedulerTaskCleaner interface {
 	UnregisterPeriodicTasksByOwner(owner string) int
@@ -43,6 +52,7 @@ type SchedulerTaskCleaner interface {
 type Manager struct {
 	router            *core.Router
 	hookRegistrar     HookRegistrar
+	callbackRegistrar callbackRegistrar
 	schedCleaner      SchedulerTaskCleaner
 	resourceManager   *resource.Manager
 	gate              *CapabilityGate
@@ -50,7 +60,7 @@ type Manager struct {
 	processManager    *process.Manager
 	filesystemManager *filesystem.Manager
 	secretManager     *secret.Manager
-	taskManager       *tasks.Manager
+	taskClient        tasks.Client
 	jobsManager       *jobs.Manager
 	storageManager    *storage.Manager
 	plugins           map[string]Plugin
@@ -63,26 +73,37 @@ type Manager struct {
 	teardownErrors    map[string]error
 	registering       map[string]bool
 	list              []Plugin
-	hookCleanups      []func()
+	hookCleanups      map[string]func()
+	callbackCleanups  map[string]func()
 	auditor           audit.Auditor
+	panicReporter     core.PanicReporter
 	mu                sync.RWMutex
 	shutdown          bool
 }
 
 func NewManager(router *core.Router) *Manager {
 	return &Manager{
-		router:         router,
-		plugins:        make(map[string]Plugin),
-		metadata:       make(map[string]Metadata),
-		manifests:      make(map[string]Manifest),
-		scopes:         make(map[string]*Scope),
-		commands:       make(map[string][]core.Command),
-		disabled:       make(map[string]bool),
-		transitions:    make(map[string]string),
-		teardownErrors: make(map[string]error),
-		registering:    make(map[string]bool),
-		list:           make([]Plugin, 0),
+		router:           router,
+		plugins:          make(map[string]Plugin),
+		metadata:         make(map[string]Metadata),
+		manifests:        make(map[string]Manifest),
+		scopes:           make(map[string]*Scope),
+		commands:         make(map[string][]core.Command),
+		disabled:         make(map[string]bool),
+		transitions:      make(map[string]string),
+		teardownErrors:   make(map[string]error),
+		registering:      make(map[string]bool),
+		hookCleanups:     make(map[string]func()),
+		callbackCleanups: make(map[string]func()),
+		list:             make([]Plugin, 0),
 	}
+}
+
+// SetCallbackRegistrar binds callback registrations to plugin transactions.
+func (m *Manager) SetCallbackRegistrar(registrar callbackRegistrar) {
+	m.mu.Lock()
+	m.callbackRegistrar = registrar
+	m.mu.Unlock()
 }
 
 // SetPlatformServices attaches platform managers and capability gate to this manager.
@@ -92,7 +113,6 @@ func (m *Manager) SetPlatformServices(
 	proc *process.Manager,
 	fs *filesystem.Manager,
 	sec *secret.Manager,
-	tsk *tasks.Manager,
 	jbs *jobs.Manager,
 ) {
 	m.mu.Lock()
@@ -102,7 +122,6 @@ func (m *Manager) SetPlatformServices(
 	m.processManager = proc
 	m.filesystemManager = fs
 	m.secretManager = sec
-	m.taskManager = tsk
 	m.jobsManager = jbs
 }
 
@@ -118,6 +137,13 @@ func (m *Manager) SetResourceManager(mgr *resource.Manager) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.resourceManager = mgr
+}
+
+// SetPanicReporter attaches a panic reporter for plugin scopes.
+func (m *Manager) SetPanicReporter(reporter core.PanicReporter) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.panicReporter = reporter
 }
 
 // SetHookRegistrar attaches a hook registrar (e.g. Telegram Dispatcher) to this manager.
@@ -148,6 +174,13 @@ func (m *Manager) SetStorageManager(mgr *storage.Manager) {
 	m.storageManager = mgr
 }
 
+// SetTaskClient attaches an execution task client to this plugin manager.
+func (m *Manager) SetTaskClient(client tasks.Client) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.taskClient = client
+}
+
 func (m *Manager) buildPluginContext(baseCtx context.Context, name string, scope *Scope) PluginContext {
 	m.mu.RLock()
 	gate := m.gate
@@ -155,22 +188,22 @@ func (m *Manager) buildPluginContext(baseCtx context.Context, name string, scope
 	procMgr := m.processManager
 	fsMgr := m.filesystemManager
 	secMgr := m.secretManager
-	taskMgr := m.taskManager
+	taskClient := m.taskClient
 	jobsMgr := m.jobsManager
 	storageMgr := m.storageManager
 	m.mu.RUnlock()
 
 	return NewPluginContext(baseCtx, ContextConfig{
-		Scope:   scope,
-		Owner:   name,
-		Gate:    gate,
-		Network: netSvc,
-		Process: procMgr,
-		Files:   fsMgr,
-		Secrets: secMgr,
-		Tasks:   taskMgr,
-		Jobs:    jobsMgr,
-		Storage: storageMgr,
+		Scope:      scope,
+		Owner:      name,
+		Gate:       gate,
+		Network:    netSvc,
+		Process:    procMgr,
+		Files:      fsMgr,
+		Secrets:    secMgr,
+		Jobs:       jobsMgr,
+		TaskClient: taskClient,
+		Storage:    storageMgr,
 	})
 }
 
@@ -289,6 +322,7 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 	// 3. Initialization without holding lock (may be long, may call manager)
 	m.mu.RLock()
 	resMgr := m.resourceManager
+	reporter := m.panicReporter
 	m.mu.RUnlock()
 
 	var scope *Scope
@@ -296,6 +330,13 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 		scope = NewScopeWithManager(ctx, "plugin:"+name, resMgr)
 	} else {
 		scope = NewScope(ctx, "plugin:"+name)
+	}
+	if reporter != nil {
+		scope.SetPanicReporter(reporter)
+	}
+	commandScope := tasks.ScopeIdentity{Owner: "plugin:" + name, Generation: scope.Generation()}
+	for i := range cmds {
+		cmds[i].Scope = commandScope
 	}
 	pctx := m.buildPluginContext(scope.Context(), name, scope)
 
@@ -342,7 +383,29 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 	m.mu.RUnlock()
 	if hookRegistrar != nil {
 		if mhp, ok := p.(MessageHookPlugin); ok {
-			hookCleanup = hookRegistrar.AddPrioritizedMessageHandler(mhp.MessageHookPriority(), mhp.HandleIncomingMessage)
+			if scoped, ok := hookRegistrar.(scopedHookRegistrar); ok {
+				hookCleanup = scoped.AddScopedMessageHandler(mhp.MessageHookPriority(), commandScope, mhp.HandleIncomingMessage)
+			} else {
+				hookCleanup = hookRegistrar.AddPrioritizedMessageHandler(mhp.MessageHookPriority(), mhp.HandleIncomingMessage)
+			}
+		}
+	}
+	var callbackCleanup func()
+	m.mu.RLock()
+	callbackRegistry := m.callbackRegistrar
+	m.mu.RUnlock()
+	if callbackRegistry != nil {
+		if handler, ok := p.(callback.Handler); ok {
+			registration, err := callbackRegistry.RegisterOwned(name, handler)
+			if err != nil {
+				if hookCleanup != nil {
+					hookCleanup()
+				}
+				router.UnregisterBatch(cmds)
+				cleanupPlugin()
+				return fmt.Errorf("plugin %s callback registration failed: %w", name, err)
+			}
+			callbackCleanup = registration.Close
 		}
 	}
 
@@ -365,6 +428,9 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 		if hookCleanup != nil {
 			hookCleanup()
 		}
+		if callbackCleanup != nil {
+			callbackCleanup()
+		}
 		router.UnregisterBatch(cmds)
 		cleanupPlugin()
 		return fmt.Errorf("plugin manager is shutting down")
@@ -373,6 +439,9 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 		m.mu.Unlock()
 		if hookCleanup != nil {
 			hookCleanup()
+		}
+		if callbackCleanup != nil {
+			callbackCleanup()
 		}
 		router.UnregisterBatch(cmds)
 		cleanupPlugin()
@@ -387,7 +456,10 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 	m.commands[name] = append([]core.Command(nil), cmds...)
 	m.list = append(m.list, p)
 	if hookCleanup != nil {
-		m.hookCleanups = append(m.hookCleanups, hookCleanup)
+		m.hookCleanups[name] = hookCleanup
+	}
+	if callbackCleanup != nil {
+		m.callbackCleanups[name] = callbackCleanup
 	}
 	m.mu.Unlock()
 	committed = true
@@ -482,8 +554,15 @@ func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 		return nil
 	}
 	m.shutdown = true
-	cleanups := m.hookCleanups
-	m.hookCleanups = nil
+	cleanups := make([]func(), 0, len(m.hookCleanups))
+	for _, cleanup := range m.hookCleanups {
+		cleanups = append(cleanups, cleanup)
+	}
+	m.hookCleanups = make(map[string]func())
+	for _, cleanup := range m.callbackCleanups {
+		cleanups = append(cleanups, cleanup)
+	}
+	m.callbackCleanups = make(map[string]func())
 	plugins := make([]Plugin, len(m.list))
 	copy(plugins, m.list)
 	scopes := make(map[string]*Scope, len(m.scopes))
@@ -517,6 +596,12 @@ func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 			errs = append(errs, fmt.Sprintf("%s: %v", p.Name(), err))
 		}
 		if scope := scopes[strings.ToLower(strings.TrimSpace(p.Name()))]; scope != nil {
+			m.mu.RLock()
+			taskClient := m.taskClient
+			m.mu.RUnlock()
+			if taskClient != nil {
+				taskClient.CancelScope(tasks.ScopeIdentity{Owner: scope.Owner(), Generation: scope.Generation()}, tasks.CauseShutdown)
+			}
 			if err := scope.Close(ctx); err != nil {
 				errs = append(errs, fmt.Sprintf("%s scope: %v", p.Name(), err))
 			}
@@ -556,11 +641,21 @@ func (m *Manager) Disable(ctx context.Context, name string) error {
 	}
 	cmds := append([]core.Command(nil), m.commands[key]...)
 	scope := m.scopes[key]
+	hookCleanup := m.hookCleanups[key]
+	delete(m.hookCleanups, key)
+	callbackCleanup := m.callbackCleanups[key]
+	delete(m.callbackCleanups, key)
 	delete(m.scopes, key)
 	m.disabled[key] = true
 	m.transitions[key] = "disabling"
 	router := m.router
 	m.mu.Unlock()
+	if hookCleanup != nil {
+		hookCleanup()
+	}
+	if callbackCleanup != nil {
+		callbackCleanup()
+	}
 
 	// Unregister commands from router
 	if router != nil && len(cmds) > 0 {
@@ -595,6 +690,12 @@ func (m *Manager) Disable(ctx context.Context, name string) error {
 	}
 
 	if scope != nil {
+		m.mu.RLock()
+		taskClient := m.taskClient
+		m.mu.RUnlock()
+		if taskClient != nil {
+			taskClient.CancelScope(tasks.ScopeIdentity{Owner: scope.Owner(), Generation: scope.Generation()}, tasks.CauseScopeClosed)
+		}
 		if err := scope.Close(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("close scope %s: %w", name, err))
 		}
@@ -658,6 +759,7 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 	cmds := append([]core.Command(nil), m.commands[key]...)
 	router := m.router
 	resMgr := m.resourceManager
+	reporter := m.panicReporter
 	m.mu.Unlock()
 
 	// Initialize scope and plugin
@@ -666,6 +768,13 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 		scope = NewScopeWithManager(ctx, "plugin:"+key, resMgr)
 	} else {
 		scope = NewScope(ctx, "plugin:"+key)
+	}
+	if reporter != nil {
+		scope.SetPanicReporter(reporter)
+	}
+	commandScope := tasks.ScopeIdentity{Owner: "plugin:" + key, Generation: scope.Generation()}
+	for i := range cmds {
+		cmds[i].Scope = commandScope
 	}
 
 	pctx := m.buildPluginContext(scope.Context(), key, scope)
@@ -689,9 +798,49 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 		return fmt.Errorf("failed to re-initialize plugin %s: %w", name, initErr)
 	}
 
+	var hookCleanup func()
+	m.mu.RLock()
+	hookRegistrar := m.hookRegistrar
+	m.mu.RUnlock()
+	if hookRegistrar != nil {
+		if mhp, ok := p.(MessageHookPlugin); ok {
+			if scoped, ok := hookRegistrar.(scopedHookRegistrar); ok {
+				hookCleanup = scoped.AddScopedMessageHandler(mhp.MessageHookPriority(), commandScope, mhp.HandleIncomingMessage)
+			} else {
+				hookCleanup = hookRegistrar.AddPrioritizedMessageHandler(mhp.MessageHookPriority(), mhp.HandleIncomingMessage)
+			}
+		}
+	}
+	var callbackCleanup func()
+	m.mu.RLock()
+	callbackRegistry := m.callbackRegistrar
+	m.mu.RUnlock()
+	if callbackRegistry != nil {
+		if handler, ok := p.(callback.Handler); ok {
+			registration, regErr := callbackRegistry.RegisterOwned(key, handler)
+			if regErr != nil {
+				if hookCleanup != nil {
+					hookCleanup()
+				}
+				_ = scope.Close(ctx)
+				m.mu.Lock()
+				delete(m.transitions, key)
+				m.mu.Unlock()
+				return fmt.Errorf("failed to re-register callback for plugin %s: %w", name, regErr)
+			}
+			callbackCleanup = registration.Close
+		}
+	}
+
 	// Register commands back to router
 	if router != nil && len(cmds) > 0 {
 		if err := router.RegisterBatch(cmds); err != nil {
+			if hookCleanup != nil {
+				hookCleanup()
+			}
+			if callbackCleanup != nil {
+				callbackCleanup()
+			}
 			_ = scope.Close(ctx)
 			m.mu.Lock()
 			delete(m.transitions, key)
@@ -702,6 +851,13 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 
 	m.mu.Lock()
 	m.scopes[key] = scope
+	m.commands[key] = append([]core.Command(nil), cmds...)
+	if hookCleanup != nil {
+		m.hookCleanups[key] = hookCleanup
+	}
+	if callbackCleanup != nil {
+		m.callbackCleanups[key] = callbackCleanup
+	}
 	delete(m.disabled, key)
 	delete(m.transitions, key)
 	auditor := m.auditor

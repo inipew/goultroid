@@ -43,6 +43,43 @@ func TestAssistantClientStopTimeoutCanBeRetried(t *testing.T) {
 	}
 }
 
+func TestAssistantClientStartWaitsForFailedRunToExit(t *testing.T) {
+	previousDone := make(chan struct{})
+	c := NewAssistantClient(1234, "hash", "test-token", zap.NewNop())
+	c.mu.Lock()
+	c.runDone = previousDone
+	c.mu.Unlock()
+	c.lifecycle.SetState(StateFailed)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan error, 1)
+	go func() { started <- c.Start(ctx) }()
+
+	select {
+	case err := <-started:
+		t.Fatalf("Start returned before failed run exited: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(previousDone)
+	if err := <-started; err != nil {
+		t.Fatalf("Start after failed run exit: %v", err)
+	}
+	cancel()
+	if err := c.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop after restart: %v", err)
+	}
+}
+
+func TestAssistantClientStartRejectsStoppingState(t *testing.T) {
+	c := NewAssistantClient(1234, "hash", "test-token", zap.NewNop())
+	c.lifecycle.SetState(StateStopping)
+	if err := c.Start(context.Background()); !errors.Is(err, ErrAlreadyRunning) {
+		t.Fatalf("Start error = %v, want ErrAlreadyRunning", err)
+	}
+}
+
 func TestWaitForStartupWaitsForReadiness(t *testing.T) {
 	ready := make(chan struct{})
 	errCh := make(chan error, 1)

@@ -6,12 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"os"
 	"time"
+	"unicode/utf16"
 
+	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/telegram/message/entity"
 	"github.com/gotd/td/telegram/message/html"
 	"github.com/gotd/td/telegram/message/styling"
+	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
+	assistentrpc "github.com/inipew/goultroid/internal/assistant/rpc"
 	"github.com/inipew/goultroid/internal/core"
 	"go.uber.org/zap"
 )
@@ -22,12 +27,20 @@ type PeerReResolver interface {
 	ReResolve(ctx context.Context, inputPeer tg.InputPeerClass) (tg.InputPeerClass, error)
 }
 
+// MediaUploader defines the upload contract for Telegram media files.
+type MediaUploader interface {
+	FromPath(ctx context.Context, path string) (tg.InputFileClass, error)
+}
+
 // ClientInteraction implements MessageInteraction using MTProto TelegramAPI.
 type ClientInteraction struct {
 	api        TelegramAPI
 	logger     *zap.Logger
 	reResolver PeerReResolver
 	metrics    core.MetricsCollector
+	sender     *message.Sender
+	uploader   MediaUploader
+	executor   assistentrpc.Executor
 }
 
 var _ MessageInteraction = (*ClientInteraction)(nil)
@@ -37,10 +50,39 @@ func NewClientInteraction(api TelegramAPI, logger *zap.Logger) *ClientInteractio
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	return &ClientInteraction{
-		api:    api,
-		logger: logger,
+	ci := &ClientInteraction{
+		api:      api,
+		logger:   logger,
+		executor: assistentrpc.DirectExecutor{},
 	}
+	if tgClient, ok := api.(*tg.Client); ok {
+		ci.sender = message.NewSender(tgClient)
+		ci.uploader = uploader.NewUploader(tgClient)
+	}
+	return ci
+}
+
+// SetMediaSender sets custom media sender and uploader components.
+func (c *ClientInteraction) SetMediaSender(sender *message.Sender, upl MediaUploader) {
+	c.sender = sender
+	c.uploader = upl
+}
+
+// SetRPCExecutor configures the shared executor used for multi-request media operations.
+func (c *ClientInteraction) SetRPCExecutor(executor assistentrpc.Executor) {
+	if executor != nil {
+		c.executor = executor
+	}
+}
+
+func executeValue[T any](ctx context.Context, executor assistentrpc.Executor, method, family string, kind assistentrpc.Kind, timeout time.Duration, operation func(context.Context) (T, error)) (T, error) {
+	var value T
+	err := executor.Do(ctx, method, family, kind, timeout, func(opCtx context.Context) error {
+		var opErr error
+		value, opErr = operation(opCtx)
+		return opErr
+	})
+	return value, err
 }
 
 // SetMetricsCollector configures optional runtime metrics collection.
@@ -57,9 +99,49 @@ func parseHTML(text string) (string, []tg.MessageEntityClass) {
 	var eb entity.Builder
 	if err := styling.Perform(&eb, html.String(nil, text)); err == nil {
 		plain, ents := eb.Complete()
-		return plain, ents
+		return plain, sanitizeEntities(plain, ents)
 	}
 	return text, nil
+}
+
+// sanitizeEntities ensures that entities stay within valid UTF-16 bounds and removes
+// duplicate MessageEntityCode instances that overlap identically with MessageEntityPre
+// (which triggers Telegram rpc 400 ENTITY_BOUNDS_INVALID).
+func sanitizeEntities(plain string, ents []tg.MessageEntityClass) []tg.MessageEntityClass {
+	if len(ents) == 0 {
+		return ents
+	}
+	u16Len := len(utf16.Encode([]rune(plain)))
+
+	valid := make([]tg.MessageEntityClass, 0, len(ents))
+	for _, e := range ents {
+		offset := e.GetOffset()
+		length := e.GetLength()
+		if offset < 0 || length <= 0 || offset+length > u16Len {
+			continue
+		}
+		valid = append(valid, e)
+	}
+
+	cleaned := make([]tg.MessageEntityClass, 0, len(valid))
+	for _, e := range valid {
+		if code, ok := e.(*tg.MessageEntityCode); ok {
+			isDuplicate := false
+			for _, other := range valid {
+				if pre, isPre := other.(*tg.MessageEntityPre); isPre {
+					if pre.Offset == code.Offset && pre.Length == code.Length {
+						isDuplicate = true
+						break
+					}
+				}
+			}
+			if isDuplicate {
+				continue
+			}
+		}
+		cleaned = append(cleaned, e)
+	}
+	return cleaned
 }
 
 func randomID() int64 {
@@ -383,6 +465,69 @@ func (c *ClientInteraction) SendMessage(ctx context.Context, peer tg.InputPeerCl
 	return extractMessage(updates), nil
 }
 
+// SendMedia uploads and sends media (photo, sticker, audio, video, file) to the specified peer.
+func (c *ClientInteraction) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (_ *tg.Message, retErr error) {
+	if c.sender == nil || c.uploader == nil {
+		return nil, fmt.Errorf("%w: assistant media upload is not configured", core.ErrUnsupported)
+	}
+	if peer == nil {
+		return nil, ErrInvalidTarget
+	}
+	stat, err := os.Stat(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to inspect file %q: %w", filePath, err)
+	}
+	if stat.Size() > core.DefaultMaxUploadSize {
+		return nil, fmt.Errorf("%w: file size (%d bytes) exceeds maximum upload limit (500MB)", core.ErrMediaTooLarge, stat.Size())
+	}
+
+	start := time.Now()
+	defer func() {
+		if c.metrics != nil {
+			c.metrics.RecordTelegramRequest("SendMedia", time.Since(start), retErr)
+		}
+	}()
+
+	const transferTimeout = 30 * time.Minute
+	inputFile, err := executeValue(ctx, c.executor, "upload.saveFilePart", "upload", assistentrpc.IdempotentMutation, transferTimeout, func(opCtx context.Context) (tg.InputFileClass, error) {
+		return c.uploader.FromPath(opCtx, filePath)
+	})
+	if err != nil {
+		retErr = fmt.Errorf("failed to upload file %q: %w", filePath, err)
+		return nil, retErr
+	}
+
+	builder := c.sender.To(peer)
+	var styledCaption []message.StyledTextOption
+	if caption != "" {
+		styledCaption = append(styledCaption, html.String(nil, caption))
+	}
+
+	updates, err := executeValue(ctx, c.executor, "messages.sendMedia", "messages", assistentrpc.NonIdempotentMutation, transferTimeout, func(opCtx context.Context) (tg.UpdatesClass, error) {
+		switch mediaType {
+		case "photo":
+			return builder.UploadedPhoto(opCtx, inputFile, styledCaption...)
+		case "sticker":
+			return builder.UploadedSticker(opCtx, inputFile, styledCaption...)
+		case "audio":
+			return builder.Audio(opCtx, inputFile, styledCaption...)
+		case "video":
+			return builder.Video(opCtx, inputFile, styledCaption...)
+		case "file", "document":
+			fallthrough
+		default:
+			return builder.File(opCtx, inputFile, styledCaption...)
+		}
+	})
+
+	if err != nil {
+		retErr = fmt.Errorf("failed to send media (%s): %w", mediaType, ClassifyRPCError(err))
+		return nil, retErr
+	}
+
+	return extractMessage(updates), nil
+}
+
 // InlineClientInteraction adapts ClientInteraction to the InlineInteraction interface.
 type InlineClientInteraction struct {
 	ci *ClientInteraction
@@ -432,6 +577,38 @@ func (i *InlineClientInteraction) Edit(ctx context.Context, target InlineTarget,
 			return nil
 		}
 		retErr = fmt.Errorf("assistant edit inline message: %w", classified)
+		return retErr
+	}
+	return nil
+}
+
+// EditMarkup updates only the inline markup of an inline bot message, preserving the text on Telegram.
+func (i *InlineClientInteraction) EditMarkup(ctx context.Context, target InlineTarget, markup tg.ReplyMarkupClass) (retErr error) {
+	if i.ci == nil || i.ci.api == nil || !target.IsValid() {
+		return ErrInvalidTarget
+	}
+	start := time.Now()
+	defer func() {
+		if i.ci != nil && i.ci.metrics != nil {
+			i.ci.metrics.RecordTelegramRequest("MessagesEditInlineBotMessage", time.Since(start), retErr)
+		}
+	}()
+
+	req := &tg.MessagesEditInlineBotMessageRequest{
+		ID: target.MessageID(),
+	}
+	req.SetNoWebpage(true)
+	if markup != nil {
+		req.SetReplyMarkup(markup)
+	}
+
+	_, err := i.ci.api.MessagesEditInlineBotMessage(ctx, req)
+	if err != nil {
+		classified := ClassifyRPCError(err)
+		if classified == nil {
+			return nil
+		}
+		retErr = fmt.Errorf("assistant edit inline message markup: %w", classified)
 		return retErr
 	}
 	return nil

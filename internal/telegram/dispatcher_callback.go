@@ -7,6 +7,8 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/tasks"
+	"go.uber.org/zap"
 )
 
 // RegisterHooks binds message, edit, delete, callback query, inline query, and reaction handlers to a tg.UpdateDispatcher.
@@ -44,82 +46,85 @@ func (d *Dispatcher) OnNewChannelMessage(ctx context.Context, e tg.Entities, upd
 
 // OnEditMessage handles edits in private chats and standard groups.
 func (d *Dispatcher) OnEditMessage(ctx context.Context, e tg.Entities, update *tg.UpdateEditMessage) error {
-	if !d.acceptingUpdates.Load() {
+	release, accepted := d.admitIngress()
+	if !accepted {
 		return nil
 	}
+	defer release()
+
 	bus := d.getEventBus()
 	if bus == nil {
 		return nil
 	}
-	msg, ok := update.Message.(*tg.Message)
-	if !ok {
-		return nil
+	if d.normalizer != nil {
+		evt, err := d.normalizer.Normalize(ctx, e, update)
+		if err == nil && evt != nil {
+			bus.Publish(evt)
+		}
 	}
-	chatID := extractChatIDFromPeer(msg.PeerID)
-	bus.Publish(&core.MessageEditedEvent{
-		At:     time.Now(),
-		MsgID:  msg.ID,
-		ChatID: chatID,
-		Text:   msg.Message,
-	})
 	return nil
 }
 
 // OnEditChannelMessage handles edits in supergroups and channels.
 func (d *Dispatcher) OnEditChannelMessage(ctx context.Context, e tg.Entities, update *tg.UpdateEditChannelMessage) error {
-	if !d.acceptingUpdates.Load() {
+	release, accepted := d.admitIngress()
+	if !accepted {
 		return nil
 	}
+	defer release()
+
 	bus := d.getEventBus()
 	if bus == nil {
 		return nil
 	}
-	msg, ok := update.Message.(*tg.Message)
-	if !ok {
-		return nil
+	if d.normalizer != nil {
+		evt, err := d.normalizer.Normalize(ctx, e, update)
+		if err == nil && evt != nil {
+			bus.Publish(evt)
+		}
 	}
-	chatID := extractChatIDFromPeer(msg.PeerID)
-	bus.Publish(&core.MessageEditedEvent{
-		At:     time.Now(),
-		MsgID:  msg.ID,
-		ChatID: chatID,
-		Text:   msg.Message,
-	})
 	return nil
 }
 
 // OnDeleteMessages handles bulk message deletions in private chats and standard groups.
 func (d *Dispatcher) OnDeleteMessages(ctx context.Context, e tg.Entities, update *tg.UpdateDeleteMessages) error {
-	if !d.acceptingUpdates.Load() {
+	release, accepted := d.admitIngress()
+	if !accepted {
 		return nil
 	}
+	defer release()
+
 	bus := d.getEventBus()
 	if bus == nil {
 		return nil
 	}
-	bus.Publish(&core.MessagesDeletedEvent{
-		At:          time.Now(),
-		ChatID:      0,
-		PeerUnknown: true,
-		MsgIDs:      update.Messages,
-	})
+	if d.normalizer != nil {
+		evt, err := d.normalizer.Normalize(ctx, e, update)
+		if err == nil && evt != nil {
+			bus.Publish(evt)
+		}
+	}
 	return nil
 }
 
 // OnDeleteChannelMessages handles bulk message deletions in supergroups and channels.
 func (d *Dispatcher) OnDeleteChannelMessages(ctx context.Context, e tg.Entities, update *tg.UpdateDeleteChannelMessages) error {
-	if !d.acceptingUpdates.Load() {
+	release, accepted := d.admitIngress()
+	if !accepted {
 		return nil
 	}
+	defer release()
+
 	bus := d.getEventBus()
 	if bus == nil {
 		return nil
 	}
-	bus.Publish(&core.MessagesDeletedEvent{
-		At:     time.Now(),
-		ChatID: update.ChannelID,
-		MsgIDs: update.Messages,
-	})
+	if d.normalizer != nil {
+		evt, err := d.normalizer.Normalize(ctx, e, update)
+		if err == nil && evt != nil {
+			bus.Publish(evt)
+		}
+	}
 	return nil
 }
 
@@ -174,35 +179,32 @@ func (d *Dispatcher) callbackInputPeer(ctx context.Context, peer tg.PeerClass, e
 
 // OnBotCallbackQuery handles inline keyboard button callback queries.
 func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, update *tg.UpdateBotCallbackQuery) error {
-	if !d.acceptingUpdates.Load() {
+	release, accepted := d.admitIngress()
+	if !accepted {
 		return nil
 	}
+	defer release()
+
 	if d.idempotencyMgr != nil {
 		key := fmt.Sprintf("cb:%d", update.QueryID)
-		isNew, err := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
-		if err == nil && !isNew {
+		isNew, claimErr := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
+		if claimErr != nil {
+			d.logger.Error("callback idempotency claim failed",
+				zap.String("key", key),
+				zap.Int64("query_id", update.QueryID),
+				zap.Error(claimErr),
+			)
+			if svc := d.getService(); svc != nil {
+				_ = svc.AnswerCallbackQuery(ctx, update.QueryID, "Interaction service temporarily unavailable.", true)
+			}
+			return nil
+		}
+		if !isNew {
 			return nil
 		}
 	}
-	chatID := extractChatIDFromPeer(update.Peer)
 	inputPeer := d.callbackInputPeer(ctx, update.Peer, e)
-	target := core.CallbackTarget{
-		Origin:       core.CallbackOriginMessage,
-		Peer:         inputPeer,
-		MessageID:    update.MsgID,
-		ChatInstance: update.ChatInstance,
-	}
-	evt := &core.CallbackQueryEvent{
-		At:           time.Now(),
-		QueryID:      update.QueryID,
-		UserID:       update.UserID,
-		ChatID:       chatID,
-		MsgID:        update.MsgID,
-		Data:         update.Data,
-		Origin:       core.CallbackOriginMessage,
-		Target:       target,
-		ChatInstance: update.ChatInstance,
-	}
+	evt := canonicalCallbackQueryEvent(update, inputPeer, time.Now())
 
 	bus := d.getEventBus()
 	if bus != nil {
@@ -210,40 +212,81 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 	}
 
 	cbRouter := d.getCallbackRouter()
-	if cbRouter != nil {
-		_ = cbRouter.Dispatch(ctx, evt, d.getService())
+	if cbRouter == nil {
+		if svc := d.getService(); svc != nil {
+			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Interaction service unavailable.", false)
+		}
+		return nil
+	}
+
+	scope, available := cbRouter.TaskScope(evt.Data, d.resolvePluginScope)
+	if !available {
+		if svc := d.getService(); svc != nil {
+			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Feature not available.", false)
+		}
+		return nil
+	}
+	client := d.taskClient()
+	if client != nil {
+		taskID := fmt.Sprintf("cb:%d", evt.QueryID)
+		owner := fmt.Sprintf("telegram:user:%d", evt.UserID)
+		d.inFlight.Add(1)
+		_, err := client.Submit(ctx, tasks.WorkSpec{
+			ID:               tasks.TaskID(taskID),
+			Scope:            scope,
+			QuotaOwner:       tasks.OwnerID(owner),
+			Pool:             "interactive",
+			Class:            tasks.PriorityInteractive,
+			OrderingKey:      callbackOrderingKey(evt),
+			ExecutionTimeout: 15 * time.Second,
+			Handler: func(taskCtx context.Context) error {
+				return cbRouter.Dispatch(taskCtx, evt, d.getService())
+			},
+			OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
+		})
+		if err != nil {
+			d.inFlight.Done()
+			d.logger.Warn("callback dispatch admission rejected", zap.Int64("query_id", evt.QueryID), zap.Error(err))
+			if svc := d.getService(); svc != nil {
+				_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Server is overloaded, please try again shortly.", false)
+			}
+		}
+	} else {
+		d.logger.Warn("callback execution unavailable", zap.Error(ErrTasksNotConfigured))
+		if svc := d.getService(); svc != nil {
+			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Service unavailable.", false)
+		}
 	}
 	return nil
 }
 
 // OnInlineBotCallbackQuery handles inline message button callback queries.
 func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities, update *tg.UpdateInlineBotCallbackQuery) error {
-	if !d.acceptingUpdates.Load() {
+	release, accepted := d.admitIngress()
+	if !accepted {
 		return nil
 	}
+	defer release()
+
 	if d.idempotencyMgr != nil {
 		key := fmt.Sprintf("inline_cb:%d", update.QueryID)
-		isNew, err := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
-		if err == nil && !isNew {
+		isNew, claimErr := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
+		if claimErr != nil {
+			d.logger.Error("inline callback idempotency claim failed",
+				zap.String("key", key),
+				zap.Int64("query_id", update.QueryID),
+				zap.Error(claimErr),
+			)
+			if svc := d.getService(); svc != nil {
+				_ = svc.AnswerCallbackQuery(ctx, update.QueryID, "Interaction service temporarily unavailable.", true)
+			}
+			return nil
+		}
+		if !isNew {
 			return nil
 		}
 	}
-	target := core.CallbackTarget{
-		Origin:       core.CallbackOriginInline,
-		InlineID:     update.MsgID,
-		ChatInstance: update.ChatInstance,
-	}
-	evt := &core.CallbackQueryEvent{
-		At:           time.Now(),
-		QueryID:      update.QueryID,
-		UserID:       update.UserID,
-		ChatID:       0,
-		MsgID:        0,
-		Data:         update.Data,
-		Origin:       core.CallbackOriginInline,
-		Target:       target,
-		ChatInstance: update.ChatInstance,
-	}
+	evt := canonicalInlineCallbackQueryEvent(update, time.Now())
 
 	bus := d.getEventBus()
 	if bus != nil {
@@ -251,64 +294,160 @@ func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities
 	}
 
 	cbRouter := d.getCallbackRouter()
-	if cbRouter != nil {
-		_ = cbRouter.Dispatch(ctx, evt, d.getService())
+	if cbRouter == nil {
+		if svc := d.getService(); svc != nil {
+			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Interaction service unavailable.", false)
+		}
+		return nil
+	}
+
+	scope, available := cbRouter.TaskScope(evt.Data, d.resolvePluginScope)
+	if !available {
+		if svc := d.getService(); svc != nil {
+			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Feature not available.", false)
+		}
+		return nil
+	}
+	client := d.taskClient()
+	if client != nil {
+		taskID := fmt.Sprintf("inline_cb:%d", evt.QueryID)
+		owner := fmt.Sprintf("telegram:user:%d", evt.UserID)
+		d.inFlight.Add(1)
+		_, err := client.Submit(ctx, tasks.WorkSpec{
+			ID:               tasks.TaskID(taskID),
+			Scope:            scope,
+			QuotaOwner:       tasks.OwnerID(owner),
+			Pool:             "interactive",
+			Class:            tasks.PriorityInteractive,
+			OrderingKey:      callbackOrderingKey(evt),
+			ExecutionTimeout: 15 * time.Second,
+			Handler: func(taskCtx context.Context) error {
+				return cbRouter.Dispatch(taskCtx, evt, d.getService())
+			},
+			OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
+		})
+		if err != nil {
+			d.inFlight.Done()
+			d.logger.Warn("inline callback dispatch admission rejected", zap.Int64("query_id", evt.QueryID), zap.Error(err))
+			if svc := d.getService(); svc != nil {
+				_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Server is overloaded, please try again shortly.", false)
+			}
+		}
+	} else {
+		d.logger.Warn("inline callback execution unavailable", zap.Error(ErrTasksNotConfigured))
+		if svc := d.getService(); svc != nil {
+			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Service unavailable.", false)
+		}
 	}
 	return nil
 }
 
 // OnBotInlineQuery handles incoming inline search query requests.
 func (d *Dispatcher) OnBotInlineQuery(ctx context.Context, e tg.Entities, update *tg.UpdateBotInlineQuery) error {
-	if !d.acceptingUpdates.Load() {
+	release, accepted := d.admitIngress()
+	if !accepted {
 		return nil
 	}
+	defer release()
+
 	engine := d.getInlineEngine()
 	if engine == nil {
 		return nil
 	}
-	return engine.ExecuteWithPeerType(ctx, d.getService(), update.QueryID, update.UserID, update.Query, update.Offset, update.PeerType)
+	client := d.taskClient()
+	if client != nil {
+		taskID := fmt.Sprintf("inline:%d", update.QueryID)
+		owner := fmt.Sprintf("telegram:user:%d", update.UserID)
+		d.inFlight.Add(1)
+		_, err := client.Submit(ctx, tasks.WorkSpec{
+			ID:               tasks.TaskID(taskID),
+			QuotaOwner:       tasks.OwnerID(owner),
+			Pool:             "interactive",
+			Class:            tasks.PriorityInteractive,
+			OrderingKey:      fmt.Sprintf("inline:%d", update.QueryID),
+			ExecutionTimeout: 5 * time.Second,
+			Handler: func(taskCtx context.Context) error {
+				return engine.ExecuteWithPeerType(taskCtx, d.getService(), update.QueryID, update.UserID, update.Query, update.Offset, update.PeerType)
+			},
+			OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
+		})
+		if err != nil {
+			d.inFlight.Done()
+			d.logger.Warn("inline query admission rejected", zap.Int64("query_id", update.QueryID), zap.Error(err))
+			return err
+		}
+		return nil
+	}
+	return ErrTasksNotConfigured
 }
 
 // OnBotInlineSend handles inline result chosen feedback (observational only).
 func (d *Dispatcher) OnBotInlineSend(ctx context.Context, e tg.Entities, update *tg.UpdateBotInlineSend) error {
-	if !d.acceptingUpdates.Load() {
+	release, accepted := d.admitIngress()
+	if !accepted {
 		return nil
 	}
+	defer release()
+
 	bus := d.getEventBus()
-	if bus != nil {
-		var inlineID tg.InputBotInlineMessageIDClass
-		if msgID, ok := update.GetMsgID(); ok {
-			inlineID = msgID
-		} else if update.MsgID != nil {
-			inlineID = update.MsgID
+	if bus == nil {
+		return nil
+	}
+	if d.normalizer != nil {
+		evt, err := d.normalizer.Normalize(ctx, e, update)
+		if err == nil && evt != nil {
+			bus.Publish(evt)
 		}
-		bus.Publish(&core.InlineResultChosenEvent{
-			At:       time.Now(),
-			UserID:   update.UserID,
-			Query:    update.Query,
-			ResultID: update.ID,
-			InlineID: inlineID,
-		})
 	}
 	return nil
 }
 
 // OnMessageReactions handles reaction updates on messages.
 func (d *Dispatcher) OnMessageReactions(ctx context.Context, e tg.Entities, update *tg.UpdateMessageReactions) error {
-	if !d.acceptingUpdates.Load() {
+	release, accepted := d.admitIngress()
+	if !accepted {
 		return nil
 	}
+	defer release()
+
 	bus := d.getEventBus()
 	if bus == nil {
 		return nil
 	}
-	chatID := extractChatIDFromPeer(update.Peer)
-	bus.Publish(&core.ReactionUpdatedEvent{
-		At:     time.Now(),
-		MsgID:  update.MsgID,
-		ChatID: chatID,
-	})
+	if d.normalizer != nil {
+		evt, err := d.normalizer.Normalize(ctx, e, update)
+		if err == nil && evt != nil {
+			bus.Publish(evt)
+		}
+	}
 	return nil
+}
+
+func callbackOrderingKey(evt *core.CallbackQueryEvent) string {
+	if evt == nil {
+		return ""
+	}
+	if !evt.IsInline() {
+		if evt.ChatID != 0 && evt.MsgID != 0 {
+			return fmt.Sprintf("callback:msg:%d:%d", evt.ChatID, evt.MsgID)
+		}
+		if evt.MsgID != 0 {
+			return fmt.Sprintf("callback:msg:%d", evt.MsgID)
+		}
+		return fmt.Sprintf("callback:%d", evt.QueryID)
+	}
+	if evt.Target.InlineID != nil {
+		switch id := evt.Target.InlineID.(type) {
+		case *tg.InputBotInlineMessageID:
+			return fmt.Sprintf("callback:inline_msg:%d:%d", id.DCID, id.ID)
+		case *tg.InputBotInlineMessageID64:
+			return fmt.Sprintf("callback:inline_msg:%d:%d", id.DCID, id.ID)
+		}
+	}
+	if evt.ChatInstance != 0 {
+		return fmt.Sprintf("callback:instance:%d", evt.ChatInstance)
+	}
+	return fmt.Sprintf("inline_callback:%d", evt.QueryID)
 }
 
 // extractChatIDFromPeer returns a numeric chat ID for the given peer class.

@@ -7,10 +7,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/idempotency"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/services/inline"
+	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
 
@@ -33,24 +35,47 @@ type Dispatcher struct {
 	inlineEngine   *inline.Engine
 	normalizer     *Normalizer
 	idempotencyMgr *idempotency.Manager
+	tasks          tasks.Client
+	scopeResolver  func(string) (tasks.ScopeIdentity, bool)
 
 	messageHandlers  []prioritizedHandler
 	nextHandlerID    uint64
 	acceptingUpdates atomic.Bool
-	inFlight         sync.WaitGroup
-	cmdWG            sync.WaitGroup
-	cmdSem           chan struct{}
+	inFlight         lifecycleCounter
+	cmdWG            lifecycleCounter
 	runningCommands  atomic.Int64
 	totalCommands    atomic.Int64
 	mu               sync.RWMutex
 
-	peerQueue      chan peerUpdateJob
+	peerSignal     chan struct{}
+	peerUsers      map[int64]*tg.User
+	peerChannels   map[int64]*tg.Channel
+	peerChats      map[int64]*tg.Chat
 	peerWG         sync.WaitGroup
 	peerStopOnce   sync.Once
+	peerDone       chan struct{}
+	peerCancel     context.CancelFunc
 	peerDropped    atomic.Int64
 	peerEnqueued   atomic.Int64
 	peerSaveFailed atomic.Int64
 	stopping       atomic.Bool
+}
+
+// SetPluginScopeResolver binds Telegram work to the currently active plugin generation.
+func (d *Dispatcher) SetPluginScopeResolver(resolve func(string) (tasks.ScopeIdentity, bool)) {
+	d.mu.Lock()
+	d.scopeResolver = resolve
+	d.mu.Unlock()
+}
+
+func (d *Dispatcher) resolvePluginScope(owner string) (tasks.ScopeIdentity, bool) {
+	d.mu.RLock()
+	resolve := d.scopeResolver
+	d.mu.RUnlock()
+	if resolve == nil {
+		return tasks.ScopeIdentity{}, false
+	}
+	return resolve(owner)
 }
 
 // DispatcherDeps specifies dependencies for initializing a Dispatcher via dependency injection.
@@ -64,6 +89,7 @@ type DispatcherDeps struct {
 	CallbackRouter *callback.Router
 	InlineEngine   *inline.Engine
 	Resolver       core.PeerResolver
+	Tasks          tasks.Client
 }
 
 // NewDispatcherWithDeps constructs a Dispatcher with all available dependencies.
@@ -78,6 +104,9 @@ func NewDispatcherWithDeps(deps DispatcherDeps) (*Dispatcher, error) {
 		deps.Logger = zap.NewNop()
 	}
 	d := NewDispatcher(deps.Router, deps.Permissions, deps.Service, deps.Logger)
+	if deps.Tasks != nil {
+		d.SetTasks(deps.Tasks)
+	}
 	if deps.EventBus != nil {
 		d.SetEventBus(deps.EventBus)
 	}
@@ -116,8 +145,8 @@ func NewDispatcher(
 		cooldown:    cooldown,
 		executor:    executor,
 		albumBuffer: core.NewAlbumBuffer(10 * time.Minute),
-		cmdSem:      make(chan struct{}, 32),
 		normalizer:  NewNormalizer(),
+		peerDone:    make(chan struct{}),
 	}
 	d.acceptingUpdates.Store(true)
 	return d

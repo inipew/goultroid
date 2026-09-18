@@ -6,9 +6,13 @@ import (
 
 	"github.com/inipew/goultroid/internal/assistant/callback"
 	"github.com/inipew/goultroid/internal/assistant/client"
+	"github.com/inipew/goultroid/internal/assistant/menu"
+	assistentrpc "github.com/inipew/goultroid/internal/assistant/rpc"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/runtime"
+	"github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/settings"
+	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
 
@@ -21,6 +25,12 @@ type Client interface {
 	SetOwner(ownerID int64, sudoGetter func() []int64)
 	SetSettingsService(svc *settings.Service)
 	SetMetricsCollector(m core.MetricsCollector)
+	SetCallbackRouter(router client.CoreCallbackDispatcher)
+	SetInlineEngine(engine *inline.Engine)
+	SetTasks(client tasks.Client)
+	SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool))
+	SetRPCExecutor(executor assistentrpc.Executor)
+	MenuController() *menu.Controller
 }
 
 type AssistantApp struct {
@@ -36,7 +46,7 @@ func (a *AssistantApp) Name() string {
 }
 
 func (a *AssistantApp) Dependencies() []string {
-	return []string{"dispatcher", "settings"}
+	return []string{"dispatcher", "settings", "taskengine"}
 }
 
 func (a *AssistantApp) IsCritical() bool {
@@ -79,5 +89,23 @@ func (a *AssistantApp) SetOwner(ownerID int64, sudoGetter func() []int64) {
 	a.client.SetOwner(ownerID, sudoGetter)
 }
 func (a *AssistantApp) SetCoreRouter(router *core.Router)           { a.client.SetCoreRouter(router) }
+func (a *AssistantApp) SetTasks(client tasks.Client)                { a.client.SetTasks(client) }
+func (a *AssistantApp) SetDelayedActions(scheduler core.DelayedActionScheduler) { a.client.SetDelayedActions(scheduler) }
 func (a *AssistantApp) SetSettingsService(svc *settings.Service)    { a.client.SetSettingsService(svc) }
 func (a *AssistantApp) SetMetricsCollector(m core.MetricsCollector) { a.client.SetMetricsCollector(m) }
+func (a *AssistantApp) SetCallbackRouter(router client.CoreCallbackDispatcher) {
+	a.client.SetCallbackRouter(router)
+}
+func (a *AssistantApp) SetInlineEngine(engine *inline.Engine) { a.client.SetInlineEngine(engine) }
+func (a *AssistantApp) SetRPCExecutor(executor assistentrpc.Executor) {
+	a.client.SetRPCExecutor(executor)
+}
+func (a *AssistantApp) SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool)) {
+	a.client.SetPluginScopeResolver(resolver)
+}
+func (a *AssistantApp) MenuController() *menu.Controller {
+	if a.client == nil {
+		return nil
+	}
+	return a.client.MenuController()
+}

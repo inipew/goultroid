@@ -16,7 +16,7 @@ import (
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/storage"
-	"github.com/inipew/goultroid/internal/workers"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 // Plugin provides media download capabilities for Telegram media and external URLs.
@@ -29,6 +29,11 @@ type Plugin struct {
 
 type downloadJobPayload struct {
 	URL string `json:"url"`
+}
+
+type mediaJobPayload struct {
+	SaveDir   string `json:"save_dir"`
+	MediaSize int64  `json:"media_size"`
 }
 
 // New creates a new downloader Plugin instance with optional dependencies.
@@ -77,7 +82,7 @@ func (p *Plugin) registerJobHandlers() {
 	if p.jobs == nil {
 		return
 	}
-	p.jobs.RegisterHandler("downloader.url", func(ctx context.Context, j *jobs.Job) error {
+	_ = p.jobs.RegisterHandler("downloader.url", func(ctx context.Context, j jobs.JobDefinition) error {
 		var payload downloadJobPayload
 		if err := json.Unmarshal(j.Payload, &payload); err != nil {
 			return fmt.Errorf("decode downloader job payload: %w", err)
@@ -89,7 +94,28 @@ func (p *Plugin) registerJobHandlers() {
 		if value, ok := p.jobUI.LoadAndDelete(j.ID); ok {
 			uiCtx, _ = value.(*core.Context)
 		}
-		return p.executeURLDownload(ctx, uiCtx, payload.URL)
+		reqCtx := ctx
+		for _, r := range j.Resources {
+			if r.Amount > 0 {
+				reqCtx = download.WithResource(reqCtx, r.Name)
+			}
+		}
+		return p.executeURLDownload(reqCtx, uiCtx, payload.URL)
+	})
+	_ = p.jobs.RegisterHandler("downloader.telegram_media", func(ctx context.Context, j jobs.JobDefinition) error {
+		var payload mediaJobPayload
+		if err := json.Unmarshal(j.Payload, &payload); err != nil {
+			return fmt.Errorf("decode downloader media payload: %w", err)
+		}
+		value, ok := p.jobUI.LoadAndDelete(j.ID)
+		if !ok {
+			return errors.New("downloader media context expired")
+		}
+		uiCtx, _ := value.(*core.Context)
+		if uiCtx == nil {
+			return errors.New("downloader media context missing")
+		}
+		return p.executeMediaDownload(ctx, uiCtx, payload.SaveDir, payload.MediaSize)
 	})
 }
 
@@ -128,6 +154,7 @@ func (p *Plugin) Commands() []core.Command {
 			ReplyOnly:   false,
 			Cooldown:    3 * time.Second,
 			Timeout:     10 * time.Minute,
+			Resources:   []tasks.ResourceRequirement{{Name: "download", Amount: 1}},
 			Handler:     p.handleDownload,
 		},
 	}
@@ -143,12 +170,28 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 	}
 
 	// 2. Otherwise, check for media in replied or current message
+	var targetMedia *core.MediaInfo
 	var mediaSize int64
-	if ctx.Message != nil && ctx.Message.Media != nil {
-		mediaSize = ctx.Message.Media.Size
-	} else if reply, err := ctx.GetReply(); err == nil && reply != nil && reply.Media != nil {
-		mediaSize = reply.Media.Size
+
+	if ctx.Message != nil && ctx.Message.Media != nil && ctx.Message.Media.Location != nil {
+		targetMedia = ctx.Message.Media
+		mediaSize = targetMedia.Size
 	} else {
+		reply, err := ctx.GetReply()
+		if err != nil {
+			return fmt.Errorf("resolve replied message: %w", err)
+		}
+		if reply != nil {
+			if reply.Media != nil && reply.Media.Location != nil {
+				targetMedia = reply.Media
+				mediaSize = targetMedia.Size
+			} else if urls := reply.URLs(); len(urls) > 0 {
+				return p.handleURLDownload(ctx, urls[0])
+			}
+		}
+	}
+
+	if targetMedia == nil {
 		return ctx.EditOrReply("⚠️ <b>No media or URL found!</b> Reply to a media message or provide a valid download URL.")
 	}
 
@@ -176,38 +219,48 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 		return err
 	}
 
+	uiCtx := ctx
+	if targetMedia != nil {
+		uiCtx = uiCtx.WithMedia(targetMedia)
+	}
+
 	if p.jobs != nil {
 		jobID := fmt.Sprintf("dl-media-%d", time.Now().UnixNano())
 		idempKey := ""
 		if ctx.Message != nil {
 			idempKey = fmt.Sprintf("dl:msg:%d:%d", ctx.ChatID(), ctx.Message.ID)
 		}
-		job := jobs.Job{
-			ID:             jobID,
-			Owner:          "downloader",
-			Type:           "downloader.telegram_media",
-			Pool:           workers.PoolDownload,
-			Timeout:        10 * time.Minute,
-			IdempotencyKey: idempKey,
-			RecoveryPolicy: jobs.RecoverySkip,
-			Run: func(taskCtx context.Context) error {
-				return p.executeMediaDownload(taskCtx, ctx, saveDir, mediaSize)
-			},
+		payload, err := json.Marshal(mediaJobPayload{SaveDir: saveDir, MediaSize: mediaSize})
+		if err != nil {
+			return fmt.Errorf("encode media download job: %w", err)
 		}
+		job := jobs.JobDefinition{ID: jobID, ScopeOwner: "plugin:downloader", QuotaOwner: "telegram:download", HandlerType: "downloader.telegram_media", Payload: payload, Pool: "download", Class: "normal", Timeout: 10 * time.Minute, Resources: []tasks.ResourceRequirement{{Name: "download", Amount: 1}}, Enabled: true}
+		_ = idempKey
 		if err := p.jobs.Register(job); err == nil {
-			return p.jobs.Trigger(ctx.Ctx, jobID)
+			p.jobUI.Store(jobID, uiCtx)
+			if err := p.jobs.Trigger(ctx.Ctx, jobID); err != nil {
+				p.jobUI.Delete(jobID)
+				return err
+			}
+			return nil
 		}
 	}
 
-	return p.executeMediaDownload(ctx.Ctx, ctx, saveDir, mediaSize)
+	return p.executeMediaDownload(ctx.Ctx, uiCtx, saveDir, mediaSize)
 }
 
 func (p *Plugin) executeMediaDownload(taskCtx context.Context, ctx *core.Context, saveDir string, mediaSize int64) error {
+	if taskCtx != nil && ctx != nil {
+		ctx = ctx.WithContext(taskCtx)
+	}
 	start := time.Now()
 
 	filePath, err := ctx.DownloadMedia(saveDir)
 	if err != nil {
-		return ctx.Edit(fmt.Sprintf("❌ Download failed: %v", err))
+		if ctx != nil {
+			return ctx.Edit(fmt.Sprintf("❌ Download failed: %v", err))
+		}
+		return fmt.Errorf("download failed: %w", err)
 	}
 
 	duration := time.Since(start)
@@ -256,16 +309,14 @@ func (p *Plugin) handleURLDownload(ctx *core.Context, rawURL string) error {
 		if err != nil {
 			return fmt.Errorf("encode download job: %w", err)
 		}
-		job := jobs.Job{
-			ID:             jobID,
-			Owner:          "downloader",
-			Type:           "downloader.url",
-			Payload:        payload,
-			Pool:           workers.PoolDownload,
-			Timeout:        10 * time.Minute,
-			IdempotencyKey: idempKey,
-			RecoveryPolicy: jobs.RecoveryRunImmediately,
+		reqResources := []tasks.ResourceRequirement{{Name: "download", Amount: 1}}
+		if p.registry != nil {
+			if prov := p.registry.Resolve(rawURL); prov != nil && prov.Name() == "extractor" {
+				reqResources = append(reqResources, tasks.ResourceRequirement{Name: "process", Amount: 1})
+			}
 		}
+		job := jobs.JobDefinition{ID: jobID, ScopeOwner: "plugin:downloader", QuotaOwner: "telegram:download", HandlerType: "downloader.url", Payload: payload, Pool: "download", Class: "normal", Timeout: 10 * time.Minute, Resources: reqResources, Enabled: true}
+		_ = idempKey
 		if err := p.jobs.Register(job); err == nil {
 			p.jobUI.Store(jobID, ctx)
 			if err := p.jobs.Trigger(ctx.Ctx, jobID); err != nil {
@@ -280,6 +331,9 @@ func (p *Plugin) handleURLDownload(ctx *core.Context, rawURL string) error {
 }
 
 func (p *Plugin) executeURLDownload(taskCtx context.Context, ctx *core.Context, rawURL string) error {
+	if taskCtx != nil && ctx != nil {
+		ctx = ctx.WithContext(taskCtx)
+	}
 	if p.registry == nil {
 		_ = p.Init()
 	}

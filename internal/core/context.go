@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/execution"
@@ -79,7 +80,7 @@ type InlineAnswerOptions struct {
 
 // MediaInfo stores metadata and download location for message attachments.
 type MediaInfo struct {
-	Type     string // "photo", "video", "document", "audio", "voice", "sticker"
+	Type     string // "photo", "video", "document", "audio", "voice", "sticker", "webpage"
 	FileName string
 	MimeType string
 	Size     int64
@@ -87,6 +88,7 @@ type MediaInfo struct {
 	Height   int
 	Duration int
 	Location tg.InputFileLocationClass
+	WebURL   string
 }
 
 // Message represents a high-level Telegram message.
@@ -114,18 +116,41 @@ func (m *Message) IsAlbum() bool {
 	return m != nil && m.GroupedID != 0
 }
 
+func telegramEntityText(text string, offset, length int) (string, bool) {
+	if offset < 0 || length < 0 {
+		return "", false
+	}
+	units := utf16.Encode([]rune(text))
+	if offset > len(units) || length > len(units)-offset {
+		return "", false
+	}
+	end := offset + length
+	if splitsUTF16SurrogatePair(units, offset) || splitsUTF16SurrogatePair(units, end) {
+		return "", false
+	}
+	return string(utf16.Decode(units[offset:end])), true
+}
+
+func splitsUTF16SurrogatePair(units []uint16, index int) bool {
+	if index <= 0 || index >= len(units) {
+		return false
+	}
+	prev := units[index-1]
+	next := units[index]
+	return prev >= 0xD800 && prev <= 0xDBFF && next >= 0xDC00 && next <= 0xDFFF
+}
+
 // Mentions returns all usernames and text mentions parsed from message entities or plain text.
 func (m *Message) Mentions() []string {
 	if m == nil {
 		return nil
 	}
 	var mentions []string
-	runes := []rune(m.Text)
 	for _, ent := range m.Entities {
 		switch e := ent.(type) {
 		case *tg.MessageEntityMention:
-			if e.Offset >= 0 && e.Offset+e.Length <= len(runes) {
-				mentions = append(mentions, string(runes[e.Offset:e.Offset+e.Length]))
+			if value, ok := telegramEntityText(m.Text, e.Offset, e.Length); ok {
+				mentions = append(mentions, value)
 			}
 		case *tg.MessageEntityMentionName:
 			mentions = append(mentions, strconv.FormatInt(e.UserID, 10))
@@ -142,21 +167,32 @@ func (m *Message) Mentions() []string {
 	return mentions
 }
 
-// URLs returns all URLs parsed from message entities or plain text.
+// URLs returns all URLs parsed from message entities, web previews, or plain text.
 func (m *Message) URLs() []string {
 	if m == nil {
 		return nil
 	}
 	var urls []string
-	runes := []rune(m.Text)
 	for _, ent := range m.Entities {
 		switch e := ent.(type) {
 		case *tg.MessageEntityURL:
-			if e.Offset >= 0 && e.Offset+e.Length <= len(runes) {
-				urls = append(urls, string(runes[e.Offset:e.Offset+e.Length]))
+			if value, ok := telegramEntityText(m.Text, e.Offset, e.Length); ok {
+				urls = append(urls, value)
 			}
 		case *tg.MessageEntityTextURL:
 			urls = append(urls, e.URL)
+		}
+	}
+	if m.Media != nil && m.Media.WebURL != "" {
+		found := false
+		for _, u := range urls {
+			if u == m.Media.WebURL {
+				found = true
+				break
+			}
+		}
+		if !found {
+			urls = append(urls, m.Media.WebURL)
 		}
 	}
 	if len(urls) > 0 {
@@ -193,6 +229,13 @@ type Localizer interface {
 	T(key string, args ...any) string
 }
 
+// DelayedActionScheduler owns delayed work beyond the triggering command's lifetime.
+// The admission context only governs Schedule itself; accepted work is owned by
+// the scheduler/runtime lifecycle.
+type DelayedActionScheduler interface {
+	Schedule(ctx context.Context, delay time.Duration, action func(context.Context) error) error
+}
+
 // Context is passed to each command handler, providing clean abstractions.
 type Context struct {
 	Ctx context.Context
@@ -217,7 +260,8 @@ type Context struct {
 	PeerID    tg.InputPeerClass
 	Resolver  PeerResolver
 	Localizer Localizer
-	EventBus  *EventBus
+	EventBus       *EventBus
+	DelayedActions DelayedActionScheduler
 }
 
 // IsInteractive returns true if triggered by human interaction in Telegram.
@@ -290,6 +334,38 @@ func (c *Context) URLs() []string {
 	return nil
 }
 
+// WithContext returns a shallow copy of Context with the underlying Go context replaced.
+func (c *Context) WithContext(ctx context.Context) *Context {
+	if c == nil {
+		return nil
+	}
+	cp := *c
+	cp.Ctx = ctx
+	return &cp
+}
+
+// WithMedia returns a shallow copy of Context with the message media populated or updated.
+func (c *Context) WithMedia(media *MediaInfo) *Context {
+	if c == nil {
+		return nil
+	}
+	cp := *c
+	if cp.Message != nil {
+		msgCp := *cp.Message
+		msgCp.Media = media
+		if media != nil {
+			msgCp.MediaType = media.Type
+		}
+		cp.Message = &msgCp
+	} else if media != nil {
+		cp.Message = &Message{
+			Media:     media,
+			MediaType: media.Type,
+		}
+	}
+	return &cp
+}
+
 // Messages returns the dedicated MessagesFacade for messaging operations.
 func (c *Context) Messages() *MessagesFacade {
 	return &MessagesFacade{ctx: c}
@@ -349,9 +425,12 @@ func (c *Context) GetReply() (*Message, error) {
 	}
 
 	res := &Message{
-		ID:   msg.ID,
-		Text: msg.Message,
-		Date: time.Unix(int64(msg.Date), 0),
+		ID:         msg.ID,
+		Text:       msg.Message,
+		Date:       time.Unix(int64(msg.Date), 0),
+		IsOutgoing: msg.Out,
+		GroupedID:  msg.GroupedID,
+		Entities:   msg.Entities,
 	}
 
 	if msg.FromID != nil {
@@ -591,90 +670,151 @@ func ExtractMediaFromTG(media tg.MessageMediaClass) *MediaInfo {
 	switch m := media.(type) {
 	case *tg.MessageMediaPhoto:
 		photo, ok := m.Photo.(*tg.Photo)
-		if !ok || len(photo.Sizes) == 0 {
+		if !ok {
 			return nil
 		}
-
-		var largestSize string
-		var largestBytes int64
-		var width, height int
-		for _, s := range photo.Sizes {
-			switch sz := s.(type) {
-			case *tg.PhotoSize:
-				largestSize = sz.Type
-				largestBytes = int64(sz.Size)
-				width = sz.W
-				height = sz.H
-			case *tg.PhotoSizeProgressive:
-				largestSize = sz.Type
-				if len(sz.Sizes) > 0 {
-					largestBytes = int64(sz.Sizes[len(sz.Sizes)-1])
-				}
-				width = sz.W
-				height = sz.H
-			}
-		}
-
-		return &MediaInfo{
-			Type:     "photo",
-			FileName: fmt.Sprintf("photo_%d.jpg", photo.ID),
-			MimeType: "image/jpeg",
-			Size:     largestBytes,
-			Width:    width,
-			Height:   height,
-			Location: photo.AsInputPhotoFileLocation(largestSize),
-		}
+		return extractPhotoMedia(photo)
 
 	case *tg.MessageMediaDocument:
 		doc, ok := m.Document.(*tg.Document)
 		if !ok {
 			return nil
 		}
+		return extractDocumentMedia(doc)
 
-		mediaType := "document"
-		fileName := fmt.Sprintf("document_%d", doc.ID)
-		var width, height, duration int
-
-		for _, attr := range doc.Attributes {
-			switch a := attr.(type) {
-			case *tg.DocumentAttributeFilename:
-				base := filepath.Base(filepath.Clean(a.FileName))
-				if base != "." && base != ".." && base != "/" && base != "" {
-					fileName = base
+	case *tg.MessageMediaWebPage:
+		wp, ok := m.Webpage.(*tg.WebPage)
+		if !ok {
+			return nil
+		}
+		if wp.Document != nil {
+			if doc, ok := wp.Document.(*tg.Document); ok {
+				info := extractDocumentMedia(doc)
+				if info != nil {
+					info.WebURL = wp.URL
+					return info
 				}
-			case *tg.DocumentAttributeVideo:
-				mediaType = "video"
-				width = a.W
-				height = a.H
-				duration = int(a.Duration)
-			case *tg.DocumentAttributeAudio:
-				if a.Voice {
-					mediaType = "voice"
-				} else {
-					mediaType = "audio"
-				}
-				duration = a.Duration
-			case *tg.DocumentAttributeImageSize:
-				width = a.W
-				height = a.H
-			case *tg.DocumentAttributeSticker:
-				mediaType = "sticker"
 			}
 		}
-
-		return &MediaInfo{
-			Type:     mediaType,
-			FileName: fileName,
-			MimeType: doc.MimeType,
-			Size:     doc.Size,
-			Width:    width,
-			Height:   height,
-			Duration: duration,
-			Location: doc.AsInputDocumentFileLocation(""),
+		if wp.Photo != nil {
+			if photo, ok := wp.Photo.(*tg.Photo); ok {
+				info := extractPhotoMedia(photo)
+				if info != nil {
+					info.WebURL = wp.URL
+					return info
+				}
+			}
 		}
+		if wp.URL != "" {
+			return &MediaInfo{
+				Type:   "webpage",
+				WebURL: wp.URL,
+			}
+		}
+		return nil
+
+	case *tg.MessageMediaPaidMedia:
+		for _, ext := range m.ExtendedMedia {
+			if em, ok := ext.(*tg.MessageExtendedMedia); ok && em.Media != nil {
+				if info := ExtractMediaFromTG(em.Media); info != nil {
+					return info
+				}
+			}
+		}
+		return nil
+
+	case *tg.MessageMediaStory:
+		if si, ok := m.Story.(*tg.StoryItem); ok && si.Media != nil {
+			return ExtractMediaFromTG(si.Media)
+		}
+		return nil
 	}
 
 	return nil
+}
+
+func extractPhotoMedia(photo *tg.Photo) *MediaInfo {
+	if photo == nil || len(photo.Sizes) == 0 {
+		return nil
+	}
+
+	var largestSize string
+	var largestBytes int64
+	var width, height int
+	for _, s := range photo.Sizes {
+		switch sz := s.(type) {
+		case *tg.PhotoSize:
+			largestSize = sz.Type
+			largestBytes = int64(sz.Size)
+			width = sz.W
+			height = sz.H
+		case *tg.PhotoSizeProgressive:
+			largestSize = sz.Type
+			if len(sz.Sizes) > 0 {
+				largestBytes = int64(sz.Sizes[len(sz.Sizes)-1])
+			}
+			width = sz.W
+			height = sz.H
+		}
+	}
+
+	return &MediaInfo{
+		Type:     "photo",
+		FileName: fmt.Sprintf("photo_%d.jpg", photo.ID),
+		MimeType: "image/jpeg",
+		Size:     largestBytes,
+		Width:    width,
+		Height:   height,
+		Location: photo.AsInputPhotoFileLocation(largestSize),
+	}
+}
+
+func extractDocumentMedia(doc *tg.Document) *MediaInfo {
+	if doc == nil {
+		return nil
+	}
+
+	mediaType := "document"
+	fileName := fmt.Sprintf("document_%d", doc.ID)
+	var width, height, duration int
+
+	for _, attr := range doc.Attributes {
+		switch a := attr.(type) {
+		case *tg.DocumentAttributeFilename:
+			base := filepath.Base(filepath.Clean(a.FileName))
+			if base != "." && base != ".." && base != "/" && base != "" {
+				fileName = base
+			}
+		case *tg.DocumentAttributeVideo:
+			mediaType = "video"
+			width = a.W
+			height = a.H
+			duration = int(a.Duration)
+		case *tg.DocumentAttributeAudio:
+			if a.Voice {
+				mediaType = "voice"
+			} else {
+				mediaType = "audio"
+			}
+			duration = a.Duration
+		case *tg.DocumentAttributeImageSize:
+			width = a.W
+			height = a.H
+		case *tg.DocumentAttributeSticker:
+			mediaType = "sticker"
+		}
+	}
+
+	return &MediaInfo{
+		Type:     mediaType,
+		FileName: fileName,
+		MimeType: doc.MimeType,
+		Size:     doc.Size,
+		Width:    width,
+		Height:   height,
+		Duration: duration,
+		Location: doc.AsInputDocumentFileLocation(""),
+	}
 }
 
 // IsPrivate returns true if the chat is a 1-on-1 private chat.

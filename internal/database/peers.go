@@ -13,6 +13,7 @@ import (
 type PeerRepository interface {
 	SavePeerEntity(ctx context.Context, prefix string, id int64, username, phone, firstName, lastName, title string) error
 	FindPeerByUsername(ctx context.Context, username string) (prefix string, id int64, accessHash int64, found bool, err error)
+	FindPeerUsernameByID(ctx context.Context, prefix string, id int64) (username string, found bool, err error)
 }
 
 // PeerEntity stores metadata for Telegram peers (users, chats, channels).
@@ -70,4 +71,22 @@ func (d *DB) FindPeerByUsername(ctx context.Context, username string) (string, i
 		return "", 0, 0, false, fmt.Errorf("failed to find peer by username %q: %w", username, err)
 	}
 	return prefix, id, accessHash, true, nil
+}
+
+// FindPeerUsernameByID returns the last persisted public username for a peer.
+// It intentionally reads metadata only; callers use it to perform a fresh
+// contacts.resolveUsername after invalidating a stale access hash.
+func (d *DB) FindPeerUsernameByID(ctx context.Context, prefix string, id int64) (string, bool, error) {
+	if id == 0 || strings.TrimSpace(prefix) == "" {
+		return "", false, nil
+	}
+	var username string
+	err := d.QueryRowContext(ctx, `SELECT username FROM peers_entities WHERE prefix = ? AND id = ? LIMIT 1;`, prefix, id).Scan(&username)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("failed to find peer username (%s:%d): %w", prefix, id, err)
+	}
+	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(username), "@")), true, nil
 }

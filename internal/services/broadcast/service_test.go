@@ -10,6 +10,8 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/services/broadcast"
+	"github.com/inipew/goultroid/internal/taskengine"
+	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
 
@@ -17,9 +19,19 @@ type mockTelegram struct {
 	core.MockTelegramServicer
 	sentCount int32
 	failCount int32
+	sendDelay time.Duration
 }
 
 func (m *mockTelegram) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
+	if m.sendDelay > 0 {
+		timer := time.NewTimer(m.sendDelay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
 	if atomic.LoadInt32(&m.failCount) > 0 {
 		atomic.AddInt32(&m.failCount, -1)
 		return nil, errors.New("temporary error")
@@ -28,9 +40,30 @@ func (m *mockTelegram) SendMessage(ctx context.Context, peer tg.InputPeerClass, 
 	return &tg.Message{ID: int(atomic.LoadInt32(&m.sentCount)), Message: text}, nil
 }
 
+func newBroadcastService(t *testing.T, telegram core.TelegramServicer) *broadcast.Service {
+	t.Helper()
+	engine := taskengine.NewEngine(taskengine.Config{
+		DefaultPool: "general",
+		Pools: map[tasks.PoolID]taskengine.PoolEngineConfig{
+			"general": {Concurrency: 4, BacklogLimit: 128, PayloadBudget: 1 << 20},
+		},
+	})
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatalf("start task engine: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = engine.Stop(ctx)
+	})
+	svc := broadcast.NewService(telegram, zap.NewNop())
+	svc.SetTasks(engine)
+	return svc
+}
+
 func TestBroadcast_Success(t *testing.T) {
 	mockTG := &mockTelegram{}
-	svc := broadcast.NewService(mockTG, zap.NewNop())
+	svc := newBroadcastService(t, mockTG)
 
 	targets := []tg.InputPeerClass{
 		&tg.InputPeerUser{UserID: 1},
@@ -62,9 +95,39 @@ func TestBroadcast_Success(t *testing.T) {
 	}
 }
 
+type rateLimitedTelegram struct {
+	core.MockTelegramServicer
+	calls int32
+}
+
+func (m *rateLimitedTelegram) SendMessage(context.Context, tg.InputPeerClass, string) (*tg.Message, error) {
+	atomic.AddInt32(&m.calls, 1)
+	return nil, core.NewRateLimitError(30*time.Second, errors.New("telegram flood wait"))
+}
+
+func TestBroadcast_RateLimitIsNotRetriedLocally(t *testing.T) {
+	mockTG := &rateLimitedTelegram{}
+	svc := newBroadcastService(t, mockTG)
+
+	rep, err := svc.Broadcast(context.Background(), broadcast.BroadcastRequest{
+		Targets: []tg.InputPeerClass{&tg.InputPeerUser{UserID: 1}},
+		Text:    "hello",
+		Delay:   time.Nanosecond,
+	})
+	if err != nil {
+		t.Fatalf("broadcast should account for a per-target rate limit without failing the whole run: %v", err)
+	}
+	if got := atomic.LoadInt32(&mockTG.calls); got != 1 {
+		t.Fatalf("expected exactly one SendMessage call and no local retry, got %d", got)
+	}
+	if rep == nil || rep.RateLimited != 1 || rep.Failed != 1 || rep.Sent != 0 {
+		t.Fatalf("unexpected broadcast report: %+v", rep)
+	}
+}
+
 func TestBroadcast_Validation(t *testing.T) {
 	mockTG := &mockTelegram{}
-	svc := broadcast.NewService(mockTG, zap.NewNop())
+	svc := newBroadcastService(t, mockTG)
 	ctx := context.Background()
 
 	// Empty targets
@@ -83,8 +146,8 @@ func TestBroadcast_Validation(t *testing.T) {
 }
 
 func TestBroadcast_CancelActive(t *testing.T) {
-	mockTG := &mockTelegram{}
-	svc := broadcast.NewService(mockTG, zap.NewNop())
+	mockTG := &mockTelegram{sendDelay: 50 * time.Millisecond}
+	svc := newBroadcastService(t, mockTG)
 
 	var targets []tg.InputPeerClass
 	for i := 0; i < 20; i++ {
@@ -94,7 +157,6 @@ func TestBroadcast_CancelActive(t *testing.T) {
 	req := broadcast.BroadcastRequest{
 		Targets: targets,
 		Text:    "Long broadcast",
-		Delay:   50 * time.Millisecond,
 	}
 
 	ctx := context.Background()

@@ -18,6 +18,7 @@ var (
 	ErrCooldownActive    = errors.New("command is on cooldown")
 	ErrInterceptHandled  = errors.New("message handled by interceptor")
 	ErrInvalidArgs       = errors.New("invalid command arguments")
+	ErrInvalidArguments  = ErrInvalidArgs
 	ErrNotFound          = errors.New("entity not found")
 	ErrUnsupported       = errors.New("operation unsupported")
 	ErrMedia             = errors.New("media operation failed")
@@ -74,6 +75,14 @@ func (e *RateLimitError) Unwrap() error {
 	return errors.Join(ErrRateLimited, e.Err)
 }
 
+// RateLimitWait returns the duration requested by the rate limiter.
+func (e *RateLimitError) RateLimitWait() time.Duration {
+	if e == nil {
+		return 0
+	}
+	return e.Wait
+}
+
 func NewRateLimitError(wait time.Duration, err error) *RateLimitError {
 	return &RateLimitError{Wait: wait, Err: err}
 }
@@ -121,6 +130,27 @@ func WrapCategory(category ErrorCategory, err error) error {
 	return &ErrorWithCategory{Category: category, Err: err}
 }
 
+// UsageError represents an expected command usage or argument validation error.
+type UsageError struct {
+	Message string
+}
+
+func (e *UsageError) Error() string {
+	if e == nil || e.Message == "" {
+		return "invalid command arguments"
+	}
+	return e.Message
+}
+
+func (e *UsageError) Unwrap() error {
+	return ErrInvalidArgs
+}
+
+// NewUsageError returns an error indicating invalid or missing command arguments that unwraps to ErrInvalidArgs.
+func NewUsageError(msg string) error {
+	return &UsageError{Message: msg}
+}
+
 func CategoryOf(err error) ErrorCategory {
 	if err == nil {
 		return CategoryNone
@@ -132,7 +162,7 @@ func CategoryOf(err error) ErrorCategory {
 	if errors.Is(err, ErrPermissionDenied) || errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrForbidden) {
 		return CategorySecurity
 	}
-	if errors.Is(err, ErrValidation) || errors.Is(err, ErrInvalidArgs) || errors.Is(err, ErrUnclosedQuote) || errors.Is(err, ErrTrailingEscape) || errors.Is(err, ErrGroupOnly) {
+	if errors.Is(err, ErrValidation) || errors.Is(err, ErrInvalidArgs) || errors.Is(err, ErrUnclosedQuote) || errors.Is(err, ErrTrailingEscape) || errors.Is(err, ErrGroupOnly) || errors.Is(err, ErrPrivateOnly) || errors.Is(err, ErrReplyRequired) {
 		return CategoryInvalidInput
 	}
 	if errors.Is(err, ErrResourceLimit) {
@@ -155,6 +185,10 @@ func CategoryOf(err error) ErrorCategory {
 	}
 	if strings.Contains(strings.ToUpper(err.Error()), "USER_BANNED") {
 		return CategoryPermanent
+	}
+	errLower := strings.ToLower(err.Error())
+	if strings.HasPrefix(errLower, "missing ") || strings.Contains(errLower, "invalid argument") {
+		return CategoryInvalidInput
 	}
 	return CategoryInternal
 }

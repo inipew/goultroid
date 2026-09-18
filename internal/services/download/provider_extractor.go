@@ -14,6 +14,7 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/services/process"
 	"github.com/inipew/goultroid/internal/services/storage"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 var extractorDomains = []string{
@@ -33,12 +34,20 @@ var extractorDomains = []string{
 type ExtractorProvider struct {
 	runner        process.Runner
 	defaultMaxCap int64
+	tasks         tasks.Client
 	mu            sync.Mutex
 	activeTemps   map[string]time.Time
 }
 
 // Ensure ExtractorProvider implements Provider.
 var _ Provider = (*ExtractorProvider)(nil)
+
+// SetTasks attaches the tasks client used to acquire execution resources.
+func (p *ExtractorProvider) SetTasks(client tasks.Client) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.tasks = client
+}
 
 // NewExtractorProvider creates a new ExtractorProvider.
 func NewExtractorProvider(runner process.Runner, defaultMaxCap int64) *ExtractorProvider {
@@ -145,9 +154,53 @@ func (p *ExtractorProvider) Download(ctx context.Context, rawURL string, store s
 		WorkingDir: tmpDir,
 	}
 
-	res, err := p.runner.Run(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("%w: yt-dlp failed (exit %d): %s (%v)", ErrDownloadFailed, res.ExitCode, res.Stderr, err)
+	var res *process.Result
+	p.mu.Lock()
+	taskClient := p.tasks
+	p.mu.Unlock()
+
+	if !HasResource(ctx, "process") && taskClient != nil {
+		ticket, taskErr := taskClient.Submit(ctx, tasks.WorkSpec{
+			ID:               tasks.TaskID(fmt.Sprintf("extractor:%d", time.Now().UnixNano())),
+			QuotaOwner:       "download:extractor",
+			Pool:             "download",
+			Class:            tasks.PriorityNormal,
+			ExecutionTimeout: timeout,
+			Resources:        []tasks.ResourceRequirement{{Name: "process", Amount: 1}},
+			Handler: func(taskCtx context.Context) error {
+				var runErr error
+				res, runErr = p.runner.Run(taskCtx, req)
+				return runErr
+			},
+		})
+		if taskErr != nil {
+			return nil, fmt.Errorf("%w: failed to allocate process resource: %v", ErrDownloadFailed, taskErr)
+		}
+		result, waitErr := ticket.Wait(ctx)
+		if waitErr != nil {
+			return nil, fmt.Errorf("%w: extractor process wait failed: %v", ErrDownloadFailed, waitErr)
+		}
+		if !result.IsSuccess() {
+			exitCode := 1
+			stderr := ""
+			if res != nil {
+				exitCode = res.ExitCode
+				stderr = res.Stderr
+			}
+			return nil, fmt.Errorf("%w: yt-dlp failed (exit %d): %s (%v)", ErrDownloadFailed, exitCode, stderr, result.Failure.Message)
+		}
+	} else {
+		var runErr error
+		res, runErr = p.runner.Run(ctx, req)
+		if runErr != nil {
+			exitCode := 1
+			stderr := ""
+			if res != nil {
+				exitCode = res.ExitCode
+				stderr = res.Stderr
+			}
+			return nil, fmt.Errorf("%w: yt-dlp failed (exit %d): %s (%v)", ErrDownloadFailed, exitCode, stderr, runErr)
+		}
 	}
 
 	// Find the extracted file in tmpDir

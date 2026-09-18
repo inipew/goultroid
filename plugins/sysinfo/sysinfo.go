@@ -1,8 +1,10 @@
 package sysinfo
 
 import (
+	"context"
 	"fmt"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -10,19 +12,18 @@ import (
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/resource"
+	"github.com/inipew/goultroid/internal/taskengine"
 	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/ui"
-	"github.com/inipew/goultroid/internal/workers"
 )
 
 // Plugin provides rich system, hardware, network, and bot runtime metrics.
 type Plugin struct {
-	startTime time.Time
-	collector *Collector
-	resources *resource.Manager
-	workers   *workers.Manager
-	tasks     *tasks.Manager
-	eventBus  *core.EventBus
+	startTime  time.Time
+	collector  *Collector
+	resources  *resource.Manager
+	eventBus   *core.EventBus
+	taskEngine *taskengine.Engine
 }
 
 // New creates a new Sysinfo plugin instance.
@@ -40,14 +41,9 @@ func New(startTime ...time.Time) *Plugin {
 // SetResources attaches the resource manager.
 func (p *Plugin) SetResources(rm *resource.Manager) { p.resources = rm }
 
-// SetWorkers attaches the worker pool manager.
-func (p *Plugin) SetWorkers(wm *workers.Manager) { p.workers = wm }
-
-// SetTasks attaches the task manager.
-func (p *Plugin) SetTasks(tm *tasks.Manager) { p.tasks = tm }
-
 // SetEventBus attaches the event bus.
-func (p *Plugin) SetEventBus(eb *core.EventBus) { p.eventBus = eb }
+func (p *Plugin) SetEventBus(eb *core.EventBus)           { p.eventBus = eb }
+func (p *Plugin) SetTaskEngine(engine *taskengine.Engine) { p.taskEngine = engine }
 
 // Name returns the unique plugin identifier.
 func (p *Plugin) Name() string {
@@ -405,37 +401,7 @@ func (p *Plugin) handleBotInfo(ctx *core.Context) error {
 func (p *Plugin) handleDiagnostics(ctx *core.Context) error {
 	card := ui.NewCard("GoUltroid Runtime Diagnostics & Quotas").WithIcon("🔬")
 
-	// 1. Worker Pools
-	if p.workers != nil {
-		stats := p.workers.AllStats()
-		var sb strings.Builder
-		for _, s := range stats {
-			sb.WriteString(fmt.Sprintf("• <b>%s</b>: %d/%d workers | q <code>%d/%d</code> (done: %d, err: %d)\n",
-				ui.EscapeHTML(s.Name), s.Busy, s.Concurrency, s.QueueStats.Depth, s.QueueStats.Capacity, s.TasksExecuted, s.TasksFailed))
-		}
-		if sb.Len() > 0 {
-			card.AddField("⚙️ Worker Pools", strings.TrimRight(sb.String(), "\n"))
-		}
-	}
-
-	// 2. Task Quotas
-	if p.tasks != nil {
-		tStats := p.tasks.Stats()
-		card.AddField("📋 Task Summary", fmt.Sprintf("Queued: <code>%d</code> | Running: <code>%d</code> | Completed: <code>%d</code> | Failed: <code>%d</code>",
-			tStats.TotalQueued, tStats.TotalRunning, tStats.TotalCompleted, tStats.TotalFailed))
-
-		if len(tStats.Owners) > 0 {
-			var sb strings.Builder
-			for owner, os := range tStats.Owners {
-				q := p.tasks.GetQuota(owner)
-				sb.WriteString(fmt.Sprintf("• <b>%s</b>: run %d/%d | q %d/%d (done: %d)\n",
-					ui.EscapeHTML(owner), os.Running, q.MaxConcurrent, os.Queued, q.MaxQueued, os.Completed))
-			}
-			card.AddField("📊 Per-Plugin Task Quotas", strings.TrimRight(sb.String(), "\n"))
-		}
-	}
-
-	// 3. Tracked Resources & Leaks
+	// 1. Tracked Resources & Leaks
 	if p.resources != nil {
 		snaps := p.resources.AllSnapshots()
 		leakedTotal := 0
@@ -462,7 +428,40 @@ func (p *Plugin) handleDiagnostics(ctx *core.Context) error {
 		}
 	}
 
-	// 4. EventBus
+	// 2. EventBus
+	if p.taskEngine != nil {
+		statsCtx, cancel := context.WithTimeout(ctx.Ctx, 200*time.Millisecond)
+		stats, err := p.taskEngine.Stats(statsCtx)
+		cancel()
+		if err == nil {
+			poolNames := make([]string, 0, len(stats.Pools))
+			for name := range stats.Pools {
+				poolNames = append(poolNames, string(name))
+			}
+			sort.Strings(poolNames)
+			var lines strings.Builder
+			for _, name := range poolNames {
+				pool := stats.Pools[tasks.PoolID(name)]
+				lines.WriteString(formatPoolRuntimeStats(name, pool))
+				lines.WriteByte('\n')
+			}
+			card.AddField("⚙️ Task Pools", strings.TrimSpace(lines.String()))
+			resourceNames := make([]string, 0, len(stats.Resources))
+			for name := range stats.Resources {
+				resourceNames = append(resourceNames, name)
+			}
+			sort.Strings(resourceNames)
+			var resourceLines strings.Builder
+			for _, name := range resourceNames {
+				value := stats.Resources[name]
+				fmt.Fprintf(&resourceLines, "• <b>%s</b>: %d/%d\n", ui.EscapeHTML(name), value.Used, value.Capacity)
+			}
+			card.AddField("🧮 Execution Resources", strings.TrimSpace(resourceLines.String()))
+			card.AddField("🧠 Task Memory", fmt.Sprintf("Retained: %s / %s | Results: %d/%d", ui.FormatBytes(stats.RetainedBytes), ui.FormatBytes(stats.RetainedCap), stats.ResultSlotsHeld, stats.ResultCapacity))
+		}
+	}
+
+	// 3. EventBus
 	if p.eventBus != nil {
 		ebStats := p.eventBus.Stats()
 		dlqLen := len(p.eventBus.DLQ())
@@ -470,6 +469,12 @@ func (p *Plugin) handleDiagnostics(ctx *core.Context) error {
 			ebStats.Published, ebStats.Delivered, ebStats.Dropped, dlqLen))
 	}
 
-	card.WithFooter("<i>Telemetry aggregated across workers, tasks, resources, and eventbus.</i>")
+	card.WithFooter("<i>Telemetry aggregated across task execution, resources, and eventbus.</i>")
 	return ctx.EditOrReply(card.Render())
+}
+
+func formatPoolRuntimeStats(name string, pool taskengine.PoolRuntimeStats) string {
+	return fmt.Sprintf("• <b>%s</b>: running %d, dispatching %d, idle %d, waiting %d / %s | workers %d (%d-%d)",
+		ui.EscapeHTML(name), pool.Running, pool.Dispatching, pool.Idle, pool.Waiting, ui.FormatBytes(pool.WaitingBytes),
+		pool.Workers, pool.MinWorkers, pool.MaxWorkers)
 }

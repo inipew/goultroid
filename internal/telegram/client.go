@@ -31,6 +31,7 @@ type Client struct {
 	gaps        *updates.Manager
 	peerManager *peers.Manager
 	peerStorage *PeerStorage
+	executor    *RPCExecutor
 	logger      *zap.Logger
 	ready       chan struct{}
 	readyOnce   sync.Once
@@ -143,6 +144,16 @@ func NewClient(cfg *config.Config, dispatcher *Dispatcher, db *database.DB, logg
 	})
 	updateHook = peerManager.UpdateHook(gaps)
 
+	limiter := NewHierarchicalRPCLimiter(DefaultHierarchicalLimiterConfig())
+	executor, err := NewRPCExecutor(RPCExecutorConfig{
+		Limiter:       limiter,
+		DefaultPolicy: DefaultExecutorPolicy,
+		Metrics:       NewInMemoryRPCMetrics(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("initialize rpc executor: %w", err)
+	}
+
 	return &Client{
 		raw:         raw,
 		cfg:         cfg,
@@ -150,9 +161,18 @@ func NewClient(cfg *config.Config, dispatcher *Dispatcher, db *database.DB, logg
 		gaps:        gaps,
 		peerManager: peerManager,
 		peerStorage: peerStorage,
+		executor:    executor,
 		logger:      logger,
 		ready:       make(chan struct{}),
 	}, nil
+}
+
+// Executor returns the RPCExecutor for coordinating outbound Telegram calls.
+func (c *Client) Executor() *RPCExecutor {
+	if c != nil {
+		return c.executor
+	}
+	return nil
 }
 
 // API returns the raw Telegram MTProto client.
@@ -184,20 +204,73 @@ func (c *Client) Resolver() core.PeerResolver {
 	return nil
 }
 
+// PreloadDialogs preloads initial dialogs to populate access hashes in peer manager.
+func (c *Client) PreloadDialogs(ctx context.Context) error {
+	if c == nil || c.peerManager == nil || c.raw == nil {
+		return nil
+	}
+	dialogs, err := ExecuteRPC(ctx, c.executor, RPCMeta{
+		Method: "messages.getDialogs",
+		Family: "messages",
+		Kind:   RPCReadOnly,
+	}, func(opCtx context.Context) (tg.MessagesDialogsClass, error) {
+		return c.raw.API().MessagesGetDialogs(opCtx, &tg.MessagesGetDialogsRequest{
+			OffsetPeer: &tg.InputPeerEmpty{},
+			Limit:      100,
+		})
+	})
+	if err != nil {
+		if c.logger != nil {
+			c.logger.Warn("failed to preload dialogs for channel access hashes", zap.Error(err))
+		}
+		return err
+	}
+	if d, ok := dialogs.AsModified(); ok {
+		_ = c.peerManager.Apply(ctx, d.GetUsers(), d.GetChats())
+	}
+	return nil
+}
+
+// RPCMetrics returns a snapshot of RPC metrics collected so far.
+func (c *Client) RPCMetrics() RPCMetricsSnapshot {
+	if c != nil && c.executor != nil {
+		if inMem, ok := c.executor.Metrics().(*InMemoryRPCMetrics); ok {
+			return inMem.Snapshot()
+		}
+	}
+	return RPCMetricsSnapshot{}
+}
+
+// ResolverCacheLen returns the number of active entries in the resolver peer cache.
+func (c *Client) ResolverCacheLen() int {
+	if c != nil && c.dispatcher != nil {
+		if r, ok := c.dispatcher.Resolver().(*Resolver); ok && r != nil {
+			return r.Len()
+		}
+	}
+	return 0
+}
+
 // Run connects to Telegram, performs authentication, and maintains the update loop.
 func (c *Client) Run(ctx context.Context) error {
 	return c.raw.Run(ctx, func(ctx context.Context) error {
 		// Initialize service wrapper & peer resolver
 		svc := NewService(c.raw.API())
+		svc.SetExecutor(c.executor)
 		svc.SetPeerManager(c.peerManager)
 		if c.peerStorage != nil {
 			svc.SetStorage(c.peerStorage)
 		}
 		c.dispatcher.SetService(svc)
 		resolver := NewResolver(c.raw.API(), c.peerManager)
+		if c.logger != nil {
+			resolver.SetLogger(c.logger.Named("resolver"))
+		}
+		resolver.SetExecutor(c.executor)
 		if c.peerStorage != nil {
 			resolver.SetStorage(c.peerStorage)
 		}
+		svc.SetResolver(resolver)
 		c.dispatcher.SetResolver(resolver)
 
 		// Authenticate if needed
@@ -229,22 +302,6 @@ func (c *Client) Run(ctx context.Context) error {
 			if err := c.peerManager.Init(ctx); err != nil && c.logger != nil {
 				c.logger.Warn("failed to initialize peer manager", zap.Error(err))
 			}
-
-			// Background warm-up: asynchronously preload dialogs into peer manager
-			// without blocking client startup and the update recovery loop.
-			go func() {
-				dialogs, err := c.raw.API().MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
-					OffsetPeer: &tg.InputPeerEmpty{},
-					Limit:      100,
-				})
-				if err == nil {
-					if d, ok := dialogs.AsModified(); ok {
-						_ = c.peerManager.Apply(ctx, d.GetUsers(), d.GetChats())
-					}
-				} else if c.logger != nil {
-					c.logger.Warn("failed to preload dialogs for channel access hashes", zap.Error(err))
-				}
-			}()
 		}
 
 		if c.logger != nil {

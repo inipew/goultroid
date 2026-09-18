@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
 
@@ -20,10 +22,26 @@ const (
 	PriorityObservability HandlerPriority = 90 // UserLog, Analytics, Auditing
 )
 
+type HandlerFailurePolicy uint8
+
+const (
+	FailurePolicyFailOpen HandlerFailurePolicy = iota
+	FailurePolicyFailClosed
+)
+
+func failurePolicyForPriority(priority HandlerPriority) HandlerFailurePolicy {
+	if priority <= PrioritySecurity {
+		return FailurePolicyFailClosed
+	}
+	return FailurePolicyFailOpen
+}
+
 type prioritizedHandler struct {
-	id       uint64
-	priority HandlerPriority
-	handler  MessageHandler
+	id            uint64
+	priority      HandlerPriority
+	failurePolicy HandlerFailurePolicy
+	handler       MessageHandler
+	scope         tasks.ScopeIdentity
 }
 
 // MessageHandler is invoked for each incoming message.
@@ -36,13 +54,20 @@ func (d *Dispatcher) AddMessageHandler(h MessageHandler) {
 
 // AddPrioritizedMessageHandler registers an interceptor with an explicit priority.
 func (d *Dispatcher) AddPrioritizedMessageHandler(priority HandlerPriority, h MessageHandler) func() {
+	return d.AddScopedMessageHandler(priority, tasks.ScopeIdentity{}, h)
+}
+
+// AddScopedMessageHandler registers a handler owned by a plugin generation.
+func (d *Dispatcher) AddScopedMessageHandler(priority HandlerPriority, scope tasks.ScopeIdentity, h MessageHandler) func() {
 	if h == nil {
 		return func() {}
 	}
 	d.mu.Lock()
 	d.nextHandlerID++
 	id := d.nextHandlerID
-	d.messageHandlers = append(d.messageHandlers, prioritizedHandler{id: id, priority: priority, handler: h})
+	d.messageHandlers = append(d.messageHandlers, prioritizedHandler{
+		id: id, priority: priority, failurePolicy: failurePolicyForPriority(priority), handler: h, scope: scope,
+	})
 	sort.SliceStable(d.messageHandlers, func(i, j int) bool {
 		return d.messageHandlers[i].priority < d.messageHandlers[j].priority
 	})
@@ -67,21 +92,31 @@ func (d *Dispatcher) safeExecuteInterceptor(
 	msg *tg.Message,
 	isCmd bool,
 	cmdName string,
-) bool {
+	policy HandlerFailurePolicy,
+) (handled bool) {
+	failClosed := policy == FailurePolicyFailClosed
 	defer func() {
 		if r := recover(); r != nil {
-			d.logger.Error("message interceptor panicked", zap.Any("panic", r))
+			d.logger.Error("message interceptor panicked",
+				zap.Any("panic", r),
+				zap.Bool("fail_closed", failClosed),
+			)
+			handled = failClosed
 		}
 	}()
 
-	interceptorCtx, cancel := context.WithTimeout(ctx, 5*1000000000)
+	interceptorCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	if err := h(interceptorCtx, e, msg, isCmd, cmdName); err != nil {
 		if errors.Is(err, core.ErrInterceptHandled) {
 			return true
 		}
-		d.logger.Warn("message interceptor returned error", zap.Error(err))
+		d.logger.Warn("message interceptor returned error",
+			zap.Error(err),
+			zap.Bool("fail_closed", failClosed),
+		)
+		return failClosed
 	}
 	return false
 }

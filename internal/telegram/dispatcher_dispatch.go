@@ -4,36 +4,23 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
 
 func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Message) error {
-	// Admission and WaitGroup.Add are serialized with Stop through d.mu. This is
-	// required by sync.WaitGroup: a positive Add that starts from zero must happen
-	// before Wait begins.
-	d.mu.Lock()
-	if !d.acceptingUpdates.Load() {
-		d.mu.Unlock()
+	release, accepted := d.admitIngress()
+	if !accepted {
 		return nil
 	}
-	d.inFlight.Add(1)
-	d.mu.Unlock()
-	defer d.inFlight.Done()
+	defer release()
 
 	chatID := extractChatIDFromPeer(msg.PeerID)
-	if d.idempotencyMgr != nil {
-		key := fmt.Sprintf("msg:%d:%d", chatID, msg.ID)
-		isNew, err := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
-		if err == nil && !isNew {
-			d.logger.Debug("dispatcher: duplicate message dropped by idempotency manager", zap.String("key", key))
-			return nil
-		}
-	}
-
 	parsed, isCmd, err := d.router.Parse(msg.Message)
 	if err != nil {
 		d.logger.Warn("command parse syntax error", zap.Error(err), zap.String("text", msg.Message))
@@ -44,11 +31,41 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		cmdName = parsed.Name
 	}
 
+	if d.idempotencyMgr != nil {
+		key := fmt.Sprintf("msg:%d:%d", chatID, msg.ID)
+		isNew, claimErr := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
+		if claimErr != nil {
+			d.logger.Error("dispatcher: idempotency claim failed",
+				zap.String("key", key),
+				zap.Bool("command", isCmd),
+				zap.Error(claimErr),
+			)
+			// Commands may produce external side effects, so deduplication failure is
+			// an admission failure. Ordinary messages remain available for
+			// non-mutating hooks while the failure is surfaced operationally.
+			if isCmd {
+				return nil
+			}
+		} else if !isNew {
+			d.logger.Debug("dispatcher: duplicate message dropped by idempotency manager", zap.String("key", key))
+			return nil
+		}
+	}
+
 	origin := core.ExecutionInteractive
 	if msg.Out {
 		svc := d.getService()
-		if svc != nil && svc.IsBotSent(msg.ID) {
-			origin = core.ExecutionAutomation
+		if svc != nil {
+			type peerAwareBotSent interface {
+				IsBotSentForPeer(peer tg.PeerClass, msgID int, selfID int64) bool
+			}
+			if tracker, ok := svc.(peerAwareBotSent); ok {
+				if tracker.IsBotSentForPeer(msg.PeerID, msg.ID, d.getSelfID()) {
+					origin = core.ExecutionAutomation
+				}
+			} else if svc.IsBotSent(msg.ID) {
+				origin = core.ExecutionAutomation
+			}
 		}
 	}
 	decision := core.NewMessageDecision(origin)
@@ -57,56 +74,24 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	if len(e.Users) > 0 || len(e.Channels) > 0 || len(e.Chats) > 0 {
 		resolver := d.getResolver()
 		if r, ok := resolver.(*Resolver); ok && r.storage != nil {
-			job := peerUpdateJob{}
-			for _, u := range e.Users {
-				job.users = append(job.users, u)
-			}
-			for _, ch := range e.Channels {
-				job.channels = append(job.channels, ch)
-			}
-			for _, c := range e.Chats {
-				job.chats = append(job.chats, c)
-			}
-			if !d.stopping.Load() {
-				d.mu.RLock()
-				if !d.stopping.Load() && d.peerQueue != nil {
-					select {
-					case d.peerQueue <- job:
-						d.peerEnqueued.Add(1)
-					default:
-						d.peerDropped.Add(1)
-					}
-					d.mu.RUnlock()
-				} else {
-					d.mu.RUnlock()
-					if !d.stopping.Load() {
-						go func() {
-							bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-							defer cancel()
-							_ = r.storage.SaveEntitiesBatch(bgCtx, job.users, job.channels, job.chats)
-						}()
-					}
-				}
-			}
+			d.enqueuePeerEntities(e)
 		}
 	}
 
 	d.mu.RLock()
-	var syncHandlers []MessageHandler
-	var asyncHandlers []MessageHandler
+	var syncHandlers []prioritizedHandler
+	var asyncHandlers []prioritizedHandler
 	for _, ph := range d.messageHandlers {
-		if ph.priority >= PriorityObservability {
-			asyncHandlers = append(asyncHandlers, ph.handler)
+		if ph.priority >= PriorityObservability || (ph.priority >= PriorityFeature && !ph.scope.IsZero()) {
+			asyncHandlers = append(asyncHandlers, ph)
 		} else {
-			syncHandlers = append(syncHandlers, ph.handler)
+			syncHandlers = append(syncHandlers, ph)
 		}
 	}
 	d.mu.RUnlock()
 
-	for _, h := range syncHandlers {
-		if d.safeExecuteInterceptor(ctx, h, e, msg, isCmd, cmdName) {
-			return nil
-		}
+	if d.executeDecisionHandlers(ctx, syncHandlers, e, msg, isCmd, cmdName) {
+		return nil
 	}
 	if decision.IsHandled() || decision.IsSuppressedCommands() {
 		return nil
@@ -118,27 +103,19 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	}
 
 	if bus := d.getEventBus(); bus != nil {
-		bus.Publish(&core.MessageCreatedEvent{
-			MetaData: core.EventMeta{ID: fmt.Sprintf("msg:%d:%d", chatID, msg.ID)},
-			At:       time.Now().UTC(),
-			Message:  coreMsg,
-			ChatID:   chatID,
-			PeerID:   msg.PeerID,
-		})
+		if evt := canonicalMessageCreatedEvent(msg, coreMsg, time.Now()); evt != nil {
+			bus.Publish(evt)
+		}
 	}
 
 	if !isCmd {
-		for _, h := range asyncHandlers {
-			_ = d.safeExecuteInterceptor(ctx, h, e, msg, isCmd, cmdName)
-		}
+		d.dispatchAsyncHandlers(ctx, asyncHandlers, e, msg, isCmd, cmdName)
 		return nil
 	}
 
 	cmd, exists := d.router.Find(parsed.Name)
 	if !exists {
-		for _, h := range asyncHandlers {
-			_ = d.safeExecuteInterceptor(ctx, h, e, msg, isCmd, cmdName)
-		}
+		d.dispatchAsyncHandlers(ctx, asyncHandlers, e, msg, isCmd, cmdName)
 		return nil
 	}
 
@@ -219,10 +196,100 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		)
 	}
 
-	for _, h := range asyncHandlers {
-		_ = d.safeExecuteInterceptor(ctx, h, e, msg, isCmd, cmdName)
-	}
+	d.dispatchAsyncHandlers(ctx, asyncHandlers, e, msg, isCmd, cmdName)
 	return nil
+}
+
+// executeDecisionHandlers preserves the synchronous security/moderation
+// decision contract while routing plugin code through TaskEngine. One shared
+// deadline bounds total update-loop latency regardless of handler count.
+func (d *Dispatcher) executeDecisionHandlers(ctx context.Context, handlers []prioritizedHandler, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) bool {
+	decisionCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	for _, registered := range handlers {
+		if registered.scope.IsZero() { // compatibility for local/test handlers
+			if d.safeExecuteInterceptor(decisionCtx, registered.handler, e, msg, isCmd, cmdName, registered.failurePolicy) {
+				return true
+			}
+			continue
+		}
+		client := d.taskClient()
+		if client == nil {
+			d.logger.Warn("decision handler execution unavailable", zap.Error(ErrTasksNotConfigured))
+			return true // fail closed for security/moderation handlers
+		}
+		var handled atomic.Bool
+		d.inFlight.Add(1)
+		ticket, err := client.Submit(decisionCtx, tasks.WorkSpec{
+			ID:               tasks.TaskID(fmt.Sprintf("decision:%d:%d:%d", registered.id, extractChatIDFromPeer(msg.PeerID), msg.ID)),
+			Scope:            registered.scope,
+			QuotaOwner:       tasks.OwnerID(registered.scope.Owner),
+			Pool:             "interactive",
+			Class:            tasks.PriorityInteractive,
+			OrderingKey:      fmt.Sprintf("chat:%d", extractChatIDFromPeer(msg.PeerID)),
+			ExecutionTimeout: 5 * time.Second,
+			Handler: func(taskCtx context.Context) error {
+				handled.Store(d.safeExecuteInterceptor(taskCtx, registered.handler, e, msg, isCmd, cmdName, registered.failurePolicy))
+				return nil
+			},
+			OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
+		})
+		if err != nil {
+			d.inFlight.Done()
+			d.logger.Warn("decision handler admission rejected", zap.Uint64("handler_id", registered.id), zap.Error(err))
+			return true
+		}
+		if _, err := ticket.Wait(decisionCtx); err != nil {
+			d.logger.Warn("decision handler deadline exceeded", zap.Uint64("handler_id", registered.id), zap.Error(err))
+			return true
+		}
+		if handled.Load() {
+			return true
+		}
+	}
+	return false
+}
+
+func (d *Dispatcher) dispatchAsyncHandlers(ctx context.Context, handlers []prioritizedHandler, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) {
+	if len(handlers) == 0 {
+		return
+	}
+	client := d.taskClient()
+	if client == nil {
+		d.logger.Warn("observer execution unavailable", zap.Error(ErrTasksNotConfigured))
+		return
+	}
+	for _, registered := range handlers {
+		registered := registered
+		d.inFlight.Add(1)
+		owner := tasks.OwnerID("telegram:feature")
+		class := tasks.PriorityNormal
+		if registered.priority >= PriorityObservability {
+			owner = "telegram:observability"
+			class = tasks.PriorityBackground
+		}
+		if !registered.scope.IsZero() {
+			owner = tasks.OwnerID(registered.scope.Owner)
+		}
+		_, err := client.Submit(ctx, tasks.WorkSpec{
+			ID:               tasks.TaskID(fmt.Sprintf("hook:%d:%d:%d", registered.id, extractChatIDFromPeer(msg.PeerID), msg.ID)),
+			Scope:            registered.scope,
+			QuotaOwner:       owner,
+			Pool:             "general",
+			Class:            class,
+			OrderingKey:      fmt.Sprintf("chat:%d", extractChatIDFromPeer(msg.PeerID)),
+			ExecutionTimeout: 10 * time.Second,
+			Handler: func(taskCtx context.Context) error {
+				_ = d.safeExecuteInterceptor(taskCtx, registered.handler, e, msg, isCmd, cmdName, registered.failurePolicy)
+				return nil
+			},
+			OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
+		})
+		if err != nil {
+			d.inFlight.Done()
+			d.logger.Debug("message hook admission rejected", zap.Uint64("handler_id", registered.id), zap.Error(err))
+		}
+	}
 }
 
 func (d *Dispatcher) resolveDispatchChat(e tg.Entities, msg *tg.Message) *core.Chat {

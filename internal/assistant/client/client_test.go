@@ -49,6 +49,19 @@ func TestLifecycle(t *testing.T) {
 	if !lc.TryStart() {
 		t.Fatalf("expected TryStart to succeed from StateStopped")
 	}
+
+	lc.SetState(client.StateStopping)
+	if lc.TryStart() {
+		t.Fatal("expected TryStart to reject StateStopping")
+	}
+	lc.SetState(client.StateFailed)
+	if !lc.TryStart() {
+		t.Fatal("expected TryStart to recover from StateFailed")
+	}
+	lc.SetState(client.StateFailed)
+	if lc.TryStop() {
+		t.Fatal("expected TryStop to reject StateFailed")
+	}
 }
 
 func TestUserRateLimiter(t *testing.T) {

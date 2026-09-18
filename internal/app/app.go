@@ -11,6 +11,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/addon"
 	"github.com/inipew/goultroid/internal/assistant"
+	"github.com/inipew/goultroid/internal/assistant/menu"
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
@@ -22,44 +23,51 @@ import (
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/scheduler"
 	"github.com/inipew/goultroid/internal/services/callback"
+	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/inline"
 	mediaSvc "github.com/inipew/goultroid/internal/services/media"
 	processSvc "github.com/inipew/goultroid/internal/services/process"
 	"github.com/inipew/goultroid/internal/services/ratelimit"
 	"github.com/inipew/goultroid/internal/settings"
+	"github.com/inipew/goultroid/internal/taskengine"
 	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/telegram"
-	"github.com/inipew/goultroid/internal/workers"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
 type App struct {
-	cfg             *config.Config
-	logger          *zap.Logger
-	db              *database.DB
-	client          *telegram.Client
-	plugins         *plugin.Manager
-	router          *core.Router
-	sched           *scheduler.Engine
-	eventBus        *core.EventBus
-	assistant       assistant.Client
-	limiter         *ratelimit.Limiter
-	interLimiter    *ratelimit.Limiter
-	addonMgr        *addon.Manager
-	callbackStore   *callback.StateStore
-	inlineEngine    *inline.Engine
-	settingsService *settings.Service
-	media           *mediaSvc.Service
-	processRunner   *processSvc.OSRunner
-	startTime       time.Time
+	cfg              *config.Config
+	logger           *zap.Logger
+	db               *database.DB
+	client           *telegram.Client
+	plugins          *plugin.Manager
+	router           *core.Router
+	sched            *scheduler.Engine
+	eventBus         *core.EventBus
+	assistant        assistant.Client
+	limiter          *ratelimit.Limiter
+	interLimiter     *ratelimit.Limiter
+	addonMgr         *addon.Manager
+	callbackStore    *callback.StateStore
+	inlineEngine     *inline.Engine
+	settingsService  *settings.Service
+	media            *mediaSvc.Service
+	downloadRegistry *download.Registry
+	processRunner    *processSvc.OSRunner
+	startTime        time.Time
 
-	workers   *workers.Manager
-	tasks     *tasks.Manager
-	jobs      *jobs.Manager
-	resources *resource.Manager
-	idemp     *idempotency.Manager
-	runtime   *runtime.Runtime
+	jobs            *jobs.Manager
+	taskEngine      *taskengine.Engine
+	persistencePump *jobs.PersistencePump
+	resources       *resource.Manager
+	idemp           *idempotency.Manager
+	runtime         *runtime.Runtime
+	supervisor      *runtime.Supervisor
+
+	appCancel       context.CancelFunc
+	transportCancel context.CancelFunc
+	transportDone   <-chan struct{}
 
 	lifecycleMu    sync.Mutex
 	lifecycleState atomic.Uint32
@@ -99,8 +107,21 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		return nil, err
 	}
 
+	delayedActions := newDelayedActionScheduler(coreDeps.taskEngine)
+	tgRuntime.dispatcher.Executor().SetDelayedActions(delayedActions)
+
 	pluginManager := plugin.NewManager(coreDeps.router)
+	pluginManager.SetPanicReporter(zapCorePanicReporter{logger: logger.Named("plugin.panic")})
+	coreDeps.eventBus.SetTasks(coreDeps.taskEngine)
 	pluginManager.SetHookRegistrar(tgRuntime.dispatcher)
+	pluginManager.SetCallbackRegistrar(coreDeps.callbackRouter)
+	tgRuntime.dispatcher.SetPluginScopeResolver(func(owner string) (tasks.ScopeIdentity, bool) {
+		scope, ok := pluginManager.Scope(owner)
+		if !ok {
+			return tasks.ScopeIdentity{}, false
+		}
+		return tasks.ScopeIdentity{Owner: scope.Owner(), Generation: scope.Generation()}, true
+	})
 	if coreDeps.resourceManager != nil {
 		pluginManager.SetResourceManager(coreDeps.resourceManager)
 	}
@@ -116,9 +137,9 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		coreDeps.procManager,
 		coreDeps.fsManager,
 		coreDeps.secretManager,
-		coreDeps.taskManager,
 		coreDeps.jobsManager,
 	)
+	pluginManager.SetTaskClient(coreDeps.taskEngine)
 	if domServices.schedEngine != nil {
 		pluginManager.SetSchedulerCleaner(domServices.schedEngine)
 	}
@@ -126,9 +147,22 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		domServices.addonManager.SetProcessManager(coreDeps.procManager)
 	}
 	if tgRuntime.assistant != nil {
+		if aware, ok := tgRuntime.assistant.(interface{ SetDelayedActions(core.DelayedActionScheduler) }); ok {
+			aware.SetDelayedActions(delayedActions)
+		}
 		tgRuntime.assistant.SetCoreRouter(coreDeps.router)
 		tgRuntime.assistant.SetSettingsService(domServices.settingsService)
 		tgRuntime.assistant.SetMetricsCollector(coreDeps.metrics)
+		tgRuntime.assistant.SetCallbackRouter(coreDeps.callbackRouter)
+		tgRuntime.assistant.SetInlineEngine(coreDeps.inlineEngine)
+		tgRuntime.assistant.SetTasks(coreDeps.taskEngine)
+		tgRuntime.assistant.SetPluginScopeResolver(func(owner string) (tasks.ScopeIdentity, bool) {
+			scope, ok := pluginManager.Scope(owner)
+			if !ok {
+				return tasks.ScopeIdentity{}, false
+			}
+			return tasks.ScopeIdentity{Owner: scope.Owner(), Generation: scope.Generation()}, true
+		})
 	}
 
 	if err := migrateBuiltinFeatures(context.Background(), coreDeps.db); err != nil {
@@ -152,6 +186,12 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 			Resolver:        tgRuntime.dispatcher.Resolver(),
 			Callbacks:       coreDeps.callbackRouter,
 			CallbackStore:   coreDeps.callbackStore,
+			AssistantMenu: func() *menu.Controller {
+				if tgRuntime.assistant != nil {
+					return tgRuntime.assistant.MenuController()
+				}
+				return nil
+			}(),
 		},
 		ServiceRuntime: module.ServiceRuntime{
 			Storage:          domServices.storage,
@@ -165,16 +205,15 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 			SchedEngine:      domServices.schedEngine,
 		},
 		PlatformRuntime: module.PlatformRuntime{
-			Gate:      coreDeps.capGate,
-			Network:   coreDeps.netService,
-			Process:   coreDeps.procManager,
-			Files:     coreDeps.fsManager,
-			Secrets:   coreDeps.secretManager,
-			Audit:     coreDeps.auditService,
-			Resources: coreDeps.resourceManager,
-			Workers:   coreDeps.workerManager,
-			Tasks:     coreDeps.taskManager,
-			Jobs:      coreDeps.jobsManager,
+			Gate:       coreDeps.capGate,
+			Network:    coreDeps.netService,
+			Process:    coreDeps.procManager,
+			Files:      coreDeps.fsManager,
+			Secrets:    coreDeps.secretManager,
+			Audit:      coreDeps.auditService,
+			Resources:  coreDeps.resourceManager,
+			Jobs:       coreDeps.jobsManager,
+			TaskEngine: coreDeps.taskEngine,
 		},
 	}
 	if err := registerBuiltinModules(context.Background(), featureRuntime); err != nil {
@@ -184,9 +223,9 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	rt := runtime.New()
 	resources := []resourceComponent{
 		{name: "database", stop: coreDeps.db.Close},
-		{name: "idempotency", dependencies: []string{"database"}, stop: func() error { coreDeps.idempManager.Close(); return nil }},
-		{name: "command-rate-limiter", dependencies: []string{"database"}, stop: coreDeps.cmdLimiter.Close},
-		{name: "interaction-rate-limiter", dependencies: []string{"database"}, stop: coreDeps.interLimiter.Close},
+		{name: "idempotency", dependencies: []string{"database"}, start: coreDeps.idempManager.Start, stopContext: coreDeps.idempManager.Stop},
+		{name: "command-rate-limiter", dependencies: []string{"database"}, start: coreDeps.cmdLimiter.Start, stop: coreDeps.cmdLimiter.Close},
+		{name: "interaction-rate-limiter", dependencies: []string{"database"}, start: coreDeps.interLimiter.Start, stop: coreDeps.interLimiter.Close},
 		{name: "addon-runtimes", dependencies: []string{"database"}, stop: domServices.addonManager.ShutdownRuntimes},
 	}
 	for _, resource := range resources {
@@ -194,13 +233,23 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 			return nil, fmt.Errorf("register %s component: %w", resource.name, err)
 		}
 	}
-	if err := rt.Register(dependencyComponent{Component: coreDeps.eventBus, dependencies: []string{"database"}}); err != nil {
+	if err := rt.Register(dependencyComponent{Component: coreDeps.eventBus, dependencies: []string{"database", "taskengine"}}); err != nil {
 		return nil, fmt.Errorf("register eventbus component: %w", err)
 	}
-	if err := rt.Register(dependencyComponent{Component: coreDeps.workerManager, dependencies: []string{"database"}}); err != nil {
-		return nil, fmt.Errorf("register workers component: %w", err)
+	if coreDeps.persistencePump != nil {
+		if err := rt.Register(coreDeps.persistencePump); err != nil {
+			return nil, fmt.Errorf("register persistence-pump component: %w", err)
+		}
 	}
-	if err := rt.Register(coreDeps.jobsManager); err != nil {
+	if coreDeps.taskEngine != nil {
+		if err := rt.Register(dependencyComponent{Component: coreDeps.taskEngine, dependencies: []string{"persistence-pump"}}); err != nil {
+			return nil, fmt.Errorf("register taskengine component: %w", err)
+		}
+	}
+	if err := rt.Register(delayedActions); err != nil {
+		return nil, fmt.Errorf("register delayed-actions component: %w", err)
+	}
+	if err := rt.Register(dependencyComponent{Component: coreDeps.jobsManager, dependencies: []string{"taskengine", "eventbus"}}); err != nil {
 		return nil, fmt.Errorf("register jobs component: %w", err)
 	}
 	if err := rt.Register(domServices.schedEngine); err != nil {
@@ -229,36 +278,62 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 			return nil, fmt.Errorf("register assistant component: %w", err)
 		}
 	}
+	supervisor := runtime.NewSupervisor(
+		runtime.WithSupervisorName("lifecycle-supervisor"),
+		runtime.WithPanicReporter(zapRuntimePanicReporter{logger: logger.Named("supervisor")}),
+	)
+	if tgRuntime.client != nil {
+		if err := supervisor.Register(runtime.WorkerSpec{
+			Name:    "telegram-dialogs-warmup",
+			Restart: runtime.NeverRestart,
+			Run: func(ctx context.Context) error {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-tgRuntime.client.Ready():
+					return tgRuntime.client.PreloadDialogs(ctx)
+				}
+			},
+		}); err != nil {
+			return nil, fmt.Errorf("register Telegram dialog warmup worker: %w", err)
+		}
+	}
+	if err := rt.Register(supervisor); err != nil {
+		return nil, fmt.Errorf("register supervisor component: %w", err)
+	}
+
 	if err := rt.Register(dependencyComponent{Component: pluginManager, dependencies: []string{"dispatcher", "jobs", "addon-runtimes"}}); err != nil {
 		return nil, fmt.Errorf("register plugins component: %w", err)
 	}
 
 	return &App{
-		cfg:             cfg,
-		logger:          logger,
-		db:              coreDeps.db,
-		client:          tgRuntime.client,
-		plugins:         pluginManager,
-		router:          coreDeps.router,
-		sched:           domServices.schedEngine,
-		eventBus:        coreDeps.eventBus,
-		assistant:       tgRuntime.assistant,
-		limiter:         coreDeps.cmdLimiter,
-		interLimiter:    coreDeps.interLimiter,
-		addonMgr:        domServices.addonManager,
-		callbackStore:   coreDeps.callbackStore,
-		inlineEngine:    coreDeps.inlineEngine,
-		settingsService: domServices.settingsService,
-		media:           domServices.mediaService,
-		processRunner:   domServices.processRunner,
-		startTime:       domServices.startTime,
-		workers:         coreDeps.workerManager,
-		tasks:           coreDeps.taskManager,
-		jobs:            coreDeps.jobsManager,
-		resources:       coreDeps.resourceManager,
-		idemp:           coreDeps.idempManager,
-		runtime:         rt,
-		shutdownDone:    make(chan struct{}),
+		cfg:              cfg,
+		logger:           logger,
+		db:               coreDeps.db,
+		client:           tgRuntime.client,
+		plugins:          pluginManager,
+		router:           coreDeps.router,
+		sched:            domServices.schedEngine,
+		eventBus:         coreDeps.eventBus,
+		assistant:        tgRuntime.assistant,
+		limiter:          coreDeps.cmdLimiter,
+		interLimiter:     coreDeps.interLimiter,
+		addonMgr:         domServices.addonManager,
+		callbackStore:    coreDeps.callbackStore,
+		inlineEngine:     coreDeps.inlineEngine,
+		settingsService:  domServices.settingsService,
+		media:            domServices.mediaService,
+		downloadRegistry: domServices.downloadRegistry,
+		processRunner:    domServices.processRunner,
+		startTime:        domServices.startTime,
+		jobs:             coreDeps.jobsManager,
+		taskEngine:       coreDeps.taskEngine,
+		persistencePump:  coreDeps.persistencePump,
+		resources:        coreDeps.resourceManager,
+		idemp:            coreDeps.idempManager,
+		runtime:          rt,
+		supervisor:       supervisor,
+		shutdownDone:     make(chan struct{}),
 	}, nil
 }
 
@@ -361,4 +436,59 @@ func (a *App) LifecycleState() string {
 	default:
 		return "unknown"
 	}
+}
+
+// Supervisor returns the application lifecycle supervisor.
+func (a *App) Supervisor() *runtime.Supervisor {
+	return a.supervisor
+}
+
+// DBMetrics returns the active database metrics collector.
+func (a *App) DBMetrics() database.DBMetrics {
+	if a != nil && a.db != nil {
+		return a.db.Metrics()
+	}
+	return database.NoopDBMetrics{}
+}
+
+// RPCMetrics returns the active Telegram RPC metrics collector.
+func (a *App) RPCMetrics() telegram.RPCMetrics {
+	if a != nil && a.client != nil && a.client.Executor() != nil {
+		return a.client.Executor().Metrics()
+	}
+	return telegram.NoopRPCMetrics{}
+}
+
+type zapCorePanicReporter struct {
+	logger *zap.Logger
+}
+
+func (r zapCorePanicReporter) ReportPanic(report core.PanicReport) {
+	if r.logger == nil {
+		return
+	}
+	r.logger.Error("recovered panic",
+		zap.String("owner", report.Owner),
+		zap.String("component", report.Component),
+		zap.Any("value", report.Value),
+		zap.ByteString("stack", report.Stack),
+		zap.Time("at", report.At),
+	)
+}
+
+type zapRuntimePanicReporter struct {
+	logger *zap.Logger
+}
+
+func (r zapRuntimePanicReporter) ReportPanic(report runtime.PanicReport) {
+	if r.logger == nil {
+		return
+	}
+	r.logger.Error("recovered panic",
+		zap.String("owner", report.Owner),
+		zap.String("component", report.Component),
+		zap.Any("value", report.Value),
+		zap.ByteString("stack", report.Stack),
+		zap.Time("at", report.At),
+	)
 }

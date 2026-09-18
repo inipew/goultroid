@@ -18,6 +18,12 @@ type mockService struct {
 	lastMarkup tg.ReplyMarkupClass
 }
 
+func TestPlugin_CallbackOptions_HandlerOwnsAnswer(t *testing.T) {
+	if opts := (&Plugin{}).CallbackOptions(); opts.AutoAnswer {
+		t.Fatal("help callbacks must not be pre-answered before action-specific feedback")
+	}
+}
+
 func (m *mockService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
 	m.sent = text
 	m.lastMarkup = nil

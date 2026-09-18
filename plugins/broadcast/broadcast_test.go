@@ -4,10 +4,13 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	broadcastSvc "github.com/inipew/goultroid/internal/services/broadcast"
+	"github.com/inipew/goultroid/internal/taskengine"
+	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/plugins/broadcast"
 	"go.uber.org/zap"
 )
@@ -36,9 +39,30 @@ func (m *mockTelegram) GetDialogs(ctx context.Context, limit int) ([]*core.Chat,
 	}, nil
 }
 
+func newBroadcastPluginService(t *testing.T, telegram core.TelegramServicer) *broadcastSvc.Service {
+	t.Helper()
+	engine := taskengine.NewEngine(taskengine.Config{
+		DefaultPool: "general",
+		Pools: map[tasks.PoolID]taskengine.PoolEngineConfig{
+			"general": {Concurrency: 2, BacklogLimit: 32, PayloadBudget: 1 << 20},
+		},
+	})
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatalf("start task engine: %v", err)
+	}
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = engine.Stop(stopCtx)
+	})
+	svc := broadcastSvc.NewService(telegram, zap.NewNop())
+	svc.SetTasks(engine)
+	return svc
+}
+
 func TestBroadcastPlugin(t *testing.T) {
 	mockTG := &mockTelegram{}
-	svc := broadcastSvc.NewService(mockTG, zap.NewNop())
+	svc := newBroadcastPluginService(t, mockTG)
 	p := broadcast.New(svc)
 
 	if p.Name() != "broadcast" {

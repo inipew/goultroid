@@ -32,10 +32,20 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 	settingsService := settings.NewService(settingsRepo, settingsRegistry, core.eventBus)
 
 	schedRepo := scheduler.NewSQLiteRepository(core.db.DB)
-	schedEngine := scheduler.NewEngine(schedRepo, tg.client.Service, core.router, core.perms, logger)
-	schedEngine.SetExecutor(tg.dispatcher.Executor())
-	if core.workerManager != nil {
-		schedEngine.SetWorkers(core.workerManager, core.taskManager)
+	schedEngine := scheduler.NewEngine(schedRepo, logger)
+	schedEngine.SetPrivilegedChecker(core.perms)
+	if core.jobsManager != nil {
+		actionHandler := scheduledActionHandler{
+			repo: schedRepo, service: tg.client.Service, router: core.router,
+			perms: core.perms, executor: tg.dispatcher.Executor(), jobs: core.jobsManager,
+			tasks: core.taskEngine,
+		}
+		if err := core.jobsManager.RegisterHandler("scheduler.action", actionHandler.run); err != nil {
+			return nil, fmt.Errorf("register scheduled action handler: %w", err)
+		}
+	}
+	if core.taskEngine != nil {
+		schedEngine.SetTasks(core.taskEngine)
 	}
 	if core.jobsManager != nil {
 		schedEngine.SetJobsManager(core.jobsManager)
@@ -50,8 +60,12 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 	}
 
 	processRunner := process.NewOSRunner(3, 5*time.Minute, 4*1024*1024)
+	extractorProvider := download.NewExtractorProvider(processRunner, 500*1024*1024)
+	if core.taskEngine != nil {
+		extractorProvider.SetTasks(core.taskEngine)
+	}
 	downloadRegistry := download.NewRegistry(
-		download.NewExtractorProvider(processRunner, 500*1024*1024),
+		extractorProvider,
 		download.NewDirectHTTPProvider(5*time.Minute, 500*1024*1024),
 	)
 	mediaGuard := mediaSvc.NewResourceGuard(2, 100*1024*1024)
@@ -62,6 +76,9 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 	pmpermitService.SetEventBus(core.eventBus)
 
 	broadcastService := broadcastSvc.NewService(tg.client.Service, logger)
+	if core.taskEngine != nil {
+		broadcastService.SetTasks(core.taskEngine)
+	}
 	userlogRepo := userlogSvc.NewSQLiteRepository(core.db)
 	userlogService := userlogSvc.NewService(userlogRepo, tg.client.Service, logger)
 

@@ -1,28 +1,49 @@
 package app
 
 import (
+	"context"
 	"sort"
 	"time"
 
 	"github.com/inipew/goultroid/internal/jobs"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/services/media"
 	processSvc "github.com/inipew/goultroid/internal/services/process"
+	"github.com/inipew/goultroid/internal/taskengine"
+	"github.com/inipew/goultroid/internal/telegram"
 )
 
 // DiagnosticsSnapshot is a read-only view of runtime coordination state.
 // It intentionally contains metadata and counters, not mutable subsystem
 // references.
 type DiagnosticsSnapshot struct {
-	Lifecycle     string
-	Uptime        time.Duration
-	EventBus      EventBusDiagnostics
-	Commands      CommandDiagnostics
-	PeriodicTasks []PeriodicTaskDiagnostics
-	Plugins       []PluginDiagnostics
-	Media         media.DiagnosticsSnapshot
-	Process       processSvc.DiagnosticsSnapshot
-	Jobs          jobs.Diagnostics
+	Lifecycle          string
+	Uptime             time.Duration
+	EventBus           EventBusDiagnostics
+	Commands           CommandDiagnostics
+	PeriodicTasks      []PeriodicTaskDiagnostics
+	Plugins            []PluginDiagnostics
+	Media              media.DiagnosticsSnapshot
+	Process            processSvc.DiagnosticsSnapshot
+	Jobs               jobs.Diagnostics
+	TaskEngine         taskengine.RuntimeStats
+	RPC                telegram.RPCMetricsSnapshot
+	DB                 DBDiagnostics
+	ResolverCacheCount int
+	Workers            []runtime.WorkerSnapshot
+	LastShutdownReport runtime.ShutdownReport
+}
+
+type DBDiagnostics struct {
+	MaxOpenConnections int
+	OpenConnections    int
+	InUse              int
+	Idle               int
+	WaitCount          int64
+	WaitDuration       time.Duration
+	MaxIdleClosed      int64
+	MaxLifetimeClosed  int64
 }
 
 type EventBusDiagnostics struct {
@@ -108,6 +129,36 @@ func (a *App) Diagnostics() DiagnosticsSnapshot {
 	}
 	if a.jobs != nil {
 		snapshot.Jobs = a.jobs.Diagnostics()
+	}
+	if a.taskEngine != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		if stats, err := a.taskEngine.Stats(ctx); err == nil {
+			snapshot.TaskEngine = stats
+		}
+		cancel()
+	}
+	if a.client != nil {
+		snapshot.RPC = a.client.RPCMetrics()
+		snapshot.ResolverCacheCount = a.client.ResolverCacheLen()
+	}
+	if a.db != nil && a.db.DB != nil {
+		stats := a.db.DB.Stats()
+		snapshot.DB = DBDiagnostics{
+			MaxOpenConnections: stats.MaxOpenConnections,
+			OpenConnections:    stats.OpenConnections,
+			InUse:              stats.InUse,
+			Idle:               stats.Idle,
+			WaitCount:          stats.WaitCount,
+			WaitDuration:       stats.WaitDuration,
+			MaxIdleClosed:      stats.MaxIdleClosed,
+			MaxLifetimeClosed:  stats.MaxLifetimeClosed,
+		}
+	}
+	if a.supervisor != nil {
+		snapshot.Workers = a.supervisor.Snapshot()
+	}
+	if a.runtime != nil {
+		snapshot.LastShutdownReport = a.runtime.LastShutdownReport()
 	}
 	return snapshot
 }

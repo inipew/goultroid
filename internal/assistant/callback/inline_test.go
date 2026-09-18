@@ -21,6 +21,39 @@ type fakeInlineInteraction struct {
 	editText    string
 }
 
+type retryInlineInteraction struct{ calls int }
+
+func (r *retryInlineInteraction) Answer(context.Context, int64, string, bool) error {
+	r.calls++
+	if r.calls == 1 {
+		return errors.New("temporary answer failure")
+	}
+	return nil
+}
+func (r *retryInlineInteraction) Edit(context.Context, interaction.InlineTarget, string, tg.ReplyMarkupClass) error {
+	return nil
+}
+func (r *retryInlineInteraction) EditMarkup(context.Context, interaction.InlineTarget, tg.ReplyMarkupClass) error {
+	return nil
+}
+
+func TestInlineTransaction_AnswerRetriesAfterRPCFailure(t *testing.T) {
+	inter := &retryInlineInteraction{}
+	tx := NewInlineTransaction(101, 202, ParsedPayload{}, interaction.NewInlineTarget(101, &tg.InputBotInlineMessageID{DCID: 1, ID: 2}, 1), inter)
+	if err := tx.Answer(context.Background(), "first", false); err == nil {
+		t.Fatal("expected first RPC failure")
+	}
+	if tx.IsAnswered() {
+		t.Fatal("failed RPC must not mark transaction answered")
+	}
+	if err := tx.Answer(context.Background(), "retry", false); err != nil {
+		t.Fatalf("retry failed: %v", err)
+	}
+	if !tx.IsAnswered() {
+		t.Fatal("successful retry must mark transaction answered")
+	}
+}
+
 func (f *fakeInlineInteraction) Answer(ctx context.Context, queryID int64, text string, alert bool) error {
 	f.answered = true
 	f.answerText = text
@@ -32,6 +65,11 @@ func (f *fakeInlineInteraction) Answer(ctx context.Context, queryID int64, text 
 func (f *fakeInlineInteraction) Edit(ctx context.Context, target interaction.InlineTarget, text string, markup tg.ReplyMarkupClass) error {
 	f.edited = true
 	f.editText = text
+	return nil
+}
+
+func (f *fakeInlineInteraction) EditMarkup(ctx context.Context, target interaction.InlineTarget, markup tg.ReplyMarkupClass) error {
+	f.edited = true
 	return nil
 }
 

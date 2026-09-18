@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/execution"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 // Permission represents the access tier required to execute a command.
@@ -47,7 +48,11 @@ type Command struct {
 	ReplyOnly   bool
 	Cooldown    time.Duration
 	Timeout     time.Duration
-	Handler     CommandHandler
+	Resources   []tasks.ResourceRequirement
+	// Scope identifies the plugin generation that owns this command. It is
+	// populated by the plugin manager, not by feature implementations.
+	Scope   tasks.ScopeIdentity
+	Handler CommandHandler
 }
 
 // IsAvailableOn reports whether this command is enabled on the specified execution source.

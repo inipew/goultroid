@@ -112,6 +112,13 @@ func LoggingMiddleware(logger *zap.Logger) Middleware {
 							zap.Duration("duration", duration),
 							zap.Error(err),
 						)
+					} else if errors.Is(err, ErrInvalidArgs) || CategoryOf(err) == CategoryInvalidInput || errors.Is(err, ErrPermissionDenied) || errors.Is(err, ErrCooldownActive) {
+						logger.Debug("command rejected due to client or usage constraint",
+							zap.String("correlation_id", ctx.CorrelationID),
+							zap.String("command", ctx.Command),
+							zap.Duration("duration", duration),
+							zap.Error(err),
+						)
 					} else {
 						logger.Warn("command executed with error",
 							zap.String("correlation_id", ctx.CorrelationID),

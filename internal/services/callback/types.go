@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
@@ -87,6 +88,9 @@ type CallbackHandlerOptions struct {
 	// AutoAnswer when true (default) immediately answers the callback with empty toast
 	// to clear Telegram loading state before handler execution.
 	AutoAnswer bool
+	// RequiresState rejects the callback when its opaque id does not resolve to
+	// live state. Leave false only for explicitly stateless handlers.
+	RequiresState bool
 	// DefaultText and DefaultAlert are used for the immediate answer when AutoAnswer is true.
 	// Empty DefaultText means silent ack.
 	DefaultText  string
@@ -105,12 +109,47 @@ type HandlerWithOptions interface {
 	CallbackOptions() CallbackHandlerOptions
 }
 
+// HandlerWithStatePolicy optionally declares state requirements per action.
+// This supports namespaces that intentionally mix stateless navigation with
+// stateful or single-use mutations.
+type HandlerWithStatePolicy interface {
+	Handler
+	RequiresCallbackState(action, opaqueID string) bool
+}
+
+func requiresHandlerState(h Handler, action, opaqueID string) bool {
+	if h == nil {
+		return false
+	}
+	if handlerOptions(h).RequiresState {
+		return true
+	}
+	if policy, ok := h.(HandlerWithStatePolicy); ok {
+		return policy.RequiresCallbackState(action, opaqueID)
+	}
+	return false
+}
+
 func handlerOptions(h Handler) CallbackHandlerOptions {
 	if ho, ok := h.(HandlerWithOptions); ok {
 		return ho.CallbackOptions()
 	}
 	// Default: immediate ack, silent
 	return CallbackHandlerOptions{AutoAnswer: true}
+}
+
+func truncateUTF8Bytes(text string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(text) <= maxBytes {
+		return text
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut]
 }
 
 // CallbackContext encapsulates the execution environment and metadata of an incoming callback query.
@@ -158,10 +197,8 @@ func (c *CallbackContext) Answer(text string, alert bool) error {
 	if c.Service == nil {
 		return fmt.Errorf("%w: telegram service is nil", core.ErrInternal)
 	}
-	// Telegram answer length limit ~200 chars
-	if len(text) > 200 {
-		text = text[:200]
-	}
+	// Keep the legacy byte budget while preserving valid UTF-8 boundaries.
+	text = truncateUTF8Bytes(text, 200)
 	err := c.Service.AnswerCallbackQuery(c.Ctx, c.QueryID, text, alert)
 	if err == nil {
 		c.answered = true
@@ -178,10 +215,8 @@ func (c *CallbackContext) Edit(text string, markup tg.ReplyMarkupClass) error {
 	if c.Service == nil {
 		return fmt.Errorf("%w: telegram service is nil", core.ErrInternal)
 	}
-	// Bounded serialized payload: truncate to Telegram max (4096 chars)
-	if len(text) > 4096 {
-		text = text[:4096]
-	}
+	// Keep the legacy byte budget while preserving valid UTF-8 boundaries.
+	text = truncateUTF8Bytes(text, 4096)
 	if c.IsInline() {
 		if c.Target.InlineID == nil {
 			return fmt.Errorf("%w: inline message id is missing", core.ErrInternal)
@@ -347,8 +382,8 @@ func EncodeCallbackDataChecked(namespace, action, opaqueID string) ([]byte, erro
 	if opaqueID == "" {
 		return nil, fmt.Errorf("%w: opaque id cannot be empty", ErrInvalidCallbackData)
 	}
-	if len(opaqueID) > 32 || !isHexID(opaqueID) {
-		// opaqueID from StateStore is hex16, but allow up to 32 hex chars for future signed mode
+	if len(opaqueID) > 48 || !isHexID(opaqueID) {
+		// opaqueID from StateStore is hex16, but allow up to 48 chars for UUIDs, composite tokens, or signed mode
 		// for now enforce hex; "noop" is handled earlier by router, not via validation here
 		if opaqueID != "noop" && !isValidOpaqueID(opaqueID) {
 			return nil, fmt.Errorf("%w: invalid opaque id %q", ErrInvalidCallbackData, opaqueID)
@@ -368,18 +403,27 @@ func ParseCallbackData(data []byte) (namespace, action, opaqueID string, err err
 	}
 	str := string(data)
 	parts := strings.SplitN(str, ":", 4)
-	if len(parts) != 4 || parts[0] != CallbackVersion1 {
+	if len(parts) < 3 || (parts[0] != CallbackVersion1 && parts[0] != "a1") {
 		return "", "", "", ErrInvalidCallbackData
 	}
-	ns, act, oid := parts[1], parts[2], parts[3]
+	// The canonical v1 protocol always carries an opaque ID. The assistant a1
+	// protocol also permits a three-field stateless action.
+	if parts[0] == CallbackVersion1 && len(parts) != 4 {
+		return "", "", "", ErrInvalidCallbackData
+	}
+	ns, act := parts[1], parts[2]
 	if err := validateCallbackField(ns, "namespace"); err != nil {
 		return "", "", "", err
 	}
 	if err := validateCallbackField(act, "action"); err != nil {
 		return "", "", "", err
 	}
-	if oid == "" {
-		return "", "", "", ErrInvalidCallbackData
+	oid := "noop"
+	if len(parts) == 4 {
+		oid = parts[3]
+		if oid == "" {
+			return "", "", "", ErrInvalidCallbackData
+		}
 	}
 	if !isValidOpaqueID(oid) {
 		return "", "", "", ErrInvalidCallbackData
@@ -420,12 +464,12 @@ func isValidOpaqueID(s string) bool {
 	if s == "noop" {
 		return true
 	}
-	if len(s) > 32 {
+	if len(s) > 48 {
 		return false
 	}
-	// allow hex or base64url-like without padding for future; for now hex or alnum_-.
+	// allow hex or base64url-like without padding for future; for now hex, alnum, _ - . :
 	for _, r := range s {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' || r == ':' {
 			continue
 		}
 		return false

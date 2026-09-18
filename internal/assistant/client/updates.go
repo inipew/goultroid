@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/callback"
@@ -11,7 +12,9 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/assistant/menu"
 	"github.com/inipew/goultroid/internal/assistant/peer"
+	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/settings"
+	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
 
@@ -26,6 +29,14 @@ type UpdateHandlerDeps struct {
 	IsShuttingDown  func() bool
 	MenuController  *menu.Controller
 	SettingsService *settings.Service
+	InlineEngine    InlineQueryExecutor
+	InlineService   core.TelegramServicer
+	Tasks           tasks.Client
+}
+
+// InlineQueryExecutor is the Assistant-facing subset of the shared inline engine.
+type InlineQueryExecutor interface {
+	ExecuteWithPeerType(context.Context, core.TelegramServicer, int64, int64, string, string, tg.InlineQueryPeerTypeClass) error
 }
 
 func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerDeps) {
@@ -64,7 +75,7 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			logger.Warn("assistant: sender access hash missing, message ignored", zap.Int64("sender_id", senderID), zap.Error(err))
 			return nil
 		}
-		if deps.MenuController != nil && deps.SettingsService != nil {
+		if deps.MenuController != nil {
 			if handled, hErr := deps.MenuController.HandleTextMessage(ctx, senderID, extractChatID(msg.PeerID), msg.Message, deps.Interaction, deps.SettingsService); handled {
 				return hErr
 			}
@@ -84,19 +95,47 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 	})
 	dispatcher.OnBotInlineQuery(func(ctx context.Context, e tg.Entities, update *tg.UpdateBotInlineQuery) error {
 		if deps.IsShuttingDown != nil && deps.IsShuttingDown() {
+			if deps.InlineService != nil {
+				_ = deps.InlineService.AnswerInlineQueryOptions(ctx, update.QueryID, nil, core.InlineAnswerOptions{CacheTime: 1, Private: true})
+			}
 			return nil
 		}
 		if deps.CacheEntities != nil {
 			deps.CacheEntities(e)
 		}
-		if deps.RateLimiter != nil && !deps.RateLimiter.Allow(update.UserID, "inline") {
-			logger.Warn("assistant: rate limit exceeded for inline", zap.Int64("user_id", update.UserID))
+		if deps.InlineEngine == nil || deps.InlineService == nil {
+			logger.Warn("assistant: inline query service unavailable", zap.Int64("query_id", update.QueryID))
+			if deps.InlineService != nil {
+				_ = deps.InlineService.AnswerInlineQueryOptions(ctx, update.QueryID, nil, core.InlineAnswerOptions{CacheTime: 1, Private: true})
+			}
 			return nil
+		}
+		if deps.Tasks == nil {
+			logger.Warn("assistant: inline query execution unavailable", zap.Int64("query_id", update.QueryID))
+			return deps.InlineService.AnswerInlineQueryOptions(ctx, update.QueryID, nil, core.InlineAnswerOptions{CacheTime: 1, Private: true})
+		}
+		_, err := deps.Tasks.Submit(ctx, tasks.WorkSpec{
+			ID:               tasks.TaskID(fmt.Sprintf("asst:inline:%d", update.QueryID)),
+			QuotaOwner:       tasks.OwnerID(fmt.Sprintf("telegram:user:%d", update.UserID)),
+			Pool:             "interactive",
+			Class:            tasks.PriorityInteractive,
+			OrderingKey:      fmt.Sprintf("inline:%d", update.QueryID),
+			ExecutionTimeout: 5 * time.Second,
+			Handler: func(taskCtx context.Context) error {
+				return deps.InlineEngine.ExecuteWithPeerType(taskCtx, deps.InlineService, update.QueryID, update.UserID, update.Query, update.Offset, update.PeerType)
+			},
+		})
+		if err != nil {
+			logger.Warn("assistant: inline query admission rejected", zap.Int64("query_id", update.QueryID), zap.Error(err))
+			_ = deps.InlineService.AnswerInlineQueryOptions(ctx, update.QueryID, nil, core.InlineAnswerOptions{CacheTime: 1, Private: true})
 		}
 		return nil
 	})
 	dispatcher.OnInlineBotCallbackQuery(func(ctx context.Context, e tg.Entities, update *tg.UpdateInlineBotCallbackQuery) error {
 		if deps.IsShuttingDown != nil && deps.IsShuttingDown() {
+			if deps.Interaction != nil {
+				_ = deps.Interaction.Answer(ctx, update.QueryID, "Bot is shutting down. Please retry later.", true)
+			}
 			return nil
 		}
 		if deps.CacheEntities != nil {
@@ -116,16 +155,29 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			}
 			return nil
 		}
-		if deps.CallbackRouter != nil && deps.Interaction != nil {
+		if deps.CallbackRouter == nil {
+			if deps.Interaction != nil {
+				_ = deps.Interaction.Answer(ctx, update.QueryID, "Interaction service unavailable.", false)
+			}
+			return nil
+		}
+		if deps.Interaction != nil {
 			tx := callback.NewInlineTransaction(update.QueryID, update.UserID, *payload, inlineTarget, deps.Interaction.AsInline())
+			tx.RawData = update.Data
 			if err := dispatchInlineSafely(ctx, deps.CallbackRouter, tx, logger); err != nil {
 				logger.Warn("assistant: inline callback router error", zap.Error(err), zap.Int64("query_id", update.QueryID), zap.Int64("user_id", update.UserID), zap.String("action", payload.Action))
+				if !tx.IsAnswered() {
+					_ = tx.Answer(ctx, "Action failed. Please retry.", false)
+				}
 			}
 		}
 		return nil
 	})
 	dispatcher.OnBotCallbackQuery(func(ctx context.Context, e tg.Entities, update *tg.UpdateBotCallbackQuery) error {
 		if deps.IsShuttingDown != nil && deps.IsShuttingDown() {
+			if deps.Interaction != nil {
+				_ = deps.Interaction.Answer(ctx, update.QueryID, "Bot is shutting down. Please retry later.", true)
+			}
 			return nil
 		}
 		if deps.CacheEntities != nil {
@@ -151,12 +203,25 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		target := interaction.NewMessageTarget(inputPeer, update.MsgID, extractChatID(update.Peer), update.ChatInstance)
 		payload, parseErr := callback.Parse(update.Data)
 		if parseErr != nil {
+			if deps.Interaction != nil {
+				_ = deps.Interaction.Answer(ctx, update.QueryID, "Invalid callback", false)
+			}
 			return nil
 		}
-		if deps.CallbackRouter != nil && deps.Interaction != nil {
+		if deps.CallbackRouter == nil {
+			if deps.Interaction != nil {
+				_ = deps.Interaction.Answer(ctx, update.QueryID, "Interaction service unavailable.", false)
+			}
+			return nil
+		}
+		if deps.Interaction != nil {
 			tx := callback.NewTransaction(update.QueryID, update.UserID, *payload, target, deps.Interaction)
+			tx.RawData = update.Data
 			if err := dispatchCallbackSafely(ctx, deps.CallbackRouter, tx, logger); err != nil {
 				logger.Warn("assistant: callback router error", zap.Error(err), zap.Int64("query_id", update.QueryID), zap.Int64("user_id", update.UserID), zap.String("action", payload.Action))
+				if !tx.IsAnswered() {
+					_ = tx.Answer(ctx, "Action failed. Please retry.", false)
+				}
 			}
 		}
 		return nil
@@ -171,6 +236,9 @@ func dispatchCallbackSafely(ctx context.Context, router *callback.Router, tx *ca
 		if recovered := recover(); recovered != nil {
 			tx.SetState(callback.StateFailed)
 			err = fmt.Errorf("callback handler panic: %v", recovered)
+			if !tx.IsAnswered() {
+				_ = tx.Answer(ctx, "Internal server error.", true)
+			}
 			if logger != nil {
 				logger.Error("assistant: callback panic recovered", zap.Int64("query_id", tx.QueryID), zap.String("namespace", tx.Payload.Namespace), zap.String("action", tx.Payload.Action), zap.Any("panic", recovered))
 			}
@@ -187,6 +255,9 @@ func dispatchInlineSafely(ctx context.Context, router *callback.Router, tx *call
 		if recovered := recover(); recovered != nil {
 			tx.SetState(callback.StateFailed)
 			err = fmt.Errorf("inline callback handler panic: %v", recovered)
+			if !tx.IsAnswered() {
+				_ = tx.Answer(ctx, "Internal server error.", true)
+			}
 			if logger != nil {
 				logger.Error("assistant: inline callback panic recovered", zap.Int64("query_id", tx.QueryID), zap.String("namespace", tx.Payload.Namespace), zap.String("action", tx.Payload.Action), zap.Any("panic", recovered))
 			}

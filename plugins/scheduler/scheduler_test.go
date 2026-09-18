@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -227,6 +228,17 @@ func TestSchedulerPlugin(t *testing.T) {
 	ctxRemindReply := &core.Context{Ctx: context.Background(), Command: "remind", Args: []string{"10m"}, RawArgs: "10m", Svc: mockSvc, PeerID: peer, Chat: &core.Chat{ID: 777}, Message: &core.Message{ReplyToID: 99}}
 	if err := cmdMap["remind"].Handler(ctxRemindReply); err != nil {
 		t.Fatalf("remind with reply failed: %v", err)
+	}
+
+	// Verify .schedule without args returns core.ErrInvalidArgs and sends usage
+	ctxSchedNoArgs := &core.Context{Ctx: context.Background(), Command: "schedule", Svc: mockSvc, PeerID: peer, Chat: &core.Chat{ID: 777}}
+	if err := cmdMap["schedule"].Handler(ctxSchedNoArgs); err == nil {
+		t.Fatalf("expected error for schedule without args, got nil")
+	} else if !errors.Is(err, core.ErrInvalidArgs) {
+		t.Fatalf("expected ErrInvalidArgs for schedule without args, got: %v", err)
+	}
+	if !strings.Contains(mockSvc.sent, "Usage:") {
+		t.Fatalf("expected usage message sent, got: %s", mockSvc.sent)
 	}
 
 	ctxSchedOnce := &core.Context{Ctx: context.Background(), Command: "schedule", Args: []string{"30m", ".whois"}, RawArgs: "30m .whois", Svc: mockSvc, PeerID: peer, Chat: &core.Chat{ID: 777}, Message: &core.Message{SenderID: 42}}

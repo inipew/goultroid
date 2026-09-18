@@ -144,3 +144,20 @@ func TestResolver_WithStorage_GuaranteedAccessHash(t *testing.T) {
 		t.Errorf("expected *tg.InputPeerChat with ID 888777, got %+v", chatPeer)
 	}
 }
+
+func TestResolver_CloseCancelsLifecycleContext(t *testing.T) {
+	r := NewResolver(nil, nil)
+	if r.lifecycleCtx == nil {
+		t.Fatal("expected lifecycleCtx to be initialized")
+	}
+	if err := r.lifecycleCtx.Err(); err != nil {
+		t.Fatalf("expected lifecycleCtx to be active, got: %v", err)
+	}
+
+	if err := r.Close(); err != nil {
+		t.Fatalf("expected Close to succeed, got: %v", err)
+	}
+	if !errors.Is(r.lifecycleCtx.Err(), context.Canceled) {
+		t.Fatalf("expected lifecycleCtx to be canceled after Close, got: %v", r.lifecycleCtx.Err())
+	}
+}

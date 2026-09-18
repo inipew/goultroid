@@ -73,6 +73,48 @@ type fakeInteraction struct {
 	lastAlert   bool
 }
 
+type retryInteraction struct{ calls int32 }
+
+func (r *retryInteraction) Answer(context.Context, int64, string, bool) error {
+	if atomic.AddInt32(&r.calls, 1) == 1 {
+		return errors.New("temporary answer failure")
+	}
+	return nil
+}
+func (r *retryInteraction) Edit(context.Context, interaction.MessageTarget, string, tg.ReplyMarkupClass) error {
+	return nil
+}
+func (r *retryInteraction) EditMarkup(context.Context, interaction.MessageTarget, tg.ReplyMarkupClass) error {
+	return nil
+}
+func (r *retryInteraction) Delete(context.Context, interaction.MessageTarget) error { return nil }
+func (r *retryInteraction) GetMessage(context.Context, interaction.MessageTarget) (*tg.Message, error) {
+	return nil, nil
+}
+func (r *retryInteraction) SendMessage(context.Context, tg.InputPeerClass, string, tg.ReplyMarkupClass) (*tg.Message, error) {
+	return nil, nil
+}
+func (r *retryInteraction) SendMedia(context.Context, tg.InputPeerClass, string, string, string) (*tg.Message, error) {
+	return nil, nil
+}
+
+func TestTransaction_AnswerRetriesAfterRPCFailure(t *testing.T) {
+	inter := &retryInteraction{}
+	tx := callback.NewTransaction(1001, 42, callback.ParsedPayload{}, interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 42}, 10, 42, 1), inter)
+	if err := tx.Answer(context.Background(), "first", false); err == nil {
+		t.Fatal("expected first RPC failure")
+	}
+	if tx.IsAnswered() {
+		t.Fatal("failed RPC must not mark transaction answered")
+	}
+	if err := tx.Answer(context.Background(), "retry", false); err != nil {
+		t.Fatalf("retry failed: %v", err)
+	}
+	if !tx.IsAnswered() {
+		t.Fatal("successful retry must mark transaction answered")
+	}
+}
+
 func (f *fakeInteraction) Answer(ctx context.Context, queryID int64, text string, alert bool) error {
 	atomic.AddInt32(&f.answerCount, 1)
 	f.lastAnswer = text
@@ -93,6 +135,9 @@ func (f *fakeInteraction) GetMessage(ctx context.Context, target interaction.Mes
 	return &tg.Message{ID: target.MessageID()}, nil
 }
 func (f *fakeInteraction) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
+	return &tg.Message{ID: 1}, nil
+}
+func (f *fakeInteraction) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
 	return &tg.Message{ID: 1}, nil
 }
 
@@ -229,5 +274,37 @@ func TestRouter_Dispatch_WildcardAndUnknown(t *testing.T) {
 	err := r.Dispatch(ctx, txUnknown)
 	if !errors.Is(err, callback.ErrUnknownAction) {
 		t.Fatalf("expected ErrUnknownAction, got %v", err)
+	}
+}
+
+func TestRouter_Dispatch_Fallback(t *testing.T) {
+	fake := &fakeInteraction{}
+	r := callback.NewRouter(zap.NewNop())
+
+	fallbackCalled := false
+	r.SetFallbackHandler(func(ctx context.Context, tx *callback.Transaction) error {
+		fallbackCalled = true
+		if tx.Payload.Namespace != "myxl" || tx.Payload.Action != "refresh" {
+			t.Errorf("unexpected fallback payload: %+v", tx.Payload)
+		}
+		return tx.Answer(ctx, "Refreshed", false)
+	})
+
+	ctx := context.Background()
+	tx := callback.NewTransaction(
+		3, 589287392,
+		callback.ParsedPayload{Namespace: "myxl", Action: "refresh", State: "628123456789"},
+		interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 589287392}, 10, 589287392, 1),
+		fake,
+	)
+
+	if err := r.Dispatch(ctx, tx); err != nil {
+		t.Fatalf("unexpected dispatch error with fallback: %v", err)
+	}
+	if !fallbackCalled {
+		t.Fatalf("expected fallback handler to be called")
+	}
+	if tx.State() != callback.StateCompleted {
+		t.Fatalf("expected StateCompleted, got %v", tx.State())
 	}
 }

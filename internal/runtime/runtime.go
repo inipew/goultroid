@@ -17,6 +17,31 @@ type AggregateHealth struct {
 	Components map[string]string `json:"components"`
 }
 
+// ShutdownPhase identifies the specific phase of graceful shutdown.
+type ShutdownPhase string
+
+const (
+	PhaseQuiesce   ShutdownPhase = "quiesce"
+	PhaseDrain     ShutdownPhase = "drain"
+	PhaseStop      ShutdownPhase = "stop"
+	PhaseForceStop ShutdownPhase = "force_stop"
+)
+
+// ShutdownPhaseReport captures the timing and outcome of a component in a shutdown phase.
+type ShutdownPhaseReport struct {
+	Phase     ShutdownPhase `json:"phase"`
+	Component string        `json:"component"`
+	Duration  time.Duration `json:"duration"`
+	Error     error         `json:"error,omitempty"`
+}
+
+// ShutdownReport captures aggregated metrics from a runtime shutdown operation.
+type ShutdownReport struct {
+	TotalDuration time.Duration         `json:"total_duration"`
+	Phases        []ShutdownPhaseReport `json:"phases"`
+	Errors        []error               `json:"errors,omitempty"`
+}
+
 // Runtime is the sole owner and coordinator of the application lifecycle and component dependencies.
 type Runtime struct {
 	mu           sync.Mutex
@@ -24,14 +49,15 @@ type Runtime struct {
 	graph        *DependencyGraph
 	startedComps []Component
 
-	rootCtx     context.Context
-	rootCancel  context.CancelFunc
-	opMu        sync.Mutex
-	stopOnce    sync.Once
-	stopDone    chan struct{}
-	stopErr     error
-	stopTimeout time.Duration
-	startTime   time.Time
+	rootCtx      context.Context
+	rootCancel   context.CancelFunc
+	opMu         sync.Mutex
+	stopOnce     sync.Once
+	stopDone     chan struct{}
+	stopErr      error
+	stopTimeout  time.Duration
+	startTime    time.Time
+	lastShutdown ShutdownReport
 }
 
 // New creates a new Runtime instance in the StateCreated state.
@@ -65,6 +91,13 @@ func (r *Runtime) Uptime() time.Duration {
 		return 0
 	}
 	return time.Since(r.startTime)
+}
+
+// LastShutdownReport returns the metrics and phase breakdown from the most recent shutdown.
+func (r *Runtime) LastShutdownReport() ShutdownReport {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastShutdown
 }
 
 // Register registers a component with the runtime. Components must be registered
@@ -196,23 +229,50 @@ func (r *Runtime) Stop(ctx context.Context) error {
 	}
 }
 
+const forcedStopReserve = 250 * time.Millisecond
+
+func reserveForcedStopBudget(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		return context.Background(), func() {}
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return ctx, func() {}
+	}
+	cutoff := deadline.Add(-forcedStopReserve)
+	if time.Until(cutoff) <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithDeadline(ctx, cutoff)
+}
+
 func (r *Runtime) performStop(ctx context.Context) error {
 	r.opMu.Lock()
 	defer r.opMu.Unlock()
 
+	stopStart := time.Now()
+	var report ShutdownReport
+
+	recordPhase := func(phase ShutdownPhase, compName string, d time.Duration, err error) {
+		report.Phases = append(report.Phases, ShutdownPhaseReport{
+			Phase:     phase,
+			Component: compName,
+			Duration:  d,
+			Error:     err,
+		})
+	}
+
+	graceCtx, cancelGrace := reserveForcedStopBudget(ctx)
+	defer cancelGrace()
+
 	r.mu.Lock()
-	currentState := r.stateMachine.Current()
-	if currentState == StateStopped {
+	if r.stateMachine.Current() == StateStopped {
 		r.mu.Unlock()
 		return nil
 	}
-
 	_ = r.stateMachine.Transition(StateStopping)
-
-	// Determine shutdown order
 	var stopOrder []Component
 	if len(r.startedComps) > 0 {
-		// Stop only what was started, in reverse order
 		n := len(r.startedComps)
 		stopOrder = make([]Component, n)
 		for i, c := range r.startedComps {
@@ -222,51 +282,80 @@ func (r *Runtime) performStop(ctx context.Context) error {
 	r.mu.Unlock()
 
 	var stopErrs []error
-	for _, phase := range []struct {
-		name string
-		run  func(Component) error
-	}{
-		{name: "quiesce", run: func(comp Component) error {
-			if q, ok := comp.(Quiescer); ok {
-				return q.Quiesce(ctx)
-			}
-			return nil
-		}},
-		{name: "drain", run: func(comp Component) error {
-			if d, ok := comp.(Drainer); ok {
-				return d.Drain(ctx)
-			}
-			return nil
-		}},
-	} {
-		for _, comp := range stopOrder {
-			if err := ctx.Err(); err != nil {
-				stopErrs = append(stopErrs, fmt.Errorf("%s deadline exceeded before component %q: %w", phase.name, comp.Name(), err))
-				break
-			}
-			if err := phase.run(comp); err != nil {
-				stopErrs = append(stopErrs, fmt.Errorf("component %q %s failed: %w", comp.Name(), phase.name, err))
-			}
-		}
-	}
+	graceExhausted := false
 	for _, comp := range stopOrder {
-		if err := ctx.Err(); err != nil {
-			stopErrs = append(stopErrs, fmt.Errorf("stop deadline exceeded before stopping %q: %w", comp.Name(), err))
+		if err := graceCtx.Err(); err != nil {
+			stopErrs = append(stopErrs, fmt.Errorf("graceful shutdown budget exhausted before component %q: %w", comp.Name(), err))
+			graceExhausted = true
 			break
 		}
-
-		if err := comp.Stop(ctx); err != nil {
-			stopErrs = append(stopErrs, fmt.Errorf("component %q stop failed: %w", comp.Name(), err))
+		if q, ok := comp.(Quiescer); ok {
+			tStart := time.Now()
+			err := q.Quiesce(graceCtx)
+			recordPhase(PhaseQuiesce, comp.Name(), time.Since(tStart), err)
+			if err != nil {
+				stopErrs = append(stopErrs, fmt.Errorf("component %q quiesce failed: %w", comp.Name(), err))
+			}
+		}
+		if err := graceCtx.Err(); err != nil {
+			stopErrs = append(stopErrs, fmt.Errorf("graceful shutdown budget exhausted after quiescing %q: %w", comp.Name(), err))
+			graceExhausted = true
+			break
+		}
+		if d, ok := comp.(Drainer); ok {
+			tStart := time.Now()
+			err := d.Drain(graceCtx)
+			recordPhase(PhaseDrain, comp.Name(), time.Since(tStart), err)
+			if err != nil {
+				stopErrs = append(stopErrs, fmt.Errorf("component %q drain failed: %w", comp.Name(), err))
+			}
+		}
+		if graceCtx.Err() != nil {
+			graceExhausted = true
+			break
 		}
 	}
 
-	// Cancel root context after components have stopped or attempted to stop
+	forceMode := graceExhausted || graceCtx.Err() != nil
+	for _, comp := range stopOrder {
+		if !forceMode {
+			tStart := time.Now()
+			err := comp.Stop(graceCtx)
+			recordPhase(PhaseStop, comp.Name(), time.Since(tStart), err)
+			if err != nil {
+				stopErrs = append(stopErrs, fmt.Errorf("component %q stop failed: %w", comp.Name(), err))
+			}
+			if graceCtx.Err() == nil {
+				continue
+			}
+			forceMode = true
+			stopErrs = append(stopErrs, fmt.Errorf("graceful shutdown budget exhausted while stopping %q: %w", comp.Name(), graceCtx.Err()))
+		}
+		if forced, ok := comp.(ForcedStopper); ok && ctx.Err() == nil {
+			tStart := time.Now()
+			err := forced.ForceStop(ctx)
+			recordPhase(PhaseForceStop, comp.Name(), time.Since(tStart), err)
+			if err != nil {
+				stopErrs = append(stopErrs, fmt.Errorf("component %q forced stop failed: %w", comp.Name(), err))
+			}
+		}
+	}
+
+	r.rootCancel()
+	if ctx.Err() != nil {
+		stopErrs = append(stopErrs, fmt.Errorf("shutdown hard deadline exceeded: %w", ctx.Err()))
+	}
+
+	report.TotalDuration = time.Since(stopStart)
+	report.Errors = append([]error(nil), stopErrs...)
+	r.mu.Lock()
+	r.lastShutdown = report
+	r.mu.Unlock()
+
 	if len(stopErrs) > 0 {
-		r.rootCancel()
 		r.stateMachine.SetFailed()
 		return fmt.Errorf("shutdown completed with errors: %w", errors.Join(stopErrs...))
 	}
-	r.rootCancel()
 	_ = r.stateMachine.Transition(StateStopped)
 	return nil
 }

@@ -2,268 +2,385 @@ package downloader
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"os"
-	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/jobs"
-	"github.com/inipew/goultroid/internal/plugin"
+	jobsqlite "github.com/inipew/goultroid/internal/jobs/sqlite"
 	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/storage"
 	"github.com/inipew/goultroid/internal/tasks"
-	_ "modernc.org/sqlite"
 )
 
-type mockService struct {
-	core.MockTelegramServicer
-	sent   string
-	edited string
+type mockTicket struct {
+	id tasks.TaskID
 }
 
-func (m *mockService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
-	m.sent = text
-	return &tg.Message{ID: 10, Message: text}, nil
+func (t *mockTicket) TaskID() tasks.TaskID             { return t.id }
+func (t *mockTicket) State() tasks.TaskState           { return tasks.StateRunning }
+func (t *mockTicket) Done() <-chan struct{}            { return nil }
+func (t *mockTicket) Result() (tasks.TaskResult, bool) { return tasks.TaskResult{}, false }
+func (t *mockTicket) Wait(ctx context.Context) (tasks.TaskResult, error) {
+	return tasks.TaskResult{TaskID: t.id, Outcome: tasks.OutcomeCompleted}, nil
 }
-func (m *mockService) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
-	m.edited = text
+
+type capturedClient struct {
+	tasks.Client
+	mu    sync.Mutex
+	specs []tasks.WorkSpec
+}
+
+func (c *capturedClient) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket, error) {
+	c.mu.Lock()
+	c.specs = append(c.specs, spec)
+	c.mu.Unlock()
+	return &mockTicket{id: spec.ID}, nil
+}
+
+func (c *capturedClient) LastSpec() (tasks.WorkSpec, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.specs) == 0 {
+		return tasks.WorkSpec{}, false
+	}
+	return c.specs[len(c.specs)-1], true
+}
+
+type mockTelegramService struct {
+	core.TelegramServicer
+	mu           sync.Mutex
+	lastEdited   string
+	replyMessage *tg.Message
+}
+
+func (m *mockTelegramService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
+	return &tg.Message{ID: 100}, nil
+}
+
+func (m *mockTelegramService) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
+	m.mu.Lock()
+	m.lastEdited = text
+	m.mu.Unlock()
 	return nil
 }
-func (m *mockService) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {
-	return nil
+
+func (m *mockTelegramService) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) (*tg.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.replyMessage != nil {
+		return m.replyMessage, nil
+	}
+	return nil, nil
 }
-func (m *mockService) React(ctx context.Context, peer tg.InputPeerClass, msgID int, emoji string) error {
-	return nil
+
+func (m *mockTelegramService) DownloadFile(ctx context.Context, location tg.InputFileLocationClass, dstPath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return os.WriteFile(dstPath, []byte("dummy audio content"), 0600)
 }
-func (m *mockService) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) (*tg.Message, error) {
-	return &tg.Message{
-		ID: 42,
-		Media: &tg.MessageMediaDocument{
-			Document: &tg.Document{
-				ID:       999,
-				MimeType: "video/mp4",
-				Size:     2048576,
-				Attributes: []tg.DocumentAttributeClass{
-					&tg.DocumentAttributeFilename{FileName: "sample.mp4"},
+
+func TestDownloaderCommandDeclaresOnlyDownloadResource(t *testing.T) {
+	p := New()
+	cmds := p.Commands()
+	if len(cmds) == 0 {
+		t.Fatal("expected at least 1 command")
+	}
+	dlCmd := cmds[0]
+	if dlCmd.Name != "download" {
+		t.Fatalf("expected command name download, got %s", dlCmd.Name)
+	}
+
+	for _, req := range dlCmd.Resources {
+		if req.Name == "process" {
+			t.Fatal("command .download must NOT statically hold process resource")
+		}
+	}
+
+	foundDownload := false
+	for _, req := range dlCmd.Resources {
+		if req.Name == "download" && req.Amount == 1 {
+			foundDownload = true
+			break
+		}
+	}
+	if !foundDownload {
+		t.Fatal("command .download must hold download resource with amount 1")
+	}
+}
+
+func TestDownloaderURLResourcePlanning(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := jobsqlite.InitSchema(context.Background(), db.DB); err != nil {
+		t.Fatal(err)
+	}
+	pump := jobs.NewPersistencePump(1, 4)
+	if err := pump.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer pump.Stop(context.Background())
+
+	client := &capturedClient{}
+	jm := jobs.NewManager(client, jobsqlite.NewResourceStore(db.DB), pump)
+	if err := jm.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer jm.Stop(context.Background())
+
+	p := New()
+	p.SetJobsManager(jm)
+	p.registerJobHandlers()
+
+	p.registry = download.NewRegistry(
+		download.NewExtractorProvider(nil, 500*1024*1024),
+		download.NewDirectHTTPProvider(5*time.Minute, 500*1024*1024),
+	)
+	p.storage = storage.NewMemoryStorage()
+
+	tgSvc := &mockTelegramService{}
+
+	// 1. Direct HTTP URL download
+	ctxHTTP := &core.Context{
+		Ctx:     context.Background(),
+		Svc:     tgSvc,
+		PeerID:  &tg.InputPeerSelf{},
+		Message: &core.Message{ID: 1, IsOutgoing: true, Text: ".download https://example.com/media/file.mp4"},
+		Args:    []string{"https://example.com/media/file.mp4"},
+	}
+	if err := p.handleURLDownload(ctxHTTP, "https://example.com/media/file.mp4"); err != nil {
+		t.Fatal(err)
+	}
+
+	client.mu.Lock()
+	specsCount := len(client.specs)
+	client.mu.Unlock()
+	if specsCount != 1 {
+		t.Fatalf("expected 1 task submitted to task client, got %d", specsCount)
+	}
+
+	specHTTP, _ := client.LastSpec()
+	for _, r := range specHTTP.Resources {
+		if r.Name == "process" {
+			t.Errorf("direct HTTP work spec should NOT hold process resource, found: %+v", r)
+		}
+	}
+	hasDownload := false
+	for _, r := range specHTTP.Resources {
+		if r.Name == "download" && r.Amount == 1 {
+			hasDownload = true
+		}
+	}
+	if !hasDownload {
+		t.Errorf("direct HTTP work spec must hold download resource, found: %+v", specHTTP.Resources)
+	}
+
+	// 2. Extractor URL download (YouTube)
+	ctxExtractor := &core.Context{
+		Ctx:     context.Background(),
+		Svc:     tgSvc,
+		PeerID:  &tg.InputPeerSelf{},
+		Message: &core.Message{ID: 2, IsOutgoing: true, Text: ".download https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+		Args:    []string{"https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+	}
+	if err := p.handleURLDownload(ctxExtractor, "https://www.youtube.com/watch?v=dQw4w9WgXcQ"); err != nil {
+		t.Fatal(err)
+	}
+
+	client.mu.Lock()
+	specsCount = len(client.specs)
+	client.mu.Unlock()
+	if specsCount != 2 {
+		t.Fatalf("expected 2 tasks submitted to task client, got %d", specsCount)
+	}
+
+	specExtractor, _ := client.LastSpec()
+	hasExtDownload := false
+	hasExtProcess := false
+	for _, r := range specExtractor.Resources {
+		if r.Name == "download" && r.Amount == 1 {
+			hasExtDownload = true
+		}
+		if r.Name == "process" && r.Amount == 1 {
+			hasExtProcess = true
+		}
+	}
+	if !hasExtDownload || !hasExtProcess {
+		t.Errorf("extractor work spec must hold both download and process resources, found: %+v", specExtractor.Resources)
+	}
+}
+
+func TestDownloaderRepliedMediaWithTaskContext(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := jobsqlite.InitSchema(context.Background(), db.DB); err != nil {
+		t.Fatal(err)
+	}
+	pump := jobs.NewPersistencePump(1, 4)
+	if err := pump.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer pump.Stop(context.Background())
+
+	client := &capturedClient{}
+	jm := jobs.NewManager(client, jobsqlite.NewResourceStore(db.DB), pump)
+	if err := jm.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer jm.Stop(context.Background())
+
+	p := New()
+	p.SetJobsManager(jm)
+	p.registerJobHandlers()
+
+	tmpDir := t.TempDir()
+	fs, err := storage.NewFileStorage(tmpDir, 100*1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.storage = fs
+
+	tgSvc := &mockTelegramService{
+		replyMessage: &tg.Message{
+			ID:      42,
+			Message: "Music track from Pikabot",
+			Media: &tg.MessageMediaDocument{
+				Document: &tg.Document{
+					ID:       999,
+					MimeType: "audio/mpeg",
+					Size:     1024,
+					Attributes: []tg.DocumentAttributeClass{
+						&tg.DocumentAttributeAudio{
+							Duration: 200,
+							Title:    "Training Season",
+						},
+						&tg.DocumentAttributeFilename{
+							FileName: "training_season.mp3",
+						},
+					},
 				},
 			},
 		},
-	}, nil
-}
-func (m *mockService) PinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, silent bool) error {
-	return nil
-}
-func (m *mockService) UnpinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) error {
-	return nil
-}
-func (m *mockService) ForwardMessages(ctx context.Context, fromPeer, toPeer tg.InputPeerClass, msgIDs []int) error {
-	return nil
-}
-func (m *mockService) DownloadFile(ctx context.Context, location tg.InputFileLocationClass, dstPath string) error {
-	// Create a dummy file at dstPath to simulate successful download
-	_ = os.MkdirAll(filepath.Dir(dstPath), 0755)
-	return os.WriteFile(dstPath, []byte("dummy video content"), 0644)
-}
-func (m *mockService) BanUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, untilDate int) error {
-	return nil
-}
-func (m *mockService) UnbanUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
-	return nil
-}
-func (m *mockService) KickUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
-	return nil
-}
-func (m *mockService) MuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, untilDate int) error {
-	return nil
-}
-func (m *mockService) UnmuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
-	return nil
-}
-func (m *mockService) PurgeMessages(ctx context.Context, peer tg.InputPeerClass, topicID int, fromID, toID int) (int, error) {
-	return 0, nil
-}
-func (m *mockService) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
-	return &tg.Message{ID: 100}, nil
-}
-func (m *mockService) GetFullUser(ctx context.Context, user tg.InputUserClass) (*tg.UsersUserFull, error) {
-	return nil, nil
-}
-func (m *mockService) ResolveUsername(ctx context.Context, username string) (*tg.ContactsResolvedPeer, error) {
-	return nil, nil
-}
-func (m *mockService) GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.MessagesChatFull, error) {
-	return nil, nil
-}
-
-func TestDownloaderPlugin(t *testing.T) {
-	p := New()
-	if p.Name() != "downloader" {
-		t.Errorf("expected plugin name downloader, got %s", p.Name())
-	}
-	if err := p.Init(); err != nil {
-		t.Errorf("unexpected error in Init: %v", err)
 	}
 
-	cmds := p.Commands()
-	if len(cmds) != 1 {
-		t.Fatalf("expected 1 command, got %d", len(cmds))
-	}
-	if cmds[0].Permission != core.PermissionSudo {
-		t.Errorf("expected PermissionSudo, got %v", cmds[0].Permission)
-	}
-	if cmds[0].Timeout != 10*time.Minute {
-		t.Errorf("expected 10m timeout, got %v", cmds[0].Timeout)
-	}
-	if cmds[0].Cooldown != 3*time.Second {
-		t.Errorf("expected 3s cooldown, got %v", cmds[0].Cooldown)
-	}
-
-	svc := &mockService{}
+	cmdCtx, cmdCancel := context.WithCancel(context.Background())
 	ctx := &core.Context{
-		Ctx:     context.Background(),
-		Message: &core.Message{ID: 1, ReplyToID: 42, IsOutgoing: true},
-		Svc:     svc,
+		Ctx:     cmdCtx,
+		Svc:     tgSvc,
 		PeerID:  &tg.InputPeerSelf{},
-	}
-
-	if err := cmds[0].Handler(ctx); err != nil {
-		t.Fatalf("unexpected error running download: %v", err)
-	}
-
-	// With edit-in-place UX, the trigger msg is first edited with "⏳ Downloading..."
-	// then again with the final result. svc.edited holds the last write.
-	if !strings.Contains(svc.edited, "Download Complete") || !strings.Contains(svc.edited, "sample.mp4") {
-		t.Errorf("expected final edit to report complete and filename, got %s", svc.edited)
-	}
-
-	// Test no media & no URL
-	emptyCtx := &core.Context{
-		Ctx:     context.Background(),
-		Message: &core.Message{ID: 2, IsOutgoing: true},
-		Svc:     svc,
-		PeerID:  &tg.InputPeerSelf{},
-	}
-	if err := cmds[0].Handler(emptyCtx); err != nil {
-		t.Fatalf("unexpected error running download with no media: %v", err)
-	}
-	if !strings.Contains(svc.edited, "No media or URL found") {
-		t.Errorf("expected 'No media or URL found', got %s", svc.edited)
-	}
-}
-
-func TestFormatBytes(t *testing.T) {
-	tests := []struct {
-		b    int64
-		want string
-	}{
-		{500, "500 B"},
-		{1024, "1.00 KB"},
-		{1048576, "1.00 MB"},
-		{1073741824, "1.00 GB"},
-	}
-
-	for _, tt := range tests {
-		got := formatBytes(tt.b)
-		if got != tt.want {
-			t.Errorf("formatBytes(%d) = %q, want %q", tt.b, got, tt.want)
-		}
-	}
-}
-
-type immediateSubmitter struct{}
-
-func (s *immediateSubmitter) Submit(ctx context.Context, poolName string, task tasks.Task) error {
-	return task.Run(ctx)
-}
-
-type recordingProvider struct{ url string }
-
-func (p *recordingProvider) Name() string      { return "recording" }
-func (p *recordingProvider) Match(string) bool { return true }
-func (p *recordingProvider) Download(_ context.Context, rawURL string, _ storage.Storage, _ download.DownloadOptions) (*storage.Asset, error) {
-	p.url = rawURL
-	return &storage.Asset{Name: "recovered.bin", Path: "recovered.bin", Size: 42}, nil
-}
-
-func TestDownloaderURLJobRecoversFromPayload(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	repo := jobs.NewSQLiteRepository(db)
-	if err := repo.InitSchema(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	payload, _ := json.Marshal(downloadJobPayload{URL: "https://example.com/recovered"})
-	if err := repo.Save(context.Background(), &jobs.Job{
-		ID: "recover-download", Owner: "downloader", Type: "downloader.url", Payload: payload,
-		Pool: "download", RecoveryPolicy: jobs.RecoveryRunImmediately,
-		State: jobs.StateRegistered, NextRun: time.Now().Add(-time.Minute),
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	provider := &recordingProvider{}
-	mgr := jobs.NewManager(&immediateSubmitter{}, repo)
-	p := New(download.NewRegistry(provider), storage.NewMemoryStorage(), mgr)
-	p.registerJobHandlers()
-	if err := mgr.LoadAndReconcile(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if provider.url != "https://example.com/recovered" {
-		t.Fatalf("recovered handler used wrong URL: %q", provider.url)
-	}
-}
-
-func TestDownloaderPlugin_WithJobsManager(t *testing.T) {
-	gate := plugin.NewCapabilityGate()
-	gate.Register("downloader", []string{plugin.CapJobs})
-
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	repo := jobs.NewSQLiteRepository(db)
-	if err := repo.InitSchema(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	jobsMgr := jobs.NewManager(&immediateSubmitter{}, repo)
-
-	pctx := plugin.NewPluginContext(context.Background(), plugin.ContextConfig{
-		Owner: "downloader",
-		Gate:  gate,
-		Jobs:  jobsMgr,
-	})
-
-	p := New()
-	if err := p.InitPlugin(pctx); err != nil {
-		t.Fatalf("InitPlugin failed: %v", err)
-	}
-	if p.jobs == nil {
-		t.Fatal("expected jobs manager to be injected")
-	}
-
-	svc := &mockService{}
-	ctx := &core.Context{
-		Ctx:     context.Background(),
-		Message: &core.Message{ID: 10, ReplyToID: 42, IsOutgoing: true},
-		Svc:     svc,
-		PeerID:  &tg.InputPeerSelf{},
+		Message: &core.Message{ID: 1, ReplyToID: 42, IsOutgoing: true, Text: ".download"},
 	}
 
 	if err := p.handleDownload(ctx); err != nil {
-		t.Fatalf("handleDownload failed: %v", err)
+		t.Fatalf("handleDownload returned unexpected error: %v", err)
 	}
 
-	if !strings.Contains(svc.edited, "Download Complete") || !strings.Contains(svc.edited, "sample.mp4") {
-		t.Errorf("expected final edit to report complete and filename, got %s", svc.edited)
+	// Foreground interactive command finishes and cancels its context
+	cmdCancel()
+
+	// Task was submitted to TaskEngine
+	client.mu.Lock()
+	specsCount := len(client.specs)
+	var lastSpec tasks.WorkSpec
+	if specsCount > 0 {
+		lastSpec = client.specs[specsCount-1]
+	}
+	client.mu.Unlock()
+
+	if specsCount != 1 {
+		t.Fatalf("expected 1 task submitted, got %d", specsCount)
+	}
+
+	// Background worker runs the task with a live taskCtx
+	taskCtx := context.Background()
+	if err := lastSpec.Handler(taskCtx); err != nil {
+		t.Fatalf("background task execution failed: %v", err)
+	}
+
+	tgSvc.mu.Lock()
+	lastText := tgSvc.lastEdited
+	tgSvc.mu.Unlock()
+
+	if !strings.Contains(lastText, "Download Complete!") {
+		t.Fatalf("expected download to complete, but got text: %s", lastText)
+	}
+}
+
+func TestDownloaderRepliedURLFallback(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := jobsqlite.InitSchema(context.Background(), db.DB); err != nil {
+		t.Fatal(err)
+	}
+	pump := jobs.NewPersistencePump(1, 4)
+	if err := pump.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer pump.Stop(context.Background())
+
+	client := &capturedClient{}
+	jm := jobs.NewManager(client, jobsqlite.NewResourceStore(db.DB), pump)
+	if err := jm.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer jm.Stop(context.Background())
+
+	p := New()
+	p.SetJobsManager(jm)
+	p.registerJobHandlers()
+	p.storage = storage.NewMemoryStorage()
+
+	tgSvc := &mockTelegramService{
+		replyMessage: &tg.Message{
+			ID:      55,
+			Message: "Check out this song: https://example.com/audio/song.mp3",
+			Entities: []tg.MessageEntityClass{
+				&tg.MessageEntityURL{Offset: 21, Length: 33},
+			},
+		},
+	}
+
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		Svc:     tgSvc,
+		PeerID:  &tg.InputPeerSelf{},
+		Message: &core.Message{ID: 2, ReplyToID: 55, IsOutgoing: true, Text: ".download"},
+	}
+
+	if err := p.handleDownload(ctx); err != nil {
+		t.Fatalf("handleDownload with reply URL returned error: %v", err)
+	}
+
+	client.mu.Lock()
+	specsCount := len(client.specs)
+	var lastSpec tasks.WorkSpec
+	if specsCount > 0 {
+		lastSpec = client.specs[specsCount-1]
+	}
+	client.mu.Unlock()
+
+	if specsCount != 1 {
+		t.Fatalf("expected 1 task submitted for URL fallback, got %d", specsCount)
+	}
+	if lastSpec.Pool != "download" || lastSpec.QuotaOwner != "telegram:download" {
+		t.Errorf("unexpected spec pool or quota: %+v", lastSpec)
 	}
 }

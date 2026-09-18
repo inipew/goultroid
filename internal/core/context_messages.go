@@ -15,6 +15,23 @@ type MessagesFacade struct {
 	ctx *Context
 }
 
+func (m *MessagesFacade) scheduleDelete(peer tg.InputPeerClass, msgID int, delay time.Duration) error {
+	c := m.ctx
+	if delay <= 0 || msgID <= 0 {
+		return nil
+	}
+	if c == nil || c.Svc == nil || peer == nil {
+		return errors.New("telegram service not initialized")
+	}
+	if c.DelayedActions == nil {
+		return fmt.Errorf("%w: delayed action scheduler is unavailable", ErrUnavailable)
+	}
+	svc := c.Svc
+	return c.DelayedActions.Schedule(c.Ctx, delay, func(actionCtx context.Context) error {
+		return svc.DeleteMessage(actionCtx, peer, []int{msgID})
+	})
+}
+
 // Reply sends a response message to the same chat and records LastResponseID.
 func (m *MessagesFacade) Reply(text string) error {
 	c := m.ctx
@@ -74,14 +91,9 @@ func (m *MessagesFacade) ReplyAndDeleteWithDelay(text string, delay time.Duratio
 		_ = c.Svc.DeleteMessage(c.Ctx, c.PeerID, []int{c.Message.ID})
 	}
 	if delay > 0 && sent != nil && sent.ID > 0 {
-		respID := sent.ID
-		peer := c.PeerID
-		svc := c.Svc
-		time.AfterFunc(delay, func() {
-			delCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			_ = svc.DeleteMessage(delCtx, peer, []int{respID})
-		})
+		if err := m.scheduleDelete(c.PeerID, sent.ID, delay); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -133,14 +145,9 @@ func (m *MessagesFacade) EditOrReplyWithDelay(text string, delay time.Duration) 
 			return err
 		}
 		if delay > 0 && c.Svc != nil && c.PeerID != nil {
-			targetID := c.LastResponseID
-			peer := c.PeerID
-			svc := c.Svc
-			time.AfterFunc(delay, func() {
-				delCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-				defer cancel()
-				_ = svc.DeleteMessage(delCtx, peer, []int{targetID})
-			})
+			if err := m.scheduleDelete(c.PeerID, c.LastResponseID, delay); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -149,14 +156,9 @@ func (m *MessagesFacade) EditOrReplyWithDelay(text string, delay time.Duration) 
 			return err
 		}
 		if delay > 0 && c.Svc != nil && c.PeerID != nil {
-			targetID := c.Message.ID
-			peer := c.PeerID
-			svc := c.Svc
-			time.AfterFunc(delay, func() {
-				delCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-				defer cancel()
-				_ = svc.DeleteMessage(delCtx, peer, []int{targetID})
-			})
+			if err := m.scheduleDelete(c.PeerID, c.Message.ID, delay); err != nil {
+				return err
+			}
 		}
 		return nil
 	}

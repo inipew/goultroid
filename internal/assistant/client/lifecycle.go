@@ -58,11 +58,11 @@ func (l *Lifecycle) SetState(s ClientState) {
 	atomic.StoreUint32(&l.state, uint32(s))
 }
 
-// TryStart attempts to transition to StateStarting if the client is New or Stopped.
+// TryStart attempts to transition to StateStarting from a quiescent state.
 func (l *Lifecycle) TryStart() bool {
 	for {
 		cur := l.State()
-		if cur == StateStarting || cur == StateRunning {
+		if cur != StateNew && cur != StateStopped && cur != StateFailed {
 			return false
 		}
 		if atomic.CompareAndSwapUint32(&l.state, uint32(cur), uint32(StateStarting)) {
@@ -75,7 +75,7 @@ func (l *Lifecycle) TryStart() bool {
 func (l *Lifecycle) TryStop() bool {
 	for {
 		cur := l.State()
-		if cur == StateStopping || cur == StateStopped {
+		if cur != StateStarting && cur != StateRunning {
 			return false
 		}
 		if atomic.CompareAndSwapUint32(&l.state, uint32(cur), uint32(StateStopping)) {

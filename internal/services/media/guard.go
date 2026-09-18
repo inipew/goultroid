@@ -39,6 +39,10 @@ func NewResourceGuard(maxConcurrent int, diskFreeThreshold int64) *ResourceGuard
 	}
 }
 
+// UseExternalConcurrencyControl delegates concurrency to TaskEngine while
+// retaining input, duration, dimension, and disk-space validation.
+func (g *ResourceGuard) UseExternalConcurrencyControl() { g.sem = nil }
+
 // ValidateInput ensures the input asset does not exceed safe operating parameters.
 func (g *ResourceGuard) ValidateInput(asset *storage.Asset) error {
 	if asset == nil {
@@ -69,6 +73,9 @@ func (g *ResourceGuard) CheckDisk(dirPath string, requiredBytes int64) error {
 // Acquire acquires a slot in the concurrency semaphore or waits until ctx is canceled.
 // Returns a release function to be called in defer.
 func (g *ResourceGuard) Acquire(ctx context.Context) (func(), error) {
+	if g.sem == nil {
+		return func() {}, nil
+	}
 	select {
 	case g.sem <- struct{}{}:
 		return func() { <-g.sem }, nil

@@ -1,7 +1,6 @@
 package scheduler
 
 import (
-	"errors"
 	"fmt"
 	"html"
 	"strconv"
@@ -75,7 +74,7 @@ func (p *Plugin) Commands() []core.Command {
 func (p *Plugin) handleRemind(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
 		_ = ctx.EditOrReply("⚠️ Usage: <code>.remind &lt;duration&gt; &lt;text&gt;</code> or reply to a message with <code>.remind &lt;duration&gt;</code>\nExample: <code>.remind 15m Take a break</code>")
-		return errors.New("missing arguments")
+		return core.NewUsageError("missing arguments")
 	}
 
 	durStr := ctx.Args[0]
@@ -92,7 +91,7 @@ func (p *Plugin) handleRemind(ctx *core.Context) error {
 		reply, err := ctx.GetReply()
 		if err != nil || reply == nil || reply.Text == "" {
 			_ = ctx.EditOrReply("⚠️ Please specify reminder text or reply to a text message.")
-			return errors.New("missing reminder text")
+			return core.NewUsageError("missing reminder text")
 		}
 		text = reply.Text
 	}
@@ -113,7 +112,7 @@ func (p *Plugin) handleRemind(ctx *core.Context) error {
 func (p *Plugin) handleSchedule(ctx *core.Context) error {
 	if len(ctx.Args) < 2 {
 		_ = ctx.EditOrReply("⚠️ Usage: <code>.schedule [in|every] &lt;duration&gt; &lt;text/command&gt;</code>\nExamples:\n• <code>.schedule in 30m .whois @user</code>\n• <code>.schedule every 2h .alive</code>")
-		return errors.New("missing arguments")
+		return core.NewUsageError("missing arguments")
 	}
 
 	isRecurring := false
@@ -131,7 +130,7 @@ func (p *Plugin) handleSchedule(ctx *core.Context) error {
 
 	if len(ctx.Args) <= payloadIdx {
 		_ = ctx.EditOrReply("⚠️ Please provide a text or command payload to schedule.")
-		return errors.New("missing schedule payload")
+		return core.NewUsageError("missing schedule payload")
 	}
 
 	durStr := ctx.Args[durIdx]
@@ -148,7 +147,7 @@ func (p *Plugin) handleSchedule(ctx *core.Context) error {
 	payload := strings.TrimSpace(strings.TrimPrefix(ctx.RawArgs, prefixToStrip))
 	if payload == "" {
 		_ = ctx.EditOrReply("⚠️ Payload cannot be empty.")
-		return errors.New("empty payload")
+		return core.NewUsageError("empty payload")
 	}
 
 	actionType := scheduler.ActionMessage
@@ -217,7 +216,7 @@ func (p *Plugin) handleList(ctx *core.Context) error {
 func (p *Plugin) handleCancel(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
 		_ = ctx.EditOrReply("⚠️ Usage: <code>.cancelschedule &lt;id&gt;</code>")
-		return errors.New("missing job id")
+		return core.NewUsageError("missing job id")
 	}
 	idStr := strings.TrimPrefix(ctx.Args[0], "#")
 	id, err := strconv.ParseInt(idStr, 10, 64)
@@ -235,7 +234,7 @@ func (p *Plugin) handleCancel(ctx *core.Context) error {
 func (p *Plugin) handleSchedHistory(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
 		_ = ctx.EditOrReply("⚠️ Usage: <code>.schedhistory &lt;id&gt; [limit]</code>")
-		return errors.New("missing job id")
+		return core.NewUsageError("missing job id")
 	}
 	idStr := strings.TrimPrefix(ctx.Args[0], "#")
 	jobID, err := strconv.ParseInt(idStr, 10, 64)

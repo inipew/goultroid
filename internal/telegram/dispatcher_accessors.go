@@ -30,8 +30,8 @@ func (d *Dispatcher) RunningCommands() int64 {
 	return d.runningCommands.Load()
 }
 
-// CommandConcurrencySnapshot exposes dispatcher command pressure without
-// leaking the internal semaphore.
+// CommandConcurrencySnapshot exposes dispatcher command pressure. Capacity is
+// owned by TaskEngine and is intentionally not duplicated in Dispatcher.
 type CommandConcurrencySnapshot struct {
 	Capacity int
 	Active   int
@@ -40,9 +40,8 @@ type CommandConcurrencySnapshot struct {
 
 func (d *Dispatcher) CommandConcurrency() CommandConcurrencySnapshot {
 	return CommandConcurrencySnapshot{
-		Capacity: cap(d.cmdSem),
-		Active:   len(d.cmdSem),
-		Total:    d.totalCommands.Load(),
+		Active: int(d.runningCommands.Load()),
+		Total:  d.totalCommands.Load(),
 	}
 }
 

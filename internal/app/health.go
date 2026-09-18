@@ -157,18 +157,6 @@ func (a *App) HealthContext(ctx context.Context) HealthSnapshot {
 		} else if rtHealth.Status == runtime.HealthDegraded && health.Status != HealthUnhealthy {
 			health.Status = HealthDegraded
 		}
-	} else if a.workers != nil {
-		wHealth := a.workers.Health(ctx)
-		switch wHealth.Status {
-		case runtime.HealthHealthy:
-			health.Subsystems["workers"] = HealthHealthy
-		case runtime.HealthDegraded:
-			health.Subsystems["workers"] = HealthDegraded
-			health.Reasons = append(health.Reasons, "workers:degraded:"+wHealth.Details)
-		case runtime.HealthUnhealthy:
-			health.Subsystems["workers"] = HealthUnhealthy
-			health.Reasons = append(health.Reasons, "workers:unhealthy:"+wHealth.Details)
-		}
 	}
 	if a.resources != nil {
 		leaks := a.resources.AllSnapshots()

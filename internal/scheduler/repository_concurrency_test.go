@@ -2,34 +2,33 @@ package scheduler_test
 
 import (
 	"context"
-	"database/sql"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/scheduler"
-	_ "modernc.org/sqlite"
 )
 
 func TestClaimDueScheduledJobs_ConcurrentWorkersClaimEachJobOnce(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "scheduler.db")
-	db1, err := sql.Open("sqlite", path)
+	db1, err := database.Open(path)
 	if err != nil {
 		t.Fatalf("open db1: %v", err)
 	}
 	defer db1.Close()
-	db2, err := sql.Open("sqlite", path)
+	db2, err := database.Open(path)
 	if err != nil {
 		t.Fatalf("open db2: %v", err)
 	}
 	defer db2.Close()
 
-	repo1 := scheduler.NewSQLiteRepository(db1)
+	repo1 := scheduler.NewSQLiteRepository(db1.DB)
 	if err := repo1.InitSchema(context.Background()); err != nil {
 		t.Fatalf("init schema: %v", err)
 	}
-	repo2 := scheduler.NewSQLiteRepository(db2)
+	repo2 := scheduler.NewSQLiteRepository(db2.DB)
 
 	ctx := context.Background()
 	now := time.Now().UTC()

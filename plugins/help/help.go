@@ -40,7 +40,9 @@ func (p *Plugin) Name() string      { return "help" }
 func (p *Plugin) Namespace() string { return "help" }
 
 func (p *Plugin) CallbackOptions() callback.CallbackHandlerOptions {
-	return callback.CallbackHandlerOptions{AutoAnswer: true}
+	// Help may answer with action-specific feedback. Leave acknowledgement to
+	// the handler (or the router's fallback after a successful edit).
+	return callback.CallbackHandlerOptions{AutoAnswer: false}
 }
 
 func (p *Plugin) Init() error { return nil }

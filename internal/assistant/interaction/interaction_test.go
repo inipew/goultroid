@@ -3,10 +3,12 @@ package interaction_test
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
+	"github.com/inipew/goultroid/internal/core"
 	"go.uber.org/zap"
 )
 
@@ -233,4 +235,64 @@ func TestClientInteraction_StalePeerRecovery(t *testing.T) {
 	if reResolver.reResolveCount != 1 {
 		t.Fatalf("expected exactly 1 ReResolve attempt (MaxPeerRecoveryAttempts=1), got %d", reResolver.reResolveCount)
 	}
+}
+
+func TestParseHTML_SanitizeEntities(t *testing.T) {
+	mockAPI := &mockTelegramAPI{}
+	ci := interaction.NewClientInteraction(mockAPI, zap.NewNop())
+	ctx := context.Background()
+
+	target := interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 100}, 55, 100, 200)
+
+	// HTML with nested <pre><code> which normally produces duplicate entities in gotd
+	text := "<pre><code>hello world</code></pre>"
+	if err := ci.Edit(ctx, target, text, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if mockAPI.editReq == nil {
+		t.Fatal("expected editReq to be sent")
+	}
+
+	// Verify that entities only contains MessageEntityPre and NOT duplicate MessageEntityCode
+	ents := mockAPI.editReq.Entities
+	if len(ents) != 1 {
+		t.Fatalf("expected exactly 1 entity after sanitization, got %d: %+v", len(ents), ents)
+	}
+	if _, ok := ents[0].(*tg.MessageEntityPre); !ok {
+		t.Fatalf("expected MessageEntityPre, got %T", ents[0])
+	}
+}
+
+func TestClientInteraction_SendMedia(t *testing.T) {
+	mockAPI := &mockTelegramAPI{}
+	ci := interaction.NewClientInteraction(mockAPI, zap.NewNop())
+	ctx := context.Background()
+
+	// 1. Without sender/uploader configured -> core.ErrUnsupported
+	_, err := ci.SendMedia(ctx, &tg.InputPeerUser{UserID: 100}, "photo", "nonexistent.png", "caption")
+	if !errors.Is(err, core.ErrUnsupported) {
+		t.Fatalf("expected ErrUnsupported when sender/uploader nil, got %v", err)
+	}
+
+	// 2. Mock uploader & sender via dummy struct
+	tmpDir := t.TempDir()
+	testFile := tmpDir + "/test.png"
+	if err := os.WriteFile(testFile, []byte("fake png content"), 0600); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	// Nil peer with fake sender
+	ci.SetMediaSender(nil, &fakeUploader{})
+	// Still returns ErrUnsupported since sender is nil
+	_, err = ci.SendMedia(ctx, nil, "photo", testFile, "")
+	if !errors.Is(err, core.ErrUnsupported) {
+		t.Fatalf("expected ErrUnsupported when sender is nil, got %v", err)
+	}
+}
+
+type fakeUploader struct{}
+
+func (f *fakeUploader) FromPath(ctx context.Context, path string) (tg.InputFileClass, error) {
+	return &tg.InputFile{ID: 1, Parts: 1, Name: "test.png"}, nil
 }
