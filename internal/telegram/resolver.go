@@ -29,9 +29,14 @@ type Resolver struct {
 
 var _ core.PeerResolver = (*Resolver)(nil)
 
-// NewResolverWithConfig initializes a peer resolver with custom cache configurations.
-func NewResolverWithConfig(api *tg.Client, peerManager *peers.Manager, cfg ResolverCacheConfig) *Resolver {
-	ctx, cancel := context.WithCancel(context.Background())
+// NewResolverWithContext initializes a peer resolver whose underlying shared
+// network work is owned by parent. Callers waiting on the same singleflight may
+// cancel independently, while parent cancellation terminates the shared RPC.
+func NewResolverWithContext(parent context.Context, api *tg.Client, peerManager *peers.Manager, cfg ResolverCacheConfig) *Resolver {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
 	executor, _ := NewRPCExecutor(RPCExecutorConfig{DefaultPolicy: DefaultExecutorPolicy})
 	return &Resolver{
 		api:             api,
@@ -41,6 +46,12 @@ func NewResolverWithConfig(api *tg.Client, peerManager *peers.Manager, cfg Resol
 		lifecycleCtx:    ctx,
 		lifecycleCancel: cancel,
 	}
+}
+
+// NewResolverWithConfig initializes a standalone peer resolver with custom
+// cache configuration. Production wiring should prefer NewResolverWithContext.
+func NewResolverWithConfig(api *tg.Client, peerManager *peers.Manager, cfg ResolverCacheConfig) *Resolver {
+	return NewResolverWithContext(context.Background(), api, peerManager, cfg)
 }
 
 func NewResolver(api *tg.Client, peerManager *peers.Manager) *Resolver {

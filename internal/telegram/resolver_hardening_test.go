@@ -73,3 +73,29 @@ func TestResolverInvalidateRefContext_RemovesHashButKeepsUsernameMetadata(t *tes
 		t.Fatalf("expected username metadata to resolve with no cached access hash, got %d", value.AccessHash)
 	}
 }
+
+
+func TestResolverLifecycleFollowsParentContext(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	resolver := NewResolverWithContext(parent, nil, nil, ResolverCacheConfig{MaxEntries: 8})
+	t.Cleanup(func() { _ = resolver.Close() })
+
+	cancel()
+	select {
+	case <-resolver.lifecycleCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("resolver lifecycle did not follow parent cancellation")
+	}
+}
+
+func TestResolverCloseCancelsLifecycle(t *testing.T) {
+	resolver := NewResolverWithContext(context.Background(), nil, nil, ResolverCacheConfig{MaxEntries: 8})
+	if err := resolver.Close(); err != nil {
+		t.Fatalf("close resolver: %v", err)
+	}
+	select {
+	case <-resolver.lifecycleCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("resolver close did not cancel lifecycle")
+	}
+}
