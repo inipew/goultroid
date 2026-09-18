@@ -178,3 +178,147 @@ func TestHierarchicalRPCLimiter_HardBounds(t *testing.T) {
 		t.Fatalf("penalty duration %v was not clamped to MaxPenaltyDuration %v", res.RetryAfter, MaxPenaltyDuration)
 	}
 }
+
+
+func TestHierarchicalRPCLimiter_IdleTTLReclaimsDepletedBucket(t *testing.T) {
+	limiter := NewHierarchicalRPCLimiter(HierarchicalLimiterConfig{
+		GlobalRate:         100,
+		GlobalBurst:        100,
+		DefaultPeerRate:    1,
+		DefaultPeerBurst:   1,
+		MaxBuckets:         2,
+		MaxPenalties:       8,
+		IdleTTL:            time.Second,
+		DefaultFamilyRate:  100,
+		DefaultFamilyBurst: 100,
+		DefaultMethodRate:  100,
+		DefaultMethodBurst: 100,
+	})
+	now := time.Now()
+	first := []LimitKey{{Scope: "peer", Key: "user:1"}}
+	if res := limiter.Reserve(now, first, 1); !res.Allowed {
+		t.Fatalf("first peer reservation failed: %+v", res)
+	}
+	// The bucket is depleted (tokens == 0), but inactivity rather than token
+	// fullness defines reclamation. The old implementation leaked this entry.
+	if res := limiter.Reserve(now.Add(2*time.Second), []LimitKey{{Scope: "peer", Key: "user:2"}}, 1); !res.Allowed {
+		t.Fatalf("new peer should be admitted after idle reclamation: %+v", res)
+	}
+	buckets, _ := limiter.Size()
+	if buckets != 1 {
+		t.Fatalf("expected exactly one live peer bucket after reclamation, got %d", buckets)
+	}
+}
+
+func TestHierarchicalRPCLimiter_BucketSaturationFailsClosedWithoutResettingLiveState(t *testing.T) {
+	limiter := NewHierarchicalRPCLimiter(HierarchicalLimiterConfig{
+		GlobalRate:         100,
+		GlobalBurst:        100,
+		DefaultPeerRate:    1,
+		DefaultPeerBurst:   1,
+		MaxBuckets:         2, // global + exactly one peer
+		MaxPenalties:       8,
+		IdleTTL:            10 * time.Second,
+		DefaultFamilyRate:  100,
+		DefaultFamilyBurst: 100,
+		DefaultMethodRate:  100,
+		DefaultMethodBurst: 100,
+	})
+	now := time.Now()
+	peer1 := []LimitKey{
+		{Scope: "global", Key: "account"},
+		{Scope: "peer", Key: "user:1"},
+	}
+	if res := limiter.Reserve(now, peer1, 1); !res.Allowed {
+		t.Fatalf("first peer reservation failed: %+v", res)
+	}
+
+	peer2 := []LimitKey{
+		{Scope: "global", Key: "account"},
+		{Scope: "peer", Key: "user:2"},
+	}
+	if res := limiter.Reserve(now, peer2, 1); res.Allowed || res.RetryAfter <= 0 {
+		t.Fatalf("new identity must fail closed while live state fills the cap: %+v", res)
+	}
+
+	// The old limiter evicted peer1 to make room for peer2, resetting peer1's
+	// exhausted token bucket. Its state must still be present and rate-limited.
+	if res := limiter.Reserve(now, peer1, 1); res.Allowed || res.RetryAfter <= 0 {
+		t.Fatalf("live peer state was reset/discarded under saturation: %+v", res)
+	}
+	buckets, _ := limiter.Size()
+	if buckets != 2 {
+		t.Fatalf("expected global+peer1 to remain resident, got %d buckets", buckets)
+	}
+}
+
+func TestHierarchicalRPCLimiter_PenaltyOverflowFailsClosedWithoutDroppingFloodWait(t *testing.T) {
+	limiter := NewHierarchicalRPCLimiter(HierarchicalLimiterConfig{
+		GlobalRate:         100,
+		GlobalBurst:        100,
+		DefaultPeerRate:    100,
+		DefaultPeerBurst:   100,
+		MaxBuckets:         16,
+		MaxPenalties:       1,
+		IdleTTL:            time.Minute,
+		DefaultFamilyRate:  100,
+		DefaultFamilyBurst: 100,
+		DefaultMethodRate:  100,
+		DefaultMethodBurst: 100,
+	})
+	now := time.Now()
+	peer1 := LimitKey{Scope: "peer", Key: "user:1"}
+	peer2 := LimitKey{Scope: "peer", Key: "user:2"}
+	peer3 := LimitKey{Scope: "peer", Key: "user:3"}
+
+	limiter.Penalize(now, []LimitKey{peer1}, 10*time.Second)
+	limiter.Penalize(now, []LimitKey{peer2}, 5*time.Second) // overflows bounded penalty state
+
+	// Overflow is conservatively promoted to account-wide cooldown rather than
+	// evicting the live peer1 penalty.
+	if res := limiter.Reserve(now, []LimitKey{peer3}, 1); res.Allowed || res.RetryAfter != 5*time.Second {
+		t.Fatalf("expected overflow cooldown of 5s, got %+v", res)
+	}
+	_, penalties := limiter.Size()
+	if penalties != 1 {
+		t.Fatalf("penalty map exceeded/changed hard bound: %d", penalties)
+	}
+
+	// After overflow cooldown expires, unrelated peers proceed while the
+	// original longer FloodWait remains intact.
+	if res := limiter.Reserve(now.Add(6*time.Second), []LimitKey{peer3}, 1); !res.Allowed {
+		t.Fatalf("unrelated peer should recover after overflow cooldown: %+v", res)
+	}
+	if res := limiter.Reserve(now.Add(6*time.Second), []LimitKey{peer1}, 1); res.Allowed || res.RetryAfter != 4*time.Second {
+		t.Fatalf("original FloodWait was lost or shortened: %+v", res)
+	}
+}
+
+func TestHierarchicalRPCLimiter_ExtendingPenaltyDoesNotGrowHeapState(t *testing.T) {
+	limiter := NewHierarchicalRPCLimiter(HierarchicalLimiterConfig{
+		GlobalRate:         100,
+		GlobalBurst:        100,
+		DefaultPeerRate:    100,
+		DefaultPeerBurst:   100,
+		MaxBuckets:         16,
+		MaxPenalties:       2,
+		IdleTTL:            time.Minute,
+		DefaultFamilyRate:  100,
+		DefaultFamilyBurst: 100,
+		DefaultMethodRate:  100,
+		DefaultMethodBurst: 100,
+	})
+	now := time.Now()
+	peer := LimitKey{Scope: "peer", Key: "user:1"}
+
+	for i := 1; i <= 1000; i++ {
+		limiter.Penalize(now, []LimitKey{peer}, time.Duration(i)*time.Second)
+	}
+	if len(limiter.penaltyQ) != 1 {
+		t.Fatalf("expected one indexed heap node for repeated extensions, got %d", len(limiter.penaltyQ))
+	}
+	_, penalties := limiter.Size()
+	if penalties != 1 {
+		t.Fatalf("expected one active penalty, got %d", penalties)
+	}
+}
