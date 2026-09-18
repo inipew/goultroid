@@ -49,9 +49,11 @@ func (b *AlbumBuffer) Add(msg *Message) {
 	now := time.Now()
 
 	if !exists {
-		// Prune if buffer is full
 		if len(b.albums) >= b.maxSize {
 			b.pruneLocked(now)
+			if len(b.albums) >= b.maxSize {
+				b.evictOldestLocked()
+			}
 		}
 
 		b.albums[msg.GroupedID] = &AlbumEntry{
@@ -84,11 +86,15 @@ func (b *AlbumBuffer) Get(groupedID int64) []*Message {
 		return nil
 	}
 
-	b.mu.RLock()
-	defer b.mu.RUnlock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
 
 	entry, exists := b.albums[groupedID]
 	if !exists {
+		return nil
+	}
+	if time.Since(entry.UpdatedAt) > b.ttl {
+		delete(b.albums, groupedID)
 		return nil
 	}
 
@@ -123,4 +129,25 @@ func (b *AlbumBuffer) pruneLocked(now time.Time) {
 			delete(b.albums, id)
 		}
 	}
+}
+
+func (b *AlbumBuffer) evictOldestLocked() {
+	if len(b.albums) == 0 {
+		return
+	}
+	var oldestID int64
+	var oldestTime time.Time
+	first := true
+	for id, entry := range b.albums {
+		if entry == nil {
+			oldestID = id
+			break
+		}
+		if first || entry.UpdatedAt.Before(oldestTime) || (entry.UpdatedAt.Equal(oldestTime) && id < oldestID) {
+			oldestID = id
+			oldestTime = entry.UpdatedAt
+			first = false
+		}
+	}
+	delete(b.albums, oldestID)
 }

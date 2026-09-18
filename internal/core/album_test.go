@@ -80,3 +80,40 @@ func TestAlbumBuffer_Concurrency(t *testing.T) {
 		t.Errorf("expected 4 albums, got %d", buf.Len())
 	}
 }
+
+func TestAlbumBuffer_HardBoundEvictsOldestLiveAlbum(t *testing.T) {
+	buf := NewAlbumBuffer(time.Minute)
+	buf.maxSize = 2
+
+	buf.Add(&Message{ID: 1, GroupedID: 101})
+	time.Sleep(time.Millisecond)
+	buf.Add(&Message{ID: 2, GroupedID: 202})
+	time.Sleep(time.Millisecond)
+	buf.Add(&Message{ID: 3, GroupedID: 303})
+
+	if got := buf.Len(); got != 2 {
+		t.Fatalf("expected hard bound of 2 albums, got %d", got)
+	}
+	if got := buf.Get(101); got != nil {
+		t.Fatalf("expected oldest album to be evicted, got %v", got)
+	}
+	if got := buf.Get(202); len(got) != 1 {
+		t.Fatalf("expected album 202 retained, got %v", got)
+	}
+	if got := buf.Get(303); len(got) != 1 {
+		t.Fatalf("expected album 303 retained, got %v", got)
+	}
+}
+
+func TestAlbumBuffer_GetEvictsExpiredEntry(t *testing.T) {
+	buf := NewAlbumBuffer(10 * time.Millisecond)
+	buf.Add(&Message{ID: 1, GroupedID: 404})
+
+	time.Sleep(20 * time.Millisecond)
+	if got := buf.Get(404); got != nil {
+		t.Fatalf("expected expired album to be absent, got %v", got)
+	}
+	if got := buf.Len(); got != 0 {
+		t.Fatalf("expected expired album removed on read, len=%d", got)
+	}
+}

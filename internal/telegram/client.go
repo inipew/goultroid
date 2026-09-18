@@ -295,6 +295,7 @@ func (c *Client) Run(ctx context.Context) error {
 			return fmt.Errorf("failed to fetch self user: %w", err)
 		}
 
+		svc.SetSelfID(me.ID)
 		c.dispatcher.SetSelfID(me.ID)
 		c.signalReady()
 

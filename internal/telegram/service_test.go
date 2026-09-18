@@ -397,6 +397,35 @@ func TestService_PeerAwareRetryReloadsAccessHashPerAttempt(t *testing.T) {
 	}
 }
 
+func TestService_BotSentOriginIsPeerQualified(t *testing.T) {
+	svc := NewService(nil)
+	svc.SetSelfID(999)
+
+	svc.recordBotSent(
+		&tg.InputPeerUser{UserID: 1001, AccessHash: 1},
+		&tg.Message{ID: 42, PeerID: &tg.PeerUser{UserID: 1001}},
+	)
+	if !svc.IsBotSentForPeer(&tg.PeerUser{UserID: 1001}, 42) {
+		t.Fatal("expected sent message to be recognized in its original peer")
+	}
+	if svc.IsBotSentForPeer(&tg.PeerUser{UserID: 2002}, 42) {
+		t.Fatal("same message id in a different peer was incorrectly classified as bot-sent")
+	}
+	if !svc.IsBotSent(42) {
+		t.Fatal("legacy message-id lookup should remain compatible")
+	}
+
+	// Saved Messages can be sent through InputPeerSelf. When a short Telegram
+	// update lacks PeerID, the authenticated self ID still qualifies the key.
+	svc.recordBotSent(&tg.InputPeerSelf{}, &tg.Message{ID: 77})
+	if !svc.IsBotSentForPeer(&tg.PeerUser{UserID: 999}, 77) {
+		t.Fatal("expected InputPeerSelf origin to resolve through configured self id")
+	}
+	if svc.IsBotSentForPeer(&tg.PeerUser{UserID: 1001}, 77) {
+		t.Fatal("self message id leaked into another peer identity")
+	}
+}
+
 func TestService_NonIdempotentMutationNoRetryOnTransient(t *testing.T) {
 	svc := NewService(nil)
 	clock := NewFakeClock(time.Now())

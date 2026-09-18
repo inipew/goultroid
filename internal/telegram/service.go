@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gotd/td/telegram/downloader"
@@ -105,8 +106,10 @@ type Service struct {
 	storage     peers.Storage
 	resolver    *Resolver
 
+	selfID atomic.Int64
+
 	botSentMu       sync.RWMutex
-	botSentMessages map[int]time.Time
+	botSentMessages map[botSentKey]time.Time
 }
 
 // NewService creates a new Service instance.
@@ -120,7 +123,7 @@ func NewService(api *tg.Client) *Service {
 		sender:          message.NewSender(api),
 		downloader:      downloader.NewDownloader(),
 		uploader:        uploader.NewUploader(api),
-		botSentMessages: make(map[int]time.Time),
+		botSentMessages: make(map[botSentKey]time.Time),
 	}
 }
 
@@ -374,42 +377,119 @@ func (s *Service) execMediaTransferVal[T any](ctx context.Context, method string
 	}, op)
 }
 
-func (s *Service) recordBotSent(msgID int) {
-	if s == nil || msgID == 0 {
+type botSentKey struct {
+	kind  byte
+	id    int64
+	msgID int
+}
+
+const (
+	botSentPeerUser    byte = 'u'
+	botSentPeerChat    byte = 'g'
+	botSentPeerChannel byte = 'c'
+)
+
+func botSentKeyFromPeer(peer tg.PeerClass, msgID int) (botSentKey, bool) {
+	if peer == nil || msgID == 0 {
+		return botSentKey{}, false
+	}
+	switch p := peer.(type) {
+	case *tg.PeerUser:
+		return botSentKey{kind: botSentPeerUser, id: p.UserID, msgID: msgID}, true
+	case *tg.PeerChat:
+		return botSentKey{kind: botSentPeerChat, id: p.ChatID, msgID: msgID}, true
+	case *tg.PeerChannel:
+		return botSentKey{kind: botSentPeerChannel, id: p.ChannelID, msgID: msgID}, true
+	default:
+		return botSentKey{}, false
+	}
+}
+
+func (s *Service) botSentKeyFromInputPeer(peer tg.InputPeerClass, msgID int) (botSentKey, bool) {
+	if s == nil || peer == nil || msgID == 0 {
+		return botSentKey{}, false
+	}
+	switch p := peer.(type) {
+	case *tg.InputPeerUser:
+		return botSentKey{kind: botSentPeerUser, id: p.UserID, msgID: msgID}, true
+	case *tg.InputPeerChat:
+		return botSentKey{kind: botSentPeerChat, id: p.ChatID, msgID: msgID}, true
+	case *tg.InputPeerChannel:
+		return botSentKey{kind: botSentPeerChannel, id: p.ChannelID, msgID: msgID}, true
+	case *tg.InputPeerSelf:
+		if id := s.selfID.Load(); id != 0 {
+			return botSentKey{kind: botSentPeerUser, id: id, msgID: msgID}, true
+		}
+	}
+	return botSentKey{}, false
+}
+
+func (s *Service) SetSelfID(id int64) {
+	if s != nil && id != 0 {
+		s.selfID.Store(id)
+	}
+}
+
+func (s *Service) recordBotSent(peer tg.InputPeerClass, msg *tg.Message) {
+	if s == nil || msg == nil || msg.ID == 0 {
 		return
 	}
+	key, ok := botSentKeyFromPeer(msg.PeerID, msg.ID)
+	if !ok {
+		key, ok = s.botSentKeyFromInputPeer(peer, msg.ID)
+	}
+	if !ok {
+		return
+	}
+
 	s.botSentMu.Lock()
 	defer s.botSentMu.Unlock()
 	if s.botSentMessages == nil {
-		s.botSentMessages = make(map[int]time.Time)
+		s.botSentMessages = make(map[botSentKey]time.Time)
 	}
 	now := time.Now()
-	s.botSentMessages[msgID] = now
+	s.botSentMessages[key] = now
 	if len(s.botSentMessages) > 200 {
 		cutoff := now.Add(-5 * time.Minute)
-		for id, t := range s.botSentMessages {
+		for storedKey, t := range s.botSentMessages {
 			if t.Before(cutoff) {
-				delete(s.botSentMessages, id)
+				delete(s.botSentMessages, storedKey)
 			}
 		}
 	}
 }
 
-// IsBotSent returns true if the message ID was dispatched programmatically by this bot instance.
+// IsBotSentForPeer performs production origin detection using Telegram's
+// peer-local message identity.
+func (s *Service) IsBotSentForPeer(peer tg.PeerClass, msgID int) bool {
+	if s == nil || msgID == 0 {
+		return false
+	}
+	key, ok := botSentKeyFromPeer(peer, msgID)
+	if !ok {
+		return false
+	}
+	s.botSentMu.RLock()
+	defer s.botSentMu.RUnlock()
+	t, ok := s.botSentMessages[key]
+	return ok && time.Since(t) < 5*time.Minute
+}
+
+// IsBotSent is retained for compatibility with older TelegramServicer mocks.
+// Production Dispatcher uses IsBotSentForPeer when the service supports it.
 func (s *Service) IsBotSent(msgID int) bool {
 	if s == nil || msgID == 0 {
 		return false
 	}
 	s.botSentMu.RLock()
 	defer s.botSentMu.RUnlock()
-	if s.botSentMessages == nil {
-		return false
+	now := time.Now()
+	for key, t := range s.botSentMessages {
+		if key.msgID == msgID && now.Sub(t) < 5*time.Minute {
+			return true
+		}
 	}
-	t, ok := s.botSentMessages[msgID]
-	if !ok {
-		return false
-	}
-	return time.Since(t) < 5*time.Minute
+	return false
 }
 
 // SetPeerManager configures the peers.Manager used for caching and resolving peer access hashes.
@@ -557,7 +637,7 @@ func (s *Service) SendMessage(ctx context.Context, peer tg.InputPeerClass, text 
 		s.checkPeerError(ctx, err, peer)
 	}
 	if err == nil && res != nil {
-		s.recordBotSent(res.ID)
+		s.recordBotSent(peer, res)
 	}
 	return res, err
 }
@@ -623,7 +703,7 @@ func (s *Service) SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerCl
 		s.checkPeerError(ctx, err, peer)
 	}
 	if err == nil && res != nil {
-		s.recordBotSent(res.ID)
+		s.recordBotSent(peer, res)
 	}
 	return res, err
 }
@@ -1328,7 +1408,7 @@ func (s *Service) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaTy
 
 	msg := extractMessageFromUpdates(updates)
 	if msg != nil {
-		s.recordBotSent(msg.ID)
+		s.recordBotSent(peer, msg)
 	}
 	return msg, nil
 }

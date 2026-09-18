@@ -13,6 +13,10 @@ import (
 	"go.uber.org/zap"
 )
 
+type peerAwareBotSentTracker interface {
+	IsBotSentForPeer(peer tg.PeerClass, msgID int) bool
+}
+
 func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Message) error {
 	release, accepted := d.admitIngress()
 	if !accepted {
@@ -55,8 +59,16 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	origin := core.ExecutionInteractive
 	if msg.Out {
 		svc := d.getService()
-		if svc != nil && svc.IsBotSent(msg.ID) {
-			origin = core.ExecutionAutomation
+		if svc != nil {
+			automated := false
+			if tracker, ok := svc.(peerAwareBotSentTracker); ok {
+				automated = tracker.IsBotSentForPeer(msg.PeerID, msg.ID)
+			} else {
+				automated = svc.IsBotSent(msg.ID)
+			}
+			if automated {
+				origin = core.ExecutionAutomation
+			}
 		}
 	}
 	decision := core.NewMessageDecision(origin)
