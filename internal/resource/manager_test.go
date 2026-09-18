@@ -1,7 +1,10 @@
 package resource
 
 import (
+	"context"
+	"errors"
 	"testing"
+	"time"
 )
 
 func TestResourceManager_RegisterAndRelease(t *testing.T) {
@@ -129,5 +132,34 @@ func TestResourceManager_HardCardinalityBound(t *testing.T) {
 	}
 	if got := len(mgr.All()); got != 2 {
 		t.Fatalf("resource manager exceeded hard bound: %d", got)
+	}
+}
+
+func TestResourceManager_ForceCleanupRespectsDeadlineAndRetainsFailedResource(t *testing.T) {
+	mgr := NewManager()
+	mgr.SetLeakPolicy(LeakPolicyForceCleanup)
+	release := make(chan struct{})
+	if err := mgr.RegisterWithCleanup(Resource{ID: "blocked", Owner: "plugin:blocked", Type: TypeTempFile}, func() error {
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := mgr.HandleLeaksContext(ctx, "plugin:blocked")
+	elapsed := time.Since(start)
+	close(release)
+
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected force-cleanup deadline error, got %v", err)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("force cleanup escaped caller deadline: %v", elapsed)
+	}
+	if _, found := mgr.Get("blocked"); !found {
+		t.Fatal("timed-out resource was removed from tracking")
 	}
 }

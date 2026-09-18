@@ -1,6 +1,7 @@
 package resource
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -19,12 +20,16 @@ const (
 // Manager tracks, inspects, and audits the ownership and lifecycle of long-lived resources.
 const DefaultMaxTrackedResources = 16 * 1024
 
+// CleanupFunc is a bounded force-cleanup callback. Implementations should honor
+// ctx cancellation; Manager also enforces the caller deadline around callbacks.
+type CleanupFunc func(context.Context) error
+
 type Manager struct {
 	mu           sync.RWMutex
 	policy       LeakPolicy
 	maxResources int
 	resources    map[string]Resource
-	cleanups     map[string]func() error
+	cleanups     map[string]CleanupFunc
 }
 
 // NewManager initializes a new thread-safe resource manager with a hard
@@ -41,7 +46,7 @@ func NewManagerWithLimit(maxResources int) *Manager {
 		policy:       LeakPolicyWarn,
 		maxResources: maxResources,
 		resources:    make(map[string]Resource),
-		cleanups:     make(map[string]func() error),
+		cleanups:     make(map[string]CleanupFunc),
 	}
 }
 
@@ -64,8 +69,20 @@ func (m *Manager) Register(r Resource) error {
 	return m.RegisterWithCleanup(r, nil)
 }
 
-// RegisterWithCleanup adds a resource to tracking along with an optional force-cleanup function.
+// RegisterWithCleanup adds a resource with a legacy contextless force-cleanup
+// callback. New callers should prefer RegisterWithCleanupContext.
 func (m *Manager) RegisterWithCleanup(r Resource, cleanup func() error) error {
+	if cleanup == nil {
+		return m.RegisterWithCleanupContext(r, nil)
+	}
+	return m.RegisterWithCleanupContext(r, func(context.Context) error {
+		return cleanup()
+	})
+}
+
+// RegisterWithCleanupContext adds a resource to tracking along with an optional
+// context-aware force-cleanup function.
+func (m *Manager) RegisterWithCleanupContext(r Resource, cleanup CleanupFunc) error {
 	if strings.TrimSpace(r.ID) == "" {
 		return errors.New("resource ID cannot be empty")
 	}
@@ -232,40 +249,92 @@ func (m *Manager) AllSnapshots() []OwnerSnapshot {
 	return result
 }
 
-// ForceCleanupOwner executes cleanup functions for all tracked resources belonging to owner,
-// releases them, and returns any cleanup errors encountered.
-func (m *Manager) ForceCleanupOwner(owner string) []error {
-	m.mu.Lock()
-	var toClean []struct {
-		id      string
-		cleanup func() error
+func runCleanupWithContext(ctx context.Context, cleanup CleanupFunc) error {
+	if cleanup == nil {
+		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		var cleanupErr error
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				cleanupErr = fmt.Errorf("cleanup panic: %v", recovered)
+			}
+			result <- cleanupErr
+		}()
+		cleanupErr = cleanup(ctx)
+	}()
+
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// ForceCleanupOwner executes cleanup functions for all tracked resources belonging
+// to owner. A resource is removed only after its cleanup completes successfully;
+// timed-out or failed resources stay tracked as leaked for diagnostics/retry.
+func (m *Manager) ForceCleanupOwner(owner string) []error {
+	return m.ForceCleanupOwnerContext(context.Background(), owner)
+}
+
+// ForceCleanupOwnerContext is the deadline-aware force-cleanup variant.
+func (m *Manager) ForceCleanupOwnerContext(ctx context.Context, owner string) []error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	m.mu.RLock()
+	toClean := make([]struct {
+		id      string
+		cleanup CleanupFunc
+	}, 0)
 	for id, r := range m.resources {
 		if r.Owner == owner {
-			cleanup := m.cleanups[id]
 			toClean = append(toClean, struct {
 				id      string
-				cleanup func() error
-			}{id: id, cleanup: cleanup})
-			delete(m.resources, id)
-			delete(m.cleanups, id)
+				cleanup CleanupFunc
+			}{id: id, cleanup: m.cleanups[id]})
 		}
 	}
-	m.mu.Unlock()
+	m.mu.RUnlock()
 
 	var errs []error
 	for _, item := range toClean {
-		if item.cleanup != nil {
-			if err := item.cleanup(); err != nil {
-				errs = append(errs, fmt.Errorf("cleanup %s: %w", item.id, err))
-			}
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, err)
+			break
 		}
+		if err := runCleanupWithContext(ctx, item.cleanup); err != nil {
+			errs = append(errs, fmt.Errorf("cleanup %s: %w", item.id, err))
+			if ctx.Err() != nil {
+				break
+			}
+			continue
+		}
+		m.mu.Lock()
+		delete(m.resources, item.id)
+		delete(m.cleanups, item.id)
+		m.mu.Unlock()
 	}
 	return errs
 }
 
 // HandleLeaks checks if owner has active resources, marks them leaked, and applies the LeakPolicy.
 func (m *Manager) HandleLeaks(owner string) ([]Resource, error) {
+	return m.HandleLeaksContext(context.Background(), owner)
+}
+
+// HandleLeaksContext is the deadline-aware leak-policy variant.
+func (m *Manager) HandleLeaksContext(ctx context.Context, owner string) ([]Resource, error) {
 	leaks := m.DetectLeaks(owner)
 	if len(leaks) == 0 {
 		return nil, nil
@@ -274,7 +343,7 @@ func (m *Manager) HandleLeaks(owner string) ([]Resource, error) {
 	policy := m.LeakPolicy()
 	switch policy {
 	case LeakPolicyForceCleanup:
-		errs := m.ForceCleanupOwner(owner)
+		errs := m.ForceCleanupOwnerContext(ctx, owner)
 		if len(errs) > 0 {
 			return leaks, fmt.Errorf("force cleanup encountered errors: %w", errors.Join(errs...))
 		}
