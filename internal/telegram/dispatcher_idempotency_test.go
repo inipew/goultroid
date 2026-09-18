@@ -93,6 +93,9 @@ func (r failingIdempotencyRepository) IsProcessed(context.Context, string, time.
 func (r failingIdempotencyRepository) DeleteExpired(context.Context, time.Time) (int, error) {
 	return 0, r.err
 }
+func (r failingIdempotencyRepository) EarliestExpiry(context.Context) (time.Time, bool, error) {
+	return time.Time{}, false, r.err
+}
 func (r failingIdempotencyRepository) Size(context.Context, time.Time) (int, error) {
 	return 0, r.err
 }
