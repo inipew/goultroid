@@ -25,6 +25,7 @@ type Cache struct {
 	retainedBytes int64
 	defaultTTL    time.Duration
 	cancel        context.CancelFunc
+	wake          chan struct{}
 	wg            sync.WaitGroup
 }
 
@@ -91,6 +92,68 @@ func NewCache(defaultTTL time.Duration) *Cache {
 	return &Cache{
 		entries:    make(map[string]cachedEntry),
 		defaultTTL: defaultTTL,
+		wake:       make(chan struct{}, 1),
+	}
+}
+
+func (c *Cache) notifyWake() {
+	if c == nil || c.wake == nil {
+		return
+	}
+	select {
+	case c.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (c *Cache) nextExpiry() (time.Time, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var next time.Time
+	for _, entry := range c.entries {
+		if next.IsZero() || entry.expiresAt.Before(next) {
+			next = entry.expiresAt
+		}
+	}
+	return next, !next.IsZero()
+}
+
+func (c *Cache) pruneLoop(ctx context.Context) {
+	for {
+		next, ok := c.nextExpiry()
+		if !ok {
+			select {
+			case <-ctx.Done():
+				return
+			case <-c.wake:
+				continue
+			}
+		}
+
+		wait := time.Until(next)
+		if wait < 0 {
+			wait = 0
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return
+		case <-c.wake:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		case <-timer.C:
+			c.Prune()
+		}
 	}
 }
 
@@ -222,6 +285,7 @@ func (c *Cache) SetScoped(key string, results []InlineResult, ttl time.Duration)
 		sizeBytes: size,
 	}
 	c.retainedBytes += size
+	c.notifyWake()
 }
 
 // Len returns entry count.
@@ -241,11 +305,12 @@ func (c *Cache) RetainedBytes() int64 {
 // Delete removes a specific query from the cache.
 func (c *Cache) Delete(query string) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if entry, exists := c.entries[query]; exists {
 		c.retainedBytes -= entry.sizeBytes
 		delete(c.entries, query)
 	}
+	c.mu.Unlock()
+	c.notifyWake()
 }
 
 // Prune removes all expired entries from the cache.
@@ -280,7 +345,9 @@ func (c *Cache) Health(ctx context.Context) runtime.ComponentHealth {
 	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
 }
 
-// Start launches background prune loop (Fase 4 shutdown-aware).
+// Start launches a deadline-driven prune loop. With no cached entries it
+// blocks indefinitely; it wakes only when cache state changes or the nearest
+// entry actually expires.
 func (c *Cache) Start(ctx context.Context) error {
 	if c == nil {
 		return nil
@@ -293,23 +360,18 @@ func (c *Cache) Start(ctx context.Context) error {
 		c.mu.Unlock()
 		return nil
 	}
+	if c.wake == nil {
+		c.wake = make(chan struct{}, 1)
+	}
 	runCtx, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
 	c.wg.Add(1)
 	c.mu.Unlock()
 	go func() {
 		defer c.wg.Done()
-		ticker := time.NewTicker(60 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				c.Prune()
-			case <-runCtx.Done():
-				return
-			}
-		}
+		c.pruneLoop(runCtx)
 	}()
+	c.notifyWake()
 	return nil
 }
 

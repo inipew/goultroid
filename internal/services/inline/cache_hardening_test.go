@@ -1,6 +1,7 @@
 package inline
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -90,5 +91,36 @@ func TestCache_MaxSingleEntrySize(t *testing.T) {
 	c.SetScoped("huge:key", results, time.Minute)
 	if c.Len() != 0 {
 		t.Fatalf("expected huge entry to be rejected, got %d entries", c.Len())
+	}
+}
+
+
+func TestCache_DeadlineDrivenExpiryReclaimsRetainedBytes(t *testing.T) {
+	cache := NewCache(time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := cache.Start(ctx); err != nil {
+		t.Fatalf("start cache: %v", err)
+	}
+	t.Cleanup(func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
+		defer stopCancel()
+		_ = cache.Stop(stopCtx)
+	})
+
+	cache.SetScoped("expires", []InlineResult{{ID: "1", Text: "payload"}}, 20*time.Millisecond)
+	if cache.RetainedBytes() == 0 {
+		t.Fatal("expected retained bytes before expiry")
+	}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for cache.Len() != 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if cache.Len() != 0 {
+		t.Fatalf("expired cache entry was not reclaimed; len=%d", cache.Len())
+	}
+	if got := cache.RetainedBytes(); got != 0 {
+		t.Fatalf("expired cache retained %d bytes", got)
 	}
 }
