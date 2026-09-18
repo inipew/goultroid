@@ -185,3 +185,33 @@ func TestIdleCachesAvoidPeriodicWakeupsAndRemainBounded(t *testing.T) {
 		}
 	}
 }
+
+func TestTelegramEventConstructionUsesCanonicalNormalizerBoundary(t *testing.T) {
+	root := repositoryRoot(t)
+
+	dispatchPath := filepath.Join(root, "internal", "telegram", "dispatcher_dispatch.go")
+	dispatchData, err := os.ReadFile(dispatchPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(dispatchData), "&core.MessageCreatedEvent{") {
+		t.Errorf("%s must use canonicalMessageCreatedEvent instead of constructing MessageCreatedEvent directly", dispatchPath)
+	}
+	if !strings.Contains(string(dispatchData), "canonicalMessageCreatedEvent(") {
+		t.Errorf("%s must publish messages through canonicalMessageCreatedEvent", dispatchPath)
+	}
+
+	callbackPath := filepath.Join(root, "internal", "telegram", "dispatcher_callback.go")
+	callbackData, err := os.ReadFile(callbackPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(callbackData), "&core.CallbackQueryEvent{") {
+		t.Errorf("%s must not construct CallbackQueryEvent directly", callbackPath)
+	}
+	for _, required := range []string{"canonicalCallbackQueryEvent(", "canonicalInlineCallbackQueryEvent("} {
+		if !strings.Contains(string(callbackData), required) {
+			t.Errorf("%s is missing canonical callback constructor %q", callbackPath, required)
+		}
+	}
+}

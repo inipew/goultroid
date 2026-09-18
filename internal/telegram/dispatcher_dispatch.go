@@ -103,13 +103,9 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	}
 
 	if bus := d.getEventBus(); bus != nil {
-		bus.Publish(&core.MessageCreatedEvent{
-			MetaData: core.EventMeta{ID: fmt.Sprintf("msg:%d:%d", chatID, msg.ID)},
-			At:       time.Now().UTC(),
-			Message:  coreMsg,
-			ChatID:   chatID,
-			PeerID:   msg.PeerID,
-		})
+		if evt := canonicalMessageCreatedEvent(msg, coreMsg, time.Now()); evt != nil {
+			bus.Publish(evt)
+		}
 	}
 
 	if !isCmd {

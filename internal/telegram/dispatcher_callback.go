@@ -203,25 +203,8 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 			return nil
 		}
 	}
-	chatID := extractChatIDFromPeer(update.Peer)
 	inputPeer := d.callbackInputPeer(ctx, update.Peer, e)
-	target := core.CallbackTarget{
-		Origin:       core.CallbackOriginMessage,
-		Peer:         inputPeer,
-		MessageID:    update.MsgID,
-		ChatInstance: update.ChatInstance,
-	}
-	evt := &core.CallbackQueryEvent{
-		At:           time.Now(),
-		QueryID:      update.QueryID,
-		UserID:       update.UserID,
-		ChatID:       chatID,
-		MsgID:        update.MsgID,
-		Data:         update.Data,
-		Origin:       core.CallbackOriginMessage,
-		Target:       target,
-		ChatInstance: update.ChatInstance,
-	}
+	evt := canonicalCallbackQueryEvent(update, inputPeer, time.Now())
 
 	bus := d.getEventBus()
 	if bus != nil {
@@ -303,22 +286,7 @@ func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities
 			return nil
 		}
 	}
-	target := core.CallbackTarget{
-		Origin:       core.CallbackOriginInline,
-		InlineID:     update.MsgID,
-		ChatInstance: update.ChatInstance,
-	}
-	evt := &core.CallbackQueryEvent{
-		At:           time.Now(),
-		QueryID:      update.QueryID,
-		UserID:       update.UserID,
-		ChatID:       0,
-		MsgID:        0,
-		Data:         update.Data,
-		Origin:       core.CallbackOriginInline,
-		Target:       target,
-		ChatInstance: update.ChatInstance,
-	}
+	evt := canonicalInlineCallbackQueryEvent(update, time.Now())
 
 	bus := d.getEventBus()
 	if bus != nil {
