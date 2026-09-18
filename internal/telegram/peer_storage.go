@@ -164,20 +164,43 @@ func (s *PeerStorage) SaveContactsHash(ctx context.Context, hash int64) error {
 	return nil
 }
 
-// Invalidate removes a cached access hash from memory and persistent SQLite storage.
-func (s *PeerStorage) Invalidate(key peers.Key) error {
+// InvalidateContext removes a cached access hash from memory and persistent
+// SQLite storage using the caller's lifecycle-bound context.
+func (s *PeerStorage) InvalidateContext(ctx context.Context, key peers.Key) error {
 	s.mu.Lock()
 	delete(s.peers, key)
 	s.mu.Unlock()
-	if s.db != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		t0 := time.Now()
-		_, err := s.db.ExecContext(ctx, `DELETE FROM peers_storage WHERE prefix = ? AND id = ?;`, key.Prefix, key.ID)
-		s.db.Observe("peer.invalidate", time.Since(t0), err)
-		return err
+	if s.db == nil {
+		return nil
+	}
+	if ctx == nil {
+		return errors.New("peer invalidation context is nil")
+	}
+	t0 := time.Now()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err == nil {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM peers_storage WHERE prefix = ? AND id = ?;`, key.Prefix, key.ID); err == nil {
+			_, err = tx.ExecContext(ctx, `UPDATE peers_phones SET access_hash = 0 WHERE prefix = ? AND id = ?;`, key.Prefix, key.ID)
+		}
+		if err != nil {
+			_ = tx.Rollback()
+		} else {
+			err = tx.Commit()
+		}
+	}
+	s.db.Observe("peer.invalidate", time.Since(t0), err)
+	if err != nil {
+		return fmt.Errorf("failed to invalidate peer (%s:%d): %w", key.Prefix, key.ID, err)
 	}
 	return nil
+}
+
+// Invalidate is retained for gotd/backward compatibility. Runtime hot paths
+// should use InvalidateContext so shutdown/cancellation ownership is preserved.
+func (s *PeerStorage) Invalidate(key peers.Key) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return s.InvalidateContext(ctx, key)
 }
 
 func (s *PeerStorage) DB() *database.DB { return s.db }
@@ -205,6 +228,26 @@ func (s *PeerStorage) SaveEntity(ctx context.Context, prefix string, id int64, u
 	s.entities[key] = snapshot
 	s.mu.Unlock()
 	return nil
+}
+
+func (s *PeerStorage) FindUsernameByID(ctx context.Context, prefix string, id int64) (string, bool, error) {
+	if s.db == nil {
+		return "", false, errors.New("database is nil")
+	}
+	cacheKey := fmt.Sprintf("%s:%d", prefix, id)
+	s.mu.RLock()
+	cached, ok := s.entities[cacheKey]
+	s.mu.RUnlock()
+	if ok && cached.username != "" {
+		return cached.username, true, nil
+	}
+	t0 := time.Now()
+	username, found, err := s.db.FindPeerUsernameByID(ctx, prefix, id)
+	s.db.Observe("peer.find_username_by_id", time.Since(t0), err)
+	if err != nil || !found {
+		return "", found, err
+	}
+	return username, true, nil
 }
 
 func (s *PeerStorage) FindByUsername(ctx context.Context, username string) (peers.Key, peers.Value, bool, error) {

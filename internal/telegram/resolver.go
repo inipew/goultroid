@@ -99,19 +99,12 @@ func (r *Resolver) ResolveUser(ctx context.Context, ref string) (tg.InputPeerCla
 				}
 			}
 		}
-		if r.peerManager != nil {
-			if user, err := r.peerManager.ResolveUserID(ctx, uid); err == nil {
-				peer := user.InputPeer()
-				if input, ok := peer.(*tg.InputPeerUser); ok && input.AccessHash != 0 {
-					if r.cache != nil {
-						r.cache.Set("user", strID, "user", uid, input.AccessHash)
-					}
-					return peer, user.ID(), nil
-				}
-			}
-		}
 		if r.storage != nil {
-			if val, found, err := r.storage.Find(ctx, peers.Key{Prefix: "user", ID: uid}); err == nil && found && val.AccessHash != 0 {
+			val, found, findErr := r.storage.Find(ctx, peers.Key{Prefix: "user", ID: uid})
+			if findErr != nil {
+				return nil, 0, fmt.Errorf("resolve numeric user from storage: %w", findErr)
+			}
+			if found && val.AccessHash != 0 {
 				if r.cache != nil {
 					r.cache.Set("user", strID, "user", uid, val.AccessHash)
 				}
@@ -138,7 +131,11 @@ func (r *Resolver) ResolveUser(ctx context.Context, ref string) (tg.InputPeerCla
 
 	// 2. Persistent Storage Lookup
 	if r.storage != nil {
-		if key, val, found, err := r.storage.FindByUsername(ctx, cleaned); err == nil && found && val.AccessHash != 0 && key.Prefix == "user" {
+		key, val, found, findErr := r.storage.FindByUsername(ctx, cleaned)
+		if findErr != nil {
+			return nil, 0, fmt.Errorf("resolve user %q from storage: %w", cleaned, findErr)
+		}
+		if found && val.AccessHash != 0 && key.Prefix == "user" {
 			if r.cache != nil {
 				r.cache.Set("user", cleaned, "user", key.ID, val.AccessHash)
 			}
@@ -243,7 +240,7 @@ func (r *Resolver) ResolveChat(ctx context.Context, ref string) (tg.InputPeerCla
 			str := strconv.FormatInt(id, 10)
 			if strings.HasPrefix(str, "-100") {
 				channelID := id
-				if parsed, err := strconv.ParseInt(str[4:], 10, 64); err == nil {
+				if parsed, parseErr := strconv.ParseInt(str[4:], 10, 64); parseErr == nil {
 					channelID = parsed
 				}
 				chanStr := strconv.FormatInt(channelID, 10)
@@ -252,19 +249,12 @@ func (r *Resolver) ResolveChat(ctx context.Context, ref string) (tg.InputPeerCla
 						return &tg.InputPeerChannel{ChannelID: channelID, AccessHash: entry.AccessHash}, nil
 					}
 				}
-				if r.peerManager != nil {
-					if channel, err := r.peerManager.ResolveChannelID(ctx, channelID); err == nil {
-						peer := channel.InputPeer()
-						if input, ok := peer.(*tg.InputPeerChannel); ok && input.AccessHash != 0 {
-							if r.cache != nil {
-								r.cache.Set("channel", chanStr, "channel", channelID, input.AccessHash)
-							}
-							return peer, nil
-						}
-					}
-				}
 				if r.storage != nil {
-					if val, found, err := r.storage.Find(ctx, peers.Key{Prefix: "channel", ID: channelID}); err == nil && found && val.AccessHash != 0 {
+					val, found, findErr := r.storage.Find(ctx, peers.Key{Prefix: "channel", ID: channelID})
+					if findErr != nil {
+						return nil, fmt.Errorf("resolve numeric channel from storage: %w", findErr)
+					}
+					if found && val.AccessHash != 0 {
 						if r.cache != nil {
 							r.cache.Set("channel", chanStr, "channel", channelID, val.AccessHash)
 						}
@@ -274,18 +264,7 @@ func (r *Resolver) ResolveChat(ctx context.Context, ref string) (tg.InputPeerCla
 				}
 				return nil, fmt.Errorf("%w: channel %d requires a usable access hash", core.ErrAccessHashMissing, channelID)
 			}
-			chatID := -id
-			if r.peerManager != nil {
-				if chat, err := r.peerManager.ResolveChatID(ctx, chatID); err == nil {
-					return chat.InputPeer(), nil
-				}
-			}
-			return &tg.InputPeerChat{ChatID: chatID}, nil
-		}
-		if r.peerManager != nil {
-			if chat, err := r.peerManager.ResolveChatID(ctx, id); err == nil {
-				return chat.InputPeer(), nil
-			}
+			return &tg.InputPeerChat{ChatID: -id}, nil
 		}
 		return &tg.InputPeerChat{ChatID: id}, nil
 	}
@@ -309,7 +288,11 @@ func (r *Resolver) ResolveChat(ctx context.Context, ref string) (tg.InputPeerCla
 
 	// 2. Persistent Storage Lookup
 	if r.storage != nil {
-		if key, val, found, err := r.storage.FindByUsername(ctx, cleaned); err == nil && found {
+		key, val, found, findErr := r.storage.FindByUsername(ctx, cleaned)
+		if findErr != nil {
+			return nil, fmt.Errorf("resolve chat %q from storage: %w", cleaned, findErr)
+		}
+		if found {
 			if key.Prefix == "channel" && val.AccessHash != 0 {
 				if r.cache != nil {
 					r.cache.Set("chat", cleaned, "channel", key.ID, val.AccessHash)
@@ -411,58 +394,158 @@ func (r *Resolver) resolveUsernameChat(ctx context.Context, username string) (tg
 	return nil, fmt.Errorf("%w: username %q returned no chat", core.ErrNotFound, username)
 }
 
+// RefreshPeer invalidates a stale user/channel access hash and forces exactly one
+// fresh username resolve through the resolver's shared RPCExecutor. Basic chats
+// do not carry access hashes and therefore need no refresh.
+func (r *Resolver) RefreshPeer(ctx context.Context, peer tg.InputPeerClass) error {
+	if peer == nil {
+		return nil
+	}
+	if ctx == nil {
+		return errors.New("peer refresh context is nil")
+	}
+	var prefix string
+	var id int64
+	switch p := peer.(type) {
+	case *tg.InputPeerUser:
+		prefix, id = "user", p.UserID
+	case *tg.InputPeerChannel:
+		prefix, id = "channel", p.ChannelID
+	case *tg.InputPeerChat, *tg.InputPeerSelf:
+		return nil
+	default:
+		return fmt.Errorf("%w: unsupported peer refresh type %T", core.ErrUnsupported, peer)
+	}
+	if id == 0 || r.storage == nil {
+		return fmt.Errorf("%w: %s %d has no persistent metadata", core.ErrAccessHashMissing, prefix, id)
+	}
+
+	username, found, err := r.storage.FindUsernameByID(ctx, prefix, id)
+	if err != nil {
+		return fmt.Errorf("find refresh username for %s %d: %w", prefix, id, err)
+	}
+	if !found || username == "" {
+		return fmt.Errorf("%w: %s %d has no persisted username for refresh", core.ErrAccessHashMissing, prefix, id)
+	}
+
+	if r.api == nil {
+		return fmt.Errorf("%w: telegram api unavailable for peer refresh", core.ErrUnavailable)
+	}
+	if r.cache != nil {
+		r.cache.InvalidateID(id)
+		r.cache.Invalidate("user", username)
+		r.cache.Invalidate("chat", username)
+		r.cache.Invalidate("channel", username)
+	}
+	if err := r.storage.InvalidateContext(ctx, peers.Key{Prefix: prefix, ID: id}); err != nil {
+		return err
+	}
+
+	key := "refresh:" + prefix + ":" + username
+	resCh := r.group.DoChan(key, func() (any, error) {
+		underlyingCtx := r.lifecycleCtx
+		if underlyingCtx == nil {
+			return nil, errors.New("resolver lifecycle context is unavailable")
+		}
+		callCtx, cancel := context.WithTimeout(underlyingCtx, 15*time.Second)
+		defer cancel()
+		if prefix == "user" {
+			_, _, refreshErr := r.resolveUsernameUser(callCtx, username)
+			return nil, refreshErr
+		}
+		_, refreshErr := r.resolveUsernameChat(callCtx, username)
+		return nil, refreshErr
+	})
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case res := <-resCh:
+		return res.Err
+	}
+}
+
 // Invalidate removes cached peer entries from memory and persistent storage.
 func (r *Resolver) Invalidate(ctx context.Context, peer tg.InputPeerClass) error {
 	if peer == nil {
 		return nil
 	}
+	if ctx == nil {
+		return errors.New("peer invalidation context is nil")
+	}
+	var key peers.Key
 	switch p := peer.(type) {
 	case *tg.InputPeerUser:
-		if r.cache != nil {
-			r.cache.InvalidateID(p.UserID)
-		}
-		if r.storage != nil {
-			_ = r.storage.Invalidate(peers.Key{Prefix: "user", ID: p.UserID})
-		}
+		key = peers.Key{Prefix: "user", ID: p.UserID}
 	case *tg.InputPeerChannel:
-		if r.cache != nil {
-			r.cache.InvalidateID(p.ChannelID)
-		}
-		if r.storage != nil {
-			_ = r.storage.Invalidate(peers.Key{Prefix: "channel", ID: p.ChannelID})
-		}
+		key = peers.Key{Prefix: "channel", ID: p.ChannelID}
 	case *tg.InputPeerChat:
-		if r.cache != nil {
-			r.cache.InvalidateID(p.ChatID)
-		}
-		if r.storage != nil {
-			_ = r.storage.Invalidate(peers.Key{Prefix: "chat", ID: p.ChatID})
-		}
+		key = peers.Key{Prefix: "chat", ID: p.ChatID}
+	default:
+		return nil
+	}
+	if r.cache != nil {
+		r.cache.InvalidateID(key.ID)
+	}
+	if r.storage != nil {
+		return r.storage.InvalidateContext(ctx, key)
 	}
 	return nil
 }
 
-// InvalidateRef removes cached peer entries by reference (username or string ID).
-func (r *Resolver) InvalidateRef(ref string) {
+// InvalidateRefContext removes memory entries and the exact persistent access
+// hash associated with a username or numeric reference while retaining entity
+// metadata needed for a forced network refresh.
+func (r *Resolver) InvalidateRefContext(ctx context.Context, ref string) error {
+	if ctx == nil {
+		return errors.New("peer invalidation context is nil")
+	}
 	cleaned := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(ref, "@")))
 	if cleaned == "" {
-		return
+		return nil
 	}
 	if r.cache != nil {
 		r.cache.Invalidate("user", cleaned)
 		r.cache.Invalidate("chat", cleaned)
 		r.cache.Invalidate("channel", cleaned)
 	}
-	if id, err := strconv.ParseInt(strings.TrimPrefix(cleaned, "-100"), 10, 64); err == nil {
+
+	if id, parseErr := strconv.ParseInt(strings.TrimPrefix(cleaned, "-100"), 10, 64); parseErr == nil {
 		if r.cache != nil {
 			r.cache.InvalidateID(id)
 		}
 		if r.storage != nil {
-			_ = r.storage.Invalidate(peers.Key{Prefix: "user", ID: id})
-			_ = r.storage.Invalidate(peers.Key{Prefix: "channel", ID: id})
-			_ = r.storage.Invalidate(peers.Key{Prefix: "chat", ID: id})
+			for _, prefix := range []string{"user", "channel", "chat"} {
+				if err := r.storage.InvalidateContext(ctx, peers.Key{Prefix: prefix, ID: id}); err != nil {
+					return err
+				}
+			}
 		}
+		return nil
 	}
+
+	if r.storage == nil {
+		return nil
+	}
+	key, _, found, err := r.storage.FindByUsername(ctx, cleaned)
+	if err != nil {
+		return fmt.Errorf("find peer %q for invalidation: %w", cleaned, err)
+	}
+	if !found {
+		return nil
+	}
+	if r.cache != nil {
+		r.cache.InvalidateID(key.ID)
+	}
+	return r.storage.InvalidateContext(ctx, key)
+}
+
+// InvalidateRef is retained for compatibility with older callers. Runtime hot
+// paths should use InvalidateRefContext so cancellation and shutdown propagate.
+func (r *Resolver) InvalidateRef(ref string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = r.InvalidateRefContext(ctx, ref)
 }
 
 // Len returns the number of active entries in the resolver memory cache.

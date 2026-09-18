@@ -335,19 +335,65 @@ func (m *mockInvalidatingStorage) Invalidate(key peers.Key) error {
 	return nil
 }
 
+func (m *mockInvalidatingStorage) InvalidateContext(_ context.Context, key peers.Key) error {
+	return m.Invalidate(key)
+}
+
 func TestService_InvalidatePeerOnInvalid(t *testing.T) {
 	svc := NewService(nil)
 	storage := &mockInvalidatingStorage{}
 	svc.SetStorage(storage)
 
 	peer := &tg.InputPeerChannel{ChannelID: 12345, AccessHash: 9999}
-	svc.checkPeerError(tgerr.New(400, "CHANNEL_INVALID"), peer)
+	svc.checkPeerError(context.Background(), tgerr.New(400, "CHANNEL_INVALID"), peer)
 
 	if len(storage.invalidated) != 1 {
 		t.Fatalf("expected 1 invalidated key, got %d", len(storage.invalidated))
 	}
 	if storage.invalidated[0].Prefix != "channel" || storage.invalidated[0].ID != 12345 {
 		t.Errorf("unexpected invalidated key: %+v", storage.invalidated[0])
+	}
+}
+
+type rotatingPeerStorage struct {
+	hash  int64
+	calls int
+}
+
+func (m *rotatingPeerStorage) Save(context.Context, peers.Key, peers.Value) error { return nil }
+func (m *rotatingPeerStorage) Find(context.Context, peers.Key) (peers.Value, bool, error) {
+	return peers.Value{AccessHash: m.hash}, true, nil
+}
+func (m *rotatingPeerStorage) SavePhone(context.Context, string, peers.Key) error { return nil }
+func (m *rotatingPeerStorage) FindPhone(context.Context, string) (peers.Key, peers.Value, bool, error) {
+	return peers.Key{}, peers.Value{}, false, nil
+}
+func (m *rotatingPeerStorage) GetContactsHash(context.Context) (int64, error) { return 0, nil }
+func (m *rotatingPeerStorage) SaveContactsHash(context.Context, int64) error { return nil }
+
+func TestService_PeerAwareRetryReloadsAccessHashPerAttempt(t *testing.T) {
+	storage := &rotatingPeerStorage{hash: 111}
+	svc := NewService(nil)
+	svc.SetStorage(storage)
+	exec := newTestExecutor(nil, NewFakeClock(time.Now()), &FakeSleeper{}, nil)
+	svc.SetExecutor(exec)
+
+	var seen []int64
+	err := svc.execIdempotentPeer(context.Background(), "messages.editMessage", &tg.InputPeerUser{UserID: 42, AccessHash: 111}, func(_ context.Context, current tg.InputPeerClass) error {
+		u := current.(*tg.InputPeerUser)
+		seen = append(seen, u.AccessHash)
+		storage.calls++
+		if storage.calls == 1 {
+			storage.hash = 222
+			return tgerr.New(500, "RPC_CALL_FAIL")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected peer-aware retry error: %v", err)
+	}
+	if len(seen) != 2 || seen[0] != 111 || seen[1] != 222 {
+		t.Fatalf("expected access hashes [111 222], got %v", seen)
 	}
 }
 

@@ -14,8 +14,14 @@ import (
 func TestTelegramRPCIngressGuards(t *testing.T) {
 	root := repositoryRoot(t)
 
-	assertFileExcludes(t, filepath.Join(root, "internal", "telegram", "service.go"), "retryOnFloodWait")
-	assertFileExcludes(t, filepath.Join(root, "internal", "telegram", "resolver.go"), "RetryRPC(")
+	servicePath := filepath.Join(root, "internal", "telegram", "service.go")
+	resolverPath := filepath.Join(root, "internal", "telegram", "resolver.go")
+	assertFileExcludes(t, servicePath, "retryOnFloodWait")
+	assertFileExcludes(t, resolverPath, "RetryRPC(")
+	for _, forbidden := range []string{"ResolveUserID(", "ResolveChannelID("} {
+		assertFileExcludes(t, resolverPath, forbidden)
+		assertFileExcludes(t, servicePath, forbidden)
+	}
 
 	assistantClient := filepath.Join(root, "internal", "assistant", "client", "client.go")
 	clientData, err := os.ReadFile(assistantClient)
