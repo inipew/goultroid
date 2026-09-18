@@ -236,14 +236,15 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 		}
 		job := jobs.JobDefinition{ID: jobID, ScopeOwner: "plugin:downloader", QuotaOwner: "telegram:download", HandlerType: "downloader.telegram_media", Payload: payload, Pool: "download", Class: "normal", Timeout: 10 * time.Minute, Resources: []tasks.ResourceRequirement{{Name: "download", Amount: 1}}, Enabled: true}
 		_ = idempKey
-		if err := p.jobs.Register(job); err == nil {
-			p.jobUI.Store(jobID, uiCtx)
-			if err := p.jobs.Trigger(ctx.Ctx, jobID); err != nil {
-				p.jobUI.Delete(jobID)
-				return err
-			}
-			return nil
+		if err := p.jobs.Register(job); err != nil {
+			return fmt.Errorf("register media download job: %w", err)
 		}
+		p.jobUI.Store(jobID, uiCtx)
+		if err := p.jobs.Trigger(ctx.Ctx, jobID); err != nil {
+			p.jobUI.Delete(jobID)
+			return err
+		}
+		return nil
 	}
 
 	return p.executeMediaDownload(ctx.Ctx, uiCtx, saveDir, mediaSize)
@@ -317,14 +318,15 @@ func (p *Plugin) handleURLDownload(ctx *core.Context, rawURL string) error {
 		}
 		job := jobs.JobDefinition{ID: jobID, ScopeOwner: "plugin:downloader", QuotaOwner: "telegram:download", HandlerType: "downloader.url", Payload: payload, Pool: "download", Class: "normal", Timeout: 10 * time.Minute, Resources: reqResources, Enabled: true}
 		_ = idempKey
-		if err := p.jobs.Register(job); err == nil {
-			p.jobUI.Store(jobID, ctx)
-			if err := p.jobs.Trigger(ctx.Ctx, jobID); err != nil {
-				p.jobUI.Delete(jobID)
-				return err
-			}
-			return nil
+		if err := p.jobs.Register(job); err != nil {
+			return fmt.Errorf("register URL download job: %w", err)
 		}
+		p.jobUI.Store(jobID, ctx)
+		if err := p.jobs.Trigger(ctx.Ctx, jobID); err != nil {
+			p.jobUI.Delete(jobID)
+			return err
+		}
+		return nil
 	}
 
 	return p.executeURLDownload(ctx.Ctx, ctx, rawURL)

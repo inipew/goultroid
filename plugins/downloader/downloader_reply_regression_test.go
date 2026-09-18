@@ -36,7 +36,7 @@ func (s *replyFailureTelegramService) GetMessage(context.Context, tg.InputPeerCl
 	return nil, s.err
 }
 
-func newDownloaderJobHarness(t *testing.T) (*Plugin, *capturedClient) {
+func newDownloaderJobHarness(t *testing.T) (*Plugin, *capturedClient, *jobs.Manager) {
 	t.Helper()
 
 	db, err := database.Open(":memory:")
@@ -70,11 +70,11 @@ func newDownloaderJobHarness(t *testing.T) (*Plugin, *capturedClient) {
 
 	p := New()
 	p.SetJobsManager(jm)
-	return p, client
+	return p, client, jm
 }
 
 func TestDownloaderRepliedURLFallbackPreservesUTF16EntityURL(t *testing.T) {
-	p, client := newDownloaderJobHarness(t)
+	p, client, _ := newDownloaderJobHarness(t)
 	provider := &recordingDownloadProvider{}
 	p.registry = download.NewRegistry(provider)
 	p.storage = storage.NewMemoryStorage()
@@ -156,5 +156,50 @@ func TestDownloaderPropagatesReplyLookupError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "resolve replied message") {
 		t.Fatalf("expected downloader context in error, got %v", err)
+	}
+}
+
+
+type namedRecordingDownloadProvider struct {
+	name   string
+	gotURL string
+}
+
+func (p *namedRecordingDownloadProvider) Name() string      { return p.name }
+func (p *namedRecordingDownloadProvider) Match(string) bool { return true }
+func (p *namedRecordingDownloadProvider) Download(_ context.Context, rawURL string, _ storage.Storage, _ download.DownloadOptions) (*storage.Asset, error) {
+	p.gotURL = rawURL
+	return &storage.Asset{Name: "song.mp3", Size: 1, Path: "memory://song.mp3"}, nil
+}
+
+func TestDownloaderDoesNotBypassJobAdmissionOnRegisterFailure(t *testing.T) {
+	p, _, jm := newDownloaderJobHarness(t)
+	provider := &namedRecordingDownloadProvider{name: "extractor"}
+	p.registry = download.NewRegistry(provider)
+	p.storage = storage.NewMemoryStorage()
+
+	if err := jm.Stop(context.Background()); err != nil {
+		t.Fatalf("stop jobs manager: %v", err)
+	}
+
+	const targetURL = "https://example.com/extractor-target"
+	tgSvc := &mockTelegramService{}
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		Svc:     tgSvc,
+		PeerID:  &tg.InputPeerSelf{},
+		Message: &core.Message{ID: 7, IsOutgoing: true, Text: ".download " + targetURL},
+		Args:    []string{targetURL},
+	}
+
+	err := p.handleURLDownload(ctx, targetURL)
+	if err == nil {
+		t.Fatal("expected durable job registration failure")
+	}
+	if !strings.Contains(err.Error(), "register URL download job") {
+		t.Fatalf("expected registration context in error, got %v", err)
+	}
+	if provider.gotURL != "" {
+		t.Fatalf("extractor provider ran despite failed job admission: %q", provider.gotURL)
 	}
 }
