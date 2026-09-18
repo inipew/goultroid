@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
@@ -76,11 +77,11 @@ func TestPMPermitPlugin(t *testing.T) {
 	}
 
 	ctx := &core.Context{
-		Ctx:      context.Background(),
-		Svc:      mockTG,
-		PeerID:   &tg.InputPeerUser{UserID: 88888},
-		Message:  &core.Message{ID: 1, IsOutgoing: true},
-		Args:     []string{"88888"},
+		Ctx:            context.Background(),
+		Svc:            mockTG,
+		PeerID:         &tg.InputPeerUser{UserID: 88888},
+		Message:        &core.Message{ID: 1, IsOutgoing: true},
+		Args:           []string{"88888"},
 		Resolver:       &core.MockPeerResolver{UserID: 88888, UserPeer: &tg.InputPeerUser{UserID: 88888, AccessHash: 12345}},
 		DelayedActions: noOpDelayedActions{},
 	}
@@ -119,9 +120,9 @@ func TestPMPermitPlugin(t *testing.T) {
 
 	// 5. ListApproved command
 	listCtx := &core.Context{
-		Ctx:     context.Background(),
-		Svc:     mockTG,
-		PeerID:  &tg.InputPeerUser{UserID: 88888},
+		Ctx:            context.Background(),
+		Svc:            mockTG,
+		PeerID:         &tg.InputPeerUser{UserID: 88888},
 		Message:        &core.Message{ID: 1, IsOutgoing: true},
 		DelayedActions: noOpDelayedActions{},
 	}
@@ -168,10 +169,10 @@ func TestPMPermitPlugin(t *testing.T) {
 
 	// Test self-test
 	testCtx := &core.Context{
-		Ctx:     context.Background(),
-		Svc:     mockTG,
-		PeerID:  &tg.InputPeerUser{UserID: 88888},
-		Message: &core.Message{ID: 1, IsOutgoing: true},
+		Ctx:            context.Background(),
+		Svc:            mockTG,
+		PeerID:         &tg.InputPeerUser{UserID: 88888},
+		Message:        &core.Message{ID: 1, IsOutgoing: true},
 		Args:           []string{"test"},
 		DelayedActions: noOpDelayedActions{},
 	}
