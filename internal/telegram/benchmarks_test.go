@@ -77,3 +77,48 @@ func BenchmarkPeerCache_GetSet(b *testing.B) {
 		_, _ = cache.Get("user", "alice")
 	}
 }
+
+
+func BenchmarkHierarchicalRPCLimiter_HotPeerAtHighCardinality(b *testing.B) {
+	cfg := HierarchicalLimiterConfig{
+		GlobalRate:         1e9,
+		GlobalBurst:        1e9,
+		DefaultFamilyRate:  1e9,
+		DefaultFamilyBurst: 1e9,
+		DefaultMethodRate:  1e9,
+		DefaultMethodBurst: 1e9,
+		DefaultPeerRate:    1e9,
+		DefaultPeerBurst:   1e9,
+		MaxBuckets:         DefaultMaxLimiterBuckets,
+		MaxPenalties:       DefaultMaxLimiterPenalties,
+		IdleTTL:            24 * time.Hour,
+	}
+	limiter := NewHierarchicalRPCLimiter(cfg)
+	base := time.Unix(1_700_000_000, 0)
+
+	// Populate near the production cardinality ceiling. The benchmarked hot
+	// peer must remain O(request dimensions), independent of this population.
+	for i := 0; i < 4000; i++ {
+		dims := []LimitKey{{Scope: "peer", Key: fmt.Sprintf("peer:%d", i)}}
+		if res := limiter.Reserve(base, dims, 1); !res.Allowed {
+			b.Fatalf("failed to seed limiter at peer %d: %+v", i, res)
+		}
+	}
+	hot := []LimitKey{
+		{Scope: "global", Key: "account"},
+		{Scope: "family", Key: "messages"},
+		{Scope: "method", Key: "messages.sendMessage"},
+		{Scope: "peer", Key: "peer:1"},
+	}
+	if res := limiter.Reserve(base, hot, 1); !res.Allowed {
+		b.Fatalf("failed to initialize hot dimensions: %+v", res)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if res := limiter.Reserve(base.Add(time.Duration(i+1)*time.Nanosecond), hot, 1); !res.Allowed {
+			b.Fatalf("hot reservation unexpectedly denied: %+v", res)
+		}
+	}
+}
