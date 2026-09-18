@@ -867,6 +867,18 @@ func (s *Store) EarliestScheduleDue(ctx context.Context) (time.Time, bool, error
 	return parseAggregateTime(raw)
 }
 
+func (s *Store) EarliestDeferredOccurrenceDue(ctx context.Context, now time.Time) (time.Time, bool, error) {
+	var raw any
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT MIN(ready_at)
+		FROM job_occurrences
+		WHERE state = 'dispatched' AND ready_at > ?
+	`, now.UTC()).Scan(&raw); err != nil {
+		return time.Time{}, false, err
+	}
+	return parseAggregateTime(raw)
+}
+
 func parseAggregateTime(raw any) (time.Time, bool, error) {
 	if raw == nil {
 		return time.Time{}, false, nil
