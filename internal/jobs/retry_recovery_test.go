@@ -116,6 +116,54 @@ func TestRetrySucceedsAfterFailure(t *testing.T) {
 	}
 }
 
+func TestShortRetryDelayIsPersistedInsteadOfSleepingRetryWorker(t *testing.T) {
+	var calls atomic.Int32
+	manager, store, _ := engineBackedManager(t,
+		func(context.Context, jobs.JobDefinition) error {
+			if calls.Add(1) == 1 {
+				return errTestFailure
+			}
+			return nil
+		},
+		jobs.JobRetryPolicy{MaxAttempts: 2, InitialDelay: 250 * time.Millisecond},
+	)
+
+	start := time.Now().UTC()
+	ticket, occurrenceID, err := manager.SubmitOccurrence(context.Background(), "job-retry", "manual:short-durable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ticket.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	var occ *jobs.JobOccurrence
+	for time.Now().Before(deadline) {
+		occ, err = store.GetOccurrence(context.Background(), occurrenceID)
+		if err == nil && occ.ReadyAt.After(start.Add(100*time.Millisecond)) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if occ == nil || !occ.ReadyAt.After(start.Add(100*time.Millisecond)) {
+		t.Fatalf("short retry was not persisted as future ready_at: %+v", occ)
+	}
+	if n, err := store.CountAttempts(context.Background(), occurrenceID); err != nil {
+		t.Fatal(err)
+	} else if n != 1 {
+		t.Fatalf("attempts=%d before durable deadline, want 1", n)
+	}
+
+	pollOccurrenceState(t, store, occurrenceID, jobs.OccurrenceCompleted, 5*time.Second)
+	if calls.Load() != 2 {
+		t.Fatalf("calls=%d, want 2", calls.Load())
+	}
+}
+
 func TestRetryHonorsConfiguredBackoff(t *testing.T) {
 	var firstFailure time.Time
 	var secondAttempt time.Time

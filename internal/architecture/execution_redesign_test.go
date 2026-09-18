@@ -345,6 +345,29 @@ func TestIdleAndResourceRegressionGuards(t *testing.T) {
 	}
 }
 
+func TestJobsRetryDelaysRemainCoordinatorOwned(t *testing.T) {
+	root := repositoryRoot(t)
+	managerPath := filepath.Join(root, "internal", "jobs", "manager.go")
+	data, err := os.ReadFile(managerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, required := range []string{
+		"if delay > 0 {",
+		"m.store.DeferOccurrence(",
+		"m.signalRecovery()",
+		"Every positive backoff is durable timing state",
+	} {
+		if !strings.Contains(text, required) {
+			t.Errorf("%s is missing durable retry invariant %q", managerPath, required)
+		}
+	}
+	if strings.Contains(text, "timer := time.NewTimer(delay)") {
+		t.Errorf("%s reintroduced a timer held by a retry worker", managerPath)
+	}
+}
+
 func TestDownloaderUsesEphemeralTaskContinuations(t *testing.T) {
 	root := repositoryRoot(t)
 

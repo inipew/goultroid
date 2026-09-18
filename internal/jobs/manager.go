@@ -1101,8 +1101,7 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		delay = rlWait
 	}
 
-	const deferredThreshold = 2 * time.Second
-	if (isRL && rlWait > 0) || delay >= deferredThreshold {
+	if delay > 0 {
 		deferUntil := time.Now().UTC().Add(delay)
 		deferCtx, deferCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
 		err := m.store.DeferOccurrence(deferCtx, item.occurrenceID, deferUntil)
@@ -1113,28 +1112,15 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 			return
 		}
 		m.untrack(item.occurrenceID)
-		// Durable ready_at is authoritative. Wake the single recovery
-		// coordinator so it can re-arm its nearest-deadline timer; never create
-		// one timer/goroutine per deferred occurrence.
+		// Every positive backoff is durable timing state. The single recovery
+		// coordinator owns the nearest-deadline timer, so retry workers never
+		// sleep while waiting for a per-occurrence delay.
 		m.signalRecovery()
 		return
 	}
 
-	if delay > 0 {
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-		select {
-		case <-stopCh:
-			return
-		case <-baseCtx.Done():
-			return
-		case <-timer.C:
-		}
-	}
-	// Re-read after backoff: cancellation wins over retry.
-	// The backoff may be much longer than a store-operation timeout. Always
-	// create a fresh context after waiting; reusing a pre-backoff deadline makes
-	// long retry policies collapse into immediate recovery retries.
+	// Zero-delay retries may continue immediately. Re-read first so
+	// cancellation always wins over the next lease.
 	refreshCtx, refreshCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
 	occ2, refreshErr := m.store.GetOccurrence(refreshCtx, item.occurrenceID)
 	refreshCancel()
