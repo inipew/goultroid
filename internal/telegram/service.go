@@ -109,11 +109,30 @@ type Service struct {
 	botSentMessages map[string]time.Time
 }
 
-// NewService creates a new Service instance.
-func NewService(api *tg.Client) *Service {
-	exec, _ := NewRPCExecutor(RPCExecutorConfig{
+func newStandaloneServiceExecutor() *RPCExecutor {
+	exec, err := NewRPCExecutor(RPCExecutorConfig{
+		Limiter:       NewHierarchicalRPCLimiter(DefaultHierarchicalLimiterConfig()),
 		DefaultPolicy: defaultExecutorPolicy(),
 	})
+	if err != nil {
+		return nil
+	}
+	return exec
+}
+
+// NewService creates a standalone Service with one bounded executor. Production
+// wiring should use NewServiceWithExecutor so every surface shares the client
+// executor and its limiter/metrics state.
+func NewService(api *tg.Client) *Service {
+	return NewServiceWithExecutor(api, nil)
+}
+
+// NewServiceWithExecutor creates a Service using the supplied shared executor.
+// A nil executor gets one standalone bounded executor for compatibility.
+func NewServiceWithExecutor(api *tg.Client, exec *RPCExecutor) *Service {
+	if exec == nil {
+		exec = newStandaloneServiceExecutor()
+	}
 	s := &Service{
 		api:             api,
 		executor:        exec,
@@ -138,13 +157,10 @@ func (s *Service) SetExecutor(exec *RPCExecutor) {
 }
 
 func (s *Service) getExecutor() *RPCExecutor {
-	if s != nil && s.executor != nil {
-		return s.executor
+	if s == nil {
+		return nil
 	}
-	exec, _ := NewRPCExecutor(RPCExecutorConfig{
-		DefaultPolicy: defaultExecutorPolicy(),
-	})
-	return exec
+	return s.executor
 }
 
 func executeServiceRPC[T any](ctx context.Context, s *Service, meta RPCMeta, op func(opCtx context.Context) (T, error)) (T, error) {
@@ -159,6 +175,10 @@ func executeServiceRPC[T any](ctx context.Context, s *Service, meta RPCMeta, op 
 		}
 	}
 	exec := s.getExecutor()
+	if exec == nil {
+		var zero T
+		return zero, fmt.Errorf("%w: telegram RPC executor is not configured", core.ErrInternal)
+	}
 	res, err := ExecuteRPC(ctx, exec, meta, op)
 	if err != nil {
 		var failure *RPCFailure

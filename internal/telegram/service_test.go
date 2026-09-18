@@ -439,6 +439,34 @@ func TestService_ContextPropagationToExecutor(t *testing.T) {
 	}
 }
 
+func TestServiceMissingExecutorFailsClosed(t *testing.T) {
+	svc := &Service{}
+	called := false
+	_, err := executeServiceRPC(context.Background(), svc, RPCMeta{
+		Method: "users.getMe",
+		Kind:   RPCReadOnly,
+	}, func(context.Context) (struct{}, error) {
+		called = true
+		return struct{}{}, nil
+	})
+	if err == nil || !errors.Is(err, core.ErrInternal) {
+		t.Fatalf("expected missing-executor internal error, got %v", err)
+	}
+	if called {
+		t.Fatal("physical operation ran without RPC executor")
+	}
+}
+
+func TestStandaloneServiceUsesBoundedExecutor(t *testing.T) {
+	svc := NewService(nil)
+	if svc.getExecutor() == nil {
+		t.Fatal("standalone service did not construct an executor")
+	}
+	if _, ok := svc.getExecutor().limiter.(*HierarchicalRPCLimiter); !ok {
+		t.Fatalf("standalone limiter type=%T, want *HierarchicalRPCLimiter", svc.getExecutor().limiter)
+	}
+}
+
 func TestService_SetExecutor(t *testing.T) {
 	svc := NewService(nil)
 	exec, err := NewRPCExecutor(RPCExecutorConfig{

@@ -255,8 +255,7 @@ func (c *Client) ResolverCacheLen() int {
 func (c *Client) Run(ctx context.Context) error {
 	return c.raw.Run(ctx, func(ctx context.Context) error {
 		// Initialize service wrapper & peer resolver
-		svc := NewService(c.raw.API())
-		svc.SetExecutor(c.executor)
+		svc := NewServiceWithExecutor(c.raw.API(), c.executor)
 		svc.SetPeerManager(c.peerManager)
 		if c.peerStorage != nil {
 			svc.SetStorage(c.peerStorage)

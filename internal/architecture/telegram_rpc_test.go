@@ -26,6 +26,22 @@ func TestTelegramRPCIngressGuards(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !strings.Contains(string(serviceData), "func NewServiceWithExecutor(") {
+		t.Error("Telegram service must expose shared-executor construction")
+	}
+	if !strings.Contains(string(serviceData), "telegram RPC executor is not configured") {
+		t.Error("Telegram service must fail closed when executor wiring is absent")
+	}
+	getExecutorStart := strings.Index(string(serviceData), "func (s *Service) getExecutor() *RPCExecutor")
+	if getExecutorStart >= 0 {
+		getExecutorTail := string(serviceData)[getExecutorStart:]
+		if end := strings.Index(getExecutorTail, "\n}\n"); end >= 0 {
+			getExecutorTail = getExecutorTail[:end+3]
+		}
+		if strings.Contains(getExecutorTail, "NewRPCExecutor(") {
+			t.Error("getExecutor must not construct a second RPC policy on demand")
+		}
+	}
 	for _, forbidden := range []string{"uploader.NewUploader(api)", ".Download(s.api,", "execMediaTransfer("} {
 		if strings.Contains(string(serviceData), forbidden) {
 			t.Errorf("%s reintroduced logical-only media RPC boundary %q", servicePath, forbidden)
