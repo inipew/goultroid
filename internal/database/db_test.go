@@ -226,3 +226,27 @@ func TestPeerEntity_SaveAndFindByUsername(t *testing.T) {
 		t.Errorf("expected found=false for non-existent user")
 	}
 }
+
+
+func TestSQLitePoolLimitsRemainBoundedAcrossCPUCounts(t *testing.T) {
+	tests := []struct {
+		cpus     int
+		wantOpen int
+		wantIdle int
+	}{
+		{cpus: 1, wantOpen: 4, wantIdle: 2},
+		{cpus: 4, wantOpen: 4, wantIdle: 2},
+		{cpus: 8, wantOpen: 8, wantIdle: 4},
+		{cpus: 32, wantOpen: 8, wantIdle: 4},
+		{cpus: 128, wantOpen: 8, wantIdle: 4},
+	}
+	for _, tc := range tests {
+		open, idle := sqlitePoolLimits(tc.cpus)
+		if open != tc.wantOpen || idle != tc.wantIdle {
+			t.Fatalf("sqlitePoolLimits(%d)=(%d,%d), want (%d,%d)", tc.cpus, open, idle, tc.wantOpen, tc.wantIdle)
+		}
+		if idle > open {
+			t.Fatalf("idle connections %d exceed open connections %d", idle, open)
+		}
+	}
+}

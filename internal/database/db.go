@@ -62,6 +62,18 @@ func (db *DB) Observe(operation string, elapsed time.Duration, err error) {
 
 const sqliteConnectionPragmas = "_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)"
 
+func sqlitePoolLimits(cpuCount int) (maxOpen, maxIdle int) {
+	if cpuCount < 1 {
+		cpuCount = 1
+	}
+	// SQLite/WAL benefits from a handful of concurrent readers, but writers are
+	// still serialized. Keep pool growth bounded instead of retaining O(CPU)
+	// idle connections on large hosts.
+	maxOpen = min(max(4, cpuCount), 8)
+	maxIdle = min(max(2, maxOpen/2), 4)
+	return maxOpen, maxIdle
+}
+
 func sqliteOpenDSN(dsn string, inMemory bool) string {
 	// Keep the special :memory: sentinel untouched. It is pinned to one physical
 	// connection below, so startup PRAGMAs remain connection-complete there.
@@ -112,8 +124,10 @@ func Open(dsn string) (*DB, error) {
 		db.SetConnMaxLifetime(0)
 	} else {
 		// WAL supports concurrent readers while SQLite still serializes writers.
-		db.SetMaxOpenConns(max(4, runtime.NumCPU()*2))
-		db.SetMaxIdleConns(max(2, runtime.NumCPU()))
+		// Bound physical/idle handles so large CPU counts do not inflate steady RSS.
+		maxOpen, maxIdle := sqlitePoolLimits(runtime.NumCPU())
+		db.SetMaxOpenConns(maxOpen)
+		db.SetMaxIdleConns(maxIdle)
 		db.SetConnMaxLifetime(time.Hour)
 	}
 
