@@ -270,3 +270,60 @@ func TestPerformanceResilienceHotPathsStayBounded(t *testing.T) {
 		t.Errorf("%s must wire broadcast execution to the shared TaskEngine", wiringPath)
 	}
 }
+
+
+func TestIdleAndResourceRegressionGuards(t *testing.T) {
+	root := repositoryRoot(t)
+
+	checks := []struct {
+		path      string
+		required  []string
+		forbidden []string
+	}{
+		{
+			path:      filepath.Join(root, "internal", "services", "inline", "cache.go"),
+			required:  []string{"nextExpiry(", "pruneLoop("},
+			forbidden: []string{"time.NewTicker("},
+		},
+		{
+			path:      filepath.Join(root, "internal", "idempotency", "manager.go"),
+			required:  []string{"EarliestExpiry(", "cleanupWake"},
+			forbidden: []string{"time.NewTicker("},
+		},
+		{
+			path:      filepath.Join(root, "internal", "scheduler", "engine.go"),
+			required:  []string{"SetScheduleWake(e.notifyWake)", "case <-e.wakeChan:"},
+			forbidden: []string{"idleHeartbeat"},
+		},
+		{
+			path:     filepath.Join(root, "internal", "database", "db.go"),
+			required: []string{"sqlitePoolLimits(", "min(max(4, cpuCount), 8)"},
+		},
+		{
+			path:     filepath.Join(root, "internal", "resource", "manager.go"),
+			required: []string{"DefaultMaxTrackedResources", "resource tracking capacity reached"},
+		},
+		{
+			path:      filepath.Join(root, "internal", "services", "userlog", "service.go"),
+			forbidden: []string{"time.After("},
+		},
+	}
+
+	for _, check := range checks {
+		data, err := os.ReadFile(check.path)
+		if err != nil {
+			t.Fatalf("read %s: %v", check.path, err)
+		}
+		text := string(data)
+		for _, required := range check.required {
+			if !strings.Contains(text, required) {
+				t.Errorf("%s is missing regression invariant %q", check.path, required)
+			}
+		}
+		for _, forbidden := range check.forbidden {
+			if strings.Contains(text, forbidden) {
+				t.Errorf("%s reintroduced idle/resource regression %q", check.path, forbidden)
+			}
+		}
+	}
+}
