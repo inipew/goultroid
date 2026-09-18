@@ -312,20 +312,32 @@ func (c *Client) Run(ctx context.Context) error {
 			)
 		}
 
-		// Check if process was restarted and notify origin chat
-		go checkRestartState(ctx, svc, c.logger)
+		// Restart notification is owned by the application Supervisor. It waits
+		// for Ready and uses this same lifecycle-bound service without spawning an
+		// unjoined transport goroutine.
 
 		// Run update recovery manager until context cancellation
 		return c.gaps.Run(ctx, c.raw.API(), me.ID, updates.AuthOptions{IsBot: me.Bot})
 	})
 }
 
-// checkRestartState checks data/restart.json to edit the restart message if present.
-func checkRestartState(ctx context.Context, svc core.TelegramServicer, logger *zap.Logger) {
+// NotifyRestartState checks data/restart.json and reports a prior restart using
+// the currently active Telegram service. App owns execution through Supervisor.
+func (c *Client) NotifyRestartState(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
+	return notifyRestartState(ctx, c.Service(), c.logger)
+}
+
+func notifyRestartState(ctx context.Context, svc core.TelegramServicer, logger *zap.Logger) error {
 	restartPath := "data/restart.json"
 	data, err := os.ReadFile(restartPath)
 	if err != nil {
-		return
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read restart state: %w", err)
 	}
 	defer os.Remove(restartPath)
 
@@ -340,11 +352,14 @@ func checkRestartState(ctx context.Context, svc core.TelegramServicer, logger *z
 
 	var state restartState
 	if err := json.Unmarshal(data, &state); err != nil {
-		return
+		return fmt.Errorf("decode restart state: %w", err)
 	}
 
 	if state.MsgID == 0 && state.ChatID == 0 && state.PeerType == "" {
-		return
+		return nil
+	}
+	if svc == nil {
+		return fmt.Errorf("%w: telegram service unavailable for restart notification", core.ErrUnavailable)
 	}
 
 	var peer tg.InputPeerClass
@@ -378,7 +393,7 @@ func checkRestartState(ctx context.Context, svc core.TelegramServicer, logger *z
 		editErr = svc.EditMessage(ctx, peer, state.MsgID, msg)
 	}
 
-	// Fallback to sending a new message if editing fails or no msgID
+	// Fallback to sending a new message if editing fails or no msgID.
 	if state.MsgID == 0 || editErr != nil {
 		if _, sendErr := svc.SendMessage(ctx, peer, msg); sendErr != nil {
 			if logger != nil {
@@ -387,6 +402,8 @@ func checkRestartState(ctx context.Context, svc core.TelegramServicer, logger *z
 					zap.NamedError("sendErr", sendErr),
 				)
 			}
+			return errors.Join(editErr, sendErr)
 		}
 	}
+	return nil
 }

@@ -66,6 +66,26 @@ func TestTelegramRPCIngressGuards(t *testing.T) {
 	if !strings.Contains(string(clientData), "managedAPI := &managedAPI{") {
 		t.Error("assistant client must construct the managed Telegram API before wiring handlers")
 	}
+	telegramClientPath := filepath.Join(root, "internal", "telegram", "client.go")
+	telegramClientData, err := os.ReadFile(telegramClientPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(telegramClientData), "go checkRestartState(") {
+		t.Errorf("%s reintroduced an unowned restart notification goroutine", telegramClientPath)
+	}
+	if !strings.Contains(string(telegramClientData), "func (c *Client) NotifyRestartState(") {
+		t.Errorf("%s must expose restart notification as lifecycle-owned work", telegramClientPath)
+	}
+	appPath := filepath.Join(root, "internal", "app", "app.go")
+	appData, err := os.ReadFile(appPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(appData), `Name:    "telegram-restart-notification"`) {
+		t.Errorf("%s must supervise Telegram restart notification work", appPath)
+	}
+
 	for _, forbidden := range []string{
 		"NewClientInteraction(tdClient.API()",
 		"NewTelegramEntityFetcher(tdClient.API()",

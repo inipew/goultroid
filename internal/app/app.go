@@ -299,6 +299,22 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 			return nil, fmt.Errorf("register Telegram dialog warmup worker: %w", err)
 		}
 	}
+	if tgRuntime.client != nil {
+		if err := supervisor.Register(runtime.WorkerSpec{
+			Name:    "telegram-restart-notification",
+			Restart: runtime.NeverRestart,
+			Run: func(ctx context.Context) error {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-tgRuntime.client.Ready():
+					return tgRuntime.client.NotifyRestartState(ctx)
+				}
+			},
+		}); err != nil {
+			return nil, fmt.Errorf("register Telegram restart notification worker: %w", err)
+		}
+	}
 	if err := rt.Register(supervisor); err != nil {
 		return nil, fmt.Errorf("register supervisor component: %w", err)
 	}
