@@ -125,10 +125,12 @@ const (
 	// Automatic recovery is deliberately low-frequency as a safety scan; fast
 	// convergence comes from bounded wake signals emitted on monitor overflow or
 	// uncertain retry-driver errors.
-	recoveryScanLimit    = 256
-	recoveryInterval     = 30 * time.Second
-	recoveryTimeout      = 20 * time.Second
-	outboxSafetyInterval = 30 * time.Second
+	recoveryScanLimit     = 256
+	recoveryInterval      = 30 * time.Second
+	recoveryTimeout       = 20 * time.Second
+	outboxBatchSize       = 100
+	outboxDrainBatchLimit = 4
+	outboxSafetyInterval  = 30 * time.Second
 )
 
 // RecoverReport summarizes one recovery scan over unresolved occurrences.
@@ -336,17 +338,29 @@ func (m *Manager) drainOutbox(base context.Context) {
 	}
 	ctx, cancel := context.WithTimeout(base, 10*time.Second)
 	defer cancel()
-	events, err := store.ListPendingOutbox(ctx, 100)
-	if err != nil {
-		return
+
+	for batch := 0; batch < outboxDrainBatchLimit; batch++ {
+		events, err := store.ListPendingOutbox(ctx, outboxBatchSize)
+		if err != nil || len(events) == 0 {
+			return
+		}
+		for _, event := range events {
+			if err := sink(ctx, event); err != nil {
+				return
+			}
+			if err := store.MarkOutboxDelivered(ctx, event.ID); err != nil {
+				return
+			}
+		}
+		if len(events) < outboxBatchSize {
+			return
+		}
 	}
-	for _, event := range events {
-		if err := sink(ctx, event); err != nil {
-			return
-		}
-		if err := store.MarkOutboxDelivered(ctx, event.ID); err != nil {
-			return
-		}
+
+	// More rows may remain after the bounded per-wake budget. Re-arm the
+	// coalescing wake instead of waiting for the 30s crash-safety ticker.
+	if ctx.Err() == nil {
+		m.signalOutbox()
 	}
 }
 

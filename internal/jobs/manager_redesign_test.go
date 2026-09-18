@@ -3,7 +3,9 @@ package jobs_test
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -244,5 +246,62 @@ func TestEngineBackedOccurrenceCommitsBeforeTicketResolves(t *testing.T) {
 	}
 	if occurrenceState != string(jobs.OccurrenceCompleted) {
 		t.Fatalf("occurrence state=%q, want completed", occurrenceState)
+	}
+}
+
+func TestManagerOutboxWakeDrainsBeyondSingleBatch(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := jobsqlite.InitSchema(context.Background(), db.DB); err != nil {
+		t.Fatal(err)
+	}
+	pump := jobs.NewPersistencePump(1, 4)
+	if err := pump.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer pump.Stop(context.Background())
+
+	manager := jobs.NewManager(&capturedClient{}, jobsqlite.NewStore(db.DB), pump)
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(context.Background())
+
+	now := time.Now().UTC()
+	for i := 0; i < 250; i++ {
+		if _, err := db.DB.Exec(
+			"INSERT INTO job_outbox(event_id, occurrence_id, kind, payload, committed_at, delivery_state) VALUES(?, ?, ?, ?, ?, 'pending')",
+			fmt.Sprintf("event-%03d", i),
+			fmt.Sprintf("occ-%03d", i),
+			"test",
+			[]byte("{}"),
+			now,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var delivered atomic.Int32
+	manager.SetOutboxSink(func(context.Context, jobs.OutboxEvent) error {
+		delivered.Add(1)
+		return nil
+	})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for delivered.Load() < 250 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := delivered.Load(); got != 250 {
+		t.Fatalf("single wake delivered %d/250 outbox rows; backlog waited for safety ticker", got)
+	}
+	var pending int
+	if err := db.DB.QueryRow("SELECT COUNT(*) FROM job_outbox WHERE delivery_state = 'pending'").Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending != 0 {
+		t.Fatalf("outbox still has %d pending rows after wake-driven drain", pending)
 	}
 }
