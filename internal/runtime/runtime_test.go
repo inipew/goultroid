@@ -483,3 +483,38 @@ func TestRuntime_ShutdownReportMetrics(t *testing.T) {
 		t.Error("missing stop:comp1 in report")
 	}
 }
+
+
+func TestRuntime_StopWithinMakesOwnerContextAuthoritative(t *testing.T) {
+	r := New()
+	r.stopTimeout = time.Second
+
+	stopSawDeadline := make(chan struct{})
+	if err := r.Register(&callbackComponent{name: "slow", stopFn: func(ctx context.Context) error {
+		<-ctx.Done()
+		close(stopSawDeadline)
+		return ctx.Err()
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_ = r.StopWithin(ctx)
+
+	select {
+	case <-stopSawDeadline:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("runtime teardown did not observe lifecycle-owner deadline")
+	}
+	if elapsed := time.Since(start); elapsed >= 500*time.Millisecond {
+		t.Fatalf("StopWithin ignored owner budget; elapsed=%v", elapsed)
+	}
+	if err := r.Stop(context.Background()); err == nil {
+		t.Fatal("expected shutdown error after component stop deadline")
+	}
+}

@@ -206,20 +206,65 @@ func (r *Runtime) failStartAndRollback(startErr error, started []Component) erro
 	return fmt.Errorf("runtime startup and rollback failed: %w", errors.Join(causes...))
 }
 
-// Stop gracefully stops all started components in reverse dependency order.
-// Stop is idempotent; concurrent callers wait on the initial shutdown completion.
-func (r *Runtime) Stop(ctx context.Context) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+func (r *Runtime) startStop(ownerCtx context.Context) {
 	r.stopOnce.Do(func() {
 		go func() {
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), r.stopTimeout)
+			shutdownCtx, cancel := r.shutdownContext(ownerCtx)
 			defer cancel()
 			r.stopErr = r.performStop(shutdownCtx)
 			close(r.stopDone)
 		}()
 	})
+}
+
+func (r *Runtime) shutdownContext(ownerCtx context.Context) (context.Context, context.CancelFunc) {
+	deadline := time.Now().Add(r.stopTimeout)
+	if ownerCtx != nil {
+		if ownerDeadline, ok := ownerCtx.Deadline(); ok && ownerDeadline.Before(deadline) {
+			deadline = ownerDeadline
+		}
+	}
+
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	if ownerCtx == nil {
+		return ctx, cancel
+	}
+
+	stopForward := context.AfterFunc(ownerCtx, cancel)
+	if ownerCtx.Err() != nil {
+		cancel()
+	}
+	return ctx, func() {
+		stopForward()
+		cancel()
+	}
+}
+
+// Stop gracefully stops all started components in reverse dependency order.
+// Stop is idempotent; caller cancellation only bounds how long that caller
+// waits. The actual teardown retains Runtime's own stop budget.
+func (r *Runtime) Stop(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r.startStop(nil)
+
+	select {
+	case <-r.stopDone:
+		return r.stopErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// StopWithin is for the lifecycle owner. Unlike Stop, ctx is authoritative for
+// the actual teardown as well as the caller wait, capped by Runtime's own stop
+// timeout. This lets a composition root enforce one hard shutdown deadline.
+func (r *Runtime) StopWithin(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r.startStop(ctx)
 
 	select {
 	case <-r.stopDone:

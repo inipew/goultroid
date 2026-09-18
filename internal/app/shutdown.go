@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const appShutdownTimeout = 30 * time.Second
+
 func (a *App) Shutdown(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -27,25 +29,28 @@ func (a *App) Shutdown(ctx context.Context) error {
 }
 
 func (a *App) performShutdown() {
-	quiesceCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// One App-owned deadline governs every teardown phase. External Shutdown
+	// caller contexts only bound their own wait and never shorten this budget.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), appShutdownTimeout)
+	defer shutdownCancel()
+
+	quiesceCtx, cancelQuiesce := context.WithTimeout(shutdownCtx, 5*time.Second)
 	if a.client != nil && a.client.Dispatcher() != nil {
 		_ = a.client.Dispatcher().Quiesce(quiesceCtx)
 	}
-	cancel()
+	cancelQuiesce()
 	a.markStopping()
 
 	var errs []error
 	if a.runtime != nil {
-		// Runtime owns its own bounded stop deadline. Do not couple actual
-		// teardown to the first caller's wait context.
-		if err := a.runtime.Stop(context.Background()); err != nil {
+		if err := a.runtime.StopWithin(shutdownCtx); err != nil {
 			errs = append(errs, fmt.Errorf("runtime: %w", err))
 		}
 	}
 
-	// Transport/RPC remains available throughout Runtime drain. The published
-	// cancel function also owns a bounded join, so no client.Run goroutine is
-	// waited on indefinitely after the execution/runtime layers have stopped.
+	// Transport/RPC remains available throughout Runtime drain. Once runtime
+	// teardown finishes (or consumes the global budget), cancel transport and
+	// join only within the remaining global budget.
 	a.lifecycleMu.Lock()
 	transportCancel := a.transportCancel
 	transportDone := a.transportDone
@@ -59,10 +64,21 @@ func (a *App) performShutdown() {
 		select {
 		case <-transportDone:
 			if !timer.Stop() {
-				<-timer.C
+				select {
+				case <-timer.C:
+				default:
+				}
 			}
 		case <-timer.C:
 			errs = append(errs, errors.New("telegram transport did not stop before join deadline"))
+		case <-shutdownCtx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			errs = append(errs, fmt.Errorf("telegram transport join exceeded global shutdown deadline: %w", shutdownCtx.Err()))
 		}
 	}
 	if appCancel != nil {
