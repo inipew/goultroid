@@ -1,7 +1,6 @@
 package callback
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -15,8 +14,6 @@ type StateStore struct {
 	mu            sync.RWMutex
 	items         map[string]stateItem
 	retainedBytes int64
-	cancel        context.CancelFunc
-	wg            sync.WaitGroup
 }
 
 const (
@@ -235,6 +232,10 @@ func (s *StateStore) StoreWithScope(data any, scope StateScope, ttl time.Duratio
 
 // Len returns current entry count (for metrics).
 func (s *StateStore) Len() int {
+	if s == nil {
+		return 0
+	}
+	s.Prune()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.items)

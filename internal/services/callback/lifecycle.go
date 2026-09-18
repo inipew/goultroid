@@ -44,67 +44,14 @@ func (s *StateStore) Prune() int {
 	return pruned
 }
 
-// Start launches a background goroutine that periodically prunes expired entries.
-// It is safe to call multiple times; subsequent calls are no-op.
-func (s *StateStore) Start(ctx context.Context) error {
-	if s == nil {
-		return nil
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	s.mu.Lock()
-	if s.cancel != nil {
-		s.mu.Unlock()
-		return nil
-	}
-	runCtx, cancel := context.WithCancel(ctx)
-	s.cancel = cancel
-	s.wg.Add(1)
-	s.mu.Unlock()
-
-	go func() {
-		defer s.wg.Done()
-		ticker := time.NewTicker(60 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				s.Prune()
-			case <-runCtx.Done():
-				return
-			}
-		}
-	}()
+// Start is intentionally passive. StateStore expiration is opportunistic:
+ // Get/Consume delete touched expired entries, Store prunes under pressure, and
+ // Len/Prune perform explicit sweeps. This avoids periodic idle wakeups.
+func (s *StateStore) Start(context.Context) error {
 	return nil
 }
 
-// Stop terminates the background pruning goroutine.
-func (s *StateStore) Stop(ctx context.Context) error {
-	if s == nil {
-		return nil
-	}
-	s.mu.Lock()
-	cancel := s.cancel
-	s.cancel = nil
-	s.mu.Unlock()
-
-	if cancel != nil {
-		cancel()
-		done := make(chan struct{})
-		go func() {
-			s.wg.Wait()
-			close(done)
-		}()
-		if ctx != nil {
-			select {
-			case <-done:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		} else {
-			<-done
-		}
-	}
+// Stop is a no-op because StateStore owns no background goroutines.
+func (s *StateStore) Stop(context.Context) error {
 	return nil
 }

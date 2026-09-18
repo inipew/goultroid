@@ -165,3 +165,24 @@ func TestPeerStorageInvalidateContextClearsPhoneAccessHash(t *testing.T) {
 		t.Fatalf("expected phone access hash to be cleared, got %d", value.AccessHash)
 	}
 }
+
+func TestPeerStorageProcessCacheIsHardBounded(t *testing.T) {
+	storage := NewPeerStorage(nil)
+
+	storage.mu.Lock()
+	for i := 0; i < maxPeerStorageCacheEntries+250; i++ {
+		key := peers.Key{Prefix: "user", ID: int64(i + 1)}
+		storage.cachePeerLocked(key, int64(i+1000))
+		storage.cacheEntityLocked(fmt.Sprintf("user:%d", i+1), peerEntitySnapshot{username: fmt.Sprintf("u%d", i+1)})
+	}
+	peerLen := len(storage.peers)
+	entityLen := len(storage.entities)
+	storage.mu.Unlock()
+
+	if peerLen > maxPeerStorageCacheEntries {
+		t.Fatalf("peer cache exceeded cap: %d > %d", peerLen, maxPeerStorageCacheEntries)
+	}
+	if entityLen > maxPeerStorageCacheEntries {
+		t.Fatalf("entity cache exceeded cap: %d > %d", entityLen, maxPeerStorageCacheEntries)
+	}
+}

@@ -32,7 +32,29 @@ type peerEntitySnapshot struct {
 	username, phone, firstName, lastName, title string
 }
 
+const maxPeerStorageCacheEntries = 4096
+
 var _ peers.Storage = (*PeerStorage)(nil)
+
+func (s *PeerStorage) cachePeerLocked(key peers.Key, accessHash int64) {
+	if _, exists := s.peers[key]; !exists && len(s.peers) >= maxPeerStorageCacheEntries {
+		for oldest := range s.peers {
+			delete(s.peers, oldest)
+			break
+		}
+	}
+	s.cachePeerLocked(key, accessHash)
+}
+
+func (s *PeerStorage) cacheEntityLocked(key string, snapshot peerEntitySnapshot) {
+	if _, exists := s.entities[key]; !exists && len(s.entities) >= maxPeerStorageCacheEntries {
+		for oldest := range s.entities {
+			delete(s.entities, oldest)
+			break
+		}
+	}
+	s.cacheEntityLocked(key, snapshot)
+}
 
 func NewPeerStorage(db *database.DB) *PeerStorage {
 	return &PeerStorage{db: db, peers: make(map[peers.Key]int64), entities: make(map[string]peerEntitySnapshot)}
@@ -63,7 +85,7 @@ func (s *PeerStorage) Save(ctx context.Context, key peers.Key, value peers.Value
 		return fmt.Errorf("failed to save peer (%s:%d): %w", key.Prefix, key.ID, err)
 	}
 	s.mu.Lock()
-	s.peers[key] = value.AccessHash
+	s.cachePeerLocked(key, value.AccessHash)
 	s.mu.Unlock()
 	return nil
 }
@@ -89,7 +111,7 @@ func (s *PeerStorage) Find(ctx context.Context, key peers.Key) (peers.Value, boo
 		return peers.Value{}, false, fmt.Errorf("failed to find peer (%s:%d): %w", key.Prefix, key.ID, err)
 	}
 	s.mu.Lock()
-	s.peers[key] = accessHash
+	s.cachePeerLocked(key, accessHash)
 	s.mu.Unlock()
 	return peers.Value{AccessHash: accessHash}, true, nil
 }
@@ -225,7 +247,7 @@ func (s *PeerStorage) SaveEntity(ctx context.Context, prefix string, id int64, u
 		return err
 	}
 	s.mu.Lock()
-	s.entities[key] = snapshot
+	s.cacheEntityLocked(key, snapshot)
 	s.mu.Unlock()
 	return nil
 }
@@ -396,10 +418,10 @@ func (s *PeerStorage) SaveEntitiesBatch(ctx context.Context, users []*tg.User, c
 
 	s.mu.Lock()
 	for _, item := range toStore {
-		s.peers[item.key] = item.value
+		s.cachePeerLocked(item.key, item.value)
 	}
 	for _, item := range toEntity {
-		s.entities[item.idStr] = item.snapshot
+		s.cacheEntityLocked(item.idStr, item.snapshot)
 	}
 	s.mu.Unlock()
 
