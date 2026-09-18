@@ -24,12 +24,18 @@ const DefaultMaxTrackedResources = 16 * 1024
 // ctx cancellation; Manager also enforces the caller deadline around callbacks.
 type CleanupFunc func(context.Context) error
 
+type cleanupRun struct {
+	done chan struct{}
+	err  error
+}
+
 type Manager struct {
 	mu           sync.RWMutex
 	policy       LeakPolicy
 	maxResources int
 	resources    map[string]Resource
 	cleanups     map[string]CleanupFunc
+	cleanupRuns  map[string]*cleanupRun
 }
 
 // NewManager initializes a new thread-safe resource manager with a hard
@@ -47,6 +53,7 @@ func NewManagerWithLimit(maxResources int) *Manager {
 		maxResources: maxResources,
 		resources:    make(map[string]Resource),
 		cleanups:     make(map[string]CleanupFunc),
+		cleanupRuns:  make(map[string]*cleanupRun),
 	}
 }
 
@@ -130,6 +137,7 @@ func (m *Manager) Release(id string) error {
 	r.State = StateReleased
 	delete(m.resources, id)
 	delete(m.cleanups, id)
+	delete(m.cleanupRuns, id)
 	return nil
 }
 
@@ -249,10 +257,7 @@ func (m *Manager) AllSnapshots() []OwnerSnapshot {
 	return result
 }
 
-func runCleanupWithContext(ctx context.Context, cleanup CleanupFunc) error {
-	if cleanup == nil {
-		return nil
-	}
+func (m *Manager) cleanupResource(ctx context.Context, id string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -260,21 +265,56 @@ func runCleanupWithContext(ctx context.Context, cleanup CleanupFunc) error {
 		return err
 	}
 
-	result := make(chan error, 1)
+	m.mu.Lock()
+	if _, exists := m.resources[id]; !exists {
+		m.mu.Unlock()
+		return nil
+	}
+	if run := m.cleanupRuns[id]; run != nil {
+		m.mu.Unlock()
+		select {
+		case <-run.done:
+			return run.err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	cleanup := m.cleanups[id]
+	if cleanup == nil {
+		delete(m.resources, id)
+		delete(m.cleanups, id)
+		m.mu.Unlock()
+		return nil
+	}
+	run := &cleanupRun{done: make(chan struct{})}
+	m.cleanupRuns[id] = run
+	m.mu.Unlock()
+
 	go func() {
 		var cleanupErr error
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				cleanupErr = fmt.Errorf("cleanup panic: %v", recovered)
 			}
-			result <- cleanupErr
+
+			m.mu.Lock()
+			run.err = cleanupErr
+			if m.cleanupRuns[id] == run {
+				delete(m.cleanupRuns, id)
+				if cleanupErr == nil {
+					delete(m.resources, id)
+					delete(m.cleanups, id)
+				}
+			}
+			close(run.done)
+			m.mu.Unlock()
 		}()
 		cleanupErr = cleanup(ctx)
 	}()
 
 	select {
-	case err := <-result:
-		return err
+	case <-run.done:
+		return run.err
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -293,37 +333,26 @@ func (m *Manager) ForceCleanupOwnerContext(ctx context.Context, owner string) []
 		ctx = context.Background()
 	}
 	m.mu.RLock()
-	toClean := make([]struct {
-		id      string
-		cleanup CleanupFunc
-	}, 0)
-	for id, r := range m.resources {
-		if r.Owner == owner {
-			toClean = append(toClean, struct {
-				id      string
-				cleanup CleanupFunc
-			}{id: id, cleanup: m.cleanups[id]})
+	ids := make([]string, 0)
+	for id, resource := range m.resources {
+		if resource.Owner == owner {
+			ids = append(ids, id)
 		}
 	}
 	m.mu.RUnlock()
 
 	var errs []error
-	for _, item := range toClean {
+	for _, id := range ids {
 		if err := ctx.Err(); err != nil {
 			errs = append(errs, err)
 			break
 		}
-		if err := runCleanupWithContext(ctx, item.cleanup); err != nil {
-			errs = append(errs, fmt.Errorf("cleanup %s: %w", item.id, err))
+		if err := m.cleanupResource(ctx, id); err != nil {
+			errs = append(errs, fmt.Errorf("cleanup %s: %w", id, err))
 			if ctx.Err() != nil {
 				break
 			}
-			continue
 		}
-		m.mu.Lock()
-		delete(m.resources, item.id)
-		delete(m.cleanups, item.id)
-		m.mu.Unlock()
 	}
 	return errs
 }

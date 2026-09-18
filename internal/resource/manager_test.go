@@ -3,6 +3,7 @@ package resource
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -162,4 +163,40 @@ func TestResourceManager_ForceCleanupRespectsDeadlineAndRetainsFailedResource(t 
 	if _, found := mgr.Get("blocked"); !found {
 		t.Fatal("timed-out resource was removed from tracking")
 	}
+}
+
+func TestResourceManager_ForceCleanupDoesNotDuplicateTimedOutCallback(t *testing.T) {
+	mgr := NewManager()
+	mgr.SetLeakPolicy(LeakPolicyForceCleanup)
+	var calls atomic.Int32
+	release := make(chan struct{})
+	if err := mgr.RegisterWithCleanup(Resource{ID: "slow", Owner: "plugin:slow", Type: TypeTempFile}, func() error {
+		calls.Add(1)
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 2; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+		_, err := mgr.HandleLeaksContext(ctx, "plugin:slow")
+		cancel()
+		if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("attempt %d: expected deadline error, got %v", i+1, err)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("timed-out cleanup was started %d times, want 1 in-flight callback", got)
+	}
+
+	close(release)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, found := mgr.Get("slow"); !found {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("resource remained tracked after the original cleanup eventually succeeded")
 }
