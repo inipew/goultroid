@@ -147,7 +147,7 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 
 	runID := s.runSeq.Add(1)
 	scope := tasks.ScopeIdentity{
-		Owner:      tasks.OwnerID("service:broadcast"),
+		Owner:      "service:broadcast",
 		Generation: runID,
 	}
 	runCtx, cancel := context.WithCancel(ctx)
