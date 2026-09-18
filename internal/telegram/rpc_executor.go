@@ -270,9 +270,14 @@ func (e *RPCExecutor) Do(ctx context.Context, meta RPCMeta, operation func(conte
 			}
 		}
 
-		// Check rate limiter
-		reservation := e.limiter.Reserve(e.clock.Now(), dimensions, 1)
-		if !reservation.Allowed {
+		// Acquire limiter capacity before every physical RPC attempt. A denied
+		// reservation does not consume tokens, so a successful wait must be
+		// followed by a fresh reservation instead of falling through to the RPC.
+		for {
+			reservation := e.limiter.Reserve(e.clock.Now(), dimensions, 1)
+			if reservation.Allowed {
+				break
+			}
 			if reservation.RetryAfter <= 0 {
 				e.metrics.ObserveFloodWait(meta.Method, 0, true)
 				return &RPCFailure{
@@ -304,6 +309,15 @@ func (e *RPCExecutor) Do(ctx context.Context, meta RPCMeta, operation func(conte
 			}
 			e.metrics.ObserveWait("limiter", reservation.RetryAfter)
 			if err := e.sleeper.Sleep(opCtx, reservation.RetryAfter); err != nil {
+				return &RPCFailure{
+					Method:     meta.Method,
+					Class:      RPCUnknown,
+					Attempts:   attempt - 1,
+					RetryAfter: reservation.RetryAfter,
+					Err:        err,
+				}
+			}
+			if err := opCtx.Err(); err != nil {
 				return &RPCFailure{
 					Method:     meta.Method,
 					Class:      RPCUnknown,

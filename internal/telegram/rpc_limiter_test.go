@@ -53,6 +53,39 @@ func TestHierarchicalRPCLimiter_AtomicRejection(t *testing.T) {
 	}
 }
 
+func TestHierarchicalRPCLimiter_DefaultMethodBucketIsActive(t *testing.T) {
+	limiter := NewHierarchicalRPCLimiter(HierarchicalLimiterConfig{
+		GlobalRate:         100,
+		GlobalBurst:        100,
+		DefaultFamilyRate:  100,
+		DefaultFamilyBurst: 100,
+		DefaultMethodRate:  1,
+		DefaultMethodBurst: 1,
+		DefaultPeerRate:    100,
+		DefaultPeerBurst:   100,
+	})
+	now := time.Now()
+
+	dims := []LimitKey{
+		{Scope: "global", Key: "account"},
+		{Scope: "family", Key: "messages"},
+		{Scope: "method", Key: "messages.sendMessage"},
+		{Scope: "peer", Key: "user:123"},
+	}
+	if res := limiter.Reserve(now, dims, 1); !res.Allowed {
+		t.Fatalf("expected first method reservation to succeed, got retry after %v", res.RetryAfter)
+	}
+	if res := limiter.Reserve(now, dims, 1); res.Allowed || res.RetryAfter <= 0 {
+		t.Fatalf("expected second reservation to be rejected by method bucket, got %+v", res)
+	}
+
+	otherMethod := append([]LimitKey(nil), dims...)
+	otherMethod[2] = LimitKey{Scope: "method", Key: "messages.editMessage"}
+	if res := limiter.Reserve(now, otherMethod, 1); !res.Allowed {
+		t.Fatalf("expected independent method bucket to allow request, got retry after %v", res.RetryAfter)
+	}
+}
+
 func TestHierarchicalRPCLimiter_FloodWaitPenalty(t *testing.T) {
 	limiter := NewHierarchicalRPCLimiter(DefaultHierarchicalLimiterConfig())
 	now := time.Now()

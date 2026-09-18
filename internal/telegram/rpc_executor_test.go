@@ -241,6 +241,58 @@ func TestRPCExecutor_Case6_CanceledDuringLimiterWait(t *testing.T) {
 	}
 }
 
+type sequenceLimiter struct {
+	mu           sync.Mutex
+	reservations []Reservation
+	calls        int
+}
+
+func (s *sequenceLimiter) Reserve(time.Time, []LimitKey, int) Reservation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	if len(s.reservations) == 0 {
+		return Reservation{Allowed: true}
+	}
+	res := s.reservations[0]
+	s.reservations = s.reservations[1:]
+	return res
+}
+
+func (s *sequenceLimiter) Penalize(time.Time, []LimitKey, time.Duration) {}
+
+func TestRPCExecutor_LimiterWaitReReservesBeforeRPC(t *testing.T) {
+	clock := NewFakeClock(time.Now())
+	sleeper := &FakeSleeper{}
+	limiter := &sequenceLimiter{reservations: []Reservation{
+		{Allowed: false, RetryAfter: 10 * time.Millisecond},
+		{Allowed: true},
+	}}
+	exec := newTestExecutor(limiter, clock, sleeper, nil)
+
+	var calls int
+	err := exec.Do(context.Background(), RPCMeta{
+		Method: "messages.sendMessage",
+		Kind:   RPCReadOnly,
+	}, func(context.Context) error {
+		calls++
+		return nil
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if limiter.calls != 2 {
+		t.Fatalf("expected limiter to be reserved twice, got %d", limiter.calls)
+	}
+	if sleeper.Calls() != 1 {
+		t.Fatalf("expected exactly one limiter wait, got %d", sleeper.Calls())
+	}
+	if calls != 1 {
+		t.Fatalf("expected exactly one physical RPC call, got %d", calls)
+	}
+}
+
 func TestRPCExecutor_LimiterDeniedZeroRetryAfter_FailClosed(t *testing.T) {
 	clock := NewFakeClock(time.Now())
 	sleeper := &FakeSleeper{}

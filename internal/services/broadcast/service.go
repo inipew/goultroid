@@ -2,12 +2,12 @@ package broadcast
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/gotd/td/tg"
-	"github.com/gotd/td/tgerr"
 	"github.com/inipew/goultroid/internal/core"
 	"go.uber.org/zap"
 )
@@ -134,31 +134,20 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 		}
 
 		sent := false
-		for attempts := 0; attempts < 3; attempts++ {
-			_, err := svc.SendMessage(runCtx, target, req.Text)
-			if err == nil {
-				sent = true
-				report.Sent++
-				break
-			}
-			if waitDuration, ok := tgerr.AsFloodWait(err); ok {
+		_, err := svc.SendMessage(runCtx, target, req.Text)
+		if err == nil {
+			sent = true
+			report.Sent++
+		} else {
+			var rateErr *core.RateLimitError
+			if errors.As(err, &rateErr) {
 				report.RateLimited++
-				if waitDuration > 60*time.Second {
-					s.logger.Warn("flood wait too long, skipping target", zap.Duration("wait", waitDuration))
-					break
-				}
-				s.logger.Info("flood wait encountered during broadcast, backing off", zap.Duration("wait", waitDuration))
-				select {
-				case <-runCtx.Done():
-					report.Canceled = true
-					report.Duration = time.Since(start)
-					return &report, runCtx.Err()
-				case <-time.After(waitDuration):
-				}
-				continue
+				s.logger.Info("broadcast target deferred by Telegram rate limit",
+					zap.Duration("retry_after", rateErr.RateLimitWait()),
+				)
+			} else {
+				s.logger.Debug("broadcast message error", zap.Error(err))
 			}
-			s.logger.Debug("broadcast message error", zap.Error(err))
-			break
 		}
 
 		if !sent {

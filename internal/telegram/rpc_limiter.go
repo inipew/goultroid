@@ -26,6 +26,8 @@ type HierarchicalLimiterConfig struct {
 	DefaultFamilyRate  float64
 	DefaultFamilyBurst float64
 	MethodConfigs      map[string]LimiterBucketConfig
+	DefaultMethodRate  float64
+	DefaultMethodBurst float64
 	DefaultPeerRate    float64
 	DefaultPeerBurst   float64
 	MaxBuckets         int
@@ -47,12 +49,14 @@ func DefaultHierarchicalLimiterConfig() HierarchicalLimiterConfig {
 			"photos":   {Rate: 10.0, Capacity: 15.0},
 			"updates":  {Rate: 20.0, Capacity: 30.0},
 		},
-		MethodConfigs:    make(map[string]LimiterBucketConfig),
-		DefaultPeerRate:  1.0,
-		DefaultPeerBurst: 3.0,
-		MaxBuckets:       DefaultMaxLimiterBuckets,
-		MaxPenalties:     DefaultMaxLimiterPenalties,
-		IdleTTL:          10 * time.Minute,
+		MethodConfigs:      make(map[string]LimiterBucketConfig),
+		DefaultMethodRate:  15.0,
+		DefaultMethodBurst: 20.0,
+		DefaultPeerRate:    1.0,
+		DefaultPeerBurst:   3.0,
+		MaxBuckets:         DefaultMaxLimiterBuckets,
+		MaxPenalties:       DefaultMaxLimiterPenalties,
+		IdleTTL:            10 * time.Minute,
 	}
 }
 
@@ -101,6 +105,12 @@ func NewHierarchicalRPCLimiter(cfg HierarchicalLimiterConfig) *HierarchicalRPCLi
 	}
 	if cfg.DefaultFamilyBurst <= 0 {
 		cfg.DefaultFamilyBurst = 20.0
+	}
+	if cfg.DefaultMethodRate <= 0 {
+		cfg.DefaultMethodRate = 15.0
+	}
+	if cfg.DefaultMethodBurst <= 0 {
+		cfg.DefaultMethodBurst = 20.0
 	}
 	if cfg.DefaultPeerRate <= 0 {
 		cfg.DefaultPeerRate = 1.0
@@ -154,7 +164,8 @@ func (l *HierarchicalRPCLimiter) getOrCreateBucketLocked(key LimitKey, now time.
 			rate = mcfg.Rate
 			cap = mcfg.Capacity
 		} else {
-			return nil
+			rate = l.cfg.DefaultMethodRate
+			cap = l.cfg.DefaultMethodBurst
 		}
 	case "peer":
 		rate = l.cfg.DefaultPeerRate

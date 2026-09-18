@@ -62,6 +62,36 @@ func TestBroadcast_Success(t *testing.T) {
 	}
 }
 
+type rateLimitedTelegram struct {
+	core.MockTelegramServicer
+	calls int32
+}
+
+func (m *rateLimitedTelegram) SendMessage(context.Context, tg.InputPeerClass, string) (*tg.Message, error) {
+	atomic.AddInt32(&m.calls, 1)
+	return nil, core.NewRateLimitError(30*time.Second, errors.New("telegram flood wait"))
+}
+
+func TestBroadcast_RateLimitIsNotRetriedLocally(t *testing.T) {
+	mockTG := &rateLimitedTelegram{}
+	svc := broadcast.NewService(mockTG, zap.NewNop())
+
+	rep, err := svc.Broadcast(context.Background(), broadcast.BroadcastRequest{
+		Targets: []tg.InputPeerClass{&tg.InputPeerUser{UserID: 1}},
+		Text:    "hello",
+		Delay:   time.Nanosecond,
+	})
+	if err != nil {
+		t.Fatalf("broadcast should account for a per-target rate limit without failing the whole run: %v", err)
+	}
+	if got := atomic.LoadInt32(&mockTG.calls); got != 1 {
+		t.Fatalf("expected exactly one SendMessage call and no local retry, got %d", got)
+	}
+	if rep == nil || rep.RateLimited != 1 || rep.Failed != 1 || rep.Sent != 0 {
+		t.Fatalf("unexpected broadcast report: %+v", rep)
+	}
+}
+
 func TestBroadcast_Validation(t *testing.T) {
 	mockTG := &mockTelegram{}
 	svc := broadcast.NewService(mockTG, zap.NewNop())

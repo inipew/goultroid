@@ -41,12 +41,12 @@ func mapTelegramError(err error) error {
 		return nil
 	}
 	if tgerr.Is(err, "CHAT_ID_INVALID", "PEER_ID_INVALID", "USER_ID_INVALID", "MESSAGE_ID_INVALID") {
-		return fmt.Errorf("%w: %v", core.ErrNotFound, err)
+		return fmt.Errorf("%w: %w", core.ErrNotFound, err)
 	}
 	if tgerr.Is(err, "CHAT_ADMIN_REQUIRED", "CHAT_WRITE_FORBIDDEN") {
-		return fmt.Errorf("%w: %v", core.ErrPermissionDenied, err)
+		return fmt.Errorf("%w: %w", core.ErrPermissionDenied, err)
 	}
-	return fmt.Errorf("%w: %v", core.ErrTelegram, err)
+	return fmt.Errorf("%w: %w", core.ErrTelegram, err)
 }
 
 // FullBanRights returns the complete set of chat restrictions representing a full ban.

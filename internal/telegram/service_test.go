@@ -176,12 +176,18 @@ func TestMapTelegramError(t *testing.T) {
 	if !errors.Is(mappedChat, core.ErrNotFound) {
 		t.Errorf("expected mappedChat to match ErrNotFound, got %v", mappedChat)
 	}
+	if !errors.Is(mappedChat, chatInvalidErr) {
+		t.Errorf("expected mappedChat to preserve raw Telegram error cause, got %v", mappedChat)
+	}
 
 	// 4. Permission denied errors
 	adminReqErr := tgerr.New(400, "CHAT_ADMIN_REQUIRED")
 	mappedAdmin := mapTelegramError(adminReqErr)
 	if !errors.Is(mappedAdmin, core.ErrPermissionDenied) {
 		t.Errorf("expected mappedAdmin to match ErrPermissionDenied, got %v", mappedAdmin)
+	}
+	if !errors.Is(mappedAdmin, adminReqErr) {
+		t.Errorf("expected mappedAdmin to preserve raw Telegram error cause, got %v", mappedAdmin)
 	}
 
 	// 4b. Idempotent success errors (RIGHTS_NOT_MODIFIED, CHAT_NOT_MODIFIED)
@@ -199,6 +205,9 @@ func TestMapTelegramError(t *testing.T) {
 	mappedGen := mapTelegramError(genErr)
 	if !errors.Is(mappedGen, core.ErrTelegram) {
 		t.Errorf("expected mappedGen to match ErrTelegram, got %v", mappedGen)
+	}
+	if !errors.Is(mappedGen, genErr) {
+		t.Errorf("expected mappedGen to preserve raw Telegram error cause, got %v", mappedGen)
 	}
 }
 
