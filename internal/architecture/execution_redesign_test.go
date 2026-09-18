@@ -215,3 +215,58 @@ func TestTelegramEventConstructionUsesCanonicalNormalizerBoundary(t *testing.T) 
 		}
 	}
 }
+
+func TestPerformanceResilienceHotPathsStayBounded(t *testing.T) {
+	root := repositoryRoot(t)
+
+	limiterPath := filepath.Join(root, "internal", "telegram", "rpc_limiter.go")
+	limiterData, err := os.ReadFile(limiterPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limiter := string(limiterData)
+	if strings.Contains(limiter, "for key, bucket := range l.buckets") ||
+		strings.Contains(limiter, "for key, until := range l.penalties") {
+		t.Errorf("%s must not sweep all limiter state on the RPC hot path", limiterPath)
+	}
+	for _, required := range []string{"bucketLRU", "penaltyHeap", "overflowPenaltyUntil"} {
+		if !strings.Contains(limiter, required) {
+			t.Errorf("%s is missing bounded limiter structure %q", limiterPath, required)
+		}
+	}
+
+	jobsPath := filepath.Join(root, "internal", "jobs", "manager.go")
+	jobsData, err := os.ReadFile(jobsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(jobsData), "time.AfterFunc(") {
+		t.Errorf("%s must not create one timer per deferred occurrence", jobsPath)
+	}
+	if !strings.Contains(string(jobsData), "EarliestDeferredOccurrenceDue(") {
+		t.Errorf("%s must coordinate durable retry deadlines through one timer", jobsPath)
+	}
+
+	broadcastPath := filepath.Join(root, "internal", "services", "broadcast", "service.go")
+	broadcastData, err := os.ReadFile(broadcastPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"time.After(", "time.Sleep("} {
+		if strings.Contains(string(broadcastData), forbidden) {
+			t.Errorf("%s must not hold a broadcast worker with %q", broadcastPath, forbidden)
+		}
+	}
+	if !strings.Contains(string(broadcastData), "client.Submit(") {
+		t.Errorf("%s must delegate physical target sends to TaskEngine", broadcastPath)
+	}
+
+	wiringPath := filepath.Join(root, "internal", "app", "wiring_services.go")
+	wiringData, err := os.ReadFile(wiringPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wiringData), "broadcastService.SetTasks(core.taskEngine)") {
+		t.Errorf("%s must wire broadcast execution to the shared TaskEngine", wiringPath)
+	}
+}
