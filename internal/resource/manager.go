@@ -17,19 +17,31 @@ const (
 )
 
 // Manager tracks, inspects, and audits the ownership and lifecycle of long-lived resources.
+const DefaultMaxTrackedResources = 16 * 1024
+
 type Manager struct {
-	mu        sync.RWMutex
-	policy    LeakPolicy
-	resources map[string]Resource
-	cleanups  map[string]func() error
+	mu           sync.RWMutex
+	policy       LeakPolicy
+	maxResources int
+	resources    map[string]Resource
+	cleanups     map[string]func() error
 }
 
-// NewManager initializes a new thread-safe resource manager.
+// NewManager initializes a new thread-safe resource manager with a hard
+// cardinality bound so resource tracking itself cannot become an unbounded leak.
 func NewManager() *Manager {
+	return NewManagerWithLimit(DefaultMaxTrackedResources)
+}
+
+func NewManagerWithLimit(maxResources int) *Manager {
+	if maxResources <= 0 {
+		maxResources = DefaultMaxTrackedResources
+	}
 	return &Manager{
-		policy:    LeakPolicyWarn,
-		resources: make(map[string]Resource),
-		cleanups:  make(map[string]func() error),
+		policy:       LeakPolicyWarn,
+		maxResources: maxResources,
+		resources:    make(map[string]Resource),
+		cleanups:     make(map[string]func() error),
 	}
 }
 
@@ -76,6 +88,9 @@ func (m *Manager) RegisterWithCleanup(r Resource, cleanup func() error) error {
 
 	if _, exists := m.resources[r.ID]; exists {
 		return fmt.Errorf("resource with ID %q already registered", r.ID)
+	}
+	if len(m.resources) >= m.maxResources {
+		return fmt.Errorf("resource tracking capacity reached (%d/%d)", len(m.resources), m.maxResources)
 	}
 
 	m.resources[r.ID] = r

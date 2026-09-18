@@ -113,12 +113,18 @@ func (s *Scope) Go(fn func(context.Context)) error {
 	var rID string
 	if mgr != nil {
 		rID = fmt.Sprintf("goroutine:%s:%d", s.owner, s.goCounter.Add(1))
-		_ = mgr.Register(resource.Resource{
+		if err := mgr.Register(resource.Resource{
 			ID:        rID,
 			Owner:     s.owner,
 			Type:      resource.TypeGoroutine,
 			CreatedAt: time.Now().UTC(),
-		})
+		}); err != nil {
+			s.mu.Lock()
+			s.activeGoroutines--
+			s.mu.Unlock()
+			s.wg.Done()
+			return fmt.Errorf("track plugin goroutine: %w", err)
+		}
 	}
 
 	go func() {
@@ -255,12 +261,21 @@ func (s *Scope) Track(r Resource) error {
 		s.mu.Unlock()
 		return errors.New("plugin scope is closed")
 	}
+	if _, exists := s.resources[r.ID]; exists {
+		s.mu.Unlock()
+		return fmt.Errorf("resource %q already tracked by plugin scope", r.ID)
+	}
 	s.resources[r.ID] = r
 	mgr := s.manager
 	s.mu.Unlock()
 
 	if mgr != nil {
-		_ = mgr.Register(r)
+		if err := mgr.Register(r); err != nil {
+			s.mu.Lock()
+			delete(s.resources, r.ID)
+			s.mu.Unlock()
+			return fmt.Errorf("register scoped resource: %w", err)
+		}
 	}
 	return nil
 }

@@ -173,3 +173,38 @@ func TestScope_Defer_PanicReported(t *testing.T) {
 		t.Fatalf("expected value 'cleanup panic', got %v", last.Value)
 	}
 }
+
+
+func TestScope_TrackingFailsClosedWhenGlobalResourceCapacityIsFull(t *testing.T) {
+	mgr := resource.NewManagerWithLimit(1)
+	scope := NewScopeWithManager(context.Background(), "plugin:test", mgr)
+	if err := scope.Track(Resource{ID: "first", Type: resource.TypeJob}); err != nil {
+		t.Fatal(err)
+	}
+	if err := scope.Track(Resource{ID: "second", Type: resource.TypeJob}); err == nil {
+		t.Fatal("expected scoped resource registration to fail closed")
+	}
+	if got := len(scope.Resources()); got != 1 {
+		t.Fatalf("scope retained resource rejected by global manager: %d", got)
+	}
+}
+
+func TestScope_GoFailsClosedWhenGlobalResourceCapacityIsFull(t *testing.T) {
+	mgr := resource.NewManagerWithLimit(1)
+	if err := mgr.Register(resource.Resource{ID: "occupied", Owner: "other", Type: resource.TypeJob}); err != nil {
+		t.Fatal(err)
+	}
+	scope := NewScopeWithManager(context.Background(), "plugin:test", mgr)
+	ran := make(chan struct{}, 1)
+	if err := scope.Go(func(context.Context) { ran <- struct{}{} }); err == nil {
+		t.Fatal("expected goroutine admission to fail when tracking capacity is exhausted")
+	}
+	select {
+	case <-ran:
+		t.Fatal("goroutine executed without resource tracking")
+	default:
+	}
+	if got := scope.ActiveGoroutines(); got != 0 {
+		t.Fatalf("failed goroutine admission leaked active count: %d", got)
+	}
+}

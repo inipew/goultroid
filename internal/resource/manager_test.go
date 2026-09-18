@@ -114,3 +114,20 @@ func TestResourceManager_LeakPolicyAndForceCleanup(t *testing.T) {
 		t.Fatalf("expected 0 active resources after force cleanup")
 	}
 }
+
+
+func TestResourceManager_HardCardinalityBound(t *testing.T) {
+	mgr := NewManagerWithLimit(2)
+	if err := mgr.Register(Resource{ID: "r1", Owner: "one", Type: TypeJob}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Register(Resource{ID: "r2", Owner: "two", Type: TypeJob}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Register(Resource{ID: "r3", Owner: "three", Type: TypeJob}); err == nil {
+		t.Fatal("expected resource tracking capacity failure")
+	}
+	if got := len(mgr.All()); got != 2 {
+		t.Fatalf("resource manager exceeded hard bound: %d", got)
+	}
+}
