@@ -41,7 +41,7 @@ func (m *mockTelegram) IsBotSent(msgID int) bool {
 
 type noOpDelayedActions struct{}
 
-func (noOpDelayedActions) Schedule(context.Context, time.Duration, func(context.Context) error) error {
+func (noOpDelayedActions) Schedule(context.Context, time.Duration, int64, func(context.Context) error) error {
 	return nil
 }
 

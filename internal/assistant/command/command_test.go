@@ -378,7 +378,7 @@ func TestCommandRouter_CoreRouterDirect(t *testing.T) {
 
 type testDelayedScheduler struct{}
 
-func (*testDelayedScheduler) Schedule(context.Context, time.Duration, func(context.Context) error) error {
+func (*testDelayedScheduler) Schedule(context.Context, time.Duration, int64, func(context.Context) error) error {
 	return nil
 }
 

@@ -9,6 +9,8 @@ import (
 	"github.com/gotd/td/tg"
 )
 
+const delayedDeleteRetainedBytes int64 = 256
+
 // MessagesFacade provides a dedicated namespace for message sending, editing,
 // deletion, reaction, and pinning operations.
 type MessagesFacade struct {
@@ -27,7 +29,7 @@ func (m *MessagesFacade) scheduleDelete(peer tg.InputPeerClass, msgID int, delay
 		return fmt.Errorf("%w: delayed action scheduler is unavailable", ErrUnavailable)
 	}
 	svc := c.Svc
-	return c.DelayedActions.Schedule(c.Ctx, delay, func(actionCtx context.Context) error {
+	return c.DelayedActions.Schedule(c.Ctx, delay, delayedDeleteRetainedBytes, func(actionCtx context.Context) error {
 		return svc.DeleteMessage(actionCtx, peer, []int{msgID})
 	})
 }

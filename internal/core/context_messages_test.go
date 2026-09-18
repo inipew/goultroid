@@ -62,11 +62,13 @@ func TestMessagesFacadeEditOrReplyIncomingDeletesTrigger(t *testing.T) {
 }
 
 type immediateDelayedActions struct {
-	delays []time.Duration
+	delays        []time.Duration
+	retainedBytes []int64
 }
 
-func (s *immediateDelayedActions) Schedule(ctx context.Context, delay time.Duration, action func(context.Context) error) error {
+func (s *immediateDelayedActions) Schedule(ctx context.Context, delay time.Duration, retainedBytes int64, action func(context.Context) error) error {
 	s.delays = append(s.delays, delay)
+	s.retainedBytes = append(s.retainedBytes, retainedBytes)
 	return action(ctx)
 }
 
@@ -93,6 +95,9 @@ func TestMessagesFacadeReplyAndDeleteWithDelay(t *testing.T) {
 	}
 	if mock.sentText != "purged 5 messages" {
 		t.Fatalf("sent text = %q, want purge result", mock.sentText)
+	}
+	if len(scheduler.retainedBytes) != 1 || scheduler.retainedBytes[0] != delayedDeleteRetainedBytes {
+		t.Fatalf("delayed delete retained weight = %v, want [%d]", scheduler.retainedBytes, delayedDeleteRetainedBytes)
 	}
 	select {
 	case id := <-mock.deleted:

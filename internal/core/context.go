@@ -233,7 +233,10 @@ type Localizer interface {
 // The admission context only governs Schedule itself; accepted work is owned by
 // the scheduler/runtime lifecycle.
 type DelayedActionScheduler interface {
-	Schedule(ctx context.Context, delay time.Duration, action func(context.Context) error) error
+	// Schedule transfers ownership of action to the runtime after admission.
+	// retainedBytes must conservatively account for action-specific captured state;
+	// the scheduler adds its own fixed request/heap overhead.
+	Schedule(ctx context.Context, delay time.Duration, retainedBytes int64, action func(context.Context) error) error
 }
 
 // Context is passed to each command handler, providing clean abstractions.

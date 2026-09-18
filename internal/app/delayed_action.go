@@ -15,22 +15,26 @@ import (
 )
 
 const (
-	defaultDelayedActionCapacity = 4096
-	delayedActionSubmitTimeout    = time.Second
-	delayedActionExecutionTimeout = 15 * time.Second
+	defaultDelayedActionCapacity      = 4096
+	defaultDelayedActionRetainedBytes = 4 << 20 // 4 MiB
+	delayedActionOverheadBytes   int64 = 256
+	delayedActionSubmitTimeout         = time.Second
+	delayedActionExecutionTimeout      = 15 * time.Second
 )
 
 type delayedActionRequest struct {
-	due    time.Time
-	action func(context.Context) error
-	reply  chan error
-	seq    uint64
+	due           time.Time
+	action        func(context.Context) error
+	reply         chan error
+	seq           uint64
+	retainedBytes int64
 }
 
 type delayedActionItem struct {
-	due    time.Time
-	action func(context.Context) error
-	seq    uint64
+	due           time.Time
+	action        func(context.Context) error
+	seq           uint64
+	retainedBytes int64
 }
 
 type delayedActionHeap []*delayedActionItem
@@ -66,14 +70,21 @@ type delayedActionScheduler struct {
 	done      chan struct{}
 	accepting bool
 
-	seq            atomic.Uint64
-	pending        atomic.Int64
-	submitFailures atomic.Int64
-	maxPending     int
+	seq             atomic.Uint64
+	pending         atomic.Int64
+	pendingBytes    atomic.Int64
+	submitFailures  atomic.Int64
+	byteRejections  atomic.Uint64
+	maxPending      int
+	maxRetainedBytes int64
 }
 
 func newDelayedActionScheduler(client tasks.Client) *delayedActionScheduler {
-	return &delayedActionScheduler{tasks: client, maxPending: defaultDelayedActionCapacity}
+	return &delayedActionScheduler{
+		tasks:            client,
+		maxPending:       defaultDelayedActionCapacity,
+		maxRetainedBytes: defaultDelayedActionRetainedBytes,
+	}
 }
 
 func (s *delayedActionScheduler) Name() string { return "delayed-actions" }
@@ -105,7 +116,22 @@ func (s *delayedActionScheduler) Start(ctx context.Context) error {
 	return nil
 }
 
-func (s *delayedActionScheduler) Schedule(ctx context.Context, delay time.Duration, action func(context.Context) error) error {
+func (s *delayedActionScheduler) releaseReservation(retainedBytes int64) {
+	if s == nil || retainedBytes <= 0 {
+		return
+	}
+	s.mu.Lock()
+	if s.pending.Load() > 0 {
+		s.pending.Add(-1)
+	}
+	remaining := s.pendingBytes.Add(-retainedBytes)
+	if remaining < 0 {
+		s.pendingBytes.Store(0)
+	}
+	s.mu.Unlock()
+}
+
+func (s *delayedActionScheduler) Schedule(ctx context.Context, delay time.Duration, retainedBytes int64, action func(context.Context) error) error {
 	if s == nil || action == nil {
 		return fmt.Errorf("%w: delayed action scheduler is unavailable", core.ErrUnavailable)
 	}
@@ -118,25 +144,52 @@ func (s *delayedActionScheduler) Schedule(ctx context.Context, delay time.Durati
 	if delay < 0 {
 		delay = 0
 	}
+	if retainedBytes < 0 {
+		return fmt.Errorf("%w: delayed action retained bytes cannot be negative", core.ErrValidation)
+	}
 
 	s.mu.Lock()
 	if !s.accepting || s.requests == nil || s.done == nil {
 		s.mu.Unlock()
 		return fmt.Errorf("%w: delayed action scheduler is not accepting work", core.ErrUnavailable)
 	}
+	if s.pending.Load() >= int64(s.maxPending) {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: delayed action capacity %d reached", core.ErrResourceLimit, s.maxPending)
+	}
+	if s.maxRetainedBytes > 0 {
+		remaining := s.maxRetainedBytes - s.pendingBytes.Load()
+		if remaining < delayedActionOverheadBytes || retainedBytes > remaining-delayedActionOverheadBytes {
+			s.byteRejections.Add(1)
+			s.mu.Unlock()
+			return fmt.Errorf("%w: delayed action retained-byte budget reached", core.ErrResourceLimit)
+		}
+	}
+	charge := retainedBytes + delayedActionOverheadBytes
+	s.pending.Add(1)
+	s.pendingBytes.Add(charge)
 	requests := s.requests
 	done := s.done
 	s.mu.Unlock()
 
 	reply := make(chan error, 1)
 	req := delayedActionRequest{
-		due:    time.Now().Add(delay),
-		action: action,
-		reply:  reply,
-		seq:    s.seq.Add(1),
+		due:           time.Now().Add(delay),
+		action:        action,
+		reply:         reply,
+		seq:           s.seq.Add(1),
+		retainedBytes: charge,
 	}
+	owned := false
+	defer func() {
+		if !owned {
+			s.releaseReservation(charge)
+		}
+	}()
+
 	select {
 	case requests <- req:
+		owned = true
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-done:
@@ -198,7 +251,10 @@ func (s *delayedActionScheduler) Health(context.Context) runtime.ComponentHealth
 	if failures > 0 {
 		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: fmt.Sprintf("task submission failures: %d", failures)}
 	}
-	return runtime.ComponentHealth{Status: runtime.HealthHealthy, Details: fmt.Sprintf("pending=%d", s.pending.Load())}
+	return runtime.ComponentHealth{Status: runtime.HealthHealthy, Details: fmt.Sprintf(
+		"pending=%d retained_bytes=%d/%d byte_rejections=%d",
+		s.pending.Load(), s.pendingBytes.Load(), s.maxRetainedBytes, s.byteRejections.Load(),
+	)}
 }
 
 func (s *delayedActionScheduler) run(ctx context.Context, requests <-chan delayedActionRequest, done chan struct{}) {
@@ -211,11 +267,14 @@ func (s *delayedActionScheduler) run(ctx context.Context, requests <-chan delaye
 			timer.Stop()
 		}
 		s.pending.Store(0)
+		s.pendingBytes.Store(0)
 		s.mu.Lock()
 		if s.done == done {
 			s.accepting = false
 			s.cancel = nil
 			s.runCtx = nil
+			s.requests = nil
+			s.done = nil
 		}
 		s.mu.Unlock()
 	}()
@@ -245,18 +304,15 @@ func (s *delayedActionScheduler) run(ctx context.Context, requests <-chan delaye
 		case <-ctx.Done():
 			return
 		case req := <-requests:
-			if queue.Len() >= s.maxPending {
-				req.reply <- fmt.Errorf("%w: delayed action capacity %d reached", core.ErrResourceLimit, s.maxPending)
-				continue
-			}
-			heap.Push(&queue, &delayedActionItem{due: req.due, action: req.action, seq: req.seq})
-			s.pending.Store(int64(queue.Len()))
+			heap.Push(&queue, &delayedActionItem{
+				due: req.due, action: req.action, seq: req.seq, retainedBytes: req.retainedBytes,
+			})
 			req.reply <- nil
 		case <-timerC:
 			now := time.Now()
 			for queue.Len() > 0 && !queue[0].due.After(now) {
 				item := heap.Pop(&queue).(*delayedActionItem)
-				s.pending.Store(int64(queue.Len()))
+				s.releaseReservation(item.retainedBytes)
 				s.submit(ctx, item)
 			}
 		}

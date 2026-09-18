@@ -114,6 +114,10 @@ func TestDelayedTelegramActionsAreRuntimeOwned(t *testing.T) {
 		`Dependencies() []string { return []string{"taskengine"} }`,
 		"s.tasks.Submit",
 		"tasks.PriorityMaintenance",
+		"defaultDelayedActionRetainedBytes",
+		"pendingBytes",
+		"retainedBytes int64",
+		"s.requests = nil",
 		"case <-ctx.Done():",
 	} {
 		if !strings.Contains(string(schedulerData), required) {
