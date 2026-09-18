@@ -67,6 +67,7 @@ type AssistantClient struct {
 	metrics             core.MetricsCollector
 	settingsSvc         *settings.Service
 	tasks               tasks.Client
+	delayedActions      core.DelayedActionScheduler
 	pluginScopeResolver func(string) (tasks.ScopeIdentity, bool)
 	inlineEngine        *inlineService.Engine
 	rpcExecutor         assistentrpc.Executor
@@ -335,6 +336,14 @@ func (c *AssistantClient) SetTasks(client tasks.Client) {
 	c.mu.Unlock()
 	if c.cmdRouter != nil {
 		c.cmdRouter.SetTasks(client)
+	}
+}
+func (c *AssistantClient) SetDelayedActions(scheduler core.DelayedActionScheduler) {
+	c.mu.Lock()
+	c.delayedActions = scheduler
+	c.mu.Unlock()
+	if c.cmdRouter != nil {
+		c.cmdRouter.SetDelayedActions(scheduler)
 	}
 }
 func (c *AssistantClient) SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool)) {

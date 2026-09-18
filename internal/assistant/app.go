@@ -90,6 +90,7 @@ func (a *AssistantApp) SetOwner(ownerID int64, sudoGetter func() []int64) {
 }
 func (a *AssistantApp) SetCoreRouter(router *core.Router)           { a.client.SetCoreRouter(router) }
 func (a *AssistantApp) SetTasks(client tasks.Client)                { a.client.SetTasks(client) }
+func (a *AssistantApp) SetDelayedActions(scheduler core.DelayedActionScheduler) { a.client.SetDelayedActions(scheduler) }
 func (a *AssistantApp) SetSettingsService(svc *settings.Service)    { a.client.SetSettingsService(svc) }
 func (a *AssistantApp) SetMetricsCollector(m core.MetricsCollector) { a.client.SetMetricsCollector(m) }
 func (a *AssistantApp) SetCallbackRouter(router client.CoreCallbackDispatcher) {

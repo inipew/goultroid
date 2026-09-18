@@ -375,3 +375,36 @@ func TestCommandRouter_CoreRouterDirect(t *testing.T) {
 		t.Fatalf("expected 'pong from core', got %q", fake.lastSentText)
 	}
 }
+
+type testDelayedScheduler struct{}
+
+func (*testDelayedScheduler) Schedule(context.Context, time.Duration, func(context.Context) error) error {
+	return nil
+}
+
+func TestCommandRouter_InjectsDelayedActionOwner(t *testing.T) {
+	r := command.NewRouter(zap.NewNop())
+	scheduler := &testDelayedScheduler{}
+	r.SetDelayedActions(scheduler)
+
+	coreRouter := core.NewRouter(".")
+	err := coreRouter.Register(core.Command{
+		Name:     "delayowner",
+		Surfaces: execution.SurfaceAssistant,
+		Handler: func(c *core.Context) error {
+			if c.DelayedActions != scheduler {
+				t.Fatalf("expected assistant core context to receive delayed action owner")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("register command: %v", err)
+	}
+	r.SetCoreRouter(coreRouter)
+
+	err = r.Dispatch(context.Background(), 12345, &tg.InputPeerUser{UserID: 12345}, "/delayowner", &fakeInteraction{})
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+}

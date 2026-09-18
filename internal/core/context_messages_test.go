@@ -61,6 +61,15 @@ func TestMessagesFacadeEditOrReplyIncomingDeletesTrigger(t *testing.T) {
 	}
 }
 
+type immediateDelayedActions struct {
+	delays []time.Duration
+}
+
+func (s *immediateDelayedActions) Schedule(ctx context.Context, delay time.Duration, action func(context.Context) error) error {
+	s.delays = append(s.delays, delay)
+	return action(ctx)
+}
+
 type delayedDeleteMock struct {
 	*mockTelegramServicer
 	deleted chan int
@@ -76,7 +85,8 @@ func (m *delayedDeleteMock) DeleteMessage(ctx context.Context, peer tg.InputPeer
 
 func TestMessagesFacadeReplyAndDeleteWithDelay(t *testing.T) {
 	mock := &delayedDeleteMock{mockTelegramServicer: &mockTelegramServicer{}, deleted: make(chan int, 2)}
-	ctx := &Context{Ctx: context.Background(), Message: &Message{ID: 104}, Svc: mock, PeerID: &tg.InputPeerSelf{}}
+	scheduler := &immediateDelayedActions{}
+	ctx := &Context{Ctx: context.Background(), Message: &Message{ID: 104}, Svc: mock, PeerID: &tg.InputPeerSelf{}, DelayedActions: scheduler}
 	delay := 30 * time.Millisecond
 	if err := ctx.Messages().ReplyAndDeleteWithDelay("purged 5 messages", delay); err != nil {
 		t.Fatalf("ReplyAndDeleteWithDelay() error = %v", err)
@@ -105,7 +115,8 @@ func TestMessagesFacadeReplyAndDeleteWithDelay(t *testing.T) {
 func TestMessagesFacadeEditOrReplyWithDelay(t *testing.T) {
 	mock := &delayedDeleteMock{mockTelegramServicer: &mockTelegramServicer{}, deleted: make(chan int, 2)}
 	// Outgoing command message
-	ctx := &Context{Ctx: context.Background(), Message: &Message{ID: 205, IsOutgoing: true}, Svc: mock, PeerID: &tg.InputPeerSelf{}}
+	scheduler := &immediateDelayedActions{}
+	ctx := &Context{Ctx: context.Background(), Message: &Message{ID: 205, IsOutgoing: true}, Svc: mock, PeerID: &tg.InputPeerSelf{}, DelayedActions: scheduler}
 	delay := 30 * time.Millisecond
 	if err := ctx.Messages().EditOrReplyWithDelay("approved user", delay); err != nil {
 		t.Fatalf("EditOrReplyWithDelay() error = %v", err)
@@ -120,5 +131,14 @@ func TestMessagesFacadeEditOrReplyWithDelay(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for delayed edit message deletion")
+	}
+}
+
+func TestMessagesFacadeDelayedDeleteRequiresOwnedScheduler(t *testing.T) {
+	mock := &mockTelegramServicer{}
+	ctx := &Context{Ctx: context.Background(), Message: &Message{ID: 205, IsOutgoing: true}, Svc: mock, PeerID: &tg.InputPeerSelf{}}
+	err := ctx.Messages().EditOrReplyWithDelay("approved user", time.Second)
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("expected ErrUnavailable without delayed action owner, got %v", err)
 	}
 }

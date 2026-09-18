@@ -90,3 +90,34 @@ func TestArchitecture_ResourceCommandsGateInvariants(t *testing.T) {
 		t.Errorf("%s must enforce TaskEngine client for resource-bearing scheduled commands", schedActionPath)
 	}
 }
+
+func TestDelayedTelegramActionsAreRuntimeOwned(t *testing.T) {
+	root := repositoryRoot(t)
+
+	messagesPath := filepath.Join(root, "internal", "core", "context_messages.go")
+	messagesData, err := os.ReadFile(messagesPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", messagesPath, err)
+	}
+	for _, forbidden := range []string{"time.AfterFunc(", "context.Background()"} {
+		if strings.Contains(string(messagesData), forbidden) {
+			t.Errorf("%s must not own detached delayed Telegram work via %q", messagesPath, forbidden)
+		}
+	}
+
+	schedulerPath := filepath.Join(root, "internal", "app", "delayed_action.go")
+	schedulerData, err := os.ReadFile(schedulerPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", schedulerPath, err)
+	}
+	for _, required := range []string{
+		`Dependencies() []string { return []string{"taskengine"} }`,
+		"s.tasks.Submit",
+		"tasks.PriorityMaintenance",
+		"case <-ctx.Done():",
+	} {
+		if !strings.Contains(string(schedulerData), required) {
+			t.Errorf("%s is missing runtime-owned delayed action invariant %q", schedulerPath, required)
+		}
+	}
+}

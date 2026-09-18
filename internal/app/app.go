@@ -107,6 +107,9 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		return nil, err
 	}
 
+	delayedActions := newDelayedActionScheduler(coreDeps.taskEngine)
+	tgRuntime.dispatcher.Executor().SetDelayedActions(delayedActions)
+
 	pluginManager := plugin.NewManager(coreDeps.router)
 	pluginManager.SetPanicReporter(zapCorePanicReporter{logger: logger.Named("plugin.panic")})
 	coreDeps.eventBus.SetTasks(coreDeps.taskEngine)
@@ -144,6 +147,9 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		domServices.addonManager.SetProcessManager(coreDeps.procManager)
 	}
 	if tgRuntime.assistant != nil {
+		if aware, ok := tgRuntime.assistant.(interface{ SetDelayedActions(core.DelayedActionScheduler) }); ok {
+			aware.SetDelayedActions(delayedActions)
+		}
 		tgRuntime.assistant.SetCoreRouter(coreDeps.router)
 		tgRuntime.assistant.SetSettingsService(domServices.settingsService)
 		tgRuntime.assistant.SetMetricsCollector(coreDeps.metrics)
@@ -239,6 +245,9 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		if err := rt.Register(dependencyComponent{Component: coreDeps.taskEngine, dependencies: []string{"persistence-pump"}}); err != nil {
 			return nil, fmt.Errorf("register taskengine component: %w", err)
 		}
+	}
+	if err := rt.Register(delayedActions); err != nil {
+		return nil, fmt.Errorf("register delayed-actions component: %w", err)
 	}
 	if err := rt.Register(dependencyComponent{Component: coreDeps.jobsManager, dependencies: []string{"taskengine", "eventbus"}}); err != nil {
 		return nil, fmt.Errorf("register jobs component: %w", err)

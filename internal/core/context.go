@@ -229,6 +229,13 @@ type Localizer interface {
 	T(key string, args ...any) string
 }
 
+// DelayedActionScheduler owns delayed work beyond the triggering command's lifetime.
+// The admission context only governs Schedule itself; accepted work is owned by
+// the scheduler/runtime lifecycle.
+type DelayedActionScheduler interface {
+	Schedule(ctx context.Context, delay time.Duration, action func(context.Context) error) error
+}
+
 // Context is passed to each command handler, providing clean abstractions.
 type Context struct {
 	Ctx context.Context
@@ -253,7 +260,8 @@ type Context struct {
 	PeerID    tg.InputPeerClass
 	Resolver  PeerResolver
 	Localizer Localizer
-	EventBus  *EventBus
+	EventBus       *EventBus
+	DelayedActions DelayedActionScheduler
 }
 
 // IsInteractive returns true if triggered by human interaction in Telegram.

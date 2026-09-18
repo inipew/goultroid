@@ -52,6 +52,7 @@ type Router struct {
 	presentationHandlers map[string]Handler
 	coreRouter           *core.Router
 	tasks                tasks.Client
+	delayedActions       core.DelayedActionScheduler
 	ownerID              int64
 	sudoGetter           func() []int64
 	metrics              core.MetricsCollector
@@ -73,6 +74,7 @@ func NewRouter(logger *zap.Logger) *Router {
 // SetTasks attaches the shared TaskEngine client used by canonical Assistant
 // commands. Resource-bearing commands fail closed when this dependency is absent.
 func (r *Router) SetTasks(client tasks.Client) { r.tasks = client }
+func (r *Router) SetDelayedActions(scheduler core.DelayedActionScheduler) { r.delayedActions = scheduler }
 
 // SetOwner configures the owner identity and optional sudo getter for permission enforcement.
 func (r *Router) SetOwner(ownerID int64, sudoGetter func() []int64) {
@@ -312,6 +314,7 @@ func (r *Router) Dispatch(ctx context.Context, senderID int64, peer tg.InputPeer
 			Perms:         core.NewPermissions(r.ownerID, sudoList),
 			Principal:     principal,
 			Svc:           &assistantServicerAdapter{inter: inter},
+			DelayedActions: r.delayedActions,
 		}
 
 		return r.executeCanonicalTask(ctx, senderID, cmd, coreCtx, cmdNameClean)
