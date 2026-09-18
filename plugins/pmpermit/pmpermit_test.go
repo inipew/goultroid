@@ -38,6 +38,12 @@ func (m *mockTelegram) IsBotSent(msgID int) bool {
 	return false
 }
 
+type noOpDelayedActions struct{}
+
+func (noOpDelayedActions) Schedule(context.Context, time.Duration, func(context.Context) error) error {
+	return nil
+}
+
 func setupTestDB(t *testing.T) *database.DB {
 	t.Helper()
 	db, err := database.Open(":memory:")
@@ -75,7 +81,8 @@ func TestPMPermitPlugin(t *testing.T) {
 		PeerID:   &tg.InputPeerUser{UserID: 88888},
 		Message:  &core.Message{ID: 1, IsOutgoing: true},
 		Args:     []string{"88888"},
-		Resolver: &core.MockPeerResolver{UserID: 88888, UserPeer: &tg.InputPeerUser{UserID: 88888, AccessHash: 12345}},
+		Resolver:       &core.MockPeerResolver{UserID: 88888, UserPeer: &tg.InputPeerUser{UserID: 88888, AccessHash: 12345}},
+		DelayedActions: noOpDelayedActions{},
 	}
 
 	// 1. Approve command
@@ -115,7 +122,8 @@ func TestPMPermitPlugin(t *testing.T) {
 		Ctx:     context.Background(),
 		Svc:     mockTG,
 		PeerID:  &tg.InputPeerUser{UserID: 88888},
-		Message: &core.Message{ID: 1, IsOutgoing: true},
+		Message:        &core.Message{ID: 1, IsOutgoing: true},
+		DelayedActions: noOpDelayedActions{},
 	}
 	_ = svc.Approve(context.Background(), 88888, "approved test", 0)
 	if err := cmds[4].Handler(listCtx); err != nil {
@@ -164,7 +172,8 @@ func TestPMPermitPlugin(t *testing.T) {
 		Svc:     mockTG,
 		PeerID:  &tg.InputPeerUser{UserID: 88888},
 		Message: &core.Message{ID: 1, IsOutgoing: true},
-		Args:    []string{"test"},
+		Args:           []string{"test"},
+		DelayedActions: noOpDelayedActions{},
 	}
 	if err := cmds[5].Handler(testCtx); err != nil {
 		t.Fatalf("test subcommand failed: %v", err)
