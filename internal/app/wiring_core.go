@@ -38,6 +38,7 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 	if err != nil {
 		return nil, fmt.Errorf("initialize database: %w", err)
 	}
+	db.SetMetrics(database.NewInMemoryDBMetrics())
 
 	perms := core.NewPermissions(cfg.OwnerID, cfg.SudoUsers)
 	sudoCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

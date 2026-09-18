@@ -7,6 +7,7 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/callback"
 	"github.com/inipew/goultroid/internal/assistant/client"
 	"github.com/inipew/goultroid/internal/assistant/menu"
+	assistentrpc "github.com/inipew/goultroid/internal/assistant/rpc"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/services/inline"
@@ -28,6 +29,7 @@ type Client interface {
 	SetInlineEngine(engine *inline.Engine)
 	SetTasks(client tasks.Client)
 	SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool))
+	SetRPCExecutor(executor assistentrpc.Executor)
 	MenuController() *menu.Controller
 }
 
@@ -94,6 +96,9 @@ func (a *AssistantApp) SetCallbackRouter(router client.CoreCallbackDispatcher) {
 	a.client.SetCallbackRouter(router)
 }
 func (a *AssistantApp) SetInlineEngine(engine *inline.Engine) { a.client.SetInlineEngine(engine) }
+func (a *AssistantApp) SetRPCExecutor(executor assistentrpc.Executor) {
+	a.client.SetRPCExecutor(executor)
+}
 func (a *AssistantApp) SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool)) {
 	a.client.SetPluginScopeResolver(resolver)
 }

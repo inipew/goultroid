@@ -63,6 +63,7 @@ type App struct {
 	resources       *resource.Manager
 	idemp           *idempotency.Manager
 	runtime         *runtime.Runtime
+	supervisor      *runtime.Supervisor
 
 	appCancel       context.CancelFunc
 	transportCancel context.CancelFunc
@@ -107,6 +108,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	}
 
 	pluginManager := plugin.NewManager(coreDeps.router)
+	pluginManager.SetPanicReporter(zapCorePanicReporter{logger: logger.Named("plugin.panic")})
 	coreDeps.eventBus.SetTasks(coreDeps.taskEngine)
 	pluginManager.SetHookRegistrar(tgRuntime.dispatcher)
 	pluginManager.SetCallbackRegistrar(coreDeps.callbackRouter)
@@ -216,8 +218,8 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	resources := []resourceComponent{
 		{name: "database", stop: coreDeps.db.Close},
 		{name: "idempotency", dependencies: []string{"database"}, stop: func() error { coreDeps.idempManager.Close(); return nil }},
-		{name: "command-rate-limiter", dependencies: []string{"database"}, stop: coreDeps.cmdLimiter.Close},
-		{name: "interaction-rate-limiter", dependencies: []string{"database"}, stop: coreDeps.interLimiter.Close},
+		{name: "command-rate-limiter", dependencies: []string{"database"}, start: coreDeps.cmdLimiter.Start, stop: coreDeps.cmdLimiter.Close},
+		{name: "interaction-rate-limiter", dependencies: []string{"database"}, start: coreDeps.interLimiter.Start, stop: coreDeps.interLimiter.Close},
 		{name: "addon-runtimes", dependencies: []string{"database"}, stop: domServices.addonManager.ShutdownRuntimes},
 	}
 	for _, resource := range resources {
@@ -267,6 +269,14 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 			return nil, fmt.Errorf("register assistant component: %w", err)
 		}
 	}
+	supervisor := runtime.NewSupervisor(
+		runtime.WithSupervisorName("lifecycle-supervisor"),
+		runtime.WithPanicReporter(zapRuntimePanicReporter{logger: logger.Named("supervisor")}),
+	)
+	if err := rt.Register(supervisor); err != nil {
+		return nil, fmt.Errorf("register supervisor component: %w", err)
+	}
+
 	if err := rt.Register(dependencyComponent{Component: pluginManager, dependencies: []string{"dispatcher", "jobs", "addon-runtimes"}}); err != nil {
 		return nil, fmt.Errorf("register plugins component: %w", err)
 	}
@@ -297,6 +307,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		resources:        coreDeps.resourceManager,
 		idemp:            coreDeps.idempManager,
 		runtime:          rt,
+		supervisor:       supervisor,
 		shutdownDone:     make(chan struct{}),
 	}, nil
 }
@@ -400,4 +411,59 @@ func (a *App) LifecycleState() string {
 	default:
 		return "unknown"
 	}
+}
+
+// Supervisor returns the application lifecycle supervisor.
+func (a *App) Supervisor() *runtime.Supervisor {
+	return a.supervisor
+}
+
+// DBMetrics returns the active database metrics collector.
+func (a *App) DBMetrics() database.DBMetrics {
+	if a != nil && a.db != nil {
+		return a.db.Metrics()
+	}
+	return database.NoopDBMetrics{}
+}
+
+// RPCMetrics returns the active Telegram RPC metrics collector.
+func (a *App) RPCMetrics() telegram.RPCMetrics {
+	if a != nil && a.client != nil && a.client.Executor() != nil {
+		return a.client.Executor().Metrics()
+	}
+	return telegram.NoopRPCMetrics{}
+}
+
+type zapCorePanicReporter struct {
+	logger *zap.Logger
+}
+
+func (r zapCorePanicReporter) ReportPanic(report core.PanicReport) {
+	if r.logger == nil {
+		return
+	}
+	r.logger.Error("recovered panic",
+		zap.String("owner", report.Owner),
+		zap.String("component", report.Component),
+		zap.Any("value", report.Value),
+		zap.ByteString("stack", report.Stack),
+		zap.Time("at", report.At),
+	)
+}
+
+type zapRuntimePanicReporter struct {
+	logger *zap.Logger
+}
+
+func (r zapRuntimePanicReporter) ReportPanic(report runtime.PanicReport) {
+	if r.logger == nil {
+		return
+	}
+	r.logger.Error("recovered panic",
+		zap.String("owner", report.Owner),
+		zap.String("component", report.Component),
+		zap.Any("value", report.Value),
+		zap.ByteString("stack", report.Stack),
+		zap.Time("at", report.At),
+	)
 }

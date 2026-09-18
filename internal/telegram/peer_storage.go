@@ -56,7 +56,10 @@ func (s *PeerStorage) Save(ctx context.Context, key peers.Key, value peers.Value
 		access_hash = excluded.access_hash,
 		updated_at = excluded.updated_at;
 	`
-	if _, err := s.db.ExecContext(ctx, query, key.Prefix, key.ID, value.AccessHash, time.Now()); err != nil {
+	t0 := time.Now()
+	_, err := s.db.ExecContext(ctx, query, key.Prefix, key.ID, value.AccessHash, time.Now())
+	s.db.Observe("peer.save", time.Since(t0), err)
+	if err != nil {
 		return fmt.Errorf("failed to save peer (%s:%d): %w", key.Prefix, key.ID, err)
 	}
 	s.mu.Lock()
@@ -76,7 +79,9 @@ func (s *PeerStorage) Find(ctx context.Context, key peers.Key) (peers.Value, boo
 		return peers.Value{AccessHash: cached}, true, nil
 	}
 	var accessHash int64
+	t0 := time.Now()
 	err := s.db.QueryRowContext(ctx, `SELECT access_hash FROM peers_storage WHERE prefix = ? AND id = ?;`, key.Prefix, key.ID).Scan(&accessHash)
+	s.db.Observe("peer.find", time.Since(t0), err)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return peers.Value{}, false, nil
@@ -102,7 +107,10 @@ func (s *PeerStorage) SavePhone(ctx context.Context, phone string, key peers.Key
 		access_hash = excluded.access_hash,
 		updated_at = excluded.updated_at;
 	`
-	if _, err := s.db.ExecContext(ctx, query, phone, key.Prefix, key.ID, key.Prefix, key.ID, time.Now()); err != nil {
+	t0 := time.Now()
+	_, err := s.db.ExecContext(ctx, query, phone, key.Prefix, key.ID, key.Prefix, key.ID, time.Now())
+	s.db.Observe("peer.save_phone", time.Since(t0), err)
+	if err != nil {
 		return fmt.Errorf("failed to save phone %q: %w", phone, err)
 	}
 	return nil
@@ -114,7 +122,9 @@ func (s *PeerStorage) FindPhone(ctx context.Context, phone string) (peers.Key, p
 	}
 	var prefix string
 	var id, accessHash int64
+	t0 := time.Now()
 	err := s.db.QueryRowContext(ctx, `SELECT p.prefix, p.id, COALESCE(s.access_hash, p.access_hash, 0) FROM peers_phones p LEFT JOIN peers_storage s ON p.prefix = s.prefix AND p.id = s.id WHERE p.phone = ?;`, phone).Scan(&prefix, &id, &accessHash)
+	s.db.Observe("peer.find_phone", time.Since(t0), err)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return peers.Key{}, peers.Value{}, false, nil
@@ -129,7 +139,9 @@ func (s *PeerStorage) GetContactsHash(ctx context.Context) (int64, error) {
 		return 0, errors.New("database is nil")
 	}
 	var hash int64
+	t0 := time.Now()
 	err := s.db.QueryRowContext(ctx, `SELECT int_val FROM peers_metadata WHERE key = 'contacts_hash';`).Scan(&hash)
+	s.db.Observe("peer.get_contacts_hash", time.Since(t0), err)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, nil
@@ -143,7 +155,9 @@ func (s *PeerStorage) SaveContactsHash(ctx context.Context, hash int64) error {
 	if s.db == nil {
 		return errors.New("database is nil")
 	}
+	t0 := time.Now()
 	_, err := s.db.ExecContext(ctx, `INSERT INTO peers_metadata (key, int_val) VALUES ('contacts_hash', ?) ON CONFLICT(key) DO UPDATE SET int_val = excluded.int_val;`, hash)
+	s.db.Observe("peer.save_contacts_hash", time.Since(t0), err)
 	if err != nil {
 		return fmt.Errorf("failed to save contacts hash: %w", err)
 	}
@@ -158,7 +172,9 @@ func (s *PeerStorage) Invalidate(key peers.Key) error {
 	if s.db != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
+		t0 := time.Now()
 		_, err := s.db.ExecContext(ctx, `DELETE FROM peers_storage WHERE prefix = ? AND id = ?;`, key.Prefix, key.ID)
+		s.db.Observe("peer.invalidate", time.Since(t0), err)
 		return err
 	}
 	return nil
@@ -179,7 +195,10 @@ func (s *PeerStorage) SaveEntity(ctx context.Context, prefix string, id int64, u
 	if ok && old == snapshot {
 		return nil
 	}
-	if err := s.db.SavePeerEntity(ctx, prefix, id, username, phone, firstName, lastName, title); err != nil {
+	t0 := time.Now()
+	err := s.db.SavePeerEntity(ctx, prefix, id, username, phone, firstName, lastName, title)
+	s.db.Observe("peer.save_entity", time.Since(t0), err)
+	if err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -193,7 +212,9 @@ func (s *PeerStorage) FindByUsername(ctx context.Context, username string) (peer
 		return peers.Key{}, peers.Value{}, false, errors.New("database is nil")
 	}
 	username = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(username), "@"))
+	t0 := time.Now()
 	prefix, id, accessHash, found, err := s.db.FindPeerByUsername(ctx, username)
+	s.db.Observe("peer.find_by_username", time.Since(t0), err)
 	if err != nil || !found {
 		return peers.Key{}, peers.Value{}, false, err
 	}
@@ -202,10 +223,14 @@ func (s *PeerStorage) FindByUsername(ctx context.Context, username string) (peer
 
 // SaveEntitiesBatch writes multiple users, channels, and chats in a single SQLite transaction.
 // It skips entities whose state has not changed in the process-local cache.
-func (s *PeerStorage) SaveEntitiesBatch(ctx context.Context, users []*tg.User, channels []*tg.Channel, chats []*tg.Chat) error {
+func (s *PeerStorage) SaveEntitiesBatch(ctx context.Context, users []*tg.User, channels []*tg.Channel, chats []*tg.Chat) (err error) {
 	if s.db == nil {
 		return errors.New("database is nil")
 	}
+	t0 := time.Now()
+	defer func() {
+		s.db.Observe("peer.save_batch", time.Since(t0), err)
+	}()
 
 	type storageItem struct {
 		key   peers.Key

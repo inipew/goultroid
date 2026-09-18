@@ -31,6 +31,7 @@ type Client struct {
 	gaps        *updates.Manager
 	peerManager *peers.Manager
 	peerStorage *PeerStorage
+	executor    *RPCExecutor
 	logger      *zap.Logger
 	ready       chan struct{}
 	readyOnce   sync.Once
@@ -143,6 +144,14 @@ func NewClient(cfg *config.Config, dispatcher *Dispatcher, db *database.DB, logg
 	})
 	updateHook = peerManager.UpdateHook(gaps)
 
+	executor, err := NewRPCExecutor(RPCExecutorConfig{
+		DefaultPolicy: DefaultExecutorPolicy,
+		Metrics:       NewInMemoryRPCMetrics(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("initialize rpc executor: %w", err)
+	}
+
 	return &Client{
 		raw:         raw,
 		cfg:         cfg,
@@ -150,9 +159,18 @@ func NewClient(cfg *config.Config, dispatcher *Dispatcher, db *database.DB, logg
 		gaps:        gaps,
 		peerManager: peerManager,
 		peerStorage: peerStorage,
+		executor:    executor,
 		logger:      logger,
 		ready:       make(chan struct{}),
 	}, nil
+}
+
+// Executor returns the RPCExecutor for coordinating outbound Telegram calls.
+func (c *Client) Executor() *RPCExecutor {
+	if c != nil {
+		return c.executor
+	}
+	return nil
 }
 
 // API returns the raw Telegram MTProto client.
@@ -189,12 +207,17 @@ func (c *Client) Run(ctx context.Context) error {
 	return c.raw.Run(ctx, func(ctx context.Context) error {
 		// Initialize service wrapper & peer resolver
 		svc := NewService(c.raw.API())
+		svc.SetExecutor(c.executor)
 		svc.SetPeerManager(c.peerManager)
 		if c.peerStorage != nil {
 			svc.SetStorage(c.peerStorage)
 		}
 		c.dispatcher.SetService(svc)
 		resolver := NewResolver(c.raw.API(), c.peerManager)
+		if c.logger != nil {
+			resolver.SetLogger(c.logger.Named("resolver"))
+		}
+		resolver.SetExecutor(c.executor)
 		if c.peerStorage != nil {
 			resolver.SetStorage(c.peerStorage)
 		}
@@ -233,9 +256,15 @@ func (c *Client) Run(ctx context.Context) error {
 			// Background warm-up: asynchronously preload dialogs into peer manager
 			// without blocking client startup and the update recovery loop.
 			go func() {
-				dialogs, err := c.raw.API().MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
-					OffsetPeer: &tg.InputPeerEmpty{},
-					Limit:      100,
+				dialogs, err := ExecuteRPC(ctx, c.executor, RPCMeta{
+					Method: "messages.getDialogs",
+					Family: "messages",
+					Kind:   RPCReadOnly,
+				}, func(opCtx context.Context) (tg.MessagesDialogsClass, error) {
+					return c.raw.API().MessagesGetDialogs(opCtx, &tg.MessagesGetDialogsRequest{
+						OffsetPeer: &tg.InputPeerEmpty{},
+						Limit:      100,
+					})
 				})
 				if err == nil {
 					if d, ok := dialogs.AsModified(); ok {

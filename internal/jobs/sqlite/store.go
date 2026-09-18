@@ -432,6 +432,28 @@ func (s *Store) FinalizeOccurrence(ctx context.Context, occurrenceID string, sta
 	return tx.Commit()
 }
 
+// DeferOccurrence updates the ready_at timestamp of a dispatched occurrence,
+// postponing redrive/retry until ready_at without tying up memory worker slots.
+func (s *Store) DeferOccurrence(ctx context.Context, occurrenceID string, readyAt time.Time) error {
+	now := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE job_occurrences
+		SET ready_at = ?, revision = revision + 1, updated_at = ?
+		WHERE id = ? AND state = 'dispatched';
+	`, readyAt.UTC(), now, occurrenceID)
+	if err != nil {
+		return fmt.Errorf("defer occurrence: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("defer occurrence rows affected: %w", err)
+	}
+	if affected == 0 {
+		return ErrOccurrenceNotFound
+	}
+	return nil
+}
+
 // PrepareAttemptLease atomically creates an attempt and leases the occurrence under writer intent (ADR 0006 §7.3 & §7.4).
 // The first attempt requires a ready occurrence; retries require a dispatched
 // occurrence whose latest attempt is already terminal, so two live attempts
@@ -481,6 +503,9 @@ func (s *Store) PrepareAttemptLease(ctx context.Context, occurrenceID, taskID st
 			return nil, fmt.Errorf("%w: ready occurrence already has attempts", ErrLeaseFencingLost)
 		}
 	case string(jobs.OccurrenceDispatched):
+		if readyAt.After(time.Now().UTC()) {
+			return nil, fmt.Errorf("%w: occurrence is deferred until %s", ErrOccurrenceNotReady, readyAt)
+		}
 		// Retry path: the previous attempt must be terminal, otherwise a live
 		// attempt is still holding the lease. Stale non-terminal attempts
 		// (crashed owner, unknown effect) are deliberately NOT overridden

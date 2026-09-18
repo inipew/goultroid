@@ -32,6 +32,7 @@ type Store interface {
 	LatestAttempt(context.Context, string) (*JobAttempt, error)
 	ListUnresolvedOccurrences(context.Context, int) ([]*JobOccurrence, error)
 	DeleteTerminalOccurrences(context.Context, string, time.Time, int) (int64, error)
+	DeferOccurrence(context.Context, string, time.Time) error
 }
 
 type outboxStore interface {
@@ -95,6 +96,21 @@ type trackedOccurrence struct {
 	def     JobDefinition
 	handler Handler
 	taskID  tasks.TaskID
+	lastErr error
+}
+
+func extractRateLimitWait(err error) (time.Duration, bool) {
+	if err == nil {
+		return 0, false
+	}
+	type waiter interface {
+		RateLimitWait() time.Duration
+	}
+	var w waiter
+	if errors.As(err, &w) {
+		return w.RateLimitWait(), true
+	}
+	return 0, false
 }
 
 const (
@@ -502,6 +518,14 @@ func (m *Manager) untrack(occurrenceID string) {
 	m.mu.Unlock()
 }
 
+func (m *Manager) recordLastError(occurrenceID string, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if tr, ok := m.tracked[occurrenceID]; ok {
+		tr.lastErr = err
+	}
+}
+
 func (m *Manager) rootContext() context.Context {
 	m.mu.RLock()
 	ctx := m.baseCtx
@@ -512,21 +536,22 @@ func (m *Manager) rootContext() context.Context {
 	return ctx
 }
 
-func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey string) (tasks.Ticket, string, error) {
+// SubmitOccurrence admits one new occurrence through the store and into TaskEngine.
+func (m *Manager) SubmitOccurrence(ctx context.Context, jobID string, occurrenceKey string) (tasks.Ticket, string, error) {
 	m.mu.RLock()
-	if !m.accepting {
-		m.mu.RUnlock()
+	client := m.client
+	definition, ok := m.definitions[jobID]
+	handler := m.handlers[definition.HandlerType]
+	accepting := m.accepting
+	m.mu.RUnlock()
+	if !accepting {
 		return nil, "", errors.New("job admission is closed")
 	}
-	definition, found := m.definitions[jobID]
-	handler := m.handlers[definition.HandlerType]
-	client := m.client
-	m.mu.RUnlock()
-	if !found {
+	if !ok {
 		return nil, "", fmt.Errorf("job definition not found: %s", jobID)
 	}
 	if handler == nil {
-		return nil, "", fmt.Errorf("unknown job handler: %s", definition.HandlerType)
+		return nil, "", fmt.Errorf("no handler registered for job definition %s (handler: %s)", jobID, definition.HandlerType)
 	}
 	if !definition.Enabled {
 		return nil, "", fmt.Errorf("job definition is disabled: %s", jobID)
@@ -550,6 +575,7 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey str
 		return nil, "", fmt.Errorf("prepare job attempt: %w", err)
 	}
 	copyDef := cloneDefinition(definition)
+	m.track(occurrence.ID, copyDef, handler, taskID)
 	ticket, err := client.Submit(ctx, tasks.WorkSpec{
 		ID:               taskID,
 		Scope:            tasks.ScopeIdentity{Owner: copyDef.ScopeOwner, Generation: uint64(copyDef.Version)},
@@ -561,12 +587,19 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey str
 		Input:            append([]byte(nil), copyDef.Payload...),
 		Resources:        definitionResources(copyDef),
 		Job:              &tasks.OccurrenceRef{JobID: copyDef.ID, OccurrenceID: occurrenceID, AttemptID: tasks.AttemptID(attempt.ID), LeaseEpoch: attempt.LeaseEpoch},
-		Handler:          func(runCtx context.Context) error { return handler(runCtx, copyDef) },
+		Handler: func(runCtx context.Context) error {
+			err := handler(runCtx, copyDef)
+			if err != nil {
+				m.recordLastError(occurrence.ID, err)
+			}
+			return err
+		},
 		Commit: func(commitCtx context.Context, res tasks.TaskResult) error {
 			return m.store.CommitAttemptResult(commitCtx, attempt.ID, attempt.LeaseEpoch, attemptState(res.Outcome), nil, res.Failure.Message)
 		},
 	})
 	if err != nil {
+		m.untrack(occurrence.ID)
 		m.persistAttemptResult(attempt, tasks.TaskResult{
 			TaskID: taskID, Outcome: tasks.OutcomeAbortedBeforeStart,
 			Cause: tasks.CausePersistenceFailure, FinishedAt: time.Now().UTC(),
@@ -574,7 +607,6 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID, occurrenceKey str
 		})
 		return nil, "", err
 	}
-	m.track(occurrence.ID, copyDef, handler, taskID)
 	m.enqueueRetry(retryItem{occurrenceID: occurrence.ID, ticket: ticket})
 	return ticket, occurrence.ID, nil
 }
@@ -961,7 +993,39 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		m.untrack(item.occurrenceID)
 		return
 	}
-	if delay := retryDelay(tr.def.RetryPolicy, attempts); delay > 0 {
+
+	var lastErr error
+	m.mu.RLock()
+	if tr != nil {
+		lastErr = tr.lastErr
+	}
+	m.mu.RUnlock()
+
+	rlWait, isRL := extractRateLimitWait(lastErr)
+	delay := retryDelay(tr.def.RetryPolicy, attempts)
+	if isRL && rlWait > 0 {
+		delay = rlWait
+	}
+
+	const deferredThreshold = 2 * time.Second
+	if (isRL && rlWait > 0) || delay >= deferredThreshold {
+		deferUntil := time.Now().UTC().Add(delay)
+		deferCtx, deferCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
+		err := m.store.DeferOccurrence(deferCtx, item.occurrenceID, deferUntil)
+		deferCancel()
+		if err != nil {
+			m.signalRecovery()
+			m.untrack(item.occurrenceID)
+			return
+		}
+		m.untrack(item.occurrenceID)
+		time.AfterFunc(delay, func() {
+			m.signalRecovery()
+		})
+		return
+	}
+
+	if delay > 0 {
 		timer := time.NewTimer(delay)
 		defer timer.Stop()
 		select {
@@ -1017,6 +1081,7 @@ func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def Job
 	commit := func(commitCtx context.Context, res tasks.TaskResult) error {
 		return m.store.CommitAttemptResult(commitCtx, attempt.ID, attempt.LeaseEpoch, attemptState(res.Outcome), nil, res.Failure.Message)
 	}
+	m.track(occurrenceID, copyDef, handler, nextTaskID)
 	ticket, err := m.client.Submit(ctx, tasks.WorkSpec{
 		ID:               nextTaskID,
 		Scope:            tasks.ScopeIdentity{Owner: copyDef.ScopeOwner, Generation: uint64(copyDef.Version)},
@@ -1028,10 +1093,17 @@ func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def Job
 		Input:            append([]byte(nil), copyDef.Payload...),
 		Resources:        definitionResources(copyDef),
 		Job:              &tasks.OccurrenceRef{JobID: copyDef.ID, OccurrenceID: tasks.OccurrenceID(occurrenceID), AttemptID: tasks.AttemptID(attempt.ID), LeaseEpoch: attempt.LeaseEpoch},
-		Handler:          func(runCtx context.Context) error { return handler(runCtx, copyDef) },
-		Commit:           commit,
+		Handler: func(runCtx context.Context) error {
+			err := handler(runCtx, copyDef)
+			if err != nil {
+				m.recordLastError(occurrenceID, err)
+			}
+			return err
+		},
+		Commit: commit,
 	})
 	if err != nil {
+		m.untrack(occurrenceID)
 		abortCtx, cancel := context.WithTimeout(m.rootContext(), 10*time.Second)
 		commitErr := m.store.CommitAttemptResult(abortCtx, attempt.ID, attempt.LeaseEpoch, AttemptAbortedBeforeStart, nil, err.Error())
 		cancel()
@@ -1041,7 +1113,6 @@ func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def Job
 		}
 		return err
 	}
-	m.track(occurrenceID, copyDef, handler, nextTaskID)
 	m.enqueueRetry(retryItem{occurrenceID: occurrenceID, ticket: ticket})
 	return nil
 }
@@ -1059,6 +1130,10 @@ func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error)
 	}
 	for _, occ := range unresolved {
 		report.Scanned++
+		if occ.ReadyAt.After(time.Now().UTC()) {
+			// Occurrence is deferred (waiting for FloodWait / durable backoff).
+			continue
+		}
 		m.mu.RLock()
 		_, activelyTracked := m.tracked[occ.ID]
 		def, found := m.definitions[occ.JobID]

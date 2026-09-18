@@ -94,42 +94,10 @@ func FullMuteRights(untilDate int) tg.ChatBannedRights {
 	}
 }
 
-func retryOnFloodWait[T any](ctx context.Context, op func() (T, error)) (T, error) {
-	val, err := op()
-	if err == nil {
-		return val, nil
-	}
-
-	if wait, ok := tgerr.AsFloodWait(err); ok && wait <= defaultFloodWaitRetryLimit {
-		select {
-		case <-ctx.Done():
-			return val, ctx.Err()
-		case <-time.After(wait):
-			val, err = op()
-			if err == nil {
-				return val, nil
-			}
-		}
-	}
-
-	if tgerr.Is(err, "RPC_CALL_FAIL") {
-		select {
-		case <-ctx.Done():
-			return val, ctx.Err()
-		case <-time.After(300 * time.Millisecond):
-			val, err = op()
-			if err == nil {
-				return val, nil
-			}
-		}
-	}
-
-	return val, mapTelegramError(err)
-}
-
 // Service provides high-level Telegram operations implementing core.TelegramServicer.
 type Service struct {
 	api         *tg.Client
+	executor    *RPCExecutor
 	sender      *message.Sender
 	downloader  *downloader.Downloader
 	uploader    *uploader.Uploader
@@ -142,13 +110,144 @@ type Service struct {
 
 // NewService creates a new Service instance.
 func NewService(api *tg.Client) *Service {
+	exec, _ := NewRPCExecutor(RPCExecutorConfig{
+		DefaultPolicy: DefaultExecutorPolicy,
+	})
 	return &Service{
 		api:             api,
+		executor:        exec,
 		sender:          message.NewSender(api),
 		downloader:      downloader.NewDownloader(),
 		uploader:        uploader.NewUploader(api),
 		botSentMessages: make(map[int]time.Time),
 	}
+}
+
+// SetExecutor configures the shared RPCExecutor for coordinating Telegram calls.
+func (s *Service) SetExecutor(exec *RPCExecutor) {
+	if s != nil && exec != nil {
+		s.executor = exec
+	}
+}
+
+func (s *Service) getExecutor() *RPCExecutor {
+	if s != nil && s.executor != nil {
+		return s.executor
+	}
+	exec, _ := NewRPCExecutor(RPCExecutorConfig{
+		DefaultPolicy: DefaultExecutorPolicy,
+	})
+	return exec
+}
+
+func executeServiceRPC[T any](ctx context.Context, s *Service, meta RPCMeta, op func(opCtx context.Context) (T, error)) (T, error) {
+	if meta.Family == "" {
+		if family, _, ok := strings.Cut(meta.Method, "."); ok {
+			meta.Family = family
+		}
+	}
+	exec := s.getExecutor()
+	res, err := ExecuteRPC(ctx, exec, meta, op)
+	if err != nil {
+		var failure *RPCFailure
+		if errors.As(err, &failure) {
+			return res, mapTelegramError(failure.Err)
+		}
+		return res, mapTelegramError(err)
+	}
+	return res, nil
+}
+
+func (s *Service) execReadOnly(ctx context.Context, method string, op func(opCtx context.Context) error) error {
+	_, err := executeServiceRPC(ctx, s, RPCMeta{
+		Method: method,
+		Kind:   RPCReadOnly,
+	}, func(opCtx context.Context) (struct{}, error) {
+		return struct{}{}, op(opCtx)
+	})
+	return err
+}
+
+func (s *Service) execReadOnlyVal[T any](ctx context.Context, method string, op func(opCtx context.Context) (T, error)) (T, error) {
+	return executeServiceRPC(ctx, s, RPCMeta{
+		Method: method,
+		Kind:   RPCReadOnly,
+	}, op)
+}
+
+func (s *Service) execIdempotent(ctx context.Context, method string, op func(opCtx context.Context) error) error {
+	_, err := executeServiceRPC(ctx, s, RPCMeta{
+		Method: method,
+		Kind:   RPCIdempotentMutation,
+	}, func(opCtx context.Context) (struct{}, error) {
+		return struct{}{}, op(opCtx)
+	})
+	return err
+}
+
+func (s *Service) execIdempotentVal[T any](ctx context.Context, method string, op func(opCtx context.Context) (T, error)) (T, error) {
+	return executeServiceRPC(ctx, s, RPCMeta{
+		Method: method,
+		Kind:   RPCIdempotentMutation,
+	}, op)
+}
+
+func (s *Service) execNonIdempotent(ctx context.Context, method string, op func(opCtx context.Context) error) error {
+	_, err := executeServiceRPC(ctx, s, RPCMeta{
+		Method: method,
+		Kind:   RPCNonIdempotentMutation,
+		RetryPolicy: RetryPolicy{
+			MaxAttempts:        1,
+			InlineFloodWaitMax: defaultFloodWaitRetryLimit,
+		},
+	}, func(opCtx context.Context) (struct{}, error) {
+		return struct{}{}, op(opCtx)
+	})
+	return err
+}
+
+func (s *Service) execNonIdempotentVal[T any](ctx context.Context, method string, op func(opCtx context.Context) (T, error)) (T, error) {
+	return executeServiceRPC(ctx, s, RPCMeta{
+		Method: method,
+		Kind:   RPCNonIdempotentMutation,
+		RetryPolicy: RetryPolicy{
+			MaxAttempts:        1,
+			InlineFloodWaitMax: defaultFloodWaitRetryLimit,
+		},
+	}, op)
+}
+
+const mediaTransferTimeout = 30 * time.Minute
+
+func (s *Service) execMediaTransfer(ctx context.Context, method string, op func(opCtx context.Context) error) error {
+	_, err := executeServiceRPC(ctx, s, RPCMeta{
+		Method:  method,
+		Family:  "upload",
+		Kind:    RPCIdempotentMutation,
+		Timeout: mediaTransferTimeout,
+		RetryPolicy: RetryPolicy{
+			MaxAttempts:        1,
+			MaxElapsed:         mediaTransferTimeout,
+			InlineFloodWaitMax: defaultFloodWaitRetryLimit,
+		},
+	}, func(opCtx context.Context) (struct{}, error) {
+		return struct{}{}, op(opCtx)
+	})
+	return err
+}
+
+func (s *Service) execMediaTransferVal[T any](ctx context.Context, method string, op func(opCtx context.Context) (T, error)) (T, error) {
+	return executeServiceRPC(ctx, s, RPCMeta{
+		Method:  method,
+		Family:  "upload",
+		Kind:    RPCIdempotentMutation,
+		Timeout: mediaTransferTimeout,
+		RetryPolicy: RetryPolicy{
+			MaxAttempts:        1,
+			MaxElapsed:         mediaTransferTimeout,
+			InlineFloodWaitMax: defaultFloodWaitRetryLimit,
+		},
+	}, op)
 }
 
 func (s *Service) recordBotSent(msgID int) {
@@ -278,14 +377,14 @@ func (s *Service) SendMessage(ctx context.Context, peer tg.InputPeerClass, text 
 	peer = s.ensureChannelAccessHash(ctx, peer)
 	peer = s.ensureUserAccessHash(ctx, peer)
 
-	res, err := retryOnFloodWait(ctx, func() (*tg.Message, error) {
-		updates, err := s.sender.To(peer).StyledText(ctx, html.String(nil, text))
+	res, err := s.execNonIdempotentVal(ctx, "messages.sendMessage", func(opCtx context.Context) (*tg.Message, error) {
+		updates, err := s.sender.To(peer).StyledText(opCtx, html.String(nil, text))
 		if err != nil {
 			if _, isFlood := tgerr.AsFloodWait(err); isFlood {
 				return nil, err
 			}
 			// Fallback to plain text if HTML parsing or formatting fails
-			updates, err = s.sender.To(peer).Text(ctx, text)
+			updates, err = s.sender.To(peer).Text(opCtx, text)
 			if err != nil {
 				return nil, err
 			}
@@ -311,15 +410,15 @@ func (s *Service) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID
 	peer = s.ensureChannelAccessHash(ctx, peer)
 	peer = s.ensureUserAccessHash(ctx, peer)
 
-	_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
-		_, err := s.sender.To(peer).Edit(msgID).StyledText(ctx, html.String(nil, text))
+	err := s.execIdempotent(ctx, "messages.editMessage", func(opCtx context.Context) error {
+		_, err := s.sender.To(peer).Edit(msgID).StyledText(opCtx, html.String(nil, text))
 		if err != nil {
 			if _, isFlood := tgerr.AsFloodWait(err); isFlood {
-				return struct{}{}, err
+				return err
 			}
-			_, err = s.sender.To(peer).Edit(msgID).Text(ctx, text)
+			_, err = s.sender.To(peer).Edit(msgID).Text(opCtx, text)
 		}
-		return struct{}{}, err
+		return err
 	})
 	if err != nil {
 		s.checkPeerError(err, peer)
@@ -335,27 +434,27 @@ func (s *Service) SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerCl
 	peer = s.ensureChannelAccessHash(ctx, peer)
 	peer = s.ensureUserAccessHash(ctx, peer)
 
-	res, err := retryOnFloodWait(ctx, func() (*tg.Message, error) {
+	res, err := s.execNonIdempotentVal(ctx, "messages.sendMessage", func(opCtx context.Context) (*tg.Message, error) {
 		req := s.sender.To(peer)
 		var updates tg.UpdatesClass
 		var err error
 
 		if markup != nil {
 			b := req.Markup(markup)
-			updates, err = b.StyledText(ctx, html.String(nil, text))
+			updates, err = b.StyledText(opCtx, html.String(nil, text))
 			if err != nil {
 				if _, isFlood := tgerr.AsFloodWait(err); isFlood {
 					return nil, err
 				}
-				updates, err = b.Text(ctx, text)
+				updates, err = b.Text(opCtx, text)
 			}
 		} else {
-			updates, err = req.StyledText(ctx, html.String(nil, text))
+			updates, err = req.StyledText(opCtx, html.String(nil, text))
 			if err != nil {
 				if _, isFlood := tgerr.AsFloodWait(err); isFlood {
 					return nil, err
 				}
-				updates, err = req.Text(ctx, text)
+				updates, err = req.Text(opCtx, text)
 			}
 		}
 
@@ -405,8 +504,8 @@ func (s *Service) EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass,
 		req.SetReplyMarkup(markup)
 	}
 
-	_, err := retryOnFloodWait(ctx, func() (tg.UpdatesClass, error) {
-		return s.api.MessagesEditMessage(ctx, req)
+	_, err := s.execIdempotentVal(ctx, "messages.editMessage", func(opCtx context.Context) (tg.UpdatesClass, error) {
+		return s.api.MessagesEditMessage(opCtx, req)
 	})
 	if err != nil {
 		s.checkPeerError(err, peer)
@@ -429,8 +528,8 @@ func (s *Service) EditMessageMarkupOnly(ctx context.Context, peer tg.InputPeerCl
 		req.SetReplyMarkup(markup)
 	}
 
-	_, err := retryOnFloodWait(ctx, func() (tg.UpdatesClass, error) {
-		return s.api.MessagesEditMessage(ctx, req)
+	_, err := s.execIdempotentVal(ctx, "messages.editMessage", func(opCtx context.Context) (tg.UpdatesClass, error) {
+		return s.api.MessagesEditMessage(opCtx, req)
 	})
 	if err != nil {
 		s.checkPeerError(err, peer)
@@ -458,8 +557,8 @@ func (s *Service) EditInlineBotMessage(ctx context.Context, inlineID tg.InputBot
 	if markup != nil {
 		req.SetReplyMarkup(markup)
 	}
-	_, err := retryOnFloodWait(ctx, func() (bool, error) {
-		return s.api.MessagesEditInlineBotMessage(ctx, req)
+	_, err := s.execIdempotentVal(ctx, "messages.editInlineBotMessage", func(opCtx context.Context) (bool, error) {
+		return s.api.MessagesEditInlineBotMessage(opCtx, req)
 	})
 	return err
 }
@@ -478,8 +577,8 @@ func (s *Service) EditInlineBotMessageMarkup(ctx context.Context, inlineID tg.In
 	if markup != nil {
 		req.SetReplyMarkup(markup)
 	}
-	_, err := retryOnFloodWait(ctx, func() (bool, error) {
-		return s.api.MessagesEditInlineBotMessage(ctx, req)
+	_, err := s.execIdempotentVal(ctx, "messages.editInlineBotMessage", func(opCtx context.Context) (bool, error) {
+		return s.api.MessagesEditInlineBotMessage(opCtx, req)
 	})
 	return err
 }
@@ -499,8 +598,8 @@ func (s *Service) AnswerCallbackQuery(ctx context.Context, queryID int64, text s
 		req.SetFlags()
 	}
 
-	_, err := retryOnFloodWait(ctx, func() (bool, error) {
-		return s.api.MessagesSetBotCallbackAnswer(ctx, req)
+	_, err := s.execIdempotentVal(ctx, "messages.setBotCallbackAnswer", func(opCtx context.Context) (bool, error) {
+		return s.api.MessagesSetBotCallbackAnswer(opCtx, req)
 	})
 	return err
 }
@@ -542,8 +641,8 @@ func (s *Service) AnswerInlineQueryOptions(ctx context.Context, queryID int64, r
 	// SetFlags computes flag bits for Gallery/Private/SwitchPM etc.
 	req.SetFlags()
 
-	_, err := retryOnFloodWait(ctx, func() (bool, error) {
-		return s.api.MessagesSetInlineBotResults(ctx, req)
+	_, err := s.execIdempotentVal(ctx, "messages.setInlineBotResults", func(opCtx context.Context) (bool, error) {
+		return s.api.MessagesSetInlineBotResults(opCtx, req)
 	})
 	return err
 }
@@ -558,15 +657,15 @@ func (s *Service) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msg
 	peer = s.ensureUserAccessHash(ctx, peer)
 
 	if ch, ok := peer.(*tg.InputPeerChannel); ok {
-		_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
-			_, err := s.api.ChannelsDeleteMessages(ctx, &tg.ChannelsDeleteMessagesRequest{
+		err := s.execIdempotent(ctx, "channels.deleteMessages", func(opCtx context.Context) error {
+			_, err := s.api.ChannelsDeleteMessages(opCtx, &tg.ChannelsDeleteMessagesRequest{
 				Channel: &tg.InputChannel{
 					ChannelID:  ch.ChannelID,
 					AccessHash: ch.AccessHash,
 				},
 				ID: msgIDs,
 			})
-			return struct{}{}, err
+			return err
 		})
 		if err != nil {
 			s.checkPeerError(err, peer)
@@ -574,9 +673,9 @@ func (s *Service) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msg
 		return err
 	}
 
-	_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
-		_, err := s.sender.To(peer).Revoke().Messages(ctx, msgIDs...)
-		return struct{}{}, err
+	err := s.execIdempotent(ctx, "messages.deleteMessages", func(opCtx context.Context) error {
+		_, err := s.sender.To(peer).Revoke().Messages(opCtx, msgIDs...)
+		return err
 	})
 	if err != nil {
 		s.checkPeerError(err, peer)
@@ -592,9 +691,9 @@ func (s *Service) React(ctx context.Context, peer tg.InputPeerClass, msgID int, 
 
 	peer = s.ensureChannelAccessHash(ctx, peer)
 	peer = s.ensureUserAccessHash(ctx, peer)
-	_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
-		_, err := s.sender.To(peer).Reaction(ctx, msgID, &tg.ReactionEmoji{Emoticon: emoji})
-		return struct{}{}, err
+	err := s.execIdempotent(ctx, "messages.sendReaction", func(opCtx context.Context) error {
+		_, err := s.sender.To(peer).Reaction(opCtx, msgID, &tg.ReactionEmoji{Emoticon: emoji})
+		return err
 	})
 	return err
 }
@@ -608,12 +707,11 @@ func (s *Service) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID 
 
 	switch p := peer.(type) {
 	case *tg.InputPeerChannel:
-		res, err := s.api.ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
-			Channel: &tg.InputChannel{
-				ChannelID:  p.ChannelID,
-				AccessHash: p.AccessHash,
-			},
-			ID: []tg.InputMessageClass{&tg.InputMessageID{ID: msgID}},
+		res, err := s.execReadOnlyVal(ctx, "channels.getMessages", func(opCtx context.Context) (tg.MessagesMessagesClass, error) {
+			return s.api.ChannelsGetMessages(opCtx, &tg.ChannelsGetMessagesRequest{
+				Channel: &tg.InputChannel{ChannelID: p.ChannelID, AccessHash: p.AccessHash},
+				ID:      []tg.InputMessageClass{&tg.InputMessageID{ID: msgID}},
+			})
 		})
 		if err != nil {
 			return nil, mapTelegramError(err)
@@ -637,7 +735,9 @@ func (s *Service) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID 
 			msgs = m.Messages
 		}
 	default:
-		res, err := s.api.MessagesGetMessages(ctx, []tg.InputMessageClass{&tg.InputMessageID{ID: msgID}})
+		res, err := s.execReadOnlyVal(ctx, "messages.getMessages", func(opCtx context.Context) (tg.MessagesMessagesClass, error) {
+			return s.api.MessagesGetMessages(opCtx, []tg.InputMessageClass{&tg.InputMessageID{ID: msgID}})
+		})
 		if err != nil {
 			return nil, mapTelegramError(err)
 		}
@@ -682,12 +782,12 @@ func (s *Service) PinMessage(ctx context.Context, peer tg.InputPeerClass, msgID 
 	if silent {
 		req.SetSilent(true)
 	}
-	_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
-		_, err := s.api.MessagesUpdatePinnedMessage(ctx, req)
+	err := s.execIdempotent(ctx, "messages.updatePinnedMessage", func(opCtx context.Context) error {
+		_, err := s.api.MessagesUpdatePinnedMessage(opCtx, req)
 		if err != nil && tgerr.Is(err, "CHAT_NOT_MODIFIED") {
-			return struct{}{}, nil
+			return nil
 		}
-		return struct{}{}, err
+		return err
 	})
 	return err
 }
@@ -701,12 +801,12 @@ func (s *Service) UnpinMessage(ctx context.Context, peer tg.InputPeerClass, msgI
 		ID:    msgID,
 	}
 	req.SetUnpin(true)
-	_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
-		_, err := s.api.MessagesUpdatePinnedMessage(ctx, req)
+	err := s.execIdempotent(ctx, "messages.updatePinnedMessage", func(opCtx context.Context) error {
+		_, err := s.api.MessagesUpdatePinnedMessage(opCtx, req)
 		if err != nil && tgerr.Is(err, "CHAT_NOT_MODIFIED") {
-			return struct{}{}, nil
+			return nil
 		}
-		return struct{}{}, err
+		return err
 	})
 	return err
 }
@@ -725,9 +825,9 @@ func (s *Service) ForwardMessages(ctx context.Context, fromPeer, toPeer tg.Input
 	toPeer = s.ensureChannelAccessHash(ctx, toPeer)
 	toPeer = s.ensureUserAccessHash(ctx, toPeer)
 
-	_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
-		_, err := s.sender.To(toPeer).ForwardIDs(fromPeer, msgIDs[0], msgIDs[1:]...).Send(ctx)
-		return struct{}{}, err
+	err := s.execNonIdempotent(ctx, "messages.forwardMessages", func(opCtx context.Context) error {
+		_, err := s.sender.To(toPeer).ForwardIDs(fromPeer, msgIDs[0], msgIDs[1:]...).Send(opCtx)
+		return err
 	})
 	return err
 }
@@ -766,7 +866,10 @@ func (s *Service) DownloadFile(ctx context.Context, location tg.InputFileLocatio
 		limit:  core.DefaultMaxDownloadSize,
 	}
 
-	_, err = s.downloader.Download(s.api, location).Stream(ctx, bw)
+	err = s.execMediaTransfer(ctx, "upload.getFile", func(opCtx context.Context) error {
+		_, streamErr := s.downloader.Download(s.api, location).Stream(opCtx, bw)
+		return streamErr
+	})
 	if err != nil {
 		_ = os.Remove(dstPath)
 		return mapTelegramError(err)
@@ -784,28 +887,28 @@ func (s *Service) BanUser(ctx context.Context, peer tg.InputPeerClass, user tg.I
 
 	if ch, ok := peer.(*tg.InputPeerChannel); ok {
 		participant := s.ensureUserAccessHash(ctx, user)
-		_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
-			_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
+		err := s.execIdempotent(ctx, "channels.editBanned", func(opCtx context.Context) error {
+			_, err := s.api.ChannelsEditBanned(opCtx, &tg.ChannelsEditBannedRequest{
 				Channel:      &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
 				Participant:  participant,
 				BannedRights: FullBanRights(untilDate),
 			})
 			if err != nil && tgerr.Is(err, "CHAT_NOT_MODIFIED") {
-				return struct{}{}, nil
+				return nil
 			}
-			return struct{}{}, err
+			return err
 		})
 		return err
 	}
 
 	if chat, ok := peer.(*tg.InputPeerChat); ok {
 		if u, ok := user.(*tg.InputPeerUser); ok {
-			_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
-				_, err := s.api.MessagesDeleteChatUser(ctx, &tg.MessagesDeleteChatUserRequest{
+			err := s.execIdempotent(ctx, "messages.deleteChatUser", func(opCtx context.Context) error {
+				_, err := s.api.MessagesDeleteChatUser(opCtx, &tg.MessagesDeleteChatUserRequest{
 					ChatID: chat.ChatID,
 					UserID: &tg.InputUser{UserID: u.UserID, AccessHash: u.AccessHash},
 				})
-				return struct{}{}, err
+				return err
 			})
 			return err
 		}
@@ -824,16 +927,16 @@ func (s *Service) UnbanUser(ctx context.Context, peer tg.InputPeerClass, user tg
 
 	if ch, ok := peer.(*tg.InputPeerChannel); ok {
 		participant := s.ensureUserAccessHash(ctx, user)
-		_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
-			_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
+		err := s.execIdempotent(ctx, "channels.editBanned", func(opCtx context.Context) error {
+			_, err := s.api.ChannelsEditBanned(opCtx, &tg.ChannelsEditBannedRequest{
 				Channel:      &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
 				Participant:  participant,
 				BannedRights: tg.ChatBannedRights{}, // reset all rights
 			})
 			if err != nil && tgerr.Is(err, "CHAT_NOT_MODIFIED", "RIGHTS_NOT_MODIFIED", "USER_NOT_PARTICIPANT") {
-				return struct{}{}, nil
+				return nil
 			}
-			return struct{}{}, err
+			return err
 		})
 		return err
 	}
@@ -852,39 +955,39 @@ func (s *Service) KickUser(ctx context.Context, peer tg.InputPeerClass, user tg.
 	if ch, ok := peer.(*tg.InputPeerChannel); ok {
 		channel := &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash}
 		participant := s.ensureUserAccessHash(ctx, user)
-		_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
-			_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
+		err := s.execIdempotent(ctx, "channels.editBanned", func(opCtx context.Context) error {
+			_, err := s.api.ChannelsEditBanned(opCtx, &tg.ChannelsEditBannedRequest{
 				Channel:      channel,
 				Participant:  participant,
 				BannedRights: tg.ChatBannedRights{ViewMessages: true, UntilDate: int(time.Now().Unix() + 60)},
 			})
-			return struct{}{}, err
+			return err
 		})
 		if err != nil {
 			return err
 		}
-		_, err = retryOnFloodWait(ctx, func() (struct{}, error) {
-			_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
+		err = s.execIdempotent(ctx, "channels.editBanned", func(opCtx context.Context) error {
+			_, err := s.api.ChannelsEditBanned(opCtx, &tg.ChannelsEditBannedRequest{
 				Channel:      channel,
 				Participant:  participant,
 				BannedRights: tg.ChatBannedRights{}, // allow rejoin
 			})
 			if err != nil && tgerr.Is(err, "CHAT_NOT_MODIFIED", "RIGHTS_NOT_MODIFIED") {
-				return struct{}{}, nil
+				return nil
 			}
-			return struct{}{}, err
+			return err
 		})
 		return err
 	}
 
 	if chat, ok := peer.(*tg.InputPeerChat); ok {
 		if u, ok := user.(*tg.InputPeerUser); ok {
-			_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
-				_, err := s.api.MessagesDeleteChatUser(ctx, &tg.MessagesDeleteChatUserRequest{
+			err := s.execIdempotent(ctx, "messages.deleteChatUser", func(opCtx context.Context) error {
+				_, err := s.api.MessagesDeleteChatUser(opCtx, &tg.MessagesDeleteChatUserRequest{
 					ChatID: chat.ChatID,
 					UserID: &tg.InputUser{UserID: u.UserID, AccessHash: u.AccessHash},
 				})
-				return struct{}{}, err
+				return err
 			})
 			return err
 		}
@@ -903,16 +1006,16 @@ func (s *Service) MuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.
 
 	if ch, ok := peer.(*tg.InputPeerChannel); ok {
 		participant := s.ensureUserAccessHash(ctx, user)
-		_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
-			_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
+		err := s.execIdempotent(ctx, "channels.editBanned", func(opCtx context.Context) error {
+			_, err := s.api.ChannelsEditBanned(opCtx, &tg.ChannelsEditBannedRequest{
 				Channel:      &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
 				Participant:  participant,
 				BannedRights: FullMuteRights(untilDate),
 			})
 			if err != nil && tgerr.Is(err, "CHAT_NOT_MODIFIED") {
-				return struct{}{}, nil
+				return nil
 			}
-			return struct{}{}, err
+			return err
 		})
 		return err
 	}
@@ -930,16 +1033,16 @@ func (s *Service) UnmuteUser(ctx context.Context, peer tg.InputPeerClass, user t
 
 	if ch, ok := peer.(*tg.InputPeerChannel); ok {
 		participant := s.ensureUserAccessHash(ctx, user)
-		_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
-			_, err := s.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
+		err := s.execIdempotent(ctx, "channels.editBanned", func(opCtx context.Context) error {
+			_, err := s.api.ChannelsEditBanned(opCtx, &tg.ChannelsEditBannedRequest{
 				Channel:      &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
 				Participant:  participant,
 				BannedRights: tg.ChatBannedRights{},
 			})
 			if err != nil && tgerr.Is(err, "CHAT_NOT_MODIFIED", "RIGHTS_NOT_MODIFIED", "USER_NOT_PARTICIPANT") {
-				return struct{}{}, nil
+				return nil
 			}
-			return struct{}{}, err
+			return err
 		})
 		return err
 	}
@@ -979,8 +1082,8 @@ func (s *Service) PurgeMessages(ctx context.Context, peer tg.InputPeerClass, top
 
 		if topicID > 0 {
 			// Topic-scoped purge via GetReplies with pagination
-			_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
-				resp, err := s.api.MessagesGetReplies(ctx, &tg.MessagesGetRepliesRequest{
+			err := s.execReadOnly(ctx, "messages.getReplies", func(opCtx context.Context) error {
+				resp, err := s.api.MessagesGetReplies(opCtx, &tg.MessagesGetRepliesRequest{
 					Peer:     peer,
 					MsgID:    topicID,
 					OffsetID: currentOffsetID,
@@ -989,20 +1092,20 @@ func (s *Service) PurgeMessages(ctx context.Context, peer tg.InputPeerClass, top
 					Limit:    100,
 				})
 				if err != nil {
-					return struct{}{}, err
+					return err
 				}
 				if resp != nil {
 					if mod, ok := resp.AsModified(); ok {
 						messages = mod.GetMessages()
 					}
 				}
-				return struct{}{}, nil
+				return nil
 			})
 			fetchErr = err
 		} else {
 			// Non-topic history fetch with pagination
-			_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
-				resp, err := s.api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
+			err := s.execReadOnly(ctx, "messages.getHistory", func(opCtx context.Context) error {
+				resp, err := s.api.MessagesGetHistory(opCtx, &tg.MessagesGetHistoryRequest{
 					Peer:     peer,
 					OffsetID: currentOffsetID,
 					MinID:    minID - 1,
@@ -1010,14 +1113,14 @@ func (s *Service) PurgeMessages(ctx context.Context, peer tg.InputPeerClass, top
 					Limit:    100,
 				})
 				if err != nil {
-					return struct{}{}, err
+					return err
 				}
 				if resp != nil {
 					if mod, ok := resp.AsModified(); ok {
 						messages = mod.GetMessages()
 					}
 				}
-				return struct{}{}, nil
+				return nil
 			})
 			fetchErr = err
 		}
@@ -1094,7 +1197,9 @@ func (s *Service) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaTy
 		return nil, fmt.Errorf("sender/uploader is not initialized")
 	}
 
-	inputFile, err := s.uploader.FromPath(ctx, filePath)
+	inputFile, err := s.execMediaTransferVal(ctx, "upload.saveFilePart", func(opCtx context.Context) (tg.InputFileClass, error) {
+		return s.uploader.FromPath(opCtx, filePath)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to upload file %q: %w", filePath, err)
 	}
@@ -1105,21 +1210,22 @@ func (s *Service) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaTy
 		styledCaption = append(styledCaption, html.String(nil, caption))
 	}
 
-	var updates tg.UpdatesClass
-	switch mediaType {
-	case "photo":
-		updates, err = builder.UploadedPhoto(ctx, inputFile, styledCaption...)
-	case "sticker":
-		updates, err = builder.UploadedSticker(ctx, inputFile, styledCaption...)
-	case "audio":
-		updates, err = builder.Audio(ctx, inputFile, styledCaption...)
-	case "video":
-		updates, err = builder.Video(ctx, inputFile, styledCaption...)
-	case "file", "document":
-		fallthrough
-	default:
-		updates, err = builder.File(ctx, inputFile, styledCaption...)
-	}
+	updates, err := s.execNonIdempotentVal(ctx, "messages.sendMedia", func(opCtx context.Context) (tg.UpdatesClass, error) {
+		switch mediaType {
+		case "photo":
+			return builder.UploadedPhoto(opCtx, inputFile, styledCaption...)
+		case "sticker":
+			return builder.UploadedSticker(opCtx, inputFile, styledCaption...)
+		case "audio":
+			return builder.Audio(opCtx, inputFile, styledCaption...)
+		case "video":
+			return builder.Video(opCtx, inputFile, styledCaption...)
+		case "file", "document":
+			fallthrough
+		default:
+			return builder.File(opCtx, inputFile, styledCaption...)
+		}
+	})
 
 	if err != nil {
 		s.checkPeerError(err, peer)
@@ -1138,7 +1244,9 @@ func (s *Service) GetFullUser(ctx context.Context, user tg.InputUserClass) (*tg.
 	if s.api == nil {
 		return nil, fmt.Errorf("%w: telegram api not initialized", core.ErrInternal)
 	}
-	res, err := s.api.UsersGetFullUser(ctx, user)
+	res, err := s.execReadOnlyVal(ctx, "users.getFullUser", func(opCtx context.Context) (*tg.UsersUserFull, error) {
+		return s.api.UsersGetFullUser(opCtx, user)
+	})
 	if err != nil {
 		return nil, mapTelegramError(err)
 	}
@@ -1151,7 +1259,9 @@ func (s *Service) ResolveUsername(ctx context.Context, username string) (*tg.Con
 		return nil, fmt.Errorf("%w: telegram api not initialized", core.ErrInternal)
 	}
 	cleaned := strings.TrimPrefix(username, "@")
-	res, err := s.api.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: cleaned})
+	res, err := s.execReadOnlyVal(ctx, "contacts.resolveUsername", func(opCtx context.Context) (*tg.ContactsResolvedPeer, error) {
+		return s.api.ContactsResolveUsername(opCtx, &tg.ContactsResolveUsernameRequest{Username: cleaned})
+	})
 	if err != nil {
 		return nil, mapTelegramError(err)
 	}
@@ -1171,12 +1281,13 @@ func (s *Service) GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.
 
 	switch p := peer.(type) {
 	case *tg.InputPeerChannel:
-		res, err = s.api.ChannelsGetFullChannel(ctx, &tg.InputChannel{
-			ChannelID:  p.ChannelID,
-			AccessHash: p.AccessHash,
+		res, err = s.execReadOnlyVal(ctx, "channels.getFullChannel", func(opCtx context.Context) (*tg.MessagesChatFull, error) {
+			return s.api.ChannelsGetFullChannel(opCtx, &tg.InputChannel{ChannelID: p.ChannelID, AccessHash: p.AccessHash})
 		})
 	case *tg.InputPeerChat:
-		res, err = s.api.MessagesGetFullChat(ctx, p.ChatID)
+		res, err = s.execReadOnlyVal(ctx, "messages.getFullChat", func(opCtx context.Context) (*tg.MessagesChatFull, error) {
+			return s.api.MessagesGetFullChat(opCtx, p.ChatID)
+		})
 	default:
 		return nil, fmt.Errorf("%w: chat info is only available for groups, supergroups, and channels", core.ErrUnsupported)
 	}
@@ -1229,12 +1340,12 @@ func (s *Service) PromoteAdmin(ctx context.Context, peer tg.InputPeerClass, user
 		req.SetRank(title)
 	}
 
-	_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
-		_, err := s.api.ChannelsEditAdmin(ctx, req)
+	err := s.execIdempotent(ctx, "channels.editAdmin", func(opCtx context.Context) error {
+		_, err := s.api.ChannelsEditAdmin(opCtx, req)
 		if err != nil && tgerr.Is(err, "CHAT_NOT_MODIFIED") {
-			return struct{}{}, nil
+			return nil
 		}
-		return struct{}{}, err
+		return err
 	})
 	return err
 }
@@ -1264,12 +1375,12 @@ func (s *Service) DemoteAdmin(ctx context.Context, peer tg.InputPeerClass, user 
 		AdminRights: tg.ChatAdminRights{}, // empty rights removes admin status
 	}
 
-	_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
-		_, err := s.api.ChannelsEditAdmin(ctx, req)
+	err := s.execIdempotent(ctx, "channels.editAdmin", func(opCtx context.Context) error {
+		_, err := s.api.ChannelsEditAdmin(opCtx, req)
 		if err != nil && tgerr.Is(err, "CHAT_NOT_MODIFIED") {
-			return struct{}{}, nil
+			return nil
 		}
-		return struct{}{}, err
+		return err
 	})
 	return err
 }
@@ -1290,13 +1401,13 @@ func (s *Service) EditChatDefaultBannedRights(ctx context.Context, peer tg.Input
 		BannedRights: rights,
 	}
 
-	_, err := retryOnFloodWait(ctx, func() (struct{}, error) {
-		_, err := s.api.MessagesEditChatDefaultBannedRights(ctx, req)
+	err := s.execIdempotent(ctx, "messages.editChatDefaultBannedRights", func(opCtx context.Context) error {
+		_, err := s.api.MessagesEditChatDefaultBannedRights(opCtx, req)
 		if err != nil && tgerr.Is(err, "CHAT_NOT_MODIFIED", "RIGHTS_NOT_MODIFIED") {
 			// Rights are already in the requested state; treat as idempotent success.
-			return struct{}{}, nil
+			return nil
 		}
-		return struct{}{}, err
+		return err
 	})
 	return err
 }
@@ -1348,8 +1459,8 @@ func (s *Service) UpdateProfile(ctx context.Context, firstName, lastName, about 
 		req.SetAbout(*about)
 	}
 
-	_, err := retryOnFloodWait(ctx, func() (tg.UserClass, error) {
-		return s.api.AccountUpdateProfile(ctx, req)
+	_, err := s.execIdempotentVal(ctx, "account.updateProfile", func(opCtx context.Context) (tg.UserClass, error) {
+		return s.api.AccountUpdateProfile(opCtx, req)
 	})
 	return err
 }
@@ -1361,8 +1472,8 @@ func (s *Service) BlockUser(ctx context.Context, peer tg.InputPeerClass) error {
 	}
 	peer = s.ensureUserAccessHash(ctx, peer)
 
-	_, err := retryOnFloodWait(ctx, func() (bool, error) {
-		return s.api.ContactsBlock(ctx, &tg.ContactsBlockRequest{ID: peer})
+	_, err := s.execIdempotentVal(ctx, "contacts.block", func(opCtx context.Context) (bool, error) {
+		return s.api.ContactsBlock(opCtx, &tg.ContactsBlockRequest{ID: peer})
 	})
 	return err
 }
@@ -1374,8 +1485,8 @@ func (s *Service) UnblockUser(ctx context.Context, peer tg.InputPeerClass) error
 	}
 	peer = s.ensureUserAccessHash(ctx, peer)
 
-	_, err := retryOnFloodWait(ctx, func() (bool, error) {
-		return s.api.ContactsUnblock(ctx, &tg.ContactsUnblockRequest{ID: peer})
+	_, err := s.execIdempotentVal(ctx, "contacts.unblock", func(opCtx context.Context) (bool, error) {
+		return s.api.ContactsUnblock(opCtx, &tg.ContactsUnblockRequest{ID: peer})
 	})
 	return err
 }
@@ -1394,13 +1505,15 @@ func (s *Service) UploadProfilePhoto(ctx context.Context, filePath string) error
 		return fmt.Errorf("%w: api/uploader is not initialized", core.ErrInternal)
 	}
 
-	inputFile, err := s.uploader.FromPath(ctx, filePath)
+	inputFile, err := s.execMediaTransferVal(ctx, "upload.saveFilePart", func(opCtx context.Context) (tg.InputFileClass, error) {
+		return s.uploader.FromPath(opCtx, filePath)
+	})
 	if err != nil {
 		return fmt.Errorf("failed to upload photo file: %w", err)
 	}
 
-	_, err = retryOnFloodWait(ctx, func() (*tg.PhotosPhoto, error) {
-		return s.api.PhotosUploadProfilePhoto(ctx, &tg.PhotosUploadProfilePhotoRequest{
+	_, err = s.execNonIdempotentVal(ctx, "photos.uploadProfilePhoto", func(opCtx context.Context) (*tg.PhotosPhoto, error) {
+		return s.api.PhotosUploadProfilePhoto(opCtx, &tg.PhotosUploadProfilePhotoRequest{
 			File: inputFile,
 		})
 	})
@@ -1416,8 +1529,8 @@ func (s *Service) DeleteProfilePhotos(ctx context.Context, limit int) (int, erro
 		limit = 1
 	}
 
-	photosRes, err := retryOnFloodWait(ctx, func() (tg.PhotosPhotosClass, error) {
-		return s.api.PhotosGetUserPhotos(ctx, &tg.PhotosGetUserPhotosRequest{
+	photosRes, err := s.execReadOnlyVal(ctx, "photos.getUserPhotos", func(opCtx context.Context) (tg.PhotosPhotosClass, error) {
+		return s.api.PhotosGetUserPhotos(opCtx, &tg.PhotosGetUserPhotosRequest{
 			UserID: &tg.InputUserSelf{},
 			Offset: 0,
 			MaxID:  0,
@@ -1455,8 +1568,8 @@ func (s *Service) DeleteProfilePhotos(ctx context.Context, limit int) (int, erro
 		return 0, nil
 	}
 
-	deletedIDs, err := retryOnFloodWait(ctx, func() ([]int64, error) {
-		return s.api.PhotosDeletePhotos(ctx, inputPhotos)
+	deletedIDs, err := s.execIdempotentVal(ctx, "photos.deletePhotos", func(opCtx context.Context) ([]int64, error) {
+		return s.api.PhotosDeletePhotos(opCtx, inputPhotos)
 	})
 	if err != nil {
 		return 0, err
@@ -1477,8 +1590,8 @@ func (s *Service) GetDialogs(ctx context.Context, limit int) ([]*core.Chat, erro
 		limit = 100
 	}
 
-	res, err := retryOnFloodWait(ctx, func() (tg.MessagesDialogsClass, error) {
-		return s.api.MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
+	res, err := s.execReadOnlyVal(ctx, "messages.getDialogs", func(opCtx context.Context) (tg.MessagesDialogsClass, error) {
+		return s.api.MessagesGetDialogs(opCtx, &tg.MessagesGetDialogsRequest{
 			OffsetPeer: &tg.InputPeerEmpty{},
 			Limit:      limit,
 		})
@@ -1557,8 +1670,8 @@ func (s *Service) GetContacts(ctx context.Context) ([]*core.User, error) {
 		return nil, fmt.Errorf("%w: api is not initialized", core.ErrInternal)
 	}
 
-	res, err := retryOnFloodWait(ctx, func() (tg.ContactsContactsClass, error) {
-		return s.api.ContactsGetContacts(ctx, 0)
+	res, err := s.execReadOnlyVal(ctx, "contacts.getContacts", func(opCtx context.Context) (tg.ContactsContactsClass, error) {
+		return s.api.ContactsGetContacts(opCtx, 0)
 	})
 	if err != nil {
 		return nil, err

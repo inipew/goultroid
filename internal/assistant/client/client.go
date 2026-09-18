@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/gotd/td/telegram"
+	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/telegram/updates"
+	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/callback"
 	"github.com/inipew/goultroid/internal/assistant/command"
@@ -17,6 +19,7 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/menu"
 	"github.com/inipew/goultroid/internal/assistant/peer"
 	"github.com/inipew/goultroid/internal/assistant/presentation"
+	assistentrpc "github.com/inipew/goultroid/internal/assistant/rpc"
 	"github.com/inipew/goultroid/internal/core"
 	inlineService "github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/settings"
@@ -66,6 +69,7 @@ type AssistantClient struct {
 	tasks               tasks.Client
 	pluginScopeResolver func(string) (tasks.ScopeIdentity, bool)
 	inlineEngine        *inlineService.Engine
+	rpcExecutor         assistentrpc.Executor
 }
 
 var _ Client = (*AssistantClient)(nil)
@@ -84,10 +88,21 @@ func NewAssistantClient(appID int, appHash string, botToken string, logger *zap.
 		appID: appID, appHash: appHash, botToken: botToken, logger: logger,
 		startTime: time.Now(), lifecycle: NewLifecycle(), rateLimiter: rl,
 		cache: cache, resolver: res, cmdRouter: cmdR, cbRouter: cbR, menuCtrl: ctrl,
+		rpcExecutor: assistentrpc.DirectExecutor{},
 	}
 	ctrl.AttachRoutes(cbR, c.Username, c.StartTime)
 	command.AttachDefaultCommandsWithStore(cmdR, c.Username, c.StartTime, presentation.RenderScreen, ctrl.Instances())
 	return c
+}
+
+// SetRPCExecutor installs the application-owned Telegram executor before Start.
+func (c *AssistantClient) SetRPCExecutor(executor assistentrpc.Executor) {
+	if executor == nil {
+		return
+	}
+	c.mu.Lock()
+	c.rpcExecutor = executor
+	c.mu.Unlock()
 }
 
 func (c *AssistantClient) Start(ctx context.Context) error {
@@ -139,13 +154,16 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	dispatcher := tg.NewUpdateDispatcher()
 	updateMgr := updates.New(updates.Config{Handler: dispatcher})
 	tdClient := telegram.NewClient(c.appID, c.appHash, telegram.Options{UpdateHandler: updateMgr})
-	c.resolver.SetEntityFetcher(peer.NewTelegramEntityFetcher(tdClient.API()))
-	c.interaction = interaction.NewClientInteraction(tdClient.API(), c.logger)
+	managedAPI := &managedAPI{raw: tdClient.API(), executor: c.rpcExecutor}
+	c.resolver.SetEntityFetcher(peer.NewTelegramEntityFetcher(managedAPI))
+	c.interaction = interaction.NewClientInteraction(managedAPI, c.logger)
+	c.interaction.SetRPCExecutor(c.rpcExecutor)
+	c.interaction.SetMediaSender(message.NewSender(tdClient.API()), uploader.NewUploader(tdClient.API()))
 	if c.metrics != nil {
 		c.interaction.SetMetricsCollector(c.metrics)
 	}
 	c.interaction.SetPeerReResolver(c.resolver)
-	inlineQueryService := newAssistantInlineQueryServicer(tdClient.API())
+	inlineQueryService := newAssistantInlineQueryServicer(managedAPI)
 	c.shuttingDown.Store(false)
 
 	deps := UpdateHandlerDeps{
@@ -181,7 +199,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 			// Assistant command surface. Registration is best-effort so a
 			// presentation API failure never prevents the bot from starting.
 			if c.cmdRouter != nil {
-				if err := menu.RegisterTelegramCommandMenu(ctx, tdClient.API(), c.cmdRouter.CoreRouter()); err != nil {
+				if err := menu.RegisterTelegramCommandMenu(ctx, managedAPI, c.cmdRouter.CoreRouter()); err != nil {
 					c.logger.Warn("assistant: failed to register Telegram command menu", zap.Error(err))
 				}
 			}

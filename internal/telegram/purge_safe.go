@@ -64,8 +64,8 @@ func (s *Service) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerClass,
 		var err error
 
 		if topicID > 0 {
-			_, err = retryOnFloodWait(ctx, func() (struct{}, error) {
-				resp, callErr := s.api.MessagesGetReplies(ctx, &tg.MessagesGetRepliesRequest{
+			_, err = s.execReadOnlyVal(ctx, "messages.getReplies", func(opCtx context.Context) (struct{}, error) {
+				resp, callErr := s.api.MessagesGetReplies(opCtx, &tg.MessagesGetRepliesRequest{
 					Peer:     peer,
 					MsgID:    topicID,
 					OffsetID: offsetID,
@@ -84,8 +84,8 @@ func (s *Service) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerClass,
 				return struct{}{}, nil
 			})
 		} else {
-			_, err = retryOnFloodWait(ctx, func() (struct{}, error) {
-				resp, callErr := s.api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
+			_, err = s.execReadOnlyVal(ctx, "messages.getHistory", func(opCtx context.Context) (struct{}, error) {
+				resp, callErr := s.api.MessagesGetHistory(opCtx, &tg.MessagesGetHistoryRequest{
 					Peer:     peer,
 					OffsetID: offsetID,
 					MinID:    queryMinID,

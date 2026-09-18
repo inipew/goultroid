@@ -8,14 +8,56 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
-// DB wraps a sql.DB connection with custom repository methods.
+// DB wraps a sql.DB connection with custom repository methods and query metrics.
 type DB struct {
 	*sql.DB
+	metricsMu sync.RWMutex
+	metrics   DBMetrics
+}
+
+// SetMetrics attaches a DBMetrics observer to this database handle.
+func (db *DB) SetMetrics(m DBMetrics) {
+	if db == nil {
+		return
+	}
+	if m == nil {
+		m = NoopDBMetrics{}
+	}
+	db.metricsMu.Lock()
+	defer db.metricsMu.Unlock()
+	db.metrics = m
+}
+
+// Metrics returns the active DBMetrics observer, or NoopDBMetrics if unset.
+func (db *DB) Metrics() DBMetrics {
+	if db == nil {
+		return NoopDBMetrics{}
+	}
+	db.metricsMu.RLock()
+	defer db.metricsMu.RUnlock()
+	if db.metrics != nil {
+		return db.metrics
+	}
+	return NoopDBMetrics{}
+}
+
+// Observe records execution duration and error for a database operation label.
+func (db *DB) Observe(operation string, elapsed time.Duration, err error) {
+	if db == nil {
+		return
+	}
+	db.metricsMu.RLock()
+	m := db.metrics
+	db.metricsMu.RUnlock()
+	if m != nil {
+		m.Observe(operation, elapsed, err)
+	}
 }
 
 const sqliteConnectionPragmas = "_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)"

@@ -200,27 +200,6 @@ func TestMapTelegramError(t *testing.T) {
 	}
 }
 
-func TestRetryOnFloodWait_ExceedsLimit(t *testing.T) {
-	ctx := context.Background()
-	callCount := 0
-	floodErr := tgerr.New(420, "FLOOD_WAIT_60")
-
-	res, err := retryOnFloodWait(ctx, func() (string, error) {
-		callCount++
-		return "", floodErr
-	})
-
-	if res != "" {
-		t.Errorf("expected empty result, got %q", res)
-	}
-	if callCount != 1 {
-		t.Errorf("expected exactly 1 call when flood wait exceeds limit, got %d", callCount)
-	}
-	if !errors.Is(err, core.ErrRateLimited) {
-		t.Errorf("expected ErrRateLimited, got %v", err)
-	}
-}
-
 func TestEditChatDefaultBannedRights_UnsupportedPeer(t *testing.T) {
 	svc := &Service{api: &tg.Client{}}
 	ctx := context.Background()
@@ -358,5 +337,61 @@ func TestService_InvalidatePeerOnInvalid(t *testing.T) {
 	}
 	if storage.invalidated[0].Prefix != "channel" || storage.invalidated[0].ID != 12345 {
 		t.Errorf("unexpected invalidated key: %+v", storage.invalidated[0])
+	}
+}
+
+func TestService_NonIdempotentMutationNoRetryOnTransient(t *testing.T) {
+	svc := NewService(nil)
+	clock := NewFakeClock(time.Now())
+	sleeper := &FakeSleeper{}
+	exec := newTestExecutor(nil, clock, sleeper, nil)
+	svc.SetExecutor(exec)
+
+	var attempts int
+	err := svc.execNonIdempotent(context.Background(), "messages.sendMessage", func(opCtx context.Context) error {
+		attempts++
+		return tgerr.New(500, "RPC_CALL_FAIL")
+	})
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if attempts != 1 {
+		t.Fatalf("expected exactly 1 attempt for non-idempotent mutation, got %d", attempts)
+	}
+}
+
+func TestService_ContextPropagationToExecutor(t *testing.T) {
+	svc := NewService(nil)
+	clock := NewFakeClock(time.Now())
+	sleeper := &FakeSleeper{}
+	exec := newTestExecutor(nil, clock, sleeper, nil)
+	svc.SetExecutor(exec)
+
+	var hasDeadline bool
+	err := svc.execReadOnly(context.Background(), "users.getMe", func(opCtx context.Context) error {
+		_, hasDeadline = opCtx.Deadline()
+		return nil
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hasDeadline {
+		t.Fatal("expected opCtx passed to operation to have a deadline derived from executor")
+	}
+}
+
+func TestService_SetExecutor(t *testing.T) {
+	svc := NewService(nil)
+	exec, err := NewRPCExecutor(RPCExecutorConfig{
+		DefaultPolicy: DefaultExecutorPolicy,
+	})
+	if err != nil {
+		t.Fatalf("failed to create executor: %v", err)
+	}
+	svc.SetExecutor(exec)
+	if svc.getExecutor() != exec {
+		t.Fatal("expected configured executor to be returned")
 	}
 }

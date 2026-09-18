@@ -17,16 +17,20 @@ type bucket struct {
 
 // Limiter provides multi-dimensional token-bucket rate-limiting.
 type Limiter struct {
-	mu            sync.RWMutex
-	buckets       map[string]*bucket
-	policies      map[Dimension]Policy
-	defaultPolicy Policy
+	mu              sync.RWMutex
+	buckets         map[string]*bucket
+	policies        map[Dimension]Policy
+	defaultPolicy   Policy
+	cleanupInterval time.Duration
 
-	stopOnce sync.Once
-	stopCh   chan struct{}
+	lifecycleMu sync.Mutex
+	started     bool
+	stopped     bool
+	stopCh      chan struct{}
+	doneCh      chan struct{}
 }
 
-// New creates a new Limiter with the given default policy and cleanup interval.
+// New creates a new Limiter with the given default policy and cleanup interval without starting background workers.
 func New(defaultPolicy Policy, cleanupInterval time.Duration) *Limiter {
 	if defaultPolicy.Window <= 0 {
 		defaultPolicy.Window = time.Minute
@@ -41,15 +45,14 @@ func New(defaultPolicy Policy, cleanupInterval time.Duration) *Limiter {
 		cleanupInterval = 5 * time.Minute
 	}
 
-	l := &Limiter{
-		buckets:       make(map[string]*bucket),
-		policies:      make(map[Dimension]Policy),
-		defaultPolicy: defaultPolicy,
-		stopCh:        make(chan struct{}),
+	return &Limiter{
+		buckets:         make(map[string]*bucket),
+		policies:        make(map[Dimension]Policy),
+		defaultPolicy:   defaultPolicy,
+		cleanupInterval: cleanupInterval,
+		stopCh:          make(chan struct{}),
+		doneCh:          make(chan struct{}),
 	}
-
-	go l.cleanupLoop(cleanupInterval)
-	return l
 }
 
 // SetPolicy sets a specialized policy for a specific dimension.
@@ -170,8 +173,50 @@ func (l *Limiter) Reset(dim Dimension, key string) {
 	delete(l.buckets, compositeKey)
 }
 
+// Start initiates the background cleanup worker. It is safe to call repeatedly.
+func (l *Limiter) Start(ctx context.Context) error {
+	l.lifecycleMu.Lock()
+	defer l.lifecycleMu.Unlock()
+	if l.started || l.stopped {
+		return nil
+	}
+	l.started = true
+	go l.cleanupLoop(l.cleanupInterval)
+	return nil
+}
+
+// Stop gracefully shuts down the background cleanup worker, waiting for termination up to ctx deadline.
+func (l *Limiter) Stop(ctx context.Context) error {
+	l.lifecycleMu.Lock()
+	if !l.started {
+		l.stopped = true
+		l.lifecycleMu.Unlock()
+		return nil
+	}
+	if l.stopped {
+		l.lifecycleMu.Unlock()
+		return nil
+	}
+	l.stopped = true
+	close(l.stopCh)
+	done := l.doneCh
+	l.lifecycleMu.Unlock()
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // cleanupLoop periodically removes buckets that haven't been accessed in twice their window.
 func (l *Limiter) cleanupLoop(interval time.Duration) {
+	defer close(l.doneCh)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -195,10 +240,9 @@ func (l *Limiter) cleanupLoop(interval time.Duration) {
 	}
 }
 
-// Close gracefully stops the cleanup background worker.
+// Close gracefully stops the cleanup background worker for backward compatibility.
 func (l *Limiter) Close() error {
-	l.stopOnce.Do(func() {
-		close(l.stopCh)
-	})
-	return nil
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return l.Stop(ctx)
 }

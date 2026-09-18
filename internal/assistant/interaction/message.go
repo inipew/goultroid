@@ -16,6 +16,7 @@ import (
 	"github.com/gotd/td/telegram/message/styling"
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
+	assistentrpc "github.com/inipew/goultroid/internal/assistant/rpc"
 	"github.com/inipew/goultroid/internal/core"
 	"go.uber.org/zap"
 )
@@ -39,6 +40,7 @@ type ClientInteraction struct {
 	metrics    core.MetricsCollector
 	sender     *message.Sender
 	uploader   MediaUploader
+	executor   assistentrpc.Executor
 }
 
 var _ MessageInteraction = (*ClientInteraction)(nil)
@@ -49,8 +51,9 @@ func NewClientInteraction(api TelegramAPI, logger *zap.Logger) *ClientInteractio
 		logger = zap.NewNop()
 	}
 	ci := &ClientInteraction{
-		api:    api,
-		logger: logger,
+		api:      api,
+		logger:   logger,
+		executor: assistentrpc.DirectExecutor{},
 	}
 	if tgClient, ok := api.(*tg.Client); ok {
 		ci.sender = message.NewSender(tgClient)
@@ -63,6 +66,23 @@ func NewClientInteraction(api TelegramAPI, logger *zap.Logger) *ClientInteractio
 func (c *ClientInteraction) SetMediaSender(sender *message.Sender, upl MediaUploader) {
 	c.sender = sender
 	c.uploader = upl
+}
+
+// SetRPCExecutor configures the shared executor used for multi-request media operations.
+func (c *ClientInteraction) SetRPCExecutor(executor assistentrpc.Executor) {
+	if executor != nil {
+		c.executor = executor
+	}
+}
+
+func executeValue[T any](ctx context.Context, executor assistentrpc.Executor, method, family string, kind assistentrpc.Kind, timeout time.Duration, operation func(context.Context) (T, error)) (T, error) {
+	var value T
+	err := executor.Do(ctx, method, family, kind, timeout, func(opCtx context.Context) error {
+		var opErr error
+		value, opErr = operation(opCtx)
+		return opErr
+	})
+	return value, err
 }
 
 // SetMetricsCollector configures optional runtime metrics collection.
@@ -468,7 +488,10 @@ func (c *ClientInteraction) SendMedia(ctx context.Context, peer tg.InputPeerClas
 		}
 	}()
 
-	inputFile, err := c.uploader.FromPath(ctx, filePath)
+	const transferTimeout = 30 * time.Minute
+	inputFile, err := executeValue(ctx, c.executor, "upload.saveFilePart", "upload", assistentrpc.IdempotentMutation, transferTimeout, func(opCtx context.Context) (tg.InputFileClass, error) {
+		return c.uploader.FromPath(opCtx, filePath)
+	})
 	if err != nil {
 		retErr = fmt.Errorf("failed to upload file %q: %w", filePath, err)
 		return nil, retErr
@@ -480,21 +503,22 @@ func (c *ClientInteraction) SendMedia(ctx context.Context, peer tg.InputPeerClas
 		styledCaption = append(styledCaption, html.String(nil, caption))
 	}
 
-	var updates tg.UpdatesClass
-	switch mediaType {
-	case "photo":
-		updates, err = builder.UploadedPhoto(ctx, inputFile, styledCaption...)
-	case "sticker":
-		updates, err = builder.UploadedSticker(ctx, inputFile, styledCaption...)
-	case "audio":
-		updates, err = builder.Audio(ctx, inputFile, styledCaption...)
-	case "video":
-		updates, err = builder.Video(ctx, inputFile, styledCaption...)
-	case "file", "document":
-		fallthrough
-	default:
-		updates, err = builder.File(ctx, inputFile, styledCaption...)
-	}
+	updates, err := executeValue(ctx, c.executor, "messages.sendMedia", "messages", assistentrpc.NonIdempotentMutation, transferTimeout, func(opCtx context.Context) (tg.UpdatesClass, error) {
+		switch mediaType {
+		case "photo":
+			return builder.UploadedPhoto(opCtx, inputFile, styledCaption...)
+		case "sticker":
+			return builder.UploadedSticker(opCtx, inputFile, styledCaption...)
+		case "audio":
+			return builder.Audio(opCtx, inputFile, styledCaption...)
+		case "video":
+			return builder.Video(opCtx, inputFile, styledCaption...)
+		case "file", "document":
+			fallthrough
+		default:
+			return builder.File(opCtx, inputFile, styledCaption...)
+		}
+	})
 
 	if err != nil {
 		retErr = fmt.Errorf("failed to send media (%s): %w", mediaType, ClassifyRPCError(err))

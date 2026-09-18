@@ -75,6 +75,14 @@ func (e *RateLimitError) Unwrap() error {
 	return errors.Join(ErrRateLimited, e.Err)
 }
 
+// RateLimitWait returns the duration requested by the rate limiter.
+func (e *RateLimitError) RateLimitWait() time.Duration {
+	if e == nil {
+		return 0
+	}
+	return e.Wait
+}
+
 func NewRateLimitError(wait time.Duration, err error) *RateLimitError {
 	return &RateLimitError{Wait: wait, Err: err}
 }

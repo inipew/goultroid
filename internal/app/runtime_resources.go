@@ -45,6 +45,7 @@ func (c dependencyComponent) ForceStop(ctx context.Context) error {
 type resourceComponent struct {
 	name         string
 	dependencies []string
+	start        func(context.Context) error
 	stop         func() error
 }
 
@@ -52,7 +53,12 @@ func (c resourceComponent) Name() string { return c.name }
 func (c resourceComponent) Dependencies() []string {
 	return append([]string(nil), c.dependencies...)
 }
-func (c resourceComponent) Start(context.Context) error { return nil }
+func (c resourceComponent) Start(ctx context.Context) error {
+	if c.start != nil {
+		return c.start(ctx)
+	}
+	return nil
+}
 func (c resourceComponent) Health(context.Context) runtime.ComponentHealth {
 	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
 }

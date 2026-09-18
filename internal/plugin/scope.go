@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,11 +25,12 @@ const DefaultMaxScopeGoroutines = 64
 // Scope owns cancellable plugin work and cleanup callbacks. It is safe for
 // concurrent use and can be closed repeatedly.
 type Scope struct {
-	owner      string
-	generation uint64
-	ctx        context.Context
-	cancel     context.CancelFunc
-	manager    *resource.Manager
+	owner         string
+	generation    uint64
+	ctx           context.Context
+	cancel        context.CancelFunc
+	manager       *resource.Manager
+	panicReporter core.PanicReporter
 
 	mu               sync.Mutex
 	closed           bool
@@ -38,6 +40,7 @@ type Scope struct {
 	maxGoroutines    int
 	wg               sync.WaitGroup
 	goCounter        atomic.Uint64
+	panicCount       atomic.Uint64
 }
 
 var scopeGeneration atomic.Uint64
@@ -120,6 +123,21 @@ func (s *Scope) Go(fn func(context.Context)) error {
 
 	go func() {
 		defer func() {
+			if r := recover(); r != nil {
+				s.panicCount.Add(1)
+				s.mu.Lock()
+				reporter := s.panicReporter
+				s.mu.Unlock()
+				if reporter != nil {
+					reporter.ReportPanic(core.PanicReport{
+						Owner:     s.owner,
+						Component: "plugin.Scope.Go",
+						Value:     r,
+						Stack:     debug.Stack(),
+						At:        time.Now().UTC(),
+					})
+				}
+			}
 			s.mu.Lock()
 			s.activeGoroutines--
 			s.mu.Unlock()
@@ -131,6 +149,25 @@ func (s *Scope) Go(fn func(context.Context)) error {
 		fn(s.ctx)
 	}()
 	return nil
+}
+
+// SetPanicReporter configures the reporter for recovered goroutine panics.
+func (s *Scope) SetPanicReporter(reporter core.PanicReporter) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.panicReporter = reporter
+}
+
+// Panics returns the total number of panics recovered by this scope.
+func (s *Scope) Panics() uint64 {
+	return s.panicCount.Load()
+}
+
+// ActiveGoroutines returns the number of currently running goroutines in this scope.
+func (s *Scope) ActiveGoroutines() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activeGoroutines
 }
 
 // Defer registers an idempotent-at-scope cleanup callback. Callbacks execute
@@ -284,7 +321,23 @@ func (s *Scope) Close(ctx context.Context) error {
 
 	for i := len(cleanups) - 1; i >= 0; i-- {
 		func() {
-			defer func() { _ = recover() }()
+			defer func() {
+				if r := recover(); r != nil {
+					s.panicCount.Add(1)
+					s.mu.Lock()
+					reporter := s.panicReporter
+					s.mu.Unlock()
+					if reporter != nil {
+						reporter.ReportPanic(core.PanicReport{
+							Owner:     s.owner,
+							Component: "plugin.Scope.Close",
+							Value:     r,
+							Stack:     debug.Stack(),
+							At:        time.Now().UTC(),
+						})
+					}
+				}
+			}()
 			cleanups[i]()
 		}()
 	}

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/jobs"
 	jobsqlite "github.com/inipew/goultroid/internal/jobs/sqlite"
@@ -302,4 +303,68 @@ func TestConcurrentDuplicateTriggerSingleRun(t *testing.T) {
 		t.Fatalf("succeeded=%d, want exactly 1 (single-flight lease)", succeeded)
 	}
 	_ = store
+}
+
+// TestDeferredDurableRetry_FloodWait verifies that when a task encounters a Telegram
+// FloodWait (RateLimitError), physical workers are released immediately, the occurrence
+// is deferred in the store with a future ready_at, early recovery calls respect ready_at,
+// and the task eventually completes after the wait window expires.
+func TestDeferredDurableRetry_FloodWait(t *testing.T) {
+	var calls atomic.Int32
+	waitDuration := 200 * time.Millisecond
+
+	manager, store, _ := engineBackedManager(t,
+		func(context.Context, jobs.JobDefinition) error {
+			if calls.Add(1) == 1 {
+				return core.NewRateLimitError(waitDuration, errors.New("flood wait"))
+			}
+			return nil
+		},
+		jobs.JobRetryPolicy{MaxAttempts: 3, InitialDelay: 10 * time.Millisecond, MaxDelay: 100 * time.Millisecond, BackoffMultiplier: 2},
+	)
+
+	start := time.Now()
+	ticket, occID, err := manager.SubmitOccurrence(context.Background(), "job-retry", "manual:flood-wait")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First attempt resolves as failure promptly without blocking on the wait duration.
+	res, err := ticket.Wait(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != tasks.OutcomeFailed {
+		t.Fatalf("first attempt outcome=%s, want failed", res.Outcome)
+	}
+	if time.Since(start) >= waitDuration {
+		t.Fatalf("first attempt should resolve immediately without waiting out flood wait: elapsed=%v", time.Since(start))
+	}
+
+	// Verify that the occurrence has been deferred into the future in the store.
+	occ, err := store.GetOccurrence(context.Background(), occID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !occ.ReadyAt.After(start) {
+		t.Fatalf("occurrence ready_at %v should be deferred after %v", occ.ReadyAt, start)
+	}
+
+	// While still before readyAt, calling Recover must NOT redrive early.
+	if time.Now().Before(occ.ReadyAt) {
+		report, err := manager.Recover(context.Background(), 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.Redriven != 0 {
+			t.Fatalf("expected 0 redriven before ready_at, got %d", report.Redriven)
+		}
+	}
+
+	// Eventually after waitDuration, recovery drives the second attempt and completes.
+	pollOccurrenceState(t, store, occID, jobs.OccurrenceCompleted, 3*time.Second)
+
+	if calls.Load() != 2 {
+		t.Fatalf("expected 2 calls, got %d", calls.Load())
+	}
 }

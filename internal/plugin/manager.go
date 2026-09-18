@@ -76,6 +76,7 @@ type Manager struct {
 	hookCleanups      map[string]func()
 	callbackCleanups  map[string]func()
 	auditor           audit.Auditor
+	panicReporter     core.PanicReporter
 	mu                sync.RWMutex
 	shutdown          bool
 }
@@ -136,6 +137,13 @@ func (m *Manager) SetResourceManager(mgr *resource.Manager) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.resourceManager = mgr
+}
+
+// SetPanicReporter attaches a panic reporter for plugin scopes.
+func (m *Manager) SetPanicReporter(reporter core.PanicReporter) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.panicReporter = reporter
 }
 
 // SetHookRegistrar attaches a hook registrar (e.g. Telegram Dispatcher) to this manager.
@@ -314,6 +322,7 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 	// 3. Initialization without holding lock (may be long, may call manager)
 	m.mu.RLock()
 	resMgr := m.resourceManager
+	reporter := m.panicReporter
 	m.mu.RUnlock()
 
 	var scope *Scope
@@ -321,6 +330,9 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 		scope = NewScopeWithManager(ctx, "plugin:"+name, resMgr)
 	} else {
 		scope = NewScope(ctx, "plugin:"+name)
+	}
+	if reporter != nil {
+		scope.SetPanicReporter(reporter)
 	}
 	commandScope := tasks.ScopeIdentity{Owner: "plugin:" + name, Generation: scope.Generation()}
 	for i := range cmds {
@@ -747,6 +759,7 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 	cmds := append([]core.Command(nil), m.commands[key]...)
 	router := m.router
 	resMgr := m.resourceManager
+	reporter := m.panicReporter
 	m.mu.Unlock()
 
 	// Initialize scope and plugin
@@ -755,6 +768,9 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 		scope = NewScopeWithManager(ctx, "plugin:"+key, resMgr)
 	} else {
 		scope = NewScope(ctx, "plugin:"+key)
+	}
+	if reporter != nil {
+		scope.SetPanicReporter(reporter)
 	}
 	commandScope := tasks.ScopeIdentity{Owner: "plugin:" + key, Generation: scope.Generation()}
 	for i := range cmds {

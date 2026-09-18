@@ -428,3 +428,58 @@ func TestRuntime_StartPropagatesOperationCancellationAndBoundsRollback(t *testin
 		t.Fatalf("started component was not rolled back: %+v", calls)
 	}
 }
+
+func TestRuntime_ShutdownReportMetrics(t *testing.T) {
+	r := New()
+	var calls []recordedCall
+	var mu sync.Mutex
+	c1 := &recordingComponent{name: "comp1", calls: &calls, mu: &mu}
+	c2 := &phasedComponent{recordingComponent{name: "comp2", calls: &calls, mu: &mu}}
+
+	if err := r.Register(c1); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register(c2); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	report := r.LastShutdownReport()
+	if report.TotalDuration <= 0 {
+		t.Fatalf("expected TotalDuration > 0, got %v", report.TotalDuration)
+	}
+	if len(report.Errors) != 0 {
+		t.Fatalf("expected 0 errors in report, got %v", report.Errors)
+	}
+	if len(report.Phases) == 0 {
+		t.Fatal("expected non-empty phases in report")
+	}
+
+	phaseMap := make(map[string]bool)
+	for _, p := range report.Phases {
+		if p.Duration < 0 {
+			t.Errorf("phase %s duration %v must be >= 0", p.Phase, p.Duration)
+		}
+		phaseMap[string(p.Phase)+":"+p.Component] = true
+	}
+
+	// comp2 has quiesce, drain, stop
+	if !phaseMap["quiesce:comp2"] {
+		t.Error("missing quiesce:comp2 in report")
+	}
+	if !phaseMap["drain:comp2"] {
+		t.Error("missing drain:comp2 in report")
+	}
+	if !phaseMap["stop:comp2"] {
+		t.Error("missing stop:comp2 in report")
+	}
+	// comp1 has stop
+	if !phaseMap["stop:comp1"] {
+		t.Error("missing stop:comp1 in report")
+	}
+}

@@ -196,6 +196,7 @@ func TestLegacyFeatureDatabaseSurfaceIsExplicit(t *testing.T) {
 	infrastructure := map[string]struct{}{
 		"db.go":                 {},
 		"feature_migrations.go": {},
+		"metrics.go":            {},
 		"migration_contract.go": {},
 		"migrations.go":         {},
 		"peers.go":              {},

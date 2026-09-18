@@ -18,7 +18,11 @@ const (
 // RegisterTelegramCommandMenu synchronizes Telegram's native bot command menu
 // from the canonical Assistant command surface. It never creates a second
 // command registry: core.Router remains the source of truth.
-func RegisterTelegramCommandMenu(ctx context.Context, api *tg.Client, router *core.Router) error {
+type botCommandAPI interface {
+	BotsSetBotCommands(context.Context, *tg.BotsSetBotCommandsRequest) (bool, error)
+}
+
+func RegisterTelegramCommandMenu(ctx context.Context, api botCommandAPI, router *core.Router) error {
 	if api == nil {
 		return fmt.Errorf("assistant/menu: telegram API is nil")
 	}
