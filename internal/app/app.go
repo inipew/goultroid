@@ -111,6 +111,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	tgRuntime.dispatcher.Executor().SetDelayedActions(delayedActions)
 
 	pluginManager := plugin.NewManager(coreDeps.router)
+	pluginManager.SetCleanupExecutor(coreDeps.cleanupExecutor)
 	pluginManager.SetPanicReporter(zapCorePanicReporter{logger: logger.Named("plugin.panic")})
 	coreDeps.eventBus.SetTasks(coreDeps.taskEngine)
 	pluginManager.SetHookRegistrar(tgRuntime.dispatcher)

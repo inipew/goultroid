@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/resource"
+	"github.com/inipew/goultroid/internal/runtime"
 )
 
 type mockPanicReporter struct {
@@ -255,4 +257,36 @@ func TestScope_CloseDeadlineBoundsBlockingLegacyCleanup(t *testing.T) {
 	if elapsed > 250*time.Millisecond {
 		t.Fatalf("blocking legacy cleanup escaped close deadline: %v", elapsed)
 	}
+}
+
+func TestScopeCleanupUsesSharedCallbackBudget(t *testing.T) {
+	exec := runtime.NewCallbackExecutor(1)
+	release := make(chan struct{})
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	if err := exec.Run(ctx1, func() error { <-release; return nil }); !errors.Is(err, context.DeadlineExceeded) {
+		cancel1()
+		close(release)
+		t.Fatalf("failed to occupy cleanup executor: %v", err)
+	}
+	cancel1()
+
+	scope := NewScope(context.Background(), "plugin:shared-budget")
+	scope.SetCleanupExecutor(exec)
+	var cleanupCalls atomic.Int32
+	if err := scope.Defer(func() { cleanupCalls.Add(1) }); err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	err := scope.Close(ctx)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		close(release)
+		t.Fatalf("expected deadline waiting for shared cleanup budget, got %v", err)
+	}
+	if cleanupCalls.Load() != 0 {
+		close(release)
+		t.Fatal("scope cleanup started despite exhausted shared callback budget")
+	}
+	close(release)
 }

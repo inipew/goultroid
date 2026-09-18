@@ -10,6 +10,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/resource"
+	"github.com/inipew/goultroid/internal/runtime"
 )
 
 type lifecyclePlugin struct {
@@ -294,4 +295,41 @@ func TestManager_ShutdownDeadlineBoundsLegacyPlugin(t *testing.T) {
 	default:
 		t.Fatal("legacy shutdown callback was never started")
 	}
+}
+
+func TestManagerLifecycleUsesSharedCallbackBudget(t *testing.T) {
+	exec := runtime.NewCallbackExecutor(1)
+	release := make(chan struct{})
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	if err := exec.Run(ctx1, func() error { <-release; return nil }); !errors.Is(err, context.DeadlineExceeded) {
+		cancel1()
+		close(release)
+		t.Fatalf("failed to occupy cleanup executor: %v", err)
+	}
+	cancel1()
+
+	mgr := NewManager(core.NewRouter("."))
+	mgr.SetCleanupExecutor(exec)
+	p := &lifecyclePlugin{name: "bounded", commands: []core.Command{{Name: "bounded"}}}
+	if err := mgr.Register(p); err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	err := mgr.ShutdownWithContext(ctx)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		close(release)
+		t.Fatalf("expected deadline waiting for shared lifecycle budget, got %v", err)
+	}
+	if p.shutdowns.Load() != 0 {
+		close(release)
+		t.Fatal("plugin shutdown started despite exhausted shared callback budget")
+	}
+	stats := mgr.CleanupStats()
+	if stats.Capacity != 1 || stats.Active != 1 {
+		close(release)
+		t.Fatalf("unexpected cleanup stats: %+v", stats)
+	}
+	close(release)
 }

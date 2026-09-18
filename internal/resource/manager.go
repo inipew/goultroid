@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/inipew/goultroid/internal/runtime"
 )
 
 type LeakPolicy string
@@ -34,8 +36,9 @@ type Manager struct {
 	policy       LeakPolicy
 	maxResources int
 	resources    map[string]Resource
-	cleanups     map[string]CleanupFunc
-	cleanupRuns  map[string]*cleanupRun
+	cleanups        map[string]CleanupFunc
+	cleanupRuns     map[string]*cleanupRun
+	cleanupExecutor *runtime.CallbackExecutor
 }
 
 // NewManager initializes a new thread-safe resource manager with a hard
@@ -51,10 +54,22 @@ func NewManagerWithLimit(maxResources int) *Manager {
 	return &Manager{
 		policy:       LeakPolicyWarn,
 		maxResources: maxResources,
-		resources:    make(map[string]Resource),
-		cleanups:     make(map[string]CleanupFunc),
-		cleanupRuns:  make(map[string]*cleanupRun),
+		resources:       make(map[string]Resource),
+		cleanups:        make(map[string]CleanupFunc),
+		cleanupRuns:     make(map[string]*cleanupRun),
+		cleanupExecutor: runtime.NewCallbackExecutor(runtime.DefaultLifecycleCallbackConcurrency),
 	}
+}
+
+// SetCleanupExecutor shares the application lifecycle callback budget with
+// resource force-cleanup.
+func (m *Manager) SetCleanupExecutor(executor *runtime.CallbackExecutor) {
+	if executor == nil {
+		return
+	}
+	m.mu.Lock()
+	m.cleanupExecutor = executor
+	m.mu.Unlock()
 }
 
 // SetLeakPolicy sets the policy applied when leaks are detected.
@@ -286,30 +301,40 @@ func (m *Manager) cleanupResource(ctx context.Context, id string) error {
 		m.mu.Unlock()
 		return nil
 	}
+	executor := m.cleanupExecutor
+	if executor == nil {
+		executor = runtime.NewCallbackExecutor(runtime.DefaultLifecycleCallbackConcurrency)
+		m.cleanupExecutor = executor
+	}
 	run := &cleanupRun{done: make(chan struct{})}
 	m.cleanupRuns[id] = run
 	m.mu.Unlock()
 
-	go func() {
-		var cleanupErr error
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				cleanupErr = fmt.Errorf("cleanup panic: %v", recovered)
-			}
+	result, startErr := executor.Start(ctx, func() error { return cleanup(ctx) })
+	if startErr != nil {
+		m.mu.Lock()
+		run.err = startErr
+		if m.cleanupRuns[id] == run {
+			delete(m.cleanupRuns, id)
+		}
+		close(run.done)
+		m.mu.Unlock()
+		return startErr
+	}
 
-			m.mu.Lock()
-			run.err = cleanupErr
-			if m.cleanupRuns[id] == run {
-				delete(m.cleanupRuns, id)
-				if cleanupErr == nil {
-					delete(m.resources, id)
-					delete(m.cleanups, id)
-				}
+	go func() {
+		cleanupErr := <-result
+		m.mu.Lock()
+		run.err = cleanupErr
+		if m.cleanupRuns[id] == run {
+			delete(m.cleanupRuns, id)
+			if cleanupErr == nil {
+				delete(m.resources, id)
+				delete(m.cleanups, id)
 			}
-			close(run.done)
-			m.mu.Unlock()
-		}()
-		cleanupErr = cleanup(ctx)
+		}
+		close(run.done)
+		m.mu.Unlock()
 	}()
 
 	select {

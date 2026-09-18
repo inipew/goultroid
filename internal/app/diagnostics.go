@@ -28,6 +28,7 @@ type DiagnosticsSnapshot struct {
 	Process            processSvc.DiagnosticsSnapshot
 	Jobs               jobs.Diagnostics
 	PersistencePanics  uint64
+	LifecycleCallbacks runtime.CallbackExecutorStats
 	TaskEngine         taskengine.RuntimeStats
 	RPC                telegram.RPCMetricsSnapshot
 	DB                 DBDiagnostics
@@ -112,6 +113,7 @@ func (a *App) Diagnostics() DiagnosticsSnapshot {
 		})
 	}
 	if a.plugins != nil {
+		snapshot.LifecycleCallbacks = a.plugins.CleanupStats()
 		for _, p := range a.plugins.Plugins() {
 			entry := PluginDiagnostics{Name: p.Name()}
 			if scope, ok := a.plugins.Scope(p.Name()); ok && scope != nil {

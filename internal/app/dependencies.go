@@ -17,6 +17,7 @@ import (
 	platformStorage "github.com/inipew/goultroid/internal/platform/storage"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/resource"
+	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/scheduler"
 	broadcastSvc "github.com/inipew/goultroid/internal/services/broadcast"
 	"github.com/inipew/goultroid/internal/services/callback"
@@ -52,6 +53,7 @@ type coreDependencies struct {
 	taskEngine      *taskengine.Engine
 	persistencePump *jobs.PersistencePump
 	resourceManager *resource.Manager
+	cleanupExecutor *runtime.CallbackExecutor
 	idempManager    *idempotency.Manager
 	fsManager       *filesystem.Manager
 	procManager     *process.Manager

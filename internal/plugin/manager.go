@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -79,6 +78,7 @@ type Manager struct {
 	callbackCleanups  map[string]func()
 	auditor           audit.Auditor
 	panicReporter     core.PanicReporter
+	cleanupExecutor   *runtime.CallbackExecutor
 	mu                sync.RWMutex
 	shutdown          bool
 }
@@ -98,6 +98,7 @@ func NewManager(router *core.Router) *Manager {
 		hookCleanups:     make(map[string]func()),
 		callbackCleanups: make(map[string]func()),
 		list:             make([]Plugin, 0),
+		cleanupExecutor:  runtime.NewCallbackExecutor(runtime.DefaultLifecycleCallbackConcurrency),
 	}
 }
 
@@ -112,36 +113,58 @@ func (m *Manager) runLifecycleCallback(ctx context.Context, component string, fn
 		return fmt.Errorf("%s skipped after lifecycle deadline: %w", component, err)
 	}
 
-	result := make(chan error, 1)
-	go func() {
-		var callErr error
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				m.mu.RLock()
-				reporter := m.panicReporter
-				m.mu.RUnlock()
-				if reporter != nil {
-					reporter.ReportPanic(core.PanicReport{
-						Owner:     "plugin-manager",
-						Component: component,
-						Value:     recovered,
-						Stack:     debug.Stack(),
-						At:        time.Now().UTC(),
-					})
-				}
-				callErr = fmt.Errorf("%s panic: %v", component, recovered)
-			}
-			result <- callErr
-		}()
-		callErr = fn()
-	}()
-
-	select {
-	case err := <-result:
-		return err
-	case <-ctx.Done():
-		return fmt.Errorf("%s exceeded lifecycle deadline: %w", component, ctx.Err())
+	m.mu.RLock()
+	executor := m.cleanupExecutor
+	reporter := m.panicReporter
+	m.mu.RUnlock()
+	if executor == nil {
+		executor = runtime.NewCallbackExecutor(runtime.DefaultLifecycleCallbackConcurrency)
 	}
+	err := executor.Run(ctx, fn)
+	var panicErr *runtime.CallbackPanicError
+	if errors.As(err, &panicErr) {
+		if reporter != nil {
+			reporter.ReportPanic(core.PanicReport{
+				Owner:     "plugin-manager",
+				Component: component,
+				Value:     panicErr.Value,
+				Stack:     panicErr.Stack,
+				At:        time.Now().UTC(),
+			})
+		}
+		return fmt.Errorf("%s panic: %w", component, err)
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%s exceeded lifecycle deadline: %w", component, err)
+	}
+	return err
+}
+
+// SetCleanupExecutor shares one bounded lifecycle-callback budget across plugin
+// shutdown and scope cleanup.
+func (m *Manager) SetCleanupExecutor(executor *runtime.CallbackExecutor) {
+	if executor == nil {
+		return
+	}
+	m.mu.Lock()
+	m.cleanupExecutor = executor
+	for _, scope := range m.scopes {
+		if scope != nil {
+			scope.SetCleanupExecutor(executor)
+		}
+	}
+	m.mu.Unlock()
+}
+
+// CleanupStats returns the shared callback executor diagnostics.
+func (m *Manager) CleanupStats() runtime.CallbackExecutorStats {
+	m.mu.RLock()
+	executor := m.cleanupExecutor
+	m.mu.RUnlock()
+	if executor == nil {
+		return runtime.CallbackExecutorStats{}
+	}
+	return executor.Stats()
 }
 
 // SetCallbackRegistrar binds callback registrations to plugin transactions.
@@ -368,6 +391,7 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 	m.mu.RLock()
 	resMgr := m.resourceManager
 	reporter := m.panicReporter
+	cleanupExecutor := m.cleanupExecutor
 	m.mu.RUnlock()
 
 	var scope *Scope
@@ -378,6 +402,9 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 	}
 	if reporter != nil {
 		scope.SetPanicReporter(reporter)
+	}
+	if cleanupExecutor != nil {
+		scope.SetCleanupExecutor(cleanupExecutor)
 	}
 	commandScope := tasks.ScopeIdentity{Owner: "plugin:" + name, Generation: scope.Generation()}
 	for i := range cmds {
@@ -396,11 +423,10 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 		initErr = p.Init()
 	}
 	if initErr != nil {
-		// Compensating cleanup outside lock
 		if s, ok := p.(ContextShutdowner); ok {
-			_ = s.ShutdownContext(ctx)
+			_ = m.runLifecycleCallback(ctx, "plugin "+name+" init rollback", func() error { return s.ShutdownContext(ctx) })
 		} else if s, ok := p.(Shutdowner); ok {
-			_ = s.Shutdown()
+			_ = m.runLifecycleCallback(ctx, "plugin "+name+" init rollback", s.Shutdown)
 		}
 		_ = scope.Close(ctx)
 		return fmt.Errorf("failed to initialize plugin %s: %w", name, initErr)
@@ -408,9 +434,9 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 
 	cleanupPlugin := func() {
 		if s, ok := p.(ContextShutdowner); ok {
-			_ = s.ShutdownContext(ctx)
+			_ = m.runLifecycleCallback(ctx, "plugin "+name+" registration rollback", func() error { return s.ShutdownContext(ctx) })
 		} else if s, ok := p.(Shutdowner); ok {
-			_ = s.Shutdown()
+			_ = m.runLifecycleCallback(ctx, "plugin "+name+" registration rollback", s.Shutdown)
 		}
 		_ = scope.Close(ctx)
 	}
@@ -444,7 +470,10 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 			registration, err := callbackRegistry.RegisterOwned(name, handler)
 			if err != nil {
 				if hookCleanup != nil {
-					hookCleanup()
+					_ = m.runLifecycleCallback(ctx, "plugin "+name+" hook registration rollback", func() error {
+						hookCleanup()
+						return nil
+					})
 				}
 				router.UnregisterBatch(cmds)
 				cleanupPlugin()
@@ -471,10 +500,10 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 	if m.shutdown {
 		m.mu.Unlock()
 		if hookCleanup != nil {
-			hookCleanup()
+			_ = m.runLifecycleCallback(ctx, "plugin "+name+" hook shutdown rollback", func() error { hookCleanup(); return nil })
 		}
 		if callbackCleanup != nil {
-			callbackCleanup()
+			_ = m.runLifecycleCallback(ctx, "plugin "+name+" callback shutdown rollback", func() error { callbackCleanup(); return nil })
 		}
 		router.UnregisterBatch(cmds)
 		cleanupPlugin()
@@ -483,10 +512,10 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 	if _, exists := m.plugins[name]; exists {
 		m.mu.Unlock()
 		if hookCleanup != nil {
-			hookCleanup()
+			_ = m.runLifecycleCallback(ctx, "plugin "+name+" hook duplicate rollback", func() error { hookCleanup(); return nil })
 		}
 		if callbackCleanup != nil {
-			callbackCleanup()
+			_ = m.runLifecycleCallback(ctx, "plugin "+name+" callback duplicate rollback", func() error { callbackCleanup(); return nil })
 		}
 		router.UnregisterBatch(cmds)
 		cleanupPlugin()
@@ -825,6 +854,7 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 	router := m.router
 	resMgr := m.resourceManager
 	reporter := m.panicReporter
+	cleanupExecutor := m.cleanupExecutor
 	m.mu.Unlock()
 
 	// Initialize scope and plugin
@@ -836,6 +866,9 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 	}
 	if reporter != nil {
 		scope.SetPanicReporter(reporter)
+	}
+	if cleanupExecutor != nil {
+		scope.SetCleanupExecutor(cleanupExecutor)
 	}
 	commandScope := tasks.ScopeIdentity{Owner: "plugin:" + key, Generation: scope.Generation()}
 	for i := range cmds {
@@ -856,6 +889,11 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 	}
 
 	if initErr != nil {
+		if s, ok := p.(ContextShutdowner); ok {
+			_ = m.runLifecycleCallback(ctx, "plugin "+name+" enable rollback", func() error { return s.ShutdownContext(ctx) })
+		} else if s, ok := p.(Shutdowner); ok {
+			_ = m.runLifecycleCallback(ctx, "plugin "+name+" enable rollback", s.Shutdown)
+		}
 		_ = scope.Close(ctx)
 		m.mu.Lock()
 		delete(m.transitions, key)
@@ -885,7 +923,7 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 			registration, regErr := callbackRegistry.RegisterOwned(key, handler)
 			if regErr != nil {
 				if hookCleanup != nil {
-					hookCleanup()
+					_ = m.runLifecycleCallback(ctx, "plugin "+name+" hook enable rollback", func() error { hookCleanup(); return nil })
 				}
 				_ = scope.Close(ctx)
 				m.mu.Lock()
@@ -901,10 +939,10 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 	if router != nil && len(cmds) > 0 {
 		if err := router.RegisterBatch(cmds); err != nil {
 			if hookCleanup != nil {
-				hookCleanup()
+				_ = m.runLifecycleCallback(ctx, "plugin "+name+" hook command rollback", func() error { hookCleanup(); return nil })
 			}
 			if callbackCleanup != nil {
-				callbackCleanup()
+				_ = m.runLifecycleCallback(ctx, "plugin "+name+" callback command rollback", func() error { callbackCleanup(); return nil })
 			}
 			_ = scope.Close(ctx)
 			m.mu.Lock()

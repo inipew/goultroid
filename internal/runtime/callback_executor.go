@@ -59,28 +59,27 @@ func (e *CallbackExecutor) updatePeak(active int64) {
 	}
 }
 
-// Run executes fn under the bounded callback budget and waits until fn returns
-// or ctx expires. Context expiry does not free capacity early: the callback
-// keeps its slot until it really exits.
-func (e *CallbackExecutor) Run(ctx context.Context, fn func() error) error {
+// Start acquires callback capacity and starts fn. The returned channel resolves
+// only when fn really exits, even if the admission context is later cancelled.
+func (e *CallbackExecutor) Start(ctx context.Context, fn func() error) (<-chan error, error) {
 	if fn == nil {
-		return errors.New("callback cannot be nil")
+		return nil, errors.New("callback cannot be nil")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	if e == nil {
-		return errors.New("callback executor is nil")
+		return nil, errors.New("callback executor is nil")
 	}
 
 	select {
 	case e.slots <- struct{}{}:
 	case <-ctx.Done():
 		e.saturated.Add(1)
-		return ctx.Err()
+		return nil, ctx.Err()
 	}
 
 	active := e.active.Add(1)
@@ -95,10 +94,21 @@ func (e *CallbackExecutor) Run(ctx context.Context, fn func() error) error {
 			e.active.Add(-1)
 			<-e.slots
 			result <- callbackErr
+			close(result)
 		}()
 		callbackErr = fn()
 	}()
+	return result, nil
+}
 
+// Run executes fn under the bounded callback budget and waits until fn returns
+// or ctx expires. Context expiry does not free capacity early: the callback
+// keeps its slot until it really exits.
+func (e *CallbackExecutor) Run(ctx context.Context, fn func() error) error {
+	result, err := e.Start(ctx, fn)
+	if err != nil {
+		return err
+	}
 	select {
 	case err := <-result:
 		return err

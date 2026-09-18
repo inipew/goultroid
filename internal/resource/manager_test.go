@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/inipew/goultroid/internal/runtime"
 )
 
 func TestResourceManager_RegisterAndRelease(t *testing.T) {
@@ -199,4 +201,40 @@ func TestResourceManager_ForceCleanupDoesNotDuplicateTimedOutCallback(t *testing
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("resource remained tracked after the original cleanup eventually succeeded")
+}
+
+func TestResourceCleanupUsesSharedCallbackBudget(t *testing.T) {
+	exec := runtime.NewCallbackExecutor(1)
+	release := make(chan struct{})
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	if err := exec.Run(ctx1, func() error { <-release; return nil }); !errors.Is(err, context.DeadlineExceeded) {
+		cancel1()
+		close(release)
+		t.Fatalf("failed to occupy cleanup executor: %v", err)
+	}
+	cancel1()
+
+	mgr := NewManager()
+	mgr.SetCleanupExecutor(exec)
+	mgr.SetLeakPolicy(LeakPolicyForceCleanup)
+	var cleanupCalls atomic.Int32
+	if err := mgr.RegisterWithCleanup(Resource{ID: "bounded", Owner: "plugin:bounded", Type: TypeTempFile}, func() error {
+		cleanupCalls.Add(1)
+		return nil
+	}); err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	_, err := mgr.HandleLeaksContext(ctx, "plugin:bounded")
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		close(release)
+		t.Fatalf("expected deadline waiting for shared cleanup budget, got %v", err)
+	}
+	if cleanupCalls.Load() != 0 {
+		close(release)
+		t.Fatal("resource cleanup started despite exhausted shared callback budget")
+	}
+	close(release)
 }

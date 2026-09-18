@@ -12,6 +12,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/resource"
+	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -34,8 +35,9 @@ type Scope struct {
 	generation    uint64
 	ctx           context.Context
 	cancel        context.CancelFunc
-	manager       *resource.Manager
-	panicReporter core.PanicReporter
+	manager         *resource.Manager
+	panicReporter   core.PanicReporter
+	cleanupExecutor *runtime.CallbackExecutor
 
 	mu               sync.Mutex
 	closed           bool
@@ -67,9 +69,10 @@ func NewScopeWithManager(parent context.Context, owner string, manager *resource
 		generation:    scopeGeneration.Add(1),
 		ctx:           ctx,
 		cancel:        cancel,
-		manager:       manager,
-		maxGoroutines: DefaultMaxScopeGoroutines,
-		resources:     make(map[string]Resource),
+		manager:         manager,
+		cleanupExecutor: runtime.NewCallbackExecutor(runtime.DefaultLifecycleCallbackConcurrency),
+		maxGoroutines:   DefaultMaxScopeGoroutines,
+		resources:       make(map[string]Resource),
 	}
 }
 
@@ -82,6 +85,16 @@ func (s *Scope) SetManager(m *resource.Manager) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.manager = m
+}
+
+// SetCleanupExecutor shares the application lifecycle callback budget with this scope.
+func (s *Scope) SetCleanupExecutor(executor *runtime.CallbackExecutor) {
+	if executor == nil {
+		return
+	}
+	s.mu.Lock()
+	s.cleanupExecutor = executor
+	s.mu.Unlock()
 }
 
 // SetMaxGoroutines sets the maximum concurrent goroutines allowed in Scope.Go.
@@ -330,37 +343,29 @@ func (s *Scope) runCleanup(ctx context.Context, cleanup CleanupFunc) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-
-	result := make(chan error, 1)
-	go func() {
-		var cleanupErr error
-		defer func() {
-			if r := recover(); r != nil {
-				s.panicCount.Add(1)
-				s.mu.Lock()
-				reporter := s.panicReporter
-				s.mu.Unlock()
-				if reporter != nil {
-					reporter.ReportPanic(core.PanicReport{
-						Owner:     s.owner,
-						Component: "plugin.Scope.Close",
-						Value:     r,
-						Stack:     debug.Stack(),
-						At:        time.Now().UTC(),
-					})
-				}
-			}
-			result <- cleanupErr
-		}()
-		cleanupErr = cleanup(ctx)
-	}()
-
-	select {
-	case err := <-result:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
+	s.mu.Lock()
+	executor := s.cleanupExecutor
+	reporter := s.panicReporter
+	s.mu.Unlock()
+	if executor == nil {
+		executor = runtime.NewCallbackExecutor(runtime.DefaultLifecycleCallbackConcurrency)
 	}
+
+	err := executor.Run(ctx, func() error { return cleanup(ctx) })
+	var panicErr *runtime.CallbackPanicError
+	if errors.As(err, &panicErr) {
+		s.panicCount.Add(1)
+		if reporter != nil {
+			reporter.ReportPanic(core.PanicReport{
+				Owner:     s.owner,
+				Component: "plugin.Scope.Close",
+				Value:     panicErr.Value,
+				Stack:     panicErr.Stack,
+				At:        time.Now().UTC(),
+			})
+		}
+	}
+	return err
 }
 
 // Close cancels child work, waits up to ctx's deadline, runs cleanup callbacks in

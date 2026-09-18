@@ -20,6 +20,7 @@ import (
 	platformStorage "github.com/inipew/goultroid/internal/platform/storage"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/resource"
+	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/services/localization"
@@ -97,7 +98,9 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 		cleanupCore(&coreDependencies{db: db, eventBus: eventBus, cmdLimiter: cmdLimiter, interLimiter: interLimiter}, logger)
 		return nil, fmt.Errorf("configure taskengine durability concurrency: %w", err)
 	}
+	cleanupExecutor := runtime.NewCallbackExecutor(runtime.DefaultLifecycleCallbackConcurrency)
 	resourceManager := resource.NewManager()
+	resourceManager.SetCleanupExecutor(cleanupExecutor)
 	idempRepo := idempotency.NewSQLiteRepository(db.DB)
 	if err := idempRepo.InitSchema(context.Background()); err != nil {
 		cleanupCore(&coreDependencies{db: db, eventBus: eventBus, cmdLimiter: cmdLimiter, interLimiter: interLimiter}, logger)
@@ -175,6 +178,7 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 		taskEngine:      taskEngine,
 		persistencePump: persistencePump,
 		resourceManager: resourceManager,
+		cleanupExecutor: cleanupExecutor,
 		idempManager:    idempManager,
 		fsManager:       fsManager,
 		procManager:     procManager,
