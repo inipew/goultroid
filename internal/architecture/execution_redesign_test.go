@@ -159,3 +159,29 @@ func TestTelegramCallbackAndOriginHardeningGuards(t *testing.T) {
 		t.Errorf("%s must classify automation origin with peer identity", dispatchPath)
 	}
 }
+
+func TestIdleCachesAvoidPeriodicWakeupsAndRemainBounded(t *testing.T) {
+	root := repositoryRoot(t)
+
+	callbackLifecycle := filepath.Join(root, "internal", "services", "callback", "lifecycle.go")
+	lifecycleData, err := os.ReadFile(callbackLifecycle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"time.NewTicker(", "go func()"} {
+		if strings.Contains(string(lifecycleData), forbidden) {
+			t.Errorf("%s must remain passive during idle; found %q", callbackLifecycle, forbidden)
+		}
+	}
+
+	peerStorage := filepath.Join(root, "internal", "telegram", "peer_storage.go")
+	peerData, err := os.ReadFile(peerStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"maxPeerStorageCacheEntries", "cachePeerLocked(", "cacheEntityLocked("} {
+		if !strings.Contains(string(peerData), required) {
+			t.Errorf("%s is missing bounded cache invariant %q", peerStorage, required)
+		}
+	}
+}

@@ -1,6 +1,7 @@
 package callback
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -134,5 +135,23 @@ func TestStateStore_RetainedBytesTrackingAndEviction(t *testing.T) {
 	s.Delete(id)
 	if remaining := s.RetainedBytes(); remaining != 0 {
 		t.Fatalf("expected retainedBytes to be 0 after delete, got %d", remaining)
+	}
+}
+
+func TestStateStoreLenPrunesExpiredWithoutBackgroundWorker(t *testing.T) {
+	s := NewStateStore()
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	id := s.Store("short", 1, 5*time.Millisecond)
+	if id == "" {
+		t.Fatal("expected stored state")
+	}
+	time.Sleep(10 * time.Millisecond)
+	if got := s.Len(); got != 0 {
+		t.Fatalf("Len retained expired state without periodic worker: %d", got)
+	}
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatalf("stop: %v", err)
 	}
 }
