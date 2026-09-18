@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -177,6 +178,7 @@ func TestPeerStorageProcessCacheIsHardBounded(t *testing.T) {
 	}
 	peerLen := len(storage.peers)
 	entityLen := len(storage.entities)
+	entityBytes := storage.entityCacheBytes
 	storage.mu.Unlock()
 
 	if peerLen > maxPeerStorageCacheEntries {
@@ -184,5 +186,54 @@ func TestPeerStorageProcessCacheIsHardBounded(t *testing.T) {
 	}
 	if entityLen > maxPeerStorageCacheEntries {
 		t.Fatalf("entity cache exceeded cap: %d > %d", entityLen, maxPeerStorageCacheEntries)
+	}
+	if entityBytes > maxPeerStorageEntityBytes {
+		t.Fatalf("entity cache exceeded byte cap: %d > %d", entityBytes, maxPeerStorageEntityBytes)
+	}
+}
+
+func TestPeerStorageEntityCacheIsByteBounded(t *testing.T) {
+	storage := NewPeerStorage(nil)
+	payload := strings.Repeat("x", 256*1024)
+
+	storage.mu.Lock()
+	for i := 0; i < 64; i++ {
+		key := fmt.Sprintf("channel:%d", i+1)
+		storage.cacheEntityLocked(key, peerEntitySnapshot{title: payload})
+	}
+	stats := PeerStorageCacheStats{
+		EntityEntries:   len(storage.entities),
+		EntityBytes:     storage.entityCacheBytes,
+		EntityByteCap:   maxPeerStorageEntityBytes,
+		EntityEvictions: storage.entityCacheEvictions,
+		EntityOversize:  storage.entityCacheOversize,
+	}
+	storage.mu.Unlock()
+
+	if stats.EntityBytes > maxPeerStorageEntityBytes {
+		t.Fatalf("entity cache bytes=%d, cap=%d", stats.EntityBytes, maxPeerStorageEntityBytes)
+	}
+	if stats.EntityEntries >= 64 {
+		t.Fatalf("byte budget did not evict large snapshots: %+v", stats)
+	}
+	if stats.EntityEvictions == 0 {
+		t.Fatalf("expected byte-pressure eviction: %+v", stats)
+	}
+}
+
+func TestPeerStorageOversizedEntityIsNotRetained(t *testing.T) {
+	storage := NewPeerStorage(nil)
+	oversized := strings.Repeat("z", int(maxPeerStorageEntityBytes)+1)
+
+	storage.mu.Lock()
+	storage.cacheEntityLocked("channel:oversized", peerEntitySnapshot{title: oversized})
+	storage.mu.Unlock()
+
+	stats := storage.CacheStats()
+	if stats.EntityEntries != 0 || stats.EntityBytes != 0 {
+		t.Fatalf("oversized entity retained in memory: %+v", stats)
+	}
+	if stats.EntityOversize != 1 {
+		t.Fatalf("oversize counter=%d, want 1", stats.EntityOversize)
 	}
 }

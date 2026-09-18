@@ -23,16 +23,40 @@ type PeerStorage struct {
 	// The dispatcher receives the same entities repeatedly. Keep a small
 	// process-local dirty cache so repeated background writes do not contend
 	// for SQLite's single connection.
-	mu       sync.RWMutex
-	peers    map[peers.Key]int64
-	entities map[string]peerEntitySnapshot
+	mu                  sync.RWMutex
+	peers               map[peers.Key]int64
+	entities            map[string]peerEntitySnapshot
+	entityCacheBytes    int64
+	entityCacheEvictions uint64
+	entityCacheOversize  uint64
 }
 
 type peerEntitySnapshot struct {
 	username, phone, firstName, lastName, title string
 }
 
-const maxPeerStorageCacheEntries = 4096
+const (
+	maxPeerStorageCacheEntries = 4096
+	maxPeerStorageEntityBytes  int64 = 4 << 20 // 4 MiB
+	peerEntityFixedBytes       int64 = 64
+)
+
+// PeerStorageCacheStats reports bounded process-local cache retention.
+type PeerStorageCacheStats struct {
+	PeerEntries      int
+	EntityEntries    int
+	EntityBytes      int64
+	EntityByteCap    int64
+	EntityEvictions  uint64
+	EntityOversize   uint64
+}
+
+func peerEntityRetainedBytes(key string, snapshot peerEntitySnapshot) int64 {
+	return peerEntityFixedBytes + int64(
+		len(key)+len(snapshot.username)+len(snapshot.phone)+
+			len(snapshot.firstName)+len(snapshot.lastName)+len(snapshot.title),
+	)
+}
 
 var _ peers.Storage = (*PeerStorage)(nil)
 
@@ -46,14 +70,74 @@ func (s *PeerStorage) cachePeerLocked(key peers.Key, accessHash int64) {
 	s.peers[key] = accessHash
 }
 
+func (s *PeerStorage) removeEntityLocked(key string) bool {
+	snapshot, exists := s.entities[key]
+	if !exists {
+		return false
+	}
+	delete(s.entities, key)
+	s.entityCacheBytes -= peerEntityRetainedBytes(key, snapshot)
+	if s.entityCacheBytes < 0 {
+		s.entityCacheBytes = 0
+	}
+	return true
+}
+
+func (s *PeerStorage) evictOneEntityLocked() bool {
+	for key := range s.entities {
+		if s.removeEntityLocked(key) {
+			s.entityCacheEvictions++
+			return true
+		}
+	}
+	return false
+}
+
 func (s *PeerStorage) cacheEntityLocked(key string, snapshot peerEntitySnapshot) {
-	if _, exists := s.entities[key]; !exists && len(s.entities) >= maxPeerStorageCacheEntries {
-		for oldest := range s.entities {
-			delete(s.entities, oldest)
+	charge := peerEntityRetainedBytes(key, snapshot)
+
+	// Replacing an entry must first release the old retained charge. If the new
+	// snapshot itself is too large for the cache, leave it only in SQLite rather
+	// than retaining an unbounded process-local string graph.
+	if s.removeEntityLocked(key) {
+		// Replacement is not an eviction; it is the same logical cache key.
+	}
+	if charge > maxPeerStorageEntityBytes {
+		s.entityCacheOversize++
+		return
+	}
+
+	for len(s.entities) >= maxPeerStorageCacheEntries ||
+		s.entityCacheBytes > maxPeerStorageEntityBytes-charge {
+		if !s.evictOneEntityLocked() {
 			break
 		}
 	}
+	if len(s.entities) >= maxPeerStorageCacheEntries ||
+		s.entityCacheBytes > maxPeerStorageEntityBytes-charge {
+		// Defensive fail-closed path if cache accounting ever becomes
+		// inconsistent: DB remains authoritative, so skipping memory cache is safe.
+		s.entityCacheOversize++
+		return
+	}
 	s.entities[key] = snapshot
+	s.entityCacheBytes += charge
+}
+
+func (s *PeerStorage) CacheStats() PeerStorageCacheStats {
+	if s == nil {
+		return PeerStorageCacheStats{EntityByteCap: maxPeerStorageEntityBytes}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return PeerStorageCacheStats{
+		PeerEntries:     len(s.peers),
+		EntityEntries:   len(s.entities),
+		EntityBytes:     s.entityCacheBytes,
+		EntityByteCap:   maxPeerStorageEntityBytes,
+		EntityEvictions: s.entityCacheEvictions,
+		EntityOversize:  s.entityCacheOversize,
+	}
 }
 
 func NewPeerStorage(db *database.DB) *PeerStorage {

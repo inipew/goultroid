@@ -241,6 +241,14 @@ func (c *Client) RPCMetrics() RPCMetricsSnapshot {
 	return RPCMetricsSnapshot{}
 }
 
+// PeerStorageCacheStats returns process-local peer/entity cache retention.
+func (c *Client) PeerStorageCacheStats() PeerStorageCacheStats {
+	if c == nil || c.peerStorage == nil {
+		return PeerStorageCacheStats{EntityByteCap: maxPeerStorageEntityBytes}
+	}
+	return c.peerStorage.CacheStats()
+}
+
 // ResolverCacheLen returns the number of active entries in the resolver peer cache.
 func (c *Client) ResolverCacheLen() int {
 	if c != nil && c.dispatcher != nil {

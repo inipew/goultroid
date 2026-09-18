@@ -196,7 +196,14 @@ func TestIdleCachesAvoidPeriodicWakeupsAndRemainBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"maxPeerStorageCacheEntries", "cachePeerLocked(", "cacheEntityLocked("} {
+	for _, required := range []string{
+		"maxPeerStorageCacheEntries",
+		"maxPeerStorageEntityBytes",
+		"entityCacheBytes",
+		"peerEntityRetainedBytes(",
+		"cachePeerLocked(",
+		"cacheEntityLocked(",
+	} {
 		if !strings.Contains(string(peerData), required) {
 			t.Errorf("%s is missing bounded cache invariant %q", peerStorage, required)
 		}

@@ -34,6 +34,7 @@ type DiagnosticsSnapshot struct {
 	RPC                telegram.RPCMetricsSnapshot
 	DB                 DBDiagnostics
 	ResolverCacheCount int
+	PeerStorageCache   telegram.PeerStorageCacheStats
 	Workers            []runtime.WorkerSnapshot
 	LastShutdownReport runtime.ShutdownReport
 }
@@ -148,6 +149,7 @@ func (a *App) Diagnostics() DiagnosticsSnapshot {
 	if a.client != nil {
 		snapshot.RPC = a.client.RPCMetrics()
 		snapshot.ResolverCacheCount = a.client.ResolverCacheLen()
+		snapshot.PeerStorageCache = a.client.PeerStorageCacheStats()
 	}
 	if a.db != nil && a.db.DB != nil {
 		stats := a.db.DB.Stats()
