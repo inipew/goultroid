@@ -345,6 +345,26 @@ func TestIdleAndResourceRegressionGuards(t *testing.T) {
 	}
 }
 
+func TestPluginScopeDrainDoesNotSpawnWaiterGoroutine(t *testing.T) {
+	root := repositoryRoot(t)
+	scopePath := filepath.Join(root, "internal", "plugin", "scope.go")
+	data, err := os.ReadFile(scopePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, required := range []string{"idle             chan struct{}", "done := s.idle"} {
+		if !strings.Contains(text, required) {
+			t.Errorf("%s is missing waiter-free drain invariant %q", scopePath, required)
+		}
+	}
+	for _, forbidden := range []string{"s.wg.Wait()", "s.wg.Add(", "s.wg.Done()"} {
+		if strings.Contains(text, forbidden) {
+			t.Errorf("%s reintroduced goroutine-per-drain waiter %q", scopePath, forbidden)
+		}
+	}
+}
+
 func TestJobsRetryDelaysRemainCoordinatorOwned(t *testing.T) {
 	root := repositoryRoot(t)
 	managerPath := filepath.Join(root, "internal", "jobs", "manager.go")

@@ -290,3 +290,49 @@ func TestScopeCleanupUsesSharedCallbackBudget(t *testing.T) {
 	}
 	close(release)
 }
+
+func TestScopeCloseDeadlineDoesNotNeedWaiterGoroutine(t *testing.T) {
+	scope := NewScope(context.Background(), "test-plugin")
+	release := make(chan struct{})
+	started := make(chan struct{})
+	if err := scope.Go(func(context.Context) {
+		close(started)
+		<-release
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	err := scope.Close(ctx)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		close(release)
+		t.Fatalf("expected deadline waiting for blocked scope worker, got %v", err)
+	}
+
+	scope.mu.Lock()
+	idle := scope.idle
+	active := scope.activeGoroutines
+	scope.mu.Unlock()
+	if active != 1 {
+		close(release)
+		t.Fatalf("active goroutines=%d, want 1", active)
+	}
+	select {
+	case <-idle:
+		close(release)
+		t.Fatal("scope idle signal closed before worker exited")
+	default:
+	}
+
+	close(release)
+	select {
+	case <-idle:
+	case <-time.After(time.Second):
+		t.Fatal("scope idle signal did not close after worker exit")
+	}
+	if got := scope.ActiveGoroutines(); got != 0 {
+		t.Fatalf("active goroutines=%d after release, want 0", got)
+	}
+}

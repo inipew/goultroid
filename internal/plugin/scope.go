@@ -45,7 +45,7 @@ type Scope struct {
 	resources        map[string]Resource
 	activeGoroutines int
 	maxGoroutines    int
-	wg               sync.WaitGroup
+	idle             chan struct{}
 	goCounter        atomic.Uint64
 	panicCount       atomic.Uint64
 }
@@ -64,6 +64,8 @@ func NewScopeWithManager(parent context.Context, owner string, manager *resource
 		parent = context.Background()
 	}
 	ctx, cancel := context.WithCancel(parent)
+	idle := make(chan struct{})
+	close(idle)
 	return &Scope{
 		owner:         owner,
 		generation:    scopeGeneration.Add(1),
@@ -73,6 +75,7 @@ func NewScopeWithManager(parent context.Context, owner string, manager *resource
 		cleanupExecutor: runtime.NewCallbackExecutor(runtime.DefaultLifecycleCallbackConcurrency),
 		maxGoroutines:   DefaultMaxScopeGoroutines,
 		resources:       make(map[string]Resource),
+		idle:            idle,
 	}
 }
 
@@ -123,8 +126,10 @@ func (s *Scope) Go(fn func(context.Context)) error {
 		s.mu.Unlock()
 		return fmt.Errorf("plugin scope goroutine limit exceeded (%d/%d)", s.activeGoroutines, limit)
 	}
+	if s.activeGoroutines == 0 {
+		s.idle = make(chan struct{})
+	}
 	s.activeGoroutines++
-	s.wg.Add(1)
 	mgr := s.manager
 	s.mu.Unlock()
 
@@ -139,8 +144,10 @@ func (s *Scope) Go(fn func(context.Context)) error {
 		}); err != nil {
 			s.mu.Lock()
 			s.activeGoroutines--
+			if s.activeGoroutines == 0 {
+				close(s.idle)
+			}
 			s.mu.Unlock()
-			s.wg.Done()
 			return fmt.Errorf("track plugin goroutine: %w", err)
 		}
 	}
@@ -164,11 +171,13 @@ func (s *Scope) Go(fn func(context.Context)) error {
 			}
 			s.mu.Lock()
 			s.activeGoroutines--
+			if s.activeGoroutines == 0 {
+				close(s.idle)
+			}
 			s.mu.Unlock()
 			if rID != "" && mgr != nil {
 				_ = mgr.Release(rID)
 			}
-			s.wg.Done()
 		}()
 		fn(s.ctx)
 	}()
@@ -384,14 +393,10 @@ func (s *Scope) Close(ctx context.Context) error {
 	cleanups := append([]CleanupFunc(nil), s.cleanups...)
 	s.cleanups = nil
 	mgr := s.manager
+	done := s.idle
 	s.mu.Unlock()
 
 	s.cancel()
-	done := make(chan struct{})
-	go func() {
-		s.wg.Wait()
-		close(done)
-	}()
 
 	var waitErr error
 	select {
