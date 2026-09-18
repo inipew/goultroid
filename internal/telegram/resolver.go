@@ -37,6 +37,9 @@ func NewResolverWithContext(parent context.Context, api *tg.Client, peerManager 
 	if parent == nil {
 		parent = context.Background()
 	}
+	if cfg.MaxConcurrentNetwork <= 0 {
+		cfg.MaxConcurrentNetwork = DefaultResolverCacheConfig.MaxConcurrentNetwork
+	}
 	ctx, cancel := context.WithCancel(parent)
 	executor, _ := NewRPCExecutor(RPCExecutorConfig{DefaultPolicy: DefaultExecutorPolicy})
 	return &Resolver{
