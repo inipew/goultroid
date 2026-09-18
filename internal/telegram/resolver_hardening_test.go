@@ -99,3 +99,51 @@ func TestResolverCloseCancelsLifecycle(t *testing.T) {
 		t.Fatal("resolver close did not cancel lifecycle")
 	}
 }
+
+
+func TestResolverNetworkAdmissionIsBoundedAndCancelable(t *testing.T) {
+	resolver := NewResolverWithContext(context.Background(), nil, nil, ResolverCacheConfig{
+		MaxEntries:           8,
+		MaxConcurrentNetwork: 2,
+	})
+	t.Cleanup(func() { _ = resolver.Close() })
+
+	release1, err := resolver.acquireNetwork(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release1()
+	release2, err := resolver.acquireNetwork(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release2()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := resolver.acquireNetwork(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected bounded admission to honor cancellation, got %v", err)
+	}
+}
+
+func TestResolverNetworkAdmissionReleasesCapacity(t *testing.T) {
+	resolver := NewResolverWithContext(context.Background(), nil, nil, ResolverCacheConfig{
+		MaxEntries:           8,
+		MaxConcurrentNetwork: 1,
+	})
+	t.Cleanup(func() { _ = resolver.Close() })
+
+	release, err := resolver.acquireNetwork(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	releaseAgain, err := resolver.acquireNetwork(ctx)
+	if err != nil {
+		t.Fatalf("released network capacity was not reusable: %v", err)
+	}
+	releaseAgain()
+}

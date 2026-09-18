@@ -21,17 +21,19 @@ type peerCacheEntry struct {
 
 // ResolverCacheConfig specifies capacity and TTL bounds for peer caching.
 type ResolverCacheConfig struct {
-	MaxEntries  int
-	PositiveTTL time.Duration
-	NegativeTTL time.Duration
-	Clock       Clock
+	MaxEntries           int
+	MaxConcurrentNetwork int
+	PositiveTTL          time.Duration
+	NegativeTTL          time.Duration
+	Clock                Clock
 }
 
 // DefaultResolverCacheConfig defines conservative production defaults.
 var DefaultResolverCacheConfig = ResolverCacheConfig{
-	MaxEntries:  1000,
-	PositiveTTL: 15 * time.Minute,
-	NegativeTTL: 30 * time.Second,
+	MaxEntries:           1000,
+	MaxConcurrentNetwork: 16,
+	PositiveTTL:          15 * time.Minute,
+	NegativeTTL:          30 * time.Second,
 }
 
 // PeerCache is a bounded, concurrency-safe in-memory cache for resolved Telegram peers.
@@ -47,6 +49,9 @@ type PeerCache struct {
 func NewPeerCache(cfg ResolverCacheConfig) *PeerCache {
 	if cfg.MaxEntries <= 0 {
 		cfg.MaxEntries = DefaultResolverCacheConfig.MaxEntries
+	}
+	if cfg.MaxConcurrentNetwork <= 0 {
+		cfg.MaxConcurrentNetwork = DefaultResolverCacheConfig.MaxConcurrentNetwork
 	}
 	if cfg.PositiveTTL <= 0 {
 		cfg.PositiveTTL = DefaultResolverCacheConfig.PositiveTTL

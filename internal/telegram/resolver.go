@@ -23,6 +23,7 @@ type Resolver struct {
 	executor        *RPCExecutor
 	logger          *zap.Logger
 	group           singleflight.Group
+	networkSlots    chan struct{}
 	lifecycleCtx    context.Context
 	lifecycleCancel context.CancelFunc
 }
@@ -43,6 +44,7 @@ func NewResolverWithContext(parent context.Context, api *tg.Client, peerManager 
 		peerManager:     peerManager,
 		cache:           NewPeerCache(cfg),
 		executor:        executor,
+		networkSlots:    make(chan struct{}, cfg.MaxConcurrentNetwork),
 		lifecycleCtx:    ctx,
 		lifecycleCancel: cancel,
 	}
@@ -67,6 +69,27 @@ func (r *Resolver) Close() error {
 		r.lifecycleCancel()
 	}
 	return nil
+}
+
+func (r *Resolver) acquireNetwork(ctx context.Context) (func(), error) {
+	if r == nil {
+		return nil, errors.New("resolver is nil")
+	}
+	if ctx == nil {
+		ctx = r.lifecycleCtx
+	}
+	if ctx == nil {
+		return nil, errors.New("resolver lifecycle context is unavailable")
+	}
+	if r.networkSlots == nil {
+		return func() {}, nil
+	}
+	select {
+	case r.networkSlots <- struct{}{}:
+		return func() { <-r.networkSlots }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func (r *Resolver) SetStorage(storage *PeerStorage) { r.storage = storage }
@@ -164,8 +187,13 @@ func (r *Resolver) ResolveUser(ctx context.Context, ref string) (tg.InputPeerCla
 		resCh := r.group.DoChan("user:"+cleaned, func() (any, error) {
 			underlyingCtx := r.lifecycleCtx
 			if underlyingCtx == nil {
-				underlyingCtx = context.Background()
+				return nil, errors.New("resolver lifecycle context is unavailable")
 			}
+			release, err := r.acquireNetwork(underlyingCtx)
+			if err != nil {
+				return nil, err
+			}
+			defer release()
 			callCtx, cancel := context.WithTimeout(underlyingCtx, 15*time.Second)
 			defer cancel()
 			p, id, err := r.resolveUsernameUser(callCtx, cleaned)
@@ -324,8 +352,13 @@ func (r *Resolver) ResolveChat(ctx context.Context, ref string) (tg.InputPeerCla
 		resCh := r.group.DoChan("chat:"+cleaned, func() (any, error) {
 			underlyingCtx := r.lifecycleCtx
 			if underlyingCtx == nil {
-				underlyingCtx = context.Background()
+				return nil, errors.New("resolver lifecycle context is unavailable")
 			}
+			release, err := r.acquireNetwork(underlyingCtx)
+			if err != nil {
+				return nil, err
+			}
+			defer release()
 			callCtx, cancel := context.WithTimeout(underlyingCtx, 15*time.Second)
 			defer cancel()
 			return r.resolveUsernameChat(callCtx, cleaned)
@@ -458,6 +491,11 @@ func (r *Resolver) RefreshPeer(ctx context.Context, peer tg.InputPeerClass) erro
 		if underlyingCtx == nil {
 			return nil, errors.New("resolver lifecycle context is unavailable")
 		}
+		release, acquireErr := r.acquireNetwork(underlyingCtx)
+		if acquireErr != nil {
+			return nil, acquireErr
+		}
+		defer release()
 		callCtx, cancel := context.WithTimeout(underlyingCtx, 15*time.Second)
 		defer cancel()
 		if prefix == "user" {
