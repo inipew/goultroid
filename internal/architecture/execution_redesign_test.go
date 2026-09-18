@@ -345,6 +345,33 @@ func TestIdleAndResourceRegressionGuards(t *testing.T) {
 	}
 }
 
+func TestTaskEngineRuntimeDefaultsAreMutationIsolated(t *testing.T) {
+	root := repositoryRoot(t)
+	enginePath := filepath.Join(root, "internal", "taskengine", "engine.go")
+	engineData, err := os.ReadFile(enginePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engineText := string(engineData)
+	for _, required := range []string{"func NewDefaultConfig() Config", "defaults := newDefaultConfig()"} {
+		if !strings.Contains(engineText, required) {
+			t.Errorf("%s is missing immutable default invariant %q", enginePath, required)
+		}
+	}
+
+	configPath := filepath.Join(root, "internal", "config", "config.go")
+	configData, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(configData), "cfg := taskengine.NewDefaultConfig()") {
+		t.Errorf("%s must construct TaskEngine defaults from a fresh snapshot", configPath)
+	}
+	if strings.Contains(string(configData), "cfg := taskengine.DefaultConfig") {
+		t.Errorf("%s must not read mutable taskengine.DefaultConfig", configPath)
+	}
+}
+
 func TestPluginScopeDrainDoesNotSpawnWaiterGoroutine(t *testing.T) {
 	root := repositoryRoot(t)
 	scopePath := filepath.Join(root, "internal", "plugin", "scope.go")

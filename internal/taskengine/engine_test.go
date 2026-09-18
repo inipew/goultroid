@@ -593,3 +593,44 @@ func TestEngineMultiPoolSaturationAndFairness(t *testing.T) {
 		t.Errorf("pool-slow concurrency exceeded: max observed %d > limit 1", slowMax.Load())
 	}
 }
+
+func TestNewDefaultConfigReturnsIndependentMaps(t *testing.T) {
+	first := NewDefaultConfig()
+	second := NewDefaultConfig()
+
+	general := first.Pools["general"]
+	general.Concurrency = 999
+	first.Pools["general"] = general
+	first.Pools["custom"] = PoolEngineConfig{Concurrency: 1}
+
+	if got := second.Pools["general"].Concurrency; got != 8 {
+		t.Fatalf("second default inherited mutation: concurrency=%d", got)
+	}
+	if _, exists := second.Pools["custom"]; exists {
+		t.Fatal("default pool map is shared across calls")
+	}
+}
+
+func TestNewEngineDoesNotReadMutableDefaultConfig(t *testing.T) {
+	original := DefaultConfig
+	defer func() { DefaultConfig = original }()
+
+	DefaultConfig = Config{
+		Pools: map[tasks.PoolID]PoolEngineConfig{
+			"poisoned": {Concurrency: 1, BacklogLimit: 1, PayloadBudget: 1},
+		},
+		ResultCapacity: 1,
+		InboxCapacity:  1,
+	}
+
+	engine := NewEngine(Config{})
+	if _, exists := engine.config.Pools["poisoned"]; exists {
+		t.Fatal("engine construction read mutable exported DefaultConfig")
+	}
+	if got := engine.config.Pools["general"].Concurrency; got != 8 {
+		t.Fatalf("general concurrency=%d, want immutable default 8", got)
+	}
+	if engine.resultCapacity != 1000 {
+		t.Fatalf("result capacity=%d, want immutable default 1000", engine.resultCapacity)
+	}
+}

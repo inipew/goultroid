@@ -63,25 +63,37 @@ type Config struct {
 	ResourceCapacities map[string]int64
 }
 
-// DefaultConfig provides standard execution coordinator settings.
-var DefaultConfig = Config{
-	Pools: map[tasks.PoolID]PoolEngineConfig{
-		"general":       {Concurrency: 8, MinConcurrency: 1, IdleTimeout: 30 * time.Second, BacklogLimit: 200, PayloadBudget: 100 * 1024 * 1024},
-		"interactive":   {Concurrency: 32, MinConcurrency: 2, IdleTimeout: 30 * time.Second, BacklogLimit: 128, PayloadBudget: 50 * 1024 * 1024},
-		"download":      {Concurrency: 3, MinConcurrency: 1, IdleTimeout: 45 * time.Second, BacklogLimit: 50, PayloadBudget: 200 * 1024 * 1024},
-		"media-process": {Concurrency: 2, MinConcurrency: 1, IdleTimeout: time.Minute, BacklogLimit: 20, PayloadBudget: 200 * 1024 * 1024},
-		"scheduler":     {Concurrency: 4, MinConcurrency: 1, IdleTimeout: time.Minute, BacklogLimit: 100, PayloadBudget: 50 * 1024 * 1024},
-	},
-	ResultCapacity:      1000,
-	MaxTerminalRetained: 1000,
-	DecisionTimeout:     5 * time.Second,
-	InboxCapacity:       2048,
-	MaxRetainedBytes:    DefaultMaxRetainedBytes,
-	MaxOutputBytes:      DefaultMaxOutputBytes,
-	MaxFailureBytes:     DefaultMaxFailureBytes,
-	DeliveryConcurrency: DefaultDeliveryConcurrency,
-	MaxScopeTombstones:  4096,
+func newDefaultConfig() Config {
+	return Config{
+		Pools: map[tasks.PoolID]PoolEngineConfig{
+			"general":       {Concurrency: 8, MinConcurrency: 1, IdleTimeout: 30 * time.Second, BacklogLimit: 200, PayloadBudget: 100 * 1024 * 1024},
+			"interactive":   {Concurrency: 32, MinConcurrency: 2, IdleTimeout: 30 * time.Second, BacklogLimit: 128, PayloadBudget: 50 * 1024 * 1024},
+			"download":      {Concurrency: 3, MinConcurrency: 1, IdleTimeout: 45 * time.Second, BacklogLimit: 50, PayloadBudget: 200 * 1024 * 1024},
+			"media-process": {Concurrency: 2, MinConcurrency: 1, IdleTimeout: time.Minute, BacklogLimit: 20, PayloadBudget: 200 * 1024 * 1024},
+			"scheduler":     {Concurrency: 4, MinConcurrency: 1, IdleTimeout: time.Minute, BacklogLimit: 100, PayloadBudget: 50 * 1024 * 1024},
+		},
+		ResultCapacity:      1000,
+		MaxTerminalRetained: 1000,
+		DecisionTimeout:     5 * time.Second,
+		InboxCapacity:       2048,
+		MaxRetainedBytes:    DefaultMaxRetainedBytes,
+		MaxOutputBytes:      DefaultMaxOutputBytes,
+		MaxFailureBytes:     DefaultMaxFailureBytes,
+		DeliveryConcurrency: DefaultDeliveryConcurrency,
+		MaxScopeTombstones:  4096,
+	}
 }
+
+// NewDefaultConfig returns a fresh default configuration. Mutable maps are not
+// shared across calls, so runtime construction never depends on package-global
+// mutations.
+func NewDefaultConfig() Config {
+	return newDefaultConfig()
+}
+
+// DefaultConfig is retained for source compatibility. Runtime code must use
+// NewDefaultConfig/newDefaultConfig instead of reading this mutable value.
+var DefaultConfig = NewDefaultConfig()
 
 type workerAssignment struct {
 	rec     *taskRecord
@@ -379,12 +391,13 @@ func ValidateConfig(cfg Config) error {
 // NewEngine constructs a TaskEngine with the specified configuration.
 func NewEngine(cfg Config) *Engine {
 	configErr := ValidateConfig(cfg)
+	defaults := newDefaultConfig()
 	if cfg.ResultCapacity <= 0 {
-		cfg.ResultCapacity = DefaultConfig.ResultCapacity
+		cfg.ResultCapacity = defaults.ResultCapacity
 	}
 	poolsSource := cfg.Pools
 	if len(poolsSource) == 0 {
-		poolsSource = DefaultConfig.Pools
+		poolsSource = defaults.Pools
 	}
 	copiedPools := make(map[tasks.PoolID]PoolEngineConfig, len(poolsSource))
 	for k, v := range poolsSource {
@@ -417,7 +430,7 @@ func NewEngine(cfg Config) *Engine {
 	}
 	inboxCap := cfg.InboxCapacity
 	if inboxCap <= 0 {
-		inboxCap = DefaultConfig.InboxCapacity
+		inboxCap = defaults.InboxCapacity
 		if inboxCap <= 0 {
 			inboxCap = 2048
 		}
@@ -436,7 +449,7 @@ func NewEngine(cfg Config) *Engine {
 	}
 	maxScopeTombstones := cfg.MaxScopeTombstones
 	if maxScopeTombstones <= 0 {
-		maxScopeTombstones = DefaultConfig.MaxScopeTombstones
+		maxScopeTombstones = defaults.MaxScopeTombstones
 	}
 	deliveryWorkers := cfg.DeliveryConcurrency
 	if deliveryWorkers <= 0 {

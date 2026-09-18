@@ -145,11 +145,7 @@ func LoadFrom(lookup func(string) string) (*Config, error) {
 }
 
 func defaultTaskEngineConfig() taskengine.Config {
-	cfg := taskengine.DefaultConfig
-	cfg.Pools = make(map[tasks.PoolID]taskengine.PoolEngineConfig, len(taskengine.DefaultConfig.Pools))
-	for id, pool := range taskengine.DefaultConfig.Pools {
-		cfg.Pools[id] = pool
-	}
+	cfg := taskengine.NewDefaultConfig()
 	cfg.ResourceCapacities = map[string]int64{"process": 2, "media": 2, "download": 3}
 	return cfg
 }

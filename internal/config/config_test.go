@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/inipew/goultroid/internal/taskengine"
 )
 
 func clearEnv() {
@@ -220,5 +222,24 @@ func TestLoad_InvalidSudoUser(t *testing.T) {
 	_, err := Load()
 	if err == nil {
 		t.Fatal("expected error for invalid SUDO_USERS, got nil")
+	}
+}
+
+func TestDefaultTaskEngineConfigIgnoresMutableCompatibilityGlobal(t *testing.T) {
+	original := taskengine.DefaultConfig
+	defer func() { taskengine.DefaultConfig = original }()
+
+	poisoned := taskengine.NewDefaultConfig()
+	general := poisoned.Pools["general"]
+	general.Concurrency = 777
+	poisoned.Pools["general"] = general
+	taskengine.DefaultConfig = poisoned
+
+	cfg := defaultTaskEngineConfig()
+	if got := cfg.Pools["general"].Concurrency; got != 8 {
+		t.Fatalf("production default inherited mutable global: concurrency=%d", got)
+	}
+	if got := cfg.ResourceCapacities["download"]; got != 3 {
+		t.Fatalf("download resource capacity=%d, want 3", got)
 	}
 }
