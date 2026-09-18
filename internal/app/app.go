@@ -273,6 +273,22 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		runtime.WithSupervisorName("lifecycle-supervisor"),
 		runtime.WithPanicReporter(zapRuntimePanicReporter{logger: logger.Named("supervisor")}),
 	)
+	if tgRuntime.client != nil {
+		if err := supervisor.Register(runtime.WorkerSpec{
+			Name:    "telegram-dialogs-warmup",
+			Restart: runtime.NeverRestart,
+			Run: func(ctx context.Context) error {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-tgRuntime.client.Ready():
+					return tgRuntime.client.PreloadDialogs(ctx)
+				}
+			},
+		}); err != nil {
+			return nil, fmt.Errorf("register Telegram dialog warmup worker: %w", err)
+		}
+	}
 	if err := rt.Register(supervisor); err != nil {
 		return nil, fmt.Errorf("register supervisor component: %w", err)
 	}

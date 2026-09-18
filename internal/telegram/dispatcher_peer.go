@@ -153,7 +153,7 @@ func (d *Dispatcher) peerWorker(ctx context.Context, signal <-chan struct{}) {
 			return
 		}
 
-		saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		saveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 
 		resolver := d.getResolver()

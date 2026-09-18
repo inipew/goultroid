@@ -14,6 +14,7 @@ type RPCErrorClass uint8
 
 const (
 	RPCUnknown RPCErrorClass = iota
+	RPCSuccess
 	RPCTransient
 	RPCFloodWait
 	RPCStalePeer
@@ -21,6 +22,27 @@ const (
 	RPCAuth
 	RPCInvalidRequest
 )
+
+func (c RPCErrorClass) String() string {
+	switch c {
+	case RPCSuccess:
+		return "success"
+	case RPCTransient:
+		return "transient"
+	case RPCFloodWait:
+		return "flood_wait"
+	case RPCStalePeer:
+		return "stale_peer"
+	case RPCPermission:
+		return "permission"
+	case RPCAuth:
+		return "auth"
+	case RPCInvalidRequest:
+		return "invalid_request"
+	default:
+		return "unknown"
+	}
+}
 
 type RPCPolicy struct {
 	MaxAttempts int
@@ -36,7 +58,7 @@ var DefaultRPCPolicy = RPCPolicy{
 
 func ClassifyRPCError(err error) RPCErrorClass {
 	if err == nil {
-		return RPCUnknown
+		return RPCSuccess
 	}
 	if _, ok := tgerr.AsFloodWait(err); ok {
 		return RPCFloodWait

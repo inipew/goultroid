@@ -363,3 +363,62 @@ func TestSupervisor_ComponentIntegrationWithRuntime(t *testing.T) {
 		t.Fatalf("expected worker stopped cleanly on runtime shutdown, got %s", snapshots[0].State)
 	}
 }
+
+func TestSupervisor_StopConcurrentAndTimeout(t *testing.T) {
+	sup := NewSupervisor(WithSupervisorName("concurrent-stop"))
+	workerBlock := make(chan struct{})
+	started := make(chan struct{})
+
+	err := sup.Register(WorkerSpec{
+		Name:    "blocking-worker",
+		Restart: NeverRestart,
+		Run: func(ctx context.Context) error {
+			close(started)
+			<-workerBlock
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected register error: %v", err)
+	}
+
+	if err := sup.Start(context.Background()); err != nil {
+		t.Fatalf("unexpected start error: %v", err)
+	}
+
+	// Wait until worker is actively running in its loop
+	<-started
+
+	// 1. Caller with immediate/short timeout should return context error without breaking supervisor
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if err := sup.Stop(timeoutCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got: %v", err)
+	}
+
+	// 2. Concurrent callers to Stop while worker is still running
+	var wg sync.WaitGroup
+	errs := make([]error, 5)
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			errs[idx] = sup.Stop(context.Background())
+		}(i)
+	}
+
+	// Release the worker
+	close(workerBlock)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("concurrent caller %d expected nil error, got: %v", i, err)
+		}
+	}
+
+	// 3. Subsequent Stop call on already stopped supervisor
+	if err := sup.Stop(context.Background()); err != nil {
+		t.Fatalf("expected nil for stop on already stopped supervisor, got: %v", err)
+	}
+}

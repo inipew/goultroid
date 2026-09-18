@@ -319,7 +319,7 @@ func (e *RPCExecutor) Do(ctx context.Context, meta RPCMeta, operation func(conte
 		callElapsed := e.clock.Now().Sub(callStart)
 
 		if err == nil {
-			e.metrics.ObserveRequest(meta.Method, RPCUnknown, attempt, callElapsed)
+			e.metrics.ObserveRequest(meta.Method, RPCSuccess, attempt, callElapsed)
 			return nil
 		}
 
@@ -520,19 +520,9 @@ func (e *RPCExecutor) calculateBackoff(policy RetryPolicy, attempt int) time.Dur
 		return exponential
 	}
 
-	jitterRange := time.Duration(float64(exponential) * policy.JitterFraction)
-	if jitterRange <= 0 {
-		return exponential
-	}
-
 	e.randMu.Lock()
-	randomDelta := time.Duration(e.randSource.Int63n(int64(jitterRange)))
+	delay := time.Duration(e.randSource.Float64() * float64(exponential))
 	e.randMu.Unlock()
-
-	delay := (exponential - jitterRange) + randomDelta
-	if delay < 0 {
-		delay = 0
-	}
 	return delay
 }
 

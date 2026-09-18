@@ -103,6 +103,7 @@ type Service struct {
 	uploader    *uploader.Uploader
 	peerManager *peers.Manager
 	storage     peers.Storage
+	resolver    *Resolver
 
 	botSentMu       sync.RWMutex
 	botSentMessages map[int]time.Time
@@ -144,6 +145,11 @@ func executeServiceRPC[T any](ctx context.Context, s *Service, meta RPCMeta, op 
 	if meta.Family == "" {
 		if family, _, ok := strings.Cut(meta.Method, "."); ok {
 			meta.Family = family
+		}
+	}
+	if meta.RefreshPeer == nil && meta.PeerKey != "" && s != nil && s.resolver != nil {
+		meta.RefreshPeer = func(refreshCtx context.Context) error {
+			return s.refreshPeer(refreshCtx, meta.PeerKey)
 		}
 	}
 	exec := s.getExecutor()
@@ -298,6 +304,26 @@ func (s *Service) SetStorage(st peers.Storage) {
 	s.storage = st
 }
 
+// SetResolver sets the resolver used for address/username resolution and peer refresh.
+func (s *Service) SetResolver(r *Resolver) {
+	s.resolver = r
+}
+
+func (s *Service) refreshPeer(ctx context.Context, peerKey string) error {
+	if s == nil || s.resolver == nil || peerKey == "" {
+		return nil
+	}
+	s.resolver.InvalidateRef(peerKey)
+	if strings.HasPrefix(peerKey, "@") || !strings.ContainsAny(peerKey, "0123456789") {
+		_, _, err := s.resolver.ResolveUser(ctx, peerKey)
+		if err != nil {
+			_, err = s.resolver.ResolveChat(ctx, peerKey)
+		}
+		return err
+	}
+	return nil
+}
+
 func (s *Service) ensureChannelAccessHash(ctx context.Context, peer tg.InputPeerClass) tg.InputPeerClass {
 	ch, ok := peer.(*tg.InputPeerChannel)
 	if !ok || ch.AccessHash != 0 {
@@ -332,6 +358,41 @@ func (s *Service) ensureUserAccessHash(ctx context.Context, user tg.InputPeerCla
 		}
 	}
 	return user
+}
+
+// RefreshPeerAccessHash retrieves the fresh access hash from persistent storage or peer manager.
+func (s *Service) RefreshPeerAccessHash(ctx context.Context, peer tg.InputPeerClass) tg.InputPeerClass {
+	if s == nil || peer == nil {
+		return peer
+	}
+	switch p := peer.(type) {
+	case *tg.InputPeerUser:
+		if s.storage != nil {
+			if val, found, err := s.storage.Find(ctx, peers.Key{Prefix: "user", ID: p.UserID}); err == nil && found && val.AccessHash != 0 {
+				return &tg.InputPeerUser{UserID: p.UserID, AccessHash: val.AccessHash}
+			}
+		}
+		if s.peerManager != nil {
+			if resolved, err := s.peerManager.ResolveUserID(ctx, p.UserID); err == nil {
+				return resolved.InputPeer()
+			}
+		}
+		return p
+	case *tg.InputPeerChannel:
+		if s.storage != nil {
+			if val, found, err := s.storage.Find(ctx, peers.Key{Prefix: "channel", ID: p.ChannelID}); err == nil && found && val.AccessHash != 0 {
+				return &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: val.AccessHash}
+			}
+		}
+		if s.peerManager != nil {
+			if resolved, err := s.peerManager.ResolveChannelID(ctx, p.ChannelID); err == nil {
+				return resolved.InputPeer()
+			}
+		}
+		return p
+	default:
+		return peer
+	}
 }
 
 func (s *Service) invalidatePeer(peer tg.InputPeerClass) {
@@ -1264,6 +1325,9 @@ func (s *Service) ResolveUsername(ctx context.Context, username string) (*tg.Con
 	})
 	if err != nil {
 		return nil, mapTelegramError(err)
+	}
+	if s.peerManager != nil && res != nil {
+		_ = s.peerManager.Apply(ctx, res.Users, res.Chats)
 	}
 	return res, nil
 }

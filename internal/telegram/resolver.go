@@ -146,20 +146,7 @@ func (r *Resolver) ResolveUser(ctx context.Context, ref string) (tg.InputPeerCla
 		}
 	}
 
-	// 3. PeerManager Lookup
-	if r.peerManager != nil {
-		if peer, err := r.peerManager.Resolve(ctx, cleaned); err == nil && peer != nil {
-			input := peer.InputPeer()
-			if user, ok := input.(*tg.InputPeerUser); ok && user.AccessHash != 0 {
-				if r.cache != nil {
-					r.cache.Set("user", cleaned, "user", peer.ID(), user.AccessHash)
-				}
-				return input, peer.ID(), nil
-			}
-		}
-	}
-
-	// 4. Singleflight Telegram Network Resolve
+	// 3. Singleflight Telegram Network Resolve
 	if r.api != nil {
 		type userResult struct {
 			peer tg.InputPeerClass
@@ -213,6 +200,9 @@ func (r *Resolver) resolveUsernameUser(ctx context.Context, username string) (tg
 
 	if err != nil {
 		return nil, 0, WrapRPCError("resolve username", err)
+	}
+	if r.peerManager != nil && resolved != nil {
+		_ = r.peerManager.Apply(ctx, resolved.Users, resolved.Chats)
 	}
 	for _, entity := range resolved.Users {
 		if user, ok := entity.(*tg.User); ok {
@@ -335,22 +325,7 @@ func (r *Resolver) ResolveChat(ctx context.Context, ref string) (tg.InputPeerCla
 		}
 	}
 
-	// 3. PeerManager Lookup
-	if r.peerManager != nil {
-		if peer, err := r.peerManager.Resolve(ctx, cleaned); err == nil && peer != nil {
-			input := peer.InputPeer()
-			if r.cache != nil {
-				if ch, ok := input.(*tg.InputPeerChannel); ok {
-					r.cache.Set("chat", cleaned, "channel", ch.ChannelID, ch.AccessHash)
-				} else if ct, ok := input.(*tg.InputPeerChat); ok {
-					r.cache.Set("chat", cleaned, "chat", ct.ChatID, 0)
-				}
-			}
-			return input, nil
-		}
-	}
-
-	// 4. Singleflight Telegram Network Resolve
+	// 3. Singleflight Telegram Network Resolve
 	if r.api != nil {
 		resCh := r.group.DoChan("chat:"+cleaned, func() (any, error) {
 			underlyingCtx := r.lifecycleCtx
@@ -394,6 +369,9 @@ func (r *Resolver) resolveUsernameChat(ctx context.Context, username string) (tg
 
 	if err != nil {
 		return nil, WrapRPCError("resolve chat username", err)
+	}
+	if r.peerManager != nil && resolved != nil {
+		_ = r.peerManager.Apply(ctx, resolved.Users, resolved.Chats)
 	}
 	for _, entity := range resolved.Chats {
 		switch chat := entity.(type) {
@@ -462,4 +440,35 @@ func (r *Resolver) Invalidate(ctx context.Context, peer tg.InputPeerClass) error
 		}
 	}
 	return nil
+}
+
+// InvalidateRef removes cached peer entries by reference (username or string ID).
+func (r *Resolver) InvalidateRef(ref string) {
+	cleaned := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(ref, "@")))
+	if cleaned == "" {
+		return
+	}
+	if r.cache != nil {
+		r.cache.Invalidate("user", cleaned)
+		r.cache.Invalidate("chat", cleaned)
+		r.cache.Invalidate("channel", cleaned)
+	}
+	if id, err := strconv.ParseInt(strings.TrimPrefix(cleaned, "-100"), 10, 64); err == nil {
+		if r.cache != nil {
+			r.cache.InvalidateID(id)
+		}
+		if r.storage != nil {
+			_ = r.storage.Invalidate(peers.Key{Prefix: "user", ID: id})
+			_ = r.storage.Invalidate(peers.Key{Prefix: "channel", ID: id})
+			_ = r.storage.Invalidate(peers.Key{Prefix: "chat", ID: id})
+		}
+	}
+}
+
+// Len returns the number of active entries in the resolver memory cache.
+func (r *Resolver) Len() int {
+	if r != nil && r.cache != nil {
+		return r.cache.Len()
+	}
+	return 0
 }

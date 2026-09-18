@@ -89,6 +89,8 @@ type Supervisor struct {
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 	quiesced bool
+	stopOnce sync.Once
+	stopDone chan struct{}
 }
 
 // SupervisorOption configures a Supervisor.
@@ -136,6 +138,7 @@ func NewSupervisor(opts ...SupervisorOption) *Supervisor {
 		baseBackoff: DefaultBaseBackoff,
 		state:       StateCreated,
 		workers:     make(map[string]*workerEntry),
+		stopDone:    make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -237,31 +240,26 @@ func (s *Supervisor) Stop(ctx context.Context) error {
 		ctx = context.Background()
 	}
 
-	s.mu.Lock()
-	if s.state == StateStopped {
+	s.stopOnce.Do(func() {
+		s.mu.Lock()
+		s.state = StateStopping
+		s.quiesced = true
+		cancel := s.cancel
 		s.mu.Unlock()
-		return nil
-	}
-	s.state = StateStopping
-	s.quiesced = true
-	cancel := s.cancel
-	s.mu.Unlock()
-
-	if cancel != nil {
-		cancel()
-	}
-
-	done := make(chan struct{})
-	go func() {
-		s.wg.Wait()
-		close(done)
-	}()
+		if cancel != nil {
+			cancel()
+		}
+		go func() {
+			s.wg.Wait()
+			s.mu.Lock()
+			s.state = StateStopped
+			s.mu.Unlock()
+			close(s.stopDone)
+		}()
+	})
 
 	select {
-	case <-done:
-		s.mu.Lock()
-		s.state = StateStopped
-		s.mu.Unlock()
+	case <-s.stopDone:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -320,6 +318,11 @@ func (s *Supervisor) Snapshot() []WorkerSnapshot {
 	return snapshots
 }
 
+// Workers returns a snapshot of all worker states (alias for Snapshot).
+func (s *Supervisor) Workers() []WorkerSnapshot {
+	return s.Snapshot()
+}
+
 func (s *Supervisor) runWorker(w *workerEntry) {
 	defer s.wg.Done()
 
@@ -375,9 +378,13 @@ func (s *Supervisor) runWorker(w *workerEntry) {
 
 		// Calculate exponential backoff with jitter
 		backoff := s.calculateBackoff(attemptInWindow)
+		timer := time.NewTimer(backoff)
 		select {
-		case <-time.After(backoff):
+		case <-timer.C:
 		case <-supCtx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
 			w.markStopped(nil)
 			return
 		}

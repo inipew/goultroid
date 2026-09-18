@@ -55,6 +55,7 @@ func BenchmarkB1_TinyEphemeralTask(b *testing.B) {
 	defer engine.Stop(context.Background())
 
 	ctx := context.Background()
+	const batchSize = 32
 	noOpHandler := func(ctx context.Context) error { return nil }
 
 	b.ResetTimer()
@@ -195,6 +196,7 @@ func BenchmarkB3_CPUAndInteractiveIsolation(b *testing.B) {
 
 // BenchmarkB4_PeriodicDueBurst measures burst dispatch of 500 timer tasks.
 func BenchmarkB4_PeriodicDueBurst(b *testing.B) {
+	const burstTasks = 500
 	cfg := Config{
 		Pools: map[tasks.PoolID]PoolEngineConfig{
 			"scheduler": {Concurrency: 16, BacklogLimit: 50000},
@@ -208,15 +210,13 @@ func BenchmarkB4_PeriodicDueBurst(b *testing.B) {
 	defer engine.Stop(context.Background())
 
 	ctx := context.Background()
-	const batchSize = 500
 
 	b.ResetTimer()
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		b.StopTimer()
-		tickets := make([]tasks.Ticket, batchSize)
-		for j := 0; j < batchSize; j++ {
+		tickets := make([]tasks.Ticket, 0, burstTasks)
+		for j := 0; j < burstTasks; j++ {
 			owner := tasks.OwnerID(fmt.Sprintf("scheduler:periodic:%d", j%25))
 			spec := tasks.WorkSpec{
 				ID:         tasks.TaskID(fmt.Sprintf("sched-%d-%d", i, j)),
@@ -225,18 +225,19 @@ func BenchmarkB4_PeriodicDueBurst(b *testing.B) {
 				Class:      tasks.PriorityMaintenance,
 				Handler:    func(ctx context.Context) error { return nil },
 			}
-			t, err := engine.Submit(ctx, spec)
+			ticket, err := engine.Submit(ctx, spec)
 			if err != nil {
 				b.Fatalf("Submit error: %v", err)
 			}
-			tickets[j] = t
+			tickets = append(tickets, ticket)
 		}
-		b.StartTimer()
-
-		for _, t := range tickets {
-			_, _ = t.Wait(ctx)
+		for _, ticket := range tickets {
+			if _, err := ticket.Wait(ctx); err != nil {
+				b.Fatalf("Wait error: %v", err)
+			}
 		}
 	}
+	b.ReportMetric(float64(burstTasks), "tasks/burst")
 }
 
 // BenchmarkB5_DurableStoreThroughput measures SQLite attempt lease prepare and result commit latency.

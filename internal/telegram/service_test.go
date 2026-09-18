@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/database"
 )
 
 func TestParseHTML(t *testing.T) {
@@ -393,5 +395,86 @@ func TestService_SetExecutor(t *testing.T) {
 	svc.SetExecutor(exec)
 	if svc.getExecutor() != exec {
 		t.Fatal("expected configured executor to be returned")
+	}
+}
+
+func TestService_StalePeerAutoRefreshRecovery(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(fmt.Sprintf("file:stale_recovery_test_%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("failed to open in-memory db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	storage := NewPeerStorage(db)
+	_ = storage.Save(ctx, peers.Key{Prefix: "user", ID: 12345}, peers.Value{AccessHash: 88888})
+	_ = storage.SaveEntity(ctx, "user", 12345, "target", "", "", "", "")
+
+	svc := NewService(nil)
+	exec, err := NewRPCExecutor(RPCExecutorConfig{
+		DefaultPolicy: RetryPolicy{
+			MaxAttempts: 3,
+			BaseDelay:   10 * time.Millisecond,
+			MaxDelay:    50 * time.Millisecond,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create executor: %v", err)
+	}
+	svc.SetExecutor(exec)
+
+	resolver := NewResolver(nil, nil)
+	resolver.SetStorage(storage)
+	svc.SetResolver(resolver)
+	svc.SetStorage(storage)
+
+	// Populate cache with stale hash for @target
+	resolver.cache.Set("user", "target", "user", 12345, 99999)
+
+	// Request starts with stale access hash 99999
+	req := &tg.InputPeerUser{UserID: 12345, AccessHash: 99999}
+	var calls int
+	var executedHashes []int64
+
+	meta := RPCMeta{
+		Method:  "users.getFullUser",
+		Kind:    RPCReadOnly,
+		PeerKey: "@target",
+	}
+
+	res, err := executeServiceRPC(context.Background(), svc, meta, func(opCtx context.Context) (string, error) {
+		calls++
+		// Re-evaluate peer access hash from service on retry attempts (stale recovery flow)
+		if calls > 1 {
+			refreshed := svc.RefreshPeerAccessHash(opCtx, req)
+			if u, ok := refreshed.(*tg.InputPeerUser); ok {
+				req.AccessHash = u.AccessHash
+			}
+		}
+		executedHashes = append(executedHashes, req.AccessHash)
+
+		// The mock Telegram RPC server strictly rejects the stale hash 99999
+		if req.AccessHash != 88888 {
+			return "", tgerr.New(400, "PEER_ID_INVALID")
+		}
+		return "recovered", nil
+	})
+
+	if err != nil {
+		t.Fatalf("expected successful recovery, got: %v", err)
+	}
+	if res != "recovered" {
+		t.Fatalf("expected result 'recovered', got %q", res)
+	}
+	if calls != 2 {
+		t.Fatalf("expected exactly 2 calls (fail then retry), got %d", calls)
+	}
+	// Verify that first attempt executed with 99999 and second attempt executed with updated fresh hash 88888
+	if len(executedHashes) != 2 || executedHashes[0] != 99999 || executedHashes[1] != 88888 {
+		t.Fatalf("expected executed hashes [99999, 88888], got %v", executedHashes)
+	}
+	// Check that cache was invalidated and repopulated during refresh
+	if entry, hit := resolver.cache.Get("user", "target"); hit && entry.AccessHash == 99999 {
+		t.Fatalf("expected cached entry with old hash to be invalidated, but still found: %+v", entry)
 	}
 }
