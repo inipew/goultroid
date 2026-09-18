@@ -123,7 +123,10 @@ func (m *Manager) cleanupLoop(ctx context.Context, done chan struct{}) {
 			select {
 			case <-ctx.Done():
 				if !timer.Stop() {
-					<-timer.C
+					select {
+					case <-timer.C:
+					default:
+					}
 				}
 				return
 			case <-m.cleanupWake:
