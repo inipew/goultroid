@@ -73,3 +73,28 @@ func TestRetryRPCCancelled(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestRetryRPCLegacyHelperUsesBoundedLimiter(t *testing.T) {
+	var attempts int
+	err := RetryRPC(context.Background(), RPCPolicy{MaxAttempts: 1}, func(context.Context) error {
+		attempts++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts=%d, want 1", attempts)
+	}
+}
+
+func TestDefaultRPCPolicyCompatibilityMutationDoesNotAffectFreshPolicy(t *testing.T) {
+	original := DefaultRPCPolicy
+	defer func() { DefaultRPCPolicy = original }()
+
+	DefaultRPCPolicy.MaxAttempts = 99
+	fresh := defaultRPCPolicy()
+	if fresh.MaxAttempts != 3 {
+		t.Fatalf("fresh default inherited compatibility mutation: %+v", fresh)
+	}
+}

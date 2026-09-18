@@ -111,6 +111,33 @@ func TestTelegramRPCIngressGuards(t *testing.T) {
 	}
 }
 
+func TestLegacyRetryRPCIsNotUsedByRuntime(t *testing.T) {
+	root := repositoryRoot(t)
+	allowed := map[string]bool{
+		filepath.Join(root, "internal", "telegram", "rpc_policy.go"):      true,
+		filepath.Join(root, "internal", "telegram", "rpc_policy_test.go"): true,
+	}
+	err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() || !strings.HasSuffix(path, ".go") || allowed[path] {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(data), "RetryRPC(") {
+			t.Errorf("%s must use the shared RPCExecutor instead of legacy RetryRPC", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func assertFileExcludes(t *testing.T, path, forbidden string) {
 	t.Helper()
 	data, err := os.ReadFile(path)

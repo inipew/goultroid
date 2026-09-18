@@ -50,11 +50,18 @@ type RPCPolicy struct {
 	MaxDelay    time.Duration
 }
 
-var DefaultRPCPolicy = RPCPolicy{
-	MaxAttempts: 3,
-	BaseDelay:   250 * time.Millisecond,
-	MaxDelay:    30 * time.Second,
+func defaultRPCPolicy() RPCPolicy {
+	return RPCPolicy{
+		MaxAttempts: 3,
+		BaseDelay:   250 * time.Millisecond,
+		MaxDelay:    30 * time.Second,
+	}
 }
+
+// DefaultRPCPolicy is retained for compatibility only. Production runtime code
+// must use the shared RPCExecutor; compatibility callers should prefer an
+// explicit RPCPolicy instead of mutating this package-global value.
+var DefaultRPCPolicy = defaultRPCPolicy()
 
 func ClassifyRPCError(err error) RPCErrorClass {
 	if err == nil {
@@ -87,6 +94,9 @@ func ClassifyRPCError(err error) RPCErrorClass {
 
 func IsStalePeerError(err error) bool { return ClassifyRPCError(err) == RPCStalePeer }
 
+// RetryRPC is a compatibility helper for legacy tests/adapters. Production
+// runtime code must use the shared RPCExecutor so limiter, metrics, FloodWait
+// penalties, and retry state remain process-wide.
 func RetryRPC(ctx context.Context, policy RPCPolicy, op func(context.Context) error) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -102,6 +112,7 @@ func RetryRPC(ctx context.Context, policy RPCPolicy, op func(context.Context) er
 	}
 
 	exec, err := NewRPCExecutor(RPCExecutorConfig{
+		Limiter: NewHierarchicalRPCLimiter(DefaultHierarchicalLimiterConfig()),
 		DefaultPolicy: RetryPolicy{
 			MaxAttempts:        policy.MaxAttempts,
 			BaseDelay:          policy.BaseDelay,
