@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
@@ -96,6 +98,49 @@ func NewManager(router *core.Router) *Manager {
 		hookCleanups:     make(map[string]func()),
 		callbackCleanups: make(map[string]func()),
 		list:             make([]Plugin, 0),
+	}
+}
+
+func (m *Manager) runLifecycleCallback(ctx context.Context, component string, fn func() error) error {
+	if fn == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%s skipped after lifecycle deadline: %w", component, err)
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		var callErr error
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				m.mu.RLock()
+				reporter := m.panicReporter
+				m.mu.RUnlock()
+				if reporter != nil {
+					reporter.ReportPanic(core.PanicReport{
+						Owner:     "plugin-manager",
+						Component: component,
+						Value:     recovered,
+						Stack:     debug.Stack(),
+						At:        time.Now().UTC(),
+					})
+				}
+				callErr = fmt.Errorf("%s panic: %v", component, recovered)
+			}
+			result <- callErr
+		}()
+		callErr = fn()
+	}()
+
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		return fmt.Errorf("%s exceeded lifecycle deadline: %w", component, ctx.Err())
 	}
 }
 
@@ -538,12 +583,10 @@ func (m *Manager) AllManifests() map[string]Manifest {
 
 func (m *Manager) Shutdown() error { return m.ShutdownWithContext(context.Background()) }
 
-// ShutdownWithContext shuts plugins down in reverse registration order. A
-// context-aware plugin receives the shutdown context. Legacy Shutdowner plugins
-// are synchronous because their API cannot be cancelled; this prevents shared
-// resources from being closed while legacy teardown is still running. Context
-// cancellation does not skip later plugins: every registered plugin gets one
-// shutdown attempt so a database or network resource is not left running.
+// ShutdownWithContext shuts plugins down in reverse registration order. Every
+// plugin/hook callback is bounded by ctx. Context-aware plugins receive ctx
+// directly; legacy callbacks run behind the same deadline boundary so they
+// cannot hold the application past its global shutdown budget.
 func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -575,25 +618,34 @@ func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 	}
 	m.mu.Unlock()
 
-	// 1. Detach all message hooks first so no incoming update hits shutting-down plugins
-	for _, cleanup := range cleanups {
-		if cleanup != nil {
+	var errs []error
+
+	// 1. Detach all message hooks first so no incoming update hits shutting-down plugins.
+	for i, cleanup := range cleanups {
+		if cleanup == nil {
+			continue
+		}
+		if err := m.runLifecycleCallback(ctx, fmt.Sprintf("plugin hook cleanup %d", i), func() error {
 			cleanup()
+			return nil
+		}); err != nil {
+			errs = append(errs, err)
 		}
 	}
 
-	// 2. Shut down plugins in reverse registration order
-	var errs []string
+	// 2. Shut down plugins in reverse registration order.
 	for i := len(plugins) - 1; i >= 0; i-- {
 		p := plugins[i]
 		var err error
 		if s, ok := p.(ContextShutdowner); ok {
-			err = s.ShutdownContext(ctx)
+			err = m.runLifecycleCallback(ctx, "plugin "+p.Name()+" shutdown", func() error {
+				return s.ShutdownContext(ctx)
+			})
 		} else if s, ok := p.(Shutdowner); ok {
-			err = s.Shutdown()
+			err = m.runLifecycleCallback(ctx, "plugin "+p.Name()+" legacy shutdown", s.Shutdown)
 		}
 		if err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", p.Name(), err))
+			errs = append(errs, fmt.Errorf("%s: %w", p.Name(), err))
 		}
 		if scope := scopes[strings.ToLower(strings.TrimSpace(p.Name()))]; scope != nil {
 			m.mu.RLock()
@@ -603,13 +655,13 @@ func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 				taskClient.CancelScope(tasks.ScopeIdentity{Owner: scope.Owner(), Generation: scope.Generation()}, tasks.CauseShutdown)
 			}
 			if err := scope.Close(ctx); err != nil {
-				errs = append(errs, fmt.Sprintf("%s scope: %v", p.Name(), err))
+				errs = append(errs, fmt.Errorf("%s scope: %w", p.Name(), err))
 			}
 		}
 		m.router.UnregisterBatch(commands[strings.ToLower(strings.TrimSpace(p.Name()))])
 	}
 	if len(errs) > 0 {
-		return fmt.Errorf("errors during plugin shutdown: %s", strings.Join(errs, "; "))
+		return fmt.Errorf("errors during plugin shutdown: %w", errors.Join(errs...))
 	}
 	return nil
 }
@@ -650,11 +702,23 @@ func (m *Manager) Disable(ctx context.Context, name string) error {
 	m.transitions[key] = "disabling"
 	router := m.router
 	m.mu.Unlock()
+
+	var errs []error
 	if hookCleanup != nil {
-		hookCleanup()
+		if err := m.runLifecycleCallback(ctx, "plugin "+name+" hook cleanup", func() error {
+			hookCleanup()
+			return nil
+		}); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if callbackCleanup != nil {
-		callbackCleanup()
+		if err := m.runLifecycleCallback(ctx, "plugin "+name+" callback cleanup", func() error {
+			callbackCleanup()
+			return nil
+		}); err != nil {
+			errs = append(errs, err)
+		}
 	}
 
 	// Unregister commands from router
@@ -677,14 +741,15 @@ func (m *Manager) Disable(ctx context.Context, name string) error {
 		schedCl.UnregisterPeriodicTasksByOwner("plugin:" + key)
 	}
 
-	// Close scope and execute shutdown hooks
-	var errs []error
+	// Close scope and execute shutdown hooks.
 	if s, ok := p.(ContextShutdowner); ok {
-		if err := s.ShutdownContext(ctx); err != nil {
+		if err := m.runLifecycleCallback(ctx, "plugin "+name+" shutdown", func() error {
+			return s.ShutdownContext(ctx)
+		}); err != nil {
 			errs = append(errs, fmt.Errorf("shutdown %s: %w", name, err))
 		}
 	} else if s, ok := p.(Shutdowner); ok {
-		if err := s.Shutdown(); err != nil {
+		if err := m.runLifecycleCallback(ctx, "plugin "+name+" legacy shutdown", s.Shutdown); err != nil {
 			errs = append(errs, fmt.Errorf("shutdown %s: %w", name, err))
 		}
 	}

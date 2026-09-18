@@ -44,6 +44,19 @@ type contextLifecyclePlugin struct {
 	observedDeadline atomic.Bool
 }
 
+type blockingLifecyclePlugin struct {
+	lifecyclePlugin
+	started chan struct{}
+	release chan struct{}
+}
+
+func (p *blockingLifecyclePlugin) Shutdown() error {
+	close(p.started)
+	<-p.release
+	p.shutdowns.Add(1)
+	return nil
+}
+
 func (p *contextLifecyclePlugin) ShutdownContext(ctx context.Context) error {
 	if _, ok := ctx.Deadline(); ok {
 		p.observedDeadline.Store(true)
@@ -249,4 +262,36 @@ func TestScope_GoroutineBudgetEnforcement(t *testing.T) {
 
 	close(release)
 	_ = scope.Close(context.Background())
+}
+
+func TestManager_ShutdownDeadlineBoundsLegacyPlugin(t *testing.T) {
+	router := core.NewRouter(".")
+	mgr := NewManager(router)
+	p := &blockingLifecyclePlugin{
+		lifecyclePlugin: lifecyclePlugin{name: "blocked", commands: []core.Command{{Name: "blocked"}}},
+		started:         make(chan struct{}),
+		release:         make(chan struct{}),
+	}
+	if err := mgr.Register(p); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := mgr.ShutdownWithContext(ctx)
+	elapsed := time.Since(start)
+	close(p.release)
+
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected shutdown deadline error, got %v", err)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("legacy plugin shutdown escaped lifecycle deadline: %v", elapsed)
+	}
+	select {
+	case <-p.started:
+	default:
+		t.Fatal("legacy shutdown callback was never started")
+	}
 }
