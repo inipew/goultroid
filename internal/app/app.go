@@ -217,7 +217,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	rt := runtime.New()
 	resources := []resourceComponent{
 		{name: "database", stop: coreDeps.db.Close},
-		{name: "idempotency", dependencies: []string{"database"}, stop: func() error { coreDeps.idempManager.Close(); return nil }},
+		{name: "idempotency", dependencies: []string{"database"}, start: coreDeps.idempManager.Start, stopContext: coreDeps.idempManager.Stop},
 		{name: "command-rate-limiter", dependencies: []string{"database"}, start: coreDeps.cmdLimiter.Start, stop: coreDeps.cmdLimiter.Close},
 		{name: "interaction-rate-limiter", dependencies: []string{"database"}, start: coreDeps.interLimiter.Start, stop: coreDeps.interLimiter.Close},
 		{name: "addon-runtimes", dependencies: []string{"database"}, stop: domServices.addonManager.ShutdownRuntimes},

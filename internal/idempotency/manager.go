@@ -19,50 +19,91 @@ type entry struct {
 }
 
 // Manager manages idempotency keys and deduplication windows to prevent duplicate side effects.
+// Construction is passive; background cleanup is owned by Start/Stop.
 type Manager struct {
-	mu       sync.RWMutex
-	entries  map[string]entry
-	repo     Repository
-	stopCh   chan struct{}
-	stopOnce sync.Once
+	mu      sync.RWMutex
+	entries map[string]entry
+	repo    Repository
+
+	lifecycleMu    sync.Mutex
+	cleanupInterval time.Duration
+	cancel          context.CancelFunc
+	done            chan struct{}
+	running         bool
 }
 
-// NewManager creates an in-memory Idempotency Manager and starts a background eviction loop.
+// NewManager creates an idempotency manager without starting background work.
 func NewManager(cleanupInterval time.Duration, repositories ...Repository) *Manager {
 	if cleanupInterval <= 0 {
-		cleanupInterval = 1 * time.Minute
+		cleanupInterval = time.Minute
 	}
-
 	m := &Manager{
-		entries: make(map[string]entry),
-		stopCh:  make(chan struct{}),
+		entries:         make(map[string]entry),
+		cleanupInterval: cleanupInterval,
 	}
 	if len(repositories) > 0 {
 		m.repo = repositories[0]
 	}
-
-	go m.cleanupLoop(cleanupInterval)
 	return m
 }
 
-func (m *Manager) cleanupLoop(interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+// Start begins lifecycle-owned expiration cleanup. Repeated Start while running is idempotent.
+func (m *Manager) Start(ctx context.Context) error {
+	if m == nil {
+		return errors.New("idempotency manager is nil")
+	}
+	if ctx == nil {
+		return errors.New("idempotency start context is nil")
+	}
 
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	if m.running {
+		return nil
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	m.cancel = cancel
+	m.done = done
+	m.running = true
+	interval := m.cleanupInterval
+
+	go m.cleanupLoop(runCtx, interval, done)
+	return nil
+}
+
+func (m *Manager) cleanupLoop(ctx context.Context, interval time.Duration, done chan struct{}) {
+	defer close(done)
+	defer func() {
+		m.lifecycleMu.Lock()
+		if m.done == done {
+			m.running = false
+			m.cancel = nil
+		}
+		m.lifecycleMu.Unlock()
+	}()
+
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
 	for {
 		select {
-		case <-m.stopCh:
+		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			m.evictExpired()
+		case <-timer.C:
+			m.evictExpired(ctx)
+			timer.Reset(interval)
 		}
 	}
 }
 
-func (m *Manager) evictExpired() {
+func (m *Manager) evictExpired(ctx context.Context) {
 	now := time.Now().UTC()
 	if m.repo != nil {
-		_, _ = m.repo.DeleteExpired(context.Background(), now)
+		if ctx == nil || ctx.Err() != nil {
+			return
+		}
+		_, _ = m.repo.DeleteExpired(ctx, now)
 		return
 	}
 	m.mu.Lock()
@@ -75,11 +116,40 @@ func (m *Manager) evictExpired() {
 	}
 }
 
-// Close stops the background eviction loop.
+// Stop cancels cleanup and joins the worker within the caller's deadline.
+func (m *Manager) Stop(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	if ctx == nil {
+		return errors.New("idempotency stop context is nil")
+	}
+
+	m.lifecycleMu.Lock()
+	cancel := m.cancel
+	done := m.done
+	running := m.running
+	m.lifecycleMu.Unlock()
+	if !running || done == nil {
+		return nil
+	}
+	if cancel != nil {
+		cancel()
+	}
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Close is a bounded compatibility wrapper for older callers.
 func (m *Manager) Close() {
-	m.stopOnce.Do(func() {
-		close(m.stopCh)
-	})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = m.Stop(ctx)
 }
 
 // CheckAndSet returns true if the key was NOT previously seen within its TTL (i.e. first time),
@@ -103,7 +173,7 @@ func (m *Manager) CheckAndSet(ctx context.Context, key string, ttl time.Duration
 
 	if e, exists := m.entries[cleanKey]; exists {
 		if now.Before(e.expiresAt) {
-			return false, nil // Duplicate!
+			return false, nil
 		}
 	}
 
@@ -115,37 +185,48 @@ func (m *Manager) CheckAndSet(ctx context.Context, key string, ttl time.Duration
 	return true, nil
 }
 
-// IsProcessed checks whether a key is currently marked as processed without setting it.
-func (m *Manager) IsProcessed(key string) bool {
+// IsProcessedContext checks whether a key is currently marked as processed.
+func (m *Manager) IsProcessedContext(ctx context.Context, key string) (bool, error) {
 	cleanKey := strings.TrimSpace(key)
 	if cleanKey == "" {
-		return false
+		return false, nil
 	}
 	if m.repo != nil {
-		processed, err := m.repo.IsProcessed(context.Background(), cleanKey, time.Now().UTC())
-		return err == nil && processed
+		return m.repo.IsProcessed(ctx, cleanKey, time.Now().UTC())
 	}
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-
 	e, exists := m.entries[cleanKey]
-	if !exists {
-		return false
-	}
-	return time.Now().UTC().Before(e.expiresAt)
+	return exists && time.Now().UTC().Before(e.expiresAt), nil
 }
 
-// Size returns the count of currently held keys.
-func (m *Manager) Size() int {
+// IsProcessed is retained for compatibility. Hot paths should pass their context
+// through IsProcessedContext instead.
+func (m *Manager) IsProcessed(key string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	processed, err := m.IsProcessedContext(ctx, key)
+	return err == nil && processed
+}
+
+// SizeContext returns the current number of live idempotency keys.
+func (m *Manager) SizeContext(ctx context.Context) (int, error) {
 	if m.repo != nil {
-		size, err := m.repo.Size(context.Background(), time.Now().UTC())
-		if err == nil {
-			return size
-		}
-		return 0
+		return m.repo.Size(ctx, time.Now().UTC())
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return len(m.entries)
+	return len(m.entries), nil
+}
+
+// Size is retained for compatibility.
+func (m *Manager) Size() int {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	size, err := m.SizeContext(ctx)
+	if err != nil {
+		return 0
+	}
+	return size
 }

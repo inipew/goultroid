@@ -56,6 +56,63 @@ func TestIdempotencyManager_CheckAndSet(t *testing.T) {
 	}
 }
 
+type lifecycleRepo struct {
+	deleteCalls atomic.Int32
+}
+
+func (r *lifecycleRepo) InitSchema(context.Context) error { return nil }
+func (r *lifecycleRepo) Claim(context.Context, string, time.Time, time.Time) (bool, error) { return true, nil }
+func (r *lifecycleRepo) IsProcessed(context.Context, string, time.Time) (bool, error) { return false, nil }
+func (r *lifecycleRepo) DeleteExpired(ctx context.Context, _ time.Time) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	r.deleteCalls.Add(1)
+	return 0, nil
+}
+func (r *lifecycleRepo) Size(context.Context, time.Time) (int, error) { return 0, nil }
+
+func TestIdempotencyManager_ConstructorIsPassiveAndStopJoins(t *testing.T) {
+	repo := &lifecycleRepo{}
+	mgr := NewManager(5*time.Millisecond, repo)
+
+	time.Sleep(15 * time.Millisecond)
+	if got := repo.deleteCalls.Load(); got != 0 {
+		t.Fatalf("constructor started cleanup work: delete calls=%d", got)
+	}
+
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	if err := mgr.Start(runCtx); err != nil {
+		t.Fatalf("start manager: %v", err)
+	}
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for repo.deleteCalls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if repo.deleteCalls.Load() == 0 {
+		t.Fatal("expected lifecycle-owned cleanup after Start")
+	}
+
+	stopCtx, cancelStop := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancelStop()
+	if err := mgr.Stop(stopCtx); err != nil {
+		t.Fatalf("stop manager: %v", err)
+	}
+	stoppedAt := repo.deleteCalls.Load()
+	time.Sleep(15 * time.Millisecond)
+	if got := repo.deleteCalls.Load(); got != stoppedAt {
+		t.Fatalf("cleanup continued after Stop joined worker: before=%d after=%d", stoppedAt, got)
+	}
+}
+
+func TestIdempotencyManager_StartRejectsNilContext(t *testing.T) {
+	mgr := NewManager(time.Hour)
+	if err := mgr.Start(nil); err == nil {
+		t.Fatal("expected nil lifecycle context to be rejected")
+	}
+}
+
 func TestIdempotencyManager_CloseConcurrent(t *testing.T) {
 	mgr := NewManager(time.Hour)
 

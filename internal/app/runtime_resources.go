@@ -47,6 +47,7 @@ type resourceComponent struct {
 	dependencies []string
 	start        func(context.Context) error
 	stop         func() error
+	stopContext  func(context.Context) error
 }
 
 func (c resourceComponent) Name() string { return c.name }
@@ -69,6 +70,9 @@ func (c resourceComponent) Stop(ctx context.Context) error {
 			return ctx.Err()
 		default:
 		}
+	}
+	if c.stopContext != nil {
+		return c.stopContext(ctx)
 	}
 	if c.stop == nil {
 		return nil
