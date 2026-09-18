@@ -79,7 +79,6 @@ func BenchmarkPeerCache_GetSet(b *testing.B) {
 	}
 }
 
-
 func BenchmarkHierarchicalRPCLimiter_HotPeerAtHighCardinality(b *testing.B) {
 	cfg := HierarchicalLimiterConfig{
 		GlobalRate:         1e9,
