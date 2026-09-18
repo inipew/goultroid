@@ -124,9 +124,9 @@ const (
 	// Automatic recovery is deliberately low-frequency as a safety scan; fast
 	// convergence comes from bounded wake signals emitted on monitor overflow or
 	// uncertain retry-driver errors.
-	recoveryScanLimit   = 256
-	recoveryInterval    = 30 * time.Second
-	recoveryTimeout     = 20 * time.Second
+	recoveryScanLimit    = 256
+	recoveryInterval     = 30 * time.Second
+	recoveryTimeout      = 20 * time.Second
 	outboxSafetyInterval = 30 * time.Second
 )
 
