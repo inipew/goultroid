@@ -2,28 +2,35 @@ package downloader
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/database"
-	"github.com/inipew/goultroid/internal/jobs"
-	jobsqlite "github.com/inipew/goultroid/internal/jobs/sqlite"
 	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/storage"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 type recordingDownloadProvider struct {
-	gotURL string
+	name       string
+	gotURL     string
+	sawProcess bool
+	sawDownload bool
 }
 
-func (p *recordingDownloadProvider) Name() string      { return "recording" }
+func (p *recordingDownloadProvider) Name() string {
+	if p.name != "" {
+		return p.name
+	}
+	return "recording"
+}
 func (p *recordingDownloadProvider) Match(string) bool { return true }
-func (p *recordingDownloadProvider) Download(_ context.Context, rawURL string, _ storage.Storage, _ download.DownloadOptions) (*storage.Asset, error) {
+func (p *recordingDownloadProvider) Download(ctx context.Context, rawURL string, _ storage.Storage, _ download.DownloadOptions) (*storage.Asset, error) {
 	p.gotURL = rawURL
+	p.sawProcess = download.HasResource(ctx, "process")
+	p.sawDownload = download.HasResource(ctx, "download")
 	return &storage.Asset{Name: "song.mp3", Size: 1, Path: "memory://song.mp3"}, nil
 }
 
@@ -36,45 +43,18 @@ func (s *replyFailureTelegramService) GetMessage(context.Context, tg.InputPeerCl
 	return nil, s.err
 }
 
-func newDownloaderJobHarness(t *testing.T) (*Plugin, *capturedClient, *jobs.Manager) {
-	t.Helper()
+type rejectingTaskClient struct {
+	tasks.Client
+	err error
+}
 
-	db, err := database.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := jobsqlite.InitSchema(context.Background(), db.DB); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-
-	pump := jobs.NewPersistencePump(1, 4)
-	if err := pump.Start(context.Background()); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-
-	client := &capturedClient{}
-	jm := jobs.NewManager(client, jobsqlite.NewResourceStore(db.DB), pump)
-	if err := jm.Start(context.Background()); err != nil {
-		_ = pump.Stop(context.Background())
-		db.Close()
-		t.Fatal(err)
-	}
-
-	t.Cleanup(func() {
-		_ = jm.Stop(context.Background())
-		_ = pump.Stop(context.Background())
-		db.Close()
-	})
-
-	p := New()
-	p.SetJobsManager(jm)
-	return p, client, jm
+func (c *rejectingTaskClient) Submit(context.Context, tasks.WorkSpec) (tasks.Ticket, error) {
+	return nil, c.err
 }
 
 func TestDownloaderRepliedURLFallbackPreservesUTF16EntityURL(t *testing.T) {
-	p, client, _ := newDownloaderJobHarness(t)
+	client := &capturedClient{}
+	p := New(client)
 	provider := &recordingDownloadProvider{}
 	p.registry = download.NewRegistry(provider)
 	p.storage = storage.NewMemoryStorage()
@@ -90,46 +70,71 @@ func TestDownloaderRepliedURLFallbackPreservesUTF16EntityURL(t *testing.T) {
 			},
 		},
 	}
-
 	ctx := &core.Context{
 		Ctx:     context.Background(),
 		Svc:     tgSvc,
 		PeerID:  &tg.InputPeerSelf{},
 		Message: &core.Message{ID: 2, ReplyToID: 55, IsOutgoing: true, Text: ".download"},
 	}
-
 	if err := p.handleDownload(ctx); err != nil {
-		t.Fatalf("handleDownload with reply URL returned error: %v", err)
+		t.Fatalf("handleDownload: %v", err)
 	}
 
-	lastSpec, ok := client.LastSpec()
+	spec, ok := client.LastSpec()
 	if !ok {
-		t.Fatal("expected URL fallback to submit a task")
+		t.Fatal("expected URL continuation task")
 	}
-	input, ok := lastSpec.Input.([]byte)
+	input, ok := spec.Input.([]byte)
 	if !ok {
-		t.Fatalf("expected downloader task payload to be []byte, got %T", lastSpec.Input)
+		t.Fatalf("task input type=%T, want []byte", spec.Input)
 	}
-	var payload downloadJobPayload
-	if err := json.Unmarshal(input, &payload); err != nil {
-		t.Fatalf("decode submitted downloader payload: %v", err)
+	if string(input) != targetURL {
+		t.Fatalf("task input=%q, want %q", input, targetURL)
 	}
-	if payload.URL != targetURL {
-		t.Fatalf("expected exact URL %q in task payload, got %q", targetURL, payload.URL)
-	}
-
-	if err := lastSpec.Handler(context.Background()); err != nil {
-		t.Fatalf("background URL task failed: %v", err)
+	if err := spec.Handler(context.Background()); err != nil {
+		t.Fatalf("URL continuation: %v", err)
 	}
 	if provider.gotURL != targetURL {
-		t.Fatalf("expected provider to receive exact URL %q, got %q", targetURL, provider.gotURL)
+		t.Fatalf("provider URL=%q, want %q", provider.gotURL, targetURL)
+	}
+	if !provider.sawDownload {
+		t.Fatal("continuation did not propagate its held download resource marker")
 	}
 
 	tgSvc.mu.Lock()
 	lastText := tgSvc.lastEdited
 	tgSvc.mu.Unlock()
 	if !strings.Contains(lastText, "URL Download Complete!") {
-		t.Fatalf("expected successful URL download completion message, got %q", lastText)
+		t.Fatalf("completion edit=%q", lastText)
+	}
+}
+
+func TestDownloaderExtractorContinuationMarksBothHeldResources(t *testing.T) {
+	client := &capturedClient{}
+	p := New(client)
+	provider := &recordingDownloadProvider{name: "extractor"}
+	p.registry = download.NewRegistry(provider)
+	p.storage = storage.NewMemoryStorage()
+
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		Svc:     &mockTelegramService{},
+		PeerID:  &tg.InputPeerSelf{},
+		Message: &core.Message{ID: 7, IsOutgoing: true},
+	}
+	const targetURL = "https://example.com/extractor-target"
+	if err := p.handleURLDownload(ctx, targetURL); err != nil {
+		t.Fatal(err)
+	}
+	spec, _ := client.LastSpec()
+	if !hasResource(spec.Resources, "download") || !hasResource(spec.Resources, "process") {
+		t.Fatalf("extractor resources=%+v", spec.Resources)
+	}
+	if err := spec.Handler(context.Background()); err != nil {
+		t.Fatalf("extractor continuation: %v", err)
+	}
+	if !provider.sawDownload || !provider.sawProcess {
+		t.Fatalf("held resource markers: download=%v process=%v", provider.sawDownload, provider.sawProcess)
 	}
 }
 
@@ -149,57 +154,41 @@ func TestDownloaderPropagatesReplyLookupError(t *testing.T) {
 
 	err := New().handleDownload(ctx)
 	if err == nil {
-		t.Fatal("expected reply lookup failure to be returned")
+		t.Fatal("expected reply lookup failure")
 	}
 	if !errors.Is(err, lookupErr) {
-		t.Fatalf("expected original reply lookup error to be preserved, got %v", err)
+		t.Fatalf("expected original lookup error, got %v", err)
 	}
 	if !strings.Contains(err.Error(), "resolve replied message") {
-		t.Fatalf("expected downloader context in error, got %v", err)
+		t.Fatalf("missing downloader error context: %v", err)
 	}
 }
 
-
-type namedRecordingDownloadProvider struct {
-	name   string
-	gotURL string
-}
-
-func (p *namedRecordingDownloadProvider) Name() string      { return p.name }
-func (p *namedRecordingDownloadProvider) Match(string) bool { return true }
-func (p *namedRecordingDownloadProvider) Download(_ context.Context, rawURL string, _ storage.Storage, _ download.DownloadOptions) (*storage.Asset, error) {
-	p.gotURL = rawURL
-	return &storage.Asset{Name: "song.mp3", Size: 1, Path: "memory://song.mp3"}, nil
-}
-
-func TestDownloaderDoesNotBypassJobAdmissionOnRegisterFailure(t *testing.T) {
-	p, _, jm := newDownloaderJobHarness(t)
-	provider := &namedRecordingDownloadProvider{name: "extractor"}
+func TestDownloaderFailsClosedWhenContinuationAdmissionFails(t *testing.T) {
+	admissionErr := errors.New("task admission closed")
+	p := New(&rejectingTaskClient{err: admissionErr})
+	provider := &recordingDownloadProvider{name: "extractor"}
 	p.registry = download.NewRegistry(provider)
 	p.storage = storage.NewMemoryStorage()
 
-	if err := jm.Stop(context.Background()); err != nil {
-		t.Fatalf("stop jobs manager: %v", err)
-	}
-
 	const targetURL = "https://example.com/extractor-target"
-	tgSvc := &mockTelegramService{}
 	ctx := &core.Context{
 		Ctx:     context.Background(),
-		Svc:     tgSvc,
+		Svc:     &mockTelegramService{},
 		PeerID:  &tg.InputPeerSelf{},
-		Message: &core.Message{ID: 7, IsOutgoing: true, Text: ".download " + targetURL},
-		Args:    []string{targetURL},
+		Message: &core.Message{ID: 7, IsOutgoing: true},
 	}
-
 	err := p.handleURLDownload(ctx, targetURL)
 	if err == nil {
-		t.Fatal("expected durable job registration failure")
+		t.Fatal("expected continuation admission failure")
 	}
-	if !strings.Contains(err.Error(), "register URL download job") {
-		t.Fatalf("expected registration context in error, got %v", err)
+	if !errors.Is(err, admissionErr) {
+		t.Fatalf("expected original admission error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "submit url download task") {
+		t.Fatalf("missing admission error context: %v", err)
 	}
 	if provider.gotURL != "" {
-		t.Fatalf("extractor provider ran despite failed job admission: %q", provider.gotURL)
+		t.Fatalf("provider executed despite failed admission: %q", provider.gotURL)
 	}
 }

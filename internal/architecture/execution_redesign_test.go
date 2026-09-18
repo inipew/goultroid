@@ -344,3 +344,47 @@ func TestIdleAndResourceRegressionGuards(t *testing.T) {
 		}
 	}
 }
+
+func TestDownloaderUsesEphemeralTaskContinuations(t *testing.T) {
+	root := repositoryRoot(t)
+
+	downloaderPath := filepath.Join(root, "plugins", "downloader", "downloader.go")
+	data, err := os.ReadFile(downloaderPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, required := range []string{
+		"p.tasks.Submit(",
+		`Pool:             tasks.PoolID("download")`,
+		"urlResources(",
+		"markHeldResources(",
+	} {
+		if !strings.Contains(text, required) {
+			t.Errorf("%s is missing ephemeral continuation invariant %q", downloaderPath, required)
+		}
+	}
+	for _, forbidden := range []string{
+		"jobs.Register(",
+		"JobDefinition",
+		"jobUI",
+		"dl-url-",
+		"dl-media-",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Errorf("%s reintroduced per-request durable job state %q", downloaderPath, forbidden)
+		}
+	}
+
+	modulePath := filepath.Join(root, "plugins", "downloader", "module.go")
+	moduleData, err := os.ReadFile(modulePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(moduleData), "plugin.CapTasks") {
+		t.Errorf("%s must request TaskEngine capability", modulePath)
+	}
+	if strings.Contains(string(moduleData), "plugin.CapJobs") {
+		t.Errorf("%s must not request durable jobs capability for ephemeral downloads", modulePath)
+	}
+}

@@ -13,10 +13,17 @@ var Module ModuleType
 
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
-		ID:           "downloader",
-		Version:      "1.0.0",
-		Description:  "Media download capabilities for Telegram media and external URLs",
-		Capabilities: []string{plugin.CapHTTP, plugin.CapFilesystemTemp, plugin.CapFilesystemData, plugin.CapProcessExecute, plugin.CapTelegramSendMessage, plugin.CapJobs},
+		ID:          "downloader",
+		Version:     "1.0.0",
+		Description: "Media download capabilities for Telegram media and external URLs",
+		Capabilities: []string{
+			plugin.CapHTTP,
+			plugin.CapFilesystemTemp,
+			plugin.CapFilesystemData,
+			plugin.CapProcessExecute,
+			plugin.CapTelegramSendMessage,
+			plugin.CapTasks,
+		},
 	}
 }
 

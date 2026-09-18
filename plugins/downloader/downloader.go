@@ -2,38 +2,29 @@ package downloader
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/jobs"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/storage"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
+const downloaderExecutionTimeout = 10 * time.Minute
+
+var downloaderTaskSequence atomic.Uint64
+
 // Plugin provides media download capabilities for Telegram media and external URLs.
 type Plugin struct {
 	registry *download.Registry
 	storage  storage.Storage
-	jobs     *jobs.Manager
-	jobUI    sync.Map // job ID -> *core.Context; transient notification only
-}
-
-type downloadJobPayload struct {
-	URL string `json:"url"`
-}
-
-type mediaJobPayload struct {
-	SaveDir   string `json:"save_dir"`
-	MediaSize int64  `json:"media_size"`
+	tasks    tasks.Client
 }
 
 // New creates a new downloader Plugin instance with optional dependencies.
@@ -45,8 +36,8 @@ func New(deps ...any) *Plugin {
 			p.registry = v
 		case storage.Storage:
 			p.storage = v
-		case *jobs.Manager:
-			p.jobs = v
+		case tasks.Client:
+			p.tasks = v
 		}
 	}
 	return p
@@ -62,61 +53,19 @@ func (p *Plugin) SetStorage(store storage.Storage) {
 	p.storage = store
 }
 
-// SetJobsManager sets the jobs manager and registers typed download handlers.
-func (p *Plugin) SetJobsManager(jm *jobs.Manager) {
-	p.jobs = jm
-	p.registerJobHandlers()
+// SetTaskClient sets the scoped TaskEngine client used for download continuations.
+func (p *Plugin) SetTaskClient(client tasks.Client) {
+	p.tasks = client
 }
 
-// InitPlugin initializes the plugin using PluginContext.
+// InitPlugin initializes the plugin using capability-gated runtime services.
 func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
-	jobsMgr, err := pctx.Jobs()
-	if err == nil && jobsMgr != nil {
-		p.jobs = jobsMgr
-		p.registerJobHandlers()
+	client, err := pctx.TaskClient()
+	if err != nil {
+		return fmt.Errorf("initialize downloader task client: %w", err)
 	}
+	p.tasks = client
 	return nil
-}
-
-func (p *Plugin) registerJobHandlers() {
-	if p.jobs == nil {
-		return
-	}
-	_ = p.jobs.RegisterHandler("downloader.url", func(ctx context.Context, j jobs.JobDefinition) error {
-		var payload downloadJobPayload
-		if err := json.Unmarshal(j.Payload, &payload); err != nil {
-			return fmt.Errorf("decode downloader job payload: %w", err)
-		}
-		if strings.TrimSpace(payload.URL) == "" {
-			return errors.New("downloader job URL is empty")
-		}
-		var uiCtx *core.Context
-		if value, ok := p.jobUI.LoadAndDelete(j.ID); ok {
-			uiCtx, _ = value.(*core.Context)
-		}
-		reqCtx := ctx
-		for _, r := range j.Resources {
-			if r.Amount > 0 {
-				reqCtx = download.WithResource(reqCtx, r.Name)
-			}
-		}
-		return p.executeURLDownload(reqCtx, uiCtx, payload.URL)
-	})
-	_ = p.jobs.RegisterHandler("downloader.telegram_media", func(ctx context.Context, j jobs.JobDefinition) error {
-		var payload mediaJobPayload
-		if err := json.Unmarshal(j.Payload, &payload); err != nil {
-			return fmt.Errorf("decode downloader media payload: %w", err)
-		}
-		value, ok := p.jobUI.LoadAndDelete(j.ID)
-		if !ok {
-			return errors.New("downloader media context expired")
-		}
-		uiCtx, _ := value.(*core.Context)
-		if uiCtx == nil {
-			return errors.New("downloader media context missing")
-		}
-		return p.executeMediaDownload(ctx, uiCtx, payload.SaveDir, payload.MediaSize)
-	})
 }
 
 // Name returns the plugin identifier.
@@ -153,15 +102,108 @@ func (p *Plugin) Commands() []core.Command {
 			Permission:  core.PermissionSudo,
 			ReplyOnly:   false,
 			Cooldown:    3 * time.Second,
-			Timeout:     10 * time.Minute,
-			Resources:   []tasks.ResourceRequirement{{Name: "download", Amount: 1}},
-			Handler:     p.handleDownload,
+			Timeout:     downloaderExecutionTimeout,
+			// The interactive command only performs planning and admission.
+			// Resource ownership belongs to the continuation task that performs I/O.
+			Handler: p.handleDownload,
 		},
 	}
 }
 
+func (p *Plugin) nextTaskID(kind string) tasks.TaskID {
+	return tasks.TaskID(fmt.Sprintf(
+		"downloader:%s:%d:%d",
+		kind,
+		time.Now().UnixNano(),
+		downloaderTaskSequence.Add(1),
+	))
+}
+
+func detachDownloadContext(ctx *core.Context) *core.Context {
+	if ctx == nil {
+		return nil
+	}
+	cp := *ctx
+	// The continuation receives its TaskEngine context immediately before use.
+	// Drop command-only references so the queued closure does not retain the
+	// entire invocation graph after admission.
+	cp.Ctx = nil
+	cp.Args = nil
+	cp.RawArgs = ""
+	cp.Album = nil
+	cp.Chat = nil
+	cp.Sender = nil
+	cp.Perms = nil
+	cp.Principal = nil
+	cp.Resolver = nil
+	cp.Localizer = nil
+	cp.EventBus = nil
+	cp.DelayedActions = nil
+	return &cp
+}
+
+func markHeldResources(ctx context.Context, resources []tasks.ResourceRequirement) context.Context {
+	for _, requirement := range resources {
+		if requirement.Amount > 0 {
+			ctx = download.WithResource(ctx, requirement.Name)
+		}
+	}
+	return ctx
+}
+
+func (p *Plugin) submitContinuation(
+	admissionCtx context.Context,
+	kind string,
+	input []byte,
+	resources []tasks.ResourceRequirement,
+	handler func(context.Context) error,
+) error {
+	if p.tasks == nil {
+		return fmt.Errorf("%w: downloader TaskEngine client is not configured", core.ErrUnavailable)
+	}
+	if admissionCtx == nil {
+		admissionCtx = context.Background()
+	}
+	resources = append([]tasks.ResourceRequirement(nil), resources...)
+	input = append([]byte(nil), input...)
+
+	_, err := p.tasks.Submit(admissionCtx, tasks.WorkSpec{
+		ID:               p.nextTaskID(kind),
+		QuotaOwner:       tasks.OwnerID("plugin:downloader"),
+		Pool:             tasks.PoolID("download"),
+		Class:            tasks.PriorityNormal,
+		ExecutionTimeout: downloaderExecutionTimeout,
+		Input:            input,
+		Resources:        resources,
+		Handler: func(taskCtx context.Context) error {
+			return handler(markHeldResources(taskCtx, resources))
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("submit %s download task: %w", kind, err)
+	}
+	return nil
+}
+
+func (p *Plugin) ensureRegistry() {
+	if p.registry == nil {
+		_ = p.Init()
+	}
+}
+
+func (p *Plugin) urlResources(rawURL string) []tasks.ResourceRequirement {
+	resources := []tasks.ResourceRequirement{{Name: "download", Amount: 1}}
+	p.ensureRegistry()
+	if p.registry != nil {
+		if provider := p.registry.Resolve(rawURL); provider != nil && provider.Name() == "extractor" {
+			resources = append(resources, tasks.ResourceRequirement{Name: "process", Amount: 1})
+		}
+	}
+	return resources
+}
+
 func (p *Plugin) handleDownload(ctx *core.Context) error {
-	// 1. Check if a URL was provided as an argument
+	// 1. Check if a URL was provided as an argument.
 	if len(ctx.Args) > 0 {
 		targetURL := strings.TrimSpace(ctx.Args[0])
 		if strings.HasPrefix(targetURL, "http://") || strings.HasPrefix(targetURL, "https://") {
@@ -169,7 +211,7 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 		}
 	}
 
-	// 2. Otherwise, check for media in replied or current message
+	// 2. Otherwise, check for media in replied or current message.
 	var targetMedia *core.MediaInfo
 	var mediaSize int64
 
@@ -193,6 +235,9 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 
 	if targetMedia == nil {
 		return ctx.EditOrReply("⚠️ <b>No media or URL found!</b> Reply to a media message or provide a valid download URL.")
+	}
+	if p.tasks == nil {
+		return fmt.Errorf("%w: downloader TaskEngine client is not configured", core.ErrUnavailable)
 	}
 
 	saveDir := filepath.Join("data", "downloads")
@@ -219,35 +264,13 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 		return err
 	}
 
-	uiCtx := ctx
-	if targetMedia != nil {
-		uiCtx = uiCtx.WithMedia(targetMedia)
-	}
-
-	if p.jobs != nil {
-		jobID := fmt.Sprintf("dl-media-%d", time.Now().UnixNano())
-		idempKey := ""
-		if ctx.Message != nil {
-			idempKey = fmt.Sprintf("dl:msg:%d:%d", ctx.ChatID(), ctx.Message.ID)
-		}
-		payload, err := json.Marshal(mediaJobPayload{SaveDir: saveDir, MediaSize: mediaSize})
-		if err != nil {
-			return fmt.Errorf("encode media download job: %w", err)
-		}
-		job := jobs.JobDefinition{ID: jobID, ScopeOwner: "plugin:downloader", QuotaOwner: "telegram:download", HandlerType: "downloader.telegram_media", Payload: payload, Pool: "download", Class: "normal", Timeout: 10 * time.Minute, Resources: []tasks.ResourceRequirement{{Name: "download", Amount: 1}}, Enabled: true}
-		_ = idempKey
-		if err := p.jobs.Register(job); err != nil {
-			return fmt.Errorf("register media download job: %w", err)
-		}
-		p.jobUI.Store(jobID, uiCtx)
-		if err := p.jobs.Trigger(ctx.Ctx, jobID); err != nil {
-			p.jobUI.Delete(jobID)
-			return err
-		}
-		return nil
-	}
-
-	return p.executeMediaDownload(ctx.Ctx, uiCtx, saveDir, mediaSize)
+	uiCtx := ctx.WithMedia(targetMedia)
+	uiCtx = detachDownloadContext(uiCtx)
+	resources := []tasks.ResourceRequirement{{Name: "download", Amount: 1}}
+	input := []byte(fmt.Sprintf("%s\x00%d", saveDir, mediaSize))
+	return p.submitContinuation(ctx.Ctx, "media", input, resources, func(taskCtx context.Context) error {
+		return p.executeMediaDownload(taskCtx, uiCtx, saveDir, mediaSize)
+	})
 }
 
 func (p *Plugin) executeMediaDownload(taskCtx context.Context, ctx *core.Context, saveDir string, mediaSize int64) error {
@@ -299,46 +322,26 @@ func (p *Plugin) executeMediaDownload(taskCtx context.Context, ctx *core.Context
 }
 
 func (p *Plugin) handleURLDownload(ctx *core.Context, rawURL string) error {
+	if p.tasks == nil {
+		return fmt.Errorf("%w: downloader TaskEngine client is not configured", core.ErrUnavailable)
+	}
+	p.ensureRegistry()
+
+	resources := p.urlResources(rawURL)
 	if err := ctx.EditOrReply("⏳ <i>Downloading media from URL...</i>"); err != nil {
 		return err
 	}
-
-	if p.jobs != nil {
-		jobID := fmt.Sprintf("dl-url-%d", time.Now().UnixNano())
-		idempKey := fmt.Sprintf("dl:url:%s", rawURL)
-		payload, err := json.Marshal(downloadJobPayload{URL: rawURL})
-		if err != nil {
-			return fmt.Errorf("encode download job: %w", err)
-		}
-		reqResources := []tasks.ResourceRequirement{{Name: "download", Amount: 1}}
-		if p.registry != nil {
-			if prov := p.registry.Resolve(rawURL); prov != nil && prov.Name() == "extractor" {
-				reqResources = append(reqResources, tasks.ResourceRequirement{Name: "process", Amount: 1})
-			}
-		}
-		job := jobs.JobDefinition{ID: jobID, ScopeOwner: "plugin:downloader", QuotaOwner: "telegram:download", HandlerType: "downloader.url", Payload: payload, Pool: "download", Class: "normal", Timeout: 10 * time.Minute, Resources: reqResources, Enabled: true}
-		_ = idempKey
-		if err := p.jobs.Register(job); err != nil {
-			return fmt.Errorf("register URL download job: %w", err)
-		}
-		p.jobUI.Store(jobID, ctx)
-		if err := p.jobs.Trigger(ctx.Ctx, jobID); err != nil {
-			p.jobUI.Delete(jobID)
-			return err
-		}
-		return nil
-	}
-
-	return p.executeURLDownload(ctx.Ctx, ctx, rawURL)
+	uiCtx := detachDownloadContext(ctx)
+	return p.submitContinuation(ctx.Ctx, "url", []byte(rawURL), resources, func(taskCtx context.Context) error {
+		return p.executeURLDownload(taskCtx, uiCtx, rawURL)
+	})
 }
 
 func (p *Plugin) executeURLDownload(taskCtx context.Context, ctx *core.Context, rawURL string) error {
 	if taskCtx != nil && ctx != nil {
 		ctx = ctx.WithContext(taskCtx)
 	}
-	if p.registry == nil {
-		_ = p.Init()
-	}
+	p.ensureRegistry()
 
 	targetStore := p.storage
 	if targetStore == nil {
@@ -347,7 +350,7 @@ func (p *Plugin) executeURLDownload(taskCtx context.Context, ctx *core.Context, 
 
 	start := time.Now()
 	opts := download.DownloadOptions{
-		Timeout:  10 * time.Minute,
+		Timeout:  downloaderExecutionTimeout,
 		MaxBytes: 500 * 1024 * 1024,
 	}
 
