@@ -342,17 +342,21 @@ func (l *HierarchicalRPCLimiter) cleanupExpiredPenaltiesLocked(now time.Time) {
 }
 
 func (l *HierarchicalRPCLimiter) missingBucketCountLocked(dimensions []LimitKey) int {
-	seen := make(map[LimitKey]struct{}, len(dimensions))
 	missing := 0
-	for _, dim := range dimensions {
+	for i, dim := range dimensions {
 		if _, ok := l.buckets[dim]; ok {
 			continue
 		}
-		if _, duplicate := seen[dim]; duplicate {
-			continue
+		duplicate := false
+		for j := 0; j < i; j++ {
+			if dimensions[j] == dim {
+				duplicate = true
+				break
+			}
 		}
-		seen[dim] = struct{}{}
-		missing++
+		if !duplicate {
+			missing++
+		}
 	}
 	return missing
 }
@@ -405,7 +409,6 @@ func (l *HierarchicalRPCLimiter) Reserve(now time.Time, dimensions []LimitKey, c
 
 	reqCost := float64(cost)
 	var maxWait time.Duration
-	matchedBuckets := make([]*tokenBucket, 0, len(dimensions))
 
 	for _, dim := range dimensions {
 		bucket := l.getOrCreateBucketLocked(dim, now)
@@ -414,7 +417,6 @@ func (l *HierarchicalRPCLimiter) Reserve(now time.Time, dimensions []LimitKey, c
 			return Reservation{Allowed: false, RetryAfter: l.bucketCapacityRetryAfterLocked(now)}
 		}
 		bucket.refill(now)
-		matchedBuckets = append(matchedBuckets, bucket)
 
 		if bucket.tokens < reqCost {
 			deficit := reqCost - bucket.tokens
@@ -436,8 +438,8 @@ func (l *HierarchicalRPCLimiter) Reserve(now time.Time, dimensions []LimitKey, c
 		return Reservation{Allowed: false, RetryAfter: maxWait}
 	}
 
-	for _, bucket := range matchedBuckets {
-		bucket.tokens -= reqCost
+	for _, dim := range dimensions {
+		l.buckets[dim].tokens -= reqCost
 	}
 
 	return Reservation{Allowed: true}
