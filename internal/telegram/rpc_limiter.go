@@ -1,6 +1,8 @@
 package telegram
 
 import (
+	"container/heap"
+	"container/list"
 	"math"
 	"sync"
 	"time"
@@ -65,6 +67,8 @@ type tokenBucket struct {
 	capacity   float64
 	tokens     float64
 	lastRefill time.Time
+	lastAccess time.Time
+	lruElem    *list.Element
 }
 
 func (b *tokenBucket) refill(now time.Time) {
@@ -84,12 +88,63 @@ func (b *tokenBucket) refill(now time.Time) {
 	b.lastRefill = now
 }
 
+type penaltyState struct {
+	key   LimitKey
+	until time.Time
+	index int
+}
+
+type penaltyHeap []*penaltyState
+
+func (h penaltyHeap) Len() int { return len(h) }
+func (h penaltyHeap) Less(i, j int) bool {
+	return h[i].until.Before(h[j].until)
+}
+func (h penaltyHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].index = i
+	h[j].index = j
+}
+func (h *penaltyHeap) Push(value any) {
+	state := value.(*penaltyState)
+	state.index = len(*h)
+	*h = append(*h, state)
+}
+func (h *penaltyHeap) Pop() any {
+	old := *h
+	n := len(old)
+	state := old[n-1]
+	old[n-1] = nil
+	state.index = -1
+	*h = old[:n-1]
+	return state
+}
+
 // HierarchicalRPCLimiter provides atomic multi-dimensional rate limiting and penalty management.
+//
+// The hot path is intentionally O(number of request dimensions), not O(total
+// limiter cardinality). Dynamic buckets are ordered by last access in an LRU
+// list, so idle reclamation only inspects the oldest entries. Penalties use an
+// indexed expiry heap, keeping one heap node per active penalty.
+//
+// When bounded state is saturated the limiter fails closed. It never evicts a
+// live token bucket merely to admit a new identity, and it never drops an
+// active FloodWait penalty. Penalty overflow is conservatively promoted to a
+// temporary account-wide cooldown.
 type HierarchicalRPCLimiter struct {
-	mu        sync.Mutex
-	cfg       HierarchicalLimiterConfig
+	mu  sync.Mutex
+	cfg HierarchicalLimiterConfig
+
 	buckets   map[LimitKey]*tokenBucket
-	penalties map[LimitKey]time.Time
+	bucketLRU *list.List // non-global buckets, oldest access at Front
+
+	penalties map[LimitKey]*penaltyState
+	penaltyQ  penaltyHeap
+
+	// overflowPenaltyUntil is used only when MaxPenalties is saturated by live
+	// entries. Promoting the overflow to an account-wide cooldown is stricter
+	// than dropping Telegram's FloodWait instruction and remains constant-space.
+	overflowPenaltyUntil time.Time
 }
 
 // NewHierarchicalRPCLimiter creates a new limiter with the specified config.
@@ -134,68 +189,172 @@ func NewHierarchicalRPCLimiter(cfg HierarchicalLimiterConfig) *HierarchicalRPCLi
 		cfg.MethodConfigs = make(map[string]LimiterBucketConfig)
 	}
 
-	return &HierarchicalRPCLimiter{
+	l := &HierarchicalRPCLimiter{
 		cfg:       cfg,
 		buckets:   make(map[LimitKey]*tokenBucket),
-		penalties: make(map[LimitKey]time.Time),
+		bucketLRU: list.New(),
+		penalties: make(map[LimitKey]*penaltyState),
 	}
+	heap.Init(&l.penaltyQ)
+	return l
 }
 
-func (l *HierarchicalRPCLimiter) getOrCreateBucketLocked(key LimitKey, now time.Time) *tokenBucket {
-	if b, ok := l.buckets[key]; ok {
-		return b
-	}
-
-	var rate, cap float64
+func (l *HierarchicalRPCLimiter) bucketConfig(key LimitKey) (rate, capacity float64) {
 	switch key.Scope {
 	case "global":
 		rate = l.cfg.GlobalRate
-		cap = l.cfg.GlobalBurst
+		capacity = l.cfg.GlobalBurst
 	case "family":
 		if fcfg, ok := l.cfg.FamilyConfigs[key.Key]; ok {
 			rate = fcfg.Rate
-			cap = fcfg.Capacity
+			capacity = fcfg.Capacity
 		} else {
 			rate = l.cfg.DefaultFamilyRate
-			cap = l.cfg.DefaultFamilyBurst
+			capacity = l.cfg.DefaultFamilyBurst
 		}
 	case "method":
 		if mcfg, ok := l.cfg.MethodConfigs[key.Key]; ok {
 			rate = mcfg.Rate
-			cap = mcfg.Capacity
+			capacity = mcfg.Capacity
 		} else {
 			rate = l.cfg.DefaultMethodRate
-			cap = l.cfg.DefaultMethodBurst
+			capacity = l.cfg.DefaultMethodBurst
 		}
 	case "peer":
 		rate = l.cfg.DefaultPeerRate
-		cap = l.cfg.DefaultPeerBurst
+		capacity = l.cfg.DefaultPeerBurst
 	default:
 		rate = l.cfg.GlobalRate
-		cap = l.cfg.GlobalBurst
+		capacity = l.cfg.GlobalBurst
 	}
-
 	if rate <= 0 {
 		rate = 1.0
 	}
-	if cap <= 0 {
-		cap = rate
+	if capacity <= 0 {
+		capacity = rate
+	}
+	return rate, capacity
+}
+
+func (l *HierarchicalRPCLimiter) touchBucketLocked(key LimitKey, bucket *tokenBucket, now time.Time) {
+	bucket.lastAccess = now
+	if key.Scope == "global" {
+		return
+	}
+	if bucket.lruElem == nil {
+		bucket.lruElem = l.bucketLRU.PushBack(key)
+		return
+	}
+	l.bucketLRU.MoveToBack(bucket.lruElem)
+}
+
+func (l *HierarchicalRPCLimiter) getOrCreateBucketLocked(key LimitKey, now time.Time) *tokenBucket {
+	if bucket, ok := l.buckets[key]; ok {
+		l.touchBucketLocked(key, bucket, now)
+		return bucket
 	}
 	if len(l.buckets) >= l.cfg.MaxBuckets {
-		l.evictOldestDynamicBucketLocked()
-		if len(l.buckets) >= l.cfg.MaxBuckets {
-			return nil
-		}
+		return nil
 	}
 
-	b := &tokenBucket{
+	rate, capacity := l.bucketConfig(key)
+	bucket := &tokenBucket{
 		rate:       rate,
-		capacity:   cap,
-		tokens:     cap,
+		capacity:   capacity,
+		tokens:     capacity,
 		lastRefill: now,
+		lastAccess: now,
 	}
-	l.buckets[key] = b
-	return b
+	l.buckets[key] = bucket
+	l.touchBucketLocked(key, bucket, now)
+	return bucket
+}
+
+func (l *HierarchicalRPCLimiter) removeBucketLocked(key LimitKey, bucket *tokenBucket) {
+	if bucket != nil && bucket.lruElem != nil {
+		l.bucketLRU.Remove(bucket.lruElem)
+		bucket.lruElem = nil
+	}
+	delete(l.buckets, key)
+}
+
+// cleanupIdleBucketsLocked is amortized O(number of entries actually expired).
+// Because the LRU list is ordered by last access, once the oldest entry is not
+// expired no later entry can be expired either.
+func (l *HierarchicalRPCLimiter) cleanupIdleBucketsLocked(now time.Time) {
+	for {
+		elem := l.bucketLRU.Front()
+		if elem == nil {
+			return
+		}
+		key := elem.Value.(LimitKey)
+		bucket := l.buckets[key]
+		if bucket == nil {
+			l.bucketLRU.Remove(elem)
+			continue
+		}
+		if now.Sub(bucket.lastAccess) <= l.cfg.IdleTTL {
+			return
+		}
+		l.removeBucketLocked(key, bucket)
+	}
+}
+
+func (l *HierarchicalRPCLimiter) bucketCapacityRetryAfterLocked(now time.Time) time.Duration {
+	elem := l.bucketLRU.Front()
+	if elem == nil {
+		return l.cfg.IdleTTL
+	}
+	key := elem.Value.(LimitKey)
+	bucket := l.buckets[key]
+	if bucket == nil {
+		return time.Millisecond
+	}
+	retryAfter := bucket.lastAccess.Add(l.cfg.IdleTTL).Sub(now)
+	if retryAfter <= 0 {
+		return time.Millisecond
+	}
+	return retryAfter
+}
+
+func (l *HierarchicalRPCLimiter) removePenaltyLocked(state *penaltyState) {
+	if state == nil {
+		return
+	}
+	if state.index >= 0 && state.index < l.penaltyQ.Len() {
+		heap.Remove(&l.penaltyQ, state.index)
+	}
+	delete(l.penalties, state.key)
+}
+
+func (l *HierarchicalRPCLimiter) cleanupExpiredPenaltiesLocked(now time.Time) {
+	for l.penaltyQ.Len() > 0 {
+		state := l.penaltyQ[0]
+		if state.until.After(now) {
+			return
+		}
+		heap.Pop(&l.penaltyQ)
+		delete(l.penalties, state.key)
+	}
+	if !l.overflowPenaltyUntil.IsZero() && !l.overflowPenaltyUntil.After(now) {
+		l.overflowPenaltyUntil = time.Time{}
+	}
+}
+
+func (l *HierarchicalRPCLimiter) missingBucketCountLocked(dimensions []LimitKey) int {
+	seen := make(map[LimitKey]struct{}, len(dimensions))
+	missing := 0
+	for _, dim := range dimensions {
+		if _, ok := l.buckets[dim]; ok {
+			continue
+		}
+		if _, duplicate := seen[dim]; duplicate {
+			continue
+		}
+		seen[dim] = struct{}{}
+		missing++
+	}
+	return missing
 }
 
 // Reserve checks rate limits and FloodWait penalties across all dimensions atomically.
@@ -207,40 +366,52 @@ func (l *HierarchicalRPCLimiter) Reserve(now time.Time, dimensions []LimitKey, c
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	// 1. Check FloodWait penalties on any associated dimension
+	l.cleanupExpiredPenaltiesLocked(now)
+	if l.overflowPenaltyUntil.After(now) {
+		return Reservation{Allowed: false, RetryAfter: l.overflowPenaltyUntil.Sub(now)}
+	}
+
+	// Check only penalties associated with this request. This is O(dimensions)
+	// regardless of the number of other peers currently represented.
 	var maxPenaltyWait time.Duration
 	for _, dim := range dimensions {
-		if until, ok := l.penalties[dim]; ok {
-			if until.After(now) {
-				wait := until.Sub(now)
-				if wait > maxPenaltyWait {
-					maxPenaltyWait = wait
-				}
-			} else {
-				delete(l.penalties, dim)
-			}
+		state, ok := l.penalties[dim]
+		if !ok {
+			continue
+		}
+		if !state.until.After(now) {
+			l.removePenaltyLocked(state)
+			continue
+		}
+		wait := state.until.Sub(now)
+		if wait > maxPenaltyWait {
+			maxPenaltyWait = wait
 		}
 	}
 	if maxPenaltyWait > 0 {
-		return Reservation{
-			Allowed:    false,
-			RetryAfter: maxPenaltyWait,
-		}
+		return Reservation{Allowed: false, RetryAfter: maxPenaltyWait}
 	}
 
-	// 2. Expire idle dynamic state before evaluating capacity.
+	// Reclaim only LRU entries that are actually idle. A depleted bucket is
+	// still reclaimable after IdleTTL; token fullness is not an activity signal.
 	l.cleanupIdleBucketsLocked(now)
-	l.cleanupExpiredPenaltiesLocked(now)
 
-	// 3. Check token availability for each active dimension
+	// Reserve state capacity atomically before creating any new dimensions.
+	// Saturation is a fail-closed admission result, never a reason to discard a
+	// live bucket and reset its rate-limit history.
+	if missing := l.missingBucketCountLocked(dimensions); len(l.buckets)+missing > l.cfg.MaxBuckets {
+		return Reservation{Allowed: false, RetryAfter: l.bucketCapacityRetryAfterLocked(now)}
+	}
+
 	reqCost := float64(cost)
 	var maxWait time.Duration
-	var matchedBuckets []*tokenBucket
+	matchedBuckets := make([]*tokenBucket, 0, len(dimensions))
 
 	for _, dim := range dimensions {
 		bucket := l.getOrCreateBucketLocked(dim, now)
 		if bucket == nil {
-			continue
+			// Defensive fallback for impossible capacity races while holding l.mu.
+			return Reservation{Allowed: false, RetryAfter: l.bucketCapacityRetryAfterLocked(now)}
 		}
 		bucket.refill(now)
 		matchedBuckets = append(matchedBuckets, bucket)
@@ -258,15 +429,13 @@ func (l *HierarchicalRPCLimiter) Reserve(now time.Time, dimensions []LimitKey, c
 		}
 	}
 
-	// If any dimension doesn't have sufficient tokens, atomically reject without deducting any tokens
+	// If any dimension lacks tokens, reject atomically without deducting from any
+	// other dimension. Access timestamps are intentionally refreshed: repeated
+	// attempts are activity and must not reset a hot bucket through idle eviction.
 	if maxWait > 0 {
-		return Reservation{
-			Allowed:    false,
-			RetryAfter: maxWait,
-		}
+		return Reservation{Allowed: false, RetryAfter: maxWait}
 	}
 
-	// Deduct tokens from all checked dimensions atomically
 	for _, bucket := range matchedBuckets {
 		bucket.tokens -= reqCost
 	}
@@ -286,62 +455,30 @@ func (l *HierarchicalRPCLimiter) Penalize(now time.Time, dimensions []LimitKey, 
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
 	l.cleanupExpiredPenaltiesLocked(now)
-
 	for _, dim := range dimensions {
-		if _, exists := l.penalties[dim]; !exists && len(l.penalties) >= l.cfg.MaxPenalties {
-			l.evictEarliestPenaltyLocked()
-		}
-		if current, ok := l.penalties[dim]; !ok || until.After(current) {
-			l.penalties[dim] = until
-		}
-	}
-}
-
-func (l *HierarchicalRPCLimiter) cleanupIdleBucketsLocked(now time.Time) {
-	for key, b := range l.buckets {
-		if key.Scope != "global" && b.tokens >= b.capacity && now.Sub(b.lastRefill) > l.cfg.IdleTTL {
-			delete(l.buckets, key)
-		}
-	}
-}
-
-func (l *HierarchicalRPCLimiter) cleanupExpiredPenaltiesLocked(now time.Time) {
-	for key, until := range l.penalties {
-		if !until.After(now) {
-			delete(l.penalties, key)
-		}
-	}
-}
-
-func (l *HierarchicalRPCLimiter) evictOldestDynamicBucketLocked() {
-	var oldestKey LimitKey
-	var oldest time.Time
-	found := false
-	for key, bucket := range l.buckets {
-		if key.Scope == "global" {
+		if state, ok := l.penalties[dim]; ok {
+			if until.After(state.until) {
+				state.until = until
+				heap.Fix(&l.penaltyQ, state.index)
+			}
 			continue
 		}
-		if !found || bucket.lastRefill.Before(oldest) {
-			oldestKey, oldest, found = key, bucket.lastRefill, true
-		}
-	}
-	if found {
-		delete(l.buckets, oldestKey)
-	}
-}
 
-func (l *HierarchicalRPCLimiter) evictEarliestPenaltyLocked() {
-	var earliestKey LimitKey
-	var earliest time.Time
-	found := false
-	for key, until := range l.penalties {
-		if !found || until.Before(earliest) {
-			earliestKey, earliest, found = key, until, true
+		if len(l.penalties) >= l.cfg.MaxPenalties {
+			// Dropping an active Telegram penalty would fail open. Preserve a
+			// bounded representation by promoting overflow to account-wide
+			// cooldown until the new instruction expires.
+			if until.After(l.overflowPenaltyUntil) {
+				l.overflowPenaltyUntil = until
+			}
+			continue
 		}
-	}
-	if found {
-		delete(l.penalties, earliestKey)
+
+		state := &penaltyState{key: dim, until: until, index: -1}
+		l.penalties[dim] = state
+		heap.Push(&l.penaltyQ, state)
 	}
 }
 
