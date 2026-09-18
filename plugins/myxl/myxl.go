@@ -109,6 +109,18 @@ func (p *Plugin) CallbackOptions() callback.CallbackHandlerOptions {
 	return callback.CallbackHandlerOptions{AutoAnswer: false}
 }
 
+// RequiresCallbackState fails closed only for transaction actions whose opaque
+// id must resolve to a live single-use purchase draft. Other MyXL callbacks
+// intentionally mix menu/session state with stateless navigation.
+func (p *Plugin) RequiresCallbackState(action, _ string) bool {
+	switch action {
+	case "buy_confirm", "buy_cancel":
+		return true
+	default:
+		return false
+	}
+}
+
 // Description returns a summary of the plugin functionality.
 func (p *Plugin) Description() string {
 	return "MyXL account management and real-time quota visualizer"

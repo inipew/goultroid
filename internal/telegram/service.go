@@ -106,7 +106,7 @@ type Service struct {
 	resolver    *Resolver
 
 	botSentMu       sync.RWMutex
-	botSentMessages map[int]time.Time
+	botSentMessages map[string]time.Time
 }
 
 // NewService creates a new Service instance.
@@ -120,7 +120,7 @@ func NewService(api *tg.Client) *Service {
 		sender:          message.NewSender(api),
 		downloader:      downloader.NewDownloader(),
 		uploader:        uploader.NewUploader(api),
-		botSentMessages: make(map[int]time.Time),
+		botSentMessages: make(map[string]time.Time),
 	}
 }
 
@@ -374,17 +374,55 @@ func (s *Service) execMediaTransferVal[T any](ctx context.Context, method string
 	}, op)
 }
 
-func (s *Service) recordBotSent(msgID int) {
+func botSentInputKey(peer tg.InputPeerClass, msgID int) string {
+	if msgID == 0 || peer == nil {
+		return ""
+	}
+	switch p := peer.(type) {
+	case *tg.InputPeerUser:
+		return fmt.Sprintf("user:%d:%d", p.UserID, msgID)
+	case *tg.InputPeerChannel:
+		return fmt.Sprintf("channel:%d:%d", p.ChannelID, msgID)
+	case *tg.InputPeerChat:
+		return fmt.Sprintf("chat:%d:%d", p.ChatID, msgID)
+	case *tg.InputPeerSelf:
+		return fmt.Sprintf("self:%d", msgID)
+	default:
+		return ""
+	}
+}
+
+func botSentPeerKey(peer tg.PeerClass, msgID int) string {
+	if msgID == 0 || peer == nil {
+		return ""
+	}
+	switch p := peer.(type) {
+	case *tg.PeerUser:
+		return fmt.Sprintf("user:%d:%d", p.UserID, msgID)
+	case *tg.PeerChannel:
+		return fmt.Sprintf("channel:%d:%d", p.ChannelID, msgID)
+	case *tg.PeerChat:
+		return fmt.Sprintf("chat:%d:%d", p.ChatID, msgID)
+	default:
+		return ""
+	}
+}
+
+func (s *Service) recordBotSent(peer tg.InputPeerClass, msgID int) {
 	if s == nil || msgID == 0 {
+		return
+	}
+	key := botSentInputKey(peer, msgID)
+	if key == "" {
 		return
 	}
 	s.botSentMu.Lock()
 	defer s.botSentMu.Unlock()
 	if s.botSentMessages == nil {
-		s.botSentMessages = make(map[int]time.Time)
+		s.botSentMessages = make(map[string]time.Time)
 	}
 	now := time.Now()
-	s.botSentMessages[msgID] = now
+	s.botSentMessages[key] = now
 	if len(s.botSentMessages) > 200 {
 		cutoff := now.Add(-5 * time.Minute)
 		for id, t := range s.botSentMessages {
@@ -395,21 +433,45 @@ func (s *Service) recordBotSent(msgID int) {
 	}
 }
 
-// IsBotSent returns true if the message ID was dispatched programmatically by this bot instance.
+// IsBotSentForPeer reports whether this bot instance sent msgID to the exact
+// peer. InputPeerSelf records are accepted only for the current self user.
+func (s *Service) IsBotSentForPeer(peer tg.PeerClass, msgID int, selfID int64) bool {
+	if s == nil || msgID == 0 {
+		return false
+	}
+	keys := []string{botSentPeerKey(peer, msgID)}
+	if p, ok := peer.(*tg.PeerUser); ok && selfID != 0 && p.UserID == selfID {
+		keys = append(keys, fmt.Sprintf("self:%d", msgID))
+	}
+	s.botSentMu.RLock()
+	defer s.botSentMu.RUnlock()
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		if t, ok := s.botSentMessages[key]; ok && time.Since(t) < 5*time.Minute {
+			return true
+		}
+	}
+	return false
+}
+
+// IsBotSent is retained for compatibility with older callers that do not have
+// peer identity. New ingress classification must use IsBotSentForPeer.
 func (s *Service) IsBotSent(msgID int) bool {
 	if s == nil || msgID == 0 {
 		return false
 	}
+	suffix := fmt.Sprintf(":%d", msgID)
+	selfKey := fmt.Sprintf("self:%d", msgID)
 	s.botSentMu.RLock()
 	defer s.botSentMu.RUnlock()
-	if s.botSentMessages == nil {
-		return false
+	for key, t := range s.botSentMessages {
+		if (key == selfKey || strings.HasSuffix(key, suffix)) && time.Since(t) < 5*time.Minute {
+			return true
+		}
 	}
-	t, ok := s.botSentMessages[msgID]
-	if !ok {
-		return false
-	}
-	return time.Since(t) < 5*time.Minute
+	return false
 }
 
 // SetPeerManager configures the peers.Manager used for caching and resolving peer access hashes.
@@ -557,7 +619,7 @@ func (s *Service) SendMessage(ctx context.Context, peer tg.InputPeerClass, text 
 		s.checkPeerError(ctx, err, peer)
 	}
 	if err == nil && res != nil {
-		s.recordBotSent(res.ID)
+		s.recordBotSent(peer, res.ID)
 	}
 	return res, err
 }
@@ -623,7 +685,7 @@ func (s *Service) SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerCl
 		s.checkPeerError(ctx, err, peer)
 	}
 	if err == nil && res != nil {
-		s.recordBotSent(res.ID)
+		s.recordBotSent(peer, res.ID)
 	}
 	return res, err
 }
@@ -1328,7 +1390,7 @@ func (s *Service) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaTy
 
 	msg := extractMessageFromUpdates(updates)
 	if msg != nil {
-		s.recordBotSent(msg.ID)
+		s.recordBotSent(peer, msg.ID)
 	}
 	return msg, nil
 }

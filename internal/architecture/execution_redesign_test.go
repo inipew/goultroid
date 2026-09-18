@@ -121,3 +121,41 @@ func TestDelayedTelegramActionsAreRuntimeOwned(t *testing.T) {
 		}
 	}
 }
+
+func TestTelegramCallbackAndOriginHardeningGuards(t *testing.T) {
+	root := repositoryRoot(t)
+
+	callbackTypes := filepath.Join(root, "internal", "services", "callback", "types.go")
+	data, err := os.ReadFile(callbackTypes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"RequiresState bool", "RequiresCallbackState(", "truncateUTF8Bytes("} {
+		if !strings.Contains(string(data), required) {
+			t.Errorf("%s is missing hardening invariant %q", callbackTypes, required)
+		}
+	}
+	for _, forbidden := range []string{"text[:200]", "text[:4096]"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Errorf("%s still contains UTF-8-unsafe truncation %q", callbackTypes, forbidden)
+		}
+	}
+
+	servicePath := filepath.Join(root, "internal", "telegram", "service.go")
+	serviceData, err := os.ReadFile(servicePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(serviceData), "IsBotSentForPeer(") {
+		t.Errorf("%s must expose peer-scoped bot-origin tracking", servicePath)
+	}
+
+	dispatchPath := filepath.Join(root, "internal", "telegram", "dispatcher_dispatch.go")
+	dispatchData, err := os.ReadFile(dispatchPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(dispatchData), "IsBotSentForPeer(") {
+		t.Errorf("%s must classify automation origin with peer identity", dispatchPath)
+	}
+}

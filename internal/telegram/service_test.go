@@ -533,3 +533,27 @@ func TestService_StalePeerAutoRefreshRecovery(t *testing.T) {
 		t.Fatalf("expected cached entry with old hash to be invalidated, but still found: %+v", entry)
 	}
 }
+
+func TestService_BotSentTrackingIsPeerScoped(t *testing.T) {
+	svc := NewService(nil)
+	svc.recordBotSent(&tg.InputPeerChat{ChatID: 10}, 77)
+
+	if !svc.IsBotSentForPeer(&tg.PeerChat{ChatID: 10}, 77, 0) {
+		t.Fatal("expected exact peer/message pair to be recognized")
+	}
+	if svc.IsBotSentForPeer(&tg.PeerChat{ChatID: 11}, 77, 0) {
+		t.Fatal("same message id in another chat must not be classified as bot-sent")
+	}
+}
+
+func TestService_BotSentTrackingSupportsSavedMessages(t *testing.T) {
+	svc := NewService(nil)
+	svc.recordBotSent(&tg.InputPeerSelf{}, 88)
+
+	if !svc.IsBotSentForPeer(&tg.PeerUser{UserID: 1234}, 88, 1234) {
+		t.Fatal("expected InputPeerSelf record to match current self peer")
+	}
+	if svc.IsBotSentForPeer(&tg.PeerUser{UserID: 9999}, 88, 1234) {
+		t.Fatal("InputPeerSelf record must not match a different user peer")
+	}
+}

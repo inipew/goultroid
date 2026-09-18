@@ -349,8 +349,25 @@ func (r *Router) Dispatch(ctx context.Context, evt *core.CallbackQueryEvent, svc
 	if err != nil {
 		return err
 	}
-	_ = hasState
 	_ = entry
+
+	if !hasState {
+		if handler, exists := r.GetHandler(ns); exists && requiresHandlerState(handler, action, opaqueID) {
+			r.logger.Debug("callback requires state but none is available",
+				zap.Int64("query_id", evt.QueryID),
+				zap.Int64("user_id", evt.UserID),
+				zap.String("namespace", ns),
+				zap.String("action", action),
+				zap.String("opaque_id", opaqueID))
+			return r.reject(ctx, evt, svc, CallbackFailure{
+				Code:        FailureCodeSessionExpired,
+				MetricTag:   "missing_state",
+				UserAlert:   "⏰ Button expired, run the command again.",
+				InternalErr: ErrStateNotFound,
+				IsAlert:     true,
+			}, start)
+		}
+	}
 
 	return r.executeHandler(ctx, evt, svc, ns, action, opaqueID, storedState, start)
 }

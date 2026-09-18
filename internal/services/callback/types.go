@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
@@ -87,6 +88,9 @@ type CallbackHandlerOptions struct {
 	// AutoAnswer when true (default) immediately answers the callback with empty toast
 	// to clear Telegram loading state before handler execution.
 	AutoAnswer bool
+	// RequiresState rejects the callback when its opaque id does not resolve to
+	// live state. Leave false only for explicitly stateless handlers.
+	RequiresState bool
 	// DefaultText and DefaultAlert are used for the immediate answer when AutoAnswer is true.
 	// Empty DefaultText means silent ack.
 	DefaultText  string
@@ -105,12 +109,47 @@ type HandlerWithOptions interface {
 	CallbackOptions() CallbackHandlerOptions
 }
 
+// HandlerWithStatePolicy optionally declares state requirements per action.
+// This supports namespaces that intentionally mix stateless navigation with
+// stateful or single-use mutations.
+type HandlerWithStatePolicy interface {
+	Handler
+	RequiresCallbackState(action, opaqueID string) bool
+}
+
+func requiresHandlerState(h Handler, action, opaqueID string) bool {
+	if h == nil {
+		return false
+	}
+	if handlerOptions(h).RequiresState {
+		return true
+	}
+	if policy, ok := h.(HandlerWithStatePolicy); ok {
+		return policy.RequiresCallbackState(action, opaqueID)
+	}
+	return false
+}
+
 func handlerOptions(h Handler) CallbackHandlerOptions {
 	if ho, ok := h.(HandlerWithOptions); ok {
 		return ho.CallbackOptions()
 	}
 	// Default: immediate ack, silent
 	return CallbackHandlerOptions{AutoAnswer: true}
+}
+
+func truncateUTF8Bytes(text string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(text) <= maxBytes {
+		return text
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut]
 }
 
 // CallbackContext encapsulates the execution environment and metadata of an incoming callback query.
@@ -158,10 +197,8 @@ func (c *CallbackContext) Answer(text string, alert bool) error {
 	if c.Service == nil {
 		return fmt.Errorf("%w: telegram service is nil", core.ErrInternal)
 	}
-	// Telegram answer length limit ~200 chars
-	if len(text) > 200 {
-		text = text[:200]
-	}
+	// Keep the legacy byte budget while preserving valid UTF-8 boundaries.
+	text = truncateUTF8Bytes(text, 200)
 	err := c.Service.AnswerCallbackQuery(c.Ctx, c.QueryID, text, alert)
 	if err == nil {
 		c.answered = true
@@ -178,10 +215,8 @@ func (c *CallbackContext) Edit(text string, markup tg.ReplyMarkupClass) error {
 	if c.Service == nil {
 		return fmt.Errorf("%w: telegram service is nil", core.ErrInternal)
 	}
-	// Bounded serialized payload: truncate to Telegram max (4096 chars)
-	if len(text) > 4096 {
-		text = text[:4096]
-	}
+	// Keep the legacy byte budget while preserving valid UTF-8 boundaries.
+	text = truncateUTF8Bytes(text, 4096)
 	if c.IsInline() {
 		if c.Target.InlineID == nil {
 			return fmt.Errorf("%w: inline message id is missing", core.ErrInternal)

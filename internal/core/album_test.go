@@ -80,3 +80,40 @@ func TestAlbumBuffer_Concurrency(t *testing.T) {
 		t.Errorf("expected 4 albums, got %d", buf.Len())
 	}
 }
+
+func TestAlbumBuffer_HardBoundEvictsOldestLiveAlbum(t *testing.T) {
+	buf := NewAlbumBuffer(time.Minute)
+	buf.maxSize = 2
+
+	buf.Add(&Message{ID: 1, GroupedID: 101})
+	time.Sleep(time.Millisecond)
+	buf.Add(&Message{ID: 2, GroupedID: 102})
+	time.Sleep(time.Millisecond)
+	buf.Add(&Message{ID: 3, GroupedID: 103})
+
+	if got := buf.Len(); got != 2 {
+		t.Fatalf("album count = %d, want hard bound 2", got)
+	}
+	if got := buf.Get(101); got != nil {
+		t.Fatalf("oldest live album was not evicted: %+v", got)
+	}
+	if got := buf.Get(102); len(got) != 1 || got[0].ID != 2 {
+		t.Fatalf("newer album 102 missing after eviction: %+v", got)
+	}
+	if got := buf.Get(103); len(got) != 1 || got[0].ID != 3 {
+		t.Fatalf("new album 103 missing after eviction: %+v", got)
+	}
+}
+
+func TestAlbumBuffer_GetExpiresEntryWithoutExplicitPrune(t *testing.T) {
+	buf := NewAlbumBuffer(10 * time.Millisecond)
+	buf.Add(&Message{ID: 1, GroupedID: 777})
+	time.Sleep(20 * time.Millisecond)
+
+	if got := buf.Get(777); got != nil {
+		t.Fatalf("expired album returned from Get: %+v", got)
+	}
+	if got := buf.Len(); got != 0 {
+		t.Fatalf("expired album retained after Get: len=%d", got)
+	}
+}

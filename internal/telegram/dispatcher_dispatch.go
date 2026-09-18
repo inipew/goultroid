@@ -55,8 +55,17 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	origin := core.ExecutionInteractive
 	if msg.Out {
 		svc := d.getService()
-		if svc != nil && svc.IsBotSent(msg.ID) {
-			origin = core.ExecutionAutomation
+		if svc != nil {
+			type peerAwareBotSent interface {
+				IsBotSentForPeer(peer tg.PeerClass, msgID int, selfID int64) bool
+			}
+			if tracker, ok := svc.(peerAwareBotSent); ok {
+				if tracker.IsBotSentForPeer(msg.PeerID, msg.ID, d.getSelfID()) {
+					origin = core.ExecutionAutomation
+				}
+			} else if svc.IsBotSent(msg.ID) {
+				origin = core.ExecutionAutomation
+			}
 		}
 	}
 	decision := core.NewMessageDecision(origin)

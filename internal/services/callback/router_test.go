@@ -3,8 +3,10 @@ package callback
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
@@ -26,6 +28,14 @@ func (m *mockHandler) HandleCallback(ctx *CallbackContext) error {
 	m.handled = true
 	m.lastCtx = ctx
 	return m.returnErr
+}
+
+type requiredStateHandler struct {
+	*mockHandler
+}
+
+func (h *requiredStateHandler) CallbackOptions() CallbackHandlerOptions {
+	return CallbackHandlerOptions{AutoAnswer: true, RequiresState: true}
 }
 
 type recordingService struct {
@@ -677,5 +687,63 @@ func TestCallback_FailureAndNewActionData(t *testing.T) {
 	}
 	if ns != "settings" || act != ActionNav || oid != "abc12345" {
 		t.Errorf("unexpected parsed action data: ns=%s act=%s oid=%s", ns, act, oid)
+	}
+}
+
+func TestRouter_Dispatch_RequiredStateRejectsMissingState(t *testing.T) {
+	store := NewStateStore()
+	router := NewRouter(zap.NewNop(), store)
+	handler := &requiredStateHandler{mockHandler: &mockHandler{namespace: "stateful"}}
+	if err := router.Register(handler); err != nil {
+		t.Fatalf("register handler: %v", err)
+	}
+
+	svc := &recordingService{}
+	evt := &core.CallbackQueryEvent{
+		QueryID: 991,
+		UserID:  42,
+		Data:    EncodeCallbackData("stateful", "next", "missing-token"),
+	}
+	err := router.Dispatch(context.Background(), evt, svc)
+	if !errors.Is(err, ErrStateNotFound) {
+		t.Fatalf("expected ErrStateNotFound, got %v", err)
+	}
+	if handler.handled {
+		t.Fatal("required-state handler executed without state")
+	}
+	if !svc.lastAnswerAlert {
+		t.Fatal("expected missing required state to produce alert")
+	}
+}
+
+func TestCallbackContext_UTF8SafeTruncation(t *testing.T) {
+	svc := &recordingService{}
+	ctx := &CallbackContext{
+		Ctx:     context.Background(),
+		QueryID: 1,
+		Service: svc,
+		Target:  core.CallbackTarget{Peer: &tg.InputPeerSelf{}, MessageID: 7},
+	}
+
+	answer := strings.Repeat("😀", 80)
+	if err := ctx.Answer(answer, false); err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if !utf8.ValidString(svc.lastAnswerText) {
+		t.Fatal("answer truncation produced invalid UTF-8")
+	}
+	if len(svc.lastAnswerText) > 200 {
+		t.Fatalf("answer exceeds byte budget: %d", len(svc.lastAnswerText))
+	}
+
+	edit := strings.Repeat("界", 2000)
+	if err := ctx.Edit(edit, nil); err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+	if !utf8.ValidString(svc.lastEditText) {
+		t.Fatal("edit truncation produced invalid UTF-8")
+	}
+	if len(svc.lastEditText) > 4096 {
+		t.Fatalf("edit exceeds byte budget: %d", len(svc.lastEditText))
 	}
 }

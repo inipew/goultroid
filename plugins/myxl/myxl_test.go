@@ -651,3 +651,17 @@ func TestMyXLPlugin_PendingQRISCommand(t *testing.T) {
 		t.Errorf("expected pending QRIS to be cancelled, got: %v", p)
 	}
 }
+
+func TestPluginRequiresCallbackStateForPurchaseMutations(t *testing.T) {
+	p := &Plugin{}
+	for _, action := range []string{"buy_confirm", "buy_cancel"} {
+		if !p.RequiresCallbackState(action, "opaque") {
+			t.Fatalf("expected %s to require callback state", action)
+		}
+	}
+	for _, action := range []string{"refresh", "dashboard", "detail", "cancel_draft"} {
+		if p.RequiresCallbackState(action, "opaque") {
+			t.Fatalf("did not expect %s to require callback state", action)
+		}
+	}
+}
