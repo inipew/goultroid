@@ -45,7 +45,7 @@ func (s *StateStore) Prune() int {
 }
 
 // Start is intentionally passive. StateStore expiration is opportunistic:
- // Get/Consume delete touched expired entries, Store prunes under pressure, and
+// Get/Consume delete touched expired entries, Store prunes under pressure, and
  // Len/Prune perform explicit sweeps. This avoids periodic idle wakeups.
 func (s *StateStore) Start(context.Context) error {
 	return nil

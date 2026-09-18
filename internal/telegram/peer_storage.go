@@ -43,7 +43,7 @@ func (s *PeerStorage) cachePeerLocked(key peers.Key, accessHash int64) {
 			break
 		}
 	}
-	s.cachePeerLocked(key, accessHash)
+	s.peers[key] = accessHash
 }
 
 func (s *PeerStorage) cacheEntityLocked(key string, snapshot peerEntitySnapshot) {
@@ -53,7 +53,7 @@ func (s *PeerStorage) cacheEntityLocked(key string, snapshot peerEntitySnapshot)
 			break
 		}
 	}
-	s.cacheEntityLocked(key, snapshot)
+	s.entities[key] = snapshot
 }
 
 func NewPeerStorage(db *database.DB) *PeerStorage {
