@@ -21,6 +21,12 @@ const (
 	TargetUsers    TargetType = "users"
 	TargetGroups   TargetType = "groups"
 	TargetChannels TargetType = "channels"
+
+	// Keep only a bounded number of accepted TaskEngine tickets retained by one
+	// broadcast. TaskEngine still owns physical concurrency; this window adds
+	// producer backpressure so a large target list cannot fill the engine backlog
+	// and turn temporary queue saturation into dropped broadcast targets.
+	maxBroadcastInFlight = 64
 )
 
 type BroadcastReport struct {
@@ -180,7 +186,40 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 
 	start := time.Now()
 	report := BroadcastReport{Total: len(req.Targets)}
-	pending := make([]pendingTarget, 0, len(req.Targets))
+	pending := make([]pendingTarget, 0, min(len(req.Targets), maxBroadcastInFlight))
+
+	consumeOldest := func() error {
+		item := pending[0]
+		copy(pending, pending[1:])
+		pending = pending[:len(pending)-1]
+
+		res, waitErr := item.ticket.Wait(runCtx)
+		if waitErr != nil {
+			report.Canceled = errors.Is(waitErr, context.Canceled) || errors.Is(runCtx.Err(), context.Canceled)
+			report.Duration = time.Since(start)
+			return waitErr
+		}
+
+		err := *item.sendErr
+		if res.Outcome == tasks.OutcomeCompleted && err == nil {
+			report.Sent++
+		} else {
+			report.Failed++
+			var rateErr *core.RateLimitError
+			if errors.As(err, &rateErr) {
+				report.RateLimited++
+				s.logger.Info("broadcast target deferred by Telegram rate limit",
+					zap.Duration("retry_after", rateErr.RateLimitWait()),
+				)
+			} else if err != nil {
+				s.logger.Debug("broadcast message error", zap.Error(err))
+			}
+		}
+		if req.Progress != nil {
+			req.Progress(report)
+		}
+		return nil
+	}
 
 	for i, target := range req.Targets {
 		if err := runCtx.Err(); err != nil {
@@ -212,33 +251,16 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 			continue
 		}
 		pending = append(pending, pendingTarget{ticket: ticket, sendErr: &sendErr})
-	}
-
-	for _, item := range pending {
-		res, waitErr := item.ticket.Wait(runCtx)
-		if waitErr != nil {
-			report.Canceled = errors.Is(waitErr, context.Canceled) || errors.Is(runCtx.Err(), context.Canceled)
-			report.Duration = time.Since(start)
-			return &report, waitErr
-		}
-
-		err := *item.sendErr
-		if res.Outcome == tasks.OutcomeCompleted && err == nil {
-			report.Sent++
-		} else {
-			report.Failed++
-			var rateErr *core.RateLimitError
-			if errors.As(err, &rateErr) {
-				report.RateLimited++
-				s.logger.Info("broadcast target deferred by Telegram rate limit",
-					zap.Duration("retry_after", rateErr.RateLimitWait()),
-				)
-			} else if err != nil {
-				s.logger.Debug("broadcast message error", zap.Error(err))
+		if len(pending) >= maxBroadcastInFlight {
+			if err := consumeOldest(); err != nil {
+				return &report, err
 			}
 		}
-		if req.Progress != nil {
-			req.Progress(report)
+	}
+
+	for len(pending) > 0 {
+		if err := consumeOldest(); err != nil {
+			return &report, err
 		}
 	}
 

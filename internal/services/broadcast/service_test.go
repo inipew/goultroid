@@ -180,3 +180,29 @@ func TestBroadcast_CancelActive(t *testing.T) {
 		t.Errorf("expected broadcast to cancel before sending all 20, sent: %d", sent)
 	}
 }
+
+
+func TestBroadcast_BackpressuresInsteadOfDroppingOnTaskBacklog(t *testing.T) {
+	mockTG := &mockTelegram{sendDelay: 10 * time.Millisecond}
+	svc := newBroadcastService(t, mockTG)
+
+	const targetCount = 200 // larger than the test engine backlog (128)
+	targets := make([]tg.InputPeerClass, 0, targetCount)
+	for i := 0; i < targetCount; i++ {
+		targets = append(targets, &tg.InputPeerUser{UserID: int64(i + 1)})
+	}
+
+	rep, err := svc.Broadcast(context.Background(), broadcast.BroadcastRequest{
+		Targets: targets,
+		Text:    "bounded broadcast",
+	})
+	if err != nil {
+		t.Fatalf("Broadcast failed: %v", err)
+	}
+	if rep.Sent != targetCount || rep.Failed != 0 {
+		t.Fatalf("temporary TaskEngine backlog saturation dropped targets: %+v", rep)
+	}
+	if got := atomic.LoadInt32(&mockTG.sentCount); got != targetCount {
+		t.Fatalf("sent count = %d, want %d", got, targetCount)
+	}
+}
