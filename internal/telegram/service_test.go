@@ -495,6 +495,14 @@ func TestService_StalePeerAutoRefreshRecovery(t *testing.T) {
 		Method:  "users.getFullUser",
 		Kind:    RPCReadOnly,
 		PeerKey: "@target",
+		RefreshPeer: func(context.Context) error {
+			// This fixture models the case where persistence already observed a
+			// newer access hash than the request-local peer. The production
+			// default refresh path intentionally forces network refresh when the
+			// persistent hash itself may be stale.
+			resolver.cache.Invalidate("user", "target")
+			return nil
+		},
 	}
 
 	res, err := executeServiceRPC(context.Background(), svc, meta, func(opCtx context.Context) (string, error) {
