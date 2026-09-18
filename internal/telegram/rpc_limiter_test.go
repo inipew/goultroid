@@ -179,7 +179,6 @@ func TestHierarchicalRPCLimiter_HardBounds(t *testing.T) {
 	}
 }
 
-
 func TestHierarchicalRPCLimiter_IdleTTLReclaimsDepletedBucket(t *testing.T) {
 	limiter := NewHierarchicalRPCLimiter(HierarchicalLimiterConfig{
 		GlobalRate:         100,
