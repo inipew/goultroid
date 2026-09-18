@@ -80,6 +80,7 @@ type Manager struct {
 	recoveryWake chan struct{}
 	outboxWake   chan struct{}
 	outboxSink   OutboxSink
+	scheduleWake func()
 	stopCh       chan struct{}
 	stopOnce     sync.Once
 	baseCtx      context.Context
@@ -267,6 +268,23 @@ func (m *Manager) SetOutboxSink(sink OutboxSink) {
 	m.outboxSink = sink
 	m.mu.Unlock()
 	m.signalOutbox()
+}
+
+// SetScheduleWake connects durable schedule mutations to the timing owner.
+// The callback must be non-blocking; Scheduler uses a coalescing wake channel.
+func (m *Manager) SetScheduleWake(wake func()) {
+	m.mu.Lock()
+	m.scheduleWake = wake
+	m.mu.Unlock()
+}
+
+func (m *Manager) signalSchedule() {
+	m.mu.RLock()
+	wake := m.scheduleWake
+	m.mu.RUnlock()
+	if wake != nil {
+		wake()
+	}
 }
 
 func (m *Manager) signalOutbox() {
@@ -665,7 +683,11 @@ func (m *Manager) SaveSchedule(ctx context.Context, schedule JobSchedule) error 
 	if !ok {
 		return errors.New("job schedule store is not configured")
 	}
-	return store.SaveSchedule(ctx, &schedule)
+	if err := store.SaveSchedule(ctx, &schedule); err != nil {
+		return err
+	}
+	m.signalSchedule()
+	return nil
 }
 
 func validateSchedulePolicy(schedule JobSchedule) error {
@@ -720,7 +742,11 @@ func (m *Manager) DisableSchedule(ctx context.Context, scheduleID string) error 
 	if !ok {
 		return errors.New("job schedule store is not configured")
 	}
-	return store.DisableSchedule(ctx, scheduleID)
+	if err := store.DisableSchedule(ctx, scheduleID); err != nil {
+		return err
+	}
+	m.signalSchedule()
+	return nil
 }
 
 func (m *Manager) ScheduleCutoverActive(ctx context.Context) (bool, error) {

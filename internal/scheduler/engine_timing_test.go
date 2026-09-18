@@ -432,3 +432,47 @@ func TestPeriodicRetryCollapsesToJobPolicy(t *testing.T) {
 		t.Fatalf("task executed %d times, want exactly 3 (one retry engine)", calls.Load())
 	}
 }
+
+
+func TestJobsScheduleMutationWakesIdleScheduler(t *testing.T) {
+	h := newTimingHarness(t)
+	ctx := context.Background()
+
+	// Register one definition so the durable schedule store accepts the row.
+	if err := h.jobs.RegisterHandler("wake.test", func(context.Context, jobs.JobDefinition) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.jobs.Register(jobs.JobDefinition{
+		ID: "wake-test-job", ScopeOwner: "test:wake", QuotaOwner: "test",
+		HandlerType: "wake.test", Pool: "scheduler", Class: string(tasks.PriorityMaintenance),
+		Timeout: time.Second, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stop the loop so the coalesced wake remains observable in the channel.
+	if err := h.sched.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		select {
+		case <-h.sched.wakeChan:
+		default:
+			goto drained
+		}
+	}
+drained:
+	if err := h.jobs.SaveSchedule(ctx, jobs.JobSchedule{
+		ID: "wake-test-schedule", JobID: "wake-test-job", Recurrence: "once",
+		Timezone: "UTC", NextDueAt: time.Now().UTC().Add(time.Hour),
+		MisfirePolicy: jobs.MisfireRunOnce, OverlapPolicy: jobs.OverlapForbid,
+		Enabled: true, Revision: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-h.sched.wakeChan:
+	case <-time.After(time.Second):
+		t.Fatal("durable Jobs schedule mutation did not wake Scheduler")
+	}
+}

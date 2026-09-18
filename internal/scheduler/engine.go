@@ -148,10 +148,14 @@ func (e *Engine) SetTasks(client tasks.Client) {
 func (e *Engine) SetJobsManager(jobsMgr *jobs.Manager) {
 	e.runMu.Lock()
 	defer e.runMu.Unlock()
+	if e.jobsMgr != nil && e.jobsMgr != jobsMgr {
+		e.jobsMgr.SetScheduleWake(nil)
+	}
 	e.jobsMgr = jobsMgr
 	if jobsMgr == nil {
 		return
 	}
+	jobsMgr.SetScheduleWake(e.notifyWake)
 	if err := jobsMgr.RegisterHandler(periodicHandlerType, e.runPeriodicAction); err != nil {
 		e.logger.Warn("register periodic action handler", zap.Error(err))
 	}
@@ -562,9 +566,12 @@ func scheduledTaskScope(jobID int64) string { return fmt.Sprintf("scheduler:job:
 
 func (e *Engine) runLoop(ctx context.Context) {
 	defer e.wg.Done()
-	const idleHeartbeat = 60 * time.Second
-	timer := time.NewTimer(idleHeartbeat)
-	defer timer.Stop()
+	var timer *time.Timer
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
 
 	for {
 		if ctx.Err() != nil {
@@ -572,6 +579,7 @@ func (e *Engine) runLoop(ctx context.Context) {
 		}
 		now := time.Now()
 		var nextDelay time.Duration
+		var hasDeadline bool
 		e.reconcileSettledClaims(ctx)
 		if ctx.Err() != nil {
 			return
@@ -598,18 +606,17 @@ func (e *Engine) runLoop(ctx context.Context) {
 			}
 			e.logger.Error("failed to query earliest due scheduled job", zap.Error(err))
 			nextDelay = time.Second
-		} else if !found {
-			nextDelay = idleHeartbeat
-		} else if earliest.Before(now) || earliest.Equal(now) {
-			nextDelay = 0
-		} else {
-			nextDelay = earliest.Sub(now)
-			if nextDelay > idleHeartbeat {
-				nextDelay = idleHeartbeat
+			hasDeadline = true
+		} else if found {
+			hasDeadline = true
+			if earliest.Before(now) || earliest.Equal(now) {
+				nextDelay = 0
+			} else {
+				nextDelay = earliest.Sub(now)
 			}
 		}
 
-		if nextDelay <= 0 {
+		if hasDeadline && nextDelay <= 0 {
 			claimed := 0
 			if redesigned {
 				claimed = e.processRedesignedSchedules(ctx, now)
@@ -618,6 +625,7 @@ func (e *Engine) runLoop(ctx context.Context) {
 			}
 			if claimed == 0 {
 				nextDelay = 250 * time.Millisecond
+				hasDeadline = true
 			} else {
 				select {
 				case <-ctx.Done():
@@ -628,16 +636,33 @@ func (e *Engine) runLoop(ctx context.Context) {
 			}
 		}
 
-		if !timer.Stop() {
+		// Active legacy claims need settlement reconciliation. This polling is
+		// work-driven; with no claims and no schedule the loop sleeps on wake only.
+		if e.trackedClaimCount() > 0 && (!hasDeadline || nextDelay > time.Second) {
+			nextDelay = time.Second
+			hasDeadline = true
+		}
+
+		if !hasDeadline {
 			select {
-			case <-timer.C:
-			default:
+			case <-ctx.Done():
+				return
+			case <-e.wakeChan:
+				continue
 			}
 		}
-		if nextDelay > time.Second && e.trackedClaimCount() > 0 {
-			nextDelay = time.Second
+
+		if timer == nil {
+			timer = time.NewTimer(nextDelay)
+		} else {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(nextDelay)
 		}
-		timer.Reset(nextDelay)
 		select {
 		case <-ctx.Done():
 			return
@@ -646,7 +671,6 @@ func (e *Engine) runLoop(ctx context.Context) {
 		}
 	}
 }
-
 func (e *Engine) processRedesignedSchedules(ctx context.Context, now time.Time) int {
 	if !e.beginClaimBatch() {
 		return 0
