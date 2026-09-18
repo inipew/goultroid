@@ -112,16 +112,22 @@ type Service struct {
 // NewService creates a new Service instance.
 func NewService(api *tg.Client) *Service {
 	exec, _ := NewRPCExecutor(RPCExecutorConfig{
-		DefaultPolicy: DefaultExecutorPolicy,
+		DefaultPolicy: defaultExecutorPolicy(),
 	})
-	return &Service{
+	s := &Service{
 		api:             api,
 		executor:        exec,
 		sender:          message.NewSender(api),
 		downloader:      downloader.NewDownloader(),
-		uploader:        uploader.NewUploader(api),
 		botSentMessages: make(map[string]time.Time),
 	}
+	if api != nil {
+		s.uploader = uploader.NewUploader(&managedUploadRPCClient{
+			raw:      api,
+			executor: s.getExecutor,
+		})
+	}
+	return s
 }
 
 // SetExecutor configures the shared RPCExecutor for coordinating Telegram calls.
@@ -136,7 +142,7 @@ func (s *Service) getExecutor() *RPCExecutor {
 		return s.executor
 	}
 	exec, _ := NewRPCExecutor(RPCExecutorConfig{
-		DefaultPolicy: DefaultExecutorPolicy,
+		DefaultPolicy: defaultExecutorPolicy(),
 	})
 	return exec
 }
@@ -339,39 +345,6 @@ func (s *Service) execNonIdempotentPeer(ctx context.Context, method string, peer
 		return struct{}{}, op(opCtx, current)
 	})
 	return err
-}
-
-const mediaTransferTimeout = 30 * time.Minute
-
-func (s *Service) execMediaTransfer(ctx context.Context, method string, op func(opCtx context.Context) error) error {
-	_, err := executeServiceRPC(ctx, s, RPCMeta{
-		Method:  method,
-		Family:  "upload",
-		Kind:    RPCIdempotentMutation,
-		Timeout: mediaTransferTimeout,
-		RetryPolicy: RetryPolicy{
-			MaxAttempts:        1,
-			MaxElapsed:         mediaTransferTimeout,
-			InlineFloodWaitMax: defaultFloodWaitRetryLimit,
-		},
-	}, func(opCtx context.Context) (struct{}, error) {
-		return struct{}{}, op(opCtx)
-	})
-	return err
-}
-
-func (s *Service) execMediaTransferVal[T any](ctx context.Context, method string, op func(opCtx context.Context) (T, error)) (T, error) {
-	return executeServiceRPC(ctx, s, RPCMeta{
-		Method:  method,
-		Family:  "upload",
-		Kind:    RPCIdempotentMutation,
-		Timeout: mediaTransferTimeout,
-		RetryPolicy: RetryPolicy{
-			MaxAttempts:        1,
-			MaxElapsed:         mediaTransferTimeout,
-			InlineFloodWaitMax: defaultFloodWaitRetryLimit,
-		},
-	}, op)
 }
 
 func botSentInputKey(peer tg.InputPeerClass, msgID int) string {
@@ -1034,6 +1007,9 @@ func (w *boundedWriter) Write(p []byte) (int, error) {
 // It wraps the destination in a boundedWriter to enforce real-time streaming byte limits (500MB),
 // preventing transient disk and bandwidth exhaustion even when media metadata size is 0 or unknown.
 func (s *Service) DownloadFile(ctx context.Context, location tg.InputFileLocationClass, dstPath string) error {
+	if s.api == nil {
+		return fmt.Errorf("%w: telegram api not initialized", core.ErrInternal)
+	}
 	if s.downloader == nil {
 		s.downloader = downloader.NewDownloader()
 	}
@@ -1048,14 +1024,17 @@ func (s *Service) DownloadFile(ctx context.Context, location tg.InputFileLocatio
 		writer: file,
 		limit:  core.DefaultMaxDownloadSize,
 	}
+	transferCtx, cancel := core.WithDefaultTimeout(ctx, mediaTransferTimeout)
+	defer cancel()
 
-	err = s.execMediaTransfer(ctx, "upload.getFile", func(opCtx context.Context) error {
-		_, streamErr := s.downloader.Download(s.api, location).Stream(opCtx, bw)
-		return streamErr
-	})
+	managed := &managedDownloadRPCClient{
+		raw:      s.api,
+		executor: s.getExecutor,
+	}
+	_, err = s.downloader.Download(managed, location).Stream(transferCtx, bw)
 	if err != nil {
 		_ = os.Remove(dstPath)
-		return mapTelegramError(err)
+		return mapTelegramError(unwrapMediaRPCBoundary(err))
 	}
 	return nil
 }
@@ -1353,11 +1332,11 @@ func (s *Service) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaTy
 		return nil, fmt.Errorf("sender/uploader is not initialized")
 	}
 
-	inputFile, err := s.execMediaTransferVal(ctx, "upload.saveFilePart", func(opCtx context.Context) (tg.InputFileClass, error) {
-		return s.uploader.FromPath(opCtx, filePath)
-	})
+	transferCtx, cancel := core.WithDefaultTimeout(ctx, mediaTransferTimeout)
+	inputFile, err := s.uploader.FromPath(transferCtx, filePath)
+	cancel()
 	if err != nil {
-		return nil, fmt.Errorf("failed to upload file %q: %w", filePath, err)
+		return nil, fmt.Errorf("failed to upload file %q: %w", filePath, unwrapMediaRPCBoundary(err))
 	}
 
 	var styledCaption []message.StyledTextOption
@@ -1638,11 +1617,11 @@ func (s *Service) UploadProfilePhoto(ctx context.Context, filePath string) error
 		return fmt.Errorf("%w: api/uploader is not initialized", core.ErrInternal)
 	}
 
-	inputFile, err := s.execMediaTransferVal(ctx, "upload.saveFilePart", func(opCtx context.Context) (tg.InputFileClass, error) {
-		return s.uploader.FromPath(opCtx, filePath)
-	})
+	transferCtx, cancel := core.WithDefaultTimeout(ctx, mediaTransferTimeout)
+	inputFile, err := s.uploader.FromPath(transferCtx, filePath)
+	cancel()
 	if err != nil {
-		return fmt.Errorf("failed to upload photo file: %w", err)
+		return fmt.Errorf("failed to upload photo file: %w", unwrapMediaRPCBoundary(err))
 	}
 
 	_, err = s.execNonIdempotentVal(ctx, "photos.uploadProfilePhoto", func(opCtx context.Context) (*tg.PhotosPhoto, error) {

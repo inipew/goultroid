@@ -22,6 +22,25 @@ func TestTelegramRPCIngressGuards(t *testing.T) {
 		assertFileExcludes(t, resolverPath, forbidden)
 		assertFileExcludes(t, servicePath, forbidden)
 	}
+	serviceData, err := os.ReadFile(servicePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"uploader.NewUploader(api)", ".Download(s.api,", "execMediaTransfer("} {
+		if strings.Contains(string(serviceData), forbidden) {
+			t.Errorf("%s reintroduced logical-only media RPC boundary %q", servicePath, forbidden)
+		}
+	}
+	mediaRPCPath := filepath.Join(root, "internal", "telegram", "media_rpc.go")
+	mediaData, err := os.ReadFile(mediaRPCPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"managedUploadRPCClient", "managedDownloadRPCClient", "executePhysicalMediaRPC"} {
+		if !strings.Contains(string(mediaData), required) {
+			t.Errorf("%s is missing physical media RPC invariant %q", mediaRPCPath, required)
+		}
+	}
 
 	assistantClient := filepath.Join(root, "internal", "assistant", "client", "client.go")
 	clientData, err := os.ReadFile(assistantClient)
