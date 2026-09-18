@@ -269,12 +269,11 @@ func (c *Client) Run(ctx context.Context) error {
 			svc.SetStorage(c.peerStorage)
 		}
 		c.dispatcher.SetService(svc)
-		resolver := NewResolverWithContext(ctx, c.raw.API(), c.peerManager, defaultResolverCacheConfig())
+		resolver := NewResolverWithContextAndExecutor(ctx, c.raw.API(), c.peerManager, defaultResolverCacheConfig(), c.executor)
 		defer resolver.Close()
 		if c.logger != nil {
 			resolver.SetLogger(c.logger.Named("resolver"))
 		}
-		resolver.SetExecutor(c.executor)
 		if c.peerStorage != nil {
 			resolver.SetStorage(c.peerStorage)
 		}

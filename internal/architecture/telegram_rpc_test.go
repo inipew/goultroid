@@ -18,6 +18,17 @@ func TestTelegramRPCIngressGuards(t *testing.T) {
 	resolverPath := filepath.Join(root, "internal", "telegram", "resolver.go")
 	assertFileExcludes(t, servicePath, "retryOnFloodWait")
 	assertFileExcludes(t, resolverPath, "RetryRPC(")
+	resolverData, err := os.ReadFile(resolverPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(resolverData), "func NewResolverWithContextAndExecutor(") {
+		t.Error("resolver must support shared-executor construction")
+	}
+	if !strings.Contains(string(resolverData), "newStandaloneResolverExecutor") ||
+		!strings.Contains(string(resolverData), "NewHierarchicalRPCLimiter") {
+		t.Error("standalone resolver must use a bounded hierarchical executor")
+	}
 	for _, forbidden := range []string{"ResolveUserID(", "ResolveChannelID("} {
 		assertFileExcludes(t, resolverPath, forbidden)
 		assertFileExcludes(t, servicePath, forbidden)

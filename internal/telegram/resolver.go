@@ -30,18 +30,38 @@ type Resolver struct {
 
 var _ core.PeerResolver = (*Resolver)(nil)
 
-// NewResolverWithContext initializes a peer resolver whose underlying shared
-// network work is owned by parent. Callers waiting on the same singleflight may
-// cancel independently, while parent cancellation terminates the shared RPC.
+func newStandaloneResolverExecutor() *RPCExecutor {
+	executor, err := NewRPCExecutor(RPCExecutorConfig{
+		Limiter:       NewHierarchicalRPCLimiter(DefaultHierarchicalLimiterConfig()),
+		DefaultPolicy: defaultExecutorPolicy(),
+	})
+	if err != nil {
+		return nil
+	}
+	return executor
+}
+
+// NewResolverWithContext initializes a standalone peer resolver whose shared
+// network work is owned by parent. Production wiring should use
+// NewResolverWithContextAndExecutor so resolver and service share one RPC state.
 func NewResolverWithContext(parent context.Context, api *tg.Client, peerManager *peers.Manager, cfg ResolverCacheConfig) *Resolver {
+	return NewResolverWithContextAndExecutor(parent, api, peerManager, cfg, nil)
+}
+
+// NewResolverWithContextAndExecutor binds resolver network work to the supplied
+// process-wide executor at construction time. A nil executor receives one
+// standalone bounded executor for compatibility.
+func NewResolverWithContextAndExecutor(parent context.Context, api *tg.Client, peerManager *peers.Manager, cfg ResolverCacheConfig, executor *RPCExecutor) *Resolver {
 	if parent == nil {
 		parent = context.Background()
 	}
 	if cfg.MaxConcurrentNetwork <= 0 {
 		cfg.MaxConcurrentNetwork = defaultResolverCacheConfig().MaxConcurrentNetwork
 	}
+	if executor == nil {
+		executor = newStandaloneResolverExecutor()
+	}
 	ctx, cancel := context.WithCancel(parent)
-	executor, _ := NewRPCExecutor(RPCExecutorConfig{DefaultPolicy: defaultExecutorPolicy()})
 	return &Resolver{
 		api:             api,
 		peerManager:     peerManager,
@@ -99,7 +119,11 @@ func (r *Resolver) SetStorage(storage *PeerStorage) { r.storage = storage }
 
 func (r *Resolver) SetCache(cache *PeerCache) { r.cache = cache }
 
-func (r *Resolver) SetExecutor(exec *RPCExecutor) { r.executor = exec }
+func (r *Resolver) SetExecutor(exec *RPCExecutor) {
+	if r != nil && exec != nil {
+		r.executor = exec
+	}
+}
 
 func (r *Resolver) Resolve(ctx context.Context, ref string) (tg.InputPeerClass, error) {
 	ref = strings.TrimSpace(ref)

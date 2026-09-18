@@ -147,3 +147,33 @@ func TestResolverNetworkAdmissionReleasesCapacity(t *testing.T) {
 	}
 	releaseAgain()
 }
+
+func TestStandaloneResolverUsesBoundedExecutor(t *testing.T) {
+	resolver := NewResolverWithContext(context.Background(), nil, nil, ResolverCacheConfig{MaxEntries: 8})
+	t.Cleanup(func() { _ = resolver.Close() })
+	if resolver.executor == nil {
+		t.Fatal("standalone resolver did not construct an executor")
+	}
+	if _, ok := resolver.executor.limiter.(*HierarchicalRPCLimiter); !ok {
+		t.Fatalf("standalone resolver limiter=%T, want *HierarchicalRPCLimiter", resolver.executor.limiter)
+	}
+}
+
+func TestResolverConstructorKeepsSharedExecutor(t *testing.T) {
+	exec, err := NewRPCExecutor(RPCExecutorConfig{
+		Limiter:       NewHierarchicalRPCLimiter(DefaultHierarchicalLimiterConfig()),
+		DefaultPolicy: defaultExecutorPolicy(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := NewResolverWithContextAndExecutor(context.Background(), nil, nil, ResolverCacheConfig{MaxEntries: 8}, exec)
+	t.Cleanup(func() { _ = resolver.Close() })
+	if resolver.executor != exec {
+		t.Fatal("resolver did not retain shared executor")
+	}
+	resolver.SetExecutor(nil)
+	if resolver.executor != exec {
+		t.Fatal("nil SetExecutor cleared shared executor")
+	}
+}
