@@ -3,9 +3,12 @@ package jobs
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/inipew/goultroid/internal/core"
 )
 
 func TestPersistencePump_EnqueueAndProcess(t *testing.T) {
@@ -133,5 +136,60 @@ func TestPersistencePumpPanicDoesNotKillWorker(t *testing.T) {
 	}
 	if err := <-next; err != nil {
 		t.Fatal(err)
+	}
+}
+
+type recordingPumpPanicReporter struct {
+	mu      sync.Mutex
+	reports []core.PanicReport
+}
+
+func (r *recordingPumpPanicReporter) ReportPanic(report core.PanicReport) {
+	r.mu.Lock()
+	r.reports = append(r.reports, report)
+	r.mu.Unlock()
+}
+
+func (r *recordingPumpPanicReporter) snapshot() []core.PanicReport {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]core.PanicReport(nil), r.reports...)
+}
+
+func TestPersistencePumpPanicReportsStackAndKeepsWorkerAlive(t *testing.T) {
+	p := NewPersistencePump(1, 4)
+	reporter := &recordingPumpPanicReporter{}
+	p.SetPanicReporter(reporter)
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer p.Stop(context.Background())
+
+	result, err := p.Enqueue(context.Background(), func(context.Context) error {
+		panic("durability exploded")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-result; err == nil {
+		t.Fatal("panic was not converted to operation error")
+	}
+	if p.Panics() != 1 {
+		t.Fatalf("panic count=%d, want 1", p.Panics())
+	}
+	reports := reporter.snapshot()
+	if len(reports) != 1 {
+		t.Fatalf("panic reports=%d, want 1", len(reports))
+	}
+	if reports[0].Component != "persistence-pump" || len(reports[0].Stack) == 0 {
+		t.Fatalf("incomplete panic report: %+v", reports[0])
+	}
+
+	next, err := p.Enqueue(context.Background(), func(context.Context) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-next; err != nil {
+		t.Fatalf("worker did not survive recovered panic: %v", err)
 	}
 }

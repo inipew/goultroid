@@ -110,6 +110,7 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 		return nil, fmt.Errorf("initialize job schema: %w", err)
 	}
 	persistencePump := jobs.NewPersistencePump(2, 256)
+	persistencePump.SetPanicReporter(zapCorePanicReporter{logger: logger.Named("persistence-pump")})
 	// Durable commit transport (Phase C): the engine holds CommitPending
 	// result credits until the pump acknowledges each attempt commit.
 	taskEngine.SetCommitPump(persistencePump)

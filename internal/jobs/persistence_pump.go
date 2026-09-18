@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/runtime"
 )
 
@@ -24,16 +27,18 @@ type persistenceRequest struct {
 // PersistencePump is a dedicated service with bounded concurrency that commits durable results (ADR 0006 §3.3).
 // It does NOT borrow feature execution slots, preventing cycles where tasks wait on persistence to finish.
 type PersistencePump struct {
-	mu          sync.Mutex
-	concurrency int
-	queueCap    int
-	requests    chan persistenceRequest
-	wg          sync.WaitGroup
-	ctx         context.Context
-	cancel      context.CancelFunc
-	running     bool
-	accepting   bool
-	done        chan struct{}
+	mu            sync.Mutex
+	concurrency   int
+	queueCap      int
+	requests      chan persistenceRequest
+	wg            sync.WaitGroup
+	ctx           context.Context
+	cancel        context.CancelFunc
+	running       bool
+	accepting     bool
+	done          chan struct{}
+	panicReporter core.PanicReporter
+	panicCount    atomic.Uint64
 }
 
 var _ runtime.Component = (*PersistencePump)(nil)
@@ -54,6 +59,23 @@ func NewPersistencePump(concurrency int, queueCap int) *PersistencePump {
 
 func (p *PersistencePump) Name() string           { return "persistence-pump" }
 func (p *PersistencePump) Dependencies() []string { return []string{"database"} }
+
+// SetPanicReporter attaches the framework panic reporter used by worker
+// boundaries. Recovered persistence panics remain operation failures, while the
+// stack and component identity are reported for diagnostics.
+func (p *PersistencePump) SetPanicReporter(reporter core.PanicReporter) {
+	p.mu.Lock()
+	p.panicReporter = reporter
+	p.mu.Unlock()
+}
+
+// Panics returns the number of recovered persistence operation panics.
+func (p *PersistencePump) Panics() uint64 {
+	if p == nil {
+		return 0
+	}
+	return p.panicCount.Load()
+}
 
 // Start initializes the pump goroutines.
 func (p *PersistencePump) Start(parent context.Context) error {
@@ -96,6 +118,20 @@ func (p *PersistencePump) workerLoop() {
 func (p *PersistencePump) processRequest(req persistenceRequest) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			p.panicCount.Add(1)
+			stack := debug.Stack()
+			p.mu.Lock()
+			reporter := p.panicReporter
+			p.mu.Unlock()
+			if reporter != nil {
+				reporter.ReportPanic(core.PanicReport{
+					Owner:     "jobs",
+					Component: "persistence-pump",
+					Value:     recovered,
+					Stack:     stack,
+					At:        time.Now().UTC(),
+				})
+			}
 			err = fmt.Errorf("persistence operation panic: %v", recovered)
 		}
 	}()
