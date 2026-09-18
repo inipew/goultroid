@@ -14,6 +14,7 @@ type Repository interface {
 	Claim(context.Context, string, time.Time, time.Time) (bool, error)
 	IsProcessed(context.Context, string, time.Time) (bool, error)
 	DeleteExpired(context.Context, time.Time) (int, error)
+	EarliestExpiry(context.Context) (time.Time, bool, error)
 	Size(context.Context, time.Time) (int, error)
 }
 
@@ -73,6 +74,17 @@ func (r *SQLiteRepository) DeleteExpired(ctx context.Context, now time.Time) (in
 	}
 	rows, err := result.RowsAffected()
 	return int(rows), err
+}
+
+func (r *SQLiteRepository) EarliestExpiry(ctx context.Context) (time.Time, bool, error) {
+	var expiry sql.NullInt64
+	if err := r.db.QueryRowContext(ctx, `SELECT MIN(expires_at_ms) FROM idempotency_keys`).Scan(&expiry); err != nil {
+		return time.Time{}, false, err
+	}
+	if !expiry.Valid {
+		return time.Time{}, false, nil
+	}
+	return time.UnixMilli(expiry.Int64).UTC(), true, nil
 }
 
 func (r *SQLiteRepository) Size(ctx context.Context, now time.Time) (int, error) {

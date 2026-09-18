@@ -27,6 +27,7 @@ type Manager struct {
 
 	lifecycleMu    sync.Mutex
 	cleanupInterval time.Duration
+	cleanupWake     chan struct{}
 	cancel          context.CancelFunc
 	done            chan struct{}
 	running         bool
@@ -40,6 +41,7 @@ func NewManager(cleanupInterval time.Duration, repositories ...Repository) *Mana
 	m := &Manager{
 		entries:         make(map[string]entry),
 		cleanupInterval: cleanupInterval,
+		cleanupWake:     make(chan struct{}, 1),
 	}
 	if len(repositories) > 0 {
 		m.repo = repositories[0]
@@ -67,13 +69,40 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.cancel = cancel
 	m.done = done
 	m.running = true
-	interval := m.cleanupInterval
+	if m.cleanupWake == nil {
+		m.cleanupWake = make(chan struct{}, 1)
+	}
 
-	go m.cleanupLoop(runCtx, interval, done)
+	go m.cleanupLoop(runCtx, done)
 	return nil
 }
 
-func (m *Manager) cleanupLoop(ctx context.Context, interval time.Duration, done chan struct{}) {
+func (m *Manager) signalCleanup() {
+	if m == nil || m.cleanupWake == nil {
+		return
+	}
+	select {
+	case m.cleanupWake <- struct{}{}:
+	default:
+	}
+}
+
+func (m *Manager) nextExpiry(ctx context.Context) (time.Time, bool, error) {
+	if m.repo != nil {
+		return m.repo.EarliestExpiry(ctx)
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var next time.Time
+	for _, e := range m.entries {
+		if next.IsZero() || e.expiresAt.Before(next) {
+			next = e.expiresAt
+		}
+	}
+	return next, !next.IsZero(), nil
+}
+
+func (m *Manager) cleanupLoop(ctx context.Context, done chan struct{}) {
 	defer close(done)
 	defer func() {
 		m.lifecycleMu.Lock()
@@ -84,15 +113,55 @@ func (m *Manager) cleanupLoop(ctx context.Context, interval time.Duration, done 
 		m.lifecycleMu.Unlock()
 	}()
 
-	timer := time.NewTimer(interval)
-	defer timer.Stop()
 	for {
+		next, found, err := m.nextExpiry(ctx)
+		if err != nil {
+			// Repository failures are an active degraded state, not normal idle.
+			// Retry at the configured safety interval until the durable deadline
+			// source is readable again.
+			timer := time.NewTimer(m.cleanupInterval)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return
+			case <-m.cleanupWake:
+				if !timer.Stop() {
+					select { case <-timer.C: default: }
+				}
+				continue
+			case <-timer.C:
+				continue
+			}
+		}
+		if !found {
+			select {
+			case <-ctx.Done():
+				return
+			case <-m.cleanupWake:
+				continue
+			}
+		}
+
+		wait := time.Until(next)
+		if wait < 0 {
+			wait = 0
+		}
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			if !timer.Stop() {
+				select { case <-timer.C: default: }
+			}
 			return
+		case <-m.cleanupWake:
+			if !timer.Stop() {
+				select { case <-timer.C: default: }
+			}
+			continue
 		case <-timer.C:
 			m.evictExpired(ctx)
-			timer.Reset(interval)
 		}
 	}
 }
@@ -166,7 +235,11 @@ func (m *Manager) CheckAndSet(ctx context.Context, key string, ttl time.Duration
 
 	now := time.Now().UTC()
 	if m.repo != nil {
-		return m.repo.Claim(ctx, cleanKey, now, now.Add(ttl))
+		claimed, err := m.repo.Claim(ctx, cleanKey, now, now.Add(ttl))
+		if err == nil && claimed {
+			m.signalCleanup()
+		}
+		return claimed, err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -182,6 +255,7 @@ func (m *Manager) CheckAndSet(ctx context.Context, key string, ttl time.Duration
 		createdAt: now,
 		expiresAt: now.Add(ttl),
 	}
+	m.signalCleanup()
 	return true, nil
 }
 

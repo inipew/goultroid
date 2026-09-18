@@ -58,17 +58,35 @@ func TestIdempotencyManager_CheckAndSet(t *testing.T) {
 
 type lifecycleRepo struct {
 	deleteCalls atomic.Int32
+	mu          sync.Mutex
+	expiry      time.Time
 }
 
 func (r *lifecycleRepo) InitSchema(context.Context) error { return nil }
-func (r *lifecycleRepo) Claim(context.Context, string, time.Time, time.Time) (bool, error) { return true, nil }
+func (r *lifecycleRepo) Claim(_ context.Context, _ string, _ time.Time, expires time.Time) (bool, error) {
+	r.mu.Lock()
+	r.expiry = expires
+	r.mu.Unlock()
+	return true, nil
+}
 func (r *lifecycleRepo) IsProcessed(context.Context, string, time.Time) (bool, error) { return false, nil }
-func (r *lifecycleRepo) DeleteExpired(ctx context.Context, _ time.Time) (int, error) {
+func (r *lifecycleRepo) DeleteExpired(ctx context.Context, now time.Time) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.expiry.IsZero() || r.expiry.After(now) {
+		return 0, nil
+	}
+	r.expiry = time.Time{}
 	r.deleteCalls.Add(1)
-	return 0, nil
+	return 1, nil
+}
+func (r *lifecycleRepo) EarliestExpiry(context.Context) (time.Time, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.expiry, !r.expiry.IsZero(), nil
 }
 func (r *lifecycleRepo) Size(context.Context, time.Time) (int, error) { return 0, nil }
 
@@ -85,6 +103,9 @@ func TestIdempotencyManager_ConstructorIsPassiveAndStopJoins(t *testing.T) {
 	defer cancelRun()
 	if err := mgr.Start(runCtx); err != nil {
 		t.Fatalf("start manager: %v", err)
+	}
+	if claimed, err := mgr.CheckAndSet(context.Background(), "lifecycle", 5*time.Millisecond); err != nil || !claimed {
+		t.Fatalf("seed lifecycle expiry: claimed=%v err=%v", claimed, err)
 	}
 	deadline := time.Now().Add(100 * time.Millisecond)
 	for repo.deleteCalls.Load() == 0 && time.Now().Before(deadline) {
@@ -211,5 +232,22 @@ func TestSQLiteIdempotencyClaimIsAtomic(t *testing.T) {
 	wg.Wait()
 	if got := winners.Load(); got != 1 {
 		t.Fatalf("expected exactly one atomic claim winner, got %d", got)
+	}
+}
+
+
+func TestIdempotencyManager_RepoIdleDoesNotPollDeleteExpired(t *testing.T) {
+	repo := &lifecycleRepo{}
+	mgr := NewManager(5*time.Millisecond, repo)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+
+	time.Sleep(25 * time.Millisecond)
+	if got := repo.deleteCalls.Load(); got != 0 {
+		t.Fatalf("idle manager polled DeleteExpired %d times without any deadline", got)
 	}
 }
