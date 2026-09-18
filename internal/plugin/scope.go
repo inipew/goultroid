@@ -22,6 +22,11 @@ type Resource = resource.Resource
 // DefaultMaxScopeGoroutines is the maximum concurrent unmanaged goroutines permitted per scope.
 const DefaultMaxScopeGoroutines = 64
 
+// CleanupFunc is a scope-owned teardown callback. Implementations must honor
+// ctx cancellation; Scope.Close also enforces the caller deadline around
+// callbacks so legacy/non-cooperative cleanup cannot stall global shutdown.
+type CleanupFunc func(context.Context) error
+
 // Scope owns cancellable plugin work and cleanup callbacks. It is safe for
 // concurrent use and can be closed repeatedly.
 type Scope struct {
@@ -34,7 +39,7 @@ type Scope struct {
 
 	mu               sync.Mutex
 	closed           bool
-	cleanups         []func()
+	cleanups         []CleanupFunc
 	resources        map[string]Resource
 	activeGoroutines int
 	maxGoroutines    int
@@ -176,9 +181,9 @@ func (s *Scope) ActiveGoroutines() int {
 	return s.activeGoroutines
 }
 
-// Defer registers an idempotent-at-scope cleanup callback. Callbacks execute
-// in reverse registration order during Close.
-func (s *Scope) Defer(fn func()) error {
+// DeferContext registers a context-aware idempotent-at-scope cleanup callback.
+// Callbacks execute in reverse registration order during Close.
+func (s *Scope) DeferContext(fn CleanupFunc) error {
 	if fn == nil {
 		return errors.New("scope cleanup cannot be nil")
 	}
@@ -189,6 +194,19 @@ func (s *Scope) Defer(fn func()) error {
 	}
 	s.cleanups = append(s.cleanups, fn)
 	return nil
+}
+
+// Defer is the compatibility form for legacy contextless cleanup. Close still
+// bounds the callback by its context; callers implementing cancellable cleanup
+// should prefer DeferContext.
+func (s *Scope) Defer(fn func()) error {
+	if fn == nil {
+		return errors.New("scope cleanup cannot be nil")
+	}
+	return s.DeferContext(func(context.Context) error {
+		fn()
+		return nil
+	})
 }
 
 // SubscribeEvent registers an event listener on the EventBus bound to this scope.
@@ -205,9 +223,10 @@ func (s *Scope) SubscribeEvent(bus *core.EventBus, eventType core.EventType, han
 			Owner: s.owner,
 			Type:  resource.TypeSubscription,
 		})
-		_ = s.Defer(func() {
+		_ = s.DeferContext(func(context.Context) error {
 			sub.Close()
 			s.Release(subID)
+			return nil
 		})
 	}
 	return sub
@@ -236,9 +255,10 @@ func (s *Scope) TrackWebSocket(wsID, url string, closeFn func() error) error {
 		return err
 	}
 	if closeFn != nil {
-		_ = s.Defer(func() {
-			_ = closeFn()
+		_ = s.DeferContext(func(context.Context) error {
+			err := closeFn()
 			s.Release(resID)
+			return err
 		})
 	}
 	return nil
@@ -303,8 +323,49 @@ func (s *Scope) Resources() []Resource {
 	return resources
 }
 
+func (s *Scope) runCleanup(ctx context.Context, cleanup CleanupFunc) error {
+	if cleanup == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		var cleanupErr error
+		defer func() {
+			if r := recover(); r != nil {
+				s.panicCount.Add(1)
+				s.mu.Lock()
+				reporter := s.panicReporter
+				s.mu.Unlock()
+				if reporter != nil {
+					reporter.ReportPanic(core.PanicReport{
+						Owner:     s.owner,
+						Component: "plugin.Scope.Close",
+						Value:     r,
+						Stack:     debug.Stack(),
+						At:        time.Now().UTC(),
+					})
+				}
+			}
+			result <- cleanupErr
+		}()
+		cleanupErr = cleanup(ctx)
+	}()
+
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // Close cancels child work, waits up to ctx's deadline, runs cleanup callbacks in
-// reverse order, and detects residual resource leaks.
+// reverse order, and detects residual resource leaks. The caller deadline is
+// authoritative even for legacy cleanup callbacks that do not accept context.
 func (s *Scope) Close(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -315,7 +376,7 @@ func (s *Scope) Close(ctx context.Context) error {
 		return nil
 	}
 	s.closed = true
-	cleanups := append([]func(){}, s.cleanups...)
+	cleanups := append([]CleanupFunc(nil), s.cleanups...)
 	s.cleanups = nil
 	mgr := s.manager
 	s.mu.Unlock()
@@ -334,27 +395,14 @@ func (s *Scope) Close(ctx context.Context) error {
 		waitErr = ctx.Err()
 	}
 
+	var cleanupErrs []error
 	for i := len(cleanups) - 1; i >= 0; i-- {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					s.panicCount.Add(1)
-					s.mu.Lock()
-					reporter := s.panicReporter
-					s.mu.Unlock()
-					if reporter != nil {
-						reporter.ReportPanic(core.PanicReport{
-							Owner:     s.owner,
-							Component: "plugin.Scope.Close",
-							Value:     r,
-							Stack:     debug.Stack(),
-							At:        time.Now().UTC(),
-						})
-					}
-				}
-			}()
-			cleanups[i]()
-		}()
+		if err := s.runCleanup(ctx, cleanups[i]); err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("cleanup %d: %w", i, err))
+			if ctx.Err() != nil {
+				break
+			}
+		}
 	}
 
 	if mgr != nil {
@@ -365,15 +413,15 @@ func (s *Scope) Close(ctx context.Context) error {
 				leakIDs = append(leakIDs, l.ID)
 			}
 			leakErr := fmt.Errorf("plugin scope %s leaked %d resource(s): %v", s.owner, len(leaks), leakIDs)
-			if waitErr != nil {
-				return fmt.Errorf("%w; %v", waitErr, leakErr)
-			}
-			return leakErr
+			cleanupErrs = append(cleanupErrs, leakErr)
 		}
 	}
 
 	if waitErr != nil {
-		return fmt.Errorf("close plugin scope %s: %w", s.owner, waitErr)
+		cleanupErrs = append(cleanupErrs, fmt.Errorf("close plugin scope %s: %w", s.owner, waitErr))
+	}
+	if len(cleanupErrs) > 0 {
+		return errors.Join(cleanupErrs...)
 	}
 	return nil
 }

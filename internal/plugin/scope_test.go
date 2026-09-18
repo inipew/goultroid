@@ -2,8 +2,10 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/resource"
@@ -206,5 +208,51 @@ func TestScope_GoFailsClosedWhenGlobalResourceCapacityIsFull(t *testing.T) {
 	}
 	if got := scope.ActiveGoroutines(); got != 0 {
 		t.Fatalf("failed goroutine admission leaked active count: %d", got)
+	}
+}
+
+func TestScope_DeferContextReceivesDeadline(t *testing.T) {
+	scope := NewScope(context.Background(), "test-plugin")
+	observed := make(chan struct{}, 1)
+	if err := scope.DeferContext(func(ctx context.Context) error {
+		if _, ok := ctx.Deadline(); ok {
+			observed <- struct{}{}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := scope.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-observed:
+	default:
+		t.Fatal("context-aware cleanup did not receive caller deadline")
+	}
+}
+
+func TestScope_CloseDeadlineBoundsBlockingLegacyCleanup(t *testing.T) {
+	scope := NewScope(context.Background(), "test-plugin")
+	release := make(chan struct{})
+	if err := scope.Defer(func() { <-release }); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := scope.Close(ctx)
+	elapsed := time.Since(start)
+	close(release)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected deadline error, got %v", err)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("blocking legacy cleanup escaped close deadline: %v", elapsed)
 	}
 }
