@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -75,5 +76,94 @@ func TestDispatcher_IdempotencyAndEventPublish(t *testing.T) {
 	// Interceptor count and event count should NOT increase
 	if interceptorCalls.Load() != 1 {
 		t.Fatalf("expected duplicate message to be dropped, got %d interceptor calls", interceptorCalls.Load())
+	}
+}
+
+type failingIdempotencyRepository struct {
+	err error
+}
+
+func (r failingIdempotencyRepository) InitSchema(context.Context) error { return nil }
+func (r failingIdempotencyRepository) Claim(context.Context, string, time.Time, time.Time) (bool, error) {
+	return false, r.err
+}
+func (r failingIdempotencyRepository) IsProcessed(context.Context, string, time.Time) (bool, error) {
+	return false, r.err
+}
+func (r failingIdempotencyRepository) DeleteExpired(context.Context, time.Time) (int, error) {
+	return 0, r.err
+}
+func (r failingIdempotencyRepository) Size(context.Context, time.Time) (int, error) {
+	return 0, r.err
+}
+
+func TestDispatcher_IdempotencyFailureFailsClosedForCommand(t *testing.T) {
+	router := core.NewRouter(".")
+	var executed atomic.Bool
+	if err := router.Register(core.Command{
+		Name: "mutate",
+		Handler: func(*core.Context) error {
+			executed.Store(true)
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("register command: %v", err)
+	}
+
+	d := NewDispatcher(router, core.NewPermissions(1, nil), nil, zap.NewNop())
+	d.SetIdempotency(idempotency.NewManager(time.Minute, failingIdempotencyRepository{err: errors.New("db unavailable")}))
+
+	msg := &tg.Message{ID: 7, PeerID: &tg.PeerChat{ChatID: 10}, Message: ".mutate"}
+	if err := d.dispatch(context.Background(), tg.Entities{}, msg); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if executed.Load() {
+		t.Fatal("command executed while idempotency claim was unavailable")
+	}
+}
+
+func TestDispatcher_IdempotencyFailureFailsOpenForPlainMessage(t *testing.T) {
+	d := NewDispatcher(core.NewRouter("."), core.NewPermissions(1, nil), nil, zap.NewNop())
+	d.SetIdempotency(idempotency.NewManager(time.Minute, failingIdempotencyRepository{err: errors.New("db unavailable")}))
+
+	var called atomic.Bool
+	d.AddMessageHandler(func(context.Context, tg.Entities, *tg.Message, bool, string) error {
+		called.Store(true)
+		return nil
+	})
+
+	msg := &tg.Message{ID: 8, PeerID: &tg.PeerChat{ChatID: 10}, Message: "hello"}
+	if err := d.dispatch(context.Background(), tg.Entities{}, msg); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if !called.Load() {
+		t.Fatal("plain message hook was blocked by idempotency backend failure")
+	}
+}
+
+func TestDispatcher_CallbackIdempotencyFailureFailsClosed(t *testing.T) {
+	d := NewDispatcher(core.NewRouter("."), core.NewPermissions(1, nil), nil, zap.NewNop())
+	d.SetIdempotency(idempotency.NewManager(time.Minute, failingIdempotencyRepository{err: errors.New("db unavailable")}))
+	svc := newCallbackRecordingService()
+	d.SetService(svc)
+
+	update := &tg.UpdateBotCallbackQuery{
+		QueryID: 1234,
+		UserID:  5,
+		Peer:    &tg.PeerChat{ChatID: 10},
+		MsgID:   20,
+		Data:    []byte("v1:test:act:-"),
+	}
+	if err := d.OnBotCallbackQuery(context.Background(), tg.Entities{}, update); err != nil {
+		t.Fatalf("callback dispatch: %v", err)
+	}
+	if svc.callCount.Load() != 1 {
+		t.Fatalf("expected one availability answer, got %d", svc.callCount.Load())
+	}
+	svc.mu.Lock()
+	answer := svc.answered[update.QueryID]
+	svc.mu.Unlock()
+	if answer != "Interaction service temporarily unavailable." {
+		t.Fatalf("unexpected callback answer %q", answer)
 	}
 }

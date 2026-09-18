@@ -21,15 +21,6 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	defer release()
 
 	chatID := extractChatIDFromPeer(msg.PeerID)
-	if d.idempotencyMgr != nil {
-		key := fmt.Sprintf("msg:%d:%d", chatID, msg.ID)
-		isNew, err := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
-		if err == nil && !isNew {
-			d.logger.Debug("dispatcher: duplicate message dropped by idempotency manager", zap.String("key", key))
-			return nil
-		}
-	}
-
 	parsed, isCmd, err := d.router.Parse(msg.Message)
 	if err != nil {
 		d.logger.Warn("command parse syntax error", zap.Error(err), zap.String("text", msg.Message))
@@ -38,6 +29,27 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	cmdName := ""
 	if isCmd {
 		cmdName = parsed.Name
+	}
+
+	if d.idempotencyMgr != nil {
+		key := fmt.Sprintf("msg:%d:%d", chatID, msg.ID)
+		isNew, claimErr := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
+		if claimErr != nil {
+			d.logger.Error("dispatcher: idempotency claim failed",
+				zap.String("key", key),
+				zap.Bool("command", isCmd),
+				zap.Error(claimErr),
+			)
+			// Commands may produce external side effects, so deduplication failure is
+			// an admission failure. Ordinary messages remain available for
+			// non-mutating hooks while the failure is surfaced operationally.
+			if isCmd {
+				return nil
+			}
+		} else if !isNew {
+			d.logger.Debug("dispatcher: duplicate message dropped by idempotency manager", zap.String("key", key))
+			return nil
+		}
 	}
 
 	origin := core.ExecutionInteractive
@@ -191,7 +203,7 @@ func (d *Dispatcher) executeDecisionHandlers(ctx context.Context, handlers []pri
 	defer cancel()
 	for _, registered := range handlers {
 		if registered.scope.IsZero() { // compatibility for local/test handlers
-			if d.safeExecuteInterceptor(decisionCtx, registered.handler, e, msg, isCmd, cmdName) {
+			if d.safeExecuteInterceptor(decisionCtx, registered.handler, e, msg, isCmd, cmdName, registered.failurePolicy) {
 				return true
 			}
 			continue
@@ -212,7 +224,7 @@ func (d *Dispatcher) executeDecisionHandlers(ctx context.Context, handlers []pri
 			OrderingKey:      fmt.Sprintf("chat:%d", extractChatIDFromPeer(msg.PeerID)),
 			ExecutionTimeout: 5 * time.Second,
 			Handler: func(taskCtx context.Context) error {
-				handled.Store(d.safeExecuteInterceptor(taskCtx, registered.handler, e, msg, isCmd, cmdName))
+				handled.Store(d.safeExecuteInterceptor(taskCtx, registered.handler, e, msg, isCmd, cmdName, registered.failurePolicy))
 				return nil
 			},
 			OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
@@ -263,7 +275,7 @@ func (d *Dispatcher) dispatchAsyncHandlers(ctx context.Context, handlers []prior
 			OrderingKey:      fmt.Sprintf("chat:%d", extractChatIDFromPeer(msg.PeerID)),
 			ExecutionTimeout: 10 * time.Second,
 			Handler: func(taskCtx context.Context) error {
-				_ = d.safeExecuteInterceptor(taskCtx, registered.handler, e, msg, isCmd, cmdName)
+				_ = d.safeExecuteInterceptor(taskCtx, registered.handler, e, msg, isCmd, cmdName, registered.failurePolicy)
 				return nil
 			},
 			OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },

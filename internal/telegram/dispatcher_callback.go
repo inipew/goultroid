@@ -187,8 +187,19 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 
 	if d.idempotencyMgr != nil {
 		key := fmt.Sprintf("cb:%d", update.QueryID)
-		isNew, err := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
-		if err == nil && !isNew {
+		isNew, claimErr := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
+		if claimErr != nil {
+			d.logger.Error("callback idempotency claim failed",
+				zap.String("key", key),
+				zap.Int64("query_id", update.QueryID),
+				zap.Error(claimErr),
+			)
+			if svc := d.getService(); svc != nil {
+				_ = svc.AnswerCallbackQuery(ctx, update.QueryID, "Interaction service temporarily unavailable.", true)
+			}
+			return nil
+		}
+		if !isNew {
 			return nil
 		}
 	}
@@ -276,8 +287,19 @@ func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities
 
 	if d.idempotencyMgr != nil {
 		key := fmt.Sprintf("inline_cb:%d", update.QueryID)
-		isNew, err := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
-		if err == nil && !isNew {
+		isNew, claimErr := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
+		if claimErr != nil {
+			d.logger.Error("inline callback idempotency claim failed",
+				zap.String("key", key),
+				zap.Int64("query_id", update.QueryID),
+				zap.Error(claimErr),
+			)
+			if svc := d.getService(); svc != nil {
+				_ = svc.AnswerCallbackQuery(ctx, update.QueryID, "Interaction service temporarily unavailable.", true)
+			}
+			return nil
+		}
+		if !isNew {
 			return nil
 		}
 	}

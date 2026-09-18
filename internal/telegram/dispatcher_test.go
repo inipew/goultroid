@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -292,6 +293,50 @@ func TestDispatcher_InterceptorPanicIsolation(t *testing.T) {
 	}
 	if !subsequentRan {
 		t.Errorf("expected subsequent interceptor to run despite previous panic")
+	}
+}
+
+func TestDispatcher_SecurityInterceptorPanicFailsClosed(t *testing.T) {
+	dispatcher := NewDispatcher(core.NewRouter("."), core.NewPermissions(1, nil), nil, zap.NewNop())
+
+	var featureRan atomic.Bool
+	dispatcher.AddPrioritizedMessageHandler(PrioritySecurity, func(context.Context, tg.Entities, *tg.Message, bool, string) error {
+		panic("security backend invariant failed")
+	})
+	dispatcher.AddPrioritizedMessageHandler(PriorityFeature, func(context.Context, tg.Entities, *tg.Message, bool, string) error {
+		featureRan.Store(true)
+		return nil
+	})
+
+	if err := dispatcher.OnNewMessage(context.Background(), tg.Entities{}, &tg.UpdateNewMessage{
+		Message: &tg.Message{ID: 1, PeerID: &tg.PeerChat{ChatID: 10}, Message: "hello"},
+	}); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if featureRan.Load() {
+		t.Fatal("feature handler ran after security interceptor panic")
+	}
+}
+
+func TestDispatcher_SecurityInterceptorErrorFailsClosed(t *testing.T) {
+	dispatcher := NewDispatcher(core.NewRouter("."), core.NewPermissions(1, nil), nil, zap.NewNop())
+
+	var featureRan atomic.Bool
+	dispatcher.AddPrioritizedMessageHandler(PrioritySecurity, func(context.Context, tg.Entities, *tg.Message, bool, string) error {
+		return errors.New("security store unavailable")
+	})
+	dispatcher.AddPrioritizedMessageHandler(PriorityFeature, func(context.Context, tg.Entities, *tg.Message, bool, string) error {
+		featureRan.Store(true)
+		return nil
+	})
+
+	if err := dispatcher.OnNewMessage(context.Background(), tg.Entities{}, &tg.UpdateNewMessage{
+		Message: &tg.Message{ID: 2, PeerID: &tg.PeerChat{ChatID: 10}, Message: "hello"},
+	}); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if featureRan.Load() {
+		t.Fatal("feature handler ran after security interceptor error")
 	}
 }
 
