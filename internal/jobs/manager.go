@@ -40,6 +40,10 @@ type outboxStore interface {
 	MarkOutboxDelivered(context.Context, string) error
 }
 
+type deferredDeadlineStore interface {
+	EarliestDeferredOccurrenceDue(context.Context, time.Time) (time.Time, bool, error)
+}
+
 type definitionLoader interface {
 	ListDefinitions(context.Context) ([]JobDefinition, error)
 }
@@ -120,9 +124,10 @@ const (
 	// Automatic recovery is deliberately low-frequency as a safety scan; fast
 	// convergence comes from bounded wake signals emitted on monitor overflow or
 	// uncertain retry-driver errors.
-	recoveryScanLimit = 256
-	recoveryInterval  = 30 * time.Second
-	recoveryTimeout   = 20 * time.Second
+	recoveryScanLimit   = 256
+	recoveryInterval    = 30 * time.Second
+	recoveryTimeout     = 20 * time.Second
+	outboxSafetyInterval = 30 * time.Second
 )
 
 // RecoverReport summarizes one recovery scan over unresolved occurrences.
@@ -279,7 +284,10 @@ func (m *Manager) signalOutbox() {
 
 func (m *Manager) outboxLoop() {
 	defer m.wg.Done()
-	ticker := time.NewTicker(time.Second)
+	// Delivery is wake-driven. The low-frequency ticker is only a crash/
+	// uncertainty safety net for durable outbox rows that were committed before
+	// an in-memory wake could be emitted.
+	ticker := time.NewTicker(outboxSafetyInterval)
 	defer ticker.Stop()
 	for {
 		m.mu.RLock()
@@ -863,8 +871,50 @@ func (m *Manager) retryLoop() {
 // safety scan. Overflow/error paths only wake this one bounded goroutine.
 func (m *Manager) recoveryLoop() {
 	defer m.wg.Done()
-	ticker := time.NewTicker(recoveryInterval)
-	defer ticker.Stop()
+	safetyTicker := time.NewTicker(recoveryInterval)
+	defer safetyTicker.Stop()
+
+	var deadlineTimer *time.Timer
+	var deadlineC <-chan time.Time
+	stopDeadlineTimer := func() {
+		if deadlineTimer == nil {
+			deadlineC = nil
+			return
+		}
+		if !deadlineTimer.Stop() {
+			select {
+			case <-deadlineTimer.C:
+			default:
+			}
+		}
+		deadlineC = nil
+	}
+	defer stopDeadlineTimer()
+
+	rearmDeadline := func(baseCtx context.Context) {
+		stopDeadlineTimer()
+		store, ok := m.store.(deferredDeadlineStore)
+		if !ok {
+			return
+		}
+		queryCtx, cancel := context.WithTimeout(baseCtx, 5*time.Second)
+		due, found, err := store.EarliestDeferredOccurrenceDue(queryCtx, time.Now().UTC())
+		cancel()
+		if err != nil || !found {
+			return
+		}
+		wait := time.Until(due)
+		if wait < 0 {
+			wait = 0
+		}
+		if deadlineTimer == nil {
+			deadlineTimer = time.NewTimer(wait)
+		} else {
+			deadlineTimer.Reset(wait)
+		}
+		deadlineC = deadlineTimer.C
+	}
+
 	for {
 		m.mu.RLock()
 		stopCh := m.stopCh
@@ -874,6 +924,8 @@ func (m *Manager) recoveryLoop() {
 		if stopCh == nil || baseCtx == nil || wake == nil {
 			return
 		}
+
+		rearmDeadline(baseCtx)
 		select {
 		case <-stopCh:
 			return
@@ -881,7 +933,9 @@ func (m *Manager) recoveryLoop() {
 			return
 		case <-wake:
 			m.runRecoveryPass(baseCtx)
-		case <-ticker.C:
+		case <-deadlineC:
+			m.runRecoveryPass(baseCtx)
+		case <-safetyTicker.C:
 			m.runRecoveryPass(baseCtx)
 		}
 	}
@@ -1019,9 +1073,10 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 			return
 		}
 		m.untrack(item.occurrenceID)
-		time.AfterFunc(delay, func() {
-			m.signalRecovery()
-		})
+		// Durable ready_at is authoritative. Wake the single recovery
+		// coordinator so it can re-arm its nearest-deadline timer; never create
+		// one timer/goroutine per deferred occurrence.
+		m.signalRecovery()
 		return
 	}
 
