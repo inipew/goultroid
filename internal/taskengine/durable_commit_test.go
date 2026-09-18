@@ -424,3 +424,47 @@ func TestCommitPendingExertsBackpressure(t *testing.T) {
 	}
 	waitForEngineState(t, e, "held-2", tasks.StateCompleted, 5*time.Second)
 }
+
+type sizedRecordingPump struct {
+	stubPump
+	muSized sync.Mutex
+	weights []int64
+}
+
+func (p *sizedRecordingPump) EnqueueSized(ctx context.Context, retainedBytes int64, op func(context.Context) error) (<-chan error, error) {
+	p.muSized.Lock()
+	p.weights = append(p.weights, retainedBytes)
+	p.muSized.Unlock()
+	return p.stubPump.Enqueue(ctx, op)
+}
+
+func TestDurableCommitUsesSizedPumpAdmission(t *testing.T) {
+	pump := &sizedRecordingPump{stubPump: stubPump{mode: stubAuto}}
+	e := durableTestEngine(t, Config{
+		Pools:               map[tasks.PoolID]PoolEngineConfig{"general": {Concurrency: 1, BacklogLimit: 4, PayloadBudget: 1 << 20}},
+		ResultCapacity:      4,
+		MaxTerminalRetained: 4,
+		DecisionTimeout:     time.Second,
+	}, pump)
+	var calls atomic.Int32
+	ticket, err := e.Submit(context.Background(), tasks.WorkSpec{
+		ID:         "sized-commit",
+		QuotaOwner: "owner",
+		Pool:       "general",
+		Class:      tasks.PriorityNormal,
+		Handler:    func(context.Context) error { return nil },
+		Commit:     commitRecorder(&calls),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ticket.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pump.muSized.Lock()
+	weights := append([]int64(nil), pump.weights...)
+	pump.muSized.Unlock()
+	if len(weights) != 1 || weights[0] < durabilityCommitBaseBytes {
+		t.Fatalf("sized pump weights=%v, want one bounded retained charge", weights)
+	}
+}

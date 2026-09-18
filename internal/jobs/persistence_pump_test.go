@@ -193,3 +193,56 @@ func TestPersistencePumpPanicReportsStackAndKeepsWorkerAlive(t *testing.T) {
 		t.Fatalf("worker did not survive recovered panic: %v", err)
 	}
 }
+
+func TestPersistencePumpRetainedByteBudgetIncludesInFlight(t *testing.T) {
+	p := NewPersistencePump(1, 4)
+	p.SetMaxRetainedBytes(1024)
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer p.Stop(context.Background())
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	first, err := p.EnqueueSized(context.Background(), 800, func(context.Context) error {
+		close(started)
+		<-release
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+
+	if _, err := p.EnqueueSized(context.Background(), 300, func(context.Context) error { return nil }); !errors.Is(err, ErrPumpByteBudget) {
+		close(release)
+		t.Fatalf("expected byte-budget rejection while first callback is in flight, got %v", err)
+	}
+	stats := p.Stats()
+	if stats.RetainedBytes != 800 || stats.ByteRejections != 1 {
+		close(release)
+		t.Fatalf("unexpected retained stats: %+v", stats)
+	}
+
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if p.Stats().RetainedBytes == 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := p.Stats().RetainedBytes; got != 0 {
+		t.Fatalf("retained bytes were not released after callback completion: %d", got)
+	}
+	second, err := p.EnqueueSized(context.Background(), 300, func(context.Context) error { return nil })
+	if err != nil {
+		t.Fatalf("enqueue after release: %v", err)
+	}
+	if err := <-second; err != nil {
+		t.Fatal(err)
+	}
+}

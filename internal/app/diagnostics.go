@@ -28,6 +28,7 @@ type DiagnosticsSnapshot struct {
 	Process            processSvc.DiagnosticsSnapshot
 	Jobs               jobs.Diagnostics
 	PersistencePanics  uint64
+	PersistencePump    jobs.PersistencePumpStats
 	LifecycleCallbacks runtime.CallbackExecutorStats
 	TaskEngine         taskengine.RuntimeStats
 	RPC                telegram.RPCMetricsSnapshot
@@ -135,6 +136,7 @@ func (a *App) Diagnostics() DiagnosticsSnapshot {
 	}
 	if a.persistencePump != nil {
 		snapshot.PersistencePanics = a.persistencePump.Panics()
+		snapshot.PersistencePump = a.persistencePump.Stats()
 	}
 	if a.taskEngine != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)

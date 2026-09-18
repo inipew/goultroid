@@ -13,15 +13,32 @@ import (
 	"github.com/inipew/goultroid/internal/runtime"
 )
 
+const (
+	DefaultPersistenceRetainedBytes int64 = 64 << 20 // 64 MiB
+	defaultPersistenceRequestBytes  int64 = 512
+)
+
 var (
-	ErrPumpClosed    = errors.New("persistence pump is closed")
-	ErrPumpQueueFull = errors.New("persistence pump queue is saturated")
+	ErrPumpClosed      = errors.New("persistence pump is closed")
+	ErrPumpQueueFull   = errors.New("persistence pump queue is saturated")
+	ErrPumpByteBudget  = errors.New("persistence pump retained-byte budget is saturated")
 )
 
 type persistenceRequest struct {
-	ctx      context.Context
-	execute  func(ctx context.Context) error
-	resultCh chan error
+	ctx           context.Context
+	execute       func(ctx context.Context) error
+	resultCh      chan error
+	retainedBytes int64
+}
+
+// PersistencePumpStats is a bounded-cardinality view of persistence admission.
+type PersistencePumpStats struct {
+	QueueDepth     int
+	QueueCapacity  int
+	RetainedBytes  int64
+	RetainedCap    int64
+	ByteRejections uint64
+	Panics         uint64
 }
 
 // PersistencePump is a dedicated service with bounded concurrency that commits durable results (ADR 0006 §3.3).
@@ -37,8 +54,11 @@ type PersistencePump struct {
 	running       bool
 	accepting     bool
 	done          chan struct{}
-	panicReporter core.PanicReporter
-	panicCount    atomic.Uint64
+	panicReporter   core.PanicReporter
+	panicCount      atomic.Uint64
+	maxRetainedBytes int64
+	retainedBytes    int64
+	byteRejections   atomic.Uint64
 }
 
 var _ runtime.Component = (*PersistencePump)(nil)
@@ -52,13 +72,46 @@ func NewPersistencePump(concurrency int, queueCap int) *PersistencePump {
 		queueCap = 256
 	}
 	return &PersistencePump{
-		concurrency: concurrency,
-		queueCap:    queueCap,
+		concurrency:      concurrency,
+		queueCap:         queueCap,
+		maxRetainedBytes: DefaultPersistenceRetainedBytes,
 	}
 }
 
 func (p *PersistencePump) Name() string           { return "persistence-pump" }
 func (p *PersistencePump) Dependencies() []string { return []string{"database"} }
+
+// SetMaxRetainedBytes sets the total byte admission budget for queued and
+// in-flight persistence callbacks. It is safe before Start and while running.
+func (p *PersistencePump) SetMaxRetainedBytes(max int64) {
+	if p == nil || max <= 0 {
+		return
+	}
+	p.mu.Lock()
+	p.maxRetainedBytes = max
+	p.mu.Unlock()
+}
+
+// Stats returns persistence queue/retained-memory diagnostics.
+func (p *PersistencePump) Stats() PersistencePumpStats {
+	if p == nil {
+		return PersistencePumpStats{}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	depth := 0
+	if p.requests != nil {
+		depth = len(p.requests)
+	}
+	return PersistencePumpStats{
+		QueueDepth:     depth,
+		QueueCapacity:  p.queueCap,
+		RetainedBytes:  p.retainedBytes,
+		RetainedCap:    p.maxRetainedBytes,
+		ByteRejections: p.byteRejections.Load(),
+		Panics:         p.panicCount.Load(),
+	}
+}
 
 // SetPanicReporter attaches the framework panic reporter used by worker
 // boundaries. Recovered persistence panics remain operation failures, while the
@@ -108,6 +161,12 @@ func (p *PersistencePump) workerLoop() {
 	defer p.wg.Done()
 	for req := range p.requests {
 		err := p.processRequest(req)
+		p.mu.Lock()
+		p.retainedBytes -= req.retainedBytes
+		if p.retainedBytes < 0 {
+			p.retainedBytes = 0
+		}
+		p.mu.Unlock()
 		if req.resultCh != nil {
 			req.resultCh <- err
 			close(req.resultCh)
@@ -155,21 +214,38 @@ func (p *PersistencePump) processRequest(req persistenceRequest) (err error) {
 	return nil
 }
 
-// Enqueue submits an operation to the persistence pump.
+// Enqueue submits a legacy-weight operation to the persistence pump.
 func (p *PersistencePump) Enqueue(ctx context.Context, op func(ctx context.Context) error) (<-chan error, error) {
+	return p.EnqueueSized(ctx, defaultPersistenceRequestBytes, op)
+}
+
+// EnqueueSized submits an operation with an explicit retained-memory charge.
+// The charge remains held until the callback physically completes, not merely
+// until a worker dequeues it.
+func (p *PersistencePump) EnqueueSized(ctx context.Context, retainedBytes int64, op func(ctx context.Context) error) (<-chan error, error) {
+	if retainedBytes <= 0 {
+		retainedBytes = defaultPersistenceRequestBytes
+	}
 	p.mu.Lock()
 	if !p.accepting || !p.running {
 		p.mu.Unlock()
 		return nil, ErrPumpClosed
 	}
+	if p.maxRetainedBytes > 0 && retainedBytes > p.maxRetainedBytes-p.retainedBytes {
+		p.byteRejections.Add(1)
+		p.mu.Unlock()
+		return nil, ErrPumpByteBudget
+	}
 	resCh := make(chan error, 1)
 	req := persistenceRequest{
-		ctx:      ctx,
-		execute:  op,
-		resultCh: resCh,
+		ctx:           ctx,
+		execute:       op,
+		resultCh:      resCh,
+		retainedBytes: retainedBytes,
 	}
 	select {
 	case p.requests <- req:
+		p.retainedBytes += retainedBytes
 		p.mu.Unlock()
 		return resCh, nil
 	default:
@@ -240,5 +316,10 @@ func (p *PersistencePump) Health(ctx context.Context) runtime.ComponentHealth {
 			Status:  runtime.HealthDegraded,
 			Details: fmt.Sprintf("persistence queue saturated (%d/%d)", len(p.requests), p.queueCap)}
 	}
-	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
+	if p.maxRetainedBytes > 0 && p.retainedBytes >= p.maxRetainedBytes {
+		return runtime.ComponentHealth{
+			Status:  runtime.HealthDegraded,
+			Details: fmt.Sprintf("persistence retained-byte budget saturated (%d/%d)", p.retainedBytes, p.maxRetainedBytes)}
+	}
+	return runtime.ComponentHealth{Status: runtime.HealthHealthy, Details: fmt.Sprintf("queue=%d/%d retained_bytes=%d/%d", len(p.requests), p.queueCap, p.retainedBytes, p.maxRetainedBytes)}
 }

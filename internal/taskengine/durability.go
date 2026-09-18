@@ -45,6 +45,12 @@ type CommitPump interface {
 	Enqueue(ctx context.Context, op func(ctx context.Context) error) (<-chan error, error)
 }
 
+// SizedCommitPump is an optional stronger admission contract. Pumps that
+// implement it can reject retained-memory pressure before accepting a closure.
+type SizedCommitPump interface {
+	EnqueueSized(ctx context.Context, retainedBytes int64, op func(ctx context.Context) error) (<-chan error, error)
+}
+
 // durabilityState is the internal durability phase of one task record.
 type durabilityState int
 
@@ -61,7 +67,23 @@ const commitWaitTimeout = 30 * time.Second
 
 // directCommitTimeout bounds the fallback path that runs the commit in the
 // dedicated durability lane when the pump is missing or saturated.
-const directCommitTimeout = 15 * time.Second
+const (
+	directCommitTimeout       = 15 * time.Second
+	durabilityCommitBaseBytes = 512
+)
+
+func durabilityCommitRetainedBytes(res tasks.TaskResult) int64 {
+	bytes := int64(durabilityCommitBaseBytes +
+		len(res.TaskID) + len(res.AttemptID) + len(res.Outcome) + len(res.Cause) +
+		len(res.Failure.Message) + len(res.Failure.Detail))
+	switch output := res.Output.(type) {
+	case []byte:
+		bytes += int64(len(output))
+	case string:
+		bytes += int64(len(output))
+	}
+	return bytes
+}
 
 // terminalStateFor maps a physical outcome to its public terminal state.
 func terminalStateFor(outcome tasks.Outcome) tasks.TaskState {
@@ -115,7 +137,16 @@ func (e *Engine) beginCommit(rec *taskRecord) {
 	}
 
 	if e.commitPump != nil {
-		if resCh, err := e.commitPump.Enqueue(context.Background(), commitOp); err == nil {
+		var (
+			resCh <-chan error
+			err   error
+		)
+		if sized, ok := e.commitPump.(SizedCommitPump); ok {
+			resCh, err = sized.EnqueueSized(context.Background(), durabilityCommitRetainedBytes(pendingResult), commitOp)
+		} else {
+			resCh, err = e.commitPump.Enqueue(context.Background(), commitOp)
+		}
+		if err == nil {
 			if e.durability != nil && e.durability.enqueue(func() { waitPump(resCh) }) {
 				return
 			}
