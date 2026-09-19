@@ -119,6 +119,18 @@ type JobAttempt struct {
 	Error        string       `json:"error,omitempty"`
 }
 
+// AttemptSummary is the recovery/retry decision snapshot for one occurrence.
+// Production stores should load this atomically enough for decision-making in a
+// single round-trip; PrepareAttemptLease remains the final fencing authority.
+type AttemptSummary struct {
+	OccurrenceState OccurrenceState
+	ReadyAt         time.Time
+	Latest          JobAttempt
+	AttemptCount    int
+	RetryBudgetUses int
+	Deferrals       int
+}
+
 // OutboxEvent is a durable notification committed with a job state change.
 type OutboxEvent struct {
 	ID           string
