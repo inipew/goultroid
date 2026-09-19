@@ -566,7 +566,7 @@ func (m *Manager) untrack(occurrenceID string) {
 	tracked, existed := m.tracked[occurrenceID]
 	delete(m.tracked, occurrenceID)
 	wake := m.scheduleWake
-	shouldWake := existed && timingOwnedDefinition(tracked.def.ID)
+	shouldWake := existed && tracked != nil && timingOwnedDefinition(tracked.def.ID)
 	m.mu.Unlock()
 
 	// Timing-owned occurrences wake scheduler reconciliation on settlement.

@@ -25,9 +25,9 @@ type periodicCoordinator struct {
 	wake    chan struct{}
 	ctx     context.Context
 	cancel  context.CancelFunc
-	wg      sync.WaitGroup
-	done    chan struct{}
-	running bool
+	done        chan struct{}
+	running     bool
+	loopRunning bool
 	seq     uint64
 	logger  *zap.Logger
 	jobsMgr *jobs.Manager
@@ -103,9 +103,30 @@ func (c *periodicCoordinator) SetClock(nowFn func() time.Time) {
 	c.notify()
 }
 
+func (c *periodicCoordinator) startLoopLocked() {
+	if !c.running || c.loopRunning || c.ctx == nil || c.ctx.Err() != nil || len(c.entries) == 0 {
+		return
+	}
+	done := make(chan struct{})
+	c.loopRunning = true
+	c.done = done
+	go c.loop(done)
+}
+
 func (c *periodicCoordinator) notify() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.startLoopLocked()
+	running := c.loopRunning
+	wake := c.wake
+	c.mu.Unlock()
+	if !running || wake == nil {
+		return
+	}
 	select {
-	case c.wake <- struct{}{}:
+	case wake <- struct{}{}:
 	default:
 	}
 }
@@ -131,10 +152,10 @@ func (c *periodicCoordinator) Start(parent context.Context) error {
 	}
 	c.ctx, c.cancel = context.WithCancel(parent)
 	c.running = true
-	c.done = make(chan struct{})
-	done := c.done
+	// No loop is created for an empty registry. Register/notify starts timing
+	// ownership lazily when the first periodic deadline actually exists.
+	c.startLoopLocked()
 	c.mu.Unlock()
-	go c.loop(done)
 	return nil
 }
 
@@ -481,7 +502,15 @@ func (c *periodicCoordinator) syncHeapLocked() {
 }
 
 func (c *periodicCoordinator) loop(done chan struct{}) {
-	defer close(done)
+	defer func() {
+		c.mu.Lock()
+		if c.done == done {
+			c.loopRunning = false
+			c.done = nil
+		}
+		c.mu.Unlock()
+		close(done)
+	}()
 	timer := time.NewTimer(time.Hour)
 	if !timer.Stop() {
 		<-timer.C
@@ -492,6 +521,17 @@ func (c *periodicCoordinator) loop(done chan struct{}) {
 		c.mu.Lock()
 		ctx := c.ctx
 		if !c.running || ctx == nil {
+			c.mu.Unlock()
+			return
+		}
+		if len(c.entries) == 0 {
+			// Publish retirement while holding the same lock used by Register.
+			// A concurrent registration either keeps this generation alive or
+			// observes loopRunning=false and starts a successor through notify().
+			if c.done == done {
+				c.loopRunning = false
+				c.done = nil
+			}
 			c.mu.Unlock()
 			return
 		}
