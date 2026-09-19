@@ -47,9 +47,11 @@ type PersistencePump struct {
 	mu            sync.Mutex
 	concurrency   int
 	queueCap      int
+	idleTimeout   time.Duration
 	requests      chan persistenceRequest
 	wg            sync.WaitGroup
 	remaining     atomic.Int64
+	active        atomic.Int64
 	doneOnce      sync.Once
 	ctx           context.Context
 	cancel        context.CancelFunc
@@ -76,6 +78,7 @@ func NewPersistencePump(concurrency int, queueCap int) *PersistencePump {
 	return &PersistencePump{
 		concurrency:      concurrency,
 		queueCap:         queueCap,
+		idleTimeout:      30 * time.Second,
 		maxRetainedBytes: DefaultPersistenceRetainedBytes,
 	}
 }
@@ -146,38 +149,96 @@ func (p *PersistencePump) Start(parent context.Context) error {
 	p.requests = make(chan persistenceRequest, p.queueCap)
 	p.done = make(chan struct{})
 	p.doneOnce = sync.Once{}
-	p.remaining.Store(int64(p.concurrency))
+	p.remaining.Store(0)
+	p.active.Store(0)
 	p.running = true
 	p.accepting = true
-
-	done := p.done
-	for i := 0; i < p.concurrency; i++ {
-		p.wg.Add(1)
-		go p.workerLoop(done)
+	if p.idleTimeout <= 0 {
+		p.idleTimeout = 30 * time.Second
 	}
 	return nil
 }
 
+func (p *PersistencePump) ensureWorkersLocked(done chan struct{}) {
+	if !p.running {
+		return
+	}
+	target := int(p.active.Load()) + len(p.requests)
+	if target < 1 {
+		target = 1
+	}
+	if target > p.concurrency {
+		target = p.concurrency
+	}
+	running := int(p.remaining.Load())
+	for running < target {
+		p.remaining.Add(1)
+		running++
+		p.wg.Add(1)
+		go p.workerLoop(done)
+	}
+}
+
 func (p *PersistencePump) workerDone(done chan struct{}) {
 	p.wg.Done()
-	if p.remaining.Add(-1) == 0 {
-		p.doneOnce.Do(func() { close(done) })
+	p.mu.Lock()
+	remaining := p.remaining.Add(-1)
+	if !p.running {
+		if remaining == 0 {
+			p.doneOnce.Do(func() { close(done) })
+		}
+		p.mu.Unlock()
+		return
 	}
+	if len(p.requests) > 0 {
+		p.ensureWorkersLocked(done)
+	}
+	p.mu.Unlock()
 }
 
 func (p *PersistencePump) workerLoop(done chan struct{}) {
 	defer p.workerDone(done)
-	for req := range p.requests {
-		err := p.processRequest(req)
-		p.mu.Lock()
-		p.retainedBytes -= req.retainedBytes
-		if p.retainedBytes < 0 {
-			p.retainedBytes = 0
+	timer := time.NewTimer(p.idleTimeout)
+	defer timer.Stop()
+
+	resetTimer := func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
 		}
-		p.mu.Unlock()
-		if req.resultCh != nil {
-			req.resultCh <- err
-			close(req.resultCh)
+		timer.Reset(p.idleTimeout)
+	}
+
+	for {
+		select {
+		case req, ok := <-p.requests:
+			if !ok {
+				return
+			}
+			p.active.Add(1)
+			err := p.processRequest(req)
+			p.active.Add(-1)
+			p.mu.Lock()
+			p.retainedBytes -= req.retainedBytes
+			if p.retainedBytes < 0 {
+				p.retainedBytes = 0
+			}
+			p.mu.Unlock()
+			if req.resultCh != nil {
+				req.resultCh <- err
+				close(req.resultCh)
+			}
+			resetTimer()
+		case <-timer.C:
+			p.mu.Lock()
+			retire := p.running && len(p.requests) == 0
+			p.mu.Unlock()
+			if retire {
+				return
+			}
+			timer.Reset(p.idleTimeout)
 		}
 	}
 }
@@ -254,6 +315,7 @@ func (p *PersistencePump) EnqueueSized(ctx context.Context, retainedBytes int64,
 	select {
 	case p.requests <- req:
 		p.retainedBytes += retainedBytes
+		p.ensureWorkersLocked(p.done)
 		p.mu.Unlock()
 		return resCh, nil
 	default:
@@ -284,6 +346,9 @@ func (p *PersistencePump) Drain(ctx context.Context) error {
 		p.accepting = false
 		close(p.requests)
 		p.running = false
+		if p.remaining.Load() == 0 {
+			p.doneOnce.Do(func() { close(p.done) })
+		}
 	}
 	done := p.done
 	p.mu.Unlock()

@@ -246,3 +246,73 @@ func TestPersistencePumpRetainedByteBudgetIncludesInFlight(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPersistencePumpWorkersAreLazyAndRetire(t *testing.T) {
+	p := NewPersistencePump(2, 4)
+	p.idleTimeout = 10 * time.Millisecond
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.remaining.Load(); got != 0 {
+		t.Fatalf("persistence pump started %d idle workers, want 0", got)
+	}
+
+	result, err := p.Enqueue(context.Background(), func(context.Context) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && p.remaining.Load() != 0 {
+		time.Sleep(time.Millisecond)
+	}
+	if got := p.remaining.Load(); got != 0 {
+		t.Fatalf("persistence pump retained %d workers after idle timeout", got)
+	}
+	if err := p.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPersistencePumpLazyWorkersScaleToDemand(t *testing.T) {
+	p := NewPersistencePump(2, 4)
+	p.idleTimeout = time.Second
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	results := make([]<-chan error, 0, 2)
+	for i := 0; i < 2; i++ {
+		result, err := p.Enqueue(context.Background(), func(context.Context) error {
+			started <- struct{}{}
+			<-release
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("enqueue %d: %v", i, err)
+		}
+		results = append(results, result)
+	}
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("persistence pump failed to scale to configured concurrency")
+		}
+	}
+	close(release)
+	for i, result := range results {
+		if err := <-result; err != nil {
+			t.Fatalf("result %d: %v", i, err)
+		}
+	}
+	if err := p.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
