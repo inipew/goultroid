@@ -20,3 +20,9 @@ type Repository interface {
 	ListFilters(ctx context.Context, chatID int64) ([]Filter, error)
 	DeleteFilter(ctx context.Context, chatID int64, keyword string) error
 }
+
+// ActiveChatRepository is an optional optimization interface used to preload
+// the set of chats that actually have filter state.
+type ActiveChatRepository interface {
+	ListActiveChatIDs(ctx context.Context) ([]int64, error)
+}

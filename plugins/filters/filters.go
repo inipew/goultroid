@@ -20,6 +20,7 @@ const (
 )
 
 var _ plugin.MessageHookPlugin = (*Plugin)(nil)
+var _ plugin.MessageHookStatePlugin = (*Plugin)(nil)
 
 type compiledFilter struct {
 	keyword   string
@@ -28,9 +29,10 @@ type compiledFilter struct {
 }
 
 type Plugin struct {
-	db          Repository
-	svcFunc     func() core.TelegramServicer
-	cacheMu     sync.RWMutex
+	db           Repository
+	svcFunc      func() core.TelegramServicer
+	featureState core.ChatFeatureSnapshot
+	cacheMu      sync.RWMutex
 	chatFilters map[int64][]compiledFilter
 	chatAccess  map[int64]time.Time
 	cooldownMu  sync.Mutex
@@ -41,9 +43,28 @@ func New(db Repository, svcFunc func() core.TelegramServicer) *Plugin {
 	return &Plugin{db: db, svcFunc: svcFunc, chatFilters: make(map[int64][]compiledFilter), chatAccess: make(map[int64]time.Time), lastReply: make(map[string]time.Time)}
 }
 
-func (p *Plugin) Name() string             { return "filters" }
-func (p *Plugin) Init() error              { return nil }
+func (p *Plugin) Name() string { return "filters" }
+
+func (p *Plugin) Init() error {
+	return p.InitContext(context.Background())
+}
+
+func (p *Plugin) InitContext(ctx context.Context) error {
+	if repo, ok := p.db.(ActiveChatRepository); ok {
+		chatIDs, err := repo.ListActiveChatIDs(ctx)
+		if err == nil {
+			p.featureState.ReplaceLoaded(chatIDs)
+		}
+	}
+	return nil
+}
+
 func (p *Plugin) MessageHookPriority() int { return 20 }
+
+func (p *Plugin) MessageHookInterested(chatID int64) bool {
+	return p.featureState.Interested(chatID)
+}
+
 func (p *Plugin) MessageHookRouting() core.MessageHookRouting {
 	return core.MessageHookRouting{
 		Lane: core.MessageHookDecision,
@@ -101,10 +122,12 @@ func (p *Plugin) handleFilter(ctx *core.Context) error {
 		return errors.New("empty filter reply")
 	}
 	chatID := p.getChatID(ctx)
+	p.featureState.MarkUnknown(chatID)
 	if err := p.db.SaveFilter(ctx.Ctx, chatID, keyword, replyText); err != nil {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to save filter: %v", err))
 		return err
 	}
+	p.featureState.SetActive(chatID, true)
 	p.invalidateChat(chatID)
 	return ctx.EditOrReply(fmt.Sprintf("🎯 Filter <code>%s</code> saved successfully.", keyword))
 }
@@ -120,9 +143,15 @@ func (p *Plugin) handleStop(ctx *core.Context) error {
 	}
 	keyword := strings.ToLower(strings.TrimSpace(ctx.Args[0]))
 	chatID := p.getChatID(ctx)
+	p.featureState.MarkUnknown(chatID)
 	if err := p.db.DeleteFilter(ctx.Ctx, chatID, keyword); err != nil {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to stop filter: %v", err))
 		return err
+	}
+	if remaining, err := p.db.ListFilters(ctx.Ctx, chatID); err != nil {
+		p.featureState.MarkUnknown(chatID)
+	} else {
+		p.featureState.SetActive(chatID, len(remaining) > 0)
 	}
 	p.invalidateChat(chatID)
 	return ctx.EditOrReply(fmt.Sprintf("🗑️ Filter <code>%s</code> stopped.", keyword))
@@ -187,8 +216,10 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 	if !ok {
 		rawFilters, err := p.db.ListFilters(ctx, chatID)
 		if err != nil {
+			p.featureState.MarkUnknown(chatID)
 			return nil
 		}
+		p.featureState.SetActive(chatID, len(rawFilters) > 0)
 		filters = compileFilters(rawFilters)
 		p.cacheFilters(chatID, filters)
 	}

@@ -41,6 +41,7 @@ type prioritizedHandler struct {
 	priority      HandlerPriority
 	failurePolicy HandlerFailurePolicy
 	routing       core.MessageHookRouting
+	stateGate     func(int64) bool
 	handler       MessageHandler
 	scope         tasks.ScopeIdentity
 }
@@ -77,22 +78,34 @@ func (d *Dispatcher) AddPrioritizedMessageHandler(priority HandlerPriority, h Me
 // AddPrioritizedMessageHandlerWithRouting registers an unscoped interceptor
 // with explicit lane and structural interests.
 func (d *Dispatcher) AddPrioritizedMessageHandlerWithRouting(priority HandlerPriority, routing core.MessageHookRouting, h MessageHandler) func() {
-	return d.addMessageHandler(priority, tasks.ScopeIdentity{}, routing, h)
+	return d.addMessageHandler(priority, tasks.ScopeIdentity{}, routing, nil, h)
+}
+
+// AddPrioritizedMessageHandlerWithRoutingAndState registers an unscoped
+// interceptor with structural routing plus a dynamic chat-state gate.
+func (d *Dispatcher) AddPrioritizedMessageHandlerWithRoutingAndState(priority HandlerPriority, routing core.MessageHookRouting, stateGate func(int64) bool, h MessageHandler) func() {
+	return d.addMessageHandler(priority, tasks.ScopeIdentity{}, routing, stateGate, h)
 }
 
 // AddScopedMessageHandler registers a plugin-owned handler with routing derived
 // from the legacy priority/scope convention.
 func (d *Dispatcher) AddScopedMessageHandler(priority HandlerPriority, scope tasks.ScopeIdentity, h MessageHandler) func() {
-	return d.addMessageHandler(priority, scope, legacyMessageHookRouting(priority, scope), h)
+	return d.addMessageHandler(priority, scope, legacyMessageHookRouting(priority, scope), nil, h)
 }
 
 // AddScopedMessageHandlerWithRouting registers a plugin-owned handler with
 // explicit decision/event lane and indexed interests.
 func (d *Dispatcher) AddScopedMessageHandlerWithRouting(priority HandlerPriority, scope tasks.ScopeIdentity, routing core.MessageHookRouting, h MessageHandler) func() {
-	return d.addMessageHandler(priority, scope, routing, h)
+	return d.addMessageHandler(priority, scope, routing, nil, h)
 }
 
-func (d *Dispatcher) addMessageHandler(priority HandlerPriority, scope tasks.ScopeIdentity, routing core.MessageHookRouting, h MessageHandler) func() {
+// AddScopedMessageHandlerWithRoutingAndState registers a plugin-owned handler
+// with structural routing plus a dynamic chat-state gate.
+func (d *Dispatcher) AddScopedMessageHandlerWithRoutingAndState(priority HandlerPriority, scope tasks.ScopeIdentity, routing core.MessageHookRouting, stateGate func(int64) bool, h MessageHandler) func() {
+	return d.addMessageHandler(priority, scope, routing, stateGate, h)
+}
+
+func (d *Dispatcher) addMessageHandler(priority HandlerPriority, scope tasks.ScopeIdentity, routing core.MessageHookRouting, stateGate func(int64) bool, h MessageHandler) func() {
 	if h == nil {
 		return func() {}
 	}
@@ -100,7 +113,7 @@ func (d *Dispatcher) addMessageHandler(priority HandlerPriority, scope tasks.Sco
 	d.nextHandlerID++
 	id := d.nextHandlerID
 	d.messageHandlers = append(d.messageHandlers, prioritizedHandler{
-		id: id, priority: priority, failurePolicy: failurePolicyForPriority(priority), routing: routing, handler: h, scope: scope,
+		id: id, priority: priority, failurePolicy: failurePolicyForPriority(priority), routing: routing, stateGate: stateGate, handler: h, scope: scope,
 	})
 	sort.SliceStable(d.messageHandlers, func(i, j int) bool {
 		return d.messageHandlers[i].priority < d.messageHandlers[j].priority

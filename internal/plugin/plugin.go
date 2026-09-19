@@ -79,3 +79,12 @@ type MessageHookRoutingPlugin interface {
 	MessageHookPlugin
 	MessageHookRouting() core.MessageHookRouting
 }
+
+// MessageHookStatePlugin optionally supplies a lock-free dynamic interest gate
+// for chat-scoped feature state. Returning false lets the dispatcher skip the
+// hook before TaskEngine admission. Implementations must fail open whenever
+// persistent state is not known to be complete.
+type MessageHookStatePlugin interface {
+	MessageHookRoutingPlugin
+	MessageHookInterested(chatID int64) bool
+}

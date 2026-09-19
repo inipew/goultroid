@@ -16,6 +16,7 @@ import (
 )
 
 var _ plugin.MessageHookPlugin = (*Plugin)(nil)
+var _ plugin.MessageHookStatePlugin = (*Plugin)(nil)
 
 type compiledBlacklist struct {
 	word string
@@ -25,6 +26,7 @@ type compiledBlacklist struct {
 type Plugin struct {
 	db            Repository
 	svcFunc       func() core.TelegramServicer
+	featureState  core.ChatFeatureSnapshot
 	cacheMu       sync.RWMutex
 	chatBlacklist map[int64][]compiledBlacklist
 	chatAccess    map[int64]time.Time
@@ -33,9 +35,28 @@ type Plugin struct {
 func New(db Repository, svcFunc func() core.TelegramServicer) *Plugin {
 	return &Plugin{db: db, svcFunc: svcFunc, chatBlacklist: make(map[int64][]compiledBlacklist), chatAccess: make(map[int64]time.Time)}
 }
-func (p *Plugin) Name() string             { return "blacklist" }
-func (p *Plugin) Init() error              { return nil }
+func (p *Plugin) Name() string { return "blacklist" }
+
+func (p *Plugin) Init() error {
+	return p.InitContext(context.Background())
+}
+
+func (p *Plugin) InitContext(ctx context.Context) error {
+	if repo, ok := p.db.(ActiveChatRepository); ok {
+		chatIDs, err := repo.ListActiveChatIDs(ctx)
+		if err == nil {
+			p.featureState.ReplaceLoaded(chatIDs)
+		}
+	}
+	return nil
+}
+
 func (p *Plugin) MessageHookPriority() int { return 10 }
+
+func (p *Plugin) MessageHookInterested(chatID int64) bool {
+	return p.featureState.Interested(chatID)
+}
+
 func (p *Plugin) MessageHookRouting() core.MessageHookRouting {
 	return core.MessageHookRouting{
 		Lane: core.MessageHookDecision,
@@ -73,10 +94,12 @@ func (p *Plugin) handleBlacklist(ctx *core.Context) error {
 		return errors.New("empty blacklist word")
 	}
 	chatID := p.getChatID(ctx)
+	p.featureState.MarkUnknown(chatID)
 	if err := p.db.AddBlacklist(ctx.Ctx, chatID, word); err != nil {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to add to blacklist: %v", err))
 		return err
 	}
+	p.featureState.SetActive(chatID, true)
 	p.cacheMu.Lock()
 	delete(p.chatBlacklist, chatID)
 	delete(p.chatAccess, chatID)
@@ -90,9 +113,15 @@ func (p *Plugin) handleUnblacklist(ctx *core.Context) error {
 	}
 	word := strings.ToLower(strings.TrimSpace(ctx.RawArgs))
 	chatID := p.getChatID(ctx)
+	p.featureState.MarkUnknown(chatID)
 	if err := p.db.RemoveBlacklist(ctx.Ctx, chatID, word); err != nil {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to remove from blacklist: %v", err))
 		return err
+	}
+	if remaining, err := p.db.ListBlacklists(ctx.Ctx, chatID); err != nil {
+		p.featureState.MarkUnknown(chatID)
+	} else {
+		p.featureState.SetActive(chatID, len(remaining) > 0)
 	}
 	p.cacheMu.Lock()
 	delete(p.chatBlacklist, chatID)
@@ -146,8 +175,10 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 	if !ok {
 		rawWords, err := p.db.ListBlacklists(ctx, chatID)
 		if err != nil {
+			p.featureState.MarkUnknown(chatID)
 			return nil
 		}
+		p.featureState.SetActive(chatID, len(rawWords) > 0)
 		items = compileBlacklist(rawWords)
 		p.cacheMu.Lock()
 		if len(p.chatBlacklist) >= 500 {

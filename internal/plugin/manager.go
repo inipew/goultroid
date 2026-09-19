@@ -49,10 +49,27 @@ type scopedRoutedHookRegistrar interface {
 	AddScopedMessageHandlerWithRouting(priority int, scope tasks.ScopeIdentity, routing core.MessageHookRouting, h MessageHookHandler) func()
 }
 
+type stateRoutedHookRegistrar interface {
+	AddPrioritizedMessageHandlerWithRoutingAndState(priority int, routing core.MessageHookRouting, stateGate func(int64) bool, h MessageHookHandler) func()
+}
+
+type scopedStateRoutedHookRegistrar interface {
+	AddScopedMessageHandlerWithRoutingAndState(priority int, scope tasks.ScopeIdentity, routing core.MessageHookRouting, stateGate func(int64) bool, h MessageHookHandler) func()
+}
+
 func registerMessageHook(registrar HookRegistrar, p Plugin, scope tasks.ScopeIdentity) func() {
 	mhp, ok := p.(MessageHookPlugin)
 	if !ok || registrar == nil {
 		return nil
+	}
+	if stateful, ok := p.(MessageHookStatePlugin); ok {
+		routing := stateful.MessageHookRouting()
+		if scoped, ok := registrar.(scopedStateRoutedHookRegistrar); ok {
+			return scoped.AddScopedMessageHandlerWithRoutingAndState(mhp.MessageHookPriority(), scope, routing, stateful.MessageHookInterested, mhp.HandleIncomingMessage)
+		}
+		if indexed, ok := registrar.(stateRoutedHookRegistrar); ok {
+			return indexed.AddPrioritizedMessageHandlerWithRoutingAndState(mhp.MessageHookPriority(), routing, stateful.MessageHookInterested, mhp.HandleIncomingMessage)
+		}
 	}
 	if routed, ok := p.(MessageHookRoutingPlugin); ok {
 		routing := routed.MessageHookRouting()

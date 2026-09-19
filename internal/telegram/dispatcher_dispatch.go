@@ -223,9 +223,21 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 // decision contract while routing plugin code through TaskEngine. One shared
 // deadline bounds total update-loop latency regardless of handler count.
 func (d *Dispatcher) executeDecisionHandlers(ctx context.Context, handlers []prioritizedHandler, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) bool {
-	decisionCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
+	chatID := extractChatIDFromPeer(msg.PeerID)
+	var decisionCtx context.Context
+	var cancel context.CancelFunc
+	defer func() {
+		if cancel != nil {
+			cancel()
+		}
+	}()
 	for _, registered := range handlers {
+		if !d.messageHookStateInterested(registered, chatID) {
+			continue
+		}
+		if decisionCtx == nil {
+			decisionCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
+		}
 		if registered.scope.IsZero() { // compatibility for local/test handlers
 			if d.safeExecuteInterceptor(decisionCtx, registered.handler, e, msg, isCmd, cmdName, registered.failurePolicy) {
 				return true
@@ -240,12 +252,12 @@ func (d *Dispatcher) executeDecisionHandlers(ctx context.Context, handlers []pri
 		var handled atomic.Bool
 		d.inFlight.Add(1)
 		ticket, err := client.Submit(decisionCtx, tasks.WorkSpec{
-			ID:               tasks.TaskID(fmt.Sprintf("decision:%d:%d:%d", registered.id, extractChatIDFromPeer(msg.PeerID), msg.ID)),
+			ID:               tasks.TaskID(fmt.Sprintf("decision:%d:%d:%d", registered.id, chatID, msg.ID)),
 			Scope:            registered.scope,
 			QuotaOwner:       tasks.OwnerID(registered.scope.Owner),
 			Pool:             "interactive",
 			Class:            tasks.PriorityInteractive,
-			OrderingKey:      fmt.Sprintf("chat:%d", extractChatIDFromPeer(msg.PeerID)),
+			OrderingKey:      fmt.Sprintf("chat:%d", chatID),
 			ExecutionTimeout: 5 * time.Second,
 			Handler: func(taskCtx context.Context) error {
 				handled.Store(d.safeExecuteInterceptor(taskCtx, registered.handler, e, msg, isCmd, cmdName, registered.failurePolicy))
@@ -269,6 +281,22 @@ func (d *Dispatcher) executeDecisionHandlers(ctx context.Context, handlers []pri
 	return false
 }
 
+func (d *Dispatcher) messageHookStateInterested(registered prioritizedHandler, chatID int64) (interested bool) {
+	if registered.stateGate == nil {
+		return true
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			d.logger.Warn("message hook state gate panicked; failing open",
+				zap.Uint64("handler_id", registered.id),
+				zap.Any("panic", r),
+			)
+			interested = true
+		}
+	}()
+	return registered.stateGate(chatID)
+}
+
 // dispatchEventHandlers submits the indexed event-lane hooks asynchronously.
 // Decision/interception work has already completed before this point.
 func (d *Dispatcher) dispatchEventHandlers(ctx context.Context, handlers []prioritizedHandler, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) {
@@ -280,8 +308,12 @@ func (d *Dispatcher) dispatchEventHandlers(ctx context.Context, handlers []prior
 		d.logger.Warn("observer execution unavailable", zap.Error(ErrTasksNotConfigured))
 		return
 	}
+	chatID := extractChatIDFromPeer(msg.PeerID)
 	for _, registered := range handlers {
 		registered := registered
+		if !d.messageHookStateInterested(registered, chatID) {
+			continue
+		}
 		d.inFlight.Add(1)
 		owner := tasks.OwnerID("telegram:feature")
 		class := tasks.PriorityNormal
@@ -293,12 +325,12 @@ func (d *Dispatcher) dispatchEventHandlers(ctx context.Context, handlers []prior
 			owner = tasks.OwnerID(registered.scope.Owner)
 		}
 		_, err := client.Submit(ctx, tasks.WorkSpec{
-			ID:               tasks.TaskID(fmt.Sprintf("hook:%d:%d:%d", registered.id, extractChatIDFromPeer(msg.PeerID), msg.ID)),
+			ID:               tasks.TaskID(fmt.Sprintf("hook:%d:%d:%d", registered.id, chatID, msg.ID)),
 			Scope:            registered.scope,
 			QuotaOwner:       owner,
 			Pool:             "general",
 			Class:            class,
-			OrderingKey:      fmt.Sprintf("chat:%d", extractChatIDFromPeer(msg.PeerID)),
+			OrderingKey:      fmt.Sprintf("chat:%d", chatID),
 			ExecutionTimeout: 10 * time.Second,
 			Handler: func(taskCtx context.Context) error {
 				_ = d.safeExecuteInterceptor(taskCtx, registered.handler, e, msg, isCmd, cmdName, registered.failurePolicy)

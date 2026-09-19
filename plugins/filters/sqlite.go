@@ -52,6 +52,25 @@ func (r *SQLiteRepository) GetFilter(ctx context.Context, chatID int64, keyword 
 	return &f, nil
 }
 
+// ListActiveChatIDs returns chats with at least one persisted filter.
+func (r *SQLiteRepository) ListActiveChatIDs(ctx context.Context) ([]int64, error) {
+	rows, err := r.db.QueryContext(ctx, "SELECT DISTINCT chat_id FROM filters ORDER BY chat_id ASC")
+	if err != nil {
+		return nil, fmt.Errorf("failed to list active filter chats: %w", err)
+	}
+	defer rows.Close()
+
+	var chatIDs []int64
+	for rows.Next() {
+		var chatID int64
+		if err := rows.Scan(&chatID); err != nil {
+			return nil, fmt.Errorf("failed to scan active filter chat: %w", err)
+		}
+		chatIDs = append(chatIDs, chatID)
+	}
+	return chatIDs, rows.Err()
+}
+
 // ListFilters lists all active filters for a chat.
 func (r *SQLiteRepository) ListFilters(ctx context.Context, chatID int64) ([]Filter, error) {
 	query := "SELECT chat_id, keyword, reply_text, created_at FROM filters WHERE chat_id = ? ORDER BY keyword ASC"
@@ -90,3 +109,4 @@ func (r *SQLiteRepository) DeleteFilter(ctx context.Context, chatID int64, keywo
 }
 
 var _ Repository = (*SQLiteRepository)(nil)
+var _ ActiveChatRepository = (*SQLiteRepository)(nil)
