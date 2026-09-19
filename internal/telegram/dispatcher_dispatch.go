@@ -71,9 +71,10 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		}
 	}
 
-	decisionHandlers, eventHandlers := d.messageHandlersFor(msg, isCmd)
+	messageEnvelope := NormalizeMessageEnvelope(e, msg, isCmd, cmdName, d.getSelfID())
+	decisionHandlers, eventHandlers := d.messageHandlersForEnvelope(messageEnvelope)
 
-	if d.executeDecisionHandlers(ctx, decisionHandlers, e, msg, isCmd, cmdName) {
+	if d.executeDecisionHandlersEnvelope(ctx, decisionHandlers, messageEnvelope, e, msg) {
 		return nil
 	}
 	if decision.IsHandled() || decision.IsSuppressedCommands() {
@@ -129,12 +130,12 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	}
 
 	if !isCmd {
-		d.dispatchEventHandlers(ctx, eventHandlers, e, msg, isCmd, cmdName)
+		d.dispatchEventHandlersEnvelope(ctx, eventHandlers, messageEnvelope, e, msg)
 		return nil
 	}
 
 	if !cmdExists {
-		d.dispatchEventHandlers(ctx, eventHandlers, e, msg, isCmd, cmdName)
+		d.dispatchEventHandlersEnvelope(ctx, eventHandlers, messageEnvelope, e, msg)
 		return nil
 	}
 
@@ -215,7 +216,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		)
 	}
 
-	d.dispatchEventHandlers(ctx, eventHandlers, e, msg, isCmd, cmdName)
+	d.dispatchEventHandlersEnvelope(ctx, eventHandlers, messageEnvelope, e, msg)
 	return nil
 }
 
@@ -223,7 +224,15 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 // decision contract while routing plugin code through TaskEngine. One shared
 // deadline bounds total update-loop latency regardless of handler count.
 func (d *Dispatcher) executeDecisionHandlers(ctx context.Context, handlers []prioritizedHandler, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) bool {
-	chatID := extractChatIDFromPeer(msg.PeerID)
+	message := NormalizeMessageEnvelope(e, msg, isCmd, cmdName, d.getSelfID())
+	return d.executeDecisionHandlersEnvelope(ctx, handlers, message, e, msg)
+}
+
+func (d *Dispatcher) executeDecisionHandlersEnvelope(ctx context.Context, handlers []prioritizedHandler, message *core.MessageEnvelope, e tg.Entities, msg *tg.Message) bool {
+	if message == nil || msg == nil {
+		return false
+	}
+	chatID := message.ChatID
 	var decisionCtx context.Context
 	var cancel context.CancelFunc
 	defer func() {
@@ -239,7 +248,7 @@ func (d *Dispatcher) executeDecisionHandlers(ctx context.Context, handlers []pri
 			decisionCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
 		}
 		if registered.scope.IsZero() { // compatibility for local/test handlers
-			if d.safeExecuteInterceptor(decisionCtx, registered.handler, e, msg, isCmd, cmdName, registered.failurePolicy) {
+			if d.safeExecuteRegisteredInterceptor(decisionCtx, registered, e, msg, message) {
 				return true
 			}
 			continue
@@ -260,7 +269,7 @@ func (d *Dispatcher) executeDecisionHandlers(ctx context.Context, handlers []pri
 			OrderingKey:      fmt.Sprintf("chat:%d", chatID),
 			ExecutionTimeout: 5 * time.Second,
 			Handler: func(taskCtx context.Context) error {
-				handled.Store(d.safeExecuteInterceptor(taskCtx, registered.handler, e, msg, isCmd, cmdName, registered.failurePolicy))
+				handled.Store(d.safeExecuteRegisteredInterceptor(taskCtx, registered, e, msg, message))
 				return nil
 			},
 			OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
@@ -300,7 +309,12 @@ func (d *Dispatcher) messageHookStateInterested(registered prioritizedHandler, c
 // dispatchEventHandlers submits the indexed event-lane hooks asynchronously.
 // Decision/interception work has already completed before this point.
 func (d *Dispatcher) dispatchEventHandlers(ctx context.Context, handlers []prioritizedHandler, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) {
-	if len(handlers) == 0 {
+	message := NormalizeMessageEnvelope(e, msg, isCmd, cmdName, d.getSelfID())
+	d.dispatchEventHandlersEnvelope(ctx, handlers, message, e, msg)
+}
+
+func (d *Dispatcher) dispatchEventHandlersEnvelope(ctx context.Context, handlers []prioritizedHandler, message *core.MessageEnvelope, e tg.Entities, msg *tg.Message) {
+	if len(handlers) == 0 || message == nil || msg == nil {
 		return
 	}
 	client := d.taskClient()
@@ -308,7 +322,7 @@ func (d *Dispatcher) dispatchEventHandlers(ctx context.Context, handlers []prior
 		d.logger.Warn("observer execution unavailable", zap.Error(ErrTasksNotConfigured))
 		return
 	}
-	chatID := extractChatIDFromPeer(msg.PeerID)
+	chatID := message.ChatID
 	for _, registered := range handlers {
 		registered := registered
 		if !d.messageHookStateInterested(registered, chatID) {
@@ -333,7 +347,7 @@ func (d *Dispatcher) dispatchEventHandlers(ctx context.Context, handlers []prior
 			OrderingKey:      fmt.Sprintf("chat:%d", chatID),
 			ExecutionTimeout: 10 * time.Second,
 			Handler: func(taskCtx context.Context) error {
-				_ = d.safeExecuteInterceptor(taskCtx, registered.handler, e, msg, isCmd, cmdName, registered.failurePolicy)
+				_ = d.safeExecuteRegisteredInterceptor(taskCtx, registered, e, msg, message)
 				return nil
 			},
 			OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },

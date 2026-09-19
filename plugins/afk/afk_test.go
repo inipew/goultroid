@@ -11,7 +11,12 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/telegram"
 )
+
+func handleMessageEvent(p *Plugin, ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error {
+	return p.HandleMessageEvent(ctx, telegram.NormalizeMessageEnvelope(e, msg, isCmd, cmdName, p.ownerID))
+}
 
 type mockService struct {
 	core.MockTelegramServicer
@@ -177,7 +182,7 @@ func TestAFKPlugin(t *testing.T) {
 	}
 
 	svc.sent = ""
-	if err := p.HandleIncomingMessage(ctx, entities, dmMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, entities, dmMsg, false, ""); err != nil {
 		t.Fatalf("unexpected error on handle message: %v", err)
 	}
 	if !strings.Contains(svc.sent, "currently AFK") || !strings.Contains(svc.sent, "taking a nap") {
@@ -186,7 +191,7 @@ func TestAFKPlugin(t *testing.T) {
 
 	// 3. Second message from same user immediately -> rate limited (no reply)
 	svc.sent = ""
-	if err := p.HandleIncomingMessage(ctx, entities, dmMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, entities, dmMsg, false, ""); err != nil {
 		t.Fatalf("unexpected error on second handle: %v", err)
 	}
 	if svc.sent != "" {
@@ -201,7 +206,7 @@ func TestAFKPlugin(t *testing.T) {
 		PeerID:  &tg.PeerUser{UserID: 2002},
 	}
 	svc.sent = ""
-	if err := p.HandleIncomingMessage(ctx, entities, ownerCmdMsg, true, "afk"); err != nil {
+	if err := handleMessageEvent(p, ctx, entities, ownerCmdMsg, true, "afk"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if svc.sent != "" {
@@ -223,7 +228,7 @@ func TestAFKPlugin(t *testing.T) {
 		PeerID:  &tg.PeerUser{UserID: 2002},
 	}
 	svc.sent = ""
-	if err := p.HandleIncomingMessage(ctx, entities, ownerChatMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, entities, ownerChatMsg, false, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(svc.sent, "Welcome back") || !strings.Contains(svc.sent, "turned off") {
@@ -428,7 +433,7 @@ func TestAFKPlugin_BotSentMessageDoesNotTurnOffAFK(t *testing.T) {
 		PeerID:  &tg.PeerUser{UserID: 2002},
 	}
 	svc.sent = ""
-	if err := p.HandleIncomingMessage(ctx, entities, botMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, entities, botMsg, false, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if svc.sent != "" {
@@ -446,7 +451,7 @@ func TestAFKPlugin_BotSentMessageDoesNotTurnOffAFK(t *testing.T) {
 		Message: "Hello I am back",
 		PeerID:  &tg.PeerUser{UserID: 2002},
 	}
-	if err := p.HandleIncomingMessage(ctx, entities, manualMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, entities, manualMsg, false, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(svc.sent, "Welcome back") {
@@ -482,7 +487,7 @@ func TestAFKPlugin_SilentUnAFKInGroups(t *testing.T) {
 		PeerID:  &tg.PeerChannel{ChannelID: 7777},
 	}
 	svc.sent = ""
-	if err := p.HandleIncomingMessage(ctx, tg.Entities{}, groupMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, tg.Entities{}, groupMsg, false, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// Verify AFK was deactivated silently without spamming the group
@@ -530,7 +535,7 @@ func TestAFKPlugin_CompoundCooldown(t *testing.T) {
 		FromID:    &tg.PeerUser{UserID: senderID},
 	}
 	svc.sent = ""
-	if err := p.HandleIncomingMessage(ctx, entities, msgGroup1, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, entities, msgGroup1, false, ""); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if !strings.Contains(svc.sent, "currently AFK") {
@@ -539,7 +544,7 @@ func TestAFKPlugin_CompoundCooldown(t *testing.T) {
 
 	// 2. Second mention immediately in Group 100 -> rate-limited (no reply)
 	svc.sent = ""
-	if err := p.HandleIncomingMessage(ctx, entities, msgGroup1, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, entities, msgGroup1, false, ""); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if svc.sent != "" {
@@ -554,7 +559,7 @@ func TestAFKPlugin_CompoundCooldown(t *testing.T) {
 		FromID:    &tg.PeerUser{UserID: senderID},
 	}
 	svc.sent = ""
-	if err := p.HandleIncomingMessage(ctx, entities, msgGroup2, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, entities, msgGroup2, false, ""); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if !strings.Contains(svc.sent, "currently AFK") {
@@ -599,7 +604,7 @@ func TestAFKPlugin_MentionDetectionComplete(t *testing.T) {
 		},
 	}
 	svc.sent = ""
-	if err := p.HandleIncomingMessage(ctx, entities, usernameMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, entities, usernameMsg, false, ""); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if !strings.Contains(svc.sent, "currently AFK") {
@@ -635,7 +640,7 @@ func TestAFKPlugin_BotDMIgnored(t *testing.T) {
 		FromID: &tg.PeerUser{UserID: botID},
 	}
 	svc.sent = ""
-	if err := p.HandleIncomingMessage(ctx, entities, botMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, entities, botMsg, false, ""); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if svc.sent != "" {
@@ -669,7 +674,7 @@ func TestAFKPlugin_ArbitrationSuppressed(t *testing.T) {
 		FromID: &tg.PeerUser{UserID: 2002},
 	}
 	svc.sent = ""
-	if err := p.HandleIncomingMessage(arbCtx, tg.Entities{Users: map[int64]*tg.User{2002: {ID: 2002, AccessHash: 1}}}, dmMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, arbCtx, tg.Entities{Users: map[int64]*tg.User{2002: {ID: 2002, AccessHash: 1}}}, dmMsg, false, ""); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if svc.sent != "" {
@@ -704,7 +709,7 @@ func TestAFKPlugin_ConcurrentOutgoingAtomicCAS(t *testing.T) {
 				Message: fmt.Sprintf("message %d", msgID),
 				PeerID:  &tg.PeerUser{UserID: 2002},
 			}
-			_ = p.HandleIncomingMessage(ctx, tg.Entities{Users: map[int64]*tg.User{2002: {ID: 2002, AccessHash: 1}}}, m, false, "")
+			_ = handleMessageEvent(p, ctx, tg.Entities{Users: map[int64]*tg.User{2002: {ID: 2002, AccessHash: 1}}}, m, false, "")
 		}(i + 1)
 	}
 	wg.Wait()
@@ -768,7 +773,7 @@ func TestAFKPlugin_MentionDetectionUTF16Emojis(t *testing.T) {
 	}
 
 	svc.sent = ""
-	if err := p.HandleIncomingMessage(ctx, entities, msg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, entities, msg, false, ""); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if !strings.Contains(svc.sent, "currently AFK") {
@@ -820,7 +825,7 @@ func TestAFKPlugin_ForumTopicHandling(t *testing.T) {
 		},
 	}
 	svc.sent = ""
-	if err := p.HandleIncomingMessage(ctx, entities, topicPostMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, entities, topicPostMsg, false, ""); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if svc.sent != "" {
@@ -840,7 +845,7 @@ func TestAFKPlugin_ForumTopicHandling(t *testing.T) {
 		},
 	}
 	svc.sent = ""
-	if err := p.HandleIncomingMessage(ctx, entities, replyInTopicMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, entities, replyInTopicMsg, false, ""); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if !strings.Contains(svc.sent, "currently AFK") {
@@ -884,7 +889,7 @@ func TestAFKPlugin_AnonymousChannelSender(t *testing.T) {
 	}
 
 	svc.sent = ""
-	if err := p.HandleIncomingMessage(ctx, entities, chanSenderMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, entities, chanSenderMsg, false, ""); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if !strings.Contains(svc.sent, "currently AFK") {
@@ -900,7 +905,7 @@ func TestAFKPlugin_AnonymousChannelSender(t *testing.T) {
 		FromID:    &tg.PeerChannel{ChannelID: 777},
 		Mentioned: true,
 	}
-	if err := p.HandleIncomingMessage(ctx, entities, chanSenderMsg2, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, entities, chanSenderMsg2, false, ""); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if svc.sent != "" {
@@ -916,7 +921,7 @@ func TestAFKPlugin_AnonymousChannelSender(t *testing.T) {
 		FromID:    &tg.PeerUser{UserID: 888},
 		Mentioned: true,
 	}
-	if err := p.HandleIncomingMessage(ctx, entities, userSenderMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, entities, userSenderMsg, false, ""); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if !strings.Contains(svc.sent, "currently AFK") {
@@ -961,7 +966,7 @@ func TestAFKPlugin_AutoDiscoverOwnerUsername(t *testing.T) {
 	}
 
 	svc.sent = ""
-	if err := p.HandleIncomingMessage(ctx, entities, msg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, entities, msg, false, ""); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if !strings.Contains(svc.sent, "currently AFK") {
@@ -1004,7 +1009,7 @@ func TestAFKPlugin_IncomingDMOmittedFromID(t *testing.T) {
 	}
 
 	svc.sent = ""
-	if err := p.HandleIncomingMessage(ctx, entities, dmMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, entities, dmMsg, false, ""); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if !strings.Contains(svc.sent, "currently AFK") {

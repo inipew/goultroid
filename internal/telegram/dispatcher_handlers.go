@@ -37,13 +37,14 @@ func failurePolicyForPriority(priority HandlerPriority) HandlerFailurePolicy {
 }
 
 type prioritizedHandler struct {
-	id            uint64
-	priority      HandlerPriority
-	failurePolicy HandlerFailurePolicy
-	routing       core.MessageHookRouting
-	stateGate     func(int64) bool
-	handler       MessageHandler
-	scope         tasks.ScopeIdentity
+	id               uint64
+	priority         HandlerPriority
+	failurePolicy    HandlerFailurePolicy
+	routing          core.MessageHookRouting
+	stateGate        func(int64) bool
+	handler          MessageHandler
+	canonicalHandler CanonicalMessageHandler
+	scope            tasks.ScopeIdentity
 }
 
 const messageRouteClassCount = 128
@@ -60,8 +61,12 @@ type messageHandlerIndex struct {
 	buckets [messageRouteClassCount]messageHandlerBucket
 }
 
-// MessageHandler is invoked for each incoming message.
+// MessageHandler is the privileged raw Telegram compatibility hook.
 type MessageHandler = func(ctx context.Context, e tg.Entities, msg *tg.Message, isCommand bool, cmdName string) error
+
+// CanonicalMessageHandler is the default plugin hook contract. It receives a
+// lightweight normalized envelope and no raw Telegram entity container.
+type CanonicalMessageHandler = func(ctx context.Context, message *core.MessageEnvelope) error
 
 // AddMessageHandler registers a compatibility interceptor with default
 // PriorityFeature. Unscoped feature handlers remain in the decision lane to
@@ -78,42 +83,66 @@ func (d *Dispatcher) AddPrioritizedMessageHandler(priority HandlerPriority, h Me
 // AddPrioritizedMessageHandlerWithRouting registers an unscoped interceptor
 // with explicit lane and structural interests.
 func (d *Dispatcher) AddPrioritizedMessageHandlerWithRouting(priority HandlerPriority, routing core.MessageHookRouting, h MessageHandler) func() {
-	return d.addMessageHandler(priority, tasks.ScopeIdentity{}, routing, nil, h)
+	return d.addMessageHandler(priority, tasks.ScopeIdentity{}, routing, nil, h, nil)
+}
+
+// AddPrioritizedCanonicalMessageHandlerWithRouting registers an unscoped
+// canonical handler with explicit lane and structural interests.
+func (d *Dispatcher) AddPrioritizedCanonicalMessageHandlerWithRouting(priority HandlerPriority, routing core.MessageHookRouting, h CanonicalMessageHandler) func() {
+	return d.addMessageHandler(priority, tasks.ScopeIdentity{}, routing, nil, nil, h)
 }
 
 // AddPrioritizedMessageHandlerWithRoutingAndState registers an unscoped
 // interceptor with structural routing plus a dynamic chat-state gate.
 func (d *Dispatcher) AddPrioritizedMessageHandlerWithRoutingAndState(priority HandlerPriority, routing core.MessageHookRouting, stateGate func(int64) bool, h MessageHandler) func() {
-	return d.addMessageHandler(priority, tasks.ScopeIdentity{}, routing, stateGate, h)
+	return d.addMessageHandler(priority, tasks.ScopeIdentity{}, routing, stateGate, h, nil)
+}
+
+// AddPrioritizedCanonicalMessageHandlerWithRoutingAndState registers an
+// unscoped canonical handler with structural routing and a dynamic state gate.
+func (d *Dispatcher) AddPrioritizedCanonicalMessageHandlerWithRoutingAndState(priority HandlerPriority, routing core.MessageHookRouting, stateGate func(int64) bool, h CanonicalMessageHandler) func() {
+	return d.addMessageHandler(priority, tasks.ScopeIdentity{}, routing, stateGate, nil, h)
 }
 
 // AddScopedMessageHandler registers a plugin-owned handler with routing derived
 // from the legacy priority/scope convention.
 func (d *Dispatcher) AddScopedMessageHandler(priority HandlerPriority, scope tasks.ScopeIdentity, h MessageHandler) func() {
-	return d.addMessageHandler(priority, scope, legacyMessageHookRouting(priority, scope), nil, h)
+	return d.addMessageHandler(priority, scope, legacyMessageHookRouting(priority, scope), nil, h, nil)
 }
 
 // AddScopedMessageHandlerWithRouting registers a plugin-owned handler with
 // explicit decision/event lane and indexed interests.
 func (d *Dispatcher) AddScopedMessageHandlerWithRouting(priority HandlerPriority, scope tasks.ScopeIdentity, routing core.MessageHookRouting, h MessageHandler) func() {
-	return d.addMessageHandler(priority, scope, routing, nil, h)
+	return d.addMessageHandler(priority, scope, routing, nil, h, nil)
+}
+
+// AddScopedCanonicalMessageHandlerWithRouting registers a plugin-owned
+// canonical handler with explicit decision/event lane and indexed interests.
+func (d *Dispatcher) AddScopedCanonicalMessageHandlerWithRouting(priority HandlerPriority, scope tasks.ScopeIdentity, routing core.MessageHookRouting, h CanonicalMessageHandler) func() {
+	return d.addMessageHandler(priority, scope, routing, nil, nil, h)
 }
 
 // AddScopedMessageHandlerWithRoutingAndState registers a plugin-owned handler
 // with structural routing plus a dynamic chat-state gate.
 func (d *Dispatcher) AddScopedMessageHandlerWithRoutingAndState(priority HandlerPriority, scope tasks.ScopeIdentity, routing core.MessageHookRouting, stateGate func(int64) bool, h MessageHandler) func() {
-	return d.addMessageHandler(priority, scope, routing, stateGate, h)
+	return d.addMessageHandler(priority, scope, routing, stateGate, h, nil)
 }
 
-func (d *Dispatcher) addMessageHandler(priority HandlerPriority, scope tasks.ScopeIdentity, routing core.MessageHookRouting, stateGate func(int64) bool, h MessageHandler) func() {
-	if h == nil {
+// AddScopedCanonicalMessageHandlerWithRoutingAndState registers a plugin-owned
+// canonical handler with structural routing and a dynamic chat-state gate.
+func (d *Dispatcher) AddScopedCanonicalMessageHandlerWithRoutingAndState(priority HandlerPriority, scope tasks.ScopeIdentity, routing core.MessageHookRouting, stateGate func(int64) bool, h CanonicalMessageHandler) func() {
+	return d.addMessageHandler(priority, scope, routing, stateGate, nil, h)
+}
+
+func (d *Dispatcher) addMessageHandler(priority HandlerPriority, scope tasks.ScopeIdentity, routing core.MessageHookRouting, stateGate func(int64) bool, h MessageHandler, canonical CanonicalMessageHandler) func() {
+	if h == nil && canonical == nil {
 		return func() {}
 	}
 	d.mu.Lock()
 	d.nextHandlerID++
 	id := d.nextHandlerID
 	d.messageHandlers = append(d.messageHandlers, prioritizedHandler{
-		id: id, priority: priority, failurePolicy: failurePolicyForPriority(priority), routing: routing, stateGate: stateGate, handler: h, scope: scope,
+		id: id, priority: priority, failurePolicy: failurePolicyForPriority(priority), routing: routing, stateGate: stateGate, handler: h, canonicalHandler: canonical, scope: scope,
 	})
 	sort.SliceStable(d.messageHandlers, func(i, j int) bool {
 		return d.messageHandlers[i].priority < d.messageHandlers[j].priority
@@ -161,11 +190,24 @@ func (d *Dispatcher) rebuildMessageHandlerIndexLocked() {
 }
 
 func (d *Dispatcher) messageHandlersFor(msg *tg.Message, isCommand bool) (decision, event []prioritizedHandler) {
+	if msg == nil {
+		return nil, nil
+	}
+	return d.messageHandlersForClass(classifyMessageRoute(msg, isCommand))
+}
+
+func (d *Dispatcher) messageHandlersForEnvelope(message *core.MessageEnvelope) (decision, event []prioritizedHandler) {
+	if message == nil {
+		return nil, nil
+	}
+	return d.messageHandlersForClass(classifyCanonicalMessageRoute(message))
+}
+
+func (d *Dispatcher) messageHandlersForClass(class uint8) (decision, event []prioritizedHandler) {
 	idx := d.messageRouteIndex.Load()
 	if idx == nil {
 		return nil, nil
 	}
-	class := classifyMessageRoute(msg, isCommand)
 	bucket := &idx.buckets[class]
 	return bucket.decision, bucket.event
 }
@@ -189,6 +231,37 @@ func classifyMessageRoute(msg *tg.Message, isCommand bool) uint8 {
 		class |= 1 << 5
 	}
 	if msg.ReplyTo != nil {
+		class |= 1 << 6
+	}
+	return class
+}
+
+func classifyCanonicalMessageRoute(message *core.MessageEnvelope) uint8 {
+	if message == nil {
+		return 0
+	}
+	var class uint8
+	if message.Outgoing {
+		class |= 1 << 0
+	}
+	switch message.Chat.Type {
+	case "private":
+		class |= 1 << 1
+	case "group":
+		class |= 2 << 1
+	case "supergroup", "channel":
+		class |= 3 << 1
+	}
+	if message.IsCommand {
+		class |= 1 << 3
+	}
+	if message.Text != "" {
+		class |= 1 << 4
+	}
+	if message.Mentioned || len(message.Mentions) > 0 {
+		class |= 1 << 5
+	}
+	if message.ReplyToID != 0 {
 		class |= 1 << 6
 	}
 	return class
@@ -299,6 +372,39 @@ func (d *Dispatcher) safeExecuteInterceptor(
 	isCmd bool,
 	cmdName string,
 	policy HandlerFailurePolicy,
+) bool {
+	return d.safeExecuteMessageHook(ctx, policy, func(interceptorCtx context.Context) error {
+		return h(interceptorCtx, e, msg, isCmd, cmdName)
+	})
+}
+
+func (d *Dispatcher) safeExecuteRegisteredInterceptor(
+	ctx context.Context,
+	registered prioritizedHandler,
+	e tg.Entities,
+	msg *tg.Message,
+	message *core.MessageEnvelope,
+) bool {
+	if registered.canonicalHandler != nil {
+		return d.safeExecuteMessageHook(ctx, registered.failurePolicy, func(interceptorCtx context.Context) error {
+			return registered.canonicalHandler(interceptorCtx, message)
+		})
+	}
+	if registered.handler == nil {
+		return false
+	}
+	isCmd, cmdName := false, ""
+	if message != nil {
+		isCmd = message.IsCommand
+		cmdName = message.CommandName
+	}
+	return d.safeExecuteInterceptor(ctx, registered.handler, e, msg, isCmd, cmdName, registered.failurePolicy)
+}
+
+func (d *Dispatcher) safeExecuteMessageHook(
+	ctx context.Context,
+	policy HandlerFailurePolicy,
+	run func(context.Context) error,
 ) (handled bool) {
 	failClosed := policy == FailurePolicyFailClosed
 	defer func() {
@@ -314,7 +420,10 @@ func (d *Dispatcher) safeExecuteInterceptor(
 	interceptorCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	if err := h(interceptorCtx, e, msg, isCmd, cmdName); err != nil {
+	if run == nil {
+		return false
+	}
+	if err := run(interceptorCtx); err != nil {
 		if errors.Is(err, core.ErrInterceptHandled) {
 			return true
 		}

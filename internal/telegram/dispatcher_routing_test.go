@@ -137,3 +137,71 @@ func BenchmarkDispatcherMessageRouteLookup(b *testing.B) {
 		}
 	}
 }
+
+func TestDispatcher_CanonicalHandlerReceivesNormalizedEnvelope(t *testing.T) {
+	d := NewDispatcher(core.NewRouter("."), core.NewPermissions(42, nil), nil, zap.NewNop())
+	d.SetSelfID(42)
+
+	var got *core.MessageEnvelope
+	d.AddPrioritizedCanonicalMessageHandlerWithRouting(PrioritySecurity, core.MessageHookRouting{
+		Lane: core.MessageHookDecision,
+		Interests: []core.MessageHookInterest{{
+			Directions: core.MessageDirectionIncoming,
+			Peers:      core.MessagePeerGroup,
+			RequireText: true,
+		}},
+	}, func(_ context.Context, message *core.MessageEnvelope) error {
+		got = message
+		return nil
+	})
+
+	msg := &tg.Message{
+		ID:      9,
+		PeerID:  &tg.PeerChat{ChatID: 77},
+		FromID:  &tg.PeerUser{UserID: 7},
+		Message: "hello @owner",
+		Entities: []tg.MessageEntityClass{
+			&tg.MessageEntityMentionName{Offset: 6, Length: 6, UserID: 42},
+		},
+	}
+	entities := tg.Entities{
+		Users: map[int64]*tg.User{
+			7:  {ID: 7, FirstName: "Alice"},
+			42: {ID: 42, Username: "owner", Self: true},
+		},
+		Chats: map[int64]*tg.Chat{77: {ID: 77, Title: "Room"}},
+	}
+	if err := d.dispatch(context.Background(), entities, msg); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if got == nil {
+		t.Fatal("canonical hook was not invoked")
+	}
+	if got.ID != 9 || got.ChatID != 77 || got.Chat.Title != "Room" {
+		t.Fatalf("unexpected message/chat: %+v", got)
+	}
+	if got.Sender.ID != 7 || got.Sender.FirstName != "Alice" {
+		t.Fatalf("unexpected sender: %+v", got.Sender)
+	}
+	if !got.MentionsUser(42) {
+		t.Fatalf("owner mention missing: %+v", got.Mentions)
+	}
+}
+
+func TestCanonicalAndRawRouteClassificationParity(t *testing.T) {
+	msg := &tg.Message{
+		Out:       true,
+		PeerID:    &tg.PeerChannel{ChannelID: 5},
+		Message:   "@x",
+		Mentioned: true,
+		ReplyTo:   &tg.MessageReplyHeader{ReplyToMsgID: 1},
+	}
+	rawClass := classifyMessageRoute(msg, true)
+	envelope := NormalizeMessageEnvelope(tg.Entities{
+		Channels: map[int64]*tg.Channel{5: {ID: 5, Megagroup: true}},
+	}, msg, true, "cmd", 1)
+	canonicalClass := classifyCanonicalMessageRoute(envelope)
+	if rawClass != canonicalClass {
+		t.Fatalf("route class mismatch raw=%07b canonical=%07b", rawClass, canonicalClass)
+	}
+}

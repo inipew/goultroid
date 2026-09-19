@@ -243,3 +243,18 @@ func TestUserLogService_DeliveryHealthAndStats(t *testing.T) {
 		t.Fatalf("userlog introduced a second retry policy: attempts=%d", mockTG.attempts)
 	}
 }
+
+func TestServiceIsLogDestinationRef(t *testing.T) {
+	db := setupTestDB(t)
+	repo := userlog.NewSQLiteRepository(db)
+	svc := userlog.NewService(repo, nil, zap.NewNop())
+	if err := svc.SetDestination(context.Background(), userlog.LogDestination{Type: userlog.LogDestinationChannel, ID: 77, AccessHash: 99}); err != nil {
+		t.Fatal(err)
+	}
+	if !svc.IsLogDestinationRef(core.PeerRef{Kind: core.PeerKindChannel, ID: 77, AccessHash: 99}) {
+		t.Fatal("expected matching normalized channel peer to be recognized")
+	}
+	if svc.IsLogDestinationRef(core.PeerRef{Kind: core.PeerKindChat, ID: 77}) {
+		t.Fatal("peer kind mismatch should not match log destination")
+	}
+}

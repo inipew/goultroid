@@ -14,8 +14,8 @@ import (
 	"github.com/inipew/goultroid/internal/settings"
 )
 
-var _ plugin.MessageHookPlugin = (*Plugin)(nil)
-var _ plugin.MessageHookStatePlugin = (*Plugin)(nil)
+var _ plugin.MessageEventPlugin = (*Plugin)(nil)
+var _ plugin.MessageEventStatePlugin = (*Plugin)(nil)
 
 type Plugin struct {
 	svc      *pmpermit.Service
@@ -59,69 +59,75 @@ func (p *Plugin) Commands() []core.Command {
 	}
 }
 
-func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *tg.Message, isCommand bool, cmdName string) error {
-	if p.svc == nil || !p.svc.IsEnabled() || msg == nil {
+func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEnvelope) error {
+	if p.svc == nil || !p.svc.IsEnabled() || message == nil {
 		return nil
 	}
-	if msg.Out {
-		if isCommand || cmdName != "" || strings.HasPrefix(msg.Message, ".") {
+	if message.Outgoing {
+		if message.IsCommand || message.CommandName != "" {
 			return nil
 		}
-		if p.svc.IsPMPermitMessage(msg.Message) || p.svc.IsBotSent(msg.ID) {
+		if p.svc.IsPMPermitMessage(message.Text) || p.svc.IsBotSent(message.ID) {
 			return nil
 		}
-		if peerUser, ok := msg.PeerID.(*tg.PeerUser); ok && peerUser != nil {
-			targetID := peerUser.UserID
-			if p.svc.IsWarnID(targetID, msg.ID) {
-				return nil
-			}
-			if targetID != 0 && targetID != p.svc.OwnerID() && !p.svc.IsSudoID(targetID) {
-				user, ok := e.Users[targetID]
-				if !ok || user == nil || user.AccessHash == 0 {
-					return nil
-				}
-				peer := &tg.InputPeerUser{UserID: targetID, AccessHash: user.AccessHash}
-				if err := p.svc.AutoApproveOutgoing(ctx, peer, targetID); err != nil {
-					return err
-				}
-			}
+		if !message.IsPrivate() {
+			return nil
 		}
+		targetID := message.ChatID
+		if targetID == 0 || targetID == p.svc.OwnerID() || p.svc.IsSudoID(targetID) {
+			return nil
+		}
+		if p.svc.IsWarnID(targetID, message.ID) {
+			return nil
+		}
+		peer, err := message.Peer.InputPeer()
+		if err != nil {
+			return nil
+		}
+		userPeer, ok := peer.(*tg.InputPeerUser)
+		if !ok || userPeer.AccessHash == 0 {
+			return nil
+		}
+		return p.svc.AutoApproveOutgoing(ctx, userPeer, targetID)
+	}
+
+	if !message.IsPrivate() {
 		return nil
 	}
-	peerUser, ok := msg.PeerID.(*tg.PeerUser)
-	if !ok || peerUser == nil {
+	senderID := message.Sender.ID
+	if senderID == 0 {
+		senderID = message.ChatID
+	}
+	if senderID == 0 {
 		return nil
 	}
-	senderID := peerUser.UserID
-	if msg.FromID != nil {
-		if u, ok := msg.FromID.(*tg.PeerUser); ok {
-			senderID = u.UserID
-		}
-	}
-	user := e.Users[senderID]
+
 	var peerInput *tg.InputPeerUser
-	if user != nil && user.AccessHash != 0 {
-		peerInput = &tg.InputPeerUser{UserID: senderID, AccessHash: user.AccessHash}
-	} else if p.resolver != nil {
+	if peer, err := message.Peer.InputPeer(); err == nil {
+		if userPeer, ok := peer.(*tg.InputPeerUser); ok && userPeer.UserID == senderID && userPeer.AccessHash != 0 {
+			peerInput = userPeer
+		}
+	}
+	if peerInput == nil && p.resolver != nil {
 		peer, resolvedID, err := p.resolver.ResolveUser(ctx, strconv.FormatInt(senderID, 10))
 		if resolved, ok := peer.(*tg.InputPeerUser); err == nil && ok && resolved != nil &&
 			resolved.UserID == senderID && resolvedID == senderID && resolved.AccessHash != 0 {
 			peerInput = resolved
 		}
 	}
-	actor := pmpermit.PMActor{UserID: senderID}
-	if user != nil {
-		actor.IsBot = user.Bot
-		actor.Verified = user.Verified
-		actor.IsSelf = user.Self
+
+	actor := pmpermit.PMActor{
+		UserID:   senderID,
+		IsBot:    message.Sender.IsBot,
+		Verified: message.SenderVerified,
+		IsSelf:   message.SenderSelf,
 	}
 	if actor.IsBot || actor.Verified || actor.IsSelf {
 		return nil
 	}
 	if peerInput == nil {
-		// Do not let an unapproved private message reach commands or other
-		// automation merely because Telegram supplied a min/incomplete user.
-		// A later update can retry after the peer cache has been populated.
+		// Fail closed: an unapproved private message with incomplete peer data
+		// must not reach commands/automation merely because access hash is absent.
 		return core.ErrInterceptHandled
 	}
 	handled, err := p.svc.HandleIncomingPM(ctx, peerInput, senderID, actor)
@@ -129,8 +135,8 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 		return err
 	}
 	if handled {
-		if isCommand {
-			core.MarkMessageHandled(senderID, msg.ID)
+		if message.IsCommand {
+			core.MarkMessageHandled(senderID, message.ID)
 		}
 		if decision := core.GetMessageDecision(ctx); decision != nil {
 			decision.SetHandled(true)
@@ -143,7 +149,6 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 	}
 	return nil
 }
-
 func (p *Plugin) resolveTargetUser(ctx *core.Context) (tg.InputPeerClass, int64) {
 	if peer, id, err := ctx.ResolveTargetUser(); err == nil && id != 0 {
 		return peer, id

@@ -9,7 +9,12 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/telegram"
 )
+
+func handleMessageEvent(p *Plugin, ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error {
+	return p.HandleMessageEvent(ctx, telegram.NormalizeMessageEnvelope(e, msg, isCmd, cmdName, 0))
+}
 
 type mockService struct {
 	core.MockTelegramServicer
@@ -122,7 +127,7 @@ func TestBlacklistPlugin(t *testing.T) {
 	// 5a. Command message -> ignored
 	svc.deleteCalled = false
 	svc.deletedMsgIDs = nil
-	err = p.HandleIncomingMessage(context.Background(), tg.Entities{}, &tg.Message{
+	err = handleMessageEvent(p, context.Background(), tg.Entities{}, &tg.Message{
 		ID:      101,
 		PeerID:  &tg.PeerChat{ChatID: chatID},
 		Message: ".blacklist scam",
@@ -133,7 +138,7 @@ func TestBlacklistPlugin(t *testing.T) {
 
 	// 5b. Outgoing message -> ignored
 	svc.deleteCalled = false
-	err = p.HandleIncomingMessage(context.Background(), tg.Entities{}, &tg.Message{
+	err = handleMessageEvent(p, context.Background(), tg.Entities{}, &tg.Message{
 		ID:      102,
 		PeerID:  &tg.PeerChat{ChatID: chatID},
 		Message: "this is scam",
@@ -145,7 +150,7 @@ func TestBlacklistPlugin(t *testing.T) {
 
 	// 5c. Safe incoming message -> ignored
 	svc.deleteCalled = false
-	err = p.HandleIncomingMessage(context.Background(), tg.Entities{}, &tg.Message{
+	err = handleMessageEvent(p, context.Background(), tg.Entities{}, &tg.Message{
 		ID:      103,
 		PeerID:  &tg.PeerChat{ChatID: chatID},
 		Message: "hello this is legitimate message",
@@ -157,7 +162,7 @@ func TestBlacklistPlugin(t *testing.T) {
 	// 5d. Blacklist violation -> auto-deleted!
 	svc.deleteCalled = false
 	svc.deletedMsgIDs = nil
-	err = p.HandleIncomingMessage(context.Background(), tg.Entities{}, &tg.Message{
+	err = handleMessageEvent(p, context.Background(), tg.Entities{}, &tg.Message{
 		ID:      104,
 		PeerID:  &tg.PeerChat{ChatID: chatID},
 		Message: "Warning, this might be a SCAM alert!",
@@ -172,7 +177,7 @@ func TestBlacklistPlugin(t *testing.T) {
 	// 5e. Phrase violation -> auto-deleted!
 	svc.deleteCalled = false
 	svc.deletedMsgIDs = nil
-	err = p.HandleIncomingMessage(context.Background(), tg.Entities{}, &tg.Message{
+	err = handleMessageEvent(p, context.Background(), tg.Entities{}, &tg.Message{
 		ID:      105,
 		PeerID:  &tg.PeerChat{ChatID: chatID},
 		Message: "Click here to get free crypto now!",
@@ -203,7 +208,7 @@ func TestBlacklistPlugin(t *testing.T) {
 
 	// Verify scam is no longer triggered
 	svc.deleteCalled = false
-	_ = p.HandleIncomingMessage(context.Background(), tg.Entities{}, &tg.Message{
+	_ = handleMessageEvent(p, context.Background(), tg.Entities{}, &tg.Message{
 		ID:      106,
 		PeerID:  &tg.PeerChat{ChatID: chatID},
 		Message: "this is scam",

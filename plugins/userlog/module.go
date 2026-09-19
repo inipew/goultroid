@@ -16,7 +16,7 @@ func (ModuleType) Manifest() module.Manifest {
 		ID:           "userlog",
 		Version:      "1.0.0",
 		Description:  "User event logging to a dedicated Telegram destination",
-		Capabilities: []string{plugin.CapTelegramSendMessage, plugin.CapStorageRead, plugin.CapStorageWrite, plugin.CapEvents},
+		Capabilities: []string{plugin.CapTelegramRead, plugin.CapTelegramSendMessage, plugin.CapStorageRead, plugin.CapStorageWrite, plugin.CapEvents},
 	}
 }
 

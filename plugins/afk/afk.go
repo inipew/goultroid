@@ -9,7 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf16"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
@@ -19,7 +18,7 @@ import (
 )
 
 var (
-	_ plugin.MessageHookPlugin     = (*Plugin)(nil)
+	_ plugin.MessageEventRoutingPlugin = (*Plugin)(nil)
 	_ plugin.ContextInitializer    = (*Plugin)(nil)
 	_ execution.CapabilityProvider = (*Plugin)(nil)
 )
@@ -297,32 +296,30 @@ func (p *Plugin) disableAFK(ctx context.Context) (string, bool, error) {
 	return dur, true, nil
 }
 
-func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *tg.Message, isCommand bool, cmdName string) error {
-	if msg == nil {
+func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEnvelope) error {
+	if message == nil {
 		return nil
 	}
 	if decision := core.GetMessageDecision(ctx); decision != nil && (decision.IsSuppressedAFK() || decision.IsSuppressedAutomation()) {
 		return nil
 	}
 	ownerID := p.ownerID
-	if ownerID == 0 {
-		return nil
-	}
-	if p.svcFunc == nil {
+	if ownerID == 0 || p.svcFunc == nil {
 		return nil
 	}
 	svc := p.svcFunc()
 	if svc == nil {
 		return nil
 	}
-	if msg.Out {
-		if svc.IsBotSent(msg.ID) {
+
+	if message.Outgoing {
+		if svc.IsBotSent(message.ID) {
 			return nil
 		}
 		if decision := core.GetMessageDecision(ctx); decision != nil && decision.Origin() == core.ExecutionAutomation {
 			return nil
 		}
-		if isCommand && strings.EqualFold(cmdName, "afk") {
+		if message.IsCommand && strings.EqualFold(message.CommandName, "afk") {
 			return nil
 		}
 		dur, changed, err := p.disableAFK(ctx)
@@ -336,12 +333,8 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 			return nil
 		}
 		p.Cleanup(0)
-		isPrivate := false
-		if _, ok := msg.PeerID.(*tg.PeerUser); ok {
-			isPrivate = true
-		}
-		if isPrivate || !p.isWelcomePrivateOnly() {
-			peer := p.resolveInputPeer(ctx, msg.PeerID, e)
+		if message.IsPrivate() || !p.isWelcomePrivateOnly() {
+			peer := p.resolveEnvelopePeer(ctx, message)
 			if peer != nil {
 				text := fmt.Sprintf("☀️ <b>Welcome back! AFK mode turned off.</b>\n<b>Away for:</b> <code>%s</code>", dur)
 				sent, err := svc.SendMessage(ctx, peer, text)
@@ -356,77 +349,49 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 		}
 		return nil
 	}
+
 	st := p.state.Load()
-	if st == nil || !st.isAFK {
+	if st == nil || !st.isAFK || !p.AutoReplyEnabled() {
 		return nil
 	}
-	if !p.AutoReplyEnabled() {
+	if p.getOwnerUsername() == "" && message.Self.Username != "" {
+		p.SetOwnerUsername(message.Self.Username)
+	}
+	senderID := message.Sender.ID
+	if senderID == 0 {
+		senderID = message.SenderPeer.ID
+	}
+	if senderID == 0 && message.IsPrivate() {
+		senderID = message.ChatID
+	}
+	if senderID == 0 || senderID == ownerID || message.Sender.IsBot {
 		return nil
 	}
-	if p.getOwnerUsername() == "" {
-		if u, ok := e.Users[ownerID]; ok && u != nil && u.Username != "" {
-			p.SetOwnerUsername(u.Username)
-		}
-	}
-	senderID := extractSenderID(msg)
-	if senderID == 0 || senderID == ownerID {
-		return nil
-	}
-	if u, ok := e.Users[senderID]; ok && u != nil && u.Bot {
-		return nil
-	}
-	chatID := extractChatID(msg.PeerID)
+	chatID := message.ChatID
 	if chatID == 0 {
 		return nil
 	}
+
 	shouldReply := false
-	switch pPeer := msg.PeerID.(type) {
-	case *tg.PeerUser:
-		if pPeer.UserID == ownerID {
+	if message.IsPrivate() {
+		if message.ChatID == ownerID {
 			return nil
 		}
 		shouldReply = true
-	case *tg.PeerChat, *tg.PeerChannel:
-		if msg.Mentioned {
-			shouldReply = true
-		}
-		if !shouldReply && len(msg.Entities) > 0 {
-			u16 := utf16.Encode([]rune(msg.Message))
-			ownerUsername := p.getOwnerUsername()
-			for _, ent := range msg.Entities {
-				switch m := ent.(type) {
-				case *tg.MessageEntityMentionName:
-					if m.UserID == ownerID {
-						shouldReply = true
-					}
-				case *tg.MessageEntityMention:
-					if ownerUsername != "" && m.Offset >= 0 && m.Offset+m.Length <= len(u16) {
-						mentionStr := string(utf16.Decode(u16[m.Offset : m.Offset+m.Length]))
-						mText := strings.TrimPrefix(strings.ToLower(mentionStr), "@")
-						if mText == strings.ToLower(ownerUsername) {
-							shouldReply = true
-						}
-					}
-				}
-				if shouldReply {
-					break
-				}
+	} else if message.IsGroup() || message.IsChannel() {
+		shouldReply = message.Mentioned ||
+			message.MentionsUser(ownerID) ||
+			message.MentionsUsername(p.getOwnerUsername())
+
+		if !shouldReply && message.ReplyToID != 0 && !message.ReplyIsTopicRoot {
+			if p.isCooldownActive(chatID, senderID) {
+				return nil
 			}
-		}
-		if !shouldReply && msg.ReplyTo != nil {
-			if h, ok := msg.ReplyTo.(*tg.MessageReplyHeader); ok && h.ReplyToMsgID != 0 {
-				isTopicRootPost := h.ForumTopic && (h.ReplyToTopID == 0 || h.ReplyToMsgID == h.ReplyToTopID)
-				if !isTopicRootPost {
-					if p.isCooldownActive(chatID, senderID) {
-						return nil
-					}
-					peer := p.resolveInputPeer(ctx, msg.PeerID, e)
-					if peer != nil {
-						repliedMsg, err := svc.GetMessage(ctx, peer, h.ReplyToMsgID)
-						if err == nil && repliedMsg != nil && (repliedMsg.Out || extractSenderID(repliedMsg) == ownerID) {
-							shouldReply = true
-						}
-					}
+			peer := p.resolveEnvelopePeer(ctx, message)
+			if peer != nil {
+				repliedMsg, err := svc.GetMessage(ctx, peer, message.ReplyToID)
+				if err == nil && repliedMsg != nil && (repliedMsg.Out || extractSenderID(repliedMsg) == ownerID) {
+					shouldReply = true
 				}
 			}
 		}
@@ -437,7 +402,7 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 	if !p.checkAndSetCooldown(chatID, senderID) {
 		return nil
 	}
-	peer := p.resolveInputPeer(ctx, msg.PeerID, e)
+	peer := p.resolveEnvelopePeer(ctx, message)
 	if peer == nil {
 		p.rollbackCooldown(chatID, senderID)
 		return nil
@@ -452,7 +417,6 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 	}
 	return nil
 }
-
 func (p *Plugin) deleteWelcomeAfter(svc core.TelegramServicer, peer tg.InputPeerClass, messageID int) {
 	delay := p.getWelcomeDeleteDelay()
 	if delay <= 0 || svc == nil || peer == nil || messageID <= 0 {
@@ -510,28 +474,36 @@ func (p *Plugin) rollbackCooldown(chatID, senderID int64) {
 	delete(p.cooldownMap, [2]int64{chatID, senderID})
 	p.cooldownMu.Unlock()
 }
-func (p *Plugin) resolveInputPeer(ctx context.Context, peer tg.PeerClass, e tg.Entities) tg.InputPeerClass {
-	if res := extractPeerInput(peer, e); res != nil {
-		return res
-	}
-	resolver := p.getResolver()
-	if resolver == nil {
+func (p *Plugin) resolveEnvelopePeer(ctx context.Context, message *core.MessageEnvelope) tg.InputPeerClass {
+	if message == nil {
 		return nil
 	}
-	switch pt := peer.(type) {
-	case *tg.PeerUser:
-		if ipu, _, err := resolver.ResolveUser(ctx, strconv.FormatInt(pt.UserID, 10)); err == nil && ipu != nil {
-			return ipu
+	if peer, err := message.Peer.InputPeer(); err == nil && peer != nil {
+		return peer
+	}
+	resolver := p.getResolver()
+	if resolver == nil || message.Peer.ID == 0 {
+		return nil
+	}
+	switch message.Peer.Kind {
+	case core.PeerKindUser:
+		if peer, _, err := resolver.ResolveUser(ctx, strconv.FormatInt(message.Peer.ID, 10)); err == nil {
+			if userPeer, ok := peer.(*tg.InputPeerUser); ok && userPeer.AccessHash != 0 {
+				return userPeer
+			}
 		}
-	case *tg.PeerChat:
-		return &tg.InputPeerChat{ChatID: pt.ChatID}
-	case *tg.PeerChannel:
-		if ipc, err := resolver.ResolveChat(ctx, fmt.Sprintf("-100%d", pt.ChannelID)); err == nil && ipc != nil {
-			return ipc
+	case core.PeerKindChat:
+		return &tg.InputPeerChat{ChatID: message.Peer.ID}
+	case core.PeerKindChannel:
+		if peer, err := resolver.ResolveChat(ctx, fmt.Sprintf("-100%d", message.Peer.ID)); err == nil {
+			if channelPeer, ok := peer.(*tg.InputPeerChannel); ok && channelPeer.AccessHash != 0 {
+				return channelPeer
+			}
 		}
 	}
 	return nil
 }
+
 func extractSenderID(msg *tg.Message) int64 {
 	if msg == nil {
 		return 0
@@ -552,49 +524,6 @@ func extractSenderID(msg *tg.Message) int64 {
 		}
 	}
 	return 0
-}
-func extractChatID(peer tg.PeerClass) int64 {
-	if peer == nil {
-		return 0
-	}
-	switch p := peer.(type) {
-	case *tg.PeerUser:
-		return p.UserID
-	case *tg.PeerChat:
-		return p.ChatID
-	case *tg.PeerChannel:
-		return p.ChannelID
-	}
-	return 0
-}
-func extractPeerInput(peer tg.PeerClass, e tg.Entities) tg.InputPeerClass {
-	if peer == nil {
-		return nil
-	}
-	switch p := peer.(type) {
-	case *tg.PeerUser:
-		if p.UserID == 0 {
-			return nil
-		}
-		if u, ok := e.Users[p.UserID]; ok && u != nil && u.AccessHash != 0 {
-			return &tg.InputPeerUser{UserID: p.UserID, AccessHash: u.AccessHash}
-		}
-		return nil
-	case *tg.PeerChat:
-		if p.ChatID == 0 {
-			return nil
-		}
-		return &tg.InputPeerChat{ChatID: p.ChatID}
-	case *tg.PeerChannel:
-		if p.ChannelID == 0 {
-			return nil
-		}
-		if ch, ok := e.Channels[p.ChannelID]; ok && ch != nil && ch.AccessHash != 0 {
-			return &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: ch.AccessHash}
-		}
-		return nil
-	}
-	return nil
 }
 func formatDuration(d time.Duration) string {
 	d = d.Round(time.Second)

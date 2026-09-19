@@ -10,13 +10,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/plugin"
 )
 
-var _ plugin.MessageHookPlugin = (*Plugin)(nil)
-var _ plugin.MessageHookStatePlugin = (*Plugin)(nil)
+var _ plugin.MessageEventPlugin = (*Plugin)(nil)
+var _ plugin.MessageEventStatePlugin = (*Plugin)(nil)
 
 type compiledBlacklist struct {
 	word string
@@ -147,16 +146,12 @@ func (p *Plugin) handleListBlacklists(ctx *core.Context) error {
 	return ctx.EditOrReply(sb.String())
 }
 
-func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *tg.Message, isCommand bool, cmdName string) error {
-	if isCommand || msg == nil || msg.Message == "" || msg.Out {
+func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEnvelope) error {
+	if message == nil || message.IsCommand || message.Text == "" || message.Outgoing {
 		return nil
 	}
-	if msg.FromID != nil {
-		if uPeer, ok := msg.FromID.(*tg.PeerUser); ok {
-			if senderUser, found := e.Users[uPeer.UserID]; found && senderUser != nil && senderUser.Bot {
-				return nil
-			}
-		}
+	if message.Sender.IsBot {
+		return nil
 	}
 	if p.svcFunc == nil {
 		return nil
@@ -165,7 +160,7 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 	if svc == nil {
 		return nil
 	}
-	chatID := extractChatID(msg.PeerID)
+	chatID := message.ChatID
 	if chatID == 0 {
 		return nil
 	}
@@ -205,18 +200,18 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 	if len(items) == 0 {
 		return nil
 	}
-	lowerText := strings.ToLower(msg.Message)
+	lowerText := strings.ToLower(message.Text)
 	for _, b := range items {
 		matched := (b.re != nil && b.re.MatchString(lowerText)) || (b.re == nil && b.word != "" && strings.Contains(lowerText, b.word))
 		if !matched {
 			continue
 		}
-		peer := extractPeerInput(msg.PeerID, e)
-		if peer == nil {
-			return fmt.Errorf("blacklist: cannot resolve peer for chat %d; message %d was not deleted", chatID, msg.ID)
+		peer, err := message.Peer.InputPeer()
+		if err != nil {
+			return fmt.Errorf("blacklist: cannot resolve peer for chat %d; message %d was not deleted: %w", chatID, message.ID, err)
 		}
-		if err := svc.DeleteMessage(ctx, peer, []int{msg.ID}); err != nil {
-			return fmt.Errorf("blacklist: failed to delete message %d: %w", msg.ID, err)
+		if err := svc.DeleteMessage(ctx, peer, []int{message.ID}); err != nil {
+			return fmt.Errorf("blacklist: failed to delete message %d: %w", message.ID, err)
 		}
 		if decision := core.GetMessageDecision(ctx); decision != nil {
 			decision.SetHandled(true)
@@ -229,7 +224,6 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 	}
 	return nil
 }
-
 func compileBlacklist(raw []string) []compiledBlacklist {
 	res := make([]compiledBlacklist, len(raw))
 	for i, w := range raw {
@@ -253,44 +247,4 @@ func matchBlacklist(text, word string) bool {
 		return b.re.MatchString(lowerText)
 	}
 	return strings.Contains(lowerText, b.word)
-}
-func extractChatID(peer tg.PeerClass) int64 {
-	switch p := peer.(type) {
-	case *tg.PeerUser:
-		return p.UserID
-	case *tg.PeerChat:
-		return p.ChatID
-	case *tg.PeerChannel:
-		return p.ChannelID
-	}
-	return 0
-}
-func extractPeerInput(peer tg.PeerClass, e tg.Entities) tg.InputPeerClass {
-	if peer == nil {
-		return nil
-	}
-	switch p := peer.(type) {
-	case *tg.PeerUser:
-		if p.UserID == 0 {
-			return nil
-		}
-		if u, ok := e.Users[p.UserID]; ok {
-			return &tg.InputPeerUser{UserID: p.UserID, AccessHash: u.AccessHash}
-		}
-		return nil
-	case *tg.PeerChat:
-		if p.ChatID == 0 {
-			return nil
-		}
-		return &tg.InputPeerChat{ChatID: p.ChatID}
-	case *tg.PeerChannel:
-		if p.ChannelID == 0 {
-			return nil
-		}
-		if ch, ok := e.Channels[p.ChannelID]; ok {
-			return &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: ch.AccessHash}
-		}
-		return nil
-	}
-	return nil
 }

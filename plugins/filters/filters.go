@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/plugin"
 )
@@ -19,8 +18,8 @@ const (
 	filterCooldown = 5 * time.Second
 )
 
-var _ plugin.MessageHookPlugin = (*Plugin)(nil)
-var _ plugin.MessageHookStatePlugin = (*Plugin)(nil)
+var _ plugin.MessageEventPlugin = (*Plugin)(nil)
+var _ plugin.MessageEventStatePlugin = (*Plugin)(nil)
 
 type compiledFilter struct {
 	keyword   string
@@ -186,19 +185,15 @@ func (p *Plugin) invalidateChat(chatID int64) {
 	p.cacheMu.Unlock()
 }
 
-func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *tg.Message, isCommand bool, cmdName string) error {
-	if isCommand || msg == nil || msg.Message == "" || msg.Out {
+func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEnvelope) error {
+	if message == nil || message.IsCommand || message.Text == "" || message.Outgoing {
 		return nil
 	}
 	if decision := core.GetMessageDecision(ctx); decision != nil && (decision.IsSuppressedFilters() || decision.IsSuppressedAutomation()) {
 		return nil
 	}
-	if msg.FromID != nil {
-		if uPeer, ok := msg.FromID.(*tg.PeerUser); ok {
-			if senderUser, found := e.Users[uPeer.UserID]; found && senderUser != nil && senderUser.Bot {
-				return nil
-			}
-		}
+	if message.Sender.IsBot {
+		return nil
 	}
 	if p.svcFunc == nil || p.db == nil {
 		return nil
@@ -207,7 +202,7 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 	if svc == nil {
 		return nil
 	}
-	chatID := extractChatID(msg.PeerID)
+	chatID := message.ChatID
 	if chatID == 0 {
 		return nil
 	}
@@ -227,7 +222,7 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 		return nil
 	}
 
-	lowerText := strings.ToLower(msg.Message)
+	lowerText := strings.ToLower(message.Text)
 	for _, f := range filters {
 		matched := (f.re != nil && f.re.MatchString(lowerText)) || (f.re == nil && f.keyword != "" && strings.Contains(lowerText, f.keyword))
 		if !matched {
@@ -238,9 +233,9 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 			break
 		}
 
-		peer := extractPeerInput(msg.PeerID, e)
-		if peer == nil {
-			return fmt.Errorf("filters: cannot resolve chat peer %d for reply", chatID)
+		peer, err := message.Peer.InputPeer()
+		if err != nil {
+			return fmt.Errorf("filters: cannot resolve chat peer %d for reply: %w", chatID, err)
 		}
 		if _, err := svc.SendMessage(ctx, peer, f.replyText); err != nil {
 			return fmt.Errorf("filters: send reply for %q: %w", f.keyword, err)
@@ -253,7 +248,6 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 	}
 	return nil
 }
-
 func (p *Plugin) getCachedFilters(chatID int64) ([]compiledFilter, bool) {
 	p.cacheMu.RLock()
 	filters, ok := p.chatFilters[chatID]
@@ -334,46 +328,4 @@ func matchFilter(text, keyword string) bool {
 		return f.re.MatchString(lowerText)
 	}
 	return strings.Contains(lowerText, f.keyword)
-}
-
-func extractChatID(peer tg.PeerClass) int64 {
-	switch p := peer.(type) {
-	case *tg.PeerUser:
-		return p.UserID
-	case *tg.PeerChat:
-		return p.ChatID
-	case *tg.PeerChannel:
-		return p.ChannelID
-	}
-	return 0
-}
-
-func extractPeerInput(peer tg.PeerClass, e tg.Entities) tg.InputPeerClass {
-	if peer == nil {
-		return nil
-	}
-	switch p := peer.(type) {
-	case *tg.PeerUser:
-		if p.UserID == 0 {
-			return nil
-		}
-		if u, ok := e.Users[p.UserID]; ok && u != nil && u.AccessHash != 0 {
-			return &tg.InputPeerUser{UserID: p.UserID, AccessHash: u.AccessHash}
-		}
-		return nil
-	case *tg.PeerChat:
-		if p.ChatID == 0 {
-			return nil
-		}
-		return &tg.InputPeerChat{ChatID: p.ChatID}
-	case *tg.PeerChannel:
-		if p.ChannelID == 0 {
-			return nil
-		}
-		if ch, ok := e.Channels[p.ChannelID]; ok && ch != nil && ch.AccessHash != 0 {
-			return &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: ch.AccessHash}
-		}
-		return nil
-	}
-	return nil
 }

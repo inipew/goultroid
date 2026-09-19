@@ -8,7 +8,12 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/telegram"
 )
+
+func handleMessageEvent(p *Plugin, ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error {
+	return p.HandleMessageEvent(ctx, telegram.NormalizeMessageEnvelope(e, msg, isCmd, cmdName, 0))
+}
 
 type mockService struct {
 	core.MockTelegramServicer
@@ -175,7 +180,7 @@ func TestFiltersPlugin(t *testing.T) {
 	// 5. Incoming message evaluation:
 	// 5a. Command message -> skipped
 	svc.sent = ""
-	err = p.HandleIncomingMessage(context.Background(), tg.Entities{}, &tg.Message{
+	err = handleMessageEvent(p, context.Background(), tg.Entities{}, &tg.Message{
 		PeerID:  &tg.PeerChat{ChatID: chatID},
 		Message: ".filter rules",
 	}, true, "filter")
@@ -185,7 +190,7 @@ func TestFiltersPlugin(t *testing.T) {
 
 	// 5b. Outgoing message -> skipped
 	svc.sent = ""
-	err = p.HandleIncomingMessage(context.Background(), tg.Entities{}, &tg.Message{
+	err = handleMessageEvent(p, context.Background(), tg.Entities{}, &tg.Message{
 		PeerID:  &tg.PeerChat{ChatID: chatID},
 		Message: "here are the rules",
 		Out:     true,
@@ -196,7 +201,7 @@ func TestFiltersPlugin(t *testing.T) {
 
 	// 5c. Matching non-command message -> triggers auto-reply
 	svc.sent = ""
-	err = p.HandleIncomingMessage(context.Background(), tg.Entities{}, &tg.Message{
+	err = handleMessageEvent(p, context.Background(), tg.Entities{}, &tg.Message{
 		PeerID:  &tg.PeerChat{ChatID: chatID},
 		Message: "What are the rules please?",
 	}, false, "")
@@ -209,7 +214,7 @@ func TestFiltersPlugin(t *testing.T) {
 
 	// 5d. Non-matching message -> no reply
 	svc.sent = ""
-	err = p.HandleIncomingMessage(context.Background(), tg.Entities{}, &tg.Message{
+	err = handleMessageEvent(p, context.Background(), tg.Entities{}, &tg.Message{
 		PeerID:  &tg.PeerChat{ChatID: chatID},
 		Message: "just a normal random message",
 	}, false, "")
@@ -259,7 +264,7 @@ func TestFiltersPlugin(t *testing.T) {
 		},
 	}
 	svc.sent = ""
-	err = p.HandleIncomingMessage(context.Background(), botEntities, &tg.Message{
+	err = handleMessageEvent(p, context.Background(), botEntities, &tg.Message{
 		PeerID:  &tg.PeerChat{ChatID: chatID},
 		FromID:  &tg.PeerUser{UserID: 9999},
 		Message: "replied to this filter keyword",
@@ -275,7 +280,7 @@ func TestFiltersPlugin(t *testing.T) {
 		},
 	}
 	svc.sent = ""
-	err = p.HandleIncomingMessage(context.Background(), humanEntities, &tg.Message{
+	err = handleMessageEvent(p, context.Background(), humanEntities, &tg.Message{
 		PeerID:  &tg.PeerChat{ChatID: chatID},
 		FromID:  &tg.PeerUser{UserID: 8888},
 		Message: "replied to this filter keyword",
@@ -284,7 +289,7 @@ func TestFiltersPlugin(t *testing.T) {
 		t.Fatalf("expected first human trigger to reply, got sent: %s", svc.sent)
 	}
 	svc.sent = ""
-	err = p.HandleIncomingMessage(context.Background(), humanEntities, &tg.Message{
+	err = handleMessageEvent(p, context.Background(), humanEntities, &tg.Message{
 		PeerID:  &tg.PeerChat{ChatID: chatID},
 		FromID:  &tg.PeerUser{UserID: 8888},
 		Message: "replied to this filter keyword again immediately",

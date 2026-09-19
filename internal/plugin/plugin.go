@@ -64,8 +64,28 @@ type PluginContextInitializer interface {
 	InitPlugin(PluginContext) error
 }
 
-// MessageHookPlugin is an optional interface for plugins that intercept raw Telegram messages.
-// The priority integer corresponds to HandlerPriority (Security=10, Moderation=20, Feature=50, Observability=90).
+// MessageEventPlugin is the preferred message hook API. It receives the
+// canonical core envelope and never needs raw MTProto update/entity containers.
+type MessageEventPlugin interface {
+	Plugin
+	MessageHookPriority() int
+	HandleMessageEvent(ctx context.Context, message *core.MessageEnvelope) error
+}
+
+// MessageEventRoutingPlugin declares structural routing for a canonical hook.
+type MessageEventRoutingPlugin interface {
+	MessageEventPlugin
+	MessageHookRouting() core.MessageHookRouting
+}
+
+// MessageEventStatePlugin adds a fast dynamic feature-state gate to a canonical hook.
+type MessageEventStatePlugin interface {
+	MessageEventRoutingPlugin
+	MessageHookInterested(chatID int64) bool
+}
+
+// MessageHookPlugin is the privileged legacy/raw Telegram compatibility API.
+// Production registration requires the telegram.raw capability.
 type MessageHookPlugin interface {
 	Plugin
 	MessageHookPriority() int

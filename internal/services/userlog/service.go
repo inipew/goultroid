@@ -323,6 +323,28 @@ func (s *Service) IsLogDestination(peer tg.PeerClass) bool {
 	}
 }
 
+// IsLogDestinationRef checks a normalized peer reference against the
+// configured log destination without exposing raw Telegram peer classes.
+func (s *Service) IsLogDestinationRef(peer core.PeerRef) bool {
+	if peer.ID == 0 {
+		return false
+	}
+	s.mu.RLock()
+	dest := s.cachedDest
+	s.mu.RUnlock()
+	if dest == nil || dest.ID == 0 {
+		return false
+	}
+	switch peer.Kind {
+	case core.PeerKindChannel:
+		return dest.Type == LogDestinationChannel && peer.ID == dest.ID
+	case core.PeerKindChat:
+		return dest.Type == LogDestinationChat && peer.ID == dest.ID
+	default:
+		return false
+	}
+}
+
 // SetFeatureEnabled toggles a specific log category (e.g. SettingTagsEnable, SettingPMsEnable, SettingActionsEnable).
 func (s *Service) SetFeatureEnabled(ctx context.Context, feature string, enabled bool) error {
 	val := "false"

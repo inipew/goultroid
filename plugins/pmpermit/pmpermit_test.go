@@ -12,9 +12,14 @@ import (
 	"github.com/inipew/goultroid/internal/database"
 	pmpermitSvc "github.com/inipew/goultroid/internal/services/pmpermit"
 	"github.com/inipew/goultroid/internal/settings"
+	"github.com/inipew/goultroid/internal/telegram"
 	"github.com/inipew/goultroid/plugins/pmpermit"
 	"go.uber.org/zap"
 )
+
+func handleMessageEvent(p *pmpermit.Plugin, ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error {
+	return p.HandleMessageEvent(ctx, telegram.NormalizeMessageEnvelope(e, msg, isCmd, cmdName, 0))
+}
 
 type mockTelegram struct {
 	core.MockTelegramServicer
@@ -206,7 +211,7 @@ func TestPMPermitPlugin_HandleIncomingMessage(t *testing.T) {
 		PeerID: &tg.PeerUser{UserID: 8888},
 	}
 	e.Users[8888] = &tg.User{ID: 8888, AccessHash: 999}
-	if err := p.HandleIncomingMessage(ctx, e, outMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, e, outMsg, false, ""); err != nil {
 		t.Errorf("expected outgoing message handled, got %v", err)
 	}
 	if ok, _ := svc.IsApproved(ctx, 8888); !ok {
@@ -219,7 +224,7 @@ func TestPMPermitPlugin_HandleIncomingMessage(t *testing.T) {
 		Out:    false,
 		PeerID: &tg.PeerChannel{ChannelID: 100},
 	}
-	if err := p.HandleIncomingMessage(ctx, e, groupMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, e, groupMsg, false, ""); err != nil {
 		t.Errorf("expected group message skipped, got %v", err)
 	}
 
@@ -230,7 +235,7 @@ func TestPMPermitPlugin_HandleIncomingMessage(t *testing.T) {
 		PeerID: &tg.PeerUser{UserID: 9999},
 		FromID: &tg.PeerUser{UserID: 9999},
 	}
-	if err := p.HandleIncomingMessage(ctx, e, inMsg, false, ""); !errors.Is(err, core.ErrInterceptHandled) {
+	if err := handleMessageEvent(p, ctx, e, inMsg, false, ""); !errors.Is(err, core.ErrInterceptHandled) {
 		t.Errorf("expected ErrInterceptHandled on intercepted PM, got %v", err)
 	}
 	if !strings.Contains(mockTG.sentText, "Warning") {
@@ -258,7 +263,7 @@ func TestPMPermitPlugin_HandleIncomingMessage_ResolvesMissingAccessHash(t *testi
 		9999: {ID: 9999}, // Telegram min user: access hash is absent.
 	}}
 
-	err := p.HandleIncomingMessage(context.Background(), entities, msg, false, "")
+	err := handleMessageEvent(p, context.Background(), entities, msg, false, "")
 	if !errors.Is(err, core.ErrInterceptHandled) {
 		t.Fatalf("expected resolved PM to be intercepted, got %v", err)
 	}
@@ -278,7 +283,7 @@ func TestPMPermitPlugin_HandleIncomingMessage_UnresolvedSenderIsSafelyIntercepte
 		PeerID: &tg.PeerUser{UserID: 9999},
 		FromID: &tg.PeerUser{UserID: 9999},
 	}
-	err := p.HandleIncomingMessage(context.Background(), tg.Entities{}, msg, false, "")
+	err := handleMessageEvent(p, context.Background(), tg.Entities{}, msg, false, "")
 	if !errors.Is(err, core.ErrInterceptHandled) {
 		t.Fatalf("expected unresolved PM to be safely intercepted, got %v", err)
 	}
@@ -310,7 +315,7 @@ func TestPMPermitPlugin_DisapproveAndWarningDoNotAutoApprove(t *testing.T) {
 		Message: ".disapprove",
 		PeerID:  &tg.PeerUser{UserID: targetID},
 	}
-	if err := p.HandleIncomingMessage(ctx, e, cmdMsg, true, "disapprove"); err != nil {
+	if err := handleMessageEvent(p, ctx, e, cmdMsg, true, "disapprove"); err != nil {
 		t.Fatalf("HandleIncomingMessage failed: %v", err)
 	}
 	if ok, _ := svc.IsApproved(ctx, targetID); ok {
@@ -324,7 +329,7 @@ func TestPMPermitPlugin_DisapproveAndWarningDoNotAutoApprove(t *testing.T) {
 		Message: "👋 <b>Hello!</b>\n\nI haven't approved you for private messaging yet. Warning 1/4",
 		PeerID:  &tg.PeerUser{UserID: targetID},
 	}
-	if err := p.HandleIncomingMessage(ctx, e, warnMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, e, warnMsg, false, ""); err != nil {
 		t.Fatalf("HandleIncomingMessage failed: %v", err)
 	}
 	if ok, _ := svc.IsApproved(ctx, targetID); ok {
@@ -338,7 +343,7 @@ func TestPMPermitPlugin_DisapproveAndWarningDoNotAutoApprove(t *testing.T) {
 		Message: "Automated broadcast or download notification",
 		PeerID:  &tg.PeerUser{UserID: targetID},
 	}
-	if err := p.HandleIncomingMessage(ctx, e, botAutoMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, e, botAutoMsg, false, ""); err != nil {
 		t.Fatalf("HandleIncomingMessage failed: %v", err)
 	}
 	if ok, _ := svc.IsApproved(ctx, targetID); ok {
@@ -353,7 +358,7 @@ func TestPMPermitPlugin_DisapproveAndWarningDoNotAutoApprove(t *testing.T) {
 		Message: "Hello blocked user, unblocking you now",
 		PeerID:  &tg.PeerUser{UserID: targetID},
 	}
-	if err := p.HandleIncomingMessage(ctx, e, chatMsgToBlocked, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, e, chatMsgToBlocked, false, ""); err != nil {
 		t.Fatalf("HandleIncomingMessage failed: %v", err)
 	}
 	if ok, _ := svc.IsApproved(ctx, targetID); !ok {
@@ -372,7 +377,7 @@ func TestPMPermitPlugin_DisapproveAndWarningDoNotAutoApprove(t *testing.T) {
 		Message: "Hey friend, how are you?",
 		PeerID:  &tg.PeerUser{UserID: newTarget},
 	}
-	if err := p.HandleIncomingMessage(ctx, e, chatMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, e, chatMsg, false, ""); err != nil {
 		t.Fatalf("HandleIncomingMessage failed: %v", err)
 	}
 	if ok, _ := svc.IsApproved(ctx, newTarget); !ok {

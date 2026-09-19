@@ -17,7 +17,7 @@ func (ModuleType) Manifest() module.Manifest {
 		ID:           "blacklist",
 		Version:      "1.0.0",
 		Description:  "Chat-specific keyword blacklist and auto-deletion",
-		Capabilities: []string{plugin.CapTelegramSendMessage, plugin.CapTelegramDeleteMessage, plugin.CapStorageRead, plugin.CapStorageWrite, plugin.CapEvents},
+		Capabilities: []string{plugin.CapTelegramRead, plugin.CapTelegramSendMessage, plugin.CapTelegramDeleteMessage, plugin.CapStorageRead, plugin.CapStorageWrite, plugin.CapEvents},
 	}
 }
 

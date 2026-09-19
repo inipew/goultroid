@@ -29,8 +29,11 @@ type ManifestPlugin interface {
 	Manifest() Manifest
 }
 
-// MessageHookHandler represents the raw Telegram message interceptor signature.
+// MessageHookHandler represents the privileged raw Telegram compatibility signature.
 type MessageHookHandler = func(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error
+
+// CanonicalMessageHookHandler is the preferred normalized message hook signature.
+type CanonicalMessageHookHandler = func(ctx context.Context, message *core.MessageEnvelope) error
 
 // HookRegistrar allows the plugin manager to attach message hooks into the dispatcher.
 type HookRegistrar interface {
@@ -57,33 +60,97 @@ type scopedStateRoutedHookRegistrar interface {
 	AddScopedMessageHandlerWithRoutingAndState(priority int, scope tasks.ScopeIdentity, routing core.MessageHookRouting, stateGate func(int64) bool, h MessageHookHandler) func()
 }
 
-func registerMessageHook(registrar HookRegistrar, p Plugin, scope tasks.ScopeIdentity) func() {
-	mhp, ok := p.(MessageHookPlugin)
-	if !ok || registrar == nil {
+type canonicalRoutedHookRegistrar interface {
+	AddPrioritizedCanonicalMessageHandlerWithRouting(priority int, routing core.MessageHookRouting, h CanonicalMessageHookHandler) func()
+}
+
+type scopedCanonicalRoutedHookRegistrar interface {
+	AddScopedCanonicalMessageHandlerWithRouting(priority int, scope tasks.ScopeIdentity, routing core.MessageHookRouting, h CanonicalMessageHookHandler) func()
+}
+
+type canonicalStateRoutedHookRegistrar interface {
+	AddPrioritizedCanonicalMessageHandlerWithRoutingAndState(priority int, routing core.MessageHookRouting, stateGate func(int64) bool, h CanonicalMessageHookHandler) func()
+}
+
+type scopedCanonicalStateRoutedHookRegistrar interface {
+	AddScopedCanonicalMessageHandlerWithRoutingAndState(priority int, scope tasks.ScopeIdentity, routing core.MessageHookRouting, stateGate func(int64) bool, h CanonicalMessageHookHandler) func()
+}
+
+func validateMessageHookAccess(pluginID string, p Plugin, gate *CapabilityGate) error {
+	if gate == nil {
+		// Compatibility for standalone/unit-test managers. The application
+		// composition root always installs a fail-closed capability gate.
 		return nil
+	}
+	if _, canonical := p.(MessageEventPlugin); canonical {
+		if err := gate.Check(pluginID, CapTelegramRead); err != nil {
+			return fmt.Errorf("canonical message hook requires %s: %w", CapTelegramRead, err)
+		}
+		return nil
+	}
+	if _, raw := p.(MessageHookPlugin); raw {
+		if err := gate.Check(pluginID, CapTelegramRaw); err != nil {
+			return fmt.Errorf("raw message hook requires %s: %w", CapTelegramRaw, err)
+		}
+	}
+	return nil
+}
+
+func registerMessageHook(registrar HookRegistrar, p Plugin, scope tasks.ScopeIdentity) (func(), error) {
+	if registrar == nil {
+		return nil, nil
+	}
+
+	if mhp, ok := p.(MessageEventPlugin); ok {
+		if stateful, ok := p.(MessageEventStatePlugin); ok {
+			routing := stateful.MessageHookRouting()
+			if scoped, ok := registrar.(scopedCanonicalStateRoutedHookRegistrar); ok {
+				return scoped.AddScopedCanonicalMessageHandlerWithRoutingAndState(mhp.MessageHookPriority(), scope, routing, stateful.MessageHookInterested, mhp.HandleMessageEvent), nil
+			}
+			if indexed, ok := registrar.(canonicalStateRoutedHookRegistrar); ok {
+				return indexed.AddPrioritizedCanonicalMessageHandlerWithRoutingAndState(mhp.MessageHookPriority(), routing, stateful.MessageHookInterested, mhp.HandleMessageEvent), nil
+			}
+			return nil, fmt.Errorf("hook registrar does not support canonical state routing for plugin %s", p.Name())
+		}
+		if routed, ok := p.(MessageEventRoutingPlugin); ok {
+			routing := routed.MessageHookRouting()
+			if scoped, ok := registrar.(scopedCanonicalRoutedHookRegistrar); ok {
+				return scoped.AddScopedCanonicalMessageHandlerWithRouting(mhp.MessageHookPriority(), scope, routing, mhp.HandleMessageEvent), nil
+			}
+			if indexed, ok := registrar.(canonicalRoutedHookRegistrar); ok {
+				return indexed.AddPrioritizedCanonicalMessageHandlerWithRouting(mhp.MessageHookPriority(), routing, mhp.HandleMessageEvent), nil
+			}
+			return nil, fmt.Errorf("hook registrar does not support canonical routing for plugin %s", p.Name())
+		}
+		return nil, fmt.Errorf("canonical message hook plugin %s must declare MessageHookRouting", p.Name())
+	}
+
+	mhp, ok := p.(MessageHookPlugin)
+	if !ok {
+		return nil, nil
 	}
 	if stateful, ok := p.(MessageHookStatePlugin); ok {
 		routing := stateful.MessageHookRouting()
 		if scoped, ok := registrar.(scopedStateRoutedHookRegistrar); ok {
-			return scoped.AddScopedMessageHandlerWithRoutingAndState(mhp.MessageHookPriority(), scope, routing, stateful.MessageHookInterested, mhp.HandleIncomingMessage)
+			return scoped.AddScopedMessageHandlerWithRoutingAndState(mhp.MessageHookPriority(), scope, routing, stateful.MessageHookInterested, mhp.HandleIncomingMessage), nil
 		}
 		if indexed, ok := registrar.(stateRoutedHookRegistrar); ok {
-			return indexed.AddPrioritizedMessageHandlerWithRoutingAndState(mhp.MessageHookPriority(), routing, stateful.MessageHookInterested, mhp.HandleIncomingMessage)
+			return indexed.AddPrioritizedMessageHandlerWithRoutingAndState(mhp.MessageHookPriority(), routing, stateful.MessageHookInterested, mhp.HandleIncomingMessage), nil
 		}
 	}
 	if routed, ok := p.(MessageHookRoutingPlugin); ok {
 		routing := routed.MessageHookRouting()
 		if scoped, ok := registrar.(scopedRoutedHookRegistrar); ok {
-			return scoped.AddScopedMessageHandlerWithRouting(mhp.MessageHookPriority(), scope, routing, mhp.HandleIncomingMessage)
+			return scoped.AddScopedMessageHandlerWithRouting(mhp.MessageHookPriority(), scope, routing, mhp.HandleIncomingMessage), nil
 		}
 		if indexed, ok := registrar.(routedHookRegistrar); ok {
-			return indexed.AddPrioritizedMessageHandlerWithRouting(mhp.MessageHookPriority(), routing, mhp.HandleIncomingMessage)
+			return indexed.AddPrioritizedMessageHandlerWithRouting(mhp.MessageHookPriority(), routing, mhp.HandleIncomingMessage), nil
 		}
 	}
 	if scoped, ok := registrar.(scopedHookRegistrar); ok {
-		return scoped.AddScopedMessageHandler(mhp.MessageHookPriority(), scope, mhp.HandleIncomingMessage)
+		return scoped.AddScopedMessageHandler(mhp.MessageHookPriority(), scope, mhp.HandleIncomingMessage), nil
 	}
-	return registrar.AddPrioritizedMessageHandler(mhp.MessageHookPriority(), mhp.HandleIncomingMessage)
+	return registrar.AddPrioritizedMessageHandler(mhp.MessageHookPriority(), mhp.HandleIncomingMessage), nil
 }
 
 type callbackRegistrar interface {
@@ -421,6 +488,13 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 		}
 	}()
 
+	m.mu.RLock()
+	messageGate := m.gate
+	m.mu.RUnlock()
+	if err := validateMessageHookAccess(name, p, messageGate); err != nil {
+		return fmt.Errorf("plugin %s message hook rejected: %w", name, err)
+	}
+
 	// 2. Validate commands outside lock
 	cmds := p.Commands()
 	for _, cmd := range cmds {
@@ -498,7 +572,13 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 	hookRegistrar := m.hookRegistrar
 	m.mu.RUnlock()
 	if hookRegistrar != nil {
-		hookCleanup = registerMessageHook(hookRegistrar, p, commandScope)
+		var hookErr error
+		hookCleanup, hookErr = registerMessageHook(hookRegistrar, p, commandScope)
+		if hookErr != nil {
+			router.UnregisterBatch(cmds)
+			cleanupPlugin()
+			return fmt.Errorf("plugin %s message hook registration failed: %w", name, hookErr)
+		}
 	}
 	var callbackCleanup func()
 	m.mu.RLock()
@@ -894,7 +974,15 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 	resMgr := m.resourceManager
 	reporter := m.panicReporter
 	cleanupExecutor := m.cleanupExecutor
+	messageGate := m.gate
 	m.mu.Unlock()
+
+	if err := validateMessageHookAccess(key, p, messageGate); err != nil {
+		m.mu.Lock()
+		delete(m.transitions, key)
+		m.mu.Unlock()
+		return fmt.Errorf("plugin %s message hook rejected: %w", name, err)
+	}
 
 	// Initialize scope and plugin
 	var scope *Scope
@@ -940,12 +1028,29 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 		return fmt.Errorf("failed to re-initialize plugin %s: %w", name, initErr)
 	}
 
+	cleanupEnabledPlugin := func(component string) {
+		if s, ok := p.(ContextShutdowner); ok {
+			_ = m.runLifecycleCallback(ctx, component, func() error { return s.ShutdownContext(ctx) })
+		} else if s, ok := p.(Shutdowner); ok {
+			_ = m.runLifecycleCallback(ctx, component, s.Shutdown)
+		}
+		_ = scope.Close(ctx)
+	}
+
 	var hookCleanup func()
 	m.mu.RLock()
 	hookRegistrar := m.hookRegistrar
 	m.mu.RUnlock()
 	if hookRegistrar != nil {
-		hookCleanup = registerMessageHook(hookRegistrar, p, commandScope)
+		var hookErr error
+		hookCleanup, hookErr = registerMessageHook(hookRegistrar, p, commandScope)
+		if hookErr != nil {
+			cleanupEnabledPlugin("plugin " + name + " hook registration rollback")
+			m.mu.Lock()
+			delete(m.transitions, key)
+			m.mu.Unlock()
+			return fmt.Errorf("failed to re-register message hook for plugin %s: %w", name, hookErr)
+		}
 	}
 	var callbackCleanup func()
 	m.mu.RLock()

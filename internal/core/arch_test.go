@@ -254,3 +254,28 @@ func TestArchitecture_TelegramAdapterNoBusinessRule(t *testing.T) {
 		}
 	}
 }
+
+func TestArchitecture_BuiltinPluginsUseCanonicalMessageEvents(t *testing.T) {
+	pluginsDir := "../../plugins"
+	err := filepath.Walk(pluginsDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || strings.HasSuffix(path, "_test.go") || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		content := string(src)
+		if strings.Contains(content, "plugin.MessageHookPlugin") ||
+			strings.Contains(content, "HandleIncomingMessage(ctx context.Context") {
+			t.Errorf("Architecture violation: builtin plugin %s uses privileged raw message hook; use MessageEventPlugin", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk plugins failed: %v", err)
+	}
+}

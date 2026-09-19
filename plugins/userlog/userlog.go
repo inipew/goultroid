@@ -218,7 +218,7 @@ func (p *Plugin) ShutdownContext(ctx context.Context) error {
 
 var (
 	_ plugin.ContextShutdowner = (*Plugin)(nil)
-	_ plugin.MessageHookPlugin = (*Plugin)(nil)
+	_ plugin.MessageEventRoutingPlugin = (*Plugin)(nil)
 )
 
 func (p *Plugin) Name() string { return "userlog" }
@@ -278,50 +278,30 @@ func (p *Plugin) Commands() []core.Command {
 }
 
 // HandleIncomingMessage inspects updates for PMs or mentions and dispatches to the queue.
-func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *tg.Message, isCommand bool, cmdName string) error {
-	if p.svc == nil || msg == nil || msg.Out {
+func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEnvelope) error {
+	if p.svc == nil || message == nil || message.Outgoing {
 		return nil
 	}
 
-	// Filter out messages occurring inside the log destination chat itself (prevent loop)
-	if p.svc.IsLogDestination(msg.PeerID) {
+	// Prevent recursive logging from the configured destination itself.
+	if p.svc.IsLogDestinationRef(message.Peer) {
 		return nil
 	}
 
-	senderID := int64(0)
-	senderName := "Unknown User"
-	isBot := false
-	if msg.FromID != nil {
-		if u, ok := msg.FromID.(*tg.PeerUser); ok {
-			senderID = u.UserID
-			if userObj, exists := e.Users[senderID]; exists && userObj != nil {
-				senderName = strings.TrimSpace(userObj.FirstName + " " + userObj.LastName)
-				if senderName == "" {
-					senderName = userObj.Username
-				}
-				if senderName == "" {
-					senderName = fmt.Sprintf("User %d", senderID)
-				}
-				isBot = userObj.Bot
-			}
-		}
+	senderID := message.Sender.ID
+	if senderID == 0 && message.IsPrivate() {
+		senderID = message.ChatID
 	}
-
-	// Filter bot senders
-	if isBot {
+	if message.Sender.IsBot {
 		return nil
 	}
+	senderName := message.SenderName()
 
-	// 1. PM Handling
-	if peerUser, ok := msg.PeerID.(*tg.PeerUser); ok {
-		if senderID == 0 {
-			senderID = peerUser.UserID
-		}
-		// Ignore Telegram service notification bots (777000) or self
+	if message.IsPrivate() {
 		if senderID == 777000 || senderID == p.ownerID {
 			return nil
 		}
-		name, id, text, logCtx := senderName, senderID, msg.Message, p.ctx
+		name, id, text, logCtx := senderName, senderID, message.Text, p.ctx
 		p.enqueue(func() {
 			jobCtx, cancel := context.WithTimeout(logCtx, 15*time.Second)
 			defer cancel()
@@ -330,50 +310,18 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 		return nil
 	}
 
-	// 2. Mention Handling
-	isMentioned := msg.Mentioned
-	if !isMentioned {
-		runes := []rune(msg.Message)
-		for _, ent := range msg.Entities {
-			switch m := ent.(type) {
-			case *tg.MessageEntityMentionName:
-				if m.UserID == p.ownerID {
-					isMentioned = true
-					break
-				}
-			case *tg.MessageEntityMention:
-				if p.ownerUsername != "" && m.Offset >= 0 && m.Offset+m.Length <= len(runes) {
-					mentionText := string(runes[m.Offset : m.Offset+m.Length])
-					mentionClean := strings.TrimPrefix(strings.ToLower(mentionText), "@")
-					if mentionClean == strings.ToLower(p.ownerUsername) {
-						isMentioned = true
-						break
-					}
-				}
-			}
-			if isMentioned {
-				break
-			}
-		}
-	}
-
+	isMentioned := message.Mentioned ||
+		message.MentionsUser(p.ownerID) ||
+		message.MentionsUsername(p.ownerUsername)
 	if !isMentioned {
 		return nil
 	}
 
-	chatTitle := "Group Chat"
-	switch c := msg.PeerID.(type) {
-	case *tg.PeerChat:
-		if chatObj, exists := e.Chats[c.ChatID]; exists && chatObj != nil {
-			chatTitle = chatObj.Title
-		}
-	case *tg.PeerChannel:
-		if chObj, exists := e.Channels[c.ChannelID]; exists && chObj != nil {
-			chatTitle = chObj.Title
-		}
+	chatTitle := message.Chat.Title
+	if chatTitle == "" {
+		chatTitle = "Group Chat"
 	}
-
-	name, id, title, text, logCtx := senderName, senderID, chatTitle, msg.Message, p.ctx
+	name, id, title, text, logCtx := senderName, senderID, chatTitle, message.Text, p.ctx
 	p.enqueue(func() {
 		jobCtx, cancel := context.WithTimeout(logCtx, 15*time.Second)
 		defer cancel()
@@ -381,7 +329,6 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 	})
 	return nil
 }
-
 func (p *Plugin) handleSetLog(ctx *core.Context) error {
 	if p.svc == nil {
 		return ctx.EditOrReply("⚠️ UserLog service is not configured.")

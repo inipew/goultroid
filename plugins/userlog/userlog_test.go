@@ -12,9 +12,14 @@ import (
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/plugin"
 	userlogSvc "github.com/inipew/goultroid/internal/services/userlog"
+	"github.com/inipew/goultroid/internal/telegram"
 	"github.com/inipew/goultroid/plugins/userlog"
 	"go.uber.org/zap"
 )
+
+func handleMessageEvent(p *userlog.Plugin, ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error {
+	return p.HandleMessageEvent(ctx, telegram.NormalizeMessageEnvelope(e, msg, isCmd, cmdName, 0))
+}
 
 type mockTelegram struct {
 	core.MockTelegramServicer
@@ -202,7 +207,7 @@ func TestUserLogPlugin_HandleIncomingMessage(t *testing.T) {
 		},
 	}
 
-	if err := p.HandleIncomingMessage(ctx, e, mentionMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, e, mentionMsg, false, ""); err != nil {
 		t.Fatalf("HandleIncomingMessage failed: %v", err)
 	}
 	// UserLog queues work async; wait briefly for worker to process.
@@ -224,7 +229,7 @@ func TestUserLogPlugin_HandleIncomingMessage(t *testing.T) {
 		FromID:  &tg.PeerUser{UserID: 999},
 		Message: "Direct message for you",
 	}
-	if err := p.HandleIncomingMessage(ctx, e, pmMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, e, pmMsg, false, ""); err != nil {
 		t.Fatalf("HandleIncomingMessage PM failed: %v", err)
 	}
 	for i := 0; i < 20; i++ {
@@ -250,7 +255,7 @@ func TestUserLogPlugin_HandleIncomingMessage(t *testing.T) {
 		FromID:    &tg.PeerUser{UserID: 999},
 		Message:   "Reply without entity mention",
 	}
-	if err := p.HandleIncomingMessage(ctx, e, flagMentionMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, e, flagMentionMsg, false, ""); err != nil {
 		t.Fatalf("HandleIncomingMessage flag mention failed: %v", err)
 	}
 	for i := 0; i < 20; i++ {
@@ -279,7 +284,7 @@ func TestUserLogPlugin_HandleIncomingMessage(t *testing.T) {
 			&tg.MessageEntityMention{Offset: 0, Length: 8},
 		},
 	}
-	if err := p.HandleIncomingMessage(ctx, e, usernameMentionMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, e, usernameMentionMsg, false, ""); err != nil {
 		t.Fatalf("HandleIncomingMessage username mention failed: %v", err)
 	}
 	for i := 0; i < 20; i++ {
@@ -305,7 +310,7 @@ func TestUserLogPlugin_HandleIncomingMessage(t *testing.T) {
 		FromID:  &tg.PeerUser{UserID: 888},
 		Message: "I am a bot message",
 	}
-	if err := p.HandleIncomingMessage(ctx, e, botMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, e, botMsg, false, ""); err != nil {
 		t.Fatalf("HandleIncomingMessage bot failed: %v", err)
 	}
 	time.Sleep(50 * time.Millisecond)
@@ -326,7 +331,7 @@ func TestUserLogPlugin_HandleIncomingMessage(t *testing.T) {
 		FromID:    &tg.PeerUser{UserID: 999},
 		Message:   "Mention in log chat itself",
 	}
-	if err := p.HandleIncomingMessage(ctx, e, logChatMsg, false, ""); err != nil {
+	if err := handleMessageEvent(p, ctx, e, logChatMsg, false, ""); err != nil {
 		t.Fatalf("HandleIncomingMessage in log chat failed: %v", err)
 	}
 	time.Sleep(50 * time.Millisecond)
