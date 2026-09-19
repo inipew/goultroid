@@ -49,6 +49,8 @@ type PersistencePump struct {
 	queueCap      int
 	requests      chan persistenceRequest
 	wg            sync.WaitGroup
+	remaining     atomic.Int64
+	doneOnce      sync.Once
 	ctx           context.Context
 	cancel        context.CancelFunc
 	running       bool
@@ -143,22 +145,28 @@ func (p *PersistencePump) Start(parent context.Context) error {
 	p.ctx, p.cancel = context.WithCancel(parent)
 	p.requests = make(chan persistenceRequest, p.queueCap)
 	p.done = make(chan struct{})
+	p.doneOnce = sync.Once{}
+	p.remaining.Store(int64(p.concurrency))
 	p.running = true
 	p.accepting = true
 
+	done := p.done
 	for i := 0; i < p.concurrency; i++ {
 		p.wg.Add(1)
-		go p.workerLoop()
+		go p.workerLoop(done)
 	}
-	go func() {
-		p.wg.Wait()
-		close(p.done)
-	}()
 	return nil
 }
 
-func (p *PersistencePump) workerLoop() {
-	defer p.wg.Done()
+func (p *PersistencePump) workerDone(done chan struct{}) {
+	p.wg.Done()
+	if p.remaining.Add(-1) == 0 {
+		p.doneOnce.Do(func() { close(done) })
+	}
+}
+
+func (p *PersistencePump) workerLoop(done chan struct{}) {
+	defer p.workerDone(done)
 	for req := range p.requests {
 		err := p.processRequest(req)
 		p.mu.Lock()

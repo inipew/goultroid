@@ -131,14 +131,9 @@ func (c *periodicCoordinator) Start(parent context.Context) error {
 	c.ctx, c.cancel = context.WithCancel(parent)
 	c.running = true
 	c.done = make(chan struct{})
-	c.wg.Add(1)
 	done := c.done
 	c.mu.Unlock()
-	go func() {
-		c.wg.Wait()
-		close(done)
-	}()
-	go c.loop()
+	go c.loop(done)
 	return nil
 }
 
@@ -484,8 +479,8 @@ func (c *periodicCoordinator) syncHeapLocked() {
 	}
 }
 
-func (c *periodicCoordinator) loop() {
-	defer c.wg.Done()
+func (c *periodicCoordinator) loop(done chan struct{}) {
+	defer close(done)
 	timer := time.NewTimer(time.Hour)
 	if !timer.Stop() {
 		<-timer.C

@@ -102,9 +102,11 @@ type Manager struct {
 	stopOnce     sync.Once
 	baseCtx      context.Context
 	baseCancel   context.CancelFunc
-	wg           sync.WaitGroup
-	done         chan struct{}
-	tracked      map[string]*trackedOccurrence
+	wg               sync.WaitGroup
+	workersRemaining atomic.Int64
+	doneOnce         sync.Once
+	done             chan struct{}
+	tracked          map[string]*trackedOccurrence
 }
 
 // retryItem watches one submitted attempt for retry/recovery decisions.
@@ -242,21 +244,24 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.accepting = true
 	m.started = true
 	if firstStart {
+		done := m.done
+		_, hasOutbox := m.store.(outboxStore)
+		workerCount := retryWorkers + 1
+		if hasOutbox {
+			workerCount++
+		}
+		m.doneOnce = sync.Once{}
+		m.workersRemaining.Store(int64(workerCount))
 		for i := 0; i < retryWorkers; i++ {
 			m.wg.Add(1)
-			go m.retryLoop()
+			go m.retryLoop(done)
 		}
 		m.wg.Add(1)
-		go m.recoveryLoop()
-		if _, ok := m.store.(outboxStore); ok {
+		go m.recoveryLoop(done)
+		if hasOutbox {
 			m.wg.Add(1)
-			go m.outboxLoop()
+			go m.outboxLoop(done)
 		}
-		done := m.done
-		go func() {
-			m.wg.Wait()
-			close(done)
-		}()
 		// Startup recovery is a bounded wake, not a caller responsibility.
 		select {
 		case m.recoveryWake <- struct{}{}:
@@ -304,8 +309,15 @@ func (m *Manager) signalOutbox() {
 	}
 }
 
-func (m *Manager) outboxLoop() {
-	defer m.wg.Done()
+func (m *Manager) workerDone(done chan struct{}) {
+	m.wg.Done()
+	if m.workersRemaining.Add(-1) == 0 {
+		m.doneOnce.Do(func() { close(done) })
+	}
+}
+
+func (m *Manager) outboxLoop(done chan struct{}) {
+	defer m.workerDone(done)
 	// Delivery is wake-driven. The low-frequency ticker is only a crash/
 	// uncertainty safety net for durable outbox rows that were committed before
 	// an in-memory wake could be emitted.
@@ -883,8 +895,8 @@ func (m *Manager) enqueueRetry(item retryItem) {
 	}
 }
 
-func (m *Manager) retryLoop() {
-	defer m.wg.Done()
+func (m *Manager) retryLoop(done chan struct{}) {
+	defer m.workerDone(done)
 	for {
 		m.mu.RLock()
 		queue := m.retryQueue
@@ -907,8 +919,8 @@ func (m *Manager) retryLoop() {
 
 // recoveryLoop owns startup/restart convergence and provides a low-frequency
 // safety scan. Overflow/error paths only wake this one bounded goroutine.
-func (m *Manager) recoveryLoop() {
-	defer m.wg.Done()
+func (m *Manager) recoveryLoop(done chan struct{}) {
+	defer m.workerDone(done)
 	safetyTicker := time.NewTicker(recoveryInterval)
 	defer safetyTicker.Stop()
 

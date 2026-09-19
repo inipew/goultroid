@@ -27,6 +27,7 @@ type Cache struct {
 	cancel        context.CancelFunc
 	wake          chan struct{}
 	wg            sync.WaitGroup
+	done          chan struct{}
 }
 
 const (
@@ -364,11 +365,14 @@ func (c *Cache) Start(ctx context.Context) error {
 		c.wake = make(chan struct{}, 1)
 	}
 	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	c.cancel = cancel
+	c.done = done
 	c.wg.Add(1)
 	c.mu.Unlock()
 	go func() {
 		defer c.wg.Done()
+		defer close(done)
 		c.pruneLoop(runCtx)
 	}()
 	c.notifyWake()
@@ -382,15 +386,15 @@ func (c *Cache) Stop(ctx context.Context) error {
 	}
 	c.mu.Lock()
 	cancel := c.cancel
+	done := c.done
 	c.cancel = nil
+	c.done = nil
 	c.mu.Unlock()
 	if cancel != nil {
 		cancel()
-		done := make(chan struct{})
-		go func() {
-			c.wg.Wait()
-			close(done)
-		}()
+		if done == nil {
+			return nil
+		}
 		if ctx != nil {
 			select {
 			case <-done:

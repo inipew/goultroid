@@ -228,13 +228,7 @@ func (e *Engine) Start(parentCtx context.Context) error {
 	e.claimMu.Unlock()
 	e.running = true
 	e.runDone = make(chan struct{})
-	e.wg.Add(1)
-	runDone := e.runDone
-	go func() {
-		e.wg.Wait()
-		close(runDone)
-	}()
-	go e.runLoop(e.ctx)
+	go e.runLoop(e.ctx, e.runDone)
 	e.logger.Info("scheduler engine started")
 	return nil
 }
@@ -565,8 +559,8 @@ func (e *Engine) JobHistory(ctx context.Context, jobID int64, limit int) ([]JobH
 
 func scheduledTaskScope(jobID int64) string { return fmt.Sprintf("scheduler:job:%d", jobID) }
 
-func (e *Engine) runLoop(ctx context.Context) {
-	defer e.wg.Done()
+func (e *Engine) runLoop(ctx context.Context, done chan struct{}) {
+	defer close(done)
 	var timer *time.Timer
 	defer func() {
 		if timer != nil {
