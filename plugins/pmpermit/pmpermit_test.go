@@ -11,6 +11,7 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
 	pmpermitSvc "github.com/inipew/goultroid/internal/services/pmpermit"
+	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/plugins/pmpermit"
 	"go.uber.org/zap"
 )
@@ -376,5 +377,93 @@ func TestPMPermitPlugin_DisapproveAndWarningDoNotAutoApprove(t *testing.T) {
 	}
 	if ok, _ := svc.IsApproved(ctx, newTarget); !ok {
 		t.Errorf("legitimate outgoing chat SHOULD auto-approve user")
+	}
+}
+
+func TestPMPermitMessageHookStateTracksEnabled(t *testing.T) {
+	svc := pmpermitSvc.NewService(nil, nil, 1, core.NewPermissions(1, nil), zap.NewNop())
+	p := pmpermit.New(svc)
+
+	if !p.MessageHookInterested(0) {
+		t.Fatal("enabled PMPermit should be interested in routed messages")
+	}
+	svc.SetEnabled(false)
+	if p.MessageHookInterested(0) {
+		t.Fatal("disabled PMPermit should be skipped before TaskEngine admission")
+	}
+	svc.SetEnabled(true)
+	if !p.MessageHookInterested(0) {
+		t.Fatal("re-enabled PMPermit did not restore routing interest")
+	}
+}
+
+func TestPMPermitTogglePersistsAndAppliesLive(t *testing.T) {
+	db := setupTestDB(t)
+	mockTG := &mockTelegram{}
+	perms := core.NewPermissions(12345, nil)
+	svc := pmpermitSvc.NewService(pmpermit.NewSQLiteRepository(db), mockTG, 12345, perms, zap.NewNop())
+
+	registry := settings.NewRegistry()
+	if err := settings.RegisterDefaultDefinitions(registry); err != nil {
+		t.Fatal(err)
+	}
+	settingsRepo := settings.NewSQLiteRepository(db.DB)
+	if err := settingsRepo.InitSchema(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	bus := core.NewEventBus()
+	if err := bus.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = bus.Close() }()
+	settingsSvc := settings.NewService(settingsRepo, registry, bus)
+	binder := settings.NewLiveBinder(settingsSvc, bus)
+	if err := binder.Bind("pmpermit", "enabled", func(value settings.SettingValue) error {
+		enabled, err := value.BoolE()
+		if err != nil {
+			return err
+		}
+		svc.SetEnabled(enabled)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := binder.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = binder.Stop(context.Background()) }()
+
+	p := pmpermit.New(svc)
+	p.SetSettingsService(settingsSvc)
+	var toggle core.Command
+	for _, cmd := range p.Commands() {
+		if cmd.Name == "pmpermit" {
+			toggle = cmd
+			break
+		}
+	}
+	if toggle.Handler == nil {
+		t.Fatal("pmpermit command not found")
+	}
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		Svc:     mockTG,
+		PeerID:  &tg.InputPeerUser{UserID: 12345},
+		Sender:  &core.User{ID: 12345},
+		Message: &core.Message{ID: 1, IsOutgoing: true},
+		Args:    []string{"off"},
+	}
+	if err := toggle.Handler(ctx); err != nil {
+		t.Fatalf("toggle off: %v", err)
+	}
+	if svc.IsEnabled() {
+		t.Fatal("PM Permit remained enabled after persisted live toggle")
+	}
+	enabled, err := settingsSvc.ResolveBool(context.Background(), 0, 0, "pmpermit", "enabled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enabled {
+		t.Fatal("persisted pmpermit:enabled remained true")
 	}
 }

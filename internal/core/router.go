@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode"
 
 	"github.com/inipew/goultroid/internal/execution"
@@ -18,7 +19,7 @@ type ParsedCommand struct {
 
 // Router dispatches incoming message text to registered commands.
 type Router struct {
-	prefix   string
+	prefix   atomic.Value // string
 	commands map[string]Command
 	all      []Command
 	mu       sync.RWMutex
@@ -29,17 +30,35 @@ func NewRouter(prefix string) *Router {
 	if prefix == "" {
 		prefix = "."
 	}
-	return &Router{
-		prefix:   prefix,
+	r := &Router{
 		commands: make(map[string]Command),
 		all:      make([]Command, 0),
 	}
+	r.prefix.Store(prefix)
+	return r
 }
 
 func (r *Router) Prefix() string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.prefix
+	if value := r.prefix.Load(); value != nil {
+		if prefix, ok := value.(string); ok && prefix != "" {
+			return prefix
+		}
+	}
+	return "."
+}
+
+// SetPrefix applies a new command prefix atomically. Prefix changes are rare,
+// while Parse is on the Telegram message hot path, so readers remain lock-free.
+func (r *Router) SetPrefix(prefix string) error {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return fmt.Errorf("command prefix cannot be empty")
+	}
+	if strings.IndexFunc(prefix, unicode.IsSpace) >= 0 {
+		return fmt.Errorf("command prefix cannot contain whitespace")
+	}
+	r.prefix.Store(prefix)
+	return nil
 }
 
 // Register adds one command atomically.
@@ -137,9 +156,7 @@ func (r *Router) UnregisterBatch(cmds []Command) {
 
 // Parse checks if a text starts with prefix and parses it into ParsedCommand.
 func (r *Router) Parse(text string) (*ParsedCommand, bool, error) {
-	r.mu.RLock()
-	prefix := r.prefix
-	r.mu.RUnlock()
+	prefix := r.Prefix()
 	text = strings.TrimSpace(text)
 	if !strings.HasPrefix(text, prefix) {
 		return nil, false, nil

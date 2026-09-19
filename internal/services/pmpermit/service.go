@@ -110,6 +110,18 @@ func (s *Service) SetWarnCooldown(d time.Duration) {
 	s.mu.Unlock()
 }
 
+func (s *Service) WarnCooldown() time.Duration {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.warnCooldown
+}
+
+func (s *Service) MaxWarns() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.maxWarns
+}
+
 func (s *Service) IsBotSent(msgID int) bool {
 	if svc := s.getService(); svc != nil {
 		return svc.IsBotSent(msgID)

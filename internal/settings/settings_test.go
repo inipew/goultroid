@@ -653,3 +653,60 @@ func TestServiceResolverCacheAndInvalidation(t *testing.T) {
 		t.Fatalf("expected event-invalidated resolution '%%', got %q", val)
 	}
 }
+
+func TestRegistrySetDefault(t *testing.T) {
+	reg := NewRegistry()
+	if err := RegisterDefaultDefinitions(reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.SetDefault("core", "prefix", "!"); err != nil {
+		t.Fatal(err)
+	}
+	def, ok := reg.Get("core", "prefix")
+	if !ok || def.DefaultValue != "!" {
+		t.Fatalf("prefix default=%v, want !", def)
+	}
+	if err := reg.SetDefault("debug", "log_level", "WARN"); err != nil {
+		t.Fatal(err)
+	}
+	def, _ = reg.Get("debug", "log_level")
+	if def.DefaultValue != "warn" {
+		t.Fatalf("log level default=%q, want warn", def.DefaultValue)
+	}
+	if err := reg.SetDefault("core", "prefix", "   "); err == nil {
+		t.Fatal("expected invalid blank prefix default")
+	}
+}
+
+func TestServiceCommittedSubscriptionIsSynchronous(t *testing.T) {
+	repo := newMockRepo()
+	reg := NewRegistry()
+	if err := RegisterDefaultDefinitions(reg); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(repo, reg, nil)
+
+	var got string
+	unsub := svc.SubscribeCommitted(func(_ context.Context, event *core.SettingChangedEvent) {
+		if event.Namespace == "core" && event.Key == "prefix" {
+			got = event.NewVal
+		}
+	})
+	defer unsub()
+
+	if err := svc.Set(context.Background(), ScopeGlobal, 0, "core", "prefix", "!", 1); err != nil {
+		t.Fatal(err)
+	}
+	if got != "!" {
+		t.Fatalf("committed listener observed %q before Set returned, want !", got)
+	}
+
+	unsub()
+	got = ""
+	if err := svc.Set(context.Background(), ScopeGlobal, 0, "core", "prefix", "#", 1); err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Fatalf("unsubscribed listener still received %q", got)
+	}
+}

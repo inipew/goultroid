@@ -263,3 +263,49 @@ func TestSchedulerPlugin(t *testing.T) {
 		t.Fatalf("cancel failed: %v", err)
 	}
 }
+
+func TestSchedulerCommandClassificationUsesLiveRouterPrefix(t *testing.T) {
+	mockSched := newMockSchedulerService()
+	p := New(mockSched)
+	router := core.NewRouter(".")
+	p.SetRouter(router)
+
+	cmds := p.Commands()
+	var scheduleCmd core.Command
+	for _, cmd := range cmds {
+		if cmd.Name == "schedule" {
+			scheduleCmd = cmd
+			break
+		}
+	}
+	if scheduleCmd.Handler == nil {
+		t.Fatal("schedule command not found")
+	}
+	if err := router.SetPrefix("!"); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		Command: "schedule",
+		Args:    []string{"30m", "!alive"},
+		RawArgs: "30m !alive",
+		Chat:    &core.Chat{ID: 777},
+		PeerID:  &tg.InputPeerChat{ChatID: 777},
+		Message: &core.Message{SenderID: 42},
+		Svc:     &mockTelegramServicer{},
+	}
+	if err := scheduleCmd.Handler(ctx); err != nil {
+		t.Fatalf("schedule live-prefix command: %v", err)
+	}
+	job := mockSched.jobs[1]
+	if job == nil {
+		t.Fatal("scheduled job was not created")
+	}
+	if job.ActionType != scheduler.ActionCommand {
+		t.Fatalf("action type=%q, want %q", job.ActionType, scheduler.ActionCommand)
+	}
+	if job.Payload != "!alive" {
+		t.Fatalf("payload=%q, want !alive", job.Payload)
+	}
+}

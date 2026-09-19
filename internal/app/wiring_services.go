@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/inipew/goultroid/internal/addon"
@@ -27,6 +28,22 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 	settingsRegistry := settings.NewRegistry()
 	if err := settings.RegisterDefaultDefinitions(settingsRegistry); err != nil {
 		return nil, fmt.Errorf("register default settings definitions: %w", err)
+	}
+	prefixDefault := cfg.Prefix
+	if prefixDefault == "" {
+		prefixDefault = "."
+	}
+	if err := settingsRegistry.SetDefault("core", "prefix", prefixDefault); err != nil {
+		return nil, fmt.Errorf("apply bootstrap prefix default: %w", err)
+	}
+	logLevelDefault := strings.ToLower(strings.TrimSpace(cfg.LogLevel))
+	switch logLevelDefault {
+	case "debug", "info", "warn", "error":
+	default:
+		logLevelDefault = "info"
+	}
+	if err := settingsRegistry.SetDefault("debug", "log_level", logLevelDefault); err != nil {
+		return nil, fmt.Errorf("apply bootstrap log level default: %w", err)
 	}
 	settingsRepo := settings.NewSQLiteRepository(core.db.DB)
 	settingsService := settings.NewService(settingsRepo, settingsRegistry, core.eventBus)

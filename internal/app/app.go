@@ -52,6 +52,7 @@ type App struct {
 	callbackStore    *callback.StateStore
 	inlineEngine     *inline.Engine
 	settingsService  *settings.Service
+	settingsLive     *settings.LiveBinder
 	media            *mediaSvc.Service
 	downloadRegistry *download.Registry
 	processRunner    *processSvc.OSRunner
@@ -79,7 +80,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
-	logger, err := initLogger(cfg.LogLevel)
+	logger, logLevel, err := initLogger(cfg.LogLevel)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build logger: %w", err)
 	}
@@ -221,6 +222,11 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		return nil, err
 	}
 
+	settingsLive, err := buildLiveSettingsBinder(coreDeps, domServices, pluginManager, logLevel)
+	if err != nil {
+		return nil, fmt.Errorf("build live settings binder: %w", err)
+	}
+
 	rt := runtime.New()
 	resources := []resourceComponent{
 		{name: "database", stop: coreDeps.db.Close},
@@ -271,7 +277,12 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 			return nil, fmt.Errorf("register settings component: %w", err)
 		}
 	}
-	if err := rt.Register(tgRuntime.dispatcher); err != nil {
+	if settingsLive != nil {
+		if err := rt.Register(settingsLive); err != nil {
+			return nil, fmt.Errorf("register live settings component: %w", err)
+		}
+	}
+	if err := rt.Register(dependencyComponent{Component: tgRuntime.dispatcher, dependencies: []string{"eventbus", "taskengine", "settings-live"}}); err != nil {
 		return nil, fmt.Errorf("register dispatcher component: %w", err)
 	}
 	if tgRuntime.assistant != nil {
@@ -339,6 +350,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		callbackStore:    coreDeps.callbackStore,
 		inlineEngine:     coreDeps.inlineEngine,
 		settingsService:  domServices.settingsService,
+		settingsLive:     settingsLive,
 		media:            domServices.mediaService,
 		downloadRegistry: domServices.downloadRegistry,
 		processRunner:    domServices.processRunner,
@@ -356,7 +368,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 
 func (a *App) Run(ctx context.Context) error { return a.runLifecycle(ctx) }
 
-func initLogger(logLevel string) (*zap.Logger, error) {
+func initLogger(logLevel string) (*zap.Logger, zap.AtomicLevel, error) {
 	var zapLevel zapcore.Level
 	switch logLevel {
 	case "debug":
@@ -368,9 +380,14 @@ func initLogger(logLevel string) (*zap.Logger, error) {
 	default:
 		zapLevel = zap.InfoLevel
 	}
+	atomicLevel := zap.NewAtomicLevelAt(zapLevel)
 	zapCfg := zap.NewDevelopmentConfig()
-	zapCfg.Level = zap.NewAtomicLevelAt(zapLevel)
-	return zapCfg.Build()
+	zapCfg.Level = atomicLevel
+	logger, err := zapCfg.Build()
+	if err != nil {
+		return nil, atomicLevel, err
+	}
+	return logger, atomicLevel, nil
 }
 
 type lifecycleState uint32

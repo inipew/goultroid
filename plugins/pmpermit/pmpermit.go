@@ -11,23 +11,32 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/pmpermit"
+	"github.com/inipew/goultroid/internal/settings"
 )
 
 var _ plugin.MessageHookPlugin = (*Plugin)(nil)
+var _ plugin.MessageHookStatePlugin = (*Plugin)(nil)
 
 type Plugin struct {
 	svc      *pmpermit.Service
 	resolver core.PeerResolver
+	settings *settings.Service
 }
 
 func New(svc *pmpermit.Service) *Plugin                  { return &Plugin{svc: svc} }
 func (p *Plugin) SetResolver(resolver core.PeerResolver) { p.resolver = resolver }
+func (p *Plugin) SetSettingsService(service *settings.Service) { p.settings = service }
 func (p *Plugin) Name() string                           { return "pmpermit" }
 func (p *Plugin) Description() string {
 	return "Anti-spam shield and private message access control system"
 }
 func (p *Plugin) Init() error                { return nil }
-func (p *Plugin) MessageHookPriority() int   { return 10 }
+func (p *Plugin) MessageHookPriority() int { return 10 }
+
+func (p *Plugin) MessageHookInterested(int64) bool {
+	return p.svc == nil || p.svc.IsEnabled()
+}
+
 func (p *Plugin) MessageHookRouting() core.MessageHookRouting {
 	return core.MessageHookRouting{
 		Lane: core.MessageHookDecision,
@@ -257,6 +266,23 @@ func (p *Plugin) renderList(ctx *core.Context, statusFilter string) error {
 	return ctx.EditOrReply(sb.String())
 }
 
+func (p *Plugin) setEnabled(ctx *core.Context, enabled bool) error {
+	if p.svc == nil {
+		return fmt.Errorf("PM Permit service is not configured")
+	}
+	if p.settings != nil {
+		value := "false"
+		if enabled {
+			value = "true"
+		}
+		return p.settings.Set(ctx.Ctx, settings.ScopeGlobal, 0, "pmpermit", "enabled", value, ctx.SenderID())
+	}
+	// Standalone/tests without the application settings runtime retain the
+	// direct legacy behavior.
+	p.svc.SetEnabled(enabled)
+	return nil
+}
+
 func (p *Plugin) handleToggle(ctx *core.Context) error {
 	if p.svc == nil {
 		return ctx.EditOrReply("⚠️ PM Permit service is not configured.")
@@ -267,10 +293,14 @@ func (p *Plugin) handleToggle(ctx *core.Context) error {
 	}
 	switch sub {
 	case "on", "enable", "true":
-		p.svc.SetEnabled(true)
+		if err := p.setEnabled(ctx, true); err != nil {
+			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to enable PM Permit: %v", err))
+		}
 		return ctx.EditOrReply("🛡️ <b>PM Permit</b> is now <b>ENABLED</b>.")
 	case "off", "disable", "false":
-		p.svc.SetEnabled(false)
+		if err := p.setEnabled(ctx, false); err != nil {
+			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to disable PM Permit: %v", err))
+		}
 		return ctx.EditOrReply("⚠️ <b>PM Permit</b> is now <b>DISABLED</b>.")
 	case "unblock":
 		if len(ctx.Args) < 2 {
@@ -297,7 +327,7 @@ func (p *Plugin) handleToggle(ctx *core.Context) error {
 		if err != nil {
 			return ctx.EditOrReply(fmt.Sprintf("❌ PM Permit test failed: %v", err))
 		}
-		return ctx.EditOrReply(fmt.Sprintf("✅ <b>PM Permit Self-Test OK</b>\n\n<b>Status:</b> %s\n<b>Max Warns:</b> %d\n\n• <b>Approved:</b> <code>%d</code>\n• <b>Pending:</b> <code>%d</code>\n• <b>Blocked:</b> <code>%d</code>\n\n<b>Commands:</b>\n• <code>.approve</code> / <code>.disapprove</code> / <code>.blockpm</code> / <code>.unblockpm</code>\n• <code>.pmpermit [on|off]</code>\n• <code>.pmpermit list [approved|blocked|pending]</code>\n• <code>.pmpermit test</code>", map[bool]string{true: "ENABLED", false: "DISABLED"}[p.svc.IsEnabled()], pmpermit.DefaultMaxWarns, approved, pending, blocked))
+		return ctx.EditOrReply(fmt.Sprintf("✅ <b>PM Permit Self-Test OK</b>\n\n<b>Status:</b> %s\n<b>Max Warns:</b> %d\n\n• <b>Approved:</b> <code>%d</code>\n• <b>Pending:</b> <code>%d</code>\n• <b>Blocked:</b> <code>%d</code>\n\n<b>Commands:</b>\n• <code>.approve</code> / <code>.disapprove</code> / <code>.blockpm</code> / <code>.unblockpm</code>\n• <code>.pmpermit [on|off]</code>\n• <code>.pmpermit list [approved|blocked|pending]</code>\n• <code>.pmpermit test</code>", map[bool]string{true: "ENABLED", false: "DISABLED"}[p.svc.IsEnabled()], p.svc.MaxWarns(), approved, pending, blocked))
 	case "status", "":
 		statusStr := "❌ DISABLED"
 		if p.svc.IsEnabled() {
@@ -307,7 +337,7 @@ func (p *Plugin) handleToggle(ctx *core.Context) error {
 		if err != nil {
 			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to read PM Permit status: %v", err))
 		}
-		text := fmt.Sprintf("🛡️ <b>PM Permit Dashboard</b>\n\n<b>Status:</b> %s\n<b>Max Warns:</b> <code>%d</code>\n<b>Burst Cooldown:</b> <code>2.5s</code>\n\n<b>Access Control Records:</b>\n• <b>Approved:</b> <code>%d</code>\n• <b>Pending:</b> <code>%d</code>\n• <b>Blocked:</b> <code>%d</code>\n\n<b>Commands:</b>\n• <code>.approve</code> / <code>.disapprove</code> / <code>.blockpm</code> / <code>.unblockpm</code>\n• <code>.pmpermit [on|off]</code>\n• <code>.pmpermit list [approved|blocked|pending]</code>\n• <code>.pmpermit test</code>", statusStr, pmpermit.DefaultMaxWarns, approved, pending, blocked)
+		text := fmt.Sprintf("🛡️ <b>PM Permit Dashboard</b>\n\n<b>Status:</b> %s\n<b>Max Warns:</b> <code>%d</code>\n<b>Burst Cooldown:</b> <code>%s</code>\n\n<b>Access Control Records:</b>\n• <b>Approved:</b> <code>%d</code>\n• <b>Pending:</b> <code>%d</code>\n• <b>Blocked:</b> <code>%d</code>\n\n<b>Commands:</b>\n• <code>.approve</code> / <code>.disapprove</code> / <code>.blockpm</code> / <code>.unblockpm</code>\n• <code>.pmpermit [on|off]</code>\n• <code>.pmpermit list [approved|blocked|pending]</code>\n• <code>.pmpermit test</code>", statusStr, p.svc.MaxWarns(), p.svc.WarnCooldown(), approved, pending, blocked)
 		return ctx.EditOrReply(text)
 	default:
 		return ctx.EditOrReply("⚠️ Unknown option. Usage: <code>.pmpermit [on|off|status|test|list|unblock]</code>")

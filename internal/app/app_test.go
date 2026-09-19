@@ -10,6 +10,8 @@ import (
 
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/settings"
+	"go.uber.org/zap"
 )
 
 func TestApp_New(t *testing.T) {
@@ -134,6 +136,7 @@ func TestApp_UnifiedDAGComponents(t *testing.T) {
 		"callback_store",
 		"inline_cache",
 		"settings",
+		"settings-live",
 		"dispatcher",
 		"assistant",
 		"plugins",
@@ -148,5 +151,72 @@ func TestApp_UnifiedDAGComponents(t *testing.T) {
 
 	if err := app.Shutdown(context.Background()); err != nil {
 		t.Errorf("unexpected error during shutdown: %v", err)
+	}
+}
+
+func TestApp_LiveSettingsBindRuntimeConsumers(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		OwnerID:      123456,
+		AppID:        123456,
+		AppHash:      "hash123",
+		Phone:        "+628123456789",
+		SessionFile:  filepath.Join(tmpDir, "session.json"),
+		DatabasePath: filepath.Join(tmpDir, "test.db"),
+		Prefix:       "$",
+		LogLevel:     "error",
+	}
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := app.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown: %v", err)
+		}
+	}()
+
+	// LiveBinder can be started independently here because this test does not
+	// start the network runtime. Production starts it through the runtime DAG.
+	if err := app.settingsLive.Start(context.Background()); err != nil {
+		t.Fatalf("start settings live: %v", err)
+	}
+	defer func() { _ = app.settingsLive.Stop(context.Background()) }()
+
+	if got := app.router.Prefix(); got != "$" {
+		t.Fatalf("bootstrap prefix=%q, want $", got)
+	}
+	if app.logger.Core().Enabled(zap.DebugLevel) {
+		t.Fatal("debug unexpectedly enabled before live update")
+	}
+
+	if err := app.settingsService.Set(context.Background(), settings.ScopeGlobal, 0, "core", "prefix", "!", cfg.OwnerID); err != nil {
+		t.Fatalf("set prefix: %v", err)
+	}
+	if got := app.router.Prefix(); got != "!" {
+		t.Fatalf("live prefix=%q, want !", got)
+	}
+
+	if err := app.settingsService.Set(context.Background(), settings.ScopeGlobal, 0, "debug", "log_level", "debug", cfg.OwnerID); err != nil {
+		t.Fatalf("set log level: %v", err)
+	}
+	if !app.logger.Core().Enabled(zap.DebugLevel) {
+		t.Fatal("debug level was not applied live")
+	}
+
+	// Contextual override remains contextual; it must not mutate process-global
+	// command parsing.
+	if err := app.settingsService.Set(context.Background(), settings.ScopeChat, 42, "core", "prefix", "#", cfg.OwnerID); err != nil {
+		t.Fatalf("set chat prefix: %v", err)
+	}
+	if got := app.router.Prefix(); got != "!" {
+		t.Fatalf("chat override changed global router prefix to %q", got)
+	}
+
+	if err := app.settingsService.Reset(context.Background(), settings.ScopeGlobal, 0, "core", "prefix", cfg.OwnerID); err != nil {
+		t.Fatalf("reset prefix: %v", err)
+	}
+	if got := app.router.Prefix(); got != "$" {
+		t.Fatalf("reset prefix=%q, want bootstrap default $", got)
 	}
 }

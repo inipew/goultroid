@@ -217,3 +217,26 @@ func TestRouter_RegisterConflicts(t *testing.T) {
 		t.Errorf("expected error registering alias conflicting with existing alias")
 	}
 }
+
+func TestRouter_SetPrefixLive(t *testing.T) {
+	r := NewRouter(".")
+	if err := r.SetPrefix("!"); err != nil {
+		t.Fatalf("SetPrefix: %v", err)
+	}
+	if got := r.Prefix(); got != "!" {
+		t.Fatalf("Prefix()=%q, want !", got)
+	}
+	if _, ok, _ := r.Parse(".ping"); ok {
+		t.Fatal("old prefix remained active")
+	}
+	parsed, ok, err := r.Parse("!ping one")
+	if err != nil || !ok || parsed.Name != "ping" || len(parsed.Args) != 1 || parsed.Args[0] != "one" {
+		t.Fatalf("new prefix parse failed: parsed=%+v ok=%v err=%v", parsed, ok, err)
+	}
+	if err := r.SetPrefix("  "); err == nil {
+		t.Fatal("expected empty/whitespace prefix to be rejected")
+	}
+	if got := r.Prefix(); got != "!" {
+		t.Fatalf("invalid prefix changed active prefix to %q", got)
+	}
+}

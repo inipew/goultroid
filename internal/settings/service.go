@@ -34,6 +34,10 @@ type Service struct {
 	outboxWake   chan struct{}
 	outboxErrMu  sync.RWMutex
 	outboxErr    error
+
+	commitMu      sync.RWMutex
+	commitSubs    map[uint64]CommittedSettingHandler
+	nextCommitSub uint64
 }
 
 // NewService instantiates a new settings Service.
@@ -238,6 +242,54 @@ func (s *Service) Registry() *Registry {
 	return s.reg
 }
 
+// CommittedSettingHandler is invoked synchronously after a settings mutation
+// commits successfully. It is an in-process fast path; the durable outbox
+// remains the recovery path across crashes/restarts.
+type CommittedSettingHandler func(context.Context, *core.SettingChangedEvent)
+
+// SubscribeCommitted registers a lightweight post-commit listener.
+func (s *Service) SubscribeCommitted(handler CommittedSettingHandler) func() {
+	if handler == nil {
+		return func() {}
+	}
+	s.commitMu.Lock()
+	if s.commitSubs == nil {
+		s.commitSubs = make(map[uint64]CommittedSettingHandler)
+	}
+	s.nextCommitSub++
+	id := s.nextCommitSub
+	s.commitSubs[id] = handler
+	s.commitMu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.commitMu.Lock()
+			delete(s.commitSubs, id)
+			s.commitMu.Unlock()
+		})
+	}
+}
+
+func (s *Service) notifyCommitted(ctx context.Context, event *core.SettingChangedEvent) {
+	if event == nil {
+		return
+	}
+	s.commitMu.RLock()
+	handlers := make([]CommittedSettingHandler, 0, len(s.commitSubs))
+	for _, handler := range s.commitSubs {
+		handlers = append(handlers, handler)
+	}
+	s.commitMu.RUnlock()
+
+	for _, handler := range handlers {
+		func() {
+			defer func() { _ = recover() }()
+			handler(ctx, event)
+		}()
+	}
+}
+
 func (s *Service) invalidate(namespace, key string) {
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
@@ -394,23 +446,25 @@ func (s *Service) Set(ctx context.Context, scope SettingScope, scopeID int64, na
 		return fmt.Errorf("failed to save setting (%s:%d:%s:%s): %w", scope, scopeID, ns, k, err)
 	}
 
+	event := &core.SettingChangedEvent{
+		At:        item.UpdatedAt,
+		ScopeType: string(scope),
+		ScopeID:   scopeID,
+		Namespace: ns,
+		Key:       k,
+		OldVal:    oldVal,
+		NewVal:    canonicalVal,
+		ChangedBy: updaterID,
+	}
 	s.invalidate(ns, k)
+	s.notifyCommitted(ctx, event)
 	if s.usesDurableOutbox() {
 		s.wakeOutbox()
 		return nil
 	}
 
 	if s.bus != nil {
-		s.bus.Publish(&core.SettingChangedEvent{
-			At:        time.Now().UTC(),
-			ScopeType: string(scope),
-			ScopeID:   scopeID,
-			Namespace: ns,
-			Key:       k,
-			OldVal:    oldVal,
-			NewVal:    canonicalVal,
-			ChangedBy: updaterID,
-		})
+		s.bus.Publish(event)
 	}
 
 	return nil
@@ -438,23 +492,25 @@ func (s *Service) Reset(ctx context.Context, scope SettingScope, scopeID int64, 
 		return fmt.Errorf("failed to delete setting: %w", err)
 	}
 
+	event := &core.SettingChangedEvent{
+		At:        time.Now().UTC(),
+		ScopeType: string(scope),
+		ScopeID:   scopeID,
+		Namespace: ns,
+		Key:       k,
+		OldVal:    oldVal,
+		NewVal:    "",
+		ChangedBy: updaterID,
+	}
 	s.invalidate(ns, k)
+	s.notifyCommitted(ctx, event)
 	if s.usesDurableOutbox() {
 		s.wakeOutbox()
 		return nil
 	}
 
 	if s.bus != nil {
-		s.bus.Publish(&core.SettingChangedEvent{
-			At:        time.Now().UTC(),
-			ScopeType: string(scope),
-			ScopeID:   scopeID,
-			Namespace: ns,
-			Key:       k,
-			OldVal:    oldVal,
-			NewVal:    "",
-			ChangedBy: updaterID,
-		})
+		s.bus.Publish(event)
 	}
 
 	return nil
@@ -550,8 +606,20 @@ func (s *Service) Import(ctx context.Context, scope SettingScope, scopeID int64,
 		return 0, fmt.Errorf("failed executing batch settings import: %w", err)
 	}
 
+	events := make([]*core.SettingChangedEvent, 0, len(prepared))
 	for _, p := range prepared {
 		s.invalidate(p.ns, p.k)
+		event := &core.SettingChangedEvent{
+			At:        now,
+			ScopeType: string(scope),
+			ScopeID:   scopeID,
+			Namespace: p.ns,
+			Key:       p.k,
+			NewVal:    p.canonical,
+			ChangedBy: updaterID,
+		}
+		events = append(events, event)
+		s.notifyCommitted(ctx, event)
 	}
 	if s.usesDurableOutbox() {
 		s.wakeOutbox()
@@ -560,16 +628,8 @@ func (s *Service) Import(ctx context.Context, scope SettingScope, scopeID int64,
 
 	// Phase 3: Publish events
 	if s.bus != nil {
-		for _, p := range prepared {
-			s.bus.Publish(&core.SettingChangedEvent{
-				At:        now,
-				ScopeType: string(scope),
-				ScopeID:   scopeID,
-				Namespace: p.ns,
-				Key:       p.k,
-				NewVal:    p.canonical,
-				ChangedBy: updaterID,
-			})
+		for _, event := range events {
+			s.bus.Publish(event)
 		}
 	}
 

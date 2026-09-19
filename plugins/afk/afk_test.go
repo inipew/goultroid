@@ -1011,3 +1011,30 @@ func TestAFKPlugin_IncomingDMOmittedFromID(t *testing.T) {
 		t.Fatalf("expected AFK reply even when FromID is nil in incoming DM, got: %q", svc.sent)
 	}
 }
+
+func TestAFKLiveSettings(t *testing.T) {
+	p := New(nil, 1, nil)
+	if !p.AutoReplyEnabled() {
+		t.Fatal("auto reply should default enabled")
+	}
+	p.SetAutoReply(false)
+	if p.AutoReplyEnabled() {
+		t.Fatal("SetAutoReply(false) did not apply")
+	}
+
+	p.SetCooldown(0)
+	if !p.checkAndSetCooldown(10, 20) {
+		t.Fatal("zero cooldown should allow first reply")
+	}
+	if !p.checkAndSetCooldown(10, 20) {
+		t.Fatal("zero cooldown should disable throttling")
+	}
+
+	p.SetCooldown(5 * time.Second)
+	if !p.checkAndSetCooldown(10, 20) {
+		t.Fatal("positive cooldown should allow first reply after zero-mode map reset")
+	}
+	if p.checkAndSetCooldown(10, 20) {
+		t.Fatal("positive cooldown did not throttle repeated reply")
+	}
+}

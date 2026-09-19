@@ -1,5 +1,11 @@
 package settings
 
+import (
+	"fmt"
+	"strings"
+	"unicode"
+)
+
 // RegisterDefaultDefinitions populates the registry with standard GoUltroid settings.
 func RegisterDefaultDefinitions(reg *Registry) error {
 	minWarns, maxWarns := int64(1), int64(20)
@@ -17,6 +23,16 @@ func RegisterDefaultDefinitions(reg *Registry) error {
 			Title:        "Command Prefix",
 			Description:  "Prefix symbol used to trigger userbot commands",
 			Category:     CategoryGeneral,
+			Validator: func(val string) error {
+				prefix := strings.TrimSpace(val)
+				if prefix == "" {
+					return fmt.Errorf("command prefix cannot be empty")
+				}
+				if strings.IndexFunc(prefix, unicode.IsSpace) >= 0 {
+					return fmt.Errorf("command prefix cannot contain whitespace")
+				}
+				return nil
+			},
 		},
 		{
 			Namespace:    "core",

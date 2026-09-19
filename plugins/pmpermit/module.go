@@ -31,6 +31,7 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	}
 	p := New(rt.PMPermitService)
 	p.SetResolver(rt.Resolver)
+	p.SetSettingsService(rt.SettingsService)
 	return rt.RegisterPlugin(ctx, m.Manifest(), p)
 }
 

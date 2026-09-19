@@ -68,6 +68,27 @@ func (r *Registry) Register(def SettingDefinition) error {
 }
 
 // Get finds a setting definition by namespace and key.
+// SetDefault replaces the schema fallback for an already registered setting.
+// The value is canonicalized using the setting definition before publication.
+func (r *Registry) SetDefault(namespace, key, value string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	lookupKey := makeDefKey(namespace, key)
+	def, exists := r.definitions[lookupKey]
+	if !exists || def == nil {
+		return fmt.Errorf("setting definition not found: %s:%s", namespace, key)
+	}
+	copyDef := *def
+	canonical, err := copyDef.Canonicalize(value)
+	if err != nil {
+		return fmt.Errorf("invalid default for %s:%s: %w", copyDef.Namespace, copyDef.Key, err)
+	}
+	copyDef.DefaultValue = canonical
+	r.definitions[lookupKey] = &copyDef
+	return nil
+}
+
 func (r *Registry) Get(namespace, key string) (*SettingDefinition, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

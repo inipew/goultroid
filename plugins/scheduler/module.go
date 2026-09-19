@@ -25,6 +25,7 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 		return module.ErrNilRuntime
 	}
 	p := New(rt.SchedEngine)
+	p.SetRouter(rt.Router)
 	return rt.RegisterPlugin(ctx, m.Manifest(), p)
 }
 

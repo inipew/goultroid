@@ -43,6 +43,7 @@ type Plugin struct {
 	welcomeDeleteDelay time.Duration
 	stateMu            sync.RWMutex
 	state              atomic.Pointer[afkState]
+	autoReply          atomic.Bool
 	transitionMu       sync.Mutex
 	cooldownMu         sync.Mutex
 	cooldownMap        map[[2]int64]time.Time
@@ -60,6 +61,7 @@ func New(db Repository, ownerID int64, svcFunc func() core.TelegramServicer) *Pl
 		welcomeDeleteDelay: defaultWelcomeDeleteDelay,
 	}
 	p.state.Store(&afkState{isAFK: false})
+	p.autoReply.Store(true)
 	return p
 }
 
@@ -120,12 +122,24 @@ func (p *Plugin) getWelcomeDeleteDelay() time.Duration {
 	defer p.stateMu.RUnlock()
 	return p.welcomeDeleteDelay
 }
+func (p *Plugin) SetAutoReply(enabled bool) {
+	p.autoReply.Store(enabled)
+}
+
+func (p *Plugin) AutoReplyEnabled() bool {
+	return p.autoReply.Load()
+}
+
 func (p *Plugin) SetCooldown(duration time.Duration) {
-	if duration > 0 {
-		p.cooldownMu.Lock()
-		p.cooldownDur = duration
-		p.cooldownMu.Unlock()
+	if duration < 0 {
+		return
 	}
+	p.cooldownMu.Lock()
+	p.cooldownDur = duration
+	if duration == 0 {
+		p.cooldownMap = make(map[[2]int64]time.Time)
+	}
+	p.cooldownMu.Unlock()
 }
 func (p *Plugin) InitContext(ctx context.Context) error { return p.loadState(ctx) }
 func (p *Plugin) Init() error {
@@ -346,6 +360,9 @@ func (p *Plugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *
 	if st == nil || !st.isAFK {
 		return nil
 	}
+	if !p.AutoReplyEnabled() {
+		return nil
+	}
 	if p.getOwnerUsername() == "" {
 		if u, ok := e.Users[ownerID]; ok && u != nil && u.Username != "" {
 			p.SetOwnerUsername(u.Username)
@@ -461,7 +478,7 @@ func (p *Plugin) isCooldownActive(chatID, senderID int64) bool {
 	}
 	dur := p.cooldownDur
 	if dur <= 0 {
-		dur = 60 * time.Second
+		return false
 	}
 	return time.Since(last) < dur
 }
@@ -472,7 +489,7 @@ func (p *Plugin) checkAndSetCooldown(chatID, senderID int64) bool {
 	now := time.Now()
 	dur := p.cooldownDur
 	if dur <= 0 {
-		dur = 60 * time.Second
+		return true
 	}
 	if last, ok := p.cooldownMap[key]; ok && now.Sub(last) < dur {
 		return false

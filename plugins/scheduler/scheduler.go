@@ -19,12 +19,19 @@ var (
 
 // Plugin provides commands for scheduling messages, reminders, and periodic commands.
 type Plugin struct {
-	sched scheduler.Service
+	sched  scheduler.Service
+	router *core.Router
 }
 
 // New creates a new scheduler Plugin instance.
 func New(sched scheduler.Service) *Plugin {
 	return &Plugin{sched: sched}
+}
+
+// SetRouter binds command classification to the canonical router so live prefix
+// changes are reflected when deciding whether a scheduled payload is a command.
+func (p *Plugin) SetRouter(router *core.Router) {
+	p.router = router
 }
 
 func (p *Plugin) Name() string { return "scheduler" }
@@ -151,7 +158,13 @@ func (p *Plugin) handleSchedule(ctx *core.Context) error {
 	}
 
 	actionType := scheduler.ActionMessage
-	if strings.HasPrefix(payload, ".") {
+	if p.router != nil {
+		if _, isCommand, parseErr := p.router.Parse(payload); parseErr == nil && isCommand {
+			actionType = scheduler.ActionCommand
+		}
+	} else if strings.HasPrefix(payload, ".") {
+		// Compatibility for standalone/tests that construct the plugin without
+		// application wiring.
 		actionType = scheduler.ActionCommand
 	}
 
