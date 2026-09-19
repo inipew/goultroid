@@ -512,6 +512,25 @@ func TestStoreAttemptSummaryAndNextLeaseFastPath(t *testing.T) {
 		summary.Latest.TaskID != second.TaskID {
 		t.Fatalf("unexpected mixed summary: %+v", summary)
 	}
+
+	candidates, err := s.ListRecoveryCandidates(ctx, 10)
+	if err != nil {
+		t.Fatalf("list compact recovery candidates: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("recovery candidates=%d, want 1", len(candidates))
+	}
+	candidate := candidates[0]
+	if candidate.Occurrence.ID != occ.ID || candidate.Summary == nil {
+		t.Fatalf("unexpected recovery candidate: %+v", candidate)
+	}
+	if candidate.Summary.AttemptCount != summary.AttemptCount ||
+		candidate.Summary.RetryBudgetUses != summary.RetryBudgetUses ||
+		candidate.Summary.Deferrals != summary.Deferrals ||
+		candidate.Summary.Latest.ID != summary.Latest.ID ||
+		candidate.Summary.Latest.State != summary.Latest.State {
+		t.Fatalf("batch summary diverged: batch=%+v single=%+v", candidate.Summary, summary)
+	}
 }
 
 func TestStorePrepareNextAttemptLeasePreservesActiveAttemptFencing(t *testing.T) {
