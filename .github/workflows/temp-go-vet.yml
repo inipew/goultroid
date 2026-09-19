@@ -1,0 +1,16 @@
+name: temp-go-vet
+on:
+  push:
+    branches:
+      - ai-vet-temp
+
+jobs:
+  vet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go vet ./...
