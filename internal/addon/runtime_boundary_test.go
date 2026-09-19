@@ -22,17 +22,17 @@ type addonInlineTicket struct {
 	done chan struct{}
 }
 
-func (t *addonInlineTicket) TaskID() tasks.TaskID { return t.id }
-func (t *addonInlineTicket) State() tasks.TaskState { return tasks.StateCompleted }
-func (t *addonInlineTicket) Done() <-chan struct{} { return t.done }
-func (t *addonInlineTicket) Result() (tasks.TaskResult, bool) { return t.res, true }
+func (t *addonInlineTicket) TaskID() tasks.TaskID                           { return t.id }
+func (t *addonInlineTicket) State() tasks.TaskState                         { return tasks.StateCompleted }
+func (t *addonInlineTicket) Done() <-chan struct{}                          { return t.done }
+func (t *addonInlineTicket) Result() (tasks.TaskResult, bool)               { return t.res, true }
 func (t *addonInlineTicket) Wait(context.Context) (tasks.TaskResult, error) { return t.res, nil }
 
 type addonBoundaryTaskClient struct {
-	mu sync.Mutex
+	mu        sync.Mutex
 	lastScope tasks.ScopeIdentity
 	cancelled tasks.ScopeIdentity
-	submits int
+	submits   int
 }
 
 func (c *addonBoundaryTaskClient) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket, error) {
@@ -89,13 +89,13 @@ func (f *addonFakeInvoker) Call(_ context.Context, method string, params any) (j
 
 func TestCanonicalizeEventDoesNotExposeRawTelegramTypes(t *testing.T) {
 	event := &core.MessageCreatedEvent{
-		At: time.Unix(100, 0),
+		At:     time.Unix(100, 0),
 		ChatID: 77,
 		PeerID: &tg.PeerChannel{ChannelID: 77},
 		Message: &core.Message{
-			ID: 9,
-			SenderID: 42,
-			Text: "hello @owner",
+			ID:        9,
+			SenderID:  42,
+			Text:      "hello @owner",
 			MediaType: "photo",
 			Entities: []tg.MessageEntityClass{
 				&tg.MessageEntityMention{Offset: 6, Length: 6},
@@ -130,15 +130,15 @@ func TestCanonicalizeEventDoesNotExposeRawTelegramTypes(t *testing.T) {
 
 func TestCanonicalizeCallbackDropsRawTarget(t *testing.T) {
 	event := &core.CallbackQueryEvent{
-		At: time.Unix(101, 0),
+		At:      time.Unix(101, 0),
 		QueryID: 1,
-		UserID: 2,
-		ChatID: 3,
-		MsgID: 4,
-		Data: []byte("action"),
+		UserID:  2,
+		ChatID:  3,
+		MsgID:   4,
+		Data:    []byte("action"),
 		Target: core.CallbackTarget{
-			Origin: core.CallbackOriginMessage,
-			Peer: &tg.InputPeerChannel{ChannelID: 3, AccessHash: 999},
+			Origin:    core.CallbackOriginMessage,
+			Peer:      &tg.InputPeerChannel{ChannelID: 3, AccessHash: 999},
 			MessageID: 4,
 		},
 	}
@@ -172,7 +172,7 @@ func TestRuntimeEventBindingUsesScopedTaskAndClosesCleanly(t *testing.T) {
 	invoker := &addonFakeInvoker{calls: make(chan addonRuntimeCall, 1)}
 	binding, err := manager.bindRuntimeContract("sample", Manifest{
 		Name: "sample", Version: "1.0.0",
-		Events: []EventType{EventMessageCreated},
+		Events:       []EventType{EventMessageCreated},
 		Capabilities: []Capability{CapTelegramRead},
 	}, invoker)
 	if err != nil {
@@ -186,8 +186,8 @@ func TestRuntimeEventBindingUsesScopedTaskAndClosesCleanly(t *testing.T) {
 	}
 
 	bus.Publish(&core.MessageCreatedEvent{
-		At: time.Now(),
-		ChatID: 77,
+		At:      time.Now(),
+		ChatID:  77,
 		Message: &core.Message{ID: 5, Text: "hello"},
 	})
 	select {
@@ -220,7 +220,7 @@ func TestRuntimeEventBindingFailsClosedWithoutBoundary(t *testing.T) {
 	manager := NewManager(nil, gate, "1.0.0", zap.NewNop())
 	_, err := manager.bindRuntimeContract("sample", Manifest{
 		Name: "sample", Version: "1.0.0",
-		Events: []EventType{EventMessageCreated},
+		Events:       []EventType{EventMessageCreated},
 		Capabilities: []Capability{CapTelegramRead},
 	}, &addonFakeInvoker{calls: make(chan addonRuntimeCall, 1)})
 	if err != ErrRuntimeBoundaryUnavailable {

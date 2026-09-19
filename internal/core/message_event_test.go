@@ -4,8 +4,8 @@ import "testing"
 
 func TestMessageEnvelopeMentionHelpers(t *testing.T) {
 	e := &MessageEnvelope{
-		Chat: Chat{Type: "supergroup"},
-		Sender: User{ID: 42, FirstName: "Ada", LastName: "Lovelace"},
+		Chat:     Chat{Type: "supergroup"},
+		Sender:   User{ID: 42, FirstName: "Ada", LastName: "Lovelace"},
 		Mentions: []MessageMention{{UserID: 7}, {Username: "@Owner"}},
 	}
 	if !e.IsGroup() || e.IsPrivate() || e.IsChannel() {

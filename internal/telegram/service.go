@@ -362,8 +362,8 @@ func (s *Service) execIdempotentPeers(ctx context.Context, method string, peers 
 
 func (s *Service) execNonIdempotentPeers(ctx context.Context, method string, peers []tg.InputPeerClass, op func(context.Context, []tg.InputPeerClass) error) error {
 	_, err := executeServicePeersRPC(ctx, s, RPCMeta{
-		Method: method,
-		Kind:   RPCNonIdempotentMutation,
+		Method:      method,
+		Kind:        RPCNonIdempotentMutation,
 		RetryPolicy: RetryPolicy{MaxAttempts: 1, InlineFloodWaitMax: defaultFloodWaitRetryLimit},
 	}, peers, func(opCtx context.Context, current []tg.InputPeerClass) (struct{}, error) {
 		return struct{}{}, op(opCtx, current)
@@ -373,8 +373,8 @@ func (s *Service) execNonIdempotentPeers(ctx context.Context, method string, pee
 
 func (s *Service) execNonIdempotentPeerVal[T any](ctx context.Context, method string, peer tg.InputPeerClass, op func(context.Context, tg.InputPeerClass) (T, error)) (T, error) {
 	return executeServicePeerRPC(ctx, s, RPCMeta{
-		Method: method,
-		Kind:   RPCNonIdempotentMutation,
+		Method:      method,
+		Kind:        RPCNonIdempotentMutation,
 		RetryPolicy: RetryPolicy{MaxAttempts: 1, InlineFloodWaitMax: defaultFloodWaitRetryLimit},
 	}, peer, op)
 }
@@ -1510,8 +1510,8 @@ func (s *Service) PromoteAdmin(ctx context.Context, peer tg.InputPeerClass, user
 		ch := current[0].(*tg.InputPeerChannel)
 		u := current[1].(*tg.InputPeerUser)
 		req := &tg.ChannelsEditAdminRequest{
-			Channel: &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
-			UserID:  &tg.InputUser{UserID: u.UserID, AccessHash: u.AccessHash},
+			Channel:     &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
+			UserID:      &tg.InputUser{UserID: u.UserID, AccessHash: u.AccessHash},
 			AdminRights: tg.ChatAdminRights{ChangeInfo: true, PostMessages: true, EditMessages: true, DeleteMessages: true, BanUsers: true, InviteUsers: true, PinMessages: true, ManageTopics: true},
 		}
 		if title != "" {

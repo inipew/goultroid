@@ -26,9 +26,9 @@ const (
 )
 
 const (
-	actionTimeout                    = 90 * time.Second
-	schedulerClaimLease              = 3 * time.Minute
-	misfireThreshold                 = time.Minute
+	actionTimeout                     = 90 * time.Second
+	schedulerClaimLease               = 3 * time.Minute
+	misfireThreshold                  = time.Minute
 	schedulerSettlementSafetyInterval = 30 * time.Second
 )
 
@@ -735,16 +735,16 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) int {
 			definitionID = strings.TrimSpace(j.Payload)
 			if definitionID == "" {
 				e.onSubmitRejected(ctx, j, occurrenceKey, execution.WithSemantics(
-				errors.New("empty job id in scheduled managed job payload"),
-				execution.Semantics{Disposition: execution.DispositionPermanent, Code: "empty_managed_job_id"},
-			))
+					errors.New("empty job id in scheduled managed job payload"),
+					execution.Semantics{Disposition: execution.DispositionPermanent, Code: "empty_managed_job_id"},
+				))
 				continue
 			}
 			if _, ok := e.jobsMgr.Definition(definitionID); !ok {
 				e.onSubmitRejected(ctx, j, occurrenceKey, execution.WithSemantics(
-				fmt.Errorf("managed job definition not found: %s", definitionID),
-				execution.Semantics{Disposition: execution.DispositionPermanent, Code: "managed_job_not_found"},
-			))
+					fmt.Errorf("managed job definition not found: %s", definitionID),
+					execution.Semantics{Disposition: execution.DispositionPermanent, Code: "managed_job_not_found"},
+				))
 				continue
 			}
 		}

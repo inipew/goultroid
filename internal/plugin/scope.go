@@ -31,10 +31,10 @@ type CleanupFunc func(context.Context) error
 // Scope owns cancellable plugin work and cleanup callbacks. It is safe for
 // concurrent use and can be closed repeatedly.
 type Scope struct {
-	owner         string
-	generation    uint64
-	ctx           context.Context
-	cancel        context.CancelFunc
+	owner           string
+	generation      uint64
+	ctx             context.Context
+	cancel          context.CancelFunc
 	manager         *resource.Manager
 	panicReporter   core.PanicReporter
 	cleanupExecutor *runtime.CallbackExecutor
@@ -67,10 +67,10 @@ func NewScopeWithManager(parent context.Context, owner string, manager *resource
 	idle := make(chan struct{})
 	close(idle)
 	return &Scope{
-		owner:         owner,
-		generation:    scopeGeneration.Add(1),
-		ctx:           ctx,
-		cancel:        cancel,
+		owner:           owner,
+		generation:      scopeGeneration.Add(1),
+		ctx:             ctx,
+		cancel:          cancel,
 		manager:         manager,
 		cleanupExecutor: runtime.NewCallbackExecutor(runtime.DefaultLifecycleCallbackConcurrency),
 		maxGoroutines:   DefaultMaxScopeGoroutines,

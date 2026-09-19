@@ -19,9 +19,9 @@ const (
 )
 
 var (
-	ErrPumpClosed      = errors.New("persistence pump is closed")
-	ErrPumpQueueFull   = errors.New("persistence pump queue is saturated")
-	ErrPumpByteBudget  = errors.New("persistence pump retained-byte budget is saturated")
+	ErrPumpClosed     = errors.New("persistence pump is closed")
+	ErrPumpQueueFull  = errors.New("persistence pump queue is saturated")
+	ErrPumpByteBudget = errors.New("persistence pump retained-byte budget is saturated")
 )
 
 type persistenceRequest struct {
@@ -45,23 +45,23 @@ type PersistencePumpStats struct {
 // PersistencePump is a dedicated service with bounded concurrency that commits durable results (ADR 0006 §3.3).
 // It does NOT borrow feature execution slots, preventing cycles where tasks wait on persistence to finish.
 type PersistencePump struct {
-	mu            sync.Mutex
-	concurrency   int
-	queueCap      int
-	idleTimeout   time.Duration
-	requests      chan persistenceRequest
-	wg            sync.WaitGroup
-	remaining     atomic.Int64
-	queued        atomic.Int64
-	active        atomic.Int64
-	doneOnce      sync.Once
-	ctx           context.Context
-	cancel        context.CancelFunc
-	running       bool
-	accepting     bool
-	done          chan struct{}
-	panicReporter   core.PanicReporter
-	panicCount      atomic.Uint64
+	mu               sync.Mutex
+	concurrency      int
+	queueCap         int
+	idleTimeout      time.Duration
+	requests         chan persistenceRequest
+	wg               sync.WaitGroup
+	remaining        atomic.Int64
+	queued           atomic.Int64
+	active           atomic.Int64
+	doneOnce         sync.Once
+	ctx              context.Context
+	cancel           context.CancelFunc
+	running          bool
+	accepting        bool
+	done             chan struct{}
+	panicReporter    core.PanicReporter
+	panicCount       atomic.Uint64
 	maxRetainedBytes int64
 	retainedBytes    int64
 	byteRejections   atomic.Uint64

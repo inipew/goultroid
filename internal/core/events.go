@@ -438,30 +438,30 @@ type EventBusStats struct {
 var _ runtime.Component = (*EventBus)(nil)
 
 type EventBus struct {
-	mu            sync.RWMutex
-	subscribers   map[EventType]map[uint64]eventSubscriber
-	nextID        uint64
-	queue         chan *eventJob
-	queueCritical chan *eventJob
-	queueHigh     chan *eventJob
-	queueLow      chan *eventJob
-	orderedQueues [orderedPartitions]chan *eventJob
-	jobPool       sync.Pool
-	middlewares   []EventMiddleware
-	stop          chan struct{}
-	workers       sync.WaitGroup
-	workerMu      sync.Mutex
-	generalWorkers int
-	orderedRunning [orderedPartitions]bool
+	mu                sync.RWMutex
+	subscribers       map[EventType]map[uint64]eventSubscriber
+	nextID            uint64
+	queue             chan *eventJob
+	queueCritical     chan *eventJob
+	queueHigh         chan *eventJob
+	queueLow          chan *eventJob
+	orderedQueues     [orderedPartitions]chan *eventJob
+	jobPool           sync.Pool
+	middlewares       []EventMiddleware
+	stop              chan struct{}
+	workers           sync.WaitGroup
+	workerMu          sync.Mutex
+	generalWorkers    int
+	orderedRunning    [orderedPartitions]bool
 	workerIdleTimeout time.Duration
-	durable       sync.WaitGroup
-	taskWG        sync.WaitGroup
-	taskClient    tasks.Client
-	taskSequence  atomic.Uint64
-	closeOnce     sync.Once
-	closeDone     chan struct{}
-	closed        bool
-	started       bool
+	durable           sync.WaitGroup
+	taskWG            sync.WaitGroup
+	taskClient        tasks.Client
+	taskSequence      atomic.Uint64
+	closeOnce         sync.Once
+	closeDone         chan struct{}
+	closed            bool
+	started           bool
 
 	dlqMu sync.RWMutex
 	dlq   []DeadLetter
@@ -488,11 +488,11 @@ func (b *EventBus) SetTasks(client tasks.Client) {
 // NewEventBus is a pure constructor. It does not spawn goroutines.
 func NewEventBus() *EventBus {
 	b := &EventBus{
-		subscribers:   make(map[EventType]map[uint64]eventSubscriber),
-		queue:         make(chan *eventJob, eventQueueSize),
-		queueCritical: make(chan *eventJob, priorityQueueSize),
-		queueHigh:     make(chan *eventJob, priorityQueueSize),
-		queueLow:      make(chan *eventJob, priorityQueueSize),
+		subscribers:       make(map[EventType]map[uint64]eventSubscriber),
+		queue:             make(chan *eventJob, eventQueueSize),
+		queueCritical:     make(chan *eventJob, priorityQueueSize),
+		queueHigh:         make(chan *eventJob, priorityQueueSize),
+		queueLow:          make(chan *eventJob, priorityQueueSize),
 		stop:              make(chan struct{}),
 		closeDone:         make(chan struct{}),
 		workerIdleTimeout: defaultEventWorkerIdle,

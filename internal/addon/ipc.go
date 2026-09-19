@@ -278,11 +278,11 @@ func (r *ExternalRuntime) handshake(ctx context.Context) error {
 	}
 	params, _ := json.Marshal(HelloParams{
 		Protocol: AddonProtocolVersion,
-		Name: r.manifest.Name,
-		Version: r.manifest.Version,
+		Name:     r.manifest.Name,
+		Version:  r.manifest.Version,
 		Commands: append([]string(nil), r.manifest.Commands...),
-		Events: append([]EventType(nil), r.manifest.Events...),
-		Caps: granted,
+		Events:   append([]EventType(nil), r.manifest.Events...),
+		Caps:     granted,
 	})
 	resp, err := r.callLocked(ctx, "hello", params)
 	if err != nil {

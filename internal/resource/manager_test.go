@@ -121,7 +121,6 @@ func TestResourceManager_LeakPolicyAndForceCleanup(t *testing.T) {
 	}
 }
 
-
 func TestResourceManager_HardCardinalityBound(t *testing.T) {
 	mgr := NewManagerWithLimit(2)
 	if err := mgr.Register(Resource{ID: "r1", Owner: "one", Type: TypeJob}); err != nil {

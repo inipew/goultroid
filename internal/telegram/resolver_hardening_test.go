@@ -74,7 +74,6 @@ func TestResolverInvalidateRefContext_RemovesHashButKeepsUsernameMetadata(t *tes
 	}
 }
 
-
 func TestResolverLifecycleFollowsParentContext(t *testing.T) {
 	parent, cancel := context.WithCancel(context.Background())
 	resolver := NewResolverWithContext(parent, nil, nil, ResolverCacheConfig{MaxEntries: 8})
@@ -99,7 +98,6 @@ func TestResolverCloseCancelsLifecycle(t *testing.T) {
 		t.Fatal("resolver close did not cancel lifecycle")
 	}
 }
-
 
 func TestResolverNetworkAdmissionIsBoundedAndCancelable(t *testing.T) {
 	resolver := NewResolverWithContext(context.Background(), nil, nil, ResolverCacheConfig{

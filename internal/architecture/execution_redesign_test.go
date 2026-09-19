@@ -178,8 +178,6 @@ func TestIdleCachesAvoidPeriodicWakeupsAndRemainBounded(t *testing.T) {
 		}
 	}
 
-
-
 	clientPath := filepath.Join(root, "internal", "telegram", "client.go")
 	clientData, err := os.ReadFile(clientPath)
 	if err != nil {
@@ -294,7 +292,6 @@ func TestPerformanceResilienceHotPathsStayBounded(t *testing.T) {
 		t.Errorf("%s must wire broadcast execution to the shared TaskEngine", wiringPath)
 	}
 }
-
 
 func TestIdleAndResourceRegressionGuards(t *testing.T) {
 	root := repositoryRoot(t)

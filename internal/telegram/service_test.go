@@ -369,7 +369,7 @@ func (m *rotatingPeerStorage) FindPhone(context.Context, string) (peers.Key, pee
 	return peers.Key{}, peers.Value{}, false, nil
 }
 func (m *rotatingPeerStorage) GetContactsHash(context.Context) (int64, error) { return 0, nil }
-func (m *rotatingPeerStorage) SaveContactsHash(context.Context, int64) error { return nil }
+func (m *rotatingPeerStorage) SaveContactsHash(context.Context, int64) error  { return nil }
 
 func TestService_PeerAwareRetryReloadsAccessHashPerAttempt(t *testing.T) {
 	storage := &rotatingPeerStorage{hash: 111}
@@ -593,7 +593,6 @@ func TestService_BotSentTrackingSupportsSavedMessages(t *testing.T) {
 		t.Fatal("InputPeerSelf record must not match a different user peer")
 	}
 }
-
 
 type captureDimensionsLimiter struct {
 	dimensions []LimitKey

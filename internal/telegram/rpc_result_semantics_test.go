@@ -16,24 +16,24 @@ func TestRPCFailureExecutionSemantics(t *testing.T) {
 		retryAfter  time.Duration
 	}{
 		{
-			name: "transient",
-			failure: &RPCFailure{Method: "x", Class: RPCTransient, Err: errors.New("temporary")},
+			name:        "transient",
+			failure:     &RPCFailure{Method: "x", Class: RPCTransient, Err: errors.New("temporary")},
 			disposition: execution.DispositionRetryable,
 		},
 		{
-			name: "flood wait",
-			failure: &RPCFailure{Method: "x", Class: RPCFloodWait, RetryAfter: 4 * time.Second, Err: errors.New("flood")},
+			name:        "flood wait",
+			failure:     &RPCFailure{Method: "x", Class: RPCFloodWait, RetryAfter: 4 * time.Second, Err: errors.New("flood")},
 			disposition: execution.DispositionRetryable,
-			retryAfter: 4 * time.Second,
+			retryAfter:  4 * time.Second,
 		},
 		{
-			name: "permission",
-			failure: &RPCFailure{Method: "x", Class: RPCPermission, Err: errors.New("denied")},
+			name:        "permission",
+			failure:     &RPCFailure{Method: "x", Class: RPCPermission, Err: errors.New("denied")},
 			disposition: execution.DispositionPermanent,
 		},
 		{
-			name: "ambiguous non idempotent",
-			failure: &RPCFailure{Method: "x", Class: RPCTransient, Ambiguous: true, Err: errors.New("unknown effect")},
+			name:        "ambiguous non idempotent",
+			failure:     &RPCFailure{Method: "x", Class: RPCTransient, Ambiguous: true, Err: errors.New("unknown effect")},
 			disposition: execution.DispositionPermanent,
 		},
 	}

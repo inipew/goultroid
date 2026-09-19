@@ -23,10 +23,10 @@ type PeerStorage struct {
 	// The dispatcher receives the same entities repeatedly. Keep a small
 	// process-local dirty cache so repeated background writes do not contend
 	// for SQLite's single connection.
-	mu                  sync.RWMutex
-	peers               map[peers.Key]int64
-	entities            map[string]peerEntitySnapshot
-	entityCacheBytes    int64
+	mu                   sync.RWMutex
+	peers                map[peers.Key]int64
+	entities             map[string]peerEntitySnapshot
+	entityCacheBytes     int64
 	entityCacheEvictions uint64
 	entityCacheOversize  uint64
 }
@@ -36,19 +36,19 @@ type peerEntitySnapshot struct {
 }
 
 const (
-	maxPeerStorageCacheEntries = 4096
+	maxPeerStorageCacheEntries       = 4096
 	maxPeerStorageEntityBytes  int64 = 4 << 20 // 4 MiB
 	peerEntityFixedBytes       int64 = 64
 )
 
 // PeerStorageCacheStats reports bounded process-local cache retention.
 type PeerStorageCacheStats struct {
-	PeerEntries      int
-	EntityEntries    int
-	EntityBytes      int64
-	EntityByteCap    int64
-	EntityEvictions  uint64
-	EntityOversize   uint64
+	PeerEntries     int
+	EntityEntries   int
+	EntityBytes     int64
+	EntityByteCap   int64
+	EntityEvictions uint64
+	EntityOversize  uint64
 }
 
 func peerEntityRetainedBytes(key string, snapshot peerEntitySnapshot) int64 {

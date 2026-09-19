@@ -101,13 +101,13 @@ type Manager struct {
 	retryStopping    bool
 	retryIdleTimeout time.Duration
 	recoveryWake     chan struct{}
-	outboxWake   chan struct{}
-	outboxSink   OutboxSink
-	scheduleWake func()
-	stopCh       chan struct{}
-	stopOnce     sync.Once
-	baseCtx      context.Context
-	baseCancel   context.CancelFunc
+	outboxWake       chan struct{}
+	outboxSink       OutboxSink
+	scheduleWake     func()
+	stopCh           chan struct{}
+	stopOnce         sync.Once
+	baseCtx          context.Context
+	baseCancel       context.CancelFunc
 	wg               sync.WaitGroup
 	workersRemaining atomic.Int64
 	doneOnce         sync.Once
@@ -1236,12 +1236,12 @@ func occurrenceStateForSemantics(semantics execution.Semantics) OccurrenceState 
 func abortedTaskResult(taskID tasks.TaskID, err error) tasks.TaskResult {
 	semantics := execution.SemanticsOf(err)
 	return tasks.TaskResult{
-		TaskID: taskID,
-		Outcome: tasks.OutcomeAbortedBeforeStart,
-		Cause: tasks.CauseAdmissionRejected,
+		TaskID:      taskID,
+		Outcome:     tasks.OutcomeAbortedBeforeStart,
+		Cause:       tasks.CauseAdmissionRejected,
 		Disposition: semantics.Disposition,
-		FinishedAt: time.Now().UTC(),
-		Failure: tasks.FailureInfo{Code: semantics.Code, Message: err.Error()},
+		FinishedAt:  time.Now().UTC(),
+		Failure:     tasks.FailureInfo{Code: semantics.Code, Message: err.Error()},
 	}
 }
 

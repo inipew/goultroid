@@ -180,12 +180,18 @@ func (c *Cache) pruneLoop(ctx context.Context, wake <-chan struct{}, done chan s
 		select {
 		case <-ctx.Done():
 			if !timer.Stop() {
-				select { case <-timer.C: default: }
+				select {
+				case <-timer.C:
+				default:
+				}
 			}
 			return
 		case <-wake:
 			if !timer.Stop() {
-				select { case <-timer.C: default: }
+				select {
+				case <-timer.C:
+				default:
+				}
 			}
 		case <-timer.C:
 			c.Prune()

@@ -29,9 +29,9 @@ func TestDispatcher_IndexedMessageRoutingSkipsIrrelevantHandlers(t *testing.T) {
 	d.AddPrioritizedMessageHandlerWithRouting(PriorityModeration, core.MessageHookRouting{
 		Lane: core.MessageHookDecision,
 		Interests: []core.MessageHookInterest{{
-			Directions: core.MessageDirectionIncoming,
-			Peers:      core.MessagePeerGroup | core.MessagePeerChannel,
-			Commands:   core.MessagePlain,
+			Directions:  core.MessageDirectionIncoming,
+			Peers:       core.MessagePeerGroup | core.MessagePeerChannel,
+			Commands:    core.MessagePlain,
 			RequireText: true,
 		}},
 	}, func(context.Context, tg.Entities, *tg.Message, bool, string) error {
@@ -119,9 +119,9 @@ func BenchmarkDispatcherMessageRouteLookup(b *testing.B) {
 		d.AddPrioritizedMessageHandlerWithRouting(PriorityFeature, core.MessageHookRouting{
 			Lane: core.MessageHookEvent,
 			Interests: []core.MessageHookInterest{{
-				Directions: core.MessageDirectionIncoming,
-				Peers:      core.MessagePeerGroup | core.MessagePeerChannel,
-				Commands:   core.MessagePlain,
+				Directions:  core.MessageDirectionIncoming,
+				Peers:       core.MessagePeerGroup | core.MessagePeerChannel,
+				Commands:    core.MessagePlain,
 				RequireText: true,
 			}},
 		}, noop)
@@ -146,8 +146,8 @@ func TestDispatcher_CanonicalHandlerReceivesNormalizedEnvelope(t *testing.T) {
 	d.AddPrioritizedCanonicalMessageHandlerWithRouting(PrioritySecurity, core.MessageHookRouting{
 		Lane: core.MessageHookDecision,
 		Interests: []core.MessageHookInterest{{
-			Directions: core.MessageDirectionIncoming,
-			Peers:      core.MessagePeerGroup,
+			Directions:  core.MessageDirectionIncoming,
+			Peers:       core.MessagePeerGroup,
 			RequireText: true,
 		}},
 	}, func(_ context.Context, message *core.MessageEnvelope) error {

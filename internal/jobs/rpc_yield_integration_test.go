@@ -90,7 +90,6 @@ func TestDurableJobYieldsShortServerFloodWaitWithoutRPCSleep(t *testing.T) {
 	}
 }
 
-
 type fixedDenyLimiter struct {
 	wait     time.Duration
 	reserves atomic.Int32

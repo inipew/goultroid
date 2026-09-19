@@ -635,7 +635,6 @@ func TestNewEngineDoesNotReadMutableDefaultConfig(t *testing.T) {
 	}
 }
 
-
 type testRateLimitSignal struct {
 	wait time.Duration
 }

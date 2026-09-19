@@ -18,20 +18,20 @@ import (
 // min-heap timer. It decides WHEN work is due; execution, retries, and
 // durability belong to JobManager/TaskEngine (Phase E collapse).
 type periodicCoordinator struct {
-	mu      sync.Mutex
-	entries map[string]*periodicRegistration
-	jobDefs map[string]periodicIdentity
-	heap    *IndexedHeap
-	wake    chan struct{}
-	ctx     context.Context
-	cancel  context.CancelFunc
+	mu          sync.Mutex
+	entries     map[string]*periodicRegistration
+	jobDefs     map[string]periodicIdentity
+	heap        *IndexedHeap
+	wake        chan struct{}
+	ctx         context.Context
+	cancel      context.CancelFunc
 	done        chan struct{}
 	running     bool
 	loopRunning bool
-	seq     uint64
-	logger  *zap.Logger
-	jobsMgr *jobs.Manager
-	nowFn   func() time.Time
+	seq         uint64
+	logger      *zap.Logger
+	jobsMgr     *jobs.Manager
+	nowFn       func() time.Time
 }
 
 type periodicIdentity struct {

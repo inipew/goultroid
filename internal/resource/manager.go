@@ -32,10 +32,10 @@ type cleanupRun struct {
 }
 
 type Manager struct {
-	mu           sync.RWMutex
-	policy       LeakPolicy
-	maxResources int
-	resources    map[string]Resource
+	mu              sync.RWMutex
+	policy          LeakPolicy
+	maxResources    int
+	resources       map[string]Resource
 	cleanups        map[string]CleanupFunc
 	cleanupRuns     map[string]*cleanupRun
 	cleanupExecutor *runtime.CallbackExecutor
@@ -52,8 +52,8 @@ func NewManagerWithLimit(maxResources int) *Manager {
 		maxResources = DefaultMaxTrackedResources
 	}
 	return &Manager{
-		policy:       LeakPolicyWarn,
-		maxResources: maxResources,
+		policy:          LeakPolicyWarn,
+		maxResources:    maxResources,
 		resources:       make(map[string]Resource),
 		cleanups:        make(map[string]CleanupFunc),
 		cleanupRuns:     make(map[string]*cleanupRun),

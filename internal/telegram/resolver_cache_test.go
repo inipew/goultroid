@@ -321,7 +321,6 @@ func TestPeerCache_TombstoneCompaction(t *testing.T) {
 	}
 }
 
-
 func TestPeerCache_IdleStorageIsLazy(t *testing.T) {
 	cache := NewPeerCache(ResolverCacheConfig{MaxEntries: 1000})
 	if cache.entries != nil {

@@ -1640,7 +1640,7 @@ func (e *Engine) forceCancelInFlight(rec *taskRecord) {
 	res := tasks.TaskResult{
 		TaskID: rec.spec.ID, Outcome: tasks.OutcomeCancelled, Cause: tasks.CauseShutdown,
 		Disposition: execution.DispositionCancelled,
-		StartedAt: rec.startedAt, FinishedAt: now,
+		StartedAt:   rec.startedAt, FinishedAt: now,
 		Failure: tasks.FailureInfo{Code: "shutdown", Message: failureMessage},
 	}
 	if rec.spec.Job != nil {

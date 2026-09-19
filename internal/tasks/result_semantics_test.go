@@ -8,10 +8,10 @@ import (
 
 func TestTaskResultSemanticRetryPolicy(t *testing.T) {
 	tests := []struct {
-		name       string
-		result     TaskResult
+		name        string
+		result      TaskResult
 		disposition execution.Disposition
-		retry      bool
+		retry       bool
 	}{
 		{"success", TaskResult{Outcome: OutcomeCompleted, Disposition: execution.DispositionSuccess}, execution.DispositionSuccess, false},
 		{"handled", TaskResult{Outcome: OutcomeCompleted, Disposition: execution.DispositionHandled}, execution.DispositionHandled, false},
@@ -37,10 +37,10 @@ func TestTaskResultSemanticRetryPolicy(t *testing.T) {
 
 func TestTaskResultSemanticsCarriesCodeAndRetryAfter(t *testing.T) {
 	result := TaskResult{
-		Outcome: OutcomeFailed,
+		Outcome:     OutcomeFailed,
 		Disposition: execution.DispositionRetryable,
-		RetryAfter: 42,
-		Failure: FailureInfo{Code: "rpc_flood_wait"},
+		RetryAfter:  42,
+		Failure:     FailureInfo{Code: "rpc_flood_wait"},
 	}
 	semantics := result.Semantics()
 	if semantics.Code != "rpc_flood_wait" || semantics.RetryAfter != 42 {

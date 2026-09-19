@@ -23,14 +23,14 @@ type Plugin struct {
 	settings *settings.Service
 }
 
-func New(svc *pmpermit.Service) *Plugin                  { return &Plugin{svc: svc} }
-func (p *Plugin) SetResolver(resolver core.PeerResolver) { p.resolver = resolver }
+func New(svc *pmpermit.Service) *Plugin                        { return &Plugin{svc: svc} }
+func (p *Plugin) SetResolver(resolver core.PeerResolver)       { p.resolver = resolver }
 func (p *Plugin) SetSettingsService(service *settings.Service) { p.settings = service }
-func (p *Plugin) Name() string                           { return "pmpermit" }
+func (p *Plugin) Name() string                                 { return "pmpermit" }
 func (p *Plugin) Description() string {
 	return "Anti-spam shield and private message access control system"
 }
-func (p *Plugin) Init() error                { return nil }
+func (p *Plugin) Init() error              { return nil }
 func (p *Plugin) MessageHookPriority() int { return 10 }
 
 func (p *Plugin) MessageHookInterested(int64) bool {

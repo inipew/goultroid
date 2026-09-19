@@ -259,10 +259,10 @@ type Context struct {
 	// LastResponseID tracks the ID of the bot's most recent reply in this context
 	LastResponseID int
 
-	Svc       TelegramServicer
-	PeerID    tg.InputPeerClass
-	Resolver  PeerResolver
-	Localizer Localizer
+	Svc            TelegramServicer
+	PeerID         tg.InputPeerClass
+	Resolver       PeerResolver
+	Localizer      Localizer
 	EventBus       *EventBus
 	DelayedActions DelayedActionScheduler
 }

@@ -34,22 +34,22 @@ func benchmarkFirstTaskLatency(b *testing.B, zeroIdle bool) {
 	cfg := Config{
 		Pools: map[tasks.PoolID]PoolEngineConfig{
 			pool: {
-				Concurrency:   1,
+				Concurrency:    1,
 				MinConcurrency: 1,
-				ZeroIdle:      zeroIdle,
-				IdleTimeout:   time.Millisecond,
-				BacklogLimit:  16,
+				ZeroIdle:       zeroIdle,
+				IdleTimeout:    time.Millisecond,
+				BacklogLimit:   16,
 			},
 		},
 		ResultCapacity: 64,
 	}
 	if zeroIdle {
 		cfg.Pools[pool] = PoolEngineConfig{
-			Concurrency:  1,
+			Concurrency:    1,
 			MinConcurrency: 0,
-			ZeroIdle:     true,
-			IdleTimeout:  time.Millisecond,
-			BacklogLimit: 16,
+			ZeroIdle:       true,
+			IdleTimeout:    time.Millisecond,
+			BacklogLimit:   16,
 		}
 	}
 

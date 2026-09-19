@@ -10,7 +10,7 @@ import (
 
 type retryWaitErr struct{ wait time.Duration }
 
-func (e retryWaitErr) Error() string                 { return "wait" }
+func (e retryWaitErr) Error() string                { return "wait" }
 func (e retryWaitErr) RateLimitWait() time.Duration { return e.wait }
 
 func TestSemanticErrorPreservesUnwrap(t *testing.T) {

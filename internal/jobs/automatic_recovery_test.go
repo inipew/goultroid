@@ -98,7 +98,6 @@ func TestManagerStartAutomaticallyRecoversCrashGap(t *testing.T) {
 	t.Fatalf("startup recovery did not converge occurrence: %+v", current)
 }
 
-
 func TestManagerRestartWaitsForPersistedDeferredDeadline(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "jobs-restart.db")
@@ -116,7 +115,7 @@ func TestManagerRestartWaitsForPersistedDeferredDeadline(t *testing.T) {
 		ID: "restart-deferred", ScopeOwner: "test:restart", QuotaOwner: "test:restart",
 		HandlerType: "restart", Pool: "general", Class: string(tasks.PriorityNormal),
 		RetryPolicy: jobs.JobRetryPolicy{MaxAttempts: 1, MaxDeferrals: 2},
-		Enabled: true, Version: 1,
+		Enabled:     true, Version: 1,
 	}
 	if err := beforeStore.SaveDefinition(ctx, &definition); err != nil {
 		before.Close()

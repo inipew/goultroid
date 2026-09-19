@@ -34,10 +34,10 @@ type RPCMetricsSnapshot struct {
 }
 
 const (
-	rpcErrorClassCount        = int(RPCInvalidRequest) + 1
-	maxRPCMethodMetricLabels  = 512
-	maxRPCWaitMetricLabels    = 32
-	rpcMetricOverflowLabel    = "__other__"
+	rpcErrorClassCount       = int(RPCInvalidRequest) + 1
+	maxRPCMethodMetricLabels = 512
+	maxRPCWaitMetricLabels   = 32
+	rpcMetricOverflowLabel   = "__other__"
 )
 
 type rpcMethodCounters struct {

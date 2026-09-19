@@ -78,7 +78,6 @@ func TestDB_Metrics_ConcurrentAccess(t *testing.T) {
 	}
 }
 
-
 func TestDBMetrics_ConcurrentObserveExactCounts(t *testing.T) {
 	m := NewInMemoryDBMetrics()
 	const goroutines = 16

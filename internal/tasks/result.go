@@ -13,11 +13,11 @@ type TaskResult struct {
 	Outcome     Outcome               `json:"outcome"`
 	Cause       Cause                 `json:"cause"`
 	Disposition execution.Disposition `json:"disposition,omitempty"`
-	StartedAt  time.Time     `json:"started_at"`
-	FinishedAt time.Time     `json:"finished_at"`
-	RetryAfter time.Duration `json:"retry_after,omitempty"`
-	Output     any           `json:"output,omitempty"`
-	Failure    FailureInfo   `json:"failure,omitempty"`
+	StartedAt   time.Time             `json:"started_at"`
+	FinishedAt  time.Time             `json:"finished_at"`
+	RetryAfter  time.Duration         `json:"retry_after,omitempty"`
+	Output      any                   `json:"output,omitempty"`
+	Failure     FailureInfo           `json:"failure,omitempty"`
 }
 
 // IsSuccess returns true if the task completed normally.

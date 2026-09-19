@@ -94,7 +94,6 @@ func TestCache_MaxSingleEntrySize(t *testing.T) {
 	}
 }
 
-
 func TestCache_DeadlineDrivenExpiryReclaimsRetainedBytes(t *testing.T) {
 	cache := NewCache(time.Minute)
 	ctx, cancel := context.WithCancel(context.Background())

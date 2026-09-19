@@ -15,11 +15,11 @@ import (
 )
 
 const (
-	defaultDelayedActionCapacity      = 4096
-	defaultDelayedActionRetainedBytes = 4 << 20 // 4 MiB
-	delayedActionOverheadBytes   int64 = 256
-	delayedActionSubmitTimeout         = time.Second
-	delayedActionExecutionTimeout      = 15 * time.Second
+	defaultDelayedActionCapacity            = 4096
+	defaultDelayedActionRetainedBytes       = 4 << 20 // 4 MiB
+	delayedActionOverheadBytes        int64 = 256
+	delayedActionSubmitTimeout              = time.Second
+	delayedActionExecutionTimeout           = 15 * time.Second
 )
 
 type delayedActionRequest struct {
@@ -47,7 +47,7 @@ func (h delayedActionHeap) Less(i, j int) bool {
 	return h[i].due.Before(h[j].due)
 }
 func (h delayedActionHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
-func (h *delayedActionHeap) Push(x any)    { *h = append(*h, x.(*delayedActionItem)) }
+func (h *delayedActionHeap) Push(x any)   { *h = append(*h, x.(*delayedActionItem)) }
 func (h *delayedActionHeap) Pop() any {
 	old := *h
 	n := len(old)
@@ -74,12 +74,12 @@ type delayedActionScheduler struct {
 	coordinatorCount int
 	coordinatorIdle  chan struct{}
 
-	seq             atomic.Uint64
-	pending         atomic.Int64
-	pendingBytes    atomic.Int64
-	submitFailures  atomic.Int64
-	byteRejections  atomic.Uint64
-	maxPending      int
+	seq              atomic.Uint64
+	pending          atomic.Int64
+	pendingBytes     atomic.Int64
+	submitFailures   atomic.Int64
+	byteRejections   atomic.Uint64
+	maxPending       int
 	maxRetainedBytes int64
 }
 
@@ -91,7 +91,7 @@ func newDelayedActionScheduler(client tasks.Client) *delayedActionScheduler {
 	}
 }
 
-func (s *delayedActionScheduler) Name() string { return "delayed-actions" }
+func (s *delayedActionScheduler) Name() string           { return "delayed-actions" }
 func (s *delayedActionScheduler) Dependencies() []string { return []string{"taskengine"} }
 
 func (s *delayedActionScheduler) Start(ctx context.Context) error {

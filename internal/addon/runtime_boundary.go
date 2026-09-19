@@ -67,16 +67,16 @@ type CanonicalEventEnvelope struct {
 }
 
 type MessageCreatedPayload struct {
-	ID         int       `json:"id"`
-	ChatID     int64     `json:"chat_id"`
-	SenderID   int64     `json:"sender_id,omitempty"`
-	Text       string    `json:"text,omitempty"`
-	Date       time.Time `json:"date,omitempty"`
-	ReplyToID  int       `json:"reply_to_id,omitempty"`
-	TopicID    int       `json:"topic_id,omitempty"`
-	MediaType  string    `json:"media_type,omitempty"`
-	Outgoing   bool      `json:"outgoing,omitempty"`
-	GroupedID  int64     `json:"grouped_id,omitempty"`
+	ID        int       `json:"id"`
+	ChatID    int64     `json:"chat_id"`
+	SenderID  int64     `json:"sender_id,omitempty"`
+	Text      string    `json:"text,omitempty"`
+	Date      time.Time `json:"date,omitempty"`
+	ReplyToID int       `json:"reply_to_id,omitempty"`
+	TopicID   int       `json:"topic_id,omitempty"`
+	MediaType string    `json:"media_type,omitempty"`
+	Outgoing  bool      `json:"outgoing,omitempty"`
+	GroupedID int64     `json:"grouped_id,omitempty"`
 }
 
 type MessageEditedPayload struct {
@@ -123,10 +123,10 @@ type CommandInvocation struct {
 }
 
 type CommandResult struct {
-	Disposition     execution.Disposition `json:"disposition,omitempty"`
-	Code            string                `json:"code,omitempty"`
-	Reply           string                `json:"reply,omitempty"`
-	Error           string                `json:"error,omitempty"`
+	Disposition      execution.Disposition `json:"disposition,omitempty"`
+	Code             string                `json:"code,omitempty"`
+	Reply            string                `json:"reply,omitempty"`
+	Error            string                `json:"error,omitempty"`
 	RetryAfterMillis int64                 `json:"retry_after_ms,omitempty"`
 }
 

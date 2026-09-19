@@ -17,22 +17,22 @@ func TestEnginePropagatesTypedExecutionSemantics(t *testing.T) {
 		retry       bool
 	}{
 		{
-			name: "rejected",
-			semantics: execution.Semantics{Disposition: execution.DispositionRejected, Code: "invalid_input"},
+			name:        "rejected",
+			semantics:   execution.Semantics{Disposition: execution.DispositionRejected, Code: "invalid_input"},
 			disposition: execution.DispositionRejected,
-			retry: false,
+			retry:       false,
 		},
 		{
-			name: "permanent",
-			semantics: execution.Semantics{Disposition: execution.DispositionPermanent, Code: "bad_payload"},
+			name:        "permanent",
+			semantics:   execution.Semantics{Disposition: execution.DispositionPermanent, Code: "bad_payload"},
 			disposition: execution.DispositionPermanent,
-			retry: false,
+			retry:       false,
 		},
 		{
-			name: "retryable",
-			semantics: execution.Semantics{Disposition: execution.DispositionRetryable, Code: "temporary"},
+			name:        "retryable",
+			semantics:   execution.Semantics{Disposition: execution.DispositionRetryable, Code: "temporary"},
 			disposition: execution.DispositionRetryable,
-			retry: true,
+			retry:       true,
 		},
 	}
 	for _, tc := range tests {

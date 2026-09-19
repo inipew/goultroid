@@ -135,7 +135,6 @@ func TestDelayedActionSchedulerRetainedByteBudget(t *testing.T) {
 	}
 }
 
-
 func TestDelayedActionScheduler_StartIsCoordinatorLazy(t *testing.T) {
 	client := &delayedActionTaskClient{}
 	scheduler := newDelayedActionScheduler(client)
@@ -270,7 +269,6 @@ func TestDelayedActionScheduler_HealthReportsZeroIdleCoordinators(t *testing.T) 
 		t.Fatal(err)
 	}
 }
-
 
 func TestDelayedActionScheduler_ConcurrentLazyAdmissionDoesNotLoseActions(t *testing.T) {
 	client := &delayedActionTaskClient{}

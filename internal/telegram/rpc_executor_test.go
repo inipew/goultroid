@@ -687,7 +687,6 @@ func TestRPCExecutor_HardMaxElapsedBudget(t *testing.T) {
 	}
 }
 
-
 func TestRPCExecutor_DurableContextYieldsShortFloodWait(t *testing.T) {
 	clock := NewFakeClock(time.Now())
 	sleeper := &FakeSleeper{}
@@ -731,10 +730,9 @@ func TestRPCExecutor_DurableContextYieldsShortFloodWait(t *testing.T) {
 	}
 }
 
-
 type oneWaitLimiter struct {
-	mu      sync.Mutex
-	wait    time.Duration
+	mu       sync.Mutex
+	wait     time.Duration
 	reserves int
 }
 
@@ -774,7 +772,6 @@ func TestRPCExecutor_InteractiveShortLimiterWaitRemainsInline(t *testing.T) {
 		t.Fatalf("interactive limiter wait was not kept inline: calls=%d total=%s", sleeper.Calls(), sleeper.TotalSleep())
 	}
 }
-
 
 func TestRPCExecutor_DurableLimiterWaitAtDefaultThresholdRemainsInline(t *testing.T) {
 	clock := NewFakeClock(time.Now())
@@ -853,10 +850,10 @@ func TestRPCExecutor_DurableLimiterInlineThresholdIsConfigurable(t *testing.T) {
 	sleeper := &FakeSleeper{}
 	limiter := &oneWaitLimiter{wait: 75 * time.Millisecond}
 	exec, err := NewRPCExecutor(RPCExecutorConfig{
-		Limiter:                       limiter,
-		Clock:                         clock,
-		Sleeper:                       sleeper,
-		DurableLimiterInlineWaitMax:   100 * time.Millisecond,
+		Limiter:                     limiter,
+		Clock:                       clock,
+		Sleeper:                     sleeper,
+		DurableLimiterInlineWaitMax: 100 * time.Millisecond,
 		DefaultPolicy: RetryPolicy{
 			MaxAttempts:        3,
 			BaseDelay:          10 * time.Millisecond,
@@ -894,7 +891,6 @@ func TestNewRPCExecutor_RejectsNegativeDurableLimiterInlineThreshold(t *testing.
 		t.Fatal("expected negative durable limiter inline threshold to be rejected")
 	}
 }
-
 
 func TestRPCExecutor_DurableLimiterInlineBudgetIsCumulative(t *testing.T) {
 	clock := NewFakeClock(time.Now())
@@ -939,7 +935,6 @@ func TestRPCExecutor_DurableLimiterInlineBudgetIsCumulative(t *testing.T) {
 	}
 }
 
-
 type fakeStructuredPeerRefresher struct {
 	calls int
 	peer  tg.InputPeerClass
@@ -958,9 +953,9 @@ func TestRPCExecutor_StructuredPeerRefresherRetriesStaleReadOnly(t *testing.T) {
 	attempts := 0
 
 	err := exec.Do(context.Background(), RPCMeta{
-		Method:           "users.getFullUser",
-		Kind:             RPCReadOnly,
-		PeerRefresher:    refresher,
+		Method:            "users.getFullUser",
+		Kind:              RPCReadOnly,
+		PeerRefresher:     refresher,
 		RefreshPeerTarget: peer,
 	}, func(context.Context) error {
 		attempts++

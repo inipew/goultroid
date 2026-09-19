@@ -22,23 +22,23 @@ const maxResolveCacheEntries = 4096
 
 // Service provides a unified management and resolution interface for settings.
 type Service struct {
-	repo    Repository
-	reg     *Registry
-	bus     *core.EventBus
+	repo         Repository
+	reg          *Registry
+	bus          *core.EventBus
 	cacheMu      sync.RWMutex
 	cache        map[string]map[resolveCacheKey]string // namespace:key -> resolveCacheKey -> value
 	cacheEntries int
 
-	lifecycleMu  sync.Mutex
-	started      bool
-	runCtx       context.Context
-	runCancel    context.CancelFunc
+	lifecycleMu   sync.Mutex
+	started       bool
+	runCtx        context.Context
+	runCancel     context.CancelFunc
 	outboxRunning bool
-	outboxDone   chan struct{}
-	unsubSetting func()
-	outboxWake   chan struct{}
-	outboxErrMu  sync.RWMutex
-	outboxErr    error
+	outboxDone    chan struct{}
+	unsubSetting  func()
+	outboxWake    chan struct{}
+	outboxErrMu   sync.RWMutex
+	outboxErr     error
 
 	commitMu      sync.RWMutex
 	commitSubs    map[uint64]CommittedSettingHandler
@@ -104,12 +104,18 @@ func (s *Service) runOutboxWorker(ctx context.Context, wake <-chan struct{}, don
 			select {
 			case <-ctx.Done():
 				if !timer.Stop() {
-					select { case <-timer.C: default: }
+					select {
+					case <-timer.C:
+					default:
+					}
 				}
 				return
 			case <-wake:
 				if !timer.Stop() {
-					select { case <-timer.C: default: }
+					select {
+					case <-timer.C:
+					default:
+					}
 				}
 			case <-timer.C:
 			}

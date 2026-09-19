@@ -74,7 +74,9 @@ func NewRouter(logger *zap.Logger) *Router {
 // SetTasks attaches the shared TaskEngine client used by canonical Assistant
 // commands. Resource-bearing commands fail closed when this dependency is absent.
 func (r *Router) SetTasks(client tasks.Client) { r.tasks = client }
-func (r *Router) SetDelayedActions(scheduler core.DelayedActionScheduler) { r.delayedActions = scheduler }
+func (r *Router) SetDelayedActions(scheduler core.DelayedActionScheduler) {
+	r.delayedActions = scheduler
+}
 
 // SetOwner configures the owner identity and optional sudo getter for permission enforcement.
 func (r *Router) SetOwner(ownerID int64, sudoGetter func() []int64) {
@@ -315,19 +317,19 @@ func (r *Router) Dispatch(ctx context.Context, senderID int64, peer tg.InputPeer
 		}
 
 		coreCtx := &core.Context{
-			Ctx:           ctx,
-			CorrelationID: fmt.Sprintf("asst-%d-%d", senderID, time.Now().UnixNano()),
-			Source:        core.ExecutionAssistant,
-			Command:       cmdNameClean,
-			Args:          fields[1:],
-			RawArgs:       strings.Join(fields[1:], " "),
-			PeerID:        peer,
-			Message:       &core.Message{SenderID: senderID, Text: strings.TrimSpace(messageText)},
-			Sender:        &core.User{ID: senderID},
-			Chat:          &core.Chat{ID: chatID, Type: chatTypeForPeer(peer)},
-			Perms:         perms,
-			Principal:     principal,
-			Svc:           &assistantServicerAdapter{inter: inter},
+			Ctx:            ctx,
+			CorrelationID:  fmt.Sprintf("asst-%d-%d", senderID, time.Now().UnixNano()),
+			Source:         core.ExecutionAssistant,
+			Command:        cmdNameClean,
+			Args:           fields[1:],
+			RawArgs:        strings.Join(fields[1:], " "),
+			PeerID:         peer,
+			Message:        &core.Message{SenderID: senderID, Text: strings.TrimSpace(messageText)},
+			Sender:         &core.User{ID: senderID},
+			Chat:           &core.Chat{ID: chatID, Type: chatTypeForPeer(peer)},
+			Perms:          perms,
+			Principal:      principal,
+			Svc:            &assistantServicerAdapter{inter: inter},
 			DelayedActions: r.delayedActions,
 		}
 

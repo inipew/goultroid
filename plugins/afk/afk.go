@@ -19,8 +19,8 @@ import (
 
 var (
 	_ plugin.MessageEventRoutingPlugin = (*Plugin)(nil)
-	_ plugin.ContextInitializer    = (*Plugin)(nil)
-	_ execution.CapabilityProvider = (*Plugin)(nil)
+	_ plugin.ContextInitializer        = (*Plugin)(nil)
+	_ execution.CapabilityProvider     = (*Plugin)(nil)
 )
 
 const defaultWelcomeDeleteDelay = 2 * time.Second

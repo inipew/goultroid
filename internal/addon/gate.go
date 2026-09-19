@@ -64,7 +64,6 @@ func (g *CapabilityGate) HasCapability(name string, cap Capability) bool {
 	return true
 }
 
-
 // AllowPrivileged explicitly grants a declared privileged capability.
 func (g *CapabilityGate) AllowPrivileged(name string, capability Capability) error {
 	if !IsPrivilegedCapability(capability) {

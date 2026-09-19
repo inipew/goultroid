@@ -127,7 +127,6 @@ func BenchmarkHierarchicalRPCLimiter_HotPeerAtHighCardinality(b *testing.B) {
 	}
 }
 
-
 func BenchmarkHierarchicalRPCLimiterCardinality(b *testing.B) {
 	for _, cardinality := range []int{1, 100, 1000, DefaultMaxLimiterBuckets} {
 		b.Run(fmt.Sprintf("buckets_%d", cardinality), func(b *testing.B) {
@@ -278,7 +277,6 @@ func BenchmarkRPCExecutorSamePeerFloodWaitOccupancy(b *testing.B) {
 	}
 }
 
-
 func BenchmarkPeerRPCLimitKey(b *testing.B) {
 	peer := &tg.InputPeerUser{UserID: 123456789, AccessHash: 987654321}
 	b.ReportAllocs()
@@ -315,7 +313,6 @@ func BenchmarkServiceSinglePeerWrapperFastPath(b *testing.B) {
 		}
 	}
 }
-
 
 func BenchmarkHierarchicalRPCLimiterSafePeerReclamation(b *testing.B) {
 	for _, cardinality := range []int{1000, DefaultMaxLimiterBuckets} {

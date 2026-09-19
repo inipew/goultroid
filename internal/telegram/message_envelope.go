@@ -159,11 +159,11 @@ func normalizeEnvelopeUser(user *tg.User) core.User {
 		return core.User{}
 	}
 	return core.User{
-		ID:         user.ID,
-		FirstName:  user.FirstName,
-		LastName:   user.LastName,
-		Username:   user.Username,
-		IsBot:      user.Bot,
+		ID:        user.ID,
+		FirstName: user.FirstName,
+		LastName:  user.LastName,
+		Username:  user.Username,
+		IsBot:     user.Bot,
 	}
 }
 

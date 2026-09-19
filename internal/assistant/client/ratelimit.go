@@ -18,16 +18,16 @@ type rateBucket struct {
 }
 
 const (
-	maxUserRateLimiterBuckets        = 4096
+	maxUserRateLimiterBuckets          = 4096
 	userRateLimitCapacitySweepInterval = 30 * time.Second
 )
 
 // UserRateLimiter implements token bucket rate limiting.
 type UserRateLimiter struct {
-	mu          sync.Mutex
-	buckets     map[string]*rateBucket
-	maxTokens   int
-	refillEvery        time.Duration
+	mu                sync.Mutex
+	buckets           map[string]*rateBucket
+	maxTokens         int
+	refillEvery       time.Duration
 	lastCapacitySweep time.Time
 }
 

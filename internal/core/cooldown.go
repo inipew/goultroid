@@ -17,8 +17,8 @@ type cooldownRecord struct {
 }
 
 const (
-	maxCooldownRecords             = 4096
-	cooldownCapacitySweepInterval  = 30 * time.Second
+	maxCooldownRecords            = 4096
+	cooldownCapacitySweepInterval = 30 * time.Second
 )
 
 // CooldownTracker provides thread-safe rate-limiting per user and command.

@@ -105,12 +105,12 @@ type RPCMeta struct {
 	Family            string
 	PeerKey           string
 	PeerLimitKey      LimitKey
-	Kind               RPCOperationKind
-	Timeout            time.Duration
-	RetryPolicy        RetryPolicy
-	RefreshPeer        func(context.Context) error
-	PeerRefresher      RPCPeerRefresher
-	RefreshPeerTarget  tg.InputPeerClass
+	Kind              RPCOperationKind
+	Timeout           time.Duration
+	RetryPolicy       RetryPolicy
+	RefreshPeer       func(context.Context) error
+	PeerRefresher     RPCPeerRefresher
+	RefreshPeerTarget tg.InputPeerClass
 }
 
 // RPCFailure holds detailed diagnostic information about a failed RPC call.

@@ -180,7 +180,6 @@ func TestFinalizeOccurrence(t *testing.T) {
 	}
 }
 
-
 func TestCommitAttemptDeferredAtomicReplayAndRedrive(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()

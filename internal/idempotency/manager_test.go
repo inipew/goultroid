@@ -69,7 +69,9 @@ func (r *lifecycleRepo) Claim(_ context.Context, _ string, _ time.Time, expires 
 	r.mu.Unlock()
 	return true, nil
 }
-func (r *lifecycleRepo) IsProcessed(context.Context, string, time.Time) (bool, error) { return false, nil }
+func (r *lifecycleRepo) IsProcessed(context.Context, string, time.Time) (bool, error) {
+	return false, nil
+}
 func (r *lifecycleRepo) DeleteExpired(ctx context.Context, now time.Time) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -234,7 +236,6 @@ func TestSQLiteIdempotencyClaimIsAtomic(t *testing.T) {
 		t.Fatalf("expected exactly one atomic claim winner, got %d", got)
 	}
 }
-
 
 func TestIdempotencyManager_RepoIdleDoesNotPollDeleteExpired(t *testing.T) {
 	repo := &lifecycleRepo{}

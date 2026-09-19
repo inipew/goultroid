@@ -484,7 +484,6 @@ func TestRuntime_ShutdownReportMetrics(t *testing.T) {
 	}
 }
 
-
 func TestRuntime_StopWithinMakesOwnerContextAuthoritative(t *testing.T) {
 	r := New()
 	r.stopTimeout = time.Second

@@ -14,9 +14,9 @@ import (
 )
 
 type recordingDownloadProvider struct {
-	name       string
-	gotURL     string
-	sawProcess bool
+	name        string
+	gotURL      string
+	sawProcess  bool
 	sawDownload bool
 }
 

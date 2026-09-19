@@ -40,16 +40,20 @@ func (*coordinatorStore) CommitAttemptResult(context.Context, string, uint64, At
 func (*coordinatorStore) CommitAttemptDeferred(context.Context, string, uint64, time.Time, string) error {
 	return nil
 }
-func (*coordinatorStore) FinalizeOccurrence(context.Context, string, OccurrenceState) error { return nil }
-func (*coordinatorStore) CancelOccurrence(context.Context, string, string) error            { return nil }
-func (*coordinatorStore) GetOccurrence(context.Context, string) (*JobOccurrence, error)    { return nil, nil }
+func (*coordinatorStore) FinalizeOccurrence(context.Context, string, OccurrenceState) error {
+	return nil
+}
+func (*coordinatorStore) CancelOccurrence(context.Context, string, string) error { return nil }
+func (*coordinatorStore) GetOccurrence(context.Context, string) (*JobOccurrence, error) {
+	return nil, nil
+}
 func (*coordinatorStore) GetOccurrenceByKey(context.Context, string) (*JobOccurrence, error) {
 	return nil, nil
 }
-func (*coordinatorStore) CountAttempts(context.Context, string) (int, error)          { return 0, nil }
-func (*coordinatorStore) CountRetryBudgetUses(context.Context, string) (int, error)   { return 0, nil }
-func (*coordinatorStore) CountDeferrals(context.Context, string) (int, error)         { return 0, nil }
-func (*coordinatorStore) LatestAttempt(context.Context, string) (*JobAttempt, error)   { return nil, nil }
+func (*coordinatorStore) CountAttempts(context.Context, string) (int, error)         { return 0, nil }
+func (*coordinatorStore) CountRetryBudgetUses(context.Context, string) (int, error)  { return 0, nil }
+func (*coordinatorStore) CountDeferrals(context.Context, string) (int, error)        { return 0, nil }
+func (*coordinatorStore) LatestAttempt(context.Context, string) (*JobAttempt, error) { return nil, nil }
 func (*coordinatorStore) ListUnresolvedOccurrences(context.Context, int) ([]*JobOccurrence, error) {
 	return nil, nil
 }

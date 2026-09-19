@@ -42,7 +42,6 @@ func TestInMemoryRPCMetrics_Snapshot(t *testing.T) {
 	}
 }
 
-
 func TestInMemoryRPCMetrics_ConcurrentObserveExactCounts(t *testing.T) {
 	m := NewInMemoryRPCMetrics()
 	const goroutines = 16
@@ -180,7 +179,6 @@ func BenchmarkInMemoryRPCMetricsObserveRequestWarmParallel(b *testing.B) {
 		}
 	})
 }
-
 
 func TestInMemoryRPCMetrics_InvalidClassFallsBackToUnknown(t *testing.T) {
 	m := NewInMemoryRPCMetrics()

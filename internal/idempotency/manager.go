@@ -25,7 +25,7 @@ type Manager struct {
 	entries map[string]entry
 	repo    Repository
 
-	lifecycleMu    sync.Mutex
+	lifecycleMu     sync.Mutex
 	cleanupInterval time.Duration
 	cleanupWake     chan struct{}
 	runCtx          context.Context
@@ -142,12 +142,18 @@ func (m *Manager) cleanupLoop(ctx context.Context, wake <-chan struct{}, done ch
 			select {
 			case <-ctx.Done():
 				if !timer.Stop() {
-					select { case <-timer.C: default: }
+					select {
+					case <-timer.C:
+					default:
+					}
 				}
 				return
 			case <-wake:
 				if !timer.Stop() {
-					select { case <-timer.C: default: }
+					select {
+					case <-timer.C:
+					default:
+					}
 				}
 				continue
 			case <-timer.C:
@@ -183,12 +189,18 @@ func (m *Manager) cleanupLoop(ctx context.Context, wake <-chan struct{}, done ch
 		select {
 		case <-ctx.Done():
 			if !timer.Stop() {
-				select { case <-timer.C: default: }
+				select {
+				case <-timer.C:
+				default:
+				}
 			}
 			return
 		case <-wake:
 			if !timer.Stop() {
-				select { case <-timer.C: default: }
+				select {
+				case <-timer.C:
+				default:
+				}
 			}
 			continue
 		case <-timer.C:

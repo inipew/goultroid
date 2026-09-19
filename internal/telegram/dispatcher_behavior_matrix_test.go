@@ -379,7 +379,7 @@ func TestDispatcherBehaviorMatrix(t *testing.T) {
 			hasCommand:        true,
 			commandName:       "run",
 			commandPermission: core.PermissionEveryone,
-			commandResources: []tasks.ResourceRequirement{{Name: "process", Amount: 1}},
+			commandResources:  []tasks.ResourceRequirement{{Name: "process", Amount: 1}},
 			decisionActive:    true,
 			eventActive:       true,
 			subscribeEvent:    true,
@@ -560,7 +560,7 @@ func TestDispatcherBehaviorDurableClaimPrecedesCommandAdmission(t *testing.T) {
 	if err := router.Register(core.Command{
 		Name:       "mutate",
 		Permission: core.PermissionEveryone,
-		Handler: func(*core.Context) error { return nil },
+		Handler:    func(*core.Context) error { return nil },
 	}); err != nil {
 		t.Fatal(err)
 	}

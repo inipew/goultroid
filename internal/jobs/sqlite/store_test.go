@@ -434,7 +434,6 @@ func TestStoreCommitAttemptResultWithOutbox(t *testing.T) {
 	}
 }
 
-
 func TestStoreAttemptSummaryAndNextLeaseFastPath(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()

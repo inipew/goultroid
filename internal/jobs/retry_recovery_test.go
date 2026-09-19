@@ -436,7 +436,6 @@ func TestDeferredDurableRetry_FloodWait(t *testing.T) {
 	}
 }
 
-
 func TestRepeatedFloodWaitsUseDeferralBudgetNotRetryBudget(t *testing.T) {
 	var calls atomic.Int32
 	manager, store, _ := engineBackedManager(t,
@@ -514,7 +513,6 @@ func TestDeferralBudgetExhaustionFinalizesOccurrence(t *testing.T) {
 		t.Fatalf("terminal deferral diagnosis missing: %+v", latest)
 	}
 }
-
 
 func TestCancellationWhileDeferredWinsOverDeadlineWake(t *testing.T) {
 	var calls atomic.Int32
@@ -601,7 +599,7 @@ func TestConcurrentRecoveryPassesCreateOneDeferredRedrive(t *testing.T) {
 		ID: "recovery-race", ScopeOwner: "test:race", QuotaOwner: "test:race",
 		HandlerType: "race", Pool: "general",
 		RetryPolicy: jobs.JobRetryPolicy{MaxAttempts: 1, MaxDeferrals: 3},
-		Enabled: true,
+		Enabled:     true,
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -17,18 +17,18 @@ type MessageMention struct {
 // message-hook plugins. It intentionally contains no raw MTProto update or
 // entity containers. Treat instances as immutable after dispatcher creation.
 type MessageEnvelope struct {
-	ID       int
-	ChatID   int64
-	Peer     PeerRef
-	Chat     Chat
+	ID         int
+	ChatID     int64
+	Peer       PeerRef
+	Chat       Chat
 	Sender     User
 	SenderPeer PeerRef
 	Self       User
-	Text     string
-	Date     time.Time
-	ReplyToID int
-	TopicID   int
-	GroupedID int64
+	Text       string
+	Date       time.Time
+	ReplyToID  int
+	TopicID    int
+	GroupedID  int64
 
 	Outgoing         bool
 	IsCommand        bool
@@ -37,7 +37,7 @@ type MessageEnvelope struct {
 	SenderSelf       bool
 	Mentioned        bool
 	ReplyIsTopicRoot bool
-	Mentions        []MessageMention
+	Mentions         []MessageMention
 }
 
 // IsPrivate reports whether the message belongs to a private user dialog.

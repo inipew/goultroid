@@ -217,7 +217,7 @@ func (p *Plugin) ShutdownContext(ctx context.Context) error {
 }
 
 var (
-	_ plugin.ContextShutdowner = (*Plugin)(nil)
+	_ plugin.ContextShutdowner         = (*Plugin)(nil)
 	_ plugin.MessageEventRoutingPlugin = (*Plugin)(nil)
 )
 

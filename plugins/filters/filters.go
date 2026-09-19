@@ -32,10 +32,10 @@ type Plugin struct {
 	svcFunc      func() core.TelegramServicer
 	featureState core.ChatFeatureSnapshot
 	cacheMu      sync.RWMutex
-	chatFilters map[int64][]compiledFilter
-	chatAccess  map[int64]time.Time
-	cooldownMu  sync.Mutex
-	lastReply   map[string]time.Time
+	chatFilters  map[int64][]compiledFilter
+	chatAccess   map[int64]time.Time
+	cooldownMu   sync.Mutex
+	lastReply    map[string]time.Time
 }
 
 func New(db Repository, svcFunc func() core.TelegramServicer) *Plugin {

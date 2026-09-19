@@ -181,7 +181,6 @@ func TestBroadcast_CancelActive(t *testing.T) {
 	}
 }
 
-
 func TestBroadcast_BackpressuresInsteadOfDroppingOnTaskBacklog(t *testing.T) {
 	mockTG := &mockTelegram{sendDelay: 10 * time.Millisecond}
 	svc := newBroadcastService(t, mockTG)

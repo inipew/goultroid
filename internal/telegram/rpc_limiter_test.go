@@ -322,7 +322,6 @@ func TestHierarchicalRPCLimiter_ExtendingPenaltyDoesNotGrowHeapState(t *testing.
 	}
 }
 
-
 func TestHierarchicalRPCLimiter_TypedPeerIdentitySeparatesKinds(t *testing.T) {
 	limiter := NewHierarchicalRPCLimiter(HierarchicalLimiterConfig{
 		GlobalRate:         100,
@@ -362,7 +361,6 @@ func TestHierarchicalRPCLimiter_TypedPeerIdentitySeparatesKinds(t *testing.T) {
 		t.Fatalf("typed user penalty leaked into channel identity: %+v", res)
 	}
 }
-
 
 func TestHierarchicalRPCLimiter_SafeFullRefillReclaimsBeforeIdleTTL(t *testing.T) {
 	limiter := NewHierarchicalRPCLimiter(HierarchicalLimiterConfig{
@@ -504,7 +502,6 @@ func TestHierarchicalRPCLimiter_HighCardinalityPeersCollapseAfterSafeRefill(t *t
 		t.Fatalf("high-cardinality safe reclaim left %d buckets, want 1", buckets)
 	}
 }
-
 
 func TestHierarchicalRPCLimiter_SafeReclaimSkipsBeyondIdleTTL(t *testing.T) {
 	limiter := NewHierarchicalRPCLimiter(HierarchicalLimiterConfig{

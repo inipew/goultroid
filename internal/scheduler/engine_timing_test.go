@@ -433,7 +433,6 @@ func TestPeriodicRetryCollapsesToJobPolicy(t *testing.T) {
 	}
 }
 
-
 func TestJobsScheduleMutationWakesIdleScheduler(t *testing.T) {
 	h := newTimingHarness(t)
 	ctx := context.Background()

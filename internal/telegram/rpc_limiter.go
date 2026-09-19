@@ -169,9 +169,9 @@ type HierarchicalRPCLimiter struct {
 	mu  sync.Mutex
 	cfg HierarchicalLimiterConfig
 
-	buckets    map[LimitKey]*tokenBucket
-	bucketLRU  *list.List // non-global buckets, oldest access at Front
-	reclaimQ   bucketReclaimHeap // peer buckets ordered by mathematically safe full-refill time
+	buckets   map[LimitKey]*tokenBucket
+	bucketLRU *list.List        // non-global buckets, oldest access at Front
+	reclaimQ  bucketReclaimHeap // peer buckets ordered by mathematically safe full-refill time
 
 	penalties map[LimitKey]*penaltyState
 	penaltyQ  penaltyHeap

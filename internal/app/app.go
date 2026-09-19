@@ -151,7 +151,9 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		domServices.addonManager.SetCommandRouter(coreDeps.router)
 	}
 	if tgRuntime.assistant != nil {
-		if aware, ok := tgRuntime.assistant.(interface{ SetDelayedActions(core.DelayedActionScheduler) }); ok {
+		if aware, ok := tgRuntime.assistant.(interface {
+			SetDelayedActions(core.DelayedActionScheduler)
+		}); ok {
 			aware.SetDelayedActions(delayedActions)
 		}
 		tgRuntime.assistant.SetCoreRouter(coreDeps.router)

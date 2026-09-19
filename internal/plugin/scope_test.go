@@ -178,7 +178,6 @@ func TestScope_Defer_PanicReported(t *testing.T) {
 	}
 }
 
-
 func TestScope_TrackingFailsClosedWhenGlobalResourceCapacityIsFull(t *testing.T) {
 	mgr := resource.NewManagerWithLimit(1)
 	scope := NewScopeWithManager(context.Background(), "plugin:test", mgr)

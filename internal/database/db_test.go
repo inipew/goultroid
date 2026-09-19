@@ -227,7 +227,6 @@ func TestPeerEntity_SaveAndFindByUsername(t *testing.T) {
 	}
 }
 
-
 func TestSQLitePoolLimitsRemainBoundedAcrossCPUCounts(t *testing.T) {
 	tests := []struct {
 		cpus     int
