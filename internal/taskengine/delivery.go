@@ -71,18 +71,11 @@ func (d *completionDelivery) start() {
 	}
 }
 
-func (d *completionDelivery) ensureWorkers() {
-	if d == nil || d.stopping.Load() {
-		return
-	}
-
-	d.workerMu.Lock()
-	defer d.workerMu.Unlock()
+func (d *completionDelivery) ensureWorkersLocked() {
 	if d.stopping.Load() {
 		return
 	}
-
-	target := len(d.queue)
+	target := int(d.active.Load()) + len(d.queue)
 	if target < 1 {
 		target = 1
 	}
@@ -95,6 +88,15 @@ func (d *completionDelivery) ensureWorkers() {
 		running++
 		go d.loop()
 	}
+}
+
+func (d *completionDelivery) ensureWorkers() {
+	if d == nil {
+		return
+	}
+	d.workerMu.Lock()
+	d.ensureWorkersLocked()
+	d.workerMu.Unlock()
 }
 
 func (d *completionDelivery) workerDone() {
@@ -155,15 +157,16 @@ func (d *completionDelivery) loop() {
 // reserve claims one callback-delivery credit. It is intentionally
 // non-blocking because admission must remain bounded and explicit.
 func (d *completionDelivery) reserve() bool {
-	if d == nil || d.stopping.Load() {
+	if d == nil {
+		return false
+	}
+	d.workerMu.Lock()
+	defer d.workerMu.Unlock()
+	if d.stopping.Load() {
 		return false
 	}
 	select {
 	case d.reservations <- struct{}{}:
-		if d.stopping.Load() {
-			d.releaseReservation()
-			return false
-		}
 		return true
 	default:
 		return false
@@ -194,6 +197,8 @@ func (d *completionDelivery) enqueueReserved(fn func(tasks.TaskResult), res task
 		}
 		return false
 	}
+	d.workerMu.Lock()
+	defer d.workerMu.Unlock()
 	if d.stopping.Load() {
 		d.failed.Add(1)
 		d.releaseReservation()
@@ -202,7 +207,7 @@ func (d *completionDelivery) enqueueReserved(fn func(tasks.TaskResult), res task
 	d.pending.Add(1)
 	select {
 	case d.queue <- deliveryItem{fn: fn, res: res, release: true}:
-		d.ensureWorkers()
+		d.ensureWorkersLocked()
 		return true
 	default:
 		d.pending.Add(-1)
@@ -246,11 +251,13 @@ func (d *completionDelivery) stop(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	d.workerMu.Lock()
 	d.stopping.Store(true)
 	d.stopOs.Do(func() { close(d.stopCh) })
 	if d.remaining.Load() == 0 {
 		d.doneOnce.Do(func() { close(d.done) })
 	}
+	d.workerMu.Unlock()
 	select {
 	case <-d.done:
 		return nil

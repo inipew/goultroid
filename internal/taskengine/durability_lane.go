@@ -60,18 +60,11 @@ func (d *durabilityLane) start() {
 	}
 }
 
-func (d *durabilityLane) ensureWorkers() {
-	if d == nil || d.stopping.Load() {
-		return
-	}
-
-	d.workerMu.Lock()
-	defer d.workerMu.Unlock()
+func (d *durabilityLane) ensureWorkersLocked() {
 	if d.stopping.Load() {
 		return
 	}
-
-	target := len(d.queue)
+	target := int(d.active.Load()) + len(d.queue)
 	if target < 1 {
 		target = 1
 	}
@@ -84,6 +77,15 @@ func (d *durabilityLane) ensureWorkers() {
 		running++
 		go d.loop()
 	}
+}
+
+func (d *durabilityLane) ensureWorkers() {
+	if d == nil {
+		return
+	}
+	d.workerMu.Lock()
+	d.ensureWorkersLocked()
+	d.workerMu.Unlock()
 }
 
 func (d *durabilityLane) workerDone() {
@@ -145,10 +147,16 @@ func (d *durabilityLane) enqueue(fn func()) bool {
 		}
 		return false
 	}
+	d.workerMu.Lock()
+	defer d.workerMu.Unlock()
+	if d.stopping.Load() {
+		d.failed.Add(1)
+		return false
+	}
 	d.pending.Add(1)
 	select {
 	case d.queue <- fn:
-		d.ensureWorkers()
+		d.ensureWorkersLocked()
 		return true
 	default:
 		d.pending.Add(-1)
@@ -167,11 +175,13 @@ func (d *durabilityLane) stop(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	d.workerMu.Lock()
 	d.stopping.Store(true)
 	d.stopOnce.Do(func() { close(d.stopCh) })
 	if d.remaining.Load() == 0 {
 		d.doneOnce.Do(func() { close(d.done) })
 	}
+	d.workerMu.Unlock()
 	select {
 	case <-d.done:
 		return nil
