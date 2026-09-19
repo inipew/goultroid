@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -266,6 +267,73 @@ func TestDelayedActionScheduler_HealthReportsZeroIdleCoordinators(t *testing.T) 
 		t.Fatalf("idle coordinator count=%d, want 0", count)
 	}
 	if err := scheduler.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+
+func TestDelayedActionScheduler_ConcurrentLazyAdmissionDoesNotLoseActions(t *testing.T) {
+	client := &delayedActionTaskClient{}
+	scheduler := newDelayedActionScheduler(client)
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	if err := scheduler.Start(runCtx); err != nil {
+		t.Fatal(err)
+	}
+
+	const actions = 64
+	var ran atomic.Int32
+	var wg sync.WaitGroup
+	errs := make(chan error, actions)
+	wg.Add(actions)
+	for i := 0; i < actions; i++ {
+		go func() {
+			defer wg.Done()
+			errs <- scheduler.Schedule(context.Background(), time.Millisecond, 32, func(context.Context) error {
+				ran.Add(1)
+				return nil
+			})
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent schedule failed: %v", err)
+		}
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for ran.Load() != actions && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := ran.Load(); got != actions {
+		t.Fatalf("executed actions=%d, want %d", got, actions)
+	}
+
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		scheduler.mu.Lock()
+		idle := scheduler.coordinatorCount == 0 && scheduler.requests == nil && scheduler.done == nil
+		scheduler.mu.Unlock()
+		if idle && scheduler.pending.Load() == 0 && scheduler.pendingBytes.Load() == 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	scheduler.mu.Lock()
+	idle := scheduler.coordinatorCount == 0 && scheduler.requests == nil && scheduler.done == nil
+	scheduler.mu.Unlock()
+	if !idle {
+		t.Fatal("coordinator remained resident after concurrent queue drained")
+	}
+	if scheduler.pending.Load() != 0 || scheduler.pendingBytes.Load() != 0 {
+		t.Fatalf("retained accounting after drain: pending=%d bytes=%d", scheduler.pending.Load(), scheduler.pendingBytes.Load())
+	}
+
+	stopCtx, cancelStop := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancelStop()
+	if err := scheduler.Stop(stopCtx); err != nil {
 		t.Fatal(err)
 	}
 }
