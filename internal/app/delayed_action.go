@@ -337,7 +337,6 @@ func (s *delayedActionScheduler) Health(context.Context) runtime.ComponentHealth
 }
 
 func (s *delayedActionScheduler) run(ctx context.Context, requests chan delayedActionRequest, done chan struct{}) {
-	defer close(done)
 	var queue delayedActionHeap
 	heap.Init(&queue)
 	var timer *time.Timer
@@ -353,6 +352,11 @@ func (s *delayedActionScheduler) run(ctx context.Context, requests chan delayedA
 			s.pending.Store(0)
 			s.pendingBytes.Store(0)
 		}
+
+		// Wake every admission waiter before publishing coordinator-idle. Stop()
+		// may return as soon as coordinatorIdle closes, so done must already be
+		// closed at that point.
+		close(done)
 
 		s.mu.Lock()
 		if s.requests == requests && s.done == done {
