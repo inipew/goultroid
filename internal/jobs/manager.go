@@ -55,6 +55,10 @@ type nextAttemptLeaseStore interface {
 	PrepareNextAttemptLease(context.Context, string, time.Duration) (*JobAttempt, error)
 }
 
+type recoveryCandidateStore interface {
+	ListRecoveryCandidates(context.Context, int) ([]RecoveryCandidate, error)
+}
+
 type definitionLoader interface {
 	ListDefinitions(context.Context) ([]JobDefinition, error)
 }
@@ -1277,11 +1281,31 @@ func definitionResources(def JobDefinition) []tasks.ResourceRequirement {
 // Recover scans unresolved occurrences and converges each one. Repeated calls converge; limit bounds each scan.
 func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error) {
 	var report RecoverReport
-	unresolved, err := m.store.ListUnresolvedOccurrences(ctx, limit)
-	if err != nil {
-		return report, err
+
+	var candidates []RecoveryCandidate
+	if store, ok := m.store.(recoveryCandidateStore); ok {
+		var err error
+		candidates, err = store.ListRecoveryCandidates(ctx, limit)
+		if err != nil {
+			return report, err
+		}
+	} else {
+		unresolved, err := m.store.ListUnresolvedOccurrences(ctx, limit)
+		if err != nil {
+			return report, err
+		}
+		candidates = make([]RecoveryCandidate, 0, len(unresolved))
+		for _, occ := range unresolved {
+			if occ == nil {
+				continue
+			}
+			candidates = append(candidates, RecoveryCandidate{Occurrence: *occ})
+		}
 	}
-	for _, occ := range unresolved {
+
+	for i := range candidates {
+		candidate := &candidates[i]
+		occ := &candidate.Occurrence
 		report.Scanned++
 		if occ.ReadyAt.After(time.Now().UTC()) {
 			// Occurrence is deferred (waiting for FloodWait / durable backoff).
@@ -1305,8 +1329,16 @@ func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error)
 			report.Orphaned++
 			continue
 		}
-		summary, err := m.loadAttemptSummary(ctx, occ.ID)
-		if err != nil || summary.OccurrenceState != OccurrenceDispatched {
+		summary := candidate.Summary
+		if summary == nil {
+			var err error
+			summary, err = m.loadAttemptSummary(ctx, occ.ID)
+			if err != nil {
+				report.Stale++
+				continue
+			}
+		}
+		if summary.OccurrenceState != OccurrenceDispatched {
 			report.Stale++
 			continue
 		}
