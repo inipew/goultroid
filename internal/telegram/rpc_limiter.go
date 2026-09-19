@@ -311,15 +311,20 @@ func (l *HierarchicalRPCLimiter) removeBucketLocked(key LimitKey, bucket *tokenB
 			l.bucketLRU.Remove(bucket.lruElem)
 			bucket.lruElem = nil
 		}
-		if bucket.reclaim != nil {
-			state := bucket.reclaim
-			bucket.reclaim = nil
-			if state.index >= 0 && state.index < l.reclaimQ.Len() {
-				heap.Remove(&l.reclaimQ, state.index)
-			}
-		}
+		l.clearBucketReclaimLocked(bucket)
 	}
 	delete(l.buckets, key)
+}
+
+func (l *HierarchicalRPCLimiter) clearBucketReclaimLocked(bucket *tokenBucket) {
+	if bucket == nil || bucket.reclaim == nil {
+		return
+	}
+	state := bucket.reclaim
+	bucket.reclaim = nil
+	if state.index >= 0 && state.index < l.reclaimQ.Len() {
+		heap.Remove(&l.reclaimQ, state.index)
+	}
 }
 
 func (l *HierarchicalRPCLimiter) scheduleSafePeerReclaimLocked(key LimitKey, bucket *tokenBucket, now time.Time) {
@@ -331,7 +336,15 @@ func (l *HierarchicalRPCLimiter) scheduleSafePeerReclaimLocked(key LimitKey, buc
 	if deficit < 0 {
 		deficit = 0
 	}
-	waitNanos := math.Ceil((deficit / bucket.rate) * float64(time.Second))
+	fullAfterSeconds := deficit / bucket.rate
+	// IdleTTL already provides bounded fallback reclamation. Do not keep a
+	// redundant heap node when natural refill would take as long or longer;
+	// this also avoids duration overflow for pathological tiny rates.
+	if fullAfterSeconds >= l.cfg.IdleTTL.Seconds() {
+		l.clearBucketReclaimLocked(bucket)
+		return
+	}
+	waitNanos := math.Ceil(fullAfterSeconds * float64(time.Second))
 	if waitNanos < 0 {
 		waitNanos = 0
 	}
