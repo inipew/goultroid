@@ -28,8 +28,7 @@ type dbMetricCounters struct {
 // bounded label is warm, Observe only performs a map load and atomic increments
 // instead of contending on one collector-wide mutex.
 type InMemoryDBMetrics struct {
-	operations      sync.Map // map[string]*dbMetricCounters
-	totalOperations atomic.Int64
+	operations sync.Map // map[string]*dbMetricCounters
 }
 
 // NewInMemoryDBMetrics creates an initialized in-memory database metrics collector.
@@ -59,7 +58,6 @@ func (m *InMemoryDBMetrics) Observe(operation string, elapsed time.Duration, err
 	if err != nil {
 		counters.errors.Add(1)
 	}
-	m.totalOperations.Add(1)
 }
 
 // Count returns the number of times an operation was invoked.
@@ -98,10 +96,17 @@ func (m *InMemoryDBMetrics) TotalDuration(operation string) time.Duration {
 	return time.Duration(value.(*dbMetricCounters).durationNanos.Load())
 }
 
-// TotalOperations returns the total operations across all labels.
+// TotalOperations returns the total operations across all labels. Aggregation
+// is intentionally paid by the diagnostics/read path instead of adding a
+// collector-wide atomic write to every database operation.
 func (m *InMemoryDBMetrics) TotalOperations() int64 {
 	if m == nil {
 		return 0
 	}
-	return m.totalOperations.Load()
+	var total int64
+	m.operations.Range(func(_, value any) bool {
+		total += value.(*dbMetricCounters).count.Load()
+		return true
+	})
+	return total
 }
