@@ -463,7 +463,7 @@ func (s *Service) Set(ctx context.Context, scope SettingScope, scopeID int64, na
 		return nil
 	}
 
-	if s.bus != nil {
+	if s.bus != nil && s.bus.HasSubscribersAtPriority(core.EventTypeSettingChanged, core.PriorityNormal) {
 		s.bus.Publish(event)
 	}
 
@@ -509,7 +509,7 @@ func (s *Service) Reset(ctx context.Context, scope SettingScope, scopeID int64, 
 		return nil
 	}
 
-	if s.bus != nil {
+	if s.bus != nil && s.bus.HasSubscribersAtPriority(core.EventTypeSettingChanged, core.PriorityNormal) {
 		s.bus.Publish(event)
 	}
 
@@ -627,7 +627,7 @@ func (s *Service) Import(ctx context.Context, scope SettingScope, scopeID int64,
 	}
 
 	// Phase 3: Publish events
-	if s.bus != nil {
+	if s.bus != nil && s.bus.HasSubscribersAtPriority(core.EventTypeSettingChanged, core.PriorityNormal) {
 		for _, event := range events {
 			s.bus.Publish(event)
 		}

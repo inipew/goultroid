@@ -28,6 +28,35 @@ const (
 	EventTypeJobLifecycle    EventType = "job.lifecycle"
 )
 
+const builtinEventTypeCount = 10
+
+func builtinEventTypeIndex(t EventType) (int, bool) {
+	switch t {
+	case EventTypeMessageCreated:
+		return 0, true
+	case EventTypeMessageEdited:
+		return 1, true
+	case EventTypeMessagesDeleted:
+		return 2, true
+	case EventTypeCallbackQuery:
+		return 3, true
+	case EventTypeReactionUpdated:
+		return 4, true
+	case EventTypeInlineChosen:
+		return 5, true
+	case EventTypeAdminAction:
+		return 6, true
+	case EventTypePMPermit:
+		return 7, true
+	case EventTypeSettingChanged:
+		return 8, true
+	case EventTypeJobLifecycle:
+		return 9, true
+	default:
+		return 0, false
+	}
+}
+
 type EventMeta struct {
 	ID            string
 	CorrelationID string
@@ -342,7 +371,10 @@ func (s *Subscription) Close() {
 		s.bus.mu.Lock()
 		defer s.bus.mu.Unlock()
 		if m := s.bus.subscribers[s.eventType]; m != nil {
-			delete(m, s.id)
+			if subscriber, ok := m[s.id]; ok {
+				delete(m, s.id)
+				s.bus.addSubscriberInterest(s.eventType, subscriber.minPriority, -1)
+			}
 			if len(m) == 0 {
 				delete(s.bus.subscribers, s.eventType)
 			}
@@ -430,6 +462,12 @@ type EventBus struct {
 	deliveredCount atomic.Int64
 	droppedCount   atomic.Int64
 	panicCount     atomic.Int64
+
+	// subscriberInterest is an exact count by built-in event type and
+	// subscriber MinPriority. Producers can query it without taking the
+	// EventBus coordinator lock, allowing them to skip normalization and
+	// allocation when nobody can consume an event.
+	subscriberInterest [builtinEventTypeCount][4]atomic.Int64
 }
 
 // SetTasks routes asynchronous subscriber execution through the shared runtime.
@@ -520,6 +558,73 @@ func (b *EventBus) LifecycleState() string {
 		return "started"
 	}
 	return "new"
+}
+
+// HasSubscribers reports whether at least one subscriber currently exists for
+// an event type. Built-in event types use lock-free counters; custom event
+// types fall back to the coordinator map.
+func (b *EventBus) HasSubscribers(t EventType) bool {
+	if b == nil {
+		return false
+	}
+	if idx, ok := builtinEventTypeIndex(t); ok {
+		for p := PriorityCritical; p <= PriorityLow; p++ {
+			if b.subscriberInterest[idx][int(p)].Load() > 0 {
+				return true
+			}
+		}
+		return false
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return len(b.subscribers[t]) > 0
+}
+
+// HasSubscribersAtPriority reports whether an event at priority would be
+// accepted by at least one current subscriber. A subscriber with MinPriority
+// P receives events whose priority is <= P.
+func (b *EventBus) HasSubscribersAtPriority(t EventType, priority EventPriority) bool {
+	if b == nil {
+		return false
+	}
+	if priority < PriorityCritical || priority > PriorityLow {
+		priority = PriorityNormal
+	}
+	if idx, ok := builtinEventTypeIndex(t); ok {
+		for minPriority := priority; minPriority <= PriorityLow; minPriority++ {
+			if b.subscriberInterest[idx][int(minPriority)].Load() > 0 {
+				return true
+			}
+		}
+		return false
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for _, subscriber := range b.subscribers[t] {
+		if priority <= subscriber.minPriority {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *EventBus) addSubscriberInterest(t EventType, priority EventPriority, delta int64) {
+	idx, ok := builtinEventTypeIndex(t)
+	if !ok {
+		return
+	}
+	if priority < PriorityCritical || priority > PriorityLow {
+		priority = PriorityLow
+	}
+	b.subscriberInterest[idx][int(priority)].Add(delta)
+}
+
+func (b *EventBus) clearSubscriberInterest() {
+	for i := 0; i < builtinEventTypeCount; i++ {
+		for p := 0; p < 4; p++ {
+			b.subscriberInterest[i][p].Store(0)
+		}
+	}
 }
 
 // Use attaches event middleware into the dispatch pipeline.
@@ -789,6 +894,7 @@ func (b *EventBus) SubscribeWithOptions(t EventType, handler ContextEventHandler
 		timeout:        opts.Timeout,
 		minPriority:    minPrio,
 	}
+	b.addSubscriberInterest(t, minPrio, 1)
 	return &Subscription{bus: b, eventType: t, id: id}
 }
 
@@ -870,6 +976,14 @@ func (b *EventBus) Publish(event Event) {
 	if event == nil {
 		return
 	}
+	prio := PriorityNormal
+	if pe, ok := event.(PrioritizedEvent); ok {
+		prio = pe.Priority()
+	}
+	if !b.HasSubscribersAtPriority(event.Type(), prio) {
+		return
+	}
+
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	if b.closed || !b.started {
@@ -878,11 +992,6 @@ func (b *EventBus) Publish(event Event) {
 	m := b.subscribers[event.Type()]
 	if len(m) == 0 {
 		return
-	}
-
-	prio := PriorityNormal
-	if pe, ok := event.(PrioritizedEvent); ok {
-		prio = pe.Priority()
 	}
 
 	var ordKey string
@@ -937,6 +1046,11 @@ func (b *EventBus) PublishDurable(ctx context.Context, event Event) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	prio := PriorityNormal
+	if pe, ok := event.(PrioritizedEvent); ok {
+		prio = pe.Priority()
+	}
+
 	b.mu.RLock()
 	if b.closed {
 		b.mu.RUnlock()
@@ -953,22 +1067,20 @@ func (b *EventBus) PublishDurable(ctx context.Context, event Event) error {
 	}
 	subscribers := make([]eventSubscriber, 0, len(m))
 	for _, subscriber := range m {
-		subscribers = append(subscribers, subscriber)
+		if prio <= subscriber.minPriority {
+			subscribers = append(subscribers, subscriber)
+		}
+	}
+	if len(subscribers) == 0 {
+		b.mu.RUnlock()
+		return nil
 	}
 	mws := append([]EventMiddleware(nil), b.middlewares...)
 	b.durable.Add(1)
 	b.mu.RUnlock()
 	defer b.durable.Done()
 
-	prio := PriorityNormal
-	if pe, ok := event.(PrioritizedEvent); ok {
-		prio = pe.Priority()
-	}
-
 	for _, subscriber := range subscribers {
-		if prio > subscriber.minPriority {
-			continue
-		}
 
 		select {
 		case <-ctx.Done():
@@ -1073,6 +1185,7 @@ func (b *EventBus) CloseContext(ctx context.Context) error {
 		b.mu.Lock()
 		b.closed = true
 		b.subscribers = make(map[EventType]map[uint64]eventSubscriber)
+		b.clearSubscriberInterest()
 		if b.started {
 			close(b.stop)
 		}

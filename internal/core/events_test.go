@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 func newStartedEventBus(t *testing.T) *core.EventBus {
@@ -560,5 +561,183 @@ func TestEventBus_CloseContextHonorsDeadline(t *testing.T) {
 	close(release)
 	if err := bus.CloseContext(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+type noSubmitTaskClient struct {
+	submits atomic.Int32
+}
+
+func (c *noSubmitTaskClient) Submit(context.Context, tasks.WorkSpec) (tasks.Ticket, error) {
+	c.submits.Add(1)
+	return nil, errors.New("unexpected task submission")
+}
+func (*noSubmitTaskClient) Cancel(tasks.TaskID, tasks.Cause) (tasks.CancelReceipt, error) {
+	return tasks.CancelReceipt{}, nil
+}
+func (*noSubmitTaskClient) CancelScope(tasks.ScopeIdentity, tasks.Cause) int { return 0 }
+func (*noSubmitTaskClient) Snapshot(tasks.TaskID) (tasks.TaskSnapshot, bool) {
+	return tasks.TaskSnapshot{}, false
+}
+
+func TestEventBusSubscriberInterestTracksPriorityAndLifecycle(t *testing.T) {
+	bus := newStartedEventBus(t)
+	if bus.HasSubscribers(core.EventTypeMessageCreated) {
+		t.Fatal("new bus unexpectedly reports subscribers")
+	}
+
+	critical := bus.SubscribeWithOptions(core.EventTypeMessageCreated, func(context.Context, core.Event) error {
+		return nil
+	}, core.SubscribeOptions{Owner: "critical", MinPriority: core.PriorityCritical})
+	if critical == nil {
+		t.Fatal("critical subscription was not created")
+	}
+	if !bus.HasSubscribers(core.EventTypeMessageCreated) {
+		t.Fatal("subscriber interest did not become active")
+	}
+	if !bus.HasSubscribersAtPriority(core.EventTypeMessageCreated, core.PriorityCritical) {
+		t.Fatal("critical event should have an interested subscriber")
+	}
+	if bus.HasSubscribersAtPriority(core.EventTypeMessageCreated, core.PriorityNormal) {
+		t.Fatal("normal event should not match critical-only subscriber")
+	}
+
+	normal := bus.SubscribeWithOptions(core.EventTypeMessageCreated, func(context.Context, core.Event) error {
+		return nil
+	}, core.SubscribeOptions{Owner: "normal", MinPriority: core.PriorityNormal})
+	if normal == nil {
+		t.Fatal("normal subscription was not created")
+	}
+	if !bus.HasSubscribersAtPriority(core.EventTypeMessageCreated, core.PriorityNormal) {
+		t.Fatal("normal subscriber interest not visible")
+	}
+	if bus.HasSubscribersAtPriority(core.EventTypeMessageCreated, core.PriorityLow) {
+		t.Fatal("low event should not match a normal-priority subscriber")
+	}
+
+	normal.Close()
+	if bus.HasSubscribersAtPriority(core.EventTypeMessageCreated, core.PriorityNormal) {
+		t.Fatal("normal interest remained after unsubscribe")
+	}
+	critical.Close()
+	if bus.HasSubscribers(core.EventTypeMessageCreated) {
+		t.Fatal("event type remained interested after last unsubscribe")
+	}
+
+	custom := core.EventType("custom.test")
+	customSub := bus.SubscribeOwned("custom", custom, func(core.Event) {})
+	if customSub == nil || !bus.HasSubscribers(custom) {
+		t.Fatal("custom event fallback interest lookup failed")
+	}
+	customSub.Close()
+	if bus.HasSubscribers(custom) {
+		t.Fatal("custom event interest remained after close")
+	}
+}
+
+func TestEventBusPublishWithoutSubscribersNeverSubmitsTask(t *testing.T) {
+	bus := newStartedEventBus(t)
+	client := &noSubmitTaskClient{}
+	bus.SetTasks(client)
+
+	bus.Publish(&core.MessageCreatedEvent{At: time.Now(), ChatID: 42})
+	time.Sleep(20 * time.Millisecond)
+	if got := client.submits.Load(); got != 0 {
+		t.Fatalf("task submissions=%d, want 0 with no subscribers", got)
+	}
+	if stats := bus.Stats(); stats.Published != 0 || stats.Dropped != 0 {
+		t.Fatalf("uninterested publish changed queue stats: %+v", stats)
+	}
+}
+
+func TestEventBusInterestClearedOnClose(t *testing.T) {
+	bus := core.NewEventBus()
+	if err := bus.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	bus.Subscribe(core.EventTypeReactionUpdated, func(core.Event) {})
+	if !bus.HasSubscribers(core.EventTypeReactionUpdated) {
+		t.Fatal("expected active interest")
+	}
+	if err := bus.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if bus.HasSubscribers(core.EventTypeReactionUpdated) {
+		t.Fatal("interest remained after EventBus close")
+	}
+}
+
+func BenchmarkEventBusHasSubscribersNoSubscribers(b *testing.B) {
+	bus := core.NewEventBus()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if bus.HasSubscribersAtPriority(core.EventTypeMessageCreated, core.PriorityNormal) {
+			b.Fatal("unexpected subscriber")
+		}
+	}
+}
+
+func TestEventBusPublishDurableSkipsSubscribersBelowPriority(t *testing.T) {
+	bus := newStartedEventBus(t)
+	var calls atomic.Int32
+	sub := bus.SubscribeWithOptions(core.EventTypeMessageCreated, func(context.Context, core.Event) error {
+		calls.Add(1)
+		return nil
+	}, core.SubscribeOptions{Owner: "critical-only", MinPriority: core.PriorityCritical})
+	defer sub.Close()
+
+	if err := bus.PublishDurable(context.Background(), &core.MessageCreatedEvent{At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("normal durable event delivered to critical-only subscriber: %d", got)
+	}
+
+	critical := core.WithPriority(&core.MessageCreatedEvent{At: time.Now()}, core.PriorityCritical)
+	if err := bus.PublishDurable(context.Background(), critical); err != nil {
+		t.Fatal(err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("critical durable event calls=%d, want 1", got)
+	}
+}
+
+func BenchmarkEventBusPublishNoSubscribers(b *testing.B) {
+	bus := core.NewEventBus()
+	event := &core.MessageCreatedEvent{At: time.Unix(1, 0), ChatID: 42}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bus.Publish(event)
+	}
+}
+
+func TestEventBusBuiltinInterestCoverage(t *testing.T) {
+	eventTypes := []core.EventType{
+		core.EventTypeMessageCreated,
+		core.EventTypeMessageEdited,
+		core.EventTypeMessagesDeleted,
+		core.EventTypeCallbackQuery,
+		core.EventTypeReactionUpdated,
+		core.EventTypeInlineChosen,
+		core.EventTypeAdminAction,
+		core.EventTypePMPermit,
+		core.EventTypeSettingChanged,
+		core.EventTypeJobLifecycle,
+	}
+	bus := newStartedEventBus(t)
+	for _, eventType := range eventTypes {
+		sub := bus.SubscribeOwned("coverage", eventType, func(core.Event) {})
+		if sub == nil {
+			t.Fatalf("subscribe %q returned nil", eventType)
+		}
+		if !bus.HasSubscribers(eventType) {
+			t.Fatalf("built-in interest missing for %q", eventType)
+		}
+		sub.Close()
+		if bus.HasSubscribers(eventType) {
+			t.Fatalf("built-in interest remained after unsubscribe for %q", eventType)
+		}
 	}
 }

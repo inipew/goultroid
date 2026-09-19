@@ -1015,3 +1015,59 @@ func TestDispatcher_AFK_EndToEnd(t *testing.T) {
 		t.Fatalf("expected Welcome back message in private chat, got: %q", lastSent)
 	}
 }
+
+type countingUpdateNormalizer struct {
+	calls atomic.Int32
+}
+
+func (n *countingUpdateNormalizer) Normalize(_ context.Context, _ tg.Entities, update tg.UpdateClass) (core.Event, error) {
+	n.calls.Add(1)
+	switch u := update.(type) {
+	case *tg.UpdateEditMessage:
+		msg, _ := u.Message.(*tg.Message)
+		return &core.MessageEditedEvent{At: time.Now(), MsgID: msg.ID, ChatID: extractChatIDFromPeer(msg.PeerID), Text: msg.Message}, nil
+	default:
+		return nil, nil
+	}
+}
+
+func TestDispatcherSkipsNormalizationWithoutEventSubscribers(t *testing.T) {
+	dispatcher := NewDispatcher(core.NewRouter("."), core.NewPermissions(1, nil), nil, zap.NewNop())
+	bus := core.NewEventBus()
+	if err := bus.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer bus.Close()
+	dispatcher.SetEventBus(bus)
+
+	normalizer := &countingUpdateNormalizer{}
+	dispatcher.SetNormalizer(normalizer)
+	update := &tg.UpdateEditMessage{Message: &tg.Message{
+		ID: 9, PeerID: &tg.PeerChat{ChatID: 77}, Message: "edited",
+	}}
+
+	if err := dispatcher.OnEditMessage(context.Background(), tg.Entities{}, update); err != nil {
+		t.Fatal(err)
+	}
+	if got := normalizer.calls.Load(); got != 0 {
+		t.Fatalf("normalizer calls=%d, want 0 without subscribers", got)
+	}
+
+	delivered := make(chan struct{}, 1)
+	sub := bus.Subscribe(core.EventTypeMessageEdited, func(core.Event) {
+		delivered <- struct{}{}
+	})
+	defer sub()
+
+	if err := dispatcher.OnEditMessage(context.Background(), tg.Entities{}, update); err != nil {
+		t.Fatal(err)
+	}
+	if got := normalizer.calls.Load(); got != 1 {
+		t.Fatalf("normalizer calls=%d, want 1 with subscriber", got)
+	}
+	select {
+	case <-delivered:
+	case <-time.After(time.Second):
+		t.Fatal("interested normalized event was not delivered")
+	}
+}

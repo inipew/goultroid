@@ -89,7 +89,7 @@ func (s *Service) publishEvent(action string, userID int64, targetName string, w
 	s.mu.RLock()
 	eb := s.eventBus
 	s.mu.RUnlock()
-	if eb == nil {
+	if eb == nil || !eb.HasSubscribersAtPriority(core.EventTypePMPermit, core.PriorityNormal) {
 		return
 	}
 	eb.Publish(&core.PMPermitEvent{

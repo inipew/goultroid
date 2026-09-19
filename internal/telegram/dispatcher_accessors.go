@@ -127,6 +127,12 @@ func (d *Dispatcher) getEventBus() *core.EventBus {
 	return d.eventBus
 }
 
+func (d *Dispatcher) getNormalizer() UpdateNormalizer {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.normalizer
+}
+
 // AlbumBuffer returns the album aggregator used by this dispatcher.
 func (d *Dispatcher) AlbumBuffer() *core.AlbumBuffer {
 	return d.albumBuffer

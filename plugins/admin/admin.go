@@ -581,7 +581,8 @@ func (p *Plugin) handleResetWarns(ctx *core.Context) error {
 }
 
 func (p *Plugin) publishAdminAction(ctx *core.Context, action string, targetID int64, reason string) {
-	if ctx == nil || ctx.EventBus == nil {
+	if ctx == nil || ctx.EventBus == nil ||
+		!ctx.EventBus.HasSubscribersAtPriority(core.EventTypeAdminAction, core.PriorityHigh) {
 		return
 	}
 	var chatID int64

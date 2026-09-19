@@ -9,6 +9,13 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 )
 
+// UpdateNormalizer is the narrow normalization contract used by Dispatcher.
+// Keeping this as an interface lets tests prove that uninterested event types
+// never pay normalization cost.
+type UpdateNormalizer interface {
+	Normalize(ctx context.Context, e tg.Entities, update tg.UpdateClass) (core.Event, error)
+}
+
 // Normalizer converts raw MTProto updates into normalized internal core.Event objects.
 type Normalizer struct{}
 

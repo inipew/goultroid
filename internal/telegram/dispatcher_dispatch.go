@@ -118,12 +118,22 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		}
 	}
 
-	coreMsg := extractCoreMessage(msg)
-	if coreMsg.GroupedID != 0 && d.albumBuffer != nil {
+	bus := d.getEventBus()
+	publishMessageEvent := bus != nil &&
+		bus.HasSubscribersAtPriority(core.EventTypeMessageCreated, core.PriorityNormal)
+
+	// core.Message performs media extraction and is materially heavier than the
+	// ingress envelope. Build it only when a command, album aggregation, or an
+	// actual EventBus subscriber needs it.
+	needsCoreMessage := cmdExists || msg.GroupedID != 0 || publishMessageEvent
+	var coreMsg *core.Message
+	if needsCoreMessage {
+		coreMsg = extractCoreMessage(msg)
+	}
+	if coreMsg != nil && coreMsg.GroupedID != 0 && d.albumBuffer != nil {
 		d.albumBuffer.Add(coreMsg)
 	}
-
-	if bus := d.getEventBus(); bus != nil {
+	if publishMessageEvent {
 		if evt := canonicalMessageCreatedEvent(msg, coreMsg, time.Now()); evt != nil {
 			bus.Publish(evt)
 		}
@@ -137,6 +147,11 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	if !cmdExists {
 		d.dispatchEventHandlersEnvelope(ctx, eventHandlers, messageEnvelope, e, msg)
 		return nil
+	}
+	if coreMsg == nil {
+		// Defensive fallback: recognized commands are included in
+		// needsCoreMessage above, so this should be unreachable.
+		coreMsg = extractCoreMessage(msg)
 	}
 
 	peerInput := d.resolveDispatchPeer(ctx, e, msg)

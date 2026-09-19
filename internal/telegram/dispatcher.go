@@ -33,7 +33,7 @@ type Dispatcher struct {
 	localizer      core.Localizer
 	callbackRouter *callback.Router
 	inlineEngine   *inline.Engine
-	normalizer     *Normalizer
+	normalizer     UpdateNormalizer
 	idempotencyMgr *idempotency.Manager
 	ingressDedupe  *ingressMessageDedupe
 	tasks          tasks.Client
@@ -157,7 +157,7 @@ func NewDispatcher(
 }
 
 // SetNormalizer configures a custom update normalizer.
-func (d *Dispatcher) SetNormalizer(n *Normalizer) {
+func (d *Dispatcher) SetNormalizer(n UpdateNormalizer) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.normalizer = n

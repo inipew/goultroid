@@ -26,6 +26,22 @@ func (d *Dispatcher) RegisterHooks(dispatcher *tg.UpdateDispatcher) {
 	dispatcher.OnMessageReactions(d.OnMessageReactions)
 }
 
+func (d *Dispatcher) publishNormalizedUpdate(ctx context.Context, e tg.Entities, update tg.UpdateClass, eventType core.EventType) {
+	bus := d.getEventBus()
+	if bus == nil || !bus.HasSubscribersAtPriority(eventType, core.PriorityNormal) {
+		return
+	}
+	normalizer := d.getNormalizer()
+	if normalizer == nil {
+		return
+	}
+	evt, err := normalizer.Normalize(ctx, e, update)
+	if err != nil || evt == nil || evt.Type() != eventType {
+		return
+	}
+	bus.Publish(evt)
+}
+
 // OnNewMessage handles private and standard group message updates.
 func (d *Dispatcher) OnNewMessage(ctx context.Context, e tg.Entities, update *tg.UpdateNewMessage) error {
 	msg, ok := update.Message.(*tg.Message)
@@ -52,16 +68,7 @@ func (d *Dispatcher) OnEditMessage(ctx context.Context, e tg.Entities, update *t
 	}
 	defer release()
 
-	bus := d.getEventBus()
-	if bus == nil {
-		return nil
-	}
-	if d.normalizer != nil {
-		evt, err := d.normalizer.Normalize(ctx, e, update)
-		if err == nil && evt != nil {
-			bus.Publish(evt)
-		}
-	}
+	d.publishNormalizedUpdate(ctx, e, update, core.EventTypeMessageEdited)
 	return nil
 }
 
@@ -73,16 +80,7 @@ func (d *Dispatcher) OnEditChannelMessage(ctx context.Context, e tg.Entities, up
 	}
 	defer release()
 
-	bus := d.getEventBus()
-	if bus == nil {
-		return nil
-	}
-	if d.normalizer != nil {
-		evt, err := d.normalizer.Normalize(ctx, e, update)
-		if err == nil && evt != nil {
-			bus.Publish(evt)
-		}
-	}
+	d.publishNormalizedUpdate(ctx, e, update, core.EventTypeMessageEdited)
 	return nil
 }
 
@@ -94,16 +92,7 @@ func (d *Dispatcher) OnDeleteMessages(ctx context.Context, e tg.Entities, update
 	}
 	defer release()
 
-	bus := d.getEventBus()
-	if bus == nil {
-		return nil
-	}
-	if d.normalizer != nil {
-		evt, err := d.normalizer.Normalize(ctx, e, update)
-		if err == nil && evt != nil {
-			bus.Publish(evt)
-		}
-	}
+	d.publishNormalizedUpdate(ctx, e, update, core.EventTypeMessagesDeleted)
 	return nil
 }
 
@@ -115,16 +104,7 @@ func (d *Dispatcher) OnDeleteChannelMessages(ctx context.Context, e tg.Entities,
 	}
 	defer release()
 
-	bus := d.getEventBus()
-	if bus == nil {
-		return nil
-	}
-	if d.normalizer != nil {
-		evt, err := d.normalizer.Normalize(ctx, e, update)
-		if err == nil && evt != nil {
-			bus.Publish(evt)
-		}
-	}
+	d.publishNormalizedUpdate(ctx, e, update, core.EventTypeMessagesDeleted)
 	return nil
 }
 
@@ -207,7 +187,7 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 	evt := canonicalCallbackQueryEvent(update, inputPeer, time.Now())
 
 	bus := d.getEventBus()
-	if bus != nil {
+	if bus != nil && bus.HasSubscribersAtPriority(core.EventTypeCallbackQuery, core.PriorityNormal) {
 		bus.Publish(evt)
 	}
 
@@ -289,7 +269,7 @@ func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities
 	evt := canonicalInlineCallbackQueryEvent(update, time.Now())
 
 	bus := d.getEventBus()
-	if bus != nil {
+	if bus != nil && bus.HasSubscribersAtPriority(core.EventTypeCallbackQuery, core.PriorityNormal) {
 		bus.Publish(evt)
 	}
 
@@ -389,16 +369,7 @@ func (d *Dispatcher) OnBotInlineSend(ctx context.Context, e tg.Entities, update 
 	}
 	defer release()
 
-	bus := d.getEventBus()
-	if bus == nil {
-		return nil
-	}
-	if d.normalizer != nil {
-		evt, err := d.normalizer.Normalize(ctx, e, update)
-		if err == nil && evt != nil {
-			bus.Publish(evt)
-		}
-	}
+	d.publishNormalizedUpdate(ctx, e, update, core.EventTypeInlineChosen)
 	return nil
 }
 
@@ -410,16 +381,7 @@ func (d *Dispatcher) OnMessageReactions(ctx context.Context, e tg.Entities, upda
 	}
 	defer release()
 
-	bus := d.getEventBus()
-	if bus == nil {
-		return nil
-	}
-	if d.normalizer != nil {
-		evt, err := d.normalizer.Normalize(ctx, e, update)
-		if err == nil && evt != nil {
-			bus.Publish(evt)
-		}
-	}
+	d.publishNormalizedUpdate(ctx, e, update, core.EventTypeReactionUpdated)
 	return nil
 }
 
