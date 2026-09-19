@@ -343,6 +343,70 @@ func (s *Store) LatestAttempt(ctx context.Context, occurrenceID string) (*jobs.J
 	return &a, nil
 }
 
+// AttemptSummary loads the occurrence decision state, latest attempt, and
+// retry/deferral counters in one SQLite round-trip. This is the production
+// recovery/retry fast path used by jobs.Manager.
+func (s *Store) AttemptSummary(ctx context.Context, occurrenceID string) (*jobs.AttemptSummary, error) {
+	query := `
+	WITH stats AS (
+		SELECT occurrence_id,
+		       COUNT(*) AS attempt_count,
+		       SUM(CASE WHEN state <> 'deferred' THEN 1 ELSE 0 END) AS retry_budget_uses,
+		       SUM(CASE WHEN state = 'deferred' THEN 1 ELSE 0 END) AS deferrals,
+		       MAX(attempt_no) AS latest_attempt_no
+		FROM job_attempts
+		WHERE occurrence_id = ?
+		GROUP BY occurrence_id
+	)
+	SELECT o.state, o.ready_at,
+	       a.id, a.occurrence_id, a.attempt_no, a.task_id, a.lease_epoch, a.lease_until, a.state,
+	       a.started_at, a.finished_at, a.created_at,
+	       COALESCE(a.result, ''), COALESCE(a.error, ''),
+	       stats.attempt_count, stats.retry_budget_uses, stats.deferrals
+	FROM stats
+	JOIN job_occurrences o ON o.id = stats.occurrence_id
+	JOIN job_attempts a
+	  ON a.occurrence_id = stats.occurrence_id
+	 AND a.attempt_no = stats.latest_attempt_no
+	WHERE o.id = ?;
+	`
+
+	var summary jobs.AttemptSummary
+	var occurrenceState, attemptState string
+	var started, finished sql.NullTime
+	var created time.Time
+	var result []byte
+	var errStr string
+	err := s.db.QueryRowContext(ctx, query, occurrenceID, occurrenceID).Scan(
+		&occurrenceState, &summary.ReadyAt,
+		&summary.Latest.ID, &summary.Latest.OccurrenceID, &summary.Latest.AttemptNo,
+		&summary.Latest.TaskID, &summary.Latest.LeaseEpoch, &summary.Latest.LeaseUntil, &attemptState,
+		&started, &finished, &created,
+		&result, &errStr,
+		&summary.AttemptCount, &summary.RetryBudgetUses, &summary.Deferrals,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrAttemptNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query job attempt summary: %w", err)
+	}
+
+	summary.OccurrenceState = jobs.OccurrenceState(occurrenceState)
+	summary.Latest.State = jobs.AttemptState(attemptState)
+	summary.Latest.StartedAt = created
+	if started.Valid {
+		summary.Latest.StartedAt = started.Time
+	}
+	summary.Latest.FinishedAt = created
+	if finished.Valid {
+		summary.Latest.FinishedAt = finished.Time
+	}
+	summary.Latest.Result = result
+	summary.Latest.Error = errStr
+	return &summary, nil
+}
+
 // ListUnresolvedOccurrences returns a bounded page of dispatched occurrences
 // whose final disposition is still unknown (crash/retry/recovery scan input).
 func (s *Store) ListUnresolvedOccurrences(ctx context.Context, limit int) ([]*jobs.JobOccurrence, error) {
@@ -482,12 +546,20 @@ func (s *Store) DeferOccurrence(ctx context.Context, occurrenceID string, readyA
 }
 
 // PrepareAttemptLease atomically creates an attempt and leases the occurrence under writer intent (ADR 0006 §7.3 & §7.4).
-// The first attempt requires a ready occurrence; retries require a dispatched
-// occurrence whose latest attempt is already terminal, so two live attempts
-// for one occurrence can never exist. The occurrence transition is fenced on
-// revision + cancel_epoch and the affected row is verified.
+// Callers that already own a stable TaskID can use this compatibility entrypoint.
 func (s *Store) PrepareAttemptLease(ctx context.Context, occurrenceID, taskID string, leaseDuration time.Duration) (*jobs.JobAttempt, error) {
-	if leaseDuration <= 0 || taskID == "" {
+	return s.prepareAttemptLease(ctx, occurrenceID, taskID, leaseDuration, false)
+}
+
+// PrepareNextAttemptLease is the production fast path. attempt_no and the
+// canonical task:<occurrence>:<attempt> TaskID are derived inside the same
+// writer-fenced transaction, removing the caller-side CountAttempts round-trip.
+func (s *Store) PrepareNextAttemptLease(ctx context.Context, occurrenceID string, leaseDuration time.Duration) (*jobs.JobAttempt, error) {
+	return s.prepareAttemptLease(ctx, occurrenceID, "", leaseDuration, true)
+}
+
+func (s *Store) prepareAttemptLease(ctx context.Context, occurrenceID, taskID string, leaseDuration time.Duration, deriveTaskID bool) (*jobs.JobAttempt, error) {
+	if leaseDuration <= 0 || (!deriveTaskID && taskID == "") {
 		return nil, errors.New("invalid attempt lease request")
 	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
@@ -501,23 +573,27 @@ func (s *Store) PrepareAttemptLease(ctx context.Context, occurrenceID, taskID st
 		return nil, fmt.Errorf("acquire prepare writer intent: %w", err)
 	}
 
-	// Check occurrence state and cancel epoch
-	var occState string
+	// Load occurrence state plus latest attempt number/state in one read. The
+	// unique (occurrence_id, attempt_no) index keeps both correlated lookups
+	// bounded and avoids separate COUNT + latest-state queries.
+	var occState, latestState string
 	var cancelEpoch uint64
 	var occRev uint64
 	var readyAt time.Time
-	checkQuery := `SELECT state, cancel_epoch, revision, ready_at FROM job_occurrences WHERE id = ?;`
-	if err := tx.QueryRowContext(ctx, checkQuery, occurrenceID).Scan(&occState, &cancelEpoch, &occRev, &readyAt); err != nil {
+	var latestAttemptNo int
+	checkQuery := `
+	SELECT o.state, o.cancel_epoch, o.revision, o.ready_at,
+	       COALESCE((SELECT MAX(a.attempt_no) FROM job_attempts a WHERE a.occurrence_id = o.id), 0),
+	       COALESCE((SELECT a.state FROM job_attempts a WHERE a.occurrence_id = o.id ORDER BY a.attempt_no DESC LIMIT 1), '')
+	FROM job_occurrences o
+	WHERE o.id = ?;
+	`
+	if err := tx.QueryRowContext(ctx, checkQuery, occurrenceID).Scan(
+		&occState, &cancelEpoch, &occRev, &readyAt, &latestAttemptNo, &latestState,
+	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrOccurrenceNotFound
 		}
-		return nil, err
-	}
-
-	// Count existing attempts to determine attempt_no
-	var attemptCount int
-	countQuery := `SELECT COUNT(*) FROM job_attempts WHERE occurrence_id = ?;`
-	if err := tx.QueryRowContext(ctx, countQuery, occurrenceID).Scan(&attemptCount); err != nil {
 		return nil, err
 	}
 
@@ -526,21 +602,19 @@ func (s *Store) PrepareAttemptLease(ctx context.Context, occurrenceID, taskID st
 		if readyAt.After(time.Now().UTC()) {
 			return nil, fmt.Errorf("%w: occurrence state is %s", ErrOccurrenceNotReady, occState)
 		}
-		if attemptCount != 0 {
+		if latestAttemptNo != 0 {
 			return nil, fmt.Errorf("%w: ready occurrence already has attempts", ErrLeaseFencingLost)
 		}
 	case string(jobs.OccurrenceDispatched):
 		if readyAt.After(time.Now().UTC()) {
 			return nil, fmt.Errorf("%w: occurrence is deferred until %s", ErrOccurrenceNotReady, readyAt)
 		}
-		// Retry path: the previous attempt must be terminal, otherwise a live
-		// attempt is still holding the lease. Stale non-terminal attempts
-		// (crashed owner, unknown effect) are deliberately NOT overridden
-		// here; recovery reports them instead of risking duplicate execution.
-		var latestState string
-		if err := tx.QueryRowContext(ctx, `SELECT state FROM job_attempts WHERE occurrence_id = ? ORDER BY attempt_no DESC LIMIT 1`, occurrenceID).Scan(&latestState); err != nil {
-			return nil, fmt.Errorf("latest attempt state: %w", err)
+		if latestAttemptNo == 0 {
+			return nil, fmt.Errorf("%w: dispatched occurrence has no predecessor attempt", ErrOccurrenceNotReady)
 		}
+		// Retry path: the previous attempt must be terminal, otherwise a live
+		// attempt is still holding the lease. Stale non-terminal attempts are
+		// deliberately not overridden.
 		switch jobs.AttemptState(latestState) {
 		case jobs.AttemptCompleted, jobs.AttemptFailed, jobs.AttemptTimedOut, jobs.AttemptCancelled, jobs.AttemptAbortedBeforeStart, jobs.AttemptDeferred:
 		default:
@@ -549,7 +623,10 @@ func (s *Store) PrepareAttemptLease(ctx context.Context, occurrenceID, taskID st
 	default:
 		return nil, fmt.Errorf("%w: occurrence state is %s", ErrOccurrenceNotReady, occState)
 	}
-	attemptNo := attemptCount + 1
+	attemptNo := latestAttemptNo + 1
+	if deriveTaskID {
+		taskID = fmt.Sprintf("task:%s:%d", occurrenceID, attemptNo)
+	}
 
 	now := time.Now().UTC()
 	leaseEpoch := uint64(attemptNo)
