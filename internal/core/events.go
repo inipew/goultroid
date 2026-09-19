@@ -868,8 +868,10 @@ func (b *EventBus) orderedWorker(partition int, ch <-chan *eventJob) {
 		case <-b.stop:
 			for {
 				select {
-				case job := <-ch:
-					b.runJob(job)
+				case jobPtr := <-ch:
+					if job, ok := b.takeJob(jobPtr); ok {
+						b.runJob(job)
+					}
 				default:
 					return
 				}
