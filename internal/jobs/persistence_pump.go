@@ -28,6 +28,7 @@ type persistenceRequest struct {
 	ctx           context.Context
 	execute       func(ctx context.Context) error
 	resultCh      chan error
+	ack           func(error)
 	retainedBytes int64
 }
 
@@ -229,7 +230,9 @@ func (p *PersistencePump) workerLoop(done chan struct{}) {
 				p.retainedBytes = 0
 			}
 			p.mu.Unlock()
-			if req.resultCh != nil {
+			if req.ack != nil {
+				req.ack(err)
+			} else if req.resultCh != nil {
 				req.resultCh <- err
 				close(req.resultCh)
 			}
@@ -295,24 +298,42 @@ func (p *PersistencePump) Enqueue(ctx context.Context, op func(ctx context.Conte
 // The charge remains held until the callback physically completes, not merely
 // until a worker dequeues it.
 func (p *PersistencePump) EnqueueSized(ctx context.Context, retainedBytes int64, op func(ctx context.Context) error) (<-chan error, error) {
+	resCh := make(chan error, 1)
+	if err := p.enqueueRequest(ctx, retainedBytes, op, resCh, nil); err != nil {
+		return nil, err
+	}
+	return resCh, nil
+}
+
+// EnqueueSizedAck is the allocation-light acknowledgement path used by
+// TaskEngine in production. It avoids a per-commit result channel consumer:
+// the persistence worker invokes ack exactly once after the operation returns.
+func (p *PersistencePump) EnqueueSizedAck(ctx context.Context, retainedBytes int64, op func(ctx context.Context) error, ack func(error)) error {
+	if ack == nil {
+		return errors.New("persistence acknowledgement callback is nil")
+	}
+	return p.enqueueRequest(ctx, retainedBytes, op, nil, ack)
+}
+
+func (p *PersistencePump) enqueueRequest(ctx context.Context, retainedBytes int64, op func(ctx context.Context) error, resultCh chan error, ack func(error)) error {
 	if retainedBytes <= 0 {
 		retainedBytes = defaultPersistenceRequestBytes
 	}
 	p.mu.Lock()
 	if !p.accepting || !p.running {
 		p.mu.Unlock()
-		return nil, ErrPumpClosed
+		return ErrPumpClosed
 	}
 	if p.maxRetainedBytes > 0 && retainedBytes > p.maxRetainedBytes-p.retainedBytes {
 		p.byteRejections.Add(1)
 		p.mu.Unlock()
-		return nil, ErrPumpByteBudget
+		return ErrPumpByteBudget
 	}
-	resCh := make(chan error, 1)
 	req := persistenceRequest{
 		ctx:           ctx,
 		execute:       op,
-		resultCh:      resCh,
+		resultCh:      resultCh,
+		ack:           ack,
 		retainedBytes: retainedBytes,
 	}
 	p.queued.Add(1)
@@ -321,11 +342,11 @@ func (p *PersistencePump) EnqueueSized(ctx context.Context, retainedBytes int64,
 		p.retainedBytes += retainedBytes
 		p.ensureWorkersLocked(p.done)
 		p.mu.Unlock()
-		return resCh, nil
+		return nil
 	default:
 		p.queued.Add(-1)
 		p.mu.Unlock()
-		return nil, ErrPumpQueueFull
+		return ErrPumpQueueFull
 	}
 }
 

@@ -51,6 +51,14 @@ type SizedCommitPump interface {
 	EnqueueSized(ctx context.Context, retainedBytes int64, op func(ctx context.Context) error) (<-chan error, error)
 }
 
+// AckCommitPump is the zero-waiter production fast path. An accepted request
+// invokes ack exactly once after the commit operation physically completes.
+// This lets TaskEngine receive durability acknowledgement without dedicating a
+// goroutine merely to wait on a result channel.
+type AckCommitPump interface {
+	EnqueueSizedAck(ctx context.Context, retainedBytes int64, op func(ctx context.Context) error, ack func(error)) error
+}
+
 // durabilityState is the internal durability phase of one task record.
 type durabilityState int
 
@@ -99,8 +107,9 @@ func terminalStateFor(outcome tasks.Outcome) tasks.TaskState {
 	}
 }
 
-// beginCommit moves a physically complete record into CommitPending and hands
-// its acknowledgement wait/direct commit to the bounded durability lane. The
+// beginCommit moves a physically complete record into CommitPending. Callback-
+// capable pumps acknowledge directly; legacy waits/direct fallbacks use the
+// bounded durability lane. The
 // caller must have stored the bounded physical result in rec.pendingResult,
 // released quota/ordering, and dispatched further work already.
 func (e *Engine) beginCommit(rec *taskRecord) {
@@ -109,51 +118,69 @@ func (e *Engine) beginCommit(rec *taskRecord) {
 	e.commitPending++
 
 	rootCtx := e.rootCtx
-	waitCtx, waitCancel := context.WithCancel(context.Background())
-	if e.commitWaiters == nil {
-		e.commitWaiters = make(map[uint64]context.CancelFunc)
-	}
-	e.commitWaiters[rec.commitSeq] = waitCancel
-	// Snapshot the callback and result. The task record can drop execution
-	// closures as soon as it settles without extending their lifetime through
-	// the durability transport.
+	// Snapshot identity, callback and result. No asynchronous durability path
+	// should retain the taskRecord pointer or its execution graph.
+	taskID := rec.spec.ID
+	commitSeq := rec.commitSeq
 	commit := rec.spec.Commit
 	pendingResult := rec.pendingResult
 	commitOp := func(ctx context.Context) error {
 		return commit(ctx, pendingResult)
 	}
-	waitPump := func(resCh <-chan error) {
-		var ackErr error
+	ack := func(ackErr error) {
 		select {
-		case ackErr = <-resCh:
-		case <-waitCtx.Done():
-			return
 		case <-rootCtx.Done():
 			return
-		case <-time.After(commitWaitTimeout):
-			ackErr = context.DeadlineExceeded
+		default:
 		}
-		e.sendInternal(engineRequest{op: opCommitAck, taskID: rec.spec.ID, commitSeq: rec.commitSeq, ackErr: ackErr})
+		e.sendInternal(engineRequest{op: opCommitAck, taskID: taskID, commitSeq: commitSeq, ackErr: ackErr})
 	}
 
 	if e.commitPump != nil {
+		retainedBytes := durabilityCommitRetainedBytes(pendingResult)
+		if callbackPump, ok := e.commitPump.(AckCommitPump); ok {
+			if err := callbackPump.EnqueueSizedAck(context.Background(), retainedBytes, commitOp, ack); err == nil {
+				return
+			}
+		}
+
 		var (
 			resCh <-chan error
 			err   error
 		)
 		if sized, ok := e.commitPump.(SizedCommitPump); ok {
-			resCh, err = sized.EnqueueSized(context.Background(), durabilityCommitRetainedBytes(pendingResult), commitOp)
+			resCh, err = sized.EnqueueSized(context.Background(), retainedBytes, commitOp)
 		} else {
 			resCh, err = e.commitPump.Enqueue(context.Background(), commitOp)
 		}
 		if err == nil {
-			if e.durability != nil && e.durability.enqueue(func() { waitPump(resCh) }) {
+			waitCtx, waitCancel := context.WithCancel(context.Background())
+			if e.commitWaiters == nil {
+				e.commitWaiters = make(map[uint64]context.CancelFunc)
+			}
+			e.commitWaiters[commitSeq] = waitCancel
+			waitPump := func() {
+				var ackErr error
+				timer := time.NewTimer(commitWaitTimeout)
+				defer timer.Stop()
+				select {
+				case ackErr = <-resCh:
+				case <-waitCtx.Done():
+					return
+				case <-rootCtx.Done():
+					return
+				case <-timer.C:
+					ackErr = context.DeadlineExceeded
+				}
+				ack(ackErr)
+			}
+			if e.durability != nil && e.durability.enqueue(waitPump) {
 				return
 			}
 			// The pump request may already be executing. Its result channel is
 			// buffered, so failing the local acknowledgement lane cannot wedge the
 			// pump. Resolve as uncertain and let durable recovery reconcile it.
-			e.applyCommitAck(rec.spec.ID, rec.commitSeq, errors.New("durability acknowledgement lane saturated"))
+			e.applyCommitAck(taskID, commitSeq, errors.New("durability acknowledgement lane saturated"))
 			return
 		}
 	}
