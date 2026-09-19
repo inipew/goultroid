@@ -252,13 +252,8 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.started = true
 	if firstStart {
 		done := m.done
-		_, hasOutbox := m.store.(outboxStore)
-		workerCount := 1
-		if hasOutbox {
-			workerCount++
-		}
 		m.doneOnce = sync.Once{}
-		m.workersRemaining.Store(int64(workerCount))
+		m.workersRemaining.Store(1)
 		m.retryRemaining.Store(0)
 		m.retryQueued.Store(0)
 		m.retryActive.Store(0)
@@ -269,15 +264,19 @@ func (m *Manager) Start(ctx context.Context) error {
 		}
 		m.retryMu.Unlock()
 		m.wg.Add(1)
-		go m.recoveryLoop(done)
-		if hasOutbox {
-			m.wg.Add(1)
-			go m.outboxLoop(done)
-		}
-		// Startup recovery is a bounded wake, not a caller responsibility.
+		go m.durableCoordinatorLoop(done)
+		// Startup convergence and outbox replay are explicit wakes. The single
+		// coordinator owns both safety deadlines and the deferred-occurrence
+		// deadline, so Jobs keeps one durable background goroutine instead of two.
 		select {
 		case m.recoveryWake <- struct{}{}:
 		default:
+		}
+		if _, hasOutbox := m.store.(outboxStore); hasOutbox {
+			select {
+			case m.outboxWake <- struct{}{}:
+			default:
+			}
 		}
 	}
 	return nil
@@ -325,29 +324,6 @@ func (m *Manager) workerDone(done chan struct{}) {
 	m.wg.Done()
 	if m.workersRemaining.Add(-1) == 0 {
 		m.doneOnce.Do(func() { close(done) })
-	}
-}
-
-func (m *Manager) outboxLoop(done chan struct{}) {
-	defer m.workerDone(done)
-	// Delivery is wake-driven. The low-frequency ticker is only a crash/
-	// uncertainty safety net for durable outbox rows that were committed before
-	// an in-memory wake could be emitted.
-	ticker := time.NewTicker(outboxSafetyInterval)
-	defer ticker.Stop()
-	for {
-		m.mu.RLock()
-		stopCh, baseCtx, wake := m.stopCh, m.baseCtx, m.outboxWake
-		m.mu.RUnlock()
-		select {
-		case <-stopCh:
-			return
-		case <-baseCtx.Done():
-			return
-		case <-ticker.C:
-		case <-wake:
-		}
-		m.drainOutbox(baseCtx)
 	}
 }
 
@@ -1019,76 +995,96 @@ func (m *Manager) retryLoop(done chan struct{}) {
 	}
 }
 
-// recoveryLoop owns startup/restart convergence and provides a low-frequency
-// safety scan. Overflow/error paths only wake this one bounded goroutine.
-func (m *Manager) recoveryLoop(done chan struct{}) {
+// durableCoordinatorLoop owns all durable Jobs maintenance timing:
+// startup/restart recovery, deferred-occurrence deadlines, outbox replay, and
+// low-frequency crash-safety scans. Explicit wake sources remain independent,
+// but one timer/goroutine owns their fallback deadlines.
+func (m *Manager) durableCoordinatorLoop(done chan struct{}) {
 	defer m.workerDone(done)
-	safetyTicker := time.NewTicker(recoveryInterval)
-	defer safetyTicker.Stop()
 
-	var deadlineTimer *time.Timer
-	var deadlineC <-chan time.Time
-	stopDeadlineTimer := func() {
-		if deadlineTimer == nil {
-			deadlineC = nil
-			return
+	var timer *time.Timer
+	var timerC <-chan time.Time
+	defer func() {
+		if timer != nil {
+			timer.Stop()
 		}
-		if !deadlineTimer.Stop() {
-			select {
-			case <-deadlineTimer.C:
-			default:
-			}
-		}
-		deadlineC = nil
-	}
-	defer stopDeadlineTimer()
+	}()
 
-	rearmDeadline := func(baseCtx context.Context) {
-		stopDeadlineTimer()
-		store, ok := m.store.(deferredDeadlineStore)
-		if !ok {
-			return
-		}
-		queryCtx, cancel := context.WithTimeout(baseCtx, 5*time.Second)
-		due, found, err := store.EarliestDeferredOccurrenceDue(queryCtx, time.Now().UTC())
-		cancel()
-		if err != nil || !found {
-			return
-		}
-		wait := time.Until(due)
-		if wait < 0 {
-			wait = 0
-		}
-		if deadlineTimer == nil {
-			deadlineTimer = time.NewTimer(wait)
-		} else {
-			deadlineTimer.Reset(wait)
-		}
-		deadlineC = deadlineTimer.C
-	}
+	now := time.Now()
+	nextRecoverySafety := now.Add(recoveryInterval)
+	nextOutboxSafety := now.Add(outboxSafetyInterval)
 
 	for {
 		m.mu.RLock()
 		stopCh := m.stopCh
 		baseCtx := m.baseCtx
-		wake := m.recoveryWake
+		recoveryWake := m.recoveryWake
+		outboxWake := m.outboxWake
+		_, hasOutbox := m.store.(outboxStore)
 		m.mu.RUnlock()
-		if stopCh == nil || baseCtx == nil || wake == nil {
+		if stopCh == nil || baseCtx == nil || recoveryWake == nil || outboxWake == nil {
 			return
 		}
 
-		rearmDeadline(baseCtx)
+		now = time.Now()
+		nextWake := nextRecoverySafety
+		if hasOutbox && nextOutboxSafety.Before(nextWake) {
+			nextWake = nextOutboxSafety
+		}
+
+		// Deferred retry timing is durable state and may be earlier than either
+		// safety scan. A read failure does not create a tight loop; recovery safety
+		// remains the fallback authority.
+		if store, ok := m.store.(deferredDeadlineStore); ok {
+			queryCtx, cancel := context.WithTimeout(baseCtx, 5*time.Second)
+			due, found, err := store.EarliestDeferredOccurrenceDue(queryCtx, time.Now().UTC())
+			cancel()
+			if err == nil && found && due.Before(nextWake) {
+				nextWake = due
+			}
+		}
+
+		wait := time.Until(nextWake)
+		if wait < 0 {
+			wait = 0
+		}
+		if timer == nil {
+			timer = time.NewTimer(wait)
+		} else {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(wait)
+		}
+		timerC = timer.C
+
 		select {
 		case <-stopCh:
 			return
 		case <-baseCtx.Done():
 			return
-		case <-wake:
+		case <-recoveryWake:
 			m.runRecoveryPass(baseCtx)
-		case <-deadlineC:
+		case <-outboxWake:
+			if hasOutbox {
+				m.drainOutbox(baseCtx)
+			}
+		case fired := <-timerC:
+			utcNow := fired.UTC()
+			// A timer firing can represent the deferred occurrence deadline, one
+			// or both safety deadlines, or all of them. Recovery is cheap enough to
+			// be the convergence owner whenever the nearest durable deadline fires.
 			m.runRecoveryPass(baseCtx)
-		case <-safetyTicker.C:
-			m.runRecoveryPass(baseCtx)
+			if !utcNow.Before(nextRecoverySafety.UTC()) {
+				nextRecoverySafety = fired.Add(recoveryInterval)
+			}
+			if hasOutbox && !utcNow.Before(nextOutboxSafety.UTC()) {
+				m.drainOutbox(baseCtx)
+				nextOutboxSafety = fired.Add(outboxSafetyInterval)
+			}
 		}
 	}
 }
