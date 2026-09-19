@@ -3,6 +3,8 @@ package jobs_test
 import (
 	"context"
 	"errors"
+	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -508,5 +510,167 @@ func TestDeferralBudgetExhaustionFinalizesOccurrence(t *testing.T) {
 	}
 	if latest.State != jobs.AttemptDeferred || latest.Error == "" {
 		t.Fatalf("terminal deferral diagnosis missing: %+v", latest)
+	}
+}
+
+
+func TestCancellationWhileDeferredWinsOverDeadlineWake(t *testing.T) {
+	var calls atomic.Int32
+	manager, store, _ := engineBackedManager(t,
+		func(context.Context, jobs.JobDefinition) error {
+			calls.Add(1)
+			return core.NewRateLimitError(150*time.Millisecond, errors.New("flood wait"))
+		},
+		jobs.JobRetryPolicy{MaxAttempts: 1, MaxDeferrals: 5},
+	)
+
+	ticket, occurrenceID, err := manager.SubmitOccurrence(context.Background(), "job-retry", "manual:cancel-deferred")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := ticket.Wait(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Cause != tasks.CauseRateLimited {
+		t.Fatalf("cause=%s, want rate_limited", res.Cause)
+	}
+	latest, err := store.LatestAttempt(context.Background(), occurrenceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.State != jobs.AttemptDeferred {
+		t.Fatalf("attempt state=%s, want deferred", latest.State)
+	}
+	if err := manager.CancelOccurrence(context.Background(), occurrenceID, "operator cancelled deferred work"); err != nil {
+		t.Fatal(err)
+	}
+
+	pollOccurrenceState(t, store, occurrenceID, jobs.OccurrenceCancelled, time.Second)
+	time.Sleep(250 * time.Millisecond)
+	if n, err := store.CountAttempts(context.Background(), occurrenceID); err != nil {
+		t.Fatal(err)
+	} else if n != 1 {
+		t.Fatalf("cancelled deferred occurrence redrove after deadline: attempts=%d", n)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("handler calls=%d, want 1", calls.Load())
+	}
+}
+
+func TestConcurrentRecoveryPassesCreateOneDeferredRedrive(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(filepath.Join(t.TempDir(), "recovery-race.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := jobsqlite.InitSchema(ctx, db.DB); err != nil {
+		t.Fatal(err)
+	}
+
+	pump := jobs.NewPersistencePump(2, 32)
+	if err := pump.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer pump.Stop(context.Background())
+	engine := taskengine.NewEngine(taskengine.Config{
+		Pools: map[tasks.PoolID]taskengine.PoolEngineConfig{
+			"general": {Concurrency: 2, BacklogLimit: 16, PayloadBudget: 1 << 20},
+		},
+		ResultCapacity: 16,
+	})
+	engine.SetCommitPump(pump)
+	if err := engine.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Stop(context.Background())
+
+	store := jobsqlite.NewStore(db.DB)
+	manager := jobs.NewManager(engine, store, pump)
+	var calls atomic.Int32
+	if err := manager.RegisterHandler("race", func(context.Context, jobs.JobDefinition) error {
+		calls.Add(1)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Register(jobs.JobDefinition{
+		ID: "recovery-race", ScopeOwner: "test:race", QuotaOwner: "test:race",
+		HandlerType: "race", Pool: "general",
+		RetryPolicy: jobs.JobRetryPolicy{MaxAttempts: 1, MaxDeferrals: 3},
+		Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	occ := &jobs.JobOccurrence{
+		ID: "occ-recovery-race", JobID: "recovery-race", OccurrenceKey: "race:deferred",
+		State: jobs.OccurrenceReady, ReadyAt: time.Now().UTC(),
+	}
+	if err := store.MaterializeOccurrence(ctx, occ); err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.PrepareAttemptLease(ctx, occ.ID, "task:occ-recovery-race:1", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CommitAttemptDeferred(ctx, first.ID, first.LeaseEpoch, time.Now().UTC().Add(-time.Millisecond), "due flood wait"); err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	type recoveryResult struct {
+		report jobs.RecoverReport
+		err    error
+	}
+	results := make(chan recoveryResult, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			report, err := manager.Recover(ctx, 10)
+			results <- recoveryResult{report: report, err: err}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	redriven := 0
+	for result := range results {
+		if result.err != nil {
+			t.Fatalf("concurrent recovery failed: %v", result.err)
+		}
+		redriven += result.report.Redriven
+	}
+	if redriven != 1 {
+		t.Fatalf("concurrent recovery redrives=%d, want exactly 1", redriven)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		current, err := store.GetOccurrence(ctx, occ.ID)
+		if err == nil && current.State == jobs.OccurrenceCompleted {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	current, err := store.GetOccurrence(ctx, occ.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.State != jobs.OccurrenceCompleted {
+		t.Fatalf("raced recovery did not converge: %+v", current)
+	}
+	if n, err := store.CountAttempts(ctx, occ.ID); err != nil {
+		t.Fatal(err)
+	} else if n != 2 {
+		t.Fatalf("concurrent recovery created %d physical attempts, want 2 total", n)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("handler calls=%d, want one redrive execution", calls.Load())
 	}
 }

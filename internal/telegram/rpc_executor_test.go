@@ -729,3 +729,47 @@ func TestRPCExecutor_DurableContextYieldsShortFloodWait(t *testing.T) {
 		t.Fatalf("server FloodWait must still penalize shared limiter: %+v", limiter.penalized)
 	}
 }
+
+
+type oneWaitLimiter struct {
+	mu      sync.Mutex
+	wait    time.Duration
+	reserves int
+}
+
+func (l *oneWaitLimiter) Reserve(time.Time, []LimitKey, int) Reservation {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.reserves++
+	if l.reserves == 1 {
+		return Reservation{Allowed: false, RetryAfter: l.wait}
+	}
+	return Reservation{Allowed: true}
+}
+
+func (*oneWaitLimiter) Penalize(time.Time, []LimitKey, time.Duration) {}
+
+func TestRPCExecutor_InteractiveShortLimiterWaitRemainsInline(t *testing.T) {
+	clock := NewFakeClock(time.Now())
+	sleeper := &FakeSleeper{}
+	limiter := &oneWaitLimiter{wait: 25 * time.Millisecond}
+	exec := newTestExecutor(limiter, clock, sleeper, nil)
+
+	var calls int
+	err := exec.Do(context.Background(), RPCMeta{
+		Method: "messages.getHistory",
+		Kind:   RPCReadOnly,
+	}, func(context.Context) error {
+		calls++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("interactive limiter wait failed: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("physical RPC calls=%d, want 1", calls)
+	}
+	if sleeper.Calls() != 1 || sleeper.TotalSleep() != 25*time.Millisecond {
+		t.Fatalf("interactive limiter wait was not kept inline: calls=%d total=%s", sleeper.Calls(), sleeper.TotalSleep())
+	}
+}
