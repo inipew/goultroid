@@ -133,3 +133,139 @@ func TestDelayedActionSchedulerRetainedByteBudget(t *testing.T) {
 		t.Fatal("shutdown retained request channel/runtime handles")
 	}
 }
+
+
+func TestDelayedActionScheduler_StartIsCoordinatorLazy(t *testing.T) {
+	client := &delayedActionTaskClient{}
+	scheduler := newDelayedActionScheduler(client)
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+
+	if err := scheduler.Start(runCtx); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+
+	scheduler.mu.Lock()
+	if !scheduler.accepting {
+		scheduler.mu.Unlock()
+		t.Fatal("scheduler should accept work after Start")
+	}
+	if scheduler.requests != nil || scheduler.done != nil {
+		scheduler.mu.Unlock()
+		t.Fatal("idle Start eagerly allocated coordinator channels")
+	}
+	if scheduler.coordinatorCount != 0 || scheduler.coordinatorIdle != nil {
+		scheduler.mu.Unlock()
+		t.Fatalf("idle Start created coordinator state: count=%d idle=%v", scheduler.coordinatorCount, scheduler.coordinatorIdle != nil)
+	}
+	scheduler.mu.Unlock()
+
+	stopCtx, cancelStop := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancelStop()
+	if err := scheduler.Stop(stopCtx); err != nil {
+		t.Fatalf("stop idle scheduler: %v", err)
+	}
+}
+
+func TestDelayedActionScheduler_RetiresAndRestartsCoordinator(t *testing.T) {
+	client := &delayedActionTaskClient{}
+	scheduler := newDelayedActionScheduler(client)
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	if err := scheduler.Start(runCtx); err != nil {
+		t.Fatal(err)
+	}
+
+	var runs atomic.Int32
+	scheduleAndWait := func() {
+		t.Helper()
+		if err := scheduler.Schedule(context.Background(), time.Millisecond, 64, func(context.Context) error {
+			runs.Add(1)
+			return nil
+		}); err != nil {
+			t.Fatalf("schedule action: %v", err)
+		}
+		deadline := time.Now().Add(250 * time.Millisecond)
+		for runs.Load() == 0 && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		if runs.Load() == 0 {
+			t.Fatal("scheduled action did not run")
+		}
+		deadline = time.Now().Add(250 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			scheduler.mu.Lock()
+			idle := scheduler.coordinatorCount == 0 && scheduler.requests == nil && scheduler.done == nil
+			scheduler.mu.Unlock()
+			if idle {
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+		t.Fatal("empty delayed-action coordinator did not retire")
+	}
+
+	scheduleAndWait()
+	firstRuns := runs.Load()
+
+	if err := scheduler.Schedule(context.Background(), time.Millisecond, 64, func(context.Context) error {
+		runs.Add(1)
+		return nil
+	}); err != nil {
+		t.Fatalf("schedule after coordinator retirement: %v", err)
+	}
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for runs.Load() == firstRuns && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if runs.Load() != firstRuns+1 {
+		t.Fatalf("coordinator restart did not execute second action: runs=%d want=%d", runs.Load(), firstRuns+1)
+	}
+
+	deadline = time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		scheduler.mu.Lock()
+		idle := scheduler.coordinatorCount == 0 && scheduler.requests == nil && scheduler.done == nil
+		scheduler.mu.Unlock()
+		if idle {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	scheduler.mu.Lock()
+	idle := scheduler.coordinatorCount == 0 && scheduler.requests == nil && scheduler.done == nil
+	scheduler.mu.Unlock()
+	if !idle {
+		t.Fatal("restarted coordinator did not retire after second action")
+	}
+
+	stopCtx, cancelStop := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancelStop()
+	if err := scheduler.Stop(stopCtx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDelayedActionScheduler_HealthReportsZeroIdleCoordinators(t *testing.T) {
+	client := &delayedActionTaskClient{}
+	scheduler := newDelayedActionScheduler(client)
+	if err := scheduler.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	health := scheduler.Health(context.Background())
+	if health.Status == "" {
+		t.Fatal("health status is empty")
+	}
+	if health.Details == "" {
+		t.Fatal("health details are empty")
+	}
+	scheduler.mu.Lock()
+	count := scheduler.coordinatorCount
+	scheduler.mu.Unlock()
+	if count != 0 {
+		t.Fatalf("idle coordinator count=%d, want 0", count)
+	}
+	if err := scheduler.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
