@@ -315,3 +315,44 @@ func BenchmarkServiceSinglePeerWrapperFastPath(b *testing.B) {
 		}
 	}
 }
+
+
+func BenchmarkHierarchicalRPCLimiterSafePeerReclamation(b *testing.B) {
+	for _, cardinality := range []int{1000, DefaultMaxLimiterBuckets} {
+		b.Run(fmt.Sprintf("peers_%d", cardinality), func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				limiter := NewHierarchicalRPCLimiter(HierarchicalLimiterConfig{
+					GlobalRate:         1e9,
+					GlobalBurst:        1e9,
+					DefaultFamilyRate:  1e9,
+					DefaultFamilyBurst: 1e9,
+					DefaultMethodRate:  1e9,
+					DefaultMethodBurst: 1e9,
+					DefaultPeerRate:    1000,
+					DefaultPeerBurst:   1,
+					MaxBuckets:         cardinality + 1,
+					MaxPenalties:       16,
+					IdleTTL:            10 * time.Minute,
+				})
+				now := time.Unix(1_700_000_000, 0)
+				for peer := 0; peer < cardinality; peer++ {
+					if res := limiter.Reserve(now, []LimitKey{{Scope: "peer", Key: "user", ID: int64(peer + 1)}}, 1); !res.Allowed {
+						b.Fatalf("seed peer %d failed: %+v", peer, res)
+					}
+				}
+
+				b.StartTimer()
+				trigger := []LimitKey{{Scope: "peer", Key: "user", ID: int64(cardinality + 1)}}
+				if res := limiter.Reserve(now.Add(time.Millisecond), trigger, 1); !res.Allowed {
+					b.Fatalf("trigger reservation failed: %+v", res)
+				}
+				b.StopTimer()
+
+				if buckets, _ := limiter.Size(); buckets != 1 {
+					b.Fatalf("resident buckets=%d after safe reclaim, want 1", buckets)
+				}
+			}
+			b.ReportAllocs()
+		})
+	}
+}
