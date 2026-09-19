@@ -250,6 +250,15 @@ func (p *Plugin) InitScope(ctx context.Context, scope *plugin.Scope) error {
 
 // MessageHookPriority returns priority for the message hook (Observability = 90).
 func (p *Plugin) MessageHookPriority() int { return 90 }
+func (p *Plugin) MessageHookRouting() core.MessageHookRouting {
+	return core.MessageHookRouting{
+		Lane: core.MessageHookEvent,
+		Interests: []core.MessageHookInterest{
+			{Directions: core.MessageDirectionIncoming, Peers: core.MessagePeerPrivate},
+			{Directions: core.MessageDirectionIncoming, Peers: core.MessagePeerGroup | core.MessagePeerChannel, RequireMention: true},
+		},
+	}
+}
 
 func (p *Plugin) Commands() []core.Command {
 	return []core.Command{

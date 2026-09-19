@@ -44,6 +44,17 @@ func New(db Repository, svcFunc func() core.TelegramServicer) *Plugin {
 func (p *Plugin) Name() string             { return "filters" }
 func (p *Plugin) Init() error              { return nil }
 func (p *Plugin) MessageHookPriority() int { return 20 }
+func (p *Plugin) MessageHookRouting() core.MessageHookRouting {
+	return core.MessageHookRouting{
+		Lane: core.MessageHookDecision,
+		Interests: []core.MessageHookInterest{{
+			Directions:  core.MessageDirectionIncoming,
+			Peers:       core.MessagePeerStable,
+			Commands:    core.MessagePlain,
+			RequireText: true,
+		}},
+	}
+}
 
 func (p *Plugin) Commands() []core.Command {
 	return []core.Command{

@@ -28,6 +28,15 @@ func (p *Plugin) Description() string {
 }
 func (p *Plugin) Init() error                { return nil }
 func (p *Plugin) MessageHookPriority() int   { return 10 }
+func (p *Plugin) MessageHookRouting() core.MessageHookRouting {
+	return core.MessageHookRouting{
+		Lane: core.MessageHookDecision,
+		Interests: []core.MessageHookInterest{
+			{Directions: core.MessageDirectionIncoming, Peers: core.MessagePeerPrivate},
+			{Directions: core.MessageDirectionOutgoing, Peers: core.MessagePeerPrivate},
+		},
+	}
+}
 func (p *Plugin) Service() *pmpermit.Service { return p.svc }
 
 func (p *Plugin) Commands() []core.Command {

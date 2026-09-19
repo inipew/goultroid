@@ -39,8 +39,9 @@ type Dispatcher struct {
 	tasks          tasks.Client
 	scopeResolver  func(string) (tasks.ScopeIdentity, bool)
 
-	messageHandlers  []prioritizedHandler
-	nextHandlerID    uint64
+	messageHandlers   []prioritizedHandler
+	messageRouteIndex atomic.Pointer[messageHandlerIndex]
+	nextHandlerID     uint64
 	acceptingUpdates atomic.Bool
 	inFlight         lifecycleCounter
 	cmdWG            lifecycleCounter
@@ -139,17 +140,18 @@ func NewDispatcher(
 	cooldown := core.NewCooldownTracker()
 	executor := core.NewCommandExecutor(logger, cooldown, 30*time.Second)
 	d := &Dispatcher{
-		router:      router,
-		perms:       perms,
-		svc:         svc,
-		logger:      logger,
-		cooldown:    cooldown,
-		executor:    executor,
-		albumBuffer: core.NewAlbumBuffer(10 * time.Minute),
-		normalizer:    NewNormalizer(),
-		ingressDedupe: newIngressMessageDedupe(defaultIngressDedupeTTL, defaultIngressDedupeCapacity),
-		peerDone:      make(chan struct{}),
+		router:         router,
+		perms:          perms,
+		svc:            svc,
+		logger:         logger,
+		cooldown:       cooldown,
+		executor:       executor,
+		albumBuffer:    core.NewAlbumBuffer(10 * time.Minute),
+		normalizer:     NewNormalizer(),
+		ingressDedupe:  newIngressMessageDedupe(defaultIngressDedupeTTL, defaultIngressDedupeCapacity),
+		peerDone:       make(chan struct{}),
 	}
+	d.messageRouteIndex.Store(&messageHandlerIndex{})
 	d.acceptingUpdates.Store(true)
 	return d
 }

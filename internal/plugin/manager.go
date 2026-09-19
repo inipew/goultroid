@@ -41,6 +41,34 @@ type scopedHookRegistrar interface {
 	AddScopedMessageHandler(priority int, scope tasks.ScopeIdentity, h MessageHookHandler) func()
 }
 
+type routedHookRegistrar interface {
+	AddPrioritizedMessageHandlerWithRouting(priority int, routing core.MessageHookRouting, h MessageHookHandler) func()
+}
+
+type scopedRoutedHookRegistrar interface {
+	AddScopedMessageHandlerWithRouting(priority int, scope tasks.ScopeIdentity, routing core.MessageHookRouting, h MessageHookHandler) func()
+}
+
+func registerMessageHook(registrar HookRegistrar, p Plugin, scope tasks.ScopeIdentity) func() {
+	mhp, ok := p.(MessageHookPlugin)
+	if !ok || registrar == nil {
+		return nil
+	}
+	if routed, ok := p.(MessageHookRoutingPlugin); ok {
+		routing := routed.MessageHookRouting()
+		if scoped, ok := registrar.(scopedRoutedHookRegistrar); ok {
+			return scoped.AddScopedMessageHandlerWithRouting(mhp.MessageHookPriority(), scope, routing, mhp.HandleIncomingMessage)
+		}
+		if indexed, ok := registrar.(routedHookRegistrar); ok {
+			return indexed.AddPrioritizedMessageHandlerWithRouting(mhp.MessageHookPriority(), routing, mhp.HandleIncomingMessage)
+		}
+	}
+	if scoped, ok := registrar.(scopedHookRegistrar); ok {
+		return scoped.AddScopedMessageHandler(mhp.MessageHookPriority(), scope, mhp.HandleIncomingMessage)
+	}
+	return registrar.AddPrioritizedMessageHandler(mhp.MessageHookPriority(), mhp.HandleIncomingMessage)
+}
+
 type callbackRegistrar interface {
 	RegisterOwned(string, callback.Handler) (*callback.Registration, error)
 }
@@ -453,13 +481,7 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 	hookRegistrar := m.hookRegistrar
 	m.mu.RUnlock()
 	if hookRegistrar != nil {
-		if mhp, ok := p.(MessageHookPlugin); ok {
-			if scoped, ok := hookRegistrar.(scopedHookRegistrar); ok {
-				hookCleanup = scoped.AddScopedMessageHandler(mhp.MessageHookPriority(), commandScope, mhp.HandleIncomingMessage)
-			} else {
-				hookCleanup = hookRegistrar.AddPrioritizedMessageHandler(mhp.MessageHookPriority(), mhp.HandleIncomingMessage)
-			}
-		}
+		hookCleanup = registerMessageHook(hookRegistrar, p, commandScope)
 	}
 	var callbackCleanup func()
 	m.mu.RLock()
@@ -906,13 +928,7 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 	hookRegistrar := m.hookRegistrar
 	m.mu.RUnlock()
 	if hookRegistrar != nil {
-		if mhp, ok := p.(MessageHookPlugin); ok {
-			if scoped, ok := hookRegistrar.(scopedHookRegistrar); ok {
-				hookCleanup = scoped.AddScopedMessageHandler(mhp.MessageHookPriority(), commandScope, mhp.HandleIncomingMessage)
-			} else {
-				hookCleanup = hookRegistrar.AddPrioritizedMessageHandler(mhp.MessageHookPriority(), mhp.HandleIncomingMessage)
-			}
-		}
+		hookCleanup = registerMessageHook(hookRegistrar, p, commandScope)
 	}
 	var callbackCleanup func()
 	m.mu.RLock()

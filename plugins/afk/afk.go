@@ -154,6 +154,17 @@ func (p *Plugin) loadState(ctx context.Context) error {
 }
 
 func (p *Plugin) MessageHookPriority() int { return 50 }
+func (p *Plugin) MessageHookRouting() core.MessageHookRouting {
+	return core.MessageHookRouting{
+		Lane: core.MessageHookEvent,
+		Interests: []core.MessageHookInterest{
+			{Directions: core.MessageDirectionOutgoing, Peers: core.MessagePeerStable},
+			{Directions: core.MessageDirectionIncoming, Peers: core.MessagePeerPrivate},
+			{Directions: core.MessageDirectionIncoming, Peers: core.MessagePeerGroup | core.MessagePeerChannel, RequireMention: true},
+			{Directions: core.MessageDirectionIncoming, Peers: core.MessagePeerGroup | core.MessagePeerChannel, RequireReply: true},
+		},
+	}
+}
 func (p *Plugin) Capabilities() []execution.Capability {
 	return []execution.Capability{{ID: "afk", Name: "AFK", Description: "Away From Keyboard status manager and intelligent auto-reply system", Category: "Utility", Surfaces: execution.SurfaceUserbot}}
 }

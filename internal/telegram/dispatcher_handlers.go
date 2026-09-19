@@ -40,25 +40,59 @@ type prioritizedHandler struct {
 	id            uint64
 	priority      HandlerPriority
 	failurePolicy HandlerFailurePolicy
+	routing       core.MessageHookRouting
 	handler       MessageHandler
 	scope         tasks.ScopeIdentity
+}
+
+const messageRouteClassCount = 128
+
+type messageHandlerBucket struct {
+	decision []prioritizedHandler
+	event    []prioritizedHandler
+}
+
+// messageHandlerIndex is immutable after publication through Dispatcher.
+// Registration/removal rebuilds it under d.mu; ingress only performs one atomic
+// load and one fixed-array lookup.
+type messageHandlerIndex struct {
+	buckets [messageRouteClassCount]messageHandlerBucket
 }
 
 // MessageHandler is invoked for each incoming message.
 type MessageHandler = func(ctx context.Context, e tg.Entities, msg *tg.Message, isCommand bool, cmdName string) error
 
-// AddMessageHandler registers an interceptor for raw message processing with default PriorityFeature.
+// AddMessageHandler registers a compatibility interceptor with default
+// PriorityFeature. Unscoped feature handlers remain in the decision lane to
+// preserve the historical synchronous test/local-handler contract.
 func (d *Dispatcher) AddMessageHandler(h MessageHandler) {
 	_ = d.AddPrioritizedMessageHandler(PriorityFeature, h)
 }
 
-// AddPrioritizedMessageHandler registers an interceptor with an explicit priority.
+// AddPrioritizedMessageHandler registers an interceptor with legacy routing.
 func (d *Dispatcher) AddPrioritizedMessageHandler(priority HandlerPriority, h MessageHandler) func() {
 	return d.AddScopedMessageHandler(priority, tasks.ScopeIdentity{}, h)
 }
 
-// AddScopedMessageHandler registers a handler owned by a plugin generation.
+// AddPrioritizedMessageHandlerWithRouting registers an unscoped interceptor
+// with explicit lane and structural interests.
+func (d *Dispatcher) AddPrioritizedMessageHandlerWithRouting(priority HandlerPriority, routing core.MessageHookRouting, h MessageHandler) func() {
+	return d.addMessageHandler(priority, tasks.ScopeIdentity{}, routing, h)
+}
+
+// AddScopedMessageHandler registers a plugin-owned handler with routing derived
+// from the legacy priority/scope convention.
 func (d *Dispatcher) AddScopedMessageHandler(priority HandlerPriority, scope tasks.ScopeIdentity, h MessageHandler) func() {
+	return d.addMessageHandler(priority, scope, legacyMessageHookRouting(priority, scope), h)
+}
+
+// AddScopedMessageHandlerWithRouting registers a plugin-owned handler with
+// explicit decision/event lane and indexed interests.
+func (d *Dispatcher) AddScopedMessageHandlerWithRouting(priority HandlerPriority, scope tasks.ScopeIdentity, routing core.MessageHookRouting, h MessageHandler) func() {
+	return d.addMessageHandler(priority, scope, routing, h)
+}
+
+func (d *Dispatcher) addMessageHandler(priority HandlerPriority, scope tasks.ScopeIdentity, routing core.MessageHookRouting, h MessageHandler) func() {
 	if h == nil {
 		return func() {}
 	}
@@ -66,11 +100,12 @@ func (d *Dispatcher) AddScopedMessageHandler(priority HandlerPriority, scope tas
 	d.nextHandlerID++
 	id := d.nextHandlerID
 	d.messageHandlers = append(d.messageHandlers, prioritizedHandler{
-		id: id, priority: priority, failurePolicy: failurePolicyForPriority(priority), handler: h, scope: scope,
+		id: id, priority: priority, failurePolicy: failurePolicyForPriority(priority), routing: routing, handler: h, scope: scope,
 	})
 	sort.SliceStable(d.messageHandlers, func(i, j int) bool {
 		return d.messageHandlers[i].priority < d.messageHandlers[j].priority
 	})
+	d.rebuildMessageHandlerIndexLocked()
 	d.mu.Unlock()
 
 	return func() {
@@ -79,10 +114,168 @@ func (d *Dispatcher) AddScopedMessageHandler(priority HandlerPriority, scope tas
 		for i, ph := range d.messageHandlers {
 			if ph.id == id {
 				d.messageHandlers = append(d.messageHandlers[:i], d.messageHandlers[i+1:]...)
+				d.rebuildMessageHandlerIndexLocked()
 				break
 			}
 		}
 	}
+}
+
+func legacyMessageHookRouting(priority HandlerPriority, scope tasks.ScopeIdentity) core.MessageHookRouting {
+	lane := core.MessageHookDecision
+	if priority >= PriorityObservability || (priority >= PriorityFeature && !scope.IsZero()) {
+		lane = core.MessageHookEvent
+	}
+	return core.MessageHookRouting{Lane: lane}
+}
+
+func (d *Dispatcher) rebuildMessageHandlerIndexLocked() {
+	idx := &messageHandlerIndex{}
+	for _, registered := range d.messageHandlers {
+		for class := 0; class < messageRouteClassCount; class++ {
+			if !messageHookRoutingMatchesClass(registered.routing, uint8(class)) {
+				continue
+			}
+			bucket := &idx.buckets[class]
+			if registered.routing.Lane == core.MessageHookEvent {
+				bucket.event = append(bucket.event, registered)
+			} else {
+				bucket.decision = append(bucket.decision, registered)
+			}
+		}
+	}
+	d.messageRouteIndex.Store(idx)
+}
+
+func (d *Dispatcher) messageHandlersFor(msg *tg.Message, isCommand bool) (decision, event []prioritizedHandler) {
+	idx := d.messageRouteIndex.Load()
+	if idx == nil {
+		return nil, nil
+	}
+	class := classifyMessageRoute(msg, isCommand)
+	bucket := &idx.buckets[class]
+	return bucket.decision, bucket.event
+}
+
+func classifyMessageRoute(msg *tg.Message, isCommand bool) uint8 {
+	if msg == nil {
+		return 0
+	}
+	var class uint8
+	if msg.Out {
+		class |= 1 << 0
+	}
+	class |= messagePeerClass(msg.PeerID) << 1
+	if isCommand {
+		class |= 1 << 3
+	}
+	if msg.Message != "" {
+		class |= 1 << 4
+	}
+	if messageMentionCandidate(msg) {
+		class |= 1 << 5
+	}
+	if msg.ReplyTo != nil {
+		class |= 1 << 6
+	}
+	return class
+}
+
+func messagePeerClass(peer tg.PeerClass) uint8 {
+	switch peer.(type) {
+	case *tg.PeerUser:
+		return 1
+	case *tg.PeerChat:
+		return 2
+	case *tg.PeerChannel:
+		return 3
+	default:
+		return 0
+	}
+}
+
+func messageMentionCandidate(msg *tg.Message) bool {
+	if msg == nil {
+		return false
+	}
+	if msg.Mentioned {
+		return true
+	}
+	for _, entity := range msg.Entities {
+		switch entity.(type) {
+		case *tg.MessageEntityMention, *tg.MessageEntityMentionName:
+			return true
+		}
+	}
+	return false
+}
+
+func messageHookRoutingMatchesClass(routing core.MessageHookRouting, class uint8) bool {
+	if len(routing.Interests) == 0 {
+		return true
+	}
+	for _, interest := range routing.Interests {
+		if messageHookInterestMatchesClass(interest, class) {
+			return true
+		}
+	}
+	return false
+}
+
+func messageHookInterestMatchesClass(interest core.MessageHookInterest, class uint8) bool {
+	directions := interest.Directions
+	if directions == 0 {
+		directions = core.MessageDirectionAny
+	}
+	if class&(1<<0) != 0 {
+		if directions&core.MessageDirectionOutgoing == 0 {
+			return false
+		}
+	} else if directions&core.MessageDirectionIncoming == 0 {
+		return false
+	}
+
+	peers := interest.Peers
+	if peers == 0 {
+		peers = core.MessagePeerAny
+	}
+	var peerMask core.MessagePeerMask
+	switch (class >> 1) & 0x3 {
+	case 1:
+		peerMask = core.MessagePeerPrivate
+	case 2:
+		peerMask = core.MessagePeerGroup
+	case 3:
+		peerMask = core.MessagePeerChannel
+	default:
+		peerMask = core.MessagePeerUnknown
+	}
+	if peers&peerMask == 0 {
+		return false
+	}
+
+	commands := interest.Commands
+	if commands == 0 {
+		commands = core.MessageCommandAny
+	}
+	if class&(1<<3) != 0 {
+		if commands&core.MessageCommand == 0 {
+			return false
+		}
+	} else if commands&core.MessagePlain == 0 {
+		return false
+	}
+
+	if interest.RequireText && class&(1<<4) == 0 {
+		return false
+	}
+	if interest.RequireMention && class&(1<<5) == 0 {
+		return false
+	}
+	if interest.RequireReply && class&(1<<6) == 0 {
+		return false
+	}
+	return true
 }
 
 func (d *Dispatcher) safeExecuteInterceptor(

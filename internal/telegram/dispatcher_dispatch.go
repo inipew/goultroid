@@ -71,19 +71,9 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		}
 	}
 
-	d.mu.RLock()
-	var syncHandlers []prioritizedHandler
-	var asyncHandlers []prioritizedHandler
-	for _, ph := range d.messageHandlers {
-		if ph.priority >= PriorityObservability || (ph.priority >= PriorityFeature && !ph.scope.IsZero()) {
-			asyncHandlers = append(asyncHandlers, ph)
-		} else {
-			syncHandlers = append(syncHandlers, ph)
-		}
-	}
-	d.mu.RUnlock()
+	decisionHandlers, eventHandlers := d.messageHandlersFor(msg, isCmd)
 
-	if d.executeDecisionHandlers(ctx, syncHandlers, e, msg, isCmd, cmdName) {
+	if d.executeDecisionHandlers(ctx, decisionHandlers, e, msg, isCmd, cmdName) {
 		return nil
 	}
 	if decision.IsHandled() || decision.IsSuppressedCommands() {
@@ -124,12 +114,12 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	}
 
 	if !isCmd {
-		d.dispatchAsyncHandlers(ctx, asyncHandlers, e, msg, isCmd, cmdName)
+		d.dispatchEventHandlers(ctx, eventHandlers, e, msg, isCmd, cmdName)
 		return nil
 	}
 
 	if !cmdExists {
-		d.dispatchAsyncHandlers(ctx, asyncHandlers, e, msg, isCmd, cmdName)
+		d.dispatchEventHandlers(ctx, eventHandlers, e, msg, isCmd, cmdName)
 		return nil
 	}
 
@@ -210,7 +200,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		)
 	}
 
-	d.dispatchAsyncHandlers(ctx, asyncHandlers, e, msg, isCmd, cmdName)
+	d.dispatchEventHandlers(ctx, eventHandlers, e, msg, isCmd, cmdName)
 	return nil
 }
 
@@ -264,7 +254,9 @@ func (d *Dispatcher) executeDecisionHandlers(ctx context.Context, handlers []pri
 	return false
 }
 
-func (d *Dispatcher) dispatchAsyncHandlers(ctx context.Context, handlers []prioritizedHandler, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) {
+// dispatchEventHandlers submits the indexed event-lane hooks asynchronously.
+// Decision/interception work has already completed before this point.
+func (d *Dispatcher) dispatchEventHandlers(ctx context.Context, handlers []prioritizedHandler, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) {
 	if len(handlers) == 0 {
 		return
 	}

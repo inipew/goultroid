@@ -71,3 +71,11 @@ type MessageHookPlugin interface {
 	MessageHookPriority() int
 	HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error
 }
+
+// MessageHookRoutingPlugin lets a hook declare its execution lane and
+// structural message interests. The dispatcher indexes these interests at
+// registration time so irrelevant updates never invoke the plugin.
+type MessageHookRoutingPlugin interface {
+	MessageHookPlugin
+	MessageHookRouting() core.MessageHookRouting
+}
