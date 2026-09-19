@@ -593,3 +593,98 @@ func TestService_BotSentTrackingSupportsSavedMessages(t *testing.T) {
 		t.Fatal("InputPeerSelf record must not match a different user peer")
 	}
 }
+
+
+type captureDimensionsLimiter struct {
+	dimensions []LimitKey
+}
+
+func (l *captureDimensionsLimiter) Reserve(_ time.Time, dimensions []LimitKey, _ int) Reservation {
+	l.dimensions = append(l.dimensions[:0], dimensions...)
+	return Reservation{Allowed: true}
+}
+
+func (*captureDimensionsLimiter) Penalize(time.Time, []LimitKey, time.Duration) {}
+
+func TestServiceSinglePeerWrapperUsesTypedLimiterIdentity(t *testing.T) {
+	limiter := &captureDimensionsLimiter{}
+	exec, err := NewRPCExecutor(RPCExecutorConfig{
+		Limiter: limiter,
+		DefaultPolicy: RetryPolicy{
+			MaxAttempts: 1,
+			MaxElapsed:  time.Second,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewServiceWithExecutor(nil, exec)
+	peer := &tg.InputPeerUser{UserID: 42, AccessHash: 99}
+
+	err = svc.execReadOnlyPeer(context.Background(), "users.getFullUser", peer, func(_ context.Context, current tg.InputPeerClass) error {
+		if current != peer {
+			t.Fatalf("unchanged peer should preserve pointer identity: got %p want %p", current, peer)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("single-peer rpc failed: %v", err)
+	}
+
+	var peerDimension *LimitKey
+	for i := range limiter.dimensions {
+		if limiter.dimensions[i].Scope == "peer" {
+			peerDimension = &limiter.dimensions[i]
+			break
+		}
+	}
+	if peerDimension == nil {
+		t.Fatalf("missing peer limiter dimension: %+v", limiter.dimensions)
+	}
+	if peerDimension.Key != "user" || peerDimension.ID != 42 {
+		t.Fatalf("unexpected typed peer dimension: %+v", *peerDimension)
+	}
+	if peerDimension.Key == "user:42" {
+		t.Fatalf("peer limiter identity regressed to formatted string: %+v", *peerDimension)
+	}
+}
+
+func TestServiceRefreshPeerAccessHashReusesUnchangedPeer(t *testing.T) {
+	storage := &rotatingPeerStorage{hash: 777}
+	svc := NewService(nil)
+	svc.SetStorage(storage)
+
+	user := &tg.InputPeerUser{UserID: 123, AccessHash: 777}
+	if got := svc.RefreshPeerAccessHash(context.Background(), user); got != user {
+		t.Fatalf("unchanged user hash allocated/replaced peer: got %p want %p", got, user)
+	}
+
+	channelStorage := &rotatingPeerStorage{hash: 888}
+	svc.SetStorage(channelStorage)
+	channel := &tg.InputPeerChannel{ChannelID: 456, AccessHash: 888}
+	if got := svc.RefreshPeerAccessHash(context.Background(), channel); got != channel {
+		t.Fatalf("unchanged channel hash allocated/replaced peer: got %p want %p", got, channel)
+	}
+}
+
+func TestServiceRefreshPeerAccessHashReplacesChangedPeer(t *testing.T) {
+	storage := &rotatingPeerStorage{hash: 222}
+	svc := NewService(nil)
+	svc.SetStorage(storage)
+
+	original := &tg.InputPeerUser{UserID: 42, AccessHash: 111}
+	got := svc.RefreshPeerAccessHash(context.Background(), original)
+	refreshed, ok := got.(*tg.InputPeerUser)
+	if !ok {
+		t.Fatalf("refreshed peer type=%T", got)
+	}
+	if refreshed == original {
+		t.Fatal("changed access hash must return refreshed peer")
+	}
+	if refreshed.UserID != original.UserID || refreshed.AccessHash != 222 {
+		t.Fatalf("unexpected refreshed peer: %+v", refreshed)
+	}
+	if original.AccessHash != 111 {
+		t.Fatalf("original peer was mutated: %+v", original)
+	}
+}
