@@ -47,6 +47,14 @@ type deferredDeadlineStore interface {
 	EarliestDeferredOccurrenceDue(context.Context, time.Time) (time.Time, bool, error)
 }
 
+type attemptSummaryStore interface {
+	AttemptSummary(context.Context, string) (*AttemptSummary, error)
+}
+
+type nextAttemptLeaseStore interface {
+	PrepareNextAttemptLease(context.Context, string, time.Duration) (*JobAttempt, error)
+}
+
 type definitionLoader interface {
 	ListDefinitions(context.Context) ([]JobDefinition, error)
 }
@@ -589,11 +597,11 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID string, occurrence
 	// Materialization is idempotent on occurrence_key and rewrites occurrence.ID
 	// to the canonical identity when this logical run already exists.
 	occurrenceID = tasks.OccurrenceID(occurrence.ID)
-	taskID := tasks.TaskID(fmt.Sprintf("task:%s:1", occurrenceID))
-	attempt, err := m.store.PrepareAttemptLease(ctx, occurrence.ID, string(taskID), leaseDurationFor(definition))
+	attempt, err := m.prepareNextAttemptLease(ctx, occurrence.ID, leaseDurationFor(definition))
 	if err != nil {
 		return nil, "", fmt.Errorf("prepare job attempt: %w", err)
 	}
+	taskID := tasks.TaskID(attempt.TaskID)
 	copyDef := cloneDefinition(definition)
 	m.track(occurrence.ID, copyDef, handler, taskID)
 	ticket, err := client.Submit(ctx, tasks.WorkSpec{
@@ -987,6 +995,65 @@ func maxDeferrals(policy JobRetryPolicy) int {
 	return maxAttempts(policy) + 1
 }
 
+func occurrenceTerminal(state OccurrenceState) bool {
+	switch state {
+	case OccurrenceCompleted, OccurrenceFailed, OccurrenceCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *Manager) loadAttemptSummary(ctx context.Context, occurrenceID string) (*AttemptSummary, error) {
+	if store, ok := m.store.(attemptSummaryStore); ok {
+		return store.AttemptSummary(ctx, occurrenceID)
+	}
+
+	// Compatibility fallback for alternate/test stores. Production SQLite uses
+	// the single-round-trip AttemptSummary fast path above.
+	occ, err := m.store.GetOccurrence(ctx, occurrenceID)
+	if err != nil {
+		return nil, err
+	}
+	summary := &AttemptSummary{
+		OccurrenceState: occ.State,
+		ReadyAt:         occ.ReadyAt,
+	}
+	if occurrenceTerminal(occ.State) {
+		return summary, nil
+	}
+	latest, err := m.store.LatestAttempt(ctx, occurrenceID)
+	if err != nil {
+		return nil, err
+	}
+	summary.Latest = *latest
+	if summary.AttemptCount, err = m.store.CountAttempts(ctx, occurrenceID); err != nil {
+		return nil, err
+	}
+	if summary.RetryBudgetUses, err = m.store.CountRetryBudgetUses(ctx, occurrenceID); err != nil {
+		return nil, err
+	}
+	if summary.Deferrals, err = m.store.CountDeferrals(ctx, occurrenceID); err != nil {
+		return nil, err
+	}
+	return summary, nil
+}
+
+func (m *Manager) prepareNextAttemptLease(ctx context.Context, occurrenceID string, leaseDuration time.Duration) (*JobAttempt, error) {
+	if store, ok := m.store.(nextAttemptLeaseStore); ok {
+		return store.PrepareNextAttemptLease(ctx, occurrenceID, leaseDuration)
+	}
+
+	// Compatibility fallback for alternate/test stores. Production SQLite
+	// computes attempt_no and TaskID inside one fenced transaction.
+	attempts, err := m.store.CountAttempts(ctx, occurrenceID)
+	if err != nil {
+		return nil, err
+	}
+	taskID := fmt.Sprintf("task:%s:%d", occurrenceID, attempts+1)
+	return m.store.PrepareAttemptLease(ctx, occurrenceID, taskID, leaseDuration)
+}
+
 func (m *Manager) commitAttemptResult(ctx context.Context, attempt *JobAttempt, res tasks.TaskResult) error {
 	if attempt == nil {
 		return errors.New("job attempt is required for durable commit")
@@ -1054,18 +1121,6 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		return
 	default:
 	}
-	stateCtx, stateCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
-	occ, err := m.store.GetOccurrence(stateCtx, item.occurrenceID)
-	stateCancel()
-	if err == nil {
-		switch occ.State {
-		case OccurrenceCancelled, OccurrenceCompleted, OccurrenceFailed:
-			m.untrack(item.occurrenceID)
-			return
-		}
-	} else {
-		m.signalRecovery()
-	}
 	if res.Cause == tasks.CausePersistenceFailure {
 		// TaskEngine could not prove the durable acknowledgement. Never turn an
 		// uncertain physical outcome into a new retry/finalization decision; the
@@ -1075,9 +1130,27 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		return
 	}
 	if res.Outcome == tasks.OutcomeCompleted {
+		// Durable tickets resolve successfully only after CommitAttemptResult
+		// acknowledgement, so re-reading job_occurrences here is redundant.
 		m.untrack(item.occurrenceID)
 		return
 	}
+
+	stateCtx, stateCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
+	summary, err := m.loadAttemptSummary(stateCtx, item.occurrenceID)
+	stateCancel()
+	if err != nil {
+		// The monitor cannot make a safe retry decision without durable state.
+		// Drop in-memory ownership so recovery can become authoritative.
+		m.untrack(item.occurrenceID)
+		m.signalRecovery()
+		return
+	}
+	if occurrenceTerminal(summary.OccurrenceState) {
+		m.untrack(item.occurrenceID)
+		return
+	}
+
 	switch res.Outcome {
 	case tasks.OutcomeFailed, tasks.OutcomeTimedOut, tasks.OutcomeCancelled,
 		tasks.OutcomePanic, tasks.OutcomeAbortedBeforeStart:
@@ -1088,15 +1161,7 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		return
 	}
 	if res.Cause == tasks.CauseRateLimited {
-		countCtx, countCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
-		deferrals, err := m.store.CountDeferrals(countCtx, item.occurrenceID)
-		countCancel()
-		if err != nil {
-			m.untrack(item.occurrenceID)
-			m.signalRecovery()
-			return
-		}
-		if deferrals >= maxDeferrals(tr.def.RetryPolicy) {
+		if summary.Deferrals >= maxDeferrals(tr.def.RetryPolicy) {
 			finalizeCtx, finalizeCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
 			err := m.store.FinalizeOccurrence(finalizeCtx, item.occurrenceID, OccurrenceFailed)
 			finalizeCancel()
@@ -1112,13 +1177,7 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		return
 	}
 
-	countCtx, countCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
-	retryUses, err := m.store.CountRetryBudgetUses(countCtx, item.occurrenceID)
-	countCancel()
-	if err != nil {
-		m.signalRecovery()
-		return
-	}
+	retryUses := summary.RetryBudgetUses
 	if retryUses >= maxAttempts(tr.def.RetryPolicy) {
 		finalizeCtx, finalizeCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
 		err := m.store.FinalizeOccurrence(finalizeCtx, item.occurrenceID, OccurrenceFailed)
@@ -1150,19 +1209,9 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		return
 	}
 
-	// Zero-delay retries may continue immediately. Re-read first so
-	// cancellation always wins over the next lease.
-	refreshCtx, refreshCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
-	occ2, refreshErr := m.store.GetOccurrence(refreshCtx, item.occurrenceID)
-	refreshCancel()
-	if refreshErr != nil {
-		m.untrack(item.occurrenceID)
-		m.signalRecovery()
-		return
-	} else if occ2.State == OccurrenceCancelled {
-		m.untrack(item.occurrenceID)
-		return
-	}
+	// Zero-delay retries may continue immediately. PrepareNextAttemptLease is
+	// the final writer-fenced cancellation/state check, so a second occurrence
+	// read here only adds a race window and one DB round-trip.
 	m.mu.RLock()
 	accepting := m.accepting
 	m.mu.RUnlock()
@@ -1180,15 +1229,11 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 
 // driveAttempt prepares the next attempt lease and submits its task, then re-arms the monitor.
 func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def JobDefinition, handler Handler) error {
-	attempts, err := m.store.CountAttempts(ctx, occurrenceID)
+	attempt, err := m.prepareNextAttemptLease(ctx, occurrenceID, leaseDurationFor(def))
 	if err != nil {
 		return err
 	}
-	nextTaskID := tasks.TaskID(fmt.Sprintf("task:%s:%d", occurrenceID, attempts+1))
-	attempt, err := m.store.PrepareAttemptLease(ctx, occurrenceID, string(nextTaskID), leaseDurationFor(def))
-	if err != nil {
-		return err
-	}
+	nextTaskID := tasks.TaskID(attempt.TaskID)
 	copyDef := cloneDefinition(def)
 	commit := func(commitCtx context.Context, res tasks.TaskResult) error {
 		return m.commitAttemptResult(commitCtx, attempt, res)
@@ -1260,38 +1305,28 @@ func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error)
 			report.Orphaned++
 			continue
 		}
-		latest, err := m.store.LatestAttempt(ctx, occ.ID)
-		if err != nil {
+		summary, err := m.loadAttemptSummary(ctx, occ.ID)
+		if err != nil || summary.OccurrenceState != OccurrenceDispatched {
 			report.Stale++
 			continue
 		}
+		latest := &summary.Latest
 		switch latest.State {
 		case AttemptCompleted, AttemptFailed, AttemptTimedOut, AttemptCancelled, AttemptAbortedBeforeStart, AttemptDeferred:
 		default:
 			report.Stale++
 			continue
 		}
-		if latest.State == AttemptDeferred {
-			deferrals, err := m.store.CountDeferrals(ctx, occ.ID)
-			if err != nil {
+		if latest.State == AttemptDeferred && summary.Deferrals >= maxDeferrals(def.RetryPolicy) {
+			if ferr := m.store.FinalizeOccurrence(ctx, occ.ID, OccurrenceFailed); ferr != nil {
 				report.Stale++
 				continue
 			}
-			if deferrals >= maxDeferrals(def.RetryPolicy) {
-				if ferr := m.store.FinalizeOccurrence(ctx, occ.ID, OccurrenceFailed); ferr != nil {
-					report.Stale++
-					continue
-				}
-				m.untrack(occ.ID)
-				report.Finalized++
-				continue
-			}
-		}
-		retryUses, err := m.store.CountRetryBudgetUses(ctx, occ.ID)
-		if err != nil {
-			report.Stale++
+			m.untrack(occ.ID)
+			report.Finalized++
 			continue
 		}
+		retryUses := summary.RetryBudgetUses
 		if retryUses >= maxAttempts(def.RetryPolicy) {
 			if ferr := m.store.FinalizeOccurrence(ctx, occ.ID, OccurrenceFailed); ferr != nil {
 				report.Stale++
