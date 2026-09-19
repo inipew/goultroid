@@ -131,6 +131,7 @@ func (e *CommandExecutor) execute(ctx *Context, cmd Command, source ExecutionSou
 		CorrelationMiddleware(e.logger),
 		LoggingMiddleware(e.logger),
 		SurfaceMiddleware(cmd, source),
+		InvocationMiddleware(cmd, source),
 		PermissionMiddleware(cmd),
 		FilterMiddlewareForSource(cmd, source),
 		CooldownMiddleware(cmd, e.cooldown),
@@ -142,7 +143,7 @@ func (e *CommandExecutor) execute(ctx *Context, cmd Command, source ExecutionSou
 		e.metrics.RecordCommand(cmd.Name, time.Since(start), err)
 	}
 	if err != nil {
-		if errors.Is(err, ErrPermissionDenied) || errors.Is(err, ErrCooldownActive) || errors.Is(err, ErrRateLimited) {
+		if errors.Is(err, ErrInvocationDenied) || errors.Is(err, ErrPermissionDenied) || errors.Is(err, ErrCooldownActive) || errors.Is(err, ErrRateLimited) {
 			return err
 		}
 		if errors.Is(err, ErrGroupOnly) || errors.Is(err, ErrPrivateOnly) || errors.Is(err, ErrReplyRequired) {

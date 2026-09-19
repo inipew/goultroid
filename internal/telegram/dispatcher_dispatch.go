@@ -80,6 +80,21 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		return nil
 	}
 
+	// Invocation is a cheap security admission gate and must run before durable
+	// idempotency, peer resolution, or TaskEngine submission. Permission remains
+	// a separate authorization check inside CommandExecutor.
+	if cmdExists {
+		senderID := invocationSenderID(msg, d.getSelfID())
+		if !cmd.CanInvoke(core.ExecutionInteractive, senderID, msg.Out, d.perms) {
+			d.logger.Debug("dispatcher: command invocation denied",
+				zap.String("command", cmdName),
+				zap.Int64("sender_id", senderID),
+				zap.String("policy", cmd.EffectiveInvocation(core.ExecutionInteractive).String()),
+			)
+			return nil
+		}
+	}
+
 	// Durability belongs to execution candidates, not transport ingress. Only a
 	// recognized command that survived the synchronous decision pipeline may
 	// claim durable idempotency. This keeps ordinary traffic, unknown commands,
@@ -394,4 +409,20 @@ func extractCoreMessage(msg *tg.Message) *core.Message {
 		}
 	}
 	return coreMsg
+}
+
+func invocationSenderID(msg *tg.Message, selfID int64) int64 {
+	if msg == nil {
+		return 0
+	}
+	if msg.Out {
+		return selfID
+	}
+	if from, ok := msg.FromID.(*tg.PeerUser); ok && from != nil {
+		return from.UserID
+	}
+	if peer, ok := msg.PeerID.(*tg.PeerUser); ok && peer != nil {
+		return peer.UserID
+	}
+	return 0
 }

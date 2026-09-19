@@ -51,6 +51,7 @@ func TestCommandExecutor_PermissionDenied(t *testing.T) {
 	cmd := Command{
 		Name:       "owner_cmd",
 		Permission: PermissionOwner,
+		Invocation: InvocationPolicy{Userbot: InvocationAnyone},
 		Handler: func(ctx *Context) error {
 			return nil
 		},

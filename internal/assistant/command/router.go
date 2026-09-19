@@ -253,6 +253,19 @@ func (r *Router) Dispatch(ctx context.Context, senderID int64, peer tg.InputPeer
 			}
 		}
 
+		perms := core.NewPermissions(r.ownerID, sudoList)
+		if !cmd.CanInvoke(core.ExecutionAssistant, senderID, false, perms) {
+			r.logger.Debug("assistant: command invocation denied",
+				zap.String("command", cmdNameClean),
+				zap.Int64("sender_id", senderID),
+				zap.String("policy", cmd.EffectiveInvocation(core.ExecutionAssistant).String()),
+			)
+			if inter != nil && peer != nil {
+				_, _ = inter.SendMessage(ctx, peer, "⛔ <i>This command cannot be invoked by this account.</i>", nil)
+			}
+			return nil
+		}
+
 		if (cmd.Permission == core.PermissionOwner || cmd.Permission == core.PermissionSudo) && r.ownerID == 0 {
 			r.logger.Warn("assistant: owner_id not configured, rejecting privileged command",
 				zap.String("command", cmdNameClean),
@@ -311,7 +324,7 @@ func (r *Router) Dispatch(ctx context.Context, senderID int64, peer tg.InputPeer
 			Message:       &core.Message{SenderID: senderID, Text: strings.TrimSpace(messageText)},
 			Sender:        &core.User{ID: senderID},
 			Chat:          &core.Chat{ID: chatID, Type: chatTypeForPeer(peer)},
-			Perms:         core.NewPermissions(r.ownerID, sudoList),
+			Perms:         perms,
 			Principal:     principal,
 			Svc:           &assistantServicerAdapter{inter: inter},
 			DelayedActions: r.delayedActions,

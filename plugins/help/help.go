@@ -156,6 +156,7 @@ func (p *Plugin) handleHelp(ctx *core.Context) error {
 			}
 			card.AddField("Category", category).
 				AddField("Permission", ui.Badge(cmd.Permission)).
+				AddField("Invocation", ui.Code(cmd.EffectiveInvocation(ctx.Source).String())).
 				AddField("Usage", ui.Code(usage)).
 				AddField("Aliases", aliasesStr)
 

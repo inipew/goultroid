@@ -116,7 +116,7 @@ func TestDispatcher_IdempotencyFailureFailsClosedForCommand(t *testing.T) {
 	d := NewDispatcher(router, core.NewPermissions(1, nil), nil, zap.NewNop())
 	d.SetIdempotency(idempotency.NewManager(time.Minute, failingIdempotencyRepository{err: errors.New("db unavailable")}))
 
-	msg := &tg.Message{ID: 7, PeerID: &tg.PeerChat{ChatID: 10}, Message: ".mutate"}
+	msg := &tg.Message{ID: 7, Out: true, PeerID: &tg.PeerChat{ChatID: 10}, Message: ".mutate"}
 	if err := d.dispatch(context.Background(), tg.Entities{}, msg); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}

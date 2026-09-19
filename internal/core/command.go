@@ -11,7 +11,7 @@ import (
 type Permission int
 
 const (
-	// PermissionEveryone allows any user to run the command.
+	// PermissionEveryone requires no elevated authorization tier. InvocationPolicy still controls who may initiate the command.
 	PermissionEveryone Permission = iota
 	// PermissionSudo allows Sudo users and the Owner to run the command.
 	PermissionSudo
@@ -42,6 +42,9 @@ type Command struct {
 	Usage       string
 	Category    string
 	Permission  Permission
+	// Invocation controls who may initiate the command independently from the
+	// authorization tier above.
+	Invocation  InvocationPolicy
 	Surfaces    execution.SurfaceMask
 	GroupOnly   bool
 	PrivateOnly bool

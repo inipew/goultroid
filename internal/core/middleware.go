@@ -112,7 +112,7 @@ func LoggingMiddleware(logger *zap.Logger) Middleware {
 							zap.Duration("duration", duration),
 							zap.Error(err),
 						)
-					} else if errors.Is(err, ErrInvalidArgs) || CategoryOf(err) == CategoryInvalidInput || errors.Is(err, ErrPermissionDenied) || errors.Is(err, ErrCooldownActive) {
+					} else if errors.Is(err, ErrInvalidArgs) || CategoryOf(err) == CategoryInvalidInput || errors.Is(err, ErrInvocationDenied) || errors.Is(err, ErrPermissionDenied) || errors.Is(err, ErrCooldownActive) {
 						logger.Debug("command rejected due to client or usage constraint",
 							zap.String("correlation_id", ctx.CorrelationID),
 							zap.String("command", ctx.Command),
@@ -156,6 +156,37 @@ func TimeoutMiddleware(cmd Command, defaultTimeout time.Duration) Middleware {
 			defer cancel()
 
 			ctx.Ctx = timeoutCtx
+			return next(ctx)
+		}
+	}
+}
+
+// InvocationMiddleware enforces who may initiate a human-triggered command.
+// It is deliberately separate from PermissionMiddleware.
+//
+// Identity-less direct executor calls are retained as a narrow compatibility
+// path for internal/tests using the legacy Context entry point. Telegram and
+// Assistant transports always supply a trigger identity before reaching here.
+func InvocationMiddleware(cmd Command, source ExecutionSource) Middleware {
+	return func(next CommandHandler) CommandHandler {
+		return func(ctx *Context) error {
+			if source != ExecutionInteractive && source != ExecutionAssistant {
+				return next(ctx)
+			}
+			if ctx != nil && ctx.Sender == nil && ctx.Message == nil {
+				return next(ctx)
+			}
+			var senderID int64
+			var outgoing bool
+			var perms *Permissions
+			if ctx != nil {
+				senderID = ctx.SenderID()
+				perms = ctx.Perms
+				outgoing = ctx.Message != nil && ctx.Message.IsOutgoing
+			}
+			if !cmd.CanInvoke(source, senderID, outgoing, perms) {
+				return ErrInvocationDenied
+			}
 			return next(ctx)
 		}
 	}
