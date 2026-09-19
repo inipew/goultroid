@@ -66,13 +66,16 @@ func (e *Engine) stopEngine(ctx context.Context, graceful bool) error {
 	if inbox != nil && rootCtx.Err() == nil {
 		reply := make(chan engineReply, 1)
 		req := engineRequest{op: opStopFinalize, reply: reply}
+		queued := e.acquireRequest(req)
 		sent := false
 		select {
-		case inbox <- req:
+		case inbox <- queued:
 			sent = true
 		case <-ctx.Done():
+			e.releaseRequest(queued)
 			errs = append(errs, fmt.Errorf("taskengine force-finalize enqueue: %w", ctx.Err()))
 		case <-rootCtx.Done():
+			e.releaseRequest(queued)
 		}
 		if sent {
 			select {

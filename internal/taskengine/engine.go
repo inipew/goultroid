@@ -313,7 +313,12 @@ type Engine struct {
 	inboxCap        int
 
 	// ---- lifecycle handles ----
-	inbox       chan engineRequest
+	// The inbox stores pooled pointers rather than engineRequest values. The
+	// request union is intentionally broad and relatively large; pointer-backed
+	// storage keeps the configured burst capacity without preallocating that
+	// entire union for every empty channel slot.
+	inbox       chan *engineRequest
+	requestPool sync.Pool
 	delivery    *completionDelivery
 	durability  *durabilityLane
 	accepting   bool
@@ -551,7 +556,7 @@ func (e *Engine) Start(ctx context.Context) error {
 	e.quiesced = false
 	e.drained = false
 	e.drainDone = make(chan struct{})
-	e.inbox = make(chan engineRequest, e.inboxCap)
+	e.inbox = make(chan *engineRequest, e.inboxCap)
 	inbox := e.inbox
 	rootCtx := e.rootCtx
 	e.runStarted = true
@@ -606,7 +611,7 @@ func (e *Engine) runtimeLoopDone() {
 }
 
 // runLoop is the sole writer of execution state.
-func (e *Engine) runLoop(ctx context.Context, inbox <-chan engineRequest) {
+func (e *Engine) runLoop(ctx context.Context, inbox <-chan *engineRequest) {
 	sweepTimer := time.NewTimer(time.Hour)
 	if !sweepTimer.Stop() {
 		select {
@@ -663,10 +668,18 @@ func (e *Engine) runLoop(ctx context.Context, inbox <-chan engineRequest) {
 		case <-ctx.Done():
 			e.applyStopFinalize()
 			return
-		case req, ok := <-inbox:
+		case reqPtr, ok := <-inbox:
 			if !ok {
 				return
 			}
+			if reqPtr == nil {
+				continue
+			}
+			// Copy the small live request view onto the coordinator stack and
+			// release the pooled envelope before running any potentially heavier
+			// state transition. Referenced payloads remain owned by the copy.
+			req := *reqPtr
+			e.releaseRequest(reqPtr)
 			e.handleRequest(ctx, req)
 			armSweeper()
 		case <-sweepTimerCh:
@@ -792,6 +805,28 @@ func (e *Engine) physicalWorker(pool tasks.PoolID, slotID int, mailbox <-chan wo
 	}
 }
 
+func (e *Engine) acquireRequest(req engineRequest) *engineRequest {
+	pooled := e.requestPool.Get()
+	var slot *engineRequest
+	if pooled == nil {
+		slot = &engineRequest{}
+	} else {
+		slot = pooled.(*engineRequest)
+	}
+	*slot = req
+	return slot
+}
+
+func (e *Engine) releaseRequest(req *engineRequest) {
+	if req == nil {
+		return
+	}
+	// Do not let the pool extend lifetimes of contexts, closures, result
+	// payloads, reply channels, or strings between control operations.
+	*req = engineRequest{}
+	e.requestPool.Put(req)
+}
+
 // sendInternal delivers worker-originated events to the control loop.
 func (e *Engine) sendInternal(req engineRequest) {
 	e.mu.Lock()
@@ -801,9 +836,11 @@ func (e *Engine) sendInternal(req engineRequest) {
 	if inbox == nil || rootCtx == nil {
 		return
 	}
+	queued := e.acquireRequest(req)
 	select {
-	case inbox <- req:
+	case inbox <- queued:
 	case <-rootCtx.Done():
+		e.releaseRequest(queued)
 	}
 }
 
@@ -829,11 +866,14 @@ func (e *Engine) sendControl(ctx context.Context, req engineRequest) (engineRepl
 	}
 	req.ctx = ctx
 	req.reply = make(chan engineReply, 1)
+	queued := e.acquireRequest(req)
 	select {
-	case inbox <- req:
+	case inbox <- queued:
 	case <-ctx.Done():
+		e.releaseRequest(queued)
 		return engineReply{}, ctx.Err()
 	case <-rootCtx.Done():
+		e.releaseRequest(queued)
 		return engineReply{}, tasks.NewAdmissionError(tasks.ReasonEngineQuiescing, tasks.ErrEngineQuiescing)
 	}
 	select {
@@ -872,11 +912,14 @@ func (e *Engine) sendSubmitControl(ctx context.Context, spec tasks.WorkSpec) (en
 	decision := &submitCell{}
 	reply := make(chan engineReply, 1)
 	req := engineRequest{op: opSubmit, ctx: ctx, spec: spec, decision: decision, reply: reply}
+	queued := e.acquireRequest(req)
 	select {
-	case inbox <- req:
+	case inbox <- queued:
 	case <-ctx.Done():
+		e.releaseRequest(queued)
 		return engineReply{}, ctx.Err()
 	case <-rootCtx.Done():
+		e.releaseRequest(queued)
 		return engineReply{}, tasks.NewAdmissionError(tasks.ReasonEngineQuiescing, tasks.ErrEngineQuiescing)
 	}
 
@@ -1666,8 +1709,9 @@ func (e *Engine) Quiesce(ctx context.Context) error {
 	}
 	reply := make(chan engineReply, 1)
 	req := engineRequest{op: opQuiesce, reply: reply}
+	queued := e.acquireRequest(req)
 	select {
-	case inbox <- req:
+	case inbox <- queued:
 		select {
 		case <-reply:
 			return nil
@@ -1677,8 +1721,10 @@ func (e *Engine) Quiesce(ctx context.Context) error {
 			return nil
 		}
 	case <-ctx.Done():
+		e.releaseRequest(queued)
 		return ctx.Err()
 	case <-rootCtx.Done():
+		e.releaseRequest(queued)
 		return nil
 	}
 }
@@ -1749,8 +1795,9 @@ func (e *Engine) Health(ctx context.Context) runtime.ComponentHealth {
 		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "task engine not running"}
 	}
 	reply := make(chan engineReply, 1)
+	queued := e.acquireRequest(engineRequest{op: opStats, reply: reply})
 	select {
-	case inbox <- engineRequest{op: opStats, reply: reply}:
+	case inbox <- queued:
 		timeout := 200 * time.Millisecond
 		if dl, ok := ctx.Deadline(); ok {
 			if d := time.Until(dl); d < timeout {
@@ -1787,8 +1834,10 @@ func (e *Engine) Health(ctx context.Context) runtime.ComponentHealth {
 			return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "health check cancelled"}
 		}
 	case <-ctx.Done():
+		e.releaseRequest(queued)
 		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "health check cancelled"}
 	default:
+		e.releaseRequest(queued)
 		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "task engine inbox saturated"}
 	}
 }
@@ -1803,14 +1852,16 @@ func (e *Engine) SetOwnerLimits(owner tasks.OwnerID, limits admission.OwnerLimit
 		return
 	}
 	reply := make(chan engineReply, 1)
+	queued := e.acquireRequest(engineRequest{op: opSetOwnerLimits, owner: owner, limits: limits, reply: reply})
 	select {
-	case inbox <- engineRequest{op: opSetOwnerLimits, owner: owner, limits: limits, reply: reply}:
+	case inbox <- queued:
 		select {
 		case <-reply:
 		case <-time.After(2 * time.Second):
 		case <-rootCtx.Done():
 		}
 	case <-rootCtx.Done():
+		e.releaseRequest(queued)
 	}
 }
 

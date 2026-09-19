@@ -15,7 +15,7 @@ func TestSubmitHandoffCancellationCannotHideAcceptedDecision(t *testing.T) {
 	e := NewEngine(Config{DecisionTimeout: time.Second})
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	defer rootCancel()
-	inbox := make(chan engineRequest, 1)
+	inbox := make(chan *engineRequest, 1)
 	e.mu.Lock()
 	e.inbox = inbox
 	e.rootCtx = rootCtx
@@ -25,7 +25,9 @@ func TestSubmitHandoffCancellationCannotHideAcceptedDecision(t *testing.T) {
 	accepted := make(chan struct{})
 	releaseReply := make(chan struct{})
 	go func() {
-		req := <-inbox
+		reqPtr := <-inbox
+		req := *reqPtr
+		e.releaseRequest(reqPtr)
 		if !req.decision.decide(decisionAccepted) {
 			t.Errorf("coordinator lost admission decision")
 			return
