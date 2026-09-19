@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
@@ -935,5 +936,49 @@ func TestRPCExecutor_DurableLimiterInlineBudgetIsCumulative(t *testing.T) {
 	}
 	if limiter.calls != 2 {
 		t.Fatalf("limiter reserve calls=%d, want 2 before durable yield", limiter.calls)
+	}
+}
+
+
+type fakeStructuredPeerRefresher struct {
+	calls int
+	peer  tg.InputPeerClass
+}
+
+func (f *fakeStructuredPeerRefresher) RefreshPeer(_ context.Context, peer tg.InputPeerClass) error {
+	f.calls++
+	f.peer = peer
+	return nil
+}
+
+func TestRPCExecutor_StructuredPeerRefresherRetriesStaleReadOnly(t *testing.T) {
+	exec := newTestExecutor(nil, NewFakeClock(time.Now()), &FakeSleeper{}, nil)
+	refresher := &fakeStructuredPeerRefresher{}
+	peer := &tg.InputPeerUser{UserID: 42, AccessHash: 99}
+	attempts := 0
+
+	err := exec.Do(context.Background(), RPCMeta{
+		Method:           "users.getFullUser",
+		Kind:             RPCReadOnly,
+		PeerRefresher:    refresher,
+		RefreshPeerTarget: peer,
+	}, func(context.Context) error {
+		attempts++
+		if attempts == 1 {
+			return tgerr.New(400, "PEER_ID_INVALID")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("structured stale-peer recovery failed: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("physical attempts=%d, want 2", attempts)
+	}
+	if refresher.calls != 1 {
+		t.Fatalf("refresh calls=%d, want 1", refresher.calls)
+	}
+	if refresher.peer != peer {
+		t.Fatalf("refresher peer=%p, want %p", refresher.peer, peer)
 	}
 }
