@@ -24,9 +24,10 @@ type Cache struct {
 	entries       map[string]cachedEntry
 	retainedBytes int64
 	defaultTTL    time.Duration
+	runCtx        context.Context
 	cancel        context.CancelFunc
 	wake          chan struct{}
-	wg            sync.WaitGroup
+	workerRunning bool
 	done          chan struct{}
 }
 
@@ -97,12 +98,32 @@ func NewCache(defaultTTL time.Duration) *Cache {
 	}
 }
 
+func (c *Cache) startPrunerLocked() {
+	if c.workerRunning || c.cancel == nil || c.runCtx == nil || c.runCtx.Err() != nil || len(c.entries) == 0 {
+		return
+	}
+	done := make(chan struct{})
+	c.workerRunning = true
+	c.done = done
+	runCtx := c.runCtx
+	wake := c.wake
+	go c.pruneLoop(runCtx, wake, done)
+}
+
 func (c *Cache) notifyWake() {
-	if c == nil || c.wake == nil {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.startPrunerLocked()
+	running := c.workerRunning
+	wake := c.wake
+	c.mu.Unlock()
+	if !running || wake == nil {
 		return
 	}
 	select {
-	case c.wake <- struct{}{}:
+	case wake <- struct{}{}:
 	default:
 	}
 }
@@ -119,16 +140,36 @@ func (c *Cache) nextExpiry() (time.Time, bool) {
 	return next, !next.IsZero()
 }
 
-func (c *Cache) pruneLoop(ctx context.Context) {
+func (c *Cache) pruneLoop(ctx context.Context, wake <-chan struct{}, done chan struct{}) {
+	defer func() {
+		c.mu.Lock()
+		if c.done == done {
+			c.workerRunning = false
+			c.done = nil
+		}
+		c.mu.Unlock()
+		close(done)
+	}()
+
 	for {
 		next, ok := c.nextExpiry()
 		if !ok {
-			select {
-			case <-ctx.Done():
+			// Coordinate retirement with SetScoped. If an entry appears before
+			// workerRunning is cleared, the recheck keeps this generation alive;
+			// otherwise SetScoped starts a successor after retirement.
+			c.mu.Lock()
+			if c.done != done {
+				c.mu.Unlock()
 				return
-			case <-c.wake:
-				continue
 			}
+			if len(c.entries) == 0 {
+				c.workerRunning = false
+				c.done = nil
+				c.mu.Unlock()
+				return
+			}
+			c.mu.Unlock()
+			continue
 		}
 
 		wait := time.Until(next)
@@ -139,18 +180,12 @@ func (c *Cache) pruneLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
+				select { case <-timer.C: default: }
 			}
 			return
-		case <-c.wake:
+		case <-wake:
 			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
+				select { case <-timer.C: default: }
 			}
 		case <-timer.C:
 			c.Prune()
@@ -243,7 +278,6 @@ func (c *Cache) SetScoped(key string, results []InlineResult, ttl time.Duration)
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	if old, exists := c.entries[key]; exists {
 		c.retainedBytes -= old.sizeBytes
@@ -286,6 +320,7 @@ func (c *Cache) SetScoped(key string, results []InlineResult, ttl time.Duration)
 		sizeBytes: size,
 	}
 	c.retainedBytes += size
+	c.mu.Unlock()
 	c.notifyWake()
 }
 
@@ -317,8 +352,6 @@ func (c *Cache) Delete(query string) {
 // Prune removes all expired entries from the cache.
 func (c *Cache) Prune() int {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	now := time.Now()
 	pruned := 0
 	for q, entry := range c.entries {
@@ -327,6 +360,10 @@ func (c *Cache) Prune() int {
 			delete(c.entries, q)
 			pruned++
 		}
+	}
+	c.mu.Unlock()
+	if pruned > 0 {
+		c.notifyWake()
 	}
 	return pruned
 }
@@ -346,9 +383,8 @@ func (c *Cache) Health(ctx context.Context) runtime.ComponentHealth {
 	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
 }
 
-// Start launches a deadline-driven prune loop. With no cached entries it
-// blocks indefinitely; it wakes only when cache state changes or the nearest
-// entry actually expires.
+// Start activates cache lifecycle without creating an idle prune goroutine.
+// A deadline coordinator exists only while the cache contains entries.
 func (c *Cache) Start(ctx context.Context) error {
 	if c == nil {
 		return nil
@@ -361,49 +397,47 @@ func (c *Cache) Start(ctx context.Context) error {
 		c.mu.Unlock()
 		return nil
 	}
-	if c.wake == nil {
-		c.wake = make(chan struct{}, 1)
-	}
-	runCtx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{})
-	c.cancel = cancel
-	c.done = done
-	c.wg.Add(1)
+	c.wake = make(chan struct{}, 1)
+	c.runCtx, c.cancel = context.WithCancel(ctx)
+	c.startPrunerLocked()
+	running := c.workerRunning
+	wake := c.wake
 	c.mu.Unlock()
-	go func() {
-		defer c.wg.Done()
-		defer close(done)
-		c.pruneLoop(runCtx)
-	}()
-	c.notifyWake()
+	if running {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	}
 	return nil
 }
 
-// Stop terminates background prune loop.
+// Stop terminates cache lifecycle and joins the prune coordinator only when it
+// is currently active.
 func (c *Cache) Stop(ctx context.Context) error {
 	if c == nil {
 		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	c.mu.Lock()
 	cancel := c.cancel
 	done := c.done
 	c.cancel = nil
-	c.done = nil
+	c.runCtx = nil
 	c.mu.Unlock()
-	if cancel != nil {
-		cancel()
-		if done == nil {
-			return nil
-		}
-		if ctx != nil {
-			select {
-			case <-done:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		} else {
-			<-done
-		}
+	if cancel == nil {
+		return nil
 	}
-	return nil
+	cancel()
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
