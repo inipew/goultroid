@@ -180,3 +180,20 @@ func BenchmarkInMemoryRPCMetricsObserveRequestWarmParallel(b *testing.B) {
 		}
 	})
 }
+
+
+func TestInMemoryRPCMetrics_InvalidClassFallsBackToUnknown(t *testing.T) {
+	m := NewInMemoryRPCMetrics()
+	m.ObserveRequest("test.invalid", RPCErrorClass(255), 1, time.Millisecond)
+
+	snap := m.Snapshot()
+	if snap.TotalRequests != 1 {
+		t.Fatalf("total requests=%d, want 1", snap.TotalRequests)
+	}
+	if got := snap.RequestsByClass[RPCUnknown]; got != 1 {
+		t.Fatalf("unknown class count=%d, want 1", got)
+	}
+	if got := snap.RequestsByMethod["test.invalid"]; got != 1 {
+		t.Fatalf("method count=%d, want 1", got)
+	}
+}
