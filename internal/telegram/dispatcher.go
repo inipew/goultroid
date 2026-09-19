@@ -35,6 +35,7 @@ type Dispatcher struct {
 	inlineEngine   *inline.Engine
 	normalizer     *Normalizer
 	idempotencyMgr *idempotency.Manager
+	ingressDedupe  *ingressMessageDedupe
 	tasks          tasks.Client
 	scopeResolver  func(string) (tasks.ScopeIdentity, bool)
 
@@ -145,8 +146,9 @@ func NewDispatcher(
 		cooldown:    cooldown,
 		executor:    executor,
 		albumBuffer: core.NewAlbumBuffer(10 * time.Minute),
-		normalizer:  NewNormalizer(),
-		peerDone:    make(chan struct{}),
+		normalizer:    NewNormalizer(),
+		ingressDedupe: newIngressMessageDedupe(defaultIngressDedupeTTL, defaultIngressDedupeCapacity),
+		peerDone:      make(chan struct{}),
 	}
 	d.acceptingUpdates.Store(true)
 	return d
@@ -159,7 +161,8 @@ func (d *Dispatcher) SetNormalizer(n *Normalizer) {
 	d.normalizer = n
 }
 
-// SetIdempotency configures an idempotency manager for update deduplication.
+// SetIdempotency configures durable deduplication for recognized commands and callbacks.
+// Ordinary message ingress is deduplicated by the bounded in-memory ingress cache.
 func (d *Dispatcher) SetIdempotency(mgr *idempotency.Manager) {
 	d.mu.Lock()
 	defer d.mu.Unlock()

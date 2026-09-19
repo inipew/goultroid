@@ -20,6 +20,14 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	}
 	defer release()
 
+	// Telegram's updates manager already provides ordering/gap recovery, but the
+	// same update can still be delivered more than once around reconnects. Keep
+	// this transport-level guard memory-only and bounded: ordinary chat traffic
+	// must never require a durable database claim just to enter the dispatcher.
+	if d.ingressDedupe != nil && !d.ingressDedupe.Accept(msg, time.Now()) {
+		return nil
+	}
+
 	chatID := extractChatIDFromPeer(msg.PeerID)
 	parsed, isCmd, err := d.router.Parse(msg.Message)
 	if err != nil {
@@ -31,25 +39,10 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		cmdName = parsed.Name
 	}
 
-	if d.idempotencyMgr != nil {
-		key := fmt.Sprintf("msg:%d:%d", chatID, msg.ID)
-		isNew, claimErr := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
-		if claimErr != nil {
-			d.logger.Error("dispatcher: idempotency claim failed",
-				zap.String("key", key),
-				zap.Bool("command", isCmd),
-				zap.Error(claimErr),
-			)
-			// Commands may produce external side effects, so deduplication failure is
-			// an admission failure. Ordinary messages remain available for
-			// non-mutating hooks while the failure is surfaced operationally.
-			if isCmd {
-				return nil
-			}
-		} else if !isNew {
-			d.logger.Debug("dispatcher: duplicate message dropped by idempotency manager", zap.String("key", key))
-			return nil
-		}
+	var cmd core.Command
+	var cmdExists bool
+	if isCmd {
+		cmd, cmdExists = d.router.Find(parsed.Name)
 	}
 
 	origin := core.ExecutionInteractive
@@ -97,6 +90,28 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		return nil
 	}
 
+	// Durability belongs to execution candidates, not transport ingress. Only a
+	// recognized command that survived the synchronous decision pipeline may
+	// claim durable idempotency. This keeps ordinary traffic, unknown commands,
+	// and suppressed commands off the SQLite write path while preserving the
+	// fail-closed guarantee before command/event side effects.
+	if cmdExists && d.idempotencyMgr != nil {
+		key := fmt.Sprintf("msg:%d:%d", chatID, msg.ID)
+		isNew, claimErr := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
+		if claimErr != nil {
+			d.logger.Error("dispatcher: command idempotency claim failed",
+				zap.String("key", key),
+				zap.String("command", cmdName),
+				zap.Error(claimErr),
+			)
+			return nil
+		}
+		if !isNew {
+			d.logger.Debug("dispatcher: duplicate command dropped by idempotency manager", zap.String("key", key))
+			return nil
+		}
+	}
+
 	coreMsg := extractCoreMessage(msg)
 	if coreMsg.GroupedID != 0 && d.albumBuffer != nil {
 		d.albumBuffer.Add(coreMsg)
@@ -113,8 +128,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		return nil
 	}
 
-	cmd, exists := d.router.Find(parsed.Name)
-	if !exists {
+	if !cmdExists {
 		d.dispatchAsyncHandlers(ctx, asyncHandlers, e, msg, isCmd, cmdName)
 		return nil
 	}
