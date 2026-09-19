@@ -149,14 +149,17 @@ func defaultExecutorPolicy() RetryPolicy {
 var DefaultExecutorPolicy = defaultExecutorPolicy()
 
 // RPCExecutor coordinates timeout, rate limiting, error classification, retry, and FloodWait.
+const defaultDurableLimiterInlineWaitMax = 25 * time.Millisecond
+
 type RPCExecutor struct {
-	limiter       RPCRequestLimiter
-	clock         Clock
-	sleeper       Sleeper
-	metrics       RPCMetrics
-	defaultPolicy RetryPolicy
-	randMu        sync.Mutex
-	randSource    *rand.Rand
+	limiter                     RPCRequestLimiter
+	clock                       Clock
+	sleeper                     Sleeper
+	metrics                     RPCMetrics
+	defaultPolicy               RetryPolicy
+	durableLimiterInlineWaitMax time.Duration
+	randMu                      sync.Mutex
+	randSource                  *rand.Rand
 }
 
 // RPCExecutorConfig options for constructing an RPCExecutor.
@@ -167,6 +170,13 @@ type RPCExecutorConfig struct {
 	Metrics       RPCMetrics
 	DefaultPolicy RetryPolicy
 	RandSource    *rand.Rand
+
+	// DurableLimiterInlineWaitMax bounds how long durable work may wait inline
+	// for a local limiter reservation before yielding to its durable owner.
+	// Zero uses the conservative production default. This threshold does not
+	// apply to explicit Telegram FloodWait responses, which still always yield
+	// when the caller supports durable continuation.
+	DurableLimiterInlineWaitMax time.Duration
 }
 
 // NewRPCExecutor initializes a verified RPCExecutor instance.
@@ -199,14 +209,22 @@ func NewRPCExecutor(cfg RPCExecutorConfig) (*RPCExecutor, error) {
 	if rSource == nil {
 		rSource = rand.New(rand.NewSource(time.Now().UnixNano()))
 	}
+	durableInlineWaitMax := cfg.DurableLimiterInlineWaitMax
+	if durableInlineWaitMax < 0 {
+		return nil, errors.New("durable limiter inline wait max cannot be negative")
+	}
+	if durableInlineWaitMax == 0 {
+		durableInlineWaitMax = defaultDurableLimiterInlineWaitMax
+	}
 
 	return &RPCExecutor{
-		limiter:       limiter,
-		clock:         clock,
-		sleeper:       sleeper,
-		metrics:       metrics,
-		defaultPolicy: policy,
-		randSource:    rSource,
+		limiter:                     limiter,
+		clock:                       clock,
+		sleeper:                     sleeper,
+		metrics:                     metrics,
+		defaultPolicy:               policy,
+		durableLimiterInlineWaitMax: durableInlineWaitMax,
+		randSource:                  rSource,
 	}, nil
 }
 
@@ -294,11 +312,12 @@ func (e *RPCExecutor) Do(ctx context.Context, meta RPCMeta, operation func(conte
 					Err:      core.NewRateLimitError(0, errors.New("rate limit reservation denied")),
 				}
 			}
-			// A durable caller already has an atomic defer-and-redrive protocol.
-			// Yield every positive limiter reservation wait before sleeping so a
-			// TaskEngine worker is never occupied only waiting for local admission.
-			// Interactive callers intentionally retain the bounded inline wait path.
-			if execution.CanDurablyYield(opCtx) {
+			// Durable work should not turn tiny local limiter waits into a full
+			// SQLite deferred-attempt/recovery cycle. Keep very short waits inline,
+			// but yield larger waits so physical TaskEngine capacity is not held
+			// behind local admission. Explicit server FloodWait handling below is
+			// intentionally stricter and still always yields for durable callers.
+			if execution.CanDurablyYield(opCtx) && reservation.RetryAfter > e.durableLimiterInlineWaitMax {
 				e.metrics.ObserveFloodWait(meta.Method, reservation.RetryAfter, true)
 				return &RPCFailure{
 					Method:     meta.Method,
