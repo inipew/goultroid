@@ -72,10 +72,8 @@ func NewPeerCache(cfg ResolverCacheConfig) *PeerCache {
 	}
 
 	return &PeerCache{
-		cfg:     cfg,
-		entries: make(map[peerCacheKey]peerCacheEntry, cfg.MaxEntries),
-		order:   make([]peerCacheKey, 0, cfg.MaxEntries),
-		clock:   clock,
+		cfg:   cfg,
+		clock: clock,
 	}
 }
 
@@ -150,6 +148,12 @@ func (c *PeerCache) SetNegative(kind, ref string) {
 }
 
 func (c *PeerCache) putUnderLock(key peerCacheKey, entry peerCacheEntry) {
+	if c.entries == nil {
+		// Keep an unused resolver cache allocation-free. Do not pre-size to
+		// MaxEntries on first use either; most processes touch only a small
+		// fraction of the configured bound and Go's map grows incrementally.
+		c.entries = make(map[peerCacheKey]peerCacheEntry)
+	}
 	if _, exists := c.entries[key]; !exists {
 		// Evict oldest if full
 		if len(c.entries) >= c.cfg.MaxEntries {
