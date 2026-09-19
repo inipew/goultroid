@@ -390,6 +390,8 @@ func TestHierarchicalRPCLimiter_SafeFullRefillReclaimsBeforeIdleTTL(t *testing.T
 	// pressure must fail closed rather than discarding that live rate state.
 	if res := limiter.Reserve(now.Add(500*time.Millisecond), peer2, 1); res.Allowed {
 		t.Fatalf("new peer was admitted before old bucket safely refilled: %+v", res)
+	} else if res.RetryAfter != 500*time.Millisecond {
+		t.Fatalf("capacity retry_after=%s, want safe refill horizon 500ms", res.RetryAfter)
 	}
 	if res := limiter.Reserve(now.Add(500*time.Millisecond), peer1, 1); res.Allowed || res.RetryAfter <= 0 {
 		t.Fatalf("original depleted peer state was reset early: %+v", res)
