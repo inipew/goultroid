@@ -446,6 +446,101 @@ func (s *Store) ListUnresolvedOccurrences(ctx context.Context, limit int) ([]*jo
 	return out, rows.Err()
 }
 
+// ListRecoveryCandidates collapses the unresolved-occurrence page, latest
+// attempt lookup, and retry/deferral counts into one query. This removes the
+// recovery N+1 query pattern while preserving immutable attempt history.
+func (s *Store) ListRecoveryCandidates(ctx context.Context, limit int) ([]jobs.RecoveryCandidate, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	query := `
+	WITH unresolved AS (
+		SELECT id, job_id, schedule_id, scheduled_for, occurrence_key, state,
+		       ready_at, cancel_epoch, revision
+		FROM job_occurrences
+		WHERE state = 'dispatched'
+		ORDER BY ready_at ASC, id ASC
+		LIMIT ?
+	),
+	stats AS (
+		SELECT a.occurrence_id,
+		       COUNT(*) AS attempt_count,
+		       SUM(CASE WHEN a.state <> 'deferred' THEN 1 ELSE 0 END) AS retry_budget_uses,
+		       SUM(CASE WHEN a.state = 'deferred' THEN 1 ELSE 0 END) AS deferrals,
+		       MAX(a.attempt_no) AS latest_attempt_no
+		FROM job_attempts a
+		JOIN unresolved u ON u.id = a.occurrence_id
+		GROUP BY a.occurrence_id
+	)
+	SELECT u.id, u.job_id, u.schedule_id, u.scheduled_for, u.occurrence_key,
+	       u.state, u.ready_at, u.cancel_epoch, u.revision,
+	       a.id, a.occurrence_id, a.attempt_no, a.task_id, a.lease_epoch, a.lease_until, a.state,
+	       a.started_at, a.finished_at, a.created_at,
+	       COALESCE(a.result, ''), COALESCE(a.error, ''),
+	       stats.attempt_count, stats.retry_budget_uses, stats.deferrals
+	FROM unresolved u
+	JOIN stats ON stats.occurrence_id = u.id
+	JOIN job_attempts a
+	  ON a.occurrence_id = stats.occurrence_id
+	 AND a.attempt_no = stats.latest_attempt_no
+	ORDER BY u.ready_at ASC, u.id ASC;
+	`
+	rows, err := s.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list job recovery candidates: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]jobs.RecoveryCandidate, 0, limit)
+	for rows.Next() {
+		var candidate jobs.RecoveryCandidate
+		var summary jobs.AttemptSummary
+		var schedID sql.NullString
+		var occurrenceState, attemptState string
+		var started, finished sql.NullTime
+		var created time.Time
+		var result []byte
+		var errStr string
+		if err := rows.Scan(
+			&candidate.Occurrence.ID, &candidate.Occurrence.JobID, &schedID,
+			&candidate.Occurrence.ScheduledFor, &candidate.Occurrence.OccurrenceKey,
+			&occurrenceState, &candidate.Occurrence.ReadyAt, &candidate.Occurrence.CancelEpoch,
+			&candidate.Occurrence.Revision,
+			&summary.Latest.ID, &summary.Latest.OccurrenceID, &summary.Latest.AttemptNo,
+			&summary.Latest.TaskID, &summary.Latest.LeaseEpoch, &summary.Latest.LeaseUntil, &attemptState,
+			&started, &finished, &created,
+			&result, &errStr,
+			&summary.AttemptCount, &summary.RetryBudgetUses, &summary.Deferrals,
+		); err != nil {
+			return nil, fmt.Errorf("scan job recovery candidate: %w", err)
+		}
+		candidate.Occurrence.ScheduleID = schedID.String
+		candidate.Occurrence.State = jobs.OccurrenceState(occurrenceState)
+		summary.OccurrenceState = candidate.Occurrence.State
+		summary.ReadyAt = candidate.Occurrence.ReadyAt
+		summary.Latest.State = jobs.AttemptState(attemptState)
+		summary.Latest.StartedAt = created
+		if started.Valid {
+			summary.Latest.StartedAt = started.Time
+		}
+		summary.Latest.FinishedAt = created
+		if finished.Valid {
+			summary.Latest.FinishedAt = finished.Time
+		}
+		summary.Latest.Result = result
+		summary.Latest.Error = errStr
+		candidate.Summary = &summary
+		out = append(out, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate job recovery candidates: %w", err)
+	}
+	return out, nil
+}
+
 // DeleteTerminalOccurrences removes terminal occurrences of one job older
 // than before, bounding durable growth for high-frequency definitions.
 // Attempts cascade via foreign keys where enforced; callers keep their own
