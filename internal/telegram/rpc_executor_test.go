@@ -893,3 +893,47 @@ func TestNewRPCExecutor_RejectsNegativeDurableLimiterInlineThreshold(t *testing.
 		t.Fatal("expected negative durable limiter inline threshold to be rejected")
 	}
 }
+
+
+func TestRPCExecutor_DurableLimiterInlineBudgetIsCumulative(t *testing.T) {
+	clock := NewFakeClock(time.Now())
+	sleeper := &FakeSleeper{}
+	limiter := &sequenceLimiter{reservations: []Reservation{
+		{Allowed: false, RetryAfter: 15 * time.Millisecond},
+		{Allowed: false, RetryAfter: 15 * time.Millisecond},
+		{Allowed: true},
+	}}
+	exec := newTestExecutor(limiter, clock, sleeper, nil)
+
+	ctx := execution.WithMetadata(context.Background(), execution.Metadata{CanDurablyYield: true})
+	var calls int
+	err := exec.Do(ctx, RPCMeta{
+		Method: "messages.getHistory",
+		Kind:   RPCReadOnly,
+	}, func(context.Context) error {
+		calls++
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected cumulative durable limiter budget to yield")
+	}
+	if !errors.Is(err, core.ErrRateLimit) {
+		t.Fatalf("expected structured rate-limit signal, got %v", err)
+	}
+	var failure *RPCFailure
+	if !errors.As(err, &failure) {
+		t.Fatalf("expected RPCFailure, got %T", err)
+	}
+	if failure.RetryAfter != 15*time.Millisecond {
+		t.Fatalf("retry_after=%s, want 15ms", failure.RetryAfter)
+	}
+	if calls != 0 {
+		t.Fatalf("physical RPC calls=%d, want 0 before limiter admission", calls)
+	}
+	if sleeper.Calls() != 1 || sleeper.TotalSleep() != 15*time.Millisecond {
+		t.Fatalf("cumulative inline budget should allow only first wait: calls=%d total=%s", sleeper.Calls(), sleeper.TotalSleep())
+	}
+	if limiter.calls != 2 {
+		t.Fatalf("limiter reserve calls=%d, want 2 before durable yield", limiter.calls)
+	}
+}
