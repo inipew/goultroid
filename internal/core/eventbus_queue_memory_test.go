@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"testing"
+	"time"
 	"unsafe"
 )
 
@@ -27,7 +28,7 @@ func TestEventBusQueueBackingStoreIsPointerSized(t *testing.T) {
 
 func TestEventBusJobPoolClearsReferences(t *testing.T) {
 	b := NewEventBus()
-	job := b.acquireJob(eventJob{event: &testEvent{}})
+	job := b.acquireJob(eventJob{event: &MessageCreatedEvent{At: time.Now()}})
 	if job.event == nil {
 		t.Fatal("test envelope not populated")
 	}
@@ -46,11 +47,11 @@ func TestEventBusPointerQueuesStillDeliver(t *testing.T) {
 	}
 	defer b.Close()
 	done := make(chan struct{}, 1)
-	b.Subscribe(EventTypeMessage, func(Event) { done <- struct{}{} })
-	b.Publish(&testEvent{})
+	b.Subscribe(EventTypeMessageCreated, func(Event) { done <- struct{}{} })
+	b.Publish(&MessageCreatedEvent{At: time.Now()})
 	select {
 	case <-done:
-	case <-context.Background().Done():
-		t.Fatal("unreachable")
+	case <-time.After(time.Second):
+		t.Fatal("pointer-backed event queue did not deliver")
 	}
 }
