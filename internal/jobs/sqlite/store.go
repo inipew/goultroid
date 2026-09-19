@@ -515,7 +515,7 @@ func (s *Store) PrepareAttemptLease(ctx context.Context, occurrenceID, taskID st
 			return nil, fmt.Errorf("latest attempt state: %w", err)
 		}
 		switch jobs.AttemptState(latestState) {
-		case jobs.AttemptCompleted, jobs.AttemptFailed, jobs.AttemptTimedOut, jobs.AttemptCancelled, jobs.AttemptAbortedBeforeStart:
+		case jobs.AttemptCompleted, jobs.AttemptFailed, jobs.AttemptTimedOut, jobs.AttemptCancelled, jobs.AttemptAbortedBeforeStart, jobs.AttemptDeferred:
 		default:
 			return nil, fmt.Errorf("%w: previous attempt %s still active", ErrOccurrenceNotReady, latestState)
 		}
@@ -568,6 +568,105 @@ func (s *Store) PrepareAttemptLease(ctx context.Context, occurrenceID, taskID st
 		LeaseUntil:   leaseUntil,
 		State:        jobs.AttemptLeased,
 	}, nil
+}
+
+// CommitAttemptDeferred atomically records a rate-limit deferral and the
+// occurrence deadline that owns its durable redrive. A replay is accepted only
+// while the same attempt is still latest, the occurrence remains dispatched,
+// and both the deadline and reason match the original commit.
+func (s *Store) CommitAttemptDeferred(ctx context.Context, attemptID string, leaseEpoch uint64, readyAt time.Time, reason string) error {
+	if readyAt.IsZero() {
+		return errors.New("deferred attempt ready_at is required")
+	}
+	readyAt = readyAt.UTC()
+
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin commit deferred attempt: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Acquire writer intent before reading either side of the atomic protocol.
+	if _, err := tx.ExecContext(ctx, `UPDATE job_attempts SET lease_epoch = lease_epoch WHERE id = ?`, attemptID); err != nil {
+		return fmt.Errorf("acquire deferred writer intent: %w", err)
+	}
+
+	var occID, attemptState, oldError string
+	var epoch uint64
+	var attemptNo int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT occurrence_id, lease_epoch, state, COALESCE(error, ''), attempt_no FROM job_attempts WHERE id = ?`,
+		attemptID,
+	).Scan(&occID, &epoch, &attemptState, &oldError, &attemptNo); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrLeaseFencingLost
+		}
+		return err
+	}
+	if epoch != leaseEpoch {
+		return ErrLeaseFencingLost
+	}
+
+	var occState string
+	var storedReadyAt time.Time
+	var latest int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT state, ready_at, (SELECT MAX(attempt_no) FROM job_attempts WHERE occurrence_id = ?) FROM job_occurrences WHERE id = ?`,
+		occID, occID,
+	).Scan(&occState, &storedReadyAt, &latest); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrLeaseFencingLost
+		}
+		return err
+	}
+	if latest != attemptNo || occState != string(jobs.OccurrenceDispatched) {
+		return ErrLeaseFencingLost
+	}
+
+	if attemptState == string(jobs.AttemptDeferred) {
+		if oldError == reason && storedReadyAt.Equal(readyAt) {
+			return tx.Commit()
+		}
+		return ErrLeaseFencingLost
+	}
+	if attemptState != string(jobs.AttemptLeased) && attemptState != string(jobs.AttemptRunning) {
+		return ErrLeaseFencingLost
+	}
+
+	now := time.Now().UTC()
+	res, err := tx.ExecContext(ctx, `
+		UPDATE job_attempts
+		SET state = ?, error = ?, finished_at = ?
+		WHERE id = ? AND lease_epoch = ? AND state IN ('leased', 'running')
+	`, string(jobs.AttemptDeferred), reason, now, attemptID, leaseEpoch)
+	if err != nil {
+		return fmt.Errorf("commit deferred attempt state: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("deferred attempt rows affected: %w", err)
+	}
+	if affected != 1 {
+		return ErrLeaseFencingLost
+	}
+
+	res, err = tx.ExecContext(ctx, `
+		UPDATE job_occurrences
+		SET ready_at = ?, revision = revision + 1, updated_at = ?
+		WHERE id = ? AND state = 'dispatched'
+	`, readyAt, now, occID)
+	if err != nil {
+		return fmt.Errorf("commit deferred occurrence deadline: %w", err)
+	}
+	affected, err = res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("deferred occurrence rows affected: %w", err)
+	}
+	if affected != 1 {
+		return ErrLeaseFencingLost
+	}
+
+	return tx.Commit()
 }
 
 // CommitAttemptResult applies final attempt outcome using lease epoch fencing (ADR 0006 §7.5).

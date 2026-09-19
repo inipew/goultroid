@@ -47,6 +47,7 @@ const (
 	AttemptTimedOut           AttemptState = "timed_out"
 	AttemptCancelled          AttemptState = "cancelled"
 	AttemptAbortedBeforeStart AttemptState = "aborted_before_start"
+	AttemptDeferred           AttemptState = "deferred"
 )
 
 // JobRetryPolicy controls retry attempts, exponential backoff, and caps.

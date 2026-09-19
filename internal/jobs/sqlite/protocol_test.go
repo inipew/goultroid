@@ -179,3 +179,111 @@ func TestFinalizeOccurrence(t *testing.T) {
 		t.Fatalf("finalized occurrence must refuse leases, got %v", err)
 	}
 }
+
+
+func TestCommitAttemptDeferredAtomicReplayAndRedrive(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	s := NewStore(db)
+	ctx := context.Background()
+
+	if err := s.MaterializeOccurrence(ctx, &jobs.JobOccurrence{
+		ID: "occ-deferred", JobID: "job", OccurrenceKey: "deferred-key",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := s.PrepareAttemptLease(ctx, "occ-deferred", "task-deferred-1", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	readyAt := time.Now().UTC().Add(75 * time.Millisecond)
+	const reason = "telegram flood wait"
+	if err := s.CommitAttemptDeferred(ctx, attempt.ID, attempt.LeaseEpoch, readyAt, reason); err != nil {
+		t.Fatalf("commit deferred attempt: %v", err)
+	}
+
+	latest, err := s.LatestAttempt(ctx, "occ-deferred")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.State != jobs.AttemptDeferred || latest.Error != reason || latest.FinishedAt.IsZero() {
+		t.Fatalf("deferred attempt not persisted atomically: %+v", latest)
+	}
+	occ, err := s.GetOccurrence(ctx, "occ-deferred")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if occ.State != jobs.OccurrenceDispatched || !occ.ReadyAt.Equal(readyAt) {
+		t.Fatalf("deferred occurrence mismatch: %+v; ready_at want %v", occ, readyAt)
+	}
+	revision := occ.Revision
+
+	// Lost acknowledgement replay must be a no-op, including occurrence revision.
+	if err := s.CommitAttemptDeferred(ctx, attempt.ID, attempt.LeaseEpoch, readyAt, reason); err != nil {
+		t.Fatalf("idempotent deferred replay: %v", err)
+	}
+	occ, err = s.GetOccurrence(ctx, "occ-deferred")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if occ.Revision != revision {
+		t.Fatalf("idempotent replay changed revision: got %d want %d", occ.Revision, revision)
+	}
+
+	if err := s.CommitAttemptDeferred(ctx, attempt.ID, attempt.LeaseEpoch, readyAt.Add(time.Second), reason); !errors.Is(err, ErrLeaseFencingLost) {
+		t.Fatalf("conflicting deferred deadline must be fenced, got %v", err)
+	}
+	if err := s.CommitAttemptDeferred(ctx, attempt.ID, attempt.LeaseEpoch, readyAt, "different reason"); !errors.Is(err, ErrLeaseFencingLost) {
+		t.Fatalf("conflicting deferred reason must be fenced, got %v", err)
+	}
+	if _, err := s.PrepareAttemptLease(ctx, "occ-deferred", "task-deferred-2", time.Minute); !errors.Is(err, ErrOccurrenceNotReady) {
+		t.Fatalf("deferred occurrence redrove before ready_at: %v", err)
+	}
+
+	if wait := time.Until(readyAt); wait > 0 {
+		time.Sleep(wait + 10*time.Millisecond)
+	}
+	next, err := s.PrepareAttemptLease(ctx, "occ-deferred", "task-deferred-2", time.Minute)
+	if err != nil {
+		t.Fatalf("prepare after deferred deadline: %v", err)
+	}
+	if next.AttemptNo != 2 || next.LeaseEpoch == attempt.LeaseEpoch {
+		t.Fatalf("deferred redrive must mint next physical attempt: first=%+v next=%+v", attempt, next)
+	}
+}
+
+func TestCommitAttemptDeferredHonorsCancellationAndLeaseFencing(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	s := NewStore(db)
+	ctx := context.Background()
+
+	if err := s.MaterializeOccurrence(ctx, &jobs.JobOccurrence{
+		ID: "occ-deferred-cancel", JobID: "job", OccurrenceKey: "deferred-cancel-key",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := s.PrepareAttemptLease(ctx, "occ-deferred-cancel", "task-deferred-cancel-1", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readyAt := time.Now().UTC().Add(time.Minute)
+
+	if err := s.CommitAttemptDeferred(ctx, attempt.ID, attempt.LeaseEpoch+1, readyAt, "stale epoch"); !errors.Is(err, ErrLeaseFencingLost) {
+		t.Fatalf("stale deferred epoch must be fenced, got %v", err)
+	}
+	if err := s.CancelOccurrence(ctx, "occ-deferred-cancel", "operator cancelled"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CommitAttemptDeferred(ctx, attempt.ID, attempt.LeaseEpoch, readyAt, "late flood wait"); !errors.Is(err, ErrLeaseFencingLost) {
+		t.Fatalf("cancelled occurrence must win over deferred commit, got %v", err)
+	}
+	occ, err := s.GetOccurrence(ctx, "occ-deferred-cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if occ.State != jobs.OccurrenceCancelled {
+		t.Fatalf("deferred commit revived cancelled occurrence: %+v", occ)
+	}
+}
