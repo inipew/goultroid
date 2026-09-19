@@ -171,8 +171,9 @@ type RPCExecutorConfig struct {
 	DefaultPolicy RetryPolicy
 	RandSource    *rand.Rand
 
-	// DurableLimiterInlineWaitMax bounds how long durable work may wait inline
-	// for a local limiter reservation before yielding to its durable owner.
+	// DurableLimiterInlineWaitMax bounds the cumulative time durable work may
+	// wait inline for local limiter reservations during one Do call before
+	// yielding to its durable owner.
 	// Zero uses the conservative production default. This threshold does not
 	// apply to explicit Telegram FloodWait responses, which still always yield
 	// when the caller supports durable continuation.
@@ -276,6 +277,7 @@ func (e *RPCExecutor) Do(ctx context.Context, meta RPCMeta, operation func(conte
 
 	startTime := e.clock.Now()
 	var refreshedPeer bool
+	var durableLimiterInlineWait time.Duration
 
 	for attempt := 1; attempt <= policy.MaxAttempts; attempt++ {
 		if policy.MaxElapsed > 0 && e.clock.Now().Sub(startTime) >= policy.MaxElapsed {
@@ -313,11 +315,17 @@ func (e *RPCExecutor) Do(ctx context.Context, meta RPCMeta, operation func(conte
 				}
 			}
 			// Durable work should not turn tiny local limiter waits into a full
-			// SQLite deferred-attempt/recovery cycle. Keep very short waits inline,
-			// but yield larger waits so physical TaskEngine capacity is not held
-			// behind local admission. Explicit server FloodWait handling below is
-			// intentionally stricter and still always yields for durable callers.
-			if execution.CanDurablyYield(opCtx) && reservation.RetryAfter > e.durableLimiterInlineWaitMax {
+			// SQLite deferred-attempt/recovery cycle. Keep only a small cumulative
+			// wait budget inline; once exhausted, yield so repeated micro-denials
+			// cannot occupy a TaskEngine worker indefinitely. Explicit server
+			// FloodWait handling below is intentionally stricter and still always
+			// yields for durable callers.
+			durableYield := false
+			if execution.CanDurablyYield(opCtx) {
+				remaining := e.durableLimiterInlineWaitMax - durableLimiterInlineWait
+				durableYield = remaining <= 0 || reservation.RetryAfter > remaining
+			}
+			if durableYield {
 				e.metrics.ObserveFloodWait(meta.Method, reservation.RetryAfter, true)
 				return &RPCFailure{
 					Method:     meta.Method,
@@ -356,6 +364,9 @@ func (e *RPCExecutor) Do(ctx context.Context, meta RPCMeta, operation func(conte
 					RetryAfter: reservation.RetryAfter,
 					Err:        err,
 				}
+			}
+			if execution.CanDurablyYield(opCtx) {
+				durableLimiterInlineWait += reservation.RetryAfter
 			}
 			if err := opCtx.Err(); err != nil {
 				return &RPCFailure{
