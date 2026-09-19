@@ -24,8 +24,13 @@ var (
 type PoolEngineConfig struct {
 	Concurrency int
 	// MinConcurrency enables adaptive sizing when positive and lower than
-	// Concurrency. Zero preserves the historical fixed-size pool behavior.
+	// Concurrency. Zero preserves the historical fixed-size behavior unless
+	// ZeroIdle is explicitly enabled.
 	MinConcurrency int
+	// ZeroIdle permits a pool to retire every physical worker while empty.
+	// It is explicit so existing configs that relied on MinConcurrency=0 as the
+	// legacy fixed-size spelling retain their previous semantics.
+	ZeroIdle bool
 	// IdleTimeout retires adaptive workers above MinConcurrency. Zero uses the
 	// default timeout.
 	IdleTimeout   time.Duration
@@ -67,11 +72,11 @@ type Config struct {
 func newDefaultConfig() Config {
 	return Config{
 		Pools: map[tasks.PoolID]PoolEngineConfig{
-			"general":       {Concurrency: 8, MinConcurrency: 1, IdleTimeout: 30 * time.Second, BacklogLimit: 200, PayloadBudget: 100 * 1024 * 1024},
-			"interactive":   {Concurrency: 32, MinConcurrency: 2, IdleTimeout: 30 * time.Second, BacklogLimit: 128, PayloadBudget: 50 * 1024 * 1024},
-			"download":      {Concurrency: 3, MinConcurrency: 1, IdleTimeout: 45 * time.Second, BacklogLimit: 50, PayloadBudget: 200 * 1024 * 1024},
-			"media-process": {Concurrency: 2, MinConcurrency: 1, IdleTimeout: time.Minute, BacklogLimit: 20, PayloadBudget: 200 * 1024 * 1024},
-			"scheduler":     {Concurrency: 4, MinConcurrency: 1, IdleTimeout: time.Minute, BacklogLimit: 100, PayloadBudget: 50 * 1024 * 1024},
+			"general":       {Concurrency: 8, MinConcurrency: 0, ZeroIdle: true, IdleTimeout: 30 * time.Second, BacklogLimit: 200, PayloadBudget: 100 * 1024 * 1024},
+			"interactive":   {Concurrency: 32, MinConcurrency: 0, ZeroIdle: true, IdleTimeout: 30 * time.Second, BacklogLimit: 128, PayloadBudget: 50 * 1024 * 1024},
+			"download":      {Concurrency: 3, MinConcurrency: 0, ZeroIdle: true, IdleTimeout: 45 * time.Second, BacklogLimit: 50, PayloadBudget: 200 * 1024 * 1024},
+			"media-process": {Concurrency: 2, MinConcurrency: 0, ZeroIdle: true, IdleTimeout: time.Minute, BacklogLimit: 20, PayloadBudget: 200 * 1024 * 1024},
+			"scheduler":     {Concurrency: 4, MinConcurrency: 0, ZeroIdle: true, IdleTimeout: time.Minute, BacklogLimit: 100, PayloadBudget: 50 * 1024 * 1024},
 		},
 		ResultCapacity:      1000,
 		MaxTerminalRetained: 1000,
@@ -477,7 +482,9 @@ func NewEngine(cfg Config) *Engine {
 		}
 		concurrencies[poolID] = pcfg.Concurrency
 		minimum := pcfg.MinConcurrency
-		if minimum <= 0 {
+		if pcfg.ZeroIdle {
+			minimum = 0
+		} else if minimum <= 0 {
 			minimum = pcfg.Concurrency
 		}
 		minimums[poolID] = minimum
@@ -1211,7 +1218,9 @@ func (e *Engine) applyPoolConfig(pool tasks.PoolID, cfg PoolEngineConfig) error 
 	if cfg.Concurrency <= 0 || cfg.Concurrency > hardMax || cfg.MinConcurrency < 0 || cfg.MinConcurrency > cfg.Concurrency {
 		return errors.New("taskengine: invalid live pool bounds")
 	}
-	if cfg.MinConcurrency == 0 {
+	if cfg.ZeroIdle {
+		cfg.MinConcurrency = 0
+	} else if cfg.MinConcurrency == 0 {
 		cfg.MinConcurrency = 1
 	}
 	if cfg.IdleTimeout <= 0 {
