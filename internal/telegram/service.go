@@ -249,22 +249,22 @@ func (s *Service) execNonIdempotentVal[T any](ctx context.Context, method string
 	}, op)
 }
 
-func peerRPCKey(peer tg.InputPeerClass) string {
+func peerRPCLimitKey(peer tg.InputPeerClass) LimitKey {
 	switch p := peer.(type) {
 	case *tg.InputPeerUser:
-		return fmt.Sprintf("user:%d", p.UserID)
+		return LimitKey{Scope: "peer", Key: "user", ID: p.UserID}
 	case *tg.InputPeerChannel:
-		return fmt.Sprintf("channel:%d", p.ChannelID)
+		return LimitKey{Scope: "peer", Key: "channel", ID: p.ChannelID}
 	case *tg.InputPeerChat:
-		return fmt.Sprintf("chat:%d", p.ChatID)
+		return LimitKey{Scope: "peer", Key: "chat", ID: p.ChatID}
 	default:
-		return ""
+		return LimitKey{}
 	}
 }
 
 func executeServicePeersRPC[T any](ctx context.Context, s *Service, meta RPCMeta, original []tg.InputPeerClass, op func(context.Context, []tg.InputPeerClass) (T, error)) (T, error) {
-	if len(original) > 0 && meta.PeerKey == "" {
-		meta.PeerKey = peerRPCKey(original[0])
+	if len(original) > 0 && meta.PeerKey == "" && meta.PeerLimitKey.Scope == "" {
+		meta.PeerLimitKey = peerRPCLimitKey(original[0])
 	}
 	if meta.RefreshPeer == nil && s != nil && s.resolver != nil {
 		meta.RefreshPeer = func(refreshCtx context.Context) error {
@@ -299,10 +299,25 @@ func executeServicePeersRPC[T any](ctx context.Context, s *Service, meta RPCMeta
 	})
 }
 
-func (s *Service) execReadOnlyPeerVal[T any](ctx context.Context, method string, peer tg.InputPeerClass, op func(context.Context, tg.InputPeerClass) (T, error)) (T, error) {
-	return executeServicePeersRPC(ctx, s, RPCMeta{Method: method, Kind: RPCReadOnly}, []tg.InputPeerClass{peer}, func(opCtx context.Context, peers []tg.InputPeerClass) (T, error) {
-		return op(opCtx, peers[0])
+func executeServicePeerRPC[T any](ctx context.Context, s *Service, meta RPCMeta, original tg.InputPeerClass, op func(context.Context, tg.InputPeerClass) (T, error)) (T, error) {
+	if meta.PeerKey == "" && meta.PeerLimitKey.Scope == "" {
+		meta.PeerLimitKey = peerRPCLimitKey(original)
+	}
+	if meta.RefreshPeer == nil && s != nil && s.resolver != nil {
+		switch original.(type) {
+		case *tg.InputPeerUser, *tg.InputPeerChannel:
+			meta.RefreshPeer = func(refreshCtx context.Context) error {
+				return s.resolver.RefreshPeer(refreshCtx, original)
+			}
+		}
+	}
+	return executeServiceRPC(ctx, s, meta, func(opCtx context.Context) (T, error) {
+		return op(opCtx, s.RefreshPeerAccessHash(opCtx, original))
 	})
+}
+
+func (s *Service) execReadOnlyPeerVal[T any](ctx context.Context, method string, peer tg.InputPeerClass, op func(context.Context, tg.InputPeerClass) (T, error)) (T, error) {
+	return executeServicePeerRPC(ctx, s, RPCMeta{Method: method, Kind: RPCReadOnly}, peer, op)
 }
 
 func (s *Service) execReadOnlyPeer(ctx context.Context, method string, peer tg.InputPeerClass, op func(context.Context, tg.InputPeerClass) error) error {
@@ -313,9 +328,7 @@ func (s *Service) execReadOnlyPeer(ctx context.Context, method string, peer tg.I
 }
 
 func (s *Service) execIdempotentPeerVal[T any](ctx context.Context, method string, peer tg.InputPeerClass, op func(context.Context, tg.InputPeerClass) (T, error)) (T, error) {
-	return executeServicePeersRPC(ctx, s, RPCMeta{Method: method, Kind: RPCIdempotentMutation}, []tg.InputPeerClass{peer}, func(opCtx context.Context, peers []tg.InputPeerClass) (T, error) {
-		return op(opCtx, peers[0])
-	})
+	return executeServicePeerRPC(ctx, s, RPCMeta{Method: method, Kind: RPCIdempotentMutation}, peer, op)
 }
 
 func (s *Service) execIdempotentPeer(ctx context.Context, method string, peer tg.InputPeerClass, op func(context.Context, tg.InputPeerClass) error) error {
@@ -351,13 +364,11 @@ func (s *Service) execNonIdempotentPeers(ctx context.Context, method string, pee
 }
 
 func (s *Service) execNonIdempotentPeerVal[T any](ctx context.Context, method string, peer tg.InputPeerClass, op func(context.Context, tg.InputPeerClass) (T, error)) (T, error) {
-	return executeServicePeersRPC(ctx, s, RPCMeta{
+	return executeServicePeerRPC(ctx, s, RPCMeta{
 		Method: method,
 		Kind:   RPCNonIdempotentMutation,
 		RetryPolicy: RetryPolicy{MaxAttempts: 1, InlineFloodWaitMax: defaultFloodWaitRetryLimit},
-	}, []tg.InputPeerClass{peer}, func(opCtx context.Context, peers []tg.InputPeerClass) (T, error) {
-		return op(opCtx, peers[0])
-	})
+	}, peer, op)
 }
 
 func (s *Service) execNonIdempotentPeer(ctx context.Context, method string, peer tg.InputPeerClass, op func(context.Context, tg.InputPeerClass) error) error {
@@ -534,6 +545,9 @@ func (s *Service) RefreshPeerAccessHash(ctx context.Context, peer tg.InputPeerCl
 	case *tg.InputPeerUser:
 		if s.storage != nil {
 			if val, found, err := s.storage.Find(ctx, peers.Key{Prefix: "user", ID: p.UserID}); err == nil && found && val.AccessHash != 0 {
+				if val.AccessHash == p.AccessHash {
+					return p
+				}
 				return &tg.InputPeerUser{UserID: p.UserID, AccessHash: val.AccessHash}
 			}
 		}
@@ -541,6 +555,9 @@ func (s *Service) RefreshPeerAccessHash(ctx context.Context, peer tg.InputPeerCl
 	case *tg.InputPeerChannel:
 		if s.storage != nil {
 			if val, found, err := s.storage.Find(ctx, peers.Key{Prefix: "channel", ID: p.ChannelID}); err == nil && found && val.AccessHash != 0 {
+				if val.AccessHash == p.AccessHash {
+					return p
+				}
 				return &tg.InputPeerChannel{ChannelID: p.ChannelID, AccessHash: val.AccessHash}
 			}
 		}
