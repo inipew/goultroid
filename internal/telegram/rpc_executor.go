@@ -10,6 +10,7 @@ import (
 
 	"github.com/gotd/td/tgerr"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
 )
 
 // RPCOperationKind specifies the safety and idempotency of an RPC method.
@@ -388,7 +389,10 @@ func (e *RPCExecutor) Do(ctx context.Context, meta RPCMeta, operation func(conte
 				wait = time.Second
 			}
 			e.limiter.Penalize(e.clock.Now(), dimensions, wait)
-			deferred := wait > policy.InlineFloodWaitMax
+			// Explicit server FloodWait is a safe yield point when the caller has
+			// a durable continuation owner. Interactive work retains the existing
+			// bounded inline-wait behavior for short waits.
+			deferred := execution.CanDurablyYield(opCtx) || wait > policy.InlineFloodWaitMax
 			e.metrics.ObserveFloodWait(meta.Method, wait, deferred)
 
 			if deferred {

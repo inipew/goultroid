@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -52,6 +53,9 @@ func executeAssignment(ctx context.Context, spec tasks.WorkSpec, grant *permit, 
 		var cancel context.CancelFunc
 		runCtx, cancel = context.WithTimeout(ctx, spec.ExecutionTimeout)
 		defer cancel()
+	}
+	if spec.Job != nil {
+		runCtx = execution.WithMetadata(runCtx, execution.Metadata{CanDurablyYield: true})
 	}
 	result.StartedAt = time.Now().UTC()
 	if onStarted != nil {

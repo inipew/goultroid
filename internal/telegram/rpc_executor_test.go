@@ -11,6 +11,7 @@ import (
 
 	"github.com/gotd/td/tgerr"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
 )
 
 type fakeLimiter struct {
@@ -682,5 +683,49 @@ func TestRPCExecutor_HardMaxElapsedBudget(t *testing.T) {
 	}
 	if calls >= 5 {
 		t.Fatalf("expected attempts to be cut short by MaxElapsed budget, got %d calls", calls)
+	}
+}
+
+
+func TestRPCExecutor_DurableContextYieldsShortFloodWait(t *testing.T) {
+	clock := NewFakeClock(time.Now())
+	sleeper := &FakeSleeper{}
+	limiter := &fakeLimiter{}
+	exec := newTestExecutor(limiter, clock, sleeper, nil)
+
+	ctx := execution.WithMetadata(context.Background(), execution.Metadata{CanDurablyYield: true})
+	var calls int
+	err := exec.Do(ctx, RPCMeta{
+		Method: "messages.sendMessage",
+		Kind:   RPCNonIdempotentMutation,
+	}, func(context.Context) error {
+		calls++
+		return tgerr.New(420, "FLOOD_WAIT_1")
+	})
+	if err == nil {
+		t.Fatal("expected durable FloodWait yield")
+	}
+	if !errors.Is(err, core.ErrRateLimit) {
+		t.Fatalf("expected rate-limit signal, got %v", err)
+	}
+	var failure *RPCFailure
+	if !errors.As(err, &failure) {
+		t.Fatalf("expected RPCFailure, got %T", err)
+	}
+	if failure.RetryAfter != time.Second {
+		t.Fatalf("retry_after=%s, want 1s", failure.RetryAfter)
+	}
+	var rateLimit *core.RateLimitError
+	if !errors.As(err, &rateLimit) || rateLimit.RateLimitWait() != time.Second {
+		t.Fatalf("structured rate-limit wait missing: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("durable FloodWait retried inline: calls=%d", calls)
+	}
+	if sleeper.Calls() != 0 {
+		t.Fatalf("durable FloodWait occupied sleeper: calls=%d", sleeper.Calls())
+	}
+	if len(limiter.penalized) != 1 || limiter.penalized[0] != time.Second {
+		t.Fatalf("server FloodWait must still penalize shared limiter: %+v", limiter.penalized)
 	}
 }
