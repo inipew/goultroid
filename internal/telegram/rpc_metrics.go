@@ -50,9 +50,9 @@ type rpcWaitCounters struct {
 // load plus per-label atomic increments. Snapshot pays the aggregation cost
 // instead of serializing every physical Telegram RPC on one global mutex.
 type InMemoryRPCMetrics struct {
-	requestsByClass [rpcErrorClassCount]atomic.Int64
-	requestsByMethod sync.Map // map[string]*rpcMethodCounters
-	waitTimeByScope  sync.Map // map[string]*rpcWaitCounters
+	requestsByClass   [rpcErrorClassCount]atomic.Int64
+	requestsByMethod  sync.Map // map[string]*rpcMethodCounters
+	waitTimeByScope   sync.Map // map[string]*rpcWaitCounters
 	unscopedWaitNanos atomic.Int64
 
 	floodWaitCount    atomic.Int64
@@ -60,7 +60,7 @@ type InMemoryRPCMetrics struct {
 	floodWaitNanos    atomic.Int64
 }
 
-// NewInMemoryRPCMetrics initializes an in-memory database metrics tracker.
+// NewInMemoryRPCMetrics initializes an in-memory RPC metrics tracker.
 func NewInMemoryRPCMetrics() *InMemoryRPCMetrics {
 	return &InMemoryRPCMetrics{}
 }
