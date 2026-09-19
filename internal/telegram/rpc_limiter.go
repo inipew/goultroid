@@ -69,6 +69,7 @@ type tokenBucket struct {
 	lastRefill time.Time
 	lastAccess time.Time
 	lruElem    *list.Element
+	reclaim    *bucketReclaimState
 }
 
 func (b *tokenBucket) refill(now time.Time) {
@@ -86,6 +87,38 @@ func (b *tokenBucket) refill(now time.Time) {
 		b.tokens = b.capacity
 	}
 	b.lastRefill = now
+}
+
+type bucketReclaimState struct {
+	key   LimitKey
+	at    time.Time
+	index int
+}
+
+type bucketReclaimHeap []*bucketReclaimState
+
+func (h bucketReclaimHeap) Len() int { return len(h) }
+func (h bucketReclaimHeap) Less(i, j int) bool {
+	return h[i].at.Before(h[j].at)
+}
+func (h bucketReclaimHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].index = i
+	h[j].index = j
+}
+func (h *bucketReclaimHeap) Push(value any) {
+	state := value.(*bucketReclaimState)
+	state.index = len(*h)
+	*h = append(*h, state)
+}
+func (h *bucketReclaimHeap) Pop() any {
+	old := *h
+	n := len(old)
+	state := old[n-1]
+	old[n-1] = nil
+	state.index = -1
+	*h = old[:n-1]
+	return state
 }
 
 type penaltyState struct {
@@ -135,8 +168,9 @@ type HierarchicalRPCLimiter struct {
 	mu  sync.Mutex
 	cfg HierarchicalLimiterConfig
 
-	buckets   map[LimitKey]*tokenBucket
-	bucketLRU *list.List // non-global buckets, oldest access at Front
+	buckets    map[LimitKey]*tokenBucket
+	bucketLRU  *list.List // non-global buckets, oldest access at Front
+	reclaimQ   bucketReclaimHeap // peer buckets ordered by mathematically safe full-refill time
 
 	penalties map[LimitKey]*penaltyState
 	penaltyQ  penaltyHeap
@@ -195,6 +229,7 @@ func NewHierarchicalRPCLimiter(cfg HierarchicalLimiterConfig) *HierarchicalRPCLi
 		bucketLRU: list.New(),
 		penalties: make(map[LimitKey]*penaltyState),
 	}
+	heap.Init(&l.reclaimQ)
 	heap.Init(&l.penaltyQ)
 	return l
 }
@@ -271,11 +306,73 @@ func (l *HierarchicalRPCLimiter) getOrCreateBucketLocked(key LimitKey, now time.
 }
 
 func (l *HierarchicalRPCLimiter) removeBucketLocked(key LimitKey, bucket *tokenBucket) {
-	if bucket != nil && bucket.lruElem != nil {
-		l.bucketLRU.Remove(bucket.lruElem)
-		bucket.lruElem = nil
+	if bucket != nil {
+		if bucket.lruElem != nil {
+			l.bucketLRU.Remove(bucket.lruElem)
+			bucket.lruElem = nil
+		}
+		if bucket.reclaim != nil {
+			state := bucket.reclaim
+			bucket.reclaim = nil
+			if state.index >= 0 && state.index < l.reclaimQ.Len() {
+				heap.Remove(&l.reclaimQ, state.index)
+			}
+		}
 	}
 	delete(l.buckets, key)
+}
+
+func (l *HierarchicalRPCLimiter) scheduleSafePeerReclaimLocked(key LimitKey, bucket *tokenBucket, now time.Time) {
+	if bucket == nil || key.Scope != "peer" || bucket.rate <= 0 {
+		return
+	}
+
+	deficit := bucket.capacity - bucket.tokens
+	if deficit < 0 {
+		deficit = 0
+	}
+	waitNanos := math.Ceil((deficit / bucket.rate) * float64(time.Second))
+	if waitNanos < 0 {
+		waitNanos = 0
+	}
+	reclaimAt := now.Add(time.Duration(waitNanos))
+
+	if bucket.reclaim == nil {
+		state := &bucketReclaimState{key: key, at: reclaimAt, index: -1}
+		bucket.reclaim = state
+		heap.Push(&l.reclaimQ, state)
+		return
+	}
+	bucket.reclaim.at = reclaimAt
+	heap.Fix(&l.reclaimQ, bucket.reclaim.index)
+}
+
+// cleanupSafePeerBucketsLocked reclaims peer buckets only after their token
+// state has mathematically refilled to full capacity. At that point replacing
+// the bucket with a fresh one is state-equivalent, so this cannot reset an
+// active/depleted rate limit. Work is amortized by an indexed min-heap.
+func (l *HierarchicalRPCLimiter) cleanupSafePeerBucketsLocked(now time.Time) {
+	for l.reclaimQ.Len() > 0 {
+		state := l.reclaimQ[0]
+		if state.at.After(now) {
+			return
+		}
+		heap.Pop(&l.reclaimQ)
+
+		bucket := l.buckets[state.key]
+		if bucket == nil || bucket.reclaim != state {
+			continue
+		}
+		bucket.reclaim = nil
+		bucket.refill(now)
+		if bucket.tokens < bucket.capacity {
+			// Rounding or a concurrent reschedule cannot happen while l.mu is
+			// held, but fail closed if floating-point math leaves any deficit.
+			l.scheduleSafePeerReclaimLocked(state.key, bucket, now)
+			continue
+		}
+		l.removeBucketLocked(state.key, bucket)
+	}
 }
 
 // cleanupIdleBucketsLocked is amortized O(number of entries actually expired).
@@ -301,16 +398,20 @@ func (l *HierarchicalRPCLimiter) cleanupIdleBucketsLocked(now time.Time) {
 }
 
 func (l *HierarchicalRPCLimiter) bucketCapacityRetryAfterLocked(now time.Time) time.Duration {
-	elem := l.bucketLRU.Front()
-	if elem == nil {
-		return l.cfg.IdleTTL
+	retryAfter := l.cfg.IdleTTL
+	if elem := l.bucketLRU.Front(); elem != nil {
+		key := elem.Value.(LimitKey)
+		if bucket := l.buckets[key]; bucket != nil {
+			if ttlWait := bucket.lastAccess.Add(l.cfg.IdleTTL).Sub(now); ttlWait > 0 && ttlWait < retryAfter {
+				retryAfter = ttlWait
+			}
+		}
 	}
-	key := elem.Value.(LimitKey)
-	bucket := l.buckets[key]
-	if bucket == nil {
-		return time.Millisecond
+	if l.reclaimQ.Len() > 0 {
+		if safeWait := l.reclaimQ[0].at.Sub(now); safeWait > 0 && safeWait < retryAfter {
+			retryAfter = safeWait
+		}
 	}
-	retryAfter := bucket.lastAccess.Add(l.cfg.IdleTTL).Sub(now)
 	if retryAfter <= 0 {
 		return time.Millisecond
 	}
@@ -396,8 +497,10 @@ func (l *HierarchicalRPCLimiter) Reserve(now time.Time, dimensions []LimitKey, c
 		return Reservation{Allowed: false, RetryAfter: maxPenaltyWait}
 	}
 
-	// Reclaim only LRU entries that are actually idle. A depleted bucket is
-	// still reclaimable after IdleTTL; token fullness is not an activity signal.
+	// Peer identity state can be discarded as soon as it has naturally refilled
+	// to full capacity: a fresh bucket is then exactly equivalent. IdleTTL remains
+	// the conservative fallback for other dimensions and long-idle state.
+	l.cleanupSafePeerBucketsLocked(now)
 	l.cleanupIdleBucketsLocked(now)
 
 	// Reserve state capacity atomically before creating any new dimensions.
@@ -417,6 +520,7 @@ func (l *HierarchicalRPCLimiter) Reserve(now time.Time, dimensions []LimitKey, c
 			return Reservation{Allowed: false, RetryAfter: l.bucketCapacityRetryAfterLocked(now)}
 		}
 		bucket.refill(now)
+		l.scheduleSafePeerReclaimLocked(dim, bucket, now)
 
 		if bucket.tokens < reqCost {
 			deficit := reqCost - bucket.tokens
@@ -439,7 +543,9 @@ func (l *HierarchicalRPCLimiter) Reserve(now time.Time, dimensions []LimitKey, c
 	}
 
 	for _, dim := range dimensions {
-		l.buckets[dim].tokens -= reqCost
+		bucket := l.buckets[dim]
+		bucket.tokens -= reqCost
+		l.scheduleSafePeerReclaimLocked(dim, bucket, now)
 	}
 
 	return Reservation{Allowed: true}
