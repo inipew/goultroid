@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
@@ -92,16 +93,24 @@ func (p RetryPolicy) Validate() error {
 	return nil
 }
 
+// RPCPeerRefresher refreshes one concrete Telegram peer without requiring a
+// per-call closure in the common single-peer service path.
+type RPCPeerRefresher interface {
+	RefreshPeer(context.Context, tg.InputPeerClass) error
+}
+
 // RPCMeta provides operational metadata for an RPC execution.
 type RPCMeta struct {
-	Method       string
-	Family       string
-	PeerKey      string
-	PeerLimitKey LimitKey
-	Kind         RPCOperationKind
-	Timeout      time.Duration
-	RetryPolicy  RetryPolicy
-	RefreshPeer  func(context.Context) error
+	Method            string
+	Family            string
+	PeerKey           string
+	PeerLimitKey      LimitKey
+	Kind               RPCOperationKind
+	Timeout            time.Duration
+	RetryPolicy        RetryPolicy
+	RefreshPeer        func(context.Context) error
+	PeerRefresher      RPCPeerRefresher
+	RefreshPeerTarget  tg.InputPeerClass
 }
 
 // RPCFailure holds detailed diagnostic information about a failed RPC call.
@@ -416,18 +425,30 @@ func (e *RPCExecutor) Do(ctx context.Context, meta RPCMeta, operation func(conte
 
 		// Stale peer handling
 		if class == RPCStalePeer {
-			if meta.RefreshPeer != nil && !refreshedPeer {
-				refreshedPeer = true
-				if refErr := meta.RefreshPeer(opCtx); refErr == nil {
-					if meta.Kind == RPCReadOnly || meta.Kind == RPCIdempotentMutation {
-						continue
-					}
-					return &RPCFailure{
-						Method:    meta.Method,
-						Class:     class,
-						Attempts:  attempt,
-						Ambiguous: true,
-						Err:       err,
+			if !refreshedPeer {
+				var refreshErr error
+				var attemptedRefresh bool
+				switch {
+				case meta.RefreshPeer != nil:
+					attemptedRefresh = true
+					refreshErr = meta.RefreshPeer(opCtx)
+				case meta.PeerRefresher != nil && meta.RefreshPeerTarget != nil:
+					attemptedRefresh = true
+					refreshErr = meta.PeerRefresher.RefreshPeer(opCtx, meta.RefreshPeerTarget)
+				}
+				if attemptedRefresh {
+					refreshedPeer = true
+					if refreshErr == nil {
+						if meta.Kind == RPCReadOnly || meta.Kind == RPCIdempotentMutation {
+							continue
+						}
+						return &RPCFailure{
+							Method:    meta.Method,
+							Class:     class,
+							Attempts:  attempt,
+							Ambiguous: true,
+							Err:       err,
+						}
 					}
 				}
 			}
