@@ -36,9 +36,13 @@ func (k RPCOperationKind) String() string {
 }
 
 // LimitKey identifies a rate-limiting dimension (e.g. global, method family, or peer).
+// ID is optional and lets hot peer paths use a typed numeric identity without
+// formatting it into a transient string. Key remains for bounded static labels
+// and backwards-compatible callers.
 type LimitKey struct {
 	Scope string
 	Key   string
+	ID    int64
 }
 
 // Reservation indicates whether an RPC invocation is permitted or delayed.
@@ -90,13 +94,14 @@ func (p RetryPolicy) Validate() error {
 
 // RPCMeta provides operational metadata for an RPC execution.
 type RPCMeta struct {
-	Method      string
-	Family      string
-	PeerKey     string
-	Kind        RPCOperationKind
-	Timeout     time.Duration
-	RetryPolicy RetryPolicy
-	RefreshPeer func(context.Context) error
+	Method       string
+	Family       string
+	PeerKey      string
+	PeerLimitKey LimitKey
+	Kind         RPCOperationKind
+	Timeout      time.Duration
+	RetryPolicy  RetryPolicy
+	RefreshPeer  func(context.Context) error
 }
 
 // RPCFailure holds detailed diagnostic information about a failed RPC call.
@@ -262,18 +267,26 @@ func (e *RPCExecutor) Do(ctx context.Context, meta RPCMeta, operation func(conte
 	opCtx, cancel := core.WithDefaultTimeout(ctx, timeout)
 	defer cancel()
 
-	dimensions := []LimitKey{
-		{Scope: "global", Key: "account"},
-	}
+	var dimensionBuf [4]LimitKey
+	dimensionCount := 0
+	dimensionBuf[dimensionCount] = LimitKey{Scope: "global", Key: "account"}
+	dimensionCount++
 	if meta.Family != "" {
-		dimensions = append(dimensions, LimitKey{Scope: "family", Key: meta.Family})
+		dimensionBuf[dimensionCount] = LimitKey{Scope: "family", Key: meta.Family}
+		dimensionCount++
 	}
 	if meta.Method != "" {
-		dimensions = append(dimensions, LimitKey{Scope: "method", Key: meta.Method})
+		dimensionBuf[dimensionCount] = LimitKey{Scope: "method", Key: meta.Method}
+		dimensionCount++
 	}
-	if meta.PeerKey != "" {
-		dimensions = append(dimensions, LimitKey{Scope: "peer", Key: meta.PeerKey})
+	if meta.PeerLimitKey.Scope != "" {
+		dimensionBuf[dimensionCount] = meta.PeerLimitKey
+		dimensionCount++
+	} else if meta.PeerKey != "" {
+		dimensionBuf[dimensionCount] = LimitKey{Scope: "peer", Key: meta.PeerKey}
+		dimensionCount++
 	}
+	dimensions := dimensionBuf[:dimensionCount]
 
 	startTime := e.clock.Now()
 	var refreshedPeer bool
