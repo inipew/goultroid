@@ -70,6 +70,10 @@ type delayedActionScheduler struct {
 	done      chan struct{}
 	accepting bool
 
+	admissions       int
+	coordinatorCount int
+	coordinatorIdle  chan struct{}
+
 	seq             atomic.Uint64
 	pending         atomic.Int64
 	pendingBytes    atomic.Int64
@@ -109,11 +113,59 @@ func (s *delayedActionScheduler) Start(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	s.runCtx = runCtx
 	s.cancel = cancel
-	s.requests = make(chan delayedActionRequest, 256)
-	s.done = make(chan struct{})
+	s.requests = nil
+	s.done = nil
 	s.accepting = true
-	go s.run(runCtx, s.requests, s.done)
 	return nil
+}
+
+func (s *delayedActionScheduler) ensureCoordinatorLocked() (chan delayedActionRequest, chan struct{}, error) {
+	if !s.accepting || s.runCtx == nil || s.runCtx.Err() != nil {
+		return nil, nil, fmt.Errorf("%w: delayed action scheduler is not accepting work", core.ErrUnavailable)
+	}
+	if s.requests != nil && s.done != nil {
+		return s.requests, s.done, nil
+	}
+
+	requests := make(chan delayedActionRequest, 256)
+	done := make(chan struct{})
+	s.requests = requests
+	s.done = done
+	if s.coordinatorCount == 0 {
+		s.coordinatorIdle = make(chan struct{})
+	}
+	s.coordinatorCount++
+	runCtx := s.runCtx
+	go s.run(runCtx, requests, done)
+	return requests, done, nil
+}
+
+func (s *delayedActionScheduler) finishAdmission() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.admissions > 0 {
+		s.admissions--
+	}
+	s.mu.Unlock()
+}
+
+func (s *delayedActionScheduler) tryRetireCoordinator(requests chan delayedActionRequest, done chan struct{}) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.accepting || s.requests != requests || s.done != done {
+		return false
+	}
+	if s.admissions != 0 || len(requests) != 0 {
+		return false
+	}
+	// Mark this coordinator unavailable before it exits. A concurrent Schedule
+	// will create a new coordinator instead of enqueueing onto an orphaned
+	// buffered channel.
+	s.requests = nil
+	s.done = nil
+	return true
 }
 
 func (s *delayedActionScheduler) releaseReservation(retainedBytes int64) {
@@ -149,7 +201,7 @@ func (s *delayedActionScheduler) Schedule(ctx context.Context, delay time.Durati
 	}
 
 	s.mu.Lock()
-	if !s.accepting || s.requests == nil || s.done == nil {
+	if !s.accepting || s.runCtx == nil || s.runCtx.Err() != nil {
 		s.mu.Unlock()
 		return fmt.Errorf("%w: delayed action scheduler is not accepting work", core.ErrUnavailable)
 	}
@@ -166,11 +218,24 @@ func (s *delayedActionScheduler) Schedule(ctx context.Context, delay time.Durati
 		}
 	}
 	charge := retainedBytes + delayedActionOverheadBytes
+	requests, done, err := s.ensureCoordinatorLocked()
+	if err != nil {
+		s.mu.Unlock()
+		return err
+	}
 	s.pending.Add(1)
 	s.pendingBytes.Add(charge)
-	requests := s.requests
-	done := s.done
+	s.admissions++
 	s.mu.Unlock()
+
+	admissionActive := true
+	finishAdmission := func() {
+		if !admissionActive {
+			return
+		}
+		admissionActive = false
+		s.finishAdmission()
+	}
 
 	reply := make(chan error, 1)
 	req := delayedActionRequest{
@@ -182,6 +247,7 @@ func (s *delayedActionScheduler) Schedule(ctx context.Context, delay time.Durati
 	}
 	owned := false
 	defer func() {
+		finishAdmission()
 		if !owned {
 			s.releaseReservation(charge)
 		}
@@ -198,10 +264,13 @@ func (s *delayedActionScheduler) Schedule(ctx context.Context, delay time.Durati
 
 	select {
 	case err := <-reply:
+		finishAdmission()
 		return err
 	case <-ctx.Done():
+		finishAdmission()
 		return ctx.Err()
 	case <-done:
+		finishAdmission()
 		return fmt.Errorf("%w: delayed action scheduler stopped", core.ErrUnavailable)
 	}
 }
@@ -213,6 +282,12 @@ func (s *delayedActionScheduler) Quiesce(context.Context) error {
 	s.mu.Lock()
 	s.accepting = false
 	cancel := s.cancel
+	if s.coordinatorCount == 0 {
+		s.runCtx = nil
+		s.cancel = nil
+		s.requests = nil
+		s.done = nil
+	}
 	s.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -230,13 +305,14 @@ func (s *delayedActionScheduler) Stop(ctx context.Context) error {
 	_ = s.Quiesce(ctx)
 
 	s.mu.Lock()
-	done := s.done
+	idle := s.coordinatorIdle
+	count := s.coordinatorCount
 	s.mu.Unlock()
-	if done == nil {
+	if count == 0 || idle == nil {
 		return nil
 	}
 	select {
-	case <-done:
+	case <-idle:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -251,13 +327,16 @@ func (s *delayedActionScheduler) Health(context.Context) runtime.ComponentHealth
 	if failures > 0 {
 		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: fmt.Sprintf("task submission failures: %d", failures)}
 	}
+	s.mu.Lock()
+	coordinators := s.coordinatorCount
+	s.mu.Unlock()
 	return runtime.ComponentHealth{Status: runtime.HealthHealthy, Details: fmt.Sprintf(
-		"pending=%d retained_bytes=%d/%d byte_rejections=%d",
-		s.pending.Load(), s.pendingBytes.Load(), s.maxRetainedBytes, s.byteRejections.Load(),
+		"pending=%d retained_bytes=%d/%d byte_rejections=%d coordinators=%d",
+		s.pending.Load(), s.pendingBytes.Load(), s.maxRetainedBytes, s.byteRejections.Load(), coordinators,
 	)}
 }
 
-func (s *delayedActionScheduler) run(ctx context.Context, requests <-chan delayedActionRequest, done chan struct{}) {
+func (s *delayedActionScheduler) run(ctx context.Context, requests chan delayedActionRequest, done chan struct{}) {
 	defer close(done)
 	var queue delayedActionHeap
 	heap.Init(&queue)
@@ -266,20 +345,39 @@ func (s *delayedActionScheduler) run(ctx context.Context, requests <-chan delaye
 		if timer != nil {
 			timer.Stop()
 		}
-		s.pending.Store(0)
-		s.pendingBytes.Store(0)
+
+		terminated := ctx.Err() != nil
+		if terminated {
+			// Component shutdown owns every queued/admitted reservation. Active
+			// Schedule callers are released by done closing below.
+			s.pending.Store(0)
+			s.pendingBytes.Store(0)
+		}
+
 		s.mu.Lock()
-		if s.done == done {
+		if s.requests == requests && s.done == done {
+			s.requests = nil
+			s.done = nil
+		}
+		if terminated && s.runCtx == ctx {
 			s.accepting = false
 			s.cancel = nil
 			s.runCtx = nil
-			s.requests = nil
-			s.done = nil
+		}
+		if s.coordinatorCount > 0 {
+			s.coordinatorCount--
+		}
+		if s.coordinatorCount == 0 && s.coordinatorIdle != nil {
+			close(s.coordinatorIdle)
+			s.coordinatorIdle = nil
 		}
 		s.mu.Unlock()
 	}()
 
 	for {
+		if queue.Len() == 0 && s.tryRetireCoordinator(requests, done) {
+			return
+		}
 		var timerC <-chan time.Time
 		if queue.Len() > 0 {
 			wait := time.Until(queue[0].due)
