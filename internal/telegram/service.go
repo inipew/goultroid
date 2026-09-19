@@ -169,7 +169,7 @@ func executeServiceRPC[T any](ctx context.Context, s *Service, meta RPCMeta, op 
 			meta.Family = family
 		}
 	}
-	if meta.RefreshPeer == nil && meta.PeerKey != "" && s != nil && s.resolver != nil {
+	if meta.RefreshPeer == nil && meta.PeerRefresher == nil && meta.PeerKey != "" && s != nil && s.resolver != nil {
 		meta.RefreshPeer = func(refreshCtx context.Context) error {
 			return s.refreshPeer(refreshCtx, meta.PeerKey)
 		}
@@ -266,28 +266,37 @@ func executeServicePeersRPC[T any](ctx context.Context, s *Service, meta RPCMeta
 	if len(original) > 0 && meta.PeerKey == "" && meta.PeerLimitKey.Scope == "" {
 		meta.PeerLimitKey = peerRPCLimitKey(original[0])
 	}
-	if meta.RefreshPeer == nil && s != nil && s.resolver != nil {
-		meta.RefreshPeer = func(refreshCtx context.Context) error {
-			var refreshErrs []error
-			refreshed := false
-			refreshable := 0
-			for _, peer := range original {
-				switch peer.(type) {
-				case *tg.InputPeerUser, *tg.InputPeerChannel:
-					refreshable++
-				default:
-					continue
-				}
-				if err := s.resolver.RefreshPeer(refreshCtx, peer); err != nil {
-					refreshErrs = append(refreshErrs, err)
-					continue
-				}
-				refreshed = true
+	if meta.RefreshPeer == nil && meta.PeerRefresher == nil && s != nil && s.resolver != nil {
+		if len(original) == 1 {
+			switch original[0].(type) {
+			case *tg.InputPeerUser, *tg.InputPeerChannel:
+				meta.PeerRefresher = s.resolver
+				meta.RefreshPeerTarget = original[0]
 			}
-			if refreshed || refreshable == 0 {
-				return nil
+		}
+		if meta.PeerRefresher == nil {
+			meta.RefreshPeer = func(refreshCtx context.Context) error {
+				var refreshErrs []error
+				refreshed := false
+				refreshable := 0
+				for _, peer := range original {
+					switch peer.(type) {
+					case *tg.InputPeerUser, *tg.InputPeerChannel:
+						refreshable++
+					default:
+						continue
+					}
+					if err := s.resolver.RefreshPeer(refreshCtx, peer); err != nil {
+						refreshErrs = append(refreshErrs, err)
+						continue
+					}
+					refreshed = true
+				}
+				if refreshed || refreshable == 0 {
+					return nil
+				}
+				return errors.Join(refreshErrs...)
 			}
-			return errors.Join(refreshErrs...)
 		}
 	}
 	return executeServiceRPC(ctx, s, meta, func(opCtx context.Context) (T, error) {
@@ -303,12 +312,11 @@ func executeServicePeerRPC[T any](ctx context.Context, s *Service, meta RPCMeta,
 	if meta.PeerKey == "" && meta.PeerLimitKey.Scope == "" {
 		meta.PeerLimitKey = peerRPCLimitKey(original)
 	}
-	if meta.RefreshPeer == nil && s != nil && s.resolver != nil {
+	if meta.RefreshPeer == nil && meta.PeerRefresher == nil && s != nil && s.resolver != nil {
 		switch original.(type) {
 		case *tg.InputPeerUser, *tg.InputPeerChannel:
-			meta.RefreshPeer = func(refreshCtx context.Context) error {
-				return s.resolver.RefreshPeer(refreshCtx, original)
-			}
+			meta.PeerRefresher = s.resolver
+			meta.RefreshPeerTarget = original
 		}
 	}
 	return executeServiceRPC(ctx, s, meta, func(opCtx context.Context) (T, error) {
