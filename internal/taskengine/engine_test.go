@@ -634,3 +634,65 @@ func TestNewEngineDoesNotReadMutableDefaultConfig(t *testing.T) {
 		t.Fatalf("result capacity=%d, want immutable default 1000", engine.resultCapacity)
 	}
 }
+
+
+type testRateLimitSignal struct {
+	wait time.Duration
+}
+
+func (e *testRateLimitSignal) Error() string {
+	return "rate limited"
+}
+
+func (e *testRateLimitSignal) Unwrap() error {
+	return context.DeadlineExceeded
+}
+
+func (e *testRateLimitSignal) RateLimitWait() time.Duration {
+	return e.wait
+}
+
+func TestEngine_PreservesRateLimitResultMetadata(t *testing.T) {
+	cfg := Config{
+		Pools: map[tasks.PoolID]PoolEngineConfig{
+			"general": {Concurrency: 1, BacklogLimit: 10, PayloadBudget: 1000},
+		},
+		ResultCapacity: 10,
+	}
+	engine := NewEngine(cfg)
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start engine: %v", err)
+	}
+	defer engine.Stop(context.Background())
+
+	const wantWait = 17 * time.Second
+	ticket, err := engine.Submit(context.Background(), tasks.WorkSpec{
+		ID:         "rate-limited-task",
+		QuotaOwner: "user-1",
+		Pool:       "general",
+		Class:      tasks.PriorityNormal,
+		Handler: func(context.Context) error {
+			return fmt.Errorf("telegram rpc: %w", &testRateLimitSignal{wait: wantWait})
+		},
+	})
+	if err != nil {
+		t.Fatalf("submit rate-limited task: %v", err)
+	}
+
+	res, err := ticket.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("wait rate-limited task: %v", err)
+	}
+	if res.Outcome != tasks.OutcomeFailed {
+		t.Fatalf("outcome=%s, want %s", res.Outcome, tasks.OutcomeFailed)
+	}
+	if res.Cause != tasks.CauseRateLimited {
+		t.Fatalf("cause=%s, want %s", res.Cause, tasks.CauseRateLimited)
+	}
+	if res.RetryAfter != wantWait {
+		t.Fatalf("retry_after=%s, want %s", res.RetryAfter, wantWait)
+	}
+	if res.Failure.Message == "" {
+		t.Fatal("rate-limit diagnostic message must be preserved")
+	}
+}

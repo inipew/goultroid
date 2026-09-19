@@ -58,10 +58,22 @@ func executeAssignment(ctx context.Context, spec tasks.WorkSpec, grant *permit, 
 		onStarted(result.StartedAt)
 	}
 	err := spec.Handler(runCtx)
+	var rateLimit interface {
+		RateLimitWait() time.Duration
+	}
 	switch {
 	case err == nil:
 		result.Outcome = tasks.OutcomeCompleted
 		result.Cause = tasks.CauseNone
+	case errors.As(err, &rateLimit):
+		wait := rateLimit.RateLimitWait()
+		if wait < 0 {
+			wait = 0
+		}
+		result.Outcome = tasks.OutcomeFailed
+		result.Cause = tasks.CauseRateLimited
+		result.RetryAfter = wait
+		result.Failure = tasks.FailureInfo{Message: err.Error()}
 	case errors.Is(err, context.DeadlineExceeded):
 		result.Outcome = tasks.OutcomeTimedOut
 		result.Cause = tasks.CauseTimeout

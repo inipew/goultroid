@@ -65,6 +65,7 @@ const (
 	CausePersistenceFailure Cause = "persistence_failure"
 	CauseScopeClosed        Cause = "scope_closed"
 	CauseLeaseLost          Cause = "lease_lost"
+	CauseRateLimited        Cause = "rate_limited"
 )
 
 // FailureInfo holds structured diagnostic details for execution failures.
