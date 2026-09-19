@@ -81,6 +81,7 @@ func newDefaultConfig() Config {
 		MaxOutputBytes:      DefaultMaxOutputBytes,
 		MaxFailureBytes:     DefaultMaxFailureBytes,
 		DeliveryConcurrency: DefaultDeliveryConcurrency,
+		TerminalTTL:         5 * time.Minute,
 		MaxScopeTombstones:  4096,
 	}
 }

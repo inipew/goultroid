@@ -18,13 +18,16 @@ type resolveCacheKey struct {
 	chatID int64
 }
 
+const maxResolveCacheEntries = 4096
+
 // Service provides a unified management and resolution interface for settings.
 type Service struct {
 	repo    Repository
 	reg     *Registry
 	bus     *core.EventBus
-	cacheMu sync.RWMutex
-	cache   map[string]map[resolveCacheKey]string // namespace:key -> resolveCacheKey -> value
+	cacheMu      sync.RWMutex
+	cache        map[string]map[resolveCacheKey]string // namespace:key -> resolveCacheKey -> value
+	cacheEntries int
 
 	lifecycleMu  sync.Mutex
 	started      bool
@@ -295,11 +298,35 @@ func (s *Service) invalidate(namespace, key string) {
 	defer s.cacheMu.Unlock()
 	if namespace == "" && key == "" {
 		s.cache = make(map[string]map[resolveCacheKey]string)
+		s.cacheEntries = 0
 		return
 	}
 	ns := strings.ToLower(strings.TrimSpace(namespace))
 	k := strings.ToLower(strings.TrimSpace(key))
-	delete(s.cache, ns+":"+k)
+	cacheKey := ns + ":" + k
+	if byKey, ok := s.cache[cacheKey]; ok {
+		s.cacheEntries -= len(byKey)
+		if s.cacheEntries < 0 {
+			s.cacheEntries = 0
+		}
+		delete(s.cache, cacheKey)
+	}
+}
+
+func (s *Service) evictOneCacheEntryLocked() {
+	for cacheKey, byKey := range s.cache {
+		for rKey := range byKey {
+			delete(byKey, rKey)
+			if s.cacheEntries > 0 {
+				s.cacheEntries--
+			}
+			if len(byKey) == 0 {
+				delete(s.cache, cacheKey)
+			}
+			return
+		}
+		delete(s.cache, cacheKey)
+	}
 }
 
 func (s *Service) putCache(cacheKey string, rKey resolveCacheKey, val string) {
@@ -308,12 +335,22 @@ func (s *Service) putCache(cacheKey string, rKey resolveCacheKey, val string) {
 	if s.cache == nil {
 		s.cache = make(map[string]map[resolveCacheKey]string)
 	}
+	if byKey, ok := s.cache[cacheKey]; ok {
+		if _, exists := byKey[rKey]; exists {
+			byKey[rKey] = val
+			return
+		}
+	}
+	if s.cacheEntries >= maxResolveCacheEntries {
+		s.evictOneCacheEntryLocked()
+	}
 	byKey, ok := s.cache[cacheKey]
 	if !ok {
 		byKey = make(map[resolveCacheKey]string)
 		s.cache[cacheKey] = byKey
 	}
 	byKey[rKey] = val
+	s.cacheEntries++
 }
 
 // Resolve applies the hierarchical fallback with single-query batch optimization:

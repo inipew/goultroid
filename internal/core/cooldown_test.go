@@ -87,7 +87,9 @@ func TestCooldownTracker_Cleanup(t *testing.T) {
 
 	// Artificially set an old timestamp
 	tracker.mu.Lock()
-	tracker.records[userCommandKey{userID: 999, cmdName: "old"}] = time.Now().Add(-2 * time.Hour)
+	tracker.records[userCommandKey{userID: 999, cmdName: "old"}] = cooldownRecord{
+		at: time.Now().Add(-2 * time.Hour), duration: time.Second,
+	}
 	tracker.mu.Unlock()
 
 	purged = tracker.Cleanup(1 * time.Hour)
@@ -99,5 +101,36 @@ func TestCooldownTracker_Cleanup(t *testing.T) {
 	var nilTracker *CooldownTracker
 	if n := nilTracker.Cleanup(time.Hour); n != 0 {
 		t.Errorf("expected 0 from nil tracker cleanup, got %d", n)
+	}
+}
+
+func TestCooldownTrackerCardinalityIsBoundedFailClosed(t *testing.T) {
+	tracker := NewCooldownTracker()
+	for i := 0; i < maxCooldownRecords; i++ {
+		if _, ok := tracker.CheckAndRecord(int64(i+1), "bounded", time.Hour); !ok {
+			t.Fatalf("entry %d unexpectedly rejected before capacity", i)
+		}
+	}
+	if got := len(tracker.records); got != maxCooldownRecords {
+		t.Fatalf("unexpected cooldown cardinality: got=%d want=%d", got, maxCooldownRecords)
+	}
+	if _, ok := tracker.CheckAndRecord(9_999_999, "bounded", time.Hour); ok {
+		t.Fatal("new cooldown identity was admitted by evicting active state")
+	}
+
+	tracker.mu.Lock()
+	for key := range tracker.records {
+		tracker.records[key] = cooldownRecord{
+			at: time.Now().Add(-2 * time.Hour), duration: time.Second,
+		}
+		break
+	}
+	tracker.mu.Unlock()
+
+	if _, ok := tracker.CheckAndRecord(9_999_999, "bounded", time.Hour); !ok {
+		t.Fatal("expired cooldown state was not reclaimed")
+	}
+	if got := len(tracker.records); got > maxCooldownRecords {
+		t.Fatalf("cooldown cardinality grew past cap: got=%d cap=%d", got, maxCooldownRecords)
 	}
 }

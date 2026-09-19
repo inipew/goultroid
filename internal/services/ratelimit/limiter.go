@@ -15,6 +15,8 @@ type bucket struct {
 	lastAccess time.Time
 }
 
+const defaultMaxBuckets = 4096
+
 // Limiter provides multi-dimensional token-bucket rate-limiting.
 type Limiter struct {
 	mu              sync.RWMutex
@@ -22,6 +24,7 @@ type Limiter struct {
 	policies        map[Dimension]Policy
 	defaultPolicy   Policy
 	cleanupInterval time.Duration
+	maxBuckets      int
 
 	lifecycleMu sync.Mutex
 	started     bool
@@ -50,6 +53,7 @@ func New(defaultPolicy Policy, cleanupInterval time.Duration) *Limiter {
 		policies:        make(map[Dimension]Policy),
 		defaultPolicy:   defaultPolicy,
 		cleanupInterval: cleanupInterval,
+		maxBuckets:      defaultMaxBuckets,
 		stopCh:          make(chan struct{}),
 		doneCh:          make(chan struct{}),
 	}
@@ -84,6 +88,33 @@ func (l *Limiter) getPolicy(dim Dimension) Policy {
 	return l.defaultPolicy
 }
 
+func bucketIdleExpired(now time.Time, b *bucket) bool {
+	if b == nil {
+		return true
+	}
+	maxAge := b.policy.Window * 2
+	if maxAge < 5*time.Minute {
+		maxAge = 5 * time.Minute
+	}
+	return now.Sub(b.lastAccess) > maxAge
+}
+
+func (l *Limiter) cleanupIdleBucketsLocked(now time.Time) {
+	for key, b := range l.buckets {
+		if bucketIdleExpired(now, b) {
+			delete(l.buckets, key)
+		}
+	}
+}
+
+func (l *Limiter) ensureBucketCapacityLocked(now time.Time) bool {
+	if l.maxBuckets <= 0 || len(l.buckets) < l.maxBuckets {
+		return true
+	}
+	l.cleanupIdleBucketsLocked(now)
+	return len(l.buckets) < l.maxBuckets
+}
+
 // Allow reports whether a single token can be consumed immediately.
 func (l *Limiter) Allow(dim Dimension, key string) bool {
 	res := l.Take(context.Background(), dim, key, 1)
@@ -105,6 +136,13 @@ func (l *Limiter) Take(ctx context.Context, dim Dimension, key string, cost int)
 	b, exists := l.buckets[compositeKey]
 	if !exists {
 		p := l.getPolicy(dim)
+		if !l.ensureBucketCapacityLocked(now) {
+			retryAfter := l.cleanupInterval
+			if retryAfter <= 0 {
+				retryAfter = 5 * time.Minute
+			}
+			return Result{Allowed: false, RetryAfter: retryAfter, ResetAfter: retryAfter}
+		}
 		b = &bucket{
 			tokens:     float64(p.Burst),
 			lastRefill: now,
@@ -226,15 +264,7 @@ func (l *Limiter) cleanupLoop(interval time.Duration) {
 			return
 		case now := <-ticker.C:
 			l.mu.Lock()
-			for k, b := range l.buckets {
-				maxAge := b.policy.Window * 2
-				if maxAge < 5*time.Minute {
-					maxAge = 5 * time.Minute
-				}
-				if now.Sub(b.lastAccess) > maxAge {
-					delete(l.buckets, k)
-				}
-			}
+			l.cleanupIdleBucketsLocked(now)
 			l.mu.Unlock()
 		}
 	}

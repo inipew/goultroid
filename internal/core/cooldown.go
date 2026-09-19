@@ -11,16 +11,31 @@ type userCommandKey struct {
 	cmdName string
 }
 
+type cooldownRecord struct {
+	at       time.Time
+	duration time.Duration
+}
+
+const maxCooldownRecords = 4096
+
 // CooldownTracker provides thread-safe rate-limiting per user and command.
 type CooldownTracker struct {
 	mu      sync.RWMutex
-	records map[userCommandKey]time.Time
+	records map[userCommandKey]cooldownRecord
 }
 
 // NewCooldownTracker creates a new CooldownTracker instance.
 func NewCooldownTracker() *CooldownTracker {
 	return &CooldownTracker{
-		records: make(map[userCommandKey]time.Time),
+		records: make(map[userCommandKey]cooldownRecord),
+	}
+}
+
+func (c *CooldownTracker) pruneExpiredLocked(now time.Time) {
+	for key, record := range c.records {
+		if record.duration <= 0 || now.Sub(record.at) >= record.duration {
+			delete(c.records, key)
+		}
 	}
 }
 
@@ -42,15 +57,22 @@ func (c *CooldownTracker) CheckAndRecord(userID int64, cmdName string, duration 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	lastTime, exists := c.records[key]
+	record, exists := c.records[key]
 	if exists {
-		elapsed := now.Sub(lastTime)
+		elapsed := now.Sub(record.at)
 		if elapsed < duration {
 			return duration - elapsed, false
 		}
+	} else if len(c.records) >= maxCooldownRecords {
+		c.pruneExpiredLocked(now)
+		if len(c.records) >= maxCooldownRecords {
+			// Fail closed rather than evicting an active cooldown and allowing
+			// a new identity to bypass admission under cardinality pressure.
+			return duration, false
+		}
 	}
 
-	c.records[key] = now
+	c.records[key] = cooldownRecord{at: now, duration: duration}
 	return 0, true
 }
 
@@ -66,8 +88,8 @@ func (c *CooldownTracker) Cleanup(maxAge time.Duration) int {
 
 	now := time.Now()
 	purged := 0
-	for k, t := range c.records {
-		if now.Sub(t) > maxAge {
+	for k, record := range c.records {
+		if now.Sub(record.at) > maxAge {
 			delete(c.records, k)
 			purged++
 		}
