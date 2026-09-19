@@ -10,7 +10,10 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
-var validAddonNameRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,63}$`)
+var (
+	validAddonNameRegex   = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,63}$`)
+	validCommandNameRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+)
 
 // ParseManifest parses a YAML or JSON manifest byte slice.
 func ParseManifest(data []byte) (*Manifest, error) {
@@ -71,8 +74,8 @@ func ValidateManifest(m *Manifest) error {
 	seenCommands := make(map[string]struct{}, len(m.Commands))
 	for i, command := range m.Commands {
 		command = strings.ToLower(strings.TrimSpace(command))
-		if command == "" {
-			return fmt.Errorf("%w: command names cannot be empty", ErrInvalidManifest)
+		if !validCommandNameRegex.MatchString(command) {
+			return fmt.Errorf("%w: invalid command name %q", ErrInvalidManifest, command)
 		}
 		if _, exists := seenCommands[command]; exists {
 			return fmt.Errorf("%w: duplicate command %q", ErrInvalidManifest, command)

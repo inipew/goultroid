@@ -21,12 +21,14 @@ type assistantBehaviorTaskClient struct {
 	mu        sync.Mutex
 	submits   int
 	resources []tasks.ResourceRequirement
+	scope     tasks.ScopeIdentity
 }
 
 func (c *assistantBehaviorTaskClient) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket, error) {
 	c.mu.Lock()
 	c.submits++
 	c.resources = append([]tasks.ResourceRequirement(nil), spec.Resources...)
+	c.scope = spec.Scope
 	c.mu.Unlock()
 	return c.inner.Submit(ctx, spec)
 }
@@ -41,15 +43,17 @@ func (c *assistantBehaviorTaskClient) Snapshot(id tasks.TaskID) (tasks.TaskSnaps
 	return c.inner.Snapshot(id)
 }
 
-func (c *assistantBehaviorTaskClient) snapshot() (int, []tasks.ResourceRequirement) {
+func (c *assistantBehaviorTaskClient) snapshot() (int, []tasks.ResourceRequirement, tasks.ScopeIdentity) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.submits, append([]tasks.ResourceRequirement(nil), c.resources...)
+	return c.submits, append([]tasks.ResourceRequirement(nil), c.resources...), c.scope
 }
 
 func TestAssistantCanonicalBehaviorMatrix(t *testing.T) {
 	const ownerID int64 = 100
 	const regularID int64 = 300
+
+	addonScope := tasks.ScopeIdentity{Owner: "addon:test", Generation: 7}
 
 	cfg := taskengine.Config{
 		Pools: map[tasks.PoolID]taskengine.PoolEngineConfig{
@@ -81,6 +85,7 @@ func TestAssistantCanonicalBehaviorMatrix(t *testing.T) {
 			Invocation: core.InvocationPolicy{Assistant: core.InvocationAnyone},
 			Surfaces:   execution.SurfaceAssistant,
 			Resources:  []tasks.ResourceRequirement{{Name: "process", Amount: 1}},
+			Scope:      addonScope,
 			Handler: func(*core.Context) error {
 				resourceCalls.Add(1)
 				return nil
@@ -119,7 +124,7 @@ func TestAssistantCanonicalBehaviorMatrix(t *testing.T) {
 	if err := router.Dispatch(context.Background(), regularID, peer, "/selfonly", fake); err != nil {
 		t.Fatalf("selfonly dispatch: %v", err)
 	}
-	if submits, _ := client.snapshot(); submits != 0 {
+	if submits, _, _ := client.snapshot(); submits != 0 {
 		t.Fatalf("invocation-denied command task submissions=%d, want 0", submits)
 	}
 	if invocationDeniedCalls.Load() != 0 {
@@ -129,7 +134,7 @@ func TestAssistantCanonicalBehaviorMatrix(t *testing.T) {
 	if err := router.Dispatch(context.Background(), regularID, peer, "/owneronly", fake); err != nil {
 		t.Fatalf("owneronly dispatch: %v", err)
 	}
-	if submits, _ := client.snapshot(); submits != 0 {
+	if submits, _, _ := client.snapshot(); submits != 0 {
 		t.Fatalf("permission-denied command task submissions=%d, want 0", submits)
 	}
 	if permissionDeniedCalls.Load() != 0 {
@@ -139,7 +144,7 @@ func TestAssistantCanonicalBehaviorMatrix(t *testing.T) {
 	if err := router.Dispatch(context.Background(), regularID, peer, "/resource", fake); err != nil {
 		t.Fatalf("resource dispatch: %v", err)
 	}
-	submits, resources := client.snapshot()
+	submits, resources, scope := client.snapshot()
 	if submits != 1 {
 		t.Fatalf("resource command task submissions=%d, want 1", submits)
 	}
@@ -149,5 +154,8 @@ func TestAssistantCanonicalBehaviorMatrix(t *testing.T) {
 	want := []tasks.ResourceRequirement{{Name: "process", Amount: 1}}
 	if len(resources) != 1 || resources[0] != want[0] {
 		t.Fatalf("task resources=%+v, want %+v", resources, want)
+	}
+	if scope != addonScope {
+		t.Fatalf("task scope=%+v, want %+v", scope, addonScope)
 	}
 }

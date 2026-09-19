@@ -3,16 +3,21 @@ package addon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
-const addonEventHandlerTimeout = 5 * time.Second
+const (
+	addonEventHandlerTimeout   = 5 * time.Second
+	addonCommandHandlerTimeout = 30 * time.Second
+)
 
 type runtimeInvoker interface {
 	Call(context.Context, string, any) (json.RawMessage, error)
@@ -22,6 +27,8 @@ type runtimeBinding struct {
 	scope tasks.ScopeIdentity
 
 	once          sync.Once
+	router        *core.Router
+	commands      []core.Command
 	subscriptions []*core.Subscription
 }
 
@@ -30,6 +37,9 @@ func (b *runtimeBinding) close(client tasks.Client) {
 		return
 	}
 	b.once.Do(func() {
+		if b.router != nil && len(b.commands) > 0 {
+			b.router.UnregisterBatch(b.commands)
+		}
 		for _, subscription := range b.subscriptions {
 			if subscription != nil {
 				subscription.Close()
@@ -37,7 +47,7 @@ func (b *runtimeBinding) close(client tasks.Client) {
 		}
 		b.subscriptions = nil
 		if client != nil && !b.scope.IsZero() {
-			client.CancelScope(b.scope, tasks.CauseShutdown)
+			client.CancelScope(b.scope, tasks.CauseScopeClosed)
 		}
 	})
 }
@@ -54,6 +64,15 @@ func (m *Manager) SetRuntimeBoundary(bus *core.EventBus, client tasks.Client) {
 	m.runtimeMu.Unlock()
 }
 
+func (m *Manager) SetCommandRouter(router *core.Router) {
+	if m == nil {
+		return
+	}
+	m.runtimeMu.Lock()
+	m.commandRouter = router
+	m.runtimeMu.Unlock()
+}
+
 // CallRuntimeOperation is the typed host-to-addon IPC boundary. Callers cannot
 // pair an arbitrary method string with an unrelated capability.
 func (m *Manager) CallRuntimeOperation(ctx context.Context, name string, operation RuntimeOperation, params any) (interface{}, error) {
@@ -62,6 +81,9 @@ func (m *Manager) CallRuntimeOperation(ctx context.Context, name string, operati
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedRuntimeOperation, operation)
 	}
 	cleanName := strings.ToLower(strings.TrimSpace(name))
+	if required == "" {
+		return nil, runtimeBoundaryError(fmt.Errorf("%w: operation %q is host-contract only", ErrUnauthorizedCapability, operation))
+	}
 	if err := m.broker.Authorize(cleanName, required); err != nil {
 		return nil, runtimeBoundaryError(err)
 	}
@@ -72,21 +94,56 @@ func (m *Manager) CallRuntimeOperation(ctx context.Context, name string, operati
 	return result, nil
 }
 
-func (m *Manager) bindRuntimeEvents(name string, manifest Manifest, invoker runtimeInvoker) (*runtimeBinding, error) {
+func (m *Manager) bindRuntimeContract(name string, manifest Manifest, invoker runtimeInvoker) (*runtimeBinding, error) {
 	generation := m.runtimeGeneration.Add(1)
 	binding := &runtimeBinding{
 		scope: tasks.ScopeIdentity{Owner: "addon:" + name, Generation: generation},
 	}
-	if len(manifest.Events) == 0 {
+	if len(manifest.Commands) == 0 && len(manifest.Events) == 0 {
 		return binding, nil
 	}
 
 	m.runtimeMu.RLock()
 	bus := m.eventBus
 	client := m.taskClient
+	router := m.commandRouter
 	m.runtimeMu.RUnlock()
-	if bus == nil || client == nil {
+	if client == nil {
 		return nil, ErrRuntimeBoundaryUnavailable
+	}
+	if len(manifest.Commands) > 0 && router == nil {
+		return nil, ErrRuntimeBoundaryUnavailable
+	}
+	if len(manifest.Events) > 0 && bus == nil {
+		return nil, ErrRuntimeBoundaryUnavailable
+	}
+
+	if len(manifest.Commands) > 0 {
+		commands := make([]core.Command, 0, len(manifest.Commands))
+		for _, commandName := range manifest.Commands {
+			commandName := commandName
+			commands = append(commands, core.Command{
+				Name:        commandName,
+				Description: "External addon command provided by " + name,
+				Category:    "Addon",
+				Permission:  core.PermissionOwner,
+				Invocation: core.InvocationPolicy{
+					Userbot:   core.InvocationSelfOnly,
+					Assistant: core.InvocationSelfOnly,
+				},
+				Surfaces: execution.SurfaceUserbot | execution.SurfaceAssistant,
+				Timeout:  addonCommandHandlerTimeout,
+				Scope:    binding.scope,
+				Handler: func(ctx *core.Context) error {
+					return m.invokeRuntimeCommand(name, commandName, invoker, ctx)
+				},
+			})
+		}
+		if err := router.RegisterBatch(commands); err != nil {
+			return nil, fmt.Errorf("register addon commands: %w", err)
+		}
+		binding.router = router
+		binding.commands = commands
 	}
 
 	seen := make(map[EventType]struct{}, len(manifest.Events))
@@ -139,6 +196,45 @@ func (m *Manager) bindRuntimeEvents(name string, manifest Manifest, invoker runt
 		binding.subscriptions = append(binding.subscriptions, subscription)
 	}
 	return binding, nil
+}
+
+func (m *Manager) invokeRuntimeCommand(name, commandName string, invoker runtimeInvoker, ctx *core.Context) error {
+	if ctx == nil {
+		return runtimeBoundaryError(errors.New("addon command context is nil"))
+	}
+	callCtx := ctx.Ctx
+	if callCtx == nil {
+		callCtx = context.Background()
+	}
+	invocation := CommandInvocation{
+		Version:       AddonProtocolVersion,
+		Command:       commandName,
+		Args:          append([]string(nil), ctx.Args...),
+		RawArgs:       ctx.RawArgs,
+		Source:        ctx.Source.String(),
+		CorrelationID: ctx.CorrelationID,
+	}
+	raw, err := invoker.Call(callCtx, string(OperationCommandHandle), invocation)
+	if err != nil {
+		return runtimeBoundaryError(err)
+	}
+
+	var result CommandResult
+	if len(raw) > 0 && string(raw) != "null" {
+		if err := json.Unmarshal(raw, &result); err != nil {
+			return runtimeBoundaryError(fmt.Errorf("decode addon command result: %w", err))
+		}
+	}
+	resultErr := result.executionError()
+	if result.Reply != "" {
+		if err := m.broker.Authorize(name, CapTelegramSend); err != nil {
+			return runtimeBoundaryError(err)
+		}
+		if err := ctx.EditOrReply(result.Reply); err != nil {
+			return err
+		}
+	}
+	return resultErr
 }
 
 func (m *Manager) watchRuntime(name string, runtime *ExternalRuntime) {

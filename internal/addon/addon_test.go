@@ -358,3 +358,15 @@ capabilities: [telegram.read]
 		t.Fatal("reloaded manager did not restore declared capability")
 	}
 }
+
+func TestManifestRejectsUnroutableCommandName(t *testing.T) {
+	raw := []byte(`
+name: bad-command-addon
+version: 1.0.0
+commands:
+  - "bad command"
+`)
+	if _, err := addon.ParseManifest(raw); err == nil {
+		t.Fatal("manifest accepted command name that Router cannot tokenize")
+	}
+}

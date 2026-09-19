@@ -148,6 +148,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	if domServices.addonManager != nil {
 		domServices.addonManager.SetProcessManager(coreDeps.procManager)
 		domServices.addonManager.SetRuntimeBoundary(coreDeps.eventBus, coreDeps.taskEngine)
+		domServices.addonManager.SetCommandRouter(coreDeps.router)
 	}
 	if tgRuntime.assistant != nil {
 		if aware, ok := tgRuntime.assistant.(interface{ SetDelayedActions(core.DelayedActionScheduler) }); ok {

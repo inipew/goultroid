@@ -17,6 +17,11 @@ import (
 
 // Manager coordinates addon installation, validation, capability gating,
 // external-process lifecycle, and database persistence.
+type runtimeStartup struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
 type Manager struct {
 	repo         Repository
 	gate         *CapabilityGate
@@ -26,11 +31,13 @@ type Manager struct {
 	logger       *zap.Logger
 	shuttingDown atomic.Bool
 
-	runtimeMu        sync.RWMutex
-	runtimes         map[string]*ExternalRuntime
-	runtimeBindings  map[string]*runtimeBinding
-	eventBus         *core.EventBus
-	taskClient       tasks.Client
+	runtimeMu         sync.RWMutex
+	runtimes          map[string]*ExternalRuntime
+	runtimeBindings   map[string]*runtimeBinding
+	runtimeStarting   map[string]*runtimeStartup
+	eventBus          *core.EventBus
+	commandRouter     *core.Router
+	taskClient        tasks.Client
 	runtimeGeneration atomic.Uint64
 }
 
@@ -48,6 +55,7 @@ func NewManager(repo Repository, gate *CapabilityGate, appVersion string, logger
 		repo: repo, gate: gate, broker: NewCapabilityBroker(gate), appVersion: appVersion,
 		logger: logger.Named("addon"), runtimes: make(map[string]*ExternalRuntime),
 		runtimeBindings: make(map[string]*runtimeBinding),
+		runtimeStarting: make(map[string]*runtimeStartup),
 	}
 }
 
@@ -148,11 +156,44 @@ func (m *Manager) StartRuntime(ctx context.Context, name, executable, expectedSH
 	if m.shuttingDown.Load() {
 		return errors.New("addon manager is shutting down")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	cleanName := strings.ToLower(strings.TrimSpace(name))
 	if cleanName == "" {
 		return ErrAddonNotFound
 	}
-	manifest, err := m.manifestForRuntime(ctx, cleanName)
+	startCtx, startCancel := context.WithCancel(ctx)
+	startup := &runtimeStartup{cancel: startCancel, done: make(chan struct{})}
+	m.runtimeMu.Lock()
+	if m.shuttingDown.Load() {
+		m.runtimeMu.Unlock()
+		startCancel()
+		return errors.New("addon manager is shutting down")
+	}
+	if _, running := m.runtimes[cleanName]; running {
+		m.runtimeMu.Unlock()
+		startCancel()
+		return ErrAddonRuntimeRunning
+	}
+	if _, starting := m.runtimeStarting[cleanName]; starting {
+		m.runtimeMu.Unlock()
+		startCancel()
+		return ErrAddonRuntimeRunning
+	}
+	m.runtimeStarting[cleanName] = startup
+	m.runtimeMu.Unlock()
+	defer func() {
+		startCancel()
+		m.runtimeMu.Lock()
+		if m.runtimeStarting[cleanName] == startup {
+			delete(m.runtimeStarting, cleanName)
+		}
+		m.runtimeMu.Unlock()
+		close(startup.done)
+	}()
+
+	manifest, err := m.manifestForRuntime(startCtx, cleanName)
 	if err != nil {
 		return err
 	}
@@ -170,37 +211,35 @@ func (m *Manager) StartRuntime(ctx context.Context, name, executable, expectedSH
 	if pm != nil {
 		runtime.SetProcessManager(pm)
 	}
-	if err := runtime.Start(ctx); err != nil {
+	if err := runtime.Start(startCtx); err != nil {
+		return err
+	}
+	if err := startCtx.Err(); err != nil {
+		_ = runtime.Stop()
 		return err
 	}
 
-	binding, err := m.bindRuntimeEvents(cleanName, *manifest, runtime)
+	binding, err := m.bindRuntimeContract(cleanName, *manifest, runtime)
 	if err != nil {
 		_ = runtime.Stop()
 		return err
 	}
 
 	m.runtimeMu.Lock()
-	if m.shuttingDown.Load() {
+	if m.shuttingDown.Load() || startCtx.Err() != nil {
 		client := m.taskClient
 		m.runtimeMu.Unlock()
 		binding.close(client)
 		_ = runtime.Stop()
+		if err := startCtx.Err(); err != nil {
+			return err
+		}
 		return errors.New("addon manager is shutting down")
 	}
-	old := m.runtimes[cleanName]
-	oldBinding := m.runtimeBindings[cleanName]
 	m.runtimes[cleanName] = runtime
 	m.runtimeBindings[cleanName] = binding
-	client := m.taskClient
 	m.runtimeMu.Unlock()
 
-	if oldBinding != nil {
-		oldBinding.close(client)
-	}
-	if old != nil {
-		_ = old.Stop()
-	}
 	go m.watchRuntime(cleanName, runtime)
 
 	m.logger.Info("started addon runtime", zap.String("name", cleanName), zap.String("executable", executable), zap.Uint64("generation", binding.scope.Generation))
@@ -212,10 +251,15 @@ func (m *Manager) StopRuntime(name string) error {
 	m.runtimeMu.Lock()
 	runtime := m.runtimes[cleanName]
 	binding := m.runtimeBindings[cleanName]
+	startup := m.runtimeStarting[cleanName]
 	client := m.taskClient
 	delete(m.runtimes, cleanName)
 	delete(m.runtimeBindings, cleanName)
 	m.runtimeMu.Unlock()
+	if startup != nil {
+		startup.cancel()
+		<-startup.done
+	}
 	if binding != nil {
 		binding.close(client)
 	}
@@ -266,6 +310,9 @@ func (m *Manager) CallRuntimeWithCapability(ctx context.Context, name string, ca
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedRuntimeOperation, method)
 	}
+	if required == "" {
+		return nil, fmt.Errorf("%w: operation %q is host-contract only", ErrUnauthorizedCapability, operation)
+	}
 	if required != capability {
 		return nil, fmt.Errorf("%w: operation %q requires %q, not %q", ErrUnauthorizedCapability, operation, required, capability)
 	}
@@ -277,16 +324,25 @@ func (m *Manager) ShutdownRuntimes() error {
 	m.runtimeMu.Lock()
 	runtimes := make(map[string]*ExternalRuntime, len(m.runtimes))
 	bindings := make(map[string]*runtimeBinding, len(m.runtimeBindings))
+	starting := make([]*runtimeStartup, 0, len(m.runtimeStarting))
 	for name, runtime := range m.runtimes {
 		runtimes[name] = runtime
 	}
 	for name, binding := range m.runtimeBindings {
 		bindings[name] = binding
 	}
+	for _, startup := range m.runtimeStarting {
+		if startup != nil {
+			starting = append(starting, startup)
+		}
+	}
 	client := m.taskClient
 	m.runtimes = make(map[string]*ExternalRuntime)
 	m.runtimeBindings = make(map[string]*runtimeBinding)
 	m.runtimeMu.Unlock()
+	for _, startup := range starting {
+		startup.cancel()
+	}
 	for _, binding := range bindings {
 		if binding != nil {
 			binding.close(client)
@@ -297,6 +353,9 @@ func (m *Manager) ShutdownRuntimes() error {
 		if err := runtime.Stop(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("stop addon %q: %w", name, err)
 		}
+	}
+	for _, startup := range starting {
+		<-startup.done
 	}
 	return firstErr
 }

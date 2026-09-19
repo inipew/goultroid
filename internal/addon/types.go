@@ -57,8 +57,9 @@ var (
 	ErrIncompatibleVersion    = errors.New("addon incompatible with current GoUltroid version")
 	ErrUnauthorizedCapability = errors.New("addon capability permission denied")
 	ErrAddonNotFound          = errors.New("addon not found")
-	ErrAddonAlreadyInstalled  = errors.New("addon is already installed")
-	ErrAddonDisabled          = errors.New("addon is currently disabled")
+	ErrAddonAlreadyInstalled      = errors.New("addon is already installed")
+	ErrAddonDisabled              = errors.New("addon is currently disabled")
+	ErrAddonRuntimeRunning        = errors.New("addon runtime is already running")
 	ErrRuntimeBoundaryUnavailable = errors.New("addon runtime boundary is unavailable")
 )
 

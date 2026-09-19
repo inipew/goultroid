@@ -170,6 +170,7 @@ func (r *Router) executeCanonicalTask(ctx context.Context, senderID int64, cmd c
 
 	ticket, err := r.tasks.Submit(ctx, tasks.WorkSpec{
 		ID:               taskID,
+		Scope:            cmd.Scope,
 		QuotaOwner:       tasks.OwnerID(fmt.Sprintf("assistant:user:%d", senderID)),
 		Pool:             "interactive",
 		Class:            tasks.PriorityInteractive,

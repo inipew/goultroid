@@ -39,11 +39,13 @@ func eventCapability(t EventType) (Capability, bool) {
 type RuntimeOperation string
 
 const (
-	OperationEventHandle RuntimeOperation = "event.handle"
+	OperationEventHandle   RuntimeOperation = "event.handle"
+	OperationCommandHandle RuntimeOperation = "command.handle"
 )
 
 var runtimeOperationCapabilities = map[RuntimeOperation]Capability{
-	OperationEventHandle: CapTelegramRead,
+	OperationEventHandle:   CapTelegramRead,
+	OperationCommandHandle: "",
 }
 
 func RequiredCapability(operation RuntimeOperation) (Capability, bool) {
@@ -109,6 +111,71 @@ type InlineChosenPayload struct {
 	UserID   int64  `json:"user_id"`
 	Query    string `json:"query,omitempty"`
 	ResultID string `json:"result_id"`
+}
+
+type CommandInvocation struct {
+	Version       int      `json:"version"`
+	Command       string   `json:"command"`
+	Args          []string `json:"args,omitempty"`
+	RawArgs       string   `json:"raw_args,omitempty"`
+	Source        string   `json:"source"`
+	CorrelationID string   `json:"correlation_id,omitempty"`
+}
+
+type CommandResult struct {
+	Disposition     execution.Disposition `json:"disposition,omitempty"`
+	Code            string                `json:"code,omitempty"`
+	Reply           string                `json:"reply,omitempty"`
+	Error           string                `json:"error,omitempty"`
+	RetryAfterMillis int64                 `json:"retry_after_ms,omitempty"`
+}
+
+func (r CommandResult) semantics() (execution.Semantics, error) {
+	disposition := r.Disposition
+	if disposition == "" {
+		disposition = execution.DispositionSuccess
+	}
+	switch disposition {
+	case execution.DispositionSuccess,
+		execution.DispositionHandled,
+		execution.DispositionRejected,
+		execution.DispositionRetryable,
+		execution.DispositionPermanent,
+		execution.DispositionCancelled,
+		execution.DispositionInternal:
+	default:
+		return execution.Semantics{}, fmt.Errorf("%w: unsupported command disposition %q", ErrUnsupportedRuntimeOperation, disposition)
+	}
+	if r.RetryAfterMillis < 0 {
+		return execution.Semantics{}, fmt.Errorf("%w: retry_after_ms cannot be negative", ErrUnsupportedRuntimeOperation)
+	}
+	const maxRetryAfterMillis = int64((1<<63 - 1) / int64(time.Millisecond))
+	if r.RetryAfterMillis > maxRetryAfterMillis {
+		return execution.Semantics{}, fmt.Errorf("%w: retry_after_ms overflows duration", ErrUnsupportedRuntimeOperation)
+	}
+	return execution.Semantics{
+		Disposition: disposition,
+		Code:        r.Code,
+		RetryAfter:  time.Duration(r.RetryAfterMillis) * time.Millisecond,
+	}, nil
+}
+
+func (r CommandResult) executionError() error {
+	semantics, err := r.semantics()
+	if err != nil {
+		return runtimeBoundaryError(err)
+	}
+	if semantics.IsSuccess() {
+		return nil
+	}
+	message := r.Error
+	if message == "" {
+		message = semantics.Code
+	}
+	if message == "" {
+		message = string(semantics.Disposition)
+	}
+	return execution.WithSemantics(errors.New(message), semantics)
 }
 
 func CanonicalizeEvent(event core.Event) (CanonicalEventEnvelope, error) {
