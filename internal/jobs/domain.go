@@ -53,6 +53,7 @@ const (
 // JobRetryPolicy controls retry attempts, exponential backoff, and caps.
 type JobRetryPolicy struct {
 	MaxAttempts       int           `json:"max_attempts"`
+	MaxDeferrals      int           `json:"max_deferrals,omitempty"`
 	InitialDelay      time.Duration `json:"initial_delay"`
 	MaxDelay          time.Duration `json:"max_delay"`
 	BackoffMultiplier float64       `json:"backoff_multiplier"`

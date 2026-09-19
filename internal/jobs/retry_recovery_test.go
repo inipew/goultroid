@@ -368,7 +368,7 @@ func TestDeferredDurableRetry_FloodWait(t *testing.T) {
 			}
 			return nil
 		},
-		jobs.JobRetryPolicy{MaxAttempts: 3, InitialDelay: 10 * time.Millisecond, MaxDelay: 100 * time.Millisecond, BackoffMultiplier: 2},
+		jobs.JobRetryPolicy{MaxAttempts: 1, MaxDeferrals: 2, InitialDelay: 10 * time.Millisecond, MaxDelay: 100 * time.Millisecond, BackoffMultiplier: 2},
 	)
 
 	start := time.Now()
@@ -385,6 +385,9 @@ func TestDeferredDurableRetry_FloodWait(t *testing.T) {
 	if res.Outcome != tasks.OutcomeFailed {
 		t.Fatalf("first attempt outcome=%s, want failed", res.Outcome)
 	}
+	if res.Cause != tasks.CauseRateLimited || res.RetryAfter != waitDuration {
+		t.Fatalf("rate-limit metadata lost: cause=%s retry_after=%s", res.Cause, res.RetryAfter)
+	}
 	if time.Since(start) >= waitDuration {
 		t.Fatalf("first attempt should resolve immediately without waiting out flood wait: elapsed=%v", time.Since(start))
 	}
@@ -396,6 +399,18 @@ func TestDeferredDurableRetry_FloodWait(t *testing.T) {
 	}
 	if !occ.ReadyAt.After(start) {
 		t.Fatalf("occurrence ready_at %v should be deferred after %v", occ.ReadyAt, start)
+	}
+	latest, err := store.LatestAttempt(context.Background(), occID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.State != jobs.AttemptDeferred {
+		t.Fatalf("first attempt state=%s, want deferred", latest.State)
+	}
+	if retryUses, err := store.CountRetryBudgetUses(context.Background(), occID); err != nil {
+		t.Fatal(err)
+	} else if retryUses != 0 {
+		t.Fatalf("rate-limit deferral consumed retry budget: %d", retryUses)
 	}
 
 	// While still before readyAt, calling Recover must NOT redrive early.
@@ -414,5 +429,84 @@ func TestDeferredDurableRetry_FloodWait(t *testing.T) {
 
 	if calls.Load() != 2 {
 		t.Fatalf("expected 2 calls, got %d", calls.Load())
+	}
+}
+
+
+func TestRepeatedFloodWaitsUseDeferralBudgetNotRetryBudget(t *testing.T) {
+	var calls atomic.Int32
+	manager, store, _ := engineBackedManager(t,
+		func(context.Context, jobs.JobDefinition) error {
+			if calls.Add(1) <= 2 {
+				return core.NewRateLimitError(20*time.Millisecond, errors.New("flood wait"))
+			}
+			return nil
+		},
+		jobs.JobRetryPolicy{MaxAttempts: 1, MaxDeferrals: 3},
+	)
+
+	_, occurrenceID, err := manager.SubmitOccurrence(context.Background(), "job-retry", "manual:repeated-flood-wait")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pollOccurrenceState(t, store, occurrenceID, jobs.OccurrenceCompleted, 5*time.Second)
+
+	attempts, err := store.CountAttempts(context.Background(), occurrenceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 3 {
+		t.Fatalf("physical attempts=%d, want 3", attempts)
+	}
+	deferrals, err := store.CountDeferrals(context.Background(), occurrenceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deferrals != 2 {
+		t.Fatalf("deferrals=%d, want 2", deferrals)
+	}
+	retryUses, err := store.CountRetryBudgetUses(context.Background(), occurrenceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retryUses != 1 {
+		t.Fatalf("retry budget uses=%d, want only final successful execution", retryUses)
+	}
+}
+
+func TestDeferralBudgetExhaustionFinalizesOccurrence(t *testing.T) {
+	manager, store, _ := engineBackedManager(t,
+		func(context.Context, jobs.JobDefinition) error {
+			return core.NewRateLimitError(20*time.Millisecond, errors.New("persistent flood wait"))
+		},
+		jobs.JobRetryPolicy{MaxAttempts: 1, MaxDeferrals: 2},
+	)
+
+	_, occurrenceID, err := manager.SubmitOccurrence(context.Background(), "job-retry", "manual:deferral-budget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pollOccurrenceState(t, store, occurrenceID, jobs.OccurrenceFailed, 5*time.Second)
+
+	deferrals, err := store.CountDeferrals(context.Background(), occurrenceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deferrals != 2 {
+		t.Fatalf("deferrals=%d, want configured cap 2", deferrals)
+	}
+	retryUses, err := store.CountRetryBudgetUses(context.Background(), occurrenceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retryUses != 0 {
+		t.Fatalf("deferral exhaustion consumed ordinary retry budget: %d", retryUses)
+	}
+	latest, err := store.LatestAttempt(context.Background(), occurrenceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.State != jobs.AttemptDeferred || latest.Error == "" {
+		t.Fatalf("terminal deferral diagnosis missing: %+v", latest)
 	}
 }

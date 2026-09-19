@@ -274,6 +274,33 @@ func (s *Store) CountAttempts(ctx context.Context, occurrenceID string) (int, er
 	return n, nil
 }
 
+// CountRetryBudgetUses returns physical attempts that consume the ordinary
+// retry budget. Explicit durable deferrals remain part of the immutable
+// physical attempt sequence but do not consume MaxAttempts.
+func (s *Store) CountRetryBudgetUses(ctx context.Context, occurrenceID string) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM job_attempts WHERE occurrence_id = ? AND state <> 'deferred'`,
+		occurrenceID,
+	).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count job retry budget uses: %w", err)
+	}
+	return n, nil
+}
+
+// CountDeferrals returns the number of physical attempts durably dispositioned
+// as deferred for one occurrence.
+func (s *Store) CountDeferrals(ctx context.Context, occurrenceID string) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM job_attempts WHERE occurrence_id = ? AND state = 'deferred'`,
+		occurrenceID,
+	).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count job deferrals: %w", err)
+	}
+	return n, nil
+}
+
 // LatestAttempt returns the highest-numbered attempt of an occurrence.
 func (s *Store) LatestAttempt(ctx context.Context, occurrenceID string) (*jobs.JobAttempt, error) {
 	// NOTE: time columns are selected directly (not wrapped in COALESCE):

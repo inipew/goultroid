@@ -24,11 +24,14 @@ type Store interface {
 	MaterializeOccurrence(context.Context, *JobOccurrence) error
 	PrepareAttemptLease(context.Context, string, string, time.Duration) (*JobAttempt, error)
 	CommitAttemptResult(context.Context, string, uint64, AttemptState, []byte, string) error
+	CommitAttemptDeferred(context.Context, string, uint64, time.Time, string) error
 	FinalizeOccurrence(context.Context, string, OccurrenceState) error
 	CancelOccurrence(context.Context, string, string) error
 	GetOccurrence(context.Context, string) (*JobOccurrence, error)
 	GetOccurrenceByKey(context.Context, string) (*JobOccurrence, error)
 	CountAttempts(context.Context, string) (int, error)
+	CountRetryBudgetUses(context.Context, string) (int, error)
+	CountDeferrals(context.Context, string) (int, error)
 	LatestAttempt(context.Context, string) (*JobAttempt, error)
 	ListUnresolvedOccurrences(context.Context, int) ([]*JobOccurrence, error)
 	DeleteTerminalOccurrences(context.Context, string, time.Time, int) (int64, error)
@@ -101,21 +104,6 @@ type trackedOccurrence struct {
 	def     JobDefinition
 	handler Handler
 	taskID  tasks.TaskID
-	lastErr error
-}
-
-func extractRateLimitWait(err error) (time.Duration, bool) {
-	if err == nil {
-		return 0, false
-	}
-	type waiter interface {
-		RateLimitWait() time.Duration
-	}
-	var w waiter
-	if errors.As(err, &w) {
-		return w.RateLimitWait(), true
-	}
-	return 0, false
 }
 
 const (
@@ -558,14 +546,6 @@ func (m *Manager) untrack(occurrenceID string) {
 	m.mu.Unlock()
 }
 
-func (m *Manager) recordLastError(occurrenceID string, err error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if tr, ok := m.tracked[occurrenceID]; ok {
-		tr.lastErr = err
-	}
-}
-
 func (m *Manager) rootContext() context.Context {
 	m.mu.RLock()
 	ctx := m.baseCtx
@@ -628,14 +608,10 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID string, occurrence
 		Resources:        definitionResources(copyDef),
 		Job:              &tasks.OccurrenceRef{JobID: copyDef.ID, OccurrenceID: occurrenceID, AttemptID: tasks.AttemptID(attempt.ID), LeaseEpoch: attempt.LeaseEpoch},
 		Handler: func(runCtx context.Context) error {
-			err := handler(runCtx, copyDef)
-			if err != nil {
-				m.recordLastError(occurrence.ID, err)
-			}
-			return err
+			return handler(runCtx, copyDef)
 		},
 		Commit: func(commitCtx context.Context, res tasks.TaskResult) error {
-			return m.store.CommitAttemptResult(commitCtx, attempt.ID, attempt.LeaseEpoch, attemptState(res.Outcome), nil, res.Failure.Message)
+			return m.commitAttemptResult(commitCtx, attempt, res)
 		},
 	})
 	if err != nil {
@@ -1000,6 +976,40 @@ func maxAttempts(policy JobRetryPolicy) int {
 	return policy.MaxAttempts
 }
 
+// maxDeferrals is intentionally derived from the existing execution budget
+// when not configured explicitly. This keeps legacy definitions bounded
+// without freezing a new tuning constant before the occupancy benchmarks.
+// The +1 preserves one durable redrive even for MaxAttempts=1.
+func maxDeferrals(policy JobRetryPolicy) int {
+	if policy.MaxDeferrals > 0 {
+		return policy.MaxDeferrals
+	}
+	return maxAttempts(policy) + 1
+}
+
+func (m *Manager) commitAttemptResult(ctx context.Context, attempt *JobAttempt, res tasks.TaskResult) error {
+	if attempt == nil {
+		return errors.New("job attempt is required for durable commit")
+	}
+	if res.Cause == tasks.CauseRateLimited {
+		if res.FinishedAt.IsZero() {
+			return errors.New("rate-limited task result is missing finished_at")
+		}
+		wait := res.RetryAfter
+		if wait < 0 {
+			wait = 0
+		}
+		return m.store.CommitAttemptDeferred(
+			ctx,
+			attempt.ID,
+			attempt.LeaseEpoch,
+			res.FinishedAt.UTC().Add(wait),
+			res.Failure.Message,
+		)
+	}
+	return m.store.CommitAttemptResult(ctx, attempt.ID, attempt.LeaseEpoch, attemptState(res.Outcome), nil, res.Failure.Message)
+}
+
 func retryDelay(policy JobRetryPolicy, attemptsMade int) time.Duration {
 	if policy.InitialDelay <= 0 {
 		return 0
@@ -1056,6 +1066,14 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 	} else {
 		m.signalRecovery()
 	}
+	if res.Cause == tasks.CausePersistenceFailure {
+		// TaskEngine could not prove the durable acknowledgement. Never turn an
+		// uncertain physical outcome into a new retry/finalization decision; the
+		// store and recovery protocol remain authoritative.
+		m.untrack(item.occurrenceID)
+		m.signalRecovery()
+		return
+	}
 	if res.Outcome == tasks.OutcomeCompleted {
 		m.untrack(item.occurrenceID)
 		return
@@ -1069,14 +1087,39 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		m.signalRecovery()
 		return
 	}
+	if res.Cause == tasks.CauseRateLimited {
+		countCtx, countCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
+		deferrals, err := m.store.CountDeferrals(countCtx, item.occurrenceID)
+		countCancel()
+		if err != nil {
+			m.untrack(item.occurrenceID)
+			m.signalRecovery()
+			return
+		}
+		if deferrals >= maxDeferrals(tr.def.RetryPolicy) {
+			finalizeCtx, finalizeCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
+			err := m.store.FinalizeOccurrence(finalizeCtx, item.occurrenceID, OccurrenceFailed)
+			finalizeCancel()
+			if err != nil {
+				m.signalRecovery()
+				return
+			}
+			m.untrack(item.occurrenceID)
+			return
+		}
+		m.untrack(item.occurrenceID)
+		m.signalRecovery()
+		return
+	}
+
 	countCtx, countCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
-	attempts, err := m.store.CountAttempts(countCtx, item.occurrenceID)
+	retryUses, err := m.store.CountRetryBudgetUses(countCtx, item.occurrenceID)
 	countCancel()
 	if err != nil {
 		m.signalRecovery()
 		return
 	}
-	if attempts >= maxAttempts(tr.def.RetryPolicy) {
+	if retryUses >= maxAttempts(tr.def.RetryPolicy) {
 		finalizeCtx, finalizeCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
 		err := m.store.FinalizeOccurrence(finalizeCtx, item.occurrenceID, OccurrenceFailed)
 		finalizeCancel()
@@ -1088,19 +1131,7 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		return
 	}
 
-	var lastErr error
-	m.mu.RLock()
-	if tr != nil {
-		lastErr = tr.lastErr
-	}
-	m.mu.RUnlock()
-
-	rlWait, isRL := extractRateLimitWait(lastErr)
-	delay := retryDelay(tr.def.RetryPolicy, attempts)
-	if isRL && rlWait > 0 {
-		delay = rlWait
-	}
-
+	delay := retryDelay(tr.def.RetryPolicy, retryUses)
 	if delay > 0 {
 		deferUntil := time.Now().UTC().Add(delay)
 		deferCtx, deferCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
@@ -1160,7 +1191,7 @@ func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def Job
 	}
 	copyDef := cloneDefinition(def)
 	commit := func(commitCtx context.Context, res tasks.TaskResult) error {
-		return m.store.CommitAttemptResult(commitCtx, attempt.ID, attempt.LeaseEpoch, attemptState(res.Outcome), nil, res.Failure.Message)
+		return m.commitAttemptResult(commitCtx, attempt, res)
 	}
 	m.track(occurrenceID, copyDef, handler, nextTaskID)
 	ticket, err := m.client.Submit(ctx, tasks.WorkSpec{
@@ -1175,11 +1206,7 @@ func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def Job
 		Resources:        definitionResources(copyDef),
 		Job:              &tasks.OccurrenceRef{JobID: copyDef.ID, OccurrenceID: tasks.OccurrenceID(occurrenceID), AttemptID: tasks.AttemptID(attempt.ID), LeaseEpoch: attempt.LeaseEpoch},
 		Handler: func(runCtx context.Context) error {
-			err := handler(runCtx, copyDef)
-			if err != nil {
-				m.recordLastError(occurrenceID, err)
-			}
-			return err
+			return handler(runCtx, copyDef)
 		},
 		Commit: commit,
 	})
@@ -1239,17 +1266,33 @@ func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error)
 			continue
 		}
 		switch latest.State {
-		case AttemptCompleted, AttemptFailed, AttemptTimedOut, AttemptCancelled, AttemptAbortedBeforeStart:
+		case AttemptCompleted, AttemptFailed, AttemptTimedOut, AttemptCancelled, AttemptAbortedBeforeStart, AttemptDeferred:
 		default:
 			report.Stale++
 			continue
 		}
-		attempts, err := m.store.CountAttempts(ctx, occ.ID)
+		if latest.State == AttemptDeferred {
+			deferrals, err := m.store.CountDeferrals(ctx, occ.ID)
+			if err != nil {
+				report.Stale++
+				continue
+			}
+			if deferrals >= maxDeferrals(def.RetryPolicy) {
+				if ferr := m.store.FinalizeOccurrence(ctx, occ.ID, OccurrenceFailed); ferr != nil {
+					report.Stale++
+					continue
+				}
+				m.untrack(occ.ID)
+				report.Finalized++
+				continue
+			}
+		}
+		retryUses, err := m.store.CountRetryBudgetUses(ctx, occ.ID)
 		if err != nil {
 			report.Stale++
 			continue
 		}
-		if attempts >= maxAttempts(def.RetryPolicy) {
+		if retryUses >= maxAttempts(def.RetryPolicy) {
 			if ferr := m.store.FinalizeOccurrence(ctx, occ.ID, OccurrenceFailed); ferr != nil {
 				report.Stale++
 				continue
