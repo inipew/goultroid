@@ -362,3 +362,143 @@ func TestHierarchicalRPCLimiter_TypedPeerIdentitySeparatesKinds(t *testing.T) {
 		t.Fatalf("typed user penalty leaked into channel identity: %+v", res)
 	}
 }
+
+
+func TestHierarchicalRPCLimiter_SafeFullRefillReclaimsBeforeIdleTTL(t *testing.T) {
+	limiter := NewHierarchicalRPCLimiter(HierarchicalLimiterConfig{
+		GlobalRate:         100,
+		GlobalBurst:        100,
+		DefaultFamilyRate:  100,
+		DefaultFamilyBurst: 100,
+		DefaultMethodRate:  100,
+		DefaultMethodBurst: 100,
+		DefaultPeerRate:    1,
+		DefaultPeerBurst:   1,
+		MaxBuckets:         1,
+		MaxPenalties:       8,
+		IdleTTL:            10 * time.Minute,
+	})
+	now := time.Now()
+	peer1 := []LimitKey{{Scope: "peer", Key: "user", ID: 1}}
+	peer2 := []LimitKey{{Scope: "peer", Key: "user", ID: 2}}
+
+	if res := limiter.Reserve(now, peer1, 1); !res.Allowed {
+		t.Fatalf("first peer reservation failed: %+v", res)
+	}
+
+	// Halfway to full refill the original bucket is still depleted. Capacity
+	// pressure must fail closed rather than discarding that live rate state.
+	if res := limiter.Reserve(now.Add(500*time.Millisecond), peer2, 1); res.Allowed {
+		t.Fatalf("new peer was admitted before old bucket safely refilled: %+v", res)
+	}
+	if res := limiter.Reserve(now.Add(500*time.Millisecond), peer1, 1); res.Allowed || res.RetryAfter <= 0 {
+		t.Fatalf("original depleted peer state was reset early: %+v", res)
+	}
+
+	// At one second the old capacity-1/rate-1 bucket is mathematically full.
+	// Replacing it with a fresh bucket cannot grant any extra token, so peer2
+	// may safely reuse the bounded slot long before IdleTTL.
+	if res := limiter.Reserve(now.Add(time.Second), peer2, 1); !res.Allowed {
+		t.Fatalf("fully refilled peer bucket was not safely reclaimed: %+v", res)
+	}
+	buckets, _ := limiter.Size()
+	if buckets != 1 {
+		t.Fatalf("resident buckets=%d, want 1 after safe slot reuse", buckets)
+	}
+}
+
+func TestHierarchicalRPCLimiter_SafeReclaimPreservesFloodWaitPenalty(t *testing.T) {
+	limiter := NewHierarchicalRPCLimiter(HierarchicalLimiterConfig{
+		GlobalRate:         100,
+		GlobalBurst:        100,
+		DefaultFamilyRate:  100,
+		DefaultFamilyBurst: 100,
+		DefaultMethodRate:  100,
+		DefaultMethodBurst: 100,
+		DefaultPeerRate:    1,
+		DefaultPeerBurst:   1,
+		MaxBuckets:         2,
+		MaxPenalties:       8,
+		IdleTTL:            10 * time.Minute,
+	})
+	now := time.Now()
+	peer := []LimitKey{{Scope: "peer", Key: "user", ID: 42}}
+	other := []LimitKey{{Scope: "peer", Key: "user", ID: 99}}
+
+	if res := limiter.Reserve(now, peer, 1); !res.Allowed {
+		t.Fatal(res)
+	}
+	limiter.Penalize(now, peer, 5*time.Second)
+
+	// Trigger safe bucket reclamation after the token state refills.
+	if res := limiter.Reserve(now.Add(time.Second), other, 1); !res.Allowed {
+		t.Fatalf("other peer failed while triggering reclamation: %+v", res)
+	}
+	if res := limiter.Reserve(now.Add(time.Second), peer, 1); res.Allowed || res.RetryAfter != 4*time.Second {
+		t.Fatalf("bucket reclaim dropped/shortened FloodWait penalty: %+v", res)
+	}
+}
+
+func TestHierarchicalRPCLimiter_SafeReclaimHeapRemainsOneNodePerPeer(t *testing.T) {
+	limiter := NewHierarchicalRPCLimiter(HierarchicalLimiterConfig{
+		GlobalRate:         100,
+		GlobalBurst:        100,
+		DefaultFamilyRate:  100,
+		DefaultFamilyBurst: 100,
+		DefaultMethodRate:  100,
+		DefaultMethodBurst: 100,
+		DefaultPeerRate:    100,
+		DefaultPeerBurst:   100,
+		MaxBuckets:         16,
+		MaxPenalties:       8,
+		IdleTTL:            10 * time.Minute,
+	})
+	now := time.Now()
+	peer := []LimitKey{{Scope: "peer", Key: "user", ID: 7}}
+
+	for i := 0; i < 50; i++ {
+		if res := limiter.Reserve(now.Add(time.Duration(i)*time.Microsecond), peer, 1); !res.Allowed {
+			t.Fatalf("reservation %d failed: %+v", i, res)
+		}
+	}
+	if len(limiter.reclaimQ) != 1 {
+		t.Fatalf("repeated peer reschedules grew reclaim heap to %d nodes", len(limiter.reclaimQ))
+	}
+}
+
+func TestHierarchicalRPCLimiter_HighCardinalityPeersCollapseAfterSafeRefill(t *testing.T) {
+	const peersCount = 1000
+	limiter := NewHierarchicalRPCLimiter(HierarchicalLimiterConfig{
+		GlobalRate:         1e9,
+		GlobalBurst:        1e9,
+		DefaultFamilyRate:  1e9,
+		DefaultFamilyBurst: 1e9,
+		DefaultMethodRate:  1e9,
+		DefaultMethodBurst: 1e9,
+		DefaultPeerRate:    1000,
+		DefaultPeerBurst:   1,
+		MaxBuckets:         peersCount + 1,
+		MaxPenalties:       8,
+		IdleTTL:            10 * time.Minute,
+	})
+	now := time.Now()
+
+	for i := 0; i < peersCount; i++ {
+		dims := []LimitKey{{Scope: "peer", Key: "user", ID: int64(i + 1)}}
+		if res := limiter.Reserve(now, dims, 1); !res.Allowed {
+			t.Fatalf("seed peer %d failed: %+v", i, res)
+		}
+	}
+	if buckets, _ := limiter.Size(); buckets != peersCount {
+		t.Fatalf("resident buckets before refill=%d, want %d", buckets, peersCount)
+	}
+
+	// rate=1000/s, capacity=1 => each depleted peer is full after 1ms.
+	trigger := []LimitKey{{Scope: "peer", Key: "user", ID: peersCount + 1}}
+	if res := limiter.Reserve(now.Add(time.Millisecond), trigger, 1); !res.Allowed {
+		t.Fatalf("trigger peer failed after safe refill horizon: %+v", res)
+	}
+	if buckets, _ := limiter.Size(); buckets != 1 {
+		t.Fatalf("high-cardinality safe reclaim left %d buckets, want 1", buckets)
+	}
+}
