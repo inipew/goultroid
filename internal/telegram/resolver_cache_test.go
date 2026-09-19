@@ -320,3 +320,31 @@ func TestPeerCache_TombstoneCompaction(t *testing.T) {
 		t.Fatalf("expected order slice bounded by compaction, got %d", orderLen)
 	}
 }
+
+
+func TestPeerCache_IdleStorageIsLazy(t *testing.T) {
+	cache := NewPeerCache(ResolverCacheConfig{MaxEntries: 1000})
+	if cache.entries != nil {
+		t.Fatalf("idle cache eagerly allocated entries map with len=%d", len(cache.entries))
+	}
+	if cache.order != nil {
+		t.Fatalf("idle cache eagerly allocated order slice with len=%d cap=%d", len(cache.order), cap(cache.order))
+	}
+	if cache.Len() != 0 {
+		t.Fatalf("idle cache len=%d, want 0", cache.Len())
+	}
+	if _, ok := cache.Get("user", "alice"); ok {
+		t.Fatal("idle cache unexpectedly returned a hit")
+	}
+
+	cache.Set("user", "alice", "user", 1, 2)
+	if cache.entries == nil {
+		t.Fatal("first cache write did not initialize entries")
+	}
+	if got := cache.Len(); got != 1 {
+		t.Fatalf("cache len=%d after first write, want 1", got)
+	}
+	if cap(cache.order) >= cache.cfg.MaxEntries {
+		t.Fatalf("first write preallocated full order capacity: cap=%d max=%d", cap(cache.order), cache.cfg.MaxEntries)
+	}
+}
