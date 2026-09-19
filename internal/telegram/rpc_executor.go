@@ -294,6 +294,20 @@ func (e *RPCExecutor) Do(ctx context.Context, meta RPCMeta, operation func(conte
 					Err:      core.NewRateLimitError(0, errors.New("rate limit reservation denied")),
 				}
 			}
+			// A durable caller already has an atomic defer-and-redrive protocol.
+			// Yield every positive limiter reservation wait before sleeping so a
+			// TaskEngine worker is never occupied only waiting for local admission.
+			// Interactive callers intentionally retain the bounded inline wait path.
+			if execution.CanDurablyYield(opCtx) {
+				e.metrics.ObserveFloodWait(meta.Method, reservation.RetryAfter, true)
+				return &RPCFailure{
+					Method:     meta.Method,
+					Class:      RPCFloodWait,
+					Attempts:   attempt - 1,
+					RetryAfter: reservation.RetryAfter,
+					Err:        core.NewRateLimitError(reservation.RetryAfter, errors.New("rate limiter reservation deferred")),
+				}
+			}
 			if policy.MaxElapsed > 0 && e.clock.Now().Add(reservation.RetryAfter).Sub(startTime) > policy.MaxElapsed {
 				e.metrics.ObserveFloodWait(meta.Method, reservation.RetryAfter, true)
 				return &RPCFailure{
