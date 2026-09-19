@@ -332,7 +332,7 @@ func TestHierarchicalRPCLimiter_TypedPeerIdentitySeparatesKinds(t *testing.T) {
 		DefaultMethodRate:  100,
 		DefaultMethodBurst: 100,
 		DefaultPeerRate:    1,
-		DefaultPeerBurst:   1,
+		DefaultPeerBurst:   2,
 		MaxBuckets:         16,
 		MaxPenalties:       16,
 		IdleTTL:            time.Minute,
@@ -343,6 +343,9 @@ func TestHierarchicalRPCLimiter_TypedPeerIdentitySeparatesKinds(t *testing.T) {
 
 	if res := limiter.Reserve(now, user, 1); !res.Allowed {
 		t.Fatalf("first typed user reservation failed: %+v", res)
+	}
+	if res := limiter.Reserve(now, user, 1); !res.Allowed {
+		t.Fatalf("second typed user reservation failed: %+v", res)
 	}
 	if res := limiter.Reserve(now, user, 1); res.Allowed || res.RetryAfter <= 0 {
 		t.Fatalf("typed user bucket was not independently exhausted: %+v", res)
@@ -355,11 +358,7 @@ func TestHierarchicalRPCLimiter_TypedPeerIdentitySeparatesKinds(t *testing.T) {
 	if res := limiter.Reserve(now, user, 1); res.Allowed || res.RetryAfter != 5*time.Second {
 		t.Fatalf("typed user penalty missing: %+v", res)
 	}
-	if res := limiter.Reserve(now, channel, 1); res.Allowed {
-		// The channel token was consumed above; advance enough for exactly one
-		// peer token so this assertion tests penalty isolation, not token state.
-		if res2 := limiter.Reserve(now.Add(time.Second), channel, 1); !res2.Allowed {
-			t.Fatalf("typed user penalty leaked into channel identity: %+v", res2)
-		}
+	if res := limiter.Reserve(now, channel, 1); !res.Allowed {
+		t.Fatalf("typed user penalty leaked into channel identity: %+v", res)
 	}
 }
