@@ -400,10 +400,11 @@ type SubscribeOptions struct {
 type EventMiddleware func(next ContextEventHandler) ContextEventHandler
 
 const (
-	eventQueueSize    = 1024
-	priorityQueueSize = 256
-	eventWorkers      = 8
-	orderedPartitions = 4
+	eventQueueSize         = 1024
+	priorityQueueSize      = 256
+	eventWorkers           = 8
+	orderedPartitions      = 4
+	defaultEventWorkerIdle = 30 * time.Second
 )
 
 func partitionIndex(key string, n int) int {
@@ -423,12 +424,14 @@ var (
 )
 
 type EventBusStats struct {
-	Published     int64
-	Delivered     int64
-	Dropped       int64
-	Panics        int64
-	QueueDepth    int
-	QueueCapacity int
+	Published      int64
+	Delivered      int64
+	Dropped        int64
+	Panics         int64
+	QueueDepth     int
+	QueueCapacity  int
+	ActiveWorkers  int
+	OrderedWorkers int
 }
 
 // Ensure EventBus implements runtime.Component.
@@ -446,6 +449,10 @@ type EventBus struct {
 	middlewares   []EventMiddleware
 	stop          chan struct{}
 	workers       sync.WaitGroup
+	workerMu      sync.Mutex
+	generalWorkers int
+	orderedRunning [orderedPartitions]bool
+	workerIdleTimeout time.Duration
 	durable       sync.WaitGroup
 	taskWG        sync.WaitGroup
 	taskClient    tasks.Client
@@ -485,8 +492,9 @@ func NewEventBus() *EventBus {
 		queueCritical: make(chan eventJob, priorityQueueSize),
 		queueHigh:     make(chan eventJob, priorityQueueSize),
 		queueLow:      make(chan eventJob, priorityQueueSize),
-		stop:          make(chan struct{}),
-		closeDone:     make(chan struct{}),
+		stop:              make(chan struct{}),
+		closeDone:         make(chan struct{}),
+		workerIdleTimeout: defaultEventWorkerIdle,
 	}
 	for i := 0; i < orderedPartitions; i++ {
 		b.orderedQueues[i] = make(chan eventJob, priorityQueueSize)
@@ -494,8 +502,10 @@ func NewEventBus() *EventBus {
 	return b
 }
 
-// Start launches workers exactly once. Cancellation of ctx requests a graceful
-// Close, which drains already accepted jobs instead of abandoning the queue.
+// Start activates lifecycle without pre-spawning dispatch goroutines.
+// Asynchronous workers are created on first accepted work and retire after an
+// idle window. Cancellation requests a graceful Close through context.AfterFunc,
+// which avoids a lifetime watcher goroutine.
 func (b *EventBus) Start(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -511,20 +521,10 @@ func (b *EventBus) Start(ctx context.Context) error {
 		return nil
 	}
 	b.started = true
-	b.workers.Add(eventWorkers + orderedPartitions)
-	for i := 0; i < eventWorkers; i++ {
-		go b.worker()
-	}
-	for i := 0; i < orderedPartitions; i++ {
-		go b.orderedWorker(b.orderedQueues[i])
-	}
 	b.mu.Unlock()
 
-	if done := ctx.Done(); done != nil {
-		go func() {
-			<-done
-			_ = b.Close()
-		}()
+	if ctx.Done() != nil {
+		context.AfterFunc(ctx, func() { _ = b.Close() })
 	}
 	return nil
 }
@@ -536,13 +536,24 @@ func (b *EventBus) Stats() EventBusStats {
 		depth += len(b.orderedQueues[i])
 		capSum += cap(b.orderedQueues[i])
 	}
+	b.workerMu.Lock()
+	activeWorkers := b.generalWorkers
+	orderedWorkers := 0
+	for _, running := range b.orderedRunning {
+		if running {
+			orderedWorkers++
+		}
+	}
+	b.workerMu.Unlock()
 	return EventBusStats{
-		Published:     b.publishedCount.Load(),
-		Delivered:     b.deliveredCount.Load(),
-		Dropped:       b.droppedCount.Load(),
-		Panics:        b.panicCount.Load(),
-		QueueDepth:    depth,
-		QueueCapacity: capSum,
+		Published:      b.publishedCount.Load(),
+		Delivered:      b.deliveredCount.Load(),
+		Dropped:        b.droppedCount.Load(),
+		Panics:         b.panicCount.Load(),
+		QueueDepth:     depth,
+		QueueCapacity:  capSum,
+		ActiveWorkers:  activeWorkers,
+		OrderedWorkers: orderedWorkers,
 	}
 }
 
@@ -634,13 +645,85 @@ func (b *EventBus) Use(mw ...EventMiddleware) {
 	b.middlewares = append(b.middlewares, mw...)
 }
 
+func (b *EventBus) generalQueueDepth() int {
+	return len(b.queue) + len(b.queueCritical) + len(b.queueHigh) + len(b.queueLow)
+}
+
+func (b *EventBus) ensureGeneralWorkers() {
+	b.workerMu.Lock()
+	defer b.workerMu.Unlock()
+	depth := b.generalQueueDepth()
+	if depth <= 0 {
+		return
+	}
+	target := depth
+	if target > eventWorkers {
+		target = eventWorkers
+	}
+	for b.generalWorkers < target {
+		b.generalWorkers++
+		b.workers.Add(1)
+		go b.worker()
+	}
+}
+
+func (b *EventBus) generalWorkerDone() {
+	b.workerMu.Lock()
+	if b.generalWorkers > 0 {
+		b.generalWorkers--
+	}
+	b.workerMu.Unlock()
+	b.workers.Done()
+}
+
+func (b *EventBus) ensureOrderedWorker(partition int) {
+	if partition < 0 || partition >= orderedPartitions {
+		return
+	}
+	b.workerMu.Lock()
+	if !b.orderedRunning[partition] {
+		b.orderedRunning[partition] = true
+		b.workers.Add(1)
+		go b.orderedWorker(partition, b.orderedQueues[partition])
+	}
+	b.workerMu.Unlock()
+}
+
+func (b *EventBus) orderedWorkerDone(partition int) {
+	b.workerMu.Lock()
+	if partition >= 0 && partition < orderedPartitions {
+		b.orderedRunning[partition] = false
+	}
+	b.workerMu.Unlock()
+	b.workers.Done()
+}
+
 func (b *EventBus) worker() {
-	defer b.workers.Done()
+	defer b.generalWorkerDone()
+	idle := b.workerIdleTimeout
+	if idle <= 0 {
+		idle = defaultEventWorkerIdle
+	}
+	timer := time.NewTimer(idle)
+	defer timer.Stop()
+
+	resetIdle := func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(idle)
+	}
+
 	for {
-		// Non-blocking priority drain checks
+		// Non-blocking priority drain checks preserve the existing critical/high
+		// preference before the blocking select.
 		select {
 		case job := <-b.queueCritical:
 			b.runJob(job)
+			resetIdle()
 			continue
 		default:
 		}
@@ -648,23 +731,39 @@ func (b *EventBus) worker() {
 		select {
 		case job := <-b.queueCritical:
 			b.runJob(job)
+			resetIdle()
 			continue
 		case job := <-b.queueHigh:
 			b.runJob(job)
+			resetIdle()
 			continue
 		default:
 		}
 
-		// Blocking priority select
 		select {
 		case job := <-b.queueCritical:
 			b.runJob(job)
+			resetIdle()
 		case job := <-b.queueHigh:
 			b.runJob(job)
+			resetIdle()
 		case job := <-b.queue:
 			b.runJob(job)
+			resetIdle()
 		case job := <-b.queueLow:
 			b.runJob(job)
+			resetIdle()
+		case <-timer.C:
+			// Coordinate retirement with ensureGeneralWorkers via workerMu.
+			// A producer that has already enqueued work keeps this generation
+			// alive; a producer racing after retirement starts a successor.
+			b.workerMu.Lock()
+			empty := b.generalQueueDepth() == 0
+			b.workerMu.Unlock()
+			if empty {
+				return
+			}
+			timer.Reset(idle)
 		case <-b.stop:
 			b.drainQueues()
 			return
@@ -672,12 +771,33 @@ func (b *EventBus) worker() {
 	}
 }
 
-func (b *EventBus) orderedWorker(ch <-chan eventJob) {
-	defer b.workers.Done()
+func (b *EventBus) orderedWorker(partition int, ch <-chan eventJob) {
+	defer b.orderedWorkerDone(partition)
+	idle := b.workerIdleTimeout
+	if idle <= 0 {
+		idle = defaultEventWorkerIdle
+	}
+	timer := time.NewTimer(idle)
+	defer timer.Stop()
 	for {
 		select {
 		case job := <-ch:
 			b.runJob(job)
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(idle)
+		case <-timer.C:
+			b.workerMu.Lock()
+			empty := len(ch) == 0
+			b.workerMu.Unlock()
+			if empty {
+				return
+			}
+			timer.Reset(idle)
 		case <-b.stop:
 			for {
 				select {
@@ -905,13 +1025,7 @@ func (b *EventBus) SubscribeContextHandlerWithCancel(ctx context.Context, owner 
 		return nil
 	}
 	if ctx != nil && ctx.Done() != nil {
-		go func() {
-			select {
-			case <-ctx.Done():
-				sub.Close()
-			case <-b.stop:
-			}
-		}()
+		context.AfterFunc(ctx, sub.Close)
 	}
 	return sub
 }
@@ -923,13 +1037,7 @@ func (b *EventBus) SubscribeContext(ctx context.Context, owner string, t EventTy
 		return nil
 	}
 	if ctx != nil && ctx.Done() != nil {
-		go func() {
-			select {
-			case <-ctx.Done():
-				sub.Close()
-			case <-b.stop:
-			}
-		}()
+		context.AfterFunc(ctx, sub.Close)
 	}
 	return sub
 }
@@ -944,13 +1052,7 @@ func (b *EventBus) SubscribeContextScoped(ctx context.Context, owner string, sco
 		return nil
 	}, SubscribeOptions{Owner: owner, Scope: scope, MinPriority: PriorityLow})
 	if sub != nil && ctx != nil && ctx.Done() != nil {
-		go func() {
-			select {
-			case <-ctx.Done():
-				sub.Close()
-			case <-b.stop:
-			}
-		}()
+		context.AfterFunc(ctx, sub.Close)
 	}
 	return sub
 }
@@ -1010,6 +1112,7 @@ func (b *EventBus) Publish(event Event) {
 			select {
 			case b.orderedQueues[idx] <- job:
 				b.publishedCount.Add(1)
+				b.ensureOrderedWorker(idx)
 			default:
 				b.droppedCount.Add(1)
 			}
@@ -1031,6 +1134,7 @@ func (b *EventBus) Publish(event Event) {
 		select {
 		case targetChan <- job:
 			b.publishedCount.Add(1)
+			b.ensureGeneralWorkers()
 		default:
 			b.droppedCount.Add(1)
 		}
