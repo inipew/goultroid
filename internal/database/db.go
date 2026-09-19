@@ -8,20 +8,25 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
 // DB wraps a sql.DB connection with custom repository methods and query metrics.
-type DB struct {
-	*sql.DB
-	metricsMu sync.RWMutex
-	metrics   DBMetrics
+type metricsHolder struct {
+	metrics DBMetrics
 }
 
-// SetMetrics attaches a DBMetrics observer to this database handle.
+type DB struct {
+	*sql.DB
+	metrics atomic.Pointer[metricsHolder]
+}
+
+// SetMetrics attaches a DBMetrics observer to this database handle. Collector
+// replacement is rare configuration work, while Observe is a hot path, so use
+// an atomic immutable holder instead of taking an RWMutex on every operation.
 func (db *DB) SetMetrics(m DBMetrics) {
 	if db == nil {
 		return
@@ -29,9 +34,7 @@ func (db *DB) SetMetrics(m DBMetrics) {
 	if m == nil {
 		m = NoopDBMetrics{}
 	}
-	db.metricsMu.Lock()
-	defer db.metricsMu.Unlock()
-	db.metrics = m
+	db.metrics.Store(&metricsHolder{metrics: m})
 }
 
 // Metrics returns the active DBMetrics observer, or NoopDBMetrics if unset.
@@ -39,24 +42,22 @@ func (db *DB) Metrics() DBMetrics {
 	if db == nil {
 		return NoopDBMetrics{}
 	}
-	db.metricsMu.RLock()
-	defer db.metricsMu.RUnlock()
-	if db.metrics != nil {
-		return db.metrics
+	holder := db.metrics.Load()
+	if holder == nil || holder.metrics == nil {
+		return NoopDBMetrics{}
 	}
-	return NoopDBMetrics{}
+	return holder.metrics
 }
 
 // Observe records execution duration and error for a database operation label.
+// The collector lookup is lock-free; the collector owns its own concurrency.
 func (db *DB) Observe(operation string, elapsed time.Duration, err error) {
 	if db == nil {
 		return
 	}
-	db.metricsMu.RLock()
-	m := db.metrics
-	db.metricsMu.RUnlock()
-	if m != nil {
-		m.Observe(operation, elapsed, err)
+	holder := db.metrics.Load()
+	if holder != nil && holder.metrics != nil {
+		holder.metrics.Observe(operation, elapsed, err)
 	}
 }
 
