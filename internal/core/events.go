@@ -667,13 +667,12 @@ func (b *EventBus) ensureGeneralWorkers() {
 	}
 }
 
-func (b *EventBus) generalWorkerDone() {
+func (b *EventBus) releaseGeneralWorker() {
 	b.workerMu.Lock()
 	if b.generalWorkers > 0 {
 		b.generalWorkers--
 	}
 	b.workerMu.Unlock()
-	b.workers.Done()
 }
 
 func (b *EventBus) ensureOrderedWorker(partition int) {
@@ -689,17 +688,22 @@ func (b *EventBus) ensureOrderedWorker(partition int) {
 	b.workerMu.Unlock()
 }
 
-func (b *EventBus) orderedWorkerDone(partition int) {
+func (b *EventBus) releaseOrderedWorker(partition int) {
 	b.workerMu.Lock()
 	if partition >= 0 && partition < orderedPartitions {
 		b.orderedRunning[partition] = false
 	}
 	b.workerMu.Unlock()
-	b.workers.Done()
 }
 
 func (b *EventBus) worker() {
-	defer b.generalWorkerDone()
+	released := false
+	defer func() {
+		if !released {
+			b.releaseGeneralWorker()
+		}
+		b.workers.Done()
+	}()
 	idle := b.workerIdleTimeout
 	if idle <= 0 {
 		idle = defaultEventWorkerIdle
@@ -754,15 +758,20 @@ func (b *EventBus) worker() {
 			b.runJob(job)
 			resetIdle()
 		case <-timer.C:
-			// Coordinate retirement with ensureGeneralWorkers via workerMu.
-			// A producer that has already enqueued work keeps this generation
-			// alive; a producer racing after retirement starts a successor.
+			// Publish retirement under the same lock used by ensureGeneralWorkers.
+			// If a producer already enqueued work, this generation stays alive. If
+			// enqueue races after the count is decremented, the producer observes
+			// the lower count and starts a successor.
 			b.workerMu.Lock()
-			empty := b.generalQueueDepth() == 0
-			b.workerMu.Unlock()
-			if empty {
+			if b.generalQueueDepth() == 0 {
+				if b.generalWorkers > 0 {
+					b.generalWorkers--
+				}
+				released = true
+				b.workerMu.Unlock()
 				return
 			}
+			b.workerMu.Unlock()
 			timer.Reset(idle)
 		case <-b.stop:
 			b.drainQueues()
@@ -772,7 +781,13 @@ func (b *EventBus) worker() {
 }
 
 func (b *EventBus) orderedWorker(partition int, ch <-chan eventJob) {
-	defer b.orderedWorkerDone(partition)
+	released := false
+	defer func() {
+		if !released {
+			b.releaseOrderedWorker(partition)
+		}
+		b.workers.Done()
+	}()
 	idle := b.workerIdleTimeout
 	if idle <= 0 {
 		idle = defaultEventWorkerIdle
@@ -792,11 +807,15 @@ func (b *EventBus) orderedWorker(partition int, ch <-chan eventJob) {
 			timer.Reset(idle)
 		case <-timer.C:
 			b.workerMu.Lock()
-			empty := len(ch) == 0
-			b.workerMu.Unlock()
-			if empty {
+			if len(ch) == 0 {
+				if partition >= 0 && partition < orderedPartitions {
+					b.orderedRunning[partition] = false
+				}
+				released = true
+				b.workerMu.Unlock()
 				return
 			}
+			b.workerMu.Unlock()
 			timer.Reset(idle)
 		case <-b.stop:
 			for {
