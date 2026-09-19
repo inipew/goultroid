@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
 	"github.com/inipew/goultroid/internal/execution"
 )
@@ -273,6 +274,44 @@ func BenchmarkRPCExecutorSamePeerFloodWaitOccupancy(b *testing.B) {
 					b.ReportMetric(float64(sleeper.waitNanos.Load())/logicalOps, "inline-wait-ns/op")
 				}
 			})
+		}
+	}
+}
+
+
+func BenchmarkPeerRPCLimitKey(b *testing.B) {
+	peer := &tg.InputPeerUser{UserID: 123456789, AccessHash: 987654321}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := peerRPCLimitKey(peer)
+		if key.Scope != "peer" || key.Key != "user" || key.ID != peer.UserID {
+			b.Fatal(key)
+		}
+	}
+}
+
+func BenchmarkServiceSinglePeerWrapperFastPath(b *testing.B) {
+	exec, err := NewRPCExecutor(RPCExecutorConfig{
+		Limiter: NoopRPCLimiter{},
+		DefaultPolicy: RetryPolicy{
+			MaxAttempts: 1,
+			MaxElapsed:  time.Second,
+		},
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	svc := NewServiceWithExecutor(nil, exec)
+	peer := &tg.InputPeerUser{UserID: 42, AccessHash: 99}
+	ctx := context.Background()
+	op := func(context.Context, tg.InputPeerClass) error { return nil }
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := svc.execReadOnlyPeer(ctx, "users.getFullUser", peer, op); err != nil {
+			b.Fatal(err)
 		}
 	}
 }
