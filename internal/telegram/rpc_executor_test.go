@@ -773,3 +773,46 @@ func TestRPCExecutor_InteractiveShortLimiterWaitRemainsInline(t *testing.T) {
 		t.Fatalf("interactive limiter wait was not kept inline: calls=%d total=%s", sleeper.Calls(), sleeper.TotalSleep())
 	}
 }
+
+
+func TestRPCExecutor_DurableShortLimiterWaitYieldsWithoutSleep(t *testing.T) {
+	clock := NewFakeClock(time.Now())
+	sleeper := &FakeSleeper{}
+	limiter := &oneWaitLimiter{wait: 25 * time.Millisecond}
+	exec := newTestExecutor(limiter, clock, sleeper, nil)
+
+	ctx := execution.WithMetadata(context.Background(), execution.Metadata{CanDurablyYield: true})
+	var calls int
+	err := exec.Do(ctx, RPCMeta{
+		Method: "messages.getHistory",
+		Kind:   RPCReadOnly,
+	}, func(context.Context) error {
+		calls++
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected durable limiter reservation to yield")
+	}
+	if !errors.Is(err, core.ErrRateLimit) {
+		t.Fatalf("expected structured rate-limit signal, got %v", err)
+	}
+	var failure *RPCFailure
+	if !errors.As(err, &failure) {
+		t.Fatalf("expected RPCFailure, got %T", err)
+	}
+	if failure.RetryAfter != 25*time.Millisecond {
+		t.Fatalf("retry_after=%s, want 25ms", failure.RetryAfter)
+	}
+	if failure.Attempts != 0 {
+		t.Fatalf("physical RPC attempts=%d, want 0 before limiter admission", failure.Attempts)
+	}
+	if calls != 0 {
+		t.Fatalf("physical RPC calls=%d, want 0", calls)
+	}
+	if sleeper.Calls() != 0 {
+		t.Fatalf("durable limiter wait occupied sleeper: calls=%d", sleeper.Calls())
+	}
+	if limiter.reserves != 1 {
+		t.Fatalf("limiter reserve calls=%d, want 1 before durable deferral", limiter.reserves)
+	}
+}
