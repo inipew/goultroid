@@ -131,6 +131,14 @@ type AttemptSummary struct {
 	Deferrals       int
 }
 
+// RecoveryCandidate is a batch recovery row containing the occurrence and its
+// pre-aggregated attempt decision state. Summary is non-nil for stores that
+// implement the compact recovery query path.
+type RecoveryCandidate struct {
+	Occurrence JobOccurrence
+	Summary    *AttemptSummary
+}
+
 // OutboxEvent is a durable notification committed with a job state change.
 type OutboxEvent struct {
 	ID           string
