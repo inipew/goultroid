@@ -31,7 +31,9 @@ type Service struct {
 
 	lifecycleMu  sync.Mutex
 	started      bool
-	outboxCancel context.CancelFunc
+	runCtx       context.Context
+	runCancel    context.CancelFunc
+	outboxRunning bool
 	outboxDone   chan struct{}
 	unsubSetting func()
 	outboxWake   chan struct{}
@@ -58,38 +60,95 @@ func NewService(repo Repository, reg *Registry, bus *core.EventBus) *Service {
 	return s
 }
 
-// runOutboxWorker drains setting_outbox on local commit notifications, with a
-// slow fallback poll for recovery. Delivery is intentionally at-least-once:
-// consumers that perform side effects must deduplicate by EventMeta.ID.
-// Single ordered worker: processes pending outbox rows in created_at order, dispatches synchronously,
-// and only marks processed after successful delivery (no drop). Retries on next tick if dispatch fails.
-func (s *Service) runOutboxWorker(ctx context.Context) {
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
-	s.drainOutbox(ctx)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-s.outboxWake:
-			s.drainOutbox(ctx)
-		case <-ticker.C:
-			s.drainOutbox(ctx)
+const settingsOutboxRetryInterval = 15 * time.Second
+
+// startOutboxWorkerLocked creates an outbox worker only while replay/delivery
+// work exists. lifecycleMu must be held.
+func (s *Service) startOutboxWorkerLocked() {
+	if !s.started || s.outboxRunning || !s.usesDurableOutbox() ||
+		s.runCtx == nil || s.runCtx.Err() != nil || s.bus == nil {
+		return
+	}
+	if s.outboxWake == nil {
+		s.outboxWake = make(chan struct{}, 1)
+	}
+	done := make(chan struct{})
+	s.outboxRunning = true
+	s.outboxDone = done
+	runCtx := s.runCtx
+	wake := s.outboxWake
+	go s.runOutboxWorker(runCtx, wake, done)
+}
+
+// runOutboxWorker performs startup replay and local-commit delivery. Healthy
+// empty state retires the worker. A delivery failure keeps exactly one worker
+// alive on a bounded retry timer until recovery or shutdown.
+func (s *Service) runOutboxWorker(ctx context.Context, wake <-chan struct{}, done chan struct{}) {
+	defer func() {
+		s.lifecycleMu.Lock()
+		if s.outboxDone == done {
+			s.outboxRunning = false
+			s.outboxDone = nil
 		}
+		s.lifecycleMu.Unlock()
+		close(done)
+	}()
+
+	for {
+		healthy := s.drainOutbox(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		if !healthy {
+			timer := time.NewTimer(settingsOutboxRetryInterval)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					select { case <-timer.C: default: }
+				}
+				return
+			case <-wake:
+				if !timer.Stop() {
+					select { case <-timer.C: default: }
+				}
+			case <-timer.C:
+			}
+			continue
+		}
+
+		// Coordinate retirement with wakeOutbox. A wake that arrived before this
+		// lock is consumed here; a wake racing after retirement observes
+		// outboxRunning=false and starts the next worker generation.
+		s.lifecycleMu.Lock()
+		if s.outboxDone != done || !s.started || s.runCtx == nil || s.runCtx.Err() != nil {
+			s.lifecycleMu.Unlock()
+			return
+		}
+		select {
+		case <-wake:
+			s.lifecycleMu.Unlock()
+			continue
+		default:
+		}
+		s.outboxRunning = false
+		s.outboxDone = nil
+		s.lifecycleMu.Unlock()
+		return
 	}
 }
 
-func (s *Service) drainOutbox(ctx context.Context) {
+func (s *Service) drainOutbox(ctx context.Context) bool {
 	const batchSize = 100
 	for {
 		entries, err := s.repo.ListPendingOutbox(ctx, batchSize)
 		if err != nil {
 			s.setOutboxError(err)
-			return
+			return false
 		}
 		for _, e := range entries {
 			if s.bus == nil {
-				return
+				s.setOutboxError(fmt.Errorf("settings event bus is unavailable"))
+				return false
 			}
 			evt := &core.SettingChangedEvent{
 				MetaData: core.EventMeta{
@@ -106,16 +165,16 @@ func (s *Service) drainOutbox(ctx context.Context) {
 			}
 			if err := s.bus.PublishDurable(ctx, evt); err != nil {
 				s.setOutboxError(err)
-				return
+				return false
 			}
 			if err := s.repo.MarkOutboxProcessed(ctx, e.ID); err != nil {
 				s.setOutboxError(err)
-				return
+				return false
 			}
 		}
 		s.setOutboxError(nil)
 		if len(entries) < batchSize {
-			return
+			return true
 		}
 	}
 }
@@ -132,14 +191,30 @@ func (s *Service) usesDurableOutbox() bool {
 }
 
 func (s *Service) wakeOutbox() {
+	if s == nil {
+		return
+	}
+	s.lifecycleMu.Lock()
+	if !s.started || !s.usesDurableOutbox() {
+		s.lifecycleMu.Unlock()
+		return
+	}
+	s.startOutboxWorkerLocked()
+	running := s.outboxRunning
+	wake := s.outboxWake
+	s.lifecycleMu.Unlock()
+	if !running || wake == nil {
+		return
+	}
 	select {
-	case s.outboxWake <- struct{}{}:
+	case wake <- struct{}{}:
 	default:
 	}
 }
 
-// Start launches the durable outbox worker explicitly (Construct != Start).
-// It is idempotent; if already started via NewService, it returns nil.
+// Start activates settings lifecycle. Durable outbox replay is demand-driven:
+// one worker is started for startup recovery, then retires when the outbox is
+// healthy and empty.
 func (s *Service) Start(ctx context.Context) error {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
@@ -152,6 +227,7 @@ func (s *Service) Start(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	s.runCtx, s.runCancel = context.WithCancel(ctx)
 	s.started = true
 	sub := s.bus.SubscribeOwned("runtime:settings", core.EventTypeSettingChanged, func(event core.Event) {
 		if e, ok := event.(*core.SettingChangedEvent); ok {
@@ -161,29 +237,15 @@ func (s *Service) Start(ctx context.Context) error {
 	if sub != nil {
 		s.unsubSetting = sub.Close
 	}
-	if _, ok := s.repo.(*SQLiteRepository); !ok {
-		return nil
-	}
-	cctx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{})
-	s.outboxCancel = cancel
-	s.outboxDone = done
-	go func() {
-		s.runOutboxWorker(cctx)
-
-		s.lifecycleMu.Lock()
-		if s.outboxDone == done {
-			s.started = false
-			s.outboxCancel = nil
-			s.outboxDone = nil
-			if s.unsubSetting != nil {
-				s.unsubSetting()
-				s.unsubSetting = nil
+	if s.usesDurableOutbox() {
+		s.startOutboxWorkerLocked()
+		if s.outboxRunning {
+			select {
+			case s.outboxWake <- struct{}{}:
+			default:
 			}
 		}
-		close(done)
-		s.lifecycleMu.Unlock()
-	}()
+	}
 	return nil
 }
 
@@ -208,7 +270,8 @@ func (s *Service) Health(ctx context.Context) runtime.ComponentHealth {
 	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
 }
 
-// Stop gracefully shuts down the outbox worker.
+// Stop cancels settings lifecycle and joins the outbox worker only when one is
+// active. Idle healthy settings therefore contribute zero background workers.
 func (s *Service) Stop(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -218,20 +281,24 @@ func (s *Service) Stop(ctx context.Context) error {
 		s.lifecycleMu.Unlock()
 		return nil
 	}
-	cancel := s.outboxCancel
+	s.started = false
+	cancel := s.runCancel
 	done := s.outboxDone
-	if cancel == nil || done == nil {
-		unsub := s.unsubSetting
-		s.unsubSetting = nil
-		s.started = false
-		s.lifecycleMu.Unlock()
-		if unsub != nil {
-			unsub()
-		}
+	unsub := s.unsubSetting
+	s.runCancel = nil
+	s.runCtx = nil
+	s.unsubSetting = nil
+	s.lifecycleMu.Unlock()
+
+	if unsub != nil {
+		unsub()
+	}
+	if cancel != nil {
+		cancel()
+	}
+	if done == nil {
 		return nil
 	}
-	s.lifecycleMu.Unlock()
-	cancel()
 	select {
 	case <-done:
 		return nil
