@@ -155,15 +155,16 @@ func (h *penaltyHeap) Pop() any {
 
 // HierarchicalRPCLimiter provides atomic multi-dimensional rate limiting and penalty management.
 //
-// The hot path is intentionally O(number of request dimensions), not O(total
-// limiter cardinality). Dynamic buckets are ordered by last access in an LRU
-// list, so idle reclamation only inspects the oldest entries. Penalties use an
-// indexed expiry heap, keeping one heap node per active penalty.
+// The steady hot path is O(number of request dimensions), independent of total
+// limiter cardinality. Dynamic buckets are ordered by last access in an LRU for
+// IdleTTL fallback. Peer buckets also use an indexed full-refill heap, so burst
+// cardinality is reclaimed as soon as rate state becomes equivalent to a fresh
+// bucket without scanning all residents. Penalties use a separate indexed heap.
 //
-// When bounded state is saturated the limiter fails closed. It never evicts a
-// live token bucket merely to admit a new identity, and it never drops an
-// active FloodWait penalty. Penalty overflow is conservatively promoted to a
-// temporary account-wide cooldown.
+// When bounded state is saturated the limiter fails closed. It never discards
+// depleted/non-equivalent rate state merely to admit a new identity, and it
+// never drops an active FloodWait penalty. Penalty overflow is conservatively
+// promoted to a temporary account-wide cooldown.
 type HierarchicalRPCLimiter struct {
 	mu  sync.Mutex
 	cfg HierarchicalLimiterConfig
