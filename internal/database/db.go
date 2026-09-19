@@ -71,7 +71,10 @@ func sqlitePoolLimits(cpuCount int) (maxOpen, maxIdle int) {
 	// still serialized. Keep pool growth bounded instead of retaining O(CPU)
 	// idle connections on large hosts.
 	maxOpen = min(max(4, cpuCount), 8)
-	maxIdle = min(max(2, maxOpen/2), 4)
+	// Two warm readers are enough for steady userbot traffic; higher burst
+	// concurrency can still grow to maxOpen, but idle handles do not scale with
+	// host CPU count and retain SQLite page/cache state after traffic subsides.
+	maxIdle = min(2, maxOpen)
 	return maxOpen, maxIdle
 }
 
@@ -129,6 +132,9 @@ func Open(dsn string) (*DB, error) {
 		maxOpen, maxIdle := sqlitePoolLimits(runtime.NumCPU())
 		db.SetMaxOpenConns(maxOpen)
 		db.SetMaxIdleConns(maxIdle)
+		// Reclaim reader connections after a quiet period instead of retaining
+		// their SQLite connection-local allocations until the one-hour lifetime.
+		db.SetConnMaxIdleTime(5 * time.Minute)
 		db.SetConnMaxLifetime(time.Hour)
 	}
 

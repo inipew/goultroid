@@ -236,9 +236,9 @@ func TestSQLitePoolLimitsRemainBoundedAcrossCPUCounts(t *testing.T) {
 	}{
 		{cpus: 1, wantOpen: 4, wantIdle: 2},
 		{cpus: 4, wantOpen: 4, wantIdle: 2},
-		{cpus: 8, wantOpen: 8, wantIdle: 4},
-		{cpus: 32, wantOpen: 8, wantIdle: 4},
-		{cpus: 128, wantOpen: 8, wantIdle: 4},
+		{cpus: 8, wantOpen: 8, wantIdle: 2},
+		{cpus: 32, wantOpen: 8, wantIdle: 2},
+		{cpus: 128, wantOpen: 8, wantIdle: 2},
 	}
 	for _, tc := range tests {
 		open, idle := sqlitePoolLimits(tc.cpus)
