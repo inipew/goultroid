@@ -3,6 +3,9 @@ on:
   push:
     branches:
       - ai-vet-temp
+  pull_request:
+    branches:
+      - test-next
 
 jobs:
   vet:
