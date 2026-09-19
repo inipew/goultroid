@@ -502,3 +502,37 @@ func TestHierarchicalRPCLimiter_HighCardinalityPeersCollapseAfterSafeRefill(t *t
 		t.Fatalf("high-cardinality safe reclaim left %d buckets, want 1", buckets)
 	}
 }
+
+
+func TestHierarchicalRPCLimiter_SafeReclaimSkipsBeyondIdleTTL(t *testing.T) {
+	limiter := NewHierarchicalRPCLimiter(HierarchicalLimiterConfig{
+		GlobalRate:         100,
+		GlobalBurst:        100,
+		DefaultFamilyRate:  100,
+		DefaultFamilyBurst: 100,
+		DefaultMethodRate:  100,
+		DefaultMethodBurst: 100,
+		DefaultPeerRate:    0.001,
+		DefaultPeerBurst:   1,
+		MaxBuckets:         8,
+		MaxPenalties:       8,
+		IdleTTL:            time.Minute,
+	})
+	now := time.Now()
+	peer := []LimitKey{{Scope: "peer", Key: "user", ID: 1}}
+
+	if res := limiter.Reserve(now, peer, 1); !res.Allowed {
+		t.Fatal(res)
+	}
+	// Full refill would take 1000s, much longer than the 60s idle fallback.
+	// The safe-refill heap should not retain a redundant long-horizon node.
+	if len(limiter.reclaimQ) != 0 {
+		t.Fatalf("slow-refill peer retained %d safe-reclaim nodes", len(limiter.reclaimQ))
+	}
+	if buckets, _ := limiter.Size(); buckets != 1 {
+		t.Fatalf("bucket disappeared before idle fallback: %d", buckets)
+	}
+	if res := limiter.Reserve(now.Add(61*time.Second), []LimitKey{{Scope: "peer", Key: "user", ID: 2}}, 1); !res.Allowed {
+		t.Fatalf("idle fallback did not reclaim slow-refill bucket: %+v", res)
+	}
+}
