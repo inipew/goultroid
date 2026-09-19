@@ -33,7 +33,12 @@ type RPCMetricsSnapshot struct {
 	FloodWaitTotal    time.Duration
 }
 
-const rpcErrorClassCount = int(RPCInvalidRequest) + 1
+const (
+	rpcErrorClassCount        = int(RPCInvalidRequest) + 1
+	maxRPCMethodMetricLabels  = 512
+	maxRPCWaitMetricLabels    = 32
+	rpcMetricOverflowLabel    = "__other__"
+)
 
 type rpcMethodCounters struct {
 	requests atomic.Int64
@@ -53,6 +58,11 @@ type InMemoryRPCMetrics struct {
 	requestsByClass   [rpcErrorClassCount]atomic.Int64
 	requestsByMethod  sync.Map // map[string]*rpcMethodCounters
 	waitTimeByScope   sync.Map // map[string]*rpcWaitCounters
+	labelMu           sync.Mutex
+	methodLabels      int
+	waitLabels        int
+	overflowMethod    rpcMethodCounters
+	overflowWait      rpcWaitCounters
 	unscopedWaitNanos atomic.Int64
 
 	floodWaitCount    atomic.Int64
@@ -72,9 +82,18 @@ func (m *InMemoryRPCMetrics) methodCounters(method string) *rpcMethodCounters {
 	if value, ok := m.requestsByMethod.Load(method); ok {
 		return value.(*rpcMethodCounters)
 	}
+	m.labelMu.Lock()
+	defer m.labelMu.Unlock()
+	if value, ok := m.requestsByMethod.Load(method); ok {
+		return value.(*rpcMethodCounters)
+	}
+	if m.methodLabels >= maxRPCMethodMetricLabels {
+		return &m.overflowMethod
+	}
 	created := &rpcMethodCounters{}
-	actual, _ := m.requestsByMethod.LoadOrStore(method, created)
-	return actual.(*rpcMethodCounters)
+	m.requestsByMethod.Store(method, created)
+	m.methodLabels++
+	return created
 }
 
 func (m *InMemoryRPCMetrics) waitCounters(scope string) *rpcWaitCounters {
@@ -84,9 +103,18 @@ func (m *InMemoryRPCMetrics) waitCounters(scope string) *rpcWaitCounters {
 	if value, ok := m.waitTimeByScope.Load(scope); ok {
 		return value.(*rpcWaitCounters)
 	}
+	m.labelMu.Lock()
+	defer m.labelMu.Unlock()
+	if value, ok := m.waitTimeByScope.Load(scope); ok {
+		return value.(*rpcWaitCounters)
+	}
+	if m.waitLabels >= maxRPCWaitMetricLabels {
+		return &m.overflowWait
+	}
 	created := &rpcWaitCounters{}
-	actual, _ := m.waitTimeByScope.LoadOrStore(scope, created)
-	return actual.(*rpcWaitCounters)
+	m.waitTimeByScope.Store(scope, created)
+	m.waitLabels++
+	return created
 }
 
 func (m *InMemoryRPCMetrics) ObserveRequest(method string, class RPCErrorClass, attempt int, elapsed time.Duration) {
@@ -155,6 +183,9 @@ func (m *InMemoryRPCMetrics) Snapshot() RPCMetricsSnapshot {
 		}
 		return true
 	})
+	if overflow := m.overflowMethod.requests.Load(); overflow != 0 {
+		methods[rpcMetricOverflowLabel] = overflow
+	}
 
 	waits := make(map[string]time.Duration)
 	totalWaitNanos := m.unscopedWaitNanos.Load()
@@ -166,6 +197,10 @@ func (m *InMemoryRPCMetrics) Snapshot() RPCMetricsSnapshot {
 		totalWaitNanos += nanos
 		return true
 	})
+	if overflow := m.overflowWait.nanos.Load(); overflow != 0 {
+		waits[rpcMetricOverflowLabel] = time.Duration(overflow)
+		totalWaitNanos += overflow
+	}
 
 	return RPCMetricsSnapshot{
 		TotalRequests:     totalRequests,

@@ -17,6 +17,11 @@ type NoopDBMetrics struct{}
 
 func (NoopDBMetrics) Observe(string, time.Duration, error) {}
 
+const (
+	maxDBMetricLabels     = 256
+	dbMetricOverflowLabel = "__other__"
+)
+
 type dbMetricCounters struct {
 	count         atomic.Int64
 	durationNanos atomic.Int64
@@ -29,6 +34,9 @@ type dbMetricCounters struct {
 // instead of contending on one collector-wide mutex.
 type InMemoryDBMetrics struct {
 	operations sync.Map // map[string]*dbMetricCounters
+	labelMu    sync.Mutex
+	labels     int
+	overflow   dbMetricCounters
 }
 
 // NewInMemoryDBMetrics creates an initialized in-memory database metrics collector.
@@ -40,12 +48,27 @@ func (m *InMemoryDBMetrics) counters(operation string) *dbMetricCounters {
 	if m == nil {
 		return nil
 	}
+	if operation == "" {
+		return &m.overflow
+	}
 	if value, ok := m.operations.Load(operation); ok {
 		return value.(*dbMetricCounters)
 	}
+
+	// Cold-path registration is serialized so cardinality cannot overshoot
+	// under concurrent first observations. Warm labels never take this mutex.
+	m.labelMu.Lock()
+	defer m.labelMu.Unlock()
+	if value, ok := m.operations.Load(operation); ok {
+		return value.(*dbMetricCounters)
+	}
+	if m.labels >= maxDBMetricLabels {
+		return &m.overflow
+	}
 	created := &dbMetricCounters{}
-	actual, _ := m.operations.LoadOrStore(operation, created)
-	return actual.(*dbMetricCounters)
+	m.operations.Store(operation, created)
+	m.labels++
+	return created
 }
 
 func (m *InMemoryDBMetrics) Observe(operation string, elapsed time.Duration, err error) {
@@ -65,6 +88,9 @@ func (m *InMemoryDBMetrics) Count(operation string) int64 {
 	if m == nil {
 		return 0
 	}
+	if operation == dbMetricOverflowLabel {
+		return m.overflow.count.Load()
+	}
 	value, ok := m.operations.Load(operation)
 	if !ok {
 		return 0
@@ -77,6 +103,9 @@ func (m *InMemoryDBMetrics) Errors(operation string) int64 {
 	if m == nil {
 		return 0
 	}
+	if operation == dbMetricOverflowLabel {
+		return m.overflow.errors.Load()
+	}
 	value, ok := m.operations.Load(operation)
 	if !ok {
 		return 0
@@ -88,6 +117,9 @@ func (m *InMemoryDBMetrics) Errors(operation string) int64 {
 func (m *InMemoryDBMetrics) TotalDuration(operation string) time.Duration {
 	if m == nil {
 		return 0
+	}
+	if operation == dbMetricOverflowLabel {
+		return time.Duration(m.overflow.durationNanos.Load())
 	}
 	value, ok := m.operations.Load(operation)
 	if !ok {
@@ -108,5 +140,5 @@ func (m *InMemoryDBMetrics) TotalOperations() int64 {
 		total += value.(*dbMetricCounters).count.Load()
 		return true
 	})
-	return total
+	return total + m.overflow.count.Load()
 }

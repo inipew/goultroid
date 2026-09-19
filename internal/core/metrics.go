@@ -58,6 +58,11 @@ type MetricsSnapshot struct {
 	InlineResultCount    int64         `json:"inline_result_count"`
 }
 
+const (
+	maxCommandMetricLabels = 512
+	metricsOverflowLabel   = "__other__"
+)
+
 // DefaultMetricsTracker is a thread-safe in-memory implementation of MetricsCollector.
 type DefaultMetricsTracker struct {
 	mu                sync.RWMutex
@@ -110,13 +115,22 @@ func (m *DefaultMetricsTracker) RecordCommand(name string, duration time.Duratio
 		m.totalErrors++
 	}
 
-	st, exists := m.commands[name]
+	label := name
+	st, exists := m.commands[label]
+	if !exists {
+		// Reserve the final slot for overflow aggregation so custom/plugin
+		// command names cannot grow diagnostics memory without bound.
+		if label == "" || len(m.commands) >= maxCommandMetricLabels-1 {
+			label = metricsOverflowLabel
+			st, exists = m.commands[label]
+		}
+	}
 	if !exists {
 		st = &CommandStats{
 			MinTime: duration,
 			MaxTime: duration,
 		}
-		m.commands[name] = st
+		m.commands[label] = st
 	}
 
 	st.TotalCalls++
