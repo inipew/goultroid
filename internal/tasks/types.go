@@ -66,10 +66,12 @@ const (
 	CauseScopeClosed        Cause = "scope_closed"
 	CauseLeaseLost          Cause = "lease_lost"
 	CauseRateLimited        Cause = "rate_limited"
+	CauseAdmissionRejected  Cause = "admission_rejected"
 )
 
 // FailureInfo holds structured diagnostic details for execution failures.
 type FailureInfo struct {
+	Code    string `json:"code,omitempty"`
 	Message string `json:"message,omitempty"`
 	Detail  string `json:"detail,omitempty"`
 }

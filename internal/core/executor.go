@@ -49,7 +49,7 @@ func (e *CommandExecutor) DelayedActions() DelayedActionScheduler { return e.del
 // their reserved correlation prefix; new callers should use ExecuteExecution.
 func (e *CommandExecutor) Execute(ctx *Context, cmd Command) error {
 	if ctx == nil {
-		return ErrInternal
+		return NormalizeExecutionError(ErrInternal)
 	}
 	source := ctx.Source
 	return e.execute(ctx, cmd, source)
@@ -84,7 +84,7 @@ func (e *CommandExecutor) ExecuteExecution(exec CommandExecution, cmd Command, s
 
 func (e *CommandExecutor) execute(ctx *Context, cmd Command, source ExecutionSource) error {
 	if ctx == nil {
-		return ErrInternal
+		return NormalizeExecutionError(ErrInternal)
 	}
 	if ctx.Ctx == nil {
 		ctx.Ctx = context.Background()
@@ -122,7 +122,7 @@ func (e *CommandExecutor) execute(ctx *Context, cmd Command, source ExecutionSou
 			}
 		}
 		if !e.rateLimiter.Allow(key) {
-			return ErrRateLimited
+			return NormalizeExecutionError(ErrRateLimited)
 		}
 	}
 
@@ -139,6 +139,7 @@ func (e *CommandExecutor) execute(ctx *Context, cmd Command, source ExecutionSou
 	)
 	start := time.Now()
 	err := chain.Then(cmd.Handler)(ctx)
+	err = NormalizeExecutionError(err)
 	if e.metrics != nil {
 		e.metrics.RecordCommand(cmd.Name, time.Since(start), err)
 	}

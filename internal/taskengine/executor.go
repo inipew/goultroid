@@ -21,30 +21,36 @@ func executeAssignment(ctx context.Context, spec tasks.WorkSpec, grant *permit, 
 		if recovered := recover(); recovered != nil {
 			result.Outcome = tasks.OutcomePanic
 			result.Cause = tasks.CausePanic
-			result.Failure = tasks.FailureInfo{Message: fmt.Sprintf("panic in task handler: %v", recovered)}
+			result.Disposition = execution.DispositionInternal
+			result.Failure = tasks.FailureInfo{Code: "panic", Message: fmt.Sprintf("panic in task handler: %v", recovered)}
 		}
 	}()
 
 	if err := grant.use(spec); err != nil {
 		result.Outcome = tasks.OutcomeAbortedBeforeStart
 		result.Cause = tasks.CauseLeaseLost
-		result.Failure = tasks.FailureInfo{Message: err.Error()}
+		result.Disposition = execution.DispositionRetryable
+		result.Failure = tasks.FailureInfo{Code: "lease_lost", Message: err.Error()}
 		return result
 	}
 	if err := ctx.Err(); err != nil {
 		result.Outcome = tasks.OutcomeCancelled
 		result.Cause = tasks.CauseShutdown
-		result.Failure = tasks.FailureInfo{Message: err.Error()}
+		result.Disposition = execution.DispositionCancelled
+		result.Failure = tasks.FailureInfo{Code: "shutdown", Message: err.Error()}
 		return result
 	}
 	if !spec.QueueDeadline.IsZero() && !time.Now().Before(spec.QueueDeadline) {
 		result.Outcome = tasks.OutcomeTimedOut
 		result.Cause = tasks.CauseQueueExpired
+		result.Disposition = execution.DispositionRetryable
+		result.Failure = tasks.FailureInfo{Code: "queue_expired", Message: "queue deadline expired before execution"}
 		return result
 	}
 	if spec.Handler == nil {
 		result.Outcome = tasks.OutcomeAbortedBeforeStart
-		result.Failure = tasks.FailureInfo{Message: tasks.ErrUnknownHandler.Error()}
+		result.Disposition = execution.DispositionPermanent
+		result.Failure = tasks.FailureInfo{Code: tasks.ReasonUnknownHandler, Message: tasks.ErrUnknownHandler.Error()}
 		return result
 	}
 
@@ -62,6 +68,7 @@ func executeAssignment(ctx context.Context, spec tasks.WorkSpec, grant *permit, 
 		onStarted(result.StartedAt)
 	}
 	err := spec.Handler(runCtx)
+	semantics := execution.SemanticsOf(err)
 	var rateLimit interface {
 		RateLimitWait() time.Duration
 	}
@@ -69,6 +76,11 @@ func executeAssignment(ctx context.Context, spec tasks.WorkSpec, grant *permit, 
 	case err == nil:
 		result.Outcome = tasks.OutcomeCompleted
 		result.Cause = tasks.CauseNone
+		result.Disposition = execution.DispositionSuccess
+	case semantics.Disposition == execution.DispositionHandled:
+		result.Outcome = tasks.OutcomeCompleted
+		result.Cause = tasks.CauseNone
+		result.Disposition = execution.DispositionHandled
 	case errors.As(err, &rateLimit):
 		wait := rateLimit.RateLimitWait()
 		if wait < 0 {
@@ -76,20 +88,25 @@ func executeAssignment(ctx context.Context, spec tasks.WorkSpec, grant *permit, 
 		}
 		result.Outcome = tasks.OutcomeFailed
 		result.Cause = tasks.CauseRateLimited
+		result.Disposition = execution.DispositionRetryable
 		result.RetryAfter = wait
-		result.Failure = tasks.FailureInfo{Message: err.Error()}
+		result.Failure = tasks.FailureInfo{Code: semantics.Code, Message: err.Error()}
 	case errors.Is(err, context.DeadlineExceeded):
 		result.Outcome = tasks.OutcomeTimedOut
 		result.Cause = tasks.CauseTimeout
-		result.Failure = tasks.FailureInfo{Message: err.Error()}
+		result.Disposition = semantics.Disposition
+		result.Failure = tasks.FailureInfo{Code: semantics.Code, Message: err.Error()}
 	case errors.Is(err, context.Canceled):
 		result.Outcome = tasks.OutcomeCancelled
 		result.Cause = tasks.CauseUserCancel
-		result.Failure = tasks.FailureInfo{Message: err.Error()}
+		result.Disposition = execution.DispositionCancelled
+		result.Failure = tasks.FailureInfo{Code: semantics.Code, Message: err.Error()}
 	default:
 		result.Outcome = tasks.OutcomeFailed
 		result.Cause = tasks.CauseNone
-		result.Failure = tasks.FailureInfo{Message: err.Error()}
+		result.Disposition = semantics.Disposition
+		result.RetryAfter = semantics.RetryAfter
+		result.Failure = tasks.FailureInfo{Code: semantics.Code, Message: err.Error()}
 	}
 	return result
 }

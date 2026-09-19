@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/jobs"
 	jobsqlite "github.com/inipew/goultroid/internal/jobs/sqlite"
 	"github.com/inipew/goultroid/internal/taskengine"
@@ -672,5 +674,123 @@ func TestConcurrentRecoveryPassesCreateOneDeferredRedrive(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("handler calls=%d, want one redrive execution", calls.Load())
+	}
+}
+
+func TestRejectedUsageErrorDoesNotRetry(t *testing.T) {
+	var calls atomic.Int32
+	manager, store, _ := engineBackedManager(t,
+		func(context.Context, jobs.JobDefinition) error {
+			calls.Add(1)
+			return core.NewUsageError("invalid scheduled arguments")
+		},
+		jobs.JobRetryPolicy{MaxAttempts: 5, InitialDelay: time.Millisecond},
+	)
+	_, occurrenceID, err := manager.SubmitOccurrence(context.Background(), "job-retry", "manual:typed-rejected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pollOccurrenceState(t, store, occurrenceID, jobs.OccurrenceFailed, 5*time.Second)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("handler calls=%d, want 1 for rejected result", got)
+	}
+	if n, err := store.CountAttempts(context.Background(), occurrenceID); err != nil {
+		t.Fatal(err)
+	} else if n != 1 {
+		t.Fatalf("attempts=%d, want 1 for rejected result", n)
+	}
+	latest, err := store.LatestAttempt(context.Background(), occurrenceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(latest.Result), `"disposition":"rejected"`) {
+		t.Fatalf("persisted result metadata=%q, want rejected disposition", latest.Result)
+	}
+}
+
+func TestExplicitPermanentFailureDoesNotRetry(t *testing.T) {
+	var calls atomic.Int32
+	permanent := errors.New("payload cannot ever be processed")
+	manager, store, _ := engineBackedManager(t,
+		func(context.Context, jobs.JobDefinition) error {
+			calls.Add(1)
+			return execution.WithSemantics(permanent, execution.Semantics{
+				Disposition: execution.DispositionPermanent,
+				Code:        "bad_payload",
+			})
+		},
+		jobs.JobRetryPolicy{MaxAttempts: 5, InitialDelay: time.Millisecond},
+	)
+	_, occurrenceID, err := manager.SubmitOccurrence(context.Background(), "job-retry", "manual:typed-permanent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pollOccurrenceState(t, store, occurrenceID, jobs.OccurrenceFailed, 5*time.Second)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("handler calls=%d, want 1 for permanent result", got)
+	}
+	if n, err := store.CountAttempts(context.Background(), occurrenceID); err != nil {
+		t.Fatal(err)
+	} else if n != 1 {
+		t.Fatalf("attempts=%d, want 1 for permanent result", n)
+	}
+	latest, err := store.LatestAttempt(context.Background(), occurrenceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(latest.Result), `"disposition":"permanent"`) ||
+		!strings.Contains(string(latest.Result), `"code":"bad_payload"`) {
+		t.Fatalf("persisted result metadata=%q", latest.Result)
+	}
+}
+
+func TestRecoverFinalizesPersistedPermanentFailureWithoutRedrive(t *testing.T) {
+	var calls atomic.Int32
+	manager, store, _ := engineBackedManager(t,
+		func(context.Context, jobs.JobDefinition) error {
+			calls.Add(1)
+			return nil
+		},
+		jobs.JobRetryPolicy{MaxAttempts: 5},
+	)
+	ctx := context.Background()
+	occ := &jobs.JobOccurrence{
+		ID: "occ-typed-permanent", JobID: "job-retry",
+		OccurrenceKey: "manual:typed-recovery", State: jobs.OccurrenceReady,
+		ReadyAt: time.Now().UTC(),
+	}
+	if err := store.MaterializeOccurrence(ctx, occ); err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.PrepareAttemptLease(ctx, occ.ID, "task:occ-typed-permanent:1", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := []byte(`{"disposition":"permanent","code":"bad_payload"}`)
+	if err := store.CommitAttemptResult(ctx, attempt.ID, attempt.LeaseEpoch, jobs.AttemptFailed, metadata, "bad payload"); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := manager.Recover(ctx, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := store.GetOccurrence(ctx, occ.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.State != jobs.OccurrenceFailed {
+		t.Fatalf("occurrence state=%s, want failed; report=%+v", current.State, report)
+	}
+	if report.Redriven != 0 || report.Finalized != 1 {
+		t.Fatalf("report=%+v, want finalized=1 redriven=0", report)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("handler calls=%d, permanent recovery must not redrive", got)
+	}
+	if n, err := store.CountAttempts(ctx, occ.ID); err != nil {
+		t.Fatal(err)
+	} else if n != 1 {
+		t.Fatalf("attempts=%d, want 1", n)
 	}
 }

@@ -74,8 +74,8 @@ const (
 
 func durabilityCommitRetainedBytes(res tasks.TaskResult) int64 {
 	bytes := int64(durabilityCommitBaseBytes +
-		len(res.TaskID) + len(res.AttemptID) + len(res.Outcome) + len(res.Cause) +
-		len(res.Failure.Message) + len(res.Failure.Detail))
+		len(res.TaskID) + len(res.AttemptID) + len(res.Outcome) + len(res.Cause) + len(res.Disposition) +
+		len(res.Failure.Code) + len(res.Failure.Message) + len(res.Failure.Detail))
 	switch output := res.Output.(type) {
 	case []byte:
 		bytes += int64(len(output))

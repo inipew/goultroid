@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/tasks"
 )
@@ -577,16 +579,28 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID string, occurrence
 	accepting := m.accepting
 	m.mu.RUnlock()
 	if !accepting {
-		return nil, "", errors.New("job admission is closed")
+		return nil, "", execution.WithSemantics(
+			errors.New("job admission is closed"),
+			execution.Semantics{Disposition: execution.DispositionRetryable, Code: "job_admission_closed"},
+		)
 	}
 	if !ok {
-		return nil, "", fmt.Errorf("job definition not found: %s", jobID)
+		return nil, "", execution.WithSemantics(
+			fmt.Errorf("job definition not found: %s", jobID),
+			execution.Semantics{Disposition: execution.DispositionPermanent, Code: "job_definition_not_found"},
+		)
 	}
 	if handler == nil {
-		return nil, "", fmt.Errorf("no handler registered for job definition %s (handler: %s)", jobID, definition.HandlerType)
+		return nil, "", execution.WithSemantics(
+			fmt.Errorf("no handler registered for job definition %s (handler: %s)", jobID, definition.HandlerType),
+			execution.Semantics{Disposition: execution.DispositionPermanent, Code: "job_handler_missing"},
+		)
 	}
 	if !definition.Enabled {
-		return nil, "", fmt.Errorf("job definition is disabled: %s", jobID)
+		return nil, "", execution.WithSemantics(
+			fmt.Errorf("job definition is disabled: %s", jobID),
+			execution.Semantics{Disposition: execution.DispositionPermanent, Code: "job_definition_disabled"},
+		)
 	}
 	sequence := m.sequence.Add(1)
 	if occurrenceKey == "" {
@@ -628,11 +642,7 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID string, occurrence
 	})
 	if err != nil {
 		m.untrack(occurrence.ID)
-		m.persistAttemptResult(attempt, tasks.TaskResult{
-			TaskID: taskID, Outcome: tasks.OutcomeAbortedBeforeStart,
-			Cause: tasks.CausePersistenceFailure, FinishedAt: time.Now().UTC(),
-			Failure: tasks.FailureInfo{Message: err.Error()},
-		})
+		m.persistAttemptResult(attempt, abortedTaskResult(taskID, err))
 		return nil, "", err
 	}
 	m.enqueueRetry(retryItem{occurrenceID: occurrence.ID, ticket: ticket})
@@ -1058,6 +1068,58 @@ func (m *Manager) prepareNextAttemptLease(ctx context.Context, occurrenceID stri
 	return m.store.PrepareAttemptLease(ctx, occurrenceID, taskID, leaseDuration)
 }
 
+type attemptResultMetadata struct {
+	Disposition execution.Disposition `json:"disposition,omitempty"`
+	Code        string                `json:"code,omitempty"`
+}
+
+func encodeAttemptResultMetadata(res tasks.TaskResult) []byte {
+	// Completed/cancelled attempts already have authoritative durable state and
+	// never need failure disposition to decide a future redrive.
+	if res.Outcome == tasks.OutcomeCompleted || res.Outcome == tasks.OutcomeCancelled {
+		return nil
+	}
+	semantics := res.Semantics()
+	if semantics.Disposition == "" {
+		return nil
+	}
+	data, err := json.Marshal(attemptResultMetadata{Disposition: semantics.Disposition, Code: semantics.Code})
+	if err != nil {
+		return nil
+	}
+	return data
+}
+
+func persistedAttemptSemantics(attempt JobAttempt) (execution.Semantics, bool) {
+	if len(attempt.Result) == 0 {
+		return execution.Semantics{}, false
+	}
+	var metadata attemptResultMetadata
+	if err := json.Unmarshal(attempt.Result, &metadata); err != nil || metadata.Disposition == "" {
+		return execution.Semantics{}, false
+	}
+	return execution.Semantics{Disposition: metadata.Disposition, Code: metadata.Code}, true
+}
+
+func occurrenceStateForSemantics(semantics execution.Semantics) OccurrenceState {
+	if semantics.Disposition == execution.DispositionCancelled {
+		return OccurrenceCancelled
+	}
+	return OccurrenceFailed
+}
+
+func abortedTaskResult(taskID tasks.TaskID, err error) tasks.TaskResult {
+	semantics := execution.SemanticsOf(err)
+	return tasks.TaskResult{
+		TaskID: taskID,
+		Outcome: tasks.OutcomeAbortedBeforeStart,
+		Cause: tasks.CauseAdmissionRejected,
+		Disposition: semantics.Disposition,
+		FinishedAt: time.Now().UTC(),
+		Failure: tasks.FailureInfo{Code: semantics.Code, Message: err.Error()},
+	}
+}
+
 func (m *Manager) commitAttemptResult(ctx context.Context, attempt *JobAttempt, res tasks.TaskResult) error {
 	if attempt == nil {
 		return errors.New("job attempt is required for durable commit")
@@ -1078,7 +1140,7 @@ func (m *Manager) commitAttemptResult(ctx context.Context, attempt *JobAttempt, 
 			res.Failure.Message,
 		)
 	}
-	return m.store.CommitAttemptResult(ctx, attempt.ID, attempt.LeaseEpoch, attemptState(res.Outcome), nil, res.Failure.Message)
+	return m.store.CommitAttemptResult(ctx, attempt.ID, attempt.LeaseEpoch, attemptState(res.Outcome), encodeAttemptResultMetadata(res), res.Failure.Message)
 }
 
 func retryDelay(policy JobRetryPolicy, attemptsMade int) time.Duration {
@@ -1151,6 +1213,19 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		return
 	}
 	if occurrenceTerminal(summary.OccurrenceState) {
+		m.untrack(item.occurrenceID)
+		return
+	}
+
+	semantics := res.Semantics()
+	if !semantics.ShouldRetry() && !semantics.IsSuccess() {
+		finalizeCtx, finalizeCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
+		err := m.store.FinalizeOccurrence(finalizeCtx, item.occurrenceID, occurrenceStateForSemantics(semantics))
+		finalizeCancel()
+		if err != nil {
+			m.signalRecovery()
+			return
+		}
 		m.untrack(item.occurrenceID)
 		return
 	}
@@ -1261,8 +1336,9 @@ func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def Job
 	})
 	if err != nil {
 		m.untrack(occurrenceID)
+		abortResult := abortedTaskResult(nextTaskID, err)
 		abortCtx, cancel := context.WithTimeout(m.rootContext(), 10*time.Second)
-		commitErr := m.store.CommitAttemptResult(abortCtx, attempt.ID, attempt.LeaseEpoch, AttemptAbortedBeforeStart, nil, err.Error())
+		commitErr := m.store.CommitAttemptResult(abortCtx, attempt.ID, attempt.LeaseEpoch, AttemptAbortedBeforeStart, encodeAttemptResultMetadata(abortResult), err.Error())
 		cancel()
 		m.signalRecovery()
 		if commitErr != nil {
@@ -1349,6 +1425,17 @@ func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error)
 			report.Stale++
 			continue
 		}
+		if latest.State != AttemptDeferred {
+			if semantics, typed := persistedAttemptSemantics(*latest); typed && !semantics.ShouldRetry() && !semantics.IsSuccess() {
+				if ferr := m.store.FinalizeOccurrence(ctx, occ.ID, occurrenceStateForSemantics(semantics)); ferr != nil {
+					report.Stale++
+					continue
+				}
+				m.untrack(occ.ID)
+				report.Finalized++
+				continue
+			}
+		}
 		if latest.State == AttemptDeferred && summary.Deferrals >= maxDeferrals(def.RetryPolicy) {
 			if ferr := m.store.FinalizeOccurrence(ctx, occ.ID, OccurrenceFailed); ferr != nil {
 				report.Stale++
@@ -1386,7 +1473,7 @@ func (m *Manager) persistAttemptResult(attempt *JobAttempt, result tasks.TaskRes
 		return
 	}
 	ctx, cancel := context.WithTimeout(m.rootContext(), 10*time.Second)
-	err := m.store.CommitAttemptResult(ctx, attempt.ID, attempt.LeaseEpoch, attemptState(result.Outcome), nil, result.Failure.Message)
+	err := m.store.CommitAttemptResult(ctx, attempt.ID, attempt.LeaseEpoch, attemptState(result.Outcome), encodeAttemptResultMetadata(result), result.Failure.Message)
 	cancel()
 	// Whether commit succeeded or became uncertain, wake durable recovery. A
 	// successful abort is immediately retryable; an uncertain one is revisited

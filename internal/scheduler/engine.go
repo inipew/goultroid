@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/jobs"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/tasks"
@@ -733,11 +734,17 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) int {
 		if j.ActionType == ActionJob {
 			definitionID = strings.TrimSpace(j.Payload)
 			if definitionID == "" {
-				e.onSubmitRejected(ctx, j, occurrenceKey, errors.New("empty job id in scheduled managed job payload"))
+				e.onSubmitRejected(ctx, j, occurrenceKey, execution.WithSemantics(
+				errors.New("empty job id in scheduled managed job payload"),
+				execution.Semantics{Disposition: execution.DispositionPermanent, Code: "empty_managed_job_id"},
+			))
 				continue
 			}
 			if _, ok := e.jobsMgr.Definition(definitionID); !ok {
-				e.onSubmitRejected(ctx, j, occurrenceKey, fmt.Errorf("managed job definition not found: %s", definitionID))
+				e.onSubmitRejected(ctx, j, occurrenceKey, execution.WithSemantics(
+				fmt.Errorf("managed job definition not found: %s", definitionID),
+				execution.Semantics{Disposition: execution.DispositionPermanent, Code: "managed_job_not_found"},
+			))
 				continue
 			}
 		}
@@ -750,6 +757,17 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) int {
 		e.trackClaim(j.ID, j.ClaimToken, definitionID, occurrenceID)
 	}
 	return len(claimedJobs)
+}
+
+func schedulerSubmissionFailurePolicy(err error) (retryDelay time.Duration, permanent bool) {
+	semantics := execution.SemanticsOf(err)
+	retryDelay = semantics.RetryAfter
+	if retryDelay <= 0 {
+		retryDelay = time.Second
+	}
+	permanent = semantics.Disposition == execution.DispositionPermanent ||
+		semantics.Disposition == execution.DispositionRejected
+	return retryDelay, permanent
 }
 
 func (e *Engine) onSubmitRejected(ctx context.Context, job ScheduledJob, occurrenceKey string, submitErr error) {
@@ -778,7 +796,8 @@ func (e *Engine) onSubmitRejected(ctx context.Context, job ScheduledJob, occurre
 		}
 	}
 	e.logger.Error("failed to admit scheduled occurrence", zap.Int64("job_id", job.ID), zap.Error(submitErr))
-	if failErr := e.db.FailScheduledJob(stateCtx, job.ID, job.ClaimToken, submitErr.Error(), 0, time.Second, false, time.Now().UTC()); failErr != nil && !errors.Is(failErr, ErrJobLeaseLost) {
+	retryDelay, permanent := schedulerSubmissionFailurePolicy(submitErr)
+	if failErr := e.db.FailScheduledJob(stateCtx, job.ID, job.ClaimToken, submitErr.Error(), 0, retryDelay, permanent, time.Now().UTC()); failErr != nil && !errors.Is(failErr, ErrJobLeaseLost) {
 		e.logger.Error("failed to release rejected scheduled claim", zap.Int64("job_id", job.ID), zap.Error(failErr))
 	}
 }

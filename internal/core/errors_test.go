@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/inipew/goultroid/internal/execution"
 )
 
 func TestErrorTaxonomy_Sentinels(t *testing.T) {
@@ -148,5 +150,47 @@ func TestClassifyError(t *testing.T) {
 		if got != tc.expected {
 			t.Errorf("ClassifyError(%v) = %v, want %v", tc.err, got, tc.expected)
 		}
+	}
+}
+
+func TestExecutionSemanticsLegacyCoreErrors(t *testing.T) {
+	tests := []struct {
+		name        string
+		err         error
+		disposition execution.Disposition
+		retry       bool
+	}{
+		{"permission", ErrPermissionDenied, execution.DispositionRejected, false},
+		{"usage", NewUsageError("bad input"), execution.DispositionRejected, false},
+		{"handled", ErrInterceptHandled, execution.DispositionHandled, false},
+		{"not found", ErrNotFound, execution.DispositionPermanent, false},
+		{"unavailable", ErrUnavailable, execution.DispositionRetryable, true},
+		{"resource pressure", ErrResourceLimit, execution.DispositionRetryable, true},
+		{"cancelled", ErrCancelled, execution.DispositionCancelled, false},
+		{"internal", ErrInternal, execution.DispositionInternal, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			semantics := ExecutionSemantics(tc.err)
+			if semantics.Disposition != tc.disposition {
+				t.Fatalf("disposition=%q, want %q", semantics.Disposition, tc.disposition)
+			}
+			if got := semantics.ShouldRetry(); got != tc.retry {
+				t.Fatalf("ShouldRetry=%v, want %v", got, tc.retry)
+			}
+			normalized := NormalizeExecutionError(tc.err)
+			if !errors.Is(normalized, tc.err) {
+				t.Fatalf("normalized error lost errors.Is identity: %v", normalized)
+			}
+		})
+	}
+}
+
+func TestIsPermanentErrorPreservesLegacyResourceLimitContract(t *testing.T) {
+	if !IsPermanentError(ErrResourceLimit) {
+		t.Fatal("legacy IsPermanentError contract changed for ErrResourceLimit")
+	}
+	if ExecutionSemantics(ErrResourceLimit).Disposition != execution.DispositionRetryable {
+		t.Fatal("new execution semantics should treat resource pressure as retryable")
 	}
 }

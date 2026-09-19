@@ -3,6 +3,8 @@ package tasks
 import (
 	"errors"
 	"fmt"
+
+	"github.com/inipew/goultroid/internal/execution"
 )
 
 var (
@@ -54,6 +56,24 @@ func (e *AdmissionError) Error() string {
 
 func (e *AdmissionError) Unwrap() error {
 	return e.Err
+}
+
+func (e *AdmissionError) ExecutionSemantics() execution.Semantics {
+	if e == nil {
+		return execution.Semantics{Disposition: execution.DispositionInternal, Code: "nil_admission_error"}
+	}
+	switch e.Reason {
+	case ReasonPayloadBudget, ReasonUnsupportedPayload, ReasonUnknownHandler:
+		return execution.Semantics{Disposition: execution.DispositionPermanent, Code: e.Reason}
+	case ReasonScopeClosed, ReasonLinearizationCancel:
+		return execution.Semantics{Disposition: execution.DispositionCancelled, Code: e.Reason}
+	case ReasonOwnerQueueFull, ReasonPoolBacklogFull, ReasonResourceUnavailable,
+		ReasonResultBackpressure, ReasonDeliveryBackpressure, ReasonDeadlineExpired,
+		ReasonEngineQuiescing, ReasonRetainedBudget:
+		return execution.Semantics{Disposition: execution.DispositionRetryable, Code: e.Reason}
+	default:
+		return execution.Semantics{Disposition: execution.DispositionInternal, Code: e.Reason}
+	}
 }
 
 func NewAdmissionError(reason string, baseErr error) *AdmissionError {

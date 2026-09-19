@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/admission"
+	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/tasks"
 )
@@ -1033,7 +1034,7 @@ func (e *Engine) boundResult(res tasks.TaskResult) (tasks.TaskResult, int64) {
 	res.Output = out
 	res.Failure.Message = truncateField(res.Failure.Message, e.maxFailureBytes)
 	res.Failure.Detail = truncateField(res.Failure.Detail, e.maxFailureBytes)
-	return res, outBytes + int64(len(res.Failure.Message)+len(res.Failure.Detail))
+	return res, outBytes + int64(len(res.Disposition)+len(res.Failure.Code)+len(res.Failure.Message)+len(res.Failure.Detail))
 }
 
 // settleTerminal performs the shared terminal tail for every completion path.
@@ -1066,7 +1067,7 @@ func (e *Engine) sweepExpired(pool tasks.PoolID, now time.Time) {
 		rec.state = tasks.StateTimedOut
 		rec.finishedAt = now
 		rec.errorMsg = "queue deadline expired before execution"
-		rec.result = tasks.TaskResult{TaskID: entry.Spec.ID, Outcome: tasks.OutcomeTimedOut, Cause: tasks.CauseQueueExpired, FinishedAt: now, Failure: tasks.FailureInfo{Message: rec.errorMsg}}
+		rec.result = tasks.TaskResult{TaskID: entry.Spec.ID, Outcome: tasks.OutcomeTimedOut, Cause: tasks.CauseQueueExpired, Disposition: execution.DispositionRetryable, FinishedAt: now, Failure: tasks.FailureInfo{Code: "queue_expired", Message: rec.errorMsg}}
 		bounded, delta := e.boundResult(rec.result)
 		rec.result = bounded
 		rec.retainedBytes += delta
@@ -1370,6 +1371,10 @@ func (e *Engine) applyWorkerCompleted(res tasks.TaskResult, grant *permit) {
 	if rec.cancelRequested && res.Outcome != tasks.OutcomeCancelled {
 		res.Outcome = tasks.OutcomeCancelled
 		res.Cause = rec.cancelReason
+		res.Disposition = execution.DispositionCancelled
+		if res.Failure.Code == "" {
+			res.Failure.Code = string(rec.cancelReason)
+		}
 		if res.Failure.Message == "" {
 			res.Failure.Message = fmt.Sprintf("late cancellation applied: %s", rec.cancelReason)
 		}
@@ -1422,7 +1427,7 @@ func (e *Engine) applyCancel(id tasks.TaskID, reason tasks.Cause) (tasks.CancelR
 		rec.cancelRequested = true
 		rec.cancelReason = reason
 		rec.finishedAt = time.Now().UTC()
-		rec.result = tasks.TaskResult{TaskID: id, Outcome: tasks.OutcomeCancelled, Cause: reason, FinishedAt: rec.finishedAt}
+		rec.result = tasks.TaskResult{TaskID: id, Outcome: tasks.OutcomeCancelled, Cause: reason, Disposition: execution.DispositionCancelled, FinishedAt: rec.finishedAt, Failure: tasks.FailureInfo{Code: string(reason)}}
 		bounded, delta := e.boundResult(rec.result)
 		rec.result = bounded
 		rec.retainedBytes += delta
@@ -1554,8 +1559,9 @@ func (e *Engine) forceCancelInFlight(rec *taskRecord) {
 	}
 	res := tasks.TaskResult{
 		TaskID: rec.spec.ID, Outcome: tasks.OutcomeCancelled, Cause: tasks.CauseShutdown,
+		Disposition: execution.DispositionCancelled,
 		StartedAt: rec.startedAt, FinishedAt: now,
-		Failure: tasks.FailureInfo{Message: failureMessage},
+		Failure: tasks.FailureInfo{Code: "shutdown", Message: failureMessage},
 	}
 	if rec.spec.Job != nil {
 		res.AttemptID = rec.spec.Job.AttemptID

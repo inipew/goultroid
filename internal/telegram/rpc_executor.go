@@ -146,6 +146,38 @@ func (f *RPCFailure) Unwrap() error {
 	return f.Err
 }
 
+func (f *RPCFailure) ExecutionSemantics() execution.Semantics {
+	if f == nil {
+		return execution.Semantics{Disposition: execution.DispositionInternal, Code: "nil_rpc_failure"}
+	}
+	if f.Ambiguous {
+		// Retrying an ambiguous non-idempotent mutation can duplicate the side
+		// effect. Treat it as terminal for automatic retry policy.
+		return execution.Semantics{Disposition: execution.DispositionPermanent, Code: "rpc_ambiguous"}
+	}
+	switch f.Class {
+	case RPCFloodWait:
+		wait := f.RetryAfter
+		if wait <= 0 {
+			if semantics, ok := execution.ExplicitSemantics(f.Err); ok {
+				wait = semantics.RetryAfter
+			}
+		}
+		return execution.Semantics{Disposition: execution.DispositionRetryable, Code: "rpc_flood_wait", RetryAfter: wait}
+	case RPCTransient, RPCStalePeer:
+		return execution.Semantics{Disposition: execution.DispositionRetryable, Code: "rpc_" + f.Class.String()}
+	case RPCPermission, RPCAuth, RPCInvalidRequest:
+		return execution.Semantics{Disposition: execution.DispositionPermanent, Code: "rpc_" + f.Class.String()}
+	case RPCSuccess:
+		return execution.Semantics{Disposition: execution.DispositionSuccess}
+	default:
+		if semantics, ok := execution.ExplicitSemantics(f.Err); ok {
+			return semantics
+		}
+		return execution.Semantics{Disposition: execution.DispositionInternal, Code: "rpc_unknown"}
+	}
+}
+
 func defaultExecutorPolicy() RetryPolicy {
 	return RetryPolicy{
 		MaxAttempts:        3,

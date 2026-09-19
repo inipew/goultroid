@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/inipew/goultroid/internal/execution"
 )
 
 var (
@@ -84,6 +86,14 @@ func (e *RateLimitError) RateLimitWait() time.Duration {
 	return e.Wait
 }
 
+func (e *RateLimitError) ExecutionSemantics() execution.Semantics {
+	wait := time.Duration(0)
+	if e != nil && e.Wait > 0 {
+		wait = e.Wait
+	}
+	return execution.Semantics{Disposition: execution.DispositionRetryable, Code: "rate_limited", RetryAfter: wait}
+}
+
 func NewRateLimitError(wait time.Duration, err error) *RateLimitError {
 	return &RateLimitError{Wait: wait, Err: err}
 }
@@ -93,8 +103,18 @@ func IsPermanentError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, ErrValidation) || errors.Is(err, ErrInvocationDenied) || errors.Is(err, ErrPermissionDenied) || errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrForbidden) || errors.Is(err, ErrInvalidArgs) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrUnsupported) || errors.Is(err, ErrGroupOnly) || errors.Is(err, ErrPrivateOnly) || errors.Is(err, ErrReplyRequired) || errors.Is(err, ErrUnclosedQuote) || errors.Is(err, ErrTrailingEscape) || errors.Is(err, ErrResourceLimit) {
+	// Preserve the historical helper contract. The new cross-layer execution
+	// semantics intentionally treats resource pressure as retryable, but legacy
+	// callers of IsPermanentError have always treated ErrResourceLimit as final.
+	if errors.Is(err, ErrResourceLimit) {
 		return true
+	}
+	semantics := ExecutionSemantics(err)
+	switch semantics.Disposition {
+	case execution.DispositionHandled, execution.DispositionRejected, execution.DispositionPermanent:
+		return true
+	case execution.DispositionRetryable, execution.DispositionCancelled:
+		return false
 	}
 	text := strings.ToUpper(err.Error())
 	for _, marker := range []string{"CHAT_WRITE_FORBIDDEN", "CHANNEL_PRIVATE", "USER_BANNED", "USER_BANNED_IN_CHANNEL", "PEER_ID_INVALID", "USER_ID_INVALID", "CHAT_ID_INVALID", "MESSAGE_ID_INVALID", "SCHEDULED COMMAND NOT FOUND"} {
@@ -124,6 +144,13 @@ func (e *ErrorWithCategory) Unwrap() error {
 	return e.Err
 }
 
+func (e *ErrorWithCategory) ExecutionSemantics() execution.Semantics {
+	if e == nil {
+		return execution.Semantics{Disposition: execution.DispositionInternal, Code: "nil_category_error"}
+	}
+	return semanticsForCategory(e.Category)
+}
+
 func WrapCategory(category ErrorCategory, err error) error {
 	if err == nil {
 		return nil
@@ -147,9 +174,105 @@ func (e *UsageError) Unwrap() error {
 	return ErrInvalidArgs
 }
 
+func (e *UsageError) ExecutionSemantics() execution.Semantics {
+	return execution.Semantics{Disposition: execution.DispositionRejected, Code: "invalid_arguments"}
+}
+
 // NewUsageError returns an error indicating invalid or missing command arguments that unwraps to ErrInvalidArgs.
 func NewUsageError(msg string) error {
 	return &UsageError{Message: msg}
+}
+
+func semanticsForCategory(category ErrorCategory) execution.Semantics {
+	switch category {
+	case CategorySecurity:
+		return execution.Semantics{Disposition: execution.DispositionRejected, Code: "security_rejected"}
+	case CategoryInvalidInput:
+		return execution.Semantics{Disposition: execution.DispositionRejected, Code: "invalid_input"}
+	case CategoryResourceLimit:
+		return execution.Semantics{Disposition: execution.DispositionRetryable, Code: "resource_limit"}
+	case CategoryRateLimited:
+		return execution.Semantics{Disposition: execution.DispositionRetryable, Code: "rate_limited"}
+	case CategoryTransient:
+		return execution.Semantics{Disposition: execution.DispositionRetryable, Code: "transient"}
+	case CategoryPermanent:
+		return execution.Semantics{Disposition: execution.DispositionPermanent, Code: "permanent"}
+	case CategoryNone:
+		return execution.Semantics{Disposition: execution.DispositionSuccess}
+	default:
+		return execution.Semantics{Disposition: execution.DispositionInternal, Code: "internal"}
+	}
+}
+
+// ExecutionSemantics maps legacy core errors to the cross-layer execution
+// contract while preserving explicit semantics carried by wrapped errors.
+func ExecutionSemantics(err error) execution.Semantics {
+	if err == nil {
+		return execution.Semantics{Disposition: execution.DispositionSuccess}
+	}
+	if semantics, ok := execution.ExplicitSemantics(err); ok {
+		return semantics
+	}
+	switch {
+	case errors.Is(err, ErrInterceptHandled):
+		return execution.Semantics{Disposition: execution.DispositionHandled, Code: "intercept_handled"}
+	case errors.Is(err, ErrInvocationDenied):
+		return execution.Semantics{Disposition: execution.DispositionRejected, Code: "invocation_denied"}
+	case errors.Is(err, ErrPermissionDenied):
+		return execution.Semantics{Disposition: execution.DispositionRejected, Code: "permission_denied"}
+	case errors.Is(err, ErrUnauthorized):
+		return execution.Semantics{Disposition: execution.DispositionRejected, Code: "unauthorized"}
+	case errors.Is(err, ErrForbidden):
+		return execution.Semantics{Disposition: execution.DispositionRejected, Code: "forbidden"}
+	case errors.Is(err, ErrCooldownActive):
+		return execution.Semantics{Disposition: execution.DispositionRejected, Code: "cooldown_active"}
+	case errors.Is(err, ErrValidation):
+		return execution.Semantics{Disposition: execution.DispositionRejected, Code: "validation_failed"}
+	case errors.Is(err, ErrInvalidArgs):
+		return execution.Semantics{Disposition: execution.DispositionRejected, Code: "invalid_arguments"}
+	case errors.Is(err, ErrUnclosedQuote):
+		return execution.Semantics{Disposition: execution.DispositionRejected, Code: "unclosed_quote"}
+	case errors.Is(err, ErrTrailingEscape):
+		return execution.Semantics{Disposition: execution.DispositionRejected, Code: "trailing_escape"}
+	case errors.Is(err, ErrGroupOnly):
+		return execution.Semantics{Disposition: execution.DispositionRejected, Code: "group_only"}
+	case errors.Is(err, ErrPrivateOnly):
+		return execution.Semantics{Disposition: execution.DispositionRejected, Code: "private_only"}
+	case errors.Is(err, ErrReplyRequired):
+		return execution.Semantics{Disposition: execution.DispositionRejected, Code: "reply_required"}
+	case errors.Is(err, ErrRateLimited):
+		return execution.Semantics{Disposition: execution.DispositionRetryable, Code: "rate_limited"}
+	case errors.Is(err, ErrResourceLimit):
+		return execution.Semantics{Disposition: execution.DispositionRetryable, Code: "resource_limit"}
+	case errors.Is(err, ErrTimeout):
+		return execution.Semantics{Disposition: execution.DispositionRetryable, Code: "timeout"}
+	case errors.Is(err, ErrUnavailable):
+		return execution.Semantics{Disposition: execution.DispositionRetryable, Code: "unavailable"}
+	case errors.Is(err, ErrConflict):
+		return execution.Semantics{Disposition: execution.DispositionRetryable, Code: "conflict"}
+	case errors.Is(err, ErrLeaseLost):
+		return execution.Semantics{Disposition: execution.DispositionRetryable, Code: "lease_lost"}
+	case errors.Is(err, ErrCancelled):
+		return execution.Semantics{Disposition: execution.DispositionCancelled, Code: "cancelled"}
+	case errors.Is(err, ErrNotFound):
+		return execution.Semantics{Disposition: execution.DispositionPermanent, Code: "not_found"}
+	case errors.Is(err, ErrUnsupported):
+		return execution.Semantics{Disposition: execution.DispositionPermanent, Code: "unsupported"}
+	default:
+		return semanticsForCategory(CategoryOf(err))
+	}
+}
+
+// NormalizeExecutionError attaches typed execution semantics to a legacy core
+// error without changing errors.Is/errors.As behavior.
+func NormalizeExecutionError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if _, ok := execution.ExplicitSemantics(err); ok {
+		return err
+	}
+	return execution.WithSemantics(err, ExecutionSemantics(err))
 }
 
 func CategoryOf(err error) ErrorCategory {
