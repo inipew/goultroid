@@ -441,11 +441,12 @@ type EventBus struct {
 	mu            sync.RWMutex
 	subscribers   map[EventType]map[uint64]eventSubscriber
 	nextID        uint64
-	queue         chan eventJob
-	queueCritical chan eventJob
-	queueHigh     chan eventJob
-	queueLow      chan eventJob
-	orderedQueues [orderedPartitions]chan eventJob
+	queue         chan *eventJob
+	queueCritical chan *eventJob
+	queueHigh     chan *eventJob
+	queueLow      chan *eventJob
+	orderedQueues [orderedPartitions]chan *eventJob
+	jobPool       sync.Pool
 	middlewares   []EventMiddleware
 	stop          chan struct{}
 	workers       sync.WaitGroup
@@ -488,16 +489,16 @@ func (b *EventBus) SetTasks(client tasks.Client) {
 func NewEventBus() *EventBus {
 	b := &EventBus{
 		subscribers:   make(map[EventType]map[uint64]eventSubscriber),
-		queue:         make(chan eventJob, eventQueueSize),
-		queueCritical: make(chan eventJob, priorityQueueSize),
-		queueHigh:     make(chan eventJob, priorityQueueSize),
-		queueLow:      make(chan eventJob, priorityQueueSize),
+		queue:         make(chan *eventJob, eventQueueSize),
+		queueCritical: make(chan *eventJob, priorityQueueSize),
+		queueHigh:     make(chan *eventJob, priorityQueueSize),
+		queueLow:      make(chan *eventJob, priorityQueueSize),
 		stop:              make(chan struct{}),
 		closeDone:         make(chan struct{}),
 		workerIdleTimeout: defaultEventWorkerIdle,
 	}
 	for i := 0; i < orderedPartitions; i++ {
-		b.orderedQueues[i] = make(chan eventJob, priorityQueueSize)
+		b.orderedQueues[i] = make(chan *eventJob, priorityQueueSize)
 	}
 	return b
 }
@@ -645,6 +646,37 @@ func (b *EventBus) Use(mw ...EventMiddleware) {
 	b.middlewares = append(b.middlewares, mw...)
 }
 
+func (b *EventBus) acquireJob(job eventJob) *eventJob {
+	pooled := b.jobPool.Get()
+	var slot *eventJob
+	if pooled == nil {
+		slot = &eventJob{}
+	} else {
+		slot = pooled.(*eventJob)
+	}
+	*slot = job
+	return slot
+}
+
+func (b *EventBus) releaseJob(job *eventJob) {
+	if job == nil {
+		return
+	}
+	// Handlers/events can retain large object graphs. Always clear references
+	// before returning an envelope to the pool.
+	*job = eventJob{}
+	b.jobPool.Put(job)
+}
+
+func (b *EventBus) takeJob(job *eventJob) (eventJob, bool) {
+	if job == nil {
+		return eventJob{}, false
+	}
+	value := *job
+	b.releaseJob(job)
+	return value, true
+}
+
 func (b *EventBus) generalQueueDepth() int {
 	return len(b.queue) + len(b.queueCritical) + len(b.queueHigh) + len(b.queueLow)
 }
@@ -725,37 +757,51 @@ func (b *EventBus) worker() {
 		// Non-blocking priority drain checks preserve the existing critical/high
 		// preference before the blocking select.
 		select {
-		case job := <-b.queueCritical:
-			b.runJob(job)
+		case jobPtr := <-b.queueCritical:
+			if job, ok := b.takeJob(jobPtr); ok {
+				b.runJob(job)
+			}
 			resetIdle()
 			continue
 		default:
 		}
 
 		select {
-		case job := <-b.queueCritical:
-			b.runJob(job)
+		case jobPtr := <-b.queueCritical:
+			if job, ok := b.takeJob(jobPtr); ok {
+				b.runJob(job)
+			}
 			resetIdle()
 			continue
-		case job := <-b.queueHigh:
-			b.runJob(job)
+		case jobPtr := <-b.queueHigh:
+			if job, ok := b.takeJob(jobPtr); ok {
+				b.runJob(job)
+			}
 			resetIdle()
 			continue
 		default:
 		}
 
 		select {
-		case job := <-b.queueCritical:
-			b.runJob(job)
+		case jobPtr := <-b.queueCritical:
+			if job, ok := b.takeJob(jobPtr); ok {
+				b.runJob(job)
+			}
 			resetIdle()
-		case job := <-b.queueHigh:
-			b.runJob(job)
+		case jobPtr := <-b.queueHigh:
+			if job, ok := b.takeJob(jobPtr); ok {
+				b.runJob(job)
+			}
 			resetIdle()
-		case job := <-b.queue:
-			b.runJob(job)
+		case jobPtr := <-b.queue:
+			if job, ok := b.takeJob(jobPtr); ok {
+				b.runJob(job)
+			}
 			resetIdle()
-		case job := <-b.queueLow:
-			b.runJob(job)
+		case jobPtr := <-b.queueLow:
+			if job, ok := b.takeJob(jobPtr); ok {
+				b.runJob(job)
+			}
 			resetIdle()
 		case <-timer.C:
 			// Publish retirement under the same lock used by ensureGeneralWorkers.
@@ -780,7 +826,7 @@ func (b *EventBus) worker() {
 	}
 }
 
-func (b *EventBus) orderedWorker(partition int, ch <-chan eventJob) {
+func (b *EventBus) orderedWorker(partition int, ch <-chan *eventJob) {
 	released := false
 	defer func() {
 		if !released {
@@ -796,8 +842,10 @@ func (b *EventBus) orderedWorker(partition int, ch <-chan eventJob) {
 	defer timer.Stop()
 	for {
 		select {
-		case job := <-ch:
-			b.runJob(job)
+		case jobPtr := <-ch:
+			if job, ok := b.takeJob(jobPtr); ok {
+				b.runJob(job)
+			}
 			if !timer.Stop() {
 				select {
 				case <-timer.C:
@@ -833,14 +881,22 @@ func (b *EventBus) orderedWorker(partition int, ch <-chan eventJob) {
 func (b *EventBus) drainQueues() {
 	for {
 		select {
-		case job := <-b.queueCritical:
-			b.runJob(job)
-		case job := <-b.queueHigh:
-			b.runJob(job)
-		case job := <-b.queue:
-			b.runJob(job)
-		case job := <-b.queueLow:
-			b.runJob(job)
+		case jobPtr := <-b.queueCritical:
+			if job, ok := b.takeJob(jobPtr); ok {
+				b.runJob(job)
+			}
+		case jobPtr := <-b.queueHigh:
+			if job, ok := b.takeJob(jobPtr); ok {
+				b.runJob(job)
+			}
+		case jobPtr := <-b.queue:
+			if job, ok := b.takeJob(jobPtr); ok {
+				b.runJob(job)
+			}
+		case jobPtr := <-b.queueLow:
+			if job, ok := b.takeJob(jobPtr); ok {
+				b.runJob(job)
+			}
 		default:
 			return
 		}
@@ -1128,17 +1184,19 @@ func (b *EventBus) Publish(event Event) {
 		job := eventJob{subscriber: subscriber, event: event, priority: prio}
 		if ordKey != "" {
 			idx := partitionIndex(ordKey, orderedPartitions)
+			queued := b.acquireJob(job)
 			select {
-			case b.orderedQueues[idx] <- job:
+			case b.orderedQueues[idx] <- queued:
 				b.publishedCount.Add(1)
 				b.ensureOrderedWorker(idx)
 			default:
+				b.releaseJob(queued)
 				b.droppedCount.Add(1)
 			}
 			continue
 		}
 
-		var targetChan chan eventJob
+		var targetChan chan *eventJob
 		switch prio {
 		case PriorityCritical:
 			targetChan = b.queueCritical
@@ -1150,11 +1208,13 @@ func (b *EventBus) Publish(event Event) {
 			targetChan = b.queue
 		}
 
+		queued := b.acquireJob(job)
 		select {
-		case targetChan <- job:
+		case targetChan <- queued:
 			b.publishedCount.Add(1)
 			b.ensureGeneralWorkers()
 		default:
+			b.releaseJob(queued)
 			b.droppedCount.Add(1)
 		}
 	}
