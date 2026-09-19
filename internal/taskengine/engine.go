@@ -610,8 +610,26 @@ func (e *Engine) runtimeLoopDone() {
 	}
 }
 
+func (e *Engine) releaseQueuedRequests(inbox <-chan *engineRequest) {
+	for {
+		select {
+		case req, ok := <-inbox:
+			if !ok {
+				return
+			}
+			e.releaseRequest(req)
+		default:
+			return
+		}
+	}
+}
+
 // runLoop is the sole writer of execution state.
 func (e *Engine) runLoop(ctx context.Context, inbox <-chan *engineRequest) {
+	// Once the coordinator exits no queued control request can be processed.
+	// Clear pooled envelopes eagerly so their contexts/specs/results do not stay
+	// reachable through the Engine's retained channel after shutdown.
+	defer e.releaseQueuedRequests(inbox)
 	sweepTimer := time.NewTimer(time.Hour)
 	if !sweepTimer.Stop() {
 		select {
