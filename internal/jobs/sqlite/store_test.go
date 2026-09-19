@@ -433,3 +433,114 @@ func TestStoreCommitAttemptResultWithOutbox(t *testing.T) {
 		t.Fatalf("delivered outbox remained pending: %+v, %v", events, err)
 	}
 }
+
+
+func TestStoreAttemptSummaryAndNextLeaseFastPath(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	s := NewStore(db)
+	ctx := context.Background()
+
+	def := &jobs.JobDefinition{
+		ID:          "job-fast-summary",
+		ScopeOwner:  "system",
+		QuotaOwner:  "system",
+		HandlerType: "test.fast",
+		Enabled:     true,
+	}
+	if err := s.SaveDefinition(ctx, def); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	occ := &jobs.JobOccurrence{
+		ID:            "occ-fast-summary",
+		JobID:         def.ID,
+		ScheduledFor:  now,
+		OccurrenceKey: "fast-summary-key",
+		State:         jobs.OccurrenceReady,
+		ReadyAt:       now,
+	}
+	if err := s.MaterializeOccurrence(ctx, occ); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := s.PrepareNextAttemptLease(ctx, occ.ID, time.Minute)
+	if err != nil {
+		t.Fatalf("prepare first fast lease: %v", err)
+	}
+	if first.AttemptNo != 1 || first.TaskID != "task:occ-fast-summary:1" {
+		t.Fatalf("first attempt identity mismatch: %+v", first)
+	}
+	if err := s.CommitAttemptDeferred(ctx, first.ID, first.LeaseEpoch, time.Now().UTC().Add(-time.Millisecond), "local limiter"); err != nil {
+		t.Fatalf("commit first deferred: %v", err)
+	}
+
+	summary, err := s.AttemptSummary(ctx, occ.ID)
+	if err != nil {
+		t.Fatalf("summary after deferral: %v", err)
+	}
+	if summary.OccurrenceState != jobs.OccurrenceDispatched ||
+		summary.AttemptCount != 1 ||
+		summary.RetryBudgetUses != 0 ||
+		summary.Deferrals != 1 ||
+		summary.Latest.State != jobs.AttemptDeferred ||
+		summary.Latest.AttemptNo != 1 {
+		t.Fatalf("unexpected deferred summary: %+v", summary)
+	}
+
+	second, err := s.PrepareNextAttemptLease(ctx, occ.ID, time.Minute)
+	if err != nil {
+		t.Fatalf("prepare second fast lease: %v", err)
+	}
+	if second.AttemptNo != 2 || second.TaskID != "task:occ-fast-summary:2" {
+		t.Fatalf("second attempt identity mismatch: %+v", second)
+	}
+	if err := s.CommitAttemptResult(ctx, second.ID, second.LeaseEpoch, jobs.AttemptFailed, nil, "retryable"); err != nil {
+		t.Fatalf("commit second failed attempt: %v", err)
+	}
+
+	summary, err = s.AttemptSummary(ctx, occ.ID)
+	if err != nil {
+		t.Fatalf("summary after failed retry: %v", err)
+	}
+	if summary.OccurrenceState != jobs.OccurrenceDispatched ||
+		summary.AttemptCount != 2 ||
+		summary.RetryBudgetUses != 1 ||
+		summary.Deferrals != 1 ||
+		summary.Latest.State != jobs.AttemptFailed ||
+		summary.Latest.AttemptNo != 2 ||
+		summary.Latest.TaskID != second.TaskID {
+		t.Fatalf("unexpected mixed summary: %+v", summary)
+	}
+}
+
+func TestStorePrepareNextAttemptLeasePreservesActiveAttemptFencing(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	s := NewStore(db)
+	ctx := context.Background()
+
+	def := &jobs.JobDefinition{ID: "job-fast-fence", ScopeOwner: "system", QuotaOwner: "system", HandlerType: "test.fast", Enabled: true}
+	if err := s.SaveDefinition(ctx, def); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	occ := &jobs.JobOccurrence{ID: "occ-fast-fence", JobID: def.ID, ScheduledFor: now, OccurrenceKey: "fast-fence-key", State: jobs.OccurrenceReady, ReadyAt: now}
+	if err := s.MaterializeOccurrence(ctx, occ); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := s.PrepareNextAttemptLease(ctx, occ.ID, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PrepareNextAttemptLease(ctx, occ.ID, time.Minute); !errors.Is(err, ErrOccurrenceNotReady) {
+		t.Fatalf("active predecessor allowed a second lease: %v", err)
+	}
+	if err := s.CommitAttemptResult(ctx, first.ID, first.LeaseEpoch, jobs.AttemptFailed, nil, "retry"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PrepareNextAttemptLease(ctx, occ.ID, time.Minute); err != nil {
+		t.Fatalf("terminal predecessor did not allow next lease: %v", err)
+	}
+}
