@@ -320,6 +320,7 @@ func BenchmarkServiceSinglePeerWrapperFastPath(b *testing.B) {
 func BenchmarkHierarchicalRPCLimiterSafePeerReclamation(b *testing.B) {
 	for _, cardinality := range []int{1000, DefaultMaxLimiterBuckets} {
 		b.Run(fmt.Sprintf("peers_%d", cardinality), func(b *testing.B) {
+			b.StopTimer()
 			for i := 0; i < b.N; i++ {
 				limiter := NewHierarchicalRPCLimiter(HierarchicalLimiterConfig{
 					GlobalRate:         1e9,
