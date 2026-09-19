@@ -125,6 +125,7 @@ func TestCooldownTrackerCardinalityIsBoundedFailClosed(t *testing.T) {
 		}
 		break
 	}
+	tracker.lastCapacitySweep = time.Time{}
 	tracker.mu.Unlock()
 
 	if _, ok := tracker.CheckAndRecord(9_999_999, "bounded", time.Hour); !ok {

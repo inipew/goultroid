@@ -1,7 +1,6 @@
 package client
 
 import (
-	"fmt"
 	"testing"
 	"time"
 )
@@ -27,10 +26,11 @@ func TestUserRateLimiterCardinalityIsBoundedFailClosed(t *testing.T) {
 		bucket.lastAccess = time.Now().Add(-2 * time.Hour)
 		break
 	}
+	limiter.lastCapacitySweep = time.Time{}
 	limiter.mu.Unlock()
 
 	if !limiter.Allow(99_999_999, "command") {
-		t.Fatal(fmt.Sprintf("fully refilled idle bucket was not reclaimed; buckets=%d", len(limiter.buckets)))
+		t.Fatalf("fully refilled idle bucket was not reclaimed; buckets=%d", len(limiter.buckets))
 	}
 	if got := len(limiter.buckets); got > maxUserRateLimiterBuckets {
 		t.Fatalf("assistant limiter grew past cap: got=%d cap=%d", got, maxUserRateLimiterBuckets)

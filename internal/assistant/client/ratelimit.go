@@ -17,14 +17,18 @@ type rateBucket struct {
 	lastAccess time.Time
 }
 
-const maxUserRateLimiterBuckets = 4096
+const (
+	maxUserRateLimiterBuckets        = 4096
+	userRateLimitCapacitySweepInterval = 30 * time.Second
+)
 
 // UserRateLimiter implements token bucket rate limiting.
 type UserRateLimiter struct {
 	mu          sync.Mutex
 	buckets     map[string]*rateBucket
 	maxTokens   int
-	refillEvery time.Duration
+	refillEvery        time.Duration
+	lastCapacitySweep time.Time
 }
 
 // NewUserRateLimiter creates a RateLimiter with configured burst and refill rate.
@@ -66,7 +70,10 @@ func (l *UserRateLimiter) Allow(userID int64, category string) bool {
 	b, ok := l.buckets[key]
 	if !ok {
 		if len(l.buckets) >= maxUserRateLimiterBuckets {
-			l.reclaimIdleBucketsLocked(now)
+			if l.lastCapacitySweep.IsZero() || now.Sub(l.lastCapacitySweep) >= userRateLimitCapacitySweepInterval {
+				l.reclaimIdleBucketsLocked(now)
+				l.lastCapacitySweep = now
+			}
 			if len(l.buckets) >= maxUserRateLimiterBuckets {
 				// Cardinality pressure must not reset another active user's
 				// limiter state. New identities are denied until idle state can

@@ -29,6 +29,7 @@ func TestLimiterBucketCardinalityIsBoundedFailClosed(t *testing.T) {
 		b.lastAccess = time.Now().Add(-10 * time.Minute)
 		break
 	}
+	l.lastCapacitySweep = time.Time{}
 	l.mu.Unlock()
 
 	if !l.Allow(DimensionUser, "replacement") {

@@ -18,13 +18,15 @@ type Cache interface {
 
 // MemoryCache implements a concurrent in-memory Peer cache.
 type MemoryCache struct {
-	mu      sync.RWMutex
-	records map[uint64]PeerRecord // key: (uint64(kind) << 56) | (uint64(id) & 0x00FFFFFFFFFFFFFF)
+	mu        sync.RWMutex
+	records   map[uint64]PeerRecord // key: (uint64(kind) << 56) | (uint64(id) & 0x00FFFFFFFFFFFFFF)
+	lastPrune time.Time
 }
 
 const (
-	maxMemoryCacheEntries = 4096
-	memoryCacheTTL        = 30 * time.Minute
+	maxMemoryCacheEntries    = 4096
+	memoryCacheTTL           = 30 * time.Minute
+	memoryCachePruneInterval = 30 * time.Second
 )
 
 // NewMemoryCache creates an initialized in-memory cache.
@@ -51,23 +53,20 @@ func (c *MemoryCache) ensureCapacityLocked(now time.Time) {
 	if len(c.records) < maxMemoryCacheEntries {
 		return
 	}
-	c.pruneExpiredLocked(now)
-	if len(c.records) < maxMemoryCacheEntries {
-		return
-	}
-
-	var oldestKey uint64
-	var oldest time.Time
-	found := false
-	for key, rec := range c.records {
-		if !found || rec.UpdatedAt.Before(oldest) {
-			oldestKey = key
-			oldest = rec.UpdatedAt
-			found = true
+	if c.lastPrune.IsZero() || now.Sub(c.lastPrune) >= memoryCachePruneInterval {
+		c.pruneExpiredLocked(now)
+		c.lastPrune = now
+		if len(c.records) < maxMemoryCacheEntries {
+			return
 		}
 	}
-	if found {
-		delete(c.records, oldestKey)
+
+	// Peer state is a read-through optimization, not an authorization fence.
+	// Evict one arbitrary entry in O(1) expected time rather than scanning the
+	// whole cache for an LRU victim on every high-cardinality insertion.
+	for key := range c.records {
+		delete(c.records, key)
+		return
 	}
 }
 
@@ -87,10 +86,17 @@ func (c *MemoryCache) Get(kind PeerKind, id int64) (PeerRecord, bool) {
 	key := cacheKey(kind, id)
 	now := time.Now()
 
+	c.mu.RLock()
+	rec, ok := c.records[key]
+	expired := ok && !rec.UpdatedAt.IsZero() && now.Sub(rec.UpdatedAt) >= memoryCacheTTL
+	c.mu.RUnlock()
+	if !expired {
+		return rec, ok
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	rec, ok := c.records[key]
+	rec, ok = c.records[key]
 	if ok && !rec.UpdatedAt.IsZero() && now.Sub(rec.UpdatedAt) >= memoryCacheTTL {
 		delete(c.records, key)
 		return PeerRecord{}, false

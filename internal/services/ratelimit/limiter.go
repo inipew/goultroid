@@ -15,7 +15,10 @@ type bucket struct {
 	lastAccess time.Time
 }
 
-const defaultMaxBuckets = 4096
+const (
+	defaultMaxBuckets           = 4096
+	capacitySweepInterval       = 30 * time.Second
+)
 
 // Limiter provides multi-dimensional token-bucket rate-limiting.
 type Limiter struct {
@@ -23,8 +26,9 @@ type Limiter struct {
 	buckets         map[string]*bucket
 	policies        map[Dimension]Policy
 	defaultPolicy   Policy
-	cleanupInterval time.Duration
-	maxBuckets      int
+	cleanupInterval   time.Duration
+	maxBuckets        int
+	lastCapacitySweep time.Time
 
 	lifecycleMu sync.Mutex
 	started     bool
@@ -111,7 +115,10 @@ func (l *Limiter) ensureBucketCapacityLocked(now time.Time) bool {
 	if l.maxBuckets <= 0 || len(l.buckets) < l.maxBuckets {
 		return true
 	}
-	l.cleanupIdleBucketsLocked(now)
+	if l.lastCapacitySweep.IsZero() || now.Sub(l.lastCapacitySweep) >= capacitySweepInterval {
+		l.cleanupIdleBucketsLocked(now)
+		l.lastCapacitySweep = now
+	}
 	return len(l.buckets) < l.maxBuckets
 }
 

@@ -16,12 +16,16 @@ type cooldownRecord struct {
 	duration time.Duration
 }
 
-const maxCooldownRecords = 4096
+const (
+	maxCooldownRecords             = 4096
+	cooldownCapacitySweepInterval  = 30 * time.Second
+)
 
 // CooldownTracker provides thread-safe rate-limiting per user and command.
 type CooldownTracker struct {
-	mu      sync.RWMutex
-	records map[userCommandKey]cooldownRecord
+	mu                sync.RWMutex
+	records           map[userCommandKey]cooldownRecord
+	lastCapacitySweep time.Time
 }
 
 // NewCooldownTracker creates a new CooldownTracker instance.
@@ -64,7 +68,10 @@ func (c *CooldownTracker) CheckAndRecord(userID int64, cmdName string, duration 
 			return duration - elapsed, false
 		}
 	} else if len(c.records) >= maxCooldownRecords {
-		c.pruneExpiredLocked(now)
+		if c.lastCapacitySweep.IsZero() || now.Sub(c.lastCapacitySweep) >= cooldownCapacitySweepInterval {
+			c.pruneExpiredLocked(now)
+			c.lastCapacitySweep = now
+		}
 		if len(c.records) >= maxCooldownRecords {
 			// Fail closed rather than evicting an active cooldown and allowing
 			// a new identity to bypass admission under cardinality pressure.
