@@ -557,10 +557,24 @@ func (m *Manager) CancelOccurrence(ctx context.Context, occurrenceID, reason str
 	return nil
 }
 
+func timingOwnedDefinition(id string) bool {
+	return strings.HasPrefix(id, "scheduler:job:") || strings.HasPrefix(id, "periodic:")
+}
+
 func (m *Manager) untrack(occurrenceID string) {
 	m.mu.Lock()
+	tracked, existed := m.tracked[occurrenceID]
 	delete(m.tracked, occurrenceID)
+	wake := m.scheduleWake
+	shouldWake := existed && timingOwnedDefinition(tracked.def.ID)
 	m.mu.Unlock()
+
+	// Timing-owned occurrences wake scheduler reconciliation on settlement.
+	// The callback is coalescing/non-blocking; durable safety polling remains
+	// only for crash or lost-wake recovery.
+	if shouldWake && wake != nil {
+		wake()
+	}
 }
 
 func (m *Manager) rootContext() context.Context {

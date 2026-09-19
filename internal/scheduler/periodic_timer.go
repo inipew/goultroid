@@ -74,6 +74,7 @@ func periodicDefinitionID(owner, name string) string {
 
 const periodicHandlerType = "periodic.task"
 const periodicPruneWindow = time.Hour
+const periodicSettlementSafetyInterval = 30 * time.Second
 
 func newPeriodicCoordinator(logger *zap.Logger) *periodicCoordinator {
 	if logger == nil {
@@ -527,7 +528,7 @@ func (c *periodicCoordinator) loop(done chan struct{}) {
 					default:
 					}
 				}
-				timer.Reset(time.Second)
+				timer.Reset(periodicSettlementSafetyInterval)
 				select {
 				case <-ctx.Done():
 					return
@@ -548,8 +549,8 @@ func (c *periodicCoordinator) loop(done chan struct{}) {
 		if delay < 0 {
 			delay = 0
 		}
-		if delay > time.Second && c.inflightCount() > 0 {
-			delay = time.Second
+		if delay > periodicSettlementSafetyInterval && c.inflightCount() > 0 {
+			delay = periodicSettlementSafetyInterval
 		}
 		if !timer.Stop() {
 			select {

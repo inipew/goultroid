@@ -26,9 +26,10 @@ const (
 )
 
 const (
-	actionTimeout       = 90 * time.Second
-	schedulerClaimLease = 3 * time.Minute
-	misfireThreshold    = time.Minute
+	actionTimeout                    = 90 * time.Second
+	schedulerClaimLease              = 3 * time.Minute
+	misfireThreshold                 = time.Minute
+	schedulerSettlementSafetyInterval = 30 * time.Second
 )
 
 // trackedClaim follows one claimed row until its occurrence settles durably.
@@ -156,7 +157,12 @@ func (e *Engine) SetJobsManager(jobsMgr *jobs.Manager) {
 	if jobsMgr == nil {
 		return
 	}
-	jobsMgr.SetScheduleWake(e.notifyWake)
+	jobsMgr.SetScheduleWake(func() {
+		e.notifyWake()
+		if e.periodic != nil {
+			e.periodic.notify()
+		}
+	})
 	if err := jobsMgr.RegisterHandler(periodicHandlerType, e.runPeriodicAction); err != nil {
 		e.logger.Warn("register periodic action handler", zap.Error(err))
 	}
@@ -633,8 +639,8 @@ func (e *Engine) runLoop(ctx context.Context, done chan struct{}) {
 
 		// Active legacy claims need settlement reconciliation. This polling is
 		// work-driven; with no claims and no schedule the loop sleeps on wake only.
-		if e.trackedClaimCount() > 0 && (!hasDeadline || nextDelay > time.Second) {
-			nextDelay = time.Second
+		if e.trackedClaimCount() > 0 && (!hasDeadline || nextDelay > schedulerSettlementSafetyInterval) {
+			nextDelay = schedulerSettlementSafetyInterval
 			hasDeadline = true
 		}
 
