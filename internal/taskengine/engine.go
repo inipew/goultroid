@@ -495,10 +495,12 @@ func NewEngine(cfg Config) *Engine {
 		idleTimeouts[poolID] = idleTimeout
 		generations[poolID] = 1
 		slots := make([]int, pcfg.Concurrency)
+		// Mailboxes are allocated by spawnWorker per physical generation. Keeping
+		// this slice nil-initialized avoids allocating channels for every maximum
+		// slot when the default zero-idle pools have never executed work.
 		mboxes := make([]chan workerAssignment, pcfg.Concurrency)
 		for i := 0; i < pcfg.Concurrency; i++ {
 			slots[i] = i
-			mboxes[i] = make(chan workerAssignment, 1)
 		}
 		idleSlots[poolID] = slots[:0]
 		mailboxes[poolID] = mboxes
