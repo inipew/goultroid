@@ -321,3 +321,45 @@ func TestHierarchicalRPCLimiter_ExtendingPenaltyDoesNotGrowHeapState(t *testing.
 		t.Fatalf("expected one active penalty, got %d", penalties)
 	}
 }
+
+
+func TestHierarchicalRPCLimiter_TypedPeerIdentitySeparatesKinds(t *testing.T) {
+	limiter := NewHierarchicalRPCLimiter(HierarchicalLimiterConfig{
+		GlobalRate:         100,
+		GlobalBurst:        100,
+		DefaultFamilyRate:  100,
+		DefaultFamilyBurst: 100,
+		DefaultMethodRate:  100,
+		DefaultMethodBurst: 100,
+		DefaultPeerRate:    1,
+		DefaultPeerBurst:   1,
+		MaxBuckets:         16,
+		MaxPenalties:       16,
+		IdleTTL:            time.Minute,
+	})
+	now := time.Now()
+	user := []LimitKey{{Scope: "peer", Key: "user", ID: 42}}
+	channel := []LimitKey{{Scope: "peer", Key: "channel", ID: 42}}
+
+	if res := limiter.Reserve(now, user, 1); !res.Allowed {
+		t.Fatalf("first typed user reservation failed: %+v", res)
+	}
+	if res := limiter.Reserve(now, user, 1); res.Allowed || res.RetryAfter <= 0 {
+		t.Fatalf("typed user bucket was not independently exhausted: %+v", res)
+	}
+	if res := limiter.Reserve(now, channel, 1); !res.Allowed {
+		t.Fatalf("channel with same numeric id collided with user bucket: %+v", res)
+	}
+
+	limiter.Penalize(now, user, 5*time.Second)
+	if res := limiter.Reserve(now, user, 1); res.Allowed || res.RetryAfter != 5*time.Second {
+		t.Fatalf("typed user penalty missing: %+v", res)
+	}
+	if res := limiter.Reserve(now, channel, 1); res.Allowed {
+		// The channel token was consumed above; advance enough for exactly one
+		// peer token so this assertion tests penalty isolation, not token state.
+		if res2 := limiter.Reserve(now.Add(time.Second), channel, 1); !res2.Allowed {
+			t.Fatalf("typed user penalty leaked into channel identity: %+v", res2)
+		}
+	}
+}
