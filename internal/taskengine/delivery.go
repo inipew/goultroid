@@ -9,6 +9,8 @@ import (
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
+const defaultLaneIdleTimeout = 30 * time.Second
+
 // Bounded completion-callback delivery (Phase B5).
 //
 // Delivery capacity is reserved at task admission for every WorkSpec with an
@@ -27,13 +29,14 @@ type completionDelivery struct {
 	queue        chan deliveryItem
 	reservations chan struct{}
 	workers      int
+	idleTimeout  time.Duration
 	pending      atomic.Int64
 	active       atomic.Int64
 	failed       atomic.Int64
 	stopping     atomic.Bool
 	remaining    atomic.Int64
 
-	wg       sync.WaitGroup
+	workerMu sync.Mutex
 	stopCh   chan struct{}
 	stopOs   sync.Once
 	done     chan struct{}
@@ -51,31 +54,77 @@ func newCompletionDelivery(workers, queueCap int) *completionDelivery {
 		queue:        make(chan deliveryItem, queueCap),
 		reservations: make(chan struct{}, queueCap),
 		workers:      workers,
+		idleTimeout:  defaultLaneIdleTimeout,
 		stopCh:       make(chan struct{}),
 		done:         make(chan struct{}),
 	}
 }
 
+// start is intentionally passive. Workers are created only after callback work
+// is queued, so an idle TaskEngine does not retain completion goroutines.
 func (d *completionDelivery) start() {
 	if d == nil {
 		return
 	}
-	d.remaining.Store(int64(d.workers))
-	for i := 0; i < d.workers; i++ {
-		d.wg.Add(1)
+	if d.idleTimeout <= 0 {
+		d.idleTimeout = defaultLaneIdleTimeout
+	}
+}
+
+func (d *completionDelivery) ensureWorkers() {
+	if d == nil || d.stopping.Load() {
+		return
+	}
+
+	d.workerMu.Lock()
+	defer d.workerMu.Unlock()
+	if d.stopping.Load() {
+		return
+	}
+
+	target := len(d.queue)
+	if target < 1 {
+		target = 1
+	}
+	if target > d.workers {
+		target = d.workers
+	}
+	running := int(d.remaining.Load())
+	for running < target {
+		d.remaining.Add(1)
+		running++
 		go d.loop()
 	}
 }
 
 func (d *completionDelivery) workerDone() {
-	d.wg.Done()
-	if d.remaining.Add(-1) == 0 {
-		d.doneOnce.Do(func() { close(d.done) })
+	remaining := d.remaining.Add(-1)
+	if d.stopping.Load() {
+		if remaining == 0 {
+			d.doneOnce.Do(func() { close(d.done) })
+		}
+		return
+	}
+	if len(d.queue) > 0 {
+		d.ensureWorkers()
 	}
 }
 
 func (d *completionDelivery) loop() {
 	defer d.workerDone()
+	timer := time.NewTimer(d.idleTimeout)
+	defer timer.Stop()
+
+	resetTimer := func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(d.idleTimeout)
+	}
+
 	for {
 		select {
 		case <-d.stopCh:
@@ -93,6 +142,12 @@ func (d *completionDelivery) loop() {
 				}()
 				item.fn(item.res)
 			}()
+			resetTimer()
+		case <-timer.C:
+			if len(d.queue) == 0 {
+				return
+			}
+			timer.Reset(d.idleTimeout)
 		}
 	}
 }
@@ -147,6 +202,7 @@ func (d *completionDelivery) enqueueReserved(fn func(tasks.TaskResult), res task
 	d.pending.Add(1)
 	select {
 	case d.queue <- deliveryItem{fn: fn, res: res, release: true}:
+		d.ensureWorkers()
 		return true
 	default:
 		d.pending.Add(-1)

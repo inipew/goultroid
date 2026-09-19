@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const defaultDurabilityConcurrency = 4
@@ -16,15 +17,16 @@ const defaultDurabilityConcurrency = 4
 // sized to ResultCapacity, so the number of durability-required tasks that can
 // reach this lane is itself bounded by the same credit budget.
 type durabilityLane struct {
-	queue     chan func()
-	workers   int
-	pending   atomic.Int64
-	active    atomic.Int64
-	failed    atomic.Int64
-	stopping  atomic.Bool
-	remaining atomic.Int64
+	queue       chan func()
+	workers     int
+	idleTimeout time.Duration
+	pending     atomic.Int64
+	active      atomic.Int64
+	failed      atomic.Int64
+	stopping    atomic.Bool
+	remaining   atomic.Int64
 
-	wg       sync.WaitGroup
+	workerMu sync.Mutex
 	stopCh   chan struct{}
 	stopOnce sync.Once
 	done     chan struct{}
@@ -39,33 +41,79 @@ func newDurabilityLane(workers, queueCap int) *durabilityLane {
 		queueCap = 1
 	}
 	return &durabilityLane{
-		queue:   make(chan func(), queueCap),
-		workers: workers,
-		stopCh:  make(chan struct{}),
-		done:    make(chan struct{}),
+		queue:       make(chan func(), queueCap),
+		workers:     workers,
+		idleTimeout: defaultLaneIdleTimeout,
+		stopCh:      make(chan struct{}),
+		done:        make(chan struct{}),
 	}
 }
 
+// start is intentionally passive. Durability workers exist only while commit
+// acknowledgements or direct fallback commits are actually pending.
 func (d *durabilityLane) start() {
 	if d == nil {
 		return
 	}
-	d.remaining.Store(int64(d.workers))
-	for i := 0; i < d.workers; i++ {
-		d.wg.Add(1)
+	if d.idleTimeout <= 0 {
+		d.idleTimeout = defaultLaneIdleTimeout
+	}
+}
+
+func (d *durabilityLane) ensureWorkers() {
+	if d == nil || d.stopping.Load() {
+		return
+	}
+
+	d.workerMu.Lock()
+	defer d.workerMu.Unlock()
+	if d.stopping.Load() {
+		return
+	}
+
+	target := len(d.queue)
+	if target < 1 {
+		target = 1
+	}
+	if target > d.workers {
+		target = d.workers
+	}
+	running := int(d.remaining.Load())
+	for running < target {
+		d.remaining.Add(1)
+		running++
 		go d.loop()
 	}
 }
 
 func (d *durabilityLane) workerDone() {
-	d.wg.Done()
-	if d.remaining.Add(-1) == 0 {
-		d.doneOnce.Do(func() { close(d.done) })
+	remaining := d.remaining.Add(-1)
+	if d.stopping.Load() {
+		if remaining == 0 {
+			d.doneOnce.Do(func() { close(d.done) })
+		}
+		return
+	}
+	if len(d.queue) > 0 {
+		d.ensureWorkers()
 	}
 }
 
 func (d *durabilityLane) loop() {
 	defer d.workerDone()
+	timer := time.NewTimer(d.idleTimeout)
+	defer timer.Stop()
+
+	resetTimer := func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(d.idleTimeout)
+	}
+
 	for {
 		select {
 		case <-d.stopCh:
@@ -80,6 +128,12 @@ func (d *durabilityLane) loop() {
 				}()
 				fn()
 			}()
+			resetTimer()
+		case <-timer.C:
+			if len(d.queue) == 0 {
+				return
+			}
+			timer.Reset(d.idleTimeout)
 		}
 	}
 }
@@ -94,6 +148,7 @@ func (d *durabilityLane) enqueue(fn func()) bool {
 	d.pending.Add(1)
 	select {
 	case d.queue <- fn:
+		d.ensureWorkers()
 		return true
 	default:
 		d.pending.Add(-1)
