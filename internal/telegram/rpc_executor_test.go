@@ -775,10 +775,40 @@ func TestRPCExecutor_InteractiveShortLimiterWaitRemainsInline(t *testing.T) {
 }
 
 
-func TestRPCExecutor_DurableShortLimiterWaitYieldsWithoutSleep(t *testing.T) {
+func TestRPCExecutor_DurableLimiterWaitAtDefaultThresholdRemainsInline(t *testing.T) {
 	clock := NewFakeClock(time.Now())
 	sleeper := &FakeSleeper{}
-	limiter := &oneWaitLimiter{wait: 25 * time.Millisecond}
+	limiter := &oneWaitLimiter{wait: defaultDurableLimiterInlineWaitMax}
+	exec := newTestExecutor(limiter, clock, sleeper, nil)
+
+	ctx := execution.WithMetadata(context.Background(), execution.Metadata{CanDurablyYield: true})
+	var calls int
+	err := exec.Do(ctx, RPCMeta{
+		Method: "messages.getHistory",
+		Kind:   RPCReadOnly,
+	}, func(context.Context) error {
+		calls++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("durable short limiter wait failed: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("physical RPC calls=%d, want 1", calls)
+	}
+	if sleeper.Calls() != 1 || sleeper.TotalSleep() != defaultDurableLimiterInlineWaitMax {
+		t.Fatalf("durable short wait was not kept inline: calls=%d total=%s", sleeper.Calls(), sleeper.TotalSleep())
+	}
+	if limiter.reserves != 2 {
+		t.Fatalf("limiter reserve calls=%d, want 2 after inline re-reservation", limiter.reserves)
+	}
+}
+
+func TestRPCExecutor_DurableLimiterWaitAboveDefaultThresholdYieldsWithoutSleep(t *testing.T) {
+	clock := NewFakeClock(time.Now())
+	sleeper := &FakeSleeper{}
+	wait := defaultDurableLimiterInlineWaitMax + time.Millisecond
+	limiter := &oneWaitLimiter{wait: wait}
 	exec := newTestExecutor(limiter, clock, sleeper, nil)
 
 	ctx := execution.WithMetadata(context.Background(), execution.Metadata{CanDurablyYield: true})
@@ -800,8 +830,8 @@ func TestRPCExecutor_DurableShortLimiterWaitYieldsWithoutSleep(t *testing.T) {
 	if !errors.As(err, &failure) {
 		t.Fatalf("expected RPCFailure, got %T", err)
 	}
-	if failure.RetryAfter != 25*time.Millisecond {
-		t.Fatalf("retry_after=%s, want 25ms", failure.RetryAfter)
+	if failure.RetryAfter != wait {
+		t.Fatalf("retry_after=%s, want %s", failure.RetryAfter, wait)
 	}
 	if failure.Attempts != 0 {
 		t.Fatalf("physical RPC attempts=%d, want 0 before limiter admission", failure.Attempts)
@@ -814,5 +844,52 @@ func TestRPCExecutor_DurableShortLimiterWaitYieldsWithoutSleep(t *testing.T) {
 	}
 	if limiter.reserves != 1 {
 		t.Fatalf("limiter reserve calls=%d, want 1 before durable deferral", limiter.reserves)
+	}
+}
+
+func TestRPCExecutor_DurableLimiterInlineThresholdIsConfigurable(t *testing.T) {
+	clock := NewFakeClock(time.Now())
+	sleeper := &FakeSleeper{}
+	limiter := &oneWaitLimiter{wait: 75 * time.Millisecond}
+	exec, err := NewRPCExecutor(RPCExecutorConfig{
+		Limiter:                       limiter,
+		Clock:                         clock,
+		Sleeper:                       sleeper,
+		DurableLimiterInlineWaitMax:   100 * time.Millisecond,
+		DefaultPolicy: RetryPolicy{
+			MaxAttempts:        3,
+			BaseDelay:          10 * time.Millisecond,
+			MaxDelay:           100 * time.Millisecond,
+			MaxElapsed:         time.Second,
+			InlineFloodWaitMax: 2 * time.Second,
+		},
+	})
+	if err != nil {
+		t.Fatalf("new executor: %v", err)
+	}
+
+	ctx := execution.WithMetadata(context.Background(), execution.Metadata{CanDurablyYield: true})
+	var calls int
+	if err := exec.Do(ctx, RPCMeta{
+		Method: "messages.getHistory",
+		Kind:   RPCReadOnly,
+	}, func(context.Context) error {
+		calls++
+		return nil
+	}); err != nil {
+		t.Fatalf("custom inline threshold should keep wait inline: %v", err)
+	}
+	if calls != 1 || sleeper.Calls() != 1 || sleeper.TotalSleep() != 75*time.Millisecond {
+		t.Fatalf("unexpected custom-threshold behavior: rpc_calls=%d sleep_calls=%d total_sleep=%s", calls, sleeper.Calls(), sleeper.TotalSleep())
+	}
+}
+
+func TestNewRPCExecutor_RejectsNegativeDurableLimiterInlineThreshold(t *testing.T) {
+	_, err := NewRPCExecutor(RPCExecutorConfig{
+		DurableLimiterInlineWaitMax: -time.Millisecond,
+		DefaultPolicy:               defaultExecutorPolicy(),
+	})
+	if err == nil {
+		t.Fatal("expected negative durable limiter inline threshold to be rejected")
 	}
 }
