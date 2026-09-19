@@ -157,3 +157,56 @@ func TestWriteEnvRejectsInvalidTaskEngineConfig(t *testing.T) {
 		t.Fatal("expected invalid TaskEngine config to be rejected")
 	}
 }
+
+func TestTaskEngineExplicitMinDisablesDefaultZeroIdle(t *testing.T) {
+	lookup := func(key string) string {
+		if key == "TASKENGINE_POOL_GENERAL_MIN" {
+			return "1"
+		}
+		return ""
+	}
+	cfg, err := loadTaskEngineConfig(lookup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := cfg.Pools["general"]
+	if pool.ZeroIdle {
+		t.Fatal("explicit MIN must preserve legacy minimum-worker semantics")
+	}
+	if pool.MinConcurrency != 1 {
+		t.Fatalf("general MinConcurrency=%d, want 1", pool.MinConcurrency)
+	}
+}
+
+func TestTaskEngineExplicitZeroIdleOverridesMin(t *testing.T) {
+	lookup := func(key string) string {
+		switch key {
+		case "TASKENGINE_POOL_GENERAL_MIN":
+			return "2"
+		case "TASKENGINE_POOL_GENERAL_ZERO_IDLE":
+			return "true"
+		default:
+			return ""
+		}
+	}
+	cfg, err := loadTaskEngineConfig(lookup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := cfg.Pools["general"]
+	if !pool.ZeroIdle || pool.MinConcurrency != 0 {
+		t.Fatalf("zero-idle override not canonicalized: %+v", pool)
+	}
+}
+
+func TestTaskEngineZeroIdleEnvValidation(t *testing.T) {
+	_, err := loadTaskEngineConfig(func(key string) string {
+		if key == "TASKENGINE_POOL_GENERAL_ZERO_IDLE" {
+			return "not-a-bool"
+		}
+		return ""
+	})
+	if err == nil {
+		t.Fatal("expected invalid ZERO_IDLE boolean to fail")
+	}
+}

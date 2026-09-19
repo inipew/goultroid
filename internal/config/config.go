@@ -206,8 +206,20 @@ func loadTaskEngineConfig(lookup func(string) string) (taskengine.Config, error)
 		if pool.Concurrency, err = optionalInt(lookup, prefix+"MAX", pool.Concurrency); err != nil {
 			return cfg, err
 		}
-		if pool.MinConcurrency, err = optionalInt(lookup, prefix+"MIN", pool.MinConcurrency); err != nil {
+		if rawMin := strings.TrimSpace(lookup(prefix + "MIN")); rawMin != "" {
+			if pool.MinConcurrency, err = optionalInt(func(string) string { return rawMin }, prefix+"MIN", pool.MinConcurrency); err != nil {
+				return cfg, err
+			}
+			// Before ZeroIdle existed, an explicit MIN (including zero) opted into
+			// the legacy minimum-worker semantics. Preserve that behavior unless
+			// ZERO_IDLE is explicitly set below.
+			pool.ZeroIdle = false
+		}
+		if pool.ZeroIdle, err = optionalBool(lookup, prefix+"ZERO_IDLE", pool.ZeroIdle); err != nil {
 			return cfg, err
+		}
+		if pool.ZeroIdle {
+			pool.MinConcurrency = 0
 		}
 		if pool.BacklogLimit, err = optionalInt(lookup, prefix+"BACKLOG", pool.BacklogLimit); err != nil {
 			return cfg, err
@@ -297,6 +309,18 @@ func optionalInt(lookup func(string) string, key string, fallback int) (int, err
 	value, err := strconv.Atoi(raw)
 	if err != nil || value < 0 {
 		return 0, fmt.Errorf("invalid %s: must be a non-negative integer", key)
+	}
+	return value, nil
+}
+
+func optionalBool(lookup func(string) string, key string, fallback bool) (bool, error) {
+	raw := strings.TrimSpace(lookup(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("invalid %s: must be a boolean", key)
 	}
 	return value, nil
 }
