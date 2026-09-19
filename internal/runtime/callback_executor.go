@@ -62,6 +62,14 @@ func (e *CallbackExecutor) updatePeak(active int64) {
 // Start acquires callback capacity and starts fn. The returned channel resolves
 // only when fn really exits, even if the admission context is later cancelled.
 func (e *CallbackExecutor) Start(ctx context.Context, fn func() error) (<-chan error, error) {
+	return e.StartWithCompletion(ctx, fn, nil)
+}
+
+// StartWithCompletion is Start plus an in-goroutine completion hook. The hook
+// receives the final normalized callback error, including recovered panics,
+// before capacity is released. It lets lifecycle owners update bookkeeping
+// without spawning a second goroutine just to wait on the result channel.
+func (e *CallbackExecutor) StartWithCompletion(ctx context.Context, fn func() error, onDone func(error)) (<-chan error, error) {
 	if fn == nil {
 		return nil, errors.New("callback cannot be nil")
 	}
@@ -90,6 +98,9 @@ func (e *CallbackExecutor) Start(ctx context.Context, fn func() error) (<-chan e
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				callbackErr = &CallbackPanicError{Value: recovered, Stack: debug.Stack()}
+			}
+			if onDone != nil {
+				onDone(callbackErr)
 			}
 			e.active.Add(-1)
 			<-e.slots

@@ -310,20 +310,7 @@ func (m *Manager) cleanupResource(ctx context.Context, id string) error {
 	m.cleanupRuns[id] = run
 	m.mu.Unlock()
 
-	result, startErr := executor.Start(ctx, func() error { return cleanup(ctx) })
-	if startErr != nil {
-		m.mu.Lock()
-		run.err = startErr
-		if m.cleanupRuns[id] == run {
-			delete(m.cleanupRuns, id)
-		}
-		close(run.done)
-		m.mu.Unlock()
-		return startErr
-	}
-
-	go func() {
-		cleanupErr := <-result
+	_, startErr := executor.StartWithCompletion(ctx, func() error { return cleanup(ctx) }, func(cleanupErr error) {
 		m.mu.Lock()
 		run.err = cleanupErr
 		if m.cleanupRuns[id] == run {
@@ -335,7 +322,17 @@ func (m *Manager) cleanupResource(ctx context.Context, id string) error {
 		}
 		close(run.done)
 		m.mu.Unlock()
-	}()
+	})
+	if startErr != nil {
+		m.mu.Lock()
+		run.err = startErr
+		if m.cleanupRuns[id] == run {
+			delete(m.cleanupRuns, id)
+		}
+		close(run.done)
+		m.mu.Unlock()
+		return startErr
+	}
 
 	select {
 	case <-run.done:
