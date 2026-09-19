@@ -9,6 +9,7 @@ type Capability string
 
 const (
 	CapTelegramRead    Capability = "telegram.read"
+	CapTelegramRaw     Capability = "telegram.raw"
 	CapTelegramSend    Capability = "telegram.send"
 	CapTelegramDelete  Capability = "telegram.delete"
 	CapMediaDownload   Capability = "media.download"
@@ -21,6 +22,7 @@ const (
 // ValidCapabilities is the set of all authorized capability identifiers.
 var ValidCapabilities = map[Capability]bool{
 	CapTelegramRead:    true,
+	CapTelegramRaw:     true,
 	CapTelegramSend:    true,
 	CapTelegramDelete:  true,
 	CapMediaDownload:   true,
@@ -45,7 +47,8 @@ type Manifest struct {
 	MinGoUltroid string       `yaml:"min_goultroid" json:"min_goultroid"`
 	Description  string       `yaml:"description" json:"description"`
 	Author       string       `yaml:"author" json:"author"`
-	Commands     []string     `yaml:"commands" json:"commands"`
+	Commands     []string     `yaml:"commands,omitempty" json:"commands,omitempty"`
+	Events       []EventType  `yaml:"events,omitempty" json:"events,omitempty"`
 	Capabilities []Capability `yaml:"capabilities" json:"capabilities"`
 }
 
@@ -56,4 +59,9 @@ var (
 	ErrAddonNotFound          = errors.New("addon not found")
 	ErrAddonAlreadyInstalled  = errors.New("addon is already installed")
 	ErrAddonDisabled          = errors.New("addon is currently disabled")
+	ErrRuntimeBoundaryUnavailable = errors.New("addon runtime boundary is unavailable")
 )
+
+func IsPrivilegedCapability(capability Capability) bool {
+	return capability == CapTelegramRaw
+}

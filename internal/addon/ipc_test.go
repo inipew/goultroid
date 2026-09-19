@@ -38,7 +38,7 @@ while IFS= read -r line; do
     case "$line" in
         *'"method":"hello"'*)
             id=$(printf '%s\n' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-            printf '{"id":"%s","ok":true,"result":{"protocol":1}}\n' "$id"
+            printf '{"id":"%s","ok":true,"result":{"protocol":2}}\n' "$id"
             ;;
     esac
 done
@@ -74,7 +74,7 @@ func TestExternalRuntimeDetectsUnexpectedProcessExit(t *testing.T) {
 	content := `#!/bin/sh
 IFS= read -r line
 id=$(printf '%s\n' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-printf '{"id":"%s","ok":true,"result":{"protocol":1}}\n' "$id"
+printf '{"id":"%s","ok":true,"result":{"protocol":2}}\n' "$id"
 exit 0
 `
 	if err := os.WriteFile(script, []byte(content), 0700); err != nil {
@@ -103,7 +103,7 @@ func TestExternalRuntimeLifetimeOutlivesStartupContext(t *testing.T) {
 	content := `#!/bin/sh
 while IFS= read -r line; do
     id=$(printf '%s\n' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-    printf '{"id":"%s","ok":true,"result":{"protocol":1}}\n' "$id"
+    printf '{"id":"%s","ok":true,"result":{"protocol":2}}\n' "$id"
 done
 `
 	if err := os.WriteFile(script, []byte(content), 0700); err != nil {

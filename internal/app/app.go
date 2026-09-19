@@ -147,6 +147,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	}
 	if domServices.addonManager != nil {
 		domServices.addonManager.SetProcessManager(coreDeps.procManager)
+		domServices.addonManager.SetRuntimeBoundary(coreDeps.eventBus, coreDeps.taskEngine)
 	}
 	if tgRuntime.assistant != nil {
 		if aware, ok := tgRuntime.assistant.(interface{ SetDelayedActions(core.DelayedActionScheduler) }); ok {
@@ -233,7 +234,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		{name: "idempotency", dependencies: []string{"database"}, start: coreDeps.idempManager.Start, stopContext: coreDeps.idempManager.Stop},
 		{name: "command-rate-limiter", dependencies: []string{"database"}, start: coreDeps.cmdLimiter.Start, stop: coreDeps.cmdLimiter.Close},
 		{name: "interaction-rate-limiter", dependencies: []string{"database"}, start: coreDeps.interLimiter.Start, stop: coreDeps.interLimiter.Close},
-		{name: "addon-runtimes", dependencies: []string{"database"}, stop: domServices.addonManager.ShutdownRuntimes},
+		{name: "addon-runtimes", dependencies: []string{"database", "eventbus", "taskengine"}, stop: domServices.addonManager.ShutdownRuntimes},
 	}
 	for _, resource := range resources {
 		if err := rt.Register(resource); err != nil {

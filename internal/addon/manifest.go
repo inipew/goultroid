@@ -52,15 +52,50 @@ func ValidateManifest(m *Manifest) error {
 
 	m.MinGoUltroid = strings.TrimSpace(m.MinGoUltroid)
 
-	if len(m.Commands) == 0 {
-		return fmt.Errorf("%w: addon must declare at least one command", ErrInvalidManifest)
+	if len(m.Commands) == 0 && len(m.Events) == 0 {
+		return fmt.Errorf("%w: addon must declare at least one command or event", ErrInvalidManifest)
 	}
 
-	// Validate capabilities
-	for _, cap := range m.Capabilities {
-		if !ValidCapabilities[cap] {
-			return fmt.Errorf("%w: unknown or unauthorized capability %q", ErrInvalidManifest, cap)
+	seenCaps := make(map[Capability]struct{}, len(m.Capabilities))
+	for i, capability := range m.Capabilities {
+		if !ValidCapabilities[capability] {
+			return fmt.Errorf("%w: unknown or unauthorized capability %q", ErrInvalidManifest, capability)
 		}
+		if _, exists := seenCaps[capability]; exists {
+			return fmt.Errorf("%w: duplicate capability %q", ErrInvalidManifest, capability)
+		}
+		seenCaps[capability] = struct{}{}
+		m.Capabilities[i] = capability
+	}
+
+	seenCommands := make(map[string]struct{}, len(m.Commands))
+	for i, command := range m.Commands {
+		command = strings.ToLower(strings.TrimSpace(command))
+		if command == "" {
+			return fmt.Errorf("%w: command names cannot be empty", ErrInvalidManifest)
+		}
+		if _, exists := seenCommands[command]; exists {
+			return fmt.Errorf("%w: duplicate command %q", ErrInvalidManifest, command)
+		}
+		seenCommands[command] = struct{}{}
+		m.Commands[i] = command
+	}
+
+	seenEvents := make(map[EventType]struct{}, len(m.Events))
+	for i, eventType := range m.Events {
+		eventType = EventType(strings.TrimSpace(string(eventType)))
+		required, ok := eventCapability(eventType)
+		if !ok {
+			return fmt.Errorf("%w: unsupported event %q", ErrInvalidManifest, eventType)
+		}
+		if _, exists := seenEvents[eventType]; exists {
+			return fmt.Errorf("%w: duplicate event %q", ErrInvalidManifest, eventType)
+		}
+		if _, declared := seenCaps[required]; !declared {
+			return fmt.Errorf("%w: event %q requires capability %q", ErrInvalidManifest, eventType, required)
+		}
+		seenEvents[eventType] = struct{}{}
+		m.Events[i] = eventType
 	}
 
 	return nil

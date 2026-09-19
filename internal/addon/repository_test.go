@@ -47,6 +47,22 @@ func TestSQLiteRepository(t *testing.T) {
 		t.Fatalf("SaveAddon failed: %v", err)
 	}
 
+	contract := addon.AddonContract{
+		Commands: []string{"weather"},
+		Events:   []addon.EventType{addon.EventMessageCreated, addon.EventReactionUpdated},
+	}
+	if err := repo.SaveContract(ctx, a1.Name, contract); err != nil {
+		t.Fatalf("SaveContract failed: %v", err)
+	}
+	gotContract, err := repo.GetContract(ctx, a1.Name)
+	if err != nil {
+		t.Fatalf("GetContract failed: %v", err)
+	}
+	if len(gotContract.Commands) != 1 || gotContract.Commands[0] != "weather" ||
+		len(gotContract.Events) != 2 || gotContract.Events[1] != addon.EventReactionUpdated {
+		t.Fatalf("unexpected contract: %+v", gotContract)
+	}
+
 	got, err := repo.GetAddon(ctx, "weather-addon")
 	if err != nil || got == nil {
 		t.Fatalf("GetAddon failed: %v", err)
@@ -74,6 +90,16 @@ func TestSQLiteRepository(t *testing.T) {
 
 	if err := repo.DeleteAddon(ctx, "weather-addon"); err != nil {
 		t.Fatalf("DeleteAddon failed: %v", err)
+	}
+	if err := repo.DeleteContract(ctx, "weather-addon"); err != nil {
+		t.Fatalf("DeleteContract failed: %v", err)
+	}
+	deletedContract, err := repo.GetContract(ctx, "weather-addon")
+	if err != nil {
+		t.Fatalf("GetContract after delete: %v", err)
+	}
+	if len(deletedContract.Commands) != 0 || len(deletedContract.Events) != 0 {
+		t.Fatalf("contract remained after delete: %+v", deletedContract)
 	}
 	gotDeleted, _ := repo.GetAddon(ctx, "weather-addon")
 	if gotDeleted != nil {

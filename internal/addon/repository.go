@@ -3,6 +3,7 @@ package addon
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -23,6 +24,17 @@ type AddonRecord struct {
 	MinVersion   string    `json:"min_version"`
 	InstalledAt  time.Time `json:"installed_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type AddonContract struct {
+	Commands []string    `json:"commands,omitempty"`
+	Events   []EventType `json:"events,omitempty"`
+}
+
+type ContractRepository interface {
+	SaveContract(ctx context.Context, name string, contract AddonContract) error
+	GetContract(ctx context.Context, name string) (AddonContract, error)
+	DeleteContract(ctx context.Context, name string) error
 }
 
 // Repository defines persistence operations for addon records.
@@ -63,6 +75,13 @@ func (r *SQLiteRepository) InitSchema(ctx context.Context) error {
 		updated_at DATETIME NOT NULL
 	);
 	CREATE INDEX IF NOT EXISTS idx_addon_registry_status ON addon_registry(status);
+
+	CREATE TABLE IF NOT EXISTS addon_contracts (
+		name TEXT PRIMARY KEY,
+		commands_json TEXT NOT NULL DEFAULT '[]',
+		events_json TEXT NOT NULL DEFAULT '[]',
+		updated_at DATETIME NOT NULL
+	);
 	`
 	_, err := r.db.ExecContext(ctx, query)
 	if err != nil {
@@ -177,6 +196,62 @@ func (r *SQLiteRepository) SetAddonStatus(ctx context.Context, name, status stri
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return fmt.Errorf("addon not found: %s", cleanName)
+	}
+	return nil
+}
+
+func (r *SQLiteRepository) SaveContract(ctx context.Context, name string, contract AddonContract) error {
+	commands, err := json.Marshal(contract.Commands)
+	if err != nil {
+		return fmt.Errorf("encode addon commands: %w", err)
+	}
+	events, err := json.Marshal(contract.Events)
+	if err != nil {
+		return fmt.Errorf("encode addon events: %w", err)
+	}
+	cleanName := strings.ToLower(strings.TrimSpace(name))
+	_, err = r.db.ExecContext(ctx, `
+		INSERT INTO addon_contracts (name, commands_json, events_json, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(name) DO UPDATE SET
+			commands_json = excluded.commands_json,
+			events_json = excluded.events_json,
+			updated_at = excluded.updated_at
+	`, cleanName, string(commands), string(events), time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("save addon contract %q: %w", cleanName, err)
+	}
+	return nil
+}
+
+func (r *SQLiteRepository) GetContract(ctx context.Context, name string) (AddonContract, error) {
+	cleanName := strings.ToLower(strings.TrimSpace(name))
+	var commandsJSON, eventsJSON string
+	err := r.db.QueryRowContext(ctx, `
+		SELECT commands_json, events_json
+		FROM addon_contracts
+		WHERE name = ?
+	`, cleanName).Scan(&commandsJSON, &eventsJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AddonContract{}, nil
+	}
+	if err != nil {
+		return AddonContract{}, fmt.Errorf("get addon contract %q: %w", cleanName, err)
+	}
+	var contract AddonContract
+	if err := json.Unmarshal([]byte(commandsJSON), &contract.Commands); err != nil {
+		return AddonContract{}, fmt.Errorf("decode addon commands %q: %w", cleanName, err)
+	}
+	if err := json.Unmarshal([]byte(eventsJSON), &contract.Events); err != nil {
+		return AddonContract{}, fmt.Errorf("decode addon events %q: %w", cleanName, err)
+	}
+	return contract, nil
+}
+
+func (r *SQLiteRepository) DeleteContract(ctx context.Context, name string) error {
+	cleanName := strings.ToLower(strings.TrimSpace(name))
+	if _, err := r.db.ExecContext(ctx, `DELETE FROM addon_contracts WHERE name = ?`, cleanName); err != nil {
+		return fmt.Errorf("delete addon contract %q: %w", cleanName, err)
 	}
 	return nil
 }

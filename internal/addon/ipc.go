@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	AddonProtocolVersion = 1
+	AddonProtocolVersion = 2
 	maxIPCFrameSize      = 8 << 20
 	maxStderrLineSize    = 1 << 20
 )
@@ -42,6 +42,8 @@ type HelloParams struct {
 	Protocol int          `json:"protocol"`
 	Name     string       `json:"name"`
 	Version  string       `json:"version"`
+	Commands []string     `json:"commands,omitempty"`
+	Events   []EventType  `json:"events,omitempty"`
 	Caps     []Capability `json:"capabilities"`
 }
 
@@ -67,6 +69,13 @@ func (b *CapabilityBroker) Authorize(addon string, capability Capability) error 
 		return ErrUnauthorizedCapability
 	}
 	return b.gate.Assert(addon, capability)
+}
+
+func (b *CapabilityBroker) GrantedCapabilities(addon string) []Capability {
+	if b == nil || b.gate == nil {
+		return nil
+	}
+	return b.gate.ListCapabilities(addon)
 }
 
 // ExternalRuntime manages one isolated addon process and a JSON-lines IPC
@@ -257,7 +266,24 @@ func (r *ExternalRuntime) watchProcess(cmd *exec.Cmd) {
 }
 
 func (r *ExternalRuntime) handshake(ctx context.Context) error {
-	params, _ := json.Marshal(HelloParams{Protocol: AddonProtocolVersion, Name: r.manifest.Name, Version: r.manifest.Version, Caps: r.manifest.Capabilities})
+	granted := make([]Capability, 0, len(r.manifest.Capabilities))
+	if r.broker != nil {
+		granted = r.broker.GrantedCapabilities(r.manifest.Name)
+	} else {
+		for _, capability := range r.manifest.Capabilities {
+			if !IsPrivilegedCapability(capability) {
+				granted = append(granted, capability)
+			}
+		}
+	}
+	params, _ := json.Marshal(HelloParams{
+		Protocol: AddonProtocolVersion,
+		Name: r.manifest.Name,
+		Version: r.manifest.Version,
+		Commands: append([]string(nil), r.manifest.Commands...),
+		Events: append([]EventType(nil), r.manifest.Events...),
+		Caps: granted,
+	})
 	resp, err := r.callLocked(ctx, "hello", params)
 	if err != nil {
 		return err
@@ -422,6 +448,12 @@ func (r *ExternalRuntime) Running() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.running
+}
+
+func (r *ExternalRuntime) Done() <-chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.exitDone
 }
 
 func validateExecutable(path string) (string, error) {

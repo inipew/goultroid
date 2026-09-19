@@ -325,6 +325,18 @@ var migrations = []migration{
 			`ALTER TABLE clone_state ADD COLUMN cloned_photo BOOLEAN NOT NULL DEFAULT 0;`,
 		},
 	},
+	{
+		version:     17,
+		description: "Persist external addon runtime contracts",
+		statements: []string{
+			`CREATE TABLE IF NOT EXISTS addon_contracts (
+				name TEXT PRIMARY KEY,
+				commands_json TEXT NOT NULL DEFAULT '[]',
+				events_json TEXT NOT NULL DEFAULT '[]',
+				updated_at DATETIME NOT NULL
+			);`,
+		},
+	},
 }
 
 // LegacyMigrationInfo contains metadata and checksums for a canonical legacy migration.

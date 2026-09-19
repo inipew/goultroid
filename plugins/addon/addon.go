@@ -2,6 +2,7 @@ package addon
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -55,7 +56,7 @@ func (p *Plugin) Commands() []core.Command {
 			Name:        "addon",
 			Aliases:     []string{"addons"},
 			Description: "Inspect, install, and manage external addons and capability permissions",
-			Usage:       ".addon [list|info|install|uninstall|enable|disable]",
+			Usage:       ".addon [list|info|install|uninstall|enable|disable|grant|revoke]",
 			Category:    "Addon",
 			Permission:  core.PermissionOwner,
 			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
@@ -85,8 +86,12 @@ func (p *Plugin) handleAddon(ctx *core.Context) error {
 		return p.handleEnable(ctx)
 	case "disable":
 		return p.handleDisable(ctx)
+	case "grant":
+		return p.handleGrant(ctx)
+	case "revoke":
+		return p.handleRevoke(ctx)
 	default:
-		return ctx.EditOrReply("⚠️ Unknown subcommand. Use: <code>list</code>, <code>info</code>, <code>install</code>, <code>uninstall</code>, <code>enable</code>, or <code>disable</code>.")
+		return ctx.EditOrReply("⚠️ Unknown subcommand. Use: <code>list</code>, <code>info</code>, <code>install</code>, <code>uninstall</code>, <code>enable</code>, <code>disable</code>, <code>grant</code>, or <code>revoke</code>.")
 	}
 }
 
@@ -162,9 +167,20 @@ func (p *Plugin) handleInfo(ctx *core.Context) error {
 	}
 
 	if rec.Capabilities != "" {
-		card.AddField("Capabilities", ui.Code(strings.ReplaceAll(rec.Capabilities, ",", ", ")))
+		card.AddField("Declared Capabilities", ui.Code(strings.ReplaceAll(rec.Capabilities, ",", ", ")))
 	} else {
-		card.AddField("Capabilities", "<i>None (Zero Privileges)</i>")
+		card.AddField("Declared Capabilities", "<i>None (Zero Privileges)</i>")
+	}
+	grantedCaps := p.mgr.Gate().ListCapabilities(rec.Name)
+	if len(grantedCaps) > 0 {
+		values := make([]string, 0, len(grantedCaps))
+		for _, capability := range grantedCaps {
+			values = append(values, string(capability))
+		}
+		sort.Strings(values)
+		card.AddField("Granted Capabilities", ui.Code(strings.Join(values, ", ")))
+	} else {
+		card.AddField("Granted Capabilities", "<i>None</i>")
 	}
 
 	return ctx.EditOrReply(card.Render())
@@ -211,8 +227,9 @@ func (p *Plugin) handleInstall(ctx *core.Context) error {
 		AddField("Name", ui.Code(manifest.Name)).
 		AddField("Version", ui.Code(manifest.Version)).
 		AddField("Commands", strings.Join(manifest.Commands, ", ")).
-		AddField("Capabilities", ui.Code(capStr)).
-		WithFooter("Addon is active and capability permissions have been granted")
+		AddField("Events", strings.Join(eventStrings(manifest.Events), ", ")).
+		AddField("Declared Capabilities", ui.Code(capStr)).
+		WithFooter("Non-privileged capabilities are active. Privileged capabilities require an explicit owner grant.")
 
 	return ctx.EditOrReply(card.Render())
 }
@@ -254,4 +271,46 @@ func (p *Plugin) handleDisable(ctx *core.Context) error {
 	}
 
 	return ctx.EditOrReply(fmt.Sprintf("🔴 <b>Disabled addon:</b> <code>%s</code> (capability permissions revoked)", core.EscapeHTML(name)))
+}
+
+func eventStrings(events []addon.EventType) []string {
+	result := make([]string, 0, len(events))
+	for _, eventType := range events {
+		result = append(result, string(eventType))
+	}
+	return result
+}
+
+func (p *Plugin) handleGrant(ctx *core.Context) error {
+	if len(ctx.Args) < 3 {
+		return ctx.EditOrReply("⚠️ Usage: <code>.addon grant &lt;name&gt; &lt;capability&gt;</code>")
+	}
+	name := strings.ToLower(strings.TrimSpace(ctx.Args[1]))
+	capability := addon.Capability(strings.TrimSpace(ctx.Args[2]))
+	if !addon.IsPrivilegedCapability(capability) {
+		return ctx.EditOrReply(fmt.Sprintf("⚠️ <code>%s</code> is not a privileged capability.", core.EscapeHTML(string(capability))))
+	}
+	if err := p.mgr.GrantPrivilegedCapability(ctx.Ctx, name, capability); err != nil {
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to grant <code>%s</code>: %v", core.EscapeHTML(string(capability)), err))
+	}
+	return ctx.EditOrReply(fmt.Sprintf(
+		"🔐 Granted <code>%s</code> to <code>%s</code> for this runtime session.",
+		core.EscapeHTML(string(capability)), core.EscapeHTML(name),
+	))
+}
+
+func (p *Plugin) handleRevoke(ctx *core.Context) error {
+	if len(ctx.Args) < 3 {
+		return ctx.EditOrReply("⚠️ Usage: <code>.addon revoke &lt;name&gt; &lt;capability&gt;</code>")
+	}
+	name := strings.ToLower(strings.TrimSpace(ctx.Args[1]))
+	capability := addon.Capability(strings.TrimSpace(ctx.Args[2]))
+	if !addon.IsPrivilegedCapability(capability) {
+		return ctx.EditOrReply(fmt.Sprintf("⚠️ <code>%s</code> is not a privileged capability.", core.EscapeHTML(string(capability))))
+	}
+	p.mgr.RevokePrivilegedCapability(name, capability)
+	return ctx.EditOrReply(fmt.Sprintf(
+		"🔒 Revoked <code>%s</code> from <code>%s</code>.",
+		core.EscapeHTML(string(capability)), core.EscapeHTML(name),
+	))
 }

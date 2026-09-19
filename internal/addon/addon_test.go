@@ -246,3 +246,115 @@ func TestManager_RuntimeCallRequiresCapability(t *testing.T) {
 		t.Fatalf("CallRuntimeWithCapability() error = %v, want ErrUnauthorizedCapability", err)
 	}
 }
+
+func TestManifest_EventSubscriptionRequiresTelegramRead(t *testing.T) {
+	valid := []byte(`
+name: event-addon
+version: 1.0.0
+events:
+  - message.created
+  - reaction.updated
+capabilities:
+  - telegram.read
+`)
+	manifest, err := addon.ParseManifest(valid)
+	if err != nil {
+		t.Fatalf("event-only manifest rejected: %v", err)
+	}
+	if len(manifest.Commands) != 0 || len(manifest.Events) != 2 {
+		t.Fatalf("unexpected event manifest: %+v", manifest)
+	}
+
+	missingCapability := []byte(`
+name: event-denied
+version: 1.0.0
+events:
+  - message.created
+`)
+	if _, err := addon.ParseManifest(missingCapability); err == nil {
+		t.Fatal("event declaration without telegram.read was accepted")
+	}
+
+	rawEvent := []byte(`
+name: raw-event
+version: 1.0.0
+events:
+  - update.raw
+capabilities:
+  - telegram.read
+  - telegram.raw
+`)
+	if _, err := addon.ParseManifest(rawEvent); err == nil {
+		t.Fatal("raw MTProto event was accepted as canonical addon event")
+	}
+}
+
+func TestCapabilityGate_PrivilegedRawRequiresExplicitGrant(t *testing.T) {
+	gate := addon.NewCapabilityGate()
+	gate.Register("raw-addon", []addon.Capability{addon.CapTelegramRead, addon.CapTelegramRaw})
+
+	if !gate.HasCapability("raw-addon", addon.CapTelegramRead) {
+		t.Fatal("ordinary declared capability was not granted")
+	}
+	if gate.HasCapability("raw-addon", addon.CapTelegramRaw) {
+		t.Fatal("privileged telegram.raw was auto-granted")
+	}
+	if err := gate.AllowPrivileged("raw-addon", addon.CapTelegramRaw); err != nil {
+		t.Fatalf("AllowPrivileged: %v", err)
+	}
+	if !gate.HasCapability("raw-addon", addon.CapTelegramRaw) {
+		t.Fatal("explicit privileged grant did not become active")
+	}
+
+	gate.Unregister("raw-addon")
+	if gate.HasCapability("raw-addon", addon.CapTelegramRaw) {
+		t.Fatal("disabled/unregistered addon retained active raw capability")
+	}
+	gate.Register("raw-addon", []addon.Capability{addon.CapTelegramRead, addon.CapTelegramRaw})
+	if gate.HasCapability("raw-addon", addon.CapTelegramRaw) {
+		t.Fatal("privileged approval survived unregister/re-enable")
+	}
+	if err := gate.AllowPrivileged("raw-addon", addon.CapTelegramRaw); err != nil {
+		t.Fatal(err)
+	}
+	gate.ClearPrivileged("raw-addon")
+	if gate.HasCapability("raw-addon", addon.CapTelegramRaw) {
+		t.Fatal("ClearPrivileged did not revoke raw capability")
+	}
+}
+
+func TestManager_PersistsRuntimeContractAcrossReload(t *testing.T) {
+	db := setupTestDB(t)
+	repo := addon.NewSQLiteRepository(db)
+	gate := addon.NewCapabilityGate()
+	mgr := addon.NewManager(repo, gate, "1.5.0", zap.NewNop())
+	ctx := context.Background()
+
+	raw := []byte(`
+name: event-persist
+version: 1.0.0
+commands: [hello]
+events: [message.created]
+capabilities: [telegram.read]
+`)
+	if _, err := mgr.Install(ctx, raw, ""); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	contract, err := repo.GetContract(ctx, "event-persist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(contract.Commands) != 1 || contract.Commands[0] != "hello" ||
+		len(contract.Events) != 1 || contract.Events[0] != addon.EventMessageCreated {
+		t.Fatalf("persisted contract=%+v", contract)
+	}
+
+	reloaded := addon.NewManager(repo, addon.NewCapabilityGate(), "1.5.0", zap.NewNop())
+	if err := reloaded.LoadInstalled(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.Gate().HasCapability("event-persist", addon.CapTelegramRead) {
+		t.Fatal("reloaded manager did not restore declared capability")
+	}
+}

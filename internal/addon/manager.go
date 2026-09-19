@@ -9,7 +9,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/platform/process"
+	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
 
@@ -24,8 +26,12 @@ type Manager struct {
 	logger       *zap.Logger
 	shuttingDown atomic.Bool
 
-	runtimeMu sync.RWMutex
-	runtimes  map[string]*ExternalRuntime
+	runtimeMu        sync.RWMutex
+	runtimes         map[string]*ExternalRuntime
+	runtimeBindings  map[string]*runtimeBinding
+	eventBus         *core.EventBus
+	taskClient       tasks.Client
+	runtimeGeneration atomic.Uint64
 }
 
 func NewManager(repo Repository, gate *CapabilityGate, appVersion string, logger *zap.Logger) *Manager {
@@ -41,11 +47,30 @@ func NewManager(repo Repository, gate *CapabilityGate, appVersion string, logger
 	return &Manager{
 		repo: repo, gate: gate, broker: NewCapabilityBroker(gate), appVersion: appVersion,
 		logger: logger.Named("addon"), runtimes: make(map[string]*ExternalRuntime),
+		runtimeBindings: make(map[string]*runtimeBinding),
 	}
 }
 
 func (m *Manager) Gate() *CapabilityGate     { return m.gate }
 func (m *Manager) Broker() *CapabilityBroker { return m.broker }
+
+func (m *Manager) GrantPrivilegedCapability(ctx context.Context, name string, capability Capability) error {
+	cleanName := strings.ToLower(strings.TrimSpace(name))
+	if m.repo != nil {
+		rec, err := m.repo.GetAddon(ctx, cleanName)
+		if err != nil || rec == nil {
+			return ErrAddonNotFound
+		}
+		if rec.Status != string(StatusActive) {
+			return ErrAddonDisabled
+		}
+	}
+	return m.gate.AllowPrivileged(cleanName, capability)
+}
+
+func (m *Manager) RevokePrivilegedCapability(name string, capability Capability) {
+	m.gate.RevokePrivileged(strings.ToLower(strings.TrimSpace(name)), capability)
+}
 
 // SetProcessManager attaches a process.Manager to supervise addon external processes.
 func (m *Manager) SetProcessManager(pm *process.Manager) {
@@ -99,6 +124,18 @@ func (m *Manager) Install(ctx context.Context, rawManifest []byte, sourceURL str
 		if err := m.repo.SaveAddon(ctx, rec); err != nil {
 			return nil, fmt.Errorf("failed to persist addon: %w", err)
 		}
+		if contracts, ok := m.repo.(ContractRepository); ok {
+			if err := contracts.SaveContract(ctx, manifest.Name, AddonContract{
+				Commands: append([]string(nil), manifest.Commands...),
+				Events:   append([]EventType(nil), manifest.Events...),
+			}); err != nil {
+				_ = m.repo.DeleteAddon(ctx, manifest.Name)
+				return nil, fmt.Errorf("failed to persist addon runtime contract: %w", err)
+			}
+		} else if len(manifest.Commands) > 0 || len(manifest.Events) > 0 {
+			_ = m.repo.DeleteAddon(ctx, manifest.Name)
+			return nil, fmt.Errorf("%w: repository cannot persist addon runtime contract", ErrRuntimeBoundaryUnavailable)
+		}
 	}
 	m.gate.Register(manifest.Name, manifest.Capabilities)
 	m.logger.Info("installed addon", zap.String("name", manifest.Name), zap.String("version", manifest.Version), zap.Int("capabilities", len(manifest.Capabilities)))
@@ -137,19 +174,36 @@ func (m *Manager) StartRuntime(ctx context.Context, name, executable, expectedSH
 		return err
 	}
 
+	binding, err := m.bindRuntimeEvents(cleanName, *manifest, runtime)
+	if err != nil {
+		_ = runtime.Stop()
+		return err
+	}
+
 	m.runtimeMu.Lock()
 	if m.shuttingDown.Load() {
+		client := m.taskClient
 		m.runtimeMu.Unlock()
+		binding.close(client)
 		_ = runtime.Stop()
 		return errors.New("addon manager is shutting down")
 	}
 	old := m.runtimes[cleanName]
+	oldBinding := m.runtimeBindings[cleanName]
 	m.runtimes[cleanName] = runtime
+	m.runtimeBindings[cleanName] = binding
+	client := m.taskClient
 	m.runtimeMu.Unlock()
+
+	if oldBinding != nil {
+		oldBinding.close(client)
+	}
 	if old != nil {
 		_ = old.Stop()
 	}
-	m.logger.Info("started addon runtime", zap.String("name", cleanName), zap.String("executable", executable))
+	go m.watchRuntime(cleanName, runtime)
+
+	m.logger.Info("started addon runtime", zap.String("name", cleanName), zap.String("executable", executable), zap.Uint64("generation", binding.scope.Generation))
 	return nil
 }
 
@@ -157,8 +211,14 @@ func (m *Manager) StopRuntime(name string) error {
 	cleanName := strings.ToLower(strings.TrimSpace(name))
 	m.runtimeMu.Lock()
 	runtime := m.runtimes[cleanName]
+	binding := m.runtimeBindings[cleanName]
+	client := m.taskClient
 	delete(m.runtimes, cleanName)
+	delete(m.runtimeBindings, cleanName)
 	m.runtimeMu.Unlock()
+	if binding != nil {
+		binding.close(client)
+	}
 	if runtime == nil {
 		return nil
 	}
@@ -201,18 +261,37 @@ func (m *Manager) CallRuntimeWithCapability(ctx context.Context, name string, ca
 	if err := m.broker.Authorize(cleanName, capability); err != nil {
 		return nil, err
 	}
-	return m.callRuntime(ctx, cleanName, method, params)
+	operation := RuntimeOperation(method)
+	required, ok := RequiredCapability(operation)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedRuntimeOperation, method)
+	}
+	if required != capability {
+		return nil, fmt.Errorf("%w: operation %q requires %q, not %q", ErrUnauthorizedCapability, operation, required, capability)
+	}
+	return m.callRuntime(ctx, cleanName, string(operation), params)
 }
 
 func (m *Manager) ShutdownRuntimes() error {
 	m.shuttingDown.Store(true)
 	m.runtimeMu.Lock()
 	runtimes := make(map[string]*ExternalRuntime, len(m.runtimes))
+	bindings := make(map[string]*runtimeBinding, len(m.runtimeBindings))
 	for name, runtime := range m.runtimes {
 		runtimes[name] = runtime
 	}
+	for name, binding := range m.runtimeBindings {
+		bindings[name] = binding
+	}
+	client := m.taskClient
 	m.runtimes = make(map[string]*ExternalRuntime)
+	m.runtimeBindings = make(map[string]*runtimeBinding)
 	m.runtimeMu.Unlock()
+	for _, binding := range bindings {
+		if binding != nil {
+			binding.close(client)
+		}
+	}
 	var firstErr error
 	for name, runtime := range runtimes {
 		if err := runtime.Stop(); err != nil && firstErr == nil {
@@ -233,7 +312,21 @@ func (m *Manager) manifestForRuntime(ctx context.Context, name string) (*Manifes
 	if rec.Status != string(StatusActive) {
 		return nil, ErrAddonDisabled
 	}
-	return &Manifest{Name: rec.Name, Version: rec.Version, Description: rec.Description, Author: rec.Author, MinGoUltroid: rec.MinVersion, Capabilities: parseCapabilitiesString(rec.Capabilities)}, nil
+	manifest := &Manifest{Name: rec.Name, Version: rec.Version, Description: rec.Description, Author: rec.Author, MinGoUltroid: rec.MinVersion, Capabilities: parseCapabilitiesString(rec.Capabilities)}
+	if contracts, ok := m.repo.(ContractRepository); ok {
+		contract, err := contracts.GetContract(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		manifest.Commands = append([]string(nil), contract.Commands...)
+		manifest.Events = append([]EventType(nil), contract.Events...)
+		if len(manifest.Commands) > 0 || len(manifest.Events) > 0 {
+			if err := ValidateManifest(manifest); err != nil {
+				return nil, fmt.Errorf("invalid persisted addon contract: %w", err)
+			}
+		}
+	}
+	return manifest, nil
 }
 
 func (m *Manager) Uninstall(ctx context.Context, name string) error {
@@ -250,7 +343,13 @@ func (m *Manager) Uninstall(ctx context.Context, name string) error {
 			return fmt.Errorf("failed to delete addon from db: %w", err)
 		}
 	}
+	if contracts, ok := m.repo.(ContractRepository); ok {
+		if err := contracts.DeleteContract(ctx, cleanName); err != nil {
+			m.logger.Warn("failed to delete stale addon contract", zap.String("name", cleanName), zap.Error(err))
+		}
+	}
 	m.gate.Unregister(cleanName)
+	m.gate.ClearPrivileged(cleanName)
 	m.logger.Info("uninstalled addon", zap.String("name", cleanName))
 	return nil
 }

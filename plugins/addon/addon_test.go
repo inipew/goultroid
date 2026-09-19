@@ -135,3 +135,56 @@ capabilities: [telegram.send]
 		t.Errorf("expected uninstalled message, got %s", mockTG.edited)
 	}
 }
+
+func TestAddonPluginPrivilegedGrantAndRevoke(t *testing.T) {
+	db := setupTestDB(t)
+	repo := addon.NewSQLiteRepository(db)
+	gate := addon.NewCapabilityGate()
+	mgr := addon.NewManager(repo, gate, "1.0.0", zap.NewNop())
+	p := pluginAddon.New(mgr)
+	cmd := p.Commands()[0]
+
+	mockTG := &mockTelegram{}
+	newCtx := func(args ...string) *core.Context {
+		return &core.Context{
+			Ctx:     context.Background(),
+			Svc:     mockTG,
+			PeerID:  &tg.InputPeerUser{UserID: 12345},
+			Message: &core.Message{ID: 1, SenderID: 12345, IsOutgoing: true},
+			Args:    args,
+		}
+	}
+
+	manifest := `
+name: raw-helper
+version: 1.0.0
+commands: [raw]
+capabilities: [telegram.raw]
+`
+	if err := cmd.Handler(newCtx("install", manifest)); err != nil {
+		t.Fatal(err)
+	}
+	if gate.HasCapability("raw-helper", addon.CapTelegramRaw) {
+		t.Fatal("telegram.raw was auto-granted during install")
+	}
+
+	if err := cmd.Handler(newCtx("grant", "raw-helper", "telegram.raw")); err != nil {
+		t.Fatal(err)
+	}
+	if !gate.HasCapability("raw-helper", addon.CapTelegramRaw) {
+		t.Fatal("explicit raw grant did not become active")
+	}
+	if !strings.Contains(mockTG.edited, "Granted") {
+		t.Fatalf("grant response=%q", mockTG.edited)
+	}
+
+	if err := cmd.Handler(newCtx("revoke", "raw-helper", "telegram.raw")); err != nil {
+		t.Fatal(err)
+	}
+	if gate.HasCapability("raw-helper", addon.CapTelegramRaw) {
+		t.Fatal("raw capability remained after revoke")
+	}
+	if !strings.Contains(mockTG.edited, "Revoked") {
+		t.Fatalf("revoke response=%q", mockTG.edited)
+	}
+}
