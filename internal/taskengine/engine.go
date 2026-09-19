@@ -603,7 +603,14 @@ func (e *Engine) spawnWorker(pool tasks.PoolID, slot int, ctx context.Context) b
 	e.workerCancels[pool][slot] = cancel
 	e.workerIdleSince[pool][slot] = time.Now().UTC()
 	e.runtimeRemaining.Add(1)
-	mailbox := e.workerMailboxes[pool][slot]
+
+	// Each physical worker generation owns a distinct mailbox. Retirement only
+	// cancels the old worker; it does not synchronously join it. Reusing the same
+	// channel would let a cancelled generation race a newly spawned generation
+	// for the next assignment. Replacing the mailbox before publishing the slot
+	// idle makes stale workers incapable of consuming future work.
+	mailbox := make(chan workerAssignment, 1)
+	e.workerMailboxes[pool][slot] = mailbox
 	go func() {
 		defer e.runtimeLoopDone()
 		e.physicalWorker(pool, slot, mailbox, workerCtx)
