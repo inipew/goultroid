@@ -100,7 +100,18 @@ func (e *CallbackExecutor) StartWithCompletion(ctx context.Context, fn func() er
 				callbackErr = &CallbackPanicError{Value: recovered, Stack: debug.Stack()}
 			}
 			if onDone != nil {
-				onDone(callbackErr)
+				var completionErr error
+				func() {
+					defer func() {
+						if recovered := recover(); recovered != nil {
+							completionErr = &CallbackPanicError{Value: recovered, Stack: debug.Stack()}
+						}
+					}()
+					onDone(callbackErr)
+				}()
+				if completionErr != nil {
+					callbackErr = errors.Join(callbackErr, completionErr)
+				}
 			}
 			e.active.Add(-1)
 			<-e.slots
