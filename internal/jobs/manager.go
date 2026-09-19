@@ -93,8 +93,14 @@ type Manager struct {
 	accepting      bool
 	started        bool
 
-	retryQueue   chan retryItem
-	recoveryWake chan struct{}
+	retryQueue       chan retryItem
+	retryMu          sync.Mutex
+	retryRemaining   atomic.Int64
+	retryQueued      atomic.Int64
+	retryActive      atomic.Int64
+	retryStopping    bool
+	retryIdleTimeout time.Duration
+	recoveryWake     chan struct{}
 	outboxWake   chan struct{}
 	outboxSink   OutboxSink
 	scheduleWake func()
@@ -123,8 +129,9 @@ type trackedOccurrence struct {
 }
 
 const (
-	retryQueueCap = 256
-	retryWorkers  = 4
+	retryQueueCap    = 256
+	retryWorkers     = 4
+	retryIdleTimeout = 30 * time.Second
 
 	// Automatic recovery is deliberately low-frequency as a safety scan; fast
 	// convergence comes from bounded wake signals emitted on monitor overflow or
@@ -246,16 +253,21 @@ func (m *Manager) Start(ctx context.Context) error {
 	if firstStart {
 		done := m.done
 		_, hasOutbox := m.store.(outboxStore)
-		workerCount := retryWorkers + 1
+		workerCount := 1
 		if hasOutbox {
 			workerCount++
 		}
 		m.doneOnce = sync.Once{}
 		m.workersRemaining.Store(int64(workerCount))
-		for i := 0; i < retryWorkers; i++ {
-			m.wg.Add(1)
-			go m.retryLoop(done)
+		m.retryRemaining.Store(0)
+		m.retryQueued.Store(0)
+		m.retryActive.Store(0)
+		m.retryMu.Lock()
+		m.retryStopping = false
+		if m.retryIdleTimeout <= 0 {
+			m.retryIdleTimeout = retryIdleTimeout
 		}
+		m.retryMu.Unlock()
 		m.wg.Add(1)
 		go m.recoveryLoop(done)
 		if hasOutbox {
@@ -390,6 +402,8 @@ func (m *Manager) Drain(context.Context) error { return nil }
 func (m *Manager) beginStop() {
 	_ = m.Quiesce(context.Background())
 	m.stopOnce.Do(func() {
+		m.retryMu.Lock()
+		m.retryStopping = true
 		m.mu.RLock()
 		stopCh := m.stopCh
 		cancel := m.baseCancel
@@ -400,6 +414,7 @@ func (m *Manager) beginStop() {
 		if stopCh != nil {
 			close(stopCh)
 		}
+		m.retryMu.Unlock()
 	})
 }
 
@@ -877,33 +892,111 @@ func (m *Manager) signalRecovery() {
 	}
 }
 
+func (m *Manager) ensureRetryWorkersLocked() {
+	m.mu.RLock()
+	queue := m.retryQueue
+	stopCh := m.stopCh
+	baseCtx := m.baseCtx
+	done := m.done
+	m.mu.RUnlock()
+	if m.retryStopping || queue == nil || stopCh == nil || baseCtx == nil || done == nil || baseCtx.Err() != nil {
+		return
+	}
+	select {
+	case <-stopCh:
+		return
+	default:
+	}
+
+	target := int(m.retryActive.Load() + m.retryQueued.Load())
+	if target < 1 {
+		target = 1
+	}
+	if target > retryWorkers {
+		target = retryWorkers
+	}
+	running := int(m.retryRemaining.Load())
+	for running < target {
+		m.retryRemaining.Add(1)
+		m.workersRemaining.Add(1)
+		running++
+		m.wg.Add(1)
+		go m.retryLoop(done)
+	}
+}
+
+func (m *Manager) retryWorkerDone(done chan struct{}) {
+	m.wg.Done()
+	m.retryMu.Lock()
+	m.retryRemaining.Add(-1)
+	if !m.retryStopping && m.retryQueued.Load() > 0 {
+		m.ensureRetryWorkersLocked()
+	}
+	m.retryMu.Unlock()
+	if m.workersRemaining.Add(-1) == 0 {
+		m.doneOnce.Do(func() { close(done) })
+	}
+}
+
 // enqueueRetry hands an attempt to the bounded monitor pool. Queue saturation
 // is never silent: durability remains authoritative and the recovery loop is
 // woken to converge the occurrence once the attempt becomes terminal.
 func (m *Manager) enqueueRetry(item retryItem) {
+	m.retryMu.Lock()
+	if m.retryStopping {
+		m.retryMu.Unlock()
+		m.signalRecovery()
+		return
+	}
 	m.mu.RLock()
 	queue := m.retryQueue
 	m.mu.RUnlock()
 	if queue == nil {
+		m.retryMu.Unlock()
 		m.signalRecovery()
 		return
 	}
+	m.retryQueued.Add(1)
 	select {
 	case queue <- item:
+		m.ensureRetryWorkersLocked()
+		m.retryMu.Unlock()
 	default:
+		m.retryQueued.Add(-1)
+		m.retryMu.Unlock()
 		m.signalRecovery()
 	}
 }
 
 func (m *Manager) retryLoop(done chan struct{}) {
-	defer m.workerDone(done)
+	defer m.retryWorkerDone(done)
+
+	m.retryMu.Lock()
+	idleTimeout := m.retryIdleTimeout
+	m.retryMu.Unlock()
+	if idleTimeout <= 0 {
+		idleTimeout = retryIdleTimeout
+	}
+	timer := time.NewTimer(idleTimeout)
+	defer timer.Stop()
+
+	resetTimer := func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(idleTimeout)
+	}
+
 	for {
 		m.mu.RLock()
 		queue := m.retryQueue
 		stopCh := m.stopCh
 		baseCtx := m.baseCtx
 		m.mu.RUnlock()
-		if queue == nil || stopCh == nil {
+		if queue == nil || stopCh == nil || baseCtx == nil {
 			return
 		}
 		select {
@@ -912,7 +1005,16 @@ func (m *Manager) retryLoop(done chan struct{}) {
 		case <-baseCtx.Done():
 			return
 		case item := <-queue:
+			m.retryActive.Add(1)
+			m.retryQueued.Add(-1)
 			m.watchAttempt(baseCtx, item)
+			m.retryActive.Add(-1)
+			resetTimer()
+		case <-timer.C:
+			if m.retryQueued.Load() == 0 {
+				return
+			}
+			timer.Reset(idleTimeout)
 		}
 	}
 }

@@ -64,7 +64,7 @@ func (d *durabilityLane) ensureWorkersLocked() {
 	if d.stopping.Load() {
 		return
 	}
-	target := int(d.active.Load()) + len(d.queue)
+	target := int(d.active.Load() + d.pending.Load())
 	if target < 1 {
 		target = 1
 	}
@@ -96,7 +96,7 @@ func (d *durabilityLane) workerDone() {
 		}
 		return
 	}
-	if len(d.queue) > 0 {
+	if d.pending.Load() > 0 {
 		d.ensureWorkers()
 	}
 }
@@ -121,8 +121,8 @@ func (d *durabilityLane) loop() {
 		case <-d.stopCh:
 			return
 		case fn := <-d.queue:
-			d.pending.Add(-1)
 			d.active.Add(1)
+			d.pending.Add(-1)
 			func() {
 				defer func() {
 					_ = recover()
@@ -132,7 +132,7 @@ func (d *durabilityLane) loop() {
 			}()
 			resetTimer()
 		case <-timer.C:
-			if len(d.queue) == 0 {
+			if d.pending.Load() == 0 {
 				return
 			}
 			timer.Reset(d.idleTimeout)

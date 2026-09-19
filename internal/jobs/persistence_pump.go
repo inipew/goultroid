@@ -51,6 +51,7 @@ type PersistencePump struct {
 	requests      chan persistenceRequest
 	wg            sync.WaitGroup
 	remaining     atomic.Int64
+	queued        atomic.Int64
 	active        atomic.Int64
 	doneOnce      sync.Once
 	ctx           context.Context
@@ -150,6 +151,7 @@ func (p *PersistencePump) Start(parent context.Context) error {
 	p.done = make(chan struct{})
 	p.doneOnce = sync.Once{}
 	p.remaining.Store(0)
+	p.queued.Store(0)
 	p.active.Store(0)
 	p.running = true
 	p.accepting = true
@@ -163,7 +165,7 @@ func (p *PersistencePump) ensureWorkersLocked(done chan struct{}) {
 	if !p.running {
 		return
 	}
-	target := int(p.active.Load()) + len(p.requests)
+	target := int(p.active.Load() + p.queued.Load())
 	if target < 1 {
 		target = 1
 	}
@@ -190,7 +192,7 @@ func (p *PersistencePump) workerDone(done chan struct{}) {
 		p.mu.Unlock()
 		return
 	}
-	if len(p.requests) > 0 {
+	if p.queued.Load() > 0 {
 		p.ensureWorkersLocked(done)
 	}
 	p.mu.Unlock()
@@ -218,6 +220,7 @@ func (p *PersistencePump) workerLoop(done chan struct{}) {
 				return
 			}
 			p.active.Add(1)
+			p.queued.Add(-1)
 			err := p.processRequest(req)
 			p.active.Add(-1)
 			p.mu.Lock()
@@ -233,7 +236,7 @@ func (p *PersistencePump) workerLoop(done chan struct{}) {
 			resetTimer()
 		case <-timer.C:
 			p.mu.Lock()
-			retire := p.running && len(p.requests) == 0
+			retire := p.running && p.queued.Load() == 0
 			p.mu.Unlock()
 			if retire {
 				return
@@ -312,6 +315,7 @@ func (p *PersistencePump) EnqueueSized(ctx context.Context, retainedBytes int64,
 		resultCh:      resCh,
 		retainedBytes: retainedBytes,
 	}
+	p.queued.Add(1)
 	select {
 	case p.requests <- req:
 		p.retainedBytes += retainedBytes
@@ -319,6 +323,7 @@ func (p *PersistencePump) EnqueueSized(ctx context.Context, retainedBytes int64,
 		p.mu.Unlock()
 		return resCh, nil
 	default:
+		p.queued.Add(-1)
 		p.mu.Unlock()
 		return nil, ErrPumpQueueFull
 	}
