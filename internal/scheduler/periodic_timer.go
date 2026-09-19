@@ -556,11 +556,9 @@ func (c *periodicCoordinator) loop(done chan struct{}) {
 		}
 
 		if !hasEarliest {
-			// Running entries are intentionally absent from the timing heap, but
-			// their durable occurrences still need reconciliation.  Waiting only
-			// on wake here can strand a completed occurrence forever when it is
-			// the sole registration: task completion does not signal this local
-			// coordinator.
+			// Running entries are intentionally absent from the timing heap. Normal
+			// durable settlement now wakes this coordinator through JobManager;
+			// the timer is only a crash/lost-wake safety reconciliation fallback.
 			if c.inflightCount() > 0 {
 				if !timer.Stop() {
 					select {

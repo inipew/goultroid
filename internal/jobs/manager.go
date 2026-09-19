@@ -290,8 +290,9 @@ func (m *Manager) SetOutboxSink(sink OutboxSink) {
 	m.signalOutbox()
 }
 
-// SetScheduleWake connects durable schedule mutations to the timing owner.
-// The callback must be non-blocking; Scheduler uses a coalescing wake channel.
+// SetScheduleWake connects durable schedule mutations and timing-owned
+// occurrence settlement to the timing owner. The callback must be non-blocking;
+// Scheduler uses coalescing wake channels.
 func (m *Manager) SetScheduleWake(wake func()) {
 	m.mu.Lock()
 	m.scheduleWake = wake
