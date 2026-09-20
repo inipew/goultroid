@@ -154,6 +154,16 @@ func (r *Registry) RemoveReference(ctx context.Context, ref Reference) error {
 	return nil
 }
 
+// RemoveOwnedAsset removes registry metadata only when the expected owner still
+// owns the asset and no durable references remain. Physical storage is outside
+// this operation.
+func (r *Registry) RemoveOwnedAsset(ctx context.Context, assetID, owner string) error {
+	if r == nil || r.db == nil {
+		return ErrNilDatabase
+	}
+	return RemoveOwnedAssetWithExecutor(ctx, r.db, assetID, owner)
+}
+
 func (r *Registry) Asset(ctx context.Context, assetID string) (AssetRecord, error) {
 	if r == nil || r.db == nil {
 		return AssetRecord{}, ErrNilDatabase

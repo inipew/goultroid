@@ -10,6 +10,7 @@ import (
 	"github.com/inipew/goultroid/internal/services/mediaregistry"
 	"github.com/inipew/goultroid/internal/services/savedresponse"
 	"github.com/inipew/goultroid/internal/services/storage"
+	cloneplugin "github.com/inipew/goultroid/plugins/clone"
 )
 
 //go:generate go run ../../tools/featuregen
@@ -94,6 +95,13 @@ func reconcileBuiltinPersistentMedia(
 		startupPersistentMediaReconcileBatch,
 	); err != nil {
 		return stats, fmt.Errorf("persistent saved-response media registry compatibility failed: %w", err)
+	}
+	if _, err := cloneplugin.ReconcileMediaRegistry(
+		reconcileCtx,
+		db,
+		startupPersistentMediaReconcileBatch,
+	); err != nil {
+		return stats, fmt.Errorf("persistent clone media registry compatibility failed: %w", err)
 	}
 	return stats, nil
 }

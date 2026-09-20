@@ -466,6 +466,21 @@ func (p *Plugin) storeOriginalPhotoSnapshot(ctx context.Context, path string) (s
 	if err != nil {
 		return "", err
 	}
+	if registryRepo, ok := p.repo.(mediaRegistryRepository); ok {
+		if err := registryRepo.RegisterCloneMediaAsset(ctx, asset.ID); err != nil {
+			cleanupParent := ctx
+			if cleanupParent == nil {
+				cleanupParent = context.Background()
+			}
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(cleanupParent), 5*time.Second)
+			deleteErr := p.assetStore.Delete(cleanupCtx, asset.ID)
+			cancel()
+			if deleteErr != nil && !errors.Is(deleteErr, storage.ErrNotFound) {
+				return "", errors.Join(err, fmt.Errorf("clone: rollback unregistered snapshot %q: %w", asset.ID, deleteErr))
+			}
+			return "", err
+		}
+	}
 	return cloneAssetRefPrefix + asset.ID, nil
 }
 
@@ -519,13 +534,23 @@ func (p *Plugin) cleanupSnapshot(parent context.Context, ref string) error {
 			return errors.New("clone asset storage is not initialized")
 		}
 		id := strings.TrimPrefix(ref, cloneAssetRefPrefix)
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
-		defer cancel()
-		err := p.assetStore.Delete(ctx, id)
-		if errors.Is(err, storage.ErrNotFound) {
+		if id == "" {
 			return nil
 		}
-		return err
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
+		defer cancel()
+		if err := p.assetStore.Delete(ctx, id); err != nil && !errors.Is(err, storage.ErrNotFound) {
+			return err
+		}
+		if registryRepo, ok := p.repo.(mediaRegistryRepository); ok {
+			if err := registryRepo.RemoveCloneMediaAsset(ctx, id); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	err := os.Remove(ref)
 	if os.IsNotExist(err) {
