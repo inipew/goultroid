@@ -65,9 +65,18 @@ func TestPluginInitLoadsCapabilityGatedSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create filesystem manager: %v", err)
 	}
+	scope := platformPlugin.NewScope(context.Background(), "myxl")
+	defer func() { _ = scope.Close(context.Background()) }()
+	taskClient := &immediateMyXLTaskClient{}
 	newContext := func() platformPlugin.PluginContext {
 		return platformPlugin.NewPluginContext(context.Background(), platformPlugin.ContextConfig{
-			Owner: "myxl", Gate: gate, Network: network.NewService(nil, nil), Secrets: secrets, Files: files,
+			Scope:      scope,
+			Owner:      "myxl",
+			Gate:       gate,
+			Network:    network.NewService(nil, nil),
+			Secrets:    secrets,
+			Files:      files,
+			TaskClient: taskClient,
 		})
 	}
 
