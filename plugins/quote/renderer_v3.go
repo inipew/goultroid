@@ -14,11 +14,12 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/gotd/td/tg"
+	xdraw "golang.org/x/image/draw"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/basicfont"
-	xdraw "golang.org/x/image/draw"
 	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
 	_ "golang.org/x/image/webp"
@@ -939,11 +940,8 @@ func wrapStyledSegments(segments []styledSegment, faces styledFaces, maxWidth in
 		face := faces.face(style)
 		if len(current.segments) > 0 && current.segments[len(current.segments)-1].style == style {
 			last := &current.segments[len(current.segments)-1]
-			oldWidth := font.MeasureString(face, last.text).Ceil()
-			newText := last.text + text
-			newWidth := font.MeasureString(face, newText).Ceil()
-			last.text = newText
-			width += newWidth - oldWidth
+			width += appendStyledAdvance(face, last.text, text)
+			last.text += text
 			return
 		}
 		current.segments = append(current.segments, styledSegment{text: text, style: style})
@@ -963,8 +961,7 @@ func wrapStyledSegments(segments []styledSegment, faces styledFaces, maxWidth in
 			candidateWidth := width + tokenWidth
 			if len(current.segments) > 0 && current.segments[len(current.segments)-1].style == style {
 				last := current.segments[len(current.segments)-1]
-				candidateWidth = width - font.MeasureString(face, last.text).Ceil() +
-					font.MeasureString(face, last.text+token).Ceil()
+				candidateWidth = width + appendStyledAdvance(face, last.text, token)
 			}
 			if candidateWidth <= maxWidth {
 				appendText(token, style)
@@ -1016,6 +1013,19 @@ func wrapStyledSegments(segments []styledSegment, faces styledFaces, maxWidth in
 		flush(true)
 	}
 	return lines
+}
+
+func appendStyledAdvance(face font.Face, existing, appended string) int {
+	if appended == "" {
+		return 0
+	}
+	advance := font.MeasureString(face, appended)
+	if existing != "" {
+		last, _ := utf8.DecodeLastRuneInString(existing)
+		first, _ := utf8.DecodeRuneInString(appended)
+		advance += face.Kern(last, first)
+	}
+	return advance.Ceil()
 }
 
 func fitStyledPrefix(text string, face font.Face, maxWidth int) (string, string) {

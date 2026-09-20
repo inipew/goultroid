@@ -551,7 +551,6 @@ func TestQuoteWorkspaceCleanupDoesNotAffectSibling(t *testing.T) {
 	}
 }
 
-
 func TestStyledSegmentsUsesUTF16BoundariesForAstralRunes(t *testing.T) {
 	text := "A😀 bold"
 	segments := styledSegments(text, []tg.MessageEntityClass{
@@ -679,5 +678,16 @@ func BenchmarkStyledSegmentsManyEntities(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = styledSegments(text, entities)
+	}
+}
+
+
+func BenchmarkWrapStyledSegments(b *testing.B) {
+	face := loadFont("regular", 27)
+	faces := styledFaces{normal: face, bold: face, italic: face, code: face}
+	segments := styledSegments(strings.Repeat("alpha  beta gamma delta ", 50), nil)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = wrapStyledSegments(segments, faces, 672)
 	}
 }
