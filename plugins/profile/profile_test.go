@@ -2,6 +2,8 @@ package profile
 
 import (
 	"context"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -249,9 +251,17 @@ func TestHandleSetPic_LocalFile(t *testing.T) {
 	svc := &mockService{}
 
 	tempDir := t.TempDir()
-	filePath := filepath.Join(tempDir, "profile.jpg")
-	if err := os.WriteFile(filePath, []byte("fake-jpeg-data"), 0644); err != nil {
-		t.Fatalf("failed to write dummy file: %v", err)
+	filePath := filepath.Join(tempDir, "profile.png")
+	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("failed to create profile image: %v", err)
+	}
+	if err := png.Encode(f, image.NewRGBA(image.Rect(0, 0, 32, 32))); err != nil {
+		_ = f.Close()
+		t.Fatalf("failed to encode profile image: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("failed to close profile image: %v", err)
 	}
 
 	ctx := &core.Context{
@@ -386,5 +396,53 @@ func TestHandleDialogs(t *testing.T) {
 	}
 	if !strings.Contains(svc.sent, "Golang Developers") || !strings.Contains(svc.sent, "Secret Channel") {
 		t.Errorf("expected chat titles in dialogs list, got: %s", svc.sent)
+	}
+}
+
+
+func TestSetPicCommandResources(t *testing.T) {
+	cmds := New().Commands()
+	var found *core.Command
+	for i := range cmds {
+		if cmds[i].Name == "setpic" {
+			found = &cmds[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("setpic command not found")
+	}
+	seen := map[string]int64{}
+	for _, resource := range found.Resources {
+		seen[resource.Name] = resource.Amount
+	}
+	for _, name := range []string{"download", "media"} {
+		if seen[name] != 1 {
+			t.Fatalf("setpic resource %q=%d, want 1; all=%+v", name, seen[name], found.Resources)
+		}
+	}
+}
+
+func TestHandleSetPicRejectsInvalidLocalImageBeforeUpload(t *testing.T) {
+	p := New()
+	svc := &mockService{}
+	path := filepath.Join(t.TempDir(), "not-image.jpg")
+	if err := os.WriteFile(path, []byte("definitely not an image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := &core.Context{
+		Ctx:    context.Background(),
+		Svc:    svc,
+		Args:   []string{path},
+		PeerID: &tg.InputPeerSelf{},
+	}
+	if err := p.handleSetPic(ctx); err != nil {
+		t.Fatalf("handleSetPic returned error: %v", err)
+	}
+	if svc.uploadedPhotoPath != "" {
+		t.Fatalf("invalid image reached UploadProfilePhoto: %q", svc.uploadedPhotoPath)
+	}
+	if !strings.Contains(svc.sent, "Local profile image is invalid") {
+		t.Fatalf("unexpected response: %q", svc.sent)
 	}
 }
