@@ -420,8 +420,9 @@ func RenderV3WithOpts(opts RenderOptions) error {
 	replyTextFace := fonts.replyText
 	timeFace := fonts.timestamp
 
-	// Format text and entities
-	rawText := strings.TrimSpace(opts.Text)
+	// Preserve the original prefix so Telegram UTF-16 entity offsets remain
+	// aligned. The command path already applies prefix-only quote bounds.
+	rawText := opts.Text
 	var entities []tg.MessageEntityClass
 	var mediaInfo *core.MediaInfo
 	if opts.Message != nil {
@@ -431,7 +432,7 @@ func RenderV3WithOpts(opts RenderOptions) error {
 			rawText = mediaPlaceholder(opts.Message.MediaType)
 		}
 	}
-	if rawText == "" {
+	if strings.TrimSpace(rawText) == "" {
 		rawText = " "
 	}
 
@@ -449,11 +450,16 @@ func RenderV3WithOpts(opts RenderOptions) error {
 		lines = []styledLine{{segments: []styledSegment{{text: rawText}}}}
 	}
 
+	// Bound header labels independently so a custom badge or unusual display
+	// name can never force drawing outside the capped Telegram bubble width.
+	renderName := truncateToWidth(opts.Name, nameFace, 420)
+	renderBadge := truncateToWidth(opts.Badge, badgeFace, 180)
+
 	// Calculate widths
-	nameWidth := font.MeasureString(nameFace, opts.Name).Ceil()
+	nameWidth := font.MeasureString(nameFace, renderName).Ceil()
 	badgeWidth := 0
-	if opts.Badge != "" {
-		badgeWidth = font.MeasureString(badgeFace, opts.Badge).Ceil() + 28 // 14px padding each side
+	if renderBadge != "" {
+		badgeWidth = font.MeasureString(badgeFace, renderBadge).Ceil() + 28 // 14px padding each side
 	}
 	headerWidth := nameWidth
 	if badgeWidth > 0 {
@@ -582,10 +588,10 @@ func RenderV3WithOpts(opts RenderOptions) error {
 		Face: nameFace,
 		Dot:  fixed.P(currX, currY),
 	}
-	d.DrawString(opts.Name)
+	d.DrawString(renderName)
 
 	// 2. Draw Badge (if present)
-	if opts.Badge != "" {
+	if renderBadge != "" {
 		bx := currX + nameWidth + 14
 		by := currY - 18
 		bh := 26
@@ -597,7 +603,7 @@ func RenderV3WithOpts(opts RenderOptions) error {
 			Face: badgeFace,
 			Dot:  fixed.P(bx+14, by+19),
 		}
-		bd.DrawString(opts.Badge)
+		bd.DrawString(renderBadge)
 	}
 
 	currY += 8 // move past header
@@ -836,12 +842,16 @@ func styledSegments(text string, entities []tg.MessageEntityClass) []styledSegme
 
 	styles := make([]entityStyle, len(runes))
 	boundaries := utf16RuneBoundaries(runes)
+	maxUnits := len(boundaries) - 1
 	for _, entity := range entities {
 		offset, length, style, ok := entityStyleSpan(entity)
-		if !ok || offset < 0 || length <= 0 || offset > len(boundaries)-1 || length > len(boundaries)-1-offset {
+		if !ok || offset < 0 || length <= 0 || offset >= maxUnits {
 			continue
 		}
 		end := offset + length
+		if end > maxUnits {
+			end = maxUnits
+		}
 		startRune, endRune := boundaries[offset], boundaries[end]
 		if startRune < 0 || endRune < 0 || startRune >= endRune || endRune > len(styles) {
 			continue

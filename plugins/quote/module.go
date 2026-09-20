@@ -14,7 +14,7 @@ var Module ModuleType
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
 		ID:           "quote",
-		Version:      "1.4.0",
+		Version:      "1.5.0",
 		Description:  "Render a replied message as a shareable quote image",
 		Capabilities: []string{plugin.CapTelegramSendMessage, plugin.CapFilesystemTemp},
 	}

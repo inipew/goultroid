@@ -1,6 +1,7 @@
 package quote
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"image"
@@ -667,6 +668,139 @@ func styledLineText(line styledLine) string {
 		b.WriteString(segment.text)
 	}
 	return b.String()
+}
+
+
+func TestBoundedQuoteTextPreservesPrefixAndCapsLogicalLines(t *testing.T) {
+	input := "  😀 bold\n" + strings.Repeat("line\n", maxQuoteLogicalLines+5)
+	got := boundedQuoteText(input)
+	if !strings.HasPrefix(got, "  😀 bold\n") {
+		t.Fatalf("quote prefix changed: %q", got[:min(len(got), 20)])
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Fatal("bounded quote text should signal truncation")
+	}
+	if lines := strings.Count(got, "\n") + 1; lines > maxQuoteLogicalLines {
+		t.Fatalf("logical lines=%d, max=%d", lines, maxQuoteLogicalLines)
+	}
+
+	long := strings.Repeat("界", maxQuoteTextRunes+50)
+	got = boundedQuoteText(long)
+	if runes := len([]rune(got)); runes != maxQuoteTextRunes+1 {
+		t.Fatalf("bounded runes=%d, want %d including ellipsis", runes, maxQuoteTextRunes+1)
+	}
+}
+
+func TestStyledSegmentsClipsEntityAtBoundedTextEnd(t *testing.T) {
+	text := "A😀bold"
+	segments := styledSegments(text, []tg.MessageEntityClass{
+		// Starts at UTF-16 offset 3 (after A + 😀) and extends beyond this
+		// bounded prefix. The visible suffix should stay bold.
+		&tg.MessageEntityBold{Offset: 3, Length: 100},
+	})
+	var found bool
+	for _, segment := range segments {
+		if segment.text == "bold" {
+			found = true
+			if segment.style != styleBold {
+				t.Fatalf("clipped segment style=%v, want bold", segment.style)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("clipped styled suffix not found: %+v", segments)
+	}
+}
+
+type quoteMediaSelectionService struct {
+	core.MockTelegramServicer
+	payload      []byte
+	downloadedID int64
+}
+
+func (s *quoteMediaSelectionService) DownloadFile(
+	_ context.Context,
+	location tg.InputFileLocationClass,
+	dstPath string,
+) error {
+	if document, ok := location.(*tg.InputDocumentFileLocation); ok {
+		s.downloadedID = document.ID
+	}
+	return os.WriteFile(dstPath, s.payload, 0o600)
+}
+
+func TestDownloadQuotedMediaUsesReplyAttachmentNotCommandAttachment(t *testing.T) {
+	var payload bytes.Buffer
+	if err := png.Encode(&payload, image.NewRGBA(image.Rect(0, 0, 64, 64))); err != nil {
+		t.Fatal(err)
+	}
+	svc := &quoteMediaSelectionService{payload: payload.Bytes()}
+	ctx := &core.Context{
+		Ctx: context.Background(),
+		Svc: svc,
+		Message: &core.Message{
+			ID: 1,
+			Media: &core.MediaInfo{
+				Type: "document", MimeType: "image/png", FileName: "command.png",
+				Location: &tg.InputDocumentFileLocation{ID: 111},
+			},
+		},
+	}
+	reply := &core.Message{
+		ID: 2,
+		Media: &core.MediaInfo{
+			Type: "document", MimeType: "image/png", FileName: "reply.png",
+			Location: &tg.InputDocumentFileLocation{ID: 222},
+		},
+	}
+	manager, err := filesystem.NewManager(t.TempDir(), "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := New()
+	p.SetFiles(manager)
+	workspace, err := p.createWorkspace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = p.files.RemoveTempDir(workspace) }()
+
+	path := p.downloadQuotedMedia(ctx, reply, workspace)
+	if path == "" {
+		t.Fatal("expected quoted media preview download")
+	}
+	if svc.downloadedID != 222 {
+		t.Fatalf("downloaded document ID=%d, want replied media ID 222", svc.downloadedID)
+	}
+	if filepath.Base(path) != "reply.png" {
+		t.Fatalf("downloaded path=%q, want reply.png", path)
+	}
+}
+
+type replyPreviewService struct {
+	core.MockTelegramServicer
+	message *tg.Message
+}
+
+func (s *replyPreviewService) GetMessage(context.Context, tg.InputPeerClass, int) (*tg.Message, error) {
+	return s.message, nil
+}
+
+func TestResolveReplyPreviewUsesCanonicalMediaType(t *testing.T) {
+	svc := &replyPreviewService{message: &tg.Message{
+		ID: 9,
+		Media: &tg.MessageMediaDocument{Document: &tg.Document{
+			ID: 99, MimeType: "video/mp4",
+			Attributes: []tg.DocumentAttributeClass{
+				&tg.DocumentAttributeVideo{W: 640, H: 360, Duration: 5},
+			},
+		}},
+	}}
+	ctx := &core.Context{Ctx: context.Background(), Svc: svc, PeerID: &tg.InputPeerSelf{}}
+	preview := New().resolveReplyPreview(ctx, 9)
+	if preview == nil || preview.Text != "[Video]" {
+		t.Fatalf("reply preview=%+v, want canonical [Video] placeholder", preview)
+	}
 }
 
 func BenchmarkStyledSegmentsManyEntities(b *testing.B) {

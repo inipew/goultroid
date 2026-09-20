@@ -19,6 +19,12 @@ import (
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
+const (
+	maxQuoteTextRunes        = 1200
+	maxQuoteLogicalLines     = 32
+	maxReplyPreviewTextRunes = 60
+)
+
 type Plugin struct {
 	files *filesystem.Scope
 }
@@ -99,17 +105,9 @@ func (p *Plugin) handle(ctx *core.Context) error {
 	defer func() { _ = p.files.RemoveTempDir(workspace) }()
 
 	author := p.resolveAuthorInfo(ctx, reply)
-	text := strings.TrimSpace(reply.Text)
-	if len([]rune(text)) > 1200 {
-		text = string([]rune(text)[:1200]) + "…"
-	}
+	text := boundedQuoteText(reply.Text)
 
-	var mediaPath string
-	if reply.HasMedia() && quoteCanPreviewImage(reply.Media) {
-		if err := imageguard.ValidateKnown(reply.Media.Size, reply.Media.Width, reply.Media.Height, quoteMediaPolicy); err == nil {
-			mediaPath, _ = ctx.Media().DownloadMedia(workspace)
-		}
-	}
+	mediaPath := p.downloadQuotedMedia(ctx, reply, workspace)
 	var avatarPath string
 	if reply.SenderID != 0 {
 		avatarPath = p.downloadAvatar(ctx, reply.SenderID, workspace)
@@ -148,6 +146,50 @@ func (p *Plugin) handle(ctx *core.Context) error {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to send quote image: %v", err))
 	}
 	return nil
+}
+
+func boundedQuoteText(text string) string {
+	runes := []rune(text)
+	if len(runes) == 0 {
+		return ""
+	}
+	cut := len(runes)
+	lines := 1
+	for i, r := range runes {
+		if i >= maxQuoteTextRunes {
+			cut = i
+			break
+		}
+		if r == '\n' {
+			lines++
+			if lines > maxQuoteLogicalLines {
+				cut = i
+				break
+			}
+		}
+	}
+	if cut < len(runes) {
+		return string(runes[:cut]) + "…"
+	}
+	return text
+}
+
+func (p *Plugin) downloadQuotedMedia(ctx *core.Context, reply *core.Message, workspace string) string {
+	if ctx == nil || reply == nil || !reply.HasMedia() || !quoteCanPreviewImage(reply.Media) {
+		return ""
+	}
+	if err := imageguard.ValidateKnown(reply.Media.Size, reply.Media.Width, reply.Media.Height, quoteMediaPolicy); err != nil {
+		return ""
+	}
+	mediaCtx := ctx.WithMedia(reply.Media)
+	if mediaCtx == nil {
+		return ""
+	}
+	path, err := mediaCtx.Media().DownloadMedia(workspace)
+	if err != nil {
+		return ""
+	}
+	return path
 }
 
 type profilePhotoDownloader interface {
@@ -251,13 +293,17 @@ func (p *Plugin) resolveReplyPreview(ctx *core.Context, replyToID int) *ReplyPre
 	}
 	text := strings.TrimSpace(msg.Message)
 	if text == "" && msg.Media != nil {
-		text = mediaPlaceholder("")
+		if media := core.ExtractMediaFromTG(msg.Media); media != nil {
+			text = mediaPlaceholder(media.Type)
+		} else {
+			text = mediaPlaceholder("")
+		}
 	}
 	if text == "" {
 		text = "Message"
 	}
-	if len([]rune(text)) > 60 {
-		text = string([]rune(text)[:57]) + "…"
+	if len([]rune(text)) > maxReplyPreviewTextRunes {
+		text = string([]rune(text)[:maxReplyPreviewTextRunes-1]) + "…"
 	}
 	return &ReplyPreview{
 		Author: author,
