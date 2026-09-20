@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
@@ -247,6 +248,22 @@ func getContext(ctx *core.Context) context.Context {
 	return context.Background()
 }
 
+func normalizeAlias(alias string) (string, error) {
+	alias = strings.TrimSpace(alias)
+	if alias == "" {
+		return "", errors.New("alias tidak boleh kosong")
+	}
+	if len([]rune(alias)) > 24 {
+		return "", errors.New("panjang alias maksimal 24 karakter")
+	}
+	for _, r := range alias {
+		if unicode.IsControl(r) {
+			return "", errors.New("alias mengandung karakter kontrol")
+		}
+	}
+	return alias, nil
+}
+
 func isGroupChat(chat *core.Chat) bool {
 	if chat == nil {
 		return false
@@ -421,10 +438,8 @@ func (p *Plugin) handleOTP(ctx *core.Context, args []string) error {
 	acc.IsActive = true
 
 	if err := p.repo.Save(cCtx, acc); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("⚠️ Login berhasil di CIAM tetapi gagal menyimpan ke database: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("⚠️ Login berhasil di CIAM tetapi gagal menyimpan ke database: %s", html.EscapeString(err.Error())))
 	}
-
-	_ = p.repo.SetActive(cCtx, msisdn)
 
 	return ctx.EditOrReply(
 		fmt.Sprintf("🎉 <b>Login Berhasil!</b>\n\n"+
@@ -443,9 +458,9 @@ func (p *Plugin) handleSetAlias(ctx *core.Context, args []string) error {
 	if norm, err := NormalizeMSISDN(target); err == nil {
 		target = norm
 	}
-	newAlias := strings.TrimSpace(strings.Join(args[1:], " "))
-	if newAlias == "" {
-		return ctx.EditOrReply("⚠️ Alias tidak boleh kosong.")
+	newAlias, err := normalizeAlias(strings.Join(args[1:], " "))
+	if err != nil {
+		return ctx.EditOrReply("⚠️ " + html.EscapeString(err.Error()) + ".")
 	}
 
 	cCtx := getContext(ctx)

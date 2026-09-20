@@ -311,8 +311,14 @@ func (m *MenuManager) handleWizardLoginOTP(ctx context.Context, userID int64, in
 	}
 	acc.IsActive = true
 
-	_ = m.plugin.repo.Save(cCtx, acc)
-	_ = m.plugin.repo.SetActive(cCtx, sess.MSISDN)
+	if err := m.plugin.repo.Save(cCtx, acc); err != nil {
+		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(),
+			"⚠️ <b>Login berhasil di CIAM, tetapi akun gagal disimpan secara lokal.</b>\n\n"+
+				"<code>"+html.EscapeString(err.Error())+"</code>\n\n"+
+				"Silakan ulangi login setelah masalah penyimpanan diperbaiki.",
+			nil)
+		return true, sendErr
+	}
 	m.ClearSession(userID)
 
 	successMsg := fmt.Sprintf(
@@ -332,10 +338,10 @@ func (m *MenuManager) handleWizardLoginOTP(ctx context.Context, userID int64, in
 }
 
 func (m *MenuManager) handleWizardSetAlias(ctx context.Context, userID int64, input string, sess *wizardSession, inter interaction.MessageInteraction) (bool, error) {
-	alias := strings.TrimSpace(input)
-	if len(alias) > 24 {
+	alias, err := normalizeAlias(input)
+	if err != nil {
 		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(),
-			"⚠️ Panjang alias maksimal 24 karakter. Silakan kirimkan nama yang lebih pendek:",
+			"⚠️ "+html.EscapeString(err.Error())+". Silakan kirimkan nama yang valid:",
 			nil)
 		return true, sendErr
 	}

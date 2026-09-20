@@ -120,7 +120,9 @@ func NormalizeMSISDN(msisdn string) (string, error) {
 	s := strings.TrimSpace(msisdn)
 	s = strings.ReplaceAll(s, "-", "")
 	s = strings.ReplaceAll(s, " ", "")
-	s = strings.ReplaceAll(s, "+", "")
+	if strings.HasPrefix(s, "+") {
+		s = strings.TrimPrefix(s, "+")
+	}
 
 	if strings.HasPrefix(s, "08") {
 		s = "62" + s[1:]
@@ -129,9 +131,27 @@ func NormalizeMSISDN(msisdn string) (string, error) {
 	}
 
 	if !strings.HasPrefix(s, "628") || len(s) < 10 || len(s) > 15 {
-		return "", fmt.Errorf("invalid Indonesian MSISDN: %s", msisdn)
+		return "", fmt.Errorf("invalid Indonesian MSISDN")
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return "", fmt.Errorf("invalid Indonesian MSISDN")
+		}
 	}
 	return s, nil
+}
+
+func normalizeOTPCode(code string) (string, error) {
+	code = strings.TrimSpace(code)
+	if len(code) != 6 {
+		return "", errors.New("OTP must contain exactly 6 digits")
+	}
+	for _, r := range code {
+		if r < '0' || r > '9' {
+			return "", errors.New("OTP must contain exactly 6 digits")
+		}
+	}
+	return code, nil
 }
 
 func (c *Client) buildCIAMHeaders(requestAt string) map[string]string {
@@ -155,16 +175,22 @@ func (c *Client) RequestOTP(ctx context.Context, msisdn string) (string, error) 
 		return "", err
 	}
 
+	now := time.Now()
 	c.mu.Lock()
+	for key, last := range c.lastOTP {
+		if now.Sub(last) >= 60*time.Second {
+			delete(c.lastOTP, key)
+		}
+	}
 	if last, exists := c.lastOTP[cleanMSISDN]; exists {
-		elapsed := time.Since(last)
+		elapsed := now.Sub(last)
 		if elapsed < 60*time.Second {
 			c.mu.Unlock()
 			waitSec := int(math.Ceil((60*time.Second - elapsed).Seconds()))
 			return "", fmt.Errorf("mohon tunggu %d detik sebelum meminta kode OTP kembali", waitSec)
 		}
 	}
-	c.lastOTP[cleanMSISDN] = time.Now()
+	c.lastOTP[cleanMSISDN] = now
 	c.mu.Unlock()
 
 	reqURL := fmt.Sprintf("%s/realms/xl-ciam/auth/otp?contact=%s&contactType=SMS&alternateContact=false",
@@ -213,7 +239,10 @@ func (c *Client) SubmitOTP(ctx context.Context, msisdn, code string) (*Tokens, e
 	if err != nil {
 		return nil, err
 	}
-	code = strings.TrimSpace(code)
+	code, err = normalizeOTPCode(code)
+	if err != nil {
+		return nil, err
+	}
 
 	reqURL := fmt.Sprintf("%s/realms/xl-ciam/protocol/openid-connect/token", c.cfg.BaseCIAMURL)
 

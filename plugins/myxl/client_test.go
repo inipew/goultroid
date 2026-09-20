@@ -174,6 +174,51 @@ func (m *mockRepo) PruneExpiredQRIS(ctx context.Context) (int64, error) {
 	return 0, nil
 }
 
+
+func TestNormalizeMSISDNRejectsNonDigitsAndEmbeddedPlus(t *testing.T) {
+	valid, err := NormalizeMSISDN("+62 819-1234-5678")
+	if err != nil || valid != "6281912345678" {
+		t.Fatalf("valid MSISDN = %q, err=%v", valid, err)
+	}
+	for _, input := range []string{
+		"62819abc5678",
+		"62819+123456",
+		"62+81912345678",
+	} {
+		if _, err := NormalizeMSISDN(input); err == nil {
+			t.Fatalf("NormalizeMSISDN(%q) unexpectedly accepted non-digit input", input)
+		}
+	}
+}
+
+func TestNormalizeOTPCodeRequiresSixDigits(t *testing.T) {
+	if got, err := normalizeOTPCode(" 123456 "); err != nil || got != "123456" {
+		t.Fatalf("normalizeOTPCode valid = %q, err=%v", got, err)
+	}
+	for _, code := range []string{"12345", "1234567", "12a456", "１２３４５６"} {
+		if _, err := normalizeOTPCode(code); err == nil {
+			t.Fatalf("normalizeOTPCode(%q) unexpectedly accepted", code)
+		}
+	}
+}
+
+func TestRequestOTPPrunesExpiredCooldownEntries(t *testing.T) {
+	client := NewClient(DefaultClientConfig(), nil, network.NewService(nil, nil).ForOwner("myxl"))
+	client.lastOTP["6281111111111"] = time.Now().Add(-2 * time.Minute)
+	client.lastOTP["6281222222222"] = time.Now()
+
+	_, _ = client.RequestOTP(context.Background(), "6281222222222")
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if _, ok := client.lastOTP["6281111111111"]; ok {
+		t.Fatal("expired OTP cooldown entry was not reclaimed")
+	}
+	if _, ok := client.lastOTP["6281222222222"]; !ok {
+		t.Fatal("active OTP cooldown entry was unexpectedly removed")
+	}
+}
+
 func TestClient_RequestAndSubmitOTP(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
