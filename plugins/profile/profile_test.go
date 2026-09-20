@@ -2,10 +2,6 @@ package profile
 
 import (
 	"context"
-	"image"
-	"image/png"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -246,40 +242,25 @@ func TestHandleSetName(t *testing.T) {
 	}
 }
 
-func TestHandleSetPic_LocalFile(t *testing.T) {
+func TestHandleSetPicRejectsHostFilesystemPath(t *testing.T) {
 	p := New()
 	svc := &mockService{}
-
-	tempDir := t.TempDir()
-	filePath := filepath.Join(tempDir, "profile.png")
-	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		t.Fatalf("failed to create profile image: %v", err)
-	}
-	if err := png.Encode(f, image.NewRGBA(image.Rect(0, 0, 32, 32))); err != nil {
-		_ = f.Close()
-		t.Fatalf("failed to encode profile image: %v", err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("failed to close profile image: %v", err)
-	}
-
 	ctx := &core.Context{
-		Ctx:    context.Background(),
-		Svc:    svc,
-		Args:   []string{filePath},
-		PeerID: &tg.InputPeerSelf{},
+		Ctx:     context.Background(),
+		Svc:     svc,
+		Args:    []string{"/etc/passwd"},
+		RawArgs: "/etc/passwd",
+		PeerID:  &tg.InputPeerSelf{},
 	}
 
-	err := p.handleSetPic(ctx)
-	if err != nil {
-		t.Fatalf("handleSetPic error: %v", err)
+	if err := p.handleSetPic(ctx); err != nil {
+		t.Fatalf("handleSetPic returned error: %v", err)
 	}
-	if svc.uploadedPhotoPath != filePath {
-		t.Errorf("expected uploaded path %s, got %s", filePath, svc.uploadedPhotoPath)
+	if svc.uploadedPhotoPath != "" {
+		t.Fatalf("host path reached UploadProfilePhoto: %q", svc.uploadedPhotoPath)
 	}
-	if !strings.Contains(svc.sent, "Profile photo updated successfully") {
-		t.Errorf("expected success reply, got: %s", svc.sent)
+	if !strings.Contains(svc.sent, "Local filesystem paths are not accepted") {
+		t.Fatalf("unexpected response: %q", svc.sent)
 	}
 }
 
@@ -423,26 +404,18 @@ func TestSetPicCommandResources(t *testing.T) {
 	}
 }
 
-func TestHandleSetPicRejectsInvalidLocalImageBeforeUpload(t *testing.T) {
-	p := New()
-	svc := &mockService{}
-	path := filepath.Join(t.TempDir(), "not-image.jpg")
-	if err := os.WriteFile(path, []byte("definitely not an image"), 0o600); err != nil {
-		t.Fatal(err)
+func TestSetPicMetadataDoesNotAdvertiseHostPaths(t *testing.T) {
+	for _, cmd := range New().Commands() {
+		if cmd.Name != "setpic" {
+			continue
+		}
+		combined := strings.ToLower(cmd.Description + " " + cmd.Usage)
+		for _, forbidden := range []string{"/path/", "local image path", "filesystem path"} {
+			if strings.Contains(combined, forbidden) {
+				t.Fatalf("setpic metadata still advertises host-path access: %q", combined)
+			}
+		}
+		return
 	}
-	ctx := &core.Context{
-		Ctx:    context.Background(),
-		Svc:    svc,
-		Args:   []string{path},
-		PeerID: &tg.InputPeerSelf{},
-	}
-	if err := p.handleSetPic(ctx); err != nil {
-		t.Fatalf("handleSetPic returned error: %v", err)
-	}
-	if svc.uploadedPhotoPath != "" {
-		t.Fatalf("invalid image reached UploadProfilePhoto: %q", svc.uploadedPhotoPath)
-	}
-	if !strings.Contains(svc.sent, "Local profile image is invalid") {
-		t.Fatalf("unexpected response: %q", svc.sent)
-	}
+	t.Fatal("setpic command not found")
 }
