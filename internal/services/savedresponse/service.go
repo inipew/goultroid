@@ -15,7 +15,10 @@ import (
 	"github.com/inipew/goultroid/internal/services/storage"
 )
 
-const MaxPersistentMediaBytes int64 = 32 << 20
+const (
+	MaxPersistentMediaBytes int64 = 32 << 20
+	MaxCaptionRunes               = 1024
+)
 
 type Service struct {
 	store storage.Storage
@@ -43,7 +46,7 @@ func (s *Service) CaptureReply(ctx *core.Context) (Response, error) {
 	if reply == nil {
 		return Response{}, errors.New("saved response: replied message not found")
 	}
-	response := NewText(reply.Text)
+	response := NewPlainText(reply.Text)
 	if reply.Media != nil && reply.Media.Location != nil {
 		media, err := s.captureMedia(ctx, reply.Media)
 		if err != nil {
@@ -146,6 +149,71 @@ func (s *Service) DeleteMedia(parent context.Context, response Response) error {
 	return err
 }
 
+type Prepared struct {
+	Text      string
+	Caption   string
+	MediaType string
+	MediaPath string
+	cleanup   func()
+}
+
+func (p *Prepared) Cleanup() {
+	if p == nil || p.cleanup == nil {
+		return
+	}
+	p.cleanup()
+	p.cleanup = nil
+}
+
+func (s *Service) Prepare(ctx context.Context, response Response, vars TemplateVars) (*Prepared, error) {
+	if response.Empty() {
+		return nil, errors.New("saved response: response is empty")
+	}
+
+	mediaID := response.MediaAssetID()
+	if mediaID == "" {
+		text, err := Render(response, vars, DefaultMaxOutputRunes)
+		if err != nil {
+			return nil, err
+		}
+		return &Prepared{Text: text}, nil
+	}
+
+	mediaType := "file"
+	if response.Media != nil && strings.TrimSpace(response.Media.MediaType) != "" {
+		mediaType = deliveryMediaType(response.Media.MediaType)
+	}
+
+	captionAllowed := mediaType != "sticker"
+	if captionAllowed {
+		caption, err := Render(response, vars, MaxCaptionRunes)
+		if err == nil {
+			path, cleanup, err := s.Materialize(ctx, response)
+			if err != nil {
+				return nil, err
+			}
+			return &Prepared{
+				Caption: caption, MediaType: mediaType, MediaPath: path, cleanup: cleanup,
+			}, nil
+		}
+		if !errors.Is(err, ErrRenderedTooLarge) {
+			return nil, err
+		}
+	}
+
+	text, err := Render(response, vars, DefaultMaxOutputRunes)
+	if err != nil {
+		return nil, err
+	}
+	path, cleanup, err := s.Materialize(ctx, response)
+	if err != nil {
+		return nil, err
+	}
+	return &Prepared{
+		Text: text, MediaType: mediaType, MediaPath: path, cleanup: cleanup,
+	}, nil
+}
+
 func (s *Service) Materialize(ctx context.Context, response Response) (string, func(), error) {
 	id := response.MediaAssetID()
 	if id == "" {
@@ -154,6 +222,14 @@ func (s *Service) Materialize(ctx context.Context, response Response) (string, f
 	if s == nil || s.store == nil || s.files == nil {
 		return "", nil, errors.New("saved response: media delivery is not configured")
 	}
+	asset, err := s.store.Stat(ctx, id)
+	if err != nil {
+		return "", nil, err
+	}
+	if asset.Size > MaxPersistentMediaBytes {
+		return "", nil, fmt.Errorf("saved response media exceeds %d bytes", MaxPersistentMediaBytes)
+	}
+
 	reader, err := s.store.Open(ctx, id)
 	if err != nil {
 		return "", nil, err
