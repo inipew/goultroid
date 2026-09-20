@@ -3,11 +3,13 @@ package savedresponse
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/services/storage"
 )
 
@@ -68,5 +70,108 @@ func TestCommitReplacementCleansAssets(t *testing.T) {
 	}
 	if _, err := store.Stat(context.Background(), newAsset.ID); err != nil {
 		t.Fatalf("new asset missing: %v", err)
+	}
+}
+
+
+func TestRenderPlainEscapesLiteralHTMLAndVariables(t *testing.T) {
+	got, err := Render(NewPlainText("2 < 3 & hello {name}"), TemplateVars{Name: "Alice <Admin>"}, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "2 &lt; 3 &amp; hello Alice &lt;Admin&gt;"
+	if got != want {
+		t.Fatalf("Render plain=%q, want %q", got, want)
+	}
+
+	htmlText, err := Render(NewHTML("<b>{name}</b>"), TemplateVars{Name: "Alice <Admin>"}, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if htmlText != "<b>Alice &lt;Admin&gt;</b>" {
+		t.Fatalf("Render HTML=%q", htmlText)
+	}
+}
+
+func TestRenderRejectsTooManyTemplateTokens(t *testing.T) {
+	template := strings.Repeat("{name}", MaxTemplateTokens+1)
+	_, err := Render(NewHTML(template), TemplateVars{Name: "Alice"}, 4096)
+	if !errors.Is(err, ErrTooManyTokens) {
+		t.Fatalf("error=%v, want ErrTooManyTokens", err)
+	}
+}
+
+func newPreparedTestService(t *testing.T) (*Service, storage.Storage) {
+	t.Helper()
+	store := storage.NewMemoryStorage()
+	manager, err := filesystem.NewManager(t.TempDir(), "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(store)
+	svc.SetFiles(manager.ForOwner("savedresponse-test"))
+	return svc, store
+}
+
+func putPreparedAsset(t *testing.T, store storage.Storage, name, content string) *storage.Asset {
+	t.Helper()
+	asset, err := store.Put(context.Background(), strings.NewReader(content), storage.Metadata{Name: name, MIME: "image/png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return asset
+}
+
+func TestPrepareFallsBackToStandaloneTextWhenCaptionTooLong(t *testing.T) {
+	svc, store := newPreparedTestService(t)
+	asset := putPreparedAsset(t, store, "photo.png", "fake image bytes")
+	response := NewPlainText(strings.Repeat("x", MaxCaptionRunes+20))
+	response.Media = &MediaRef{AssetID: asset.ID, MediaType: "photo", Name: asset.Name, MIMEType: asset.MIME}
+
+	prepared, err := svc.Prepare(context.Background(), response, TemplateVars{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prepared.Cleanup()
+
+	if prepared.Caption != "" {
+		t.Fatalf("caption should be empty after overflow fallback, got %d chars", len([]rune(prepared.Caption)))
+	}
+	if len([]rune(prepared.Text)) != MaxCaptionRunes+20 {
+		t.Fatalf("standalone text runes=%d", len([]rune(prepared.Text)))
+	}
+	if prepared.MediaPath == "" || prepared.MediaType != "photo" {
+		t.Fatalf("unexpected prepared media: %+v", prepared)
+	}
+	if _, err := os.Stat(prepared.MediaPath); err != nil {
+		t.Fatalf("materialized media missing before cleanup: %v", err)
+	}
+	path := prepared.MediaPath
+	prepared.Cleanup()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("materialized media still exists after cleanup: %v", err)
+	}
+}
+
+func TestPrepareStickerUsesStandaloneText(t *testing.T) {
+	svc, store := newPreparedTestService(t)
+	asset := putPreparedAsset(t, store, "sticker.webp", "fake sticker bytes")
+	response := NewHTML("<b>Hello {name}</b>")
+	response.Media = &MediaRef{AssetID: asset.ID, MediaType: "sticker", Name: asset.Name, MIMEType: "image/webp"}
+
+	prepared, err := svc.Prepare(context.Background(), response, TemplateVars{Name: "Alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prepared.Cleanup()
+
+	if prepared.Caption != "" {
+		t.Fatalf("sticker must not carry caption: %q", prepared.Caption)
+	}
+	if prepared.Text != "<b>Hello Alice</b>" {
+		t.Fatalf("unexpected standalone sticker text: %q", prepared.Text)
+	}
+	if prepared.MediaType != "sticker" || prepared.MediaPath == "" {
+		t.Fatalf("unexpected prepared sticker: %+v", prepared)
 	}
 }
