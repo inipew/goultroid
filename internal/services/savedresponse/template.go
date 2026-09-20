@@ -17,6 +17,7 @@ const (
 	DefaultMaxOutputRunes = 4096
 	MaxVariableRunes      = 512
 	MaxTemplateTokens     = 128
+	maxTokenNameBytes     = 16
 )
 
 var (
@@ -24,6 +25,7 @@ var (
 	ErrRenderedTooLarge  = errors.New("rendered saved response too large")
 	ErrTooManyTokens     = errors.New("saved response template has too many tokens")
 	ErrUnsupportedFormat = errors.New("unsupported saved response format")
+	ErrNilTemplate       = errors.New("saved response compiled template is nil")
 )
 
 type TemplateVars struct {
@@ -35,6 +37,50 @@ type TemplateVars struct {
 	Chat     string
 	ChatID   int64
 	Now      time.Time
+}
+
+type templateToken uint8
+
+const (
+	tokenLiteral templateToken = iota
+	tokenName
+	tokenFirst
+	tokenLast
+	tokenUsername
+	tokenMention
+	tokenID
+	tokenChat
+	tokenChatID
+	tokenDate
+	tokenTime
+)
+
+type templatePart struct {
+	literal string
+	token   templateToken
+}
+
+// CompiledTemplate is an immutable parsed saved-response template.
+// It can be rendered repeatedly without rescanning placeholder syntax.
+type CompiledTemplate struct {
+	format     Format
+	parts      []templatePart
+	tokenCount int
+	usesClock  bool
+}
+
+func (t *CompiledTemplate) Format() Format {
+	if t == nil {
+		return ""
+	}
+	return t.format
+}
+
+func (t *CompiledTemplate) TokenCount() int {
+	if t == nil {
+		return 0
+	}
+	return t.tokenCount
 }
 
 func VarsFromContext(ctx *core.Context, now time.Time) TemplateVars {
@@ -83,47 +129,82 @@ func VarsFromEnvelope(message *core.MessageEnvelope, now time.Time) TemplateVars
 }
 
 func Validate(response Response) error {
+	_, err := Compile(response)
+	return err
+}
+
+func Compile(response Response) (*CompiledTemplate, error) {
 	if len(response.Text) > MaxTemplateBytes {
-		return fmt.Errorf("%w: max %d bytes", ErrTemplateTooLarge, MaxTemplateBytes)
+		return nil, fmt.Errorf("%w: max %d bytes", ErrTemplateTooLarge, MaxTemplateBytes)
 	}
 	format := response.EffectiveFormat()
 	if format != FormatHTML && format != FormatPlain {
-		return fmt.Errorf("%w: %q", ErrUnsupportedFormat, format)
+		return nil, fmt.Errorf("%w: %q", ErrUnsupportedFormat, format)
 	}
-	tokens := 0
-	for i := 0; i < len(response.Text); {
-		start := strings.IndexByte(response.Text[i:], '{')
-		if start < 0 {
-			break
+
+	compiled := &CompiledTemplate{
+		format: format,
+		parts:  make([]templatePart, 0, 8),
+	}
+	appendLiteral := func(value string) {
+		if value == "" {
+			return
 		}
-		start += i
-		end := strings.IndexByte(response.Text[start:], '}')
-		if end <= 1 {
-			i = start + 1
+		if format == FormatPlain {
+			value = html.EscapeString(value)
+		}
+		compiled.parts = append(compiled.parts, templatePart{literal: value})
+	}
+
+	source := response.Text
+	literalStart := 0
+	for i := 0; i < len(source); {
+		if source[i] != '{' {
+			i++
 			continue
 		}
-		tokens++
-		if tokens > MaxTemplateTokens {
-			return fmt.Errorf("%w: max %d tokens", ErrTooManyTokens, MaxTemplateTokens)
+
+		if token, consumed, ok := escapedTemplateTokenAt(source, i); ok {
+			appendLiteral(source[literalStart:i])
+			appendLiteral("{" + tokenName(token) + "}")
+			i += consumed
+			literalStart = i
+			continue
 		}
-		i = start + end + 1
+
+		end, ok := templateTokenEnd(source, i)
+		if !ok {
+			i++
+			continue
+		}
+		token, known := parseTemplateToken(source[i+1 : end])
+		if !known {
+			i = end + 1
+			continue
+		}
+
+		appendLiteral(source[literalStart:i])
+		compiled.parts = append(compiled.parts, templatePart{token: token})
+		compiled.tokenCount++
+		if compiled.tokenCount > MaxTemplateTokens {
+			return nil, fmt.Errorf("%w: max %d tokens", ErrTooManyTokens, MaxTemplateTokens)
+		}
+		if token == tokenDate || token == tokenTime {
+			compiled.usesClock = true
+		}
+		i = end + 1
+		literalStart = i
 	}
-	return nil
+	appendLiteral(source[literalStart:])
+	return compiled, nil
 }
 
 func Render(response Response, vars TemplateVars, maxRunes int) (string, error) {
-	if err := Validate(response); err != nil {
+	compiled, err := Compile(response)
+	if err != nil {
 		return "", err
 	}
-	format := response.EffectiveFormat()
-	switch format {
-	case FormatHTML:
-		return renderTemplate(response.Text, vars, maxRunes, false)
-	case FormatPlain:
-		return renderTemplate(response.Text, vars, maxRunes, true)
-	default:
-		return "", fmt.Errorf("%w: %q", ErrUnsupportedFormat, format)
-	}
+	return compiled.Render(vars, maxRunes)
 }
 
 func RenderHTML(template string, vars TemplateVars, maxRunes int) (string, error) {
@@ -134,22 +215,20 @@ func RenderPlain(template string, vars TemplateVars, maxRunes int) (string, erro
 	return Render(NewPlainText(template), vars, maxRunes)
 }
 
-func renderTemplate(template string, vars TemplateVars, maxRunes int, escapeLiteral bool) (string, error) {
-	if len(template) > MaxTemplateBytes {
-		return "", fmt.Errorf("%w: max %d bytes", ErrTemplateTooLarge, MaxTemplateBytes)
+func (t *CompiledTemplate) Render(vars TemplateVars, maxRunes int) (string, error) {
+	if t == nil {
+		return "", ErrNilTemplate
 	}
 	if maxRunes <= 0 {
 		maxRunes = DefaultMaxOutputRunes
 	}
-	if vars.Now.IsZero() {
+	if t.usesClock && vars.Now.IsZero() {
 		vars.Now = time.Now()
 	}
 
 	var out strings.Builder
-	out.Grow(min(len(template)+64, MaxTemplateBytes))
+	out.Grow(min(MaxTemplateBytes, maxRunes+64))
 	writtenRunes := 0
-	tokenCount := 0
-
 	write := func(value string) error {
 		count := utf8.RuneCountInString(value)
 		if count > maxRunes-writtenRunes {
@@ -159,72 +238,118 @@ func renderTemplate(template string, vars TemplateVars, maxRunes int, escapeLite
 		writtenRunes += count
 		return nil
 	}
-	writeLiteral := func(value string) error {
-		if escapeLiteral {
-			value = html.EscapeString(value)
-		}
-		return write(value)
-	}
 
-	for i := 0; i < len(template); {
-		if template[i] != '{' {
-			next := strings.IndexByte(template[i:], '{')
-			if next < 0 {
-				if err := writeLiteral(template[i:]); err != nil {
-					return "", err
-				}
-				break
-			}
-			if err := writeLiteral(template[i : i+next]); err != nil {
+	for _, part := range t.parts {
+		if part.token == tokenLiteral {
+			if err := write(part.literal); err != nil {
 				return "", err
 			}
-			i += next
 			continue
 		}
-
-		end := strings.IndexByte(template[i:], '}')
-		if end <= 1 {
-			if err := writeLiteral(template[i : i+1]); err != nil {
-				return "", err
-			}
-			i++
-			continue
-		}
-		end += i
-		tokenCount++
-		if tokenCount > MaxTemplateTokens {
-			return "", fmt.Errorf("%w: max %d tokens", ErrTooManyTokens, MaxTemplateTokens)
-		}
-
-		token := template[i+1 : end]
-		value, ok := renderToken(token, vars)
-		if !ok {
-			if err := writeLiteral(template[i : end+1]); err != nil {
-				return "", err
-			}
-		} else if err := write(value); err != nil {
+		value := renderCompiledToken(part.token, vars)
+		if err := write(value); err != nil {
 			return "", err
 		}
-		i = end + 1
 	}
 	return out.String(), nil
 }
 
-func renderToken(token string, vars TemplateVars) (string, bool) {
-	switch token {
+func templateTokenEnd(source string, start int) (int, bool) {
+	limit := min(len(source), start+1+maxTokenNameBytes+1)
+	for i := start + 1; i < limit; i++ {
+		if source[i] == '}' {
+			return i, i > start+1
+		}
+		if source[i] == '{' {
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
+func escapedTemplateTokenAt(source string, start int) (templateToken, int, bool) {
+	if start+4 > len(source) || source[start] != '{' || source[start+1] != '{' {
+		return tokenLiteral, 0, false
+	}
+	for token := tokenName; token <= tokenTime; token++ {
+		name := tokenName(token)
+		escaped := "{{" + name + "}}"
+		if strings.HasPrefix(source[start:], escaped) {
+			return token, len(escaped), true
+		}
+	}
+	return tokenLiteral, 0, false
+}
+
+func parseTemplateToken(name string) (templateToken, bool) {
+	switch name {
 	case "name":
-		return escapeVar(vars.Name), true
+		return tokenName, true
 	case "first":
-		return escapeVar(vars.First), true
+		return tokenFirst, true
 	case "last":
-		return escapeVar(vars.Last), true
+		return tokenLast, true
 	case "username":
+		return tokenUsername, true
+	case "mention":
+		return tokenMention, true
+	case "id":
+		return tokenID, true
+	case "chat":
+		return tokenChat, true
+	case "chat_id":
+		return tokenChatID, true
+	case "date":
+		return tokenDate, true
+	case "time":
+		return tokenTime, true
+	default:
+		return tokenLiteral, false
+	}
+}
+
+func tokenName(token templateToken) string {
+	switch token {
+	case tokenName:
+		return "name"
+	case tokenFirst:
+		return "first"
+	case tokenLast:
+		return "last"
+	case tokenUsername:
+		return "username"
+	case tokenMention:
+		return "mention"
+	case tokenID:
+		return "id"
+	case tokenChat:
+		return "chat"
+	case tokenChatID:
+		return "chat_id"
+	case tokenDate:
+		return "date"
+	case tokenTime:
+		return "time"
+	default:
+		return ""
+	}
+}
+
+func renderCompiledToken(token templateToken, vars TemplateVars) string {
+	switch token {
+	case tokenName:
+		return escapeVar(vars.Name)
+	case tokenFirst:
+		return escapeVar(vars.First)
+	case tokenLast:
+		return escapeVar(vars.Last)
+	case tokenUsername:
 		username := strings.TrimPrefix(strings.TrimSpace(vars.Username), "@")
 		if username == "" {
-			return "", true
+			return ""
 		}
-		return "@" + escapeVar(username), true
-	case "mention":
+		return "@" + escapeVar(username)
+	case tokenMention:
 		label := vars.Name
 		if strings.TrimSpace(label) == "" {
 			label = vars.Username
@@ -233,27 +358,27 @@ func renderToken(token string, vars TemplateVars) (string, bool) {
 			label = strconv.FormatInt(vars.UserID, 10)
 		}
 		if vars.UserID == 0 {
-			return escapeVar(label), true
+			return escapeVar(label)
 		}
-		return fmt.Sprintf("<a href=\"tg://user?id=%d\">%s</a>", vars.UserID, escapeVar(label)), true
-	case "id":
+		return fmt.Sprintf("<a href=\"tg://user?id=%d\">%s</a>", vars.UserID, escapeVar(label))
+	case tokenID:
 		if vars.UserID == 0 {
-			return "", true
+			return ""
 		}
-		return strconv.FormatInt(vars.UserID, 10), true
-	case "chat":
-		return escapeVar(vars.Chat), true
-	case "chat_id":
+		return strconv.FormatInt(vars.UserID, 10)
+	case tokenChat:
+		return escapeVar(vars.Chat)
+	case tokenChatID:
 		if vars.ChatID == 0 {
-			return "", true
+			return ""
 		}
-		return strconv.FormatInt(vars.ChatID, 10), true
-	case "date":
-		return vars.Now.Format("2006-01-02"), true
-	case "time":
-		return vars.Now.Format("15:04:05"), true
+		return strconv.FormatInt(vars.ChatID, 10)
+	case tokenDate:
+		return vars.Now.Format("2006-01-02")
+	case tokenTime:
+		return vars.Now.Format("15:04:05")
 	default:
-		return "", false
+		return ""
 	}
 }
 
