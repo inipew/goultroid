@@ -61,6 +61,30 @@ func TestBuiltinModulesResolveInDependencyOrder(t *testing.T) {
 	}
 }
 
+func TestBuiltinFeatureMigrationsIncludeGlobalMediaRegistry(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := migrateBuiltinFeatures(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, table := range []string{"media_assets", "media_asset_references"} {
+		var count int
+		if err := db.QueryRowContext(ctx, `
+			SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?
+		`, table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("global media registry table %q missing after builtin migrations", table)
+		}
+	}
+}
+
 func TestBuiltinPersistentMediaReconcileRunsAfterFeatureMigrations(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(":memory:")
