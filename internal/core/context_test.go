@@ -21,6 +21,7 @@ type mockTelegramServicer struct {
 	deletedIDs   []int
 	reactEmoji   string
 	messageToGet *tg.Message
+	getCalls     int
 
 	errToSend   error
 	errToEdit   error
@@ -62,6 +63,7 @@ func (m *mockTelegramServicer) React(ctx context.Context, peer tg.InputPeerClass
 }
 
 func (m *mockTelegramServicer) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) (*tg.Message, error) {
+	m.getCalls++
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -1068,5 +1070,116 @@ func TestDownloadMedia_PropagatesGetReplyError(t *testing.T) {
 	}
 	if !errors.Is(err, context.Canceled) && !strings.Contains(err.Error(), "context canceled") {
 		t.Fatalf("expected context canceled error to be propagated, got: %v", err)
+	}
+}
+
+func TestGetReplyMemoizesSuccessfulLookupAcrossMediaDownload(t *testing.T) {
+	mock := &mockTelegramServicer{
+		messageToGet: &tg.Message{
+			ID:      42,
+			Message: "image",
+			Media: &tg.MessageMediaPhoto{Photo: &tg.Photo{
+				ID: 9001,
+				Sizes: []tg.PhotoSizeClass{
+					&tg.PhotoSize{Type: "x", W: 800, H: 600, Size: 1024},
+				},
+			}},
+		},
+	}
+	ctx := &Context{
+		Ctx:    context.Background(),
+		Svc:    mock,
+		PeerID: &tg.InputPeerSelf{},
+		Message: &Message{
+			ID:        1,
+			ReplyToID: 42,
+		},
+	}
+
+	reply, err := ctx.GetReply()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply == nil || reply.Media == nil {
+		t.Fatalf("expected replied media, got %+v", reply)
+	}
+	if _, err := ctx.DownloadMedia(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if mock.getCalls != 1 {
+		t.Fatalf("GetMessage calls=%d, want 1 across GetReply + DownloadMedia", mock.getCalls)
+	}
+}
+
+func TestGetReplyMemoSharedAfterWithContext(t *testing.T) {
+	mock := &mockTelegramServicer{messageToGet: &tg.Message{ID: 42, Message: "cached"}}
+	ctx := &Context{
+		Ctx:    context.Background(),
+		Svc:    mock,
+		PeerID: &tg.InputPeerSelf{},
+		Message: &Message{ID: 1, ReplyToID: 42},
+	}
+	if _, err := ctx.GetReply(); err != nil {
+		t.Fatal(err)
+	}
+
+	child := ctx.WithContext(context.WithValue(context.Background(), struct{}{}, "child"))
+	reply, err := child.GetReply()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply == nil || reply.Text != "cached" {
+		t.Fatalf("unexpected child reply: %+v", reply)
+	}
+	if mock.getCalls != 1 {
+		t.Fatalf("GetMessage calls=%d, want shared memo after WithContext", mock.getCalls)
+	}
+}
+
+func TestGetReplyDoesNotMemoizeTransientFailure(t *testing.T) {
+	mock := &mockTelegramServicer{errToGet: context.DeadlineExceeded}
+	ctx := &Context{
+		Ctx:    context.Background(),
+		Svc:    mock,
+		PeerID: &tg.InputPeerSelf{},
+		Message: &Message{ID: 1, ReplyToID: 42},
+	}
+
+	if _, err := ctx.GetReply(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first GetReply error=%v, want deadline exceeded", err)
+	}
+	mock.errToGet = nil
+	mock.messageToGet = &tg.Message{ID: 42, Message: "retry succeeded"}
+	reply, err := ctx.GetReply()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply == nil || reply.Text != "retry succeeded" {
+		t.Fatalf("unexpected reply after transient retry: %+v", reply)
+	}
+	if mock.getCalls != 2 {
+		t.Fatalf("GetMessage calls=%d, want transient failure retried", mock.getCalls)
+	}
+}
+
+func TestGetReplyMemoizesAuthoritativeAbsence(t *testing.T) {
+	mock := &mockTelegramServicer{errToGet: ErrNotFound}
+	ctx := &Context{
+		Ctx:    context.Background(),
+		Svc:    mock,
+		PeerID: &tg.InputPeerSelf{},
+		Message: &Message{ID: 1, ReplyToID: 42},
+	}
+
+	if reply, err := ctx.GetReply(); err != nil || reply != nil {
+		t.Fatalf("first GetReply=(%+v,%v), want nil,nil", reply, err)
+	}
+	mock.errToGet = nil
+	mock.messageToGet = &tg.Message{ID: 42, Message: "must stay absent in invocation"}
+	if reply, err := ctx.GetReply(); err != nil || reply != nil {
+		t.Fatalf("memoized absent GetReply=(%+v,%v), want nil,nil", reply, err)
+	}
+	if mock.getCalls != 1 {
+		t.Fatalf("GetMessage calls=%d, want authoritative absence cached", mock.getCalls)
 	}
 }
