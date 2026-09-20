@@ -5,6 +5,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/module"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/services/mediaregistry"
 )
 
 type ModuleType struct{}
@@ -31,7 +32,10 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	if rt == nil {
 		return module.ErrNilRuntime
 	}
-	p := New(rt.DownloadRegistry, rt.Storage)
+	if rt.DB == nil {
+		return module.ErrNilDatabase
+	}
+	p := New(rt.DownloadRegistry, rt.Storage, mediaregistry.New(rt.DB))
 	return rt.RegisterPlugin(ctx, m.Manifest(), p)
 }
 

@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/download"
+	"github.com/inipew/goultroid/internal/services/mediaregistry"
 	"github.com/inipew/goultroid/internal/services/storage"
 	"github.com/inipew/goultroid/internal/tasks"
 )
@@ -22,9 +24,11 @@ var downloaderTaskSequence atomic.Uint64
 
 // Plugin provides media download capabilities for Telegram media and external URLs.
 type Plugin struct {
-	registry *download.Registry
-	storage  storage.Storage
-	tasks    tasks.Client
+	registry      *download.Registry
+	storage       storage.Storage
+	mediaRegistry *mediaregistry.Registry
+	files         *filesystem.Scope
+	tasks         tasks.Client
 }
 
 // New creates a new downloader Plugin instance with optional dependencies.
@@ -36,6 +40,8 @@ func New(deps ...any) *Plugin {
 			p.registry = v
 		case storage.Storage:
 			p.storage = v
+		case *mediaregistry.Registry:
+			p.mediaRegistry = v
 		case tasks.Client:
 			p.tasks = v
 		}
@@ -60,6 +66,11 @@ func (p *Plugin) SetTaskClient(client tasks.Client) {
 
 // InitPlugin initializes the plugin using capability-gated runtime services.
 func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
+	files, err := pctx.Files()
+	if err != nil {
+		return fmt.Errorf("initialize downloader filesystem scope: %w", err)
+	}
+	p.files = files
 	client, err := pctx.TaskClient()
 	if err != nil {
 		return fmt.Errorf("initialize downloader task client: %w", err)
@@ -237,8 +248,6 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 	if p.storage != nil && p.storage.BasePath() != "" {
 		saveDir = p.storage.BasePath()
 	}
-	_ = core.EnforceDirectoryQuota(saveDir, core.DefaultDirectoryQuota, core.DefaultMaxFileAge)
-
 	if mediaSize > 0 {
 		if err := core.ValidateMediaSize(mediaSize, core.DefaultMaxDownloadSize); err != nil {
 			return ctx.EditOrReply(fmt.Sprintf("⚠️ <b>Media too large!</b> File size (%s) exceeds download limit (500MB).", formatBytes(mediaSize)))
@@ -266,33 +275,83 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 	})
 }
 
-func (p *Plugin) executeMediaDownload(taskCtx context.Context, ctx *core.Context, saveDir string, mediaSize int64) error {
-	if taskCtx != nil && ctx != nil {
+func (p *Plugin) createDownloadWorkspace() (string, func(), error) {
+	if p != nil && p.files != nil {
+		dir, err := p.files.CreateTempDir("goultroid-download-*")
+		if err != nil {
+			return "", nil, err
+		}
+		return dir, func() { _ = p.files.RemoveTempDir(dir) }, nil
+	}
+	dir, err := os.MkdirTemp("", "goultroid-download-*")
+	if err != nil {
+		return "", nil, err
+	}
+	return dir, func() { _ = os.RemoveAll(dir) }, nil
+}
+
+func (p *Plugin) executeMediaDownload(taskCtx context.Context, ctx *core.Context, _ string, _ int64) error {
+	if ctx == nil {
+		return fmt.Errorf("downloader: media context is nil")
+	}
+	if taskCtx != nil {
+		ctx = ctx.WithContext(taskCtx)
+	} else {
+		taskCtx = ctx.Ctx
+	}
+	if taskCtx == nil {
+		taskCtx = context.Background()
 		ctx = ctx.WithContext(taskCtx)
 	}
-	start := time.Now()
 
-	filePath, err := ctx.DownloadMedia(saveDir)
+	workspace, cleanup, err := p.createDownloadWorkspace()
 	if err != nil {
-		if ctx != nil {
-			return ctx.Edit(fmt.Sprintf("❌ Download failed: %v", err))
+		return ctx.Edit(fmt.Sprintf("❌ Download workspace failed: %v", err))
+	}
+	defer cleanup()
+
+	start := time.Now()
+	filePath, err := ctx.DownloadMedia(workspace)
+	if err != nil {
+		return ctx.Edit(fmt.Sprintf("❌ Download failed: %v", err))
+	}
+
+	targetStore := p.storage
+	if targetStore == nil {
+		targetStore = storage.NewMemoryStorage()
+	}
+
+	f, err := os.Open(filePath)
+	if err != nil {
+		return ctx.Edit(fmt.Sprintf("❌ Download persistence failed: %v", err))
+	}
+	defer f.Close()
+
+	meta := storage.Metadata{Name: filepath.Base(filePath)}
+	if ctx.Message != nil && ctx.Message.Media != nil {
+		media := ctx.Message.Media
+		if strings.TrimSpace(media.FileName) != "" {
+			meta.Name = media.FileName
 		}
-		return fmt.Errorf("download failed: %w", err)
+		meta.MIME = media.MimeType
+		meta.Duration = time.Duration(media.Duration) * time.Second
+		meta.Width = media.Width
+		meta.Height = media.Height
+	}
+	asset, err := targetStore.Put(taskCtx, f, meta)
+	if err != nil {
+		return ctx.Edit(fmt.Sprintf("❌ Download persistence failed: %v", err))
+	}
+	if err := p.registerRetainedAsset(taskCtx, targetStore, asset, downloaderTelegramProducer); err != nil {
+		return ctx.Edit(fmt.Sprintf("❌ Download ownership registration failed: %v", err))
 	}
 
 	duration := time.Since(start)
-
-	var sizeBytes int64
-	if stat, err := os.Stat(filePath); err == nil {
-		sizeBytes = stat.Size()
-	}
-
-	fileName := filepath.Base(filePath)
-	sizeStr := formatBytes(sizeBytes)
+	sizeStr := formatBytes(asset.Size)
 
 	var speedStr string
-	if duration.Seconds() > 0 && sizeBytes > 0 {
-		mbps := (float64(sizeBytes) / 1024 / 1024) / duration.Seconds()
+	if duration.Seconds() > 0 && asset.Size > 0 {
+		mbps := (float64(asset.Size) / 1024 / 1024) / duration.Seconds()
 		speedStr = fmt.Sprintf("%.2f MB/s", mbps)
 	} else {
 		speedStr = "fast"
@@ -304,11 +363,11 @@ func (p *Plugin) executeMediaDownload(taskCtx context.Context, ctx *core.Context
 			"📦 <b>Size:</b> <code>%s</code>\n"+
 			"⏱️ <b>Time:</b> <code>%.2fs</code> (%s)\n"+
 			"📍 <b>Saved to:</b> <code>%s</code>",
-		core.EscapeHTML(fileName),
+		core.EscapeHTML(asset.Name),
 		sizeStr,
 		duration.Seconds(),
 		speedStr,
-		core.EscapeHTML(filePath),
+		core.EscapeHTML(asset.Path),
 	)
 
 	return ctx.Edit(text)
@@ -347,12 +406,23 @@ func (p *Plugin) executeURLDownload(taskCtx context.Context, ctx *core.Context, 
 		MaxBytes: 500 * 1024 * 1024,
 	}
 
+	provider := p.registry.Resolve(rawURL)
 	asset, err := p.registry.Download(taskCtx, rawURL, targetStore, opts)
 	if err != nil {
 		if ctx != nil {
 			return ctx.Edit(fmt.Sprintf("❌ <b>URL Download Failed</b>: %v", err))
 		}
 		return fmt.Errorf("URL download failed: %w", err)
+	}
+	producer := "downloader.unknown"
+	if provider != nil {
+		producer = downloaderProviderProducer(provider.Name())
+	}
+	if err := p.registerRetainedAsset(taskCtx, targetStore, asset, producer); err != nil {
+		if ctx != nil {
+			return ctx.Edit(fmt.Sprintf("❌ <b>URL Download Ownership Failed</b>: %v", err))
+		}
+		return fmt.Errorf("URL download ownership registration failed: %w", err)
 	}
 
 	duration := time.Since(start)
