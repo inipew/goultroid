@@ -927,9 +927,13 @@ func (m *MenuManager) BuildPurchaseResultScreen(result *SettlementResult, packag
 		if result.QRCode != "" {
 			wibLoc := time.FixedZone("WIB", 7*3600)
 			expireWIB := time.Now().UTC().Add(5 * time.Minute).In(wibLoc).Format("15:04:05")
+			preview, truncated := inlineQRPreview(result.QRCode)
 			card.AddField("Batas Waktu", fmt.Sprintf("5 Menit (s/d %s WIB)", expireWIB))
-			card.WithRaw("📱 <b>Kode / String QRIS:</b>\n<code>" + html.EscapeString(result.QRCode) + "</code>\n\n" +
-				"<i>💡 Foto QRIS dikirimkan di bawah ini. QRIS berlaku 5 menit dan dapat dilihat kembali di Dashboard atau perintah <code>.myxl qris</code> selama belum dibayar.</i>")
+			note := "<i>💡 Foto QRIS dikirimkan di bawah ini. QRIS berlaku 5 menit dan dapat dilihat kembali di Dashboard atau perintah <code>.myxl qris</code> selama belum dibayar.</i>"
+			if truncated {
+				note = "<i>💡 String dipersingkat agar aman untuk Telegram; payload penuh tetap tersedia pada foto QRIS.</i>"
+			}
+			card.WithRaw("📱 <b>Kode / String QRIS:</b>\n<code>" + html.EscapeString(preview) + "</code>\n\n" + note)
 		}
 	}
 
@@ -981,8 +985,12 @@ func (m *MenuManager) BuildPendingQRISScreen(ctx context.Context) (*ui.Screen, e
 		card.AddField("Kode Transaksi", "<code>"+html.EscapeString(pending.TransactionCode)+"</code>")
 	}
 
-	card.WithRaw("📱 <b>Kode / String QRIS:</b>\n<code>" + html.EscapeString(pending.QRCode) + "</code>\n\n" +
-		"<i>💡 Foto QRIS dikirimkan ke chat. Anda dapat scan langsung atau upload dari galeri aplikasi e-wallet / mobile banking.</i>")
+	preview, truncated := inlineQRPreview(pending.QRCode)
+	note := "<i>💡 Foto QRIS dikirimkan ke chat. Anda dapat scan langsung atau upload dari galeri aplikasi e-wallet / mobile banking.</i>"
+	if truncated {
+		note = "<i>💡 String dipersingkat agar aman untuk Telegram; payload penuh tetap tersedia pada foto QRIS.</i>"
+	}
+	card.WithRaw("📱 <b>Kode / String QRIS:</b>\n<code>" + html.EscapeString(preview) + "</code>\n\n" + note)
 
 	screen := menu.NewScreen("myxl:pending_qris", "", card.Render())
 	qrKey := m.RegisterQR(pending.QRCode)
