@@ -123,9 +123,10 @@ type retryItem struct {
 
 // trackedOccurrence remembers the latest attempt driver of an occurrence.
 type trackedOccurrence struct {
-	def     JobDefinition
-	handler Handler
-	taskID  tasks.TaskID
+	def         JobDefinition
+	handler     Handler
+	taskID      tasks.TaskID
+	timingOwned bool
 }
 
 const (
@@ -558,23 +559,45 @@ func (m *Manager) CancelOccurrence(ctx context.Context, occurrenceID, reason str
 	return nil
 }
 
-func timingOwnedDefinition(id string) bool {
-	return strings.HasPrefix(id, "scheduler:job:") || strings.HasPrefix(id, "periodic:")
+func timingOwnedOccurrence(occurrence *JobOccurrence) bool {
+	if occurrence == nil {
+		return false
+	}
+	if occurrence.ScheduleID != "" {
+		return true
+	}
+	return strings.HasPrefix(occurrence.OccurrenceKey, "sched:") ||
+		strings.HasPrefix(occurrence.OccurrenceKey, "periodic:")
 }
 
-func (m *Manager) untrack(occurrenceID string) {
+func (m *Manager) untrack(occurrenceID string) bool {
 	m.mu.Lock()
 	tracked, existed := m.tracked[occurrenceID]
 	delete(m.tracked, occurrenceID)
 	wake := m.scheduleWake
-	shouldWake := existed && tracked != nil && timingOwnedDefinition(tracked.def.ID)
+	shouldWake := existed && tracked != nil && tracked.timingOwned
 	m.mu.Unlock()
 
-	// Timing-owned occurrences wake scheduler reconciliation on settlement.
-	// The callback is coalescing/non-blocking; durable safety polling remains
-	// only for crash or lost-wake recovery.
+	// Timing ownership belongs to the occurrence origin, not the target
+	// definition name. This preserves immediate reconciliation for managed
+	// schedules whose target definition has an arbitrary ID.
 	if shouldWake && wake != nil {
 		wake()
+	}
+	return shouldWake
+}
+
+func (m *Manager) untrackOrWakeTimingOccurrence(occurrence *JobOccurrence) {
+	if occurrence == nil {
+		return
+	}
+	if m.untrack(occurrence.ID) {
+		return
+	}
+	// Recovery can finalize an occurrence after process restart with no in-memory
+	// tracked entry. Persisted schedule_id/occurrence_key remains authoritative.
+	if timingOwnedOccurrence(occurrence) {
+		m.signalSchedule()
 	}
 }
 
@@ -639,7 +662,7 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID string, occurrence
 	}
 	taskID := tasks.TaskID(attempt.TaskID)
 	copyDef := cloneDefinition(definition)
-	m.track(occurrence.ID, copyDef, handler, taskID)
+	m.track(occurrence.ID, copyDef, handler, taskID, timingOwnedOccurrence(occurrence))
 	ticket, err := client.Submit(ctx, tasks.WorkSpec{
 		ID:               taskID,
 		Scope:            tasks.ScopeIdentity{Owner: copyDef.ScopeOwner, Generation: uint64(copyDef.Version)},
@@ -853,20 +876,22 @@ func (m *Manager) ProcessDueSchedules(ctx context.Context, now time.Time, limit 
 			m.signalRecovery()
 			continue
 		}
-		if err := m.driveAttempt(ctx, occurrence.ID, definition, handler); err != nil {
+		if err := m.driveAttempt(ctx, occurrence.ID, definition, handler, timingOwnedOccurrence(occurrence)); err != nil {
 			m.signalRecovery()
 		}
 	}
 	return processed, nil
 }
 
-func (m *Manager) track(occurrenceID string, def JobDefinition, handler Handler, taskID tasks.TaskID) {
+func (m *Manager) track(occurrenceID string, def JobDefinition, handler Handler, taskID tasks.TaskID, timingOwned bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.tracked == nil {
 		m.tracked = make(map[string]*trackedOccurrence)
 	}
-	m.tracked[occurrenceID] = &trackedOccurrence{def: cloneDefinition(def), handler: handler, taskID: taskID}
+	m.tracked[occurrenceID] = &trackedOccurrence{
+		def: cloneDefinition(def), handler: handler, taskID: taskID, timingOwned: timingOwned,
+	}
 }
 
 // signalRecovery coalesces arbitrarily many recovery hints into one bounded wake.
@@ -1277,7 +1302,7 @@ func (m *Manager) commitAttemptResult(ctx context.Context, attempt *JobAttempt, 
 		m.mu.RLock()
 		tracked := m.tracked[attempt.OccurrenceID]
 		wake := m.scheduleWake
-		shouldWake := tracked != nil && timingOwnedDefinition(tracked.def.ID)
+		shouldWake := tracked != nil && tracked.timingOwned
 		m.mu.RUnlock()
 		if shouldWake && wake != nil {
 			wake()
@@ -1441,7 +1466,7 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		return
 	}
 	driveCtx, driveCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
-	err = m.driveAttempt(driveCtx, item.occurrenceID, tr.def, tr.handler)
+	err = m.driveAttempt(driveCtx, item.occurrenceID, tr.def, tr.handler, tr.timingOwned)
 	driveCancel()
 	if err != nil {
 		m.untrack(item.occurrenceID)
@@ -1450,7 +1475,7 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 }
 
 // driveAttempt prepares the next attempt lease and submits its task, then re-arms the monitor.
-func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def JobDefinition, handler Handler) error {
+func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def JobDefinition, handler Handler, timingOwned bool) error {
 	attempt, err := m.prepareNextAttemptLease(ctx, occurrenceID, leaseDurationFor(def))
 	if err != nil {
 		return err
@@ -1460,7 +1485,7 @@ func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def Job
 	commit := func(commitCtx context.Context, res tasks.TaskResult) error {
 		return m.commitAttemptResult(commitCtx, attempt, res)
 	}
-	m.track(occurrenceID, copyDef, handler, nextTaskID)
+	m.track(occurrenceID, copyDef, handler, nextTaskID, timingOwned)
 	ticket, err := m.client.Submit(ctx, tasks.WorkSpec{
 		ID:               nextTaskID,
 		Scope:            tasks.ScopeIdentity{Owner: copyDef.ScopeOwner, Generation: uint64(copyDef.Version)},
@@ -1574,7 +1599,7 @@ func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error)
 					report.Stale++
 					continue
 				}
-				m.untrack(occ.ID)
+				m.untrackOrWakeTimingOccurrence(occ)
 				report.Finalized++
 				continue
 			}
@@ -1584,7 +1609,7 @@ func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error)
 				report.Stale++
 				continue
 			}
-			m.untrack(occ.ID)
+			m.untrackOrWakeTimingOccurrence(occ)
 			report.Finalized++
 			continue
 		}
@@ -1594,11 +1619,11 @@ func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error)
 				report.Stale++
 				continue
 			}
-			m.untrack(occ.ID)
+			m.untrackOrWakeTimingOccurrence(occ)
 			report.Finalized++
 			continue
 		}
-		if derr := m.driveAttempt(ctx, occ.ID, def, handler); derr != nil {
+		if derr := m.driveAttempt(ctx, occ.ID, def, handler, timingOwnedOccurrence(occ)); derr != nil {
 			report.Stale++
 			continue
 		}
