@@ -36,12 +36,14 @@ type Service struct {
 	store   storage.Storage
 	files   *filesystem.Scope
 	cleanup *cleanupJournal
+	assets  *assetLedger
 }
 
 func NewService(store storage.Storage, dbs ...*database.DB) *Service {
 	s := &Service{store: store}
 	if len(dbs) > 0 && dbs[0] != nil {
 		s.cleanup = newCleanupJournal(dbs[0])
+		s.assets = newAssetLedger(dbs[0])
 	}
 	return s
 }
@@ -139,6 +141,17 @@ func (s *Service) captureMedia(ctx *core.Context, media *core.MediaInfo) (*Media
 	if err != nil {
 		return nil, err
 	}
+	if s.assets != nil {
+		if err := s.assets.register(ctx.Ctx, asset.ID); err != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			deleteErr := s.store.Delete(cleanupCtx, asset.ID)
+			cancel()
+			if deleteErr != nil && !errors.Is(deleteErr, storage.ErrNotFound) {
+				return nil, errors.Join(err, fmt.Errorf("saved response: rollback untracked media asset %q: %w", asset.ID, deleteErr))
+			}
+			return nil, err
+		}
+	}
 	return &MediaRef{
 		AssetID:   asset.ID,
 		MediaType: capturedRef.MediaType,
@@ -171,6 +184,12 @@ func (s *Service) CommitReplacement(ctx context.Context, previous, next Response
 			s.cleanupUncommitted(next)
 		}
 		return err
+	}
+
+	if newID != "" && s != nil && s.assets != nil {
+		// The feature row is already durable. Marking the ledger live is
+		// best-effort; global reconciliation can reconstruct this from references.
+		_ = s.assets.markSeen(ctx, newID)
 	}
 
 	if needsOldCleanup {
@@ -237,6 +256,76 @@ func (s *Service) PendingCleanupCount(ctx context.Context) (int, error) {
 	return s.cleanup.pendingCount(ctx)
 }
 
+type PersistentMediaReconcileStats struct {
+	ReferencesBackfilled int
+	OrphansDiscovered    int
+	OrphansQueued        int
+	Cleanup              CleanupStats
+}
+
+func (s *Service) TrackedMediaCount(ctx context.Context) (int, error) {
+	if s == nil || s.assets == nil {
+		return 0, nil
+	}
+	return s.assets.count(ctx)
+}
+
+// ReconcilePersistentMedia repairs the SavedResponse media ownership ledger,
+// discovers durable orphan candidates across every known SavedResponse
+// reference table, and delegates physical deletion to the existing cleanup
+// journal. It intentionally ignores storage assets that are not in the
+// SavedResponse ledger because the underlying storage is shared by other media
+// subsystems.
+func (s *Service) ReconcilePersistentMedia(ctx context.Context, limit int) (PersistentMediaReconcileStats, error) {
+	var stats PersistentMediaReconcileStats
+	if s == nil {
+		return stats, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if limit <= 0 {
+		limit = defaultPersistentReconcileBatch
+	}
+	if limit > maxPersistentReconcileBatch {
+		limit = maxPersistentReconcileBatch
+	}
+
+	if s.assets != nil {
+		backfilled, err := s.assets.backfillReferences(ctx)
+		if err != nil {
+			return stats, err
+		}
+		stats.ReferencesBackfilled = backfilled
+
+		candidates, err := s.assets.orphanCandidates(
+			ctx,
+			time.Now().UTC().Add(-persistentMediaOrphanGrace),
+			limit,
+		)
+		if err != nil {
+			return stats, err
+		}
+		stats.OrphansDiscovered = len(candidates)
+		for _, assetID := range candidates {
+			if s.cleanup == nil {
+				break
+			}
+			queued, err := s.cleanup.enqueueIfAbsent(ctx, assetID)
+			if err != nil {
+				return stats, err
+			}
+			if queued {
+				stats.OrphansQueued++
+			}
+		}
+	}
+
+	cleanupStats, err := s.ReconcileCleanup(ctx, limit)
+	stats.Cleanup = cleanupStats
+	return stats, err
+}
+
 func (s *Service) ReconcileCleanup(ctx context.Context, limit int) (CleanupStats, error) {
 	var stats CleanupStats
 	if s == nil || s.cleanup == nil {
@@ -257,6 +346,15 @@ func (s *Service) ReconcileCleanup(ctx context.Context, limit int) (CleanupStats
 			continue
 		}
 		if referenced {
+			if s.assets != nil {
+				if err := s.assets.markSeen(ctx, item.AssetID); err != nil {
+					if recordErr := s.cleanup.recordFailure(ctx, item, err); recordErr != nil {
+						return stats, recordErr
+					}
+					stats.Deferred++
+					continue
+				}
+			}
 			if err := s.cleanup.remove(ctx, item.AssetID); err != nil {
 				return stats, err
 			}
@@ -286,6 +384,15 @@ func (s *Service) ReconcileCleanup(ctx context.Context, limit int) (CleanupStats
 			stats.Deferred++
 			continue
 		}
+		if s.assets != nil {
+			if err := s.assets.remove(ctx, item.AssetID); err != nil {
+				if recordErr := s.cleanup.recordFailure(ctx, item, err); recordErr != nil {
+					return stats, recordErr
+				}
+				stats.Deferred++
+				continue
+			}
+		}
 		if err := s.cleanup.remove(ctx, item.AssetID); err != nil {
 			return stats, err
 		}
@@ -305,10 +412,13 @@ func (s *Service) DeleteMedia(parent context.Context, response Response) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
 	defer cancel()
 	err := s.store.Delete(ctx, id)
-	if errors.Is(err, storage.ErrNotFound) {
-		return nil
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
+		return err
 	}
-	return err
+	if s.assets != nil {
+		return s.assets.remove(ctx, id)
+	}
+	return nil
 }
 
 type Prepared struct {

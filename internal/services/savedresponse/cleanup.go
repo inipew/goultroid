@@ -48,6 +48,34 @@ func (j *cleanupJournal) prepare(ctx context.Context, assetID string) error {
 	return j.enqueueAt(ctx, assetID, time.Now().UTC().Add(preparedCleanupGrace))
 }
 
+func (j *cleanupJournal) enqueueIfAbsent(ctx context.Context, assetID string) (bool, error) {
+	if j == nil || j.db == nil {
+		return false, nil
+	}
+	assetID = strings.TrimSpace(assetID)
+	if assetID == "" {
+		return false, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	now := time.Now().UTC()
+	res, err := j.db.ExecContext(ctx, `
+		INSERT INTO saved_response_media_cleanup (
+			asset_id, attempts, last_error, next_attempt_at, created_at, updated_at
+		) VALUES (?, 0, '', ?, ?, ?)
+		ON CONFLICT(asset_id) DO NOTHING
+	`, assetID, now, now, now)
+	if err != nil {
+		return false, fmt.Errorf("saved response: enqueue discovered media cleanup %q: %w", assetID, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows == 1, nil
+}
+
 func (j *cleanupJournal) enqueueAt(ctx context.Context, assetID string, nextAttempt time.Time) error {
 	if j == nil || j.db == nil {
 		return nil
