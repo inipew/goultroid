@@ -254,7 +254,6 @@ func TestCommitReplacementPersistFailureKeepsOldAssetAndCleansNew(t *testing.T) 
 	}
 }
 
-
 func TestReconcileCleanupProtectsFilterMediaReference(t *testing.T) {
 	db := openCleanupTestDB(t)
 	defer db.Close()
