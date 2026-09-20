@@ -1,6 +1,8 @@
 package media
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -281,6 +283,7 @@ func (p *Plugin) handleExtractAudio(ctx *core.Context) error {
 	if err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Audio extraction failed: %v", err))
 	}
+	defer p.cleanupTransientAsset(ctx.Ctx, outAsset)
 
 	cleanFileName := core.SanitizeFileName(item.FileName)
 	caption := fmt.Sprintf("🎵 Extracted from: <code>%s</code>", core.EscapeHTML(cleanFileName))
@@ -355,6 +358,7 @@ func (p *Plugin) handleConvert(ctx *core.Context) error {
 	if err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Conversion failed: %v", err))
 	}
+	defer p.cleanupTransientAsset(ctx.Ctx, outAsset)
 
 	caption := fmt.Sprintf("🎬 Converted to: <code>%s</code>", core.EscapeHTML(targetFormat))
 	if err := sendAsset(ctx, mediaType, outAsset, caption); err != nil {
@@ -405,6 +409,7 @@ func (p *Plugin) handleConvertToGIF(ctx *core.Context) error {
 	if err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ GIF conversion failed: %v", err))
 	}
+	defer p.cleanupTransientAsset(ctx.Ctx, outAsset)
 
 	if err := sendAsset(ctx, "document", outAsset, "🎞️ Converted to GIF"); err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to send GIF: %v", err))
@@ -454,6 +459,7 @@ func (p *Plugin) handleConvertToSticker(ctx *core.Context) error {
 	if err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Video sticker generation failed: %v", err))
 	}
+	defer p.cleanupTransientAsset(ctx.Ctx, outAsset)
 
 	if err := sendAsset(ctx, "sticker", outAsset, "🎭 Video Sticker"); err != nil {
 		// Fallback to document if sticker sender fails
@@ -480,6 +486,23 @@ func classifyConvertFormat(targetFormat string) (mediaType string, audioOnly boo
 	}
 }
 
+func (p *Plugin) cleanupTransientAsset(parent context.Context, asset *storage.Asset) {
+	if p == nil || p.mediaService == nil || asset == nil || strings.TrimSpace(asset.ID) == "" {
+		return
+	}
+	store := p.mediaService.Storage()
+	if store == nil {
+		return
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
+	defer cancel()
+	if err := store.Delete(cleanupCtx, asset.ID); err != nil && !errors.Is(err, storage.ErrNotFound) {
+		return
+	}
+}
 func sendAsset(ctx *core.Context, mediaType string, asset *storage.Asset, caption string) error {
 	if ctx == nil {
 		return fmt.Errorf("%w: media context is nil", core.ErrInvalidArgs)
