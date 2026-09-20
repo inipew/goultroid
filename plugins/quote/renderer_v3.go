@@ -13,11 +13,12 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf16"
+	"unicode"
 
 	"github.com/gotd/td/tg"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/basicfont"
+	xdraw "golang.org/x/image/draw"
 	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
 	_ "golang.org/x/image/webp"
@@ -73,8 +74,9 @@ var (
 )
 
 var (
-	fontCacheLock sync.Mutex
-	parsedFonts   = make(map[string]*opentype.Font)
+	fontCacheLock      sync.Mutex
+	parsedFonts        = make(map[string]*opentype.Font)
+	resolvedFontSource = make(map[string]*opentype.Font)
 
 	quoteMediaPolicy = imageguard.Policy{
 		MaxInputBytes:   32 << 20,
@@ -95,14 +97,21 @@ var (
 const (
 	quoteMediaPreviewMaxWidth  = 600
 	quoteMediaPreviewMaxHeight = 720
+	maxFallbackRuneCache       = 4096
 )
 
 func getParsedFont(paths []string) *opentype.Font {
+	key := strings.Join(paths, "\x00")
+
 	fontCacheLock.Lock()
 	defer fontCacheLock.Unlock()
+	if f, ok := resolvedFontSource[key]; ok {
+		return f
+	}
 
 	for _, p := range paths {
 		if f, ok := parsedFonts[p]; ok {
+			resolvedFontSource[key] = f
 			return f
 		}
 		data, err := os.ReadFile(p)
@@ -114,8 +123,10 @@ func getParsedFont(paths []string) *opentype.Font {
 			continue
 		}
 		parsedFonts[p] = f
+		resolvedFontSource[key] = f
 		return f
 	}
+	resolvedFontSource[key] = nil
 	return nil
 }
 
@@ -138,6 +149,10 @@ func (f *fallbackFace) faceForRune(r rune) font.Face {
 	defer f.mu.Unlock()
 	if fc, ok := f.cache[r]; ok {
 		return fc
+	}
+
+	if len(f.cache) >= maxFallbackRuneCache {
+		clear(f.cache)
 	}
 
 	target := f.primary
@@ -293,6 +308,70 @@ func loadFont(kind string, size float64) font.Face {
 	}
 }
 
+type styledFaces struct {
+	normal font.Face
+	bold   font.Face
+	italic font.Face
+	code   font.Face
+}
+
+func (f styledFaces) face(style entityStyle) font.Face {
+	switch style {
+	case styleBold:
+		return f.bold
+	case styleItalic:
+		return f.italic
+	case styleCode:
+		return f.code
+	default:
+		return f.normal
+	}
+}
+
+type renderFontSet struct {
+	name        font.Face
+	badge       font.Face
+	body        styledFaces
+	replyAuthor font.Face
+	replyText   font.Face
+	timestamp   font.Face
+	avatar      font.Face
+}
+
+func newRenderFontSet() *renderFontSet {
+	bold27 := loadFont("bold", 27)
+	return &renderFontSet{
+		name:  bold27,
+		badge: loadFont("bold", 21),
+		body: styledFaces{
+			normal: loadFont("regular", 27),
+			bold:   bold27,
+			italic: loadFont("italic", 27),
+			code:   loadFont("mono", 24),
+		},
+		replyAuthor: loadFont("bold", 23),
+		replyText:   loadFont("regular", 24),
+		timestamp:   loadFont("regular", 23),
+		avatar:      loadFont("bold", 33),
+	}
+}
+
+var renderFontsPool = sync.Pool{
+	New: func() any {
+		return newRenderFontSet()
+	},
+}
+
+func acquireRenderFonts() *renderFontSet {
+	return renderFontsPool.Get().(*renderFontSet)
+}
+
+func releaseRenderFonts(fonts *renderFontSet) {
+	if fonts != nil {
+		renderFontsPool.Put(fonts)
+	}
+}
+
 // renderV3 maintains backward compatibility with callers.
 func renderV3(path, name, text string, msg *core.Message, mediaPath, avatarPath string) error {
 	var senderID int64
@@ -328,16 +407,17 @@ func RenderV3WithOpts(opts RenderOptions) error {
 	colorIndex := int(absInt64(senderID) % 7)
 	nameColor := telegramNameColors[colorIndex]
 
-	// Fonts (2x scale for sharp output)
-	nameFace := loadFont("bold", 27)
-	badgeFace := loadFont("bold", 21)
-	bodyFace := loadFont("regular", 27)
-	boldFace := loadFont("bold", 27)
-	italicFace := loadFont("italic", 27)
-	codeFace := loadFont("mono", 24)
-	replyAuthorFace := loadFont("bold", 23)
-	replyTextFace := loadFont("regular", 24)
-	timeFace := loadFont("regular", 23)
+	// Borrow one exclusive font set per render. This keeps font.Face instances
+	// reusable without sharing mutable glyph state across concurrent renders.
+	fonts := acquireRenderFonts()
+	defer releaseRenderFonts(fonts)
+
+	nameFace := fonts.name
+	badgeFace := fonts.badge
+	textFaces := fonts.body
+	replyAuthorFace := fonts.replyAuthor
+	replyTextFace := fonts.replyText
+	timeFace := fonts.timestamp
 
 	// Format text and entities
 	rawText := strings.TrimSpace(opts.Text)
@@ -363,7 +443,7 @@ func RenderV3WithOpts(opts RenderOptions) error {
 	const maxTextWidth = maxBubbleWidth - padLeft - padRight
 
 	// Line wrapping
-	lines := wrapStyledSegments(styledSegments(rawText, entities), bodyFace, maxTextWidth)
+	lines := wrapStyledSegments(styledSegments(rawText, entities), textFaces, maxTextWidth)
 	if len(lines) == 0 {
 		lines = []styledLine{{segments: []styledSegment{{text: rawText}}}}
 	}
@@ -398,7 +478,7 @@ func RenderV3WithOpts(opts RenderOptions) error {
 	// Text lines measurement
 	maxLineWidth := 0
 	for _, l := range lines {
-		w := measureStyledLine(l, bodyFace, boldFace, italicFace, codeFace)
+		w := measureStyledLine(l, textFaces)
 		if w > maxLineWidth {
 			maxLineWidth = w
 		}
@@ -438,7 +518,7 @@ func RenderV3WithOpts(opts RenderOptions) error {
 	// Check if timestamp can fit on the last line or needs extra bottom space
 	lastLineWidth := 0
 	if len(lines) > 0 {
-		lastLineWidth = measureStyledLine(lines[len(lines)-1], bodyFace, boldFace, italicFace, codeFace)
+		lastLineWidth = measureStyledLine(lines[len(lines)-1], textFaces)
 	}
 	timeFitsOnLastLine := (len(lines) == 1 && contentWidth >= lastLineWidth+timeWidth+32) ||
 		(len(lines) > 1 && contentWidth >= lastLineWidth+timeWidth+32)
@@ -487,7 +567,7 @@ func RenderV3WithOpts(opts RenderOptions) error {
 	// Avatar bottom aligns with bubble bottom
 	avatarCenter := image.Pt(canvasPadX+avatarRadius, bubbleY+bubbleHeight-avatarRadius)
 	avatarImg := loadAvatarImage(opts.AvatarPath, avatarDiameter)
-	drawAvatar(img, avatarImg, avatarCenter, avatarRadius, initialsFor(opts.Name), nameColor)
+	drawAvatar(img, avatarImg, avatarCenter, avatarRadius, initialsFor(opts.Name), nameColor, fonts.avatar)
 
 	// Draw incoming message bubble with tail
 	drawTelegramBubble(img, bubbleRect, 22, tailWidth, tailHeight, colorBubbleBg)
@@ -564,7 +644,7 @@ func RenderV3WithOpts(opts RenderOptions) error {
 		currY += mediaH + 6
 	} else if mediaInfo != nil {
 		currY += 8
-		drawMediaCard(img, image.Rect(bubbleX+padLeft, currY, bubbleX+padLeft+contentWidth, currY+90), mediaInfo, mediaKind, codeFace, timeFace)
+		drawMediaCard(img, image.Rect(bubbleX+padLeft, currY, bubbleX+padLeft+contentWidth, currY+90), mediaInfo, mediaKind, textFaces.code, timeFace)
 		currY += 96
 	}
 
@@ -572,7 +652,7 @@ func RenderV3WithOpts(opts RenderOptions) error {
 	if len(lines) > 0 {
 		currY += 26
 		for i, line := range lines {
-			drawStyledLine(img, line, bubbleX+padLeft, currY, bodyFace, boldFace, italicFace, codeFace)
+			drawStyledLine(img, line, bubbleX+padLeft, currY, textFaces)
 			if i < len(lines)-1 {
 				currY += 34
 			}
@@ -691,10 +771,10 @@ func loadAvatarImage(path string, size int) image.Image {
 	if err != nil {
 		return nil
 	}
-	return resizeNearest(img, size, size)
+	return resizeAvatarCover(img, size)
 }
 
-func drawAvatar(dst draw.Image, avatar image.Image, center image.Point, radius int, fallbackInitial string, fallbackColor color.Color) {
+func drawAvatar(dst draw.Image, avatar image.Image, center image.Point, radius int, fallbackInitial string, fallbackColor color.Color, initialFace font.Face) {
 	r2 := radius * radius
 	if avatar != nil {
 		ab := avatar.Bounds()
@@ -717,12 +797,14 @@ func drawAvatar(dst draw.Image, avatar image.Image, center image.Point, radius i
 	}
 
 	drawCircle(dst, center, radius, fallbackColor)
-	face := loadFont("bold", float64(radius*4/5))
-	w := font.MeasureString(face, fallbackInitial).Ceil()
+	if initialFace == nil {
+		initialFace = basicfont.Face7x13
+	}
+	w := font.MeasureString(initialFace, fallbackInitial).Ceil()
 	d := &font.Drawer{
 		Dst:  dst,
 		Src:  image.NewUniform(color.White),
-		Face: face,
+		Face: initialFace,
 		Dot:  fixed.P(center.X-w/2, center.Y+radius/3),
 	}
 	d.DrawString(fallbackInitial)
@@ -750,32 +832,25 @@ func styledSegments(text string, entities []tg.MessageEntityClass) []styledSegme
 	if len(runes) == 0 {
 		return nil
 	}
+
 	styles := make([]entityStyle, len(runes))
+	boundaries := utf16RuneBoundaries(runes)
 	for _, entity := range entities {
-		start, end, ok := entityRuneRange(text, entity)
-		if !ok {
+		offset, length, style, ok := entityStyleSpan(entity)
+		if !ok || offset < 0 || length <= 0 || offset > len(boundaries)-1 || length > len(boundaries)-1-offset {
 			continue
 		}
-		var style entityStyle
-		switch entity.(type) {
-		case *tg.MessageEntityPre, *tg.MessageEntityCode:
-			style = styleCode
-		case *tg.MessageEntityBold:
-			style = styleBold
-		case *tg.MessageEntityItalic:
-			style = styleItalic
-		case *tg.MessageEntityTextURL, *tg.MessageEntityURL:
-			style = styleLink
-		default:
+		end := offset + length
+		startRune, endRune := boundaries[offset], boundaries[end]
+		if startRune < 0 || endRune < 0 || startRune >= endRune || endRune > len(styles) {
 			continue
 		}
-		for i := start; i < end && i < len(styles); i++ {
-			if style == styleCode || styles[i] == styleNormal || style == styleBold || style == styleItalic {
-				styles[i] = style
-			}
+		for i := startRune; i < endRune; i++ {
+			styles[i] = mergeEntityStyle(styles[i], style)
 		}
 	}
-	var out []styledSegment
+
+	out := make([]styledSegment, 0, len(entities)*2+1)
 	start := 0
 	for i := 1; i <= len(runes); i++ {
 		if i == len(runes) || styles[i] != styles[start] {
@@ -786,129 +861,204 @@ func styledSegments(text string, entities []tg.MessageEntityClass) []styledSegme
 	return out
 }
 
-func entityRuneRange(text string, entity tg.MessageEntityClass) (int, int, bool) {
-	var offset, length int
-	switch e := entity.(type) {
-	case *tg.MessageEntityBold:
-		offset, length = e.Offset, e.Length
-	case *tg.MessageEntityItalic:
-		offset, length = e.Offset, e.Length
-	case *tg.MessageEntityCode:
-		offset, length = e.Offset, e.Length
-	case *tg.MessageEntityPre:
-		offset, length = e.Offset, e.Length
-	case *tg.MessageEntityURL:
-		offset, length = e.Offset, e.Length
-	case *tg.MessageEntityTextURL:
-		offset, length = e.Offset, e.Length
-	default:
-		return 0, 0, false
+func utf16RuneBoundaries(runes []rune) []int {
+	boundaries := make([]int, len(runes)*2+1)
+	for i := range boundaries {
+		boundaries[i] = -1
 	}
-	if offset < 0 || length <= 0 {
-		return 0, 0, false
-	}
-	units, startByte, endByte := 0, -1, -1
-	for i, r := range text {
-		if units == offset {
-			startByte = i
-		}
-		units += len(utf16.Encode([]rune{r}))
-		if units == offset+length {
-			endByte = i + len(string(r))
-			break
-		}
-	}
-	if startByte < 0 {
-		if units == offset {
-			startByte = len(text)
+	boundaries[0] = 0
+	units := 0
+	for i, r := range runes {
+		if r > 0xffff {
+			units += 2
 		} else {
-			return 0, 0, false
+			units++
 		}
+		boundaries[units] = i + 1
 	}
-	if endByte < 0 {
-		if units == offset+length {
-			endByte = len(text)
-		} else {
-			return 0, 0, false
-		}
-	}
-	return len([]rune(text[:startByte])), len([]rune(text[:endByte])), true
+	return boundaries[:units+1]
 }
 
-func wrapStyledSegments(segments []styledSegment, face font.Face, maxWidth int) []styledLine {
-	var lines []styledLine
+func entityStyleSpan(entity tg.MessageEntityClass) (offset, length int, style entityStyle, ok bool) {
+	switch e := entity.(type) {
+	case *tg.MessageEntityBold:
+		return e.Offset, e.Length, styleBold, true
+	case *tg.MessageEntityItalic:
+		return e.Offset, e.Length, styleItalic, true
+	case *tg.MessageEntityCode:
+		return e.Offset, e.Length, styleCode, true
+	case *tg.MessageEntityPre:
+		return e.Offset, e.Length, styleCode, true
+	case *tg.MessageEntityURL:
+		return e.Offset, e.Length, styleLink, true
+	case *tg.MessageEntityTextURL:
+		return e.Offset, e.Length, styleLink, true
+	default:
+		return 0, 0, styleNormal, false
+	}
+}
+
+func mergeEntityStyle(current, next entityStyle) entityStyle {
+	if next == styleCode {
+		return styleCode
+	}
+	if current == styleCode {
+		return current
+	}
+	if next == styleLink {
+		if current == styleNormal {
+			return styleLink
+		}
+		return current
+	}
+	return next
+}
+
+func wrapStyledSegments(segments []styledSegment, faces styledFaces, maxWidth int) []styledLine {
+	if maxWidth <= 0 {
+		return nil
+	}
+
+	lines := make([]styledLine, 0, 4)
 	current := styledLine{}
 	width := 0
-	flush := func() {
-		if len(current.segments) > 0 {
+	lastWasNewline := false
+
+	flush := func(force bool) {
+		if len(current.segments) > 0 || force {
 			lines = append(lines, current)
 		}
 		current = styledLine{}
 		width = 0
 	}
-	for _, seg := range segments {
-		paragraphs := strings.Split(strings.ReplaceAll(seg.text, "\r\n", "\n"), "\n")
-		for pi, paragraph := range paragraphs {
-			if pi > 0 {
-				flush()
+
+	appendText := func(text string, style entityStyle) {
+		if text == "" {
+			return
+		}
+		face := faces.face(style)
+		if len(current.segments) > 0 && current.segments[len(current.segments)-1].style == style {
+			last := &current.segments[len(current.segments)-1]
+			oldWidth := font.MeasureString(face, last.text).Ceil()
+			newText := last.text + text
+			newWidth := font.MeasureString(face, newText).Ceil()
+			last.text = newText
+			width += newWidth - oldWidth
+			return
+		}
+		current.segments = append(current.segments, styledSegment{text: text, style: style})
+		width += font.MeasureString(face, text).Ceil()
+	}
+
+	var addToken func(string, entityStyle)
+	addToken = func(token string, style entityStyle) {
+		for token != "" {
+			face := faces.face(style)
+			tokenWidth := font.MeasureString(face, token).Ceil()
+			if len(current.segments) == 0 && tokenWidth <= maxWidth {
+				appendText(token, style)
+				return
 			}
-			parts := strings.Fields(paragraph)
-			if len(parts) == 0 {
+
+			candidateWidth := width + tokenWidth
+			if len(current.segments) > 0 && current.segments[len(current.segments)-1].style == style {
+				last := current.segments[len(current.segments)-1]
+				candidateWidth = width - font.MeasureString(face, last.text).Ceil() +
+					font.MeasureString(face, last.text+token).Ceil()
+			}
+			if candidateWidth <= maxWidth {
+				appendText(token, style)
+				return
+			}
+			if len(current.segments) > 0 {
+				flush(false)
 				continue
 			}
-			for _, word := range parts {
-				candidate := word
-				if len(current.segments) > 0 {
-					candidate = " " + word
-				}
-				cw := font.MeasureString(face, candidate).Ceil()
-				if width > 0 && width+cw > maxWidth {
-					flush()
-					candidate = word
-					cw = font.MeasureString(face, candidate).Ceil()
-				}
-				current.segments = append(current.segments, styledSegment{text: candidate, style: seg.style})
-				width += cw
+
+			prefix, rest := fitStyledPrefix(token, face, maxWidth)
+			if prefix == "" {
+				runes := []rune(token)
+				prefix = string(runes[:1])
+				rest = string(runes[1:])
+			}
+			appendText(prefix, style)
+			token = rest
+			if token != "" {
+				flush(false)
 			}
 		}
 	}
-	flush()
+
+	for _, segment := range segments {
+		text := strings.ReplaceAll(strings.ReplaceAll(segment.text, "\r\n", "\n"), "\r", "\n")
+		text = strings.ReplaceAll(text, "\t", "    ")
+		runes := []rune(text)
+		for i := 0; i < len(runes); {
+			if runes[i] == '\n' {
+				flush(true)
+				lastWasNewline = true
+				i++
+				continue
+			}
+
+			space := unicode.IsSpace(runes[i])
+			start := i
+			for i < len(runes) && runes[i] != '\n' && unicode.IsSpace(runes[i]) == space {
+				i++
+			}
+			addToken(string(runes[start:i]), segment.style)
+			lastWasNewline = false
+		}
+	}
+	if len(current.segments) > 0 {
+		flush(false)
+	} else if lastWasNewline {
+		flush(true)
+	}
 	return lines
 }
 
-func measureStyledLine(line styledLine, normal, bold, italic, code font.Face) int {
-	w := 0
-	for _, seg := range line.segments {
-		f := normal
-		switch seg.style {
-		case styleBold:
-			f = bold
-		case styleItalic:
-			f = italic
-		case styleCode:
-			f = code
-		}
-		w += font.MeasureString(f, seg.text).Ceil()
+func fitStyledPrefix(text string, face font.Face, maxWidth int) (string, string) {
+	runes := []rune(text)
+	if len(runes) == 0 {
+		return "", ""
 	}
-	return w
+	low, high := 1, len(runes)
+	best := 0
+	for low <= high {
+		mid := low + (high-low)/2
+		if font.MeasureString(face, string(runes[:mid])).Ceil() <= maxWidth {
+			best = mid
+			low = mid + 1
+		} else {
+			high = mid - 1
+		}
+	}
+	if best == 0 {
+		return "", text
+	}
+	return string(runes[:best]), string(runes[best:])
 }
 
-func drawStyledLine(dst draw.Image, line styledLine, x, y int, normal, bold, italic, code font.Face) {
+func measureStyledLine(line styledLine, faces styledFaces) int {
+	width := 0
+	for _, segment := range line.segments {
+		width += font.MeasureString(faces.face(segment.style), segment.text).Ceil()
+	}
+	return width
+}
+
+func drawStyledLine(dst draw.Image, line styledLine, x, y int, faces styledFaces) {
 	d := &font.Drawer{Dst: dst, Dot: fixed.P(x, y)}
 	for _, seg := range line.segments {
-		d.Face = normal
+		d.Face = faces.face(seg.style)
 		d.Src = image.NewUniform(colorText)
 		switch seg.style {
-		case styleBold:
-			d.Face = bold
-			d.Src = image.NewUniform(color.White)
-		case styleItalic:
-			d.Face = italic
+		case styleBold, styleItalic:
 			d.Src = image.NewUniform(color.White)
 		case styleCode:
-			d.Face = code
 			d.Src = image.NewUniform(colorCodeText)
-			sw := font.MeasureString(code, seg.text).Ceil()
+			sw := font.MeasureString(d.Face, seg.text).Ceil()
 			drawRoundedRect(dst, image.Rect(d.Dot.X.Floor()-2, y-20, d.Dot.X.Floor()+sw+2, y+6), 4, colorCodeBg)
 		case styleLink:
 			d.Src = image.NewUniform(colorCodeText)
@@ -937,7 +1087,7 @@ func loadQuoteMedia(path string, media *core.MediaInfo) (image.Image, string) {
 	}
 	dstW, dstH := fitWithin(b.Dx(), b.Dy(), quoteMediaPreviewMaxWidth, quoteMediaPreviewMaxHeight)
 	if dstW != b.Dx() || dstH != b.Dy() {
-		img = resizeNearest(img, dstW, dstH)
+		img = resizeImage(img, dstW, dstH)
 	}
 	return img, kind
 }
@@ -1017,14 +1167,34 @@ func insideRounded(x, y, w, h, radius int) bool {
 	return dx*dx+dy*dy <= radius*radius
 }
 
-func resizeNearest(src image.Image, width, height int) image.Image {
-	dst := image.NewRGBA(image.Rect(0, 0, width, height))
-	sb := src.Bounds()
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			dst.Set(x, y, src.At(sb.Min.X+x*sb.Dx()/width, sb.Min.Y+y*sb.Dy()/height))
-		}
+func resizeImage(src image.Image, width, height int) image.Image {
+	if src == nil || width <= 0 || height <= 0 {
+		return nil
 	}
+	bounds := src.Bounds()
+	if bounds.Dx() == width && bounds.Dy() == height {
+		return src
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, width, height))
+	xdraw.BiLinear.Scale(dst, dst.Bounds(), src, bounds, draw.Src, nil)
+	return dst
+}
+
+func resizeAvatarCover(src image.Image, size int) image.Image {
+	if src == nil || size <= 0 {
+		return nil
+	}
+	bounds := src.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+	if width <= 0 || height <= 0 {
+		return nil
+	}
+	side := min(width, height)
+	minX := bounds.Min.X + (width-side)/2
+	minY := bounds.Min.Y + (height-side)/2
+	sourceRect := image.Rect(minX, minY, minX+side, minY+side)
+	dst := image.NewRGBA(image.Rect(0, 0, size, size))
+	xdraw.BiLinear.Scale(dst, dst.Bounds(), src, sourceRect, draw.Src, nil)
 	return dst
 }
 

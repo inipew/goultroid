@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"image/color"
 	"image/jpeg"
 	"image/png"
 	"os"
@@ -14,6 +15,8 @@ import (
 	"time"
 
 	"github.com/gotd/td/tg"
+	"golang.org/x/image/font"
+
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/plugin"
@@ -84,7 +87,9 @@ func TestRenderPreservesUnicodePath(t *testing.T) {
 		t.Fatalf("rendered file is not a valid JPEG: %v", err)
 	}
 
-	lines := wrapStyledSegments(styledSegments(strings.Repeat("Unicode ", 100), nil), loadFont("regular", 24), 804)
+	face := loadFont("regular", 24)
+	faces := styledFaces{normal: face, bold: face, italic: face, code: face}
+	lines := wrapStyledSegments(styledSegments(strings.Repeat("Unicode ", 100), nil), faces, 804)
 	if len(lines) < 2 {
 		t.Fatal("expected long text to wrap into multiple lines")
 	}
@@ -543,5 +548,136 @@ func TestQuoteWorkspaceCleanupDoesNotAffectSibling(t *testing.T) {
 	}
 	if string(data) != "second" {
 		t.Fatalf("sibling workspace content changed: %q", data)
+	}
+}
+
+
+func TestStyledSegmentsUsesUTF16BoundariesForAstralRunes(t *testing.T) {
+	text := "A😀 bold"
+	segments := styledSegments(text, []tg.MessageEntityClass{
+		&tg.MessageEntityBold{Offset: 4, Length: 4},
+	})
+	found := false
+	for _, segment := range segments {
+		if segment.text == "bold" {
+			found = true
+			if segment.style != styleBold {
+				t.Fatalf("bold segment style=%v", segment.style)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("bold segment not found: %+v", segments)
+	}
+}
+
+func TestStyledSegmentsRejectsEntitySplittingSurrogatePair(t *testing.T) {
+	segments := styledSegments("A😀B", []tg.MessageEntityClass{
+		&tg.MessageEntityBold{Offset: 2, Length: 1},
+	})
+	for _, segment := range segments {
+		if segment.style != styleNormal {
+			t.Fatalf("surrogate-splitting entity must be ignored: %+v", segments)
+		}
+	}
+}
+
+func TestWrapStyledSegmentsPreservesWhitespaceAndBlankLines(t *testing.T) {
+	face := loadFont("regular", 24)
+	faces := styledFaces{normal: face, bold: face, italic: face, code: face}
+	lines := wrapStyledSegments(styledSegments("A  B\tC\n\nD", nil), faces, 1000)
+	if len(lines) != 3 {
+		t.Fatalf("lines=%d, want 3: %+v", len(lines), lines)
+	}
+	if got := styledLineText(lines[0]); got != "A  B    C" {
+		t.Fatalf("first line=%q, want preserved whitespace", got)
+	}
+	if got := styledLineText(lines[1]); got != "" {
+		t.Fatalf("blank line=%q, want empty", got)
+	}
+	if got := styledLineText(lines[2]); got != "D" {
+		t.Fatalf("last line=%q, want D", got)
+	}
+}
+
+func TestWrapStyledSegmentsHardWrapsLongTokenWithinWidth(t *testing.T) {
+	face := loadFont("regular", 24)
+	faces := styledFaces{normal: face, bold: face, italic: face, code: face}
+	maxWidth := font.MeasureString(face, "abcdefgh").Ceil()
+	lines := wrapStyledSegments(styledSegments(strings.Repeat("x", 200), nil), faces, maxWidth)
+	if len(lines) < 2 {
+		t.Fatalf("expected hard wrapping, got %d line(s)", len(lines))
+	}
+	for i, line := range lines {
+		if width := measureStyledLine(line, faces); width > maxWidth {
+			t.Fatalf("line %d width=%d exceeds %d", i, width, maxWidth)
+		}
+	}
+}
+
+func TestWrapStyledSegmentsMeasuresActualStyleFace(t *testing.T) {
+	normal := loadFont("regular", 27)
+	bold := loadFont("bold", 27)
+	faces := styledFaces{normal: normal, bold: bold, italic: normal, code: normal}
+	text := strings.Repeat("W", 24)
+	segments := []styledSegment{{text: text, style: styleBold}}
+	maxWidth := font.MeasureString(bold, text[:12]).Ceil()
+	lines := wrapStyledSegments(segments, faces, maxWidth)
+	for i, line := range lines {
+		if width := measureStyledLine(line, faces); width > maxWidth {
+			t.Fatalf("styled line %d width=%d exceeds %d", i, width, maxWidth)
+		}
+	}
+}
+
+func TestRenderFontPoolProvidesExclusiveSets(t *testing.T) {
+	first := acquireRenderFonts()
+	second := acquireRenderFonts()
+	if first == second {
+		t.Fatal("concurrent borrowers received the same render font set")
+	}
+	releaseRenderFonts(first)
+	releaseRenderFonts(second)
+}
+
+func TestResizeAvatarCoverCenterCropsWithoutDistortion(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 4, 2))
+	for y := 0; y < 2; y++ {
+		for x := 0; x < 4; x++ {
+			if x < 2 {
+				src.Set(x, y, color.RGBA{R: 255, A: 255})
+			} else {
+				src.Set(x, y, color.RGBA{B: 255, A: 255})
+			}
+		}
+	}
+	got := resizeAvatarCover(src, 8)
+	if got == nil || got.Bounds().Dx() != 8 || got.Bounds().Dy() != 8 {
+		t.Fatalf("unexpected avatar result: %v", got)
+	}
+	leftR, _, leftB, _ := got.At(0, 4).RGBA()
+	rightR, _, rightB, _ := got.At(7, 4).RGBA()
+	if leftR <= leftB || rightB <= rightR {
+		t.Fatalf("center crop lost left/right image content")
+	}
+}
+
+func styledLineText(line styledLine) string {
+	var b strings.Builder
+	for _, segment := range line.segments {
+		b.WriteString(segment.text)
+	}
+	return b.String()
+}
+
+func BenchmarkStyledSegmentsManyEntities(b *testing.B) {
+	text := strings.Repeat("A😀bcdefghij ", 100)
+	entities := make([]tg.MessageEntityClass, 0, 100)
+	for i := 0; i < 100; i++ {
+		entities = append(entities, &tg.MessageEntityBold{Offset: i * 13, Length: 4})
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = styledSegments(text, entities)
 	}
 }
