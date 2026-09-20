@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"html"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,9 +31,13 @@ var _ plugin.MessageEventStatePlugin = (*Plugin)(nil)
 type compiledFilter struct {
 	keyword     string
 	response    savedresponse.Response
-	re          *regexp.Regexp
 	template    *savedresponse.CompiledTemplate
 	templateErr error
+}
+
+type compiledFilterSet struct {
+	filters []compiledFilter
+	matcher *keywordMatcher
 }
 
 type Plugin struct {
@@ -44,7 +47,7 @@ type Plugin struct {
 	tasks        tasks.Client
 	featureState core.ChatFeatureSnapshot
 	cacheMu      sync.RWMutex
-	chatFilters  map[int64][]compiledFilter
+	chatFilters  map[int64]*compiledFilterSet
 	chatAccess   map[int64]time.Time
 	cooldownMu   sync.Mutex
 	lastReply    map[string]time.Time
@@ -54,7 +57,7 @@ func New(db Repository, svcFunc func() core.TelegramServicer, responses ...*save
 	p := &Plugin{
 		db: db, svcFunc: svcFunc,
 		responses:   savedresponse.NewService(nil),
-		chatFilters: make(map[int64][]compiledFilter),
+		chatFilters: make(map[int64]*compiledFilterSet),
 		chatAccess:  make(map[int64]time.Time),
 		lastReply:   make(map[string]time.Time),
 	}
@@ -267,7 +270,7 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 		return nil
 	}
 
-	filters, ok := p.getCachedFilters(message.ChatID)
+	filterSet, ok := p.getCachedFilters(message.ChatID)
 	if !ok {
 		rawFilters, err := p.db.ListFilters(ctx, message.ChatID)
 		if err != nil {
@@ -275,41 +278,38 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 			return nil
 		}
 		p.featureState.SetActive(message.ChatID, len(rawFilters) > 0)
-		filters = compileFilters(rawFilters)
-		p.cacheFilters(message.ChatID, filters)
+		filterSet = compileFilterSet(rawFilters)
+		p.cacheFilters(message.ChatID, filterSet)
 	}
-	if len(filters) == 0 {
+	if filterSet == nil || len(filterSet.filters) == 0 {
 		return nil
 	}
 
-	lowerText := strings.ToLower(message.Text)
-	for _, f := range filters {
-		matched := (f.re != nil && f.re.MatchString(lowerText)) || (f.re == nil && f.keyword != "" && strings.Contains(lowerText, f.keyword))
-		if !matched {
-			continue
-		}
-		cooldownKey := fmt.Sprintf("%d:%s", message.ChatID, f.keyword)
-		if p.cooldownActive(cooldownKey) {
-			break
-		}
+	matchIndex := filterSet.matcher.firstMatch(message.Text)
+	if matchIndex < 0 {
+		return nil
+	}
+	f := filterSet.filters[matchIndex]
+	cooldownKey := fmt.Sprintf("%d:%s", message.ChatID, f.keyword)
+	if p.cooldownActive(cooldownKey) {
+		return nil
+	}
 
-		peer, err := message.Peer.InputPeer()
-		if err != nil {
-			return fmt.Errorf("filters: cannot resolve chat peer %d for reply: %w", message.ChatID, err)
-		}
-		if f.templateErr != nil {
-			return fmt.Errorf("filters: compile saved response for %q: %w", f.keyword, f.templateErr)
-		}
-		vars := savedresponse.VarsFromEnvelope(message, time.Now())
-		response := f.response.Clone()
-		if err := p.submitDelivery(ctx, svc, peer, message.ChatID, message.ID, response, f.template, vars); err != nil {
-			return fmt.Errorf("filters: submit reply for %q: %w", f.keyword, err)
-		}
-		p.markCooldown(cooldownKey)
-		if decision := core.GetMessageDecision(ctx); decision != nil {
-			decision.SetSuppressAFK(true)
-		}
-		break
+	peer, err := message.Peer.InputPeer()
+	if err != nil {
+		return fmt.Errorf("filters: cannot resolve chat peer %d for reply: %w", message.ChatID, err)
+	}
+	if f.templateErr != nil {
+		return fmt.Errorf("filters: compile saved response for %q: %w", f.keyword, f.templateErr)
+	}
+	vars := savedresponse.VarsFromEnvelope(message, time.Now())
+	response := f.response.Clone()
+	if err := p.submitDelivery(ctx, svc, peer, message.ChatID, message.ID, response, f.template, vars); err != nil {
+		return fmt.Errorf("filters: submit reply for %q: %w", f.keyword, err)
+	}
+	p.markCooldown(cooldownKey)
+	if decision := core.GetMessageDecision(ctx); decision != nil {
+		decision.SetSuppressAFK(true)
 	}
 	return nil
 }
@@ -382,7 +382,7 @@ func (p *Plugin) deliverResponse(
 	return nil
 }
 
-func (p *Plugin) getCachedFilters(chatID int64) ([]compiledFilter, bool) {
+func (p *Plugin) getCachedFilters(chatID int64) (*compiledFilterSet, bool) {
 	p.cacheMu.RLock()
 	filters, ok := p.chatFilters[chatID]
 	accessed := p.chatAccess[chatID]
@@ -396,7 +396,7 @@ func (p *Plugin) getCachedFilters(chatID int64) ([]compiledFilter, bool) {
 	return filters, true
 }
 
-func (p *Plugin) cacheFilters(chatID int64, filters []compiledFilter) {
+func (p *Plugin) cacheFilters(chatID int64, filters *compiledFilterSet) {
 	p.cacheMu.Lock()
 	defer p.cacheMu.Unlock()
 	if len(p.chatFilters) >= 500 {
@@ -445,26 +445,25 @@ func compileFilters(raw []Filter) []compiledFilter {
 	return res
 }
 
+func compileFilterSet(raw []Filter) *compiledFilterSet {
+	filters := compileFilters(raw)
+	return &compiledFilterSet{
+		filters: filters,
+		matcher: newKeywordMatcher(filters),
+	}
+}
+
 func compileFilterItem(f Filter) compiledFilter {
 	kw := strings.ToLower(strings.TrimSpace(f.Keyword))
-	var re *regexp.Regexp
-	if kw != "" {
-		pattern := `(?:^|[^\p{L}\p{N}_])` + regexp.QuoteMeta(kw) + `(?:$|[^\p{L}\p{N}_])`
-		re, _ = regexp.Compile(pattern)
-	}
 	response := f.Response.Clone()
 	template, templateErr := savedresponse.Compile(response)
 	return compiledFilter{
-		keyword: kw, response: response, re: re,
+		keyword: kw, response: response,
 		template: template, templateErr: templateErr,
 	}
 }
 
 func matchFilter(text, keyword string) bool {
-	f := compileFilterItem(Filter{Keyword: keyword})
-	lowerText := strings.ToLower(text)
-	if f.re != nil {
-		return f.re.MatchString(lowerText)
-	}
-	return strings.Contains(lowerText, f.keyword)
+	filters := []compiledFilter{compileFilterItem(Filter{Keyword: keyword})}
+	return newKeywordMatcher(filters).firstMatch(text) == 0
 }

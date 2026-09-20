@@ -53,9 +53,14 @@ func TestFilterDeliveryResourcePlanning(t *testing.T) {
 	svc := &core.MockTelegramServicer{}
 	peer := &tg.InputPeerSelf{}
 
+	textResponse := savedresponse.NewHTML("hello")
+	textTemplate, err := savedresponse.Compile(textResponse)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := p.submitDelivery(
 		context.Background(), svc, peer, 10, 20,
-		savedresponse.NewHTML("hello"), savedresponse.TemplateVars{},
+		textResponse, textTemplate, savedresponse.TemplateVars{},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -71,9 +76,13 @@ func TestFilterDeliveryResourcePlanning(t *testing.T) {
 
 	media := savedresponse.NewHTML("caption")
 	media.Media = &savedresponse.MediaRef{AssetID: "asset-1", MediaType: "photo"}
+	mediaTemplate, err := savedresponse.Compile(media)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := p.submitDelivery(
 		context.Background(), svc, peer, 10, 21,
-		media, savedresponse.TemplateVars{},
+		media, mediaTemplate, savedresponse.TemplateVars{},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -89,10 +98,10 @@ func TestFilterDeliveryResourcePlanning(t *testing.T) {
 	}
 }
 
-func TestCloneSavedResponseDetachesMediaPointer(t *testing.T) {
+func TestResponseCloneDetachesMediaPointer(t *testing.T) {
 	original := savedresponse.NewHTML("hello")
 	original.Media = &savedresponse.MediaRef{AssetID: "one", MediaType: "photo"}
-	cloned := cloneSavedResponse(original)
+	cloned := original.Clone()
 	cloned.Media.AssetID = "two"
 	if original.Media.AssetID != "one" {
 		t.Fatalf("clone mutated original media ref: %+v", original.Media)
