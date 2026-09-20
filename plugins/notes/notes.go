@@ -94,6 +94,11 @@ func (p *Plugin) handleSave(ctx *core.Context) error {
 		_ = ctx.EditOrReply("⚠️ Saved response cannot be empty.")
 		return errors.New("empty note response")
 	}
+	if err := savedresponse.Validate(response); err != nil {
+		_ = p.responses.DeleteMedia(ctx.Ctx, response)
+		_ = ctx.EditOrReply(fmt.Sprintf("⚠️ Invalid saved response: %v", err))
+		return err
+	}
 
 	chatID := p.getChatID(ctx)
 	previous, err := p.db.GetNote(ctx.Ctx, chatID, noteName)

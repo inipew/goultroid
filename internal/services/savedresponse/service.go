@@ -57,6 +57,10 @@ func (s *Service) CaptureReply(ctx *core.Context) (Response, error) {
 	if response.Empty() {
 		return Response{}, errors.New("saved response: replied message has no text or media")
 	}
+	if err := Validate(response); err != nil {
+		_ = s.DeleteMedia(ctx.Ctx, response)
+		return Response{}, err
+	}
 	return response, nil
 }
 
@@ -168,6 +172,9 @@ func (p *Prepared) Cleanup() {
 func (s *Service) Prepare(ctx context.Context, response Response, vars TemplateVars) (*Prepared, error) {
 	if response.Empty() {
 		return nil, errors.New("saved response: response is empty")
+	}
+	if err := Validate(response); err != nil {
+		return nil, err
 	}
 
 	mediaID := response.MediaAssetID()

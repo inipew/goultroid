@@ -146,6 +146,11 @@ func (p *Plugin) handleFilter(ctx *core.Context) error {
 		_ = ctx.EditOrReply("⚠️ Filter response cannot be empty.")
 		return errors.New("empty filter response")
 	}
+	if err := savedresponse.Validate(response); err != nil {
+		_ = p.responses.DeleteMedia(ctx.Ctx, response)
+		_ = ctx.EditOrReply(fmt.Sprintf("⚠️ Invalid filter response: %v", err))
+		return err
+	}
 
 	chatID := p.getChatID(ctx)
 	p.featureState.MarkUnknown(chatID)

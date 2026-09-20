@@ -82,7 +82,42 @@ func VarsFromEnvelope(message *core.MessageEnvelope, now time.Time) TemplateVars
 	return vars
 }
 
+func Validate(response Response) error {
+	if len(response.Text) > MaxTemplateBytes {
+		return fmt.Errorf("%w: max %d bytes", ErrTemplateTooLarge, MaxTemplateBytes)
+	}
+	format := response.Format
+	if format == "" {
+		format = FormatHTML
+	}
+	if format != FormatHTML && format != FormatPlain {
+		return fmt.Errorf("%w: %q", ErrUnsupportedFormat, format)
+	}
+	tokens := 0
+	for i := 0; i < len(response.Text); {
+		start := strings.IndexByte(response.Text[i:], '{')
+		if start < 0 {
+			break
+		}
+		start += i
+		end := strings.IndexByte(response.Text[start:], '}')
+		if end <= 1 {
+			i = start + 1
+			continue
+		}
+		tokens++
+		if tokens > MaxTemplateTokens {
+			return fmt.Errorf("%w: max %d tokens", ErrTooManyTokens, MaxTemplateTokens)
+		}
+		i = start + end + 1
+	}
+	return nil
+}
+
 func Render(response Response, vars TemplateVars, maxRunes int) (string, error) {
+	if err := Validate(response); err != nil {
+		return "", err
+	}
 	format := response.Format
 	if format == "" {
 		format = FormatHTML
