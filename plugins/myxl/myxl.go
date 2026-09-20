@@ -530,7 +530,7 @@ func (p *Plugin) handleListAccounts(ctx *core.Context) error {
 	b.WriteString("🏷️ <i>Beri nama alias:</i> <code>.myxl alias &lt;nomor&gt; &lt;nama&gt;</code>\n")
 	b.WriteString("🗑️ <i>Hapus akun:</i> <code>.myxl del &lt;nomor/alias&gt;</code>")
 
-	return ctx.EditOrReply(b.String())
+	return deliverHTML(ctx, b.String())
 }
 
 func (p *Plugin) handleUseAccount(ctx *core.Context, args []string) error {
@@ -621,15 +621,14 @@ func (p *Plugin) handleShowQuota(ctx *core.Context, args []string) error {
 		markup := p.buildRefreshMarkup(quotaRefreshState{MSISDN: acc.MSISDN, Masked: maskMSISDN}, callback.StateScope{
 			UserID: ctx.SenderID(), ChatID: ctx.ChatID(), Namespace: p.Namespace(),
 		})
-		if markup == nil {
-			return ctx.EditOrReply(respText)
-		}
-		if err := ctx.Messages().ReplyMarkup(respText, markup); err == nil {
-			return nil
+		if markup != nil {
+			if err := deliverHTMLWithMarkup(ctx, respText, markup); err == nil {
+				return nil
+			}
 		}
 	}
 
-	return ctx.EditOrReply(respText)
+	return deliverHTML(ctx, respText)
 }
 
 func condMask(s string, mask bool) string {
@@ -1262,7 +1261,7 @@ func (p *Plugin) handleSearchFamily(ctx *core.Context, args []string) error {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Gagal memuat paket family:\n<code>%s</code>", html.EscapeString(err.Error())))
 	}
 
-	return ctx.EditOrReply(FormatFamilyPackages(res))
+	return deliverHTML(ctx, FormatFamilyPackages(res))
 }
 
 func (p *Plugin) handlePackageDetail(ctx *core.Context, args []string) error {
@@ -1308,7 +1307,7 @@ func (p *Plugin) handleSavedPackages(ctx *core.Context, args []string) error {
 		if err != nil {
 			return ctx.EditOrReply(fmt.Sprintf("❌ Gagal membaca bookmark: %v", err))
 		}
-		return ctx.EditOrReply(FormatSavedPackages(pkgs))
+		return deliverHTML(ctx, FormatSavedPackages(pkgs))
 
 	case "add", "save":
 		if len(args) < 2 {
@@ -1368,7 +1367,7 @@ func (p *Plugin) handleSavedPackages(ctx *core.Context, args []string) error {
 		if err != nil {
 			return ctx.EditOrReply(fmt.Sprintf("❌ Gagal membaca bookmark: %v", err))
 		}
-		return ctx.EditOrReply(FormatSavedPackages(pkgs))
+		return deliverHTML(ctx, FormatSavedPackages(pkgs))
 	}
 }
 
@@ -1429,7 +1428,7 @@ func (p *Plugin) handlePendingQRIS(ctx *core.Context, args []string) error {
 	sb.WriteString(fmt.Sprintf("<code>%s</code>\n\n", html.EscapeString(pending.QRCode)))
 	sb.WriteString("💡 <i>Salin string QRIS di atas atau scan gambar QR yang dikirimkan. QRIS hanya berlaku 5 menit. Ketik <code>.myxl qris cancel</code> untuk membatalkan.</i>")
 
-	if err := ctx.EditOrReply(sb.String()); err != nil {
+	if err := deliverHTML(ctx, sb.String()); err != nil {
 		return err
 	}
 
