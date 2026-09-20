@@ -60,7 +60,7 @@ For databases where the global registry schema is present, a Notes/Filters media
 
 The canonical reference identities are `notes/note/<chat_id>:<name>` and `filters/filter/<chat_id>:<lowercase-keyword>`. An ownership conflict in the global registry rolls the whole domain mutation back. A schema-inspection error also fails closed; a genuinely absent global registry keeps the legacy repository behavior for standalone/compatibility environments.
 
-Startup reconciliation still runs the P3-A SavedResponse reconciliation first. It then performs a bounded, idempotent compatibility pass that backfills old ledger assets and Notes/Filters references into the global registry, removes only stale **registry metadata** owned by this compatibility layer, and runs bounded consistency checks for:
+Startup reconciliation runs the full P3-A SavedResponse reconciliation first when durable FileStorage is available. If startup has fallen back to process-local MemoryStorage (or storage is unavailable), physical P3-A reconciliation remains fail-closed, but a bounded ledger-only backfill still runs because it neither inspects nor deletes physical assets. The bounded, idempotent compatibility pass then backfills old ledger assets and Notes/Filters references into the global registry, removes only stale **registry metadata** owned by this compatibility layer, and runs bounded consistency checks for:
 
 - P3-A ledger assets missing from the global registry;
 - SavedResponse global assets with incorrect producer/owner/lifecycle metadata;
@@ -69,7 +69,7 @@ Startup reconciliation still runs the P3-A SavedResponse reconciliation first. I
 - SavedResponse-owned global assets no longer represented by the old ledger; and
 - stale global Notes/Filters references whose source row no longer exists.
 
-The verifier reports whether findings were truncated by the configured batch bound so large legacy datasets can converge across bounded passes without unbounded startup work.
+The verifier reports whether findings were truncated by the configured batch bound so large legacy datasets can converge across bounded passes without unbounded startup work. A completely absent global registry remains a supported standalone/compatibility state, while a partially present registry schema is treated as corruption and fails closed instead of silently reverting to legacy-only writes.
 
 ### Authority boundary remains unchanged
 
