@@ -148,3 +148,17 @@ func TestQRHTMLParse(t *testing.T) {
 		}
 	}
 }
+
+
+func TestQRPayloadBoundsAndWhitespace(t *testing.T) {
+	trimmed, err := GenerateQRPNG("  hello  ")
+	if err != nil || len(trimmed) == 0 {
+		t.Fatalf("trimmed QR payload failed: len=%d err=%v", len(trimmed), err)
+	}
+	if _, err := GenerateQRPNG(strings.Repeat("x", maxQRPayloadBytes+1)); err == nil {
+		t.Fatal("expected oversized QR payload to be rejected")
+	}
+	if _, err := RenderQRCompact(strings.Repeat("x", maxQRPayloadBytes+1)); err == nil {
+		t.Fatal("expected oversized compact QR payload to be rejected")
+	}
+}

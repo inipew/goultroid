@@ -12,6 +12,9 @@ var fractionalBlocks = [8]string{"▏", "▎", "▍", "▌", "▋", "▊", "▉"
 
 // FormatBytes formats byte count as human readable string.
 func FormatBytes(bytes float64) string {
+	if bytes <= 0 || math.IsNaN(bytes) || math.IsInf(bytes, 0) {
+		return "0 B"
+	}
 	const (
 		kb = 1024.0
 		mb = kb * 1024.0
@@ -33,7 +36,12 @@ func FormatBytes(bytes float64) string {
 
 // RenderProgressBar renders a high-resolution progress bar with sub-block resolution.
 func RenderProgressBar(remaining, total float64, width int) (string, string) {
-	if total <= 0 || remaining <= 0 || math.IsNaN(remaining) || math.IsNaN(total) {
+	if width < 1 {
+		width = 1
+	} else if width > 64 {
+		width = 64
+	}
+	if total <= 0 || remaining <= 0 || math.IsNaN(remaining) || math.IsNaN(total) || math.IsInf(remaining, 0) || math.IsInf(total, 0) {
 		empty := strings.Repeat("░", width)
 		return fmt.Sprintf("[%s]", empty), "0.0%"
 	}
@@ -69,7 +77,7 @@ func RenderProgressBar(remaining, total float64, width int) (string, string) {
 
 // FormatWIBTime converts unix epoch (seconds or milliseconds) to readable WIB date.
 func FormatWIBTime(epoch float64) string {
-	if epoch <= 0 {
+	if epoch <= 0 || math.IsNaN(epoch) || math.IsInf(epoch, 0) {
 		return "N/A"
 	}
 	// If epoch is in milliseconds (greater than year 2100 in seconds: 4102444800)
@@ -266,7 +274,7 @@ func FormatPackageDetails(details *PackageDetailsData) string {
 		b.WriteString("<b>Status Konfirmasi:</b> Tersedia\n")
 	}
 	if details.PackageOption != nil {
-		b.WriteString("\n<i>Beli via: <code>.myxl buy " + details.PackageOption.PackageOptionCode + " [pulsa/qris/gopay/ovo/dana/shopeepay] [harga]</code></i>")
+		b.WriteString("\n<i>Beli via: <code>.myxl buy " + html.EscapeString(details.PackageOption.PackageOptionCode) + " [pulsa/qris/gopay/ovo/dana/shopeepay] [harga]</code></i>")
 	}
 	return b.String()
 }

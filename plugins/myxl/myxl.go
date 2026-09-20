@@ -154,9 +154,14 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 		p.client.SetHTTP(netSvc)
 	}
 
-	if fs, err := pctx.Files(); err == nil && fs != nil {
-		p.files = fs
+	fs, err := pctx.Files()
+	if err != nil {
+		return fmt.Errorf("initialize MyXL filesystem: %w", err)
 	}
+	if fs == nil {
+		return fmt.Errorf("initialize MyXL filesystem: filesystem scope is nil")
+	}
+	p.files = fs
 
 	secMgr, err := pctx.Secrets()
 	if err != nil {
@@ -438,7 +443,10 @@ func (p *Plugin) handleSetAlias(ctx *core.Context, args []string) error {
 	if norm, err := NormalizeMSISDN(target); err == nil {
 		target = norm
 	}
-	newAlias := strings.TrimSpace(args[1])
+	newAlias := strings.TrimSpace(strings.Join(args[1:], " "))
+	if newAlias == "" {
+		return ctx.EditOrReply("⚠️ Alias tidak boleh kosong.")
+	}
 
 	cCtx := getContext(ctx)
 	if err := p.repo.SetAlias(cCtx, target, newAlias); err != nil {
@@ -1406,7 +1414,11 @@ func (p *Plugin) handlePendingQRIS(ctx *core.Context, args []string) error {
 
 	var sb strings.Builder
 	sb.WriteString("📱 <b>TRANSAKSI QRIS AKTIF</b>\n\n")
-	sb.WriteString(fmt.Sprintf("• <b>Nomor:</b> <code>%s</code>\n", html.EscapeString(pending.MSISDN)))
+	displayMSISDN := pending.MSISDN
+	if isGroupChat(ctx.Chat) {
+		displayMSISDN = MaskMSISDN(displayMSISDN)
+	}
+	sb.WriteString(fmt.Sprintf("• <b>Nomor:</b> <code>%s</code>\n", html.EscapeString(displayMSISDN)))
 	sb.WriteString(fmt.Sprintf("• <b>Paket:</b> %s\n", html.EscapeString(pending.PackageName)))
 	sb.WriteString(fmt.Sprintf("• <b>Total Bayar:</b> Rp %s\n", formatRupiah(pending.Price)))
 	if pending.TransactionCode != "" {
@@ -1666,10 +1678,6 @@ func (p *Plugin) confirmPurchase(cbCtx *callback.CallbackContext, draft purchase
 }
 
 func (p *Plugin) getFiles() *filesystem.Scope {
-	if p.files == nil {
-		manager, _ := filesystem.NewManager("data", "", "", nil)
-		p.files = manager.ForOwner("myxl")
-	}
 	return p.files
 }
 
@@ -1711,10 +1719,14 @@ func (p *Plugin) sendQRPhoto(ctx context.Context, svc core.TelegramServicer, pee
 }
 
 func truncateString(s string, n int) string {
-	if len(s) <= n {
+	if n <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= n {
 		return s
 	}
-	return s[:n]
+	return string(runes[:n])
 }
 
 // Module registration helpers

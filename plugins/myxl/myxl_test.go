@@ -190,11 +190,11 @@ func TestMyXLPlugin_Commands(t *testing.T) {
 		t.Errorf("expected status execution in group with masked MSISDN, got %s", svc.sent)
 	}
 
-	// 6. .myxl alias 081912345678 ModemHome
+	// 6. .myxl alias 081912345678 Modem Home
 	ctxAlias := *baseCtx
-	ctxAlias.Args = []string{"alias", "081912345678", "ModemHome"}
+	ctxAlias.Args = []string{"alias", "081912345678", "Modem", "Home"}
 	_ = cmdMap["myxl"].Handler(&ctxAlias)
-	if !strings.Contains(svc.sent, "ModemHome") {
+	if !strings.Contains(svc.sent, "Modem Home") {
 		t.Errorf("expected alias set confirmation, got %s", svc.sent)
 	}
 
@@ -202,7 +202,7 @@ func TestMyXLPlugin_Commands(t *testing.T) {
 	ctxStatus := *baseCtx
 	ctxStatus.Args = []string{"status"}
 	_ = cmdMap["myxl"].Handler(&ctxStatus)
-	if !strings.Contains(svc.sent, "ModemHome") || !strings.Contains(svc.sent, "Terautentikasi") {
+	if !strings.Contains(svc.sent, "Modem Home") || !strings.Contains(svc.sent, "Terautentikasi") {
 		t.Errorf("expected status output with alias, got %s", svc.sent)
 	}
 
@@ -663,5 +663,30 @@ func TestPluginRequiresCallbackStateForPurchaseMutations(t *testing.T) {
 		if p.RequiresCallbackState(action, "opaque") {
 			t.Fatalf("did not expect %s to require callback state", action)
 		}
+	}
+}
+
+
+func TestTruncateStringPreservesUTF8(t *testing.T) {
+	got := truncateString("Modem 日本語 Rumah", 8)
+	if got != "Modem 日本" {
+		t.Fatalf("truncateString=%q, want %q", got, "Modem 日本")
+	}
+	if !strings.ValidUTF8(got) {
+		t.Fatalf("truncateString produced invalid UTF-8: %q", got)
+	}
+}
+
+func TestMyXLManifestDeclaresFilesystemTemp(t *testing.T) {
+	manifest := Module.Manifest()
+	found := false
+	for _, cap := range manifest.Capabilities {
+		if cap == "filesystem.temp" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("MyXL manifest must declare filesystem.temp: %+v", manifest.Capabilities)
 	}
 }

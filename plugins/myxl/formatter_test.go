@@ -1,6 +1,7 @@
 package myxl
 
 import (
+	"math"
 	"strings"
 	"testing"
 )
@@ -169,5 +170,25 @@ func TestFormatSavedAndPurchase(t *testing.T) {
 	outPurchase := FormatPurchaseResult(res, "Flex S 10GB", 35000, "OVO")
 	if !strings.Contains(outPurchase, "TRX-777") || !strings.Contains(outPurchase, "https://pay.ovo.id/777") || !strings.Contains(outPurchase, "000201...") {
 		t.Fatalf("unexpected purchase result output: %s", outPurchase)
+	}
+}
+
+
+func TestFormatterRejectsNonFiniteAndBoundsProgressWidth(t *testing.T) {
+	for _, value := range []float64{-1, math.NaN(), math.Inf(1)} {
+		if got := FormatBytes(value); got != "0 B" {
+			t.Fatalf("FormatBytes(%v)=%q, want 0 B", value, got)
+		}
+	}
+	bar, _ := RenderProgressBar(50, 100, -10)
+	if len([]rune(bar)) != 3 {
+		t.Fatalf("negative width should clamp to one cell, got %q", bar)
+	}
+	bar, _ = RenderProgressBar(50, 100, 1000)
+	if len([]rune(bar)) != 66 {
+		t.Fatalf("large width should clamp to 64 cells, got width=%d", len([]rune(bar)))
+	}
+	if got := FormatWIBTime(math.NaN()); got != "N/A" {
+		t.Fatalf("FormatWIBTime(NaN)=%q, want N/A", got)
 	}
 }

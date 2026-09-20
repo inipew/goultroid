@@ -7,13 +7,30 @@ import (
 	"rsc.io/qr"
 )
 
+const (
+	maxQRPayloadBytes = 2953
+	maxQRPNGBytes     = 1 << 20
+)
+
+func normalizeQRPayload(data string) (string, error) {
+	data = strings.TrimSpace(data)
+	if data == "" {
+		return "", fmt.Errorf("empty QR code data")
+	}
+	if len(data) > maxQRPayloadBytes {
+		return "", fmt.Errorf("QR code payload too large: %d bytes (max %d)", len(data), maxQRPayloadBytes)
+	}
+	return data, nil
+}
+
 // RenderQRCompact renders a QR code string into a compact text block
 // using Unicode half-block characters (█, ▀, ▄, ' ') with a 2-module quiet zone padding.
 // Each text line represents two vertical QR modules, reducing the height by half
 // so it fits comfortably within Telegram message bubbles and monospaced text.
 func RenderQRCompact(data string) (string, error) {
-	if data == "" {
-		return "", fmt.Errorf("empty QR code data")
+	data, err := normalizeQRPayload(data)
+	if err != nil {
+		return "", err
 	}
 
 	code, err := qr.Encode(data, qr.M)
@@ -71,8 +88,9 @@ func RenderQRCompact(data string) (string, error) {
 // GenerateQRPNG encodes data into a high-resolution PNG image byte slice
 // with standard 4-module quiet zone padding.
 func GenerateQRPNG(data string) ([]byte, error) {
-	if data == "" {
-		return nil, fmt.Errorf("empty QR code data")
+	data, err := normalizeQRPayload(data)
+	if err != nil {
+		return nil, err
 	}
 
 	code, err := qr.Encode(data, qr.M)
@@ -89,6 +107,9 @@ func GenerateQRPNG(data string) ([]byte, error) {
 	pngBytes := code.PNG()
 	if len(pngBytes) == 0 {
 		return nil, fmt.Errorf("empty PNG output generated")
+	}
+	if len(pngBytes) > maxQRPNGBytes {
+		return nil, fmt.Errorf("generated QR PNG too large: %d bytes (max %d)", len(pngBytes), maxQRPNGBytes)
 	}
 	return pngBytes, nil
 }

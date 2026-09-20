@@ -15,7 +15,7 @@ var Module ModuleType
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
 		ID:          "myxl",
-		Version:     "1.1.0",
+		Version:     "1.2.0",
 		Description: "MyXL account management and real-time quota visualizer",
 		Capabilities: []string{
 			plugin.CapTelegramSendMessage,
@@ -23,6 +23,7 @@ func (ModuleType) Manifest() module.Manifest {
 			plugin.CapStorageWrite,
 			plugin.CapHTTP,
 			plugin.CapSecretRead,
+			plugin.CapFilesystemTemp,
 		},
 	}
 }
