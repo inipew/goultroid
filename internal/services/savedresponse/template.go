@@ -1,6 +1,7 @@
 package savedresponse
 
 import (
+	"errors"
 	"fmt"
 	"html"
 	"strconv"
@@ -15,6 +16,14 @@ const (
 	MaxTemplateBytes      = 16 << 10
 	DefaultMaxOutputRunes = 4096
 	MaxVariableRunes      = 512
+	MaxTemplateTokens     = 128
+)
+
+var (
+	ErrTemplateTooLarge = errors.New("saved response template too large")
+	ErrRenderedTooLarge = errors.New("rendered saved response too large")
+	ErrTooManyTokens    = errors.New("saved response template has too many tokens")
+	ErrUnsupportedFormat = errors.New("unsupported saved response format")
 )
 
 type TemplateVars struct {
@@ -73,9 +82,32 @@ func VarsFromEnvelope(message *core.MessageEnvelope, now time.Time) TemplateVars
 	return vars
 }
 
+func Render(response Response, vars TemplateVars, maxRunes int) (string, error) {
+	format := response.Format
+	if format == "" {
+		format = FormatHTML
+	}
+	switch format {
+	case FormatHTML:
+		return renderTemplate(response.Text, vars, maxRunes, false)
+	case FormatPlain:
+		return renderTemplate(response.Text, vars, maxRunes, true)
+	default:
+		return "", fmt.Errorf("%w: %q", ErrUnsupportedFormat, format)
+	}
+}
+
 func RenderHTML(template string, vars TemplateVars, maxRunes int) (string, error) {
+	return renderTemplate(template, vars, maxRunes, false)
+}
+
+func RenderPlain(template string, vars TemplateVars, maxRunes int) (string, error) {
+	return renderTemplate(template, vars, maxRunes, true)
+}
+
+func renderTemplate(template string, vars TemplateVars, maxRunes int, escapeLiteral bool) (string, error) {
 	if len(template) > MaxTemplateBytes {
-		return "", fmt.Errorf("saved response template exceeds %d bytes", MaxTemplateBytes)
+		return "", fmt.Errorf("%w: max %d bytes", ErrTemplateTooLarge, MaxTemplateBytes)
 	}
 	if maxRunes <= 0 {
 		maxRunes = DefaultMaxOutputRunes
@@ -87,26 +119,34 @@ func RenderHTML(template string, vars TemplateVars, maxRunes int) (string, error
 	var out strings.Builder
 	out.Grow(min(len(template)+64, MaxTemplateBytes))
 	writtenRunes := 0
+	tokenCount := 0
+
 	write := func(value string) error {
 		count := utf8.RuneCountInString(value)
 		if count > maxRunes-writtenRunes {
-			return fmt.Errorf("rendered saved response exceeds %d characters", maxRunes)
+			return fmt.Errorf("%w: max %d characters", ErrRenderedTooLarge, maxRunes)
 		}
 		out.WriteString(value)
 		writtenRunes += count
 		return nil
+	}
+	writeLiteral := func(value string) error {
+		if escapeLiteral {
+			value = html.EscapeString(value)
+		}
+		return write(value)
 	}
 
 	for i := 0; i < len(template); {
 		if template[i] != '{' {
 			next := strings.IndexByte(template[i:], '{')
 			if next < 0 {
-				if err := write(template[i:]); err != nil {
+				if err := writeLiteral(template[i:]); err != nil {
 					return "", err
 				}
 				break
 			}
-			if err := write(template[i : i+next]); err != nil {
+			if err := writeLiteral(template[i : i+next]); err != nil {
 				return "", err
 			}
 			i += next
@@ -115,17 +155,22 @@ func RenderHTML(template string, vars TemplateVars, maxRunes int) (string, error
 
 		end := strings.IndexByte(template[i:], '}')
 		if end <= 1 {
-			if err := write(template[i : i+1]); err != nil {
+			if err := writeLiteral(template[i : i+1]); err != nil {
 				return "", err
 			}
 			i++
 			continue
 		}
 		end += i
+		tokenCount++
+		if tokenCount > MaxTemplateTokens {
+			return "", fmt.Errorf("%w: max %d tokens", ErrTooManyTokens, MaxTemplateTokens)
+		}
+
 		token := template[i+1 : end]
 		value, ok := renderToken(token, vars)
 		if !ok {
-			if err := write(template[i : end+1]); err != nil {
+			if err := writeLiteral(template[i : end+1]); err != nil {
 				return "", err
 			}
 		} else if err := write(value); err != nil {
