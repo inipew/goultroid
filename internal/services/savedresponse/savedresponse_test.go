@@ -399,7 +399,6 @@ func TestInspectStickerReportsFormat(t *testing.T) {
 	}
 }
 
-
 type stickerCaptureTelegram struct {
 	core.MockTelegramServicer
 	reply   *tg.Message
