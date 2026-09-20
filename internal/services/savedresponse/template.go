@@ -21,11 +21,11 @@ const (
 )
 
 var (
-	ErrTemplateTooLarge         = errors.New("saved response template too large")
-	ErrRenderedTooLarge         = errors.New("rendered saved response too large")
-	ErrTooManyTokens            = errors.New("saved response template has too many tokens")
-	ErrUnsupportedFormat        = errors.New("unsupported saved response format")
-	ErrNilTemplate              = errors.New("saved response compiled template is nil")
+	ErrTemplateTooLarge        = errors.New("saved response template too large")
+	ErrRenderedTooLarge        = errors.New("rendered saved response too large")
+	ErrTooManyTokens           = errors.New("saved response template has too many tokens")
+	ErrUnsupportedFormat       = errors.New("unsupported saved response format")
+	ErrNilTemplate             = errors.New("saved response compiled template is nil")
 	ErrInvalidTemplateVariable = errors.New("invalid saved response template variable")
 )
 

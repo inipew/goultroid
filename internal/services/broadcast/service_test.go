@@ -219,10 +219,10 @@ func TestBroadcast_BackpressuresInsteadOfDroppingOnTaskBacklog(t *testing.T) {
 
 type richBroadcastTelegram struct {
 	core.MockTelegramServicer
-	mediaCalls     int32
-	textCalls      int32
-	caption        string
-	mediaPath      string
+	mediaCalls    int32
+	textCalls     int32
+	caption       string
+	mediaPath     string
 	sawMediaLease bool
 }
 
@@ -274,9 +274,9 @@ func TestBroadcast_RichSavedResponseUsesSharedDeliveryAndMediaLease(t *testing.T
 	}
 
 	rep, err := svc.Broadcast(context.Background(), broadcast.BroadcastRequest{
-		Targets: []tg.InputPeerClass{&tg.InputPeerUser{UserID: 1}},
+		Targets:  []tg.InputPeerClass{&tg.InputPeerUser{UserID: 1}},
 		Response: response,
-		Vars: savedresponse.TemplateVars{Name: "Alice"},
+		Vars:     savedresponse.TemplateVars{Name: "Alice"},
 	})
 	if err != nil {
 		t.Fatal(err)

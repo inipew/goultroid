@@ -226,4 +226,3 @@ func TestMenuRegisterQRUsesPaymentTTLAndRejectsOversizePayload(t *testing.T) {
 		t.Fatalf("oversized QR payload unexpectedly registered: %q", key)
 	}
 }
-

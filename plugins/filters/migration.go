@@ -80,8 +80,10 @@ func (migration002) VerifySchema(ctx context.Context, tx database.SQLExecutor) e
 
 type migration003 struct{}
 
-func (migration003) ID() string          { return "filters.003" }
-func (migration003) Description() string { return "Index persistent media references for bounded reconciliation" }
+func (migration003) ID() string { return "filters.003" }
+func (migration003) Description() string {
+	return "Index persistent media references for bounded reconciliation"
+}
 func (migration003) Checksum() string {
 	return "0cb39daebeb0716fa820ac5b6ab29fe9e1570b7c41981db96a8f893e9a17df84"
 }

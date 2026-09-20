@@ -31,9 +31,9 @@ type immediateOCRTicket struct {
 	done   chan struct{}
 }
 
-func (t *immediateOCRTicket) TaskID() tasks.TaskID { return t.result.TaskID }
-func (t *immediateOCRTicket) State() tasks.TaskState { return t.state }
-func (t *immediateOCRTicket) Done() <-chan struct{} { return t.done }
+func (t *immediateOCRTicket) TaskID() tasks.TaskID             { return t.result.TaskID }
+func (t *immediateOCRTicket) State() tasks.TaskState           { return t.state }
+func (t *immediateOCRTicket) Done() <-chan struct{}            { return t.done }
 func (t *immediateOCRTicket) Result() (tasks.TaskResult, bool) { return t.result, true }
 func (t *immediateOCRTicket) Wait(ctx context.Context) (tasks.TaskResult, error) {
 	select {
@@ -434,9 +434,9 @@ func TestOCRHandlerStagesResourcesAndUsesRepliedMedia(t *testing.T) {
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
-			Body: io.NopCloser(strings.NewReader(`{"IsErroredOnProcessing":false,"ParsedResults":[{"ParsedText":"hello OCR"}]}`)),
-			Header: make(http.Header),
-			Request: r,
+			Body:       io.NopCloser(strings.NewReader(`{"IsErroredOnProcessing":false,"ParsedResults":[{"ParsedText":"hello OCR"}]}`)),
+			Header:     make(http.Header),
+			Request:    r,
 		}, nil
 	})}
 
@@ -456,8 +456,8 @@ func TestOCRHandlerStagesResourcesAndUsesRepliedMedia(t *testing.T) {
 	p.SetTaskClient(taskClient)
 
 	ctx := &core.Context{
-		Ctx: context.Background(),
-		Svc: svc,
+		Ctx:    context.Background(),
+		Svc:    svc,
 		PeerID: &tg.InputPeerChat{ChatID: 1},
 		Message: &core.Message{
 			ID: 10, ReplyToID: 77, IsOutgoing: true,
@@ -525,9 +525,9 @@ func TestOCRHandlerCleansWorkspaceAndEscapesServiceFailure(t *testing.T) {
 		}
 		return &http.Response{
 			StatusCode: http.StatusBadRequest,
-			Body: io.NopCloser(strings.NewReader("<bad>& rejected")),
-			Header: make(http.Header),
-			Request: r,
+			Body:       io.NopCloser(strings.NewReader("<bad>& rejected")),
+			Header:     make(http.Header),
+			Request:    r,
 		}, nil
 	})}
 
@@ -546,9 +546,9 @@ func TestOCRHandlerCleansWorkspaceAndEscapesServiceFailure(t *testing.T) {
 	p.SetTaskClient(&immediateOCRTaskClient{})
 
 	ctx := &core.Context{
-		Ctx: context.Background(),
-		Svc: svc,
-		PeerID: &tg.InputPeerChat{ChatID: 1},
+		Ctx:     context.Background(),
+		Svc:     svc,
+		PeerID:  &tg.InputPeerChat{ChatID: 1},
 		Message: &core.Message{ID: 11, ReplyToID: 88, IsOutgoing: true},
 	}
 	if err := p.handle(ctx); err == nil {

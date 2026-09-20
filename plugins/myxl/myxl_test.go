@@ -85,7 +85,7 @@ func (c *immediateMyXLTaskClient) Snapshot(tasks.TaskID) (tasks.TaskSnapshot, bo
 
 type myXLQRService struct {
 	core.MockTelegramServicer
-	mediaSent       bool
+	mediaSent      bool
 	heldMediaLease bool
 }
 
@@ -911,4 +911,3 @@ func TestPendingQRISRepositoryRejectsOversizePayloadAndMissingDelete(t *testing.
 		t.Fatal("missing pending QRIS delete should report not found")
 	}
 }
-
