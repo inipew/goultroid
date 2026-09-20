@@ -161,3 +161,42 @@ func TestQRPayloadBoundsAndWhitespace(t *testing.T) {
 		t.Fatal("expected oversized compact QR payload to be rejected")
 	}
 }
+
+
+func TestQRScaleBoundsLargePayload(t *testing.T) {
+	if got := qrScaleForModules(177); got != 4 {
+		t.Fatalf("qrScaleForModules(177)=%d, want 4", got)
+	}
+	pngBytes, err := GenerateQRPNG(strings.Repeat("x", 2000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := png.Decode(bytes.NewReader(pngBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bounds := img.Bounds()
+	if bounds.Dx() > 900 || bounds.Dy() > 900 {
+		t.Fatalf("large-payload QR dimensions=%dx%d, expected bounded image", bounds.Dx(), bounds.Dy())
+	}
+}
+
+func TestRenderQRCompactRejectsOversizedTextOutput(t *testing.T) {
+	if _, err := RenderQRCompact(strings.Repeat("x", 2000)); err == nil {
+		t.Fatal("expected large compact QR to be rejected in favor of PNG")
+	}
+}
+
+func TestInlineQRPreviewBoundsRunes(t *testing.T) {
+	payload := strings.Repeat("日本語", 300)
+	preview, truncated := inlineQRPreview(payload)
+	if !truncated {
+		t.Fatal("expected preview to be truncated")
+	}
+	if len([]rune(preview)) > maxInlineQRPreview+1 {
+		t.Fatalf("preview runes=%d, max=%d", len([]rune(preview)), maxInlineQRPreview+1)
+	}
+	if !strings.HasSuffix(preview, "…") {
+		t.Fatalf("preview missing ellipsis: %q", preview)
+	}
+}

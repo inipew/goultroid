@@ -191,3 +191,19 @@ func TestFormatterRejectsNonFiniteAndBoundsProgressWidth(t *testing.T) {
 		t.Fatalf("FormatWIBTime(NaN)=%q, want N/A", got)
 	}
 }
+
+
+func TestFormatPurchaseResultBoundsInlineQRIS(t *testing.T) {
+	payload := strings.Repeat("1234567890", 80)
+	out := FormatPurchaseResult(&SettlementResult{
+		IsSuccess: true,
+		Status:    "SUCCESS",
+		QRCode:    payload,
+	}, "Large QR", 10000, "QRIS")
+	if strings.Contains(out, payload) {
+		t.Fatal("full oversized QR payload should not be embedded inline")
+	}
+	if !strings.Contains(out, "payload penuh") {
+		t.Fatalf("missing truncation explanation: %s", out)
+	}
+}
