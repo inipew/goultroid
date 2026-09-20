@@ -16,6 +16,11 @@ var (
 	ErrQuotaExceeded = errors.New("storage: quota exceeded")
 )
 
+const (
+	DefaultEnumerationLimit = 64
+	MaxEnumerationLimit     = 256
+)
+
 // Metadata provides descriptive metadata when storing a new asset.
 type Metadata struct {
 	Name     string        `json:"name"`
@@ -38,6 +43,41 @@ type Asset struct {
 	CreatedAt time.Time     `json:"created_at"`
 }
 
+// EnumerationState describes how a physical storage root entry relates to the
+// managed asset layout. Enumeration never mutates or reclaims an entry.
+type EnumerationState string
+
+const (
+	EnumerationManaged   EnumerationState = "managed"
+	EnumerationUnmanaged EnumerationState = "unmanaged"
+	EnumerationMalformed EnumerationState = "malformed"
+)
+
+// EnumerationEntry is one physical root entry discovered during a bounded
+// storage scan. Asset is populated only for managed entries. Detail is a
+// stable, machine-readable reason for unmanaged or malformed entries.
+type EnumerationEntry struct {
+	Key    string           `json:"key"`
+	State  EnumerationState `json:"state"`
+	Asset  *Asset           `json:"asset,omitempty"`
+	Size   int64            `json:"size,omitempty"`
+	Detail string           `json:"detail,omitempty"`
+}
+
+// EnumerationOptions controls one bounded page. Cursor is an opaque value
+// returned by the previous page and Limit is clamped to MaxEnumerationLimit.
+type EnumerationOptions struct {
+	Cursor string
+	Limit  int
+}
+
+// EnumerationPage is a bounded physical-storage page. NextCursor is empty
+// when the current scan reached the end of the storage root.
+type EnumerationPage struct {
+	Entries    []EnumerationEntry
+	NextCursor string
+}
+
 // Storage provides an abstraction for asset persistence.
 type Storage interface {
 	// Put writes the stream from src to storage under a generated asset ID.
@@ -48,6 +88,8 @@ type Storage interface {
 	Delete(ctx context.Context, id string) error
 	// Stat returns the Asset descriptor without opening the stream.
 	Stat(ctx context.Context, id string) (*Asset, error)
+	// Enumerate returns one bounded, non-destructive page of physical entries.
+	Enumerate(ctx context.Context, opts EnumerationOptions) (EnumerationPage, error)
 	// BasePath returns the underlying base storage directory (if filesystem-backed).
 	BasePath() string
 }
