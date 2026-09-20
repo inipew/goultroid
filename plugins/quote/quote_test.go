@@ -2,6 +2,7 @@ package quote
 
 import (
 	"context"
+	"fmt"
 	"image"
 	"image/jpeg"
 	"image/png"
@@ -348,7 +349,6 @@ func TestLoadQuoteMediaRejectsUnsafeDimensions(t *testing.T) {
 		t.Fatalf("kind=%q, want photo", kind)
 	}
 }
-
 
 func TestQuotePluginRequiresTempFilesystemCapability(t *testing.T) {
 	manager, err := filesystem.NewManager(t.TempDir(), "", "", nil)
