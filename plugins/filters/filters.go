@@ -45,11 +45,12 @@ type Plugin struct {
 func New(db Repository, svcFunc func() core.TelegramServicer, responses ...*savedresponse.Service) *Plugin {
 	p := &Plugin{
 		db: db, svcFunc: svcFunc,
+		responses: savedresponse.NewService(nil),
 		chatFilters: make(map[int64][]compiledFilter),
 		chatAccess: make(map[int64]time.Time),
 		lastReply: make(map[string]time.Time),
 	}
-	if len(responses) > 0 {
+	if len(responses) > 0 && responses[0] != nil {
 		p.responses = responses[0]
 	}
 	return p
@@ -126,6 +127,7 @@ func (p *Plugin) handleFilter(ctx *core.Context) error {
 	}
 	keyword := strings.ToLower(strings.TrimSpace(ctx.Args[0]))
 	if keyword == "" {
+		_ = ctx.EditOrReply("⚠️ Filter keyword cannot be empty.")
 		return errors.New("empty filter keyword")
 	}
 
@@ -141,6 +143,7 @@ func (p *Plugin) handleFilter(ctx *core.Context) error {
 		}
 	}
 	if response.Empty() {
+		_ = ctx.EditOrReply("⚠️ Filter response cannot be empty.")
 		return errors.New("empty filter response")
 	}
 
@@ -168,6 +171,7 @@ func (p *Plugin) handleFilter(ctx *core.Context) error {
 
 func (p *Plugin) handleStop(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
+		_ = ctx.EditOrReply("⚠️ Usage: <code>.stop &lt;keyword&gt;</code>")
 		return errors.New("missing filter keyword")
 	}
 	if p.db == nil || p.responses == nil {
@@ -180,6 +184,7 @@ func (p *Plugin) handleStop(ctx *core.Context) error {
 		return err
 	}
 	if filter == nil {
+		_ = ctx.EditOrReply(fmt.Sprintf("ℹ️ Filter <code>%s</code> not found.", html.EscapeString(keyword)))
 		return errors.New("filter not found")
 	}
 
@@ -270,27 +275,22 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 		if err != nil {
 			return fmt.Errorf("filters: cannot resolve chat peer %d for reply: %w", message.ChatID, err)
 		}
-		maxRunes := savedresponse.DefaultMaxOutputRunes
-		if f.response.Media != nil {
-			maxRunes = 1024
-		}
-		rendered, err := savedresponse.RenderHTML(f.response.Text, savedresponse.VarsFromEnvelope(message, time.Now()), maxRunes)
+		prepared, err := p.responses.Prepare(ctx, f.response, savedresponse.VarsFromEnvelope(message, time.Now()))
 		if err != nil {
-			return fmt.Errorf("filters: render reply for %q: %w", f.keyword, err)
+			return fmt.Errorf("filters: prepare reply for %q: %w", f.keyword, err)
 		}
-		if f.response.Media == nil {
-			if _, err := svc.SendMessage(ctx, peer, rendered); err != nil {
-				return fmt.Errorf("filters: send reply for %q: %w", f.keyword, err)
-			}
-		} else {
-			path, cleanup, err := p.responses.Materialize(ctx, f.response)
-			if err != nil {
-				return fmt.Errorf("filters: materialize media for %q: %w", f.keyword, err)
-			}
-			_, sendErr := svc.SendMedia(ctx, peer, f.response.Media.MediaType, path, rendered)
-			cleanup()
+		if prepared.MediaPath != "" {
+			_, sendErr := svc.SendMedia(ctx, peer, prepared.MediaType, prepared.MediaPath, prepared.Caption)
+			prepared.Cleanup()
 			if sendErr != nil {
 				return fmt.Errorf("filters: send media reply for %q: %w", f.keyword, sendErr)
+			}
+		} else {
+			defer prepared.Cleanup()
+		}
+		if prepared.Text != "" {
+			if _, err := svc.SendMessage(ctx, peer, prepared.Text); err != nil {
+				return fmt.Errorf("filters: send text reply for %q: %w", f.keyword, err)
 			}
 		}
 		p.markCooldown(cooldownKey)
@@ -352,7 +352,7 @@ func (p *Plugin) markCooldown(key string) {
 			if now.Sub(v) > 30*time.Second {
 				delete(p.lastReply, k)
 			}
-	}
+		}
 	}
 	p.cooldownMu.Unlock()
 }
@@ -369,7 +369,7 @@ func compileFilterItem(f Filter) compiledFilter {
 	kw := strings.ToLower(strings.TrimSpace(f.Keyword))
 	var re *regexp.Regexp
 	if kw != "" {
-		pattern := `(?i)(?:^|[^\p{L}\p{N}_])` + regexp.QuoteMeta(kw) + `(?:$|[^\p{L}\p{N}_])`
+		pattern := `(?:^|[^\p{L}\p{N}_])` + regexp.QuoteMeta(kw) + `(?:$|[^\p{L}\p{N}_])`
 		re, _ = regexp.Compile(pattern)
 	}
 	return compiledFilter{keyword: kw, response: f.Response, re: re}

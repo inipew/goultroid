@@ -19,8 +19,8 @@ type Plugin struct {
 }
 
 func New(db Repository, responses ...*savedresponse.Service) *Plugin {
-	p := &Plugin{db: db}
-	if len(responses) > 0 {
+	p := &Plugin{db: db, responses: savedresponse.NewService(nil)}
+	if len(responses) > 0 && responses[0] != nil {
 		p.responses = responses[0]
 	}
 	return p
@@ -133,25 +133,19 @@ func (p *Plugin) handleGet(ctx *core.Context) error {
 		return fmt.Errorf("note %s not found", noteName)
 	}
 
-	maxRunes := savedresponse.DefaultMaxOutputRunes
-	if note.Response.Media != nil {
-		maxRunes = 1024
-	}
-	text, err := savedresponse.RenderHTML(note.Response.Text, savedresponse.VarsFromContext(ctx, time.Now()), maxRunes)
+	prepared, err := p.responses.Prepare(ctx.Ctx, note.Response, savedresponse.VarsFromContext(ctx, time.Now()))
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to render note: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to prepare note: %v", err))
 	}
-	if note.Response.Media == nil {
-		return ctx.EditOrReply(text)
+	defer prepared.Cleanup()
+
+	if prepared.MediaPath != "" {
+		if _, err := ctx.SendMedia(prepared.MediaType, prepared.MediaPath, prepared.Caption); err != nil {
+			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to send note media: %v", err))
+		}
 	}
-	path, cleanup, err := p.responses.Materialize(ctx.Ctx, note.Response)
-	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to load note media: %v", err))
-	}
-	defer cleanup()
-	_, err = ctx.SendMedia(note.Response.Media.MediaType, path, text)
-	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to send note media: %v", err))
+	if prepared.Text != "" {
+		return ctx.EditOrReply(prepared.Text)
 	}
 	return nil
 }
