@@ -116,10 +116,10 @@ func (s *Service) captureMedia(ctx *core.Context, media *core.MediaInfo) (*Media
 		return nil, err
 	}
 	return &MediaRef{
-		AssetID: asset.ID,
+		AssetID:   asset.ID,
 		MediaType: deliveryMediaType(media.Type),
-		Name: asset.Name,
-		MIMEType: asset.MIME,
+		Name:      asset.Name,
+		MIMEType:  asset.MIME,
 	}, nil
 }
 
@@ -249,7 +249,7 @@ func (s *Service) Materialize(ctx context.Context, response Response) (string, f
 		return "", nil, err
 	}
 	if asset.Size > MaxPersistentMediaBytes {
-		return "", nil, fmt.Errorf("saved response media exceeds %d bytes", MaxPersistentMediaBytes)
+		return "", nil, fmt.Errorf("%w: max %d bytes", ErrMediaTooLarge, MaxPersistentMediaBytes)
 	}
 
 	reader, err := s.store.Open(ctx, id)

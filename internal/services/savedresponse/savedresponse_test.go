@@ -175,7 +175,6 @@ func TestPrepareStickerUsesStandaloneText(t *testing.T) {
 	}
 }
 
-
 func TestResponseCloneDetachesMediaAndDefaultsFormat(t *testing.T) {
 	original := Response{
 		Text: "hello",
@@ -256,7 +255,7 @@ func TestSafeTempExtension(t *testing.T) {
 		"photo.PNG":        ".png",
 		"archive.tar.gz":   ".gz",
 		"unsafe.jp*g":      "",
-		"too.longextension": "",
+		"too.abcdefghijklmnopq": "",
 		"noext":            "",
 	}
 	for name, want := range cases {
