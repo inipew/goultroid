@@ -5,14 +5,15 @@ import "strings"
 type Format string
 
 const (
-	FormatHTML Format = "html"
+	FormatHTML  Format = "html"
+	FormatPlain Format = "plain"
 )
 
 type MediaRef struct {
-	AssetID  string
+	AssetID   string
 	MediaType string
-	Name     string
-	MIMEType string
+	Name      string
+	MIMEType  string
 }
 
 type Response struct {
@@ -21,8 +22,17 @@ type Response struct {
 	Media  *MediaRef
 }
 
-func NewText(text string) Response {
+func NewHTML(text string) Response {
 	return Response{Text: text, Format: FormatHTML}
+}
+
+// NewText preserves the historical authored-template semantics.
+func NewText(text string) Response {
+	return NewHTML(text)
+}
+
+func NewPlainText(text string) Response {
+	return Response{Text: text, Format: FormatPlain}
 }
 
 func (r Response) Empty() bool {
