@@ -16,9 +16,9 @@ var Module ModuleType
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
 		ID:           "clone",
-		Version:      "1.0.0",
+		Version:      "1.1.0",
 		Description:  "Clone another user's public profile identity and safely revert it",
-		Capabilities: []string{plugin.CapTelegramSendMessage, plugin.CapStorageRead, plugin.CapStorageWrite},
+		Capabilities: []string{plugin.CapTelegramSendMessage, plugin.CapFilesystemTemp},
 	}
 }
 
@@ -29,7 +29,7 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	if rt.DB == nil {
 		return module.ErrNilDatabase
 	}
-	return rt.RegisterPlugin(ctx, m.Manifest(), New(NewSQLiteRepository(rt.DB), rt.OwnerID))
+	return rt.RegisterPlugin(ctx, m.Manifest(), New(NewSQLiteRepository(rt.DB), rt.OwnerID, rt.Storage))
 }
 
 func (ModuleType) Migrations() []database.Migration {
