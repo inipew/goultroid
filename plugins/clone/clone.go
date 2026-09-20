@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gotd/td/tg"
@@ -14,15 +15,34 @@ import (
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/storage"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
-const cloneAssetRefPrefix = "asset:"
+const (
+	cloneAssetRefPrefix = "asset:"
+	cloneTaskTimeout    = 2 * time.Minute
+)
+
+var cloneTaskSequence atomic.Uint64
+
+type clonePlan struct {
+	targetPeer      tg.InputPeerClass
+	targetFirst     string
+	targetLast      string
+	targetBio       string
+	targetPhotoID   int64
+	originalFirst   string
+	originalLast    string
+	originalBio     string
+	originalPhotoID int64
+}
 
 type Plugin struct {
 	repo       Repository
 	ownerID    int64
 	assetStore storage.Storage
 	files      *filesystem.Scope
+	tasks      tasks.Client
 }
 
 func New(repo Repository, ownerID int64, stores ...storage.Storage) *Plugin {
@@ -39,6 +59,11 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 		return err
 	}
 	p.files = files
+	client, err := pctx.TaskClient()
+	if err != nil {
+		return fmt.Errorf("clone: initialize task client: %w", err)
+	}
+	p.tasks = client
 	return nil
 }
 
@@ -49,6 +74,12 @@ func (p *Plugin) SetFiles(manager *filesystem.Manager) {
 	}
 	p.files = manager.ForOwner("clone")
 }
+
+// SetTaskClient sets the scoped TaskEngine client used for profile continuations.
+func (p *Plugin) SetTaskClient(client tasks.Client) {
+	p.tasks = client
+}
+
 func (p *Plugin) Name() string { return "clone" }
 func (p *Plugin) Description() string {
 	return "Clone another user's public profile identity and safely revert it"
@@ -74,6 +105,103 @@ func (p *Plugin) Commands() []core.Command {
 	}
 }
 
+func (p *Plugin) nextTaskID(kind string) tasks.TaskID {
+	return tasks.TaskID(fmt.Sprintf(
+		"clone:%s:%d:%d:%d",
+		kind,
+		p.ownerID,
+		time.Now().UnixNano(),
+		cloneTaskSequence.Add(1),
+	))
+}
+
+func detachCloneContext(ctx *core.Context) *core.Context {
+	if ctx == nil {
+		return nil
+	}
+	cp := *ctx
+	cp.Ctx = nil
+	cp.Args = nil
+	cp.RawArgs = ""
+	cp.Album = nil
+	cp.Chat = nil
+	cp.Sender = nil
+	cp.Perms = nil
+	cp.Principal = nil
+	cp.Resolver = nil
+	cp.Localizer = nil
+	cp.EventBus = nil
+	cp.DelayedActions = nil
+	return &cp
+}
+
+func (p *Plugin) submitContinuation(
+	admissionCtx context.Context,
+	kind string,
+	pool tasks.PoolID,
+	resources []tasks.ResourceRequirement,
+	handler func(context.Context) error,
+) error {
+	if p.tasks == nil {
+		return fmt.Errorf("%w: clone TaskEngine client is not configured", core.ErrUnavailable)
+	}
+	if admissionCtx == nil {
+		admissionCtx = context.Background()
+	}
+	resources = append([]tasks.ResourceRequirement(nil), resources...)
+	_, err := p.tasks.Submit(admissionCtx, tasks.WorkSpec{
+		ID:               p.nextTaskID(kind),
+		Pool:             pool,
+		Class:            tasks.PriorityNormal,
+		OrderingKey:      fmt.Sprintf("profile:%d", p.ownerID),
+		ExecutionTimeout: cloneTaskTimeout,
+		Resources:        resources,
+		Handler: func(taskCtx context.Context) error {
+			return handler(taskCtx)
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("clone: submit %s continuation: %w", kind, err)
+	}
+	return nil
+}
+
+func profilePhotoID(full *tg.UsersUserFull) int64 {
+	if full == nil {
+		return 0
+	}
+	photo, ok := full.FullUser.ProfilePhoto.(*tg.Photo)
+	if !ok || photo == nil {
+		return 0
+	}
+	return photo.ID
+}
+
+func (p *Plugin) clonePlan(ctx *core.Context) (clonePlan, error) {
+	targetPeer, targetID, _, targetUser, targetFull, err := p.resolveTarget(ctx)
+	if err != nil {
+		return clonePlan{}, err
+	}
+	if targetID == p.ownerID {
+		return clonePlan{}, errors.New("you are already the target identity")
+	}
+	selfFull, selfUser, err := p.getSelf(ctx)
+	if err != nil {
+		return clonePlan{}, fmt.Errorf("failed to snapshot your current profile: %w", err)
+	}
+	return clonePlan{
+		targetPeer:      targetPeer,
+		targetFirst:     targetUser.FirstName,
+		targetLast:      targetUser.LastName,
+		targetBio:       targetFull.FullUser.About,
+		targetPhotoID:   profilePhotoID(targetFull),
+		originalFirst:   selfUser.FirstName,
+		originalLast:    selfUser.LastName,
+		originalBio:     selfFull.FullUser.About,
+		originalPhotoID: profilePhotoID(selfFull),
+	}, nil
+}
+
 func (p *Plugin) handleClone(ctx *core.Context) error {
 	state, err := p.repo.GetCloneState(ctx.Ctx, p.ownerID)
 	if err != nil {
@@ -83,48 +211,63 @@ func (p *Plugin) handleClone(ctx *core.Context) error {
 		return ctx.EditOrReply("⚠️ A clone is already active. Run <code>.revert</code> before cloning another identity.")
 	}
 
-	workspace, err := p.createWorkspace()
-	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create clone workspace: %v", err))
-	}
-	defer func() { _ = p.files.RemoveTempDir(workspace) }()
-
-	targetPeer, targetID, targetInput, targetUser, targetFull, err := p.resolveTarget(ctx)
+	plan, err := p.clonePlan(ctx)
 	if err != nil {
 		return ctx.EditOrReply("⚠️ " + err.Error())
 	}
-	if targetID == p.ownerID {
-		return ctx.EditOrReply("⚠️ You are already the target identity.")
-	}
-	_ = targetInput
-
-	selfFull, selfUser, err := p.getSelf(ctx)
-	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to snapshot your current profile: %v", err))
+	if plan.targetPhotoID == 0 {
+		return p.executeClone(ctx, plan)
 	}
 
-	targetPhoto, targetHasPhoto := targetFull.FullUser.ProfilePhoto.(*tg.Photo)
-	targetHasPhoto = targetHasPhoto && targetPhoto != nil && targetPhoto.ID != 0
+	uiCtx := detachCloneContext(ctx)
+	resources := []tasks.ResourceRequirement{
+		{Name: "download", Amount: 1},
+		{Name: "media", Amount: 1},
+	}
+	if err := p.submitContinuation(ctx.Ctx, "clone-photo", tasks.PoolID("download"), resources, func(taskCtx context.Context) error {
+		taskCore := uiCtx.WithContext(taskCtx)
+		current, stateErr := p.repo.GetCloneState(taskCtx, p.ownerID)
+		if stateErr != nil {
+			return taskCore.EditOrReply(fmt.Sprintf("❌ Failed to re-check clone state: %v", stateErr))
+		}
+		if current != nil && current.Active {
+			return taskCore.EditOrReply("⚠️ A clone became active before this operation started. Revert it before cloning another identity.")
+		}
+		return p.executeClone(taskCore, plan)
+	}); err != nil {
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to queue profile-photo clone: %v", err))
+	}
+	return nil
+}
+
+func (p *Plugin) executeClone(ctx *core.Context, plan clonePlan) error {
+	workspace := ""
+	if plan.targetPhotoID != 0 {
+		var err error
+		workspace, err = p.createWorkspace()
+		if err != nil {
+			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create clone workspace: %v", err))
+		}
+		defer func() { _ = p.files.RemoveTempDir(workspace) }()
+	}
 
 	originalPhotoRef := ""
-	if targetHasPhoto {
-		if photo, ok := selfFull.FullUser.ProfilePhoto.(*tg.Photo); ok && photo != nil && photo.ID != 0 {
-			path, downloadErr := p.downloadProfilePhoto(ctx, &tg.InputPeerSelf{}, photo.ID, workspace, "original.jpg")
-			if downloadErr != nil {
-				return ctx.EditOrReply(fmt.Sprintf("❌ Could not snapshot your current profile photo: %v", downloadErr))
-			}
-			originalPhotoRef, err = p.storeOriginalPhotoSnapshot(ctx.Ctx, path)
-			if err != nil {
-				return ctx.EditOrReply(fmt.Sprintf("❌ Could not persist original profile photo: %v", err))
-			}
+	if plan.targetPhotoID != 0 && plan.originalPhotoID != 0 {
+		path, err := p.downloadProfilePhoto(ctx, &tg.InputPeerSelf{}, plan.originalPhotoID, workspace, "original.jpg")
+		if err != nil {
+			return ctx.EditOrReply(fmt.Sprintf("❌ Could not snapshot your current profile photo: %v", err))
+		}
+		originalPhotoRef, err = p.storeOriginalPhotoSnapshot(ctx.Ctx, path)
+		if err != nil {
+			return ctx.EditOrReply(fmt.Sprintf("❌ Could not persist original profile photo: %v", err))
 		}
 	}
 
 	snapshot := CloneState{
 		OwnerID:       p.ownerID,
-		OriginalFirst: selfUser.FirstName,
-		OriginalLast:  selfUser.LastName,
-		OriginalBio:   selfFull.FullUser.About,
+		OriginalFirst: plan.originalFirst,
+		OriginalLast:  plan.originalLast,
+		OriginalBio:   plan.originalBio,
 		OriginalPhoto: originalPhotoRef,
 		ClonedPhoto:   false,
 		Active:        true,
@@ -135,7 +278,9 @@ func (p *Plugin) handleClone(ctx *core.Context) error {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to persist clone snapshot: %v", err))
 	}
 
-	firstName, lastName, bio := sanitizeName(targetUser.FirstName), sanitizeName(targetUser.LastName), targetFull.FullUser.About
+	firstName := sanitizeName(plan.targetFirst)
+	lastName := sanitizeName(plan.targetLast)
+	bio := plan.targetBio
 	if firstName == "" {
 		firstName = "User"
 	}
@@ -143,15 +288,12 @@ func (p *Plugin) handleClone(ctx *core.Context) error {
 		return p.cloneFailure(ctx, snapshot, false, fmt.Errorf("profile update failed: %w", err))
 	}
 
-	if targetHasPhoto {
-		path, downloadErr := p.downloadProfilePhoto(ctx, targetPeer, targetPhoto.ID, workspace, "target.jpg")
-		if downloadErr != nil {
-			return p.cloneFailure(ctx, snapshot, false, fmt.Errorf("profile photo download failed: %w", downloadErr))
+	if plan.targetPhotoID != 0 {
+		path, err := p.downloadProfilePhoto(ctx, plan.targetPeer, plan.targetPhotoID, workspace, "target.jpg")
+		if err != nil {
+			return p.cloneFailure(ctx, snapshot, false, fmt.Errorf("profile photo download failed: %w", err))
 		}
 
-		// Persist mutation intent before the non-idempotent upload. If the process
-		// dies after Telegram accepts the photo but before the RPC returns, .revert
-		// still knows that the latest profile photo may need to be removed.
 		snapshot.ClonedPhoto = true
 		snapshot.UpdatedAt = time.Now().UTC()
 		if err := p.repo.SaveCloneState(ctx.Ctx, snapshot); err != nil {
@@ -177,12 +319,30 @@ func (p *Plugin) handleRevert(ctx *core.Context) error {
 		return ctx.EditOrReply("❌ Telegram service is not available.")
 	}
 
-	workspace, err := p.createWorkspace()
-	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create revert workspace: %v", err))
+	needsPhotoRestore := state.ClonedPhoto || strings.TrimSpace(state.OriginalPhoto) != ""
+	if !needsPhotoRestore {
+		return p.executeRevert(ctx, *state)
 	}
-	defer func() { _ = p.files.RemoveTempDir(workspace) }()
 
+	uiCtx := detachCloneContext(ctx)
+	resources := []tasks.ResourceRequirement{{Name: "media", Amount: 1}}
+	if err := p.submitContinuation(ctx.Ctx, "revert-photo", tasks.PoolID("general"), resources, func(taskCtx context.Context) error {
+		taskCore := uiCtx.WithContext(taskCtx)
+		current, stateErr := p.repo.GetCloneState(taskCtx, p.ownerID)
+		if stateErr != nil {
+			return taskCore.EditOrReply(fmt.Sprintf("❌ Failed to re-check clone state: %v", stateErr))
+		}
+		if current == nil || !current.Active {
+			return taskCore.EditOrReply("ℹ️ No active clone state exists.")
+		}
+		return p.executeRevert(taskCore, *current)
+	}); err != nil {
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to queue profile-photo revert: %v", err))
+	}
+	return nil
+}
+
+func (p *Plugin) executeRevert(ctx *core.Context, state CloneState) error {
 	if state.ClonedPhoto {
 		if _, err := ctx.Svc.DeleteProfilePhotos(ctx.Ctx, 1); err != nil {
 			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to remove cloned profile photo: %v", err))
@@ -191,7 +351,13 @@ func (p *Plugin) handleRevert(ctx *core.Context) error {
 	if err := ctx.UpdateProfile(&state.OriginalFirst, &state.OriginalLast, &state.OriginalBio); err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("⚠️ Profile photo state handled, but profile text restore failed: %v", err))
 	}
-	if state.OriginalPhoto != "" {
+	if strings.TrimSpace(state.OriginalPhoto) != "" {
+		workspace, err := p.createWorkspace()
+		if err != nil {
+			return ctx.EditOrReply(fmt.Sprintf("⚠️ Profile text restored, but revert workspace is unavailable: %v", err))
+		}
+		defer func() { _ = p.files.RemoveTempDir(workspace) }()
+
 		path, err := p.materializeSnapshot(ctx.Ctx, workspace, state.OriginalPhoto)
 		if err != nil {
 			return ctx.EditOrReply(fmt.Sprintf("⚠️ Profile text restored, but original photo snapshot is unavailable: %v", err))

@@ -183,6 +183,7 @@ func TestCloneFailureAfterPhotoMutationRestoresManagedSnapshot(t *testing.T) {
 func TestHandleRevertRestoresManagedSnapshotAndCleansState(t *testing.T) {
 	repo := &cloneTestRepo{}
 	p, store := newCloneTestPlugin(t, repo)
+	p.SetTaskClient(&cloneTaskClient{execute: true})
 	ref := storeCloneSnapshotForTest(t, p, "saved-original")
 	repo.state = &CloneState{
 		OwnerID:       1001,

@@ -16,9 +16,9 @@ var Module ModuleType
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
 		ID:           "clone",
-		Version:      "1.1.0",
+		Version:      "1.2.0",
 		Description:  "Clone another user's public profile identity and safely revert it",
-		Capabilities: []string{plugin.CapTelegramSendMessage, plugin.CapFilesystemTemp},
+		Capabilities: []string{plugin.CapTelegramSendMessage, plugin.CapFilesystemTemp, plugin.CapTasks},
 	}
 }
 
