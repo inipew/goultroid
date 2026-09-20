@@ -32,7 +32,6 @@ func TestTimingOwnedOccurrenceUntrackWakesSchedulerOnlyForTimingDefinitions(t *t
 	}
 }
 
-
 type timingCommitWakeStore struct {
 	Store
 }
