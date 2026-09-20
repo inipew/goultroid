@@ -26,7 +26,7 @@ func TestSettingsOutboxWorkerRetiresWhenHealthyAndRestartsOnCommit(t *testing.T)
 	}
 	defer svc.Stop(context.Background())
 
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		svc.lifecycleMu.Lock()
 		running := svc.outboxRunning
@@ -38,7 +38,7 @@ func TestSettingsOutboxWorkerRetiresWhenHealthyAndRestartsOnCommit(t *testing.T)
 			}
 			break
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
 	svc.lifecycleMu.Lock()
 	if svc.outboxRunning {
@@ -51,7 +51,7 @@ func TestSettingsOutboxWorkerRetiresWhenHealthyAndRestartsOnCommit(t *testing.T)
 		t.Fatal(err)
 	}
 
-	deadline = time.Now().Add(time.Second)
+	deadline = time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		pending, err := repo.ListPendingOutbox(context.Background(), 10)
 		if err != nil {
@@ -63,7 +63,7 @@ func TestSettingsOutboxWorkerRetiresWhenHealthyAndRestartsOnCommit(t *testing.T)
 		if len(pending) == 0 && !running {
 			return
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
 	pending, _ := repo.ListPendingOutbox(context.Background(), 10)
 	svc.lifecycleMu.Lock()

@@ -209,7 +209,7 @@ func TestCommandResourceTaskEngineGate_AllBuiltinCommands(t *testing.T) {
 		tasks:    client,
 	}
 
-	for _, cmd := range resourceCommands {
+	for commandIndex, cmd := range resourceCommands {
 		cmdName := cmd.Name
 
 		// Test 1: Surface Userbot
@@ -223,16 +223,19 @@ func TestCommandResourceTaskEngineGate_AllBuiltinCommands(t *testing.T) {
 						1001: {ID: 1001, FirstName: "Owner", Username: "owner"},
 					},
 				}
-				update := &tg.UpdateNewMessage{
-					Message: &tg.Message{
-						ID:      10,
-						Message: "." + cmdName,
-						PeerID:  &tg.PeerUser{UserID: 1001},
-						FromID:  &tg.PeerUser{UserID: 1001},
-						Date:    int(time.Now().Unix()),
-						Out:     true,
-					},
+				newUpdate := func(id int) *tg.UpdateNewMessage {
+					return &tg.UpdateNewMessage{
+						Message: &tg.Message{
+							ID:      id,
+							Message: "." + cmdName,
+							PeerID:  &tg.PeerUser{UserID: 1001},
+							FromID:  &tg.PeerUser{UserID: 1001},
+							Date:    int(time.Now().Unix()),
+							Out:     true,
+						},
+					}
 				}
+				update := newUpdate(10 + commandIndex*2)
 
 				if err := disp.OnNewMessage(context.Background(), entities, update); err != nil {
 					t.Fatalf("unexpected error in OnNewMessage: %v", err)
@@ -252,7 +255,7 @@ func TestCommandResourceTaskEngineGate_AllBuiltinCommands(t *testing.T) {
 				// Fail-closed verification
 				disp.SetTasks(nil)
 				client.Clear()
-				_ = disp.OnNewMessage(context.Background(), entities, update)
+				_ = disp.OnNewMessage(context.Background(), entities, newUpdate(11+commandIndex*2))
 				if client.Count() != 0 {
 					t.Fatalf("command %q submitted task even when task client was nil", cmdName)
 				}
@@ -443,9 +446,10 @@ func TestCommandResourceTaskEngineGate_HandlerRunsStrictlyInsideTaskEngine(t *te
 	}
 }
 
-// TestDownloaderCommandResourceStaticAndDynamicInvariants verifies that
-// .download never statically binds to process, and dynamically distinguishes
-// direct HTTP from extractor URLs.
+// TestDownloaderCommandResourceStaticAndDynamicInvariants verifies that the
+// interactive .download command is planning-only. Heavy download/process
+// resources belong to the continuation task; downloader package tests cover
+// the exact continuation resource set for direct HTTP and extractor providers.
 func TestDownloaderCommandResourceStaticAndDynamicInvariants(t *testing.T) {
 	app := createTestApp(t)
 
@@ -453,23 +457,11 @@ func TestDownloaderCommandResourceStaticAndDynamicInvariants(t *testing.T) {
 	if !found {
 		t.Fatal("expected .download command in app router")
 	}
-
-	for _, req := range cmd.Resources {
-		if req.Name == "process" {
-			t.Fatalf(".download command must NOT statically require process resource, found: %+v", req)
-		}
-	}
-	hasDownload := false
-	for _, req := range cmd.Resources {
-		if req.Name == "download" && req.Amount == 1 {
-			hasDownload = true
-		}
-	}
-	if !hasDownload {
-		t.Fatalf(".download command must statically require download: 1, found: %+v", cmd.Resources)
+	if len(cmd.Resources) != 0 {
+		t.Fatalf(".download planning command must not statically reserve heavy resources: %+v", cmd.Resources)
 	}
 
-	// Verify download registry resolution
+	// Verify provider selection that drives continuation resource planning.
 	if app.downloadRegistry == nil {
 		t.Fatal("expected downloadRegistry configured on app")
 	}

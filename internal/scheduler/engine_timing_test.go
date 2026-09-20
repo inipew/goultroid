@@ -165,7 +165,10 @@ func TestScheduledMessageExecutesOnceAndCompletes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pollRowStatus(t, h, 42, 0, 10*time.Second)
+	// Full-repository -race runs can stretch SQLite + durability settlement well
+	// beyond the normal sub-second path. Keep the assertion eventual, not tied
+	// to production latency.
+	pollRowStatus(t, h, 42, 0, 30*time.Second)
 	if h.svc.count() != 1 {
 		t.Fatalf("deliveries=%d, want exactly 1", h.svc.count())
 	}

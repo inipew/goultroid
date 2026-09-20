@@ -312,8 +312,13 @@ func TestIdleAndResourceRegressionGuards(t *testing.T) {
 			forbidden: []string{"time.NewTicker("},
 		},
 		{
-			path:      filepath.Join(root, "internal", "scheduler", "engine.go"),
-			required:  []string{"SetScheduleWake(e.notifyWake)", "case <-e.wakeChan:"},
+			path: filepath.Join(root, "internal", "scheduler", "engine.go"),
+			required: []string{
+				"jobsMgr.SetScheduleWake(func()",
+				"e.notifyWake()",
+				"e.periodic.notify()",
+				"case <-e.wakeChan:",
+			},
 			forbidden: []string{"idleHeartbeat"},
 		},
 		{
