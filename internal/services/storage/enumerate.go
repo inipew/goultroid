@@ -56,7 +56,7 @@ func (f *FileStorage) Enumerate(ctx context.Context, opts EnumerationOptions) (E
 		return EnumerationPage{}, err
 	}
 	limit := normalizeEnumerationLimit(opts.Limit)
-	cursor := strings.TrimSpace(opts.Cursor)
+	cursor := opts.Cursor
 
 	dir, err := os.Open(f.baseDir)
 	if err != nil {
@@ -139,7 +139,7 @@ func (m *MemoryStorage) Enumerate(ctx context.Context, opts EnumerationOptions) 
 		return EnumerationPage{}, err
 	}
 	limit := normalizeEnumerationLimit(opts.Limit)
-	cursor := strings.TrimSpace(opts.Cursor)
+	cursor := opts.Cursor
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
