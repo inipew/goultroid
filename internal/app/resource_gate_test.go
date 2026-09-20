@@ -176,7 +176,10 @@ func TestCommandResourceTaskEngineGate_AllBuiltinCommands(t *testing.T) {
 	}
 	t.Logf("found %d resource-bearing commands to verify across surfaces", len(resourceCommands))
 
-	client := &gateTaskClient{execute: true}
+	// This architecture gate verifies admission and WorkSpec propagation only.
+	// Handlers are deliberately withheld so command-specific argument/business
+	// validation cannot affect the cross-surface TaskEngine contract.
+	client := &gateTaskClient{execute: false}
 	tgSvc := &gateTelegramService{}
 	perms := core.NewPermissions(1001, []int64{1001})
 

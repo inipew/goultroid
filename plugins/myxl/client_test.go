@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/platform/network"
 	"github.com/inipew/goultroid/internal/platform/secret"
 	platformPlugin "github.com/inipew/goultroid/internal/plugin"
@@ -59,9 +60,13 @@ func TestPluginInitLoadsCapabilityGatedSecrets(t *testing.T) {
 	})
 	client := NewClient(DefaultClientConfig(), &mockRepo{}, nil)
 	p := New(&mockRepo{}, client)
+	files, err := filesystem.NewManager(t.TempDir(), "", "", nil)
+	if err != nil {
+		t.Fatalf("create filesystem manager: %v", err)
+	}
 	newContext := func() platformPlugin.PluginContext {
 		return platformPlugin.NewPluginContext(context.Background(), platformPlugin.ContextConfig{
-			Owner: "myxl", Gate: gate, Network: network.NewService(nil, nil), Secrets: secrets,
+			Owner: "myxl", Gate: gate, Network: network.NewService(nil, nil), Secrets: secrets, Files: files,
 		})
 	}
 

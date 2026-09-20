@@ -16,6 +16,9 @@ func TestFilterFeatureStatePreloadAndMutation(t *testing.T) {
 		t.Fatalf("database open: %v", err)
 	}
 	defer db.Close()
+	if err := database.RunFeatureMigrations(context.Background(), db, Module); err != nil {
+		t.Fatalf("filters migrations: %v", err)
+	}
 
 	repo := NewSQLiteRepository(db)
 	if err := repo.SaveFilter(context.Background(), 10, "rules", savedresponse.NewHTML("read them")); err != nil {
@@ -89,6 +92,9 @@ func TestFilterSQLiteRepositoryListsActiveChats(t *testing.T) {
 		t.Fatalf("database open: %v", err)
 	}
 	defer db.Close()
+	if err := database.RunFeatureMigrations(context.Background(), db, Module); err != nil {
+		t.Fatalf("filters migrations: %v", err)
+	}
 
 	repo := NewSQLiteRepository(db)
 	if err := repo.SaveFilter(context.Background(), 30, "a", savedresponse.NewHTML("1")); err != nil {

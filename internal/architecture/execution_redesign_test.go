@@ -437,13 +437,15 @@ func TestDownloaderUsesEphemeralTaskContinuations(t *testing.T) {
 		"p.tasks.Submit(",
 		`Pool:             tasks.PoolID("download")`,
 		"urlResources(",
-		"markHeldResources(",
+		"Resources:        resources",
+		"TaskEngine publishes spec.Resources into taskCtx",
 	} {
 		if !strings.Contains(text, required) {
 			t.Errorf("%s is missing ephemeral continuation invariant %q", downloaderPath, required)
 		}
 	}
 	for _, forbidden := range []string{
+		"markHeldResources(",
 		"jobs.Register(",
 		"JobDefinition",
 		"jobUI",

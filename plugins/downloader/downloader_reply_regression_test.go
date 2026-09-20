@@ -91,7 +91,7 @@ func TestDownloaderRepliedURLFallbackPreservesUTF16EntityURL(t *testing.T) {
 	if string(input) != targetURL {
 		t.Fatalf("task input=%q, want %q", input, targetURL)
 	}
-	if err := spec.Handler(context.Background()); err != nil {
+	if err := spec.Handler(tasks.WithHeldResources(context.Background(), spec.Resources)); err != nil {
 		t.Fatalf("URL continuation: %v", err)
 	}
 	if provider.gotURL != targetURL {
@@ -130,7 +130,7 @@ func TestDownloaderExtractorContinuationMarksBothHeldResources(t *testing.T) {
 	if !hasResource(spec.Resources, "download") || !hasResource(spec.Resources, "process") {
 		t.Fatalf("extractor resources=%+v", spec.Resources)
 	}
-	if err := spec.Handler(context.Background()); err != nil {
+	if err := spec.Handler(tasks.WithHeldResources(context.Background(), spec.Resources)); err != nil {
 		t.Fatalf("extractor continuation: %v", err)
 	}
 	if !provider.sawDownload || !provider.sawProcess {
