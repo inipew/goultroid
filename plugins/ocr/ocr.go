@@ -16,6 +16,7 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
+	"github.com/inipew/goultroid/internal/services/imageguard"
 	"github.com/inipew/goultroid/internal/platform/network"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/tasks"
@@ -27,6 +28,14 @@ const (
 	maxResponseSize = 8 << 20
 	maxAttempts     = 3
 )
+
+var ocrImagePolicy = imageguard.Policy{
+	MaxInputBytes:   25 << 20,
+	MaxWidth:        8192,
+	MaxHeight:       8192,
+	MaxPixels:       40_000_000,
+	MaxDecodedBytes: 160 << 20,
+}
 
 var supportedLanguages = map[string]struct{}{
 	"eng": {}, "ara": {}, "bul": {}, "chs": {}, "cht": {}, "cze": {},
@@ -148,6 +157,9 @@ func (p *Plugin) handle(ctx *core.Context) error {
 	if !validLanguage(lang) {
 		return ctx.EditOrReply("⚠️ Unsupported OCR language. Use a valid OCR.Space language code such as eng, ind, jpn, kor, rus, or vie.")
 	}
+	if err := imageguard.ValidateKnown(reply.Media.Size, reply.Media.Width, reply.Media.Height, ocrImagePolicy); err != nil {
+		return ctx.EditOrReply(fmt.Sprintf("❌ Image rejected by safety limits: %v", err))
+	}
 
 	_ = ctx.EditOrReply("⏳ Processing OCR...")
 	files := p.getFiles()
@@ -202,6 +214,9 @@ type response struct {
 func (p *Plugin) extract(ctx context.Context, path, language string) (string, error) {
 	if !validLanguage(language) {
 		return "", fmt.Errorf("unsupported OCR language %q", language)
+	}
+	if _, err := imageguard.Inspect(path, ocrImagePolicy); err != nil {
+		return "", fmt.Errorf("image safety validation failed: %w", err)
 	}
 
 	var lastErr error

@@ -1,6 +1,7 @@
 package quote
 
 import (
+	"image"
 	"image/jpeg"
 	"image/png"
 	"os"
@@ -273,5 +274,74 @@ func TestSymbolsRendering(t *testing.T) {
 	}
 	if img.Bounds().Dx() < 400 || img.Bounds().Dy() < 100 {
 		t.Fatalf("unexpected image bounds: %v", img.Bounds())
+	}
+}
+
+
+func TestQuoteCanPreviewImage(t *testing.T) {
+	if !quoteCanPreviewImage(&core.MediaInfo{Type: "photo"}) {
+		t.Fatal("photo should be previewable")
+	}
+	if !quoteCanPreviewImage(&core.MediaInfo{Type: "document", MimeType: "image/png"}) {
+		t.Fatal("image document should be previewable")
+	}
+	if quoteCanPreviewImage(&core.MediaInfo{Type: "video", MimeType: "video/mp4"}) {
+		t.Fatal("video must use quote placeholder without image download")
+	}
+	if quoteCanPreviewImage(&core.MediaInfo{Type: "document", MimeType: "application/pdf"}) {
+		t.Fatal("non-image document must use quote placeholder")
+	}
+}
+
+func TestLoadQuoteMediaBoundsPreviewDimensions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "portrait.png")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(f, image.NewRGBA(image.Rect(0, 0, 700, 1400))); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	img, kind := loadQuoteMedia(path, &core.MediaInfo{Type: "photo"})
+	if img == nil {
+		t.Fatal("expected quote media preview")
+	}
+	if kind != "photo" {
+		t.Fatalf("kind=%q, want photo", kind)
+	}
+	b := img.Bounds()
+	if b.Dx() > quoteMediaPreviewMaxWidth || b.Dy() > quoteMediaPreviewMaxHeight {
+		t.Fatalf("preview exceeds bounds: %v", b)
+	}
+	if b.Dx() != 360 || b.Dy() != 720 {
+		t.Fatalf("unexpected fitted size %dx%d", b.Dx(), b.Dy())
+	}
+}
+
+func TestLoadQuoteMediaRejectsUnsafeDimensions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "too-wide.png")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(f, image.NewRGBA(image.Rect(0, 0, 9000, 1))); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	img, kind := loadQuoteMedia(path, &core.MediaInfo{Type: "photo"})
+	if img != nil {
+		t.Fatal("unsafe media should be rejected before full decode")
+	}
+	if kind != "photo" {
+		t.Fatalf("kind=%q, want photo", kind)
 	}
 }

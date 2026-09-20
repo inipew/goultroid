@@ -2,6 +2,8 @@ package ocr
 
 import (
 	"context"
+	"image"
+	"image/png"
 	"io"
 	"net/http"
 	"os"
@@ -40,10 +42,8 @@ func TestExtractRetriesTransientHTTPFailure(t *testing.T) {
 	})}
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "image.jpg")
-	if err := os.WriteFile(path, []byte("test image"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	path := filepath.Join(dir, "image.png")
+	writeTestPNG(t, path, 8, 8)
 
 	netSvc := network.NewService(client, nil)
 	p := &Plugin{
@@ -107,3 +107,42 @@ func TestOCRPlugin_InitPluginCapabilities(t *testing.T) {
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+
+func TestExtractRejectsUnsafeImageBeforeHTTP(t *testing.T) {
+	attempts := 0
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"IsErroredOnProcessing":false}`)), Header: make(http.Header), Request: r}, nil
+	})}
+
+	path := filepath.Join(t.TempDir(), "too-wide.png")
+	writeTestPNG(t, path, 9000, 1)
+
+	p := &Plugin{
+		apiKey:   "test-key",
+		endpoint: "https://ocr.example.test/parse/image",
+		http:     network.NewService(client, nil).ForOwner("ocr"),
+	}
+	if _, err := p.extract(context.Background(), path, "eng"); err == nil {
+		t.Fatal("expected unsafe image to be rejected")
+	}
+	if attempts != 0 {
+		t.Fatalf("unsafe image reached HTTP client %d times", attempts)
+	}
+}
+
+func writeTestPNG(t *testing.T, path string, width, height int) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(f, image.NewRGBA(image.Rect(0, 0, width, height))); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

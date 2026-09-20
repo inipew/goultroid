@@ -14,6 +14,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
+	"github.com/inipew/goultroid/internal/services/imageguard"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -48,10 +49,12 @@ func (p *Plugin) handle(ctx *core.Context) error {
 	}
 
 	var mediaPath string
-	if reply.HasMedia() {
-		mediaPath, _ = ctx.Media().DownloadMedia(p.dataDir)
-		if mediaPath != "" {
-			defer os.Remove(mediaPath)
+	if reply.HasMedia() && quoteCanPreviewImage(reply.Media) {
+		if err := imageguard.ValidateKnown(reply.Media.Size, reply.Media.Width, reply.Media.Height, quoteMediaPolicy); err == nil {
+			mediaPath, _ = ctx.Media().DownloadMedia(p.dataDir)
+			if mediaPath != "" {
+				defer os.Remove(mediaPath)
+			}
 		}
 	}
 	var avatarPath string
@@ -250,6 +253,20 @@ func displayUserName(first, last, username string) string {
 		return "@" + strings.TrimPrefix(username, "@")
 	}
 	return ""
+}
+
+func quoteCanPreviewImage(media *core.MediaInfo) bool {
+	if media == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(media.Type)) {
+	case "photo":
+		return true
+	case "sticker", "document":
+		return strings.HasPrefix(strings.ToLower(strings.TrimSpace(media.MimeType)), "image/")
+	default:
+		return false
+	}
 }
 
 func mediaPlaceholder(mediaType string) string {

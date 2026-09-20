@@ -235,3 +235,67 @@ func TestSticker_ConvertProcess(t *testing.T) {
 		t.Errorf("expected mediaType sticker, got %s", svc.mediaType)
 	}
 }
+
+
+func TestStickerRejectsOversizedImageDimensions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "too-wide.png")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(f, image.NewRGBA(image.Rect(0, 0, 9000, 1))); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := &mockService{dummyImgPath: path}
+	ctx := &core.Context{
+		Ctx:    context.Background(),
+		PeerID: &tg.InputPeerChat{ChatID: 100},
+		Message: &core.Message{
+			ID: 1,
+			Media: &core.MediaInfo{
+				Type:     "document",
+				MimeType: "image/png",
+				FileName: "too-wide.png",
+				Location: &tg.InputDocumentFileLocation{},
+			},
+		},
+		Svc: svc,
+	}
+	if err := New().handleSticker(ctx); err != nil {
+		t.Fatalf("unexpected handler error: %v", err)
+	}
+	if svc.mediaSent {
+		t.Fatal("unsafe image must not be sent as sticker")
+	}
+	if !strings.Contains(svc.sent, "safety limit") {
+		t.Fatalf("expected safety-limit response, got %q", svc.sent)
+	}
+}
+
+func TestStickerRejectsNonImageDocumentBeforeDownload(t *testing.T) {
+	svc := &mockService{}
+	ctx := &core.Context{
+		Ctx:    context.Background(),
+		PeerID: &tg.InputPeerChat{ChatID: 100},
+		Message: &core.Message{
+			ID: 1,
+			Media: &core.MediaInfo{
+				Type:     "document",
+				MimeType: "application/pdf",
+				Location: &tg.InputDocumentFileLocation{},
+			},
+		},
+		Svc: svc,
+	}
+	if err := New().handleSticker(ctx); err != nil {
+		t.Fatalf("unexpected handler error: %v", err)
+	}
+	if !strings.Contains(svc.sent, "not a supported image") {
+		t.Fatalf("unexpected response: %q", svc.sent)
+	}
+}

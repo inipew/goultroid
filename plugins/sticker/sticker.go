@@ -3,25 +3,31 @@ package sticker
 import (
 	"fmt"
 	"image"
-	_ "image/gif"
-	_ "image/jpeg"
 	"image/png"
-	"io"
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/image/draw"
-	"golang.org/x/image/webp"
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/services/imageguard"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
 // Plugin provides sticker creation and conversion utilities.
+var stickerImagePolicy = imageguard.Policy{
+	MaxInputBytes:   32 << 20,
+	MaxWidth:        8192,
+	MaxHeight:       8192,
+	MaxPixels:       32_000_000,
+	MaxDecodedBytes: 128 << 20,
+}
+
 type Plugin struct {
 	files *filesystem.Scope
 }
@@ -102,6 +108,13 @@ func (p *Plugin) handleSticker(ctx *core.Context) error {
 	if media.Type != "photo" && media.Type != "sticker" && media.Type != "document" {
 		return ctx.EditOrReply("⚠️ Please reply to a photo, sticker, or image document.")
 	}
+	if (media.Type == "document" || media.Type == "sticker") &&
+		media.MimeType != "" && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(media.MimeType)), "image/") {
+		return ctx.EditOrReply("⚠️ The selected document or sticker is not a supported image.")
+	}
+	if err := imageguard.ValidateKnown(media.Size, media.Width, media.Height, stickerImagePolicy); err != nil {
+		return ctx.EditOrReply(fmt.Sprintf("❌ Image rejected by safety limits: %v", err))
+	}
 
 	_ = ctx.EditOrReply("⏳ <i>Processing sticker...</i>")
 
@@ -175,28 +188,10 @@ func calculateStickerDimensions(srcW, srcH int) (int, int) {
 	return dstW, dstH
 }
 
-// decodeImageFile decodes JPEG, PNG, GIF, or WEBP image formats.
+// decodeImageFile validates compressed and decoded image budgets before full decode.
 func decodeImageFile(path string) (image.Image, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	// Attempt standard library decoding (JPEG, PNG, GIF)
-	img, _, err := image.Decode(f)
-	if err == nil {
-		return img, nil
-	}
-
-	// Rewind and attempt WebP decoding
-	if _, seekErr := f.Seek(0, io.SeekStart); seekErr == nil {
-		if webpImg, webpErr := webp.Decode(f); webpErr == nil {
-			return webpImg, nil
-		}
-	}
-
-	return nil, fmt.Errorf("unsupported or corrupted image format: %w", err)
+	img, _, err := imageguard.Decode(path, stickerImagePolicy)
+	return img, err
 }
 
 // findMedia retrieves media from the current message or the replied message.

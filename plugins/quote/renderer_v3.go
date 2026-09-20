@@ -23,6 +23,7 @@ import (
 	_ "golang.org/x/image/webp"
 
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/services/imageguard"
 )
 
 // RenderOptions specifies all configuration options for rendering a Telegram quote bubble.
@@ -74,6 +75,26 @@ var (
 var (
 	fontCacheLock sync.Mutex
 	parsedFonts   = make(map[string]*opentype.Font)
+
+	quoteMediaPolicy = imageguard.Policy{
+		MaxInputBytes:   32 << 20,
+		MaxWidth:        8192,
+		MaxHeight:       8192,
+		MaxPixels:       32_000_000,
+		MaxDecodedBytes: 128 << 20,
+	}
+	quoteAvatarPolicy = imageguard.Policy{
+		MaxInputBytes:   8 << 20,
+		MaxWidth:        4096,
+		MaxHeight:       4096,
+		MaxPixels:       12_000_000,
+		MaxDecodedBytes: 48 << 20,
+	}
+)
+
+const (
+	quoteMediaPreviewMaxWidth  = 600
+	quoteMediaPreviewMaxHeight = 720
 )
 
 func getParsedFont(paths []string) *opentype.Font {
@@ -663,15 +684,14 @@ func drawRoundedRect(dst draw.Image, r image.Rectangle, radius int, c color.Colo
 }
 
 func loadAvatarImage(path string, size int) image.Image {
-	if path != "" {
-		if f, err := os.Open(path); err == nil {
-			defer f.Close()
-			if img, _, err := image.Decode(f); err == nil {
-				return resizeNearest(img, size, size)
-			}
-		}
+	if path == "" {
+		return nil
 	}
-	return nil
+	img, _, err := imageguard.Decode(path, quoteAvatarPolicy)
+	if err != nil {
+		return nil
+	}
+	return resizeNearest(img, size, size)
 }
 
 func drawAvatar(dst draw.Image, avatar image.Image, center image.Point, radius int, fallbackInitial string, fallbackColor color.Color) {
@@ -900,31 +920,45 @@ func drawStyledLine(dst draw.Image, line styledLine, x, y int, normal, bold, ita
 // Media handling
 
 func loadQuoteMedia(path string, media *core.MediaInfo) (image.Image, string) {
+	kind := "media"
+	if media != nil && strings.TrimSpace(media.Type) != "" {
+		kind = media.Type
+	}
 	if path == "" {
-		return nil, ""
+		return nil, kind
 	}
-	f, err := os.Open(path)
+	img, _, err := imageguard.Decode(path, quoteMediaPolicy)
 	if err != nil {
-		return nil, ""
-	}
-	defer f.Close()
-	img, _, err := image.Decode(f)
-	if err != nil {
-		return nil, ""
+		return nil, kind
 	}
 	b := img.Bounds()
 	if b.Dx() <= 0 || b.Dy() <= 0 {
-		return nil, ""
+		return nil, kind
 	}
-	maxW := 600
-	if b.Dx() > maxW {
-		img = resizeNearest(img, maxW, b.Dy()*maxW/b.Dx())
-	}
-	kind := "media"
-	if media != nil {
-		kind = media.Type
+	dstW, dstH := fitWithin(b.Dx(), b.Dy(), quoteMediaPreviewMaxWidth, quoteMediaPreviewMaxHeight)
+	if dstW != b.Dx() || dstH != b.Dy() {
+		img = resizeNearest(img, dstW, dstH)
 	}
 	return img, kind
+}
+
+func fitWithin(width, height, maxWidth, maxHeight int) (int, int) {
+	if width <= 0 || height <= 0 || maxWidth <= 0 || maxHeight <= 0 {
+		return 1, 1
+	}
+	if width <= maxWidth && height <= maxHeight {
+		return width, height
+	}
+	scale := math.Min(float64(maxWidth)/float64(width), float64(maxHeight)/float64(height))
+	w := int(math.Round(float64(width) * scale))
+	h := int(math.Round(float64(height) * scale))
+	if w < 1 {
+		w = 1
+	}
+	if h < 1 {
+		h = 1
+	}
+	return w, h
 }
 
 func drawMediaCard(dst draw.Image, r image.Rectangle, media *core.MediaInfo, kind string, titleFace, subFace font.Face) {
