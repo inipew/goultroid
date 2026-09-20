@@ -1123,7 +1123,8 @@ func TestGetReplyMemoSharedAfterWithContext(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	child := ctx.WithContext(context.WithValue(context.Background(), struct{}{}, "child"))
+	type childContextKey struct{}
+	child := ctx.WithContext(context.WithValue(context.Background(), childContextKey{}, "child"))
 	reply, err := child.GetReply()
 	if err != nil {
 		t.Fatal(err)

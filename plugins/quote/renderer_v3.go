@@ -948,8 +948,7 @@ func wrapStyledSegments(segments []styledSegment, faces styledFaces, maxWidth in
 		width += font.MeasureString(face, text).Ceil()
 	}
 
-	var addToken func(string, entityStyle)
-	addToken = func(token string, style entityStyle) {
+	addToken := func(token string, style entityStyle) {
 		for token != "" {
 			face := faces.face(style)
 			tokenWidth := font.MeasureString(face, token).Ceil()
