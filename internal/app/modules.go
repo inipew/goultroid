@@ -7,6 +7,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/module"
+	"github.com/inipew/goultroid/internal/services/mediaregistry"
 	"github.com/inipew/goultroid/internal/services/savedresponse"
 	"github.com/inipew/goultroid/internal/services/storage"
 )
@@ -27,7 +28,8 @@ func registerBuiltinModules(ctx context.Context, rt *module.Runtime) error {
 }
 
 func migrateBuiltinFeatures(ctx context.Context, db *database.DB) error {
-	providers := make([]database.MigrationProvider, 0, len(builtinModules))
+	providers := make([]database.MigrationProvider, 0, len(builtinModules)+1)
+	providers = append(providers, mediaregistry.MigrationProvider{})
 	for _, m := range builtinModules {
 		provider, ok := m.(database.MigrationProvider)
 		if !ok {
