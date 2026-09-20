@@ -255,6 +255,84 @@ func TestCommitReplacementPersistFailureKeepsOldAssetAndCleansNew(t *testing.T) 
 }
 
 
+
+func TestPersistentMediaOrphanDeletionFailsClosedOnIncompleteReferenceSchema(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, statement := range []string{
+		`ALTER TABLE notes ADD COLUMN media_asset_id TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE notes ADD COLUMN media_type TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE notes ADD COLUMN media_name TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE notes ADD COLUMN media_mime TEXT NOT NULL DEFAULT '';`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	store := storage.NewMemoryStorage()
+	asset := putCleanupTestAsset(t, store, "schema-incomplete.bin")
+	svc := NewService(store, db)
+	if err := svc.assets.register(context.Background(), asset.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := svc.ReconcilePersistentMedia(context.Background(), 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.OrphansDiscovered != 0 || stats.Cleanup.Deleted != 0 {
+		t.Fatalf("incomplete reference schema must fail closed: %+v", stats)
+	}
+	if _, err := store.Stat(context.Background(), asset.ID); err != nil {
+		t.Fatalf("tracked asset was deleted while reference schema was incomplete: %v", err)
+	}
+}
+
+func TestPersistentMediaBackfillSharesBudgetAcrossReferenceSources(t *testing.T) {
+	db := openCleanupTestDB(t)
+	defer db.Close()
+	now := time.Now().UTC()
+	for i := 0; i < 6; i++ {
+		if _, err := db.Exec(`
+			INSERT INTO notes (chat_id, name, content, media_asset_id, created_at, updated_at)
+			VALUES (1, ?, 'note', ?, ?, ?)
+		`, fmt.Sprintf("fair-note-%02d", i), fmt.Sprintf("note-asset-%02d", i), now, now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`
+			INSERT INTO filters (chat_id, keyword, reply_text, media_asset_id, created_at)
+			VALUES (1, ?, 'filter', ?, ?)
+		`, fmt.Sprintf("fair-filter-%02d", i), fmt.Sprintf("filter-asset-%02d", i), now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ledger := newAssetLedger(db)
+	inserted, err := ledger.backfillReferences(context.Background(), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inserted != 4 {
+		t.Fatalf("bounded fair backfill inserted=%d, want 4", inserted)
+	}
+	for _, prefix := range []string{"note-asset-", "filter-asset-"} {
+		var count int
+		if err := db.QueryRow(`
+			SELECT count(*) FROM saved_response_media_assets
+			WHERE asset_id LIKE ?
+		`, prefix+"%").Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count == 0 {
+			t.Fatalf("backfill starved reference source prefix %q", prefix)
+		}
+	}
+}
+
 func TestPersistentMediaReconcileRepairsMissingReferencedAssets(t *testing.T) {
 	db := openCleanupTestDB(t)
 	defer db.Close()

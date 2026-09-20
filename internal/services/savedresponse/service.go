@@ -310,14 +310,18 @@ func (s *Service) ReconcilePersistentMedia(ctx context.Context, limit int) (Pers
 	limit = normalizePersistentReconcileLimit(limit)
 
 	if s.assets != nil {
-		backfilled, err := s.assets.backfillReferences(ctx, limit)
+		sources, schemaComplete, err := s.assets.resolveReferenceSources(ctx)
+		if err != nil {
+			return stats, err
+		}
+		backfilled, err := s.assets.backfillReferencesFromSources(ctx, sources, limit)
 		if err != nil {
 			return stats, err
 		}
 		stats.ReferencesBackfilled = backfilled
 
 		if s.store != nil {
-			referenced, err := s.assets.referencedCandidates(ctx, limit)
+			referenced, err := s.assets.referencedCandidatesFromSources(ctx, sources, limit)
 			if err != nil {
 				return stats, err
 			}
@@ -330,7 +334,7 @@ func (s *Service) ReconcilePersistentMedia(ctx context.Context, limit int) (Pers
 						return stats, err
 					}
 				case errors.Is(statErr, storage.ErrNotFound):
-					detached, removed, err := s.assets.repairMissingReferences(ctx, assetID)
+					detached, removed, err := s.assets.repairMissingReferencesFromSources(ctx, sources, assetID)
 					if err != nil {
 						return stats, err
 					}
@@ -351,7 +355,7 @@ func (s *Service) ReconcilePersistentMedia(ctx context.Context, limit int) (Pers
 			}
 		}
 
-		candidates, err := s.assets.orphanCandidates(ctx, limit)
+		candidates, err := s.assets.orphanCandidatesFromSources(ctx, sources, schemaComplete, limit)
 		if err != nil {
 			return stats, err
 		}

@@ -137,8 +137,108 @@ func normalizePersistentReconcileLimit(limit int) int {
 	return min(limit, maxPersistentReconcileBatch)
 }
 
-func (l *assetLedger) backfillReferences(ctx context.Context, limit int) (int, error) {
+func (l *assetLedger) resolveReferenceSources(ctx context.Context) ([]mediaReferenceSource, bool, error) {
 	if l == nil || l.db == nil {
+		return nil, false, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	resolved := make([]mediaReferenceSource, 0, len(persistentMediaReferenceSources))
+	complete := true
+	for _, source := range persistentMediaReferenceSources {
+		for _, column := range []string{
+			source.column,
+			source.textColumn,
+			"media_type",
+			"media_name",
+			"media_mime",
+		} {
+			exists, err := l.columnExists(ctx, source.table, column)
+			if err != nil {
+				return nil, false, err
+			}
+			if !exists {
+				complete = false
+				break
+			}
+		}
+		if !complete && len(resolved) == 0 {
+			// Continue inspecting the remaining known sources so callers can still
+			// backfill/check any fully migrated source, but never delete orphans
+			// unless every known source is present.
+		}
+		assetExists, err := l.columnExists(ctx, source.table, source.column)
+		if err != nil {
+			return nil, false, err
+		}
+		textExists, err := l.columnExists(ctx, source.table, source.textColumn)
+		if err != nil {
+			return nil, false, err
+		}
+		if !assetExists || !textExists {
+			continue
+		}
+		metadataComplete := true
+		for _, column := range []string{"media_type", "media_name", "media_mime"} {
+			exists, err := l.columnExists(ctx, source.table, column)
+			if err != nil {
+				return nil, false, err
+			}
+			if !exists {
+				metadataComplete = false
+				break
+			}
+		}
+		if !metadataComplete {
+			continue
+		}
+		resolved = append(resolved, source)
+	}
+	if len(resolved) != len(persistentMediaReferenceSources) {
+		complete = false
+	}
+	return resolved, complete, nil
+}
+
+func (l *assetLedger) backfillSource(
+	ctx context.Context,
+	source mediaReferenceSource,
+	now time.Time,
+	limit int,
+) (int, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+	query := fmt.Sprintf(`
+		INSERT OR IGNORE INTO saved_response_media_assets (asset_id, registered_at, last_seen_at)
+		SELECT DISTINCT TRIM(r.%s), ?, ?
+		FROM %s r
+		WHERE TRIM(r.%s) <> ''
+		  AND NOT EXISTS (
+			SELECT 1 FROM saved_response_media_assets a
+			WHERE a.asset_id = TRIM(r.%s)
+		  )
+		LIMIT ?
+	`, source.column, source.table, source.column, source.column)
+	res, err := l.db.ExecContext(ctx, query, now, now, limit)
+	if err != nil {
+		return 0, fmt.Errorf("saved response: backfill %s media references: %w", source.table, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return int(rows), nil
+}
+
+func (l *assetLedger) backfillReferencesFromSources(
+	ctx context.Context,
+	sources []mediaReferenceSource,
+	limit int,
+) (int, error) {
+	if l == nil || l.db == nil || len(sources) == 0 {
 		return 0, nil
 	}
 	if ctx == nil {
@@ -147,44 +247,58 @@ func (l *assetLedger) backfillReferences(ctx context.Context, limit int) (int, e
 	limit = normalizePersistentReconcileLimit(limit)
 	now := time.Now().UTC()
 	inserted := 0
-	for _, source := range persistentMediaReferenceSources {
-		if inserted >= limit {
+
+	// Give every known reference source a fair first share so a large Notes
+	// table cannot indefinitely starve legacy Filters references (or vice versa).
+	quota := max(1, limit/len(sources))
+	for _, source := range sources {
+		remaining := limit - inserted
+		if remaining <= 0 {
 			break
 		}
-		exists, err := l.columnExists(ctx, source.table, source.column)
+		n, err := l.backfillSource(ctx, source, now, min(quota, remaining))
 		if err != nil {
 			return inserted, err
 		}
-		if !exists {
-			continue
+		inserted += n
+	}
+
+	// Spend unused budget on any source that still has unseen references.
+	for inserted < limit {
+		progress := 0
+		for _, source := range sources {
+			remaining := limit - inserted
+			if remaining <= 0 {
+				break
+			}
+			n, err := l.backfillSource(ctx, source, now, remaining)
+			if err != nil {
+				return inserted, err
+			}
+			inserted += n
+			progress += n
 		}
-		remaining := limit - inserted
-		query := fmt.Sprintf(`
-			INSERT OR IGNORE INTO saved_response_media_assets (asset_id, registered_at, last_seen_at)
-			SELECT DISTINCT TRIM(r.%s), ?, ?
-			FROM %s r
-			WHERE TRIM(r.%s) <> ''
-			  AND NOT EXISTS (
-				SELECT 1 FROM saved_response_media_assets a
-				WHERE a.asset_id = TRIM(r.%s)
-			  )
-			LIMIT ?
-		`, source.column, source.table, source.column, source.column)
-		res, err := l.db.ExecContext(ctx, query, now, now, remaining)
-		if err != nil {
-			return inserted, fmt.Errorf("saved response: backfill %s media references: %w", source.table, err)
+		if progress == 0 {
+			break
 		}
-		rows, err := res.RowsAffected()
-		if err != nil {
-			return inserted, err
-		}
-		inserted += int(rows)
 	}
 	return inserted, nil
 }
 
-func (l *assetLedger) referencedCandidates(ctx context.Context, limit int) ([]string, error) {
-	if l == nil || l.db == nil {
+func (l *assetLedger) backfillReferences(ctx context.Context, limit int) (int, error) {
+	sources, _, err := l.resolveReferenceSources(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return l.backfillReferencesFromSources(ctx, sources, limit)
+}
+
+func (l *assetLedger) referencedCandidatesFromSources(
+	ctx context.Context,
+	sources []mediaReferenceSource,
+	limit int,
+) ([]string, error) {
+	if l == nil || l.db == nil || len(sources) == 0 {
 		return nil, nil
 	}
 	if ctx == nil {
@@ -192,25 +306,14 @@ func (l *assetLedger) referencedCandidates(ctx context.Context, limit int) ([]st
 	}
 	limit = normalizePersistentReconcileLimit(limit)
 
-	clauses := make([]string, 0, len(persistentMediaReferenceSources))
-	for _, source := range persistentMediaReferenceSources {
-		exists, err := l.columnExists(ctx, source.table, source.column)
-		if err != nil {
-			return nil, err
-		}
-		if !exists {
-			continue
-		}
+	clauses := make([]string, 0, len(sources))
+	for _, source := range sources {
 		clauses = append(clauses, fmt.Sprintf(
 			"EXISTS (SELECT 1 FROM %s r WHERE TRIM(r.%s) = a.asset_id)",
 			source.table,
 			source.column,
 		))
 	}
-	if len(clauses) == 0 {
-		return nil, nil
-	}
-
 	query := fmt.Sprintf(`
 		SELECT a.asset_id
 		FROM saved_response_media_assets a
@@ -238,8 +341,20 @@ func (l *assetLedger) referencedCandidates(ctx context.Context, limit int) ([]st
 	return ids, nil
 }
 
-func (l *assetLedger) repairMissingReferences(ctx context.Context, assetID string) (detached, removed int, err error) {
-	if l == nil || l.db == nil {
+func (l *assetLedger) referencedCandidates(ctx context.Context, limit int) ([]string, error) {
+	sources, _, err := l.resolveReferenceSources(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return l.referencedCandidatesFromSources(ctx, sources, limit)
+}
+
+func (l *assetLedger) repairMissingReferencesFromSources(
+	ctx context.Context,
+	sources []mediaReferenceSource,
+	assetID string,
+) (detached, removed int, err error) {
+	if l == nil || l.db == nil || len(sources) == 0 {
 		return 0, 0, nil
 	}
 	assetID = strings.TrimSpace(assetID)
@@ -250,43 +365,13 @@ func (l *assetLedger) repairMissingReferences(ctx context.Context, assetID strin
 		ctx = context.Background()
 	}
 
-	type repairSource struct {
-		mediaReferenceSource
-		clearColumns []string
-	}
-	available := make([]repairSource, 0, len(persistentMediaReferenceSources))
-	for _, source := range persistentMediaReferenceSources {
-		hasAsset, checkErr := l.columnExists(ctx, source.table, source.column)
-		if checkErr != nil {
-			return detached, removed, checkErr
-		}
-		hasText, checkErr := l.columnExists(ctx, source.table, source.textColumn)
-		if checkErr != nil {
-			return detached, removed, checkErr
-		}
-		if !hasAsset || !hasText {
-			continue
-		}
-		columns := make([]string, 0, 4)
-		for _, column := range []string{"media_asset_id", "media_type", "media_name", "media_mime"} {
-			hasColumn, columnErr := l.columnExists(ctx, source.table, column)
-			if columnErr != nil {
-				return detached, removed, columnErr
-			}
-			if hasColumn {
-				columns = append(columns, column)
-			}
-		}
-		available = append(available, repairSource{mediaReferenceSource: source, clearColumns: columns})
-	}
-
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, 0, fmt.Errorf("saved response: begin missing media repair: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	for _, source := range available {
+	for _, source := range sources {
 		deleteQuery := fmt.Sprintf(
 			"DELETE FROM %s WHERE TRIM(%s) = ? AND TRIM(%s) = ''",
 			source.table,
@@ -303,19 +388,11 @@ func (l *assetLedger) repairMissingReferences(ctx context.Context, assetID strin
 		}
 		removed += int(rows)
 
-		if len(source.clearColumns) == 0 {
-			continue
-		}
-		sets := make([]string, 0, len(source.clearColumns))
-		for _, column := range source.clearColumns {
-			sets = append(sets, column+" = ''")
-		}
-		updateQuery := fmt.Sprintf(
-			"UPDATE %s SET %s WHERE TRIM(%s) = ?",
-			source.table,
-			strings.Join(sets, ", "),
-			source.column,
-		)
+		updateQuery := fmt.Sprintf(`
+			UPDATE %s
+			SET media_asset_id = '', media_type = '', media_name = '', media_mime = ''
+			WHERE TRIM(%s) = ?
+		`, source.table, source.column)
 		res, execErr = tx.ExecContext(ctx, updateQuery, assetID)
 		if execErr != nil {
 			return detached, removed, fmt.Errorf("saved response: detach missing %s media: %w", source.table, execErr)
@@ -332,8 +409,21 @@ func (l *assetLedger) repairMissingReferences(ctx context.Context, assetID strin
 	return detached, removed, nil
 }
 
-func (l *assetLedger) orphanCandidates(ctx context.Context, limit int) ([]string, error) {
-	if l == nil || l.db == nil {
+func (l *assetLedger) repairMissingReferences(ctx context.Context, assetID string) (detached, removed int, err error) {
+	sources, _, err := l.resolveReferenceSources(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	return l.repairMissingReferencesFromSources(ctx, sources, assetID)
+}
+
+func (l *assetLedger) orphanCandidatesFromSources(
+	ctx context.Context,
+	sources []mediaReferenceSource,
+	schemaComplete bool,
+	limit int,
+) ([]string, error) {
+	if l == nil || l.db == nil || !schemaComplete {
 		return nil, nil
 	}
 	if ctx == nil {
@@ -341,25 +431,16 @@ func (l *assetLedger) orphanCandidates(ctx context.Context, limit int) ([]string
 	}
 	limit = normalizePersistentReconcileLimit(limit)
 
-	clauses := make([]string, 0, len(persistentMediaReferenceSources))
-	for _, source := range persistentMediaReferenceSources {
-		exists, err := l.columnExists(ctx, source.table, source.column)
-		if err != nil {
-			return nil, err
-		}
-		if !exists {
-			continue
-		}
+	clauses := make([]string, 0, len(sources))
+	for _, source := range sources {
 		clauses = append(clauses, fmt.Sprintf(
 			"NOT EXISTS (SELECT 1 FROM %s r WHERE TRIM(r.%s) = a.asset_id)",
 			source.table,
 			source.column,
 		))
 	}
-
-	where := "1 = 1"
-	if len(clauses) > 0 {
-		where = strings.Join(clauses, " AND ")
+	if len(clauses) == 0 {
+		return nil, nil
 	}
 	query := fmt.Sprintf(`
 		SELECT a.asset_id
@@ -367,9 +448,8 @@ func (l *assetLedger) orphanCandidates(ctx context.Context, limit int) ([]string
 		WHERE %s
 		ORDER BY a.registered_at ASC, a.asset_id ASC
 		LIMIT ?
-	`, where)
-	args := []any{limit}
-	rows, err := l.db.QueryContext(ctx, query, args...)
+	`, strings.Join(clauses, " AND "))
+	rows, err := l.db.QueryContext(ctx, query, limit)
 	if err != nil {
 		return nil, fmt.Errorf("saved response: list persistent media orphans: %w", err)
 	}
@@ -387,6 +467,14 @@ func (l *assetLedger) orphanCandidates(ctx context.Context, limit int) ([]string
 		return nil, err
 	}
 	return ids, nil
+}
+
+func (l *assetLedger) orphanCandidates(ctx context.Context, limit int) ([]string, error) {
+	sources, complete, err := l.resolveReferenceSources(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return l.orphanCandidatesFromSources(ctx, sources, complete, limit)
 }
 
 func (l *assetLedger) count(ctx context.Context) (int, error) {
