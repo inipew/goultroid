@@ -21,3 +21,8 @@ type Repository interface {
 	ListNotes(ctx context.Context, chatID int64) ([]string, error)
 	DeleteNote(ctx context.Context, chatID int64, name string) error
 }
+
+
+type DetailRepository interface {
+	ListNoteDetails(ctx context.Context, chatID int64) ([]Note, error)
+}

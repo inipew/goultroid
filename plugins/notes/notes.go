@@ -89,6 +89,7 @@ func (p *Plugin) Commands() []core.Command {
 			Handler: p.handleGet,
 		},
 		{Name: "notes", Description: "List all notes saved in this chat", Category: "Notes", Permission: core.PermissionSudo, Handler: p.handleList},
+		{Name: "noteinfo", Description: "Show saved note response/media details", Usage: ".noteinfo <name>", Category: "Notes", Permission: core.PermissionSudo, Handler: p.handleInfo},
 		{Name: "clear", Description: "Delete a saved note", Usage: ".clear <name>", Category: "Notes", Permission: core.PermissionSudo, Handler: p.handleClear},
 	}
 }
@@ -309,7 +310,20 @@ func (p *Plugin) deliverResponse(
 }
 
 func (p *Plugin) handleList(ctx *core.Context) error {
-	names, err := p.db.ListNotes(ctx.Ctx, p.getChatID(ctx))
+	chatID := p.getChatID(ctx)
+	if details, ok := p.db.(DetailRepository); ok {
+		notes, err := details.ListNoteDetails(ctx.Ctx, chatID)
+		if err != nil {
+			_ = ctx.EditOrReply(fmt.Sprintf("❌ Error listing notes: %v", err))
+			return err
+		}
+		if len(notes) == 0 {
+			return ctx.EditOrReply("ℹ️ No notes saved in this chat.")
+		}
+		return deliverNoteDetailsList(ctx, notes)
+	}
+
+	names, err := p.db.ListNotes(ctx.Ctx, chatID)
 	if err != nil {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Error listing notes: %v", err))
 		return err
@@ -363,6 +377,118 @@ func deliverNotesList(ctx *core.Context, names []string) error {
 		return err
 	}
 	return flush()
+}
+
+func deliverNoteDetailsList(ctx *core.Context, notes []Note) error {
+	var current strings.Builder
+	currentRunes := 0
+	sent := false
+	flush := func() error {
+		if currentRunes == 0 {
+			return nil
+		}
+		chunk := current.String()
+		current.Reset()
+		currentRunes = 0
+		if !sent {
+			sent = true
+			return ctx.EditOrReply(chunk)
+		}
+		return ctx.Reply(chunk)
+	}
+	appendFragment := func(fragment string) error {
+		for _, part := range core.SplitTelegramHTML(fragment, notesTelegramMessageRunes) {
+			partRunes := utf8.RuneCountInString(part)
+			if currentRunes > 0 && currentRunes+partRunes > notesTelegramMessageRunes {
+				if err := flush(); err != nil {
+					return err
+				}
+			}
+			current.WriteString(part)
+			currentRunes += partRunes
+		}
+		return nil
+	}
+
+	if err := appendFragment(fmt.Sprintf("📝 <b>Notes in this chat (%d):</b>\n\n", len(notes))); err != nil {
+		return err
+	}
+	for _, note := range notes {
+		if err := appendFragment(fmt.Sprintf(
+			"• <code>[%s]</code> <code>%s</code>\n",
+			html.EscapeString(note.Response.Kind()),
+			html.EscapeString(note.Name),
+		)); err != nil {
+			return err
+		}
+	}
+	if err := appendFragment("\nUse <code>.get &lt;name&gt;</code> to view or <code>.noteinfo &lt;name&gt;</code> for details."); err != nil {
+		return err
+	}
+	return flush()
+}
+
+func (p *Plugin) handleInfo(ctx *core.Context) error {
+	if len(ctx.Args) == 0 {
+		_ = ctx.EditOrReply("⚠️ Usage: <code>.noteinfo &lt;name&gt;</code>")
+		return errors.New("missing note name")
+	}
+	noteName := strings.ToLower(strings.TrimSpace(ctx.Args[0]))
+	note, err := p.db.GetNote(ctx.Ctx, p.getChatID(ctx), noteName)
+	if err != nil {
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Error fetching note info: %v", err))
+		return err
+	}
+	if note == nil {
+		_ = ctx.EditOrReply(fmt.Sprintf("ℹ️ Note <code>%s</code> not found in this chat.", html.EscapeString(noteName)))
+		return errors.New("note not found")
+	}
+	info, err := savedresponse.Inspect(note.Response)
+	if err != nil {
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to inspect note: %v", err))
+		return err
+	}
+	return ctx.EditOrReply(renderNoteInfo(note, info))
+}
+
+func renderNoteInfo(note *Note, info savedresponse.Inspection) string {
+	if note == nil {
+		return ""
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "📝 <b>Note Info</b>\n\n")
+	fmt.Fprintf(&sb, "• <b>Name:</b> <code>%s</code>\n", html.EscapeString(note.Name))
+	fmt.Fprintf(&sb, "• <b>Type:</b> <code>%s</code>\n", html.EscapeString(info.Kind))
+	fmt.Fprintf(&sb, "• <b>Format:</b> <code>%s</code>\n", html.EscapeString(string(info.Format)))
+	if info.HasText {
+		fmt.Fprintf(&sb, "• <b>Text/Caption:</b> <code>yes</code>\n")
+	} else {
+		fmt.Fprintf(&sb, "• <b>Text/Caption:</b> <code>no</code>\n")
+	}
+	fmt.Fprintf(&sb, "• <b>Template variables:</b> %s\n", renderNoteTemplateVariables(info.Variables))
+	if info.Kind != "text" {
+		if info.MediaName != "" {
+			fmt.Fprintf(&sb, "• <b>Media:</b> <code>%s</code>\n", html.EscapeString(info.MediaName))
+		}
+		if info.MIMEType != "" {
+			fmt.Fprintf(&sb, "• <b>MIME:</b> <code>%s</code>\n", html.EscapeString(info.MIMEType))
+		}
+	}
+	if !note.UpdatedAt.IsZero() {
+		fmt.Fprintf(&sb, "• <b>Updated:</b> <code>%s</code>", note.UpdatedAt.UTC().Format("2006-01-02 15:04:05 UTC"))
+	}
+	return sb.String()
+}
+
+func renderNoteTemplateVariables(variables []string) string {
+	if len(variables) == 0 {
+		return "<code>none</code>"
+	}
+	parts := make([]string, 0, len(variables))
+	for _, variable := range variables {
+		parts = append(parts, fmt.Sprintf("<code>{%s}</code>", html.EscapeString(variable)))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (p *Plugin) handleClear(ctx *core.Context) error {

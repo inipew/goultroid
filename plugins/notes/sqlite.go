@@ -105,6 +105,45 @@ func (r *SQLiteRepository) ListNotes(ctx context.Context, chatID int64) ([]strin
 	return names, nil
 }
 
+func (r *SQLiteRepository) ListNoteDetails(ctx context.Context, chatID int64) ([]Note, error) {
+	query := `SELECT chat_id, name, content, response_format,
+		media_asset_id, media_type, media_name, media_mime,
+		created_at, updated_at
+		FROM notes WHERE chat_id = ? ORDER BY name ASC`
+	rows, err := r.db.QueryContext(ctx, query, chatID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list note details: %w", err)
+	}
+	defer rows.Close()
+
+	var notes []Note
+	for rows.Next() {
+		var n Note
+		var format, assetID, mediaType, mediaName, mediaMIME string
+		if err := rows.Scan(
+			&n.ChatID, &n.Name, &n.Response.Text, &format,
+			&assetID, &mediaType, &mediaName, &mediaMIME,
+			&n.CreatedAt, &n.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan note details: %w", err)
+		}
+		n.Response.Format = savedresponse.Format(format)
+		if n.Response.Format == "" {
+			n.Response.Format = savedresponse.FormatHTML
+		}
+		if assetID != "" {
+			n.Response.Media = &savedresponse.MediaRef{
+				AssetID: assetID, MediaType: mediaType, Name: mediaName, MIMEType: mediaMIME,
+			}
+		}
+		notes = append(notes, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return notes, nil
+}
+
 func (r *SQLiteRepository) DeleteNote(ctx context.Context, chatID int64, name string) error {
 	res, err := r.db.ExecContext(ctx, "DELETE FROM notes WHERE chat_id = ? AND name = ?", chatID, name)
 	if err != nil {
@@ -121,3 +160,4 @@ func (r *SQLiteRepository) DeleteNote(ctx context.Context, chatID int64, name st
 }
 
 var _ Repository = (*SQLiteRepository)(nil)
+var _ DetailRepository = (*SQLiteRepository)(nil)

@@ -488,3 +488,59 @@ func TestClearMissingNoteReportsUserFacingMessage(t *testing.T) {
 		t.Fatalf("missing note did not produce user-facing message: %+v", messages)
 	}
 }
+
+func TestNotesMediaManagementUX(t *testing.T) {
+	db := openRichNotesDB(t)
+	defer db.Close()
+	repo := NewSQLiteRepository(db)
+	chatID := int64(606)
+
+	if err := repo.SaveNote(context.Background(), chatID, "plain", savedresponse.NewHTML("Hello {name}")); err != nil {
+		t.Fatal(err)
+	}
+	media := savedresponse.NewPlainText("literal caption")
+	media.Media = &savedresponse.MediaRef{
+		AssetID: "asset-photo", MediaType: "photo", Name: "photo.jpg", MIMEType: "image/jpeg",
+	}
+	if err := repo.SaveNote(context.Background(), chatID, "photo", media); err != nil {
+		t.Fatal(err)
+	}
+
+	telegram := &richNotesService{}
+	p := New(repo)
+	ctx := newRichNotesContext(telegram, chatID)
+	if err := p.handleList(ctx); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(telegram.snapshotMessages(), "\n")
+	if !strings.Contains(joined, "[text]") || !strings.Contains(joined, "[photo]") {
+		t.Fatalf("note list missing media indicators: %q", joined)
+	}
+	if !strings.Contains(joined, ".noteinfo") {
+		t.Fatalf("note list missing management hint: %q", joined)
+	}
+
+	telegram.resetMessages()
+	ctx.Args = []string{"photo"}
+	if err := p.handleInfo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	messages := telegram.snapshotMessages()
+	info := messages[len(messages)-1]
+	for _, want := range []string{"Note Info", "photo", "plain", "photo.jpg", "image/jpeg", "Template variables:", "none"} {
+		if !strings.Contains(info, want) {
+			t.Fatalf("note info missing %q: %s", want, info)
+		}
+	}
+
+	telegram.resetMessages()
+	ctx.Args = []string{"plain"}
+	if err := p.handleInfo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	messages = telegram.snapshotMessages()
+	info = messages[len(messages)-1]
+	if !strings.Contains(info, "{name}") || !strings.Contains(info, "Type:</b> <code>text") {
+		t.Fatalf("text note info missing template/type metadata: %s", info)
+	}
+}
