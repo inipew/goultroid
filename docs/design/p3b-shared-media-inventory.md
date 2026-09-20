@@ -44,3 +44,35 @@ Bounded storage enumeration and the global registry observer classify physical e
 5. `malformed`
 
 Stage 1 performs no physical deletion and does not replace `saved_response_media_assets` or `saved_response_media_cleanup`. Those compatibility structures remain authoritative for the existing P3-A SavedResponse lifecycle until later P3-B migration stages explicitly move each producer/reference source.
+
+
+## Stage 2 — SavedResponse compatibility migration
+
+Notes and Filters now mirror persistent SavedResponse media into the global registry while retaining the P3-A ledger and cleanup journal.
+
+For databases where the global registry schema is present, a Notes/Filters media mutation uses one SQL transaction for:
+
+- the feature row mutation;
+- ensuring the asset remains present in `saved_response_media_assets`;
+- registering/updating the global `media_assets` ownership record;
+- adding the exact Notes/Filters reference; and
+- removing the previous global reference on replacement or delete.
+
+The canonical reference identities are `notes/note/<chat_id>:<name>` and `filters/filter/<chat_id>:<lowercase-keyword>`. An ownership conflict in the global registry rolls the whole domain mutation back. A schema-inspection error also fails closed; a genuinely absent global registry keeps the legacy repository behavior for standalone/compatibility environments.
+
+Startup reconciliation still runs the P3-A SavedResponse reconciliation first. It then performs a bounded, idempotent compatibility pass that backfills old ledger assets and Notes/Filters references into the global registry, removes only stale **registry metadata** owned by this compatibility layer, and runs bounded consistency checks for:
+
+- P3-A ledger assets missing from the global registry;
+- SavedResponse global assets with incorrect producer/owner/lifecycle metadata;
+- Notes/Filters media references missing from the P3-A ledger;
+- Notes/Filters media references missing from the global reference registry;
+- SavedResponse-owned global assets no longer represented by the old ledger; and
+- stale global Notes/Filters references whose source row no longer exists.
+
+The verifier reports whether findings were truncated by the configured batch bound so large legacy datasets can converge across bounded passes without unbounded startup work.
+
+### Authority boundary remains unchanged
+
+Stage 2 does **not** transfer deletion authority. `saved_response_media_cleanup` and the existing P3-A lifecycle remain responsible for physical SavedResponse reclamation. The global compatibility reconciler never calls `Storage.Delete`; stale global rows can only be removed as metadata, and an asset metadata row is removed only when the old ledger no longer contains it and the global reference registry has zero references.
+
+Global physical reclamation therefore remains a later P3-C concern, after the registry has been stabilized and the remaining persistent/retained/transient producers have been onboarded.
