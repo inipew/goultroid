@@ -2,17 +2,24 @@ name: CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, test-next ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ main, master, test-next ]
+  workflow_dispatch:
 
-# Keep CI jobs independent, but reuse the expensive Go module/build caches.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 env:
   GOTOOLCHAIN: local
 
 jobs:
   lint:
-    name: Lint & Vet
+    name: Lint & Validation
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -25,16 +32,6 @@ jobs:
           cache: true
           cache-dependency-path: 'go.sum'
 
-      - name: Cache Go build artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-build-${{ hashFiles('go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-build-
-
       - name: Check Formatting (gofmt)
         run: |
           unformatted=$(gofmt -l .)
@@ -44,19 +41,22 @@ jobs:
             exit 1
           fi
 
-      - name: Go Vet
-        run: go vet ./...
-
       - name: Verify Generated Modules Freshness
         run: |
           go run ./tools/featuregen
           git diff --exit-code -- internal/app/generated_modules.go
+
+      - name: Go Vet
+        run: go vet ./...
 
       - name: GolangCI-Lint
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.2
           args: --timeout=3m
+
+      - name: Verify Clean Repository
+        run: git diff --exit-code
 
   test:
     name: Unit & Race Tests
@@ -72,19 +72,29 @@ jobs:
           cache: true
           cache-dependency-path: 'go.sum'
 
-      - name: Cache Go build and test artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-race-${{ hashFiles('go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-race-
-            ${{ runner.os }}-go-build-
+      - name: Run Tests with Race Detector & Coverage
+        run: |
+          go test -v -race -covermode=atomic -coverprofile=coverage.out ./...
 
-      - name: Run Tests with Race Detector
-        run: go test -v -race ./...
+      - name: Generate Coverage Summary
+        if: always()
+        run: |
+          if [ -f coverage.out ]; then
+            echo "### Test & Coverage Summary" >> $GITHUB_STEP_SUMMARY
+            echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+            TOTAL_COV=$(go tool cover -func=coverage.out | tail -n 1 | awk '{print $3}')
+            echo "| Total Statement Coverage | **${TOTAL_COV}** |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload Coverage Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.out
+          retention-days: 14
+          if-no-files-found: ignore
 
   build:
     name: Build Binary
@@ -100,15 +110,15 @@ jobs:
           cache: true
           cache-dependency-path: 'go.sum'
 
-      - name: Cache Go build artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-build-${{ hashFiles('go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-build-
-
       - name: Build Application
-        run: go build -v ./cmd/goultroid
+        run: go build -v -ldflags="-s -w" -o bin/goultroid ./cmd/goultroid
+
+      - name: Smoke Test Binary
+        run: ./bin/goultroid version
+
+      - name: Upload Binary Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: goultroid-linux-amd64
+          path: bin/goultroid
+          retention-days: 7
