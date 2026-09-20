@@ -289,12 +289,12 @@ func (s *Service) TrackedMediaCount(ctx context.Context) (int, error) {
 	return s.assets.count(ctx)
 }
 
-// ReconcilePersistentMedia repairs the SavedResponse media ownership ledger,
-// discovers durable orphan candidates across every known SavedResponse
-// reference table, and delegates physical deletion to the existing cleanup
-// journal. It intentionally ignores storage assets that are not in the
-// SavedResponse ledger because the underlying storage is shared by other media
-// subsystems.
+// ReconcilePersistentMedia repairs the SavedResponse media ledger during
+// quiescent startup, discovers durable orphan candidates across every known
+// SavedResponse reference table, and delegates physical deletion to the
+// existing cleanup journal. It intentionally ignores storage assets that are
+// not in the SavedResponse ledger because the underlying storage is shared by
+// other media subsystems.
 func (s *Service) ReconcilePersistentMedia(ctx context.Context, limit int) (PersistentMediaReconcileStats, error) {
 	var stats PersistentMediaReconcileStats
 	if s == nil {

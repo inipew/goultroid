@@ -272,7 +272,7 @@ func (j *cleanupJournal) referenced(ctx context.Context, assetID string) (bool, 
 			continue
 		}
 		var marker int
-		query := fmt.Sprintf("SELECT 1 FROM %s WHERE %s = ? LIMIT 1", source.table, source.column)
+		query := fmt.Sprintf("SELECT 1 FROM %s WHERE TRIM(%s) = ? LIMIT 1", source.table, source.column)
 		err = j.db.QueryRowContext(ctx, query, assetID).Scan(&marker)
 		switch {
 		case err == nil:

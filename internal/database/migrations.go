@@ -352,7 +352,7 @@ var migrations = []migration{
 			`CREATE INDEX IF NOT EXISTS idx_saved_response_media_cleanup_due
 				ON saved_response_media_cleanup(next_attempt_at, created_at);`,
 		},
-	},,
+	},
 	{
 		version:     19,
 		description: "Saved-response persistent media reconciliation ledger",

@@ -187,7 +187,7 @@ func (l *assetLedger) orphanCandidates(ctx context.Context, limit int) ([]string
 			continue
 		}
 		clauses = append(clauses, fmt.Sprintf(
-			"NOT EXISTS (SELECT 1 FROM %s r WHERE r.%s = a.asset_id)",
+			"NOT EXISTS (SELECT 1 FROM %s r WHERE TRIM(r.%s) = a.asset_id)",
 			source.table,
 			source.column,
 		))
