@@ -133,7 +133,6 @@ func (m *MessageEnvelope) SenderName() string {
 	return "Unknown User"
 }
 
-
 func (m *MessageEnvelope) HasMedia() bool {
 	return m != nil && m.Media != nil
 }
