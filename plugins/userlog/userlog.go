@@ -15,11 +15,8 @@ import (
 )
 
 const (
-	// asyncLogWorkers is the number of goroutines that drain the log queue.
-	// 4 workers are sufficient for a single Telegram destination; logging is
-	// inherently serial (one chat), so high concurrency adds no throughput.
-	asyncLogWorkers = 4
-	queueCapacity   = 256
+	queueCapacity            = 256
+	defaultWorkerIdleTimeout = 15 * time.Second
 )
 
 // Plugin manages user event logging (mentions, PMs, admin actions) to a dedicated Telegram destination.
@@ -27,17 +24,20 @@ type Plugin struct {
 	svc           *userlog.Service
 	ownerID       int64
 	ownerUsername string
-	queue         chan func()
-	closing       atomic.Bool
-	mu            sync.RWMutex
-	ctx           context.Context
-	cancel        context.CancelFunc
-	wg            sync.WaitGroup
-	once          sync.Once // guards queue close on shutdown
-	startOnce     sync.Once // guards worker startup
-	startErr      error
-	subscriptions []*core.Subscription
-	scope         *plugin.Scope
+
+	mu               sync.RWMutex
+	ctx              context.Context
+	cancel           context.CancelFunc
+	scope            *plugin.Scope
+	eventBus         *core.EventBus
+	subscriptions    []*core.Subscription
+	queue            chan func()
+	closing          bool
+	shutdownDone     chan struct{}
+	workerRunning    bool
+	workerGeneration uint64
+	workerIdleTimeout time.Duration
+	wg               sync.WaitGroup
 
 	enqueuedCount  atomic.Int64
 	deliveredCount atomic.Int64
@@ -52,107 +52,208 @@ func New(svc *userlog.Service, ownerID int64, ownerUsername ...string) *Plugin {
 		username = strings.TrimPrefix(ownerUsername[0], "@")
 	}
 	return &Plugin{
-		svc:           svc,
-		ownerID:       ownerID,
-		ownerUsername: username,
-		queue:         make(chan func(), queueCapacity),
+		svc:               svc,
+		ownerID:           ownerID,
+		ownerUsername:     username,
+		workerIdleTimeout: defaultWorkerIdleTimeout,
 	}
-}
-
-// startWorkers spawns the async worker goroutines exactly once. It is
-// idempotent and safe to call from multiple goroutines concurrently.
-func (p *Plugin) startWorkers() error {
-	p.startOnce.Do(func() {
-		p.mu.RLock()
-		scope := p.scope
-		p.mu.RUnlock()
-		if scope == nil {
-			p.startErr = fmt.Errorf("userlog plugin is not initialized with a scope")
-			return
-		}
-		p.wg.Add(asyncLogWorkers)
-		for i := 0; i < asyncLogWorkers; i++ {
-			if err := scope.Go(p.worker); err != nil {
-				p.wg.Done()
-				p.startErr = fmt.Errorf("start userlog worker: %w", err)
-			}
-		}
-	})
-	return p.startErr
 }
 
 // SetOwnerUsername configures the owner's Telegram username for @username mention detection.
 func (p *Plugin) SetOwnerUsername(username string) {
+	p.mu.Lock()
 	p.ownerUsername = strings.TrimPrefix(username, "@")
+	p.mu.Unlock()
 }
 
-// SetEventBus subscribes the plugin to domain events (AdminActionEvent and PMPermitEvent).
-func (p *Plugin) SetEventBus(eb *core.EventBus) {
-	if eb == nil {
+func (p *Plugin) ownerUsernameValue() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.ownerUsername
+}
+
+// SetWorkerIdleTimeout configures how long the single lazy worker remains alive
+// after the queue becomes idle. It is primarily useful for lifecycle tests.
+func (p *Plugin) SetWorkerIdleTimeout(timeout time.Duration) {
+	if timeout <= 0 {
 		return
 	}
-	addSubscription := func(sub *core.Subscription) {
+	p.mu.Lock()
+	p.workerIdleTimeout = timeout
+	p.mu.Unlock()
+}
+
+func (p *Plugin) lifecycleContext() context.Context {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closing {
+		return nil
+	}
+	return p.ctx
+}
+
+// SetEventBus binds domain-event logging to the current plugin lifecycle.
+// The EventBus reference is retained so disable -> enable can re-subscribe.
+func (p *Plugin) SetEventBus(eb *core.EventBus) {
+	p.mu.Lock()
+	sameBinding := p.eventBus == eb && len(p.subscriptions) > 0
+	p.eventBus = eb
+	active := p.scope != nil && p.ctx != nil && !p.closing
+	p.mu.Unlock()
+	if active && !sameBinding {
+		p.bindEventBus()
+	}
+}
+
+func (p *Plugin) bindEventBus() {
+	p.mu.Lock()
+	eb := p.eventBus
+	scope := p.scope
+	active := eb != nil && scope != nil && p.ctx != nil && !p.closing
+	old := append([]*core.Subscription(nil), p.subscriptions...)
+	p.subscriptions = nil
+	p.mu.Unlock()
+
+	for _, sub := range old {
+		if sub != nil {
+			sub.Close()
+		}
+	}
+	if !active {
+		return
+	}
+
+	owner := scope.Owner()
+	var created []*core.Subscription
+	add := func(sub *core.Subscription) {
 		if sub == nil {
 			return
 		}
-		p.mu.Lock()
-		p.subscriptions = append(p.subscriptions, sub)
-		scope := p.scope
-		p.mu.Unlock()
-		if scope != nil {
-			_ = scope.Defer(sub.Close)
+		created = append(created, sub)
+		if err := scope.Defer(sub.Close); err != nil {
+			sub.Close()
 		}
 	}
-	addSubscription(eb.SubscribeOwned("plugin:userlog", core.EventTypeAdminAction, func(event core.Event) {
-		if evt, ok := event.(*core.AdminActionEvent); ok && p.svc != nil {
-			logCtx := p.ctx
-			p.enqueue(func() {
-				jobCtx, cancel := context.WithTimeout(logCtx, 15*time.Second)
-				defer cancel()
-				_ = p.svc.LogActionDetailed(
-					jobCtx,
-					evt.Action,
-					evt.TargetID,
-					evt.TargetName,
-					evt.ActorID,
-					evt.ChatTitle,
-					evt.Reason,
-					evt.Success,
-					evt.Error,
-				)
-			})
+
+	add(eb.SubscribeOwned(owner, core.EventTypeAdminAction, func(event core.Event) {
+		evt, ok := event.(*core.AdminActionEvent)
+		if !ok || p.svc == nil {
+			return
 		}
-	}))
-	addSubscription(eb.SubscribeOwned("plugin:userlog", core.EventTypePMPermit, func(event core.Event) {
-		if evt, ok := event.(*core.PMPermitEvent); ok && p.svc != nil {
-			logCtx := p.ctx
-			p.enqueue(func() {
-				jobCtx, cancel := context.WithTimeout(logCtx, 15*time.Second)
-				defer cancel()
-				actionName := fmt.Sprintf("PMPermit %s", strings.ToUpper(evt.Action))
-				_ = p.svc.LogActionDetailed(
-					jobCtx,
-					actionName,
-					evt.UserID,
-					evt.TargetName,
-					0,
-					"Private Message",
-					evt.Reason,
-					evt.Success,
-					evt.Error,
-				)
-			})
+		logCtx := p.lifecycleContext()
+		if logCtx == nil {
+			return
 		}
+		p.enqueue(func() {
+			jobCtx, cancel := context.WithTimeout(logCtx, 15*time.Second)
+			defer cancel()
+			_ = p.svc.LogActionDetailed(
+				jobCtx,
+				evt.Action,
+				evt.TargetID,
+				evt.TargetName,
+				evt.ActorID,
+				evt.ChatTitle,
+				evt.Reason,
+				evt.Success,
+				evt.Error,
+			)
+		})
 	}))
+
+	add(eb.SubscribeOwned(owner, core.EventTypePMPermit, func(event core.Event) {
+		evt, ok := event.(*core.PMPermitEvent)
+		if !ok || p.svc == nil {
+			return
+		}
+		logCtx := p.lifecycleContext()
+		if logCtx == nil {
+			return
+		}
+		p.enqueue(func() {
+			jobCtx, cancel := context.WithTimeout(logCtx, 15*time.Second)
+			defer cancel()
+			actionName := fmt.Sprintf("PMPermit %s", strings.ToUpper(evt.Action))
+			_ = p.svc.LogActionDetailed(
+				jobCtx,
+				actionName,
+				evt.UserID,
+				evt.TargetName,
+				0,
+				"Private Message",
+				evt.Reason,
+				evt.Success,
+				evt.Error,
+			)
+		})
+	}))
+
+	p.mu.Lock()
+	stale := p.scope != scope || p.eventBus != eb || p.closing
+	if !stale {
+		p.subscriptions = append(p.subscriptions, created...)
+	}
+	p.mu.Unlock()
+	if stale {
+		for _, sub := range created {
+			sub.Close()
+		}
+	}
 }
 
-func (p *Plugin) worker(ctx context.Context) {
+func (p *Plugin) startWorkerLocked() error {
+	if p.workerRunning {
+		return nil
+	}
+	if p.scope == nil || p.queue == nil || p.ctx == nil || p.closing {
+		return fmt.Errorf("userlog lifecycle is not active")
+	}
+	idleTimeout := p.workerIdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = defaultWorkerIdleTimeout
+	}
+	queue := p.queue
+	p.workerGeneration++
+	generation := p.workerGeneration
+	p.workerRunning = true
+	p.wg.Add(1)
+	if err := p.scope.Go(func(ctx context.Context) {
+		p.worker(ctx, queue, idleTimeout, generation)
+	}); err != nil {
+		p.workerRunning = false
+		p.wg.Done()
+		return fmt.Errorf("start userlog worker: %w", err)
+	}
+	return nil
+}
+
+func (p *Plugin) worker(ctx context.Context, queue chan func(), idleTimeout time.Duration, generation uint64) {
 	defer p.wg.Done()
+	defer func() {
+		p.mu.Lock()
+		if p.queue == queue && p.workerGeneration == generation {
+			p.workerRunning = false
+		}
+		p.mu.Unlock()
+	}()
+
+	timer := time.NewTimer(idleTimeout)
+	defer timer.Stop()
+	resetTimer := func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(idleTimeout)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case job, ok := <-p.queue:
+		case job, ok := <-queue:
 			if !ok {
 				return
 			}
@@ -161,6 +262,16 @@ func (p *Plugin) worker(ctx context.Context) {
 				job()
 			}()
 			p.deliveredCount.Add(1)
+			resetTimer()
+		case <-timer.C:
+			p.mu.Lock()
+			if p.queue == queue && p.workerGeneration == generation && !p.closing && len(queue) == 0 {
+				p.workerRunning = false
+				p.mu.Unlock()
+				return
+			}
+			p.mu.Unlock()
+			timer.Reset(idleTimeout)
 		}
 	}
 }
@@ -169,11 +280,18 @@ func (p *Plugin) enqueue(job func()) {
 	if job == nil {
 		return
 	}
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	if p.closing.Load() || p.ctx == nil || p.startErr != nil {
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closing || p.ctx == nil || p.scope == nil || p.queue == nil {
 		p.droppedCount.Add(1)
 		return
+	}
+	if !p.workerRunning {
+		if err := p.startWorkerLocked(); err != nil {
+			p.droppedCount.Add(1)
+			return
+		}
 	}
 	select {
 	case p.queue <- job:
@@ -183,28 +301,60 @@ func (p *Plugin) enqueue(job func()) {
 	}
 }
 
-// ShutdownContext stops accepting new work, drains the bounded queue, and cancels worker context.
+// ShutdownContext stops new work, detaches event subscriptions, drains the
+// bounded queue, and then cancels the lifecycle context.
 func (p *Plugin) ShutdownContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	p.mu.Lock()
+	if p.closing {
+		done := p.shutdownDone
+		p.mu.Unlock()
+		if done == nil {
+			return nil
+		}
+		select {
+		case <-done:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	p.closing = true
+	done := make(chan struct{})
+	p.shutdownDone = done
 	subscriptions := append([]*core.Subscription(nil), p.subscriptions...)
 	p.subscriptions = nil
-	p.mu.Unlock()
-	for _, sub := range subscriptions {
-		sub.Close()
+	queue := p.queue
+	cancel := p.cancel
+	if queue != nil {
+		close(queue)
 	}
-	p.mu.Lock()
-	p.closing.Store(true)
-	p.once.Do(func() {
-		close(p.queue)
-	})
 	p.mu.Unlock()
 
-	done := make(chan struct{})
+	for _, sub := range subscriptions {
+		if sub != nil {
+			sub.Close()
+		}
+	}
+
 	go func() {
 		p.wg.Wait()
-		if p.cancel != nil {
-			p.cancel()
+		if cancel != nil {
+			cancel()
 		}
+		p.mu.Lock()
+		if p.shutdownDone == done {
+			p.ctx = nil
+			p.cancel = nil
+			p.scope = nil
+			p.queue = nil
+			p.workerRunning = false
+		}
+		p.mu.Unlock()
 		close(done)
 	}()
 
@@ -212,6 +362,9 @@ func (p *Plugin) ShutdownContext(ctx context.Context) error {
 	case <-done:
 		return nil
 	case <-ctx.Done():
+		if cancel != nil {
+			cancel()
+		}
 		return ctx.Err()
 	}
 }
@@ -229,23 +382,33 @@ func (p *Plugin) Description() string {
 
 func (p *Plugin) Init() error { return nil }
 
-// InitScope binds plugin-owned EventBus subscriptions and workers to the
-// runtime scope.
+// InitScope initializes a restartable lifecycle without spawning idle workers.
 func (p *Plugin) InitScope(ctx context.Context, scope *plugin.Scope) error {
 	if scope == nil {
 		return fmt.Errorf("userlog plugin scope cannot be nil")
 	}
+
 	p.mu.Lock()
-	p.scope = scope
-	p.ctx, p.cancel = context.WithCancel(ctx)
-	subscriptions := append([]*core.Subscription(nil), p.subscriptions...)
-	p.mu.Unlock()
-	for _, sub := range subscriptions {
-		if err := scope.Defer(sub.Close); err != nil {
-			return err
-		}
+	if p.ctx != nil && !p.closing {
+		p.mu.Unlock()
+		return fmt.Errorf("userlog plugin lifecycle is already active")
 	}
-	return p.startWorkers()
+	p.scope = scope
+	p.ctx, p.cancel = context.WithCancel(scope.Context())
+	p.queue = make(chan func(), queueCapacity)
+	p.closing = false
+	p.shutdownDone = nil
+	p.workerRunning = false
+	if p.workerIdleTimeout <= 0 {
+		p.workerIdleTimeout = defaultWorkerIdleTimeout
+	}
+	hasEventBus := p.eventBus != nil
+	p.mu.Unlock()
+
+	if hasEventBus {
+		p.bindEventBus()
+	}
+	return nil
 }
 
 // MessageHookPriority returns priority for the message hook (Observability = 90).
@@ -301,7 +464,7 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 		if senderID == 777000 || senderID == p.ownerID {
 			return nil
 		}
-		name, id, text, logCtx := senderName, senderID, message.Text, p.ctx
+		name, id, text, logCtx := senderName, senderID, message.Text, p.lifecycleContext()
 		p.enqueue(func() {
 			jobCtx, cancel := context.WithTimeout(logCtx, 15*time.Second)
 			defer cancel()
@@ -312,7 +475,7 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 
 	isMentioned := message.Mentioned ||
 		message.MentionsUser(p.ownerID) ||
-		message.MentionsUsername(p.ownerUsername)
+		message.MentionsUsername(p.ownerUsernameValue())
 	if !isMentioned {
 		return nil
 	}
@@ -321,7 +484,7 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 	if chatTitle == "" {
 		chatTitle = "Group Chat"
 	}
-	name, id, title, text, logCtx := senderName, senderID, chatTitle, message.Text, p.ctx
+	name, id, title, text, logCtx := senderName, senderID, chatTitle, message.Text, p.lifecycleContext()
 	p.enqueue(func() {
 		jobCtx, cancel := context.WithTimeout(logCtx, 15*time.Second)
 		defer cancel()

@@ -68,7 +68,7 @@ func setupTestDB(t *testing.T) *database.DB {
 
 func initializePlugin(t *testing.T, p *userlog.Plugin) {
 	t.Helper()
-	scope := plugin.NewScope(context.Background(), "test:userlog")
+	scope := plugin.NewScope(context.Background(), "plugin:userlog")
 	if err := p.InitScope(scope.Context(), scope); err != nil {
 		t.Fatalf("initialize userlog plugin: %v", err)
 	}
@@ -421,6 +421,11 @@ func TestUserLogPlugin_OwnedSubscriptionsClose(t *testing.T) {
 	}
 	defer bus.Close()
 	p.SetEventBus(bus)
+
+	scope := plugin.NewScope(context.Background(), "plugin:userlog")
+	if err := p.InitScope(scope.Context(), scope); err != nil {
+		t.Fatal(err)
+	}
 	if got := bus.SubscriptionCount("plugin:userlog"); got != 2 {
 		t.Fatalf("owned subscriptions = %d, want 2", got)
 	}
@@ -432,4 +437,128 @@ func TestUserLogPlugin_OwnedSubscriptionsClose(t *testing.T) {
 	if got := bus.SubscriptionCount("plugin:userlog"); got != 0 {
 		t.Fatalf("owned subscriptions after shutdown = %d, want 0", got)
 	}
+	if err := scope.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+
+func TestUserLogWorkerStartsLazilyAndRetiresWhenIdle(t *testing.T) {
+	db := setupTestDB(t)
+	repo := userlogSvc.NewSQLiteRepository(db)
+	mockTG := &mockTelegram{}
+	svc := userlogSvc.NewService(repo, mockTG, zap.NewNop())
+	if err := svc.SetLogChat(context.Background(), 777); err != nil {
+		t.Fatal(err)
+	}
+
+	p := userlog.New(svc, 12345)
+	p.SetWorkerIdleTimeout(20 * time.Millisecond)
+	scope := plugin.NewScope(context.Background(), "plugin:userlog")
+	if err := p.InitScope(scope.Context(), scope); err != nil {
+		t.Fatal(err)
+	}
+	if got := scope.ActiveGoroutines(); got != 0 {
+		t.Fatalf("userlog started %d idle worker(s), want 0", got)
+	}
+
+	msg := &core.MessageEnvelope{
+		ChatID: 999,
+		Text:   "hello",
+		Peer:   core.PeerRef{Kind: core.PeerKindUser, ID: 999},
+		SenderPeer: core.PeerRef{Kind: core.PeerKindUser, ID: 999},
+		Sender: core.EnvelopeUser{ID: 999, FirstName: "Alice"},
+	}
+	if err := p.HandleMessageEvent(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 50; i++ {
+		if strings.Contains(mockTG.getSent(), "New Private Message") {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !strings.Contains(mockTG.getSent(), "New Private Message") {
+		t.Fatalf("lazy worker did not deliver queued PM: %q", mockTG.getSent())
+	}
+	for i := 0; i < 100 && scope.ActiveGoroutines() != 0; i++ {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := scope.ActiveGoroutines(); got != 0 {
+		t.Fatalf("userlog retained %d worker(s) after idle timeout", got)
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := p.ShutdownContext(shutdownCtx); err != nil {
+		t.Fatal(err)
+	}
+	if err := scope.Close(shutdownCtx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUserLogLifecycleRestartRebindsEventBus(t *testing.T) {
+	db := setupTestDB(t)
+	repo := userlogSvc.NewSQLiteRepository(db)
+	mockTG := &mockTelegram{}
+	svc := userlogSvc.NewService(repo, mockTG, zap.NewNop())
+	if err := svc.SetLogChat(context.Background(), 777); err != nil {
+		t.Fatal(err)
+	}
+
+	bus := core.NewEventBus()
+	if err := bus.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer bus.Close()
+
+	p := userlog.New(svc, 12345)
+	p.SetWorkerIdleTimeout(10 * time.Millisecond)
+	p.SetEventBus(bus)
+
+	runLifecycle := func(action string) {
+		scope := plugin.NewScope(context.Background(), "plugin:userlog")
+		if err := p.InitScope(scope.Context(), scope); err != nil {
+			t.Fatalf("InitScope(%s): %v", action, err)
+		}
+		if got := bus.SubscriptionCount("plugin:userlog"); got != 2 {
+			t.Fatalf("subscriptions after %s init=%d, want 2", action, got)
+		}
+
+		mockTG.mu.Lock()
+		mockTG.sentText = ""
+		mockTG.mu.Unlock()
+		bus.Publish(&core.AdminActionEvent{
+			At:       time.Now(),
+			Action:   action,
+			ActorID:  12345,
+			TargetID: 999,
+			Success:  true,
+		})
+		for i := 0; i < 50; i++ {
+			if strings.Contains(mockTG.getSent(), strings.ToUpper(action)) {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		if !strings.Contains(mockTG.getSent(), strings.ToUpper(action)) {
+			t.Fatalf("event was not delivered during %s lifecycle: %q", action, mockTG.getSent())
+		}
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := p.ShutdownContext(shutdownCtx); err != nil {
+			t.Fatalf("ShutdownContext(%s): %v", action, err)
+		}
+		if got := bus.SubscriptionCount("plugin:userlog"); got != 0 {
+			t.Fatalf("subscriptions after %s shutdown=%d, want 0", action, got)
+		}
+		if err := scope.Close(shutdownCtx); err != nil {
+			t.Fatalf("scope.Close(%s): %v", action, err)
+		}
+	}
+
+	runLifecycle("ban")
+	runLifecycle("mute")
 }
