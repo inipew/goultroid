@@ -108,7 +108,6 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-
 func TestExtractRejectsUnsafeImageBeforeHTTP(t *testing.T) {
 	attempts := 0
 	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {

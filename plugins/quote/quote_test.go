@@ -277,7 +277,6 @@ func TestSymbolsRendering(t *testing.T) {
 	}
 }
 
-
 func TestQuoteCanPreviewImage(t *testing.T) {
 	if !quoteCanPreviewImage(&core.MediaInfo{Type: "photo"}) {
 		t.Fatal("photo should be previewable")

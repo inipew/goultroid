@@ -16,9 +16,9 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
-	"github.com/inipew/goultroid/internal/services/imageguard"
 	"github.com/inipew/goultroid/internal/platform/network"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/services/imageguard"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 

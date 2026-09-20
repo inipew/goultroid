@@ -15,24 +15,31 @@ import (
 )
 
 var (
-	ErrInputTooLarge         = errors.New("image input exceeds safety limit")
-	ErrDimensionsExceeded    = errors.New("image dimensions exceed safety limit")
-	ErrPixelBudgetExceeded   = errors.New("image pixel count exceeds safety limit")
+	// ErrInputTooLarge indicates that compressed input exceeds the configured byte budget.
+	ErrInputTooLarge = errors.New("image input exceeds safety limit")
+	// ErrDimensionsExceeded indicates that width or height exceeds the configured bound.
+	ErrDimensionsExceeded = errors.New("image dimensions exceed safety limit")
+	// ErrPixelBudgetExceeded indicates that total decoded pixels exceed the configured bound.
+	ErrPixelBudgetExceeded = errors.New("image pixel count exceeds safety limit")
+	// ErrDecodedBudgetExceeded indicates that the estimated RGBA footprint exceeds the configured bound.
 	ErrDecodedBudgetExceeded = errors.New("estimated decoded image exceeds safety limit")
-	ErrUnsupportedFormat     = errors.New("unsupported image format")
-	ErrInvalidImage          = errors.New("invalid image")
+	// ErrUnsupportedFormat indicates that the detected image format is not allowed by policy.
+	ErrUnsupportedFormat = errors.New("unsupported image format")
+	// ErrInvalidImage indicates malformed, empty, or otherwise undecodable image input.
+	ErrInvalidImage = errors.New("invalid image")
 )
 
 const (
-	DefaultMaxInputBytes   int64 = 32 << 20
-	DefaultMaxWidth              = 8192
-	DefaultMaxHeight             = 8192
-	DefaultMaxPixels       int64 = 40_000_000
-	DefaultMaxDecodedBytes int64 = 160 << 20
+	defaultMaxInputBytes   int64 = 32 << 20
+	defaultMaxWidth              = 8192
+	defaultMaxHeight             = 8192
+	defaultMaxPixels       int64 = 40_000_000
+	defaultMaxDecodedBytes int64 = 160 << 20
 	decodedBytesPerPixel   int64 = 4
 	maxInt64               int64 = 1<<63 - 1
 )
 
+// Policy defines compressed-input and decoded-image safety budgets.
 type Policy struct {
 	MaxInputBytes   int64
 	MaxWidth        int
@@ -42,6 +49,7 @@ type Policy struct {
 	AllowedFormats  []string
 }
 
+// Info describes validated image metadata and its estimated decoded footprint.
 type Info struct {
 	Format                string
 	Width                 int
@@ -51,13 +59,14 @@ type Info struct {
 	EstimatedDecodedBytes int64
 }
 
+// DefaultPolicy returns the conservative shared policy used for unspecified limits.
 func DefaultPolicy() Policy {
 	return Policy{
-		MaxInputBytes:   DefaultMaxInputBytes,
-		MaxWidth:        DefaultMaxWidth,
-		MaxHeight:       DefaultMaxHeight,
-		MaxPixels:       DefaultMaxPixels,
-		MaxDecodedBytes: DefaultMaxDecodedBytes,
+		MaxInputBytes:   defaultMaxInputBytes,
+		MaxWidth:        defaultMaxWidth,
+		MaxHeight:       defaultMaxHeight,
+		MaxPixels:       defaultMaxPixels,
+		MaxDecodedBytes: defaultMaxDecodedBytes,
 		AllowedFormats:  []string{"jpeg", "png", "gif", "webp"},
 	}
 }
@@ -76,6 +85,7 @@ func ValidateKnown(fileSize int64, width, height int, policy Policy) error {
 	return err
 }
 
+// Inspect validates image metadata without performing a full pixel decode.
 func Inspect(path string, policy Policy) (Info, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -85,6 +95,7 @@ func Inspect(path string, policy Policy) (Info, error) {
 	return inspectOpenFile(f, policy)
 }
 
+// Decode performs metadata preflight first, then fully decodes only validated input.
 func Decode(path string, policy Policy) (image.Image, Info, error) {
 	f, err := os.Open(path)
 	if err != nil {

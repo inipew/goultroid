@@ -19,7 +19,6 @@ import (
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
-// Plugin provides sticker creation and conversion utilities.
 var stickerImagePolicy = imageguard.Policy{
 	MaxInputBytes:   32 << 20,
 	MaxWidth:        8192,
@@ -28,6 +27,7 @@ var stickerImagePolicy = imageguard.Policy{
 	MaxDecodedBytes: 128 << 20,
 }
 
+// Plugin provides sticker creation and conversion utilities.
 type Plugin struct {
 	files *filesystem.Scope
 }

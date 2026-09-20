@@ -236,7 +236,6 @@ func TestSticker_ConvertProcess(t *testing.T) {
 	}
 }
 
-
 func TestStickerRejectsOversizedImageDimensions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "too-wide.png")
 	f, err := os.Create(path)
