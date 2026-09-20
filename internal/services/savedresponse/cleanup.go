@@ -257,13 +257,7 @@ func (j *cleanupJournal) referenced(ctx context.Context, assetID string) (bool, 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	for _, source := range []struct {
-		table  string
-		column string
-	}{
-		{table: "notes", column: "media_asset_id"},
-		{table: "filters", column: "media_asset_id"},
-	} {
+	for _, source := range persistentMediaReferenceSources {
 		exists, err := j.columnExists(ctx, source.table, source.column)
 		if err != nil {
 			return false, err

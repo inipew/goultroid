@@ -255,6 +255,36 @@ func TestCommitReplacementPersistFailureKeepsOldAssetAndCleansNew(t *testing.T) 
 }
 
 
+func TestReconcileCleanupProtectsFilterMediaReference(t *testing.T) {
+	db := openCleanupTestDB(t)
+	defer db.Close()
+	store := storage.NewMemoryStorage()
+	asset := putCleanupTestAsset(t, store, "filter-live.bin")
+	now := time.Now().UTC()
+	if _, err := db.Exec(`
+		INSERT INTO filters (
+			chat_id, keyword, reply_text, media_asset_id, media_type, media_name, media_mime, created_at
+		) VALUES (1, 'live-filter', 'response', ?, 'photo', 'live.png', 'image/png', ?)
+	`, asset.ID, now); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService(store, db)
+	if err := svc.cleanup.enqueue(context.Background(), asset.ID); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := svc.ReconcileCleanup(context.Background(), 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Referenced != 1 || stats.Deleted != 0 {
+		t.Fatalf("filter-referenced cleanup stats=%+v", stats)
+	}
+	if _, err := store.Stat(context.Background(), asset.ID); err != nil {
+		t.Fatalf("filter-referenced asset was deleted: %v", err)
+	}
+}
+
 func TestPersistentMediaOrphanDeletionFailsClosedOnIncompleteReferenceSchema(t *testing.T) {
 	db, err := database.Open(":memory:")
 	if err != nil {
