@@ -16,7 +16,7 @@ var Module ModuleType
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
 		ID:           "filters",
-		Version:      "1.5.2",
+		Version:      "1.5.3",
 		Description:  "Chat-specific rich auto-reply keyword filters",
 		Capabilities: []string{plugin.CapTelegramRead, plugin.CapTelegramSendMessage, plugin.CapStorageRead, plugin.CapStorageWrite, plugin.CapEvents, plugin.CapFilesystemTemp, plugin.CapTasks},
 	}
