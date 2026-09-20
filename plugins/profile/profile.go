@@ -43,15 +43,11 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 
 // SetFiles sets the filesystem manager for the plugin.
 func (p *Plugin) SetFiles(fs *filesystem.Manager) {
-	p.files = fs.ForOwner("profile")
-}
-
-func (p *Plugin) getFiles() *filesystem.Scope {
-	if p.files == nil {
-		manager, _ := filesystem.NewManager("data", "", "", nil)
-		p.files = manager.ForOwner("profile")
+	if fs == nil {
+		p.files = nil
+		return
 	}
-	return p.files
+	p.files = fs.ForOwner("profile")
 }
 
 // Name returns the unique plugin identifier.
@@ -272,12 +268,14 @@ func (p *Plugin) handleSetPic(ctx *core.Context) error {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Profile image rejected by safety limits: %v", err))
 	}
 
-	files := p.getFiles()
-	tempDir, err := files.CreateTempDir("goultroid-pfp-*")
+	if p.files == nil {
+		return ctx.EditOrReply("❌ Profile filesystem scope is not available.")
+	}
+	tempDir, err := p.files.CreateTempDir("goultroid-pfp-*")
 	if err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temporary directory: %v", err))
 	}
-	defer func() { _ = files.RemoveTempDir(tempDir) }()
+	defer func() { _ = p.files.RemoveTempDir(tempDir) }()
 
 	filePath, err := ctx.DownloadMedia(tempDir)
 	if err != nil {
