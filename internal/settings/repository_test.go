@@ -15,6 +15,12 @@ func setupTestSettingsRepo(t *testing.T) (*SQLiteRepository, *sql.DB) {
 	if err != nil {
 		t.Fatalf("failed to open sqlite in-memory db: %v", err)
 	}
+	// SQLite's :memory: database is private to each physical connection.
+	// Pin this test handle to one connection so concurrent/race-instrumented
+	// repository calls cannot land on a fresh connection without the schema.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
 	t.Cleanup(func() {
 		_ = db.Close()
 	})
