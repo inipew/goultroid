@@ -173,7 +173,6 @@ func TestFormatSavedAndPurchase(t *testing.T) {
 	}
 }
 
-
 func TestFormatterRejectsNonFiniteAndBoundsProgressWidth(t *testing.T) {
 	for _, value := range []float64{-1, math.NaN(), math.Inf(1)} {
 		if got := FormatBytes(value); got != "0 B" {
