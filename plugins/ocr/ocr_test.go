@@ -25,7 +25,6 @@ import (
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
-
 type immediateOCRTicket struct {
 	result tasks.TaskResult
 	state  tasks.TaskState
@@ -313,7 +312,6 @@ func (m *ocrDeliveryService) SendMedia(_ context.Context, _ tg.InputPeerClass, m
 	return &tg.Message{ID: 500}, nil
 }
 
-
 func TestOCRCommandUsesStagedResources(t *testing.T) {
 	cmds := New().Commands()
 	if len(cmds) != 1 {
@@ -501,6 +499,78 @@ func TestOCRHandlerStagesResourcesAndUsesRepliedMedia(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("OCR workspace leaked %d entries after success", len(entries))
+	}
+}
+
+
+func TestOCRHandlerCleansWorkspaceAndEscapesServiceFailure(t *testing.T) {
+	imagePath := filepath.Join(t.TempDir(), "source.png")
+	writeTestPNG(t, imagePath, 32, 32)
+	imageBytes, err := os.ReadFile(imagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &ocrHandlerService{
+		payload: imageBytes,
+		reply: &tg.Message{
+			ID: 88,
+			Media: &tg.MessageMediaDocument{Document: &tg.Document{
+				ID: 333, MimeType: "image/png", Size: int64(len(imageBytes)),
+				Attributes: []tg.DocumentAttributeClass{
+					&tg.DocumentAttributeFilename{FileName: "failure.png"},
+					&tg.DocumentAttributeImageSize{W: 32, H: 32},
+				},
+			}},
+		},
+	}
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Body: io.NopCloser(strings.NewReader("<bad>& rejected")),
+			Header: make(http.Header),
+			Request: r,
+		}, nil
+	})}
+
+	manager, err := filesystem.NewManager(t.TempDir(), "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := manager.ForOwner("ocr").TempDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := New()
+	p.SetAPIKey("test-key")
+	p.SetHTTP(network.NewService(client, nil))
+	p.SetFiles(manager)
+	p.SetTaskClient(&immediateOCRTaskClient{})
+
+	ctx := &core.Context{
+		Ctx: context.Background(),
+		Svc: svc,
+		PeerID: &tg.InputPeerChat{ChatID: 1},
+		Message: &core.Message{ID: 11, ReplyToID: 88, IsOutgoing: true},
+	}
+	if err := p.handle(ctx); err == nil {
+		t.Fatal("expected OCR service rejection to remain an execution error")
+	}
+	if len(svc.edits) == 0 {
+		t.Fatal("expected user-facing OCR failure")
+	}
+	last := svc.edits[len(svc.edits)-1]
+	if strings.Contains(last, "<bad>") || !strings.Contains(last, "&lt;bad&gt;") || !strings.Contains(last, "&amp;") {
+		t.Fatalf("unsafe service error UI: %q", last)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("OCR workspace leaked %d entries after failure", len(entries))
 	}
 }
 

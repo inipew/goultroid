@@ -616,11 +616,6 @@ func splitOCRTextLimited(text string, maxEscapedRunes, maxChunks int) ([]string,
 	return chunks, text != ""
 }
 
-func splitOCRText(text string, maxEscapedRunes int) []string {
-	chunks, _ := splitOCRTextLimited(text, maxEscapedRunes, int(^uint(0)>>1))
-	return chunks
-}
-
 func renderOCRChunks(text string) ([]string, bool) {
 	payloadBudget := maxTelegramMessageRunes - ocrChunkFormattingReserve
 	raw, more := splitOCRTextLimited(text, payloadBudget, maxOCRInlineChunks+1)
