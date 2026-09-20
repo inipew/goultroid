@@ -166,7 +166,7 @@ func Compile(response Response) (*CompiledTemplate, error) {
 
 		if token, consumed, ok := escapedTemplateTokenAt(source, i); ok {
 			appendLiteral(source[literalStart:i])
-			appendLiteral("{" + tokenName(token) + "}")
+			appendLiteral("{" + templateTokenName(token) + "}")
 			i += consumed
 			literalStart = i
 			continue
@@ -272,7 +272,7 @@ func escapedTemplateTokenAt(source string, start int) (templateToken, int, bool)
 		return tokenLiteral, 0, false
 	}
 	for token := tokenName; token <= tokenTime; token++ {
-		name := tokenName(token)
+		name := templateTokenName(token)
 		escaped := "{{" + name + "}}"
 		if strings.HasPrefix(source[start:], escaped) {
 			return token, len(escaped), true
@@ -308,7 +308,7 @@ func parseTemplateToken(name string) (templateToken, bool) {
 	}
 }
 
-func tokenName(token templateToken) string {
+func templateTokenName(token templateToken) string {
 	switch token {
 	case tokenName:
 		return "name"
