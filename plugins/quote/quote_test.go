@@ -681,7 +681,6 @@ func BenchmarkStyledSegmentsManyEntities(b *testing.B) {
 	}
 }
 
-
 func BenchmarkWrapStyledSegments(b *testing.B) {
 	face := loadFont("regular", 27)
 	faces := styledFaces{normal: face, bold: face, italic: face, code: face}
