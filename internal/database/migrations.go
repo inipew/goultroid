@@ -352,6 +352,19 @@ var migrations = []migration{
 			`CREATE INDEX IF NOT EXISTS idx_saved_response_media_cleanup_due
 				ON saved_response_media_cleanup(next_attempt_at, created_at);`,
 		},
+	},,
+	{
+		version:     19,
+		description: "Saved-response persistent media reconciliation ledger",
+		statements: []string{
+			`CREATE TABLE IF NOT EXISTS saved_response_media_assets (
+				asset_id TEXT PRIMARY KEY,
+				registered_at DATETIME NOT NULL,
+				last_seen_at DATETIME NOT NULL
+			);`,
+			`CREATE INDEX IF NOT EXISTS idx_saved_response_media_assets_registered
+				ON saved_response_media_assets(registered_at, asset_id);`,
+		},
 	},
 }
 
