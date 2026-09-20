@@ -258,7 +258,6 @@ func (p *Plugin) handle(ctx *core.Context) error {
 	return nil
 }
 
-
 func (p *Plugin) nextTaskID(stage string, ctx *core.Context) tasks.TaskID {
 	var chatID int64
 	if ctx != nil {
@@ -371,7 +370,9 @@ func isOCRMedia(media *core.MediaInfo) bool {
 	switch mediaType {
 	case "photo":
 		return true
-	case "sticker", "document":
+	case "sticker":
+		return mimeType == "image/png" || mimeType == "image/webp"
+	case "document":
 		switch mimeType {
 		case "image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp":
 			return true
@@ -610,9 +611,9 @@ func splitOCRTextLimited(text string, maxEscapedRunes, maxChunks int) ([]string,
 			cutAt = size
 		}
 		chunks = append(chunks, text[:cutAt])
-		text = strings.TrimLeftFunc(text[cutAt:], unicode.IsSpace)
+		text = text[cutAt:]
 	}
-	return chunks, strings.TrimSpace(text) != ""
+	return chunks, text != ""
 }
 
 func splitOCRText(text string, maxEscapedRunes int) []string {
