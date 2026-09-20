@@ -86,6 +86,9 @@ func (r *SQLiteRepository) SaveFilter(ctx context.Context, chatID int64, keyword
 		return fmt.Errorf("failed to save filter: %w", err)
 	}
 	if media.AssetID != "" {
+		if err := savedresponse.EnsureLegacyMediaAssetWithExecutor(ctx, tx, media.AssetID); err != nil {
+			return fmt.Errorf("failed to mirror legacy media ledger: %w", err)
+		}
 		if err := mediaregistry.RegisterAssetWithExecutor(
 			ctx,
 			tx,

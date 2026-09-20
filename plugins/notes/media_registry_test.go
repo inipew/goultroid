@@ -29,6 +29,7 @@ func TestSQLiteRepositoryDualWritesMediaRegistry(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertNoteRegistryReferenceCount(t, registry, "note-asset-a", 1)
+	assertNoteLegacyLedgerAsset(t, db, "note-asset-a", 1)
 
 	second := savedresponse.NewPlainText("second")
 	second.Media = &savedresponse.MediaRef{AssetID: "note-asset-b", MediaType: "photo", Name: "b.jpg", MIMEType: "image/jpeg"}
@@ -37,6 +38,7 @@ func TestSQLiteRepositoryDualWritesMediaRegistry(t *testing.T) {
 	}
 	assertNoteRegistryReferenceCount(t, registry, "note-asset-a", 0)
 	assertNoteRegistryReferenceCount(t, registry, "note-asset-b", 1)
+	assertNoteLegacyLedgerAsset(t, db, "note-asset-b", 1)
 
 	if err := repo.DeleteNote(ctx, 42, "welcome"); err != nil {
 		t.Fatal(err)
@@ -74,6 +76,20 @@ func TestSQLiteRepositoryRollsBackOnMediaRegistryOwnershipConflict(t *testing.T)
 	}
 	if row != nil {
 		t.Fatalf("domain row committed despite registry conflict: %+v", row)
+	}
+	assertNoteLegacyLedgerAsset(t, db, "note-collision", 0)
+}
+
+func assertNoteLegacyLedgerAsset(t *testing.T, db *database.DB, assetID string, want int) {
+	t.Helper()
+	var count int
+	if err := db.QueryRowContext(context.Background(), `
+		SELECT count(*) FROM saved_response_media_assets WHERE asset_id = ?
+	`, assetID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != want {
+		t.Fatalf("legacy ledger count for %s=%d, want %d", assetID, count, want)
 	}
 }
 

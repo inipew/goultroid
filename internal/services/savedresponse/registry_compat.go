@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/services/mediaregistry"
@@ -73,6 +74,35 @@ func MediaRegistryAssetRegistration(assetID string) mediaregistry.AssetRegistrat
 
 func savedResponseAssetRegistration(assetID string) mediaregistry.AssetRegistration {
 	return MediaRegistryAssetRegistration(assetID)
+}
+
+// EnsureLegacyMediaAssetWithExecutor mirrors the P3-A ledger write inside a
+// caller-owned transaction. Removing ledger rows remains the cleanup journal's
+// responsibility after physical reclamation succeeds.
+func EnsureLegacyMediaAssetWithExecutor(
+	ctx context.Context,
+	exec database.SQLExecutor,
+	assetID string,
+) error {
+	if exec == nil {
+		return mediaregistry.ErrNilDatabase
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	assetID = strings.TrimSpace(assetID)
+	if assetID == "" {
+		return mediaregistry.ErrInvalidAsset
+	}
+	now := time.Now().UTC()
+	if _, err := exec.ExecContext(ctx, `
+		INSERT INTO saved_response_media_assets (asset_id, registered_at, last_seen_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(asset_id) DO UPDATE SET last_seen_at = excluded.last_seen_at
+	`, assetID, now, now); err != nil {
+		return fmt.Errorf("saved response: ensure legacy media asset %q: %w", assetID, err)
+	}
+	return nil
 }
 
 func registryReferenceKey(chatID int64, key string) string {

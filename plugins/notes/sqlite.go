@@ -88,6 +88,9 @@ func (r *SQLiteRepository) SaveNote(ctx context.Context, chatID int64, name stri
 	}
 
 	if media.AssetID != "" {
+		if err := savedresponse.EnsureLegacyMediaAssetWithExecutor(ctx, tx, media.AssetID); err != nil {
+			return fmt.Errorf("failed to mirror legacy media ledger: %w", err)
+		}
 		if err := mediaregistry.RegisterAssetWithExecutor(
 			ctx,
 			tx,
