@@ -89,6 +89,32 @@ func (t *CompiledTemplate) TokenCount() int {
 	return t.tokenCount
 }
 
+func (t *CompiledTemplate) Variables() []string {
+	if t == nil || t.tokenCount == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, t.tokenCount)
+	variables := make([]string, 0, t.tokenCount)
+	for _, part := range t.parts {
+		if part.token == tokenLiteral {
+			continue
+		}
+		name := part.extra
+		if part.token != tokenExtra {
+			name = templateTokenName(part.token)
+		}
+		if name == "" {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		variables = append(variables, name)
+	}
+	return variables
+}
+
 func VarsFromContext(ctx *core.Context, now time.Time) TemplateVars {
 	var vars TemplateVars
 	vars.Now = now

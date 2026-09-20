@@ -239,6 +239,58 @@ func TestCompileWithVariablesUsesSameVariableBounds(t *testing.T) {
 	}
 }
 
+func TestCompiledTemplateVariablesAreUniqueAndOrdered(t *testing.T) {
+	compiled, err := Compile(NewHTML("{name} {chat} {name} {mention}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := compiled.Variables()
+	want := []string{"name", "chat", "mention"}
+	if len(got) != len(want) {
+		t.Fatalf("Variables=%v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Variables=%v, want %v", got, want)
+		}
+	}
+
+	custom, err := CompileWithVariables(NewHTML("{reason} {name} {reason}"), "reason")
+	if err != nil {
+		t.Fatal(err)
+	}
+	customGot := custom.Variables()
+	customWant := []string{"reason", "name"}
+	if len(customGot) != len(customWant) {
+		t.Fatalf("custom Variables=%v, want %v", customGot, customWant)
+	}
+	for i := range customWant {
+		if customGot[i] != customWant[i] {
+			t.Fatalf("custom Variables=%v, want %v", customGot, customWant)
+		}
+	}
+}
+
+func TestInspectResponseMetadata(t *testing.T) {
+	response := NewHTML("Hi {mention}")
+	response.Media = &MediaRef{
+		AssetID: "asset-1", MediaType: "photo", Name: "image.jpg", MIMEType: "image/jpeg",
+	}
+	info, err := Inspect(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Kind != "photo" || info.Format != FormatHTML || !info.HasText {
+		t.Fatalf("unexpected inspection: %+v", info)
+	}
+	if len(info.Variables) != 1 || info.Variables[0] != "mention" {
+		t.Fatalf("inspection variables=%v", info.Variables)
+	}
+	if info.MediaName != "image.jpg" || info.MIMEType != "image/jpeg" {
+		t.Fatalf("inspection media metadata=%+v", info)
+	}
+}
+
 func BenchmarkCompileTemplate(b *testing.B) {
 	response := NewHTML(strings.Repeat("hello {name} in {chat} at {time}\n", 16))
 	b.ResetTimer()

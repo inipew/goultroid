@@ -22,6 +22,17 @@ type Response struct {
 	Media  *MediaRef
 }
 
+// Inspection is bounded response metadata for management/UI surfaces.
+// It deliberately omits internal asset identifiers.
+type Inspection struct {
+	Kind      string
+	Format    Format
+	HasText   bool
+	Variables []string
+	MediaName string
+	MIMEType  string
+}
+
 func NewHTML(text string) Response {
 	return Response{Text: text, Format: FormatHTML}
 }
@@ -64,4 +75,40 @@ func (r Response) MediaAssetID() string {
 		return ""
 	}
 	return strings.TrimSpace(r.Media.AssetID)
+}
+
+
+func (r Response) Kind() string {
+	if !r.HasMedia() {
+		return "text"
+	}
+	kind := strings.ToLower(strings.TrimSpace(r.Media.MediaType))
+	switch kind {
+	case "photo", "sticker", "audio", "video", "file":
+		return kind
+	case "voice":
+		return "audio"
+	default:
+		return "media"
+	}
+}
+
+// Inspect returns user-facing response metadata using the canonical template
+// compiler, so management surfaces report exactly the variables delivery sees.
+func Inspect(response Response) (Inspection, error) {
+	compiled, err := Compile(response)
+	if err != nil {
+		return Inspection{}, err
+	}
+	info := Inspection{
+		Kind:      response.Kind(),
+		Format:    response.EffectiveFormat(),
+		HasText:   strings.TrimSpace(response.Text) != "",
+		Variables: compiled.Variables(),
+	}
+	if response.Media != nil {
+		info.MediaName = strings.TrimSpace(response.Media.Name)
+		info.MIMEType = strings.TrimSpace(response.Media.MIMEType)
+	}
+	return info, nil
 }
