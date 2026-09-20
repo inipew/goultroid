@@ -20,10 +20,11 @@ import (
 const (
 	filterCacheTTL        = 10 * time.Minute
 	filterCooldown        = 5 * time.Second
+	filterCaptureTimeout  = 2 * time.Minute
 	filterDeliveryTimeout = 30 * time.Second
 )
 
-var filterDeliverySequence atomic.Uint64
+var filterTaskSequence atomic.Uint64
 
 var _ plugin.MessageEventPlugin = (*Plugin)(nil)
 var _ plugin.MessageEventStatePlugin = (*Plugin)(nil)
@@ -122,8 +123,7 @@ func (p *Plugin) Commands() []core.Command {
 			Name: "filter", Description: "Save a rich automated keyword filter in this chat",
 			Usage:    ".filter <keyword> <reply text> or reply to text/media with .filter <keyword>",
 			Category: "Filters", Permission: core.PermissionSudo, GroupOnly: true,
-			Resources: []tasks.ResourceRequirement{{Name: "download", Amount: 1}},
-			Handler:   p.handleFilter,
+			Handler: p.handleFilter,
 		},
 		{Name: "stop", Description: "Stop and delete a chat filter", Usage: ".stop <keyword>", Category: "Filters", Permission: core.PermissionSudo, GroupOnly: true, Handler: p.handleStop},
 		{Name: "filters", Description: "List all active filters in this chat", Category: "Filters", Permission: core.PermissionSudo, GroupOnly: true, Handler: p.handleList},
@@ -135,6 +135,71 @@ func (p *Plugin) getChatID(ctx *core.Context) int64 {
 		return ctx.Chat.ID
 	}
 	return ctx.SenderID()
+}
+
+func (p *Plugin) nextTaskID(kind string, chatID int64) tasks.TaskID {
+	return tasks.TaskID(fmt.Sprintf(
+		"filters:%s:%d:%d:%d",
+		kind,
+		chatID,
+		time.Now().UnixNano(),
+		filterTaskSequence.Add(1),
+	))
+}
+
+func detachFilterContext(ctx *core.Context) *core.Context {
+	if ctx == nil {
+		return nil
+	}
+	cp := *ctx
+	// Preserve Message, Svc, PeerID and the memoized reply needed by a queued
+	// media capture, but release invocation-only/runtime references.
+	cp.Ctx = nil
+	cp.Args = nil
+	cp.RawArgs = ""
+	cp.Album = nil
+	cp.Chat = nil
+	cp.Sender = nil
+	cp.Perms = nil
+	cp.Principal = nil
+	cp.Resolver = nil
+	cp.Localizer = nil
+	cp.EventBus = nil
+	cp.DelayedActions = nil
+	return &cp
+}
+
+func (p *Plugin) submitContinuation(
+	admissionCtx context.Context,
+	kind string,
+	pool tasks.PoolID,
+	chatID int64,
+	timeout time.Duration,
+	resources []tasks.ResourceRequirement,
+	handler func(context.Context) error,
+) error {
+	if p.tasks == nil {
+		return fmt.Errorf("%w: filters TaskEngine client is not configured", core.ErrUnavailable)
+	}
+	if admissionCtx == nil {
+		admissionCtx = context.Background()
+	}
+	resources = append([]tasks.ResourceRequirement(nil), resources...)
+	_, err := p.tasks.Submit(admissionCtx, tasks.WorkSpec{
+		ID:               p.nextTaskID(kind, chatID),
+		Pool:             pool,
+		Class:            tasks.PriorityNormal,
+		OrderingKey:      fmt.Sprintf("chat:%d", chatID),
+		ExecutionTimeout: timeout,
+		Resources:        resources,
+		Handler: func(taskCtx context.Context) error {
+			return handler(taskCtx)
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("filters: submit %s continuation: %w", kind, err)
+	}
+	return nil
 }
 
 func (p *Plugin) handleFilter(ctx *core.Context) error {
@@ -151,17 +216,55 @@ func (p *Plugin) handleFilter(ctx *core.Context) error {
 		return errors.New("empty filter keyword")
 	}
 
-	var response savedresponse.Response
-	var err error
+	chatID := p.getChatID(ctx)
 	if len(ctx.Args) >= 2 {
-		response = savedresponse.NewText(strings.TrimSpace(strings.TrimPrefix(ctx.RawArgs, ctx.Args[0])))
-	} else {
-		response, err = p.responses.CaptureReply(ctx)
-		if err != nil {
-			_ = ctx.EditOrReply(fmt.Sprintf("⚠️ Could not capture replied response: %v", err))
-			return err
-		}
+		response := savedresponse.NewText(strings.TrimSpace(strings.TrimPrefix(ctx.RawArgs, ctx.Args[0])))
+		return p.saveFilterResponse(ctx, chatID, keyword, response)
 	}
+
+	reply, err := ctx.GetReply()
+	if err != nil {
+		_ = ctx.EditOrReply(fmt.Sprintf("⚠️ Could not load replied response: %v", err))
+		return err
+	}
+	return p.saveReply(ctx, chatID, keyword, reply)
+}
+
+func (p *Plugin) saveReply(ctx *core.Context, chatID int64, keyword string, reply *core.Message) error {
+	if reply == nil {
+		_ = ctx.EditOrReply("⚠️ Reply to text/media or provide filter response.")
+		return savedresponse.ErrReplyNotFound
+	}
+	if !reply.HasMedia() {
+		return p.saveFilterResponse(ctx, chatID, keyword, savedresponse.NewPlainText(reply.Text))
+	}
+
+	uiCtx := detachFilterContext(ctx)
+	resources := []tasks.ResourceRequirement{{Name: "download", Amount: 1}}
+	if err := p.submitContinuation(
+		ctx.Ctx,
+		"save-media",
+		tasks.PoolID("download"),
+		chatID,
+		filterCaptureTimeout,
+		resources,
+		func(taskCtx context.Context) error {
+			taskCore := uiCtx.WithContext(taskCtx)
+			response, captureErr := p.responses.CaptureReply(taskCore)
+			if captureErr != nil {
+				_ = taskCore.EditOrReply(fmt.Sprintf("⚠️ Could not capture replied response: %v", captureErr))
+				return captureErr
+			}
+			return p.saveFilterResponse(taskCore, chatID, keyword, response)
+		},
+	); err != nil {
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to queue media filter save: %v", err))
+		return err
+	}
+	return nil
+}
+
+func (p *Plugin) saveFilterResponse(ctx *core.Context, chatID int64, keyword string, response savedresponse.Response) error {
 	if response.Empty() {
 		_ = ctx.EditOrReply("⚠️ Filter response cannot be empty.")
 		return errors.New("empty filter response")
@@ -172,7 +275,6 @@ func (p *Plugin) handleFilter(ctx *core.Context) error {
 		return err
 	}
 
-	chatID := p.getChatID(ctx)
 	p.featureState.MarkUnknown(chatID)
 	previous, err := p.db.GetFilter(ctx.Ctx, chatID, keyword)
 	if err != nil {
@@ -329,27 +431,20 @@ func (p *Plugin) submitDelivery(
 	}
 
 	resources := []tasks.ResourceRequirement(nil)
-	if response.Media != nil {
+	if response.HasMedia() {
 		resources = []tasks.ResourceRequirement{{Name: "media", Amount: 1}}
 	}
-	id := tasks.TaskID(fmt.Sprintf(
-		"filter-response:%d:%d:%d",
+	return p.submitContinuation(
+		admissionCtx,
+		fmt.Sprintf("response-%d", messageID),
+		tasks.PoolID("general"),
 		chatID,
-		messageID,
-		filterDeliverySequence.Add(1),
-	))
-	_, err := p.tasks.Submit(admissionCtx, tasks.WorkSpec{
-		ID:               id,
-		Pool:             tasks.PoolID("general"),
-		Class:            tasks.PriorityNormal,
-		OrderingKey:      fmt.Sprintf("chat:%d", chatID),
-		ExecutionTimeout: filterDeliveryTimeout,
-		Resources:        resources,
-		Handler: func(taskCtx context.Context) error {
+		filterDeliveryTimeout,
+		resources,
+		func(taskCtx context.Context) error {
 			return p.deliverResponse(taskCtx, svc, peer, response, template, vars)
 		},
-	})
-	return err
+	)
 }
 
 func (p *Plugin) deliverResponse(
