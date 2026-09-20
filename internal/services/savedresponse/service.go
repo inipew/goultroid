@@ -138,7 +138,7 @@ func (s *Service) CommitReplacement(ctx context.Context, previous, next Response
 	needsOldCleanup := oldID != "" && oldID != newID
 
 	if needsOldCleanup && s != nil && s.cleanup != nil {
-		if err := s.cleanup.enqueue(ctx, oldID); err != nil {
+		if err := s.cleanup.prepare(ctx, oldID); err != nil {
 			// Refuse to drop the DB reference when we cannot durably record how
 			// to reclaim the old asset.
 			return err
@@ -157,6 +157,10 @@ func (s *Service) CommitReplacement(ctx context.Context, previous, next Response
 
 	if needsOldCleanup {
 		if s != nil && s.cleanup != nil {
+			// Activation is best-effort after the DB mutation. The prepared
+			// intent remains durable with a grace deadline even if activation
+			// itself is interrupted, so startup reconciliation can still finish it.
+			_ = s.cleanup.activate(ctx, oldID)
 			_, _ = s.ReconcileCleanup(ctx, defaultCleanupBatch)
 			return nil
 		}
@@ -174,7 +178,7 @@ func (s *Service) CommitDelete(ctx context.Context, response Response, remove fu
 	}
 	assetID := response.MediaAssetID()
 	if assetID != "" && s != nil && s.cleanup != nil {
-		if err := s.cleanup.enqueue(ctx, assetID); err != nil {
+		if err := s.cleanup.prepare(ctx, assetID); err != nil {
 			return err
 		}
 	}
@@ -188,6 +192,7 @@ func (s *Service) CommitDelete(ctx context.Context, response Response, remove fu
 		return nil
 	}
 	if s != nil && s.cleanup != nil {
+		_ = s.cleanup.activate(ctx, assetID)
 		_, _ = s.ReconcileCleanup(ctx, defaultCleanupBatch)
 		return nil
 	}
