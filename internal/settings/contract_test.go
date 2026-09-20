@@ -38,11 +38,24 @@ func TestServiceLifecycleConcurrent(t *testing.T) {
 	wg.Wait()
 
 	svc.lifecycleMu.Lock()
-	done := svc.outboxDone
+	started := svc.started
+	runCtx := svc.runCtx
+	runCancel := svc.runCancel
 	svc.lifecycleMu.Unlock()
-	if done == nil {
-		t.Fatal("Start() did not create an outbox worker")
+	if !started {
+		t.Fatal("concurrent Start() did not leave settings service started")
 	}
+	if runCtx == nil || runCtx.Err() != nil {
+		t.Fatal("concurrent Start() did not leave an active lifecycle context")
+	}
+	if runCancel == nil {
+		t.Fatal("concurrent Start() did not install lifecycle cancellation")
+	}
+
+	// The durable outbox worker is intentionally zero-idle: after startup replay
+	// finds no work it may retire before Start returns. Do not assert on
+	// outboxDone/outboxRunning here because those fields describe transient worker
+	// presence, not whether the settings service itself is started.
 
 	wg.Add(callers)
 	for range callers {
@@ -54,6 +67,23 @@ func TestServiceLifecycleConcurrent(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+
+	svc.lifecycleMu.Lock()
+	started = svc.started
+	runCtx = svc.runCtx
+	runCancel = svc.runCancel
+	done := svc.outboxDone
+	running := svc.outboxRunning
+	svc.lifecycleMu.Unlock()
+	if started {
+		t.Fatal("concurrent Stop() left settings service started")
+	}
+	if runCtx != nil || runCancel != nil {
+		t.Fatal("concurrent Stop() retained lifecycle context")
+	}
+	if done != nil || running {
+		t.Fatal("concurrent Stop() retained outbox worker state")
+	}
 }
 
 // TestContract_SettingsHierarchy verifies chat > user > global > default fallback (bug13 #29, #42)
