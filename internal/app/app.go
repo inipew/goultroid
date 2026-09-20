@@ -174,6 +174,9 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	if err := migrateBuiltinFeatures(context.Background(), coreDeps.db); err != nil {
 		return nil, err
 	}
+	if _, err := reconcileBuiltinPersistentMedia(context.Background(), coreDeps.db, domServices.storage); err != nil {
+		return nil, err
+	}
 
 	featureRuntime := &module.Runtime{
 		OwnerID:   coreDeps.perms.OwnerID,

@@ -3,9 +3,12 @@ package app
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/module"
+	"github.com/inipew/goultroid/internal/services/savedresponse"
+	"github.com/inipew/goultroid/internal/services/storage"
 )
 
 //go:generate go run ../../tools/featuregen
@@ -36,4 +39,34 @@ func migrateBuiltinFeatures(ctx context.Context, db *database.DB) error {
 		return fmt.Errorf("feature migrations failed: %w", err)
 	}
 	return nil
+}
+
+const (
+	startupPersistentMediaReconcileBatch   = 64
+	startupPersistentMediaReconcileTimeout = 10 * time.Second
+)
+
+func reconcileBuiltinPersistentMedia(
+	ctx context.Context,
+	db *database.DB,
+	store storage.Storage,
+) (savedresponse.PersistentMediaReconcileStats, error) {
+	var stats savedresponse.PersistentMediaReconcileStats
+	if db == nil || store == nil {
+		return stats, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	reconcileCtx, cancel := context.WithTimeout(ctx, startupPersistentMediaReconcileTimeout)
+	defer cancel()
+
+	stats, err := savedresponse.NewService(store, db).ReconcilePersistentMedia(
+		reconcileCtx,
+		startupPersistentMediaReconcileBatch,
+	)
+	if err != nil {
+		return stats, fmt.Errorf("persistent saved-response media reconciliation failed: %w", err)
+	}
+	return stats, nil
 }
