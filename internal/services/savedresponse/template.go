@@ -219,9 +219,7 @@ func (t *CompiledTemplate) Render(vars TemplateVars, maxRunes int) (string, erro
 	if t == nil {
 		return "", ErrNilTemplate
 	}
-	if maxRunes <= 0 {
-		maxRunes = DefaultMaxOutputRunes
-	}
+	maxRunes = normalizeRenderLimit(maxRunes)
 	if t.usesClock && vars.Now.IsZero() {
 		vars.Now = time.Now()
 	}
@@ -252,6 +250,13 @@ func (t *CompiledTemplate) Render(vars TemplateVars, maxRunes int) (string, erro
 		}
 	}
 	return out.String(), nil
+}
+
+func normalizeRenderLimit(maxRunes int) int {
+	if maxRunes <= 0 || maxRunes > DefaultMaxOutputRunes {
+		return DefaultMaxOutputRunes
+	}
+	return maxRunes
 }
 
 func templateTokenEnd(source string, start int) (int, bool) {
