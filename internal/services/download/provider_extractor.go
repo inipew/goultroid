@@ -159,7 +159,7 @@ func (p *ExtractorProvider) Download(ctx context.Context, rawURL string, store s
 	taskClient := p.tasks
 	p.mu.Unlock()
 
-	if !HasResource(ctx, "process") && taskClient != nil {
+	if !tasks.HasHeldResource(ctx, "process") && taskClient != nil {
 		ticket, taskErr := taskClient.Submit(ctx, tasks.WorkSpec{
 			ID:               tasks.TaskID(fmt.Sprintf("extractor:%d", time.Now().UnixNano())),
 			QuotaOwner:       "download:extractor",

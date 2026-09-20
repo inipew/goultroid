@@ -2,6 +2,7 @@ package taskengine
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -69,7 +70,6 @@ func TestResourceReservationPrecedesDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-
 
 func TestTaskHandlerReceivesHeldResourceMarkersAfterAdmission(t *testing.T) {
 	e := NewEngine(Config{

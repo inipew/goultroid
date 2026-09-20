@@ -142,16 +142,6 @@ func detachDownloadContext(ctx *core.Context) *core.Context {
 	return &cp
 }
 
-func markHeldResources(ctx context.Context, resources []tasks.ResourceRequirement) context.Context {
-	for _, requirement := range resources {
-		if requirement.Amount > 0 {
-			ctx = tasks.WithHeldResource(ctx, requirement.Name)
-			ctx = download.WithResource(ctx, requirement.Name)
-		}
-	}
-	return ctx
-}
-
 func (p *Plugin) submitContinuation(
 	admissionCtx context.Context,
 	kind string,
@@ -177,7 +167,9 @@ func (p *Plugin) submitContinuation(
 		Input:            input,
 		Resources:        resources,
 		Handler: func(taskCtx context.Context) error {
-			return handler(markHeldResources(taskCtx, resources))
+			// TaskEngine publishes spec.Resources into taskCtx only after the
+			// corresponding resource grant is owned.
+			return handler(taskCtx)
 		},
 	})
 	if err != nil {
