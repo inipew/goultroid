@@ -10,6 +10,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/services/savedresponse"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
@@ -41,8 +42,14 @@ type BroadcastReport struct {
 type ProgressCallback func(report BroadcastReport)
 
 type BroadcastRequest struct {
-	Targets []tg.InputPeerClass
-	Text    string
+	Targets  []tg.InputPeerClass
+	Response savedresponse.Response
+	Vars     savedresponse.TemplateVars
+
+	// Text is retained for source compatibility with older callers. New callers
+	// should populate Response so media, format, and template semantics remain
+	// canonical.
+	Text string
 
 	// Delay is retained for API compatibility. Physical pacing belongs to the
 	// shared Telegram RPC limiter; Broadcast never sleeps a worker between
@@ -56,8 +63,10 @@ type Service struct {
 	svc     core.TelegramServicer
 	svcFunc func() core.TelegramServicer
 	logger  *zap.Logger
-	tasks   tasks.Client
-	runSeq  atomic.Uint64
+	tasks     tasks.Client
+	responses *savedresponse.Service
+	delivery  *savedresponse.ResponseDelivery
+	runSeq    atomic.Uint64
 
 	cancel context.CancelFunc
 	scope  tasks.ScopeIdentity
@@ -69,6 +78,7 @@ func NewService(svc any, logger *zap.Logger) *Service {
 		logger = zap.NewNop()
 	}
 	s := &Service{logger: logger}
+	s.SetResponses(savedresponse.NewService(nil))
 	switch v := svc.(type) {
 	case core.TelegramServicer:
 		s.svc = v
@@ -82,6 +92,27 @@ func (s *Service) SetTasks(client tasks.Client) {
 	s.mu.Lock()
 	s.tasks = client
 	s.mu.Unlock()
+}
+
+// SetResponses binds the canonical SavedResponse preparation/delivery service.
+func (s *Service) SetResponses(responses *savedresponse.Service) {
+	if responses == nil {
+		responses = savedresponse.NewService(nil)
+	}
+	s.mu.Lock()
+	s.responses = responses
+	s.delivery = savedresponse.NewResponseDelivery(responses)
+	s.mu.Unlock()
+}
+
+func (s *Service) CaptureReply(ctx *core.Context) (savedresponse.Response, error) {
+	s.mu.Lock()
+	responses := s.responses
+	s.mu.Unlock()
+	if responses == nil {
+		return savedresponse.Response{}, savedresponse.ErrMediaPersistenceUnavailable
+	}
+	return responses.CaptureReply(ctx)
 }
 
 func (s *Service) getService() core.TelegramServicer {
@@ -144,8 +175,16 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 	if len(req.Targets) == 0 {
 		return nil, fmt.Errorf("%w: no targets provided for broadcast", core.ErrInvalidArgs)
 	}
-	if req.Text == "" {
-		return nil, fmt.Errorf("%w: message text cannot be empty", core.ErrInvalidArgs)
+	response := req.Response.Clone()
+	if response.Empty() && req.Text != "" {
+		response = savedresponse.NewText(req.Text)
+	}
+	if response.Empty() {
+		return nil, fmt.Errorf("%w: response cannot be empty", core.ErrInvalidArgs)
+	}
+	compiled, err := savedresponse.Compile(response)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid saved response: %v", core.ErrInvalidArgs, err)
 	}
 	if ctx == nil {
 		return nil, fmt.Errorf("%w: broadcast context is nil", core.ErrInvalidArgs)
@@ -165,10 +204,16 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 		return nil, fmt.Errorf("%w: another broadcast is already running", core.ErrConflict)
 	}
 	client := s.tasks
+	delivery := s.delivery
 	if client == nil {
 		s.mu.Unlock()
 		cancel()
 		return nil, fmt.Errorf("%w: broadcast requires task engine", core.ErrUnavailable)
+	}
+	if delivery == nil {
+		s.mu.Unlock()
+		cancel()
+		return nil, fmt.Errorf("%w: broadcast response delivery is unavailable", core.ErrUnavailable)
 	}
 	s.cancel = cancel
 	s.scope = scope
@@ -187,6 +232,10 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 	start := time.Now()
 	report := BroadcastReport{Total: len(req.Targets)}
 	pending := make([]pendingTarget, 0, min(len(req.Targets), maxBroadcastInFlight))
+	var deliveryResources []tasks.ResourceRequirement
+	if response.HasMedia() {
+		deliveryResources = []tasks.ResourceRequirement{{Name: "media", Amount: 1}}
+	}
 
 	consumeOldest := func() error {
 		item := pending[0]
@@ -238,8 +287,18 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 			Class:            tasks.PriorityBackground,
 			OrderingKey:      broadcastOrderingKey(target),
 			ExecutionTimeout: 30 * time.Second,
+			Resources:        deliveryResources,
 			Handler: func(taskCtx context.Context) error {
-				_, sendErr = svc.SendMessage(taskCtx, target, req.Text)
+				_, sendErr = delivery.DeliverCompiled(taskCtx, response, compiled, req.Vars, savedresponse.DeliverySink{
+					SendMedia: func(mediaType, path, caption string) error {
+						_, err := svc.SendMedia(taskCtx, target, mediaType, path, caption)
+						return err
+					},
+					SendText: func(text string) error {
+						_, err := svc.SendMessage(taskCtx, target, text)
+						return err
+					},
+				})
 				return sendErr
 			},
 		}

@@ -3,13 +3,19 @@ package broadcast_test
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/services/broadcast"
+	"github.com/inipew/goultroid/internal/services/savedresponse"
+	"github.com/inipew/goultroid/internal/services/storage"
 	"github.com/inipew/goultroid/internal/taskengine"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
@@ -46,6 +52,7 @@ func newBroadcastService(t *testing.T, telegram core.TelegramServicer) *broadcas
 		Pools: map[tasks.PoolID]taskengine.PoolEngineConfig{
 			"general": {Concurrency: 4, BacklogLimit: 128, PayloadBudget: 1 << 20},
 		},
+		ResourceCapacities: map[string]int64{"media": 2},
 	})
 	if err := engine.Start(context.Background()); err != nil {
 		t.Fatalf("start task engine: %v", err)
@@ -202,5 +209,123 @@ func TestBroadcast_BackpressuresInsteadOfDroppingOnTaskBacklog(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&mockTG.sentCount); got != targetCount {
 		t.Fatalf("sent count = %d, want %d", got, targetCount)
+	}
+}
+
+type richBroadcastTelegram struct {
+	core.MockTelegramServicer
+	mediaCalls     int32
+	textCalls      int32
+	caption        string
+	mediaPath      string
+	sawMediaLease bool
+}
+
+func (m *richBroadcastTelegram) SendMessage(_ context.Context, _ tg.InputPeerClass, text string) (*tg.Message, error) {
+	atomic.AddInt32(&m.textCalls, 1)
+	return &tg.Message{ID: int(atomic.LoadInt32(&m.textCalls)), Message: text}, nil
+}
+
+func (m *richBroadcastTelegram) SendMedia(
+	ctx context.Context,
+	_ tg.InputPeerClass,
+	mediaType, filePath, caption string,
+) (*tg.Message, error) {
+	if _, err := os.Stat(filePath); err != nil {
+		return nil, err
+	}
+	if mediaType != "photo" {
+		return nil, errors.New("unexpected media type")
+	}
+	atomic.AddInt32(&m.mediaCalls, 1)
+	m.caption = caption
+	m.mediaPath = filePath
+	m.sawMediaLease = tasks.HasHeldResource(ctx, "media")
+	return &tg.Message{ID: 700}, nil
+}
+
+func TestBroadcast_RichSavedResponseUsesSharedDeliveryAndMediaLease(t *testing.T) {
+	telegram := &richBroadcastTelegram{}
+	svc := newBroadcastService(t, telegram)
+	store := storage.NewMemoryStorage()
+	manager, err := filesystem.NewManager(t.TempDir(), "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responses := savedresponse.NewService(store)
+	responses.SetFiles(manager.ForOwner("broadcast-service-test"))
+	svc.SetResponses(responses)
+
+	asset, err := store.Put(context.Background(), strings.NewReader("broadcast-photo"), storage.Metadata{
+		Name: "broadcast.jpg",
+		MIME: "image/jpeg",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := savedresponse.NewHTML("Hello {name}")
+	response.Media = &savedresponse.MediaRef{
+		AssetID: asset.ID, MediaType: "photo", Name: asset.Name, MIMEType: asset.MIME,
+	}
+
+	rep, err := svc.Broadcast(context.Background(), broadcast.BroadcastRequest{
+		Targets: []tg.InputPeerClass{&tg.InputPeerUser{UserID: 1}},
+		Response: response,
+		Vars: savedresponse.TemplateVars{Name: "Alice"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Sent != 1 || rep.Failed != 0 {
+		t.Fatalf("unexpected report: %+v", rep)
+	}
+	if got := atomic.LoadInt32(&telegram.mediaCalls); got != 1 {
+		t.Fatalf("media calls=%d, want 1", got)
+	}
+	if got := atomic.LoadInt32(&telegram.textCalls); got != 0 {
+		t.Fatalf("text calls=%d, want 0 caption-only delivery", got)
+	}
+	if !telegram.sawMediaLease || telegram.caption != "Hello Alice" {
+		t.Fatalf("rich delivery lease=%v caption=%q", telegram.sawMediaLease, telegram.caption)
+	}
+	if telegram.mediaPath == "" {
+		t.Fatal("materialized media path was not observed")
+	}
+	if _, err := os.Stat(telegram.mediaPath); !os.IsNotExist(err) {
+		t.Fatalf("materialized broadcast media survived delivery: %v", err)
+	}
+}
+
+func TestBroadcast_RichSavedResponseCaptionOverflowFallsBackToText(t *testing.T) {
+	telegram := &richBroadcastTelegram{}
+	svc := newBroadcastService(t, telegram)
+	store := storage.NewMemoryStorage()
+	manager, err := filesystem.NewManager(filepath.Join(t.TempDir(), "files"), "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responses := savedresponse.NewService(store)
+	responses.SetFiles(manager.ForOwner("broadcast-overflow-test"))
+	svc.SetResponses(responses)
+
+	asset, err := store.Put(context.Background(), strings.NewReader("broadcast-photo"), storage.Metadata{Name: "broadcast.jpg"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := savedresponse.NewPlainText(strings.Repeat("x", savedresponse.MaxCaptionRunes+20))
+	response.Media = &savedresponse.MediaRef{AssetID: asset.ID, MediaType: "photo", Name: asset.Name}
+
+	rep, err := svc.Broadcast(context.Background(), broadcast.BroadcastRequest{
+		Targets:  []tg.InputPeerClass{&tg.InputPeerUser{UserID: 1}},
+		Response: response,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Sent != 1 || atomic.LoadInt32(&telegram.mediaCalls) != 1 || atomic.LoadInt32(&telegram.textCalls) != 1 {
+		t.Fatalf("unexpected fallback delivery: report=%+v media=%d text=%d", rep, telegram.mediaCalls, telegram.textCalls)
+	}
+	if telegram.caption != "" {
+		t.Fatalf("overflow caption=%q, want empty", telegram.caption)
 	}
 }

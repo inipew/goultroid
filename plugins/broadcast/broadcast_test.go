@@ -31,6 +31,13 @@ func (m *mockTelegram) EditMessage(ctx context.Context, peer tg.InputPeerClass, 
 	return nil
 }
 
+func (m *mockTelegram) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) (*tg.Message, error) {
+	if msgID == 77 {
+		return &tg.Message{ID: 77, Message: "<b>literal reply</b>"}, nil
+	}
+	return nil, nil
+}
+
 func (m *mockTelegram) GetDialogs(ctx context.Context, limit int) ([]*core.Chat, error) {
 	return []*core.Chat{
 		{ID: 101, Title: "Group 1", Type: "group"},
@@ -127,5 +134,24 @@ func TestBroadcastPlugin_EmptyArgs(t *testing.T) {
 	}
 	if !strings.Contains(mockTG.edited, "Usage:") {
 		t.Errorf("expected usage guide, got %s", mockTG.edited)
+	}
+}
+
+func TestBroadcastPlugin_RepliedTextUsesPlainSavedResponse(t *testing.T) {
+	mockTG := &mockTelegram{}
+	svc := newBroadcastPluginService(t, mockTG)
+	p := broadcast.New(svc)
+
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		Svc:     mockTG,
+		PeerID:  &tg.InputPeerSelf{},
+		Message: &core.Message{ID: 10, ReplyToID: 77, IsOutgoing: true},
+	}
+	if err := p.Commands()[0].Handler(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if mockTG.sentText != "&lt;b&gt;literal reply&lt;/b&gt;" {
+		t.Fatalf("replied plain text broadcast=%q", mockTG.sentText)
 	}
 }
