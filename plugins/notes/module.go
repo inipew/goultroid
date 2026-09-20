@@ -6,6 +6,7 @@ import (
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/module"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/services/savedresponse"
 )
 
 type ModuleType struct{}
@@ -15,9 +16,9 @@ var Module ModuleType
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
 		ID:           "notes",
-		Version:      "1.0.0",
+		Version:      "1.1.0",
 		Description:  "Chat notes management and retrieval",
-		Capabilities: []string{plugin.CapTelegramSendMessage, plugin.CapStorageRead, plugin.CapStorageWrite},
+		Capabilities: []string{plugin.CapTelegramSendMessage, plugin.CapStorageRead, plugin.CapStorageWrite, plugin.CapFilesystemTemp},
 	}
 }
 
@@ -29,7 +30,7 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 		return module.ErrNilDatabase
 	}
 	repo := NewSQLiteRepository(rt.DB)
-	return rt.RegisterPlugin(ctx, m.Manifest(), New(repo))
+	return rt.RegisterPlugin(ctx, m.Manifest(), New(repo, savedresponse.NewService(rt.Storage)))
 }
 
 func (ModuleType) Migrations() []database.Migration {

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/services/savedresponse"
 )
 
 func TestNotesFeatureMigrationFreshDatabase(t *testing.T) {
@@ -20,7 +21,7 @@ func TestNotesFeatureMigrationFreshDatabase(t *testing.T) {
 	}
 
 	repo := NewSQLiteRepository(db)
-	if err := repo.SaveNote(ctx, 100, "hello", "world"); err != nil {
+	if err := repo.SaveNote(ctx, 100, "hello", savedresponse.NewText("world")); err != nil {
 		t.Fatalf("save note: %v", err)
 	}
 
@@ -28,7 +29,7 @@ func TestNotesFeatureMigrationFreshDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get note: %v", err)
 	}
-	if note == nil || note.Content != "world" {
+	if note == nil || note.Response.Text != "world" || note.Response.Format != savedresponse.FormatHTML {
 		t.Fatalf("unexpected note: %#v", note)
 	}
 
