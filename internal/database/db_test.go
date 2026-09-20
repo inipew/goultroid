@@ -112,6 +112,20 @@ func TestMigrations_Versioning(t *testing.T) {
 	}
 }
 
+
+func TestLatestMigrationIncludesPersistentMediaLedger(t *testing.T) {
+	if len(migrations) == 0 {
+		t.Fatal("migrations unexpectedly empty")
+	}
+	latest := migrations[len(migrations)-1]
+	if latest.version != 19 {
+		t.Fatalf("latest migration version=%d, want 19", latest.version)
+	}
+	if !strings.Contains(strings.ToLower(latest.description), "media reconciliation") {
+		t.Fatalf("latest migration description=%q", latest.description)
+	}
+}
+
 func TestMigrations_ChecksumValidation(t *testing.T) {
 	ctx := context.Background()
 	db := setupTestDB(t)

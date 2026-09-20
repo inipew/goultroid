@@ -243,6 +243,166 @@ func TestCommitReplacementPersistFailureKeepsOldAssetAndCleansNew(t *testing.T) 
 	}
 }
 
+func ageTrackedAsset(t *testing.T, db *database.DB, assetID string) {
+	t.Helper()
+	_, err := db.Exec(`
+		UPDATE saved_response_media_assets
+		SET registered_at = ?, last_seen_at = ?
+		WHERE asset_id = ?
+	`, time.Now().UTC().Add(-2*persistentMediaOrphanGrace), time.Now().UTC().Add(-2*persistentMediaOrphanGrace), assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPersistentMediaReconcileBackfillsLiveReferencesAndDeletesTrackedOrphan(t *testing.T) {
+	db := openCleanupTestDB(t)
+	defer db.Close()
+	store := storage.NewMemoryStorage()
+	live := putCleanupTestAsset(t, store, "live-global.bin")
+	orphan := putCleanupTestAsset(t, store, "orphan-global.bin")
+	untracked := putCleanupTestAsset(t, store, "shared-media.bin")
+	insertReferencedNote(t, db, "global-live", live.ID)
+
+	svc := NewService(store, db)
+	if err := svc.assets.register(context.Background(), orphan.ID); err != nil {
+		t.Fatal(err)
+	}
+	ageTrackedAsset(t, db, orphan.ID)
+
+	stats, err := svc.ReconcilePersistentMedia(context.Background(), 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.ReferencesBackfilled != 1 || stats.OrphansDiscovered != 1 || stats.OrphansQueued != 1 {
+		t.Fatalf("unexpected persistent reconciliation stats: %+v", stats)
+	}
+	if stats.Cleanup.Deleted != 1 {
+		t.Fatalf("orphan cleanup stats=%+v, want one deletion", stats.Cleanup)
+	}
+	if _, err := store.Stat(context.Background(), live.ID); err != nil {
+		t.Fatalf("live referenced asset disappeared: %v", err)
+	}
+	if _, err := store.Stat(context.Background(), orphan.ID); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("tracked orphan survived reconciliation: %v", err)
+	}
+	if _, err := store.Stat(context.Background(), untracked.ID); err != nil {
+		t.Fatalf("untracked shared-storage asset must remain untouched: %v", err)
+	}
+	tracked, err := svc.TrackedMediaCount(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tracked != 1 {
+		t.Fatalf("tracked media count=%d, want only live referenced asset", tracked)
+	}
+}
+
+func TestPersistentMediaReconcileDoesNotResetCleanupBackoff(t *testing.T) {
+	db := openCleanupTestDB(t)
+	defer db.Close()
+	store := storage.NewMemoryStorage()
+	asset := putCleanupTestAsset(t, store, "backoff-orphan.bin")
+	svc := NewService(store, db)
+	if err := svc.assets.register(context.Background(), asset.ID); err != nil {
+		t.Fatal(err)
+	}
+	ageTrackedAsset(t, db, asset.ID)
+	if err := svc.cleanup.enqueue(context.Background(), asset.ID); err != nil {
+		t.Fatal(err)
+	}
+	item := cleanupItem{AssetID: asset.ID, Attempts: 2}
+	if err := svc.cleanup.recordFailure(context.Background(), item, errors.New("keep backoff")); err != nil {
+		t.Fatal(err)
+	}
+
+	var beforeAttempts int
+	var beforeNext time.Time
+	if err := db.QueryRow(`
+		SELECT attempts, next_attempt_at
+		FROM saved_response_media_cleanup
+		WHERE asset_id = ?
+	`, asset.ID).Scan(&beforeAttempts, &beforeNext); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := svc.ReconcilePersistentMedia(context.Background(), 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.OrphansDiscovered != 1 || stats.OrphansQueued != 0 || stats.Cleanup.Scanned != 0 {
+		t.Fatalf("reconcile unexpectedly reset/dequeued backoff: %+v", stats)
+	}
+
+	var afterAttempts int
+	var afterNext time.Time
+	if err := db.QueryRow(`
+		SELECT attempts, next_attempt_at
+		FROM saved_response_media_cleanup
+		WHERE asset_id = ?
+	`, asset.ID).Scan(&afterAttempts, &afterNext); err != nil {
+		t.Fatal(err)
+	}
+	if afterAttempts != beforeAttempts || !afterNext.Equal(beforeNext) {
+		t.Fatalf("cleanup backoff changed: before attempts=%d next=%v, after attempts=%d next=%v",
+			beforeAttempts, beforeNext, afterAttempts, afterNext)
+	}
+	if _, err := store.Stat(context.Background(), asset.ID); err != nil {
+		t.Fatalf("asset was deleted before retry deadline: %v", err)
+	}
+}
+
+func TestPersistentMediaGraceProtectsFreshUnreferencedAsset(t *testing.T) {
+	db := openCleanupTestDB(t)
+	defer db.Close()
+	store := storage.NewMemoryStorage()
+	asset := putCleanupTestAsset(t, store, "fresh-capture.bin")
+	svc := NewService(store, db)
+	if err := svc.assets.register(context.Background(), asset.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := svc.ReconcilePersistentMedia(context.Background(), 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.OrphansDiscovered != 0 || stats.Cleanup.Deleted != 0 {
+		t.Fatalf("fresh capture entered orphan cleanup before grace: %+v", stats)
+	}
+	if _, err := store.Stat(context.Background(), asset.ID); err != nil {
+		t.Fatalf("fresh tracked asset disappeared: %v", err)
+	}
+}
+
+func TestGlobalMigrationCreatesPersistentMediaLedger(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	var table string
+	if err := db.QueryRow(`
+		SELECT name FROM sqlite_master
+		WHERE type = 'table' AND name = 'saved_response_media_assets'
+	`).Scan(&table); err != nil {
+		t.Fatal(err)
+	}
+	if table != "saved_response_media_assets" {
+		t.Fatalf("persistent media ledger table=%q", table)
+	}
+	var indexCount int
+	if err := db.QueryRow(`
+		SELECT count(*) FROM sqlite_master
+		WHERE type = 'index' AND name = 'idx_saved_response_media_assets_registered'
+	`).Scan(&indexCount); err != nil {
+		t.Fatal(err)
+	}
+	if indexCount != 1 {
+		t.Fatalf("persistent media ledger index count=%d", indexCount)
+	}
+}
+
 func TestCleanupRetryDelayIsExponentiallyBounded(t *testing.T) {
 	if got := cleanupRetryDelay(1); got != 5*time.Second {
 		t.Fatalf("attempt 1 delay=%v", got)
