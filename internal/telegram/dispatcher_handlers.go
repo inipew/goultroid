@@ -47,7 +47,7 @@ type prioritizedHandler struct {
 	scope            tasks.ScopeIdentity
 }
 
-const messageRouteClassCount = 128
+const messageRouteClassCount = 256
 
 type messageHandlerBucket struct {
 	decision []prioritizedHandler
@@ -233,6 +233,9 @@ func classifyMessageRoute(msg *tg.Message, isCommand bool) uint8 {
 	if msg.ReplyTo != nil {
 		class |= 1 << 6
 	}
+	if msg.Media != nil {
+		class |= 1 << 7
+	}
 	return class
 }
 
@@ -263,6 +266,9 @@ func classifyCanonicalMessageRoute(message *core.MessageEnvelope) uint8 {
 	}
 	if message.ReplyToID != 0 {
 		class |= 1 << 6
+	}
+	if message.Media != nil {
+		class |= 1 << 7
 	}
 	return class
 }
@@ -359,6 +365,9 @@ func messageHookInterestMatchesClass(interest core.MessageHookInterest, class ui
 		return false
 	}
 	if interest.RequireReply && class&(1<<6) == 0 {
+		return false
+	}
+	if interest.RequireMedia && class&(1<<7) == 0 {
 		return false
 	}
 	return true

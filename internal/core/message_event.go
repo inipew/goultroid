@@ -13,6 +13,31 @@ type MessageMention struct {
 	Username string
 }
 
+// MessageMediaSummary is the transport-neutral media metadata exposed to
+// canonical message hooks. Download locations and raw MTProto objects are
+// intentionally excluded.
+type MessageMediaSummary struct {
+	Type     string
+	FileName string
+	MIMEType string
+	Size     int64
+	Width    int
+	Height   int
+	Duration int
+	WebURL   string
+}
+
+func SummarizeMedia(info *MediaInfo) *MessageMediaSummary {
+	if info == nil {
+		return nil
+	}
+	return &MessageMediaSummary{
+		Type: info.Type, FileName: info.FileName, MIMEType: info.MimeType,
+		Size: info.Size, Width: info.Width, Height: info.Height,
+		Duration: info.Duration, WebURL: info.WebURL,
+	}
+}
+
 // MessageEnvelope is the canonical, lightweight message view exposed to
 // message-hook plugins. It intentionally contains no raw MTProto update or
 // entity containers. Treat instances as immutable after dispatcher creation.
@@ -38,6 +63,7 @@ type MessageEnvelope struct {
 	Mentioned        bool
 	ReplyIsTopicRoot bool
 	Mentions         []MessageMention
+	Media            *MessageMediaSummary
 }
 
 // IsPrivate reports whether the message belongs to a private user dialog.
@@ -105,4 +131,9 @@ func (m *MessageEnvelope) SenderName() string {
 		return "User " + strconv.FormatInt(m.Sender.ID, 10)
 	}
 	return "Unknown User"
+}
+
+
+func (m *MessageEnvelope) HasMedia() bool {
+	return m != nil && m.Media != nil
 }

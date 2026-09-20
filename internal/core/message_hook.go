@@ -56,6 +56,7 @@ type MessageHookInterest struct {
 	RequireText    bool
 	RequireMention bool
 	RequireReply   bool
+	RequireMedia   bool
 }
 
 // MessageHookRouting describes where a raw-message hook belongs and which

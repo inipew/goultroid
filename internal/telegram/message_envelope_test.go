@@ -99,3 +99,30 @@ func TestNormalizeMessageEnvelopePreservesDirectMentionFlag(t *testing.T) {
 		t.Fatalf("direct Mentioned flag was not preserved: %+v", got)
 	}
 }
+
+
+func TestNormalizeMessageEnvelopeIncludesTransportNeutralMediaSummary(t *testing.T) {
+	msg := &tg.Message{
+		ID:     20,
+		PeerID: &tg.PeerChat{ChatID: 7},
+		Media: &tg.MessageMediaDocument{Document: &tg.Document{
+			ID:       55,
+			MimeType: "video/mp4",
+			Size:     123456,
+			Attributes: []tg.DocumentAttributeClass{
+				&tg.DocumentAttributeFilename{FileName: "clip.mp4"},
+				&tg.DocumentAttributeVideo{W: 1280, H: 720, Duration: 9},
+			},
+		}},
+	}
+	got := NormalizeMessageEnvelope(tg.Entities{}, msg, false, "", 1)
+	if got == nil || !got.HasMedia() || got.Media == nil {
+		t.Fatalf("media summary missing: %+v", got)
+	}
+	if got.Media.Type != "video" || got.Media.FileName != "clip.mp4" || got.Media.MIMEType != "video/mp4" {
+		t.Fatalf("unexpected media summary: %+v", got.Media)
+	}
+	if got.Media.Size != 123456 || got.Media.Width != 1280 || got.Media.Height != 720 || got.Media.Duration != 9 {
+		t.Fatalf("unexpected media metadata: %+v", got.Media)
+	}
+}

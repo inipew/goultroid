@@ -21,3 +21,16 @@ func TestMessageEnvelopeMentionHelpers(t *testing.T) {
 		t.Fatalf("SenderName=%q", got)
 	}
 }
+
+
+func TestMessageEnvelopeMediaSummaryHelper(t *testing.T) {
+	info := &MediaInfo{Type: "photo", FileName: "x.jpg", MIMEType: "image/jpeg", Size: 12, Width: 10, Height: 20}
+	summary := SummarizeMedia(info)
+	if summary == nil || summary.Type != "photo" || summary.Width != 10 || summary.Height != 20 {
+		t.Fatalf("unexpected summary: %+v", summary)
+	}
+	envelope := &MessageEnvelope{Media: summary}
+	if !envelope.HasMedia() {
+		t.Fatal("expected HasMedia")
+	}
+}

@@ -102,6 +102,30 @@ func TestDispatcher_MessageRoutingMentionAndReplyInterests(t *testing.T) {
 	}
 }
 
+func TestDispatcher_MessageRoutingMediaInterest(t *testing.T) {
+	d := NewDispatcher(core.NewRouter("."), core.NewPermissions(1, nil), nil, zap.NewNop())
+	d.AddPrioritizedMessageHandlerWithRouting(PriorityFeature, core.MessageHookRouting{
+		Lane: core.MessageHookEvent,
+		Interests: []core.MessageHookInterest{{
+			Directions: core.MessageDirectionIncoming,
+			Peers: core.MessagePeerPrivate | core.MessagePeerGroup | core.MessagePeerChannel,
+			RequireMedia: true,
+		}},
+	}, func(context.Context, tg.Entities, *tg.Message, bool, string) error { return nil })
+
+	plain := &tg.Message{PeerID: &tg.PeerChat{ChatID: 7}, Message: "plain"}
+	_, event := d.messageHandlersFor(plain, false)
+	if len(event) != 0 {
+		t.Fatalf("plain message routed to media-only hook: %d", len(event))
+	}
+
+	photo := &tg.Message{PeerID: &tg.PeerChat{ChatID: 7}, Media: &tg.MessageMediaPhoto{Photo: &tg.Photo{ID: 9}}}
+	_, event = d.messageHandlersFor(photo, false)
+	if len(event) != 1 {
+		t.Fatalf("media event handlers=%d, want 1", len(event))
+	}
+}
+
 func TestDispatcher_LegacyHookRoutingCompatibility(t *testing.T) {
 	d := NewDispatcher(core.NewRouter("."), core.NewPermissions(1, nil), nil, zap.NewNop())
 	d.AddMessageHandler(func(context.Context, tg.Entities, *tg.Message, bool, string) error { return nil })
@@ -195,6 +219,7 @@ func TestCanonicalAndRawRouteClassificationParity(t *testing.T) {
 		Message:   "@x",
 		Mentioned: true,
 		ReplyTo:   &tg.MessageReplyHeader{ReplyToMsgID: 1},
+		Media:     &tg.MessageMediaPhoto{Photo: &tg.Photo{ID: 12}},
 	}
 	rawClass := classifyMessageRoute(msg, true)
 	envelope := NormalizeMessageEnvelope(tg.Entities{
@@ -202,6 +227,6 @@ func TestCanonicalAndRawRouteClassificationParity(t *testing.T) {
 	}, msg, true, "cmd", 1)
 	canonicalClass := classifyCanonicalMessageRoute(envelope)
 	if rawClass != canonicalClass {
-		t.Fatalf("route class mismatch raw=%07b canonical=%07b", rawClass, canonicalClass)
+		t.Fatalf("route class mismatch raw=%08b canonical=%08b", rawClass, canonicalClass)
 	}
 }

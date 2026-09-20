@@ -128,6 +128,14 @@ func NormalizeMessageEnvelope(e tg.Entities, msg *tg.Message, isCommand bool, co
 		}
 	}
 
+	if msg.Media != nil {
+		if info := core.ExtractMediaFromTG(msg.Media); info != nil {
+			envelope.Media = core.SummarizeMedia(info)
+		} else {
+			envelope.Media = &core.MessageMediaSummary{Type: "unknown"}
+		}
+	}
+
 	envelope.Mentioned = msg.Mentioned
 	if len(msg.Entities) > 0 {
 		envelope.Mentions = make([]core.MessageMention, 0, len(msg.Entities))
