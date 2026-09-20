@@ -1,0 +1,100 @@
+name: Benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      benchtime:
+        description: 'Benchmark duration (e.g. 1s, 3s)'
+        required: false
+        default: '3s'
+      count:
+        description: 'Benchmark iteration count'
+        required: false
+        default: '5'
+  schedule:
+    # Run weekly on Sunday at 00:00 UTC
+    - cron: '0 0 * * 0'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  benchmark:
+    name: Run Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+          cache-dependency-path: 'go.sum'
+
+      - name: Benchmark Database
+        run: |
+          BENCHTIME="${{ github.event.inputs.benchtime || '3s' }}"
+          COUNT="${{ github.event.inputs.count || '5' }}"
+          echo "=== Database Benchmarks ===" >> benchmark-results.txt
+          go test ./internal/database \
+            -run '^$' \
+            -bench '^BenchmarkSQLiteIdlePoolBurst$' \
+            -benchmem -benchtime="${BENCHTIME}" -count="${COUNT}" | tee -a benchmark-results.txt
+
+      - name: Benchmark Core EventBus
+        run: |
+          BENCHTIME="${{ github.event.inputs.benchtime || '3s' }}"
+          COUNT="${{ github.event.inputs.count || '5' }}"
+          echo -e "\n=== Core EventBus Benchmarks ===" >> benchmark-results.txt
+          go test ./internal/core \
+            -run '^$' \
+            -bench '^BenchmarkEventBusActivePublish$' \
+            -benchmem -benchtime="${BENCHTIME}" -count="${COUNT}" | tee -a benchmark-results.txt
+
+      - name: Benchmark TaskEngine
+        run: |
+          BENCHTIME="${{ github.event.inputs.benchtime || '3s' }}"
+          COUNT="${{ github.event.inputs.count || '5' }}"
+          echo -e "\n=== TaskEngine Benchmarks ===" >> benchmark-results.txt
+          go test ./internal/taskengine \
+            -run '^$' \
+            -bench '^BenchmarkTaskEngineFirstTaskAfterIdle$' \
+            -benchmem -benchtime="${BENCHTIME}" -count="${COUNT}" | tee -a benchmark-results.txt
+
+      - name: Benchmark Telegram RPC Limiter
+        run: |
+          BENCHTIME="${{ github.event.inputs.benchtime || '3s' }}"
+          COUNT="${{ github.event.inputs.count || '5' }}"
+          echo -e "\n=== Telegram RPC Limiter Benchmarks ===" >> benchmark-results.txt
+          go test ./internal/telegram \
+            -run '^$' \
+            -bench 'BenchmarkHierarchicalRPCLimiter' \
+            -benchmem -benchtime="${BENCHTIME}" -count="${COUNT}" | tee -a benchmark-results.txt
+
+      - name: Publish Benchmark Summary
+        if: always()
+        run: |
+          if [ -f benchmark-results.txt ]; then
+            echo "## Performance Benchmark Results" >> $GITHUB_STEP_SUMMARY
+            echo "```text" >> $GITHUB_STEP_SUMMARY
+            cat benchmark-results.txt >> $GITHUB_STEP_SUMMARY
+            echo "```" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload Benchmark Results Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmark-results.txt
+          retention-days: 30
+          if-no-files-found: ignore
