@@ -17,10 +17,11 @@ var ErrJobLeaseLost = errors.New("scheduled job lease was lost or claimed by ano
 
 // ScheduledJob status constants
 const (
-	JobStatusPending   = "pending"
-	JobStatusRunning   = "running"
-	JobStatusFailed    = "failed"
-	JobStatusCompleted = "completed"
+	JobStatusInitializing = "initializing"
+	JobStatusPending      = "pending"
+	JobStatusRunning      = "running"
+	JobStatusFailed       = "failed"
+	JobStatusCompleted    = "completed"
 )
 
 // ScheduledJob represents a scheduled task (one-shot or recurring).
@@ -59,6 +60,7 @@ type JobHistoryEntry struct {
 // Repository is the persistence contract for the scheduler domain.
 type Repository interface {
 	CreateScheduledJob(ctx context.Context, job *ScheduledJob) (*ScheduledJob, error)
+	ActivateScheduledJob(ctx context.Context, id int64) error
 	GetScheduledJob(ctx context.Context, id int64) (*ScheduledJob, error)
 	ListScheduledJobs(ctx context.Context, chatID int64) ([]ScheduledJob, error)
 	ListDueScheduledJobs(ctx context.Context, before time.Time) ([]ScheduledJob, error)
@@ -202,6 +204,30 @@ func (r *SQLiteRepository) CreateScheduledJob(ctx context.Context, job *Schedule
 	}
 	job.ID = id
 	return job, nil
+}
+
+// ActivateScheduledJob publishes a fully prepared scheduler row to claimers.
+// Rows are created as JobStatusInitializing by Engine while their JobManager
+// definition/schedule is registered; only this transition makes them visible
+// to ClaimDueScheduledJobs/GetEarliestDueTime.
+func (r *SQLiteRepository) ActivateScheduledJob(ctx context.Context, id int64) error {
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE scheduled_jobs
+		SET status = ?
+		WHERE id = ? AND status = ?`,
+		JobStatusPending, id, JobStatusInitializing,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to activate scheduled job %d: %w", id, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return fmt.Errorf("scheduled job %d is not initializing", id)
+	}
+	return nil
 }
 
 // GetScheduledJob retrieves a single scheduled job by its primary key ID.

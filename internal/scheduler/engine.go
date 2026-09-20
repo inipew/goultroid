@@ -421,7 +421,7 @@ func (e *Engine) ScheduleOnce(ctx context.Context, chatID int64, peerType string
 		ChatID: chatID, PeerType: peerType, AccessHash: accessHash,
 		ActionType: actionType, Payload: payload, IntervalSeconds: 0,
 		NextRunAt: when, CreatedAt: time.Now().UTC(), CreatedBy: createdBy,
-		Status: JobStatusPending, MaxAttempts: 3,
+		Status: JobStatusInitializing, MaxAttempts: 3,
 	}
 	res, err := e.db.CreateScheduledJob(ctx, job)
 	if err != nil {
@@ -431,6 +431,11 @@ func (e *Engine) ScheduleOnce(ctx context.Context, chatID int64, peerType string
 		_ = e.db.DeleteScheduledJob(ctx, res.ID)
 		return nil, err
 	}
+	if err := e.db.ActivateScheduledJob(ctx, res.ID); err != nil {
+		_ = e.db.DeleteScheduledJob(ctx, res.ID)
+		return nil, err
+	}
+	res.Status = JobStatusPending
 	e.notifyWake()
 	return res, nil
 }
@@ -454,7 +459,7 @@ func (e *Engine) ScheduleRecurring(ctx context.Context, chatID int64, peerType s
 		ChatID: chatID, PeerType: peerType, AccessHash: accessHash,
 		ActionType: actionType, Payload: payload, IntervalSeconds: sec,
 		NextRunAt: time.Now().UTC().Add(interval), CreatedAt: time.Now().UTC(),
-		CreatedBy: createdBy, Status: JobStatusPending, MaxAttempts: 3,
+		CreatedBy: createdBy, Status: JobStatusInitializing, MaxAttempts: 3,
 	}
 	res, err := e.db.CreateScheduledJob(ctx, job)
 	if err != nil {
@@ -464,6 +469,11 @@ func (e *Engine) ScheduleRecurring(ctx context.Context, chatID int64, peerType s
 		_ = e.db.DeleteScheduledJob(ctx, res.ID)
 		return nil, err
 	}
+	if err := e.db.ActivateScheduledJob(ctx, res.ID); err != nil {
+		_ = e.db.DeleteScheduledJob(ctx, res.ID)
+		return nil, err
+	}
+	res.Status = JobStatusPending
 	e.notifyWake()
 	return res, nil
 }

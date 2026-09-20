@@ -779,3 +779,42 @@ func TestGetEarliestDueTime(t *testing.T) {
 	}
 	t.Logf("earliest found: %v", earliest)
 }
+
+
+func TestInitializingScheduledJobIsNotClaimableUntilActivated(t *testing.T) {
+	repo, _ := setupTestSchedulerRepo(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	job, err := repo.CreateScheduledJob(ctx, &ScheduledJob{
+		ChatID: 77, PeerType: "chat", ActionType: ActionMessage, Payload: "staged",
+		NextRunAt: now.Add(-time.Second), Status: JobStatusInitializing, MaxAttempts: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	claimed, err := repo.ClaimDueScheduledJobs(ctx, now, 10, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 0 {
+		t.Fatalf("initializing row was claimable before definition registration: %+v", claimed)
+	}
+	if _, found, err := repo.GetEarliestDueTime(ctx); err != nil {
+		t.Fatal(err)
+	} else if found {
+		t.Fatal("initializing row leaked into scheduler wake deadline")
+	}
+
+	if err := repo.ActivateScheduledJob(ctx, job.ID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err = repo.ClaimDueScheduledJobs(ctx, now, 10, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 1 || claimed[0].ID != job.ID {
+		t.Fatalf("activated row claim=%+v, want job %d", claimed, job.ID)
+	}
+}
