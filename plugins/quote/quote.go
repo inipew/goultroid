@@ -155,18 +155,22 @@ func boundedQuoteText(text string) string {
 	}
 	cut := len(runes)
 	lines := 1
+	previousCR := false
 	for i, r := range runes {
 		if i >= maxQuoteTextRunes {
 			cut = i
 			break
 		}
-		if r == '\n' {
+
+		lineBreak := r == '\r' || (r == '\n' && !previousCR)
+		if lineBreak {
 			lines++
 			if lines > maxQuoteLogicalLines {
 				cut = i
 				break
 			}
 		}
+		previousCR = r == '\r'
 	}
 	if cut < len(runes) {
 		return string(runes[:cut]) + "…"

@@ -683,6 +683,16 @@ func TestBoundedQuoteTextPreservesPrefixAndCapsLogicalLines(t *testing.T) {
 		t.Fatalf("logical lines=%d, max=%d", lines, maxQuoteLogicalLines)
 	}
 
+	carriageReturns := boundedQuoteText(strings.Repeat("line\r", maxQuoteLogicalLines+5))
+	if !strings.HasSuffix(carriageReturns, "…") {
+		t.Fatal("carriage-return logical lines must also be bounded")
+	}
+
+	crlf := boundedQuoteText(strings.Repeat("line\r\n", maxQuoteLogicalLines+5))
+	if !strings.HasSuffix(crlf, "…") {
+		t.Fatal("CRLF logical lines must be bounded")
+	}
+
 	long := strings.Repeat("界", maxQuoteTextRunes+50)
 	got = boundedQuoteText(long)
 	if runes := len([]rune(got)); runes != maxQuoteTextRunes+1 {
