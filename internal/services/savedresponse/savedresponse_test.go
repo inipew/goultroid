@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/services/storage"
@@ -395,5 +396,86 @@ func TestInspectStickerReportsFormat(t *testing.T) {
 	}
 	if info.StickerFormat != StickerFormatVideo {
 		t.Fatalf("StickerFormat=%q, want %q", info.StickerFormat, StickerFormatVideo)
+	}
+}
+
+
+type stickerCaptureTelegram struct {
+	core.MockTelegramServicer
+	reply   *tg.Message
+	payload []byte
+}
+
+func (s *stickerCaptureTelegram) GetMessage(
+	context.Context,
+	tg.InputPeerClass,
+	int,
+) (*tg.Message, error) {
+	if s.reply == nil {
+		return nil, nil
+	}
+	cp := *s.reply
+	return &cp, nil
+}
+
+func (s *stickerCaptureTelegram) DownloadFile(
+	_ context.Context,
+	_ tg.InputFileLocationClass,
+	dstPath string,
+) error {
+	return os.WriteFile(dstPath, s.payload, 0o600)
+}
+
+func TestCaptureReplyPreservesAnimatedStickerFormat(t *testing.T) {
+	var payload bytes.Buffer
+	zw := gzip.NewWriter(&payload)
+	if _, err := zw.Write([]byte(`{"v":"5.7.4","w":512,"h":512,"fr":60,"ip":0,"op":60,"layers":[]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	telegram := &stickerCaptureTelegram{
+		payload: payload.Bytes(),
+		reply: &tg.Message{
+			ID: 77,
+			Media: &tg.MessageMediaDocument{Document: &tg.Document{
+				ID:       7001,
+				MimeType: "application/x-tgsticker",
+				Size:     int64(payload.Len()),
+				Attributes: []tg.DocumentAttributeClass{
+					&tg.DocumentAttributeSticker{},
+				},
+			}},
+		},
+	}
+	svc, store := newPreparedTestService(t)
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		Svc:     telegram,
+		PeerID:  &tg.InputPeerSelf{},
+		Message: &core.Message{ID: 10, ReplyToID: 77, IsOutgoing: true},
+	}
+
+	response, err := svc.CaptureReply(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Media == nil || response.Media.MediaType != "sticker" {
+		t.Fatalf("unexpected captured media: %+v", response.Media)
+	}
+	if response.Media.MIMEType != "application/x-tgsticker" {
+		t.Fatalf("captured MIME=%q", response.Media.MIMEType)
+	}
+	if !strings.HasSuffix(response.Media.Name, ".tgs") {
+		t.Fatalf("captured asset name=%q, want .tgs suffix", response.Media.Name)
+	}
+	asset, err := store.Stat(context.Background(), response.Media.AssetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(asset.Name, ".tgs") {
+		t.Fatalf("persisted asset name=%q, want .tgs suffix", asset.Name)
 	}
 }
