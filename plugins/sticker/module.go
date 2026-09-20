@@ -14,7 +14,7 @@ var Module ModuleType
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
 		ID:           "sticker",
-		Version:      "1.0.0",
+		Version:      "1.1.0",
 		Description:  "Sticker creation and conversion utilities",
 		Capabilities: []string{plugin.CapFilesystemTemp},
 	}

@@ -1,6 +1,7 @@
 package sticker
 
 import (
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
@@ -18,6 +19,8 @@ import (
 	"github.com/inipew/goultroid/internal/services/imageguard"
 	"github.com/inipew/goultroid/internal/tasks"
 )
+
+const staticStickerMaxBytes int64 = 512 << 10
 
 var stickerImagePolicy = imageguard.Policy{
 	MaxInputBytes:   32 << 20,
@@ -91,7 +94,10 @@ func (p *Plugin) Commands() []core.Command {
 			Category:    "Media",
 			Permission:  core.PermissionSudo,
 			Timeout:     60 * time.Second,
-			Resources:   []tasks.ResourceRequirement{{Name: "media", Amount: 1}},
+			Resources: []tasks.ResourceRequirement{
+				{Name: "download", Amount: 1},
+				{Name: "media", Amount: 1},
+			},
 			Handler:     p.handleSticker,
 		},
 	}
@@ -143,18 +149,24 @@ func (p *Plugin) handleSticker(ctx *core.Context) error {
 	dstImg := image.NewRGBA(image.Rect(0, 0, dstW, dstH))
 	draw.BiLinear.Scale(dstImg, dstImg.Bounds(), srcImg, srcImg.Bounds(), draw.Over, nil)
 
-	// Save as PNG
+	// Static stickers may be PNG or WebP. BestCompression keeps the bounded
+	// 512px output as small as possible without adding a process/WebP dependency.
 	outPath := filepath.Join(tmpDir, "sticker.png")
-	outFile, err := os.Create(outPath)
+	outFile, err := os.OpenFile(outPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create output file: %v", err))
 	}
-	defer outFile.Close()
-
-	if err := png.Encode(outFile, dstImg); err != nil {
+	encoder := png.Encoder{CompressionLevel: png.BestCompression}
+	if err := encoder.Encode(outFile, dstImg); err != nil {
+		_ = outFile.Close()
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to encode sticker PNG: %v", err))
 	}
-	_ = outFile.Close()
+	if err := outFile.Close(); err != nil {
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to finalize sticker PNG: %v", err))
+	}
+	if err := validateStaticStickerOutput(outPath); err != nil {
+		return ctx.EditOrReply(fmt.Sprintf("❌ Sticker output is not Telegram-compliant: %v", err))
+	}
 
 	// Upload sticker
 	if err := ctx.SendSticker(outPath); err != nil {
@@ -162,6 +174,20 @@ func (p *Plugin) handleSticker(ctx *core.Context) error {
 	}
 
 	_ = ctx.Delete()
+	return nil
+}
+
+func validateStaticStickerOutput(path string) error {
+	stat, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if stat.Size() <= 0 {
+		return errors.New("sticker output is empty")
+	}
+	if stat.Size() > staticStickerMaxBytes {
+		return fmt.Errorf("PNG is %d bytes; static sticker limit is %d bytes", stat.Size(), staticStickerMaxBytes)
+	}
 	return nil
 }
 
