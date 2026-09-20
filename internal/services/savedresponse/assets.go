@@ -148,6 +148,7 @@ func (l *assetLedger) resolveReferenceSources(ctx context.Context) ([]mediaRefer
 	resolved := make([]mediaReferenceSource, 0, len(persistentMediaReferenceSources))
 	complete := true
 	for _, source := range persistentMediaReferenceSources {
+		sourceComplete := true
 		for _, column := range []string{
 			source.column,
 			source.textColumn,
@@ -160,46 +161,16 @@ func (l *assetLedger) resolveReferenceSources(ctx context.Context) ([]mediaRefer
 				return nil, false, err
 			}
 			if !exists {
+				sourceComplete = false
 				complete = false
 				break
 			}
 		}
-		if !complete && len(resolved) == 0 {
-			// Continue inspecting the remaining known sources so callers can still
-			// backfill/check any fully migrated source, but never delete orphans
-			// unless every known source is present.
+		if sourceComplete {
+			resolved = append(resolved, source)
 		}
-		assetExists, err := l.columnExists(ctx, source.table, source.column)
-		if err != nil {
-			return nil, false, err
-		}
-		textExists, err := l.columnExists(ctx, source.table, source.textColumn)
-		if err != nil {
-			return nil, false, err
-		}
-		if !assetExists || !textExists {
-			continue
-		}
-		metadataComplete := true
-		for _, column := range []string{"media_type", "media_name", "media_mime"} {
-			exists, err := l.columnExists(ctx, source.table, column)
-			if err != nil {
-				return nil, false, err
-			}
-			if !exists {
-				metadataComplete = false
-				break
-			}
-		}
-		if !metadataComplete {
-			continue
-		}
-		resolved = append(resolved, source)
 	}
-	if len(resolved) != len(persistentMediaReferenceSources) {
-		complete = false
-	}
-	return resolved, complete, nil
+	return resolved, complete && len(resolved) == len(persistentMediaReferenceSources), nil
 }
 
 func (l *assetLedger) backfillSource(

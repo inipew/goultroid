@@ -255,7 +255,6 @@ func TestCommitReplacementPersistFailureKeepsOldAssetAndCleansNew(t *testing.T) 
 }
 
 
-
 func TestPersistentMediaOrphanDeletionFailsClosedOnIncompleteReferenceSchema(t *testing.T) {
 	db, err := database.Open(":memory:")
 	if err != nil {
