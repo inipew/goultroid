@@ -3,13 +3,17 @@ package myxl
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"rsc.io/qr"
 )
 
 const (
-	maxQRPayloadBytes = 2953
-	maxQRPNGBytes     = 1 << 20
+	maxQRPayloadBytes    = 2953
+	maxQRPNGBytes        = 1 << 20
+	maxCompactQRRunes    = 3900
+	maxQRImageDimension  = 768
+	maxInlineQRPreview   = 512
 )
 
 func normalizeQRPayload(data string) (string, error) {
@@ -82,7 +86,37 @@ func RenderQRCompact(data string) (string, error) {
 		sb.WriteByte('\n')
 	}
 
-	return strings.TrimRight(sb.String(), "\n"), nil
+	rendered := strings.TrimRight(sb.String(), "\n")
+	if utf8.RuneCountInString(rendered) > maxCompactQRRunes {
+		return "", fmt.Errorf("compact QR output too large for Telegram text; use PNG output")
+	}
+	return rendered, nil
+}
+
+func qrScaleForModules(modules int) int {
+	if modules <= 0 {
+		return 10
+	}
+	scale := 10
+	if modules*scale > maxQRImageDimension {
+		scale = maxQRImageDimension / modules
+	}
+	if scale < 2 {
+		scale = 2
+	}
+	return scale
+}
+
+func inlineQRPreview(data string) (string, bool) {
+	data = strings.TrimSpace(data)
+	if data == "" {
+		return "", false
+	}
+	runes := []rune(data)
+	if len(runes) <= maxInlineQRPreview {
+		return data, false
+	}
+	return string(runes[:maxInlineQRPreview]) + "…", true
 }
 
 // GenerateQRPNG encodes data into a high-resolution PNG image byte slice
@@ -102,8 +136,7 @@ func GenerateQRPNG(data string) ([]byte, error) {
 		}
 	}
 
-	// Scale = 10 gives sharp ~400-550px output, ideal for camera and gallery QR scanners.
-	code.Scale = 10
+	code.Scale = qrScaleForModules(code.Size)
 	pngBytes := code.PNG()
 	if len(pngBytes) == 0 {
 		return nil, fmt.Errorf("empty PNG output generated")
