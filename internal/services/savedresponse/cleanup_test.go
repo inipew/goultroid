@@ -392,6 +392,83 @@ func TestGlobalMigrationCreatesPersistentMediaLedger(t *testing.T) {
 	}
 }
 
+func TestCommitReplacementDisarmsPreparedCaptureIntent(t *testing.T) {
+	db := openCleanupTestDB(t)
+	defer db.Close()
+	store := storage.NewMemoryStorage()
+	asset := putCleanupTestAsset(t, store, "commit-live.bin")
+	svc := NewService(store, db)
+
+	if err := svc.assets.register(context.Background(), asset.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.cleanup.prepare(context.Background(), asset.ID); err != nil {
+		t.Fatal(err)
+	}
+	next := Response{Text: "live", Media: &MediaRef{AssetID: asset.ID}}
+	if err := svc.CommitReplacement(context.Background(), Response{}, next, func() error {
+		insertReferencedNote(t, db, "commit-live", asset.ID)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	pending, err := svc.PendingCleanupCount(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending != 0 {
+		t.Fatalf("prepared capture intent survived durable commit: %d", pending)
+	}
+	tracked, err := svc.TrackedMediaCount(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tracked != 1 {
+		t.Fatalf("tracked media count=%d, want 1", tracked)
+	}
+	if _, err := store.Stat(context.Background(), asset.ID); err != nil {
+		t.Fatalf("committed media asset disappeared: %v", err)
+	}
+}
+
+func TestDeleteMediaRemovesLedgerAndPreparedIntent(t *testing.T) {
+	db := openCleanupTestDB(t)
+	defer db.Close()
+	store := storage.NewMemoryStorage()
+	asset := putCleanupTestAsset(t, store, "validation-failure.bin")
+	svc := NewService(store, db)
+
+	if err := svc.assets.register(context.Background(), asset.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.cleanup.prepare(context.Background(), asset.ID); err != nil {
+		t.Fatal(err)
+	}
+	response := Response{Media: &MediaRef{AssetID: asset.ID}}
+	if err := svc.DeleteMedia(context.Background(), response); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Stat(context.Background(), asset.ID); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("direct media delete left storage asset: %v", err)
+	}
+	tracked, err := svc.TrackedMediaCount(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tracked != 0 {
+		t.Fatalf("direct media delete left %d ledger rows", tracked)
+	}
+	pending, err := svc.PendingCleanupCount(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending != 0 {
+		t.Fatalf("direct media delete left %d cleanup intents", pending)
+	}
+}
+
 func TestCleanupRetryDelayIsExponentiallyBounded(t *testing.T) {
 	if got := cleanupRetryDelay(1); got != 5*time.Second {
 		t.Fatalf("attempt 1 delay=%v", got)
