@@ -298,3 +298,48 @@ func TestStickerRejectsNonImageDocumentBeforeDownload(t *testing.T) {
 		t.Fatalf("unexpected response: %q", svc.sent)
 	}
 }
+
+
+func TestStickerCommandResources(t *testing.T) {
+	cmds := New().Commands()
+	if len(cmds) != 1 {
+		t.Fatalf("commands=%d, want 1", len(cmds))
+	}
+	seen := map[string]int64{}
+	for _, resource := range cmds[0].Resources {
+		seen[resource.Name] = resource.Amount
+	}
+	for _, name := range []string{"download", "media"} {
+		if seen[name] != 1 {
+			t.Fatalf("resource %q=%d, want 1; all=%+v", name, seen[name], cmds[0].Resources)
+		}
+	}
+}
+
+func TestValidateStaticStickerOutputRejectsOversize(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oversized.png")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(staticStickerMaxBytes + 1); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateStaticStickerOutput(path); err == nil {
+		t.Fatal("expected oversized static sticker to be rejected")
+	}
+}
+
+func TestValidateStaticStickerOutputRejectsEmptyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "empty.png")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateStaticStickerOutput(path); err == nil {
+		t.Fatal("expected empty static sticker to be rejected")
+	}
+}
