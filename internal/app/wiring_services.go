@@ -13,6 +13,7 @@ import (
 	broadcastSvc "github.com/inipew/goultroid/internal/services/broadcast"
 	"github.com/inipew/goultroid/internal/services/download"
 	mediaSvc "github.com/inipew/goultroid/internal/services/media"
+	"github.com/inipew/goultroid/internal/services/mediaregistry"
 	pmpermitSvc "github.com/inipew/goultroid/internal/services/pmpermit"
 	"github.com/inipew/goultroid/internal/services/process"
 	"github.com/inipew/goultroid/internal/services/storage"
@@ -86,7 +87,7 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 		download.NewDirectHTTPProvider(5*time.Minute, 500*1024*1024),
 	)
 	mediaGuard := mediaSvc.NewResourceGuard(2, 100*1024*1024)
-	mediaService := mediaSvc.NewService(processRunner, appStorage, mediaGuard)
+	mediaService := mediaSvc.NewService(processRunner, appStorage, mediaGuard, mediaregistry.New(core.db))
 
 	pmpermitRepo := pmpermitPlugin.NewSQLiteRepository(core.db)
 	pmpermitService := pmpermitSvc.NewService(pmpermitRepo, tg.client.Service, cfg.OwnerID, core.perms, logger)

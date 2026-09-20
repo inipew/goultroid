@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/services/mediaregistry"
 	"github.com/inipew/goultroid/internal/services/process"
 	"github.com/inipew/goultroid/internal/services/storage"
 )
@@ -21,6 +22,7 @@ type FFmpegTranscoder struct {
 	store       storage.Storage
 	guard       *ResourceGuard
 	prober      Prober
+	registry    *mediaregistry.Registry
 	timeout     time.Duration
 	mu          sync.Mutex
 	activeTemps map[string]time.Time
@@ -30,7 +32,13 @@ type FFmpegTranscoder struct {
 var _ Transcoder = (*FFmpegTranscoder)(nil)
 
 // NewFFmpegTranscoder creates a new FFmpeg transcoder service.
-func NewFFmpegTranscoder(runner process.Runner, store storage.Storage, guard *ResourceGuard, prober Prober) *FFmpegTranscoder {
+func NewFFmpegTranscoder(
+	runner process.Runner,
+	store storage.Storage,
+	guard *ResourceGuard,
+	prober Prober,
+	registries ...*mediaregistry.Registry,
+) *FFmpegTranscoder {
 	if runner == nil {
 		runner = process.NewOSRunner(2, 5*time.Minute, 4*1024*1024)
 	}
@@ -40,11 +48,16 @@ func NewFFmpegTranscoder(runner process.Runner, store storage.Storage, guard *Re
 	if prober == nil {
 		prober = NewFFProber(runner)
 	}
+	var registry *mediaregistry.Registry
+	if len(registries) > 0 {
+		registry = registries[0]
+	}
 	return &FFmpegTranscoder{
 		runner:      runner,
 		store:       store,
 		guard:       guard,
 		prober:      prober,
+		registry:    registry,
 		timeout:     5 * time.Minute,
 		activeTemps: make(map[string]time.Time),
 	}
@@ -162,12 +175,19 @@ func (t *FFmpegTranscoder) Run(ctx context.Context, input *storage.Asset, op Ope
 		height = probe.Height
 	}
 
-	return t.store.Put(ctx, outFile, storage.Metadata{
+	asset, err := t.store.Put(ctx, outFile, storage.Metadata{
 		Name:     newAssetName,
 		Duration: duration,
 		Width:    width,
 		Height:   height,
 	})
+	if err != nil {
+		return nil, err
+	}
+	if err := registerTransientAsset(ctx, t.registry, t.store, asset); err != nil {
+		return nil, fmt.Errorf("media: register transient output %q: %w", asset.ID, err)
+	}
+	return asset, nil
 }
 
 func sanitizeFormat(format string) (string, error) {

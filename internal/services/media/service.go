@@ -2,9 +2,12 @@ package media
 
 import (
 	"context"
+	"errors"
 	"sort"
+	"strings"
 	"time"
 
+	"github.com/inipew/goultroid/internal/services/mediaregistry"
 	"github.com/inipew/goultroid/internal/services/process"
 	"github.com/inipew/goultroid/internal/services/storage"
 )
@@ -21,30 +24,60 @@ type Service struct {
 	prober     Prober
 	transcoder Transcoder
 	guard      *ResourceGuard
+	registry   *mediaregistry.Registry
 }
 
 // NewService creates a new media service platform.
-func NewService(runner process.Runner, store storage.Storage, guard *ResourceGuard) *Service {
+func NewService(
+	runner process.Runner,
+	store storage.Storage,
+	guard *ResourceGuard,
+	registries ...*mediaregistry.Registry,
+) *Service {
 	if runner == nil {
 		runner = process.NewOSRunner(2, 5*time.Minute, 4*1024*1024)
 	}
 	if guard == nil {
 		guard = NewResourceGuard(2, 100*1024*1024)
 	}
+	var registry *mediaregistry.Registry
+	if len(registries) > 0 {
+		registry = registries[0]
+	}
 	prober := NewFFProber(runner)
-	transcoder := NewFFmpegTranscoder(runner, store, guard, prober)
+	transcoder := NewFFmpegTranscoder(runner, store, guard, prober, registry)
 
 	return &Service{
 		store:      store,
 		prober:     prober,
 		transcoder: transcoder,
 		guard:      guard,
+		registry:   registry,
 	}
 }
 
 // Storage returns the underlying storage manager.
 func (s *Service) Storage() storage.Storage {
 	return s.store
+}
+
+// DeleteTransientAsset removes a media-owned transient output from physical
+// storage, then removes its registry metadata. Physical deletion stays the
+// authoritative first step; metadata is retained when storage deletion fails.
+func (s *Service) DeleteTransientAsset(ctx context.Context, asset *storage.Asset) error {
+	if s == nil || s.store == nil || asset == nil || strings.TrimSpace(asset.ID) == "" {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := s.store.Delete(ctx, asset.ID); err != nil && !errors.Is(err, storage.ErrNotFound) {
+		return err
+	}
+	if s.registry == nil {
+		return nil
+	}
+	return s.registry.RemoveOwnedAsset(ctx, asset.ID, mediaRegistryOwner)
 }
 
 // Prober returns the underlying prober.

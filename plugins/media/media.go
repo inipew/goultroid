@@ -2,7 +2,6 @@ package media
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -498,18 +497,12 @@ func (p *Plugin) cleanupTransientAsset(parent context.Context, asset *storage.As
 	if p == nil || p.mediaService == nil || asset == nil || strings.TrimSpace(asset.ID) == "" {
 		return
 	}
-	store := p.mediaService.Storage()
-	if store == nil {
-		return
-	}
 	if parent == nil {
 		parent = context.Background()
 	}
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
 	defer cancel()
-	if err := store.Delete(cleanupCtx, asset.ID); err != nil && !errors.Is(err, storage.ErrNotFound) {
-		return
-	}
+	_ = p.mediaService.DeleteTransientAsset(cleanupCtx, asset)
 }
 
 func sendAsset(ctx *core.Context, mediaType string, asset *storage.Asset, caption string) error {
