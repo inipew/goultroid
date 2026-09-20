@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
@@ -666,13 +667,12 @@ func TestPluginRequiresCallbackStateForPurchaseMutations(t *testing.T) {
 	}
 }
 
-
 func TestTruncateStringPreservesUTF8(t *testing.T) {
 	got := truncateString("Modem 日本語 Rumah", 8)
 	if got != "Modem 日本" {
 		t.Fatalf("truncateString=%q, want %q", got, "Modem 日本")
 	}
-	if !strings.ValidUTF8(got) {
+	if !utf8.ValidString(got) {
 		t.Fatalf("truncateString produced invalid UTF-8: %q", got)
 	}
 }
