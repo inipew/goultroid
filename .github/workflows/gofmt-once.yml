@@ -1,0 +1,39 @@
+name: One-shot gofmt
+
+on:
+  push:
+    branches: [ test-next ]
+
+permissions:
+  contents: write
+
+jobs:
+  gofmt:
+    if: github.event.head_commit.message == 'chore(ci): run one-shot gofmt'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: test-next
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+          cache-dependency-path: 'go.sum'
+
+      - name: Apply gofmt and push
+        run: |
+          gofmt -w .
+          if git diff --quiet; then
+            echo "No gofmt changes required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "style: apply gofmt"
+          git push origin HEAD:test-next
