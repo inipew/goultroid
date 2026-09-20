@@ -106,9 +106,16 @@ func (p *Plugin) Capabilities() []execution.Capability {
 }
 
 // Commands returns the list of registered commands.
+func heavyMediaResources() []tasks.ResourceRequirement {
+	return []tasks.ResourceRequirement{
+		{Name: "download", Amount: 1},
+		{Name: "process", Amount: 1},
+		{Name: "media", Amount: 1},
+	}
+}
+
 func (p *Plugin) Commands() []core.Command {
 	mediaSurfaces := execution.SurfaceUserbot | execution.SurfaceAssistant
-	resources := []tasks.ResourceRequirement{{Name: "process", Amount: 1}, {Name: "media", Amount: 1}}
 	return []core.Command{
 		{
 			Name:        "mediainfo",
@@ -118,7 +125,6 @@ func (p *Plugin) Commands() []core.Command {
 			Category:    "Media",
 			Permission:  core.PermissionEveryone,
 			Surfaces:    mediaSurfaces,
-			Resources:   resources,
 			Handler:     p.handleMediaInfo,
 		},
 		{
@@ -130,7 +136,7 @@ func (p *Plugin) Commands() []core.Command {
 			Permission:  core.PermissionSudo,
 			Timeout:     5 * time.Minute,
 			Surfaces:    mediaSurfaces,
-			Resources:   resources,
+			Resources:   heavyMediaResources(),
 			Handler:     p.handleExtractAudio,
 		},
 		{
@@ -142,7 +148,7 @@ func (p *Plugin) Commands() []core.Command {
 			Permission:  core.PermissionSudo,
 			Timeout:     5 * time.Minute,
 			Surfaces:    mediaSurfaces,
-			Resources:   resources,
+			Resources:   heavyMediaResources(),
 			Handler:     p.handleConvert,
 		},
 		{
@@ -154,7 +160,7 @@ func (p *Plugin) Commands() []core.Command {
 			Permission:  core.PermissionSudo,
 			Timeout:     5 * time.Minute,
 			Surfaces:    mediaSurfaces,
-			Resources:   resources,
+			Resources:   heavyMediaResources(),
 			Handler:     p.handleConvertToGIF,
 		},
 		{
@@ -166,7 +172,7 @@ func (p *Plugin) Commands() []core.Command {
 			Permission:  core.PermissionSudo,
 			Timeout:     5 * time.Minute,
 			Surfaces:    mediaSurfaces,
-			Resources:   resources,
+			Resources:   heavyMediaResources(),
 			Handler:     p.handleConvertToSticker,
 		},
 	}
@@ -295,7 +301,12 @@ func (p *Plugin) handleConvert(ctx *core.Context) error {
 
 	targetFormat := "mp4"
 	if len(ctx.Args) > 0 {
-		targetFormat = strings.ToLower(strings.TrimPrefix(ctx.Args[0], "."))
+		targetFormat = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(ctx.Args[0], ".")))
+	}
+
+	mediaType, audioOnly, err := classifyConvertFormat(targetFormat)
+	if err != nil {
+		return ctx.EditOrReply(fmt.Sprintf("⚠️ %v", err))
 	}
 
 	if p.mediaService == nil {
@@ -333,22 +344,20 @@ func (p *Plugin) handleConvert(ctx *core.Context) error {
 		CreatedAt: time.Now(),
 	}
 
-	outAsset, err := p.mediaService.ConvertVideo(ctx.Ctx, inAsset, media.TranscodeOptions{
-		TargetFormat: targetFormat,
-	})
+	var outAsset *storage.Asset
+	if audioOnly {
+		outAsset, err = p.mediaService.ExtractAudio(ctx.Ctx, inAsset, targetFormat)
+	} else {
+		outAsset, err = p.mediaService.ConvertVideo(ctx.Ctx, inAsset, media.TranscodeOptions{
+			TargetFormat: targetFormat,
+		})
+	}
 	if err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Conversion failed: %v", err))
 	}
 
 	caption := fmt.Sprintf("🎬 Converted to: <code>%s</code>", core.EscapeHTML(targetFormat))
-	mediaType := "document"
-	if targetFormat == "mp4" {
-		mediaType = "video"
-	} else if targetFormat == "mp3" || targetFormat == "m4a" || targetFormat == "aac" {
-		mediaType = "audio"
-	}
-
-	if _, err := ctx.SendMedia(outAsset.Path, mediaType, caption); err != nil {
+	if err := sendAsset(ctx, mediaType, outAsset, caption); err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to send converted media: %v", err))
 	}
 
@@ -397,7 +406,7 @@ func (p *Plugin) handleConvertToGIF(ctx *core.Context) error {
 		return ctx.EditOrReply(fmt.Sprintf("❌ GIF conversion failed: %v", err))
 	}
 
-	if _, err := ctx.SendMedia(outAsset.Path, "document", "🎞️ Converted to GIF"); err != nil {
+	if err := sendAsset(ctx, "document", outAsset, "🎞️ Converted to GIF"); err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to send GIF: %v", err))
 	}
 
@@ -446,13 +455,40 @@ func (p *Plugin) handleConvertToSticker(ctx *core.Context) error {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Video sticker generation failed: %v", err))
 	}
 
-	if _, err := ctx.SendMedia(outAsset.Path, "sticker", "🎭 Video Sticker"); err != nil {
+	if err := sendAsset(ctx, "sticker", outAsset, "🎭 Video Sticker"); err != nil {
 		// Fallback to document if sticker sender fails
-		_, _ = ctx.SendMedia(outAsset.Path, "document", "🎭 Video Sticker (WebM)")
+		_ = sendAsset(ctx, "document", outAsset, "🎭 Video Sticker (WebM)")
 	}
 
 	_ = ctx.Delete()
 	return nil
+}
+
+func classifyConvertFormat(targetFormat string) (mediaType string, audioOnly bool, err error) {
+	switch targetFormat {
+	case "mp3", "m4a", "aac", "ogg", "opus", "flac", "wav":
+		return "audio", true, nil
+	case "mp4":
+		return "video", false, nil
+	case "mkv", "mov", "webm", "avi":
+		return "document", false, nil
+	default:
+		return "", false, fmt.Errorf(
+			"unsupported target format <code>%s</code>. Supported: <code>mp4, mkv, mov, webm, avi, mp3, m4a, aac, ogg, opus, flac, wav</code>",
+			core.EscapeHTML(targetFormat),
+		)
+	}
+}
+
+func sendAsset(ctx *core.Context, mediaType string, asset *storage.Asset, caption string) error {
+	if ctx == nil {
+		return fmt.Errorf("%w: media context is nil", core.ErrInvalidArgs)
+	}
+	if asset == nil || strings.TrimSpace(asset.Path) == "" {
+		return fmt.Errorf("%w: transformed media asset has no path", core.ErrInvalidArgs)
+	}
+	_, err := ctx.SendMedia(mediaType, asset.Path, caption)
+	return err
 }
 
 // findMedia retrieves media from the current message or the replied message.

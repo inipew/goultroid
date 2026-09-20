@@ -8,14 +8,17 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/services/storage"
 )
 
 type mockService struct {
 	core.MockTelegramServicer
-	sent         string
-	mediaSent    bool
-	mediaType    string
-	mediaCaption string
+	sent           string
+	mediaSent      bool
+	mediaType      string
+	mediaPath      string
+	mediaCaption   string
+	downloadCalled bool
 }
 
 func (m *mockService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
@@ -61,6 +64,7 @@ func (m *mockService) ForwardMessages(ctx context.Context, fromPeer, toPeer tg.I
 	return nil
 }
 func (m *mockService) DownloadFile(ctx context.Context, location tg.InputFileLocationClass, dstPath string) error {
+	m.downloadCalled = true
 	return nil
 }
 func (m *mockService) BanUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, untilDate int) error {
@@ -84,6 +88,7 @@ func (m *mockService) PurgeMessages(ctx context.Context, peer tg.InputPeerClass,
 func (m *mockService) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
 	m.mediaSent = true
 	m.mediaType = mediaType
+	m.mediaPath = filePath
 	m.mediaCaption = caption
 	return &tg.Message{ID: 200}, nil
 }
@@ -139,6 +144,119 @@ func TestMediaPlugin_Metadata(t *testing.T) {
 	}
 	if cmds[4].Name != "vstick" {
 		t.Errorf("expected vstick command, got %s", cmds[4].Name)
+	}
+}
+
+func TestMediaPlugin_CommandResources(t *testing.T) {
+	p := New()
+	cmds := p.Commands()
+	if len(cmds) != 5 {
+		t.Fatalf("expected 5 commands, got %d", len(cmds))
+	}
+
+	if len(cmds[0].Resources) != 0 {
+		t.Fatalf("mediainfo must not reserve heavy resources: %+v", cmds[0].Resources)
+	}
+
+	for _, cmd := range cmds[1:] {
+		seen := map[string]int64{}
+		for _, resource := range cmd.Resources {
+			seen[resource.Name] = resource.Amount
+		}
+		for _, name := range []string{"download", "process", "media"} {
+			if seen[name] != 1 {
+				t.Fatalf("%s resource %q=%d, want 1; all=%+v", cmd.Name, name, seen[name], cmd.Resources)
+			}
+		}
+	}
+}
+
+func TestClassifyConvertFormat(t *testing.T) {
+	tests := []struct {
+		format    string
+		mediaType string
+		audioOnly bool
+		wantErr   bool
+	}{
+		{format: "mp4", mediaType: "video"},
+		{format: "webm", mediaType: "document"},
+		{format: "mp3", mediaType: "audio", audioOnly: true},
+		{format: "aac", mediaType: "audio", audioOnly: true},
+		{format: "flac", mediaType: "audio", audioOnly: true},
+		{format: "exe", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		mediaType, audioOnly, err := classifyConvertFormat(tt.format)
+		if tt.wantErr {
+			if err == nil {
+				t.Fatalf("format %q: expected error", tt.format)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("format %q: unexpected error: %v", tt.format, err)
+		}
+		if mediaType != tt.mediaType || audioOnly != tt.audioOnly {
+			t.Fatalf("format %q: got (%q, %v), want (%q, %v)", tt.format, mediaType, audioOnly, tt.mediaType, tt.audioOnly)
+		}
+	}
+}
+
+func TestConvertRejectsUnsupportedFormatBeforeDownload(t *testing.T) {
+	svc := &mockService{}
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		PeerID:  &tg.InputPeerChat{ChatID: 100},
+		Message: &core.Message{ID: 1, IsOutgoing: true, Media: &core.MediaInfo{Type: "video", Location: &tg.InputDocumentFileLocation{}}},
+		Args:    []string{"exe"},
+		Svc:     svc,
+	}
+
+	if err := New().handleConvert(ctx); err != nil {
+		t.Fatalf("handleConvert returned error: %v", err)
+	}
+	if svc.downloadCalled {
+		t.Fatal("unsupported format must be rejected before media download")
+	}
+	if !strings.Contains(svc.sent, "unsupported target format") {
+		t.Fatalf("unexpected response: %q", svc.sent)
+	}
+}
+
+func TestSendAssetPreservesMediaArgumentOrder(t *testing.T) {
+	svc := &mockService{}
+	ctx := &core.Context{
+		Ctx:    context.Background(),
+		PeerID: &tg.InputPeerChat{ChatID: 100},
+		Svc:    svc,
+	}
+	asset := &storage.Asset{Path: "/tmp/converted.mp4"}
+
+	if err := sendAsset(ctx, "video", asset, "converted"); err != nil {
+		t.Fatalf("sendAsset failed: %v", err)
+	}
+	if !svc.mediaSent {
+		t.Fatal("expected media to be sent")
+	}
+	if svc.mediaType != "video" {
+		t.Fatalf("mediaType=%q, want video", svc.mediaType)
+	}
+	if svc.mediaPath != asset.Path {
+		t.Fatalf("mediaPath=%q, want %q", svc.mediaPath, asset.Path)
+	}
+	if svc.mediaCaption != "converted" {
+		t.Fatalf("caption=%q, want converted", svc.mediaCaption)
+	}
+}
+
+func TestSendAssetRejectsMissingAsset(t *testing.T) {
+	ctx := &core.Context{Ctx: context.Background(), PeerID: &tg.InputPeerChat{ChatID: 100}, Svc: &mockService{}}
+	if err := sendAsset(ctx, "video", nil, ""); err == nil {
+		t.Fatal("expected nil asset to be rejected")
+	}
+	if err := sendAsset(ctx, "video", &storage.Asset{}, ""); err == nil {
+		t.Fatal("expected empty asset path to be rejected")
 	}
 }
 
