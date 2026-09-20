@@ -780,7 +780,6 @@ func TestGetEarliestDueTime(t *testing.T) {
 	t.Logf("earliest found: %v", earliest)
 }
 
-
 func TestInitializingScheduledJobIsNotClaimableUntilActivated(t *testing.T) {
 	repo, _ := setupTestSchedulerRepo(t)
 	ctx := context.Background()
