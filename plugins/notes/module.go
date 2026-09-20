@@ -15,10 +15,16 @@ var Module ModuleType
 
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
-		ID:           "notes",
-		Version:      "1.3.0",
-		Description:  "Chat notes management and retrieval",
-		Capabilities: []string{plugin.CapTelegramSendMessage, plugin.CapStorageRead, plugin.CapStorageWrite, plugin.CapFilesystemTemp},
+		ID:          "notes",
+		Version:     "1.4.0",
+		Description: "Chat notes management and retrieval",
+		Capabilities: []string{
+			plugin.CapTelegramSendMessage,
+			plugin.CapStorageRead,
+			plugin.CapStorageWrite,
+			plugin.CapFilesystemTemp,
+			plugin.CapTasks,
+		},
 	}
 }
 
