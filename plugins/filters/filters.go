@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
@@ -17,9 +18,12 @@ import (
 )
 
 const (
-	filterCacheTTL = 10 * time.Minute
-	filterCooldown = 5 * time.Second
+	filterCacheTTL          = 10 * time.Minute
+	filterCooldown          = 5 * time.Second
+	filterDeliveryTimeout   = 30 * time.Second
 )
+
+var filterDeliverySequence atomic.Uint64
 
 var _ plugin.MessageEventPlugin = (*Plugin)(nil)
 var _ plugin.MessageEventStatePlugin = (*Plugin)(nil)
@@ -34,6 +38,7 @@ type Plugin struct {
 	db           Repository
 	svcFunc      func() core.TelegramServicer
 	responses    *savedresponse.Service
+	tasks        tasks.Client
 	featureState core.ChatFeatureSnapshot
 	cacheMu      sync.RWMutex
 	chatFilters  map[int64][]compiledFilter
@@ -69,6 +74,12 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 		return err
 	}
 	p.responses.SetFiles(files)
+
+	client, err := pctx.TaskClient()
+	if err != nil {
+		return fmt.Errorf("filters: initialize task client: %w", err)
+	}
+	p.tasks = client
 	return nil
 }
 
@@ -280,29 +291,91 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 		if err != nil {
 			return fmt.Errorf("filters: cannot resolve chat peer %d for reply: %w", message.ChatID, err)
 		}
-		prepared, err := p.responses.Prepare(ctx, f.response, savedresponse.VarsFromEnvelope(message, time.Now()))
-		if err != nil {
-			return fmt.Errorf("filters: prepare reply for %q: %w", f.keyword, err)
-		}
-		if prepared.MediaPath != "" {
-			_, sendErr := svc.SendMedia(ctx, peer, prepared.MediaType, prepared.MediaPath, prepared.Caption)
-			prepared.Cleanup()
-			if sendErr != nil {
-				return fmt.Errorf("filters: send media reply for %q: %w", f.keyword, sendErr)
-			}
-		} else {
-			defer prepared.Cleanup()
-		}
-		if prepared.Text != "" {
-			if _, err := svc.SendMessage(ctx, peer, prepared.Text); err != nil {
-				return fmt.Errorf("filters: send text reply for %q: %w", f.keyword, err)
-			}
+		vars := savedresponse.VarsFromEnvelope(message, time.Now())
+		response := cloneSavedResponse(f.response)
+		if err := p.submitDelivery(ctx, svc, peer, message.ChatID, message.ID, response, vars); err != nil {
+			return fmt.Errorf("filters: submit reply for %q: %w", f.keyword, err)
 		}
 		p.markCooldown(cooldownKey)
 		if decision := core.GetMessageDecision(ctx); decision != nil {
 			decision.SetSuppressAFK(true)
 		}
 		break
+	}
+	return nil
+}
+
+func cloneSavedResponse(response savedresponse.Response) savedresponse.Response {
+	cloned := response
+	if response.Media != nil {
+		media := *response.Media
+		cloned.Media = &media
+	}
+	return cloned
+}
+
+func (p *Plugin) submitDelivery(
+	admissionCtx context.Context,
+	svc core.TelegramServicer,
+	peer tg.InputPeerClass,
+	chatID int64,
+	messageID int,
+	response savedresponse.Response,
+	vars savedresponse.TemplateVars,
+) error {
+	if p.tasks == nil {
+		return p.deliverResponse(admissionCtx, svc, peer, response, vars)
+	}
+
+	resources := []tasks.ResourceRequirement(nil)
+	if response.Media != nil {
+		resources = []tasks.ResourceRequirement{{Name: "media", Amount: 1}}
+	}
+	id := tasks.TaskID(fmt.Sprintf(
+		"filter-response:%d:%d:%d",
+		chatID,
+		messageID,
+		filterDeliverySequence.Add(1),
+	))
+	_, err := p.tasks.Submit(admissionCtx, tasks.WorkSpec{
+		ID:               id,
+		Pool:             tasks.PoolID("general"),
+		Class:            tasks.PriorityNormal,
+		OrderingKey:      fmt.Sprintf("chat:%d", chatID),
+		ExecutionTimeout: filterDeliveryTimeout,
+		Resources:        resources,
+		Handler: func(taskCtx context.Context) error {
+			return p.deliverResponse(taskCtx, svc, peer, response, vars)
+		},
+	})
+	return err
+}
+
+func (p *Plugin) deliverResponse(
+	ctx context.Context,
+	svc core.TelegramServicer,
+	peer tg.InputPeerClass,
+	response savedresponse.Response,
+	vars savedresponse.TemplateVars,
+) error {
+	if svc == nil || peer == nil {
+		return errors.New("filters: telegram delivery is unavailable")
+	}
+	prepared, err := p.responses.Prepare(ctx, response, vars)
+	if err != nil {
+		return err
+	}
+	defer prepared.Cleanup()
+
+	if prepared.MediaPath != "" {
+		if _, err := svc.SendMedia(ctx, peer, prepared.MediaType, prepared.MediaPath, prepared.Caption); err != nil {
+			return err
+		}
+	}
+	if prepared.Text != "" {
+		if _, err := svc.SendMessage(ctx, peer, prepared.Text); err != nil {
+			return err
+		}
 	}
 	return nil
 }
