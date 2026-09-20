@@ -20,6 +20,17 @@ const (
 	MaxCaptionRunes               = 1024
 )
 
+var (
+	ErrNilContext                  = errors.New("saved response: context is nil")
+	ErrReplyNotFound               = errors.New("saved response: replied message not found")
+	ErrEmptyResponse               = errors.New("saved response: response is empty")
+	ErrMediaPersistenceUnavailable = errors.New("saved response: media persistence is not configured")
+	ErrMediaDeliveryUnavailable    = errors.New("saved response: media delivery is not configured")
+	ErrMediaTooLarge               = errors.New("saved response: media exceeds persistent limit")
+	ErrNilPersist                  = errors.New("saved response: persist callback is nil")
+	ErrNilDelete                   = errors.New("saved response: delete callback is nil")
+)
+
 type Service struct {
 	store storage.Storage
 	files *filesystem.Scope
@@ -37,14 +48,14 @@ func (s *Service) SetFiles(files *filesystem.Scope) {
 
 func (s *Service) CaptureReply(ctx *core.Context) (Response, error) {
 	if ctx == nil {
-		return Response{}, errors.New("saved response: context is nil")
+		return Response{}, ErrNilContext
 	}
 	reply, err := ctx.GetReply()
 	if err != nil {
 		return Response{}, err
 	}
 	if reply == nil {
-		return Response{}, errors.New("saved response: replied message not found")
+		return Response{}, ErrReplyNotFound
 	}
 	response := NewPlainText(reply.Text)
 	if reply.Media != nil && reply.Media.Location != nil {
@@ -55,7 +66,7 @@ func (s *Service) CaptureReply(ctx *core.Context) (Response, error) {
 		response.Media = media
 	}
 	if response.Empty() {
-		return Response{}, errors.New("saved response: replied message has no text or media")
+		return Response{}, ErrEmptyResponse
 	}
 	if err := Validate(response); err != nil {
 		_ = s.DeleteMedia(ctx.Ctx, response)
@@ -66,10 +77,10 @@ func (s *Service) CaptureReply(ctx *core.Context) (Response, error) {
 
 func (s *Service) captureMedia(ctx *core.Context, media *core.MediaInfo) (*MediaRef, error) {
 	if s == nil || s.store == nil || s.files == nil {
-		return nil, errors.New("saved response: media persistence is not configured")
+		return nil, ErrMediaPersistenceUnavailable
 	}
 	if media.Size > MaxPersistentMediaBytes {
-		return nil, fmt.Errorf("saved response media exceeds %d bytes", MaxPersistentMediaBytes)
+		return nil, fmt.Errorf("%w: max %d bytes", ErrMediaTooLarge, MaxPersistentMediaBytes)
 	}
 	workspace, err := s.files.CreateTempDir("saved-response-capture-*")
 	if err != nil {
@@ -86,7 +97,7 @@ func (s *Service) captureMedia(ctx *core.Context, media *core.MediaInfo) (*Media
 		return nil, err
 	}
 	if stat.Size() > MaxPersistentMediaBytes {
-		return nil, fmt.Errorf("saved response media exceeds %d bytes", MaxPersistentMediaBytes)
+		return nil, fmt.Errorf("%w: max %d bytes", ErrMediaTooLarge, MaxPersistentMediaBytes)
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -114,10 +125,14 @@ func (s *Service) captureMedia(ctx *core.Context, media *core.MediaInfo) (*Media
 
 func (s *Service) CommitReplacement(ctx context.Context, previous, next Response, persist func() error) error {
 	if persist == nil {
-		return errors.New("saved response: persist callback is nil")
+		return ErrNilPersist
 	}
 	if err := persist(); err != nil {
-		_ = s.DeleteMedia(context.Background(), next)
+		// Only the next response owns a disposable asset when it differs from the
+		// previously committed one. Never delete the still-valid previous asset.
+		if next.MediaAssetID() != "" && next.MediaAssetID() != previous.MediaAssetID() {
+			_ = s.DeleteMedia(context.Background(), next)
+		}
 		return err
 	}
 	if previous.MediaAssetID() != "" && previous.MediaAssetID() != next.MediaAssetID() {
@@ -128,7 +143,7 @@ func (s *Service) CommitReplacement(ctx context.Context, previous, next Response
 
 func (s *Service) CommitDelete(ctx context.Context, response Response, remove func() error) error {
 	if remove == nil {
-		return errors.New("saved response: delete callback is nil")
+		return ErrNilDelete
 	}
 	if err := remove(); err != nil {
 		return err
@@ -171,7 +186,7 @@ func (p *Prepared) Cleanup() {
 
 func (s *Service) Prepare(ctx context.Context, response Response, vars TemplateVars) (*Prepared, error) {
 	if response.Empty() {
-		return nil, errors.New("saved response: response is empty")
+		return nil, ErrEmptyResponse
 	}
 	if err := Validate(response); err != nil {
 		return nil, err
@@ -227,7 +242,7 @@ func (s *Service) Materialize(ctx context.Context, response Response) (string, f
 		return "", func() {}, nil
 	}
 	if s == nil || s.store == nil || s.files == nil {
-		return "", nil, errors.New("saved response: media delivery is not configured")
+		return "", nil, ErrMediaDeliveryUnavailable
 	}
 	asset, err := s.store.Stat(ctx, id)
 	if err != nil {
@@ -243,9 +258,9 @@ func (s *Service) Materialize(ctx context.Context, response Response) (string, f
 	}
 	defer reader.Close()
 
-	ext := filepath.Ext(response.Media.Name)
+	ext := safeTempExtension(response.Media.Name)
 	pattern := "saved-response-*"
-	if ext != "" && len(ext) <= 16 {
+	if ext != "" {
 		pattern += ext
 	}
 	file, err := s.files.CreateTempFile(pattern)
@@ -253,7 +268,7 @@ func (s *Service) Materialize(ctx context.Context, response Response) (string, f
 		return "", nil, err
 	}
 	cleanup := func() { _ = s.files.RemoveTempFile(file.Name()) }
-	if _, err := io.Copy(file, reader); err != nil {
+	if _, err := copyBounded(file, reader, MaxPersistentMediaBytes); err != nil {
 		_ = file.Close()
 		cleanup()
 		return "", nil, err
@@ -263,6 +278,40 @@ func (s *Service) Materialize(ctx context.Context, response Response) (string, f
 		return "", nil, err
 	}
 	return file.Name(), cleanup, nil
+}
+
+func copyBounded(dst io.Writer, src io.Reader, maxBytes int64) (int64, error) {
+	if maxBytes < 0 {
+		return 0, fmt.Errorf("%w: max %d bytes", ErrMediaTooLarge, maxBytes)
+	}
+	limited := &io.LimitedReader{R: src, N: maxBytes + 1}
+	written, err := io.Copy(dst, limited)
+	if err != nil {
+		return written, err
+	}
+	if written > maxBytes {
+		return written, fmt.Errorf("%w: max %d bytes", ErrMediaTooLarge, maxBytes)
+	}
+	return written, nil
+}
+
+func safeTempExtension(name string) string {
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(name)))
+	if ext == "" || len(ext) > 16 {
+		return ""
+	}
+	for i, r := range ext {
+		if i == 0 {
+			if r != '.' {
+				return ""
+			}
+			continue
+		}
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+			return ""
+		}
+	}
+	return ext
 }
 
 func deliveryMediaType(mediaType string) string {

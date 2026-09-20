@@ -35,8 +35,28 @@ func NewPlainText(text string) Response {
 	return Response{Text: text, Format: FormatPlain}
 }
 
+func (r Response) EffectiveFormat() Format {
+	if r.Format == "" {
+		return FormatHTML
+	}
+	return r.Format
+}
+
 func (r Response) Empty() bool {
-	return strings.TrimSpace(r.Text) == "" && (r.Media == nil || strings.TrimSpace(r.Media.AssetID) == "")
+	return strings.TrimSpace(r.Text) == "" && !r.HasMedia()
+}
+
+func (r Response) HasMedia() bool {
+	return r.Media != nil && strings.TrimSpace(r.Media.AssetID) != ""
+}
+
+func (r Response) Clone() Response {
+	cloned := r
+	if r.Media != nil {
+		media := *r.Media
+		cloned.Media = &media
+	}
+	return cloned
 }
 
 func (r Response) MediaAssetID() string {

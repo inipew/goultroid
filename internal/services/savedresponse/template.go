@@ -20,9 +20,9 @@ const (
 )
 
 var (
-	ErrTemplateTooLarge = errors.New("saved response template too large")
-	ErrRenderedTooLarge = errors.New("rendered saved response too large")
-	ErrTooManyTokens    = errors.New("saved response template has too many tokens")
+	ErrTemplateTooLarge  = errors.New("saved response template too large")
+	ErrRenderedTooLarge  = errors.New("rendered saved response too large")
+	ErrTooManyTokens     = errors.New("saved response template has too many tokens")
 	ErrUnsupportedFormat = errors.New("unsupported saved response format")
 )
 
@@ -86,10 +86,7 @@ func Validate(response Response) error {
 	if len(response.Text) > MaxTemplateBytes {
 		return fmt.Errorf("%w: max %d bytes", ErrTemplateTooLarge, MaxTemplateBytes)
 	}
-	format := response.Format
-	if format == "" {
-		format = FormatHTML
-	}
+	format := response.EffectiveFormat()
 	if format != FormatHTML && format != FormatPlain {
 		return fmt.Errorf("%w: %q", ErrUnsupportedFormat, format)
 	}
@@ -118,10 +115,7 @@ func Render(response Response, vars TemplateVars, maxRunes int) (string, error) 
 	if err := Validate(response); err != nil {
 		return "", err
 	}
-	format := response.Format
-	if format == "" {
-		format = FormatHTML
-	}
+	format := response.EffectiveFormat()
 	switch format {
 	case FormatHTML:
 		return renderTemplate(response.Text, vars, maxRunes, false)
@@ -133,11 +127,11 @@ func Render(response Response, vars TemplateVars, maxRunes int) (string, error) 
 }
 
 func RenderHTML(template string, vars TemplateVars, maxRunes int) (string, error) {
-	return renderTemplate(template, vars, maxRunes, false)
+	return Render(NewHTML(template), vars, maxRunes)
 }
 
 func RenderPlain(template string, vars TemplateVars, maxRunes int) (string, error) {
-	return renderTemplate(template, vars, maxRunes, true)
+	return Render(NewPlainText(template), vars, maxRunes)
 }
 
 func renderTemplate(template string, vars TemplateVars, maxRunes int, escapeLiteral bool) (string, error) {
