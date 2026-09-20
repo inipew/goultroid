@@ -15,10 +15,10 @@ Ownership metadata must therefore live above `storage.Storage`. `Storage.Put` re
 | Notes / SavedResponse | `savedresponse.captureMedia -> Storage.Put` | `notes.media_asset_id`; compatibility ledger `saved_response_media_assets` | Persistent while note references it | First persistent consumer to migrate to the global registry. |
 | Filters / SavedResponse | `savedresponse.captureMedia -> Storage.Put` | `filters.media_asset_id`; compatibility ledger `saved_response_media_assets` | Persistent while filter references it | Same ownership domain as Notes, separate reference source. |
 | Broadcast | No independent persistent write; materializes SavedResponse media for delivery | Reads SavedResponse reference | Read/materialize only | Consumer, not an ownership authority. |
-| Clone | `clone.persistSnapshot -> Storage.Put` | `clone_state.original_photo_path` with `asset:<id>` encoding | Persistent only while clone rollback/revert needs the snapshot | Must be onboarded as its own owner/reference kind before global reclamation. |
-| Media transcoder | `FFmpegTranscoder.Run -> Storage.Put` | No durable DB reference | Transient; plugin deletes output after send through `withTransientAsset` | Zero references are expected. Lifecycle must prevent a global reconciler from treating an in-flight transient output as an orphan. |
-| Downloader URL | HTTP/extractor provider -> `Storage.Put` | No DB reference | Retained user download | Zero references do **not** mean orphan; owner/lifecycle metadata is required. |
-| Downloader Telegram media | `ctx.DownloadMedia(Storage.BasePath())` | No registry/DB reference | Retained user download | Bypasses the managed `<asset-id>/meta.json` layout and can leave regular files directly in `data/storage`; enumeration must report them as unmanaged legacy entries and never delete them by inference. |
+| Clone | `clone.persistSnapshot -> Storage.Put` | `clone_state.original_photo_path` with `asset:<id>` encoding | Persistent only while clone rollback/revert needs the snapshot | Onboarded in Stage 3 as `clone.snapshot / clone / persistent` with one exact `profile_snapshot` reference per owner. |
+| Media transcoder | `FFmpegTranscoder.Run -> Storage.Put` | No durable DB reference | Transient; plugin deletes output after send through `withTransientAsset` | Onboarded in Stage 3 as `media.ffmpeg / media / transient`; zero references are intentionally normal. |
+| Downloader URL | HTTP/extractor provider -> `Storage.Put` | No DB reference | Retained user download | Onboarded in Stage 3 as `downloader.http` / `downloader.extractor`, owner `downloader`, lifecycle `retained`; zero references are intentionally normal. |
+| Downloader Telegram media | scoped temp download -> `Storage.Put` | No DB reference | Retained user download | New downloads are managed Stage-3 assets registered as `downloader.telegram / downloader / retained`. Pre-Stage-3 root files remain unmanaged legacy and are never adopted by inference. |
 
 The Media and Downloader plugins contain standalone fallback storage paths (`data/media` and `data/downloads`) for non-production/manual construction. Normal application wiring supplies the shared runtime services, so the production inventory above is centered on `data/storage`.
 
@@ -76,3 +76,58 @@ The verifier reports whether findings were truncated by the configured batch bou
 Stage 2 does **not** transfer deletion authority. `saved_response_media_cleanup` and the existing P3-A lifecycle remain responsible for physical SavedResponse reclamation. The global compatibility reconciler never calls `Storage.Delete`; stale global rows can only be removed as metadata, and an asset metadata row is removed only when the old ledger no longer contains it and the global reference registry has zero references.
 
 Global physical reclamation therefore remains a later P3-C concern, after the registry has been stabilized and the remaining persistent/retained/transient producers have been onboarded.
+
+
+## Stage 3 — remaining ownership domains
+
+Stage 3 onboards the remaining known producers without transferring physical reclamation authority to the global registry.
+
+### Clone persistent snapshots
+
+Managed Clone snapshots use:
+
+- producer: `clone.snapshot`
+- owner: `clone`
+- lifecycle: `persistent`
+- reference: `clone/profile_snapshot/<owner_id>`
+
+`clone_state.original_photo_path` remains the durable source of truth. Saving or clearing a managed `asset:<id>` reference mirrors the global asset/reference rows in the same SQL transaction. Newly-created snapshot bytes are registered immediately after `Storage.Put`; registry failure rolls the fresh physical asset back. Clone still performs its own physical snapshot cleanup, then removes ownership metadata only after deletion succeeds or the asset is already absent.
+
+Startup performs a bounded/idempotent DB-only backfill for existing managed `asset:<id>` clone snapshots. Historical raw filesystem paths are intentionally ignored because they do not prove membership in managed shared storage.
+
+### Media transient outputs
+
+FFmpeg outputs use:
+
+- producer: `media.ffmpeg`
+- owner: `media`
+- lifecycle: `transient`
+- durable references: none
+
+The transcoder registers ownership immediately after a successful `Storage.Put`. If registry persistence fails, the newly-created output is deleted before the operation fails. A zero-reference transient asset is therefore an expected state, not orphan evidence.
+
+Existing Media behavior remains the cleanup authority: `withTransientAsset` deletes the physical output after use, and only then removes global ownership metadata. A failed physical delete leaves metadata intact so later reconciliation can see that the asset was not successfully reclaimed.
+
+### Downloader retained assets
+
+URL downloads use producer identities derived from the selected provider:
+
+- `downloader.http`
+- `downloader.extractor`
+
+Telegram downloads use `downloader.telegram`. All use owner `downloader`, lifecycle `retained`, and intentionally have no durable reference rows. The retained lifecycle is what prevents a future zero-reference scan from treating user downloads as disposable.
+
+Telegram downloads no longer write directly into the shared storage root. They are first downloaded into a scoped temporary workspace, then persisted through `Storage.Put`, and finally registered as retained ownership. This stops creation of new unmanaged root files while preserving existing downloader UX.
+
+Pre-Stage-3 downloader files and unregistered managed assets are **not** backfilled by filename/path heuristics. Their producer cannot be proven safely, so they remain legacy/untracked until a later explicit adoption or quarantine policy.
+
+### Authority boundary after Stage 3
+
+Stage 3 still does not authorize a global `Storage.Delete` decision. Physical deletion remains with the subsystem that already owns it:
+
+- SavedResponse: P3-A cleanup journal.
+- Clone: Clone snapshot cleanup.
+- Media: transient post-use cleanup.
+- Downloader retained assets: retained by design; no automatic global deletion.
+
+The global registry now has enough ownership/lifecycle coverage for the known managed producers to proceed to P3-C, where reclamation can be designed around explicit lifecycle policy, durable delete intent, grace periods, retries, re-reference protection, and legacy quarantine rather than a raw zero-reference test.
