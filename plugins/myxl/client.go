@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/url"
 	"strconv"
@@ -25,6 +26,8 @@ const (
 	DefaultTokenRefreshSkew = 2 * time.Minute
 	// DefaultTokenExpiryFallback is used if CIAM does not return an expires_in value.
 	DefaultTokenExpiryFallback = 60 * time.Minute
+
+	maxMyXLResponseBytes int64 = 8 << 20
 )
 
 // ClientConfig holds configuration for the MyXL API client.
@@ -113,6 +116,23 @@ func (c *Client) getHTTP() *network.Client {
 		c.httpCli = network.NewService(nil, nil).ForOwner("myxl")
 	}
 	return c.httpCli
+}
+
+
+func readMyXLResponse(resp *network.Response) ([]byte, error) {
+	if resp == nil || resp.Body == nil {
+		return nil, errors.New("empty MyXL HTTP response")
+	}
+	defer resp.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxMyXLResponseBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read MyXL response: %w", err)
+	}
+	if int64(len(body)) > maxMyXLResponseBytes {
+		return nil, fmt.Errorf("MyXL response exceeds %d bytes", maxMyXLResponseBytes)
+	}
+	return body, nil
 }
 
 // NormalizeMSISDN standardizes Indonesian phone numbers into format 628xxxxxxxx.
@@ -205,7 +225,7 @@ func (c *Client) RequestOTP(ctx context.Context, msisdn string) (string, error) 
 		return "", fmt.Errorf("request otp failed: %w", err)
 	}
 
-	body, err := resp.Bytes()
+	body, err := readMyXLResponse(resp)
 	if err != nil {
 		return "", fmt.Errorf("read response: %w", err)
 	}
@@ -230,7 +250,7 @@ func (c *Client) RequestOTP(ctx context.Context, msisdn string) (string, error) 
 		}
 	}
 
-	return "", fmt.Errorf("OTP request failed (HTTP %d): %s", resp.StatusCode, string(body))
+	return "", fmt.Errorf("OTP request failed (HTTP %d)", resp.StatusCode)
 }
 
 // SubmitOTP submits the received OTP and returns authentication tokens.
@@ -271,7 +291,7 @@ func (c *Client) SubmitOTP(ctx context.Context, msisdn, code string) (*Tokens, e
 		return nil, fmt.Errorf("submit otp failed: %w", err)
 	}
 
-	body, err := resp.Bytes()
+	body, err := readMyXLResponse(resp)
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
@@ -297,7 +317,7 @@ func (c *Client) SubmitOTP(ctx context.Context, msisdn, code string) (*Tokens, e
 		}
 	}
 
-	return nil, fmt.Errorf("OTP submission failed (HTTP %d): %s", resp.StatusCode, string(body))
+	return nil, fmt.Errorf("OTP submission failed (HTTP %d)", resp.StatusCode)
 }
 
 func applyTokensToAccount(acc *Account, tokens *Tokens) {
@@ -326,7 +346,7 @@ func (c *Client) doRefreshToken(ctx context.Context, acc *Account) (*Tokens, err
 
 		resp, err := c.getHTTP().DoRequest(ctx, network.MethodPost, reqURL, strings.NewReader(formData.Encode()), headers)
 		if err == nil {
-			body, readErr := resp.Bytes()
+			body, readErr := readMyXLResponse(resp)
 			if readErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 				var tokens Tokens
 				if jsonErr := json.Unmarshal(body, &tokens); jsonErr == nil && tokens.IDToken != "" {
@@ -484,7 +504,7 @@ func (c *Client) extendSession(ctx context.Context, subscriberID string) (*Token
 		return nil, err
 	}
 
-	body, err := resp.Bytes()
+	body, err := readMyXLResponse(resp)
 	if err != nil {
 		return nil, err
 	}
@@ -494,8 +514,11 @@ func (c *Client) extendSession(ctx context.Context, subscriberID string) (*Token
 			ExchangeCode string `json:"exchange_code"`
 		} `json:"data"`
 	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("extend session failed (HTTP %d)", resp.StatusCode)
+	}
 	if err := json.Unmarshal(body, &res); err != nil || res.Data.ExchangeCode == "" {
-		return nil, fmt.Errorf("extend session missing exchange_code: %s", string(body))
+		return nil, errors.New("extend session response missing exchange_code")
 	}
 
 	// Submit exchange_code with contactType=DEVICEID
@@ -529,14 +552,20 @@ func (c *Client) submitDeviceIDToken(ctx context.Context, b64Contact, exchangeCo
 		return nil, err
 	}
 
-	body, err := resp.Bytes()
+	body, err := readMyXLResponse(resp)
 	if err != nil {
 		return nil, err
 	}
 
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("device token exchange failed (HTTP %d)", resp.StatusCode)
+	}
 	var tokens Tokens
 	if err := json.Unmarshal(body, &tokens); err != nil {
 		return nil, fmt.Errorf("parse tokens from device exchange: %w", err)
+	}
+	if tokens.IDToken == "" {
+		return nil, errors.New("device token exchange response missing id_token")
 	}
 	return &tokens, nil
 }
@@ -623,13 +652,12 @@ func (c *Client) executeEngselOnce(ctx context.Context, acc *Account, method, pa
 		return nil, fmt.Errorf("http request: %w", err)
 	}
 
-	if httpResp.StatusCode == 401 {
-		return nil, ErrUnauthorized
-	}
-
-	respBody, err := httpResp.Bytes()
+	respBody, err := readMyXLResponse(httpResp)
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if httpResp.StatusCode == 401 {
+		return nil, ErrUnauthorized
 	}
 
 	return c.parseEngselResponse(respBody)
@@ -660,7 +688,7 @@ func (c *Client) parseEngselResponse(body []byte) (*APIResponse, error) {
 		return &apiResp, nil
 	}
 
-	return nil, fmt.Errorf("failed to parse response: %s", string(body))
+	return nil, errors.New("failed to parse MyXL response")
 }
 
 // GetBalance retrieves the balance details for the account.
@@ -896,13 +924,12 @@ func (c *Client) sendPaymentOnce(ctx context.Context, acc *Account, path string,
 		return nil, fmt.Errorf("payment http request: %w", err)
 	}
 
-	if httpResp.StatusCode == 401 {
-		return nil, ErrUnauthorized
-	}
-
-	respBody, err := httpResp.Bytes()
+	respBody, err := readMyXLResponse(httpResp)
 	if err != nil {
 		return nil, fmt.Errorf("read payment response: %w", err)
+	}
+	if httpResp.StatusCode == 401 {
+		return nil, ErrUnauthorized
 	}
 
 	return c.parseEngselResponse(respBody)

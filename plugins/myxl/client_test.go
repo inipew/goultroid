@@ -1,6 +1,7 @@
 package myxl
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -174,7 +175,6 @@ func (m *mockRepo) PruneExpiredQRIS(ctx context.Context) (int64, error) {
 	return 0, nil
 }
 
-
 func TestNormalizeMSISDNRejectsNonDigitsAndEmbeddedPlus(t *testing.T) {
 	valid, err := NormalizeMSISDN("+62 819-1234-5678")
 	if err != nil || valid != "6281912345678" {
@@ -216,6 +216,50 @@ func TestRequestOTPPrunesExpiredCooldownEntries(t *testing.T) {
 	}
 	if _, ok := client.lastOTP["6281222222222"]; !ok {
 		t.Fatal("active OTP cooldown entry was unexpectedly removed")
+	}
+}
+
+
+func TestClientResponseBodyIsBounded(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write(bytes.Repeat([]byte("x"), int(maxMyXLResponseBytes)+1))
+	}))
+	defer server.Close()
+
+	cfg := DefaultClientConfig()
+	cfg.BaseCIAMURL = server.URL
+	client := NewClient(cfg, nil, network.NewService(server.Client(), nil).ForOwner("myxl"))
+
+	_, err := client.RequestOTP(context.Background(), "6281912345678")
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized response error=%v", err)
+	}
+}
+
+func TestSubmitDeviceIDTokenRejectsHTTPFailureAndEmptyToken(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "http failure", status: http.StatusBadRequest, body: `{"error":"invalid"}`},
+		{name: "missing id token", status: http.StatusOK, body: `{"access_token":"only-access"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			cfg := DefaultClientConfig()
+			cfg.BaseCIAMURL = server.URL
+			client := NewClient(cfg, nil, network.NewService(server.Client(), nil).ForOwner("myxl"))
+			if _, err := client.submitDeviceIDToken(context.Background(), "contact", "code"); err == nil {
+				t.Fatal("expected device token exchange failure")
+			}
+		})
 	}
 }
 
