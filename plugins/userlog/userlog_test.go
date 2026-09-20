@@ -442,7 +442,6 @@ func TestUserLogPlugin_OwnedSubscriptionsClose(t *testing.T) {
 	}
 }
 
-
 func TestUserLogWorkerStartsLazilyAndRetiresWhenIdle(t *testing.T) {
 	db := setupTestDB(t)
 	repo := userlogSvc.NewSQLiteRepository(db)
@@ -463,11 +462,12 @@ func TestUserLogWorkerStartsLazilyAndRetiresWhenIdle(t *testing.T) {
 	}
 
 	msg := &core.MessageEnvelope{
-		ChatID: 999,
-		Text:   "hello",
-		Peer:   core.PeerRef{Kind: core.PeerKindUser, ID: 999},
+		ChatID:     999,
+		Chat:       core.Chat{ID: 999, Type: "private"},
+		Text:       "hello",
+		Peer:       core.PeerRef{Kind: core.PeerKindUser, ID: 999},
 		SenderPeer: core.PeerRef{Kind: core.PeerKindUser, ID: 999},
-		Sender: core.EnvelopeUser{ID: 999, FirstName: "Alice"},
+		Sender:     core.User{ID: 999, FirstName: "Alice"},
 	}
 	if err := p.HandleMessageEvent(context.Background(), msg); err != nil {
 		t.Fatal(err)
