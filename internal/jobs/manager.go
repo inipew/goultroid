@@ -1264,7 +1264,26 @@ func (m *Manager) commitAttemptResult(ctx context.Context, attempt *JobAttempt, 
 			res.Failure.Message,
 		)
 	}
-	return m.store.CommitAttemptResult(ctx, attempt.ID, attempt.LeaseEpoch, attemptState(res.Outcome), encodeAttemptResultMetadata(res), res.Failure.Message)
+
+	if err := m.store.CommitAttemptResult(ctx, attempt.ID, attempt.LeaseEpoch, attemptState(res.Outcome), encodeAttemptResultMetadata(res), res.Failure.Message); err != nil {
+		return err
+	}
+
+	// Completed/cancelled attempts atomically settle the occurrence in durable
+	// storage. Wake the timing owner at that authoritative boundary instead of
+	// waiting for the asynchronous retry monitor to observe the ticket and call
+	// untrack(). The untrack wake remains a fallback for other terminal paths.
+	if res.Outcome == tasks.OutcomeCompleted || res.Outcome == tasks.OutcomeCancelled {
+		m.mu.RLock()
+		tracked := m.tracked[attempt.OccurrenceID]
+		wake := m.scheduleWake
+		shouldWake := tracked != nil && timingOwnedDefinition(tracked.def.ID)
+		m.mu.RUnlock()
+		if shouldWake && wake != nil {
+			wake()
+		}
+	}
+	return nil
 }
 
 func retryDelay(policy JobRetryPolicy, attemptsMade int) time.Duration {
