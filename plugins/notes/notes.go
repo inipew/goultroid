@@ -310,6 +310,9 @@ func (p *Plugin) deliverResponse(
 }
 
 func (p *Plugin) handleList(ctx *core.Context) error {
+	if p.db == nil {
+		return errors.New("notes: database is unavailable")
+	}
 	chatID := p.getChatID(ctx)
 	if details, ok := p.db.(DetailRepository); ok {
 		notes, err := details.ListNoteDetails(ctx.Ctx, chatID)
@@ -429,6 +432,9 @@ func deliverNoteDetailsList(ctx *core.Context, notes []Note) error {
 }
 
 func (p *Plugin) handleInfo(ctx *core.Context) error {
+	if p.db == nil {
+		return errors.New("notes: database is unavailable")
+	}
 	if len(ctx.Args) == 0 {
 		_ = ctx.EditOrReply("⚠️ Usage: <code>.noteinfo &lt;name&gt;</code>")
 		return errors.New("missing note name")

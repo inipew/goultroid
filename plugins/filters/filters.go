@@ -19,9 +19,9 @@ import (
 )
 
 const (
-	filterCacheTTL        = 10 * time.Minute
-	filterCooldown        = 5 * time.Second
-	filterCaptureTimeout  = 2 * time.Minute
+	filterCacheTTL              = 10 * time.Minute
+	filterCooldown              = 5 * time.Second
+	filterCaptureTimeout        = 2 * time.Minute
 	filterDeliveryTimeout       = 30 * time.Second
 	filtersTelegramMessageRunes = 4096
 )
@@ -400,6 +400,9 @@ func deliverFilterList(ctx *core.Context, filters []Filter) error {
 }
 
 func (p *Plugin) handleInfo(ctx *core.Context) error {
+	if p.db == nil {
+		return errors.New("filters: database is unavailable")
+	}
 	if len(ctx.Args) == 0 {
 		_ = ctx.EditOrReply("⚠️ Usage: <code>.filterinfo &lt;keyword&gt;</code>")
 		return errors.New("missing filter keyword")

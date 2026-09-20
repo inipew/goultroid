@@ -2,8 +2,10 @@ package filters
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
@@ -379,3 +381,64 @@ func TestFilterMediaManagementUX(t *testing.T) {
 	}
 }
 
+
+type filterListCaptureService struct {
+	mockService
+	messages []string
+}
+
+func (s *filterListCaptureService) SendMessage(
+	ctx context.Context,
+	peer tg.InputPeerClass,
+	text string,
+) (*tg.Message, error) {
+	s.messages = append(s.messages, text)
+	return &tg.Message{ID: len(s.messages), Message: text}, nil
+}
+
+func (s *filterListCaptureService) EditMessage(
+	ctx context.Context,
+	peer tg.InputPeerClass,
+	msgID int,
+	text string,
+) error {
+	s.messages = append(s.messages, text)
+	return nil
+}
+
+func TestFilterListDeliveryIsChunkedToTelegramLimit(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := database.RunFeatureMigrations(context.Background(), db, Module); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewSQLiteRepository(db)
+	chatID := int64(98765)
+	for i := 0; i < 700; i++ {
+		keyword := fmt.Sprintf("filter-%04d-%s", i, strings.Repeat("x", 8))
+		if err := repo.SaveFilter(context.Background(), chatID, keyword, savedresponse.NewText("value")); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	svc := &filterListCaptureService{}
+	p := New(repo, func() core.TelegramServicer { return svc })
+	ctx := &core.Context{
+		Ctx: context.Background(), Chat: &core.Chat{ID: chatID},
+		Svc: svc, PeerID: &tg.InputPeerChat{ChatID: chatID},
+	}
+	if err := p.handleList(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(svc.messages) < 2 {
+		t.Fatalf("expected chunked filter list, got %d message", len(svc.messages))
+	}
+	for i, message := range svc.messages {
+		if runes := utf8.RuneCountInString(message); runes > filtersTelegramMessageRunes {
+			t.Fatalf("chunk %d has %d runes, max %d", i, runes, filtersTelegramMessageRunes)
+		}
+	}
+}

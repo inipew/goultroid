@@ -77,7 +77,6 @@ func (r Response) MediaAssetID() string {
 	return strings.TrimSpace(r.Media.AssetID)
 }
 
-
 func (r Response) Kind() string {
 	if !r.HasMedia() {
 		return "text"
