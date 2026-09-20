@@ -493,6 +493,7 @@ func (p *Plugin) withTransientAsset(parent context.Context, asset *storage.Asset
 	}
 	return use()
 }
+
 func (p *Plugin) cleanupTransientAsset(parent context.Context, asset *storage.Asset) {
 	if p == nil || p.mediaService == nil || asset == nil || strings.TrimSpace(asset.ID) == "" {
 		return
@@ -510,6 +511,7 @@ func (p *Plugin) cleanupTransientAsset(parent context.Context, asset *storage.As
 		return
 	}
 }
+
 func sendAsset(ctx *core.Context, mediaType string, asset *storage.Asset, caption string) error {
 	if ctx == nil {
 		return fmt.Errorf("%w: media context is nil", core.ErrInvalidArgs)
