@@ -381,7 +381,6 @@ func TestFilterMediaManagementUX(t *testing.T) {
 	}
 }
 
-
 type filterListCaptureService struct {
 	mockService
 	messages []string
