@@ -4,6 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
+	"image/color/palette"
+	stddraw "image/draw"
 	"image/png"
 	"math"
 	"os"
@@ -21,6 +24,8 @@ import (
 )
 
 const staticStickerMaxBytes int64 = 512 << 10
+
+var errStaticStickerTooLarge = errors.New("static sticker exceeds Telegram size limit")
 
 var stickerImagePolicy = imageguard.Policy{
 	MaxInputBytes:   32 << 20,
@@ -114,9 +119,19 @@ func (p *Plugin) handleSticker(ctx *core.Context) error {
 	if media.Type != "photo" && media.Type != "sticker" && media.Type != "document" {
 		return ctx.EditOrReply("⚠️ Please reply to a photo, sticker, or image document.")
 	}
-	if (media.Type == "document" || media.Type == "sticker") &&
+	if media.Type == "sticker" {
+		switch stickerSourceFormat(media) {
+		case "animated":
+			return ctx.EditOrReply("⚠️ Animated <code>.tgs</code> stickers are already Telegram stickers and cannot be raster-converted. Reply to a static image/WebP/PNG instead.")
+		case "video":
+			return ctx.EditOrReply("⚠️ Video <code>.webm</code> stickers are already Telegram stickers and cannot be raster-converted. Reply to a static image/WebP/PNG instead.")
+		case "unsupported":
+			return ctx.EditOrReply("⚠️ The selected sticker format is not supported for static conversion.")
+		}
+	}
+	if media.Type == "document" &&
 		media.MimeType != "" && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(media.MimeType)), "image/") {
-		return ctx.EditOrReply("⚠️ The selected document or sticker is not a supported image.")
+		return ctx.EditOrReply("⚠️ The selected document is not a supported image.")
 	}
 	if err := imageguard.ValidateKnown(media.Size, media.Width, media.Height, stickerImagePolicy); err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Image rejected by safety limits: %v", err))
@@ -149,23 +164,16 @@ func (p *Plugin) handleSticker(ctx *core.Context) error {
 	dstImg := image.NewRGBA(image.Rect(0, 0, dstW, dstH))
 	draw.BiLinear.Scale(dstImg, dstImg.Bounds(), srcImg, srcImg.Bounds(), draw.Over, nil)
 
-	// Static stickers may be PNG or WebP. BestCompression keeps the bounded
-	// 512px output as small as possible without adding a process/WebP dependency.
+	// Prefer the full-color lossless PNG. If an image with high entropy exceeds
+	// Telegram's 512 KiB static-sticker limit, retry with a bounded 256-color
+	// dithered palette rather than failing a perfectly usable source image.
 	outPath := filepath.Join(tmpDir, "sticker.png")
-	outFile, err := os.OpenFile(outPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	quantized, err := encodeStaticStickerOutput(outPath, dstImg)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create output file: %v", err))
-	}
-	encoder := png.Encoder{CompressionLevel: png.BestCompression}
-	if err := encoder.Encode(outFile, dstImg); err != nil {
-		_ = outFile.Close()
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to encode sticker PNG: %v", err))
-	}
-	if err := outFile.Close(); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to finalize sticker PNG: %v", err))
-	}
-	if err := validateStaticStickerOutput(outPath); err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Sticker output is not Telegram-compliant: %v", err))
+	}
+	if quantized {
+		_ = ctx.EditOrReply("⏳ <i>Sticker optimized to fit Telegram's 512 KiB limit...</i>")
 	}
 
 	// Upload sticker
@@ -177,16 +185,86 @@ func (p *Plugin) handleSticker(ctx *core.Context) error {
 	return nil
 }
 
-func validateStaticStickerOutput(path string) error {
-	stat, err := os.Stat(path)
+func stickerSourceFormat(media *core.MediaInfo) string {
+	if media == nil || media.Type != "sticker" {
+		return ""
+	}
+	mime := strings.ToLower(strings.TrimSpace(media.MimeType))
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(media.FileName)))
+	switch {
+	case mime == "application/x-tgsticker" || mime == "application/x-tgs" || ext == ".tgs":
+		return "animated"
+	case mime == "video/webm" || ext == ".webm":
+		return "video"
+	case mime == "image/webp" || mime == "image/png" || ext == ".webp" || ext == ".png" || (mime == "" && ext == ""):
+		return "static"
+	default:
+		return "unsupported"
+	}
+}
+
+func encodeStaticStickerOutput(path string, img image.Image) (bool, error) {
+	if err := writeStickerPNG(path, img); err != nil {
+		return false, err
+	}
+	if err := validateStaticStickerOutput(path); err == nil {
+		return false, nil
+	} else if !errors.Is(err, errStaticStickerTooLarge) {
+		return false, err
+	}
+
+	base := palette.Plan9
+	if len(base) > 255 {
+		base = base[:255]
+	}
+	pal := make(color.Palette, 0, 256)
+	pal = append(pal, color.NRGBA{R: 0, G: 0, B: 0, A: 0})
+	pal = append(pal, base...)
+	indexed := image.NewPaletted(img.Bounds(), pal)
+	stddraw.FloydSteinberg.Draw(indexed, indexed.Bounds(), img, img.Bounds().Min)
+
+	if err := writeStickerPNG(path, indexed); err != nil {
+		return true, err
+	}
+	if err := validateStaticStickerOutput(path); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func writeStickerPNG(path string, img image.Image) error {
+	outFile, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
+		return fmt.Errorf("create sticker PNG: %w", err)
+	}
+	encoder := png.Encoder{CompressionLevel: png.BestCompression}
+	if err := encoder.Encode(outFile, img); err != nil {
+		_ = outFile.Close()
+		return fmt.Errorf("encode sticker PNG: %w", err)
+	}
+	if err := outFile.Close(); err != nil {
+		return fmt.Errorf("finalize sticker PNG: %w", err)
+	}
+	return nil
+}
+
+func validateStaticStickerOutput(path string) error {
+	info, err := imageguard.Inspect(path, imageguard.Policy{
+		MaxInputBytes:   staticStickerMaxBytes,
+		MaxWidth:        512,
+		MaxHeight:       512,
+		MaxPixels:       512 * 512,
+		MaxDecodedBytes: 4 * 512 * 512,
+		AllowedFormats:  []string{"png"},
+	})
+	if err != nil {
+		if errors.Is(err, imageguard.ErrInputTooLarge) {
+			return fmt.Errorf("%w: %v", errStaticStickerTooLarge, err)
+		}
 		return err
 	}
-	if stat.Size() <= 0 {
-		return errors.New("sticker output is empty")
-	}
-	if stat.Size() > staticStickerMaxBytes {
-		return fmt.Errorf("PNG is %d bytes; static sticker limit is %d bytes", stat.Size(), staticStickerMaxBytes)
+	if info.Width != 512 && info.Height != 512 {
+		return fmt.Errorf("one side must be exactly 512px, got %dx%d", info.Width, info.Height)
 	}
 	return nil
 }
