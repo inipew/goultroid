@@ -97,3 +97,25 @@ func TestNotesRichResponseMetadataRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected rich note media: %+v", got.Response.Media)
 	}
 }
+
+func TestNotesMediaReferenceIndexMigration(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := database.RunFeatureMigrations(ctx, db, Module); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*) FROM sqlite_master
+		WHERE type = 'index' AND name = 'idx_notes_media_asset_id_trim'
+	`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("notes media reference index count=%d, want 1", count)
+	}
+}

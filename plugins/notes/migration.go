@@ -10,6 +10,7 @@ import (
 var (
 	_ database.SchemaInvariantMigration = migration001{}
 	_ database.SchemaInvariantMigration = migration002{}
+	_ database.SchemaInvariantMigration = migration003{}
 )
 
 type migration001 struct{}
@@ -78,6 +79,32 @@ func (migration002) VerifySchema(ctx context.Context, tx database.SQLExecutor) e
 	return nil
 }
 
+type migration003 struct{}
+
+func (migration003) ID() string          { return "notes.003" }
+func (migration003) Description() string { return "Index persistent media references for bounded reconciliation" }
+func (migration003) Checksum() string {
+	return "760eee853a98e0046d43166cc8f96cd5d87113b3f32445c82356f8ece258bf5b"
+}
+func (migration003) LegacyVersions() []int { return nil }
+func (migration003) Up(ctx context.Context, tx database.SQLExecutor) error {
+	_, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_notes_media_asset_id_trim ON notes(TRIM(media_asset_id));`)
+	return err
+}
+func (migration003) VerifySchema(ctx context.Context, tx database.SQLExecutor) error {
+	var count int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT count(*) FROM sqlite_master
+		WHERE type = 'index' AND name = 'idx_notes_media_asset_id_trim'
+	`).Scan(&count); err != nil {
+		return err
+	}
+	if count == 0 {
+		return fmt.Errorf("required index idx_notes_media_asset_id_trim does not exist")
+	}
+	return nil
+}
+
 func Migrations() []database.Migration {
-	return []database.Migration{migration001{}, migration002{}}
+	return []database.Migration{migration001{}, migration002{}, migration003{}}
 }
