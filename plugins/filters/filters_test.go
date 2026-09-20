@@ -8,6 +8,7 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/services/savedresponse"
 	"github.com/inipew/goultroid/internal/telegram"
 )
 
@@ -106,8 +107,8 @@ func TestFiltersPlugin(t *testing.T) {
 	}
 
 	cmds := p.Commands()
-	if len(cmds) != 3 {
-		t.Fatalf("expected 3 commands, got %d", len(cmds))
+	if len(cmds) != 4 {
+		t.Fatalf("expected 4 commands, got %d", len(cmds))
 	}
 
 	cmdMap := make(map[string]core.Command)
@@ -322,3 +323,59 @@ func TestFiltersPlugin(t *testing.T) {
 		t.Errorf("expected cooldown to drop immediate repeat reply, got sent: %s", svc.sent)
 	}
 }
+
+func TestFilterMediaManagementUX(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := database.RunFeatureMigrations(context.Background(), db, Module); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewSQLiteRepository(db)
+	chatID := int64(54321)
+
+	if err := repo.SaveFilter(context.Background(), chatID, "hello", savedresponse.NewHTML("Hi {mention}")); err != nil {
+		t.Fatal(err)
+	}
+	media := savedresponse.NewPlainText("literal")
+	media.Media = &savedresponse.MediaRef{
+		AssetID: "asset-sticker", MediaType: "sticker", Name: "wave.webp", MIMEType: "image/webp",
+	}
+	if err := repo.SaveFilter(context.Background(), chatID, "wave", media); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := &mockService{}
+	p := New(repo, func() core.TelegramServicer { return svc })
+	ctx := &core.Context{
+		Ctx: context.Background(), Chat: &core.Chat{ID: chatID},
+		Svc: svc, PeerID: &tg.InputPeerChat{ChatID: chatID},
+	}
+	if err := p.handleList(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(svc.sent, "[text]") || !strings.Contains(svc.sent, "[sticker]") || !strings.Contains(svc.sent, ".filterinfo") {
+		t.Fatalf("filter list missing response indicators: %s", svc.sent)
+	}
+
+	ctx.Args = []string{"wave"}
+	if err := p.handleInfo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Filter Info", "sticker", "plain", "wave.webp", "image/webp", "Template variables:", "none"} {
+		if !strings.Contains(svc.sent, want) {
+			t.Fatalf("filter info missing %q: %s", want, svc.sent)
+		}
+	}
+
+	ctx.Args = []string{"hello"}
+	if err := p.handleInfo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(svc.sent, "{mention}") || !strings.Contains(svc.sent, "Type:</b> <code>text") {
+		t.Fatalf("text filter info missing template/type metadata: %s", svc.sent)
+	}
+}
+

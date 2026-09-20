@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
@@ -21,7 +22,8 @@ const (
 	filterCacheTTL        = 10 * time.Minute
 	filterCooldown        = 5 * time.Second
 	filterCaptureTimeout  = 2 * time.Minute
-	filterDeliveryTimeout = 30 * time.Second
+	filterDeliveryTimeout       = 30 * time.Second
+	filtersTelegramMessageRunes = 4096
 )
 
 var filterTaskSequence atomic.Uint64
@@ -129,6 +131,7 @@ func (p *Plugin) Commands() []core.Command {
 		},
 		{Name: "stop", Description: "Stop and delete a chat filter", Usage: ".stop <keyword>", Category: "Filters", Permission: core.PermissionSudo, GroupOnly: true, Handler: p.handleStop},
 		{Name: "filters", Description: "List all active filters in this chat", Category: "Filters", Permission: core.PermissionSudo, GroupOnly: true, Handler: p.handleList},
+		{Name: "filterinfo", Description: "Show filter response/media details", Usage: ".filterinfo <keyword>", Category: "Filters", Permission: core.PermissionSudo, GroupOnly: true, Handler: p.handleInfo},
 	}
 }
 
@@ -344,12 +347,119 @@ func (p *Plugin) handleList(ctx *core.Context) error {
 	if len(list) == 0 {
 		return ctx.EditOrReply("ℹ️ No active filters in this chat.")
 	}
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "🎯 <b>Active Filters in this chat (%d):</b>\n", len(list))
-	for _, f := range list {
-		fmt.Fprintf(&sb, "• <code>%s</code>\n", html.EscapeString(f.Keyword))
+	return deliverFilterList(ctx, list)
+}
+
+func deliverFilterList(ctx *core.Context, filters []Filter) error {
+	var current strings.Builder
+	currentRunes := 0
+	sent := false
+	flush := func() error {
+		if currentRunes == 0 {
+			return nil
+		}
+		chunk := current.String()
+		current.Reset()
+		currentRunes = 0
+		if !sent {
+			sent = true
+			return ctx.EditOrReply(chunk)
+		}
+		return ctx.Reply(chunk)
 	}
-	return ctx.EditOrReply(sb.String())
+	appendFragment := func(fragment string) error {
+		for _, part := range core.SplitTelegramHTML(fragment, filtersTelegramMessageRunes) {
+			partRunes := utf8.RuneCountInString(part)
+			if currentRunes > 0 && currentRunes+partRunes > filtersTelegramMessageRunes {
+				if err := flush(); err != nil {
+					return err
+				}
+			}
+			current.WriteString(part)
+			currentRunes += partRunes
+		}
+		return nil
+	}
+
+	if err := appendFragment(fmt.Sprintf("🎯 <b>Active Filters in this chat (%d):</b>\n\n", len(filters))); err != nil {
+		return err
+	}
+	for _, filter := range filters {
+		if err := appendFragment(fmt.Sprintf(
+			"• <code>[%s]</code> <code>%s</code>\n",
+			html.EscapeString(filter.Response.Kind()),
+			html.EscapeString(filter.Keyword),
+		)); err != nil {
+			return err
+		}
+	}
+	if err := appendFragment("\nUse <code>.filterinfo &lt;keyword&gt;</code> for details."); err != nil {
+		return err
+	}
+	return flush()
+}
+
+func (p *Plugin) handleInfo(ctx *core.Context) error {
+	if len(ctx.Args) == 0 {
+		_ = ctx.EditOrReply("⚠️ Usage: <code>.filterinfo &lt;keyword&gt;</code>")
+		return errors.New("missing filter keyword")
+	}
+	keyword := strings.ToLower(strings.TrimSpace(ctx.Args[0]))
+	filter, err := p.db.GetFilter(ctx.Ctx, p.getChatID(ctx), keyword)
+	if err != nil {
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Error fetching filter info: %v", err))
+		return err
+	}
+	if filter == nil {
+		_ = ctx.EditOrReply(fmt.Sprintf("ℹ️ Filter <code>%s</code> not found.", html.EscapeString(keyword)))
+		return errors.New("filter not found")
+	}
+	info, err := savedresponse.Inspect(filter.Response)
+	if err != nil {
+		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to inspect filter: %v", err))
+		return err
+	}
+	return ctx.EditOrReply(renderFilterInfo(filter, info))
+}
+
+func renderFilterInfo(filter *Filter, info savedresponse.Inspection) string {
+	if filter == nil {
+		return ""
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "🎯 <b>Filter Info</b>\n\n")
+	fmt.Fprintf(&sb, "• <b>Keyword:</b> <code>%s</code>\n", html.EscapeString(filter.Keyword))
+	fmt.Fprintf(&sb, "• <b>Type:</b> <code>%s</code>\n", html.EscapeString(info.Kind))
+	fmt.Fprintf(&sb, "• <b>Format:</b> <code>%s</code>\n", html.EscapeString(string(info.Format)))
+	if info.HasText {
+		fmt.Fprintf(&sb, "• <b>Text/Caption:</b> <code>yes</code>\n")
+	} else {
+		fmt.Fprintf(&sb, "• <b>Text/Caption:</b> <code>no</code>\n")
+	}
+	fmt.Fprintf(&sb, "• <b>Template variables:</b> %s\n", renderFilterTemplateVariables(info.Variables))
+	if info.Kind != "text" {
+		if info.MediaName != "" {
+			fmt.Fprintf(&sb, "• <b>Media:</b> <code>%s</code>\n", html.EscapeString(info.MediaName))
+		}
+		if info.MIMEType != "" {
+			fmt.Fprintf(&sb, "• <b>MIME:</b> <code>%s</code>\n", html.EscapeString(info.MIMEType))
+		}
+	}
+	if !filter.CreatedAt.IsZero() {
+		fmt.Fprintf(&sb, "• <b>Last saved:</b> <code>%s</code>", filter.CreatedAt.UTC().Format("2006-01-02 15:04:05 UTC"))
+	}
+	return sb.String()
+}
+
+func renderFilterTemplateVariables(variables []string) string {
+	if len(variables) == 0 {
+		return "<code>none</code>"
+	}
+	parts := make([]string, 0, len(variables))
+	for _, variable := range variables {
+		parts = append(parts, fmt.Sprintf("<code>{%s}</code>", html.EscapeString(variable)))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (p *Plugin) invalidateChat(chatID int64) {
