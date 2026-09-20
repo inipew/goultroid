@@ -1,4 +1,4 @@
-package core
+package tasks
 
 import (
 	"context"
@@ -31,6 +31,16 @@ func WithHeldResource(ctx context.Context, name string) context.Context {
 		names[name] = struct{}{}
 	}
 	return context.WithValue(ctx, heldResourcesContextKey{}, heldResources{names: names})
+}
+
+// WithHeldResources marks every positive resource requirement as held.
+func WithHeldResources(ctx context.Context, requirements []ResourceRequirement) context.Context {
+	for _, requirement := range requirements {
+		if requirement.Amount > 0 {
+			ctx = WithHeldResource(ctx, requirement.Name)
+		}
+	}
+	return ctx
 }
 
 // HasHeldResource reports whether ctx already holds the named authoritative

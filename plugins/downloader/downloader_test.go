@@ -263,7 +263,7 @@ func TestMarkHeldResourcesPropagatesCoreAndDownloadLeaseMarkers(t *testing.T) {
 		{Name: "process", Amount: 1},
 	})
 	for _, name := range []string{"download", "process"} {
-		if !core.HasHeldResource(ctx, name) {
+		if !tasks.HasHeldResource(ctx, name) {
 			t.Fatalf("core held-resource marker missing for %q", name)
 		}
 		if !download.HasResource(ctx, name) {

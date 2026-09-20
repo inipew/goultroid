@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 func TestResourceGuardHeldMediaLeaseBypassesLocalSemaphore(t *testing.T) {
@@ -15,7 +15,7 @@ func TestResourceGuardHeldMediaLeaseBypassesLocalSemaphore(t *testing.T) {
 	}
 	defer release()
 
-	ctx, cancel := context.WithCancel(core.WithHeldResource(context.Background(), "media"))
+	ctx, cancel := context.WithCancel(tasks.WithHeldResource(context.Background(), "media"))
 	cancel()
 	releaseHeld, err := guard.Acquire(ctx)
 	if err != nil {

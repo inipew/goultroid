@@ -1,4 +1,4 @@
-package core
+package tasks
 
 import (
 	"context"
@@ -24,6 +24,20 @@ func TestHeldResourceContextIsImmutableAndScoped(t *testing.T) {
 	}
 	if HasHeldResource(media, "process") {
 		t.Fatal("unexpected process lease marker")
+	}
+}
+
+func TestWithHeldResourcesMarksPositiveRequirementsOnly(t *testing.T) {
+	ctx := WithHeldResources(context.Background(), []ResourceRequirement{
+		{Name: "download", Amount: 1},
+		{Name: "media", Amount: 2},
+		{Name: "ignored", Amount: 0},
+	})
+	if !HasHeldResource(ctx, "download") || !HasHeldResource(ctx, "media") {
+		t.Fatal("positive resource requirements were not marked")
+	}
+	if HasHeldResource(ctx, "ignored") {
+		t.Fatal("non-positive resource requirement was marked")
 	}
 }
 

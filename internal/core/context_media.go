@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 // downloadSemaphore enforces global maximum concurrent downloads (default: 3 concurrent jobs).
@@ -177,7 +179,7 @@ func (m *MediaFacade) SendAudio(filePath, caption string) error {
 }
 
 func acquireDownloadSlot(ctx context.Context) (func(), error) {
-	if HasHeldResource(ctx, "download") {
+	if tasks.HasHeldResource(ctx, "download") {
 		return func() {}, nil
 	}
 	if ctx == nil {

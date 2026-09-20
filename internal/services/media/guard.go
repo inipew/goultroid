@@ -7,6 +7,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/services/storage"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 // ResourceGuard enforces size, dimension, duration, disk space, and concurrency boundaries.
@@ -73,7 +74,7 @@ func (g *ResourceGuard) CheckDisk(dirPath string, requiredBytes int64) error {
 // Acquire acquires a slot in the concurrency semaphore or waits until ctx is canceled.
 // Returns a release function to be called in defer.
 func (g *ResourceGuard) Acquire(ctx context.Context) (func(), error) {
-	if g.sem == nil || core.HasHeldResource(ctx, "media") {
+	if g.sem == nil || tasks.HasHeldResource(ctx, "media") {
 		return func() {}, nil
 	}
 	if ctx == nil {

@@ -63,6 +63,10 @@ func executeAssignment(ctx context.Context, spec tasks.WorkSpec, grant *permit, 
 	if spec.Job != nil {
 		runCtx = execution.WithMetadata(runCtx, execution.Metadata{CanDurablyYield: true})
 	}
+	// grant.use(spec) above is the linearization point where TaskEngine owns the
+	// declared resource reservations. Publish those leases to downstream code so
+	// safety-net semaphores do not queue the same work a second time.
+	runCtx = tasks.WithHeldResources(runCtx, spec.Resources)
 	result.StartedAt = time.Now().UTC()
 	if onStarted != nil {
 		onStarted(result.StartedAt)
