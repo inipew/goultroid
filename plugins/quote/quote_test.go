@@ -670,7 +670,6 @@ func styledLineText(line styledLine) string {
 	return b.String()
 }
 
-
 func TestBoundedQuoteTextPreservesPrefixAndCapsLogicalLines(t *testing.T) {
 	input := "  😀 bold\n" + strings.Repeat("line\n", maxQuoteLogicalLines+5)
 	got := boundedQuoteText(input)
@@ -688,6 +687,29 @@ func TestBoundedQuoteTextPreservesPrefixAndCapsLogicalLines(t *testing.T) {
 	got = boundedQuoteText(long)
 	if runes := len([]rune(got)); runes != maxQuoteTextRunes+1 {
 		t.Fatalf("bounded runes=%d, want %d including ellipsis", runes, maxQuoteTextRunes+1)
+	}
+}
+
+func TestRenderBoundsPathologicalLogicalLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bounded-quote.png")
+	if err := RenderV3WithOpts(RenderOptions{
+		Path: path,
+		Name: "Alice",
+		Text: strings.Repeat("line\n", 5000),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	img, err := png.Decode(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if height := img.Bounds().Dy(); height > 1800 {
+		t.Fatalf("bounded quote canvas height=%d, want <=1800", height)
 	}
 }
 

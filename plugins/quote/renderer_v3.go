@@ -420,9 +420,9 @@ func RenderV3WithOpts(opts RenderOptions) error {
 	replyTextFace := fonts.replyText
 	timeFace := fonts.timestamp
 
-	// Preserve the original prefix so Telegram UTF-16 entity offsets remain
-	// aligned. The command path already applies prefix-only quote bounds.
-	rawText := opts.Text
+	// Prefix-only bounds preserve Telegram UTF-16 entity offsets while keeping
+	// direct renderer callers from constructing pathological output canvases.
+	rawText := boundedQuoteText(opts.Text)
 	var entities []tg.MessageEntityClass
 	var mediaInfo *core.MediaInfo
 	if opts.Message != nil {
