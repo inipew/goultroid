@@ -127,7 +127,7 @@ func TestCommitDeleteKeepsDurableIntentWhenStorageDeleteFails(t *testing.T) {
 	}
 }
 
-func TestReconcileDropsIntentWithoutDeletingStillReferencedAsset(t *testing.T) {
+func TestPreparedIntentIsNotReconciledBeforeGraceAndProtectsLiveAsset(t *testing.T) {
 	db := openCleanupTestDB(t)
 	defer db.Close()
 	store := storage.NewMemoryStorage()
@@ -135,25 +135,43 @@ func TestReconcileDropsIntentWithoutDeletingStillReferencedAsset(t *testing.T) {
 	insertReferencedNote(t, db, "live", asset.ID)
 	svc := NewService(store, db)
 
-	if err := svc.cleanup.enqueue(context.Background(), asset.ID); err != nil {
+	if err := svc.cleanup.prepare(context.Background(), asset.ID); err != nil {
 		t.Fatal(err)
 	}
 	stats, err := svc.ReconcileCleanup(context.Background(), 16)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.Referenced != 1 || stats.Deleted != 0 {
-		t.Fatalf("unexpected cleanup stats: %+v", stats)
-	}
-	if _, err := store.Stat(context.Background(), asset.ID); err != nil {
-		t.Fatalf("referenced asset was deleted: %v", err)
+	if stats.Scanned != 0 {
+		t.Fatalf("prepared intent was visible before grace: %+v", stats)
 	}
 	pending, err := svc.PendingCleanupCount(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
+	if pending != 1 {
+		t.Fatalf("prepared intent count=%d, want 1", pending)
+	}
+
+	// Simulate process recovery after the prepared grace window. Because the DB
+	// mutation never happened, the asset is still referenced and must survive.
+	forceCleanupDue(t, db, asset.ID)
+	stats, err = svc.ReconcileCleanup(context.Background(), 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Referenced != 1 || stats.Deleted != 0 {
+		t.Fatalf("unexpected cleanup stats after grace: %+v", stats)
+	}
+	if _, err := store.Stat(context.Background(), asset.ID); err != nil {
+		t.Fatalf("referenced asset was deleted: %v", err)
+	}
+	pending, err = svc.PendingCleanupCount(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if pending != 0 {
-		t.Fatalf("stale pre-commit intent was not cleared: %d", pending)
+		t.Fatalf("stale prepared intent was not cleared: %d", pending)
 	}
 }
 
