@@ -301,12 +301,16 @@ func (r *SQLiteRepository) SetActive(ctx context.Context, identifier string) err
 
 // SetAlias updates the alias for an account identified by MSISDN or current alias.
 func (r *SQLiteRepository) SetAlias(ctx context.Context, identifier, alias string) error {
+	normalizedAlias, err := normalizeAlias(alias)
+	if err != nil {
+		return err
+	}
 	query := `
 	UPDATE myxl_accounts
 	SET alias = ?, updated_at = ?
 	WHERE msisdn = ? OR alias = ?
 	`
-	res, err := r.db.ExecContext(ctx, query, strings.TrimSpace(alias), time.Now().UTC(), identifier, identifier)
+	res, err := r.db.ExecContext(ctx, query, normalizedAlias, time.Now().UTC(), identifier, identifier)
 	if err != nil {
 		return fmt.Errorf("failed to set alias: %w", err)
 	}
@@ -532,8 +536,9 @@ func (r *SQLiteRepository) SavePendingQRIS(ctx context.Context, item *PendingQRI
 	if item.CreatedAt.IsZero() {
 		item.CreatedAt = now
 	}
-	if item.ExpiresAt.IsZero() {
-		item.ExpiresAt = now.Add(5 * time.Minute)
+	maxExpiresAt := item.CreatedAt.Add(pendingQRISTTL)
+	if item.ExpiresAt.IsZero() || item.ExpiresAt.After(maxExpiresAt) {
+		item.ExpiresAt = maxExpiresAt
 	}
 
 	query := `

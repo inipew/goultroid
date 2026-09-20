@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	"github.com/inipew/goultroid/internal/services/callback"
-	"unicode/utf16"
 
 	"github.com/gotd/td/telegram/message/entity"
 	"github.com/gotd/td/telegram/message/html"

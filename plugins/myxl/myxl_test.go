@@ -26,7 +26,6 @@ type mockTgService struct {
 	lastMarkup tg.ReplyMarkupClass
 }
 
-
 type immediateMyXLTicket struct {
 	result tasks.TaskResult
 	done   chan struct{}
@@ -72,11 +71,13 @@ func (c *immediateMyXLTaskClient) Snapshot(tasks.TaskID) (tasks.TaskSnapshot, bo
 
 type myXLQRService struct {
 	core.MockTelegramServicer
-	mediaSent bool
+	mediaSent       bool
+	heldMediaLease bool
 }
 
-func (s *myXLQRService) SendMedia(context.Context, tg.InputPeerClass, string, string, string) (*tg.Message, error) {
+func (s *myXLQRService) SendMedia(ctx context.Context, _ tg.InputPeerClass, _, _, _ string) (*tg.Message, error) {
 	s.mediaSent = true
+	s.heldMediaLease = tasks.HasHeldResource(ctx, "media")
 	return &tg.Message{ID: 55}, nil
 }
 
@@ -735,6 +736,63 @@ func TestTruncateStringPreservesUTF8(t *testing.T) {
 }
 
 
+func TestRepositorySetAliasEnforcesSharedAliasInvariant(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := database.RunFeatureMigrations(ctx, db, Module); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewSQLiteRepository(db)
+	if err := repo.Save(ctx, &Account{MSISDN: "6281912345678", IsActive: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetAlias(ctx, "6281912345678", strings.Repeat("界", 25)); err == nil {
+		t.Fatal("repository accepted alias beyond shared 24-rune limit")
+	}
+	if err := repo.SetAlias(ctx, "6281912345678", "bad\x00alias"); err == nil {
+		t.Fatal("repository accepted control characters in alias")
+	}
+}
+
+func TestPendingQRISRepositoryClampsExpiryToFiveMinutes(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := database.RunFeatureMigrations(ctx, db, Module); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewSQLiteRepository(db)
+	created := time.Now().UTC().Add(-time.Minute)
+	if err := repo.SavePendingQRIS(ctx, &PendingQRIS{
+		TransactionCode: "TX-CLAMP",
+		MSISDN:          "6281912345678",
+		QRCode:          "000201010212TEST",
+		Status:          "PENDING",
+		CreatedAt:       created,
+		ExpiresAt:       created.Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := repo.GetPendingQRIS(ctx, "6281912345678")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending == nil {
+		t.Fatal("clamped pending QRIS unexpectedly missing")
+	}
+	want := created.Add(pendingQRISTTL)
+	if delta := pending.ExpiresAt.Sub(want); delta < -time.Second || delta > time.Second {
+		t.Fatalf("ExpiresAt=%v, want about %v", pending.ExpiresAt, want)
+	}
+}
+
 func TestSendQRPhotoUsesMediaResourceAndCleansTempFile(t *testing.T) {
 	manager, err := filesystem.NewManager(t.TempDir(), "", "", nil)
 	if err != nil {
@@ -763,6 +821,9 @@ func TestSendQRPhotoUsesMediaResourceAndCleansTempFile(t *testing.T) {
 	}
 	if !svc.mediaSent {
 		t.Fatal("QR media was not sent")
+	}
+	if !svc.heldMediaLease {
+		t.Fatal("QR media send did not run under media resource lease")
 	}
 	if len(client.specs) != 1 {
 		t.Fatalf("QR task count=%d, want 1", len(client.specs))

@@ -118,7 +118,6 @@ func (c *Client) getHTTP() *network.Client {
 	return c.httpCli
 }
 
-
 func readMyXLResponse(resp *network.Response) ([]byte, error) {
 	if resp == nil || resp.Body == nil {
 		return nil, errors.New("empty MyXL HTTP response")
@@ -652,12 +651,13 @@ func (c *Client) executeEngselOnce(ctx context.Context, acc *Account, method, pa
 		return nil, fmt.Errorf("http request: %w", err)
 	}
 
+	if httpResp.StatusCode == 401 {
+		_ = httpResp.Close()
+		return nil, ErrUnauthorized
+	}
 	respBody, err := readMyXLResponse(httpResp)
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
-	}
-	if httpResp.StatusCode == 401 {
-		return nil, ErrUnauthorized
 	}
 
 	return c.parseEngselResponse(respBody)
@@ -924,12 +924,13 @@ func (c *Client) sendPaymentOnce(ctx context.Context, acc *Account, path string,
 		return nil, fmt.Errorf("payment http request: %w", err)
 	}
 
+	if httpResp.StatusCode == 401 {
+		_ = httpResp.Close()
+		return nil, ErrUnauthorized
+	}
 	respBody, err := readMyXLResponse(httpResp)
 	if err != nil {
 		return nil, fmt.Errorf("read payment response: %w", err)
-	}
-	if httpResp.StatusCode == 401 {
-		return nil, ErrUnauthorized
 	}
 
 	return c.parseEngselResponse(respBody)

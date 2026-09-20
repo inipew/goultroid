@@ -219,7 +219,6 @@ func TestRequestOTPPrunesExpiredCooldownEntries(t *testing.T) {
 	}
 }
 
-
 func TestClientResponseBodyIsBounded(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)

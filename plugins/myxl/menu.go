@@ -268,8 +268,8 @@ func (m *MenuManager) handleWizardLoginMSISDN(ctx context.Context, userID int64,
 }
 
 func (m *MenuManager) handleWizardLoginOTP(ctx context.Context, userID int64, input string, sess *wizardSession, inter interaction.MessageInteraction) (bool, error) {
-	code := strings.TrimSpace(input)
-	if len(code) != 6 {
+	code, codeErr := normalizeOTPCode(input)
+	if codeErr != nil {
 		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(),
 			"⚠️ <b>Kode OTP harus berupa 6 digit angka!</b>\n\nSilakan kirimkan ulang atau ketik <code>/cancel</code>.",
 			nil)
