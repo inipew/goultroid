@@ -167,12 +167,15 @@ func (p *Plugin) handleBroadcast(ctx *core.Context) error {
 
 	uiCtx := detachBroadcastContext(ctx)
 	resources := []tasks.ResourceRequirement{{Name: "download", Amount: 1}}
-	_, err = p.tasks.Submit(ctx.Ctx, tasks.WorkSpec{
+	var response savedresponse.Response
+	var captureErr error
+	ticket, err := p.tasks.Submit(ctx.Ctx, tasks.WorkSpec{
 		ID: tasks.TaskID(fmt.Sprintf(
 			"broadcast:capture:%d:%d",
 			time.Now().UnixNano(),
 			broadcastTaskSequence.Add(1),
 		)),
+		QuotaOwner:       tasks.OwnerID("plugin:broadcast"),
 		Pool:             tasks.PoolID("download"),
 		Class:            tasks.PriorityNormal,
 		OrderingKey:      "broadcast:capture",
@@ -180,19 +183,33 @@ func (p *Plugin) handleBroadcast(ctx *core.Context) error {
 		Resources:        resources,
 		Handler: func(taskCtx context.Context) error {
 			taskCore := uiCtx.WithContext(taskCtx)
-			response, captureErr := p.svc.CaptureReply(taskCore)
-			if captureErr != nil {
-				_ = taskCore.EditOrReply(fmt.Sprintf("⚠️ Could not capture replied broadcast: %v", captureErr))
-				return captureErr
-			}
-			defer p.responses.DeleteMedia(context.Background(), response)
-			return p.runBroadcast(taskCore, scope, response)
+			response, captureErr = p.svc.CaptureReply(taskCore)
+			return captureErr
 		},
 	})
 	if err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to queue broadcast media capture: %v", err))
 	}
-	return nil
+
+	result, waitErr := ticket.Wait(ctx.Ctx)
+	if waitErr != nil {
+		return fmt.Errorf("broadcast: wait media capture: %w", waitErr)
+	}
+	if captureErr != nil {
+		return ctx.EditOrReply(fmt.Sprintf("⚠️ Could not capture replied broadcast: %v", captureErr))
+	}
+	if !result.IsSuccess() {
+		failure := strings.TrimSpace(result.Failure.Message)
+		if failure == "" {
+			failure = fmt.Sprintf("capture task ended with %s", result.Outcome)
+		}
+		return ctx.EditOrReply(fmt.Sprintf("⚠️ Could not capture replied broadcast: %s", failure))
+	}
+
+	// TaskEngine releases download:1 before closing the ticket. Keep the
+	// captured asset alive across fan-out, then reclaim it after the run.
+	defer p.responses.DeleteMedia(context.Background(), response)
+	return p.runBroadcast(ctx, scope, response)
 }
 
 func detachBroadcastContext(ctx *core.Context) *core.Context {

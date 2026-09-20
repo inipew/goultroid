@@ -15,7 +15,7 @@ var Module ModuleType
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
 		ID:           "broadcast",
-		Version:      "1.2.0",
+		Version:      "1.2.1",
 		Description:  "Mass messaging tool with FloodWait resilience and target filtering",
 		Capabilities: []string{plugin.CapTelegramSendMessage, plugin.CapFilesystemTemp, plugin.CapTasks},
 	}
