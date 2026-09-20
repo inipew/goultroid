@@ -9,7 +9,7 @@ import (
 )
 
 func TestCompileCountsOnlySupportedPlaceholders(t *testing.T) {
-	source := strings.Repeat(`{"key":"value"} `, MaxTemplateTokens+32) + "{name}"
+	source := strings.Repeat(`{"key":1} `, MaxTemplateTokens+32) + "{name}"
 	compiled, err := Compile(NewPlainText(source))
 	if err != nil {
 		t.Fatalf("Compile rejected literal brace content: %v", err)
@@ -22,7 +22,7 @@ func TestCompileCountsOnlySupportedPlaceholders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "{&#34;key&#34;:&#34;value&#34;}") {
+	if !strings.Contains(out, "{&#34;key&#34;:1}") {
 		t.Fatalf("plain literal JSON was not preserved/escaped: %q", out[:min(len(out), 160)])
 	}
 	if !strings.HasSuffix(out, "Alice") {
