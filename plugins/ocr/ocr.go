@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
@@ -25,8 +27,11 @@ import (
 const defaultEndpoint = "https://api.ocr.space/parse/image"
 
 const (
-	maxResponseSize = 8 << 20
-	maxAttempts     = 3
+	maxResponseSize           = 8 << 20
+	maxAttempts               = 3
+	maxTelegramMessageRunes   = 4096
+	maxOCRInlineChunks        = 6
+	ocrChunkFormattingReserve = 192
 )
 
 var ocrImagePolicy = imageguard.Policy{
@@ -133,7 +138,10 @@ func (p *Plugin) Commands() []core.Command {
 		Category:    "Media",
 		Permission:  core.PermissionEveryone,
 		Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
-		Resources:   []tasks.ResourceRequirement{{Name: "download", Amount: 1}},
+		Resources: []tasks.ResourceRequirement{
+			{Name: "download", Amount: 1},
+			{Name: "media", Amount: 1},
+		},
 		Handler:     p.handle,
 	}}
 }
@@ -182,7 +190,7 @@ func (p *Plugin) handle(ctx *core.Context) error {
 	if text == "" {
 		return ctx.EditOrReply("ℹ️ OCR completed, but no text was detected.")
 	}
-	return ctx.EditOrReply("🎉 <b>OCR RESULT</b>\n\n" + core.EscapeHTML(text))
+	return p.deliverResult(ctx, dir, text)
 }
 
 func isOCRMedia(media *core.MediaInfo) bool {
@@ -247,37 +255,88 @@ func (p *Plugin) extract(ctx context.Context, path, language string) (string, er
 	return "", lastErr
 }
 
-func (p *Plugin) extractOnce(ctx context.Context, path, language string) (string, bool, time.Duration, error) {
+type ocrMultipartBody struct {
+	ctx    context.Context
+	reader io.Reader
+	file   *os.File
+}
+
+func (b *ocrMultipartBody) Read(p []byte) (int, error) {
+	if err := b.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return b.reader.Read(p)
+}
+
+func (b *ocrMultipartBody) Close() error {
+	if b.file == nil {
+		return nil
+	}
+	return b.file.Close()
+}
+
+// newOCRMultipartBody keeps only multipart framing in memory. Image bytes are
+// pulled directly from the file by the HTTP transport for every retry attempt.
+func newOCRMultipartBody(ctx context.Context, path, language string) (*ocrMultipartBody, string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	f, err := os.Open(path)
 	if err != nil {
-		return "", false, 0, err
+		return nil, "", err
 	}
-	defer f.Close()
 
-	var body bytes.Buffer
-	mw := multipart.NewWriter(&body)
+	var framing bytes.Buffer
+	mw := multipart.NewWriter(&framing)
+	fail := func(err error) (*ocrMultipartBody, string, error) {
+		_ = f.Close()
+		return nil, "", err
+	}
 	if err := mw.WriteField("language", language); err != nil {
-		return "", false, 0, err
+		return fail(err)
 	}
 	if err := mw.WriteField("isOverlayRequired", "false"); err != nil {
-		return "", false, 0, err
+		return fail(err)
 	}
-	part, err := mw.CreateFormFile("file", filepath.Base(path))
+	if _, err := mw.CreateFormFile("file", filepath.Base(path)); err != nil {
+		return fail(err)
+	}
+	contentType := mw.FormDataContentType()
+	boundary := mw.Boundary()
+	if err := mw.Close(); err != nil {
+		return fail(err)
+	}
+
+	closingBoundary := []byte("\r\n--" + boundary + "--\r\n")
+	framed := framing.Bytes()
+	closingAt := bytes.LastIndex(framed, closingBoundary)
+	if closingAt < 0 {
+		return fail(errors.New("multipart closing boundary was not generated"))
+	}
+
+	reader := io.MultiReader(
+		bytes.NewReader(framed[:closingAt]),
+		f,
+		bytes.NewReader(framed[closingAt:]),
+	)
+	return &ocrMultipartBody{ctx: ctx, reader: reader, file: f}, contentType, nil
+}
+
+func (p *Plugin) extractOnce(ctx context.Context, path, language string) (string, bool, time.Duration, error) {
+	body, contentType, err := newOCRMultipartBody(ctx, path, language)
 	if err != nil {
 		return "", false, 0, err
 	}
-	if _, err = io.Copy(part, f); err != nil {
-		return "", false, 0, err
-	}
-	if err = mw.Close(); err != nil {
-		return "", false, 0, err
-	}
+	defer func() { _ = body.Close() }()
 
 	httpSvc := p.getHTTP()
-	resp, err := httpSvc.Post(ctx, p.endpoint, mw.FormDataContentType(), &body, map[string]string{
+	resp, err := httpSvc.Post(ctx, p.endpoint, contentType, body, map[string]string{
 		"apikey": p.apiKey,
 	})
 	if err != nil {
+		if ctx != nil && ctx.Err() != nil {
+			return "", false, 0, ctx.Err()
+		}
 		return "", true, 0, err
 	}
 	defer resp.Close()
@@ -288,8 +347,8 @@ func (p *Plugin) extractOnce(ctx context.Context, path, language string) (string
 		return "", retryable, retryAfter(resp), fmt.Errorf("OCR service returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 
-	var out response
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseSize)).Decode(&out); err != nil {
+	out, err := decodeOCRResponse(resp.Body)
+	if err != nil {
 		return "", false, 0, err
 	}
 	if out.IsErroredOnProcessing {
@@ -306,6 +365,144 @@ func (p *Plugin) extractOnce(ctx context.Context, path, language string) (string
 		}
 	}
 	return sb.String(), false, 0, nil
+}
+
+func decodeOCRResponse(r io.Reader) (response, error) {
+	var out response
+	limited := &io.LimitedReader{R: r, N: maxResponseSize + 1}
+	if err := json.NewDecoder(limited).Decode(&out); err != nil {
+		return out, err
+	}
+	if _, err := io.Copy(io.Discard, limited); err != nil {
+		return out, err
+	}
+	if limited.N == 0 {
+		return out, fmt.Errorf("OCR service response exceeds %d bytes", maxResponseSize)
+	}
+	return out, nil
+}
+
+func escapedOCRRuneCost(r rune) int {
+	switch r {
+	case '&':
+		return 5
+	case '<', '>':
+		return 4
+	default:
+		return 1
+	}
+}
+
+func splitOCRText(text string, maxEscapedRunes int) []string {
+	text = strings.TrimSpace(text)
+	if text == "" || maxEscapedRunes <= 0 {
+		return nil
+	}
+
+	chunks := make([]string, 0, 2)
+	for len(text) > 0 {
+		cost := 0
+		cutAt := 0
+		lastNewline := 0
+		lastNewlineCost := 0
+
+		for i, r := range text {
+			runeCost := escapedOCRRuneCost(r)
+			if cost+runeCost > maxEscapedRunes {
+				if lastNewline > 0 && lastNewlineCost >= maxEscapedRunes/3 {
+					cutAt = lastNewline
+				} else {
+					cutAt = i
+				}
+				break
+			}
+			cost += runeCost
+			next := i + utf8.RuneLen(r)
+			cutAt = next
+			if r == '\n' {
+				lastNewline = next
+				lastNewlineCost = cost
+			}
+		}
+
+		if cutAt <= 0 {
+			_, size := utf8.DecodeRuneInString(text)
+			if size <= 0 {
+				break
+			}
+			cutAt = size
+		}
+		chunks = append(chunks, text[:cutAt])
+		text = text[cutAt:]
+	}
+	return chunks
+}
+
+func renderOCRChunks(text string) []string {
+	payloadBudget := maxTelegramMessageRunes - ocrChunkFormattingReserve
+	raw := splitOCRText(text, payloadBudget)
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for i, chunk := range raw {
+		header := "🎉 <b>OCR RESULT</b>\n\n"
+		if len(raw) > 1 {
+			header = fmt.Sprintf("🎉 <b>OCR RESULT</b> <code>%d/%d</code>\n\n", i+1, len(raw))
+		}
+		out = append(out, header+core.EscapeHTML(chunk))
+	}
+	return out
+}
+
+func renderOCRPreview(text string) string {
+	payloadBudget := maxTelegramMessageRunes - ocrChunkFormattingReserve
+	raw := splitOCRText(text, payloadBudget)
+	if len(raw) == 0 {
+		return "🎉 <b>OCR RESULT</b>"
+	}
+	return "🎉 <b>OCR RESULT</b>\n\n" + core.EscapeHTML(raw[0]) +
+		"\n\n<i>Output is long; the full OCR result is attached as a text file.</i>"
+}
+
+func (p *Plugin) deliverResult(ctx *core.Context, tempDir, text string) error {
+	chunks := renderOCRChunks(text)
+	if len(chunks) == 0 {
+		return ctx.EditOrReply("ℹ️ OCR completed, but no text was detected.")
+	}
+
+	if len(chunks) <= maxOCRInlineChunks {
+		if err := ctx.EditOrReply(chunks[0]); err != nil {
+			return err
+		}
+		for i, chunk := range chunks[1:] {
+			if err := ctx.Reply(chunk); err != nil {
+				return fmt.Errorf("send OCR result chunk %d/%d: %w", i+2, len(chunks), err)
+			}
+		}
+		return nil
+	}
+
+	if err := ctx.EditOrReply(renderOCRPreview(text)); err != nil {
+		return err
+	}
+
+	resultPath := filepath.Join(tempDir, "ocr-result.txt")
+	f, err := os.OpenFile(resultPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("create OCR result attachment: %w", err)
+	}
+	if _, err := io.WriteString(f, text); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write OCR result attachment: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close OCR result attachment: %w", err)
+	}
+	if err := ctx.SendFile(resultPath, "🧾 Full OCR result"); err != nil {
+		return ctx.Reply(fmt.Sprintf("❌ Failed to attach full OCR result: %v", err))
+	}
+	return nil
 }
 
 func retryAfter(resp *network.Response) time.Duration {

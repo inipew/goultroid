@@ -2,16 +2,22 @@ package ocr
 
 import (
 	"context"
+	"errors"
 	"image"
 	"image/png"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
+	"github.com/gotd/td/tg"
+	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/platform/network"
 	"github.com/inipew/goultroid/internal/platform/secret"
@@ -35,6 +41,9 @@ func TestExtractRetriesTransientHTTPFailure(t *testing.T) {
 	attempts := 0
 	client := &http.Client{Timeout: 2 * time.Second, Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		attempts++
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			return nil, err
+		}
 		if attempts == 1 {
 			return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader("temporary failure")), Header: make(http.Header), Request: r}, nil
 		}
@@ -143,5 +152,166 @@ func writeTestPNG(t *testing.T, path string, width, height int) {
 	}
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+
+func TestOCRMultipartBodyStreamsValidForm(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "image.png")
+	writeTestPNG(t, path, 16, 8)
+	wantFile, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body, contentType, err := newOCRMultipartBody(context.Background(), path, "ind")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = body.Close() }()
+
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mediaType != "multipart/form-data" || params["boundary"] == "" {
+		t.Fatalf("unexpected content type %q", contentType)
+	}
+
+	reader := multipart.NewReader(body, params["boundary"])
+	fields := map[string]string{}
+	var gotFile []byte
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(part)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if part.FormName() == "file" {
+			gotFile = data
+		} else {
+			fields[part.FormName()] = string(data)
+		}
+	}
+	if fields["language"] != "ind" || fields["isOverlayRequired"] != "false" {
+		t.Fatalf("unexpected multipart fields: %+v", fields)
+	}
+	if string(gotFile) != string(wantFile) {
+		t.Fatal("multipart file payload did not match source image")
+	}
+}
+
+func TestOCRMultipartBodyHonorsCancellation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "image.png")
+	writeTestPNG(t, path, 8, 8)
+	ctx, cancel := context.WithCancel(context.Background())
+	body, _, err := newOCRMultipartBody(ctx, path, "eng")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = body.Close() }()
+	cancel()
+
+	if _, err := body.Read(make([]byte, 32)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Read error = %v, want context.Canceled", err)
+	}
+}
+
+type ocrDeliveryService struct {
+	core.MockTelegramServicer
+	edits     []string
+	sends     []string
+	mediaType string
+	mediaData string
+}
+
+func (m *ocrDeliveryService) EditMessage(_ context.Context, _ tg.InputPeerClass, _ int, text string) error {
+	m.edits = append(m.edits, text)
+	return nil
+}
+
+func (m *ocrDeliveryService) SendMessage(_ context.Context, _ tg.InputPeerClass, text string) (*tg.Message, error) {
+	m.sends = append(m.sends, text)
+	return &tg.Message{ID: 100 + len(m.sends), Message: text}, nil
+}
+
+func (m *ocrDeliveryService) SendMedia(_ context.Context, _ tg.InputPeerClass, mediaType, filePath, _ string) (*tg.Message, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, err
+	}
+	m.mediaType = mediaType
+	m.mediaData = string(data)
+	return &tg.Message{ID: 500}, nil
+}
+
+func TestDeliverResultChunksUnicodeAndEscapedHTML(t *testing.T) {
+	svc := &ocrDeliveryService{}
+	ctx := &core.Context{
+		Ctx:    context.Background(),
+		PeerID: &tg.InputPeerChat{ChatID: 1},
+		Message: &core.Message{
+			ID:         10,
+			IsOutgoing: true,
+		},
+		Svc: svc,
+	}
+	text := strings.Repeat("日本語 <tag> & OCR line\n", 500)
+	if err := New().deliverResult(ctx, t.TempDir(), text); err != nil {
+		t.Fatalf("deliverResult failed: %v", err)
+	}
+	if len(svc.edits) != 1 || len(svc.sends) == 0 {
+		t.Fatalf("expected one edit plus continuation replies, edits=%d sends=%d", len(svc.edits), len(svc.sends))
+	}
+	all := append(append([]string{}, svc.edits...), svc.sends...)
+	for i, chunk := range all {
+		if !utf8.ValidString(chunk) {
+			t.Fatalf("chunk %d is invalid UTF-8", i)
+		}
+		if got := utf8.RuneCountInString(chunk); got > maxTelegramMessageRunes {
+			t.Fatalf("chunk %d has %d runes, exceeds %d", i, got, maxTelegramMessageRunes)
+		}
+	}
+	joined := strings.Join(all, "")
+	if !strings.Contains(joined, "&lt;tag&gt;") || !strings.Contains(joined, "&amp;") {
+		t.Fatal("OCR output was not HTML-escaped safely")
+	}
+}
+
+func TestDeliverResultUsesAttachmentForVeryLongOutput(t *testing.T) {
+	svc := &ocrDeliveryService{}
+	ctx := &core.Context{
+		Ctx:    context.Background(),
+		PeerID: &tg.InputPeerChat{ChatID: 1},
+		Message: &core.Message{
+			ID:         10,
+			IsOutgoing: true,
+		},
+		Svc: svc,
+	}
+	text := strings.Repeat("&long OCR text<>\n", 10000)
+	if err := New().deliverResult(ctx, t.TempDir(), text); err != nil {
+		t.Fatalf("deliverResult failed: %v", err)
+	}
+	if len(svc.edits) != 1 {
+		t.Fatalf("expected one preview edit, got %d", len(svc.edits))
+	}
+	if svc.mediaType != "file" {
+		t.Fatalf("mediaType=%q, want file", svc.mediaType)
+	}
+	if svc.mediaData != text {
+		t.Fatal("attached OCR result did not preserve full raw text")
+	}
+	if got := utf8.RuneCountInString(svc.edits[0]); got > maxTelegramMessageRunes {
+		t.Fatalf("preview has %d runes, exceeds Telegram limit", got)
+	}
+	if !strings.Contains(svc.edits[0], "full OCR result is attached") {
+		t.Fatalf("preview did not explain attachment fallback: %q", svc.edits[0])
 	}
 }
