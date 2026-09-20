@@ -1,6 +1,14 @@
 package filters
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"github.com/gotd/td/tg"
+	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/services/savedresponse"
+	"github.com/inipew/goultroid/internal/tasks"
+)
 
 func TestCommandsAreGroupOnly(t *testing.T) {
 	p := New(nil, nil)
@@ -25,5 +33,68 @@ func TestMatchFilterUsesWholeTokenBoundaries(t *testing.T) {
 		if got := matchFilter(tc.text, tc.keyword); got != tc.want {
 			t.Errorf("matchFilter(%q, %q) = %v, want %v", tc.text, tc.keyword, got, tc.want)
 		}
+	}
+}
+
+type captureTaskClient struct {
+	tasks.Client
+	specs []tasks.WorkSpec
+}
+
+func (c *captureTaskClient) Submit(_ context.Context, spec tasks.WorkSpec) (tasks.Ticket, error) {
+	c.specs = append(c.specs, spec)
+	return nil, nil
+}
+
+func TestFilterDeliveryResourcePlanning(t *testing.T) {
+	client := &captureTaskClient{}
+	p := New(nil, nil)
+	p.tasks = client
+	svc := &core.MockTelegramServicer{}
+	peer := &tg.InputPeerSelf{}
+
+	if err := p.submitDelivery(
+		context.Background(), svc, peer, 10, 20,
+		savedresponse.NewHTML("hello"), savedresponse.TemplateVars{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.specs) != 1 {
+		t.Fatalf("submitted specs=%d, want 1", len(client.specs))
+	}
+	if len(client.specs[0].Resources) != 0 {
+		t.Fatalf("text-only filter resources=%+v, want none", client.specs[0].Resources)
+	}
+	if client.specs[0].Pool != tasks.PoolID("general") || client.specs[0].Class != tasks.PriorityNormal {
+		t.Fatalf("unexpected text delivery scheduling: %+v", client.specs[0])
+	}
+
+	media := savedresponse.NewHTML("caption")
+	media.Media = &savedresponse.MediaRef{AssetID: "asset-1", MediaType: "photo"}
+	if err := p.submitDelivery(
+		context.Background(), svc, peer, 10, 21,
+		media, savedresponse.TemplateVars{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.specs) != 2 {
+		t.Fatalf("submitted specs=%d, want 2", len(client.specs))
+	}
+	resources := client.specs[1].Resources
+	if len(resources) != 1 || resources[0].Name != "media" || resources[0].Amount != 1 {
+		t.Fatalf("media filter resources=%+v, want media:1", resources)
+	}
+	if client.specs[1].ExecutionTimeout != filterDeliveryTimeout {
+		t.Fatalf("media delivery timeout=%v, want %v", client.specs[1].ExecutionTimeout, filterDeliveryTimeout)
+	}
+}
+
+func TestCloneSavedResponseDetachesMediaPointer(t *testing.T) {
+	original := savedresponse.NewHTML("hello")
+	original.Media = &savedresponse.MediaRef{AssetID: "one", MediaType: "photo"}
+	cloned := cloneSavedResponse(original)
+	cloned.Media.AssetID = "two"
+	if original.Media.AssetID != "one" {
+		t.Fatalf("clone mutated original media ref: %+v", original.Media)
 	}
 }

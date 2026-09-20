@@ -67,3 +67,34 @@ func TestFiltersFeatureMigrationAdoptLegacyDatabase(t *testing.T) {
 		t.Fatalf("expected 1 adopted feature migration, got %d", count)
 	}
 }
+
+
+func TestFiltersRichResponseMetadataRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := database.RunFeatureMigrations(ctx, db, Module); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewSQLiteRepository(db)
+	response := savedresponse.NewPlainText("literal <tag> & {name}")
+	response.Media = &savedresponse.MediaRef{
+		AssetID: "asset-filter", MediaType: "sticker", Name: "sticker.webp", MIMEType: "image/webp",
+	}
+	if err := repo.SaveFilter(ctx, 8, "hello", response); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.GetFilter(ctx, 8, "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.Response.Format != savedresponse.FormatPlain || got.Response.Text != response.Text {
+		t.Fatalf("unexpected rich filter response: %+v", got)
+	}
+	if got.Response.Media == nil || *got.Response.Media != *response.Media {
+		t.Fatalf("unexpected rich filter media: %+v", got.Response.Media)
+	}
+}

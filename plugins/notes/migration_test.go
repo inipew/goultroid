@@ -67,3 +67,34 @@ func TestNotesFeatureMigrationAdoptLegacyDatabase(t *testing.T) {
 		t.Fatalf("expected 1 adopted feature migration, got %d", count)
 	}
 }
+
+
+func TestNotesRichResponseMetadataRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := database.RunFeatureMigrations(ctx, db, Module); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewSQLiteRepository(db)
+	response := savedresponse.NewPlainText("literal <tag> & {mention}")
+	response.Media = &savedresponse.MediaRef{
+		AssetID: "asset-note", MediaType: "photo", Name: "image.png", MIMEType: "image/png",
+	}
+	if err := repo.SaveNote(ctx, 7, "rich", response); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.GetNote(ctx, 7, "rich")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.Response.Format != savedresponse.FormatPlain || got.Response.Text != response.Text {
+		t.Fatalf("unexpected rich note response: %+v", got)
+	}
+	if got.Response.Media == nil || *got.Response.Media != *response.Media {
+		t.Fatalf("unexpected rich note media: %+v", got.Response.Media)
+	}
+}
