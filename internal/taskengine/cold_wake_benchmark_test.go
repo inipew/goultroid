@@ -2,7 +2,6 @@ package taskengine
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"testing"
 	"time"
@@ -103,7 +102,7 @@ func BenchmarkTaskEngineFirstTaskAfterIdle(b *testing.B) {
 		{name: "cold_zero_idle", zeroIdle: true},
 		{name: "warm_min_one", zeroIdle: false},
 	} {
-		b.Run(fmt.Sprintf("%s", tc.name), func(b *testing.B) {
+		b.Run(tc.name, func(b *testing.B) {
 			benchmarkFirstTaskLatency(b, tc.zeroIdle)
 		})
 	}

@@ -140,17 +140,6 @@ func RetryRPC(ctx context.Context, policy RPCPolicy, op func(context.Context) er
 	return nil
 }
 
-func sleepContext(ctx context.Context, d time.Duration) error {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
-		return nil
-	}
-}
-
 func WrapRPCError(op string, err error) error {
 	if err == nil {
 		return nil

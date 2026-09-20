@@ -167,8 +167,11 @@ func TestIngressMessageDedupeBypassesUnstableIdentity(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	msg := &tg.Message{Message: "synthetic"}
 
-	if !cache.Accept(msg, now) || !cache.Accept(msg, now) {
-		t.Fatal("message without stable Telegram identity must not be deduplicated")
+	if !cache.Accept(msg, now) {
+		t.Fatal("first message without stable Telegram identity must be accepted")
+	}
+	if !cache.Accept(msg, now) {
+		t.Fatal("repeated message without stable Telegram identity must not be deduplicated")
 	}
 }
 

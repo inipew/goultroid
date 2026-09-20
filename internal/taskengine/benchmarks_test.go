@@ -55,7 +55,6 @@ func BenchmarkB1_TinyEphemeralTask(b *testing.B) {
 	defer engine.Stop(context.Background())
 
 	ctx := context.Background()
-	const batchSize = 32
 	noOpHandler := func(ctx context.Context) error { return nil }
 
 	b.ResetTimer()

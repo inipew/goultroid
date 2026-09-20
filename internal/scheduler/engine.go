@@ -65,7 +65,6 @@ type Engine struct {
 
 	ctx     context.Context
 	cancel  context.CancelFunc
-	wg      sync.WaitGroup
 	runDone chan struct{}
 
 	running bool
