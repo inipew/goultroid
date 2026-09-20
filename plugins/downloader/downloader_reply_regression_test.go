@@ -29,8 +29,8 @@ func (p *recordingDownloadProvider) Name() string {
 func (p *recordingDownloadProvider) Match(string) bool { return true }
 func (p *recordingDownloadProvider) Download(ctx context.Context, rawURL string, _ storage.Storage, _ download.DownloadOptions) (*storage.Asset, error) {
 	p.gotURL = rawURL
-	p.sawProcess = download.HasResource(ctx, "process")
-	p.sawDownload = download.HasResource(ctx, "download")
+	p.sawProcess = tasks.HasHeldResource(ctx, "process")
+	p.sawDownload = tasks.HasHeldResource(ctx, "download")
 	return &storage.Asset{Name: "song.mp3", Size: 1, Path: "memory://song.mp3"}, nil
 }
 

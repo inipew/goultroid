@@ -7,6 +7,7 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/services/savedresponse"
 )
 
 func TestFilterFeatureStatePreloadAndMutation(t *testing.T) {
@@ -17,7 +18,7 @@ func TestFilterFeatureStatePreloadAndMutation(t *testing.T) {
 	defer db.Close()
 
 	repo := NewSQLiteRepository(db)
-	if err := repo.SaveFilter(context.Background(), 10, "rules", "read them"); err != nil {
+	if err := repo.SaveFilter(context.Background(), 10, "rules", savedresponse.NewHTML("read them")); err != nil {
 		t.Fatalf("seed filter: %v", err)
 	}
 
@@ -90,13 +91,13 @@ func TestFilterSQLiteRepositoryListsActiveChats(t *testing.T) {
 	defer db.Close()
 
 	repo := NewSQLiteRepository(db)
-	if err := repo.SaveFilter(context.Background(), 30, "a", "1"); err != nil {
+	if err := repo.SaveFilter(context.Background(), 30, "a", savedresponse.NewHTML("1")); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SaveFilter(context.Background(), 10, "b", "2"); err != nil {
+	if err := repo.SaveFilter(context.Background(), 10, "b", savedresponse.NewHTML("2")); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SaveFilter(context.Background(), 30, "c", "3"); err != nil {
+	if err := repo.SaveFilter(context.Background(), 30, "c", savedresponse.NewHTML("3")); err != nil {
 		t.Fatal(err)
 	}
 	ids, err := repo.ListActiveChatIDs(context.Background())

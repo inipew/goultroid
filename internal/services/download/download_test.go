@@ -10,6 +10,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/storage"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 func TestDirectHTTPProvider_Match(t *testing.T) {
@@ -202,18 +203,18 @@ func TestDirectHTTPProvider_ResourceLimit(t *testing.T) {
 
 func TestResourceContext(t *testing.T) {
 	ctx := context.Background()
-	if download.HasResource(ctx, "process") {
+	if tasks.HasHeldResource(ctx, "process") {
 		t.Errorf("expected HasResource false for empty context")
 	}
-	if download.HasResource(nil, "process") {
+	if tasks.HasHeldResource(nil, "process") {
 		t.Errorf("expected HasResource false for nil context")
 	}
 
-	ctxWithProcess := download.WithResource(ctx, "process")
-	if !download.HasResource(ctxWithProcess, "process") {
+	ctxWithProcess := tasks.WithHeldResource(ctx, "process")
+	if !tasks.HasHeldResource(ctxWithProcess, "process") {
 		t.Errorf("expected HasResource true for process")
 	}
-	if download.HasResource(ctxWithProcess, "download") {
+	if tasks.HasHeldResource(ctxWithProcess, "download") {
 		t.Errorf("expected HasResource false for download")
 	}
 }

@@ -23,7 +23,7 @@ func TestMessageEnvelopeMentionHelpers(t *testing.T) {
 }
 
 func TestMessageEnvelopeMediaSummaryHelper(t *testing.T) {
-	info := &MediaInfo{Type: "photo", FileName: "x.jpg", MIMEType: "image/jpeg", Size: 12, Width: 10, Height: 20}
+	info := &MediaInfo{Type: "photo", FileName: "x.jpg", MimeType: "image/jpeg", Size: 12, Width: 10, Height: 20}
 	summary := SummarizeMedia(info)
 	if summary == nil || summary.Type != "photo" || summary.Width != 10 || summary.Height != 20 {
 		t.Fatalf("unexpected summary: %+v", summary)
