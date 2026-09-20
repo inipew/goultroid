@@ -55,7 +55,8 @@ func TestScope_Go_PanicRecovery(t *testing.T) {
 	}
 
 	<-panicked
-	// Close waits for all goroutines to exit (via wg.Done())
+	// Close's idle barrier includes ResourceManager release, so panic recovery
+	// cannot be misclassified as a leaked goroutine resource.
 	if err := scope.Close(context.Background()); err != nil {
 		t.Fatalf("unexpected close error: %v", err)
 	}
@@ -78,6 +79,9 @@ func TestScope_Go_PanicRecovery(t *testing.T) {
 	}
 	if len(last.Stack) == 0 {
 		t.Fatal("expected non-empty stack trace in panic report")
+	}
+	if resources := mgr.ByOwner("test-plugin"); len(resources) != 0 {
+		t.Fatalf("panic goroutine resource remained after Close: %+v", resources)
 	}
 }
 

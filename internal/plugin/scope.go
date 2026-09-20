@@ -169,15 +169,20 @@ func (s *Scope) Go(fn func(context.Context)) error {
 					})
 				}
 			}
+
+			// idle is the Scope.Close completion barrier. Remove the goroutine's
+			// global resource record before publishing activeGoroutines == 0;
+			// otherwise Close can observe idle and race DetectLeaks against Release.
+			if rID != "" && mgr != nil {
+				_ = mgr.Release(rID)
+			}
+
 			s.mu.Lock()
 			s.activeGoroutines--
 			if s.activeGoroutines == 0 {
 				close(s.idle)
 			}
 			s.mu.Unlock()
-			if rID != "" && mgr != nil {
-				_ = mgr.Release(rID)
-			}
 		}()
 		fn(s.ctx)
 	}()
