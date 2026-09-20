@@ -270,7 +270,11 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 		c.dispatcher.SetService(svc)
 		resolver := NewResolverWithContextAndExecutor(ctx, c.raw.API(), c.peerManager, defaultResolverCacheConfig(), c.executor)
-		defer resolver.Close()
+		defer func() {
+			if err := resolver.Close(); err != nil && c.logger != nil {
+				c.logger.Warn("close Telegram resolver", zap.Error(err))
+			}
+		}()
 		if c.logger != nil {
 			resolver.SetLogger(c.logger.Named("resolver"))
 		}

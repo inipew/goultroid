@@ -1041,7 +1041,6 @@ func (m *Manager) durableCoordinatorLoop(done chan struct{}) {
 			return
 		}
 
-		now = time.Now()
 		nextWake := nextRecoverySafety
 		if hasOutbox && nextOutboxSafety.Before(nextWake) {
 			nextWake = nextOutboxSafety

@@ -247,20 +247,15 @@ func (d *Dispatcher) executeDecisionHandlersEnvelope(ctx context.Context, handle
 	if message == nil || msg == nil {
 		return false
 	}
+	if len(handlers) == 0 {
+		return false
+	}
 	chatID := message.ChatID
-	var decisionCtx context.Context
-	var cancel context.CancelFunc
-	defer func() {
-		if cancel != nil {
-			cancel()
-		}
-	}()
+	decisionCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	for _, registered := range handlers {
 		if !d.messageHookStateInterested(registered, chatID) {
 			continue
-		}
-		if decisionCtx == nil {
-			decisionCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
 		}
 		if registered.scope.IsZero() { // compatibility for local/test handlers
 			if d.safeExecuteRegisteredInterceptor(decisionCtx, registered, e, msg, message) {

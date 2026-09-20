@@ -99,9 +99,9 @@ func (s *PeerStorage) cacheEntityLocked(key string, snapshot peerEntitySnapshot)
 	// Replacing an entry must first release the old retained charge. If the new
 	// snapshot itself is too large for the cache, leave it only in SQLite rather
 	// than retaining an unbounded process-local string graph.
-	if s.removeEntityLocked(key) {
-		// Replacement is not an eviction; it is the same logical cache key.
-	}
+	// Replacement is not an eviction; releasing the previous retained charge
+	// before inserting the new snapshot preserves exact cache accounting.
+	s.removeEntityLocked(key)
 	if charge > maxPeerStorageEntityBytes {
 		s.entityCacheOversize++
 		return

@@ -337,7 +337,7 @@ func (s *Supervisor) runWorker(w *workerEntry) {
 		}
 
 		w.markRunning()
-		err, panicked := s.invokeWorker(supCtx, w)
+		panicked, err := s.invokeWorker(supCtx, w)
 
 		if supCtx.Err() != nil {
 			// Supervisor is shutting down; this was a normal exit under cancellation
@@ -391,7 +391,7 @@ func (s *Supervisor) runWorker(w *workerEntry) {
 	}
 }
 
-func (s *Supervisor) invokeWorker(ctx context.Context, w *workerEntry) (err error, panicked bool) {
+func (s *Supervisor) invokeWorker(ctx context.Context, w *workerEntry) (panicked bool, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			panicked = true
@@ -418,7 +418,7 @@ func (s *Supervisor) invokeWorker(ctx context.Context, w *workerEntry) (err erro
 	}()
 
 	err = w.spec.Run(ctx)
-	return err, false
+	return false, err
 }
 
 func (s *Supervisor) calculateBackoff(attempt int) time.Duration {

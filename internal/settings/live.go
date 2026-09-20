@@ -194,6 +194,14 @@ func (b *LiveBinder) Stop(ctx context.Context) error {
 	if b == nil {
 		return nil
 	}
+
+	// applyBinding takes applyMu before checking started. Holding the same lock
+	// across the transition and unsubscription fences any application already in
+	// progress; callbacks admitted concurrently resume afterward, observe
+	// started=false, and become no-ops.
+	b.applyMu.Lock()
+	defer b.applyMu.Unlock()
+
 	b.mu.Lock()
 	if !b.started {
 		b.mu.Unlock()
@@ -212,10 +220,6 @@ func (b *LiveBinder) Stop(ctx context.Context) error {
 	if unsubBus != nil {
 		unsubBus()
 	}
-	// Wait for any application already admitted before unsubscription. There
-	// are no background binder workers, so this is sufficient to fence Stop.
-	b.applyMu.Lock()
-	b.applyMu.Unlock()
 	return nil
 }
 
