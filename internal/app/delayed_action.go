@@ -66,9 +66,10 @@ type delayedActionScheduler struct {
 	mu        sync.Mutex
 	runCtx    context.Context
 	cancel    context.CancelFunc
-	requests  chan delayedActionRequest
-	done      chan struct{}
-	accepting bool
+	requests   chan delayedActionRequest
+	done       chan struct{}
+	retireWake chan struct{}
+	accepting  bool
 
 	admissions       int
 	coordinatorCount int
@@ -115,32 +116,35 @@ func (s *delayedActionScheduler) Start(ctx context.Context) error {
 	s.cancel = cancel
 	s.requests = nil
 	s.done = nil
+	s.retireWake = nil
 	s.accepting = true
 	return nil
 }
 
-func (s *delayedActionScheduler) ensureCoordinatorLocked() (chan delayedActionRequest, chan struct{}, error) {
+func (s *delayedActionScheduler) ensureCoordinatorLocked() (chan delayedActionRequest, chan struct{}, chan struct{}, error) {
 	if !s.accepting || s.runCtx == nil || s.runCtx.Err() != nil {
-		return nil, nil, fmt.Errorf("%w: delayed action scheduler is not accepting work", core.ErrUnavailable)
+		return nil, nil, nil, fmt.Errorf("%w: delayed action scheduler is not accepting work", core.ErrUnavailable)
 	}
-	if s.requests != nil && s.done != nil {
-		return s.requests, s.done, nil
+	if s.requests != nil && s.done != nil && s.retireWake != nil {
+		return s.requests, s.done, s.retireWake, nil
 	}
 
 	requests := make(chan delayedActionRequest, 256)
 	done := make(chan struct{})
+	retireWake := make(chan struct{}, 1)
 	s.requests = requests
 	s.done = done
+	s.retireWake = retireWake
 	if s.coordinatorCount == 0 {
 		s.coordinatorIdle = make(chan struct{})
 	}
 	s.coordinatorCount++
 	runCtx := s.runCtx
-	go s.run(runCtx, requests, done)
-	return requests, done, nil
+	go s.run(runCtx, requests, done, retireWake)
+	return requests, done, retireWake, nil
 }
 
-func (s *delayedActionScheduler) finishAdmission() {
+func (s *delayedActionScheduler) finishAdmission(retireWake chan struct{}) {
 	if s == nil {
 		return
 	}
@@ -148,13 +152,24 @@ func (s *delayedActionScheduler) finishAdmission() {
 	if s.admissions > 0 {
 		s.admissions--
 	}
+	shouldWake := s.admissions == 0 && s.retireWake == retireWake
 	s.mu.Unlock()
+
+	// A coordinator with an empty heap may have observed admissions>0 and then
+	// blocked with no timer armed. Wake that exact coordinator generation when
+	// the last admission leaves so it can re-evaluate retirement immediately.
+	if shouldWake && retireWake != nil {
+		select {
+		case retireWake <- struct{}{}:
+		default:
+		}
+	}
 }
 
-func (s *delayedActionScheduler) tryRetireCoordinator(requests chan delayedActionRequest, done chan struct{}) bool {
+func (s *delayedActionScheduler) tryRetireCoordinator(requests chan delayedActionRequest, done chan struct{}, retireWake chan struct{}) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.accepting || s.requests != requests || s.done != done {
+	if !s.accepting || s.requests != requests || s.done != done || s.retireWake != retireWake {
 		return false
 	}
 	if s.admissions != 0 || len(requests) != 0 {
@@ -165,6 +180,7 @@ func (s *delayedActionScheduler) tryRetireCoordinator(requests chan delayedActio
 	// buffered channel.
 	s.requests = nil
 	s.done = nil
+	s.retireWake = nil
 	return true
 }
 
@@ -218,7 +234,7 @@ func (s *delayedActionScheduler) Schedule(ctx context.Context, delay time.Durati
 		}
 	}
 	charge := retainedBytes + delayedActionOverheadBytes
-	requests, done, err := s.ensureCoordinatorLocked()
+	requests, done, retireWake, err := s.ensureCoordinatorLocked()
 	if err != nil {
 		s.mu.Unlock()
 		return err
@@ -234,7 +250,7 @@ func (s *delayedActionScheduler) Schedule(ctx context.Context, delay time.Durati
 			return
 		}
 		admissionActive = false
-		s.finishAdmission()
+		s.finishAdmission(retireWake)
 	}
 
 	reply := make(chan error, 1)
@@ -287,6 +303,7 @@ func (s *delayedActionScheduler) Quiesce(context.Context) error {
 		s.cancel = nil
 		s.requests = nil
 		s.done = nil
+		s.retireWake = nil
 	}
 	s.mu.Unlock()
 	if cancel != nil {
@@ -336,7 +353,7 @@ func (s *delayedActionScheduler) Health(context.Context) runtime.ComponentHealth
 	)}
 }
 
-func (s *delayedActionScheduler) run(ctx context.Context, requests chan delayedActionRequest, done chan struct{}) {
+func (s *delayedActionScheduler) run(ctx context.Context, requests chan delayedActionRequest, done chan struct{}, retireWake chan struct{}) {
 	var queue delayedActionHeap
 	heap.Init(&queue)
 	var timer *time.Timer
@@ -359,9 +376,10 @@ func (s *delayedActionScheduler) run(ctx context.Context, requests chan delayedA
 		close(done)
 
 		s.mu.Lock()
-		if s.requests == requests && s.done == done {
+		if s.requests == requests && s.done == done && s.retireWake == retireWake {
 			s.requests = nil
 			s.done = nil
+			s.retireWake = nil
 		}
 		if terminated && s.runCtx == ctx {
 			s.accepting = false
@@ -379,7 +397,7 @@ func (s *delayedActionScheduler) run(ctx context.Context, requests chan delayedA
 	}()
 
 	for {
-		if queue.Len() == 0 && s.tryRetireCoordinator(requests, done) {
+		if queue.Len() == 0 && s.tryRetireCoordinator(requests, done, retireWake) {
 			return
 		}
 		var timerC <-chan time.Time
@@ -405,6 +423,10 @@ func (s *delayedActionScheduler) run(ctx context.Context, requests chan delayedA
 		select {
 		case <-ctx.Done():
 			return
+		case <-retireWake:
+			// Last in-flight admission finished while the heap was empty. Re-run
+			// the retirement predicate instead of remaining resident indefinitely.
+			continue
 		case req := <-requests:
 			heap.Push(&queue, &delayedActionItem{
 				due: req.due, action: req.action, seq: req.seq, retainedBytes: req.retainedBytes,
