@@ -395,7 +395,7 @@ func (r *SQLiteRepository) SavePackage(ctx context.Context, pkg *SavedPackage) e
 		price = excluded.price,
 		family_code = excluded.family_code
 	`
-	_, err = r.db.ExecContext(ctx, query, pkg.MSISDN, pkg.OptionCode, pkg.Name, pkg.Price, pkg.FamilyCode)
+	_, err := r.db.ExecContext(ctx, query, pkg.MSISDN, pkg.OptionCode, pkg.Name, pkg.Price, pkg.FamilyCode)
 	if err != nil {
 		return fmt.Errorf("failed to save package: %w", err)
 	}
@@ -553,7 +553,7 @@ func (r *SQLiteRepository) SavePendingQRIS(ctx context.Context, item *PendingQRI
 		status = excluded.status,
 		expires_at = excluded.expires_at
 	`
-	_, err := r.db.ExecContext(ctx, query,
+	_, err = r.db.ExecContext(ctx, query,
 		item.TransactionCode, item.IdempotencyKey, item.MSISDN, item.OptionCode,
 		item.PackageName, item.Price, qrPayload, item.Status, item.CreatedAt, item.ExpiresAt,
 	)
