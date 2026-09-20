@@ -152,6 +152,20 @@ func (s *Service) captureMedia(ctx *core.Context, media *core.MediaInfo) (*Media
 			return nil, err
 		}
 	}
+	if s.cleanup != nil {
+		if err := s.cleanup.prepare(ctx.Ctx, asset.ID); err != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			deleteErr := s.store.Delete(cleanupCtx, asset.ID)
+			cancel()
+			if s.assets != nil {
+				_ = s.assets.remove(context.Background(), asset.ID)
+			}
+			if deleteErr != nil && !errors.Is(deleteErr, storage.ErrNotFound) {
+				return nil, errors.Join(err, fmt.Errorf("saved response: rollback unjournaled media asset %q: %w", asset.ID, deleteErr))
+			}
+			return nil, err
+		}
+	}
 	return &MediaRef{
 		AssetID:   asset.ID,
 		MediaType: capturedRef.MediaType,
@@ -190,6 +204,11 @@ func (s *Service) CommitReplacement(ctx context.Context, previous, next Response
 		// The feature row is already durable. Marking the ledger live is
 		// best-effort; global reconciliation can reconstruct this from references.
 		_ = s.assets.markSeen(ctx, newID)
+	}
+	if newID != "" && s != nil && s.cleanup != nil {
+		// Capture installs a prepared orphan intent before handing the asset to
+		// the caller. Durable feature persistence disarms that intent.
+		_ = s.cleanup.remove(ctx, newID)
 	}
 
 	if needsOldCleanup {
@@ -259,7 +278,7 @@ func (s *Service) PendingCleanupCount(ctx context.Context) (int, error) {
 type PersistentMediaReconcileStats struct {
 	ReferencesBackfilled int
 	OrphansDiscovered    int
-	OrphansQueued        int
+	CleanupScheduled     int
 	Cleanup              CleanupStats
 }
 
@@ -298,11 +317,7 @@ func (s *Service) ReconcilePersistentMedia(ctx context.Context, limit int) (Pers
 		}
 		stats.ReferencesBackfilled = backfilled
 
-		candidates, err := s.assets.orphanCandidates(
-			ctx,
-			time.Now().UTC().Add(-persistentMediaOrphanGrace),
-			limit,
-		)
+		candidates, err := s.assets.orphanCandidates(ctx, limit)
 		if err != nil {
 			return stats, err
 		}
@@ -311,12 +326,12 @@ func (s *Service) ReconcilePersistentMedia(ctx context.Context, limit int) (Pers
 			if s.cleanup == nil {
 				break
 			}
-			queued, err := s.cleanup.enqueueIfAbsent(ctx, assetID)
+			scheduled, err := s.cleanup.scheduleDiscovered(ctx, assetID)
 			if err != nil {
 				return stats, err
 			}
-			if queued {
-				stats.OrphansQueued++
+			if scheduled {
+				stats.CleanupScheduled++
 			}
 		}
 	}
@@ -416,7 +431,12 @@ func (s *Service) DeleteMedia(parent context.Context, response Response) error {
 		return err
 	}
 	if s.assets != nil {
-		return s.assets.remove(ctx, id)
+		if err := s.assets.remove(ctx, id); err != nil {
+			return err
+		}
+	}
+	if s.cleanup != nil {
+		return s.cleanup.remove(ctx, id)
 	}
 	return nil
 }

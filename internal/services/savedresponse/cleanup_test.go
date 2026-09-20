@@ -243,18 +243,6 @@ func TestCommitReplacementPersistFailureKeepsOldAssetAndCleansNew(t *testing.T) 
 	}
 }
 
-func ageTrackedAsset(t *testing.T, db *database.DB, assetID string) {
-	t.Helper()
-	_, err := db.Exec(`
-		UPDATE saved_response_media_assets
-		SET registered_at = ?, last_seen_at = ?
-		WHERE asset_id = ?
-	`, time.Now().UTC().Add(-2*persistentMediaOrphanGrace), time.Now().UTC().Add(-2*persistentMediaOrphanGrace), assetID)
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestPersistentMediaReconcileBackfillsLiveReferencesAndDeletesTrackedOrphan(t *testing.T) {
 	db := openCleanupTestDB(t)
 	defer db.Close()
@@ -268,13 +256,12 @@ func TestPersistentMediaReconcileBackfillsLiveReferencesAndDeletesTrackedOrphan(
 	if err := svc.assets.register(context.Background(), orphan.ID); err != nil {
 		t.Fatal(err)
 	}
-	ageTrackedAsset(t, db, orphan.ID)
 
 	stats, err := svc.ReconcilePersistentMedia(context.Background(), 32)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.ReferencesBackfilled != 1 || stats.OrphansDiscovered != 1 || stats.OrphansQueued != 1 {
+	if stats.ReferencesBackfilled != 1 || stats.OrphansDiscovered != 1 || stats.CleanupScheduled != 1 {
 		t.Fatalf("unexpected persistent reconciliation stats: %+v", stats)
 	}
 	if stats.Cleanup.Deleted != 1 {
@@ -307,7 +294,6 @@ func TestPersistentMediaReconcileDoesNotResetCleanupBackoff(t *testing.T) {
 	if err := svc.assets.register(context.Background(), asset.ID); err != nil {
 		t.Fatal(err)
 	}
-	ageTrackedAsset(t, db, asset.ID)
 	if err := svc.cleanup.enqueue(context.Background(), asset.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +316,7 @@ func TestPersistentMediaReconcileDoesNotResetCleanupBackoff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.OrphansDiscovered != 1 || stats.OrphansQueued != 0 || stats.Cleanup.Scanned != 0 {
+	if stats.OrphansDiscovered != 1 || stats.CleanupScheduled != 0 || stats.Cleanup.Scanned != 0 {
 		t.Fatalf("reconcile unexpectedly reset/dequeued backoff: %+v", stats)
 	}
 
@@ -352,13 +338,16 @@ func TestPersistentMediaReconcileDoesNotResetCleanupBackoff(t *testing.T) {
 	}
 }
 
-func TestPersistentMediaGraceProtectsFreshUnreferencedAsset(t *testing.T) {
+func TestPersistentMediaStartupReconcileRecoversFreshCrashOrphan(t *testing.T) {
 	db := openCleanupTestDB(t)
 	defer db.Close()
 	store := storage.NewMemoryStorage()
-	asset := putCleanupTestAsset(t, store, "fresh-capture.bin")
+	asset := putCleanupTestAsset(t, store, "fresh-crash-orphan.bin")
 	svc := NewService(store, db)
 	if err := svc.assets.register(context.Background(), asset.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.cleanup.prepare(context.Background(), asset.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -366,11 +355,11 @@ func TestPersistentMediaGraceProtectsFreshUnreferencedAsset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.OrphansDiscovered != 0 || stats.Cleanup.Deleted != 0 {
-		t.Fatalf("fresh capture entered orphan cleanup before grace: %+v", stats)
+	if stats.OrphansDiscovered != 1 || stats.CleanupScheduled != 1 || stats.Cleanup.Deleted != 1 {
+		t.Fatalf("fresh crash orphan was not reclaimed at startup: %+v", stats)
 	}
-	if _, err := store.Stat(context.Background(), asset.ID); err != nil {
-		t.Fatalf("fresh tracked asset disappeared: %v", err)
+	if _, err := store.Stat(context.Background(), asset.ID); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("fresh crash orphan survived startup reconciliation: %v", err)
 	}
 }
 

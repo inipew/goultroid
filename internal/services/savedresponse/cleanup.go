@@ -48,7 +48,7 @@ func (j *cleanupJournal) prepare(ctx context.Context, assetID string) error {
 	return j.enqueueAt(ctx, assetID, time.Now().UTC().Add(preparedCleanupGrace))
 }
 
-func (j *cleanupJournal) enqueueIfAbsent(ctx context.Context, assetID string) (bool, error) {
+func (j *cleanupJournal) scheduleDiscovered(ctx context.Context, assetID string) (bool, error) {
 	if j == nil || j.db == nil {
 		return false, nil
 	}
@@ -67,9 +67,30 @@ func (j *cleanupJournal) enqueueIfAbsent(ctx context.Context, assetID string) (b
 		ON CONFLICT(asset_id) DO NOTHING
 	`, assetID, now, now, now)
 	if err != nil {
-		return false, fmt.Errorf("saved response: enqueue discovered media cleanup %q: %w", assetID, err)
+		return false, fmt.Errorf("saved response: schedule discovered media cleanup %q: %w", assetID, err)
 	}
 	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if rows == 1 {
+		return true, nil
+	}
+
+	// A prepared capture intent has attempts=0 and may still be waiting for its
+	// in-process grace deadline. Global reconciliation runs during quiescent
+	// startup, so an unreferenced prepared asset is known to have survived a
+	// process boundary and can be activated immediately. Failed deletions keep
+	// attempts>0 and retain their existing exponential backoff.
+	res, err = j.db.ExecContext(ctx, `
+		UPDATE saved_response_media_cleanup
+		SET next_attempt_at = ?, updated_at = ?
+		WHERE asset_id = ? AND attempts = 0 AND next_attempt_at > ?
+	`, now, now, assetID, now)
+	if err != nil {
+		return false, fmt.Errorf("saved response: activate discovered media cleanup %q: %w", assetID, err)
+	}
+	rows, err = res.RowsAffected()
 	if err != nil {
 		return false, err
 	}

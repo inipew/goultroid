@@ -13,7 +13,6 @@ import (
 const (
 	defaultPersistentReconcileBatch = 128
 	maxPersistentReconcileBatch     = 1024
-	persistentMediaOrphanGrace      = time.Minute
 )
 
 type assetLedger struct {
@@ -164,7 +163,7 @@ func (l *assetLedger) backfillReferences(ctx context.Context) (int, error) {
 	return inserted, nil
 }
 
-func (l *assetLedger) orphanCandidates(ctx context.Context, olderThan time.Time, limit int) ([]string, error) {
+func (l *assetLedger) orphanCandidates(ctx context.Context, limit int) ([]string, error) {
 	if l == nil || l.db == nil {
 		return nil, nil
 	}
@@ -178,7 +177,7 @@ func (l *assetLedger) orphanCandidates(ctx context.Context, olderThan time.Time,
 		limit = maxPersistentReconcileBatch
 	}
 
-	clauses := []string{"a.registered_at <= ?"}
+	clauses := make([]string, 0, len(persistentMediaReferenceSources))
 	for _, source := range persistentMediaReferenceSources {
 		exists, err := l.columnExists(ctx, source.table, source.column)
 		if err != nil {
@@ -194,14 +193,18 @@ func (l *assetLedger) orphanCandidates(ctx context.Context, olderThan time.Time,
 		))
 	}
 
+	where := "1 = 1"
+	if len(clauses) > 0 {
+		where = strings.Join(clauses, " AND ")
+	}
 	query := fmt.Sprintf(`
 		SELECT a.asset_id
 		FROM saved_response_media_assets a
 		WHERE %s
 		ORDER BY a.registered_at ASC, a.asset_id ASC
 		LIMIT ?
-	`, strings.Join(clauses, " AND "))
-	args := []any{olderThan.UTC(), limit}
+	`, where)
+	args := []any{limit}
 	rows, err := l.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("saved response: list persistent media orphans: %w", err)
