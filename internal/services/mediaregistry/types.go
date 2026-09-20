@@ -11,6 +11,7 @@ var (
 	ErrInvalidReference   = errors.New("media registry: invalid reference")
 	ErrOwnershipConflict  = errors.New("media registry: asset ownership conflict")
 	ErrAssetNotRegistered = errors.New("media registry: asset is not registered")
+	ErrIncompleteSchema   = errors.New("media registry: incomplete schema")
 )
 
 // Lifecycle describes who is allowed to decide when an asset can be reclaimed.

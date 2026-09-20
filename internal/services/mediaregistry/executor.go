@@ -12,6 +12,9 @@ import (
 // SchemaReady reports whether the global media registry schema is available.
 // It is used by compatibility callers that may be constructed in tests or
 // standalone feature environments before application-wide migrations run.
+// A completely absent registry is a supported compatibility state; a partial
+// registry is treated as corruption and fails closed instead of silently
+// falling back to legacy-only writes.
 func SchemaReady(ctx context.Context, db database.SQLExecutor) (bool, error) {
 	if db == nil {
 		return false, ErrNilDatabase
@@ -24,7 +27,14 @@ func SchemaReady(ctx context.Context, db database.SQLExecutor) (bool, error) {
 	`).Scan(&count); err != nil {
 		return false, fmt.Errorf("media registry: inspect schema: %w", err)
 	}
-	return count == 2, nil
+	switch count {
+	case 0:
+		return false, nil
+	case 2:
+		return true, nil
+	default:
+		return false, fmt.Errorf("%w: found %d of 2 required tables", ErrIncompleteSchema, count)
+	}
 }
 
 // RegisterAssetWithExecutor mirrors RegisterAsset using a caller-owned SQL

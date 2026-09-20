@@ -54,13 +54,7 @@ func reconcileBuiltinPersistentMedia(
 	store storage.Storage,
 ) (savedresponse.PersistentMediaReconcileStats, error) {
 	var stats savedresponse.PersistentMediaReconcileStats
-	if db == nil || store == nil {
-		return stats, nil
-	}
-	// FileStorage is the durable source of truth. If startup fell back to the
-	// process-local memory backend, an empty store does not prove that durable
-	// assets are gone; destructive reconciliation must therefore fail closed.
-	if store.BasePath() == "memory://" {
+	if db == nil {
 		return stats, nil
 	}
 	if ctx == nil {
@@ -69,13 +63,31 @@ func reconcileBuiltinPersistentMedia(
 	reconcileCtx, cancel := context.WithTimeout(ctx, startupPersistentMediaReconcileTimeout)
 	defer cancel()
 
-	stats, err := savedresponse.NewService(store, db).ReconcilePersistentMedia(
-		reconcileCtx,
-		startupPersistentMediaReconcileBatch,
-	)
-	if err != nil {
-		return stats, fmt.Errorf("persistent saved-response media reconciliation failed: %w", err)
+	// FileStorage is the durable source of truth. If startup fell back to the
+	// process-local memory backend (or storage is unavailable), an empty store
+	// does not prove that durable assets are gone; destructive P3-A
+	// reconciliation must therefore fail closed. The ledger-only backfill is
+	// metadata-only and remains safe, so keep migration progress independent of
+	// physical storage availability.
+	if store != nil && store.BasePath() != "memory://" {
+		var err error
+		stats, err = savedresponse.NewService(store, db).ReconcilePersistentMedia(
+			reconcileCtx,
+			startupPersistentMediaReconcileBatch,
+		)
+		if err != nil {
+			return stats, fmt.Errorf("persistent saved-response media reconciliation failed: %w", err)
+		}
+	} else {
+		if _, err := savedresponse.BackfillPersistentMediaLedger(
+			reconcileCtx,
+			db,
+			startupPersistentMediaReconcileBatch,
+		); err != nil {
+			return stats, fmt.Errorf("persistent saved-response media ledger backfill failed: %w", err)
+		}
 	}
+
 	if _, err := savedresponse.ReconcileRegistryCompatibility(
 		reconcileCtx,
 		db,
