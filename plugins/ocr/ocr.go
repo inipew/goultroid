@@ -239,7 +239,7 @@ func (p *Plugin) handle(ctx *core.Context) error {
 		nil,
 		func(taskCtx context.Context) error {
 			var stageErr error
-			text, stageErr = p.extract(taskCtx, path, lang)
+			text, stageErr = p.extractValidated(taskCtx, path, lang)
 			return stageErr
 		},
 	)
@@ -329,7 +329,11 @@ func safeOCRError(err error) string {
 	if err == nil {
 		return "unknown error"
 	}
-	runes := []rune(strings.TrimSpace(err.Error()))
+	message := normalizeOCRText(err.Error())
+	if message == "" {
+		message = "unknown error"
+	}
+	runes := []rune(message)
 	if len(runes) > maxOCRErrorRunes {
 		runes = append(runes[:maxOCRErrorRunes-1], '…')
 	}
@@ -403,6 +407,13 @@ func (p *Plugin) extract(ctx context.Context, path, language string) (string, er
 	}
 	if _, err := imageguard.Inspect(path, ocrImagePolicy); err != nil {
 		return "", fmt.Errorf("image safety validation failed: %w", err)
+	}
+	return p.extractValidated(ctx, path, language)
+}
+
+func (p *Plugin) extractValidated(ctx context.Context, path, language string) (string, error) {
+	if !validLanguage(language) {
+		return "", fmt.Errorf("unsupported OCR language %q", language)
 	}
 
 	var lastErr error
