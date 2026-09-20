@@ -230,7 +230,7 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 
 		target := target
 		var sendErr error
-		ticket, err := client.Submit(runCtx, tasks.WorkSpec{
+		spec := tasks.WorkSpec{
 			ID:               tasks.TaskID(fmt.Sprintf("broadcast:%d:%d", runID, i)),
 			Scope:            scope,
 			QuotaOwner:       tasks.OwnerID("system:broadcast"),
@@ -242,15 +242,38 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 				_, sendErr = svc.SendMessage(taskCtx, target, req.Text)
 				return sendErr
 			},
-		})
-		if err != nil {
+		}
+
+		for {
+			ticket, err := client.Submit(runCtx, spec)
+			if err == nil {
+				pending = append(pending, pendingTarget{ticket: ticket, sendErr: &sendErr})
+				break
+			}
+
+			var admissionErr *tasks.AdmissionError
+			retryableAdmission := errors.As(err, &admissionErr) && admissionErr.ExecutionSemantics().ShouldRetry()
+			if retryableAdmission {
+				// Admission pressure is producer backpressure, not a target failure.
+				// Waiting the oldest accepted child releases queue/result/owner
+				// capacity without polling or sleeping, then retries this same target.
+				if len(pending) == 0 {
+					report.Duration = time.Since(start)
+					return &report, err
+				}
+				if err := consumeOldest(); err != nil {
+					return &report, err
+				}
+				continue
+			}
+
 			report.Failed++
 			if req.Progress != nil {
 				req.Progress(report)
 			}
-			continue
+			break
 		}
-		pending = append(pending, pendingTarget{ticket: ticket, sendErr: &sendErr})
+
 		if len(pending) >= maxBroadcastInFlight {
 			if err := consumeOldest(); err != nil {
 				return &report, err

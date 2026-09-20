@@ -204,17 +204,25 @@ func (m *Manager) All() []Resource {
 	return result
 }
 
-// DetectLeaks checks if there are any remaining active resources for an owner that is
-// expected to be stopped. It marks those resources as StateLeaked.
+// DetectLeaks returns all still-tracked leaked resources for an owner. Active
+// resources are atomically promoted to StateLeaked on first observation;
+// already-leaked resources remain visible on later calls so force-cleanup
+// retries can join an in-flight cleanup instead of silently treating it as gone.
 func (m *Manager) DetectLeaks(owner string) []Resource {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	var leaks []Resource
 	for id, r := range m.resources {
-		if r.Owner == owner && r.State == StateActive {
+		if r.Owner != owner {
+			continue
+		}
+		switch r.State {
+		case StateActive:
 			r.State = StateLeaked
 			m.resources[id] = r
+			leaks = append(leaks, r)
+		case StateLeaked:
 			leaks = append(leaks, r)
 		}
 	}

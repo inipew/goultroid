@@ -373,6 +373,10 @@ func (s *Scope) runCleanup(ctx context.Context, cleanup CleanupFunc) error {
 				At:        time.Now().UTC(),
 			})
 		}
+		// CallbackExecutor has already contained the panic. Treat reporting as the
+		// terminal handling contract so one bad cleanup cannot make Scope.Close
+		// fail twice while still allowing later cleanups and leak detection to run.
+		return nil
 	}
 	return err
 }
