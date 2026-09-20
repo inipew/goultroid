@@ -1,9 +1,15 @@
 package savedresponse
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -154,9 +160,22 @@ func TestPrepareFallsBackToStandaloneTextWhenCaptionTooLong(t *testing.T) {
 
 func TestPrepareStickerUsesStandaloneText(t *testing.T) {
 	svc, store := newPreparedTestService(t)
-	asset := putPreparedAsset(t, store, "sticker.webp", "fake sticker bytes")
+	var sticker bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 512, 256))
+	for y := 0; y < 256; y++ {
+		for x := 0; x < 512; x++ {
+			img.Set(x, y, color.NRGBA{R: 40, G: 120, B: 220, A: 255})
+		}
+	}
+	if err := png.Encode(&sticker, img); err != nil {
+		t.Fatal(err)
+	}
+	asset, err := store.Put(context.Background(), bytes.NewReader(sticker.Bytes()), storage.Metadata{Name: "sticker.png", MIME: "image/png"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	response := NewHTML("<b>Hello {name}</b>")
-	response.Media = &MediaRef{AssetID: asset.ID, MediaType: "sticker", Name: asset.Name, MIMEType: "image/webp"}
+	response.Media = &MediaRef{AssetID: asset.ID, MediaType: "sticker", Name: asset.Name, MIMEType: asset.MIME}
 
 	prepared, err := svc.Prepare(context.Background(), response, TemplateVars{Name: "Alice"})
 	if err != nil {
@@ -288,5 +307,73 @@ func TestSavedResponseTypedErrors(t *testing.T) {
 	}
 	if err := svc.CommitDelete(context.Background(), Response{}, nil); !errors.Is(err, ErrNilDelete) {
 		t.Fatalf("CommitDelete(nil callback) error=%v, want ErrNilDelete", err)
+	}
+}
+
+func TestStickerFormatClassification(t *testing.T) {
+	cases := []struct {
+		media MediaRef
+		want  string
+	}{
+		{MediaRef{MIMEType: "image/webp"}, StickerFormatStatic},
+		{MediaRef{MIMEType: "image/png"}, StickerFormatStatic},
+		{MediaRef{MIMEType: "application/x-tgsticker"}, StickerFormatAnimated},
+		{MediaRef{MIMEType: "video/webm"}, StickerFormatVideo},
+		{MediaRef{Name: "legacy.tgs"}, StickerFormatAnimated},
+		{MediaRef{Name: "legacy.webm"}, StickerFormatVideo},
+	}
+	for _, tc := range cases {
+		if got := stickerFormat(&tc.media); got != tc.want {
+			t.Errorf("stickerFormat(%+v)=%q, want %q", tc.media, got, tc.want)
+		}
+	}
+}
+
+func TestValidateAnimatedStickerTGS(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "animated.tgs")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := gzip.NewWriter(f)
+	if _, err := zw.Write([]byte(`{"v":"5.7.4","w":512,"h":512,"fr":60,"ip":0,"op":60,"layers":[]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateStickerFile(path, &MediaRef{Name: "animated.tgs", MIMEType: "application/x-tgsticker"}); err != nil {
+		t.Fatalf("valid TGS rejected: %v", err)
+	}
+}
+
+func TestValidateVideoStickerRequiresWebMMagic(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "video.webm")
+	if err := os.WriteFile(path, []byte{0x1a, 0x45, 0xdf, 0xa3, 0x42, 0x86, 0x81, 0x01}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateStickerFile(path, &MediaRef{Name: "video.webm", MIMEType: "video/webm"}); err != nil {
+		t.Fatalf("valid WebM header rejected: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("not-webm"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateStickerFile(path, &MediaRef{Name: "video.webm", MIMEType: "video/webm"}); !errors.Is(err, ErrInvalidSticker) {
+		t.Fatalf("invalid WebM error=%v, want ErrInvalidSticker", err)
+	}
+}
+
+func TestInspectStickerReportsFormat(t *testing.T) {
+	response := NewPlainText("caption")
+	response.Media = &MediaRef{AssetID: "asset", MediaType: "sticker", Name: "wave.webm", MIMEType: "video/webm"}
+	info, err := Inspect(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.StickerFormat != StickerFormatVideo {
+		t.Fatalf("StickerFormat=%q, want %q", info.StickerFormat, StickerFormatVideo)
 	}
 }

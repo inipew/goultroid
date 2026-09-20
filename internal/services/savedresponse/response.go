@@ -25,12 +25,13 @@ type Response struct {
 // Inspection is bounded response metadata for management/UI surfaces.
 // It deliberately omits internal asset identifiers.
 type Inspection struct {
-	Kind      string
-	Format    Format
-	HasText   bool
-	Variables []string
-	MediaName string
-	MIMEType  string
+	Kind          string
+	Format        Format
+	HasText       bool
+	Variables     []string
+	MediaName     string
+	MIMEType      string
+	StickerFormat string
 }
 
 func NewHTML(text string) Response {
@@ -108,6 +109,9 @@ func Inspect(response Response) (Inspection, error) {
 	if response.Media != nil {
 		info.MediaName = strings.TrimSpace(response.Media.Name)
 		info.MIMEType = strings.TrimSpace(response.Media.MIMEType)
+		if info.Kind == "sticker" {
+			info.StickerFormat = stickerFormat(response.Media)
+		}
 	}
 	return info, nil
 }

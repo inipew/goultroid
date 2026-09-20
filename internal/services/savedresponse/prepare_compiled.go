@@ -60,6 +60,12 @@ func (s *Service) PrepareCompiled(
 	if err != nil {
 		return nil, err
 	}
+	if mediaType == "sticker" {
+		if err := validateStickerFile(path, response.Media); err != nil {
+			cleanup()
+			return nil, err
+		}
+	}
 	return &Prepared{
 		Text: text, MediaType: mediaType, MediaPath: path, cleanup: cleanup,
 	}, nil

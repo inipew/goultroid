@@ -441,6 +441,9 @@ func renderFilterInfo(filter *Filter, info savedresponse.Inspection) string {
 	}
 	fmt.Fprintf(&sb, "• <b>Template variables:</b> %s\n", renderFilterTemplateVariables(info.Variables))
 	if info.Kind != "text" {
+		if info.StickerFormat != "" {
+			fmt.Fprintf(&sb, "• <b>Sticker format:</b> <code>%s</code>\n", html.EscapeString(info.StickerFormat))
+		}
 		if info.MediaName != "" {
 			fmt.Fprintf(&sb, "• <b>Media:</b> <code>%s</code>\n", html.EscapeString(info.MediaName))
 		}
