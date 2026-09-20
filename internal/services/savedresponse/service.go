@@ -105,9 +105,14 @@ func (s *Service) captureMedia(ctx *core.Context, media *core.MediaInfo) (*Media
 	if stat.Size() > MaxPersistentMediaBytes {
 		return nil, fmt.Errorf("%w: max %d bytes", ErrMediaTooLarge, MaxPersistentMediaBytes)
 	}
+	mediaType := deliveryMediaType(media.Type)
+	capturedName := media.FileName
+	if mediaType == "sticker" {
+		capturedName = filepath.Base(path)
+	}
 	capturedRef := &MediaRef{
-		MediaType: deliveryMediaType(media.Type),
-		Name:      filepath.Base(path),
+		MediaType: mediaType,
+		Name:      capturedName,
 		MIMEType:  media.MimeType,
 	}
 	if capturedRef.MediaType == "sticker" {

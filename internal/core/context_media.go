@@ -104,7 +104,6 @@ func (m *MediaFacade) DownloadMedia(destDir string) (string, error) {
 	return filePath, nil
 }
 
-
 func mediaFileExtension(media *MediaInfo) string {
 	if media == nil {
 		return ".bin"

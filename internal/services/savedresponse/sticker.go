@@ -16,10 +16,9 @@ import (
 )
 
 const (
-	StickerFormatStatic   = "static"
-	StickerFormatAnimated = "animated"
-	StickerFormatVideo    = "video"
-
+	StickerFormatStatic           = "static"
+	StickerFormatAnimated         = "animated"
+	StickerFormatVideo            = "video"
 	staticStickerMaxBytes   int64 = 512 << 10
 	animatedStickerMaxBytes int64 = 64 << 10
 	videoStickerMaxBytes    int64 = 256 << 10
