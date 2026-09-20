@@ -63,9 +63,9 @@ func (h *delayedActionHeap) Pop() any {
 type delayedActionScheduler struct {
 	tasks tasks.Client
 
-	mu        sync.Mutex
-	runCtx    context.Context
-	cancel    context.CancelFunc
+	mu         sync.Mutex
+	runCtx     context.Context
+	cancel     context.CancelFunc
 	requests   chan delayedActionRequest
 	done       chan struct{}
 	retireWake chan struct{}
