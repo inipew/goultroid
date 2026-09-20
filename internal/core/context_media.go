@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -62,13 +63,13 @@ func (m *MediaFacade) DownloadMedia(destDir string) (string, error) {
 		return "", err
 	}
 
-	// Acquire concurrent download slot (max 3 concurrent jobs)
-	select {
-	case downloadSemaphore <- struct{}{}:
-		defer func() { <-downloadSemaphore }()
-	case <-c.Ctx.Done():
-		return "", c.Ctx.Err()
+	// TaskEngine resource admission is authoritative when present. The local
+	// semaphore remains a safety net for direct/legacy callers.
+	releaseDownload, err := acquireDownloadSlot(c.Ctx)
+	if err != nil {
+		return "", err
 	}
+	defer releaseDownload()
 
 	if err := os.MkdirAll(destDir, 0700); err != nil {
 		return "", fmt.Errorf("failed to create destination directory: %w", err)
@@ -173,4 +174,20 @@ func (m *MediaFacade) SendSticker(filePath string) error {
 func (m *MediaFacade) SendAudio(filePath, caption string) error {
 	_, err := m.SendMedia("audio", filePath, caption)
 	return err
+}
+
+
+func acquireDownloadSlot(ctx context.Context) (func(), error) {
+	if HasHeldResource(ctx, "download") {
+		return func() {}, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case downloadSemaphore <- struct{}{}:
+		return func() { <-downloadSemaphore }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }

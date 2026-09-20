@@ -44,6 +44,11 @@ func (d *Dispatcher) submitInteractiveCommand(ctx context.Context, cancel contex
 		ExecutionTimeout: cmd.Timeout,
 		Resources:        append([]tasks.ResourceRequirement(nil), cmd.Resources...),
 		Handler: func(taskCtx context.Context) error {
+			for _, requirement := range cmd.Resources {
+				if requirement.Amount > 0 {
+					taskCtx = core.WithHeldResource(taskCtx, requirement.Name)
+				}
+			}
 			d.runningCommands.Add(1)
 			defer d.runningCommands.Add(-1)
 			runCtx, runCancel := context.WithCancel(taskCtx)

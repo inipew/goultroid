@@ -73,8 +73,11 @@ func (g *ResourceGuard) CheckDisk(dirPath string, requiredBytes int64) error {
 // Acquire acquires a slot in the concurrency semaphore or waits until ctx is canceled.
 // Returns a release function to be called in defer.
 func (g *ResourceGuard) Acquire(ctx context.Context) (func(), error) {
-	if g.sem == nil {
+	if g.sem == nil || core.HasHeldResource(ctx, "media") {
 		return func() {}, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	select {
 	case g.sem <- struct{}{}:

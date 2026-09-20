@@ -255,3 +255,19 @@ func TestDownloaderRepliedURLFallbackSubmitsContinuation(t *testing.T) {
 		t.Fatalf("unexpected URL continuation: %+v", spec)
 	}
 }
+
+
+func TestMarkHeldResourcesPropagatesCoreAndDownloadLeaseMarkers(t *testing.T) {
+	ctx := markHeldResources(context.Background(), []tasks.ResourceRequirement{
+		{Name: "download", Amount: 1},
+		{Name: "process", Amount: 1},
+	})
+	for _, name := range []string{"download", "process"} {
+		if !core.HasHeldResource(ctx, name) {
+			t.Fatalf("core held-resource marker missing for %q", name)
+		}
+		if !download.HasResource(ctx, name) {
+			t.Fatalf("download service marker missing for %q", name)
+		}
+	}
+}

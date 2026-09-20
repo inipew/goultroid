@@ -145,6 +145,7 @@ func detachDownloadContext(ctx *core.Context) *core.Context {
 func markHeldResources(ctx context.Context, resources []tasks.ResourceRequirement) context.Context {
 	for _, requirement := range resources {
 		if requirement.Amount > 0 {
+			ctx = core.WithHeldResource(ctx, requirement.Name)
 			ctx = download.WithResource(ctx, requirement.Name)
 		}
 	}
