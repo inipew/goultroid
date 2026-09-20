@@ -175,6 +175,44 @@ func TestPreparedIntentIsNotReconciledBeforeGraceAndProtectsLiveAsset(t *testing
 	}
 }
 
+
+func TestPreparedIntentRecoversCrashAfterDBMutationBeforeActivation(t *testing.T) {
+	db := openCleanupTestDB(t)
+	defer db.Close()
+	store := storage.NewMemoryStorage()
+	asset := putCleanupTestAsset(t, store, "post-commit-crash.bin")
+	insertReferencedNote(t, db, "crash", asset.ID)
+	svc := NewService(store, db)
+
+	if err := svc.cleanup.prepare(context.Background(), asset.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the DB mutation committing, followed by process death before
+	// cleanup.activate() can make the intent immediately due.
+	if _, err := db.Exec(`UPDATE notes SET media_asset_id = '' WHERE chat_id = 1 AND name = 'crash'`); err != nil {
+		t.Fatal(err)
+	}
+	forceCleanupDue(t, db, asset.ID)
+
+	stats, err := svc.ReconcileCleanup(context.Background(), 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Deleted != 1 || stats.Referenced != 0 {
+		t.Fatalf("unexpected recovery stats: %+v", stats)
+	}
+	if _, err := store.Stat(context.Background(), asset.ID); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("orphaned asset survived recovery: %v", err)
+	}
+	pending, err := svc.PendingCleanupCount(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending != 0 {
+		t.Fatalf("cleanup intent survived successful recovery: %d", pending)
+	}
+}
+
 func TestCommitReplacementPersistFailureKeepsOldAssetAndCleansNew(t *testing.T) {
 	db := openCleanupTestDB(t)
 	defer db.Close()
