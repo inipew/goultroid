@@ -350,19 +350,39 @@ func TestValidateAnimatedStickerTGS(t *testing.T) {
 	}
 }
 
-func TestValidateVideoStickerRequiresWebMMagic(t *testing.T) {
+func TestValidateVideoStickerRequiresWebMDocType(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "video.webm")
-	if err := os.WriteFile(path, []byte{0x1a, 0x45, 0xdf, 0xa3, 0x42, 0x86, 0x81, 0x01}, 0o600); err != nil {
+	valid := append([]byte{0x1a, 0x45, 0xdf, 0xa3, 0x42, 0x82, 0x84}, []byte("webm")...)
+	if err := os.WriteFile(path, valid, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := validateStickerFile(path, &MediaRef{Name: "video.webm", MIMEType: "video/webm"}); err != nil {
 		t.Fatalf("valid WebM header rejected: %v", err)
 	}
-	if err := os.WriteFile(path, []byte("not-webm"), 0o600); err != nil {
+	invalid := append([]byte{0x1a, 0x45, 0xdf, 0xa3}, []byte("matroska")...)
+	if err := os.WriteFile(path, invalid, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := validateStickerFile(path, &MediaRef{Name: "video.webm", MIMEType: "video/webm"}); !errors.Is(err, ErrInvalidSticker) {
-		t.Fatalf("invalid WebM error=%v, want ErrInvalidSticker", err)
+		t.Fatalf("non-WebM EBML error=%v, want ErrInvalidSticker", err)
+	}
+}
+
+func TestValidateCapturedVideoStickerMetadata(t *testing.T) {
+	ref := &MediaRef{Name: "video.webm", MIMEType: "video/webm"}
+	if err := validateCapturedStickerMetadata(&core.MediaInfo{
+		Type: "sticker", Width: 512, Height: 384, Duration: 3,
+	}, ref); err != nil {
+		t.Fatalf("valid video sticker metadata rejected: %v", err)
+	}
+	for _, media := range []*core.MediaInfo{
+		{Type: "sticker", Width: 640, Height: 512, Duration: 2},
+		{Type: "sticker", Width: 500, Height: 500, Duration: 2},
+		{Type: "sticker", Width: 512, Height: 384, Duration: 4},
+	} {
+		if err := validateCapturedStickerMetadata(media, ref); !errors.Is(err, ErrInvalidSticker) {
+			t.Fatalf("metadata %+v error=%v, want ErrInvalidSticker", media, err)
+		}
 	}
 }
 

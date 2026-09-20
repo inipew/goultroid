@@ -1,6 +1,7 @@
 package savedresponse
 
 import (
+	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/services/imageguard"
 )
 
@@ -21,7 +23,7 @@ const (
 	staticStickerMaxBytes   int64 = 512 << 10
 	animatedStickerMaxBytes int64 = 64 << 10
 	videoStickerMaxBytes    int64 = 256 << 10
-	maxTGSDecodedBytes      int64 = 2 << 20
+	maxTGSDecodedBytes      int64 = 8 << 20
 )
 
 var (
@@ -52,6 +54,24 @@ func stickerFormat(media *MediaRef) string {
 	default:
 		return ""
 	}
+}
+
+func validateCapturedStickerMetadata(media *core.MediaInfo, ref *MediaRef) error {
+	if media == nil || ref == nil {
+		return fmt.Errorf("%w: sticker metadata is unavailable", ErrInvalidSticker)
+	}
+	if stickerFormat(ref) != StickerFormatVideo {
+		return nil
+	}
+	if media.Width > 0 && media.Height > 0 {
+		if media.Width > 512 || media.Height > 512 || (media.Width != 512 && media.Height != 512) {
+			return fmt.Errorf("%w: video sticker dimensions must have one 512px side and stay within 512x512, got %dx%d", ErrInvalidSticker, media.Width, media.Height)
+		}
+	}
+	if media.Duration > 3 {
+		return fmt.Errorf("%w: video sticker duration is %ds; max 3s", ErrInvalidSticker, media.Duration)
+	}
+	return nil
 }
 
 func validateStickerFile(path string, media *MediaRef) error {
@@ -122,11 +142,18 @@ func validateAnimatedSticker(path string, size int64) error {
 		return fmt.Errorf("%w: decompressed TGS exceeds %d bytes", ErrInvalidSticker, maxTGSDecodedBytes)
 	}
 	var meta struct {
-		Width  int `json:"w"`
-		Height int `json:"h"`
+		Version   string  `json:"v"`
+		Width     int     `json:"w"`
+		Height    int     `json:"h"`
+		FrameRate float64 `json:"fr"`
+		InPoint   float64 `json:"ip"`
+		OutPoint  float64 `json:"op"`
 	}
 	if err := json.Unmarshal(body, &meta); err != nil {
 		return fmt.Errorf("%w: invalid TGS JSON: %v", ErrInvalidSticker, err)
+	}
+	if meta.Version == "" || meta.FrameRate <= 0 || meta.OutPoint <= meta.InPoint {
+		return fmt.Errorf("%w: incomplete TGS animation metadata", ErrInvalidSticker)
 	}
 	if meta.Width != 512 || meta.Height != 512 {
 		return fmt.Errorf("%w: animated sticker canvas must be 512x512, got %dx%d", ErrInvalidSticker, meta.Width, meta.Height)
@@ -143,13 +170,15 @@ func validateVideoSticker(path string, size int64) error {
 		return fmt.Errorf("%w: %v", ErrInvalidSticker, err)
 	}
 	defer f.Close()
-	var magic [4]byte
-	if _, err := io.ReadFull(f, magic[:]); err != nil {
-		return fmt.Errorf("%w: short WebM sticker: %v", ErrInvalidSticker, err)
+	header, err := io.ReadAll(io.LimitReader(f, 4096))
+	if err != nil {
+		return fmt.Errorf("%w: read WebM header: %v", ErrInvalidSticker, err)
 	}
-	want := [4]byte{0x1a, 0x45, 0xdf, 0xa3}
-	if magic != want {
-		return fmt.Errorf("%w: video sticker is not a WebM/EBML stream", ErrInvalidSticker)
+	if len(header) < 4 || !bytes.Equal(header[:4], []byte{0x1a, 0x45, 0xdf, 0xa3}) {
+		return fmt.Errorf("%w: video sticker is not an EBML stream", ErrInvalidSticker)
+	}
+	if !bytes.Contains(bytes.ToLower(header), []byte("webm")) {
+		return fmt.Errorf("%w: EBML document type is not WebM", ErrInvalidSticker)
 	}
 	return nil
 }

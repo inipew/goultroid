@@ -111,6 +111,9 @@ func (s *Service) captureMedia(ctx *core.Context, media *core.MediaInfo) (*Media
 		MIMEType:  media.MimeType,
 	}
 	if capturedRef.MediaType == "sticker" {
+		if err := validateCapturedStickerMetadata(media, capturedRef); err != nil {
+			return nil, err
+		}
 		if err := validateStickerFile(path, capturedRef); err != nil {
 			return nil, err
 		}
@@ -122,7 +125,7 @@ func (s *Service) captureMedia(ctx *core.Context, media *core.MediaInfo) (*Media
 	defer f.Close()
 
 	asset, err := s.store.Put(ctx.Ctx, f, storage.Metadata{
-		Name:     media.FileName,
+		Name:     capturedRef.Name,
 		MIME:     media.MimeType,
 		Width:    media.Width,
 		Height:   media.Height,
