@@ -395,7 +395,7 @@ func (r *SQLiteRepository) SavePackage(ctx context.Context, pkg *SavedPackage) e
 		price = excluded.price,
 		family_code = excluded.family_code
 	`
-	_, err := r.db.ExecContext(ctx, query, pkg.MSISDN, pkg.OptionCode, pkg.Name, pkg.Price, pkg.FamilyCode)
+	_, err = r.db.ExecContext(ctx, query, pkg.MSISDN, pkg.OptionCode, pkg.Name, pkg.Price, pkg.FamilyCode)
 	if err != nil {
 		return fmt.Errorf("failed to save package: %w", err)
 	}

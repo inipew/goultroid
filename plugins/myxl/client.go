@@ -215,8 +215,8 @@ func (c *Client) RequestOTP(ctx context.Context, msisdn string) (string, error) 
 	reqURL := fmt.Sprintf("%s/realms/xl-ciam/auth/otp?contact=%s&contactType=SMS&alternateContact=false",
 		c.cfg.BaseCIAMURL, url.QueryEscape(cleanMSISDN))
 
-	now := time.Now()
-	headers := c.buildCIAMHeaders(FormatMyXLHeaderTS(now))
+	requestAt := time.Now()
+	headers := c.buildCIAMHeaders(FormatMyXLHeaderTS(requestAt))
 	headers["Content-Type"] = "application/json"
 
 	resp, err := c.getHTTP().DoRequest(ctx, network.MethodGet, reqURL, nil, headers)
