@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -13,14 +14,70 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/platform/network"
 	"github.com/inipew/goultroid/internal/services/callback"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 type mockTgService struct {
 	core.MockTelegramServicer
 	sent       string
 	lastMarkup tg.ReplyMarkupClass
+}
+
+
+type immediateMyXLTicket struct {
+	result tasks.TaskResult
+	done   chan struct{}
+}
+
+func (t *immediateMyXLTicket) TaskID() tasks.TaskID                  { return t.result.TaskID }
+func (t *immediateMyXLTicket) State() tasks.TaskState               { return tasks.StateCompleted }
+func (t *immediateMyXLTicket) Done() <-chan struct{}                { return t.done }
+func (t *immediateMyXLTicket) Result() (tasks.TaskResult, bool)      { return t.result, true }
+func (t *immediateMyXLTicket) Wait(context.Context) (tasks.TaskResult, error) { return t.result, nil }
+
+type immediateMyXLTaskClient struct {
+	specs []tasks.WorkSpec
+}
+
+func (c *immediateMyXLTaskClient) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket, error) {
+	recorded := spec
+	recorded.Handler = nil
+	recorded.Commit = nil
+	recorded.OnComplete = nil
+	recorded.Resources = append([]tasks.ResourceRequirement(nil), spec.Resources...)
+	c.specs = append(c.specs, recorded)
+
+	result := tasks.TaskResult{TaskID: spec.ID, Outcome: tasks.OutcomeCompleted}
+	if spec.Handler != nil {
+		if err := spec.Handler(tasks.WithHeldResources(ctx, spec.Resources)); err != nil {
+			result.Outcome = tasks.OutcomeFailed
+			result.Failure.Message = err.Error()
+		}
+	}
+	done := make(chan struct{})
+	close(done)
+	return &immediateMyXLTicket{result: result, done: done}, nil
+}
+
+func (c *immediateMyXLTaskClient) Cancel(tasks.TaskID, tasks.Cause) (tasks.CancelReceipt, error) {
+	return tasks.CancelReceipt{}, nil
+}
+func (c *immediateMyXLTaskClient) CancelScope(tasks.ScopeIdentity, tasks.Cause) int { return 0 }
+func (c *immediateMyXLTaskClient) Snapshot(tasks.TaskID) (tasks.TaskSnapshot, bool) {
+	return tasks.TaskSnapshot{}, false
+}
+
+type myXLQRService struct {
+	core.MockTelegramServicer
+	mediaSent bool
+}
+
+func (s *myXLQRService) SendMedia(context.Context, tg.InputPeerClass, string, string, string) (*tg.Message, error) {
+	s.mediaSent = true
+	return &tg.Message{ID: 55}, nil
 }
 
 func TestPlugin_CallbackOptions_HandlerOwnsAnswer(t *testing.T) {
@@ -675,6 +732,65 @@ func TestTruncateStringPreservesUTF8(t *testing.T) {
 	if !utf8.ValidString(got) {
 		t.Fatalf("truncateString produced invalid UTF-8: %q", got)
 	}
+}
+
+
+func TestSendQRPhotoUsesMediaResourceAndCleansTempFile(t *testing.T) {
+	manager, err := filesystem.NewManager(t.TempDir(), "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := manager.ForOwner("myxl").TempDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := New(nil, nil)
+	p.files = manager.ForOwner("myxl")
+	client := &immediateMyXLTaskClient{}
+	p.SetTaskClient(client)
+	svc := &myXLQRService{}
+
+	if err := p.sendQRPhoto(
+		context.Background(),
+		svc,
+		&tg.InputPeerUser{UserID: 1},
+		"000201010212TEST",
+		"Paket Test",
+		15000,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !svc.mediaSent {
+		t.Fatal("QR media was not sent")
+	}
+	if len(client.specs) != 1 {
+		t.Fatalf("QR task count=%d, want 1", len(client.specs))
+	}
+	spec := client.specs[0]
+	if spec.Pool != tasks.PoolID("general") || spec.ExecutionTimeout != myxlQRSendTimeout {
+		t.Fatalf("QR task spec=%+v", spec)
+	}
+	if len(spec.Resources) != 1 || spec.Resources[0].Name != "media" || spec.Resources[0].Amount != 1 {
+		t.Fatalf("QR resources=%+v, want media:1", spec.Resources)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("QR temp workspace leaked %d entries", len(entries))
+	}
+}
+
+func TestMyXLManifestDeclaresTasks(t *testing.T) {
+	manifest := Module.Manifest()
+	for _, capability := range manifest.Capabilities {
+		if capability == "tasks" {
+			return
+		}
+	}
+	t.Fatalf("MyXL manifest must declare tasks: %+v", manifest.Capabilities)
 }
 
 func TestMyXLManifestDeclaresFilesystemTemp(t *testing.T) {

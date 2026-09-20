@@ -8,6 +8,7 @@ import (
 	"html"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/callback"
+	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/ui"
 	"github.com/inipew/goultroid/internal/ui/render"
 )
@@ -36,11 +38,14 @@ type Plugin struct {
 	stateStore *callback.StateStore
 	menuMgr    *MenuManager
 	files      *filesystem.Scope
+	tasks      tasks.Client
+	qrTaskSeq  atomic.Uint64
 }
 
 const (
-	myxlCallbackTTL = 10 * time.Minute
-	pendingQRISTTL  = 5 * time.Minute
+	myxlCallbackTTL   = 10 * time.Minute
+	pendingQRISTTL    = 5 * time.Minute
+	myxlQRSendTimeout = 10 * time.Second
 )
 
 type quotaRefreshState struct {
@@ -76,6 +81,11 @@ func New(repo Repository, client *Client) *Plugin {
 // SetStateStore configures the callback state store.
 func (p *Plugin) SetStateStore(store *callback.StateStore) {
 	p.stateStore = store
+}
+
+// SetTaskClient configures staged TaskEngine access for scarce QR media sends.
+func (p *Plugin) SetTaskClient(client tasks.Client) {
+	p.tasks = client
 }
 
 // SetAssistantMenu configures the assistant interactive menu controller.
@@ -166,6 +176,12 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 		return fmt.Errorf("initialize MyXL filesystem: filesystem scope is nil")
 	}
 	p.files = fs
+
+	taskClient, err := pctx.TaskClient()
+	if err != nil {
+		return fmt.Errorf("initialize MyXL task client: %w", err)
+	}
+	p.tasks = taskClient
 
 	secMgr, err := pctx.Secrets()
 	if err != nil {
@@ -1463,7 +1479,7 @@ func (p *Plugin) handlePendingQRIS(ctx *core.Context, args []string) error {
 		return err
 	}
 
-	if qrErr == nil && ctx.Svc != nil && ctx.PeerID != nil {
+	if qrErr == nil && p.files != nil && p.tasks != nil && ctx.Svc != nil && ctx.PeerID != nil {
 		if err := p.sendQRPhoto(ctx.Ctx, ctx.Svc, ctx.PeerID, qrPayload, pending.PackageName, pending.Price); err != nil {
 			_ = ctx.Reply("⚠️ Detail QRIS tersedia, tetapi gambar QR gagal dikirim. Gunakan string QRIS di pesan sebelumnya.")
 		}
@@ -1706,7 +1722,7 @@ func (p *Plugin) confirmPurchase(cbCtx *callback.CallbackContext, draft purchase
 		if err := cbCtx.Edit(text, markup); err != nil {
 			return err
 		}
-		if result.QRCode != "" && cbCtx.Service != nil && cbCtx.Target.Peer != nil {
+		if result.QRCode != "" && p.files != nil && p.tasks != nil && cbCtx.Service != nil && cbCtx.Target.Peer != nil {
 			if err := p.sendQRPhoto(cbCtx.Ctx, cbCtx.Service, cbCtx.Target.Peer, result.QRCode, draft.PackageName, effectivePrice); err != nil && qrWarning == "" {
 				qrWarning = "Transaksi selesai tetapi foto QRIS gagal dikirim."
 			}
@@ -1720,7 +1736,7 @@ func (p *Plugin) confirmPurchase(cbCtx *callback.CallbackContext, draft purchase
 	if err := cbCtx.Edit(resText, nil); err != nil {
 		return err
 	}
-	if result.QRCode != "" && cbCtx.Service != nil && cbCtx.Target.Peer != nil {
+	if result.QRCode != "" && p.files != nil && p.tasks != nil && cbCtx.Service != nil && cbCtx.Target.Peer != nil {
 		if err := p.sendQRPhoto(cbCtx.Ctx, cbCtx.Service, cbCtx.Target.Peer, result.QRCode, draft.PackageName, effectivePrice); err != nil && qrWarning == "" {
 			qrWarning = "Transaksi selesai tetapi foto QRIS gagal dikirim."
 		}
@@ -1736,8 +1752,16 @@ func (p *Plugin) getFiles() *filesystem.Scope {
 }
 
 func (p *Plugin) sendQRPhoto(ctx context.Context, svc core.TelegramServicer, peer tg.InputPeerClass, qrCode, pkgName string, price int64) error {
-	if svc == nil || peer == nil || qrCode == "" {
+	if svc == nil || peer == nil || strings.TrimSpace(qrCode) == "" {
 		return nil
+	}
+	if p.tasks == nil {
+		return fmt.Errorf("%w: MyXL task runtime unavailable", core.ErrUnavailable)
+	}
+
+	qrCode, err := normalizeQRPayload(qrCode)
+	if err != nil {
+		return err
 	}
 	pngBytes, err := GenerateQRPNG(qrCode)
 	if err != nil {
@@ -1746,14 +1770,15 @@ func (p *Plugin) sendQRPhoto(ctx context.Context, svc core.TelegramServicer, pee
 
 	files := p.getFiles()
 	if files == nil {
-		return fmt.Errorf("filesystem manager not available")
+		return fmt.Errorf("%w: MyXL filesystem unavailable", core.ErrUnavailable)
 	}
 
 	tmpFile, err := files.CreateTempFile("qris-*.png")
 	if err != nil {
 		return err
 	}
-	defer files.RemoveTempFile(tmpFile.Name())
+	path := tmpFile.Name()
+	defer func() { _ = files.RemoveTempFile(path) }()
 
 	if _, err := tmpFile.Write(pngBytes); err != nil {
 		_ = tmpFile.Close()
@@ -1768,8 +1793,37 @@ func (p *Plugin) sendQRPhoto(ctx context.Context, svc core.TelegramServicer, pee
 		formatRupiah(price),
 	)
 
-	_, err = svc.SendMedia(ctx, peer, "photo", tmpFile.Name(), caption)
-	return err
+	var sendErr error
+	taskID := tasks.TaskID(fmt.Sprintf("myxl:qr:%d:%d", time.Now().UnixNano(), p.qrTaskSeq.Add(1)))
+	ticket, err := p.tasks.Submit(ctx, tasks.WorkSpec{
+		ID:               taskID,
+		Pool:             tasks.PoolID("general"),
+		Class:            tasks.PriorityInteractive,
+		ExecutionTimeout: myxlQRSendTimeout,
+		Resources:        []tasks.ResourceRequirement{{Name: "media", Amount: 1}},
+		Handler: func(taskCtx context.Context) error {
+			_, sendErr = svc.SendMedia(taskCtx, peer, "photo", path, caption)
+			return sendErr
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("submit QR media task: %w", err)
+	}
+	result, err := ticket.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("wait QR media task: %w", err)
+	}
+	if sendErr != nil {
+		return sendErr
+	}
+	if !result.IsSuccess() {
+		message := strings.TrimSpace(result.Failure.Message)
+		if message == "" {
+			message = fmt.Sprintf("task ended with %s", result.Outcome)
+		}
+		return fmt.Errorf("QR media task failed: %s", message)
+	}
+	return nil
 }
 
 func truncateString(s string, n int) string {
