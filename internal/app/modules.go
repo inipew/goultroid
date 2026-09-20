@@ -76,5 +76,12 @@ func reconcileBuiltinPersistentMedia(
 	if err != nil {
 		return stats, fmt.Errorf("persistent saved-response media reconciliation failed: %w", err)
 	}
+	if _, err := savedresponse.ReconcileRegistryCompatibility(
+		reconcileCtx,
+		db,
+		startupPersistentMediaReconcileBatch,
+	); err != nil {
+		return stats, fmt.Errorf("persistent saved-response media registry compatibility failed: %w", err)
+	}
 	return stats, nil
 }
