@@ -9,18 +9,26 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/services/mediaregistry"
 	"github.com/inipew/goultroid/internal/services/savedresponse"
 )
 
 type SQLiteRepository struct {
-	db *database.DB
+	db            *database.DB
+	registryReady bool
+	registryErr   error
 }
 
 func NewSQLiteRepository(db *database.DB) *SQLiteRepository {
-	return &SQLiteRepository{db: db}
+	ready, err := mediaregistry.SchemaReady(context.Background(), db)
+	return &SQLiteRepository{db: db, registryReady: ready, registryErr: err}
 }
 
 func (r *SQLiteRepository) SaveFilter(ctx context.Context, chatID int64, keyword string, response savedresponse.Response) error {
+	if r.registryErr != nil {
+		return fmt.Errorf("failed to inspect media registry schema: %w", r.registryErr)
+	}
+
 	media := savedresponse.MediaRef{}
 	if response.Media != nil {
 		media = *response.Media
@@ -29,6 +37,8 @@ func (r *SQLiteRepository) SaveFilter(ctx context.Context, chatID int64, keyword
 	if format == "" {
 		format = savedresponse.FormatHTML
 	}
+	keyword = strings.ToLower(keyword)
+	now := time.Now().UTC()
 	query := `
 	INSERT INTO filters (
 		chat_id, keyword, reply_text, response_format,
@@ -43,12 +53,59 @@ func (r *SQLiteRepository) SaveFilter(ctx context.Context, chatID int64, keyword
 		media_mime = excluded.media_mime,
 		created_at = excluded.created_at;
 	`
-	_, err := r.db.ExecContext(ctx, query,
-		chatID, strings.ToLower(keyword), response.Text, string(format),
-		media.AssetID, media.MediaType, media.Name, media.MIMEType, time.Now().UTC(),
-	)
+	if !r.registryReady {
+		if _, err := r.db.ExecContext(ctx, query,
+			chatID, keyword, response.Text, string(format),
+			media.AssetID, media.MediaType, media.Name, media.MIMEType, now,
+		); err != nil {
+			return fmt.Errorf("failed to save filter: %w", err)
+		}
+		return nil
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
+		return fmt.Errorf("failed to begin filter save: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var previousAssetID string
+	err = tx.QueryRowContext(ctx,
+		"SELECT media_asset_id FROM filters WHERE chat_id = ? AND keyword = ?",
+		chatID,
+		keyword,
+	).Scan(&previousAssetID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("failed to inspect previous filter media: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, query,
+		chatID, keyword, response.Text, string(format),
+		media.AssetID, media.MediaType, media.Name, media.MIMEType, now,
+	); err != nil {
 		return fmt.Errorf("failed to save filter: %w", err)
+	}
+	if media.AssetID != "" {
+		if err := mediaregistry.RegisterAssetWithExecutor(
+			ctx,
+			tx,
+			savedresponse.MediaRegistryAssetRegistration(media.AssetID),
+			savedresponse.FilterMediaRegistryReference(media.AssetID, chatID, keyword),
+		); err != nil {
+			return fmt.Errorf("failed to mirror filter media registry: %w", err)
+		}
+	}
+	if previousAssetID != "" && previousAssetID != media.AssetID {
+		if err := mediaregistry.RemoveReferenceWithExecutor(
+			ctx,
+			tx,
+			savedresponse.FilterMediaRegistryReference(previousAssetID, chatID, keyword),
+		); err != nil {
+			return fmt.Errorf("failed to remove previous filter media reference: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit filter save: %w", err)
 	}
 	return nil
 }
@@ -129,16 +186,57 @@ func (r *SQLiteRepository) ListFilters(ctx context.Context, chatID int64) ([]Fil
 }
 
 func (r *SQLiteRepository) DeleteFilter(ctx context.Context, chatID int64, keyword string) error {
-	res, err := r.db.ExecContext(ctx, "DELETE FROM filters WHERE chat_id = ? AND keyword = ?", chatID, strings.ToLower(keyword))
+	if r.registryErr != nil {
+		return fmt.Errorf("failed to inspect media registry schema: %w", r.registryErr)
+	}
+
+	keyword = strings.ToLower(keyword)
+	if !r.registryReady {
+		res, err := r.db.ExecContext(ctx, "DELETE FROM filters WHERE chat_id = ? AND keyword = ?", chatID, keyword)
+		if err != nil {
+			return fmt.Errorf("failed to delete filter: %w", err)
+		}
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			return errors.New("filter not found")
+		}
+		return nil
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
+		return fmt.Errorf("failed to begin filter delete: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var assetID string
+	if err := tx.QueryRowContext(ctx,
+		"SELECT media_asset_id FROM filters WHERE chat_id = ? AND keyword = ?",
+		chatID,
+		keyword,
+	).Scan(&assetID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("filter not found")
+		}
+		return fmt.Errorf("failed to inspect filter media before delete: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM filters WHERE chat_id = ? AND keyword = ?", chatID, keyword); err != nil {
 		return fmt.Errorf("failed to delete filter: %w", err)
 	}
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return err
+	if assetID != "" {
+		if err := mediaregistry.RemoveReferenceWithExecutor(
+			ctx,
+			tx,
+			savedresponse.FilterMediaRegistryReference(assetID, chatID, keyword),
+		); err != nil {
+			return fmt.Errorf("failed to remove filter media reference: %w", err)
+		}
 	}
-	if rows == 0 {
-		return errors.New("filter not found")
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit filter delete: %w", err)
 	}
 	return nil
 }

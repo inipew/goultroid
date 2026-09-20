@@ -8,18 +8,26 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/services/mediaregistry"
 	"github.com/inipew/goultroid/internal/services/savedresponse"
 )
 
 type SQLiteRepository struct {
-	db *database.DB
+	db            *database.DB
+	registryReady bool
+	registryErr   error
 }
 
 func NewSQLiteRepository(db *database.DB) *SQLiteRepository {
-	return &SQLiteRepository{db: db}
+	ready, err := mediaregistry.SchemaReady(context.Background(), db)
+	return &SQLiteRepository{db: db, registryReady: ready, registryErr: err}
 }
 
 func (r *SQLiteRepository) SaveNote(ctx context.Context, chatID int64, name string, response savedresponse.Response) error {
+	if r.registryErr != nil {
+		return fmt.Errorf("failed to inspect media registry schema: %w", r.registryErr)
+	}
+
 	now := time.Now().UTC()
 	media := savedresponse.MediaRef{}
 	if response.Media != nil {
@@ -44,13 +52,62 @@ func (r *SQLiteRepository) SaveNote(ctx context.Context, chatID int64, name stri
 		media_mime = excluded.media_mime,
 		updated_at = excluded.updated_at
 	`
-	_, err := r.db.ExecContext(ctx, query,
+	if !r.registryReady {
+		if _, err := r.db.ExecContext(ctx, query,
+			chatID, name, response.Text, string(format),
+			media.AssetID, media.MediaType, media.Name, media.MIMEType,
+			now, now,
+		); err != nil {
+			return fmt.Errorf("failed to save note: %w", err)
+		}
+		return nil
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin note save: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var previousAssetID string
+	err = tx.QueryRowContext(ctx,
+		"SELECT media_asset_id FROM notes WHERE chat_id = ? AND name = ?",
+		chatID,
+		name,
+	).Scan(&previousAssetID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("failed to inspect previous note media: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, query,
 		chatID, name, response.Text, string(format),
 		media.AssetID, media.MediaType, media.Name, media.MIMEType,
 		now, now,
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("failed to save note: %w", err)
+	}
+
+	if media.AssetID != "" {
+		if err := mediaregistry.RegisterAssetWithExecutor(
+			ctx,
+			tx,
+			savedresponse.MediaRegistryAssetRegistration(media.AssetID),
+			savedresponse.NoteMediaRegistryReference(media.AssetID, chatID, name),
+		); err != nil {
+			return fmt.Errorf("failed to mirror note media registry: %w", err)
+		}
+	}
+	if previousAssetID != "" && previousAssetID != media.AssetID {
+		if err := mediaregistry.RemoveReferenceWithExecutor(
+			ctx,
+			tx,
+			savedresponse.NoteMediaRegistryReference(previousAssetID, chatID, name),
+		); err != nil {
+			return fmt.Errorf("failed to remove previous note media reference: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit note save: %w", err)
 	}
 	return nil
 }
@@ -132,9 +189,7 @@ func (r *SQLiteRepository) ListNoteDetails(ctx context.Context, chatID int64) ([
 			n.Response.Format = savedresponse.FormatHTML
 		}
 		if assetID != "" {
-			n.Response.Media = &savedresponse.MediaRef{
-				AssetID: assetID, MediaType: mediaType, Name: mediaName, MIMEType: mediaMIME,
-			}
+			n.Response.Media = &savedresponse.MediaRef{AssetID: assetID, MediaType: mediaType, Name: mediaName, MIMEType: mediaMIME}
 		}
 		notes = append(notes, n)
 	}
@@ -145,16 +200,56 @@ func (r *SQLiteRepository) ListNoteDetails(ctx context.Context, chatID int64) ([
 }
 
 func (r *SQLiteRepository) DeleteNote(ctx context.Context, chatID int64, name string) error {
-	res, err := r.db.ExecContext(ctx, "DELETE FROM notes WHERE chat_id = ? AND name = ?", chatID, name)
+	if r.registryErr != nil {
+		return fmt.Errorf("failed to inspect media registry schema: %w", r.registryErr)
+	}
+
+	if !r.registryReady {
+		res, err := r.db.ExecContext(ctx, "DELETE FROM notes WHERE chat_id = ? AND name = ?", chatID, name)
+		if err != nil {
+			return fmt.Errorf("failed to delete note: %w", err)
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return errors.New("note not found")
+		}
+		return nil
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
+		return fmt.Errorf("failed to begin note delete: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var assetID string
+	if err := tx.QueryRowContext(ctx,
+		"SELECT media_asset_id FROM notes WHERE chat_id = ? AND name = ?",
+		chatID,
+		name,
+	).Scan(&assetID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("note not found")
+		}
+		return fmt.Errorf("failed to inspect note media before delete: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM notes WHERE chat_id = ? AND name = ?", chatID, name); err != nil {
 		return fmt.Errorf("failed to delete note: %w", err)
 	}
-	affected, err := res.RowsAffected()
-	if err != nil {
-		return err
+	if assetID != "" {
+		if err := mediaregistry.RemoveReferenceWithExecutor(
+			ctx,
+			tx,
+			savedresponse.NoteMediaRegistryReference(assetID, chatID, name),
+		); err != nil {
+			return fmt.Errorf("failed to remove note media reference: %w", err)
+		}
 	}
-	if affected == 0 {
-		return errors.New("note not found")
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit note delete: %w", err)
 	}
 	return nil
 }
