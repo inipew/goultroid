@@ -277,6 +277,10 @@ func (s *Service) PendingCleanupCount(ctx context.Context) (int, error) {
 
 type PersistentMediaReconcileStats struct {
 	ReferencesBackfilled int
+	ReferencesChecked    int
+	MissingAssets        int
+	ReferencesDetached   int
+	ResponsesRemoved     int
 	OrphansDiscovered    int
 	CleanupScheduled     int
 	Cleanup              CleanupStats
@@ -303,19 +307,49 @@ func (s *Service) ReconcilePersistentMedia(ctx context.Context, limit int) (Pers
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if limit <= 0 {
-		limit = defaultPersistentReconcileBatch
-	}
-	if limit > maxPersistentReconcileBatch {
-		limit = maxPersistentReconcileBatch
-	}
+	limit = normalizePersistentReconcileLimit(limit)
 
 	if s.assets != nil {
-		backfilled, err := s.assets.backfillReferences(ctx)
+		backfilled, err := s.assets.backfillReferences(ctx, limit)
 		if err != nil {
 			return stats, err
 		}
 		stats.ReferencesBackfilled = backfilled
+
+		if s.store != nil {
+			referenced, err := s.assets.referencedCandidates(ctx, limit)
+			if err != nil {
+				return stats, err
+			}
+			for _, assetID := range referenced {
+				stats.ReferencesChecked++
+				_, statErr := s.store.Stat(ctx, assetID)
+				switch {
+				case statErr == nil:
+					if err := s.assets.markSeen(ctx, assetID); err != nil {
+						return stats, err
+					}
+				case errors.Is(statErr, storage.ErrNotFound):
+					detached, removed, err := s.assets.repairMissingReferences(ctx, assetID)
+					if err != nil {
+						return stats, err
+					}
+					stats.MissingAssets++
+					stats.ReferencesDetached += detached
+					stats.ResponsesRemoved += removed
+					if s.cleanup != nil {
+						if err := s.cleanup.remove(ctx, assetID); err != nil {
+							return stats, err
+						}
+					}
+					if err := s.assets.remove(ctx, assetID); err != nil {
+						return stats, err
+					}
+				default:
+					return stats, fmt.Errorf("saved response: inspect persistent media asset %q: %w", assetID, statErr)
+				}
+			}
+		}
 
 		candidates, err := s.assets.orphanCandidates(ctx, limit)
 		if err != nil {

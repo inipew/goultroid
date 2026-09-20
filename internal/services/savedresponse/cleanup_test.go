@@ -32,8 +32,19 @@ func openCleanupTestDB(t *testing.T) *database.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`ALTER TABLE notes ADD COLUMN media_asset_id TEXT NOT NULL DEFAULT '';`); err != nil {
-		t.Fatal(err)
+	for _, statement := range []string{
+		`ALTER TABLE notes ADD COLUMN media_asset_id TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE notes ADD COLUMN media_type TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE notes ADD COLUMN media_name TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE notes ADD COLUMN media_mime TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE filters ADD COLUMN media_asset_id TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE filters ADD COLUMN media_type TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE filters ADD COLUMN media_name TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE filters ADD COLUMN media_mime TEXT NOT NULL DEFAULT '';`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return db
 }
@@ -240,6 +251,99 @@ func TestCommitReplacementPersistFailureKeepsOldAssetAndCleansNew(t *testing.T) 
 	}
 	if pending != 0 {
 		t.Fatalf("pending cleanup=%d, want 0 after successful uncommitted cleanup", pending)
+	}
+}
+
+
+func TestPersistentMediaReconcileRepairsMissingReferencedAssets(t *testing.T) {
+	db := openCleanupTestDB(t)
+	defer db.Close()
+	store := storage.NewMemoryStorage()
+	now := time.Now().UTC()
+
+	_, err := db.Exec(`
+		INSERT INTO notes (
+			chat_id, name, content, media_asset_id, media_type, media_name, media_mime, created_at, updated_at
+		) VALUES (1, 'text-fallback', 'still usable', 'missing-shared', 'photo', 'missing.png', 'image/png', ?, ?)
+	`, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO filters (
+			chat_id, keyword, reply_text, media_asset_id, media_type, media_name, media_mime, created_at
+		) VALUES (1, 'media-only', '', 'missing-shared', 'photo', 'missing.png', 'image/png', ?)
+	`, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService(store, db)
+	stats, err := svc.ReconcilePersistentMedia(context.Background(), 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.MissingAssets != 1 || stats.ReferencesDetached != 1 || stats.ResponsesRemoved != 1 {
+		t.Fatalf("unexpected missing-media reconciliation stats: %+v", stats)
+	}
+
+	var content, assetID, mediaType, mediaName, mediaMIME string
+	if err := db.QueryRow(`
+		SELECT content, media_asset_id, media_type, media_name, media_mime
+		FROM notes WHERE chat_id = 1 AND name = 'text-fallback'
+	`).Scan(&content, &assetID, &mediaType, &mediaName, &mediaMIME); err != nil {
+		t.Fatal(err)
+	}
+	if content != "still usable" || assetID != "" || mediaType != "" || mediaName != "" || mediaMIME != "" {
+		t.Fatalf("text fallback note was not repaired: content=%q asset=%q type=%q name=%q mime=%q",
+			content, assetID, mediaType, mediaName, mediaMIME)
+	}
+
+	var filterCount int
+	if err := db.QueryRow(`
+		SELECT count(*) FROM filters WHERE chat_id = 1 AND keyword = 'media-only'
+	`).Scan(&filterCount); err != nil {
+		t.Fatal(err)
+	}
+	if filterCount != 0 {
+		t.Fatalf("missing media-only filter survived reconciliation: %d", filterCount)
+	}
+	tracked, err := svc.TrackedMediaCount(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tracked != 0 {
+		t.Fatalf("missing asset remained in ledger: %d", tracked)
+	}
+}
+
+func TestPersistentMediaBackfillIsBounded(t *testing.T) {
+	db := openCleanupTestDB(t)
+	defer db.Close()
+	now := time.Now().UTC()
+	for i := 0; i < 10; i++ {
+		if _, err := db.Exec(`
+			INSERT INTO notes (chat_id, name, content, media_asset_id, created_at, updated_at)
+			VALUES (1, ?, 'text', ?, ?, ?)
+		`, fmt.Sprintf("note-%02d", i), fmt.Sprintf("asset-%02d", i), now, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ledger := newAssetLedger(db)
+	inserted, err := ledger.backfillReferences(context.Background(), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inserted != 3 {
+		t.Fatalf("bounded backfill inserted=%d, want 3", inserted)
+	}
+	count, err := ledger.count(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 {
+		t.Fatalf("bounded backfill ledger count=%d, want 3", count)
 	}
 }
 
