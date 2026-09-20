@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	defaultCleanupBatch = 16
-	maxCleanupBatch     = 128
-	maxCleanupErrorLen  = 1024
+	defaultCleanupBatch  = 16
+	maxCleanupBatch      = 128
+	maxCleanupErrorLen   = 1024
+	preparedCleanupGrace = time.Minute
 )
 
 type cleanupItem struct {
@@ -40,6 +41,14 @@ func newCleanupJournal(db *database.DB) *cleanupJournal {
 }
 
 func (j *cleanupJournal) enqueue(ctx context.Context, assetID string) error {
+	return j.enqueueAt(ctx, assetID, time.Now().UTC())
+}
+
+func (j *cleanupJournal) prepare(ctx context.Context, assetID string) error {
+	return j.enqueueAt(ctx, assetID, time.Now().UTC().Add(preparedCleanupGrace))
+}
+
+func (j *cleanupJournal) enqueueAt(ctx context.Context, assetID string, nextAttempt time.Time) error {
 	if j == nil || j.db == nil {
 		return nil
 	}
@@ -60,9 +69,35 @@ func (j *cleanupJournal) enqueue(ctx context.Context, assetID string) error {
 			last_error = '',
 			next_attempt_at = excluded.next_attempt_at,
 			updated_at = excluded.updated_at
-	`, assetID, now, now, now)
+	`, assetID, nextAttempt.UTC(), now, now)
 	if err != nil {
 		return fmt.Errorf("saved response: enqueue media cleanup %q: %w", assetID, err)
+	}
+	return nil
+}
+
+func (j *cleanupJournal) activate(ctx context.Context, assetID string) error {
+	if j == nil || j.db == nil || strings.TrimSpace(assetID) == "" {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	now := time.Now().UTC()
+	res, err := j.db.ExecContext(ctx, `
+		UPDATE saved_response_media_cleanup
+		SET attempts = 0, last_error = '', next_attempt_at = ?, updated_at = ?
+		WHERE asset_id = ?
+	`, now, now, assetID)
+	if err != nil {
+		return fmt.Errorf("saved response: activate media cleanup %q: %w", assetID, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return fmt.Errorf("saved response: media cleanup intent %q disappeared before activation", assetID)
 	}
 	return nil
 }
