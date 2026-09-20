@@ -207,16 +207,6 @@ func (s *Service) execReadOnlyVal[T any](ctx context.Context, method string, op 
 	}, op)
 }
 
-func (s *Service) execIdempotent(ctx context.Context, method string, op func(opCtx context.Context) error) error {
-	_, err := executeServiceRPC(ctx, s, RPCMeta{
-		Method: method,
-		Kind:   RPCIdempotentMutation,
-	}, func(opCtx context.Context) (struct{}, error) {
-		return struct{}{}, op(opCtx)
-	})
-	return err
-}
-
 func (s *Service) execIdempotentVal[T any](ctx context.Context, method string, op func(opCtx context.Context) (T, error)) (T, error) {
 	return executeServiceRPC(ctx, s, RPCMeta{
 		Method: method,
@@ -346,13 +336,6 @@ func (s *Service) execIdempotentPeer(ctx context.Context, method string, peer tg
 	return err
 }
 
-func (s *Service) execReadOnlyPeers(ctx context.Context, method string, peers []tg.InputPeerClass, op func(context.Context, []tg.InputPeerClass) error) error {
-	_, err := executeServicePeersRPC(ctx, s, RPCMeta{Method: method, Kind: RPCReadOnly}, peers, func(opCtx context.Context, current []tg.InputPeerClass) (struct{}, error) {
-		return struct{}{}, op(opCtx, current)
-	})
-	return err
-}
-
 func (s *Service) execIdempotentPeers(ctx context.Context, method string, peers []tg.InputPeerClass, op func(context.Context, []tg.InputPeerClass) error) error {
 	_, err := executeServicePeersRPC(ctx, s, RPCMeta{Method: method, Kind: RPCIdempotentMutation}, peers, func(opCtx context.Context, current []tg.InputPeerClass) (struct{}, error) {
 		return struct{}{}, op(opCtx, current)
@@ -377,13 +360,6 @@ func (s *Service) execNonIdempotentPeerVal[T any](ctx context.Context, method st
 		Kind:        RPCNonIdempotentMutation,
 		RetryPolicy: RetryPolicy{MaxAttempts: 1, InlineFloodWaitMax: defaultFloodWaitRetryLimit},
 	}, peer, op)
-}
-
-func (s *Service) execNonIdempotentPeer(ctx context.Context, method string, peer tg.InputPeerClass, op func(context.Context, tg.InputPeerClass) error) error {
-	_, err := s.execNonIdempotentPeerVal(ctx, method, peer, func(opCtx context.Context, current tg.InputPeerClass) (struct{}, error) {
-		return struct{}{}, op(opCtx, current)
-	})
-	return err
 }
 
 func botSentInputKey(peer tg.InputPeerClass, msgID int) string {
@@ -516,32 +492,6 @@ func (s *Service) refreshPeer(ctx context.Context, peerKey string) error {
 		return err
 	}
 	return nil
-}
-
-func (s *Service) ensureChannelAccessHash(ctx context.Context, peer tg.InputPeerClass) tg.InputPeerClass {
-	ch, ok := peer.(*tg.InputPeerChannel)
-	if !ok || ch.AccessHash != 0 {
-		return peer
-	}
-	if s.storage != nil {
-		if val, found, err := s.storage.Find(ctx, peers.Key{Prefix: "channel", ID: ch.ChannelID}); err == nil && found && val.AccessHash != 0 {
-			return &tg.InputPeerChannel{ChannelID: ch.ChannelID, AccessHash: val.AccessHash}
-		}
-	}
-	return peer
-}
-
-func (s *Service) ensureUserAccessHash(ctx context.Context, user tg.InputPeerClass) tg.InputPeerClass {
-	u, ok := user.(*tg.InputPeerUser)
-	if !ok || u.AccessHash != 0 {
-		return user
-	}
-	if s.storage != nil {
-		if val, found, err := s.storage.Find(ctx, peers.Key{Prefix: "user", ID: u.UserID}); err == nil && found && val.AccessHash != 0 {
-			return &tg.InputPeerUser{UserID: u.UserID, AccessHash: val.AccessHash}
-		}
-	}
-	return user
 }
 
 // RefreshPeerAccessHash retrieves the latest access hash from persistent storage only.

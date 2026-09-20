@@ -316,13 +316,6 @@ func (d *Dispatcher) messageHookStateInterested(registered prioritizedHandler, c
 	return registered.stateGate(chatID)
 }
 
-// dispatchEventHandlers submits the indexed event-lane hooks asynchronously.
-// Decision/interception work has already completed before this point.
-func (d *Dispatcher) dispatchEventHandlers(ctx context.Context, handlers []prioritizedHandler, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) {
-	message := NormalizeMessageEnvelope(e, msg, isCmd, cmdName, d.getSelfID())
-	d.dispatchEventHandlersEnvelope(ctx, handlers, message, e, msg)
-}
-
 func (d *Dispatcher) dispatchEventHandlersEnvelope(ctx context.Context, handlers []prioritizedHandler, message *core.MessageEnvelope, e tg.Entities, msg *tg.Message) {
 	if len(handlers) == 0 || message == nil || msg == nil {
 		return

@@ -19,35 +19,6 @@ import (
 	"github.com/inipew/goultroid/internal/services/callback"
 )
 
-type mockAssistantMessenger struct {
-	sentText   string
-	lastMarkup tg.ReplyMarkupClass
-	editTarget interaction.MessageTarget
-}
-
-func (m *mockAssistantMessenger) SendTextMessage(ctx context.Context, target interaction.MessageTarget, text string) error {
-	m.sentText = text
-	m.editTarget = target
-	return nil
-}
-
-func (m *mockAssistantMessenger) SendScreen(ctx context.Context, target interaction.MessageTarget, screen *menu.Screen) error {
-	return nil
-}
-
-func (m *mockAssistantMessenger) EditScreen(ctx context.Context, target interaction.MessageTarget, screen *menu.Screen) error {
-	m.editTarget = target
-	return nil
-}
-
-func (m *mockAssistantMessenger) DeleteMessage(ctx context.Context, target interaction.MessageTarget) error {
-	return nil
-}
-
-func (m *mockAssistantMessenger) SendToast(ctx context.Context, queryID int64, text string, alert bool) error {
-	return nil
-}
-
 type mockInteraction struct {
 	sentText string
 }
