@@ -2,12 +2,14 @@ package media
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	mediaSvc "github.com/inipew/goultroid/internal/services/media"
 	"github.com/inipew/goultroid/internal/services/storage"
 )
 
@@ -19,6 +21,7 @@ type mockService struct {
 	mediaPath      string
 	mediaCaption   string
 	downloadCalled bool
+	sendMediaErr   error
 }
 
 func (m *mockService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
@@ -86,6 +89,9 @@ func (m *mockService) PurgeMessages(ctx context.Context, peer tg.InputPeerClass,
 	return 0, nil
 }
 func (m *mockService) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
+	if m.sendMediaErr != nil {
+		return nil, m.sendMediaErr
+	}
 	m.mediaSent = true
 	m.mediaType = mediaType
 	m.mediaPath = filePath
@@ -523,5 +529,73 @@ func TestNewCommands_NoMedia(t *testing.T) {
 	}
 	if !strings.Contains(svc.sent, "No media found") {
 		t.Errorf("expected 'No media found', got: %s", svc.sent)
+	}
+}
+
+func putTransientTestAsset(t *testing.T, store storage.Storage) *storage.Asset {
+	t.Helper()
+	asset, err := store.Put(context.Background(), strings.NewReader("transient payload"), storage.Metadata{Name: "converted.bin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return asset
+}
+
+func TestWithTransientAssetDeletesAfterSuccessfulUse(t *testing.T) {
+	store, err := storage.NewFileStorage(t.TempDir(), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := New(mediaSvc.NewService(nil, store, nil))
+	asset := putTransientTestAsset(t, store)
+
+	called := false
+	if err := p.withTransientAsset(context.Background(), asset, func() error {
+		called = true
+		if _, err := store.Stat(context.Background(), asset.ID); err != nil {
+			t.Fatalf("asset disappeared before use: %v", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("transient asset consumer was not called")
+	}
+	if _, err := store.Stat(context.Background(), asset.ID); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("asset still present after successful use: %v", err)
+	}
+}
+
+func TestWithTransientAssetDeletesAfterConsumerFailure(t *testing.T) {
+	store, err := storage.NewFileStorage(t.TempDir(), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := New(mediaSvc.NewService(nil, store, nil))
+	asset := putTransientTestAsset(t, store)
+	want := errors.New("send failed")
+
+	if err := p.withTransientAsset(context.Background(), asset, func() error { return want }); !errors.Is(err, want) {
+		t.Fatalf("withTransientAsset error=%v, want %v", err, want)
+	}
+	if _, err := store.Stat(context.Background(), asset.ID); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("asset still present after failed use: %v", err)
+	}
+}
+
+func TestCleanupTransientAssetIgnoresCancelledParent(t *testing.T) {
+	store, err := storage.NewFileStorage(t.TempDir(), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := New(mediaSvc.NewService(nil, store, nil))
+	asset := putTransientTestAsset(t, store)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	p.cleanupTransientAsset(ctx, asset)
+	if _, err := store.Stat(context.Background(), asset.ID); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("cancelled parent prevented cleanup: %v", err)
 	}
 }
