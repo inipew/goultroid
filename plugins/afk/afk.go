@@ -20,6 +20,7 @@ import (
 var (
 	_ plugin.MessageEventRoutingPlugin = (*Plugin)(nil)
 	_ plugin.ContextInitializer        = (*Plugin)(nil)
+	_ plugin.ScopeInitializer          = (*Plugin)(nil)
 	_ execution.CapabilityProvider     = (*Plugin)(nil)
 )
 
@@ -47,6 +48,7 @@ type Plugin struct {
 	cooldownMu         sync.Mutex
 	cooldownMap        map[[2]int64]time.Time
 	cooldownDur        time.Duration
+	scope              *plugin.Scope
 }
 
 func New(db Repository, ownerID int64, svcFunc func() core.TelegramServicer) *Plugin {
@@ -141,6 +143,17 @@ func (p *Plugin) SetCooldown(duration time.Duration) {
 	p.cooldownMu.Unlock()
 }
 func (p *Plugin) InitContext(ctx context.Context) error { return p.loadState(ctx) }
+
+func (p *Plugin) InitScope(ctx context.Context, scope *plugin.Scope) error {
+	if scope == nil {
+		return fmt.Errorf("afk plugin scope cannot be nil")
+	}
+	p.stateMu.Lock()
+	p.scope = scope
+	p.stateMu.Unlock()
+	return p.loadState(scope.Context())
+}
+
 func (p *Plugin) Init() error {
 	return p.validateDependencies()
 }
@@ -422,15 +435,35 @@ func (p *Plugin) deleteWelcomeAfter(svc core.TelegramServicer, peer tg.InputPeer
 	if delay <= 0 || svc == nil || peer == nil || messageID <= 0 {
 		return
 	}
-	time.AfterFunc(delay, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+
+	p.stateMu.RLock()
+	scope := p.scope
+	p.stateMu.RUnlock()
+	if scope == nil {
+		return
+	}
+
+	if err := scope.Go(func(scopeCtx context.Context) {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-scopeCtx.Done():
+			return
+		}
+
+		deleteCtx, cancel := context.WithTimeout(scopeCtx, 15*time.Second)
 		defer cancel()
-		if err := svc.DeleteMessage(ctx, peer, []int{messageID}); err != nil {
-			if logger := p.getLogger(); logger != nil {
+		if err := svc.DeleteMessage(deleteCtx, peer, []int{messageID}); err != nil {
+			if logger := p.getLogger(); logger != nil && deleteCtx.Err() == nil {
 				logger.Warn("failed to auto-delete welcome back message", zap.Int("message_id", messageID), zap.Error(err))
 			}
 		}
-	})
+	}); err != nil {
+		if logger := p.getLogger(); logger != nil {
+			logger.Debug("welcome back deletion not scheduled", zap.Int("message_id", messageID), zap.Error(err))
+		}
+	}
 }
 
 func (p *Plugin) isCooldownActive(chatID, senderID int64) bool {

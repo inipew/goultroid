@@ -11,6 +11,7 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/telegram"
 )
 
@@ -133,9 +134,15 @@ func TestAFKPlugin(t *testing.T) {
 	if p.Name() != "afk" {
 		t.Errorf("expected name afk, got %s", p.Name())
 	}
-	if err := p.InitContext(context.Background()); err != nil {
+	scope := plugin.NewScope(context.Background(), "plugin:afk")
+	if err := p.InitScope(scope.Context(), scope); err != nil {
 		t.Errorf("unexpected error in Init: %v", err)
 	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = scope.Close(closeCtx)
+	}()
 
 	cmds := p.Commands()
 	if len(cmds) != 1 || cmds[0].Name != "afk" {
@@ -1041,5 +1048,50 @@ func TestAFKLiveSettings(t *testing.T) {
 	}
 	if p.checkAndSetCooldown(10, 20) {
 		t.Fatal("positive cooldown did not throttle repeated reply")
+	}
+}
+
+
+func TestAFKWelcomeDeleteIsCancelledByScopeClose(t *testing.T) {
+	svc := &mockService{deleteCh: make(chan int, 1)}
+	p := New(nil, 1001, func() core.TelegramServicer { return svc })
+	p.SetWelcomeDeleteDelay(100 * time.Millisecond)
+
+	scope := plugin.NewScope(context.Background(), "plugin:afk")
+	if err := p.InitScope(scope.Context(), scope); err != nil {
+		t.Fatal(err)
+	}
+
+	p.deleteWelcomeAfter(svc, &tg.InputPeerSelf{}, 77)
+	if got := scope.ActiveGoroutines(); got != 1 {
+		t.Fatalf("active scoped goroutines=%d, want 1 delayed deletion", got)
+	}
+
+	closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := scope.Close(closeCtx); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case deleted := <-svc.deleteCh:
+		t.Fatalf("scope-closed AFK timer deleted message %d", deleted)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if got := scope.ActiveGoroutines(); got != 0 {
+		t.Fatalf("scope retained %d AFK goroutine(s) after close", got)
+	}
+}
+
+func TestAFKWelcomeDeleteRequiresManagedScope(t *testing.T) {
+	svc := &mockService{deleteCh: make(chan int, 1)}
+	p := New(nil, 1001, func() core.TelegramServicer { return svc })
+	p.SetWelcomeDeleteDelay(5 * time.Millisecond)
+	p.deleteWelcomeAfter(svc, &tg.InputPeerSelf{}, 88)
+
+	select {
+	case deleted := <-svc.deleteCh:
+		t.Fatalf("unmanaged AFK plugin scheduled deletion for message %d", deleted)
+	case <-time.After(25 * time.Millisecond):
 	}
 }
