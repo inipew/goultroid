@@ -176,7 +176,6 @@ func (m *MediaFacade) SendAudio(filePath, caption string) error {
 	return err
 }
 
-
 func acquireDownloadSlot(ctx context.Context) (func(), error) {
 	if HasHeldResource(ctx, "download") {
 		return func() {}, nil
