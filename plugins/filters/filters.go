@@ -30,9 +30,11 @@ var _ plugin.MessageEventPlugin = (*Plugin)(nil)
 var _ plugin.MessageEventStatePlugin = (*Plugin)(nil)
 
 type compiledFilter struct {
-	keyword  string
-	response savedresponse.Response
-	re       *regexp.Regexp
+	keyword     string
+	response    savedresponse.Response
+	re          *regexp.Regexp
+	template    *savedresponse.CompiledTemplate
+	templateErr error
 }
 
 type Plugin struct {
@@ -295,9 +297,12 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 		if err != nil {
 			return fmt.Errorf("filters: cannot resolve chat peer %d for reply: %w", message.ChatID, err)
 		}
+		if f.templateErr != nil {
+			return fmt.Errorf("filters: compile saved response for %q: %w", f.keyword, f.templateErr)
+		}
 		vars := savedresponse.VarsFromEnvelope(message, time.Now())
-		response := cloneSavedResponse(f.response)
-		if err := p.submitDelivery(ctx, svc, peer, message.ChatID, message.ID, response, vars); err != nil {
+		response := f.response.Clone()
+		if err := p.submitDelivery(ctx, svc, peer, message.ChatID, message.ID, response, f.template, vars); err != nil {
 			return fmt.Errorf("filters: submit reply for %q: %w", f.keyword, err)
 		}
 		p.markCooldown(cooldownKey)
@@ -309,15 +314,6 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 	return nil
 }
 
-func cloneSavedResponse(response savedresponse.Response) savedresponse.Response {
-	cloned := response
-	if response.Media != nil {
-		media := *response.Media
-		cloned.Media = &media
-	}
-	return cloned
-}
-
 func (p *Plugin) submitDelivery(
 	admissionCtx context.Context,
 	svc core.TelegramServicer,
@@ -325,10 +321,11 @@ func (p *Plugin) submitDelivery(
 	chatID int64,
 	messageID int,
 	response savedresponse.Response,
+	template *savedresponse.CompiledTemplate,
 	vars savedresponse.TemplateVars,
 ) error {
 	if p.tasks == nil {
-		return p.deliverResponse(admissionCtx, svc, peer, response, vars)
+		return p.deliverResponse(admissionCtx, svc, peer, response, template, vars)
 	}
 
 	resources := []tasks.ResourceRequirement(nil)
@@ -349,7 +346,7 @@ func (p *Plugin) submitDelivery(
 		ExecutionTimeout: filterDeliveryTimeout,
 		Resources:        resources,
 		Handler: func(taskCtx context.Context) error {
-			return p.deliverResponse(taskCtx, svc, peer, response, vars)
+			return p.deliverResponse(taskCtx, svc, peer, response, template, vars)
 		},
 	})
 	return err
@@ -360,12 +357,13 @@ func (p *Plugin) deliverResponse(
 	svc core.TelegramServicer,
 	peer tg.InputPeerClass,
 	response savedresponse.Response,
+	template *savedresponse.CompiledTemplate,
 	vars savedresponse.TemplateVars,
 ) error {
 	if svc == nil || peer == nil {
 		return errors.New("filters: telegram delivery is unavailable")
 	}
-	prepared, err := p.responses.Prepare(ctx, response, vars)
+	prepared, err := p.responses.PrepareCompiled(ctx, response, template, vars)
 	if err != nil {
 		return err
 	}
@@ -454,7 +452,12 @@ func compileFilterItem(f Filter) compiledFilter {
 		pattern := `(?:^|[^\p{L}\p{N}_])` + regexp.QuoteMeta(kw) + `(?:$|[^\p{L}\p{N}_])`
 		re, _ = regexp.Compile(pattern)
 	}
-	return compiledFilter{keyword: kw, response: f.Response, re: re}
+	response := f.Response.Clone()
+	template, templateErr := savedresponse.Compile(response)
+	return compiledFilter{
+		keyword: kw, response: response, re: re,
+		template: template, templateErr: templateErr,
+	}
 }
 
 func matchFilter(text, keyword string) bool {
