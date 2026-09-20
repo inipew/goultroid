@@ -14,7 +14,7 @@ var Module ModuleType
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
 		ID:           "profile",
-		Version:      "1.0.0",
+		Version:      "1.1.0",
 		Description:  "Self-user profile and contact management commands",
 		Capabilities: []string{plugin.CapFilesystemTemp},
 	}

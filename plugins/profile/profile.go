@@ -10,7 +10,17 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/services/imageguard"
+	"github.com/inipew/goultroid/internal/tasks"
 )
+
+var profileImagePolicy = imageguard.Policy{
+	MaxInputBytes:   20 << 20,
+	MaxWidth:        8192,
+	MaxHeight:       8192,
+	MaxPixels:       40_000_000,
+	MaxDecodedBytes: 160 << 20,
+}
 
 // Plugin provides self-user profile and contact management commands.
 type Plugin struct {
@@ -99,7 +109,11 @@ func (p *Plugin) Commands() []core.Command {
 			Usage:       ".setpic [reply to photo | /path/to/image.jpg]",
 			Category:    "Profile",
 			Permission:  core.PermissionOwner,
-			Handler:     p.handleSetPic,
+			Resources: []tasks.ResourceRequirement{
+				{Name: "download", Amount: 1},
+				{Name: "media", Amount: 1},
+			},
+			Handler: p.handleSetPic,
 		},
 		{
 			Name:        "delphoto",
@@ -228,35 +242,57 @@ func (p *Plugin) handleSetName(ctx *core.Context) error {
 	return ctx.EditOrReply(fmt.Sprintf("✅ <b>Name updated successfully to</b>: %s", core.EscapeHTML(fullName)))
 }
 
+func isProfileImageMedia(media *core.MediaInfo) bool {
+	if media == nil || media.Location == nil {
+		return false
+	}
+	if media.Type == "photo" {
+		return true
+	}
+	if media.Type == "document" || media.Type == "sticker" {
+		return strings.HasPrefix(strings.ToLower(strings.TrimSpace(media.MimeType)), "image/")
+	}
+	return false
+}
+
 // handleSetPic sets a new profile photo from replied photo/document or file path.
 func (p *Plugin) handleSetPic(ctx *core.Context) error {
 	var filePath string
-	var cleanupTemp bool
-
 	reply, err := ctx.GetReply()
-	if err == nil && reply != nil && reply.HasMedia() {
+	if err != nil {
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to load replied message: %v", err))
+	}
+
+	if reply != nil && reply.HasMedia() {
+		if !isProfileImageMedia(reply.Media) {
+			return ctx.EditOrReply("⚠️ Replied media must be a photo or image document.")
+		}
+		if err := imageguard.ValidateKnown(reply.Media.Size, reply.Media.Width, reply.Media.Height, profileImagePolicy); err != nil {
+			return ctx.EditOrReply(fmt.Sprintf("❌ Profile image rejected by safety limits: %v", err))
+		}
+
 		files := p.getFiles()
 		tempDir, err := files.CreateTempDir("goultroid-pfp-*")
 		if err != nil {
 			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temporary directory: %v", err))
 		}
-		defer func() {
-			if cleanupTemp {
-				_ = files.RemoveTempDir(tempDir)
-			}
-		}()
-		cleanupTemp = true
+		defer func() { _ = files.RemoveTempDir(tempDir) }()
 
-		destDir := tempDir
-		downloadedPath, err := ctx.DownloadMedia(destDir)
+		downloadedPath, err := ctx.DownloadMedia(tempDir)
 		if err != nil {
 			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to download replied media: %v", err))
 		}
+		if _, err := imageguard.Inspect(downloadedPath, profileImagePolicy); err != nil {
+			return ctx.EditOrReply(fmt.Sprintf("❌ Downloaded profile image is invalid: %v", err))
+		}
 		filePath = downloadedPath
 	} else if len(ctx.Args) > 0 {
-		filePath = ctx.Args[0]
+		filePath = strings.TrimSpace(ctx.Args[0])
 		if _, err := os.Stat(filePath); err != nil {
 			return ctx.EditOrReply(fmt.Sprintf("❌ File does not exist: <code>%s</code>", core.EscapeHTML(filePath)))
+		}
+		if _, err := imageguard.Inspect(filePath, profileImagePolicy); err != nil {
+			return ctx.EditOrReply(fmt.Sprintf("❌ Local profile image is invalid: %v", err))
 		}
 	} else {
 		return ctx.EditOrReply("⚠️ Reply to a photo or specify a valid image file path: <code>.setpic</code>")
@@ -265,11 +301,9 @@ func (p *Plugin) handleSetPic(ctx *core.Context) error {
 	if ctx.Svc == nil {
 		return ctx.EditOrReply("❌ Telegram service not available.")
 	}
-
 	if err := ctx.Svc.UploadProfilePhoto(ctx.Ctx, filePath); err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to set profile photo: %v", err))
 	}
-
 	return ctx.EditOrReply("✅ <b>Profile photo updated successfully!</b>")
 }
 
