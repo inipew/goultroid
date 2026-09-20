@@ -1,17 +1,21 @@
 package quote
 
 import (
+	"context"
 	"image"
 	"image/jpeg"
 	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/platform/filesystem"
+	"github.com/inipew/goultroid/internal/plugin"
 )
 
 func TestDisplayUserName(t *testing.T) {
@@ -342,5 +346,202 @@ func TestLoadQuoteMediaRejectsUnsafeDimensions(t *testing.T) {
 	}
 	if kind != "photo" {
 		t.Fatalf("kind=%q, want photo", kind)
+	}
+}
+
+
+func TestQuotePluginRequiresTempFilesystemCapability(t *testing.T) {
+	manager, err := filesystem.NewManager(t.TempDir(), "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := plugin.NewCapabilityGate()
+	gate.Register("quote", []string{})
+
+	p := New()
+	denied := plugin.NewPluginContext(context.Background(), plugin.ContextConfig{
+		Owner: "quote",
+		Gate:  gate,
+		Files: manager,
+	})
+	if err := p.InitPlugin(denied); err == nil {
+		t.Fatal("expected InitPlugin to reject missing filesystem.temp capability")
+	}
+
+	gate.Register("quote", []string{plugin.CapFilesystemTemp})
+	granted := plugin.NewPluginContext(context.Background(), plugin.ContextConfig{
+		Owner: "quote",
+		Gate:  gate,
+		Files: manager,
+	})
+	if err := p.InitPlugin(granted); err != nil {
+		t.Fatalf("InitPlugin with filesystem.temp failed: %v", err)
+	}
+	if p.files == nil {
+		t.Fatal("filesystem scope was not installed")
+	}
+}
+
+func TestQuoteCommandResources(t *testing.T) {
+	cmds := New().Commands()
+	if len(cmds) != 1 {
+		t.Fatalf("expected one quote command, got %d", len(cmds))
+	}
+	seen := map[string]int64{}
+	for _, resource := range cmds[0].Resources {
+		seen[resource.Name] = resource.Amount
+	}
+	for _, name := range []string{"download", "media"} {
+		if seen[name] != 1 {
+			t.Fatalf("resource %q=%d, want 1; all=%+v", name, seen[name], cmds[0].Resources)
+		}
+	}
+}
+
+type concurrentQuoteService struct {
+	core.MockTelegramServicer
+	mu        sync.Mutex
+	sentPaths []string
+	payloads  [][]byte
+}
+
+func (s *concurrentQuoteService) GetMessage(_ context.Context, _ tg.InputPeerClass, msgID int) (*tg.Message, error) {
+	return &tg.Message{
+		ID:      msgID,
+		Message: "same quoted message",
+		Date:    int(time.Now().Unix()),
+	}, nil
+}
+
+func (s *concurrentQuoteService) SendMedia(_ context.Context, _ tg.InputPeerClass, mediaType, filePath, _ string) (*tg.Message, error) {
+	if mediaType != "photo" {
+		return nil, fmt.Errorf("unexpected media type %q", mediaType)
+	}
+	payload, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	s.sentPaths = append(s.sentPaths, filePath)
+	s.payloads = append(s.payloads, payload)
+	id := len(s.sentPaths)
+	s.mu.Unlock()
+	return &tg.Message{ID: id}, nil
+}
+
+func TestQuoteConcurrentHandlersUseIsolatedWorkspacesAndCleanup(t *testing.T) {
+	base := t.TempDir()
+	manager, err := filesystem.NewManager(base, "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := New()
+	p.SetFiles(manager)
+	root, err := manager.ForOwner("quote").TempDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc := &concurrentQuoteService{}
+	const callers = 2
+	var wg sync.WaitGroup
+	errCh := make(chan error, callers)
+	wg.Add(callers)
+	for i := range callers {
+		go func(commandID int) {
+			defer wg.Done()
+			ctx := &core.Context{
+				Ctx:    context.Background(),
+				PeerID: &tg.InputPeerChat{ChatID: 100},
+				Message: &core.Message{
+					ID:         commandID + 1,
+					ReplyToID:  77,
+					IsOutgoing: true,
+				},
+				Svc: svc,
+			}
+			errCh <- p.handle(ctx)
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent quote handler failed: %v", err)
+		}
+	}
+
+	svc.mu.Lock()
+	paths := append([]string(nil), svc.sentPaths...)
+	payloads := append([][]byte(nil), svc.payloads...)
+	svc.mu.Unlock()
+	if len(paths) != callers {
+		t.Fatalf("sent paths=%d, want %d", len(paths), callers)
+	}
+	if paths[0] == paths[1] {
+		t.Fatalf("concurrent quote outputs collided at %q", paths[0])
+	}
+	for i, path := range paths {
+		if filepath.Base(path) != "quote.png" {
+			t.Fatalf("output %d filename=%q, want quote.png", i, filepath.Base(path))
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			t.Fatalf("output %d escaped quote temp root: root=%q path=%q rel=%q err=%v", i, root, path, rel, err)
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("output %d still exists after handler cleanup: %q err=%v", i, path, err)
+		}
+		if len(payloads[i]) == 0 {
+			t.Fatalf("output %d was empty when SendMedia read it", i)
+		}
+	}
+	if filepath.Dir(paths[0]) == filepath.Dir(paths[1]) {
+		t.Fatalf("concurrent handlers shared workspace %q", filepath.Dir(paths[0]))
+	}
+}
+
+func TestQuoteWorkspaceCleanupDoesNotAffectSibling(t *testing.T) {
+	manager, err := filesystem.NewManager(t.TempDir(), "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := New()
+	p.SetFiles(manager)
+
+	first, err := p.createWorkspace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := p.createWorkspace()
+	if err != nil {
+		_ = p.files.RemoveTempDir(first)
+		t.Fatal(err)
+	}
+	defer func() { _ = p.files.RemoveTempDir(second) }()
+
+	firstMedia, err := p.workspacePath(first, "same-name.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondMedia, err := p.workspacePath(second, "same-name.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(firstMedia, []byte("first"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secondMedia, []byte("second"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.files.RemoveTempDir(first); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(secondMedia)
+	if err != nil {
+		t.Fatalf("cleaning first workspace affected sibling: %v", err)
+	}
+	if string(data) != "second" {
+		t.Fatalf("sibling workspace content changed: %q", data)
 	}
 }

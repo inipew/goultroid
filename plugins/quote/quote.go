@@ -2,9 +2,8 @@ package quote
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -14,22 +13,73 @@ import (
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
+	"github.com/inipew/goultroid/internal/platform/filesystem"
+	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/imageguard"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
-type Plugin struct{ dataDir string }
+type Plugin struct {
+	files *filesystem.Scope
+}
 
-func New() *Plugin                    { return &Plugin{dataDir: filepath.Join("data", "quote")} }
+func New() *Plugin { return &Plugin{} }
+
+func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
+	files, err := pctx.Files()
+	if err != nil {
+		return err
+	}
+	p.files = files
+	return nil
+}
+
+// SetFiles injects the filesystem manager for tests and standalone wiring.
+func (p *Plugin) SetFiles(manager *filesystem.Manager) {
+	if manager == nil {
+		p.files = nil
+		return
+	}
+	p.files = manager.ForOwner("quote")
+}
+
 func (p *Plugin) Name() string        { return "quote" }
 func (p *Plugin) Description() string { return "Render a replied message as a shareable quote image" }
-func (p *Plugin) Init() error         { return os.MkdirAll(p.dataDir, 0o700) }
+func (p *Plugin) Init() error         { return nil }
 func (p *Plugin) Shutdown() error     { return nil }
 func (p *Plugin) Capabilities() []execution.Capability {
 	return []execution.Capability{{ID: "quote", Name: "Quote", Description: "Generate quote images from Telegram messages", Category: "Media", Surfaces: execution.SurfaceUserbot}}
 }
 func (p *Plugin) Commands() []core.Command {
-	return []core.Command{{Name: "qbot", Aliases: []string{"quote", "q"}, Description: "Create a quote image from a replied message", Usage: ".qbot (reply to a message)", Category: "Media", Permission: core.PermissionSudo, Surfaces: execution.SurfaceUserbot, Timeout: 2 * time.Minute, Resources: []tasks.ResourceRequirement{{Name: "media", Amount: 1}}, Handler: p.handle}}
+	return []core.Command{{
+		Name:        "qbot",
+		Aliases:     []string{"quote", "q"},
+		Description: "Create a quote image from a replied message",
+		Usage:       ".qbot (reply to a message)",
+		Category:    "Media",
+		Permission:  core.PermissionSudo,
+		Surfaces:    execution.SurfaceUserbot,
+		Timeout:     2 * time.Minute,
+		Resources: []tasks.ResourceRequirement{
+			{Name: "download", Amount: 1},
+			{Name: "media", Amount: 1},
+		},
+		Handler: p.handle,
+	}}
+}
+
+func (p *Plugin) createWorkspace() (string, error) {
+	if p == nil || p.files == nil {
+		return "", errors.New("quote filesystem scope is not initialized")
+	}
+	return p.files.CreateTempDir("goultroid-quote-*")
+}
+
+func (p *Plugin) workspacePath(workspace, name string) (string, error) {
+	if p == nil || p.files == nil {
+		return "", errors.New("quote filesystem scope is not initialized")
+	}
+	return p.files.SafePath(workspace, name)
 }
 
 func (p *Plugin) handle(ctx *core.Context) error {
@@ -42,6 +92,12 @@ func (p *Plugin) handle(ctx *core.Context) error {
 	}
 	_ = ctx.EditOrReply("⏳ Generating quote...")
 
+	workspace, err := p.createWorkspace()
+	if err != nil {
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create quote workspace: %v", err))
+	}
+	defer func() { _ = p.files.RemoveTempDir(workspace) }()
+
 	author := p.resolveAuthorInfo(ctx, reply)
 	text := strings.TrimSpace(reply.Text)
 	if len([]rune(text)) > 1200 {
@@ -51,18 +107,12 @@ func (p *Plugin) handle(ctx *core.Context) error {
 	var mediaPath string
 	if reply.HasMedia() && quoteCanPreviewImage(reply.Media) {
 		if err := imageguard.ValidateKnown(reply.Media.Size, reply.Media.Width, reply.Media.Height, quoteMediaPolicy); err == nil {
-			mediaPath, _ = ctx.Media().DownloadMedia(p.dataDir)
-			if mediaPath != "" {
-				defer os.Remove(mediaPath)
-			}
+			mediaPath, _ = ctx.Media().DownloadMedia(workspace)
 		}
 	}
 	var avatarPath string
 	if reply.SenderID != 0 {
-		avatarPath = p.downloadAvatar(ctx, reply.SenderID)
-		if avatarPath != "" {
-			defer os.Remove(avatarPath)
-		}
+		avatarPath = p.downloadAvatar(ctx, reply.SenderID, workspace)
 	}
 
 	// Resolve reply-to message if the quoted message itself replied to another message
@@ -77,7 +127,10 @@ func (p *Plugin) handle(ctx *core.Context) error {
 		badge = author.Badge
 	}
 
-	path := filepath.Join(p.dataDir, fmt.Sprintf("quote-%d.png", time.Now().UnixNano()))
+	path, err := p.workspacePath(workspace, "quote.png")
+	if err != nil {
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to prepare quote output: %v", err))
+	}
 	if err := renderV3WithOpts(RenderOptions{
 		Path:         path,
 		Name:         author.Name,
@@ -91,7 +144,6 @@ func (p *Plugin) handle(ctx *core.Context) error {
 	}); err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Quote rendering failed: %v", err))
 	}
-	defer os.Remove(path)
 	if _, err := ctx.SendMedia("photo", path, ""); err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to send quote image: %v", err))
 	}
@@ -102,7 +154,7 @@ type profilePhotoDownloader interface {
 	DownloadUserProfilePhoto(context.Context, tg.InputUserClass, string) error
 }
 
-func (p *Plugin) downloadAvatar(ctx *core.Context, userID int64) string {
+func (p *Plugin) downloadAvatar(ctx *core.Context, userID int64, workspace string) string {
 	if ctx == nil || ctx.Svc == nil || ctx.Resolver == nil {
 		return ""
 	}
@@ -118,10 +170,12 @@ func (p *Plugin) downloadAvatar(ctx *core.Context, userID int64) string {
 	if !ok || inputPeer == nil || inputPeer.AccessHash == 0 {
 		return ""
 	}
-	path := filepath.Join(p.dataDir, fmt.Sprintf("avatar-%d-%d.jpg", userID, time.Now().UnixNano()))
+	path, err := p.workspacePath(workspace, fmt.Sprintf("avatar-%d.jpg", userID))
+	if err != nil {
+		return ""
+	}
 	inputUser := &tg.InputUser{UserID: inputPeer.UserID, AccessHash: inputPeer.AccessHash}
 	if err := service.DownloadUserProfilePhoto(ctx.Ctx, inputUser, path); err != nil {
-		_ = os.Remove(path)
 		return ""
 	}
 	return path
