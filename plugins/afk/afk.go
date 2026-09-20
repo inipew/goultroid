@@ -3,7 +3,6 @@ package afk
 import (
 	"context"
 	"fmt"
-	"html"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +13,7 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/services/savedresponse"
 	"go.uber.org/zap"
 )
 
@@ -23,6 +23,33 @@ var (
 	_ plugin.ScopeInitializer          = (*Plugin)(nil)
 	_ execution.CapabilityProvider     = (*Plugin)(nil)
 )
+
+var (
+	afkActivatedResponse   = savedresponse.NewHTML("🌙 <b>AFK Mode Activated!</b>\n<b>Reason:</b> <i>{reason}</i>")
+	afkActivatedTemplate   = mustCompileAFKResponse(afkActivatedResponse, "reason")
+	afkDeactivatedResponse = savedresponse.NewHTML("☀️ <b>AFK Mode Deactivated!</b>\n<b>Away for:</b> <code>{duration}</code>")
+	afkDeactivatedTemplate = mustCompileAFKResponse(afkDeactivatedResponse, "duration")
+	afkStatusResponse      = savedresponse.NewHTML("🌙 <b>AFK Status: Active</b>\n<b>Reason:</b> <i>{reason}</i>\n<b>Since:</b> <code>{duration} ago</code>")
+	afkStatusTemplate      = mustCompileAFKResponse(afkStatusResponse, "reason", "duration")
+	afkWelcomeResponse     = savedresponse.NewHTML("☀️ <b>Welcome back! AFK mode turned off.</b>\n<b>Away for:</b> <code>{duration}</code>")
+	afkWelcomeTemplate     = mustCompileAFKResponse(afkWelcomeResponse, "duration")
+	afkAutoReplyResponse   = savedresponse.NewHTML("🌙 <i>My owner is currently AFK!</i>\n<b>Reason:</b> {reason}\n<b>Since:</b> <code>{duration} ago</code>")
+	afkAutoReplyTemplate   = mustCompileAFKResponse(afkAutoReplyResponse, "reason", "duration")
+)
+
+func mustCompileAFKResponse(response savedresponse.Response, variables ...string) *savedresponse.CompiledTemplate {
+	compiled, err := savedresponse.CompileWithVariables(response, variables...)
+	if err != nil {
+		panic(fmt.Sprintf("afk: compile static response: %v", err))
+	}
+	return compiled
+}
+
+func afkTemplateVars(reason, duration string) savedresponse.TemplateVars {
+	return savedresponse.TemplateVars{Extra: map[string]string{
+		"reason": reason, "duration": duration,
+	}}
+}
 
 const defaultWelcomeDeleteDelay = 2 * time.Second
 
@@ -49,6 +76,7 @@ type Plugin struct {
 	cooldownMap        map[[2]int64]time.Time
 	cooldownDur        time.Duration
 	scope              *plugin.Scope
+	delivery           *savedresponse.ResponseDelivery
 }
 
 func New(db Repository, ownerID int64, svcFunc func() core.TelegramServicer) *Plugin {
@@ -63,7 +91,54 @@ func New(db Repository, ownerID int64, svcFunc func() core.TelegramServicer) *Pl
 	}
 	p.state.Store(&afkState{isAFK: false})
 	p.autoReply.Store(true)
+	p.delivery = savedresponse.NewResponseDelivery(savedresponse.NewService(nil))
 	return p
+}
+
+func (p *Plugin) deliverTemplate(
+	ctx context.Context,
+	response savedresponse.Response,
+	compiled *savedresponse.CompiledTemplate,
+	vars savedresponse.TemplateVars,
+	send func(string) error,
+) error {
+	if p.delivery == nil {
+		return savedresponse.ErrResponseDeliveryUnavailable
+	}
+	_, err := p.delivery.DeliverCompiled(ctx, response, compiled, vars, savedresponse.DeliverySink{SendText: send})
+	return err
+}
+
+func (p *Plugin) replyTemplate(
+	ctx *core.Context,
+	response savedresponse.Response,
+	compiled *savedresponse.CompiledTemplate,
+	vars savedresponse.TemplateVars,
+) error {
+	if ctx == nil {
+		return fmt.Errorf("afk: response context is nil")
+	}
+	return p.deliverTemplate(ctx.Ctx, response, compiled, vars, ctx.EditOrReply)
+}
+
+func (p *Plugin) sendTemplate(
+	ctx context.Context,
+	svc core.TelegramServicer,
+	peer tg.InputPeerClass,
+	response savedresponse.Response,
+	compiled *savedresponse.CompiledTemplate,
+	vars savedresponse.TemplateVars,
+) (*tg.Message, error) {
+	if svc == nil {
+		return nil, fmt.Errorf("afk: telegram service is unavailable")
+	}
+	var sent *tg.Message
+	err := p.deliverTemplate(ctx, response, compiled, vars, func(text string) error {
+		var sendErr error
+		sent, sendErr = svc.SendMessage(ctx, peer, text)
+		return sendErr
+	})
+	return sent, err
 }
 
 func (p *Plugin) Name() string { return "afk" }
@@ -208,13 +283,13 @@ func (p *Plugin) handleAFKCommand(ctx *core.Context) error {
 			if !changed {
 				return ctx.EditOrReply("ℹ️ <b>AFK Mode is already inactive.</b>")
 			}
-			return ctx.EditOrReply(fmt.Sprintf("☀️ <b>AFK Mode Deactivated!</b>\n<b>Away for:</b> <code>%s</code>", dur))
+			return p.replyTemplate(ctx, afkDeactivatedResponse, afkDeactivatedTemplate, afkTemplateVars("", dur))
 		}
 		const r = "Away from keyboard"
 		if err := p.enableAFK(ctx.Ctx, r); err != nil {
 			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to activate AFK mode: %v", err))
 		}
-		return ctx.EditOrReply(fmt.Sprintf("🌙 <b>AFK Mode Activated!</b>\n<b>Reason:</b> <i>%s</i>", html.EscapeString(r)))
+		return p.replyTemplate(ctx, afkActivatedResponse, afkActivatedTemplate, afkTemplateVars(r, ""))
 	}
 	sub := strings.ToLower(ctx.Args[0])
 	switch sub {
@@ -226,11 +301,11 @@ func (p *Plugin) handleAFKCommand(ctx *core.Context) error {
 		if !changed {
 			return ctx.EditOrReply("ℹ️ <b>AFK Mode is already inactive.</b>")
 		}
-		return ctx.EditOrReply(fmt.Sprintf("☀️ <b>AFK Mode Deactivated!</b>\n<b>Away for:</b> <code>%s</code>", dur))
+		return p.replyTemplate(ctx, afkDeactivatedResponse, afkDeactivatedTemplate, afkTemplateVars("", dur))
 	case "status":
 		st := p.state.Load()
 		if st != nil && st.isAFK {
-			return ctx.EditOrReply(fmt.Sprintf("🌙 <b>AFK Status: Active</b>\n<b>Reason:</b> <i>%s</i>\n<b>Since:</b> <code>%s ago</code>", html.EscapeString(st.reason), formatDuration(time.Since(st.since))))
+			return p.replyTemplate(ctx, afkStatusResponse, afkStatusTemplate, afkTemplateVars(st.reason, formatDuration(time.Since(st.since))))
 		}
 		return ctx.EditOrReply("🟢 <b>AFK Status: Inactive</b>")
 	case "on":
@@ -241,7 +316,7 @@ func (p *Plugin) handleAFKCommand(ctx *core.Context) error {
 		if err := p.enableAFK(ctx.Ctx, reason); err != nil {
 			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to activate AFK mode: %v", err))
 		}
-		return ctx.EditOrReply(fmt.Sprintf("🌙 <b>AFK Mode Activated!</b>\n<b>Reason:</b> <i>%s</i>", html.EscapeString(reason)))
+		return p.replyTemplate(ctx, afkActivatedResponse, afkActivatedTemplate, afkTemplateVars(reason, ""))
 	case "toggle":
 		if st := p.state.Load(); st != nil && st.isAFK {
 			dur, changed, err := p.disableAFK(ctx.Ctx)
@@ -251,19 +326,19 @@ func (p *Plugin) handleAFKCommand(ctx *core.Context) error {
 			if !changed {
 				return ctx.EditOrReply("ℹ️ <b>AFK Mode is already inactive.</b>")
 			}
-			return ctx.EditOrReply(fmt.Sprintf("☀️ <b>AFK Mode Deactivated!</b>\n<b>Away for:</b> <code>%s</code>", dur))
+			return p.replyTemplate(ctx, afkDeactivatedResponse, afkDeactivatedTemplate, afkTemplateVars("", dur))
 		}
 		const r = "Away from keyboard"
 		if err := p.enableAFK(ctx.Ctx, r); err != nil {
 			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to activate AFK mode: %v", err))
 		}
-		return ctx.EditOrReply(fmt.Sprintf("🌙 <b>AFK Mode Activated!</b>\n<b>Reason:</b> <i>%s</i>", html.EscapeString(r)))
+		return p.replyTemplate(ctx, afkActivatedResponse, afkActivatedTemplate, afkTemplateVars(r, ""))
 	default:
 		reason := strings.TrimSpace(ctx.RawArgs)
 		if err := p.enableAFK(ctx.Ctx, reason); err != nil {
 			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to activate AFK mode: %v", err))
 		}
-		return ctx.EditOrReply(fmt.Sprintf("🌙 <b>AFK Mode Activated!</b>\n<b>Reason:</b> <i>%s</i>", html.EscapeString(reason)))
+		return p.replyTemplate(ctx, afkActivatedResponse, afkActivatedTemplate, afkTemplateVars(reason, ""))
 	}
 }
 
@@ -349,8 +424,7 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 		if message.IsPrivate() || !p.isWelcomePrivateOnly() {
 			peer := p.resolveEnvelopePeer(ctx, message)
 			if peer != nil {
-				text := fmt.Sprintf("☀️ <b>Welcome back! AFK mode turned off.</b>\n<b>Away for:</b> <code>%s</code>", dur)
-				sent, err := svc.SendMessage(ctx, peer, text)
+				sent, err := p.sendTemplate(ctx, svc, peer, afkWelcomeResponse, afkWelcomeTemplate, afkTemplateVars("", dur))
 				if err != nil {
 					if logger := p.getLogger(); logger != nil {
 						logger.Warn("failed to send welcome back message", zap.Error(err))
@@ -421,8 +495,7 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 		return nil
 	}
 	sinceStr := formatDuration(time.Since(st.since))
-	replyText := fmt.Sprintf("🌙 <i>My owner is currently AFK!</i>\n<b>Reason:</b> %s\n<b>Since:</b> <code>%s ago</code>", html.EscapeString(st.reason), sinceStr)
-	if _, err := svc.SendMessage(ctx, peer, replyText); err != nil {
+	if _, err := p.sendTemplate(ctx, svc, peer, afkAutoReplyResponse, afkAutoReplyTemplate, afkTemplateVars(st.reason, sinceStr)); err != nil {
 		p.rollbackCooldown(chatID, senderID)
 		if logger := p.getLogger(); logger != nil {
 			logger.Warn("failed to send AFK auto-reply", zap.Error(err), zap.Int64("chat_id", chatID), zap.Int64("sender_id", senderID))

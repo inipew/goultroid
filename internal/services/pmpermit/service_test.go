@@ -2,6 +2,7 @@ package pmpermit_test
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -252,6 +253,9 @@ func TestPMPermit_HandleIncomingPM(t *testing.T) {
 	if mockTG.msgCount != 1 {
 		t.Errorf("expected 1 warning message sent, got %d", mockTG.msgCount)
 	}
+	if !strings.Contains(mockTG.lastMessage, "Warning 1/3") || !strings.Contains(mockTG.lastMessage, "2 remaining before block") {
+		t.Errorf("unexpected first warning template output: %q", mockTG.lastMessage)
+	}
 
 	// 2nd unapproved message -> warning 2
 	handled, _ = svc.HandleIncomingPM(ctx, peer, sender)
@@ -263,6 +267,9 @@ func TestPMPermit_HandleIncomingPM(t *testing.T) {
 	handled, _ = svc.HandleIncomingPM(ctx, peer, sender)
 	if !handled || mockTG.msgCount != 3 {
 		t.Errorf("expected block notice on 3rd warning, got msgCount %d", mockTG.msgCount)
+	}
+	if !strings.Contains(mockTG.lastMessage, "PM Permit Limit Reached") {
+		t.Errorf("unexpected limit template output: %q", mockTG.lastMessage)
 	}
 
 	rec, err := db.GetPMRecord(ctx, sender)

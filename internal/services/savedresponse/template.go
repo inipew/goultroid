@@ -21,11 +21,12 @@ const (
 )
 
 var (
-	ErrTemplateTooLarge  = errors.New("saved response template too large")
-	ErrRenderedTooLarge  = errors.New("rendered saved response too large")
-	ErrTooManyTokens     = errors.New("saved response template has too many tokens")
-	ErrUnsupportedFormat = errors.New("unsupported saved response format")
-	ErrNilTemplate       = errors.New("saved response compiled template is nil")
+	ErrTemplateTooLarge         = errors.New("saved response template too large")
+	ErrRenderedTooLarge         = errors.New("rendered saved response too large")
+	ErrTooManyTokens            = errors.New("saved response template has too many tokens")
+	ErrUnsupportedFormat        = errors.New("unsupported saved response format")
+	ErrNilTemplate              = errors.New("saved response compiled template is nil")
+	ErrInvalidTemplateVariable = errors.New("invalid saved response template variable")
 )
 
 type TemplateVars struct {
@@ -37,6 +38,9 @@ type TemplateVars struct {
 	Chat     string
 	ChatID   int64
 	Now      time.Time
+	// Extra supplies feature-local values accepted by CompileWithVariables.
+	// Render treats the map as read-only and never retains it.
+	Extra map[string]string
 }
 
 type templateToken uint8
@@ -53,11 +57,13 @@ const (
 	tokenChatID
 	tokenDate
 	tokenTime
+	tokenExtra
 )
 
 type templatePart struct {
 	literal string
 	token   templateToken
+	extra   string
 }
 
 // CompiledTemplate is an immutable parsed saved-response template.
@@ -134,6 +140,30 @@ func Validate(response Response) error {
 }
 
 func Compile(response Response) (*CompiledTemplate, error) {
+	return compileTemplate(response, nil)
+}
+
+// CompileWithVariables extends one compiled template with explicitly allowed
+// feature-local variables. Compile() remains unchanged, so unknown placeholders
+// in persisted user templates continue to render literally.
+func CompileWithVariables(response Response, variables ...string) (*CompiledTemplate, error) {
+	if len(variables) == 0 {
+		return Compile(response)
+	}
+	extra := make(map[string]struct{}, len(variables))
+	for _, variable := range variables {
+		if !validTemplateVariableName(variable) {
+			return nil, fmt.Errorf("%w: %q", ErrInvalidTemplateVariable, variable)
+		}
+		if _, reserved := parseTemplateToken(variable); reserved {
+			return nil, fmt.Errorf("%w: %q is reserved", ErrInvalidTemplateVariable, variable)
+		}
+		extra[variable] = struct{}{}
+	}
+	return compileTemplate(response, extra)
+}
+
+func compileTemplate(response Response, extra map[string]struct{}) (*CompiledTemplate, error) {
 	if len(response.Text) > MaxTemplateBytes {
 		return nil, fmt.Errorf("%w: max %d bytes", ErrTemplateTooLarge, MaxTemplateBytes)
 	}
@@ -164,9 +194,9 @@ func Compile(response Response) (*CompiledTemplate, error) {
 			continue
 		}
 
-		if token, consumed, ok := escapedTemplateTokenAt(source, i); ok {
+		if name, consumed, ok := escapedTemplateVariableAt(source, i, extra); ok {
 			appendLiteral(source[literalStart:i])
-			appendLiteral("{" + templateTokenName(token) + "}")
+			appendLiteral("{" + name + "}")
 			i += consumed
 			literalStart = i
 			continue
@@ -177,14 +207,20 @@ func Compile(response Response) (*CompiledTemplate, error) {
 			i++
 			continue
 		}
-		token, known := parseTemplateToken(source[i+1 : end])
+		name := source[i+1 : end]
+		token, known := parseTemplateToken(name)
+		part := templatePart{token: token}
 		if !known {
-			i = end + 1
-			continue
+			if _, allowed := extra[name]; !allowed {
+				i = end + 1
+				continue
+			}
+			part.token = tokenExtra
+			part.extra = name
 		}
 
 		appendLiteral(source[literalStart:i])
-		compiled.parts = append(compiled.parts, templatePart{token: token})
+		compiled.parts = append(compiled.parts, part)
 		compiled.tokenCount++
 		if compiled.tokenCount > MaxTemplateTokens {
 			return nil, fmt.Errorf("%w: max %d tokens", ErrTooManyTokens, MaxTemplateTokens)
@@ -244,7 +280,12 @@ func (t *CompiledTemplate) Render(vars TemplateVars, maxRunes int) (string, erro
 			}
 			continue
 		}
-		value := renderCompiledToken(part.token, vars)
+		value := ""
+		if part.token == tokenExtra {
+			value = escapeVar(vars.Extra[part.extra])
+		} else {
+			value = renderCompiledToken(part.token, vars)
+		}
 		if err := write(value); err != nil {
 			return "", err
 		}
@@ -272,18 +313,39 @@ func templateTokenEnd(source string, start int) (int, bool) {
 	return 0, false
 }
 
-func escapedTemplateTokenAt(source string, start int) (templateToken, int, bool) {
+func escapedTemplateVariableAt(source string, start int, extra map[string]struct{}) (string, int, bool) {
 	if start+4 > len(source) || source[start] != '{' || source[start+1] != '{' {
-		return tokenLiteral, 0, false
+		return "", 0, false
 	}
-	for token := tokenName; token <= tokenTime; token++ {
-		name := templateTokenName(token)
-		escaped := "{{" + name + "}}"
-		if strings.HasPrefix(source[start:], escaped) {
-			return token, len(escaped), true
+	limit := min(len(source), start+2+maxTokenNameBytes+2)
+	for end := start + 2; end+1 < limit; end++ {
+		if source[end] != '}' || source[end+1] != '}' {
+			continue
 		}
+		name := source[start+2 : end]
+		if _, known := parseTemplateToken(name); known {
+			return name, end + 2 - start, true
+		}
+		if _, allowed := extra[name]; allowed {
+			return name, end + 2 - start, true
+		}
+		return "", 0, false
 	}
-	return tokenLiteral, 0, false
+	return "", 0, false
+}
+
+func validTemplateVariableName(name string) bool {
+	if name == "" || len(name) > maxTokenNameBytes {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c >= 'a' && c <= 'z') || (i > 0 && c >= '0' && c <= '9') || (i > 0 && c == '_') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func parseTemplateToken(name string) (templateToken, bool) {

@@ -15,7 +15,7 @@ var Module ModuleType
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
 		ID:           "afk",
-		Version:      "1.1.0",
+		Version:      "1.2.0",
 		Description:  "Away From Keyboard status manager and intelligent auto-reply system",
 		Capabilities: []string{plugin.CapTelegramRead, plugin.CapTelegramSendMessage, plugin.CapTelegramDeleteMessage, plugin.CapStorageRead, plugin.CapStorageWrite, plugin.CapEvents},
 	}

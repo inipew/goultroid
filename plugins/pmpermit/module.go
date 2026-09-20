@@ -15,7 +15,7 @@ var Module ModuleType
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
 		ID:           "pmpermit",
-		Version:      "1.0.0",
+		Version:      "1.1.0",
 		Description:  "Anti-spam shield and private message access control system",
 		Capabilities: []string{plugin.CapTelegramRead, plugin.CapTelegramSendMessage, plugin.CapStorageRead, plugin.CapStorageWrite, plugin.CapEvents},
 	}

@@ -173,6 +173,72 @@ func TestCompilePlainEscapesStaticHTMLOnce(t *testing.T) {
 	}
 }
 
+func TestCompileWithVariablesPreservesDefaultUnknownSemantics(t *testing.T) {
+	response := NewHTML("default {reason} / custom {reason}")
+
+	defaultCompiled, err := Compile(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultOut, err := defaultCompiled.Render(TemplateVars{Extra: map[string]string{"reason": "away"}}, DefaultMaxOutputRunes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaultOut != "default {reason} / custom {reason}" {
+		t.Fatalf("default Compile changed unknown placeholder semantics: %q", defaultOut)
+	}
+
+	customCompiled, err := CompileWithVariables(response, "reason")
+	if err != nil {
+		t.Fatal(err)
+	}
+	customOut, err := customCompiled.Render(TemplateVars{Extra: map[string]string{"reason": "<away>"}}, DefaultMaxOutputRunes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if customOut != "default &lt;away&gt; / custom &lt;away&gt;" {
+		t.Fatalf("custom variable render=%q", customOut)
+	}
+}
+
+func TestCompileWithVariablesSupportsEscapedCustomPlaceholder(t *testing.T) {
+	compiled, err := CompileWithVariables(NewHTML("literal {{reason}} / expanded {reason}"), "reason")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := compiled.Render(TemplateVars{Extra: map[string]string{"reason": "away"}}, DefaultMaxOutputRunes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "literal {reason} / expanded away" {
+		t.Fatalf("custom placeholder render=%q", out)
+	}
+}
+
+func TestCompileWithVariablesRejectsInvalidOrReservedNames(t *testing.T) {
+	for _, variable := range []string{"", "Reason", "_reason", "name", "this_variable_name_is_too_long"} {
+		if _, err := CompileWithVariables(NewHTML("ok"), variable); !errors.Is(err, ErrInvalidTemplateVariable) {
+			t.Fatalf("variable %q error=%v, want ErrInvalidTemplateVariable", variable, err)
+		}
+	}
+}
+
+func TestCompileWithVariablesUsesSameVariableBounds(t *testing.T) {
+	compiled, err := CompileWithVariables(NewHTML("{reason}"), "reason")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := compiled.Render(TemplateVars{
+		Extra: map[string]string{"reason": strings.Repeat("界", MaxVariableRunes+100)},
+	}, DefaultMaxOutputRunes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := utf8.RuneCountInString(out); got != MaxVariableRunes {
+		t.Fatalf("custom variable runes=%d, want %d", got, MaxVariableRunes)
+	}
+}
+
 func BenchmarkCompileTemplate(b *testing.B) {
 	response := NewHTML(strings.Repeat("hello {name} in {chat} at {time}\n", 16))
 	b.ResetTimer()

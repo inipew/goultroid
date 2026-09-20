@@ -3,14 +3,31 @@ package pmpermit
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/services/savedresponse"
 	"go.uber.org/zap"
 )
+
+var (
+	pmWarningResponse = savedresponse.NewHTML("👋 <b>Hello!</b>\n\nI haven't approved you for private messaging yet. Please wait patiently until I review your message.\n\n⚠️ <b>Warning {count}/{limit}</b> ({remaining} remaining before block)")
+	pmWarningTemplate = mustCompilePMPermitResponse(pmWarningResponse, "count", "limit", "remaining")
+	pmLimitResponse   = savedresponse.NewHTML("⛔ <b>PM Permit Limit Reached</b>\n\nYou sent too many unapproved messages without waiting. You have been blocked from private messaging.")
+	pmLimitTemplate   = mustCompilePMPermitResponse(pmLimitResponse)
+)
+
+func mustCompilePMPermitResponse(response savedresponse.Response, variables ...string) *savedresponse.CompiledTemplate {
+	compiled, err := savedresponse.CompileWithVariables(response, variables...)
+	if err != nil {
+		panic(fmt.Sprintf("pmpermit: compile static response: %v", err))
+	}
+	return compiled
+}
 
 const (
 	StatusUnknown  = "unknown"
@@ -49,6 +66,7 @@ type Service struct {
 	warnTimeMu   sync.Mutex
 
 	eventBus *core.EventBus
+	delivery *savedresponse.ResponseDelivery
 }
 
 type approvalCacheEntry struct {
@@ -69,6 +87,7 @@ func NewService(repo Repository, svc any, ownerID int64, perms *core.Permissions
 		warnCooldown: DefaultWarnCooldown,
 		warnIDs:      make(map[int64][]int),
 		lastWarnTime: make(map[int64]time.Time),
+		delivery:     savedresponse.NewResponseDelivery(savedresponse.NewService(nil)),
 	}
 	switch v := svc.(type) {
 	case core.TelegramServicer:
@@ -77,6 +96,31 @@ func NewService(repo Repository, svc any, ownerID int64, perms *core.Permissions
 		s.svcFunc = v
 	}
 	return s
+}
+
+func (s *Service) sendTemplate(
+	ctx context.Context,
+	svc core.TelegramServicer,
+	peer tg.InputPeerClass,
+	response savedresponse.Response,
+	compiled *savedresponse.CompiledTemplate,
+	vars savedresponse.TemplateVars,
+) (*tg.Message, error) {
+	if svc == nil {
+		return nil, fmt.Errorf("pm permit telegram service is unavailable")
+	}
+	if s.delivery == nil {
+		return nil, savedresponse.ErrResponseDeliveryUnavailable
+	}
+	var sent *tg.Message
+	_, err := s.delivery.DeliverCompiled(ctx, response, compiled, vars, savedresponse.DeliverySink{
+		SendText: func(text string) error {
+			var sendErr error
+			sent, sendErr = svc.SendMessage(ctx, peer, text)
+			return sendErr
+		},
+	})
+	return sent, err
 }
 
 func (s *Service) SetEventBus(eb *core.EventBus) {
@@ -512,7 +556,7 @@ func (s *Service) HandleIncomingPM(ctx context.Context, peer tg.InputPeerClass, 
 
 	if warnCount >= maxWarns {
 		_ = s.BlockWithPeer(ctx, peer, senderID, "exceeded pm warning threshold")
-		msg, err := svc.SendMessage(ctx, peer, "⛔ <b>PM Permit Limit Reached</b>\n\nYou sent too many unapproved messages without waiting. You have been blocked from private messaging.")
+		msg, err := s.sendTemplate(ctx, svc, peer, pmLimitResponse, pmLimitTemplate, savedresponse.TemplateVars{})
 		if err != nil {
 			s.logger.Warn("failed to send pm limit reached message", zap.Int64("user_id", senderID), zap.Error(err))
 		} else if msg != nil {
@@ -522,8 +566,11 @@ func (s *Service) HandleIncomingPM(ctx context.Context, peer tg.InputPeerClass, 
 	}
 
 	remaining := maxWarns - warnCount
-	warnMsg := fmt.Sprintf("👋 <b>Hello!</b>\n\nI haven't approved you for private messaging yet. Please wait patiently until I review your message.\n\n⚠️ <b>Warning %d/%d</b> (%d remaining before block)", warnCount, maxWarns, remaining)
-	msg, err := svc.SendMessage(ctx, peer, warnMsg)
+	msg, err := s.sendTemplate(ctx, svc, peer, pmWarningResponse, pmWarningTemplate, savedresponse.TemplateVars{
+		Extra: map[string]string{
+			"count": strconv.Itoa(warnCount), "limit": strconv.Itoa(maxWarns), "remaining": strconv.Itoa(remaining),
+		},
+	})
 	if err != nil {
 		s.logger.Warn("failed to send pm warning message", zap.Int64("user_id", senderID), zap.Error(err))
 	} else if msg != nil {
