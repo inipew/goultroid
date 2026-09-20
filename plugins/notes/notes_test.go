@@ -85,6 +85,9 @@ func TestNotesPlugin(t *testing.T) {
 	}
 	defer db.Close()
 
+	if err := database.RunFeatureMigrations(context.Background(), db, Module); err != nil {
+		t.Fatalf("notes migrations failed: %v", err)
+	}
 	repo := NewSQLiteRepository(db)
 	p := New(repo)
 	if p.Name() != "notes" {
@@ -104,7 +107,7 @@ func TestNotesPlugin(t *testing.T) {
 	baseCtx := &core.Context{
 		Ctx:     context.Background(),
 		Sender:  &core.User{ID: 1001},
-		Chat:    &core.Chat{ID: -100999},
+		Chat:    &core.Chat{ID: -100999, Title: "Test Group"},
 		Message: &core.Message{ID: 1},
 		Svc:     svc,
 		PeerID:  &tg.InputPeerChat{ChatID: -100999},
@@ -175,7 +178,23 @@ func TestNotesPlugin(t *testing.T) {
 		t.Errorf("expected content from replied message, got: %s", svc.sent)
 	}
 
-	// 8. list notes (now has 2 notes)
+	// 8. authored templates expand safe variables.
+	ctxSaveTemplate := *baseCtx
+	ctxSaveTemplate.Args = []string{"welcome", "Hi", "{mention}", "in", "{chat}"}
+	ctxSaveTemplate.RawArgs = "welcome Hi {mention} in {chat}"
+	if err := cmdMap["save"].Handler(&ctxSaveTemplate); err != nil {
+		t.Fatalf("unexpected error saving template: %v", err)
+	}
+	ctxGetTemplate := *baseCtx
+	ctxGetTemplate.Args = []string{"welcome"}
+	if err := cmdMap["get"].Handler(&ctxGetTemplate); err != nil {
+		t.Fatalf("unexpected error getting template: %v", err)
+	}
+	if !strings.Contains(svc.sent, `<a href="tg://user?id=1001">`) || !strings.Contains(svc.sent, "Test Group") {
+		t.Fatalf("template variables not rendered safely: %s", svc.sent)
+	}
+
+	// 9. list notes.
 	if err := cmdMap["notes"].Handler(&ctxList); err != nil {
 		t.Fatalf("unexpected error listing notes: %v", err)
 	}
@@ -183,7 +202,7 @@ func TestNotesPlugin(t *testing.T) {
 		t.Errorf("expected notes to contain rules and faq, got: %s", svc.sent)
 	}
 
-	// 9. clear note
+	// 10. clear note
 	ctxClear := *baseCtx
 	ctxClear.Args = []string{"rules"}
 	if err := cmdMap["clear"].Handler(&ctxClear); err != nil {
@@ -193,7 +212,7 @@ func TestNotesPlugin(t *testing.T) {
 		t.Errorf("expected deleted message, got: %s", svc.sent)
 	}
 
-	// 10. clear non-existent
+	// 11. clear non-existent
 	if err := cmdMap["clear"].Handler(&ctxClear); err == nil {
 		t.Errorf("expected error clearing non-existent note")
 	}

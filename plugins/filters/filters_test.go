@@ -92,6 +92,9 @@ func TestFiltersPlugin(t *testing.T) {
 	}
 	defer db.Close()
 
+	if err := database.RunFeatureMigrations(context.Background(), db, Module); err != nil {
+		t.Fatalf("filters migrations failed: %v", err)
+	}
 	svc := &mockService{}
 	p := New(NewSQLiteRepository(db), func() core.TelegramServicer { return svc })
 
@@ -177,8 +180,29 @@ func TestFiltersPlugin(t *testing.T) {
 		t.Errorf("expected active filters list, got: %s", svc.sent)
 	}
 
-	// 5. Incoming message evaluation:
-	// 5a. Command message -> skipped
+	// 5. template variables are rendered from the triggering sender/chat.
+	ctxTemplate := &core.Context{
+		Ctx: context.Background(), Command: "filter",
+		Args: []string{"welcome", "Hi", "{mention}", "in", "{chat}"},
+		RawArgs: "welcome Hi {mention} in {chat}",
+		Svc: svc, PeerID: peer, Chat: &core.Chat{ID: chatID, Title: "Rules Room"},
+	}
+	if err := cmdMap["filter"].Handler(ctxTemplate); err != nil {
+		t.Fatalf("failed to save template filter: %v", err)
+	}
+	svc.sent = ""
+	templateEntities := tg.Entities{Users: map[int64]*tg.User{7777: {ID: 7777, FirstName: "Alice"}}}
+	if err := handleMessageEvent(p, context.Background(), templateEntities, &tg.Message{
+		PeerID: &tg.PeerChat{ChatID: chatID}, FromID: &tg.PeerUser{UserID: 7777}, Message: "welcome",
+	}, false, ""); err != nil {
+		t.Fatalf("template filter trigger failed: %v", err)
+	}
+	if !strings.Contains(svc.sent, `<a href="tg://user?id=7777">Alice</a>`) {
+		t.Fatalf("template mention not rendered: %s", svc.sent)
+	}
+
+	// 6. Incoming message evaluation:
+	// 6a. Command message -> skipped
 	svc.sent = ""
 	err = handleMessageEvent(p, context.Background(), tg.Entities{}, &tg.Message{
 		PeerID:  &tg.PeerChat{ChatID: chatID},
@@ -188,7 +212,7 @@ func TestFiltersPlugin(t *testing.T) {
 		t.Errorf("expected command message to be ignored, got sent: %s", svc.sent)
 	}
 
-	// 5b. Outgoing message -> skipped
+	// 6b. Outgoing message -> skipped
 	svc.sent = ""
 	err = handleMessageEvent(p, context.Background(), tg.Entities{}, &tg.Message{
 		PeerID:  &tg.PeerChat{ChatID: chatID},
@@ -199,7 +223,7 @@ func TestFiltersPlugin(t *testing.T) {
 		t.Errorf("expected outgoing message to be ignored, got sent: %s", svc.sent)
 	}
 
-	// 5c. Matching non-command message -> triggers auto-reply
+	// 6c. Matching non-command message -> triggers auto-reply
 	svc.sent = ""
 	err = handleMessageEvent(p, context.Background(), tg.Entities{}, &tg.Message{
 		PeerID:  &tg.PeerChat{ChatID: chatID},
@@ -212,7 +236,7 @@ func TestFiltersPlugin(t *testing.T) {
 		t.Errorf("expected filter auto-reply 'Follow the group guidelines!', got '%s'", svc.sent)
 	}
 
-	// 5d. Non-matching message -> no reply
+	// 6d. Non-matching message -> no reply
 	svc.sent = ""
 	err = handleMessageEvent(p, context.Background(), tg.Entities{}, &tg.Message{
 		PeerID:  &tg.PeerChat{ChatID: chatID},
@@ -222,7 +246,7 @@ func TestFiltersPlugin(t *testing.T) {
 		t.Errorf("expected no auto-reply, got: %s", svc.sent)
 	}
 
-	// 6. .stop <keyword>
+	// 7. .stop <keyword>
 	ctxStop := &core.Context{
 		Ctx:     context.Background(),
 		Command: "stop",
@@ -238,7 +262,7 @@ func TestFiltersPlugin(t *testing.T) {
 		t.Errorf("expected stop confirmation, got: %s", svc.sent)
 	}
 
-	// 7. Test matchFilter helper logic
+	// 8. Test matchFilter helper logic
 	testCases := []struct {
 		text    string
 		kw      string
@@ -257,7 +281,7 @@ func TestFiltersPlugin(t *testing.T) {
 		}
 	}
 
-	// 8. Bot loop prevention
+	// 9. Bot loop prevention
 	botEntities := tg.Entities{
 		Users: map[int64]*tg.User{
 			9999: {ID: 9999, Bot: true},
@@ -273,7 +297,7 @@ func TestFiltersPlugin(t *testing.T) {
 		t.Errorf("expected bot sender to be ignored, got sent: %s", svc.sent)
 	}
 
-	// 9. Cooldown test: first reply works, second within 5s is dropped
+	// 10. Cooldown test: first reply works, second within 5s is dropped
 	humanEntities := tg.Entities{
 		Users: map[int64]*tg.User{
 			8888: {ID: 8888, Bot: false},
