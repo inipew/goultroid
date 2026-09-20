@@ -49,6 +49,7 @@ func (migration002) Description() string { return "Rich saved response metadata 
 func (migration002) Checksum() string {
 	return "bf16dd3ba62191d1fcf4f19267ab0266c67590a8221f3ed84ffb51f6a4dde0bc"
 }
+func (migration002) LegacyVersions() []int { return nil }
 func (migration002) Up(ctx context.Context, tx database.SQLExecutor) error {
 	for _, statement := range []string{
 		`ALTER TABLE filters ADD COLUMN response_format TEXT NOT NULL DEFAULT 'html';`,

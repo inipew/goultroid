@@ -38,6 +38,9 @@ jobs:
           if [ -n "$unformatted" ]; then
             echo "The following files are not formatted properly:"
             echo "$unformatted"
+            echo
+            echo "gofmt diff:"
+            gofmt -d $unformatted
             exit 1
           fi
 
