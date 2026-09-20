@@ -366,7 +366,7 @@ func TestFilterMediaManagementUX(t *testing.T) {
 	if err := p.handleInfo(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Filter Info", "sticker", "plain", "wave.webp", "image/webp", "Template variables:", "none"} {
+	for _, want := range []string{"Filter Info", "sticker", "plain", "Sticker format:", "static", "wave.webp", "image/webp", "Template variables:", "none"} {
 		if !strings.Contains(svc.sent, want) {
 			t.Fatalf("filter info missing %q: %s", want, svc.sent)
 		}
