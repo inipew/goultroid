@@ -55,9 +55,6 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 		return err
 	}
 	p.responses.SetFiles(files)
-	if _, err := p.responses.ReconcilePersistentMedia(pctx, 32); err != nil {
-		return fmt.Errorf("notes: reconcile persistent saved-response media: %w", err)
-	}
 	client, err := pctx.TaskClient()
 	if err != nil {
 		return fmt.Errorf("notes: initialize task client: %w", err)

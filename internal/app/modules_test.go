@@ -1,11 +1,15 @@
 package app
 
 import (
+	"context"
 	"reflect"
 	"sort"
 	"testing"
+	"time"
 
+	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/module"
+	"github.com/inipew/goultroid/internal/services/storage"
 )
 
 func TestBuiltinModulesHaveUniqueDeterministicIDs(t *testing.T) {
@@ -53,5 +57,48 @@ func TestBuiltinModulesResolveInDependencyOrder(t *testing.T) {
 				t.Fatalf("module %q appears before dependency %q", m.Manifest().ID, dep)
 			}
 		}
+	}
+}
+
+func TestBuiltinPersistentMediaReconcileRunsAfterFeatureMigrations(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := migrateBuiltinFeatures(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO notes (
+			chat_id, name, content, response_format,
+			media_asset_id, media_type, media_name, media_mime,
+			created_at, updated_at
+		) VALUES (1, 'startup-missing', 'fallback', 'html',
+			'missing-startup', 'photo', 'missing.png', 'image/png', ?, ?)
+	`, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := reconcileBuiltinPersistentMedia(ctx, db, storage.NewMemoryStorage())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.MissingAssets != 1 || stats.ReferencesDetached != 1 {
+		t.Fatalf("unexpected startup reconciliation stats: %+v", stats)
+	}
+
+	var content, assetID string
+	if err := db.QueryRowContext(ctx, `
+		SELECT content, media_asset_id
+		FROM notes WHERE chat_id = 1 AND name = 'startup-missing'
+	`).Scan(&content, &assetID); err != nil {
+		t.Fatal(err)
+	}
+	if content != "fallback" || assetID != "" {
+		t.Fatalf("startup reconciliation did not preserve text fallback: content=%q asset=%q", content, assetID)
 	}
 }
