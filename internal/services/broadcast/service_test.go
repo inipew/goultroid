@@ -43,7 +43,6 @@ func (m *mockTelegram) SendMessage(ctx context.Context, peer tg.InputPeerClass, 
 func newBroadcastService(t *testing.T, telegram core.TelegramServicer) *broadcast.Service {
 	t.Helper()
 	engine := taskengine.NewEngine(taskengine.Config{
-		DefaultPool: "general",
 		Pools: map[tasks.PoolID]taskengine.PoolEngineConfig{
 			"general": {Concurrency: 4, BacklogLimit: 128, PayloadBudget: 1 << 20},
 		},

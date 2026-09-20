@@ -107,7 +107,7 @@ func TestDeleteMessage_EmptyIDs(t *testing.T) {
 
 func TestCheckRestartState_FileHandling(t *testing.T) {
 	// 1. Missing file -> no-op, no panic
-	checkRestartState(context.Background(), nil, nil)
+	_ = notifyRestartState(context.Background(), nil, nil)
 
 	// 2. Self peer state
 	_ = os.MkdirAll("data", 0755)
@@ -116,17 +116,17 @@ func TestCheckRestartState_FileHandling(t *testing.T) {
 	selfJSON := []byte(`{"peer_type":"self","chat_id":0,"msg_id":99,"time":1700000000}`)
 	_ = os.WriteFile("data/restart.json", selfJSON, 0644)
 
-	// Calls checkRestartState with nil sender; svc.EditMessage will fail safely and remove file
-	checkRestartState(context.Background(), &Service{}, nil)
+	// Calls notifyRestartState with a service lacking transport; it fails safely after consuming the state file
+	_ = notifyRestartState(context.Background(), &Service{}, nil)
 
 	if _, err := os.Stat("data/restart.json"); !os.IsNotExist(err) {
-		t.Errorf("expected data/restart.json to be removed by checkRestartState")
+		t.Errorf("expected data/restart.json to be removed by notifyRestartState")
 	}
 
 	// 3. User peer with access hash
 	userJSON := []byte(`{"peer_type":"user","chat_id":12345,"access_hash":67890,"msg_id":101,"time":1700000000}`)
 	_ = os.WriteFile("data/restart.json", userJSON, 0644)
-	checkRestartState(context.Background(), &Service{}, nil)
+	_ = notifyRestartState(context.Background(), &Service{}, nil)
 
 	if _, err := os.Stat("data/restart.json"); !os.IsNotExist(err) {
 		t.Errorf("expected data/restart.json to be removed")
@@ -135,7 +135,7 @@ func TestCheckRestartState_FileHandling(t *testing.T) {
 	// 4. Legacy format fallback
 	legacyJSON := []byte(`{"chat_id":777,"is_channel":true,"access_hash":888,"msg_id":102,"time":1700000000}`)
 	_ = os.WriteFile("data/restart.json", legacyJSON, 0644)
-	checkRestartState(context.Background(), &Service{}, nil)
+	_ = notifyRestartState(context.Background(), &Service{}, nil)
 
 	if _, err := os.Stat("data/restart.json"); !os.IsNotExist(err) {
 		t.Errorf("expected legacy data/restart.json to be removed")

@@ -42,7 +42,6 @@ func (m *mockTelegram) GetDialogs(ctx context.Context, limit int) ([]*core.Chat,
 func newBroadcastPluginService(t *testing.T, telegram core.TelegramServicer) *broadcastSvc.Service {
 	t.Helper()
 	engine := taskengine.NewEngine(taskengine.Config{
-		DefaultPool: "general",
 		Pools: map[tasks.PoolID]taskengine.PoolEngineConfig{
 			"general": {Concurrency: 2, BacklogLimit: 32, PayloadBudget: 1 << 20},
 		},
