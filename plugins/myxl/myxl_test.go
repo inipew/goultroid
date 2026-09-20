@@ -690,3 +690,35 @@ func TestMyXLManifestDeclaresFilesystemTemp(t *testing.T) {
 		t.Fatalf("MyXL manifest must declare filesystem.temp: %+v", manifest.Capabilities)
 	}
 }
+
+func TestPendingQRISRepositoryRejectsOversizePayloadAndMissingDelete(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := database.RunFeatureMigrations(ctx, db, Module); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewSQLiteRepository(db)
+	if err := repo.SavePendingQRIS(ctx, &PendingQRIS{
+		TransactionCode: "TX-OVERSIZE",
+		MSISDN:          "6281912345678",
+		QRCode:          strings.Repeat("x", maxQRPayloadBytes+1),
+		Status:          "PENDING",
+	}); err == nil {
+		t.Fatal("oversized QR payload should not be persisted")
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM myxl_pending_qris WHERE transaction_code = ?", "TX-OVERSIZE").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("oversized QR payload persisted %d rows", count)
+	}
+	if err := repo.DeletePendingQRIS(ctx, "TX-MISSING"); err == nil {
+		t.Fatal("missing pending QRIS delete should report not found")
+	}
+}
+

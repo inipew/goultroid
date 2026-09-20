@@ -321,13 +321,17 @@ func FormatPurchaseResult(res *SettlementResult, pkgName string, price int64, me
 		b.WriteString(fmt.Sprintf("\n🔗 <a href=\"%s\">Klik Disini untuk Bayar via E-Wallet</a>\n", html.EscapeString(res.Deeplink)))
 	}
 	if res.QRCode != "" {
-		preview, truncated := inlineQRPreview(res.QRCode)
-		b.WriteString("\n<b>📱 QRIS String:</b>\n")
-		b.WriteString(fmt.Sprintf("<code>%s</code>\n", html.EscapeString(preview)))
-		if truncated {
-			b.WriteString("<i>String dipersingkat di pesan ini; payload penuh tetap tersedia pada foto QRIS.</i>\n")
+		if qrPayload, qrErr := normalizeQRPayload(res.QRCode); qrErr != nil {
+			b.WriteString("\n⚠️ <i>Payload QRIS dari operator tidak valid sehingga gambar QR tidak dapat dibuat.</i>\n")
 		} else {
-			b.WriteString("<i>Salin kode QRIS di atas atau scan foto QRIS yang dikirimkan melalui aplikasi e-wallet / mobile banking.</i>\n")
+			preview, truncated := inlineQRPreview(qrPayload)
+			b.WriteString("\n<b>📱 QRIS String:</b>\n")
+			b.WriteString(fmt.Sprintf("<code>%s</code>\n", html.EscapeString(preview)))
+			if truncated {
+				b.WriteString("<i>String dipersingkat di pesan ini; payload penuh tetap tersedia pada foto QRIS.</i>\n")
+			} else {
+				b.WriteString("<i>Salin kode QRIS di atas atau scan foto QRIS yang dikirimkan melalui aplikasi e-wallet / mobile banking.</i>\n")
+			}
 		}
 	}
 	return b.String()

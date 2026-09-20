@@ -38,7 +38,10 @@ type Plugin struct {
 	files      *filesystem.Scope
 }
 
-const myxlCallbackTTL = 10 * time.Minute
+const (
+	myxlCallbackTTL = 10 * time.Minute
+	pendingQRISTTL  = 5 * time.Minute
+)
 
 type quotaRefreshState struct {
 	MSISDN string
@@ -1115,8 +1118,11 @@ func (p *Plugin) HandleCallback(cbCtx *callback.CallbackContext) error {
 
 	case "qris_cancel":
 		txCode := cbCtx.OpaqueID
-		if txCode != "" {
-			_ = p.repo.DeletePendingQRIS(cbCtx.Ctx, txCode)
+		if txCode == "" {
+			return cbCtx.Answer("Kode transaksi QRIS tidak valid", true)
+		}
+		if err := p.repo.DeletePendingQRIS(cbCtx.Ctx, txCode); err != nil {
+			return cbCtx.Answer("Gagal membatalkan transaksi QRIS. Silakan coba lagi.", true)
 		}
 		_ = cbCtx.Answer("✅ Transaksi QRIS dibatalkan", false)
 		if p.menuMgr != nil {
@@ -1439,16 +1445,28 @@ func (p *Plugin) handlePendingQRIS(ctx *core.Context, args []string) error {
 		sb.WriteString(fmt.Sprintf("• <b>ID Transaksi:</b> <code>%s</code>\n", html.EscapeString(pending.TransactionCode)))
 	}
 	sb.WriteString(fmt.Sprintf("• <b>Batas Waktu:</b> %s (sisa <b>%s</b>)\n\n", FormatWIBClock(pending.ExpiresAt), FormatRemainingDuration(remaining)))
-	sb.WriteString("<b>Kode QRIS (Raw Text):</b>\n")
-	sb.WriteString(fmt.Sprintf("<code>%s</code>\n\n", html.EscapeString(pending.QRCode)))
-	sb.WriteString("💡 <i>Salin string QRIS di atas atau scan gambar QR yang dikirimkan. QRIS hanya berlaku 5 menit. Ketik <code>.myxl qris cancel</code> untuk membatalkan.</i>")
+	qrPayload, qrErr := normalizeQRPayload(pending.QRCode)
+	if qrErr != nil {
+		sb.WriteString("⚠️ <i>Payload QRIS tersimpan tidak valid sehingga tidak dapat ditampilkan atau dibuat menjadi gambar.</i>")
+	} else {
+		preview, truncated := inlineQRPreview(qrPayload)
+		sb.WriteString("<b>Kode QRIS:</b>\n")
+		sb.WriteString(fmt.Sprintf("<code>%s</code>\n\n", html.EscapeString(preview)))
+		if truncated {
+			sb.WriteString("💡 <i>String dipersingkat agar aman untuk Telegram; gunakan gambar QR untuk pembayaran. Ketik <code>.myxl qris cancel</code> untuk membatalkan.</i>")
+		} else {
+			sb.WriteString("💡 <i>Salin string QRIS di atas atau scan gambar QR yang dikirimkan. QRIS hanya berlaku 5 menit. Ketik <code>.myxl qris cancel</code> untuk membatalkan.</i>")
+		}
+	}
 
 	if err := deliverHTML(ctx, sb.String()); err != nil {
 		return err
 	}
 
-	if ctx.Svc != nil && ctx.PeerID != nil && pending.QRCode != "" {
-		_ = p.sendQRPhoto(ctx.Ctx, ctx.Svc, ctx.PeerID, pending.QRCode, pending.PackageName, pending.Price)
+	if qrErr == nil && ctx.Svc != nil && ctx.PeerID != nil {
+		if err := p.sendQRPhoto(ctx.Ctx, ctx.Svc, ctx.PeerID, qrPayload, pending.PackageName, pending.Price); err != nil {
+			_ = ctx.Reply("⚠️ Detail QRIS tersedia, tetapi gambar QR gagal dikirim. Gunakan string QRIS di pesan sebelumnya.")
+		}
 	}
 	return nil
 }
@@ -1653,21 +1671,33 @@ func (p *Plugin) confirmPurchase(cbCtx *callback.CallbackContext, draft purchase
 		effectivePrice = draft.OverwritePrice
 	}
 
-	if result.QRCode != "" && p.repo != nil {
-		now := time.Now().UTC()
-		pending := &PendingQRIS{
-			TransactionCode: result.TransactionCode,
-			IdempotencyKey:  key,
-			MSISDN:          draft.MSISDN,
-			OptionCode:      draft.OptionCode,
-			PackageName:     draft.PackageName,
-			Price:           effectivePrice,
-			QRCode:          result.QRCode,
-			Status:          "PENDING",
-			CreatedAt:       now,
-			ExpiresAt:       now.Add(5 * time.Minute),
+	var qrWarning string
+	if result.QRCode != "" {
+		qrPayload, qrErr := normalizeQRPayload(result.QRCode)
+		if qrErr != nil {
+			qrWarning = "Payload QRIS dari operator tidak valid; gambar QR tidak dibuat."
+			result.QRCode = ""
+		} else {
+			result.QRCode = qrPayload
+			if p.repo != nil {
+				now := time.Now().UTC()
+				pending := &PendingQRIS{
+					TransactionCode: result.TransactionCode,
+					IdempotencyKey:  key,
+					MSISDN:          draft.MSISDN,
+					OptionCode:      draft.OptionCode,
+					PackageName:     draft.PackageName,
+					Price:           effectivePrice,
+					QRCode:          qrPayload,
+					Status:          "PENDING",
+					CreatedAt:       now,
+					ExpiresAt:       now.Add(pendingQRISTTL),
+				}
+				if err := p.repo.SavePendingQRIS(cCtx, pending); err != nil {
+					qrWarning = "QRIS berhasil dibuat tetapi gagal disimpan untuk dilihat kembali."
+				}
+			}
 		}
-		_ = p.repo.SavePendingQRIS(cCtx, pending)
 	}
 
 	if p.menuMgr != nil {
@@ -1677,7 +1707,12 @@ func (p *Plugin) confirmPurchase(cbCtx *callback.CallbackContext, draft purchase
 			return err
 		}
 		if result.QRCode != "" && cbCtx.Service != nil && cbCtx.Target.Peer != nil {
-			_ = p.sendQRPhoto(cbCtx.Ctx, cbCtx.Service, cbCtx.Target.Peer, result.QRCode, draft.PackageName, effectivePrice)
+			if err := p.sendQRPhoto(cbCtx.Ctx, cbCtx.Service, cbCtx.Target.Peer, result.QRCode, draft.PackageName, effectivePrice); err != nil && qrWarning == "" {
+				qrWarning = "Transaksi selesai tetapi foto QRIS gagal dikirim."
+			}
+		}
+		if qrWarning != "" {
+			_ = cbCtx.Answer(qrWarning, true)
 		}
 		return nil
 	}
@@ -1686,7 +1721,12 @@ func (p *Plugin) confirmPurchase(cbCtx *callback.CallbackContext, draft purchase
 		return err
 	}
 	if result.QRCode != "" && cbCtx.Service != nil && cbCtx.Target.Peer != nil {
-		_ = p.sendQRPhoto(cbCtx.Ctx, cbCtx.Service, cbCtx.Target.Peer, result.QRCode, draft.PackageName, effectivePrice)
+		if err := p.sendQRPhoto(cbCtx.Ctx, cbCtx.Service, cbCtx.Target.Peer, result.QRCode, draft.PackageName, effectivePrice); err != nil && qrWarning == "" {
+			qrWarning = "Transaksi selesai tetapi foto QRIS gagal dikirim."
+		}
+	}
+	if qrWarning != "" {
+		_ = cbCtx.Answer(qrWarning, true)
 	}
 	return nil
 }

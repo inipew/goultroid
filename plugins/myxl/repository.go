@@ -521,8 +521,12 @@ func (r *SQLiteRepository) UpsertDecoy(ctx context.Context, decoy *DecoyConfig) 
 
 // SavePendingQRIS stores or updates an active pending QRIS transaction.
 func (r *SQLiteRepository) SavePendingQRIS(ctx context.Context, item *PendingQRIS) error {
-	if item == nil || item.TransactionCode == "" || item.QRCode == "" {
-		return errors.New("invalid pending qris: transaction_code and qr_code required")
+	if item == nil || strings.TrimSpace(item.TransactionCode) == "" {
+		return errors.New("invalid pending qris: transaction_code required")
+	}
+	qrPayload, err := normalizeQRPayload(item.QRCode)
+	if err != nil {
+		return fmt.Errorf("invalid pending qris payload: %w", err)
 	}
 	now := time.Now().UTC()
 	if item.CreatedAt.IsZero() {
@@ -546,7 +550,7 @@ func (r *SQLiteRepository) SavePendingQRIS(ctx context.Context, item *PendingQRI
 	`
 	_, err := r.db.ExecContext(ctx, query,
 		item.TransactionCode, item.IdempotencyKey, item.MSISDN, item.OptionCode,
-		item.PackageName, item.Price, item.QRCode, item.Status, item.CreatedAt, item.ExpiresAt,
+		item.PackageName, item.Price, qrPayload, item.Status, item.CreatedAt, item.ExpiresAt,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save pending qris: %w", err)
@@ -588,9 +592,16 @@ func (r *SQLiteRepository) GetPendingQRIS(ctx context.Context, msisdn string) (*
 // DeletePendingQRIS deletes a pending QRIS record by transaction code.
 func (r *SQLiteRepository) DeletePendingQRIS(ctx context.Context, transactionCode string) error {
 	query := `DELETE FROM myxl_pending_qris WHERE transaction_code = ?`
-	_, err := r.db.ExecContext(ctx, query, transactionCode)
+	res, err := r.db.ExecContext(ctx, query, transactionCode)
 	if err != nil {
 		return fmt.Errorf("failed to delete pending qris: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read pending qris delete result: %w", err)
+	}
+	if rows == 0 {
+		return errors.New("pending qris not found")
 	}
 	return nil
 }

@@ -92,13 +92,14 @@ func (m *MenuManager) ResolveOptionCode(keyOrCode string) string {
 
 // RegisterQR registers a QR payload in the state store with a short key safe for callback data.
 func (m *MenuManager) RegisterQR(qrPayload string) string {
-	if qrPayload == "" {
+	qrPayload, err := normalizeQRPayload(qrPayload)
+	if err != nil {
 		return ""
 	}
 	if m.plugin != nil && m.plugin.stateStore != nil {
 		return m.plugin.stateStore.StoreWithScope(qrPayload, coreCallback.StateScope{
 			Namespace: m.plugin.Namespace(),
-		}, 24*time.Hour)
+		}, pendingQRISTTL)
 	}
 	return ""
 }
@@ -931,15 +932,19 @@ func (m *MenuManager) BuildPurchaseResultScreen(result *SettlementResult, packag
 			card.AddField("Pesan Operator", html.EscapeString(result.Message))
 		}
 		if result.QRCode != "" {
-			wibLoc := time.FixedZone("WIB", 7*3600)
-			expireWIB := time.Now().UTC().Add(5 * time.Minute).In(wibLoc).Format("15:04:05")
-			preview, truncated := inlineQRPreview(result.QRCode)
-			card.AddField("Batas Waktu", fmt.Sprintf("5 Menit (s/d %s WIB)", expireWIB))
-			note := "<i>💡 Foto QRIS dikirimkan di bawah ini. QRIS berlaku 5 menit dan dapat dilihat kembali di Dashboard atau perintah <code>.myxl qris</code> selama belum dibayar.</i>"
-			if truncated {
-				note = "<i>💡 String dipersingkat agar aman untuk Telegram; payload penuh tetap tersedia pada foto QRIS.</i>"
+			if qrPayload, qrErr := normalizeQRPayload(result.QRCode); qrErr != nil {
+				card.WithRaw("⚠️ <i>Payload QRIS dari operator tidak valid sehingga gambar QR tidak dapat dibuat.</i>")
+			} else {
+				wibLoc := time.FixedZone("WIB", 7*3600)
+				expireWIB := time.Now().UTC().Add(pendingQRISTTL).In(wibLoc).Format("15:04:05")
+				preview, truncated := inlineQRPreview(qrPayload)
+				card.AddField("Batas Waktu", fmt.Sprintf("5 Menit (s/d %s WIB)", expireWIB))
+				note := "<i>💡 Foto QRIS dikirimkan di bawah ini. QRIS berlaku 5 menit dan dapat dilihat kembali di Dashboard atau perintah <code>.myxl qris</code> selama belum dibayar.</i>"
+				if truncated {
+					note = "<i>💡 String dipersingkat agar aman untuk Telegram; payload penuh tetap tersedia pada foto QRIS.</i>"
+				}
+				card.WithRaw("📱 <b>Kode / String QRIS:</b>\n<code>" + html.EscapeString(preview) + "</code>\n\n" + note)
 			}
-			card.WithRaw("📱 <b>Kode / String QRIS:</b>\n<code>" + html.EscapeString(preview) + "</code>\n\n" + note)
 		}
 	}
 
@@ -991,15 +996,23 @@ func (m *MenuManager) BuildPendingQRISScreen(ctx context.Context) (*ui.Screen, e
 		card.AddField("Kode Transaksi", "<code>"+html.EscapeString(pending.TransactionCode)+"</code>")
 	}
 
-	preview, truncated := inlineQRPreview(pending.QRCode)
-	note := "<i>💡 Foto QRIS dikirimkan ke chat. Anda dapat scan langsung atau upload dari galeri aplikasi e-wallet / mobile banking.</i>"
-	if truncated {
-		note = "<i>💡 String dipersingkat agar aman untuk Telegram; payload penuh tetap tersedia pada foto QRIS.</i>"
+	qrPayload, qrErr := normalizeQRPayload(pending.QRCode)
+	if qrErr != nil {
+		card.WithRaw("⚠️ <i>Payload QRIS tersimpan tidak valid sehingga gambar QR tidak dapat dibuat.</i>")
+	} else {
+		preview, truncated := inlineQRPreview(qrPayload)
+		note := "<i>💡 Foto QRIS dikirimkan ke chat. Anda dapat scan langsung atau upload dari galeri aplikasi e-wallet / mobile banking.</i>"
+		if truncated {
+			note = "<i>💡 String dipersingkat agar aman untuk Telegram; payload penuh tetap tersedia pada foto QRIS.</i>"
+		}
+		card.WithRaw("📱 <b>Kode / String QRIS:</b>\n<code>" + html.EscapeString(preview) + "</code>\n\n" + note)
 	}
-	card.WithRaw("📱 <b>Kode / String QRIS:</b>\n<code>" + html.EscapeString(preview) + "</code>\n\n" + note)
 
 	screen := menu.NewScreen("myxl:pending_qris", "", card.Render())
-	qrKey := m.RegisterQR(pending.QRCode)
+	qrKey := ""
+	if qrErr == nil {
+		qrKey = m.RegisterQR(qrPayload)
+	}
 	var actionRow []ui.Button
 	if qrKey != "" {
 		actionRow = append(actionRow, menu.NewButton("🖼️ Kirim Foto QRIS", fmt.Sprintf("a1:myxl:qris_img:%s", qrKey)))

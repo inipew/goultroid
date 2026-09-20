@@ -5,6 +5,9 @@ import (
 	"image/png"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/inipew/goultroid/internal/services/callback"
 	"unicode/utf16"
 
 	"github.com/gotd/td/telegram/message/entity"
@@ -199,3 +202,29 @@ func TestInlineQRPreviewBoundsRunes(t *testing.T) {
 		t.Fatalf("preview missing ellipsis: %q", preview)
 	}
 }
+
+func TestMenuRegisterQRUsesPaymentTTLAndRejectsOversizePayload(t *testing.T) {
+	store := callback.NewStateStore()
+	p := &Plugin{stateStore: store}
+	m := NewMenuManager(p, nil)
+
+	key := m.RegisterQR(" 000201010212TEST ")
+	if key == "" {
+		t.Fatal("valid QR payload was not registered")
+	}
+	entry, err := store.GetEntry(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remaining := time.Until(entry.Scope.ExpiresAt)
+	if remaining <= 4*time.Minute || remaining > pendingQRISTTL+time.Second {
+		t.Fatalf("QR callback TTL=%v, want about %v", remaining, pendingQRISTTL)
+	}
+	if got, ok := entry.Data.(string); !ok || got != "000201010212TEST" {
+		t.Fatalf("stored QR payload=%#v", entry.Data)
+	}
+	if key := m.RegisterQR(strings.Repeat("x", maxQRPayloadBytes+1)); key != "" {
+		t.Fatalf("oversized QR payload unexpectedly registered: %q", key)
+	}
+}
+
