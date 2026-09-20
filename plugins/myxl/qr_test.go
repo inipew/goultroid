@@ -8,12 +8,11 @@ import (
 	"time"
 	"unicode/utf16"
 
-	"github.com/inipew/goultroid/internal/services/callback"
-
 	"github.com/gotd/td/telegram/message/entity"
 	"github.com/gotd/td/telegram/message/html"
 	"github.com/gotd/td/telegram/message/styling"
 	"github.com/gotd/td/tg"
+	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/ui/render"
 )
 

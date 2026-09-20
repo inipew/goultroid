@@ -31,10 +31,22 @@ type immediateMyXLTicket struct {
 	done   chan struct{}
 }
 
-func (t *immediateMyXLTicket) TaskID() tasks.TaskID             { return t.result.TaskID }
-func (t *immediateMyXLTicket) State() tasks.TaskState          { return tasks.StateCompleted }
-func (t *immediateMyXLTicket) Done() <-chan struct{}           { return t.done }
-func (t *immediateMyXLTicket) Result() (tasks.TaskResult, bool) { return t.result, true }
+func (t *immediateMyXLTicket) TaskID() tasks.TaskID {
+	return t.result.TaskID
+}
+
+func (t *immediateMyXLTicket) State() tasks.TaskState {
+	return tasks.StateCompleted
+}
+
+func (t *immediateMyXLTicket) Done() <-chan struct{} {
+	return t.done
+}
+
+func (t *immediateMyXLTicket) Result() (tasks.TaskResult, bool) {
+	return t.result, true
+}
+
 func (t *immediateMyXLTicket) Wait(context.Context) (tasks.TaskResult, error) {
 	return t.result, nil
 }
