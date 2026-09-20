@@ -39,4 +39,3 @@ type Provider interface {
 	// Download fetches the remote asset and persists it into storage.
 	Download(ctx context.Context, rawURL string, store storage.Storage, opts DownloadOptions) (*storage.Asset, error)
 }
-

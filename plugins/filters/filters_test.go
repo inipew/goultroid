@@ -183,9 +183,9 @@ func TestFiltersPlugin(t *testing.T) {
 	// 5. template variables are rendered from the triggering sender/chat.
 	ctxTemplate := &core.Context{
 		Ctx: context.Background(), Command: "filter",
-		Args: []string{"welcome", "Hi", "{mention}", "in", "{chat}"},
+		Args:    []string{"welcome", "Hi", "{mention}", "in", "{chat}"},
 		RawArgs: "welcome Hi {mention} in {chat}",
-		Svc: svc, PeerID: peer, Chat: &core.Chat{ID: chatID, Title: "Rules Room"},
+		Svc:     svc, PeerID: peer, Chat: &core.Chat{ID: chatID, Title: "Rules Room"},
 	}
 	if err := cmdMap["filter"].Handler(ctxTemplate); err != nil {
 		t.Fatalf("failed to save template filter: %v", err)

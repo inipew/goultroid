@@ -25,15 +25,15 @@ type Plugin struct {
 	ownerID       int64
 	ownerUsername string
 
-	mu               sync.RWMutex
-	ctx              context.Context
-	cancel           context.CancelFunc
-	scope            *plugin.Scope
-	eventBus         *core.EventBus
-	subscriptions    []*core.Subscription
-	queue            chan func()
-	closing          bool
-	shutdownDone     chan struct{}
+	mu                sync.RWMutex
+	ctx               context.Context
+	cancel            context.CancelFunc
+	scope             *plugin.Scope
+	eventBus          *core.EventBus
+	subscriptions     []*core.Subscription
+	queue             chan func()
+	closing           bool
+	shutdownDone      chan struct{}
 	workerRunning     bool
 	workerGeneration  uint64
 	workerIdleTimeout time.Duration

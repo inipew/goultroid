@@ -19,9 +19,9 @@ import (
 )
 
 const (
-	filterCacheTTL          = 10 * time.Minute
-	filterCooldown          = 5 * time.Second
-	filterDeliveryTimeout   = 30 * time.Second
+	filterCacheTTL        = 10 * time.Minute
+	filterCooldown        = 5 * time.Second
+	filterDeliveryTimeout = 30 * time.Second
 )
 
 var filterDeliverySequence atomic.Uint64
@@ -51,10 +51,10 @@ type Plugin struct {
 func New(db Repository, svcFunc func() core.TelegramServicer, responses ...*savedresponse.Service) *Plugin {
 	p := &Plugin{
 		db: db, svcFunc: svcFunc,
-		responses: savedresponse.NewService(nil),
+		responses:   savedresponse.NewService(nil),
 		chatFilters: make(map[int64][]compiledFilter),
-		chatAccess: make(map[int64]time.Time),
-		lastReply: make(map[string]time.Time),
+		chatAccess:  make(map[int64]time.Time),
+		lastReply:   make(map[string]time.Time),
 	}
 	if len(responses) > 0 && responses[0] != nil {
 		p.responses = responses[0]
@@ -115,10 +115,10 @@ func (p *Plugin) Commands() []core.Command {
 	return []core.Command{
 		{
 			Name: "filter", Description: "Save a rich automated keyword filter in this chat",
-			Usage: ".filter <keyword> <reply text> or reply to text/media with .filter <keyword>",
+			Usage:    ".filter <keyword> <reply text> or reply to text/media with .filter <keyword>",
 			Category: "Filters", Permission: core.PermissionSudo, GroupOnly: true,
 			Resources: []tasks.ResourceRequirement{{Name: "download", Amount: 1}},
-			Handler: p.handleFilter,
+			Handler:   p.handleFilter,
 		},
 		{Name: "stop", Description: "Stop and delete a chat filter", Usage: ".stop <keyword>", Category: "Filters", Permission: core.PermissionSudo, GroupOnly: true, Handler: p.handleStop},
 		{Name: "filters", Description: "List all active filters in this chat", Category: "Filters", Permission: core.PermissionSudo, GroupOnly: true, Handler: p.handleList},

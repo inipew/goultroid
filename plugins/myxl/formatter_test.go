@@ -192,7 +192,6 @@ func TestFormatterRejectsNonFiniteAndBoundsProgressWidth(t *testing.T) {
 	}
 }
 
-
 func TestFormatPurchaseResultBoundsInlineQRIS(t *testing.T) {
 	payload := strings.Repeat("1234567890", 80)
 	out := FormatPurchaseResult(&SettlementResult{

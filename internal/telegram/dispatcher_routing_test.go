@@ -107,8 +107,8 @@ func TestDispatcher_MessageRoutingMediaInterest(t *testing.T) {
 	d.AddPrioritizedMessageHandlerWithRouting(PriorityFeature, core.MessageHookRouting{
 		Lane: core.MessageHookEvent,
 		Interests: []core.MessageHookInterest{{
-			Directions: core.MessageDirectionIncoming,
-			Peers: core.MessagePeerPrivate | core.MessagePeerGroup | core.MessagePeerChannel,
+			Directions:   core.MessageDirectionIncoming,
+			Peers:        core.MessagePeerPrivate | core.MessagePeerGroup | core.MessagePeerChannel,
 			RequireMedia: true,
 		}},
 	}, func(context.Context, tg.Entities, *tg.Message, bool, string) error { return nil })

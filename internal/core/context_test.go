@@ -1114,9 +1114,9 @@ func TestGetReplyMemoizesSuccessfulLookupAcrossMediaDownload(t *testing.T) {
 func TestGetReplyMemoSharedAfterWithContext(t *testing.T) {
 	mock := &mockTelegramServicer{messageToGet: &tg.Message{ID: 42, Message: "cached"}}
 	ctx := &Context{
-		Ctx:    context.Background(),
-		Svc:    mock,
-		PeerID: &tg.InputPeerSelf{},
+		Ctx:     context.Background(),
+		Svc:     mock,
+		PeerID:  &tg.InputPeerSelf{},
 		Message: &Message{ID: 1, ReplyToID: 42},
 	}
 	if _, err := ctx.GetReply(); err != nil {
@@ -1139,9 +1139,9 @@ func TestGetReplyMemoSharedAfterWithContext(t *testing.T) {
 func TestGetReplyDoesNotMemoizeTransientFailure(t *testing.T) {
 	mock := &mockTelegramServicer{errToGet: context.DeadlineExceeded}
 	ctx := &Context{
-		Ctx:    context.Background(),
-		Svc:    mock,
-		PeerID: &tg.InputPeerSelf{},
+		Ctx:     context.Background(),
+		Svc:     mock,
+		PeerID:  &tg.InputPeerSelf{},
 		Message: &Message{ID: 1, ReplyToID: 42},
 	}
 
@@ -1165,9 +1165,9 @@ func TestGetReplyDoesNotMemoizeTransientFailure(t *testing.T) {
 func TestGetReplyMemoizesAuthoritativeAbsence(t *testing.T) {
 	mock := &mockTelegramServicer{errToGet: ErrNotFound}
 	ctx := &Context{
-		Ctx:    context.Background(),
-		Svc:    mock,
-		PeerID: &tg.InputPeerSelf{},
+		Ctx:     context.Background(),
+		Svc:     mock,
+		PeerID:  &tg.InputPeerSelf{},
 		Message: &Message{ID: 1, ReplyToID: 42},
 	}
 

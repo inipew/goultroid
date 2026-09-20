@@ -15,13 +15,13 @@ import (
 
 func TestRenderHTMLSafeVariablesAndBounds(t *testing.T) {
 	vars := TemplateVars{
-		Name: "Alice <Admin>",
-		First: "Alice",
+		Name:     "Alice <Admin>",
+		First:    "Alice",
 		Username: "alice",
-		UserID: 42,
-		Chat: "Group & Friends",
-		ChatID: -1001,
-		Now: time.Date(2026, 9, 20, 12, 34, 56, 0, time.UTC),
+		UserID:   42,
+		Chat:     "Group & Friends",
+		ChatID:   -1001,
+		Now:      time.Date(2026, 9, 20, 12, 34, 56, 0, time.UTC),
 	}
 	got, err := RenderHTML("Hi {mention} in {chat} on {date} {time}; {unknown}", vars, 4096)
 	if err != nil {
@@ -41,7 +41,7 @@ func TestRenderHTMLSafeVariablesAndBounds(t *testing.T) {
 func TestVarsFromEnvelope(t *testing.T) {
 	vars := VarsFromEnvelope(&core.MessageEnvelope{
 		Sender: core.User{ID: 9, FirstName: "Ada", LastName: "Lovelace", Username: "ada"},
-		Chat: core.Chat{ID: 7, Title: "Math"},
+		Chat:   core.Chat{ID: 7, Title: "Math"},
 		ChatID: 7,
 	}, time.Unix(0, 0))
 	if vars.Name != "Ada Lovelace" || vars.UserID != 9 || vars.Chat != "Math" || vars.ChatID != 7 {
@@ -177,7 +177,7 @@ func TestPrepareStickerUsesStandaloneText(t *testing.T) {
 
 func TestResponseCloneDetachesMediaAndDefaultsFormat(t *testing.T) {
 	original := Response{
-		Text: "hello",
+		Text:  "hello",
 		Media: &MediaRef{AssetID: "asset-1", MediaType: "photo"},
 	}
 	if original.EffectiveFormat() != FormatHTML {
@@ -252,11 +252,11 @@ func TestCopyBoundedRejectsActualOversizeStream(t *testing.T) {
 
 func TestSafeTempExtension(t *testing.T) {
 	cases := map[string]string{
-		"photo.PNG":        ".png",
-		"archive.tar.gz":   ".gz",
-		"unsafe.jp*g":      "",
+		"photo.PNG":             ".png",
+		"archive.tar.gz":        ".gz",
+		"unsafe.jp*g":           "",
 		"too.abcdefghijklmnopq": "",
-		"noext":            "",
+		"noext":                 "",
 	}
 	for name, want := range cases {
 		if got := safeTempExtension(name); got != want {

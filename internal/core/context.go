@@ -513,6 +513,7 @@ func (c *Context) GetReply() (*Message, error) {
 	memo.message = normalizeReplyMessage(msg)
 	return memo.message, nil
 }
+
 // --- Backward-Compatible Delegator Methods ---
 
 // Reply sends a response message to the same chat and records LastResponseID.

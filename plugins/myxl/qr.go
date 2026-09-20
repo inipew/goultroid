@@ -9,11 +9,11 @@ import (
 )
 
 const (
-	maxQRPayloadBytes    = 2953
-	maxQRPNGBytes        = 1 << 20
-	maxCompactQRRunes    = 3900
-	maxQRImageDimension  = 768
-	maxInlineQRPreview   = 512
+	maxQRPayloadBytes   = 2953
+	maxQRPNGBytes       = 1 << 20
+	maxCompactQRRunes   = 3900
+	maxQRImageDimension = 768
+	maxInlineQRPreview  = 512
 )
 
 func normalizeQRPayload(data string) (string, error) {

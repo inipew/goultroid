@@ -142,7 +142,7 @@ func (p *Plugin) Commands() []core.Command {
 			{Name: "download", Amount: 1},
 			{Name: "media", Amount: 1},
 		},
-		Handler:     p.handle,
+		Handler: p.handle,
 	}}
 }
 

@@ -112,10 +112,10 @@ func (s *Service) captureMedia(ctx *core.Context, media *core.MediaInfo) (*Media
 	defer f.Close()
 
 	asset, err := s.store.Put(ctx.Ctx, f, storage.Metadata{
-		Name: media.FileName,
-		MIME: media.MimeType,
-		Width: media.Width,
-		Height: media.Height,
+		Name:     media.FileName,
+		MIME:     media.MimeType,
+		Width:    media.Width,
+		Height:   media.Height,
 		Duration: time.Duration(media.Duration) * time.Second,
 	})
 	if err != nil {

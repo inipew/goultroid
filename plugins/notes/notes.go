@@ -49,16 +49,16 @@ func (p *Plugin) Commands() []core.Command {
 	return []core.Command{
 		{
 			Name: "save", Description: "Save a rich note in this chat",
-			Usage: ".save <name> <content> or reply to text/media with .save <name>",
+			Usage:    ".save <name> <content> or reply to text/media with .save <name>",
 			Category: "Notes", Permission: core.PermissionSudo,
 			Resources: []tasks.ResourceRequirement{{Name: "download", Amount: 1}},
-			Handler: p.handleSave,
+			Handler:   p.handleSave,
 		},
 		{
 			Name: "get", Description: "Retrieve a saved note by name",
 			Usage: ".get <name>", Category: "Notes", Permission: core.PermissionSudo,
 			Resources: []tasks.ResourceRequirement{{Name: "media", Amount: 1}},
-			Handler: p.handleGet,
+			Handler:   p.handleGet,
 		},
 		{Name: "notes", Description: "List all notes saved in this chat", Category: "Notes", Permission: core.PermissionSudo, Handler: p.handleList},
 		{Name: "clear", Description: "Delete a saved note", Usage: ".clear <name>", Category: "Notes", Permission: core.PermissionSudo, Handler: p.handleClear},

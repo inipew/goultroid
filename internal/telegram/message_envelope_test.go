@@ -100,7 +100,6 @@ func TestNormalizeMessageEnvelopePreservesDirectMentionFlag(t *testing.T) {
 	}
 }
 
-
 func TestNormalizeMessageEnvelopeIncludesTransportNeutralMediaSummary(t *testing.T) {
 	msg := &tg.Message{
 		ID:     20,

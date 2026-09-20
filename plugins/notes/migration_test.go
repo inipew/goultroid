@@ -68,7 +68,6 @@ func TestNotesFeatureMigrationAdoptLegacyDatabase(t *testing.T) {
 	}
 }
 
-
 func TestNotesRichResponseMetadataRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(":memory:")

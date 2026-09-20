@@ -14,7 +14,7 @@ import (
 
 type failingDeleteStorage struct {
 	storage.Storage
-	failDelete bool
+	failDelete  bool
 	deleteCalls int
 }
 
@@ -174,7 +174,6 @@ func TestPreparedIntentIsNotReconciledBeforeGraceAndProtectsLiveAsset(t *testing
 		t.Fatalf("stale prepared intent was not cleared: %d", pending)
 	}
 }
-
 
 func TestPreparedIntentRecoversCrashAfterDBMutationBeforeActivation(t *testing.T) {
 	db := openCleanupTestDB(t)

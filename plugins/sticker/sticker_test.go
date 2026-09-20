@@ -299,7 +299,6 @@ func TestStickerRejectsNonImageDocumentBeforeDownload(t *testing.T) {
 	}
 }
 
-
 func TestStickerCommandResources(t *testing.T) {
 	cmds := New().Commands()
 	if len(cmds) != 1 {

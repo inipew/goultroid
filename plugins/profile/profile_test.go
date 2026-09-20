@@ -380,7 +380,6 @@ func TestHandleDialogs(t *testing.T) {
 	}
 }
 
-
 func TestSetPicCommandResources(t *testing.T) {
 	cmds := New().Commands()
 	var found *core.Command

@@ -1051,7 +1051,6 @@ func TestAFKLiveSettings(t *testing.T) {
 	}
 }
 
-
 func TestAFKWelcomeDeleteIsCancelledByScopeClose(t *testing.T) {
 	svc := &mockService{deleteCh: make(chan int, 1)}
 	p := New(nil, 1001, func() core.TelegramServicer { return svc })
