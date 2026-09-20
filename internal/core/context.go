@@ -826,9 +826,9 @@ func extractDocumentMedia(doc *tg.Document) *MediaInfo {
 		return nil
 	}
 
-	mediaType := "document"
 	fileName := fmt.Sprintf("document_%d", doc.ID)
 	var width, height, duration int
+	var hasSticker, hasVideo, hasAudio, hasVoice bool
 
 	for _, attr := range doc.Attributes {
 		switch a := attr.(type) {
@@ -838,23 +838,34 @@ func extractDocumentMedia(doc *tg.Document) *MediaInfo {
 				fileName = base
 			}
 		case *tg.DocumentAttributeVideo:
-			mediaType = "video"
+			hasVideo = true
 			width = a.W
 			height = a.H
 			duration = int(a.Duration)
 		case *tg.DocumentAttributeAudio:
-			if a.Voice {
-				mediaType = "voice"
-			} else {
-				mediaType = "audio"
-			}
+			hasAudio = true
+			hasVoice = a.Voice
 			duration = a.Duration
 		case *tg.DocumentAttributeImageSize:
 			width = a.W
 			height = a.H
 		case *tg.DocumentAttributeSticker:
-			mediaType = "sticker"
+			hasSticker = true
 		}
+	}
+
+	mediaType := "document"
+	switch {
+	case hasSticker:
+		// Video stickers also carry DocumentAttributeVideo. Sticker semantics
+		// must win regardless of Telegram attribute ordering.
+		mediaType = "sticker"
+	case hasVoice:
+		mediaType = "voice"
+	case hasAudio:
+		mediaType = "audio"
+	case hasVideo:
+		mediaType = "video"
 	}
 
 	return &MediaInfo{

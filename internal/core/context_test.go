@@ -1184,3 +1184,48 @@ func TestGetReplyMemoizesAuthoritativeAbsence(t *testing.T) {
 		t.Fatalf("GetMessage calls=%d, want authoritative absence cached", mock.getCalls)
 	}
 }
+
+func TestExtractDocumentMediaStickerPrecedenceIsOrderIndependent(t *testing.T) {
+	orders := [][]tg.DocumentAttributeClass{
+		{
+			&tg.DocumentAttributeSticker{},
+			&tg.DocumentAttributeVideo{W: 512, H: 512, Duration: 2},
+		},
+		{
+			&tg.DocumentAttributeVideo{W: 512, H: 512, Duration: 2},
+			&tg.DocumentAttributeSticker{},
+		},
+	}
+	for i, attributes := range orders {
+		info := ExtractMediaFromTG(&tg.MessageMediaDocument{Document: &tg.Document{
+			ID: 100 + int64(i), MimeType: "video/webm", Size: 1024, Attributes: attributes,
+		}})
+		if info == nil {
+			t.Fatalf("order %d: expected media info", i)
+		}
+		if info.Type != "sticker" {
+			t.Fatalf("order %d: type=%q, want sticker", i, info.Type)
+		}
+		if info.Width != 512 || info.Height != 512 || info.Duration != 2 {
+			t.Fatalf("order %d: lost video sticker metadata: %+v", i, info)
+		}
+	}
+}
+
+func TestMediaFileExtensionPreservesStickerFormat(t *testing.T) {
+	cases := []struct {
+		mime string
+		want string
+	}{
+		{"image/webp", ".webp"},
+		{"image/png", ".png"},
+		{"application/x-tgsticker", ".tgs"},
+		{"video/webm", ".webm"},
+		{"application/octet-stream", ".webp"},
+	}
+	for _, tc := range cases {
+		if got := mediaFileExtension(&MediaInfo{Type: "sticker", MimeType: tc.mime}); got != tc.want {
+			t.Errorf("mime %q extension=%q, want %q", tc.mime, got, tc.want)
+		}
+	}
+}

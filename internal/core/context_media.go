@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/inipew/goultroid/internal/tasks"
@@ -79,33 +80,9 @@ func (m *MediaFacade) DownloadMedia(destDir string) (string, error) {
 
 	fileName := filepath.Base(filepath.Clean(media.FileName))
 	if fileName == "." || fileName == ".." || fileName == "/" || fileName == "" {
-		ext := ".bin"
-		switch media.Type {
-		case "photo":
-			ext = ".jpg"
-		case "video":
-			ext = ".mp4"
-		case "audio":
-			ext = ".mp3"
-		case "voice":
-			ext = ".ogg"
-		case "sticker":
-			ext = ".webp"
-		}
-		fileName = fmt.Sprintf("media_%d%s", time.Now().UnixNano(), ext)
+		fileName = fmt.Sprintf("media_%d%s", time.Now().UnixNano(), mediaFileExtension(media))
 	} else if filepath.Ext(fileName) == "" {
-		switch media.Type {
-		case "photo":
-			fileName += ".jpg"
-		case "video":
-			fileName += ".mp4"
-		case "audio":
-			fileName += ".mp3"
-		case "voice":
-			fileName += ".ogg"
-		case "sticker":
-			fileName += ".webp"
-		}
+		fileName += mediaFileExtension(media)
 	}
 
 	fileName = SanitizeFileName(fileName)
@@ -125,6 +102,38 @@ func (m *MediaFacade) DownloadMedia(destDir string) (string, error) {
 	}
 
 	return filePath, nil
+}
+
+
+func mediaFileExtension(media *MediaInfo) string {
+	if media == nil {
+		return ".bin"
+	}
+	switch media.Type {
+	case "photo":
+		return ".jpg"
+	case "video":
+		return ".mp4"
+	case "audio":
+		return ".mp3"
+	case "voice":
+		return ".ogg"
+	case "sticker":
+		switch strings.ToLower(strings.TrimSpace(media.MimeType)) {
+		case "application/x-tgsticker", "application/x-tgs":
+			return ".tgs"
+		case "video/webm":
+			return ".webm"
+		case "image/png":
+			return ".png"
+		case "image/webp":
+			return ".webp"
+		default:
+			return ".webp"
+		}
+	default:
+		return ".bin"
+	}
 }
 
 // SendMedia sends a media file with the specified mediaType ("file", "photo", "sticker", "audio", "video").
