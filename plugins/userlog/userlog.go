@@ -34,10 +34,10 @@ type Plugin struct {
 	queue            chan func()
 	closing          bool
 	shutdownDone     chan struct{}
-	workerRunning    bool
-	workerGeneration uint64
+	workerRunning     bool
+	workerGeneration  uint64
 	workerIdleTimeout time.Duration
-	wg               sync.WaitGroup
+	wg                sync.WaitGroup
 
 	enqueuedCount  atomic.Int64
 	deliveredCount atomic.Int64
