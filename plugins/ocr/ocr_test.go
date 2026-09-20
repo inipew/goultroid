@@ -409,17 +409,14 @@ func (s *ocrHandlerService) DownloadFile(
 }
 
 func TestOCRHandlerStagesResourcesAndUsesRepliedMedia(t *testing.T) {
-	var payload strings.Builder
 	imagePath := filepath.Join(t.TempDir(), "source.png")
 	writeTestPNG(t, imagePath, 64, 64)
 	imageBytes, err := os.ReadFile(imagePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload.Write(imageBytes)
-
 	svc := &ocrHandlerService{
-		payload: []byte(payload.String()),
+		payload: imageBytes,
 		reply: &tg.Message{
 			ID: 77,
 			Media: &tg.MessageMediaDocument{Document: &tg.Document{
@@ -501,7 +498,6 @@ func TestOCRHandlerStagesResourcesAndUsesRepliedMedia(t *testing.T) {
 		t.Fatalf("OCR workspace leaked %d entries after success", len(entries))
 	}
 }
-
 
 func TestOCRHandlerCleansWorkspaceAndEscapesServiceFailure(t *testing.T) {
 	imagePath := filepath.Join(t.TempDir(), "source.png")
@@ -631,8 +627,8 @@ func TestDeliverResultUsesAttachmentForVeryLongOutput(t *testing.T) {
 	if svc.mediaType != "file" {
 		t.Fatalf("mediaType=%q, want file", svc.mediaType)
 	}
-	if svc.mediaData != text {
-		t.Fatal("attached OCR result did not preserve full raw text")
+	if svc.mediaData != normalizeOCRText(text) {
+		t.Fatal("attached OCR result did not preserve normalized full text")
 	}
 	if got := utf8.RuneCountInString(svc.edits[0]); got > maxTelegramMessageRunes {
 		t.Fatalf("preview has %d runes, exceeds Telegram limit", got)
