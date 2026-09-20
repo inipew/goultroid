@@ -162,7 +162,6 @@ func TestQRPayloadBoundsAndWhitespace(t *testing.T) {
 	}
 }
 
-
 func TestQRScaleBoundsLargePayload(t *testing.T) {
 	if got := qrScaleForModules(177); got != 4 {
 		t.Fatalf("qrScaleForModules(177)=%d, want 4", got)

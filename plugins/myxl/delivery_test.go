@@ -41,9 +41,7 @@ func TestDeliverHTMLChunksLongGeneratedOutput(t *testing.T) {
 		PeerID:  &tg.InputPeerSelf{},
 		Message: &core.Message{ID: 1, IsOutgoing: true},
 	}
-	text := "<b>Quota</b>
-" + strings.Repeat("日本語 &amp; data
-", 700)
+	text := "<b>Quota</b>\n" + strings.Repeat("日本語 &amp; data\n", 700)
 
 	if err := deliverHTML(ctx, text); err != nil {
 		t.Fatal(err)
@@ -67,8 +65,7 @@ func TestDeliverHTMLWithMarkupAttachesMarkupToFinalChunk(t *testing.T) {
 		PeerID:  &tg.InputPeerSelf{},
 		Message: &core.Message{ID: 1, IsOutgoing: true},
 	}
-	text := "<i>" + strings.Repeat("x
-", 5000) + "</i>"
+	text := "<i>" + strings.Repeat("x\n", 5000) + "</i>"
 	markup := &tg.ReplyInlineMarkup{}
 
 	if err := deliverHTMLWithMarkup(ctx, text, markup); err != nil {
