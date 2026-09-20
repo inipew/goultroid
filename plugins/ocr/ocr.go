@@ -12,7 +12,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/inipew/goultroid/internal/core"
@@ -32,6 +34,12 @@ const (
 	maxTelegramMessageRunes   = 4096
 	maxOCRInlineChunks        = 6
 	ocrChunkFormattingReserve = 192
+	maxOCRErrorRunes          = 384
+
+	ocrCommandTimeout  = 2 * time.Minute
+	ocrDownloadTimeout = 45 * time.Second
+	ocrExtractTimeout  = 45 * time.Second
+	ocrDeliveryTimeout = 30 * time.Second
 )
 
 var ocrImagePolicy = imageguard.Policy{
@@ -50,10 +58,13 @@ var supportedLanguages = map[string]struct{}{
 	"spa": {}, "swe": {}, "tur": {}, "ukr": {}, "vie": {},
 }
 
+var ocrTaskSequence atomic.Uint64
+
 type Plugin struct {
 	apiKey, endpoint string
 	http             *network.Client
 	files            *filesystem.Scope
+	tasks            tasks.Client
 }
 
 func New() *Plugin {
@@ -84,6 +95,12 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 	if key, err := secMgr.Get("OCR_API"); err == nil && strings.TrimSpace(key) != "" {
 		p.apiKey = strings.TrimSpace(key)
 	}
+
+	taskClient, err := pctx.TaskClient()
+	if err != nil {
+		return fmt.Errorf("ocr: initialize task client: %w", err)
+	}
+	p.tasks = taskClient
 	return nil
 }
 
@@ -97,6 +114,10 @@ func (p *Plugin) SetHTTP(svc *network.Service) {
 
 func (p *Plugin) SetFiles(fs *filesystem.Manager) {
 	p.files = fs.ForOwner("ocr")
+}
+
+func (p *Plugin) SetTaskClient(client tasks.Client) {
+	p.tasks = client
 }
 
 func (p *Plugin) getHTTP() *network.Client {
@@ -138,10 +159,10 @@ func (p *Plugin) Commands() []core.Command {
 		Category:    "Media",
 		Permission:  core.PermissionEveryone,
 		Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
-		Resources: []tasks.ResourceRequirement{
-			{Name: "download", Amount: 1},
-			{Name: "media", Amount: 1},
-		},
+		Timeout:     ocrCommandTimeout,
+		// Physical resources are staged after reply inspection:
+		// download:1 for capture, none while waiting on OCR.Space, and media:1
+		// only when a long result needs an attachment.
 		Handler: p.handle,
 	}}
 }
@@ -150,12 +171,19 @@ func (p *Plugin) handle(ctx *core.Context) error {
 	if p.apiKey == "" {
 		return ctx.EditOrReply("❌ OCR is not configured. Set OCR_API to an OCR.Space API key.")
 	}
+	if p.tasks == nil {
+		return ctx.EditOrReply("❌ OCR task runtime is unavailable.")
+	}
 	if ctx.Message == nil || ctx.Message.ReplyToID == 0 {
 		return ctx.EditOrReply("⚠️ Reply to a photo or image document with .ocr [language].")
 	}
 	reply, err := ctx.GetReply()
-	if err != nil || reply == nil || !isOCRMedia(reply.Media) {
-		return ctx.EditOrReply("⚠️ The replied message must contain a photo or an image document.")
+	if err != nil {
+		_ = ctx.EditOrReply("❌ Unable to load the replied message.")
+		return fmt.Errorf("ocr: load reply: %w", err)
+	}
+	if reply == nil || !isOCRMedia(reply.Media) {
+		return ctx.EditOrReply("⚠️ The replied message must contain a supported static image.")
 	}
 
 	lang := "eng"
@@ -166,44 +194,193 @@ func (p *Plugin) handle(ctx *core.Context) error {
 		return ctx.EditOrReply("⚠️ Unsupported OCR language. Use a valid OCR.Space language code such as eng, ind, jpn, kor, rus, or vie.")
 	}
 	if err := imageguard.ValidateKnown(reply.Media.Size, reply.Media.Width, reply.Media.Height, ocrImagePolicy); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Image rejected by safety limits: %v", err))
+		return ctx.EditOrReply(fmt.Sprintf("❌ Image rejected by safety limits: %s", core.EscapeHTML(err.Error())))
 	}
 
 	_ = ctx.EditOrReply("⏳ Processing OCR...")
 	files := p.getFiles()
 	dir, err := files.CreateTempDir("goultroid-ocr-*")
 	if err != nil {
-		return fmt.Errorf("create OCR temp directory: %w", err)
+		return fmt.Errorf("ocr: create temp directory: %w", err)
 	}
-	defer files.RemoveTempDir(dir)
+	defer func() { _ = files.RemoveTempDir(dir) }()
 
-	path, err := ctx.DownloadMedia(dir)
+	var path string
+	mediaCtx := ctx.WithMedia(reply.Media)
+	err = p.runStage(
+		ctx.Ctx,
+		ctx,
+		"download",
+		tasks.PoolID("download"),
+		ocrDownloadTimeout,
+		[]tasks.ResourceRequirement{{Name: "download", Amount: 1}},
+		func(taskCtx context.Context) error {
+			var stageErr error
+			path, stageErr = mediaCtx.WithContext(taskCtx).DownloadMedia(dir)
+			if stageErr != nil {
+				return stageErr
+			}
+			_, stageErr = imageguard.Inspect(path, ocrImagePolicy)
+			return stageErr
+		},
+	)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to download image: %v", err))
+		_ = ctx.EditOrReply("❌ Failed to prepare a safe OCR image: " + safeOCRError(err))
+		return fmt.Errorf("ocr: prepare input: %w", err)
 	}
 
-	text, err := p.extract(ctx.Ctx, path, lang)
+	var text string
+	err = p.runStage(
+		ctx.Ctx,
+		ctx,
+		"extract",
+		tasks.PoolID("general"),
+		ocrExtractTimeout,
+		nil,
+		func(taskCtx context.Context) error {
+			var stageErr error
+			text, stageErr = p.extract(taskCtx, path, lang)
+			return stageErr
+		},
+	)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ OCR failed: %v", err))
+		_ = ctx.EditOrReply("❌ OCR failed: " + safeOCRError(err))
+		return fmt.Errorf("ocr: extract: %w", err)
 	}
-	text = strings.TrimSpace(text)
+
+	text = normalizeOCRText(text)
 	if text == "" {
 		return ctx.EditOrReply("ℹ️ OCR completed, but no text was detected.")
 	}
-	return p.deliverResult(ctx, dir, text)
+	if err := p.deliverResult(ctx, dir, text); err != nil {
+		return fmt.Errorf("ocr: deliver result: %w", err)
+	}
+	return nil
+}
+
+
+func (p *Plugin) nextTaskID(stage string, ctx *core.Context) tasks.TaskID {
+	var chatID int64
+	if ctx != nil {
+		chatID = ctx.ChatID()
+		if chatID == 0 {
+			chatID = ctx.SenderID()
+		}
+	}
+	return tasks.TaskID(fmt.Sprintf(
+		"ocr:%s:%d:%d:%d",
+		stage,
+		chatID,
+		time.Now().UnixNano(),
+		ocrTaskSequence.Add(1),
+	))
+}
+
+func (p *Plugin) runStage(
+	admissionCtx context.Context,
+	commandCtx *core.Context,
+	stage string,
+	pool tasks.PoolID,
+	timeout time.Duration,
+	resources []tasks.ResourceRequirement,
+	handler func(context.Context) error,
+) error {
+	if p.tasks == nil {
+		return fmt.Errorf("%w: OCR TaskEngine client is not configured", core.ErrUnavailable)
+	}
+	if admissionCtx == nil {
+		admissionCtx = context.Background()
+	}
+	resources = append([]tasks.ResourceRequirement(nil), resources...)
+
+	var stageErr error
+	ticket, err := p.tasks.Submit(admissionCtx, tasks.WorkSpec{
+		ID:               p.nextTaskID(stage, commandCtx),
+		Pool:             pool,
+		Class:            tasks.PriorityNormal,
+		ExecutionTimeout: timeout,
+		Resources:        resources,
+		Handler: func(taskCtx context.Context) error {
+			stageErr = handler(taskCtx)
+			return stageErr
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("submit %s stage: %w", stage, err)
+	}
+
+	result, waitErr := ticket.Wait(admissionCtx)
+	if waitErr != nil {
+		return fmt.Errorf("wait %s stage: %w", stage, waitErr)
+	}
+	if stageErr != nil {
+		return stageErr
+	}
+	if !result.IsSuccess() {
+		message := strings.TrimSpace(result.Failure.Message)
+		if message == "" {
+			message = fmt.Sprintf("task ended with %s", result.Outcome)
+		}
+		return fmt.Errorf("%s stage: %s", stage, message)
+	}
+	return nil
+}
+
+func safeOCRError(err error) string {
+	if err == nil {
+		return "unknown error"
+	}
+	runes := []rune(strings.TrimSpace(err.Error()))
+	if len(runes) > maxOCRErrorRunes {
+		runes = append(runes[:maxOCRErrorRunes-1], '…')
+	}
+	return core.EscapeHTML(string(runes))
+}
+
+func normalizeOCRText(text string) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	previousCR := false
+	for _, r := range text {
+		if r == '\r' {
+			b.WriteByte('\n')
+			previousCR = true
+			continue
+		}
+		if r == '\n' {
+			if !previousCR {
+				b.WriteByte('\n')
+			}
+			previousCR = false
+			continue
+		}
+		previousCR = false
+		if r == '\t' || !unicode.IsControl(r) {
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func isOCRMedia(media *core.MediaInfo) bool {
 	if media == nil || media.Location == nil {
 		return false
 	}
-	if media.Type == "photo" {
+	mediaType := strings.ToLower(strings.TrimSpace(media.Type))
+	mimeType := strings.ToLower(strings.TrimSpace(media.MimeType))
+	switch mediaType {
+	case "photo":
 		return true
+	case "sticker", "document":
+		switch mimeType {
+		case "image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp":
+			return true
+		default:
+			return false
+		}
+	default:
+		return false
 	}
-	if media.Type == "sticker" {
-		return strings.HasPrefix(strings.ToLower(media.MimeType), "image/")
-	}
-	return media.Type == "document" && strings.HasPrefix(strings.ToLower(media.MimeType), "image/")
 }
 
 func validLanguage(language string) bool {
@@ -393,14 +570,14 @@ func escapedOCRRuneCost(r rune) int {
 	}
 }
 
-func splitOCRText(text string, maxEscapedRunes int) []string {
+func splitOCRTextLimited(text string, maxEscapedRunes, maxChunks int) ([]string, bool) {
 	text = strings.TrimSpace(text)
-	if text == "" || maxEscapedRunes <= 0 {
-		return nil
+	if text == "" || maxEscapedRunes <= 0 || maxChunks <= 0 {
+		return nil, false
 	}
 
-	chunks := make([]string, 0, 2)
-	for len(text) > 0 {
+	chunks := make([]string, 0, min(maxChunks, 2))
+	for len(text) > 0 && len(chunks) < maxChunks {
 		cost := 0
 		cutAt := 0
 		lastNewline := 0
@@ -433,16 +610,24 @@ func splitOCRText(text string, maxEscapedRunes int) []string {
 			cutAt = size
 		}
 		chunks = append(chunks, text[:cutAt])
-		text = text[cutAt:]
+		text = strings.TrimLeftFunc(text[cutAt:], unicode.IsSpace)
 	}
+	return chunks, strings.TrimSpace(text) != ""
+}
+
+func splitOCRText(text string, maxEscapedRunes int) []string {
+	chunks, _ := splitOCRTextLimited(text, maxEscapedRunes, int(^uint(0)>>1))
 	return chunks
 }
 
-func renderOCRChunks(text string) []string {
+func renderOCRChunks(text string) ([]string, bool) {
 	payloadBudget := maxTelegramMessageRunes - ocrChunkFormattingReserve
-	raw := splitOCRText(text, payloadBudget)
+	raw, more := splitOCRTextLimited(text, payloadBudget, maxOCRInlineChunks+1)
 	if len(raw) == 0 {
-		return nil
+		return nil, false
+	}
+	if more || len(raw) > maxOCRInlineChunks {
+		return raw, true
 	}
 	out := make([]string, 0, len(raw))
 	for i, chunk := range raw {
@@ -452,12 +637,12 @@ func renderOCRChunks(text string) []string {
 		}
 		out = append(out, header+core.EscapeHTML(chunk))
 	}
-	return out
+	return out, false
 }
 
 func renderOCRPreview(text string) string {
 	payloadBudget := maxTelegramMessageRunes - ocrChunkFormattingReserve
-	raw := splitOCRText(text, payloadBudget)
+	raw, _ := splitOCRTextLimited(text, payloadBudget, 1)
 	if len(raw) == 0 {
 		return "🎉 <b>OCR RESULT</b>"
 	}
@@ -466,12 +651,13 @@ func renderOCRPreview(text string) string {
 }
 
 func (p *Plugin) deliverResult(ctx *core.Context, tempDir, text string) error {
-	chunks := renderOCRChunks(text)
+	text = normalizeOCRText(text)
+	chunks, attach := renderOCRChunks(text)
 	if len(chunks) == 0 {
 		return ctx.EditOrReply("ℹ️ OCR completed, but no text was detected.")
 	}
 
-	if len(chunks) <= maxOCRInlineChunks {
+	if !attach {
 		if err := ctx.EditOrReply(chunks[0]); err != nil {
 			return err
 		}
@@ -499,8 +685,21 @@ func (p *Plugin) deliverResult(ctx *core.Context, tempDir, text string) error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("close OCR result attachment: %w", err)
 	}
-	if err := ctx.SendFile(resultPath, "🧾 Full OCR result"); err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Failed to attach full OCR result: %v", err))
+
+	err = p.runStage(
+		ctx.Ctx,
+		ctx,
+		"deliver",
+		tasks.PoolID("general"),
+		ocrDeliveryTimeout,
+		[]tasks.ResourceRequirement{{Name: "media", Amount: 1}},
+		func(taskCtx context.Context) error {
+			return ctx.WithContext(taskCtx).SendFile(resultPath, "🧾 Full OCR result")
+		},
+	)
+	if err != nil {
+		_ = ctx.Reply("❌ Failed to attach full OCR result: " + safeOCRError(err))
+		return err
 	}
 	return nil
 }

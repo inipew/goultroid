@@ -14,9 +14,9 @@ var Module ModuleType
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
 		ID:           "ocr",
-		Version:      "1.1.0",
+		Version:      "1.2.0",
 		Description:  "Extract text from a replied Telegram image using OCR.Space",
-		Capabilities: []string{plugin.CapHTTP, plugin.CapFilesystemTemp, plugin.CapSecretRead},
+		Capabilities: []string{plugin.CapHTTP, plugin.CapFilesystemTemp, plugin.CapSecretRead, plugin.CapTasks},
 	}
 }
 
