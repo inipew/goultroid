@@ -74,6 +74,9 @@ func validateCapturedStickerMetadata(media *core.MediaInfo, ref *MediaRef) error
 }
 
 func validateStickerFile(path string, media *MediaRef) error {
+	if media == nil {
+		return fmt.Errorf("%w: sticker metadata is unavailable", ErrUnsupportedStickerFormat)
+	}
 	stat, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidSticker, err)
@@ -176,7 +179,7 @@ func validateVideoSticker(path string, size int64) error {
 	if len(header) < 4 || !bytes.Equal(header[:4], []byte{0x1a, 0x45, 0xdf, 0xa3}) {
 		return fmt.Errorf("%w: video sticker is not an EBML stream", ErrInvalidSticker)
 	}
-	if !bytes.Contains(bytes.ToLower(header), []byte("webm")) {
+	if !bytes.Contains(header, []byte("webm")) {
 		return fmt.Errorf("%w: EBML document type is not WebM", ErrInvalidSticker)
 	}
 	return nil
