@@ -9,6 +9,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/module"
+	"github.com/inipew/goultroid/internal/services/savedresponse"
 	"github.com/inipew/goultroid/internal/services/storage"
 )
 
@@ -83,7 +84,11 @@ func TestBuiltinPersistentMediaReconcileRunsAfterFeatureMigrations(t *testing.T)
 		t.Fatal(err)
 	}
 
-	stats, err := reconcileBuiltinPersistentMedia(ctx, db, storage.NewMemoryStorage())
+	store, err := storage.NewFileStorage(t.TempDir(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := reconcileBuiltinPersistentMedia(ctx, db, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,5 +105,48 @@ func TestBuiltinPersistentMediaReconcileRunsAfterFeatureMigrations(t *testing.T)
 	}
 	if content != "fallback" || assetID != "" {
 		t.Fatalf("startup reconciliation did not preserve text fallback: content=%q asset=%q", content, assetID)
+	}
+}
+
+func TestBuiltinPersistentMediaReconcileSkipsEphemeralFallbackStorage(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := migrateBuiltinFeatures(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO notes (
+			chat_id, name, content, response_format,
+			media_asset_id, media_type, media_name, media_mime,
+			created_at, updated_at
+		) VALUES (1, 'ephemeral-guard', 'fallback', 'html',
+			'durable-but-unavailable', 'photo', 'image.png', 'image/png', ?, ?)
+	`, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := reconcileBuiltinPersistentMedia(ctx, db, storage.NewMemoryStorage())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats != (savedresponse.PersistentMediaReconcileStats{}) {
+		t.Fatalf("ephemeral startup storage should skip reconciliation: %+v", stats)
+	}
+
+	var assetID string
+	if err := db.QueryRowContext(ctx, `
+		SELECT media_asset_id FROM notes
+		WHERE chat_id = 1 AND name = 'ephemeral-guard'
+	`).Scan(&assetID); err != nil {
+		t.Fatal(err)
+	}
+	if assetID != "durable-but-unavailable" {
+		t.Fatalf("ephemeral fallback mutated durable media reference: %q", assetID)
 	}
 }

@@ -55,6 +55,12 @@ func reconcileBuiltinPersistentMedia(
 	if db == nil || store == nil {
 		return stats, nil
 	}
+	// FileStorage is the durable source of truth. If startup fell back to the
+	// process-local memory backend, an empty store does not prove that durable
+	// assets are gone; destructive reconciliation must therefore fail closed.
+	if store.BasePath() == "memory://" {
+		return stats, nil
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
