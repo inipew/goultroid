@@ -16,7 +16,7 @@ var Module ModuleType
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
 		ID:           "filters",
-		Version:      "1.2.0",
+		Version:      "1.3.0",
 		Description:  "Chat-specific rich auto-reply keyword filters",
 		Capabilities: []string{plugin.CapTelegramRead, plugin.CapTelegramSendMessage, plugin.CapStorageRead, plugin.CapStorageWrite, plugin.CapEvents, plugin.CapFilesystemTemp, plugin.CapTasks},
 	}
@@ -30,7 +30,7 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 		return module.ErrNilDatabase
 	}
 	repo := NewSQLiteRepository(rt.DB)
-	return rt.RegisterPlugin(ctx, m.Manifest(), New(repo, rt.TelegramService, savedresponse.NewService(rt.Storage)))
+	return rt.RegisterPlugin(ctx, m.Manifest(), New(repo, rt.TelegramService, savedresponse.NewService(rt.Storage, rt.DB)))
 }
 
 func (ModuleType) Migrations() []database.Migration {

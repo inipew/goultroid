@@ -16,7 +16,7 @@ var Module ModuleType
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
 		ID:           "notes",
-		Version:      "1.2.0",
+		Version:      "1.3.0",
 		Description:  "Chat notes management and retrieval",
 		Capabilities: []string{plugin.CapTelegramSendMessage, plugin.CapStorageRead, plugin.CapStorageWrite, plugin.CapFilesystemTemp},
 	}
@@ -30,7 +30,7 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 		return module.ErrNilDatabase
 	}
 	repo := NewSQLiteRepository(rt.DB)
-	return rt.RegisterPlugin(ctx, m.Manifest(), New(repo, savedresponse.NewService(rt.Storage)))
+	return rt.RegisterPlugin(ctx, m.Manifest(), New(repo, savedresponse.NewService(rt.Storage, rt.DB)))
 }
 
 func (ModuleType) Migrations() []database.Migration {

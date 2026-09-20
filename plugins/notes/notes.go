@@ -39,6 +39,9 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 		return err
 	}
 	p.responses.SetFiles(files)
+	if _, err := p.responses.ReconcileCleanup(pctx, 32); err != nil {
+		return fmt.Errorf("notes: reconcile saved response cleanup: %w", err)
+	}
 	return nil
 }
 
