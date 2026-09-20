@@ -267,6 +267,28 @@ func (p *Plugin) runBroadcast(ctx *core.Context, scope broadcast.TargetType, res
 		Response: response.Clone(),
 		Vars:     savedresponse.VarsFromContext(ctx, time.Now()),
 		Delay:    400 * time.Millisecond,
+		Progress: func(progress broadcast.BroadcastReport) {
+			completed := progress.Sent + progress.Failed
+			if progress.Canceled || progress.Total <= 0 || completed >= progress.Total {
+				return
+			}
+			percent := completed * 100 / progress.Total
+			_ = ctx.Edit(fmt.Sprintf(
+				"🚀 <b>Broadcast in progress</b>\n\n"+
+					"• <b>Progress:</b> <code>%d/%d (%d%%)</code>\n"+
+					"• <b>Sent:</b> <code>%d</code>\n"+
+					"• <b>Failed:</b> <code>%d</code>\n"+
+					"• <b>Rate Limited:</b> <code>%d</code>\n"+
+					"• <b>Elapsed:</b> <code>%v</code>",
+				completed,
+				progress.Total,
+				percent,
+				progress.Sent,
+				progress.Failed,
+				progress.RateLimited,
+				progress.Duration.Round(time.Second),
+			))
+		},
 	})
 	if err != nil && (rep == nil || !rep.Canceled) {
 		return ctx.Edit(fmt.Sprintf("❌ Broadcast failed: %v", err))

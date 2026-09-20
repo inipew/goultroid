@@ -78,12 +78,14 @@ func TestBroadcast_Success(t *testing.T) {
 	}
 
 	var progressReports int32
+	var finalProgress broadcast.BroadcastReport
 	req := broadcast.BroadcastRequest{
 		Targets: targets,
 		Text:    "Hello Broadcast!",
 		Delay:   5 * time.Millisecond,
 		Progress: func(report broadcast.BroadcastReport) {
 			atomic.AddInt32(&progressReports, 1)
+			finalProgress = report
 		},
 	}
 
@@ -96,8 +98,11 @@ func TestBroadcast_Success(t *testing.T) {
 	if rep.Total != 3 || rep.Sent != 3 || rep.Failed != 0 {
 		t.Errorf("unexpected report: %+v", rep)
 	}
-	if atomic.LoadInt32(&progressReports) != 3 {
-		t.Errorf("expected 3 progress callbacks, got %d", progressReports)
+	if got := atomic.LoadInt32(&progressReports); got < 1 || got >= int32(len(targets)) {
+		t.Errorf("expected coalesced progress callbacks, got %d for %d targets", got, len(targets))
+	}
+	if finalProgress.Sent != 3 || finalProgress.Failed != 0 || finalProgress.Total != 3 {
+		t.Errorf("terminal progress snapshot=%+v", finalProgress)
 	}
 }
 

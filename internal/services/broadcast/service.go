@@ -56,13 +56,15 @@ type BroadcastRequest struct {
 	// targets.
 	Delay time.Duration
 
+	// Progress receives coalesced snapshots instead of one callback per target.
+	// The service always attempts one final snapshot for the terminal state.
 	Progress ProgressCallback
 }
 
 type Service struct {
-	svc     core.TelegramServicer
-	svcFunc func() core.TelegramServicer
-	logger  *zap.Logger
+	svc       core.TelegramServicer
+	svcFunc   func() core.TelegramServicer
+	logger    *zap.Logger
 	tasks     tasks.Client
 	responses *savedresponse.Service
 	delivery  *savedresponse.ResponseDelivery
@@ -231,6 +233,13 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 
 	start := time.Now()
 	report := BroadcastReport{Total: len(req.Targets)}
+	progress := newProgressCoalescer(req.Progress, report.Total, start)
+	defer func() {
+		now := time.Now()
+		report.Duration = now.Sub(start)
+		progress.Emit(report, now, true)
+	}()
+
 	pending := make([]pendingTarget, 0, min(len(req.Targets), maxBroadcastInFlight))
 	var deliveryResources []tasks.ResourceRequirement
 	if response.HasMedia() {
@@ -264,9 +273,7 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 				s.logger.Debug("broadcast message error", zap.Error(err))
 			}
 		}
-		if req.Progress != nil {
-			req.Progress(report)
-		}
+		progress.Emit(report, time.Now(), false)
 		return nil
 	}
 
@@ -327,9 +334,7 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 			}
 
 			report.Failed++
-			if req.Progress != nil {
-				req.Progress(report)
-			}
+			progress.Emit(report, time.Now(), false)
 			break
 		}
 
