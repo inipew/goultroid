@@ -155,7 +155,6 @@ func writeTestPNG(t *testing.T, path string, width, height int) {
 	}
 }
 
-
 func TestOCRMultipartBodyStreamsValidForm(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "image.png")
 	writeTestPNG(t, path, 16, 8)
