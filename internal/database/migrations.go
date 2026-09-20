@@ -337,6 +337,22 @@ var migrations = []migration{
 			);`,
 		},
 	},
+	{
+		version:     18,
+		description: "Durable saved-response media cleanup journal",
+		statements: []string{
+			`CREATE TABLE IF NOT EXISTS saved_response_media_cleanup (
+				asset_id TEXT PRIMARY KEY,
+				attempts INTEGER NOT NULL DEFAULT 0,
+				last_error TEXT NOT NULL DEFAULT '',
+				next_attempt_at DATETIME NOT NULL,
+				created_at DATETIME NOT NULL,
+				updated_at DATETIME NOT NULL
+			);`,
+			`CREATE INDEX IF NOT EXISTS idx_saved_response_media_cleanup_due
+				ON saved_response_media_cleanup(next_attempt_at, created_at);`,
+		},
+	},
 }
 
 // LegacyMigrationInfo contains metadata and checksums for a canonical legacy migration.
