@@ -112,7 +112,6 @@ func TestMigrations_Versioning(t *testing.T) {
 	}
 }
 
-
 func TestLatestMigrationIncludesPersistentMediaLedger(t *testing.T) {
 	if len(migrations) == 0 {
 		t.Fatal("migrations unexpectedly empty")

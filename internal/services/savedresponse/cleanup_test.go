@@ -392,6 +392,37 @@ func TestGlobalMigrationCreatesPersistentMediaLedger(t *testing.T) {
 	}
 }
 
+func TestPersistentMediaReconcileRecoversOutOfBandReferenceLoss(t *testing.T) {
+	db := openCleanupTestDB(t)
+	defer db.Close()
+	store := storage.NewMemoryStorage()
+	asset := putCleanupTestAsset(t, store, "out-of-band.bin")
+	insertReferencedNote(t, db, "out-of-band", asset.ID)
+	svc := NewService(store, db)
+
+	first, err := svc.ReconcilePersistentMedia(context.Background(), 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ReferencesBackfilled != 1 || first.Cleanup.Deleted != 0 {
+		t.Fatalf("unexpected first reconciliation: %+v", first)
+	}
+
+	if _, err := db.Exec(`DELETE FROM notes WHERE chat_id = 1 AND name = 'out-of-band'`); err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.ReconcilePersistentMedia(context.Background(), 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.OrphansDiscovered != 1 || second.CleanupScheduled != 1 || second.Cleanup.Deleted != 1 {
+		t.Fatalf("out-of-band reference loss was not reconciled: %+v", second)
+	}
+	if _, err := store.Stat(context.Background(), asset.ID); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("out-of-band orphan survived reconciliation: %v", err)
+	}
+}
+
 func TestCommitReplacementDisarmsPreparedCaptureIntent(t *testing.T) {
 	db := openCleanupTestDB(t)
 	defer db.Close()
