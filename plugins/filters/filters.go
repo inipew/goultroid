@@ -85,7 +85,7 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 		return err
 	}
 	p.responses.SetFiles(files)
-	if _, err := p.responses.ReconcilePersistentMedia(pctx, 256); err != nil {
+	if _, err := p.responses.ReconcilePersistentMedia(pctx, 32); err != nil {
 		return fmt.Errorf("filters: reconcile persistent saved-response media: %w", err)
 	}
 

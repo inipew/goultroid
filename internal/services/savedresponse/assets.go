@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	defaultPersistentReconcileBatch = 128
-	maxPersistentReconcileBatch     = 1024
+	defaultPersistentReconcileBatch = 32
+	maxPersistentReconcileBatch     = 128
 )
 
 type assetLedger struct {
