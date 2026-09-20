@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf16"
 
@@ -239,6 +240,15 @@ type DelayedActionScheduler interface {
 	Schedule(ctx context.Context, delay time.Duration, retainedBytes int64, action func(context.Context) error) error
 }
 
+type replyMemo struct {
+	mu        sync.Mutex
+	replyToID int
+	loaded    bool
+	message   *Message
+}
+
+var replyMemoInitMu sync.Mutex
+
 // Context is passed to each command handler, providing clean abstractions.
 type Context struct {
 	Ctx context.Context
@@ -265,6 +275,8 @@ type Context struct {
 	Localizer      Localizer
 	EventBus       *EventBus
 	DelayedActions DelayedActionScheduler
+
+	replyMemo *replyMemo
 }
 
 // IsInteractive returns true if triggered by human interaction in Telegram.
@@ -408,25 +420,26 @@ func (c *Context) TopicID() int {
 	return 0
 }
 
-// GetReply retrieves the message that was replied to, if any.
-func (c *Context) GetReply() (*Message, error) {
-	if c.Svc == nil {
-		return nil, errors.New("telegram service not initialized")
+func (c *Context) replyMemoState() *replyMemo {
+	if c == nil {
+		return nil
 	}
-	if c.Message == nil || c.Message.ReplyToID == 0 {
-		return nil, nil
+	if c.replyMemo != nil {
+		return c.replyMemo
 	}
-	msg, err := c.Svc.GetMessage(c.Ctx, c.PeerID, c.Message.ReplyToID)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to fetch reply message: %w", err)
+	replyMemoInitMu.Lock()
+	if c.replyMemo == nil {
+		c.replyMemo = &replyMemo{}
 	}
-	if msg == nil {
-		return nil, nil
-	}
+	memo := c.replyMemo
+	replyMemoInitMu.Unlock()
+	return memo
+}
 
+func normalizeReplyMessage(msg *tg.Message) *Message {
+	if msg == nil {
+		return nil
+	}
 	res := &Message{
 		ID:         msg.ID,
 		Text:       msg.Message,
@@ -461,10 +474,45 @@ func (c *Context) GetReply() (*Message, error) {
 			res.MediaType = res.Media.Type
 		}
 	}
-
-	return res, nil
+	return res
 }
 
+// GetReply retrieves and memoizes the replied message for this invocation.
+// Successful lookups and authoritative absence are cached. Transient RPC
+// failures are deliberately not cached so a later caller can retry.
+func (c *Context) GetReply() (*Message, error) {
+	if c == nil || c.Svc == nil {
+		return nil, errors.New("telegram service not initialized")
+	}
+	if c.Message == nil || c.Message.ReplyToID == 0 {
+		return nil, nil
+	}
+
+	replyToID := c.Message.ReplyToID
+	memo := c.replyMemoState()
+	memo.mu.Lock()
+	defer memo.mu.Unlock()
+
+	if memo.loaded && memo.replyToID == replyToID {
+		return memo.message, nil
+	}
+
+	msg, err := c.Svc.GetMessage(c.Ctx, c.PeerID, replyToID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			memo.replyToID = replyToID
+			memo.loaded = true
+			memo.message = nil
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to fetch reply message: %w", err)
+	}
+
+	memo.replyToID = replyToID
+	memo.loaded = true
+	memo.message = normalizeReplyMessage(msg)
+	return memo.message, nil
+}
 // --- Backward-Compatible Delegator Methods ---
 
 // Reply sends a response message to the same chat and records LastResponseID.
