@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/services/savedresponse"
 )
 
 func TestFiltersFeatureMigrationFreshDatabase(t *testing.T) {
@@ -20,7 +21,7 @@ func TestFiltersFeatureMigrationFreshDatabase(t *testing.T) {
 	}
 
 	repo := NewSQLiteRepository(db)
-	if err := repo.SaveFilter(ctx, 100, "hello", "world"); err != nil {
+	if err := repo.SaveFilter(ctx, 100, "hello", savedresponse.NewText("world")); err != nil {
 		t.Fatalf("save filter: %v", err)
 	}
 
@@ -28,7 +29,7 @@ func TestFiltersFeatureMigrationFreshDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get filter: %v", err)
 	}
-	if f == nil || f.ReplyText != "world" {
+	if f == nil || f.Response.Text != "world" || f.Response.Format != savedresponse.FormatHTML {
 		t.Fatalf("unexpected filter: %#v", f)
 	}
 

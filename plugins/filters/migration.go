@@ -7,7 +7,10 @@ import (
 	"github.com/inipew/goultroid/internal/database"
 )
 
-var _ database.SchemaInvariantMigration = migration001{}
+var (
+	_ database.SchemaInvariantMigration = migration001{}
+	_ database.SchemaInvariantMigration = migration002{}
+)
 
 type migration001 struct{}
 
@@ -39,6 +42,40 @@ func (migration001) VerifySchema(ctx context.Context, tx database.SQLExecutor) e
 	return nil
 }
 
+type migration002 struct{}
+
+func (migration002) ID() string          { return "filters.002" }
+func (migration002) Description() string { return "Rich saved response metadata for filters" }
+func (migration002) Checksum() string {
+	return "bf16dd3ba62191d1fcf4f19267ab0266c67590a8221f3ed84ffb51f6a4dde0bc"
+}
+func (migration002) Up(ctx context.Context, tx database.SQLExecutor) error {
+	for _, statement := range []string{
+		`ALTER TABLE filters ADD COLUMN response_format TEXT NOT NULL DEFAULT 'html';`,
+		`ALTER TABLE filters ADD COLUMN media_asset_id TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE filters ADD COLUMN media_type TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE filters ADD COLUMN media_name TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE filters ADD COLUMN media_mime TEXT NOT NULL DEFAULT '';`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+func (migration002) VerifySchema(ctx context.Context, tx database.SQLExecutor) error {
+	for _, column := range []string{"response_format", "media_asset_id", "media_type", "media_name", "media_mime"} {
+		var count int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('filters') WHERE name = ?`, column).Scan(&count); err != nil {
+			return err
+		}
+		if count == 0 {
+			return fmt.Errorf("required column %s in table filters does not exist", column)
+		}
+	}
+	return nil
+}
+
 func Migrations() []database.Migration {
-	return []database.Migration{migration001{}}
+	return []database.Migration{migration001{}, migration002{}}
 }

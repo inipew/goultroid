@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"regexp"
 	"strings"
 	"sync"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/services/savedresponse"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 const (
@@ -22,14 +25,15 @@ var _ plugin.MessageEventPlugin = (*Plugin)(nil)
 var _ plugin.MessageEventStatePlugin = (*Plugin)(nil)
 
 type compiledFilter struct {
-	keyword   string
-	replyText string
-	re        *regexp.Regexp
+	keyword  string
+	response savedresponse.Response
+	re       *regexp.Regexp
 }
 
 type Plugin struct {
 	db           Repository
 	svcFunc      func() core.TelegramServicer
+	responses    *savedresponse.Service
 	featureState core.ChatFeatureSnapshot
 	cacheMu      sync.RWMutex
 	chatFilters  map[int64][]compiledFilter
@@ -38,14 +42,33 @@ type Plugin struct {
 	lastReply    map[string]time.Time
 }
 
-func New(db Repository, svcFunc func() core.TelegramServicer) *Plugin {
-	return &Plugin{db: db, svcFunc: svcFunc, chatFilters: make(map[int64][]compiledFilter), chatAccess: make(map[int64]time.Time), lastReply: make(map[string]time.Time)}
+func New(db Repository, svcFunc func() core.TelegramServicer, responses ...*savedresponse.Service) *Plugin {
+	p := &Plugin{
+		db: db, svcFunc: svcFunc,
+		chatFilters: make(map[int64][]compiledFilter),
+		chatAccess: make(map[int64]time.Time),
+		lastReply: make(map[string]time.Time),
+	}
+	if len(responses) > 0 {
+		p.responses = responses[0]
+	}
+	return p
 }
 
 func (p *Plugin) Name() string { return "filters" }
 
-func (p *Plugin) Init() error {
-	return p.InitContext(context.Background())
+func (p *Plugin) Init() error { return p.InitContext(context.Background()) }
+
+func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
+	if p.responses == nil {
+		return errors.New("filters: saved response service is not configured")
+	}
+	files, err := pctx.Files()
+	if err != nil {
+		return err
+	}
+	p.responses.SetFiles(files)
+	return nil
 }
 
 func (p *Plugin) InitContext(ctx context.Context) error {
@@ -60,25 +83,27 @@ func (p *Plugin) InitContext(ctx context.Context) error {
 
 func (p *Plugin) MessageHookPriority() int { return 20 }
 
-func (p *Plugin) MessageHookInterested(chatID int64) bool {
-	return p.featureState.Interested(chatID)
-}
+func (p *Plugin) MessageHookInterested(chatID int64) bool { return p.featureState.Interested(chatID) }
 
 func (p *Plugin) MessageHookRouting() core.MessageHookRouting {
 	return core.MessageHookRouting{
 		Lane: core.MessageHookDecision,
 		Interests: []core.MessageHookInterest{{
-			Directions:  core.MessageDirectionIncoming,
-			Peers:       core.MessagePeerStable,
-			Commands:    core.MessagePlain,
-			RequireText: true,
+			Directions: core.MessageDirectionIncoming, Peers: core.MessagePeerStable,
+			Commands: core.MessagePlain, RequireText: true,
 		}},
 	}
 }
 
 func (p *Plugin) Commands() []core.Command {
 	return []core.Command{
-		{Name: "filter", Description: "Save an automated keyword filter in this chat", Usage: ".filter <keyword> <reply text> or reply to a message with .filter <keyword>", Category: "Filters", Permission: core.PermissionSudo, GroupOnly: true, Handler: p.handleFilter},
+		{
+			Name: "filter", Description: "Save a rich automated keyword filter in this chat",
+			Usage: ".filter <keyword> <reply text> or reply to text/media with .filter <keyword>",
+			Category: "Filters", Permission: core.PermissionSudo, GroupOnly: true,
+			Resources: []tasks.ResourceRequirement{{Name: "download", Amount: 1}},
+			Handler: p.handleFilter,
+		},
 		{Name: "stop", Description: "Stop and delete a chat filter", Usage: ".stop <keyword>", Category: "Filters", Permission: core.PermissionSudo, GroupOnly: true, Handler: p.handleStop},
 		{Name: "filters", Description: "List all active filters in this chat", Category: "Filters", Permission: core.PermissionSudo, GroupOnly: true, Handler: p.handleList},
 	}
@@ -93,57 +118,75 @@ func (p *Plugin) getChatID(ctx *core.Context) int64 {
 
 func (p *Plugin) handleFilter(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		_ = ctx.EditOrReply("⚠️ Usage: <code>.filter &lt;keyword&gt; &lt;reply text&gt;</code> or reply to a message with <code>.filter &lt;keyword&gt;</code>")
+		_ = ctx.EditOrReply("⚠️ Usage: <code>.filter &lt;keyword&gt; &lt;reply text&gt;</code> or reply to text/media with <code>.filter &lt;keyword&gt;</code>")
 		return errors.New("missing arguments")
 	}
-	if p.db == nil {
-		_ = ctx.EditOrReply("❌ Filters database is unavailable.")
-		return errors.New("filters: database is unavailable")
+	if p.db == nil || p.responses == nil {
+		return errors.New("filters: persistence is unavailable")
 	}
 	keyword := strings.ToLower(strings.TrimSpace(ctx.Args[0]))
 	if keyword == "" {
-		_ = ctx.EditOrReply("⚠️ Filter keyword cannot be empty.")
 		return errors.New("empty filter keyword")
 	}
-	var replyText string
+
+	var response savedresponse.Response
+	var err error
 	if len(ctx.Args) >= 2 {
-		replyText = strings.TrimSpace(strings.TrimPrefix(ctx.RawArgs, ctx.Args[0]))
+		response = savedresponse.NewText(strings.TrimSpace(strings.TrimPrefix(ctx.RawArgs, ctx.Args[0])))
 	} else {
-		reply, err := ctx.GetReply()
-		if err != nil || reply == nil || reply.Text == "" {
-			_ = ctx.EditOrReply("⚠️ Please provide reply text or reply to a text message.")
-			return errors.New("missing filter reply text")
+		response, err = p.responses.CaptureReply(ctx)
+		if err != nil {
+			_ = ctx.EditOrReply(fmt.Sprintf("⚠️ Could not capture replied response: %v", err))
+			return err
 		}
-		replyText = reply.Text
 	}
-	if replyText == "" {
-		_ = ctx.EditOrReply("⚠️ Filter reply cannot be empty.")
-		return errors.New("empty filter reply")
+	if response.Empty() {
+		return errors.New("empty filter response")
 	}
+
 	chatID := p.getChatID(ctx)
 	p.featureState.MarkUnknown(chatID)
-	if err := p.db.SaveFilter(ctx.Ctx, chatID, keyword, replyText); err != nil {
+	previous, err := p.db.GetFilter(ctx.Ctx, chatID, keyword)
+	if err != nil {
+		_ = p.responses.DeleteMedia(ctx.Ctx, response)
+		return err
+	}
+	var old savedresponse.Response
+	if previous != nil {
+		old = previous.Response
+	}
+	if err := p.responses.CommitReplacement(ctx.Ctx, old, response, func() error {
+		return p.db.SaveFilter(ctx.Ctx, chatID, keyword, response)
+	}); err != nil {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to save filter: %v", err))
 		return err
 	}
 	p.featureState.SetActive(chatID, true)
 	p.invalidateChat(chatID)
-	return ctx.EditOrReply(fmt.Sprintf("🎯 Filter <code>%s</code> saved successfully.", keyword))
+	return ctx.EditOrReply(fmt.Sprintf("🎯 Filter <code>%s</code> saved successfully.", html.EscapeString(keyword)))
 }
 
 func (p *Plugin) handleStop(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		_ = ctx.EditOrReply("⚠️ Usage: <code>.stop &lt;keyword&gt;</code>")
 		return errors.New("missing filter keyword")
 	}
-	if p.db == nil {
-		_ = ctx.EditOrReply("❌ Filters database is unavailable.")
-		return errors.New("filters: database is unavailable")
+	if p.db == nil || p.responses == nil {
+		return errors.New("filters: persistence is unavailable")
 	}
 	keyword := strings.ToLower(strings.TrimSpace(ctx.Args[0]))
 	chatID := p.getChatID(ctx)
+	filter, err := p.db.GetFilter(ctx.Ctx, chatID, keyword)
+	if err != nil {
+		return err
+	}
+	if filter == nil {
+		return errors.New("filter not found")
+	}
+
 	p.featureState.MarkUnknown(chatID)
-	if err := p.db.DeleteFilter(ctx.Ctx, chatID, keyword); err != nil {
+	if err := p.responses.CommitDelete(ctx.Ctx, filter.Response, func() error {
+		return p.db.DeleteFilter(ctx.Ctx, chatID, keyword)
+	}); err != nil {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to stop filter: %v", err))
 		return err
 	}
@@ -153,18 +196,15 @@ func (p *Plugin) handleStop(ctx *core.Context) error {
 		p.featureState.SetActive(chatID, len(remaining) > 0)
 	}
 	p.invalidateChat(chatID)
-	return ctx.EditOrReply(fmt.Sprintf("🗑️ Filter <code>%s</code> stopped.", keyword))
+	return ctx.EditOrReply(fmt.Sprintf("🗑️ Filter <code>%s</code> stopped.", html.EscapeString(keyword)))
 }
 
 func (p *Plugin) handleList(ctx *core.Context) error {
 	if p.db == nil {
-		_ = ctx.EditOrReply("❌ Filters database is unavailable.")
 		return errors.New("filters: database is unavailable")
 	}
-	chatID := p.getChatID(ctx)
-	list, err := p.db.ListFilters(ctx.Ctx, chatID)
+	list, err := p.db.ListFilters(ctx.Ctx, p.getChatID(ctx))
 	if err != nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to list filters: %v", err))
 		return err
 	}
 	if len(list) == 0 {
@@ -173,7 +213,7 @@ func (p *Plugin) handleList(ctx *core.Context) error {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "🎯 <b>Active Filters in this chat (%d):</b>\n", len(list))
 	for _, f := range list {
-		fmt.Fprintf(&sb, "• <code>%s</code>\n", f.Keyword)
+		fmt.Fprintf(&sb, "• <code>%s</code>\n", html.EscapeString(f.Keyword))
 	}
 	return ctx.EditOrReply(sb.String())
 }
@@ -192,31 +232,24 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 	if decision := core.GetMessageDecision(ctx); decision != nil && (decision.IsSuppressedFilters() || decision.IsSuppressedAutomation()) {
 		return nil
 	}
-	if message.Sender.IsBot {
-		return nil
-	}
-	if p.svcFunc == nil || p.db == nil {
+	if message.Sender.IsBot || p.svcFunc == nil || p.db == nil || p.responses == nil {
 		return nil
 	}
 	svc := p.svcFunc()
-	if svc == nil {
-		return nil
-	}
-	chatID := message.ChatID
-	if chatID == 0 {
+	if svc == nil || message.ChatID == 0 {
 		return nil
 	}
 
-	filters, ok := p.getCachedFilters(chatID)
+	filters, ok := p.getCachedFilters(message.ChatID)
 	if !ok {
-		rawFilters, err := p.db.ListFilters(ctx, chatID)
+		rawFilters, err := p.db.ListFilters(ctx, message.ChatID)
 		if err != nil {
-			p.featureState.MarkUnknown(chatID)
+			p.featureState.MarkUnknown(message.ChatID)
 			return nil
 		}
-		p.featureState.SetActive(chatID, len(rawFilters) > 0)
+		p.featureState.SetActive(message.ChatID, len(rawFilters) > 0)
 		filters = compileFilters(rawFilters)
-		p.cacheFilters(chatID, filters)
+		p.cacheFilters(message.ChatID, filters)
 	}
 	if len(filters) == 0 {
 		return nil
@@ -228,17 +261,37 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 		if !matched {
 			continue
 		}
-		cooldownKey := fmt.Sprintf("%d:%s", chatID, f.keyword)
+		cooldownKey := fmt.Sprintf("%d:%s", message.ChatID, f.keyword)
 		if p.cooldownActive(cooldownKey) {
 			break
 		}
 
 		peer, err := message.Peer.InputPeer()
 		if err != nil {
-			return fmt.Errorf("filters: cannot resolve chat peer %d for reply: %w", chatID, err)
+			return fmt.Errorf("filters: cannot resolve chat peer %d for reply: %w", message.ChatID, err)
 		}
-		if _, err := svc.SendMessage(ctx, peer, f.replyText); err != nil {
-			return fmt.Errorf("filters: send reply for %q: %w", f.keyword, err)
+		maxRunes := savedresponse.DefaultMaxOutputRunes
+		if f.response.Media != nil {
+			maxRunes = 1024
+		}
+		rendered, err := savedresponse.RenderHTML(f.response.Text, savedresponse.VarsFromEnvelope(message, time.Now()), maxRunes)
+		if err != nil {
+			return fmt.Errorf("filters: render reply for %q: %w", f.keyword, err)
+		}
+		if f.response.Media == nil {
+			if _, err := svc.SendMessage(ctx, peer, rendered); err != nil {
+				return fmt.Errorf("filters: send reply for %q: %w", f.keyword, err)
+			}
+		} else {
+			path, cleanup, err := p.responses.Materialize(ctx, f.response)
+			if err != nil {
+				return fmt.Errorf("filters: materialize media for %q: %w", f.keyword, err)
+			}
+			_, sendErr := svc.SendMedia(ctx, peer, f.response.Media.MediaType, path, rendered)
+			cleanup()
+			if sendErr != nil {
+				return fmt.Errorf("filters: send media reply for %q: %w", f.keyword, sendErr)
+			}
 		}
 		p.markCooldown(cooldownKey)
 		if decision := core.GetMessageDecision(ctx); decision != nil {
@@ -248,6 +301,7 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 	}
 	return nil
 }
+
 func (p *Plugin) getCachedFilters(chatID int64) ([]compiledFilter, bool) {
 	p.cacheMu.RLock()
 	filters, ok := p.chatFilters[chatID]
@@ -298,7 +352,7 @@ func (p *Plugin) markCooldown(key string) {
 			if now.Sub(v) > 30*time.Second {
 				delete(p.lastReply, k)
 			}
-		}
+	}
 	}
 	p.cooldownMu.Unlock()
 }
@@ -318,7 +372,7 @@ func compileFilterItem(f Filter) compiledFilter {
 		pattern := `(?i)(?:^|[^\p{L}\p{N}_])` + regexp.QuoteMeta(kw) + `(?:$|[^\p{L}\p{N}_])`
 		re, _ = regexp.Compile(pattern)
 	}
-	return compiledFilter{keyword: kw, replyText: f.ReplyText, re: re}
+	return compiledFilter{keyword: kw, response: f.Response, re: re}
 }
 
 func matchFilter(text, keyword string) bool {

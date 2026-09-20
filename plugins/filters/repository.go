@@ -3,26 +3,24 @@ package filters
 import (
 	"context"
 	"time"
+
+	"github.com/inipew/goultroid/internal/services/savedresponse"
 )
 
-// Filter represents a chat-specific auto-reply keyword filter.
 type Filter struct {
-	ChatID    int64     `json:"chat_id"`
-	Keyword   string    `json:"keyword"`
-	ReplyText string    `json:"reply_text"`
-	CreatedAt time.Time `json:"created_at"`
+	ChatID    int64                  `json:"chat_id"`
+	Keyword   string                 `json:"keyword"`
+	Response  savedresponse.Response `json:"response"`
+	CreatedAt time.Time              `json:"created_at"`
 }
 
-// Repository defines access methods for chat auto-reply filters.
 type Repository interface {
-	SaveFilter(ctx context.Context, chatID int64, keyword, replyText string) error
+	SaveFilter(ctx context.Context, chatID int64, keyword string, response savedresponse.Response) error
 	GetFilter(ctx context.Context, chatID int64, keyword string) (*Filter, error)
 	ListFilters(ctx context.Context, chatID int64) ([]Filter, error)
 	DeleteFilter(ctx context.Context, chatID int64, keyword string) error
 }
 
-// ActiveChatRepository is an optional optimization interface used to preload
-// the set of chats that actually have filter state.
 type ActiveChatRepository interface {
 	ListActiveChatIDs(ctx context.Context) ([]int64, error)
 }
