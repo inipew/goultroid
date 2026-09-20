@@ -283,11 +283,10 @@ func (p *Plugin) handleExtractAudio(ctx *core.Context) error {
 	if err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Audio extraction failed: %v", err))
 	}
-	defer p.cleanupTransientAsset(ctx.Ctx, outAsset)
 
 	cleanFileName := core.SanitizeFileName(item.FileName)
 	caption := fmt.Sprintf("🎵 Extracted from: <code>%s</code>", core.EscapeHTML(cleanFileName))
-	if err := ctx.SendAudio(outAsset.Path, caption); err != nil {
+	if err := p.withTransientAsset(ctx.Ctx, outAsset, func() error { return ctx.SendAudio(outAsset.Path, caption) }); err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to send audio: %v", err))
 	}
 
@@ -358,10 +357,9 @@ func (p *Plugin) handleConvert(ctx *core.Context) error {
 	if err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Conversion failed: %v", err))
 	}
-	defer p.cleanupTransientAsset(ctx.Ctx, outAsset)
 
 	caption := fmt.Sprintf("🎬 Converted to: <code>%s</code>", core.EscapeHTML(targetFormat))
-	if err := sendAsset(ctx, mediaType, outAsset, caption); err != nil {
+	if err := p.withTransientAsset(ctx.Ctx, outAsset, func() error { return sendAsset(ctx, mediaType, outAsset, caption) }); err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to send converted media: %v", err))
 	}
 
@@ -409,9 +407,8 @@ func (p *Plugin) handleConvertToGIF(ctx *core.Context) error {
 	if err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ GIF conversion failed: %v", err))
 	}
-	defer p.cleanupTransientAsset(ctx.Ctx, outAsset)
 
-	if err := sendAsset(ctx, "document", outAsset, "🎞️ Converted to GIF"); err != nil {
+	if err := p.withTransientAsset(ctx.Ctx, outAsset, func() error { return sendAsset(ctx, "document", outAsset, "🎞️ Converted to GIF") }); err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to send GIF: %v", err))
 	}
 
@@ -459,11 +456,14 @@ func (p *Plugin) handleConvertToSticker(ctx *core.Context) error {
 	if err != nil {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Video sticker generation failed: %v", err))
 	}
-	defer p.cleanupTransientAsset(ctx.Ctx, outAsset)
 
-	if err := sendAsset(ctx, "sticker", outAsset, "🎭 Video Sticker"); err != nil {
-		// Fallback to document if sticker sender fails
-		_ = sendAsset(ctx, "document", outAsset, "🎭 Video Sticker (WebM)")
+	if err := p.withTransientAsset(ctx.Ctx, outAsset, func() error {
+		if err := sendAsset(ctx, "sticker", outAsset, "🎭 Video Sticker"); err != nil {
+			return sendAsset(ctx, "document", outAsset, "🎭 Video Sticker (WebM)")
+		}
+		return nil
+	}); err != nil {
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to send video sticker: %v", err))
 	}
 
 	_ = ctx.Delete()
@@ -486,6 +486,13 @@ func classifyConvertFormat(targetFormat string) (mediaType string, audioOnly boo
 	}
 }
 
+func (p *Plugin) withTransientAsset(parent context.Context, asset *storage.Asset, use func() error) error {
+	defer p.cleanupTransientAsset(parent, asset)
+	if use == nil {
+		return fmt.Errorf("%w: transient media consumer is nil", core.ErrInvalidArgs)
+	}
+	return use()
+}
 func (p *Plugin) cleanupTransientAsset(parent context.Context, asset *storage.Asset) {
 	if p == nil || p.mediaService == nil || asset == nil || strings.TrimSpace(asset.ID) == "" {
 		return
