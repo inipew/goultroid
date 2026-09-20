@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/services/storage"
 )
@@ -32,12 +33,17 @@ var (
 )
 
 type Service struct {
-	store storage.Storage
-	files *filesystem.Scope
+	store   storage.Storage
+	files   *filesystem.Scope
+	cleanup *cleanupJournal
 }
 
-func NewService(store storage.Storage) *Service {
-	return &Service{store: store}
+func NewService(store storage.Storage, dbs ...*database.DB) *Service {
+	s := &Service{store: store}
+	if len(dbs) > 0 && dbs[0] != nil {
+		s.cleanup = newCleanupJournal(dbs[0])
+	}
+	return s
 }
 
 func (s *Service) SetFiles(files *filesystem.Scope) {
@@ -127,16 +133,37 @@ func (s *Service) CommitReplacement(ctx context.Context, previous, next Response
 	if persist == nil {
 		return ErrNilPersist
 	}
+	oldID := previous.MediaAssetID()
+	newID := next.MediaAssetID()
+	needsOldCleanup := oldID != "" && oldID != newID
+
+	if needsOldCleanup && s != nil && s.cleanup != nil {
+		if err := s.cleanup.enqueue(ctx, oldID); err != nil {
+			// Refuse to drop the DB reference when we cannot durably record how
+			// to reclaim the old asset.
+			return err
+		}
+	}
+
 	if err := persist(); err != nil {
-		// Only the next response owns a disposable asset when it differs from the
-		// previously committed one. Never delete the still-valid previous asset.
-		if next.MediaAssetID() != "" && next.MediaAssetID() != previous.MediaAssetID() {
-			_ = s.DeleteMedia(context.Background(), next)
+		if needsOldCleanup && s != nil && s.cleanup != nil {
+			_ = s.cleanup.remove(context.Background(), oldID)
+		}
+		if newID != "" && newID != oldID {
+			s.cleanupUncommitted(next)
 		}
 		return err
 	}
-	if previous.MediaAssetID() != "" && previous.MediaAssetID() != next.MediaAssetID() {
-		_ = s.DeleteMedia(ctx, previous)
+
+	if needsOldCleanup {
+		if s != nil && s.cleanup != nil {
+			_, _ = s.ReconcileCleanup(ctx, defaultCleanupBatch)
+			return nil
+		}
+		return s.DeleteMedia(ctx, previous)
+	}
+	if s != nil && s.cleanup != nil {
+		_, _ = s.ReconcileCleanup(ctx, defaultCleanupBatch)
 	}
 	return nil
 }
@@ -145,10 +172,103 @@ func (s *Service) CommitDelete(ctx context.Context, response Response, remove fu
 	if remove == nil {
 		return ErrNilDelete
 	}
+	assetID := response.MediaAssetID()
+	if assetID != "" && s != nil && s.cleanup != nil {
+		if err := s.cleanup.enqueue(ctx, assetID); err != nil {
+			return err
+		}
+	}
 	if err := remove(); err != nil {
+		if assetID != "" && s != nil && s.cleanup != nil {
+			_ = s.cleanup.remove(context.Background(), assetID)
+		}
 		return err
 	}
+	if assetID == "" {
+		return nil
+	}
+	if s != nil && s.cleanup != nil {
+		_, _ = s.ReconcileCleanup(ctx, defaultCleanupBatch)
+		return nil
+	}
 	return s.DeleteMedia(ctx, response)
+}
+
+func (s *Service) cleanupUncommitted(response Response) {
+	if response.MediaAssetID() == "" {
+		return
+	}
+	if s != nil && s.cleanup != nil {
+		if err := s.cleanup.enqueue(context.Background(), response.MediaAssetID()); err == nil {
+			_, _ = s.ReconcileCleanup(context.Background(), defaultCleanupBatch)
+			return
+		}
+	}
+	_ = s.DeleteMedia(context.Background(), response)
+}
+
+func (s *Service) PendingCleanupCount(ctx context.Context) (int, error) {
+	if s == nil || s.cleanup == nil {
+		return 0, nil
+	}
+	return s.cleanup.pendingCount(ctx)
+}
+
+func (s *Service) ReconcileCleanup(ctx context.Context, limit int) (CleanupStats, error) {
+	var stats CleanupStats
+	if s == nil || s.cleanup == nil {
+		return stats, nil
+	}
+	items, err := s.cleanup.due(ctx, limit)
+	if err != nil {
+		return stats, err
+	}
+	for _, item := range items {
+		stats.Scanned++
+		referenced, err := s.cleanup.referenced(ctx, item.AssetID)
+		if err != nil {
+			if recordErr := s.cleanup.recordFailure(ctx, item, err); recordErr != nil {
+				return stats, recordErr
+			}
+			stats.Deferred++
+			continue
+		}
+		if referenced {
+			if err := s.cleanup.remove(ctx, item.AssetID); err != nil {
+				return stats, err
+			}
+			stats.Referenced++
+			continue
+		}
+		if s.store == nil {
+			cause := ErrMediaPersistenceUnavailable
+			if err := s.cleanup.recordFailure(ctx, item, cause); err != nil {
+				return stats, err
+			}
+			stats.Deferred++
+			continue
+		}
+
+		deleteCtx := ctx
+		if deleteCtx == nil {
+			deleteCtx = context.Background()
+		}
+		deleteCtx, cancel := context.WithTimeout(context.WithoutCancel(deleteCtx), 5*time.Second)
+		deleteErr := s.store.Delete(deleteCtx, item.AssetID)
+		cancel()
+		if deleteErr != nil && !errors.Is(deleteErr, storage.ErrNotFound) {
+			if err := s.cleanup.recordFailure(ctx, item, deleteErr); err != nil {
+				return stats, err
+			}
+			stats.Deferred++
+			continue
+		}
+		if err := s.cleanup.remove(ctx, item.AssetID); err != nil {
+			return stats, err
+		}
+		stats.Deleted++
+	}
+	return stats, nil
 }
 
 func (s *Service) DeleteMedia(parent context.Context, response Response) error {
