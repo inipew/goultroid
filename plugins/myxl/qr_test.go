@@ -149,7 +149,6 @@ func TestQRHTMLParse(t *testing.T) {
 	}
 }
 
-
 func TestQRPayloadBoundsAndWhitespace(t *testing.T) {
 	trimmed, err := GenerateQRPNG("  hello  ")
 	if err != nil || len(trimmed) == 0 {
