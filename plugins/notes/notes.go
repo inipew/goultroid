@@ -26,15 +26,20 @@ var notesTaskSequence atomic.Uint64
 type Plugin struct {
 	db        Repository
 	responses *savedresponse.Service
+	delivery  *savedresponse.ResponseDelivery
 	tasks     tasks.Client
 }
 
 func New(db Repository, responses ...*savedresponse.Service) *Plugin {
-	p := &Plugin{db: db, responses: savedresponse.NewService(nil)}
+	responseService := savedresponse.NewService(nil)
 	if len(responses) > 0 && responses[0] != nil {
-		p.responses = responses[0]
+		responseService = responses[0]
 	}
-	return p
+	return &Plugin{
+		db:        db,
+		responses: responseService,
+		delivery:  savedresponse.NewResponseDelivery(responseService),
+	}
 }
 
 func (p *Plugin) Name() string { return "notes" }
@@ -283,21 +288,24 @@ func (p *Plugin) deliverResponse(
 	response savedresponse.Response,
 	vars savedresponse.TemplateVars,
 ) error {
-	prepared, err := p.responses.Prepare(prepareCtx, response, vars)
-	if err != nil {
+	stage, err := p.delivery.Deliver(prepareCtx, response, vars, savedresponse.DeliverySink{
+		SendMedia: func(mediaType, path, caption string) error {
+			_, sendErr := ctx.SendMedia(mediaType, path, caption)
+			return sendErr
+		},
+		SendText: ctx.EditOrReply,
+	})
+	if err == nil {
+		return nil
+	}
+	switch stage {
+	case savedresponse.DeliveryStagePrepare:
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to prepare note: %v", err))
+	case savedresponse.DeliveryStageMedia:
+		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to send note media: %v", err))
+	default:
+		return err
 	}
-	defer prepared.Cleanup()
-
-	if prepared.MediaPath != "" {
-		if _, err := ctx.SendMedia(prepared.MediaType, prepared.MediaPath, prepared.Caption); err != nil {
-			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to send note media: %v", err))
-		}
-	}
-	if prepared.Text != "" {
-		return ctx.EditOrReply(prepared.Text)
-	}
-	return nil
 }
 
 func (p *Plugin) handleList(ctx *core.Context) error {

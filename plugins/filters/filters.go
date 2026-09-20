@@ -45,6 +45,7 @@ type Plugin struct {
 	db           Repository
 	svcFunc      func() core.TelegramServicer
 	responses    *savedresponse.Service
+	delivery     *savedresponse.ResponseDelivery
 	tasks        tasks.Client
 	featureState core.ChatFeatureSnapshot
 	cacheMu      sync.RWMutex
@@ -55,17 +56,18 @@ type Plugin struct {
 }
 
 func New(db Repository, svcFunc func() core.TelegramServicer, responses ...*savedresponse.Service) *Plugin {
-	p := &Plugin{
+	responseService := savedresponse.NewService(nil)
+	if len(responses) > 0 && responses[0] != nil {
+		responseService = responses[0]
+	}
+	return &Plugin{
 		db: db, svcFunc: svcFunc,
-		responses:   savedresponse.NewService(nil),
+		responses:   responseService,
+		delivery:    savedresponse.NewResponseDelivery(responseService),
 		chatFilters: make(map[int64]*compiledFilterSet),
 		chatAccess:  make(map[int64]time.Time),
 		lastReply:   make(map[string]time.Time),
 	}
-	if len(responses) > 0 && responses[0] != nil {
-		p.responses = responses[0]
-	}
-	return p
 }
 
 func (p *Plugin) Name() string { return "filters" }
@@ -458,23 +460,17 @@ func (p *Plugin) deliverResponse(
 	if svc == nil || peer == nil {
 		return errors.New("filters: telegram delivery is unavailable")
 	}
-	prepared, err := p.responses.PrepareCompiled(ctx, response, template, vars)
-	if err != nil {
-		return err
-	}
-	defer prepared.Cleanup()
-
-	if prepared.MediaPath != "" {
-		if _, err := svc.SendMedia(ctx, peer, prepared.MediaType, prepared.MediaPath, prepared.Caption); err != nil {
-			return err
-		}
-	}
-	if prepared.Text != "" {
-		if _, err := svc.SendMessage(ctx, peer, prepared.Text); err != nil {
-			return err
-		}
-	}
-	return nil
+	_, err := p.delivery.DeliverCompiled(ctx, response, template, vars, savedresponse.DeliverySink{
+		SendMedia: func(mediaType, path, caption string) error {
+			_, sendErr := svc.SendMedia(ctx, peer, mediaType, path, caption)
+			return sendErr
+		},
+		SendText: func(text string) error {
+			_, sendErr := svc.SendMessage(ctx, peer, text)
+			return sendErr
+		},
+	})
+	return err
 }
 
 func (p *Plugin) getCachedFilters(chatID int64) (*compiledFilterSet, bool) {

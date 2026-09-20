@@ -313,52 +313,11 @@ func (s *Service) Prepare(ctx context.Context, response Response, vars TemplateV
 	if response.Empty() {
 		return nil, ErrEmptyResponse
 	}
-	if err := Validate(response); err != nil {
-		return nil, err
-	}
-
-	mediaID := response.MediaAssetID()
-	if mediaID == "" {
-		text, err := Render(response, vars, DefaultMaxOutputRunes)
-		if err != nil {
-			return nil, err
-		}
-		return &Prepared{Text: text}, nil
-	}
-
-	mediaType := "file"
-	if response.Media != nil && strings.TrimSpace(response.Media.MediaType) != "" {
-		mediaType = deliveryMediaType(response.Media.MediaType)
-	}
-
-	captionAllowed := mediaType != "sticker"
-	if captionAllowed {
-		caption, err := Render(response, vars, MaxCaptionRunes)
-		if err == nil {
-			path, cleanup, err := s.Materialize(ctx, response)
-			if err != nil {
-				return nil, err
-			}
-			return &Prepared{
-				Caption: caption, MediaType: mediaType, MediaPath: path, cleanup: cleanup,
-			}, nil
-		}
-		if !errors.Is(err, ErrRenderedTooLarge) {
-			return nil, err
-		}
-	}
-
-	text, err := Render(response, vars, DefaultMaxOutputRunes)
+	compiled, err := Compile(response)
 	if err != nil {
 		return nil, err
 	}
-	path, cleanup, err := s.Materialize(ctx, response)
-	if err != nil {
-		return nil, err
-	}
-	return &Prepared{
-		Text: text, MediaType: mediaType, MediaPath: path, cleanup: cleanup,
-	}, nil
+	return s.PrepareCompiled(ctx, response, compiled, vars)
 }
 
 func (s *Service) Materialize(ctx context.Context, response Response) (string, func(), error) {

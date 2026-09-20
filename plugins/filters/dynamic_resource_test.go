@@ -3,6 +3,7 @@ package filters
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/gotd/td/tg"
@@ -223,5 +224,106 @@ func TestFilterRepliedMediaCaptureRunsUnderDownloadLease(t *testing.T) {
 	}
 	if _, err := store.Stat(context.Background(), stored.Response.MediaAssetID()); err != nil {
 		t.Fatalf("captured filter media asset missing: %v", err)
+	}
+}
+
+type filterResponseDeliveryService struct {
+	core.MockTelegramServicer
+	mediaCalls    int
+	textCalls     int
+	mediaType     string
+	caption       string
+	mediaPath     string
+	sawMediaLease bool
+}
+
+func (s *filterResponseDeliveryService) SendMedia(
+	ctx context.Context,
+	_ tg.InputPeerClass,
+	mediaType, filePath, caption string,
+) (*tg.Message, error) {
+	if _, err := os.Stat(filePath); err != nil {
+		return nil, err
+	}
+	s.mediaCalls++
+	s.mediaType = mediaType
+	s.caption = caption
+	s.mediaPath = filePath
+	s.sawMediaLease = tasks.HasHeldResource(ctx, "media")
+	return &tg.Message{ID: 500}, nil
+}
+
+func (s *filterResponseDeliveryService) SendMessage(
+	_ context.Context,
+	_ tg.InputPeerClass,
+	text string,
+) (*tg.Message, error) {
+	s.textCalls++
+	return &tg.Message{ID: 501, Message: text}, nil
+}
+
+func TestFilterMediaDeliveryUsesSharedBoundedResponseDelivery(t *testing.T) {
+	db := openFilterPlanningDB(t)
+	defer db.Close()
+	repo := NewSQLiteRepository(db)
+	store := storage.NewMemoryStorage()
+	responses := newFilterResponseService(t, db, store)
+
+	asset, err := store.Put(context.Background(), strings.NewReader("filter-photo"), storage.Metadata{
+		Name: "filter.jpg",
+		MIME: "image/jpeg",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := savedresponse.NewHTML("Hi {name}")
+	response.Media = &savedresponse.MediaRef{
+		AssetID: asset.ID, MediaType: "photo", Name: asset.Name, MIMEType: asset.MIME,
+	}
+	const chatID int64 = 303
+	if err := repo.SaveFilter(context.Background(), chatID, "hello", response); err != nil {
+		t.Fatal(err)
+	}
+
+	telegram := &filterResponseDeliveryService{}
+	client := &filterPlanningTaskClient{execute: true}
+	p := New(repo, func() core.TelegramServicer { return telegram }, responses)
+	p.tasks = client
+
+	envelope := &core.MessageEnvelope{
+		ID:     99,
+		ChatID: chatID,
+		Peer:   core.PeerRef{Kind: core.PeerKindChat, ID: chatID},
+		Chat:   core.Chat{ID: chatID, Title: "Filters Test"},
+		Sender: core.User{ID: 42, FirstName: "Alice"},
+		Text:   "hello",
+	}
+	if err := p.HandleMessageEvent(context.Background(), envelope); err != nil {
+		t.Fatal(err)
+	}
+
+	if client.count() != 1 {
+		t.Fatalf("media response submitted %d tasks, want 1", client.count())
+	}
+	spec := client.lastSpec(t)
+	if !hasFilterResource(spec.Resources, "media") || hasFilterResource(spec.Resources, "download") {
+		t.Fatalf("media delivery resources=%+v, want media only", spec.Resources)
+	}
+	if telegram.mediaCalls != 1 || telegram.textCalls != 0 {
+		t.Fatalf("delivery calls: media=%d text=%d", telegram.mediaCalls, telegram.textCalls)
+	}
+	if !telegram.sawMediaLease || telegram.mediaType != "photo" || telegram.caption != "Hi Alice" {
+		t.Fatalf(
+			"unexpected media delivery: lease=%v type=%q caption=%q",
+			telegram.sawMediaLease,
+			telegram.mediaType,
+			telegram.caption,
+		)
+	}
+	if telegram.mediaPath == "" {
+		t.Fatal("media path was not observed")
+	}
+	if _, err := os.Stat(telegram.mediaPath); !os.IsNotExist(err) {
+		t.Fatalf("shared delivery left materialized media behind: %v", err)
 	}
 }
