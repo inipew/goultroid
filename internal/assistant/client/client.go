@@ -184,7 +184,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	if featureCatalog != nil && interactionSessions != nil && actionDispatcher != nil {
 		presentationService := newInteractionPresentationServicer(c.interaction)
 		interactionEngine, interactionErr := orchestration.New(interactionSessions, actionDispatcher, presentationtelegram.NewBridge(presentationService))
-		if v2Err != nil {
+		if interactionErr != nil {
 			startErr := fmt.Errorf("configure interaction ingress: %w", interactionErr)
 			cancel()
 			c.lifecycle.SetState(StateFailed)
@@ -208,7 +208,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 			close(runDone)
 			return startErr
 		}
-		v2 = &interactionIngress{engine: interactionEngine, ack: v2Service, input: c.handleInteractionTextInput}
+		ingress = &interactionIngress{engine: interactionEngine, ack: presentationService, input: c.handleInteractionTextInput}
 	}
 	c.mu.Lock()
 	c.interactionIngress = ingress
