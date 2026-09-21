@@ -684,4 +684,3 @@ func (m *MenuManager) BuildFamilyPackagesScreen(ctx context.Context, acc *Accoun
 
 	return screen, nil
 }
-
