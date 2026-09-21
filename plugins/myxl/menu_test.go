@@ -206,7 +206,7 @@ func TestMenuManager_Screens(t *testing.T) {
 		Method:            "BALANCE",
 		WalletNumber:      acc.MSISDN,
 	}
-	checkoutScreen, err := plugin.menuMgr.BuildCheckoutScreen(draft, 12345, 100)
+	checkoutScreen, err := plugin.menuMgr.BuildCheckoutScreen(draft)
 	if err != nil || checkoutScreen == nil || !strings.Contains(checkoutScreen.Body, "Konfirmasi Pembelian") {
 		t.Errorf("expected checkout screen confirmation")
 	}
