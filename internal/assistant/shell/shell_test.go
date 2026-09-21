@@ -84,8 +84,15 @@ func TestSettingsViewsExposeOnlyTypedMutationsAndMaskSensitiveValues(t *testing.
 	if err := home.Validate(); err != nil {
 		t.Fatalf("SettingsHomeView() invalid: %v", err)
 	}
-	if !strings.Contains(home.Text, "Security") || !strings.Contains(home.Text, "Typed mutations") {
+	if !strings.Contains(home.Text, "Security") || !strings.Contains(home.Text, "revision-fenced") {
 		t.Fatalf("settings home text = %q", home.Text)
+	}
+	for _, row := range home.Rows {
+		for _, button := range row {
+			if button.ActionID == ActionLegacy {
+				t.Fatal("Settings root still exposes Classic menu fallback after cutover")
+			}
+		}
 	}
 
 	category := SettingsCategoryView(SettingsCategoryModel{

@@ -192,9 +192,9 @@ Sensitive input is never:
 
 ## Compatibility
 
-Legacy a1 Settings input remains available through Classic menu as a compatibility fallback.
+P5-E originally retained legacy a1 Settings input as a compatibility fallback. P5-F supersedes that temporary state: new Settings writes and free-form input are now owned exclusively by a2.
 
-The new a2 claim path has precedence only when a matching P1 input claim exists. Otherwise the existing legacy text handler and normal command router behave as before.
+After P5-F, stale a1 Settings browse/detail callbacks remain read-only, while legacy set/reset callbacks render a cutover notice and never persist. Generic non-Settings text handlers and the normal command router continue to behave as before when no a2 input claim exists.
 
 ## Resource behavior
 

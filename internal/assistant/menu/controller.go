@@ -33,14 +33,12 @@ type Controller struct {
 	instances      InstanceStore
 	cmdSource      CommandSource
 	registry       *Registry
-	pendingMu      sync.Mutex
-	pending        map[int64]pendingSettingInput
 	textHandlersMu sync.RWMutex
 	textHandlers   []TextHandler
 }
 
 func NewController(renderer RendererFunc) *Controller {
-	c := &Controller{renderer: renderer, instances: NewMemoryInstanceStore(DefaultMenuTTL), registry: NewRegistry(), pending: make(map[int64]pendingSettingInput)}
+	c := &Controller{renderer: renderer, instances: NewMemoryInstanceStore(DefaultMenuTTL), registry: NewRegistry()}
 	c.registerDefaultScreens()
 	return c
 }
@@ -95,18 +93,22 @@ func BuildStartScreenWithCommands(botUsername string, uptime time.Duration, cmds
 	if len(cmds) > 0 {
 		card.AddField("Assistant commands", fmt.Sprintf("%d available", len(cmds)))
 	}
-	card.WithFooter("<i>Choose an area below. Menus are generated from the registered capabilities.</i>")
+	card.WithFooter("<i>Classic menu remains for compatibility and detailed Help. Settings are owned by the current /start a2 shell.</i>")
 	screen := NewScreen(ScreenIDStart, "", card.Render())
-	screen.AddRow(NewButton("⚙️ Settings", "a1:assistant:settings"), NewButton("📚 Help", "a1:assistant:help"))
+	screen.AddRow(NewButton("📚 Help", "a1:assistant:help"))
 	screen.AddRow(NewButton("📊 Status", "a1:assistant:status"), NewButton("🏓 Ping", "a1:assistant:ping"))
 	screen.AddRow(NewButton("❌ Close", "a1:assistant:close"))
 	return screen
 }
 func BuildSettingsScreen(botUsername string) *Screen {
 	screen := NewScreen(ScreenIDSettings, "⚙️ Settings", "")
-	screen.Body = ui.NewCard("Assistant Settings").WithIcon("⚙️").WithHeader("Configure persistent userbot behavior. Select a category to browse its settings.").WithFooter("<i>All changes use the central settings service and are validated before persistence.</i>").Render()
-	screen.AddRow(NewButton("📂 Open Settings Dashboard", "a1:settings:home"))
-	screen.AddRow(NewButton("🏠 Back to Menu", "a1:assistant:start"), NewButton("❌ Close", "a1:assistant:close"))
+	screen.Body = ui.NewCard("Settings moved to a2").
+		WithIcon("⚙️").
+		WithHeader("Settings are now owned by the current /start interaction shell.").
+		WithRaw("Send <code>/start</code> and open <b>Settings</b> there. Legacy Settings callbacks remain read-only for compatibility.").
+		WithFooter("<i>New writes, resets, and text input are accepted only through the revision-fenced a2 Settings flow.</i>").
+		Render()
+	screen.AddRow(NewButton("🏠 Back to Classic Menu", "a1:assistant:start"), NewButton("❌ Close", "a1:assistant:close"))
 	return screen
 }
 func BuildHelpScreen(botUsername string) *Screen {

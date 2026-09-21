@@ -49,11 +49,8 @@ func SettingsHomeView(model SettingsHomeModel) presentation.View {
 			rows = append(rows, presentation.Row{{Text: "Open", ActionID: ActionSettingsOpen}})
 		}
 	}
-	card.WithFooter("<i>Typed mutations and bounded free-form string input are available in a2; Classic menu remains a compatibility fallback.</i>")
-	rows = append(rows, presentation.Row{
-		{Text: "🏠 Home", ActionID: ActionHome},
-		{Text: "🧭 Classic menu", ActionID: ActionLegacy},
-	})
+	card.WithFooter("<i>Settings writes, resets, and free-form input are now owned by the revision-fenced a2 flow.</i>")
+	rows = append(rows, presentation.Row{{Text: "🏠 Home", ActionID: ActionHome}})
 	return presentation.View{Text: card.Render(), Rows: rows}
 }
 

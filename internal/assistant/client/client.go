@@ -214,7 +214,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 		Logger: c.logger, RateLimiter: c.rateLimiter, Resolver: c.resolver,
 		CmdRouter: c.cmdRouter, CallbackRouter: c.cbRouter, Interaction: c.interaction,
 		CacheEntities: c.CacheEntities, IsShuttingDown: c.shuttingDown.Load,
-		MenuController: c.menuCtrl, SettingsService: c.settingsSvc,
+		MenuController: c.menuCtrl,
 		InlineEngine: c.inlineEngine, InlineService: inlineQueryService, Tasks: c.tasks,
 		V2Ingress: v2,
 	}

@@ -669,7 +669,7 @@ func (c *AssistantClient) applyShellSettingMutation(ctx *orchestration.Context, 
 	plan, err := assistantshell.PlanMutation(*def, current, explicit != nil, operation)
 	if err != nil {
 		mutationErr := &assistantshell.MutationError{Stage: assistantshell.MutationStageBinding, Result: result, Err: err}
-		_ = ctx.Answer("This setting requires the Classic menu workflow.", true)
+		_ = ctx.Answer("This setting requires the a2 text-input workflow. Reopen the setting and use Change.", true)
 		return mutationErr
 	}
 	result.Outcome = plan.Outcome

@@ -5,23 +5,11 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/inipew/goultroid/internal/assistant/callback"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/settings"
 )
-
-const pendingSettingTTL = 2 * time.Minute
-
-type pendingSettingInput struct {
-	Namespace string
-	Key       string
-	Category  string
-	ExpiresAt time.Time
-	Target    interaction.MessageTarget
-	Sensitive bool
-}
 
 // AttachSettingsRoutes binds the Settings service to the assistant menu.
 func (c *Controller) AttachSettingsRoutes(r *callback.Router, svc *settings.Service) {
@@ -74,92 +62,22 @@ func (c *Controller) AttachSettingsRoutes(r *callback.Router, svc *settings.Serv
 		}
 		return c.editScreen(ctx, tx, screen)
 	})
-	r.Register("settings", "set", func(ctx context.Context, tx *callback.Transaction) error {
+	cutover := func(ctx context.Context, tx *callback.Transaction) error {
 		if _, err := c.validateSession(ctx, tx); err != nil {
 			return err
 		}
 		unlock := c.lockInstance(tx)
 		defer unlock()
-		ns, key, op, err := parseSettingState(tx.Payload.State)
-		if err != nil {
-			return err
-		}
-		def, ok := svc.Registry().Get(ns, key)
-		if !ok || def == nil {
-			_ = tx.Answer(ctx, "Setting is no longer available", true)
-			return fmt.Errorf("unknown setting %s:%s", ns, key)
-		}
-		current, err := svc.Resolve(ctx, tx.UserID, tx.Target.ChatID(), ns, key)
-		if err != nil {
-			return err
-		}
-		value, changed, err := nextSettingValue(def, current, op)
-		if err != nil {
-			if def.Type == settings.TypeString {
-				return c.beginStringInput(ctx, tx, def)
-			}
-			_ = tx.Answer(ctx, "This setting cannot be changed from the menu", true)
-			return err
-		}
-		if changed {
-			if err := svc.Set(ctx, settings.ScopeUser, tx.UserID, ns, key, value, tx.UserID); err != nil {
-				_ = tx.Answer(ctx, "Invalid setting value", true)
-				return err
-			}
-			_ = tx.Answer(ctx, fmt.Sprintf("%s → %s", def.Title, displaySettingValue(*def, value)), false)
-		} else {
-			_ = tx.Answer(ctx, fmt.Sprintf("%s is already %s", def.Title, displaySettingValue(*def, current)), false)
-		}
-		screen, err := buildSettingDetail(ctx, svc, tx.UserID, tx.Target.ChatID(), *def)
-		if err != nil {
-			return err
-		}
-		return c.editScreen(ctx, tx, screen)
-	})
-	r.Register("settings", "reset", func(ctx context.Context, tx *callback.Transaction) error {
-		if _, err := c.validateSession(ctx, tx); err != nil {
-			return err
-		}
-		unlock := c.lockInstance(tx)
-		defer unlock()
-		ns, key, _, err := parseSettingState(tx.Payload.State)
-		if err != nil {
-			return err
-		}
-		def, ok := svc.Registry().Get(ns, key)
-		if !ok || def == nil {
-			return fmt.Errorf("unknown setting %s:%s", ns, key)
-		}
-		if err := svc.Reset(ctx, settings.ScopeUser, tx.UserID, ns, key, tx.UserID); err != nil {
-			return err
-		}
-		_ = tx.Answer(ctx, fmt.Sprintf("%s reset to default/inherited value", def.Title), false)
-		screen, err := buildSettingDetail(ctx, svc, tx.UserID, tx.Target.ChatID(), *def)
-		if err != nil {
-			return err
-		}
-		return c.editScreen(ctx, tx, screen)
-	})
+		_ = tx.Answer(ctx, "Settings moved to the new /start flow. Reopen Settings there.", true)
+		return c.editScreen(ctx, tx, BuildSettingsScreen(""))
+	}
+	r.Register("settings", "set", cutover)
+	r.Register("settings", "reset", cutover)
 }
 
-func (c *Controller) beginStringInput(ctx context.Context, tx *callback.Transaction, def *settings.SettingDefinition) error {
-	if tx.Interaction == nil || def == nil {
-		return fmt.Errorf("string setting input unavailable")
-	}
-	c.pendingMu.Lock()
-	c.pending[tx.UserID] = pendingSettingInput{Namespace: def.Namespace, Key: def.Key, Category: def.Category, ExpiresAt: time.Now().Add(pendingSettingTTL), Target: tx.Target, Sensitive: def.Sensitive}
-	c.pendingMu.Unlock()
-	prompt := fmt.Sprintf("✏️ <b>%s</b>\n\n%s\n\nSend the new value as your next message.\nSend <code>/cancel</code> to abort.\n\n<i>This request expires in 2 minutes.</i>", def.Title, def.Description)
-	if _, err := tx.Interaction.SendMessage(ctx, tx.Target.Peer(), prompt, nil); err != nil {
-		c.clearPending(tx.UserID)
-		return err
-	}
-	_ = tx.Answer(ctx, "Waiting for your value…", false)
-	return nil
-}
-
-// HandleTextMessage consumes a pending free-form setting input. It returns true when the message was consumed.
-func (c *Controller) HandleTextMessage(ctx context.Context, userID, chatID int64, text string, inter interaction.MessageInteraction, svc *settings.Service) (bool, error) {
+// HandleTextMessage dispatches generic Assistant text handlers. Settings input
+// ownership moved to the bounded a2 interaction runtime in P5-E.
+func (c *Controller) HandleTextMessage(ctx context.Context, userID, chatID int64, text string, inter interaction.MessageInteraction) (bool, error) {
 	if userID == 0 || inter == nil {
 		return false, nil
 	}
@@ -171,57 +89,7 @@ func (c *Controller) HandleTextMessage(ctx context.Context, userID, chatID int64
 			return true, err
 		}
 	}
-	if svc == nil {
-		return false, nil
-	}
-	c.pendingMu.Lock()
-	pending, ok := c.pending[userID]
-	if ok && time.Now().After(pending.ExpiresAt) {
-		delete(c.pending, userID)
-		ok = false
-	}
-	c.pendingMu.Unlock()
-	if !ok {
-		return false, nil
-	}
-	if chatID != pending.Target.ChatID() {
-		return true, fmt.Errorf("pending setting belongs to another chat")
-	}
-	trimmed := strings.TrimSpace(text)
-	if strings.EqualFold(trimmed, "/cancel") {
-		c.clearPending(userID)
-		_, err := inter.SendMessage(ctx, pending.Target.Peer(), "❌ Setting change cancelled.", nil)
-		return true, err
-	}
-	if strings.HasPrefix(trimmed, "/") {
-		return false, nil
-	}
-	if trimmed == "" {
-		_, _ = inter.SendMessage(ctx, pending.Target.Peer(), "Value cannot be empty.", nil)
-		return true, nil
-	}
-	def, exists := svc.Registry().Get(pending.Namespace, pending.Key)
-	if !exists || def == nil {
-		c.clearPending(userID)
-		return true, fmt.Errorf("setting is no longer registered: %s:%s", pending.Namespace, pending.Key)
-	}
-	if err := svc.Set(ctx, settings.ScopeUser, userID, pending.Namespace, pending.Key, trimmed, userID); err != nil {
-		_, _ = inter.SendMessage(ctx, pending.Target.Peer(), "⚠️ Invalid value: "+escapeText(err.Error()), nil)
-		return true, nil
-	}
-	c.clearPending(userID)
-	valueText := "updated"
-	if !def.Sensitive {
-		valueText = "updated to <code>" + escapeText(trimmed) + "</code>"
-	}
-	_, err := inter.SendMessage(ctx, pending.Target.Peer(), fmt.Sprintf("✅ <b>%s</b> %s.", def.Title, valueText), nil)
-	return true, err
-}
-
-func (c *Controller) clearPending(userID int64) {
-	c.pendingMu.Lock()
-	delete(c.pending, userID)
-	c.pendingMu.Unlock()
+	return false, nil
 }
 
 func (c *Controller) editScreen(ctx context.Context, tx *callback.Transaction, screen *Screen) error {
@@ -229,7 +97,7 @@ func (c *Controller) editScreen(ctx context.Context, tx *callback.Transaction, s
 }
 
 func buildSettingsHome(reg *settings.Registry) *Screen {
-	screen := NewScreen(ScreenIDSettings, "⚙️ GoUltroid Settings", "Configure bot variables and plugin behavior. Changes are persisted and applied through the central settings service.")
+	screen := NewScreen(ScreenIDSettings, "⚙️ GoUltroid Settings", "Legacy read-only Settings browser. Reopen /start to make changes through the a2 Settings flow.")
 	if reg == nil {
 		return screen.AddRow(NewButton("« Back", "a1:assistant:start"))
 	}
@@ -250,7 +118,7 @@ func buildSettingsCategory(ctx context.Context, svc *settings.Service, userID, c
 		screen.AddRow(NewButton("« Settings", "a1:settings:home"))
 		return screen, nil
 	}
-	screen := NewScreen(ScreenIDSettings, "⚙️ "+categoryLabel(category), "Select a setting for its current value, details, and controls.")
+	screen := NewScreen(ScreenIDSettings, "⚙️ "+categoryLabel(category), "Legacy read-only browser for current setting values and details.")
 	for _, def := range defs {
 		value, err := svc.Resolve(ctx, userID, chatID, def.Namespace, def.Key)
 		if err != nil {
@@ -288,18 +156,8 @@ func buildSettingDetail(ctx context.Context, svc *settings.Service, userID, chat
 	if def.UI.Step > 0 {
 		body += fmt.Sprintf("\n<b>Step</b>: <code>%d</code>", def.UI.Step)
 	}
+	body += "\n\n<i>Legacy Settings is read-only. Reopen <code>/start</code> to change or reset this setting.</i>"
 	screen.Body = body
-	switch def.Type {
-	case settings.TypeBool, settings.TypeEnum:
-		screen.AddRow(NewButton("✏️ Change", fmt.Sprintf("a1:settings:set:%s:%s:next", def.Namespace, def.Key)))
-	case settings.TypeInt, settings.TypeDuration:
-		screen.AddRow(NewButton("➖ Decrease", fmt.Sprintf("a1:settings:set:%s:%s:prev", def.Namespace, def.Key)), NewButton("➕ Increase", fmt.Sprintf("a1:settings:set:%s:%s:next", def.Namespace, def.Key)))
-	case settings.TypeString:
-		screen.AddRow(NewButton("✏️ Change", fmt.Sprintf("a1:settings:set:%s:%s:next", def.Namespace, def.Key)))
-	}
-	if explicit != nil {
-		screen.AddRow(NewButton("↩ Reset", fmt.Sprintf("a1:settings:reset:%s:%s:reset", def.Namespace, def.Key)))
-	}
 	screen.AddRow(NewButton("« "+categoryLabel(def.Category), "a1:settings:category:"+def.Category), NewButton("⚙️ Settings", "a1:settings:home"))
 	return screen, nil
 }
@@ -310,99 +168,6 @@ func parseSettingRef(state string) (string, string, error) {
 		return "", "", fmt.Errorf("invalid setting reference")
 	}
 	return parts[0], parts[1], nil
-}
-
-func parseSettingState(state string) (string, string, string, error) {
-	parts := strings.SplitN(strings.TrimSpace(state), ":", 3)
-	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", "", fmt.Errorf("invalid setting state")
-	}
-	op := "next"
-	if len(parts) == 3 && parts[2] != "" {
-		op = parts[2]
-	}
-	return parts[0], parts[1], op, nil
-}
-
-func nextSettingValue(def *settings.SettingDefinition, current, op string) (string, bool, error) {
-	if def == nil {
-		return "", false, fmt.Errorf("nil setting definition")
-	}
-	if op != "next" && op != "prev" {
-		return "", false, fmt.Errorf("unsupported setting operation %q", op)
-	}
-	direction := int64(1)
-	if op == "prev" {
-		direction = -1
-	}
-	switch def.Type {
-	case settings.TypeBool:
-		v, err := strconv.ParseBool(current)
-		if err != nil {
-			return "", false, err
-		}
-		return strconv.FormatBool(!v), true, nil
-	case settings.TypeEnum:
-		if len(def.AllowedValues) == 0 {
-			return "", false, fmt.Errorf("enum %s:%s has no values", def.Namespace, def.Key)
-		}
-		for i, v := range def.AllowedValues {
-			if v == current {
-				n := (i + int(direction)) % len(def.AllowedValues)
-				if n < 0 {
-					n += len(def.AllowedValues)
-				}
-				return def.AllowedValues[n], true, nil
-			}
-		}
-		return def.AllowedValues[0], true, nil
-	case settings.TypeInt:
-		v, err := strconv.ParseInt(current, 10, 64)
-		if err != nil {
-			return "", false, err
-		}
-		step := def.UI.Step
-		if step <= 0 {
-			step = 1
-		}
-		v += direction * step
-		if def.MaxVal != nil && v > *def.MaxVal {
-			if def.MinVal != nil {
-				v = *def.MinVal
-			} else {
-				v = *def.MaxVal
-			}
-		}
-		if def.MinVal != nil && v < *def.MinVal {
-			if def.MaxVal != nil {
-				v = *def.MaxVal
-			} else {
-				v = *def.MinVal
-			}
-		}
-		return strconv.FormatInt(v, 10), true, nil
-	case settings.TypeDuration:
-		d, err := time.ParseDuration(current)
-		if err != nil {
-			return "", false, err
-		}
-		step := time.Duration(def.UI.Step) * time.Second
-		if step <= 0 {
-			step = 5 * time.Second
-		}
-		d += time.Duration(direction) * step
-		if def.MaxVal != nil && int64(d/time.Second) > *def.MaxVal {
-			d = time.Duration(*def.MaxVal) * time.Second
-		}
-		if def.MinVal != nil && int64(d/time.Second) < *def.MinVal {
-			d = time.Duration(*def.MinVal) * time.Second
-		}
-		return d.String(), true, nil
-	case settings.TypeString:
-		return "", false, fmt.Errorf("string settings require text input")
-	default:
-		return "", false, fmt.Errorf("unsupported setting type %q", def.Type)
-	}
 }
 
 func displaySettingValue(def settings.SettingDefinition, value string) string {

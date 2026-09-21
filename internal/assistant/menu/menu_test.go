@@ -68,7 +68,7 @@ func TestMenuScreens(t *testing.T) {
 	}
 
 	settings := menu.BuildSettingsScreen("TestBot")
-	if settings.ID != menu.ScreenIDSettings || len(settings.Rows) != 2 {
+	if settings.ID != menu.ScreenIDSettings || len(settings.Rows) != 1 {
 		t.Fatalf("unexpected settings screen: %+v", settings)
 	}
 

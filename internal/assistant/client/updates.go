@@ -13,7 +13,6 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/menu"
 	"github.com/inipew/goultroid/internal/assistant/peer"
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
@@ -28,7 +27,6 @@ type UpdateHandlerDeps struct {
 	CacheEntities   func(e tg.Entities)
 	IsShuttingDown  func() bool
 	MenuController  *menu.Controller
-	SettingsService *settings.Service
 	InlineEngine    InlineQueryExecutor
 	InlineService   core.TelegramServicer
 	Tasks           tasks.Client
@@ -88,7 +86,7 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			}
 		}
 		if deps.MenuController != nil {
-			if handled, hErr := deps.MenuController.HandleTextMessage(ctx, senderID, extractChatID(msg.PeerID), msg.Message, deps.Interaction, deps.SettingsService); handled {
+			if handled, hErr := deps.MenuController.HandleTextMessage(ctx, senderID, extractChatID(msg.PeerID), msg.Message, deps.Interaction); handled {
 				return hErr
 			}
 		}
