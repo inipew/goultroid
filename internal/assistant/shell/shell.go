@@ -1,7 +1,6 @@
 package shell
 
 import (
-	"encoding/binary"
 	"fmt"
 	"sort"
 	"strconv"
@@ -19,10 +18,13 @@ import (
 const (
 	FeatureID = "assistant_shell"
 
-	InteractionStart  = "start"
-	InteractionHome   = "home"
-	InteractionStatus = "status"
-	InteractionHelp   = "help"
+	InteractionStart            = "start"
+	InteractionHome             = "home"
+	InteractionStatus           = "status"
+	InteractionHelp             = "help"
+	InteractionSettings         = "settings"
+	InteractionSettingsCategory = "settings_category"
+	InteractionSettingDetail    = "setting_detail"
 
 	ActionRefresh       = "refresh"
 	ActionPing          = "ping"
@@ -30,6 +32,14 @@ const (
 	ActionHelp          = "help"
 	ActionHome          = "home"
 	ActionStatusRefresh = "status_refresh"
+	ActionSettings      = "settings"
+	ActionSettingsPrev  = "settings_prev"
+	ActionSettingsNext  = "settings_next"
+	ActionSettingsOpen  = "settings_open"
+	ActionSettingPrev   = "setting_prev"
+	ActionSettingNext   = "setting_next"
+	ActionSettingOpen   = "setting_open"
+	ActionSettingBack   = "setting_back"
 	ActionLegacy        = "legacy"
 )
 
@@ -62,32 +72,26 @@ func (*Feature) FeatureSpec() feature.Spec {
 			{ID: InteractionHome, Kind: feature.InteractionScreen, Description: "Owner root/home screen", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionStatus, Kind: feature.InteractionScreen, Description: "Read-only Assistant runtime status", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionHelp, Kind: feature.InteractionScreen, Description: "Read-only Assistant command overview", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: InteractionSettings, Kind: feature.InteractionScreen, Description: "Read-only settings category navigator", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: InteractionSettingsCategory, Kind: feature.InteractionScreen, Description: "Read-only settings value navigator", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: InteractionSettingDetail, Kind: feature.InteractionScreen, Description: "Read-only setting detail", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionRefresh, Kind: feature.InteractionAction, Description: "Refresh shell state and presentation", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionPing, Kind: feature.InteractionAction, Description: "Acknowledge shell liveness", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionStatus, Kind: feature.InteractionAction, Description: "Navigate to read-only status", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionHelp, Kind: feature.InteractionAction, Description: "Navigate to read-only help overview", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionHome, Kind: feature.InteractionAction, Description: "Return to the shell home screen", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionStatusRefresh, Kind: feature.InteractionAction, Description: "Refresh read-only status", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionSettings, Kind: feature.InteractionAction, Description: "Navigate to settings categories", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionSettingsPrev, Kind: feature.InteractionAction, Description: "Select previous settings category", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionSettingsNext, Kind: feature.InteractionAction, Description: "Select next settings category", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionSettingsOpen, Kind: feature.InteractionAction, Description: "Open selected settings category", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionSettingPrev, Kind: feature.InteractionAction, Description: "Select previous setting", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionSettingNext, Kind: feature.InteractionAction, Description: "Select next setting", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionSettingOpen, Kind: feature.InteractionAction, Description: "Open selected setting detail", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionSettingBack, Kind: feature.InteractionAction, Description: "Return to selected settings category", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionLegacy, Kind: feature.InteractionAction, Description: "Handoff to the legacy a1 menu", Surfaces: assistant, Policy: ownerPolicy},
 		},
 	}
-}
-
-const stateBytes = 8
-
-func InitialState() []byte { return make([]byte, stateBytes) }
-
-func RefreshCount(state []byte) uint64 {
-	if len(state) != stateBytes {
-		return 0
-	}
-	return binary.BigEndian.Uint64(state)
-}
-
-func NextRefreshState(state []byte) []byte {
-	out := make([]byte, stateBytes)
-	binary.BigEndian.PutUint64(out, RefreshCount(state)+1)
-	return out
 }
 
 type HomeModel struct {
@@ -107,14 +111,14 @@ func HomeView(model HomeModel) presentation.View {
 	if model.Refreshes > 0 {
 		card.AddField("Session refreshes", strconv.FormatUint(model.Refreshes, 10))
 	}
-	card.WithFooter("<i>Settings and detailed command help remain available through Classic menu while migration continues.</i>")
+	card.WithFooter("<i>Settings are read-only in a2 for now; mutations remain in Classic menu.</i>")
 
 	return presentation.View{
 		Text: card.Render(),
 		Rows: []presentation.Row{
-			{{Text: "📚 Help", ActionID: ActionHelp}, {Text: "📊 Status", ActionID: ActionStatus}},
-			{{Text: "🔄 Refresh", ActionID: ActionRefresh}, {Text: "🏓 Ping", ActionID: ActionPing}},
-			{{Text: "🧭 Classic menu", ActionID: ActionLegacy}},
+			{{Text: "⚙️ Settings", ActionID: ActionSettings}, {Text: "📚 Help", ActionID: ActionHelp}},
+			{{Text: "📊 Status", ActionID: ActionStatus}, {Text: "🔄 Refresh", ActionID: ActionRefresh}},
+			{{Text: "🏓 Ping", ActionID: ActionPing}, {Text: "🧭 Classic menu", ActionID: ActionLegacy}},
 		},
 	}
 }
@@ -229,9 +233,12 @@ func ValidateSpec() error {
 		return fmt.Errorf("assistant shell feature id = %q", bound.ID)
 	}
 	for name, view := range map[string]presentation.View{
-		"home":   HomeView(HomeModel{}),
-		"status": StatusView(StatusModel{}),
-		"help":   HelpView(HelpModel{}),
+		"home":     HomeView(HomeModel{}),
+		"status":   StatusView(StatusModel{}),
+		"help":     HelpView(HelpModel{}),
+		"settings": SettingsHomeView(SettingsHomeModel{}),
+		"category": SettingsCategoryView(SettingsCategoryModel{}),
+		"detail":   SettingDetailView(SettingDetailModel{}),
 	} {
 		if err := view.Validate(); err != nil {
 			return fmt.Errorf("%s view: %w", name, err)

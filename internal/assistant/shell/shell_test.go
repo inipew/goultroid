@@ -8,6 +8,7 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/feature"
+	"github.com/inipew/goultroid/internal/settings"
 )
 
 func TestFeatureSpecAndViews(t *testing.T) {
@@ -15,10 +16,17 @@ func TestFeatureSpecAndViews(t *testing.T) {
 		t.Fatalf("ValidateSpec() error = %v", err)
 	}
 	spec := NewFeature().FeatureSpec()
-	if len(spec.Interactions) != 11 {
-		t.Fatalf("interactions = %d, want 11", len(spec.Interactions))
+	if len(spec.Interactions) != 22 {
+		t.Fatalf("interactions = %d, want 22", len(spec.Interactions))
 	}
-	for _, screenID := range []string{InteractionHome, InteractionStatus, InteractionHelp} {
+	for _, screenID := range []string{
+		InteractionHome,
+		InteractionStatus,
+		InteractionHelp,
+		InteractionSettings,
+		InteractionSettingsCategory,
+		InteractionSettingDetail,
+	} {
 		interaction, ok := findInteraction(spec, feature.InteractionScreen, screenID)
 		if !ok || !interaction.Surfaces.Supports(execution.SourceAssistant) || !interaction.Policy.PrivateOnly {
 			t.Fatalf("screen %q = %+v, ok=%v", screenID, interaction, ok)
@@ -35,7 +43,7 @@ func TestFeatureSpecAndViews(t *testing.T) {
 	}
 
 	home := HomeView(HomeModel{Username: "TestBot", Uptime: time.Minute, Refreshes: 1})
-	if len(home.Rows) != 3 || home.Rows[0][0].ActionID != ActionHelp || home.Rows[0][1].ActionID != ActionStatus {
+	if len(home.Rows) != 3 || home.Rows[0][0].ActionID != ActionSettings || home.Rows[0][1].ActionID != ActionHelp {
 		t.Fatalf("unexpected home actions: %+v", home.Rows)
 	}
 	status := StatusView(StatusModel{Username: "TestBot", Uptime: time.Minute, Refreshes: 1})
@@ -63,6 +71,75 @@ func TestHelpViewUsesDeterministicCanonicalSummary(t *testing.T) {
 	}
 	if len(view.Rows) != 1 || view.Rows[0][0].ActionID != ActionHome || view.Rows[0][1].ActionID != ActionLegacy {
 		t.Fatalf("unexpected help actions: %+v", view.Rows)
+	}
+}
+
+func TestSettingsViewsAreReadOnlyAndMaskSensitiveValues(t *testing.T) {
+	home := SettingsHomeView(SettingsHomeModel{
+		Category: SettingsCategory{ID: settings.CategorySecurity, Label: CategoryLabel(settings.CategorySecurity), Count: 2},
+		Total:    2,
+		Selected: 1,
+	})
+	if err := home.Validate(); err != nil {
+		t.Fatalf("SettingsHomeView() invalid: %v", err)
+	}
+	if !strings.Contains(home.Text, "Read-only") || !strings.Contains(home.Text, "Security") {
+		t.Fatalf("settings home text = %q", home.Text)
+	}
+
+	category := SettingsCategoryView(SettingsCategoryModel{
+		Category: SettingsCategory{ID: settings.CategorySecurity, Label: CategoryLabel(settings.CategorySecurity), Count: 2},
+		Current:  SettingSummary{Title: "API Token", Value: DisplaySettingValue(true, "secret")},
+		Total:    2,
+		Selected: 0,
+	})
+	if strings.Contains(category.Text, "secret") || !strings.Contains(category.Text, "••••") {
+		t.Fatalf("sensitive category value leaked: %q", category.Text)
+	}
+
+	detail := SettingDetailView(SettingDetailModel{
+		Definition: settings.SettingDefinition{
+			Namespace:    "security",
+			Key:          "token",
+			Title:        "API Token",
+			Description:  "Sensitive token",
+			Type:         settings.TypeString,
+			DefaultValue: "default-secret",
+			Sensitive:    true,
+		},
+		Current: "runtime-secret",
+		Source:  "User override",
+	})
+	if strings.Contains(detail.Text, "runtime-secret") || strings.Contains(detail.Text, "default-secret") {
+		t.Fatalf("sensitive detail value leaked: %q", detail.Text)
+	}
+	if strings.Contains(detail.Text, "Change") || strings.Contains(detail.Text, "Reset") {
+		t.Fatalf("P5-C detail unexpectedly exposes mutation controls: %+v", detail.Rows)
+	}
+}
+
+func TestStateCodecAcceptsLegacyAndBoundsNavigator(t *testing.T) {
+	legacy := make([]byte, legacyStateBytes)
+	legacy[7] = 4
+	state := DecodeState(legacy)
+	if state.Screen != ScreenHome || state.Refreshes != 4 {
+		t.Fatalf("legacy state = %+v", state)
+	}
+
+	raw := StepCategoryState(InitialState(), 3, -1)
+	state = DecodeState(raw)
+	if state.Screen != ScreenSettings || state.CategoryIndex != 2 {
+		t.Fatalf("previous category state = %+v", state)
+	}
+	raw = OpenCategoryState(raw, 3)
+	raw = StepSettingState(raw, 2, 1)
+	raw = OpenSettingState(raw, 2)
+	state = DecodeState(raw)
+	if state.Screen != ScreenSettingDetail || state.CategoryIndex != 2 || state.SettingIndex != 1 {
+		t.Fatalf("detail state = %+v", state)
+	}
+	if len(raw) != stateBytes {
+		t.Fatalf("encoded state bytes = %d, want %d", len(raw), stateBytes)
 	}
 }
 
