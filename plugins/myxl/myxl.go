@@ -8,13 +8,13 @@ import (
 	"html"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
-	"github.com/inipew/goultroid/internal/assistant/menu"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
@@ -40,6 +40,9 @@ type Plugin struct {
 	files      *filesystem.Scope
 	tasks      tasks.Client
 	qrTaskSeq  atomic.Uint64
+
+	assistantMu sync.RWMutex
+	assistantV2 interaction.V2Runtime
 }
 
 const (
@@ -74,7 +77,7 @@ func New(repo Repository, client *Client) *Plugin {
 		repo:   repo,
 		client: client,
 	}
-	p.menuMgr = NewMenuManager(p, nil)
+	p.menuMgr = NewMenuManager(p)
 	return p
 }
 
@@ -86,18 +89,6 @@ func (p *Plugin) SetStateStore(store *callback.StateStore) {
 // SetTaskClient configures staged TaskEngine access for scarce QR media sends.
 func (p *Plugin) SetTaskClient(client tasks.Client) {
 	p.tasks = client
-}
-
-// SetAssistantMenu configures the assistant interactive menu controller.
-func (p *Plugin) SetAssistantMenu(ctrl menu.CompatibilityHost) {
-	if p.menuMgr == nil {
-		p.menuMgr = NewMenuManager(p, ctrl)
-	} else {
-		p.menuMgr.menuCtrl = ctrl
-		if ctrl != nil {
-			ctrl.RegisterTextHandler(p.menuMgr)
-		}
-	}
 }
 
 // MenuManager returns the MenuManager instance.
@@ -291,51 +282,30 @@ func isGroupChat(chat *core.Chat) bool {
 }
 
 func (p *Plugin) handleMyXL(ctx *core.Context) error {
-	showInteractive := ctx.Source == core.ExecutionAssistant || (len(ctx.Args) == 1 && strings.EqualFold(ctx.Args[0], "menu"))
 	if len(ctx.Args) == 0 || (len(ctx.Args) == 1 && strings.EqualFold(ctx.Args[0], "menu")) {
-		if showInteractive && p.menuMgr != nil {
+		if ctx.IsAssistant() {
 			if isGroupChat(ctx.Chat) {
 				return ctx.EditOrReply("🔒 Menu interaktif MyXL hanya tersedia di chat pribadi karena memuat nomor akun, OTP, dan tindakan pembelian.")
 			}
-			cCtx, cancel := context.WithTimeout(getContext(ctx), 25*time.Second)
-			defer cancel()
-			mask := isGroupChat(ctx.Chat)
-			screen, err := p.menuMgr.BuildDashboardScreen(cCtx, mask)
-			if err == nil {
-				text, markup := render.ToTelegram(screen)
-				sErr := ctx.Messages().ReplyMarkup(text, markup)
-				if sErr == nil {
-					if ctx.LastResponseID > 0 && p.menuMgr.menuCtrl != nil && ctx.SenderID() > 0 {
-						p.menuMgr.menuCtrl.RegisterInstance(menu.MenuInstance{
-							ID:        fmt.Sprintf("menu:%d:%d", ctx.ChatID(), ctx.LastResponseID),
-							ChatID:    ctx.ChatID(),
-							MessageID: ctx.LastResponseID,
-							Screen:    menu.ScreenIDMyXL,
-							OwnerID:   ctx.SenderID(),
-						})
-					}
-					return nil
-				}
-			}
+			return p.openAssistantV2(ctx)
 		}
 		return ctx.EditOrReply(
 			"📱 <b>MyXL Plugin Menu</b>\n\n" +
-				"• <code>.myxl menu</code> - Buka menu interaktif dengan tombol\n" +
 				"• <code>.myxl login &lt;nomor&gt;</code> - Minta kode OTP SMS\n" +
-				"• <code>.myxl otp &lt;nomor&gt; &lt;kode&gt;</code> - Masukkan kode OTP dan simpan akun\n" +
+				"• <code>.myxl otp &lt;nomor&gt; &lt;kode&gt;</code> - Verifikasi OTP dan simpan akun\n" +
 				"• <code>.myxl refresh [nomor/alias]</code> - Force refresh token CIAM\n" +
-				"• <code>.myxl accounts</code> - Daftar semua akun tersimpan\n" +
+				"• <code>.myxl accounts</code> - Daftar akun tersimpan\n" +
 				"• <code>.myxl use &lt;nomor/alias&gt;</code> - Ganti akun aktif\n" +
-				"• <code>.myxl alias &lt;nomor&gt; &lt;nama_alias&gt;</code> - Berikan nama alias akun\n" +
-				"• <code>.myxl status</code> - Cek status akun aktif saat ini\n" +
-				"• <code>.myxl del &lt;nomor/alias&gt;</code> - Hapus akun tersimpan\n" +
-				"• <code>.myxl kuota</code> - Cek sisa kuota dan pulsa\n" +
-				"• <code>.myxl family &lt;family_code&gt;</code> - Cari daftar paket dalam family\n" +
-				"• <code>.myxl paket &lt;option_code&gt;</code> - Cek rincian detail paket\n" +
-				"• <code>.myxl saved [list|add|del|buy]</code> - Kelola / beli paket tersimpan\n" +
-				"• <code>.myxl buy &lt;option_code&gt; [metode] [harga] [nomor]</code> - Beli paket langsung\n" +
-				"• <code>.myxl qris [cancel]</code> - Cek / batalkan tagihan QRIS aktif (berlaku 5 menit)\n" +
-				"• <code>.kuota</code> - Shortcut cepat periksa kuota",
+				"• <code>.myxl alias &lt;nomor&gt; &lt;alias&gt;</code> - Ubah alias akun\n" +
+				"• <code>.myxl status</code> - Status akun aktif\n" +
+				"• <code>.myxl del &lt;nomor/alias&gt;</code> - Hapus akun\n" +
+				"• <code>.myxl kuota</code> - Cek kuota dan pulsa\n" +
+				"• <code>.myxl family &lt;family_code&gt;</code> - Cari paket family\n" +
+				"• <code>.myxl paket &lt;option_code&gt;</code> - Detail paket\n" +
+				"• <code>.myxl saved [list|add|del|buy]</code> - Kelola favorit\n" +
+				"• <code>.myxl buy &lt;option_code&gt; [metode] [harga] [nomor]</code> - Beli paket\n" +
+				"• <code>.myxl qris [cancel]</code> - Cek/batalkan QRIS aktif\n" +
+				"• <code>.kuota</code> - Shortcut cek kuota",
 		)
 	}
 
@@ -691,544 +661,43 @@ func (p *Plugin) HandleCallback(cbCtx *callback.CallbackContext) error {
 	if cbCtx == nil {
 		return nil
 	}
-	requiresMenuSession := true
 	switch cbCtx.Action {
 	case "refresh":
-		_, legacy := cbCtx.State.(quotaRefreshState)
-		requiresMenuSession = !legacy
-	case "buy_confirm", "buy_cancel":
-		_, legacy := cbCtx.State.(purchaseDraftState)
-		requiresMenuSession = !legacy
-	}
-	if requiresMenuSession {
-		if p.menuMgr == nil || p.menuMgr.menuCtrl == nil || cbCtx.Target.MessageID == 0 {
-			return cbCtx.Answer("Sesi menu tidak valid atau sudah kedaluwarsa", true)
+		state, ok := cbCtx.State.(quotaRefreshState)
+		if !ok || state.MSISDN == "" {
+			return cbCtx.Answer("Tombol refresh tidak valid atau sudah kedaluwarsa", true)
 		}
-		inst, ok := p.menuMgr.menuCtrl.Instances().Get(cbCtx.ChatID, cbCtx.Target.MessageID)
-		if !ok || inst == nil {
-			return cbCtx.Answer("Sesi menu tidak valid atau sudah kedaluwarsa", true)
-		}
-		if inst.OwnerID != 0 && inst.OwnerID != cbCtx.UserID {
-			return cbCtx.Answer("Anda tidak diizinkan menggunakan menu ini", true)
-		}
-		if cbCtx.ChatID < 0 {
-			return cbCtx.Answer("Menu MyXL hanya dapat digunakan di chat pribadi", true)
-		}
-	}
-
-	switch cbCtx.Action {
-	case "home":
-		if p.menuMgr == nil {
-			return cbCtx.Answer("Menu manager unavailable", true)
-		}
-		screen, err := p.menuMgr.BuildDashboardScreen(cbCtx.Ctx, false)
-		if err != nil {
-			return cbCtx.Answer(fmt.Sprintf("Gagal memuat: %v", err), true)
-		}
-		text, markup := render.ToTelegram(screen)
-		return cbCtx.Edit(text, markup)
-
-	case "refresh":
-		if state, ok := cbCtx.State.(quotaRefreshState); ok && state.MSISDN != "" {
-			cCtx, cancel := context.WithTimeout(cbCtx.Ctx, 25*time.Second)
-			defer cancel()
-
-			acc, err := p.repo.GetByMSISDN(cCtx, state.MSISDN)
-			if acc == nil || err != nil {
-				return cbCtx.Answer("Akun tidak ditemukan", true)
-			}
-
-			balance, bErr := p.client.GetBalance(cCtx, acc)
-			quota, qErr := p.client.GetQuotaDetails(cCtx, acc)
-			if bErr != nil && qErr != nil {
-				return cbCtx.Answer(fmt.Sprintf("Gagal update: %v", bErr), true)
-			}
-
-			text := FormatQuotaResponse(acc, balance, quota, state.Masked)
-			markup := p.buildRefreshMarkup(state, callback.StateScope{
-				UserID: cbCtx.UserID, ChatID: cbCtx.ChatID, MessageID: cbCtx.Target.MessageID,
-				Namespace: p.Namespace(),
-			})
-			return cbCtx.Edit(text, markup)
-		}
-		if p.menuMgr != nil {
-			screen, err := p.menuMgr.BuildDashboardScreen(cbCtx.Ctx, false)
-			if err != nil {
-				return cbCtx.Answer(fmt.Sprintf("Gagal update: %v", err), true)
-			}
-			text, markup := render.ToTelegram(screen)
-			_ = cbCtx.Answer("🔄 Kuota & pulsa diperbarui", false)
-			return cbCtx.Edit(text, markup)
-		}
-		return cbCtx.Answer("Tombol tidak valid atau sudah kedaluwarsa", true)
-
-	case "detail", "quota":
-		if p.menuMgr == nil {
-			return cbCtx.Answer("Menu manager unavailable", true)
-		}
-		screen, err := p.menuMgr.BuildQuotaDetailScreen(cbCtx.Ctx, false)
-		if err != nil {
-			return cbCtx.Answer(fmt.Sprintf("Gagal memuat rincian: %v", err), true)
-		}
-		text, markup := render.ToTelegram(screen)
-		return cbCtx.Edit(text, markup)
-
-	case "accounts":
-		if p.menuMgr == nil {
-			return cbCtx.Answer("Menu manager unavailable", true)
-		}
-		screen, err := p.menuMgr.BuildAccountsScreen(cbCtx.Ctx)
-		if err != nil {
-			return cbCtx.Answer(fmt.Sprintf("Gagal memuat akun: %v", err), true)
-		}
-		text, markup := render.ToTelegram(screen)
-		return cbCtx.Edit(text, markup)
-
-	case "switch":
-		targetMSISDN := cbCtx.OpaqueID
-		if targetMSISDN == "" || targetMSISDN == "noop" {
-			return cbCtx.Answer("", false)
-		}
-		if err := p.repo.SetActive(cbCtx.Ctx, targetMSISDN); err != nil {
-			return cbCtx.Answer(fmt.Sprintf("Gagal ganti akun: %v", err), true)
-		}
-		_ = cbCtx.Answer("✅ Akun aktif diganti ke "+targetMSISDN, false)
-		if p.menuMgr != nil {
-			screen, _ := p.menuMgr.BuildAccountsScreen(cbCtx.Ctx)
-			text, markup := render.ToTelegram(screen)
-			return cbCtx.Edit(text, markup)
-		}
-		return nil
-
-	case "alias_pick":
-		if p.menuMgr == nil {
-			return cbCtx.Answer("Menu manager unavailable", true)
-		}
-		screen, err := p.menuMgr.BuildAliasPickScreen(cbCtx.Ctx)
-		if err != nil {
-			return cbCtx.Answer(fmt.Sprintf("Gagal: %v", err), true)
-		}
-		text, markup := render.ToTelegram(screen)
-		return cbCtx.Edit(text, markup)
-
-	case "alias_req":
-		if p.menuMgr == nil {
-			return cbCtx.Answer("Menu manager unavailable", true)
-		}
-		targetMSISDN := cbCtx.OpaqueID
-		p.menuMgr.SetSession(cbCtx.UserID, &wizardSession{
-			Type:   wizardSetAlias,
-			MSISDN: targetMSISDN,
-			Target: interaction.NewMessageTarget(cbCtx.Target.Peer, cbCtx.Target.MessageID, cbCtx.ChatID, cbCtx.ChatInstance),
-		})
-		_ = cbCtx.Answer("Ketik nama alias baru...", false)
-		prompt := fmt.Sprintf(
-			"🏷️ <b>Ubah Alias Akun</b>\n\nNomor: <code>%s</code>\n\nSilakan kirimkan nama alias baru (maksimal 24 karakter):\n\n<i>Ketik <code>/cancel</code> untuk membatalkan.</i>",
-			html.EscapeString(targetMSISDN),
-		)
-		markup := render.ToTelegramMarkup(ui.Markup{Rows: []ui.ButtonRow{{
-			ui.NewCallbackButton("❌ Batal", []byte("a1:myxl:cancel_wizard")),
-		}}})
-		return cbCtx.Edit(prompt, markup)
-
-	case "del_pick":
-		if p.menuMgr == nil {
-			return cbCtx.Answer("Menu manager unavailable", true)
-		}
-		screen, err := p.menuMgr.BuildDeletePickScreen(cbCtx.Ctx)
-		if err != nil {
-			return cbCtx.Answer(fmt.Sprintf("Gagal: %v", err), true)
-		}
-		text, markup := render.ToTelegram(screen)
-		return cbCtx.Edit(text, markup)
-
-	case "del_ask":
-		targetMSISDN := cbCtx.OpaqueID
-		prompt := fmt.Sprintf(
-			"⚠️ <b>Hapus Akun MyXL</b>\n\nApakah Anda yakin ingin menghapus nomor <code>%s</code> dari penyimpanan bot?",
-			html.EscapeString(targetMSISDN),
-		)
-		markup := render.ToTelegramMarkup(ui.Markup{Rows: []ui.ButtonRow{{
-			ui.NewCallbackButton("🗑️ Ya, Hapus", []byte(fmt.Sprintf("a1:myxl:del_exec:%s", targetMSISDN))),
-			ui.NewCallbackButton("❌ Batal", []byte("a1:myxl:accounts")),
-		}}})
-		return cbCtx.Edit(prompt, markup)
-
-	case "del_exec":
-		targetMSISDN := cbCtx.OpaqueID
-		if err := p.repo.Delete(cbCtx.Ctx, targetMSISDN); err != nil {
-			return cbCtx.Answer(fmt.Sprintf("Gagal menghapus: %v", err), true)
-		}
-		_ = cbCtx.Answer("✅ Akun berhasil dihapus", false)
-		if p.menuMgr != nil {
-			screen, _ := p.menuMgr.BuildAccountsScreen(cbCtx.Ctx)
-			text, markup := render.ToTelegram(screen)
-			return cbCtx.Edit(text, markup)
-		}
-		return nil
-
-	case "token_refresh":
-		acc, err := p.repo.GetActive(cbCtx.Ctx)
+		cCtx, cancel := context.WithTimeout(cbCtx.Ctx, 25*time.Second)
+		defer cancel()
+		acc, err := p.repo.GetByMSISDN(cCtx, state.MSISDN)
 		if err != nil || acc == nil {
-			return cbCtx.Answer("Tidak ada akun aktif", true)
+			return cbCtx.Answer("Akun tidak ditemukan", true)
 		}
-		err = p.client.EnsureFreshToken(cbCtx.Ctx, acc)
-		if err != nil {
-			return cbCtx.Answer(fmt.Sprintf("Refresh token gagal: %v", err), true)
+		balance, balanceErr := p.client.GetBalance(cCtx, acc)
+		quota, quotaErr := p.client.GetQuotaDetails(cCtx, acc)
+		if balanceErr != nil && quotaErr != nil {
+			return cbCtx.Answer(fmt.Sprintf("Gagal update: %v", balanceErr), true)
 		}
-		_ = cbCtx.Answer("🔄 Token CIAM berhasil disegarkan", false)
-		if p.menuMgr != nil {
-			screen, _ := p.menuMgr.BuildAccountsScreen(cbCtx.Ctx)
-			text, markup := render.ToTelegram(screen)
-			return cbCtx.Edit(text, markup)
-		}
-		return nil
-
-	case "login_req":
-		if p.menuMgr == nil {
-			return cbCtx.Answer("Menu manager unavailable", true)
-		}
-		p.menuMgr.SetSession(cbCtx.UserID, &wizardSession{
-			Type:   wizardLoginMSISDN,
-			Target: interaction.NewMessageTarget(cbCtx.Target.Peer, cbCtx.Target.MessageID, cbCtx.ChatID, cbCtx.ChatInstance),
+		text := FormatQuotaResponse(acc, balance, quota, state.Masked)
+		markup := p.buildRefreshMarkup(state, callback.StateScope{
+			UserID: cbCtx.UserID, ChatID: cbCtx.ChatID, MessageID: cbCtx.Target.MessageID,
+			Namespace: p.Namespace(),
 		})
-		_ = cbCtx.Answer("Kirimkan nomor HP Anda...", false)
-		prompt := "📱 <b>Login MyXL — Langkah 1 dari 2</b>\n\n" +
-			"Masukkan nomor HP XL/Axis yang ingin didaftarkan.\n" +
-			"Format: <code>0819...</code> atau <code>62819...</code>\n\n" +
-			"<i>Ketik <code>/cancel</code> atau tekan Batal di bawah untuk membatalkan.</i>"
-		markup := render.ToTelegramMarkup(ui.Markup{Rows: []ui.ButtonRow{{
-			ui.NewCallbackButton("❌ Batal", []byte("a1:myxl:cancel_wizard")),
-		}}})
-		return cbCtx.Edit(prompt, markup)
-
-	case "resend_otp":
-		targetMSISDN := cbCtx.OpaqueID
-		if targetMSISDN == "" {
-			return cbCtx.Answer("Nomor HP tidak valid", true)
-		}
-		subID, err := p.client.RequestOTP(cbCtx.Ctx, targetMSISDN)
-		if err != nil {
-			return cbCtx.Answer(fmt.Sprintf("Gagal kirim ulang OTP: %v", err), true)
-		}
-		if subID != "" {
-			if existing, _ := p.repo.GetByMSISDN(cbCtx.Ctx, targetMSISDN); existing != nil {
-				existing.SubscriberID = subID
-				_ = p.repo.Save(cbCtx.Ctx, existing)
-			}
-		}
-		return cbCtx.Answer("📩 Kode OTP telah dikirim ulang via SMS!", true)
-
-	case "cancel_wizard":
-		if p.menuMgr != nil {
-			p.menuMgr.ClearSession(cbCtx.UserID)
-			_ = cbCtx.Answer("Wizard dibatalkan", false)
-			screen, err := p.menuMgr.BuildDashboardScreen(cbCtx.Ctx, false)
-			if err == nil {
-				text, markup := render.ToTelegram(screen)
-				return cbCtx.Edit(text, markup)
-			}
-		}
-		return cbCtx.Edit("❌ Interaksi MyXL dibatalkan.", nil)
-
-	case "store":
-		if p.menuMgr == nil {
-			return cbCtx.Answer("Menu manager unavailable", true)
-		}
-		screen, err := p.menuMgr.BuildStoreScreen(cbCtx.Ctx)
-		if err != nil {
-			return cbCtx.Answer(fmt.Sprintf("Gagal memuat store: %v", err), true)
-		}
-		text, markup := render.ToTelegram(screen)
 		return cbCtx.Edit(text, markup)
 
-	case "saved":
-		if p.menuMgr == nil {
-			return cbCtx.Answer("Menu manager unavailable", true)
-		}
-		screen, err := p.menuMgr.BuildSavedPackagesScreen(cbCtx.Ctx)
-		if err != nil {
-			return cbCtx.Answer(fmt.Sprintf("Gagal memuat favorit: %v", err), true)
-		}
-		text, markup := render.ToTelegram(screen)
-		return cbCtx.Edit(text, markup)
-
-	case "fam_input":
-		if p.menuMgr == nil {
-			return cbCtx.Answer("Menu manager unavailable", true)
-		}
-		p.menuMgr.SetSession(cbCtx.UserID, &wizardSession{
-			Type:   wizardFamilyCode,
-			Target: interaction.NewMessageTarget(cbCtx.Target.Peer, cbCtx.Target.MessageID, cbCtx.ChatID, cbCtx.ChatInstance),
-		})
-		_ = cbCtx.Answer("Kirimkan Family Code...", false)
-		prompt := "🔍 <b>Input Family Code Paket</b>\n\n" +
-			"Silakan kirimkan Family Code paket yang ingin Anda telusuri (contoh: <code>7658c955-a0b9-405f-bb17-de7f43d1a946</code>):\n\n" +
-			"<i>Ketik <code>/cancel</code> untuk membatalkan.</i>"
-		markup := render.ToTelegramMarkup(ui.Markup{Rows: []ui.ButtonRow{{
-			ui.NewCallbackButton("❌ Batal", []byte("a1:myxl:cancel_wizard")),
-		}}})
-		return cbCtx.Edit(prompt, markup)
-
-	case "fam_page":
-		parts := strings.Split(cbCtx.OpaqueID, ":")
-		if len(parts) < 2 {
-			return cbCtx.Answer("Data halaman tidak lengkap", true)
-		}
-		familyCode := parts[0]
-		page, _ := strconv.Atoi(parts[1])
-		if page < 1 {
-			page = 1
-		}
-		acc, err := p.repo.GetActive(cbCtx.Ctx)
-		if err != nil || acc == nil {
-			return cbCtx.Answer("Tidak ada akun aktif", true)
-		}
-		if p.menuMgr == nil {
-			return cbCtx.Answer("Menu manager unavailable", true)
-		}
-		screen, err := p.menuMgr.BuildFamilyPackagesScreen(cbCtx.Ctx, acc, familyCode, page)
-		if err != nil {
-			return cbCtx.Answer(fmt.Sprintf("Gagal memuat paket family: %v", err), true)
-		}
-		text, markup := render.ToTelegram(screen)
-		return cbCtx.Edit(text, markup)
-
-	case "buy_opt_input":
-		if p.menuMgr == nil {
-			return cbCtx.Answer("Menu manager unavailable", true)
-		}
-		p.menuMgr.SetSession(cbCtx.UserID, &wizardSession{
-			Type:   wizardOptionCode,
-			Target: interaction.NewMessageTarget(cbCtx.Target.Peer, cbCtx.Target.MessageID, cbCtx.ChatID, cbCtx.ChatInstance),
-		})
-		_ = cbCtx.Answer("Kirimkan kode paket...", false)
-		prompt := "⚡ <b>Input Option Code Paket</b>\n\n" +
-			"Silakan kirimkan kode paket yang ingin Anda beli (contoh: <code>OPT12345</code>):\n\n" +
-			"<i>Ketik <code>/cancel</code> untuk membatalkan.</i>"
-		markup := render.ToTelegramMarkup(ui.Markup{Rows: []ui.ButtonRow{{
-			ui.NewCallbackButton("❌ Batal", []byte("a1:myxl:cancel_wizard")),
-		}}})
-		return cbCtx.Edit(prompt, markup)
-
-	case "buy_opt":
-		optionCode := cbCtx.OpaqueID
-		if p.menuMgr != nil {
-			optionCode = p.menuMgr.ResolveOptionCode(optionCode)
-		}
-		if optionCode == "" {
-			return cbCtx.Answer("Kode paket tidak valid", true)
-		}
-		acc, err := p.repo.GetActive(cbCtx.Ctx)
-		if err != nil || acc == nil {
-			return cbCtx.Answer("Tidak ada akun aktif", true)
-		}
-		if p.menuMgr == nil {
-			return cbCtx.Answer("Menu manager unavailable", true)
-		}
-		screen, err := p.menuMgr.BuildPackageDetailScreen(cbCtx.Ctx, acc, optionCode)
-		if err != nil {
-			return cbCtx.Answer(fmt.Sprintf("Gagal memuat paket: %v", err), true)
-		}
-		text, markup := render.ToTelegram(screen)
-		return cbCtx.Edit(text, markup)
-
-	case "method":
-		parts := strings.Split(cbCtx.OpaqueID, ":")
-		if len(parts) < 2 {
-			return cbCtx.Answer("Data metode tidak lengkap", true)
-		}
-		method, optKey := parts[0], parts[1]
-		optionCode := optKey
-		if p.menuMgr != nil {
-			optionCode = p.menuMgr.ResolveOptionCode(optKey)
-		}
-		acc, err := p.repo.GetActive(cbCtx.Ctx)
-		if err != nil || acc == nil {
-			return cbCtx.Answer("Tidak ada akun aktif", true)
-		}
-		details, err := p.client.GetPackageDetails(cbCtx.Ctx, acc, optionCode)
-		if err != nil || details.TokenConfirmation == "" {
-			return cbCtx.Answer("Gagal memuat token konfirmasi", true)
-		}
-		pkgName := optionCode
-		var price int64
-		if details.PackageOption != nil {
-			pkgName = details.PackageOption.Name
-			price = int64(details.PackageOption.Price)
-		}
-		draft := purchaseDraftState{
-			MSISDN:            acc.MSISDN,
-			OptionCode:        optionCode,
-			PackageName:       pkgName,
-			Price:             price,
-			TokenConfirmation: details.TokenConfirmation,
-			Method:            method,
-			WalletNumber:      acc.MSISDN,
-		}
-		if p.menuMgr == nil {
-			return cbCtx.Answer("Menu manager unavailable", true)
-		}
-		screen, err := p.menuMgr.BuildCheckoutScreen(draft, cbCtx.UserID, cbCtx.ChatID)
-		if err != nil {
-			return cbCtx.Answer(fmt.Sprintf("Gagal sesi checkout: %v", err), true)
-		}
-		text, markup := render.ToTelegram(screen)
-		return cbCtx.Edit(text, markup)
-
-	case "custom_price":
-		optionCode := cbCtx.OpaqueID
-		if p.menuMgr != nil {
-			optionCode = p.menuMgr.ResolveOptionCode(optionCode)
-		}
-		if p.menuMgr == nil {
-			return cbCtx.Answer("Menu manager unavailable", true)
-		}
-		p.menuMgr.SetSession(cbCtx.UserID, &wizardSession{
-			Type:       wizardCustomPrice,
-			OptionCode: optionCode,
-			Method:     "balance",
-			Target:     interaction.NewMessageTarget(cbCtx.Target.Peer, cbCtx.Target.MessageID, cbCtx.ChatID, cbCtx.ChatInstance),
-		})
-		_ = cbCtx.Answer("Masukkan harga kustom...", false)
-		prompt := fmt.Sprintf(
-			"✏️ <b>Set Harga Kustom (Overwrite)</b>\n\n"+
-				"Paket: <code>%s</code>\n\n"+
-				"Kirimkan nominal harga dalam Rupiah (contoh: <code>0</code> untuk bypass pulsa atau <code>1000</code> untuk QRIS):\n\n"+
-				"<i>Ketik <code>/cancel</code> untuk membatalkan.</i>",
-			html.EscapeString(optionCode),
-		)
-		markup := render.ToTelegramMarkup(ui.Markup{Rows: []ui.ButtonRow{{
-			ui.NewCallbackButton("❌ Batal", []byte("a1:myxl:cancel_wizard")),
-		}}})
-		return cbCtx.Edit(prompt, markup)
-
-	case "checkout", "buy_confirm":
+	case "buy_confirm":
 		state, ok := cbCtx.State.(purchaseDraftState)
 		if !ok || state.MSISDN == "" || state.OptionCode == "" || state.TokenConfirmation == "" {
 			return cbCtx.Answer("Draft pembelian tidak valid atau sudah kedaluwarsa", true)
 		}
 		return p.confirmPurchase(cbCtx, state)
 
-	case "cancel_draft", "buy_cancel":
+	case "buy_cancel":
 		_ = cbCtx.Answer("Pembelian dibatalkan", false)
-		if p.menuMgr != nil {
-			screen, err := p.menuMgr.BuildStoreScreen(cbCtx.Ctx)
-			if err == nil {
-				text, markup := render.ToTelegram(screen)
-				return cbCtx.Edit(text, markup)
-			}
-		}
 		return cbCtx.Edit("✅ Pembelian dibatalkan.", nil)
 
-	case "pending_qris":
-		if p.menuMgr == nil {
-			return cbCtx.Answer("Menu manager unavailable", true)
-		}
-		screen, err := p.menuMgr.BuildPendingQRISScreen(cbCtx.Ctx)
-		if err != nil {
-			return cbCtx.Answer(fmt.Sprintf("Gagal memuat QRIS: %v", err), true)
-		}
-		text, markup := render.ToTelegram(screen)
-		return cbCtx.Edit(text, markup)
-
-	case "qris_cancel":
-		txCode := cbCtx.OpaqueID
-		if txCode == "" {
-			return cbCtx.Answer("Kode transaksi QRIS tidak valid", true)
-		}
-		if err := p.repo.DeletePendingQRIS(cbCtx.Ctx, txCode); err != nil {
-			return cbCtx.Answer("Gagal membatalkan transaksi QRIS. Silakan coba lagi.", true)
-		}
-		_ = cbCtx.Answer("✅ Transaksi QRIS dibatalkan", false)
-		if p.menuMgr != nil {
-			screen, err := p.menuMgr.BuildDashboardScreen(cbCtx.Ctx, false)
-			if err == nil {
-				text, markup := render.ToTelegram(screen)
-				return cbCtx.Edit(text, markup)
-			}
-		}
-		return cbCtx.Edit("✅ Transaksi QRIS dibatalkan.", nil)
-
-	case "qris_img":
-		qrCode := ""
-		if p.menuMgr != nil {
-			qrCode = p.menuMgr.ResolveQR(cbCtx.OpaqueID)
-		}
-		if qrCode == "" || qrCode == cbCtx.OpaqueID {
-			acc, _ := p.repo.GetActive(cbCtx.Ctx)
-			if acc != nil {
-				if pending, _ := p.repo.GetPendingQRIS(cbCtx.Ctx, acc.MSISDN); pending != nil {
-					qrCode = pending.QRCode
-				}
-			}
-		}
-		if qrCode == "" {
-			return cbCtx.Answer("Kode QRIS tidak ditemukan atau sudah kedaluwarsa (5 menit)", true)
-		}
-		if cbCtx.Service == nil || cbCtx.Target.Peer == nil {
-			return cbCtx.Answer("Layanan pengiriman foto tidak tersedia", true)
-		}
-		err := p.sendQRPhoto(cbCtx.Ctx, cbCtx.Service, cbCtx.Target.Peer, qrCode, "QRIS MyXL", 0)
-		if err != nil {
-			if errors.Is(err, core.ErrUnsupported) {
-				return cbCtx.Answer("⚠️ Bot asisten belum mendukung kirim foto langsung. Anda dapat screenshot tampilan QR di pesan untuk discan dari galeri!", true)
-			}
-			return cbCtx.Answer(fmt.Sprintf("Gagal mengirim foto QRIS: %v", err), true)
-		}
-		return cbCtx.Answer("✅ Foto QRIS berhasil dikirim!", false)
-
-	case "bookmark_add":
-		optionCode := cbCtx.OpaqueID
-		if p.menuMgr != nil {
-			optionCode = p.menuMgr.ResolveOptionCode(optionCode)
-		}
-		acc, err := p.repo.GetActive(cbCtx.Ctx)
-		if err != nil || acc == nil {
-			return cbCtx.Answer("Tidak ada akun aktif", true)
-		}
-		details, err := p.client.GetPackageDetails(cbCtx.Ctx, acc, optionCode)
-		if err != nil {
-			return cbCtx.Answer(fmt.Sprintf("Gagal membaca paket: %v", err), true)
-		}
-		pkgName := optionCode
-		var price int64
-		if details.PackageOption != nil {
-			pkgName = details.PackageOption.Name
-			price = int64(details.PackageOption.Price)
-		}
-		_ = p.repo.SavePackage(cbCtx.Ctx, &SavedPackage{
-			MSISDN:     acc.MSISDN,
-			OptionCode: optionCode,
-			Name:       pkgName,
-			Price:      price,
-		})
-		return cbCtx.Answer("⭐ Paket berhasil disimpan ke favorit!", true)
-
-	case "bookmark_del":
-		optionCode := cbCtx.OpaqueID
-		if p.menuMgr != nil {
-			optionCode = p.menuMgr.ResolveOptionCode(optionCode)
-		}
-		acc, _ := p.repo.GetActive(cbCtx.Ctx)
-		if acc != nil {
-			_ = p.repo.DeleteSavedPackage(cbCtx.Ctx, acc.MSISDN, optionCode)
-		}
-		_ = cbCtx.Answer("Paket dihapus dari favorit", false)
-		if p.menuMgr != nil {
-			screen, err := p.menuMgr.BuildSavedPackagesScreen(cbCtx.Ctx)
-			if err == nil {
-				text, markup := render.ToTelegram(screen)
-				return cbCtx.Edit(text, markup)
-			}
-		}
-		return nil
-
-	case "noop":
-		return cbCtx.Answer("", false)
-
 	default:
-		return cbCtx.Answer("Tombol tidak dikenali atau belum didukung", true)
+		return cbCtx.Answer("Interaksi menu MyXL lama sudah tidak didukung. Buka ulang MyXL.", true)
 	}
 }
 
