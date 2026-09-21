@@ -280,6 +280,43 @@ func (s *StateStore) GetEntry(opaqueID string) (StateEntry, error) {
 	return StateEntry{Data: cloned, Scope: item.scope}, nil
 }
 
+// ClaimEntry atomically resolves a callback state entry and claims it when it
+// is single-use. The stored payload is immutable, so cloning can happen after
+// releasing the lock without allowing a second consumer to win the claim.
+func (s *StateStore) ClaimEntry(opaqueID string) (StateEntry, error) {
+	if s == nil {
+		return StateEntry{}, ErrStateNotFound
+	}
+
+	s.mu.Lock()
+	item, exists := s.items[opaqueID]
+	if !exists {
+		s.mu.Unlock()
+		return StateEntry{}, ErrStateNotFound
+	}
+	if time.Now().After(item.expiresAt) {
+		s.retainedBytes -= item.sizeBytes
+		delete(s.items, opaqueID)
+		s.mu.Unlock()
+		return StateEntry{}, ErrStateExpired
+	}
+	if item.consumed {
+		s.mu.Unlock()
+		return StateEntry{}, ErrStateConsumed
+	}
+	if item.scope.SingleUse {
+		item.consumed = true
+		s.items[opaqueID] = item
+	}
+	s.mu.Unlock()
+
+	cloned, _, err := cloneStateData(item.data)
+	if err != nil {
+		return StateEntry{}, ErrStateNotFound
+	}
+	return StateEntry{Data: cloned, Scope: item.scope}, nil
+}
+
 // Consume atomically retrieves and marks a single-use entry as consumed.
 func (s *StateStore) Consume(opaqueID string) (StateEntry, error) {
 	s.mu.Lock()
