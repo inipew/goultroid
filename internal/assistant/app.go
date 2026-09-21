@@ -7,7 +7,6 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/callback"
 	"github.com/inipew/goultroid/internal/assistant/client"
 	assistantinteraction "github.com/inipew/goultroid/internal/assistant/interaction"
-	"github.com/inipew/goultroid/internal/assistant/menu"
 	assistentrpc "github.com/inipew/goultroid/internal/assistant/rpc"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/feature"
@@ -35,7 +34,6 @@ type Client interface {
 	SetInteractionFoundation(catalog feature.Catalog, sessions *rootinteraction.Runtime, actions *rootinteraction.Dispatcher)
 	SetInteractionDrivers(drivers []assistantinteraction.V2FeatureDriver)
 	SetRPCExecutor(executor assistentrpc.Executor)
-	LegacyMenuCompatibility() menu.CompatibilityHost
 }
 
 type AssistantApp struct {
@@ -115,10 +113,4 @@ func (a *AssistantApp) SetInteractionFoundation(catalog feature.Catalog, session
 }
 func (a *AssistantApp) SetInteractionDrivers(drivers []assistantinteraction.V2FeatureDriver) {
 	a.client.SetInteractionDrivers(drivers)
-}
-func (a *AssistantApp) LegacyMenuCompatibility() menu.CompatibilityHost {
-	if a.client == nil {
-		return nil
-	}
-	return a.client.LegacyMenuCompatibility()
 }
