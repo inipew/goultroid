@@ -22,7 +22,7 @@ func TestStateStoreSingleUseIsAtomic(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := s.Consume(id); err == nil {
+			if _, err := s.claimEntry(id, nil); err == nil {
 				mu.Lock()
 				successes++
 				mu.Unlock()
@@ -34,7 +34,7 @@ func TestStateStoreSingleUseIsAtomic(t *testing.T) {
 		t.Fatalf("expected exactly one successful consume, got %d", successes)
 	}
 
-	if _, err := s.GetEntry(id); !errors.Is(err, ErrStateConsumed) {
+	if _, err := s.getEntry(id); !errors.Is(err, ErrStateConsumed) {
 		t.Fatalf("expected consumed state, got %v", err)
 	}
 }
@@ -69,9 +69,9 @@ func TestStateStore_DefensiveCopy(t *testing.T) {
 	// Mutate original slice
 	orig[0] = 'X'
 
-	entry, err := s.GetEntry(id)
+	entry, err := s.getEntry(id)
 	if err != nil {
-		t.Fatalf("unexpected GetEntry error: %v", err)
+		t.Fatalf("unexpected getEntry error: %v", err)
 	}
 	storedBytes, ok := entry.Data.([]byte)
 	if !ok {
@@ -84,9 +84,9 @@ func TestStateStore_DefensiveCopy(t *testing.T) {
 	// Mutate returned slice
 	storedBytes[0] = 'Y'
 
-	entry2, err := s.GetEntry(id)
+	entry2, err := s.getEntry(id)
 	if err != nil {
-		t.Fatalf("unexpected second GetEntry error: %v", err)
+		t.Fatalf("unexpected second getEntry error: %v", err)
 	}
 	if string(entry2.Data.([]byte)) != "hello-world" {
 		t.Fatalf("expected 'hello-world', got '%s' (store was corrupted by return value mutation)", string(entry2.Data.([]byte)))
@@ -101,18 +101,18 @@ func TestStateStore_DefensiveCopyNestedGraph(t *testing.T) {
 		t.Fatal("expected nested state to be accepted")
 	}
 	original["token"][0] = 'X'
-	entry, err := s.GetEntry(id)
+	entry, err := s.getEntry(id)
 	if err != nil {
-		t.Fatalf("GetEntry: %v", err)
+		t.Fatalf("getEntry: %v", err)
 	}
 	got := entry.Data.(map[string][]byte)
 	if string(got["token"]) != "secret" {
 		t.Fatalf("input mutation reached store: %q", got["token"])
 	}
 	got["token"][0] = 'Y'
-	entry, err = s.GetEntry(id)
+	entry, err = s.getEntry(id)
 	if err != nil {
-		t.Fatalf("second GetEntry: %v", err)
+		t.Fatalf("second getEntry: %v", err)
 	}
 	if value := string(entry.Data.(map[string][]byte)["token"]); value != "secret" {
 		t.Fatalf("returned mutation reached store: %q", value)
@@ -132,7 +132,7 @@ func TestStateStore_RetainedBytesTrackingAndEviction(t *testing.T) {
 		t.Fatalf("expected retainedBytes > 0, got %d", initialBytes)
 	}
 
-	s.Delete(id)
+	s.deleteEntry(id)
 	if remaining := s.RetainedBytes(); remaining != 0 {
 		t.Fatalf("expected retainedBytes to be 0 after delete, got %d", remaining)
 	}
