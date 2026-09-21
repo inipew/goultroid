@@ -25,7 +25,7 @@ type SettingsHomeModel struct {
 func SettingsHomeView(model SettingsHomeModel) presentation.View {
 	card := ui.NewCard("GoUltroid Settings").
 		WithIcon("⚙️").
-		WithHeader("Read-only schema browser backed by the central settings registry.").
+		WithHeader("Settings browser backed by the central settings registry.").
 		AddField("Categories", strconv.Itoa(model.Total))
 
 	rows := []presentation.Row{}
@@ -49,7 +49,7 @@ func SettingsHomeView(model SettingsHomeModel) presentation.View {
 			rows = append(rows, presentation.Row{{Text: "Open", ActionID: ActionSettingsOpen}})
 		}
 	}
-	card.WithFooter("<i>P5-C is read-only. Mutation controls remain in Classic menu.</i>")
+	card.WithFooter("<i>Typed mutations are available from a bound setting detail; text input remains in Classic menu.</i>")
 	rows = append(rows, presentation.Row{
 		{Text: "🏠 Home", ActionID: ActionHome},
 		{Text: "🧭 Classic menu", ActionID: ActionLegacy},
@@ -105,9 +105,11 @@ func SettingsCategoryView(model SettingsCategoryModel) presentation.View {
 }
 
 type SettingDetailModel struct {
-	Definition settings.SettingDefinition
-	Current    string
-	Source     string
+	Definition   settings.SettingDefinition
+	Current      string
+	Source       string
+	ExplicitUser bool
+	Notice       string
 }
 
 func SettingDetailView(model SettingDetailModel) presentation.View {
@@ -145,15 +147,31 @@ func SettingDetailView(model SettingDetailModel) presentation.View {
 	if def.UI.Step > 0 {
 		card.AddField("Step", ui.Code(strconv.FormatInt(def.UI.Step, 10)))
 	}
-	card.WithFooter("<i>Read-only foundation. Writes, reset, and text input remain on the legacy settings workflow.</i>")
-
-	return presentation.View{
-		Text: card.Render(),
-		Rows: []presentation.Row{
-			{{Text: "« Category", ActionID: ActionSettingBack}, {Text: "⚙️ Categories", ActionID: ActionSettings}},
-			{{Text: "🏠 Home", ActionID: ActionHome}},
-		},
+	if notice := strings.TrimSpace(model.Notice); notice != "" {
+		card.AddField("Result", ui.EscapeHTML(notice))
 	}
+
+	rows := []presentation.Row{}
+	switch def.Type {
+	case settings.TypeBool, settings.TypeEnum:
+		rows = append(rows, presentation.Row{{Text: "✏️ Change", ActionID: ActionSettingChange}})
+	case settings.TypeInt, settings.TypeDuration:
+		rows = append(rows, presentation.Row{
+			{Text: "➖ Decrease", ActionID: ActionSettingDecrease},
+			{Text: "➕ Increase", ActionID: ActionSettingIncrease},
+		})
+	case settings.TypeString:
+		card.WithRaw("<i>Text input still uses Classic menu.</i>")
+	}
+	if model.ExplicitUser {
+		rows = append(rows, presentation.Row{{Text: "↩ Reset user override", ActionID: ActionSettingReset}})
+	}
+	card.WithFooter("<i>Mutation is bound to this stable setting identity and consumes the current session revision before persistence.</i>")
+	rows = append(rows,
+		presentation.Row{{Text: "« Category", ActionID: ActionSettingBack}, {Text: "⚙️ Categories", ActionID: ActionSettings}},
+		presentation.Row{{Text: "🏠 Home", ActionID: ActionHome}},
+	)
+	return presentation.View{Text: card.Render(), Rows: rows}
 }
 
 func CategoryLabel(category string) string {

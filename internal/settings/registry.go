@@ -8,16 +8,21 @@ import (
 	"sync"
 )
 
+var ErrDefinitionChanged = errors.New("settings: definition changed")
+
 // Registry manages schema definitions for all settings across GoUltroid modules and plugins.
 type Registry struct {
 	mu          sync.RWMutex
 	definitions map[string]*SettingDefinition
+	versions    map[string]uint64
+	nextVersion uint64
 }
 
 // NewRegistry initializes an empty Registry.
 func NewRegistry() *Registry {
 	return &Registry{
 		definitions: make(map[string]*SettingDefinition),
+		versions:    make(map[string]uint64),
 	}
 }
 
@@ -63,7 +68,9 @@ func (r *Registry) Register(def SettingDefinition) error {
 
 	lookupKey := makeDefKey(def.Namespace, def.Key)
 	copyDef := def
+	r.nextVersion++
 	r.definitions[lookupKey] = &copyDef
+	r.versions[lookupKey] = r.nextVersion
 	return nil
 }
 
@@ -85,7 +92,9 @@ func (r *Registry) SetDefault(namespace, key, value string) error {
 		return fmt.Errorf("invalid default for %s:%s: %w", copyDef.Namespace, copyDef.Key, err)
 	}
 	copyDef.DefaultValue = canonical
+	r.nextVersion++
 	r.definitions[lookupKey] = &copyDef
+	r.versions[lookupKey] = r.nextVersion
 	return nil
 }
 
@@ -99,6 +108,22 @@ func (r *Registry) Get(namespace, key string) (*SettingDefinition, bool) {
 	}
 	copyDef := *def
 	return &copyDef, true
+}
+
+// GetVersioned returns an immutable definition snapshot plus its per-definition
+// revision. The revision changes whenever Register or SetDefault replaces that
+// same namespace:key; unrelated definitions do not invalidate it.
+func (r *Registry) GetVersioned(namespace, key string) (*SettingDefinition, uint64, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	lookupKey := makeDefKey(namespace, key)
+	def, exists := r.definitions[lookupKey]
+	if !exists || def == nil {
+		return nil, 0, false
+	}
+	copyDef := *def
+	return &copyDef, r.versions[lookupKey], true
 }
 
 // ListByCategory returns all setting definitions in a specified category, sorted by namespace then key.

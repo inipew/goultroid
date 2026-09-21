@@ -1,6 +1,10 @@
 package shell
 
-import "encoding/binary"
+import (
+	"crypto/sha256"
+	"encoding/binary"
+	"strings"
+)
 
 type Screen uint8
 
@@ -15,15 +19,18 @@ const (
 
 const (
 	legacyStateBytes = 8
-	stateBytes       = 16
-	stateVersion     = 1
+	v1StateBytes     = 16
+	stateBytes       = 32
+	stateVersion     = 2
+	bindingBytes     = 16
 )
 
 type State struct {
-	Screen        Screen
-	CategoryIndex uint16
-	SettingIndex  uint16
-	Refreshes     uint64
+	Screen         Screen
+	CategoryIndex  uint16
+	SettingIndex   uint16
+	Refreshes      uint64
+	SettingBinding [bindingBytes]byte
 }
 
 func InitialState() []byte {
@@ -34,28 +41,43 @@ func DecodeState(raw []byte) State {
 	if len(raw) == legacyStateBytes {
 		return State{Screen: ScreenHome, Refreshes: binary.BigEndian.Uint64(raw)}
 	}
+	if len(raw) == v1StateBytes && raw[0] == 1 {
+		screen := normalizeScreen(Screen(raw[1]))
+		return State{
+			Screen:        screen,
+			CategoryIndex: binary.BigEndian.Uint16(raw[2:4]),
+			SettingIndex:  binary.BigEndian.Uint16(raw[4:6]),
+			Refreshes:     binary.BigEndian.Uint64(raw[8:16]),
+		}
+	}
 	if len(raw) != stateBytes || raw[0] != stateVersion {
 		return State{Screen: ScreenHome}
 	}
-	screen := Screen(raw[1])
-	if screen > ScreenSettingDetail {
-		screen = ScreenHome
-	}
-	return State{
-		Screen:        screen,
+	state := State{
+		Screen:        normalizeScreen(Screen(raw[1])),
 		CategoryIndex: binary.BigEndian.Uint16(raw[2:4]),
 		SettingIndex:  binary.BigEndian.Uint16(raw[4:6]),
 		Refreshes:     binary.BigEndian.Uint64(raw[8:16]),
 	}
+	copy(state.SettingBinding[:], raw[16:32])
+	return state
+}
+
+func normalizeScreen(screen Screen) Screen {
+	if screen > ScreenSettingDetail {
+		return ScreenHome
+	}
+	return screen
 }
 
 func EncodeState(state State) []byte {
 	raw := make([]byte, stateBytes)
 	raw[0] = stateVersion
-	raw[1] = byte(state.Screen)
+	raw[1] = byte(normalizeScreen(state.Screen))
 	binary.BigEndian.PutUint16(raw[2:4], state.CategoryIndex)
 	binary.BigEndian.PutUint16(raw[4:6], state.SettingIndex)
 	binary.BigEndian.PutUint64(raw[8:16], state.Refreshes)
+	copy(raw[16:32], state.SettingBinding[:])
 	return raw
 }
 
@@ -71,7 +93,10 @@ func NextRefreshState(raw []byte) []byte {
 
 func ScreenState(raw []byte, screen Screen) []byte {
 	state := DecodeState(raw)
-	state.Screen = screen
+	state.Screen = normalizeScreen(screen)
+	if state.Screen != ScreenSettingDetail {
+		state.SettingBinding = [bindingBytes]byte{}
+	}
 	return EncodeState(state)
 }
 
@@ -80,6 +105,7 @@ func StepCategoryState(raw []byte, total, delta int) []byte {
 	state.Screen = ScreenSettings
 	state.CategoryIndex = uint16(stepIndex(int(state.CategoryIndex), total, delta))
 	state.SettingIndex = 0
+	state.SettingBinding = [bindingBytes]byte{}
 	return EncodeState(state)
 }
 
@@ -88,6 +114,7 @@ func OpenCategoryState(raw []byte, total int) []byte {
 	state.Screen = ScreenSettingsCategory
 	state.CategoryIndex = uint16(clampIndex(int(state.CategoryIndex), total))
 	state.SettingIndex = 0
+	state.SettingBinding = [bindingBytes]byte{}
 	return EncodeState(state)
 }
 
@@ -95,6 +122,7 @@ func StepSettingState(raw []byte, total, delta int) []byte {
 	state := DecodeState(raw)
 	state.Screen = ScreenSettingsCategory
 	state.SettingIndex = uint16(stepIndex(int(state.SettingIndex), total, delta))
+	state.SettingBinding = [bindingBytes]byte{}
 	return EncodeState(state)
 }
 
@@ -102,7 +130,31 @@ func OpenSettingState(raw []byte, total int) []byte {
 	state := DecodeState(raw)
 	state.Screen = ScreenSettingDetail
 	state.SettingIndex = uint16(clampIndex(int(state.SettingIndex), total))
+	state.SettingBinding = [bindingBytes]byte{}
 	return EncodeState(state)
+}
+
+func BindSettingState(raw []byte, namespace, key string) []byte {
+	state := DecodeState(raw)
+	state.Screen = ScreenSettingDetail
+	state.SettingBinding = SettingBinding(namespace, key)
+	return EncodeState(state)
+}
+
+func SettingBinding(namespace, key string) [bindingBytes]byte {
+	identity := strings.ToLower(strings.TrimSpace(namespace)) + "\x00" + strings.ToLower(strings.TrimSpace(key))
+	sum := sha256.Sum256([]byte(identity))
+	var binding [bindingBytes]byte
+	copy(binding[:], sum[:bindingBytes])
+	return binding
+}
+
+func SettingBindingMatches(raw []byte, namespace, key string) bool {
+	state := DecodeState(raw)
+	if state.SettingBinding == ([bindingBytes]byte{}) {
+		return false
+	}
+	return state.SettingBinding == SettingBinding(namespace, key)
 }
 
 func clampIndex(index, total int) int {

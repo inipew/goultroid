@@ -424,7 +424,9 @@ func (c *AssistantClient) SetInlineEngine(engine *inlineService.Engine) {
 	c.mu.Unlock()
 }
 func (c *AssistantClient) SetSettingsService(svc *settings.Service) {
+	c.mu.Lock()
 	c.settingsSvc = svc
+	c.mu.Unlock()
 	if c.menuCtrl != nil && c.cbRouter != nil {
 		c.menuCtrl.AttachSettingsRoutes(c.cbRouter, svc)
 	}

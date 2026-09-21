@@ -24,6 +24,7 @@ type shellTestPort struct {
 	edited   presentation.CompiledView
 	answered presentation.Answer
 	peer     tg.InputPeerClass
+	editErr  error
 }
 
 func (p *shellTestPort) Send(_ context.Context, target presentation.Target, view presentation.CompiledView) (presentation.Target, error) {
@@ -35,7 +36,7 @@ func (p *shellTestPort) Send(_ context.Context, target presentation.Target, view
 }
 func (p *shellTestPort) Edit(_ context.Context, _ presentation.Target, view presentation.CompiledView) error {
 	p.edited = view
-	return nil
+	return p.editErr
 }
 func (p *shellTestPort) Answer(_ context.Context, answer presentation.Answer) error {
 	p.answered = answer

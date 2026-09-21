@@ -16,8 +16,8 @@ func TestFeatureSpecAndViews(t *testing.T) {
 		t.Fatalf("ValidateSpec() error = %v", err)
 	}
 	spec := NewFeature().FeatureSpec()
-	if len(spec.Interactions) != 22 {
-		t.Fatalf("interactions = %d, want 22", len(spec.Interactions))
+	if len(spec.Interactions) != 26 {
+		t.Fatalf("interactions = %d, want 26", len(spec.Interactions))
 	}
 	for _, screenID := range []string{
 		InteractionHome,
@@ -74,7 +74,7 @@ func TestHelpViewUsesDeterministicCanonicalSummary(t *testing.T) {
 	}
 }
 
-func TestSettingsViewsAreReadOnlyAndMaskSensitiveValues(t *testing.T) {
+func TestSettingsViewsExposeOnlyTypedMutationsAndMaskSensitiveValues(t *testing.T) {
 	home := SettingsHomeView(SettingsHomeModel{
 		Category: SettingsCategory{ID: settings.CategorySecurity, Label: CategoryLabel(settings.CategorySecurity), Count: 2},
 		Total:    2,
@@ -83,7 +83,7 @@ func TestSettingsViewsAreReadOnlyAndMaskSensitiveValues(t *testing.T) {
 	if err := home.Validate(); err != nil {
 		t.Fatalf("SettingsHomeView() invalid: %v", err)
 	}
-	if !strings.Contains(home.Text, "Read-only") || !strings.Contains(home.Text, "Security") {
+	if !strings.Contains(home.Text, "Security") || !strings.Contains(home.Text, "Typed mutations") {
 		t.Fatalf("settings home text = %q", home.Text)
 	}
 
@@ -124,6 +124,14 @@ func TestStateCodecAcceptsLegacyAndBoundsNavigator(t *testing.T) {
 	state := DecodeState(legacy)
 	if state.Screen != ScreenHome || state.Refreshes != 4 {
 		t.Fatalf("legacy state = %+v", state)
+	}
+	v1 := make([]byte, v1StateBytes)
+	v1[0] = 1
+	v1[1] = byte(ScreenSettingsCategory)
+	v1[15] = 7
+	state = DecodeState(v1)
+	if state.Screen != ScreenSettingsCategory || state.Refreshes != 7 {
+		t.Fatalf("v1 state = %+v", state)
 	}
 
 	raw := StepCategoryState(InitialState(), 3, -1)

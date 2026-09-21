@@ -38,9 +38,13 @@ const (
 	ActionSettingsOpen  = "settings_open"
 	ActionSettingPrev   = "setting_prev"
 	ActionSettingNext   = "setting_next"
-	ActionSettingOpen   = "setting_open"
-	ActionSettingBack   = "setting_back"
-	ActionLegacy        = "legacy"
+	ActionSettingOpen     = "setting_open"
+	ActionSettingBack     = "setting_back"
+	ActionSettingChange   = "setting_change"
+	ActionSettingDecrease = "setting_dec"
+	ActionSettingIncrease = "setting_inc"
+	ActionSettingReset    = "setting_reset"
+	ActionLegacy          = "legacy"
 )
 
 const maxHelpCategories = 12
@@ -72,9 +76,9 @@ func (*Feature) FeatureSpec() feature.Spec {
 			{ID: InteractionHome, Kind: feature.InteractionScreen, Description: "Owner root/home screen", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionStatus, Kind: feature.InteractionScreen, Description: "Read-only Assistant runtime status", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionHelp, Kind: feature.InteractionScreen, Description: "Read-only Assistant command overview", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: InteractionSettings, Kind: feature.InteractionScreen, Description: "Read-only settings category navigator", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: InteractionSettingsCategory, Kind: feature.InteractionScreen, Description: "Read-only settings value navigator", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: InteractionSettingDetail, Kind: feature.InteractionScreen, Description: "Read-only setting detail", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: InteractionSettings, Kind: feature.InteractionScreen, Description: "Settings category navigator", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: InteractionSettingsCategory, Kind: feature.InteractionScreen, Description: "Settings value navigator", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: InteractionSettingDetail, Kind: feature.InteractionScreen, Description: "Bound setting detail and typed mutation surface", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionRefresh, Kind: feature.InteractionAction, Description: "Refresh shell state and presentation", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionPing, Kind: feature.InteractionAction, Description: "Acknowledge shell liveness", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionStatus, Kind: feature.InteractionAction, Description: "Navigate to read-only status", Surfaces: assistant, Policy: ownerPolicy},
@@ -89,6 +93,10 @@ func (*Feature) FeatureSpec() feature.Spec {
 			{ID: ActionSettingNext, Kind: feature.InteractionAction, Description: "Select next setting", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingOpen, Kind: feature.InteractionAction, Description: "Open selected setting detail", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingBack, Kind: feature.InteractionAction, Description: "Return to selected settings category", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionSettingChange, Kind: feature.InteractionAction, Description: "Apply typed bool or enum mutation", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionSettingDecrease, Kind: feature.InteractionAction, Description: "Decrease typed numeric or duration setting", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionSettingIncrease, Kind: feature.InteractionAction, Description: "Increase typed numeric or duration setting", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionSettingReset, Kind: feature.InteractionAction, Description: "Reset bound user setting override", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionLegacy, Kind: feature.InteractionAction, Description: "Handoff to the legacy a1 menu", Surfaces: assistant, Policy: ownerPolicy},
 		},
 	}
@@ -111,7 +119,7 @@ func HomeView(model HomeModel) presentation.View {
 	if model.Refreshes > 0 {
 		card.AddField("Session refreshes", strconv.FormatUint(model.Refreshes, 10))
 	}
-	card.WithFooter("<i>Settings are read-only in a2 for now; mutations remain in Classic menu.</i>")
+	card.WithFooter("<i>Typed settings mutations are available in a2; free-form text input remains in Classic menu.</i>")
 
 	return presentation.View{
 		Text: card.Render(),
