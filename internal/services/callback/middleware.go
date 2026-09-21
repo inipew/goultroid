@@ -45,12 +45,6 @@ func RecoverMiddleware(logger *zap.Logger) Middleware {
 	}
 }
 
-// RateLimitMiddleware is retained as a no-op compatibility hook. Canonical
-// callback rate limiting is admission-time work owned by Router.Prepare.
-func RateLimitMiddleware() Middleware {
-	return func(next Handler) Handler { return next }
-}
-
 // TimeoutMiddleware supplies a fallback handler deadline. If an upstream owner
 // such as TaskEngine already installed an equal or tighter deadline, reuse it
 // instead of allocating a second timer.
