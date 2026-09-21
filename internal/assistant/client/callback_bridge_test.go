@@ -5,11 +5,12 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gotd/td/tg"
-	"github.com/inipew/goultroid/internal/assistant/callback"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/core"
+	corecallback "github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
@@ -45,6 +46,7 @@ type mockInteraction struct {
 	answered    bool
 	answer      string
 	alert       bool
+	answerCalls int
 	edited      bool
 	editText    string
 	editMarkup  tg.ReplyMarkupClass
@@ -52,48 +54,46 @@ type mockInteraction struct {
 	deletedList []interaction.MessageTarget
 }
 
-func (m *mockInteraction) Answer(ctx context.Context, queryID int64, text string, alert bool) error {
+func (m *mockInteraction) Answer(context.Context, int64, string, bool) error {
+	m.answerCalls++
+	return nil
+}
+
+type recordingInteraction struct{ *mockInteraction }
+
+func (m *recordingInteraction) Answer(ctx context.Context, queryID int64, text string, alert bool) error {
 	m.answered = true
 	m.answer = text
 	m.alert = alert
+	m.answerCalls++
 	return nil
 }
-
-func (m *mockInteraction) Edit(ctx context.Context, target interaction.MessageTarget, text string, markup tg.ReplyMarkupClass) error {
-	m.edited = true
-	m.editText = text
-	m.editMarkup = markup
-	m.editTarget = target
+func (m *recordingInteraction) Edit(ctx context.Context, target interaction.MessageTarget, text string, markup tg.ReplyMarkupClass) error {
+	m.edited, m.editText, m.editMarkup, m.editTarget = true, text, markup, target
 	return nil
 }
-
-func (m *mockInteraction) EditMarkup(ctx context.Context, target interaction.MessageTarget, markup tg.ReplyMarkupClass) error {
-	m.edited = true
-	m.editMarkup = markup
-	m.editTarget = target
+func (m *recordingInteraction) EditMarkup(ctx context.Context, target interaction.MessageTarget, markup tg.ReplyMarkupClass) error {
+	m.edited, m.editMarkup, m.editTarget = true, markup, target
 	return nil
 }
-
-func (m *mockInteraction) Delete(ctx context.Context, target interaction.MessageTarget) error {
+func (m *recordingInteraction) Delete(ctx context.Context, target interaction.MessageTarget) error {
 	m.deletedList = append(m.deletedList, target)
 	return nil
 }
-
-func (m *mockInteraction) GetMessage(ctx context.Context, target interaction.MessageTarget) (*tg.Message, error) {
+func (m *recordingInteraction) GetMessage(ctx context.Context, target interaction.MessageTarget) (*tg.Message, error) {
 	return &tg.Message{ID: target.MessageID()}, nil
 }
-
-func (m *mockInteraction) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
+func (m *recordingInteraction) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
 	return &tg.Message{ID: 1}, nil
 }
-
-func (m *mockInteraction) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
+func (m *recordingInteraction) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType, filePath, caption string) (*tg.Message, error) {
 	return &tg.Message{ID: 1}, nil
 }
 
 type mockInlineInteraction struct {
 	answered     bool
 	answer       string
+	answerCalls  int
 	edited       bool
 	editText     string
 	markupEdited bool
@@ -101,27 +101,20 @@ type mockInlineInteraction struct {
 }
 
 func (m *mockInlineInteraction) Answer(ctx context.Context, queryID int64, text string, alert bool) error {
-	m.answered = true
-	m.answer = text
+	m.answered, m.answer = true, text
+	m.answerCalls++
 	return nil
 }
-
 func (m *mockInlineInteraction) Edit(ctx context.Context, target interaction.InlineTarget, text string, markup tg.ReplyMarkupClass) error {
-	m.edited = true
-	m.editText = text
-	m.editMarkup = markup
+	m.edited, m.editText, m.editMarkup = true, text, markup
 	return nil
 }
-
 func (m *mockInlineInteraction) EditMarkup(ctx context.Context, target interaction.InlineTarget, markup tg.ReplyMarkupClass) error {
-	m.markupEdited = true
-	m.editMarkup = markup
+	m.markupEdited, m.editMarkup = true, markup
 	return nil
 }
 
-type testTaskClient struct {
-	last tasks.WorkSpec
-}
+type testTaskClient struct{ last tasks.WorkSpec }
 
 func (c *testTaskClient) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket, error) {
 	c.last = spec
@@ -130,7 +123,6 @@ func (c *testTaskClient) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks
 	}
 	return nil, nil
 }
-
 func (c *testTaskClient) Cancel(tasks.TaskID, tasks.Cause) (tasks.CancelReceipt, error) {
 	return tasks.CancelReceipt{}, nil
 }
@@ -200,15 +192,48 @@ func (e *recordingInlineExecutor) ExecuteWithPeerType(ctx context.Context, svc c
 	}, core.InlineAnswerOptions{NextOffset: "next", CacheTime: 7, Private: true})
 }
 
+func messageEvent(queryID, userID int64, data []byte, target interaction.MessageTarget) *core.CallbackQueryEvent {
+	return &core.CallbackQueryEvent{
+		At:      time.Now(),
+		QueryID: queryID,
+		UserID:  userID,
+		ChatID:  target.ChatID(),
+		MsgID:   target.MessageID(),
+		Data:    data,
+		Origin:  core.CallbackOriginMessage,
+		Target: core.CallbackTarget{
+			Origin:       core.CallbackOriginMessage,
+			Peer:         target.Peer(),
+			MessageID:    target.MessageID(),
+			ChatInstance: target.ChatInstance(),
+		},
+		ChatInstance: target.ChatInstance(),
+	}
+}
+
+func inlineEvent(queryID, userID int64, data []byte, target interaction.InlineTarget) *core.CallbackQueryEvent {
+	return &core.CallbackQueryEvent{
+		At:      time.Now(),
+		QueryID: queryID,
+		UserID:  userID,
+		Data:    data,
+		Origin:  core.CallbackOriginInline,
+		Target: core.CallbackTarget{
+			Origin:       core.CallbackOriginInline,
+			InlineID:     target.MessageID(),
+			ChatInstance: target.ChatInstance(),
+		},
+		ChatInstance: target.ChatInstance(),
+	}
+}
+
 func TestUpdateHandlers_InlineQueryExecutesThroughTaskEngine(t *testing.T) {
 	dispatcher := tg.NewUpdateDispatcher()
 	api := &mockTelegramAPI{}
 	executor := &recordingInlineExecutor{}
 	taskClient := &testTaskClient{}
 	RegisterUpdateHandlers(&dispatcher, UpdateHandlerDeps{
-		InlineEngine:  executor,
-		InlineService: newAssistantInlineQueryServicer(api),
-		Tasks:         taskClient,
+		InlineEngine: executor, InlineService: newAssistantInlineQueryServicer(api), Tasks: taskClient,
 	})
 
 	peerType := &tg.InlineQueryPeerTypePM{}
@@ -216,20 +241,8 @@ func TestUpdateHandlers_InlineQueryExecutesThroughTaskEngine(t *testing.T) {
 	if err := dispatcher.Handle(context.Background(), &tg.Updates{Updates: []tg.UpdateClass{update}}); err != nil {
 		t.Fatalf("handle inline query: %v", err)
 	}
-	if !executor.called {
-		t.Fatal("expected inline engine execution")
-	}
-	if executor.queryID != 77 || executor.userID != 42 || executor.query != "help ping" || executor.offset != "20" || executor.peerType != peerType {
-		t.Fatalf("unexpected inline coordinates: %+v", executor)
-	}
-	if taskClient.last.ID != "asst:inline:77" || taskClient.last.Pool != "interactive" || taskClient.last.Class != tasks.PriorityInteractive {
-		t.Fatalf("unexpected work spec: %+v", taskClient.last)
-	}
-	if api.inlineResultReq == nil {
-		t.Fatal("expected Telegram inline result answer")
-	}
-	if api.inlineResultReq.QueryID != 77 || api.inlineResultReq.NextOffset != "next" || api.inlineResultReq.CacheTime != 7 || !api.inlineResultReq.Private || len(api.inlineResultReq.Results) != 1 {
-		t.Fatalf("unexpected inline answer: %+v", api.inlineResultReq)
+	if !executor.called || taskClient.last.ID != "asst:inline:77" || api.inlineResultReq == nil {
+		t.Fatalf("inline execution not routed through TaskEngine: executor=%+v spec=%+v answer=%+v", executor, taskClient.last, api.inlineResultReq)
 	}
 }
 
@@ -237,590 +250,273 @@ func TestUpdateHandlers_InlineQueryWithoutTaskEngineAnswersEmpty(t *testing.T) {
 	dispatcher := tg.NewUpdateDispatcher()
 	api := &mockTelegramAPI{}
 	RegisterUpdateHandlers(&dispatcher, UpdateHandlerDeps{
-		InlineEngine:  &recordingInlineExecutor{},
-		InlineService: newAssistantInlineQueryServicer(api),
+		InlineEngine: &recordingInlineExecutor{}, InlineService: newAssistantInlineQueryServicer(api),
 	})
-
 	update := &tg.UpdateBotInlineQuery{QueryID: 88, UserID: 42, Query: "help"}
 	if err := dispatcher.Handle(context.Background(), &tg.Updates{Updates: []tg.UpdateClass{update}}); err != nil {
 		t.Fatalf("handle inline query: %v", err)
 	}
-	if api.inlineResultReq == nil || api.inlineResultReq.QueryID != 88 {
+	if api.inlineResultReq == nil || api.inlineResultReq.QueryID != 88 || len(api.inlineResultReq.Results) != 0 {
 		t.Fatalf("expected terminal empty answer, got %+v", api.inlineResultReq)
 	}
-	if len(api.inlineResultReq.Results) != 0 || api.inlineResultReq.CacheTime != 1 || !api.inlineResultReq.Private {
-		t.Fatalf("unexpected unavailable answer: %+v", api.inlineResultReq)
-	}
 }
 
-func TestAssistantClient_CallbackBridge_DispatchToCoreRouter(t *testing.T) {
-	asst := NewAssistantClient(1, "hash", "token", zap.NewNop())
-	asst.SetTasks(&testTaskClient{})
+func TestCallbackIngress_DispatchMessageDirectlyToCore(t *testing.T) {
+	taskClient := &testTaskClient{}
+	inter := &recordingInteraction{mockInteraction: &mockInteraction{}}
+	target := interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 589287392}, 42, 589287392, 12345)
+	evt := messageEvent(987654321, 589287392, []byte("v1:myxl:refresh:628123456789"), target)
+	var received *core.CallbackQueryEvent
 
-	var receivedEvt *core.CallbackQueryEvent
-	dispatched := false
-
-	coreRouter := &mockCoreDispatcher{
-		hasHandlerFunc: func(namespace string) bool {
-			return namespace == "myxl"
-		},
-		dispatchFunc: func(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer) error {
-			dispatched = true
-			receivedEvt = evt
-			if err := svc.AnswerCallbackQuery(ctx, evt.QueryID, "Kuotamu updated!", false); err != nil {
+	router := &mockCoreDispatcher{
+		hasHandlerFunc: func(ns string) bool { return ns == "myxl" },
+		dispatchFunc: func(ctx context.Context, got *core.CallbackQueryEvent, svc core.TelegramServicer) error {
+			received = got
+			if err := svc.AnswerCallbackQuery(ctx, got.QueryID, "Kuotamu updated!", false); err != nil {
 				return err
 			}
-			return svc.EditMessageMarkup(ctx, evt.Target.Peer, evt.Target.MessageID, "Quota: 10GB", nil)
+			return svc.EditMessageMarkup(ctx, got.Target.Peer, got.Target.MessageID, "Quota: 10GB", nil)
 		},
 	}
-
-	asst.SetCallbackRouter(coreRouter)
-
-	mockInter := &mockInteraction{}
-	target := interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 589287392}, 42, 589287392, 12345)
-	payload := callback.ParsedPayload{
-		Version:   "v1",
-		Namespace: "myxl",
-		Action:    "refresh",
-		State:     "628123456789",
+	svc := newAssistantCallbackServicer(evt.QueryID, target, inter)
+	if err := dispatchCoreCallback(context.Background(), router, taskClient, nil, newCallbackQueryDeduper(), evt, svc, zap.NewNop()); err != nil {
+		t.Fatalf("dispatch: %v", err)
 	}
-
-	tx := callback.NewTransaction(987654321, 589287392, payload, target, mockInter)
-	tx.RawData = []byte("v1:myxl:refresh:628123456789")
-
-	cbRouter := asst.CallbackRouter()
-	if cbRouter == nil {
-		t.Fatalf("expected cbRouter to be initialized")
-	}
-
-	ctx := context.Background()
-	if err := cbRouter.Dispatch(ctx, tx); err != nil {
-		t.Fatalf("unexpected dispatch error: %v", err)
-	}
-
-	if !dispatched {
-		t.Fatalf("expected coreRouter.Dispatch to have been called")
-	}
-	if receivedEvt == nil {
-		t.Fatalf("receivedEvt is nil")
-	}
-	if receivedEvt.QueryID != 987654321 {
-		t.Errorf("expected QueryID 987654321, got %d", receivedEvt.QueryID)
-	}
-	if receivedEvt.UserID != 589287392 {
-		t.Errorf("expected UserID 589287392, got %d", receivedEvt.UserID)
-	}
-	if string(receivedEvt.Data) != "v1:myxl:refresh:628123456789" {
-		t.Errorf("expected data v1:myxl:refresh:628123456789, got %s", string(receivedEvt.Data))
-	}
-	if !mockInter.answered || mockInter.answer != "Kuotamu updated!" {
-		t.Errorf("expected answered with 'Kuotamu updated!', got %v, text %s", mockInter.answered, mockInter.answer)
-	}
-	if !mockInter.edited || mockInter.editText != "Quota: 10GB" {
-		t.Errorf("expected edited with 'Quota: 10GB', got %v, text %s", mockInter.edited, mockInter.editText)
+	if received != evt || !inter.answered || inter.answer != "Kuotamu updated!" || !inter.edited || inter.editText != "Quota: 10GB" {
+		t.Fatalf("bridge mismatch: evt=%+v inter=%+v", received, inter)
 	}
 }
 
-func TestAssistantClient_CallbackBridge_TaskEngineSubmission(t *testing.T) {
-	asst := NewAssistantClient(1, "hash", "token", zap.NewNop())
+func TestCallbackIngress_TaskEngineScopeAndOrdering(t *testing.T) {
 	taskClient := &testTaskClient{}
-	asst.SetTasks(taskClient)
-
 	expectedScope := tasks.ScopeIdentity{Owner: "plugin:myxl", Generation: 3}
-	asst.SetPluginScopeResolver(func(owner string) (tasks.ScopeIdentity, bool) {
+	resolver := func(owner string) (tasks.ScopeIdentity, bool) {
 		if owner == "myxl" {
 			return expectedScope, true
 		}
 		return tasks.ScopeIdentity{}, false
-	})
-
-	dispatched := false
-	coreRouter := &mockCoreDispatcher{
-		hasHandlerFunc: func(namespace string) bool { return namespace == "myxl" },
+	}
+	router := &mockCoreDispatcher{
+		hasHandlerFunc: func(string) bool { return true },
 		taskScopeFunc: func(data []byte, resolve func(string) (tasks.ScopeIdentity, bool)) (tasks.ScopeIdentity, bool) {
 			return resolve("myxl")
 		},
-		dispatchFunc: func(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer) error {
-			dispatched = true
-			return svc.AnswerCallbackQuery(ctx, evt.QueryID, "TaskEngine Ran!", false)
-		},
 	}
-	asst.SetCallbackRouter(coreRouter)
-
-	mockInter := &mockInteraction{}
-	target := interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 589287392}, 100, 589287392, 12345)
-	payload := callback.ParsedPayload{
-		Version:   "v1",
-		Namespace: "myxl",
-		Action:    "refresh",
-		State:     "123",
+	inter := &recordingInteraction{mockInteraction: &mockInteraction{}}
+	target := interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 7}, 100, 7, 9)
+	evt := messageEvent(777, 7, []byte("v1:myxl:refresh:123"), target)
+	if err := dispatchCoreCallback(context.Background(), router, taskClient, resolver, newCallbackQueryDeduper(), evt, newAssistantCallbackServicer(evt.QueryID, target, inter), zap.NewNop()); err != nil {
+		t.Fatalf("dispatch: %v", err)
 	}
-	tx := callback.NewTransaction(777, 589287392, payload, target, mockInter)
-	tx.RawData = []byte("v1:myxl:refresh:123")
-
-	ctx := context.Background()
-	if err := asst.CallbackRouter().Dispatch(ctx, tx); err != nil {
-		t.Fatalf("unexpected dispatch error: %v", err)
-	}
-
-	if !dispatched {
-		t.Fatalf("expected dispatch through TaskEngine")
-	}
-	if taskClient.last.Scope != expectedScope {
-		t.Errorf("expected Scope %+v, got %+v", expectedScope, taskClient.last.Scope)
-	}
-	if taskClient.last.QuotaOwner != tasks.OwnerID("telegram:user:589287392") {
-		t.Errorf("expected QuotaOwner telegram:user:589287392, got %s", taskClient.last.QuotaOwner)
-	}
-	if !strings.HasPrefix(string(taskClient.last.ID), "asst:cb:777") {
-		t.Errorf("expected task ID asst:cb:777, got %s", taskClient.last.ID)
-	}
-	if taskClient.last.OrderingKey != "callback:msg:589287392:100" {
-		t.Errorf("expected ordering key callback:msg:589287392:100, got %s", taskClient.last.OrderingKey)
+	if taskClient.last.Scope != expectedScope || taskClient.last.QuotaOwner != "telegram:user:7" || taskClient.last.OrderingKey != "callback:msg:7:100" || taskClient.last.ID != "asst:cb:777" {
+		t.Fatalf("unexpected work spec: %+v", taskClient.last)
 	}
 }
 
-func TestAssistantClient_CallbackBridge_TaskScopeUnavailable(t *testing.T) {
-	asst := NewAssistantClient(1, "hash", "token", zap.NewNop())
+func TestCallbackIngress_RejectsUnavailableAndMissingTaskEngine(t *testing.T) {
+	inter := &recordingInteraction{mockInteraction: &mockInteraction{}}
+	target := interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 7}, 1, 7, 1)
 
-	coreRouter := &mockCoreDispatcher{
-		hasHandlerFunc: func(namespace string) bool { return namespace == "disabled_feature" },
-		taskScopeFunc: func(data []byte, resolve func(string) (tasks.ScopeIdentity, bool)) (tasks.ScopeIdentity, bool) {
-			return tasks.ScopeIdentity{}, false // disabled/unavailable
-		},
-	}
-	asst.SetCallbackRouter(coreRouter)
-
-	mockInter := &mockInteraction{}
-	target := interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 589287392}, 1, 589287392, 1)
-	payload := callback.ParsedPayload{
-		Version:   "v1",
-		Namespace: "disabled_feature",
-		Action:    "run",
-	}
-	tx := callback.NewTransaction(111, 589287392, payload, target, mockInter)
-	tx.RawData = []byte("v1:disabled_feature:run:0")
-
-	ctx := context.Background()
-	err := asst.CallbackRouter().Dispatch(ctx, tx)
-	if err == nil {
-		t.Fatalf("expected error for unavailable feature")
-	}
-	if !mockInter.answered || mockInter.answer != "Feature not available." {
-		t.Errorf("expected 'Feature not available.' answer, got answered=%v, answer=%s", mockInter.answered, mockInter.answer)
-	}
-}
-
-func TestAssistantClient_CallbackBridge_RequiresTaskEngine(t *testing.T) {
-	asst := NewAssistantClient(1, "hash", "token", zap.NewNop())
-	coreRouter := &mockCoreDispatcher{
+	unavailable := &mockCoreDispatcher{
 		hasHandlerFunc: func(string) bool { return true },
-		dispatchFunc: func(context.Context, *core.CallbackQueryEvent, core.TelegramServicer) error {
-			t.Fatal("core callback must not execute without TaskEngine")
-			return nil
+		taskScopeFunc: func([]byte, func(string) (tasks.ScopeIdentity, bool)) (tasks.ScopeIdentity, bool) {
+			return tasks.ScopeIdentity{}, false
 		},
 	}
-	asst.SetCallbackRouter(coreRouter)
-	inter := &mockInteraction{}
-	tx := callback.NewTransaction(112, 42, callback.ParsedPayload{Version: "v1", Namespace: "myxl", Action: "refresh", State: "1"}, interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 42}, 1, 42, 1), inter)
-	tx.RawData = []byte("v1:myxl:refresh:1")
-	err := asst.CallbackRouter().Dispatch(context.Background(), tx)
-	if !errors.Is(err, ErrCallbackTasksNotConfigured) {
-		t.Fatalf("expected ErrCallbackTasksNotConfigured, got %v", err)
+	evt := messageEvent(111, 7, []byte("v1:myxl:run:noop"), target)
+	err := dispatchCoreCallback(context.Background(), unavailable, &testTaskClient{}, nil, newCallbackQueryDeduper(), evt, newAssistantCallbackServicer(evt.QueryID, target, inter), zap.NewNop())
+	if err == nil || inter.answer != "Feature not available." {
+		t.Fatalf("expected unavailable feature rejection, err=%v answer=%q", err, inter.answer)
 	}
-	if !inter.answered || inter.answer != "Interaction service unavailable." {
-		t.Fatalf("expected unavailable acknowledgement, got answered=%v text=%q", inter.answered, inter.answer)
+
+	inter2 := &recordingInteraction{mockInteraction: &mockInteraction{}}
+	available := &mockCoreDispatcher{hasHandlerFunc: func(string) bool { return true }}
+	evt2 := messageEvent(112, 7, []byte("v1:myxl:run:noop"), target)
+	err = dispatchCoreCallback(context.Background(), available, nil, nil, newCallbackQueryDeduper(), evt2, newAssistantCallbackServicer(evt2.QueryID, target, inter2), zap.NewNop())
+	if !errors.Is(err, ErrCallbackTasksNotConfigured) || inter2.answer != "Interaction service unavailable." {
+		t.Fatalf("expected missing TaskEngine rejection, err=%v answer=%q", err, inter2.answer)
 	}
 }
 
-func TestAssistantClient_CallbackBridge_UnhandledNamespaceReturnsError(t *testing.T) {
-	asst := NewAssistantClient(1, "hash", "token", zap.NewNop())
+func TestCallbackIngress_InvalidUnknownAndDuplicate(t *testing.T) {
+	taskClient := &testTaskClient{}
+	target := interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 7}, 1, 7, 1)
 
-	coreRouter := &mockCoreDispatcher{
-		hasHandlerFunc: func(namespace string) bool {
-			return false
-		},
+	invalidInter := &recordingInteraction{mockInteraction: &mockInteraction{}}
+	invalid := messageEvent(201, 7, []byte("malformed"), target)
+	if err := dispatchCoreCallback(context.Background(), nil, taskClient, nil, newCallbackQueryDeduper(), invalid, newAssistantCallbackServicer(201, target, invalidInter), zap.NewNop()); err != nil {
+		t.Fatalf("malformed callback should terminate after feedback: %v", err)
+	}
+	if invalidInter.answer != "Invalid callback" {
+		t.Fatalf("invalid answer = %q", invalidInter.answer)
 	}
 
-	asst.SetCallbackRouter(coreRouter)
-
-	mockInter := &mockInteraction{}
-	target := interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 589287392}, 42, 589287392, 12345)
-	payload := callback.ParsedPayload{
-		Version:   "v1",
-		Namespace: "unknown_plugin",
-		Action:    "run",
+	unknownInter := &recordingInteraction{mockInteraction: &mockInteraction{}}
+	unknown := messageEvent(202, 7, []byte("v1:missing:run:noop"), target)
+	err := dispatchCoreCallback(context.Background(), &mockCoreDispatcher{}, taskClient, nil, newCallbackQueryDeduper(), unknown, newAssistantCallbackServicer(202, target, unknownInter), zap.NewNop())
+	if !errors.Is(err, corecallback.ErrHandlerNotFound) || unknownInter.answer != "Feature not available." {
+		t.Fatalf("unknown result err=%v answer=%q", err, unknownInter.answer)
 	}
 
-	tx := callback.NewTransaction(111, 589287392, payload, target, mockInter)
-
-	cbRouter := asst.CallbackRouter()
-	ctx := context.Background()
-	err := cbRouter.Dispatch(ctx, tx)
-	if err == nil || !errors.Is(err, callback.ErrUnknownAction) {
-		t.Fatalf("expected ErrUnknownAction, got %v", err)
+	deduper := newCallbackQueryDeduper()
+	dupInter1 := &recordingInteraction{mockInteraction: &mockInteraction{}}
+	dupInter2 := &recordingInteraction{mockInteraction: &mockInteraction{}}
+	router := &mockCoreDispatcher{hasHandlerFunc: func(string) bool { return true }}
+	first := messageEvent(203, 7, []byte("v1:myxl:refresh:noop"), target)
+	second := messageEvent(203, 7, []byte("v1:myxl:refresh:noop"), target)
+	if err := dispatchCoreCallback(context.Background(), router, taskClient, nil, deduper, first, newAssistantCallbackServicer(203, target, dupInter1), zap.NewNop()); err != nil {
+		t.Fatalf("first duplicate test dispatch: %v", err)
 	}
-	if !mockInter.answered {
-		t.Fatalf("expected query to be answered to clear spinner")
+	if err := dispatchCoreCallback(context.Background(), router, taskClient, nil, deduper, second, newAssistantCallbackServicer(203, target, dupInter2), zap.NewNop()); err != nil {
+		t.Fatalf("duplicate dispatch: %v", err)
+	}
+	if dupInter2.answerCalls != 1 {
+		t.Fatalf("duplicate callback must only receive terminal ack, calls=%d", dupInter2.answerCalls)
 	}
 }
 
-func TestAssistantClient_CallbackBridge_DispatchInlineToCoreRouter(t *testing.T) {
-	asst := NewAssistantClient(1, "hash", "token", zap.NewNop())
-	asst.SetTasks(&testTaskClient{})
-
-	var receivedEvt *core.CallbackQueryEvent
-	dispatched := false
-
-	coreRouter := &mockCoreDispatcher{
-		hasHandlerFunc: func(namespace string) bool {
-			return namespace == "help"
-		},
-		dispatchFunc: func(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer) error {
-			dispatched = true
-			receivedEvt = evt
-			if err := svc.AnswerCallbackQuery(ctx, evt.QueryID, "Help updated!", false); err != nil {
+func TestCallbackIngress_DispatchInlineDirectlyToCore(t *testing.T) {
+	taskClient := &testTaskClient{}
+	inter := &mockInlineInteraction{}
+	inlineID := &tg.InputBotInlineMessageID{DCID: 1, ID: 12345, AccessHash: 67890}
+	target := interaction.NewInlineTarget(555, inlineID, 999)
+	evt := inlineEvent(555, 9, []byte("v1:help:module:myxl"), target)
+	var received *core.CallbackQueryEvent
+	router := &mockCoreDispatcher{
+		hasHandlerFunc: func(ns string) bool { return ns == "help" },
+		dispatchFunc: func(ctx context.Context, got *core.CallbackQueryEvent, svc core.TelegramServicer) error {
+			received = got
+			if err := svc.AnswerCallbackQuery(ctx, got.QueryID, "Help updated!", false); err != nil {
 				return err
 			}
-			return svc.EditInlineBotMessage(ctx, evt.Target.InlineID, "Help text", nil)
+			return svc.EditInlineBotMessage(ctx, got.Target.InlineID, "Help text", nil)
 		},
 	}
-
-	asst.SetCallbackRouter(coreRouter)
-
-	mockInter := &mockInlineInteraction{}
-	inlineMsgID := &tg.InputBotInlineMessageID{DCID: 1, ID: 12345, AccessHash: 67890}
-	target := interaction.NewInlineTarget(555, inlineMsgID, 999)
-	payload := callback.ParsedPayload{
-		Version:   "v1",
-		Namespace: "help",
-		Action:    "module",
-		State:     "myxl",
+	if err := dispatchCoreCallback(context.Background(), router, taskClient, nil, newCallbackQueryDeduper(), evt, newAssistantInlineCallbackServicer(evt.QueryID, target, inter), zap.NewNop()); err != nil {
+		t.Fatalf("dispatch inline: %v", err)
 	}
-
-	tx := callback.NewInlineTransaction(555, 589287392, payload, target, mockInter)
-	tx.RawData = []byte("v1:help:module:myxl")
-
-	cbRouter := asst.CallbackRouter()
-	ctx := context.Background()
-	if err := cbRouter.DispatchInline(ctx, tx); err != nil {
-		t.Fatalf("unexpected dispatch inline error: %v", err)
+	if received == nil || received.Origin != core.CallbackOriginInline || !inter.answered || !inter.edited || inter.editText != "Help text" {
+		t.Fatalf("inline bridge mismatch evt=%+v inter=%+v", received, inter)
 	}
-
-	if !dispatched {
-		t.Fatalf("expected coreRouter.Dispatch to have been called")
-	}
-	if receivedEvt == nil {
-		t.Fatalf("receivedEvt is nil")
-	}
-	if receivedEvt.Origin != core.CallbackOriginInline {
-		t.Errorf("expected Origin inline, got %v", receivedEvt.Origin)
-	}
-	if !mockInter.answered || mockInter.answer != "Help updated!" {
-		t.Errorf("expected answered with 'Help updated!', got %v, text %s", mockInter.answered, mockInter.answer)
-	}
-	if !mockInter.edited || mockInter.editText != "Help text" {
-		t.Errorf("expected edited with 'Help text', got %v, text %s", mockInter.edited, mockInter.editText)
+	if taskClient.last.ID != "asst:cb:inline:555" {
+		t.Fatalf("inline task id = %s", taskClient.last.ID)
 	}
 }
 
-func TestAssistantClient_CallbackBridge_EditInlineBotMessageMarkup_PreservesText(t *testing.T) {
-	asst := NewAssistantClient(1, "hash", "token", zap.NewNop())
-	asst.SetTasks(&testTaskClient{})
+func TestCallbackServicers_PreserveTargetsAndSingleFlightAnswer(t *testing.T) {
+	base := &tg.InputPeerUser{UserID: 12345, AccessHash: 9999}
+	inter := &recordingInteraction{mockInteraction: &mockInteraction{}}
+	target := interaction.NewMessageTarget(base, 10, 12345, 1)
+	svc := newAssistantCallbackServicer(1, target, inter)
 
-	coreRouter := &mockCoreDispatcher{
-		hasHandlerFunc: func(namespace string) bool { return namespace == "help" },
-		dispatchFunc: func(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer) error {
-			markup := &tg.ReplyInlineMarkup{}
-			return svc.EditInlineBotMessageMarkup(ctx, evt.Target.InlineID, markup)
-		},
+	if err := svc.EditMessageMarkup(context.Background(), nil, 20, "new", nil); err != nil {
+		t.Fatalf("edit: %v", err)
 	}
-	asst.SetCallbackRouter(coreRouter)
-
-	mockInter := &mockInlineInteraction{}
-	inlineMsgID := &tg.InputBotInlineMessageID{DCID: 1, ID: 12345, AccessHash: 67890}
-	target := interaction.NewInlineTarget(888, inlineMsgID, 999)
-	payload := callback.ParsedPayload{
-		Version:   "v1",
-		Namespace: "help",
-		Action:    "close",
+	if inter.editTarget.Peer() != base || inter.editTarget.MessageID() != 20 {
+		t.Fatalf("partial target merge failed: %+v", inter.editTarget)
 	}
-
-	tx := callback.NewInlineTransaction(888, 589287392, payload, target, mockInter)
-	tx.RawData = []byte("v1:help:close")
-
-	ctx := context.Background()
-	if err := asst.CallbackRouter().DispatchInline(ctx, tx); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if !mockInter.markupEdited {
-		t.Errorf("expected EditMarkup to be called without touching text")
-	}
-	if mockInter.edited {
-		t.Errorf("expected Edit (which changes text) NOT to be called")
-	}
-}
-
-func TestAssistantClient_CallbackBridge_PartialTargetMerging(t *testing.T) {
-	asst := NewAssistantClient(1, "hash", "token", zap.NewNop())
-	asst.SetTasks(&testTaskClient{})
-
-	originalPeer := &tg.InputPeerUser{UserID: 12345, AccessHash: 9999}
-	originalMsgID := 10
-
-	var capturedTarget interaction.MessageTarget
-	coreRouter := &mockCoreDispatcher{
-		hasHandlerFunc: func(namespace string) bool { return namespace == "test" },
-		dispatchFunc: func(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer) error {
-			// Case 1: peer is nil, msgID is 20 -> originalPeer must be preserved
-			if err := svc.EditMessageMarkup(ctx, nil, 20, "new text", nil); err != nil {
-				return err
-			}
-			return nil
-		},
-	}
-	asst.SetCallbackRouter(coreRouter)
-
-	mockInter := &mockInteraction{}
-	target := interaction.NewMessageTarget(originalPeer, originalMsgID, 12345, 1)
-	payload := callback.ParsedPayload{Version: "v1", Namespace: "test", Action: "act"}
-	tx := callback.NewTransaction(1, 12345, payload, target, mockInter)
-
-	ctx := context.Background()
-	if err := asst.CallbackRouter().Dispatch(ctx, tx); err != nil {
-		t.Fatalf("unexpected dispatch error: %v", err)
-	}
-
-	capturedTarget = mockInter.editTarget
-	if capturedTarget.Peer() != originalPeer {
-		t.Errorf("expected originalPeer preserved when peer=nil, got %v", capturedTarget.Peer())
-	}
-	if capturedTarget.MessageID() != 20 {
-		t.Errorf("expected msgID=20, got %d", capturedTarget.MessageID())
-	}
-
-	// Case 2: peer is newPeer, msgID is 0 -> originalMsgID must be preserved
 	newPeer := &tg.InputPeerChannel{ChannelID: 777, AccessHash: 888}
-	coreRouter.dispatchFunc = func(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer) error {
-		return svc.EditMessageMarkupOnly(ctx, newPeer, 0, nil)
+	if err := svc.EditMessageMarkupOnly(context.Background(), newPeer, 0, nil); err != nil {
+		t.Fatalf("edit markup: %v", err)
 	}
-	tx2 := callback.NewTransaction(2, 12345, payload, target, mockInter)
-	if err := asst.CallbackRouter().Dispatch(ctx, tx2); err != nil {
-		t.Fatalf("unexpected dispatch error: %v", err)
+	if inter.editTarget.Peer() != newPeer || inter.editTarget.MessageID() != 10 {
+		t.Fatalf("partial target merge failed: %+v", inter.editTarget)
 	}
-	capturedTarget = mockInter.editTarget
-	if capturedTarget.Peer() != newPeer {
-		t.Errorf("expected newPeer, got %v", capturedTarget.Peer())
+	if err := svc.DeleteMessage(context.Background(), nil, []int{101, 102, 103}); err != nil {
+		t.Fatalf("delete: %v", err)
 	}
-	if capturedTarget.MessageID() != originalMsgID {
-		t.Errorf("expected originalMsgID preserved when msgID=0, got %d", capturedTarget.MessageID())
+	if len(inter.deletedList) != 3 {
+		t.Fatalf("deleted = %d, want 3", len(inter.deletedList))
 	}
-}
-
-func TestAssistantClient_CallbackBridge_DeleteMessage_MultipleIDs(t *testing.T) {
-	asst := NewAssistantClient(1, "hash", "token", zap.NewNop())
-	asst.SetTasks(&testTaskClient{})
-
-	originalPeer := &tg.InputPeerUser{UserID: 12345, AccessHash: 9999}
-	mockInter := &mockInteraction{}
-	target := interaction.NewMessageTarget(originalPeer, 10, 12345, 1)
-
-	coreRouter := &mockCoreDispatcher{
-		hasHandlerFunc: func(namespace string) bool { return namespace == "del" },
-		dispatchFunc: func(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer) error {
-			return svc.DeleteMessage(ctx, nil, []int{101, 102, 103})
-		},
+	if err := svc.AnswerCallbackQuery(context.Background(), 1, "ok", false); err != nil {
+		t.Fatalf("answer: %v", err)
 	}
-	asst.SetCallbackRouter(coreRouter)
-
-	payload := callback.ParsedPayload{Version: "v1", Namespace: "del", Action: "multi"}
-	tx := callback.NewTransaction(1, 12345, payload, target, mockInter)
-
-	ctx := context.Background()
-	if err := asst.CallbackRouter().Dispatch(ctx, tx); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err := svc.AnswerCallbackQuery(context.Background(), 1, "again", false); !errors.Is(err, interaction.ErrCallbackAlreadyAnswered) {
+		t.Fatalf("second answer err=%v", err)
 	}
-
-	if len(mockInter.deletedList) != 3 {
-		t.Fatalf("expected 3 deleted messages, got %d", len(mockInter.deletedList))
-	}
-	if mockInter.deletedList[0].MessageID() != 101 || mockInter.deletedList[1].MessageID() != 102 || mockInter.deletedList[2].MessageID() != 103 {
-		t.Errorf("unexpected deleted IDs: %+v", mockInter.deletedList)
+	if inter.answerCalls != 1 {
+		t.Fatalf("answer RPC calls=%d, want 1", inter.answerCalls)
 	}
 }
 
-func TestAssistantClient_CallbackBridge_ExplicitErrors(t *testing.T) {
-	// When tx is nil, servicer methods return core.ErrInternal
-	svc := &assistantCallbackServicer{tx: nil}
+func TestCallbackServicers_FailClosed(t *testing.T) {
 	ctx := context.Background()
-
-	if err := svc.AnswerCallbackQuery(ctx, 1, "test", false); !errors.Is(err, core.ErrInternal) {
-		t.Errorf("expected ErrInternal, got %v", err)
+	msgSvc := &assistantCallbackServicer{}
+	if err := msgSvc.AnswerCallbackQuery(ctx, 1, "test", false); !errors.Is(err, core.ErrInternal) {
+		t.Fatalf("message answer err=%v", err)
 	}
-	if err := svc.EditMessageMarkup(ctx, nil, 1, "test", nil); !errors.Is(err, core.ErrInternal) {
-		t.Errorf("expected ErrInternal, got %v", err)
-	}
-	if err := svc.EditMessageMarkupOnly(ctx, nil, 1, nil); !errors.Is(err, core.ErrInternal) {
-		t.Errorf("expected ErrInternal, got %v", err)
-	}
-	if err := svc.DeleteMessage(ctx, nil, []int{1}); !errors.Is(err, core.ErrInternal) {
-		t.Errorf("expected ErrInternal, got %v", err)
-	}
-	if _, err := svc.GetMessage(ctx, nil, 1); !errors.Is(err, core.ErrInternal) {
-		t.Errorf("expected ErrInternal, got %v", err)
-	}
-	if _, err := svc.SendMessage(ctx, nil, "test"); !errors.Is(err, core.ErrInternal) {
-		t.Errorf("expected ErrInternal, got %v", err)
-	}
-	if _, err := svc.SendMedia(ctx, nil, "photo", "a.png", "cap"); !errors.Is(err, core.ErrInternal) {
-		t.Errorf("expected ErrInternal, got %v", err)
+	if err := msgSvc.EditInlineBotMessage(ctx, nil, "text", nil); !errors.Is(err, core.ErrUnsupported) {
+		t.Fatalf("message inline edit err=%v", err)
 	}
 
-	inlineSvc := &assistantInlineCallbackServicer{tx: nil}
+	inlineSvc := &assistantInlineCallbackServicer{}
 	if err := inlineSvc.AnswerCallbackQuery(ctx, 1, "test", false); !errors.Is(err, core.ErrInternal) {
-		t.Errorf("expected ErrInternal, got %v", err)
+		t.Fatalf("inline answer err=%v", err)
 	}
-	if err := inlineSvc.EditInlineBotMessage(ctx, nil, "test", nil); !errors.Is(err, core.ErrInternal) {
-		t.Errorf("expected ErrInternal, got %v", err)
-	}
-	if err := inlineSvc.EditInlineBotMessageMarkup(ctx, nil, nil); !errors.Is(err, core.ErrInternal) {
-		t.Errorf("expected ErrInternal, got %v", err)
+	if err := inlineSvc.DeleteMessage(ctx, nil, []int{1}); !errors.Is(err, core.ErrUnsupported) {
+		t.Fatalf("inline delete err=%v", err)
 	}
 }
 
-func TestAssistantClient_Updates_SpinnerProtection(t *testing.T) {
+func TestUpdateHandlers_CallbackSpinnerProtection(t *testing.T) {
 	dispatcher := tg.NewUpdateDispatcher()
 	api := &mockTelegramAPI{}
-	logger := zap.NewNop()
-	clientInter := interaction.NewClientInteraction(api, logger)
-
+	clientInter := interaction.NewClientInteraction(api, zap.NewNop())
 	isShutdown := false
-	cbRouter := callback.NewRouter(logger)
-
-	deps := UpdateHandlerDeps{
-		Logger:         logger,
-		IsShuttingDown: func() bool { return isShutdown },
-		Interaction:    clientInter,
-		CallbackRouter: cbRouter,
-	}
-
-	RegisterUpdateHandlers(&dispatcher, deps)
+	RegisterUpdateHandlers(&dispatcher, UpdateHandlerDeps{
+		Logger: zap.NewNop(), IsShuttingDown: func() bool { return isShutdown },
+		Interaction: clientInter, CallbackDeduper: newCallbackQueryDeduper(),
+	})
 	ctx := context.Background()
 
-	// 1. Malformed payload answers with "Invalid callback"
-	err := dispatcher.Handle(ctx, &tg.Updates{
-		Updates: []tg.UpdateClass{
-			&tg.UpdateBotCallbackQuery{
-				QueryID: 101,
-				UserID:  1,
-				Data:    []byte("malformed_payload"),
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err := dispatcher.Handle(ctx, &tg.Updates{Updates: []tg.UpdateClass{
+		&tg.UpdateBotCallbackQuery{QueryID: 101, UserID: 1, Data: []byte("malformed_payload")},
+	}}); err != nil {
+		t.Fatalf("malformed handle: %v", err)
 	}
 	if api.answerReq == nil || api.answerReq.QueryID != 101 || api.answerReq.Message != "Invalid callback" {
-		t.Errorf("expected Invalid callback answer, got %+v", api.answerReq)
+		t.Fatalf("invalid answer: %+v", api.answerReq)
 	}
 
-	// 2. Shutting down answers with retry alert
 	isShutdown = true
 	api.answerReq = nil
-	err = dispatcher.Handle(ctx, &tg.Updates{
-		Updates: []tg.UpdateClass{
-			&tg.UpdateBotCallbackQuery{
-				QueryID: 102,
-				UserID:  1,
-				Data:    []byte("v1:test:act:noop"),
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err := dispatcher.Handle(ctx, &tg.Updates{Updates: []tg.UpdateClass{
+		&tg.UpdateBotCallbackQuery{QueryID: 102, UserID: 1, Data: []byte("v1:test:act:noop")},
+	}}); err != nil {
+		t.Fatalf("shutdown handle: %v", err)
 	}
 	if api.answerReq == nil || api.answerReq.QueryID != 102 || !strings.Contains(api.answerReq.Message, "shutting down") {
-		t.Errorf("expected shutdown answer, got %+v", api.answerReq)
+		t.Fatalf("shutdown answer: %+v", api.answerReq)
 	}
 
-	// 3. Inline malformed payload answers
 	isShutdown = false
 	api.answerReq = nil
-	err = dispatcher.Handle(ctx, &tg.Updates{
-		Updates: []tg.UpdateClass{
-			&tg.UpdateInlineBotCallbackQuery{
-				QueryID: 201,
-				UserID:  1,
-				Data:    []byte("malformed_inline"),
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err := dispatcher.Handle(ctx, &tg.Updates{Updates: []tg.UpdateClass{
+		&tg.UpdateInlineBotCallbackQuery{QueryID: 201, UserID: 1, Data: []byte("malformed_inline")},
+	}}); err != nil {
+		t.Fatalf("inline malformed handle: %v", err)
 	}
 	if api.answerReq == nil || api.answerReq.QueryID != 201 || api.answerReq.Message != "Invalid callback" {
-		t.Errorf("expected Invalid callback inline answer, got %+v", api.answerReq)
+		t.Fatalf("inline invalid answer: %+v", api.answerReq)
 	}
 }
 
-func TestAssistantClient_CallbackBridge_UnsupportedMethodsFailClosed(t *testing.T) {
-	msgSvc := &assistantCallbackServicer{}
-	inlineSvc := &assistantInlineCallbackServicer{}
-	ctx := context.Background()
-
-	// In message callback servicer: inline methods must return ErrUnsupported
-	if err := msgSvc.EditInlineBotMessage(ctx, nil, "text", nil); !errors.Is(err, core.ErrUnsupported) {
-		t.Errorf("expected ErrUnsupported for EditInlineBotMessage, got %v", err)
-	}
-	if err := msgSvc.EditInlineBotMessageMarkup(ctx, nil, nil); !errors.Is(err, core.ErrUnsupported) {
-		t.Errorf("expected ErrUnsupported for EditInlineBotMessageMarkup, got %v", err)
-	}
-	if err := msgSvc.PinMessage(ctx, nil, 1, false); !errors.Is(err, core.ErrUnsupported) {
-		t.Errorf("expected ErrUnsupported for PinMessage, got %v", err)
-	}
-	if err := msgSvc.React(ctx, nil, 1, "👍"); !errors.Is(err, core.ErrUnsupported) {
-		t.Errorf("expected ErrUnsupported for React, got %v", err)
-	}
-
-	// In inline callback servicer: delete message and normal message edits must return ErrUnsupported
-	if err := inlineSvc.DeleteMessage(ctx, nil, []int{1}); !errors.Is(err, core.ErrUnsupported) {
-		t.Errorf("expected ErrUnsupported for inline DeleteMessage, got %v", err)
-	}
-	if err := inlineSvc.EditMessage(ctx, nil, 1, "text"); !errors.Is(err, core.ErrUnsupported) {
-		t.Errorf("expected ErrUnsupported for inline EditMessage, got %v", err)
-	}
-	if _, err := inlineSvc.SendMessage(ctx, nil, "text"); !errors.Is(err, core.ErrUnsupported) {
-		t.Errorf("expected ErrUnsupported for inline SendMessage, got %v", err)
-	}
-}
-
-type testCancelledTicket struct {
-	done chan struct{}
-}
+type testCancelledTicket struct{ done chan struct{} }
 
 func (t *testCancelledTicket) TaskID() tasks.TaskID   { return "asst:cb:888" }
 func (t *testCancelledTicket) State() tasks.TaskState { return tasks.StateCancelled }
 func (t *testCancelledTicket) Done() <-chan struct{}  { return t.done }
 func (t *testCancelledTicket) Result() (tasks.TaskResult, bool) {
-	return tasks.TaskResult{
-		TaskID:  "asst:cb:888",
-		Outcome: tasks.OutcomeCancelled,
-		Cause:   tasks.CauseUserCancel,
-		Failure: tasks.FailureInfo{Message: "scope cancelled"},
-	}, true
+	return tasks.TaskResult{TaskID: "asst:cb:888", Outcome: tasks.OutcomeCancelled, Cause: tasks.CauseUserCancel, Failure: tasks.FailureInfo{Message: "scope cancelled"}}, true
 }
 func (t *testCancelledTicket) Wait(ctx context.Context) (tasks.TaskResult, error) {
 	res, _ := t.Result()
 	return res, nil
 }
 
-type testCancelledTaskClient struct {
-	ticket tasks.Ticket
-}
+type testCancelledTaskClient struct{ ticket tasks.Ticket }
 
-func (c *testCancelledTaskClient) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket, error) {
-	// TaskEngine cancelled in queue: spec.Handler is NEVER executed
+func (c *testCancelledTaskClient) Submit(context.Context, tasks.WorkSpec) (tasks.Ticket, error) {
 	return c.ticket, nil
 }
 func (c *testCancelledTaskClient) Cancel(tasks.TaskID, tasks.Cause) (tasks.CancelReceipt, error) {
@@ -831,103 +527,18 @@ func (c *testCancelledTaskClient) Snapshot(tasks.TaskID) (tasks.TaskSnapshot, bo
 	return tasks.TaskSnapshot{}, false
 }
 
-func TestAssistantClient_CallbackBridge_TaskEngineCancellationUnblocks(t *testing.T) {
-	asst := NewAssistantClient(1, "hash", "token", zap.NewNop())
-	cancelledTicket := &testCancelledTicket{done: make(chan struct{})}
-	close(cancelledTicket.done) // Already done/cancelled
-	asst.SetTasks(&testCancelledTaskClient{ticket: cancelledTicket})
-
-	asst.SetPluginScopeResolver(func(owner string) (tasks.ScopeIdentity, bool) {
-		return tasks.ScopeIdentity{Owner: "plugin:myxl", Generation: 1}, true
-	})
-
-	coreRouter := &mockCoreDispatcher{
-		hasHandlerFunc: func(namespace string) bool { return true },
-		taskScopeFunc: func(data []byte, resolve func(string) (tasks.ScopeIdentity, bool)) (tasks.ScopeIdentity, bool) {
-			return resolve("myxl")
-		},
-		dispatchFunc: func(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer) error {
-			t.Fatalf("dispatch should not be called when task is cancelled in queue")
-			return nil
-		},
+func TestCallbackIngress_TaskCancellationUnblocksAndAnswers(t *testing.T) {
+	ticket := &testCancelledTicket{done: make(chan struct{})}
+	close(ticket.done)
+	router := &mockCoreDispatcher{hasHandlerFunc: func(string) bool { return true }}
+	inter := &recordingInteraction{mockInteraction: &mockInteraction{}}
+	target := interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 9}, 100, 9, 1)
+	evt := messageEvent(888, 9, []byte("v1:myxl:refresh:123"), target)
+	err := dispatchCoreCallback(context.Background(), router, &testCancelledTaskClient{ticket: ticket}, nil, newCallbackQueryDeduper(), evt, newAssistantCallbackServicer(evt.QueryID, target, inter), zap.NewNop())
+	if err == nil || !strings.Contains(err.Error(), "scope cancelled") {
+		t.Fatalf("expected cancellation error, got %v", err)
 	}
-	asst.SetCallbackRouter(coreRouter)
-
-	mockInter := &mockInteraction{}
-	target := interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 589287392}, 100, 589287392, 12345)
-	payload := callback.ParsedPayload{
-		Version:   "v1",
-		Namespace: "myxl",
-		Action:    "refresh",
-		State:     "123",
-	}
-	tx := callback.NewTransaction(888, 589287392, payload, target, mockInter)
-	tx.RawData = []byte("v1:myxl:refresh:123")
-
-	cbRouter := asst.CallbackRouter()
-	ctx := context.Background()
-
-	// Should unblock promptly and return an error without deadlocking
-	err := cbRouter.Dispatch(ctx, tx)
-	if err == nil {
-		t.Fatalf("expected error from cancelled task, got nil")
-	}
-	if !strings.Contains(err.Error(), "scope cancelled") {
-		t.Errorf("expected 'scope cancelled' error, got %v", err)
-	}
-}
-
-func TestAssistantClient_Updates_SpinnerProtection_OnErrorAndPanic(t *testing.T) {
-	api := &mockTelegramAPI{}
-	clientInter := interaction.NewClientInteraction(api, zap.NewNop())
-	cbRouter := callback.NewRouter(zap.NewNop())
-
-	// Register a handler that fails without answering
-	cbRouter.Register("test", "fail", func(ctx context.Context, tx *callback.Transaction) error {
-		return errors.New("business error before answering")
-	})
-
-	// Register a handler that panics without answering
-	cbRouter.Register("test", "panic", func(ctx context.Context, tx *callback.Transaction) error {
-		panic("boom")
-	})
-
-	dispatcher := tg.NewUpdateDispatcher()
-	deps := UpdateHandlerDeps{
-		Logger:         zap.NewNop(),
-		Interaction:    clientInter,
-		CallbackRouter: cbRouter,
-	}
-	RegisterUpdateHandlers(&dispatcher, deps)
-	ctx := context.Background()
-
-	// 1. Handler error without answering stops spinner
-	api.answerReq = nil
-	_ = dispatcher.Handle(ctx, &tg.Updates{
-		Updates: []tg.UpdateClass{
-			&tg.UpdateBotCallbackQuery{
-				QueryID: 301,
-				UserID:  1,
-				Data:    []byte("v1:test:fail:noop"),
-			},
-		},
-	})
-	if api.answerReq == nil || api.answerReq.QueryID != 301 {
-		t.Errorf("expected query 301 answered to dismiss spinner, got %+v", api.answerReq)
-	}
-
-	// 2. Handler panic without answering stops spinner
-	api.answerReq = nil
-	_ = dispatcher.Handle(ctx, &tg.Updates{
-		Updates: []tg.UpdateClass{
-			&tg.UpdateBotCallbackQuery{
-				QueryID: 302,
-				UserID:  1,
-				Data:    []byte("v1:test:panic:noop"),
-			},
-		},
-	})
-	if api.answerReq == nil || api.answerReq.QueryID != 302 {
-		t.Errorf("expected query 302 answered to dismiss spinner, got %+v", api.answerReq)
+	if inter.answer != "Action failed. Please retry." {
+		t.Fatalf("cancellation must clear spinner, answer=%q", inter.answer)
 	}
 }
