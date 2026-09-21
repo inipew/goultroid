@@ -133,6 +133,15 @@ func TestStateCodecAcceptsLegacyAndBoundsNavigator(t *testing.T) {
 	if state.Screen != ScreenSettingsCategory || state.Refreshes != 7 {
 		t.Fatalf("v1 state = %+v", state)
 	}
+	v2 := make([]byte, v2StateBytes)
+	v2[0] = 2
+	v2[1] = byte(ScreenSettingDetail)
+	legacyBinding := SettingBinding("core", "prefix")
+	copy(v2[16:32], legacyBinding[:])
+	state = DecodeState(v2)
+	if state.Screen != ScreenSettingDetail || state.SchemaVersion != 0 {
+		t.Fatalf("v2 state = %+v", state)
+	}
 
 	raw := StepCategoryState(InitialState(), 3, -1)
 	state = DecodeState(raw)

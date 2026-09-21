@@ -505,22 +505,41 @@ func (s *Service) Get(ctx context.Context, scope SettingScope, scopeID int64, na
 	return s.repo.GetSetting(ctx, string(scope), scopeID, strings.ToLower(namespace), strings.ToLower(key))
 }
 
+// RegisteredMutationResult reports what the persistence boundary actually did.
+// Changed is false when the target scope already contained the requested value
+// (or reset had no explicit override), even if the higher-level mutation plan
+// predicted a semantic change from the effective value.
+type RegisteredMutationResult struct {
+	Changed   bool
+	Previous  string
+	Persisted string
+}
+
 // Set validates and saves a setting in the given scope, publishing a change event on success.
 func (s *Service) Set(ctx context.Context, scope SettingScope, scopeID int64, namespace, key, value string, updaterID int64) error {
-	return s.set(ctx, scope, scopeID, namespace, key, 0, value, updaterID, false)
+	_, err := s.set(ctx, scope, scopeID, namespace, key, 0, value, updaterID, false)
+	return err
 }
 
 // SetRegistered is the mutation-safe variant for interactive settings flows.
-// It requires the schema definition to exist and keeps the registry read lock
-// held from definition lookup/canonicalization through the repository commit,
-// preventing a concurrent Register/SetDefault replacement from racing the write.
+// It preserves the legacy error-only API while delegating to SetRegisteredResult.
 func (s *Service) SetRegistered(ctx context.Context, scope SettingScope, scopeID int64, namespace, key string, expectedVersion uint64, value string, updaterID int64) error {
+	_, err := s.SetRegisteredResult(ctx, scope, scopeID, namespace, key, expectedVersion, value, updaterID)
+	return err
+}
+
+// SetRegisteredResult is the result-bearing mutation-safe variant. It requires
+// the schema definition to exist and keeps the registry read lock held from
+// definition lookup/canonicalization through the repository commit, preventing
+// a concurrent Register/SetDefault replacement from racing the write.
+func (s *Service) SetRegisteredResult(ctx context.Context, scope SettingScope, scopeID int64, namespace, key string, expectedVersion uint64, value string, updaterID int64) (RegisteredMutationResult, error) {
 	return s.set(ctx, scope, scopeID, namespace, key, expectedVersion, value, updaterID, true)
 }
 
-func (s *Service) set(ctx context.Context, scope SettingScope, scopeID int64, namespace, key string, expectedVersion uint64, value string, updaterID int64, requireRegistered bool) error {
+func (s *Service) set(ctx context.Context, scope SettingScope, scopeID int64, namespace, key string, expectedVersion uint64, value string, updaterID int64, requireRegistered bool) (RegisteredMutationResult, error) {
+	var result RegisteredMutationResult
 	if err := (ScopeRef{Type: scope, ID: scopeID}).Validate(); err != nil {
-		return err
+		return result, err
 	}
 
 	ns := strings.ToLower(strings.TrimSpace(namespace))
@@ -536,44 +555,44 @@ func (s *Service) set(ctx context.Context, scope SettingScope, scopeID int64, na
 		def, ok := s.reg.definitions[lookupKey]
 		if !ok || def == nil {
 			releaseRegistry()
-			return fmt.Errorf("%w: %s:%s is no longer registered", ErrDefinitionChanged, ns, k)
+			return result, fmt.Errorf("%w: %s:%s is no longer registered", ErrDefinitionChanged, ns, k)
 		}
 		if expectedVersion == 0 || s.reg.versions[lookupKey] != expectedVersion {
 			releaseRegistry()
-			return fmt.Errorf("%w: %s:%s", ErrDefinitionChanged, ns, k)
+			return result, fmt.Errorf("%w: %s:%s", ErrDefinitionChanged, ns, k)
 		}
 		valType = string(def.Type)
 		cVal, err := def.Canonicalize(value)
 		if err != nil {
 			releaseRegistry()
-			return fmt.Errorf("invalid value for %s:%s: %w", ns, k, err)
+			return result, fmt.Errorf("invalid value for %s:%s: %w", ns, k, err)
 		}
 		canonicalVal = cVal
 	} else if def, ok := s.reg.Get(ns, k); ok {
 		valType = string(def.Type)
 		cVal, err := def.Canonicalize(value)
 		if err != nil {
-			return fmt.Errorf("invalid value for %s:%s: %w", ns, k, err)
+			return result, fmt.Errorf("invalid value for %s:%s: %w", ns, k, err)
 		}
 		canonicalVal = cVal
 	}
+	result.Persisted = canonicalVal
 
 	oldItem, err := s.repo.GetSetting(ctx, string(scope), scopeID, ns, k)
 	if err != nil {
 		if releaseRegistry != nil {
 			releaseRegistry()
 		}
-		return fmt.Errorf("failed to check existing setting: %w", err)
+		return result, fmt.Errorf("failed to check existing setting: %w", err)
 	}
-	var oldVal string
 	if oldItem != nil {
-		oldVal = oldItem.Value
+		result.Previous = oldItem.Value
 	}
-	if oldItem != nil && oldVal == canonicalVal {
+	if oldItem != nil && oldItem.Value == canonicalVal {
 		if releaseRegistry != nil {
 			releaseRegistry()
 		}
-		return nil
+		return result, nil
 	}
 
 	item := &SettingItem{
@@ -590,11 +609,12 @@ func (s *Service) set(ctx context.Context, scope SettingScope, scopeID int64, na
 		if releaseRegistry != nil {
 			releaseRegistry()
 		}
-		return fmt.Errorf("failed to save setting (%s:%d:%s:%s): %w", scope, scopeID, ns, k, err)
+		return result, fmt.Errorf("failed to save setting (%s:%d:%s:%s): %w", scope, scopeID, ns, k, err)
 	}
 	if releaseRegistry != nil {
 		releaseRegistry()
 	}
+	result.Changed = true
 
 	event := &core.SettingChangedEvent{
 		At:        item.UpdatedAt,
@@ -602,7 +622,7 @@ func (s *Service) set(ctx context.Context, scope SettingScope, scopeID int64, na
 		ScopeID:   scopeID,
 		Namespace: ns,
 		Key:       k,
-		OldVal:    oldVal,
+		OldVal:    result.Previous,
 		NewVal:    canonicalVal,
 		ChangedBy: updaterID,
 	}
@@ -610,28 +630,38 @@ func (s *Service) set(ctx context.Context, scope SettingScope, scopeID int64, na
 	s.notifyCommitted(ctx, event)
 	if s.usesDurableOutbox() {
 		s.wakeOutbox()
-		return nil
+		return result, nil
 	}
 	if s.bus != nil && s.bus.HasSubscribersAtPriority(core.EventTypeSettingChanged, core.PriorityNormal) {
 		s.bus.Publish(event)
 	}
-	return nil
+	return result, nil
 }
 
 // Reset removes an override from the specified scope, falling back to lower scopes or default.
 func (s *Service) Reset(ctx context.Context, scope SettingScope, scopeID int64, namespace, key string, updaterID int64) error {
-	return s.reset(ctx, scope, scopeID, namespace, key, 0, updaterID, false)
+	_, err := s.reset(ctx, scope, scopeID, namespace, key, 0, updaterID, false)
+	return err
 }
 
-// ResetRegistered is the mutation-safe reset variant. It requires the schema to
-// remain registered and prevents definition replacement until deletion commits.
+// ResetRegistered is the mutation-safe reset variant. It preserves the legacy
+// error-only API while delegating to ResetRegisteredResult.
 func (s *Service) ResetRegistered(ctx context.Context, scope SettingScope, scopeID int64, namespace, key string, expectedVersion uint64, updaterID int64) error {
+	_, err := s.ResetRegisteredResult(ctx, scope, scopeID, namespace, key, expectedVersion, updaterID)
+	return err
+}
+
+// ResetRegisteredResult requires the schema to remain registered and prevents
+// definition replacement until deletion commits while reporting whether an
+// explicit override was actually removed.
+func (s *Service) ResetRegisteredResult(ctx context.Context, scope SettingScope, scopeID int64, namespace, key string, expectedVersion uint64, updaterID int64) (RegisteredMutationResult, error) {
 	return s.reset(ctx, scope, scopeID, namespace, key, expectedVersion, updaterID, true)
 }
 
-func (s *Service) reset(ctx context.Context, scope SettingScope, scopeID int64, namespace, key string, expectedVersion uint64, updaterID int64, requireRegistered bool) error {
+func (s *Service) reset(ctx context.Context, scope SettingScope, scopeID int64, namespace, key string, expectedVersion uint64, updaterID int64, requireRegistered bool) (RegisteredMutationResult, error) {
+	var result RegisteredMutationResult
 	if err := (ScopeRef{Type: scope, ID: scopeID}).Validate(); err != nil {
-		return err
+		return result, err
 	}
 
 	ns := strings.ToLower(strings.TrimSpace(namespace))
@@ -643,11 +673,11 @@ func (s *Service) reset(ctx context.Context, scope SettingScope, scopeID int64, 
 		lookupKey := makeDefKey(ns, k)
 		if def, ok := s.reg.definitions[lookupKey]; !ok || def == nil {
 			releaseRegistry()
-			return fmt.Errorf("%w: %s:%s is no longer registered", ErrDefinitionChanged, ns, k)
+			return result, fmt.Errorf("%w: %s:%s is no longer registered", ErrDefinitionChanged, ns, k)
 		}
 		if expectedVersion == 0 || s.reg.versions[lookupKey] != expectedVersion {
 			releaseRegistry()
-			return fmt.Errorf("%w: %s:%s", ErrDefinitionChanged, ns, k)
+			return result, fmt.Errorf("%w: %s:%s", ErrDefinitionChanged, ns, k)
 		}
 	}
 
@@ -656,26 +686,26 @@ func (s *Service) reset(ctx context.Context, scope SettingScope, scopeID int64, 
 		if releaseRegistry != nil {
 			releaseRegistry()
 		}
-		return fmt.Errorf("failed to check setting before reset: %w", err)
+		return result, fmt.Errorf("failed to check setting before reset: %w", err)
 	}
-	var oldVal string
 	if oldItem != nil {
-		oldVal = oldItem.Value
+		result.Previous = oldItem.Value
 	}
 	if oldItem == nil && requireRegistered {
 		releaseRegistry()
-		return nil
+		return result, nil
 	}
 
 	if err := s.repo.DeleteSetting(ctx, string(scope), scopeID, ns, k); err != nil {
 		if releaseRegistry != nil {
 			releaseRegistry()
 		}
-		return fmt.Errorf("failed to delete setting: %w", err)
+		return result, fmt.Errorf("failed to delete setting: %w", err)
 	}
 	if releaseRegistry != nil {
 		releaseRegistry()
 	}
+	result.Changed = oldItem != nil
 
 	event := &core.SettingChangedEvent{
 		At:        time.Now().UTC(),
@@ -683,7 +713,7 @@ func (s *Service) reset(ctx context.Context, scope SettingScope, scopeID int64, 
 		ScopeID:   scopeID,
 		Namespace: ns,
 		Key:       k,
-		OldVal:    oldVal,
+		OldVal:    result.Previous,
 		NewVal:    "",
 		ChangedBy: updaterID,
 	}
@@ -691,12 +721,12 @@ func (s *Service) reset(ctx context.Context, scope SettingScope, scopeID int64, 
 	s.notifyCommitted(ctx, event)
 	if s.usesDurableOutbox() {
 		s.wakeOutbox()
-		return nil
+		return result, nil
 	}
 	if s.bus != nil && s.bus.HasSubscribersAtPriority(core.EventTypeSettingChanged, core.PriorityNormal) {
 		s.bus.Publish(event)
 	}
-	return nil
+	return result, nil
 }
 
 // ListByScope lists all configured settings for a specific scope.

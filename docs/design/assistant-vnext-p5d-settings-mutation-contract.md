@@ -18,7 +18,7 @@ String settings remain read-only in a2 until a dedicated input-session phase.
 
 P5-C used category and setting indexes only as read-only navigation cursors.
 
-P5-D adds a stable 128-bit SHA-256-derived mutation fingerprint of the normalized `namespace:key` identity. The fingerprint is separated from category/setting cursors and exists only to bind the detail session to that stable schema key.
+P5-D adds a stable 128-bit SHA-256-derived mutation fingerprint of the normalized `namespace:key` identity. The fingerprint is separated from category/setting cursors and exists only to bind the detail session to that stable schema key. The hardened state also stores the exact per-definition schema revision that was visible when the detail screen opened.
 
 When a detail screen opens, the selected schema identity fingerprint is bound into the P1 session state. Mutation handlers never authorize writes from the current index alone.
 
@@ -27,9 +27,9 @@ Before any write:
 1. the detail screen must still be active;
 2. the current registry item at the cursor must match the bound identity;
 3. the registry is looked up again by the stable namespace/key;
-4. the stable identity must still match;
+4. the stable identity and the schema revision bound when the detail opened must still match;
 5. the optimistic P1 revision is consumed;
-6. the current per-definition schema revision is captured;
+6. the same bound definition is revalidated immediately before persistence;
 7. persistence revalidates that exact revision under the registry lock;
 8. persistence uses the registered-mutation service boundary.
 
@@ -65,6 +65,8 @@ P5-D adds:
 
 - `settings.Service.SetRegistered`
 - `settings.Service.ResetRegistered`
+- `settings.Service.SetRegisteredResult`
+- `settings.Service.ResetRegisteredResult`
 
 These are intentionally separate from existing `Set` and `Reset`.
 
@@ -72,7 +74,9 @@ The registry now also exposes a per-definition revision token. That token change
 
 The registered variants require the expected per-definition revision, verify it under the registry read lock, and keep that read lock held from definition lookup/canonicalization until repository commit/delete finishes. A concurrent replacement of that same schema therefore cannot slip between mutation planning and persistence.
 
-Existing legacy callers keep the original APIs and semantics.
+`SetRegisteredResult` / `ResetRegisteredResult` report whether persistence actually changed the target scope, plus the previous and persisted values. This prevents the UI from inferring `Committed=true` from a semantic mutation plan when the repository legitimately performed an idempotent no-op.
+
+Existing legacy callers keep the original error-only APIs and semantics.
 
 ## Typed mutation planning
 
@@ -129,7 +133,7 @@ Failures use `MutationError` with a stage:
 - `persist`
 - `render`
 
-`MutationError.Committed` distinguishes a presentation failure after a successful persistent commit from a failure where no write committed.
+`MutationError.Committed` distinguishes a presentation failure after a successful persistent commit from a failure where no write committed. The flag is derived from the result-bearing persistence boundary, not from the pre-write plan. Sensitive values carried by typed mutation results are redacted before they leave the handler.
 
 This distinction is required for correct recovery UX and for avoiding unsafe automatic retries.
 
@@ -217,3 +221,14 @@ A later phase must define:
 - persistence-success/render-failure recovery for delayed input.
 
 P5-D does not create a second conversation subsystem to solve that prematurely.
+
+## Residual hardening
+
+The detail session state is now version 3 and fixed at 40 bytes. It contains the stable identity fingerprint and the definition revision captured when the detail was rendered. Version-2 detail states remain decodable for navigation, but have schema revision zero and therefore cannot authorize a mutation; the user must reopen the setting.
+
+Persistence failure recovery now distinguishes two cases:
+
+- if the fresh revision can be rendered, the user receives new buttons and may retry safely;
+- if recovery rendering also fails, the callback tells the user to reopen Settings instead of promising a retry path that is no longer visible.
+
+Integration coverage executes the full P3 mutation handler for successful commits, actual persistence no-ops, storage failure recovery, render failure after commit, schema replacement after detail-open, and registry reorder.

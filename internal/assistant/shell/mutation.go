@@ -74,6 +74,13 @@ type MutationPlan struct {
 	Outcome   MutationOutcome
 }
 
+func SafeMutationValue(def settings.SettingDefinition, value string) string {
+	if def.Sensitive && value != "" {
+		return "••••"
+	}
+	return value
+}
+
 func PlanMutation(def settings.SettingDefinition, current string, explicitUser bool, operation MutationOperation) (MutationPlan, error) {
 	if operation == MutationReset {
 		if !explicitUser {

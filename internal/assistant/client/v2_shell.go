@@ -389,7 +389,11 @@ func (c *AssistantClient) handleShellSettingOpen(ctx *orchestration.Context) err
 	state := assistantshell.OpenSettingState(ctx.State(), len(defs))
 	index := selectionIndex(int(assistantshell.DecodeState(state).SettingIndex), len(defs))
 	def := defs[index]
-	state = assistantshell.BindSettingState(state, def.Namespace, def.Key)
+	fresh, schemaVersion, ok := svc.Registry().GetVersioned(def.Namespace, def.Key)
+	if !ok || fresh == nil || schemaVersion == 0 {
+		return ErrShellSettingBindingStale
+	}
+	state = assistantshell.BindSettingState(state, fresh.Namespace, fresh.Key, schemaVersion)
 	view, err := c.shellSettingDetailView(ctx.Context(), ctx.Session().Binding.ActorID, ctx.Session().Binding.ChatID, state)
 	if err != nil {
 		return err
@@ -453,8 +457,6 @@ func (c *AssistantClient) applyShellSettingMutation(ctx *orchestration.Context, 
 	userID := ctx.Session().Binding.ActorID
 	chatID := ctx.Session().Binding.ChatID
 
-	// Re-resolve the stable schema identity after the optimistic revision fence,
-	// immediately before planning and persistence.
 	def, schemaVersion, err := boundSettingDefinition(svc.Registry(), ctx.State())
 	if err != nil {
 		mutationErr := &assistantshell.MutationError{Stage: assistantshell.MutationStageBinding, Result: result, Err: err}
@@ -473,7 +475,8 @@ func (c *AssistantClient) applyShellSettingMutation(ctx *orchestration.Context, 
 		_ = ctx.Answer("Unable to read the current user override.", true)
 		return mutationErr
 	}
-	result.Previous = current
+	result.Previous = assistantshell.SafeMutationValue(*def, current)
+
 	plan, err := assistantshell.PlanMutation(*def, current, explicit != nil, operation)
 	if err != nil {
 		mutationErr := &assistantshell.MutationError{Stage: assistantshell.MutationStageBinding, Result: result, Err: err}
@@ -481,13 +484,15 @@ func (c *AssistantClient) applyShellSettingMutation(ctx *orchestration.Context, 
 		return mutationErr
 	}
 	result.Outcome = plan.Outcome
-	result.Persisted = plan.Value
+	result.Persisted = assistantshell.SafeMutationValue(*def, plan.Value)
 
+	committed := false
 	if plan.Outcome == assistantshell.MutationChanged {
+		var commit settings.RegisteredMutationResult
 		if operation == assistantshell.MutationReset {
-			err = svc.ResetRegistered(ctx.Context(), settings.ScopeUser, userID, def.Namespace, def.Key, schemaVersion, userID)
+			commit, err = svc.ResetRegisteredResult(ctx.Context(), settings.ScopeUser, userID, def.Namespace, def.Key, schemaVersion, userID)
 		} else {
-			err = svc.SetRegistered(ctx.Context(), settings.ScopeUser, userID, def.Namespace, def.Key, schemaVersion, plan.Value, userID)
+			commit, err = svc.SetRegisteredResult(ctx.Context(), settings.ScopeUser, userID, def.Namespace, def.Key, schemaVersion, plan.Value, userID)
 		}
 		if err != nil {
 			if errors.Is(err, settings.ErrDefinitionChanged) {
@@ -495,23 +500,35 @@ func (c *AssistantClient) applyShellSettingMutation(ctx *orchestration.Context, 
 				_ = ctx.Answer("Setting changed while open. Reopen Settings.", true)
 				return mutationErr
 			}
-			_ = c.renderShellMutationRecovery(ctx, result, "Update failed; no change was committed.")
-			mutationErr := &assistantshell.MutationError{Stage: assistantshell.MutationStagePersist, Result: result, Err: err}
-			_ = ctx.Answer("Setting update failed. You can retry safely.", true)
-			return mutationErr
+			recoveryErr := c.renderShellMutationRecovery(ctx, result, "Update failed; no change was committed.")
+			if recoveryErr != nil {
+				err = errors.Join(err, fmt.Errorf("render mutation recovery: %w", recoveryErr))
+				_ = ctx.Answer("Setting update failed. Reopen Settings.", true)
+			} else {
+				_ = ctx.Answer("Setting update failed. You can retry safely.", true)
+			}
+			return &assistantshell.MutationError{Stage: assistantshell.MutationStagePersist, Result: result, Err: err}
 		}
+		committed = commit.Changed
+		if commit.Changed {
+			result.Outcome = assistantshell.MutationChanged
+		} else {
+			result.Outcome = assistantshell.MutationNoop
+		}
+		result.Persisted = assistantshell.SafeMutationValue(*def, commit.Persisted)
 	}
 
 	effective, resolveErr := svc.Resolve(ctx.Context(), userID, chatID, def.Namespace, def.Key)
 	if resolveErr != nil {
-		result.Effective = plan.Value
+		result.Effective = assistantshell.SafeMutationValue(*def, plan.Value)
 	} else {
-		result.Effective = effective
+		result.Effective = assistantshell.SafeMutationValue(*def, effective)
 	}
 	source, sourceErr := settingValueSource(ctx.Context(), svc, userID, chatID, def.Namespace, def.Key)
 	if sourceErr == nil {
 		result.Source = source
 	}
+
 	notice := mutationNotice(result)
 	view, viewErr := c.shellSettingDetailViewWithNotice(ctx.Context(), userID, chatID, ctx.State(), notice)
 	if viewErr == nil {
@@ -520,19 +537,19 @@ func (c *AssistantClient) applyShellSettingMutation(ctx *orchestration.Context, 
 	if viewErr != nil {
 		mutationErr := &assistantshell.MutationError{
 			Stage:     assistantshell.MutationStageRender,
-			Committed: plan.Outcome == assistantshell.MutationChanged,
+			Committed: committed,
 			Result:    result,
 			Err:       viewErr,
 		}
-		if mutationErr.Committed {
+		if committed {
 			_ = ctx.Answer("Saved, but the view could not refresh. Reopen Settings.", true)
 		} else {
-			_ = ctx.Answer("No change was needed, but the view could not refresh.", true)
+			_ = ctx.Answer("No persistent change was committed, but the view could not refresh.", true)
 		}
 		return mutationErr
 	}
 	if result.Outcome == assistantshell.MutationNoop {
-		return ctx.Answer("No setting change was needed.", false)
+		return ctx.Answer("No persistent setting change was needed.", false)
 	}
 	return ctx.Answer("Setting saved.", false)
 }
@@ -554,7 +571,9 @@ func boundSettingDefinition(reg *settings.Registry, stateRaw []byte) (*settings.
 		return nil, 0, ErrShellSettingBindingStale
 	}
 	fresh, version, ok := reg.GetVersioned(def.Namespace, def.Key)
-	if !ok || fresh == nil || version == 0 || !assistantshell.SettingBindingMatches(stateRaw, fresh.Namespace, fresh.Key) {
+	if !ok || fresh == nil || version == 0 || state.SchemaVersion == 0 ||
+		state.SchemaVersion != version ||
+		!assistantshell.SettingBindingMatches(stateRaw, fresh.Namespace, fresh.Key) {
 		return nil, 0, ErrShellSettingBindingStale
 	}
 	return fresh, version, nil
@@ -683,35 +702,7 @@ func (c *AssistantClient) shellSettingsCategoryView(ctx context.Context, userID,
 }
 
 func (c *AssistantClient) shellSettingDetailView(ctx context.Context, userID, chatID int64, stateRaw []byte) (presentation.View, error) {
-	svc := c.shellSettingsService()
-	if svc == nil || svc.Registry() == nil {
-		return presentation.View{}, ErrShellUnavailable
-	}
-	state := assistantshell.DecodeState(stateRaw)
-	_, defs := selectedSettingsCategory(svc.Registry(), state)
-	if len(defs) == 0 {
-		return presentation.View{}, ErrShellUnavailable
-	}
-	index := selectionIndex(int(state.SettingIndex), len(defs))
-	def := defs[index]
-	value, err := svc.Resolve(ctx, userID, chatID, def.Namespace, def.Key)
-	if err != nil {
-		return presentation.View{}, err
-	}
-	source, err := settingValueSource(ctx, svc, userID, chatID, def.Namespace, def.Key)
-	if err != nil {
-		return presentation.View{}, err
-	}
-	explicit, err := svc.Get(ctx, settings.ScopeUser, userID, def.Namespace, def.Key)
-	if err != nil {
-		return presentation.View{}, err
-	}
-	return assistantshell.SettingDetailView(assistantshell.SettingDetailModel{
-		Definition:   def,
-		Current:      value,
-		Source:       source,
-		ExplicitUser: explicit != nil,
-	}), nil
+	return c.shellSettingDetailViewWithNotice(ctx, userID, chatID, stateRaw, "")
 }
 
 func selectedSettingsCategory(reg *settings.Registry, state assistantshell.State) (string, []settings.SettingDefinition) {

@@ -54,16 +54,33 @@ func TestPlanMutationRejectsStringAndWrongOperation(t *testing.T) {
 	}
 }
 
-func TestSettingBindingStableAndCaseNormalized(t *testing.T) {
-	raw := BindSettingState(OpenSettingState(InitialState(), 1), " Core ", "Prefix")
+func TestSettingBindingStableAndVersioned(t *testing.T) {
+	raw := BindSettingState(OpenSettingState(InitialState(), 1), " Core ", "Prefix", 9)
 	if !SettingBindingMatches(raw, "core", "prefix") {
 		t.Fatal("normalized binding did not match")
+	}
+	if got := DecodeState(raw).SchemaVersion; got != 9 {
+		t.Fatalf("schema version = %d, want 9", got)
 	}
 	if SettingBindingMatches(raw, "core", "other") {
 		t.Fatal("different stable key matched binding")
 	}
 	raw = ScreenState(raw, ScreenSettingsCategory)
-	if SettingBindingMatches(raw, "core", "prefix") {
-		t.Fatal("binding survived leaving detail screen")
+	state := DecodeState(raw)
+	if SettingBindingMatches(raw, "core", "prefix") || state.SchemaVersion != 0 {
+		t.Fatalf("binding survived leaving detail screen: %+v", state)
+	}
+}
+
+func TestSafeMutationValueMasksSensitiveResultData(t *testing.T) {
+	def := settings.SettingDefinition{Sensitive: true}
+	if got := SafeMutationValue(def, "secret"); got != "••••" {
+		t.Fatalf("masked value = %q", got)
+	}
+	if got := SafeMutationValue(def, ""); got != "" {
+		t.Fatalf("empty sensitive value = %q", got)
+	}
+	if got := SafeMutationValue(settings.SettingDefinition{}, "visible"); got != "visible" {
+		t.Fatalf("non-sensitive value = %q", got)
 	}
 }
