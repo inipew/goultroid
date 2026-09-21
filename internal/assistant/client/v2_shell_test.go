@@ -259,11 +259,6 @@ func TestAssistantShellOwnerStartUsesA2Canary(t *testing.T) {
 	client.mu.Lock()
 	client.v2Catalog = manager.FeatureCatalog()
 	client.v2Ingress = &v2Ingress{engine: engine}
-	legacyCalled := false
-	client.legacyStart = func(*command.Context) error {
-		legacyCalled = true
-		return nil
-	}
 	client.mu.Unlock()
 
 	err = client.dispatchStart(&command.Context{
@@ -273,9 +268,6 @@ func TestAssistantShellOwnerStartUsesA2Canary(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("dispatchStart(owner) error = %v", err)
-	}
-	if legacyCalled {
-		t.Fatal("owner/private start unexpectedly used legacy fallback")
 	}
 	if len(port.sent.Rows) == 0 || len(port.sent.Rows[0]) == 0 {
 		t.Fatal("owner/private start did not render the a2 shell")
@@ -306,11 +298,6 @@ func TestAssistantShellVisitorStartUsesPublicReadOnlyPath(t *testing.T) {
 	client.mu.Lock()
 	client.v2Catalog = manager.FeatureCatalog()
 	client.v2Ingress = &v2Ingress{engine: engine}
-	legacyCalled := false
-	client.legacyStart = func(*command.Context) error {
-		legacyCalled = true
-		return nil
-	}
 	client.mu.Unlock()
 
 	err = client.dispatchStart(&command.Context{
@@ -322,9 +309,6 @@ func TestAssistantShellVisitorStartUsesPublicReadOnlyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dispatchStart(visitor) error = %v", err)
 	}
-	if legacyCalled {
-		t.Fatal("visitor was routed to legacy compatibility start")
-	}
 	if !strings.Contains(public.sent, "Assistant endpoint is online") {
 		t.Fatalf("public start text = %q", public.sent)
 	}
@@ -333,39 +317,34 @@ func TestAssistantShellVisitorStartUsesPublicReadOnlyPath(t *testing.T) {
 	}
 }
 
-func TestAssistantShellUnavailableStillUsesLegacyCompatibilityStart(t *testing.T) {
+func TestAssistantShellUnavailableUsesStaticRecoveryResponse(t *testing.T) {
 	client := NewAssistantClient(1, "hash", "token", zap.NewNop())
 	client.SetOwner(7, nil)
-	legacyCalled := false
-	client.mu.Lock()
-	client.legacyStart = func(*command.Context) error {
-		legacyCalled = true
-		return nil
-	}
-	client.mu.Unlock()
+	public := &publicStartInteraction{}
 	if err := client.dispatchStart(&command.Context{
-		Ctx:      context.Background(),
-		SenderID: 7,
-		Peer:     &tg.InputPeerUser{UserID: 7},
+		Ctx:         context.Background(),
+		SenderID:    7,
+		Peer:        &tg.InputPeerUser{UserID: 7},
+		Interaction: public,
 	}); err != nil {
 		t.Fatalf("dispatchStart(unavailable) error = %v", err)
 	}
-	if !legacyCalled {
-		t.Fatal("unavailable a2 foundation did not use compatibility start")
+	if !strings.Contains(public.sent, "temporarily unavailable") {
+		t.Fatalf("recovery response = %q", public.sent)
 	}
 }
 
-func TestShouldFallbackStartKeepsRuntimeBoundsFailClosed(t *testing.T) {
-	if !shouldFallbackStart(ErrShellUnavailable) {
-		t.Fatal("unavailable shell must remain eligible for legacy fallback")
+func TestShouldUseStartRecoveryKeepsRuntimeBoundsFailClosed(t *testing.T) {
+	if !shouldUseStartRecovery(ErrShellUnavailable) {
+		t.Fatal("unavailable shell must remain eligible for static recovery")
 	}
-	if shouldFallbackStart(ErrShellAdmission) {
-		t.Fatal("normal admission denial must use public start, not legacy fallback")
+	if shouldUseStartRecovery(ErrShellAdmission) {
+		t.Fatal("normal admission denial must use public start, not static recovery")
 	}
-	if shouldFallbackStart(rootinteraction.ErrCapacity) {
+	if shouldUseStartRecovery(rootinteraction.ErrCapacity) {
 		t.Fatal("session capacity exhaustion must not bypass P1 bounds")
 	}
-	if shouldFallbackStart(rootinteraction.ErrClosed) {
-		t.Fatal("closed interaction runtime must not reopen work through legacy fallback")
+	if shouldUseStartRecovery(rootinteraction.ErrClosed) {
+		t.Fatal("closed interaction runtime must not reopen work through static recovery")
 	}
 }
