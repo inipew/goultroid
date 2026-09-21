@@ -8,8 +8,8 @@ import (
 	"go.uber.org/zap"
 )
 
-// Middleware wraps a Handler with cross-cutting logic (rate limit, auth, timeout, recovery).
-// This is the preparation for the full pipeline chain in Fase 2; currently stubs.
+// Middleware wraps handler-local execution concerns. Admission concerns such as
+// protocol validation and rate limiting are owned by Router.Prepare.
 type Middleware func(Handler) Handler
 
 // Chain builds a Handler chain from middlewares. Last middleware wraps the final handler first.
@@ -45,7 +45,8 @@ func RecoverMiddleware(logger *zap.Logger) Middleware {
 	}
 }
 
-// RateLimitMiddleware is a stub for the future pipeline; current rate limiting stays inline in Dispatch.
+// RateLimitMiddleware is retained as a no-op compatibility hook. Canonical
+// callback rate limiting is admission-time work owned by Router.Prepare.
 func RateLimitMiddleware() Middleware {
 	return func(next Handler) Handler { return next }
 }
