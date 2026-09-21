@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	assistantshell "github.com/inipew/goultroid/internal/assistant/shell"
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/settings"
@@ -47,6 +48,9 @@ func TestApp_New(t *testing.T) {
 	t.Logf("registered plugins: %d", len(plugins))
 	if len(plugins) < 30 {
 		t.Errorf("expected at least 30 plugins registered, got %d", len(plugins))
+	}
+	if _, ok := app.plugins.FeatureCatalog().Get(assistantshell.FeatureID); !ok {
+		t.Fatal("assistant shell feature was not registered in the production catalog")
 	}
 
 	// Test Shutdown with global budget

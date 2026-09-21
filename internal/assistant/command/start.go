@@ -8,12 +8,10 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/menu"
 )
 
-// RegisterStart attaches the /start command handler to the Router.
-func RegisterStart(r *Router, usernameProvider func() string, uptimeProvider func() time.Duration, renderer menu.RendererFunc, instanceStore menu.InstanceStore) {
-	if r == nil {
-		return
-	}
-	r.Register("/start", func(c *Context) error {
+// NewStartHandler builds the legacy /start presentation handler. P5 keeps it
+// as an explicit compatibility fallback while the owner shell migrates to a2.
+func NewStartHandler(usernameProvider func() string, uptimeProvider func() time.Duration, renderer menu.RendererFunc, instanceStore menu.InstanceStore) Handler {
+	return func(c *Context) error {
 		username := "GoUltroidBot"
 		if usernameProvider != nil {
 			username = usernameProvider()
@@ -45,7 +43,15 @@ func RegisterStart(r *Router, usernameProvider func() string, uptimeProvider fun
 			})
 		}
 		return err
-	})
+	}
+}
+
+// RegisterStart attaches the /start command handler to the Router.
+func RegisterStart(r *Router, usernameProvider func() string, uptimeProvider func() time.Duration, renderer menu.RendererFunc, instanceStore menu.InstanceStore) {
+	if r == nil {
+		return
+	}
+	r.Register("/start", NewStartHandler(usernameProvider, uptimeProvider, renderer, instanceStore))
 }
 
 // AttachDefaultCommands registers /start into the command Router.

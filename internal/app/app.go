@@ -12,6 +12,7 @@ import (
 	"github.com/inipew/goultroid/internal/addon"
 	"github.com/inipew/goultroid/internal/assistant"
 	"github.com/inipew/goultroid/internal/assistant/menu"
+	assistantshell "github.com/inipew/goultroid/internal/assistant/shell"
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
@@ -162,7 +163,6 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		tgRuntime.assistant.SetCallbackRouter(coreDeps.callbackRouter)
 		tgRuntime.assistant.SetInlineEngine(coreDeps.inlineEngine)
 		tgRuntime.assistant.SetTasks(coreDeps.taskEngine)
-		tgRuntime.assistant.SetInteractionFoundation(pluginManager.InteractionRuntime(), pluginManager.ActionDispatcher())
 		tgRuntime.assistant.SetPluginScopeResolver(func(owner string) (tasks.ScopeIdentity, bool) {
 			scope, ok := pluginManager.Scope(owner)
 			if !ok {
@@ -233,6 +233,12 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	settingsLive, err := buildLiveSettingsBinder(coreDeps, domServices, pluginManager, logLevel)
 	if err != nil {
 		return nil, fmt.Errorf("build live settings binder: %w", err)
+	}
+	if err := pluginManager.RegisterWithContext(context.Background(), assistantshell.NewFeature()); err != nil {
+		return nil, fmt.Errorf("register assistant shell feature: %w", err)
+	}
+	if tgRuntime.assistant != nil {
+		tgRuntime.assistant.SetInteractionFoundation(pluginManager.FeatureCatalog(), pluginManager.InteractionRuntime(), pluginManager.ActionDispatcher())
 	}
 
 	rt := runtime.New()

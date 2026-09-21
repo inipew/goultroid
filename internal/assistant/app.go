@@ -9,6 +9,7 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/menu"
 	assistentrpc "github.com/inipew/goultroid/internal/assistant/rpc"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/feature"
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/services/inline"
@@ -30,7 +31,7 @@ type Client interface {
 	SetInlineEngine(engine *inline.Engine)
 	SetTasks(client tasks.Client)
 	SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool))
-	SetInteractionFoundation(sessions *rootinteraction.Runtime, actions *rootinteraction.Dispatcher)
+	SetInteractionFoundation(catalog feature.Catalog, sessions *rootinteraction.Runtime, actions *rootinteraction.Dispatcher)
 	SetRPCExecutor(executor assistentrpc.Executor)
 	MenuController() *menu.Controller
 }
@@ -107,8 +108,8 @@ func (a *AssistantApp) SetRPCExecutor(executor assistentrpc.Executor) {
 func (a *AssistantApp) SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool)) {
 	a.client.SetPluginScopeResolver(resolver)
 }
-func (a *AssistantApp) SetInteractionFoundation(sessions *rootinteraction.Runtime, actions *rootinteraction.Dispatcher) {
-	a.client.SetInteractionFoundation(sessions, actions)
+func (a *AssistantApp) SetInteractionFoundation(catalog feature.Catalog, sessions *rootinteraction.Runtime, actions *rootinteraction.Dispatcher) {
+	a.client.SetInteractionFoundation(catalog, sessions, actions)
 }
 func (a *AssistantApp) MenuController() *menu.Controller {
 	if a.client == nil {

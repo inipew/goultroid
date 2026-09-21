@@ -21,6 +21,7 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/presentation"
 	assistentrpc "github.com/inipew/goultroid/internal/assistant/rpc"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/feature"
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 	"github.com/inipew/goultroid/internal/interaction/orchestration"
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
@@ -68,15 +69,22 @@ type AssistantClient struct {
 	cbRouter            *callback.Router
 	menuCtrl            *menu.Controller
 	metrics             core.MetricsCollector
+	ownerID             int64
+	sudoGetter          func() []int64
 	settingsSvc         *settings.Service
 	tasks               tasks.Client
 	delayedActions      core.DelayedActionScheduler
 	pluginScopeResolver func(string) (tasks.ScopeIdentity, bool)
 	inlineEngine        *inlineService.Engine
 	rpcExecutor         assistentrpc.Executor
+	v2Catalog           feature.Catalog
 	v2Sessions          *rootinteraction.Runtime
 	v2Actions           *rootinteraction.Dispatcher
 	v2Ingress           *v2Ingress
+	legacyStart         command.Handler
+	shellMu             sync.Mutex
+	shellScope          tasks.ScopeIdentity
+	shellRegistrations  []*rootinteraction.HandlerRegistration
 }
 
 var _ Client = (*AssistantClient)(nil)
@@ -98,7 +106,10 @@ func NewAssistantClient(appID int, appHash string, botToken string, logger *zap.
 		rpcExecutor: assistentrpc.DirectExecutor{},
 	}
 	ctrl.AttachRoutes(cbR, c.Username, c.StartTime)
-	command.AttachDefaultCommandsWithStore(cmdR, c.Username, c.StartTime, presentation.RenderScreen, ctrl.Instances())
+	c.legacyStart = command.NewStartHandler(c.Username, func() time.Duration {
+		return time.Since(c.StartTime())
+	}, presentation.RenderScreen, ctrl.Instances())
+	cmdR.Register("/start", c.dispatchStart)
 	return c
 }
 
@@ -172,11 +183,12 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	c.interaction.SetPeerReResolver(c.resolver)
 	inlineQueryService := newAssistantInlineQueryServicer(managedAPI)
 	c.mu.RLock()
+	v2Catalog := c.v2Catalog
 	v2Sessions := c.v2Sessions
 	v2Actions := c.v2Actions
 	c.mu.RUnlock()
 	var v2 *v2Ingress
-	if v2Sessions != nil && v2Actions != nil {
+	if v2Catalog != nil && v2Sessions != nil && v2Actions != nil {
 		v2Service := newV2PresentationServicer(c.interaction)
 		v2Engine, v2Err := orchestration.New(v2Sessions, v2Actions, presentationtelegram.NewBridge(v2Service))
 		if v2Err != nil {
@@ -360,6 +372,10 @@ func (c *AssistantClient) CallbackRouter() *callback.Router {
 }
 func (c *AssistantClient) SetAuthorizer(auth callback.Authorizer) { c.cbRouter.SetAuthorizer(auth) }
 func (c *AssistantClient) SetOwner(ownerID int64, sudoGetter func() []int64) {
+	c.mu.Lock()
+	c.ownerID = ownerID
+	c.sudoGetter = sudoGetter
+	c.mu.Unlock()
 	c.cbRouter.SetAuthorizer(callback.NewOwnerAuthorizer(ownerID, sudoGetter))
 	if c.cmdRouter != nil {
 		c.cmdRouter.SetOwner(ownerID, sudoGetter)
@@ -395,8 +411,9 @@ func (c *AssistantClient) SetPluginScopeResolver(resolver func(string) (tasks.Sc
 	c.pluginScopeResolver = resolver
 }
 
-func (c *AssistantClient) SetInteractionFoundation(sessions *rootinteraction.Runtime, actions *rootinteraction.Dispatcher) {
+func (c *AssistantClient) SetInteractionFoundation(catalog feature.Catalog, sessions *rootinteraction.Runtime, actions *rootinteraction.Dispatcher) {
 	c.mu.Lock()
+	c.v2Catalog = catalog
 	c.v2Sessions = sessions
 	c.v2Actions = actions
 	c.mu.Unlock()
