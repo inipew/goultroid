@@ -112,7 +112,7 @@ func TestCallback_DataEncodingAndParsing(t *testing.T) {
 	}
 
 	// UUID and composite UUID:page format (e.g. MyXL family code or option code)
-	uuidData := []byte("a1:myxl:fam_page:7658c955-a0b9-405f-bb17-de7f43d1a946:1")
+	uuidData := []byte("v1:myxl:fam_page:7658c955-a0b9-405f-bb17-de7f43d1a946:1")
 	ns, action, opaqueID, err = ParseCallbackData(uuidData)
 	if err != nil {
 		t.Fatalf("unexpected error parsing UUID callback data: %v", err)
