@@ -333,7 +333,6 @@ func TestDiscoveryRequiresExplicitLifecyclePolicy(t *testing.T) {
 	}
 }
 
-
 func TestReclaimNowReportsPersistedBackoffInsteadOfFalseSuccess(t *testing.T) {
 	base := storage.NewMemoryStorage()
 	store := &failingDeleteStorage{Storage: base, err: errors.New("disk busy")}
