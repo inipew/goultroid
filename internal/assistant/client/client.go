@@ -21,6 +21,9 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/presentation"
 	assistentrpc "github.com/inipew/goultroid/internal/assistant/rpc"
 	"github.com/inipew/goultroid/internal/core"
+	rootinteraction "github.com/inipew/goultroid/internal/interaction"
+	"github.com/inipew/goultroid/internal/interaction/orchestration"
+	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 	inlineService "github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/tasks"
@@ -71,6 +74,9 @@ type AssistantClient struct {
 	pluginScopeResolver func(string) (tasks.ScopeIdentity, bool)
 	inlineEngine        *inlineService.Engine
 	rpcExecutor         assistentrpc.Executor
+	v2Sessions          *rootinteraction.Runtime
+	v2Actions           *rootinteraction.Dispatcher
+	v2Ingress           *v2Ingress
 }
 
 var _ Client = (*AssistantClient)(nil)
@@ -165,6 +171,31 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	}
 	c.interaction.SetPeerReResolver(c.resolver)
 	inlineQueryService := newAssistantInlineQueryServicer(managedAPI)
+	c.mu.RLock()
+	v2Sessions := c.v2Sessions
+	v2Actions := c.v2Actions
+	c.mu.RUnlock()
+	var v2 *v2Ingress
+	if v2Sessions != nil && v2Actions != nil {
+		v2Service := newV2PresentationServicer(c.interaction)
+		v2Engine, v2Err := orchestration.New(v2Sessions, v2Actions, presentationtelegram.NewBridge(v2Service))
+		if v2Err != nil {
+			startErr := fmt.Errorf("configure a2 interaction ingress: %w", v2Err)
+			cancel()
+			c.lifecycle.SetState(StateFailed)
+			c.mu.Lock()
+			c.lastError = startErr
+			c.v2Ingress = nil
+			c.mu.Unlock()
+			startupResult <- startErr
+			close(runDone)
+			return startErr
+		}
+		v2 = &v2Ingress{engine: v2Engine, ack: v2Service}
+	}
+	c.mu.Lock()
+	c.v2Ingress = v2
+	c.mu.Unlock()
 	c.shuttingDown.Store(false)
 
 	deps := UpdateHandlerDeps{
@@ -173,11 +204,17 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 		CacheEntities: c.CacheEntities, IsShuttingDown: c.shuttingDown.Load,
 		MenuController: c.menuCtrl, SettingsService: c.settingsSvc,
 		InlineEngine: c.inlineEngine, InlineService: inlineQueryService, Tasks: c.tasks,
+		V2Ingress: v2,
 	}
 	RegisterUpdateHandlers(&dispatcher, deps)
 
 	go func() {
-		defer close(runDone)
+		defer func() {
+			c.mu.Lock()
+			c.v2Ingress = nil
+			c.mu.Unlock()
+			close(runDone)
+		}()
 		err := tdClient.Run(runCtx, func(ctx context.Context) error {
 			status, err := tdClient.Auth().Status(ctx)
 			if err != nil {
@@ -278,11 +315,17 @@ func (c *AssistantClient) Stop(ctx context.Context) error {
 		cancel()
 	}
 	if done == nil {
+		c.mu.Lock()
+		c.v2Ingress = nil
+		c.mu.Unlock()
 		c.lifecycle.SetState(StateStopped)
 		return nil
 	}
 	select {
 	case <-done:
+		c.mu.Lock()
+		c.v2Ingress = nil
+		c.mu.Unlock()
 		c.lifecycle.SetState(StateStopped)
 		return nil
 	case <-ctx.Done():
@@ -350,6 +393,13 @@ func (c *AssistantClient) SetPluginScopeResolver(resolver func(string) (tasks.Sc
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.pluginScopeResolver = resolver
+}
+
+func (c *AssistantClient) SetInteractionFoundation(sessions *rootinteraction.Runtime, actions *rootinteraction.Dispatcher) {
+	c.mu.Lock()
+	c.v2Sessions = sessions
+	c.v2Actions = actions
+	c.mu.Unlock()
 }
 func (c *AssistantClient) SetInlineEngine(engine *inlineService.Engine) {
 	c.mu.Lock()

@@ -162,6 +162,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		tgRuntime.assistant.SetCallbackRouter(coreDeps.callbackRouter)
 		tgRuntime.assistant.SetInlineEngine(coreDeps.inlineEngine)
 		tgRuntime.assistant.SetTasks(coreDeps.taskEngine)
+		tgRuntime.assistant.SetInteractionFoundation(pluginManager.InteractionRuntime(), pluginManager.ActionDispatcher())
 		tgRuntime.assistant.SetPluginScopeResolver(func(owner string) (tasks.ScopeIdentity, bool) {
 			scope, ok := pluginManager.Scope(owner)
 			if !ok {

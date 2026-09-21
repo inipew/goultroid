@@ -32,6 +32,7 @@ type UpdateHandlerDeps struct {
 	InlineEngine    InlineQueryExecutor
 	InlineService   core.TelegramServicer
 	Tasks           tasks.Client
+	V2Ingress       *v2Ingress
 }
 
 // InlineQueryExecutor is the Assistant-facing subset of the shared inline engine.
@@ -148,6 +149,19 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			return nil
 		}
 		inlineTarget := interaction.NewInlineTarget(update.QueryID, update.MsgID, update.ChatInstance)
+		if isV2Callback(update.Data) {
+			if deps.V2Ingress == nil {
+				if deps.Interaction != nil {
+					_ = deps.Interaction.Answer(ctx, update.QueryID, "Interaction service unavailable.", false)
+				}
+				return nil
+			}
+			_, err := deps.V2Ingress.tryInline(ctx, update.Data, update.UserID, update.QueryID, update.MsgID)
+			if err != nil {
+				logger.Warn("assistant: a2 inline callback dispatch failed", zap.Error(err), zap.Int64("query_id", update.QueryID), zap.Int64("user_id", update.UserID))
+			}
+			return nil
+		}
 		payload, parseErr := callback.Parse(update.Data)
 		if parseErr != nil {
 			if deps.Interaction != nil {
@@ -201,6 +215,19 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			}
 		}
 		target := interaction.NewMessageTarget(inputPeer, update.MsgID, extractChatID(update.Peer), update.ChatInstance)
+		if isV2Callback(update.Data) {
+			if deps.V2Ingress == nil {
+				if deps.Interaction != nil {
+					_ = deps.Interaction.Answer(ctx, update.QueryID, "Interaction service unavailable.", false)
+				}
+				return nil
+			}
+			_, err := deps.V2Ingress.tryMessage(ctx, update.Data, update.UserID, update.QueryID, inputPeer, extractChatID(update.Peer), update.MsgID)
+			if err != nil {
+				logger.Warn("assistant: a2 callback dispatch failed", zap.Error(err), zap.Int64("query_id", update.QueryID), zap.Int64("user_id", update.UserID))
+			}
+			return nil
+		}
 		payload, parseErr := callback.Parse(update.Data)
 		if parseErr != nil {
 			if deps.Interaction != nil {
