@@ -1185,7 +1185,6 @@ func (p *Plugin) confirmPurchase(cbCtx *callback.CallbackContext, draft purchase
 		}
 	}
 
-
 	resText := FormatPurchaseResult(result, draft.PackageName, effectivePrice, strings.ToUpper(draft.Method))
 	if err := cbCtx.Edit(resText, nil); err != nil {
 		return err
