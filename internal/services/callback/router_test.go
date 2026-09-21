@@ -100,7 +100,12 @@ func (r *recordingService) DeleteMessage(ctx context.Context, peer tg.InputPeerC
 }
 
 func dispatchForTest(router *Router, ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer) error {
-	prepared, err := router.Prepare(ctx, evt, svc, nil)
+	prepared, err := router.Prepare(ctx, evt, svc, func(owner string) (tasks.ScopeIdentity, bool) {
+		if strings.TrimSpace(owner) == "" {
+			return tasks.ScopeIdentity{}, false
+		}
+		return tasks.ScopeIdentity{Owner: "plugin:" + owner, Generation: 1}, true
+	})
 	if err != nil {
 		return err
 	}
