@@ -51,6 +51,14 @@ func NewDispatcher(sessions *Runtime) *Dispatcher {
 	return &Dispatcher{sessions: sessions, handlers: make(map[handlerKey]handlerEntry)}
 }
 
+// Runtime returns the P1 session runtime owned by this dispatcher.
+func (d *Dispatcher) Runtime() *Runtime {
+	if d == nil {
+		return nil
+	}
+	return d.sessions
+}
+
 func (d *Dispatcher) Register(scope tasks.ScopeIdentity, featureID, actionID string, handler ActionHandler) (*HandlerRegistration, error) {
 	if d == nil || d.sessions == nil || scope.IsZero() || handler == nil {
 		return nil, ErrHandlerUnavailable
@@ -90,9 +98,30 @@ func (r *HandlerRegistration) Close() {
 	})
 }
 
+// UnregisterScope removes handlers owned by exactly one plugin generation.
+// Newer replacement generations remain intact.
+func (d *Dispatcher) UnregisterScope(scope tasks.ScopeIdentity) int {
+	if d == nil || scope.IsZero() {
+		return 0
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	removed := 0
+	for key, entry := range d.handlers {
+		if entry.scope == scope {
+			delete(d.handlers, key)
+			removed++
+		}
+	}
+	return removed
+}
+
 func (d *Dispatcher) Dispatch(ctx context.Context, data []byte, binding Binding) error {
 	if d == nil || d.sessions == nil {
 		return ErrHandlerUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	resolved, err := d.sessions.ResolveCallback(ctx, data, binding)
 	if err != nil {
@@ -109,9 +138,32 @@ func (d *Dispatcher) Dispatch(ctx context.Context, data []byte, binding Binding)
 	if !available || current != entry.scope {
 		return ErrScopeStale
 	}
-	return entry.handler(resolved.Context, Action{
+	actionCtx, release := mergeActionContext(ctx, resolved.Context)
+	defer release()
+	return entry.handler(actionCtx, Action{
 		Token:   resolved.Token,
 		Session: resolved.Session,
-		Context: resolved.Context,
+		Context: actionCtx,
 	})
+}
+
+func mergeActionContext(caller, session context.Context) (context.Context, func()) {
+	if caller == nil {
+		caller = context.Background()
+	}
+	ctx, cancel := context.WithCancelCause(caller)
+	if session == nil {
+		return ctx, func() { cancel(context.Canceled) }
+	}
+	if err := session.Err(); err != nil {
+		cancel(context.Cause(session))
+		return ctx, func() { cancel(context.Canceled) }
+	}
+	stop := context.AfterFunc(session, func() {
+		cancel(context.Cause(session))
+	})
+	return ctx, func() {
+		stop()
+		cancel(context.Canceled)
+	}
 }

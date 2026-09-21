@@ -7,6 +7,8 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/feature"
 	"github.com/inipew/goultroid/internal/interaction"
+	interactionorchestration "github.com/inipew/goultroid/internal/interaction/orchestration"
+	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -76,6 +78,22 @@ func (m *Manager) ActionDispatcher() *interaction.Dispatcher {
 	return registry.actions
 }
 
+// NewInteractionEngine binds the shared P0/P1/P2 interaction foundation to one
+// presentation transport. Assistant and userbot-inline transports can therefore
+// expose the same feature-facing P3 API without duplicating session semantics.
+func (m *Manager) NewInteractionEngine(port presentation.Port) (*interactionorchestration.Engine, error) {
+	if m == nil {
+		return nil, interactionorchestration.ErrInvalidEngine
+	}
+	m.mu.RLock()
+	registry := m.featureRegistry
+	m.mu.RUnlock()
+	if registry == nil {
+		return nil, interactionorchestration.ErrInvalidEngine
+	}
+	return interactionorchestration.New(registry.interactions, registry.actions, port)
+}
+
 func (m *Manager) registerFeatureContract(name string, p Plugin, scope tasks.ScopeIdentity, commands []core.Command) (func(), error) {
 	m.mu.RLock()
 	registry := m.featureRegistry
@@ -93,6 +111,9 @@ func (m *Manager) registerFeatureContract(name string, p Plugin, scope tasks.Sco
 	}
 	return func() {
 		registration.Close()
+		if registry.actions != nil {
+			registry.actions.UnregisterScope(scope)
+		}
 		if registry.interactions != nil {
 			registry.interactions.CancelScope(scope)
 		}

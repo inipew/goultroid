@@ -1,9 +1,22 @@
 package presentation
 
-import "context"
+import (
+	"context"
+
+	"github.com/inipew/goultroid/internal/interaction"
+)
 
 type Target interface {
 	PresentationTargetKind() string
+}
+
+// SessionTarget is implemented by transport targets that can derive both the
+// partial session binding used before a send and the concrete target binding
+// available after a message/inline target exists.
+type SessionTarget interface {
+	Target
+	SessionBinding(actorID int64) interaction.Binding
+	TargetBinding() (interaction.TargetBinding, bool)
 }
 
 type Answer struct {

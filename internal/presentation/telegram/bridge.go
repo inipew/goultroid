@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/interaction"
 	"github.com/inipew/goultroid/internal/presentation"
 )
 
@@ -19,18 +21,40 @@ type MessageTarget struct {
 }
 
 func (MessageTarget) PresentationTargetKind() string { return "message" }
+func (t MessageTarget) SessionBinding(actorID int64) interaction.Binding {
+	return interaction.Binding{ActorID: actorID, ChatID: t.ChatID, MessageID: t.MessageID}
+}
+func (t MessageTarget) TargetBinding() (interaction.TargetBinding, bool) {
+	if t.ChatID == 0 || t.MessageID <= 0 {
+		return interaction.TargetBinding{}, false
+	}
+	return interaction.TargetBinding{ChatID: t.ChatID, MessageID: t.MessageID}, true
+}
 
 type InlineTarget struct {
 	MessageID tg.InputBotInlineMessageIDClass
+	BindingID string
 }
 
 func (InlineTarget) PresentationTargetKind() string { return "inline" }
+func (t InlineTarget) SessionBinding(actorID int64) interaction.Binding {
+	return interaction.Binding{ActorID: actorID, InlineMessageID: strings.TrimSpace(t.BindingID)}
+}
+func (t InlineTarget) TargetBinding() (interaction.TargetBinding, bool) {
+	id := strings.TrimSpace(t.BindingID)
+	if id == "" {
+		return interaction.TargetBinding{}, false
+	}
+	return interaction.TargetBinding{InlineMessageID: id}, true
+}
 
 type Bridge struct {
 	Service core.TelegramServicer
 }
 
 var _ presentation.Port = (*Bridge)(nil)
+var _ presentation.SessionTarget = MessageTarget{}
+var _ presentation.SessionTarget = InlineTarget{}
 
 func NewBridge(service core.TelegramServicer) *Bridge {
 	return &Bridge{Service: service}
@@ -41,7 +65,7 @@ func (b *Bridge) Send(ctx context.Context, target presentation.Target, view pres
 		return nil, core.ErrUnavailable
 	}
 	messageTarget, ok := target.(MessageTarget)
-	if !ok || messageTarget.Peer == nil {
+	if !ok || messageTarget.Peer == nil || messageTarget.ChatID == 0 {
 		return nil, ErrInvalidTarget
 	}
 	msg, err := b.Service.SendMessageWithMarkup(ctx, messageTarget.Peer, view.Text, markup(view))
@@ -61,12 +85,12 @@ func (b *Bridge) Edit(ctx context.Context, target presentation.Target, view pres
 	}
 	switch t := target.(type) {
 	case MessageTarget:
-		if t.Peer == nil || t.MessageID <= 0 {
+		if t.Peer == nil || t.ChatID == 0 || t.MessageID <= 0 {
 			return ErrInvalidTarget
 		}
 		return b.Service.EditMessageMarkup(ctx, t.Peer, t.MessageID, view.Text, markup(view))
 	case InlineTarget:
-		if t.MessageID == nil {
+		if t.MessageID == nil || strings.TrimSpace(t.BindingID) == "" {
 			return ErrInvalidTarget
 		}
 		return b.Service.EditInlineBotMessage(ctx, t.MessageID, view.Text, markup(view))
