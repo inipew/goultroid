@@ -153,21 +153,162 @@ func (r *Router) HasHandler(namespace string) bool {
 }
 
 // TaskScope resolves callback payload ownership before task admission.
+//
+// Deprecated for execution paths that can use Prepare. TaskScope is retained
+// for compatibility, but now fails closed if the handler disappears or is
+// replaced while ownership is being resolved.
 func (r *Router) TaskScope(data []byte, resolve func(string) (tasks.ScopeIdentity, bool)) (tasks.ScopeIdentity, bool) {
-	ns, _, _, err := ParseCallbackData(data)
+	ns, action, _, err := ParseCallbackData(data)
 	if err != nil {
-		return tasks.ScopeIdentity{}, true // invalid payload is handled by the router itself
+		return tasks.ScopeIdentity{}, true // malformed data is rejected by Dispatch.
 	}
+	if action == ActionNoop {
+		return tasks.ScopeIdentity{}, true
+	}
+
 	r.mu.RLock()
 	reg, ok := r.handlers[ns]
 	r.mu.RUnlock()
-	if !ok || reg.owner == "" {
+	if !ok {
+		return tasks.ScopeIdentity{}, false
+	}
+	if reg.owner == "" {
 		return tasks.ScopeIdentity{}, true
 	}
 	if resolve == nil {
 		return tasks.ScopeIdentity{}, false
 	}
-	return resolve(reg.owner)
+
+	scope, available := resolve(reg.owner)
+	if !available {
+		return tasks.ScopeIdentity{}, false
+	}
+
+	r.mu.RLock()
+	current, stillCurrent := r.handlers[ns]
+	r.mu.RUnlock()
+	if !stillCurrent || current.id != reg.id {
+		return tasks.ScopeIdentity{}, false
+	}
+	return scope, true
+}
+
+// Prepare validates callback protocol and rate limits, pins one concrete
+// registration, resolves its TaskEngine scope, and then revalidates the
+// registration before returning. No callback state is read or consumed here.
+func (r *Router) Prepare(
+	ctx context.Context,
+	evt *core.CallbackQueryEvent,
+	svc core.TelegramServicer,
+	resolve func(string) (tasks.ScopeIdentity, bool),
+) (PreparedDispatch, error) {
+	return r.prepare(ctx, evt, svc, resolve, true)
+}
+
+func (r *Router) prepare(
+	ctx context.Context,
+	evt *core.CallbackQueryEvent,
+	svc core.TelegramServicer,
+	resolve func(string) (tasks.ScopeIdentity, bool),
+	requireScope bool,
+) (PreparedDispatch, error) {
+	if evt == nil {
+		return PreparedDispatch{}, ErrInvalidCallbackData
+	}
+	start := time.Now()
+	raw := string(evt.Data)
+	if raw == ActionNoop {
+		return PreparedDispatch{rawData: raw, noop: true}, nil
+	}
+
+	ns, action, opaqueID, err := ParseCallbackData(evt.Data)
+	if err != nil {
+		r.logger.Debug("unrecognized callback data format",
+			zap.Int64("query_id", evt.QueryID),
+			zap.Int64("user_id", evt.UserID),
+			zap.Int64("chat_id", evt.ChatID),
+			zap.String("origin", originString(evt.Origin)),
+			zap.ByteString("data", evt.Data),
+			zap.Error(err))
+		return PreparedDispatch{}, r.reject(ctx, evt, svc, CallbackFailure{
+			Code:        FailureCodeInvalidPayload,
+			MetricTag:   "invalid",
+			UserAlert:   "Invalid button action",
+			InternalErr: ErrInvalidCallbackData,
+			IsAlert:     false,
+		}, start)
+	}
+	if err := r.checkRateLimit(ctx, evt, ns, svc, start); err != nil {
+		return PreparedDispatch{}, err
+	}
+	if action == ActionNoop {
+		return PreparedDispatch{
+			namespace: ns,
+			action:    action,
+			opaqueID:  opaqueID,
+			rawData:   raw,
+			noop:      true,
+		}, nil
+	}
+
+	r.mu.RLock()
+	reg, ok := r.handlers[ns]
+	r.mu.RUnlock()
+	if !ok {
+		return PreparedDispatch{}, r.reject(ctx, evt, svc, CallbackFailure{
+			Code:        FailureCodeHandlerNotFound,
+			MetricTag:   "invalid",
+			UserAlert:   "Feature not available",
+			InternalErr: ErrHandlerNotFound,
+			IsAlert:     false,
+		}, start)
+	}
+
+	var scope tasks.ScopeIdentity
+	if requireScope && reg.owner != "" {
+		if resolve == nil {
+			return PreparedDispatch{}, r.reject(ctx, evt, svc, CallbackFailure{
+				Code:        FailureCodeHandlerNotFound,
+				MetricTag:   "unavailable",
+				UserAlert:   "Feature not available.",
+				InternalErr: ErrHandlerRegistrationChanged,
+				IsAlert:     false,
+			}, start)
+		}
+		var available bool
+		scope, available = resolve(reg.owner)
+		if !available {
+			return PreparedDispatch{}, r.reject(ctx, evt, svc, CallbackFailure{
+				Code:        FailureCodeHandlerNotFound,
+				MetricTag:   "unavailable",
+				UserAlert:   "Feature not available.",
+				InternalErr: ErrHandlerRegistrationChanged,
+				IsAlert:     false,
+			}, start)
+		}
+	}
+
+	r.mu.RLock()
+	current, stillCurrent := r.handlers[ns]
+	r.mu.RUnlock()
+	if !stillCurrent || current.id != reg.id {
+		return PreparedDispatch{}, r.reject(ctx, evt, svc, CallbackFailure{
+			Code:        FailureCodeHandlerNotFound,
+			MetricTag:   "stale_registration",
+			UserAlert:   "Feature not available.",
+			InternalErr: ErrHandlerRegistrationChanged,
+			IsAlert:     false,
+		}, start)
+	}
+
+	return PreparedDispatch{
+		namespace:      ns,
+		action:         action,
+		opaqueID:       opaqueID,
+		rawData:        raw,
+		registrationID: reg.id,
+		scope:          scope,
+	}, nil
 }
 
 // checkRateLimit enforces per-user callback rate limiting. Returns reject error if limited.
@@ -316,32 +457,30 @@ func (r *Router) resolveState(ctx context.Context, evt *core.CallbackQueryEvent,
 	return e.Data, e, true, nil
 }
 
-// Dispatch processes an incoming CallbackQueryEvent from the domain event bus.
+// Dispatch processes a callback directly without TaskEngine scope admission.
+// TaskEngine-backed transports should call Prepare followed by DispatchPrepared.
 func (r *Router) Dispatch(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer) error {
+	prepared, err := r.prepare(ctx, evt, svc, nil, false)
+	if err != nil {
+		return err
+	}
+	return r.DispatchPrepared(ctx, evt, svc, prepared)
+}
+
+// DispatchPrepared executes exactly the handler registration pinned by Prepare.
+// If the plugin was disabled/reloaded after admission, the stale registration
+// is rejected before callback state can be claimed or consumed.
+func (r *Router) DispatchPrepared(
+	ctx context.Context,
+	evt *core.CallbackQueryEvent,
+	svc core.TelegramServicer,
+	prepared PreparedDispatch,
+) error {
 	if evt == nil {
 		return nil
 	}
 	start := time.Now()
-	if r.metrics != nil {
-		defer func() { _ = start }()
-	}
-	if string(evt.Data) == ActionNoop {
-		if svc != nil {
-			if err := svc.AnswerCallbackQuery(ctx, evt.QueryID, "", false); err != nil {
-				r.logger.Debug("answer noop failed", zap.Error(err), zap.Int64("query_id", evt.QueryID))
-			}
-		}
-		return nil
-	}
-	ns, action, opaqueID, err := ParseCallbackData(evt.Data)
-	if err != nil {
-		r.logger.Debug("unrecognized callback data format",
-			zap.Int64("query_id", evt.QueryID),
-			zap.Int64("user_id", evt.UserID),
-			zap.Int64("chat_id", evt.ChatID),
-			zap.String("origin", originString(evt.Origin)),
-			zap.ByteString("data", evt.Data),
-			zap.Error(err))
+	if prepared.rawData != string(evt.Data) {
 		return r.reject(ctx, evt, svc, CallbackFailure{
 			Code:        FailureCodeInvalidPayload,
 			MetricTag:   "invalid",
@@ -350,64 +489,67 @@ func (r *Router) Dispatch(ctx context.Context, evt *core.CallbackQueryEvent, svc
 			IsAlert:     false,
 		}, start)
 	}
-	if err := r.checkRateLimit(ctx, evt, ns, svc, start); err != nil {
-		return err
-	}
-	if action == ActionNoop {
+	if prepared.noop {
 		if svc != nil {
 			if err := svc.AnswerCallbackQuery(ctx, evt.QueryID, "", false); err != nil {
-				r.logger.Debug("answer noop action failed", zap.Error(err), zap.Int64("query_id", evt.QueryID))
+				r.logger.Debug("answer noop failed", zap.Error(err), zap.Int64("query_id", evt.QueryID))
 			}
 		}
 		return nil
 	}
-	storedState, entry, hasState, err := r.resolveState(ctx, evt, ns, action, opaqueID, svc, start)
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	_ = entry
 
-	if !hasState {
-		if handler, exists := r.GetHandler(ns); exists && requiresHandlerState(handler, action, opaqueID) {
-			r.logger.Debug("callback requires state but none is available",
-				zap.Int64("query_id", evt.QueryID),
-				zap.Int64("user_id", evt.UserID),
-				zap.String("namespace", ns),
-				zap.String("action", action),
-				zap.String("opaque_id", opaqueID))
-			return r.reject(ctx, evt, svc, CallbackFailure{
-				Code:        FailureCodeSessionExpired,
-				MetricTag:   "missing_state",
-				UserAlert:   "⏰ Button expired, run the command again.",
-				InternalErr: ErrStateNotFound,
-				IsAlert:     true,
-			}, start)
-		}
-	}
-
-	return r.executeHandler(ctx, evt, svc, ns, action, opaqueID, storedState, start)
-}
-
-// executeHandler looks up the handler and runs it with timeout, panic recovery, and metrics.
-func (r *Router) executeHandler(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer, ns, action, opaqueID string, storedState any, start time.Time) error {
-	handler, exists := r.GetHandler(ns)
-	if !exists {
-		r.logger.Warn("no callback handler for namespace",
-			zap.String("namespace", ns),
-			zap.String("action", action),
-			zap.String("opaque_id", opaqueID),
-			zap.Int64("query_id", evt.QueryID),
-			zap.Int64("user_id", evt.UserID),
-			zap.String("origin", originString(evt.Origin)))
+	r.mu.RLock()
+	reg, ok := r.handlers[prepared.namespace]
+	if !ok || reg.id != prepared.registrationID {
+		r.mu.RUnlock()
 		return r.reject(ctx, evt, svc, CallbackFailure{
 			Code:        FailureCodeHandlerNotFound,
-			MetricTag:   "invalid",
-			UserAlert:   "Feature not available",
-			InternalErr: ErrHandlerNotFound,
+			MetricTag:   "stale_registration",
+			UserAlert:   "Feature not available.",
+			InternalErr: ErrHandlerRegistrationChanged,
 			IsAlert:     false,
 		}, start)
 	}
+	handler := reg.handler
+	r.mu.RUnlock()
 
+	storedState, _, hasState, err := r.resolveState(ctx, evt, prepared.namespace, prepared.action, prepared.opaqueID, svc, start)
+	if err != nil {
+		return err
+	}
+
+	if !hasState && requiresHandlerState(handler, prepared.action, prepared.opaqueID) {
+		r.logger.Debug("callback requires state but none is available",
+			zap.Int64("query_id", evt.QueryID),
+			zap.Int64("user_id", evt.UserID),
+			zap.String("namespace", prepared.namespace),
+			zap.String("action", prepared.action),
+			zap.String("opaque_id", prepared.opaqueID))
+		return r.reject(ctx, evt, svc, CallbackFailure{
+			Code:        FailureCodeSessionExpired,
+			MetricTag:   "missing_state",
+			UserAlert:   "⏰ Button expired, run the command again.",
+			InternalErr: ErrStateNotFound,
+			IsAlert:     true,
+		}, start)
+	}
+
+	return r.executeHandler(ctx, evt, svc, handler, prepared.namespace, prepared.action, prepared.opaqueID, storedState, start)
+}
+
+// executeHandler runs the registration already validated for this dispatch.
+func (r *Router) executeHandler(
+	ctx context.Context,
+	evt *core.CallbackQueryEvent,
+	svc core.TelegramServicer,
+	handler Handler,
+	ns, action, opaqueID string,
+	storedState any,
+	start time.Time,
+) error {
 	cbCtx := &CallbackContext{
 		Ctx:          ctx,
 		QueryID:      evt.QueryID,
@@ -432,33 +574,33 @@ func (r *Router) executeHandler(ctx context.Context, evt *core.CallbackQueryEven
 		}
 	}
 
-	// Canonical single execution path: Recover (outermost) → Timeout → Handler
-	// Recover must wrap Timeout so panics from timeout/handler are both caught and metrics recorded in middleware.
 	timeout := r.timeout
 	if timeout <= 0 {
 		timeout = defaultCallbackTimeout
 	}
-	final := handler
-	chain := Chain(final, RecoverMiddleware(r.logger, r.metrics, start), TimeoutMiddleware(timeout))
+	chain := Chain(handler, RecoverMiddleware(r.logger), TimeoutMiddleware(timeout))
 	handleErr := chain.HandleCallback(cbCtx)
 
 	if r.metrics != nil {
 		status := "success"
-		if handleErr != nil {
+		switch {
+		case errors.Is(handleErr, ErrHandlerPanic):
+			status = "handler_panic"
+		case handleErr != nil:
 			status = "handler_error"
 		}
 		r.metrics.RecordCallback(status, time.Since(start), handleErr)
 	}
 
 	if !cbCtx.IsAnswered() && svc != nil {
-		var aErr error
+		var answerErr error
 		if handleErr != nil {
-			aErr = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Action failed", false)
+			answerErr = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Action failed", false)
 		} else {
-			aErr = svc.AnswerCallbackQuery(ctx, evt.QueryID, "", false)
+			answerErr = svc.AnswerCallbackQuery(ctx, evt.QueryID, "", false)
 		}
-		if aErr != nil {
-			r.logger.Debug("fallback answer failed", zap.Error(aErr), zap.Int64("query_id", evt.QueryID))
+		if answerErr != nil {
+			r.logger.Debug("fallback answer failed", zap.Error(answerErr), zap.Int64("query_id", evt.QueryID))
 		}
 	}
 
