@@ -46,7 +46,6 @@ const (
 	ActionSettingReset       = "setting_reset"
 	ActionSettingInput       = "setting_input"
 	ActionSettingInputCancel = "setting_input_cancel"
-	ActionLegacy             = "legacy"
 )
 
 // Feature is the first production feature migrated onto the P0-P4 interaction
@@ -110,7 +109,6 @@ func (*Feature) FeatureSpec() feature.Spec {
 			{ID: ActionSettingInput, Kind: feature.InteractionAction, Description: "Begin bounded free-form input for a bound string setting", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingInputCancel, Kind: feature.InteractionAction, Description: "Cancel bounded free-form setting input", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionClose, Kind: feature.InteractionAction, Description: "Close and delete the current Assistant shell message", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: ActionLegacy, Kind: feature.InteractionAction, Description: "Handoff to the legacy a1 menu", Surfaces: assistant, Policy: ownerPolicy},
 		},
 	}
 }
@@ -132,7 +130,7 @@ func HomeView(model HomeModel) presentation.View {
 	if model.Refreshes > 0 {
 		card.AddField("Session refreshes", strconv.FormatUint(model.Refreshes, 10))
 	}
-	card.WithFooter("<i>Assistant shell navigation is a2-native; the legacy menu remains compatibility-only while reclamation is audited.</i>")
+	card.WithFooter("<i>Assistant shell navigation and state are fully a2-native.</i>")
 
 	return presentation.View{
 		Text: card.Render(),
