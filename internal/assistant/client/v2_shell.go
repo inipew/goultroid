@@ -488,10 +488,18 @@ func (c *AssistantClient) handleShellSettingInputCancel(ctx *orchestration.Conte
 }
 
 func (c *AssistantClient) handleV2TextInput(ctx *orchestration.Context, text string) error {
-	if ctx == nil || ctx.Session().FeatureID != assistantshell.FeatureID {
-		return ErrShellUnavailable
+	if ctx == nil {
+		return ErrV2Unavailable
 	}
-	return c.handleShellSettingTextInput(ctx, text)
+	featureID := ctx.Session().FeatureID
+	if featureID == assistantshell.FeatureID {
+		return c.handleShellSettingTextInput(ctx, text)
+	}
+	driver := c.v2Driver(featureID)
+	if driver == nil {
+		return ErrV2Unavailable
+	}
+	return driver.HandleAssistantV2Input(ctx, text)
 }
 
 func (c *AssistantClient) handleShellSettingTextInput(ctx *orchestration.Context, text string) error {
