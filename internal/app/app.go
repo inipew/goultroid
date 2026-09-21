@@ -12,7 +12,6 @@ import (
 	"github.com/inipew/goultroid/internal/addon"
 	"github.com/inipew/goultroid/internal/assistant"
 	assistantinteraction "github.com/inipew/goultroid/internal/assistant/interaction"
-	"github.com/inipew/goultroid/internal/assistant/menu"
 	assistantshell "github.com/inipew/goultroid/internal/assistant/shell"
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
@@ -197,12 +196,6 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 			Resolver:            tgRuntime.dispatcher.Resolver(),
 			Callbacks:           coreDeps.callbackRouter,
 			CallbackStore:       coreDeps.callbackStore,
-			LegacyAssistantMenu: func() menu.CompatibilityHost {
-				if tgRuntime.assistant != nil {
-					return tgRuntime.assistant.LegacyMenuCompatibility()
-				}
-				return nil
-			}(),
 		},
 		ServiceRuntime: module.ServiceRuntime{
 			Storage:          domServices.storage,
