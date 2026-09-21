@@ -330,131 +330,114 @@ func (r *Router) checkRateLimit(ctx context.Context, evt *core.CallbackQueryEven
 	return nil
 }
 
-// resolveState looks up opaqueID state, validates expiry/consumed, and performs authorization and scope checks.
-// Returns storedState, entry, hasState, and any reject error.
-func (r *Router) resolveState(ctx context.Context, evt *core.CallbackQueryEvent, ns, action, opaqueID string, svc core.TelegramServicer, start time.Time) (any, StateEntry, bool, error) {
+// resolveState atomically validates callback scope and claims single-use
+// state only after authorization succeeds.
+func (r *Router) resolveState(
+	ctx context.Context,
+	evt *core.CallbackQueryEvent,
+	ns, action, opaqueID string,
+	svc core.TelegramServicer,
+	start time.Time,
+) (any, StateEntry, bool, error) {
 	if opaqueID == "" || opaqueID == ActionNoop || opaqueID == "-" || r.stateStore == nil {
 		return nil, StateEntry{}, false, nil
 	}
-	e, getErr := r.stateStore.GetEntry(opaqueID)
-	if getErr != nil {
-		if errors.Is(getErr, ErrStateExpired) {
-			r.logger.Debug("callback state expired",
-				zap.Int64("query_id", evt.QueryID),
-				zap.Int64("user_id", evt.UserID),
-				zap.String("namespace", ns),
-				zap.String("action", action),
-				zap.String("opaque_id", opaqueID),
-				zap.String("origin", originString(evt.Origin)))
-			return nil, StateEntry{}, false, r.reject(ctx, evt, svc, CallbackFailure{
-				Code:        FailureCodeSessionExpired,
-				MetricTag:   "expired",
-				UserAlert:   "⏰ Button expired, run the command again.",
-				InternalErr: ErrStateExpired,
+
+	var validationFailure *CallbackFailure
+	entry, stateErr := r.stateStore.ClaimEntry(opaqueID, func(scope StateScope) error {
+		switch {
+		case scope.UserID > 0 && evt.UserID != scope.UserID:
+			validationFailure = &CallbackFailure{
+				Code:        FailureCodeUnauthorized,
+				MetricTag:   "unauthorized",
+				UserAlert:   "⚠️ You are not authorized to use this button.",
+				InternalErr: ErrUnauthorized,
 				IsAlert:     true,
-			}, start)
-		}
-		if errors.Is(getErr, ErrStateConsumed) {
-			r.logger.Debug("callback state already consumed",
-				zap.Int64("query_id", evt.QueryID),
-				zap.Int64("user_id", evt.UserID),
-				zap.String("namespace", ns),
-				zap.String("action", action),
-				zap.String("opaque_id", opaqueID),
-				zap.String("origin", originString(evt.Origin)))
-			return nil, StateEntry{}, false, r.reject(ctx, evt, svc, CallbackFailure{
-				Code:        FailureCodeSessionExpired,
+			}
+		case scope.Namespace != "" && scope.Namespace != ns:
+			validationFailure = &CallbackFailure{
+				Code:        FailureCodeInvalidPayload,
 				MetricTag:   "invalid",
-				UserAlert:   "Button already used.",
-				InternalErr: ErrStateNotFound,
+				UserAlert:   "Invalid button scope.",
+				InternalErr: ErrInvalidCallbackData,
+				IsAlert:     false,
+			}
+		case scope.ChatID != 0 && scope.ChatID != evt.ChatID:
+			validationFailure = &CallbackFailure{
+				Code:        FailureCodeUnauthorized,
+				MetricTag:   "unauthorized",
+				UserAlert:   "Button not valid in this chat.",
+				InternalErr: ErrUnauthorized,
 				IsAlert:     true,
-			}, start)
+			}
+		case scope.MessageID != 0 && scope.MessageID != evt.Target.MessageID:
+			validationFailure = &CallbackFailure{
+				Code:        FailureCodeUnauthorized,
+				MetricTag:   "unauthorized",
+				UserAlert:   "Button not valid for this message.",
+				InternalErr: ErrUnauthorized,
+				IsAlert:     true,
+			}
 		}
-		if errors.Is(getErr, ErrStateNotFound) {
-			return nil, StateEntry{}, false, nil
+		if validationFailure != nil {
+			return validationFailure.InternalErr
 		}
+		return nil
+	})
+	if stateErr == nil {
+		return entry.Data, entry, true, nil
+	}
+	if validationFailure != nil {
+		r.logger.Warn("callback state scope rejected",
+			zap.Int64("query_id", evt.QueryID),
+			zap.Int64("user_id", evt.UserID),
+			zap.String("namespace", ns),
+			zap.String("action", action),
+			zap.String("opaque_id", opaqueID),
+			zap.String("code", string(validationFailure.Code)))
+		return nil, StateEntry{}, false, r.reject(ctx, evt, svc, *validationFailure, start)
+	}
+
+	switch {
+	case errors.Is(stateErr, ErrStateExpired):
+		r.logger.Debug("callback state expired",
+			zap.Int64("query_id", evt.QueryID),
+			zap.Int64("user_id", evt.UserID),
+			zap.String("namespace", ns),
+			zap.String("action", action),
+			zap.String("opaque_id", opaqueID),
+			zap.String("origin", originString(evt.Origin)))
+		return nil, StateEntry{}, false, r.reject(ctx, evt, svc, CallbackFailure{
+			Code:        FailureCodeSessionExpired,
+			MetricTag:   "expired",
+			UserAlert:   "⏰ Button expired, run the command again.",
+			InternalErr: ErrStateExpired,
+			IsAlert:     true,
+		}, start)
+	case errors.Is(stateErr, ErrStateConsumed):
+		r.logger.Debug("callback state already consumed",
+			zap.Int64("query_id", evt.QueryID),
+			zap.Int64("user_id", evt.UserID),
+			zap.String("namespace", ns),
+			zap.String("action", action),
+			zap.String("opaque_id", opaqueID),
+			zap.String("origin", originString(evt.Origin)))
+		return nil, StateEntry{}, false, r.reject(ctx, evt, svc, CallbackFailure{
+			Code:        FailureCodeSessionExpired,
+			MetricTag:   "invalid",
+			UserAlert:   "Button already used.",
+			InternalErr: ErrStateNotFound,
+			IsAlert:     true,
+		}, start)
+	case errors.Is(stateErr, ErrStateNotFound):
+		return nil, StateEntry{}, false, nil
+	default:
 		r.logger.Warn("callback state lookup failed",
 			zap.Int64("query_id", evt.QueryID),
 			zap.String("namespace", ns),
-			zap.Error(getErr))
+			zap.Error(stateErr))
 		return nil, StateEntry{}, false, nil
 	}
-	// Authorization: user
-	if e.Scope.UserID > 0 && evt.UserID != e.Scope.UserID {
-		r.logger.Warn("callback unauthorized",
-			zap.Int64("query_id", evt.QueryID),
-			zap.Int64("user_id", evt.UserID),
-			zap.Int64("allowed_user", e.Scope.UserID),
-			zap.String("namespace", ns),
-			zap.String("action", action),
-			zap.String("opaque_id", opaqueID))
-		return nil, StateEntry{}, false, r.reject(ctx, evt, svc, CallbackFailure{
-			Code:        FailureCodeUnauthorized,
-			MetricTag:   "unauthorized",
-			UserAlert:   "⚠️ You are not authorized to use this button.",
-			InternalErr: ErrUnauthorized,
-			IsAlert:     true,
-		}, start)
-	}
-	if e.Scope.Namespace != "" && e.Scope.Namespace != ns {
-		r.logger.Warn("callback namespace scope mismatch",
-			zap.String("expected", e.Scope.Namespace),
-			zap.String("got", ns),
-			zap.String("opaque_id", opaqueID))
-		return nil, StateEntry{}, false, r.reject(ctx, evt, svc, CallbackFailure{
-			Code:        FailureCodeInvalidPayload,
-			MetricTag:   "invalid",
-			UserAlert:   "Invalid button scope.",
-			InternalErr: ErrInvalidCallbackData,
-			IsAlert:     false,
-		}, start)
-	}
-	if e.Scope.ChatID != 0 && e.Scope.ChatID != evt.ChatID {
-		r.logger.Warn("callback chat scope mismatch",
-			zap.Int64("expected_chat", e.Scope.ChatID),
-			zap.Int64("got_chat", evt.ChatID),
-			zap.String("opaque_id", opaqueID))
-		return nil, StateEntry{}, false, r.reject(ctx, evt, svc, CallbackFailure{
-			Code:        FailureCodeUnauthorized,
-			MetricTag:   "unauthorized",
-			UserAlert:   "Button not valid in this chat.",
-			InternalErr: ErrUnauthorized,
-			IsAlert:     true,
-		}, start)
-	}
-	if e.Scope.MessageID != 0 && e.Scope.MessageID != evt.Target.MessageID {
-		r.logger.Warn("callback message scope mismatch",
-			zap.Int("expected_msg", e.Scope.MessageID),
-			zap.Int("got_msg", evt.Target.MessageID))
-		return nil, StateEntry{}, false, r.reject(ctx, evt, svc, CallbackFailure{
-			Code:        FailureCodeUnauthorized,
-			MetricTag:   "unauthorized",
-			UserAlert:   "Button not valid for this message.",
-			InternalErr: ErrUnauthorized,
-			IsAlert:     true,
-		}, start)
-	}
-	if e.Scope.SingleUse {
-		if _, cErr := r.stateStore.Consume(opaqueID); cErr != nil {
-			if errors.Is(cErr, ErrStateExpired) {
-				return nil, StateEntry{}, false, r.reject(ctx, evt, svc, CallbackFailure{
-					Code:        FailureCodeSessionExpired,
-					MetricTag:   "expired",
-					UserAlert:   "⏰ Button expired.",
-					InternalErr: ErrStateExpired,
-					IsAlert:     true,
-				}, start)
-			}
-			return nil, StateEntry{}, false, r.reject(ctx, evt, svc, CallbackFailure{
-				Code:        FailureCodeSessionExpired,
-				MetricTag:   "invalid",
-				UserAlert:   "Button already used.",
-				InternalErr: ErrStateNotFound,
-				IsAlert:     true,
-			}, start)
-		}
-	}
-	return e.Data, e, true, nil
 }
 
 // Dispatch processes a callback directly without TaskEngine scope admission.
