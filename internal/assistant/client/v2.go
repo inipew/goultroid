@@ -15,28 +15,28 @@ import (
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 )
 
-var ErrV2Unavailable = errors.New("assistant/client: a2 interaction engine unavailable")
+var ErrInteractionUnavailable = errors.New("assistant/client: interaction engine unavailable")
 
 type callbackAcknowledger interface {
 	ensureAnswered(context.Context, int64, error)
 }
 
-type v2Ingress struct {
+type interactionIngress struct {
 	engine *orchestration.Engine
 	ack    callbackAcknowledger
 	input  func(*orchestration.Context, string) error
 }
 
-func isV2Callback(data []byte) bool {
+func isInteractionCallback(data []byte) bool {
 	return strings.HasPrefix(string(data), "a2:")
 }
 
-func (v *v2Ingress) tryMessage(ctx context.Context, data []byte, userID, queryID int64, peer tg.InputPeerClass, chatID int64, msgID int) (bool, error) {
-	if !isV2Callback(data) {
+func (v *interactionIngress) tryMessage(ctx context.Context, data []byte, userID, queryID int64, peer tg.InputPeerClass, chatID int64, msgID int) (bool, error) {
+	if !isInteractionCallback(data) {
 		return false, nil
 	}
 	if v == nil || v.engine == nil || v.ack == nil {
-		return true, ErrV2Unavailable
+		return true, ErrInteractionUnavailable
 	}
 	target := presentationtelegram.MessageTarget{Peer: peer, ChatID: chatID, MessageID: msgID}
 	err := v.engine.Dispatch(ctx, orchestration.CallbackRequest{
@@ -46,7 +46,7 @@ func (v *v2Ingress) tryMessage(ctx context.Context, data []byte, userID, queryID
 	return true, err
 }
 
-func (v *v2Ingress) tryText(ctx context.Context, text string, userID, chatID int64, peer tg.InputPeerClass) (bool, error) {
+func (v *interactionIngress) tryText(ctx context.Context, text string, userID, chatID int64, peer tg.InputPeerClass) (bool, error) {
 	trimmed := strings.TrimSpace(text)
 	if strings.HasPrefix(trimmed, "/") && !strings.EqualFold(trimmed, "/cancel") {
 		return false, nil
@@ -59,7 +59,7 @@ func (v *v2Ingress) tryText(ctx context.Context, text string, userID, chatID int
 		return handled, err
 	}
 	if v.input == nil || peer == nil {
-		return true, ErrV2Unavailable
+		return true, ErrInteractionUnavailable
 	}
 	session := inputCtx.Session()
 	if session.Binding.MessageID <= 0 || session.Binding.InlineMessageID != "" {
@@ -75,7 +75,7 @@ func (v *v2Ingress) tryText(ctx context.Context, text string, userID, chatID int
 	return true, v.input(inputCtx, text)
 }
 
-func v2TextInputErrorMessage(err error) string {
+func interactionTextInputErrorMessage(err error) string {
 	if err == nil {
 		return ""
 	}
@@ -99,12 +99,12 @@ func v2TextInputErrorMessage(err error) string {
 	return "⚠️ Interaction input failed. Reopen it and try again."
 }
 
-func (v *v2Ingress) tryInline(ctx context.Context, data []byte, userID, queryID int64, messageID tg.InputBotInlineMessageIDClass) (bool, error) {
-	if !isV2Callback(data) {
+func (v *interactionIngress) tryInline(ctx context.Context, data []byte, userID, queryID int64, messageID tg.InputBotInlineMessageIDClass) (bool, error) {
+	if !isInteractionCallback(data) {
 		return false, nil
 	}
 	if v == nil || v.engine == nil || v.ack == nil {
-		return true, ErrV2Unavailable
+		return true, ErrInteractionUnavailable
 	}
 	target := presentationtelegram.InlineTarget{
 		MessageID: messageID,
@@ -124,7 +124,7 @@ func inlineBindingID(messageID tg.InputBotInlineMessageIDClass) string {
 	return fmt.Sprintf("%T:%v", messageID, messageID)
 }
 
-type v2PresentationServicer struct {
+type interactionPresentationServicer struct {
 	unsupportedTelegramServicer
 	interaction *assistantinteraction.ClientInteraction
 
@@ -132,46 +132,46 @@ type v2PresentationServicer struct {
 	answered map[int64]struct{}
 }
 
-func newV2PresentationServicer(interaction *assistantinteraction.ClientInteraction) *v2PresentationServicer {
-	return &v2PresentationServicer{
+func newInteractionPresentationServicer(interaction *assistantinteraction.ClientInteraction) *interactionPresentationServicer {
+	return &interactionPresentationServicer{
 		interaction: interaction,
 		answered:    make(map[int64]struct{}),
 	}
 }
 
-func (s *v2PresentationServicer) SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
+func (s *interactionPresentationServicer) SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
 	if s == nil || s.interaction == nil {
-		return nil, ErrV2Unavailable
+		return nil, ErrInteractionUnavailable
 	}
 	return s.interaction.SendMessage(ctx, peer, text, markup)
 }
 
-func (s *v2PresentationServicer) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
+func (s *interactionPresentationServicer) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
 	if s == nil || s.interaction == nil {
-		return nil, ErrV2Unavailable
+		return nil, ErrInteractionUnavailable
 	}
 	return s.interaction.SendMedia(ctx, peer, mediaType, filePath, caption)
 }
 
-func (s *v2PresentationServicer) EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass, msgID int, text string, markup tg.ReplyMarkupClass) error {
+func (s *interactionPresentationServicer) EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass, msgID int, text string, markup tg.ReplyMarkupClass) error {
 	if s == nil || s.interaction == nil {
-		return ErrV2Unavailable
+		return ErrInteractionUnavailable
 	}
 	target := assistantinteraction.NewMessageTarget(peer, msgID, extractChatIDFromInputPeer(peer), 0)
 	return s.interaction.Edit(ctx, target, text, markup)
 }
 
-func (s *v2PresentationServicer) EditInlineBotMessage(ctx context.Context, inlineID tg.InputBotInlineMessageIDClass, text string, markup tg.ReplyMarkupClass) error {
+func (s *interactionPresentationServicer) EditInlineBotMessage(ctx context.Context, inlineID tg.InputBotInlineMessageIDClass, text string, markup tg.ReplyMarkupClass) error {
 	if s == nil || s.interaction == nil {
-		return ErrV2Unavailable
+		return ErrInteractionUnavailable
 	}
 	target := assistantinteraction.NewInlineTarget(1, inlineID, 0)
 	return s.interaction.AsInline().Edit(ctx, target, text, markup)
 }
 
-func (s *v2PresentationServicer) AnswerCallbackQuery(ctx context.Context, queryID int64, text string, alert bool) error {
+func (s *interactionPresentationServicer) AnswerCallbackQuery(ctx context.Context, queryID int64, text string, alert bool) error {
 	if s == nil || s.interaction == nil || queryID == 0 {
-		return ErrV2Unavailable
+		return ErrInteractionUnavailable
 	}
 	s.mu.Lock()
 	if _, answered := s.answered[queryID]; answered {
@@ -189,7 +189,7 @@ func (s *v2PresentationServicer) AnswerCallbackQuery(ctx context.Context, queryI
 	return nil
 }
 
-func (s *v2PresentationServicer) ensureAnswered(ctx context.Context, queryID int64, dispatchErr error) {
+func (s *interactionPresentationServicer) ensureAnswered(ctx context.Context, queryID int64, dispatchErr error) {
 	if s == nil || s.interaction == nil || queryID == 0 {
 		return
 	}
