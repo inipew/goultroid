@@ -148,7 +148,11 @@ func (p *Plugin) openAssistantV2(cmd *core.Context) error {
 	if rt.Engine == nil || rt.Admit == nil {
 		return fmt.Errorf("myxl: assistant a2 runtime unavailable")
 	}
-	target := presentationtelegram.MessageTarget{Peer: cmd.PeerID, ChatID: cmd.ChatID()}
+	chatID := cmd.ChatID()
+	if chatID == 0 {
+		chatID = cmd.SenderID()
+	}
+	target := presentationtelegram.MessageTarget{Peer: cmd.PeerID, ChatID: chatID}
 	if err := rt.Admit(p.Name(), feature.InteractionScreen, assistantV2ScreenHome, cmd.SenderID(), target); err != nil {
 		return err
 	}
@@ -250,7 +254,7 @@ func (p *Plugin) assistantV2Await(ctx *orchestration.Context, state assistantV2S
 
 func parseAssistantV2Template(data string) (namespace, action, opaque string, err error) {
 	parts := strings.SplitN(strings.TrimSpace(data), ":", 3)
-	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" || parts[0] == "a1" {
 		return "", "", "", fmt.Errorf("myxl: invalid assistant action intent")
 	}
 	opaque = "noop"
