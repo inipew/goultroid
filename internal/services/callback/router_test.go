@@ -10,6 +10,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/services/ratelimit"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
@@ -867,5 +868,44 @@ func TestStateStore_ClaimEntryUnauthorizedDoesNotConsumeSingleUse(t *testing.T) 
 	}
 	if _, err := store.ClaimEntry(token, nil); !errors.Is(err, ErrStateConsumed) {
 		t.Fatalf("expected consumed state after authorized claim, got %v", err)
+	}
+}
+
+
+func TestRouter_PrepareOwnsRateLimitBeforeExecution(t *testing.T) {
+	router := NewRouter(zap.NewNop(), NewStateStore())
+	router.SetLimiter(ratelimit.New(ratelimit.Policy{
+		Limit:  1,
+		Window: time.Hour,
+		Burst:  1,
+	}, time.Hour))
+	handler := &mockHandler{namespace: "limited"}
+	if err := router.Register(handler); err != nil {
+		t.Fatalf("register handler: %v", err)
+	}
+
+	svc := &recordingService{}
+	first := &core.CallbackQueryEvent{
+		QueryID: 2001,
+		UserID:  99,
+		Data:    EncodeCallbackData("limited", "run", "noop"),
+	}
+	if _, err := router.Prepare(context.Background(), first, svc, nil); err != nil {
+		t.Fatalf("first prepare: %v", err)
+	}
+	if handler.handled {
+		t.Fatal("Prepare must not execute the handler")
+	}
+
+	second := &core.CallbackQueryEvent{
+		QueryID: 2002,
+		UserID:  99,
+		Data:    EncodeCallbackData("limited", "run", "noop"),
+	}
+	if _, err := router.Prepare(context.Background(), second, svc, nil); !errors.Is(err, core.ErrRateLimited) {
+		t.Fatalf("second prepare error = %v, want rate limit", err)
+	}
+	if handler.handled {
+		t.Fatal("rate-limited prepare executed the handler")
 	}
 }
