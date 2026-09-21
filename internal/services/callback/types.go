@@ -403,12 +403,7 @@ func ParseCallbackData(data []byte) (namespace, action, opaqueID string, err err
 	}
 	str := string(data)
 	parts := strings.SplitN(str, ":", 4)
-	if len(parts) < 3 || (parts[0] != CallbackVersion1 && parts[0] != "a1") {
-		return "", "", "", ErrInvalidCallbackData
-	}
-	// The canonical v1 protocol always carries an opaque ID. The assistant a1
-	// protocol also permits a three-field stateless action.
-	if parts[0] == CallbackVersion1 && len(parts) != 4 {
+	if len(parts) != 4 || parts[0] != CallbackVersion1 {
 		return "", "", "", ErrInvalidCallbackData
 	}
 	ns, act := parts[1], parts[2]
