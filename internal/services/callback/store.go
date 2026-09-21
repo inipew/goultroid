@@ -255,69 +255,66 @@ func (s *StateStore) RetainedBytes() int64 {
 	return s.retainedBytes
 }
 
-// Get retrieves the stored state if not expired. Returns ErrStateNotFound or ErrStateExpired.
-func (s *StateStore) Get(opaqueID string) (data any, allowedUserID int64, ok bool) {
-	entry, err := s.GetEntry(opaqueID)
-	if err != nil {
-		return nil, 0, false
+// getEntry resolves an entry without claiming single-use state. It is kept
+// package-private for diagnostics and invariant tests; production execution
+// must use claimEntry through Router.Prepare/PreparedCallback.Dispatch.
+func (s *StateStore) getEntry(opaqueID string) (stateEntry, error) {
+	if s == nil {
+		return stateEntry{}, ErrStateNotFound
 	}
-	return entry.Data, entry.Scope.UserID, true
-}
 
-// GetEntry returns the entry or a typed error distinguishing not found vs expired.
-func (s *StateStore) GetEntry(opaqueID string) (StateEntry, error) {
 	s.mu.RLock()
 	item, exists := s.items[opaqueID]
 	s.mu.RUnlock()
 
 	if !exists {
-		return StateEntry{}, ErrStateNotFound
+		return stateEntry{}, ErrStateNotFound
 	}
 	if time.Now().After(item.expiresAt) {
-		s.Delete(opaqueID)
-		return StateEntry{}, ErrStateExpired
+		s.deleteEntry(opaqueID)
+		return stateEntry{}, ErrStateExpired
 	}
 	if item.consumed {
-		return StateEntry{}, ErrStateConsumed
+		return stateEntry{}, ErrStateConsumed
 	}
 	cloned, _, err := cloneStateData(item.data)
 	if err != nil {
-		return StateEntry{}, ErrStateNotFound
+		return stateEntry{}, ErrStateNotFound
 	}
-	return StateEntry{Data: cloned, Scope: item.scope}, nil
+	return stateEntry{Data: cloned, Scope: item.scope}, nil
 }
 
-// ClaimEntry atomically validates and resolves a callback state entry, then
+// claimEntry atomically validates and resolves a callback state entry, then
 // claims it when it is single-use. Validation runs before the consumed bit is
 // changed so an unauthorized click cannot burn another user's token.
 //
 // The stored payload is immutable, so cloning can happen after releasing the
 // lock without allowing a second consumer to win the single-use claim.
-func (s *StateStore) ClaimEntry(opaqueID string, validate func(StateScope) error) (StateEntry, error) {
+func (s *StateStore) claimEntry(opaqueID string, validate func(StateScope) error) (stateEntry, error) {
 	if s == nil {
-		return StateEntry{}, ErrStateNotFound
+		return stateEntry{}, ErrStateNotFound
 	}
 
 	s.mu.Lock()
 	item, exists := s.items[opaqueID]
 	if !exists {
 		s.mu.Unlock()
-		return StateEntry{}, ErrStateNotFound
+		return stateEntry{}, ErrStateNotFound
 	}
 	if time.Now().After(item.expiresAt) {
 		s.retainedBytes -= item.sizeBytes
 		delete(s.items, opaqueID)
 		s.mu.Unlock()
-		return StateEntry{}, ErrStateExpired
+		return stateEntry{}, ErrStateExpired
 	}
 	if item.consumed {
 		s.mu.Unlock()
-		return StateEntry{}, ErrStateConsumed
+		return stateEntry{}, ErrStateConsumed
 	}
 	if validate != nil {
 		if err := validate(item.scope); err != nil {
 			s.mu.Unlock()
-			return StateEntry{}, err
+			return stateEntry{}, err
 		}
 	}
 	if item.scope.SingleUse {
@@ -328,45 +325,15 @@ func (s *StateStore) ClaimEntry(opaqueID string, validate func(StateScope) error
 
 	cloned, _, err := cloneStateData(item.data)
 	if err != nil {
-		return StateEntry{}, ErrStateNotFound
+		return stateEntry{}, ErrStateNotFound
 	}
-	return StateEntry{Data: cloned, Scope: item.scope}, nil
+	return stateEntry{Data: cloned, Scope: item.scope}, nil
 }
 
-// Consume atomically retrieves and marks a single-use entry as consumed.
-//
-// Deprecated: canonical callback execution owns single-use consumption through
-// Router.DispatchPrepared -> ClaimEntry. Keep this method only for compatibility
-// with non-router callers that explicitly own their own state lifecycle.
-func (s *StateStore) Consume(opaqueID string) (StateEntry, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	item, exists := s.items[opaqueID]
-	if !exists {
-		return StateEntry{}, ErrStateNotFound
+func (s *StateStore) deleteEntry(opaqueID string) {
+	if s == nil {
+		return
 	}
-	if time.Now().After(item.expiresAt) {
-		s.retainedBytes -= item.sizeBytes
-		delete(s.items, opaqueID)
-		return StateEntry{}, ErrStateExpired
-	}
-	if item.consumed {
-		return StateEntry{}, ErrStateConsumed
-	}
-	if item.scope.SingleUse {
-		item.consumed = true
-		s.items[opaqueID] = item
-	}
-	cloned, _, err := cloneStateData(item.data)
-	if err != nil {
-		return StateEntry{}, ErrStateNotFound
-	}
-	return StateEntry{Data: cloned, Scope: item.scope}, nil
-}
-
-// Delete removes an item from the store.
-func (s *StateStore) Delete(opaqueID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if item, exists := s.items[opaqueID]; exists {
@@ -374,3 +341,4 @@ func (s *StateStore) Delete(opaqueID string) {
 		delete(s.items, opaqueID)
 	}
 }
+
