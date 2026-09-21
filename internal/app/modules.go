@@ -111,6 +111,12 @@ func reconcileBuiltinPersistentMedia(
 	// immediately. Ephemeral fallback storage never receives delete authority.
 	if durableStore {
 		reclaimer := mediaregistry.NewReclaimer(mediaregistry.New(db), store)
+		if _, err := reclaimer.RecoverClaimsAtStartup(
+			reconcileCtx,
+			startupPersistentMediaReconcileBatch,
+		); err != nil {
+			return stats, fmt.Errorf("recover global media reclamation claims failed: %w", err)
+		}
 		if _, err := reclaimer.DiscoverReclamations(
 			reconcileCtx,
 			[]mediaregistry.ReclamationPolicy{

@@ -58,7 +58,7 @@ A physical delete failure returns the claim to `pending`, increments attempts, s
 
 `storage.ErrNotFound` is success: metadata and the durable intent are finalized idempotently.
 
-A process crash while an intent is `deleting` leaves a claim lease behind. A later reconciliation recovers expired claims back to `pending`; retrying a delete that actually completed before the crash is safe because `ErrNotFound` finalizes it.
+A process crash while an intent is `deleting` leaves a claim lease behind. Runtime reconciliation recovers expired claims back to `pending`. Startup additionally releases a bounded set of all `deleting` claims immediately because it is a process boundary and no prior-process claim can still be active; retrying a delete that actually completed before the crash is safe because `ErrNotFound` finalizes it.
 
 There is intentionally no polling goroutine in P3-C. Reconciliation is event-driven by owner cleanup and startup. Durable `next_attempt_at` preserves retry/backoff state across process lifetime and future passes without adding idle CPU wakeups.
 
