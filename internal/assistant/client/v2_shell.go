@@ -54,8 +54,8 @@ func (c *AssistantClient) openShell(cmdCtx *command.Context) error {
 		return ErrShellUnavailable
 	}
 	c.mu.RLock()
-	ingress := c.v2Ingress
-	catalog := c.v2Catalog
+	ingress := c.interactionIngress
+	catalog := c.featureCatalog
 	c.mu.RUnlock()
 	if ingress == nil || ingress.engine == nil || catalog == nil {
 		return ErrShellUnavailable
@@ -224,7 +224,7 @@ func (c *AssistantClient) admitShellScreen(ctx *orchestration.Context, screenID 
 		private = isPrivatePeer(target.Peer)
 	}
 	c.mu.RLock()
-	catalog := c.v2Catalog
+	catalog := c.featureCatalog
 	c.mu.RUnlock()
 	return c.admitShellInteraction(catalog, feature.InteractionScreen, screenID, ctx.Session().Binding.ActorID, private)
 }
@@ -480,19 +480,19 @@ func (c *AssistantClient) handleShellSettingInputCancel(ctx *orchestration.Conte
 	return ctx.Transition(state, 0, view)
 }
 
-func (c *AssistantClient) handleV2TextInput(ctx *orchestration.Context, text string) error {
+func (c *AssistantClient) handleInteractionTextInput(ctx *orchestration.Context, text string) error {
 	if ctx == nil {
-		return ErrV2Unavailable
+		return ErrInteractionUnavailable
 	}
 	featureID := ctx.Session().FeatureID
 	if featureID == assistantshell.FeatureID {
 		return c.handleShellSettingTextInput(ctx, text)
 	}
-	driver := c.v2Driver(featureID)
+	driver := c.featureDriver(featureID)
 	if driver == nil {
-		return ErrV2Unavailable
+		return ErrInteractionUnavailable
 	}
-	return driver.HandleAssistantV2Input(ctx, text)
+	return driver.HandleAssistantInput(ctx, text)
 }
 
 func (c *AssistantClient) handleShellSettingTextInput(ctx *orchestration.Context, text string) error {
