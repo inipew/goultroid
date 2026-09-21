@@ -255,6 +255,13 @@ func boundedOptions(values []string, limit int) string {
 	return strings.Join(values[:limit], ", ") + fmt.Sprintf(", … +%d", len(values)-limit)
 }
 
+func displaySettingValue(sensitive bool, value string) string {
+	if sensitive && value != "" {
+		return "••••"
+	}
+	return ui.EscapeHTML(value)
+}
+
 func boundText(value *int64) string {
 	if value == nil {
 		return "∞"
