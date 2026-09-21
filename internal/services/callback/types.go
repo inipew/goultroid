@@ -16,6 +16,9 @@ var (
 	ErrInvalidCallbackData = errors.New("invalid callback data format")
 	// ErrHandlerNotFound indicates no handler is registered for the specified namespace.
 	ErrHandlerNotFound = errors.New("no callback handler found for namespace")
+	// ErrHandlerRegistrationChanged indicates admission was prepared for a callback
+	// handler generation that is no longer current.
+	ErrHandlerRegistrationChanged = fmt.Errorf("%w: callback handler registration changed", ErrHandlerNotFound)
 	// ErrUnauthorized indicates the user pressing the button is not allowed to trigger this action.
 	ErrUnauthorized = errors.New("unauthorized button interaction")
 	// ErrStateExpired indicates the state associated with the callback opaque id has expired.
