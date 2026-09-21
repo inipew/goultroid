@@ -21,21 +21,39 @@ type mockCoreDispatcher struct {
 	dispatchFunc   func(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer) error
 }
 
-func (m *mockCoreDispatcher) HasHandler(namespace string) bool {
-	if m.hasHandlerFunc != nil {
-		return m.hasHandlerFunc(namespace)
+func (m *mockCoreDispatcher) Prepare(
+	ctx context.Context,
+	evt *core.CallbackQueryEvent,
+	svc core.TelegramServicer,
+	resolve func(string) (tasks.ScopeIdentity, bool),
+) (corecallback.PreparedDispatch, error) {
+	if evt == nil {
+		return corecallback.PreparedDispatch{}, corecallback.ErrInvalidCallbackData
 	}
-	return false
-}
-
-func (m *mockCoreDispatcher) TaskScope(data []byte, resolve func(string) (tasks.ScopeIdentity, bool)) (tasks.ScopeIdentity, bool) {
+	ns, _, _, err := corecallback.ParseCallbackData(evt.Data)
+	if err != nil {
+		return corecallback.PreparedDispatch{}, err
+	}
+	if m.hasHandlerFunc != nil && !m.hasHandlerFunc(ns) {
+		return corecallback.PreparedDispatch{}, corecallback.ErrHandlerNotFound
+	}
+	var scope tasks.ScopeIdentity
 	if m.taskScopeFunc != nil {
-		return m.taskScopeFunc(data, resolve)
+		var ok bool
+		scope, ok = m.taskScopeFunc(evt.Data, resolve)
+		if !ok {
+			return corecallback.PreparedDispatch{}, corecallback.ErrHandlerRegistrationChanged
+		}
 	}
-	return tasks.ScopeIdentity{}, true
+	return corecallback.PreparedDispatch{ResolvedScope: scope}, nil
 }
 
-func (m *mockCoreDispatcher) Dispatch(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer) error {
+func (m *mockCoreDispatcher) DispatchPrepared(
+	ctx context.Context,
+	evt *core.CallbackQueryEvent,
+	svc core.TelegramServicer,
+	_ corecallback.PreparedDispatch,
+) error {
 	if m.dispatchFunc != nil {
 		return m.dispatchFunc(ctx, evt, svc)
 	}
