@@ -16,17 +16,17 @@ import (
 )
 
 type UpdateHandlerDeps struct {
-	Logger         *zap.Logger
-	RateLimiter    RateLimiter
-	Resolver       peer.Resolver
-	CmdRouter      *command.Router
-	CallbackDispatcher CoreCallbackDispatcher
-	CallbackDeduper    *callbackQueryDeduper
-	Interaction    *interaction.ClientInteraction
-	CacheEntities  func(e tg.Entities)
-	IsShuttingDown func() bool
-	InlineEngine   InlineQueryExecutor
-	InlineService  core.TelegramServicer
+	Logger              *zap.Logger
+	RateLimiter         RateLimiter
+	Resolver            peer.Resolver
+	CmdRouter           *command.Router
+	CallbackDispatcher  CoreCallbackDispatcher
+	CallbackDeduper     *callbackQueryDeduper
+	Interaction         *interaction.ClientInteraction
+	CacheEntities       func(e tg.Entities)
+	IsShuttingDown      func() bool
+	InlineEngine        InlineQueryExecutor
+	InlineService       core.TelegramServicer
 	Tasks               tasks.Client
 	PluginScopeResolver func(string) (tasks.ScopeIdentity, bool)
 	InteractionIngress  *interactionIngress
