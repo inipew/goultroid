@@ -154,7 +154,7 @@ func registerMessageHook(registrar HookRegistrar, p Plugin, scope tasks.ScopeIde
 }
 
 type callbackRegistrar interface {
-	RegisterOwned(string, callback.Handler) (*callback.Registration, error)
+	RegisterOwned(string, callback.Handler) (callback.Registration, error)
 }
 
 // SchedulerTaskCleaner allows the plugin manager to unregister periodic tasks owned by disabled plugins.
