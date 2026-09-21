@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/platform/network"
 	"github.com/inipew/goultroid/internal/services/callback"
