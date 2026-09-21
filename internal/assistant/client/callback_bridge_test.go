@@ -587,12 +587,14 @@ func TestCallbackQueryDeduper_BoundedAndReusableAfterTTL(t *testing.T) {
 	if !deduper.Admit(1, now) || deduper.Admit(1, now) {
 		t.Fatal("query id must be admitted once within the dedupe window")
 	}
-	if !deduper.Admit(1, now.Add(assistantCallbackDedupTTL)) {
+	reuseAt := now.Add(assistantCallbackDedupTTL)
+	if !deduper.Admit(1, reuseAt) {
 		t.Fatal("query id must be reusable after the dedupe window")
 	}
 
+	fillAt := reuseAt.Add(time.Minute)
 	for i := int64(2); i < int64(assistantCallbackDedupMax)+32; i++ {
-		if !deduper.Admit(i, now.Add(time.Minute)) {
+		if !deduper.Admit(i, fillAt) {
 			t.Fatalf("unexpected rejection for unique query %d", i)
 		}
 	}
