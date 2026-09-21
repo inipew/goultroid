@@ -10,8 +10,8 @@ import (
 	assistantshell "github.com/inipew/goultroid/internal/assistant/shell"
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 	"github.com/inipew/goultroid/internal/interaction/orchestration"
-	"github.com/inipew/goultroid/internal/settings"
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
+	"github.com/inipew/goultroid/internal/settings"
 )
 
 type mutationTrackingRepo struct {
