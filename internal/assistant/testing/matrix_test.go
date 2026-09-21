@@ -13,8 +13,6 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/client"
 	"github.com/inipew/goultroid/internal/assistant/command"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
-	"github.com/inipew/goultroid/internal/assistant/menu"
-	"github.com/inipew/goultroid/internal/assistant/presentation"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	"go.uber.org/zap"
@@ -23,130 +21,9 @@ import (
 func TestIntegration_15ScenarioMatrix(t *testing.T) {
 	ctx := context.Background()
 
-	// Scenario 1-6: Menu controller routes attached to Router
-	t.Run("01_Menu_StartScreen", func(t *testing.T) {
-		router := callback.NewRouter(zap.NewNop())
-		ctrl := menu.NewController(presentation.RenderScreen)
-		ctrl.AttachRoutes(router, func() string { return "Bot" }, func() time.Time { return time.Now() })
-
-		fake := NewFakeInteraction()
-		target := FixtureMessageTarget(100, 1)
-		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart, OwnerID: 100})
-		tx := callback.NewTransaction(1, 100, callback.ParsedPayload{Namespace: "assistant", Action: "start"}, target, fake)
-
-		if err := router.Dispatch(ctx, tx); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if fake.LastEditedText == "" {
-			t.Fatalf("expected start screen rendered")
-		}
-	})
-
-	t.Run("02_Menu_SettingsScreen", func(t *testing.T) {
-		router := callback.NewRouter(zap.NewNop())
-		ctrl := menu.NewController(presentation.RenderScreen)
-		ctrl.AttachRoutes(router, func() string { return "Bot" }, nil)
-
-		fake := NewFakeInteraction()
-		target := FixtureMessageTarget(100, 1)
-		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart, OwnerID: 100})
-		tx := callback.NewTransaction(2, 100, callback.ParsedPayload{Namespace: "assistant", Action: "settings"}, target, fake)
-
-		if err := router.Dispatch(ctx, tx); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if fake.LastEditedText == "" {
-			t.Fatalf("expected settings screen rendered")
-		}
-	})
-
-	t.Run("03_Menu_HelpScreen", func(t *testing.T) {
-		router := callback.NewRouter(zap.NewNop())
-		ctrl := menu.NewController(presentation.RenderScreen)
-		ctrl.AttachRoutes(router, func() string { return "Bot" }, nil)
-
-		fake := NewFakeInteraction()
-		target := FixtureMessageTarget(100, 1)
-		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart, OwnerID: 100})
-		tx := callback.NewTransaction(3, 100, callback.ParsedPayload{Namespace: "assistant", Action: "help"}, target, fake)
-
-		if err := router.Dispatch(ctx, tx); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if fake.LastEditedText == "" {
-			t.Fatalf("expected help screen rendered")
-		}
-	})
-
-	t.Run("04_Menu_StatusScreen", func(t *testing.T) {
-		router := callback.NewRouter(zap.NewNop())
-		ctrl := menu.NewController(presentation.RenderScreen)
-		ctrl.AttachRoutes(router, func() string { return "Bot" }, nil)
-
-		fake := NewFakeInteraction()
-		target := FixtureMessageTarget(100, 1)
-		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart, OwnerID: 100})
-		tx := callback.NewTransaction(4, 100, callback.ParsedPayload{Namespace: "assistant", Action: "status"}, target, fake)
-
-		if err := router.Dispatch(ctx, tx); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if fake.LastEditedText == "" {
-			t.Fatalf("expected status screen rendered")
-		}
-	})
-
-	t.Run("05_Menu_PingToast", func(t *testing.T) {
-		router := callback.NewRouter(zap.NewNop())
-		ctrl := menu.NewController(presentation.RenderScreen)
-		ctrl.AttachRoutes(router, func() string { return "Bot" }, nil)
-
-		fake := NewFakeInteraction()
-		target := FixtureMessageTarget(100, 1)
-		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart, OwnerID: 100})
-		tx := callback.NewTransaction(5, 100, callback.ParsedPayload{Namespace: "assistant", Action: "ping"}, target, fake)
-
-		if err := router.Dispatch(ctx, tx); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if fake.LastAnswerText != "🏓 Pong!" || !fake.LastAlert {
-			t.Fatalf("expected alert toast response, got %q alert=%v", fake.LastAnswerText, fake.LastAlert)
-		}
-	})
-
-	t.Run("05b_Menu_SessionExpired_Rejected", func(t *testing.T) {
-		router := callback.NewRouter(zap.NewNop())
-		ctrl := menu.NewController(presentation.RenderScreen)
-		ctrl.AttachRoutes(router, func() string { return "Bot" }, nil)
-
-		fake := NewFakeInteraction()
-		target := FixtureMessageTarget(100, 999) // not registered
-		tx := callback.NewTransaction(55, 100, callback.ParsedPayload{Namespace: "assistant", Action: "settings"}, target, fake)
-
-		err := router.Dispatch(ctx, tx)
-		if !errors.Is(err, callback.ErrSessionExpired) {
-			t.Fatalf("expected ErrSessionExpired, got %v", err)
-		}
-	})
-
-	t.Run("06_Menu_CloseIdempotent", func(t *testing.T) {
-		router := callback.NewRouter(zap.NewNop())
-		ctrl := menu.NewController(presentation.RenderScreen)
-		ctrl.AttachRoutes(router, func() string { return "Bot" }, nil)
-
-		fake := NewFakeInteraction()
-		target := FixtureMessageTarget(100, 1)
-		ctrl.RegisterInstance(menu.MenuInstance{ChatID: 100, MessageID: 1, Screen: menu.ScreenIDStart, OwnerID: 100})
-		tx := callback.NewTransaction(6, 100, callback.ParsedPayload{Namespace: "assistant", Action: "close"}, target, fake)
-
-		if err := router.Dispatch(ctx, tx); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if !fake.Deleted {
-			t.Fatalf("expected message to be deleted on close")
-		}
-	})
-
+	// Legacy menu/controller scenarios were removed with P6-C. This matrix now
+	// covers the callback bridge, authorization, lifecycle, rate limiting, and
+	// command routing that remain after the a2 cutover.
 	t.Run("07_Payload_Malformed", func(t *testing.T) {
 		_, err := callback.Parse([]byte("invalid_format"))
 		if !errors.Is(err, callback.ErrMalformedPayload) {
@@ -155,7 +32,7 @@ func TestIntegration_15ScenarioMatrix(t *testing.T) {
 	})
 
 	t.Run("08_Payload_TooLong", func(t *testing.T) {
-		longPayload := "a1:assistant:"
+		longPayload := "v1:assistant:noop:"
 		for len(longPayload) < 65 {
 			longPayload += "x"
 		}
@@ -277,7 +154,10 @@ func TestIntegration_15ScenarioMatrix(t *testing.T) {
 
 	t.Run("15_Command_Dispatch_AllCommands", func(t *testing.T) {
 		r := command.NewRouter(zap.NewNop())
-		command.AttachDefaultCommands(r, func() string { return "TestBot" }, func() time.Time { return time.Now() }, presentation.RenderScreen)
+		r.Register("/start", func(c *command.Context) error {
+			_, err := c.Reply("start", nil)
+			return err
+		})
 
 		coreRouter := core.NewRouter(".")
 		_ = coreRouter.RegisterBatch([]core.Command{
