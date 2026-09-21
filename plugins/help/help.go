@@ -29,12 +29,12 @@ type helpMenuState struct {
 
 type Plugin struct {
 	router     *core.Router
-	stateStore *callback.StateStore
+	stateStore callback.StateWriter
 }
 
 func New(router *core.Router) *Plugin { return &Plugin{router: router} }
 
-func (p *Plugin) SetStateStore(store *callback.StateStore) { p.stateStore = store }
+func (p *Plugin) SetStateStore(store callback.StateWriter) { p.stateStore = store }
 
 func (p *Plugin) Name() string      { return "help" }
 func (p *Plugin) Namespace() string { return "help" }
