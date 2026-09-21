@@ -40,6 +40,19 @@ func TestLegacyAssistantCompatibilityStackRemoved(t *testing.T) {
 		"internal/assistant/presentation",
 	}
 
+	for _, pattern := range []string{
+		"internal/assistant/client/v2*.go",
+		"plugins/myxl/assistant_v2*.go",
+	} {
+		matches, err := filepath.Glob(filepath.Join(repoRoot, pattern))
+		if err != nil {
+			t.Fatalf("glob %s: %v", pattern, err)
+		}
+		if len(matches) != 0 {
+			t.Fatalf("transitional interaction source filenames still exist for %s: %v", pattern, matches)
+		}
+	}
+
 	scanRoots := []string{
 		"internal/assistant",
 		"internal/app",
