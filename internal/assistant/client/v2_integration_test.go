@@ -106,7 +106,7 @@ func TestA2IngressSyntheticSurfaceEndToEnd(t *testing.T) {
 		t.Fatalf("ack = calls:%d err:%v", ack.calls, ack.err)
 	}
 
-	handled, err = ingress.tryMessage(context.Background(), []byte("a1:menu:home"), 7, 100, nil, 42, 77)
+	handled, err = ingress.tryMessage(context.Background(), []byte("v1:menu:home:noop"), 7, 100, nil, 42, 77)
 	if err != nil {
 		t.Fatalf("legacy tryMessage() error = %v", err)
 	}
