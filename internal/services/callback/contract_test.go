@@ -25,7 +25,7 @@ func TestContract_CallbackFiveScenarios(t *testing.T) {
 		token := store.StoreWithScope("secret", StateScope{UserID: 111}, 5*time.Minute)
 		svc := &recordingService{}
 		evt := &core.CallbackQueryEvent{QueryID: 1, UserID: 222, Data: EncodeCallbackData("contract", "view", token)}
-		err := router.Dispatch(context.Background(), evt, svc)
+		err := dispatchForTest(router, context.Background(), evt, svc)
 		if !errors.Is(err, ErrUnauthorized) {
 			t.Fatalf("expected ErrUnauthorized, got %v", err)
 		}
@@ -46,7 +46,7 @@ func TestContract_CallbackFiveScenarios(t *testing.T) {
 		token := store.StoreWithScope("x", StateScope{UserID: 111, ChatID: 999}, 5*time.Minute)
 		svc := &recordingService{}
 		evt := &core.CallbackQueryEvent{QueryID: 2, UserID: 111, ChatID: 888, Data: EncodeCallbackData("contract", "view", token)}
-		err := router.Dispatch(context.Background(), evt, svc)
+		err := dispatchForTest(router, context.Background(), evt, svc)
 		if !errors.Is(err, ErrUnauthorized) {
 			t.Fatalf("expected ErrUnauthorized for chat mismatch, got %v", err)
 		}
@@ -58,7 +58,7 @@ func TestContract_CallbackFiveScenarios(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 		svc := &recordingService{}
 		evt := &core.CallbackQueryEvent{QueryID: 3, UserID: 111, Data: EncodeCallbackData("contract", "view", token)}
-		err := router.Dispatch(context.Background(), evt, svc)
+		err := dispatchForTest(router, context.Background(), evt, svc)
 		if !errors.Is(err, ErrStateExpired) {
 			t.Fatalf("expected ErrStateExpired, got %v", err)
 		}
@@ -72,12 +72,12 @@ func TestContract_CallbackFiveScenarios(t *testing.T) {
 		token := store.StoreWithScope("one", StateScope{UserID: 111, SingleUse: true}, 5*time.Minute)
 		svc := &recordingService{}
 		evt := &core.CallbackQueryEvent{QueryID: 4, UserID: 111, Data: EncodeCallbackData("contract", "view", token)}
-		if err := router.Dispatch(context.Background(), evt, svc); err != nil {
+		if err := dispatchForTest(router, context.Background(), evt, svc); err != nil {
 			t.Fatalf("first dispatch should succeed, got %v", err)
 		}
 		h.handled = false
 		svc2 := &recordingService{}
-		err := router.Dispatch(context.Background(), evt, svc2)
+		err := dispatchForTest(router, context.Background(), evt, svc2)
 		if !errors.Is(err, ErrStateNotFound) {
 			t.Fatalf("expected ErrStateNotFound on replay, got %v", err)
 		}
@@ -92,7 +92,7 @@ func TestContract_CallbackFiveScenarios(t *testing.T) {
 		token := store.Store("ok", 111, 5*time.Minute)
 		svc := &recordingService{}
 		evt := &core.CallbackQueryEvent{QueryID: 5, UserID: 111, Data: EncodeCallbackData("contract", "view", token)}
-		err := router.Dispatch(context.Background(), evt, svc)
+		err := dispatchForTest(router, context.Background(), evt, svc)
 		if err != nil {
 			t.Fatalf("valid dispatch failed: %v", err)
 		}
@@ -105,7 +105,7 @@ func TestContract_CallbackFiveScenarios(t *testing.T) {
 	t.Run("handler_not_found", func(t *testing.T) {
 		svc := &recordingService{}
 		evt := &core.CallbackQueryEvent{QueryID: 6, UserID: 111, Data: EncodeCallbackData("missing", "act", "abc12345")}
-		err := router.Dispatch(context.Background(), evt, svc)
+		err := dispatchForTest(router, context.Background(), evt, svc)
 		if !errors.Is(err, ErrHandlerNotFound) {
 			t.Fatalf("expected ErrHandlerNotFound, got %v", err)
 		}
@@ -127,7 +127,7 @@ func TestContract_CallbackMetricTags(t *testing.T) {
 	token := store.StoreWithScope("s", StateScope{UserID: 1, ChatID: 100}, 5*time.Minute)
 	svc := &recordingService{}
 	evt := &core.CallbackQueryEvent{QueryID: 10, UserID: 1, ChatID: 999, Data: EncodeCallbackData("metric", "view", token)}
-	_ = router.Dispatch(context.Background(), evt, svc)
+	_ = dispatchForTest(router, context.Background(), evt, svc)
 	if m.lastTag != "unauthorized" {
 		t.Errorf("expected metric tag unauthorized, got %q", m.lastTag)
 	}
