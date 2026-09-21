@@ -257,8 +257,8 @@ func TestAssistantShellOwnerStartUsesA2Canary(t *testing.T) {
 	client := NewAssistantClient(1, "hash", "token", zap.NewNop())
 	client.SetOwner(7, nil)
 	client.mu.Lock()
-	client.v2Catalog = manager.FeatureCatalog()
-	client.v2Ingress = &v2Ingress{engine: engine}
+	client.featureCatalog = manager.FeatureCatalog()
+	client.interactionIngress = &interactionIngress{engine: engine}
 	client.mu.Unlock()
 
 	err = client.dispatchStart(&command.Context{
@@ -296,8 +296,8 @@ func TestAssistantShellVisitorStartUsesPublicReadOnlyPath(t *testing.T) {
 	client.SetOwner(7, nil)
 	public := &publicStartInteraction{}
 	client.mu.Lock()
-	client.v2Catalog = manager.FeatureCatalog()
-	client.v2Ingress = &v2Ingress{engine: engine}
+	client.featureCatalog = manager.FeatureCatalog()
+	client.interactionIngress = &interactionIngress{engine: engine}
 	client.mu.Unlock()
 
 	err = client.dispatchStart(&command.Context{
