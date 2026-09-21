@@ -71,7 +71,7 @@ func TestAssistantV2IntentParserRejectsLegacyA1Envelope(t *testing.T) {
 		t.Fatalf("parsed = %q %q %q", namespace, action, opaque)
 	}
 
-	if _, _, _, err := parseAssistantV2Template("a1"); err == nil {
+	if _, _, _, err := parseAssistantV2Template("a1:myxl:home"); err == nil {
 		t.Fatal("expected malformed legacy envelope to fail")
 	}
 }
