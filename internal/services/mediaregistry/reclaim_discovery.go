@@ -157,7 +157,25 @@ func (r *Reclaimer) ReclaimNow(ctx context.Context, req ReclamationRequest) erro
 	if err != nil {
 		return err
 	}
-	return result.cause
+	switch {
+	case result.deleted || result.missing:
+		return nil
+	case result.cause != nil:
+		return result.cause
+	case result.cancelled:
+		return fmt.Errorf("%w: asset %q authorization changed before physical delete", ErrReclamationNotAllowed, req.AssetID)
+	case result.deferred:
+		current, loadErr := r.Intent(ctx, req.AssetID)
+		if loadErr != nil {
+			if errors.Is(loadErr, ErrReclamationIntentGone) {
+				return fmt.Errorf("%w: asset %q reclamation intent was invalidated", ErrReclamationNotAllowed, req.AssetID)
+			}
+			return loadErr
+		}
+		return fmt.Errorf("%w: asset %q deferred until %s", ErrReclamationInProgress, req.AssetID, current.NextAttemptAt.UTC().Format(time.RFC3339Nano))
+	default:
+		return fmt.Errorf("%w: asset %q was not physically reclaimed", ErrReclamationInProgress, req.AssetID)
+	}
 }
 
 // ActivatePreparedAtStartup converts bounded leftover producer guards into

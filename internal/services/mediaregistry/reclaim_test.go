@@ -332,3 +332,36 @@ func TestDiscoveryRequiresExplicitLifecyclePolicy(t *testing.T) {
 		t.Fatalf("retained discovery policy error=%v, want ErrReclamationNotAllowed", err)
 	}
 }
+
+
+func TestReclaimNowReportsPersistedBackoffInsteadOfFalseSuccess(t *testing.T) {
+	base := storage.NewMemoryStorage()
+	store := &failingDeleteStorage{Storage: base, err: errors.New("disk busy")}
+	registry, reclaimer, _ := newReclaimerTest(t, store)
+	asset := putReclaimerAsset(t, base, registry, "test", LifecycleTransient)
+
+	err := reclaimer.ReclaimNow(context.Background(), ReclamationRequest{
+		AssetID: asset.ID, Owner: "test", Lifecycle: LifecycleTransient,
+	})
+	if err == nil || errors.Is(err, ErrReclamationInProgress) {
+		t.Fatalf("initial delete error=%v, want physical storage failure", err)
+	}
+
+	intent, err := reclaimer.Intent(context.Background(), asset.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intent.State != ReclamationPending || intent.Attempts != 1 || !intent.NextAttemptAt.After(time.Now().UTC()) {
+		t.Fatalf("initial failure did not persist backoff: %+v", intent)
+	}
+
+	err = reclaimer.ReclaimNow(context.Background(), ReclamationRequest{
+		AssetID: asset.ID, Owner: "test", Lifecycle: LifecycleTransient,
+	})
+	if !errors.Is(err, ErrReclamationInProgress) {
+		t.Fatalf("backoff retry error=%v, want ErrReclamationInProgress", err)
+	}
+	if _, statErr := base.Stat(context.Background(), asset.ID); statErr != nil {
+		t.Fatalf("deferred asset disappeared: %v", statErr)
+	}
+}
