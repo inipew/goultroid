@@ -16,9 +16,7 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/callback"
 	"github.com/inipew/goultroid/internal/assistant/command"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
-	"github.com/inipew/goultroid/internal/assistant/menu"
 	"github.com/inipew/goultroid/internal/assistant/peer"
-	"github.com/inipew/goultroid/internal/assistant/presentation"
 	assistentrpc "github.com/inipew/goultroid/internal/assistant/rpc"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/feature"
@@ -67,7 +65,6 @@ type AssistantClient struct {
 	interaction         *interaction.ClientInteraction
 	cmdRouter           *command.Router
 	cbRouter            *callback.Router
-	menuCtrl            *menu.Controller
 	metrics             core.MetricsCollector
 	ownerID             int64
 	sudoGetter          func() []int64
@@ -83,7 +80,6 @@ type AssistantClient struct {
 	v2Ingress           *v2Ingress
 	v2Drivers           map[string]interaction.V2FeatureDriver
 	v2DriverCleanups    []func()
-	legacyStart         command.Handler
 	shellMu             sync.Mutex
 	shellScope          tasks.ScopeIdentity
 	shellRegistrations  []*rootinteraction.HandlerRegistration
@@ -100,15 +96,12 @@ func NewAssistantClient(appID int, appHash string, botToken string, logger *zap.
 	rl := NewUserRateLimiter(5, 2*time.Second)
 	cmdR := command.NewRouter(logger)
 	cbR := callback.NewRouter(logger)
-	ctrl := menu.NewController(presentation.RenderScreen)
 	c := &AssistantClient{
 		appID: appID, appHash: appHash, botToken: botToken, logger: logger,
 		startTime: time.Now(), lifecycle: NewLifecycle(), rateLimiter: rl,
-		cache: cache, resolver: res, cmdRouter: cmdR, cbRouter: cbR, menuCtrl: ctrl,
+		cache: cache, resolver: res, cmdRouter: cmdR, cbRouter: cbR,
 		rpcExecutor: assistentrpc.DirectExecutor{},
 	}
-	ctrl.AttachRoutes(cbR, c.Username, c.StartTime)
-	c.legacyStart = command.NewUnavailableStartHandler()
 	cmdR.Register("/start", c.dispatchStart)
 	return c
 }
@@ -226,7 +219,6 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 		Logger: c.logger, RateLimiter: c.rateLimiter, Resolver: c.resolver,
 		CmdRouter: c.cmdRouter, CallbackRouter: c.cbRouter, Interaction: c.interaction,
 		CacheEntities: c.CacheEntities, IsShuttingDown: c.shuttingDown.Load,
-		LegacyTextInput: c.menuCtrl,
 		InlineEngine: c.inlineEngine, InlineService: inlineQueryService, Tasks: c.tasks,
 		V2Ingress: v2,
 	}
@@ -262,7 +254,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 			// Assistant command surface. Registration is best-effort so a
 			// presentation API failure never prevents the bot from starting.
 			if c.cmdRouter != nil {
-				if err := menu.RegisterTelegramCommandMenu(ctx, managedAPI, c.cmdRouter.CoreRouter()); err != nil {
+				if err := command.RegisterTelegramCommandMenu(ctx, managedAPI, c.cmdRouter.CoreRouter()); err != nil {
 					c.logger.Warn("assistant: failed to register Telegram command menu", zap.Error(err))
 				}
 			}
@@ -398,9 +390,6 @@ func (c *AssistantClient) SetCoreRouter(router *core.Router) {
 	if c.cmdRouter != nil {
 		c.cmdRouter.SetCoreRouter(router)
 	}
-	if c.menuCtrl != nil {
-		c.menuCtrl.SetCommandSource(router)
-	}
 }
 func (c *AssistantClient) SetTasks(client tasks.Client) {
 	c.mu.Lock()
@@ -440,9 +429,6 @@ func (c *AssistantClient) SetSettingsService(svc *settings.Service) {
 	c.mu.Lock()
 	c.settingsSvc = svc
 	c.mu.Unlock()
-	if c.menuCtrl != nil && c.cbRouter != nil {
-		c.menuCtrl.AttachSettingsRoutes(c.cbRouter, svc)
-	}
 }
 func (c *AssistantClient) SetMetricsCollector(m core.MetricsCollector) {
 	c.metrics = m
@@ -460,10 +446,6 @@ func (c *AssistantClient) CacheEntities(e tg.Entities) {
 	if c.cache != nil {
 		c.cache.CacheEntities(e)
 	}
-}
-
-func (c *AssistantClient) LegacyMenuCompatibility() menu.CompatibilityHost {
-	return c.menuCtrl
 }
 
 func callbackOrderingKey(evt *core.CallbackQueryEvent) string {
