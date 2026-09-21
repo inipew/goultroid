@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/gotd/td/tg"
-	"github.com/inipew/goultroid/internal/assistant/callback"
 	"github.com/inipew/goultroid/internal/assistant/command"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/assistant/peer"
@@ -21,14 +20,16 @@ type UpdateHandlerDeps struct {
 	RateLimiter    RateLimiter
 	Resolver       peer.Resolver
 	CmdRouter      *command.Router
-	CallbackRouter *callback.Router
+	CallbackDispatcher CoreCallbackDispatcher
+	CallbackDeduper    *callbackQueryDeduper
 	Interaction    *interaction.ClientInteraction
 	CacheEntities  func(e tg.Entities)
 	IsShuttingDown func() bool
 	InlineEngine   InlineQueryExecutor
 	InlineService  core.TelegramServicer
-	Tasks          tasks.Client
-	InteractionIngress      *interactionIngress
+	Tasks               tasks.Client
+	PluginScopeResolver func(string) (tasks.ScopeIdentity, bool)
+	InteractionIngress  *interactionIngress
 }
 
 // InlineQueryExecutor is the Assistant-facing subset of the shared inline engine.
@@ -75,7 +76,7 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		if deps.InteractionIngress != nil {
 			if handled, hErr := deps.InteractionIngress.tryText(ctx, msg.Message, senderID, extractChatID(msg.PeerID), inputPeer); handled {
 				if hErr != nil {
-					logger.Warn("assistant: a2 text input dispatch failed", zap.Error(hErr), zap.Int64("sender_id", senderID))
+					logger.Warn("assistant: interaction text input dispatch failed", zap.Error(hErr), zap.Int64("sender_id", senderID))
 					if feedback := interactionTextInputErrorMessage(hErr); feedback != "" {
 						_, _ = deps.Interaction.SendMessage(ctx, inputPeer, feedback, nil)
 					}
@@ -164,28 +165,25 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			}
 			return nil
 		}
-		payload, parseErr := callback.Parse(update.Data)
-		if parseErr != nil {
-			if deps.Interaction != nil {
-				_ = deps.Interaction.Answer(ctx, update.QueryID, "Invalid callback", false)
-			}
+		if deps.Interaction == nil {
 			return nil
 		}
-		if deps.CallbackRouter == nil {
-			if deps.Interaction != nil {
-				_ = deps.Interaction.Answer(ctx, update.QueryID, "Interaction service unavailable.", false)
-			}
-			return nil
+		evt := &core.CallbackQueryEvent{
+			At:      time.Now(),
+			QueryID: update.QueryID,
+			UserID:  update.UserID,
+			Data:    update.Data,
+			Origin:  core.CallbackOriginInline,
+			Target: core.CallbackTarget{
+				Origin:       core.CallbackOriginInline,
+				InlineID:     update.MsgID,
+				ChatInstance: update.ChatInstance,
+			},
+			ChatInstance: update.ChatInstance,
 		}
-		if deps.Interaction != nil {
-			tx := callback.NewInlineTransaction(update.QueryID, update.UserID, *payload, inlineTarget, deps.Interaction.AsInline())
-			tx.RawData = update.Data
-			if err := dispatchInlineSafely(ctx, deps.CallbackRouter, tx, logger); err != nil {
-				logger.Warn("assistant: inline callback router error", zap.Error(err), zap.Int64("query_id", update.QueryID), zap.Int64("user_id", update.UserID), zap.String("action", payload.Action))
-				if !tx.IsAnswered() {
-					_ = tx.Answer(ctx, "Action failed. Please retry.", false)
-				}
-			}
+		svc := newAssistantInlineCallbackServicer(update.QueryID, inlineTarget, deps.Interaction.AsInline())
+		if err := dispatchCoreCallback(ctx, deps.CallbackDispatcher, deps.Tasks, deps.PluginScopeResolver, deps.CallbackDeduper, evt, svc, logger); err != nil {
+			logger.Warn("assistant: inline callback dispatch failed", zap.Error(err), zap.Int64("query_id", update.QueryID), zap.Int64("user_id", update.UserID))
 		}
 		return nil
 	})
@@ -230,69 +228,31 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			}
 			return nil
 		}
-		payload, parseErr := callback.Parse(update.Data)
-		if parseErr != nil {
-			if deps.Interaction != nil {
-				_ = deps.Interaction.Answer(ctx, update.QueryID, "Invalid callback", false)
-			}
+		if deps.Interaction == nil {
 			return nil
 		}
-		if deps.CallbackRouter == nil {
-			if deps.Interaction != nil {
-				_ = deps.Interaction.Answer(ctx, update.QueryID, "Interaction service unavailable.", false)
-			}
-			return nil
+		evt := &core.CallbackQueryEvent{
+			At:      time.Now(),
+			QueryID: update.QueryID,
+			UserID:  update.UserID,
+			ChatID:  target.ChatID(),
+			MsgID:   target.MessageID(),
+			Data:    update.Data,
+			Origin:  core.CallbackOriginMessage,
+			Target: core.CallbackTarget{
+				Origin:       core.CallbackOriginMessage,
+				Peer:         target.Peer(),
+				MessageID:    target.MessageID(),
+				ChatInstance: target.ChatInstance(),
+			},
+			ChatInstance: target.ChatInstance(),
 		}
-		if deps.Interaction != nil {
-			tx := callback.NewTransaction(update.QueryID, update.UserID, *payload, target, deps.Interaction)
-			tx.RawData = update.Data
-			if err := dispatchCallbackSafely(ctx, deps.CallbackRouter, tx, logger); err != nil {
-				logger.Warn("assistant: callback router error", zap.Error(err), zap.Int64("query_id", update.QueryID), zap.Int64("user_id", update.UserID), zap.String("action", payload.Action))
-				if !tx.IsAnswered() {
-					_ = tx.Answer(ctx, "Action failed. Please retry.", false)
-				}
-			}
+		svc := newAssistantCallbackServicer(update.QueryID, target, deps.Interaction)
+		if err := dispatchCoreCallback(ctx, deps.CallbackDispatcher, deps.Tasks, deps.PluginScopeResolver, deps.CallbackDeduper, evt, svc, logger); err != nil {
+			logger.Warn("assistant: callback dispatch failed", zap.Error(err), zap.Int64("query_id", update.QueryID), zap.Int64("user_id", update.UserID))
 		}
 		return nil
 	})
-}
-
-func dispatchCallbackSafely(ctx context.Context, router *callback.Router, tx *callback.Transaction, logger *zap.Logger) (err error) {
-	if router == nil || tx == nil {
-		return callback.ErrUnknownAction
-	}
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			tx.SetState(callback.StateFailed)
-			err = fmt.Errorf("callback handler panic: %v", recovered)
-			if !tx.IsAnswered() {
-				_ = tx.Answer(ctx, "Internal server error.", true)
-			}
-			if logger != nil {
-				logger.Error("assistant: callback panic recovered", zap.Int64("query_id", tx.QueryID), zap.String("namespace", tx.Payload.Namespace), zap.String("action", tx.Payload.Action), zap.Any("panic", recovered))
-			}
-		}
-	}()
-	return router.Dispatch(ctx, tx)
-}
-
-func dispatchInlineSafely(ctx context.Context, router *callback.Router, tx *callback.InlineTransaction, logger *zap.Logger) (err error) {
-	if router == nil || tx == nil {
-		return callback.ErrUnknownAction
-	}
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			tx.SetState(callback.StateFailed)
-			err = fmt.Errorf("inline callback handler panic: %v", recovered)
-			if !tx.IsAnswered() {
-				_ = tx.Answer(ctx, "Internal server error.", true)
-			}
-			if logger != nil {
-				logger.Error("assistant: inline callback panic recovered", zap.Int64("query_id", tx.QueryID), zap.String("namespace", tx.Payload.Namespace), zap.String("action", tx.Payload.Action), zap.Any("panic", recovered))
-			}
-		}
-	}()
-	return router.DispatchInline(ctx, tx)
 }
 
 func extractChatID(p tg.PeerClass) int64 {
