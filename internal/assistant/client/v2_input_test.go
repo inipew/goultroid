@@ -53,7 +53,7 @@ func beginBoundStringInput(t *testing.T, engine *orchestration.Engine, port *she
 	return callbackForAction(t, port.sent, assistantshell.ActionSettingInput)
 }
 
-func armBoundStringInput(t *testing.T, client *AssistantClient, engine *orchestration.Engine, port *shellTestPort, peer tg.InputPeerClass, def *settings.SettingDefinition, version uint64, current, source string, explicit bool, queryID int64) *v2Ingress {
+func armBoundStringInput(t *testing.T, client *AssistantClient, engine *orchestration.Engine, port *shellTestPort, peer tg.InputPeerClass, def *settings.SettingDefinition, version uint64, current, source string, explicit bool, queryID int64) *interactionIngress {
 	t.Helper()
 	button := beginBoundStringInput(t, engine, port, peer, def, version, current, source, explicit)
 	if err := dispatchShell(t, engine, button, queryID, peer); err != nil {
@@ -62,7 +62,7 @@ func armBoundStringInput(t *testing.T, client *AssistantClient, engine *orchestr
 	if !strings.Contains(port.edited.Text, "Send the new value") {
 		t.Fatalf("input prompt not rendered: %q", port.edited.Text)
 	}
-	return &v2Ingress{engine: engine, input: client.handleV2TextInput}
+	return &interactionIngress{engine: engine, input: client.handleInteractionTextInput}
 }
 
 func TestAssistantShellStringInputEndToEnd(t *testing.T) {
@@ -238,7 +238,7 @@ func TestAssistantShellStringInputSchemaChangeFailsClosed(t *testing.T) {
 	if repo.setCalls != 0 {
 		t.Fatalf("stale schema reached persistence: %d", repo.setCalls)
 	}
-	if got := v2TextInputErrorMessage(err); !strings.Contains(got, "changed while input was pending") {
+	if got := interactionTextInputErrorMessage(err); !strings.Contains(got, "changed while input was pending") {
 		t.Fatalf("schema feedback = %q", got)
 	}
 }
@@ -273,7 +273,7 @@ func TestAssistantShellStringInputRenderFailureAfterCommitDoesNotRearm(t *testin
 	if item == nil || item.Value != "runtime-secret" {
 		t.Fatalf("committed sensitive value = %+v", item)
 	}
-	if got := v2TextInputErrorMessage(err); !strings.Contains(got, "was saved") {
+	if got := interactionTextInputErrorMessage(err); !strings.Contains(got, "was saved") {
 		t.Fatalf("render-failure feedback = %q", got)
 	}
 }
@@ -303,7 +303,7 @@ func TestAssistantShellStringInputGenerationCleanupDropsClaim(t *testing.T) {
 }
 
 func TestV2TextInputExpiredFeedback(t *testing.T) {
-	if got := v2TextInputErrorMessage(rootinteraction.ErrInputExpired); !strings.Contains(got, "expired") {
+	if got := interactionTextInputErrorMessage(rootinteraction.ErrInputExpired); !strings.Contains(got, "expired") {
 		t.Fatalf("expired feedback = %q", got)
 	}
 }
