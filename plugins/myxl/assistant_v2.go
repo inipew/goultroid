@@ -530,7 +530,7 @@ func (p *Plugin) dispatchAssistantV2Action(ctx *orchestration.Context, state ass
 			TokenConfirmation: details.TokenConfirmation, Method: method, WalletNumber: acc.MSISDN,
 		}
 		state.Draft = &draft
-		screen, err := p.menuMgr.BuildCheckoutScreen(draft, ctx.Session().Binding.ActorID, ctx.Session().Binding.ChatID)
+		screen, err := p.menuMgr.BuildCheckoutScreen(draft)
 		if err != nil {
 			return ctx.Answer(fmt.Sprintf("Gagal membuat sesi checkout: %v", err), true)
 		}
@@ -550,15 +550,6 @@ func (p *Plugin) dispatchAssistantV2Action(ctx *orchestration.Context, state ass
 		return ctx.Answer("Masukkan harga kustom…", false)
 
 	case "checkout", "buy_confirm":
-		if state.Draft == nil {
-			if p.stateStore != nil && opaque != "" && opaque != "noop" {
-				if value, _, ok := p.stateStore.Get(opaque); ok {
-					if draft, ok := value.(purchaseDraftState); ok {
-						state.Draft = &draft
-					}
-				}
-			}
-		}
 		if state.Draft == nil || state.Draft.MSISDN == "" || state.Draft.OptionCode == "" || state.Draft.TokenConfirmation == "" {
 			return ctx.Answer("Draft pembelian tidak valid atau sudah kedaluwarsa", true)
 		}
@@ -831,7 +822,7 @@ func (p *Plugin) assistantV2InputCustomPrice(ctx *orchestration.Context, state a
 	}
 	state.Wizard = ""
 	state.Draft = &draft
-	screen, err := p.menuMgr.BuildCheckoutScreen(draft, ctx.Session().Binding.ActorID, ctx.Session().Binding.ChatID)
+	screen, err := p.menuMgr.BuildCheckoutScreen(draft)
 	if err != nil {
 		return err
 	}
