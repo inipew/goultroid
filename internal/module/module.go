@@ -46,8 +46,7 @@ type CoreRuntime struct {
 type TelegramRuntime struct {
 	TelegramService func() core.TelegramServicer
 	Resolver        core.PeerResolver
-	Callbacks       *callback.Router
-	CallbackStore   *callback.StateStore
+	CallbackStore   callback.StateWriter
 }
 
 // ServiceRuntime contains reusable cross-feature services. Feature-owned
