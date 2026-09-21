@@ -23,6 +23,7 @@ func TestLegacyAssistantCompatibilityStackRemoved(t *testing.T) {
 	for _, rel := range []string{
 		"internal/assistant/menu",
 		"internal/assistant/presentation",
+		"internal/assistant/callback",
 	} {
 		if _, err := os.Stat(filepath.Join(repoRoot, rel)); err == nil {
 			t.Fatalf("retired legacy Assistant package still exists: %s", rel)
@@ -38,6 +39,7 @@ func TestLegacyAssistantCompatibilityStackRemoved(t *testing.T) {
 		"MenuInstanceStore",
 		"internal/assistant/menu",
 		"internal/assistant/presentation",
+		"internal/assistant/callback",
 	}
 
 	for _, pattern := range []string{
