@@ -2,6 +2,7 @@ package myxl
 
 import (
 	"context"
+	"errors"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -403,23 +404,61 @@ func TestMyXLPlugin_Commands(t *testing.T) {
 	}
 }
 
+type callbackStateCaptureHandler struct {
+	state any
+}
+
+func (h *callbackStateCaptureHandler) Namespace() string { return "myxl" }
+func (h *callbackStateCaptureHandler) HandleCallback(ctx *callback.CallbackContext) error {
+	h.state = ctx.State
+	return nil
+}
+
 func TestRefreshMarkupStoresScopedMaskedState(t *testing.T) {
 	store := callback.NewStateStore()
 	p := &Plugin{stateStore: store}
 	markup := p.buildRefreshMarkup(quotaRefreshState{MSISDN: "6281912345678", Masked: true}, callback.StateScope{
 		UserID: 42, ChatID: -10099, Namespace: "myxl",
 	})
-	_, entry := callbackEntryFromMarkup(t, store, markup)
-	state, ok := entry.Data.(quotaRefreshState)
-	if !ok || !state.Masked || state.MSISDN != "6281912345678" {
-		t.Fatalf("unexpected refresh state: %#v", entry.Data)
+	data := callbackDataFromMarkup(t, markup)
+
+	router := callback.NewRouter(nil, store)
+	capture := &callbackStateCaptureHandler{}
+	if err := router.Register(capture); err != nil {
+		t.Fatalf("register capture handler: %v", err)
 	}
-	if entry.Scope.UserID != 42 || entry.Scope.ChatID != -10099 || entry.Scope.Namespace != "myxl" {
-		t.Fatalf("unexpected callback scope: %#v", entry.Scope)
+	svc := &core.MockTelegramServicer{}
+	dispatch := func(queryID, userID, chatID int64) error {
+		evt := &core.CallbackQueryEvent{QueryID: queryID, UserID: userID, ChatID: chatID, Data: data}
+		prepared, err := router.Prepare(context.Background(), evt, svc, nil)
+		if err != nil {
+			return err
+		}
+		return prepared.Dispatch(context.Background(), evt, svc)
+	}
+
+	if err := dispatch(1, 42, -10099); err != nil {
+		t.Fatalf("dispatch scoped callback: %v", err)
+	}
+	state, ok := capture.state.(quotaRefreshState)
+	if !ok || !state.Masked || state.MSISDN != "6281912345678" {
+		t.Fatalf("unexpected refresh state: %#v", capture.state)
+	}
+
+	capture.state = nil
+	if err := dispatch(2, 43, -10099); !errors.Is(err, callback.ErrUnauthorized) {
+		t.Fatalf("wrong user error = %v, want ErrUnauthorized", err)
+	}
+	if capture.state != nil {
+		t.Fatal("wrong user reached callback handler")
+	}
+
+	if err := dispatch(3, 42, -10098); !errors.Is(err, callback.ErrUnauthorized) {
+		t.Fatalf("wrong chat error = %v, want ErrUnauthorized", err)
 	}
 }
 
-func callbackEntryFromMarkup(t *testing.T, store *callback.StateStore, markup tg.ReplyMarkupClass) (string, callback.StateEntry) {
+func callbackDataFromMarkup(t *testing.T, markup tg.ReplyMarkupClass) []byte {
 	t.Helper()
 	inline, ok := markup.(*tg.ReplyInlineMarkup)
 	if !ok || len(inline.Rows) == 0 || len(inline.Rows[0].Buttons) == 0 {
@@ -429,15 +468,10 @@ func callbackEntryFromMarkup(t *testing.T, store *callback.StateStore, markup tg
 	if !ok {
 		t.Fatalf("unexpected button type: %T", inline.Rows[0].Buttons[0])
 	}
-	_, _, oid, err := callback.ParseCallbackData(button.Data)
-	if err != nil {
+	if _, _, _, err := callback.ParseCallbackData(button.Data); err != nil {
 		t.Fatalf("parse callback data: %v", err)
 	}
-	entry, err := store.GetEntry(oid)
-	if err != nil {
-		t.Fatalf("get callback state: %v", err)
-	}
-	return oid, entry
+	return append([]byte(nil), button.Data...)
 }
 
 func TestReservePurchase_ConcurrencyAndDebounce(t *testing.T) {
