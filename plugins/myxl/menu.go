@@ -6,59 +6,21 @@ import (
 	"html"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/gotd/td/tg"
-	"github.com/inipew/goultroid/internal/assistant/interaction"
-	"github.com/inipew/goultroid/internal/assistant/menu"
 	coreCallback "github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/ui"
-	"github.com/inipew/goultroid/internal/ui/render"
 )
-
-const (
-	wizardTTL = 2 * time.Minute
-
-	wizardLoginMSISDN = 1
-	wizardLoginOTP    = 2
-	wizardSetAlias    = 3
-	wizardOptionCode  = 4
-	wizardCustomPrice = 5
-	wizardFamilyCode  = 6
-)
-
-type wizardSession struct {
-	Type        int
-	MSISDN      string
-	Target      interaction.MessageTarget
-	OptionCode  string
-	PackageName string
-	Price       int64
-	Method      string
-	ExpiresAt   time.Time
-}
 
 type MenuManager struct {
-	plugin     *Plugin
-	menuCtrl   menu.CompatibilityHost
-	sessionsMu sync.Mutex
-	sessions   map[int64]*wizardSession
+	plugin *Plugin
 }
 
-func NewMenuManager(p *Plugin, ctrl menu.CompatibilityHost) *MenuManager {
-	m := &MenuManager{
-		plugin:   p,
-		menuCtrl: ctrl,
-		sessions: make(map[int64]*wizardSession),
-	}
-	if ctrl != nil {
-		ctrl.RegisterTextHandler(m)
-	}
-	return m
+func NewMenuManager(p *Plugin) *MenuManager {
+	return &MenuManager{plugin: p}
 }
 
-// RegisterOptionCode returns a compact key for optionCode safe for Telegram's 64-byte callback limit.
+// RegisterOptionCode returns a compact key for optionCode safe for Telegram's callback limit.
 func (m *MenuManager) RegisterOptionCode(optCode string) string {
 	if optCode == "" {
 		return ""
@@ -66,8 +28,7 @@ func (m *MenuManager) RegisterOptionCode(optCode string) string {
 	if len(optCode) <= 24 && !strings.Contains(optCode, ":") {
 		return optCode
 	}
-
-	if m.plugin != nil && m.plugin.stateStore != nil {
+	if m != nil && m.plugin != nil && m.plugin.stateStore != nil {
 		return m.plugin.stateStore.StoreWithScope(optCode, coreCallback.StateScope{
 			Namespace: m.plugin.Namespace(),
 		}, 24*time.Hour)
@@ -80,7 +41,7 @@ func (m *MenuManager) ResolveOptionCode(keyOrCode string) string {
 	if keyOrCode == "" {
 		return ""
 	}
-	if m.plugin != nil && m.plugin.stateStore != nil {
+	if m != nil && m.plugin != nil && m.plugin.stateStore != nil {
 		if val, _, ok := m.plugin.stateStore.Get(keyOrCode); ok {
 			if s, ok := val.(string); ok && s != "" {
 				return s
@@ -90,13 +51,13 @@ func (m *MenuManager) ResolveOptionCode(keyOrCode string) string {
 	return keyOrCode
 }
 
-// RegisterQR registers a QR payload in the state store with a short key safe for callback data.
+// RegisterQR registers a QR payload in the state store with a short key safe for a callback intent.
 func (m *MenuManager) RegisterQR(qrPayload string) string {
 	qrPayload, err := normalizeQRPayload(qrPayload)
 	if err != nil {
 		return ""
 	}
-	if m.plugin != nil && m.plugin.stateStore != nil {
+	if m != nil && m.plugin != nil && m.plugin.stateStore != nil {
 		return m.plugin.stateStore.StoreWithScope(qrPayload, coreCallback.StateScope{
 			Namespace: m.plugin.Namespace(),
 		}, pendingQRISTTL)
@@ -109,7 +70,7 @@ func (m *MenuManager) ResolveQR(key string) string {
 	if key == "" {
 		return ""
 	}
-	if m.plugin != nil && m.plugin.stateStore != nil {
+	if m != nil && m.plugin != nil && m.plugin.stateStore != nil {
 		if val, _, ok := m.plugin.stateStore.Get(key); ok {
 			if s, ok := val.(string); ok && s != "" {
 				return s
@@ -119,417 +80,11 @@ func (m *MenuManager) ResolveQR(key string) string {
 	return key
 }
 
-func (m *MenuManager) SetSession(userID int64, sess *wizardSession) {
-	m.sessionsMu.Lock()
-	defer m.sessionsMu.Unlock()
-	if sess == nil {
-		delete(m.sessions, userID)
-		return
-	}
-	sess.ExpiresAt = time.Now().Add(wizardTTL)
-	m.sessions[userID] = sess
-}
-
-func (m *MenuManager) GetSession(userID int64) (*wizardSession, bool) {
-	m.sessionsMu.Lock()
-	defer m.sessionsMu.Unlock()
-	sess, ok := m.sessions[userID]
-	if !ok || sess == nil {
-		return nil, false
-	}
-	if time.Now().After(sess.ExpiresAt) {
-		delete(m.sessions, userID)
-		return nil, false
-	}
-	return sess, true
-}
-
-func (m *MenuManager) ClearSession(userID int64) {
-	m.sessionsMu.Lock()
-	defer m.sessionsMu.Unlock()
-	delete(m.sessions, userID)
-}
-
-func (m *MenuManager) registerMessageInstance(userID int64, msg *tg.Message) {
-	if m.menuCtrl == nil || msg == nil || msg.ID == 0 {
-		return
-	}
-	chatID := userID
-	switch p := msg.PeerID.(type) {
-	case *tg.PeerUser:
-		chatID = p.UserID
-	case *tg.PeerChat:
-		chatID = p.ChatID
-	case *tg.PeerChannel:
-		chatID = p.ChannelID
-	}
-	m.menuCtrl.RegisterInstance(menu.MenuInstance{
-		ID:        fmt.Sprintf("menu:%d:%d", chatID, msg.ID),
-		OwnerID:   userID,
-		ChatID:    chatID,
-		MessageID: msg.ID,
-		Screen:    menu.ScreenIDMyXL,
-	})
-}
-
-// HandleTextMessage implements menu.TextHandler for multi-step wizards.
-func (m *MenuManager) HandleTextMessage(ctx context.Context, userID, chatID int64, text string, inter interaction.MessageInteraction) (bool, error) {
-	if userID == 0 || inter == nil {
-		return false, nil
-	}
-	sess, ok := m.GetSession(userID)
-	if !ok {
-		return false, nil
-	}
-
-	trimmed := strings.TrimSpace(text)
-	if strings.EqualFold(trimmed, "/cancel") {
-		m.ClearSession(userID)
-		_, err := inter.SendMessage(ctx, sess.Target.Peer(), "❌ Interaksi MyXL dibatalkan.\n\nKetik /start atau buka menu kembali.", nil)
-		return true, err
-	}
-	if strings.HasPrefix(trimmed, "/") {
-		return false, nil
-	}
-
-	switch sess.Type {
-	case wizardLoginMSISDN:
-		return m.handleWizardLoginMSISDN(ctx, userID, trimmed, sess, inter)
-	case wizardLoginOTP:
-		return m.handleWizardLoginOTP(ctx, userID, trimmed, sess, inter)
-	case wizardSetAlias:
-		return m.handleWizardSetAlias(ctx, userID, trimmed, sess, inter)
-	case wizardOptionCode:
-		return m.handleWizardOptionCode(ctx, userID, trimmed, sess, inter)
-	case wizardCustomPrice:
-		return m.handleWizardCustomPrice(ctx, userID, trimmed, sess, inter)
-	case wizardFamilyCode:
-		return m.handleWizardFamilyCode(ctx, userID, trimmed, sess, inter)
-	default:
-		m.ClearSession(userID)
-		return false, nil
-	}
-}
-
-func (m *MenuManager) handleWizardLoginMSISDN(ctx context.Context, userID int64, input string, sess *wizardSession, inter interaction.MessageInteraction) (bool, error) {
-	msisdn, err := NormalizeMSISDN(input)
-	if err != nil {
-		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(),
-			fmt.Sprintf("⚠️ <b>Nomor HP tidak valid:</b> %v\n\nContoh: <code>081912345678</code> atau <code>6281912345678</code>.\nKirimkan ulang atau ketik <code>/cancel</code> untuk batal.", err),
-			nil)
-		return true, sendErr
-	}
-
-	_, _ = inter.SendMessage(ctx, sess.Target.Peer(),
-		fmt.Sprintf("⏳ Mengirimkan kode verifikasi OTP ke <code>%s</code>...", html.EscapeString(msisdn)),
-		nil)
-
-	cCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
-	defer cancel()
-
-	subID, reqErr := m.plugin.client.RequestOTP(cCtx, msisdn)
-	if reqErr != nil {
-		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(),
-			fmt.Sprintf("❌ <b>Gagal meminta OTP dari MyXL:</b>\n<code>%s</code>\n\nSilakan coba lagi beberapa saat lagi.", html.EscapeString(reqErr.Error())),
-			nil)
-		m.ClearSession(userID)
-		return true, sendErr
-	}
-
-	// Update or create placeholder account
-	existing, _ := m.plugin.repo.GetByMSISDN(cCtx, msisdn)
-	if existing == nil {
-		existing = &Account{MSISDN: msisdn, SubscriberID: subID}
-	} else if subID != "" {
-		existing.SubscriberID = subID
-	}
-	_ = m.plugin.repo.Save(cCtx, existing)
-
-	sess.Type = wizardLoginOTP
-	sess.MSISDN = msisdn
-	m.SetSession(userID, sess)
-
-	prompt := fmt.Sprintf(
-		"📩 <b>Login MyXL — Langkah 2 dari 2</b>\n\n"+
-			"Kode OTP 6-digit telah dikirim via SMS ke <code>%s</code>.\n\n"+
-			"Silakan kirimkan <b>6 digit kode OTP</b> Anda sekarang.\n\n"+
-			"<i>Ketik <code>/cancel</code> atau tekan Batal di bawah jika ingin membatalkan.</i>",
-		html.EscapeString(msisdn),
-	)
-	markup := render.ToTelegramMarkup(ui.Markup{Rows: []ui.ButtonRow{{
-		ui.NewCallbackButton("🔄 Kirim Ulang OTP", []byte(fmt.Sprintf("a1:myxl:resend_otp:%s", msisdn))),
-		ui.NewCallbackButton("❌ Batal", []byte("a1:myxl:cancel_wizard")),
-	}}})
-	msg, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), prompt, markup)
-	if sendErr == nil {
-		m.registerMessageInstance(userID, msg)
-	}
-	return true, sendErr
-}
-
-func (m *MenuManager) handleWizardLoginOTP(ctx context.Context, userID int64, input string, sess *wizardSession, inter interaction.MessageInteraction) (bool, error) {
-	code, codeErr := normalizeOTPCode(input)
-	if codeErr != nil {
-		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(),
-			"⚠️ <b>Kode OTP harus berupa 6 digit angka!</b>\n\nSilakan kirimkan ulang atau ketik <code>/cancel</code>.",
-			nil)
-		return true, sendErr
-	}
-
-	_, _ = inter.SendMessage(ctx, sess.Target.Peer(),
-		fmt.Sprintf("⏳ Memverifikasi kode OTP untuk <code>%s</code>...", html.EscapeString(sess.MSISDN)),
-		nil)
-
-	cCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
-	defer cancel()
-
-	tokens, err := m.plugin.client.SubmitOTP(cCtx, sess.MSISDN, code)
-	if err != nil {
-		markup := render.ToTelegramMarkup(ui.Markup{Rows: []ui.ButtonRow{{
-			ui.NewCallbackButton("🔄 Kirim Ulang OTP", []byte(fmt.Sprintf("a1:myxl:resend_otp:%s", sess.MSISDN))),
-			ui.NewCallbackButton("❌ Batal", []byte("a1:myxl:cancel_wizard")),
-		}}})
-		msg, sendErr := inter.SendMessage(ctx, sess.Target.Peer(),
-			fmt.Sprintf("❌ <b>Verifikasi OTP Gagal:</b>\n<code>%s</code>\n\nPeriksa kembali kode SMS Anda atau kirim ulang OTP.", html.EscapeString(err.Error())),
-			markup)
-		if sendErr == nil {
-			m.registerMessageInstance(userID, msg)
-		}
-		return true, sendErr
-	}
-
-	acc, _ := m.plugin.repo.GetByMSISDN(cCtx, sess.MSISDN)
-	if acc == nil {
-		acc = &Account{MSISDN: sess.MSISDN}
-	}
-	acc.AccessToken = tokens.AccessToken
-	acc.IDToken = tokens.IDToken
-	acc.RefreshToken = tokens.RefreshToken
-	if tokens.ExpiresIn > 0 {
-		acc.TokenExpiresAt = time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second)
-	} else {
-		acc.TokenExpiresAt = time.Now().Add(DefaultTokenExpiryFallback)
-	}
-	acc.IsActive = true
-
-	if err := m.plugin.repo.Save(cCtx, acc); err != nil {
-		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(),
-			"⚠️ <b>Login berhasil di CIAM, tetapi akun gagal disimpan secara lokal.</b>\n\n"+
-				"<code>"+html.EscapeString(err.Error())+"</code>\n\n"+
-				"Silakan ulangi login setelah masalah penyimpanan diperbaiki.",
-			nil)
-		return true, sendErr
-	}
-	m.ClearSession(userID)
-
-	successMsg := fmt.Sprintf(
-		"🎉 <b>Login Berhasil!</b>\n\n"+
-			"Nomor <code>%s</code> telah tersimpan dan aktif di database.\n\n"+
-			"Tekan tombol di bawah untuk membuka dashboard MyXL Anda.",
-		html.EscapeString(sess.MSISDN),
-	)
-	markup := render.ToTelegramMarkup(ui.Markup{Rows: []ui.ButtonRow{{
-		ui.NewCallbackButton("📱 Buka Dashboard MyXL", []byte("a1:myxl:home")),
-	}}})
-	msg, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), successMsg, markup)
-	if sendErr == nil {
-		m.registerMessageInstance(userID, msg)
-	}
-	return true, sendErr
-}
-
-func (m *MenuManager) handleWizardSetAlias(ctx context.Context, userID int64, input string, sess *wizardSession, inter interaction.MessageInteraction) (bool, error) {
-	alias, err := normalizeAlias(input)
-	if err != nil {
-		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(),
-			"⚠️ "+html.EscapeString(err.Error())+". Silakan kirimkan nama yang valid:",
-			nil)
-		return true, sendErr
-	}
-
-	cCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	if err := m.plugin.repo.SetAlias(cCtx, sess.MSISDN, alias); err != nil {
-		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(),
-			fmt.Sprintf("❌ Gagal menyimpan alias: %v", err), nil)
-		m.ClearSession(userID)
-		return true, sendErr
-	}
-	m.ClearSession(userID)
-
-	msg := fmt.Sprintf("✅ <b>Alias Berhasil Diatur!</b>\n\nNomor: <code>%s</code>\nAlias: <b>%s</b>",
-		html.EscapeString(sess.MSISDN), html.EscapeString(alias))
-	markup := render.ToTelegramMarkup(ui.Markup{Rows: []ui.ButtonRow{{
-		ui.NewCallbackButton("👥 Kelola Akun", []byte("a1:myxl:accounts")),
-		ui.NewCallbackButton("📱 Dashboard", []byte("a1:myxl:home")),
-	}}})
-	if sess.Target.IsValid() {
-		if editErr := inter.Edit(ctx, sess.Target, msg, markup); editErr == nil {
-			return true, nil
-		}
-	}
-	_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), msg, markup)
-	return true, sendErr
-}
-
-func (m *MenuManager) handleWizardOptionCode(ctx context.Context, userID int64, input string, sess *wizardSession, inter interaction.MessageInteraction) (bool, error) {
-	optCode := strings.TrimSpace(input)
-	if optCode == "" {
-		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), "⚠️ Kode paket tidak boleh kosong.", nil)
-		return true, sendErr
-	}
-
-	cCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
-	defer cancel()
-
-	acc, err := m.plugin.repo.GetActive(cCtx)
-	if err != nil || acc == nil {
-		m.ClearSession(userID)
-		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), "❌ Tidak ada akun MyXL aktif.", nil)
-		return true, sendErr
-	}
-
-	screen, err := m.BuildPackageDetailScreen(cCtx, acc, optCode)
-	if err != nil {
-		m.ClearSession(userID)
-		msg := fmt.Sprintf("❌ Gagal memuat paket <code>%s</code>:\n<code>%s</code>", html.EscapeString(optCode), html.EscapeString(err.Error()))
-		if sess.Target.IsValid() {
-			if editErr := inter.Edit(ctx, sess.Target, msg, nil); editErr == nil {
-				return true, nil
-			}
-		}
-		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), msg, nil)
-		return true, sendErr
-	}
-	m.ClearSession(userID)
-
-	text, markup := render.ToTelegram(screen)
-	if sess.Target.IsValid() {
-		if editErr := inter.Edit(ctx, sess.Target, text, markup); editErr == nil {
-			return true, nil
-		}
-	}
-	_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), text, markup)
-	return true, sendErr
-}
-
-func (m *MenuManager) handleWizardCustomPrice(ctx context.Context, userID int64, input string, sess *wizardSession, inter interaction.MessageInteraction) (bool, error) {
-	val, err := strconv.ParseInt(strings.TrimSpace(input), 10, 64)
-	if err != nil || val < 0 {
-		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(),
-			"⚠️ Nominal harga tidak valid. Masukkan angka bulat non-negatif (contoh: <code>0</code> atau <code>1000</code>):",
-			nil)
-		return true, sendErr
-	}
-
-	cCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
-	defer cancel()
-
-	acc, err := m.plugin.repo.GetActive(cCtx)
-	if err != nil || acc == nil {
-		m.ClearSession(userID)
-		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), "❌ Tidak ada akun MyXL aktif.", nil)
-		return true, sendErr
-	}
-
-	details, err := m.plugin.client.GetPackageDetails(cCtx, acc, sess.OptionCode)
-	if err != nil || details.TokenConfirmation == "" {
-		m.ClearSession(userID)
-		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), "❌ Gagal memuat token konfirmasi paket.", nil)
-		return true, sendErr
-	}
-
-	pkgName := sess.OptionCode
-	var origPrice int64
-	if details.PackageOption != nil {
-		pkgName = details.PackageOption.Name
-		origPrice = int64(details.PackageOption.Price)
-	}
-
-	draft := purchaseDraftState{
-		MSISDN:            acc.MSISDN,
-		OptionCode:        sess.OptionCode,
-		PackageName:       pkgName,
-		Price:             origPrice,
-		TokenConfirmation: details.TokenConfirmation,
-		Method:            sess.Method,
-		WalletNumber:      acc.MSISDN,
-		OverwritePrice:    val,
-		HasOverwrite:      true,
-	}
-	m.ClearSession(userID)
-
-	screen, err := m.BuildCheckoutScreen(draft, userID, sess.Target.ChatID())
-	if err != nil {
-		msg := fmt.Sprintf("❌ Gagal membuat sesi checkout: %v", err)
-		if sess.Target.IsValid() {
-			if editErr := inter.Edit(ctx, sess.Target, msg, nil); editErr == nil {
-				return true, nil
-			}
-		}
-		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), msg, nil)
-		return true, sendErr
-	}
-
-	text, markup := render.ToTelegram(screen)
-	if sess.Target.IsValid() {
-		if editErr := inter.Edit(ctx, sess.Target, text, markup); editErr == nil {
-			return true, nil
-		}
-	}
-	_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), text, markup)
-	return true, sendErr
-}
-
-func (m *MenuManager) handleWizardFamilyCode(ctx context.Context, userID int64, input string, sess *wizardSession, inter interaction.MessageInteraction) (bool, error) {
-	familyCode := strings.TrimSpace(input)
-	if familyCode == "" {
-		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(),
-			"⚠️ Family Code tidak boleh kosong.\n\nContoh: <code>7658c955-a0b9-405f-bb17-de7f43d1a946</code>.\nKirimkan kode atau ketik <code>/cancel</code> untuk batal.",
-			nil)
-		return true, sendErr
-	}
-
-	acc, err := m.plugin.repo.GetActive(ctx)
-	if err != nil || acc == nil {
-		m.ClearSession(userID)
-		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), "❌ Tidak ada akun aktif terhubung.", nil)
-		return true, sendErr
-	}
-
-	// Immediate progress feedback
-	if sess.Target.IsValid() {
-		_ = inter.Edit(ctx, sess.Target,
-			fmt.Sprintf("⏳ <b>Mencari daftar paket...</b>\n\nFamily: <code>%s</code>\nMohon tunggu sebentar...", html.EscapeString(familyCode)),
-			nil)
-	}
-
-	cCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
-	defer cancel()
-
-	screen, err := m.BuildFamilyPackagesScreen(cCtx, acc, familyCode, 1)
-	if err != nil {
-		m.ClearSession(userID)
-		msg := fmt.Sprintf("⚠️ <b>Gagal mencari paket:</b> %v\n\nPastikan Family Code benar (contoh: <code>7658c955-a0b9-405f-bb17-de7f43d1a946</code>) atau ketik <code>/cancel</code> untuk batal.", err)
-		if sess.Target.IsValid() {
-			if editErr := inter.Edit(ctx, sess.Target, msg, nil); editErr == nil {
-				return true, nil
-			}
-		}
-		_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), msg, nil)
-		return true, sendErr
-	}
-
-	m.ClearSession(userID)
-	text, markup := render.ToTelegram(screen)
-	if sess.Target.IsValid() {
-		if editErr := inter.Edit(ctx, sess.Target, text, markup); editErr == nil {
-			return true, nil
-		}
-	}
-	_, sendErr := inter.SendMessage(ctx, sess.Target.Peer(), text, markup)
-	return true, sendErr
+// newMenuButton intentionally stores an internal MyXL action intent in Button.Data.
+// Assistant a2 compilation replaces this data with an opaque session-bound a2 token
+// before it reaches Telegram.
+func newMenuButton(text, data string) ui.Button {
+	return ui.NewCallbackButton(text, []byte(data))
 }
 
 // ==================== SCREEN BUILDERS ====================
@@ -547,9 +102,9 @@ func (m *MenuManager) BuildDashboardScreen(ctx context.Context, mask bool) (*ui.
 			AddField("Status Akun", "⚠️ Belum ada akun terhubung").
 			WithRaw("Silakan login menggunakan nomor XL/Axis Anda. Anda akan menerima kode verifikasi OTP melalui SMS.").
 			WithFooter("<i>Tekan tombol Login di bawah untuk memulai.</i>")
-		screen := menu.NewScreen(menu.ScreenIDMyXL, "", card.Render())
-		screen.AddRow(menu.NewButton("➕ Login Akun Baru (OTP)", "a1:myxl:login_req"))
-		screen.AddRow(menu.NewButton("❌ Tutup", "a1:assistant:close"))
+		screen := ui.NewScreen(menu.ScreenIDMyXL, "", card.Render())
+		screen.AddRow(newMenuButton("➕ Login Akun Baru (OTP)", "a1:myxl:login_req"))
+		screen.AddRow(newMenuButton("❌ Tutup", "a1:assistant:close"))
 		return screen, nil
 	}
 
@@ -619,24 +174,24 @@ func (m *MenuManager) BuildDashboardScreen(ctx context.Context, mask bool) (*ui.
 	}
 
 	card.WithFooter("<i>Pilih menu di bawah untuk rincian kuota, akun, atau belanja paket.</i>")
-	screen := menu.NewScreen(menu.ScreenIDMyXL, "", card.Render())
+	screen := ui.NewScreen(menu.ScreenIDMyXL, "", card.Render())
 	if pendingQR != nil && time.Now().UTC().Before(pendingQR.ExpiresAt) {
 		rem := time.Until(pendingQR.ExpiresAt).Round(time.Second)
 		screen.AddRow(
-			menu.NewButton("📱 Lihat QRIS Aktif ("+FormatRemainingDuration(rem)+")", "a1:myxl:pending_qris"),
+			newMenuButton("📱 Lihat QRIS Aktif ("+FormatRemainingDuration(rem)+")", "a1:myxl:pending_qris"),
 		)
 	}
 	screen.AddRow(
-		menu.NewButton("🔄 Perbarui Kuota", "a1:myxl:refresh"),
-		menu.NewButton("📊 Rincian Kuota", "a1:myxl:detail"),
+		newMenuButton("🔄 Perbarui Kuota", "a1:myxl:refresh"),
+		newMenuButton("📊 Rincian Kuota", "a1:myxl:detail"),
 	)
 	screen.AddRow(
-		menu.NewButton("👥 Kelola Akun", "a1:myxl:accounts"),
-		menu.NewButton("🛒 Beli Paket", "a1:myxl:store"),
+		newMenuButton("👥 Kelola Akun", "a1:myxl:accounts"),
+		newMenuButton("🛒 Beli Paket", "a1:myxl:store"),
 	)
 	screen.AddRow(
-		menu.NewButton("⭐ Paket Favorit", "a1:myxl:saved"),
-		menu.NewButton("❌ Tutup Menu", "a1:assistant:close"),
+		newMenuButton("⭐ Paket Favorit", "a1:myxl:saved"),
+		newMenuButton("❌ Tutup Menu", "a1:assistant:close"),
 	)
 	return screen, nil
 }
@@ -654,10 +209,10 @@ func (m *MenuManager) BuildQuotaDetailScreen(ctx context.Context, mask bool) (*u
 	quota, _ := m.plugin.client.GetQuotaDetails(qCtx, acc)
 
 	formatted := FormatQuotaResponse(acc, balance, quota, mask)
-	screen := menu.NewScreen("myxl:detail", "", formatted)
+	screen := ui.NewScreen("myxl:detail", "", formatted)
 	screen.AddRow(
-		menu.NewButton("🔄 Perbarui", "a1:myxl:detail"),
-		menu.NewButton("🔙 Kembali ke MyXL", "a1:myxl:home"),
+		newMenuButton("🔄 Perbarui", "a1:myxl:detail"),
+		newMenuButton("🔙 Kembali ke MyXL", "a1:myxl:home"),
 	)
 	return screen, nil
 }
@@ -674,9 +229,9 @@ func (m *MenuManager) BuildAccountsScreen(ctx context.Context) (*ui.Screen, erro
 
 	if len(accounts) == 0 {
 		card.WithRaw("<i>Belum ada akun MyXL yang tersimpan.</i>")
-		screen := menu.NewScreen("myxl:accounts", "", card.Render())
-		screen.AddRow(menu.NewButton("➕ Tambah Akun", "a1:myxl:login_req"))
-		screen.AddRow(menu.NewButton("🔙 Kembali ke MyXL", "a1:myxl:home"))
+		screen := ui.NewScreen("myxl:accounts", "", card.Render())
+		screen.AddRow(newMenuButton("➕ Tambah Akun", "a1:myxl:login_req"))
+		screen.AddRow(newMenuButton("🔙 Kembali ke MyXL", "a1:myxl:home"))
 		return screen, nil
 	}
 
@@ -701,7 +256,7 @@ func (m *MenuManager) BuildAccountsScreen(ctx context.Context) (*ui.Screen, erro
 	card.WithRaw(sb.String())
 	card.WithFooter("<i>Ketuk nomor di bawah untuk mengganti akun aktif secara instan.</i>")
 
-	screen := menu.NewScreen("myxl:accounts", "", card.Render())
+	screen := ui.NewScreen("myxl:accounts", "", card.Render())
 
 	// Grid buttons to switch accounts
 	var switchRow ui.ButtonRow
@@ -711,9 +266,9 @@ func (m *MenuManager) BuildAccountsScreen(ctx context.Context) (*ui.Screen, erro
 			label = acc.Alias
 		}
 		if acc.IsActive {
-			switchRow = append(switchRow, menu.NewButton("🟢 "+truncateString(label, 12), "a1:myxl:noop"))
+			switchRow = append(switchRow, newMenuButton("🟢 "+truncateString(label, 12), "a1:myxl:noop"))
 		} else {
-			switchRow = append(switchRow, menu.NewButton("👉 "+truncateString(label, 12), fmt.Sprintf("a1:myxl:switch:%s", acc.MSISDN)))
+			switchRow = append(switchRow, newMenuButton("👉 "+truncateString(label, 12), fmt.Sprintf("a1:myxl:switch:%s", acc.MSISDN)))
 		}
 		if len(switchRow) == 2 {
 			screen.AddRow(switchRow...)
@@ -725,15 +280,15 @@ func (m *MenuManager) BuildAccountsScreen(ctx context.Context) (*ui.Screen, erro
 	}
 
 	screen.AddRow(
-		menu.NewButton("➕ Tambah Akun", "a1:myxl:login_req"),
-		menu.NewButton("🏷️ Ubah Alias", "a1:myxl:alias_pick"),
+		newMenuButton("➕ Tambah Akun", "a1:myxl:login_req"),
+		newMenuButton("🏷️ Ubah Alias", "a1:myxl:alias_pick"),
 	)
 	screen.AddRow(
-		menu.NewButton("🗑️ Hapus Akun", "a1:myxl:del_pick"),
-		menu.NewButton("🔄 Refresh Token", "a1:myxl:token_refresh"),
+		newMenuButton("🗑️ Hapus Akun", "a1:myxl:del_pick"),
+		newMenuButton("🔄 Refresh Token", "a1:myxl:token_refresh"),
 	)
 	screen.AddRow(
-		menu.NewButton("🔙 Kembali ke MyXL", "a1:myxl:home"),
+		newMenuButton("🔙 Kembali ke MyXL", "a1:myxl:home"),
 	)
 	return screen, nil
 }
@@ -762,11 +317,11 @@ func (m *MenuManager) BuildStoreScreen(ctx context.Context) (*ui.Screen, error) 
 	)
 	card.WithFooter("<i>Pilih salah satu metode di bawah.</i>")
 
-	screen := menu.NewScreen("myxl:store", "", card.Render())
-	screen.AddRow(menu.NewButton("⭐ Paket Favorit Tersimpan", "a1:myxl:saved"))
-	screen.AddRow(menu.NewButton("🔍 Cari dari Family Code", "a1:myxl:fam_input"))
-	screen.AddRow(menu.NewButton("⚡ Masukkan Option Code", "a1:myxl:buy_opt_input"))
-	screen.AddRow(menu.NewButton("🔙 Kembali ke MyXL", "a1:myxl:home"))
+	screen := ui.NewScreen("myxl:store", "", card.Render())
+	screen.AddRow(newMenuButton("⭐ Paket Favorit Tersimpan", "a1:myxl:saved"))
+	screen.AddRow(newMenuButton("🔍 Cari dari Family Code", "a1:myxl:fam_input"))
+	screen.AddRow(newMenuButton("⚡ Masukkan Option Code", "a1:myxl:buy_opt_input"))
+	screen.AddRow(newMenuButton("🔙 Kembali ke MyXL", "a1:myxl:home"))
 	return screen, nil
 }
 
@@ -787,9 +342,9 @@ func (m *MenuManager) BuildSavedPackagesScreen(ctx context.Context) (*ui.Screen,
 
 	if len(saved) == 0 {
 		card.WithRaw("<i>Belum ada paket yang disimpan dalam daftar favorit.</i>\n\nAnda dapat menyimpan paket ke favorit setelah melihat rincian paket atau menyelesaikan transaksi.")
-		screen := menu.NewScreen("myxl:saved", "", card.Render())
-		screen.AddRow(menu.NewButton("⚡ Masukkan Option Code", "a1:myxl:buy_opt_input"))
-		screen.AddRow(menu.NewButton("🔙 Kembali ke Store", "a1:myxl:store"))
+		screen := ui.NewScreen("myxl:saved", "", card.Render())
+		screen.AddRow(newMenuButton("⚡ Masukkan Option Code", "a1:myxl:buy_opt_input"))
+		screen.AddRow(newMenuButton("🔙 Kembali ke Store", "a1:myxl:store"))
 		return screen, nil
 	}
 
@@ -801,16 +356,16 @@ func (m *MenuManager) BuildSavedPackagesScreen(ctx context.Context) (*ui.Screen,
 	}
 	card.WithRaw(sb.String())
 
-	screen := menu.NewScreen("myxl:saved", "", card.Render())
+	screen := ui.NewScreen("myxl:saved", "", card.Render())
 	for _, sp := range saved {
 		label := truncateString(sp.Name, 18)
 		optKey := m.RegisterOptionCode(sp.OptionCode)
 		screen.AddRow(
-			menu.NewButton("🛒 "+label, fmt.Sprintf("a1:myxl:buy_opt:%s", optKey)),
-			menu.NewButton("❌ Hapus", fmt.Sprintf("a1:myxl:bookmark_del:%s", optKey)),
+			newMenuButton("🛒 "+label, fmt.Sprintf("a1:myxl:buy_opt:%s", optKey)),
+			newMenuButton("❌ Hapus", fmt.Sprintf("a1:myxl:bookmark_del:%s", optKey)),
 		)
 	}
-	screen.AddRow(menu.NewButton("🔙 Kembali ke Store", "a1:myxl:store"))
+	screen.AddRow(newMenuButton("🔙 Kembali ke Store", "a1:myxl:store"))
 	return screen, nil
 }
 
@@ -842,29 +397,29 @@ func (m *MenuManager) BuildPackageDetailScreen(ctx context.Context, acc *Account
 
 	optKey := m.RegisterOptionCode(optionCode)
 
-	screen := menu.NewScreen("myxl:pkg_detail", "", card.Render())
+	screen := ui.NewScreen("myxl:pkg_detail", "", card.Render())
 	screen.AddRow(
-		menu.NewButton("💰 Pulsa", fmt.Sprintf("a1:myxl:method:balance:%s", optKey)),
-		menu.NewButton("📱 QRIS", fmt.Sprintf("a1:myxl:method:qris:%s", optKey)),
+		newMenuButton("💰 Pulsa", fmt.Sprintf("a1:myxl:method:balance:%s", optKey)),
+		newMenuButton("📱 QRIS", fmt.Sprintf("a1:myxl:method:qris:%s", optKey)),
 	)
 	screen.AddRow(
-		menu.NewButton("🟢 GoPay", fmt.Sprintf("a1:myxl:method:gopay:%s", optKey)),
-		menu.NewButton("🟣 OVO", fmt.Sprintf("a1:myxl:method:ovo:%s", optKey)),
+		newMenuButton("🟢 GoPay", fmt.Sprintf("a1:myxl:method:gopay:%s", optKey)),
+		newMenuButton("🟣 OVO", fmt.Sprintf("a1:myxl:method:ovo:%s", optKey)),
 	)
 	screen.AddRow(
-		menu.NewButton("🔵 DANA", fmt.Sprintf("a1:myxl:method:dana:%s", optKey)),
-		menu.NewButton("🟠 ShopeePay", fmt.Sprintf("a1:myxl:method:shopeepay:%s", optKey)),
+		newMenuButton("🔵 DANA", fmt.Sprintf("a1:myxl:method:dana:%s", optKey)),
+		newMenuButton("🟠 ShopeePay", fmt.Sprintf("a1:myxl:method:shopeepay:%s", optKey)),
 	)
 	screen.AddRow(
-		menu.NewButton("⚡ Decoy Pulsa", fmt.Sprintf("a1:myxl:method:decoy_balance:%s", optKey)),
-		menu.NewButton("⚡ Decoy QRIS", fmt.Sprintf("a1:myxl:method:decoy_qris:%s", optKey)),
+		newMenuButton("⚡ Decoy Pulsa", fmt.Sprintf("a1:myxl:method:decoy_balance:%s", optKey)),
+		newMenuButton("⚡ Decoy QRIS", fmt.Sprintf("a1:myxl:method:decoy_qris:%s", optKey)),
 	)
 	screen.AddRow(
-		menu.NewButton("✏️ Overwrite Harga", fmt.Sprintf("a1:myxl:custom_price:%s", optKey)),
-		menu.NewButton("⭐ Simpan Favorit", fmt.Sprintf("a1:myxl:bookmark_add:%s", optKey)),
+		newMenuButton("✏️ Overwrite Harga", fmt.Sprintf("a1:myxl:custom_price:%s", optKey)),
+		newMenuButton("⭐ Simpan Favorit", fmt.Sprintf("a1:myxl:bookmark_add:%s", optKey)),
 	)
 	screen.AddRow(
-		menu.NewButton("🔙 Batal / Kembali", "a1:myxl:store"),
+		newMenuButton("🔙 Batal / Kembali", "a1:myxl:store"),
 	)
 	return screen, nil
 }
@@ -902,10 +457,10 @@ func (m *MenuManager) BuildCheckoutScreen(draft purchaseDraftState, userID, chat
 		WithRaw("<i>Proteksi idempotensi aktif. Transaksi ini hanya akan dieksekusi 1 kali dan tidak dapat dibatalkan setelah dikonfirmasi.</i>").
 		WithFooter("<i>Tekan Konfirmasi Pembayaran untuk menjalankan transaksi.</i>")
 
-	screen := menu.NewScreen("myxl:checkout", "", card.Render())
+	screen := ui.NewScreen("myxl:checkout", "", card.Render())
 	screen.AddRow(
-		menu.NewButton("✅ Konfirmasi Pembayaran", fmt.Sprintf("a1:myxl:checkout:%s", oid)),
-		menu.NewButton("❌ Batal", fmt.Sprintf("a1:myxl:cancel_draft:%s", oid)),
+		newMenuButton("✅ Konfirmasi Pembayaran", fmt.Sprintf("a1:myxl:checkout:%s", oid)),
+		newMenuButton("❌ Batal", fmt.Sprintf("a1:myxl:cancel_draft:%s", oid)),
 	)
 	return screen, nil
 }
@@ -948,19 +503,19 @@ func (m *MenuManager) BuildPurchaseResultScreen(result *SettlementResult, packag
 		}
 	}
 
-	screen := menu.NewScreen("myxl:result", "", card.Render())
+	screen := ui.NewScreen("myxl:result", "", card.Render())
 	optKey := m.RegisterOptionCode(optionCode)
 	var firstRow []ui.Button
-	firstRow = append(firstRow, menu.NewButton("⭐ Simpan ke Favorit", fmt.Sprintf("a1:myxl:bookmark_add:%s", optKey)))
+	firstRow = append(firstRow, newMenuButton("⭐ Simpan ke Favorit", fmt.Sprintf("a1:myxl:bookmark_add:%s", optKey)))
 	if result != nil && result.QRCode != "" {
 		qrKey := m.RegisterQR(result.QRCode)
 		if qrKey != "" {
-			firstRow = append(firstRow, menu.NewButton("🖼️ Kirim Foto QRIS", fmt.Sprintf("a1:myxl:qris_img:%s", qrKey)))
+			firstRow = append(firstRow, newMenuButton("🖼️ Kirim Foto QRIS", fmt.Sprintf("a1:myxl:qris_img:%s", qrKey)))
 		}
 	}
 	screen.AddRow(firstRow...)
 	screen.AddRow(
-		menu.NewButton("📱 Buka Dashboard", "a1:myxl:home"),
+		newMenuButton("📱 Buka Dashboard", "a1:myxl:home"),
 	)
 	return screen
 }
@@ -977,8 +532,8 @@ func (m *MenuManager) BuildPendingQRISScreen(ctx context.Context) (*ui.Screen, e
 		card := ui.NewCard("Tagihan QRIS").
 			WithIcon("ℹ️").
 			WithRaw("<i>Tidak ada transaksi QRIS aktif yang menunggu pembayaran.\nTransaksi QRIS otomatis kedaluwarsa setelah 5 menit.</i>")
-		screen := menu.NewScreen("myxl:pending_qris", "", card.Render())
-		screen.AddRow(menu.NewButton("🔙 Kembali ke Dashboard", "a1:myxl:home"))
+		screen := ui.NewScreen("myxl:pending_qris", "", card.Render())
+		screen.AddRow(newMenuButton("🔙 Kembali ke Dashboard", "a1:myxl:home"))
 		return screen, nil
 	}
 
@@ -1008,20 +563,20 @@ func (m *MenuManager) BuildPendingQRISScreen(ctx context.Context) (*ui.Screen, e
 		card.WithRaw("📱 <b>Kode / String QRIS:</b>\n<code>" + html.EscapeString(preview) + "</code>\n\n" + note)
 	}
 
-	screen := menu.NewScreen("myxl:pending_qris", "", card.Render())
+	screen := ui.NewScreen("myxl:pending_qris", "", card.Render())
 	qrKey := ""
 	if qrErr == nil {
 		qrKey = m.RegisterQR(qrPayload)
 	}
 	var actionRow []ui.Button
 	if qrKey != "" {
-		actionRow = append(actionRow, menu.NewButton("🖼️ Kirim Foto QRIS", fmt.Sprintf("a1:myxl:qris_img:%s", qrKey)))
+		actionRow = append(actionRow, newMenuButton("🖼️ Kirim Foto QRIS", fmt.Sprintf("a1:myxl:qris_img:%s", qrKey)))
 	}
-	actionRow = append(actionRow, menu.NewButton("🗑️ Batalkan", fmt.Sprintf("a1:myxl:qris_cancel:%s", pending.TransactionCode)))
+	actionRow = append(actionRow, newMenuButton("🗑️ Batalkan", fmt.Sprintf("a1:myxl:qris_cancel:%s", pending.TransactionCode)))
 	screen.AddRow(actionRow...)
 	screen.AddRow(
-		menu.NewButton("🔄 Cek Status", "a1:myxl:pending_qris"),
-		menu.NewButton("🔙 Kembali ke Dashboard", "a1:myxl:home"),
+		newMenuButton("🔄 Cek Status", "a1:myxl:pending_qris"),
+		newMenuButton("🔙 Kembali ke Dashboard", "a1:myxl:home"),
 	)
 	return screen, nil
 }
@@ -1035,17 +590,17 @@ func (m *MenuManager) BuildDeletePickScreen(ctx context.Context) (*ui.Screen, er
 	card := ui.NewCard("Hapus Akun MyXL").
 		WithIcon("🗑️").
 		WithHeader("Pilih akun yang ingin Anda hapus dari penyimpanan:")
-	screen := menu.NewScreen("myxl:del_pick", "", card.Render())
+	screen := ui.NewScreen("myxl:del_pick", "", card.Render())
 	for _, acc := range accounts {
 		label := acc.MSISDN
 		if acc.Alias != "" {
 			label = fmt.Sprintf("%s (%s)", acc.MSISDN, acc.Alias)
 		}
 		screen.AddRow(
-			menu.NewButton("🗑️ "+truncateString(label, 20), fmt.Sprintf("a1:myxl:del_ask:%s", acc.MSISDN)),
+			newMenuButton("🗑️ "+truncateString(label, 20), fmt.Sprintf("a1:myxl:del_ask:%s", acc.MSISDN)),
 		)
 	}
-	screen.AddRow(menu.NewButton("🔙 Batal", "a1:myxl:accounts"))
+	screen.AddRow(newMenuButton("🔙 Batal", "a1:myxl:accounts"))
 	return screen, nil
 }
 
@@ -1058,17 +613,17 @@ func (m *MenuManager) BuildAliasPickScreen(ctx context.Context) (*ui.Screen, err
 	card := ui.NewCard("Ubah Alias Akun").
 		WithIcon("🏷️").
 		WithHeader("Pilih akun yang ingin Anda ubah namanya:")
-	screen := menu.NewScreen("myxl:alias_pick", "", card.Render())
+	screen := ui.NewScreen("myxl:alias_pick", "", card.Render())
 	for _, acc := range accounts {
 		label := acc.MSISDN
 		if acc.Alias != "" {
 			label = fmt.Sprintf("%s (%s)", acc.MSISDN, acc.Alias)
 		}
 		screen.AddRow(
-			menu.NewButton("🏷️ "+truncateString(label, 20), fmt.Sprintf("a1:myxl:alias_req:%s", acc.MSISDN)),
+			newMenuButton("🏷️ "+truncateString(label, 20), fmt.Sprintf("a1:myxl:alias_req:%s", acc.MSISDN)),
 		)
 	}
-	screen.AddRow(menu.NewButton("🔙 Batal", "a1:myxl:accounts"))
+	screen.AddRow(newMenuButton("🔙 Batal", "a1:myxl:accounts"))
 	return screen, nil
 }
 
@@ -1148,37 +703,38 @@ func (m *MenuManager) BuildFamilyPackagesScreen(ctx context.Context, acc *Accoun
 	listBuf.WriteString("<i>Pilih nomor paket di bawah untuk melihat rincian & checkout.</i>")
 	card.WithRaw(listBuf.String())
 
-	screen := menu.NewScreen("myxl:fam_list", "", card.Render())
+	screen := ui.NewScreen("myxl:fam_list", "", card.Render())
 
 	// 1. Number selection buttons row: [ 1 ] [ 2 ] [ 3 ] [ 4 ] [ 5 ]
-	var numRow []menu.Button
+	var numRow []ui.Button
 	for i, item := range pageItems {
 		globalNum := startIdx + i + 1
 		label := fmt.Sprintf("%d", globalNum)
 		optKey := m.RegisterOptionCode(item.Option.PackageOptionCode)
-		numRow = append(numRow, menu.NewButton(label, fmt.Sprintf("a1:myxl:buy_opt:%s", optKey)))
+		numRow = append(numRow, newMenuButton(label, fmt.Sprintf("a1:myxl:buy_opt:%s", optKey)))
 	}
 	if len(numRow) > 0 {
 		screen.AddRow(numRow...)
 	}
 
 	// 2. Pagination row: [◀️ Prev] [📄 X/Y] [▶️ Next]
-	var navRow []menu.Button
+	var navRow []ui.Button
 	if page > 1 {
-		navRow = append(navRow, menu.NewButton("◀️ Prev", fmt.Sprintf("a1:myxl:fam_page:%s:%d", familyCode, page-1)))
+		navRow = append(navRow, newMenuButton("◀️ Prev", fmt.Sprintf("a1:myxl:fam_page:%s:%d", familyCode, page-1)))
 	} else {
-		navRow = append(navRow, menu.NewButton("⏮️", "a1:myxl:noop"))
+		navRow = append(navRow, newMenuButton("⏮️", "a1:myxl:noop"))
 	}
-	navRow = append(navRow, menu.NewButton(fmt.Sprintf("📄 %d/%d", page, totalPages), "a1:myxl:noop"))
+	navRow = append(navRow, newMenuButton(fmt.Sprintf("📄 %d/%d", page, totalPages), "a1:myxl:noop"))
 	if page < totalPages {
-		navRow = append(navRow, menu.NewButton("▶️ Next", fmt.Sprintf("a1:myxl:fam_page:%s:%d", familyCode, page+1)))
+		navRow = append(navRow, newMenuButton("▶️ Next", fmt.Sprintf("a1:myxl:fam_page:%s:%d", familyCode, page+1)))
 	} else {
-		navRow = append(navRow, menu.NewButton("⏭️", "a1:myxl:noop"))
+		navRow = append(navRow, newMenuButton("⏭️", "a1:myxl:noop"))
 	}
 	screen.AddRow(navRow...)
 
 	// 3. Back button
-	screen.AddRow(menu.NewButton("🔙 Kembali ke Store", "a1:myxl:store"))
+	screen.AddRow(newMenuButton("🔙 Kembali ke Store", "a1:myxl:store"))
 
 	return screen, nil
 }
+
