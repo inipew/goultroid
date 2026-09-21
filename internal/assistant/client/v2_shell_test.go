@@ -20,11 +20,13 @@ import (
 )
 
 type shellTestPort struct {
-	sent     presentation.CompiledView
-	edited   presentation.CompiledView
-	answered presentation.Answer
-	peer     tg.InputPeerClass
-	editErr  error
+	sent      presentation.CompiledView
+	edited    presentation.CompiledView
+	answered  presentation.Answer
+	peer      tg.InputPeerClass
+	editErr   error
+	deleteErr error
+	deleted   bool
 }
 
 func (p *shellTestPort) Send(_ context.Context, target presentation.Target, view presentation.CompiledView) (presentation.Target, error) {
@@ -40,6 +42,14 @@ func (p *shellTestPort) Edit(_ context.Context, _ presentation.Target, view pres
 }
 func (p *shellTestPort) Answer(_ context.Context, answer presentation.Answer) error {
 	p.answered = answer
+	return nil
+}
+
+func (p *shellTestPort) Delete(_ context.Context, _ presentation.Target) error {
+	if p.deleteErr != nil {
+		return p.deleteErr
+	}
+	p.deleted = true
 	return nil
 }
 
@@ -203,8 +213,8 @@ func TestAssistantShellReadOnlyNavigationUsesOneRevisionFencedSession(t *testing
 	if err := dispatchShell(t, engine, helpFromHome, 204, peer); err != nil {
 		t.Fatalf("Dispatch(help) error = %v", err)
 	}
-	if !strings.Contains(port.edited.Text, "Command Browser") || !strings.Contains(port.edited.Text, "Media") || !strings.Contains(port.edited.Text, "System") {
-		t.Fatalf("help view missing canonical command summary: %q", port.edited.Text)
+	if !strings.Contains(port.edited.Text, "Command Browser") || !strings.Contains(port.edited.Text, "Media") {
+		t.Fatalf("help view missing canonical command navigator: %q", port.edited.Text)
 	}
 	if strings.Contains(port.edited.Text, "Hidden") {
 		t.Fatalf("help view leaked userbot-only command category: %q", port.edited.Text)
@@ -278,7 +288,7 @@ func TestAssistantShellOwnerStartUsesA2Canary(t *testing.T) {
 	}
 }
 
-func TestAssistantShellAdmissionFallsBackToLegacyStart(t *testing.T) {
+func TestAssistantShellVisitorStartUsesPublicReadOnlyPath(t *testing.T) {
 	manager := plugin.NewManager(core.NewRouter("."))
 	if err := manager.Register(assistantshell.NewFeature()); err != nil {
 		t.Fatalf("Register(shell) error = %v", err)
@@ -292,6 +302,7 @@ func TestAssistantShellAdmissionFallsBackToLegacyStart(t *testing.T) {
 	}
 	client := NewAssistantClient(1, "hash", "token", zap.NewNop())
 	client.SetOwner(7, nil)
+	public := &publicStartInteraction{}
 	client.mu.Lock()
 	client.v2Catalog = manager.FeatureCatalog()
 	client.v2Ingress = &v2Ingress{engine: engine}
@@ -303,24 +314,53 @@ func TestAssistantShellAdmissionFallsBackToLegacyStart(t *testing.T) {
 	client.mu.Unlock()
 
 	err = client.dispatchStart(&command.Context{
-		Ctx:      context.Background(),
-		SenderID: 99,
-		Peer:     &tg.InputPeerUser{UserID: 99},
+		Ctx:         context.Background(),
+		SenderID:    99,
+		Peer:        &tg.InputPeerUser{UserID: 99},
+		Interaction: public,
 	})
 	if err != nil {
 		t.Fatalf("dispatchStart(visitor) error = %v", err)
 	}
-	if !legacyCalled {
-		t.Fatal("visitor was not routed to legacy compatibility start")
+	if legacyCalled {
+		t.Fatal("visitor was routed to legacy compatibility start")
 	}
-	if len(port.sent.Rows) != 0 {
-		t.Fatal("visitor unexpectedly created an a2 shell session")
+	if !strings.Contains(public.sent, "Assistant endpoint is online") {
+		t.Fatalf("public start text = %q", public.sent)
+	}
+	if got := manager.InteractionRuntime().Stats().Sessions; got != 0 {
+		t.Fatalf("visitor created a2 session = %d, want 0", got)
+	}
+}
+
+func TestAssistantShellUnavailableStillUsesLegacyCompatibilityStart(t *testing.T) {
+	client := NewAssistantClient(1, "hash", "token", zap.NewNop())
+	client.SetOwner(7, nil)
+	legacyCalled := false
+	client.mu.Lock()
+	client.legacyStart = func(*command.Context) error {
+		legacyCalled = true
+		return nil
+	}
+	client.mu.Unlock()
+	if err := client.dispatchStart(&command.Context{
+		Ctx:      context.Background(),
+		SenderID: 7,
+		Peer:     &tg.InputPeerUser{UserID: 7},
+	}); err != nil {
+		t.Fatalf("dispatchStart(unavailable) error = %v", err)
+	}
+	if !legacyCalled {
+		t.Fatal("unavailable a2 foundation did not use compatibility start")
 	}
 }
 
 func TestShouldFallbackStartKeepsRuntimeBoundsFailClosed(t *testing.T) {
-	if !shouldFallbackStart(ErrShellUnavailable) || !shouldFallbackStart(ErrShellAdmission) {
-		t.Fatal("compatibility conditions must remain eligible for legacy fallback")
+	if !shouldFallbackStart(ErrShellUnavailable) {
+		t.Fatal("unavailable shell must remain eligible for legacy fallback")
+	}
+	if shouldFallbackStart(ErrShellAdmission) {
+		t.Fatal("normal admission denial must use public start, not legacy fallback")
 	}
 	if shouldFallbackStart(rootinteraction.ErrCapacity) {
 		t.Fatal("session capacity exhaustion must not bypass P1 bounds")

@@ -16,13 +16,15 @@ func TestFeatureSpecAndViews(t *testing.T) {
 		t.Fatalf("ValidateSpec() error = %v", err)
 	}
 	spec := NewFeature().FeatureSpec()
-	if len(spec.Interactions) != 29 {
-		t.Fatalf("interactions = %d, want 29", len(spec.Interactions))
+	if len(spec.Interactions) != 39 {
+		t.Fatalf("interactions = %d, want 39", len(spec.Interactions))
 	}
 	for _, screenID := range []string{
 		InteractionHome,
 		InteractionStatus,
 		InteractionHelp,
+		InteractionHelpModule,
+		InteractionHelpCommand,
 		InteractionSettings,
 		InteractionSettingsCategory,
 		InteractionSettingDetail,
@@ -47,31 +49,43 @@ func TestFeatureSpecAndViews(t *testing.T) {
 	if len(home.Rows) != 3 || home.Rows[0][0].ActionID != ActionSettings || home.Rows[0][1].ActionID != ActionHelp {
 		t.Fatalf("unexpected home actions: %+v", home.Rows)
 	}
+	if home.Rows[2][1].ActionID != ActionClose {
+		t.Fatalf("home close action = %q, want %q", home.Rows[2][1].ActionID, ActionClose)
+	}
+	for _, row := range home.Rows {
+		for _, button := range row {
+			if button.ActionID == ActionLegacy {
+				t.Fatal("new Home view still exposes Classic menu")
+			}
+		}
+	}
 	status := StatusView(StatusModel{Username: "TestBot", Uptime: time.Minute, Refreshes: 1})
 	if len(status.Rows) != 1 || status.Rows[0][0].ActionID != ActionStatusRefresh || status.Rows[0][1].ActionID != ActionHome {
 		t.Fatalf("unexpected status actions: %+v", status.Rows)
 	}
 }
 
-func TestHelpViewUsesDeterministicCanonicalSummary(t *testing.T) {
+func TestHelpViewUsesDeterministicCanonicalNavigator(t *testing.T) {
 	view := HelpView(HelpModel{Commands: []core.Command{
 		{Name: "zeta", Category: "Zulu"},
 		{Name: "alpha", Category: "Alpha"},
 		{Name: "again", Category: "Alpha"},
-	}})
+	}, Selected: 0})
 	if err := view.Validate(); err != nil {
 		t.Fatalf("HelpView() invalid: %v", err)
-	}
-	alpha := strings.Index(view.Text, "Alpha")
-	zulu := strings.Index(view.Text, "Zulu")
-	if alpha < 0 || zulu < 0 || alpha >= zulu {
-		t.Fatalf("help categories are not deterministic: %q", view.Text)
 	}
 	if !strings.Contains(view.Text, "<b>Commands:</b> 3") || !strings.Contains(view.Text, "<b>Modules:</b> 2") {
 		t.Fatalf("help summary missing canonical counts: %q", view.Text)
 	}
-	if len(view.Rows) != 1 || view.Rows[0][0].ActionID != ActionHome || view.Rows[0][1].ActionID != ActionLegacy {
-		t.Fatalf("unexpected help actions: %+v", view.Rows)
+	if !strings.Contains(view.Text, "Alpha") || !strings.Contains(view.Text, "2 commands") {
+		t.Fatalf("help selection is not deterministic: %q", view.Text)
+	}
+	for _, row := range view.Rows {
+		for _, button := range row {
+			if button.ActionID == ActionLegacy {
+				t.Fatal("detailed Help parity still forces Classic menu")
+			}
+		}
 	}
 }
 

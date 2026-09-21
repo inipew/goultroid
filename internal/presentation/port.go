@@ -30,3 +30,10 @@ type Port interface {
 	Edit(context.Context, Target, CompiledView) error
 	Answer(context.Context, Answer) error
 }
+
+// Deleter is an optional presentation capability for transports that can
+// remove a concrete interaction target. Keeping it separate from Port avoids
+// forcing inline-only or synthetic ports to implement deletion.
+type Deleter interface {
+	Delete(context.Context, Target) error
+}

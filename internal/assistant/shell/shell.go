@@ -2,7 +2,6 @@ package shell
 
 import (
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -27,16 +26,16 @@ const (
 	InteractionSettingDetail    = "setting_detail"
 	InteractionSettingInput     = "setting_input"
 
-	ActionRefresh       = "refresh"
-	ActionPing          = "ping"
-	ActionStatus        = "status"
-	ActionHelp          = "help"
-	ActionHome          = "home"
-	ActionStatusRefresh = "status_refresh"
-	ActionSettings      = "settings"
-	ActionSettingsPrev  = "settings_prev"
-	ActionSettingsNext  = "settings_next"
-	ActionSettingsOpen  = "settings_open"
+	ActionRefresh            = "refresh"
+	ActionPing               = "ping"
+	ActionStatus             = "status"
+	ActionHelp               = "help"
+	ActionHome               = "home"
+	ActionStatusRefresh      = "status_refresh"
+	ActionSettings           = "settings"
+	ActionSettingsPrev       = "settings_prev"
+	ActionSettingsNext       = "settings_next"
+	ActionSettingsOpen       = "settings_open"
 	ActionSettingPrev        = "setting_prev"
 	ActionSettingNext        = "setting_next"
 	ActionSettingOpen        = "setting_open"
@@ -49,8 +48,6 @@ const (
 	ActionSettingInputCancel = "setting_input_cancel"
 	ActionLegacy             = "legacy"
 )
-
-const maxHelpCategories = 12
 
 // Feature is the first production feature migrated onto the P0-P4 interaction
 // foundation. It intentionally owns no goroutine or transport resource.
@@ -79,6 +76,8 @@ func (*Feature) FeatureSpec() feature.Spec {
 			{ID: InteractionHome, Kind: feature.InteractionScreen, Description: "Owner root/home screen", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionStatus, Kind: feature.InteractionScreen, Description: "Read-only Assistant runtime status", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionHelp, Kind: feature.InteractionScreen, Description: "Read-only Assistant command overview", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: InteractionHelpModule, Kind: feature.InteractionScreen, Description: "Canonical Assistant module command navigator", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: InteractionHelpCommand, Kind: feature.InteractionScreen, Description: "Canonical Assistant command detail", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionSettings, Kind: feature.InteractionScreen, Description: "Settings category navigator", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionSettingsCategory, Kind: feature.InteractionScreen, Description: "Settings value navigator", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionSettingDetail, Kind: feature.InteractionScreen, Description: "Bound setting detail and typed mutation surface", Surfaces: assistant, Policy: ownerPolicy},
@@ -87,6 +86,13 @@ func (*Feature) FeatureSpec() feature.Spec {
 			{ID: ActionPing, Kind: feature.InteractionAction, Description: "Acknowledge shell liveness", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionStatus, Kind: feature.InteractionAction, Description: "Navigate to read-only status", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionHelp, Kind: feature.InteractionAction, Description: "Navigate to read-only help overview", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionHelpPrev, Kind: feature.InteractionAction, Description: "Select previous Assistant help module", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionHelpNext, Kind: feature.InteractionAction, Description: "Select next Assistant help module", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionHelpOpen, Kind: feature.InteractionAction, Description: "Open selected Assistant help module", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionHelpCmdPrev, Kind: feature.InteractionAction, Description: "Select previous command in help module", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionHelpCmdNext, Kind: feature.InteractionAction, Description: "Select next command in help module", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionHelpCmdOpen, Kind: feature.InteractionAction, Description: "Open selected Assistant command detail", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionHelpBack, Kind: feature.InteractionAction, Description: "Return from command detail to its module", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionHome, Kind: feature.InteractionAction, Description: "Return to the shell home screen", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionStatusRefresh, Kind: feature.InteractionAction, Description: "Refresh read-only status", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettings, Kind: feature.InteractionAction, Description: "Navigate to settings categories", Surfaces: assistant, Policy: ownerPolicy},
@@ -103,6 +109,7 @@ func (*Feature) FeatureSpec() feature.Spec {
 			{ID: ActionSettingReset, Kind: feature.InteractionAction, Description: "Reset bound user setting override", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingInput, Kind: feature.InteractionAction, Description: "Begin bounded free-form input for a bound string setting", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingInputCancel, Kind: feature.InteractionAction, Description: "Cancel bounded free-form setting input", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionClose, Kind: feature.InteractionAction, Description: "Close and delete the current Assistant shell message", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionLegacy, Kind: feature.InteractionAction, Description: "Handoff to the legacy a1 menu", Surfaces: assistant, Policy: ownerPolicy},
 		},
 	}
@@ -125,14 +132,14 @@ func HomeView(model HomeModel) presentation.View {
 	if model.Refreshes > 0 {
 		card.AddField("Session refreshes", strconv.FormatUint(model.Refreshes, 10))
 	}
-	card.WithFooter("<i>Typed and bounded free-form Settings mutations are available in a2; Classic menu remains a compatibility fallback.</i>")
+	card.WithFooter("<i>Assistant shell navigation is a2-native; the legacy menu remains compatibility-only while reclamation is audited.</i>")
 
 	return presentation.View{
 		Text: card.Render(),
 		Rows: []presentation.Row{
 			{{Text: "⚙️ Settings", ActionID: ActionSettings}, {Text: "📚 Help", ActionID: ActionHelp}},
 			{{Text: "📊 Status", ActionID: ActionStatus}, {Text: "🔄 Refresh", ActionID: ActionRefresh}},
-			{{Text: "🏓 Ping", ActionID: ActionPing}, {Text: "🧭 Classic menu", ActionID: ActionLegacy}},
+			{{Text: "🏓 Ping", ActionID: ActionPing}, {Text: "❌ Close", ActionID: ActionClose}},
 		},
 	}
 }
@@ -171,64 +178,6 @@ func StatusView(model StatusModel) presentation.View {
 	}
 }
 
-type HelpModel struct {
-	Commands []core.Command
-}
-
-func HelpView(model HelpModel) presentation.View {
-	counts := make(map[string]int)
-	for _, command := range model.Commands {
-		category := strings.TrimSpace(command.Category)
-		if category == "" {
-			category = "General"
-		}
-		counts[category]++
-	}
-	categories := make([]string, 0, len(counts))
-	for category := range counts {
-		categories = append(categories, category)
-	}
-	sort.Slice(categories, func(i, j int) bool {
-		left := strings.ToLower(categories[i])
-		right := strings.ToLower(categories[j])
-		if left == right {
-			return categories[i] < categories[j]
-		}
-		return left < right
-	})
-
-	card := ui.NewCard("Command Browser").
-		WithIcon("📚").
-		WithHeader("Read-only overview from the canonical Assistant command registry.").
-		AddField("Commands", strconv.Itoa(len(model.Commands))).
-		AddField("Modules", strconv.Itoa(len(categories)))
-
-	if len(categories) == 0 {
-		card.WithRaw("<i>No Assistant commands are currently registered.</i>")
-	} else {
-		limit := len(categories)
-		if limit > maxHelpCategories {
-			limit = maxHelpCategories
-		}
-		lines := make([]string, 0, limit+1)
-		for _, category := range categories[:limit] {
-			lines = append(lines, fmt.Sprintf("• <b>%s</b> · %d", ui.EscapeHTML(category), counts[category]))
-		}
-		if remaining := len(categories) - limit; remaining > 0 {
-			lines = append(lines, fmt.Sprintf("<i>… %d more modules</i>", remaining))
-		}
-		card.WithRaw(strings.Join(lines, "\n"))
-	}
-	card.WithFooter("<i>Detailed module and command pages remain in Classic menu until their a2 migration.</i>")
-
-	return presentation.View{
-		Text: card.Render(),
-		Rows: []presentation.Row{
-			{{Text: "🏠 Home", ActionID: ActionHome}, {Text: "🧭 Classic menu", ActionID: ActionLegacy}},
-		},
-	}
-}
-
 func normalizedUsername(username string) string {
 	username = strings.TrimSpace(username)
 	if username == "" {
@@ -247,13 +196,15 @@ func ValidateSpec() error {
 		return fmt.Errorf("assistant shell feature id = %q", bound.ID)
 	}
 	for name, view := range map[string]presentation.View{
-		"home":     HomeView(HomeModel{}),
-		"status":   StatusView(StatusModel{}),
-		"help":     HelpView(HelpModel{}),
-		"settings": SettingsHomeView(SettingsHomeModel{}),
-		"category": SettingsCategoryView(SettingsCategoryModel{}),
-		"detail":   SettingDetailView(SettingDetailModel{}),
-		"input":    SettingInputView(SettingInputModel{}),
+		"home":         HomeView(HomeModel{}),
+		"status":       StatusView(StatusModel{}),
+		"help":         HelpView(HelpModel{}),
+		"help_module":  HelpModuleView(HelpModuleModel{}),
+		"help_command": HelpCommandView(HelpCommandModel{}),
+		"settings":     SettingsHomeView(SettingsHomeModel{}),
+		"category":     SettingsCategoryView(SettingsCategoryModel{}),
+		"detail":       SettingDetailView(SettingDetailModel{}),
+		"input":        SettingInputView(SettingInputModel{}),
 	} {
 		if err := view.Validate(); err != nil {
 			return fmt.Errorf("%s view: %w", name, err)
