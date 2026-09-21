@@ -52,13 +52,6 @@ func TestFeatureSpecAndViews(t *testing.T) {
 	if home.Rows[2][1].ActionID != ActionClose {
 		t.Fatalf("home close action = %q, want %q", home.Rows[2][1].ActionID, ActionClose)
 	}
-	for _, row := range home.Rows {
-		for _, button := range row {
-			if button.ActionID == ActionLegacy {
-				t.Fatal("new Home view still exposes Classic menu")
-			}
-		}
-	}
 	status := StatusView(StatusModel{Username: "TestBot", Uptime: time.Minute, Refreshes: 1})
 	if len(status.Rows) != 1 || status.Rows[0][0].ActionID != ActionStatusRefresh || status.Rows[0][1].ActionID != ActionHome {
 		t.Fatalf("unexpected status actions: %+v", status.Rows)
@@ -80,13 +73,6 @@ func TestHelpViewUsesDeterministicCanonicalNavigator(t *testing.T) {
 	if !strings.Contains(view.Text, "Alpha") || !strings.Contains(view.Text, "2 commands") {
 		t.Fatalf("help selection is not deterministic: %q", view.Text)
 	}
-	for _, row := range view.Rows {
-		for _, button := range row {
-			if button.ActionID == ActionLegacy {
-				t.Fatal("detailed Help parity still forces Classic menu")
-			}
-		}
-	}
 }
 
 func TestSettingsViewsExposeOnlyTypedMutationsAndMaskSensitiveValues(t *testing.T) {
@@ -100,13 +86,6 @@ func TestSettingsViewsExposeOnlyTypedMutationsAndMaskSensitiveValues(t *testing.
 	}
 	if !strings.Contains(home.Text, "Security") || !strings.Contains(home.Text, "revision-fenced") {
 		t.Fatalf("settings home text = %q", home.Text)
-	}
-	for _, row := range home.Rows {
-		for _, button := range row {
-			if button.ActionID == ActionLegacy {
-				t.Fatal("Settings root still exposes Classic menu fallback after cutover")
-			}
-		}
 	}
 
 	category := SettingsCategoryView(SettingsCategoryModel{
@@ -152,12 +131,12 @@ func TestSettingsViewsExposeOnlyTypedMutationsAndMaskSensitiveValues(t *testing.
 	}
 }
 
-func TestStateCodecAcceptsLegacyAndBoundsNavigator(t *testing.T) {
-	legacy := make([]byte, legacyStateBytes)
+func TestStateCodecAcceptsHistoricalA2AndBoundsNavigator(t *testing.T) {
+	legacy := make([]byte, v0StateBytes)
 	legacy[7] = 4
 	state := DecodeState(legacy)
 	if state.Screen != ScreenHome || state.Refreshes != 4 {
-		t.Fatalf("legacy state = %+v", state)
+		t.Fatalf("v0 state = %+v", state)
 	}
 	v1 := make([]byte, v1StateBytes)
 	v1[0] = 1
@@ -170,8 +149,8 @@ func TestStateCodecAcceptsLegacyAndBoundsNavigator(t *testing.T) {
 	v2 := make([]byte, v2StateBytes)
 	v2[0] = 2
 	v2[1] = byte(ScreenSettingDetail)
-	legacyBinding := SettingBinding("core", "prefix")
-	copy(v2[16:32], legacyBinding[:])
+	v2Binding := SettingBinding("core", "prefix")
+	copy(v2[16:32], v2Binding[:])
 	state = DecodeState(v2)
 	if state.Screen != ScreenSettingDetail || state.SchemaVersion != 0 {
 		t.Fatalf("v2 state = %+v", state)
