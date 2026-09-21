@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	coreCallback "github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/ui"
 )
 
@@ -19,69 +18,31 @@ func NewMenuManager(p *Plugin) *MenuManager {
 	return &MenuManager{plugin: p}
 }
 
-// RegisterOptionCode returns a compact key for optionCode safe for Telegram's callback limit.
+// RegisterOptionCode keeps the canonical option code in the a2 session-owned intent.
+// It no longer shortens values into the legacy callback StateStore because the intent
+// itself never crosses Telegram's 64-byte callback-data boundary.
 func (m *MenuManager) RegisterOptionCode(optCode string) string {
-	if optCode == "" {
-		return ""
-	}
-	if len(optCode) <= 24 && !strings.Contains(optCode, ":") {
-		return optCode
-	}
-	if m != nil && m.plugin != nil && m.plugin.stateStore != nil {
-		return m.plugin.stateStore.StoreWithScope(optCode, coreCallback.StateScope{
-			Namespace: m.plugin.Namespace(),
-		}, 24*time.Hour)
-	}
-	return ""
+	return strings.TrimSpace(optCode)
 }
 
-// ResolveOptionCode resolves an option key or raw code back to the canonical full option code.
 func (m *MenuManager) ResolveOptionCode(keyOrCode string) string {
-	if keyOrCode == "" {
-		return ""
-	}
-	if m != nil && m.plugin != nil && m.plugin.stateStore != nil {
-		if val, _, ok := m.plugin.stateStore.Get(keyOrCode); ok {
-			if s, ok := val.(string); ok && s != "" {
-				return s
-			}
-		}
-	}
-	return keyOrCode
+	return strings.TrimSpace(keyOrCode)
 }
 
-// RegisterQR registers a QR payload in the state store with a short key safe for a callback intent.
 func (m *MenuManager) RegisterQR(qrPayload string) string {
 	qrPayload, err := normalizeQRPayload(qrPayload)
 	if err != nil {
 		return ""
 	}
-	if m != nil && m.plugin != nil && m.plugin.stateStore != nil {
-		return m.plugin.stateStore.StoreWithScope(qrPayload, coreCallback.StateScope{
-			Namespace: m.plugin.Namespace(),
-		}, pendingQRISTTL)
-	}
-	return ""
+	return qrPayload
 }
 
-// ResolveQR resolves a registered QR key back to the raw QR payload string.
 func (m *MenuManager) ResolveQR(key string) string {
-	if key == "" {
-		return ""
-	}
-	if m != nil && m.plugin != nil && m.plugin.stateStore != nil {
-		if val, _, ok := m.plugin.stateStore.Get(key); ok {
-			if s, ok := val.(string); ok && s != "" {
-				return s
-			}
-		}
-	}
-	return key
+	return strings.TrimSpace(key)
 }
 
-// newMenuButton intentionally stores an internal MyXL action intent in Button.Data.
-// Assistant a2 compilation replaces this data with an opaque session-bound a2 token
-// before it reaches Telegram.
+// newMenuButton stores only a plugin-internal action intent. Assistant a2
+// compilation replaces it with an opaque session-bound callback token.
 func newMenuButton(text, data string) ui.Button {
 	return ui.NewCallbackButton(text, []byte(data))
 }
@@ -423,20 +384,7 @@ func (m *MenuManager) BuildPackageDetailScreen(ctx context.Context, acc *Account
 	return screen, nil
 }
 
-func (m *MenuManager) BuildCheckoutScreen(draft purchaseDraftState, userID, chatID int64) (*ui.Screen, error) {
-	if m.plugin.stateStore == nil {
-		return nil, fmt.Errorf("state store unavailable")
-	}
-
-	oid := m.plugin.stateStore.StoreWithScope(draft, coreCallback.StateScope{
-		UserID:    userID,
-		ChatID:    chatID,
-		Namespace: m.plugin.Namespace(),
-		SingleUse: true,
-	}, 5*time.Minute)
-	if oid == "" {
-		return nil, fmt.Errorf("failed to create checkout session")
-	}
+func (m *MenuManager) BuildCheckoutScreen(draft purchaseDraftState) (*ui.Screen, error) {
 
 	effectivePrice := draft.Price
 	priceLabel := fmt.Sprintf("Rp %s", formatRupiah(effectivePrice))
@@ -458,8 +406,8 @@ func (m *MenuManager) BuildCheckoutScreen(draft purchaseDraftState, userID, chat
 
 	screen := ui.NewScreen("myxl:checkout", "", card.Render())
 	screen.AddRow(
-		newMenuButton("✅ Konfirmasi Pembayaran", fmt.Sprintf("myxl:checkout:%s", oid)),
-		newMenuButton("❌ Batal", fmt.Sprintf("myxl:cancel_draft:%s", oid)),
+		newMenuButton("✅ Konfirmasi Pembayaran", "myxl:checkout"),
+		newMenuButton("❌ Batal", "myxl:cancel_draft"),
 	)
 	return screen, nil
 }
