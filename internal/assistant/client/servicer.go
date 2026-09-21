@@ -11,20 +11,15 @@ import (
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
-// CoreCallbackDispatcher routes callback query events to core and plugin handlers.
+// CoreCallbackDispatcher admits callback query events into the canonical
+// callback pipeline and returns an opaque prepared execution lease.
 type CoreCallbackDispatcher interface {
 	Prepare(
 		context.Context,
 		*core.CallbackQueryEvent,
 		core.TelegramServicer,
 		func(string) (tasks.ScopeIdentity, bool),
-	) (corecallback.PreparedDispatch, error)
-	DispatchPrepared(
-		context.Context,
-		*core.CallbackQueryEvent,
-		core.TelegramServicer,
-		corecallback.PreparedDispatch,
-	) error
+	) (corecallback.PreparedCallback, error)
 }
 
 type inlineQueryAPI interface {
