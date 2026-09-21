@@ -134,6 +134,12 @@ func TestCallback_DataEncodingAndParsing(t *testing.T) {
 		t.Errorf("expected ErrInvalidCallbackData, got: %v", err)
 	}
 
+	// Retired Assistant a1 protocol must never be accepted by the generic callback parser.
+	_, _, _, err = ParseCallbackData([]byte("a1:myxl:home:noop"))
+	if !errors.Is(err, ErrInvalidCallbackData) {
+		t.Errorf("expected ErrInvalidCallbackData for retired a1, got: %v", err)
+	}
+
 	// Wrong version
 	_, _, _, err = ParseCallbackData([]byte("v2:media:next:123"))
 	if !errors.Is(err, ErrInvalidCallbackData) {
