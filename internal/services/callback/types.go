@@ -21,6 +21,9 @@ var (
 	ErrHandlerRegistrationChanged = fmt.Errorf("%w: callback handler registration changed", ErrHandlerNotFound)
 	// ErrUnauthorized indicates the user pressing the button is not allowed to trigger this action.
 	ErrUnauthorized = errors.New("unauthorized button interaction")
+	// ErrHandlerPanic marks a recovered callback handler panic so terminal metrics
+	// can record exactly one panic outcome instead of panic + generic error.
+	ErrHandlerPanic = fmt.Errorf("%w: callback handler panic", core.ErrInternal)
 	// ErrStateExpired indicates the state associated with the callback opaque id has expired.
 	ErrStateExpired = errors.New("callback state has expired")
 	// ErrStateNotFound indicates no state exists for the opaque id.
