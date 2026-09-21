@@ -134,7 +134,7 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 
 	c.shellMu.Lock()
 	defer c.shellMu.Unlock()
-	if c.shellScope == scope && len(c.shellRegistrations) == 28 {
+	if c.shellScope == scope && len(c.shellRegistrations) == 27 {
 		return nil
 	}
 	for _, registration := range c.shellRegistrations {
@@ -145,7 +145,7 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 	c.shellRegistrations = nil
 	c.shellScope = tasks.ScopeIdentity{}
 
-	registrations := make([]*rootinteraction.HandlerRegistration, 0, 28)
+	registrations := make([]*rootinteraction.HandlerRegistration, 0, 27)
 	register := func(actionID string, handler orchestration.Handler) error {
 		guarded := func(ctx *orchestration.Context) error {
 			if err := c.admitShellAction(catalog, actionID, ctx); err != nil {
@@ -191,7 +191,6 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 		{id: assistantshell.ActionSettingReset, handler: c.handleShellSettingReset},
 		{id: assistantshell.ActionSettingInput, handler: c.handleShellSettingInput},
 		{id: assistantshell.ActionSettingInputCancel, handler: c.handleShellSettingInputCancel},
-		{id: assistantshell.ActionClose, handler: c.handleShellClose},
 	} {
 		if err := register(action.id, action.handler); err != nil {
 			closeShellRegistrations(registrations)
