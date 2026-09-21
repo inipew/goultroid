@@ -20,11 +20,11 @@ const (
 
 const (
 	v0StateBytes = 8
-	v1StateBytes     = 16
-	v2StateBytes     = 32
-	stateBytes       = 40
-	stateVersion     = 3
-	bindingBytes     = 16
+	v1StateBytes = 16
+	v2StateBytes = 32
+	stateBytes   = 40
+	stateVersion = 3
+	bindingBytes = 16
 )
 
 type State struct {
