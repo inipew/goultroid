@@ -19,6 +19,7 @@ type FeatureSpecProvider interface {
 type featureRegistry struct {
 	*feature.Registry
 	interactions *interaction.Runtime
+	actions      *interaction.Dispatcher
 }
 
 func newFeatureRegistry() *featureRegistry {
@@ -27,7 +28,11 @@ func newFeatureRegistry() *featureRegistry {
 	if err != nil {
 		panic(fmt.Sprintf("construct interaction runtime: %v", err))
 	}
-	return &featureRegistry{Registry: registry, interactions: interactions}
+	return &featureRegistry{
+		Registry:     registry,
+		interactions: interactions,
+		actions:      interaction.NewDispatcher(interactions),
+	}
 }
 
 // FeatureCatalog returns the read-only feature surface catalog. Registration
@@ -54,6 +59,21 @@ func (m *Manager) InteractionRuntime() *interaction.Runtime {
 		return nil
 	}
 	return registry.interactions
+}
+
+// ActionDispatcher returns the typed P2 action-dispatch boundary.
+// Feature-specific registrations are intentionally deferred until UI migration.
+func (m *Manager) ActionDispatcher() *interaction.Dispatcher {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	registry := m.featureRegistry
+	m.mu.RUnlock()
+	if registry == nil {
+		return nil
+	}
+	return registry.actions
 }
 
 func (m *Manager) registerFeatureContract(name string, p Plugin, scope tasks.ScopeIdentity, commands []core.Command) (func(), error) {
