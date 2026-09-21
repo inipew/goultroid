@@ -733,7 +733,7 @@ func TestAssistantClient_Updates_SpinnerProtection(t *testing.T) {
 			&tg.UpdateBotCallbackQuery{
 				QueryID: 102,
 				UserID:  1,
-				Data:    []byte("a1:test:act"),
+				Data:    []byte("v1:test:act:noop"),
 			},
 		},
 	})
@@ -908,7 +908,7 @@ func TestAssistantClient_Updates_SpinnerProtection_OnErrorAndPanic(t *testing.T)
 			&tg.UpdateBotCallbackQuery{
 				QueryID: 301,
 				UserID:  1,
-				Data:    []byte("a1:test:fail"),
+				Data:    []byte("v1:test:fail:noop"),
 			},
 		},
 	})
@@ -923,7 +923,7 @@ func TestAssistantClient_Updates_SpinnerProtection_OnErrorAndPanic(t *testing.T)
 			&tg.UpdateBotCallbackQuery{
 				QueryID: 302,
 				UserID:  1,
-				Data:    []byte("a1:test:panic"),
+				Data:    []byte("v1:test:panic:noop"),
 			},
 		},
 	})
