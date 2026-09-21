@@ -280,10 +280,13 @@ func (s *StateStore) GetEntry(opaqueID string) (StateEntry, error) {
 	return StateEntry{Data: cloned, Scope: item.scope}, nil
 }
 
-// ClaimEntry atomically resolves a callback state entry and claims it when it
-// is single-use. The stored payload is immutable, so cloning can happen after
-// releasing the lock without allowing a second consumer to win the claim.
-func (s *StateStore) ClaimEntry(opaqueID string) (StateEntry, error) {
+// ClaimEntry atomically validates and resolves a callback state entry, then
+// claims it when it is single-use. Validation runs before the consumed bit is
+// changed so an unauthorized click cannot burn another user's token.
+//
+// The stored payload is immutable, so cloning can happen after releasing the
+// lock without allowing a second consumer to win the single-use claim.
+func (s *StateStore) ClaimEntry(opaqueID string, validate func(StateScope) error) (StateEntry, error) {
 	if s == nil {
 		return StateEntry{}, ErrStateNotFound
 	}
@@ -303,6 +306,12 @@ func (s *StateStore) ClaimEntry(opaqueID string) (StateEntry, error) {
 	if item.consumed {
 		s.mu.Unlock()
 		return StateEntry{}, ErrStateConsumed
+	}
+	if validate != nil {
+		if err := validate(item.scope); err != nil {
+			s.mu.Unlock()
+			return StateEntry{}, err
+		}
 	}
 	if item.scope.SingleUse {
 		item.consumed = true
