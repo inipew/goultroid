@@ -43,46 +43,46 @@ type Client interface {
 }
 
 type AssistantClient struct {
-	appID               int
-	appHash             string
-	botToken            string
-	logger              *zap.Logger
-	startTime           time.Time
-	self                *tg.User
-	mu                  sync.RWMutex
-	lifecycleOpMu       sync.Mutex
-	cancel              context.CancelFunc
-	runDone             chan struct{}
-	ready               chan struct{}
-	startupResult       chan error
-	lastError           error
-	shuttingDown        atomic.Bool
-	lifecycle           *Lifecycle
-	rateLimiter         RateLimiter
-	cache               *peer.MemoryCache
-	resolver            *peer.DefaultResolver
-	interaction         *interaction.ClientInteraction
-	cmdRouter           *command.Router
-	callbackDispatcher CoreCallbackDispatcher
-	callbackDeduper    *callbackQueryDeduper
-	metrics             core.MetricsCollector
-	ownerID             int64
-	sudoGetter          func() []int64
-	settingsSvc         *settings.Service
-	tasks               tasks.Client
-	delayedActions      core.DelayedActionScheduler
-	pluginScopeResolver func(string) (tasks.ScopeIdentity, bool)
-	inlineEngine        *inlineService.Engine
-	rpcExecutor         assistentrpc.Executor
-	featureCatalog           feature.Catalog
-	interactionSessions          *rootinteraction.Runtime
-	actionDispatcher           *rootinteraction.Dispatcher
-	interactionIngress           *interactionIngress
-	featureDrivers           map[string]interaction.FeatureDriver
-	featureDriverCleanups    []func()
-	shellMu             sync.Mutex
-	shellScope          tasks.ScopeIdentity
-	shellRegistrations  []*rootinteraction.HandlerRegistration
+	appID                 int
+	appHash               string
+	botToken              string
+	logger                *zap.Logger
+	startTime             time.Time
+	self                  *tg.User
+	mu                    sync.RWMutex
+	lifecycleOpMu         sync.Mutex
+	cancel                context.CancelFunc
+	runDone               chan struct{}
+	ready                 chan struct{}
+	startupResult         chan error
+	lastError             error
+	shuttingDown          atomic.Bool
+	lifecycle             *Lifecycle
+	rateLimiter           RateLimiter
+	cache                 *peer.MemoryCache
+	resolver              *peer.DefaultResolver
+	interaction           *interaction.ClientInteraction
+	cmdRouter             *command.Router
+	callbackDispatcher    CoreCallbackDispatcher
+	callbackDeduper       *callbackQueryDeduper
+	metrics               core.MetricsCollector
+	ownerID               int64
+	sudoGetter            func() []int64
+	settingsSvc           *settings.Service
+	tasks                 tasks.Client
+	delayedActions        core.DelayedActionScheduler
+	pluginScopeResolver   func(string) (tasks.ScopeIdentity, bool)
+	inlineEngine          *inlineService.Engine
+	rpcExecutor           assistentrpc.Executor
+	featureCatalog        feature.Catalog
+	interactionSessions   *rootinteraction.Runtime
+	actionDispatcher      *rootinteraction.Dispatcher
+	interactionIngress    *interactionIngress
+	featureDrivers        map[string]interaction.FeatureDriver
+	featureDriverCleanups []func()
+	shellMu               sync.Mutex
+	shellScope            tasks.ScopeIdentity
+	shellRegistrations    []*rootinteraction.HandlerRegistration
 }
 
 var _ Client = (*AssistantClient)(nil)
