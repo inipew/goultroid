@@ -218,7 +218,7 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 			OrderingKey:      callbackOrderingKey(evt),
 			ExecutionTimeout: 15 * time.Second,
 			Handler: func(taskCtx context.Context) error {
-				return cbRouter.DispatchPrepared(taskCtx, evt, d.getService(), prepared)
+				return prepared.Dispatch(taskCtx, evt, d.getService())
 			},
 			OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
 		})
@@ -298,7 +298,7 @@ func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities
 			OrderingKey:      callbackOrderingKey(evt),
 			ExecutionTimeout: 15 * time.Second,
 			Handler: func(taskCtx context.Context) error {
-				return cbRouter.DispatchPrepared(taskCtx, evt, d.getService(), prepared)
+				return prepared.Dispatch(taskCtx, evt, d.getService())
 			},
 			OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
 		})
