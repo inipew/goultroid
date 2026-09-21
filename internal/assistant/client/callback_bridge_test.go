@@ -32,9 +32,15 @@ func (m *mockCoreDispatcher) Prepare(
 	}
 	ns, _, _, err := corecallback.ParseCallbackData(evt.Data)
 	if err != nil {
+		if svc != nil {
+			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Invalid callback", false)
+		}
 		return corecallback.PreparedDispatch{}, err
 	}
 	if m.hasHandlerFunc != nil && !m.hasHandlerFunc(ns) {
+		if svc != nil {
+			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Feature not available.", false)
+		}
 		return corecallback.PreparedDispatch{}, corecallback.ErrHandlerNotFound
 	}
 	var scope tasks.ScopeIdentity
@@ -42,6 +48,9 @@ func (m *mockCoreDispatcher) Prepare(
 		var ok bool
 		scope, ok = m.taskScopeFunc(evt.Data, resolve)
 		if !ok {
+			if svc != nil {
+				_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Feature not available.", false)
+			}
 			return corecallback.PreparedDispatch{}, corecallback.ErrHandlerRegistrationChanged
 		}
 	}
