@@ -597,7 +597,7 @@ func (h *canonicalBridgeHandler) HandleCallback(ctx *corecallback.CallbackContex
 func TestCallbackIngress_UsesCanonicalCallbackRouter(t *testing.T) {
 	router := corecallback.NewRouter(zap.NewNop(), corecallback.NewStateStore())
 	handler := &canonicalBridgeHandler{}
-	if err := router.Register(handler); err != nil {
+	if _, err := router.RegisterOwned("test", handler); err != nil {
 		t.Fatalf("register canonical handler: %v", err)
 	}
 
