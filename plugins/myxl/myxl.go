@@ -35,7 +35,7 @@ var (
 type Plugin struct {
 	repo       Repository
 	client     *Client
-	stateStore *callback.StateStore
+	stateStore callback.StateWriter
 	menuMgr    *MenuManager
 	files      *filesystem.Scope
 	tasks      tasks.Client
@@ -82,7 +82,7 @@ func New(repo Repository, client *Client) *Plugin {
 }
 
 // SetStateStore configures the callback state store.
-func (p *Plugin) SetStateStore(store *callback.StateStore) {
+func (p *Plugin) SetStateStore(store callback.StateWriter) {
 	p.stateStore = store
 }
 
