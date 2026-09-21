@@ -40,12 +40,12 @@ type PreparedDispatch struct {
 	opaqueID       string
 	rawData        string
 	registrationID uint64
-	scope          tasks.ScopeIdentity
+	ResolvedScope  tasks.ScopeIdentity
 	noop           bool
 }
 
 // Scope returns the TaskEngine lifecycle scope resolved for this callback.
-func (p PreparedDispatch) Scope() tasks.ScopeIdentity { return p.scope }
+func (p PreparedDispatch) Scope() tasks.ScopeIdentity { return p.ResolvedScope }
 
 // Registration is an idempotent callback handler lease.
 type Registration struct {
@@ -307,7 +307,7 @@ func (r *Router) prepare(
 		opaqueID:       opaqueID,
 		rawData:        raw,
 		registrationID: reg.id,
-		scope:          scope,
+		ResolvedScope:  scope,
 	}, nil
 }
 
