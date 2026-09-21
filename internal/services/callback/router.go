@@ -156,7 +156,7 @@ func (r *Router) Prepare(
 	evt *core.CallbackQueryEvent,
 	svc core.TelegramServicer,
 	resolve func(string) (tasks.ScopeIdentity, bool),
-) (PreparedDispatch, error) {
+) (PreparedCallback, error) {
 	return r.prepare(ctx, evt, svc, resolve, true)
 }
 
@@ -166,14 +166,14 @@ func (r *Router) prepare(
 	svc core.TelegramServicer,
 	resolve func(string) (tasks.ScopeIdentity, bool),
 	requireScope bool,
-) (PreparedDispatch, error) {
+) (*preparedDispatch, error) {
 	if evt == nil {
-		return PreparedDispatch{}, ErrInvalidCallbackData
+		return nil, ErrInvalidCallbackData
 	}
 	start := time.Now()
 	raw := string(evt.Data)
 	if raw == ActionNoop {
-		return PreparedDispatch{rawData: raw, noop: true}, nil
+		return &preparedDispatch{router: r, rawData: raw, noop: true}, nil
 	}
 
 	ns, action, opaqueID, err := ParseCallbackData(evt.Data)
@@ -185,7 +185,7 @@ func (r *Router) prepare(
 			zap.String("origin", originString(evt.Origin)),
 			zap.ByteString("data", evt.Data),
 			zap.Error(err))
-		return PreparedDispatch{}, r.reject(ctx, evt, svc, CallbackFailure{
+		return nil, r.reject(ctx, evt, svc, CallbackFailure{
 			Code:        FailureCodeInvalidPayload,
 			MetricTag:   "invalid",
 			UserAlert:   "Invalid button action",
@@ -194,10 +194,11 @@ func (r *Router) prepare(
 		}, start)
 	}
 	if err := r.checkRateLimit(ctx, evt, ns, svc, start); err != nil {
-		return PreparedDispatch{}, err
+		return nil, err
 	}
 	if action == ActionNoop {
-		return PreparedDispatch{
+		return &preparedDispatch{
+			router:    r,
 			namespace: ns,
 			action:    action,
 			opaqueID:  opaqueID,
@@ -210,7 +211,7 @@ func (r *Router) prepare(
 	reg, ok := r.handlers[ns]
 	r.mu.RUnlock()
 	if !ok {
-		return PreparedDispatch{}, r.reject(ctx, evt, svc, CallbackFailure{
+		return nil, r.reject(ctx, evt, svc, CallbackFailure{
 			Code:        FailureCodeHandlerNotFound,
 			MetricTag:   "invalid",
 			UserAlert:   "Feature not available",
@@ -222,7 +223,7 @@ func (r *Router) prepare(
 	var scope tasks.ScopeIdentity
 	if requireScope && reg.owner != "" {
 		if resolve == nil {
-			return PreparedDispatch{}, r.reject(ctx, evt, svc, CallbackFailure{
+			return nil, r.reject(ctx, evt, svc, CallbackFailure{
 				Code:        FailureCodeHandlerNotFound,
 				MetricTag:   "unavailable",
 				UserAlert:   "Feature not available.",
@@ -233,7 +234,7 @@ func (r *Router) prepare(
 		var available bool
 		scope, available = resolve(reg.owner)
 		if !available {
-			return PreparedDispatch{}, r.reject(ctx, evt, svc, CallbackFailure{
+			return nil, r.reject(ctx, evt, svc, CallbackFailure{
 				Code:        FailureCodeHandlerNotFound,
 				MetricTag:   "unavailable",
 				UserAlert:   "Feature not available.",
@@ -247,7 +248,7 @@ func (r *Router) prepare(
 	current, stillCurrent := r.handlers[ns]
 	r.mu.RUnlock()
 	if !stillCurrent || current.id != reg.id {
-		return PreparedDispatch{}, r.reject(ctx, evt, svc, CallbackFailure{
+		return nil, r.reject(ctx, evt, svc, CallbackFailure{
 			Code:        FailureCodeHandlerNotFound,
 			MetricTag:   "stale_registration",
 			UserAlert:   "Feature not available.",
@@ -256,13 +257,14 @@ func (r *Router) prepare(
 		}, start)
 	}
 
-	return PreparedDispatch{
+	return &preparedDispatch{
+		router:         r,
 		namespace:      ns,
 		action:         action,
 		opaqueID:       opaqueID,
 		rawData:        raw,
 		registrationID: reg.id,
-		ResolvedScope:  scope,
+		scope:          scope,
 	}, nil
 }
 
