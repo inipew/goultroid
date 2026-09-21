@@ -714,7 +714,7 @@ func TestStateStore_StartStopCancel(t *testing.T) {
 	_ = store.Stop(ctx)
 }
 
-func TestCallback_FailureAndNewActionData(t *testing.T) {
+func TestCallback_FailureAndCheckedEncoding(t *testing.T) {
 	fail := &CallbackFailure{
 		Code:        FailureCodeUnauthorized,
 		UserAlert:   "Access denied",
@@ -729,9 +729,9 @@ func TestCallback_FailureAndNewActionData(t *testing.T) {
 		t.Errorf("expected non-empty error string")
 	}
 
-	data, err := NewActionData("settings", ActionNav, "abc12345")
+	data, err := EncodeCallbackDataChecked("settings", ActionNav, "abc12345")
 	if err != nil {
-		t.Fatalf("NewActionData failed: %v", err)
+		t.Fatalf("EncodeCallbackDataChecked failed: %v", err)
 	}
 	ns, act, oid, err := ParseCallbackData(data)
 	if err != nil {
