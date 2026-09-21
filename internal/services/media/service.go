@@ -25,6 +25,7 @@ type Service struct {
 	transcoder Transcoder
 	guard      *ResourceGuard
 	registry   *mediaregistry.Registry
+	reclaimer  *mediaregistry.Reclaimer
 }
 
 // NewService creates a new media service platform.
@@ -46,6 +47,10 @@ func NewService(
 	}
 	prober := NewFFProber(runner)
 	transcoder := NewFFmpegTranscoder(runner, store, guard, prober, registry)
+	var reclaimer *mediaregistry.Reclaimer
+	if registry != nil && store != nil {
+		reclaimer = mediaregistry.NewReclaimer(registry, store)
+	}
 
 	return &Service{
 		store:      store,
@@ -53,6 +58,7 @@ func NewService(
 		transcoder: transcoder,
 		guard:      guard,
 		registry:   registry,
+		reclaimer:  reclaimer,
 	}
 }
 
@@ -61,15 +67,19 @@ func (s *Service) Storage() storage.Storage {
 	return s.store
 }
 
-// DeleteTransientAsset removes a media-owned transient output from physical
-// storage, then removes its registry metadata. Physical deletion stays the
-// authoritative first step; metadata is retained when storage deletion fails.
+// DeleteTransientAsset delegates registered transient deletion to the global
+// reclaimer so the last durable-reference check and physical delete are covered
+// by the P3-C claim interlock. Standalone services without a global registry
+// retain the legacy direct-delete behavior.
 func (s *Service) DeleteTransientAsset(ctx context.Context, asset *storage.Asset) error {
 	if s == nil || s.store == nil || asset == nil || strings.TrimSpace(asset.ID) == "" {
 		return nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if s.reclaimer != nil {
+		return s.reclaimer.ReclaimNow(ctx, transientReclamationRequest(asset.ID, "media transient output consumed"))
 	}
 	if err := s.store.Delete(ctx, asset.ID); err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return err

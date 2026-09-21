@@ -167,8 +167,18 @@ func (r *SQLiteRepository) RegisterCloneMediaAsset(ctx context.Context, assetID 
 	if !r.registryReady {
 		return nil
 	}
-	if err := mediaregistry.New(r.db).RegisterAsset(ctx, cloneMediaAssetRegistration(assetID)); err != nil {
+	registry := mediaregistry.New(r.db)
+	if err := registry.RegisterAsset(ctx, cloneMediaAssetRegistration(assetID)); err != nil {
 		return fmt.Errorf("clone: register snapshot asset %q: %w", assetID, err)
+	}
+	if err := mediaregistry.NewReclaimer(registry, nil).PrepareReclamation(ctx, mediaregistry.ReclamationRequest{
+		AssetID:   assetID,
+		Owner:     cloneRegistryOwner,
+		Lifecycle: mediaregistry.LifecyclePersistent,
+		Reason:    "clone snapshot awaiting durable state",
+		Grace:     mediaregistry.DefaultReclamationGrace,
+	}); err != nil {
+		return fmt.Errorf("clone: prepare snapshot reclamation %q: %w", assetID, err)
 	}
 	return nil
 }

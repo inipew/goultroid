@@ -66,11 +66,11 @@ func reconcileBuiltinPersistentMedia(
 
 	// FileStorage is the durable source of truth. If startup fell back to the
 	// process-local memory backend (or storage is unavailable), an empty store
-	// does not prove that durable assets are gone; destructive P3-A
-	// reconciliation must therefore fail closed. The ledger-only backfill is
-	// metadata-only and remains safe, so keep migration progress independent of
-	// physical storage availability.
-	if store != nil && store.BasePath() != "memory://" {
+	// does not prove that durable assets are gone; destructive reconciliation
+	// must therefore fail closed. Metadata-only compatibility backfills remain
+	// safe and continue independently of physical storage availability.
+	durableStore := store != nil && store.BasePath() != "memory://"
+	if durableStore {
 		var err error
 		stats, err = savedresponse.NewService(store, db).ReconcilePersistentMedia(
 			reconcileCtx,
@@ -102,6 +102,44 @@ func reconcileBuiltinPersistentMedia(
 		startupPersistentMediaReconcileBatch,
 	); err != nil {
 		return stats, fmt.Errorf("persistent clone media registry compatibility failed: %w", err)
+	}
+
+	// P3-C runs only after every known durable reference source has been
+	// migrated/backfilled. Prepared intents come from producers that created
+	// bytes but never reached their normal cleanup/disarm point before the prior
+	// process stopped. Startup is quiescent, so those guards can become pending
+	// immediately. Ephemeral fallback storage never receives delete authority.
+	if durableStore {
+		reclaimer := mediaregistry.NewReclaimer(mediaregistry.New(db), store)
+		if _, err := reclaimer.DiscoverReclamations(
+			reconcileCtx,
+			[]mediaregistry.ReclamationPolicy{
+				{
+					Owner:      "clone",
+					Lifecycle:  mediaregistry.LifecyclePersistent,
+					MinimumAge: 0,
+					Reason:     "startup clone snapshot orphan policy",
+				},
+				{
+					Owner:      "media",
+					Lifecycle:  mediaregistry.LifecycleTransient,
+					MinimumAge: 0,
+					Reason:     "startup transient media orphan policy",
+				},
+			},
+			startupPersistentMediaReconcileBatch,
+		); err != nil {
+			return stats, fmt.Errorf("discover global media reclamation candidates failed: %w", err)
+		}
+		if _, _, err := reclaimer.ActivatePreparedAtStartup(
+			reconcileCtx,
+			startupPersistentMediaReconcileBatch,
+		); err != nil {
+			return stats, fmt.Errorf("activate prepared global media reclamation failed: %w", err)
+		}
+		if _, err := reclaimer.Reconcile(reconcileCtx, startupPersistentMediaReconcileBatch); err != nil {
+			return stats, fmt.Errorf("global media reclamation failed: %w", err)
+		}
 	}
 	return stats, nil
 }

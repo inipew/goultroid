@@ -6,6 +6,7 @@ import (
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/module"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/services/mediaregistry"
 )
 
 // ModuleType is the compile-time composition boundary for the clone feature.
@@ -29,7 +30,16 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	if rt.DB == nil {
 		return module.ErrNilDatabase
 	}
-	return rt.RegisterPlugin(ctx, m.Manifest(), New(NewSQLiteRepository(rt.DB), rt.OwnerID, rt.Storage))
+	registry := mediaregistry.New(rt.DB)
+	cloneStorage := mediaregistry.NewOwnerStorage(
+		rt.Storage,
+		registry,
+		cloneRegistryProducer,
+		cloneRegistryOwner,
+		mediaregistry.LifecyclePersistent,
+		"clone snapshot lifecycle cleanup",
+	)
+	return rt.RegisterPlugin(ctx, m.Manifest(), New(NewSQLiteRepository(rt.DB), rt.OwnerID, cloneStorage))
 }
 
 func (ModuleType) Migrations() []database.Migration {
