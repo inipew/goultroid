@@ -51,28 +51,28 @@ const (
 	ActionDuration = "dur"
 )
 
-// FailureCode categorizes standard callback processing rejections.
-type FailureCode string
+// failureCode categorizes canonical callback processing rejections.
+type failureCode string
 
 const (
-	FailureCodeInvalidPayload  FailureCode = "INVALID_PAYLOAD"
-	FailureCodeRateLimited     FailureCode = "RATE_LIMITED"
-	FailureCodeSessionExpired  FailureCode = "SESSION_EXPIRED"
-	FailureCodeUnauthorized    FailureCode = "UNAUTHORIZED"
-	FailureCodeHandlerNotFound FailureCode = "HANDLER_NOT_FOUND"
-	FailureCodeInternal        FailureCode = "INTERNAL_ERROR"
+	failureCodeInvalidPayload  failureCode = "INVALID_PAYLOAD"
+	failureCodeRateLimited     failureCode = "RATE_LIMITED"
+	failureCodeSessionExpired  failureCode = "SESSION_EXPIRED"
+	failureCodeUnauthorized    failureCode = "UNAUTHORIZED"
+	failureCodeHandlerNotFound failureCode = "HANDLER_NOT_FOUND"
+	failureCodeInternal        failureCode = "INTERNAL_ERROR"
 )
 
-// CallbackFailure encapsulates failure details for answering queries and reporting metrics.
-type CallbackFailure struct {
-	Code        FailureCode
+// callbackFailure carries internal rejection details for feedback and metrics.
+type callbackFailure struct {
+	Code        failureCode
 	UserAlert   string
 	InternalErr error
 	MetricTag   string
 	IsAlert     bool
 }
 
-func (f *CallbackFailure) Error() string {
+func (f *callbackFailure) Error() string {
 	if f == nil {
 		return ""
 	}
@@ -82,7 +82,7 @@ func (f *CallbackFailure) Error() string {
 	return fmt.Sprintf("callback failure [%s]: %s", f.Code, f.UserAlert)
 }
 
-func (f *CallbackFailure) Unwrap() error {
+func (f *callbackFailure) Unwrap() error {
 	if f == nil {
 		return nil
 	}
