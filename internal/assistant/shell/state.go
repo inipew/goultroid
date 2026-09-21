@@ -19,7 +19,7 @@ const (
 )
 
 const (
-	legacyStateBytes = 8
+	v0StateBytes = 8
 	v1StateBytes     = 16
 	v2StateBytes     = 32
 	stateBytes       = 40
@@ -41,7 +41,7 @@ func InitialState() []byte {
 }
 
 func DecodeState(raw []byte) State {
-	if len(raw) == legacyStateBytes {
+	if len(raw) == v0StateBytes {
 		return State{Screen: ScreenHome, Refreshes: binary.BigEndian.Uint64(raw)}
 	}
 	if len(raw) == v1StateBytes && raw[0] == 1 {
