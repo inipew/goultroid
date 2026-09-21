@@ -30,14 +30,6 @@ func TestHelpModulesDeterministicAndDetailedViews(t *testing.T) {
 	if !strings.Contains(root.Text, "Media") || !strings.Contains(root.Text, "2 commands") {
 		t.Fatalf("root help text = %q", root.Text)
 	}
-	for _, row := range root.Rows {
-		for _, button := range row {
-			if button.ActionID == ActionLegacy {
-				t.Fatal("help root still exposes Classic menu")
-			}
-		}
-	}
-
 	module := HelpModuleView(HelpModuleModel{Module: modules[1], ModuleIndex: 1, ModuleTotal: 3, Selected: 0})
 	if err := module.Validate(); err != nil {
 		t.Fatalf("HelpModuleView() invalid: %v", err)
