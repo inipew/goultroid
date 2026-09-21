@@ -566,6 +566,8 @@ func (p *panickingHandler) HandleCallback(ctx *CallbackContext) error {
 
 func TestRouter_HandlerPanicRecovery(t *testing.T) {
 	router := NewRouter(zap.NewNop(), nil)
+	metrics := &recordingMetrics{}
+	router.SetMetrics(metrics)
 	_ = router.Register(&panickingHandler{})
 
 	svc := &recordingService{}
@@ -579,8 +581,35 @@ func TestRouter_HandlerPanicRecovery(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error from recovered panic, got nil")
 	}
-	if !errors.Is(err, core.ErrInternal) {
-		t.Errorf("expected ErrInternal, got %v", err)
+	if !errors.Is(err, core.ErrInternal) || !errors.Is(err, ErrHandlerPanic) {
+		t.Errorf("expected classified handler panic, got %v", err)
+	}
+	if metrics.callbackCount != 1 || metrics.lastTag != "handler_panic" {
+		t.Fatalf("panic must emit one terminal metric, count=%d tag=%q", metrics.callbackCount, metrics.lastTag)
+	}
+}
+
+type contextCaptureHandler struct {
+	seen context.Context
+}
+
+func (h *contextCaptureHandler) Namespace() string { return "capture" }
+func (h *contextCaptureHandler) HandleCallback(ctx *CallbackContext) error {
+	h.seen = ctx.Ctx
+	return nil
+}
+
+func TestTimeoutMiddleware_ReusesTighterUpstreamDeadline(t *testing.T) {
+	parent, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	handler := &contextCaptureHandler{}
+	cbCtx := &CallbackContext{Ctx: parent}
+	if err := Chain(handler, TimeoutMiddleware(15*time.Second)).HandleCallback(cbCtx); err != nil {
+		t.Fatalf("handler failed: %v", err)
+	}
+	if handler.seen != parent {
+		t.Fatal("callback timeout allocated a second context despite tighter upstream deadline")
 	}
 }
 
