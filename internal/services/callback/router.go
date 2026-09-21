@@ -31,21 +31,38 @@ type registration struct {
 	id      uint64
 }
 
-// PreparedDispatch pins callback admission to one concrete handler
-// registration. Scope is resolved before TaskEngine admission; DispatchPrepared
-// rejects the callback if that registration is no longer current.
-type PreparedDispatch struct {
+// PreparedCallback is the opaque execution lease returned by Router.Prepare.
+// It pins one callback handler registration and its TaskEngine lifecycle scope.
+// Callers cannot inspect or mutate the registration identity.
+type PreparedCallback interface {
+	Scope() tasks.ScopeIdentity
+	Dispatch(context.Context, *core.CallbackQueryEvent, core.TelegramServicer) error
+}
+
+type preparedDispatch struct {
+	router         *Router
 	namespace      string
 	action         string
 	opaqueID       string
 	rawData        string
 	registrationID uint64
-	ResolvedScope  tasks.ScopeIdentity
+	scope          tasks.ScopeIdentity
 	noop           bool
 }
 
-// Scope returns the TaskEngine lifecycle scope resolved for this callback.
-func (p PreparedDispatch) Scope() tasks.ScopeIdentity { return p.ResolvedScope }
+func (p *preparedDispatch) Scope() tasks.ScopeIdentity {
+	if p == nil {
+		return tasks.ScopeIdentity{}
+	}
+	return p.scope
+}
+
+func (p *preparedDispatch) Dispatch(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer) error {
+	if p == nil || p.router == nil {
+		return core.ErrInternal
+	}
+	return p.router.dispatchPrepared(ctx, evt, svc, p)
+}
 
 // Registration is an idempotent callback handler lease.
 type Registration struct {
