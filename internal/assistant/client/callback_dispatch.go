@@ -191,7 +191,7 @@ func dispatchCoreCallback(
 		OrderingKey:      callbackOrderingKey(evt),
 		ExecutionTimeout: 15 * time.Second,
 		Handler: func(taskCtx context.Context) error {
-			dispatchErr := dispatcher.DispatchPrepared(taskCtx, evt, svc, prepared)
+			dispatchErr := prepared.Dispatch(taskCtx, evt, svc)
 			doneCh <- dispatchErr
 			return dispatchErr
 		},
