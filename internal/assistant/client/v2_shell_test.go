@@ -3,12 +3,14 @@ package client
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/command"
 	assistantshell "github.com/inipew/goultroid/internal/assistant/shell"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 	"github.com/inipew/goultroid/internal/interaction/orchestration"
 	"github.com/inipew/goultroid/internal/plugin"
@@ -40,47 +42,76 @@ func (p *shellTestPort) Answer(_ context.Context, answer presentation.Answer) er
 	return nil
 }
 
-func TestAssistantShellRefreshStalesOldButtonAndReloadsGeneration(t *testing.T) {
+func callbackForAction(t *testing.T, view presentation.CompiledView, actionID string) []byte {
+	t.Helper()
+	for _, row := range view.Rows {
+		for _, button := range row {
+			token, err := rootinteraction.ParseCallbackToken(button.Data)
+			if err != nil {
+				t.Fatalf("ParseCallbackToken(%q) error = %v", button.Data, err)
+			}
+			if token.ActionID == actionID {
+				return append([]byte(nil), button.Data...)
+			}
+		}
+	}
+	t.Fatalf("action %q not found in compiled view", actionID)
+	return nil
+}
+
+func newShellEngine(t *testing.T) (*plugin.Manager, *AssistantClient, *shellTestPort, *orchestration.Engine) {
+	t.Helper()
 	manager := plugin.NewManager(core.NewRouter("."))
 	if err := manager.Register(assistantshell.NewFeature()); err != nil {
 		t.Fatalf("Register(shell) error = %v", err)
 	}
-	defer manager.Shutdown()
-
-	catalog := manager.FeatureCatalog()
-	sessions := manager.InteractionRuntime()
-	actions := manager.ActionDispatcher()
 	port := &shellTestPort{}
-	engine, err := orchestration.New(sessions, actions, port)
+	engine, err := orchestration.New(manager.InteractionRuntime(), manager.ActionDispatcher(), port)
 	if err != nil {
+		manager.Shutdown()
 		t.Fatalf("orchestration.New() error = %v", err)
 	}
 	client := NewAssistantClient(1, "hash", "token", zap.NewNop())
 	client.SetOwner(7, nil)
-	if err := client.ensureShellActions(engine, catalog); err != nil {
+	client.SetInteractionFoundation(manager.FeatureCatalog(), manager.InteractionRuntime(), manager.ActionDispatcher())
+	if err := client.ensureShellActions(engine, manager.FeatureCatalog()); err != nil {
+		manager.Shutdown()
 		t.Fatalf("ensureShellActions() error = %v", err)
 	}
+	return manager, client, port, engine
+}
 
-	peer := &tg.InputPeerUser{UserID: 7}
-	begin := func() []byte {
-		_, err := engine.Begin(context.Background(), orchestration.BeginRequest{
-			FeatureID: assistantshell.FeatureID,
-			ActorID:   7,
-			State:     assistantshell.InitialState(),
-			Target:    presentationtelegram.MessageTarget{Peer: peer, ChatID: 7},
-			View:      assistantshell.HomeView(assistantshell.HomeModel{Username: "TestBot"}),
-		})
-		if err != nil {
-			t.Fatalf("Begin() error = %v", err)
-		}
-		return append([]byte(nil), port.sent.Rows[0][0].Data...)
+func beginShell(t *testing.T, engine *orchestration.Engine, port *shellTestPort, peer tg.InputPeerClass) {
+	t.Helper()
+	_, err := engine.Begin(context.Background(), orchestration.BeginRequest{
+		FeatureID: assistantshell.FeatureID,
+		ActorID:   7,
+		State:     assistantshell.InitialState(),
+		Target:    presentationtelegram.MessageTarget{Peer: peer, ChatID: 7},
+		View:      assistantshell.HomeView(assistantshell.HomeModel{Username: "TestBot"}),
+	})
+	if err != nil {
+		t.Fatalf("Begin() error = %v", err)
 	}
+}
 
-	oldRefresh := begin()
-	if err := engine.Dispatch(context.Background(), orchestration.CallbackRequest{
-		Data: oldRefresh, ActorID: 7, QueryID: 100,
+func dispatchShell(t *testing.T, engine *orchestration.Engine, data []byte, queryID int64, peer tg.InputPeerClass) error {
+	t.Helper()
+	return engine.Dispatch(context.Background(), orchestration.CallbackRequest{
+		Data: data, ActorID: 7, QueryID: queryID,
 		Target: presentationtelegram.MessageTarget{Peer: peer, ChatID: 7, MessageID: 77},
-	}); err != nil {
+	})
+}
+
+func TestAssistantShellRefreshStalesOldButtonAndReloadsGeneration(t *testing.T) {
+	manager, client, port, engine := newShellEngine(t)
+	defer manager.Shutdown()
+	catalog := manager.FeatureCatalog()
+	peer := &tg.InputPeerUser{UserID: 7}
+
+	beginShell(t, engine, port, peer)
+	oldRefresh := callbackForAction(t, port.sent, assistantshell.ActionRefresh)
+	if err := dispatchShell(t, engine, oldRefresh, 100, peer); err != nil {
 		t.Fatalf("Dispatch(refresh) error = %v", err)
 	}
 	if assistantshell.RefreshCount([]byte{1}) != 0 {
@@ -89,10 +120,7 @@ func TestAssistantShellRefreshStalesOldButtonAndReloadsGeneration(t *testing.T) 
 	if len(port.edited.Rows) == 0 {
 		t.Fatal("refresh did not render a transitioned view")
 	}
-	if err := engine.Dispatch(context.Background(), orchestration.CallbackRequest{
-		Data: oldRefresh, ActorID: 7, QueryID: 101,
-		Target: presentationtelegram.MessageTarget{Peer: peer, ChatID: 7, MessageID: 77},
-	}); !errors.Is(err, rootinteraction.ErrStaleToken) {
+	if err := dispatchShell(t, engine, oldRefresh, 101, peer); !errors.Is(err, rootinteraction.ErrStaleToken) {
 		t.Fatalf("old button error = %v, want %v", err, rootinteraction.ErrStaleToken)
 	}
 
@@ -100,14 +128,11 @@ func TestAssistantShellRefreshStalesOldButtonAndReloadsGeneration(t *testing.T) 
 	if !ok {
 		t.Fatal("shell feature missing before reload")
 	}
-	newRevisionButton := append([]byte(nil), port.edited.Rows[0][0].Data...)
+	newRevisionButton := callbackForAction(t, port.edited, assistantshell.ActionRefresh)
 	if err := manager.Disable(context.Background(), assistantshell.FeatureID); err != nil {
 		t.Fatalf("Disable(shell) error = %v", err)
 	}
-	if err := engine.Dispatch(context.Background(), orchestration.CallbackRequest{
-		Data: newRevisionButton, ActorID: 7, QueryID: 102,
-		Target: presentationtelegram.MessageTarget{Peer: peer, ChatID: 7, MessageID: 77},
-	}); err == nil {
+	if err := dispatchShell(t, engine, newRevisionButton, 102, peer); err == nil {
 		t.Fatal("callback from disabled generation unexpectedly executed")
 	}
 	if err := manager.Enable(context.Background(), assistantshell.FeatureID); err != nil {
@@ -123,12 +148,86 @@ func TestAssistantShellRefreshStalesOldButtonAndReloadsGeneration(t *testing.T) 
 	if err := client.ensureShellActions(engine, catalog); err != nil {
 		t.Fatalf("ensureShellActions(reload) error = %v", err)
 	}
-	newRefresh := begin()
-	if err := engine.Dispatch(context.Background(), orchestration.CallbackRequest{
-		Data: newRefresh, ActorID: 7, QueryID: 103,
-		Target: presentationtelegram.MessageTarget{Peer: peer, ChatID: 7, MessageID: 77},
-	}); err != nil {
+	beginShell(t, engine, port, peer)
+	newRefresh := callbackForAction(t, port.sent, assistantshell.ActionRefresh)
+	if err := dispatchShell(t, engine, newRefresh, 103, peer); err != nil {
 		t.Fatalf("Dispatch(new generation) error = %v", err)
+	}
+}
+
+func TestAssistantShellReadOnlyNavigationUsesOneRevisionFencedSession(t *testing.T) {
+	manager, client, port, engine := newShellEngine(t)
+	defer manager.Shutdown()
+
+	router := core.NewRouter(".")
+	if err := router.RegisterBatch([]core.Command{
+		{Name: "alive", Category: "System", Surfaces: execution.SurfaceAssistant, Handler: func(*core.Context) error { return nil }},
+		{Name: "download", Category: "Media", Surfaces: execution.SurfaceAssistant, Handler: func(*core.Context) error { return nil }},
+		{Name: "hidden", Category: "Hidden", Surfaces: execution.SurfaceUserbot, Handler: func(*core.Context) error { return nil }},
+	}); err != nil {
+		t.Fatalf("RegisterBatch() error = %v", err)
+	}
+	client.SetCoreRouter(router)
+
+	peer := &tg.InputPeerUser{UserID: 7}
+	beginShell(t, engine, port, peer)
+	statusFromHome := callbackForAction(t, port.sent, assistantshell.ActionStatus)
+	if err := dispatchShell(t, engine, statusFromHome, 200, peer); err != nil {
+		t.Fatalf("Dispatch(status) error = %v", err)
+	}
+	if !strings.Contains(port.edited.Text, "System Status") {
+		t.Fatalf("status view not rendered: %q", port.edited.Text)
+	}
+	if err := dispatchShell(t, engine, statusFromHome, 201, peer); !errors.Is(err, rootinteraction.ErrStaleToken) {
+		t.Fatalf("pre-navigation status token error = %v, want %v", err, rootinteraction.ErrStaleToken)
+	}
+
+	statusRefresh := callbackForAction(t, port.edited, assistantshell.ActionStatusRefresh)
+	if err := dispatchShell(t, engine, statusRefresh, 202, peer); err != nil {
+		t.Fatalf("Dispatch(status refresh) error = %v", err)
+	}
+	if !strings.Contains(port.edited.Text, "Session refreshes") {
+		t.Fatalf("status refresh did not preserve state: %q", port.edited.Text)
+	}
+
+	homeFromStatus := callbackForAction(t, port.edited, assistantshell.ActionHome)
+	if err := dispatchShell(t, engine, homeFromStatus, 203, peer); err != nil {
+		t.Fatalf("Dispatch(home) error = %v", err)
+	}
+	if !strings.Contains(port.edited.Text, "GoUltroid Assistant") {
+		t.Fatalf("home view not rendered: %q", port.edited.Text)
+	}
+
+	helpFromHome := callbackForAction(t, port.edited, assistantshell.ActionHelp)
+	if err := dispatchShell(t, engine, helpFromHome, 204, peer); err != nil {
+		t.Fatalf("Dispatch(help) error = %v", err)
+	}
+	if !strings.Contains(port.edited.Text, "Command Browser") || !strings.Contains(port.edited.Text, "Media") || !strings.Contains(port.edited.Text, "System") {
+		t.Fatalf("help view missing canonical command summary: %q", port.edited.Text)
+	}
+	if strings.Contains(port.edited.Text, "Hidden") {
+		t.Fatalf("help view leaked userbot-only command category: %q", port.edited.Text)
+	}
+
+	homeFromHelp := callbackForAction(t, port.edited, assistantshell.ActionHome)
+	if err := dispatchShell(t, engine, homeFromHelp, 205, peer); err != nil {
+		t.Fatalf("Dispatch(home from help) error = %v", err)
+	}
+	if got := manager.InteractionRuntime().Stats().Sessions; got != 1 {
+		t.Fatalf("navigation sessions = %d, want 1", got)
+	}
+}
+
+func TestAssistantShellActionAdmissionTracksOwnerChanges(t *testing.T) {
+	manager, client, port, engine := newShellEngine(t)
+	defer manager.Shutdown()
+	peer := &tg.InputPeerUser{UserID: 7}
+	beginShell(t, engine, port, peer)
+	status := callbackForAction(t, port.sent, assistantshell.ActionStatus)
+
+	client.SetOwner(8, nil)
+	if err := dispatchShell(t, engine, status, 300, peer); !errors.Is(err, ErrShellAdmission) {
+		t.Fatalf("Dispatch(after owner change) error = %v, want %v", err, ErrShellAdmission)
 	}
 }
 

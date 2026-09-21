@@ -57,32 +57,17 @@ func (c *AssistantClient) openShell(cmdCtx *command.Context) error {
 	c.mu.RLock()
 	ingress := c.v2Ingress
 	catalog := c.v2Catalog
-	ownerID := c.ownerID
-	sudoGetter := c.sudoGetter
 	c.mu.RUnlock()
 	if ingress == nil || ingress.engine == nil || catalog == nil {
 		return ErrShellUnavailable
 	}
 
 	private := isPrivatePeer(cmdCtx.Peer)
-	var sudos []int64
-	if sudoGetter != nil {
-		sudos = sudoGetter()
+	if err := c.admitShellInteraction(catalog, feature.InteractionDeepLink, assistantshell.InteractionStart, cmdCtx.SenderID, private); err != nil {
+		return err
 	}
-	perms := core.NewPermissions(ownerID, sudos)
-	start, ok := catalog.FindInteraction(assistantshell.FeatureID, feature.InteractionDeepLink, assistantshell.InteractionStart)
-	if !ok {
-		return ErrShellUnavailable
-	}
-	if err := feature.AdmitInteraction(start, execution.SourceAssistant, cmdCtx.SenderID, private, perms); err != nil {
-		return fmt.Errorf("%w: %w", ErrShellAdmission, err)
-	}
-	home, ok := catalog.FindInteraction(assistantshell.FeatureID, feature.InteractionScreen, assistantshell.InteractionHome)
-	if !ok {
-		return ErrShellUnavailable
-	}
-	if err := feature.AdmitInteraction(home, execution.SourceAssistant, cmdCtx.SenderID, private, perms); err != nil {
-		return fmt.Errorf("%w: %w", ErrShellAdmission, err)
+	if err := c.admitShellInteraction(catalog, feature.InteractionScreen, assistantshell.InteractionHome, cmdCtx.SenderID, private); err != nil {
+		return err
 	}
 	if err := c.ensureShellActions(ingress.engine, catalog); err != nil {
 		return err
@@ -114,6 +99,32 @@ func isPrivatePeer(peer tg.InputPeerClass) bool {
 	}
 }
 
+func (c *AssistantClient) shellPermissions() *core.Permissions {
+	c.mu.RLock()
+	ownerID := c.ownerID
+	sudoGetter := c.sudoGetter
+	c.mu.RUnlock()
+	var sudos []int64
+	if sudoGetter != nil {
+		sudos = sudoGetter()
+	}
+	return core.NewPermissions(ownerID, sudos)
+}
+
+func (c *AssistantClient) admitShellInteraction(catalog feature.Catalog, kind feature.InteractionKind, interactionID string, userID int64, private bool) error {
+	if catalog == nil {
+		return ErrShellUnavailable
+	}
+	interaction, ok := catalog.FindInteraction(assistantshell.FeatureID, kind, interactionID)
+	if !ok {
+		return ErrShellUnavailable
+	}
+	if err := feature.AdmitInteraction(interaction, execution.SourceAssistant, userID, private, c.shellPermissions()); err != nil {
+		return fmt.Errorf("%w: %w", ErrShellAdmission, err)
+	}
+	return nil
+}
+
 func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catalog feature.Catalog) error {
 	if engine == nil || catalog == nil {
 		return ErrShellUnavailable
@@ -125,7 +136,7 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 
 	c.shellMu.Lock()
 	defer c.shellMu.Unlock()
-	if c.shellScope == scope && len(c.shellRegistrations) == 3 {
+	if c.shellScope == scope && len(c.shellRegistrations) == 7 {
 		return nil
 	}
 	for _, registration := range c.shellRegistrations {
@@ -136,7 +147,7 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 	c.shellRegistrations = nil
 	c.shellScope = tasks.ScopeIdentity{}
 
-	registrations := make([]*rootinteraction.HandlerRegistration, 0, 3)
+	registrations := make([]*rootinteraction.HandlerRegistration, 0, 7)
 	register := func(actionID string, handler orchestration.Handler) error {
 		guarded := func(ctx *orchestration.Context) error {
 			if err := c.admitShellAction(catalog, actionID, ctx); err != nil {
@@ -151,17 +162,22 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 		registrations = append(registrations, registration)
 		return nil
 	}
-	if err := register(assistantshell.ActionRefresh, c.handleShellRefresh); err != nil {
-		closeShellRegistrations(registrations)
-		return err
-	}
-	if err := register(assistantshell.ActionPing, c.handleShellPing); err != nil {
-		closeShellRegistrations(registrations)
-		return err
-	}
-	if err := register(assistantshell.ActionLegacy, c.handleShellLegacy); err != nil {
-		closeShellRegistrations(registrations)
-		return err
+	for _, action := range []struct {
+		id      string
+		handler orchestration.Handler
+	}{
+		{id: assistantshell.ActionRefresh, handler: c.handleShellRefresh},
+		{id: assistantshell.ActionPing, handler: c.handleShellPing},
+		{id: assistantshell.ActionStatus, handler: c.handleShellStatus},
+		{id: assistantshell.ActionHelp, handler: c.handleShellHelp},
+		{id: assistantshell.ActionHome, handler: c.handleShellHome},
+		{id: assistantshell.ActionStatusRefresh, handler: c.handleShellStatusRefresh},
+		{id: assistantshell.ActionLegacy, handler: c.handleShellLegacy},
+	} {
+		if err := register(action.id, action.handler); err != nil {
+			closeShellRegistrations(registrations)
+			return err
+		}
 	}
 	c.shellScope = scope
 	c.shellRegistrations = registrations
@@ -169,11 +185,7 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 }
 
 func (c *AssistantClient) admitShellAction(catalog feature.Catalog, actionID string, ctx *orchestration.Context) error {
-	if catalog == nil || ctx == nil {
-		return ErrShellUnavailable
-	}
-	interaction, ok := catalog.FindInteraction(assistantshell.FeatureID, feature.InteractionAction, actionID)
-	if !ok {
+	if ctx == nil {
 		return ErrShellUnavailable
 	}
 	session := ctx.Session()
@@ -181,18 +193,21 @@ func (c *AssistantClient) admitShellAction(catalog feature.Catalog, actionID str
 	if target, ok := ctx.Target().(presentationtelegram.MessageTarget); ok {
 		private = isPrivatePeer(target.Peer)
 	}
+	return c.admitShellInteraction(catalog, feature.InteractionAction, actionID, session.Binding.ActorID, private)
+}
+
+func (c *AssistantClient) admitShellScreen(ctx *orchestration.Context, screenID string) error {
+	if ctx == nil {
+		return ErrShellUnavailable
+	}
+	private := false
+	if target, ok := ctx.Target().(presentationtelegram.MessageTarget); ok {
+		private = isPrivatePeer(target.Peer)
+	}
 	c.mu.RLock()
-	ownerID := c.ownerID
-	sudoGetter := c.sudoGetter
+	catalog := c.v2Catalog
 	c.mu.RUnlock()
-	var sudos []int64
-	if sudoGetter != nil {
-		sudos = sudoGetter()
-	}
-	if err := feature.AdmitInteraction(interaction, execution.SourceAssistant, session.Binding.ActorID, private, core.NewPermissions(ownerID, sudos)); err != nil {
-		return fmt.Errorf("%w: %w", ErrShellAdmission, err)
-	}
-	return nil
+	return c.admitShellInteraction(catalog, feature.InteractionScreen, screenID, ctx.Session().Binding.ActorID, private)
 }
 
 func closeShellRegistrations(registrations []*rootinteraction.HandlerRegistration) {
@@ -204,6 +219,9 @@ func closeShellRegistrations(registrations []*rootinteraction.HandlerRegistratio
 }
 
 func (c *AssistantClient) handleShellRefresh(ctx *orchestration.Context) error {
+	if err := c.admitShellScreen(ctx, assistantshell.InteractionHome); err != nil {
+		return err
+	}
 	state := assistantshell.NextRefreshState(ctx.State())
 	return ctx.Transition(state, 0, assistantshell.HomeView(assistantshell.HomeModel{
 		Username:  c.Username(),
@@ -214,6 +232,59 @@ func (c *AssistantClient) handleShellRefresh(ctx *orchestration.Context) error {
 
 func (*AssistantClient) handleShellPing(ctx *orchestration.Context) error {
 	return ctx.Answer("🏓 Pong!", false)
+}
+
+func (c *AssistantClient) handleShellStatus(ctx *orchestration.Context) error {
+	if err := c.admitShellScreen(ctx, assistantshell.InteractionStatus); err != nil {
+		return err
+	}
+	return ctx.Transition(ctx.State(), 0, c.shellStatusView(ctx.State()))
+}
+
+func (c *AssistantClient) handleShellStatusRefresh(ctx *orchestration.Context) error {
+	if err := c.admitShellScreen(ctx, assistantshell.InteractionStatus); err != nil {
+		return err
+	}
+	state := assistantshell.NextRefreshState(ctx.State())
+	return ctx.Transition(state, 0, c.shellStatusView(state))
+}
+
+func (c *AssistantClient) handleShellHelp(ctx *orchestration.Context) error {
+	if err := c.admitShellScreen(ctx, assistantshell.InteractionHelp); err != nil {
+		return err
+	}
+	return ctx.Transition(ctx.State(), 0, assistantshell.HelpView(assistantshell.HelpModel{Commands: c.shellCommands()}))
+}
+
+func (c *AssistantClient) handleShellHome(ctx *orchestration.Context) error {
+	if err := c.admitShellScreen(ctx, assistantshell.InteractionHome); err != nil {
+		return err
+	}
+	return ctx.Transition(ctx.State(), 0, assistantshell.HomeView(assistantshell.HomeModel{
+		Username:  c.Username(),
+		Uptime:    time.Since(c.StartTime()),
+		Refreshes: assistantshell.RefreshCount(ctx.State()),
+	}))
+}
+
+func (c *AssistantClient) shellStatusView(state []byte) presentation.View {
+	return assistantshell.StatusView(assistantshell.StatusModel{
+		Username:  c.Username(),
+		Uptime:    time.Since(c.StartTime()),
+		Engine:    "GoUltroid (MTProto)",
+		Refreshes: assistantshell.RefreshCount(state),
+	})
+}
+
+func (c *AssistantClient) shellCommands() []core.Command {
+	if c == nil || c.cmdRouter == nil {
+		return nil
+	}
+	router := c.cmdRouter.CoreRouter()
+	if router == nil {
+		return nil
+	}
+	return router.CommandsForSurface(execution.SourceAssistant)
 }
 
 func (c *AssistantClient) handleShellLegacy(ctx *orchestration.Context) error {
