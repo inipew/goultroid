@@ -77,14 +77,14 @@ func (s *MenuState) SetTarget(ns, key string) {
 // Plugin provides interactive settings management via dashboard and CLI.
 type Plugin struct {
 	service    *settings.Service
-	stateStore *callback.StateStore
+	stateStore callback.StateWriter
 	logger     *zap.Logger
 	setUC      *usecase.SetSettingUseCase
 	resetUC    *usecase.ResetSettingUseCase
 }
 
 // New creates a new settings plugin instance.
-func New(service *settings.Service, stateStore *callback.StateStore) *Plugin {
+func New(service *settings.Service, stateStore callback.StateWriter) *Plugin {
 	if stateStore == nil {
 		stateStore = callback.NewStateStore()
 	}
