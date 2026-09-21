@@ -8,12 +8,12 @@ import (
 	"go.uber.org/zap"
 )
 
-// Middleware wraps handler-local execution concerns. Admission concerns such as
+// middleware wraps handler-local execution concerns. Admission concerns such as
 // protocol validation and rate limiting are owned by Router.Prepare.
-type Middleware func(Handler) Handler
+type middleware func(Handler) Handler
 
-// Chain builds a Handler chain from middlewares. Last middleware wraps the final handler first.
-func Chain(final Handler, mws ...Middleware) Handler {
+// chain builds a Handler chain from middlewares. Last middleware wraps the final handler first.
+func chain(final Handler, mws ...middleware) Handler {
 	h := final
 	for i := len(mws) - 1; i >= 0; i-- {
 		h = mws[i](h)
@@ -21,9 +21,9 @@ func Chain(final Handler, mws ...Middleware) Handler {
 	return h
 }
 
-// RecoverMiddleware recovers panics and classifies them for the router's
+// recoverMiddleware recovers panics and classifies them for the router's
 // single terminal metrics write. It must remain the outermost middleware.
-func RecoverMiddleware(logger *zap.Logger) Middleware {
+func recoverMiddleware(logger *zap.Logger) middleware {
 	return func(next Handler) Handler {
 		return handlerFunc{
 			ns: next.Namespace(),
@@ -45,10 +45,10 @@ func RecoverMiddleware(logger *zap.Logger) Middleware {
 	}
 }
 
-// TimeoutMiddleware supplies a fallback handler deadline. If an upstream owner
+// timeoutMiddleware supplies a fallback handler deadline. If an upstream owner
 // such as TaskEngine already installed an equal or tighter deadline, reuse it
 // instead of allocating a second timer.
-func TimeoutMiddleware(timeout time.Duration) Middleware {
+func timeoutMiddleware(timeout time.Duration) middleware {
 	return func(next Handler) Handler {
 		return handlerFunc{
 			ns: next.Namespace(),
