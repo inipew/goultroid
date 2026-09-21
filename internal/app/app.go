@@ -232,9 +232,9 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		return nil, fmt.Errorf("register assistant shell feature: %w", err)
 	}
 	if tgRuntime.assistant != nil {
-		drivers := make([]assistantinteraction.V2FeatureDriver, 0)
+		drivers := make([]assistantinteraction.FeatureDriver, 0)
 		for _, registered := range pluginManager.Plugins() {
-			if driver, ok := registered.(assistantinteraction.V2FeatureDriver); ok {
+			if driver, ok := registered.(assistantinteraction.FeatureDriver); ok {
 				drivers = append(drivers, driver)
 			}
 		}
