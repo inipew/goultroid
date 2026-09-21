@@ -542,3 +542,61 @@ func TestCallbackIngress_TaskCancellationUnblocksAndAnswers(t *testing.T) {
 		t.Fatalf("cancellation must clear spinner, answer=%q", inter.answer)
 	}
 }
+
+
+type canonicalBridgeHandler struct {
+	handled bool
+}
+
+func (h *canonicalBridgeHandler) Namespace() string { return "bridge" }
+func (h *canonicalBridgeHandler) CallbackOptions() corecallback.CallbackHandlerOptions {
+	return corecallback.CallbackHandlerOptions{AutoAnswer: false}
+}
+func (h *canonicalBridgeHandler) HandleCallback(ctx *corecallback.CallbackContext) error {
+	h.handled = true
+	return ctx.Answer("canonical", false)
+}
+
+func TestCallbackIngress_UsesCanonicalCallbackRouter(t *testing.T) {
+	router := corecallback.NewRouter(zap.NewNop(), corecallback.NewStateStore())
+	handler := &canonicalBridgeHandler{}
+	if err := router.Register(handler); err != nil {
+		t.Fatalf("register canonical handler: %v", err)
+	}
+
+	taskClient := &testTaskClient{}
+	inter := &recordingInteraction{mockInteraction: &mockInteraction{}}
+	target := interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 42}, 9, 42, 1)
+	evt := messageEvent(990, 42, corecallback.EncodeCallbackData("bridge", "run", "noop"), target)
+	svc := newAssistantCallbackServicer(evt.QueryID, target, inter)
+
+	if err := dispatchCoreCallback(context.Background(), router, taskClient, nil, newCallbackQueryDeduper(), evt, svc, zap.NewNop()); err != nil {
+		t.Fatalf("dispatch canonical router: %v", err)
+	}
+	if !handler.handled {
+		t.Fatal("canonical callback handler was not executed")
+	}
+	if inter.answer != "canonical" || inter.answerCalls != 1 {
+		t.Fatalf("canonical acknowledgement = %q calls=%d", inter.answer, inter.answerCalls)
+	}
+}
+
+func TestCallbackQueryDeduper_BoundedAndReusableAfterTTL(t *testing.T) {
+	deduper := newCallbackQueryDeduper()
+	now := time.Unix(100, 0)
+	if !deduper.Admit(1, now) || deduper.Admit(1, now) {
+		t.Fatal("query id must be admitted once within the dedupe window")
+	}
+	if !deduper.Admit(1, now.Add(assistantCallbackDedupTTL)) {
+		t.Fatal("query id must be reusable after the dedupe window")
+	}
+
+	for i := int64(2); i < int64(assistantCallbackDedupMax)+32; i++ {
+		if !deduper.Admit(i, now.Add(time.Minute)) {
+			t.Fatalf("unexpected rejection for unique query %d", i)
+		}
+	}
+	if len(deduper.seen) > assistantCallbackDedupMax {
+		t.Fatalf("dedupe map exceeded bound: %d > %d", len(deduper.seen), assistantCallbackDedupMax)
+	}
+}
