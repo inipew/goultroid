@@ -130,7 +130,7 @@ func (p *Plugin) BindAssistant(rt assistantinteraction.DriverRuntime) (func(), e
 	return cleanup, nil
 }
 
-func (p *Plugin) assistantRuntime() assistantinteraction.DriverRuntime {
+func (p *Plugin) currentAssistantRuntime() assistantinteraction.DriverRuntime {
 	if p == nil {
 		return assistantinteraction.DriverRuntime{}
 	}
@@ -144,7 +144,7 @@ func (p *Plugin) openAssistant(cmd *core.Context) error {
 	if p == nil || cmd == nil || cmd.PeerID == nil || cmd.SenderID() == 0 {
 		return fmt.Errorf("myxl: assistant command target unavailable")
 	}
-	rt := p.assistantRuntime()
+	rt := p.currentAssistantRuntime()
 	if rt.Engine == nil || rt.Admit == nil {
 		return fmt.Errorf("myxl: assistant runtime unavailable")
 	}
@@ -601,7 +601,7 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		if qrCode == "" {
 			return ctx.Answer("Kode QRIS tidak ditemukan atau sudah kedaluwarsa", true)
 		}
-		rt := p.assistantRuntime()
+		rt := p.currentAssistantRuntime()
 		target, ok := ctx.Target().(presentationtelegram.MessageTarget)
 		if !ok || target.Peer == nil || rt.Service == nil {
 			return ctx.Answer("Layanan pengiriman foto tidak tersedia", true)
@@ -661,7 +661,7 @@ func (p *Plugin) HandleAssistantInput(ctx *orchestration.Context, text string) e
 	if p == nil || ctx == nil {
 		return orchestration.ErrInvalidEngine
 	}
-	rt := p.assistantRuntime()
+	rt := p.currentAssistantRuntime()
 	session := ctx.Session()
 	if rt.Admit == nil {
 		return fmt.Errorf("myxl: assistant runtime unavailable")
@@ -959,7 +959,7 @@ func (p *Plugin) confirmAssistantPurchase(ctx *orchestration.Context, state assi
 	}
 
 	if result.QRCode != "" {
-		rt := p.assistantRuntime()
+		rt := p.currentAssistantRuntime()
 		if target, ok := ctx.Target().(presentationtelegram.MessageTarget); ok && target.Peer != nil && rt.Service != nil {
 			if err := p.sendQRPhoto(ctx.Context(), rt.Service, target.Peer, result.QRCode, draft.PackageName, effectivePrice); err != nil && qrWarning == "" {
 				qrWarning = "Transaksi selesai tetapi foto QRIS gagal dikirim."
