@@ -327,6 +327,10 @@ func (s *StateStore) ClaimEntry(opaqueID string, validate func(StateScope) error
 }
 
 // Consume atomically retrieves and marks a single-use entry as consumed.
+//
+// Deprecated: canonical callback execution owns single-use consumption through
+// Router.DispatchPrepared -> ClaimEntry. Keep this method only for compatibility
+// with non-router callers that explicitly own their own state lifecycle.
 func (s *StateStore) Consume(opaqueID string) (StateEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
