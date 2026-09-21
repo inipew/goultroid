@@ -620,3 +620,76 @@ func TestCallbackQueryDeduper_BoundedAndReusableAfterTTL(t *testing.T) {
 		t.Fatalf("dedupe map exceeded bound: %d > %d", len(deduper.seen), assistantCallbackDedupMax)
 	}
 }
+
+
+type countingAssistantRateLimiter struct {
+	calls int
+	allow bool
+}
+
+func (l *countingAssistantRateLimiter) Allow(int64, string) bool {
+	l.calls++
+	return l.allow
+}
+
+func TestUpdateHandlers_V1UsesOnlyCanonicalCallbackRateLimit(t *testing.T) {
+	dispatcher := tg.NewUpdateDispatcher()
+	api := &mockTelegramAPI{}
+	clientInter := interaction.NewClientInteraction(api, zap.NewNop())
+	transportLimiter := &countingAssistantRateLimiter{allow: false}
+	dispatched := false
+	coreDispatcher := &mockCoreDispatcher{
+		hasHandlerFunc: func(string) bool { return true },
+		dispatchFunc: func(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer) error {
+			dispatched = true
+			return svc.AnswerCallbackQuery(ctx, evt.QueryID, "ok", false)
+		},
+	}
+
+	RegisterUpdateHandlers(&dispatcher, UpdateHandlerDeps{
+		Logger:             zap.NewNop(),
+		RateLimiter:        transportLimiter,
+		Interaction:        clientInter,
+		CallbackDispatcher: coreDispatcher,
+		CallbackDeduper:    newCallbackQueryDeduper(),
+		Tasks:              &testTaskClient{},
+	})
+
+	inlineID := &tg.InputBotInlineMessageID{DCID: 1, ID: 99, AccessHash: 7}
+	if err := dispatcher.Handle(context.Background(), &tg.Updates{Updates: []tg.UpdateClass{
+		&tg.UpdateInlineBotCallbackQuery{
+			QueryID:      700,
+			UserID:       42,
+			MsgID:        inlineID,
+			ChatInstance: 1,
+			Data:         []byte("v1:test:run:noop"),
+		},
+	}}); err != nil {
+		t.Fatalf("v1 callback handle: %v", err)
+	}
+	if transportLimiter.calls != 0 {
+		t.Fatalf("v1 callback hit Assistant transport limiter %d times; canonical router must own v1 rate limiting", transportLimiter.calls)
+	}
+	if !dispatched {
+		t.Fatal("v1 callback did not reach canonical callback dispatcher")
+	}
+
+	dispatched = false
+	if err := dispatcher.Handle(context.Background(), &tg.Updates{Updates: []tg.UpdateClass{
+		&tg.UpdateInlineBotCallbackQuery{
+			QueryID:      701,
+			UserID:       42,
+			MsgID:        inlineID,
+			ChatInstance: 1,
+			Data:         []byte("a2:synthetic"),
+		},
+	}}); err != nil {
+		t.Fatalf("a2 callback handle: %v", err)
+	}
+	if transportLimiter.calls != 1 {
+		t.Fatalf("a2 callback must retain transport limiter, calls=%d", transportLimiter.calls)
+	}
+	if dispatched {
+		t.Fatal("rate-limited a2 callback reached canonical v1 dispatcher")
+	}
+}
