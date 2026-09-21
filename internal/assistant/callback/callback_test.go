@@ -14,44 +14,35 @@ import (
 )
 
 func TestPayload_EncodeAndParse(t *testing.T) {
-	// Standard v2 encode
 	data, err := callback.Encode("assistant", "start")
 	if err != nil {
 		t.Fatalf("unexpected encode error: %v", err)
 	}
-	if data != "a1:assistant:start" {
-		t.Fatalf("expected a1:assistant:start, got %s", data)
+	if data != "v1:assistant:start:noop" {
+		t.Fatalf("expected canonical v1 payload, got %s", data)
 	}
 
-	// State encode
 	dataWithState, err := callback.EncodeWithState("assistant", "page", "2")
 	if err != nil {
 		t.Fatalf("unexpected encode with state error: %v", err)
 	}
-	if dataWithState != "a1:assistant:page:2" {
-		t.Fatalf("expected a1:assistant:page:2, got %s", dataWithState)
+	if dataWithState != "v1:assistant:page:2" {
+		t.Fatalf("unexpected state payload: %s", dataWithState)
 	}
 
-	// Parse v2
 	parsed, err := callback.Parse([]byte(dataWithState))
 	if err != nil {
 		t.Fatalf("unexpected parse error: %v", err)
 	}
-	if parsed.Version != "a1" || parsed.Namespace != "assistant" || parsed.Action != "page" || parsed.State != "2" {
+	if parsed.Version != "v1" || parsed.Namespace != "assistant" || parsed.Action != "page" || parsed.State != "2" {
 		t.Fatalf("parsed values mismatch: %+v", parsed)
 	}
 
-	// Parse legacy v1 format for backward compatibility
-	legacyParsed, err := callback.Parse([]byte("v1:settings:general:noop"))
-	if err != nil {
-		t.Fatalf("unexpected error parsing legacy payload: %v", err)
-	}
-	if legacyParsed.Version != "v1" || legacyParsed.Namespace != "settings" || legacyParsed.Action != "general" || legacyParsed.State != "noop" {
-		t.Fatalf("legacy parsed values mismatch: %+v", legacyParsed)
+	if _, err := callback.Parse([]byte("a1:assistant:start")); !errors.Is(err, callback.ErrMalformedPayload) {
+		t.Fatalf("a1 payload error = %v, want ErrMalformedPayload", err)
 	}
 
-	// Too long payload
-	longStr := "a1:ns:act:"
+	longStr := "v1:ns:act:"
 	for len(longStr) < 65 {
 		longStr += "x"
 	}
@@ -60,7 +51,6 @@ func TestPayload_EncodeAndParse(t *testing.T) {
 		t.Fatalf("expected ErrPayloadTooLong, got %v", err)
 	}
 
-	// Malformed payload
 	_, err = callback.Parse([]byte("bad_payload_format"))
 	if !errors.Is(err, callback.ErrMalformedPayload) {
 		t.Fatalf("expected ErrMalformedPayload, got %v", err)
