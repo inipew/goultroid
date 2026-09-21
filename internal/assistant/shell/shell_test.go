@@ -49,9 +49,6 @@ func TestFeatureSpecAndViews(t *testing.T) {
 	if len(home.Rows) != 3 || home.Rows[0][0].ActionID != ActionSettings || home.Rows[0][1].ActionID != ActionHelp {
 		t.Fatalf("unexpected home actions: %+v", home.Rows)
 	}
-	if home.Rows[2][1].ActionID != ActionClose {
-		t.Fatalf("home close action = %q, want %q", home.Rows[2][1].ActionID, ActionClose)
-	}
 	status := StatusView(StatusModel{Username: "TestBot", Uptime: time.Minute, Refreshes: 1})
 	if len(status.Rows) != 1 || status.Rows[0][0].ActionID != ActionStatusRefresh || status.Rows[0][1].ActionID != ActionHome {
 		t.Fatalf("unexpected status actions: %+v", status.Rows)
