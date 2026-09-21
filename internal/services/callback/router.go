@@ -185,8 +185,8 @@ func (r *Router) prepare(
 			zap.String("origin", originString(evt.Origin)),
 			zap.ByteString("data", evt.Data),
 			zap.Error(err))
-		return nil, r.reject(ctx, evt, svc, CallbackFailure{
-			Code:        FailureCodeInvalidPayload,
+		return nil, r.reject(ctx, evt, svc, callbackFailure{
+			Code:        failureCodeInvalidPayload,
 			MetricTag:   "invalid",
 			UserAlert:   "Invalid button action",
 			InternalErr: ErrInvalidCallbackData,
@@ -211,8 +211,8 @@ func (r *Router) prepare(
 	reg, ok := r.handlers[ns]
 	r.mu.RUnlock()
 	if !ok {
-		return nil, r.reject(ctx, evt, svc, CallbackFailure{
-			Code:        FailureCodeHandlerNotFound,
+		return nil, r.reject(ctx, evt, svc, callbackFailure{
+			Code:        failureCodeHandlerNotFound,
 			MetricTag:   "invalid",
 			UserAlert:   "Feature not available",
 			InternalErr: ErrHandlerNotFound,
@@ -223,8 +223,8 @@ func (r *Router) prepare(
 	var scope tasks.ScopeIdentity
 	if requireScope && reg.owner != "" {
 		if resolve == nil {
-			return nil, r.reject(ctx, evt, svc, CallbackFailure{
-				Code:        FailureCodeHandlerNotFound,
+			return nil, r.reject(ctx, evt, svc, callbackFailure{
+				Code:        failureCodeHandlerNotFound,
 				MetricTag:   "unavailable",
 				UserAlert:   "Feature not available.",
 				InternalErr: ErrHandlerRegistrationChanged,
@@ -234,8 +234,8 @@ func (r *Router) prepare(
 		var available bool
 		scope, available = resolve(reg.owner)
 		if !available {
-			return nil, r.reject(ctx, evt, svc, CallbackFailure{
-				Code:        FailureCodeHandlerNotFound,
+			return nil, r.reject(ctx, evt, svc, callbackFailure{
+				Code:        failureCodeHandlerNotFound,
 				MetricTag:   "unavailable",
 				UserAlert:   "Feature not available.",
 				InternalErr: ErrHandlerRegistrationChanged,
@@ -248,8 +248,8 @@ func (r *Router) prepare(
 	current, stillCurrent := r.handlers[ns]
 	r.mu.RUnlock()
 	if !stillCurrent || current.id != reg.id {
-		return nil, r.reject(ctx, evt, svc, CallbackFailure{
-			Code:        FailureCodeHandlerNotFound,
+		return nil, r.reject(ctx, evt, svc, callbackFailure{
+			Code:        failureCodeHandlerNotFound,
 			MetricTag:   "stale_registration",
 			UserAlert:   "Feature not available.",
 			InternalErr: ErrHandlerRegistrationChanged,
@@ -276,8 +276,8 @@ func (r *Router) checkRateLimit(ctx context.Context, evt *core.CallbackQueryEven
 	key := fmt.Sprintf("%d", evt.UserID)
 	if !r.limiter.Allow(ratelimit.DimensionOperation, "callback:"+key) {
 		r.logger.Debug("callback rate limited", zap.Int64("user_id", evt.UserID), zap.String("namespace", ns))
-		return r.reject(ctx, evt, svc, CallbackFailure{
-			Code:        FailureCodeRateLimited,
+		return r.reject(ctx, evt, svc, callbackFailure{
+			Code:        failureCodeRateLimited,
 			MetricTag:   "rate_limited",
 			UserAlert:   "⏳ Too many clicks, slow down.",
 			InternalErr: fmt.Errorf("%w: callback rate limited", core.ErrRateLimited),
@@ -300,36 +300,36 @@ func (r *Router) resolveState(
 		return nil, stateEntry{}, false, nil
 	}
 
-	var validationFailure *CallbackFailure
+	var validationFailure *callbackFailure
 	entry, stateErr := r.stateStore.claimEntry(opaqueID, func(scope StateScope) error {
 		switch {
 		case scope.UserID > 0 && evt.UserID != scope.UserID:
-			validationFailure = &CallbackFailure{
-				Code:        FailureCodeUnauthorized,
+			validationFailure = &callbackFailure{
+				Code:        failureCodeUnauthorized,
 				MetricTag:   "unauthorized",
 				UserAlert:   "⚠️ You are not authorized to use this button.",
 				InternalErr: ErrUnauthorized,
 				IsAlert:     true,
 			}
 		case scope.Namespace != "" && scope.Namespace != ns:
-			validationFailure = &CallbackFailure{
-				Code:        FailureCodeInvalidPayload,
+			validationFailure = &callbackFailure{
+				Code:        failureCodeInvalidPayload,
 				MetricTag:   "invalid",
 				UserAlert:   "Invalid button scope.",
 				InternalErr: ErrInvalidCallbackData,
 				IsAlert:     false,
 			}
 		case scope.ChatID != 0 && scope.ChatID != evt.ChatID:
-			validationFailure = &CallbackFailure{
-				Code:        FailureCodeUnauthorized,
+			validationFailure = &callbackFailure{
+				Code:        failureCodeUnauthorized,
 				MetricTag:   "unauthorized",
 				UserAlert:   "Button not valid in this chat.",
 				InternalErr: ErrUnauthorized,
 				IsAlert:     true,
 			}
 		case scope.MessageID != 0 && scope.MessageID != evt.Target.MessageID:
-			validationFailure = &CallbackFailure{
-				Code:        FailureCodeUnauthorized,
+			validationFailure = &callbackFailure{
+				Code:        failureCodeUnauthorized,
 				MetricTag:   "unauthorized",
 				UserAlert:   "Button not valid for this message.",
 				InternalErr: ErrUnauthorized,
@@ -364,8 +364,8 @@ func (r *Router) resolveState(
 			zap.String("action", action),
 			zap.String("opaque_id", opaqueID),
 			zap.String("origin", originString(evt.Origin)))
-		return nil, stateEntry{}, false, r.reject(ctx, evt, svc, CallbackFailure{
-			Code:        FailureCodeSessionExpired,
+		return nil, stateEntry{}, false, r.reject(ctx, evt, svc, callbackFailure{
+			Code:        failureCodeSessionExpired,
 			MetricTag:   "expired",
 			UserAlert:   "⏰ Button expired, run the command again.",
 			InternalErr: ErrStateExpired,
@@ -379,8 +379,8 @@ func (r *Router) resolveState(
 			zap.String("action", action),
 			zap.String("opaque_id", opaqueID),
 			zap.String("origin", originString(evt.Origin)))
-		return nil, stateEntry{}, false, r.reject(ctx, evt, svc, CallbackFailure{
-			Code:        FailureCodeSessionExpired,
+		return nil, stateEntry{}, false, r.reject(ctx, evt, svc, callbackFailure{
+			Code:        failureCodeSessionExpired,
 			MetricTag:   "invalid",
 			UserAlert:   "Button already used.",
 			InternalErr: ErrStateNotFound,
@@ -411,8 +411,8 @@ func (r *Router) dispatchPrepared(
 	}
 	start := time.Now()
 	if prepared.router != r || prepared.rawData != string(evt.Data) {
-		return r.reject(ctx, evt, svc, CallbackFailure{
-			Code:        FailureCodeInvalidPayload,
+		return r.reject(ctx, evt, svc, callbackFailure{
+			Code:        failureCodeInvalidPayload,
 			MetricTag:   "invalid",
 			UserAlert:   "Invalid button action",
 			InternalErr: ErrInvalidCallbackData,
@@ -435,8 +435,8 @@ func (r *Router) dispatchPrepared(
 	reg, ok := r.handlers[prepared.namespace]
 	if !ok || reg.id != prepared.registrationID {
 		r.mu.RUnlock()
-		return r.reject(ctx, evt, svc, CallbackFailure{
-			Code:        FailureCodeHandlerNotFound,
+		return r.reject(ctx, evt, svc, callbackFailure{
+			Code:        failureCodeHandlerNotFound,
 			MetricTag:   "stale_registration",
 			UserAlert:   "Feature not available.",
 			InternalErr: ErrHandlerRegistrationChanged,
@@ -458,8 +458,8 @@ func (r *Router) dispatchPrepared(
 			zap.String("namespace", prepared.namespace),
 			zap.String("action", prepared.action),
 			zap.String("opaque_id", prepared.opaqueID))
-		return r.reject(ctx, evt, svc, CallbackFailure{
-			Code:        FailureCodeSessionExpired,
+		return r.reject(ctx, evt, svc, callbackFailure{
+			Code:        failureCodeSessionExpired,
 			MetricTag:   "missing_state",
 			UserAlert:   "⏰ Button expired, run the command again.",
 			InternalErr: ErrStateNotFound,
@@ -545,7 +545,7 @@ func originString(o core.CallbackOrigin) string {
 }
 
 // reject records failure metrics, sends user feedback via AnswerCallbackQuery, and returns the underlying error.
-func (r *Router) reject(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer, failure CallbackFailure, start time.Time) error {
+func (r *Router) reject(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer, failure callbackFailure, start time.Time) error {
 	if r.metrics != nil {
 		metricTag := failure.MetricTag
 		if metricTag == "" {
