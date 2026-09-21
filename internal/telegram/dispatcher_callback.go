@@ -199,11 +199,9 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 		return nil
 	}
 
-	scope, available := cbRouter.TaskScope(evt.Data, d.resolvePluginScope)
-	if !available {
-		if svc := d.getService(); svc != nil {
-			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Feature not available.", false)
-		}
+	prepared, prepareErr := cbRouter.Prepare(ctx, evt, d.getService(), d.resolvePluginScope)
+	if prepareErr != nil {
+		d.logger.Debug("callback admission rejected", zap.Int64("query_id", evt.QueryID), zap.Error(prepareErr))
 		return nil
 	}
 	client := d.taskClient()
@@ -213,14 +211,14 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 		d.inFlight.Add(1)
 		_, err := client.Submit(ctx, tasks.WorkSpec{
 			ID:               tasks.TaskID(taskID),
-			Scope:            scope,
+			Scope:            prepared.Scope(),
 			QuotaOwner:       tasks.OwnerID(owner),
 			Pool:             "interactive",
 			Class:            tasks.PriorityInteractive,
 			OrderingKey:      callbackOrderingKey(evt),
 			ExecutionTimeout: 15 * time.Second,
 			Handler: func(taskCtx context.Context) error {
-				return cbRouter.Dispatch(taskCtx, evt, d.getService())
+				return cbRouter.DispatchPrepared(taskCtx, evt, d.getService(), prepared)
 			},
 			OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
 		})
@@ -281,11 +279,9 @@ func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities
 		return nil
 	}
 
-	scope, available := cbRouter.TaskScope(evt.Data, d.resolvePluginScope)
-	if !available {
-		if svc := d.getService(); svc != nil {
-			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Feature not available.", false)
-		}
+	prepared, prepareErr := cbRouter.Prepare(ctx, evt, d.getService(), d.resolvePluginScope)
+	if prepareErr != nil {
+		d.logger.Debug("inline callback admission rejected", zap.Int64("query_id", evt.QueryID), zap.Error(prepareErr))
 		return nil
 	}
 	client := d.taskClient()
@@ -295,14 +291,14 @@ func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities
 		d.inFlight.Add(1)
 		_, err := client.Submit(ctx, tasks.WorkSpec{
 			ID:               tasks.TaskID(taskID),
-			Scope:            scope,
+			Scope:            prepared.Scope(),
 			QuotaOwner:       tasks.OwnerID(owner),
 			Pool:             "interactive",
 			Class:            tasks.PriorityInteractive,
 			OrderingKey:      callbackOrderingKey(evt),
 			ExecutionTimeout: 15 * time.Second,
 			Handler: func(taskCtx context.Context) error {
-				return cbRouter.Dispatch(taskCtx, evt, d.getService())
+				return cbRouter.DispatchPrepared(taskCtx, evt, d.getService(), prepared)
 			},
 			OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
 		})
