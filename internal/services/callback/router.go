@@ -508,7 +508,7 @@ func (r *Router) executeHandler(
 	if timeout <= 0 {
 		timeout = defaultCallbackTimeout
 	}
-	chain := Chain(handler, RecoverMiddleware(r.logger), TimeoutMiddleware(timeout))
+	chain := chain(handler, recoverMiddleware(r.logger), timeoutMiddleware(timeout))
 	handleErr := chain.HandleCallback(cbCtx)
 
 	if r.metrics != nil {
