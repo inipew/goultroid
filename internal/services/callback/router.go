@@ -65,8 +65,13 @@ func (p *preparedDispatch) Dispatch(ctx context.Context, evt *core.CallbackQuery
 	return p.router.dispatchPrepared(ctx, evt, svc, p)
 }
 
-// Registration is an idempotent callback handler lease.
-type Registration struct {
+// Registration is the minimal lifecycle lease returned by RegisterOwned.
+// Its concrete registration identity remains private to the callback router.
+type Registration interface {
+	Close()
+}
+
+type registrationLease struct {
 	router    *Router
 	namespace string
 	id        uint64
@@ -74,7 +79,7 @@ type Registration struct {
 }
 
 // Close unregisters this exact handler without removing a later replacement.
-func (r *Registration) Close() {
+func (r *registrationLease) Close() {
 	if r == nil || r.router == nil {
 		return
 	}
@@ -124,7 +129,7 @@ func (r *Router) SetTimeout(d time.Duration) {
 // RegisterOwned registers a handler together with its lifecycle owner.
 // Every canonical callback handler must be lifecycle-owned so TaskEngine scope
 // admission can fence disable/reload boundaries.
-func (r *Router) RegisterOwned(owner string, h Handler) (*Registration, error) {
+func (r *Router) RegisterOwned(owner string, h Handler) (Registration, error) {
 	owner = strings.TrimSpace(owner)
 	if owner == "" {
 		return nil, fmt.Errorf("callback handler owner cannot be empty")
@@ -146,7 +151,7 @@ func (r *Router) RegisterOwned(owner string, h Handler) (*Registration, error) {
 
 	r.nextID++
 	r.handlers[ns] = registration{handler: h, owner: owner, id: r.nextID}
-	return &Registration{router: r, namespace: ns, id: r.nextID}, nil
+	return &registrationLease{router: r, namespace: ns, id: r.nextID}, nil
 }
 
 // Prepare validates callback protocol and rate limits, pins one concrete
