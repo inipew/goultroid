@@ -3,6 +3,7 @@ package menu_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -138,24 +139,24 @@ func TestController_AttachRoutes(t *testing.T) {
 		OwnerID:   100,
 	})
 
-	// 1. Dispatch "start"
+	// 1. Old shell callbacks are accepted, but they can only render the
+	// compatibility tombstone instead of reviving the legacy navigation tree.
 	txStart := callback.NewTransaction(1, 100, callback.ParsedPayload{Namespace: "assistant", Action: "start"}, target, fake)
 	if err := router.Dispatch(ctx, txStart); err != nil {
 		t.Fatalf("unexpected error on start: %v", err)
 	}
-	if fake.lastEditedText == "" {
-		t.Fatalf("expected edited text on start")
+	if !strings.Contains(fake.lastEditedText, "Legacy Assistant menu retired") || !strings.Contains(fake.lastEditedText, "/start") {
+		t.Fatalf("expected retirement tombstone, got %q", fake.lastEditedText)
 	}
 
-	// 2. Dispatch "ping"
-	fake.lastAnswer = ""
-	fake.lastAlert = false
+	// 2. Every old shell navigation action shares the same tombstone.
+	fake.lastEditedText = ""
 	txPing := callback.NewTransaction(2, 100, callback.ParsedPayload{Namespace: "assistant", Action: "ping"}, target, fake)
 	if err := router.Dispatch(ctx, txPing); err != nil {
 		t.Fatalf("unexpected error on ping: %v", err)
 	}
-	if fake.lastAnswer != "🏓 Pong!" || !fake.lastAlert {
-		t.Fatalf("expected ping alert answer, got text=%q alert=%v", fake.lastAnswer, fake.lastAlert)
+	if !strings.Contains(fake.lastEditedText, "Legacy Assistant menu retired") {
+		t.Fatalf("expected ping tombstone, got %q", fake.lastEditedText)
 	}
 
 	// 3. Dispatch "close"
@@ -204,15 +205,16 @@ func TestController_OwnershipEnforcement(t *testing.T) {
 		t.Fatalf("expected ownership alert answer, got text=%q alert=%v", fake.lastAnswer, fake.lastAlert)
 	}
 
-	// 2. Owner user (100) clicks menu -> allowed
+	// 2. Owner user (100) clicks menu -> allowed, but the retired shell can
+	// only render the migration tombstone.
 	fake.lastEditedText = ""
 	txOwner := callback.NewTransaction(11, 100, callback.ParsedPayload{Namespace: "assistant", Action: "settings"}, target, fake)
 	err = router.Dispatch(ctx, txOwner)
 	if err != nil {
 		t.Fatalf("expected owner click to succeed, got %v", err)
 	}
-	if fake.lastEditedText == "" {
-		t.Fatalf("expected settings screen edited by owner")
+	if !strings.Contains(fake.lastEditedText, "Legacy Assistant menu retired") {
+		t.Fatalf("expected retirement tombstone, got %q", fake.lastEditedText)
 	}
 }
 

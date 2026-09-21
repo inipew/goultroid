@@ -13,6 +13,9 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
+	"github.com/inipew/goultroid/internal/interaction/orchestration"
+	"github.com/inipew/goultroid/internal/presentation"
+	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 )
 
 type publicStartInteraction struct {
@@ -178,5 +181,46 @@ func TestAssistantShellCloseKeepsSessionWhenDeleteFails(t *testing.T) {
 	}
 	if port.deleted {
 		t.Fatal("failed delete marked target deleted")
+	}
+}
+
+func TestAssistantShellLegacyCompatibilityTokenReturnsToA2WithoutMenuInstance(t *testing.T) {
+	manager, client, port, engine := newShellEngine(t)
+	defer manager.Shutdown()
+
+	peer := &tg.InputPeerUser{UserID: 7}
+	_, err := engine.Begin(context.Background(), orchestration.BeginRequest{
+		FeatureID: assistantshell.FeatureID,
+		ActorID:   7,
+		State:     assistantshell.InitialState(),
+		Target:    presentationtelegram.MessageTarget{Peer: peer, ChatID: 7},
+		View: presentation.View{
+			Text: "old compatibility surface",
+			Rows: []presentation.Row{{{
+				Text:     "Classic menu",
+				ActionID: assistantshell.ActionLegacy,
+			}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Begin(legacy compatibility) error = %v", err)
+	}
+
+	legacy := callbackForAction(t, port.sent, assistantshell.ActionLegacy)
+	if err := dispatchShell(t, engine, legacy, 630, peer); err != nil {
+		t.Fatalf("Dispatch(legacy compatibility) error = %v", err)
+	}
+	if !strings.Contains(port.edited.Text, "GoUltroid Assistant") {
+		t.Fatalf("legacy compatibility token did not return to a2 Home: %q", port.edited.Text)
+	}
+	if port.answered.Text != "Classic menu retired; returned to the current Assistant shell." {
+		t.Fatalf("legacy compatibility answer = %q", port.answered.Text)
+	}
+	host := client.LegacyMenuCompatibility()
+	if host == nil || host.Instances() == nil {
+		t.Fatal("legacy compatibility host unavailable")
+	}
+	if _, ok := host.Instances().Get(7, 77); ok {
+		t.Fatal("legacy compatibility token created a new a1 MenuInstance")
 	}
 }

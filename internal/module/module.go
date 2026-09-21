@@ -45,11 +45,11 @@ type CoreRuntime struct {
 
 // TelegramRuntime contains Telegram-facing capabilities shared by modules.
 type TelegramRuntime struct {
-	TelegramService func() core.TelegramServicer
-	Resolver        core.PeerResolver
-	Callbacks       *callback.Router
-	CallbackStore   *callback.StateStore
-	AssistantMenu   *menu.Controller
+	TelegramService     func() core.TelegramServicer
+	Resolver            core.PeerResolver
+	Callbacks           *callback.Router
+	CallbackStore       *callback.StateStore
+	LegacyAssistantMenu menu.CompatibilityHost
 }
 
 // ServiceRuntime contains reusable cross-feature services. Feature-owned

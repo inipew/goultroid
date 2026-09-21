@@ -41,12 +41,12 @@ type wizardSession struct {
 
 type MenuManager struct {
 	plugin     *Plugin
-	menuCtrl   *menu.Controller
+	menuCtrl   menu.CompatibilityHost
 	sessionsMu sync.Mutex
 	sessions   map[int64]*wizardSession
 }
 
-func NewMenuManager(p *Plugin, ctrl *menu.Controller) *MenuManager {
+func NewMenuManager(p *Plugin, ctrl menu.CompatibilityHost) *MenuManager {
 	m := &MenuManager{
 		plugin:   p,
 		menuCtrl: ctrl,

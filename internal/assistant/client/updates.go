@@ -10,12 +10,15 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/callback"
 	"github.com/inipew/goultroid/internal/assistant/command"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
-	"github.com/inipew/goultroid/internal/assistant/menu"
 	"github.com/inipew/goultroid/internal/assistant/peer"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
+
+type legacyTextInputDispatcher interface {
+	HandleTextMessage(context.Context, int64, int64, string, interaction.MessageInteraction) (bool, error)
+}
 
 type UpdateHandlerDeps struct {
 	Logger          *zap.Logger
@@ -26,7 +29,7 @@ type UpdateHandlerDeps struct {
 	Interaction     *interaction.ClientInteraction
 	CacheEntities   func(e tg.Entities)
 	IsShuttingDown  func() bool
-	MenuController  *menu.Controller
+	LegacyTextInput legacyTextInputDispatcher
 	InlineEngine    InlineQueryExecutor
 	InlineService   core.TelegramServicer
 	Tasks           tasks.Client
@@ -85,8 +88,8 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 				return nil
 			}
 		}
-		if deps.MenuController != nil {
-			if handled, hErr := deps.MenuController.HandleTextMessage(ctx, senderID, extractChatID(msg.PeerID), msg.Message, deps.Interaction); handled {
+		if deps.LegacyTextInput != nil {
+			if handled, hErr := deps.LegacyTextInput.HandleTextMessage(ctx, senderID, extractChatID(msg.PeerID), msg.Message, deps.Interaction); handled {
 				return hErr
 			}
 		}

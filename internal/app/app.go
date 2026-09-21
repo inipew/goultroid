@@ -192,13 +192,13 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 			Metrics:     coreDeps.metrics,
 		},
 		TelegramRuntime: module.TelegramRuntime{
-			TelegramService: tgRuntime.client.Service,
-			Resolver:        tgRuntime.dispatcher.Resolver(),
-			Callbacks:       coreDeps.callbackRouter,
-			CallbackStore:   coreDeps.callbackStore,
-			AssistantMenu: func() *menu.Controller {
+			TelegramService:     tgRuntime.client.Service,
+			Resolver:            tgRuntime.dispatcher.Resolver(),
+			Callbacks:           coreDeps.callbackRouter,
+			CallbackStore:       coreDeps.callbackStore,
+			LegacyAssistantMenu: func() menu.CompatibilityHost {
 				if tgRuntime.assistant != nil {
-					return tgRuntime.assistant.MenuController()
+					return tgRuntime.assistant.LegacyMenuCompatibility()
 				}
 				return nil
 			}(),

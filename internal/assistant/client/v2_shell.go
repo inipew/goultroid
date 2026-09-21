@@ -9,9 +9,6 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/command"
-	assistantinteraction "github.com/inipew/goultroid/internal/assistant/interaction"
-	"github.com/inipew/goultroid/internal/assistant/menu"
-	assistantpresentation "github.com/inipew/goultroid/internal/assistant/presentation"
 	assistantshell "github.com/inipew/goultroid/internal/assistant/shell"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
@@ -41,7 +38,7 @@ func (c *AssistantClient) dispatchStart(ctx *command.Context) error {
 	if !shouldFallbackStart(err) {
 		return err
 	}
-	c.logger.Debug("assistant: using legacy /start compatibility fallback")
+	c.logger.Debug("assistant: using static /start recovery fallback")
 	c.mu.RLock()
 	fallback := c.legacyStart
 	c.mu.RUnlock()
@@ -984,33 +981,9 @@ func (c *AssistantClient) shellCommands() []core.Command {
 }
 
 func (c *AssistantClient) handleShellLegacy(ctx *orchestration.Context) error {
-	target, ok := ctx.Target().(presentationtelegram.MessageTarget)
-	if !ok || target.Peer == nil || target.ChatID == 0 || target.MessageID <= 0 {
-		return orchestration.ErrInvalidTarget
-	}
-	screen := menu.BuildStartScreen(c.Username(), time.Since(c.StartTime()))
-	text, markup := assistantpresentation.RenderScreen(screen)
-
-	c.mu.RLock()
-	inter := c.interaction
-	c.mu.RUnlock()
-	if inter == nil {
-		return ErrShellUnavailable
-	}
-	messageTarget := assistantinteraction.NewMessageTarget(target.Peer, target.MessageID, target.ChatID, 0)
-	if err := inter.Edit(ctx.Context(), messageTarget, text, markup); err != nil {
+	if err := c.handleShellHome(ctx); err != nil {
 		return err
 	}
-	if c.menuCtrl != nil && c.menuCtrl.Instances() != nil {
-		actorID := ctx.Session().Binding.ActorID
-		c.menuCtrl.Instances().Register(menu.MenuInstance{
-			ID:        fmt.Sprintf("menu:%d:%d", target.ChatID, target.MessageID),
-			ChatID:    target.ChatID,
-			MessageID: target.MessageID,
-			Screen:    menu.ScreenIDStart,
-			OwnerID:   actorID,
-		})
-	}
-	ctx.Cancel()
+	_ = ctx.Answer("Classic menu retired; returned to the current Assistant shell.", false)
 	return nil
 }

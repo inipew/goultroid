@@ -89,7 +89,7 @@ func (p *Plugin) SetTaskClient(client tasks.Client) {
 }
 
 // SetAssistantMenu configures the assistant interactive menu controller.
-func (p *Plugin) SetAssistantMenu(ctrl *menu.Controller) {
+func (p *Plugin) SetAssistantMenu(ctrl menu.CompatibilityHost) {
 	if p.menuMgr == nil {
 		p.menuMgr = NewMenuManager(p, ctrl)
 	} else {

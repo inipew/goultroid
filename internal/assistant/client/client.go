@@ -106,9 +106,7 @@ func NewAssistantClient(appID int, appHash string, botToken string, logger *zap.
 		rpcExecutor: assistentrpc.DirectExecutor{},
 	}
 	ctrl.AttachRoutes(cbR, c.Username, c.StartTime)
-	c.legacyStart = command.NewStartHandler(c.Username, func() time.Duration {
-		return time.Since(c.StartTime())
-	}, presentation.RenderScreen, ctrl.Instances())
+	c.legacyStart = command.NewUnavailableStartHandler()
 	cmdR.Register("/start", c.dispatchStart)
 	return c
 }
@@ -214,7 +212,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 		Logger: c.logger, RateLimiter: c.rateLimiter, Resolver: c.resolver,
 		CmdRouter: c.cmdRouter, CallbackRouter: c.cbRouter, Interaction: c.interaction,
 		CacheEntities: c.CacheEntities, IsShuttingDown: c.shuttingDown.Load,
-		MenuController: c.menuCtrl,
+		LegacyTextInput: c.menuCtrl,
 		InlineEngine: c.inlineEngine, InlineService: inlineQueryService, Tasks: c.tasks,
 		V2Ingress: v2,
 	}
@@ -449,7 +447,7 @@ func (c *AssistantClient) CacheEntities(e tg.Entities) {
 	}
 }
 
-func (c *AssistantClient) MenuController() *menu.Controller {
+func (c *AssistantClient) LegacyMenuCompatibility() menu.CompatibilityHost {
 	return c.menuCtrl
 }
 

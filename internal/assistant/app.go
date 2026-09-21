@@ -33,7 +33,7 @@ type Client interface {
 	SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool))
 	SetInteractionFoundation(catalog feature.Catalog, sessions *rootinteraction.Runtime, actions *rootinteraction.Dispatcher)
 	SetRPCExecutor(executor assistentrpc.Executor)
-	MenuController() *menu.Controller
+	LegacyMenuCompatibility() menu.CompatibilityHost
 }
 
 type AssistantApp struct {
@@ -111,9 +111,9 @@ func (a *AssistantApp) SetPluginScopeResolver(resolver func(string) (tasks.Scope
 func (a *AssistantApp) SetInteractionFoundation(catalog feature.Catalog, sessions *rootinteraction.Runtime, actions *rootinteraction.Dispatcher) {
 	a.client.SetInteractionFoundation(catalog, sessions, actions)
 }
-func (a *AssistantApp) MenuController() *menu.Controller {
+func (a *AssistantApp) LegacyMenuCompatibility() menu.CompatibilityHost {
 	if a.client == nil {
 		return nil
 	}
-	return a.client.MenuController()
+	return a.client.LegacyMenuCompatibility()
 }

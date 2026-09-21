@@ -8,6 +8,19 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/menu"
 )
 
+// NewUnavailableStartHandler is the technical fallback used when the a2
+// interaction foundation cannot be constructed. It deliberately creates no
+// legacy menu instance, so fallback traffic cannot prolong the a1 shell.
+func NewUnavailableStartHandler() Handler {
+	return func(c *Context) error {
+		if c == nil {
+			return nil
+		}
+		_, err := c.Reply("⚠️ Assistant interaction is temporarily unavailable. Please send /start again after the service recovers.", nil)
+		return err
+	}
+}
+
 // NewStartHandler builds the legacy /start presentation handler. P5 keeps it
 // as an explicit compatibility fallback while the owner shell migrates to a2.
 func NewStartHandler(usernameProvider func() string, uptimeProvider func() time.Duration, renderer menu.RendererFunc, instanceStore menu.InstanceStore) Handler {
