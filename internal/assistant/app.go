@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/inipew/goultroid/internal/assistant/callback"
 	"github.com/inipew/goultroid/internal/assistant/client"
 	assistantinteraction "github.com/inipew/goultroid/internal/assistant/interaction"
 	assistentrpc "github.com/inipew/goultroid/internal/assistant/rpc"
@@ -87,7 +86,6 @@ func (a *AssistantApp) IsRunning() bool                        { return a.client
 func (a *AssistantApp) WaitReady(ctx context.Context) error    { return a.client.WaitReady(ctx) }
 func (a *AssistantApp) Username() string                       { return a.client.Username() }
 func (a *AssistantApp) StartTime() time.Time                   { return a.client.StartTime() }
-func (a *AssistantApp) SetAuthorizer(auth callback.Authorizer) { a.client.SetAuthorizer(auth) }
 func (a *AssistantApp) SetOwner(ownerID int64, sudoGetter func() []int64) {
 	a.client.SetOwner(ownerID, sudoGetter)
 }
