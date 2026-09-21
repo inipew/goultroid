@@ -478,7 +478,3 @@ func isValidOpaqueID(s string) bool {
 	return true
 }
 
-// NewActionData constructs standard callback data encoded as v1:namespace:action:opaqueID.
-func NewActionData(namespace, action, opaqueID string) ([]byte, error) {
-	return EncodeCallbackDataChecked(namespace, action, opaqueID)
-}
