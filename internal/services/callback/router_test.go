@@ -10,6 +10,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
 
@@ -751,5 +752,91 @@ func TestCallbackContext_UTF8SafeTruncation(t *testing.T) {
 	}
 	if len(svc.lastEditText) > 4096 {
 		t.Fatalf("edit exceeds byte budget: %d", len(svc.lastEditText))
+	}
+}
+
+
+func TestRouter_PreparedDispatchRejectsReloadWithoutConsumingState(t *testing.T) {
+	store := NewStateStore()
+	router := NewRouter(zap.NewNop(), store)
+	oldHandler := &requiredStateHandler{mockHandler: &mockHandler{namespace: "reload"}}
+	oldRegistration, err := router.RegisterOwned("reload", oldHandler)
+	if err != nil {
+		t.Fatalf("register old handler: %v", err)
+	}
+
+	token := store.StoreWithScope("payload", StateScope{
+		UserID:    42,
+		Namespace: "reload",
+		SingleUse: true,
+	}, 5*time.Minute)
+	if token == "" {
+		t.Fatal("expected state token")
+	}
+	evt := &core.CallbackQueryEvent{
+		QueryID: 1001,
+		UserID:  42,
+		Data:    EncodeCallbackData("reload", "run", token),
+	}
+	svc := &recordingService{}
+	prepared, err := router.Prepare(context.Background(), evt, svc, func(owner string) (tasks.ScopeIdentity, bool) {
+		if owner != "reload" {
+			t.Fatalf("unexpected owner %q", owner)
+		}
+		return tasks.ScopeIdentity{Owner: "plugin:reload", Generation: 1}, true
+	})
+	if err != nil {
+		t.Fatalf("prepare old registration: %v", err)
+	}
+
+	oldRegistration.Close()
+	newHandler := &requiredStateHandler{mockHandler: &mockHandler{namespace: "reload"}}
+	if _, err := router.RegisterOwned("reload", newHandler); err != nil {
+		t.Fatalf("register replacement handler: %v", err)
+	}
+
+	err = router.DispatchPrepared(context.Background(), evt, svc, prepared)
+	if !errors.Is(err, ErrHandlerRegistrationChanged) {
+		t.Fatalf("expected stale registration rejection, got %v", err)
+	}
+	if oldHandler.handled || newHandler.handled {
+		t.Fatal("stale prepared callback executed a handler")
+	}
+	if _, err := store.GetEntry(token); err != nil {
+		t.Fatalf("single-use state was consumed by stale registration: %v", err)
+	}
+}
+
+func TestStateStore_ClaimEntryUnauthorizedDoesNotConsumeSingleUse(t *testing.T) {
+	store := NewStateStore()
+	token := store.StoreWithScope("secret", StateScope{UserID: 7, SingleUse: true}, time.Minute)
+	if token == "" {
+		t.Fatal("expected state token")
+	}
+
+	_, err := store.ClaimEntry(token, func(scope StateScope) error {
+		if scope.UserID != 8 {
+			return ErrUnauthorized
+		}
+		return nil
+	})
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expected unauthorized claim rejection, got %v", err)
+	}
+
+	entry, err := store.ClaimEntry(token, func(scope StateScope) error {
+		if scope.UserID != 7 {
+			return ErrUnauthorized
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("authorized claim failed after rejected attempt: %v", err)
+	}
+	if entry.Data != "secret" {
+		t.Fatalf("unexpected claimed data: %#v", entry.Data)
+	}
+	if _, err := store.ClaimEntry(token, nil); !errors.Is(err, ErrStateConsumed) {
+		t.Fatalf("expected consumed state after authorized claim, got %v", err)
 	}
 }
