@@ -9,7 +9,6 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
-	corecallback "github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
@@ -159,11 +158,6 @@ func dispatchCoreCallback(
 		}
 	}()
 
-	namespace, _, _, parseErr := corecallback.ParseCallbackData(evt.Data)
-	if parseErr != nil {
-		_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Invalid callback", false)
-		return nil
-	}
 	if deduper != nil && !deduper.Admit(evt.QueryID, time.Now()) {
 		_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "", false)
 		logger.Debug("assistant: duplicate callback query ignored", zap.Int64("query_id", evt.QueryID))
@@ -173,15 +167,10 @@ func dispatchCoreCallback(
 		_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Interaction service unavailable.", false)
 		return nil
 	}
-	if !dispatcher.HasHandler(namespace) {
-		_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Feature not available.", false)
-		return corecallback.ErrHandlerNotFound
-	}
 
-	scope, available := dispatcher.TaskScope(evt.Data, scopeResolver)
-	if !available {
-		_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Feature not available.", false)
-		return fmt.Errorf("%w: feature not available for %s", corecallback.ErrHandlerNotFound, namespace)
+	prepared, prepareErr := dispatcher.Prepare(ctx, evt, svc, scopeResolver)
+	if prepareErr != nil {
+		return prepareErr
 	}
 	if taskClient == nil {
 		_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Interaction service unavailable.", true)
@@ -195,14 +184,14 @@ func dispatchCoreCallback(
 	doneCh := make(chan error, 1)
 	ticket, submitErr := taskClient.Submit(ctx, tasks.WorkSpec{
 		ID:               tasks.TaskID(taskID),
-		Scope:            scope,
+		Scope:            prepared.Scope(),
 		QuotaOwner:       tasks.OwnerID(fmt.Sprintf("telegram:user:%d", evt.UserID)),
 		Pool:             "interactive",
 		Class:            tasks.PriorityInteractive,
 		OrderingKey:      callbackOrderingKey(evt),
 		ExecutionTimeout: 15 * time.Second,
 		Handler: func(taskCtx context.Context) error {
-			dispatchErr := dispatcher.Dispatch(taskCtx, evt, svc)
+			dispatchErr := dispatcher.DispatchPrepared(taskCtx, evt, svc, prepared)
 			doneCh <- dispatchErr
 			return dispatchErr
 		},
