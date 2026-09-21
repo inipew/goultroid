@@ -108,7 +108,6 @@ func (*Feature) FeatureSpec() feature.Spec {
 			{ID: ActionSettingReset, Kind: feature.InteractionAction, Description: "Reset bound user setting override", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingInput, Kind: feature.InteractionAction, Description: "Begin bounded free-form input for a bound string setting", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingInputCancel, Kind: feature.InteractionAction, Description: "Cancel bounded free-form setting input", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: ActionClose, Kind: feature.InteractionAction, Description: "Close and delete the current Assistant shell message", Surfaces: assistant, Policy: ownerPolicy},
 		},
 	}
 }
@@ -137,7 +136,7 @@ func HomeView(model HomeModel) presentation.View {
 		Rows: []presentation.Row{
 			{{Text: "⚙️ Settings", ActionID: ActionSettings}, {Text: "📚 Help", ActionID: ActionHelp}},
 			{{Text: "📊 Status", ActionID: ActionStatus}, {Text: "🔄 Refresh", ActionID: ActionRefresh}},
-			{{Text: "🏓 Ping", ActionID: ActionPing}, {Text: "❌ Close", ActionID: ActionClose}},
+			{{Text: "🏓 Ping", ActionID: ActionPing}},
 		},
 	}
 }
