@@ -94,7 +94,7 @@ func TestA2IngressSyntheticSurfaceEndToEnd(t *testing.T) {
 	}
 
 	ack := &syntheticAck{}
-	ingress := &v2Ingress{engine: engine, ack: ack}
+	ingress := &interactionIngress{engine: engine, ack: ack}
 	handled, err := ingress.tryMessage(context.Background(), data, 7, 99, nil, 42, 77)
 	if err != nil {
 		t.Fatalf("tryMessage() error = %v", err)
