@@ -6,6 +6,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/feature"
+	"github.com/inipew/goultroid/internal/interaction"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -15,10 +16,18 @@ type FeatureSpecProvider interface {
 	FeatureSpec() feature.Spec
 }
 
-type featureRegistry = feature.Registry
+type featureRegistry struct {
+	*feature.Registry
+	interactions *interaction.Runtime
+}
 
-func newFeatureRegistry() *feature.Registry {
-	return feature.NewRegistry()
+func newFeatureRegistry() *featureRegistry {
+	registry := feature.NewRegistry()
+	interactions, err := interaction.NewRuntime(registry, interaction.Config{})
+	if err != nil {
+		panic(fmt.Sprintf("construct interaction runtime: %v", err))
+	}
+	return &featureRegistry{Registry: registry, interactions: interactions}
 }
 
 // FeatureCatalog returns the read-only feature surface catalog. Registration
@@ -31,6 +40,20 @@ func (m *Manager) FeatureCatalog() feature.Catalog {
 	registry := m.featureRegistry
 	m.mu.RUnlock()
 	return registry
+}
+
+// InteractionRuntime returns the lifecycle-bound interaction session runtime.
+func (m *Manager) InteractionRuntime() *interaction.Runtime {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	registry := m.featureRegistry
+	m.mu.RUnlock()
+	if registry == nil {
+		return nil
+	}
+	return registry.interactions
 }
 
 func (m *Manager) registerFeatureContract(name string, p Plugin, scope tasks.ScopeIdentity, commands []core.Command) (func(), error) {
@@ -48,7 +71,12 @@ func (m *Manager) registerFeatureContract(name string, p Plugin, scope tasks.Sco
 	if err != nil {
 		return nil, err
 	}
-	return registration.Close, nil
+	return func() {
+		registration.Close()
+		if registry.interactions != nil {
+			registry.interactions.CancelScope(scope)
+		}
+	}, nil
 }
 
 func buildFeatureSpec(name string, p Plugin, commands []core.Command) (feature.Spec, error) {

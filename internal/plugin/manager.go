@@ -811,6 +811,15 @@ func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 		}
 	}
 
+	m.mu.RLock()
+	featureRegistry := m.featureRegistry
+	m.mu.RUnlock()
+	if featureRegistry != nil && featureRegistry.interactions != nil {
+		if err := featureRegistry.interactions.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("interaction runtime: %w", err))
+		}
+	}
+
 	// 2. Shut down plugins in reverse registration order.
 	for i := len(plugins) - 1; i >= 0; i-- {
 		p := plugins[i]

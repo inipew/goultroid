@@ -41,6 +41,8 @@ type Catalog interface {
 	ForSurface(source execution.Source) []Entry
 	FindInteraction(featureID string, kind InteractionKind, id string) (Interaction, bool)
 	FindCommand(featureID, name string) (CommandSurface, bool)
+	FeatureScope(featureID string) (tasks.ScopeIdentity, bool)
+	HasAction(featureID, actionID string) bool
 }
 
 var _ Catalog = (*Registry)(nil)
@@ -166,6 +168,42 @@ func (r *Registry) FindInteraction(featureID string, kind InteractionKind, id st
 		}
 	}
 	return Interaction{}, false
+}
+
+// FeatureScope returns the current lifecycle scope for one registered feature.
+func (r *Registry) FeatureScope(featureID string) (tasks.ScopeIdentity, bool) {
+	if r == nil {
+		return tasks.ScopeIdentity{}, false
+	}
+	featureID = normalizeID(featureID)
+	r.mu.RLock()
+	entry, ok := r.entries[featureID]
+	r.mu.RUnlock()
+	if !ok {
+		return tasks.ScopeIdentity{}, false
+	}
+	return entry.entry.Owner.Scope, true
+}
+
+// HasAction reports whether the current feature generation declares an action.
+func (r *Registry) HasAction(featureID, actionID string) bool {
+	if r == nil {
+		return false
+	}
+	featureID = normalizeID(featureID)
+	actionID = normalizeID(actionID)
+	r.mu.RLock()
+	entry, ok := r.entries[featureID]
+	if ok {
+		for _, interaction := range entry.entry.Spec.Interactions {
+			if interaction.Kind == InteractionAction && normalizeID(interaction.ID) == actionID {
+				r.mu.RUnlock()
+				return true
+			}
+		}
+	}
+	r.mu.RUnlock()
+	return false
 }
 
 // FindCommand finds one catalog command by canonical name or alias.
