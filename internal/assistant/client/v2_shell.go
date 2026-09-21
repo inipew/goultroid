@@ -35,20 +35,14 @@ func (c *AssistantClient) dispatchStart(ctx *command.Context) error {
 	if errors.Is(err, ErrShellAdmission) {
 		return c.dispatchPublicStart(ctx)
 	}
-	if !shouldFallbackStart(err) {
+	if !shouldUseStartRecovery(err) {
 		return err
 	}
-	c.logger.Debug("assistant: using static /start recovery fallback")
-	c.mu.RLock()
-	fallback := c.legacyStart
-	c.mu.RUnlock()
-	if fallback == nil {
-		return err
-	}
-	return fallback(ctx)
+	c.logger.Debug("assistant: using static /start recovery response")
+	return command.NewUnavailableStartHandler()(ctx)
 }
 
-func shouldFallbackStart(err error) bool {
+func shouldUseStartRecovery(err error) bool {
 	return errors.Is(err, ErrShellUnavailable) ||
 		errors.Is(err, rootinteraction.ErrInvalidFeature) ||
 		errors.Is(err, rootinteraction.ErrScopeStale)
@@ -140,7 +134,7 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 
 	c.shellMu.Lock()
 	defer c.shellMu.Unlock()
-	if c.shellScope == scope && len(c.shellRegistrations) == 29 {
+	if c.shellScope == scope && len(c.shellRegistrations) == 28 {
 		return nil
 	}
 	for _, registration := range c.shellRegistrations {
@@ -151,7 +145,7 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 	c.shellRegistrations = nil
 	c.shellScope = tasks.ScopeIdentity{}
 
-	registrations := make([]*rootinteraction.HandlerRegistration, 0, 29)
+	registrations := make([]*rootinteraction.HandlerRegistration, 0, 28)
 	register := func(actionID string, handler orchestration.Handler) error {
 		guarded := func(ctx *orchestration.Context) error {
 			if err := c.admitShellAction(catalog, actionID, ctx); err != nil {
@@ -198,7 +192,6 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 		{id: assistantshell.ActionSettingInput, handler: c.handleShellSettingInput},
 		{id: assistantshell.ActionSettingInputCancel, handler: c.handleShellSettingInputCancel},
 		{id: assistantshell.ActionClose, handler: c.handleShellClose},
-		{id: assistantshell.ActionLegacy, handler: c.handleShellLegacy},
 	} {
 		if err := register(action.id, action.handler); err != nil {
 			closeShellRegistrations(registrations)
@@ -986,12 +979,4 @@ func (c *AssistantClient) shellCommands() []core.Command {
 		return nil
 	}
 	return router.CommandsForSurface(execution.SourceAssistant)
-}
-
-func (c *AssistantClient) handleShellLegacy(ctx *orchestration.Context) error {
-	if err := c.handleShellHome(ctx); err != nil {
-		return err
-	}
-	_ = ctx.Answer("Classic menu retired; returned to the current Assistant shell.", false)
-	return nil
 }
