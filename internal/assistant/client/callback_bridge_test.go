@@ -21,27 +21,46 @@ type mockCoreDispatcher struct {
 	dispatchFunc   func(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer) error
 }
 
+type mockPreparedCallback struct {
+	scope    tasks.ScopeIdentity
+	dispatch func(context.Context, *core.CallbackQueryEvent, core.TelegramServicer) error
+}
+
+func (p *mockPreparedCallback) Scope() tasks.ScopeIdentity {
+	if p == nil {
+		return tasks.ScopeIdentity{}
+	}
+	return p.scope
+}
+
+func (p *mockPreparedCallback) Dispatch(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer) error {
+	if p == nil || p.dispatch == nil {
+		return nil
+	}
+	return p.dispatch(ctx, evt, svc)
+}
+
 func (m *mockCoreDispatcher) Prepare(
 	ctx context.Context,
 	evt *core.CallbackQueryEvent,
 	svc core.TelegramServicer,
 	resolve func(string) (tasks.ScopeIdentity, bool),
-) (corecallback.PreparedDispatch, error) {
+) (corecallback.PreparedCallback, error) {
 	if evt == nil {
-		return corecallback.PreparedDispatch{}, corecallback.ErrInvalidCallbackData
+		return nil, corecallback.ErrInvalidCallbackData
 	}
 	ns, _, _, err := corecallback.ParseCallbackData(evt.Data)
 	if err != nil {
 		if svc != nil {
 			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Invalid callback", false)
 		}
-		return corecallback.PreparedDispatch{}, err
+		return nil, err
 	}
 	if m.hasHandlerFunc != nil && !m.hasHandlerFunc(ns) {
 		if svc != nil {
 			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Feature not available.", false)
 		}
-		return corecallback.PreparedDispatch{}, corecallback.ErrHandlerNotFound
+		return nil, corecallback.ErrHandlerNotFound
 	}
 	var scope tasks.ScopeIdentity
 	if m.taskScopeFunc != nil {
@@ -51,22 +70,10 @@ func (m *mockCoreDispatcher) Prepare(
 			if svc != nil {
 				_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Feature not available.", false)
 			}
-			return corecallback.PreparedDispatch{}, corecallback.ErrHandlerRegistrationChanged
+			return nil, corecallback.ErrHandlerRegistrationChanged
 		}
 	}
-	return corecallback.PreparedDispatch{ResolvedScope: scope}, nil
-}
-
-func (m *mockCoreDispatcher) DispatchPrepared(
-	ctx context.Context,
-	evt *core.CallbackQueryEvent,
-	svc core.TelegramServicer,
-	_ corecallback.PreparedDispatch,
-) error {
-	if m.dispatchFunc != nil {
-		return m.dispatchFunc(ctx, evt, svc)
-	}
-	return nil
+	return &mockPreparedCallback{scope: scope, dispatch: m.dispatchFunc}, nil
 }
 
 type mockInteraction struct {
