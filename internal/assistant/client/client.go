@@ -74,12 +74,12 @@ type AssistantClient struct {
 	pluginScopeResolver func(string) (tasks.ScopeIdentity, bool)
 	inlineEngine        *inlineService.Engine
 	rpcExecutor         assistentrpc.Executor
-	v2Catalog           feature.Catalog
-	v2Sessions          *rootinteraction.Runtime
-	v2Actions           *rootinteraction.Dispatcher
-	v2Ingress           *v2Ingress
-	v2Drivers           map[string]interaction.V2FeatureDriver
-	v2DriverCleanups    []func()
+	featureCatalog           feature.Catalog
+	interactionSessions          *rootinteraction.Runtime
+	actionDispatcher           *rootinteraction.Dispatcher
+	interactionIngress           *interactionIngress
+	featureDrivers           map[string]interaction.FeatureDriver
+	featureDriverCleanups    []func()
 	shellMu             sync.Mutex
 	shellScope          tasks.ScopeIdentity
 	shellRegistrations  []*rootinteraction.HandlerRegistration
@@ -176,42 +176,42 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	c.interaction.SetPeerReResolver(c.resolver)
 	inlineQueryService := newAssistantInlineQueryServicer(managedAPI)
 	c.mu.RLock()
-	v2Catalog := c.v2Catalog
-	v2Sessions := c.v2Sessions
-	v2Actions := c.v2Actions
+	featureCatalog := c.featureCatalog
+	interactionSessions := c.interactionSessions
+	actionDispatcher := c.actionDispatcher
 	c.mu.RUnlock()
-	var v2 *v2Ingress
-	if v2Catalog != nil && v2Sessions != nil && v2Actions != nil {
-		v2Service := newV2PresentationServicer(c.interaction)
-		v2Engine, v2Err := orchestration.New(v2Sessions, v2Actions, presentationtelegram.NewBridge(v2Service))
+	var ingress *interactionIngress
+	if featureCatalog != nil && interactionSessions != nil && actionDispatcher != nil {
+		presentationService := newInteractionPresentationServicer(c.interaction)
+		interactionEngine, interactionErr := orchestration.New(interactionSessions, actionDispatcher, presentationtelegram.NewBridge(presentationService))
 		if v2Err != nil {
-			startErr := fmt.Errorf("configure a2 interaction ingress: %w", v2Err)
+			startErr := fmt.Errorf("configure interaction ingress: %w", interactionErr)
 			cancel()
 			c.lifecycle.SetState(StateFailed)
 			c.mu.Lock()
 			c.lastError = startErr
-			c.v2Ingress = nil
+			c.interactionIngress = nil
 			c.mu.Unlock()
 			startupResult <- startErr
 			close(runDone)
 			return startErr
 		}
-		if bindErr := c.bindV2Drivers(v2Engine, v2Catalog, v2Service); bindErr != nil {
-			startErr := fmt.Errorf("bind a2 feature drivers: %w", bindErr)
+		if bindErr := c.bindFeatureDrivers(interactionEngine, featureCatalog, presentationService); bindErr != nil {
+			startErr := fmt.Errorf("bind feature drivers: %w", bindErr)
 			cancel()
 			c.lifecycle.SetState(StateFailed)
 			c.mu.Lock()
 			c.lastError = startErr
-			c.v2Ingress = nil
+			c.interactionIngress = nil
 			c.mu.Unlock()
 			startupResult <- startErr
 			close(runDone)
 			return startErr
 		}
-		v2 = &v2Ingress{engine: v2Engine, ack: v2Service, input: c.handleV2TextInput}
+		v2 = &interactionIngress{engine: interactionEngine, ack: v2Service, input: c.handleInteractionTextInput}
 	}
 	c.mu.Lock()
-	c.v2Ingress = v2
+	c.interactionIngress = ingress
 	c.mu.Unlock()
 	c.shuttingDown.Store(false)
 
@@ -220,15 +220,15 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 		CmdRouter: c.cmdRouter, CallbackRouter: c.cbRouter, Interaction: c.interaction,
 		CacheEntities: c.CacheEntities, IsShuttingDown: c.shuttingDown.Load,
 		InlineEngine: c.inlineEngine, InlineService: inlineQueryService, Tasks: c.tasks,
-		V2Ingress: v2,
+		InteractionIngress: ingress,
 	}
 	RegisterUpdateHandlers(&dispatcher, deps)
 
 	go func() {
 		defer func() {
-			c.unbindV2Drivers()
+			c.unbindFeatureDrivers()
 			c.mu.Lock()
-			c.v2Ingress = nil
+			c.interactionIngress = nil
 			c.mu.Unlock()
 			close(runDone)
 		}()
@@ -333,7 +333,7 @@ func (c *AssistantClient) Stop(ctx context.Context) error {
 	}
 	if done == nil {
 		c.mu.Lock()
-		c.v2Ingress = nil
+		c.interactionIngress = nil
 		c.mu.Unlock()
 		c.lifecycle.SetState(StateStopped)
 		return nil
@@ -341,7 +341,7 @@ func (c *AssistantClient) Stop(ctx context.Context) error {
 	select {
 	case <-done:
 		c.mu.Lock()
-		c.v2Ingress = nil
+		c.interactionIngress = nil
 		c.mu.Unlock()
 		c.lifecycle.SetState(StateStopped)
 		return nil
@@ -415,9 +415,9 @@ func (c *AssistantClient) SetPluginScopeResolver(resolver func(string) (tasks.Sc
 
 func (c *AssistantClient) SetInteractionFoundation(catalog feature.Catalog, sessions *rootinteraction.Runtime, actions *rootinteraction.Dispatcher) {
 	c.mu.Lock()
-	c.v2Catalog = catalog
-	c.v2Sessions = sessions
-	c.v2Actions = actions
+	c.featureCatalog = catalog
+	c.interactionSessions = sessions
+	c.actionDispatcher = actions
 	c.mu.Unlock()
 }
 func (c *AssistantClient) SetInlineEngine(engine *inlineService.Engine) {
