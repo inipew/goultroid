@@ -132,6 +132,52 @@ func TestAssistantShellRefreshStalesOldButtonAndReloadsGeneration(t *testing.T) 
 	}
 }
 
+func TestAssistantShellOwnerStartUsesA2Canary(t *testing.T) {
+	manager := plugin.NewManager(core.NewRouter("."))
+	if err := manager.Register(assistantshell.NewFeature()); err != nil {
+		t.Fatalf("Register(shell) error = %v", err)
+	}
+	defer manager.Shutdown()
+
+	port := &shellTestPort{}
+	engine, err := orchestration.New(manager.InteractionRuntime(), manager.ActionDispatcher(), port)
+	if err != nil {
+		t.Fatalf("orchestration.New() error = %v", err)
+	}
+	client := NewAssistantClient(1, "hash", "token", zap.NewNop())
+	client.SetOwner(7, nil)
+	client.mu.Lock()
+	client.v2Catalog = manager.FeatureCatalog()
+	client.v2Ingress = &v2Ingress{engine: engine}
+	legacyCalled := false
+	client.legacyStart = func(*command.Context) error {
+		legacyCalled = true
+		return nil
+	}
+	client.mu.Unlock()
+
+	err = client.dispatchStart(&command.Context{
+		Ctx:      context.Background(),
+		SenderID: 7,
+		Peer:     &tg.InputPeerUser{UserID: 7},
+	})
+	if err != nil {
+		t.Fatalf("dispatchStart(owner) error = %v", err)
+	}
+	if legacyCalled {
+		t.Fatal("owner/private start unexpectedly used legacy fallback")
+	}
+	if len(port.sent.Rows) == 0 || len(port.sent.Rows[0]) == 0 {
+		t.Fatal("owner/private start did not render the a2 shell")
+	}
+	if !isV2Callback(port.sent.Rows[0][0].Data) {
+		t.Fatalf("owner/private callback data = %q, want a2", port.sent.Rows[0][0].Data)
+	}
+	if got := manager.InteractionRuntime().Stats().Sessions; got != 1 {
+		t.Fatalf("live shell sessions = %d, want 1", got)
+	}
+}
+
 func TestAssistantShellAdmissionFallsBackToLegacyStart(t *testing.T) {
 	manager := plugin.NewManager(core.NewRouter("."))
 	if err := manager.Register(assistantshell.NewFeature()); err != nil {
@@ -148,7 +194,7 @@ func TestAssistantShellAdmissionFallsBackToLegacyStart(t *testing.T) {
 	client.SetOwner(7, nil)
 	client.mu.Lock()
 	client.v2Catalog = manager.FeatureCatalog()
-	client.v2Ingress = &v2Ingress{engine: engine, ack: &syntheticAck{}}
+	client.v2Ingress = &v2Ingress{engine: engine}
 	legacyCalled := false
 	client.legacyStart = func(*command.Context) error {
 		legacyCalled = true
