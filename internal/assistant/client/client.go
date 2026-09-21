@@ -81,6 +81,8 @@ type AssistantClient struct {
 	v2Sessions          *rootinteraction.Runtime
 	v2Actions           *rootinteraction.Dispatcher
 	v2Ingress           *v2Ingress
+	v2Drivers           map[string]interaction.V2FeatureDriver
+	v2DriverCleanups    []func()
 	legacyStart         command.Handler
 	shellMu             sync.Mutex
 	shellScope          tasks.ScopeIdentity
@@ -201,6 +203,18 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 			close(runDone)
 			return startErr
 		}
+		if bindErr := c.bindV2Drivers(v2Engine, v2Catalog, v2Service); bindErr != nil {
+			startErr := fmt.Errorf("bind a2 feature drivers: %w", bindErr)
+			cancel()
+			c.lifecycle.SetState(StateFailed)
+			c.mu.Lock()
+			c.lastError = startErr
+			c.v2Ingress = nil
+			c.mu.Unlock()
+			startupResult <- startErr
+			close(runDone)
+			return startErr
+		}
 		v2 = &v2Ingress{engine: v2Engine, ack: v2Service, input: c.handleV2TextInput}
 	}
 	c.mu.Lock()
@@ -220,6 +234,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 
 	go func() {
 		defer func() {
+			c.unbindV2Drivers()
 			c.mu.Lock()
 			c.v2Ingress = nil
 			c.mu.Unlock()
