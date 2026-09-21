@@ -5,14 +5,12 @@ import (
 	"image/png"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf16"
 
 	"github.com/gotd/td/telegram/message/entity"
 	"github.com/gotd/td/telegram/message/html"
 	"github.com/gotd/td/telegram/message/styling"
 	"github.com/gotd/td/tg"
-	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/ui/render"
 )
 
@@ -202,27 +200,17 @@ func TestInlineQRPreviewBoundsRunes(t *testing.T) {
 	}
 }
 
-func TestMenuRegisterQRUsesPaymentTTLAndRejectsOversizePayload(t *testing.T) {
-	store := callback.NewStateStore()
-	p := &Plugin{stateStore: store}
-	m := NewMenuManager(p, nil)
+func TestMenuRegisterQRKeepsPayloadSessionOwnedAndRejectsOversizePayload(t *testing.T) {
+	m := NewMenuManager(&Plugin{})
 
 	key := m.RegisterQR(" 000201010212TEST ")
-	if key == "" {
-		t.Fatal("valid QR payload was not registered")
+	if key != "000201010212TEST" {
+		t.Fatalf("RegisterQR() = %q, want normalized session-owned payload", key)
 	}
-	entry, err := store.GetEntry(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	remaining := time.Until(entry.Scope.ExpiresAt)
-	if remaining <= 4*time.Minute || remaining > pendingQRISTTL+time.Second {
-		t.Fatalf("QR callback TTL=%v, want about %v", remaining, pendingQRISTTL)
-	}
-	if got, ok := entry.Data.(string); !ok || got != "000201010212TEST" {
-		t.Fatalf("stored QR payload=%#v", entry.Data)
+	if got := m.ResolveQR(key); got != "000201010212TEST" {
+		t.Fatalf("ResolveQR(%q) = %q", key, got)
 	}
 	if key := m.RegisterQR(strings.Repeat("x", maxQRPayloadBytes+1)); key != "" {
-		t.Fatalf("oversized QR payload unexpectedly registered: %q", key)
+		t.Fatalf("oversized QR payload unexpectedly accepted: %q", key)
 	}
 }
