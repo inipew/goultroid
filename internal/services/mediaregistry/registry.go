@@ -88,7 +88,7 @@ func (r *Registry) RegisterAsset(ctx context.Context, reg AssetRegistration, ref
 		  AND media_assets.owner = excluded.owner
 	`, reg.AssetID, reg.Producer, reg.Owner, reg.Lifecycle, now, now)
 	if err != nil {
-		return fmt.Errorf("media registry: register asset %q: %w", reg.AssetID, err)
+		return fmt.Errorf("media registry: register asset %q: %w", reg.AssetID, reclamationWriteError(err))
 	}
 	affected, err := res.RowsAffected()
 	if err != nil {
@@ -130,7 +130,7 @@ func upsertReference(ctx context.Context, db database.SQLExecutor, ref Reference
 		DO UPDATE SET updated_at = excluded.updated_at
 	`, ref.AssetID, ref.Subsystem, ref.Kind, ref.Key, now, now)
 	if err != nil {
-		return fmt.Errorf("media registry: upsert reference for asset %q: %w", ref.AssetID, err)
+		return fmt.Errorf("media registry: upsert reference for asset %q: %w", ref.AssetID, reclamationWriteError(err))
 	}
 	return nil
 }

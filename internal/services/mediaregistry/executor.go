@@ -23,17 +23,18 @@ func SchemaReady(ctx context.Context, db database.SQLExecutor) (bool, error) {
 	var count int
 	if err := db.QueryRowContext(ctx, `
 		SELECT count(*) FROM sqlite_master
-		WHERE type = 'table' AND name IN ('media_assets', 'media_asset_references')
+		WHERE type = 'table'
+		  AND name IN ('media_assets', 'media_asset_references', 'media_reclamation_intents')
 	`).Scan(&count); err != nil {
 		return false, fmt.Errorf("media registry: inspect schema: %w", err)
 	}
 	switch count {
 	case 0:
 		return false, nil
-	case 2:
+	case 3:
 		return true, nil
 	default:
-		return false, fmt.Errorf("%w: found %d of 2 required tables", ErrIncompleteSchema, count)
+		return false, fmt.Errorf("%w: found %d of 3 required tables", ErrIncompleteSchema, count)
 	}
 }
 
@@ -84,7 +85,7 @@ func RegisterAssetWithExecutor(
 		  AND media_assets.owner = excluded.owner
 	`, reg.AssetID, reg.Producer, reg.Owner, reg.Lifecycle, now, now)
 	if err != nil {
-		return fmt.Errorf("media registry: register asset %q: %w", reg.AssetID, err)
+		return fmt.Errorf("media registry: register asset %q: %w", reg.AssetID, reclamationWriteError(err))
 	}
 	affected, err := res.RowsAffected()
 	if err != nil {
@@ -139,14 +140,28 @@ func RemoveOwnedAssetWithExecutor(
 	if assetID == "" || owner == "" {
 		return ErrInvalidAsset
 	}
-	if _, err := exec.ExecContext(ctx, `
+	res, err := exec.ExecContext(ctx, `
 		DELETE FROM media_assets
 		WHERE asset_id = ? AND owner = ?
 		  AND NOT EXISTS (
 			SELECT 1 FROM media_asset_references WHERE asset_id = ?
 		  )
-	`, assetID, owner, assetID); err != nil {
-		return fmt.Errorf("media registry: remove owned asset %q: %w", assetID, err)
+	`, assetID, owner, assetID)
+	if err != nil {
+		return fmt.Errorf("media registry: remove owned asset %q: %w", assetID, reclamationWriteError(err))
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 1 {
+		if _, err := exec.ExecContext(ctx, `
+			DELETE FROM media_reclamation_intents
+			WHERE asset_id = ? AND expected_owner = ?
+			  AND state IN (?, ?)
+		`, assetID, owner, ReclamationPrepared, ReclamationPending); err != nil {
+			return fmt.Errorf("media registry: remove stale reclamation intent %q: %w", assetID, err)
+		}
 	}
 	return nil
 }
