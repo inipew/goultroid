@@ -13,7 +13,6 @@ import (
 	"github.com/gotd/td/telegram/updates"
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
-	"github.com/inipew/goultroid/internal/assistant/callback"
 	"github.com/inipew/goultroid/internal/assistant/command"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/assistant/peer"
@@ -64,7 +63,8 @@ type AssistantClient struct {
 	resolver            *peer.DefaultResolver
 	interaction         *interaction.ClientInteraction
 	cmdRouter           *command.Router
-	cbRouter            *callback.Router
+	callbackDispatcher CoreCallbackDispatcher
+	callbackDeduper    *callbackQueryDeduper
 	metrics             core.MetricsCollector
 	ownerID             int64
 	sudoGetter          func() []int64
@@ -95,12 +95,12 @@ func NewAssistantClient(appID int, appHash string, botToken string, logger *zap.
 	res := peer.NewResolver(cache)
 	rl := NewUserRateLimiter(5, 2*time.Second)
 	cmdR := command.NewRouter(logger)
-	cbR := callback.NewRouter(logger)
 	c := &AssistantClient{
 		appID: appID, appHash: appHash, botToken: botToken, logger: logger,
 		startTime: time.Now(), lifecycle: NewLifecycle(), rateLimiter: rl,
-		cache: cache, resolver: res, cmdRouter: cmdR, cbRouter: cbR,
-		rpcExecutor: assistentrpc.DirectExecutor{},
+		cache: cache, resolver: res, cmdRouter: cmdR,
+		callbackDeduper: newCallbackQueryDeduper(),
+		rpcExecutor:      assistentrpc.DirectExecutor{},
 	}
 	cmdR.Register("/start", c.dispatchStart)
 	return c
@@ -179,6 +179,10 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	featureCatalog := c.featureCatalog
 	interactionSessions := c.interactionSessions
 	actionDispatcher := c.actionDispatcher
+	callbackDispatcher := c.callbackDispatcher
+	callbackDeduper := c.callbackDeduper
+	pluginScopeResolver := c.pluginScopeResolver
+	taskClient := c.tasks
 	c.mu.RUnlock()
 	var ingress *interactionIngress
 	if featureCatalog != nil && interactionSessions != nil && actionDispatcher != nil {
@@ -217,10 +221,10 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 
 	deps := UpdateHandlerDeps{
 		Logger: c.logger, RateLimiter: c.rateLimiter, Resolver: c.resolver,
-		CmdRouter: c.cmdRouter, CallbackRouter: c.cbRouter, Interaction: c.interaction,
-		CacheEntities: c.CacheEntities, IsShuttingDown: c.shuttingDown.Load,
-		InlineEngine: c.inlineEngine, InlineService: inlineQueryService, Tasks: c.tasks,
-		InteractionIngress: ingress,
+		CmdRouter: c.cmdRouter, CallbackDispatcher: callbackDispatcher, CallbackDeduper: callbackDeduper,
+		Interaction: c.interaction, CacheEntities: c.CacheEntities, IsShuttingDown: c.shuttingDown.Load,
+		InlineEngine: c.inlineEngine, InlineService: inlineQueryService, Tasks: taskClient,
+		PluginScopeResolver: pluginScopeResolver, InteractionIngress: ingress,
 	}
 	RegisterUpdateHandlers(&dispatcher, deps)
 
@@ -372,16 +376,11 @@ func (c *AssistantClient) StartTime() time.Time {
 	defer c.mu.RUnlock()
 	return c.startTime
 }
-func (c *AssistantClient) CallbackRouter() *callback.Router {
-	return c.cbRouter
-}
-func (c *AssistantClient) SetAuthorizer(auth callback.Authorizer) { c.cbRouter.SetAuthorizer(auth) }
 func (c *AssistantClient) SetOwner(ownerID int64, sudoGetter func() []int64) {
 	c.mu.Lock()
 	c.ownerID = ownerID
 	c.sudoGetter = sudoGetter
 	c.mu.Unlock()
-	c.cbRouter.SetAuthorizer(callback.NewOwnerAuthorizer(ownerID, sudoGetter))
 	if c.cmdRouter != nil {
 		c.cmdRouter.SetOwner(ownerID, sudoGetter)
 	}
@@ -435,9 +434,6 @@ func (c *AssistantClient) SetMetricsCollector(m core.MetricsCollector) {
 	if c.cmdRouter != nil {
 		c.cmdRouter.SetMetricsCollector(m)
 	}
-	if c.cbRouter != nil {
-		c.cbRouter.SetMetricsCollector(m)
-	}
 	if c.interaction != nil {
 		c.interaction.SetMetricsCollector(m)
 	}
@@ -448,236 +444,9 @@ func (c *AssistantClient) CacheEntities(e tg.Entities) {
 	}
 }
 
-func callbackOrderingKey(evt *core.CallbackQueryEvent) string {
-	if evt == nil {
-		return ""
-	}
-	if !evt.IsInline() {
-		if evt.ChatID != 0 && evt.MsgID != 0 {
-			return fmt.Sprintf("callback:msg:%d:%d", evt.ChatID, evt.MsgID)
-		}
-		if evt.MsgID != 0 {
-			return fmt.Sprintf("callback:msg:%d", evt.MsgID)
-		}
-		return fmt.Sprintf("callback:%d", evt.QueryID)
-	}
-	if evt.Target.InlineID != nil {
-		switch id := evt.Target.InlineID.(type) {
-		case *tg.InputBotInlineMessageID:
-			return fmt.Sprintf("callback:inline_msg:%d:%d", id.DCID, id.ID)
-		case *tg.InputBotInlineMessageID64:
-			return fmt.Sprintf("callback:inline_msg:%d:%d", id.DCID, id.ID)
-		}
-	}
-	if evt.ChatInstance != 0 {
-		return fmt.Sprintf("callback:instance:%d", evt.ChatInstance)
-	}
-	return fmt.Sprintf("inline_callback:%d", evt.QueryID)
-}
-
-// SetCallbackRouter wires a CoreCallbackDispatcher as fallback handler on the assistant callback router.
+// SetCallbackRouter installs the canonical core/plugin callback dispatcher.
 func (c *AssistantClient) SetCallbackRouter(coreRouter CoreCallbackDispatcher) {
-	if c.cbRouter == nil || coreRouter == nil {
-		return
-	}
-	c.cbRouter.SetFallbackHandler(func(ctx context.Context, tx *callback.Transaction) error {
-		if !coreRouter.HasHandler(tx.Payload.Namespace) {
-			_ = tx.Answer(ctx, "Unknown button action", false)
-			return fmt.Errorf("%w: %s:%s", callback.ErrUnknownAction, tx.Payload.Namespace, tx.Payload.Action)
-		}
-		rawData := tx.RawData
-		if len(rawData) == 0 {
-			if tx.Payload.State != "" {
-				rawData = []byte(fmt.Sprintf("%s:%s:%s:%s", tx.Payload.Version, tx.Payload.Namespace, tx.Payload.Action, tx.Payload.State))
-			} else {
-				rawData = []byte(fmt.Sprintf("%s:%s:%s", tx.Payload.Version, tx.Payload.Namespace, tx.Payload.Action))
-			}
-		}
-
-		c.mu.RLock()
-		scopeResolver := c.pluginScopeResolver
-		taskClient := c.tasks
-		c.mu.RUnlock()
-
-		scope, available := coreRouter.TaskScope(rawData, scopeResolver)
-		if !available {
-			_ = tx.Answer(ctx, "Feature not available.", false)
-			return fmt.Errorf("%w: feature not available for %s", callback.ErrUnknownAction, tx.Payload.Namespace)
-		}
-
-		evt := &core.CallbackQueryEvent{
-			At:      time.Now(),
-			QueryID: tx.QueryID,
-			UserID:  tx.UserID,
-			ChatID:  tx.Target.ChatID(),
-			MsgID:   tx.Target.MessageID(),
-			Data:    rawData,
-			Origin:  core.CallbackOriginMessage,
-			Target: core.CallbackTarget{
-				Origin:       core.CallbackOriginMessage,
-				Peer:         tx.Target.Peer(),
-				MessageID:    tx.Target.MessageID(),
-				ChatInstance: tx.Target.ChatInstance(),
-			},
-			ChatInstance: tx.Target.ChatInstance(),
-		}
-		svc := &assistantCallbackServicer{tx: tx}
-
-		if taskClient != nil {
-			taskID := fmt.Sprintf("asst:cb:%d", evt.QueryID)
-			owner := fmt.Sprintf("telegram:user:%d", evt.UserID)
-			doneCh := make(chan error, 1)
-			ticket, err := taskClient.Submit(ctx, tasks.WorkSpec{
-				ID:               tasks.TaskID(taskID),
-				Scope:            scope,
-				QuotaOwner:       tasks.OwnerID(owner),
-				Pool:             "interactive",
-				Class:            tasks.PriorityInteractive,
-				OrderingKey:      callbackOrderingKey(evt),
-				ExecutionTimeout: 15 * time.Second,
-				Handler: func(taskCtx context.Context) error {
-					dErr := coreRouter.Dispatch(taskCtx, evt, svc)
-					doneCh <- dErr
-					return dErr
-				},
-			})
-			if err != nil {
-				_ = tx.Answer(ctx, "Interaction busy. Please retry.", true)
-				return fmt.Errorf("task submission failed: %w", err)
-			}
-			var ticketDone <-chan struct{}
-			if ticket != nil {
-				ticketDone = ticket.Done()
-			}
-			select {
-			case dErr := <-doneCh:
-				return dErr
-			case <-ticketDone:
-				select {
-				case dErr := <-doneCh:
-					return dErr
-				default:
-				}
-				if ticket != nil {
-					res, _ := ticket.Result()
-					if res.IsSuccess() {
-						return nil
-					}
-					if res.Failure.Message != "" {
-						return errors.New(res.Failure.Message)
-					}
-					return fmt.Errorf("task finished with outcome %s (%s)", res.Outcome, res.Cause)
-				}
-				return nil
-			case <-ctx.Done():
-				if ticket != nil {
-					_, _ = taskClient.Cancel(ticket.TaskID(), tasks.CauseTimeout)
-				}
-				return ctx.Err()
-			}
-		}
-
-		_ = tx.Answer(ctx, "Interaction service unavailable.", true)
-		return ErrCallbackTasksNotConfigured
-	})
-
-	c.cbRouter.SetFallbackInlineHandler(func(ctx context.Context, tx *callback.InlineTransaction) error {
-		if !coreRouter.HasHandler(tx.Payload.Namespace) {
-			_ = tx.Answer(ctx, "Action no longer available", false)
-			return fmt.Errorf("%w: %s:%s", callback.ErrUnknownAction, tx.Payload.Namespace, tx.Payload.Action)
-		}
-		rawData := tx.RawData
-		if len(rawData) == 0 {
-			if tx.Payload.State != "" {
-				rawData = []byte(fmt.Sprintf("%s:%s:%s:%s", tx.Payload.Version, tx.Payload.Namespace, tx.Payload.Action, tx.Payload.State))
-			} else {
-				rawData = []byte(fmt.Sprintf("%s:%s:%s", tx.Payload.Version, tx.Payload.Namespace, tx.Payload.Action))
-			}
-		}
-
-		c.mu.RLock()
-		scopeResolver := c.pluginScopeResolver
-		taskClient := c.tasks
-		c.mu.RUnlock()
-
-		scope, available := coreRouter.TaskScope(rawData, scopeResolver)
-		if !available {
-			_ = tx.Answer(ctx, "Feature not available.", false)
-			return fmt.Errorf("%w: feature not available for %s", callback.ErrUnknownAction, tx.Payload.Namespace)
-		}
-
-		evt := &core.CallbackQueryEvent{
-			At:      time.Now(),
-			QueryID: tx.QueryID,
-			UserID:  tx.UserID,
-			ChatID:  0,
-			MsgID:   0,
-			Data:    rawData,
-			Origin:  core.CallbackOriginInline,
-			Target: core.CallbackTarget{
-				Origin:       core.CallbackOriginInline,
-				InlineID:     tx.Target.MessageID(),
-				ChatInstance: tx.Target.ChatInstance(),
-			},
-			ChatInstance: tx.Target.ChatInstance(),
-		}
-		svc := &assistantInlineCallbackServicer{tx: tx}
-
-		if taskClient != nil {
-			taskID := fmt.Sprintf("asst:cb:inline:%d", evt.QueryID)
-			owner := fmt.Sprintf("telegram:user:%d", evt.UserID)
-			doneCh := make(chan error, 1)
-			ticket, err := taskClient.Submit(ctx, tasks.WorkSpec{
-				ID:               tasks.TaskID(taskID),
-				Scope:            scope,
-				QuotaOwner:       tasks.OwnerID(owner),
-				Pool:             "interactive",
-				Class:            tasks.PriorityInteractive,
-				OrderingKey:      callbackOrderingKey(evt),
-				ExecutionTimeout: 15 * time.Second,
-				Handler: func(taskCtx context.Context) error {
-					dErr := coreRouter.Dispatch(taskCtx, evt, svc)
-					doneCh <- dErr
-					return dErr
-				},
-			})
-			if err != nil {
-				_ = tx.Answer(ctx, "Interaction busy. Please retry.", true)
-				return fmt.Errorf("task submission failed: %w", err)
-			}
-			var ticketDone <-chan struct{}
-			if ticket != nil {
-				ticketDone = ticket.Done()
-			}
-			select {
-			case dErr := <-doneCh:
-				return dErr
-			case <-ticketDone:
-				select {
-				case dErr := <-doneCh:
-					return dErr
-				default:
-				}
-				if ticket != nil {
-					res, _ := ticket.Result()
-					if res.IsSuccess() {
-						return nil
-					}
-					if res.Failure.Message != "" {
-						return errors.New(res.Failure.Message)
-					}
-					return fmt.Errorf("task finished with outcome %s (%s)", res.Outcome, res.Cause)
-				}
-				return nil
-			case <-ctx.Done():
-				if ticket != nil {
-					_, _ = taskClient.Cancel(ticket.TaskID(), tasks.CauseTimeout)
-				}
-				return ctx.Err()
-			}
-		}
-
-		_ = tx.Answer(ctx, "Interaction service unavailable.", true)
-		return ErrCallbackTasksNotConfigured
-	})
+	c.mu.Lock()
+	c.callbackDispatcher = coreRouter
+	c.mu.Unlock()
 }
