@@ -7,14 +7,24 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/core"
+	corecallback "github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
 // CoreCallbackDispatcher routes callback query events to core and plugin handlers.
 type CoreCallbackDispatcher interface {
-	HasHandler(namespace string) bool
-	TaskScope(data []byte, resolve func(string) (tasks.ScopeIdentity, bool)) (tasks.ScopeIdentity, bool)
-	Dispatch(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer) error
+	Prepare(
+		context.Context,
+		*core.CallbackQueryEvent,
+		core.TelegramServicer,
+		func(string) (tasks.ScopeIdentity, bool),
+	) (corecallback.PreparedDispatch, error)
+	DispatchPrepared(
+		context.Context,
+		*core.CallbackQueryEvent,
+		core.TelegramServicer,
+		corecallback.PreparedDispatch,
+	) error
 }
 
 type inlineQueryAPI interface {
