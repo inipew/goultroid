@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"strings"
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
@@ -120,14 +121,14 @@ func (r *Router) SetTimeout(d time.Duration) {
 	}
 }
 
-// Register registers a new callback handler for its designated namespace.
-func (r *Router) Register(h Handler) error {
-	_, err := r.RegisterOwned("", h)
-	return err
-}
-
 // RegisterOwned registers a handler together with its lifecycle owner.
+// Every canonical callback handler must be lifecycle-owned so TaskEngine scope
+// admission can fence disable/reload boundaries.
 func (r *Router) RegisterOwned(owner string, h Handler) (*Registration, error) {
+	owner = strings.TrimSpace(owner)
+	if owner == "" {
+		return nil, fmt.Errorf("callback handler owner cannot be empty")
+	}
 	if h == nil {
 		return nil, fmt.Errorf("handler cannot be nil")
 	}
