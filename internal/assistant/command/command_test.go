@@ -9,7 +9,6 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/command"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
-	"github.com/inipew/goultroid/internal/assistant/presentation"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	"go.uber.org/zap"
@@ -52,8 +51,10 @@ func (f *fakeInteraction) SendMedia(ctx context.Context, peer tg.InputPeerClass,
 
 func TestCommandRouter_Dispatch(t *testing.T) {
 	r := command.NewRouter(zap.NewNop())
-	startTime := time.Now().Add(-10 * time.Minute)
-	command.AttachDefaultCommands(r, func() string { return "TestBot" }, func() time.Time { return startTime }, presentation.RenderScreen)
+	r.Register("/start", func(c *command.Context) error {
+		_, err := c.Reply("start", nil)
+		return err
+	})
 
 	coreRouter := core.NewRouter(".")
 	_ = coreRouter.RegisterBatch([]core.Command{
@@ -83,8 +84,8 @@ func TestCommandRouter_Dispatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error dispatching /start: %v", err)
 	}
-	if fake.lastSentMarkup == nil {
-		t.Fatalf("expected markup returned on /start")
+	if fake.lastSentText != "start" {
+		t.Fatalf("unexpected /start response: %q", fake.lastSentText)
 	}
 
 	// 2. /ping
