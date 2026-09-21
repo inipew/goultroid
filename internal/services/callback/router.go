@@ -103,11 +103,6 @@ func (r *Router) SetTimeout(d time.Duration) {
 	}
 }
 
-// StateStore returns the underlying temporary state store.
-func (r *Router) StateStore() *StateStore {
-	return r.stateStore
-}
-
 // Register registers a new callback handler for its designated namespace.
 func (r *Router) Register(h Handler) error {
 	_, err := r.RegisterOwned("", h)
@@ -134,63 +129,6 @@ func (r *Router) RegisterOwned(owner string, h Handler) (*Registration, error) {
 	r.nextID++
 	r.handlers[ns] = registration{handler: h, owner: owner, id: r.nextID}
 	return &Registration{router: r, namespace: ns, id: r.nextID}, nil
-}
-
-// GetHandler retrieves the registered handler for a namespace.
-func (r *Router) GetHandler(namespace string) (Handler, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	reg, ok := r.handlers[namespace]
-	return reg.handler, ok
-}
-
-// HasHandler checks whether a handler is registered for the namespace.
-func (r *Router) HasHandler(namespace string) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	_, ok := r.handlers[namespace]
-	return ok
-}
-
-// TaskScope resolves callback payload ownership before task admission.
-//
-// Deprecated for execution paths that can use Prepare. TaskScope is retained
-// for compatibility, but now fails closed if the handler disappears or is
-// replaced while ownership is being resolved.
-func (r *Router) TaskScope(data []byte, resolve func(string) (tasks.ScopeIdentity, bool)) (tasks.ScopeIdentity, bool) {
-	ns, action, _, err := ParseCallbackData(data)
-	if err != nil {
-		return tasks.ScopeIdentity{}, true // malformed data is rejected by Dispatch.
-	}
-	if action == ActionNoop {
-		return tasks.ScopeIdentity{}, true
-	}
-
-	r.mu.RLock()
-	reg, ok := r.handlers[ns]
-	r.mu.RUnlock()
-	if !ok {
-		return tasks.ScopeIdentity{}, false
-	}
-	if reg.owner == "" {
-		return tasks.ScopeIdentity{}, true
-	}
-	if resolve == nil {
-		return tasks.ScopeIdentity{}, false
-	}
-
-	scope, available := resolve(reg.owner)
-	if !available {
-		return tasks.ScopeIdentity{}, false
-	}
-
-	r.mu.RLock()
-	current, stillCurrent := r.handlers[ns]
-	r.mu.RUnlock()
-	if !stillCurrent || current.id != reg.id {
-		return tasks.ScopeIdentity{}, false
-	}
-	return scope, true
 }
 
 // Prepare validates callback protocol and rate limits, pins one concrete
@@ -338,13 +276,13 @@ func (r *Router) resolveState(
 	ns, action, opaqueID string,
 	svc core.TelegramServicer,
 	start time.Time,
-) (any, StateEntry, bool, error) {
+) (any, stateEntry, bool, error) {
 	if opaqueID == "" || opaqueID == ActionNoop || opaqueID == "-" || r.stateStore == nil {
-		return nil, StateEntry{}, false, nil
+		return nil, stateEntry{}, false, nil
 	}
 
 	var validationFailure *CallbackFailure
-	entry, stateErr := r.stateStore.ClaimEntry(opaqueID, func(scope StateScope) error {
+	entry, stateErr := r.stateStore.claimEntry(opaqueID, func(scope StateScope) error {
 		switch {
 		case scope.UserID > 0 && evt.UserID != scope.UserID:
 			validationFailure = &CallbackFailure{
@@ -395,7 +333,7 @@ func (r *Router) resolveState(
 			zap.String("action", action),
 			zap.String("opaque_id", opaqueID),
 			zap.String("code", string(validationFailure.Code)))
-		return nil, StateEntry{}, false, r.reject(ctx, evt, svc, *validationFailure, start)
+		return nil, stateEntry{}, false, r.reject(ctx, evt, svc, *validationFailure, start)
 	}
 
 	switch {
@@ -407,7 +345,7 @@ func (r *Router) resolveState(
 			zap.String("action", action),
 			zap.String("opaque_id", opaqueID),
 			zap.String("origin", originString(evt.Origin)))
-		return nil, StateEntry{}, false, r.reject(ctx, evt, svc, CallbackFailure{
+		return nil, stateEntry{}, false, r.reject(ctx, evt, svc, CallbackFailure{
 			Code:        FailureCodeSessionExpired,
 			MetricTag:   "expired",
 			UserAlert:   "⏰ Button expired, run the command again.",
@@ -422,7 +360,7 @@ func (r *Router) resolveState(
 			zap.String("action", action),
 			zap.String("opaque_id", opaqueID),
 			zap.String("origin", originString(evt.Origin)))
-		return nil, StateEntry{}, false, r.reject(ctx, evt, svc, CallbackFailure{
+		return nil, stateEntry{}, false, r.reject(ctx, evt, svc, CallbackFailure{
 			Code:        FailureCodeSessionExpired,
 			MetricTag:   "invalid",
 			UserAlert:   "Button already used.",
@@ -430,13 +368,13 @@ func (r *Router) resolveState(
 			IsAlert:     true,
 		}, start)
 	case errors.Is(stateErr, ErrStateNotFound):
-		return nil, StateEntry{}, false, nil
+		return nil, stateEntry{}, false, nil
 	default:
 		r.logger.Warn("callback state lookup failed",
 			zap.Int64("query_id", evt.QueryID),
 			zap.String("namespace", ns),
 			zap.Error(stateErr))
-		return nil, StateEntry{}, false, nil
+		return nil, stateEntry{}, false, nil
 	}
 }
 
