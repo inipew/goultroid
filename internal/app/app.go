@@ -11,6 +11,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/addon"
 	"github.com/inipew/goultroid/internal/assistant"
+	assistantinteraction "github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/assistant/menu"
 	assistantshell "github.com/inipew/goultroid/internal/assistant/shell"
 	"github.com/inipew/goultroid/internal/config"
@@ -238,6 +239,13 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		return nil, fmt.Errorf("register assistant shell feature: %w", err)
 	}
 	if tgRuntime.assistant != nil {
+		drivers := make([]assistantinteraction.V2FeatureDriver, 0)
+		for _, registered := range pluginManager.Plugins() {
+			if driver, ok := registered.(assistantinteraction.V2FeatureDriver); ok {
+				drivers = append(drivers, driver)
+			}
+		}
+		tgRuntime.assistant.SetInteractionDrivers(drivers)
 		tgRuntime.assistant.SetInteractionFoundation(pluginManager.FeatureCatalog(), pluginManager.InteractionRuntime(), pluginManager.ActionDispatcher())
 	}
 
