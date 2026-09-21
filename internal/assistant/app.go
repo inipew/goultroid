@@ -32,7 +32,7 @@ type Client interface {
 	SetTasks(client tasks.Client)
 	SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool))
 	SetInteractionFoundation(catalog feature.Catalog, sessions *rootinteraction.Runtime, actions *rootinteraction.Dispatcher)
-	SetInteractionDrivers(drivers []assistantinteraction.V2FeatureDriver)
+	SetInteractionDrivers(drivers []assistantinteraction.FeatureDriver)
 	SetRPCExecutor(executor assistentrpc.Executor)
 }
 
@@ -111,6 +111,6 @@ func (a *AssistantApp) SetPluginScopeResolver(resolver func(string) (tasks.Scope
 func (a *AssistantApp) SetInteractionFoundation(catalog feature.Catalog, sessions *rootinteraction.Runtime, actions *rootinteraction.Dispatcher) {
 	a.client.SetInteractionFoundation(catalog, sessions, actions)
 }
-func (a *AssistantApp) SetInteractionDrivers(drivers []assistantinteraction.V2FeatureDriver) {
+func (a *AssistantApp) SetInteractionDrivers(drivers []assistantinteraction.FeatureDriver) {
 	a.client.SetInteractionDrivers(drivers)
 }
