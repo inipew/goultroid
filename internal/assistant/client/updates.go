@@ -145,14 +145,14 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		if deps.CacheEntities != nil {
 			deps.CacheEntities(e)
 		}
-		if deps.RateLimiter != nil && !deps.RateLimiter.Allow(update.UserID, "inline") {
-			if deps.Interaction != nil {
-				_ = deps.Interaction.Answer(ctx, update.QueryID, "Too many requests. Please wait.", true)
-			}
-			return nil
-		}
 		inlineTarget := interaction.NewInlineTarget(update.QueryID, update.MsgID, update.ChatInstance)
 		if isInteractionCallback(update.Data) {
+			if deps.RateLimiter != nil && !deps.RateLimiter.Allow(update.UserID, "inline") {
+				if deps.Interaction != nil {
+					_ = deps.Interaction.Answer(ctx, update.QueryID, "Too many requests. Please wait.", true)
+				}
+				return nil
+			}
 			if deps.InteractionIngress == nil {
 				if deps.Interaction != nil {
 					_ = deps.Interaction.Answer(ctx, update.QueryID, "Interaction service unavailable.", false)
@@ -197,12 +197,6 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		if deps.CacheEntities != nil {
 			deps.CacheEntities(e)
 		}
-		if deps.RateLimiter != nil && !deps.RateLimiter.Allow(update.UserID, "callback") {
-			if deps.Interaction != nil {
-				_ = deps.Interaction.Answer(ctx, update.QueryID, "Too many requests. Please wait.", true)
-			}
-			return nil
-		}
 		var inputPeer tg.InputPeerClass
 		if deps.Resolver != nil {
 			var err error
@@ -216,6 +210,12 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		}
 		target := interaction.NewMessageTarget(inputPeer, update.MsgID, extractChatID(update.Peer), update.ChatInstance)
 		if isInteractionCallback(update.Data) {
+			if deps.RateLimiter != nil && !deps.RateLimiter.Allow(update.UserID, "callback") {
+				if deps.Interaction != nil {
+					_ = deps.Interaction.Answer(ctx, update.QueryID, "Too many requests. Please wait.", true)
+				}
+				return nil
+			}
 			if deps.InteractionIngress == nil {
 				if deps.Interaction != nil {
 					_ = deps.Interaction.Answer(ctx, update.QueryID, "Interaction service unavailable.", false)
