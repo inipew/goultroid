@@ -16,8 +16,8 @@ func TestFeatureSpecAndViews(t *testing.T) {
 		t.Fatalf("ValidateSpec() error = %v", err)
 	}
 	spec := NewFeature().FeatureSpec()
-	if len(spec.Interactions) != 38 {
-		t.Fatalf("interactions = %d, want 38", len(spec.Interactions))
+	if len(spec.Interactions) != 37 {
+		t.Fatalf("interactions = %d, want 37", len(spec.Interactions))
 	}
 	for _, screenID := range []string{
 		InteractionHome,
