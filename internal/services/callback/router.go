@@ -31,6 +31,22 @@ type registration struct {
 	id      uint64
 }
 
+// PreparedDispatch pins callback admission to one concrete handler
+// registration. Scope is resolved before TaskEngine admission; DispatchPrepared
+// rejects the callback if that registration is no longer current.
+type PreparedDispatch struct {
+	namespace      string
+	action         string
+	opaqueID       string
+	rawData        string
+	registrationID uint64
+	scope          tasks.ScopeIdentity
+	noop           bool
+}
+
+// Scope returns the TaskEngine lifecycle scope resolved for this callback.
+func (p PreparedDispatch) Scope() tasks.ScopeIdentity { return p.scope }
+
 // Registration is an idempotent callback handler lease.
 type Registration struct {
 	router    *Router
