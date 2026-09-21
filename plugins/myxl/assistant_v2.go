@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"html"
 	"strconv"
@@ -18,7 +17,6 @@ import (
 	"github.com/inipew/goultroid/internal/interaction/orchestration"
 	"github.com/inipew/goultroid/internal/presentation"
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
-	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/ui"
 )
 
@@ -236,7 +234,7 @@ func (p *Plugin) assistantV2Transition(ctx *orchestration.Context, state assista
 }
 
 func (p *Plugin) assistantV2Await(ctx *orchestration.Context, state assistantV2State, prompt string) error {
-	state.Slots = []string{"a1:myxl:cancel_wizard"}
+	state.Slots = []string{"myxl:cancel_wizard"}
 	raw, err := encodeAssistantV2State(state)
 	if err != nil {
 		return err
@@ -251,10 +249,18 @@ func (p *Plugin) assistantV2Await(ctx *orchestration.Context, state assistantV2S
 }
 
 func parseAssistantV2Template(data string) (namespace, action, opaque string, err error) {
-	if data == "a1:assistant:close" {
-		return "assistant", "close", "noop", nil
+	parts := strings.SplitN(strings.TrimSpace(data), ":", 3)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", "", fmt.Errorf("myxl: invalid assistant action intent")
 	}
-	return callback.ParseCallbackData([]byte(data))
+	opaque = "noop"
+	if len(parts) == 3 {
+		if parts[2] == "" {
+			return "", "", "", fmt.Errorf("myxl: invalid empty assistant action payload")
+		}
+		opaque = parts[2]
+	}
+	return parts[0], parts[1], opaque, nil
 }
 
 func (p *Plugin) handleAssistantV2Slot(ctx *orchestration.Context, slot int) error {
@@ -347,8 +353,8 @@ func (p *Plugin) dispatchAssistantV2Action(ctx *orchestration.Context, state ass
 
 	case "del_ask":
 		state.Slots = []string{
-			fmt.Sprintf("a1:myxl:del_exec:%s", opaque),
-			"a1:myxl:accounts",
+			fmt.Sprintf("myxl:del_exec:%s", opaque),
+			"myxl:accounts",
 		}
 		raw, err := encodeAssistantV2State(state)
 		if err != nil {
@@ -977,4 +983,3 @@ func (p *Plugin) confirmAssistantV2Purchase(ctx *orchestration.Context, state as
 var _ assistantinteraction.V2FeatureDriver = (*Plugin)(nil)
 var _ interface{ FeatureSpec() feature.Spec } = (*Plugin)(nil)
 
-var _ = errors.Is
