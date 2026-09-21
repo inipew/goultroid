@@ -16,7 +16,7 @@ func TestContract_CallbackFiveScenarios(t *testing.T) {
 	store := NewStateStore()
 	router := NewRouter(zap.NewNop(), store)
 	h := &mockHandler{namespace: "contract"}
-	if err := router.Register(h); err != nil {
+	if _, err := router.RegisterOwned("test", h); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
@@ -122,7 +122,7 @@ func TestContract_CallbackMetricTags(t *testing.T) {
 	router := NewRouter(zap.NewNop(), store)
 	router.SetMetrics(m)
 	h := &mockHandler{namespace: "metric"}
-	_ = router.Register(h)
+	_, _ = router.RegisterOwned("test", h)
 
 	token := store.StoreWithScope("s", StateScope{UserID: 1, ChatID: 100}, 5*time.Minute)
 	svc := &recordingService{}
