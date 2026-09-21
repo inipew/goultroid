@@ -192,7 +192,7 @@ func TestStateStore_StoreGetAndPrune(t *testing.T) {
 func TestRouter_Dispatch_Success(t *testing.T) {
 	router := NewRouter(zap.NewNop(), nil)
 	handler := &mockHandler{namespace: "test"}
-	if err := router.Register(handler); err != nil {
+	if _, err := router.RegisterOwned("test", handler); err != nil {
 		t.Fatalf("failed to register handler: %v", err)
 	}
 
@@ -226,7 +226,7 @@ func TestRouter_Dispatch_Unauthorized(t *testing.T) {
 	store := NewStateStore()
 	router := NewRouter(zap.NewNop(), store)
 	handler := &mockHandler{namespace: "private"}
-	_ = router.Register(handler)
+	_, _ = router.RegisterOwned("test", handler)
 
 	// State restricted to user 1111
 	token := store.Store("secret", 1111, 5*time.Minute)
@@ -268,15 +268,18 @@ func TestRouter_Dispatch_HandlerNotFound(t *testing.T) {
 func TestRouter_RegisterValidation(t *testing.T) {
 	router := NewRouter(nil, nil)
 
-	if err := router.Register(nil); err == nil {
+	if _, err := router.RegisterOwned("", &mockHandler{namespace: "unowned"}); err == nil {
+		t.Errorf("expected error registering handler without lifecycle owner")
+	}
+	if _, err := router.RegisterOwned("test", nil); err == nil {
 		t.Errorf("expected error registering nil handler")
 	}
 
 	h := &mockHandler{namespace: "dup"}
-	if err := router.Register(h); err != nil {
+	if _, err := router.RegisterOwned("test", h); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
-	if err := router.Register(h); err == nil {
+	if _, err := router.RegisterOwned("test", h); err == nil {
 		t.Errorf("expected error registering duplicate handler")
 	}
 }
@@ -327,7 +330,7 @@ func TestRouter_Dispatch_RawNoop(t *testing.T) {
 func TestRouter_Dispatch_StatelessNoopOpaqueID(t *testing.T) {
 	router := NewRouter(zap.NewNop(), nil)
 	handler := &mockHandler{namespace: "assistant"}
-	if err := router.Register(handler); err != nil {
+	if _, err := router.RegisterOwned("test", handler); err != nil {
 		t.Fatalf("register handler failed: %v", err)
 	}
 
@@ -355,7 +358,7 @@ func TestRouter_Dispatch_StatelessNoopOpaqueID(t *testing.T) {
 func TestRouter_Dispatch_EncodedActionNoop(t *testing.T) {
 	router := NewRouter(zap.NewNop(), nil)
 	handler := &mockHandler{namespace: "ui"}
-	if err := router.Register(handler); err != nil {
+	if _, err := router.RegisterOwned("test", handler); err != nil {
 		t.Fatalf("register handler failed: %v", err)
 	}
 
@@ -383,7 +386,7 @@ func TestRouter_Dispatch_ExpiredState(t *testing.T) {
 	store := NewStateStore()
 	router := NewRouter(zap.NewNop(), store)
 	handler := &mockHandler{namespace: "exp"}
-	_ = router.Register(handler)
+	_, _ = router.RegisterOwned("test", handler)
 
 	token := store.Store("short-lived", 12345, 10*time.Millisecond)
 	time.Sleep(20 * time.Millisecond)
@@ -408,7 +411,7 @@ func TestRouter_Dispatch_SingleUseReplayProtection(t *testing.T) {
 	store := NewStateStore()
 	router := NewRouter(zap.NewNop(), store)
 	handler := &mockHandler{namespace: "action"}
-	_ = router.Register(handler)
+	_, _ = router.RegisterOwned("test", handler)
 
 	token := store.StoreWithScope("one-time-token", StateScope{
 		UserID:    12345,
@@ -443,7 +446,7 @@ func TestRouter_Dispatch_ScopeRestrictions(t *testing.T) {
 	store := NewStateStore()
 	router := NewRouter(zap.NewNop(), store)
 	handler := &mockHandler{namespace: "scoped"}
-	_ = router.Register(handler)
+	_, _ = router.RegisterOwned("test", handler)
 
 	// 1. Chat mismatch
 	tokenChat := store.StoreWithScope("data", StateScope{
@@ -581,7 +584,7 @@ func TestRouter_HandlerPanicRecovery(t *testing.T) {
 	router := NewRouter(zap.NewNop(), nil)
 	metrics := &recordingMetrics{}
 	router.SetMetrics(metrics)
-	_ = router.Register(&panickingHandler{})
+	_, _ = router.RegisterOwned("test", &panickingHandler{})
 
 	svc := &recordingService{}
 	evt := &core.CallbackQueryEvent{
@@ -743,7 +746,7 @@ func TestRouter_Dispatch_RequiredStateRejectsMissingState(t *testing.T) {
 	store := NewStateStore()
 	router := NewRouter(zap.NewNop(), store)
 	handler := &requiredStateHandler{mockHandler: &mockHandler{namespace: "stateful"}}
-	if err := router.Register(handler); err != nil {
+	if _, err := router.RegisterOwned("test", handler); err != nil {
 		t.Fatalf("register handler: %v", err)
 	}
 
@@ -892,7 +895,7 @@ func TestRouter_PrepareOwnsRateLimitBeforeExecution(t *testing.T) {
 		Burst:  1,
 	}, time.Hour))
 	handler := &mockHandler{namespace: "limited"}
-	if err := router.Register(handler); err != nil {
+	if _, err := router.RegisterOwned("test", handler); err != nil {
 		t.Fatalf("register handler: %v", err)
 	}
 
