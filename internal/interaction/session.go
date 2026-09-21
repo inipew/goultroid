@@ -80,6 +80,7 @@ func (r *Runtime) UpdateState(ctx context.Context, id string, request UpdateRequ
 		r.mu.Unlock()
 		return Session{}, ErrCapacity
 	}
+	r.clearInputLocked(entry)
 	r.stateBytes = newTotal
 	entry.session.State = append([]byte(nil), request.State...)
 	entry.session.Revision++
@@ -215,7 +216,9 @@ func (r *Runtime) PruneExpired() int {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.pruneExpiredLocked(r.now())
+	now := r.now()
+	r.pruneExpiredInputsLocked(now)
+	return r.pruneExpiredLocked(now)
 }
 
 // Stats returns bounded-retention diagnostics and lazily removes expired entries.
@@ -224,9 +227,12 @@ func (r *Runtime) Stats() Stats {
 		return Stats{}
 	}
 	r.mu.Lock()
-	r.pruneExpiredLocked(r.now())
+	now := r.now()
+	r.pruneExpiredInputsLocked(now)
+	r.pruneExpiredLocked(now)
 	stats := Stats{
 		Sessions:         len(r.sessions),
+		Inputs:           len(r.inputs),
 		StateBytes:       r.stateBytes,
 		Expired:          r.expiredCount,
 		Canceled:         r.canceledCount,

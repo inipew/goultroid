@@ -25,6 +25,7 @@ const (
 	InteractionSettings         = "settings"
 	InteractionSettingsCategory = "settings_category"
 	InteractionSettingDetail    = "setting_detail"
+	InteractionSettingInput     = "setting_input"
 
 	ActionRefresh       = "refresh"
 	ActionPing          = "ping"
@@ -36,15 +37,17 @@ const (
 	ActionSettingsPrev  = "settings_prev"
 	ActionSettingsNext  = "settings_next"
 	ActionSettingsOpen  = "settings_open"
-	ActionSettingPrev   = "setting_prev"
-	ActionSettingNext   = "setting_next"
-	ActionSettingOpen     = "setting_open"
-	ActionSettingBack     = "setting_back"
-	ActionSettingChange   = "setting_change"
-	ActionSettingDecrease = "setting_dec"
-	ActionSettingIncrease = "setting_inc"
-	ActionSettingReset    = "setting_reset"
-	ActionLegacy          = "legacy"
+	ActionSettingPrev        = "setting_prev"
+	ActionSettingNext        = "setting_next"
+	ActionSettingOpen        = "setting_open"
+	ActionSettingBack        = "setting_back"
+	ActionSettingChange      = "setting_change"
+	ActionSettingDecrease    = "setting_dec"
+	ActionSettingIncrease    = "setting_inc"
+	ActionSettingReset       = "setting_reset"
+	ActionSettingInput       = "setting_input"
+	ActionSettingInputCancel = "setting_input_cancel"
+	ActionLegacy             = "legacy"
 )
 
 const maxHelpCategories = 12
@@ -79,6 +82,7 @@ func (*Feature) FeatureSpec() feature.Spec {
 			{ID: InteractionSettings, Kind: feature.InteractionScreen, Description: "Settings category navigator", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionSettingsCategory, Kind: feature.InteractionScreen, Description: "Settings value navigator", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionSettingDetail, Kind: feature.InteractionScreen, Description: "Bound setting detail and typed mutation surface", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: InteractionSettingInput, Kind: feature.InteractionScreen, Description: "Bound free-form setting input surface", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionRefresh, Kind: feature.InteractionAction, Description: "Refresh shell state and presentation", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionPing, Kind: feature.InteractionAction, Description: "Acknowledge shell liveness", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionStatus, Kind: feature.InteractionAction, Description: "Navigate to read-only status", Surfaces: assistant, Policy: ownerPolicy},
@@ -97,6 +101,8 @@ func (*Feature) FeatureSpec() feature.Spec {
 			{ID: ActionSettingDecrease, Kind: feature.InteractionAction, Description: "Decrease typed numeric or duration setting", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingIncrease, Kind: feature.InteractionAction, Description: "Increase typed numeric or duration setting", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingReset, Kind: feature.InteractionAction, Description: "Reset bound user setting override", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionSettingInput, Kind: feature.InteractionAction, Description: "Begin bounded free-form input for a bound string setting", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionSettingInputCancel, Kind: feature.InteractionAction, Description: "Cancel bounded free-form setting input", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionLegacy, Kind: feature.InteractionAction, Description: "Handoff to the legacy a1 menu", Surfaces: assistant, Policy: ownerPolicy},
 		},
 	}
@@ -119,7 +125,7 @@ func HomeView(model HomeModel) presentation.View {
 	if model.Refreshes > 0 {
 		card.AddField("Session refreshes", strconv.FormatUint(model.Refreshes, 10))
 	}
-	card.WithFooter("<i>Typed settings mutations are available in a2; free-form text input remains in Classic menu.</i>")
+	card.WithFooter("<i>Typed and bounded free-form Settings mutations are available in a2; Classic menu remains a compatibility fallback.</i>")
 
 	return presentation.View{
 		Text: card.Render(),
@@ -247,6 +253,7 @@ func ValidateSpec() error {
 		"settings": SettingsHomeView(SettingsHomeModel{}),
 		"category": SettingsCategoryView(SettingsCategoryModel{}),
 		"detail":   SettingDetailView(SettingDetailModel{}),
+		"input":    SettingInputView(SettingInputModel{}),
 	} {
 		if err := view.Validate(); err != nil {
 			return fmt.Errorf("%s view: %w", name, err)

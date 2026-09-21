@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gotd/td/tg"
@@ -20,6 +21,7 @@ import (
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/tasks"
+	"go.uber.org/zap"
 )
 
 var (
@@ -139,7 +141,7 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 
 	c.shellMu.Lock()
 	defer c.shellMu.Unlock()
-	if c.shellScope == scope && len(c.shellRegistrations) == 19 {
+	if c.shellScope == scope && len(c.shellRegistrations) == 21 {
 		return nil
 	}
 	for _, registration := range c.shellRegistrations {
@@ -150,7 +152,7 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 	c.shellRegistrations = nil
 	c.shellScope = tasks.ScopeIdentity{}
 
-	registrations := make([]*rootinteraction.HandlerRegistration, 0, 19)
+	registrations := make([]*rootinteraction.HandlerRegistration, 0, 21)
 	register := func(actionID string, handler orchestration.Handler) error {
 		guarded := func(ctx *orchestration.Context) error {
 			if err := c.admitShellAction(catalog, actionID, ctx); err != nil {
@@ -187,6 +189,8 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 		{id: assistantshell.ActionSettingDecrease, handler: c.handleShellSettingDecrease},
 		{id: assistantshell.ActionSettingIncrease, handler: c.handleShellSettingIncrease},
 		{id: assistantshell.ActionSettingReset, handler: c.handleShellSettingReset},
+		{id: assistantshell.ActionSettingInput, handler: c.handleShellSettingInput},
+		{id: assistantshell.ActionSettingInputCancel, handler: c.handleShellSettingInputCancel},
 		{id: assistantshell.ActionLegacy, handler: c.handleShellLegacy},
 	} {
 		if err := register(action.id, action.handler); err != nil {
@@ -429,6 +433,191 @@ func (c *AssistantClient) handleShellSettingReset(ctx *orchestration.Context) er
 	return c.applyShellSettingMutation(ctx, assistantshell.MutationReset)
 }
 
+func (c *AssistantClient) handleShellSettingInput(ctx *orchestration.Context) error {
+	if err := c.admitShellScreen(ctx, assistantshell.InteractionSettingInput); err != nil {
+		return err
+	}
+	svc := c.shellSettingsService()
+	if svc == nil || svc.Registry() == nil {
+		return ErrShellUnavailable
+	}
+	def, _, err := boundSettingDefinition(svc.Registry(), ctx.State())
+	if err != nil {
+		_ = ctx.Answer("Setting changed while open. Reopen Settings.", true)
+		return &assistantshell.MutationError{Stage: assistantshell.MutationStageBinding, Err: err}
+	}
+	if def.Type != settings.TypeString {
+		err := fmt.Errorf("%w: free-form input requires string setting", assistantshell.ErrMutationUnsupported)
+		return &assistantshell.MutationError{Stage: assistantshell.MutationStageBinding, Err: err}
+	}
+	state := assistantshell.BeginSettingInputState(ctx.State())
+	if err := ctx.AwaitInput(state, assistantshell.SettingsInputTTL, assistantshell.SettingInputView(assistantshell.SettingInputModel{
+		Definition: *def,
+	})); err != nil {
+		_ = ctx.Answer("Unable to open setting input. Reopen Settings.", true)
+		return &assistantshell.MutationError{Stage: assistantshell.MutationStageRender, Err: err}
+	}
+	return ctx.Answer("Waiting for your next message…", false)
+}
+
+func (c *AssistantClient) handleShellSettingInputCancel(ctx *orchestration.Context) error {
+	if err := c.admitShellScreen(ctx, assistantshell.InteractionSettingInput); err != nil {
+		return err
+	}
+	if err := c.admitShellScreen(ctx, assistantshell.InteractionSettingDetail); err != nil {
+		return err
+	}
+	state := assistantshell.CompleteSettingInputState(ctx.State())
+	view, err := c.shellSettingDetailViewWithNotice(ctx.Context(), ctx.Session().Binding.ActorID, ctx.Session().Binding.ChatID, state, "Input cancelled.")
+	if err != nil {
+		return err
+	}
+	return ctx.Transition(state, 0, view)
+}
+
+func (c *AssistantClient) handleV2TextInput(ctx *orchestration.Context, text string) error {
+	if ctx == nil || ctx.Session().FeatureID != assistantshell.FeatureID {
+		return ErrShellUnavailable
+	}
+	return c.handleShellSettingTextInput(ctx, text)
+}
+
+func (c *AssistantClient) handleShellSettingTextInput(ctx *orchestration.Context, text string) error {
+	if err := c.admitShellScreen(ctx, assistantshell.InteractionSettingInput); err != nil {
+		return err
+	}
+	svc := c.shellSettingsService()
+	if svc == nil || svc.Registry() == nil {
+		return ErrShellUnavailable
+	}
+	def, schemaVersion, err := boundSettingDefinition(svc.Registry(), ctx.State())
+	if err != nil {
+		return &assistantshell.MutationError{Stage: assistantshell.MutationStageBinding, Err: err}
+	}
+	if def.Type != settings.TypeString {
+		err := fmt.Errorf("%w: pending input no longer targets a string setting", assistantshell.ErrMutationUnsupported)
+		return &assistantshell.MutationError{Stage: assistantshell.MutationStageBinding, Err: err}
+	}
+
+	trimmed := strings.TrimSpace(text)
+	if strings.EqualFold(trimmed, "/cancel") {
+		if err := c.admitShellScreen(ctx, assistantshell.InteractionSettingDetail); err != nil {
+			return err
+		}
+		state := assistantshell.CompleteSettingInputState(ctx.State())
+		view, viewErr := c.shellSettingDetailViewWithNotice(ctx.Context(), ctx.Session().Binding.ActorID, ctx.Session().Binding.ChatID, state, "Input cancelled.")
+		if viewErr != nil {
+			return viewErr
+		}
+		return ctx.Transition(state, 0, view)
+	}
+	if trimmed == "" {
+		return c.rearmShellSettingInput(ctx, *def, "Value cannot be empty.")
+	}
+	if len([]byte(trimmed)) > assistantshell.MaxSettingsInputBytes {
+		return c.rearmShellSettingInput(ctx, *def, "Value is too large. Send a shorter value.")
+	}
+	canonical, err := def.Canonicalize(trimmed)
+	if err != nil {
+		return c.rearmShellSettingInput(ctx, *def, "Invalid value. Check the setting requirements and try again.")
+	}
+
+	// Revalidate the exact detail-bound schema revision immediately before the
+	// registered persistence boundary.
+	def, schemaVersion, err = boundSettingDefinition(svc.Registry(), ctx.State())
+	if err != nil {
+		return &assistantshell.MutationError{Stage: assistantshell.MutationStageBinding, Err: err}
+	}
+	userID := ctx.Session().Binding.ActorID
+	chatID := ctx.Session().Binding.ChatID
+	current, err := svc.Resolve(ctx.Context(), userID, chatID, def.Namespace, def.Key)
+	if err != nil {
+		return &assistantshell.MutationError{Stage: assistantshell.MutationStagePersist, Err: err}
+	}
+	result := assistantshell.MutationResult{
+		Namespace: def.Namespace,
+		Key:       def.Key,
+		Operation: assistantshell.MutationInput,
+		Previous:  assistantshell.SafeMutationValue(*def, current),
+		Persisted: assistantshell.SafeMutationValue(*def, canonical),
+	}
+
+	commit, err := svc.SetRegisteredResult(ctx.Context(), settings.ScopeUser, userID, def.Namespace, def.Key, schemaVersion, canonical, userID)
+	if err != nil {
+		if errors.Is(err, settings.ErrDefinitionChanged) {
+			return &assistantshell.MutationError{Stage: assistantshell.MutationStageBinding, Result: result, Err: ErrShellSettingBindingStale}
+		}
+		recoveryErr := c.rearmShellSettingInput(ctx, *def, "Save failed. Send the value again to retry.")
+		if recoveryErr == nil {
+			fields := []zap.Field{
+				zap.String("namespace", def.Namespace),
+				zap.String("key", def.Key),
+			}
+			if !def.Sensitive {
+				fields = append(fields, zap.Error(err))
+			}
+			c.logger.Warn("assistant: setting text persistence failed; input re-armed", fields...)
+			return nil
+		}
+		return &assistantshell.MutationError{
+			Stage:  assistantshell.MutationStagePersist,
+			Result: result,
+			Err:    errors.Join(err, fmt.Errorf("re-arm input recovery: %w", recoveryErr)),
+		}
+	}
+	if commit.Changed {
+		result.Outcome = assistantshell.MutationChanged
+	} else {
+		result.Outcome = assistantshell.MutationNoop
+	}
+	result.Persisted = assistantshell.SafeMutationValue(*def, commit.Persisted)
+	effective, resolveErr := svc.Resolve(ctx.Context(), userID, chatID, def.Namespace, def.Key)
+	if resolveErr != nil {
+		result.Effective = assistantshell.SafeMutationValue(*def, canonical)
+	} else {
+		result.Effective = assistantshell.SafeMutationValue(*def, effective)
+	}
+	if source, sourceErr := settingValueSource(ctx.Context(), svc, userID, chatID, def.Namespace, def.Key); sourceErr == nil {
+		result.Source = source
+	}
+
+	if err := c.admitShellScreen(ctx, assistantshell.InteractionSettingDetail); err != nil {
+		return &assistantshell.MutationError{Stage: assistantshell.MutationStageRender, Committed: commit.Changed, Result: result, Err: err}
+	}
+	state := assistantshell.CompleteSettingInputState(ctx.State())
+	notice := "User override saved."
+	if !commit.Changed {
+		notice = "No persistent change was needed."
+	}
+	view, viewErr := c.shellSettingDetailViewWithNotice(ctx.Context(), userID, chatID, state, notice)
+	if viewErr == nil {
+		viewErr = ctx.Transition(state, 0, view)
+	}
+	if viewErr != nil {
+		return &assistantshell.MutationError{
+			Stage:     assistantshell.MutationStageRender,
+			Committed: commit.Changed,
+			Result:    result,
+			Err:       viewErr,
+		}
+	}
+	return nil
+}
+
+func (c *AssistantClient) rearmShellSettingInput(ctx *orchestration.Context, def settings.SettingDefinition, notice string) error {
+	if ctx == nil {
+		return ErrShellUnavailable
+	}
+	state := assistantshell.BeginSettingInputState(ctx.State())
+	if err := ctx.AwaitInput(state, assistantshell.SettingsInputTTL, assistantshell.SettingInputView(assistantshell.SettingInputModel{
+		Definition: def,
+		Notice:     notice,
+	})); err != nil {
+		return &assistantshell.MutationError{Stage: assistantshell.MutationStageRender, Err: err}
+	}
+	return nil
+}
+
 func (c *AssistantClient) applyShellSettingMutation(ctx *orchestration.Context, operation assistantshell.MutationOperation) error {
 	if err := c.admitShellScreen(ctx, assistantshell.InteractionSettingDetail); err != nil {
 		return err
@@ -559,7 +748,7 @@ func boundSettingDefinition(reg *settings.Registry, stateRaw []byte) (*settings.
 		return nil, 0, ErrShellUnavailable
 	}
 	state := assistantshell.DecodeState(stateRaw)
-	if state.Screen != assistantshell.ScreenSettingDetail {
+	if state.Screen != assistantshell.ScreenSettingDetail && state.Screen != assistantshell.ScreenSettingInput {
 		return nil, 0, ErrShellSettingBindingStale
 	}
 	_, defs := selectedSettingsCategory(reg, state)

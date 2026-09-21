@@ -18,6 +18,12 @@ const (
 	MutationDecrease MutationOperation = "decrease"
 	MutationIncrease MutationOperation = "increase"
 	MutationReset    MutationOperation = "reset"
+	MutationInput    MutationOperation = "input"
+)
+
+const (
+	SettingsInputTTL      = 2 * time.Minute
+	MaxSettingsInputBytes = 4096
 )
 
 type MutationOutcome string

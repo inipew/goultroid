@@ -9,6 +9,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	assistantinteraction "github.com/inipew/goultroid/internal/assistant/interaction"
+	assistantshell "github.com/inipew/goultroid/internal/assistant/shell"
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 	"github.com/inipew/goultroid/internal/interaction/orchestration"
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
@@ -23,6 +24,7 @@ type callbackAcknowledger interface {
 type v2Ingress struct {
 	engine *orchestration.Engine
 	ack    callbackAcknowledger
+	input  func(*orchestration.Context, string) error
 }
 
 func isV2Callback(data []byte) bool {
@@ -42,6 +44,59 @@ func (v *v2Ingress) tryMessage(ctx context.Context, data []byte, userID, queryID
 	})
 	v.ack.ensureAnswered(ctx, queryID, err)
 	return true, err
+}
+
+func (v *v2Ingress) tryText(ctx context.Context, text string, userID, chatID int64, peer tg.InputPeerClass) (bool, error) {
+	trimmed := strings.TrimSpace(text)
+	if strings.HasPrefix(trimmed, "/") && !strings.EqualFold(trimmed, "/cancel") {
+		return false, nil
+	}
+	if v == nil || v.engine == nil {
+		return false, nil
+	}
+	inputCtx, handled, err := v.engine.TakeInput(ctx, userID, chatID)
+	if err != nil || !handled {
+		return handled, err
+	}
+	if v.input == nil || peer == nil {
+		return true, ErrV2Unavailable
+	}
+	session := inputCtx.Session()
+	if session.Binding.MessageID <= 0 || session.Binding.InlineMessageID != "" {
+		return true, orchestration.ErrInvalidTarget
+	}
+	if err := inputCtx.SetTarget(presentationtelegram.MessageTarget{
+		Peer:      peer,
+		ChatID:    chatID,
+		MessageID: session.Binding.MessageID,
+	}); err != nil {
+		return true, err
+	}
+	return true, v.input(inputCtx, text)
+}
+
+func v2TextInputErrorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	switch {
+	case errors.Is(err, rootinteraction.ErrInputExpired):
+		return "⌛ Settings input expired. Reopen the setting and try again."
+	case errors.Is(err, rootinteraction.ErrExpired),
+		errors.Is(err, rootinteraction.ErrNotFound),
+		errors.Is(err, rootinteraction.ErrScopeStale):
+		return "⌛ Interaction expired. Reopen Settings."
+	}
+	var mutationErr *assistantshell.MutationError
+	if errors.As(err, &mutationErr) {
+		if mutationErr.Committed {
+			return "✅ Setting was saved, but the Settings view could not refresh. Reopen Settings."
+		}
+		if mutationErr.Stage == assistantshell.MutationStageBinding {
+			return "⚠️ The setting changed while input was pending. Reopen Settings."
+		}
+	}
+	return "⚠️ Settings input failed. Reopen Settings."
 }
 
 func (v *v2Ingress) tryInline(ctx context.Context, data []byte, userID, queryID int64, messageID tg.InputBotInlineMessageIDClass) (bool, error) {

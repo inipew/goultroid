@@ -53,6 +53,24 @@ func (c *Context) Target() presentation.Target {
 	return c.target
 }
 
+// SetTarget attaches the transport target corresponding to the session's
+// already-bound presentation message. It is primarily used when a free-form
+// input arrives as a separate Telegram message.
+func (c *Context) SetTarget(target presentation.Target) error {
+	if c == nil || c.engine == nil {
+		return ErrInvalidEngine
+	}
+	_, binding, err := sessionTarget(target, c.session.Binding.ActorID)
+	if err != nil {
+		return err
+	}
+	if !c.session.Binding.Matches(binding) {
+		return ErrInvalidTarget
+	}
+	c.target = target
+	return nil
+}
+
 func (c *Context) UpdateState(state []byte, ttl time.Duration) error {
 	if c == nil || c.engine == nil {
 		return ErrInvalidEngine
@@ -66,6 +84,29 @@ func (c *Context) UpdateState(state []byte, ttl time.Duration) error {
 		return err
 	}
 	c.session = updated
+	return nil
+}
+
+// AwaitInput atomically advances opaque state, reserves a bounded actor+chat
+// input claim, and renders the corresponding prompt revision. If presentation
+// fails, the claim is released so unseen input prompts never remain active.
+func (c *Context) AwaitInput(state []byte, ttl time.Duration, view presentation.View) error {
+	if c == nil || c.engine == nil || c.target == nil {
+		return ErrInvalidEngine
+	}
+	updated, err := c.engine.sessions.ArmInput(c.Context(), c.session.ID, interaction.InputRequest{
+		ExpectedRevision: c.session.Revision,
+		State:            state,
+		TTL:              ttl,
+	})
+	if err != nil {
+		return err
+	}
+	c.session = updated
+	if err := c.Edit(view); err != nil {
+		c.engine.sessions.ReleaseInput(c.session.ID)
+		return err
+	}
 	return nil
 }
 

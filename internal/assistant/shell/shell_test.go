@@ -16,8 +16,8 @@ func TestFeatureSpecAndViews(t *testing.T) {
 		t.Fatalf("ValidateSpec() error = %v", err)
 	}
 	spec := NewFeature().FeatureSpec()
-	if len(spec.Interactions) != 26 {
-		t.Fatalf("interactions = %d, want 26", len(spec.Interactions))
+	if len(spec.Interactions) != 29 {
+		t.Fatalf("interactions = %d, want 29", len(spec.Interactions))
 	}
 	for _, screenID := range []string{
 		InteractionHome,
@@ -26,6 +26,7 @@ func TestFeatureSpecAndViews(t *testing.T) {
 		InteractionSettings,
 		InteractionSettingsCategory,
 		InteractionSettingDetail,
+		InteractionSettingInput,
 	} {
 		interaction, ok := findInteraction(spec, feature.InteractionScreen, screenID)
 		if !ok || !interaction.Surfaces.Supports(execution.SourceAssistant) || !interaction.Policy.PrivateOnly {
@@ -113,8 +114,20 @@ func TestSettingsViewsExposeOnlyTypedMutationsAndMaskSensitiveValues(t *testing.
 	if strings.Contains(detail.Text, "runtime-secret") || strings.Contains(detail.Text, "default-secret") {
 		t.Fatalf("sensitive detail value leaked: %q", detail.Text)
 	}
-	if strings.Contains(detail.Text, "Change") || strings.Contains(detail.Text, "Reset") {
-		t.Fatalf("P5-C detail unexpectedly exposes mutation controls: %+v", detail.Rows)
+	if len(detail.Rows) == 0 || detail.Rows[0][0].ActionID != ActionSettingInput {
+		t.Fatalf("string detail missing a2 input action: %+v", detail.Rows)
+	}
+	if strings.Contains(detail.Text, "Reset user override") {
+		t.Fatalf("detail unexpectedly exposes reset without explicit override: %+v", detail.Rows)
+	}
+	input := SettingInputView(SettingInputModel{Definition: settings.SettingDefinition{
+		Namespace: "security", Key: "token", Title: "API Token", Type: settings.TypeString, Sensitive: true,
+	}})
+	if err := input.Validate(); err != nil {
+		t.Fatalf("SettingInputView() invalid: %v", err)
+	}
+	if !strings.Contains(input.Text, "2 minutes") || !strings.Contains(input.Text, "Sensitive values") || input.Rows[0][0].ActionID != ActionSettingInputCancel {
+		t.Fatalf("unexpected input view: text=%q rows=%+v", input.Text, input.Rows)
 	}
 }
 
@@ -157,6 +170,15 @@ func TestStateCodecAcceptsLegacyAndBoundsNavigator(t *testing.T) {
 	}
 	if len(raw) != stateBytes {
 		t.Fatalf("encoded state bytes = %d, want %d", len(raw), stateBytes)
+	}
+	bound := BindSettingState(raw, "core", "prefix", 9)
+	inputState := DecodeState(BeginSettingInputState(bound))
+	if inputState.Screen != ScreenSettingInput || inputState.SchemaVersion != 9 || inputState.SettingBinding == ([bindingBytes]byte{}) {
+		t.Fatalf("input state lost stable binding: %+v", inputState)
+	}
+	completed := DecodeState(CompleteSettingInputState(EncodeState(inputState)))
+	if completed.Screen != ScreenSettingDetail || completed.SchemaVersion != 9 || completed.SettingBinding == ([bindingBytes]byte{}) {
+		t.Fatalf("completed input state lost binding: %+v", completed)
 	}
 }
 

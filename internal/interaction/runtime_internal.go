@@ -169,6 +169,7 @@ func (r *Runtime) removeLocked(id string, cause error) bool {
 	if !ok {
 		return false
 	}
+	r.clearInputLocked(entry)
 	delete(r.sessions, id)
 	if entry.expiry != nil && entry.expiry.index >= 0 {
 		heap.Remove(&r.expiries, entry.expiry.index)
@@ -197,6 +198,43 @@ func (r *Runtime) removeLocked(id string, cause error) bool {
 		r.canceledCount++
 	}
 	return true
+}
+
+func inputKeyFromBinding(binding Binding) (inputBindingKey, error) {
+	if binding.ActorID == 0 || binding.ChatID == 0 || binding.InlineMessageID != "" {
+		return inputBindingKey{}, ErrInvalidBinding
+	}
+	return inputBindingKey{actorID: binding.ActorID, chatID: binding.ChatID}, nil
+}
+
+func (r *Runtime) clearInputLocked(entry *sessionEntry) bool {
+	if entry == nil || entry.input == nil {
+		return false
+	}
+	key := entry.input.key
+	if current, ok := r.inputs[key]; ok && current == entry.session.ID {
+		delete(r.inputs, key)
+	}
+	entry.input = nil
+	return true
+}
+
+func (r *Runtime) pruneExpiredInputsLocked(now time.Time) int {
+	removed := 0
+	for key, id := range r.inputs {
+		entry, ok := r.sessions[id]
+		if !ok || entry.input == nil || entry.input.key != key {
+			delete(r.inputs, key)
+			removed++
+			continue
+		}
+		if !entry.input.expiresAt.After(now) {
+			entry.input = nil
+			delete(r.inputs, key)
+			removed++
+		}
+	}
+	return removed
 }
 
 func cloneSession(session Session) Session {

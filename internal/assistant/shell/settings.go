@@ -49,7 +49,7 @@ func SettingsHomeView(model SettingsHomeModel) presentation.View {
 			rows = append(rows, presentation.Row{{Text: "Open", ActionID: ActionSettingsOpen}})
 		}
 	}
-	card.WithFooter("<i>Typed mutations are available from a bound setting detail; text input remains in Classic menu.</i>")
+	card.WithFooter("<i>Typed mutations and bounded free-form string input are available in a2; Classic menu remains a compatibility fallback.</i>")
 	rows = append(rows, presentation.Row{
 		{Text: "🏠 Home", ActionID: ActionHome},
 		{Text: "🧭 Classic menu", ActionID: ActionLegacy},
@@ -161,7 +161,8 @@ func SettingDetailView(model SettingDetailModel) presentation.View {
 			{Text: "➕ Increase", ActionID: ActionSettingIncrease},
 		})
 	case settings.TypeString:
-		card.WithRaw("<i>Text input still uses Classic menu.</i>")
+		rows = append(rows, presentation.Row{{Text: "✏️ Change", ActionID: ActionSettingInput}})
+		card.WithRaw("<i>Free-form input uses the bounded a2 input session.</i>")
 	}
 	if model.ExplicitUser {
 		rows = append(rows, presentation.Row{{Text: "↩ Reset user override", ActionID: ActionSettingReset}})
@@ -172,6 +173,46 @@ func SettingDetailView(model SettingDetailModel) presentation.View {
 		presentation.Row{{Text: "🏠 Home", ActionID: ActionHome}},
 	)
 	return presentation.View{Text: card.Render(), Rows: rows}
+}
+
+type SettingInputModel struct {
+	Definition settings.SettingDefinition
+	Notice     string
+}
+
+func SettingInputView(model SettingInputModel) presentation.View {
+	def := model.Definition
+	title := strings.TrimSpace(def.Title)
+	if title == "" {
+		title = def.Namespace + ":" + def.Key
+	}
+	description := strings.TrimSpace(def.Description)
+	if description == "" {
+		description = "Send the new value as your next message."
+	}
+	card := ui.NewCard(title).
+		WithIcon("✏️").
+		WithHeader(ui.EscapeHTML(description)).
+		AddField("Key", ui.Code(def.Namespace+":"+def.Key)).
+		AddField("Input", "Send the new value as your next message in this chat.").
+		AddField("Cancel", ui.Code("/cancel")).
+		AddField("Expires", "2 minutes")
+
+	if def.Sensitive {
+		card.AddField("Privacy", "Sensitive values are never echoed back in the Settings UI.")
+	}
+	if notice := strings.TrimSpace(model.Notice); notice != "" {
+		card.AddField("Result", ui.EscapeHTML(notice))
+	}
+	card.WithFooter("<i>Only this actor/chat can satisfy the pending input claim. Other slash commands continue normally.</i>")
+
+	return presentation.View{
+		Text: card.Render(),
+		Rows: []presentation.Row{
+			{{Text: "❌ Cancel input", ActionID: ActionSettingInputCancel}},
+			{{Text: "🏠 Home", ActionID: ActionHome}},
+		},
+	}
 }
 
 func CategoryLabel(category string) string {

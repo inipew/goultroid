@@ -206,21 +206,11 @@ P5-D covers:
 - schema replacement being blocked until a registered repository commit finishes;
 - stale per-definition revisions being rejected before the repository is touched.
 
-## Deferred input phase
+## Follow-on input phase
 
-Free-form string mutation remains intentionally deferred.
+P5-E now implements the previously deferred free-form string path on top of the same P1 session lifecycle and P5-D registered persistence boundary. It uses bounded actor/chat input claims with lazy TTL expiry rather than a second conversation subsystem.
 
-A later phase must define:
-
-- message/input ownership;
-- actor/chat binding;
-- TTL and cancellation;
-- plugin-generation cancellation;
-- stable namespace:key revalidation after user input arrives;
-- delete/cleanup of prompt state;
-- persistence-success/render-failure recovery for delayed input.
-
-P5-D does not create a second conversation subsystem to solve that prematurely.
+The P5-D typed mutation contract remains authoritative for stable identity, schema revision checks, result semantics, and post-commit recovery.
 
 ## Residual hardening
 

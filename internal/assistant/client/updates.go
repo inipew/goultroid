@@ -76,6 +76,17 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			logger.Warn("assistant: sender access hash missing, message ignored", zap.Int64("sender_id", senderID), zap.Error(err))
 			return nil
 		}
+		if deps.V2Ingress != nil {
+			if handled, hErr := deps.V2Ingress.tryText(ctx, msg.Message, senderID, extractChatID(msg.PeerID), inputPeer); handled {
+				if hErr != nil {
+					logger.Warn("assistant: a2 text input dispatch failed", zap.Error(hErr), zap.Int64("sender_id", senderID))
+					if feedback := v2TextInputErrorMessage(hErr); feedback != "" {
+						_, _ = deps.Interaction.SendMessage(ctx, inputPeer, feedback, nil)
+					}
+				}
+				return nil
+			}
+		}
 		if deps.MenuController != nil {
 			if handled, hErr := deps.MenuController.HandleTextMessage(ctx, senderID, extractChatID(msg.PeerID), msg.Message, deps.Interaction, deps.SettingsService); handled {
 				return hErr

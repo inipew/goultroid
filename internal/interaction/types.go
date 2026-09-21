@@ -47,9 +47,18 @@ type UpdateRequest struct {
 	TTL              time.Duration
 }
 
+// InputRequest atomically advances session state and arms one bounded,
+// actor+chat-bound free-form input claim.
+type InputRequest struct {
+	ExpectedRevision uint64
+	State            []byte
+	TTL              time.Duration
+}
+
 // Stats exposes bounded-retention diagnostics without leaking session contents.
 type Stats struct {
 	Sessions         int
+	Inputs           int
 	StateBytes       int
 	Expired          uint64
 	Canceled         uint64

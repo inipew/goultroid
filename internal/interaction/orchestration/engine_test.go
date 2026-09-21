@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/inipew/goultroid/internal/interaction"
 	"github.com/inipew/goultroid/internal/presentation"
@@ -41,6 +42,7 @@ type testPort struct {
 	edited    presentation.CompiledView
 	answered  presentation.Answer
 	sendErr   error
+	editErr   error
 }
 
 func (p *testPort) Send(_ context.Context, target presentation.Target, view presentation.CompiledView) (presentation.Target, error) {
@@ -53,6 +55,9 @@ func (p *testPort) Send(_ context.Context, target presentation.Target, view pres
 	return t, nil
 }
 func (p *testPort) Edit(_ context.Context, _ presentation.Target, view presentation.CompiledView) error {
+	if p.editErr != nil {
+		return p.editErr
+	}
 	p.edited = view
 	return nil
 }
@@ -181,5 +186,61 @@ func TestDispatchRejectsDifferentTargetBeforeHandler(t *testing.T) {
 	}
 	if called {
 		t.Fatal("handler called for mismatched target")
+	}
+}
+
+func TestAwaitAndTakeInputOwnRevisionAndTargetLifecycle(t *testing.T) {
+	engine, sessions, port, _ := testEngine(t)
+	ctx, err := engine.Begin(context.Background(), BeginRequest{
+		FeatureID: "demo", ActorID: 7, State: []byte("detail"),
+		Target: testTarget{chatID: 42}, View: testView("detail"),
+	})
+	if err != nil {
+		t.Fatalf("Begin() error = %v", err)
+	}
+	if err := ctx.AwaitInput([]byte("input"), time.Minute, testView("input")); err != nil {
+		t.Fatalf("AwaitInput() error = %v", err)
+	}
+	if stats := sessions.Stats(); stats.Inputs != 1 {
+		t.Fatalf("pending inputs = %d, want 1", stats.Inputs)
+	}
+	token, err := interaction.ParseCallbackToken(port.edited.Rows[0][0].Data)
+	if err != nil || token.Revision != 2 {
+		t.Fatalf("input token = %+v err=%v", token, err)
+	}
+
+	inputCtx, handled, err := engine.TakeInput(context.Background(), 7, 42)
+	if err != nil {
+		t.Fatalf("TakeInput() error = %v", err)
+	}
+	if !handled || string(inputCtx.State()) != "input" || inputCtx.Session().Revision != 3 {
+		t.Fatalf("input context handled=%v session=%+v", handled, inputCtx.Session())
+	}
+	if err := inputCtx.SetTarget(testTarget{chatID: 42, messageID: 77}); err != nil {
+		t.Fatalf("SetTarget() error = %v", err)
+	}
+	if inputCtx.Target() == nil {
+		t.Fatal("input context target not attached")
+	}
+	if _, handled, err := engine.TakeInput(context.Background(), 7, 42); err != nil || handled {
+		t.Fatalf("second TakeInput() handled=%v err=%v", handled, err)
+	}
+}
+
+func TestAwaitInputReleasesClaimWhenPromptEditFails(t *testing.T) {
+	engine, sessions, port, _ := testEngine(t)
+	ctx, err := engine.Begin(context.Background(), BeginRequest{
+		FeatureID: "demo", ActorID: 7, State: []byte("detail"),
+		Target: testTarget{chatID: 42}, View: testView("detail"),
+	})
+	if err != nil {
+		t.Fatalf("Begin() error = %v", err)
+	}
+	port.editErr = errors.New("edit failed")
+	if err := ctx.AwaitInput([]byte("input"), time.Minute, testView("input")); err == nil {
+		t.Fatal("AwaitInput() succeeded")
+	}
+	if stats := sessions.Stats(); stats.Inputs != 0 {
+		t.Fatalf("unseen prompt retained input claim: %+v", stats)
 	}
 }

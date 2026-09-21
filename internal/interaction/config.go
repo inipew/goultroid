@@ -37,6 +37,8 @@ var (
 	ErrActionNotFound   = errors.New("interaction: action not found")
 	ErrTokenMismatch    = errors.New("interaction: callback token does not match session")
 	ErrStaleToken       = errors.New("interaction: callback token revision is stale")
+	ErrInputBusy        = errors.New("interaction: another input session is already active for actor/chat")
+	ErrInputExpired     = errors.New("interaction: pending input expired")
 )
 
 // Catalog is the minimal P0 feature-catalog view needed by the session runtime.

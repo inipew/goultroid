@@ -103,7 +103,7 @@ func (*shellSettingsRepo) ListPendingOutbox(context.Context, int) ([]settings.Se
 
 func (*shellSettingsRepo) MarkOutboxProcessed(context.Context, int64) error { return nil }
 
-func TestAssistantShellSettingsReadOnlyNavigationUsesCentralService(t *testing.T) {
+func TestAssistantShellSettingsNavigationUsesCentralService(t *testing.T) {
 	manager, client, port, engine := newShellEngine(t)
 	defer manager.Shutdown()
 
@@ -185,8 +185,11 @@ func TestAssistantShellSettingsReadOnlyNavigationUsesCentralService(t *testing.T
 	if !strings.Contains(port.edited.Text, "User override") || !strings.Contains(port.edited.Text, "<code>!</code>") {
 		t.Fatalf("prefix detail missing source/value: %q", port.edited.Text)
 	}
-	if strings.Contains(port.edited.Text, "Change") || strings.Contains(port.edited.Text, "Reset") {
-		t.Fatalf("read-only settings detail exposed mutation control: %q", port.edited.Text)
+	if callbackForAction(t, port.edited, assistantshell.ActionSettingInput) == nil {
+		t.Fatal("string detail missing a2 free-form input action")
+	}
+	if callbackForAction(t, port.edited, assistantshell.ActionSettingReset) == nil {
+		t.Fatal("explicit user override missing reset action")
 	}
 
 	backCategories := callbackForAction(t, port.edited, assistantshell.ActionSettings)

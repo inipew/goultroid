@@ -15,6 +15,7 @@ const (
 	ScreenSettings
 	ScreenSettingsCategory
 	ScreenSettingDetail
+	ScreenSettingInput
 )
 
 const (
@@ -76,7 +77,7 @@ func DecodeState(raw []byte) State {
 }
 
 func normalizeScreen(screen Screen) Screen {
-	if screen > ScreenSettingDetail {
+	if screen > ScreenSettingInput {
 		return ScreenHome
 	}
 	return screen
@@ -107,7 +108,7 @@ func NextRefreshState(raw []byte) []byte {
 func ScreenState(raw []byte, screen Screen) []byte {
 	state := DecodeState(raw)
 	state.Screen = normalizeScreen(screen)
-	if state.Screen != ScreenSettingDetail {
+	if state.Screen != ScreenSettingDetail && state.Screen != ScreenSettingInput {
 		clearSettingBinding(&state)
 	}
 	return EncodeState(state)
@@ -144,6 +145,18 @@ func OpenSettingState(raw []byte, total int) []byte {
 	state.Screen = ScreenSettingDetail
 	state.SettingIndex = uint16(clampIndex(int(state.SettingIndex), total))
 	clearSettingBinding(&state)
+	return EncodeState(state)
+}
+
+func BeginSettingInputState(raw []byte) []byte {
+	state := DecodeState(raw)
+	state.Screen = ScreenSettingInput
+	return EncodeState(state)
+}
+
+func CompleteSettingInputState(raw []byte) []byte {
+	state := DecodeState(raw)
+	state.Screen = ScreenSettingDetail
 	return EncodeState(state)
 }
 

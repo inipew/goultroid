@@ -203,7 +203,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 			close(runDone)
 			return startErr
 		}
-		v2 = &v2Ingress{engine: v2Engine, ack: v2Service}
+		v2 = &v2Ingress{engine: v2Engine, ack: v2Service, input: c.handleV2TextInput}
 	}
 	c.mu.Lock()
 	c.v2Ingress = v2

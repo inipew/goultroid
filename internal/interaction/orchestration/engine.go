@@ -124,6 +124,24 @@ func (e *Engine) RegisterAction(scope tasks.ScopeIdentity, featureID, actionID s
 	})
 }
 
+// TakeInput atomically consumes one pending actor+chat input claim and returns
+// a feature-facing context with the session revision already advanced. The
+// transport attaches the concrete original presentation target before invoking
+// the feature handler.
+func (e *Engine) TakeInput(ctx context.Context, actorID, chatID int64) (*Context, bool, error) {
+	if e == nil {
+		return nil, false, ErrInvalidEngine
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	resolved, handled, err := e.sessions.TakeInput(ctx, actorID, chatID)
+	if err != nil || !handled {
+		return nil, handled, err
+	}
+	return newContext(resolved.Context, e, resolved.Session, nil, 0), true, nil
+}
+
 // Dispatch derives the P1 binding from the concrete callback target and actor,
 // preventing a caller from validating one target while editing another.
 func (e *Engine) Dispatch(ctx context.Context, request CallbackRequest) error {

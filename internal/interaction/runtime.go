@@ -13,6 +13,7 @@ type sessionEntry struct {
 	ctx     context.Context
 	cancel  context.CancelCauseFunc
 	expiry  *expiryItem
+	input   *inputClaim
 }
 
 // Runtime owns bounded, cancellable interaction sessions. It intentionally has
@@ -34,6 +35,7 @@ type Runtime struct {
 	byScope     map[tasks.ScopeIdentity]map[string]struct{}
 	actorCounts map[int64]int
 	expiries    expiryHeap
+	inputs      map[inputBindingKey]string
 	stateBytes  int
 
 	expiredCount          uint64
@@ -62,6 +64,7 @@ func NewRuntime(catalog Catalog, config Config) (*Runtime, error) {
 		sessions:    make(map[string]*sessionEntry),
 		byScope:     make(map[tasks.ScopeIdentity]map[string]struct{}),
 		actorCounts: make(map[int64]int),
+		inputs:      make(map[inputBindingKey]string),
 	}, nil
 }
 
@@ -81,6 +84,7 @@ func (r *Runtime) Close() error {
 	r.byScope = make(map[tasks.ScopeIdentity]map[string]struct{})
 	r.actorCounts = make(map[int64]int)
 	r.expiries = nil
+	r.inputs = make(map[inputBindingKey]string)
 	r.stateBytes = 0
 	r.mu.Unlock()
 	return nil
