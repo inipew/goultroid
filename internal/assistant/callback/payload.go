@@ -7,8 +7,8 @@ import (
 
 const (
 	MaxCallbackDataLen = 64
-	MaxFieldLen         = 32
-	PayloadPrefixV1     = "v1"
+	MaxFieldLen        = 32
+	PayloadPrefixV1    = "v1"
 )
 
 type ParsedPayload struct {
