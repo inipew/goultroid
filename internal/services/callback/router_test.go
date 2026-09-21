@@ -99,6 +99,14 @@ func (r *recordingService) DeleteMessage(ctx context.Context, peer tg.InputPeerC
 	return nil
 }
 
+func dispatchForTest(router *Router, ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer) error {
+	prepared, err := router.Prepare(ctx, evt, svc, nil)
+	if err != nil {
+		return err
+	}
+	return prepared.Dispatch(ctx, evt, svc)
+}
+
 func TestCallback_DataEncodingAndParsing(t *testing.T) {
 	encoded := EncodeCallbackData("media", "next", "token123")
 	if string(encoded) != "v1:media:next:token123" {
@@ -158,16 +166,15 @@ func TestStateStore_StoreGetAndPrune(t *testing.T) {
 		t.Fatalf("expected non-empty opaque id")
 	}
 
-	val, allowedUser, ok := store.Get(id)
-	if !ok || val != "sample-payload" || allowedUser != 12345 {
-		t.Errorf("unexpected retrieved state: val=%v, user=%d, ok=%v", val, allowedUser, ok)
+	entry, err := store.getEntry(id)
+	if err != nil || entry.Data != "sample-payload" || entry.Scope.UserID != 12345 {
+		t.Errorf("unexpected retrieved state: entry=%+v err=%v", entry, err)
 	}
 
 	// 2. Expiration
 	time.Sleep(150 * time.Millisecond)
-	_, _, ok = store.Get(id)
-	if ok {
-		t.Errorf("expected expired state to not be retrieved")
+	if _, err := store.getEntry(id); !errors.Is(err, ErrStateExpired) {
+		t.Errorf("expected ErrStateExpired, got %v", err)
 	}
 
 	// 3. Pruning
@@ -177,9 +184,8 @@ func TestStateStore_StoreGetAndPrune(t *testing.T) {
 	if pruned == 0 {
 		t.Errorf("expected at least 1 pruned state")
 	}
-	_, _, ok = store.Get(id2)
-	if ok {
-		t.Errorf("expected pruned item to be gone")
+	if _, err := store.getEntry(id2); !errors.Is(err, ErrStateNotFound) {
+		t.Errorf("expected pruned item to be gone, got %v", err)
 	}
 }
 
@@ -200,7 +206,7 @@ func TestRouter_Dispatch_Success(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	err := router.Dispatch(ctx, evt, svc)
+	err := dispatchForTest(router, ctx, evt, svc)
 	if err != nil {
 		t.Fatalf("dispatch error: %v", err)
 	}
@@ -232,7 +238,7 @@ func TestRouter_Dispatch_Unauthorized(t *testing.T) {
 		Data:    EncodeCallbackData("private", "view", token),
 	}
 
-	err := router.Dispatch(context.Background(), evt, svc)
+	err := dispatchForTest(router, context.Background(), evt, svc)
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Errorf("expected ErrUnauthorized, got: %v", err)
 	}
@@ -253,7 +259,7 @@ func TestRouter_Dispatch_HandlerNotFound(t *testing.T) {
 		Data:    EncodeCallbackData("missing", "click", "123"),
 	}
 
-	err := router.Dispatch(context.Background(), evt, svc)
+	err := dispatchForTest(router, context.Background(), evt, svc)
 	if !errors.Is(err, ErrHandlerNotFound) {
 		t.Errorf("expected ErrHandlerNotFound, got: %v", err)
 	}
@@ -281,12 +287,18 @@ func TestRouter_RegisterOwnedClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterOwned: %v", err)
 	}
-	if _, ok := router.GetHandler("owned"); !ok {
+	router.mu.RLock()
+	_, registered := router.handlers["owned"]
+	router.mu.RUnlock()
+	if !registered {
 		t.Fatal("owned handler was not registered")
 	}
 	registration.Close()
 	registration.Close()
-	if _, ok := router.GetHandler("owned"); ok {
+	router.mu.RLock()
+	_, registered = router.handlers["owned"]
+	router.mu.RUnlock()
+	if registered {
 		t.Fatal("owned handler remained after close")
 	}
 }
@@ -300,7 +312,7 @@ func TestRouter_Dispatch_RawNoop(t *testing.T) {
 		Data:    []byte("noop"),
 	}
 
-	err := router.Dispatch(context.Background(), evt, svc)
+	err := dispatchForTest(router, context.Background(), evt, svc)
 	if err != nil {
 		t.Fatalf("unexpected error for raw noop: %v", err)
 	}
@@ -327,7 +339,7 @@ func TestRouter_Dispatch_StatelessNoopOpaqueID(t *testing.T) {
 		Data:    EncodeCallbackData("assistant", "status", ActionNoop),
 	}
 
-	err := router.Dispatch(context.Background(), evt, svc)
+	err := dispatchForTest(router, context.Background(), evt, svc)
 	if err != nil {
 		t.Fatalf("dispatch error for stateless noop opaqueID: %v", err)
 	}
@@ -355,7 +367,7 @@ func TestRouter_Dispatch_EncodedActionNoop(t *testing.T) {
 		Data:    EncodeCallbackData("ui", ActionNoop, "-"),
 	}
 
-	err := router.Dispatch(context.Background(), evt, svc)
+	err := dispatchForTest(router, context.Background(), evt, svc)
 	if err != nil {
 		t.Fatalf("unexpected error for encoded action noop: %v", err)
 	}
@@ -383,7 +395,7 @@ func TestRouter_Dispatch_ExpiredState(t *testing.T) {
 		Data:    EncodeCallbackData("exp", "click", token),
 	}
 
-	err := router.Dispatch(context.Background(), evt, svc)
+	err := dispatchForTest(router, context.Background(), evt, svc)
 	if !errors.Is(err, ErrStateExpired) {
 		t.Fatalf("expected ErrStateExpired, got %v", err)
 	}
@@ -411,14 +423,14 @@ func TestRouter_Dispatch_SingleUseReplayProtection(t *testing.T) {
 	}
 
 	// First click: should succeed and consume state
-	err := router.Dispatch(context.Background(), evt, svc)
+	err := dispatchForTest(router, context.Background(), evt, svc)
 	if err != nil {
 		t.Fatalf("first click error: %v", err)
 	}
 
 	// Second click: state is consumed, should return ErrStateNotFound
 	handler.handled = false
-	err = router.Dispatch(context.Background(), evt, svc)
+	err = dispatchForTest(router, context.Background(), evt, svc)
 	if !errors.Is(err, ErrStateNotFound) {
 		t.Fatalf("expected ErrStateNotFound on second click, got %v", err)
 	}
@@ -446,7 +458,7 @@ func TestRouter_Dispatch_ScopeRestrictions(t *testing.T) {
 		ChatID:  8888, // wrong chat
 		Data:    EncodeCallbackData("scoped", "act", tokenChat),
 	}
-	err := router.Dispatch(context.Background(), evt, svc)
+	err := dispatchForTest(router, context.Background(), evt, svc)
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Errorf("expected ErrUnauthorized for chat mismatch, got %v", err)
 	}
@@ -459,7 +471,7 @@ func TestRouter_Dispatch_ScopeRestrictions(t *testing.T) {
 		Origin:  core.CallbackOriginInline,
 		Data:    EncodeCallbackData("scoped", "act", tokenChat),
 	}
-	err = router.Dispatch(context.Background(), evtInline, svc)
+	err = dispatchForTest(router, context.Background(), evtInline, svc)
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Errorf("expected ErrUnauthorized for inline bypass of chat scope, got %v", err)
 	}
@@ -478,7 +490,7 @@ func TestRouter_Dispatch_ScopeRestrictions(t *testing.T) {
 		},
 		Data: EncodeCallbackData("scoped", "act", tokenMsg),
 	}
-	err = router.Dispatch(context.Background(), evt2, svc)
+	err = dispatchForTest(router, context.Background(), evt2, svc)
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Errorf("expected ErrUnauthorized for message mismatch, got %v", err)
 	}
@@ -494,7 +506,7 @@ func TestRouter_Dispatch_ScopeRestrictions(t *testing.T) {
 		UserID:  12345,
 		Data:    EncodeCallbackData("scoped", "act", tokenNs),
 	}
-	err = router.Dispatch(context.Background(), evt3, svc)
+	err = dispatchForTest(router, context.Background(), evt3, svc)
 	if !errors.Is(err, ErrInvalidCallbackData) {
 		t.Errorf("expected ErrInvalidCallbackData for namespace mismatch, got %v", err)
 	}
@@ -578,7 +590,7 @@ func TestRouter_HandlerPanicRecovery(t *testing.T) {
 		Data:    EncodeCallbackData("panic", "fail", "0"),
 	}
 
-	err := router.Dispatch(context.Background(), evt, svc)
+	err := dispatchForTest(router, context.Background(), evt, svc)
 	if err == nil {
 		t.Fatalf("expected error from recovered panic, got nil")
 	}
@@ -741,7 +753,7 @@ func TestRouter_Dispatch_RequiredStateRejectsMissingState(t *testing.T) {
 		UserID:  42,
 		Data:    EncodeCallbackData("stateful", "next", "missing-token"),
 	}
-	err := router.Dispatch(context.Background(), evt, svc)
+	err := dispatchForTest(router, context.Background(), evt, svc)
 	if !errors.Is(err, ErrStateNotFound) {
 		t.Fatalf("expected ErrStateNotFound, got %v", err)
 	}
@@ -825,14 +837,14 @@ func TestRouter_PreparedDispatchRejectsReloadWithoutConsumingState(t *testing.T)
 		t.Fatalf("register replacement handler: %v", err)
 	}
 
-	err = router.DispatchPrepared(context.Background(), evt, svc, prepared)
+	err = prepared.Dispatch(context.Background(), evt, svc)
 	if !errors.Is(err, ErrHandlerRegistrationChanged) {
 		t.Fatalf("expected stale registration rejection, got %v", err)
 	}
 	if oldHandler.handled || newHandler.handled {
 		t.Fatal("stale prepared callback executed a handler")
 	}
-	if _, err := store.GetEntry(token); err != nil {
+	if _, err := store.getEntry(token); err != nil {
 		t.Fatalf("single-use state was consumed by stale registration: %v", err)
 	}
 }
@@ -844,7 +856,7 @@ func TestStateStore_ClaimEntryUnauthorizedDoesNotConsumeSingleUse(t *testing.T) 
 		t.Fatal("expected state token")
 	}
 
-	_, err := store.ClaimEntry(token, func(scope StateScope) error {
+	_, err := store.claimEntry(token, func(scope StateScope) error {
 		if scope.UserID != 8 {
 			return ErrUnauthorized
 		}
@@ -854,7 +866,7 @@ func TestStateStore_ClaimEntryUnauthorizedDoesNotConsumeSingleUse(t *testing.T) 
 		t.Fatalf("expected unauthorized claim rejection, got %v", err)
 	}
 
-	entry, err := store.ClaimEntry(token, func(scope StateScope) error {
+	entry, err := store.claimEntry(token, func(scope StateScope) error {
 		if scope.UserID != 7 {
 			return ErrUnauthorized
 		}
@@ -866,7 +878,7 @@ func TestStateStore_ClaimEntryUnauthorizedDoesNotConsumeSingleUse(t *testing.T) 
 	if entry.Data != "secret" {
 		t.Fatalf("unexpected claimed data: %#v", entry.Data)
 	}
-	if _, err := store.ClaimEntry(token, nil); !errors.Is(err, ErrStateConsumed) {
+	if _, err := store.claimEntry(token, nil); !errors.Is(err, ErrStateConsumed) {
 		t.Fatalf("expected consumed state after authorized claim, got %v", err)
 	}
 }
