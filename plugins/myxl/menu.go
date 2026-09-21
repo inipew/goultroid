@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"html"
-	"strconv"
 	"strings"
 	"time"
 
@@ -102,9 +101,9 @@ func (m *MenuManager) BuildDashboardScreen(ctx context.Context, mask bool) (*ui.
 			AddField("Status Akun", "⚠️ Belum ada akun terhubung").
 			WithRaw("Silakan login menggunakan nomor XL/Axis Anda. Anda akan menerima kode verifikasi OTP melalui SMS.").
 			WithFooter("<i>Tekan tombol Login di bawah untuk memulai.</i>")
-		screen := ui.NewScreen(menu.ScreenIDMyXL, "", card.Render())
-		screen.AddRow(newMenuButton("➕ Login Akun Baru (OTP)", "a1:myxl:login_req"))
-		screen.AddRow(newMenuButton("❌ Tutup", "a1:assistant:close"))
+		screen := ui.NewScreen("myxl", "", card.Render())
+		screen.AddRow(newMenuButton("➕ Login Akun Baru (OTP)", "myxl:login_req"))
+		screen.AddRow(newMenuButton("❌ Tutup", "assistant:close"))
 		return screen, nil
 	}
 
@@ -174,24 +173,24 @@ func (m *MenuManager) BuildDashboardScreen(ctx context.Context, mask bool) (*ui.
 	}
 
 	card.WithFooter("<i>Pilih menu di bawah untuk rincian kuota, akun, atau belanja paket.</i>")
-	screen := ui.NewScreen(menu.ScreenIDMyXL, "", card.Render())
+	screen := ui.NewScreen("myxl", "", card.Render())
 	if pendingQR != nil && time.Now().UTC().Before(pendingQR.ExpiresAt) {
 		rem := time.Until(pendingQR.ExpiresAt).Round(time.Second)
 		screen.AddRow(
-			newMenuButton("📱 Lihat QRIS Aktif ("+FormatRemainingDuration(rem)+")", "a1:myxl:pending_qris"),
+			newMenuButton("📱 Lihat QRIS Aktif ("+FormatRemainingDuration(rem)+")", "myxl:pending_qris"),
 		)
 	}
 	screen.AddRow(
-		newMenuButton("🔄 Perbarui Kuota", "a1:myxl:refresh"),
-		newMenuButton("📊 Rincian Kuota", "a1:myxl:detail"),
+		newMenuButton("🔄 Perbarui Kuota", "myxl:refresh"),
+		newMenuButton("📊 Rincian Kuota", "myxl:detail"),
 	)
 	screen.AddRow(
-		newMenuButton("👥 Kelola Akun", "a1:myxl:accounts"),
-		newMenuButton("🛒 Beli Paket", "a1:myxl:store"),
+		newMenuButton("👥 Kelola Akun", "myxl:accounts"),
+		newMenuButton("🛒 Beli Paket", "myxl:store"),
 	)
 	screen.AddRow(
-		newMenuButton("⭐ Paket Favorit", "a1:myxl:saved"),
-		newMenuButton("❌ Tutup Menu", "a1:assistant:close"),
+		newMenuButton("⭐ Paket Favorit", "myxl:saved"),
+		newMenuButton("❌ Tutup Menu", "assistant:close"),
 	)
 	return screen, nil
 }
@@ -211,8 +210,8 @@ func (m *MenuManager) BuildQuotaDetailScreen(ctx context.Context, mask bool) (*u
 	formatted := FormatQuotaResponse(acc, balance, quota, mask)
 	screen := ui.NewScreen("myxl:detail", "", formatted)
 	screen.AddRow(
-		newMenuButton("🔄 Perbarui", "a1:myxl:detail"),
-		newMenuButton("🔙 Kembali ke MyXL", "a1:myxl:home"),
+		newMenuButton("🔄 Perbarui", "myxl:detail"),
+		newMenuButton("🔙 Kembali ke MyXL", "myxl:home"),
 	)
 	return screen, nil
 }
@@ -230,8 +229,8 @@ func (m *MenuManager) BuildAccountsScreen(ctx context.Context) (*ui.Screen, erro
 	if len(accounts) == 0 {
 		card.WithRaw("<i>Belum ada akun MyXL yang tersimpan.</i>")
 		screen := ui.NewScreen("myxl:accounts", "", card.Render())
-		screen.AddRow(newMenuButton("➕ Tambah Akun", "a1:myxl:login_req"))
-		screen.AddRow(newMenuButton("🔙 Kembali ke MyXL", "a1:myxl:home"))
+		screen.AddRow(newMenuButton("➕ Tambah Akun", "myxl:login_req"))
+		screen.AddRow(newMenuButton("🔙 Kembali ke MyXL", "myxl:home"))
 		return screen, nil
 	}
 
@@ -266,9 +265,9 @@ func (m *MenuManager) BuildAccountsScreen(ctx context.Context) (*ui.Screen, erro
 			label = acc.Alias
 		}
 		if acc.IsActive {
-			switchRow = append(switchRow, newMenuButton("🟢 "+truncateString(label, 12), "a1:myxl:noop"))
+			switchRow = append(switchRow, newMenuButton("🟢 "+truncateString(label, 12), "myxl:noop"))
 		} else {
-			switchRow = append(switchRow, newMenuButton("👉 "+truncateString(label, 12), fmt.Sprintf("a1:myxl:switch:%s", acc.MSISDN)))
+			switchRow = append(switchRow, newMenuButton("👉 "+truncateString(label, 12), fmt.Sprintf("myxl:switch:%s", acc.MSISDN)))
 		}
 		if len(switchRow) == 2 {
 			screen.AddRow(switchRow...)
@@ -280,15 +279,15 @@ func (m *MenuManager) BuildAccountsScreen(ctx context.Context) (*ui.Screen, erro
 	}
 
 	screen.AddRow(
-		newMenuButton("➕ Tambah Akun", "a1:myxl:login_req"),
-		newMenuButton("🏷️ Ubah Alias", "a1:myxl:alias_pick"),
+		newMenuButton("➕ Tambah Akun", "myxl:login_req"),
+		newMenuButton("🏷️ Ubah Alias", "myxl:alias_pick"),
 	)
 	screen.AddRow(
-		newMenuButton("🗑️ Hapus Akun", "a1:myxl:del_pick"),
-		newMenuButton("🔄 Refresh Token", "a1:myxl:token_refresh"),
+		newMenuButton("🗑️ Hapus Akun", "myxl:del_pick"),
+		newMenuButton("🔄 Refresh Token", "myxl:token_refresh"),
 	)
 	screen.AddRow(
-		newMenuButton("🔙 Kembali ke MyXL", "a1:myxl:home"),
+		newMenuButton("🔙 Kembali ke MyXL", "myxl:home"),
 	)
 	return screen, nil
 }
@@ -318,10 +317,10 @@ func (m *MenuManager) BuildStoreScreen(ctx context.Context) (*ui.Screen, error) 
 	card.WithFooter("<i>Pilih salah satu metode di bawah.</i>")
 
 	screen := ui.NewScreen("myxl:store", "", card.Render())
-	screen.AddRow(newMenuButton("⭐ Paket Favorit Tersimpan", "a1:myxl:saved"))
-	screen.AddRow(newMenuButton("🔍 Cari dari Family Code", "a1:myxl:fam_input"))
-	screen.AddRow(newMenuButton("⚡ Masukkan Option Code", "a1:myxl:buy_opt_input"))
-	screen.AddRow(newMenuButton("🔙 Kembali ke MyXL", "a1:myxl:home"))
+	screen.AddRow(newMenuButton("⭐ Paket Favorit Tersimpan", "myxl:saved"))
+	screen.AddRow(newMenuButton("🔍 Cari dari Family Code", "myxl:fam_input"))
+	screen.AddRow(newMenuButton("⚡ Masukkan Option Code", "myxl:buy_opt_input"))
+	screen.AddRow(newMenuButton("🔙 Kembali ke MyXL", "myxl:home"))
 	return screen, nil
 }
 
@@ -343,8 +342,8 @@ func (m *MenuManager) BuildSavedPackagesScreen(ctx context.Context) (*ui.Screen,
 	if len(saved) == 0 {
 		card.WithRaw("<i>Belum ada paket yang disimpan dalam daftar favorit.</i>\n\nAnda dapat menyimpan paket ke favorit setelah melihat rincian paket atau menyelesaikan transaksi.")
 		screen := ui.NewScreen("myxl:saved", "", card.Render())
-		screen.AddRow(newMenuButton("⚡ Masukkan Option Code", "a1:myxl:buy_opt_input"))
-		screen.AddRow(newMenuButton("🔙 Kembali ke Store", "a1:myxl:store"))
+		screen.AddRow(newMenuButton("⚡ Masukkan Option Code", "myxl:buy_opt_input"))
+		screen.AddRow(newMenuButton("🔙 Kembali ke Store", "myxl:store"))
 		return screen, nil
 	}
 
@@ -361,11 +360,11 @@ func (m *MenuManager) BuildSavedPackagesScreen(ctx context.Context) (*ui.Screen,
 		label := truncateString(sp.Name, 18)
 		optKey := m.RegisterOptionCode(sp.OptionCode)
 		screen.AddRow(
-			newMenuButton("🛒 "+label, fmt.Sprintf("a1:myxl:buy_opt:%s", optKey)),
-			newMenuButton("❌ Hapus", fmt.Sprintf("a1:myxl:bookmark_del:%s", optKey)),
+			newMenuButton("🛒 "+label, fmt.Sprintf("myxl:buy_opt:%s", optKey)),
+			newMenuButton("❌ Hapus", fmt.Sprintf("myxl:bookmark_del:%s", optKey)),
 		)
 	}
-	screen.AddRow(newMenuButton("🔙 Kembali ke Store", "a1:myxl:store"))
+	screen.AddRow(newMenuButton("🔙 Kembali ke Store", "myxl:store"))
 	return screen, nil
 }
 
@@ -399,27 +398,27 @@ func (m *MenuManager) BuildPackageDetailScreen(ctx context.Context, acc *Account
 
 	screen := ui.NewScreen("myxl:pkg_detail", "", card.Render())
 	screen.AddRow(
-		newMenuButton("💰 Pulsa", fmt.Sprintf("a1:myxl:method:balance:%s", optKey)),
-		newMenuButton("📱 QRIS", fmt.Sprintf("a1:myxl:method:qris:%s", optKey)),
+		newMenuButton("💰 Pulsa", fmt.Sprintf("myxl:method:balance:%s", optKey)),
+		newMenuButton("📱 QRIS", fmt.Sprintf("myxl:method:qris:%s", optKey)),
 	)
 	screen.AddRow(
-		newMenuButton("🟢 GoPay", fmt.Sprintf("a1:myxl:method:gopay:%s", optKey)),
-		newMenuButton("🟣 OVO", fmt.Sprintf("a1:myxl:method:ovo:%s", optKey)),
+		newMenuButton("🟢 GoPay", fmt.Sprintf("myxl:method:gopay:%s", optKey)),
+		newMenuButton("🟣 OVO", fmt.Sprintf("myxl:method:ovo:%s", optKey)),
 	)
 	screen.AddRow(
-		newMenuButton("🔵 DANA", fmt.Sprintf("a1:myxl:method:dana:%s", optKey)),
-		newMenuButton("🟠 ShopeePay", fmt.Sprintf("a1:myxl:method:shopeepay:%s", optKey)),
+		newMenuButton("🔵 DANA", fmt.Sprintf("myxl:method:dana:%s", optKey)),
+		newMenuButton("🟠 ShopeePay", fmt.Sprintf("myxl:method:shopeepay:%s", optKey)),
 	)
 	screen.AddRow(
-		newMenuButton("⚡ Decoy Pulsa", fmt.Sprintf("a1:myxl:method:decoy_balance:%s", optKey)),
-		newMenuButton("⚡ Decoy QRIS", fmt.Sprintf("a1:myxl:method:decoy_qris:%s", optKey)),
+		newMenuButton("⚡ Decoy Pulsa", fmt.Sprintf("myxl:method:decoy_balance:%s", optKey)),
+		newMenuButton("⚡ Decoy QRIS", fmt.Sprintf("myxl:method:decoy_qris:%s", optKey)),
 	)
 	screen.AddRow(
-		newMenuButton("✏️ Overwrite Harga", fmt.Sprintf("a1:myxl:custom_price:%s", optKey)),
-		newMenuButton("⭐ Simpan Favorit", fmt.Sprintf("a1:myxl:bookmark_add:%s", optKey)),
+		newMenuButton("✏️ Overwrite Harga", fmt.Sprintf("myxl:custom_price:%s", optKey)),
+		newMenuButton("⭐ Simpan Favorit", fmt.Sprintf("myxl:bookmark_add:%s", optKey)),
 	)
 	screen.AddRow(
-		newMenuButton("🔙 Batal / Kembali", "a1:myxl:store"),
+		newMenuButton("🔙 Batal / Kembali", "myxl:store"),
 	)
 	return screen, nil
 }
@@ -459,8 +458,8 @@ func (m *MenuManager) BuildCheckoutScreen(draft purchaseDraftState, userID, chat
 
 	screen := ui.NewScreen("myxl:checkout", "", card.Render())
 	screen.AddRow(
-		newMenuButton("✅ Konfirmasi Pembayaran", fmt.Sprintf("a1:myxl:checkout:%s", oid)),
-		newMenuButton("❌ Batal", fmt.Sprintf("a1:myxl:cancel_draft:%s", oid)),
+		newMenuButton("✅ Konfirmasi Pembayaran", fmt.Sprintf("myxl:checkout:%s", oid)),
+		newMenuButton("❌ Batal", fmt.Sprintf("myxl:cancel_draft:%s", oid)),
 	)
 	return screen, nil
 }
@@ -506,16 +505,16 @@ func (m *MenuManager) BuildPurchaseResultScreen(result *SettlementResult, packag
 	screen := ui.NewScreen("myxl:result", "", card.Render())
 	optKey := m.RegisterOptionCode(optionCode)
 	var firstRow []ui.Button
-	firstRow = append(firstRow, newMenuButton("⭐ Simpan ke Favorit", fmt.Sprintf("a1:myxl:bookmark_add:%s", optKey)))
+	firstRow = append(firstRow, newMenuButton("⭐ Simpan ke Favorit", fmt.Sprintf("myxl:bookmark_add:%s", optKey)))
 	if result != nil && result.QRCode != "" {
 		qrKey := m.RegisterQR(result.QRCode)
 		if qrKey != "" {
-			firstRow = append(firstRow, newMenuButton("🖼️ Kirim Foto QRIS", fmt.Sprintf("a1:myxl:qris_img:%s", qrKey)))
+			firstRow = append(firstRow, newMenuButton("🖼️ Kirim Foto QRIS", fmt.Sprintf("myxl:qris_img:%s", qrKey)))
 		}
 	}
 	screen.AddRow(firstRow...)
 	screen.AddRow(
-		newMenuButton("📱 Buka Dashboard", "a1:myxl:home"),
+		newMenuButton("📱 Buka Dashboard", "myxl:home"),
 	)
 	return screen
 }
@@ -533,7 +532,7 @@ func (m *MenuManager) BuildPendingQRISScreen(ctx context.Context) (*ui.Screen, e
 			WithIcon("ℹ️").
 			WithRaw("<i>Tidak ada transaksi QRIS aktif yang menunggu pembayaran.\nTransaksi QRIS otomatis kedaluwarsa setelah 5 menit.</i>")
 		screen := ui.NewScreen("myxl:pending_qris", "", card.Render())
-		screen.AddRow(newMenuButton("🔙 Kembali ke Dashboard", "a1:myxl:home"))
+		screen.AddRow(newMenuButton("🔙 Kembali ke Dashboard", "myxl:home"))
 		return screen, nil
 	}
 
@@ -570,13 +569,13 @@ func (m *MenuManager) BuildPendingQRISScreen(ctx context.Context) (*ui.Screen, e
 	}
 	var actionRow []ui.Button
 	if qrKey != "" {
-		actionRow = append(actionRow, newMenuButton("🖼️ Kirim Foto QRIS", fmt.Sprintf("a1:myxl:qris_img:%s", qrKey)))
+		actionRow = append(actionRow, newMenuButton("🖼️ Kirim Foto QRIS", fmt.Sprintf("myxl:qris_img:%s", qrKey)))
 	}
-	actionRow = append(actionRow, newMenuButton("🗑️ Batalkan", fmt.Sprintf("a1:myxl:qris_cancel:%s", pending.TransactionCode)))
+	actionRow = append(actionRow, newMenuButton("🗑️ Batalkan", fmt.Sprintf("myxl:qris_cancel:%s", pending.TransactionCode)))
 	screen.AddRow(actionRow...)
 	screen.AddRow(
-		newMenuButton("🔄 Cek Status", "a1:myxl:pending_qris"),
-		newMenuButton("🔙 Kembali ke Dashboard", "a1:myxl:home"),
+		newMenuButton("🔄 Cek Status", "myxl:pending_qris"),
+		newMenuButton("🔙 Kembali ke Dashboard", "myxl:home"),
 	)
 	return screen, nil
 }
@@ -597,10 +596,10 @@ func (m *MenuManager) BuildDeletePickScreen(ctx context.Context) (*ui.Screen, er
 			label = fmt.Sprintf("%s (%s)", acc.MSISDN, acc.Alias)
 		}
 		screen.AddRow(
-			newMenuButton("🗑️ "+truncateString(label, 20), fmt.Sprintf("a1:myxl:del_ask:%s", acc.MSISDN)),
+			newMenuButton("🗑️ "+truncateString(label, 20), fmt.Sprintf("myxl:del_ask:%s", acc.MSISDN)),
 		)
 	}
-	screen.AddRow(newMenuButton("🔙 Batal", "a1:myxl:accounts"))
+	screen.AddRow(newMenuButton("🔙 Batal", "myxl:accounts"))
 	return screen, nil
 }
 
@@ -620,10 +619,10 @@ func (m *MenuManager) BuildAliasPickScreen(ctx context.Context) (*ui.Screen, err
 			label = fmt.Sprintf("%s (%s)", acc.MSISDN, acc.Alias)
 		}
 		screen.AddRow(
-			newMenuButton("🏷️ "+truncateString(label, 20), fmt.Sprintf("a1:myxl:alias_req:%s", acc.MSISDN)),
+			newMenuButton("🏷️ "+truncateString(label, 20), fmt.Sprintf("myxl:alias_req:%s", acc.MSISDN)),
 		)
 	}
-	screen.AddRow(newMenuButton("🔙 Batal", "a1:myxl:accounts"))
+	screen.AddRow(newMenuButton("🔙 Batal", "myxl:accounts"))
 	return screen, nil
 }
 
@@ -711,7 +710,7 @@ func (m *MenuManager) BuildFamilyPackagesScreen(ctx context.Context, acc *Accoun
 		globalNum := startIdx + i + 1
 		label := fmt.Sprintf("%d", globalNum)
 		optKey := m.RegisterOptionCode(item.Option.PackageOptionCode)
-		numRow = append(numRow, newMenuButton(label, fmt.Sprintf("a1:myxl:buy_opt:%s", optKey)))
+		numRow = append(numRow, newMenuButton(label, fmt.Sprintf("myxl:buy_opt:%s", optKey)))
 	}
 	if len(numRow) > 0 {
 		screen.AddRow(numRow...)
@@ -720,20 +719,20 @@ func (m *MenuManager) BuildFamilyPackagesScreen(ctx context.Context, acc *Accoun
 	// 2. Pagination row: [◀️ Prev] [📄 X/Y] [▶️ Next]
 	var navRow []ui.Button
 	if page > 1 {
-		navRow = append(navRow, newMenuButton("◀️ Prev", fmt.Sprintf("a1:myxl:fam_page:%s:%d", familyCode, page-1)))
+		navRow = append(navRow, newMenuButton("◀️ Prev", fmt.Sprintf("myxl:fam_page:%s:%d", familyCode, page-1)))
 	} else {
-		navRow = append(navRow, newMenuButton("⏮️", "a1:myxl:noop"))
+		navRow = append(navRow, newMenuButton("⏮️", "myxl:noop"))
 	}
-	navRow = append(navRow, newMenuButton(fmt.Sprintf("📄 %d/%d", page, totalPages), "a1:myxl:noop"))
+	navRow = append(navRow, newMenuButton(fmt.Sprintf("📄 %d/%d", page, totalPages), "myxl:noop"))
 	if page < totalPages {
-		navRow = append(navRow, newMenuButton("▶️ Next", fmt.Sprintf("a1:myxl:fam_page:%s:%d", familyCode, page+1)))
+		navRow = append(navRow, newMenuButton("▶️ Next", fmt.Sprintf("myxl:fam_page:%s:%d", familyCode, page+1)))
 	} else {
-		navRow = append(navRow, newMenuButton("⏭️", "a1:myxl:noop"))
+		navRow = append(navRow, newMenuButton("⏭️", "myxl:noop"))
 	}
 	screen.AddRow(navRow...)
 
 	// 3. Back button
-	screen.AddRow(newMenuButton("🔙 Kembali ke Store", "a1:myxl:store"))
+	screen.AddRow(newMenuButton("🔙 Kembali ke Store", "myxl:store"))
 
 	return screen, nil
 }
