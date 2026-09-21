@@ -798,6 +798,20 @@ func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 
 	var errs []error
 
+	// Quiesce TaskEngine ownership before detaching registrations. This prevents
+	// already-admitted work from crossing a plugin generation boundary while
+	// callbacks/hooks/features are being removed.
+	m.mu.RLock()
+	shutdownTaskClient := m.taskClient
+	m.mu.RUnlock()
+	if shutdownTaskClient != nil {
+		for _, scope := range scopes {
+			if scope != nil {
+				shutdownTaskClient.CancelScope(tasks.ScopeIdentity{Owner: scope.Owner(), Generation: scope.Generation()}, tasks.CauseShutdown)
+			}
+		}
+	}
+
 	// 1. Detach all feature surfaces, message hooks, and callbacks before plugin shutdown.
 	for i, cleanup := range cleanups {
 		if cleanup == nil {
@@ -835,12 +849,6 @@ func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("%s: %w", p.Name(), err))
 		}
 		if scope := scopes[strings.ToLower(strings.TrimSpace(p.Name()))]; scope != nil {
-			m.mu.RLock()
-			taskClient := m.taskClient
-			m.mu.RUnlock()
-			if taskClient != nil {
-				taskClient.CancelScope(tasks.ScopeIdentity{Owner: scope.Owner(), Generation: scope.Generation()}, tasks.CauseShutdown)
-			}
 			if err := scope.Close(ctx); err != nil {
 				errs = append(errs, fmt.Errorf("%s scope: %w", p.Name(), err))
 			}
@@ -890,7 +898,14 @@ func (m *Manager) Disable(ctx context.Context, name string) error {
 	m.disabled[key] = true
 	m.transitions[key] = "disabling"
 	router := m.router
+	taskClient := m.taskClient
 	m.mu.Unlock()
+
+	// Quiesce this generation before registrations are detached. New callback
+	// admission already fails because m.scopes no longer exposes this scope.
+	if scope != nil && taskClient != nil {
+		taskClient.CancelScope(tasks.ScopeIdentity{Owner: scope.Owner(), Generation: scope.Generation()}, tasks.CauseScopeClosed)
+	}
 
 	var errs []error
 	if featureCleanup != nil {
@@ -952,12 +967,6 @@ func (m *Manager) Disable(ctx context.Context, name string) error {
 	}
 
 	if scope != nil {
-		m.mu.RLock()
-		taskClient := m.taskClient
-		m.mu.RUnlock()
-		if taskClient != nil {
-			taskClient.CancelScope(tasks.ScopeIdentity{Owner: scope.Owner(), Generation: scope.Generation()}, tasks.CauseScopeClosed)
-		}
 		if err := scope.Close(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("close scope %s: %w", name, err))
 		}
