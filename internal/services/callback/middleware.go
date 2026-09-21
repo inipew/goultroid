@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/inipew/goultroid/internal/core"
 	"go.uber.org/zap"
 )
 
@@ -22,11 +21,9 @@ func Chain(final Handler, mws ...Middleware) Handler {
 	return h
 }
 
-// RecoverMiddleware returns a Middleware that recovers panics, logs, records metrics, and converts them to ErrInternal.
-// It must be the outermost middleware so panics from inner middlewares (e.g. Timeout) are also caught.
-func RecoverMiddleware(logger *zap.Logger, metrics interface {
-	RecordCallback(string, time.Duration, error)
-}, start time.Time) Middleware {
+// RecoverMiddleware recovers panics and classifies them for the router's
+// single terminal metrics write. It must remain the outermost middleware.
+func RecoverMiddleware(logger *zap.Logger) Middleware {
 	return func(next Handler) Handler {
 		return handlerFunc{
 			ns: next.Namespace(),
@@ -39,14 +36,10 @@ func RecoverMiddleware(logger *zap.Logger, metrics interface {
 								zap.String("namespace", next.Namespace()),
 							)
 						}
-						err = fmt.Errorf("%w: handler panic: %v", core.ErrInternal, rec)
-						if metrics != nil {
-							metrics.RecordCallback("handler_panic", time.Since(start), err)
-						}
+						err = fmt.Errorf("%w: %v", ErrHandlerPanic, rec)
 					}
 				}()
-				err = next.HandleCallback(ctx)
-				return err
+				return next.HandleCallback(ctx)
 			},
 		}
 	}
@@ -57,7 +50,9 @@ func RateLimitMiddleware() Middleware {
 	return func(next Handler) Handler { return next }
 }
 
-// TimeoutMiddleware returns a Middleware that enforces per-handler timeout via context.WithTimeout.
+// TimeoutMiddleware supplies a fallback handler deadline. If an upstream owner
+// such as TaskEngine already installed an equal or tighter deadline, reuse it
+// instead of allocating a second timer.
 func TimeoutMiddleware(timeout time.Duration) Middleware {
 	return func(next Handler) Handler {
 		return handlerFunc{
@@ -66,6 +61,16 @@ func TimeoutMiddleware(timeout time.Duration) Middleware {
 				if timeout <= 0 {
 					return next.HandleCallback(ctx)
 				}
+				if deadline, ok := ctx.Ctx.Deadline(); ok {
+					remaining := time.Until(deadline)
+					if remaining <= 0 {
+						return ctx.Ctx.Err()
+					}
+					if remaining <= timeout {
+						return next.HandleCallback(ctx)
+					}
+				}
+
 				hCtx, cancel := context.WithTimeout(ctx.Ctx, timeout)
 				defer cancel()
 				prev := ctx.Ctx
