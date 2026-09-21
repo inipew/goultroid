@@ -977,4 +977,3 @@ func (p *Plugin) confirmAssistantV2Purchase(ctx *orchestration.Context, state as
 
 var _ assistantinteraction.V2FeatureDriver = (*Plugin)(nil)
 var _ interface{ FeatureSpec() feature.Spec } = (*Plugin)(nil)
-
