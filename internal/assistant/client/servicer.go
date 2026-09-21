@@ -2,9 +2,9 @@ package client
 
 import (
 	"context"
+	"sync"
 
 	"github.com/gotd/td/tg"
-	"github.com/inipew/goultroid/internal/assistant/callback"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/tasks"
@@ -192,34 +192,72 @@ func (u *unsupportedTelegramServicer) IsBotSent(msgID int) bool {
 	return false
 }
 
-// assistantCallbackServicer adapts an assistant Transaction into a core.TelegramServicer
-// so delegated plugin callback handlers can edit messages, reply, and acknowledge queries.
-type assistantCallbackServicer struct {
-	unsupportedTelegramServicer
-	tx *callback.Transaction
+type callbackAnswerGuard struct {
+	mu        sync.Mutex
+	answering bool
+	answered  bool
 }
 
-func (s *assistantCallbackServicer) AnswerCallbackQuery(ctx context.Context, queryID int64, text string, alert bool) error {
-	if s.tx == nil {
+func (g *callbackAnswerGuard) Do(answer func() error) error {
+	if g == nil || answer == nil {
 		return core.ErrInternal
 	}
-	return s.tx.Answer(ctx, text, alert)
+	g.mu.Lock()
+	if g.answered || g.answering {
+		g.mu.Unlock()
+		return interaction.ErrCallbackAlreadyAnswered
+	}
+	g.answering = true
+	g.mu.Unlock()
+
+	err := answer()
+
+	g.mu.Lock()
+	g.answering = false
+	if err == nil {
+		g.answered = true
+	}
+	g.mu.Unlock()
+	return err
+}
+
+// assistantCallbackServicer is the narrow Telegram transport adapter used by
+// canonical core/plugin callback handlers for message-origin callbacks.
+type assistantCallbackServicer struct {
+	unsupportedTelegramServicer
+	queryID     int64
+	target      interaction.MessageTarget
+	interaction interaction.MessageInteraction
+	answer      callbackAnswerGuard
+}
+
+func newAssistantCallbackServicer(queryID int64, target interaction.MessageTarget, inter interaction.MessageInteraction) *assistantCallbackServicer {
+	return &assistantCallbackServicer{queryID: queryID, target: target, interaction: inter}
+}
+
+func (s *assistantCallbackServicer) AnswerCallbackQuery(ctx context.Context, _ int64, text string, alert bool) error {
+	if s == nil || s.interaction == nil || s.queryID == 0 {
+		return core.ErrInternal
+	}
+	return s.answer.Do(func() error {
+		return s.interaction.Answer(ctx, s.queryID, text, alert)
+	})
 }
 
 func (s *assistantCallbackServicer) EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass, msgID int, text string, markup tg.ReplyMarkupClass) error {
-	if s.tx == nil || s.tx.Interaction == nil {
+	if s == nil || s.interaction == nil {
 		return core.ErrInternal
 	}
-	target := resolveMessageTarget(s.tx.Target, peer, msgID)
-	return s.tx.Interaction.Edit(ctx, target, text, markup)
+	target := resolveMessageTarget(s.target, peer, msgID)
+	return s.interaction.Edit(ctx, target, text, markup)
 }
 
 func (s *assistantCallbackServicer) EditMessageMarkupOnly(ctx context.Context, peer tg.InputPeerClass, msgID int, markup tg.ReplyMarkupClass) error {
-	if s.tx == nil || s.tx.Interaction == nil {
+	if s == nil || s.interaction == nil {
 		return core.ErrInternal
 	}
-	target := resolveMessageTarget(s.tx.Target, peer, msgID)
-	return s.tx.Interaction.EditMarkup(ctx, target, markup)
+	target := resolveMessageTarget(s.target, peer, msgID)
+	return s.interaction.EditMarkup(ctx, target, markup)
 }
 
 func (s *assistantCallbackServicer) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
@@ -227,17 +265,15 @@ func (s *assistantCallbackServicer) EditMessage(ctx context.Context, peer tg.Inp
 }
 
 func (s *assistantCallbackServicer) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {
-	if s.tx == nil || s.tx.Interaction == nil {
+	if s == nil || s.interaction == nil {
 		return core.ErrInternal
 	}
 	if len(msgIDs) == 0 {
-		target := resolveMessageTarget(s.tx.Target, peer, 0)
-		return s.tx.Interaction.Delete(ctx, target)
+		return s.interaction.Delete(ctx, resolveMessageTarget(s.target, peer, 0))
 	}
 	var firstErr error
 	for _, id := range msgIDs {
-		target := resolveMessageTarget(s.tx.Target, peer, id)
-		if err := s.tx.Interaction.Delete(ctx, target); err != nil && firstErr == nil {
+		if err := s.interaction.Delete(ctx, resolveMessageTarget(s.target, peer, id)); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -245,11 +281,10 @@ func (s *assistantCallbackServicer) DeleteMessage(ctx context.Context, peer tg.I
 }
 
 func (s *assistantCallbackServicer) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) (*tg.Message, error) {
-	if s.tx == nil || s.tx.Interaction == nil {
+	if s == nil || s.interaction == nil {
 		return nil, core.ErrInternal
 	}
-	target := resolveMessageTarget(s.tx.Target, peer, msgID)
-	return s.tx.Interaction.GetMessage(ctx, target)
+	return s.interaction.GetMessage(ctx, resolveMessageTarget(s.target, peer, msgID))
 }
 
 func (s *assistantCallbackServicer) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
@@ -257,58 +292,68 @@ func (s *assistantCallbackServicer) SendMessage(ctx context.Context, peer tg.Inp
 }
 
 func (s *assistantCallbackServicer) SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
-	if s.tx == nil || s.tx.Interaction == nil {
+	if s == nil || s.interaction == nil {
 		return nil, core.ErrInternal
 	}
 	if peer == nil {
-		peer = s.tx.Target.Peer()
+		peer = s.target.Peer()
 	}
-	return s.tx.Interaction.SendMessage(ctx, peer, text, markup)
+	return s.interaction.SendMessage(ctx, peer, text, markup)
 }
 
 func (s *assistantCallbackServicer) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
-	if s.tx == nil || s.tx.Interaction == nil {
+	if s == nil || s.interaction == nil {
 		return nil, core.ErrInternal
 	}
 	if peer == nil {
-		peer = s.tx.Target.Peer()
+		peer = s.target.Peer()
 	}
-	return s.tx.Interaction.SendMedia(ctx, peer, mediaType, filePath, caption)
+	return s.interaction.SendMedia(ctx, peer, mediaType, filePath, caption)
 }
 
-// assistantInlineCallbackServicer adapts an assistant InlineTransaction into a core.TelegramServicer.
+// assistantInlineCallbackServicer is the narrow Telegram transport adapter used
+// by canonical core/plugin callback handlers for inline-origin callbacks.
 type assistantInlineCallbackServicer struct {
 	unsupportedTelegramServicer
-	tx *callback.InlineTransaction
+	queryID     int64
+	target      interaction.InlineTarget
+	interaction interaction.InlineInteraction
+	answer      callbackAnswerGuard
 }
 
-func (s *assistantInlineCallbackServicer) AnswerCallbackQuery(ctx context.Context, queryID int64, text string, alert bool) error {
-	if s.tx == nil {
+func newAssistantInlineCallbackServicer(queryID int64, target interaction.InlineTarget, inter interaction.InlineInteraction) *assistantInlineCallbackServicer {
+	return &assistantInlineCallbackServicer{queryID: queryID, target: target, interaction: inter}
+}
+
+func (s *assistantInlineCallbackServicer) AnswerCallbackQuery(ctx context.Context, _ int64, text string, alert bool) error {
+	if s == nil || s.interaction == nil || s.queryID == 0 {
 		return core.ErrInternal
 	}
-	return s.tx.Answer(ctx, text, alert)
+	return s.answer.Do(func() error {
+		return s.interaction.Answer(ctx, s.queryID, text, alert)
+	})
 }
 
 func (s *assistantInlineCallbackServicer) EditInlineBotMessage(ctx context.Context, inlineID tg.InputBotInlineMessageIDClass, text string, markup tg.ReplyMarkupClass) error {
-	if s.tx == nil || s.tx.Interaction == nil {
+	if s == nil || s.interaction == nil {
 		return core.ErrInternal
 	}
-	target := s.tx.Target
+	target := s.target
 	if inlineID != nil {
 		target = interaction.NewInlineTarget(target.QueryID(), inlineID, target.ChatInstance())
 	}
-	return s.tx.Interaction.Edit(ctx, target, text, markup)
+	return s.interaction.Edit(ctx, target, text, markup)
 }
 
 func (s *assistantInlineCallbackServicer) EditInlineBotMessageMarkup(ctx context.Context, inlineID tg.InputBotInlineMessageIDClass, markup tg.ReplyMarkupClass) error {
-	if s.tx == nil || s.tx.Interaction == nil {
+	if s == nil || s.interaction == nil {
 		return core.ErrInternal
 	}
-	target := s.tx.Target
+	target := s.target
 	if inlineID != nil {
 		target = interaction.NewInlineTarget(target.QueryID(), inlineID, target.ChatInstance())
 	}
-	return s.tx.Interaction.EditMarkup(ctx, target, markup)
+	return s.interaction.EditMarkup(ctx, target, markup)
 }
 
 func extractChatIDFromInputPeer(peer tg.InputPeerClass) int64 {
