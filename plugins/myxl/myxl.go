@@ -1185,22 +1185,7 @@ func (p *Plugin) confirmPurchase(cbCtx *callback.CallbackContext, draft purchase
 		}
 	}
 
-	if p.menuMgr != nil {
-		screen := p.menuMgr.BuildPurchaseResultScreen(result, draft.PackageName, effectivePrice, draft.Method, draft.OptionCode)
-		text, markup := render.ToTelegram(screen)
-		if err := cbCtx.Edit(text, markup); err != nil {
-			return err
-		}
-		if result.QRCode != "" && p.files != nil && p.tasks != nil && cbCtx.Service != nil && cbCtx.Target.Peer != nil {
-			if err := p.sendQRPhoto(cbCtx.Ctx, cbCtx.Service, cbCtx.Target.Peer, result.QRCode, draft.PackageName, effectivePrice); err != nil && qrWarning == "" {
-				qrWarning = "Transaksi selesai tetapi foto QRIS gagal dikirim."
-			}
-		}
-		if qrWarning != "" {
-			_ = cbCtx.Answer(qrWarning, true)
-		}
-		return nil
-	}
+
 	resText := FormatPurchaseResult(result, draft.PackageName, effectivePrice, strings.ToUpper(draft.Method))
 	if err := cbCtx.Edit(resText, nil); err != nil {
 		return err
