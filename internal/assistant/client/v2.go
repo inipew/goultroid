@@ -81,11 +81,11 @@ func v2TextInputErrorMessage(err error) string {
 	}
 	switch {
 	case errors.Is(err, rootinteraction.ErrInputExpired):
-		return "⌛ Settings input expired. Reopen the setting and try again."
+		return "⌛ Input session expired. Reopen the interaction and try again."
 	case errors.Is(err, rootinteraction.ErrExpired),
 		errors.Is(err, rootinteraction.ErrNotFound),
 		errors.Is(err, rootinteraction.ErrScopeStale):
-		return "⌛ Interaction expired. Reopen Settings."
+		return "⌛ Interaction expired. Reopen it and try again."
 	}
 	var mutationErr *assistantshell.MutationError
 	if errors.As(err, &mutationErr) {
@@ -96,7 +96,7 @@ func v2TextInputErrorMessage(err error) string {
 			return "⚠️ The setting changed while input was pending. Reopen Settings."
 		}
 	}
-	return "⚠️ Settings input failed. Reopen Settings."
+	return "⚠️ Interaction input failed. Reopen it and try again."
 }
 
 func (v *v2Ingress) tryInline(ctx context.Context, data []byte, userID, queryID int64, messageID tg.InputBotInlineMessageIDClass) (bool, error) {
@@ -144,6 +144,13 @@ func (s *v2PresentationServicer) SendMessageWithMarkup(ctx context.Context, peer
 		return nil, ErrV2Unavailable
 	}
 	return s.interaction.SendMessage(ctx, peer, text, markup)
+}
+
+func (s *v2PresentationServicer) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
+	if s == nil || s.interaction == nil {
+		return nil, ErrV2Unavailable
+	}
+	return s.interaction.SendMedia(ctx, peer, mediaType, filePath, caption)
 }
 
 func (s *v2PresentationServicer) EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass, msgID int, text string, markup tg.ReplyMarkupClass) error {
