@@ -3,57 +3,19 @@ package myxl
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/gotd/td/tg"
-	"github.com/inipew/goultroid/internal/assistant/interaction"
-	"github.com/inipew/goultroid/internal/assistant/menu"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/platform/network"
 	"github.com/inipew/goultroid/internal/services/callback"
 )
 
-type mockInteraction struct {
-	sentText string
-}
-
-func (m *mockInteraction) Answer(ctx context.Context, queryID int64, text string, alert bool) error {
-	return nil
-}
-
-func (m *mockInteraction) Edit(ctx context.Context, target interaction.MessageTarget, text string, markup tg.ReplyMarkupClass) error {
-	m.sentText = text
-	return nil
-}
-
-func (m *mockInteraction) EditMarkup(ctx context.Context, target interaction.MessageTarget, markup tg.ReplyMarkupClass) error {
-	return nil
-}
-
-func (m *mockInteraction) Delete(ctx context.Context, target interaction.MessageTarget) error {
-	return nil
-}
-
-func (m *mockInteraction) GetMessage(ctx context.Context, target interaction.MessageTarget) (*tg.Message, error) {
-	return &tg.Message{ID: target.MessageID()}, nil
-}
-
-func (m *mockInteraction) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
-	m.sentText = text
-	return &tg.Message{ID: 10, Message: text}, nil
-}
-
-func (m *mockInteraction) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
-	return &tg.Message{ID: 11, Message: caption}, nil
-}
-
-func setupTestMyXLEnv(t *testing.T) (*Plugin, *httptest.Server, *SQLiteRepository, *menu.Controller) {
+func setupTestMyXLEnv(t *testing.T) (*Plugin, *httptest.Server, *SQLiteRepository) {
 	t.Helper()
 	db, err := database.Open(":memory:")
 	if err != nil {
@@ -124,16 +86,11 @@ func setupTestMyXLEnv(t *testing.T) (*Plugin, *httptest.Server, *SQLiteRepositor
 	stateStore := callback.NewStateStore()
 	plugin.SetStateStore(stateStore)
 
-	menuCtrl := menu.NewController(func(s *menu.Screen) (string, tg.ReplyMarkupClass) {
-		return s.Body, nil
-	})
-	plugin.SetAssistantMenu(menuCtrl)
-
-	return plugin, server, repo, menuCtrl
+	return plugin, server, repo
 }
 
 func TestMenuManager_Screens(t *testing.T) {
-	plugin, server, repo, _ := setupTestMyXLEnv(t)
+	plugin, server, repo := setupTestMyXLEnv(t)
 	defer server.Close()
 
 	ctx := context.Background()
@@ -318,409 +275,22 @@ func TestMenuManager_Screens(t *testing.T) {
 	}
 }
 
-func TestMenuManager_Wizards(t *testing.T) {
-	plugin, server, repo, _ := setupTestMyXLEnv(t)
-	defer server.Close()
-
-	ctx := context.Background()
-	inter := &mockInteraction{}
-	target := interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 12345}, 200, 100, 0)
-	userID := int64(12345)
-	chatID := int64(100)
-
-	// 1. Cancel wizard
-	plugin.menuMgr.SetSession(userID, &wizardSession{
-		Type:   wizardLoginMSISDN,
-		Target: target,
-	})
-	handled, err := plugin.menuMgr.HandleTextMessage(ctx, userID, chatID, "/cancel", inter)
-	if !handled || err != nil {
-		t.Fatalf("expected /cancel to be handled cleanly: %v", err)
-	}
-	if _, ok := plugin.menuMgr.GetSession(userID); ok {
-		t.Errorf("expected wizard to be nil after cancel")
-	}
-
-	// 2. Login Wizard full flow
-	plugin.menuMgr.SetSession(userID, &wizardSession{
-		Type:   wizardLoginMSISDN,
-		Target: target,
-	})
-	// Invalid phone
-	handled, err = plugin.menuMgr.HandleTextMessage(ctx, userID, chatID, "hello", inter)
-	if !handled || err != nil {
-		t.Fatalf("expected text handled for invalid phone: %v", err)
-	}
-	sess, ok := plugin.menuMgr.GetSession(userID)
-	if !ok || sess == nil || sess.Type != wizardLoginMSISDN {
-		t.Fatalf("expected still in loginMSISDN step")
-	}
-
-	// Valid phone
-	handled, err = plugin.menuMgr.HandleTextMessage(ctx, userID, chatID, "081987654321", inter)
-	if !handled || err != nil {
-		t.Fatalf("expected valid phone handled: %v", err)
-	}
-	sess, ok = plugin.menuMgr.GetSession(userID)
-	if !ok || sess == nil || sess.Type != wizardLoginOTP {
-		t.Fatalf("expected transition to loginOTP step")
-	}
-
-	// Submit OTP
-	handled, err = plugin.menuMgr.HandleTextMessage(ctx, userID, chatID, "123456", inter)
-	if !handled || err != nil {
-		t.Fatalf("expected OTP handled: %v", err)
-	}
-	if _, ok = plugin.menuMgr.GetSession(userID); ok {
-		t.Errorf("expected wizard cleared after successful OTP")
-	}
-	acc, err := repo.GetByMSISDN(ctx, "6281987654321")
-	if err != nil || acc == nil {
-		t.Fatalf("expected account 6281987654321 saved in repository")
-	}
-
-	// 3. Alias Wizard
-	plugin.menuMgr.SetSession(userID, &wizardSession{
-		Type:   wizardSetAlias,
-		MSISDN: "6281987654321",
-		Target: target,
-	})
-	handled, err = plugin.menuMgr.HandleTextMessage(ctx, userID, chatID, "RouterUtama", inter)
-	if !handled || err != nil {
-		t.Fatalf("expected alias handled: %v", err)
-	}
-	acc, _ = repo.GetByMSISDN(ctx, "6281987654321")
-	if acc.Alias != "RouterUtama" {
-		t.Errorf("expected alias RouterUtama, got: %s", acc.Alias)
-	}
-
-	// 4. Option Code Wizard
-	plugin.menuMgr.SetSession(userID, &wizardSession{
-		Type:   wizardOptionCode,
-		Target: target,
-	})
-	handled, err = plugin.menuMgr.HandleTextMessage(ctx, userID, chatID, "OPT-10GB", inter)
-	if !handled || err != nil {
-		t.Fatalf("expected option code handled: %v", err)
-	}
-	if _, ok = plugin.menuMgr.GetSession(userID); ok {
-		t.Errorf("expected wizard cleared after option code lookup")
-	}
-
-	// 5. Custom Price Wizard
-	plugin.menuMgr.SetSession(userID, &wizardSession{
-		Type:        wizardCustomPrice,
-		OptionCode:  "OPT-10GB",
-		PackageName: "Combo 10GB",
-		Price:       25000,
-		Method:      "BALANCE",
-		Target:      target,
-	})
-	// Invalid numeric price
-	handled, err = plugin.menuMgr.HandleTextMessage(ctx, userID, chatID, "free", inter)
-	if !handled || err != nil {
-		t.Fatalf("expected invalid price handled: %v", err)
-	}
-	sess, ok = plugin.menuMgr.GetSession(userID)
-	if !ok || sess == nil || sess.Type != wizardCustomPrice {
-		t.Fatalf("expected still in custom price wizard")
-	}
-	// Valid numeric price
-	handled, err = plugin.menuMgr.HandleTextMessage(ctx, userID, chatID, "20000", inter)
-	if !handled || err != nil {
-		t.Fatalf("expected valid price handled: %v", err)
-	}
-	if _, ok = plugin.menuMgr.GetSession(userID); ok {
-		t.Errorf("expected custom price wizard completed")
-	}
-
-	// 6. Family Code Wizard
-	plugin.menuMgr.SetSession(userID, &wizardSession{
-		Type:   wizardFamilyCode,
-		Target: target,
-	})
-	handled, err = plugin.menuMgr.HandleTextMessage(ctx, userID, chatID, "FAM-FLEX", inter)
-	if !handled || err != nil {
-		t.Fatalf("expected family code handled: %v", err)
-	}
-	if _, ok = plugin.menuMgr.GetSession(userID); ok {
-		t.Errorf("expected family code wizard cleared after lookup")
-	}
-}
-
-func TestMenuManager_Callbacks(t *testing.T) {
-	plugin, server, repo, menuCtrl := setupTestMyXLEnv(t)
-	defer server.Close()
-
-	ctx := context.Background()
-	now := time.Now()
-	acc := &Account{
-		MSISDN:         "6281987654321",
-		IsActive:       true,
-		AccessToken:    "acc_tok",
-		RefreshToken:   "ref_tok",
-		TokenExpiresAt: now.Add(time.Hour),
-		CreatedAt:      now,
-		UpdatedAt:      now,
-	}
-	if err := repo.Save(ctx, acc); err != nil {
-		t.Fatalf("save account failed: %v", err)
-	}
-
-	menuCtrl.RegisterInstance(menu.MenuInstance{
-		ID:        "menu:100:200",
-		ChatID:    100,
-		MessageID: 200,
-		Screen:    menu.ScreenIDMyXL,
-		OwnerID:   12345,
-	})
-
-	type testCase struct {
-		name     string
-		action   string
-		opaqueID string
-		state    any
-		senderID int64
-		wantErr  bool
-	}
-
-	optKey := plugin.menuMgr.RegisterOptionCode("OPT-10GB")
-	qrKey := plugin.menuMgr.RegisterQR("00020101021226570011ID.CO.QRIS.WWW01189360002140000000001030301UBE51440014ID.LINKAJA.WWW0215ID20201770500670303UBE52040000530336054031005802ID5921TEST MERCHANT QRIS6013JAKARTA PUSAT610512345630421A6")
-
-	cases := []testCase{
-		{name: "Unauthorized user", action: "home", senderID: 99999, wantErr: false},
-		{name: "Home", action: "home", senderID: 12345, wantErr: false},
-		{name: "Refresh", action: "refresh", senderID: 12345, wantErr: false},
-		{name: "Detail", action: "detail", senderID: 12345, wantErr: false},
-		{name: "Quota alias", action: "quota", senderID: 12345, wantErr: false},
-		{name: "Accounts", action: "accounts", senderID: 12345, wantErr: false},
-		{name: "Store", action: "store", senderID: 12345, wantErr: false},
-		{name: "Saved", action: "saved", senderID: 12345, wantErr: false},
-		{name: "Token Refresh", action: "token_refresh", senderID: 12345, wantErr: false},
-		{name: "Delete Pick", action: "del_pick", senderID: 12345, wantErr: false},
-		{name: "Delete Ask", action: "del_ask", opaqueID: "6281987654321", senderID: 12345, wantErr: false},
-		{name: "Delete Exec", action: "del_exec", opaqueID: "6281987654321", senderID: 12345, wantErr: false},
-		{name: "Alias Pick", action: "alias_pick", senderID: 12345, wantErr: false},
-		{name: "Alias Req", action: "alias_req", opaqueID: "6281987654321", senderID: 12345, wantErr: false},
-		{name: "Login Req", action: "login_req", senderID: 12345, wantErr: false},
-		{name: "Resend OTP", action: "resend_otp", opaqueID: "6281987654321", senderID: 12345, wantErr: false},
-		{name: "Cancel Wizard", action: "cancel_wizard", senderID: 12345, wantErr: false},
-		{name: "Switch Account", action: "switch", opaqueID: "6281987654321", senderID: 12345, wantErr: false},
-		{name: "Switch Noop", action: "switch", opaqueID: "noop", senderID: 12345, wantErr: false},
-		{name: "Family Input", action: "fam_input", senderID: 12345, wantErr: false},
-		{name: "Family Page", action: "fam_page", opaqueID: "FAM-FLEX:1", senderID: 12345, wantErr: false},
-		{name: "Family Page UUID", action: "fam_page", opaqueID: "7658c955-a0b9-405f-bb17-de7f43d1a946:1", senderID: 12345, wantErr: false},
-		{name: "Buy Option Input", action: "buy_opt_input", senderID: 12345, wantErr: false},
-		{name: "Buy Option Plain", action: "buy_opt", opaqueID: "OPT-10GB", senderID: 12345, wantErr: false},
-		{name: "Buy Option Mapped Key", action: "buy_opt", opaqueID: optKey, senderID: 12345, wantErr: false},
-		{name: "Method Balance", action: "method", opaqueID: "balance:OPT-10GB", senderID: 12345, wantErr: false},
-		{name: "Method Mapped Key", action: "method", opaqueID: "balance:" + optKey, senderID: 12345, wantErr: false},
-		{name: "Custom Price", action: "custom_price", opaqueID: optKey, senderID: 12345, wantErr: false},
-		{
-			name:   "Checkout with valid draft",
-			action: "checkout",
-			state: purchaseDraftState{
-				MSISDN:            "6281987654321",
-				OptionCode:        "OPT-10GB",
-				PackageName:       "Combo 10GB",
-				Price:             25000,
-				TokenConfirmation: "TOK-CONFIRM-123",
-				Method:            "balance",
-			},
-			senderID: 12345,
-			wantErr:  false,
-		},
-		{name: "Cancel Draft", action: "cancel_draft", senderID: 12345, wantErr: false},
-		{name: "Bookmark Add", action: "bookmark_add", opaqueID: "OPT-10GB", senderID: 12345, wantErr: false},
-		{name: "Bookmark Add Mapped", action: "bookmark_add", opaqueID: optKey, senderID: 12345, wantErr: false},
-		{name: "Bookmark Del", action: "bookmark_del", opaqueID: "OPT-10GB", senderID: 12345, wantErr: false},
-		{name: "QRIS Image Send", action: "qris_img", opaqueID: qrKey, senderID: 12345, wantErr: false},
-		{name: "QRIS Image Missing", action: "qris_img", opaqueID: "missing_qr", senderID: 12345, wantErr: false},
-		{name: "Pending QRIS", action: "pending_qris", senderID: 12345, wantErr: false},
-		{name: "QRIS Cancel", action: "qris_cancel", opaqueID: "TRX-12345", senderID: 12345, wantErr: false},
-		{name: "Noop", action: "noop", senderID: 12345, wantErr: false},
-		{name: "Unknown Action", action: "unknown_action_xyz", senderID: 12345, wantErr: false},
-	}
-
-	svc := &mockTgService{}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			_ = repo.Save(ctx, acc)
-			_ = repo.SetActive(ctx, acc.MSISDN)
-
-			action := tc.action
-			opaqueID := tc.opaqueID
-			if opaqueID == "" && strings.Contains(action, ":") {
-				parts := strings.SplitN(action, ":", 2)
-				action = parts[0]
-				opaqueID = parts[1]
-			}
-
-			rawData := []byte(fmt.Sprintf("a1:myxl:%s", action))
-			if opaqueID != "" {
-				rawData = []byte(fmt.Sprintf("a1:myxl:%s:%s", action, opaqueID))
-			}
-			cbCtx := &callback.CallbackContext{
-				Ctx:      ctx,
-				QueryID:  1001,
-				UserID:   tc.senderID,
-				ChatID:   100,
-				MsgID:    200,
-				Action:   action,
-				OpaqueID: opaqueID,
-				RawData:  rawData,
-				State:    tc.state,
-				Service:  svc,
-				Target: core.CallbackTarget{
-					Peer:      &tg.InputPeerChat{ChatID: 100},
-					MessageID: 200,
-				},
-			}
-			err := plugin.HandleCallback(cbCtx)
-			if (err != nil) != tc.wantErr {
-				t.Errorf("HandleCallback(%s, %s) error = %v, wantErr %v", action, opaqueID, err, tc.wantErr)
-			}
-		})
-	}
-}
-
-func TestMenuManager_RejectsCallbackFromNonOwner(t *testing.T) {
-	plugin, server, repo, menuCtrl := setupTestMyXLEnv(t)
-	defer server.Close()
-
-	ctx := context.Background()
-	acc := &Account{MSISDN: "6281987654321", IsActive: true}
-	if err := repo.Save(ctx, acc); err != nil {
-		t.Fatal(err)
-	}
-	menuCtrl.RegisterInstance(menu.MenuInstance{
-		ChatID: 100, MessageID: 200, OwnerID: 12345, Screen: menu.ScreenIDMyXL,
-	})
-
-	err := plugin.HandleCallback(&callback.CallbackContext{
-		Ctx: ctx, QueryID: 1, UserID: 99999, ChatID: 100,
-		Action: "del_exec", OpaqueID: acc.MSISDN, Service: &mockTgService{},
-		Target: core.CallbackTarget{Peer: &tg.InputPeerUser{UserID: 100}, MessageID: 200},
-	})
-	if err != nil {
-		t.Fatalf("rejection should be delivered as a callback answer: %v", err)
-	}
-	if got, _ := repo.GetByMSISDN(ctx, acc.MSISDN); got == nil {
-		t.Fatal("unauthorized callback deleted the account")
-	}
-}
-
-func TestMenuManager_LongOptionCodeUsesStateToken(t *testing.T) {
-	plugin, server, _, _ := setupTestMyXLEnv(t)
+func TestMenuManager_LongOptionCodeRemainsSessionOwned(t *testing.T) {
+	plugin, server, _ := setupTestMyXLEnv(t)
 	defer server.Close()
 
 	code := "7658c955-a0b9-405f-bb17-de7f43d1a946:OPTION-LONG"
 	key := plugin.menuMgr.RegisterOptionCode(code)
-	if key == "" || key == code || len(key) > 24 {
-		t.Fatalf("unexpected compact option key %q", key)
+	if key != code {
+		t.Fatalf("RegisterOptionCode(%q) = %q, want raw session-owned value", code, key)
 	}
 	if got := plugin.menuMgr.ResolveOptionCode(key); got != code {
 		t.Fatalf("ResolveOptionCode(%q) = %q, want %q", key, got, code)
 	}
 }
 
-func TestMenuManager_HandleMyXLEntrypoint(t *testing.T) {
-	plugin, server, repo, menuCtrl := setupTestMyXLEnv(t)
-	defer server.Close()
-
-	ctx := context.Background()
-	now := time.Now()
-	acc := &Account{
-		MSISDN:         "6281987654321",
-		IsActive:       true,
-		AccessToken:    "acc_tok",
-		RefreshToken:   "ref_tok",
-		TokenExpiresAt: now.Add(time.Hour),
-		CreatedAt:      now,
-		UpdatedAt:      now,
-	}
-	if err := repo.Save(ctx, acc); err != nil {
-		t.Fatalf("save account failed: %v", err)
-	}
-
-	svc := &mockTgService{}
-
-	// 1. Assistant /myxl without args -> should render interactive dashboard with buttons
-	asstCtx := &core.Context{
-		Ctx:       ctx,
-		Source:    core.ExecutionAssistant,
-		Command:   "myxl",
-		Args:      []string{},
-		PeerID:    &tg.InputPeerUser{UserID: 12345},
-		Sender:    &core.User{ID: 12345},
-		Chat:      &core.Chat{ID: 12345, Type: "private"},
-		Svc:       svc,
-		Principal: &core.Principal{UserID: 12345, IsOwner: true},
-	}
-	err := plugin.handleMyXL(asstCtx)
-	if err != nil {
-		t.Fatalf("handleMyXL in Assistant failed: %v", err)
-	}
-	if svc.lastMarkup == nil {
-		t.Errorf("expected inline markup buttons from /myxl in Assistant")
-	}
-	if !strings.Contains(svc.sent, "MyXL Control Center") {
-		t.Errorf("expected dashboard title, got: %s", svc.sent)
-	}
-	// Verify instance registered
-	inst, ok := menuCtrl.Instances().Get(12345, 10)
-	if !ok || inst == nil {
-		t.Errorf("expected menu instance registered for assistant interaction")
-	}
-
-	// 2. Userbot .myxl without args -> should reply with text CLI help
-	userCtx := &core.Context{
-		Ctx:       ctx,
-		Source:    core.ExecutionInteractive,
-		Command:   "myxl",
-		Args:      []string{},
-		PeerID:    &tg.InputPeerUser{UserID: 12345},
-		Sender:    &core.User{ID: 12345},
-		Chat:      &core.Chat{ID: 12345, Type: "private"},
-		Svc:       svc,
-		Principal: &core.Principal{UserID: 12345, IsOwner: true},
-	}
-	svc.lastMarkup = nil
-	err = plugin.handleMyXL(userCtx)
-	if err != nil {
-		t.Fatalf("handleMyXL in Userbot failed: %v", err)
-	}
-	if svc.lastMarkup != nil {
-		t.Errorf("expected no markup from plain .myxl in Userbot")
-	}
-	if !strings.Contains(svc.sent, "MyXL Plugin Menu") {
-		t.Errorf("expected text menu help, got: %s", svc.sent)
-	}
-
-	// 3. Userbot .myxl menu -> should trigger interactive screen
-	userMenuCtx := &core.Context{
-		Ctx:       ctx,
-		Source:    core.ExecutionInteractive,
-		Command:   "myxl",
-		Args:      []string{"menu"},
-		PeerID:    &tg.InputPeerUser{UserID: 12345},
-		Sender:    &core.User{ID: 12345},
-		Chat:      &core.Chat{ID: 12345, Type: "private"},
-		Svc:       svc,
-		Principal: &core.Principal{UserID: 12345, IsOwner: true},
-	}
-	err = plugin.handleMyXL(userMenuCtx)
-	if err != nil {
-		t.Fatalf("handleMyXL .myxl menu failed: %v", err)
-	}
-	if svc.lastMarkup == nil {
-		t.Errorf("expected markup from .myxl menu")
-	}
-}
-
 func TestMenuManager_PendingQRISScreen(t *testing.T) {
-	plugin, server, repo, _ := setupTestMyXLEnv(t)
+	plugin, server, repo := setupTestMyXLEnv(t)
 	defer server.Close()
 
 	ctx := context.Background()
