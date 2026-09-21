@@ -397,30 +397,20 @@ func (r *Router) resolveState(
 	}
 }
 
-// Dispatch processes a callback directly without TaskEngine scope admission.
-// TaskEngine-backed transports should call Prepare followed by DispatchPrepared.
-func (r *Router) Dispatch(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer) error {
-	prepared, err := r.prepare(ctx, evt, svc, nil, false)
-	if err != nil {
-		return err
-	}
-	return r.DispatchPrepared(ctx, evt, svc, prepared)
-}
-
-// DispatchPrepared executes exactly the handler registration pinned by Prepare.
+// dispatchPrepared executes exactly the handler registration pinned by Prepare.
 // If the plugin was disabled/reloaded after admission, the stale registration
 // is rejected before callback state can be claimed or consumed.
-func (r *Router) DispatchPrepared(
+func (r *Router) dispatchPrepared(
 	ctx context.Context,
 	evt *core.CallbackQueryEvent,
 	svc core.TelegramServicer,
-	prepared PreparedDispatch,
+	prepared *preparedDispatch,
 ) error {
-	if evt == nil {
-		return nil
+	if evt == nil || prepared == nil {
+		return core.ErrInternal
 	}
 	start := time.Now()
-	if prepared.rawData != string(evt.Data) {
+	if prepared.router != r || prepared.rawData != string(evt.Data) {
 		return r.reject(ctx, evt, svc, CallbackFailure{
 			Code:        FailureCodeInvalidPayload,
 			MetricTag:   "invalid",
