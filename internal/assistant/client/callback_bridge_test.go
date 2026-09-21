@@ -362,8 +362,9 @@ func TestCallbackIngress_InvalidUnknownAndDuplicate(t *testing.T) {
 
 	invalidInter := &recordingInteraction{mockInteraction: &mockInteraction{}}
 	invalid := messageEvent(201, 7, []byte("malformed"), target)
-	if err := dispatchCoreCallback(context.Background(), nil, taskClient, nil, newCallbackQueryDeduper(), invalid, newAssistantCallbackServicer(201, target, invalidInter), zap.NewNop()); err != nil {
-		t.Fatalf("malformed callback should terminate after feedback: %v", err)
+	canonicalRouter := corecallback.NewRouter(zap.NewNop(), corecallback.NewStateStore())
+	if err := dispatchCoreCallback(context.Background(), canonicalRouter, taskClient, nil, newCallbackQueryDeduper(), invalid, newAssistantCallbackServicer(201, target, invalidInter), zap.NewNop()); !errors.Is(err, corecallback.ErrInvalidCallbackData) {
+		t.Fatalf("malformed callback error = %v, want ErrInvalidCallbackData", err)
 	}
 	if invalidInter.answer != "Invalid callback" {
 		t.Fatalf("invalid answer = %q", invalidInter.answer)
@@ -481,9 +482,11 @@ func TestUpdateHandlers_CallbackSpinnerProtection(t *testing.T) {
 	api := &mockTelegramAPI{}
 	clientInter := interaction.NewClientInteraction(api, zap.NewNop())
 	isShutdown := false
+	canonicalRouter := corecallback.NewRouter(zap.NewNop(), corecallback.NewStateStore())
 	RegisterUpdateHandlers(&dispatcher, UpdateHandlerDeps{
 		Logger: zap.NewNop(), IsShuttingDown: func() bool { return isShutdown },
-		Interaction: clientInter, CallbackDeduper: newCallbackQueryDeduper(),
+		Interaction: clientInter, CallbackDispatcher: canonicalRouter,
+		CallbackDeduper: newCallbackQueryDeduper(), Tasks: &testTaskClient{},
 	})
 	ctx := context.Background()
 
