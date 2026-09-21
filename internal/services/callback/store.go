@@ -9,7 +9,14 @@ import (
 	"time"
 )
 
-// StateStore is a thread-safe in-memory cache for temporary callback payload states.
+// StateWriter is the capability exposed to callback producers. Producers may
+// create opaque state, but only the canonical callback router may read or claim it.
+type StateWriter interface {
+	Store(data any, allowedUserID int64, ttl time.Duration) string
+	StoreWithScope(data any, scope StateScope, ttl time.Duration) string
+}
+
+// StateStore is the canonical thread-safe in-memory owner of temporary callback state.
 type StateStore struct {
 	mu            sync.RWMutex
 	items         map[string]stateItem
