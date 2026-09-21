@@ -42,7 +42,7 @@ type Plugin struct {
 	qrTaskSeq  atomic.Uint64
 
 	assistantMu sync.RWMutex
-	assistantV2 interaction.V2Runtime
+	assistantRuntime interaction.DriverRuntime
 }
 
 const (
@@ -287,7 +287,7 @@ func (p *Plugin) handleMyXL(ctx *core.Context) error {
 			if isGroupChat(ctx.Chat) {
 				return ctx.EditOrReply("🔒 Menu interaktif MyXL hanya tersedia di chat pribadi karena memuat nomor akun, OTP, dan tindakan pembelian.")
 			}
-			return p.openAssistantV2(ctx)
+			return p.openAssistant(ctx)
 		}
 		return ctx.EditOrReply(
 			"📱 <b>MyXL Plugin Menu</b>\n\n" +
