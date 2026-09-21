@@ -21,15 +21,15 @@ import (
 )
 
 const (
-	assistantV2TTL       = 10 * time.Minute
-	assistantV2InputTTL  = 2 * time.Minute
-	assistantV2SlotCount = 32
+	assistantTTL       = 10 * time.Minute
+	assistantInputTTL  = 2 * time.Minute
+	assistantActionSlotCount = 32
 
-	assistantV2ScreenHome  = "home"
-	assistantV2ScreenInput = "input"
+	assistantScreenHome  = "home"
+	assistantScreenInput = "input"
 )
 
-type assistantV2State struct {
+type assistantState struct {
 	Slots      []string            `json:"slots,omitempty"`
 	Wizard     string              `json:"wizard,omitempty"`
 	MSISDN     string              `json:"msisdn,omitempty"`
@@ -45,23 +45,23 @@ func (p *Plugin) FeatureSpec() feature.Spec {
 	policy.PrivateOnly = true
 	interactions := []feature.Interaction{
 		{
-			ID:          assistantV2ScreenHome,
+			ID:          assistantScreenHome,
 			Kind:        feature.InteractionScreen,
 			Description: "MyXL interactive dashboard",
 			Surfaces:    execution.SurfaceAssistant,
 			Policy:      policy,
 		},
 		{
-			ID:          assistantV2ScreenInput,
+			ID:          assistantScreenInput,
 			Kind:        feature.InteractionScreen,
 			Description: "MyXL bounded free-form input",
 			Surfaces:    execution.SurfaceAssistant,
 			Policy:      policy,
 		},
 	}
-	for i := 0; i < assistantV2SlotCount; i++ {
+	for i := 0; i < assistantActionSlotCount; i++ {
 		interactions = append(interactions, feature.Interaction{
-			ID:          assistantV2SlotID(i),
+			ID:          assistantSlotID(i),
 			Kind:        feature.InteractionAction,
 			Description: "MyXL session-bound action slot",
 			Surfaces:    execution.SurfaceAssistant,
@@ -77,23 +77,23 @@ func (p *Plugin) FeatureSpec() feature.Spec {
 	}
 }
 
-func assistantV2SlotID(index int) string {
+func assistantSlotID(index int) string {
 	return fmt.Sprintf("slot_%02d", index)
 }
 
-func (p *Plugin) BindAssistantV2(rt assistantinteraction.V2Runtime) (func(), error) {
+func (p *Plugin) BindAssistant(rt assistantinteraction.DriverRuntime) (func(), error) {
 	if p == nil || rt.Engine == nil || rt.Catalog == nil || rt.Admit == nil {
 		return nil, orchestration.ErrInvalidEngine
 	}
 	scope, ok := rt.Catalog.FeatureScope(p.Name())
 	if !ok || scope.IsZero() {
-		return nil, fmt.Errorf("myxl: assistant a2 feature scope unavailable")
+		return nil, fmt.Errorf("myxl: assistant feature scope unavailable")
 	}
 
-	registrations := make([]interface{ Close() }, 0, assistantV2SlotCount)
-	for i := 0; i < assistantV2SlotCount; i++ {
+	registrations := make([]interface{ Close() }, 0, assistantActionSlotCount)
+	for i := 0; i < assistantActionSlotCount; i++ {
 		slot := i
-		actionID := assistantV2SlotID(slot)
+		actionID := assistantSlotID(slot)
 		reg, err := rt.Engine.RegisterAction(scope, p.Name(), actionID, func(ctx *orchestration.Context) error {
 			if ctx == nil {
 				return orchestration.ErrInvalidEngine
@@ -102,19 +102,19 @@ func (p *Plugin) BindAssistantV2(rt assistantinteraction.V2Runtime) (func(), err
 			if err := rt.Admit(p.Name(), feature.InteractionAction, actionID, session.Binding.ActorID, ctx.Target()); err != nil {
 				return err
 			}
-			return p.handleAssistantV2Slot(ctx, slot)
+			return p.handleAssistantSlot(ctx, slot)
 		})
 		if err != nil {
 			for j := len(registrations) - 1; j >= 0; j-- {
 				registrations[j].Close()
 			}
-			return nil, fmt.Errorf("myxl: register assistant a2 %s: %w", actionID, err)
+			return nil, fmt.Errorf("myxl: register assistant action %s: %w", actionID, err)
 		}
 		registrations = append(registrations, reg)
 	}
 
 	p.assistantMu.Lock()
-	p.assistantV2 = rt
+	p.assistantRuntime = rt
 	p.assistantMu.Unlock()
 
 	cleanup := func() {
@@ -122,45 +122,45 @@ func (p *Plugin) BindAssistantV2(rt assistantinteraction.V2Runtime) (func(), err
 			registrations[i].Close()
 		}
 		p.assistantMu.Lock()
-		if p.assistantV2.Engine == rt.Engine {
-			p.assistantV2 = assistantinteraction.V2Runtime{}
+		if p.assistantRuntime.Engine == rt.Engine {
+			p.assistantRuntime = assistantinteraction.DriverRuntime{}
 		}
 		p.assistantMu.Unlock()
 	}
 	return cleanup, nil
 }
 
-func (p *Plugin) assistantRuntime() assistantinteraction.V2Runtime {
+func (p *Plugin) assistantRuntime() assistantinteraction.DriverRuntime {
 	if p == nil {
-		return assistantinteraction.V2Runtime{}
+		return assistantinteraction.DriverRuntime{}
 	}
 	p.assistantMu.RLock()
-	rt := p.assistantV2
+	rt := p.assistantRuntime
 	p.assistantMu.RUnlock()
 	return rt
 }
 
-func (p *Plugin) openAssistantV2(cmd *core.Context) error {
+func (p *Plugin) openAssistant(cmd *core.Context) error {
 	if p == nil || cmd == nil || cmd.PeerID == nil || cmd.SenderID() == 0 {
-		return fmt.Errorf("myxl: assistant a2 command target unavailable")
+		return fmt.Errorf("myxl: assistant command target unavailable")
 	}
 	rt := p.assistantRuntime()
 	if rt.Engine == nil || rt.Admit == nil {
-		return fmt.Errorf("myxl: assistant a2 runtime unavailable")
+		return fmt.Errorf("myxl: assistant runtime unavailable")
 	}
 	chatID := cmd.ChatID()
 	if chatID == 0 {
 		chatID = cmd.SenderID()
 	}
 	target := presentationtelegram.MessageTarget{Peer: cmd.PeerID, ChatID: chatID}
-	if err := rt.Admit(p.Name(), feature.InteractionScreen, assistantV2ScreenHome, cmd.SenderID(), target); err != nil {
+	if err := rt.Admit(p.Name(), feature.InteractionScreen, assistantScreenHome, cmd.SenderID(), target); err != nil {
 		return err
 	}
 	screen, err := p.menuMgr.BuildDashboardScreen(cmd.Ctx, false)
 	if err != nil {
 		return err
 	}
-	state, view, err := p.assistantV2Screen(assistantV2State{}, screen)
+	state, view, err := p.assistantScreen(assistantState{}, screen)
 	if err != nil {
 		return err
 	}
@@ -168,29 +168,29 @@ func (p *Plugin) openAssistantV2(cmd *core.Context) error {
 		FeatureID: p.Name(),
 		ActorID:   cmd.SenderID(),
 		State:     state,
-		TTL:       assistantV2TTL,
+		TTL:       assistantTTL,
 		Target:    target,
 		View:      view,
 	})
 	return err
 }
 
-func decodeAssistantV2State(raw []byte) assistantV2State {
-	var state assistantV2State
+func decodeAssistantState(raw []byte) assistantState {
+	var state assistantState
 	if len(raw) == 0 {
 		return state
 	}
 	if err := json.Unmarshal(raw, &state); err != nil {
-		return assistantV2State{}
+		return assistantState{}
 	}
 	return state
 }
 
-func encodeAssistantV2State(state assistantV2State) ([]byte, error) {
+func encodeAssistantState(state assistantState) ([]byte, error) {
 	return json.Marshal(state)
 }
 
-func (p *Plugin) assistantV2Screen(state assistantV2State, screen *ui.Screen) ([]byte, presentation.View, error) {
+func (p *Plugin) assistantScreen(state assistantState, screen *ui.Screen) ([]byte, presentation.View, error) {
 	if screen == nil {
 		return nil, presentation.View{}, fmt.Errorf("myxl: nil screen")
 	}
@@ -203,13 +203,13 @@ func (p *Plugin) assistantV2Screen(state assistantV2State, screen *ui.Screen) ([
 			if button.Type != ui.ButtonCallback {
 				return nil, presentation.View{}, fmt.Errorf("myxl: unsupported assistant button type %d", button.Type)
 			}
-			if slot >= assistantV2SlotCount {
-				return nil, presentation.View{}, fmt.Errorf("myxl: assistant screen exceeds %d action slots", assistantV2SlotCount)
+			if slot >= assistantActionSlotCount {
+				return nil, presentation.View{}, fmt.Errorf("myxl: assistant screen exceeds %d action slots", assistantActionSlotCount)
 			}
 			state.Slots = append(state.Slots, string(button.Data))
 			out = append(out, presentation.Button{
 				Text:     button.Text,
-				ActionID: assistantV2SlotID(slot),
+				ActionID: assistantSlotID(slot),
 			})
 			slot++
 		}
@@ -217,7 +217,7 @@ func (p *Plugin) assistantV2Screen(state assistantV2State, screen *ui.Screen) ([
 			rows = append(rows, out)
 		}
 	}
-	raw, err := encodeAssistantV2State(state)
+	raw, err := encodeAssistantState(state)
 	if err != nil {
 		return nil, presentation.View{}, err
 	}
@@ -228,31 +228,31 @@ func (p *Plugin) assistantV2Screen(state assistantV2State, screen *ui.Screen) ([
 	return raw, view, nil
 }
 
-func (p *Plugin) assistantV2Transition(ctx *orchestration.Context, state assistantV2State, screen *ui.Screen) error {
+func (p *Plugin) assistantTransition(ctx *orchestration.Context, state assistantState, screen *ui.Screen) error {
 	state.Wizard = ""
-	raw, view, err := p.assistantV2Screen(state, screen)
+	raw, view, err := p.assistantScreen(state, screen)
 	if err != nil {
 		return err
 	}
-	return ctx.Transition(raw, assistantV2TTL, view)
+	return ctx.Transition(raw, assistantTTL, view)
 }
 
-func (p *Plugin) assistantV2Await(ctx *orchestration.Context, state assistantV2State, prompt string) error {
+func (p *Plugin) assistantAwait(ctx *orchestration.Context, state assistantState, prompt string) error {
 	state.Slots = []string{"myxl:cancel_wizard"}
-	raw, err := encodeAssistantV2State(state)
+	raw, err := encodeAssistantState(state)
 	if err != nil {
 		return err
 	}
 	view := presentation.View{
 		Text: prompt,
 		Rows: []presentation.Row{{
-			{Text: "❌ Batal", ActionID: assistantV2SlotID(0)},
+			{Text: "❌ Batal", ActionID: assistantSlotID(0)},
 		}},
 	}
-	return ctx.AwaitInput(raw, assistantV2InputTTL, view)
+	return ctx.AwaitInput(raw, assistantInputTTL, view)
 }
 
-func parseAssistantV2Template(data string) (namespace, action, opaque string, err error) {
+func parseAssistantIntent(data string) (namespace, action, opaque string, err error) {
 	parts := strings.SplitN(strings.TrimSpace(data), ":", 3)
 	if len(parts) < 2 || parts[0] == "" || parts[1] == "" || parts[0] == "a1" {
 		return "", "", "", fmt.Errorf("myxl: invalid assistant action intent")
@@ -267,12 +267,12 @@ func parseAssistantV2Template(data string) (namespace, action, opaque string, er
 	return parts[0], parts[1], opaque, nil
 }
 
-func (p *Plugin) handleAssistantV2Slot(ctx *orchestration.Context, slot int) error {
-	state := decodeAssistantV2State(ctx.State())
+func (p *Plugin) handleAssistantSlot(ctx *orchestration.Context, slot int) error {
+	state := decodeAssistantState(ctx.State())
 	if slot < 0 || slot >= len(state.Slots) {
 		return ctx.Answer("Interaction expired. Reopen MyXL.", true)
 	}
-	namespace, action, opaque, err := parseAssistantV2Template(state.Slots[slot])
+	namespace, action, opaque, err := parseAssistantIntent(state.Slots[slot])
 	if err != nil {
 		return ctx.Answer("Interaction data is invalid. Reopen MyXL.", true)
 	}
@@ -286,10 +286,10 @@ func (p *Plugin) handleAssistantV2Slot(ctx *orchestration.Context, slot int) err
 	if namespace != p.Name() {
 		return ctx.Answer("Interaction owner mismatch. Reopen MyXL.", true)
 	}
-	return p.dispatchAssistantV2Action(ctx, state, action, opaque)
+	return p.dispatchAssistantAction(ctx, state, action, opaque)
 }
 
-func (p *Plugin) dispatchAssistantV2Action(ctx *orchestration.Context, state assistantV2State, action, opaque string) error {
+func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assistantState, action, opaque string) error {
 	switch action {
 	case "home", "refresh":
 		screen, err := p.menuMgr.BuildDashboardScreen(ctx.Context(), false)
@@ -299,21 +299,21 @@ func (p *Plugin) dispatchAssistantV2Action(ctx *orchestration.Context, state ass
 		if action == "refresh" {
 			_ = ctx.Answer("🔄 Kuota & pulsa diperbarui", false)
 		}
-		return p.assistantV2Transition(ctx, state, screen)
+		return p.assistantTransition(ctx, state, screen)
 
 	case "detail", "quota":
 		screen, err := p.menuMgr.BuildQuotaDetailScreen(ctx.Context(), false)
 		if err != nil {
 			return ctx.Answer(fmt.Sprintf("Gagal memuat rincian: %v", err), true)
 		}
-		return p.assistantV2Transition(ctx, state, screen)
+		return p.assistantTransition(ctx, state, screen)
 
 	case "accounts":
 		screen, err := p.menuMgr.BuildAccountsScreen(ctx.Context())
 		if err != nil {
 			return ctx.Answer(fmt.Sprintf("Gagal memuat akun: %v", err), true)
 		}
-		return p.assistantV2Transition(ctx, state, screen)
+		return p.assistantTransition(ctx, state, screen)
 
 	case "switch":
 		if opaque == "" || opaque == "noop" {
@@ -327,14 +327,14 @@ func (p *Plugin) dispatchAssistantV2Action(ctx *orchestration.Context, state ass
 		if err != nil {
 			return err
 		}
-		return p.assistantV2Transition(ctx, state, screen)
+		return p.assistantTransition(ctx, state, screen)
 
 	case "alias_pick":
 		screen, err := p.menuMgr.BuildAliasPickScreen(ctx.Context())
 		if err != nil {
 			return ctx.Answer(fmt.Sprintf("Gagal memuat akun: %v", err), true)
 		}
-		return p.assistantV2Transition(ctx, state, screen)
+		return p.assistantTransition(ctx, state, screen)
 
 	case "alias_req":
 		state.Wizard = "alias"
@@ -343,7 +343,7 @@ func (p *Plugin) dispatchAssistantV2Action(ctx *orchestration.Context, state ass
 			"🏷️ <b>Ubah Alias Akun</b>\n\nNomor: <code>%s</code>\n\nSilakan kirimkan nama alias baru (maksimal 24 karakter):\n\n<i>Ketik <code>/cancel</code> untuk membatalkan.</i>",
 			html.EscapeString(opaque),
 		)
-		if err := p.assistantV2Await(ctx, state, prompt); err != nil {
+		if err := p.assistantAwait(ctx, state, prompt); err != nil {
 			return err
 		}
 		return ctx.Answer("Ketik nama alias baru…", false)
@@ -353,25 +353,25 @@ func (p *Plugin) dispatchAssistantV2Action(ctx *orchestration.Context, state ass
 		if err != nil {
 			return ctx.Answer(fmt.Sprintf("Gagal memuat akun: %v", err), true)
 		}
-		return p.assistantV2Transition(ctx, state, screen)
+		return p.assistantTransition(ctx, state, screen)
 
 	case "del_ask":
 		state.Slots = []string{
 			fmt.Sprintf("myxl:del_exec:%s", opaque),
 			"myxl:accounts",
 		}
-		raw, err := encodeAssistantV2State(state)
+		raw, err := encodeAssistantState(state)
 		if err != nil {
 			return err
 		}
 		view := presentation.View{
 			Text: fmt.Sprintf("⚠️ <b>Hapus Akun MyXL</b>\n\nApakah Anda yakin ingin menghapus nomor <code>%s</code> dari penyimpanan bot?", html.EscapeString(opaque)),
 			Rows: []presentation.Row{{
-				{Text: "🗑️ Ya, Hapus", ActionID: assistantV2SlotID(0)},
-				{Text: "❌ Batal", ActionID: assistantV2SlotID(1)},
+				{Text: "🗑️ Ya, Hapus", ActionID: assistantSlotID(0)},
+				{Text: "❌ Batal", ActionID: assistantSlotID(1)},
 			}},
 		}
-		return ctx.Transition(raw, assistantV2TTL, view)
+		return ctx.Transition(raw, assistantTTL, view)
 
 	case "del_exec":
 		if err := p.repo.Delete(ctx.Context(), opaque); err != nil {
@@ -382,7 +382,7 @@ func (p *Plugin) dispatchAssistantV2Action(ctx *orchestration.Context, state ass
 		if err != nil {
 			return err
 		}
-		return p.assistantV2Transition(ctx, state, screen)
+		return p.assistantTransition(ctx, state, screen)
 
 	case "token_refresh":
 		acc, err := p.repo.GetActive(ctx.Context())
@@ -397,7 +397,7 @@ func (p *Plugin) dispatchAssistantV2Action(ctx *orchestration.Context, state ass
 		if err != nil {
 			return err
 		}
-		return p.assistantV2Transition(ctx, state, screen)
+		return p.assistantTransition(ctx, state, screen)
 
 	case "login_req":
 		state.Wizard = "login_msisdn"
@@ -406,7 +406,7 @@ func (p *Plugin) dispatchAssistantV2Action(ctx *orchestration.Context, state ass
 			"Masukkan nomor HP XL/Axis yang ingin didaftarkan.\n" +
 			"Format: <code>0819...</code> atau <code>62819...</code>\n\n" +
 			"<i>Ketik <code>/cancel</code> atau tekan Batal di bawah untuk membatalkan.</i>"
-		if err := p.assistantV2Await(ctx, state, prompt); err != nil {
+		if err := p.assistantAwait(ctx, state, prompt); err != nil {
 			return err
 		}
 		return ctx.Answer("Kirimkan nomor HP Anda…", false)
@@ -437,28 +437,28 @@ func (p *Plugin) dispatchAssistantV2Action(ctx *orchestration.Context, state ass
 			return err
 		}
 		_ = ctx.Answer("Wizard dibatalkan", false)
-		return p.assistantV2Transition(ctx, assistantV2State{}, screen)
+		return p.assistantTransition(ctx, assistantState{}, screen)
 
 	case "store":
 		screen, err := p.menuMgr.BuildStoreScreen(ctx.Context())
 		if err != nil {
 			return ctx.Answer(fmt.Sprintf("Gagal memuat store: %v", err), true)
 		}
-		return p.assistantV2Transition(ctx, state, screen)
+		return p.assistantTransition(ctx, state, screen)
 
 	case "saved":
 		screen, err := p.menuMgr.BuildSavedPackagesScreen(ctx.Context())
 		if err != nil {
 			return ctx.Answer(fmt.Sprintf("Gagal memuat favorit: %v", err), true)
 		}
-		return p.assistantV2Transition(ctx, state, screen)
+		return p.assistantTransition(ctx, state, screen)
 
 	case "fam_input":
 		state.Wizard = "family"
 		prompt := "🔍 <b>Input Family Code Paket</b>\n\n" +
 			"Silakan kirimkan Family Code paket yang ingin Anda telusuri (contoh: <code>7658c955-a0b9-405f-bb17-de7f43d1a946</code>):\n\n" +
 			"<i>Ketik <code>/cancel</code> untuk membatalkan.</i>"
-		if err := p.assistantV2Await(ctx, state, prompt); err != nil {
+		if err := p.assistantAwait(ctx, state, prompt); err != nil {
 			return err
 		}
 		return ctx.Answer("Kirimkan Family Code…", false)
@@ -481,14 +481,14 @@ func (p *Plugin) dispatchAssistantV2Action(ctx *orchestration.Context, state ass
 		if err != nil {
 			return ctx.Answer(fmt.Sprintf("Gagal memuat paket family: %v", err), true)
 		}
-		return p.assistantV2Transition(ctx, state, screen)
+		return p.assistantTransition(ctx, state, screen)
 
 	case "buy_opt_input":
 		state.Wizard = "option_code"
 		prompt := "⚡ <b>Input Option Code Paket</b>\n\n" +
 			"Silakan kirimkan kode paket yang ingin Anda beli (contoh: <code>OPT12345</code>):\n\n" +
 			"<i>Ketik <code>/cancel</code> untuk membatalkan.</i>"
-		if err := p.assistantV2Await(ctx, state, prompt); err != nil {
+		if err := p.assistantAwait(ctx, state, prompt); err != nil {
 			return err
 		}
 		return ctx.Answer("Kirimkan kode paket…", false)
@@ -506,7 +506,7 @@ func (p *Plugin) dispatchAssistantV2Action(ctx *orchestration.Context, state ass
 		if err != nil {
 			return ctx.Answer(fmt.Sprintf("Gagal memuat paket: %v", err), true)
 		}
-		return p.assistantV2Transition(ctx, state, screen)
+		return p.assistantTransition(ctx, state, screen)
 
 	case "method":
 		parts := strings.SplitN(opaque, ":", 2)
@@ -538,7 +538,7 @@ func (p *Plugin) dispatchAssistantV2Action(ctx *orchestration.Context, state ass
 		if err != nil {
 			return ctx.Answer(fmt.Sprintf("Gagal membuat sesi checkout: %v", err), true)
 		}
-		return p.assistantV2Transition(ctx, state, screen)
+		return p.assistantTransition(ctx, state, screen)
 
 	case "custom_price":
 		state.Wizard = "custom_price"
@@ -548,7 +548,7 @@ func (p *Plugin) dispatchAssistantV2Action(ctx *orchestration.Context, state ass
 			"✏️ <b>Set Harga Kustom (Overwrite)</b>\n\nPaket: <code>%s</code>\n\nKirimkan nominal harga dalam Rupiah (contoh: <code>0</code> atau <code>1000</code>):\n\n<i>Ketik <code>/cancel</code> untuk membatalkan.</i>",
 			html.EscapeString(state.OptionCode),
 		)
-		if err := p.assistantV2Await(ctx, state, prompt); err != nil {
+		if err := p.assistantAwait(ctx, state, prompt); err != nil {
 			return err
 		}
 		return ctx.Answer("Masukkan harga kustom…", false)
@@ -557,7 +557,7 @@ func (p *Plugin) dispatchAssistantV2Action(ctx *orchestration.Context, state ass
 		if state.Draft == nil || state.Draft.MSISDN == "" || state.Draft.OptionCode == "" || state.Draft.TokenConfirmation == "" {
 			return ctx.Answer("Draft pembelian tidak valid atau sudah kedaluwarsa", true)
 		}
-		return p.confirmAssistantV2Purchase(ctx, state, *state.Draft)
+		return p.confirmAssistantPurchase(ctx, state, *state.Draft)
 
 	case "cancel_draft", "buy_cancel":
 		state.Draft = nil
@@ -566,14 +566,14 @@ func (p *Plugin) dispatchAssistantV2Action(ctx *orchestration.Context, state ass
 		if err != nil {
 			return err
 		}
-		return p.assistantV2Transition(ctx, state, screen)
+		return p.assistantTransition(ctx, state, screen)
 
 	case "pending_qris":
 		screen, err := p.menuMgr.BuildPendingQRISScreen(ctx.Context())
 		if err != nil {
 			return ctx.Answer(fmt.Sprintf("Gagal memuat QRIS: %v", err), true)
 		}
-		return p.assistantV2Transition(ctx, state, screen)
+		return p.assistantTransition(ctx, state, screen)
 
 	case "qris_cancel":
 		if opaque == "" || opaque == "noop" {
@@ -587,7 +587,7 @@ func (p *Plugin) dispatchAssistantV2Action(ctx *orchestration.Context, state ass
 		if err != nil {
 			return err
 		}
-		return p.assistantV2Transition(ctx, state, screen)
+		return p.assistantTransition(ctx, state, screen)
 
 	case "qris_img":
 		qrCode := p.menuMgr.ResolveQR(opaque)
@@ -647,7 +647,7 @@ func (p *Plugin) dispatchAssistantV2Action(ctx *orchestration.Context, state ass
 		if err != nil {
 			return err
 		}
-		return p.assistantV2Transition(ctx, state, screen)
+		return p.assistantTransition(ctx, state, screen)
 
 	case "noop":
 		return ctx.Answer("", false)
@@ -657,65 +657,65 @@ func (p *Plugin) dispatchAssistantV2Action(ctx *orchestration.Context, state ass
 	}
 }
 
-func (p *Plugin) HandleAssistantV2Input(ctx *orchestration.Context, text string) error {
+func (p *Plugin) HandleAssistantInput(ctx *orchestration.Context, text string) error {
 	if p == nil || ctx == nil {
 		return orchestration.ErrInvalidEngine
 	}
 	rt := p.assistantRuntime()
 	session := ctx.Session()
 	if rt.Admit == nil {
-		return fmt.Errorf("myxl: assistant a2 runtime unavailable")
+		return fmt.Errorf("myxl: assistant runtime unavailable")
 	}
-	if err := rt.Admit(p.Name(), feature.InteractionScreen, assistantV2ScreenInput, session.Binding.ActorID, ctx.Target()); err != nil {
+	if err := rt.Admit(p.Name(), feature.InteractionScreen, assistantScreenInput, session.Binding.ActorID, ctx.Target()); err != nil {
 		return err
 	}
 
-	state := decodeAssistantV2State(ctx.State())
+	state := decodeAssistantState(ctx.State())
 	input := strings.TrimSpace(text)
 	if strings.EqualFold(input, "/cancel") {
 		screen, err := p.menuMgr.BuildDashboardScreen(ctx.Context(), false)
 		if err != nil {
 			return err
 		}
-		return p.assistantV2Transition(ctx, assistantV2State{}, screen)
+		return p.assistantTransition(ctx, assistantState{}, screen)
 	}
 	if strings.HasPrefix(input, "/") {
-		return p.assistantV2Rearm(ctx, state, "⚠️ Selesaikan input MyXL ini atau ketik <code>/cancel</code>.")
+		return p.assistantRearm(ctx, state, "⚠️ Selesaikan input MyXL ini atau ketik <code>/cancel</code>.")
 	}
 
 	switch state.Wizard {
 	case "login_msisdn":
-		return p.assistantV2InputMSISDN(ctx, state, input)
+		return p.assistantInputMSISDN(ctx, state, input)
 	case "login_otp":
-		return p.assistantV2InputOTP(ctx, state, input)
+		return p.assistantInputOTP(ctx, state, input)
 	case "alias":
-		return p.assistantV2InputAlias(ctx, state, input)
+		return p.assistantInputAlias(ctx, state, input)
 	case "option_code":
-		return p.assistantV2InputOptionCode(ctx, state, input)
+		return p.assistantInputOptionCode(ctx, state, input)
 	case "custom_price":
-		return p.assistantV2InputCustomPrice(ctx, state, input)
+		return p.assistantInputCustomPrice(ctx, state, input)
 	case "family":
-		return p.assistantV2InputFamily(ctx, state, input)
+		return p.assistantInputFamily(ctx, state, input)
 	default:
-		return fmt.Errorf("myxl: no assistant a2 input wizard is active")
+		return fmt.Errorf("myxl: no assistant input wizard is active")
 	}
 }
 
-func (p *Plugin) assistantV2Rearm(ctx *orchestration.Context, state assistantV2State, message string) error {
+func (p *Plugin) assistantRearm(ctx *orchestration.Context, state assistantState, message string) error {
 	prompt := message + "\n\n<i>Ketik <code>/cancel</code> untuk membatalkan.</i>"
-	return p.assistantV2Await(ctx, state, prompt)
+	return p.assistantAwait(ctx, state, prompt)
 }
 
-func (p *Plugin) assistantV2InputMSISDN(ctx *orchestration.Context, state assistantV2State, input string) error {
+func (p *Plugin) assistantInputMSISDN(ctx *orchestration.Context, state assistantState, input string) error {
 	msisdn, err := NormalizeMSISDN(input)
 	if err != nil {
-		return p.assistantV2Rearm(ctx, state, fmt.Sprintf("⚠️ <b>Nomor HP tidak valid:</b> %s\nContoh: <code>081912345678</code> atau <code>6281912345678</code>.", html.EscapeString(err.Error())))
+		return p.assistantRearm(ctx, state, fmt.Sprintf("⚠️ <b>Nomor HP tidak valid:</b> %s\nContoh: <code>081912345678</code> atau <code>6281912345678</code>.", html.EscapeString(err.Error())))
 	}
 	cCtx, cancel := context.WithTimeout(ctx.Context(), 25*time.Second)
 	defer cancel()
 	subID, err := p.client.RequestOTP(cCtx, msisdn)
 	if err != nil {
-		return p.assistantV2Rearm(ctx, state, fmt.Sprintf("❌ <b>Gagal meminta OTP dari MyXL:</b>\n<code>%s</code>", html.EscapeString(err.Error())))
+		return p.assistantRearm(ctx, state, fmt.Sprintf("❌ <b>Gagal meminta OTP dari MyXL:</b>\n<code>%s</code>", html.EscapeString(err.Error())))
 	}
 	existing, _ := p.repo.GetByMSISDN(cCtx, msisdn)
 	if existing == nil {
@@ -724,7 +724,7 @@ func (p *Plugin) assistantV2InputMSISDN(ctx *orchestration.Context, state assist
 		existing.SubscriberID = subID
 	}
 	if err := p.repo.Save(cCtx, existing); err != nil {
-		return p.assistantV2Rearm(ctx, state, fmt.Sprintf("❌ Gagal menyimpan sesi login: <code>%s</code>", html.EscapeString(err.Error())))
+		return p.assistantRearm(ctx, state, fmt.Sprintf("❌ Gagal menyimpan sesi login: <code>%s</code>", html.EscapeString(err.Error())))
 	}
 	state.Wizard = "login_otp"
 	state.MSISDN = msisdn
@@ -732,19 +732,19 @@ func (p *Plugin) assistantV2InputMSISDN(ctx *orchestration.Context, state assist
 		"📩 <b>Login MyXL — Langkah 2 dari 2</b>\n\nKode OTP 6-digit telah dikirim via SMS ke <code>%s</code>.\n\nSilakan kirimkan <b>6 digit kode OTP</b> Anda sekarang.\n\n<i>Ketik <code>/cancel</code> untuk membatalkan.</i>",
 		html.EscapeString(msisdn),
 	)
-	return p.assistantV2Await(ctx, state, prompt)
+	return p.assistantAwait(ctx, state, prompt)
 }
 
-func (p *Plugin) assistantV2InputOTP(ctx *orchestration.Context, state assistantV2State, input string) error {
+func (p *Plugin) assistantInputOTP(ctx *orchestration.Context, state assistantState, input string) error {
 	code, err := normalizeOTPCode(input)
 	if err != nil {
-		return p.assistantV2Rearm(ctx, state, "⚠️ <b>Kode OTP harus berupa 6 digit angka.</b>")
+		return p.assistantRearm(ctx, state, "⚠️ <b>Kode OTP harus berupa 6 digit angka.</b>")
 	}
 	cCtx, cancel := context.WithTimeout(ctx.Context(), 25*time.Second)
 	defer cancel()
 	tokens, err := p.client.SubmitOTP(cCtx, state.MSISDN, code)
 	if err != nil {
-		return p.assistantV2Rearm(ctx, state, fmt.Sprintf("❌ <b>Verifikasi OTP gagal:</b>\n<code>%s</code>", html.EscapeString(err.Error())))
+		return p.assistantRearm(ctx, state, fmt.Sprintf("❌ <b>Verifikasi OTP gagal:</b>\n<code>%s</code>", html.EscapeString(err.Error())))
 	}
 	acc, _ := p.repo.GetByMSISDN(cCtx, state.MSISDN)
 	if acc == nil {
@@ -760,58 +760,58 @@ func (p *Plugin) assistantV2InputOTP(ctx *orchestration.Context, state assistant
 	}
 	acc.IsActive = true
 	if err := p.repo.Save(cCtx, acc); err != nil {
-		return p.assistantV2Rearm(ctx, state, fmt.Sprintf("⚠️ Login berhasil di CIAM tetapi gagal disimpan: <code>%s</code>", html.EscapeString(err.Error())))
+		return p.assistantRearm(ctx, state, fmt.Sprintf("⚠️ Login berhasil di CIAM tetapi gagal disimpan: <code>%s</code>", html.EscapeString(err.Error())))
 	}
 	screen, err := p.menuMgr.BuildDashboardScreen(cCtx, false)
 	if err != nil {
 		return err
 	}
-	return p.assistantV2Transition(ctx, assistantV2State{}, screen)
+	return p.assistantTransition(ctx, assistantState{}, screen)
 }
 
-func (p *Plugin) assistantV2InputAlias(ctx *orchestration.Context, state assistantV2State, input string) error {
+func (p *Plugin) assistantInputAlias(ctx *orchestration.Context, state assistantState, input string) error {
 	alias, err := normalizeAlias(input)
 	if err != nil {
-		return p.assistantV2Rearm(ctx, state, "⚠️ "+html.EscapeString(err.Error())+".")
+		return p.assistantRearm(ctx, state, "⚠️ "+html.EscapeString(err.Error())+".")
 	}
 	if err := p.repo.SetAlias(ctx.Context(), state.MSISDN, alias); err != nil {
-		return p.assistantV2Rearm(ctx, state, fmt.Sprintf("❌ Gagal menyimpan alias: %v", err))
+		return p.assistantRearm(ctx, state, fmt.Sprintf("❌ Gagal menyimpan alias: %v", err))
 	}
 	screen, err := p.menuMgr.BuildAccountsScreen(ctx.Context())
 	if err != nil {
 		return err
 	}
-	return p.assistantV2Transition(ctx, assistantV2State{}, screen)
+	return p.assistantTransition(ctx, assistantState{}, screen)
 }
 
-func (p *Plugin) assistantV2InputOptionCode(ctx *orchestration.Context, state assistantV2State, input string) error {
+func (p *Plugin) assistantInputOptionCode(ctx *orchestration.Context, state assistantState, input string) error {
 	optionCode := strings.TrimSpace(input)
 	if optionCode == "" {
-		return p.assistantV2Rearm(ctx, state, "⚠️ Kode paket tidak boleh kosong.")
+		return p.assistantRearm(ctx, state, "⚠️ Kode paket tidak boleh kosong.")
 	}
 	acc, err := p.repo.GetActive(ctx.Context())
 	if err != nil || acc == nil {
-		return p.assistantV2Rearm(ctx, state, "❌ Tidak ada akun MyXL aktif.")
+		return p.assistantRearm(ctx, state, "❌ Tidak ada akun MyXL aktif.")
 	}
 	screen, err := p.menuMgr.BuildPackageDetailScreen(ctx.Context(), acc, optionCode)
 	if err != nil {
-		return p.assistantV2Rearm(ctx, state, fmt.Sprintf("❌ Gagal memuat paket <code>%s</code>: <code>%s</code>", html.EscapeString(optionCode), html.EscapeString(err.Error())))
+		return p.assistantRearm(ctx, state, fmt.Sprintf("❌ Gagal memuat paket <code>%s</code>: <code>%s</code>", html.EscapeString(optionCode), html.EscapeString(err.Error())))
 	}
-	return p.assistantV2Transition(ctx, assistantV2State{}, screen)
+	return p.assistantTransition(ctx, assistantState{}, screen)
 }
 
-func (p *Plugin) assistantV2InputCustomPrice(ctx *orchestration.Context, state assistantV2State, input string) error {
+func (p *Plugin) assistantInputCustomPrice(ctx *orchestration.Context, state assistantState, input string) error {
 	value, err := strconv.ParseInt(strings.TrimSpace(input), 10, 64)
 	if err != nil || value < 0 {
-		return p.assistantV2Rearm(ctx, state, "⚠️ Nominal harga tidak valid. Masukkan angka bulat non-negatif.")
+		return p.assistantRearm(ctx, state, "⚠️ Nominal harga tidak valid. Masukkan angka bulat non-negatif.")
 	}
 	acc, err := p.repo.GetActive(ctx.Context())
 	if err != nil || acc == nil {
-		return p.assistantV2Rearm(ctx, state, "❌ Tidak ada akun MyXL aktif.")
+		return p.assistantRearm(ctx, state, "❌ Tidak ada akun MyXL aktif.")
 	}
 	details, err := p.client.GetPackageDetails(ctx.Context(), acc, state.OptionCode)
 	if err != nil || details.TokenConfirmation == "" {
-		return p.assistantV2Rearm(ctx, state, "❌ Gagal memuat token konfirmasi paket.")
+		return p.assistantRearm(ctx, state, "❌ Gagal memuat token konfirmasi paket.")
 	}
 	pkgName := state.OptionCode
 	var price int64
@@ -830,26 +830,26 @@ func (p *Plugin) assistantV2InputCustomPrice(ctx *orchestration.Context, state a
 	if err != nil {
 		return err
 	}
-	return p.assistantV2Transition(ctx, state, screen)
+	return p.assistantTransition(ctx, state, screen)
 }
 
-func (p *Plugin) assistantV2InputFamily(ctx *orchestration.Context, state assistantV2State, input string) error {
+func (p *Plugin) assistantInputFamily(ctx *orchestration.Context, state assistantState, input string) error {
 	familyCode := strings.TrimSpace(input)
 	if familyCode == "" {
-		return p.assistantV2Rearm(ctx, state, "⚠️ Family Code tidak boleh kosong.")
+		return p.assistantRearm(ctx, state, "⚠️ Family Code tidak boleh kosong.")
 	}
 	acc, err := p.repo.GetActive(ctx.Context())
 	if err != nil || acc == nil {
-		return p.assistantV2Rearm(ctx, state, "❌ Tidak ada akun aktif terhubung.")
+		return p.assistantRearm(ctx, state, "❌ Tidak ada akun aktif terhubung.")
 	}
 	screen, err := p.menuMgr.BuildFamilyPackagesScreen(ctx.Context(), acc, familyCode, 1)
 	if err != nil {
-		return p.assistantV2Rearm(ctx, state, fmt.Sprintf("⚠️ <b>Gagal mencari paket:</b> %v", err))
+		return p.assistantRearm(ctx, state, fmt.Sprintf("⚠️ <b>Gagal mencari paket:</b> %v", err))
 	}
-	return p.assistantV2Transition(ctx, assistantV2State{}, screen)
+	return p.assistantTransition(ctx, assistantState{}, screen)
 }
 
-func (p *Plugin) confirmAssistantV2Purchase(ctx *orchestration.Context, state assistantV2State, draft purchaseDraftState) error {
+func (p *Plugin) confirmAssistantPurchase(ctx *orchestration.Context, state assistantState, draft purchaseDraftState) error {
 	cCtx, cancel := context.WithTimeout(ctx.Context(), 45*time.Second)
 	defer cancel()
 
@@ -954,7 +954,7 @@ func (p *Plugin) confirmAssistantV2Purchase(ctx *orchestration.Context, state as
 
 	state.Draft = nil
 	screen := p.menuMgr.BuildPurchaseResultScreen(result, draft.PackageName, effectivePrice, draft.Method, draft.OptionCode)
-	if err := p.assistantV2Transition(ctx, state, screen); err != nil {
+	if err := p.assistantTransition(ctx, state, screen); err != nil {
 		return err
 	}
 
@@ -975,5 +975,5 @@ func (p *Plugin) confirmAssistantV2Purchase(ctx *orchestration.Context, state as
 	return ctx.Answer("Pembelian selesai dengan status gagal.", true)
 }
 
-var _ assistantinteraction.V2FeatureDriver = (*Plugin)(nil)
+var _ assistantinteraction.FeatureDriver = (*Plugin)(nil)
 var _ interface{ FeatureSpec() feature.Spec } = (*Plugin)(nil)
