@@ -134,11 +134,15 @@ func TestContract_CallbackMetricTags(t *testing.T) {
 }
 
 type recordingMetrics struct {
-	lastTag string
+	lastTag       string
+	callbackCount int
 }
 
 func (r *recordingMetrics) RecordCommand(_ string, _ time.Duration, _ error)               {}
-func (r *recordingMetrics) RecordCallback(tag string, _ time.Duration, _ error)            { r.lastTag = tag }
+func (r *recordingMetrics) RecordCallback(tag string, _ time.Duration, _ error) {
+	r.lastTag = tag
+	r.callbackCount++
+}
 func (r *recordingMetrics) RecordSchedulerJob(_ int64, _ string, _ time.Duration, _ error) {}
 func (r *recordingMetrics) RecordTelegramRequest(_ string, _ time.Duration, _ error)       {}
 func (r *recordingMetrics) RecordInline(_ bool, _ int, _ time.Duration, _ error)           {}
