@@ -194,7 +194,6 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		TelegramRuntime: module.TelegramRuntime{
 			TelegramService: tgRuntime.client.Service,
 			Resolver:        tgRuntime.dispatcher.Resolver(),
-			Callbacks:       coreDeps.callbackRouter,
 			CallbackStore:   coreDeps.callbackStore,
 		},
 		ServiceRuntime: module.ServiceRuntime{
