@@ -103,6 +103,7 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 
 		chatID := extractChatID(msg.PeerID)
 		_, privateChat := msg.PeerID.(*tg.PeerUser)
+		plainTextRelay := msg.Media == nil && strings.TrimSpace(msg.Message) != ""
 		relayMessage := pmrelay.IngressMessage{
 			SenderID:         senderID,
 			ChatID:           chatID,
@@ -199,7 +200,7 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		// PM Relay is the final private-message data-plane fallback. Prepare is
 		// read-only; execution is admitted through TaskEngine and revalidated in
 		// RelayIngress before later phases may attach Telegram delivery.
-		if privateChat && deps.RelayIngress != nil {
+		if privateChat && plainTextRelay && deps.RelayIngress != nil {
 			if handled, relayErr := deps.RelayIngress.tryVisitor(ctx, relayMessage); handled {
 				if relayErr != nil {
 					logger.Warn("assistant: PM relay visitor admission failed",
