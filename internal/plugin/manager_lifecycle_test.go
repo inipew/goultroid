@@ -333,3 +333,83 @@ func TestManagerLifecycleUsesSharedCallbackBudget(t *testing.T) {
 	}
 	close(release)
 }
+
+
+func TestManagerRegistrationValidatorRollsBackStagedPlugin(t *testing.T) {
+	router := core.NewRouter(".")
+	mgr := NewManager(router)
+	rejected := errors.New("surface collision")
+	calls := 0
+	mgr.SetRegistrationValidator(func(context.Context) error {
+		calls++
+		if _, ok := router.Find("reserved"); ok {
+			return rejected
+		}
+		return nil
+	})
+
+	p := &lifecyclePlugin{name: "collision", commands: []core.Command{{Name: "reserved"}}}
+	err := mgr.Register(p)
+	if !errors.Is(err, rejected) {
+		t.Fatalf("Register() error=%v, want %v", err, rejected)
+	}
+	if calls != 1 {
+		t.Fatalf("validator calls=%d, want 1", calls)
+	}
+	if _, ok := router.Find("reserved"); ok {
+		t.Fatal("rejected staged command leaked into router")
+	}
+	if _, ok := mgr.Find("collision"); ok {
+		t.Fatal("rejected plugin was committed to manager")
+	}
+	if p.shutdowns.Load() != 1 {
+		t.Fatalf("rejected plugin cleanup count=%d, want 1", p.shutdowns.Load())
+	}
+}
+
+func TestManagerRegistrationValidatorRollsBackEnable(t *testing.T) {
+	router := core.NewRouter(".")
+	mgr := NewManager(router)
+	p := &lifecyclePlugin{name: "reload_collision", commands: []core.Command{{Name: "reserved_reload"}}}
+	if err := mgr.Register(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Disable(context.Background(), p.Name()); err != nil {
+		t.Fatal(err)
+	}
+	if mgr.IsEnabled(p.Name()) {
+		t.Fatal("plugin remained enabled after Disable")
+	}
+
+	rejected := errors.New("surface collision")
+	mgr.SetRegistrationValidator(func(context.Context) error {
+		if _, ok := router.Find("reserved_reload"); ok {
+			return rejected
+		}
+		return nil
+	})
+	err := mgr.Enable(context.Background(), p.Name())
+	if !errors.Is(err, rejected) {
+		t.Fatalf("Enable() error=%v, want %v", err, rejected)
+	}
+	if mgr.IsEnabled(p.Name()) {
+		t.Fatal("rejected generation was marked enabled")
+	}
+	if _, ok := router.Find("reserved_reload"); ok {
+		t.Fatal("rejected re-enabled command leaked into router")
+	}
+	if p.shutdowns.Load() != 2 {
+		t.Fatalf("shutdown count=%d, want 2 (disable + rejected enable rollback)", p.shutdowns.Load())
+	}
+
+	mgr.SetRegistrationValidator(nil)
+	if err := mgr.Enable(context.Background(), p.Name()); err != nil {
+		t.Fatalf("Enable(after removing validator) error=%v", err)
+	}
+	if !mgr.IsEnabled(p.Name()) {
+		t.Fatal("plugin did not recover after collision cleared")
+	}
+	if _, ok := router.Find("reserved_reload"); !ok {
+		t.Fatal("successful re-enable did not restore command")
+	}
+}
