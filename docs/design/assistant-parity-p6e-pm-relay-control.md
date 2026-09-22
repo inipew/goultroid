@@ -246,3 +246,14 @@ P6-E does not implement:
 
 Force-sub and audience integration can build on this control-plane boundary in
 later P6 phases without changing delivery identity or TaskEngine admission.
+
+
+## Later audience integration
+
+P6-F expands `assistant_audience_members` from relay-observed visitors into the
+shared Assistant audience registry for successful `/start`, inline, deep-link,
+and relay entry points.
+
+The P6-E visitor block remains deliberately scoped to the PM Relay data plane.
+A relay-blocked visitor is therefore not implicitly removed from the generic
+Assistant audience and is not a global Assistant ban.
