@@ -122,6 +122,9 @@ func (p *Plugin) handleWhois(ctx *core.Context) error {
 func (p *Plugin) handleChatInfo(ctx *core.Context) error {
 	fullChat, err := ctx.GetFullChat()
 	if err != nil {
+		if ctx.IsAssistant() {
+			return ctx.EditOrReply(core.UserMessage(err))
+		}
 		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to fetch chat info: %v", err))
 	}
 	var sb strings.Builder
