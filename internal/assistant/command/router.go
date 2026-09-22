@@ -222,7 +222,6 @@ func (r *Router) executeCanonicalTask(ctx context.Context, senderID int64, cmd c
 	return taskResultError(res)
 }
 
-
 func (r *Router) executeSavedResponseBinding(
 	ctx context.Context,
 	senderID int64,
