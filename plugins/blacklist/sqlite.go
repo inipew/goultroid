@@ -49,6 +49,18 @@ func (r *SQLiteRepository) AddBlacklist(ctx context.Context, chatID int64, word 
 		if count >= MaxRulesPerChat {
 			return ErrRuleLimit
 		}
+		if count == 0 {
+			var activeChats int
+			if err := r.db.QueryRowContext(ctx,
+				"SELECT COUNT(*) FROM (SELECT chat_id FROM blacklists GROUP BY chat_id LIMIT ?)",
+				MaxActiveChats+1,
+			).Scan(&activeChats); err != nil {
+				return fmt.Errorf("failed to count active blacklist chats: %w", err)
+			}
+			if activeChats >= MaxActiveChats {
+				return fmt.Errorf("%w: active blacklist chats exceed %d", core.ErrResourceLimit, MaxActiveChats)
+			}
+		}
 	}
 
 	query := `INSERT INTO blacklists (chat_id, word, created_at)
