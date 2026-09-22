@@ -1,0 +1,247 @@
+package deeplink
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+)
+
+const (
+	tokenRandomBytes = 16
+	pruneBatch       = 64
+)
+
+type providerEntry struct {
+	provider Provider
+	token    uint64
+}
+
+// Registration owns one provider generation.
+type Registration struct {
+	router *Router
+	kind   string
+	token  uint64
+	once   sync.Once
+}
+
+// Prepared freezes token/provider admission state without consuming single-use
+// authority. ExecutePrepared performs the atomic claim after TaskEngine admits.
+type Prepared struct {
+	record        Token
+	target        PreparedTarget
+	provider      Provider
+	providerToken uint64
+}
+
+func (p Prepared) Scope() tasks.ScopeIdentity {
+	return p.target.Scope
+}
+
+func (p Prepared) Resources() []tasks.ResourceRequirement {
+	return append([]tasks.ResourceRequirement(nil), p.target.Resources...)
+}
+
+func (p Prepared) Kind() string { return p.record.Kind }
+
+// Router is the canonical typed /start payload runtime.
+type Router struct {
+	repo Repository
+	now  func() time.Time
+
+	mu        sync.RWMutex
+	providers map[string]providerEntry
+	next      uint64
+}
+
+func NewRouter(repo Repository) *Router {
+	return &Router{repo: repo, now: time.Now, providers: make(map[string]providerEntry)}
+}
+
+func normalizeKind(kind string) string {
+	return strings.ToLower(strings.TrimSpace(kind))
+}
+
+func validKind(kind string) bool {
+	if kind == "" || len(kind) > MaxKindBytes {
+		return false
+	}
+	for _, r := range kind {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func LooksLikeToken(raw string) bool {
+	return strings.HasPrefix(strings.TrimSpace(raw), TokenVersion+"_")
+}
+
+func normalizeToken(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if !LooksLikeToken(raw) {
+		return "", ErrInvalidToken
+	}
+	encoded := strings.TrimPrefix(raw, TokenVersion+"_")
+	decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil || len(decoded) != tokenRandomBytes {
+		return "", ErrInvalidToken
+	}
+	return raw, nil
+}
+
+func newTokenID() (string, error) {
+	var raw [tokenRandomBytes]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate deep-link token: %w", err)
+	}
+	return TokenVersion + "_" + base64.RawURLEncoding.EncodeToString(raw[:]), nil
+}
+
+func (r *Router) Register(kind string, provider Provider) (*Registration, error) {
+	if r == nil || provider == nil {
+		return nil, ErrProviderUnavailable
+	}
+	kind = normalizeKind(kind)
+	if !validKind(kind) {
+		return nil, ErrInvalidKind
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.providers[kind]; ok {
+		return nil, fmt.Errorf("%w: %s", ErrProviderRegistered, kind)
+	}
+	r.next++
+	r.providers[kind] = providerEntry{provider: provider, token: r.next}
+	return &Registration{router: r, kind: kind, token: r.next}, nil
+}
+
+func (r *Registration) Close() {
+	if r == nil || r.router == nil {
+		return
+	}
+	r.once.Do(func() {
+		r.router.mu.Lock()
+		current, ok := r.router.providers[r.kind]
+		if ok && current.token == r.token {
+			delete(r.router.providers, r.kind)
+		}
+		r.router.mu.Unlock()
+	})
+}
+
+func (r *Router) Issue(ctx context.Context, request IssueRequest) (Token, error) {
+	if r == nil || r.repo == nil {
+		return Token{}, ErrProviderUnavailable
+	}
+	request.Kind = normalizeKind(request.Kind)
+	if !validKind(request.Kind) {
+		return Token{}, ErrInvalidKind
+	}
+	if strings.TrimSpace(request.Payload) == "" || len(request.Payload) > MaxPayloadBytes {
+		return Token{}, ErrInvalidPayload
+	}
+	ttl := request.TTL
+	if ttl <= 0 {
+		ttl = DefaultTTL
+	}
+	if ttl > MaxTTL {
+		return Token{}, ErrInvalidToken
+	}
+	r.mu.RLock()
+	_, registered := r.providers[request.Kind]
+	r.mu.RUnlock()
+	if !registered {
+		return Token{}, ErrProviderUnavailable
+	}
+	now := r.now().UTC()
+	_, _ = r.repo.PruneExpired(ctx, now, pruneBatch)
+	for attempt := 0; attempt < 4; attempt++ {
+		id, err := newTokenID()
+		if err != nil {
+			return Token{}, err
+		}
+		record := Token{
+			ID: id, Kind: request.Kind, Payload: request.Payload,
+			ActorID: request.ActorID, SingleUse: request.SingleUse,
+			ExpiresAt: now.Add(ttl), CreatedAt: now,
+		}
+		if err := r.repo.Create(ctx, record); err != nil {
+			if err == ErrTokenExists {
+				continue
+			}
+			return Token{}, err
+		}
+		return record, nil
+	}
+	return Token{}, ErrTokenExists
+}
+
+func (r *Router) Prepare(ctx context.Context, rawToken string, actorID int64) (Prepared, error) {
+	if r == nil || r.repo == nil {
+		return Prepared{}, ErrProviderUnavailable
+	}
+	id, err := normalizeToken(rawToken)
+	if err != nil {
+		return Prepared{}, err
+	}
+	record, err := r.repo.Get(ctx, id)
+	if err != nil {
+		return Prepared{}, err
+	}
+	now := r.now().UTC()
+	if !record.ExpiresAt.After(now) {
+		return Prepared{}, ErrTokenExpired
+	}
+	if record.ConsumedAt != nil {
+		return Prepared{}, ErrTokenConsumed
+	}
+	if record.ActorID != 0 && record.ActorID != actorID {
+		return Prepared{}, ErrTokenUnauthorized
+	}
+	r.mu.RLock()
+	entry, ok := r.providers[record.Kind]
+	r.mu.RUnlock()
+	if !ok || entry.provider == nil {
+		return Prepared{}, ErrProviderUnavailable
+	}
+	target, err := entry.provider.Prepare(ctx, record.Payload, actorID)
+	if err != nil {
+		return Prepared{}, err
+	}
+	if target.Scope.IsZero() {
+		return Prepared{}, ErrProviderUnavailable
+	}
+	return Prepared{
+		record: record, target: target, provider: entry.provider, providerToken: entry.token,
+	}, nil
+}
+
+func (r *Router) ExecutePrepared(ctx context.Context, prepared Prepared, delivery Delivery) error {
+	if r == nil || r.repo == nil || prepared.provider == nil || prepared.record.ID == "" {
+		return ErrProviderUnavailable
+	}
+	r.mu.RLock()
+	current, ok := r.providers[prepared.record.Kind]
+	r.mu.RUnlock()
+	if !ok || current.token != prepared.providerToken || current.provider != prepared.provider {
+		return ErrProviderStale
+	}
+	claimed, err := r.repo.Claim(ctx, prepared.record.ID, delivery.ActorID, r.now().UTC())
+	if err != nil {
+		return err
+	}
+	if claimed.Kind != prepared.record.Kind ||
+		claimed.Payload != prepared.record.Payload ||
+		claimed.ActorID != prepared.record.ActorID ||
+		claimed.SingleUse != prepared.record.SingleUse ||
+		!claimed.ExpiresAt.Equal(prepared.record.ExpiresAt) {
+		return ErrInvalidToken
+	}
+	return prepared.provider.Execute(ctx, prepared.target, delivery)
+}
