@@ -34,6 +34,10 @@ type groupRuleIngress interface {
 	Handle(context.Context, *core.MessageEnvelope) error
 }
 
+type groupRuleChatClassifier interface {
+	Classify(context.Context, *tg.Message, tg.Entities, tg.InputPeerClass) (core.Chat, error)
+}
+
 type UpdateHandlerDeps struct {
 	Logger              *zap.Logger
 	RateLimiter         RateLimiter
@@ -53,6 +57,7 @@ type UpdateHandlerDeps struct {
 	AudienceRegistry    pmrelay.AudienceRegistry
 	GroupEvents         groupServiceIngress
 	GroupRules          groupRuleIngress
+	GroupRuleChats      groupRuleChatClassifier
 	SelfID              func() int64
 }
 
@@ -131,58 +136,18 @@ func assistantCommandMessageContext(message *tg.Message, entities tg.Entities) c
 	}
 }
 
-func assistantGroupRuleChat(
-	message *tg.Message,
-	entities tg.Entities,
-	inputPeer tg.InputPeerClass,
-) (core.Chat, bool) {
-	if message == nil || inputPeer == nil {
-		return core.Chat{}, false
-	}
-	messageContext := assistantCommandMessageContext(message, entities)
-	chat := messageContext.Chat
-	if (&chat).IsManagerGroup() {
-		return chat, true
-	}
-
-	channelPeer, isChannel := message.PeerID.(*tg.PeerChannel)
-	if !isChannel {
-		return core.Chat{}, false
-	}
-	// If Telegram supplied channel metadata, its broadcast/megagroup bit is
-	// authoritative. Never reinterpret a known broadcast channel as a group.
-	if channel := entities.Channels[channelPeer.ChannelID]; channel != nil {
-		return core.Chat{}, false
-	}
-	resolved, ok := inputPeer.(*tg.InputPeerChannel)
-	if !ok || resolved.ChannelID != channelPeer.ChannelID || resolved.AccessHash == 0 {
-		return core.Chat{}, false
-	}
-
-	// Missing channel metadata is deferred until the chat has already passed
-	// the per-chat rule-interest gate and canonical peer resolution. An active
-	// chat can only enter this path through durable GroupOnly rule state.
-	chat.ID = channelPeer.ChannelID
-	chat.Type = string(core.ChatKindSupergroup)
-	chat.AccessHash = resolved.AccessHash
-	return chat, true
-}
-
 func assistantGroupRuleEnvelope(
 	message *tg.Message,
 	entities tg.Entities,
 	inputPeer tg.InputPeerClass,
+	chat core.Chat,
 	senderID int64,
 	selfID int64,
 ) (*core.MessageEnvelope, bool) {
-	if message == nil || inputPeer == nil || senderID <= 0 {
+	if message == nil || inputPeer == nil || senderID <= 0 || !(&chat).IsManagerGroup() {
 		return nil, false
 	}
 	messageContext := assistantCommandMessageContext(message, entities)
-	chat, ok := assistantGroupRuleChat(message, entities, inputPeer)
-	if !ok {
-		return nil, false
-	}
 	peerRef, err := core.PeerRefFromInputPeer(inputPeer)
 	if err != nil || !peerRef.Valid() {
 		return nil, false
@@ -222,7 +187,8 @@ func submitAssistantGroupRules(
 	deps UpdateHandlerDeps,
 	logger *zap.Logger,
 ) {
-	if message == nil || deps.GroupRules == nil || deps.Tasks == nil || deps.Resolver == nil {
+	if message == nil || deps.GroupRules == nil || deps.GroupRuleChats == nil ||
+		deps.Tasks == nil || deps.Resolver == nil {
 		return
 	}
 	chatID := extractChatID(message.PeerID)
@@ -249,6 +215,18 @@ func submitAssistantGroupRules(
 				}
 				return fmt.Errorf("assistant group rules resolve peer: %w", resolveErr)
 			}
+			chat, classifyErr := deps.GroupRuleChats.Classify(
+				taskCtx,
+				message,
+				entities,
+				inputPeer,
+			)
+			if classifyErr != nil {
+				if errors.Is(classifyErr, core.ErrGroupOnly) {
+					return nil
+				}
+				return classifyErr
+			}
 			selfID := int64(0)
 			if deps.SelfID != nil {
 				selfID = deps.SelfID()
@@ -257,6 +235,7 @@ func submitAssistantGroupRules(
 				message,
 				entities,
 				inputPeer,
+				chat,
 				senderID,
 				selfID,
 			)
@@ -490,7 +469,8 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		commandToken, slashCommand := assistantSlashCommand(msg.Message)
 		groupRuleCandidate := false
 		if !privateChat && !slashCommand {
-			if strings.TrimSpace(msg.Message) == "" || deps.GroupRules == nil {
+			if strings.TrimSpace(msg.Message) == "" || deps.GroupRules == nil ||
+				deps.GroupRuleChats == nil {
 				return nil
 			}
 			switch peer := msg.PeerID.(type) {
