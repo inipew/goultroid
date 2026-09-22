@@ -7,7 +7,10 @@ import (
 	"github.com/gotd/td/tg"
 )
 
-var ErrTargetSourceStalled = errors.New("broadcast: target source made no progress")
+var (
+	ErrTargetSourceStalled     = errors.New("broadcast: target source made no progress")
+	ErrTargetSourceContract    = errors.New("broadcast: target source contract violated")
+)
 
 // TargetSource is a bounded, stateful snapshot iterator. One source instance
 // belongs to exactly one Broadcast call. Implementations must keep membership
