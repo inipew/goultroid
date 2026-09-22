@@ -83,6 +83,9 @@ func TestP7KGroupServiceEventUsesChatQuotaOwner(t *testing.T) {
 		if spec.OrderingKey != "chat:77" {
 			t.Fatalf("ordering key=%q want chat:77", spec.OrderingKey)
 		}
+		if spec.QueueDeadline.IsZero() || !spec.QueueDeadline.After(time.Now()) {
+			t.Fatalf("queue deadline=%v want future deadline", spec.QueueDeadline)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for group event task")
 	}
