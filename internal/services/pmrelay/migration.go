@@ -12,10 +12,12 @@ type MigrationProvider struct{}
 type migration001 struct{}
 type migration002 struct{}
 type migration003 struct{}
+type migration004 struct{}
 
 var _ database.SchemaInvariantMigration = migration001{}
 var _ database.SchemaInvariantMigration = migration002{}
 var _ database.SchemaInvariantMigration = migration003{}
+var _ database.SchemaInvariantMigration = migration004{}
 
 var schemaStatements = []string{
 	`CREATE TABLE IF NOT EXISTS pm_relay_mappings (
@@ -67,7 +69,7 @@ var schemaStatements = []string{
 }
 
 func (MigrationProvider) Migrations() []database.Migration {
-	return []database.Migration{migration001{}, migration002{}, migration003{}}
+	return []database.Migration{migration001{}, migration002{}, migration003{}, migration004{}}
 }
 
 func (migration001) ID() string { return "pmrelay.001" }
@@ -234,6 +236,69 @@ func (migration003) VerifySchema(ctx context.Context, tx database.SQLExecutor) e
 		if count != 1 {
 			return fmt.Errorf("required %s %s does not exist", item.kind, item.name)
 		}
+	}
+	return nil
+}
+
+
+var forceSubSchemaStatements = []string{
+	`CREATE TABLE IF NOT EXISTS pm_relay_force_sub_config (
+		singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+		enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+		channel_username TEXT NOT NULL DEFAULT '',
+		join_url TEXT NOT NULL DEFAULT '',
+		failure_mode TEXT NOT NULL CHECK (failure_mode IN ('closed', 'open')),
+		revision INTEGER NOT NULL CHECK (revision > 0),
+		updated_at DATETIME NOT NULL
+	);`,
+	`INSERT OR IGNORE INTO pm_relay_force_sub_config (
+		singleton_id, enabled, channel_username, join_url, failure_mode, revision, updated_at
+	) VALUES (1, 0, '', '', 'closed', 1, CURRENT_TIMESTAMP);`,
+}
+
+func (migration004) ID() string { return "pmrelay.004" }
+
+func (migration004) Description() string {
+	return "Durable Assistant PM relay force-sub policy"
+}
+
+func (migration004) Checksum() string {
+	return "5ac099f30662bfa92e95bf475c25dd8507c12a35b42d51dbd500eb28ef0d6823"
+}
+
+func (migration004) LegacyVersions() []int { return nil }
+
+func (migration004) Up(ctx context.Context, tx database.SQLExecutor) error {
+	for _, statement := range forceSubSchemaStatements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (migration004) VerifySchema(ctx context.Context, tx database.SQLExecutor) error {
+	var count int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT count(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'pm_relay_force_sub_config'
+	`).Scan(&count); err != nil {
+		return err
+	}
+	if count != 1 {
+		return fmt.Errorf("required table pm_relay_force_sub_config does not exist")
+	}
+	if err := tx.QueryRowContext(ctx, `
+		SELECT count(*) FROM pm_relay_force_sub_config
+		WHERE singleton_id = 1
+		  AND enabled IN (0, 1)
+		  AND failure_mode IN ('closed', 'open')
+		  AND revision > 0
+	`).Scan(&count); err != nil {
+		return err
+	}
+	if count != 1 {
+		return fmt.Errorf("required force-sub singleton row does not exist")
 	}
 	return nil
 }
