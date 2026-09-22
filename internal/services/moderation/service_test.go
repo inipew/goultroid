@@ -170,3 +170,32 @@ func TestModerationService_ManualActions(t *testing.T) {
 		t.Errorf("Kick error: %v", err)
 	}
 }
+
+
+func TestP7IWarnWithServiceUsesCallerTransport(t *testing.T) {
+	defaultSvc := &recordingModService{}
+	assistantSvc := &recordingModService{}
+	service := newTestService(t, defaultSvc)
+
+	res, err := service.WarnWithService(
+		context.Background(),
+		assistantSvc,
+		&tg.InputPeerChat{ChatID: 100},
+		&tg.InputPeerUser{UserID: 200},
+		100,
+		200,
+		"Assistant warning",
+		999,
+		1,
+		ActionMute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ActionTaken != ActionMute || !assistantSvc.muted {
+		t.Fatalf("Assistant transport result=%+v muted=%v", res, assistantSvc.muted)
+	}
+	if defaultSvc.muted || defaultSvc.kicked || defaultSvc.banned {
+		t.Fatalf("P7-I warning escaped through default userbot transport: %+v", defaultSvc)
+	}
+}
