@@ -12,6 +12,7 @@ import (
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/services/inline"
+	"github.com/inipew/goultroid/internal/services/savedresponse"
 	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
@@ -25,6 +26,7 @@ type Client interface {
 	SetCoreRouter(router *core.Router)
 	SetOwner(ownerID int64, sudoGetter func() []int64)
 	SetSettingsService(svc *settings.Service)
+	SetSavedResponseBindings(bindings *savedresponse.BindingService, delivery *savedresponse.ResponseDelivery)
 	SetMetricsCollector(m core.MetricsCollector)
 	SetCallbackRouter(router client.CoreCallbackDispatcher)
 	SetInlineEngine(engine *inline.Engine)
@@ -94,7 +96,10 @@ func (a *AssistantApp) SetTasks(client tasks.Client)      { a.client.SetTasks(cl
 func (a *AssistantApp) SetDelayedActions(scheduler core.DelayedActionScheduler) {
 	a.client.SetDelayedActions(scheduler)
 }
-func (a *AssistantApp) SetSettingsService(svc *settings.Service)    { a.client.SetSettingsService(svc) }
+func (a *AssistantApp) SetSettingsService(svc *settings.Service) { a.client.SetSettingsService(svc) }
+func (a *AssistantApp) SetSavedResponseBindings(bindings *savedresponse.BindingService, delivery *savedresponse.ResponseDelivery) {
+	a.client.SetSavedResponseBindings(bindings, delivery)
+}
 func (a *AssistantApp) SetMetricsCollector(m core.MetricsCollector) { a.client.SetMetricsCollector(m) }
 func (a *AssistantApp) SetCallbackRouter(router client.CoreCallbackDispatcher) {
 	a.client.SetCallbackRouter(router)
