@@ -118,6 +118,11 @@ func (c *Context) GroupExecution() (GroupExecutionContext, bool) {
 		actor.IsOwner = principal.IsOwner
 		actor.IsSudo = principal.IsSudo
 	}
+	if contextual := c.GroupPrincipal; contextual != nil && contextual.UserID == actor.UserID {
+		actor.Role = contextual.Role
+		actor.Rights = contextual.Rights
+		actor.Verified = contextual.Verified
+	}
 
 	return GroupExecutionContext{
 		ChatID:  c.Chat.ID,
