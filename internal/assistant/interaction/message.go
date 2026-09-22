@@ -598,6 +598,9 @@ func (c *ClientInteraction) SendMediaReferenceWithRandomID(
 func reusableInputMedia(media tg.MessageMediaClass) (tg.InputMediaClass, error) {
 	switch value := media.(type) {
 	case *tg.MessageMediaPhoto:
+		if ttl, ok := value.GetTTLSeconds(); ok && ttl > 0 {
+			return nil, fmt.Errorf("%w: self-destructing photo is not relayable", core.ErrUnsupported)
+		}
 		photoClass, ok := value.GetPhoto()
 		if !ok || photoClass == nil {
 			return nil, fmt.Errorf("%w: photo payload is absent", core.ErrUnsupported)
@@ -606,12 +609,28 @@ func reusableInputMedia(media tg.MessageMediaClass) (tg.InputMediaClass, error) 
 		if !ok || photo == nil {
 			return nil, fmt.Errorf("%w: photo payload is empty", core.ErrUnsupported)
 		}
-		return &tg.InputMediaPhoto{
+		input := &tg.InputMediaPhoto{
 			ID:      photo.AsInput(),
 			Spoiler: value.Spoiler,
-		}, nil
+		}
+		if value.LivePhoto {
+			videoClass, ok := value.GetVideo()
+			if !ok || videoClass == nil {
+				return nil, fmt.Errorf("%w: live photo video payload is absent", core.ErrUnsupported)
+			}
+			video, ok := videoClass.AsNotEmpty()
+			if !ok || video == nil {
+				return nil, fmt.Errorf("%w: live photo video payload is empty", core.ErrUnsupported)
+			}
+			input.LivePhoto = true
+			input.Video = video.AsInput()
+		}
+		return input, nil
 
 	case *tg.MessageMediaDocument:
+		if ttl, ok := value.GetTTLSeconds(); ok && ttl > 0 {
+			return nil, fmt.Errorf("%w: self-destructing document is not relayable", core.ErrUnsupported)
+		}
 		documentClass, ok := value.GetDocument()
 		if !ok || documentClass == nil {
 			return nil, fmt.Errorf("%w: document payload is absent", core.ErrUnsupported)
@@ -620,10 +639,21 @@ func reusableInputMedia(media tg.MessageMediaClass) (tg.InputMediaClass, error) 
 		if !ok || document == nil {
 			return nil, fmt.Errorf("%w: document payload is empty", core.ErrUnsupported)
 		}
-		return &tg.InputMediaDocument{
+		input := &tg.InputMediaDocument{
 			ID:      document.AsInput(),
 			Spoiler: value.Spoiler,
-		}, nil
+		}
+		if coverClass, ok := value.GetVideoCover(); ok && coverClass != nil {
+			cover, ok := coverClass.AsNotEmpty()
+			if !ok || cover == nil {
+				return nil, fmt.Errorf("%w: document video cover is empty", core.ErrUnsupported)
+			}
+			input.VideoCover = cover.AsInput()
+		}
+		if timestamp, ok := value.GetVideoTimestamp(); ok {
+			input.VideoTimestamp = timestamp
+		}
+		return input, nil
 
 	default:
 		return nil, fmt.Errorf("%w: unsupported PM relay media %T", core.ErrUnsupported, media)
