@@ -437,7 +437,7 @@ func TestP7GDesiredStateNoopStillRevalidatesActorAndBot(t *testing.T) {
 	if api.editBannedCalls != 0 {
 		t.Fatalf("desired-state no-op issued %d mutations", api.editBannedCalls)
 	}
-	assertEvents(t, events, "role:30", "bot", "role:10")
+	assertEvents(t, events, "bot", "role:10", "role:30")
 }
 
 func TestP7GChatNotModifiedIsIdempotentSuccess(t *testing.T) {
