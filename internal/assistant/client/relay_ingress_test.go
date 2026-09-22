@@ -193,3 +193,101 @@ func TestRelayIngressTaskIdentityDoesNotOwnDeliveryIdempotency(t *testing.T) {
 		t.Fatalf("duplicate source changed thread ordering key=%q", taskClient.spec.OrderingKey)
 	}
 }
+
+
+type relayVisitorTransportStub struct {
+	calls   int
+	request pmrelay.VisitorForward
+	message int
+	err     error
+}
+
+func (t *relayVisitorTransportStub) ForwardVisitor(_ context.Context, request pmrelay.VisitorForward) (int, error) {
+	t.calls++
+	t.request = request
+	if t.err != nil {
+		return 0, t.err
+	}
+	return t.message, nil
+}
+
+func TestRelayIngressExecutesVisitorDeliveryOnlyInsideAdmittedHandler(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := database.RunFeatureMigrations(ctx, db, pmrelay.MigrationProvider{}); err != nil {
+		t.Fatal(err)
+	}
+	repo := pmrelay.NewSQLiteRepository(db)
+	service := pmrelay.NewService(repo, 7)
+	service.SetEnabled(true)
+	taskClient := &relayAdmissionTaskClient{run: true}
+	transport := &relayVisitorTransportStub{message: 501}
+	ingress := NewRelayIngress(service, taskClient, transport)
+
+	handled, err := ingress.tryVisitor(ctx, pmrelay.IngressMessage{
+		SenderID: 42, ChatID: 42, MessageID: 11,
+	})
+	if err != nil || !handled {
+		t.Fatalf("tryVisitor() handled=%v err=%v", handled, err)
+	}
+	if transport.calls != 1 {
+		t.Fatalf("visitor transport calls=%d, want 1", transport.calls)
+	}
+	if transport.request.SourceChatID != 42 ||
+		transport.request.SourceMessageID != 11 ||
+		transport.request.TargetChatID != 7 ||
+		transport.request.RandomID == 0 {
+		t.Fatalf("visitor transport request=%+v", transport.request)
+	}
+	if _, err := repo.GetMapping(ctx, 7, 501); err != nil {
+		t.Fatalf("durable relay mapping missing: %v", err)
+	}
+	member, err := repo.GetAudience(ctx, 42)
+	if err != nil {
+		t.Fatalf("relay audience missing: %v", err)
+	}
+	if member.Sources&pmrelay.AudienceSourceRelay == 0 {
+		t.Fatalf("relay audience sources=%d", member.Sources)
+	}
+}
+
+func TestRelayIngressAdmissionRejectionCannotTouchVisitorDeliveryState(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := database.RunFeatureMigrations(ctx, db, pmrelay.MigrationProvider{}); err != nil {
+		t.Fatal(err)
+	}
+	repo := pmrelay.NewSQLiteRepository(db)
+	service := pmrelay.NewService(repo, 7)
+	service.SetEnabled(true)
+	taskClient := &relayAdmissionTaskClient{submitErr: errors.New("queue full")}
+	transport := &relayVisitorTransportStub{message: 501}
+	ingress := NewRelayIngress(service, taskClient, transport)
+
+	handled, err := ingress.tryVisitor(ctx, pmrelay.IngressMessage{
+		SenderID: 42, ChatID: 42, MessageID: 11,
+	})
+	if !handled || err == nil {
+		t.Fatalf("tryVisitor() handled=%v err=%v", handled, err)
+	}
+	if transport.calls != 0 {
+		t.Fatalf("transport ran before admission: calls=%d", transport.calls)
+	}
+	if count, err := repo.CountDeliveries(ctx); err != nil || count != 0 {
+		t.Fatalf("deliveries after rejected admission=%d err=%v", count, err)
+	}
+	if count, err := repo.CountMappings(ctx); err != nil || count != 0 {
+		t.Fatalf("mappings after rejected admission=%d err=%v", count, err)
+	}
+	if count, err := repo.CountAudience(ctx); err != nil || count != 0 {
+		t.Fatalf("audience after rejected admission=%d err=%v", count, err)
+	}
+}
