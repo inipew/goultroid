@@ -805,7 +805,6 @@ func TestCallbackContext_UTF8SafeTruncation(t *testing.T) {
 	}
 }
 
-
 func TestRouter_PreparedDispatchRejectsReloadWithoutConsumingState(t *testing.T) {
 	store := NewStateStore()
 	router := NewRouter(zap.NewNop(), store)
@@ -890,7 +889,6 @@ func TestStateStore_ClaimEntryUnauthorizedDoesNotConsumeSingleUse(t *testing.T) 
 		t.Fatalf("expected consumed state after authorized claim, got %v", err)
 	}
 }
-
 
 func TestRouter_PrepareOwnsRateLimitBeforeExecution(t *testing.T) {
 	router := NewRouter(zap.NewNop(), NewStateStore())

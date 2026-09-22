@@ -581,7 +581,6 @@ func TestCallbackIngress_TaskCancellationUnblocksAndAnswers(t *testing.T) {
 	}
 }
 
-
 type canonicalBridgeHandler struct {
 	handled bool
 }
@@ -640,7 +639,6 @@ func TestCallbackQueryDeduper_BoundedAndReusableAfterTTL(t *testing.T) {
 		t.Fatalf("dedupe map exceeded bound: %d > %d", len(deduper.seen), assistantCallbackDedupMax)
 	}
 }
-
 
 type countingAssistantRateLimiter struct {
 	calls int

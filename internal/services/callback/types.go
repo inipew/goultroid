@@ -477,4 +477,3 @@ func isValidOpaqueID(s string) bool {
 	}
 	return true
 }
-

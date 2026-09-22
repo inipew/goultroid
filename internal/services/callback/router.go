@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"

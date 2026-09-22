@@ -80,12 +80,12 @@ func NewApp(appID int, appHash string, botToken string, logger *zap.Logger) *Ass
 func NewBotClient(appID int, appHash string, botToken string, logger *zap.Logger) *AssistantApp {
 	return NewApp(appID, appHash, botToken, logger)
 }
-func (a *AssistantApp) Start(ctx context.Context) error        { return a.client.Start(ctx) }
-func (a *AssistantApp) Stop(ctx context.Context) error         { return a.client.Stop(ctx) }
-func (a *AssistantApp) IsRunning() bool                        { return a.client.IsRunning() }
-func (a *AssistantApp) WaitReady(ctx context.Context) error    { return a.client.WaitReady(ctx) }
-func (a *AssistantApp) Username() string                       { return a.client.Username() }
-func (a *AssistantApp) StartTime() time.Time                   { return a.client.StartTime() }
+func (a *AssistantApp) Start(ctx context.Context) error     { return a.client.Start(ctx) }
+func (a *AssistantApp) Stop(ctx context.Context) error      { return a.client.Stop(ctx) }
+func (a *AssistantApp) IsRunning() bool                     { return a.client.IsRunning() }
+func (a *AssistantApp) WaitReady(ctx context.Context) error { return a.client.WaitReady(ctx) }
+func (a *AssistantApp) Username() string                    { return a.client.Username() }
+func (a *AssistantApp) StartTime() time.Time                { return a.client.StartTime() }
 func (a *AssistantApp) SetOwner(ownerID int64, sudoGetter func() []int64) {
 	a.client.SetOwner(ownerID, sudoGetter)
 }

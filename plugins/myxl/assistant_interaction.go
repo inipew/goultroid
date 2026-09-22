@@ -21,8 +21,8 @@ import (
 )
 
 const (
-	assistantTTL       = 10 * time.Minute
-	assistantInputTTL  = 2 * time.Minute
+	assistantTTL             = 10 * time.Minute
+	assistantInputTTL        = 2 * time.Minute
 	assistantActionSlotCount = 32
 
 	assistantScreenHome  = "home"

@@ -100,7 +100,7 @@ func NewAssistantClient(appID int, appHash string, botToken string, logger *zap.
 		startTime: time.Now(), lifecycle: NewLifecycle(), rateLimiter: rl,
 		cache: cache, resolver: res, cmdRouter: cmdR,
 		callbackDeduper: newCallbackQueryDeduper(),
-		rpcExecutor:      assistentrpc.DirectExecutor{},
+		rpcExecutor:     assistentrpc.DirectExecutor{},
 	}
 	cmdR.Register("/start", c.dispatchStart)
 	return c

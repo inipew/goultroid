@@ -341,4 +341,3 @@ func (s *StateStore) deleteEntry(opaqueID string) {
 		delete(s.items, opaqueID)
 	}
 }
-

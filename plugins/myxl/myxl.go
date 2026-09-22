@@ -41,7 +41,7 @@ type Plugin struct {
 	tasks      tasks.Client
 	qrTaskSeq  atomic.Uint64
 
-	assistantMu sync.RWMutex
+	assistantMu      sync.RWMutex
 	assistantRuntime interaction.DriverRuntime
 }
 

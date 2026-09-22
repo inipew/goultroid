@@ -138,7 +138,7 @@ type recordingMetrics struct {
 	callbackCount int
 }
 
-func (r *recordingMetrics) RecordCommand(_ string, _ time.Duration, _ error)               {}
+func (r *recordingMetrics) RecordCommand(_ string, _ time.Duration, _ error) {}
 func (r *recordingMetrics) RecordCallback(tag string, _ time.Duration, _ error) {
 	r.lastTag = tag
 	r.callbackCount++
