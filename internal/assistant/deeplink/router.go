@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 const (
