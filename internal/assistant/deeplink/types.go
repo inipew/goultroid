@@ -15,6 +15,7 @@ const (
 	MaxPayloadBytes  = 1024
 	MaxKindBytes     = 32
 	MaxRetainedTokens = 4096
+	ClaimLeaseTTL      = 5 * time.Minute
 )
 
 var (
@@ -22,6 +23,7 @@ var (
 	ErrTokenNotFound      = errors.New("assistant/deeplink: token not found")
 	ErrTokenExpired       = errors.New("assistant/deeplink: token expired")
 	ErrTokenConsumed      = errors.New("assistant/deeplink: token already consumed")
+	ErrTokenClaimed       = errors.New("assistant/deeplink: token execution already in progress")
 	ErrTokenUnauthorized  = errors.New("assistant/deeplink: token actor mismatch")
 	ErrTokenExists        = errors.New("assistant/deeplink: token already exists")
 	ErrInvalidKind        = errors.New("assistant/deeplink: invalid kind")
@@ -79,7 +81,9 @@ type Provider interface {
 type Repository interface {
 	Create(context.Context, Token) error
 	Get(context.Context, string) (Token, error)
-	Claim(context.Context, string, int64, time.Time) (Token, error)
+	Claim(context.Context, string, int64, time.Time, string, time.Time) (Token, error)
+	CommitClaim(context.Context, string, string, time.Time) error
+	ReleaseClaim(context.Context, string, string) error
 	PruneExpired(context.Context, time.Time, int) (int, error)
 	CountRetained(context.Context) (int, error)
 }
