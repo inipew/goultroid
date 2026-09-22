@@ -225,6 +225,8 @@ func TestBuiltinFeatureMigrationsIncludeAssistantGroupState(t *testing.T) {
 		{kind: "index", name: "idx_assistant_group_state_expiry"},
 		{kind: "trigger", name: "trg_assistant_group_state_value_insert"},
 		{kind: "trigger", name: "trg_assistant_group_state_value_update"},
+		{kind: "trigger", name: "trg_assistant_group_state_coordinate_insert"},
+		{kind: "trigger", name: "trg_assistant_group_state_coordinate_update"},
 	} {
 		var count int
 		if err := db.QueryRowContext(ctx, `
