@@ -45,6 +45,10 @@ type ClientInteraction struct {
 	executor   assistentrpc.Executor
 }
 
+type durableMessageAPI interface {
+	MessagesSendMessageDurable(context.Context, *tg.MessagesSendMessageRequest) (tg.UpdatesClass, error)
+}
+
 var _ MessageInteraction = (*ClientInteraction)(nil)
 
 // NewClientInteraction creates an interaction engine backed by a Telegram API instance.
@@ -465,6 +469,95 @@ func (c *ClientInteraction) SendMessage(ctx context.Context, peer tg.InputPeerCl
 		return nil, retErr
 	}
 	return extractMessage(updates), nil
+}
+
+// SendMessageWithRandomID sends exact Telegram text/entities with a caller-owned
+// random_id. Unlike SendMessage, it does not parse HTML; it is intended for
+// copying an already-authoritative Telegram message while keeping the new
+// message bot-authored and restart-idempotent.
+func (c *ClientInteraction) SendMessageWithRandomID(
+	ctx context.Context,
+	peer tg.InputPeerClass,
+	text string,
+	entities []tg.MessageEntityClass,
+	randomID int64,
+) (_ *tg.Message, retErr error) {
+	if c == nil || c.api == nil || peer == nil || strings.TrimSpace(text) == "" || randomID == 0 {
+		return nil, ErrInvalidTarget
+	}
+	start := time.Now()
+	defer func() {
+		if c.metrics != nil {
+			c.metrics.RecordTelegramRequest("MessagesSendMessage", time.Since(start), retErr)
+		}
+	}()
+
+	req := &tg.MessagesSendMessageRequest{
+		Peer:     peer,
+		Message:  text,
+		RandomID: randomID,
+	}
+	if cleaned := sanitizeEntities(text, entities); len(cleaned) > 0 {
+		req.SetEntities(cleaned)
+	}
+
+	var (
+		updates tg.UpdatesClass
+		err     error
+	)
+	if durable, ok := c.api.(durableMessageAPI); ok {
+		updates, err = durable.MessagesSendMessageDurable(ctx, req)
+	} else {
+		updates, err = c.api.MessagesSendMessage(ctx, req)
+	}
+	if err != nil {
+		retErr = fmt.Errorf("assistant send durable message: %w", ClassifyRPCError(err))
+		return nil, retErr
+	}
+
+	msg, unpackErr := messageunpack.Message(updates, nil)
+	if unpackErr != nil || msg == nil || msg.ID <= 0 {
+		// Keep compatibility with short update envelopes that the older
+		// interaction helper already understands.
+		if fallback := extractMessage(updates); fallback != nil && fallback.ID > 0 {
+			return fallback, nil
+		}
+		if unpackErr != nil {
+			retErr = fmt.Errorf("assistant send durable message: unpack target message: %w", unpackErr)
+		} else {
+			retErr = fmt.Errorf("assistant send durable message: Telegram returned no target message")
+		}
+		return nil, retErr
+	}
+	return msg, nil
+}
+
+// CopyTextMessageWithRandomID reloads a source Telegram message and emits a new
+// bot-authored text message to the destination. Forward metadata and source
+// author identity are never copied.
+func (c *ClientInteraction) CopyTextMessageWithRandomID(
+	ctx context.Context,
+	source MessageTarget,
+	toPeer tg.InputPeerClass,
+	randomID int64,
+) (*tg.Message, error) {
+	if c == nil || !source.IsValid() || toPeer == nil || randomID == 0 {
+		return nil, ErrInvalidTarget
+	}
+	sourceMessage, err := c.GetMessage(ctx, source)
+	if err != nil {
+		return nil, err
+	}
+	if sourceMessage == nil || sourceMessage.Media != nil || strings.TrimSpace(sourceMessage.Message) == "" {
+		return nil, fmt.Errorf("%w: PM relay copy supports plain text only", core.ErrUnsupported)
+	}
+	return c.SendMessageWithRandomID(
+		ctx,
+		toPeer,
+		sourceMessage.Message,
+		append([]tg.MessageEntityClass(nil), sourceMessage.Entities...),
+		randomID,
+	)
 }
 
 // ForwardMessageWithRandomID forwards one Telegram message using a caller-owned
