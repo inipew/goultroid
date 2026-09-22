@@ -203,6 +203,25 @@ func (r *commitFailRepository) CommitDelivery(
 	return r.Repository.CommitDelivery(ctx, key, claimID, targetMessageID, deliveredAt)
 }
 
+type claimHookRepository struct {
+	Repository
+	afterClaim func()
+}
+
+func (r *claimHookRepository) ClaimDelivery(
+	ctx context.Context,
+	key DeliveryKey,
+	now time.Time,
+	claimID string,
+	claimExpiresAt time.Time,
+) (DeliveryIntent, error) {
+	delivery, err := r.Repository.ClaimDelivery(ctx, key, now, claimID, claimExpiresAt)
+	if err == nil && r.afterClaim != nil {
+		r.afterClaim()
+	}
+	return delivery, err
+}
+
 func prepareVisitorForDelivery(t *testing.T, service *Service) PreparedIngress {
 	t.Helper()
 	prepared, handled, err := service.PrepareVisitor(context.Background(), IngressMessage{
@@ -431,5 +450,42 @@ func TestExecuteVisitorRecoversCrashAfterSendWithSameRandomID(t *testing.T) {
 	}
 	if _, err := sqliteRepo.GetAudience(ctx, 42); err != nil {
 		t.Fatalf("audience after recovery: %v", err)
+	}
+}
+
+func TestExecuteVisitorRevalidatesAgainAfterClaimBeforeTransport(t *testing.T) {
+	ctx := context.Background()
+	sqliteRepo, _ := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8})
+	repo := &claimHookRepository{Repository: sqliteRepo}
+	base := time.Date(2026, 9, 22, 14, 0, 0, 0, time.UTC)
+	service := NewService(repo, 7)
+	service.now = func() time.Time { return base }
+	service.randomID = func() (int64, error) { return 777, nil }
+	service.claimID = func() (string, error) { return "claim-a", nil }
+	service.SetEnabled(true)
+	prepared := prepareVisitorForDelivery(t, service)
+	repo.afterClaim = func() { service.SetEnabled(false) }
+	transport := &visitorTransportStub{message: 501}
+
+	if err := service.ExecuteVisitor(ctx, prepared, transport); !errors.Is(err, ErrDisabled) {
+		t.Fatalf("ExecuteVisitor(disabled after claim) error=%v, want %v", err, ErrDisabled)
+	}
+	if transport.calls != 0 {
+		t.Fatalf("transport ran after post-claim revalidation failed: calls=%d", transport.calls)
+	}
+	delivery, err := sqliteRepo.GetDelivery(ctx, DeliveryKey{
+		Direction: DeliveryVisitorToOwner, SourceChatID: 42, SourceMessageID: 11,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delivery.ClaimID != "" || delivery.Completed() {
+		t.Fatalf("failed post-claim revalidation left active delivery=%+v", delivery)
+	}
+	if _, err := sqliteRepo.GetMapping(ctx, 7, 501); !errors.Is(err, ErrMappingNotFound) {
+		t.Fatalf("mapping created after denied transport: %v", err)
+	}
+	if _, err := sqliteRepo.GetAudience(ctx, 42); !errors.Is(err, ErrAudienceNotFound) {
+		t.Fatalf("audience created after denied transport: %v", err)
 	}
 }
