@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gotd/td/tg"
@@ -12,7 +13,11 @@ import (
 )
 
 const (
-	DefaultWarnThreshold = 3
+	DefaultWarnThreshold  = 3
+	MaxWarningThreshold   = 16
+	MaxWarningReasonBytes = 1024
+	warningLockStripes    = 64
+
 	ActionNone           = "none"
 	ActionMute           = "muted"
 	ActionKick           = "kicked"
@@ -59,6 +64,12 @@ type Service struct {
 	svcFunc          func() core.TelegramServicer
 	logger           *zap.Logger
 	defaultThreshold int
+	warningLocks     [warningLockStripes]sync.Mutex
+}
+
+func (s *Service) warningLock(chatID, userID int64) *sync.Mutex {
+	mixed := uint64(chatID)*0x9e3779b97f4a7c15 ^ uint64(userID)*0xbf58476d1ce4e5b9
+	return &s.warningLocks[mixed%warningLockStripes]
 }
 
 func (s *Service) getService() core.TelegramServicer {
@@ -128,9 +139,21 @@ func (s *Service) warnWithService(
 	if threshold <= 0 {
 		threshold = s.defaultThreshold
 	}
+	if threshold > MaxWarningThreshold {
+		return nil, fmt.Errorf("%w: warning threshold exceeds %d", core.ErrResourceLimit, MaxWarningThreshold)
+	}
+	reason = strings.TrimSpace(reason)
+	if len(reason) > MaxWarningReasonBytes {
+		return nil, fmt.Errorf("%w: warning reason exceeds %d bytes", core.ErrInvalidArgs, MaxWarningReasonBytes)
+	}
 	if actionOnThreshold == "" {
 		actionOnThreshold = ActionMute
 	}
+
+	lock := s.warningLock(chatID, userID)
+	lock.Lock()
+	defer lock.Unlock()
+
 	count, err := s.repo.GetWarningCount(ctx, chatID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check warning count: %w", err)
