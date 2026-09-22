@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	FeatureID              = "pmrelay_admin"
-	blockedPageSize        = 5
+	FeatureID                 = "pmrelay_admin"
+	blockedPageSize           = 5
 	blockedReasonPreviewRunes = 96
 )
 
@@ -194,7 +194,7 @@ func (f *Feature) replyBlocked(ctx *core.Context) error {
 	if len(ctx.Args) > 1 {
 		value, err := strconv.ParseInt(strings.TrimSpace(ctx.Args[1]), 10, 64)
 		if err != nil || value < 0 {
-			return ctx.Reply("⚠️ <code>after_user_id</code> must be a positive numeric Telegram user ID.")
+			return ctx.Reply("⚠️ <code>after_user_id</code> must be a non-negative numeric Telegram user ID.")
 		}
 		after = value
 	}
