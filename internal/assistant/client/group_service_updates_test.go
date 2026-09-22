@@ -1,9 +1,12 @@
 package client
 
 import (
+	"context"
+	"fmt"
 	"testing"
 
 	"github.com/gotd/td/tg"
+	"github.com/inipew/goultroid/internal/assistant/peer"
 	"github.com/inipew/goultroid/internal/core"
 )
 
@@ -26,6 +29,42 @@ func (s *groupServiceIngressStub) Publish(event *core.GroupServiceEvent) {
 	s.published = append(s.published, event)
 }
 
+type groupServiceResolverStub struct {
+	calls    int
+	resolved tg.InputPeerClass
+	err      error
+	cache    peer.Cache
+}
+
+func (r *groupServiceResolverStub) Resolve(
+	context.Context,
+	tg.PeerClass,
+	int64,
+	tg.Entities,
+) (tg.InputPeerClass, error) {
+	r.calls++
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.resolved, nil
+}
+
+func (r *groupServiceResolverStub) ReResolve(
+	context.Context,
+	tg.InputPeerClass,
+) (tg.InputPeerClass, error) {
+	return nil, fmt.Errorf("unexpected ReResolve")
+}
+
+func (r *groupServiceResolverStub) InvalidatePeer(tg.InputPeerClass) {}
+
+func (r *groupServiceResolverStub) Cache() peer.Cache {
+	if r.cache == nil {
+		r.cache = peer.NewMemoryCache()
+	}
+	return r.cache
+}
+
 func TestP7HInactiveChatStopsBeforePublish(t *testing.T) {
 	ingress := &groupServiceIngressStub{}
 	message := &tg.MessageService{
@@ -39,7 +78,7 @@ func TestP7HInactiveChatStopsBeforePublish(t *testing.T) {
 		Users: map[int64]*tg.User{42: {ID: 42, FirstName: "Alice"}},
 	}
 
-	handleAssistantGroupService(message, entities, UpdateHandlerDeps{
+	handleAssistantGroupService(context.Background(), message, entities, UpdateHandlerDeps{
 		GroupEvents: ingress,
 		SelfID:      func() int64 { return 999 },
 	})
@@ -71,7 +110,7 @@ func TestP7HActiveJoinDeduplicatesUsersAndExcludesAssistant(t *testing.T) {
 		},
 	}
 
-	handleAssistantGroupService(message, entities, UpdateHandlerDeps{
+	handleAssistantGroupService(context.Background(), message, entities, UpdateHandlerDeps{
 		GroupEvents: ingress,
 		SelfID:      func() int64 { return 999 },
 	})
@@ -109,7 +148,7 @@ func TestP7HSupergroupServiceMessageUsesChannelIngressShape(t *testing.T) {
 		},
 	}
 
-	handleAssistantGroupService(message, entities, UpdateHandlerDeps{
+	handleAssistantGroupService(context.Background(), message, entities, UpdateHandlerDeps{
 		GroupEvents: ingress,
 		SelfID:      func() int64 { return 999 },
 	})
@@ -142,7 +181,7 @@ func TestP7HBroadcastServiceMessageFailsClosedBeforeInterest(t *testing.T) {
 		},
 	}
 
-	handleAssistantGroupService(message, entities, UpdateHandlerDeps{
+	handleAssistantGroupService(context.Background(), message, entities, UpdateHandlerDeps{
 		GroupEvents: ingress,
 	})
 
@@ -160,7 +199,7 @@ func TestP7HGoodbyeMapsDeleteUser(t *testing.T) {
 		FromID: &tg.PeerUser{UserID: 7},
 		Action: &tg.MessageActionChatDeleteUser{UserID: 42},
 	}
-	handleAssistantGroupService(message, tg.Entities{
+	handleAssistantGroupService(context.Background(), message, tg.Entities{
 		Chats: map[int64]*tg.Chat{77: {ID: 77}},
 		Users: map[int64]*tg.User{42: {ID: 42, FirstName: "Alice"}},
 	}, UpdateHandlerDeps{GroupEvents: ingress})
@@ -170,5 +209,68 @@ func TestP7HGoodbyeMapsDeleteUser(t *testing.T) {
 		len(ingress.published[0].Users) != 1 ||
 		ingress.published[0].Users[0].ID != 42 {
 		t.Fatalf("goodbye event=%+v", ingress.published)
+	}
+}
+
+
+func TestP7HInterestedSupergroupRecoversPeerWithoutEntitySnapshot(t *testing.T) {
+	ingress := &groupServiceIngressStub{interested: true}
+	resolver := &groupServiceResolverStub{
+		resolved: &tg.InputPeerChannel{ChannelID: 88, AccessHash: 188},
+	}
+	message := &tg.MessageService{
+		ID:     15,
+		PeerID: &tg.PeerChannel{ChannelID: 88},
+		FromID: &tg.PeerUser{UserID: 42},
+		Action: &tg.MessageActionChatJoinedByLink{},
+	}
+
+	handleAssistantGroupService(context.Background(), message, tg.Entities{
+		Users: map[int64]*tg.User{
+			42: {ID: 42, FirstName: "Alice"},
+		},
+	}, UpdateHandlerDeps{
+		GroupEvents: ingress,
+		Resolver:    resolver,
+		SelfID:      func() int64 { return 999 },
+	})
+
+	if resolver.calls != 1 {
+		t.Fatalf("resolver calls=%d, want 1 after interest hit", resolver.calls)
+	}
+	if len(ingress.published) != 1 {
+		t.Fatalf("published events=%d, want 1", len(ingress.published))
+	}
+	peer, ok := ingress.published[0].Peer.(*tg.InputPeerChannel)
+	if !ok || peer.ChannelID != 88 || peer.AccessHash != 188 {
+		t.Fatalf("recovered peer=%#v", ingress.published[0].Peer)
+	}
+}
+
+func TestP7HInactiveSupergroupDoesNotResolveMissingEntity(t *testing.T) {
+	ingress := &groupServiceIngressStub{interested: false}
+	resolver := &groupServiceResolverStub{
+		resolved: &tg.InputPeerChannel{ChannelID: 88, AccessHash: 188},
+	}
+	message := &tg.MessageService{
+		ID:     16,
+		PeerID: &tg.PeerChannel{ChannelID: 88},
+		FromID: &tg.PeerUser{UserID: 42},
+		Action: &tg.MessageActionChatJoinedByRequest{},
+	}
+
+	handleAssistantGroupService(context.Background(), message, tg.Entities{}, UpdateHandlerDeps{
+		GroupEvents: ingress,
+		Resolver:    resolver,
+	})
+
+	if ingress.interestedCalls != 1 {
+		t.Fatalf("interest calls=%d, want 1", ingress.interestedCalls)
+	}
+	if resolver.calls != 0 {
+		t.Fatalf("inactive supergroup touched resolver %d times", resolver.calls)
+	}
+	if len(ingress.published) != 0 {
+		t.Fatalf("inactive supergroup published %d events", len(ingress.published))
 	}
 }
