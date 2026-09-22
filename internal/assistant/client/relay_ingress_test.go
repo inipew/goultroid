@@ -163,7 +163,7 @@ func TestRelayIngressOwnerAndVisitorDirectionsShareThreadOrdering(t *testing.T) 
 	if err != nil || !handled {
 		t.Fatalf("tryOwnerReply() handled=%v err=%v", handled, err)
 	}
-	if taskClient.spec.QuotaOwner != tasks.OwnerID("pmrelay:visitor:42") ||
+	if taskClient.spec.QuotaOwner != tasks.OwnerID("pmrelay:owner-reply:42") ||
 		taskClient.spec.OrderingKey != "pmrelay:thread:42" {
 		t.Fatalf("owner reply admission quota=%q ordering=%q", taskClient.spec.QuotaOwner, taskClient.spec.OrderingKey)
 	}
