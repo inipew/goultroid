@@ -8,8 +8,8 @@ import (
 )
 
 var (
-	ErrDisabled      = errors.New("pmrelay: relay disabled")
-	ErrPreparedStale = errors.New("pmrelay: prepared ingress stale")
+	ErrDisabled       = errors.New("pmrelay: relay disabled")
+	ErrPreparedStale  = errors.New("pmrelay: prepared ingress stale")
 	ErrMappingExpired = errors.New("pmrelay: mapping expired")
 )
 
