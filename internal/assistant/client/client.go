@@ -175,7 +175,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 		c.interaction.SetMetricsCollector(c.metrics)
 	}
 	c.interaction.SetPeerReResolver(c.resolver)
-	inlineQueryService := newAssistantInlineQueryServicer(managedAPI)
+	inlineQueryService := newAssistantInlineQueryServicer(managedAPI, c.interaction)
 	c.mu.RLock()
 	featureCatalog := c.featureCatalog
 	interactionSessions := c.interactionSessions
