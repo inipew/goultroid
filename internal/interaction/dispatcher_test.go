@@ -232,7 +232,11 @@ func TestPreparedActionCarriesDynamicExecutionAdmission(t *testing.T) {
 	if prepared.Scope() != providerScope {
 		t.Fatalf("prepared scope=%+v, want %+v", prepared.Scope(), providerScope)
 	}
-	resources := prepared.Resources()
+	aware, ok := prepared.(ResourcePreparedAction)
+	if !ok {
+		t.Fatal("prepared action did not expose resource admission")
+	}
+	resources := aware.Resources()
 	if len(resources) != 1 || resources[0].Name != "media" || resources[0].Amount != 1 {
 		t.Fatalf("prepared resources=%+v, want media:1", resources)
 	}
