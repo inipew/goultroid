@@ -73,6 +73,7 @@ type Router struct {
 	groupRoles           core.GroupRoleResolver
 	groupQuery           GroupQueryReader
 	groupMutation        GroupMutationExecutor
+	peerResolver         core.PeerResolver
 	groupState           core.GroupStateStore
 	botUsername          atomic.Value // string
 	ownerID              int64
@@ -117,6 +118,11 @@ func (r *Router) SetGroupQueryReader(reader GroupQueryReader) {
 // SetGroupMutationExecutor installs the managed P7-G Telegram mutation boundary.
 func (r *Router) SetGroupMutationExecutor(executor GroupMutationExecutor) {
 	r.groupMutation = executor
+}
+
+// SetPeerResolver installs the canonical feature-facing peer resolver.
+func (r *Router) SetPeerResolver(resolver core.PeerResolver) {
+	r.peerResolver = resolver
 }
 
 // SetGroupStateStore installs the durable chat-scoped manager state boundary.
@@ -646,7 +652,8 @@ func (r *Router) dispatch(
 			Chat:           &chat,
 			Perms:          perms,
 			Principal:      principal,
-			GroupRoles: r.groupRoles,
+			GroupRoles:     r.groupRoles,
+			Resolver:       r.peerResolver,
 			Svc: &assistantServicerAdapter{
 				inter:         inter,
 				groupQuery:    r.groupQuery,
