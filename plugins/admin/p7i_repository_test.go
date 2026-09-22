@@ -91,3 +91,29 @@ func TestP7IWarningRepositoryBoundsDirectCallers(t *testing.T) {
 			len(records), moderation.MaxWarningThreshold)
 	}
 }
+
+
+func TestP7IWarningRepositoryRejectsInvalidCoordinates(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	repo := NewSQLiteWarningRepository(db)
+	for _, tc := range []struct {
+		chatID int64
+		userID int64
+	}{
+		{chatID: 0, userID: 200},
+		{chatID: 100, userID: 0},
+		{chatID: -1, userID: 200},
+		{chatID: 100, userID: -1},
+	} {
+		err := repo.AddWarning(context.Background(), tc.chatID, tc.userID, "invalid", 999)
+		if !errors.Is(err, core.ErrInvalidArgs) {
+			t.Fatalf("AddWarning(chat=%d,user=%d) error=%v, want ErrInvalidArgs",
+				tc.chatID, tc.userID, err)
+		}
+	}
+}
