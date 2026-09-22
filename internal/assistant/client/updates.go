@@ -199,7 +199,7 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 
 		// PM Relay is the final private-message data-plane fallback. Prepare is
 		// read-only; execution is admitted through TaskEngine and revalidated in
-		// RelayIngress before later phases may attach Telegram delivery.
+		// RelayIngress before durable Telegram delivery.
 		if privateChat && plainTextRelay && deps.RelayIngress != nil {
 			if handled, relayErr := deps.RelayIngress.tryVisitor(ctx, relayMessage); handled {
 				if relayErr != nil {
