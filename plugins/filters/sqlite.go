@@ -55,6 +55,18 @@ func (r *SQLiteRepository) SaveFilter(ctx context.Context, chatID int64, keyword
 		if count >= MaxRulesPerChat {
 			return ErrRuleLimit
 		}
+		if count == 0 {
+			var activeChats int
+			if err := r.db.QueryRowContext(ctx,
+				"SELECT COUNT(*) FROM (SELECT chat_id FROM filters GROUP BY chat_id LIMIT ?)",
+				MaxActiveChats+1,
+			).Scan(&activeChats); err != nil {
+				return fmt.Errorf("failed to count active filter chats: %w", err)
+			}
+			if activeChats >= MaxActiveChats {
+				return fmt.Errorf("%w: active filter chats exceed %d", core.ErrResourceLimit, MaxActiveChats)
+			}
+		}
 	}
 
 	media := savedresponse.MediaRef{}
