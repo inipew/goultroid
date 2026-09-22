@@ -171,3 +171,46 @@ func TestP7JResolveTargetExplicitMentionOverridesReply(t *testing.T) {
 		t.Fatalf("explicit target id/ref/calls=%d/%q/%d", id, resolver.lastUserRef, svc.calls)
 	}
 }
+
+type p7jContextualSendServicer struct {
+	MockTelegramServicer
+	lastSend MessageSendContext
+}
+
+func (s *p7jContextualSendServicer) SendMessageContext(
+	_ context.Context,
+	_ tg.InputPeerClass,
+	text string,
+	_ tg.ReplyMarkupClass,
+	send MessageSendContext,
+) (*tg.Message, error) {
+	s.lastSend = send
+	return &tg.Message{ID: 901, Message: text}, nil
+}
+
+func (s *p7jContextualSendServicer) SendMediaContext(
+	context.Context,
+	tg.InputPeerClass,
+	string,
+	string,
+	string,
+	MessageSendContext,
+) (*tg.Message, error) {
+	return nil, nil
+}
+
+func TestP7JCoreReplyCarriesSourceMessageAndTopic(t *testing.T) {
+	svc := &p7jContextualSendServicer{}
+	ctx := &Context{
+		Ctx:     context.Background(),
+		Svc:     svc,
+		PeerID:  &tg.InputPeerChannel{ChannelID: 77, AccessHash: 700},
+		Message: &Message{ID: 900, TopicID: 100},
+	}
+	if _, err := ctx.Messages().Reply("same topic"); err != nil {
+		t.Fatalf("reply: %v", err)
+	}
+	if svc.lastSend.ReplyToID != 900 || svc.lastSend.TopicID != 100 {
+		t.Fatalf("send context=%+v want reply=900 topic=100", svc.lastSend)
+	}
+}

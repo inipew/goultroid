@@ -224,3 +224,55 @@ func TestCommandRouter_GroupRoleResolverIsAvailableLazilyToCanonicalHandler(t *t
 		t.Fatalf("resolver calls=%d snapshot=%+v", roleResolver.calls, resolved)
 	}
 }
+
+func TestCommandRouter_P7JCarriesMediaAndSelfContextToHandler(t *testing.T) {
+	r := command.NewRouter(zap.NewNop())
+	var got *core.Context
+	coreRouter := core.NewRouter(".")
+	if err := coreRouter.Register(core.Command{
+		Name:       "contextprobe",
+		Surfaces:   execution.SurfaceAssistant,
+		GroupOnly:  true,
+		Permission: core.PermissionEveryone,
+		Handler: func(c *core.Context) error {
+			got = c
+			return nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r.SetCoreRouter(coreRouter)
+
+	err := r.DispatchMessageContext(
+		context.Background(),
+		42,
+		&tg.InputPeerChannel{ChannelID: 99, AccessHash: 123},
+		"/contextprobe @helper",
+		command.MessageContext{
+			Chat:          core.Chat{ID: 99, Type: "supergroup", AccessHash: 123},
+			MessageID:     70,
+			TopicID:       7,
+			Media:         &core.MediaInfo{Type: "webpage", WebURL: "https://example.com"},
+			GroupedID:     44,
+			Self:          core.User{ID: 999, Username: "helper", IsBot: true},
+			MentionedSelf: true,
+			ReplyPeer:     core.PeerRef{Kind: core.PeerKindChannel, ID: 99, AccessHash: 123},
+		},
+		&fakeInteraction{},
+	)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if got == nil || got.Message == nil {
+		t.Fatal("canonical handler did not receive context")
+	}
+	if got.Message.Media == nil || got.Message.Media.Type != "webpage" || got.Message.GroupedID != 44 {
+		t.Fatalf("media/grouped context=%+v grouped=%d", got.Message.Media, got.Message.GroupedID)
+	}
+	if !got.MentionedSelf() || got.Self == nil || got.Self.ID != 999 || got.Self.Username != "helper" {
+		t.Fatalf("self context mentioned=%v self=%+v", got.MentionedSelf(), got.Self)
+	}
+	if got.Message.ReplyPeer.ID != 99 {
+		t.Fatalf("reply peer=%+v", got.Message.ReplyPeer)
+	}
+}
