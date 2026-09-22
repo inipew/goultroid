@@ -72,6 +72,7 @@ type Router struct {
 	delayedActions       core.DelayedActionScheduler
 	groupRoles           core.GroupRoleResolver
 	groupQuery           GroupQueryReader
+	groupState           core.GroupStateStore
 	botUsername          atomic.Value // string
 	ownerID              int64
 	sudoGetter           func() []int64
@@ -110,6 +111,11 @@ func (r *Router) SetGroupRoleResolver(resolver core.GroupRoleResolver) {
 // by manager canaries such as /chatinfo.
 func (r *Router) SetGroupQueryReader(reader GroupQueryReader) {
 	r.groupQuery = reader
+}
+
+// SetGroupStateStore installs the durable chat-scoped manager state boundary.
+func (r *Router) SetGroupStateStore(store core.GroupStateStore) {
+	r.groupState = store
 }
 
 // SetBotUsername sets the authenticated Assistant bot username used to validate
@@ -635,6 +641,7 @@ func (r *Router) dispatch(
 			Svc:            &assistantServicerAdapter{inter: inter, groupQuery: r.groupQuery},
 			DelayedActions: r.delayedActions,
 		}
+		core.AttachGroupStateStore(coreCtx, r.groupState)
 
 		if cmd.GroupAuthorization.Required() {
 			if r.tasks == nil {
