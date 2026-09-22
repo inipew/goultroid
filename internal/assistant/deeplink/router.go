@@ -54,9 +54,10 @@ type Router struct {
 	repo Repository
 	now  func() time.Time
 
-	mu        sync.RWMutex
-	providers  map[string]providerEntry
-	next       uint64
+	mu          sync.RWMutex
+	issueMu     sync.Mutex
+	providers   map[string]providerEntry
+	next        uint64
 	maxRetained int
 }
 
@@ -165,6 +166,9 @@ func (r *Router) Issue(ctx context.Context, request IssueRequest) (Token, error)
 	if !registered {
 		return Token{}, ErrProviderUnavailable
 	}
+	r.issueMu.Lock()
+	defer r.issueMu.Unlock()
+
 	now := r.now().UTC()
 	if _, err := r.repo.PruneExpired(ctx, now, pruneBatch); err != nil {
 		return Token{}, err
