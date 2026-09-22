@@ -19,6 +19,7 @@ import (
 
 const (
 	assistantSavedResponseTimeout    = 2 * time.Minute
+	assistantGroupQueueTimeout       = 10 * time.Second
 	assistantSavedResponseMetricName = "savedresponse"
 )
 
@@ -313,9 +314,11 @@ func (r *Router) executeCanonicalTask(ctx context.Context, senderID int64, cmd c
 	correlationID := coreCtx.CorrelationID
 	orderingKey := correlationID
 	quotaOwner := tasks.OwnerID(fmt.Sprintf("assistant:user:%d", senderID))
+	var queueDeadline time.Time
 	if coreCtx.IsManagerGroup() && coreCtx.Chat != nil && coreCtx.Chat.ID > 0 {
 		orderingKey = core.GroupOrderingKey(coreCtx.Chat.ID, coreCtx.TopicID())
 		quotaOwner = tasks.OwnerID(fmt.Sprintf("telegram:chat:%d", coreCtx.Chat.ID))
+		queueDeadline = time.Now().Add(assistantGroupQueueTimeout)
 	}
 	handler := core.FilterMiddlewareForSource(cmd, core.ExecutionAssistant)(cmd.Handler)
 	var freshAuthorizationError chan error
@@ -330,6 +333,7 @@ func (r *Router) executeCanonicalTask(ctx context.Context, senderID int64, cmd c
 		Pool:             "interactive",
 		Class:            tasks.PriorityInteractive,
 		OrderingKey:      orderingKey,
+		QueueDeadline:    queueDeadline,
 		ExecutionTimeout: cmd.Timeout,
 		Resources:        append([]tasks.ResourceRequirement(nil), cmd.Resources...),
 		Handler: func(taskCtx context.Context) error {
@@ -422,9 +426,11 @@ func (r *Router) executeSavedResponseBinding(
 
 	orderingKey := fmt.Sprintf("assistant:savedresponse:%d", chatID)
 	quotaOwner := tasks.OwnerID(fmt.Sprintf("assistant:user:%d", senderID))
+	var queueDeadline time.Time
 	if (&messageContext.Chat).IsManagerGroup() {
 		orderingKey = core.GroupOrderingKey(chatID, messageContext.TopicID)
 		quotaOwner = tasks.OwnerID(fmt.Sprintf("telegram:chat:%d", chatID))
+		queueDeadline = time.Now().Add(assistantGroupQueueTimeout)
 	}
 	sendContext := core.MessageSendContext{ReplyToID: messageContext.MessageID, TopicID: messageContext.TopicID}
 
@@ -437,6 +443,7 @@ func (r *Router) executeSavedResponseBinding(
 		Pool:             pool,
 		Class:            tasks.PriorityInteractive,
 		OrderingKey:      orderingKey,
+		QueueDeadline:    queueDeadline,
 		ExecutionTimeout: assistantSavedResponseTimeout,
 		Resources:        resources,
 		Handler: func(taskCtx context.Context) (runErr error) {
