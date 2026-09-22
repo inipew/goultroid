@@ -25,9 +25,9 @@ func (s *countingRelayIngressService) PrepareOwnerReply(ctx context.Context, mes
 	return s.base.PrepareOwnerReply(ctx, message)
 }
 
-func (s *countingRelayIngressService) ExecutePrepared(ctx context.Context, prepared pmrelay.PreparedIngress) error {
+func (s *countingRelayIngressService) RevalidatePrepared(ctx context.Context, prepared pmrelay.PreparedIngress) error {
 	s.executes++
-	return s.base.ExecutePrepared(ctx, prepared)
+	return s.base.RevalidatePrepared(ctx, prepared)
 }
 
 type relayAdmissionTaskClient struct {
@@ -90,7 +90,7 @@ func TestRelayIngressAdmissionRejectionNeverExecutesPreparedWork(t *testing.T) {
 		t.Fatalf("TaskEngine submissions=%d, want 1", taskClient.calls)
 	}
 	if service.executes != 0 {
-		t.Fatalf("ExecutePrepared calls=%d after admission rejection, want 0", service.executes)
+		t.Fatalf("RevalidatePrepared calls=%d after admission rejection, want 0", service.executes)
 	}
 }
 
@@ -106,7 +106,7 @@ func TestRelayIngressCarriesPerVisitorAdmissionAndThreadOrdering(t *testing.T) {
 		t.Fatalf("tryVisitor() handled=%v err=%v", handled, err)
 	}
 	if service.executes != 1 {
-		t.Fatalf("ExecutePrepared calls=%d, want 1", service.executes)
+		t.Fatalf("RevalidatePrepared calls=%d, want 1", service.executes)
 	}
 	spec := taskClient.spec
 	if spec.Scope != relayScope {
