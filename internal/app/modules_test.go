@@ -102,6 +102,7 @@ func TestBuiltinFeatureMigrationsIncludePMRelaySchema(t *testing.T) {
 		"assistant_audience_members",
 		"pm_relay_visitor_blocks",
 		"assistant_audience_membership_order",
+		"pm_relay_force_sub_config",
 	} {
 		var count int
 		if err := db.QueryRowContext(ctx, `
