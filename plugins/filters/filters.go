@@ -40,8 +40,9 @@ type compiledFilter struct {
 }
 
 type compiledFilterSet struct {
-	filters []compiledFilter
-	matcher *keywordMatcher
+	filters  []compiledFilter
+	matcher  *keywordMatcher
+	revision uint64
 }
 
 type Plugin struct {
@@ -51,6 +52,7 @@ type Plugin struct {
 	delivery     *savedresponse.ResponseDelivery
 	tasks        tasks.Client
 	featureState core.ChatFeatureSnapshot
+	ruleRevision atomic.Uint64
 	cacheMu      sync.RWMutex
 	chatFilters  map[int64]*compiledFilterSet
 	chatAccess   map[int64]time.Time
@@ -316,6 +318,7 @@ func (p *Plugin) saveFilterResponse(ctx *core.Context, chatID int64, keyword str
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to save filter: %v", err))
 		return err
 	}
+	p.ruleRevision.Add(1)
 	p.featureState.SetActive(chatID, true)
 	p.invalidateChat(chatID)
 	return ctx.EditOrReply(fmt.Sprintf("🎯 Filter <code>%s</code> saved successfully.", html.EscapeString(keyword)))
@@ -347,6 +350,7 @@ func (p *Plugin) handleStop(ctx *core.Context) error {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to stop filter: %v", err))
 		return err
 	}
+	p.ruleRevision.Add(1)
 	if remaining, err := p.db.ListFilters(ctx.Ctx, chatID); err != nil {
 		p.featureState.MarkUnknown(chatID)
 	} else {
@@ -499,6 +503,10 @@ func (p *Plugin) AssistantRuleInterested(chatID int64) bool {
 	return p.MessageHookInterested(chatID)
 }
 
+func (p *Plugin) AssistantRuleRevision(_ int64) uint64 {
+	return p.ruleRevision.Load()
+}
+
 func (p *Plugin) matchAssistantRule(
 	ctx context.Context,
 	message *core.MessageEnvelope,
@@ -510,16 +518,9 @@ func (p *Plugin) matchAssistantRule(
 		return nil, false, nil
 	}
 
-	filterSet, ok := p.getCachedFilters(message.ChatID)
-	if !ok {
-		rawFilters, err := p.db.ListFilters(ctx, message.ChatID)
-		if err != nil {
-			p.featureState.MarkUnknown(message.ChatID)
-			return nil, false, nil
-		}
-		p.featureState.SetActive(message.ChatID, len(rawFilters) > 0)
-		filterSet = compileFilterSet(rawFilters)
-		p.cacheFilters(message.ChatID, filterSet)
+	filterSet, err := p.compiledFiltersForChat(ctx, message.ChatID)
+	if err != nil {
+		return nil, false, err
 	}
 	if filterSet == nil || len(filterSet.filters) == 0 {
 		return nil, false, nil
@@ -658,12 +659,13 @@ func (p *Plugin) deliverResponse(
 	return err
 }
 
-func (p *Plugin) getCachedFilters(chatID int64) (*compiledFilterSet, bool) {
+func (p *Plugin) getCachedFilters(chatID int64, revision uint64) (*compiledFilterSet, bool) {
 	p.cacheMu.RLock()
 	filters, ok := p.chatFilters[chatID]
 	accessed := p.chatAccess[chatID]
 	p.cacheMu.RUnlock()
-	if !ok || time.Since(accessed) >= filterCacheTTL {
+	if !ok || filters == nil || filters.revision != revision ||
+		time.Since(accessed) >= filterCacheTTL {
 		return nil, false
 	}
 	p.cacheMu.Lock()
@@ -672,15 +674,18 @@ func (p *Plugin) getCachedFilters(chatID int64) (*compiledFilterSet, bool) {
 	return filters, true
 }
 
-func (p *Plugin) cacheFilters(chatID int64, filters *compiledFilterSet) {
+func (p *Plugin) cacheFilters(chatID int64, filters *compiledFilterSet, revision uint64) bool {
 	p.cacheMu.Lock()
 	defer p.cacheMu.Unlock()
+	if p.ruleRevision.Load() != revision {
+		return false
+	}
 	if len(p.chatFilters) >= 500 {
 		var oldestChat int64
 		var oldestTime time.Time
-		for c, t := range p.chatAccess {
-			if oldestTime.IsZero() || t.Before(oldestTime) {
-				oldestTime, oldestChat = t, c
+		for c, accessed := range p.chatAccess {
+			if oldestTime.IsZero() || accessed.Before(oldestTime) {
+				oldestTime, oldestChat = accessed, c
 			}
 		}
 		if oldestChat != 0 {
@@ -688,8 +693,40 @@ func (p *Plugin) cacheFilters(chatID int64, filters *compiledFilterSet) {
 			delete(p.chatAccess, oldestChat)
 		}
 	}
+	if filters == nil {
+		filters = &compiledFilterSet{}
+	}
+	filters.revision = revision
 	p.chatFilters[chatID] = filters
 	p.chatAccess[chatID] = time.Now()
+	return true
+}
+
+func (p *Plugin) compiledFiltersForChat(
+	ctx context.Context,
+	chatID int64,
+) (*compiledFilterSet, error) {
+	for attempt := 0; attempt < 3; attempt++ {
+		revision := p.ruleRevision.Load()
+		if cached, ok := p.getCachedFilters(chatID, revision); ok {
+			return cached, nil
+		}
+
+		rawFilters, err := p.db.ListFilters(ctx, chatID)
+		if err != nil {
+			p.featureState.MarkUnknown(chatID)
+			return nil, err
+		}
+		filterSet := compileFilterSet(rawFilters)
+		if p.ruleRevision.Load() != revision {
+			continue
+		}
+		p.featureState.SetActive(chatID, len(rawFilters) > 0)
+		if p.cacheFilters(chatID, filterSet, revision) {
+			return filterSet, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: filter rules changed during compilation", core.ErrConflict)
 }
 
 func (p *Plugin) cooldownActive(key string) bool {
