@@ -146,7 +146,7 @@ Default/hard bounds:
 
 | Resource | Default | Hard |
 |---|---:|---:|
-| persistent rows | 50,000 | 200,000 |
+| persistent rows | 10,000 | 50,000 |
 | value bytes per row | 64 KiB | 64 KiB |
 | lazy cleanup batch | 64 | 512 |
 | namespace bytes | 64 | 64 |
