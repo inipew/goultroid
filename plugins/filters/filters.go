@@ -50,6 +50,8 @@ type compiledFilterSet struct {
 	filters  []compiledFilter
 	matcher  *keywordMatcher
 	revision uint64
+	cachedAt time.Time
+	lastUsed atomic.Uint64
 }
 
 type Plugin struct {
@@ -60,10 +62,10 @@ type Plugin struct {
 	tasks        tasks.Client
 	featureState core.ChatFeatureSnapshot
 	revisionSeq  atomic.Uint64
+	cacheClock   atomic.Uint64
 	cacheMu      sync.RWMutex
 	chatRevision map[int64]uint64
 	chatFilters  map[int64]*compiledFilterSet
-	chatAccess   map[int64]time.Time
 	cooldownMu   sync.Mutex
 	lastReply    map[string]time.Time
 }
@@ -79,7 +81,6 @@ func New(db Repository, svcFunc func() core.TelegramServicer, responses ...*save
 		delivery:     savedresponse.NewResponseDelivery(responseService),
 		chatRevision: make(map[int64]uint64),
 		chatFilters:  make(map[int64]*compiledFilterSet),
-		chatAccess:   make(map[int64]time.Time),
 		lastReply:    make(map[string]time.Time),
 	}
 }
@@ -516,7 +517,6 @@ func (p *Plugin) chatRuleRevision(chatID int64) uint64 {
 func (p *Plugin) invalidateChat(chatID int64, active bool) {
 	p.cacheMu.Lock()
 	delete(p.chatFilters, chatID)
-	delete(p.chatAccess, chatID)
 	if active {
 		p.chatRevision[chatID] = p.revisionSeq.Add(1)
 	} else {
@@ -688,15 +688,12 @@ func (p *Plugin) deliverResponse(
 func (p *Plugin) getCachedFilters(chatID int64, revision uint64) (*compiledFilterSet, bool) {
 	p.cacheMu.RLock()
 	filters, ok := p.chatFilters[chatID]
-	accessed := p.chatAccess[chatID]
 	p.cacheMu.RUnlock()
 	if !ok || filters == nil || filters.revision != revision ||
-		time.Since(accessed) >= filterCacheTTL {
+		filters.cachedAt.IsZero() || time.Since(filters.cachedAt) >= filterCacheTTL {
 		return nil, false
 	}
-	p.cacheMu.Lock()
-	p.chatAccess[chatID] = time.Now()
-	p.cacheMu.Unlock()
+	filters.lastUsed.Store(p.cacheClock.Add(1))
 	return filters, true
 }
 
@@ -708,23 +705,28 @@ func (p *Plugin) cacheFilters(chatID int64, filters *compiledFilterSet, revision
 	}
 	if len(p.chatFilters) >= maxCompiledFilterCacheChats {
 		var oldestChat int64
-		var oldestTime time.Time
-		for c, accessed := range p.chatAccess {
-			if oldestTime.IsZero() || accessed.Before(oldestTime) {
-				oldestTime, oldestChat = accessed, c
+		var oldestSequence uint64
+		for candidateChat, candidate := range p.chatFilters {
+			sequence := uint64(0)
+			if candidate != nil {
+				sequence = candidate.lastUsed.Load()
+			}
+			if oldestChat == 0 || sequence < oldestSequence {
+				oldestChat = candidateChat
+				oldestSequence = sequence
 			}
 		}
 		if oldestChat != 0 {
 			delete(p.chatFilters, oldestChat)
-			delete(p.chatAccess, oldestChat)
 		}
 	}
 	if filters == nil {
 		filters = &compiledFilterSet{}
 	}
 	filters.revision = revision
+	filters.cachedAt = time.Now()
+	filters.lastUsed.Store(p.cacheClock.Add(1))
 	p.chatFilters[chatID] = filters
-	p.chatAccess[chatID] = time.Now()
 	return true
 }
 
