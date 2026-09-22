@@ -440,7 +440,6 @@ func TestP7IWarningCoordinatesRejectBeforePersistence(t *testing.T) {
 	}
 }
 
-
 func TestP7IGuardedWarningRejectsBeforePersistence(t *testing.T) {
 	repo := &memoryWarningRepository{}
 	service := NewService(repo, &recordingModService{}, zap.NewNop())
