@@ -161,19 +161,49 @@ func assistantGroupServiceChatMeta(
 		}
 		return meta, meta.id > 0
 	case *tg.PeerChannel:
-		channel := entities.Channels[peer.ChannelID]
-		if channel == nil || !channel.Megagroup || channel.AccessHash == 0 {
-			return assistantGroupServiceChat{}, false
+		meta := assistantGroupServiceChat{id: peer.ChannelID, supergroup: true}
+		if channel := entities.Channels[peer.ChannelID]; channel != nil {
+			// Entity metadata is authoritative when present. Broadcast channels
+			// never enter the Assistant group-event manager plane.
+			if !channel.Megagroup {
+				return assistantGroupServiceChat{}, false
+			}
+			meta.title = channel.Title
+			meta.accessHash = channel.AccessHash
 		}
-		return assistantGroupServiceChat{
-			id:         peer.ChannelID,
-			title:      channel.Title,
-			accessHash: channel.AccessHash,
-			supergroup: true,
-		}, true
+		// Missing entity/access hash is not a reason to lose an enabled
+		// supergroup event. The peer is recovered lazily after the interest hit.
+		return meta, meta.id > 0
 	default:
 		return assistantGroupServiceChat{}, false
 	}
+}
+
+func resolveAssistantGroupServicePeer(
+	ctx context.Context,
+	message *tg.MessageService,
+	entities tg.Entities,
+	chat assistantGroupServiceChat,
+	resolver peer.Resolver,
+) tg.InputPeerClass {
+	if !chat.supergroup {
+		return &tg.InputPeerChat{ChatID: chat.id}
+	}
+	if chat.accessHash != 0 {
+		return &tg.InputPeerChannel{ChannelID: chat.id, AccessHash: chat.accessHash}
+	}
+	if resolver == nil || message == nil {
+		return nil
+	}
+	resolved, err := resolver.Resolve(ctx, message.PeerID, 0, entities)
+	if err != nil {
+		return nil
+	}
+	channel, ok := resolved.(*tg.InputPeerChannel)
+	if !ok || channel.ChannelID != chat.id || channel.AccessHash == 0 {
+		return nil
+	}
+	return channel
 }
 
 func assistantGroupServiceKind(
@@ -215,6 +245,7 @@ func assistantGroupServiceUser(userID int64, entities tg.Entities) core.GroupSer
 }
 
 func handleAssistantGroupService(
+	ctx context.Context,
 	message *tg.MessageService,
 	entities tg.Entities,
 	deps UpdateHandlerDeps,
@@ -230,7 +261,10 @@ func handleAssistantGroupService(
 	if !ok || !deps.GroupEvents.Interested(chat.id, kind) {
 		return
 	}
-	peer := chat.inputPeer()
+	peer := resolveAssistantGroupServicePeer(ctx, message, entities, chat, deps.Resolver)
+	if peer == nil {
+		return
+	}
 
 	selfID := int64(0)
 	if deps.SelfID != nil {
@@ -284,7 +318,7 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			// P7-H service updates are fully classified from the update's entity
 			// snapshot. Inactive chats return before touching the global peer
 			// cache, TaskEngine, EventBus queue, or interaction pipeline.
-			handleAssistantGroupService(service, e, deps)
+			handleAssistantGroupService(ctx, service, e, deps)
 			return nil
 		}
 		if deps.CacheEntities != nil {
