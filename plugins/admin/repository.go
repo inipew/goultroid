@@ -31,6 +31,17 @@ func (r *sqliteWarningRepository) AddWarning(ctx context.Context, chatID, userID
 	if len(reason) > moderation.MaxWarningReasonBytes {
 		return fmt.Errorf("%w: warning reason exceeds %d bytes", core.ErrInvalidArgs, moderation.MaxWarningReasonBytes)
 	}
+	var total int
+	if err := r.db.QueryRowContext(
+		ctx,
+		`SELECT COUNT(*) FROM moderation_warnings`,
+	).Scan(&total); err != nil {
+		return fmt.Errorf("failed to count global warning rows before insert: %w", err)
+	}
+	if total >= moderation.MaxWarningRows {
+		return fmt.Errorf("%w: warning rows reached global limit %d", core.ErrResourceLimit, moderation.MaxWarningRows)
+	}
+
 	var count int
 	if err := r.db.QueryRowContext(
 		ctx,
