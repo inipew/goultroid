@@ -127,7 +127,7 @@ func TestRelayIngressCarriesPerVisitorAdmissionAndThreadOrdering(t *testing.T) {
 	if len(spec.Resources) != 0 {
 		t.Fatalf("P6-B relay unexpectedly reserves resources: %+v", spec.Resources)
 	}
-	if got := string(spec.ID); got != "asst:relay:visitor_to_owner:42:11" {
+	if got := string(spec.ID); got != "asst:relay:visitor_to_owner:42:11:1" {
 		t.Fatalf("task id=%q", got)
 	}
 }
@@ -167,7 +167,29 @@ func TestRelayIngressOwnerAndVisitorDirectionsShareThreadOrdering(t *testing.T) 
 		taskClient.spec.OrderingKey != "pmrelay:thread:42" {
 		t.Fatalf("owner reply admission quota=%q ordering=%q", taskClient.spec.QuotaOwner, taskClient.spec.OrderingKey)
 	}
-	if got := string(taskClient.spec.ID); got != "asst:relay:owner_to_visitor:7:101" {
+	if got := string(taskClient.spec.ID); got != "asst:relay:owner_to_visitor:7:101:1" {
 		t.Fatalf("owner reply task id=%q", got)
+	}
+}
+
+func TestRelayIngressTaskIdentityDoesNotOwnDeliveryIdempotency(t *testing.T) {
+	service := &countingRelayIngressService{base: newRelayIngressService(t)}
+	taskClient := &relayAdmissionTaskClient{}
+	ingress := NewRelayIngress(service, taskClient)
+	message := pmrelay.IngressMessage{SenderID: 42, ChatID: 42, MessageID: 11}
+
+	if handled, err := ingress.tryVisitor(context.Background(), message); err != nil || !handled {
+		t.Fatalf("first tryVisitor() handled=%v err=%v", handled, err)
+	}
+	firstID := taskClient.spec.ID
+	if handled, err := ingress.tryVisitor(context.Background(), message); err != nil || !handled {
+		t.Fatalf("second tryVisitor() handled=%v err=%v", handled, err)
+	}
+	secondID := taskClient.spec.ID
+	if firstID == secondID {
+		t.Fatalf("duplicate source reused TaskEngine id %q; durable delivery must own idempotency", firstID)
+	}
+	if taskClient.spec.OrderingKey != "pmrelay:thread:42" {
+		t.Fatalf("duplicate source changed thread ordering key=%q", taskClient.spec.OrderingKey)
 	}
 }
