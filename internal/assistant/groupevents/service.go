@@ -135,6 +135,8 @@ func (s *Service) Load(ctx context.Context) error {
 	}
 
 	chats := make(map[int64]chatConfig)
+	welcomeChats := make([]int64, 0)
+	goodbyeChats := make([]int64, 0)
 	for _, record := range records {
 		var kind core.GroupServiceKind
 		switch record.Key {
@@ -149,30 +151,26 @@ func (s *Service) Load(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("load assistant group event state chat=%d key=%s: %w", record.ChatID, record.Key, err)
 		}
+		if !config.Enabled {
+			// Disabled configuration remains durable but is intentionally not
+			// resident. Status/config mutation paths read it lazily from the
+			// bounded GroupState store, keeping idle RSS proportional to active
+			// group-event features rather than historical chat cardinality.
+			continue
+		}
 		current := chats[record.ChatID]
 		state := State{Kind: kind, Config: config, Revision: record.Revision}
 		if kind == core.GroupServiceMemberJoined {
 			current.welcome = state
+			welcomeChats = append(welcomeChats, record.ChatID)
 		} else {
 			current.goodbye = state
+			goodbyeChats = append(goodbyeChats, record.ChatID)
 		}
 		chats[record.ChatID] = current
 	}
 
-	activeChats := 0
-	welcomeChats := make([]int64, 0, len(chats))
-	goodbyeChats := make([]int64, 0, len(chats))
-	for chatID, config := range chats {
-		if enabledChat(config) {
-			activeChats++
-		}
-		if config.welcome.Config.Enabled {
-			welcomeChats = append(welcomeChats, chatID)
-		}
-		if config.goodbye.Config.Enabled {
-			goodbyeChats = append(goodbyeChats, chatID)
-		}
-	}
+	activeChats := len(chats)
 
 	s.welcomeInterest.ReplaceLoaded(welcomeChats)
 	s.goodbyeInterest.ReplaceLoaded(goodbyeChats)
@@ -215,6 +213,10 @@ func (s *Service) Close() {
 	s.sub = nil
 	s.transport = nil
 	s.loaded = false
+	s.chats = make(map[int64]chatConfig)
+	s.activeChats = 0
+	s.welcomeInterest.ReplaceLoaded(nil)
+	s.goodbyeInterest.ReplaceLoaded(nil)
 	s.mu.Unlock()
 	if sub != nil {
 		sub.Close()
@@ -283,6 +285,42 @@ func (s *Service) State(chatID int64, kind core.GroupServiceKind) (State, error)
 	return s.stateLocked(chatID, kind), nil
 }
 
+// StateContext returns the exact durable state without requiring disabled
+// configurations to remain resident in memory. Active configurations are
+// served from the hot map; inactive/missing coordinates fall back to the
+// bounded GroupState store on demand.
+func (s *Service) StateContext(ctx context.Context, chatID int64, kind core.GroupServiceKind) (State, error) {
+	if s == nil || s.store == nil || chatID <= 0 || s.closed.Load() {
+		return State{}, ErrUnavailable
+	}
+	key, err := keyFor(kind)
+	if err != nil {
+		return State{}, err
+	}
+	s.mu.RLock()
+	state := s.stateLocked(chatID, kind)
+	s.mu.RUnlock()
+	if state.Revision != 0 {
+		return state, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	record, err := s.store.Get(ctx, core.GroupStateKey{ChatID: chatID, Namespace: Namespace, Key: key})
+	switch {
+	case err == nil:
+		config, decodeErr := decodeConfig(kind, record.Value)
+		if decodeErr != nil {
+			return State{}, decodeErr
+		}
+		return State{Kind: kind, Config: config, Revision: record.Revision}, nil
+	case errors.Is(err, core.ErrNotFound):
+		return state, nil
+	default:
+		return State{}, err
+	}
+}
+
 func (s *Service) Interested(chatID int64, kind core.GroupServiceKind) bool {
 	if s == nil || chatID <= 0 || s.closed.Load() || !s.ready.Load() {
 		return false
@@ -302,9 +340,17 @@ func (s *Service) applyState(chatID int64, state State) {
 	current := s.chats[chatID]
 	wasActive := enabledChat(current)
 	if state.Kind == core.GroupServiceMemberJoined {
-		current.welcome = state
+		if state.Config.Enabled {
+			current.welcome = state
+		} else {
+			current.welcome = State{}
+		}
 	} else {
-		current.goodbye = state
+		if state.Config.Enabled {
+			current.goodbye = state
+		} else {
+			current.goodbye = State{}
+		}
 	}
 	isActive := enabledChat(current)
 	switch {
@@ -313,9 +359,11 @@ func (s *Service) applyState(chatID int64, state State) {
 	case wasActive && !isActive && s.activeChats > 0:
 		s.activeChats--
 	}
-	// Retain disabled durable state as well. Status/revision must reflect the
-	// persisted P7-F row rather than falling back to synthetic defaults.
-	s.chats[chatID] = current
+	if isActive {
+		s.chats[chatID] = current
+	} else {
+		delete(s.chats, chatID)
+	}
 	if s.closed.Load() {
 		s.mu.Unlock()
 		return
