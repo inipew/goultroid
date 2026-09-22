@@ -28,12 +28,10 @@ import (
 	"github.com/inipew/goultroid/internal/resource"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/scheduler"
-	broadcastSvc "github.com/inipew/goultroid/internal/services/broadcast"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/inline"
 	mediaSvc "github.com/inipew/goultroid/internal/services/media"
-	"github.com/inipew/goultroid/internal/services/pmrelay"
 	processSvc "github.com/inipew/goultroid/internal/services/process"
 	"github.com/inipew/goultroid/internal/services/ratelimit"
 	"github.com/inipew/goultroid/internal/services/savedresponse"
@@ -182,16 +180,8 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		tgRuntime.assistant.SetInlineEngine(coreDeps.inlineEngine)
 		tgRuntime.assistant.SetTasks(coreDeps.taskEngine)
 		tgRuntime.assistant.SetRelayIngress(domServices.pmrelayService)
-		if aware, ok := tgRuntime.assistant.(interface {
-			SetAudienceRegistry(pmrelay.AudienceRegistry)
-		}); ok {
-			aware.SetAudienceRegistry(domServices.pmrelayService)
-		}
-		if aware, ok := tgRuntime.assistant.(interface {
-			SetBroadcastService(*broadcastSvc.Service)
-		}); ok {
-			aware.SetBroadcastService(domServices.broadcastService)
-		}
+		tgRuntime.assistant.SetAudienceRegistry(domServices.pmrelayService)
+		tgRuntime.assistant.SetBroadcastService(domServices.broadcastService)
 		tgRuntime.assistant.SetPluginScopeResolver(func(owner string) (tasks.ScopeIdentity, bool) {
 			scope, ok := pluginManager.Scope(owner)
 			if !ok {
