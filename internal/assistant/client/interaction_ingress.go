@@ -68,15 +68,27 @@ func (v *interactionIngress) dispatchCallback(
 		return err
 	}
 
+	resources := prepared.Resources()
+	pool := tasks.PoolID("interactive")
+	executionTimeout := 15 * time.Second
+	for _, requirement := range resources {
+		if requirement.Name == "media" && requirement.Amount > 0 {
+			pool = tasks.PoolID("general")
+			executionTimeout = 2 * time.Minute
+			break
+		}
+	}
+
 	doneCh := make(chan error, 1)
 	ticket, submitErr := v.tasks.Submit(ctx, tasks.WorkSpec{
 		ID:               taskID,
 		Scope:            prepared.Scope(),
 		QuotaOwner:       tasks.OwnerID(fmt.Sprintf("telegram:user:%d", request.ActorID)),
-		Pool:             "interactive",
+		Pool:             pool,
 		Class:            tasks.PriorityInteractive,
 		OrderingKey:      orderingKey,
-		ExecutionTimeout: 15 * time.Second,
+		ExecutionTimeout: executionTimeout,
+		Resources:        append([]tasks.ResourceRequirement(nil), resources...),
 		Handler: func(taskCtx context.Context) error {
 			dispatchErr := prepared.Dispatch(taskCtx)
 			doneCh <- dispatchErr
