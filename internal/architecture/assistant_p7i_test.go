@@ -404,7 +404,6 @@ func TestP7IWarningResetSharesSameTargetStripe(t *testing.T) {
 	}
 }
 
-
 func TestP7IWarningPersistenceRevalidatesTargetInsideStripe(t *testing.T) {
 	root := repositoryRoot(t)
 
