@@ -324,7 +324,6 @@ func TestP7IConcurrentSameTargetWarnHasSingleThresholdEnforcement(t *testing.T) 
 	}
 }
 
-
 type p7iBlockingMuteService struct {
 	core.MockTelegramServicer
 	entered chan struct{}
@@ -404,7 +403,6 @@ func TestP7IResetWaitsForSameTargetWarningSequence(t *testing.T) {
 		t.Fatalf("warnings after serialized enforcement/reset=%d, want 0", count)
 	}
 }
-
 
 func TestP7IWarningCoordinatesRejectBeforePersistence(t *testing.T) {
 	repo := &memoryWarningRepository{}
