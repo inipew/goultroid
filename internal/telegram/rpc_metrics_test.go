@@ -27,6 +27,22 @@ func TestInMemoryRPCMetrics_Snapshot(t *testing.T) {
 	if snap.RequestsByClass[RPCTransient] != 1 {
 		t.Fatalf("expected 1 transient, got %d", snap.RequestsByClass[RPCTransient])
 	}
+	if snap.TotalRequestLatency != 35*time.Millisecond {
+		t.Fatalf("request latency total=%v, want 35ms", snap.TotalRequestLatency)
+	}
+	if snap.MaxRequestLatency != 25*time.Millisecond {
+		t.Fatalf("request latency max=%v, want 25ms", snap.MaxRequestLatency)
+	}
+	if snap.RequestLatency.LE25ms != 2 || snap.Attempts.First != 1 || snap.Attempts.Second != 1 {
+		t.Fatalf("unexpected latency/attempt distribution: latency=%+v attempts=%+v", snap.RequestLatency, snap.Attempts)
+	}
+	method := snap.MethodMetrics["contacts.resolveUsername"]
+	if method.Requests != 1 || method.TotalLatency != 25*time.Millisecond || method.MaxLatency != 25*time.Millisecond || method.Attempts.Second != 1 {
+		t.Fatalf("unexpected per-method metrics: %+v", method)
+	}
+	if snap.TotalWaitCount != 1 || snap.WaitCountByScope["peer"] != 1 {
+		t.Fatalf("unexpected wait counts: total=%d by_scope=%v", snap.TotalWaitCount, snap.WaitCountByScope)
+	}
 	if snap.TotalWaitTime != 15*time.Millisecond {
 		t.Fatalf("expected 15ms wait, got %v", snap.TotalWaitTime)
 	}
@@ -91,8 +107,23 @@ func TestInMemoryRPCMetrics_ConcurrentObserveExactCounts(t *testing.T) {
 	if got := snap.WaitTimeByScope["limiter"]; got != time.Duration(wantRequests)*time.Microsecond {
 		t.Fatalf("limiter wait=%s, want %s", got, time.Duration(wantRequests)*time.Microsecond)
 	}
+	if snap.TotalWaitCount != wantRequests {
+		t.Fatalf("total wait count=%d, want %d", snap.TotalWaitCount, wantRequests)
+	}
+	if got := snap.WaitCountByScope["limiter"]; got != wantRequests {
+		t.Fatalf("limiter wait count=%d, want %d", got, wantRequests)
+	}
 	if snap.TotalWaitTime != time.Duration(wantRequests)*time.Microsecond {
 		t.Fatalf("total wait=%s, want %s", snap.TotalWaitTime, time.Duration(wantRequests)*time.Microsecond)
+	}
+	if snap.TotalRequestLatency != time.Duration(wantRequests)*time.Microsecond {
+		t.Fatalf("request latency total=%s, want %s", snap.TotalRequestLatency, time.Duration(wantRequests)*time.Microsecond)
+	}
+	if snap.MaxRequestLatency != time.Microsecond || snap.RequestLatency.LE1ms != wantRequests {
+		t.Fatalf("unexpected request latency distribution: max=%s buckets=%+v", snap.MaxRequestLatency, snap.RequestLatency)
+	}
+	if snap.Attempts.First != wantRequests {
+		t.Fatalf("first-attempt requests=%d, want %d", snap.Attempts.First, wantRequests)
 	}
 
 	wantFloods := wantRequests / 20
@@ -113,6 +144,12 @@ func TestInMemoryRPCMetrics_UnscopedWaitContributesToTotalOnly(t *testing.T) {
 	m.ObserveWait("limiter", 3*time.Millisecond)
 
 	snap := m.Snapshot()
+	if snap.TotalWaitCount != 2 {
+		t.Fatalf("total wait count=%d, want 2", snap.TotalWaitCount)
+	}
+	if got := snap.WaitCountByScope["limiter"]; got != 1 {
+		t.Fatalf("limiter wait count=%d, want 1", got)
+	}
 	if snap.TotalWaitTime != 10*time.Millisecond {
 		t.Fatalf("total wait=%s, want 10ms", snap.TotalWaitTime)
 	}
@@ -155,6 +192,48 @@ func TestInMemoryRPCMetrics_ConcurrentSnapshot(t *testing.T) {
 	}
 	if got := snap.RequestsByMethod["messages.getHistory"]; got != want {
 		t.Fatalf("method requests=%d, want %d", got, want)
+	}
+}
+
+func TestInMemoryRPCMetrics_LatencyAndAttemptBuckets(t *testing.T) {
+	m := NewInMemoryRPCMetrics()
+	observations := []struct {
+		elapsed time.Duration
+		attempt int
+	}{
+		{time.Millisecond, 1},
+		{5 * time.Millisecond, 2},
+		{25 * time.Millisecond, 3},
+		{100 * time.Millisecond, 4},
+		{500 * time.Millisecond, 5},
+		{2 * time.Second, 1},
+		{10 * time.Second, 2},
+		{11 * time.Second, 9},
+		{-time.Millisecond, 0},
+	}
+	for _, observation := range observations {
+		m.ObserveRequest("messages.test", RPCSuccess, observation.attempt, observation.elapsed)
+	}
+
+	snap := m.Snapshot()
+	if snap.TotalRequests != int64(len(observations)) {
+		t.Fatalf("total requests=%d, want %d", snap.TotalRequests, len(observations))
+	}
+	if snap.RequestLatency != (RPCLatencyBuckets{
+		LE1ms: 2, LE5ms: 1, LE25ms: 1, LE100ms: 1,
+		LE500ms: 1, LE2s: 1, LE10s: 1, GT10s: 1,
+	}) {
+		t.Fatalf("unexpected latency buckets: %+v", snap.RequestLatency)
+	}
+	if snap.Attempts != (RPCAttemptDistribution{First: 3, Second: 2, Third: 1, FourthOrLater: 3}) {
+		t.Fatalf("unexpected attempt distribution: %+v", snap.Attempts)
+	}
+	if snap.MaxRequestLatency != 11*time.Second {
+		t.Fatalf("max latency=%s, want 11s", snap.MaxRequestLatency)
+	}
+	method := snap.MethodMetrics["messages.test"]
+	if method.Requests != int64(len(observations)) || method.Latency != snap.RequestLatency || method.Attempts != snap.Attempts {
+		t.Fatalf("per-method distribution mismatch: %+v", method)
 	}
 }
 
