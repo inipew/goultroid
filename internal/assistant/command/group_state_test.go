@@ -21,7 +21,7 @@ func (*p7fCommandStateStore) Get(context.Context, core.GroupStateKey) (core.Grou
 	return core.GroupStateRecord{}, core.ErrNotFound
 }
 
-func (s *p7fCommandStateStore) CompareAndSwap(_ context.Context, req core.GroupStateCAS) (core.GroupStateRecord, error) {
+func (s *p7fCommandStateStore) CompareAndSwap(_ context.Context, _ core.GroupStateWriteGrant, req core.GroupStateCAS) (core.GroupStateRecord, error) {
 	s.casCalls++
 	s.lastCAS = req
 	return core.GroupStateRecord{
@@ -34,7 +34,7 @@ func (s *p7fCommandStateStore) CompareAndSwap(_ context.Context, req core.GroupS
 	}, nil
 }
 
-func (*p7fCommandStateStore) DeleteCompareAndSwap(context.Context, core.GroupStateDelete) error {
+func (*p7fCommandStateStore) DeleteCompareAndSwap(context.Context, core.GroupStateWriteGrant, core.GroupStateDelete) error {
 	return nil
 }
 
