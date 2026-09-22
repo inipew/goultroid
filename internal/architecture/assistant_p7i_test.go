@@ -65,6 +65,7 @@ func TestP7IAssistantColdPathGatesBeforeCacheResolveAndTask(t *testing.T) {
 		"OrderingKey:",
 		"fmt.Sprintf(\"chat:%d\", chatID)",
 		"deps.Resolver.Resolve(",
+		"deps.GroupRuleChats.Classify(",
 		"deps.GroupRules.Handle(taskCtx, envelope)",
 	} {
 		if !strings.Contains(taskBlock, required) { t.Errorf("P7-I admitted rule path missing %q", required) }
@@ -105,7 +106,7 @@ func TestP7IRuleAndWarningBoundsRemainExplicit(t *testing.T) {
 	checks := map[string][]string{
 		filepath.Join(root, "plugins", "blacklist", "blacklist.go"): {"MaxRulesPerChat", "= 512", "MaxActiveChats", "= 50_000", "maxCompiledCacheChats = 500"},
 		filepath.Join(root, "plugins", "filters", "filters.go"): {"MaxRulesPerChat", "= 512", "MaxActiveChats", "= 50_000", "maxCompiledFilterCacheChats", "= 500", "maxFilterCooldownEntries", "= 1_000"},
-		filepath.Join(root, "internal", "services", "moderation", "service.go"): {"MaxWarningThreshold   = 16", "MaxWarningReasonBytes = 1024", "warningLockStripes    = 64"},
+		filepath.Join(root, "internal", "services", "moderation", "service.go"): {"MaxWarningThreshold   = 16", "MaxWarningReasonBytes = 1024", "MaxWarningRows        = 50_000", "warningLockStripes    = 64"},
 	}
 	for path, required := range checks {
 		raw, err := os.ReadFile(path)
@@ -132,4 +133,66 @@ func TestP7IBypassOrderingAvoidsWorkForOwnerSudo(t *testing.T) {
 	if privileged < 0 || matched < 0 || bypassed < 0 { t.Fatalf("P7-I bypass markers missing privileged=%d match=%d bypass=%d", privileged, matched, bypassed) }
 	if privileged > matched { t.Fatal("P7-I Owner/Sudo bypass occurs after rule matching") }
 	if matched >= bypassed { t.Fatal("P7-I contextual admin bypass occurs before rule match") }
+}
+
+
+func TestP7IManagedChannelClassificationStaysInsideAdmittedPath(t *testing.T) {
+	root := repositoryRoot(t)
+	updatesRaw, err := os.ReadFile(filepath.Join(root, "internal", "assistant", "client", "updates.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(updatesRaw)
+	taskStart := strings.Index(source, "func submitAssistantGroupRules(")
+	taskEndRel := strings.Index(source[taskStart+1:], "\n// InlineQueryExecutor")
+	if taskStart < 0 || taskEndRel < 0 {
+		t.Fatal("P7-I admitted rule task helper is missing")
+	}
+	taskBlock := source[taskStart : taskStart+1+taskEndRel]
+	if !strings.Contains(taskBlock, "deps.GroupRuleChats.Classify(") {
+		t.Fatal("P7-I managed chat classification is not inside admitted task work")
+	}
+
+	classifierRaw, err := os.ReadFile(filepath.Join(
+		root, "internal", "assistant", "client", "group_rule_chat.go",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	classifier := string(classifierRaw)
+	for _, required := range []string{
+		"ChannelsGetChannels(",
+		"channel.Megagroup",
+		"core.ErrGroupOnly",
+	} {
+		if !strings.Contains(classifier, required) {
+			t.Errorf("P7-I managed channel classifier missing %q", required)
+		}
+	}
+}
+
+func TestP7IWarningResetSharesSameTargetStripe(t *testing.T) {
+	root := repositoryRoot(t)
+	raw, err := os.ReadFile(filepath.Join(
+		root, "internal", "services", "moderation", "service.go",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(raw)
+	start := strings.Index(source, "func (s *Service) ResetWarnings(")
+	endRel := strings.Index(source[start+1:], "\nfunc (s *Service) Mute(")
+	if start < 0 || endRel < 0 {
+		t.Fatal("P7-I ResetWarnings block is missing")
+	}
+	block := source[start : start+1+endRel]
+	for _, required := range []string{
+		"s.warningLock(chatID, userID)",
+		"lock.Lock()",
+		"defer lock.Unlock()",
+	} {
+		if !strings.Contains(block, required) {
+			t.Errorf("P7-I reset stripe invariant missing %q", required)
+		}
+	}
 }
