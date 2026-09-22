@@ -290,7 +290,7 @@ func TestUpdateHandlers_InlineQueryExecutesThroughTaskEngine(t *testing.T) {
 	executor := &recordingInlineExecutor{}
 	taskClient := &testTaskClient{}
 	RegisterUpdateHandlers(&dispatcher, UpdateHandlerDeps{
-		InlineEngine: executor, InlineService: newAssistantInlineQueryServicer(api), Tasks: taskClient,
+		InlineEngine: executor, InlineService: newAssistantInlineQueryServicer(api, nil), Tasks: taskClient,
 	})
 
 	peerType := &tg.InlineQueryPeerTypePM{}
@@ -307,7 +307,7 @@ func TestUpdateHandlers_InlineQueryWithoutTaskEngineAnswersEmpty(t *testing.T) {
 	dispatcher := tg.NewUpdateDispatcher()
 	api := &mockTelegramAPI{}
 	RegisterUpdateHandlers(&dispatcher, UpdateHandlerDeps{
-		InlineEngine: &recordingInlineExecutor{}, InlineService: newAssistantInlineQueryServicer(api),
+		InlineEngine: &recordingInlineExecutor{}, InlineService: newAssistantInlineQueryServicer(api, nil),
 	})
 	update := &tg.UpdateBotInlineQuery{QueryID: 88, UserID: 42, Query: "help"}
 	if err := dispatcher.Handle(context.Background(), &tg.Updates{Updates: []tg.UpdateClass{update}}); err != nil {
