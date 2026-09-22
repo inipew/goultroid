@@ -12,10 +12,11 @@ var (
 	ErrTargetSourceContract    = errors.New("broadcast: target source contract violated")
 )
 
-// TargetSource is a bounded, stateful snapshot iterator. One source instance
-// belongs to exactly one Broadcast call. Implementations must keep membership
-// fixed for the lifetime of the source and return at most limit targets per
-// call.
+// TargetSource is a bounded, stateful logical-snapshot iterator. One source
+// instance belongs to exactly one Broadcast call and returns at most limit
+// targets per call. If a snapshotted target becomes unavailable while the run
+// is active, implementations may emit a nil target so Broadcast accounts it as
+// failed instead of silently shrinking the terminal report.
 type TargetSource interface {
 	Total() int
 	Next(context.Context, int) (targets []tg.InputPeerClass, done bool, err error)
