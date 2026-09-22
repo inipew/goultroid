@@ -70,6 +70,7 @@ type Router struct {
 	coreRouter           *core.Router
 	tasks                tasks.Client
 	delayedActions       core.DelayedActionScheduler
+	groupRoles           core.GroupRoleResolver
 	ownerID              int64
 	sudoGetter           func() []int64
 	metrics              core.MetricsCollector
@@ -95,6 +96,12 @@ func NewRouter(logger *zap.Logger) *Router {
 func (r *Router) SetTasks(client tasks.Client) { r.tasks = client }
 func (r *Router) SetDelayedActions(scheduler core.DelayedActionScheduler) {
 	r.delayedActions = scheduler
+}
+
+// SetGroupRoleResolver installs the lazy chat-scoped Telegram role resolver.
+// P7-C decides which commands require admission-time/fresh authorization.
+func (r *Router) SetGroupRoleResolver(resolver core.GroupRoleResolver) {
+	r.groupRoles = resolver
 }
 
 // SetOwner configures the owner identity and optional sudo getter for permission enforcement.
@@ -533,6 +540,7 @@ func (r *Router) dispatch(
 			Chat:           &chat,
 			Perms:          perms,
 			Principal:      principal,
+			GroupRoles:     r.groupRoles,
 			Svc:            &assistantServicerAdapter{inter: inter},
 			DelayedActions: r.delayedActions,
 		}
