@@ -50,8 +50,12 @@ func TestFilterFeatureStatePreloadAndMutation(t *testing.T) {
 		PeerID:  &tg.InputPeerChat{ChatID: 20},
 		Svc:     svc,
 	}
+	beforeRevision := p.AssistantRuleRevision(20)
 	if err := byName["filter"].Handler(saveCtx); err != nil {
 		t.Fatalf("save filter: %v", err)
+	}
+	if got := p.AssistantRuleRevision(20); got != beforeRevision+1 {
+		t.Fatalf("filter revision=%d, want %d", got, beforeRevision+1)
 	}
 	if !p.MessageHookInterested(20) {
 		t.Fatal("mutation did not mark filter chat active")
@@ -78,8 +82,12 @@ func TestFilterFeatureStatePreloadAndMutation(t *testing.T) {
 	}
 
 	stopCtx.Args = []string{"second"}
+	beforeRevision = p.AssistantRuleRevision(20)
 	if err := byName["stop"].Handler(stopCtx); err != nil {
 		t.Fatalf("delete final filter: %v", err)
+	}
+	if got := p.AssistantRuleRevision(20); got != beforeRevision+1 {
+		t.Fatalf("filter revision after delete=%d, want %d", got, beforeRevision+1)
 	}
 	if p.MessageHookInterested(20) {
 		t.Fatal("removing final filter did not mark chat inactive")
