@@ -147,7 +147,13 @@ func (m *MediaFacade) SendMedia(mediaType string, filePath string, caption strin
 	if err := ValidateUploadSize(filePath, DefaultMaxUploadSize); err != nil {
 		return nil, err
 	}
-	msg, err := c.Svc.SendMedia(c.Ctx, c.PeerID, mediaType, filePath, caption)
+	var msg *tg.Message
+	var err error
+	if contextual, ok := c.Svc.(ContextualTelegramServicer); ok {
+		msg, err = contextual.SendMediaContext(c.Ctx, c.PeerID, mediaType, filePath, caption, messageSendContext(c))
+	} else {
+		msg, err = c.Svc.SendMedia(c.Ctx, c.PeerID, mediaType, filePath, caption)
+	}
 	if err != nil {
 		return nil, err
 	}

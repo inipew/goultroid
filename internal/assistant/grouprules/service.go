@@ -313,6 +313,43 @@ func (s *interactionServicer) SendMedia(
 	return s.inter.SendMedia(ctx, peer, mediaType, filePath, caption)
 }
 
+func (s *interactionServicer) SendMessageContext(
+	ctx context.Context,
+	peer tg.InputPeerClass,
+	text string,
+	markup tg.ReplyMarkupClass,
+	send core.MessageSendContext,
+) (*tg.Message, error) {
+	if s == nil || s.inter == nil {
+		return nil, fmt.Errorf("%w: Assistant interaction transport unavailable", core.ErrUnavailable)
+	}
+	if contextual, ok := s.inter.(interface {
+		SendMessageContext(context.Context, tg.InputPeerClass, string, tg.ReplyMarkupClass, core.MessageSendContext) (*tg.Message, error)
+	}); ok {
+		return contextual.SendMessageContext(ctx, peer, text, markup, send)
+	}
+	return s.inter.SendMessage(ctx, peer, text, markup)
+}
+
+func (s *interactionServicer) SendMediaContext(
+	ctx context.Context,
+	peer tg.InputPeerClass,
+	mediaType string,
+	filePath string,
+	caption string,
+	send core.MessageSendContext,
+) (*tg.Message, error) {
+	if s == nil || s.inter == nil {
+		return nil, fmt.Errorf("%w: Assistant interaction transport unavailable", core.ErrUnavailable)
+	}
+	if contextual, ok := s.inter.(interface {
+		SendMediaContext(context.Context, tg.InputPeerClass, string, string, string, core.MessageSendContext) (*tg.Message, error)
+	}); ok {
+		return contextual.SendMediaContext(ctx, peer, mediaType, filePath, caption, send)
+	}
+	return s.inter.SendMedia(ctx, peer, mediaType, filePath, caption)
+}
+
 func (s *interactionServicer) DeleteMessage(
 	ctx context.Context,
 	peer tg.InputPeerClass,

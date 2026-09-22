@@ -90,6 +90,40 @@ func (a *assistantServicerAdapter) SendMedia(ctx context.Context, peer tg.InputP
 	return a.MockTelegramServicer.SendMedia(ctx, peer, mediaType, filePath, caption)
 }
 
+func (a *assistantServicerAdapter) SendMessageContext(
+	ctx context.Context,
+	peer tg.InputPeerClass,
+	text string,
+	markup tg.ReplyMarkupClass,
+	send core.MessageSendContext,
+) (*tg.Message, error) {
+	if contextual, ok := a.inter.(interface {
+		SendMessageContext(context.Context, tg.InputPeerClass, string, tg.ReplyMarkupClass, core.MessageSendContext) (*tg.Message, error)
+	}); ok {
+		return contextual.SendMessageContext(ctx, peer, text, markup, send)
+	}
+	if markup != nil {
+		return a.SendMessageWithMarkup(ctx, peer, text, markup)
+	}
+	return a.SendMessage(ctx, peer, text)
+}
+
+func (a *assistantServicerAdapter) SendMediaContext(
+	ctx context.Context,
+	peer tg.InputPeerClass,
+	mediaType string,
+	filePath string,
+	caption string,
+	send core.MessageSendContext,
+) (*tg.Message, error) {
+	if contextual, ok := a.inter.(interface {
+		SendMediaContext(context.Context, tg.InputPeerClass, string, string, string, core.MessageSendContext) (*tg.Message, error)
+	}); ok {
+		return contextual.SendMediaContext(ctx, peer, mediaType, filePath, caption, send)
+	}
+	return a.SendMedia(ctx, peer, mediaType, filePath, caption)
+}
+
 func (a *assistantServicerAdapter) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
 	if a.inter != nil {
 		chatID := extractChatIDFromInputPeer(peer)

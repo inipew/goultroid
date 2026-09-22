@@ -475,6 +475,58 @@ func (c *ClientInteraction) SendMessage(ctx context.Context, peer tg.InputPeerCl
 	return extractMessage(updates), nil
 }
 
+// SendMessageContext sends a message while preserving an originating reply and
+// forum topic. TopMsgID is set when the direct reply target is not the topic
+// root, preventing Telegram from routing the response into another thread.
+func (c *ClientInteraction) SendMessageContext(
+	ctx context.Context,
+	peer tg.InputPeerClass,
+	text string,
+	markup tg.ReplyMarkupClass,
+	send core.MessageSendContext,
+) (_ *tg.Message, retErr error) {
+	if c.api == nil || peer == nil {
+		return nil, ErrInvalidTarget
+	}
+	start := time.Now()
+	defer func() {
+		if c.metrics != nil {
+			c.metrics.RecordTelegramRequest("MessagesSendMessage", time.Since(start), retErr)
+		}
+	}()
+
+	plain, ents := parseHTML(text)
+	req := &tg.MessagesSendMessageRequest{
+		Peer:     peer,
+		Message:  plain,
+		RandomID: randomID(),
+	}
+	if len(ents) > 0 {
+		req.SetEntities(ents)
+	}
+	if markup != nil {
+		req.SetReplyMarkup(markup)
+	}
+	replyToID := send.ReplyToID
+	if replyToID <= 0 {
+		replyToID = send.TopicID
+	}
+	if replyToID > 0 {
+		reply := &tg.InputReplyToMessage{ReplyToMsgID: replyToID}
+		if send.TopicID > 0 && send.TopicID != replyToID {
+			reply.TopMsgID = send.TopicID
+		}
+		req.SetReplyTo(reply)
+	}
+
+	updates, err := c.api.MessagesSendMessage(ctx, req)
+	if err != nil {
+		retErr = fmt.Errorf("assistant SendMessage: %w", ClassifyRPCError(err))
+		return nil, retErr
+	}
+	return extractMessage(updates), nil
+}
+
 // SendMessageWithRandomID sends exact Telegram text/entities with a caller-owned
 // random_id. Unlike SendMessage, it does not parse HTML; it is intended for
 // copying an already-authoritative Telegram message while keeping the new
@@ -851,6 +903,83 @@ func (c *ClientInteraction) SendMedia(ctx context.Context, peer tg.InputPeerClas
 		return nil, retErr
 	}
 
+	return extractMessage(updates), nil
+}
+
+// SendMediaContext uploads media while anchoring the send to the originating
+// message/topic. The gotd reply builder preserves the forum thread through the
+// Telegram reply target without creating a separate media transport path.
+func (c *ClientInteraction) SendMediaContext(
+	ctx context.Context,
+	peer tg.InputPeerClass,
+	mediaType string,
+	filePath string,
+	caption string,
+	send core.MessageSendContext,
+) (_ *tg.Message, retErr error) {
+	if c.sender == nil || c.uploader == nil {
+		return nil, fmt.Errorf("%w: assistant media upload is not configured", core.ErrUnsupported)
+	}
+	if peer == nil {
+		return nil, ErrInvalidTarget
+	}
+	stat, err := os.Stat(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to inspect file %q: %w", filePath, err)
+	}
+	if stat.Size() > core.DefaultMaxUploadSize {
+		return nil, fmt.Errorf("%w: file size (%d bytes) exceeds maximum upload limit (500MB)", core.ErrMediaTooLarge, stat.Size())
+	}
+
+	start := time.Now()
+	defer func() {
+		if c.metrics != nil {
+			c.metrics.RecordTelegramRequest("SendMedia", time.Since(start), retErr)
+		}
+	}()
+
+	const transferTimeout = 30 * time.Minute
+	inputFile, err := executeValue(ctx, c.executor, "upload.saveFilePart", "upload", assistentrpc.IdempotentMutation, transferTimeout, func(opCtx context.Context) (tg.InputFileClass, error) {
+		return c.uploader.FromPath(opCtx, filePath)
+	})
+	if err != nil {
+		retErr = fmt.Errorf("failed to upload file %q: %w", filePath, err)
+		return nil, retErr
+	}
+
+	builder := c.sender.To(peer)
+	replyToID := send.ReplyToID
+	if replyToID <= 0 {
+		replyToID = send.TopicID
+	}
+	if replyToID > 0 {
+		builder = builder.Reply(replyToID)
+	}
+	var styledCaption []message.StyledTextOption
+	if caption != "" {
+		styledCaption = append(styledCaption, html.String(nil, caption))
+	}
+
+	updates, err := executeValue(ctx, c.executor, "messages.sendMedia", "messages", assistentrpc.NonIdempotentMutation, transferTimeout, func(opCtx context.Context) (tg.UpdatesClass, error) {
+		switch mediaType {
+		case "photo":
+			return builder.UploadedPhoto(opCtx, inputFile, styledCaption...)
+		case "sticker":
+			return builder.UploadedSticker(opCtx, inputFile, styledCaption...)
+		case "audio":
+			return builder.Audio(opCtx, inputFile, styledCaption...)
+		case "video":
+			return builder.Video(opCtx, inputFile, styledCaption...)
+		case "file", "document":
+			fallthrough
+		default:
+			return builder.File(opCtx, inputFile, styledCaption...)
+		}
+	})
+	if err != nil {
+		retErr = fmt.Errorf("failed to send media (%s): %w", mediaType, ClassifyRPCError(err))
+		return nil, retErr
+	}
 	return extractMessage(updates), nil
 }
 

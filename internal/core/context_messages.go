@@ -17,6 +17,27 @@ type MessagesFacade struct {
 	ctx *Context
 }
 
+func messageSendContext(c *Context) MessageSendContext {
+	if c == nil || c.Message == nil {
+		return MessageSendContext{}
+	}
+	replyToID := c.Message.ID
+	if replyToID <= 0 && c.Message.TopicID > 0 {
+		replyToID = c.Message.TopicID
+	}
+	return MessageSendContext{ReplyToID: replyToID, TopicID: c.Message.TopicID}
+}
+
+func sendContextualMessage(c *Context, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
+	if contextual, ok := c.Svc.(ContextualTelegramServicer); ok {
+		return contextual.SendMessageContext(c.Ctx, c.PeerID, text, markup, messageSendContext(c))
+	}
+	if markup != nil {
+		return c.Svc.SendMessageWithMarkup(c.Ctx, c.PeerID, text, markup)
+	}
+	return c.Svc.SendMessage(c.Ctx, c.PeerID, text)
+}
+
 func (m *MessagesFacade) scheduleDelete(peer tg.InputPeerClass, msgID int, delay time.Duration) error {
 	c := m.ctx
 	if delay <= 0 || msgID <= 0 {
@@ -43,7 +64,7 @@ func (m *MessagesFacade) Reply(text string) error {
 	if c.PeerID == nil {
 		return errors.New("peer is nil")
 	}
-	sent, err := c.Svc.SendMessage(c.Ctx, c.PeerID, text)
+	sent, err := sendContextualMessage(c, text, nil)
 	if err != nil {
 		return fmt.Errorf("reply failed: %w", err)
 	}
@@ -61,7 +82,7 @@ func (m *MessagesFacade) ReplyAndDelete(text string) error {
 	if c.PeerID == nil {
 		return errors.New("peer is nil")
 	}
-	sent, err := c.Svc.SendMessage(c.Ctx, c.PeerID, text)
+	sent, err := sendContextualMessage(c, text, nil)
 	if err != nil {
 		return fmt.Errorf("reply failed: %w", err)
 	}
@@ -82,7 +103,7 @@ func (m *MessagesFacade) ReplyAndDeleteWithDelay(text string, delay time.Duratio
 	if c.PeerID == nil {
 		return errors.New("peer is nil")
 	}
-	sent, err := c.Svc.SendMessage(c.Ctx, c.PeerID, text)
+	sent, err := sendContextualMessage(c, text, nil)
 	if err != nil {
 		return fmt.Errorf("reply failed: %w", err)
 	}
@@ -175,7 +196,7 @@ func (m *MessagesFacade) ReplyMarkup(text string, markup tg.ReplyMarkupClass) er
 	if c.PeerID == nil {
 		return errors.New("peer is nil")
 	}
-	sent, err := c.Svc.SendMessageWithMarkup(c.Ctx, c.PeerID, text, markup)
+	sent, err := sendContextualMessage(c, text, markup)
 	if err != nil {
 		return fmt.Errorf("reply markup failed: %w", err)
 	}
