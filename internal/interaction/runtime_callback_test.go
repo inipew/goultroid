@@ -63,3 +63,51 @@ func TestBindTargetDoesNotInvalidateRenderedRevision(t *testing.T) {
 		t.Fatalf("wrong message error = %v, want binding mismatch", err)
 	}
 }
+
+func TestResolveCallbackClaimsFirstConcreteInlineTarget(t *testing.T) {
+	runtime, _, _ := testRuntime(t, Config{})
+	created, err := runtime.Create(context.Background(), CreateRequest{
+		FeatureID: "demo",
+		Binding:   Binding{ActorID: 42},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	data, err := runtime.CallbackData(context.Background(), created.Session.ID, "next")
+	if err != nil {
+		t.Fatalf("CallbackData() error = %v", err)
+	}
+
+	first, err := runtime.ResolveCallback(context.Background(), data, Binding{
+		ActorID:         42,
+		InlineMessageID: "inline:first",
+	})
+	if err != nil {
+		t.Fatalf("ResolveCallback(first) error = %v", err)
+	}
+	if first.Session.Binding.InlineMessageID != "inline:first" {
+		t.Fatalf("inline target was not claimed: %+v", first.Session.Binding)
+	}
+	if first.Session.Revision != created.Session.Revision {
+		t.Fatalf("target claim changed revision: got %d want %d", first.Session.Revision, created.Session.Revision)
+	}
+
+	if _, err := runtime.ResolveCallback(context.Background(), data, Binding{
+		ActorID:         42,
+		InlineMessageID: "inline:first",
+	}); err != nil {
+		t.Fatalf("ResolveCallback(same target) error = %v", err)
+	}
+	if _, err := runtime.ResolveCallback(context.Background(), data, Binding{
+		ActorID:         42,
+		InlineMessageID: "inline:copy",
+	}); !errors.Is(err, ErrBindingMismatch) {
+		t.Fatalf("ResolveCallback(copied target) error = %v, want %v", err, ErrBindingMismatch)
+	}
+	if _, err := runtime.ResolveCallback(context.Background(), data, Binding{
+		ActorID:         99,
+		InlineMessageID: "inline:first",
+	}); !errors.Is(err, ErrBindingMismatch) {
+		t.Fatalf("ResolveCallback(wrong actor) error = %v, want %v", err, ErrBindingMismatch)
+	}
+}
