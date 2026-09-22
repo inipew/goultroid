@@ -566,7 +566,8 @@ func (r *Router) dispatch(
 			return nil
 		}
 
-		if (cmd.Permission == core.PermissionOwner || cmd.Permission == core.PermissionSudo) && r.ownerID == 0 {
+		effectivePermission := cmd.EffectivePermission(core.ExecutionAssistant)
+		if (effectivePermission == core.PermissionOwner || effectivePermission == core.PermissionSudo) && r.ownerID == 0 {
 			r.logger.Warn("assistant: owner_id not configured, rejecting privileged command",
 				zap.String("command", cmdNameClean),
 				zap.Int64("sender_id", senderID),
@@ -577,7 +578,7 @@ func (r *Router) dispatch(
 			return nil
 		}
 
-		switch cmd.Permission {
+		switch effectivePermission {
 		case core.PermissionOwner:
 			if !isOwner {
 				r.logger.Warn("assistant: permission denied for command",
