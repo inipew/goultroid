@@ -211,6 +211,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		}
 		return nil
 	})
+	pluginManager.SetRegistrationValidator(savedResponseBindings.ValidateEnabledCollisions)
 	savedResponseAdmin := savedresponseadmin.New(savedResponseBindings)
 	if err := pluginManager.RegisterWithContext(context.Background(), savedResponseAdmin); err != nil {
 		return nil, fmt.Errorf("register saved-response admin feature: %w", err)
