@@ -63,7 +63,14 @@ Owner mapped replies outrank generic input so an owner replying to a relayed
 visitor cannot accidentally submit that reply as a pending Settings/MyXL input.
 
 Generic a2 input outranks visitor fallback so a visitor interacting with an
-explicit input session does not simultaneously create PM relay work.
+explicit input session does not simultaneously create PM relay work. An input
+classification error also fails closed and never falls through into PM Relay;
+only a clean "not handled" result may continue to the visitor fallback.
+
+PM Relay classification is otherwise independent from a2 presentation and peer
+resolution. If the interaction presentation/resolver path is unavailable, a
+private non-command message may still reach RelayIngress because relay admission
+uses only the transport-neutral message identity at this phase.
 
 Only private `PeerUser` messages may reach either PM relay classification path.
 
@@ -193,6 +200,8 @@ Regression tests freeze:
 - missing/pruned mapping fails closed;
 - mapped owner reply outranks generic input;
 - generic input outranks visitor fallback;
+- input classification errors fail closed instead of becoming relay traffic;
+- visitor fallback does not depend on a2 presentation or peer resolution;
 - slash and unknown-slash commands never enter relay;
 - `/cancel` remains a2 input control;
 - shutdown rejects relay before prepare.
