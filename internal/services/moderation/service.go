@@ -131,12 +131,15 @@ func (s *Service) warnWithService(
 	if actionOnThreshold == "" {
 		actionOnThreshold = ActionMute
 	}
-	if err := s.repo.AddWarning(ctx, chatID, userID, reason, warnedBy); err != nil {
-		return nil, fmt.Errorf("failed to add warning record: %w", err)
-	}
 	count, err := s.repo.GetWarningCount(ctx, chatID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check warning count: %w", err)
+	}
+	if count < threshold {
+		if err := s.repo.AddWarning(ctx, chatID, userID, reason, warnedBy); err != nil {
+			return nil, fmt.Errorf("failed to add warning record: %w", err)
+		}
+		count++
 	}
 	res := &WarnResult{CurrentCount: count, Threshold: threshold, ActionTaken: ActionNone}
 	if count < threshold {
