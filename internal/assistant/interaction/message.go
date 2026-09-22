@@ -466,6 +466,44 @@ func (c *ClientInteraction) SendMessage(ctx context.Context, peer tg.InputPeerCl
 	return extractMessage(updates), nil
 }
 
+// ForwardMessageWithRandomID forwards one Telegram message using a caller-owned
+// random_id. Callers must durably persist randomID before invoking this method;
+// retrying the same logical forward with the same ID is Telegram-idempotent.
+func (c *ClientInteraction) ForwardMessageWithRandomID(
+	ctx context.Context,
+	fromPeer tg.InputPeerClass,
+	toPeer tg.InputPeerClass,
+	messageID int,
+	randomID int64,
+) (_ *tg.Message, retErr error) {
+	if c == nil || c.api == nil || fromPeer == nil || toPeer == nil || messageID <= 0 || randomID == 0 {
+		return nil, ErrInvalidTarget
+	}
+	start := time.Now()
+	defer func() {
+		if c.metrics != nil {
+			c.metrics.RecordTelegramRequest("MessagesForwardMessages", time.Since(start), retErr)
+		}
+	}()
+
+	updates, err := c.api.MessagesForwardMessages(ctx, &tg.MessagesForwardMessagesRequest{
+		FromPeer: fromPeer,
+		ID:       []int{messageID},
+		RandomID: []int64{randomID},
+		ToPeer:   toPeer,
+	})
+	if err != nil {
+		retErr = fmt.Errorf("assistant forward message: %w", ClassifyRPCError(err))
+		return nil, retErr
+	}
+	msg := extractMessage(updates)
+	if msg == nil || msg.ID <= 0 {
+		retErr = fmt.Errorf("assistant forward message: Telegram returned no target message")
+		return nil, retErr
+	}
+	return msg, nil
+}
+
 // SendMedia uploads and sends media (photo, sticker, audio, video, file) to the specified peer.
 func (c *ClientInteraction) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (_ *tg.Message, retErr error) {
 	if c.sender == nil || c.uploader == nil {
