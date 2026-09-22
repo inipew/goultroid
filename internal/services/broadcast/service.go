@@ -42,9 +42,11 @@ type BroadcastReport struct {
 type ProgressCallback func(report BroadcastReport)
 
 type BroadcastRequest struct {
-	Targets  []tg.InputPeerClass
-	Response savedresponse.Response
-	Vars     savedresponse.TemplateVars
+	Targets      []tg.InputPeerClass
+	TargetSource TargetSource
+	Sender       core.TelegramServicer
+	Response     savedresponse.Response
+	Vars         savedresponse.TemplateVars
 
 	// Text is retained for source compatibility with older callers. New callers
 	// should populate Response so media, format, and template semantics remain
@@ -170,13 +172,27 @@ func broadcastOrderingKey(peer tg.InputPeerClass) string {
 }
 
 func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*BroadcastReport, error) {
-	svc := s.getService()
+	svc := req.Sender
+	if svc == nil {
+		svc = s.getService()
+	}
 	if svc == nil {
 		return nil, fmt.Errorf("%w: telegram service is nil", core.ErrInternal)
 	}
-	if len(req.Targets) == 0 {
+	if req.TargetSource != nil && len(req.Targets) != 0 {
+		return nil, fmt.Errorf("%w: broadcast targets and target source are mutually exclusive", core.ErrInvalidArgs)
+	}
+	source := req.TargetSource
+	if source == nil {
+		if len(req.Targets) == 0 {
+			return nil, fmt.Errorf("%w: no targets provided for broadcast", core.ErrInvalidArgs)
+		}
+		source = newSliceTargetSource(req.Targets)
+	}
+	if source.Total() <= 0 {
 		return nil, fmt.Errorf("%w: no targets provided for broadcast", core.ErrInvalidArgs)
 	}
+
 	response := req.Response.Clone()
 	if response.Empty() && req.Text != "" {
 		response = savedresponse.NewText(req.Text)
@@ -232,7 +248,7 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 	}()
 
 	start := time.Now()
-	report := BroadcastReport{Total: len(req.Targets)}
+	report := BroadcastReport{Total: source.Total()}
 	progress := newProgressCoalescer(req.Progress, report.Total, start)
 	defer func() {
 		now := time.Now()
@@ -240,7 +256,7 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 		progress.Emit(report, now, true)
 	}()
 
-	pending := make([]pendingTarget, 0, min(len(req.Targets), maxBroadcastInFlight))
+	pending := make([]pendingTarget, 0, min(report.Total, maxBroadcastInFlight))
 	var deliveryResources []tasks.ResourceRequirement
 	if response.HasMedia() {
 		deliveryResources = []tasks.ResourceRequirement{{Name: "media", Amount: 1}}
@@ -277,71 +293,99 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 		return nil
 	}
 
-	for i, target := range req.Targets {
+	targetIndex := 0
+	for {
 		if err := runCtx.Err(); err != nil {
 			report.Canceled = true
 			report.Duration = time.Since(start)
 			return &report, err
 		}
 
-		target := target
-		var sendErr error
-		spec := tasks.WorkSpec{
-			ID:               tasks.TaskID(fmt.Sprintf("broadcast:%d:%d", runID, i)),
-			Scope:            scope,
-			QuotaOwner:       tasks.OwnerID("system:broadcast"),
-			Pool:             tasks.PoolID("general"),
-			Class:            tasks.PriorityBackground,
-			OrderingKey:      broadcastOrderingKey(target),
-			ExecutionTimeout: 30 * time.Second,
-			Resources:        deliveryResources,
-			Handler: func(taskCtx context.Context) error {
-				_, sendErr = delivery.DeliverCompiled(taskCtx, response, compiled, req.Vars, savedresponse.DeliverySink{
-					SendMedia: func(mediaType, path, caption string) error {
-						_, err := svc.SendMedia(taskCtx, target, mediaType, path, caption)
-						return err
-					},
-					SendText: func(text string) error {
-						_, err := svc.SendMessage(taskCtx, target, text)
-						return err
-					},
-				})
-				return sendErr
-			},
+		page, done, err := source.Next(runCtx, maxBroadcastInFlight)
+		if err != nil {
+			report.Duration = time.Since(start)
+			return &report, err
+		}
+		if len(page) == 0 && !done {
+			report.Duration = time.Since(start)
+			return &report, ErrTargetSourceStalled
 		}
 
-		for {
-			ticket, err := client.Submit(runCtx, spec)
-			if err == nil {
-				pending = append(pending, pendingTarget{ticket: ticket, sendErr: &sendErr})
+		for _, target := range page {
+			if target == nil {
+				report.Failed++
+				progress.Emit(report, time.Now(), false)
+				targetIndex++
+				continue
+			}
+			if err := runCtx.Err(); err != nil {
+				report.Canceled = true
+				report.Duration = time.Since(start)
+				return &report, err
+			}
+
+			target := target
+			index := targetIndex
+			targetIndex++
+			var sendErr error
+			spec := tasks.WorkSpec{
+				ID:               tasks.TaskID(fmt.Sprintf("broadcast:%d:%d", runID, index)),
+				Scope:            scope,
+				QuotaOwner:       tasks.OwnerID("system:broadcast"),
+				Pool:             tasks.PoolID("general"),
+				Class:            tasks.PriorityBackground,
+				OrderingKey:      broadcastOrderingKey(target),
+				ExecutionTimeout: 30 * time.Second,
+				Resources:        deliveryResources,
+				Handler: func(taskCtx context.Context) error {
+					_, sendErr = delivery.DeliverCompiled(taskCtx, response, compiled, req.Vars, savedresponse.DeliverySink{
+						SendMedia: func(mediaType, path, caption string) error {
+							_, err := svc.SendMedia(taskCtx, target, mediaType, path, caption)
+							return err
+						},
+						SendText: func(text string) error {
+							_, err := svc.SendMessage(taskCtx, target, text)
+							return err
+						},
+					})
+					return sendErr
+				},
+			}
+
+			for {
+				ticket, err := client.Submit(runCtx, spec)
+				if err == nil {
+					pending = append(pending, pendingTarget{ticket: ticket, sendErr: &sendErr})
+					break
+				}
+
+				var admissionErr *tasks.AdmissionError
+				retryableAdmission := errors.As(err, &admissionErr) && admissionErr.ExecutionSemantics().ShouldRetry()
+				if retryableAdmission {
+					if len(pending) == 0 {
+						report.Duration = time.Since(start)
+						return &report, err
+					}
+					if err := consumeOldest(); err != nil {
+						return &report, err
+					}
+					continue
+				}
+
+				report.Failed++
+				progress.Emit(report, time.Now(), false)
 				break
 			}
 
-			var admissionErr *tasks.AdmissionError
-			retryableAdmission := errors.As(err, &admissionErr) && admissionErr.ExecutionSemantics().ShouldRetry()
-			if retryableAdmission {
-				// Admission pressure is producer backpressure, not a target failure.
-				// Waiting the oldest accepted child releases queue/result/owner
-				// capacity without polling or sleeping, then retries this same target.
-				if len(pending) == 0 {
-					report.Duration = time.Since(start)
-					return &report, err
-				}
+			if len(pending) >= maxBroadcastInFlight {
 				if err := consumeOldest(); err != nil {
 					return &report, err
 				}
-				continue
 			}
-
-			report.Failed++
-			progress.Emit(report, time.Now(), false)
-			break
 		}
 
-		if len(pending) >= maxBroadcastInFlight {
-			if err := consumeOldest(); err != nil {
-				return &report, err
-			}
+		if done {
+			break
 		}
 	}
 
@@ -354,3 +398,4 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 	report.Duration = time.Since(start)
 	return &report, nil
 }
+
