@@ -645,6 +645,9 @@ func TestCommandRouter_DynamicSavedResponseReservesMediaResource(t *testing.T) {
 	if taskClient.last.Scope != scope {
 		t.Fatalf("media task scope = %+v, want %+v", taskClient.last.Scope, scope)
 	}
+	if taskClient.last.Pool != "general" || taskClient.last.Class != tasks.PriorityInteractive {
+		t.Fatalf("media task admission = pool %q class %q", taskClient.last.Pool, taskClient.last.Class)
+	}
 	if len(taskClient.last.Resources) != 1 ||
 		taskClient.last.Resources[0].Name != "media" ||
 		taskClient.last.Resources[0].Amount != 1 {
@@ -700,6 +703,9 @@ func TestCommandRouter_DynamicSavedResponseDeliversMedia(t *testing.T) {
 	}
 	if fake.lastMediaPath == "" {
 		t.Fatal("media delivery did not receive a materialized path")
+	}
+	if taskClient.last.Pool != "general" || taskClient.last.Class != tasks.PriorityInteractive {
+		t.Fatalf("media delivery task admission = pool %q class %q", taskClient.last.Pool, taskClient.last.Class)
 	}
 	if _, err := os.Stat(fake.lastMediaPath); !os.IsNotExist(err) {
 		t.Fatalf("materialized media path was not cleaned up: stat error = %v", err)
