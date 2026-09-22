@@ -136,8 +136,8 @@ type AttemptSummary struct {
 // so application diagnostics cannot grow with workload cardinality.
 type DurableDiagnostics struct {
 	DeferredOccurrences int
-	RetainedDeferrals    int
-	EarliestDeferredAt   time.Time
+	RetainedDeferrals   int
+	EarliestDeferredAt  time.Time
 }
 
 // RecoveryCandidate is a batch recovery row containing the occurrence and its

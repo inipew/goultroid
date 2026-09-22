@@ -53,7 +53,6 @@ type durableDiagnosticsStore interface {
 	DurableDiagnostics(context.Context, time.Time) (DurableDiagnostics, error)
 }
 
-
 type attemptSummaryStore interface {
 	AttemptSummary(context.Context, string) (*AttemptSummary, error)
 }
