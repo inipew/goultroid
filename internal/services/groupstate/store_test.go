@@ -6,9 +6,36 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
 )
+
+type storeRoleResolver struct{}
+
+func (*storeRoleResolver) ResolveGroupRole(_ context.Context, req core.GroupRoleRequest) (core.GroupRoleSnapshot, error) {
+	return core.GroupRoleSnapshot{
+		Principal: core.GroupActorPrincipal{
+			UserID:   req.UserID,
+			Role:     core.GroupActorRoleAdministrator,
+			Verified: true,
+		},
+	}, nil
+}
+
+func (*storeRoleResolver) ResolveGroupRoleFresh(_ context.Context, req core.GroupRoleRequest) (core.GroupRoleSnapshot, error) {
+	return core.GroupRoleSnapshot{
+		Principal: core.GroupActorPrincipal{
+			UserID:   req.UserID,
+			Role:     core.GroupActorRoleAdministrator,
+			Verified: true,
+		},
+	}, nil
+}
+
+var storeAdminRequirement = core.GroupAuthorizationRequirement{
+	Level: core.GroupAuthorizationAdministrator,
+}
 
 func newTestStore(t *testing.T, limits Limits) (*SQLiteStore, *database.DB) {
 	t.Helper()
@@ -27,18 +54,31 @@ func newTestStore(t *testing.T, limits Limits) (*SQLiteStore, *database.DB) {
 	return store, db
 }
 
+func stateContext(store core.GroupStateStore, chatID int64, userID int64) *core.Context {
+	ctx := &core.Context{
+		Ctx:        context.Background(),
+		Source:     core.ExecutionAssistant,
+		Chat:       &core.Chat{ID: chatID, Type: "supergroup"},
+		PeerID:     &tg.InputPeerChannel{ChannelID: chatID, AccessHash: chatID + 100},
+		Sender:     &core.User{ID: userID},
+		GroupRoles: &storeRoleResolver{},
+	}
+	core.AttachGroupStateStore(ctx, store)
+	return ctx
+}
+
 func TestSQLiteStoreCASRestartAndChatIsolation(t *testing.T) {
 	store, db := newTestStore(t, Limits{MaxEntries: 8, CleanupBatch: 2})
-	ctx := context.Background()
-	base := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
-	store.now = func() time.Time { return base }
+	ctx100 := stateContext(store, 100, 42)
 
-	created, err := store.CompareAndSwap(ctx, core.GroupStateCAS{
-		GroupStateKey: core.GroupStateKey{ChatID: 100, Namespace: " Moderation ", Key: " Mode "},
-		Value:         []byte("strict"),
-		UpdatedBy:     42,
-		UpdatedAt:     base,
-	})
+	created, err := ctx100.CompareAndSwapGroupState(
+		storeAdminRequirement,
+		" Moderation ",
+		" Mode ",
+		0,
+		[]byte("strict"),
+		0,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,45 +86,52 @@ func TestSQLiteStoreCASRestartAndChatIsolation(t *testing.T) {
 		t.Fatalf("created=%+v", created)
 	}
 
-	if _, err := store.CompareAndSwap(ctx, core.GroupStateCAS{
-		GroupStateKey: core.GroupStateKey{ChatID: 100, Namespace: "moderation", Key: "mode"},
-		Value:         []byte("duplicate-create"),
-		UpdatedBy:     42,
-		UpdatedAt:     base,
-	}); !errors.Is(err, ErrStateConflict) {
+	if _, err := ctx100.CompareAndSwapGroupState(
+		storeAdminRequirement,
+		"moderation",
+		"mode",
+		0,
+		[]byte("duplicate-create"),
+		0,
+	); !errors.Is(err, ErrStateConflict) {
 		t.Fatalf("duplicate create error=%v, want ErrStateConflict", err)
 	}
 
-	updated, err := store.CompareAndSwap(ctx, core.GroupStateCAS{
-		GroupStateKey:    created.GroupStateKey,
-		ExpectedRevision: created.Revision,
-		Value:            []byte("relaxed"),
-		UpdatedBy:        43,
-		UpdatedAt:        base.Add(time.Minute),
-	})
+	updated, err := ctx100.CompareAndSwapGroupState(
+		storeAdminRequirement,
+		"moderation",
+		"mode",
+		created.Revision,
+		[]byte("relaxed"),
+		0,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Revision != 2 || updated.UpdatedBy != 43 || string(updated.Value) != "relaxed" {
+	if updated.Revision != 2 || updated.UpdatedBy != 42 || string(updated.Value) != "relaxed" {
 		t.Fatalf("updated=%+v", updated)
 	}
 
-	if _, err := store.CompareAndSwap(ctx, core.GroupStateCAS{
-		GroupStateKey:    created.GroupStateKey,
-		ExpectedRevision: 1,
-		Value:            []byte("stale"),
-		UpdatedBy:        44,
-		UpdatedAt:        base.Add(2 * time.Minute),
-	}); !errors.Is(err, ErrStateConflict) {
+	if _, err := ctx100.CompareAndSwapGroupState(
+		storeAdminRequirement,
+		"moderation",
+		"mode",
+		1,
+		[]byte("stale"),
+		0,
+	); !errors.Is(err, ErrStateConflict) {
 		t.Fatalf("stale CAS error=%v, want ErrStateConflict", err)
 	}
 
-	otherChat, err := store.CompareAndSwap(ctx, core.GroupStateCAS{
-		GroupStateKey: core.GroupStateKey{ChatID: 200, Namespace: "moderation", Key: "mode"},
-		Value:         []byte("other"),
-		UpdatedBy:     42,
-		UpdatedAt:     base,
-	})
+	ctx200 := stateContext(store, 200, 42)
+	otherChat, err := ctx200.CompareAndSwapGroupState(
+		storeAdminRequirement,
+		"moderation",
+		"mode",
+		0,
+		[]byte("other"),
+		0,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,15 +143,14 @@ func TestSQLiteStoreCASRestartAndChatIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restarted.now = store.now
-	got, err := restarted.Get(ctx, core.GroupStateKey{ChatID: 100, Namespace: "MODERATION", Key: "MODE"})
+	got, err := restarted.Get(context.Background(), core.GroupStateKey{ChatID: 100, Namespace: "MODERATION", Key: "MODE"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Revision != 2 || string(got.Value) != "relaxed" {
 		t.Fatalf("restart state=%+v", got)
 	}
-	other, err := restarted.Get(ctx, core.GroupStateKey{ChatID: 200, Namespace: "moderation", Key: "mode"})
+	other, err := restarted.Get(context.Background(), core.GroupStateKey{ChatID: 200, Namespace: "moderation", Key: "mode"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,140 +161,165 @@ func TestSQLiteStoreCASRestartAndChatIsolation(t *testing.T) {
 
 func TestSQLiteStoreDeleteUsesExactRevision(t *testing.T) {
 	store, _ := newTestStore(t, Limits{MaxEntries: 8, CleanupBatch: 2})
-	ctx := context.Background()
-	now := time.Now().UTC()
-	created, err := store.CompareAndSwap(ctx, core.GroupStateCAS{
-		GroupStateKey: core.GroupStateKey{ChatID: 1, Namespace: "filters", Key: "enabled"},
-		Value:         []byte("true"),
-		UpdatedBy:     7,
-		UpdatedAt:     now,
-	})
+	ctx := stateContext(store, 1, 7)
+	created, err := ctx.CompareAndSwapGroupState(
+		storeAdminRequirement,
+		"filters",
+		"enabled",
+		0,
+		[]byte("true"),
+		0,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := store.DeleteCompareAndSwap(ctx, core.GroupStateDelete{
-		GroupStateKey:    created.GroupStateKey,
-		ExpectedRevision: created.Revision + 1,
-		DeletedBy:        7,
-		DeletedAt:        now,
-	}); !errors.Is(err, ErrStateConflict) {
+	if err := ctx.DeleteGroupState(
+		storeAdminRequirement,
+		"filters",
+		"enabled",
+		created.Revision+1,
+	); !errors.Is(err, ErrStateConflict) {
 		t.Fatalf("stale delete error=%v, want ErrStateConflict", err)
 	}
-	if _, err := store.Get(ctx, created.GroupStateKey); err != nil {
+	if _, err := store.Get(context.Background(), created.GroupStateKey); err != nil {
 		t.Fatalf("stale delete removed state: %v", err)
 	}
 
-	if err := store.DeleteCompareAndSwap(ctx, core.GroupStateDelete{
-		GroupStateKey:    created.GroupStateKey,
-		ExpectedRevision: created.Revision,
-		DeletedBy:        7,
-		DeletedAt:        now,
-	}); err != nil {
+	if err := ctx.DeleteGroupState(
+		storeAdminRequirement,
+		"filters",
+		"enabled",
+		created.Revision,
+	); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Get(ctx, created.GroupStateKey); !errors.Is(err, ErrStateNotFound) {
+	if _, err := store.Get(context.Background(), created.GroupStateKey); !errors.Is(err, ErrStateNotFound) {
 		t.Fatalf("get after delete error=%v, want ErrStateNotFound", err)
 	}
 }
 
 func TestSQLiteStoreCapacityLazilyReclaimsOnlyExpiredState(t *testing.T) {
 	store, _ := newTestStore(t, Limits{MaxEntries: 2, CleanupBatch: 1})
-	ctx := context.Background()
-	base := time.Date(2026, 9, 22, 13, 0, 0, 0, time.UTC)
-	now := base
-	store.now = func() time.Time { return now }
+	ctx1 := stateContext(store, 1, 7)
+	ctx2 := stateContext(store, 2, 7)
 
-	expiry := base.Add(time.Minute)
-	expiring, err := store.CompareAndSwap(ctx, core.GroupStateCAS{
-		GroupStateKey: core.GroupStateKey{ChatID: 1, Namespace: "manager", Key: "temporary"},
-		Value:         []byte("old"),
-		UpdatedBy:     7,
-		UpdatedAt:     base,
-		ExpiresAt:     &expiry,
-	})
+	expiring, err := ctx1.CompareAndSwapGroupState(
+		storeAdminRequirement,
+		"manager",
+		"temporary",
+		0,
+		[]byte("old"),
+		time.Minute,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	live, err := store.CompareAndSwap(ctx, core.GroupStateCAS{
-		GroupStateKey: core.GroupStateKey{ChatID: 2, Namespace: "manager", Key: "durable"},
-		Value:         []byte("keep"),
-		UpdatedBy:     7,
-		UpdatedAt:     base,
-	})
+	live, err := ctx2.CompareAndSwapGroupState(
+		storeAdminRequirement,
+		"manager",
+		"durable",
+		0,
+		[]byte("keep"),
+		0,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count, err := store.Count(ctx); err != nil || count != 2 {
+	if count, err := store.Count(context.Background()); err != nil || count != 2 {
 		t.Fatalf("initial count=%d err=%v", count, err)
 	}
 
-	now = base.Add(2 * time.Minute)
-	if _, err := store.Get(ctx, expiring.GroupStateKey); !errors.Is(err, ErrStateNotFound) {
+	if expiring.ExpiresAt == nil {
+		t.Fatal("expiring state has no expiry")
+	}
+	store.now = func() time.Time { return expiring.ExpiresAt.Add(time.Second) }
+	if _, err := store.Get(context.Background(), expiring.GroupStateKey); !errors.Is(err, ErrStateNotFound) {
 		t.Fatalf("expired get error=%v, want ErrStateNotFound", err)
 	}
-	if _, err := store.CompareAndSwap(ctx, core.GroupStateCAS{
-		GroupStateKey: core.GroupStateKey{ChatID: 3, Namespace: "manager", Key: "new"},
-		Value:         []byte("new"),
-		UpdatedBy:     8,
-		UpdatedAt:     now,
-	}); err != nil {
+
+	ctx3 := stateContext(store, 3, 8)
+	if _, err := ctx3.CompareAndSwapGroupState(
+		storeAdminRequirement,
+		"manager",
+		"new",
+		0,
+		[]byte("new"),
+		0,
+	); err != nil {
 		t.Fatalf("create after lazy expiry reclamation: %v", err)
 	}
-	if count, err := store.Count(ctx); err != nil || count != 2 {
+	if count, err := store.Count(context.Background()); err != nil || count != 2 {
 		t.Fatalf("count after reclamation=%d err=%v", count, err)
 	}
-	if got, err := store.Get(ctx, live.GroupStateKey); err != nil || string(got.Value) != "keep" {
+	if got, err := store.Get(context.Background(), live.GroupStateKey); err != nil || string(got.Value) != "keep" {
 		t.Fatalf("live state was evicted: %+v err=%v", got, err)
 	}
 
-	if _, err := store.CompareAndSwap(ctx, core.GroupStateCAS{
-		GroupStateKey: core.GroupStateKey{ChatID: 4, Namespace: "manager", Key: "overflow"},
-		Value:         []byte("no"),
-		UpdatedBy:     8,
-		UpdatedAt:     now,
-	}); !errors.Is(err, ErrStateCapacity) {
+	ctx4 := stateContext(store, 4, 8)
+	if _, err := ctx4.CompareAndSwapGroupState(
+		storeAdminRequirement,
+		"manager",
+		"overflow",
+		0,
+		[]byte("no"),
+		0,
+	); !errors.Is(err, ErrStateCapacity) {
 		t.Fatalf("capacity error=%v, want ErrStateCapacity", err)
 	}
 }
 
 func TestSQLiteStorePruneExpiredIsBounded(t *testing.T) {
 	store, _ := newTestStore(t, Limits{MaxEntries: 4, CleanupBatch: 1})
-	ctx := context.Background()
-	base := time.Date(2026, 9, 22, 14, 0, 0, 0, time.UTC)
-	now := base
-	store.now = func() time.Time { return now }
-
+	var latestExpiry time.Time
 	for chatID := int64(1); chatID <= 2; chatID++ {
-		expiry := base.Add(time.Minute)
-		if _, err := store.CompareAndSwap(ctx, core.GroupStateCAS{
-			GroupStateKey: core.GroupStateKey{ChatID: chatID, Namespace: "temp", Key: "x"},
-			Value:         []byte("x"),
-			UpdatedBy:     7,
-			UpdatedAt:     base,
-			ExpiresAt:     &expiry,
-		}); err != nil {
+		ctx := stateContext(store, chatID, 7)
+		record, err := ctx.CompareAndSwapGroupState(
+			storeAdminRequirement,
+			"temp",
+			"x",
+			0,
+			[]byte("x"),
+			time.Minute,
+		)
+		if err != nil {
 			t.Fatal(err)
 		}
+		if record.ExpiresAt != nil && record.ExpiresAt.After(latestExpiry) {
+			latestExpiry = *record.ExpiresAt
+		}
 	}
-	now = base.Add(2 * time.Minute)
+	store.now = func() time.Time { return latestExpiry.Add(time.Second) }
 
-	pruned, err := store.PruneExpired(ctx, now, 1)
+	pruned, err := store.PruneExpired(context.Background(), store.now(), 1)
 	if err != nil || pruned != 1 {
 		t.Fatalf("PruneExpired(limit=1)=%d err=%v", pruned, err)
 	}
-	if count, err := store.Count(ctx); err != nil || count != 1 {
+	if count, err := store.Count(context.Background()); err != nil || count != 1 {
 		t.Fatalf("count after bounded prune=%d err=%v", count, err)
 	}
-	pruned, err = store.PruneExpired(ctx, now, 1)
+	pruned, err = store.PruneExpired(context.Background(), store.now(), 1)
 	if err != nil || pruned != 1 {
 		t.Fatalf("second PruneExpired=%d err=%v", pruned, err)
 	}
 }
 
+func TestSQLiteStoreRejectsDirectWriteWithoutOpaqueGrant(t *testing.T) {
+	store, _ := newTestStore(t, Limits{MaxEntries: 8, CleanupBatch: 2})
+	_, err := store.CompareAndSwap(context.Background(), core.GroupStateWriteGrant{}, core.GroupStateCAS{
+		GroupStateKey: core.GroupStateKey{ChatID: 1, Namespace: "manager", Key: "direct"},
+		Value:         []byte("no"),
+		UpdatedBy:     7,
+		UpdatedAt:     time.Now().UTC(),
+	})
+	if !errors.Is(err, core.ErrGroupAuthorizationDenied) {
+		t.Fatalf("direct write error=%v, want ErrGroupAuthorizationDenied", err)
+	}
+}
+
 func TestSQLiteStoreRejectsOversizedValueAndInvalidLimits(t *testing.T) {
 	store, _ := newTestStore(t, Limits{MaxEntries: 8, CleanupBatch: 2})
-	_, err := store.CompareAndSwap(context.Background(), core.GroupStateCAS{
+	_, err := store.CompareAndSwap(context.Background(), core.GroupStateWriteGrant{}, core.GroupStateCAS{
 		GroupStateKey: core.GroupStateKey{ChatID: 1, Namespace: "manager", Key: "large"},
 		Value:         make([]byte, core.MaxGroupStateValueBytes+1),
 		UpdatedBy:     7,
