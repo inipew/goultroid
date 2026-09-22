@@ -189,6 +189,9 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		savedResponseService.SetFiles(coreDeps.fsManager.ForOwner("assistant-savedresponse"))
 	}
 	savedResponseDelivery := savedresponse.NewResponseDelivery(savedResponseService)
+	if coreDeps.inlineEngine != nil {
+		coreDeps.inlineEngine.SetDynamicSource(savedresponse.NewInlineSource(savedResponseBindings, savedResponseService))
+	}
 	if tgRuntime.assistant != nil {
 		if aware, ok := tgRuntime.assistant.(interface {
 			SetSavedResponseBindings(*savedresponse.BindingService, *savedresponse.ResponseDelivery)
