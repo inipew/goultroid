@@ -48,11 +48,7 @@ func assistantSlashCommand(text string) (string, bool) {
 	if len(fields) == 0 || !strings.HasPrefix(fields[0], "/") {
 		return "", false
 	}
-	command := strings.ToLower(fields[0])
-	if at := strings.Index(command, "@"); at >= 0 {
-		command = command[:at]
-	}
-	return command, true
+	return strings.ToLower(fields[0]), true
 }
 
 func assistantReplyToMessageID(message *tg.Message) int {
@@ -200,8 +196,21 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			}
 		}
 
-		commandName, slashCommand := assistantSlashCommand(msg.Message)
+		commandToken, slashCommand := assistantSlashCommand(msg.Message)
 		if slashCommand {
+			commandName := commandToken
+			if deps.CmdRouter != nil {
+				var targeted bool
+				commandName, targeted = deps.CmdRouter.NormalizeCommandToken(commandToken)
+				if !targeted {
+					// A slash command targeted at another bot remains command-plane
+					// traffic, but must not reach our /cancel control or PM Relay.
+					return nil
+				}
+			} else if strings.Contains(commandToken, "@") {
+				// Without authenticated bot identity, suffixed commands fail closed.
+				return nil
+			}
 			inputPeer := resolvePeer()
 			if commandName == "/cancel" && deps.InteractionIngress != nil && inputPeer != nil {
 				handled, hErr := deps.InteractionIngress.tryText(ctx, msg.Message, senderID, chatID, inputPeer)
