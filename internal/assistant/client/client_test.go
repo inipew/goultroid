@@ -10,6 +10,7 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/client"
 	"github.com/inipew/goultroid/internal/core"
 	inlineservice "github.com/inipew/goultroid/internal/services/inline"
+	"github.com/inipew/goultroid/internal/services/pmrelay"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
@@ -178,12 +179,36 @@ func (*inlineAdmissionDynamicSource) Execute(context.Context, inlineservice.Dyna
 type captureInlineTaskClient struct {
 	spec  tasks.WorkSpec
 	calls int
+	run   bool
 }
 
-func (c *captureInlineTaskClient) Submit(_ context.Context, spec tasks.WorkSpec) (tasks.Ticket, error) {
+func (c *captureInlineTaskClient) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket, error) {
 	c.spec = spec
 	c.calls++
+	if c.run && spec.Handler != nil {
+		if err := spec.Handler(ctx); err != nil {
+			return nil, err
+		}
+	}
 	return nil, nil
+}
+
+type recordingAudienceRegistry struct {
+	touches []pmrelay.AudienceTouch
+}
+
+func (r *recordingAudienceRegistry) TouchAudience(_ context.Context, touch pmrelay.AudienceTouch) (pmrelay.AudienceMember, error) {
+	r.touches = append(r.touches, touch)
+	return pmrelay.AudienceMember{
+		UserID: touch.UserID, Sources: touch.Source,
+		FirstSeenAt: touch.SeenAt, LastSeenAt: touch.SeenAt,
+	}, nil
+}
+func (*recordingAudienceRegistry) SnapshotAudience(context.Context) (pmrelay.AudienceSnapshot, error) {
+	return pmrelay.AudienceSnapshot{}, nil
+}
+func (*recordingAudienceRegistry) ListAudienceSnapshot(context.Context, pmrelay.AudienceSnapshot, int64, int) ([]pmrelay.AudienceMember, int64, error) {
+	return nil, 0, nil
 }
 func (*captureInlineTaskClient) Cancel(tasks.TaskID, tasks.Cause) (tasks.CancelReceipt, error) {
 	return tasks.CancelReceipt{}, nil
@@ -200,11 +225,13 @@ func TestUpdateHandlers_DynamicInlineMediaCarriesAdmissionAuthority(t *testing.T
 	scope := tasks.ScopeIdentity{Owner: "plugin:saved", Generation: 11}
 	engine.SetDynamicSource(&inlineAdmissionDynamicSource{scope: scope})
 
-	taskClient := &captureInlineTaskClient{}
+	taskClient := &captureInlineTaskClient{run: true}
+	audience := &recordingAudienceRegistry{}
 	client.RegisterUpdateHandlers(&dispatcher, client.UpdateHandlerDeps{
-		InlineEngine:  engine,
-		InlineService: &core.MockTelegramServicer{},
-		Tasks:         taskClient,
+		InlineEngine:       engine,
+		InlineService:      &core.MockTelegramServicer{},
+		Tasks:              taskClient,
+		AudienceRegistry:   audience,
 	})
 
 	update := &tg.UpdateBotInlineQuery{
@@ -234,5 +261,11 @@ func TestUpdateHandlers_DynamicInlineMediaCarriesAdmissionAuthority(t *testing.T
 		taskClient.spec.Resources[0].Name != "media" ||
 		taskClient.spec.Resources[0].Amount != 1 {
 		t.Fatalf("task resources=%+v, want media:1", taskClient.spec.Resources)
+	}
+	if len(audience.touches) != 1 {
+		t.Fatalf("inline audience touches=%d, want 1", len(audience.touches))
+	}
+	if audience.touches[0].UserID != 42 || audience.touches[0].Source != pmrelay.AudienceSourceInline {
+		t.Fatalf("inline audience touch=%+v", audience.touches[0])
 	}
 }
