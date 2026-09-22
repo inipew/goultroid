@@ -232,9 +232,6 @@ func (r *Router) executeSavedResponseBinding(
 	if r.savedBindings == nil {
 		return false, nil
 	}
-	if r.savedDelivery == nil {
-		return true, savedresponse.ErrResponseDeliveryUnavailable
-	}
 
 	prepared, err := r.savedBindings.Prepare(ctx, savedresponse.SurfaceAssistantCommand, commandName)
 	switch {
@@ -246,6 +243,9 @@ func (r *Router) executeSavedResponseBinding(
 	default:
 		return true, err
 	}
+	if r.savedDelivery == nil {
+		return true, savedresponse.ErrResponseDeliveryUnavailable
+	}
 	if r.tasks == nil {
 		return true, ErrTasksNotConfigured
 	}
@@ -254,8 +254,13 @@ func (r *Router) executeSavedResponseBinding(
 	if chatID == 0 {
 		chatID = senderID
 	}
+	pool := tasks.PoolID("interactive")
 	resources := make([]tasks.ResourceRequirement, 0, 1)
 	if prepared.HasMedia() {
+		// Media materialization/upload can occupy a worker for much longer than
+		// a text response. Keep interactive priority while using the general
+		// worker pool plus the shared media resource budget.
+		pool = tasks.PoolID("general")
 		resources = append(resources, tasks.ResourceRequirement{Name: "media", Amount: 1})
 	}
 
@@ -265,7 +270,7 @@ func (r *Router) executeSavedResponseBinding(
 		ID:               taskID,
 		Scope:            prepared.Scope(),
 		QuotaOwner:       tasks.OwnerID(fmt.Sprintf("assistant:user:%d", senderID)),
-		Pool:             "interactive",
+		Pool:             pool,
 		Class:            tasks.PriorityInteractive,
 		OrderingKey:      fmt.Sprintf("assistant:savedresponse:%d", chatID),
 		ExecutionTimeout: assistantSavedResponseTimeout,
