@@ -274,11 +274,11 @@ P6-D does not implement:
 - semantic media copy for polls/contacts/locations/games/invoices;
 - media download/re-upload fallback;
 - album grouping;
-- visitor block/ban controls;
 - force-sub;
-- relay control UI;
+- interactive relay control UI;
 - broadcast fan-out;
 - proactive startup replay/scanning of pending delivery intents.
 
-Any later semantic-media expansion should extend this same durable
+P6-E later adds the durable visitor block policy and canonical owner command
+control plane. Any semantic-media expansion should extend this same durable
 `owner_to_visitor` contract rather than creating a parallel relay pipeline.
