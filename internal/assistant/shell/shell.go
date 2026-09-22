@@ -25,6 +25,9 @@ const (
 	InteractionSettingsCategory = "settings_category"
 	InteractionSettingDetail    = "setting_detail"
 	InteractionSettingInput     = "setting_input"
+	InteractionInlineRoot       = "inline_root"
+	InteractionInlineHelp       = "inline_help"
+	InteractionInlinePing       = "inline_ping"
 
 	ActionRefresh            = "refresh"
 	ActionPing               = "ping"
@@ -48,11 +51,27 @@ const (
 	ActionSettingInputCancel = "setting_input_cancel"
 )
 
-// Feature is the first production feature migrated onto the P0-P4 interaction
-// foundation. It intentionally owns no goroutine or transport resource.
-type Feature struct{}
+// Feature is the first production feature migrated onto the interaction
+// foundation. It owns metadata and stateless inline handlers, but no goroutine
+// or Telegram transport resource.
+type Feature struct {
+	inlineCatalog feature.Catalog
+	startTime     time.Time
+}
 
 func NewFeature() *Feature { return &Feature{} }
+
+func (f *Feature) SetInlineCatalog(catalog feature.Catalog) {
+	if f != nil {
+		f.inlineCatalog = catalog
+	}
+}
+
+func (f *Feature) SetStartTime(startTime time.Time) {
+	if f != nil {
+		f.startTime = startTime
+	}
+}
 
 func (*Feature) Name() string             { return FeatureID }
 func (*Feature) Commands() []core.Command { return nil }
@@ -60,10 +79,13 @@ func (*Feature) Init() error              { return nil }
 
 func (*Feature) FeatureSpec() feature.Spec {
 	assistant := execution.SurfaceAssistant
+	inlineSurface := execution.SurfaceInline
 	startPolicy := feature.PublicPolicy(assistant)
 	startPolicy.PrivateOnly = true
 	ownerPolicy := feature.OwnerPolicy(assistant)
 	ownerPolicy.PrivateOnly = true
+	inlinePublicPolicy := feature.PublicPolicy(inlineSurface)
+	inlineOwnerPolicy := feature.OwnerPolicy(inlineSurface)
 
 	return feature.Spec{
 		ID:          FeatureID,
@@ -72,6 +94,9 @@ func (*Feature) FeatureSpec() feature.Spec {
 		Category:    "Assistant",
 		Interactions: []feature.Interaction{
 			{ID: InteractionStart, Kind: feature.InteractionDeepLink, Description: "Telegram /start entry point", Surfaces: assistant, Policy: startPolicy},
+			{ID: InteractionInlineRoot, Kind: feature.InteractionInline, Description: "Default inline Assistant discovery surface", Surfaces: inlineSurface, Policy: inlinePublicPolicy},
+			{ID: InteractionInlineHelp, Kind: feature.InteractionInline, Description: "Feature-catalog generated inline help", Surfaces: inlineSurface, Policy: inlineOwnerPolicy},
+			{ID: InteractionInlinePing, Kind: feature.InteractionInline, Description: "Public inline Assistant liveness", Surfaces: inlineSurface, Policy: inlinePublicPolicy},
 			{ID: InteractionHome, Kind: feature.InteractionScreen, Description: "Owner root/home screen", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionStatus, Kind: feature.InteractionScreen, Description: "Read-only Assistant runtime status", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionHelp, Kind: feature.InteractionScreen, Description: "Read-only Assistant command overview", Surfaces: assistant, Policy: ownerPolicy},
