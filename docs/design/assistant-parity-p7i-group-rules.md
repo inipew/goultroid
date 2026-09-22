@@ -307,7 +307,13 @@ Before warning persistence, Assistant additionally protects:
 - Telegram administrators;
 - Telegram group creator.
 
-Telegram target role is freshly verified before warning persistence.
+Telegram target role is freshly verified twice for Assistant warnings:
+
+1. handler preflight, for early user-safe rejection;
+2. again inside the same-target warning stripe immediately before `AddWarning`.
+
+The second check closes the race where a member is promoted to administrator after
+the command preflight but before durable warning persistence.
 
 ## Warning resource bounds
 
@@ -418,6 +424,7 @@ P7-I tests cover:
 - compiled rule payload bounds;
 - filter cooldown hard cap;
 - warning target protection before persistence;
+- target promotion between preflight and persistence is rejected with zero warning rows;
 - warning enforcement stays on caller transport;
 - failed threshold retry does not grow rows;
 - oversized warning reason/threshold rejected before persistence;
