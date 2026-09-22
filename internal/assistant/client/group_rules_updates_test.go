@@ -2,6 +2,11 @@ package client
 
 import (
 	"context"
+	"os"
+	"runtime"
+	"runtime/debug"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/gotd/td/tg"
@@ -558,5 +563,105 @@ func BenchmarkP7LIrrelevantGroupMessageHotPath(b *testing.B) {
 	if cacheCalls != 0 || resolver.calls != 0 || tasksClient.calls != 0 || rules.handleCalls != 0 {
 		b.Fatalf("cold path escaped interest gate cache=%d resolver=%d tasks=%d handle=%d",
 			cacheCalls, resolver.calls, tasksClient.calls, rules.handleCalls)
+	}
+}
+
+
+type p7lProcessFootprint struct {
+	goroutines int
+	heapAlloc  uint64
+	rss        uint64
+}
+
+func p7lCurrentRSS() uint64 {
+	raw, err := os.ReadFile("/proc/self/statm")
+	if err != nil {
+		return 0
+	}
+	fields := strings.Fields(string(raw))
+	if len(fields) < 2 {
+		return 0
+	}
+	pages, err := strconv.ParseUint(fields[1], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return pages * uint64(os.Getpagesize())
+}
+
+func p7lMeasureProcessFootprint() p7lProcessFootprint {
+	runtime.GC()
+	debug.FreeOSMemory()
+	runtime.Gosched()
+	var stats runtime.MemStats
+	runtime.ReadMemStats(&stats)
+	return p7lProcessFootprint{
+		goroutines: runtime.NumGoroutine(),
+		heapAlloc:  stats.HeapAlloc,
+		rss:        p7lCurrentRSS(),
+	}
+}
+
+func TestP7LHighCardinalityColdTrafficDoesNotAmplifyIdleProcessState(t *testing.T) {
+	rules := &p7iRuleIngressStub{}
+	resolver := &groupServiceResolverStub{}
+	tasksClient := &p7iTaskClient{}
+	cacheCalls := 0
+
+	dispatcher := tg.NewUpdateDispatcher()
+	RegisterUpdateHandlers(&dispatcher, UpdateHandlerDeps{
+		Logger:         zap.NewNop(),
+		GroupRules:     rules,
+		GroupRuleChats: &p7iChatClassifierStub{},
+		Resolver:       resolver,
+		Tasks:          tasksClient,
+		CacheEntities: func(tg.Entities) {
+			cacheCalls++
+		},
+	})
+
+	before := p7lMeasureProcessFootprint()
+	ctx := context.Background()
+	const total = 8192
+	for i := 0; i < total; i++ {
+		chatID := int64(500000 + i)
+		if err := dispatcher.Handle(ctx, &tg.Updates{
+			Updates: []tg.UpdateClass{&tg.UpdateNewMessage{Message: &tg.Message{
+				ID:      i + 1,
+				PeerID:  &tg.PeerChat{ChatID: chatID},
+				FromID:  &tg.PeerUser{UserID: int64(600000 + i)},
+				Message: "irrelevant high-cardinality cold traffic",
+			}}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	after := p7lMeasureProcessFootprint()
+
+	t.Logf(
+		"P7-L idle footprint: groups=%d goroutines=%d->%d heap=%d->%d rss=%d->%d",
+		total,
+		before.goroutines, after.goroutines,
+		before.heapAlloc, after.heapAlloc,
+		before.rss, after.rss,
+	)
+
+	if cacheCalls != 0 || resolver.calls != 0 || tasksClient.calls != 0 || rules.handleCalls != 0 {
+		t.Fatalf("cold traffic escaped interest gate cache=%d resolver=%d tasks=%d handle=%d",
+			cacheCalls, resolver.calls, tasksClient.calls, rules.handleCalls)
+	}
+	if after.goroutines > before.goroutines+2 {
+		t.Fatalf("cold high-cardinality traffic amplified goroutines %d -> %d",
+			before.goroutines, after.goroutines)
+	}
+	const maxHeapGrowth = 8 << 20
+	if after.heapAlloc > before.heapAlloc+maxHeapGrowth {
+		t.Fatalf("cold high-cardinality traffic retained >%d bytes heap: %d -> %d",
+			maxHeapGrowth, before.heapAlloc, after.heapAlloc)
+	}
+	const maxRSSGrowth = 32 << 20
+	if before.rss > 0 && after.rss > before.rss+maxRSSGrowth {
+		t.Fatalf("cold high-cardinality traffic retained >%d bytes RSS: %d -> %d",
+			maxRSSGrowth, before.rss, after.rss)
 	}
 }
