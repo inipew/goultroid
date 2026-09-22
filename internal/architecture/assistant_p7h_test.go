@@ -85,8 +85,7 @@ func TestP7HInterestGatePrecedesEventAllocationAndPublish(t *testing.T) {
 	source := string(raw)
 
 	start := strings.Index(source, "func handleAssistantGroupService(")
-	end := strings.Index(source[start+1:], "
-func RegisterUpdateHandlers(")
+	end := strings.Index(source[start+1:], "\nfunc RegisterUpdateHandlers(")
 	if start < 0 || end < 0 {
 		t.Fatal("P7-H group-service ingress helper is missing")
 	}
