@@ -148,6 +148,8 @@ Default/hard bounds:
 |---|---:|---:|
 | persistent rows | 10,000 | 50,000 |
 | value bytes per row | 64 KiB | 64 KiB |
+
+The 64 KiB value limit is enforced twice: in the typed repository API and by SQLite insert/update triggers, so direct SQL cannot bypass the physical row-size invariant.
 | lazy cleanup batch | 64 | 512 |
 | namespace bytes | 64 | 64 |
 | key bytes | 128 | 128 |
@@ -203,11 +205,14 @@ private Context state capability
 
 The store is not a public field on `core.Context`. Feature handlers use typed Context methods.
 
-The schema migration is registered through the existing feature-migration runner as:
+The schema migrations are registered through the existing feature-migration runner as:
 
 ```text
-assistant_group_state.001
+assistant_group_state.001  durable table + expiry index
+assistant_group_state.002  immutable additive insert/update value-bound triggers
 ```
+
+`001` remains immutable once published; later hardening is additive rather than rewriting its checksum.
 
 The store may be constructed before migrations, but no Assistant execution starts until application startup after builtin migrations complete.
 
