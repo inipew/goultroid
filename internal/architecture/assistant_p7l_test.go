@@ -23,6 +23,7 @@ func TestP7LAcceptanceMatrixCoverageRemainsExecutable(t *testing.T) {
 		filepath.Join(root, "internal", "assistant", "client", "group_mutation_test.go"): {
 			"TestP7GSupergroupBanRevalidatesTargetBotActorBeforeRPC",
 			"TestP7GBotRightsFailurePreventsPhysicalMutation",
+			"TestP7LBotRightsChangedAfterAdmissionPreventPhysicalMutation",
 			"TestP7GActorRightsFailurePreventsPhysicalMutation",
 			"TestP7GProtectsCreatorAndHigherAdminTargets",
 			"TestP7GPurgeIsTopicAwareBoundedAndRevalidatesDeleteRPC",
@@ -46,7 +47,11 @@ func TestP7LAcceptanceMatrixCoverageRemainsExecutable(t *testing.T) {
 		filepath.Join(root, "internal", "assistant", "client", "group_rules_updates_test.go"): {
 			"TestP7LGroupRuleAdmissionRejectionStopsBeforeExecution",
 			"TestP7LHighCardinalityIrrelevantGroupsStayCold",
+			"TestP7LHighCardinalityColdTrafficDoesNotAmplifyIdleProcessState",
 			"BenchmarkP7LIrrelevantGroupMessageHotPath",
+		},
+		filepath.Join(root, "plugins", "filters", "filters_hardening_test.go"): {
+			"TestP7LMediaFilterContinuationRevalidatesAuthorityBeforePersistence",
 		},
 		filepath.Join(root, "internal", "core", "context_p7j_test.go"): {
 			"TestP7JGetReplyRejectsLinkedPeerBeforeRPC",
