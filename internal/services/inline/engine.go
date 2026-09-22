@@ -425,6 +425,31 @@ func (e *Engine) Registry() *Registry {
 	return e.registry
 }
 
+// PreparedQuery freezes one registry match at admission time. Scope is carried
+// into TaskEngine so disable/reload can cancel queued or running feature work.
+type PreparedQuery struct {
+	query    string
+	resolved Resolved
+}
+
+func (p PreparedQuery) Scope() tasks.ScopeIdentity { return p.resolved.Scope }
+
+func (p PreparedQuery) Query() string { return p.query }
+
+// Prepare resolves a query without executing feature code.
+func (e *Engine) Prepare(rawQuery string) (PreparedQuery, error) {
+	if e == nil || e.registry == nil {
+		return PreparedQuery{}, ErrNoMatchingHandler
+	}
+	trimmed := strings.TrimSpace(rawQuery)
+	resolved, ok := e.registry.ResolveOwned(trimmed)
+	if !ok {
+		return PreparedQuery{}, ErrNoMatchingHandler
+	}
+	return PreparedQuery{query: trimmed, resolved: resolved}, nil
+}
+
+
 // Cache returns the internal inline result cache.
 func (e *Engine) Cache() *Cache {
 	return e.cache
@@ -437,6 +462,16 @@ func (e *Engine) Execute(ctx context.Context, svc core.TelegramServicer, queryID
 
 // ExecuteWithPeerType processes an incoming inline query with peer context and answers Telegram.
 func (e *Engine) ExecuteWithPeerType(ctx context.Context, svc core.TelegramServicer, queryID int64, userID int64, rawQuery string, offset string, peerType tg.InlineQueryPeerTypeClass) error {
+	return e.executeWithPeerType(ctx, svc, queryID, userID, rawQuery, offset, peerType, nil)
+}
+
+// ExecutePreparedWithPeerType executes an admission-time match and rejects it if
+// plugin lifecycle replaced or removed the registration before execution.
+func (e *Engine) ExecutePreparedWithPeerType(ctx context.Context, svc core.TelegramServicer, queryID int64, userID int64, prepared PreparedQuery, offset string, peerType tg.InlineQueryPeerTypeClass) error {
+	return e.executeWithPeerType(ctx, svc, queryID, userID, prepared.query, offset, peerType, &prepared.resolved)
+}
+
+func (e *Engine) executeWithPeerType(ctx context.Context, svc core.TelegramServicer, queryID int64, userID int64, rawQuery string, offset string, peerType tg.InlineQueryPeerTypeClass, prepared *Resolved) error {
 	start := time.Now()
 	trimmed := strings.TrimSpace(rawQuery)
 	correlationID := fmt.Sprintf("inline-%d-%d", queryID, time.Now().UnixNano())
@@ -458,8 +493,19 @@ func (e *Engine) ExecuteWithPeerType(ctx context.Context, svc core.TelegramServi
 		}
 	}
 
-	// Resolve handler first to know cache policy
-	handler, args, ok := e.registry.Resolve(trimmed)
+	// Resolve handler first to know cache policy. Prepared feature work must
+	// still point at the exact same registration generation.
+	var resolved Resolved
+	var ok bool
+	if prepared != nil {
+		if !e.registry.IsCurrent(*prepared) {
+			return ErrStaleHandler
+		}
+		resolved = *prepared
+		ok = true
+	} else {
+		resolved, ok = e.registry.ResolveOwned(trimmed)
+	}
 	if !ok {
 		e.logger.Debug("no inline handler matched query", zap.String("query", trimmed), zap.String("correlation_id", correlationID))
 		if e.metrics != nil {
@@ -472,6 +518,8 @@ func (e *Engine) ExecuteWithPeerType(ctx context.Context, svc core.TelegramServi
 		}
 		return ErrNoMatchingHandler
 	}
+	handler := resolved.Handler
+	args := resolved.Args
 
 	// Determine cache policy
 	policy := CacheGlobal
@@ -554,6 +602,12 @@ func (e *Engine) ExecuteWithPeerType(ctx context.Context, svc core.TelegramServi
 
 	// Timeout + panic recovery around handler (Fase 4 hardening)
 	handlerErr := func() (err error) {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if prepared != nil && !e.registry.IsCurrent(*prepared) {
+			return ErrStaleHandler
+		}
 		defer func() {
 			if rec := recover(); rec != nil {
 				e.logger.Error("inline handler panic", zap.Any("panic", rec), zap.String("pattern", handler.Pattern()), zap.String("correlation_id", correlationID))
