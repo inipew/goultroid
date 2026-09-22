@@ -494,6 +494,12 @@ func (c *AssistantClient) SetSettingsService(svc *settings.Service) {
 	c.mu.Unlock()
 }
 
+func (c *AssistantClient) SetGroupStateStore(store core.GroupStateStore) {
+	if c.cmdRouter != nil {
+		c.cmdRouter.SetGroupStateStore(store)
+	}
+}
+
 func (c *AssistantClient) SetSavedResponseBindings(bindings *savedresponse.BindingService, delivery *savedresponse.ResponseDelivery) {
 	if c.cmdRouter != nil {
 		c.cmdRouter.SetSavedResponseBindings(bindings, delivery)
