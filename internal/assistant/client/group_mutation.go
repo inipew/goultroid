@@ -338,6 +338,7 @@ func promotedAdminRights(actor, bot core.GroupActorPrincipal) tg.ChatAdminRights
 		BanUsers:       actor.Rights.BanUsers && bot.Rights.BanUsers,
 		InviteUsers:    actor.Rights.InviteUsers && bot.Rights.InviteUsers,
 		PinMessages:    actor.Rights.PinMessages && bot.Rights.PinMessages,
+		AddAdmins:      actor.Rights.AddAdmins && bot.Rights.AddAdmins,
 		ManageTopics:   actor.Rights.ManageTopics && bot.Rights.ManageTopics,
 	}
 }
