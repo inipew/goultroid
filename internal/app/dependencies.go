@@ -26,6 +26,7 @@ import (
 	"github.com/inipew/goultroid/internal/services/localization"
 	mediaSvc "github.com/inipew/goultroid/internal/services/media"
 	pmpermitSvc "github.com/inipew/goultroid/internal/services/pmpermit"
+	pmrelaySvc "github.com/inipew/goultroid/internal/services/pmrelay"
 	processSvc "github.com/inipew/goultroid/internal/services/process"
 	"github.com/inipew/goultroid/internal/services/ratelimit"
 	"github.com/inipew/goultroid/internal/services/storage"
@@ -81,6 +82,7 @@ type domainServices struct {
 	processRunner    *processSvc.OSRunner
 	downloadRegistry *download.Registry
 	pmpermitService  *pmpermitSvc.Service
+	pmrelayService   *pmrelaySvc.Service
 	broadcastService *broadcastSvc.Service
 	userlogService   *userlogSvc.Service
 	addonManager     *addon.Manager
