@@ -310,7 +310,6 @@ func TestP7HOversizedTemplateFailsBeforePersistedInterest(t *testing.T) {
 	}
 }
 
-
 func TestP7HCloseCannotResurrectSubscriptionOrTransport(t *testing.T) {
 	store, bus := newGroupEventTestRuntime(t)
 	service := New(store, bus)
