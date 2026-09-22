@@ -367,7 +367,7 @@ func TestBroadcast_TargetSourceStreamsThroughSameBoundedFanout(t *testing.T) {
 	defaultTG := &mockTelegram{}
 	sender := &mockTelegram{}
 	svc := newBroadcastService(t, defaultTG)
-	source := &pagedTargetSource{total: maxBroadcastInFlight*2 + 5}
+	source := &pagedTargetSource{total: 64*2 + 5}
 
 	rep, err := svc.Broadcast(context.Background(), broadcast.BroadcastRequest{
 		TargetSource: source,
