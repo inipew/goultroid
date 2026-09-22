@@ -67,7 +67,7 @@ func TestP7HAssistantIngressCoversBasicAndSupergroupUpdateClasses(t *testing.T) 
 		"handleNewMessage := func(",
 		"dispatcher.OnNewMessage(",
 		"dispatcher.OnNewChannelMessage(",
-		"handleAssistantGroupService(service, e, deps)",
+		"handleAssistantGroupService(ctx, service, e, deps)",
 	} {
 		if !strings.Contains(source, required) {
 			t.Errorf("P7-H Assistant ingress missing %q", required)
@@ -91,7 +91,7 @@ func TestP7HInterestGatePrecedesEventAllocationAndPublish(t *testing.T) {
 	}
 	block := source[start : start+1+end]
 	interest := strings.Index(block, "deps.GroupEvents.Interested(chat.id, kind)")
-	peer := strings.Index(block, "peer := chat.inputPeer()")
+	peer := strings.Index(block, "resolveAssistantGroupServicePeer(")
 	dedupe := strings.Index(block, "make(map[int64]struct{}")
 	users := strings.Index(block, "make([]core.GroupServiceUser")
 	allocation := strings.Index(block, "&core.GroupServiceEvent{")
@@ -101,11 +101,11 @@ func TestP7HInterestGatePrecedesEventAllocationAndPublish(t *testing.T) {
 			interest, peer, dedupe, users, allocation, publish)
 	}
 	for name, position := range map[string]int{
-		"peer": peer,
-		"dedupe": dedupe,
-		"users": users,
-		"event": allocation,
-		"publish": publish,
+		"peer resolution": peer,
+		"dedupe":          dedupe,
+		"users":           users,
+		"event":           allocation,
+		"publish":         publish,
 	} {
 		if interest > position {
 			t.Fatalf("P7-H interest gate occurs after %s work: interest=%d position=%d",
@@ -194,5 +194,39 @@ func TestP7HDoesNotOpenGroupFreeFormInteractionBeforeP7J(t *testing.T) {
 	if !strings.Contains(source,
 		"if privateChat && deps.Resolver != nil && deps.Interaction != nil") {
 		t.Fatal("ordinary group text can reach generic Assistant free-form interaction before P7-J")
+	}
+}
+
+
+func TestP7HDeliveryReusesEventBusTaskEngine(t *testing.T) {
+	root := repositoryRoot(t)
+
+	appPath := filepath.Join(root, "internal", "app", "app.go")
+	appRaw, err := os.ReadFile(appPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(appRaw), "coreDeps.eventBus.SetTasks(coreDeps.taskEngine)") {
+		t.Fatal("P7-H EventBus is not bound to the shared TaskEngine")
+	}
+
+	servicePath := filepath.Join(root, "internal", "assistant", "groupevents", "service.go")
+	serviceRaw, err := os.ReadFile(servicePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceSource := string(serviceRaw)
+	if !strings.Contains(serviceSource, "s.bus.SubscribeWithOptions(") ||
+		!strings.Contains(serviceSource, "s.bus.Publish(event)") {
+		t.Fatal("P7-H delivery no longer uses the shared EventBus path")
+	}
+	for _, forbidden := range []string{
+		"taskengine.New",
+		"tasks.WorkSpec",
+		"tasks.Submit",
+	} {
+		if strings.Contains(serviceSource, forbidden) {
+			t.Errorf("P7-H feature owns execution primitive %q instead of EventBus/TaskEngine", forbidden)
+		}
 	}
 }
