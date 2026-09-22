@@ -88,30 +88,50 @@ func AttachGroupStateStore(c *Context, store GroupStateStore) {
 	}
 }
 
-func normalizedGroupStateCoordinate(namespace, key string) (string, string, error) {
-	namespace = strings.ToLower(strings.TrimSpace(namespace))
-	key = strings.ToLower(strings.TrimSpace(key))
-	if namespace == "" || len(namespace) > MaxGroupStateNamespaceBytes {
-		return "", "", fmt.Errorf("%w: invalid group-state namespace", ErrInvalidArgs)
+func normalizeGroupStateToken(value string, maxBytes int, label string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" || len(value) > maxBytes {
+		return "", fmt.Errorf("%w: invalid group-state %s", ErrInvalidArgs, label)
 	}
-	if key == "" || len(key) > MaxGroupStateKeyBytes {
-		return "", "", fmt.Errorf("%w: invalid group-state key", ErrInvalidArgs)
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if (c >= 'a' && c <= 'z') ||
+			(c >= '0' && c <= '9') ||
+			c == '.' || c == '_' || c == ':' || c == '/' || c == '-' {
+			continue
+		}
+		return "", fmt.Errorf("%w: group-state %s contains unsupported characters", ErrInvalidArgs, label)
 	}
-	return namespace, key, nil
+	return value, nil
+}
+
+// NormalizeGroupStateKey canonicalizes and validates the durable coordinate.
+// Namespace/key are machine identifiers rather than display strings, so they
+// are stable lowercase ASCII tokens and their limits are measured in bytes.
+func NormalizeGroupStateKey(raw GroupStateKey) (GroupStateKey, error) {
+	if raw.ChatID <= 0 {
+		return GroupStateKey{}, fmt.Errorf("%w: invalid group chat id", ErrInvalidArgs)
+	}
+	namespace, err := normalizeGroupStateToken(raw.Namespace, MaxGroupStateNamespaceBytes, "namespace")
+	if err != nil {
+		return GroupStateKey{}, err
+	}
+	key, err := normalizeGroupStateToken(raw.Key, MaxGroupStateKeyBytes, "key")
+	if err != nil {
+		return GroupStateKey{}, err
+	}
+	return GroupStateKey{ChatID: raw.ChatID, Namespace: namespace, Key: key}, nil
 }
 
 func (c *Context) groupStateKey(namespace, key string) (GroupStateKey, error) {
 	if c == nil || c.Chat == nil || !c.IsManagerGroup() {
 		return GroupStateKey{}, ErrGroupOnly
 	}
-	namespace, key, err := normalizedGroupStateCoordinate(namespace, key)
-	if err != nil {
-		return GroupStateKey{}, err
-	}
-	if c.Chat.ID <= 0 {
-		return GroupStateKey{}, fmt.Errorf("%w: invalid group chat id", ErrInvalidArgs)
-	}
-	return GroupStateKey{ChatID: c.Chat.ID, Namespace: namespace, Key: key}, nil
+	return NormalizeGroupStateKey(GroupStateKey{
+		ChatID:    c.Chat.ID,
+		Namespace: namespace,
+		Key:       key,
+	})
 }
 
 // GetGroupState reads only the current chat's explicit state. It never falls
