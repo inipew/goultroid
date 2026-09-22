@@ -24,6 +24,7 @@ import (
 	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/services/localization"
+	"github.com/inipew/goultroid/internal/services/groupstate"
 	mediaSvc "github.com/inipew/goultroid/internal/services/media"
 	pmpermitSvc "github.com/inipew/goultroid/internal/services/pmpermit"
 	pmrelaySvc "github.com/inipew/goultroid/internal/services/pmrelay"
@@ -76,6 +77,7 @@ type telegramRuntime struct {
 type domainServices struct {
 	settingsService  *settings.Service
 	settingsRegistry *settings.Registry
+	groupState       *groupstate.SQLiteStore
 	schedEngine      *scheduler.Engine
 	storage          storage.Storage
 	mediaService     *mediaSvc.Service
