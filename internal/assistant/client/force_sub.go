@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	forceSubCacheCapacity = 2048
-	forceSubMemberTTL      = 10 * time.Minute
-	forceSubNonMemberTTL   = time.Minute
+	forceSubCacheCapacity    = 2048
+	forceSubMemberTTL         = 10 * time.Minute
+	forceSubNonMemberTTL      = time.Minute
+	forceSubGuidanceCooldown  = time.Minute
 )
 
 type forceSubDecision struct {
@@ -30,6 +31,10 @@ type forceSubDecision struct {
 
 type forceSubMembershipGate interface {
 	Check(context.Context, int64) (forceSubDecision, error)
+}
+
+type forceSubGuidanceLimiter interface {
+	ClaimGuidance(int64, int64) bool
 }
 
 type forceSubAPI interface {
@@ -55,9 +60,12 @@ type telegramForceSubGate struct {
 	channel          *tg.InputChannel
 	entries          map[int64]*list.Element
 	lru              *list.List
+	guidance         map[int64]*list.Element
+	guidanceLRU      *list.List
 	cacheCapacity    int
 	memberTTL        time.Duration
 	nonMemberTTL     time.Duration
+	guidanceCooldown time.Duration
 }
 
 func newTelegramForceSubGate(
@@ -78,11 +86,14 @@ func newTelegramForceSubGate(
 		resolver:     resolver,
 		logger:       logger,
 		now:          time.Now,
-		entries:      make(map[int64]*list.Element, forceSubCacheCapacity),
-		lru:          list.New(),
-		cacheCapacity: forceSubCacheCapacity,
-		memberTTL:    forceSubMemberTTL,
-		nonMemberTTL: forceSubNonMemberTTL,
+		entries:          make(map[int64]*list.Element, forceSubCacheCapacity),
+		lru:              list.New(),
+		guidance:         make(map[int64]*list.Element, forceSubCacheCapacity),
+		guidanceLRU:      list.New(),
+		cacheCapacity:    forceSubCacheCapacity,
+		memberTTL:        forceSubMemberTTL,
+		nonMemberTTL:     forceSubNonMemberTTL,
+		guidanceCooldown: forceSubGuidanceCooldown,
 	}
 }
 
@@ -94,6 +105,8 @@ func (g *telegramForceSubGate) resetForRevisionLocked(revision int64) {
 	g.channel = nil
 	g.entries = make(map[int64]*list.Element, g.cacheCapacity)
 	g.lru.Init()
+	g.guidance = make(map[int64]*list.Element, g.cacheCapacity)
+	g.guidanceLRU.Init()
 }
 
 func (g *telegramForceSubGate) getCached(userID, revision int64, now time.Time) (bool, bool) {
@@ -143,6 +156,48 @@ func (g *telegramForceSubGate) putCached(userID, revision int64, member bool, no
 	g.entries[userID] = elem
 }
 
+type forceSubGuidanceEntry struct {
+	userID    int64
+	expiresAt time.Time
+}
+
+func (g *telegramForceSubGate) ClaimGuidance(userID, revision int64) bool {
+	if g == nil || userID <= 0 || revision <= 0 {
+		return false
+	}
+	now := g.now().UTC()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.resetForRevisionLocked(revision)
+
+	if elem, ok := g.guidance[userID]; ok {
+		entry := elem.Value.(forceSubGuidanceEntry)
+		if now.Before(entry.expiresAt) {
+			g.guidanceLRU.MoveToBack(elem)
+			return false
+		}
+		delete(g.guidance, userID)
+		g.guidanceLRU.Remove(elem)
+	}
+	if g.cacheCapacity <= 0 {
+		return false
+	}
+	if len(g.guidance) >= g.cacheCapacity {
+		if front := g.guidanceLRU.Front(); front != nil {
+			evicted := front.Value.(forceSubGuidanceEntry)
+			delete(g.guidance, evicted.userID)
+			g.guidanceLRU.Remove(front)
+		}
+	}
+	entry := forceSubGuidanceEntry{
+		userID:    userID,
+		expiresAt: now.Add(g.guidanceCooldown),
+	}
+	elem := g.guidanceLRU.PushBack(entry)
+	g.guidance[userID] = elem
+	return true
+}
+
 func (g *telegramForceSubGate) resolveChannel(
 	ctx context.Context,
 	config pmrelay.ForceSubConfig,
@@ -161,6 +216,9 @@ func (g *telegramForceSubGate) resolveChannel(
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: resolve @%s: %v", pmrelay.ErrForceSubVerify, config.ChannelUsername, err)
+	}
+	if resolved == nil {
+		return nil, fmt.Errorf("%w: resolve @%s returned no peer", pmrelay.ErrForceSubVerify, config.ChannelUsername)
 	}
 	peerChannel, ok := resolved.Peer.(*tg.PeerChannel)
 	if !ok || peerChannel.ChannelID <= 0 {
@@ -317,4 +375,5 @@ func (t *telegramRelayVisitorTransport) SendForceSubGuidance(
 }
 
 var _ forceSubMembershipGate = (*telegramForceSubGate)(nil)
+var _ forceSubGuidanceLimiter = (*telegramForceSubGate)(nil)
 var _ forceSubGuidanceTransport = (*telegramRelayVisitorTransport)(nil)
