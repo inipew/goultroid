@@ -12,6 +12,7 @@ import (
 	"github.com/inipew/goultroid/internal/addon"
 	"github.com/inipew/goultroid/internal/assistant"
 	assistantdeeplink "github.com/inipew/goultroid/internal/assistant/deeplink"
+	groupeventsadmin "github.com/inipew/goultroid/internal/assistant/groupeventsadmin"
 	assistantinteraction "github.com/inipew/goultroid/internal/assistant/interaction"
 	pmrelayadmin "github.com/inipew/goultroid/internal/assistant/pmrelayadmin"
 	savedresponseadmin "github.com/inipew/goultroid/internal/assistant/savedresponseadmin"
@@ -183,6 +184,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		tgRuntime.assistant.SetRelayIngress(domServices.pmrelayService)
 		tgRuntime.assistant.SetAudienceRegistry(domServices.pmrelayService)
 		tgRuntime.assistant.SetBroadcastService(domServices.broadcastService)
+		tgRuntime.assistant.SetGroupEventService(domServices.groupEvents)
 		tgRuntime.assistant.SetPluginScopeResolver(func(owner string) (tasks.ScopeIdentity, bool) {
 			scope, ok := pluginManager.Scope(owner)
 			if !ok {
@@ -194,6 +196,11 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 
 	if err := migrateBuiltinFeatures(context.Background(), coreDeps.db); err != nil {
 		return nil, err
+	}
+	if domServices.groupEvents != nil {
+		if err := domServices.groupEvents.Load(context.Background()); err != nil {
+			return nil, fmt.Errorf("load Assistant group event state: %w", err)
+		}
 	}
 	savedResponseBindings := savedresponse.NewBindingService(
 		savedresponse.NewSQLiteSurfaceBindingRepository(coreDeps.db),
@@ -218,6 +225,14 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		return nil
 	})
 	pluginManager.SetRegistrationValidator(savedResponseBindings.ValidateEnabledCollisions)
+
+	// Register Assistant group-event controls only after the SavedResponse
+	// collision validator is installed so /welcome and /goodbye share the same
+	// canonical namespace guarantees as every other Assistant feature.
+	groupEventsAdmin := groupeventsadmin.New(domServices.groupEvents)
+	if err := pluginManager.RegisterWithContext(context.Background(), groupEventsAdmin); err != nil {
+		return nil, fmt.Errorf("register Assistant group events feature: %w", err)
+	}
 
 	// Register PM Relay controls only after the SavedResponse collision validator
 	// is installed so /relay and /who participate in the same staged canonical
