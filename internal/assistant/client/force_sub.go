@@ -3,14 +3,12 @@ package client
 import (
 	"container/list"
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
-	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/assistant/peer"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/services/pmrelay"
@@ -320,5 +318,3 @@ func (t *telegramRelayVisitorTransport) SendForceSubGuidance(
 
 var _ forceSubMembershipGate = (*telegramForceSubGate)(nil)
 var _ forceSubGuidanceTransport = (*telegramRelayVisitorTransport)(nil)
-var _ = errors.Is
-var _ = interaction.ErrInvalidTarget
