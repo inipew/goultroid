@@ -80,14 +80,14 @@ func TestSQLiteSurfaceBindingRepositoryCASLifecycle(t *testing.T) {
 		t.Fatalf("duplicate CreateBinding() error = %v, want %v", err, ErrBindingExists)
 	}
 
-	disabled, err := repo.SetBindingEnabled(ctx, created.Surface, created.Alias, false, created.Revision)
+	disabled, err := repo.SetBindingEnabled(ctx, created.Surface, created.Alias, false, created.Revision, created.Incarnation)
 	if err != nil {
 		t.Fatalf("SetBindingEnabled(false) error = %v", err)
 	}
 	if disabled.Enabled || disabled.Revision != 2 {
 		t.Fatalf("unexpected disabled binding: %+v", disabled)
 	}
-	if _, err := repo.SetBindingEnabled(ctx, created.Surface, created.Alias, true, created.Revision); !errors.Is(err, ErrBindingConflict) {
+	if _, err := repo.SetBindingEnabled(ctx, created.Surface, created.Alias, true, created.Revision, created.Incarnation); !errors.Is(err, ErrBindingConflict) {
 		t.Fatalf("stale enable error = %v, want %v", err, ErrBindingConflict)
 	}
 
@@ -98,6 +98,7 @@ func TestSQLiteSurfaceBindingRepositoryCASLifecycle(t *testing.T) {
 		Reference{Provider: disabled.Reference.Provider, ScopeID: 84, Key: "replacement"},
 		disabled.Enabled,
 		disabled.Revision,
+		disabled.Incarnation,
 	)
 	if err != nil {
 		t.Fatalf("UpdateBinding() error = %v", err)
@@ -121,10 +122,10 @@ func TestSQLiteSurfaceBindingRepositoryCASLifecycle(t *testing.T) {
 		t.Fatalf("disabled binding leaked into enabled listing: %+v", enabledOnly)
 	}
 
-	if err := repo.DeleteBinding(ctx, updated.Surface, updated.Alias, updated.Revision-1); !errors.Is(err, ErrBindingConflict) {
+	if err := repo.DeleteBinding(ctx, updated.Surface, updated.Alias, updated.Revision-1, updated.Incarnation); !errors.Is(err, ErrBindingConflict) {
 		t.Fatalf("stale DeleteBinding() error = %v, want %v", err, ErrBindingConflict)
 	}
-	if err := repo.DeleteBinding(ctx, updated.Surface, updated.Alias, updated.Revision); err != nil {
+	if err := repo.DeleteBinding(ctx, updated.Surface, updated.Alias, updated.Revision, updated.Incarnation); err != nil {
 		t.Fatalf("DeleteBinding() error = %v", err)
 	}
 	got, err := repo.GetBinding(ctx, updated.Surface, updated.Alias)
@@ -183,7 +184,7 @@ func TestBindingServiceJoinsDurableBindingToLiveProviderGeneration(t *testing.T)
 		t.Fatalf("provider payload mutated through binding result: %q", again.Resolved.Response.Text)
 	}
 
-	disabled, err := repo.SetBindingEnabled(ctx, binding.Surface, binding.Alias, false, binding.Revision)
+	disabled, err := repo.SetBindingEnabled(ctx, binding.Surface, binding.Alias, false, binding.Revision, binding.Incarnation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +193,7 @@ func TestBindingServiceJoinsDurableBindingToLiveProviderGeneration(t *testing.T)
 	}
 
 	registration.Close()
-	if _, err := repo.SetBindingEnabled(ctx, disabled.Surface, disabled.Alias, true, disabled.Revision); err != nil {
+	if _, err := repo.SetBindingEnabled(ctx, disabled.Surface, disabled.Alias, true, disabled.Revision, disabled.Incarnation); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.Resolve(ctx, SurfaceInline, binding.Alias); !errors.Is(err, ErrResolverUnavailable) {
@@ -230,6 +231,7 @@ func TestBindingServiceMutationRevalidatesProviderButAllowsOfflineCleanup(t *tes
 		Reference{Provider: created.Reference.Provider, ScopeID: created.Reference.ScopeID, Key: "replacement"},
 		created.Enabled,
 		created.Revision,
+		created.Incarnation,
 	); !errors.Is(err, ErrResolverUnavailable) {
 		t.Fatalf("Update(with provider offline) error = %v, want %v", err, ErrResolverUnavailable)
 	}
@@ -241,17 +243,17 @@ func TestBindingServiceMutationRevalidatesProviderButAllowsOfflineCleanup(t *tes
 		t.Fatalf("failed update mutated durable binding: %+v", current)
 	}
 
-	disabled, err := service.SetEnabled(ctx, created.Surface, created.Alias, false, created.Revision)
+	disabled, err := service.SetEnabled(ctx, created.Surface, created.Alias, false, created.Revision, created.Incarnation)
 	if err != nil {
 		t.Fatalf("SetEnabled(false with provider offline) error = %v", err)
 	}
 	if disabled.Enabled {
 		t.Fatalf("binding remained enabled: %+v", disabled)
 	}
-	if _, err := service.SetEnabled(ctx, disabled.Surface, disabled.Alias, true, disabled.Revision); !errors.Is(err, ErrResolverUnavailable) {
+	if _, err := service.SetEnabled(ctx, disabled.Surface, disabled.Alias, true, disabled.Revision, disabled.Incarnation); !errors.Is(err, ErrResolverUnavailable) {
 		t.Fatalf("SetEnabled(true with provider offline) error = %v, want %v", err, ErrResolverUnavailable)
 	}
-	if err := service.Delete(ctx, disabled.Surface, disabled.Alias, disabled.Revision); err != nil {
+	if err := service.Delete(ctx, disabled.Surface, disabled.Alias, disabled.Revision, disabled.Incarnation); err != nil {
 		t.Fatalf("Delete(with provider offline) error = %v", err)
 	}
 }
@@ -303,6 +305,7 @@ func TestPreparedBindingRevalidatesRevisionAndProviderGeneration(t *testing.T) {
 		Reference{Provider: created.Reference.Provider, ScopeID: created.Reference.ScopeID, Key: "other"},
 		created.Enabled,
 		created.Revision,
+		created.Incarnation,
 	); err != nil {
 		t.Fatalf("Update(rebind) error = %v", err)
 	}
@@ -369,6 +372,7 @@ func TestUpdateBindingCannotRenameIntoAnotherIdentity(t *testing.T) {
 		Reference{Provider: "notes", ScopeID: 3, Key: "updated"},
 		true,
 		first.Revision,
+		first.Incarnation,
 	)
 	if err != nil {
 		t.Fatalf("UpdateBinding(first) error = %v", err)
@@ -462,7 +466,7 @@ func TestPreparedBindingRejectsDeleteRecreateABA(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := service.Delete(ctx, original.Surface, original.Alias, original.Revision); err != nil {
+	if err := service.Delete(ctx, original.Surface, original.Alias, original.Revision, original.Incarnation); err != nil {
 		t.Fatal(err)
 	}
 	recreated, err := service.Create(ctx, SurfaceBinding{
