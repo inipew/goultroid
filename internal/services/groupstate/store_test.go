@@ -3,6 +3,7 @@ package groupstate
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -477,5 +478,117 @@ func TestNormalizeGroupStateKeyRejectsDisplayStrings(t *testing.T) {
 	}
 	if got.Namespace != "manager" || got.Key != "mode/v1" {
 		t.Fatalf("normalized key=%+v", got)
+	}
+}
+
+
+func TestSQLiteStoreConcurrentCASHasSingleWinner(t *testing.T) {
+	store, _ := newTestStore(t, Limits{MaxEntries: 8, CleanupBatch: 2})
+	ctx := stateContext(store, 77, 9)
+
+	created, err := ctx.CompareAndSwapGroupState(
+		storeAdminRequirement,
+		"manager",
+		"revision",
+		0,
+		[]byte("v1"),
+		0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, value := range []string{"v2-a", "v2-b"} {
+		value := value
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := ctx.CompareAndSwapGroupState(
+				storeAdminRequirement,
+				"manager",
+				"revision",
+				created.Revision,
+				[]byte(value),
+				0,
+			)
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	var success, conflict int
+	for err := range errs {
+		switch {
+		case err == nil:
+			success++
+		case errors.Is(err, ErrStateConflict):
+			conflict++
+		default:
+			t.Fatalf("concurrent CAS returned unexpected error: %v", err)
+		}
+	}
+	if success != 1 || conflict != 1 {
+		t.Fatalf("concurrent CAS success=%d conflict=%d, want 1/1", success, conflict)
+	}
+
+	got, err := store.Get(context.Background(), created.GroupStateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Revision != created.Revision+1 {
+		t.Fatalf("final revision=%d, want %d", got.Revision, created.Revision+1)
+	}
+}
+
+func TestSQLiteStoreConcurrentCreatesRespectCapacity(t *testing.T) {
+	store, _ := newTestStore(t, Limits{MaxEntries: 1, CleanupBatch: 1})
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, chatID := range []int64{101, 102} {
+		chatID := chatID
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			ctx := stateContext(store, chatID, 9)
+			_, err := ctx.CompareAndSwapGroupState(
+				storeAdminRequirement,
+				"manager",
+				"capacity",
+				0,
+				[]byte("x"),
+				0,
+			)
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	var success, capacity int
+	for err := range errs {
+		switch {
+		case err == nil:
+			success++
+		case errors.Is(err, ErrStateCapacity):
+			capacity++
+		default:
+			t.Fatalf("concurrent create returned unexpected error: %v", err)
+		}
+	}
+	if success != 1 || capacity != 1 {
+		t.Fatalf("concurrent create success=%d capacity=%d, want 1/1", success, capacity)
+	}
+	if count, err := store.Count(context.Background()); err != nil || count != 1 {
+		t.Fatalf("final count=%d err=%v, want 1 nil", count, err)
 	}
 }
