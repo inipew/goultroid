@@ -746,3 +746,31 @@ func TestRelayIngressForceSubRechecksAfterClaimBeforeForward(t *testing.T) {
 		t.Fatalf("post-claim force-sub denial left active delivery=%+v", delivery)
 	}
 }
+
+
+func TestRelayIngressForceSubPolicyReadFailureDoesNotEmitInvalidGuidance(t *testing.T) {
+	ctx := context.Background()
+	service := newRelayIngressService(t)
+	taskClient := &relayAdmissionTaskClient{run: true}
+	transport := &forceSubRelayTransportStub{}
+	policyErr := errors.New("force-sub config storage unavailable")
+	ingress := NewRelayIngress(service, taskClient, transport)
+	ingress.setForceSubGate(&forceSubGateStub{
+		decisions: []forceSubDecision{{}},
+		errs:      []error{policyErr},
+	})
+
+	handled, err := ingress.tryVisitor(ctx, pmrelay.IngressMessage{
+		SenderID: 42, ChatID: 42, MessageID: 11,
+	})
+	if !handled || !errors.Is(err, policyErr) {
+		t.Fatalf("tryVisitor(policy read failure) handled=%v err=%v", handled, err)
+	}
+	if taskClient.calls != 0 {
+		t.Fatalf("policy read failure submitted %d TaskEngine work item(s), want 0", taskClient.calls)
+	}
+	if transport.guidanceCalls != 0 || transport.calls != 0 {
+		t.Fatalf("policy read failure transport/guidance calls=%d/%d, want 0/0",
+			transport.calls, transport.guidanceCalls)
+	}
+}
