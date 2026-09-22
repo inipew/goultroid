@@ -101,6 +101,7 @@ func TestP7HSubscriptionTracksEnabledChatsAndKeepsDisabledRevision(t *testing.T)
 		t.Fatal("inactive chat unexpectedly interested")
 	}
 
+	service.SetTransport(&recordingTransport{sent: make(chan string, 1)})
 	ctx := groupEventAdminContext(store, 77, 9)
 	enabled, err := service.Configure(
 		ctx,
@@ -232,8 +233,12 @@ func TestP7HRestartPreloadRestoresInterestAndSubscription(t *testing.T) {
 	if restarted.Interested(99, core.GroupServiceMemberJoined) {
 		t.Fatal("restart preload enabled unrelated welcome interest")
 	}
+	if got := bus.SubscriptionCount("assistant:groupevents"); got != 0 {
+		t.Fatalf("restart without transport subscriptions=%d, want 0", got)
+	}
+	restarted.SetTransport(&recordingTransport{sent: make(chan string, 1)})
 	if got := bus.SubscriptionCount("assistant:groupevents"); got != 1 {
-		t.Fatalf("restart subscriptions=%d, want 1", got)
+		t.Fatalf("restart with transport subscriptions=%d, want 1", got)
 	}
 	loaded, err := restarted.State(99, core.GroupServiceMemberLeft)
 	if err != nil {
@@ -251,6 +256,7 @@ func TestP7HTwoFeaturesShareOneSubscriptionUntilLastDisable(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer service.Close()
+	service.SetTransport(&recordingTransport{sent: make(chan string, 1)})
 	ctx := groupEventAdminContext(store, 123, 7)
 
 	if _, err := service.Configure(ctx, core.GroupServiceMemberJoined, true, "Welcome {user}"); err != nil {
@@ -319,6 +325,7 @@ func TestP7HCloseCannotResurrectSubscriptionOrTransport(t *testing.T) {
 	if err := service.Load(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	service.SetTransport(&recordingTransport{sent: make(chan string, 1)})
 	ctx := groupEventAdminContext(store, 404, 7)
 	if _, err := service.Configure(
 		ctx,
@@ -382,5 +389,39 @@ func TestP7HCloseCannotResurrectSubscriptionOrTransport(t *testing.T) {
 	}
 	if err := service.Load(context.Background()); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("load after close error=%v, want ErrUnavailable", err)
+	}
+}
+
+
+func TestP7KTransportLifecycleOwnsGroupEventSubscription(t *testing.T) {
+	store, bus := newGroupEventTestRuntime(t)
+	service := New(store, bus)
+	if err := service.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	ctx := groupEventAdminContext(store, 707, 7)
+	if _, err := service.Configure(ctx, core.GroupServiceMemberJoined, true, "Welcome {user}"); err != nil {
+		t.Fatal(err)
+	}
+	if got := bus.SubscriptionCount("assistant:groupevents"); got != 0 {
+		t.Fatalf("transportless service has %d subscriptions, want 0", got)
+	}
+
+	first := &recordingTransport{sent: make(chan string, 1)}
+	service.SetTransport(first)
+	if got := bus.SubscriptionCount("assistant:groupevents"); got != 1 {
+		t.Fatalf("active transport subscriptions=%d, want 1", got)
+	}
+
+	service.SetTransport(nil)
+	if got := bus.SubscriptionCount("assistant:groupevents"); got != 0 {
+		t.Fatalf("detached transport left %d subscriptions", got)
+	}
+
+	second := &recordingTransport{sent: make(chan string, 1)}
+	service.SetTransport(second)
+	if got := bus.SubscriptionCount("assistant:groupevents"); got != 1 {
+		t.Fatalf("reattached transport subscriptions=%d, want 1", got)
 	}
 }
