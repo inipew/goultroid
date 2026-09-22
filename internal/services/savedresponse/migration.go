@@ -34,7 +34,7 @@ func (migration001) LegacyVersions() []int { return nil }
 
 func (migration001) Up(ctx context.Context, tx database.SQLExecutor) error {
 	for _, statement := range []string{
-		\`CREATE TABLE IF NOT EXISTS saved_response_surface_bindings (
+		`CREATE TABLE IF NOT EXISTS saved_response_surface_bindings (
 			surface TEXT NOT NULL CHECK (surface IN ('assistant_command', 'inline', 'deep_link', 'callback')),
 			alias TEXT NOT NULL,
 			provider TEXT NOT NULL,
@@ -45,11 +45,11 @@ func (migration001) Up(ctx context.Context, tx database.SQLExecutor) error {
 			created_at DATETIME NOT NULL,
 			updated_at DATETIME NOT NULL,
 			PRIMARY KEY (surface, alias)
-		);\`,
-		\`CREATE INDEX IF NOT EXISTS idx_saved_response_surface_bindings_provider
-			ON saved_response_surface_bindings(provider, provider_scope_id, provider_key);\`,
-		\`CREATE INDEX IF NOT EXISTS idx_saved_response_surface_bindings_enabled
-			ON saved_response_surface_bindings(surface, enabled, alias);\`,
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_saved_response_surface_bindings_provider
+			ON saved_response_surface_bindings(provider, provider_scope_id, provider_key);`,
+		`CREATE INDEX IF NOT EXISTS idx_saved_response_surface_bindings_enabled
+			ON saved_response_surface_bindings(surface, enabled, alias);`,
 	} {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
 			return err
@@ -60,10 +60,10 @@ func (migration001) Up(ctx context.Context, tx database.SQLExecutor) error {
 
 func (migration001) VerifySchema(ctx context.Context, tx database.SQLExecutor) error {
 	var tableCount int
-	if err := tx.QueryRowContext(ctx, \`
+	if err := tx.QueryRowContext(ctx, `
 		SELECT count(*) FROM sqlite_master
 		WHERE type = 'table' AND name = 'saved_response_surface_bindings'
-	\`).Scan(&tableCount); err != nil {
+	`).Scan(&tableCount); err != nil {
 		return err
 	}
 	if tableCount != 1 {
@@ -74,10 +74,10 @@ func (migration001) VerifySchema(ctx context.Context, tx database.SQLExecutor) e
 		"idx_saved_response_surface_bindings_enabled",
 	} {
 		var count int
-		if err := tx.QueryRowContext(ctx, \`
+		if err := tx.QueryRowContext(ctx, `
 			SELECT count(*) FROM sqlite_master
 			WHERE type = 'index' AND name = ?
-		\`, index).Scan(&count); err != nil {
+		`, index).Scan(&count); err != nil {
 			return err
 		}
 		if count != 1 {
