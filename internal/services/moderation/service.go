@@ -16,6 +16,7 @@ const (
 	DefaultWarnThreshold  = 3
 	MaxWarningThreshold   = 16
 	MaxWarningReasonBytes = 1024
+	MaxWarningRows        = 50_000
 	warningLockStripes    = 64
 
 	ActionNone           = "none"
