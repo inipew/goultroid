@@ -26,7 +26,22 @@ func AdmitInteraction(interaction Interaction, source execution.Source, userID i
 	if interaction.Policy.GroupOnly && private {
 		return fmt.Errorf("%w: group chat required", ErrInteractionDenied)
 	}
+	return admitInteractionIdentity(interaction, source, userID, perms)
+}
 
+// AdmitInteractionIdentity revalidates surface, invocation, and permission
+// without re-evaluating chat scope. It is intended for callback continuations
+// whose originating transport already proved chat scope when the token was
+// minted, but whose callback update no longer contains verifiable chat-type
+// metadata (Telegram inline-message callbacks are the canonical example).
+func AdmitInteractionIdentity(interaction Interaction, source execution.Source, userID int64, perms *core.Permissions) error {
+	if !interaction.Surfaces.Supports(source) {
+		return fmt.Errorf("%w: surface %s", ErrInteractionUnavailable, source)
+	}
+	return admitInteractionIdentity(interaction, source, userID, perms)
+}
+
+func admitInteractionIdentity(interaction Interaction, source execution.Source, userID int64, perms *core.Permissions) error {
 	switch interaction.Policy.Invocation.For(source) {
 	case core.InvocationAnyone:
 		// Continue to authorization.

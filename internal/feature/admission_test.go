@@ -37,3 +37,28 @@ func TestAdmitInteractionPublicPolicyAllowsVisitor(t *testing.T) {
 		t.Fatalf("public admission error = %v", err)
 	}
 }
+
+func TestAdmitInteractionIdentityRevalidatesActorWithoutChatScope(t *testing.T) {
+	policy := OwnerPolicy(execution.SurfaceInline)
+	policy.PrivateOnly = true
+	interaction := Interaction{
+		ID:       "choose",
+		Kind:     InteractionAction,
+		Surfaces: execution.SurfaceInline,
+		Policy:   policy,
+	}
+	perms := core.NewPermissions(7, []int64{8})
+
+	if err := AdmitInteraction(interaction, execution.SourceInline, 7, false, perms); !errors.Is(err, ErrInteractionDenied) {
+		t.Fatalf("full admission without private evidence error = %v, want %v", err, ErrInteractionDenied)
+	}
+	if err := AdmitInteractionIdentity(interaction, execution.SourceInline, 7, perms); err != nil {
+		t.Fatalf("identity-only owner revalidation error = %v", err)
+	}
+	if err := AdmitInteractionIdentity(interaction, execution.SourceInline, 8, perms); !errors.Is(err, ErrInteractionDenied) {
+		t.Fatalf("identity-only sudo revalidation error = %v, want %v", err, ErrInteractionDenied)
+	}
+	if err := AdmitInteractionIdentity(interaction, execution.SourceAssistant, 7, perms); !errors.Is(err, ErrInteractionUnavailable) {
+		t.Fatalf("identity-only wrong surface error = %v, want %v", err, ErrInteractionUnavailable)
+	}
+}
