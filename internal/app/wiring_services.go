@@ -15,6 +15,7 @@ import (
 	mediaSvc "github.com/inipew/goultroid/internal/services/media"
 	"github.com/inipew/goultroid/internal/services/mediaregistry"
 	pmpermitSvc "github.com/inipew/goultroid/internal/services/pmpermit"
+	pmrelaySvc "github.com/inipew/goultroid/internal/services/pmrelay"
 	"github.com/inipew/goultroid/internal/services/process"
 	"github.com/inipew/goultroid/internal/services/storage"
 	userlogSvc "github.com/inipew/goultroid/internal/services/userlog"
@@ -93,6 +94,10 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 	pmpermitService := pmpermitSvc.NewService(pmpermitRepo, tg.client.Service, cfg.OwnerID, core.perms, logger)
 	pmpermitService.SetEventBus(core.eventBus)
 
+	// P6-B wires only the read-only/prepared relay admission service. It stays
+	// disabled until the delivery plane is attached in a later phase.
+	pmrelayService := pmrelaySvc.NewService(pmrelaySvc.NewSQLiteRepository(core.db), cfg.OwnerID)
+
 	broadcastService := broadcastSvc.NewService(tg.client.Service, logger)
 	if core.taskEngine != nil {
 		broadcastService.SetTasks(core.taskEngine)
@@ -119,6 +124,7 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 		processRunner:    processRunner,
 		downloadRegistry: downloadRegistry,
 		pmpermitService:  pmpermitService,
+		pmrelayService:   pmrelayService,
 		broadcastService: broadcastService,
 		userlogService:   userlogService,
 		addonManager:     addonManager,
