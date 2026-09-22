@@ -18,7 +18,7 @@ var schemaStatements = []string{
 		chat_id INTEGER NOT NULL CHECK (chat_id > 0),
 		namespace TEXT NOT NULL CHECK (length(namespace) BETWEEN 1 AND 64),
 		key TEXT NOT NULL CHECK (length(key) BETWEEN 1 AND 128),
-		value BLOB NOT NULL,
+		value BLOB NOT NULL CHECK (length(value) <= 65536),
 		revision INTEGER NOT NULL CHECK (revision > 0),
 		updated_by INTEGER NOT NULL CHECK (updated_by > 0),
 		updated_at DATETIME NOT NULL,
@@ -40,7 +40,7 @@ func (migration001) Description() string {
 }
 
 func (migration001) Checksum() string {
-	return "4963bf013a3370d9ba521c005c408dfbbe51064aeb6d976d68f2dd19cc2d4f5e"
+	return "71d714bb24ef4927f5c4d882730e54f77a9bd84c675ef40217473032fe8306a8"
 }
 
 func (migration001) LegacyVersions() []int { return nil }
