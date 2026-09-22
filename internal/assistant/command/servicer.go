@@ -102,6 +102,9 @@ func (a *assistantServicerAdapter) SendMessageContext(
 	}); ok {
 		return contextual.SendMessageContext(ctx, peer, text, markup, send)
 	}
+	if send.TopicID > 0 {
+		return nil, fmt.Errorf("%w: assistant interaction cannot preserve forum topic %d", core.ErrUnavailable, send.TopicID)
+	}
 	if markup != nil {
 		return a.SendMessageWithMarkup(ctx, peer, text, markup)
 	}
@@ -120,6 +123,9 @@ func (a *assistantServicerAdapter) SendMediaContext(
 		SendMediaContext(context.Context, tg.InputPeerClass, string, string, string, core.MessageSendContext) (*tg.Message, error)
 	}); ok {
 		return contextual.SendMediaContext(ctx, peer, mediaType, filePath, caption, send)
+	}
+	if send.TopicID > 0 {
+		return nil, fmt.Errorf("%w: assistant interaction cannot preserve forum topic %d", core.ErrUnavailable, send.TopicID)
 	}
 	return a.SendMedia(ctx, peer, mediaType, filePath, caption)
 }
