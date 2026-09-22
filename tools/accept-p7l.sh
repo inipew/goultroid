@@ -38,7 +38,7 @@ go test -race \
 
 echo
 echo "[5/6] P7-L focused acceptance"
-go test \
+go test -v \
   ./internal/assistant/command \
   ./internal/assistant/client \
   ./internal/assistant/groupauth \
@@ -51,6 +51,7 @@ go test \
   ./internal/services/groupstate \
   ./internal/telegram \
   ./internal/architecture \
+  ./plugins/filters \
   -run 'P7L|P7C|P7G|P7H|P7I|P7J|P7K|TelegramRoleResolver|SQLiteStore|HierarchicalRPCLimiter|RPCExecutor'
 
 echo
