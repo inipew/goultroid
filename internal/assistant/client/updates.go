@@ -131,6 +131,43 @@ func assistantCommandMessageContext(message *tg.Message, entities tg.Entities) c
 	}
 }
 
+func assistantGroupRuleChat(
+	message *tg.Message,
+	entities tg.Entities,
+	inputPeer tg.InputPeerClass,
+) (core.Chat, bool) {
+	if message == nil || inputPeer == nil {
+		return core.Chat{}, false
+	}
+	messageContext := assistantCommandMessageContext(message, entities)
+	chat := messageContext.Chat
+	if (&chat).IsManagerGroup() {
+		return chat, true
+	}
+
+	channelPeer, isChannel := message.PeerID.(*tg.PeerChannel)
+	if !isChannel {
+		return core.Chat{}, false
+	}
+	// If Telegram supplied channel metadata, its broadcast/megagroup bit is
+	// authoritative. Never reinterpret a known broadcast channel as a group.
+	if channel := entities.Channels[channelPeer.ChannelID]; channel != nil {
+		return core.Chat{}, false
+	}
+	resolved, ok := inputPeer.(*tg.InputPeerChannel)
+	if !ok || resolved.ChannelID != channelPeer.ChannelID || resolved.AccessHash == 0 {
+		return core.Chat{}, false
+	}
+
+	// Missing channel metadata is deferred until the chat has already passed
+	// the per-chat rule-interest gate and canonical peer resolution. An active
+	// chat can only enter this path through durable GroupOnly rule state.
+	chat.ID = channelPeer.ChannelID
+	chat.Type = string(core.ChatKindSupergroup)
+	chat.AccessHash = resolved.AccessHash
+	return chat, true
+}
+
 func assistantGroupRuleEnvelope(
 	message *tg.Message,
 	entities tg.Entities,
@@ -142,8 +179,8 @@ func assistantGroupRuleEnvelope(
 		return nil, false
 	}
 	messageContext := assistantCommandMessageContext(message, entities)
-	chat := messageContext.Chat
-	if !(&chat).IsManagerGroup() {
+	chat, ok := assistantGroupRuleChat(message, entities, inputPeer)
+	if !ok {
 		return nil, false
 	}
 	peerRef, err := core.PeerRefFromInputPeer(inputPeer)
@@ -456,9 +493,17 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			if strings.TrimSpace(msg.Message) == "" || deps.GroupRules == nil {
 				return nil
 			}
-			messageContext := assistantCommandMessageContext(msg, e)
-			if !(&messageContext.Chat).IsManagerGroup() ||
-				!deps.GroupRules.Interested(chatID) {
+			switch peer := msg.PeerID.(type) {
+			case *tg.PeerChat:
+				// Basic groups are authoritative from the peer shape alone.
+			case *tg.PeerChannel:
+				if channel := e.Channels[peer.ChannelID]; channel != nil && !channel.Megagroup {
+					return nil
+				}
+			default:
+				return nil
+			}
+			if !deps.GroupRules.Interested(chatID) {
 				return nil
 			}
 			groupRuleCandidate = true
