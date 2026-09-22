@@ -318,36 +318,35 @@ func (c *Controller) SelectCandidateEligible(pool tasks.PoolID, eligible func(ta
 				continue
 			}
 
-			head := rq.Peek()
-			if head == nil {
-				cursor++
-				continue
-			}
-
-			// Validate QueueDeadline (strict pre-dispatch check, ADR 0006 §5.2)
-			now := time.Now().UTC()
-			if !head.Spec.QueueDeadline.IsZero() && now.After(head.Spec.QueueDeadline) {
-				cursor++
-				continue
-			}
-
-			// Check owner MaxActive constraint
+			// Check owner MaxActive constraint before scanning this owner's
+			// bounded queue. MaxActive is owner-wide, so no entry can bypass it.
 			limits := c.getOwnerLimits(owner)
 			if limits.MaxActive > 0 && c.ownerActiveCount[owner] >= limits.MaxActive {
-				// Owner blocked by concurrency; skip to next owner
 				cursor++
 				continue
 			}
 
-			// Check ordering key constraint
-			if head.Spec.OrderingKey != "" {
-				if _, locked := c.orderingLocks[head.Spec.OrderingKey]; locked {
-					// Ordering key currently in-flight; skip
-					cursor++
-					continue
+			// Ordering keys are independent serialization domains. If the FIFO
+			// head is blocked by an in-flight topic/key, allow the earliest later
+			// entry from another unlocked domain to run. Owner MaxWaiting bounds
+			// this scan, preventing high-cardinality topic traffic from creating
+			// an unbounded scheduler cost or per-topic queue structure.
+			now := time.Now().UTC()
+			candidate := rq.FirstMatching(func(entry *QueueEntry) bool {
+				if entry == nil {
+					return false
 				}
-			}
-			if eligible != nil && !eligible(head.Spec) {
+				if !entry.Spec.QueueDeadline.IsZero() && now.After(entry.Spec.QueueDeadline) {
+					return false
+				}
+				if entry.Spec.OrderingKey != "" {
+					if _, locked := c.orderingLocks[entry.Spec.OrderingKey]; locked {
+						return false
+					}
+				}
+				return eligible == nil || eligible(entry.Spec)
+			})
+			if candidate == nil {
 				cursor++
 				continue
 			}
@@ -357,8 +356,9 @@ func (c *Controller) SelectCandidateEligible(pool tasks.PoolID, eligible func(ta
 			ps.classDeficits[class]--
 			ps.ownerDeficits[class][owner]--
 
-			// Pop from ReadyQueue and DeadlineIndex
-			candidate := rq.Pop()
+			// Remove the selected eligible entry, which may be behind an
+			// ordering-blocked head. DeadlineIndex remains exact by TaskID.
+			candidate = rq.Remove(candidate.Spec.ID)
 			ps.deadlineIndex.Remove(candidate)
 			ps.totalWaiting--
 			ps.totalBytes -= candidate.PayloadSize
