@@ -29,6 +29,7 @@ type InlineFeatureProvider interface {
 type featureInlineHandler struct {
 	interaction feature.Interaction
 	delegate    inlineservice.InlineHandler
+	scope       tasks.ScopeIdentity
 }
 
 func (h *featureInlineHandler) Pattern() string { return h.delegate.Pattern() }
@@ -39,6 +40,14 @@ func (h *featureInlineHandler) Description() string {
 	}
 	return h.delegate.Description()
 }
+
+func (h *featureInlineHandler) Version() string {
+	if h == nil || h.scope.IsZero() {
+		return ""
+	}
+	return fmt.Sprintf("%s:%d", h.scope.Owner, h.scope.Generation)
+}
+
 
 func (h *featureInlineHandler) HandleInline(ctx *inlineservice.InlineContext) ([]inlineservice.InlineResult, error) {
 	return h.delegate.HandleInline(ctx)
@@ -227,7 +236,7 @@ func (m *Manager) registerFeatureContract(name string, p Plugin, scope tasks.Sco
 				name,
 				interactionID,
 				scope,
-				&featureInlineHandler{interaction: interaction, delegate: binding.Handler},
+				&featureInlineHandler{interaction: interaction, delegate: binding.Handler, scope: scope},
 				binding.Priority,
 			)
 			if registerErr != nil {
