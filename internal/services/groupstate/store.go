@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strings"
 	"sync"
 	"time"
 
@@ -84,18 +83,11 @@ func NewSQLiteStoreWithLimits(db *database.DB, limits Limits) (*SQLiteStore, err
 }
 
 func normalizeKey(key core.GroupStateKey) (core.GroupStateKey, error) {
-	key.Namespace = strings.ToLower(strings.TrimSpace(key.Namespace))
-	key.Key = strings.ToLower(strings.TrimSpace(key.Key))
-	if key.ChatID <= 0 {
-		return core.GroupStateKey{}, fmt.Errorf("%w: chat id must be positive", ErrInvalidState)
+	normalized, err := core.NormalizeGroupStateKey(key)
+	if err != nil {
+		return core.GroupStateKey{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
 	}
-	if key.Namespace == "" || len(key.Namespace) > core.MaxGroupStateNamespaceBytes {
-		return core.GroupStateKey{}, fmt.Errorf("%w: invalid namespace", ErrInvalidState)
-	}
-	if key.Key == "" || len(key.Key) > core.MaxGroupStateKeyBytes {
-		return core.GroupStateKey{}, fmt.Errorf("%w: invalid key", ErrInvalidState)
-	}
-	return key, nil
+	return normalized, nil
 }
 
 func normalizeCAS(req core.GroupStateCAS, now time.Time) (core.GroupStateCAS, error) {
