@@ -26,7 +26,6 @@ type Client interface {
 	SetCoreRouter(router *core.Router)
 	SetOwner(ownerID int64, sudoGetter func() []int64)
 	SetSettingsService(svc *settings.Service)
-	SetSavedResponseBindings(bindings *savedresponse.BindingService, delivery *savedresponse.ResponseDelivery)
 	SetMetricsCollector(m core.MetricsCollector)
 	SetCallbackRouter(router client.CoreCallbackDispatcher)
 	SetInlineEngine(engine *inline.Engine)
