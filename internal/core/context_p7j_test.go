@@ -209,14 +209,13 @@ func TestP7JCoreReplyCarriesSourceMessageAndTopic(t *testing.T) {
 		PeerID:  &tg.InputPeerChannel{ChannelID: 77, AccessHash: 700},
 		Message: &Message{ID: 900, TopicID: 100},
 	}
-	if _, err := ctx.Messages().Reply("same topic"); err != nil {
+	if err := ctx.Messages().Reply("same topic"); err != nil {
 		t.Fatalf("reply: %v", err)
 	}
 	if svc.lastSend.ReplyToID != 900 || svc.lastSend.TopicID != 100 {
 		t.Fatalf("send context=%+v want reply=900 topic=100", svc.lastSend)
 	}
 }
-
 
 type p7jPlainServicer struct {
 	MockTelegramServicer
