@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
@@ -12,7 +13,8 @@ import (
 )
 
 type sqliteWarningRepository struct {
-	db *database.DB
+	db         *database.DB
+	mutationMu sync.Mutex
 }
 
 func NewSQLiteWarningRepository(db *database.DB) moderation.WarningRepository {
@@ -23,6 +25,8 @@ func (r *sqliteWarningRepository) AddWarning(ctx context.Context, chatID, userID
 	if r == nil || r.db == nil {
 		return fmt.Errorf("warning repository database is nil")
 	}
+	r.mutationMu.Lock()
+	defer r.mutationMu.Unlock()
 	reason = strings.TrimSpace(reason)
 	if len(reason) > moderation.MaxWarningReasonBytes {
 		return fmt.Errorf("%w: warning reason exceeds %d bytes", core.ErrInvalidArgs, moderation.MaxWarningReasonBytes)
@@ -92,6 +96,8 @@ func (r *sqliteWarningRepository) ResetWarnings(ctx context.Context, chatID, use
 	if r == nil || r.db == nil {
 		return fmt.Errorf("warning repository database is nil")
 	}
+	r.mutationMu.Lock()
+	defer r.mutationMu.Unlock()
 	_, err := r.db.ExecContext(ctx, `DELETE FROM moderation_warnings WHERE chat_id = ? AND user_id = ?`, chatID, userID)
 	if err != nil {
 		return fmt.Errorf("failed to delete warnings: %w", err)
