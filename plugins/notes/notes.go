@@ -44,6 +44,26 @@ func New(db Repository, responses ...*savedresponse.Service) *Plugin {
 
 func (p *Plugin) Name() string { return "notes" }
 
+// ResolveSavedResponse exposes notes through the shared reference registry
+// without copying response payload/media into a second persistence model.
+func (p *Plugin) ResolveSavedResponse(ctx context.Context, ref savedresponse.Reference) (savedresponse.Response, bool, error) {
+	if p == nil || p.db == nil || strings.ToLower(strings.TrimSpace(ref.Provider)) != p.Name() {
+		return savedresponse.Response{}, false, nil
+	}
+	name := strings.ToLower(strings.TrimSpace(ref.Key))
+	if ref.ScopeID == 0 || name == "" {
+		return savedresponse.Response{}, false, savedresponse.ErrInvalidReference
+	}
+	note, err := p.db.GetNote(ctx, ref.ScopeID, name)
+	if err != nil {
+		return savedresponse.Response{}, false, err
+	}
+	if note == nil {
+		return savedresponse.Response{}, false, nil
+	}
+	return note.Response.Clone(), true, nil
+}
+
 func (p *Plugin) Init() error { return nil }
 
 func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
