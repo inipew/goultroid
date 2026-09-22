@@ -736,6 +736,9 @@ func (p *Plugin) deliverResponse(
 				_, sendErr := contextual.SendMediaContext(ctx, peer, mediaType, path, caption, sendContext)
 				return sendErr
 			}
+			if sendContext.TopicID > 0 {
+				return fmt.Errorf("%w: filter transport cannot preserve forum topic %d", core.ErrUnavailable, sendContext.TopicID)
+			}
 			_, sendErr := svc.SendMedia(ctx, peer, mediaType, path, caption)
 			return sendErr
 		},
@@ -743,6 +746,9 @@ func (p *Plugin) deliverResponse(
 			if contextual, ok := svc.(core.ContextualTelegramServicer); ok {
 				_, sendErr := contextual.SendMessageContext(ctx, peer, text, nil, sendContext)
 				return sendErr
+			}
+			if sendContext.TopicID > 0 {
+				return fmt.Errorf("%w: filter transport cannot preserve forum topic %d", core.ErrUnavailable, sendContext.TopicID)
 			}
 			_, sendErr := svc.SendMessage(ctx, peer, text)
 			return sendErr
