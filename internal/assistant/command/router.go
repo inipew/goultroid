@@ -322,6 +322,7 @@ func (r *Router) executeCanonicalTask(ctx context.Context, senderID int64, cmd c
 
 			execCtx := *coreCtx
 			execCtx.Ctx = runCtx
+			admitGroupMutationExecution(&execCtx)
 			start := time.Now()
 			if requiresGroupAuthorization {
 				if authErr := authorizeContextualGroup(&execCtx, cmd.GroupAuthorization, true); authErr != nil {
