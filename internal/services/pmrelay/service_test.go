@@ -947,3 +947,52 @@ func TestRelayControlStatusAndVisitorDetails(t *testing.T) {
 		t.Fatalf("VisitorDetails() block after unblock=%+v", details.Block)
 	}
 }
+
+
+func TestForceSubServiceCASConflictInvalidatesCachedPolicy(t *testing.T) {
+	ctx := context.Background()
+	repo, _ := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8, Blocked: 8})
+	first := NewService(repo, 7)
+	second := NewService(repo, 7)
+
+	if config, err := first.ForceSubConfig(ctx); err != nil || config.Revision != 1 {
+		t.Fatalf("first initial ForceSubConfig()=%+v err=%v", config, err)
+	}
+	if config, err := second.ForceSubConfig(ctx); err != nil || config.Revision != 1 {
+		t.Fatalf("second initial ForceSubConfig()=%+v err=%v", config, err)
+	}
+
+	updated, err := second.ConfigureForceSub(
+		ctx,
+		true,
+		"required_channel",
+		"",
+		ForceSubFailClosed,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Revision != 2 {
+		t.Fatalf("second ConfigureForceSub revision=%d, want 2", updated.Revision)
+	}
+
+	if _, err := first.ConfigureForceSub(
+		ctx,
+		true,
+		"other_channel",
+		"",
+		ForceSubFailOpen,
+	); !errors.Is(err, ErrForceSubConfigConflict) {
+		t.Fatalf("first stale ConfigureForceSub error=%v, want %v", err, ErrForceSubConfigConflict)
+	}
+
+	refreshed, err := first.ForceSubConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshed.Revision != updated.Revision ||
+		refreshed.ChannelUsername != updated.ChannelUsername ||
+		refreshed.FailureMode != updated.FailureMode {
+		t.Fatalf("first cached policy after conflict=%+v, want %+v", refreshed, updated)
+	}
+}
