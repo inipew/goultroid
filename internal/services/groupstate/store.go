@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	DefaultMaxEntries   = 50_000
-	HardMaxEntries      = 200_000
+	DefaultMaxEntries   = 10_000
+	HardMaxEntries      = 50_000
 	DefaultCleanupBatch = 64
 	HardCleanupBatch    = 512
 )
