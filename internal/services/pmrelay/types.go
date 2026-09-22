@@ -241,7 +241,6 @@ func (m AudienceMember) Normalize() (AudienceMember, error) {
 	return m, nil
 }
 
-
 type VisitorBlock struct {
 	VisitorUserID int64
 	BlockedAt     time.Time
