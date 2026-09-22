@@ -26,10 +26,10 @@ func TestSurfaceBindingMigrationStoresReferencesOnly(t *testing.T) {
 	_, db := newSurfaceBindingRepository(t)
 
 	var tableCount int
-	if err := db.QueryRow(\`
+	if err := db.QueryRow(`
 		SELECT count(*) FROM sqlite_master
 		WHERE type = 'table' AND name = 'saved_response_surface_bindings'
-	\`).Scan(&tableCount); err != nil {
+	`).Scan(&tableCount); err != nil {
 		t.Fatal(err)
 	}
 	if tableCount != 1 {
@@ -38,10 +38,10 @@ func TestSurfaceBindingMigrationStoresReferencesOnly(t *testing.T) {
 
 	for _, forbidden := range []string{"content", "response_text", "media_asset_id", "media_type", "media_name", "media_mime"} {
 		var count int
-		if err := db.QueryRow(\`
+		if err := db.QueryRow(`
 			SELECT count(*) FROM pragma_table_info('saved_response_surface_bindings')
 			WHERE name = ?
-		\`, forbidden).Scan(&count); err != nil {
+		`, forbidden).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		if count != 0 {
