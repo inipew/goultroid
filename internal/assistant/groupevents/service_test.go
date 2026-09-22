@@ -41,12 +41,13 @@ func (r *recordingTransport) SendMessage(
 ) (*tg.Message, error) {
 	r.mu.Lock()
 	r.messages = append(r.messages, text)
+	messageID := len(r.messages)
 	r.mu.Unlock()
 	select {
 	case r.sent <- text:
 	default:
 	}
-	return &tg.Message{ID: len(r.messages), Message: text}, nil
+	return &tg.Message{ID: messageID, Message: text}, nil
 }
 
 func newGroupEventTestRuntime(t *testing.T) (*groupstate.SQLiteStore, *core.EventBus) {
