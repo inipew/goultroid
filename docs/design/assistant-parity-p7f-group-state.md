@@ -28,6 +28,15 @@ There is no:
 
 A read for chat A can never return chat B or global state.
 
+
+Namespace and key are machine identifiers, not display strings. They are normalized to lowercase and restricted to stable ASCII tokens:
+
+```text
+a-z  0-9  .  _  :  /  -
+```
+
+Whitespace, Unicode display text, and non-canonical raw database coordinates are rejected. The same rule is enforced by both the typed API and SQLite triggers.
+
 ## Schema
 
 ```text
@@ -210,9 +219,10 @@ The schema migrations are registered through the existing feature-migration runn
 ```text
 assistant_group_state.001  durable table + expiry index
 assistant_group_state.002  immutable additive insert/update value-bound triggers
+assistant_group_state.003  immutable additive canonical-coordinate triggers
 ```
 
-`001` remains immutable once published; later hardening is additive rather than rewriting its checksum.
+Published migrations remain immutable; later hardening is additive rather than rewriting an older checksum.
 
 The store may be constructed before migrations, but no Assistant execution starts until application startup after builtin migrations complete.
 
