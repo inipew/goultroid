@@ -135,7 +135,6 @@ func TestP7IBypassOrderingAvoidsWorkForOwnerSudo(t *testing.T) {
 	if matched >= bypassed { t.Fatal("P7-I contextual admin bypass occurs before rule match") }
 }
 
-
 func TestP7IManagedChannelClassificationStaysInsideAdmittedPath(t *testing.T) {
 	root := repositoryRoot(t)
 	updatesRaw, err := os.ReadFile(filepath.Join(root, "internal", "assistant", "client", "updates.go"))
