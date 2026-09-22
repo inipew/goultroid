@@ -511,20 +511,27 @@ func isNumeric(s string) bool {
 	return err == nil
 }
 
-func validateAssistantWarningTarget(ctx *core.Context, targetID int64) error {
+func validateAssistantWarningTargetAt(
+	resolveCtx context.Context,
+	ctx *core.Context,
+	targetID int64,
+) error {
 	if ctx == nil || ctx.Source != core.ExecutionAssistant {
 		return nil
 	}
 	if targetID <= 0 {
 		return core.ErrInvalidArgs
 	}
-	if ctx.Perms != nil && ctx.Perms.IsSudo(targetID) {
+	if ctx.Perms != nil && (ctx.Perms.IsOwner(targetID) || ctx.Perms.IsSudo(targetID)) {
 		return core.ErrGroupMutationTargetProtected
 	}
 	if ctx.Chat == nil || !ctx.IsManagerGroup() || ctx.GroupRoles == nil {
 		return fmt.Errorf("%w: warning target role verification unavailable", core.ErrUnavailable)
 	}
-	snapshot, err := ctx.GroupRoles.ResolveGroupRoleFresh(ctx.Ctx, core.GroupRoleRequest{
+	if resolveCtx == nil {
+		resolveCtx = ctx.Ctx
+	}
+	snapshot, err := ctx.GroupRoles.ResolveGroupRoleFresh(resolveCtx, core.GroupRoleRequest{
 		ChatID: ctx.Chat.ID,
 		Kind:   ctx.Chat.Kind(),
 		Peer:   ctx.PeerID,
@@ -542,6 +549,13 @@ func validateAssistantWarningTarget(ctx *core.Context, targetID int64) error {
 	default:
 		return nil
 	}
+}
+
+func validateAssistantWarningTarget(ctx *core.Context, targetID int64) error {
+	if ctx == nil {
+		return core.ErrInvalidArgs
+	}
+	return validateAssistantWarningTargetAt(ctx.Ctx, ctx, targetID)
 }
 
 func (p *Plugin) handleWarn(ctx *core.Context) error {
@@ -584,7 +598,7 @@ func (p *Plugin) handleWarn(ctx *core.Context) error {
 	var res *moderation.WarnResult
 	if ctx.Source == core.ExecutionAssistant {
 		contextual, ok := p.moderator.(interface {
-			WarnWithService(
+			WarnWithServiceGuarded(
 				context.Context,
 				core.TelegramServicer,
 				tg.InputPeerClass,
@@ -595,12 +609,13 @@ func (p *Plugin) handleWarn(ctx *core.Context) error {
 				int64,
 				int,
 				string,
+				func(context.Context) error,
 			) (*moderation.WarnResult, error)
 		})
 		if !ok {
-			err = fmt.Errorf("%w: contextual moderation service is unavailable", core.ErrUnavailable)
+			err = fmt.Errorf("%w: guarded contextual moderation service is unavailable", core.ErrUnavailable)
 		} else {
-			res, err = contextual.WarnWithService(
+			res, err = contextual.WarnWithServiceGuarded(
 				ctx.Ctx,
 				ctx.Svc,
 				ctx.PeerID,
@@ -611,6 +626,9 @@ func (p *Plugin) handleWarn(ctx *core.Context) error {
 				warnedBy,
 				3,
 				moderation.ActionMute,
+				func(guardCtx context.Context) error {
+					return validateAssistantWarningTargetAt(guardCtx, ctx, targetID)
+				},
 			)
 		}
 	} else {
