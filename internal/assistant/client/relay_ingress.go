@@ -195,7 +195,10 @@ func (r *RelayIngress) tryVisitor(ctx context.Context, message pmrelay.IngressMe
 	if r.forceSub != nil {
 		decision, gateErr := r.forceSub.Check(ctx, prepared.VisitorUserID())
 		if gateErr != nil || !decision.Allowed {
-			guidanceErr := r.submitForceSubGuidance(ctx, prepared.VisitorUserID(), decision)
+			var guidanceErr error
+			if decision.JoinRequired || decision.VerificationBlocked {
+				guidanceErr = r.submitForceSubGuidance(ctx, prepared.VisitorUserID(), decision)
+			}
 			switch {
 			case gateErr != nil && guidanceErr != nil:
 				return true, errors.Join(gateErr, guidanceErr)
@@ -252,7 +255,7 @@ func sendForceSubGuidance(
 	visitorID int64,
 	decision forceSubDecision,
 ) {
-	if transport == nil {
+	if transport == nil || (!decision.JoinRequired && !decision.VerificationBlocked) {
 		return
 	}
 	if limiter, ok := gate.(forceSubGuidanceLimiter); ok &&
