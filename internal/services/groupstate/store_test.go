@@ -483,9 +483,9 @@ func TestNormalizeGroupStateKeyRejectsDisplayStrings(t *testing.T) {
 
 func TestSQLiteStoreConcurrentCASHasSingleWinner(t *testing.T) {
 	store, _ := newTestStore(t, Limits{MaxEntries: 8, CleanupBatch: 2})
-	ctx := stateContext(store, 77, 9)
+	creatorCtx := stateContext(store, 77, 9)
 
-	created, err := ctx.CompareAndSwapGroupState(
+	created, err := creatorCtx.CompareAndSwapGroupState(
 		storeAdminRequirement,
 		"manager",
 		"revision",
@@ -502,8 +502,9 @@ func TestSQLiteStoreConcurrentCASHasSingleWinner(t *testing.T) {
 	var wg sync.WaitGroup
 	for _, value := range []string{"v2-a", "v2-b"} {
 		value := value
+		writerCtx := stateContext(store, 77, 9)
 		wg.Add(1)
-		go func() {
+		go func(ctx *core.Context) {
 			defer wg.Done()
 			<-start
 			_, err := ctx.CompareAndSwapGroupState(
@@ -515,7 +516,7 @@ func TestSQLiteStoreConcurrentCASHasSingleWinner(t *testing.T) {
 				0,
 			)
 			errs <- err
-		}()
+		}(writerCtx)
 	}
 	close(start)
 	wg.Wait()
