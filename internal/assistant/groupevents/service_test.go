@@ -2,6 +2,7 @@ package groupevents
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -237,5 +238,75 @@ func TestP7HRestartPreloadRestoresInterestAndSubscription(t *testing.T) {
 	}
 	if loaded.Revision != state.Revision || loaded.Config.Template != "Bye {user}" {
 		t.Fatalf("restart state=%+v, want revision/template from %+v", loaded, state)
+	}
+}
+
+
+func TestP7HTwoFeaturesShareOneSubscriptionUntilLastDisable(t *testing.T) {
+	store, bus := newGroupEventTestRuntime(t)
+	service := New(store, bus)
+	if err := service.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	ctx := groupEventAdminContext(store, 123, 7)
+
+	if _, err := service.Configure(ctx, core.GroupServiceMemberJoined, true, "Welcome {user}"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Configure(ctx, core.GroupServiceMemberLeft, true, "Bye {user}"); err != nil {
+		t.Fatal(err)
+	}
+	if got := bus.SubscriptionCount("assistant:groupevents"); got != 1 {
+		t.Fatalf("two enabled features created %d subscriptions, want one shared subscription", got)
+	}
+
+	if _, err := service.Configure(ctx, core.GroupServiceMemberJoined, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := bus.SubscriptionCount("assistant:groupevents"); got != 1 {
+		t.Fatalf("disabling welcome removed shared subscription while goodbye active: %d", got)
+	}
+	if service.Interested(123, core.GroupServiceMemberJoined) ||
+		!service.Interested(123, core.GroupServiceMemberLeft) {
+		t.Fatalf("interest mismatch welcome=%v goodbye=%v",
+			service.Interested(123, core.GroupServiceMemberJoined),
+			service.Interested(123, core.GroupServiceMemberLeft))
+	}
+
+	if _, err := service.Configure(ctx, core.GroupServiceMemberLeft, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := bus.SubscriptionCount("assistant:groupevents"); got != 0 {
+		t.Fatalf("last disable left %d subscriptions, want 0", got)
+	}
+}
+
+func TestP7HOversizedTemplateFailsBeforePersistedInterest(t *testing.T) {
+	store, bus := newGroupEventTestRuntime(t)
+	service := New(store, bus)
+	if err := service.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	ctx := groupEventAdminContext(store, 321, 7)
+
+	_, err := service.Configure(
+		ctx,
+		core.GroupServiceMemberJoined,
+		true,
+		strings.Repeat("x", MaxTemplateBytes+1),
+	)
+	if !errors.Is(err, ErrInvalidTemplate) {
+		t.Fatalf("oversized template error=%v, want ErrInvalidTemplate", err)
+	}
+	if service.Interested(321, core.GroupServiceMemberJoined) {
+		t.Fatal("oversized template activated chat interest")
+	}
+	if got := bus.SubscriptionCount("assistant:groupevents"); got != 0 {
+		t.Fatalf("oversized template created %d subscriptions", got)
+	}
+	if _, err := ctx.GetGroupState(Namespace, WelcomeKey); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("oversized template persisted state: %v", err)
 	}
 }
