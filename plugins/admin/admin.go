@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strconv"
@@ -163,6 +164,8 @@ func (p *Plugin) Commands() []core.Command {
 			Usage:       ".warn <user_id / reply> [reason]",
 			Category:    "Admin",
 			Permission:  core.PermissionSudo,
+			AssistantPermission: core.PermissionRef(core.PermissionEveryone),
+			GroupAuthorization:  core.MustGroupMutationRequirement(core.GroupMutationMute),
 			GroupOnly:   true,
 			Surfaces:    adminSurfaces,
 			Handler:     p.handleWarn,
@@ -173,9 +176,13 @@ func (p *Plugin) Commands() []core.Command {
 			Usage:       ".warns <user_id / reply>",
 			Category:    "Admin",
 			Permission:  core.PermissionSudo,
-			GroupOnly:   true,
-			Surfaces:    adminSurfaces,
-			Handler:     p.handleWarns,
+			AssistantPermission: core.PermissionRef(core.PermissionEveryone),
+			GroupAuthorization: core.GroupAuthorizationRequirement{
+				Level: core.GroupAuthorizationAdministrator,
+			},
+			GroupOnly: true,
+			Surfaces:  adminSurfaces,
+			Handler:   p.handleWarns,
 		},
 		{
 			Name:        "resetwarns",
@@ -183,9 +190,13 @@ func (p *Plugin) Commands() []core.Command {
 			Usage:       ".resetwarns <user_id / reply>",
 			Category:    "Admin",
 			Permission:  core.PermissionSudo,
-			GroupOnly:   true,
-			Surfaces:    adminSurfaces,
-			Handler:     p.handleResetWarns,
+			AssistantPermission: core.PermissionRef(core.PermissionEveryone),
+			GroupAuthorization: core.GroupAuthorizationRequirement{
+				Level: core.GroupAuthorizationAdministrator,
+			},
+			GroupOnly: true,
+			Surfaces:  adminSurfaces,
+			Handler:   p.handleResetWarns,
 		},
 	}
 }
@@ -533,7 +544,51 @@ func (p *Plugin) handleWarn(ctx *core.Context) error {
 	chatID := ctx.ChatID()
 	warnedBy := ctx.SenderID()
 
-	res, err := p.moderator.Warn(ctx.Ctx, ctx.PeerID, targetPeer, chatID, targetID, reason, warnedBy, 3, moderation.ActionMute)
+	var res *moderation.WarnResult
+	if ctx.Source == core.ExecutionAssistant {
+		contextual, ok := p.moderator.(interface {
+			WarnWithService(
+				context.Context,
+				core.TelegramServicer,
+				tg.InputPeerClass,
+				tg.InputPeerClass,
+				int64,
+				int64,
+				string,
+				int64,
+				int,
+				string,
+			) (*moderation.WarnResult, error)
+		})
+		if !ok {
+			err = fmt.Errorf("%w: contextual moderation service is unavailable", core.ErrUnavailable)
+		} else {
+			res, err = contextual.WarnWithService(
+				ctx.Ctx,
+				ctx.Svc,
+				ctx.PeerID,
+				targetPeer,
+				chatID,
+				targetID,
+				reason,
+				warnedBy,
+				3,
+				moderation.ActionMute,
+			)
+		}
+	} else {
+		res, err = p.moderator.Warn(
+			ctx.Ctx,
+			ctx.PeerID,
+			targetPeer,
+			chatID,
+			targetID,
+			reason,
+			warnedBy,
+			3,
+			moderation.ActionMute,
+		)
+	}
 	if err != nil {
 		_ = ctx.EditOrReply(formatAdminError("warn user", err))
 		return err
