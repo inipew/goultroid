@@ -52,6 +52,7 @@ func (b SurfaceBinding) Normalize() (SurfaceBinding, error) {
 	b.Alias = strings.ToLower(strings.TrimSpace(b.Alias))
 	b.Reference.Provider = normalizeProvider(b.Reference.Provider)
 	b.Reference.Key = strings.TrimSpace(b.Reference.Key)
+	b.Incarnation = strings.TrimSpace(b.Incarnation)
 	if !validSurface(b.Surface) || !validBindingAlias(b.Alias) {
 		return SurfaceBinding{}, ErrInvalidBinding
 	}
