@@ -2,6 +2,7 @@ package pmrelayadmin
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -111,7 +112,7 @@ func TestFeatureCommandsAreCanonicalOwnerPrivateAssistantSurfaces(t *testing.T) 
 
 func TestRelayControlReplyBanWhoAndUnban(t *testing.T) {
 	f, service, repo := newControlFeature(t)
-	base := time.Date(2026, 9, 22, 23, 0, 0, 0, time.UTC)
+	base := time.Now().UTC().Add(-time.Minute)
 	seedMappedVisitor(t, repo, base)
 
 	banCtx, banSvc := newOwnerContext(100, "ban", "spam")
@@ -145,7 +146,7 @@ func TestRelayControlReplyBanWhoAndUnban(t *testing.T) {
 	if len(unbanSvc.messages) != 1 || !strings.Contains(unbanSvc.messages[0], "Visitor unblocked") {
 		t.Fatalf("unban reply=%+v", unbanSvc.messages)
 	}
-	if _, err := repo.GetVisitorBlock(context.Background(), 42); err != pmrelay.ErrBlockNotFound {
+	if _, err := repo.GetVisitorBlock(context.Background(), 42); !errors.Is(err, pmrelay.ErrBlockNotFound) {
 		t.Fatalf("block after unban error=%v", err)
 	}
 
@@ -160,7 +161,7 @@ func TestRelayControlReplyBanWhoAndUnban(t *testing.T) {
 
 func TestRelayControlStatusBlockedListAndNumericTarget(t *testing.T) {
 	f, service, repo := newControlFeature(t)
-	base := time.Date(2026, 9, 22, 23, 30, 0, 0, time.UTC)
+	base := time.Now().UTC().Add(-time.Minute)
 	seedMappedVisitor(t, repo, base)
 
 	numericCtx, _ := newOwnerContext(0, "ban", "43", "manual abuse")
