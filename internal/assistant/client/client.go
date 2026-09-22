@@ -23,6 +23,7 @@ import (
 	"github.com/inipew/goultroid/internal/interaction/orchestration"
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 	inlineService "github.com/inipew/goultroid/internal/services/inline"
+	"github.com/inipew/goultroid/internal/services/savedresponse"
 	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
@@ -428,6 +429,12 @@ func (c *AssistantClient) SetSettingsService(svc *settings.Service) {
 	c.mu.Lock()
 	c.settingsSvc = svc
 	c.mu.Unlock()
+}
+
+func (c *AssistantClient) SetSavedResponseBindings(bindings *savedresponse.BindingService, delivery *savedresponse.ResponseDelivery) {
+	if c.cmdRouter != nil {
+		c.cmdRouter.SetSavedResponseBindings(bindings, delivery)
+	}
 }
 func (c *AssistantClient) SetMetricsCollector(m core.MetricsCollector) {
 	c.metrics = m
