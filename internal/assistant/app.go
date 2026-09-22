@@ -51,6 +51,7 @@ type AssistantApp struct {
 
 var _ Client = (*AssistantApp)(nil)
 var _ runtime.CriticalComponent = (*AssistantApp)(nil)
+var _ runtime.Quiescer = (*AssistantApp)(nil)
 
 func (a *AssistantApp) Name() string {
 	return "assistant"
@@ -90,6 +91,7 @@ func NewBotClient(appID int, appHash string, botToken string, logger *zap.Logger
 	return NewApp(appID, appHash, botToken, logger)
 }
 func (a *AssistantApp) Start(ctx context.Context) error     { return a.client.Start(ctx) }
+func (a *AssistantApp) Quiesce(ctx context.Context) error   { return a.client.Quiesce(ctx) }
 func (a *AssistantApp) Stop(ctx context.Context) error      { return a.client.Stop(ctx) }
 func (a *AssistantApp) IsRunning() bool                     { return a.client.IsRunning() }
 func (a *AssistantApp) WaitReady(ctx context.Context) error { return a.client.WaitReady(ctx) }
