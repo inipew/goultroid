@@ -255,3 +255,13 @@ func (b VisitorBlock) Normalize() (VisitorBlock, error) {
 	}
 	return b, nil
 }
+
+
+type AudienceSnapshot struct {
+	MaxSequence int64
+	Total       int
+}
+
+func (s AudienceSnapshot) valid() bool {
+	return s.MaxSequence >= 0 && s.Total >= 0
+}
