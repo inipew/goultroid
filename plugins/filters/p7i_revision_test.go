@@ -54,7 +54,6 @@ func TestP7IFilterRevisionIsChatScopedAndKeepsOtherCacheWarm(t *testing.T) {
 	}
 }
 
-
 type p7iChurningFilterRepo struct {
 	plugin *Plugin
 }
@@ -87,7 +86,6 @@ func TestP7IStaleFilterCompileCannotClearActiveInterest(t *testing.T) {
 		t.Fatal("stale filter compilation cleared active chat interest")
 	}
 }
-
 
 type p7iBlockingFilterRepo struct {
 	mu          sync.Mutex
