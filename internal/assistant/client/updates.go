@@ -11,6 +11,7 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/assistant/peer"
 	"github.com/inipew/goultroid/internal/core"
+	inlineservice "github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
@@ -34,7 +35,9 @@ type UpdateHandlerDeps struct {
 
 // InlineQueryExecutor is the Assistant-facing subset of the shared inline engine.
 type InlineQueryExecutor interface {
+	Prepare(string) (inlineservice.PreparedQuery, error)
 	ExecuteWithPeerType(context.Context, core.TelegramServicer, int64, int64, string, string, tg.InlineQueryPeerTypeClass) error
+	ExecutePreparedWithPeerType(context.Context, core.TelegramServicer, int64, int64, inlineservice.PreparedQuery, string, tg.InlineQueryPeerTypeClass) error
 }
 
 func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerDeps) {
@@ -118,16 +121,29 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			logger.Warn("assistant: inline query execution unavailable", zap.Int64("query_id", update.QueryID))
 			return deps.InlineService.AnswerInlineQueryOptions(ctx, update.QueryID, nil, core.InlineAnswerOptions{CacheTime: 1, Private: true})
 		}
+		prepared, prepareErr := deps.InlineEngine.Prepare(update.Query)
+		var scope tasks.ScopeIdentity
+		run := func(taskCtx context.Context) error {
+			return deps.InlineEngine.ExecuteWithPeerType(taskCtx, deps.InlineService, update.QueryID, update.UserID, update.Query, update.Offset, update.PeerType)
+		}
+		if prepareErr == nil {
+			scope = prepared.Scope()
+			run = func(taskCtx context.Context) error {
+				return deps.InlineEngine.ExecutePreparedWithPeerType(taskCtx, deps.InlineService, update.QueryID, update.UserID, prepared, update.Offset, update.PeerType)
+			}
+		} else if !errors.Is(prepareErr, inlineservice.ErrNoMatchingHandler) {
+			logger.Warn("assistant: inline query preparation failed", zap.Int64("query_id", update.QueryID), zap.Error(prepareErr))
+			return deps.InlineService.AnswerInlineQueryOptions(ctx, update.QueryID, nil, core.InlineAnswerOptions{CacheTime: 1, Private: true})
+		}
 		_, err := deps.Tasks.Submit(ctx, tasks.WorkSpec{
 			ID:               tasks.TaskID(fmt.Sprintf("asst:inline:%d", update.QueryID)),
+			Scope:            scope,
 			QuotaOwner:       tasks.OwnerID(fmt.Sprintf("telegram:user:%d", update.UserID)),
 			Pool:             "interactive",
 			Class:            tasks.PriorityInteractive,
 			OrderingKey:      fmt.Sprintf("inline:%d", update.QueryID),
 			ExecutionTimeout: 5 * time.Second,
-			Handler: func(taskCtx context.Context) error {
-				return deps.InlineEngine.ExecuteWithPeerType(taskCtx, deps.InlineService, update.QueryID, update.UserID, update.Query, update.Offset, update.PeerType)
-			},
+			Handler:          run,
 		})
 		if err != nil {
 			logger.Warn("assistant: inline query admission rejected", zap.Int64("query_id", update.QueryID), zap.Error(err))
