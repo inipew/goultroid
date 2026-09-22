@@ -91,15 +91,24 @@ func TestP7HInterestGatePrecedesEventAllocationAndPublish(t *testing.T) {
 	}
 	block := source[start : start+1+end]
 	interest := strings.Index(block, "deps.GroupEvents.Interested(chatID, kind)")
+	dedupe := strings.Index(block, "make(map[int64]struct{}")
+	users := strings.Index(block, "make([]core.GroupServiceUser")
 	allocation := strings.Index(block, "&core.GroupServiceEvent{")
 	publish := strings.Index(block, "deps.GroupEvents.Publish(")
-	if interest < 0 || allocation < 0 || publish < 0 {
-		t.Fatalf("P7-H ingress markers missing: interest=%d allocation=%d publish=%d",
-			interest, allocation, publish)
+	if interest < 0 || dedupe < 0 || users < 0 || allocation < 0 || publish < 0 {
+		t.Fatalf("P7-H ingress markers missing: interest=%d dedupe=%d users=%d allocation=%d publish=%d",
+			interest, dedupe, users, allocation, publish)
 	}
-	if interest > allocation || interest > publish {
-		t.Fatalf("P7-H interest gate occurs after event work: interest=%d allocation=%d publish=%d",
-			interest, allocation, publish)
+	for name, position := range map[string]int{
+		"dedupe": dedupe,
+		"users": users,
+		"event": allocation,
+		"publish": publish,
+	} {
+		if interest > position {
+			t.Fatalf("P7-H interest gate occurs after %s work: interest=%d position=%d",
+				name, interest, position)
+		}
 	}
 }
 
@@ -146,5 +155,43 @@ func TestP7HControlStateDoesNotUseGlobalSettings(t *testing.T) {
 			strings.Contains(source, "SettingsService") {
 			t.Errorf("P7-H chat-local state bypassed P7-F through global settings in %s", rel)
 		}
+	}
+}
+
+
+func TestP7HServiceMessagesBypassGlobalEntityCacheWhenInactive(t *testing.T) {
+	root := repositoryRoot(t)
+	path := filepath.Join(root, "internal", "assistant", "client", "updates.go")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(raw)
+
+	start := strings.Index(source, "handleNewMessage := func(")
+	end := strings.Index(source[start+1:], "\n\tdispatcher.OnNewMessage(")
+	if start < 0 || end < 0 {
+		t.Fatal("shared Assistant message handler is missing")
+	}
+	block := source[start : start+1+end]
+	serviceBranch := strings.Index(block, "if service, ok := message.(*tg.MessageService); ok")
+	cache := strings.Index(block, "deps.CacheEntities(e)")
+	if serviceBranch < 0 || cache < 0 || serviceBranch > cache {
+		t.Fatalf("service-message branch must precede global entity cache: service=%d cache=%d",
+			serviceBranch, cache)
+	}
+}
+
+func TestP7HDoesNotOpenGroupFreeFormInteractionBeforeP7J(t *testing.T) {
+	root := repositoryRoot(t)
+	path := filepath.Join(root, "internal", "assistant", "client", "updates.go")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(raw)
+	if !strings.Contains(source,
+		"if privateChat && deps.Resolver != nil && deps.Interaction != nil") {
+		t.Fatal("ordinary group text can reach generic Assistant free-form interaction before P7-J")
 	}
 }
