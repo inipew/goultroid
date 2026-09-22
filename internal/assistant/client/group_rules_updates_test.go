@@ -62,12 +62,16 @@ func (s *p7iRuleIngressStub) Handle(_ context.Context, message *core.MessageEnve
 type p7iTaskClient struct {
 	calls int
 	run   bool
+	err   error
 	spec  tasks.WorkSpec
 }
 
 func (c *p7iTaskClient) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket, error) {
 	c.calls++
 	c.spec = spec
+	if c.err != nil {
+		return nil, c.err
+	}
 	if c.run && spec.Handler != nil {
 		if err := spec.Handler(ctx); err != nil {
 			return nil, err
@@ -432,5 +436,127 @@ func TestP7JGroupRuleOrderingIsTopicScoped(t *testing.T) {
 	}
 	if tasksClient.spec.OrderingKey != "chat:77:topic:500" {
 		t.Fatalf("ordering=%q want chat:77:topic:500", tasksClient.spec.OrderingKey)
+	}
+}
+
+
+func TestP7LGroupRuleAdmissionRejectionStopsBeforeExecution(t *testing.T) {
+	rules := &p7iRuleIngressStub{interested: true}
+	resolver := &groupServiceResolverStub{resolved: &tg.InputPeerChat{ChatID: 77}}
+	classifier := &p7iChatClassifierStub{}
+	tasksClient := &p7iTaskClient{
+		err: tasks.NewAdmissionError(tasks.ReasonOwnerQueueFull, tasks.ErrOwnerQueueFull),
+	}
+	cacheCalls := 0
+
+	p7iDispatchMessage(t, UpdateHandlerDeps{
+		Logger:         zap.NewNop(),
+		GroupRules:     rules,
+		GroupRuleChats: classifier,
+		Resolver:       resolver,
+		Tasks:          tasksClient,
+		CacheEntities: func(tg.Entities) {
+			cacheCalls++
+		},
+	}, &tg.Message{
+		ID:      801,
+		PeerID:  &tg.PeerChat{ChatID: 77},
+		FromID:  &tg.PeerUser{UserID: 42},
+		Message: "candidate rule text",
+	}, nil, nil)
+
+	if rules.interestedCalls != 1 || tasksClient.calls != 1 {
+		t.Fatalf("interested/tasks=%d/%d want 1/1", rules.interestedCalls, tasksClient.calls)
+	}
+	if cacheCalls != 1 {
+		t.Fatalf("entity cache calls=%d want 1 after interest hit", cacheCalls)
+	}
+	if resolver.calls != 0 || classifier.calls != 0 || rules.handleCalls != 0 {
+		t.Fatalf("rejected task executed resolver/classifier/handle=%d/%d/%d",
+			resolver.calls, classifier.calls, rules.handleCalls)
+	}
+}
+
+func TestP7LHighCardinalityIrrelevantGroupsStayCold(t *testing.T) {
+	rules := &p7iRuleIngressStub{}
+	resolver := &groupServiceResolverStub{}
+	tasksClient := &p7iTaskClient{}
+	cacheCalls := 0
+
+	dispatcher := tg.NewUpdateDispatcher()
+	RegisterUpdateHandlers(&dispatcher, UpdateHandlerDeps{
+		Logger:         zap.NewNop(),
+		GroupRules:     rules,
+		GroupRuleChats: &p7iChatClassifierStub{},
+		Resolver:       resolver,
+		Tasks:          tasksClient,
+		CacheEntities: func(tg.Entities) {
+			cacheCalls++
+		},
+	})
+
+	ctx := context.Background()
+	const total = 2048
+	for i := 0; i < total; i++ {
+		chatID := int64(100000 + i)
+		err := dispatcher.Handle(ctx, &tg.Updates{
+			Updates: []tg.UpdateClass{&tg.UpdateNewMessage{Message: &tg.Message{
+				ID:      i + 1,
+				PeerID:  &tg.PeerChat{ChatID: chatID},
+				FromID:  &tg.PeerUser{UserID: int64(200000 + i)},
+				Message: "ordinary irrelevant group text",
+			}}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if rules.interestedCalls != total {
+		t.Fatalf("interest checks=%d want %d", rules.interestedCalls, total)
+	}
+	if cacheCalls != 0 || resolver.calls != 0 || tasksClient.calls != 0 || rules.handleCalls != 0 {
+		t.Fatalf("high-cardinality cold path cache=%d resolver=%d tasks=%d handle=%d",
+			cacheCalls, resolver.calls, tasksClient.calls, rules.handleCalls)
+	}
+}
+
+func BenchmarkP7LIrrelevantGroupMessageHotPath(b *testing.B) {
+	rules := &p7iRuleIngressStub{}
+	resolver := &groupServiceResolverStub{}
+	tasksClient := &p7iTaskClient{}
+	cacheCalls := 0
+
+	dispatcher := tg.NewUpdateDispatcher()
+	RegisterUpdateHandlers(&dispatcher, UpdateHandlerDeps{
+		Logger:         zap.NewNop(),
+		GroupRules:     rules,
+		GroupRuleChats: &p7iChatClassifierStub{},
+		Resolver:       resolver,
+		Tasks:          tasksClient,
+		CacheEntities: func(tg.Entities) {
+			cacheCalls++
+		},
+	})
+	update := &tg.Updates{
+		Updates: []tg.UpdateClass{&tg.UpdateNewMessage{Message: &tg.Message{
+			ID:      1,
+			PeerID:  &tg.PeerChat{ChatID: 77},
+			FromID:  &tg.PeerUser{UserID: 42},
+			Message: "ordinary irrelevant group text",
+		}}},
+	}
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := dispatcher.Handle(ctx, update); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.StopTimer()
+	if cacheCalls != 0 || resolver.calls != 0 || tasksClient.calls != 0 || rules.handleCalls != 0 {
+		b.Fatalf("cold path escaped interest gate cache=%d resolver=%d tasks=%d handle=%d",
+			cacheCalls, resolver.calls, tasksClient.calls, rules.handleCalls)
 	}
 }
