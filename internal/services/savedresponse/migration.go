@@ -10,14 +10,16 @@ import (
 type MigrationProvider struct{}
 
 type migration001 struct{}
+type migration002 struct{}
 
 var (
 	_ database.MigrationProvider        = MigrationProvider{}
 	_ database.SchemaInvariantMigration = migration001{}
+	_ database.SchemaInvariantMigration = migration002{}
 )
 
 func (MigrationProvider) Migrations() []database.Migration {
-	return []database.Migration{migration001{}}
+	return []database.Migration{migration001{}, migration002{}}
 }
 
 func (migration001) ID() string { return "savedresponse.001" }
@@ -83,6 +85,61 @@ func (migration001) VerifySchema(ctx context.Context, tx database.SQLExecutor) e
 		if count != 1 {
 			return fmt.Errorf("required index %s does not exist", index)
 		}
+	}
+	return nil
+}
+
+
+func (migration002) ID() string { return "savedresponse.002" }
+
+func (migration002) Description() string {
+	return "Fence SavedResponse surface binding reincarnation"
+}
+
+func (migration002) Checksum() string {
+	return "1f2fc5867f88a62af4b636752b6dce69d16618984d16e713d1f794ef80bfc355"
+}
+
+func (migration002) LegacyVersions() []int { return nil }
+
+func (migration002) Up(ctx context.Context, tx database.SQLExecutor) error {
+	for _, statement := range []string{
+		`ALTER TABLE saved_response_surface_bindings
+			ADD COLUMN incarnation TEXT NOT NULL DEFAULT '';`,
+		`UPDATE saved_response_surface_bindings
+			SET incarnation = lower(hex(randomblob(16)))
+			WHERE TRIM(incarnation) = '';`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_saved_response_surface_bindings_incarnation
+			ON saved_response_surface_bindings(incarnation);`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (migration002) VerifySchema(ctx context.Context, tx database.SQLExecutor) error {
+	var columnCount int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT count(*) FROM pragma_table_info('saved_response_surface_bindings')
+		WHERE name = 'incarnation'
+	`).Scan(&columnCount); err != nil {
+		return err
+	}
+	if columnCount != 1 {
+		return fmt.Errorf("required column incarnation does not exist")
+	}
+
+	var indexCount int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT count(*) FROM sqlite_master
+		WHERE type = 'index' AND name = 'idx_saved_response_surface_bindings_incarnation'
+	`).Scan(&indexCount); err != nil {
+		return err
+	}
+	if indexCount != 1 {
+		return fmt.Errorf("required index idx_saved_response_surface_bindings_incarnation does not exist")
 	}
 	return nil
 }
