@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/assistant/client"
+	assistantdeeplink "github.com/inipew/goultroid/internal/assistant/deeplink"
 	assistantinteraction "github.com/inipew/goultroid/internal/assistant/interaction"
 	assistentrpc "github.com/inipew/goultroid/internal/assistant/rpc"
 	"github.com/inipew/goultroid/internal/core"
@@ -29,6 +30,7 @@ type Client interface {
 	SetMetricsCollector(m core.MetricsCollector)
 	SetCallbackRouter(router client.CoreCallbackDispatcher)
 	SetInlineEngine(engine *inline.Engine)
+	SetDeepLinkRouter(router *assistantdeeplink.Router)
 	SetTasks(client tasks.Client)
 	SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool))
 	SetInteractionFoundation(catalog feature.Catalog, sessions *rootinteraction.Runtime, actions *rootinteraction.Dispatcher)
@@ -104,6 +106,9 @@ func (a *AssistantApp) SetCallbackRouter(router client.CoreCallbackDispatcher) {
 	a.client.SetCallbackRouter(router)
 }
 func (a *AssistantApp) SetInlineEngine(engine *inline.Engine) { a.client.SetInlineEngine(engine) }
+func (a *AssistantApp) SetDeepLinkRouter(router *assistantdeeplink.Router) {
+	a.client.SetDeepLinkRouter(router)
+}
 func (a *AssistantApp) SetRPCExecutor(executor assistentrpc.Executor) {
 	a.client.SetRPCExecutor(executor)
 }
