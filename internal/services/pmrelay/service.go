@@ -106,8 +106,8 @@ type VisitorDetails struct {
 	Block    *VisitorBlock
 }
 
-// Service owns relay admission policy, durable visitor delivery state, and
-// reply-routing revalidation. Telegram remains behind the VisitorTransport port.
+// Service owns relay admission/block policy, durable delivery state, and
+// reply-routing revalidation. Telegram remains behind narrow transport ports.
 type Service struct {
 	repo    Repository
 	ownerID int64
@@ -343,8 +343,9 @@ func (s *Service) PrepareOwnerReply(ctx context.Context, message IngressMessage)
 	}, true, nil
 }
 
-// RevalidatePrepared is the only post-admission execution entry point in P6-B.
-// Later phases may append durable delivery after this revalidation succeeds.
+// RevalidatePrepared is the post-admission authority fence. It rechecks the
+// current relay policy, durable visitor block policy, and reply mapping before
+// either delivery direction may perform Telegram transport.
 func (s *Service) RevalidatePrepared(ctx context.Context, prepared PreparedIngress) error {
 	if s == nil || s.ownerID <= 0 {
 		return ErrUnavailable
