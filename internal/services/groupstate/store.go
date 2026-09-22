@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -103,6 +104,9 @@ func normalizeCAS(req core.GroupStateCAS, now time.Time) (core.GroupStateCAS, er
 		return core.GroupStateCAS{}, err
 	}
 	req.GroupStateKey = key
+	if req.ExpectedRevision >= uint64(math.MaxInt64) {
+		return core.GroupStateCAS{}, fmt.Errorf("%w: expected revision is too large", ErrInvalidState)
+	}
 	if len(req.Value) > core.MaxGroupStateValueBytes {
 		return core.GroupStateCAS{}, fmt.Errorf("%w: value exceeds %d bytes", ErrInvalidState, core.MaxGroupStateValueBytes)
 	}
@@ -370,8 +374,8 @@ func (s *SQLiteStore) DeleteCompareAndSwap(ctx context.Context, grant core.Group
 		return err
 	}
 	req.GroupStateKey = key
-	if req.ExpectedRevision == 0 || req.DeletedBy <= 0 {
-		return fmt.Errorf("%w: delete requires revision and actor", ErrInvalidState)
+	if req.ExpectedRevision == 0 || req.ExpectedRevision > uint64(math.MaxInt64) || req.DeletedBy <= 0 {
+		return fmt.Errorf("%w: delete requires a valid revision and actor", ErrInvalidState)
 	}
 	if !grant.Authorizes(req.ChatID, req.DeletedBy) {
 		return fmt.Errorf("%w: invalid group-state write grant", core.ErrGroupAuthorizationDenied)
