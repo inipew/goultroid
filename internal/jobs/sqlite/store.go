@@ -1165,6 +1165,34 @@ func (s *Store) EarliestScheduleDue(ctx context.Context) (time.Time, bool, error
 	return parseAggregateTime(raw)
 }
 
+// DurableDiagnostics returns bounded aggregate deferral state for diagnostics.
+// It intentionally avoids returning occurrence identifiers or unbounded rows.
+func (s *Store) DurableDiagnostics(ctx context.Context, now time.Time) (jobs.DurableDiagnostics, error) {
+	var snapshot jobs.DurableDiagnostics
+	var rawEarliest any
+	err := s.db.QueryRowContext(ctx, `
+		SELECT
+			(SELECT COUNT(*) FROM job_occurrences WHERE state = 'dispatched' AND ready_at > ?),
+			(SELECT COUNT(*) FROM job_attempts WHERE state = 'deferred'),
+			(SELECT MIN(ready_at) FROM job_occurrences WHERE state = 'dispatched' AND ready_at > ?)
+	`, now.UTC(), now.UTC()).Scan(
+		&snapshot.DeferredOccurrences,
+		&snapshot.RetainedDeferrals,
+		&rawEarliest,
+	)
+	if err != nil {
+		return jobs.DurableDiagnostics{}, fmt.Errorf("load durable job diagnostics: %w", err)
+	}
+	earliest, ok, err := parseAggregateTime(rawEarliest)
+	if err != nil {
+		return jobs.DurableDiagnostics{}, fmt.Errorf("parse earliest deferred occurrence: %w", err)
+	}
+	if ok {
+		snapshot.EarliestDeferredAt = earliest
+	}
+	return snapshot, nil
+}
+
 func (s *Store) EarliestDeferredOccurrenceDue(ctx context.Context, now time.Time) (time.Time, bool, error) {
 	var raw any
 	if err := s.db.QueryRowContext(ctx, `
