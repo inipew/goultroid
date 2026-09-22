@@ -24,6 +24,11 @@ type interactionIngressPort interface {
 	tryMessage(context.Context, []byte, int64, int64, tg.InputPeerClass, int64, int) (bool, error)
 }
 
+type groupServiceIngress interface {
+	Interested(int64, core.GroupServiceKind) bool
+	Publish(*core.GroupServiceEvent)
+}
+
 type UpdateHandlerDeps struct {
 	Logger              *zap.Logger
 	RateLimiter         RateLimiter
@@ -41,6 +46,8 @@ type UpdateHandlerDeps struct {
 	InteractionIngress  interactionIngressPort
 	RelayIngress        relayMessageIngress
 	AudienceRegistry    pmrelay.AudienceRegistry
+	GroupEvents         groupServiceIngress
+	SelfID              func() int64
 }
 
 func assistantSlashCommand(text string) (string, bool) {
@@ -125,6 +132,125 @@ type InlineQueryExecutor interface {
 	ExecutePreparedWithPeerType(context.Context, core.TelegramServicer, int64, int64, inlineservice.PreparedQuery, string, tg.InlineQueryPeerTypeClass) error
 }
 
+func assistantGroupServicePeer(
+	message *tg.MessageService,
+	entities tg.Entities,
+) (tg.InputPeerClass, int64, string, bool) {
+	if message == nil {
+		return nil, 0, "", false
+	}
+	switch peer := message.PeerID.(type) {
+	case *tg.PeerChat:
+		title := ""
+		if chat := entities.Chats[peer.ChatID]; chat != nil {
+			title = chat.Title
+		}
+		return &tg.InputPeerChat{ChatID: peer.ChatID}, peer.ChatID, title, true
+	case *tg.PeerChannel:
+		channel := entities.Channels[peer.ChannelID]
+		if channel == nil || !channel.Megagroup || channel.AccessHash == 0 {
+			return nil, 0, "", false
+		}
+		return &tg.InputPeerChannel{
+			ChannelID:  peer.ChannelID,
+			AccessHash: channel.AccessHash,
+		}, peer.ChannelID, channel.Title, true
+	default:
+		return nil, 0, "", false
+	}
+}
+
+func assistantGroupServiceKind(
+	message *tg.MessageService,
+) (core.GroupServiceKind, []int64, bool) {
+	if message == nil {
+		return "", nil, false
+	}
+	switch action := message.Action.(type) {
+	case *tg.MessageActionChatAddUser:
+		if len(action.Users) == 0 {
+			return "", nil, false
+		}
+		return core.GroupServiceMemberJoined, action.Users, true
+	case *tg.MessageActionChatJoinedByLink, *tg.MessageActionChatJoinedByRequest:
+		if from, ok := message.FromID.(*tg.PeerUser); ok && from.UserID > 0 {
+			return core.GroupServiceMemberJoined, []int64{from.UserID}, true
+		}
+	case *tg.MessageActionChatDeleteUser:
+		if action.UserID > 0 {
+			return core.GroupServiceMemberLeft, []int64{action.UserID}, true
+		}
+	}
+	return "", nil, false
+}
+
+func assistantGroupServiceUser(userID int64, entities tg.Entities) core.GroupServiceUser {
+	user := entities.Users[userID]
+	if user == nil {
+		return core.GroupServiceUser{ID: userID}
+	}
+	return core.GroupServiceUser{
+		ID:        userID,
+		FirstName: user.FirstName,
+		LastName:  user.LastName,
+		Username:  user.Username,
+		IsBot:     user.Bot,
+	}
+}
+
+func handleAssistantGroupService(
+	message *tg.MessageService,
+	entities tg.Entities,
+	deps UpdateHandlerDeps,
+) {
+	if message == nil || deps.GroupEvents == nil {
+		return
+	}
+	peer, chatID, chatTitle, ok := assistantGroupServicePeer(message, entities)
+	if !ok {
+		return
+	}
+	kind, userIDs, ok := assistantGroupServiceKind(message)
+	if !ok || !deps.GroupEvents.Interested(chatID, kind) {
+		return
+	}
+
+	selfID := int64(0)
+	if deps.SelfID != nil {
+		selfID = deps.SelfID()
+	}
+	seen := make(map[int64]struct{}, len(userIDs))
+	users := make([]core.GroupServiceUser, 0, len(userIDs))
+	for _, userID := range userIDs {
+		if userID <= 0 || userID == selfID {
+			continue
+		}
+		if _, duplicate := seen[userID]; duplicate {
+			continue
+		}
+		seen[userID] = struct{}{}
+		users = append(users, assistantGroupServiceUser(userID, entities))
+	}
+	if len(users) == 0 {
+		return
+	}
+
+	var actorID int64
+	if from, ok := message.FromID.(*tg.PeerUser); ok {
+		actorID = from.UserID
+	}
+	deps.GroupEvents.Publish(&core.GroupServiceEvent{
+		At:        time.Unix(int64(message.Date), 0),
+		Kind:      kind,
+		ChatID:    chatID,
+		ChatTitle: chatTitle,
+		Peer:      peer,
+		MessageID: message.ID,
+		ActorID:   actorID,
+		Users:     users,
+	})
+}
+
 func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerDeps) {
 	if dispatcher == nil {
 		return
@@ -133,14 +259,18 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	dispatcher.OnNewMessage(func(ctx context.Context, e tg.Entities, update *tg.UpdateNewMessage) error {
+	handleNewMessage := func(ctx context.Context, e tg.Entities, message tg.MessageClass) error {
 		if deps.IsShuttingDown != nil && deps.IsShuttingDown() {
 			return nil
 		}
 		if deps.CacheEntities != nil {
 			deps.CacheEntities(e)
 		}
-		msg, ok := update.Message.(*tg.Message)
+		if service, ok := message.(*tg.MessageService); ok {
+			handleAssistantGroupService(service, e, deps)
+			return nil
+		}
+		msg, ok := message.(*tg.Message)
 		if !ok || msg.Out {
 			return nil
 		}
@@ -286,6 +416,12 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			}
 		}
 		return nil
+	}
+	dispatcher.OnNewMessage(func(ctx context.Context, e tg.Entities, update *tg.UpdateNewMessage) error {
+		return handleNewMessage(ctx, e, update.Message)
+	})
+	dispatcher.OnNewChannelMessage(func(ctx context.Context, e tg.Entities, update *tg.UpdateNewChannelMessage) error {
+		return handleNewMessage(ctx, e, update.Message)
 	})
 	dispatcher.OnBotInlineQuery(func(ctx context.Context, e tg.Entities, update *tg.UpdateBotInlineQuery) error {
 		if deps.IsShuttingDown != nil && deps.IsShuttingDown() {
