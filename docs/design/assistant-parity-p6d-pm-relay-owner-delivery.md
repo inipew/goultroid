@@ -219,6 +219,8 @@ admission.
 The reverse transport supports:
 
 - plain text;
+- text carrying a Telegram webpage preview (re-sent as text so Telegram may
+  regenerate the preview);
 - Telegram `MessageMediaPhoto`;
 - Telegram `MessageMediaDocument`.
 
@@ -226,6 +228,9 @@ Photo/document media is copied server-side using `InputMediaPhoto` or
 `InputMediaDocument` built from the freshly reloaded source message. The
 existing file reference is therefore refreshed by the source lookup before each
 attempt, and no local media bytes are retained.
+
+Self-destructing photo/document media is also fail-closed so relay does not
+silently turn ephemeral content into a permanent copy.
 
 Other semantic media such as polls, contacts, locations, games, invoices, and
 unsupported constructors remain fail-closed with `ErrUnsupportedDelivery`.
@@ -257,6 +262,8 @@ Tests freeze these invariants:
 - document references are copied through `messages.sendMedia`;
 - media copy performs no upload/download;
 - owner reverse delivery never invokes `messages.forwardMessages`;
+- webpage previews stay on the bot-authored text path;
+- self-destructing media produces no send/forward side effect;
 - unsupported semantic media produces no send/forward side effect.
 
 ## Explicit non-goals
