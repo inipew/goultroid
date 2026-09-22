@@ -40,6 +40,9 @@ func (a *App) performShutdown() {
 	}
 	cancelQuiesce()
 	a.markStopping()
+	if a.savedDeepLinkRegistration != nil {
+		a.savedDeepLinkRegistration.Close()
+	}
 
 	var errs []error
 	if a.runtime != nil {
