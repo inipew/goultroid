@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/gotd/td/tg"
+	"github.com/inipew/goultroid/internal/assistant/command"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/assistant/peer"
 	"github.com/inipew/goultroid/internal/services/pmrelay"
@@ -291,6 +292,50 @@ func TestRelayPrecedenceCancelRemainsInteractionControl(t *testing.T) {
 	}
 	if relay.ownerCalls != 0 || relay.visitorCalls != 0 {
 		t.Fatalf("/cancel reached relay owner=%d visitor=%d", relay.ownerCalls, relay.visitorCalls)
+	}
+}
+
+func TestRelayPrecedenceTargetedCancelUsesAuthenticatedBotIdentity(t *testing.T) {
+	input := &precedenceTextIngress{handled: true}
+	relay := &precedenceRelayIngress{ownerHandled: true, visitorHandled: true}
+	deps := basePrecedenceDeps(input, relay)
+	cmdRouter := command.NewRouter(zap.NewNop())
+	cmdRouter.SetBotUsername("Assistant")
+	deps.CmdRouter = cmdRouter
+
+	dispatchPrecedenceMessage(t, deps, &tg.Message{
+		ID:      32,
+		Message: "/cancel@Assistant",
+		FromID:  &tg.PeerUser{UserID: 7},
+		PeerID:  &tg.PeerUser{UserID: 7},
+	})
+	if input.calls != 1 {
+		t.Fatalf("targeted /cancel input calls=%d, want 1", input.calls)
+	}
+	if relay.ownerCalls != 0 || relay.visitorCalls != 0 {
+		t.Fatalf("targeted /cancel reached relay owner=%d visitor=%d", relay.ownerCalls, relay.visitorCalls)
+	}
+}
+
+func TestRelayPrecedenceCancelForAnotherBotIsIgnored(t *testing.T) {
+	input := &precedenceTextIngress{handled: true}
+	relay := &precedenceRelayIngress{ownerHandled: true, visitorHandled: true}
+	deps := basePrecedenceDeps(input, relay)
+	cmdRouter := command.NewRouter(zap.NewNop())
+	cmdRouter.SetBotUsername("Assistant")
+	deps.CmdRouter = cmdRouter
+
+	dispatchPrecedenceMessage(t, deps, &tg.Message{
+		ID:      33,
+		Message: "/cancel@OtherBot",
+		FromID:  &tg.PeerUser{UserID: 7},
+		PeerID:  &tg.PeerUser{UserID: 7},
+	})
+	if input.calls != 0 {
+		t.Fatalf("other-bot /cancel reached interaction input %d times", input.calls)
+	}
+	if relay.ownerCalls != 0 || relay.visitorCalls != 0 {
+		t.Fatalf("other-bot /cancel reached relay owner=%d visitor=%d", relay.ownerCalls, relay.visitorCalls)
 	}
 }
 
