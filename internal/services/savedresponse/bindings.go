@@ -182,6 +182,33 @@ func (s *BindingService) List(ctx context.Context, surface Surface, includeDisab
 	return s.bindings.ListBindings(ctx, surface, includeDisabled, limit)
 }
 
+// ValidateEnabledCollisions rechecks durable enabled aliases against the live
+// canonical runtime after plugin/inline registration has settled. This closes
+// the restart window where a binding persisted before a new canonical handler
+// existed and would otherwise become silently shadowed.
+func (s *BindingService) ValidateEnabledCollisions(ctx context.Context) error {
+	if s == nil || s.bindings == nil {
+		return ErrResolverUnavailable
+	}
+	for _, surface := range []Surface{
+		SurfaceAssistantCommand,
+		SurfaceInline,
+		SurfaceDeepLink,
+		SurfaceCallback,
+	} {
+		items, err := s.bindings.ListBindings(ctx, surface, false, MaxBindingList)
+		if err != nil {
+			return err
+		}
+		for _, item := range items {
+			if err := s.checkAlias(item.Surface, item.Alias, true); err != nil {
+				return fmt.Errorf("%s:%s: %w", item.Surface, item.Alias, err)
+			}
+		}
+	}
+	return nil
+}
+
 func (s *BindingService) Update(
 	ctx context.Context,
 	surface Surface,
