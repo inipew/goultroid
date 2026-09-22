@@ -1,6 +1,9 @@
 package core
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // ChatKind is the canonical transport-neutral classification used by the
 // Assistant group/manager plane. In particular, a broadcast channel is not a
@@ -49,6 +52,16 @@ func (c *Chat) IsManagerGroup() bool {
 	default:
 		return false
 	}
+}
+
+// GroupOrderingKey scopes serialized Assistant group execution to one chat and,
+// for forum traffic, one topic. Non-topic groups preserve the historical
+// chat:<id> key so unrelated chats never share an ordering lane.
+func GroupOrderingKey(chatID int64, topicID int) string {
+	if topicID > 0 {
+		return fmt.Sprintf("chat:%d:topic:%d", chatID, topicID)
+	}
+	return fmt.Sprintf("chat:%d", chatID)
 }
 
 // GroupActorRole describes Telegram's chat-scoped role independently from the

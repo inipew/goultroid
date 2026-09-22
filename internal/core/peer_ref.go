@@ -32,6 +32,13 @@ func (p PeerRef) IsUser() bool    { return p.Kind == PeerKindUser }
 func (p PeerRef) IsChat() bool    { return p.Kind == PeerKindChat }
 func (p PeerRef) IsChannel() bool { return p.Kind == PeerKindChannel }
 
+// SameIdentity reports whether two peer references address the same Telegram
+// peer. Access hashes are transport credentials and deliberately do not
+// participate in identity comparisons.
+func (p PeerRef) SameIdentity(other PeerRef) bool {
+	return p.ID != 0 && other.ID != 0 && p.Kind == other.Kind && p.ID == other.ID
+}
+
 func (p PeerRef) InputPeer() (tg.InputPeerClass, error) {
 	if p.ID == 0 {
 		return nil, errors.New("peer ID is zero")

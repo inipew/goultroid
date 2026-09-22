@@ -68,6 +68,21 @@ type TelegramServicer interface {
 	IsBotSent(msgID int) bool
 }
 
+// MessageSendContext preserves the source message/thread coordinates that a
+// transport may use to keep responses inside the originating forum topic.
+type MessageSendContext struct {
+	ReplyToID int
+	TopicID   int
+}
+
+// ContextualTelegramServicer is an optional extension implemented by transports
+// that can preserve Telegram reply/thread context. Core facades fall back to
+// TelegramServicer when this extension is unavailable.
+type ContextualTelegramServicer interface {
+	SendMessageContext(context.Context, tg.InputPeerClass, string, tg.ReplyMarkupClass, MessageSendContext) (*tg.Message, error)
+	SendMediaContext(context.Context, tg.InputPeerClass, string, string, string, MessageSendContext) (*tg.Message, error)
+}
+
 // InlineAnswerOptions carries Telegram's inline response policy (gallery/private/switch_pm).
 type InlineAnswerOptions struct {
 	Results       []tg.InputBotInlineResultClass
@@ -94,17 +109,20 @@ type MediaInfo struct {
 
 // Message represents a high-level Telegram message.
 type Message struct {
-	ID         int
-	SenderID   int64
-	TopicID    int // Root ID of the forum topic / thread, if sent in a topic
-	Text       string
-	Date       time.Time
-	ReplyToID  int
-	MediaType  string
-	Media      *MediaInfo
-	IsOutgoing bool  // true when the message was sent by the bot owner (userbot)
-	GroupedID  int64 // non-zero when this message belongs to an album (grouped media)
-	Entities   []tg.MessageEntityClass
+	ID               int
+	SenderID         int64
+	TopicID          int // Root ID of the forum topic / thread, if sent in a topic
+	Text             string
+	Date             time.Time
+	ReplyToID        int
+	ReplyPeer        PeerRef
+	ReplyIsTopicRoot bool
+	MentionedSelf    bool
+	MediaType        string
+	Media            *MediaInfo
+	IsOutgoing       bool  // true when the message was sent by the bot owner (userbot)
+	GroupedID        int64 // non-zero when this message belongs to an album (grouped media)
+	Entities         []tg.MessageEntityClass
 }
 
 // HasMedia returns true if the message has an attached downloadable media.
@@ -263,6 +281,7 @@ type Context struct {
 	Album          []*Message
 	Chat           *Chat
 	Sender         *User
+	Self           *User
 	Perms          *Permissions
 	Principal      *Principal
 	GroupPrincipal  *GroupActorPrincipal
@@ -342,6 +361,26 @@ func (c *Context) Mentions() []string {
 		return c.Message.Mentions()
 	}
 	return nil
+}
+
+// MentionedSelf reports whether Telegram entity parsing proved that the
+// triggering message explicitly mentioned the Assistant bot.
+func (c *Context) MentionedSelf() bool {
+	return c != nil && c.Message != nil && c.Message.MentionedSelf
+}
+
+// RepliedToSelf resolves the replied message and reports whether its sender is
+// the current Assistant bot. The same linked-peer/topic fences as GetReply are
+// applied before returning a result.
+func (c *Context) RepliedToSelf() (bool, error) {
+	if c == nil || c.Self == nil || c.Self.ID <= 0 {
+		return false, nil
+	}
+	reply, err := c.GetReply()
+	if err != nil || reply == nil {
+		return false, err
+	}
+	return reply.SenderID == c.Self.ID, nil
 }
 
 // URLs returns all URLs present in the triggering message.
@@ -461,12 +500,18 @@ func normalizeReplyMessage(msg *tg.Message) *Message {
 	if msg.ReplyTo != nil {
 		if h, ok := msg.ReplyTo.(*tg.MessageReplyHeader); ok {
 			res.ReplyToID = h.ReplyToMsgID
+			if h.ReplyToPeerID != nil {
+				if ref, err := PeerRefFromPeer(h.ReplyToPeerID, 0); err == nil {
+					res.ReplyPeer = ref
+				}
+			}
 			if h.ForumTopic || h.ReplyToTopID != 0 {
 				if h.ReplyToTopID != 0 {
 					res.TopicID = h.ReplyToTopID
 				} else {
 					res.TopicID = h.ReplyToMsgID
 				}
+				res.ReplyIsTopicRoot = res.ReplyToID != 0 && res.ReplyToID == res.TopicID
 			}
 		}
 	}
@@ -492,6 +537,12 @@ func (c *Context) GetReply() (*Message, error) {
 	}
 
 	replyToID := c.Message.ReplyToID
+	if c.Message.ReplyPeer.ID != 0 {
+		current, err := PeerRefFromInputPeer(c.PeerID)
+		if err != nil || !current.SameIdentity(c.Message.ReplyPeer) {
+			return nil, fmt.Errorf("%w: replied message belongs to another chat", ErrInvalidArgs)
+		}
+	}
 	memo := c.replyMemoState()
 	memo.mu.Lock()
 	defer memo.mu.Unlock()
@@ -511,9 +562,24 @@ func (c *Context) GetReply() (*Message, error) {
 		return nil, fmt.Errorf("failed to fetch reply message: %w", err)
 	}
 
+	reply := normalizeReplyMessage(msg)
+	if reply != nil {
+		commandTopic := c.TopicID()
+		replyTopic := reply.TopicID
+		if commandTopic > 0 && replyTopic == 0 && reply.ID == commandTopic {
+			replyTopic = commandTopic
+			reply.TopicID = commandTopic
+		}
+		if commandTopic != 0 || replyTopic != 0 {
+			if commandTopic == 0 || replyTopic == 0 || commandTopic != replyTopic {
+				return nil, fmt.Errorf("%w: replied message crosses forum topics", ErrInvalidArgs)
+			}
+		}
+	}
+
 	memo.replyToID = replyToID
 	memo.loaded = true
-	memo.message = normalizeReplyMessage(msg)
+	memo.message = reply
 	return memo.message, nil
 }
 
