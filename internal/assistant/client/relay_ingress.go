@@ -234,15 +234,22 @@ func (r *RelayIngress) submitForceSubGuidance(
 		OrderingKey:      fmt.Sprintf("pmrelay:thread:%d", visitorID),
 		ExecutionTimeout: 10 * time.Second,
 		Handler: func(taskCtx context.Context) error {
+			current, currentErr := r.forceSub.Check(taskCtx, visitorID)
+			if current.Allowed {
+				return nil
+			}
+			if !current.JoinRequired && !current.VerificationBlocked {
+				return currentErr
+			}
 			if limiter, ok := r.forceSub.(forceSubGuidanceLimiter); ok &&
-				!limiter.ClaimGuidance(visitorID, decision.Config.Revision) {
+				!limiter.ClaimGuidance(visitorID, current.Config.Revision) {
 				return nil
 			}
 			return r.guidanceTransport.SendForceSubGuidance(
 				taskCtx,
 				visitorID,
-				decision.Config,
-				decision.VerificationBlocked,
+				current.Config,
+				current.VerificationBlocked,
 			)
 		},
 	})
