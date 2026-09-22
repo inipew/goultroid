@@ -143,6 +143,7 @@ func TestP7IInactiveGroupStopsBeforeCacheResolverAndTask(t *testing.T) {
 func TestP7IInterestedGroupUsesOneOrderedTaskAndResolvesInsideTask(t *testing.T) {
 	rules := &p7iRuleIngressStub{interested: true}
 	resolver := &groupServiceResolverStub{resolved: &tg.InputPeerChat{ChatID: 77}}
+	classifier := &p7iChatClassifierStub{}
 	tasksClient := &p7iTaskClient{run: false}
 	cacheCalls := 0
 
@@ -262,11 +263,12 @@ func TestP7IActiveUnknownSupergroupDefersClassificationUntilTask(t *testing.T) {
 		Message: "active rule text",
 	}
 	p7iDispatchMessage(t, UpdateHandlerDeps{
-		Logger:     zap.NewNop(),
-		GroupRules: rules,
-		Resolver:   resolver,
-		Tasks:      tasksClient,
-		SelfID:     func() int64 { return 999 },
+		Logger:         zap.NewNop(),
+		GroupRules:     rules,
+		GroupRuleChats: classifier,
+		Resolver:       resolver,
+		Tasks:          tasksClient,
+		SelfID:         func() int64 { return 999 },
 		CacheEntities: func(tg.Entities) {
 			cacheCalls++
 		},
@@ -356,5 +358,45 @@ func TestP7IKnownBroadcastStillFailsClosedBeforeInterest(t *testing.T) {
 		tasksClient.calls != 0 || rules.handleCalls != 0 {
 		t.Fatalf("known broadcast entered rule plane interested=%d resolver=%d tasks=%d handle=%d",
 			rules.interestedCalls, resolver.calls, tasksClient.calls, rules.handleCalls)
+	}
+}
+
+
+func TestP7IGlobalPrivilegedSenderStopsBeforeInterestCacheAndTask(t *testing.T) {
+	rules := &p7iRuleIngressStub{interested: true}
+	resolver := &groupServiceResolverStub{resolved: &tg.InputPeerChat{ChatID: 77}}
+	tasksClient := &p7iTaskClient{run: true}
+	cacheCalls := 0
+	privilegedCalls := 0
+
+	p7iDispatchMessage(t, UpdateHandlerDeps{
+		Logger:     zap.NewNop(),
+		GroupRules: rules,
+		GlobalPrivileged: func(userID int64) bool {
+			privilegedCalls++
+			return userID == 42
+		},
+		Resolver: resolver,
+		Tasks:    tasksClient,
+		CacheEntities: func(tg.Entities) {
+			cacheCalls++
+		},
+	}, &tg.Message{
+		ID:      108,
+		PeerID:  &tg.PeerChat{ChatID: 77},
+		FromID:  &tg.PeerUser{UserID: 42},
+		Message: "owner or sudo ordinary text",
+	}, nil, nil)
+
+	if privilegedCalls != 1 {
+		t.Fatalf("privileged checks=%d, want 1", privilegedCalls)
+	}
+	if rules.interestedCalls != 0 || rules.handleCalls != 0 {
+		t.Fatalf("privileged sender touched rule interest/handle=%d/%d, want 0/0",
+			rules.interestedCalls, rules.handleCalls)
+	}
+	if cacheCalls != 0 || resolver.calls != 0 || tasksClient.calls != 0 {
+		t.Fatalf("privileged cold bypass cache=%d resolver=%d tasks=%d, want 0/0/0",
+			cacheCalls, resolver.calls, tasksClient.calls)
 	}
 }
