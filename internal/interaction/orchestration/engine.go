@@ -45,6 +45,7 @@ type CallbackRequest struct {
 // revalidated feature invocation.
 type PreparedCallback interface {
 	Scope() tasks.ScopeIdentity
+	Resources() []tasks.ResourceRequirement
 	Dispatch(context.Context) error
 }
 
@@ -59,6 +60,13 @@ func (p *preparedCallback) Scope() tasks.ScopeIdentity {
 		return tasks.ScopeIdentity{}
 	}
 	return p.action.Scope()
+}
+
+func (p *preparedCallback) Resources() []tasks.ResourceRequirement {
+	if p == nil || p.action == nil {
+		return nil
+	}
+	return p.action.Resources()
 }
 
 func (p *preparedCallback) Dispatch(ctx context.Context) error {
@@ -153,6 +161,29 @@ func (e *Engine) RegisterAction(scope tasks.ScopeIdentity, featureID, actionID s
 			return ErrNoCallback
 		}
 		return handler(newContext(ctx, e, action.Session, invocation.target, invocation.queryID))
+	})
+}
+
+// RegisterPreparedAction lets a typed a2 action resolve a dynamic downstream
+// execution owner/resources before TaskEngine admission while keeping callback
+// identity/session ownership on the declaring feature.
+func (e *Engine) RegisterPreparedAction(
+	scope tasks.ScopeIdentity,
+	featureID, actionID string,
+	preparer interaction.ActionPreparer,
+	handler Handler,
+) (*interaction.HandlerRegistration, error) {
+	if e == nil || preparer == nil || handler == nil {
+		return nil, interaction.ErrHandlerUnavailable
+	}
+	return e.actions.RegisterPrepared(scope, featureID, actionID, preparer, func(ctx context.Context, action interaction.Action) error {
+		invocation, ok := callbackInvocationFromContext(ctx)
+		if !ok {
+			return ErrNoCallback
+		}
+		actionCtx := newContext(ctx, e, action.Session, invocation.target, invocation.queryID)
+		actionCtx.preparation = action.Preparation
+		return handler(actionCtx)
 	})
 }
 
