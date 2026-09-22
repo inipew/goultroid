@@ -271,3 +271,11 @@ P6-C does not implement:
 
 Durable visitor block/ban policy and the canonical owner command control plane
 were added later by P6-E. The remaining items stay outside P6-C.
+
+
+## Later audience integration
+
+P6-F later expands the generic `assistant_audience_members` registry beyond
+relay finalization to successful `/start`, inline, and deep-link entry points.
+The relay path still records `AudienceSourceRelay` only after durable delivery
+commit; P6-F does not weaken that finalization invariant.
