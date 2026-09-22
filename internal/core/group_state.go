@@ -80,6 +80,11 @@ type GroupStateStore interface {
 	Count(context.Context) (int, error)
 }
 
+type GroupStateNamespaceReader interface {
+	ListNamespace(context.Context, string, int) ([]GroupStateRecord, error)
+}
+
+
 // AttachGroupStateStore wires the composition-owned persistence service without
 // exposing it as a public Context field to feature handlers.
 func AttachGroupStateStore(c *Context, store GroupStateStore) {
