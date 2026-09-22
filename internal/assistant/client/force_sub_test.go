@@ -336,3 +336,65 @@ func TestForceSubGuidanceCooldownIsBoundedAndRevisionAware(t *testing.T) {
 		t.Fatal("config revision did not invalidate guidance cooldown")
 	}
 }
+
+
+func TestForceSubGateVerificationCapacityUsesConfiguredFailureMode(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		mode        pmrelay.ForceSubFailureMode
+		wantAllowed bool
+		wantBlocked bool
+		wantErr     bool
+	}{
+		{name: "closed", mode: pmrelay.ForceSubFailClosed, wantBlocked: true, wantErr: true},
+		{name: "open", mode: pmrelay.ForceSubFailOpen, wantAllowed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := &forceSubPolicyStub{config: enabledForceSubConfig(2, tc.mode)}
+			api := &forceSubAPIStub{member: map[int64]bool{42: true}}
+			gate := newTelegramForceSubGate(policy, api, forceSubResolver(42), zap.NewNop())
+			gate.verificationSlots = make(chan struct{}, 1)
+			gate.verificationSlots <- struct{}{}
+
+			decision, err := gate.Check(context.Background(), 42)
+			if decision.Allowed != tc.wantAllowed ||
+				decision.VerificationBlocked != tc.wantBlocked ||
+				(err != nil) != tc.wantErr {
+				t.Fatalf("saturated verification decision=%+v err=%v", decision, err)
+			}
+			if tc.wantErr && !errors.Is(err, pmrelay.ErrForceSubVerify) {
+				t.Fatalf("saturated fail-closed error=%v, want %v", err, pmrelay.ErrForceSubVerify)
+			}
+			if _, participantCalls := api.calls(); participantCalls != 0 {
+				t.Fatalf("saturated verifier issued participant RPCs=%d, want 0", participantCalls)
+			}
+		})
+	}
+}
+
+func TestForceSubGuidanceDueDoesNotMutateCooldown(t *testing.T) {
+	policy := &forceSubPolicyStub{config: enabledForceSubConfig(2, pmrelay.ForceSubFailClosed)}
+	gate := newTelegramForceSubGate(
+		policy,
+		&forceSubAPIStub{member: map[int64]bool{}},
+		forceSubResolver(42),
+		zap.NewNop(),
+	)
+	base := time.Now().UTC()
+	now := base
+	gate.now = func() time.Time { return now }
+
+	if !gate.GuidanceDue(42, 2) || !gate.GuidanceDue(42, 2) {
+		t.Fatal("GuidanceDue mutated cooldown before execution claim")
+	}
+	if !gate.ClaimGuidance(42, 2) {
+		t.Fatal("first ClaimGuidance rejected")
+	}
+	if gate.GuidanceDue(42, 2) {
+		t.Fatal("guidance remained due inside cooldown")
+	}
+	now = base.Add(forceSubGuidanceCooldown + time.Second)
+	if !gate.GuidanceDue(42, 2) {
+		t.Fatal("guidance did not become due after cooldown")
+	}
+}
