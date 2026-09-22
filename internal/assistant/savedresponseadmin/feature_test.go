@@ -9,6 +9,7 @@ import (
 	assistantinteraction "github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/feature"
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 	"github.com/inipew/goultroid/internal/interaction/orchestration"
@@ -324,5 +325,23 @@ func TestA2ControlSurfaceRejectsWrongActor(t *testing.T) {
 	})
 	if !errors.Is(err, rootinteraction.ErrBindingMismatch) {
 		t.Fatalf("wrong actor error=%v, want %v", err, rootinteraction.ErrBindingMismatch)
+	}
+}
+
+
+func TestAdminCommandPolicyIsAssistantOwnerPrivateOnly(t *testing.T) {
+	admin := New(nil)
+	commands := admin.Commands()
+	if len(commands) != 1 {
+		t.Fatalf("commands=%d, want 1", len(commands))
+	}
+	cmd := commands[0]
+	if cmd.Name != CommandID ||
+		cmd.Permission != core.PermissionOwner ||
+		cmd.Invocation.Assistant != core.InvocationSelfOnly ||
+		!cmd.PrivateOnly ||
+		!cmd.Surfaces.Supports(execution.SourceAssistant) ||
+		cmd.Surfaces.Supports(execution.SourceUserbot) {
+		t.Fatalf("unexpected admin command policy: %+v", cmd)
 	}
 }
