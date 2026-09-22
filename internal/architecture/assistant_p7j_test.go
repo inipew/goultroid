@@ -15,6 +15,13 @@ func TestP7JGroupContextAndTopicFencesRemainCanonical(t *testing.T) {
 			"replied message belongs to another chat",
 			"replied message crosses forum topics",
 			"func (c *Context) RepliedToSelf()",
+			"func (c *Context) AddressedToSelf()",
+		},
+		filepath.Join(root, "internal", "core", "context_messages.go"): {
+			"telegram transport cannot preserve forum topic",
+		},
+		filepath.Join(root, "internal", "core", "context_media.go"): {
+			"telegram transport cannot preserve forum topic",
 		},
 		filepath.Join(root, "internal", "core", "group_context.go"): {
 			"func GroupOrderingKey(chatID int64, topicID int) string",
@@ -30,6 +37,10 @@ func TestP7JGroupContextAndTopicFencesRemainCanonical(t *testing.T) {
 			"orderingKey = core.GroupOrderingKey(coreCtx.Chat.ID, coreCtx.TopicID())",
 			"Media:            messageContext.Media",
 			"MentionedSelf:    messageContext.MentionedSelf",
+			"saved response transport cannot preserve forum topic",
+		},
+		filepath.Join(root, "internal", "assistant", "command", "servicer.go"): {
+			"assistant interaction cannot preserve forum topic",
 		},
 		filepath.Join(root, "internal", "assistant", "interaction", "message.go"): {
 			"reply.TopMsgID = send.TopicID",
