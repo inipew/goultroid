@@ -78,6 +78,7 @@ type AssistantClient struct {
 	inlineEngine          *inlineService.Engine
 	deepLinks             *assistantdeeplink.Router
 	pmRelay               pmrelay.Ingress
+	audience              pmrelay.AudienceRegistry
 	deepLinkSeq           atomic.Uint64
 	rpcExecutor           assistentrpc.Executor
 	featureCatalog        feature.Catalog
@@ -190,6 +191,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	pluginScopeResolver := c.pluginScopeResolver
 	taskClient := c.tasks
 	pmRelay := c.pmRelay
+	audience := c.audience
 	c.mu.RUnlock()
 	var ingress *interactionIngress
 	if featureCatalog != nil && interactionSessions != nil && actionDispatcher != nil {
@@ -233,6 +235,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 		InlineEngine: c.inlineEngine, InlineService: inlineQueryService, Tasks: taskClient,
 		PluginScopeResolver: pluginScopeResolver, InteractionIngress: ingress,
 		RelayIngress: NewRelayIngress(pmRelay, taskClient, newTelegramRelayVisitorTransport(c.resolver, c.interaction)),
+		AudienceRegistry: audience,
 	}
 	RegisterUpdateHandlers(&dispatcher, deps)
 
@@ -440,6 +443,11 @@ func (c *AssistantClient) SetDeepLinkRouter(router *assistantdeeplink.Router) {
 func (c *AssistantClient) SetRelayIngress(relay pmrelay.Ingress) {
 	c.mu.Lock()
 	c.pmRelay = relay
+	c.mu.Unlock()
+}
+func (c *AssistantClient) SetAudienceRegistry(registry pmrelay.AudienceRegistry) {
+	c.mu.Lock()
+	c.audience = registry
 	c.mu.Unlock()
 }
 func (c *AssistantClient) SetSettingsService(svc *settings.Service) {
