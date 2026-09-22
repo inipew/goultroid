@@ -399,6 +399,8 @@ func TestP7FMigration001UpgradeToValueBound(t *testing.T) {
 	for _, trigger := range []string{
 		"trg_assistant_group_state_value_insert",
 		"trg_assistant_group_state_value_update",
+		"trg_assistant_group_state_coordinate_insert",
+		"trg_assistant_group_state_coordinate_update",
 	} {
 		var count int
 		if err := db.QueryRowContext(ctx, `
@@ -419,5 +421,63 @@ func TestP7FMigration001UpgradeToValueBound(t *testing.T) {
 	`, 99, "manager", "upgrade", make([]byte, core.MaxGroupStateValueBytes+1), 7, time.Now().UTC())
 	if err == nil {
 		t.Fatal("post-upgrade database accepted oversized value")
+	}
+}
+
+
+func TestSQLiteSchemaRejectsNonCanonicalCoordinateBypass(t *testing.T) {
+	_, db := newTestStore(t, Limits{MaxEntries: 8, CleanupBatch: 2})
+	now := time.Now().UTC()
+
+	for _, coordinate := range []struct {
+		namespace string
+		key       string
+	}{
+		{namespace: "Manager", key: "mode"},
+		{namespace: "manager ", key: "mode"},
+		{namespace: "manager", key: "bad key"},
+		{namespace: "månager", key: "mode"},
+	} {
+		_, err := db.ExecContext(context.Background(), `
+			INSERT INTO assistant_group_state (
+				chat_id, namespace, key, value, revision, updated_by, updated_at
+			) VALUES (?, ?, ?, ?, 1, ?, ?)
+		`, 1, coordinate.namespace, coordinate.key, []byte("x"), 7, now)
+		if err == nil {
+			t.Fatalf("raw SQL accepted non-canonical coordinate namespace=%q key=%q",
+				coordinate.namespace, coordinate.key)
+		}
+	}
+
+	var count int
+	if err := db.QueryRowContext(context.Background(), `
+		SELECT COUNT(*) FROM assistant_group_state
+	`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("non-canonical raw rows persisted count=%d", count)
+	}
+}
+
+func TestNormalizeGroupStateKeyRejectsDisplayStrings(t *testing.T) {
+	for _, key := range []core.GroupStateKey{
+		{ChatID: 1, Namespace: "manager state", Key: "mode"},
+		{ChatID: 1, Namespace: "manager", Key: "møde"},
+		{ChatID: 0, Namespace: "manager", Key: "mode"},
+	} {
+		if _, err := core.NormalizeGroupStateKey(key); err == nil {
+			t.Fatalf("NormalizeGroupStateKey(%+v) unexpectedly succeeded", key)
+		}
+	}
+
+	got, err := core.NormalizeGroupStateKey(core.GroupStateKey{
+		ChatID: 1, Namespace: " Manager ", Key: "MODE/V1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Namespace != "manager" || got.Key != "mode/v1" {
+		t.Fatalf("normalized key=%+v", got)
 	}
 }
