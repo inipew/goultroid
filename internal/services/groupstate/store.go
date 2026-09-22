@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
@@ -54,9 +55,10 @@ func (l Limits) normalize() (Limits, error) {
 // SQLiteStore is a bounded durable implementation of core.GroupStateStore.
 // It owns no goroutine/cache/ticker; cleanup is occurrence-driven and bounded.
 type SQLiteStore struct {
-	db     *database.DB
-	limits Limits
-	now    func() time.Time
+	db       *database.DB
+	limits   Limits
+	now      func() time.Time
+	createMu sync.Mutex
 }
 
 var _ core.GroupStateStore = (*SQLiteStore)(nil)
@@ -252,6 +254,11 @@ func (s *SQLiteStore) CompareAndSwap(ctx context.Context, req core.GroupStateCAS
 		return core.GroupStateRecord{}, err
 	}
 
+	if req.ExpectedRevision == 0 {
+		s.createMu.Lock()
+		defer s.createMu.Unlock()
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return core.GroupStateRecord{}, fmt.Errorf("begin group state CAS: %w", err)
@@ -292,12 +299,21 @@ func (s *SQLiteStore) CompareAndSwap(ctx context.Context, req core.GroupStateCAS
 			}
 		}
 
-		if _, err := tx.ExecContext(ctx, `
+		result, err := tx.ExecContext(ctx, `
 			INSERT INTO assistant_group_state (
 				chat_id, namespace, key, value, revision, updated_by, updated_at, expires_at
 			) VALUES (?, ?, ?, ?, 1, ?, ?, ?)
-		`, req.ChatID, req.Namespace, req.Key, req.Value, req.UpdatedBy, req.UpdatedAt, req.ExpiresAt); err != nil {
+			ON CONFLICT(chat_id, namespace, key) DO NOTHING
+		`, req.ChatID, req.Namespace, req.Key, req.Value, req.UpdatedBy, req.UpdatedAt, req.ExpiresAt)
+		if err != nil {
 			return core.GroupStateRecord{}, fmt.Errorf("insert group state: %w", err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return core.GroupStateRecord{}, fmt.Errorf("read group state create result: %w", err)
+		}
+		if affected != 1 {
+			return core.GroupStateRecord{}, ErrStateConflict
 		}
 	} else {
 		result, err := tx.ExecContext(ctx, `
