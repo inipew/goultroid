@@ -10,8 +10,10 @@ import (
 type MigrationProvider struct{}
 
 type migration001 struct{}
+type migration002 struct{}
 
 var _ database.SchemaInvariantMigration = migration001{}
+var _ database.SchemaInvariantMigration = migration002{}
 
 var schemaStatements = []string{
 	`CREATE TABLE IF NOT EXISTS pm_relay_mappings (
@@ -63,7 +65,7 @@ var schemaStatements = []string{
 }
 
 func (MigrationProvider) Migrations() []database.Migration {
-	return []database.Migration{migration001{}}
+	return []database.Migration{migration001{}, migration002{}}
 }
 
 func (migration001) ID() string { return "pmrelay.001" }
@@ -121,6 +123,60 @@ func (migration001) VerifySchema(ctx context.Context, tx database.SQLExecutor) e
 		}
 		if count != 1 {
 			return fmt.Errorf("required index %s does not exist", index)
+		}
+	}
+	return nil
+}
+
+
+var visitorBlockSchemaStatements = []string{
+	`CREATE TABLE IF NOT EXISTS pm_relay_visitor_blocks (
+		visitor_user_id INTEGER PRIMARY KEY CHECK (visitor_user_id > 0),
+		blocked_at DATETIME NOT NULL,
+		reason TEXT NOT NULL DEFAULT ''
+	);`,
+	`CREATE INDEX IF NOT EXISTS idx_pm_relay_visitor_blocks_blocked_at
+		ON pm_relay_visitor_blocks(blocked_at, visitor_user_id);`,
+}
+
+func (migration002) ID() string { return "pmrelay.002" }
+
+func (migration002) Description() string {
+	return "Durable Assistant PM relay visitor block policy"
+}
+
+func (migration002) Checksum() string {
+	return "7a2e5961397d4c286dcb66bfb2335b385525919567644340bb3043a1fcebfbd0"
+}
+
+func (migration002) LegacyVersions() []int { return nil }
+
+func (migration002) Up(ctx context.Context, tx database.SQLExecutor) error {
+	for _, statement := range visitorBlockSchemaStatements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (migration002) VerifySchema(ctx context.Context, tx database.SQLExecutor) error {
+	for _, item := range []struct {
+		kind string
+		name string
+	}{
+		{kind: "table", name: "pm_relay_visitor_blocks"},
+		{kind: "index", name: "idx_pm_relay_visitor_blocks_blocked_at"},
+	} {
+		var count int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT count(*) FROM sqlite_master
+			WHERE type = ? AND name = ?
+		`, item.kind, item.name).Scan(&count); err != nil {
+			return err
+		}
+		if count != 1 {
+			return fmt.Errorf("required %s %s does not exist", item.kind, item.name)
 		}
 	}
 	return nil
