@@ -55,12 +55,16 @@ type Router struct {
 	now  func() time.Time
 
 	mu        sync.RWMutex
-	providers map[string]providerEntry
-	next      uint64
+	providers  map[string]providerEntry
+	next       uint64
+	maxRetained int
 }
 
 func NewRouter(repo Repository) *Router {
-	return &Router{repo: repo, now: time.Now, providers: make(map[string]providerEntry)}
+	return &Router{
+		repo: repo, now: time.Now, providers: make(map[string]providerEntry),
+		maxRetained: MaxRetainedTokens,
+	}
 }
 
 func normalizeKind(kind string) string {
@@ -162,7 +166,19 @@ func (r *Router) Issue(ctx context.Context, request IssueRequest) (Token, error)
 		return Token{}, ErrProviderUnavailable
 	}
 	now := r.now().UTC()
-	_, _ = r.repo.PruneExpired(ctx, now, pruneBatch)
+	if _, err := r.repo.PruneExpired(ctx, now, pruneBatch); err != nil {
+		return Token{}, err
+	}
+	retained, err := r.repo.CountRetained(ctx)
+	if err != nil {
+		return Token{}, err
+	}
+	if r.maxRetained <= 0 {
+		r.maxRetained = MaxRetainedTokens
+	}
+	if retained >= r.maxRetained {
+		return Token{}, ErrCapacity
+	}
 	for attempt := 0; attempt < 4; attempt++ {
 		id, err := newTokenID()
 		if err != nil {
@@ -216,6 +232,12 @@ func (r *Router) Prepare(ctx context.Context, rawToken string, actorID int64) (P
 	if err != nil {
 		return Prepared{}, err
 	}
+	r.mu.RLock()
+	current, currentOK := r.providers[record.Kind]
+	r.mu.RUnlock()
+	if !currentOK || current.token != entry.token {
+		return Prepared{}, ErrProviderStale
+	}
 	if target.Scope.IsZero() {
 		return Prepared{}, ErrProviderUnavailable
 	}
@@ -226,6 +248,14 @@ func (r *Router) Prepare(ctx context.Context, rawToken string, actorID int64) (P
 
 func (r *Router) ExecutePrepared(ctx context.Context, prepared Prepared, delivery Delivery) error {
 	if r == nil || r.repo == nil || prepared.provider == nil || prepared.record.ID == "" {
+		return ErrProviderUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 		return ErrProviderUnavailable
 	}
 	r.mu.RLock()
