@@ -3,6 +3,8 @@ package moderation
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,15 +15,21 @@ import (
 
 type recordingModService struct {
 	core.MockTelegramServicer
-	muted   bool
-	kicked  bool
-	banned  bool
-	muteErr error
+	mu        sync.Mutex
+	muted     bool
+	kicked    bool
+	banned    bool
+	muteCalls int
+	muteErr   error
 }
 
 func (r *recordingModService) MuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, untilDate int) error {
+	r.mu.Lock()
 	r.muted = true
-	return r.muteErr
+	r.muteCalls++
+	err := r.muteErr
+	r.mu.Unlock()
+	return err
 }
 
 func (r *recordingModService) KickUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
@@ -219,5 +227,102 @@ func TestP7IFailedThresholdRetryDoesNotGrowWarnings(t *testing.T) {
 	}
 	if count != 3 {
 		t.Fatalf("failed enforcement warning count=%d, want bounded threshold 3", count)
+	}
+}
+
+
+func TestP7IWarningBoundsRejectBeforePersistence(t *testing.T) {
+	repo := &memoryWarningRepository{}
+	service := NewService(repo, &recordingModService{}, zap.NewNop())
+	peer := &tg.InputPeerChat{ChatID: 100}
+	user := &tg.InputPeerUser{UserID: 200}
+
+	_, err := service.Warn(
+		context.Background(),
+		peer,
+		user,
+		100,
+		200,
+		strings.Repeat("x", MaxWarningReasonBytes+1),
+		999,
+		DefaultWarnThreshold,
+		ActionMute,
+	)
+	if !errors.Is(err, core.ErrInvalidArgs) {
+		t.Fatalf("oversized reason error=%v, want ErrInvalidArgs", err)
+	}
+	if len(repo.records) != 0 {
+		t.Fatalf("oversized reason persisted %d rows", len(repo.records))
+	}
+
+	_, err = service.Warn(
+		context.Background(),
+		peer,
+		user,
+		100,
+		200,
+		"bounded",
+		999,
+		MaxWarningThreshold+1,
+		ActionMute,
+	)
+	if !errors.Is(err, core.ErrResourceLimit) {
+		t.Fatalf("oversized threshold error=%v, want ErrResourceLimit", err)
+	}
+	if len(repo.records) != 0 {
+		t.Fatalf("oversized threshold persisted %d rows", len(repo.records))
+	}
+}
+
+func TestP7IConcurrentSameTargetWarnHasSingleThresholdEnforcement(t *testing.T) {
+	repo := &memoryWarningRepository{}
+	transport := &recordingModService{}
+	service := NewService(repo, transport, zap.NewNop())
+	peer := &tg.InputPeerChat{ChatID: 100}
+	user := &tg.InputPeerUser{UserID: 200}
+
+	start := make(chan struct{})
+	errs := make(chan error, DefaultWarnThreshold)
+	var wg sync.WaitGroup
+	for i := 0; i < DefaultWarnThreshold; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := service.Warn(
+				context.Background(),
+				peer,
+				user,
+				100,
+				200,
+				"concurrent",
+				999,
+				DefaultWarnThreshold,
+				ActionMute,
+			)
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent warn returned error: %v", err)
+		}
+	}
+	transport.mu.Lock()
+	muteCalls := transport.muteCalls
+	transport.mu.Unlock()
+	if muteCalls != 1 {
+		t.Fatalf("threshold enforcement calls=%d, want 1", muteCalls)
+	}
+	count, err := service.GetWarningCount(context.Background(), 100, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("warnings after successful threshold enforcement=%d, want 0", count)
 	}
 }
