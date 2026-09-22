@@ -1,6 +1,13 @@
 package filters
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/services/savedresponse"
+)
 
 func TestP7IFilterRevisionIsChatScopedAndKeepsOtherCacheWarm(t *testing.T) {
 	p := New(nil, nil)
@@ -40,5 +47,39 @@ func TestP7IFilterRevisionIsChatScopedAndKeepsOtherCacheWarm(t *testing.T) {
 	}
 	if got := p.AssistantRuleRevision(20); got != rev20 {
 		t.Fatalf("deactivating chat 10 changed chat 20 revision: got=%d want=%d", got, rev20)
+	}
+}
+
+
+type p7iChurningFilterRepo struct {
+	plugin *Plugin
+}
+
+func (*p7iChurningFilterRepo) SaveFilter(context.Context, int64, string, savedresponse.Response) error {
+	return nil
+}
+func (*p7iChurningFilterRepo) GetFilter(context.Context, int64, string) (*Filter, error) {
+	return nil, nil
+}
+func (r *p7iChurningFilterRepo) ListFilters(_ context.Context, chatID int64) ([]Filter, error) {
+	r.plugin.featureState.SetActive(chatID, true)
+	r.plugin.invalidateChat(chatID, true)
+	return nil, nil
+}
+func (*p7iChurningFilterRepo) DeleteFilter(context.Context, int64, string) error { return nil }
+
+func TestP7IStaleFilterCompileCannotClearActiveInterest(t *testing.T) {
+	repo := &p7iChurningFilterRepo{}
+	p := New(repo, nil)
+	repo.plugin = p
+	p.featureState.ReplaceLoaded([]int64{10})
+	p.invalidateChat(10, true)
+
+	_, err := p.compiledFiltersForChat(context.Background(), 10)
+	if !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("compiledFiltersForChat error=%v, want ErrConflict after repeated generation churn", err)
+	}
+	if !p.MessageHookInterested(10) {
+		t.Fatal("stale filter compilation cleared active chat interest")
 	}
 }
