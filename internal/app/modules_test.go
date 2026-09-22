@@ -206,7 +206,6 @@ func TestBuiltinPersistentMediaReconcileSkipsEphemeralFallbackStorage(t *testing
 	}
 }
 
-
 func TestBuiltinFeatureMigrationsIncludeAssistantGroupState(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(":memory:")
