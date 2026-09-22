@@ -42,6 +42,9 @@ type Command struct {
 	Usage       string
 	Category    string
 	Permission  Permission
+	// AssistantPermission overrides Permission only on the Assistant surface.
+	// Nil preserves the command-wide Permission and is therefore migration-safe.
+	AssistantPermission *Permission
 	// Invocation controls who may initiate the command independently from the
 	// authorization tier above.
 	Invocation InvocationPolicy
@@ -69,4 +72,20 @@ func (c Command) IsAvailableOn(s execution.Source) bool {
 		mask = execution.SurfaceUserbot
 	}
 	return mask.Supports(s)
+}
+
+
+// PermissionRef returns a stable pointer for explicit per-surface permission
+// overrides in static command metadata.
+func PermissionRef(permission Permission) *Permission {
+	value := permission
+	return &value
+}
+
+// EffectivePermission returns the authorization tier for one execution source.
+func (c Command) EffectivePermission(source ExecutionSource) Permission {
+	if source == ExecutionAssistant && c.AssistantPermission != nil {
+		return *c.AssistantPermission
+	}
+	return c.Permission
 }
