@@ -84,6 +84,9 @@ func TestP7FGroupStateSchemaKeepsExplicitChatRevisionAndExpiry(t *testing.T) {
 		"expires_at DATETIME",
 		"PRIMARY KEY (chat_id, namespace, key)",
 		"idx_assistant_group_state_expiry",
+		"trg_assistant_group_state_value_insert",
+		"trg_assistant_group_state_value_update",
+		"length(NEW.value) > 65536",
 	} {
 		if !strings.Contains(source, required) {
 			t.Errorf("P7-F schema missing invariant %q", required)
