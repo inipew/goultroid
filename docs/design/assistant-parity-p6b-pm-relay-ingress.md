@@ -102,7 +102,9 @@ Each prepared relay becomes one TaskEngine `WorkSpec`:
 
 ```text
 Scope:            service:pmrelay / generation 1
-QuotaOwner:       pmrelay:visitor:<visitor-id>
+QuotaOwner:
+  visitor→owner:  pmrelay:visitor:<visitor-id>
+  owner→visitor:  pmrelay:owner-reply:<visitor-id>
 Pool:             interactive
 Class:            interactive
 OrderingKey:      pmrelay:thread:<visitor-id>
@@ -121,8 +123,9 @@ PM Relay idempotency. A failed logical delivery must be retryable immediately;
 P6-A `pm_relay_deliveries` remains the authoritative source-message
 idempotency/claim boundary.
 
-Both visitor-to-owner and owner-to-visitor directions use the same visitor
-ordering key. That preserves conversation order without globally serializing
+Visitor and owner-reply work use separate quota lanes so an inbound flood cannot
+consume the owner's reply admission budget. Both directions still use the same
+visitor ordering key, preserving conversation order without globally serializing
 independent visitors.
 
 A TaskEngine submission failure never calls `RevalidatePrepared`.
@@ -179,8 +182,9 @@ durable visitor-to-owner delivery after `RevalidatePrepared` revalidation.
 Regression tests freeze:
 
 - TaskEngine rejection cannot execute prepared relay work;
-- relay work carries service scope, per-visitor quota, interactive class and
-  per-thread ordering;
+- relay work carries service scope, direction-aware per-thread quota,
+  interactive class and per-thread ordering;
+- visitor flood cannot consume the owner-reply quota lane;
 - both relay directions share the same visitor ordering key;
 - repeated source admission gets a fresh TaskEngine ID while retaining the same
   thread ordering key;
