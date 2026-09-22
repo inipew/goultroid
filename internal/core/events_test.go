@@ -725,6 +725,7 @@ func TestEventBusBuiltinInterestCoverage(t *testing.T) {
 		core.EventTypePMPermit,
 		core.EventTypeSettingChanged,
 		core.EventTypeJobLifecycle,
+		core.EventTypeGroupService,
 	}
 	bus := newStartedEventBus(t)
 	for _, eventType := range eventTypes {
