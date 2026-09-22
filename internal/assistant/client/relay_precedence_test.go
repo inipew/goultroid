@@ -40,6 +40,14 @@ func (i *precedenceTextIngress) tryText(context.Context, string, int64, int64, t
 	return i.handled, i.err
 }
 
+func (i *precedenceTextIngress) tryInline(context.Context, []byte, int64, int64, tg.InputBotInlineMessageIDClass) (bool, error) {
+	return false, nil
+}
+
+func (i *precedenceTextIngress) tryMessage(context.Context, []byte, int64, int64, tg.InputPeerClass, int64, int) (bool, error) {
+	return false, nil
+}
+
 type precedenceRelayIngress struct {
 	ownerCalls     int
 	visitorCalls   int
