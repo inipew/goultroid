@@ -120,7 +120,49 @@ func (s *Service) WarnWithService(
 	threshold int,
 	actionOnThreshold string,
 ) (*WarnResult, error) {
-	return s.warnWithService(ctx, svc, peer, user, chatID, userID, reason, warnedBy, threshold, actionOnThreshold)
+	return s.warnWithServiceGuarded(
+		ctx,
+		svc,
+		peer,
+		user,
+		chatID,
+		userID,
+		reason,
+		warnedBy,
+		threshold,
+		actionOnThreshold,
+		nil,
+	)
+}
+
+// WarnWithServiceGuarded is the Assistant P7-I variant. guard is evaluated
+// under the same-target warning stripe immediately before warning persistence,
+// closing the role-change window between handler preflight and AddWarning.
+func (s *Service) WarnWithServiceGuarded(
+	ctx context.Context,
+	svc core.TelegramServicer,
+	peer tg.InputPeerClass,
+	user tg.InputPeerClass,
+	chatID, userID int64,
+	reason string,
+	warnedBy int64,
+	threshold int,
+	actionOnThreshold string,
+	guard func(context.Context) error,
+) (*WarnResult, error) {
+	return s.warnWithServiceGuarded(
+		ctx,
+		svc,
+		peer,
+		user,
+		chatID,
+		userID,
+		reason,
+		warnedBy,
+		threshold,
+		actionOnThreshold,
+		guard,
+	)
 }
 
 func (s *Service) warnWithService(
@@ -133,6 +175,33 @@ func (s *Service) warnWithService(
 	warnedBy int64,
 	threshold int,
 	actionOnThreshold string,
+) (*WarnResult, error) {
+	return s.warnWithServiceGuarded(
+		ctx,
+		svc,
+		peer,
+		user,
+		chatID,
+		userID,
+		reason,
+		warnedBy,
+		threshold,
+		actionOnThreshold,
+		nil,
+	)
+}
+
+func (s *Service) warnWithServiceGuarded(
+	ctx context.Context,
+	svc core.TelegramServicer,
+	peer tg.InputPeerClass,
+	user tg.InputPeerClass,
+	chatID, userID int64,
+	reason string,
+	warnedBy int64,
+	threshold int,
+	actionOnThreshold string,
+	guard func(context.Context) error,
 ) (*WarnResult, error) {
 	if s.repo == nil {
 		return nil, fmt.Errorf("warning repository is nil")
@@ -163,6 +232,11 @@ func (s *Service) warnWithService(
 		return nil, fmt.Errorf("failed to check warning count: %w", err)
 	}
 	if count < threshold {
+		if guard != nil {
+			if err := guard(ctx); err != nil {
+				return nil, err
+			}
+		}
 		if err := s.repo.AddWarning(ctx, chatID, userID, reason, warnedBy); err != nil {
 			return nil, fmt.Errorf("failed to add warning record: %w", err)
 		}
