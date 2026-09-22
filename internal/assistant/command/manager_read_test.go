@@ -137,13 +137,14 @@ func TestP7DGroupInfoMemberIsDeniedBeforeTaskAndQuery(t *testing.T) {
 	}
 	router.SetCoreRouter(coreRouter)
 
+	fake := &fakeInteraction{}
 	err := router.DispatchMessageContext(
 		context.Background(),
 		42,
 		&tg.InputPeerChannel{ChannelID: 55, AccessHash: 8},
 		"/chatinfo",
 		command.MessageContext{Chat: core.Chat{ID: 55, Type: "supergroup"}, MessageID: 10},
-		&fakeInteraction{},
+		fake,
 	)
 	if err == nil || !strings.Contains(err.Error(), "contextual group authorization denied") {
 		t.Fatalf("member denial error=%v", err)
@@ -151,5 +152,8 @@ func TestP7DGroupInfoMemberIsDeniedBeforeTaskAndQuery(t *testing.T) {
 	if client.submits != 0 || resolver.freshCalls != 0 || query.calls != 0 {
 		t.Fatalf("member denial leaked past preflight submits=%d fresh=%d query=%d",
 			client.submits, resolver.freshCalls, query.calls)
+	}
+	if !strings.Contains(fake.lastSentText, "not authorized") {
+		t.Fatalf("member denial did not receive safe feedback: %q", fake.lastSentText)
 	}
 }
