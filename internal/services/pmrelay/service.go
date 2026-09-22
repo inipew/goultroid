@@ -64,6 +64,17 @@ type VisitorTransport interface {
 	ForwardVisitor(context.Context, VisitorForward) (int, error)
 }
 
+type OwnerSend struct {
+	SourceChatID    int64
+	SourceMessageID int
+	TargetChatID    int64
+	RandomID        int64
+}
+
+type OwnerTransport interface {
+	SendOwnerReply(context.Context, OwnerSend) (int, error)
+}
+
 // Ingress is the narrow Assistant-facing PM relay contract. Prepare methods are
 // read-only. RevalidatePrepared is the post-admission authority and revalidates
 // mutable policy/mapping state before delivery execution.
@@ -75,6 +86,10 @@ type Ingress interface {
 
 type VisitorExecutor interface {
 	ExecuteVisitor(context.Context, PreparedIngress, VisitorTransport) error
+}
+
+type OwnerExecutor interface {
+	ExecuteOwner(context.Context, PreparedIngress, OwnerTransport) error
 }
 
 // Service owns relay admission policy, durable visitor delivery state, and
@@ -435,5 +450,101 @@ func (s *Service) ExecuteVisitor(ctx context.Context, prepared PreparedIngress, 
 	return s.finalizeVisitorDelivery(ctx, prepared, committed, deliveredAt)
 }
 
+// ExecuteOwner owns the durable owner→visitor delivery state machine. The
+// durable mapping captured by PrepareOwnerReply remains the authorization
+// authority and is revalidated again immediately before transport. Message
+// content stays outside the repository; OwnerTransport reloads the source
+// owner message by identity and emits a new bot-authored message.
+func (s *Service) ExecuteOwner(ctx context.Context, prepared PreparedIngress, transport OwnerTransport) error {
+	if transport == nil || s == nil || s.repo == nil {
+		return ErrUnavailable
+	}
+	if prepared.direction != DeliveryOwnerToVisitor {
+		return ErrUnsupportedDelivery
+	}
+	if err := s.RevalidatePrepared(ctx, prepared); err != nil {
+		return err
+	}
+
+	now := s.now().UTC()
+	randomID, err := s.randomID()
+	if err != nil {
+		return err
+	}
+	intent, err := s.ensureDelivery(ctx, DeliveryIntent{
+		DeliveryKey: DeliveryKey{
+			Direction:       DeliveryOwnerToVisitor,
+			SourceChatID:    prepared.sourceChatID,
+			SourceMessageID: prepared.sourceMessageID,
+		},
+		TargetChatID: prepared.targetChatID,
+		RandomID:     randomID,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+		ExpiresAt:    now.Add(DefaultDeliveryRetention),
+	}, now)
+	if err != nil {
+		return err
+	}
+	if intent.Expired(now) {
+		return ErrDeliveryExpired
+	}
+	if intent.Completed() {
+		return nil
+	}
+
+	claimID, err := s.claimID()
+	if err != nil {
+		return err
+	}
+	claimed, err := s.repo.ClaimDelivery(
+		ctx,
+		intent.DeliveryKey,
+		now,
+		claimID,
+		now.Add(DeliveryClaimTTL),
+	)
+	if err != nil {
+		if errors.Is(err, ErrDeliveryCompleted) {
+			return nil
+		}
+		return err
+	}
+
+	if err := s.RevalidatePrepared(ctx, prepared); err != nil {
+		releaseErr := s.repo.ReleaseDelivery(ctx, claimed.DeliveryKey, claimID, s.now().UTC(), err.Error())
+		if releaseErr != nil {
+			return errors.Join(err, releaseErr)
+		}
+		return err
+	}
+
+	targetMessageID, sendErr := transport.SendOwnerReply(ctx, OwnerSend{
+		SourceChatID:    prepared.sourceChatID,
+		SourceMessageID: prepared.sourceMessageID,
+		TargetChatID:    prepared.targetChatID,
+		RandomID:        claimed.RandomID,
+	})
+	if sendErr != nil {
+		releaseErr := s.repo.ReleaseDelivery(ctx, claimed.DeliveryKey, claimID, s.now().UTC(), sendErr.Error())
+		if releaseErr != nil {
+			return errors.Join(sendErr, releaseErr)
+		}
+		return sendErr
+	}
+	if targetMessageID <= 0 {
+		sendErr = ErrDeliveryConflict
+		releaseErr := s.repo.ReleaseDelivery(ctx, claimed.DeliveryKey, claimID, s.now().UTC(), sendErr.Error())
+		if releaseErr != nil {
+			return errors.Join(sendErr, releaseErr)
+		}
+		return sendErr
+	}
+
+	_, err = s.repo.CommitDelivery(ctx, claimed.DeliveryKey, claimID, targetMessageID, s.now().UTC())
+	return err
+}
+
 var _ Ingress = (*Service)(nil)
 var _ VisitorExecutor = (*Service)(nil)
+var _ OwnerExecutor = (*Service)(nil)
