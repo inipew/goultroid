@@ -70,49 +70,20 @@ func (p *PeerFacade) ResolveTargetUser() (tg.InputPeerClass, int64, error) {
 	if c.Resolver == nil {
 		return nil, 0, errors.New("peer resolver is not initialized")
 	}
-	if len(c.Args) > 0 {
-		arg := c.Args[0]
-		if uid, err := strconv.ParseInt(arg, 10, 64); err == nil {
-			if uid <= 0 {
-				return nil, 0, errors.New("invalid user ID: must be positive")
-			}
-			peer, id, err := c.Resolver.ResolveUser(c.Ctx, arg)
-			if err != nil {
-				return nil, 0, fmt.Errorf("cannot resolve user %q: %w", arg, err)
-			}
-			if peer == nil || id == 0 {
-				return nil, 0, fmt.Errorf("cannot resolve user %q: %w", arg, ErrPeerUnresolved)
-			}
-			input, ok := peer.(*tg.InputPeerUser)
-			if !ok || input.AccessHash == 0 {
-				return nil, 0, fmt.Errorf("%w: user %d", ErrAccessHashMissing, id)
-			}
-			return peer, id, nil
-		}
-		if strings.HasPrefix(arg, "@") || (!strings.ContainsAny(arg, " /.:") && len(arg) >= 3) {
-			peer, id, err := c.Resolver.ResolveUser(c.Ctx, arg)
-			if err != nil {
-				return nil, 0, fmt.Errorf("cannot resolve user %q: %w", arg, err)
-			}
-			if peer == nil || id == 0 {
-				return nil, 0, fmt.Errorf("cannot resolve user %q: %w", arg, ErrPeerUnresolved)
-			}
-			input, ok := peer.(*tg.InputPeerUser)
-			if !ok || input.AccessHash == 0 {
-				return nil, 0, fmt.Errorf("%w: user %d", ErrAccessHashMissing, id)
-			}
-			return peer, id, nil
-		}
-	}
 
-	reply, err := c.GetReply()
-	if err == nil && reply != nil && reply.SenderID != 0 {
-		peer, id, resolveErr := c.Resolver.ResolveUser(c.Ctx, strconv.FormatInt(reply.SenderID, 10))
-		if resolveErr != nil {
-			return nil, 0, fmt.Errorf("cannot resolve replied user %d: %w", reply.SenderID, resolveErr)
+	resolve := func(ref string, replied bool) (tg.InputPeerClass, int64, error) {
+		peer, id, err := c.Resolver.ResolveUser(c.Ctx, ref)
+		if err != nil {
+			if replied {
+				return nil, 0, fmt.Errorf("cannot resolve replied user %s: %w", ref, err)
+			}
+			return nil, 0, fmt.Errorf("cannot resolve user %q: %w", ref, err)
 		}
 		if peer == nil || id == 0 {
-			return nil, 0, fmt.Errorf("cannot resolve replied user %d: %w", reply.SenderID, ErrPeerUnresolved)
+			if replied {
+				return nil, 0, fmt.Errorf("cannot resolve replied user %s: %w", ref, ErrPeerUnresolved)
+			}
+			return nil, 0, fmt.Errorf("cannot resolve user %q: %w", ref, ErrPeerUnresolved)
 		}
 		input, ok := peer.(*tg.InputPeerUser)
 		if !ok || input.AccessHash == 0 {
@@ -120,8 +91,41 @@ func (p *PeerFacade) ResolveTargetUser() (tg.InputPeerClass, int64, error) {
 		}
 		return peer, id, nil
 	}
-	if err != nil {
-		return nil, 0, fmt.Errorf("cannot inspect replied message: %w", err)
+
+	// Explicit numeric IDs and @usernames always override reply targeting.
+	if len(c.Args) > 0 {
+		arg := c.Args[0]
+		if uid, err := strconv.ParseInt(arg, 10, 64); err == nil {
+			if uid <= 0 {
+				return nil, 0, errors.New("invalid user ID: must be positive")
+			}
+			return resolve(arg, false)
+		}
+		if strings.HasPrefix(arg, "@") {
+			return resolve(arg, false)
+		}
+	}
+
+	// When a command is a reply, non-target arguments are command payload (for
+	// example /warn <reason>) and the replied sender is authoritative. GetReply
+	// also enforces P7-J linked-chat and forum-topic fences.
+	if c.Message != nil && c.Message.ReplyToID > 0 {
+		reply, err := c.GetReply()
+		if err != nil {
+			return nil, 0, fmt.Errorf("cannot inspect replied message: %w", err)
+		}
+		if reply != nil && reply.SenderID != 0 {
+			ref := strconv.FormatInt(reply.SenderID, 10)
+			return resolve(ref, true)
+		}
+	}
+
+	// Preserve bare-username compatibility when there is no reply context.
+	if len(c.Args) > 0 {
+		arg := c.Args[0]
+		if !strings.ContainsAny(arg, " /.:") && len(arg) >= 3 {
+			return resolve(arg, false)
+		}
 	}
 	return nil, 0, errors.New("please provide a valid user ID, username, or reply to a user's message")
 }

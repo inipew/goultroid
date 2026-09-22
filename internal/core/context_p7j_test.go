@@ -95,3 +95,79 @@ func TestP7JRepliedToSelfUsesCanonicalReplyFence(t *testing.T) {
 		t.Fatalf("RepliedToSelf=%v err=%v", ok, err)
 	}
 }
+
+type p7jTrackingResolver struct {
+	lastUserRef string
+}
+
+func (r *p7jTrackingResolver) Resolve(context.Context, string) (tg.InputPeerClass, error) {
+	return nil, nil
+}
+
+func (r *p7jTrackingResolver) ResolveUser(_ context.Context, ref string) (tg.InputPeerClass, int64, error) {
+	r.lastUserRef = ref
+	var id int64
+	switch ref {
+	case "555":
+		id = 555
+	case "@explicit":
+		id = 777
+	case "payload":
+		id = 888
+	default:
+		id = 999
+	}
+	return &tg.InputPeerUser{UserID: id, AccessHash: id + 1000}, id, nil
+}
+
+func (r *p7jTrackingResolver) ResolveChat(context.Context, string) (tg.InputPeerClass, error) {
+	return nil, nil
+}
+
+func TestP7JResolveTargetReplyPayloadDoesNotBecomeUsername(t *testing.T) {
+	resolver := &p7jTrackingResolver{}
+	svc := &p7jReplyServicer{message: &tg.Message{
+		ID:     800,
+		PeerID: &tg.PeerChat{ChatID: 77},
+		FromID: &tg.PeerUser{UserID: 555},
+	}}
+	ctx := &Context{
+		Ctx:      context.Background(),
+		Svc:      svc,
+		Resolver: resolver,
+		PeerID:   &tg.InputPeerChat{ChatID: 77},
+		Message:  &Message{ID: 900, ReplyToID: 800},
+		Args:     []string{"payload"},
+	}
+	_, id, err := ctx.ResolveTargetUser()
+	if err != nil {
+		t.Fatalf("resolve reply target: %v", err)
+	}
+	if id != 555 || resolver.lastUserRef != "555" {
+		t.Fatalf("resolved id/ref=%d/%q want 555/555", id, resolver.lastUserRef)
+	}
+}
+
+func TestP7JResolveTargetExplicitMentionOverridesReply(t *testing.T) {
+	resolver := &p7jTrackingResolver{}
+	svc := &p7jReplyServicer{message: &tg.Message{
+		ID:     800,
+		PeerID: &tg.PeerChat{ChatID: 77},
+		FromID: &tg.PeerUser{UserID: 555},
+	}}
+	ctx := &Context{
+		Ctx:      context.Background(),
+		Svc:      svc,
+		Resolver: resolver,
+		PeerID:   &tg.InputPeerChat{ChatID: 77},
+		Message:  &Message{ID: 900, ReplyToID: 800},
+		Args:     []string{"@explicit"},
+	}
+	_, id, err := ctx.ResolveTargetUser()
+	if err != nil {
+		t.Fatalf("resolve explicit target: %v", err)
+	}
+	if id != 777 || resolver.lastUserRef != "@explicit" || svc.calls != 0 {
+		t.Fatalf("explicit target id/ref/calls=%d/%q/%d", id, resolver.lastUserRef, svc.calls)
+	}
+}
