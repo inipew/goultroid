@@ -13,13 +13,23 @@ import (
 // manager transport has authoritative actor/bot rights revalidation and managed
 // Telegram RPC wiring. It prevents the embedded mock fallback from reporting a
 // mutation as successful when no Telegram operation occurred.
-var ErrGroupMutationUnavailable = fmt.Errorf("%w: assistant group mutation transport is not configured", core.ErrUnavailable)
+var (
+	ErrGroupMutationUnavailable = fmt.Errorf("%w: assistant group mutation transport is not configured", core.ErrUnavailable)
+	ErrGroupQueryUnavailable    = fmt.Errorf("%w: assistant group query transport is not configured", core.ErrUnavailable)
+)
+
+// GroupQueryReader is the read-only Telegram query boundary exposed to canonical
+// Assistant manager commands. It intentionally contains no mutation methods.
+type GroupQueryReader interface {
+	GetFullChat(context.Context, tg.InputPeerClass) (*tg.MessagesChatFull, error)
+}
 
 // assistantServicerAdapter adapts Assistant MessageInteraction into core.TelegramServicer
 // so plugin command handlers can transparently use ctx.Reply, ctx.EditOrReply, and ctx.ReplyMarkup.
 type assistantServicerAdapter struct {
 	core.MockTelegramServicer
-	inter interaction.MessageInteraction
+	inter      interaction.MessageInteraction
+	groupQuery GroupQueryReader
 }
 
 func (a *assistantServicerAdapter) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
@@ -84,6 +94,13 @@ func (a *assistantServicerAdapter) GetMessage(ctx context.Context, peer tg.Input
 		return a.inter.GetMessage(ctx, interaction.NewMessageTarget(peer, msgID, chatID, 0))
 	}
 	return a.MockTelegramServicer.GetMessage(ctx, peer, msgID)
+}
+
+func (a *assistantServicerAdapter) GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.MessagesChatFull, error) {
+	if a.groupQuery == nil {
+		return nil, ErrGroupQueryUnavailable
+	}
+	return a.groupQuery.GetFullChat(ctx, peer)
 }
 
 func (*assistantServicerAdapter) PinMessage(context.Context, tg.InputPeerClass, int, bool) error {
