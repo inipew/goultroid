@@ -19,8 +19,9 @@ type mockTelegramAPI struct {
 	deleteChanReq *tg.ChannelsDeleteMessagesRequest
 	getMsgsIDs    []tg.InputMessageClass
 	getChanReq    *tg.ChannelsGetMessagesRequest
-	sendMsgReq    *tg.MessagesSendMessageRequest
-	editInlineReq *tg.MessagesEditInlineBotMessageRequest
+	sendMsgReq     *tg.MessagesSendMessageRequest
+	forwardMsgsReq *tg.MessagesForwardMessagesRequest
+	editInlineReq  *tg.MessagesEditInlineBotMessageRequest
 
 	// Injected errors
 	deleteErr     error
@@ -70,6 +71,11 @@ func (m *mockTelegramAPI) ChannelsGetMessages(ctx context.Context, req *tg.Chann
 func (m *mockTelegramAPI) MessagesSendMessage(ctx context.Context, req *tg.MessagesSendMessageRequest) (tg.UpdatesClass, error) {
 	m.sendMsgReq = req
 	return &tg.UpdateShortSentMessage{ID: 100}, nil
+}
+
+func (m *mockTelegramAPI) MessagesForwardMessages(ctx context.Context, req *tg.MessagesForwardMessagesRequest) (tg.UpdatesClass, error) {
+	m.forwardMsgsReq = req
+	return &tg.UpdateShortSentMessage{ID: 101}, nil
 }
 
 func (m *mockTelegramAPI) MessagesEditInlineBotMessage(ctx context.Context, req *tg.MessagesEditInlineBotMessageRequest) (bool, error) {
@@ -261,6 +267,27 @@ func TestParseHTML_SanitizeEntities(t *testing.T) {
 	}
 	if _, ok := ents[0].(*tg.MessageEntityPre); !ok {
 		t.Fatalf("expected MessageEntityPre, got %T", ents[0])
+	}
+}
+
+func TestClientInteraction_ForwardMessageWithRandomID(t *testing.T) {
+	mockAPI := &mockTelegramAPI{}
+	ci := interaction.NewClientInteraction(mockAPI, zap.NewNop())
+	from := &tg.InputPeerUser{UserID: 42, AccessHash: 420}
+	to := &tg.InputPeerUser{UserID: 7, AccessHash: 70}
+
+	msg, err := ci.ForwardMessageWithRandomID(context.Background(), from, to, 11, 999)
+	if err != nil {
+		t.Fatalf("ForwardMessageWithRandomID() error = %v", err)
+	}
+	if msg == nil || msg.ID != 101 {
+		t.Fatalf("forwarded message = %+v", msg)
+	}
+	req := mockAPI.forwardMsgsReq
+	if req == nil || req.FromPeer != from || req.ToPeer != to ||
+		len(req.ID) != 1 || req.ID[0] != 11 ||
+		len(req.RandomID) != 1 || req.RandomID[0] != 999 {
+		t.Fatalf("forward request = %+v", req)
 	}
 }
 
