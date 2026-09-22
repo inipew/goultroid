@@ -7,7 +7,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
