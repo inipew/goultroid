@@ -13,6 +13,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/savedresponse"
 	"github.com/inipew/goultroid/internal/tasks"
@@ -119,16 +120,38 @@ func (p *Plugin) MessageHookRouting() core.MessageHookRouting {
 }
 
 func (p *Plugin) Commands() []core.Command {
+	surfaces := execution.SurfaceUserbot | execution.SurfaceAssistant
+	auth := core.GroupAuthorizationRequirement{Level: core.GroupAuthorizationAdministrator}
 	return []core.Command{
 		{
 			Name: "filter", Description: "Save a rich automated keyword filter in this chat",
-			Usage:    ".filter <keyword> <reply text> or reply to text/media with .filter <keyword>",
-			Category: "Filters", Permission: core.PermissionSudo, GroupOnly: true,
+			Usage: ".filter <keyword> <reply text> or reply to text/media with .filter <keyword>",
+			Category: "Filters", Permission: core.PermissionSudo,
+			AssistantPermission: core.PermissionRef(core.PermissionEveryone),
+			GroupAuthorization: auth, GroupOnly: true, Surfaces: surfaces,
 			Handler: p.handleFilter,
 		},
-		{Name: "stop", Description: "Stop and delete a chat filter", Usage: ".stop <keyword>", Category: "Filters", Permission: core.PermissionSudo, GroupOnly: true, Handler: p.handleStop},
-		{Name: "filters", Description: "List all active filters in this chat", Category: "Filters", Permission: core.PermissionSudo, GroupOnly: true, Handler: p.handleList},
-		{Name: "filterinfo", Description: "Show filter response/media details", Usage: ".filterinfo <keyword>", Category: "Filters", Permission: core.PermissionSudo, GroupOnly: true, Handler: p.handleInfo},
+		{
+			Name: "stop", Description: "Stop and delete a chat filter",
+			Usage: ".stop <keyword>", Category: "Filters", Permission: core.PermissionSudo,
+			AssistantPermission: core.PermissionRef(core.PermissionEveryone),
+			GroupAuthorization: auth, GroupOnly: true, Surfaces: surfaces,
+			Handler: p.handleStop,
+		},
+		{
+			Name: "filters", Description: "List all active filters in this chat",
+			Category: "Filters", Permission: core.PermissionSudo,
+			AssistantPermission: core.PermissionRef(core.PermissionEveryone),
+			GroupAuthorization: auth, GroupOnly: true, Surfaces: surfaces,
+			Handler: p.handleList,
+		},
+		{
+			Name: "filterinfo", Description: "Show filter response/media details",
+			Usage: ".filterinfo <keyword>", Category: "Filters", Permission: core.PermissionSudo,
+			AssistantPermission: core.PermissionRef(core.PermissionEveryone),
+			GroupAuthorization: auth, GroupOnly: true, Surfaces: surfaces,
+			Handler: p.handleInfo,
+		},
 	}
 }
 
@@ -472,19 +495,19 @@ func (p *Plugin) invalidateChat(chatID int64) {
 	p.cacheMu.Unlock()
 }
 
-func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEnvelope) error {
-	if message == nil || message.IsCommand || message.Text == "" || message.Outgoing {
-		return nil
+func (p *Plugin) AssistantRuleInterested(chatID int64) bool {
+	return p.MessageHookInterested(chatID)
+}
+
+func (p *Plugin) matchAssistantRule(
+	ctx context.Context,
+	message *core.MessageEnvelope,
+) (*compiledFilter, bool, error) {
+	if message == nil || message.IsCommand || message.Text == "" || message.Outgoing || message.Sender.IsBot {
+		return nil, false, nil
 	}
-	if decision := core.GetMessageDecision(ctx); decision != nil && (decision.IsSuppressedFilters() || decision.IsSuppressedAutomation()) {
-		return nil
-	}
-	if message.Sender.IsBot || p.svcFunc == nil || p.db == nil || p.responses == nil {
-		return nil
-	}
-	svc := p.svcFunc()
-	if svc == nil || message.ChatID == 0 {
-		return nil
+	if p.db == nil || p.responses == nil || message.ChatID == 0 {
+		return nil, false, nil
 	}
 
 	filterSet, ok := p.getCachedFilters(message.ChatID)
@@ -492,39 +515,88 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 		rawFilters, err := p.db.ListFilters(ctx, message.ChatID)
 		if err != nil {
 			p.featureState.MarkUnknown(message.ChatID)
-			return nil
+			return nil, false, nil
 		}
 		p.featureState.SetActive(message.ChatID, len(rawFilters) > 0)
 		filterSet = compileFilterSet(rawFilters)
 		p.cacheFilters(message.ChatID, filterSet)
 	}
 	if filterSet == nil || len(filterSet.filters) == 0 {
-		return nil
+		return nil, false, nil
 	}
 
 	matchIndex := filterSet.matcher.firstMatch(message.Text)
 	if matchIndex < 0 {
-		return nil
+		return nil, false, nil
 	}
-	f := filterSet.filters[matchIndex]
+	f := &filterSet.filters[matchIndex]
 	cooldownKey := fmt.Sprintf("%d:%s", message.ChatID, f.keyword)
 	if p.cooldownActive(cooldownKey) {
+		return nil, false, nil
+	}
+	if f.templateErr != nil {
+		return nil, false, fmt.Errorf("filters: compile saved response for %q: %w", f.keyword, f.templateErr)
+	}
+	return f, true, nil
+}
+
+func (p *Plugin) MatchAssistantRule(ctx context.Context, message *core.MessageEnvelope) (bool, error) {
+	_, matched, err := p.matchAssistantRule(ctx, message)
+	return matched, err
+}
+
+func (p *Plugin) ApplyAssistantRule(
+	ctx context.Context,
+	svc core.TelegramServicer,
+	message *core.MessageEnvelope,
+) (bool, error) {
+	f, matched, err := p.matchAssistantRule(ctx, message)
+	if err != nil || !matched {
+		return false, err
+	}
+	if svc == nil {
+		return false, fmt.Errorf("%w: filter Assistant transport unavailable", core.ErrUnavailable)
+	}
+	peer, err := message.Peer.InputPeer()
+	if err != nil {
+		return false, fmt.Errorf("filters: cannot resolve chat peer %d for reply: %w", message.ChatID, err)
+	}
+	vars := savedresponse.VarsFromEnvelope(message, time.Now())
+	response := f.response.Clone()
+	if err := p.deliverResponse(ctx, svc, peer, response, f.template, vars); err != nil {
+		return false, fmt.Errorf("filters: deliver Assistant response for %q: %w", f.keyword, err)
+	}
+	p.markCooldown(fmt.Sprintf("%d:%s", message.ChatID, f.keyword))
+	return true, nil
+}
+
+func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEnvelope) error {
+	if decision := core.GetMessageDecision(ctx); decision != nil &&
+		(decision.IsSuppressedFilters() || decision.IsSuppressedAutomation()) {
+		return nil
+	}
+	if p.svcFunc == nil {
+		return nil
+	}
+	svc := p.svcFunc()
+	if svc == nil {
 		return nil
 	}
 
+	f, matched, err := p.matchAssistantRule(ctx, message)
+	if err != nil || !matched {
+		return err
+	}
 	peer, err := message.Peer.InputPeer()
 	if err != nil {
 		return fmt.Errorf("filters: cannot resolve chat peer %d for reply: %w", message.ChatID, err)
-	}
-	if f.templateErr != nil {
-		return fmt.Errorf("filters: compile saved response for %q: %w", f.keyword, f.templateErr)
 	}
 	vars := savedresponse.VarsFromEnvelope(message, time.Now())
 	response := f.response.Clone()
 	if err := p.submitDelivery(ctx, svc, peer, message.ChatID, message.ID, response, f.template, vars); err != nil {
 		return fmt.Errorf("filters: submit reply for %q: %w", f.keyword, err)
 	}
-	p.markCooldown(cooldownKey)
+	p.markCooldown(fmt.Sprintf("%d:%s", message.ChatID, f.keyword))
 	if decision := core.GetMessageDecision(ctx); decision != nil {
 		decision.SetSuppressAFK(true)
 	}
