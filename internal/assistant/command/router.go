@@ -229,8 +229,11 @@ func (r *Router) executeSavedResponseBinding(
 	inter interaction.MessageInteraction,
 	commandName string,
 ) (bool, error) {
-	if r.savedBindings == nil || r.savedDelivery == nil {
+	if r.savedBindings == nil {
 		return false, nil
+	}
+	if r.savedDelivery == nil {
+		return true, savedresponse.ErrResponseDeliveryUnavailable
 	}
 
 	prepared, err := r.savedBindings.Prepare(ctx, savedresponse.SurfaceAssistantCommand, commandName)
