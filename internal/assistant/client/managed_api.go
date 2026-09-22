@@ -97,3 +97,15 @@ func (a *managedAPI) MessagesSetInlineBotResults(ctx context.Context, req *tg.Me
 func (a *managedAPI) BotsSetBotCommands(ctx context.Context, req *tg.BotsSetBotCommandsRequest) (bool, error) {
 	return managedValue(ctx, a, "bots.setBotCommands", assistentrpc.IdempotentMutation, func(opCtx context.Context) (bool, error) { return a.raw.BotsSetBotCommands(opCtx, req) })
 }
+
+func (a *managedAPI) ContactsResolveUsername(ctx context.Context, req *tg.ContactsResolveUsernameRequest) (*tg.ContactsResolvedPeer, error) {
+	return managedValue(ctx, a, "contacts.resolveUsername", assistentrpc.ReadOnly, func(opCtx context.Context) (*tg.ContactsResolvedPeer, error) {
+		return a.raw.ContactsResolveUsername(opCtx, req)
+	})
+}
+
+func (a *managedAPI) ChannelsGetParticipant(ctx context.Context, req *tg.ChannelsGetParticipantRequest) (*tg.ChannelsChannelParticipant, error) {
+	return managedValue(ctx, a, "channels.getParticipant", assistentrpc.ReadOnly, func(opCtx context.Context) (*tg.ChannelsChannelParticipant, error) {
+		return a.raw.ChannelsGetParticipant(opCtx, req)
+	})
+}
