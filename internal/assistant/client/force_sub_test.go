@@ -282,7 +282,6 @@ func TestParticipantMembershipClassification(t *testing.T) {
 	}
 }
 
-
 func TestForceSubGateNilResolveResponseFailsClosedWithoutPanic(t *testing.T) {
 	policy := &forceSubPolicyStub{config: enabledForceSubConfig(2, pmrelay.ForceSubFailClosed)}
 	api := &forceSubAPIStub{
@@ -338,7 +337,6 @@ func TestForceSubGuidanceCooldownIsBoundedAndRevisionAware(t *testing.T) {
 		t.Fatal("config revision did not invalidate guidance cooldown")
 	}
 }
-
 
 func TestForceSubGateVerificationCapacityUsesConfiguredFailureMode(t *testing.T) {
 	for _, tc := range []struct {
@@ -401,7 +399,6 @@ func TestForceSubGuidanceDueDoesNotMutateCooldown(t *testing.T) {
 	}
 }
 
-
 func TestForceSubGuidanceCarriesExplicitJoinButton(t *testing.T) {
 	api := &mockTelegramAPI{}
 	transport := &telegramRelayVisitorTransport{
@@ -458,7 +455,6 @@ func TestForceSubFailClosedGuidanceExplainsVerificationOutage(t *testing.T) {
 		t.Fatalf("verification guidance=%+v", api.sendMsgReq)
 	}
 }
-
 
 func TestForceSubGateDisabledPolicyBypassesTelegramVerification(t *testing.T) {
 	config := enabledForceSubConfig(2, pmrelay.ForceSubFailClosed)

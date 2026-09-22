@@ -8,8 +8,8 @@ import (
 )
 
 var (
-	ErrTargetSourceStalled     = errors.New("broadcast: target source made no progress")
-	ErrTargetSourceContract    = errors.New("broadcast: target source contract violated")
+	ErrTargetSourceStalled  = errors.New("broadcast: target source made no progress")
+	ErrTargetSourceContract = errors.New("broadcast: target source contract violated")
 )
 
 // TargetSource is a bounded, stateful logical-snapshot iterator. One source

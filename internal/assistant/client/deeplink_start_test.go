@@ -337,7 +337,6 @@ func TestAssistantStartUnsupportedDeepLinkVersionFailsClosed(t *testing.T) {
 	}
 }
 
-
 func TestAssistantStartFailedDeepLinkDoesNotTouchAudience(t *testing.T) {
 	provider := &startDeepLinkProvider{
 		scope:      tasks.ScopeIdentity{Owner: "plugin:test", Generation: 1},

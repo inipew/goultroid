@@ -195,7 +195,6 @@ func TestRelayIngressTaskIdentityDoesNotOwnDeliveryIdempotency(t *testing.T) {
 	}
 }
 
-
 type relayVisitorTransportStub struct {
 	calls   int
 	request pmrelay.VisitorForward
@@ -293,7 +292,6 @@ func TestRelayIngressAdmissionRejectionCannotTouchVisitorDeliveryState(t *testin
 	}
 }
 
-
 func TestRelayIngressP6CClaimsMappedOwnerReplyButFailsClosedBeforeP6D(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(":memory:")
@@ -329,7 +327,6 @@ func TestRelayIngressP6CClaimsMappedOwnerReplyButFailsClosedBeforeP6D(t *testing
 		t.Fatalf("visitor transport used for owner reply: calls=%d", transport.calls)
 	}
 }
-
 
 type relayBidirectionalTransportStub struct {
 	visitorCalls int
@@ -457,7 +454,6 @@ func TestRelayIngressOwnerAdmissionRejectionHasNoDeliverySideEffect(t *testing.T
 	}
 }
 
-
 func TestRelayIngressBlockedVisitorNeverReachesTaskEngine(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(":memory:")
@@ -531,7 +527,6 @@ func TestRelayIngressBlockedMappedOwnerReplyFailsBeforeTaskEngine(t *testing.T) 
 		t.Fatalf("blocked owner reply created deliveries=%d err=%v", count, err)
 	}
 }
-
 
 type forceSubGateStub struct {
 	decisions []forceSubDecision
@@ -747,7 +742,6 @@ func TestRelayIngressForceSubRechecksAfterClaimBeforeForward(t *testing.T) {
 	}
 }
 
-
 func TestRelayIngressForceSubPolicyReadFailureDoesNotEmitInvalidGuidance(t *testing.T) {
 	ctx := context.Background()
 	service := newRelayIngressService(t)
@@ -774,7 +768,6 @@ func TestRelayIngressForceSubPolicyReadFailureDoesNotEmitInvalidGuidance(t *test
 			transport.calls, transport.guidanceCalls)
 	}
 }
-
 
 func TestRelayIngressForceSubGuidanceRevalidatesBeforeSend(t *testing.T) {
 	ctx := context.Background()

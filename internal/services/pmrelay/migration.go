@@ -185,7 +185,6 @@ func (migration002) VerifySchema(ctx context.Context, tx database.SQLExecutor) e
 	return nil
 }
 
-
 var audienceMembershipOrderSchemaStatements = []string{
 	`CREATE TABLE IF NOT EXISTS assistant_audience_membership_order (
 		sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -239,7 +238,6 @@ func (migration003) VerifySchema(ctx context.Context, tx database.SQLExecutor) e
 	}
 	return nil
 }
-
 
 var forceSubSchemaStatements = []string{
 	`CREATE TABLE IF NOT EXISTS pm_relay_force_sub_config (

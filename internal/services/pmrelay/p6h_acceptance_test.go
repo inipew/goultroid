@@ -257,7 +257,6 @@ func TestP6HCompletedVisitorDeliveryHealsAudienceAfterRestartWithoutResend(t *te
 	}
 }
 
-
 type p6hCancelingVisitorTransport struct {
 	cancel   context.CancelFunc
 	calls    int

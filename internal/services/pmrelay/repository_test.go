@@ -278,7 +278,6 @@ func TestDomainRetentionBoundsRejectUnboundedRows(t *testing.T) {
 	}
 }
 
-
 func TestSQLiteVisitorBlocksAreDurableIdempotentAndBounded(t *testing.T) {
 	ctx := context.Background()
 	repo, db := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8, Blocked: 1})
@@ -366,7 +365,6 @@ func TestVisitorBlockRejectsInvalidRows(t *testing.T) {
 	}
 }
 
-
 func TestSQLiteAudienceSnapshotUsesStableMembershipKeyset(t *testing.T) {
 	ctx := context.Background()
 	repo, _ := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8, Blocked: 8})
@@ -439,7 +437,6 @@ func TestSQLiteAudienceSnapshotUsesStableMembershipKeyset(t *testing.T) {
 	}
 }
 
-
 func TestSQLiteAudiencePruneAndRejoinAllocatesLaterMembershipSequence(t *testing.T) {
 	ctx := context.Background()
 	repo, _ := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8, Blocked: 8})
@@ -499,7 +496,6 @@ func TestSQLiteAudiencePruneAndRejoinAllocatesLaterMembershipSequence(t *testing
 		t.Fatalf("rejoined user in new snapshot=%+v", newPage)
 	}
 }
-
 
 func TestSQLiteForceSubConfigIsDurableCASAndNormalized(t *testing.T) {
 	ctx := context.Background()
@@ -567,7 +563,7 @@ func TestForceSubConfigRejectsUnsafeJoinURLAndInvalidUsername(t *testing.T) {
 		},
 		{
 			Enabled: true, ChannelUsername: "valid_name",
-			JoinURL: "https://example.com/not-telegram",
+			JoinURL:     "https://example.com/not-telegram",
 			FailureMode: ForceSubFailClosed, Revision: 1, UpdatedAt: now,
 		},
 		{

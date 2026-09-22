@@ -121,7 +121,6 @@ func TestAssistantBroadcastAudienceUsesExistingBroadcastEngineAndBotSender(t *te
 	}
 }
 
-
 type shrinkingAudienceRegistry struct {
 	now time.Time
 }

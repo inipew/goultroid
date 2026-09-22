@@ -28,8 +28,8 @@ type relayMessageIngress interface {
 // Prepare is intentionally read-only; all mutable relay state is revalidated
 // inside the TaskEngine handler through pmrelay.Ingress.RevalidatePrepared.
 type RelayIngress struct {
-	relay            pmrelay.Ingress
-	tasks            tasks.Client
+	relay             pmrelay.Ingress
+	tasks             tasks.Client
 	visitorTransport  pmrelay.VisitorTransport
 	ownerTransport    pmrelay.OwnerTransport
 	guidanceTransport forceSubGuidanceTransport
@@ -226,7 +226,7 @@ func (r *RelayIngress) submitForceSubGuidance(
 	}
 	sequence := r.seq.Add(1)
 	_, err := r.tasks.Submit(ctx, tasks.WorkSpec{
-		ID: tasks.TaskID(fmt.Sprintf("asst:relay:forcesub-guidance:%d:%d", visitorID, sequence)),
+		ID:               tasks.TaskID(fmt.Sprintf("asst:relay:forcesub-guidance:%d:%d", visitorID, sequence)),
 		Scope:            relayScope,
 		QuotaOwner:       tasks.OwnerID(fmt.Sprintf("pmrelay:guidance:%d", visitorID)),
 		Pool:             tasks.PoolID("interactive"),

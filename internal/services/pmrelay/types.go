@@ -28,30 +28,30 @@ const (
 	HardMaxAudience   = 50_000
 	HardMaxBlocked    = 50_000
 
-	MaxBlockReasonBytes       = 512
-	MaxForceSubUsernameBytes  = 32
-	MaxForceSubJoinURLBytes   = 512
+	MaxBlockReasonBytes      = 512
+	MaxForceSubUsernameBytes = 32
+	MaxForceSubJoinURLBytes  = 512
 )
 
 var (
-	ErrUnavailable       = errors.New("pmrelay: repository unavailable")
-	ErrInvalidMapping    = errors.New("pmrelay: invalid mapping")
-	ErrMappingNotFound   = errors.New("pmrelay: mapping not found")
-	ErrMappingConflict   = errors.New("pmrelay: mapping conflict")
-	ErrMappingCapacity   = errors.New("pmrelay: mapping capacity exhausted")
-	ErrInvalidDelivery   = errors.New("pmrelay: invalid delivery")
-	ErrDeliveryNotFound  = errors.New("pmrelay: delivery not found")
-	ErrDeliveryConflict  = errors.New("pmrelay: delivery conflict")
-	ErrDeliveryClaimed   = errors.New("pmrelay: delivery already claimed")
-	ErrDeliveryCompleted = errors.New("pmrelay: delivery already completed")
-	ErrDeliveryExpired   = errors.New("pmrelay: delivery expired")
-	ErrDeliveryCapacity  = errors.New("pmrelay: delivery capacity exhausted")
-	ErrInvalidAudience   = errors.New("pmrelay: invalid audience member")
-	ErrAudienceNotFound  = errors.New("pmrelay: audience member not found")
-	ErrAudienceCapacity  = errors.New("pmrelay: audience capacity exhausted")
-	ErrVisitorBlocked    = errors.New("pmrelay: visitor blocked")
-	ErrInvalidBlock      = errors.New("pmrelay: invalid visitor block")
-	ErrBlockNotFound     = errors.New("pmrelay: visitor block not found")
+	ErrUnavailable            = errors.New("pmrelay: repository unavailable")
+	ErrInvalidMapping         = errors.New("pmrelay: invalid mapping")
+	ErrMappingNotFound        = errors.New("pmrelay: mapping not found")
+	ErrMappingConflict        = errors.New("pmrelay: mapping conflict")
+	ErrMappingCapacity        = errors.New("pmrelay: mapping capacity exhausted")
+	ErrInvalidDelivery        = errors.New("pmrelay: invalid delivery")
+	ErrDeliveryNotFound       = errors.New("pmrelay: delivery not found")
+	ErrDeliveryConflict       = errors.New("pmrelay: delivery conflict")
+	ErrDeliveryClaimed        = errors.New("pmrelay: delivery already claimed")
+	ErrDeliveryCompleted      = errors.New("pmrelay: delivery already completed")
+	ErrDeliveryExpired        = errors.New("pmrelay: delivery expired")
+	ErrDeliveryCapacity       = errors.New("pmrelay: delivery capacity exhausted")
+	ErrInvalidAudience        = errors.New("pmrelay: invalid audience member")
+	ErrAudienceNotFound       = errors.New("pmrelay: audience member not found")
+	ErrAudienceCapacity       = errors.New("pmrelay: audience capacity exhausted")
+	ErrVisitorBlocked         = errors.New("pmrelay: visitor blocked")
+	ErrInvalidBlock           = errors.New("pmrelay: invalid visitor block")
+	ErrBlockNotFound          = errors.New("pmrelay: visitor block not found")
 	ErrBlockCapacity          = errors.New("pmrelay: visitor block capacity exhausted")
 	ErrInvalidForceSubConfig  = errors.New("pmrelay: invalid force-sub config")
 	ErrForceSubConfigConflict = errors.New("pmrelay: force-sub config conflict")
@@ -261,8 +261,6 @@ func (b VisitorBlock) Normalize() (VisitorBlock, error) {
 	}
 	return b, nil
 }
-
-
 
 type ForceSubFailureMode string
 

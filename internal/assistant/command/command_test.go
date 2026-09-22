@@ -900,14 +900,13 @@ func TestCommandRouter_CanonicalNamespaceBlocksDynamicFallback(t *testing.T) {
 	}
 }
 
-
 func TestCommandRouter_DispatchMessagePreservesReplyIdentity(t *testing.T) {
 	r := command.NewRouter(zap.NewNop())
 	coreRouter := core.NewRouter(".")
 	var gotMessageID, gotReplyToID int
 	if err := coreRouter.Register(core.Command{
-		Name:       "replyaware",
-		Surfaces:   execution.SurfaceAssistant,
+		Name:        "replyaware",
+		Surfaces:    execution.SurfaceAssistant,
 		PrivateOnly: true,
 		ReplyOnly:   true,
 		Handler: func(c *core.Context) error {

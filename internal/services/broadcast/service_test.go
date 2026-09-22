@@ -335,7 +335,6 @@ func TestBroadcast_RichSavedResponseCaptionOverflowFallsBackToText(t *testing.T)
 	}
 }
 
-
 type pagedTargetSource struct {
 	total int
 	next  int
@@ -421,7 +420,6 @@ func TestBroadcast_RejectsStalledTargetSource(t *testing.T) {
 		t.Fatalf("Broadcast(stalled source) error=%v, want %v", err, broadcast.ErrTargetSourceStalled)
 	}
 }
-
 
 type oversizedTargetSource struct{}
 

@@ -139,7 +139,6 @@ func TestAssistantClientStartRejectsCanceledContext(t *testing.T) {
 	}
 }
 
-
 func TestAssistantClientQuiesceStopsAdmissionWithoutStoppingTransport(t *testing.T) {
 	c := &AssistantClient{
 		logger:    zap.NewNop(),

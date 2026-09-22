@@ -406,4 +406,3 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 	report.Duration = time.Since(start)
 	return &report, nil
 }
-

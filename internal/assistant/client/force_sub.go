@@ -16,11 +16,11 @@ import (
 )
 
 const (
-	forceSubCacheCapacity       = 2048
-	forceSubMaxVerifications    = 32
-	forceSubMemberTTL            = 10 * time.Minute
-	forceSubNonMemberTTL         = time.Minute
-	forceSubGuidanceCooldown     = time.Minute
+	forceSubCacheCapacity    = 2048
+	forceSubMaxVerifications = 32
+	forceSubMemberTTL        = 10 * time.Minute
+	forceSubNonMemberTTL     = time.Minute
+	forceSubGuidanceCooldown = time.Minute
 )
 
 type forceSubDecision struct {
@@ -57,16 +57,16 @@ type telegramForceSubGate struct {
 	logger   *zap.Logger
 	now      func() time.Time
 
-	mu               sync.Mutex
-	revision         int64
-	channel          *tg.InputChannel
-	entries          map[int64]*list.Element
-	lru              *list.List
-	guidance         map[int64]*list.Element
-	guidanceLRU      *list.List
-	cacheCapacity    int
-	memberTTL        time.Duration
-	nonMemberTTL     time.Duration
+	mu                sync.Mutex
+	revision          int64
+	channel           *tg.InputChannel
+	entries           map[int64]*list.Element
+	lru               *list.List
+	guidance          map[int64]*list.Element
+	guidanceLRU       *list.List
+	cacheCapacity     int
+	memberTTL         time.Duration
+	nonMemberTTL      time.Duration
 	guidanceCooldown  time.Duration
 	verificationSlots chan struct{}
 }
@@ -84,18 +84,18 @@ func newTelegramForceSubGate(
 		logger = zap.NewNop()
 	}
 	return &telegramForceSubGate{
-		policy:       policy,
-		api:          api,
-		resolver:     resolver,
-		logger:       logger,
-		now:          time.Now,
-		entries:          make(map[int64]*list.Element, forceSubCacheCapacity),
-		lru:              list.New(),
-		guidance:         make(map[int64]*list.Element, forceSubCacheCapacity),
-		guidanceLRU:      list.New(),
-		cacheCapacity:    forceSubCacheCapacity,
-		memberTTL:        forceSubMemberTTL,
-		nonMemberTTL:     forceSubNonMemberTTL,
+		policy:            policy,
+		api:               api,
+		resolver:          resolver,
+		logger:            logger,
+		now:               time.Now,
+		entries:           make(map[int64]*list.Element, forceSubCacheCapacity),
+		lru:               list.New(),
+		guidance:          make(map[int64]*list.Element, forceSubCacheCapacity),
+		guidanceLRU:       list.New(),
+		cacheCapacity:     forceSubCacheCapacity,
+		memberTTL:         forceSubMemberTTL,
+		nonMemberTTL:      forceSubNonMemberTTL,
 		guidanceCooldown:  forceSubGuidanceCooldown,
 		verificationSlots: make(chan struct{}, forceSubMaxVerifications),
 	}

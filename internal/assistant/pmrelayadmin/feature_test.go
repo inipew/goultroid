@@ -46,17 +46,17 @@ func newControlFeature(t *testing.T) (*Feature, *pmrelay.Service, *pmrelay.SQLit
 func newOwnerContext(replyTo int, args ...string) (*core.Context, *recordingServicer) {
 	svc := &recordingServicer{}
 	return &core.Context{
-		Ctx:      context.Background(),
-		Source:   core.ExecutionAssistant,
-		Command:  "relay",
-		Args:     args,
-		RawArgs:  strings.Join(args, " "),
-		Message:  &core.Message{ID: 900, SenderID: 7, ReplyToID: replyTo},
-		Chat:     &core.Chat{ID: 7, Type: "private"},
-		Sender:   &core.User{ID: 7},
+		Ctx:       context.Background(),
+		Source:    core.ExecutionAssistant,
+		Command:   "relay",
+		Args:      args,
+		RawArgs:   strings.Join(args, " "),
+		Message:   &core.Message{ID: 900, SenderID: 7, ReplyToID: replyTo},
+		Chat:      &core.Chat{ID: 7, Type: "private"},
+		Sender:    &core.User{ID: 7},
 		Principal: &core.Principal{UserID: 7, IsOwner: true, IsSudo: true},
-		Svc:      svc,
-		PeerID:   &tg.InputPeerUser{UserID: 7, AccessHash: 1},
+		Svc:       svc,
+		PeerID:    &tg.InputPeerUser{UserID: 7, AccessHash: 1},
 	}, svc
 }
 
@@ -201,7 +201,6 @@ func TestRelayControlStatusBlockedListAndNumericTarget(t *testing.T) {
 	}
 }
 
-
 func TestRelayBlockedListBoundsPageAndReasonPreview(t *testing.T) {
 	f, _, repo := newControlFeature(t)
 	now := time.Now().UTC()
@@ -234,7 +233,6 @@ func TestRelayBlockedListBoundsPageAndReasonPreview(t *testing.T) {
 		t.Fatalf("blocked page missing pagination/reason truncation: %q", reply)
 	}
 }
-
 
 func TestRelayControlForceSubDefaultsClosedAndPersistsRevision(t *testing.T) {
 	f, service, _ := newControlFeature(t)

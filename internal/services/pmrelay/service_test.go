@@ -167,7 +167,6 @@ func TestOwnerReplyExpiredMappingFailsClosedBeforeAdmission(t *testing.T) {
 	}
 }
 
-
 type visitorTransportStub struct {
 	calls    int
 	requests []VisitorForward
@@ -551,7 +550,6 @@ func TestExecuteVisitorLazilyReclaimsExpiredCapacity(t *testing.T) {
 	}
 }
 
-
 type ownerTransportStub struct {
 	calls    int
 	requests []OwnerSend
@@ -781,7 +779,6 @@ func TestExecuteOwnerRevalidatesMappingAgainAfterClaim(t *testing.T) {
 	}
 }
 
-
 func TestPrepareVisitorSuppressesDurablyBlockedVisitorBeforeAdmission(t *testing.T) {
 	ctx := context.Background()
 	repo, _ := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8, Blocked: 8})
@@ -947,7 +944,6 @@ func TestRelayControlStatusAndVisitorDetails(t *testing.T) {
 		t.Fatalf("VisitorDetails() block after unblock=%+v", details.Block)
 	}
 }
-
 
 func TestForceSubServiceCASConflictInvalidatesCachedPolicy(t *testing.T) {
 	ctx := context.Background()

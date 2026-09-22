@@ -229,10 +229,10 @@ func TestUpdateHandlers_DynamicInlineMediaCarriesAdmissionAuthority(t *testing.T
 	taskClient := &captureInlineTaskClient{run: true}
 	audience := &recordingAudienceRegistry{}
 	client.RegisterUpdateHandlers(&dispatcher, client.UpdateHandlerDeps{
-		InlineEngine:       engine,
-		InlineService:      &core.MockTelegramServicer{},
-		Tasks:              taskClient,
-		AudienceRegistry:   audience,
+		InlineEngine:     engine,
+		InlineService:    &core.MockTelegramServicer{},
+		Tasks:            taskClient,
+		AudienceRegistry: audience,
 	})
 
 	update := &tg.UpdateBotInlineQuery{
@@ -270,7 +270,6 @@ func TestUpdateHandlers_DynamicInlineMediaCarriesAdmissionAuthority(t *testing.T
 		t.Fatalf("inline audience touch=%+v", audience.touches[0])
 	}
 }
-
 
 type failingInlineExecutor struct{}
 

@@ -109,7 +109,6 @@ func TestAssistantAudienceTouchMergesEntryPointSources(t *testing.T) {
 	}
 }
 
-
 func TestAssistantAudienceTargetSourceAccountsForRetentionPruneAfterSnapshot(t *testing.T) {
 	ctx := context.Background()
 	registry, repo := newAssistantAudienceRegistry(t)
@@ -141,7 +140,7 @@ func TestAssistantAudienceTargetSourceAccountsForRetentionPruneAfterSnapshot(t *
 
 	var (
 		actualUsers []int64
-		nilTargets int
+		nilTargets  int
 	)
 	for {
 		page, done, err := source.Next(ctx, 1)

@@ -13,20 +13,20 @@ import (
 )
 
 type mockTelegramAPI struct {
-	answerReq     *tg.MessagesSetBotCallbackAnswerRequest
-	editReq       *tg.MessagesEditMessageRequest
-	deleteMsgsReq *tg.MessagesDeleteMessagesRequest
-	deleteChanReq *tg.ChannelsDeleteMessagesRequest
-	getMsgsIDs     []tg.InputMessageClass
-	getMsgsResult  tg.MessagesMessagesClass
-	getChanReq     *tg.ChannelsGetMessagesRequest
-	sendMsgReq     *tg.MessagesSendMessageRequest
-	sendMsgResult  tg.UpdatesClass
-	sendMediaReq   *tg.MessagesSendMediaRequest
+	answerReq       *tg.MessagesSetBotCallbackAnswerRequest
+	editReq         *tg.MessagesEditMessageRequest
+	deleteMsgsReq   *tg.MessagesDeleteMessagesRequest
+	deleteChanReq   *tg.ChannelsDeleteMessagesRequest
+	getMsgsIDs      []tg.InputMessageClass
+	getMsgsResult   tg.MessagesMessagesClass
+	getChanReq      *tg.ChannelsGetMessagesRequest
+	sendMsgReq      *tg.MessagesSendMessageRequest
+	sendMsgResult   tg.UpdatesClass
+	sendMediaReq    *tg.MessagesSendMediaRequest
 	sendMediaResult tg.UpdatesClass
-	forwardMsgsReq *tg.MessagesForwardMessagesRequest
-	forwardResult  tg.UpdatesClass
-	editInlineReq  *tg.MessagesEditInlineBotMessageRequest
+	forwardMsgsReq  *tg.MessagesForwardMessagesRequest
+	forwardResult   tg.UpdatesClass
+	editInlineReq   *tg.MessagesEditInlineBotMessageRequest
 
 	// Injected errors
 	deleteErr     error

@@ -15,8 +15,8 @@ import (
 	"github.com/inipew/goultroid/internal/interaction/orchestration"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/presentation"
-	"github.com/inipew/goultroid/internal/services/pmrelay"
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
+	"github.com/inipew/goultroid/internal/services/pmrelay"
 	"go.uber.org/zap"
 )
 

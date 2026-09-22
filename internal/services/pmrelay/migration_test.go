@@ -75,7 +75,6 @@ func TestMigrationCreatesRelaySchemaIdempotently(t *testing.T) {
 	}
 }
 
-
 func TestMigration003BackfillsExistingAudienceMembership(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(":memory:")
@@ -121,7 +120,6 @@ func TestMigration003BackfillsExistingAudienceMembership(t *testing.T) {
 	}
 }
 
-
 func TestMigration004SeedsDisabledFailClosedForceSub(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(":memory:")
@@ -138,11 +136,11 @@ func TestMigration004SeedsDisabledFailClosedForceSub(t *testing.T) {
 	}
 
 	var (
-		enabled      int
-		username     string
-		joinURL      string
-		failureMode  string
-		revision     int64
+		enabled     int
+		username    string
+		joinURL     string
+		failureMode string
+		revision    int64
 	)
 	if err := db.QueryRowContext(ctx, `
 		SELECT enabled, channel_username, join_url, failure_mode, revision
@@ -156,7 +154,6 @@ func TestMigration004SeedsDisabledFailClosedForceSub(t *testing.T) {
 			enabled, username, joinURL, failureMode, revision)
 	}
 }
-
 
 func TestP6HMigrationUpgradeFromP6APreservesDurableRelayState(t *testing.T) {
 	ctx := context.Background()
@@ -186,15 +183,15 @@ func TestP6HMigrationUpgradeFromP6APreservesDurableRelayState(t *testing.T) {
 	}
 	delivery := DeliveryIntent{
 		DeliveryKey: DeliveryKey{
-			Direction: DeliveryVisitorToOwner,
-			SourceChatID: 42,
+			Direction:       DeliveryVisitorToOwner,
+			SourceChatID:    42,
 			SourceMessageID: 11,
 		},
 		TargetChatID: 7,
-		RandomID: 777,
-		CreatedAt: base,
-		UpdatedAt: base,
-		ExpiresAt: base.Add(DefaultDeliveryRetention),
+		RandomID:     777,
+		CreatedAt:    base,
+		UpdatedAt:    base,
+		ExpiresAt:    base.Add(DefaultDeliveryRetention),
 	}
 	if _, err := repo.EnsureDelivery(ctx, delivery); err != nil {
 		t.Fatal(err)

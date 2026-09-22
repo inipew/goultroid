@@ -56,7 +56,6 @@ func TestNewBotClient_Alias(t *testing.T) {
 	}
 }
 
-
 func TestAssistantAppP6HLifecycleDeclaresDrainDependenciesAndQuiesce(t *testing.T) {
 	app := assistant.NewApp(1234, "hash", "token", zap.NewNop())
 

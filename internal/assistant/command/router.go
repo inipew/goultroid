@@ -475,13 +475,13 @@ func (r *Router) dispatch(
 		}
 
 		coreCtx := &core.Context{
-			Ctx:            ctx,
-			CorrelationID:  fmt.Sprintf("asst-%d-%d", senderID, time.Now().UnixNano()),
-			Source:         core.ExecutionAssistant,
-			Command:        cmdNameClean,
-			Args:           fields[1:],
-			RawArgs:        strings.Join(fields[1:], " "),
-			PeerID:         peer,
+			Ctx:           ctx,
+			CorrelationID: fmt.Sprintf("asst-%d-%d", senderID, time.Now().UnixNano()),
+			Source:        core.ExecutionAssistant,
+			Command:       cmdNameClean,
+			Args:          fields[1:],
+			RawArgs:       strings.Join(fields[1:], " "),
+			PeerID:        peer,
 			Message: &core.Message{
 				ID:        messageID,
 				SenderID:  senderID,
