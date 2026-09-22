@@ -137,6 +137,9 @@ func (s *Service) warnWithService(
 	if s.repo == nil {
 		return nil, fmt.Errorf("warning repository is nil")
 	}
+	if chatID <= 0 || userID <= 0 {
+		return nil, fmt.Errorf("%w: warning chat/user coordinates must be positive", core.ErrInvalidArgs)
+	}
 	if threshold <= 0 {
 		threshold = s.defaultThreshold
 	}
