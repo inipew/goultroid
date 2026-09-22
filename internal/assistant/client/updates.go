@@ -58,6 +58,7 @@ type UpdateHandlerDeps struct {
 	GroupEvents         groupServiceIngress
 	GroupRules          groupRuleIngress
 	GroupRuleChats      groupRuleChatClassifier
+	GlobalPrivileged    func(int64) bool
 	SelfID              func() int64
 }
 
@@ -481,6 +482,12 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 					return nil
 				}
 			default:
+				return nil
+			}
+			// Owner/Sudo bypass is an automation policy only. It does not
+			// manufacture Telegram group authority, but it can safely skip the
+			// P7-I data plane before interest/cache/task work.
+			if deps.GlobalPrivileged != nil && deps.GlobalPrivileged(senderID) {
 				return nil
 			}
 			if !deps.GroupRules.Interested(chatID) {
