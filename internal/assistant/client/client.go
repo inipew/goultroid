@@ -181,6 +181,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	c.cmdRouter.SetGroupRoleResolver(groupRoles)
 	c.cmdRouter.SetGroupQueryReader(newManagedGroupQuery(managedAPI, c.resolver))
 	c.cmdRouter.SetGroupMutationExecutor(newManagedGroupMutation(managedAPI, c.resolver, groupRoles, c.selfID))
+	c.cmdRouter.SetPeerResolver(newAssistantCorePeerResolver(managedAPI, c.resolver))
 	c.interaction = interaction.NewClientInteraction(managedAPI, c.logger)
 	c.interaction.SetRPCExecutor(c.rpcExecutor)
 	c.interaction.SetMediaSender(message.NewSender(tdClient.API()), uploader.NewUploader(tdClient.API()))
