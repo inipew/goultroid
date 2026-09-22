@@ -71,6 +71,9 @@ type Ingress interface {
 	PrepareVisitor(context.Context, IngressMessage) (PreparedIngress, bool, error)
 	PrepareOwnerReply(context.Context, IngressMessage) (PreparedIngress, bool, error)
 	RevalidatePrepared(context.Context, PreparedIngress) error
+}
+
+type VisitorExecutor interface {
 	ExecuteVisitor(context.Context, PreparedIngress, VisitorTransport) error
 }
 
@@ -426,3 +429,4 @@ func (s *Service) ExecuteVisitor(ctx context.Context, prepared PreparedIngress, 
 }
 
 var _ Ingress = (*Service)(nil)
+var _ VisitorExecutor = (*Service)(nil)
