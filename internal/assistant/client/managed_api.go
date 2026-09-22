@@ -53,6 +53,14 @@ func (a *managedAPI) ChannelsGetMessages(ctx context.Context, req *tg.ChannelsGe
 func (a *managedAPI) MessagesSendMessage(ctx context.Context, req *tg.MessagesSendMessageRequest) (tg.UpdatesClass, error) {
 	return managedValue(ctx, a, "messages.sendMessage", assistentrpc.NonIdempotentMutation, func(opCtx context.Context) (tg.UpdatesClass, error) { return a.raw.MessagesSendMessage(opCtx, req) })
 }
+func (a *managedAPI) MessagesForwardMessages(ctx context.Context, req *tg.MessagesForwardMessagesRequest) (tg.UpdatesClass, error) {
+	// PM Relay persists the request random_id before transport. Repeating the
+	// same request is therefore one logical Telegram mutation and may use the
+	// idempotent retry lane safely.
+	return managedValue(ctx, a, "messages.forwardMessages", assistentrpc.IdempotentMutation, func(opCtx context.Context) (tg.UpdatesClass, error) {
+		return a.raw.MessagesForwardMessages(opCtx, req)
+	})
+}
 func (a *managedAPI) MessagesEditInlineBotMessage(ctx context.Context, req *tg.MessagesEditInlineBotMessageRequest) (bool, error) {
 	return managedValue(ctx, a, "messages.editInlineBotMessage", assistentrpc.IdempotentMutation, func(opCtx context.Context) (bool, error) { return a.raw.MessagesEditInlineBotMessage(opCtx, req) })
 }
