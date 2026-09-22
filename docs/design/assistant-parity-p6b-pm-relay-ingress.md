@@ -110,11 +110,16 @@ ExecutionTimeout: 15s
 Resources:        none in P6-B
 ```
 
-Task IDs are deterministic:
+Task IDs are unique per admission:
 
 ```text
-asst:relay:<direction>:<source-chat>:<source-message>
+asst:relay:<direction>:<source-chat>:<source-message>:<sequence>
 ```
+
+TaskEngine terminal IDs are retained for a bounded period, so they must not own
+PM Relay idempotency. A failed logical delivery must be retryable immediately;
+P6-A `pm_relay_deliveries` remains the authoritative source-message
+idempotency/claim boundary.
 
 Both visitor-to-owner and owner-to-visitor directions use the same visitor
 ordering key. That preserves conversation order without globally serializing
@@ -177,6 +182,8 @@ Regression tests freeze:
 - relay work carries service scope, per-visitor quota, interactive class and
   per-thread ordering;
 - both relay directions share the same visitor ordering key;
+- repeated source admission gets a fresh TaskEngine ID while retaining the same
+  thread ordering key;
 - policy revision changes stale queued prepared work;
 - owner reply mapping is re-read at execution;
 - missing/pruned mapping fails closed;
