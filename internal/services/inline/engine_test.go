@@ -233,6 +233,7 @@ func TestEngine_TypedFeatureActionsCompileToA2AndClaimInlineTarget(t *testing.T)
 	}
 
 	engine := NewEngine(registry, zap.NewNop())
+	engine.SetFeatureCatalog(catalog)
 	engine.SetInteractionRuntime(sessions)
 	prepared, err := engine.Prepare("typed")
 	if err != nil {
