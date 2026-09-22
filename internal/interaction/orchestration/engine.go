@@ -45,8 +45,14 @@ type CallbackRequest struct {
 // revalidated feature invocation.
 type PreparedCallback interface {
 	Scope() tasks.ScopeIdentity
-	Resources() []tasks.ResourceRequirement
 	Dispatch(context.Context) error
+}
+
+// ResourcePreparedCallback is an optional admission capability for prepared
+// callbacks that need global resource budgeting.
+type ResourcePreparedCallback interface {
+	PreparedCallback
+	Resources() []tasks.ResourceRequirement
 }
 
 type preparedCallback struct {
@@ -66,7 +72,10 @@ func (p *preparedCallback) Resources() []tasks.ResourceRequirement {
 	if p == nil || p.action == nil {
 		return nil
 	}
-	return p.action.Resources()
+	if aware, ok := p.action.(interaction.ResourcePreparedAction); ok {
+		return aware.Resources()
+	}
+	return nil
 }
 
 func (p *preparedCallback) Dispatch(ctx context.Context) error {
