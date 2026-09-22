@@ -7,6 +7,7 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/client"
 	assistantdeeplink "github.com/inipew/goultroid/internal/assistant/deeplink"
 	"github.com/inipew/goultroid/internal/assistant/groupevents"
+	"github.com/inipew/goultroid/internal/assistant/grouprules"
 	assistantinteraction "github.com/inipew/goultroid/internal/assistant/interaction"
 	assistentrpc "github.com/inipew/goultroid/internal/assistant/rpc"
 	"github.com/inipew/goultroid/internal/core"
@@ -135,6 +136,10 @@ func (a *AssistantApp) SetBroadcastService(service *broadcastsvc.Service) {
 
 func (a *AssistantApp) SetGroupEventService(service *groupevents.Service) {
 	a.client.SetGroupEventService(service)
+}
+
+func (a *AssistantApp) SetGroupRuleService(service *grouprules.Service) {
+	a.client.SetGroupRuleService(service)
 }
 func (a *AssistantApp) BroadcastAudience(
 	ctx context.Context,
