@@ -96,6 +96,22 @@ func (q *ReadyQueue) Peek() *QueueEntry {
 	return q.head.entry
 }
 
+// FirstMatching returns the earliest FIFO entry accepted by match without
+// removing it. Admission owner queues are already hard-bounded, so this scan
+// is bounded and allows independent ordering/resource domains behind a blocked
+// head to make progress without creating per-ordering subqueues.
+func (q *ReadyQueue) FirstMatching(match func(*QueueEntry) bool) *QueueEntry {
+	for node := q.head; node != nil; node = node.next {
+		if node.entry == nil {
+			continue
+		}
+		if match == nil || match(node.entry) {
+			return node.entry
+		}
+	}
+	return nil
+}
+
 // Len returns the current count of items in the queue.
 func (q *ReadyQueue) Len() int {
 	return len(q.nodes)
