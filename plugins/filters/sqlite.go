@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/services/mediaregistry"
 	"github.com/inipew/goultroid/internal/services/savedresponse"
@@ -29,6 +30,33 @@ func (r *SQLiteRepository) SaveFilter(ctx context.Context, chatID int64, keyword
 		return fmt.Errorf("failed to inspect media registry schema: %w", r.registryErr)
 	}
 
+	keyword = strings.ToLower(strings.TrimSpace(keyword))
+	if keyword == "" || len(keyword) > MaxKeywordBytes {
+		return fmt.Errorf("%w: invalid filter keyword", core.ErrInvalidArgs)
+	}
+	if err := savedresponse.Validate(response); err != nil {
+		return err
+	}
+	var exists int
+	if err := r.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM filters WHERE chat_id = ? AND keyword = ?",
+		chatID, keyword,
+	).Scan(&exists); err != nil {
+		return fmt.Errorf("failed to inspect filter: %w", err)
+	}
+	if exists == 0 {
+		var count int
+		if err := r.db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM filters WHERE chat_id = ?",
+			chatID,
+		).Scan(&count); err != nil {
+			return fmt.Errorf("failed to count filters: %w", err)
+		}
+		if count >= MaxRulesPerChat {
+			return ErrRuleLimit
+		}
+	}
+
 	media := savedresponse.MediaRef{}
 	if response.Media != nil {
 		media = *response.Media
@@ -37,7 +65,6 @@ func (r *SQLiteRepository) SaveFilter(ctx context.Context, chatID int64, keyword
 	if format == "" {
 		format = savedresponse.FormatHTML
 	}
-	keyword = strings.ToLower(keyword)
 	now := time.Now().UTC()
 	query := `
 	INSERT INTO filters (
@@ -140,7 +167,7 @@ func (r *SQLiteRepository) GetFilter(ctx context.Context, chatID int64, keyword 
 }
 
 func (r *SQLiteRepository) ListActiveChatIDs(ctx context.Context) ([]int64, error) {
-	rows, err := r.db.QueryContext(ctx, "SELECT DISTINCT chat_id FROM filters ORDER BY chat_id ASC")
+	rows, err := r.db.QueryContext(ctx, "SELECT DISTINCT chat_id FROM filters ORDER BY chat_id ASC LIMIT ?", MaxActiveChats+1)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list active filter chats: %w", err)
 	}
@@ -153,7 +180,13 @@ func (r *SQLiteRepository) ListActiveChatIDs(ctx context.Context) ([]int64, erro
 		}
 		chatIDs = append(chatIDs, chatID)
 	}
-	return chatIDs, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(chatIDs) > MaxActiveChats {
+		return nil, fmt.Errorf("%w: active filter chats exceed %d", core.ErrResourceLimit, MaxActiveChats)
+	}
+	return chatIDs, nil
 }
 
 func (r *SQLiteRepository) ListFilters(ctx context.Context, chatID int64) ([]Filter, error) {
@@ -185,7 +218,13 @@ func (r *SQLiteRepository) ListFilters(ctx context.Context, chatID int64) ([]Fil
 		}
 		result = append(result, f)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(result) > MaxRulesPerChat {
+		return nil, ErrRuleLimit
+	}
+	return result, nil
 }
 
 func (r *SQLiteRepository) DeleteFilter(ctx context.Context, chatID int64, keyword string) error {
