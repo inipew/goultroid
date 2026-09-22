@@ -40,9 +40,10 @@ type SurfaceBinding struct {
 	Surface   Surface
 	Alias     string
 	Reference Reference
-	Enabled   bool
-	Revision  uint64
-	CreatedAt time.Time
+	Enabled     bool
+	Revision    uint64
+	Incarnation string
+	CreatedAt   time.Time
 	UpdatedAt time.Time
 }
 
@@ -266,6 +267,7 @@ func (s *BindingService) ResolvePrepared(ctx context.Context, prepared PreparedB
 	}
 	if current == nil || !current.Enabled ||
 		current.Revision != prepared.binding.Revision ||
+		current.Incarnation != prepared.binding.Incarnation ||
 		current.Reference != prepared.binding.Reference {
 		return ResolvedBinding{}, ErrBindingStale
 	}
