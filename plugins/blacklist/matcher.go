@@ -12,9 +12,9 @@ type blacklistEdge struct {
 }
 
 type blacklistNode struct {
-	edges []blacklistEdge
-	fail  int
-	match bool
+	edges   []blacklistEdge
+	fail    int
+	outputs []int
 }
 
 type blacklistMatcher struct {
@@ -41,7 +41,7 @@ func newBlacklistMatcher(items []compiledBlacklist) *blacklistMatcher {
 			}
 			state = next
 		}
-		matcher.nodes[state].match = true
+		matcher.nodes[state].outputs = append(matcher.nodes[state].outputs, len(word))
 	}
 	matcher.buildFailures()
 	return matcher
@@ -78,9 +78,11 @@ func (m *blacklistMatcher) buildFailures() {
 			if next, ok := m.transition(failure, edge.value); ok && next != nextState {
 				m.nodes[nextState].fail = next
 			}
-			if m.nodes[m.nodes[nextState].fail].match {
-				m.nodes[nextState].match = true
-			}
+			fallback := m.nodes[nextState].fail
+			m.nodes[nextState].outputs = append(
+				m.nodes[nextState].outputs,
+				m.nodes[fallback].outputs...,
+			)
 		}
 	}
 }
@@ -102,59 +104,14 @@ func (m *blacklistMatcher) matches(text string) bool {
 		if next, ok := m.transition(state, value); ok {
 			state = next
 		}
-		if !m.nodes[state].match {
-			continue
-		}
-
-		// A state may inherit a shorter suffix match through its failure link.
-		// Walk the failure chain to find a boundary-valid terminal without
-		// rescanning every configured rule.
-		candidate := state
-		for {
-			if m.nodes[candidate].match {
-				length := blacklistTerminalLength(m, candidate)
-				if length > 0 {
-					start := pos + 1 - length
-					if start >= 0 && blacklistBoundaryOK(lowerText, start, pos+1) {
-						return true
-					}
-				}
+		for _, keywordBytes := range m.nodes[state].outputs {
+			start := pos + 1 - keywordBytes
+			if start >= 0 && blacklistBoundaryOK(lowerText, start, pos+1) {
+				return true
 			}
-			if candidate == 0 {
-				break
-			}
-			candidate = m.nodes[candidate].fail
 		}
 	}
 	return false
-}
-
-// blacklistTerminalLength reconstructs the byte length represented by a trie
-// state. The rule set is bounded to 512x256 bytes, so this control-path helper
-// remains bounded; hot-path matching never loops over every configured rule.
-func blacklistTerminalLength(m *blacklistMatcher, target int) int {
-	if m == nil || target <= 0 || target >= len(m.nodes) {
-		return 0
-	}
-	// Trie nodes do not currently retain depth; derive it by one bounded walk
-	// from root. This is only called for terminal candidates.
-	type entry struct {
-		state int
-		depth int
-	}
-	queue := []entry{{state: 0, depth: 0}}
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-		for _, edge := range m.nodes[current.state].edges {
-			depth := current.depth + 1
-			if edge.next == target {
-				return depth
-			}
-			queue = append(queue, entry{state: edge.next, depth: depth})
-		}
-	}
-	return 0
 }
 
 func blacklistBoundaryOK(text string, start, end int) bool {
