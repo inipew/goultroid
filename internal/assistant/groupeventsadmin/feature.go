@@ -141,7 +141,7 @@ func (f *Feature) handle(ctx *core.Context, kind core.GroupServiceKind, label st
 }
 
 func (f *Feature) replyStatus(ctx *core.Context, kind core.GroupServiceKind, label string) error {
-	state, err := f.service.State(ctx.Chat.ID, kind)
+	state, err := f.service.StateContext(ctx.Ctx, ctx.Chat.ID, kind)
 	if err != nil {
 		return err
 	}
