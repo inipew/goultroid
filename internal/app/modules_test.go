@@ -205,3 +205,34 @@ func TestBuiltinPersistentMediaReconcileSkipsEphemeralFallbackStorage(t *testing
 		t.Fatalf("ephemeral fallback mutated durable media reference: %q", assetID)
 	}
 }
+
+
+func TestBuiltinFeatureMigrationsIncludeAssistantGroupState(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := migrateBuiltinFeatures(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, item := range []struct {
+		kind string
+		name string
+	}{
+		{kind: "table", name: "assistant_group_state"},
+		{kind: "index", name: "idx_assistant_group_state_expiry"},
+	} {
+		var count int
+		if err := db.QueryRowContext(ctx, `
+			SELECT count(*) FROM sqlite_master WHERE type = ? AND name = ?
+		`, item.kind, item.name).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("P7-F %s %q missing after builtin migrations", item.kind, item.name)
+		}
+	}
+}
