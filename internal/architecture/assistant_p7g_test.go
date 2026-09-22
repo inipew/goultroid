@@ -171,7 +171,6 @@ func TestP7GAdminPluginOwnsPolicyNotTelegramTransport(t *testing.T) {
 	}
 }
 
-
 func TestP7GMutationPortRequiresTaskAdmissionCapability(t *testing.T) {
 	root := repositoryRoot(t)
 
