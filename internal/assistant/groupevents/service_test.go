@@ -241,7 +241,6 @@ func TestP7HRestartPreloadRestoresInterestAndSubscription(t *testing.T) {
 	}
 }
 
-
 func TestP7HTwoFeaturesShareOneSubscriptionUntilLastDisable(t *testing.T) {
 	store, bus := newGroupEventTestRuntime(t)
 	service := New(store, bus)
