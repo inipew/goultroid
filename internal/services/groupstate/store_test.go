@@ -481,7 +481,6 @@ func TestNormalizeGroupStateKeyRejectsDisplayStrings(t *testing.T) {
 	}
 }
 
-
 func TestSQLiteStoreConcurrentCASHasSingleWinner(t *testing.T) {
 	store, _ := newTestStore(t, Limits{MaxEntries: 8, CleanupBatch: 2})
 	ctx := stateContext(store, 77, 9)
