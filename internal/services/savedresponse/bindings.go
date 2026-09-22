@@ -101,12 +101,14 @@ type ResolvedBinding struct {
 // PreparedBinding freezes routing identity and provider generation before
 // TaskEngine admission without retaining a response payload across queue wait.
 type PreparedBinding struct {
-	binding SurfaceBinding
-	scope   tasks.ScopeIdentity
+	binding  SurfaceBinding
+	scope    tasks.ScopeIdentity
+	hasMedia bool
 }
 
 func (p PreparedBinding) Binding() SurfaceBinding    { return p.binding }
 func (p PreparedBinding) Scope() tasks.ScopeIdentity { return p.scope }
+func (p PreparedBinding) HasMedia() bool             { return p.hasMedia }
 
 // BindingService joins durable surface metadata to the lifecycle-aware provider
 // registry. Consumers must carry Resolved.Scope into TaskEngine admission so a
@@ -245,7 +247,11 @@ func (s *BindingService) Prepare(ctx context.Context, surface Surface, alias str
 	if err != nil {
 		return PreparedBinding{}, err
 	}
-	return PreparedBinding{binding: *binding, scope: resolved.Scope}, nil
+	return PreparedBinding{
+		binding:  *binding,
+		scope:    resolved.Scope,
+		hasMedia: resolved.Response.HasMedia(),
+	}, nil
 }
 
 // ResolvePrepared revalidates the exact durable binding revision and provider
