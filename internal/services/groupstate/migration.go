@@ -78,7 +78,6 @@ func (migration001) VerifySchema(ctx context.Context, tx database.SQLExecutor) e
 	return nil
 }
 
-
 var valueBoundStatements = []string{
 	`CREATE TRIGGER IF NOT EXISTS trg_assistant_group_state_value_insert
 		BEFORE INSERT ON assistant_group_state
