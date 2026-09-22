@@ -44,15 +44,17 @@ type Command struct {
 	Permission  Permission
 	// Invocation controls who may initiate the command independently from the
 	// authorization tier above.
-	Invocation  InvocationPolicy
-	Surfaces           execution.SurfaceMask
-	GroupOnly          bool
+	Invocation InvocationPolicy
+	Surfaces   execution.SurfaceMask
+	GroupOnly  bool
+	// GroupAuthorization is enforced on the Assistant group surface independently
+	// from global Owner/Sudo Permission.
 	GroupAuthorization GroupAuthorizationRequirement
 	PrivateOnly        bool
-	ReplyOnly   bool
-	Cooldown    time.Duration
-	Timeout     time.Duration
-	Resources   []tasks.ResourceRequirement
+	ReplyOnly          bool
+	Cooldown           time.Duration
+	Timeout            time.Duration
+	Resources          []tasks.ResourceRequirement
 	// Scope identifies the plugin generation that owns this command. It is
 	// populated by the plugin manager, not by feature implementations.
 	Scope   tasks.ScopeIdentity
