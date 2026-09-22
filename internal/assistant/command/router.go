@@ -472,6 +472,9 @@ func (r *Router) executeSavedResponseBinding(
 							_, sendErr := contextual.SendMediaContext(runCtx, peer, mediaType, path, caption, sendContext)
 							return sendErr
 						}
+						if sendContext.TopicID > 0 {
+							return fmt.Errorf("%w: saved response transport cannot preserve forum topic %d", core.ErrUnavailable, sendContext.TopicID)
+						}
 						_, sendErr := inter.SendMedia(runCtx, peer, mediaType, path, caption)
 						return sendErr
 					},
@@ -484,6 +487,9 @@ func (r *Router) executeSavedResponseBinding(
 						}); ok {
 							_, sendErr := contextual.SendMessageContext(runCtx, peer, text, nil, sendContext)
 							return sendErr
+						}
+						if sendContext.TopicID > 0 {
+							return fmt.Errorf("%w: saved response transport cannot preserve forum topic %d", core.ErrUnavailable, sendContext.TopicID)
 						}
 						_, sendErr := inter.SendMessage(runCtx, peer, text, nil)
 						return sendErr
