@@ -8,6 +8,10 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/client"
+	"github.com/inipew/goultroid/internal/core"
+	inlineservice "github.com/inipew/goultroid/internal/services/inline"
+	"github.com/inipew/goultroid/internal/tasks"
+	"go.uber.org/zap"
 )
 
 func TestLifecycle(t *testing.T) {
@@ -149,5 +153,87 @@ func TestUpdateHandlers_ShutdownBarrier(t *testing.T) {
 	}
 	if processed {
 		t.Fatalf("expected update to be rejected before any handler-side effect")
+	}
+}
+
+
+type inlineAdmissionDynamicSource struct {
+	scope tasks.ScopeIdentity
+}
+
+func (s *inlineAdmissionDynamicSource) Prepare(context.Context, string) (inlineservice.DynamicPrepared, bool, error) {
+	return inlineservice.DynamicPrepared{
+		Pattern: "saved",
+		Scope:   s.scope,
+		Resources: []tasks.ResourceRequirement{
+			{Name: "media", Amount: 1},
+		},
+		State: "saved",
+	}, true, nil
+}
+
+func (*inlineAdmissionDynamicSource) Execute(context.Context, inlineservice.DynamicPrepared, *inlineservice.InlineContext) (*inlineservice.InlineResponse, error) {
+	return &inlineservice.InlineResponse{}, nil
+}
+
+type captureInlineTaskClient struct {
+	spec  tasks.WorkSpec
+	calls int
+}
+
+func (c *captureInlineTaskClient) Submit(_ context.Context, spec tasks.WorkSpec) (tasks.Ticket, error) {
+	c.spec = spec
+	c.calls++
+	return nil, nil
+}
+func (*captureInlineTaskClient) Cancel(tasks.TaskID, tasks.Cause) (tasks.CancelReceipt, error) {
+	return tasks.CancelReceipt{}, nil
+}
+func (*captureInlineTaskClient) CancelScope(tasks.ScopeIdentity, tasks.Cause) int { return 0 }
+func (*captureInlineTaskClient) Snapshot(tasks.TaskID) (tasks.TaskSnapshot, bool) {
+	return tasks.TaskSnapshot{}, false
+}
+
+func TestUpdateHandlers_DynamicInlineMediaCarriesAdmissionAuthority(t *testing.T) {
+	dispatcher := tg.NewUpdateDispatcher()
+	registry := inlineservice.NewRegistry()
+	engine := inlineservice.NewEngine(registry, zap.NewNop())
+	scope := tasks.ScopeIdentity{Owner: "plugin:saved", Generation: 11}
+	engine.SetDynamicSource(&inlineAdmissionDynamicSource{scope: scope})
+
+	taskClient := &captureInlineTaskClient{}
+	client.RegisterUpdateHandlers(&dispatcher, client.UpdateHandlerDeps{
+		InlineEngine:  engine,
+		InlineService: &core.MockTelegramServicer{},
+		Tasks:         taskClient,
+	})
+
+	update := &tg.UpdateBotInlineQuery{
+		QueryID: 901,
+		UserID:  42,
+		Query:   "saved",
+	}
+	if err := dispatcher.Handle(context.Background(), &tg.Updates{
+		Updates: []tg.UpdateClass{update},
+	}); err != nil {
+		t.Fatalf("inline update error: %v", err)
+	}
+	if taskClient.calls != 1 {
+		t.Fatalf("TaskEngine submissions=%d, want 1", taskClient.calls)
+	}
+	if taskClient.spec.Scope != scope {
+		t.Fatalf("task scope=%+v, want %+v", taskClient.spec.Scope, scope)
+	}
+	if taskClient.spec.Pool != tasks.PoolID("general") ||
+		taskClient.spec.Class != tasks.PriorityInteractive {
+		t.Fatalf("task admission pool=%q class=%q", taskClient.spec.Pool, taskClient.spec.Class)
+	}
+	if taskClient.spec.ExecutionTimeout != 30*time.Second {
+		t.Fatalf("media execution timeout=%s, want 30s", taskClient.spec.ExecutionTimeout)
+	}
+	if len(taskClient.spec.Resources) != 1 ||
+		taskClient.spec.Resources[0].Name != "media" ||
+		taskClient.spec.Resources[0].Amount != 1 {
+		t.Fatalf("task resources=%+v, want media:1", taskClient.spec.Resources)
 	}
 }
