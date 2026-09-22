@@ -328,6 +328,9 @@ func (s *interactionServicer) SendMessageContext(
 	}); ok {
 		return contextual.SendMessageContext(ctx, peer, text, markup, send)
 	}
+	if send.TopicID > 0 {
+		return nil, fmt.Errorf("%w: group-rule transport cannot preserve forum topic %d", core.ErrUnavailable, send.TopicID)
+	}
 	return s.inter.SendMessage(ctx, peer, text, markup)
 }
 
@@ -346,6 +349,9 @@ func (s *interactionServicer) SendMediaContext(
 		SendMediaContext(context.Context, tg.InputPeerClass, string, string, string, core.MessageSendContext) (*tg.Message, error)
 	}); ok {
 		return contextual.SendMediaContext(ctx, peer, mediaType, filePath, caption, send)
+	}
+	if send.TopicID > 0 {
+		return nil, fmt.Errorf("%w: group-rule transport cannot preserve forum topic %d", core.ErrUnavailable, send.TopicID)
 	}
 	return s.inter.SendMedia(ctx, peer, mediaType, filePath, caption)
 }
