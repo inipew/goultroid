@@ -27,17 +27,39 @@ func TestP7KGroupPlaneResourceAndLifecycleFences(t *testing.T) {
 			"It owns no goroutine/cache/ticker",
 		},
 		filepath.Join(root, "internal", "assistant", "command", "router.go"): {
+			"assistantGroupQueueTimeout       = 10 * time.Second",
+			"assistantGroupExecutionTimeout   = 30 * time.Second",
 			"quotaOwner = tasks.OwnerID(fmt.Sprintf(\"telegram:chat:%d\"",
 			"orderingKey = core.GroupOrderingKey",
+			"QueueDeadline:    queueDeadline",
 		},
 		filepath.Join(root, "internal", "assistant", "client", "updates.go"): {
+			"assistantGroupRuleQueueTimeout = 5 * time.Second",
+			"maxAssistantGroupServiceUsers = 64",
 			"QuotaOwner:       tasks.OwnerID(fmt.Sprintf(\"telegram:chat:%d\", chatID))",
 			"OrderingKey:      core.GroupOrderingKey(chatID, assistantTopicID(message))",
+			"QueueDeadline:    time.Now().Add(assistantGroupRuleQueueTimeout)",
 			"deps.IsShuttingDown != nil && deps.IsShuttingDown()",
 		},
 		filepath.Join(root, "plugins", "filters", "filters.go"): {
+			"MaxRulesPerChat               = 512",
+			"MaxActiveChats                = 50_000",
+			"maxCompiledFilterCacheChats   = 500",
+			"maxFilterCooldownEntries      = 1_000",
 			"QuotaOwner:       tasks.OwnerID(fmt.Sprintf(\"telegram:chat:%d\", chatID))",
 			"OrderingKey:      core.GroupOrderingKey(chatID, topicID)",
+			"QueueDeadline:    queueDeadline",
+			"filter transport cannot preserve forum topic",
+		},
+		filepath.Join(root, "plugins", "blacklist", "blacklist.go"): {
+			"MaxRulesPerChat      = 512",
+			"MaxActiveChats        = 50_000",
+			"maxCompiledCacheChats = 500",
+		},
+		filepath.Join(root, "internal", "services", "moderation", "service.go"): {
+			"MaxWarningThreshold   = 16",
+			"MaxWarningRows        = 50_000",
+			"warningLockStripes    = 64",
 		},
 		filepath.Join(root, "internal", "core", "events.go"): {
 			"type QuotaOwnedEvent interface",
@@ -50,12 +72,30 @@ func TestP7KGroupPlaneResourceAndLifecycleFences(t *testing.T) {
 			"func (s *Service) StateContext(",
 			"s.chats = make(map[int64]chatConfig)",
 			"s.welcomeInterest.ReplaceLoaded(nil)",
+			"s.loaded && s.hasEnabledLocked() && s.transport != nil",
+		},
+		filepath.Join(root, "internal", "assistant", "grouprules", "service.go"): {
+			"group-rule transport cannot preserve forum topic",
 		},
 		filepath.Join(root, "internal", "assistant", "client", "client.go"): {
 			"groupEvents.SetTransport(nil)",
 			"groupRules.SetTransport(nil)",
 			"groupRules.SetRoleResolver(nil)",
 			"c.shuttingDown.Store(true)",
+		},
+		filepath.Join(root, "internal", "app", "assistant_rpc.go"): {
+			"InlineFloodWaitMax: 5 * time.Second",
+			"return a.executor.Do(ctx, meta, operation)",
+		},
+		filepath.Join(root, "internal", "telegram", "rpc_limiter.go"): {
+			"len(l.buckets)+missing > l.cfg.MaxBuckets",
+			"len(l.penalties) >= l.cfg.MaxPenalties",
+			"overflowPenaltyUntil",
+		},
+		filepath.Join(root, "internal", "admission", "controller.go"): {
+			"func (c *Controller) compactOwnerCounters",
+			"delete(c.orderingLocks, spec.OrderingKey)",
+			"delete(ps.ownerDeficits[class], owner)",
 		},
 		filepath.Join(root, "internal", "app", "shutdown.go"): {
 			"One App-owned deadline governs every teardown phase",
