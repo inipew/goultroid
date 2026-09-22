@@ -69,20 +69,10 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 	callbackRouter.SetLimiter(interLimiter)
 	callbackRouter.SetTimeout(15 * time.Second)
 
+	// Inline handlers are registered transactionally from FeatureSpec providers
+	// by plugin.Manager. The engine owns execution/caching only; it is no longer
+	// a second application-level feature registry.
 	inlineRegistry := inline.NewRegistry()
-	if err := inlineRegistry.Register(&defaultCatchAllInlineHandler{router: router, startTime: time.Now()}); err != nil {
-		cleanupCore(&coreDependencies{db: db, eventBus: eventBus, cmdLimiter: cmdLimiter, interLimiter: interLimiter}, logger)
-		return nil, fmt.Errorf("register catch-all inline handler: %w", err)
-	}
-	if err := inlineRegistry.Register(&defaultHelpInlineHandler{router: router}); err != nil {
-		cleanupCore(&coreDependencies{db: db, eventBus: eventBus, cmdLimiter: cmdLimiter, interLimiter: interLimiter}, logger)
-		return nil, fmt.Errorf("register help inline handler: %w", err)
-	}
-	if err := inlineRegistry.Register(&defaultPingInlineHandler{startTime: time.Now()}); err != nil {
-		cleanupCore(&coreDependencies{db: db, eventBus: eventBus, cmdLimiter: cmdLimiter, interLimiter: interLimiter}, logger)
-		return nil, fmt.Errorf("register ping inline handler: %w", err)
-	}
-
 	inlineEngine := inline.NewEngine(inlineRegistry, logger)
 	inlineEngine.SetMetrics(metrics)
 	inlineEngine.SetLimiter(interLimiter)
