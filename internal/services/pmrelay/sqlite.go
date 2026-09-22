@@ -535,6 +535,121 @@ func (r *SQLiteRepository) CountAudience(ctx context.Context) (int, error) {
 	return r.count(ctx, "assistant_audience_members")
 }
 
+func (r *SQLiteRepository) SetVisitorBlock(ctx context.Context, block VisitorBlock) (VisitorBlock, error) {
+	if r == nil || r.db == nil {
+		return VisitorBlock{}, ErrUnavailable
+	}
+	normalized, err := block.Normalize()
+	if err != nil {
+		return VisitorBlock{}, err
+	}
+	result, err := r.db.ExecContext(ctx, `
+		INSERT INTO pm_relay_visitor_blocks (visitor_user_id, blocked_at, reason)
+		SELECT ?, ?, ?
+		WHERE EXISTS (
+			SELECT 1 FROM pm_relay_visitor_blocks WHERE visitor_user_id = ?
+		) OR (
+			SELECT count(*) FROM pm_relay_visitor_blocks
+		) < ?
+		ON CONFLICT(visitor_user_id) DO UPDATE SET
+			blocked_at = excluded.blocked_at,
+			reason = excluded.reason
+	`, normalized.VisitorUserID, normalized.BlockedAt, normalized.Reason,
+		normalized.VisitorUserID, r.limits.Blocked)
+	if err != nil {
+		return VisitorBlock{}, fmt.Errorf("set pm relay visitor block: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return VisitorBlock{}, err
+	}
+	if affected != 1 {
+		return VisitorBlock{}, ErrBlockCapacity
+	}
+	return r.GetVisitorBlock(ctx, normalized.VisitorUserID)
+}
+
+func (r *SQLiteRepository) GetVisitorBlock(ctx context.Context, visitorUserID int64) (VisitorBlock, error) {
+	if r == nil || r.db == nil {
+		return VisitorBlock{}, ErrUnavailable
+	}
+	if visitorUserID <= 0 {
+		return VisitorBlock{}, ErrInvalidBlock
+	}
+	block, err := scanVisitorBlock(r.db.QueryRowContext(ctx, `
+		SELECT visitor_user_id, blocked_at, reason
+		FROM pm_relay_visitor_blocks
+		WHERE visitor_user_id = ?
+	`, visitorUserID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return VisitorBlock{}, ErrBlockNotFound
+	}
+	if err != nil {
+		return VisitorBlock{}, fmt.Errorf("get pm relay visitor block: %w", err)
+	}
+	return block, nil
+}
+
+func (r *SQLiteRepository) DeleteVisitorBlock(ctx context.Context, visitorUserID int64) (bool, error) {
+	if r == nil || r.db == nil {
+		return false, ErrUnavailable
+	}
+	if visitorUserID <= 0 {
+		return false, ErrInvalidBlock
+	}
+	result, err := r.db.ExecContext(ctx, `
+		DELETE FROM pm_relay_visitor_blocks WHERE visitor_user_id = ?
+	`, visitorUserID)
+	if err != nil {
+		return false, fmt.Errorf("delete pm relay visitor block: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
+func (r *SQLiteRepository) ListVisitorBlocks(ctx context.Context, afterUserID int64, limit int) ([]VisitorBlock, error) {
+	if r == nil || r.db == nil {
+		return nil, ErrUnavailable
+	}
+	if afterUserID < 0 {
+		return nil, ErrInvalidBlock
+	}
+	if limit <= 0 || limit > MaxPruneBatch {
+		limit = 100
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT visitor_user_id, blocked_at, reason
+		FROM pm_relay_visitor_blocks
+		WHERE visitor_user_id > ?
+		ORDER BY visitor_user_id ASC
+		LIMIT ?
+	`, afterUserID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pm relay visitor blocks: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]VisitorBlock, 0, limit)
+	for rows.Next() {
+		block, err := scanVisitorBlock(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan pm relay visitor block: %w", err)
+		}
+		result = append(result, block)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pm relay visitor blocks: %w", err)
+	}
+	return result, nil
+}
+
+func (r *SQLiteRepository) CountVisitorBlocks(ctx context.Context) (int, error) {
+	return r.count(ctx, "pm_relay_visitor_blocks")
+}
+
 type rowScanner interface {
 	Scan(...any) error
 }
@@ -587,6 +702,14 @@ func scanDelivery(scanner rowScanner) (DeliveryIntent, error) {
 		intent.DeliveredAt = &at
 	}
 	return intent.Normalize()
+}
+
+func scanVisitorBlock(scanner rowScanner) (VisitorBlock, error) {
+	var block VisitorBlock
+	if err := scanner.Scan(&block.VisitorUserID, &block.BlockedAt, &block.Reason); err != nil {
+		return VisitorBlock{}, err
+	}
+	return block.Normalize()
 }
 
 func scanAudience(scanner rowScanner) (AudienceMember, error) {
