@@ -90,16 +90,18 @@ func TestP7HInterestGatePrecedesEventAllocationAndPublish(t *testing.T) {
 		t.Fatal("P7-H group-service ingress helper is missing")
 	}
 	block := source[start : start+1+end]
-	interest := strings.Index(block, "deps.GroupEvents.Interested(chatID, kind)")
+	interest := strings.Index(block, "deps.GroupEvents.Interested(chat.id, kind)")
+	peer := strings.Index(block, "peer := chat.inputPeer()")
 	dedupe := strings.Index(block, "make(map[int64]struct{}")
 	users := strings.Index(block, "make([]core.GroupServiceUser")
 	allocation := strings.Index(block, "&core.GroupServiceEvent{")
 	publish := strings.Index(block, "deps.GroupEvents.Publish(")
-	if interest < 0 || dedupe < 0 || users < 0 || allocation < 0 || publish < 0 {
-		t.Fatalf("P7-H ingress markers missing: interest=%d dedupe=%d users=%d allocation=%d publish=%d",
-			interest, dedupe, users, allocation, publish)
+	if interest < 0 || peer < 0 || dedupe < 0 || users < 0 || allocation < 0 || publish < 0 {
+		t.Fatalf("P7-H ingress markers missing: interest=%d peer=%d dedupe=%d users=%d allocation=%d publish=%d",
+			interest, peer, dedupe, users, allocation, publish)
 	}
 	for name, position := range map[string]int{
+		"peer": peer,
 		"dedupe": dedupe,
 		"users": users,
 		"event": allocation,
