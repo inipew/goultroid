@@ -165,7 +165,6 @@ func TestCommandRouter_AssistantGroupMutationFailsClosedBeforeP7G(t *testing.T) 
 	}
 }
 
-
 type commandGroupRoleResolverStub struct {
 	calls int
 }
