@@ -123,6 +123,14 @@ type OrderedEvent interface {
 	OrderingKey() string
 }
 
+// QuotaOwnedEvent optionally routes TaskEngine admission to a domain-specific
+// aggregate owner. This lets high-cardinality producers (for example many
+// users/topics inside one Telegram group) share one bounded quota without
+// creating a second scheduler or per-key worker.
+type QuotaOwnedEvent interface {
+	QuotaOwner() tasks.OwnerID
+}
+
 type prioritizedEventWrapper struct {
 	Event
 	priority EventPriority
@@ -180,6 +188,13 @@ func (e *GroupServiceEvent) Meta() EventMeta      { return e.MetaData }
 func (e *GroupServiceEvent) OrderingKey() string {
 	if e != nil && e.ChatID != 0 {
 		return fmt.Sprintf("chat:%d", e.ChatID)
+	}
+	return ""
+}
+
+func (e *GroupServiceEvent) QuotaOwner() tasks.OwnerID {
+	if e != nil && e.ChatID > 0 {
+		return tasks.OwnerID(fmt.Sprintf("telegram:chat:%d", e.ChatID))
 	}
 	return ""
 }
@@ -956,6 +971,11 @@ func (b *EventBus) runJob(job eventJob) {
 	owner := tasks.OwnerID(job.subscriber.owner)
 	if owner == "" {
 		owner = "eventbus"
+	}
+	if quotaOwned, ok := job.event.(QuotaOwnedEvent); ok {
+		if eventOwner := quotaOwned.QuotaOwner(); eventOwner != "" {
+			owner = eventOwner
+		}
 	}
 	class := tasks.PriorityNormal
 	if job.priority == PriorityLow {
