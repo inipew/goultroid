@@ -12,6 +12,7 @@ import (
 	"github.com/inipew/goultroid/internal/scheduler"
 	broadcastSvc "github.com/inipew/goultroid/internal/services/broadcast"
 	"github.com/inipew/goultroid/internal/services/download"
+	"github.com/inipew/goultroid/internal/services/groupstate"
 	mediaSvc "github.com/inipew/goultroid/internal/services/media"
 	"github.com/inipew/goultroid/internal/services/mediaregistry"
 	pmpermitSvc "github.com/inipew/goultroid/internal/services/pmpermit"
@@ -49,6 +50,10 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 	}
 	settingsRepo := settings.NewSQLiteRepository(core.db.DB)
 	settingsService := settings.NewService(settingsRepo, settingsRegistry, core.eventBus)
+	groupState := groupstate.NewSQLiteStore(core.db)
+	if groupState == nil {
+		return nil, fmt.Errorf("initialize group state store")
+	}
 
 	schedRepo := scheduler.NewSQLiteRepository(core.db.DB)
 	schedEngine := scheduler.NewEngine(schedRepo, logger)
@@ -122,6 +127,7 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 	return &domainServices{
 		settingsService:  settingsService,
 		settingsRegistry: settingsRegistry,
+		groupState:       groupState,
 		schedEngine:      schedEngine,
 		storage:          appStorage,
 		mediaService:     mediaService,
