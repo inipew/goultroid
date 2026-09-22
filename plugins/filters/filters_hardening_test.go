@@ -136,3 +136,87 @@ func TestP7KFilterTopicDeliveryFailsClosedWithoutContextualTransport(t *testing.
 		t.Fatalf("topic fallback error=%v want ErrUnavailable", err)
 	}
 }
+
+
+type p7lFilterWriteRepo struct {
+	saveCalls int
+}
+
+func (r *p7lFilterWriteRepo) SaveFilter(context.Context, int64, string, savedresponse.Response) error {
+	r.saveCalls++
+	return nil
+}
+func (*p7lFilterWriteRepo) GetFilter(context.Context, int64, string) (*Filter, error) {
+	return nil, nil
+}
+func (*p7lFilterWriteRepo) ListFilters(context.Context, int64) ([]Filter, error) {
+	return nil, nil
+}
+func (*p7lFilterWriteRepo) DeleteFilter(context.Context, int64, string) error { return nil }
+
+type p7lFilterRoleResolver struct {
+	principal core.GroupActorPrincipal
+	fresh     int
+}
+
+func (r *p7lFilterRoleResolver) ResolveGroupRole(context.Context, core.GroupRoleRequest) (core.GroupRoleSnapshot, error) {
+	return core.GroupRoleSnapshot{Principal: r.principal}, nil
+}
+func (r *p7lFilterRoleResolver) ResolveGroupRoleFresh(_ context.Context, request core.GroupRoleRequest) (core.GroupRoleSnapshot, error) {
+	r.fresh++
+	principal := r.principal
+	principal.UserID = request.UserID
+	return core.GroupRoleSnapshot{Principal: principal}, nil
+}
+
+func TestP7LMediaFilterContinuationRevalidatesAuthorityBeforePersistence(t *testing.T) {
+	repo := &p7lFilterWriteRepo{}
+	roles := &p7lFilterRoleResolver{principal: core.GroupActorPrincipal{
+		Role: core.GroupActorRoleAdministrator, Verified: true,
+	}}
+	p := New(repo, nil)
+
+	commandCtx := &core.Context{
+		Ctx:        context.Background(),
+		Source:     core.ExecutionAssistant,
+		Chat:       &core.Chat{ID: 77, Type: string(core.ChatKindSupergroup)},
+		Sender:     &core.User{ID: 42},
+		PeerID:     &tg.InputPeerChannel{ChannelID: 77, AccessHash: 7077},
+		GroupRoles: roles,
+		Svc:        &core.MockTelegramServicer{},
+	}
+	guard := assistantFilterWriteGuard(commandCtx)
+	if guard == nil {
+		t.Fatal("Assistant group filter write did not capture a fresh-auth guard")
+	}
+	detached := detachFilterContext(commandCtx).WithContext(context.Background())
+
+	// Simulate the actor losing Telegram admin role after the admitted command
+	// task queued its media-capture continuation but before durable persistence.
+	roles.principal = core.GroupActorPrincipal{
+		Role: core.GroupActorRoleMember, Verified: true,
+	}
+	err := p.saveFilterResponseGuarded(
+		detached,
+		77,
+		"media",
+		savedresponse.NewText("captured response"),
+		guard,
+	)
+	if !errors.Is(err, core.ErrGroupAuthorizationDenied) {
+		t.Fatalf("continuation write error=%v want ErrGroupAuthorizationDenied", err)
+	}
+	if roles.fresh != 1 {
+		t.Fatalf("fresh role checks=%d want 1 immediately before persistence", roles.fresh)
+	}
+	if repo.saveCalls != 0 {
+		t.Fatalf("revoked actor persisted filter %d times", repo.saveCalls)
+	}
+}
+
+func TestP7LUserbotFilterWriteDoesNotRequireAssistantRoleResolver(t *testing.T) {
+	ctx := &core.Context{Source: core.ExecutionInteractive}
+	if guard := assistantFilterWriteGuard(ctx); guard != nil {
+		t.Fatal("userbot filter write unexpectedly requires Assistant contextual role verification")
+	}
+}
