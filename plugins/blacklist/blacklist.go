@@ -42,14 +42,20 @@ type Plugin struct {
 	db            Repository
 	svcFunc       func() core.TelegramServicer
 	featureState  core.ChatFeatureSnapshot
-	ruleRevision  atomic.Uint64
+	revisionSeq   atomic.Uint64
 	cacheMu       sync.RWMutex
+	chatRevision  map[int64]uint64
 	chatBlacklist map[int64]compiledBlacklistSet
 	chatAccess    map[int64]time.Time
 }
 
 func New(db Repository, svcFunc func() core.TelegramServicer) *Plugin {
-	return &Plugin{db: db, svcFunc: svcFunc, chatBlacklist: make(map[int64]compiledBlacklistSet), chatAccess: make(map[int64]time.Time)}
+	return &Plugin{
+		db: db, svcFunc: svcFunc,
+		chatRevision:  make(map[int64]uint64),
+		chatBlacklist: make(map[int64]compiledBlacklistSet),
+		chatAccess:    make(map[int64]time.Time),
+	}
 }
 func (p *Plugin) Name() string { return "blacklist" }
 
@@ -142,12 +148,8 @@ func (p *Plugin) handleBlacklist(ctx *core.Context) error {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to add to blacklist: %v", err))
 		return err
 	}
-	p.ruleRevision.Add(1)
 	p.featureState.SetActive(chatID, true)
-	p.cacheMu.Lock()
-	delete(p.chatBlacklist, chatID)
-	delete(p.chatAccess, chatID)
-	p.cacheMu.Unlock()
+	p.invalidateChat(chatID, true)
 	return ctx.EditOrReply(fmt.Sprintf("🚫 Added <code>%s</code> to chat blacklist.", html.EscapeString(word)))
 }
 func (p *Plugin) handleUnblacklist(ctx *core.Context) error {
@@ -162,16 +164,14 @@ func (p *Plugin) handleUnblacklist(ctx *core.Context) error {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to remove from blacklist: %v", err))
 		return err
 	}
-	p.ruleRevision.Add(1)
+	active := false
 	if remaining, err := p.db.ListBlacklists(ctx.Ctx, chatID); err != nil {
 		p.featureState.MarkUnknown(chatID)
 	} else {
-		p.featureState.SetActive(chatID, len(remaining) > 0)
+		active = len(remaining) > 0
+		p.featureState.SetActive(chatID, active)
 	}
-	p.cacheMu.Lock()
-	delete(p.chatBlacklist, chatID)
-	delete(p.chatAccess, chatID)
-	p.cacheMu.Unlock()
+	p.invalidateChat(chatID, active)
 	return ctx.EditOrReply(fmt.Sprintf("✅ Removed <code>%s</code> from chat blacklist.", html.EscapeString(word)))
 }
 func (p *Plugin) handleListBlacklists(ctx *core.Context) error {
@@ -196,8 +196,27 @@ func (p *Plugin) AssistantRuleInterested(chatID int64) bool {
 	return p.MessageHookInterested(chatID)
 }
 
-func (p *Plugin) AssistantRuleRevision(_ int64) uint64 {
-	return p.ruleRevision.Load()
+func (p *Plugin) AssistantRuleRevision(chatID int64) uint64 {
+	return p.chatRuleRevision(chatID)
+}
+
+func (p *Plugin) chatRuleRevision(chatID int64) uint64 {
+	p.cacheMu.RLock()
+	revision := p.chatRevision[chatID]
+	p.cacheMu.RUnlock()
+	return revision
+}
+
+func (p *Plugin) invalidateChat(chatID int64, active bool) {
+	p.cacheMu.Lock()
+	delete(p.chatBlacklist, chatID)
+	delete(p.chatAccess, chatID)
+	if active {
+		p.chatRevision[chatID] = p.revisionSeq.Add(1)
+	} else {
+		delete(p.chatRevision, chatID)
+	}
+	p.cacheMu.Unlock()
 }
 
 func (p *Plugin) MatchAssistantRule(ctx context.Context, message *core.MessageEnvelope) (bool, error) {
@@ -232,7 +251,7 @@ func (p *Plugin) compiledForChat(
 	chatID int64,
 ) ([]compiledBlacklist, error) {
 	for attempt := 0; attempt < 3; attempt++ {
-		revision := p.ruleRevision.Load()
+		revision := p.chatRuleRevision(chatID)
 		p.cacheMu.RLock()
 		cached, ok := p.chatBlacklist[chatID]
 		p.cacheMu.RUnlock()
@@ -259,13 +278,13 @@ func (p *Plugin) compiledForChat(
 			}
 		}
 		items := compileBlacklist(rawWords)
-		if p.ruleRevision.Load() != revision {
+		if p.chatRuleRevision(chatID) != revision {
 			continue
 		}
 
 		p.featureState.SetActive(chatID, len(rawWords) > 0)
 		p.cacheMu.Lock()
-		if p.ruleRevision.Load() != revision {
+		if p.chatRuleRevision(chatID) != revision {
 			p.cacheMu.Unlock()
 			continue
 		}
