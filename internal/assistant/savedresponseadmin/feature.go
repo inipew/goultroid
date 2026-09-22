@@ -30,10 +30,10 @@ const (
 	screenInput  = "input"
 
 	actionHome             = "home"
-	actionSurfaceAssistant = "surface_assistant"
-	actionSurfaceInline    = "surface_inline"
-	actionSurfaceDeepLink  = "surface_deep_link"
-	actionSurfaceCallback  = "surface_callback"
+	actionSurfaceAssistant = "surf_asst"
+	actionSurfaceInline    = "surf_inl"
+	actionSurfaceDeepLink  = "surf_link"
+	actionSurfaceCallback  = "surf_cb"
 	actionPrev             = "prev"
 	actionNext             = "next"
 	actionCreate           = "create"
@@ -41,8 +41,8 @@ const (
 	actionToggle           = "toggle"
 	actionEdit             = "edit"
 	actionDelete           = "delete"
-	actionDeleteConfirm    = "delete_confirm"
-	actionDeleteCancel     = "delete_cancel"
+	actionDeleteConfirm    = "del_ok"
+	actionDeleteCancel     = "del_no"
 
 	pageSize  = 6
 	slotCount = 6
