@@ -23,14 +23,53 @@ func (NoopRPCMetrics) ObserveFloodWait(string, time.Duration, bool)             
 
 // RPCMetricsSnapshot holds a copy of aggregated metrics for diagnostics.
 type RPCMetricsSnapshot struct {
-	TotalRequests     int64
-	RequestsByClass   map[RPCErrorClass]int64
-	RequestsByMethod  map[string]int64
-	TotalWaitTime     time.Duration
-	WaitTimeByScope   map[string]time.Duration
-	FloodWaitCount    int64
-	FloodWaitDeferred int64
-	FloodWaitTotal    time.Duration
+	TotalRequests       int64
+	RequestsByClass     map[RPCErrorClass]int64
+	RequestsByMethod    map[string]int64
+	TotalRequestLatency time.Duration
+	MaxRequestLatency   time.Duration
+	RequestLatency      RPCLatencyBuckets
+	Attempts            RPCAttemptDistribution
+	MethodMetrics       map[string]RPCMethodMetricsSnapshot
+	TotalWaitCount      int64
+	WaitCountByScope    map[string]int64
+	TotalWaitTime       time.Duration
+	WaitTimeByScope     map[string]time.Duration
+	FloodWaitCount      int64
+	FloodWaitDeferred   int64
+	FloodWaitTotal      time.Duration
+}
+
+// RPCLatencyBuckets is a fixed-cardinality latency histogram. Counts are
+// mutually exclusive ranges, so Snapshot can expose useful latency shape
+// without allocating labels on the request hot path.
+type RPCLatencyBuckets struct {
+	LE1ms   int64
+	LE5ms   int64
+	LE25ms  int64
+	LE100ms int64
+	LE500ms int64
+	LE2s    int64
+	LE10s   int64
+	GT10s   int64
+}
+
+// RPCAttemptDistribution keeps retry-attempt telemetry bounded. Attempts <= 1
+// are classified as first attempts; attempt numbers >= 4 share one tail bucket.
+type RPCAttemptDistribution struct {
+	First         int64
+	Second        int64
+	Third         int64
+	FourthOrLater int64
+}
+
+// RPCMethodMetricsSnapshot contains bounded per-method latency and attempt data.
+type RPCMethodMetricsSnapshot struct {
+	Requests     int64
+	TotalLatency time.Duration
+	MaxLatency   time.Duration
+	Latency      RPCLatencyBuckets
+	Attempts     RPCAttemptDistribution
 }
 
 const (
@@ -38,13 +77,20 @@ const (
 	maxRPCMethodMetricLabels = 512
 	maxRPCWaitMetricLabels   = 32
 	rpcMetricOverflowLabel   = "__other__"
+	rpcLatencyBucketCount    = 8
+	rpcAttemptBucketCount    = 4
 )
 
 type rpcMethodCounters struct {
-	requests atomic.Int64
+	requests       atomic.Int64
+	latencyNanos   atomic.Int64
+	maxLatencyNano atomic.Int64
+	latencyBuckets [rpcLatencyBucketCount]atomic.Int64
+	attempts       [rpcAttemptBucketCount]atomic.Int64
 }
 
 type rpcWaitCounters struct {
+	count atomic.Int64
 	nanos atomic.Int64
 }
 
@@ -55,15 +101,20 @@ type rpcWaitCounters struct {
 // load plus per-label atomic increments. Snapshot pays the aggregation cost
 // instead of serializing every physical Telegram RPC on one global mutex.
 type InMemoryRPCMetrics struct {
-	requestsByClass   [rpcErrorClassCount]atomic.Int64
-	requestsByMethod  sync.Map // map[string]*rpcMethodCounters
-	waitTimeByScope   sync.Map // map[string]*rpcWaitCounters
-	labelMu           sync.Mutex
-	methodLabels      int
-	waitLabels        int
-	overflowMethod    rpcMethodCounters
-	overflowWait      rpcWaitCounters
-	unscopedWaitNanos atomic.Int64
+	requestsByClass      [rpcErrorClassCount]atomic.Int64
+	requestsByMethod     sync.Map // map[string]*rpcMethodCounters
+	waitTimeByScope      sync.Map // map[string]*rpcWaitCounters
+	labelMu              sync.Mutex
+	methodLabels         int
+	waitLabels           int
+	overflowMethod       rpcMethodCounters
+	overflowWait         rpcWaitCounters
+	requestLatencyNanos  atomic.Int64
+	requestMaxLatency    atomic.Int64
+	requestLatencyBucket [rpcLatencyBucketCount]atomic.Int64
+	requestsByAttempt    [rpcAttemptBucketCount]atomic.Int64
+	unscopedWaitCount    atomic.Int64
+	unscopedWaitNanos    atomic.Int64
 
 	floodWaitCount    atomic.Int64
 	floodWaitDeferred atomic.Int64
@@ -117,17 +168,114 @@ func (m *InMemoryRPCMetrics) waitCounters(scope string) *rpcWaitCounters {
 	return created
 }
 
+func rpcLatencyBucket(elapsed time.Duration) int {
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	switch {
+	case elapsed <= time.Millisecond:
+		return 0
+	case elapsed <= 5*time.Millisecond:
+		return 1
+	case elapsed <= 25*time.Millisecond:
+		return 2
+	case elapsed <= 100*time.Millisecond:
+		return 3
+	case elapsed <= 500*time.Millisecond:
+		return 4
+	case elapsed <= 2*time.Second:
+		return 5
+	case elapsed <= 10*time.Second:
+		return 6
+	default:
+		return 7
+	}
+}
+
+func rpcAttemptBucket(attempt int) int {
+	switch {
+	case attempt <= 1:
+		return 0
+	case attempt == 2:
+		return 1
+	case attempt == 3:
+		return 2
+	default:
+		return 3
+	}
+}
+
+func observeAtomicMax(dst *atomic.Int64, value int64) {
+	if value < 0 {
+		value = 0
+	}
+	for {
+		current := dst.Load()
+		if value <= current || dst.CompareAndSwap(current, value) {
+			return
+		}
+	}
+}
+
+func snapshotLatencyBuckets(src *[rpcLatencyBucketCount]atomic.Int64) RPCLatencyBuckets {
+	return RPCLatencyBuckets{
+		LE1ms:   src[0].Load(),
+		LE5ms:   src[1].Load(),
+		LE25ms:  src[2].Load(),
+		LE100ms: src[3].Load(),
+		LE500ms: src[4].Load(),
+		LE2s:    src[5].Load(),
+		LE10s:   src[6].Load(),
+		GT10s:   src[7].Load(),
+	}
+}
+
+func snapshotAttemptDistribution(src *[rpcAttemptBucketCount]atomic.Int64) RPCAttemptDistribution {
+	return RPCAttemptDistribution{
+		First:         src[0].Load(),
+		Second:        src[1].Load(),
+		Third:         src[2].Load(),
+		FourthOrLater: src[3].Load(),
+	}
+}
+
+func snapshotMethodCounters(counters *rpcMethodCounters) RPCMethodMetricsSnapshot {
+	if counters == nil {
+		return RPCMethodMetricsSnapshot{}
+	}
+	return RPCMethodMetricsSnapshot{
+		Requests:     counters.requests.Load(),
+		TotalLatency: time.Duration(counters.latencyNanos.Load()),
+		MaxLatency:   time.Duration(counters.maxLatencyNano.Load()),
+		Latency:      snapshotLatencyBuckets(&counters.latencyBuckets),
+		Attempts:     snapshotAttemptDistribution(&counters.attempts),
+	}
+}
+
 func (m *InMemoryRPCMetrics) ObserveRequest(method string, class RPCErrorClass, attempt int, elapsed time.Duration) {
 	if m == nil {
 		return
+	}
+	if elapsed < 0 {
+		elapsed = 0
 	}
 	classIndex := int(class)
 	if classIndex < 0 || classIndex >= len(m.requestsByClass) {
 		classIndex = int(RPCUnknown)
 	}
+	latencyBucket := rpcLatencyBucket(elapsed)
+	attemptBucket := rpcAttemptBucket(attempt)
 	m.requestsByClass[classIndex].Add(1)
+	m.requestLatencyNanos.Add(int64(elapsed))
+	observeAtomicMax(&m.requestMaxLatency, int64(elapsed))
+	m.requestLatencyBucket[latencyBucket].Add(1)
+	m.requestsByAttempt[attemptBucket].Add(1)
 	if counters := m.methodCounters(method); counters != nil {
 		counters.requests.Add(1)
+		counters.latencyNanos.Add(int64(elapsed))
+		observeAtomicMax(&counters.maxLatencyNano, int64(elapsed))
+		counters.latencyBuckets[latencyBucket].Add(1)
+		counters.attempts[attemptBucket].Add(1)
 	}
 }
 
@@ -135,10 +283,15 @@ func (m *InMemoryRPCMetrics) ObserveWait(scope string, elapsed time.Duration) {
 	if m == nil {
 		return
 	}
+	if elapsed < 0 {
+		elapsed = 0
+	}
 	if counters := m.waitCounters(scope); counters != nil {
+		counters.count.Add(1)
 		counters.nanos.Add(int64(elapsed))
 		return
 	}
+	m.unscopedWaitCount.Add(1)
 	m.unscopedWaitNanos.Add(int64(elapsed))
 }
 
@@ -161,6 +314,8 @@ func (m *InMemoryRPCMetrics) Snapshot() RPCMetricsSnapshot {
 		return RPCMetricsSnapshot{
 			RequestsByClass:  make(map[RPCErrorClass]int64),
 			RequestsByMethod: make(map[string]int64),
+			MethodMetrics:    make(map[string]RPCMethodMetricsSnapshot),
+			WaitCountByScope: make(map[string]int64),
 			WaitTimeByScope:  make(map[string]time.Duration),
 		}
 	}
@@ -176,40 +331,64 @@ func (m *InMemoryRPCMetrics) Snapshot() RPCMetricsSnapshot {
 	}
 
 	methods := make(map[string]int64)
+	methodMetrics := make(map[string]RPCMethodMetricsSnapshot)
 	m.requestsByMethod.Range(func(key, value any) bool {
-		count := value.(*rpcMethodCounters).requests.Load()
+		counters := value.(*rpcMethodCounters)
+		count := counters.requests.Load()
 		if count != 0 {
-			methods[key.(string)] = count
+			name := key.(string)
+			methods[name] = count
+			methodMetrics[name] = snapshotMethodCounters(counters)
 		}
 		return true
 	})
 	if overflow := m.overflowMethod.requests.Load(); overflow != 0 {
 		methods[rpcMetricOverflowLabel] = overflow
+		methodMetrics[rpcMetricOverflowLabel] = snapshotMethodCounters(&m.overflowMethod)
 	}
 
+	waitCounts := make(map[string]int64)
 	waits := make(map[string]time.Duration)
+	totalWaitCount := m.unscopedWaitCount.Load()
 	totalWaitNanos := m.unscopedWaitNanos.Load()
 	m.waitTimeByScope.Range(func(key, value any) bool {
-		nanos := value.(*rpcWaitCounters).nanos.Load()
+		counters := value.(*rpcWaitCounters)
+		count := counters.count.Load()
+		nanos := counters.nanos.Load()
+		if count != 0 {
+			waitCounts[key.(string)] = count
+		}
 		if nanos != 0 {
 			waits[key.(string)] = time.Duration(nanos)
 		}
+		totalWaitCount += count
 		totalWaitNanos += nanos
 		return true
 	})
+	if overflowCount := m.overflowWait.count.Load(); overflowCount != 0 {
+		waitCounts[rpcMetricOverflowLabel] = overflowCount
+		totalWaitCount += overflowCount
+	}
 	if overflow := m.overflowWait.nanos.Load(); overflow != 0 {
 		waits[rpcMetricOverflowLabel] = time.Duration(overflow)
 		totalWaitNanos += overflow
 	}
 
 	return RPCMetricsSnapshot{
-		TotalRequests:     totalRequests,
-		RequestsByClass:   classes,
-		RequestsByMethod:  methods,
-		TotalWaitTime:     time.Duration(totalWaitNanos),
-		WaitTimeByScope:   waits,
-		FloodWaitCount:    m.floodWaitCount.Load(),
-		FloodWaitDeferred: m.floodWaitDeferred.Load(),
-		FloodWaitTotal:    time.Duration(m.floodWaitNanos.Load()),
+		TotalRequests:       totalRequests,
+		RequestsByClass:     classes,
+		RequestsByMethod:    methods,
+		TotalRequestLatency: time.Duration(m.requestLatencyNanos.Load()),
+		MaxRequestLatency:   time.Duration(m.requestMaxLatency.Load()),
+		RequestLatency:      snapshotLatencyBuckets(&m.requestLatencyBucket),
+		Attempts:            snapshotAttemptDistribution(&m.requestsByAttempt),
+		MethodMetrics:       methodMetrics,
+		TotalWaitCount:      totalWaitCount,
+		WaitCountByScope:    waitCounts,
+		TotalWaitTime:       time.Duration(totalWaitNanos),
+		WaitTimeByScope:     waits,
+		FloodWaitCount:      m.floodWaitCount.Load(),
+		FloodWaitDeferred:   m.floodWaitDeferred.Load(),
+		FloodWaitTotal:      time.Duration(m.floodWaitNanos.Load()),
 	}
 }
