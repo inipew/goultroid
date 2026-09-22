@@ -299,6 +299,9 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	if err := pluginManager.RegisterWithContext(context.Background(), assistantShell); err != nil {
 		return nil, fmt.Errorf("register assistant shell feature: %w", err)
 	}
+	if err := savedResponseBindings.ValidateEnabledCollisions(context.Background()); err != nil {
+		return nil, fmt.Errorf("validate saved-response surface collisions: %w", err)
+	}
 	if tgRuntime.assistant != nil {
 		drivers := make([]assistantinteraction.FeatureDriver, 0)
 		for _, registered := range pluginManager.Plugins() {
