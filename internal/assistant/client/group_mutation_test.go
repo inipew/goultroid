@@ -286,7 +286,7 @@ func TestP7GSupergroupBanRevalidatesTargetBotActorBeforeRPC(t *testing.T) {
 	if api.editBannedCalls != 1 {
 		t.Fatalf("editBanned calls=%d, want 1", api.editBannedCalls)
 	}
-	assertEvents(t, events, "role:30", "bot", "role:10", "rpc:editBanned")
+	assertEvents(t, events, "bot", "role:10", "role:30", "rpc:editBanned")
 	if !api.editBannedReqs[0].BannedRights.ViewMessages {
 		t.Fatal("ban RPC did not carry full ban rights")
 	}
@@ -317,7 +317,7 @@ func TestP7GBotRightsFailurePreventsPhysicalMutation(t *testing.T) {
 	if api.editBannedCalls != 0 {
 		t.Fatalf("bot-right failure issued %d mutations", api.editBannedCalls)
 	}
-	assertEvents(t, events, "role:30", "bot")
+	assertEvents(t, events, "bot")
 }
 
 func TestP7GActorRightsFailurePreventsPhysicalMutation(t *testing.T) {
@@ -345,7 +345,7 @@ func TestP7GActorRightsFailurePreventsPhysicalMutation(t *testing.T) {
 	if api.editBannedCalls != 0 {
 		t.Fatalf("actor-right failure issued %d mutations", api.editBannedCalls)
 	}
-	assertEvents(t, events, "role:30", "bot", "role:10")
+	assertEvents(t, events, "bot", "role:10")
 }
 
 func TestP7GProtectsCreatorAndHigherAdminTargets(t *testing.T) {
@@ -500,8 +500,8 @@ func TestP7GKickRevalidatesBeforeBothPhysicalRPCs(t *testing.T) {
 		t.Fatalf("second kick request should clear rights: %+v", api.editBannedReqs[1].BannedRights)
 	}
 	assertEvents(t, events,
-		"role:30", "bot", "role:10", "rpc:editBanned",
-		"role:30", "bot", "role:10", "rpc:editBanned",
+		"bot", "role:10", "role:30", "rpc:editBanned",
+		"bot", "role:10", "role:30", "rpc:editBanned",
 	)
 }
 
