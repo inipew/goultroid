@@ -5,9 +5,10 @@
 P6-B attaches PM Relay classification to the Assistant update path without
 attaching Telegram relay delivery.
 
-The production PM Relay service is constructed and wired into Assistant, but it
-remains disabled by default. This makes the new composition boundary real while
-keeping the deployment behavior dormant until P6-C installs the delivery plane.
+At the P6-B milestone the production PM Relay service was constructed and wired
+but intentionally left disabled. P6-C now supersedes that dormant state by
+activating the service when an Assistant runtime exists and installing the
+durable visitor delivery plane.
 
 There is no new goroutine, ticker, polling loop, Telegram dispatcher, callback
 router, or plugin registry.
@@ -164,9 +165,9 @@ Quiescing Assistant therefore creates no new prepared relay work.
 Existing admitted work is owned by TaskEngine and follows the global TaskEngine
 shutdown/cancellation semantics.
 
-## Dormant production wiring
+## P6-B production wiring
 
-Application composition creates:
+P6-B established this composition boundary:
 
 ```text
 pmrelay.SQLiteRepository
@@ -178,11 +179,9 @@ Assistant.SetRelayIngress
 client.RelayIngress
 ```
 
-The disabled default is intentional. P6-B must not consume CPU/DB capacity for
-ordinary PM traffic while it still has no delivery plane.
-
-P6-C is responsible for defining when relay becomes active and for attaching
-durable visitor-to-owner delivery after `RevalidatePrepared` revalidation.
+The service itself still defaults to disabled when constructed directly.
+P6-C activates it only when the application has an Assistant runtime and
+attaches durable visitor-to-owner delivery after the P6-B revalidation boundary.
 
 ## Acceptance gates
 
