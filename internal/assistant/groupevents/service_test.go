@@ -425,3 +425,20 @@ func TestP7KTransportLifecycleOwnsGroupEventSubscription(t *testing.T) {
 		t.Fatalf("reattached transport subscriptions=%d, want 1", got)
 	}
 }
+
+
+func TestP7KBoundedGroupEventPayloadPreservesReportedCount(t *testing.T) {
+	users := make([]core.GroupServiceUser, maxRenderedUsers)
+	for i := range users {
+		users[i] = core.GroupServiceUser{ID: int64(i + 1), FirstName: "User"}
+	}
+	text := renderTemplate("{user} ({count})", &core.GroupServiceEvent{
+		ChatID:    77,
+		ChatTitle: "Group",
+		UserCount: 100,
+		Users:     users,
+	})
+	if !strings.Contains(text, "(100)") || !strings.Contains(text, "and 92 more") {
+		t.Fatalf("bounded render lost reported count: %q", text)
+	}
+}
