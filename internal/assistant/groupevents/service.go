@@ -195,6 +195,7 @@ func (s *Service) SetTransport(transport Transport) {
 	s.mu.Lock()
 	if !s.closed.Load() {
 		s.transport = transport
+		s.syncSubscriptionLocked()
 	}
 	s.mu.Unlock()
 }
@@ -235,7 +236,7 @@ func (s *Service) syncSubscriptionLocked() {
 	if s.bus == nil {
 		return
 	}
-	active := !s.closed.Load() && s.loaded && s.hasEnabledLocked()
+	active := !s.closed.Load() && s.loaded && s.hasEnabledLocked() && s.transport != nil
 	if active && s.sub == nil {
 		s.sub = s.bus.SubscribeWithOptions(
 			core.EventTypeGroupService,
