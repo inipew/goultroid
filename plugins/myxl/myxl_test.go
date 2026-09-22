@@ -328,7 +328,11 @@ func TestMyXLPlugin_Commands(t *testing.T) {
 		t.Errorf("expected purchase confirmation, got %s", svc.sent)
 	}
 	purchaseData := callbackDataFromMarkup(t, svc.lastMarkup)
-	purchaseRouter := callback.NewRouter(nil, plugin.stateStore)
+	purchaseStateStore, ok := plugin.stateStore.(*callback.StateStore)
+	if !ok || purchaseStateStore == nil {
+		t.Fatalf("purchase state writer type = %T, want *callback.StateStore", plugin.stateStore)
+	}
+	purchaseRouter := callback.NewRouter(nil, purchaseStateStore)
 	purchaseCapture := &callbackStateCaptureHandler{}
 	purchaseRegistration, err := purchaseRouter.RegisterOwned("test", purchaseCapture)
 	if err != nil {
