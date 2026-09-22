@@ -264,7 +264,7 @@ Tests freeze these invariants:
 
 P6-C does not implement:
 
-- media relay;
+- visitor → owner media relay;
 - local visitor block/ban policy;
 - force-sub checks;
 - relay settings/control UI;
