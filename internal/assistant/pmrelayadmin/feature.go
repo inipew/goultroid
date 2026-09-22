@@ -14,7 +14,9 @@ import (
 )
 
 const (
-	FeatureID = "pmrelay_admin"
+	FeatureID              = "pmrelay_admin"
+	blockedPageSize        = 5
+	blockedReasonPreviewRunes = 96
 )
 
 type Feature struct {
@@ -196,8 +198,7 @@ func (f *Feature) replyBlocked(ctx *core.Context) error {
 		}
 		after = value
 	}
-	const limit = 50
-	blocks, err := f.relay.ListVisitorBlocks(ctx.Ctx, after, limit)
+	blocks, err := f.relay.ListVisitorBlocks(ctx.Ctx, after, blockedPageSize)
 	if err != nil {
 		return err
 	}
@@ -210,14 +211,23 @@ func (f *Feature) replyBlocked(ctx *core.Context) error {
 	for _, block := range blocks {
 		fmt.Fprintf(&sb, "• <code>%d</code> — %s", block.VisitorUserID, block.BlockedAt.UTC().Format(time.RFC3339))
 		if block.Reason != "" {
-			fmt.Fprintf(&sb, " — %s", core.EscapeHTML(block.Reason))
+			fmt.Fprintf(&sb, " — %s", core.EscapeHTML(previewReason(block.Reason)))
 		}
 		sb.WriteByte('\n')
 	}
-	if len(blocks) == limit {
+	if len(blocks) == blockedPageSize {
 		fmt.Fprintf(&sb, "\nNext page: <code>/relay blocked %d</code>", blocks[len(blocks)-1].VisitorUserID)
 	}
 	return ctx.Reply(sb.String())
+}
+
+func previewReason(reason string) string {
+	reason = strings.TrimSpace(reason)
+	runes := []rune(reason)
+	if len(runes) <= blockedReasonPreviewRunes {
+		return reason
+	}
+	return string(runes[:blockedReasonPreviewRunes]) + "…"
 }
 
 func (f *Feature) handleWho(ctx *core.Context) error {
