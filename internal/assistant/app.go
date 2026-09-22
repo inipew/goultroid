@@ -6,6 +6,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/assistant/client"
 	assistantdeeplink "github.com/inipew/goultroid/internal/assistant/deeplink"
+	"github.com/inipew/goultroid/internal/assistant/groupevents"
 	assistantinteraction "github.com/inipew/goultroid/internal/assistant/interaction"
 	assistentrpc "github.com/inipew/goultroid/internal/assistant/rpc"
 	"github.com/inipew/goultroid/internal/core"
@@ -37,6 +38,7 @@ type Client interface {
 	SetRelayIngress(relay pmrelay.Ingress)
 	SetAudienceRegistry(registry pmrelay.AudienceRegistry)
 	SetBroadcastService(service *broadcastsvc.Service)
+	SetGroupEventService(service *groupevents.Service)
 	BroadcastAudience(context.Context, broadcastsvc.BroadcastRequest) (*broadcastsvc.BroadcastReport, error)
 	SetTasks(client tasks.Client)
 	SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool))
@@ -129,6 +131,10 @@ func (a *AssistantApp) SetAudienceRegistry(registry pmrelay.AudienceRegistry) {
 }
 func (a *AssistantApp) SetBroadcastService(service *broadcastsvc.Service) {
 	a.client.SetBroadcastService(service)
+}
+
+func (a *AssistantApp) SetGroupEventService(service *groupevents.Service) {
+	a.client.SetGroupEventService(service)
 }
 func (a *AssistantApp) BroadcastAudience(
 	ctx context.Context,
