@@ -2,6 +2,7 @@ package filters
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/gotd/td/tg"
@@ -108,5 +109,27 @@ func TestResponseCloneDetachesMediaPointer(t *testing.T) {
 	cloned.Media.AssetID = "two"
 	if original.Media.AssetID != "one" {
 		t.Fatalf("clone mutated original media ref: %+v", original.Media)
+	}
+}
+
+
+func TestP7KFilterTopicDeliveryFailsClosedWithoutContextualTransport(t *testing.T) {
+	p := New(nil, nil)
+	response := savedresponse.NewHTML("topic response")
+	template, err := savedresponse.Compile(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = p.deliverResponse(
+		context.Background(),
+		&core.MockTelegramServicer{},
+		&tg.InputPeerChannel{ChannelID: 10, AccessHash: 110},
+		response,
+		template,
+		savedresponse.TemplateVars{},
+		core.MessageSendContext{ReplyToID: 20, TopicID: 7},
+	)
+	if !errors.Is(err, core.ErrUnavailable) {
+		t.Fatalf("topic fallback error=%v want ErrUnavailable", err)
 	}
 }
