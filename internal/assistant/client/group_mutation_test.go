@@ -9,9 +9,11 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
+	"github.com/inipew/goultroid/internal/admission"
 	"github.com/inipew/goultroid/internal/assistant/command"
 	"github.com/inipew/goultroid/internal/assistant/peer"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 type mutationRoleStub struct {
@@ -710,4 +712,60 @@ func TestP7GBasicGroupBanUserNotParticipantIsIdempotentSuccess(t *testing.T) {
 	if api.deleteChatUserCalls != 1 {
 		t.Fatalf("deleteChatUser calls=%d, want 1", api.deleteChatUserCalls)
 	}
+}
+
+
+func TestP7LBotRightsChangedAfterAdmissionPreventPhysicalMutation(t *testing.T) {
+	api := &mutationAPIStub{
+		botParticipant: mutationBotParticipant(tg.ChatAdminRights{BanUsers: true}),
+	}
+	roles := &mutationRoleStub{
+		values: map[int64][]core.GroupActorPrincipal{
+			10: {banAdmin()},
+			30: {mutationPrincipal(core.GroupActorRoleMember, core.GroupAdminRights{})},
+		},
+	}
+	service := newMutationService(api, roles)
+	meta, chat, target := supergroupMutationFixture()
+
+	controller := admission.NewController(map[tasks.PoolID]admission.PoolConfig{
+		"interactive": {BacklogLimit: 8, PayloadBudget: 1 << 20},
+	})
+	spec := tasks.WorkSpec{
+		ID:          "p7l:bot-rights-race",
+		QuotaOwner:  "telegram:chat:55",
+		Pool:        "interactive",
+		Class:       tasks.PriorityInteractive,
+		OrderingKey: "chat:55",
+		Handler: func(ctx context.Context) error {
+			_, err := service.Execute(ctx, meta, command.GroupMutationRequest{
+				Action: core.GroupMutationBan,
+				Peer:   chat,
+				Target: target,
+			})
+			return err
+		},
+	}
+	if err := controller.CanAdmit(spec, 0); err != nil {
+		t.Fatalf("admission: %v", err)
+	}
+	controller.Enqueue(&admission.QueueEntry{Spec: spec})
+
+	// The command has been admitted/queued while the bot had BanUsers. Telegram
+	// rights are revoked before dispatch; the managed mutation must observe the
+	// new bot state and suppress the physical RPC.
+	api.botParticipant = mutationBotParticipant(tg.ChatAdminRights{})
+
+	entry, err := controller.SelectCandidate("interactive")
+	if err != nil {
+		t.Fatalf("select admitted mutation: %v", err)
+	}
+	err = entry.Spec.Handler(context.Background())
+	if !errors.Is(err, core.ErrGroupMutationDenied) {
+		t.Fatalf("post-admission bot-right downgrade error=%v want ErrGroupMutationDenied", err)
+	}
+	if api.editBannedCalls != 0 {
+		t.Fatalf("revoked bot rights still issued %d physical mutations", api.editBannedCalls)
+	}
+	controller.OnTaskTerminal(entry.Spec)
 }
