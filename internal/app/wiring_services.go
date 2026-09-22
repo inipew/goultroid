@@ -94,9 +94,13 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 	pmpermitService := pmpermitSvc.NewService(pmpermitRepo, tg.client.Service, cfg.OwnerID, core.perms, logger)
 	pmpermitService.SetEventBus(core.eventBus)
 
-	// P6-B wires only the read-only/prepared relay admission service. It stays
-	// disabled until the delivery plane is attached in a later phase.
+	// P6-C activates relay only when an Assistant bot exists. The service itself
+	// remains transport-neutral; Assistant wires the admitted Telegram forward
+	// adapter during client startup.
 	pmrelayService := pmrelaySvc.NewService(pmrelaySvc.NewSQLiteRepository(core.db), cfg.OwnerID)
+	if tg != nil && tg.assistant != nil {
+		pmrelayService.SetEnabled(true)
+	}
 
 	broadcastService := broadcastSvc.NewService(tg.client.Service, logger)
 	if core.taskEngine != nil {
