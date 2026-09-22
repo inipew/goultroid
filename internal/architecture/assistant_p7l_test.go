@@ -56,6 +56,25 @@ func TestP7LAcceptanceMatrixCoverageRemainsExecutable(t *testing.T) {
 		},
 		filepath.Join(root, "internal", "admission", "controller_test.go"): {
 			"TestP7LAdmissionIndependentTopicsDoNotHeadOfLineBlock",
+			"TestP7LChatQuotaBoundsHighCardinalityTopics",
+		},
+		filepath.Join(root, "internal", "core", "eventbus_idle_test.go"): {
+			"TestEventBusStartsWithZeroDispatchWorkers",
+			"TestEventBusWorkersSpawnOnDemandAndRetire",
+			"TestContextSubscriptionUsesCancellationWithoutWatcherWorker",
+		},
+		filepath.Join(root, "internal", "taskengine", "zero_idle_test.go"): {
+			"TestDefaultPoolsStartWithZeroPhysicalWorkers",
+			"TestZeroIdlePoolSpawnsOnDemandAndRetiresToZero",
+		},
+		filepath.Join(root, "internal", "taskengine", "lazy_lane_test.go"): {
+			"TestCompletionDeliveryWorkersAreLazyAndRetire",
+			"TestDurabilityLaneWorkersAreLazyAndRetire",
+		},
+		filepath.Join(root, "internal", "taskengine", "p5_lifecycle_test.go"): {
+			"TestStopDeadlineNotBlockedByCompletionCallback",
+			"TestForceStopFencesCommitPending",
+			"TestForceStopMarksDurableInFlightRecoveryRequired",
 		},
 		filepath.Join(root, "internal", "telegram", "rpc_executor_test.go"): {
 			"TestRPCExecutor_Case9_FloodWaitBelowThreshold",
