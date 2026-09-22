@@ -3,6 +3,7 @@ package deeplink
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"encoding/base64"
 	"fmt"
 	"strings"
@@ -108,6 +109,21 @@ func newTokenID() (string, error) {
 		return "", fmt.Errorf("generate deep-link token: %w", err)
 	}
 	return TokenVersion + "_" + base64.RawURLEncoding.EncodeToString(raw[:]), nil
+}
+
+func newClaimID() (string, error) {
+	var raw [tokenRandomBytes]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate deep-link claim: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
+}
+
+func claimCleanupContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(parent), 2*time.Second)
 }
 
 func (r *Router) Register(kind string, provider Provider) (*Registration, error) {
@@ -267,16 +283,65 @@ func (r *Router) ExecutePrepared(ctx context.Context, prepared Prepared, deliver
 	if !ok || current.token != prepared.providerToken {
 		return ErrProviderStale
 	}
-	claimed, err := r.repo.Claim(ctx, prepared.record.ID, delivery.ActorID, r.now().UTC())
+
+	now := r.now().UTC()
+	claimID := ""
+	claimExpiresAt := now
+	if prepared.record.SingleUse {
+		var err error
+		claimID, err = newClaimID()
+		if err != nil {
+			return err
+		}
+		claimExpiresAt = now.Add(ClaimLeaseTTL)
+	}
+	claimed, err := r.repo.Claim(
+		ctx,
+		prepared.record.ID,
+		delivery.ActorID,
+		now,
+		claimID,
+		claimExpiresAt,
+	)
 	if err != nil {
 		return err
+	}
+	releaseClaim := func(cause error) error {
+		if !prepared.record.SingleUse || claimID == "" {
+			return cause
+		}
+		cleanupCtx, cancel := claimCleanupContext(ctx)
+		defer cancel()
+		if releaseErr := r.repo.ReleaseClaim(cleanupCtx, prepared.record.ID, claimID); releaseErr != nil {
+			return errors.Join(cause, releaseErr)
+		}
+		return cause
 	}
 	if claimed.Kind != prepared.record.Kind ||
 		claimed.Payload != prepared.record.Payload ||
 		claimed.ActorID != prepared.record.ActorID ||
 		claimed.SingleUse != prepared.record.SingleUse ||
 		!claimed.ExpiresAt.Equal(prepared.record.ExpiresAt) {
-		return ErrInvalidToken
+		return releaseClaim(ErrInvalidToken)
 	}
-	return prepared.provider.Execute(ctx, prepared.target, delivery)
+
+	r.mu.RLock()
+	current, ok = r.providers[prepared.record.Kind]
+	r.mu.RUnlock()
+	if !ok || current.token != prepared.providerToken {
+		return releaseClaim(ErrProviderStale)
+	}
+
+	if err := prepared.provider.Execute(ctx, prepared.target, delivery); err != nil {
+		return releaseClaim(err)
+	}
+	if prepared.record.SingleUse {
+		commitCtx, cancel := claimCleanupContext(ctx)
+		defer cancel()
+		if err := r.repo.CommitClaim(commitCtx, prepared.record.ID, claimID, r.now().UTC()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
+
