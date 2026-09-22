@@ -56,9 +56,12 @@ per owner:
   max active:  10
   max queued payload: 50 MiB
 
-per pool:
-  backlog: 500
-  queued payload: 100 MiB
+runtime pool defaults:
+  interactive:   backlog 128 / queued payload 50 MiB
+  general:       backlog 200 / queued payload 100 MiB
+  download:      backlog 50  / queued payload 200 MiB
+  media-process: backlog 20  / queued payload 200 MiB
+  scheduler:     backlog 100 / queued payload 50 MiB
 ```
 
 Owner counters and ordering locks are compacted/deleted after waiting/active work reaches zero. Historical chat/topic keys are not retained as permanent TaskEngine state.
@@ -86,6 +89,8 @@ This is separate from fresh contextual authorization. A queued mutation is still
 Contextual principal/group execution objects are occurrence-scoped. They do not own background workers or cardinality-indexed registries.
 
 Authorization-sensitive operations continue to require fresh role verification at the relevant persistence/RPC boundary.
+
+P7-L re-audit found one delayed persistence edge in P7-I media filters: the admitted command could enqueue a download continuation and the continuation previously persisted the captured filter without another Telegram role check. The continuation now carries only a lightweight contextual authorization guard and executes a fresh role verification immediately before the durable filter replacement. A revoked/failed role aborts persistence and cleans up captured media. This preserves the P7-K lifecycle goal without retaining the full invocation context.
 
 ## P7-B — group-role cache and verification pressure
 
@@ -301,7 +306,7 @@ For many historical groups/users/topics:
 - filter cooldown stops at 1000;
 - warnings stop at 50,000 rows;
 - Telegram limiter stops at 4096 buckets/penalties;
-- TaskEngine pool backlog stops at 500;
+- TaskEngine backlog is bounded per runtime pool (interactive 128, general 200, download 50, media-process 20, scheduler 100);
 - per-chat waiting work stops at 50;
 - topic ordering locks disappear when tasks finish;
 - service-message user materialization stops at 64;
