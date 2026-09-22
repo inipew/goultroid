@@ -452,6 +452,33 @@ func TestClientInteraction_CopyMessageWithRandomIDCopiesDocumentReference(t *tes
 	}
 }
 
+func TestClientInteraction_CopyMessageRejectsSelfDestructingMedia(t *testing.T) {
+	photoMedia := &tg.MessageMediaPhoto{}
+	photoMedia.SetPhoto(&tg.Photo{ID: 901, AccessHash: 902, FileReference: []byte{1}})
+	photoMedia.SetTTLSeconds(5)
+	mockAPI := &mockTelegramAPI{
+		getMsgsResult: &tg.MessagesMessages{
+			Messages: []tg.MessageClass{
+				&tg.Message{ID: 80, Media: photoMedia},
+			},
+		},
+	}
+	ci := interaction.NewClientInteraction(mockAPI, zap.NewNop())
+	_, err := ci.CopyMessageWithRandomID(
+		context.Background(),
+		interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 7, AccessHash: 70}, 80, 7, 0),
+		&tg.InputPeerUser{UserID: 42, AccessHash: 420},
+		1004,
+	)
+	if !errors.Is(err, core.ErrUnsupported) {
+		t.Fatalf("CopyMessageWithRandomID(TTL media) error=%v, want %v", err, core.ErrUnsupported)
+	}
+	if mockAPI.sendMsgReq != nil || mockAPI.sendMediaReq != nil || mockAPI.forwardMsgsReq != nil {
+		t.Fatalf("TTL media produced side effect: send=%+v media=%+v forward=%+v",
+			mockAPI.sendMsgReq, mockAPI.sendMediaReq, mockAPI.forwardMsgsReq)
+	}
+}
+
 func TestClientInteraction_CopyMessageRejectsUnsupportedMediaWithoutSideEffect(t *testing.T) {
 	mockAPI := &mockTelegramAPI{
 		getMsgsResult: &tg.MessagesMessages{
