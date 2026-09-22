@@ -692,7 +692,35 @@ func (e *Engine) executeWithPeerType(ctx context.Context, svc core.TelegramServi
 				e.metrics.RecordInline(true, len(cached), time.Since(start), nil)
 			}
 			pageResults, nextOffset := e.paginator.Paginate(cached, offset)
-			tgResults := e.serializeResults(pageResults)
+			interactionSessionsCommitted := false
+	var interactionSessions []string
+	if interactiveResults {
+		compiledPage, created, _, compileErr := e.compileTypedActions(ctx, resolved, userID, pageResults)
+		if compileErr != nil {
+			e.logger.Warn("inline typed action compilation failed", zap.Error(compileErr), zap.String("correlation_id", correlationID), zap.String("pattern", handler.Pattern()))
+			if e.metrics != nil {
+				e.metrics.RecordInline(false, 0, time.Since(start), compileErr)
+			}
+			if svc != nil {
+				fallback := fallbackErrorResults(compileErr)
+				tgRes := e.serializeResults(fallback)
+				_ = svc.AnswerInlineQueryOptions(ctx, queryID, tgRes, core.InlineAnswerOptions{NextOffset: "", CacheTime: 1, Private: true})
+			}
+			return compileErr
+		}
+		pageResults = compiledPage
+		interactionSessions = created
+		defer func() {
+			if interactionSessionsCommitted || e.sessions == nil {
+				return
+			}
+			for _, id := range interactionSessions {
+				e.sessions.Cancel(id)
+			}
+		}()
+	}
+
+	tgResults := e.serializeResults(pageResults)
 			if len(tgResults) > 50 {
 				tgResults = tgResults[:50]
 			}
@@ -777,29 +805,13 @@ func (e *Engine) executeWithPeerType(ctx context.Context, svc core.TelegramServi
 		resp = &InlineResponse{Results: results}
 	}
 
-	compiledResults, interactionSessions, interactiveResults, compileErr := e.compileTypedActions(ctx, resolved, userID, resp.Results)
-	if compileErr != nil {
-		e.logger.Warn("inline typed action compilation failed", zap.Error(compileErr), zap.String("correlation_id", correlationID), zap.String("pattern", handler.Pattern()))
-		if e.metrics != nil {
-			e.metrics.RecordInline(false, 0, time.Since(start), compileErr)
+	interactiveResults := false
+	for _, result := range resp.Results {
+		if len(result.ActionRows) > 0 {
+			interactiveResults = true
+			break
 		}
-		if svc != nil {
-			fallback := fallbackErrorResults(compileErr)
-			tgRes := e.serializeResults(fallback)
-			_ = svc.AnswerInlineQueryOptions(ctx, queryID, tgRes, core.InlineAnswerOptions{NextOffset: "", CacheTime: 1, Private: true})
-		}
-		return compileErr
 	}
-	resp.Results = compiledResults
-	interactionSessionsCommitted := false
-	defer func() {
-		if interactionSessionsCommitted || e.sessions == nil {
-			return
-		}
-		for _, id := range interactionSessions {
-			e.sessions.Cancel(id)
-		}
-	}()
 	if interactiveResults {
 		// a2 tokens are actor/session specific and revisions can change after a
 		// callback. Never retain them in local or Telegram shared caches.
