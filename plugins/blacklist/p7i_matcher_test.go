@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
+	"time"
 	"time"
 
 	"github.com/gotd/td/tg"
@@ -217,5 +219,113 @@ func TestP7IBlacklistRemovalWaitsForInFlightDeletion(t *testing.T) {
 	}
 	if p.MessageHookInterested(77) {
 		t.Fatal("final blacklist removal did not clear chat interest")
+	}
+}
+
+
+type p7iBlockingBlacklistRepo struct {
+	mu        sync.Mutex
+	words     map[int64][]string
+	addEnter  chan struct{}
+	addRelease chan struct{}
+}
+
+func (r *p7iBlockingBlacklistRepo) AddBlacklist(
+	ctx context.Context,
+	chatID int64,
+	word string,
+) error {
+	select {
+	case r.addEnter <- struct{}{}:
+	default:
+	}
+	select {
+	case <-r.addRelease:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	r.mu.Lock()
+	r.words[chatID] = append(r.words[chatID], word)
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *p7iBlockingBlacklistRepo) RemoveBlacklist(
+	context.Context,
+	int64,
+	string,
+) error {
+	return nil
+}
+
+func (r *p7iBlockingBlacklistRepo) ListBlacklists(
+	_ context.Context,
+	chatID int64,
+) ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.words[chatID]...), nil
+}
+
+func TestP7IBlacklistMutationLinearizesWithMatcher(t *testing.T) {
+	repo := &p7iBlockingBlacklistRepo{
+		words:      make(map[int64][]string),
+		addEnter:   make(chan struct{}, 1),
+		addRelease: make(chan struct{}),
+	}
+	p := New(repo, nil)
+	p.featureState.ReplaceLoaded(nil)
+
+	mutationDone := make(chan error, 1)
+	go func() {
+		mutationDone <- p.addBlacklistRule(context.Background(), 77, "spam")
+	}()
+
+	select {
+	case <-repo.addEnter:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for durable blacklist mutation")
+	}
+
+	type matchResult struct {
+		matched bool
+		err     error
+	}
+	matchDone := make(chan matchResult, 1)
+	go func() {
+		matched, err := p.matchMessage(context.Background(), &core.MessageEnvelope{
+			ChatID: 77,
+			Text:   "spam",
+		})
+		matchDone <- matchResult{matched: matched, err: err}
+	}()
+
+	select {
+	case got := <-matchDone:
+		t.Fatalf("matcher escaped mutation fence before commit: %+v", got)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(repo.addRelease)
+	if err := <-mutationDone; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-matchDone:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if !got.matched {
+			t.Fatal("matcher did not observe newly committed blacklist rule")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("matcher remained blocked after mutation commit")
+	}
+
+	if !p.MessageHookInterested(77) {
+		t.Fatal("committed blacklist mutation did not publish chat interest")
+	}
+	if p.AssistantRuleRevision(77) == 0 {
+		t.Fatal("committed blacklist mutation did not advance chat generation")
 	}
 }
