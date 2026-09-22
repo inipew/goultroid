@@ -45,9 +45,10 @@ type Command struct {
 	// Invocation controls who may initiate the command independently from the
 	// authorization tier above.
 	Invocation  InvocationPolicy
-	Surfaces    execution.SurfaceMask
-	GroupOnly   bool
-	PrivateOnly bool
+	Surfaces           execution.SurfaceMask
+	GroupOnly          bool
+	GroupAuthorization GroupAuthorizationRequirement
+	PrivateOnly        bool
 	ReplyOnly   bool
 	Cooldown    time.Duration
 	Timeout     time.Duration
