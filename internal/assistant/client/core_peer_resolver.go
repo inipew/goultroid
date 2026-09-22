@@ -98,9 +98,13 @@ func (r *assistantCorePeerResolver) ResolveUser(ctx context.Context, ref string)
 	if err != nil {
 		return nil, 0, err
 	}
+	resolvedPeer, ok := result.Peer.(*tg.PeerUser)
+	if !ok || resolvedPeer.UserID <= 0 {
+		return nil, 0, fmt.Errorf("%w: username %q is not a user", core.ErrNotFound, ref)
+	}
 	for _, item := range result.Users {
 		user, ok := item.(*tg.User)
-		if !ok || user == nil {
+		if !ok || user == nil || user.ID != resolvedPeer.UserID {
 			continue
 		}
 		if user.AccessHash == 0 {
@@ -108,7 +112,7 @@ func (r *assistantCorePeerResolver) ResolveUser(ctx context.Context, ref string)
 		}
 		return &tg.InputPeerUser{UserID: user.ID, AccessHash: user.AccessHash}, user.ID, nil
 	}
-	return nil, 0, fmt.Errorf("%w: username %q is not a user", core.ErrNotFound, ref)
+	return nil, 0, fmt.Errorf("%w: username %q returned no matching user", core.ErrNotFound, ref)
 }
 
 func (r *assistantCorePeerResolver) ResolveChat(ctx context.Context, ref string) (tg.InputPeerClass, error) {
@@ -142,20 +146,27 @@ func (r *assistantCorePeerResolver) ResolveChat(ctx context.Context, ref string)
 	if err != nil {
 		return nil, err
 	}
-	for _, item := range result.Chats {
-		switch chat := item.(type) {
-		case *tg.Channel:
-			if chat == nil || chat.AccessHash == 0 {
+	switch resolvedPeer := result.Peer.(type) {
+	case *tg.PeerChannel:
+		for _, item := range result.Chats {
+			channel, ok := item.(*tg.Channel)
+			if !ok || channel == nil || channel.ID != resolvedPeer.ChannelID {
 				continue
 			}
-			return &tg.InputPeerChannel{ChannelID: chat.ID, AccessHash: chat.AccessHash}, nil
-		case *tg.Chat:
-			if chat != nil {
+			if channel.AccessHash == 0 {
+				return nil, fmt.Errorf("%w: channel %d", core.ErrAccessHashMissing, channel.ID)
+			}
+			return &tg.InputPeerChannel{ChannelID: channel.ID, AccessHash: channel.AccessHash}, nil
+		}
+	case *tg.PeerChat:
+		for _, item := range result.Chats {
+			chat, ok := item.(*tg.Chat)
+			if ok && chat != nil && chat.ID == resolvedPeer.ChatID {
 				return &tg.InputPeerChat{ChatID: chat.ID}, nil
 			}
 		}
 	}
-	return nil, fmt.Errorf("%w: username %q is not a chat", core.ErrNotFound, ref)
+	return nil, fmt.Errorf("%w: username %q returned no matching chat", core.ErrNotFound, ref)
 }
 
 func (r *assistantCorePeerResolver) Resolve(ctx context.Context, ref string) (tg.InputPeerClass, error) {
