@@ -177,3 +177,18 @@ func TestRelayPrecedenceCancelRemainsInteractionControl(t *testing.T) {
 		t.Fatalf("/cancel reached relay owner=%d visitor=%d", relay.ownerCalls, relay.visitorCalls)
 	}
 }
+
+func TestRelayIngressShutdownBarrierRunsBeforePrepare(t *testing.T) {
+	relay := &precedenceRelayIngress{ownerHandled: true, visitorHandled: true}
+	deps := basePrecedenceDeps(&precedenceTextIngress{}, relay)
+	deps.IsShuttingDown = func() bool { return true }
+	dispatchPrecedenceMessage(t, deps, &tg.Message{
+		ID:      41,
+		Message: "hello",
+		FromID:  &tg.PeerUser{UserID: 42},
+		PeerID:  &tg.PeerUser{UserID: 42},
+	})
+	if relay.ownerCalls != 0 || relay.visitorCalls != 0 {
+		t.Fatalf("shutdown update reached relay owner=%d visitor=%d", relay.ownerCalls, relay.visitorCalls)
+	}
+}
