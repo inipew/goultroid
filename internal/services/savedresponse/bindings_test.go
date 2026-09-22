@@ -91,9 +91,14 @@ func TestSQLiteSurfaceBindingRepositoryCASLifecycle(t *testing.T) {
 		t.Fatalf("stale enable error = %v, want %v", err, ErrBindingConflict)
 	}
 
-	disabled.Reference.ScopeID = 84
-	disabled.Reference.Key = "replacement"
-	updated, err := repo.UpdateBinding(ctx, disabled, disabled.Revision)
+	updated, err := repo.UpdateBinding(
+		ctx,
+		disabled.Surface,
+		disabled.Alias,
+		Reference{Provider: disabled.Reference.Provider, ScopeID: 84, Key: "replacement"},
+		disabled.Enabled,
+		disabled.Revision,
+	)
 	if err != nil {
 		t.Fatalf("UpdateBinding() error = %v", err)
 	}
@@ -219,9 +224,14 @@ func TestBindingServiceMutationRevalidatesProviderButAllowsOfflineCleanup(t *tes
 
 	registration.Close()
 
-	updated := created
-	updated.Reference.Key = "replacement"
-	if _, err := service.Update(ctx, updated, created.Revision); !errors.Is(err, ErrResolverUnavailable) {
+	if _, err := service.Update(
+		ctx,
+		created.Surface,
+		created.Alias,
+		Reference{Provider: created.Reference.Provider, ScopeID: created.Reference.ScopeID, Key: "replacement"},
+		created.Enabled,
+		created.Revision,
+	); !errors.Is(err, ErrResolverUnavailable) {
 		t.Fatalf("Update(with provider offline) error = %v, want %v", err, ErrResolverUnavailable)
 	}
 	current, err := service.Get(ctx, created.Surface, created.Alias)
@@ -287,9 +297,14 @@ func TestPreparedBindingRevalidatesRevisionAndProviderGeneration(t *testing.T) {
 		t.Fatalf("prepared execution used stale response content %q", resolved.Resolved.Response.Text)
 	}
 
-	rebound := created
-	rebound.Reference.Key = "other"
-	if _, err := service.Update(ctx, rebound, created.Revision); err != nil {
+	if _, err := service.Update(
+		ctx,
+		created.Surface,
+		created.Alias,
+		Reference{Provider: created.Reference.Provider, ScopeID: created.Reference.ScopeID, Key: "other"},
+		created.Enabled,
+		created.Revision,
+	); err != nil {
 		t.Fatalf("Update(rebind) error = %v", err)
 	}
 	if _, err := service.ResolvePrepared(ctx, prepared); !errors.Is(err, ErrBindingStale) {
@@ -319,5 +334,55 @@ func TestPreparedBindingRevalidatesRevisionAndProviderGeneration(t *testing.T) {
 
 	if _, err := service.ResolvePrepared(ctx, preparedReload); !errors.Is(err, ErrBindingStale) {
 		t.Fatalf("ResolvePrepared(after provider reload) error = %v, want %v", err, ErrBindingStale)
+	}
+}
+
+func TestUpdateBindingCannotRenameIntoAnotherIdentity(t *testing.T) {
+	repo, _ := newSurfaceBindingRepository(t)
+	ctx := context.Background()
+
+	first, err := repo.CreateBinding(ctx, SurfaceBinding{
+		Surface:   SurfaceAssistantCommand,
+		Alias:     "first",
+		Reference: Reference{Provider: "notes", ScopeID: 1, Key: "one"},
+		Enabled:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := repo.CreateBinding(ctx, SurfaceBinding{
+		Surface:   SurfaceAssistantCommand,
+		Alias:     "second",
+		Reference: Reference{Provider: "notes", ScopeID: 2, Key: "two"},
+		Enabled:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Revision != second.Revision {
+		t.Fatalf("test requires equal starting revisions: first=%d second=%d", first.Revision, second.Revision)
+	}
+
+	updated, err := repo.UpdateBinding(
+		ctx,
+		first.Surface,
+		first.Alias,
+		Reference{Provider: "notes", ScopeID: 3, Key: "updated"},
+		true,
+		first.Revision,
+	)
+	if err != nil {
+		t.Fatalf("UpdateBinding(first) error = %v", err)
+	}
+	if updated.Alias != "first" {
+		t.Fatalf("binding identity changed unexpectedly: %+v", updated)
+	}
+	untouched, err := repo.GetBinding(ctx, second.Surface, second.Alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if untouched == nil || untouched.Reference.ScopeID != 2 || untouched.Reference.Key != "two" ||
+		untouched.Revision != second.Revision {
+		t.Fatalf("second binding was modified by first update: %+v", untouched)
 	}
 }
