@@ -165,7 +165,6 @@ func TestP7GRealBanCommandStillFailsPreflightWithoutTelegramRight(t *testing.T) 
 	}
 }
 
-
 func TestP7GMutationPortRejectsDirectExecutionWithoutTaskAdmission(t *testing.T) {
 	mutation := &p7gMutationExecutorStub{}
 	router := command.NewRouter(zap.NewNop())
