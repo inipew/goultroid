@@ -84,7 +84,10 @@ func (f *Feature) Commands() []core.Command {
 		Description: "Manage persistent SavedResponse surface bindings",
 		Usage:       "/responses",
 		Category:    "Assistant",
-		Permission:  core.PermissionOwner,
+		Permission: core.PermissionOwner,
+		Invocation: core.InvocationPolicy{
+			Assistant: core.InvocationSelfOnly,
+		},
 		Surfaces:    execution.SurfaceAssistant,
 		PrivateOnly: true,
 		Handler:     f.openCommand,
