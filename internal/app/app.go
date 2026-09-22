@@ -118,6 +118,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	coreDeps.eventBus.SetTasks(coreDeps.taskEngine)
 	pluginManager.SetHookRegistrar(tgRuntime.dispatcher)
 	pluginManager.SetCallbackRegistrar(coreDeps.callbackRouter)
+	pluginManager.SetInlineRegistry(coreDeps.inlineEngine.Registry())
 	tgRuntime.dispatcher.SetPluginScopeResolver(func(owner string) (tasks.ScopeIdentity, bool) {
 		scope, ok := pluginManager.Scope(owner)
 		if !ok {
@@ -227,7 +228,10 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	if err != nil {
 		return nil, fmt.Errorf("build live settings binder: %w", err)
 	}
-	if err := pluginManager.RegisterWithContext(context.Background(), assistantshell.NewFeature()); err != nil {
+	assistantShell := assistantshell.NewFeature()
+	assistantShell.SetInlineCatalog(pluginManager.FeatureCatalog())
+	assistantShell.SetStartTime(domServices.startTime)
+	if err := pluginManager.RegisterWithContext(context.Background(), assistantShell); err != nil {
 		return nil, fmt.Errorf("register assistant shell feature: %w", err)
 	}
 	if tgRuntime.assistant != nil {
