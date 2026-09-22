@@ -146,6 +146,15 @@ func (r *bindingTestResolver) ResolveSavedResponse(context.Context, Reference) (
 	return r.response, true, nil
 }
 
+type lifecycleBindingResolver struct {
+	response Response
+	found    bool
+}
+
+func (r *lifecycleBindingResolver) ResolveSavedResponse(context.Context, Reference) (Response, bool, error) {
+	return r.response, r.found, nil
+}
+
 func TestBindingServiceJoinsDurableBindingToLiveProviderGeneration(t *testing.T) {
 	repo, _ := newSurfaceBindingRepository(t)
 	ctx := context.Background()
@@ -632,7 +641,7 @@ func TestCrossSurfaceLifecycleMatrixUsesOneAuthoritativeResponse(t *testing.T) {
 	}
 
 	registry := NewRegistry()
-	resolver := &bindingTestResolver{response: NewText("v1")}
+	resolver := &lifecycleBindingResolver{response: NewText("v1"), found: true}
 	scope1 := tasks.ScopeIdentity{Owner: "plugin:notes", Generation: 1}
 	registration1, err := registry.Register("notes", scope1, resolver)
 	if err != nil {
@@ -682,6 +691,22 @@ func TestCrossSurfaceLifecycleMatrixUsesOneAuthoritativeResponse(t *testing.T) {
 		}
 		if resolved.Resolved.Response.Text != "v2" {
 			t.Fatalf("%s saw %q, want authoritative v2", surface, resolved.Resolved.Response.Text)
+		}
+	}
+
+	// Deleting the provider-owned response invalidates every external surface
+	// immediately; bindings contain references only and cannot serve stale copies.
+	resolver.found = false
+	for _, surface := range surfaces {
+		if _, err := service.Resolve(ctx, surface, "shared"); !errors.Is(err, ErrReferencedNotFound) {
+			t.Fatalf("Resolve(%s after provider delete) error=%v, want %v", surface, err, ErrReferencedNotFound)
+		}
+	}
+	resolver.found = true
+	for _, surface := range surfaces {
+		resolved, err := service.Resolve(ctx, surface, "shared")
+		if err != nil || resolved.Resolved.Response.Text != "v2" {
+			t.Fatalf("Resolve(%s after provider restore)=%+v err=%v", surface, resolved, err)
 		}
 	}
 
