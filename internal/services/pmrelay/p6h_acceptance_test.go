@@ -256,3 +256,82 @@ func TestP6HCompletedVisitorDeliveryHealsAudienceAfterRestartWithoutResend(t *te
 		t.Fatalf("recovery changed activity time: got=%v want=%v", member.LastSeenAt, base)
 	}
 }
+
+
+type p6hCancelingVisitorTransport struct {
+	cancel   context.CancelFunc
+	calls    int
+	requests []VisitorForward
+}
+
+func (t *p6hCancelingVisitorTransport) ForwardVisitor(
+	_ context.Context,
+	request VisitorForward,
+) (int, error) {
+	t.calls++
+	t.requests = append(t.requests, request)
+	if t.cancel != nil {
+		t.cancel()
+	}
+	return 0, context.Canceled
+}
+
+func TestP6HForcedShutdownCanceledClaimRecoversAfterLeaseExpiry(t *testing.T) {
+	sqliteRepo, _ := newTestRepository(t, Limits{
+		Mappings: 8, Deliveries: 8, Audience: 8, Blocked: 8,
+	})
+	base := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	now := base
+
+	first := NewService(sqliteRepo, 7)
+	first.now = func() time.Time { return now }
+	first.randomID = func() (int64, error) { return 777, nil }
+	first.claimID = func() (string, error) { return "shutdown-claim", nil }
+	first.SetEnabled(true)
+	prepared := prepareVisitorForDelivery(t, first)
+
+	taskCtx, cancel := context.WithCancel(context.Background())
+	transport := &p6hCancelingVisitorTransport{cancel: cancel}
+	err := first.ExecuteVisitor(taskCtx, prepared, transport)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ExecuteVisitor(canceled transport) error=%v, want context canceled", err)
+	}
+
+	pending, getErr := sqliteRepo.GetDelivery(context.Background(), DeliveryKey{
+		Direction: DeliveryVisitorToOwner, SourceChatID: 42, SourceMessageID: 11,
+	})
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if pending.Completed() || pending.ClaimID != "shutdown-claim" ||
+		pending.RandomID != 777 {
+		t.Fatalf("canceled delivery state=%+v", pending)
+	}
+
+	// Forced cancellation can prevent best-effort ReleaseDelivery from using the
+	// canceled task context. The durable lease is therefore the fallback fence.
+	now = base.Add(DeliveryClaimTTL + time.Second)
+	second := NewService(sqliteRepo, 7)
+	second.now = func() time.Time { return now }
+	second.randomID = func() (int64, error) { return 999, nil }
+	second.claimID = func() (string, error) { return "restart-claim", nil }
+	second.SetEnabled(true)
+	reprepared := prepareVisitorForDelivery(t, second)
+	healthy := &visitorTransportStub{message: 501}
+
+	if err := second.ExecuteVisitor(context.Background(), reprepared, healthy); err != nil {
+		t.Fatalf("ExecuteVisitor(restart after canceled claim) error=%v", err)
+	}
+	if healthy.calls != 1 || len(healthy.requests) != 1 ||
+		healthy.requests[0].RandomID != 777 {
+		t.Fatalf("restart did not reuse durable random id: %+v", healthy.requests)
+	}
+	recovered, getErr := sqliteRepo.GetDelivery(context.Background(), pending.DeliveryKey)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if !recovered.Completed() || recovered.ClaimID != "" ||
+		recovered.TargetMessageID != 501 {
+		t.Fatalf("recovered canceled delivery=%+v", recovered)
+	}
+}
