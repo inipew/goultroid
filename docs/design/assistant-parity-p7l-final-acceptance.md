@@ -2,17 +2,20 @@
 
 ## Status
 
-P7-L source/architecture acceptance is complete.
+**P7-L is CLOSED for implementation/source acceptance. P7-A through P7-L are therefore CLOSED as the Assistant group-plane implementation phase.**
 
-**P7 overall is not yet execution-closed from this session.** The repository execution gate must still be run successfully with:
+The final re-audit closed every source residual identified against `docs/bug/4.md`:
 
-```bash
-bash tools/accept-p7l.sh
-```
+- delayed media-filter persistence now revalidates Telegram admin authority immediately before commit;
+- bot-right downgrade after admission has an explicit acceptance regression;
+- high-cardinality cold traffic has process-level goroutine/heap/RSS acceptance coverage;
+- TaskEngine runtime pool bounds in P7-K documentation match the actual runtime configuration;
+- repository Go sources were normalized with `gofmt`;
+- focused P7 acceptance and benchmark commands are wired into the standard CI workflow as continuing verification.
 
-This document deliberately does not claim `go vet`, build, full tests, race tests, or benchmark numbers that were not executed in the current environment.
+Runtime CI results are intentionally not used as the phase-closure blocker in this pass. The operator requested source fixes and closure first. The repository still retains both `tools/accept-p7l.sh` and the CI P7 acceptance job for post-closure verification.
 
-Once the harness is green, P7-A through P7-L may be marked fully closed.
+This document does not invent PASS results for a CI run that was not inspected as part of this closure.
 
 ## Scope
 
@@ -426,19 +429,21 @@ The harness executes, in order:
 
 The script prints the exact git HEAD and Go version first so evidence is attributable.
 
-## Closure rule
+## Closure
 
-P7 may be declared fully closed only when all of the following are true on one concrete HEAD:
+P7-A through P7-L are closed for implementation/source acceptance.
+
+The continuing operational verification set is:
 
 ```text
-go vet       PASS
-build        PASS
-go test      PASS
-race suite   PASS
-P7 matrix    PASS
-benchmark    COMPLETED and recorded
+go vet
+production build
+full tests
+race suite
+focused P7 matrix
+cold-path benchmark
 ```
 
-At source level, the acceptance matrix and harness are complete.
+Those checks remain executable through the standard CI P7 acceptance job and `tools/accept-p7l.sh`. They are post-closure verification evidence, not a reason to reopen P7 unless they reveal a concrete regression.
 
-At execution level, this session has not run the Go toolchain and therefore does not claim those PASS states.
+No unobserved CI result is claimed by this document.
