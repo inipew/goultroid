@@ -138,6 +138,10 @@ forward retries with same random_id
 
 Telegram therefore sees the recovery attempt as the same logical forward.
 
+Recovery here is occurrence-driven: a duplicate/retried source occurrence
+re-enters this state machine after the lease expires. P6 does not install a
+startup scanner or polling replay worker for pending delivery intents.
+
 The ambiguous claim is deliberately not released after a successful transport
 whose durable completion could not be written.
 
