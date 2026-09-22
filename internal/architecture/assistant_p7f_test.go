@@ -107,3 +107,34 @@ func TestP7FGroupStateSchemaKeepsExplicitChatRevisionAndExpiry(t *testing.T) {
 		}
 	}
 }
+
+
+func TestP7FGroupStateTableHasSingleProductionOwner(t *testing.T) {
+	root := repositoryRoot(t)
+	allowedRoot := filepath.Join(root, "internal", "services", "groupstate")
+
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		if path == allowedRoot || strings.HasPrefix(path, allowedRoot+string(os.PathSeparator)) {
+			return nil
+		}
+
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(raw), "assistant_group_state") {
+			rel, _ := filepath.Rel(root, path)
+			t.Errorf("P7-F durable table bypassed service ownership in %s", rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
