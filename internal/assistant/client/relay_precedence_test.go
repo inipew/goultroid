@@ -214,6 +214,24 @@ func TestRelayVisitorFallbackSurvivesInteractionPeerResolutionFailure(t *testing
 	}
 }
 
+func TestRelayVisitorMediaDoesNotEnterP6CDeliveryCanary(t *testing.T) {
+	input := &precedenceTextIngress{}
+	relay := &precedenceRelayIngress{visitorHandled: true}
+	dispatchPrecedenceMessage(t, basePrecedenceDeps(input, relay), &tg.Message{
+		ID:      15,
+		Message: "caption",
+		FromID:  &tg.PeerUser{UserID: 42},
+		PeerID:  &tg.PeerUser{UserID: 42},
+		Media:   &tg.MessageMediaPhoto{},
+	})
+	if input.calls != 1 {
+		t.Fatalf("AwaitInput calls=%d, want 1 before media gate", input.calls)
+	}
+	if relay.visitorCalls != 0 {
+		t.Fatalf("P6-C visitor delivery accepted media: calls=%d", relay.visitorCalls)
+	}
+}
+
 func TestRelayPrecedenceSlashCommandsNeverFallThroughToRelay(t *testing.T) {
 	for _, text := range []string{"/start", "/unknown", "/unknown@assistant"} {
 		t.Run(text, func(t *testing.T) {
