@@ -273,9 +273,10 @@ func TestAssistantStartDeepLinkRejectsGroupDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	taskClient := &immediateDeepLinkTasks{}
 	client := NewAssistantClient(1, "hash", "token", zap.NewNop())
 	client.SetDeepLinkRouter(router)
-	client.SetTasks(&immediateDeepLinkTasks{})
+	client.SetTasks(taskClient)
 	interaction := &publicStartInteraction{}
 	if err := client.dispatchStart(&command.Context{
 		Ctx: context.Background(), SenderID: 7,
@@ -286,8 +287,8 @@ func TestAssistantStartDeepLinkRejectsGroupDelivery(t *testing.T) {
 	if !strings.Contains(interaction.sent, "invalid, expired, or no longer available") {
 		t.Fatalf("group deep-link response=%q", interaction.sent)
 	}
-	if provider.executes != 0 {
-		t.Fatalf("group deep-link executed provider %d times", provider.executes)
+	if taskClient.submits != 0 || provider.executes != 0 {
+		t.Fatalf("group deep-link reached admission/provider: submits=%d executes=%d", taskClient.submits, provider.executes)
 	}
 
 	// Rejection happens before durable claim; the same single-use token remains
@@ -304,43 +305,3 @@ func TestAssistantStartDeepLinkRejectsGroupDelivery(t *testing.T) {
 	}
 }
 
-
-func TestAssistantStartDeepLinkRejectsGroupSurfaceBeforeAdmission(t *testing.T) {
-	provider := &startDeepLinkProvider{scope: tasks.ScopeIdentity{Owner: "plugin:test", Generation: 1}}
-	router := newStartDeepLinkRouter(t, provider)
-	token, err := router.Issue(context.Background(), assistantdeeplink.IssueRequest{
-		Kind: "test", Payload: "private-only", SingleUse: true, TTL: time.Hour,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	taskClient := &immediateDeepLinkTasks{}
-	client := NewAssistantClient(1, "hash", "token", zap.NewNop())
-	client.SetDeepLinkRouter(router)
-	client.SetTasks(taskClient)
-	interaction := &publicStartInteraction{}
-	if err := client.dispatchStart(&command.Context{
-		Ctx: context.Background(), SenderID: 7,
-		Peer: &tg.InputPeerChat{ChatID: 99}, Args: []string{token.ID}, Interaction: interaction,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if taskClient.submits != 0 || provider.executes != 0 {
-		t.Fatalf("group token reached admission/provider: submits=%d executes=%d", taskClient.submits, provider.executes)
-	}
-	if !strings.Contains(interaction.sent, "invalid, expired, or no longer available") {
-		t.Fatalf("group token response=%q", interaction.sent)
-	}
-
-	private := &publicStartInteraction{}
-	if err := client.dispatchStart(&command.Context{
-		Ctx: context.Background(), SenderID: 7,
-		Peer: &tg.InputPeerUser{UserID: 7}, Args: []string{token.ID}, Interaction: private,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if private.sent != "deep-link delivered" || provider.executes != 1 {
-		t.Fatalf("private retry delivery=%q executes=%d", private.sent, provider.executes)
-	}
-}
