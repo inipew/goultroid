@@ -499,3 +499,85 @@ func TestSQLiteAudiencePruneAndRejoinAllocatesLaterMembershipSequence(t *testing
 		t.Fatalf("rejoined user in new snapshot=%+v", newPage)
 	}
 }
+
+
+func TestSQLiteForceSubConfigIsDurableCASAndNormalized(t *testing.T) {
+	ctx := context.Background()
+	repo, db := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8, Blocked: 8})
+
+	initial, err := repo.GetForceSubConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.Enabled || initial.FailureMode != ForceSubFailClosed || initial.Revision != 1 {
+		t.Fatalf("initial force-sub config=%+v", initial)
+	}
+
+	next := ForceSubConfig{
+		Enabled:         true,
+		ChannelUsername: "@Example_Channel",
+		JoinURL:         "",
+		FailureMode:     ForceSubFailClosed,
+		Revision:        initial.Revision + 1,
+		UpdatedAt:       time.Now().UTC(),
+	}
+	updated, err := repo.UpdateForceSubConfig(ctx, initial.Revision, next)
+	if err != nil {
+		t.Fatalf("UpdateForceSubConfig() error=%v", err)
+	}
+	if !updated.Enabled ||
+		updated.ChannelUsername != "example_channel" ||
+		updated.JoinURL != "https://t.me/example_channel" ||
+		updated.FailureMode != ForceSubFailClosed ||
+		updated.Revision != 2 {
+		t.Fatalf("updated force-sub config=%+v", updated)
+	}
+
+	restarted := NewSQLiteRepositoryWithLimits(db, Limits{Mappings: 8, Deliveries: 8, Audience: 8, Blocked: 8})
+	got, err := restarted.GetForceSubConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != updated {
+		t.Fatalf("restarted force-sub config=%+v, want %+v", got, updated)
+	}
+
+	stale := updated
+	stale.FailureMode = ForceSubFailOpen
+	stale.Revision++
+	stale.UpdatedAt = stale.UpdatedAt.Add(time.Second)
+	if _, err := restarted.UpdateForceSubConfig(ctx, 1, stale); !errors.Is(err, ErrForceSubConfigConflict) {
+		t.Fatalf("stale UpdateForceSubConfig() error=%v, want %v", err, ErrForceSubConfigConflict)
+	}
+	afterConflict, err := restarted.GetForceSubConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterConflict != updated {
+		t.Fatalf("CAS conflict mutated config: got=%+v want=%+v", afterConflict, updated)
+	}
+}
+
+func TestForceSubConfigRejectsUnsafeJoinURLAndInvalidUsername(t *testing.T) {
+	now := time.Now().UTC()
+	for _, config := range []ForceSubConfig{
+		{
+			Enabled: true, ChannelUsername: "bad-name",
+			FailureMode: ForceSubFailClosed, Revision: 1, UpdatedAt: now,
+		},
+		{
+			Enabled: true, ChannelUsername: "valid_name",
+			JoinURL: "https://example.com/not-telegram",
+			FailureMode: ForceSubFailClosed, Revision: 1, UpdatedAt: now,
+		},
+		{
+			Enabled: true, ChannelUsername: "valid_name",
+			FailureMode: ForceSubFailureMode("maybe"), Revision: 1, UpdatedAt: now,
+		},
+	} {
+		if _, err := config.Normalize(); !errors.Is(err, ErrInvalidForceSubConfig) {
+			t.Fatalf("ForceSubConfig.Normalize(%+v) error=%v, want %v",
+				config, err, ErrInvalidForceSubConfig)
+		}
+	}
+}
