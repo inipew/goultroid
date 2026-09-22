@@ -115,7 +115,6 @@ func TestResponseCloneDetachesMediaPointer(t *testing.T) {
 	}
 }
 
-
 func TestP7KFilterTopicDeliveryFailsClosedWithoutContextualTransport(t *testing.T) {
 	p := New(nil, nil)
 	response := savedresponse.NewHTML("topic response")
@@ -136,7 +135,6 @@ func TestP7KFilterTopicDeliveryFailsClosedWithoutContextualTransport(t *testing.
 		t.Fatalf("topic fallback error=%v want ErrUnavailable", err)
 	}
 }
-
 
 type p7lFilterWriteRepo struct {
 	saveCalls int
