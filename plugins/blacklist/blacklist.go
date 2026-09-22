@@ -19,6 +19,15 @@ import (
 var _ plugin.MessageEventPlugin = (*Plugin)(nil)
 var _ plugin.MessageEventStatePlugin = (*Plugin)(nil)
 
+const (
+	MaxRulesPerChat      = 512
+	MaxRuleBytes         = 256
+	MaxActiveChats       = 50_000
+	maxCompiledCacheChats = 500
+)
+
+var ErrRuleLimit = fmt.Errorf("%w: blacklist rule limit exceeded", core.ErrResourceLimit)
+
 type compiledBlacklist struct {
 	word string
 	re   *regexp.Regexp
@@ -51,9 +60,10 @@ func (p *Plugin) Init() error {
 func (p *Plugin) InitContext(ctx context.Context) error {
 	if repo, ok := p.db.(ActiveChatRepository); ok {
 		chatIDs, err := repo.ListActiveChatIDs(ctx)
-		if err == nil {
-			p.featureState.ReplaceLoaded(chatIDs)
+		if err != nil {
+			return fmt.Errorf("blacklist: preload active chats: %w", err)
 		}
+		p.featureState.ReplaceLoaded(chatIDs)
 	}
 	return nil
 }
@@ -121,6 +131,10 @@ func (p *Plugin) handleBlacklist(ctx *core.Context) error {
 	if word == "" {
 		_ = ctx.EditOrReply("⚠️ Blacklist word cannot be empty.")
 		return errors.New("empty blacklist word")
+	}
+	if len(word) > MaxRuleBytes {
+		_ = ctx.EditOrReply(fmt.Sprintf("⚠️ Blacklist rule is too long (max %d bytes).", MaxRuleBytes))
+		return fmt.Errorf("%w: blacklist rule exceeds %d bytes", core.ErrInvalidArgs, MaxRuleBytes)
 	}
 	chatID := p.getChatID(ctx)
 	p.featureState.MarkUnknown(chatID)
@@ -234,6 +248,16 @@ func (p *Plugin) compiledForChat(
 			p.featureState.MarkUnknown(chatID)
 			return nil, err
 		}
+		if len(rawWords) > MaxRulesPerChat {
+			p.featureState.MarkUnknown(chatID)
+			return nil, ErrRuleLimit
+		}
+		for _, word := range rawWords {
+			if len(word) > MaxRuleBytes {
+				p.featureState.MarkUnknown(chatID)
+				return nil, fmt.Errorf("%w: persisted blacklist rule exceeds %d bytes", core.ErrResourceLimit, MaxRuleBytes)
+			}
+		}
 		items := compileBlacklist(rawWords)
 		if p.ruleRevision.Load() != revision {
 			continue
@@ -245,7 +269,7 @@ func (p *Plugin) compiledForChat(
 			p.cacheMu.Unlock()
 			continue
 		}
-		if len(p.chatBlacklist) >= 500 {
+		if len(p.chatBlacklist) >= maxCompiledCacheChats {
 			var oldestChat int64
 			var oldestTime time.Time
 			for c, accessed := range p.chatAccess {
