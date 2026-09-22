@@ -701,6 +701,9 @@ func TestCrossSurfaceLifecycleMatrixUsesOneAuthoritativeResponse(t *testing.T) {
 		if _, err := service.Resolve(ctx, surface, "shared"); !errors.Is(err, ErrReferencedNotFound) {
 			t.Fatalf("Resolve(%s after provider delete) error=%v, want %v", surface, err, ErrReferencedNotFound)
 		}
+		if _, err := service.ResolvePrepared(ctx, prepared[surface]); !errors.Is(err, ErrReferencedNotFound) {
+			t.Fatalf("ResolvePrepared(%s after provider delete) error=%v, want %v", surface, err, ErrReferencedNotFound)
+		}
 	}
 	resolver.found = true
 	for _, surface := range surfaces {
@@ -724,6 +727,9 @@ func TestCrossSurfaceLifecycleMatrixUsesOneAuthoritativeResponse(t *testing.T) {
 	}
 	if _, err := service.Prepare(ctx, SurfaceInline, "shared"); !errors.Is(err, ErrBindingDisabled) {
 		t.Fatalf("Prepare(disabled inline) error=%v, want %v", err, ErrBindingDisabled)
+	}
+	if _, err := service.ResolvePrepared(ctx, prepared[SurfaceInline]); !errors.Is(err, ErrBindingStale) {
+		t.Fatalf("ResolvePrepared(pre-disable inline lease) error=%v, want %v", err, ErrBindingStale)
 	}
 	for _, surface := range []Surface{SurfaceAssistantCommand, SurfaceDeepLink, SurfaceCallback} {
 		resolved, err := service.Resolve(ctx, surface, "shared")
@@ -751,6 +757,9 @@ func TestCrossSurfaceLifecycleMatrixUsesOneAuthoritativeResponse(t *testing.T) {
 	}
 	if _, err := service.Prepare(ctx, SurfaceCallback, "shared"); !errors.Is(err, ErrBindingNotFound) {
 		t.Fatalf("Prepare(deleted callback) error=%v, want %v", err, ErrBindingNotFound)
+	}
+	if _, err := service.ResolvePrepared(ctx, prepared[SurfaceCallback]); !errors.Is(err, ErrBindingStale) {
+		t.Fatalf("ResolvePrepared(pre-delete callback lease) error=%v, want %v", err, ErrBindingStale)
 	}
 
 	// Simulate application restart: reopen the physical SQLite file and rebuild
