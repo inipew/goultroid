@@ -10,6 +10,7 @@ import (
 	interactionorchestration "github.com/inipew/goultroid/internal/interaction/orchestration"
 	"github.com/inipew/goultroid/internal/presentation"
 	inlineservice "github.com/inipew/goultroid/internal/services/inline"
+	"github.com/inipew/goultroid/internal/services/savedresponse"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -124,6 +125,18 @@ func (m *Manager) FeatureCatalog() feature.Catalog {
 	}
 	m.mu.RLock()
 	registry := m.featureRegistry
+	m.mu.RUnlock()
+	return registry
+}
+
+// SavedResponseRegistry returns the lifecycle-owned reference registry used by
+// Assistant/inline/deep-link bindings. Response payloads remain provider-owned.
+func (m *Manager) SavedResponseRegistry() *savedresponse.Registry {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	registry := m.savedResponses
 	m.mu.RUnlock()
 	return registry
 }
@@ -249,7 +262,32 @@ func (m *Manager) registerFeatureContract(name string, p Plugin, scope tasks.Sco
 		}
 	}
 
+	var savedResponseRegistration *savedresponse.Registration
+	if resolver, ok := p.(savedresponse.Resolver); ok {
+		m.mu.RLock()
+		responseRegistry := m.savedResponses
+		m.mu.RUnlock()
+		if responseRegistry == nil {
+			for _, inlineRegistration := range inlineRegistrations {
+				inlineRegistration.Close()
+			}
+			registration.Close()
+			return nil, fmt.Errorf("feature %s exposes saved responses but registry is unavailable", name)
+		}
+		savedResponseRegistration, err = responseRegistry.Register(name, scope, resolver)
+		if err != nil {
+			for _, inlineRegistration := range inlineRegistrations {
+				inlineRegistration.Close()
+			}
+			registration.Close()
+			return nil, fmt.Errorf("feature %s saved response resolver: %w", name, err)
+		}
+	}
+
 	return func() {
+		if savedResponseRegistration != nil {
+			savedResponseRegistration.Close()
+		}
 		for _, inlineRegistration := range inlineRegistrations {
 			inlineRegistration.Close()
 		}
