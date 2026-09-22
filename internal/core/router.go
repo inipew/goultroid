@@ -78,6 +78,12 @@ func (r *Router) RegisterBatch(cmds []Command) error {
 		if name == "" {
 			return fmt.Errorf("command name cannot be empty")
 		}
+		if err := cmd.GroupAuthorization.Validate(); err != nil {
+			return fmt.Errorf("command %s group authorization: %w", name, err)
+		}
+		if cmd.GroupAuthorization.Required() && !cmd.GroupOnly {
+			return fmt.Errorf("command %s contextual group authorization requires GroupOnly", name)
+		}
 		if _, exists := r.commands[name]; exists {
 			return fmt.Errorf("command already registered: %s", name)
 		}
