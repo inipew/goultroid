@@ -229,3 +229,25 @@ func TestP7HDeliveryReusesEventBusTaskEngine(t *testing.T) {
 		}
 	}
 }
+
+
+func TestP7HCloseIsTerminalForInterestAndSubscription(t *testing.T) {
+	root := repositoryRoot(t)
+	path := filepath.Join(root, "internal", "assistant", "groupevents", "service.go")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(raw)
+	for _, required := range []string{
+		"closed atomic.Bool",
+		"if !s.closed.CompareAndSwap(false, true)",
+		"s.ready.Store(false)",
+		"active := !s.closed.Load() && s.loaded && s.hasEnabledLocked()",
+		"s.closed.Load() || !s.ready.Load()",
+	} {
+		if !strings.Contains(source, required) {
+			t.Errorf("P7-H terminal-close invariant missing %q", required)
+		}
+	}
+}
