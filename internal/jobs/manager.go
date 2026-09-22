@@ -49,6 +49,11 @@ type deferredDeadlineStore interface {
 	EarliestDeferredOccurrenceDue(context.Context, time.Time) (time.Time, bool, error)
 }
 
+type durableDiagnosticsStore interface {
+	DurableDiagnostics(context.Context, time.Time) (DurableDiagnostics, error)
+}
+
+
 type attemptSummaryStore interface {
 	AttemptSummary(context.Context, string) (*AttemptSummary, error)
 }
@@ -156,9 +161,13 @@ type RecoverReport struct {
 
 // Diagnostics is a read-only count of declarative job registrations.
 type Diagnostics struct {
-	Definitions int
-	Handlers    int
-	Accepting   bool
+	Definitions         int
+	Handlers            int
+	Accepting           bool
+	DeferredOccurrences int
+	RetainedDeferrals   int
+	EarliestDeferredAt  time.Time
+	DurableSnapshotOK   bool
 }
 
 var (
@@ -1673,7 +1682,28 @@ func (m *Manager) Definition(id string) (JobDefinition, bool) {
 }
 
 func (m *Manager) Diagnostics() Diagnostics {
+	if m == nil {
+		return Diagnostics{}
+	}
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return Diagnostics{Definitions: len(m.definitions), Handlers: len(m.handlers), Accepting: m.accepting}
+	diagnostics := Diagnostics{
+		Definitions: len(m.definitions),
+		Handlers:    len(m.handlers),
+		Accepting:   m.accepting,
+	}
+	store := m.store
+	m.mu.RUnlock()
+
+	if durable, ok := store.(durableDiagnosticsStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		snapshot, err := durable.DurableDiagnostics(ctx, time.Now().UTC())
+		cancel()
+		if err == nil {
+			diagnostics.DeferredOccurrences = snapshot.DeferredOccurrences
+			diagnostics.RetainedDeferrals = snapshot.RetainedDeferrals
+			diagnostics.EarliestDeferredAt = snapshot.EarliestDeferredAt
+			diagnostics.DurableSnapshotOK = true
+		}
+	}
+	return diagnostics
 }
