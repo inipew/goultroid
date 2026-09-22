@@ -21,10 +21,14 @@ const (
 	DefaultMaxMappings   = 16_384
 	DefaultMaxDeliveries = 32_768
 	DefaultMaxAudience   = 10_000
+	DefaultMaxBlocked    = 10_000
 
 	HardMaxMappings   = 65_536
 	HardMaxDeliveries = 131_072
 	HardMaxAudience   = 50_000
+	HardMaxBlocked    = 50_000
+
+	MaxBlockReasonBytes = 512
 )
 
 var (
@@ -43,12 +47,17 @@ var (
 	ErrInvalidAudience   = errors.New("pmrelay: invalid audience member")
 	ErrAudienceNotFound  = errors.New("pmrelay: audience member not found")
 	ErrAudienceCapacity  = errors.New("pmrelay: audience capacity exhausted")
+	ErrVisitorBlocked    = errors.New("pmrelay: visitor blocked")
+	ErrInvalidBlock      = errors.New("pmrelay: invalid visitor block")
+	ErrBlockNotFound     = errors.New("pmrelay: visitor block not found")
+	ErrBlockCapacity     = errors.New("pmrelay: visitor block capacity exhausted")
 )
 
 type Limits struct {
 	Mappings   int
 	Deliveries int
 	Audience   int
+	Blocked    int
 }
 
 func DefaultLimits() Limits {
@@ -56,6 +65,7 @@ func DefaultLimits() Limits {
 		Mappings:   DefaultMaxMappings,
 		Deliveries: DefaultMaxDeliveries,
 		Audience:   DefaultMaxAudience,
+		Blocked:    DefaultMaxBlocked,
 	}
 }
 
@@ -68,6 +78,9 @@ func (l Limits) normalized() Limits {
 	}
 	if l.Audience <= 0 || l.Audience > HardMaxAudience {
 		l.Audience = DefaultMaxAudience
+	}
+	if l.Blocked <= 0 || l.Blocked > HardMaxBlocked {
+		l.Blocked = DefaultMaxBlocked
 	}
 	return l
 }
@@ -226,4 +239,20 @@ func (m AudienceMember) Normalize() (AudienceMember, error) {
 		return AudienceMember{}, ErrInvalidAudience
 	}
 	return m, nil
+}
+
+
+type VisitorBlock struct {
+	VisitorUserID int64
+	BlockedAt     time.Time
+	Reason        string
+}
+
+func (b VisitorBlock) Normalize() (VisitorBlock, error) {
+	b.BlockedAt = b.BlockedAt.UTC()
+	b.Reason = strings.TrimSpace(b.Reason)
+	if b.VisitorUserID <= 0 || b.BlockedAt.IsZero() || len(b.Reason) > MaxBlockReasonBytes {
+		return VisitorBlock{}, ErrInvalidBlock
+	}
+	return b, nil
 }
