@@ -21,7 +21,7 @@ type relayMessageIngress interface {
 
 // RelayIngress is the Assistant transport admission bridge for PM Relay.
 // Prepare is intentionally read-only; all mutable relay state is revalidated
-// inside the TaskEngine handler through pmrelay.Ingress.ExecutePrepared.
+// inside the TaskEngine handler through pmrelay.Ingress.RevalidatePrepared.
 type RelayIngress struct {
 	relay pmrelay.Ingress
 	tasks tasks.Client
@@ -82,7 +82,7 @@ func (r *RelayIngress) submit(ctx context.Context, prepared pmrelay.PreparedIngr
 		OrderingKey:      fmt.Sprintf("pmrelay:thread:%d", visitorID),
 		ExecutionTimeout: relayExecutionTimeout,
 		Handler: func(taskCtx context.Context) error {
-			return r.relay.ExecutePrepared(taskCtx, prepared)
+			return r.relay.RevalidatePrepared(taskCtx, prepared)
 		},
 	})
 	if err != nil {
