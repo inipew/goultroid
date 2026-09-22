@@ -20,14 +20,20 @@ import (
 )
 
 const (
-	filterCacheTTL              = 10 * time.Minute
-	filterCooldown              = 5 * time.Second
-	filterCaptureTimeout        = 2 * time.Minute
-	filterDeliveryTimeout       = 30 * time.Second
-	filtersTelegramMessageRunes = 4096
+	filterCacheTTL               = 10 * time.Minute
+	filterCooldown               = 5 * time.Second
+	filterCaptureTimeout         = 2 * time.Minute
+	filterDeliveryTimeout        = 30 * time.Second
+	filtersTelegramMessageRunes  = 4096
+	MaxRulesPerChat              = 512
+	MaxKeywordBytes              = 256
+	MaxActiveChats               = 50_000
+	maxCompiledFilterCacheChats  = 500
 )
 
 var filterTaskSequence atomic.Uint64
+
+var ErrRuleLimit = fmt.Errorf("%w: filter rule limit exceeded", core.ErrResourceLimit)
 
 var _ plugin.MessageEventPlugin = (*Plugin)(nil)
 var _ plugin.MessageEventStatePlugin = (*Plugin)(nil)
@@ -100,9 +106,10 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 func (p *Plugin) InitContext(ctx context.Context) error {
 	if repo, ok := p.db.(ActiveChatRepository); ok {
 		chatIDs, err := repo.ListActiveChatIDs(ctx)
-		if err == nil {
-			p.featureState.ReplaceLoaded(chatIDs)
+		if err != nil {
+			return fmt.Errorf("filters: preload active chats: %w", err)
 		}
+		p.featureState.ReplaceLoaded(chatIDs)
 	}
 	return nil
 }
@@ -241,6 +248,10 @@ func (p *Plugin) handleFilter(ctx *core.Context) error {
 	if keyword == "" {
 		_ = ctx.EditOrReply("⚠️ Filter keyword cannot be empty.")
 		return errors.New("empty filter keyword")
+	}
+	if len(keyword) > MaxKeywordBytes {
+		_ = ctx.EditOrReply(fmt.Sprintf("⚠️ Filter keyword is too long (max %d bytes).", MaxKeywordBytes))
+		return fmt.Errorf("%w: filter keyword exceeds %d bytes", core.ErrInvalidArgs, MaxKeywordBytes)
 	}
 
 	chatID := p.getChatID(ctx)
@@ -680,7 +691,7 @@ func (p *Plugin) cacheFilters(chatID int64, filters *compiledFilterSet, revision
 	if p.ruleRevision.Load() != revision {
 		return false
 	}
-	if len(p.chatFilters) >= 500 {
+	if len(p.chatFilters) >= maxCompiledFilterCacheChats {
 		var oldestChat int64
 		var oldestTime time.Time
 		for c, accessed := range p.chatAccess {
@@ -716,6 +727,20 @@ func (p *Plugin) compiledFiltersForChat(
 		if err != nil {
 			p.featureState.MarkUnknown(chatID)
 			return nil, err
+		}
+		if len(rawFilters) > MaxRulesPerChat {
+			p.featureState.MarkUnknown(chatID)
+			return nil, ErrRuleLimit
+		}
+		for _, filter := range rawFilters {
+			if len(filter.Keyword) > MaxKeywordBytes {
+				p.featureState.MarkUnknown(chatID)
+				return nil, fmt.Errorf("%w: persisted filter keyword exceeds %d bytes", core.ErrResourceLimit, MaxKeywordBytes)
+			}
+			if err := savedresponse.Validate(filter.Response); err != nil {
+				p.featureState.MarkUnknown(chatID)
+				return nil, fmt.Errorf("filters: persisted response %q is invalid: %w", filter.Keyword, err)
+			}
 		}
 		filterSet := compileFilterSet(rawFilters)
 		if p.ruleRevision.Load() != revision {
