@@ -17,6 +17,37 @@ type p7iRuleIngressStub struct {
 	last            *core.MessageEnvelope
 }
 
+type p7iChatClassifierStub struct {
+	calls int
+	chat  core.Chat
+	err   error
+}
+
+func (s *p7iChatClassifierStub) Classify(
+	_ context.Context,
+	message *tg.Message,
+	_ tg.Entities,
+	inputPeer tg.InputPeerClass,
+) (core.Chat, error) {
+	s.calls++
+	if s.err != nil {
+		return core.Chat{}, s.err
+	}
+	if s.chat.ID != 0 {
+		return s.chat, nil
+	}
+	switch peer := inputPeer.(type) {
+	case *tg.InputPeerChat:
+		return core.Chat{ID: peer.ChatID, Type: string(core.ChatKindGroup)}, nil
+	case *tg.InputPeerChannel:
+		return core.Chat{
+			ID: peer.ChannelID, Type: string(core.ChatKindSupergroup), AccessHash: peer.AccessHash,
+		}, nil
+	default:
+		return core.Chat{}, core.ErrGroupOnly
+	}
+}
+
 func (s *p7iRuleIngressStub) Interested(int64) bool {
 	s.interestedCalls++
 	return s.interested
@@ -63,6 +94,9 @@ func p7iDispatchMessage(
 	users []tg.UserClass,
 ) {
 	t.Helper()
+	if deps.GroupRules != nil && deps.GroupRuleChats == nil {
+		deps.GroupRuleChats = &p7iChatClassifierStub{}
+	}
 	dispatcher := tg.NewUpdateDispatcher()
 	RegisterUpdateHandlers(&dispatcher, deps)
 	err := dispatcher.Handle(context.Background(), &tg.Updates{
@@ -114,10 +148,11 @@ func TestP7IInterestedGroupUsesOneOrderedTaskAndResolvesInsideTask(t *testing.T)
 
 	deps := UpdateHandlerDeps{
 		Logger:     zap.NewNop(),
-		GroupRules: rules,
-		Resolver:   resolver,
-		Tasks:      tasksClient,
-		SelfID:     func() int64 { return 999 },
+		GroupRules:     rules,
+		GroupRuleChats: classifier,
+		Resolver:       resolver,
+		Tasks:          tasksClient,
+		SelfID:         func() int64 { return 999 },
 		CacheEntities: func(tg.Entities) {
 			cacheCalls++
 		},
@@ -214,6 +249,9 @@ func TestP7IActiveUnknownSupergroupDefersClassificationUntilTask(t *testing.T) {
 	resolver := &groupServiceResolverStub{
 		resolved: &tg.InputPeerChannel{ChannelID: 88, AccessHash: 188},
 	}
+	classifier := &p7iChatClassifierStub{
+		chat: core.Chat{ID: 88, Type: string(core.ChatKindSupergroup), AccessHash: 188},
+	}
 	tasksClient := &p7iTaskClient{run: false}
 	cacheCalls := 0
 
@@ -241,9 +279,9 @@ func TestP7IActiveUnknownSupergroupDefersClassificationUntilTask(t *testing.T) {
 		t.Fatalf("unknown supergroup interested/tasks=%d/%d, want 1/1",
 			rules.interestedCalls, tasksClient.calls)
 	}
-	if resolver.calls != 0 || rules.handleCalls != 0 {
-		t.Fatalf("unknown supergroup did work before task resolver=%d handle=%d",
-			resolver.calls, rules.handleCalls)
+	if resolver.calls != 0 || classifier.calls != 0 || rules.handleCalls != 0 {
+		t.Fatalf("unknown supergroup did work before task resolver=%d classifier=%d handle=%d",
+			resolver.calls, classifier.calls, rules.handleCalls)
 	}
 	if cacheCalls != 1 {
 		t.Fatalf("entity cache calls=%d, want 1 after interest hit", cacheCalls)
@@ -252,9 +290,9 @@ func TestP7IActiveUnknownSupergroupDefersClassificationUntilTask(t *testing.T) {
 	if err := tasksClient.spec.Handler(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if resolver.calls != 1 || rules.handleCalls != 1 {
-		t.Fatalf("unknown supergroup in-task resolver/handle=%d/%d, want 1/1",
-			resolver.calls, rules.handleCalls)
+	if resolver.calls != 1 || classifier.calls != 1 || rules.handleCalls != 1 {
+		t.Fatalf("unknown supergroup in-task resolver/classifier/handle=%d/%d/%d, want 1/1/1",
+			resolver.calls, classifier.calls, rules.handleCalls)
 	}
 	if rules.last == nil || rules.last.Chat.Kind() != core.ChatKindSupergroup ||
 		rules.last.Peer.Kind != core.PeerKindChannel {
