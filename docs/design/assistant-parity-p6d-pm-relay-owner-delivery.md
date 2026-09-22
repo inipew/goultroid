@@ -184,6 +184,10 @@ same random_id is sent
 
 Telegram sees the recovery as the same logical send.
 
+As with the visitor direction, recovery is occurrence-driven rather than a
+startup outbox replay: the same/retried owner source occurrence re-enters the
+durable state machine after the lease expires.
+
 ### Already completed
 
 A duplicate owner source message does not invoke Telegram again.
