@@ -345,3 +345,53 @@ func TestAdminCommandPolicyIsAssistantOwnerPrivateOnly(t *testing.T) {
 		t.Fatalf("unexpected admin command policy: %+v", cmd)
 	}
 }
+
+
+func TestA2ControlSurfaceInputCASDoesNotOverwriteConcurrentEdit(t *testing.T) {
+	f := newAdminFixture(t)
+	created, err := f.bindings.Create(context.Background(), savedresponse.SurfaceBinding{
+		Surface: savedresponse.SurfaceDeepLink,
+		Alias: "race",
+		Reference: savedresponse.Reference{Provider: "notes", ScopeID: 1, Key: "before"},
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coreCtx := &core.Context{
+		Ctx: context.Background(),
+		PeerID: f.target.Peer,
+		Chat: &core.Chat{ID: 42, Type: "private"},
+		Sender: &core.User{ID: 1},
+	}
+	if err := f.feature.openCommand(coreCtx); err != nil {
+		t.Fatal(err)
+	}
+	f.dispatch(t, f.port.sent, actionSurfaceDeepLink, 501)
+	f.dispatch(t, f.port.edited, slotID(0), 502)
+	f.dispatch(t, f.port.edited, actionEdit, 503)
+
+	concurrent, err := f.bindings.Update(
+		context.Background(),
+		created.Surface,
+		created.Alias,
+		savedresponse.Reference{Provider: "notes", ScopeID: 2, Key: "concurrent"},
+		created.Enabled,
+		created.Revision,
+		created.Incarnation,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.input(t, "notes 3 stale-input")
+	current, err := f.bindings.Get(context.Background(), created.Surface, created.Alias)
+	if err != nil || current == nil {
+		t.Fatalf("current=%+v err=%v", current, err)
+	}
+	if current.Revision != concurrent.Revision ||
+		current.Reference.ScopeID != concurrent.Reference.ScopeID ||
+		current.Reference.Key != concurrent.Reference.Key {
+		t.Fatalf("stale input overwrote concurrent mutation: current=%+v concurrent=%+v", current, concurrent)
+	}
+}
