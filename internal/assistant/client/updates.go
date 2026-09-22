@@ -40,6 +40,7 @@ type UpdateHandlerDeps struct {
 	PluginScopeResolver func(string) (tasks.ScopeIdentity, bool)
 	InteractionIngress  interactionIngressPort
 	RelayIngress        relayMessageIngress
+	AudienceRegistry    pmrelay.AudienceRegistry
 }
 
 func assistantSlashCommand(text string) (string, bool) {
@@ -277,6 +278,14 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		} else if !errors.Is(prepareErr, inlineservice.ErrNoMatchingHandler) {
 			logger.Warn("assistant: inline query preparation failed", zap.Int64("query_id", update.QueryID), zap.Error(prepareErr))
 			return deps.InlineService.AnswerInlineQueryOptions(ctx, update.QueryID, nil, core.InlineAnswerOptions{CacheTime: 1, Private: true})
+		}
+		baseRun := run
+		run = func(taskCtx context.Context) error {
+			if err := baseRun(taskCtx); err != nil {
+				return err
+			}
+			touchAssistantAudience(taskCtx, deps.AudienceRegistry, update.UserID, pmrelay.AudienceSourceInline, logger)
+			return nil
 		}
 		_, err := deps.Tasks.Submit(ctx, tasks.WorkSpec{
 			ID:               tasks.TaskID(fmt.Sprintf("asst:inline:%d", update.QueryID)),
