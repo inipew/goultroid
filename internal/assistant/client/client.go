@@ -16,6 +16,7 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/command"
 	assistantdeeplink "github.com/inipew/goultroid/internal/assistant/deeplink"
 	"github.com/inipew/goultroid/internal/assistant/groupevents"
+	"github.com/inipew/goultroid/internal/assistant/grouprules"
 	assistantgroupauth "github.com/inipew/goultroid/internal/assistant/groupauth"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/assistant/peer"
@@ -84,6 +85,7 @@ type AssistantClient struct {
 	audience              pmrelay.AudienceRegistry
 	broadcast             *broadcastsvc.Service
 	groupEvents           *groupevents.Service
+	groupRules            *grouprules.Service
 	deepLinkSeq           atomic.Uint64
 	rpcExecutor           assistentrpc.Executor
 	featureCatalog        feature.Catalog
@@ -188,9 +190,15 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	c.interaction.SetRPCExecutor(c.rpcExecutor)
 	c.mu.RLock()
 	groupEvents := c.groupEvents
+	groupRules := c.groupRules
 	c.mu.RUnlock()
 	if groupEvents != nil {
 		groupEvents.SetTransport(c.interaction)
+	}
+	if groupRules != nil {
+		groupRules.SetRoleResolver(groupRoles)
+		groupRules.SetPrivilegedChecker(c.isGlobalPrivileged)
+		groupRules.SetTransport(c.interaction)
 	}
 	c.interaction.SetMediaSender(message.NewSender(tdClient.API()), uploader.NewUploader(tdClient.API()))
 	if c.metrics != nil {
@@ -266,6 +274,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 		RelayIngress:     relayIngress,
 		AudienceRegistry: audience,
 		GroupEvents:       groupEvents,
+		GroupRules:        groupRules,
 		SelfID:            c.selfID,
 	}
 	RegisterUpdateHandlers(&dispatcher, deps)
@@ -274,6 +283,10 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 		defer func() {
 			if groupEvents != nil {
 				groupEvents.SetTransport(nil)
+			}
+			if groupRules != nil {
+				groupRules.SetTransport(nil)
+				groupRules.SetRoleResolver(nil)
 			}
 			c.unbindFeatureDrivers()
 			c.mu.Lock()
@@ -440,6 +453,28 @@ func (c *AssistantClient) selfID() int64 {
 	}
 	return c.self.ID
 }
+
+func (c *AssistantClient) isGlobalPrivileged(userID int64) bool {
+	if userID <= 0 {
+		return false
+	}
+	c.mu.RLock()
+	ownerID := c.ownerID
+	sudoGetter := c.sudoGetter
+	c.mu.RUnlock()
+	if userID == ownerID {
+		return true
+	}
+	if sudoGetter == nil {
+		return false
+	}
+	for _, sudoID := range sudoGetter() {
+		if userID == sudoID {
+			return true
+		}
+	}
+	return false
+}
 func (c *AssistantClient) StartTime() time.Time {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -517,6 +552,12 @@ func (c *AssistantClient) SetBroadcastService(service *broadcastsvc.Service) {
 func (c *AssistantClient) SetGroupEventService(service *groupevents.Service) {
 	c.mu.Lock()
 	c.groupEvents = service
+	c.mu.Unlock()
+}
+
+func (c *AssistantClient) SetGroupRuleService(service *grouprules.Service) {
+	c.mu.Lock()
+	c.groupRules = service
 	c.mu.Unlock()
 }
 func (c *AssistantClient) SetSettingsService(svc *settings.Service) {
