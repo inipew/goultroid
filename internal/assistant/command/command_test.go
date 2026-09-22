@@ -832,3 +832,65 @@ func TestCommandRouter_UnknownCommandStillReturnsUnknownAfterDynamicLookup(t *te
 		t.Fatalf("Dispatch(missing dynamic alias) error = %v, want %v", err, command.ErrUnknownCommand)
 	}
 }
+
+
+func TestCommandRouter_DynamicSavedResponseFailsClosedWithoutDelivery(t *testing.T) {
+	bindings, _, _, _ := newSavedResponseCommandFixture(
+		t,
+		"misconfigured",
+		savedresponse.NewText("must not send"),
+	)
+	r := command.NewRouter(zap.NewNop())
+	r.SetSavedResponseBindings(bindings, nil)
+	r.SetTasks(&immediateTaskClient{})
+
+	err := r.Dispatch(
+		context.Background(),
+		12345,
+		&tg.InputPeerUser{UserID: 12345},
+		"/misconfigured",
+		&fakeInteraction{},
+	)
+	if !errors.Is(err, savedresponse.ErrResponseDeliveryUnavailable) {
+		t.Fatalf("Dispatch(missing delivery) error = %v, want %v", err, savedresponse.ErrResponseDeliveryUnavailable)
+	}
+}
+
+func TestCommandRouter_CanonicalNamespaceBlocksDynamicFallback(t *testing.T) {
+	bindings, _, _, _ := newSavedResponseCommandFixture(
+		t,
+		"useronly",
+		savedresponse.NewText("dynamic must not shadow canonical"),
+	)
+	taskClient := &immediateTaskClient{}
+	r := command.NewRouter(zap.NewNop())
+	configureSavedResponseRouter(r, bindings, taskClient)
+
+	coreRouter := core.NewRouter(".")
+	if err := coreRouter.Register(core.Command{
+		Name:     "useronly",
+		Surfaces: execution.SurfaceUserbot,
+		Handler:  func(*core.Context) error { return nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r.SetCoreRouter(coreRouter)
+
+	fake := &fakeInteraction{}
+	err := r.Dispatch(
+		context.Background(),
+		12345,
+		&tg.InputPeerUser{UserID: 12345},
+		"/useronly",
+		fake,
+	)
+	if !errors.Is(err, command.ErrUnknownCommand) {
+		t.Fatalf("Dispatch(canonical namespace collision) error = %v, want %v", err, command.ErrUnknownCommand)
+	}
+	if taskClient.submitCount != 0 {
+		t.Fatalf("canonical namespace collision submitted %d dynamic task(s)", taskClient.submitCount)
+	}
+	if fake.lastSentText != "" {
+		t.Fatalf("canonical namespace collision sent dynamic response %q", fake.lastSentText)
+	}
+}
