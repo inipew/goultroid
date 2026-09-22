@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
@@ -35,6 +34,7 @@ type compiledBlacklistSet struct {
 	items    []compiledBlacklist
 	matcher  *blacklistMatcher
 	revision uint64
+	lastUsed atomic.Uint64
 }
 
 type Plugin struct {
@@ -42,10 +42,10 @@ type Plugin struct {
 	svcFunc       func() core.TelegramServicer
 	featureState  core.ChatFeatureSnapshot
 	revisionSeq   atomic.Uint64
+	cacheClock    atomic.Uint64
 	cacheMu       sync.RWMutex
 	chatRevision  map[int64]uint64
 	chatBlacklist map[int64]*compiledBlacklistSet
-	chatAccess    map[int64]time.Time
 }
 
 func New(db Repository, svcFunc func() core.TelegramServicer) *Plugin {
@@ -53,7 +53,6 @@ func New(db Repository, svcFunc func() core.TelegramServicer) *Plugin {
 		db: db, svcFunc: svcFunc,
 		chatRevision:  make(map[int64]uint64),
 		chatBlacklist: make(map[int64]*compiledBlacklistSet),
-		chatAccess:    make(map[int64]time.Time),
 	}
 }
 func (p *Plugin) Name() string { return "blacklist" }
@@ -209,7 +208,6 @@ func (p *Plugin) chatRuleRevision(chatID int64) uint64 {
 func (p *Plugin) invalidateChat(chatID int64, active bool) {
 	p.cacheMu.Lock()
 	delete(p.chatBlacklist, chatID)
-	delete(p.chatAccess, chatID)
 	if active {
 		p.chatRevision[chatID] = p.revisionSeq.Add(1)
 	} else {
@@ -255,9 +253,7 @@ func (p *Plugin) compiledForChat(
 		cached, ok := p.chatBlacklist[chatID]
 		p.cacheMu.RUnlock()
 		if ok && cached != nil && cached.revision == revision {
-			p.cacheMu.Lock()
-			p.chatAccess[chatID] = time.Now()
-			p.cacheMu.Unlock()
+			cached.lastUsed.Store(p.cacheClock.Add(1))
 			return cached, nil
 		}
 
@@ -294,19 +290,23 @@ func (p *Plugin) compiledForChat(
 		}
 		if len(p.chatBlacklist) >= maxCompiledCacheChats {
 			var oldestChat int64
-			var oldestTime time.Time
-			for c, accessed := range p.chatAccess {
-				if oldestTime.IsZero() || accessed.Before(oldestTime) {
-					oldestTime, oldestChat = accessed, c
+			var oldestSequence uint64
+			for candidateChat, candidate := range p.chatBlacklist {
+				sequence := uint64(0)
+				if candidate != nil {
+					sequence = candidate.lastUsed.Load()
+				}
+				if oldestChat == 0 || sequence < oldestSequence {
+					oldestChat = candidateChat
+					oldestSequence = sequence
 				}
 			}
 			if oldestChat != 0 {
 				delete(p.chatBlacklist, oldestChat)
-				delete(p.chatAccess, oldestChat)
 			}
 		}
+		compiled.lastUsed.Store(p.cacheClock.Add(1))
 		p.chatBlacklist[chatID] = compiled
-		p.chatAccess[chatID] = time.Now()
 		p.cacheMu.Unlock()
 		return compiled, nil
 	}
