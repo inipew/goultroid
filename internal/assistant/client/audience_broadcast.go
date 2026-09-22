@@ -52,9 +52,6 @@ func (s *assistantAudienceTargetSource) Next(
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.cursor >= s.snapshot.MaxSequence {
-		return nil, true, nil
-	}
 	if s.missingRemaining > 0 {
 		count := s.missingRemaining
 		if limit > 0 && count > limit {
@@ -63,6 +60,9 @@ func (s *assistantAudienceTargetSource) Next(
 		targets := make([]tg.InputPeerClass, count)
 		s.missingRemaining -= count
 		return targets, s.missingRemaining == 0, nil
+	}
+	if s.cursor >= s.snapshot.MaxSequence {
+		return nil, true, nil
 	}
 
 	members, next, err := s.registry.ListAudienceSnapshot(ctx, s.snapshot, s.cursor, limit)
