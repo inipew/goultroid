@@ -17,9 +17,10 @@ import (
 )
 
 type startDeepLinkProvider struct {
-	scope     tasks.ScopeIdentity
-	resources []tasks.ResourceRequirement
-	executes  int
+	scope      tasks.ScopeIdentity
+	resources  []tasks.ResourceRequirement
+	executes   int
+	executeErr error
 }
 
 func (p *startDeepLinkProvider) Prepare(context.Context, string, int64) (assistantdeeplink.PreparedTarget, error) {
@@ -32,6 +33,9 @@ func (p *startDeepLinkProvider) Prepare(context.Context, string, int64) (assista
 
 func (p *startDeepLinkProvider) Execute(_ context.Context, _ assistantdeeplink.PreparedTarget, delivery assistantdeeplink.Delivery) error {
 	p.executes++
+	if p.executeErr != nil {
+		return p.executeErr
+	}
 	if delivery.SendText != nil {
 		return delivery.SendText("deep-link delivered")
 	}
@@ -330,5 +334,42 @@ func TestAssistantStartUnsupportedDeepLinkVersionFailsClosed(t *testing.T) {
 	}
 	if got := manager.InteractionRuntime().Stats().Sessions; got != 0 {
 		t.Fatalf("unsupported token version fell through to shell sessions=%d", got)
+	}
+}
+
+
+func TestAssistantStartFailedDeepLinkDoesNotTouchAudience(t *testing.T) {
+	provider := &startDeepLinkProvider{
+		scope:      tasks.ScopeIdentity{Owner: "plugin:test", Generation: 1},
+		executeErr: errors.New("delivery failed"),
+	}
+	router := newStartDeepLinkRouter(t, provider)
+	token, err := router.Issue(context.Background(), assistantdeeplink.IssueRequest{
+		Kind: "test", Payload: "failing", ActorID: 7, SingleUse: true, TTL: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client := NewAssistantClient(1, "hash", "token", zap.NewNop())
+	audience, repo := newAssistantAudienceRegistry(t)
+	client.SetAudienceRegistry(audience)
+	client.SetDeepLinkRouter(router)
+	client.SetTasks(&immediateDeepLinkTasks{})
+	interaction := &publicStartInteraction{}
+	if err := client.dispatchStart(&command.Context{
+		Ctx:         context.Background(),
+		SenderID:    7,
+		Peer:        &tg.InputPeerUser{UserID: 7},
+		Args:        []string{token.ID},
+		Interaction: interaction,
+	}); err != nil {
+		t.Fatalf("dispatchStart(failed deep link) error=%v", err)
+	}
+	if provider.executes != 1 {
+		t.Fatalf("provider executes=%d, want 1", provider.executes)
+	}
+	if _, err := repo.GetAudience(context.Background(), 7); !errors.Is(err, pmrelay.ErrAudienceNotFound) {
+		t.Fatalf("failed deep-link audience lookup error=%v, want %v", err, pmrelay.ErrAudienceNotFound)
 	}
 }
