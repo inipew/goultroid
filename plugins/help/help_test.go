@@ -280,3 +280,19 @@ func TestHelpPlugin_Interactive(t *testing.T) {
 		t.Errorf("expected closed text on close callback, got: %s", svc.edited)
 	}
 }
+
+
+func TestGroupAuthorizationLabel(t *testing.T) {
+	label := groupAuthorizationLabel(core.GroupAuthorizationRequirement{
+		Level: core.GroupAuthorizationAdministrator,
+		Rights: core.GroupAdminRights{
+			BanUsers:       true,
+			DeleteMessages: true,
+		},
+	})
+	if !strings.Contains(label, "administrator") ||
+		!strings.Contains(label, "ban_users") ||
+		!strings.Contains(label, "delete_messages") {
+		t.Fatalf("unexpected group authorization label: %q", label)
+	}
+}
