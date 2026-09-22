@@ -444,7 +444,6 @@ func TestP7JGroupRuleOrderingIsTopicScoped(t *testing.T) {
 	}
 }
 
-
 func TestP7LGroupRuleAdmissionRejectionStopsBeforeExecution(t *testing.T) {
 	rules := &p7iRuleIngressStub{interested: true}
 	resolver := &groupServiceResolverStub{resolved: &tg.InputPeerChat{ChatID: 77}}
@@ -565,7 +564,6 @@ func BenchmarkP7LIrrelevantGroupMessageHotPath(b *testing.B) {
 			cacheCalls, resolver.calls, tasksClient.calls, rules.handleCalls)
 	}
 }
-
 
 type p7lProcessFootprint struct {
 	goroutines int
