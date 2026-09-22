@@ -359,7 +359,6 @@ func TestSQLiteSchemaRejectsOversizedValueBypass(t *testing.T) {
 	}
 }
 
-
 type migration001OnlyProvider struct{}
 
 func (migration001OnlyProvider) Migrations() []database.Migration {
@@ -423,7 +422,6 @@ func TestP7FMigration001UpgradeToValueBound(t *testing.T) {
 		t.Fatal("post-upgrade database accepted oversized value")
 	}
 }
-
 
 func TestSQLiteSchemaRejectsNonCanonicalCoordinateBypass(t *testing.T) {
 	_, db := newTestStore(t, Limits{MaxEntries: 8, CleanupBatch: 2})
