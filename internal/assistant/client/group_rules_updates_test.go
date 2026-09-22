@@ -399,3 +399,38 @@ func TestP7IGlobalPrivilegedSenderStopsBeforeInterestCacheAndTask(t *testing.T) 
 			cacheCalls, resolver.calls, tasksClient.calls)
 	}
 }
+
+func TestP7JGroupRuleOrderingIsTopicScoped(t *testing.T) {
+	rules := &p7iRuleIngressStub{interested: true}
+	tasksClient := &p7iTaskClient{}
+	resolver := &groupServiceResolverStub{resolved: &tg.InputPeerChannel{ChannelID: 77, AccessHash: 99}}
+
+	p7iDispatchMessage(t, UpdateHandlerDeps{
+		Logger:         zap.NewNop(),
+		GroupRules:     rules,
+		Resolver:       resolver,
+		Tasks:          tasksClient,
+		GroupRuleChats: &p7iChatClassifierStub{},
+	}, &tg.Message{
+		ID:      701,
+		PeerID:  &tg.PeerChannel{ChannelID: 77},
+		FromID:  &tg.PeerUser{UserID: 42},
+		Message: "ordinary topic text",
+		ReplyTo: &tg.MessageReplyHeader{
+			ForumTopic:   true,
+			ReplyToMsgID: 510,
+			ReplyToTopID: 500,
+		},
+	}, []tg.ChatClass{&tg.Channel{
+		ID:         77,
+		AccessHash: 99,
+		Megagroup:  true,
+	}}, []tg.UserClass{&tg.User{ID: 42}})
+
+	if tasksClient.calls != 1 {
+		t.Fatalf("TaskEngine calls=%d want 1", tasksClient.calls)
+	}
+	if tasksClient.spec.OrderingKey != "chat:77:topic:500" {
+		t.Fatalf("ordering=%q want chat:77:topic:500", tasksClient.spec.OrderingKey)
+	}
+}

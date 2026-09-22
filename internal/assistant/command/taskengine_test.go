@@ -104,3 +104,50 @@ func TestCommandRouter_ResourceCommandFailsClosedWithoutTaskClient(t *testing.T)
 		t.Fatalf("expected ErrTasksNotConfigured, got %v", err)
 	}
 }
+
+func TestCommandRouter_P7JGroupTaskOrderingIsTopicScoped(t *testing.T) {
+	r := command.NewRouter(zap.NewNop())
+	client := &inlineTaskClient{}
+	r.SetTasks(client)
+
+	coreRouter := core.NewRouter(".")
+	if err := coreRouter.Register(core.Command{
+		Name:       "topicprobe",
+		Surfaces:   execution.SurfaceAssistant,
+		GroupOnly:  true,
+		Permission: core.PermissionEveryone,
+		Handler:    func(*core.Context) error { return nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r.SetCoreRouter(coreRouter)
+	peer := &tg.InputPeerChannel{ChannelID: 99, AccessHash: 123}
+
+	for _, tc := range []struct {
+		topic int
+		want  string
+	}{
+		{topic: 7, want: "chat:99:topic:7"},
+		{topic: 8, want: "chat:99:topic:8"},
+		{topic: 0, want: "chat:99"},
+	} {
+		err := r.DispatchMessageContext(
+			context.Background(),
+			42,
+			peer,
+			"/topicprobe",
+			command.MessageContext{
+				Chat:      core.Chat{ID: 99, Type: "supergroup", AccessHash: 123},
+				MessageID: 10 + tc.topic,
+				TopicID:   tc.topic,
+			},
+			&fakeInteraction{},
+		)
+		if err != nil {
+			t.Fatalf("topic %d dispatch: %v", tc.topic, err)
+		}
+		if client.last.OrderingKey != tc.want {
+			t.Fatalf("topic %d ordering=%q want %q", tc.topic, client.last.OrderingKey, tc.want)
+		}
+	}
+}

@@ -616,3 +616,29 @@ type fakeUploader struct{}
 func (f *fakeUploader) FromPath(ctx context.Context, path string) (tg.InputFileClass, error) {
 	return &tg.InputFile{ID: 1, Parts: 1, Name: "test.png"}, nil
 }
+
+func TestClientInteraction_SendMessageContextPreservesForumTopic(t *testing.T) {
+	mockAPI := &mockTelegramAPI{}
+	ci := interaction.NewClientInteraction(mockAPI, zap.NewNop())
+	peer := &tg.InputPeerChannel{ChannelID: 77, AccessHash: 88}
+
+	if _, err := ci.SendMessageContext(
+		context.Background(),
+		peer,
+		"threaded",
+		nil,
+		core.MessageSendContext{ReplyToID: 321, TopicID: 300},
+	); err != nil {
+		t.Fatalf("send contextual message: %v", err)
+	}
+	if mockAPI.sendMsgReq == nil {
+		t.Fatal("messages.sendMessage was not called")
+	}
+	reply, ok := mockAPI.sendMsgReq.ReplyTo.(*tg.InputReplyToMessage)
+	if !ok || reply == nil {
+		t.Fatalf("missing InputReplyToMessage: %#v", mockAPI.sendMsgReq.ReplyTo)
+	}
+	if reply.ReplyToMsgID != 321 || reply.TopMsgID != 300 {
+		t.Fatalf("reply context=%+v, want reply=321 top=300", reply)
+	}
+}
