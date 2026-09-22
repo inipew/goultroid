@@ -433,3 +433,56 @@ func TestPreparedBindingRejectsResourceClassDrift(t *testing.T) {
 		t.Fatalf("ResolvePrepared(resource drift) error = %v, want %v", err, ErrBindingStale)
 	}
 }
+
+
+func TestPreparedBindingRejectsDeleteRecreateABA(t *testing.T) {
+	repo, _ := newSurfaceBindingRepository(t)
+	ctx := context.Background()
+	registry := NewRegistry()
+	registration, err := registry.Register(
+		"notes",
+		tasks.ScopeIdentity{Owner: "plugin:notes", Generation: 1},
+		&bindingTestResolver{response: NewText("same")},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registration.Close()
+
+	service := NewBindingService(repo, registry)
+	original, err := service.Create(ctx, SurfaceBinding{
+		Surface:   SurfaceAssistantCommand,
+		Alias:     "aba",
+		Reference: Reference{Provider: "notes", ScopeID: 12, Key: "same"},
+		Enabled:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := service.Prepare(ctx, original.Surface, original.Alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := service.Delete(ctx, original.Surface, original.Alias, original.Revision); err != nil {
+		t.Fatal(err)
+	}
+	recreated, err := service.Create(ctx, SurfaceBinding{
+		Surface:   original.Surface,
+		Alias:     original.Alias,
+		Reference: original.Reference,
+		Enabled:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recreated.Revision != original.Revision {
+		t.Fatalf("ABA test requires reset revision: original=%d recreated=%d", original.Revision, recreated.Revision)
+	}
+	if recreated.Incarnation == "" || recreated.Incarnation == original.Incarnation {
+		t.Fatalf("binding incarnation was not renewed: original=%q recreated=%q", original.Incarnation, recreated.Incarnation)
+	}
+	if _, err := service.ResolvePrepared(ctx, prepared); !errors.Is(err, ErrBindingStale) {
+		t.Fatalf("ResolvePrepared(delete+recreate) error = %v, want %v", err, ErrBindingStale)
+	}
+}
