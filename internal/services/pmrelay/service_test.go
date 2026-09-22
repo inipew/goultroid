@@ -114,6 +114,35 @@ func TestOwnerReplyPrepareAndRevalidationUsesDurableMapping(t *testing.T) {
 	}
 }
 
+func TestPreparedOwnerReplyExpiresWhileQueued(t *testing.T) {
+	ctx := context.Background()
+	repo, _ := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8})
+	base := time.Date(2026, 9, 22, 10, 30, 0, 0, time.UTC)
+	if _, err := repo.EnsureMapping(ctx, Mapping{
+		OwnerChatID: 7, OwnerMessageID: 100,
+		VisitorUserID: 42, VisitorMessageID: 11,
+		CreatedAt: base, ExpiresAt: base.Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	service := NewService(repo, 7)
+	service.now = func() time.Time { return base.Add(5 * time.Minute) }
+	service.SetEnabled(true)
+
+	prepared, handled, err := service.PrepareOwnerReply(ctx, IngressMessage{
+		SenderID: 7, ChatID: 7, MessageID: 101, ReplyToMessageID: 100,
+	})
+	if err != nil || !handled {
+		t.Fatalf("PrepareOwnerReply() handled=%v err=%v", handled, err)
+	}
+
+	service.now = func() time.Time { return base.Add(2 * time.Hour) }
+	if err := service.ExecutePrepared(ctx, prepared); !errors.Is(err, ErrPreparedStale) {
+		t.Fatalf("ExecutePrepared(after mapping TTL) error=%v, want %v", err, ErrPreparedStale)
+	}
+}
+
 func TestOwnerReplyExpiredMappingFailsClosedBeforeAdmission(t *testing.T) {
 	ctx := context.Background()
 	repo, _ := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8})
