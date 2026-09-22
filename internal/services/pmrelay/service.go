@@ -98,6 +98,10 @@ type AudienceRegistry interface {
 	ListAudienceSnapshot(context.Context, AudienceSnapshot, int64, int) ([]AudienceMember, int64, error)
 }
 
+type ForceSubPolicy interface {
+	ForceSubConfig(context.Context) (ForceSubConfig, error)
+}
+
 type ControlStatus struct {
 	Enabled    bool
 	Mappings   int
@@ -197,6 +201,45 @@ func (s *Service) ListAudienceSnapshot(
 		return nil, afterSequence, ErrUnavailable
 	}
 	return s.repo.ListAudienceSnapshot(ctx, snapshot, afterSequence, limit)
+}
+
+func (s *Service) ForceSubConfig(ctx context.Context) (ForceSubConfig, error) {
+	if s == nil || s.repo == nil {
+		return ForceSubConfig{}, ErrUnavailable
+	}
+	return s.repo.GetForceSubConfig(ctx)
+}
+
+func (s *Service) ConfigureForceSub(
+	ctx context.Context,
+	enabled bool,
+	channelUsername string,
+	joinURL string,
+	failureMode ForceSubFailureMode,
+) (ForceSubConfig, error) {
+	if s == nil || s.repo == nil {
+		return ForceSubConfig{}, ErrUnavailable
+	}
+	current, err := s.repo.GetForceSubConfig(ctx)
+	if err != nil {
+		return ForceSubConfig{}, err
+	}
+	next := ForceSubConfig{
+		Enabled:         enabled,
+		ChannelUsername: channelUsername,
+		JoinURL:         joinURL,
+		FailureMode:     failureMode,
+		Revision:        current.Revision + 1,
+		UpdatedAt:       s.now().UTC(),
+	}
+	if !enabled {
+		next.FailureMode = ForceSubFailClosed
+	}
+	normalized, err := next.Normalize()
+	if err != nil {
+		return ForceSubConfig{}, err
+	}
+	return s.repo.UpdateForceSubConfig(ctx, current.Revision, normalized)
 }
 
 func (s *Service) checkVisitorAllowed(ctx context.Context, visitorID int64) error {
