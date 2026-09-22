@@ -4,12 +4,14 @@ import (
 	"container/list"
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
+	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/assistant/peer"
 	"github.com/inipew/goultroid/internal/services/pmrelay"
 	"go.uber.org/zap"
@@ -396,5 +398,63 @@ func TestForceSubGuidanceDueDoesNotMutateCooldown(t *testing.T) {
 	now = base.Add(forceSubGuidanceCooldown + time.Second)
 	if !gate.GuidanceDue(42, 2) {
 		t.Fatal("guidance did not become due after cooldown")
+	}
+}
+
+
+func TestForceSubGuidanceCarriesExplicitJoinButton(t *testing.T) {
+	api := &mockTelegramAPI{}
+	transport := &telegramRelayVisitorTransport{
+		resolver:    forceSubResolver(42),
+		interaction: interaction.NewClientInteraction(api, zap.NewNop()),
+	}
+	config := enabledForceSubConfig(2, pmrelay.ForceSubFailClosed)
+
+	if err := transport.SendForceSubGuidance(
+		context.Background(),
+		42,
+		config,
+		false,
+	); err != nil {
+		t.Fatalf("SendForceSubGuidance() error=%v", err)
+	}
+	req := api.sendMsgReq
+	if req == nil {
+		t.Fatal("guidance did not send a Telegram message")
+	}
+	if !strings.Contains(req.Message, "Membership required") ||
+		!strings.Contains(req.Message, "@required_channel") ||
+		!strings.Contains(req.Message, "send your message again") {
+		t.Fatalf("guidance message=%q", req.Message)
+	}
+	markup, ok := req.ReplyMarkup.(*tg.ReplyInlineMarkup)
+	if !ok || markup == nil || len(markup.Rows) != 1 ||
+		len(markup.Rows[0].Buttons) != 1 {
+		t.Fatalf("guidance markup=%T %+v", req.ReplyMarkup, req.ReplyMarkup)
+	}
+	button, ok := markup.Rows[0].Buttons[0].(*tg.KeyboardButtonURL)
+	if !ok || button.Text != "Join channel" || button.URL != config.JoinURL {
+		t.Fatalf("guidance button=%T %+v", markup.Rows[0].Buttons[0], markup.Rows[0].Buttons[0])
+	}
+}
+
+func TestForceSubFailClosedGuidanceExplainsVerificationOutage(t *testing.T) {
+	api := &mockTelegramAPI{}
+	transport := &telegramRelayVisitorTransport{
+		resolver:    forceSubResolver(42),
+		interaction: interaction.NewClientInteraction(api, zap.NewNop()),
+	}
+	if err := transport.SendForceSubGuidance(
+		context.Background(),
+		42,
+		enabledForceSubConfig(2, pmrelay.ForceSubFailClosed),
+		true,
+	); err != nil {
+		t.Fatalf("SendForceSubGuidance(unavailable) error=%v", err)
+	}
+	if api.sendMsgReq == nil ||
+		!strings.Contains(api.sendMsgReq.Message, "verification unavailable") ||
+		!strings.Contains(api.sendMsgReq.Message, "fail-closed") {
+		t.Fatalf("verification guidance=%+v", api.sendMsgReq)
 	}
 }
