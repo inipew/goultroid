@@ -156,7 +156,6 @@ func TestUpdateHandlers_ShutdownBarrier(t *testing.T) {
 	}
 }
 
-
 type inlineAdmissionDynamicSource struct {
 	scope tasks.ScopeIdentity
 }

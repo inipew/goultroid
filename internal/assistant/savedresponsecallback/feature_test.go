@@ -48,9 +48,9 @@ func (*callbackPort) Answer(context.Context, presentation.Answer) error { return
 
 type callbackTelegramService struct {
 	core.MockTelegramServicer
-	sentText     string
-	sentMedia    string
-	sentCaption  string
+	sentText    string
+	sentMedia   string
+	sentCaption string
 }
 
 func (s *callbackTelegramService) SendMessageWithMarkup(
@@ -76,16 +76,16 @@ func (s *callbackTelegramService) SendMedia(
 }
 
 type callbackFixture struct {
-	feature      *Feature
-	bindings     *savedresponse.BindingService
-	binding      savedresponse.SurfaceBinding
-	registry     *savedresponse.Registry
-	resolver     *callbackResolver
-	registration *savedresponse.Registration
+	feature       *Feature
+	bindings      *savedresponse.BindingService
+	binding       savedresponse.SurfaceBinding
+	registry      *savedresponse.Registry
+	resolver      *callbackResolver
+	registration  *savedresponse.Registration
 	providerScope tasks.ScopeIdentity
-	engine       *orchestration.Engine
-	port         *callbackPort
-	service      *callbackTelegramService
+	engine        *orchestration.Engine
+	port          *callbackPort
+	service       *callbackTelegramService
 }
 
 func newCallbackFixture(t *testing.T, response savedresponse.Response) *callbackFixture {

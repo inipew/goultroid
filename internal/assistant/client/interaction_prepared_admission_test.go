@@ -140,8 +140,8 @@ func TestInteractionIngressCarriesPreparedActionAdmissionToTaskEngine(t *testing
 	created, err := sessions.Create(context.Background(), rootinteraction.CreateRequest{
 		FeatureID: "prepared_callback",
 		Binding: rootinteraction.Binding{
-			ActorID:  7,
-			ChatID:   42,
+			ActorID:   7,
+			ChatID:    42,
 			MessageID: 77,
 		},
 	})
@@ -159,9 +159,9 @@ func TestInteractionIngressCarriesPreparedActionAdmissionToTaskEngine(t *testing
 	err = ingress.dispatchCallback(
 		context.Background(),
 		orchestration.CallbackRequest{
-			Data:     data,
-			ActorID:  7,
-			QueryID:  9001,
+			Data:    data,
+			ActorID: 7,
+			QueryID: 9001,
 			Target: presentationtelegram.MessageTarget{
 				Peer:      &tg.InputPeerUser{UserID: 7},
 				ChatID:    42,

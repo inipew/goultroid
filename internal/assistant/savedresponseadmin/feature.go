@@ -84,7 +84,7 @@ func (f *Feature) Commands() []core.Command {
 		Description: "Manage persistent SavedResponse surface bindings",
 		Usage:       "/responses",
 		Category:    "Assistant",
-		Permission: core.PermissionOwner,
+		Permission:  core.PermissionOwner,
 		Invocation: core.InvocationPolicy{
 			Assistant: core.InvocationSelfOnly,
 		},
@@ -125,7 +125,7 @@ func (*Feature) FeatureSpec() feature.Spec {
 	return feature.Spec{
 		ID: FeatureID, Name: "SavedResponse Bindings",
 		Description: "Owner-only a2 control plane for persistent SavedResponse surface bindings.",
-		Category: "Assistant", Interactions: interactions,
+		Category:    "Assistant", Interactions: interactions,
 	}
 }
 
@@ -161,20 +161,22 @@ func (f *Feature) BindAssistant(rt assistantinteraction.DriverRuntime) (func(), 
 	}
 
 	handlers := map[string]func(*orchestration.Context) error{
-		actionHome:             f.handleHome,
-		actionSurfaceAssistant: func(ctx *orchestration.Context) error { return f.openSurface(ctx, savedresponse.SurfaceAssistantCommand) },
-		actionSurfaceInline:    func(ctx *orchestration.Context) error { return f.openSurface(ctx, savedresponse.SurfaceInline) },
-		actionSurfaceDeepLink:  func(ctx *orchestration.Context) error { return f.openSurface(ctx, savedresponse.SurfaceDeepLink) },
-		actionSurfaceCallback:  func(ctx *orchestration.Context) error { return f.openSurface(ctx, savedresponse.SurfaceCallback) },
-		actionPrev:             func(ctx *orchestration.Context) error { return f.changePage(ctx, -1) },
-		actionNext:             func(ctx *orchestration.Context) error { return f.changePage(ctx, 1) },
-		actionCreate:           f.beginCreate,
-		actionBack:             f.backToList,
-		actionToggle:           f.toggleSelected,
-		actionEdit:             f.beginEdit,
-		actionDelete:           f.confirmDelete,
-		actionDeleteConfirm:    f.deleteSelected,
-		actionDeleteCancel:     f.showSelected,
+		actionHome: f.handleHome,
+		actionSurfaceAssistant: func(ctx *orchestration.Context) error {
+			return f.openSurface(ctx, savedresponse.SurfaceAssistantCommand)
+		},
+		actionSurfaceInline:   func(ctx *orchestration.Context) error { return f.openSurface(ctx, savedresponse.SurfaceInline) },
+		actionSurfaceDeepLink: func(ctx *orchestration.Context) error { return f.openSurface(ctx, savedresponse.SurfaceDeepLink) },
+		actionSurfaceCallback: func(ctx *orchestration.Context) error { return f.openSurface(ctx, savedresponse.SurfaceCallback) },
+		actionPrev:            func(ctx *orchestration.Context) error { return f.changePage(ctx, -1) },
+		actionNext:            func(ctx *orchestration.Context) error { return f.changePage(ctx, 1) },
+		actionCreate:          f.beginCreate,
+		actionBack:            f.backToList,
+		actionToggle:          f.toggleSelected,
+		actionEdit:            f.beginEdit,
+		actionDelete:          f.confirmDelete,
+		actionDeleteConfirm:   f.deleteSelected,
+		actionDeleteCancel:    f.showSelected,
 	}
 	for _, id := range []string{
 		actionHome, actionSurfaceAssistant, actionSurfaceInline, actionSurfaceDeepLink, actionSurfaceCallback,

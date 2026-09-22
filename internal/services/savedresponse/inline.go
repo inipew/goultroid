@@ -90,10 +90,10 @@ func (s *InlineSource) Execute(
 		Description: "Saved response · " + resolved.Resolved.Response.Kind(),
 	}
 	response := &inlineservice.InlineResponse{
-		Results:  []inlineservice.InlineResult{result},
-		Cache:    inlineservice.CacheNone,
+		Results:   []inlineservice.InlineResult{result},
+		Cache:     inlineservice.CacheNone,
 		CacheTime: 0,
-		Private:  true,
+		Private:   true,
 	}
 
 	if rendered.MediaPath == "" {

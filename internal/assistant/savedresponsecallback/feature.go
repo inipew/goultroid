@@ -62,9 +62,9 @@ func New(bindings *savedresponse.BindingService, delivery *savedresponse.Respons
 	return &Feature{bindings: bindings, delivery: delivery}
 }
 
-func (*Feature) Name() string             { return FeatureID }
-func (*Feature) Commands() []core.Command { return nil }
-func (*Feature) Init() error              { return nil }
+func (*Feature) Name() string               { return FeatureID }
+func (*Feature) Commands() []core.Command   { return nil }
+func (*Feature) Init() error                { return nil }
 func (*Feature) AssistantFeatureID() string { return FeatureID }
 func (*Feature) HandleAssistantInput(*orchestration.Context, string) error {
 	return ErrUnavailable

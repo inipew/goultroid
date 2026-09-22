@@ -15,9 +15,9 @@ var (
 )
 
 type Action struct {
-	Token      CallbackToken
-	Session    Session
-	Context    context.Context
+	Token       CallbackToken
+	Session     Session
+	Context     context.Context
 	Preparation any
 }
 
@@ -75,10 +75,10 @@ type ResourcePreparedAction interface {
 }
 
 type preparedAction struct {
-	dispatcher   *Dispatcher
-	data         []byte
-	binding      Binding
-	key          handlerKey
+	dispatcher     *Dispatcher
+	data           []byte
+	binding        Binding
+	key            handlerKey
 	scope          tasks.ScopeIdentity
 	executionScope tasks.ScopeIdentity
 	resources      []tasks.ResourceRequirement

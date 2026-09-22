@@ -998,7 +998,6 @@ func TestEngine_Response_GalleryAndPrivate(t *testing.T) {
 	}
 }
 
-
 type testDynamicInlineSource struct {
 	match     string
 	scope     tasks.ScopeIdentity

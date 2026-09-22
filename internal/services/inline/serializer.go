@@ -396,7 +396,6 @@ func (s *gameSerializer) Serialize(res InlineResult) (tg.InputBotInlineResultCla
 	return (&articleSerializer{}).Serialize(res)
 }
 
-
 func serializePreparedLocalMedia(res InlineResult, prepared PreparedLocalMedia) (tg.InputBotInlineResultClass, error) {
 	id := sanitizeID(res.ID)
 	text, entities := parseFormattedText(res.Text)

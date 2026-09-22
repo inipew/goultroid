@@ -9,13 +9,13 @@ import (
 )
 
 const (
-	TokenVersion       = "d1"
-	DefaultTTL         = 24 * time.Hour
-	MaxTTL             = 30 * 24 * time.Hour
-	MaxPayloadBytes    = 1024
-	MaxKindBytes       = 32
-	MaxRetainedTokens  = 4096
-	ClaimLeaseTTL      = 5 * time.Minute
+	TokenVersion      = "d1"
+	DefaultTTL        = 24 * time.Hour
+	MaxTTL            = 30 * 24 * time.Hour
+	MaxPayloadBytes   = 1024
+	MaxKindBytes      = 32
+	MaxRetainedTokens = 4096
+	ClaimLeaseTTL     = 5 * time.Minute
 )
 
 var (

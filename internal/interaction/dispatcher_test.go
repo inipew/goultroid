@@ -179,7 +179,6 @@ func TestPreparedActionRejectsRevisionChangedWhileQueued(t *testing.T) {
 	}
 }
 
-
 func TestPreparedActionCarriesDynamicExecutionAdmission(t *testing.T) {
 	runtime, _, featureScope := testRuntime(t, Config{})
 	dispatcher := NewDispatcher(runtime)

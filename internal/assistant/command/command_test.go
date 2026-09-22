@@ -839,7 +839,6 @@ func TestCommandRouter_UnknownCommandStillReturnsUnknownAfterDynamicLookup(t *te
 	}
 }
 
-
 func TestCommandRouter_DynamicSavedResponseFailsClosedWithoutDelivery(t *testing.T) {
 	bindings, _, _, _ := newSavedResponseCommandFixture(
 		t,

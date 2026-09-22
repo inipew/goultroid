@@ -106,7 +106,7 @@ func (*immediateDeepLinkTasks) Snapshot(tasks.TaskID) (tasks.TaskSnapshot, bool)
 
 func TestAssistantStartDeepLinkCarriesScopeAndMediaAdmission(t *testing.T) {
 	provider := &startDeepLinkProvider{
-		scope: tasks.ScopeIdentity{Owner: "plugin:notes", Generation: 8},
+		scope:     tasks.ScopeIdentity{Owner: "plugin:notes", Generation: 8},
 		resources: []tasks.ResourceRequirement{{Name: "media", Amount: 1}},
 	}
 	router := newStartDeepLinkRouter(t, provider)
@@ -262,7 +262,6 @@ func TestAssistantStartNonVersionedPayloadPreservesHomeFlow(t *testing.T) {
 	}
 }
 
-
 func TestAssistantStartDeepLinkRejectsGroupDelivery(t *testing.T) {
 	provider := &startDeepLinkProvider{scope: tasks.ScopeIdentity{Owner: "plugin:test", Generation: 1}}
 	router := newStartDeepLinkRouter(t, provider)
@@ -304,8 +303,6 @@ func TestAssistantStartDeepLinkRejectsGroupDelivery(t *testing.T) {
 		t.Fatalf("private retry delivery=%q executes=%d", private.sent, provider.executes)
 	}
 }
-
-
 
 func TestAssistantStartUnsupportedDeepLinkVersionFailsClosed(t *testing.T) {
 	manager, client, _, _ := newShellEngine(t)

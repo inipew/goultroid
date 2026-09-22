@@ -171,41 +171,41 @@ type SchedulerTaskCleaner interface {
 type RegistrationValidator func(context.Context) error
 
 type Manager struct {
-	router            *core.Router
-	hookRegistrar     HookRegistrar
-	callbackRegistrar callbackRegistrar
-	inlineRegistry    *inlineservice.Registry
-	schedCleaner      SchedulerTaskCleaner
-	resourceManager   *resource.Manager
-	gate              *CapabilityGate
-	networkService    *network.Service
-	processManager    *process.Manager
-	filesystemManager *filesystem.Manager
-	secretManager     *secret.Manager
-	taskClient        tasks.Client
-	jobsManager       *jobs.Manager
-	storageManager    *storage.Manager
-	featureRegistry   *featureRegistry
-	savedResponses    *savedresponse.Registry
-	plugins           map[string]Plugin
-	metadata          map[string]Metadata
-	manifests         map[string]Manifest
-	scopes            map[string]*Scope
-	commands          map[string][]core.Command
-	disabled          map[string]bool
-	transitions       map[string]string
-	teardownErrors    map[string]error
-	registering       map[string]bool
-	list              []Plugin
-	hookCleanups      map[string]func()
-	callbackCleanups  map[string]func()
-	featureCleanups   map[string]func()
-	auditor           audit.Auditor
-	panicReporter     core.PanicReporter
+	router                *core.Router
+	hookRegistrar         HookRegistrar
+	callbackRegistrar     callbackRegistrar
+	inlineRegistry        *inlineservice.Registry
+	schedCleaner          SchedulerTaskCleaner
+	resourceManager       *resource.Manager
+	gate                  *CapabilityGate
+	networkService        *network.Service
+	processManager        *process.Manager
+	filesystemManager     *filesystem.Manager
+	secretManager         *secret.Manager
+	taskClient            tasks.Client
+	jobsManager           *jobs.Manager
+	storageManager        *storage.Manager
+	featureRegistry       *featureRegistry
+	savedResponses        *savedresponse.Registry
+	plugins               map[string]Plugin
+	metadata              map[string]Metadata
+	manifests             map[string]Manifest
+	scopes                map[string]*Scope
+	commands              map[string][]core.Command
+	disabled              map[string]bool
+	transitions           map[string]string
+	teardownErrors        map[string]error
+	registering           map[string]bool
+	list                  []Plugin
+	hookCleanups          map[string]func()
+	callbackCleanups      map[string]func()
+	featureCleanups       map[string]func()
+	auditor               audit.Auditor
+	panicReporter         core.PanicReporter
 	cleanupExecutor       *runtime.CallbackExecutor
 	registrationValidator RegistrationValidator
 	mu                    sync.RWMutex
-	shutdown          bool
+	shutdown              bool
 }
 
 func NewManager(router *core.Router) *Manager {

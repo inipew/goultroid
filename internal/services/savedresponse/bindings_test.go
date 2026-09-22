@@ -510,7 +510,6 @@ func TestPreparedBindingRejectsDeleteRecreateABA(t *testing.T) {
 	}
 }
 
-
 func TestBindingServiceCollisionPolicyIsSurfaceScoped(t *testing.T) {
 	repo, _ := newSurfaceBindingRepository(t)
 	ctx := context.Background()
@@ -593,10 +592,10 @@ func TestBindingServiceCollisionGuardRecheckedOnEnableAndUpdate(t *testing.T) {
 		return nil
 	})
 	created, err := service.Create(ctx, SurfaceBinding{
-		Surface: SurfaceAssistantCommand,
-		Alias: "later",
+		Surface:   SurfaceAssistantCommand,
+		Alias:     "later",
 		Reference: Reference{Provider: "notes", ScopeID: 1, Key: "one"},
-		Enabled: false,
+		Enabled:   false,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -628,7 +627,6 @@ func TestBindingServiceCollisionGuardRecheckedOnEnableAndUpdate(t *testing.T) {
 		t.Fatalf("reserved mutation changed durable state: %+v", current)
 	}
 }
-
 
 func TestCrossSurfaceLifecycleMatrixUsesOneAuthoritativeResponse(t *testing.T) {
 	ctx := context.Background()
@@ -837,7 +835,6 @@ func TestCrossSurfaceLifecycleMatrixUsesOneAuthoritativeResponse(t *testing.T) {
 	}
 }
 
-
 func TestValidateEnabledCollisionsCatchesLegacyBindingAfterRuntimeChange(t *testing.T) {
 	repo, _ := newSurfaceBindingRepository(t)
 	ctx := context.Background()
@@ -854,10 +851,10 @@ func TestValidateEnabledCollisionsCatchesLegacyBindingAfterRuntimeChange(t *test
 
 	service := NewBindingService(repo, registry)
 	created, err := service.Create(ctx, SurfaceBinding{
-		Surface: SurfaceAssistantCommand,
-		Alias: "legacy",
+		Surface:   SurfaceAssistantCommand,
+		Alias:     "legacy",
 		Reference: Reference{Provider: "notes", ScopeID: 1, Key: "legacy"},
-		Enabled: true,
+		Enabled:   true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -886,17 +883,16 @@ func TestValidateEnabledCollisionsCatchesLegacyBindingAfterRuntimeChange(t *test
 	}
 }
 
-
 func TestSQLiteSurfaceBindingRepositoryEnforcesPerSurfaceCapacity(t *testing.T) {
 	repo, _ := newSurfaceBindingRepository(t)
 	ctx := context.Background()
 	var first SurfaceBinding
 	for i := 0; i < MaxBindingList; i++ {
 		created, err := repo.CreateBinding(ctx, SurfaceBinding{
-			Surface: SurfaceCallback,
-			Alias: fmt.Sprintf("b%03d", i),
+			Surface:   SurfaceCallback,
+			Alias:     fmt.Sprintf("b%03d", i),
 			Reference: Reference{Provider: "notes", ScopeID: int64(i), Key: "key"},
-			Enabled: true,
+			Enabled:   true,
 		})
 		if err != nil {
 			t.Fatalf("CreateBinding(%d) error=%v", i, err)
@@ -906,20 +902,20 @@ func TestSQLiteSurfaceBindingRepositoryEnforcesPerSurfaceCapacity(t *testing.T) 
 		}
 	}
 	if _, err := repo.CreateBinding(ctx, SurfaceBinding{
-		Surface: SurfaceCallback,
-		Alias: "overflow",
+		Surface:   SurfaceCallback,
+		Alias:     "overflow",
 		Reference: Reference{Provider: "notes", ScopeID: 999, Key: "overflow"},
-		Enabled: true,
+		Enabled:   true,
 	}); !errors.Is(err, ErrBindingCapacity) {
 		t.Fatalf("overflow CreateBinding() error=%v, want %v", err, ErrBindingCapacity)
 	}
 
 	// Capacity is per surface namespace, not global.
 	if _, err := repo.CreateBinding(ctx, SurfaceBinding{
-		Surface: SurfaceInline,
-		Alias: "still-free",
+		Surface:   SurfaceInline,
+		Alias:     "still-free",
 		Reference: Reference{Provider: "notes", ScopeID: 1, Key: "inline"},
-		Enabled: true,
+		Enabled:   true,
 	}); err != nil {
 		t.Fatalf("cross-surface CreateBinding() error=%v", err)
 	}
@@ -930,10 +926,10 @@ func TestSQLiteSurfaceBindingRepositoryEnforcesPerSurfaceCapacity(t *testing.T) 
 		t.Fatal(err)
 	}
 	if _, err := repo.CreateBinding(ctx, SurfaceBinding{
-		Surface: SurfaceCallback,
-		Alias: "replacement",
+		Surface:   SurfaceCallback,
+		Alias:     "replacement",
 		Reference: Reference{Provider: "notes", ScopeID: 1000, Key: "replacement"},
-		Enabled: true,
+		Enabled:   true,
 	}); err != nil {
 		t.Fatalf("CreateBinding(after free capacity) error=%v", err)
 	}

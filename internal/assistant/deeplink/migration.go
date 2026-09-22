@@ -12,7 +12,7 @@ type migration001 struct{}
 type migration002 struct{}
 
 var (
-	_ database.MigrationProvider         = MigrationProvider{}
+	_ database.MigrationProvider        = MigrationProvider{}
 	_ database.SchemaInvariantMigration = migration001{}
 	_ database.SchemaInvariantMigration = migration002{}
 )

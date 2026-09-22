@@ -101,7 +101,7 @@ func newAdminFixture(t *testing.T) *adminFixture {
 		t.Fatal(err)
 	}
 	cleanup, err := admin.BindAssistant(assistantinteraction.DriverRuntime{
-		Engine: engine,
+		Engine:  engine,
 		Catalog: catalog,
 		Admit: func(string, feature.InteractionKind, string, int64, presentation.Target) error {
 			return nil
@@ -113,13 +113,13 @@ func newAdminFixture(t *testing.T) *adminFixture {
 	t.Cleanup(cleanup)
 
 	return &adminFixture{
-		feature: admin,
+		feature:  admin,
 		bindings: bindings,
-		engine: engine,
-		port: port,
+		engine:   engine,
+		port:     port,
 		target: presentationtelegram.MessageTarget{
-			Peer: &tg.InputPeerUser{UserID: 1},
-			ChatID: 42,
+			Peer:      &tg.InputPeerUser{UserID: 1},
+			ChatID:    42,
 			MessageID: 77,
 		},
 	}
@@ -142,10 +142,10 @@ func callbackForAction(t *testing.T, view presentation.CompiledView, actionID st
 func (f *adminFixture) dispatch(t *testing.T, view presentation.CompiledView, actionID string, queryID int64) {
 	t.Helper()
 	err := f.engine.Dispatch(context.Background(), orchestration.CallbackRequest{
-		Data: callbackForAction(t, view, actionID),
+		Data:    callbackForAction(t, view, actionID),
 		ActorID: 1,
 		QueryID: queryID,
-		Target: f.target,
+		Target:  f.target,
 	})
 	if err != nil {
 		t.Fatalf("dispatch %s: %v", actionID, err)
@@ -172,9 +172,9 @@ func (f *adminFixture) input(t *testing.T, value string) {
 func TestA2ControlSurfaceCRUDLifecycle(t *testing.T) {
 	f := newAdminFixture(t)
 	coreCtx := &core.Context{
-		Ctx: context.Background(),
+		Ctx:    context.Background(),
 		PeerID: f.target.Peer,
-		Chat: &core.Chat{ID: 42, Type: "private"},
+		Chat:   &core.Chat{ID: 42, Type: "private"},
 		Sender: &core.User{ID: 1},
 	}
 	if err := f.feature.openCommand(coreCtx); err != nil {
@@ -228,19 +228,19 @@ func TestA2ControlSurfaceCRUDLifecycle(t *testing.T) {
 func TestA2ControlSurfaceStaleMutationFailsClosed(t *testing.T) {
 	f := newAdminFixture(t)
 	created, err := f.bindings.Create(context.Background(), savedresponse.SurfaceBinding{
-		Surface: savedresponse.SurfaceCallback,
-		Alias: "stale",
+		Surface:   savedresponse.SurfaceCallback,
+		Alias:     "stale",
 		Reference: savedresponse.Reference{Provider: "notes", ScopeID: 1, Key: "one"},
-		Enabled: true,
+		Enabled:   true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	coreCtx := &core.Context{
-		Ctx: context.Background(),
+		Ctx:    context.Background(),
 		PeerID: f.target.Peer,
-		Chat: &core.Chat{ID: 42, Type: "private"},
+		Chat:   &core.Chat{ID: 42, Type: "private"},
 		Sender: &core.User{ID: 1},
 	}
 	if err := f.feature.openCommand(coreCtx); err != nil {
@@ -282,9 +282,9 @@ func TestA2ControlSurfaceHonorsCollisionGuard(t *testing.T) {
 	})
 
 	coreCtx := &core.Context{
-		Ctx: context.Background(),
+		Ctx:    context.Background(),
 		PeerID: f.target.Peer,
-		Chat: &core.Chat{ID: 42, Type: "private"},
+		Chat:   &core.Chat{ID: 42, Type: "private"},
 		Sender: &core.User{ID: 1},
 	}
 	if err := f.feature.openCommand(coreCtx); err != nil {
@@ -309,25 +309,24 @@ func TestA2ControlSurfaceHonorsCollisionGuard(t *testing.T) {
 func TestA2ControlSurfaceRejectsWrongActor(t *testing.T) {
 	f := newAdminFixture(t)
 	coreCtx := &core.Context{
-		Ctx: context.Background(),
+		Ctx:    context.Background(),
 		PeerID: f.target.Peer,
-		Chat: &core.Chat{ID: 42, Type: "private"},
+		Chat:   &core.Chat{ID: 42, Type: "private"},
 		Sender: &core.User{ID: 1},
 	}
 	if err := f.feature.openCommand(coreCtx); err != nil {
 		t.Fatal(err)
 	}
 	err := f.engine.Dispatch(context.Background(), orchestration.CallbackRequest{
-		Data: callbackForAction(t, f.port.sent, actionSurfaceInline),
+		Data:    callbackForAction(t, f.port.sent, actionSurfaceInline),
 		ActorID: 2,
 		QueryID: 401,
-		Target: f.target,
+		Target:  f.target,
 	})
 	if !errors.Is(err, rootinteraction.ErrBindingMismatch) {
 		t.Fatalf("wrong actor error=%v, want %v", err, rootinteraction.ErrBindingMismatch)
 	}
 }
-
 
 func TestAdminCommandPolicyIsAssistantOwnerPrivateOnly(t *testing.T) {
 	admin := New(nil)
@@ -346,22 +345,21 @@ func TestAdminCommandPolicyIsAssistantOwnerPrivateOnly(t *testing.T) {
 	}
 }
 
-
 func TestA2ControlSurfaceInputCASDoesNotOverwriteConcurrentEdit(t *testing.T) {
 	f := newAdminFixture(t)
 	created, err := f.bindings.Create(context.Background(), savedresponse.SurfaceBinding{
-		Surface: savedresponse.SurfaceDeepLink,
-		Alias: "race",
+		Surface:   savedresponse.SurfaceDeepLink,
+		Alias:     "race",
 		Reference: savedresponse.Reference{Provider: "notes", ScopeID: 1, Key: "before"},
-		Enabled: true,
+		Enabled:   true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	coreCtx := &core.Context{
-		Ctx: context.Background(),
+		Ctx:    context.Background(),
 		PeerID: f.target.Peer,
-		Chat: &core.Chat{ID: 42, Type: "private"},
+		Chat:   &core.Chat{ID: 42, Type: "private"},
 		Sender: &core.User{ID: 1},
 	}
 	if err := f.feature.openCommand(coreCtx); err != nil {
@@ -395,7 +393,6 @@ func TestA2ControlSurfaceInputCASDoesNotOverwriteConcurrentEdit(t *testing.T) {
 		t.Fatalf("stale input overwrote concurrent mutation: current=%+v concurrent=%+v", current, concurrent)
 	}
 }
-
 
 func TestAdminA2ActionTokensFitTelegramLimitAtMaxRevision(t *testing.T) {
 	sessionID := "AAAAAAAAAAAAAAAAAAAAAA"

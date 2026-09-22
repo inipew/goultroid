@@ -176,7 +176,7 @@ func TestSQLiteDeliverySourceCannotRetargetOnRetry(t *testing.T) {
 	repo, _ := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8})
 	base := time.Date(2026, 9, 22, 6, 0, 0, 0, time.UTC)
 	intent := DeliveryIntent{
-		DeliveryKey: DeliveryKey{Direction: DeliveryOwnerToVisitor, SourceChatID: 7, SourceMessageID: 91},
+		DeliveryKey:  DeliveryKey{Direction: DeliveryOwnerToVisitor, SourceChatID: 7, SourceMessageID: 91},
 		TargetChatID: 42,
 		RandomID:     123,
 		CreatedAt:    base,
@@ -198,7 +198,7 @@ func TestSQLiteDeliveryPruneDoesNotDeleteActiveLease(t *testing.T) {
 	repo, _ := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8})
 	base := time.Date(2026, 9, 22, 7, 0, 0, 0, time.UTC)
 	intent := DeliveryIntent{
-		DeliveryKey: DeliveryKey{Direction: DeliveryVisitorToOwner, SourceChatID: 42, SourceMessageID: 77},
+		DeliveryKey:  DeliveryKey{Direction: DeliveryVisitorToOwner, SourceChatID: 42, SourceMessageID: 77},
 		TargetChatID: 7,
 		RandomID:     987,
 		CreatedAt:    base,
@@ -270,7 +270,7 @@ func TestDomainRetentionBoundsRejectUnboundedRows(t *testing.T) {
 		t.Fatalf("Mapping.Normalize() error = %v, want %v", err, ErrInvalidMapping)
 	}
 	if _, err := (DeliveryIntent{
-		DeliveryKey: DeliveryKey{Direction: DeliveryVisitorToOwner, SourceChatID: 42, SourceMessageID: 2},
+		DeliveryKey:  DeliveryKey{Direction: DeliveryVisitorToOwner, SourceChatID: 42, SourceMessageID: 2},
 		TargetChatID: 7, RandomID: 5, CreatedAt: base, UpdatedAt: base,
 		ExpiresAt: base.Add(MaxDeliveryRetention + time.Second),
 	}).Normalize(); !errors.Is(err, ErrInvalidDelivery) {

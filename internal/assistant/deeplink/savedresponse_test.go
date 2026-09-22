@@ -228,14 +228,13 @@ func TestSavedResponseDeepLinkQueuedProviderReloadFailsClosed(t *testing.T) {
 	defer reloaded.Close()
 
 	if err := fixture.router.ExecutePrepared(context.Background(), prepared, Delivery{
-		ActorID: 7,
-		ChatID:  7,
+		ActorID:  7,
+		ChatID:   7,
 		SendText: func(string) error { return nil },
 	}); !errors.Is(err, savedresponse.ErrBindingStale) {
 		t.Fatalf("ExecutePrepared(after provider reload) error=%v, want %v", err, savedresponse.ErrBindingStale)
 	}
 }
-
 
 func TestSavedResponseDeepLinkMediaDeliveryUsesSharedLifecycle(t *testing.T) {
 	ctx := context.Background()
@@ -286,10 +285,10 @@ func TestSavedResponseDeepLinkMediaDeliveryUsesSharedLifecycle(t *testing.T) {
 		registry,
 	)
 	if _, err := bindings.Create(ctx, savedresponse.SurfaceBinding{
-		Surface: savedresponse.SurfaceDeepLink,
-		Alias: "photo",
+		Surface:   savedresponse.SurfaceDeepLink,
+		Alias:     "photo",
 		Reference: savedresponse.Reference{Provider: "media", ScopeID: 1, Key: "photo"},
-		Enabled: true,
+		Enabled:   true,
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -95,7 +95,7 @@ type dynamicPreparedHandler struct {
 func (h *dynamicPreparedHandler) Pattern() string {
 	return strings.ToLower(strings.TrimSpace(h.prepared.Pattern))
 }
-func (*dynamicPreparedHandler) Description() string { return "dynamic inline response" }
+func (*dynamicPreparedHandler) Description() string    { return "dynamic inline response" }
 func (*dynamicPreparedHandler) Matcher() InlineMatcher { return nil }
 func (*dynamicPreparedHandler) AccessPolicy() InlineAccessPolicy {
 	return InlineAccessPolicy{}
@@ -725,8 +725,8 @@ func (e *Engine) PrepareContext(ctx context.Context, rawQuery string) (PreparedQ
 				query: trimmed,
 				resolved: Resolved{
 					Handler: handler,
-					Args: append([]string(nil), prepared.Args...),
-					Scope: prepared.Scope,
+					Args:    append([]string(nil), prepared.Args...),
+					Scope:   prepared.Scope,
 					pattern: handler.Pattern(),
 					dynamic: true,
 				},

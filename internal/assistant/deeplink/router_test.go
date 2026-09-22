@@ -209,7 +209,6 @@ func TestMigrationStoresOpaqueRoutingPayloadOnly(t *testing.T) {
 	}
 }
 
-
 func TestRouterCapacityFailsClosedWithoutEvictingLiveTokens(t *testing.T) {
 	router, _ := newTestRouter(t)
 	router.maxRetained = 1
@@ -254,7 +253,6 @@ func TestRouterIssuePrunesExpiredBeforeCapacityCheck(t *testing.T) {
 		t.Fatalf("Issue(after expiry) error=%v", err)
 	}
 }
-
 
 func TestRouterSingleUseDeliveryFailureReleasesClaimForRetry(t *testing.T) {
 	router, _ := newTestRouter(t)
@@ -322,7 +320,6 @@ func TestSQLiteSingleUseClaimExcludesConcurrentExecutionAndExpires(t *testing.T)
 		t.Fatalf("ReleaseClaim() error=%v", err)
 	}
 }
-
 
 func TestLooksLikeTokenClaimsVersionedProtocolFamily(t *testing.T) {
 	for _, raw := range []string{

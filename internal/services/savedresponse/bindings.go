@@ -39,14 +39,14 @@ var (
 // surface identity. It contains no response text/media and therefore cannot
 // become a second source of truth for SavedResponse content.
 type SurfaceBinding struct {
-	Surface   Surface
-	Alias     string
-	Reference Reference
+	Surface     Surface
+	Alias       string
+	Reference   Reference
 	Enabled     bool
 	Revision    uint64
 	Incarnation string
 	CreatedAt   time.Time
-	UpdatedAt time.Time
+	UpdatedAt   time.Time
 }
 
 func (b SurfaceBinding) Normalize() (SurfaceBinding, error) {

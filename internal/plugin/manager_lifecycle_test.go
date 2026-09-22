@@ -334,7 +334,6 @@ func TestManagerLifecycleUsesSharedCallbackBudget(t *testing.T) {
 	close(release)
 }
 
-
 func TestManagerRegistrationValidatorRollsBackStagedPlugin(t *testing.T) {
 	router := core.NewRouter(".")
 	mgr := NewManager(router)

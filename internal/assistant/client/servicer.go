@@ -97,7 +97,6 @@ func (s *assistantInlineQueryServicer) PrepareInlineLocalMedia(
 	}
 }
 
-
 func resolveMessageTarget(base interaction.MessageTarget, peer tg.InputPeerClass, msgID int) interaction.MessageTarget {
 	tPeer := base.Peer()
 	if peer != nil {
