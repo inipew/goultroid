@@ -9,6 +9,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/ui"
 	"go.uber.org/zap"
 )
@@ -103,6 +104,78 @@ func TestRegistry_RegisterAndResolve(t *testing.T) {
 	h, args, ok = reg.Resolve("unknown-kw foo")
 	if !ok || h != hDefault || len(args) != 2 {
 		t.Errorf("unexpected resolve for unknown query fallback: ok=%v, args=%v", ok, args)
+	}
+}
+
+func TestRegistry_OwnedRegistrationAndStaleCleanup(t *testing.T) {
+	reg := NewRegistry()
+	scope1 := tasks.ScopeIdentity{Owner: "plugin:inline-test", Generation: 1}
+	firstHandler := &mockInlineHandler{pattern: "owned"}
+	firstRegistration, err := reg.RegisterOwned("inline-test", "lookup", scope1, firstHandler, 0)
+	if err != nil {
+		t.Fatalf("RegisterOwned(first) error = %v", err)
+	}
+	first, ok := reg.ResolveOwned("owned arg")
+	if !ok {
+		t.Fatal("owned handler did not resolve")
+	}
+	if first.FeatureID != "inline-test" || first.InteractionID != "lookup" || first.Scope != scope1 {
+		t.Fatalf("unexpected resolved ownership: %+v", first)
+	}
+	oldToken := firstRegistration.token
+	firstRegistration.Close()
+
+	scope2 := tasks.ScopeIdentity{Owner: "plugin:inline-test", Generation: 2}
+	secondHandler := &mockInlineHandler{pattern: "owned"}
+	secondRegistration, err := reg.RegisterOwned("inline-test", "lookup", scope2, secondHandler, 0)
+	if err != nil {
+		t.Fatalf("RegisterOwned(second) error = %v", err)
+	}
+	defer secondRegistration.Close()
+
+	staleCleanup := &Registration{registry: reg, pattern: "owned", token: oldToken}
+	staleCleanup.Close()
+	second, ok := reg.ResolveOwned("owned")
+	if !ok || second.Handler != secondHandler || second.Scope != scope2 {
+		t.Fatalf("stale cleanup removed replacement: ok=%v resolved=%+v", ok, second)
+	}
+}
+
+func TestEngine_PreparedOwnedQueryRejectsStaleGeneration(t *testing.T) {
+	reg := NewRegistry()
+	handler := &mockInlineHandler{
+		pattern: "prepared",
+		results: []InlineResult{{ID: "ok", Title: "OK", Text: "OK"}},
+	}
+	scope := tasks.ScopeIdentity{Owner: "plugin:prepared", Generation: 7}
+	registration, err := reg.RegisterOwned("prepared", "lookup", scope, handler, 0)
+	if err != nil {
+		t.Fatalf("RegisterOwned() error = %v", err)
+	}
+	engine := NewEngine(reg, zap.NewNop())
+	prepared, err := engine.Prepare("prepared value")
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if prepared.Scope() != scope {
+		t.Fatalf("prepared scope = %+v, want %+v", prepared.Scope(), scope)
+	}
+	registration.Close()
+
+	err = engine.ExecutePreparedWithPeerType(
+		context.Background(),
+		&recordingInlineService{},
+		777,
+		123,
+		prepared,
+		"",
+		nil,
+	)
+	if !errors.Is(err, ErrStaleHandler) {
+		t.Fatalf("ExecutePreparedWithPeerType() error = %v, want %v", err, ErrStaleHandler)
+	}
+	if handler.invoked {
+		t.Fatal("stale prepared handler executed after registration removal")
 	}
 }
 
