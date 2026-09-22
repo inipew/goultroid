@@ -33,4 +33,7 @@ type Repository interface {
 	DeleteVisitorBlock(context.Context, int64) (bool, error)
 	ListVisitorBlocks(context.Context, int64, int) ([]VisitorBlock, error)
 	CountVisitorBlocks(context.Context) (int, error)
+
+	GetForceSubConfig(context.Context) (ForceSubConfig, error)
+	UpdateForceSubConfig(context.Context, int64, ForceSubConfig) (ForceSubConfig, error)
 }
