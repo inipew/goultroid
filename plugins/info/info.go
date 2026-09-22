@@ -39,7 +39,20 @@ func (p *Plugin) Commands() []core.Command {
 	infoSurfaces := execution.SurfaceUserbot | execution.SurfaceAssistant
 	return []core.Command{
 		{Name: "whois", Aliases: []string{"info", "userinfo"}, Description: "Display detailed profile information of a user", Usage: ".whois [username|id|reply]", Category: "Info", Permission: core.PermissionEveryone, Surfaces: infoSurfaces, Handler: p.handleWhois},
-		{Name: "chatinfo", Aliases: []string{"groupinfo", "cinfo"}, Description: "Display detailed metadata of the current chat/group/channel", Usage: ".chatinfo", Category: "Info", Permission: core.PermissionSudo, GroupOnly: true, Surfaces: infoSurfaces, Handler: p.handleChatInfo},
+		{
+			Name:        "chatinfo",
+			Aliases:     []string{"groupinfo", "cinfo"},
+			Description: "Display detailed metadata of the current group",
+			Usage:       ".chatinfo",
+			Category:    "Info",
+			Permission:  core.PermissionEveryone,
+			GroupOnly:   true,
+			GroupAuthorization: core.GroupAuthorizationRequirement{
+				Level: core.GroupAuthorizationAdministrator,
+			},
+			Surfaces: infoSurfaces,
+			Handler:  p.handleChatInfo,
+		},
 		{Name: "id", Aliases: []string{"chatid"}, Description: "Display current chat ID, chat type, and sender ID", Usage: ".id", Category: "Info", Permission: core.PermissionEveryone, Surfaces: infoSurfaces, Handler: p.handleID},
 	}
 }
@@ -125,6 +138,14 @@ func (p *Plugin) handleChatInfo(ctx *core.Context) error {
 	sb.WriteString(fmt.Sprintf("• <b>ID</b>: <code>%d</code>\n", chatID))
 	if ctx.Chat != nil && ctx.Chat.Type != "" {
 		sb.WriteString(fmt.Sprintf("• <b>Type</b>: <code>%s</code>\n", core.EscapeHTML(ctx.Chat.Type)))
+	}
+	if ctx.IsAssistant() {
+		if group, ok := ctx.GroupExecution(); ok && group.Actor.Verified {
+			sb.WriteString(fmt.Sprintf("• <b>Your Role</b>: <code>%s</code>\n", core.EscapeHTML(string(group.Actor.Role))))
+			if group.TopicID != 0 {
+				sb.WriteString(fmt.Sprintf("• <b>Topic ID</b>: <code>%d</code>\n", group.TopicID))
+			}
+		}
 	}
 	switch ch := fullChat.FullChat.(type) {
 	case *tg.ChannelFull:
