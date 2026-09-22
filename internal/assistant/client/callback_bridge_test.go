@@ -12,6 +12,7 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/core"
 	corecallback "github.com/inipew/goultroid/internal/services/callback"
+	inlineservice "github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
@@ -225,6 +226,21 @@ func (e *recordingInlineExecutor) ExecuteWithPeerType(ctx context.Context, svc c
 	return svc.AnswerInlineQueryOptions(ctx, queryID, []tg.InputBotInlineResultClass{
 		&tg.InputBotInlineResult{ID: "result-1", Type: "article", Title: "Result"},
 	}, core.InlineAnswerOptions{NextOffset: "next", CacheTime: 7, Private: true})
+}
+
+func (e *recordingInlineExecutor) Prepare(string) (inlineservice.PreparedQuery, error) {
+	return inlineservice.PreparedQuery{}, inlineservice.ErrNoMatchingHandler
+}
+
+func (e *recordingInlineExecutor) ExecutePreparedWithPeerType(
+	ctx context.Context,
+	svc core.TelegramServicer,
+	queryID, userID int64,
+	prepared inlineservice.PreparedQuery,
+	offset string,
+	peerType tg.InlineQueryPeerTypeClass,
+) error {
+	return e.ExecuteWithPeerType(ctx, svc, queryID, userID, prepared.Query(), offset, peerType)
 }
 
 func messageEvent(queryID, userID int64, data []byte, target interaction.MessageTarget) *core.CallbackQueryEvent {
