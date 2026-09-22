@@ -59,8 +59,9 @@ type Plugin struct {
 	delivery     *savedresponse.ResponseDelivery
 	tasks        tasks.Client
 	featureState core.ChatFeatureSnapshot
-	ruleRevision atomic.Uint64
+	revisionSeq  atomic.Uint64
 	cacheMu      sync.RWMutex
+	chatRevision map[int64]uint64
 	chatFilters  map[int64]*compiledFilterSet
 	chatAccess   map[int64]time.Time
 	cooldownMu   sync.Mutex
@@ -74,11 +75,12 @@ func New(db Repository, svcFunc func() core.TelegramServicer, responses ...*save
 	}
 	return &Plugin{
 		db: db, svcFunc: svcFunc,
-		responses:   responseService,
-		delivery:    savedresponse.NewResponseDelivery(responseService),
-		chatFilters: make(map[int64]*compiledFilterSet),
-		chatAccess:  make(map[int64]time.Time),
-		lastReply:   make(map[string]time.Time),
+		responses:    responseService,
+		delivery:     savedresponse.NewResponseDelivery(responseService),
+		chatRevision: make(map[int64]uint64),
+		chatFilters:  make(map[int64]*compiledFilterSet),
+		chatAccess:   make(map[int64]time.Time),
+		lastReply:    make(map[string]time.Time),
 	}
 }
 
@@ -330,9 +332,8 @@ func (p *Plugin) saveFilterResponse(ctx *core.Context, chatID int64, keyword str
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to save filter: %v", err))
 		return err
 	}
-	p.ruleRevision.Add(1)
 	p.featureState.SetActive(chatID, true)
-	p.invalidateChat(chatID)
+	p.invalidateChat(chatID, true)
 	return ctx.EditOrReply(fmt.Sprintf("🎯 Filter <code>%s</code> saved successfully.", html.EscapeString(keyword)))
 }
 
@@ -362,13 +363,14 @@ func (p *Plugin) handleStop(ctx *core.Context) error {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to stop filter: %v", err))
 		return err
 	}
-	p.ruleRevision.Add(1)
+	active := false
 	if remaining, err := p.db.ListFilters(ctx.Ctx, chatID); err != nil {
 		p.featureState.MarkUnknown(chatID)
 	} else {
-		p.featureState.SetActive(chatID, len(remaining) > 0)
+		active = len(remaining) > 0
+		p.featureState.SetActive(chatID, active)
 	}
-	p.invalidateChat(chatID)
+	p.invalidateChat(chatID, active)
 	return ctx.EditOrReply(fmt.Sprintf("🗑️ Filter <code>%s</code> stopped.", html.EscapeString(keyword)))
 }
 
@@ -504,10 +506,22 @@ func renderFilterTemplateVariables(variables []string) string {
 	return strings.Join(parts, ", ")
 }
 
-func (p *Plugin) invalidateChat(chatID int64) {
+func (p *Plugin) chatRuleRevision(chatID int64) uint64 {
+	p.cacheMu.RLock()
+	revision := p.chatRevision[chatID]
+	p.cacheMu.RUnlock()
+	return revision
+}
+
+func (p *Plugin) invalidateChat(chatID int64, active bool) {
 	p.cacheMu.Lock()
 	delete(p.chatFilters, chatID)
 	delete(p.chatAccess, chatID)
+	if active {
+		p.chatRevision[chatID] = p.revisionSeq.Add(1)
+	} else {
+		delete(p.chatRevision, chatID)
+	}
 	p.cacheMu.Unlock()
 }
 
@@ -515,8 +529,8 @@ func (p *Plugin) AssistantRuleInterested(chatID int64) bool {
 	return p.MessageHookInterested(chatID)
 }
 
-func (p *Plugin) AssistantRuleRevision(_ int64) uint64 {
-	return p.ruleRevision.Load()
+func (p *Plugin) AssistantRuleRevision(chatID int64) uint64 {
+	return p.chatRuleRevision(chatID)
 }
 
 func (p *Plugin) matchAssistantRule(
@@ -689,7 +703,7 @@ func (p *Plugin) getCachedFilters(chatID int64, revision uint64) (*compiledFilte
 func (p *Plugin) cacheFilters(chatID int64, filters *compiledFilterSet, revision uint64) bool {
 	p.cacheMu.Lock()
 	defer p.cacheMu.Unlock()
-	if p.ruleRevision.Load() != revision {
+	if p.chatRuleRevision(chatID) != revision {
 		return false
 	}
 	if len(p.chatFilters) >= maxCompiledFilterCacheChats {
@@ -719,7 +733,7 @@ func (p *Plugin) compiledFiltersForChat(
 	chatID int64,
 ) (*compiledFilterSet, error) {
 	for attempt := 0; attempt < 3; attempt++ {
-		revision := p.ruleRevision.Load()
+		revision := p.chatRuleRevision(chatID)
 		if cached, ok := p.getCachedFilters(chatID, revision); ok {
 			return cached, nil
 		}
@@ -744,7 +758,7 @@ func (p *Plugin) compiledFiltersForChat(
 			}
 		}
 		filterSet := compileFilterSet(rawFilters)
-		if p.ruleRevision.Load() != revision {
+		if p.chatRuleRevision(chatID) != revision {
 			continue
 		}
 		p.featureState.SetActive(chatID, len(rawFilters) > 0)
