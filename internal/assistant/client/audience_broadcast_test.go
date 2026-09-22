@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -117,5 +118,100 @@ func TestAssistantBroadcastAudienceUsesExistingBroadcastEngineAndBotSender(t *te
 	}
 	if got := defaultTransport.sent.Load(); got != 0 {
 		t.Fatalf("default userbot broadcast transport calls=%d, want 0", got)
+	}
+}
+
+
+type shrinkingAudienceRegistry struct {
+	now time.Time
+}
+
+func (r *shrinkingAudienceRegistry) TouchAudience(_ context.Context, touch pmrelay.AudienceTouch) (pmrelay.AudienceMember, error) {
+	return pmrelay.AudienceMember{
+		UserID: touch.UserID, Sources: touch.Source,
+		FirstSeenAt: touch.SeenAt, LastSeenAt: touch.SeenAt,
+	}, nil
+}
+
+func (r *shrinkingAudienceRegistry) SnapshotAudience(context.Context) (pmrelay.AudienceSnapshot, error) {
+	return pmrelay.AudienceSnapshot{MaxSequence: 2, Total: 2}, nil
+}
+
+func (r *shrinkingAudienceRegistry) ListAudienceSnapshot(
+	_ context.Context,
+	_ pmrelay.AudienceSnapshot,
+	after int64,
+	_ int,
+) ([]pmrelay.AudienceMember, int64, error) {
+	if after > 0 {
+		return nil, 2, nil
+	}
+	return []pmrelay.AudienceMember{{
+		UserID:      11,
+		Sources:     pmrelay.AudienceSourceStart,
+		FirstSeenAt: r.now,
+		LastSeenAt:  r.now,
+	}}, 2, nil
+}
+
+func TestAssistantBroadcastAudienceAccountsForPrunedSnapshotMember(t *testing.T) {
+	ctx := context.Background()
+	engine := taskengine.NewEngine(taskengine.Config{
+		Pools: map[tasks.PoolID]taskengine.PoolEngineConfig{
+			"general": {Concurrency: 2, BacklogLimit: 16, PayloadBudget: 1 << 20},
+		},
+	})
+	if err := engine.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = engine.Stop(stopCtx)
+	})
+
+	broadcast := broadcastsvc.NewService(&defaultBroadcastTransport{}, zap.NewNop())
+	broadcast.SetTasks(engine)
+
+	c := NewAssistantClient(1, "hash", "token", zap.NewNop())
+	c.SetAudienceRegistry(&shrinkingAudienceRegistry{now: time.Now().UTC()})
+	c.SetBroadcastService(broadcast)
+	c.resolver.Cache().Put(peer.PeerRecord{
+		ID: 11, Kind: peer.PeerKindUser, AccessHash: 1100,
+	})
+	api := &audienceBroadcastAPI{}
+	c.mu.Lock()
+	c.interaction = assistantinteraction.NewClientInteraction(api, zap.NewNop())
+	c.mu.Unlock()
+
+	report, err := c.BroadcastAudience(ctx, broadcastsvc.BroadcastRequest{Text: "snapshot"})
+	if err != nil {
+		t.Fatalf("BroadcastAudience(shrunk snapshot) error=%v", err)
+	}
+	if report.Total != 2 || report.Sent != 1 || report.Failed != 1 {
+		t.Fatalf("shrunk snapshot report=%+v, want total=2 sent=1 failed=1", report)
+	}
+	if got := api.sent.Load(); got != 1 {
+		t.Fatalf("Assistant MTProto sends=%d, want 1", got)
+	}
+}
+
+func TestAssistantBroadcastAudienceRejectsCallerTargetAuthority(t *testing.T) {
+	c := NewAssistantClient(1, "hash", "token", zap.NewNop())
+
+	_, err := c.BroadcastAudience(context.Background(), broadcastsvc.BroadcastRequest{
+		Targets: []tg.InputPeerClass{&tg.InputPeerUser{UserID: 42}},
+		Text:    "invalid targets",
+	})
+	if !errors.Is(err, core.ErrInvalidArgs) {
+		t.Fatalf("BroadcastAudience(caller targets) error=%v, want %v", err, core.ErrInvalidArgs)
+	}
+
+	_, err = c.BroadcastAudience(context.Background(), broadcastsvc.BroadcastRequest{
+		Sender: &core.MockTelegramServicer{},
+		Text:   "invalid sender",
+	})
+	if !errors.Is(err, core.ErrInvalidArgs) {
+		t.Fatalf("BroadcastAudience(caller sender) error=%v, want %v", err, core.ErrInvalidArgs)
 	}
 }
