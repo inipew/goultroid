@@ -763,8 +763,8 @@ func (p *Plugin) compiledFiltersForChat(
 		if p.chatRuleRevision(chatID) != revision {
 			continue
 		}
-		p.featureState.SetActive(chatID, len(rawFilters) > 0)
 		if p.cacheFilters(chatID, filterSet, revision) {
+			p.featureState.SetActive(chatID, len(rawFilters) > 0)
 			return filterSet, nil
 		}
 	}
