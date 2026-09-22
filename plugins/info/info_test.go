@@ -131,8 +131,12 @@ func TestInfoPlugin_Metadata(t *testing.T) {
 	if cmds[1].Name != "chatinfo" {
 		t.Errorf("expected chatinfo, got %s", cmds[1].Name)
 	}
-	if cmds[1].Permission != core.PermissionSudo {
-		t.Errorf("expected chatinfo to be PermissionSudo, got %v", cmds[1].Permission)
+	if cmds[1].Permission != core.PermissionEveryone {
+		t.Errorf("expected chatinfo to use global PermissionEveryone, got %v", cmds[1].Permission)
+	}
+	if !cmds[1].GroupOnly || cmds[1].GroupAuthorization.Level != core.GroupAuthorizationAdministrator {
+		t.Errorf("expected chatinfo to require contextual group administrator, got group_only=%v auth=%+v",
+			cmds[1].GroupOnly, cmds[1].GroupAuthorization)
 	}
 	if cmds[2].Name != "id" {
 		t.Errorf("expected id, got %s", cmds[2].Name)
