@@ -122,6 +122,38 @@ func splitMessage(text string, maxLen int) []string {
 	return core.SplitTelegramHTML(text, maxLen)
 }
 
+func groupAuthorizationLabel(requirement core.GroupAuthorizationRequirement) string {
+	if !requirement.Required() {
+		return ""
+	}
+	rights := make([]string, 0, 7)
+	if requirement.Rights.ChangeInfo {
+		rights = append(rights, "change_info")
+	}
+	if requirement.Rights.DeleteMessages {
+		rights = append(rights, "delete_messages")
+	}
+	if requirement.Rights.BanUsers {
+		rights = append(rights, "ban_users")
+	}
+	if requirement.Rights.InviteUsers {
+		rights = append(rights, "invite_users")
+	}
+	if requirement.Rights.PinMessages {
+		rights = append(rights, "pin_messages")
+	}
+	if requirement.Rights.AddAdmins {
+		rights = append(rights, "add_admins")
+	}
+	if requirement.Rights.ManageTopics {
+		rights = append(rights, "manage_topics")
+	}
+	if len(rights) == 0 {
+		return requirement.Level.String()
+	}
+	return fmt.Sprintf("%s + %s", requirement.Level.String(), strings.Join(rights, ", "))
+}
+
 func (p *Plugin) handleHelp(ctx *core.Context) error {
 	prefix := p.router.Prefix()
 	source := ctx.Source.Surface()
@@ -159,6 +191,9 @@ func (p *Plugin) handleHelp(ctx *core.Context) error {
 				AddField("Invocation", ui.Code(cmd.EffectiveInvocation(ctx.Source).String())).
 				AddField("Usage", ui.Code(usage)).
 				AddField("Aliases", aliasesStr)
+			if groupAuth := groupAuthorizationLabel(cmd.GroupAuthorization); groupAuth != "" {
+				card.AddField("Group Authorization", ui.Code(groupAuth))
+			}
 
 			if cmd.Cooldown > 0 {
 				card.AddField("Cooldown", cmd.Cooldown.String())
