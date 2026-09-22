@@ -15,12 +15,24 @@ var (
 )
 
 type Action struct {
-	Token   CallbackToken
-	Session Session
-	Context context.Context
+	Token      CallbackToken
+	Session    Session
+	Context    context.Context
+	Preparation any
 }
 
 type ActionHandler func(context.Context, Action) error
+
+// ActionAdmission is prepared before TaskEngine submission. FeatureScope remains
+// owned by the a2 handler registration, while Scope may point at a dynamic
+// downstream provider whose lifecycle/resource authority must govern execution.
+type ActionAdmission struct {
+	Scope     tasks.ScopeIdentity
+	Resources []tasks.ResourceRequirement
+	State     any
+}
+
+type ActionPreparer func(context.Context, Action) (ActionAdmission, error)
 
 type handlerKey struct {
 	feature string
@@ -28,9 +40,10 @@ type handlerKey struct {
 }
 
 type handlerEntry struct {
-	scope   tasks.ScopeIdentity
-	handler ActionHandler
-	token   uint64
+	scope    tasks.ScopeIdentity
+	handler  ActionHandler
+	preparer ActionPreparer
+	token    uint64
 }
 
 type Dispatcher struct {
@@ -51,6 +64,7 @@ type HandlerRegistration struct {
 // before TaskEngine admission and revalidated immediately before execution.
 type PreparedAction interface {
 	Scope() tasks.ScopeIdentity
+	Resources() []tasks.ResourceRequirement
 	Dispatch(context.Context) error
 }
 
@@ -59,15 +73,28 @@ type preparedAction struct {
 	data         []byte
 	binding      Binding
 	key          handlerKey
-	scope        tasks.ScopeIdentity
-	handlerToken uint64
+	scope          tasks.ScopeIdentity
+	executionScope tasks.ScopeIdentity
+	resources      []tasks.ResourceRequirement
+	preparation    any
+	handlerToken   uint64
 }
 
 func (p *preparedAction) Scope() tasks.ScopeIdentity {
 	if p == nil {
 		return tasks.ScopeIdentity{}
 	}
+	if !p.executionScope.IsZero() {
+		return p.executionScope
+	}
 	return p.scope
+}
+
+func (p *preparedAction) Resources() []tasks.ResourceRequirement {
+	if p == nil {
+		return nil
+	}
+	return append([]tasks.ResourceRequirement(nil), p.resources...)
 }
 
 func (p *preparedAction) Dispatch(ctx context.Context) error {
@@ -90,6 +117,30 @@ func (d *Dispatcher) Runtime() *Runtime {
 }
 
 func (d *Dispatcher) Register(scope tasks.ScopeIdentity, featureID, actionID string, handler ActionHandler) (*HandlerRegistration, error) {
+	return d.register(scope, featureID, actionID, nil, handler)
+}
+
+// RegisterPrepared adds a side-effect-free admission preparer. It is intended
+// for actions whose real execution owner/resources are resolved from bounded
+// session state (for example a SavedResponse provider binding).
+func (d *Dispatcher) RegisterPrepared(
+	scope tasks.ScopeIdentity,
+	featureID, actionID string,
+	preparer ActionPreparer,
+	handler ActionHandler,
+) (*HandlerRegistration, error) {
+	if preparer == nil {
+		return nil, ErrHandlerUnavailable
+	}
+	return d.register(scope, featureID, actionID, preparer, handler)
+}
+
+func (d *Dispatcher) register(
+	scope tasks.ScopeIdentity,
+	featureID, actionID string,
+	preparer ActionPreparer,
+	handler ActionHandler,
+) (*HandlerRegistration, error) {
 	if d == nil || d.sessions == nil || scope.IsZero() || handler == nil {
 		return nil, ErrHandlerUnavailable
 	}
@@ -110,7 +161,7 @@ func (d *Dispatcher) Register(scope tasks.ScopeIdentity, featureID, actionID str
 	}
 	d.next++
 	token := d.next
-	d.handlers[key] = handlerEntry{scope: scope, handler: handler, token: token}
+	d.handlers[key] = handlerEntry{scope: scope, handler: handler, preparer: preparer, token: token}
 	return &HandlerRegistration{dispatcher: d, key: key, token: token}, nil
 }
 
@@ -172,13 +223,34 @@ func (d *Dispatcher) Prepare(ctx context.Context, data []byte, binding Binding) 
 	if !available || current != entry.scope {
 		return nil, ErrScopeStale
 	}
+	admission := ActionAdmission{Scope: entry.scope}
+	if entry.preparer != nil {
+		admission, err = entry.preparer(ctx, Action{
+			Token:   resolved.Token,
+			Session: resolved.Session,
+			Context: resolved.Context,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if admission.Scope.IsZero() {
+			return nil, ErrHandlerUnavailable
+		}
+	}
+	current, available = d.sessions.catalog.FeatureScope(resolved.Session.FeatureID)
+	if !available || current != entry.scope {
+		return nil, ErrScopeStale
+	}
 	return &preparedAction{
-		dispatcher:   d,
-		data:         append([]byte(nil), data...),
-		binding:      binding.normalized(),
-		key:          key,
-		scope:        entry.scope,
-		handlerToken: entry.token,
+		dispatcher:     d,
+		data:           append([]byte(nil), data...),
+		binding:        binding.normalized(),
+		key:            key,
+		scope:          entry.scope,
+		executionScope: admission.Scope,
+		resources:      append([]tasks.ResourceRequirement(nil), admission.Resources...),
+		preparation:    admission.State,
+		handlerToken:   entry.token,
 	}, nil
 }
 
@@ -216,9 +288,10 @@ func (d *Dispatcher) dispatchPrepared(ctx context.Context, prepared *preparedAct
 	actionCtx, release := mergeActionContext(ctx, resolved.Context)
 	defer release()
 	return entry.handler(actionCtx, Action{
-		Token:   resolved.Token,
-		Session: resolved.Session,
-		Context: actionCtx,
+		Token:       resolved.Token,
+		Session:     resolved.Session,
+		Context:     actionCtx,
+		Preparation: prepared.preparation,
 	})
 }
 
