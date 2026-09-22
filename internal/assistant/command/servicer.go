@@ -86,7 +86,6 @@ func (a *assistantServicerAdapter) GetMessage(ctx context.Context, peer tg.Input
 	return a.MockTelegramServicer.GetMessage(ctx, peer, msgID)
 }
 
-
 func (*assistantServicerAdapter) PinMessage(context.Context, tg.InputPeerClass, int, bool) error {
 	return ErrGroupMutationUnavailable
 }
