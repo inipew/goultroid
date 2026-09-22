@@ -230,7 +230,6 @@ func TestP7HDeliveryReusesEventBusTaskEngine(t *testing.T) {
 	}
 }
 
-
 func TestP7HCloseIsTerminalForInterestAndSubscription(t *testing.T) {
 	root := repositoryRoot(t)
 	path := filepath.Join(root, "internal", "assistant", "groupevents", "service.go")
