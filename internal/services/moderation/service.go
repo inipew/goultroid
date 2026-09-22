@@ -221,6 +221,9 @@ func (s *Service) ResetWarnings(ctx context.Context, chatID, userID int64) error
 	if s.repo == nil {
 		return fmt.Errorf("warning repository is nil")
 	}
+	lock := s.warningLock(chatID, userID)
+	lock.Lock()
+	defer lock.Unlock()
 	return s.repo.ResetWarnings(ctx, chatID, userID)
 }
 
