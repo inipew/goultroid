@@ -3,6 +3,7 @@ package savedresponse
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/inipew/goultroid/internal/database"
@@ -615,5 +616,180 @@ func TestBindingServiceCollisionGuardRecheckedOnEnableAndUpdate(t *testing.T) {
 	if current == nil || current.Enabled || current.Revision != created.Revision ||
 		current.Reference.Key != created.Reference.Key {
 		t.Fatalf("reserved mutation changed durable state: %+v", current)
+	}
+}
+
+
+func TestCrossSurfaceLifecycleMatrixUsesOneAuthoritativeResponse(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "bindings.db")
+	db, err := database.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.RunFeatureMigrations(ctx, db, MigrationProvider{}); err != nil {
+		t.Fatal(err)
+	}
+
+	registry := NewRegistry()
+	resolver := &bindingTestResolver{response: NewText("v1")}
+	scope1 := tasks.ScopeIdentity{Owner: "plugin:notes", Generation: 1}
+	registration1, err := registry.Register("notes", scope1, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	service := NewBindingService(NewSQLiteSurfaceBindingRepository(db), registry)
+	ref := Reference{Provider: "notes", ScopeID: 55, Key: "shared"}
+	surfaces := []Surface{
+		SurfaceAssistantCommand,
+		SurfaceInline,
+		SurfaceDeepLink,
+		SurfaceCallback,
+	}
+	for _, surface := range surfaces {
+		if _, err := service.Create(ctx, SurfaceBinding{
+			Surface: surface, Alias: "shared", Reference: ref, Enabled: true,
+		}); err != nil {
+			t.Fatalf("Create(%s) error=%v", surface, err)
+		}
+	}
+
+	prepared := make(map[Surface]PreparedBinding, len(surfaces))
+	for _, surface := range surfaces {
+		item, err := service.Prepare(ctx, surface, "shared")
+		if err != nil {
+			t.Fatalf("Prepare(%s) error=%v", surface, err)
+		}
+		prepared[surface] = item
+		resolved, err := service.ResolvePrepared(ctx, item)
+		if err != nil {
+			t.Fatalf("ResolvePrepared(%s/v1) error=%v", surface, err)
+		}
+		if resolved.Resolved.Response.Text != "v1" || resolved.Resolved.Scope != scope1 {
+			t.Fatalf("%s v1 resolved=%+v", surface, resolved.Resolved)
+		}
+	}
+
+	// Provider content is authoritative and not copied into any surface binding.
+	// A content-only update is therefore observed by every already-prepared
+	// surface lease as long as resource class and provider generation remain stable.
+	resolver.response = NewText("v2")
+	for _, surface := range surfaces {
+		resolved, err := service.ResolvePrepared(ctx, prepared[surface])
+		if err != nil {
+			t.Fatalf("ResolvePrepared(%s/v2) error=%v", surface, err)
+		}
+		if resolved.Resolved.Response.Text != "v2" {
+			t.Fatalf("%s saw %q, want authoritative v2", surface, resolved.Resolved.Response.Text)
+		}
+	}
+
+	// Disable is scoped to one surface namespace.
+	inlineBinding, err := service.Get(ctx, SurfaceInline, "shared")
+	if err != nil || inlineBinding == nil {
+		t.Fatalf("Get(inline)=%+v err=%v", inlineBinding, err)
+	}
+	disabledInline, err := service.SetEnabled(
+		ctx, SurfaceInline, "shared", false,
+		inlineBinding.Revision, inlineBinding.Incarnation,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Prepare(ctx, SurfaceInline, "shared"); !errors.Is(err, ErrBindingDisabled) {
+		t.Fatalf("Prepare(disabled inline) error=%v, want %v", err, ErrBindingDisabled)
+	}
+	for _, surface := range []Surface{SurfaceAssistantCommand, SurfaceDeepLink, SurfaceCallback} {
+		resolved, err := service.Resolve(ctx, surface, "shared")
+		if err != nil || resolved.Resolved.Response.Text != "v2" {
+			t.Fatalf("Resolve(%s after inline disable)=%+v err=%v", surface, resolved, err)
+		}
+	}
+	if _, err := service.SetEnabled(
+		ctx, disabledInline.Surface, disabledInline.Alias, true,
+		disabledInline.Revision, disabledInline.Incarnation,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// Delete removes only that external route; provider content and other routes survive.
+	callbackBinding, err := service.Get(ctx, SurfaceCallback, "shared")
+	if err != nil || callbackBinding == nil {
+		t.Fatalf("Get(callback)=%+v err=%v", callbackBinding, err)
+	}
+	if err := service.Delete(
+		ctx, callbackBinding.Surface, callbackBinding.Alias,
+		callbackBinding.Revision, callbackBinding.Incarnation,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Prepare(ctx, SurfaceCallback, "shared"); !errors.Is(err, ErrBindingNotFound) {
+		t.Fatalf("Prepare(deleted callback) error=%v, want %v", err, ErrBindingNotFound)
+	}
+
+	// Simulate application restart: reopen the physical SQLite file and rebuild
+	// the binding service. Durable routes must survive without copying payloads.
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db2, err := database.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db2.Close()
+	if err := database.RunFeatureMigrations(ctx, db2, MigrationProvider{}); err != nil {
+		t.Fatal(err)
+	}
+	restarted := NewBindingService(NewSQLiteSurfaceBindingRepository(db2), registry)
+	for _, surface := range []Surface{SurfaceAssistantCommand, SurfaceInline, SurfaceDeepLink} {
+		resolved, err := restarted.Resolve(ctx, surface, "shared")
+		if err != nil {
+			t.Fatalf("restart Resolve(%s) error=%v", surface, err)
+		}
+		if resolved.Resolved.Response.Text != "v2" {
+			t.Fatalf("restart %s saw %q, want v2", surface, resolved.Resolved.Response.Text)
+		}
+	}
+	if _, err := restarted.Resolve(ctx, SurfaceCallback, "shared"); !errors.Is(err, ErrBindingNotFound) {
+		t.Fatalf("restart deleted callback error=%v, want %v", err, ErrBindingNotFound)
+	}
+
+	reloadPrepared := make(map[Surface]PreparedBinding)
+	for _, surface := range []Surface{SurfaceAssistantCommand, SurfaceInline, SurfaceDeepLink} {
+		item, err := restarted.Prepare(ctx, surface, "shared")
+		if err != nil {
+			t.Fatal(err)
+		}
+		reloadPrepared[surface] = item
+	}
+	registration1.Close()
+	scope2 := tasks.ScopeIdentity{Owner: "plugin:notes", Generation: 2}
+	registration2, err := registry.Register(
+		"notes", scope2, &bindingTestResolver{response: NewText("v3")},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registration2.Close()
+
+	for surface, item := range reloadPrepared {
+		if _, err := restarted.ResolvePrepared(ctx, item); !errors.Is(err, ErrBindingStale) {
+			t.Fatalf("queued %s after provider reload error=%v, want %v", surface, err, ErrBindingStale)
+		}
+		resolved, err := restarted.Resolve(ctx, surface, "shared")
+		if err != nil {
+			t.Fatalf("fresh Resolve(%s after reload) error=%v", surface, err)
+		}
+		if resolved.Resolved.Response.Text != "v3" || resolved.Resolved.Scope != scope2 {
+			t.Fatalf("fresh %s after reload resolved=%+v", surface, resolved.Resolved)
+		}
+	}
+
+	registration2.Close()
+	for _, surface := range []Surface{SurfaceAssistantCommand, SurfaceInline, SurfaceDeepLink} {
+		if _, err := restarted.Resolve(ctx, surface, "shared"); !errors.Is(err, ErrResolverUnavailable) {
+			t.Fatalf("Resolve(%s provider disabled) error=%v, want %v", surface, err, ErrResolverUnavailable)
+		}
 	}
 }
