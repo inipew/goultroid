@@ -92,6 +92,12 @@ type OwnerExecutor interface {
 	ExecuteOwner(context.Context, PreparedIngress, OwnerTransport) error
 }
 
+type AudienceRegistry interface {
+	TouchAudience(context.Context, AudienceTouch) (AudienceMember, error)
+	SnapshotAudience(context.Context) (AudienceSnapshot, error)
+	ListAudienceSnapshot(context.Context, AudienceSnapshot, int64, int) ([]AudienceMember, int64, error)
+}
+
 type ControlStatus struct {
 	Enabled    bool
 	Mappings   int
@@ -152,6 +158,45 @@ func (s *Service) IsEnabled() bool {
 	enabled := s.enabled
 	s.mu.RUnlock()
 	return enabled
+}
+
+func (s *Service) TouchAudience(ctx context.Context, touch AudienceTouch) (AudienceMember, error) {
+	if s == nil || s.repo == nil {
+		return AudienceMember{}, ErrUnavailable
+	}
+	normalized, err := touch.Normalize()
+	if err != nil {
+		return AudienceMember{}, err
+	}
+	member, err := s.repo.TouchAudience(ctx, normalized)
+	if !errors.Is(err, ErrAudienceCapacity) {
+		return member, err
+	}
+
+	now := s.now().UTC()
+	if _, pruneErr := s.repo.PruneAudienceBefore(ctx, now.Add(-DefaultAudienceRetention), 64); pruneErr != nil {
+		return AudienceMember{}, errors.Join(err, pruneErr)
+	}
+	return s.repo.TouchAudience(ctx, normalized)
+}
+
+func (s *Service) SnapshotAudience(ctx context.Context) (AudienceSnapshot, error) {
+	if s == nil || s.repo == nil {
+		return AudienceSnapshot{}, ErrUnavailable
+	}
+	return s.repo.SnapshotAudience(ctx)
+}
+
+func (s *Service) ListAudienceSnapshot(
+	ctx context.Context,
+	snapshot AudienceSnapshot,
+	afterSequence int64,
+	limit int,
+) ([]AudienceMember, int64, error) {
+	if s == nil || s.repo == nil {
+		return nil, afterSequence, ErrUnavailable
+	}
+	return s.repo.ListAudienceSnapshot(ctx, snapshot, afterSequence, limit)
 }
 
 func (s *Service) checkVisitorAllowed(ctx context.Context, visitorID int64) error {
@@ -437,15 +482,12 @@ func (s *Service) ensureMapping(ctx context.Context, mapping Mapping, now time.T
 	return err
 }
 
-func (s *Service) touchRelayAudience(ctx context.Context, visitorID int64, seenAt, now time.Time) error {
-	touch := AudienceTouch{UserID: visitorID, Source: AudienceSourceRelay, SeenAt: seenAt}
-	if _, err := s.repo.TouchAudience(ctx, touch); !errors.Is(err, ErrAudienceCapacity) {
-		return err
-	}
-	if _, err := s.repo.PruneAudienceBefore(ctx, now.Add(-DefaultAudienceRetention), 64); err != nil {
-		return err
-	}
-	_, err := s.repo.TouchAudience(ctx, touch)
+func (s *Service) touchRelayAudience(ctx context.Context, visitorID int64, seenAt, _ time.Time) error {
+	_, err := s.TouchAudience(ctx, AudienceTouch{
+		UserID: visitorID,
+		Source: AudienceSourceRelay,
+		SeenAt: seenAt,
+	})
 	return err
 }
 
@@ -670,6 +712,7 @@ func (s *Service) ExecuteOwner(ctx context.Context, prepared PreparedIngress, tr
 	return err
 }
 
+var _ AudienceRegistry = (*Service)(nil)
 var _ Ingress = (*Service)(nil)
 var _ VisitorExecutor = (*Service)(nil)
 var _ OwnerExecutor = (*Service)(nil)
