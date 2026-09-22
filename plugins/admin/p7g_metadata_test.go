@@ -48,19 +48,38 @@ func TestP7GAssistantMutationMetadataMatchesCanonicalRights(t *testing.T) {
 	}
 }
 
-func TestP7GDoesNotImplicitlyOpenWarningWorkflow(t *testing.T) {
+func TestP7IWarningWorkflowUsesAssistantContextualAuthorization(t *testing.T) {
 	commands := make(map[string]core.Command)
 	for _, command := range New().Commands() {
 		commands[command.Name] = command
 	}
 
-	for _, name := range []string{"warn", "warns", "resetwarns"} {
+	warn := commands["warn"]
+	if warn.Permission != core.PermissionSudo {
+		t.Fatalf("warn Userbot permission=%s, want Sudo", warn.Permission)
+	}
+	if got := warn.EffectivePermission(core.ExecutionAssistant); got != core.PermissionEveryone {
+		t.Fatalf("warn Assistant permission=%s, want Everyone", got)
+	}
+	wantWarn, err := core.GroupMutationRequirement(core.GroupMutationMute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warn.GroupAuthorization != wantWarn {
+		t.Fatalf("warn authorization=%+v, want %+v", warn.GroupAuthorization, wantWarn)
+	}
+
+	for _, name := range []string{"warns", "resetwarns"} {
 		command := commands[name]
-		if command.AssistantPermission != nil {
-			t.Fatalf("%s unexpectedly received Assistant permission override", name)
+		if command.Permission != core.PermissionSudo {
+			t.Fatalf("%s Userbot permission=%s, want Sudo", name, command.Permission)
 		}
-		if command.GroupAuthorization.Required() {
-			t.Fatalf("%s unexpectedly entered P7-G mutation contract: %+v", name, command.GroupAuthorization)
+		if got := command.EffectivePermission(core.ExecutionAssistant); got != core.PermissionEveryone {
+			t.Fatalf("%s Assistant permission=%s, want Everyone", name, got)
+		}
+		want := core.GroupAuthorizationRequirement{Level: core.GroupAuthorizationAdministrator}
+		if command.GroupAuthorization != want {
+			t.Fatalf("%s authorization=%+v, want %+v", name, command.GroupAuthorization, want)
 		}
 	}
 }
