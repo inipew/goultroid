@@ -24,6 +24,7 @@ import (
 	"github.com/inipew/goultroid/internal/interaction/orchestration"
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 	inlineService "github.com/inipew/goultroid/internal/services/inline"
+	"github.com/inipew/goultroid/internal/services/pmrelay"
 	"github.com/inipew/goultroid/internal/services/savedresponse"
 	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/tasks"
@@ -76,6 +77,7 @@ type AssistantClient struct {
 	pluginScopeResolver   func(string) (tasks.ScopeIdentity, bool)
 	inlineEngine          *inlineService.Engine
 	deepLinks             *assistantdeeplink.Router
+	pmRelay               pmrelay.Ingress
 	deepLinkSeq           atomic.Uint64
 	rpcExecutor           assistentrpc.Executor
 	featureCatalog        feature.Catalog
@@ -187,6 +189,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	callbackDeduper := c.callbackDeduper
 	pluginScopeResolver := c.pluginScopeResolver
 	taskClient := c.tasks
+	pmRelay := c.pmRelay
 	c.mu.RUnlock()
 	var ingress *interactionIngress
 	if featureCatalog != nil && interactionSessions != nil && actionDispatcher != nil {
@@ -229,6 +232,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 		Interaction: c.interaction, CacheEntities: c.CacheEntities, IsShuttingDown: c.shuttingDown.Load,
 		InlineEngine: c.inlineEngine, InlineService: inlineQueryService, Tasks: taskClient,
 		PluginScopeResolver: pluginScopeResolver, InteractionIngress: ingress,
+		RelayIngress: NewRelayIngress(pmRelay, taskClient),
 	}
 	RegisterUpdateHandlers(&dispatcher, deps)
 
@@ -431,6 +435,11 @@ func (c *AssistantClient) SetInlineEngine(engine *inlineService.Engine) {
 func (c *AssistantClient) SetDeepLinkRouter(router *assistantdeeplink.Router) {
 	c.mu.Lock()
 	c.deepLinks = router
+	c.mu.Unlock()
+}
+func (c *AssistantClient) SetRelayIngress(relay pmrelay.Ingress) {
+	c.mu.Lock()
+	c.pmRelay = relay
 	c.mu.Unlock()
 }
 func (c *AssistantClient) SetSettingsService(svc *settings.Service) {
