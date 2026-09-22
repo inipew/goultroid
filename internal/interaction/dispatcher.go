@@ -64,8 +64,14 @@ type HandlerRegistration struct {
 // before TaskEngine admission and revalidated immediately before execution.
 type PreparedAction interface {
 	Scope() tasks.ScopeIdentity
-	Resources() []tasks.ResourceRequirement
 	Dispatch(context.Context) error
+}
+
+// ResourcePreparedAction is an optional prepared-action capability. Existing
+// consumers that only depend on Scope+Dispatch remain source-compatible.
+type ResourcePreparedAction interface {
+	PreparedAction
+	Resources() []tasks.ResourceRequirement
 }
 
 type preparedAction struct {
