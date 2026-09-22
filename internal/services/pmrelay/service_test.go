@@ -489,3 +489,64 @@ func TestExecuteVisitorRevalidatesAgainAfterClaimBeforeTransport(t *testing.T) {
 		t.Fatalf("audience created after denied transport: %v", err)
 	}
 }
+
+func TestExecuteVisitorLazilyReclaimsExpiredCapacity(t *testing.T) {
+	ctx := context.Background()
+	repo, _ := newTestRepository(t, Limits{Mappings: 1, Deliveries: 1, Audience: 1})
+	now := time.Date(2026, 9, 22, 15, 0, 0, 0, time.UTC)
+	old := now.Add(-200 * 24 * time.Hour)
+
+	if _, err := repo.EnsureMapping(ctx, Mapping{
+		OwnerChatID: 7, OwnerMessageID: 400,
+		VisitorUserID: 99, VisitorMessageID: 1,
+		CreatedAt: old, ExpiresAt: old.Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.EnsureDelivery(ctx, DeliveryIntent{
+		DeliveryKey: DeliveryKey{
+			Direction: DeliveryVisitorToOwner, SourceChatID: 99, SourceMessageID: 1,
+		},
+		TargetChatID: 7,
+		RandomID:     123,
+		CreatedAt:    old,
+		UpdatedAt:    old,
+		ExpiresAt:    old.Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.TouchAudience(ctx, AudienceTouch{
+		UserID: 99, Source: AudienceSourceStart, SeenAt: old,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	service := NewService(repo, 7)
+	service.now = func() time.Time { return now }
+	service.randomID = func() (int64, error) { return 777, nil }
+	service.claimID = func() (string, error) { return "claim-a", nil }
+	service.SetEnabled(true)
+	prepared := prepareVisitorForDelivery(t, service)
+	transport := &visitorTransportStub{message: 501}
+
+	if err := service.ExecuteVisitor(ctx, prepared, transport); err != nil {
+		t.Fatalf("ExecuteVisitor() error = %v", err)
+	}
+	if _, err := repo.GetDelivery(ctx, DeliveryKey{
+		Direction: DeliveryVisitorToOwner, SourceChatID: 42, SourceMessageID: 11,
+	}); err != nil {
+		t.Fatalf("new delivery missing after lazy reclamation: %v", err)
+	}
+	if _, err := repo.GetMapping(ctx, 7, 501); err != nil {
+		t.Fatalf("new mapping missing after lazy reclamation: %v", err)
+	}
+	if _, err := repo.GetAudience(ctx, 42); err != nil {
+		t.Fatalf("new audience member missing after lazy reclamation: %v", err)
+	}
+	if _, err := repo.GetMapping(ctx, 7, 400); !errors.Is(err, ErrMappingNotFound) {
+		t.Fatalf("expired mapping survived capacity reclamation: %v", err)
+	}
+	if _, err := repo.GetAudience(ctx, 99); !errors.Is(err, ErrAudienceNotFound) {
+		t.Fatalf("stale audience survived capacity reclamation: %v", err)
+	}
+}
