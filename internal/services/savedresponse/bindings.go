@@ -168,6 +168,16 @@ func (s *BindingService) Update(
 	if err != nil {
 		return SurfaceBinding{}, err
 	}
+	current, err := s.bindings.GetBinding(ctx, normalized.Surface, normalized.Alias)
+	if err != nil {
+		return SurfaceBinding{}, err
+	}
+	if current == nil {
+		return SurfaceBinding{}, ErrBindingNotFound
+	}
+	if expectedRevision == 0 || current.Revision != expectedRevision {
+		return SurfaceBinding{}, ErrBindingConflict
+	}
 	if _, err := s.responses.Resolve(ctx, normalized.Reference); err != nil {
 		return SurfaceBinding{}, err
 	}
@@ -185,22 +195,25 @@ func (s *BindingService) SetEnabled(ctx context.Context, surface Surface, alias 
 	if s == nil || s.bindings == nil {
 		return SurfaceBinding{}, ErrResolverUnavailable
 	}
+	current, err := s.bindings.GetBinding(ctx, surface, alias)
+	if err != nil {
+		return SurfaceBinding{}, err
+	}
+	if current == nil {
+		return SurfaceBinding{}, ErrBindingNotFound
+	}
+	if expectedRevision == 0 || current.Revision != expectedRevision {
+		return SurfaceBinding{}, ErrBindingConflict
+	}
 	if enabled {
 		if s.responses == nil {
 			return SurfaceBinding{}, ErrResolverUnavailable
 		}
-		binding, err := s.bindings.GetBinding(ctx, surface, alias)
-		if err != nil {
-			return SurfaceBinding{}, err
-		}
-		if binding == nil {
-			return SurfaceBinding{}, ErrBindingNotFound
-		}
-		if _, err := s.responses.Resolve(ctx, binding.Reference); err != nil {
+		if _, err := s.responses.Resolve(ctx, current.Reference); err != nil {
 			return SurfaceBinding{}, err
 		}
 	}
-	return s.bindings.SetBindingEnabled(ctx, surface, alias, enabled, expectedRevision)
+	return s.bindings.SetBindingEnabled(ctx, current.Surface, current.Alias, enabled, expectedRevision)
 }
 
 func (s *BindingService) Delete(ctx context.Context, surface Surface, alias string, expectedRevision uint64) error {
