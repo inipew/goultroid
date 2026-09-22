@@ -15,6 +15,7 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/command"
 	assistantdeeplink "github.com/inipew/goultroid/internal/assistant/deeplink"
+	"github.com/inipew/goultroid/internal/assistant/groupevents"
 	assistantgroupauth "github.com/inipew/goultroid/internal/assistant/groupauth"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/assistant/peer"
@@ -82,6 +83,7 @@ type AssistantClient struct {
 	pmRelay               pmrelay.Ingress
 	audience              pmrelay.AudienceRegistry
 	broadcast             *broadcastsvc.Service
+	groupEvents           *groupevents.Service
 	deepLinkSeq           atomic.Uint64
 	rpcExecutor           assistentrpc.Executor
 	featureCatalog        feature.Catalog
@@ -184,6 +186,12 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	c.cmdRouter.SetPeerResolver(newAssistantCorePeerResolver(managedAPI, c.resolver))
 	c.interaction = interaction.NewClientInteraction(managedAPI, c.logger)
 	c.interaction.SetRPCExecutor(c.rpcExecutor)
+	c.mu.RLock()
+	groupEvents := c.groupEvents
+	c.mu.RUnlock()
+	if groupEvents != nil {
+		groupEvents.SetTransport(c.interaction)
+	}
 	c.interaction.SetMediaSender(message.NewSender(tdClient.API()), uploader.NewUploader(tdClient.API()))
 	if c.metrics != nil {
 		c.interaction.SetMetricsCollector(c.metrics)
@@ -257,6 +265,8 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 		PluginScopeResolver: pluginScopeResolver, InteractionIngress: ingress,
 		RelayIngress:     relayIngress,
 		AudienceRegistry: audience,
+		GroupEvents:       groupEvents,
+		SelfID:            c.selfID,
 	}
 	RegisterUpdateHandlers(&dispatcher, deps)
 
@@ -498,6 +508,12 @@ func (c *AssistantClient) SetAudienceRegistry(registry pmrelay.AudienceRegistry)
 func (c *AssistantClient) SetBroadcastService(service *broadcastsvc.Service) {
 	c.mu.Lock()
 	c.broadcast = service
+	c.mu.Unlock()
+}
+
+func (c *AssistantClient) SetGroupEventService(service *groupevents.Service) {
+	c.mu.Lock()
+	c.groupEvents = service
 	c.mu.Unlock()
 }
 func (c *AssistantClient) SetSettingsService(svc *settings.Service) {
