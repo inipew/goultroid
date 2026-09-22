@@ -26,9 +26,10 @@ const (
 	EventTypePMPermit        EventType = "pmpermit.action"
 	EventTypeSettingChanged  EventType = "setting.changed"
 	EventTypeJobLifecycle    EventType = "job.lifecycle"
+	EventTypeGroupService    EventType = "group.service"
 )
 
-const builtinEventTypeCount = 10
+const builtinEventTypeCount = 11
 
 func builtinEventTypeIndex(t EventType) (int, bool) {
 	switch t {
@@ -52,6 +53,8 @@ func builtinEventTypeIndex(t EventType) (int, bool) {
 		return 8, true
 	case EventTypeJobLifecycle:
 		return 9, true
+	case EventTypeGroupService:
+		return 10, true
 	default:
 		return 0, false
 	}
@@ -142,6 +145,43 @@ func WithPriority(ev Event, p EventPriority) Event {
 		return nil
 	}
 	return &prioritizedEventWrapper{Event: ev, priority: p}
+}
+
+type GroupServiceKind string
+
+const (
+	GroupServiceMemberJoined GroupServiceKind = "member.joined"
+	GroupServiceMemberLeft   GroupServiceKind = "member.left"
+)
+
+type GroupServiceUser struct {
+	ID        int64
+	FirstName string
+	LastName  string
+	Username  string
+	IsBot     bool
+}
+
+type GroupServiceEvent struct {
+	MetaData  EventMeta
+	At        time.Time
+	Kind      GroupServiceKind
+	ChatID    int64
+	ChatTitle string
+	Peer      tg.InputPeerClass
+	MessageID int
+	ActorID   int64
+	Users     []GroupServiceUser
+}
+
+func (e *GroupServiceEvent) Type() EventType      { return EventTypeGroupService }
+func (e *GroupServiceEvent) Timestamp() time.Time { return e.At }
+func (e *GroupServiceEvent) Meta() EventMeta      { return e.MetaData }
+func (e *GroupServiceEvent) OrderingKey() string {
+	if e != nil && e.ChatID != 0 {
+		return fmt.Sprintf("chat:%d", e.ChatID)
+	}
+	return ""
 }
 
 type MessageCreatedEvent struct {
