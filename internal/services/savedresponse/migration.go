@@ -89,7 +89,6 @@ func (migration001) VerifySchema(ctx context.Context, tx database.SQLExecutor) e
 	return nil
 }
 
-
 func (migration002) ID() string { return "savedresponse.002" }
 
 func (migration002) Description() string {
@@ -140,6 +139,17 @@ func (migration002) VerifySchema(ctx context.Context, tx database.SQLExecutor) e
 	}
 	if indexCount != 1 {
 		return fmt.Errorf("required index idx_saved_response_surface_bindings_incarnation does not exist")
+	}
+
+	var emptyCount int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT count(*) FROM saved_response_surface_bindings
+		WHERE TRIM(incarnation) = ''
+	`).Scan(&emptyCount); err != nil {
+		return err
+	}
+	if emptyCount != 0 {
+		return fmt.Errorf("saved response surface bindings contain %d empty incarnation values", emptyCount)
 	}
 	return nil
 }
