@@ -703,7 +703,7 @@ func (p *Plugin) getCachedFilters(chatID int64, revision uint64) (*compiledFilte
 func (p *Plugin) cacheFilters(chatID int64, filters *compiledFilterSet, revision uint64) bool {
 	p.cacheMu.Lock()
 	defer p.cacheMu.Unlock()
-	if p.chatRuleRevision(chatID) != revision {
+	if p.chatRevision[chatID] != revision {
 		return false
 	}
 	if len(p.chatFilters) >= maxCompiledFilterCacheChats {
