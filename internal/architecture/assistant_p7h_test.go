@@ -160,7 +160,6 @@ func TestP7HControlStateDoesNotUseGlobalSettings(t *testing.T) {
 	}
 }
 
-
 func TestP7HServiceMessagesBypassGlobalEntityCacheWhenInactive(t *testing.T) {
 	root := repositoryRoot(t)
 	path := filepath.Join(root, "internal", "assistant", "client", "updates.go")
