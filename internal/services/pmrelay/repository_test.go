@@ -438,3 +438,64 @@ func TestSQLiteAudienceSnapshotUsesStableMembershipKeyset(t *testing.T) {
 		t.Fatalf("existing member sources=%d, want %d", member.Sources, wantSources)
 	}
 }
+
+
+func TestSQLiteAudiencePruneAndRejoinAllocatesLaterMembershipSequence(t *testing.T) {
+	ctx := context.Background()
+	repo, _ := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8, Blocked: 8})
+	base := time.Now().UTC().Add(-2 * time.Hour)
+
+	if _, err := repo.TouchAudience(ctx, AudienceTouch{
+		UserID: 42, Source: AudienceSourceStart, SeenAt: base,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := repo.SnapshotAudience(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Total != 1 || before.MaxSequence <= 0 {
+		t.Fatalf("before snapshot=%+v", before)
+	}
+
+	pruned, err := repo.PruneAudienceBefore(ctx, base.Add(time.Hour), 64)
+	if err != nil || pruned != 1 {
+		t.Fatalf("PruneAudienceBefore()=%d err=%v, want 1 nil", pruned, err)
+	}
+	empty, err := repo.SnapshotAudience(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.Total != 0 {
+		t.Fatalf("snapshot after prune=%+v, want empty", empty)
+	}
+
+	if _, err := repo.TouchAudience(ctx, AudienceTouch{
+		UserID: 42, Source: AudienceSourceInline, SeenAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := repo.SnapshotAudience(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Total != 1 || after.MaxSequence <= before.MaxSequence {
+		t.Fatalf("rejoin snapshot=%+v, want sequence after %+v", after, before)
+	}
+
+	oldPage, _, err := repo.ListAudienceSnapshot(ctx, before, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(oldPage) != 0 {
+		t.Fatalf("rejoined user leaked into old snapshot: %+v", oldPage)
+	}
+	newPage, _, err := repo.ListAudienceSnapshot(ctx, after, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(newPage) != 1 || newPage[0].UserID != 42 ||
+		newPage[0].Sources != AudienceSourceInline {
+		t.Fatalf("rejoined user in new snapshot=%+v", newPage)
+	}
+}
