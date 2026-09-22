@@ -22,7 +22,7 @@ const (
 	GoodbyeKey       = "goodbye"
 	MaxTemplateBytes = 2048
 	maxRenderedUsers = 8
-	preloadLimit     = 10_000
+	preloadLimit     = 50_000
 )
 
 var (
@@ -198,9 +198,11 @@ func (s *Service) Close() {
 	if s == nil {
 		return
 	}
+	s.ready.Store(false)
 	s.mu.Lock()
 	sub := s.sub
 	s.sub = nil
+	s.transport = nil
 	s.mu.Unlock()
 	if sub != nil {
 		sub.Close()
@@ -302,15 +304,26 @@ func (s *Service) applyState(chatID int64, state State) {
 	// Retain disabled durable state as well. Status/revision must reflect the
 	// persisted P7-F row rather than falling back to synthetic defaults.
 	s.chats[chatID] = current
-	switch state.Kind {
-	case core.GroupServiceMemberJoined:
-		s.welcomeInterest.SetActive(chatID, state.Config.Enabled)
-	case core.GroupServiceMemberLeft:
-		s.goodbyeInterest.SetActive(chatID, state.Config.Enabled)
+
+	setInterest := func() {
+		switch state.Kind {
+		case core.GroupServiceMemberJoined:
+			s.welcomeInterest.SetActive(chatID, state.Config.Enabled)
+		case core.GroupServiceMemberLeft:
+			s.goodbyeInterest.SetActive(chatID, state.Config.Enabled)
+		}
 	}
-	// Update interest before attaching/detaching the shared EventBus
-	// subscription so ingress never observes stale chat enablement.
-	s.syncSubscriptionLocked()
+	if state.Config.Enabled {
+		// On enable, attach the shared subscriber before making chat interest
+		// visible. Once ingress can observe true, the EventBus path is ready.
+		s.syncSubscriptionLocked()
+		setInterest()
+	} else {
+		// On disable, hide chat interest before possibly removing the final
+		// subscriber so no new update can enter the feature.
+		setInterest()
+		s.syncSubscriptionLocked()
+	}
 	s.mu.Unlock()
 }
 
