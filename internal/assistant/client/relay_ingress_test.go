@@ -774,3 +774,32 @@ func TestRelayIngressForceSubPolicyReadFailureDoesNotEmitInvalidGuidance(t *test
 			transport.calls, transport.guidanceCalls)
 	}
 }
+
+
+func TestRelayIngressForceSubGuidanceRevalidatesBeforeSend(t *testing.T) {
+	ctx := context.Background()
+	service := newRelayIngressService(t)
+	taskClient := &relayAdmissionTaskClient{run: true}
+	transport := &forceSubRelayTransportStub{}
+	ingress := NewRelayIngress(service, taskClient, transport)
+	ingress.setForceSubGate(&forceSubGateStub{
+		decisions: []forceSubDecision{
+			{JoinRequired: true, Config: forceSubDecisionConfig()},
+			{Allowed: true, Config: forceSubDecisionConfig()},
+		},
+	})
+
+	handled, err := ingress.tryVisitor(ctx, pmrelay.IngressMessage{
+		SenderID: 42, ChatID: 42, MessageID: 11,
+	})
+	if err != nil || !handled {
+		t.Fatalf("tryVisitor(guidance revalidation) handled=%v err=%v", handled, err)
+	}
+	if taskClient.calls != 1 {
+		t.Fatalf("TaskEngine submissions=%d, want one guidance task", taskClient.calls)
+	}
+	if transport.guidanceCalls != 0 || transport.calls != 0 {
+		t.Fatalf("stale guidance/relay calls=%d/%d, want 0/0",
+			transport.guidanceCalls, transport.calls)
+	}
+}
