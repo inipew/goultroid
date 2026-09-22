@@ -20,17 +20,17 @@ import (
 )
 
 const (
-	filterCacheTTL               = 10 * time.Minute
-	filterCooldown               = 5 * time.Second
-	filterCaptureTimeout         = 2 * time.Minute
-	filterDeliveryTimeout        = 30 * time.Second
-	filtersTelegramMessageRunes  = 4096
-	MaxRulesPerChat              = 512
-	MaxKeywordBytes              = 256
-	MaxActiveChats               = 50_000
-	maxCompiledFilterCacheChats = 500
-	maxFilterCooldownEntries     = 1_000
-	ruleLockStripes              = 64
+	filterCacheTTL                = 10 * time.Minute
+	filterCooldown                = 5 * time.Second
+	filterCaptureTimeout          = 2 * time.Minute
+	filterDeliveryTimeout         = 30 * time.Second
+	filtersTelegramMessageRunes   = 4096
+	MaxRulesPerChat               = 512
+	MaxKeywordBytes               = 256
+	MaxActiveChats                = 50_000
+	maxCompiledFilterCacheChats   = 500
+	maxFilterCooldownEntries      = 1_000
+	ruleLockStripes               = 64
 )
 
 var filterTaskSequence atomic.Uint64
