@@ -252,6 +252,62 @@ func TestCommitAttemptDeferredAtomicReplayAndRedrive(t *testing.T) {
 	}
 }
 
+func TestDurableDiagnosticsReportsDeferredState(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	s := NewStore(db)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	firstReady := now.Add(2 * time.Minute)
+	secondReady := now.Add(3 * time.Minute)
+
+	for _, item := range []struct {
+		occurrenceID string
+		taskID       string
+		key          string
+		readyAt      time.Time
+	}{
+		{occurrenceID: "occ-diag-1", taskID: "task-diag-1", key: "diag-key-1", readyAt: firstReady},
+		{occurrenceID: "occ-diag-2", taskID: "task-diag-2", key: "diag-key-2", readyAt: secondReady},
+	} {
+		if err := s.MaterializeOccurrence(ctx, &jobs.JobOccurrence{
+			ID: item.occurrenceID, JobID: "job", OccurrenceKey: item.key,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		attempt, err := s.PrepareAttemptLease(ctx, item.occurrenceID, item.taskID, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.CommitAttemptDeferred(ctx, attempt.ID, attempt.LeaseEpoch, item.readyAt, "rate limited"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	snapshot, err := s.DurableDiagnostics(ctx, now)
+	if err != nil {
+		t.Fatalf("DurableDiagnostics() error = %v", err)
+	}
+	if snapshot.DeferredOccurrences != 2 {
+		t.Fatalf("deferred occurrences=%d, want 2", snapshot.DeferredOccurrences)
+	}
+	if snapshot.RetainedDeferrals != 2 {
+		t.Fatalf("retained deferrals=%d, want 2", snapshot.RetainedDeferrals)
+	}
+	if !snapshot.EarliestDeferredAt.Equal(firstReady) {
+		t.Fatalf("earliest deferred=%v, want %v", snapshot.EarliestDeferredAt, firstReady)
+	}
+
+	manager := jobs.NewManager(nil, s, nil)
+	diagnostics := manager.Diagnostics()
+	if !diagnostics.DurableSnapshotOK ||
+		diagnostics.DeferredOccurrences != 2 ||
+		diagnostics.RetainedDeferrals != 2 ||
+		!diagnostics.EarliestDeferredAt.Equal(firstReady) {
+		t.Fatalf("manager diagnostics mismatch: %+v", diagnostics)
+	}
+}
+
 func TestCommitAttemptDeferredHonorsCancellationAndLeaseFencing(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
