@@ -175,6 +175,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		}
 		tgRuntime.assistant.SetCoreRouter(coreDeps.router)
 		tgRuntime.assistant.SetSettingsService(domServices.settingsService)
+		tgRuntime.assistant.SetGroupStateStore(domServices.groupState)
 		tgRuntime.assistant.SetMetricsCollector(coreDeps.metrics)
 		tgRuntime.assistant.SetCallbackRouter(coreDeps.callbackRouter)
 		tgRuntime.assistant.SetInlineEngine(coreDeps.inlineEngine)
