@@ -8,6 +8,12 @@ import (
 	"github.com/inipew/goultroid/internal/database"
 )
 
+type p6hMigrationProvider []database.Migration
+
+func (p p6hMigrationProvider) Migrations() []database.Migration {
+	return append([]database.Migration(nil), p...)
+}
+
 func TestMigrationCreatesRelaySchemaIdempotently(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(":memory:")
@@ -148,5 +154,104 @@ func TestMigration004SeedsDisabledFailClosedForceSub(t *testing.T) {
 		failureMode != string(ForceSubFailClosed) || revision != 1 {
 		t.Fatalf("seeded force-sub config enabled=%d username=%q join=%q mode=%q revision=%d",
 			enabled, username, joinURL, failureMode, revision)
+	}
+}
+
+
+func TestP6HMigrationUpgradeFromP6APreservesDurableRelayState(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := database.RunFeatureMigrations(
+		ctx,
+		db,
+		p6hMigrationProvider{migration001{}},
+	); err != nil {
+		t.Fatalf("apply P6-A migration: %v", err)
+	}
+
+	base := time.Date(2026, 9, 22, 7, 0, 0, 0, time.UTC)
+	repo := NewSQLiteRepository(db)
+	mapping := Mapping{
+		OwnerChatID: 7, OwnerMessageID: 500,
+		VisitorUserID: 42, VisitorMessageID: 11,
+		CreatedAt: base, ExpiresAt: base.Add(DefaultMappingRetention),
+	}
+	if _, err := repo.EnsureMapping(ctx, mapping); err != nil {
+		t.Fatal(err)
+	}
+	delivery := DeliveryIntent{
+		DeliveryKey: DeliveryKey{
+			Direction: DeliveryVisitorToOwner,
+			SourceChatID: 42,
+			SourceMessageID: 11,
+		},
+		TargetChatID: 7,
+		RandomID: 777,
+		CreatedAt: base,
+		UpdatedAt: base,
+		ExpiresAt: base.Add(DefaultDeliveryRetention),
+	}
+	if _, err := repo.EnsureDelivery(ctx, delivery); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO assistant_audience_members (
+			user_id, sources, first_seen_at, last_seen_at
+		) VALUES (?, ?, ?, ?)
+	`, int64(42), int64(AudienceSourceRelay), base, base); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := database.RunFeatureMigrations(ctx, db, MigrationProvider{}); err != nil {
+		t.Fatalf("upgrade P6-A -> P6-G schema: %v", err)
+	}
+
+	if got, err := repo.GetMapping(ctx, 7, 500); err != nil || got != mapping {
+		t.Fatalf("mapping after upgrade=%+v err=%v, want %+v", got, err, mapping)
+	}
+	gotDelivery, err := repo.GetDelivery(ctx, delivery.DeliveryKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotDelivery.RandomID != 777 || gotDelivery.TargetChatID != 7 {
+		t.Fatalf("delivery after upgrade=%+v", gotDelivery)
+	}
+	member, err := repo.GetAudience(ctx, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if member.Sources&AudienceSourceRelay == 0 {
+		t.Fatalf("audience after upgrade=%+v", member)
+	}
+
+	snapshot, err := repo.SnapshotAudience(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Total != 1 || snapshot.MaxSequence != 1 {
+		t.Fatalf("backfilled audience snapshot=%+v, want total=1 max_sequence=1", snapshot)
+	}
+	forceSub, err := repo.GetForceSubConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forceSub.Enabled || forceSub.FailureMode != ForceSubFailClosed || forceSub.Revision != 1 {
+		t.Fatalf("force-sub default after upgrade=%+v", forceSub)
+	}
+
+	var migrationCount int
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*) FROM feature_schema_migrations
+		WHERE id IN ('pmrelay.001', 'pmrelay.002', 'pmrelay.003', 'pmrelay.004')
+	`).Scan(&migrationCount); err != nil {
+		t.Fatal(err)
+	}
+	if migrationCount != 4 {
+		t.Fatalf("PM Relay migration records=%d, want 4", migrationCount)
 	}
 }
