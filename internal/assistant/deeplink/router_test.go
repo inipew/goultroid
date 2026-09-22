@@ -30,6 +30,7 @@ type testProvider struct {
 	prepares  int
 	executes  int
 	payload   string
+	err       error
 }
 
 func (p *testProvider) Prepare(_ context.Context, payload string, _ int64) (PreparedTarget, error) {
@@ -45,7 +46,7 @@ func (p *testProvider) Prepare(_ context.Context, payload string, _ int64) (Prep
 func (p *testProvider) Execute(_ context.Context, target PreparedTarget, _ Delivery) error {
 	p.executes++
 	p.payload, _ = target.State.(string)
-	return nil
+	return p.err
 }
 
 func TestRouterActorBoundSingleUseClaimsOnlyAtExecution(t *testing.T) {
@@ -251,5 +252,73 @@ func TestRouterIssuePrunesExpiredBeforeCapacityCheck(t *testing.T) {
 		Kind: "test", Payload: "replacement", TTL: time.Hour,
 	}); err != nil {
 		t.Fatalf("Issue(after expiry) error=%v", err)
+	}
+}
+
+
+func TestRouterSingleUseDeliveryFailureReleasesClaimForRetry(t *testing.T) {
+	router, _ := newTestRouter(t)
+	provider := &testProvider{
+		scope: tasks.ScopeIdentity{Owner: "plugin:test", Generation: 1},
+		err:   errors.New("delivery failed"),
+	}
+	if _, err := router.Register("test", provider); err != nil {
+		t.Fatal(err)
+	}
+	token, err := router.Issue(context.Background(), IssueRequest{
+		Kind: "test", Payload: "retry", ActorID: 7, SingleUse: true, TTL: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := router.Prepare(context.Background(), token.ID, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := router.ExecutePrepared(context.Background(), prepared, Delivery{ActorID: 7}); err == nil {
+		t.Fatal("first ExecutePrepared() unexpectedly succeeded")
+	}
+	if _, err := router.Prepare(context.Background(), token.ID, 7); err != nil {
+		t.Fatalf("Prepare(after failed delivery) error=%v, token was burned", err)
+	}
+
+	provider.err = nil
+	retry, err := router.Prepare(context.Background(), token.ID, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := router.ExecutePrepared(context.Background(), retry, Delivery{ActorID: 7}); err != nil {
+		t.Fatalf("retry ExecutePrepared() error=%v", err)
+	}
+	if _, err := router.Prepare(context.Background(), token.ID, 7); !errors.Is(err, ErrTokenConsumed) {
+		t.Fatalf("Prepare(after successful retry) error=%v, want %v", err, ErrTokenConsumed)
+	}
+}
+
+func TestSQLiteSingleUseClaimExcludesConcurrentExecutionAndExpires(t *testing.T) {
+	router, repo := newTestRouter(t)
+	provider := &testProvider{scope: tasks.ScopeIdentity{Owner: "plugin:test", Generation: 1}}
+	if _, err := router.Register("test", provider); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 9, 22, 2, 0, 0, 0, time.UTC)
+	router.now = func() time.Time { return base }
+	token, err := router.Issue(context.Background(), IssueRequest{
+		Kind: "test", Payload: "lease", ActorID: 7, SingleUse: true, TTL: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Claim(context.Background(), token.ID, 7, base, "claim-a", base.Add(time.Minute)); err != nil {
+		t.Fatalf("first Claim() error=%v", err)
+	}
+	if _, err := repo.Claim(context.Background(), token.ID, 7, base.Add(10*time.Second), "claim-b", base.Add(2*time.Minute)); !errors.Is(err, ErrTokenClaimed) {
+		t.Fatalf("concurrent Claim() error=%v, want %v", err, ErrTokenClaimed)
+	}
+	if _, err := repo.Claim(context.Background(), token.ID, 7, base.Add(2*time.Minute), "claim-c", base.Add(3*time.Minute)); err != nil {
+		t.Fatalf("Claim(after lease expiry) error=%v", err)
+	}
+	if err := repo.ReleaseClaim(context.Background(), token.ID, "claim-c"); err != nil {
+		t.Fatalf("ReleaseClaim() error=%v", err)
 	}
 }
