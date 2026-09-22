@@ -234,6 +234,13 @@ reach the P6-C visitor delivery fallback.
 
 Media/caption messages are not forwarded by this phase.
 
+Mapped owner replies remain higher precedence than generic AwaitInput, but P6-C
+does not deliver them to visitors. When the visitor transport plane is present,
+such replies are admitted/revalidated and then fail closed with
+`ErrUnsupportedDelivery` rather than being reported as successful no-ops or
+falling into an unrelated input session. P6-D replaces this terminal boundary
+with the owner → visitor transport.
+
 ## Acceptance gates
 
 Tests freeze these invariants:
@@ -251,7 +258,8 @@ Tests freeze these invariants:
 - disable after claim but before RPC prevents transport and releases the claim;
 - recovery does not advance audience activity time;
 - expired completed delivery cannot resurrect reply mapping;
-- P6-C visitor fallback rejects media.
+- P6-C visitor fallback rejects media;
+- mapped owner replies fail closed until P6-D instead of becoming successful no-ops.
 
 ## Explicit non-goals
 
