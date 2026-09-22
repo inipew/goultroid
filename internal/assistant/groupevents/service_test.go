@@ -309,3 +309,76 @@ func TestP7HOversizedTemplateFailsBeforePersistedInterest(t *testing.T) {
 		t.Fatalf("oversized template persisted state: %v", err)
 	}
 }
+
+
+func TestP7HCloseCannotResurrectSubscriptionOrTransport(t *testing.T) {
+	store, bus := newGroupEventTestRuntime(t)
+	service := New(store, bus)
+	if err := service.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx := groupEventAdminContext(store, 404, 7)
+	if _, err := service.Configure(
+		ctx,
+		core.GroupServiceMemberJoined,
+		true,
+		"Welcome {user}",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if got := bus.SubscriptionCount("assistant:groupevents"); got != 1 {
+		t.Fatalf("subscriptions before close=%d, want 1", got)
+	}
+
+	service.Close()
+	service.Close()
+	if got := bus.SubscriptionCount("assistant:groupevents"); got != 0 {
+		t.Fatalf("close left %d subscriptions", got)
+	}
+	if service.Interested(404, core.GroupServiceMemberJoined) {
+		t.Fatal("closed service still reports chat interest")
+	}
+
+	// Simulate a configure operation that persisted just before Close but whose
+	// in-memory apply races after Close. It must not recreate a subscriber.
+	service.applyState(405, State{
+		Kind: core.GroupServiceMemberJoined,
+		Config: Config{
+			Enabled:  true,
+			Template: "Late {user}",
+		},
+		Revision: 1,
+	})
+	if got := bus.SubscriptionCount("assistant:groupevents"); got != 0 {
+		t.Fatalf("late apply resurrected %d subscriptions", got)
+	}
+
+	transport := &recordingTransport{sent: make(chan string, 1)}
+	service.SetTransport(transport)
+	service.Publish(&core.GroupServiceEvent{
+		At:        time.Now(),
+		Kind:      core.GroupServiceMemberJoined,
+		ChatID:    405,
+		ChatTitle: "Closed",
+		Peer:      &tg.InputPeerChannel{ChannelID: 405, AccessHash: 505},
+		MessageID: 1,
+		Users:     []core.GroupServiceUser{{ID: 99, FirstName: "Late"}},
+	})
+	select {
+	case msg := <-transport.sent:
+		t.Fatalf("closed service delivered message %q", msg)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	if _, err := service.Configure(
+		groupEventAdminContext(store, 406, 7),
+		core.GroupServiceMemberJoined,
+		true,
+		"nope",
+	); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("configure after close error=%v, want ErrUnavailable", err)
+	}
+	if err := service.Load(context.Background()); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("load after close error=%v, want ErrUnavailable", err)
+	}
+}
