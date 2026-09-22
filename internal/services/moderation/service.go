@@ -87,11 +87,41 @@ func NewService(repo WarningRepository, svc any, logger *zap.Logger) *Service {
 
 func (s *Service) SetTelegramService(svc core.TelegramServicer) { s.svc = svc }
 
-// Warn records a warning and enforces the configured threshold action. The
-// warning state is reset only after a successful punitive action; a failed
-// enforcement therefore remains visible and can be retried rather than being
-// silently erased.
+// Warn records a warning and enforces the configured threshold action using
+// the service's default Telegram transport.
 func (s *Service) Warn(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, chatID, userID int64, reason string, warnedBy int64, threshold int, actionOnThreshold string) (*WarnResult, error) {
+	return s.warnWithService(ctx, s.getService(), peer, user, chatID, userID, reason, warnedBy, threshold, actionOnThreshold)
+}
+
+// WarnWithService is the surface-aware variant used by Assistant P7-I. The
+// caller-supplied Telegram servicer preserves the already-admitted execution
+// surface, so threshold enforcement cannot accidentally escape through the
+// userbot transport.
+func (s *Service) WarnWithService(
+	ctx context.Context,
+	svc core.TelegramServicer,
+	peer tg.InputPeerClass,
+	user tg.InputPeerClass,
+	chatID, userID int64,
+	reason string,
+	warnedBy int64,
+	threshold int,
+	actionOnThreshold string,
+) (*WarnResult, error) {
+	return s.warnWithService(ctx, svc, peer, user, chatID, userID, reason, warnedBy, threshold, actionOnThreshold)
+}
+
+func (s *Service) warnWithService(
+	ctx context.Context,
+	svc core.TelegramServicer,
+	peer tg.InputPeerClass,
+	user tg.InputPeerClass,
+	chatID, userID int64,
+	reason string,
+	warnedBy int64,
+	threshold int,
+	actionOnThreshold string,
+) (*WarnResult, error) {
 	if s.repo == nil {
 		return nil, fmt.Errorf("warning repository is nil")
 	}
@@ -113,20 +143,24 @@ func (s *Service) Warn(ctx context.Context, peer tg.InputPeerClass, user tg.Inpu
 		return res, nil
 	}
 
+	if svc == nil {
+		return res, fmt.Errorf("%w: moderation Telegram service is nil", core.ErrUnavailable)
+	}
+
 	var actionErr error
 	switch actionLower := strings.ToLower(actionOnThreshold); actionLower {
 	case ActionKick:
-		actionErr = s.Kick(ctx, peer, user)
+		actionErr = svc.KickUser(ctx, peer, user)
 		if actionErr == nil {
 			res.ActionTaken = ActionKick
 		}
 	case ActionBan:
-		actionErr = s.Ban(ctx, peer, user, 0)
+		actionErr = svc.BanUser(ctx, peer, user, 0)
 		if actionErr == nil {
 			res.ActionTaken = ActionBan
 		}
 	default:
-		actionErr = s.Mute(ctx, peer, user, 24*time.Hour)
+		actionErr = svc.MuteUser(ctx, peer, user, int(time.Now().Add(24*time.Hour).Unix()))
 		if actionErr == nil {
 			res.ActionTaken = ActionMute
 		}
