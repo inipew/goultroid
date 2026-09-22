@@ -3,6 +3,7 @@ package pmrelay
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/inipew/goultroid/internal/database"
 )
@@ -54,5 +55,51 @@ func TestMigrationCreatesRelaySchemaIdempotently(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("pmrelay.003 migration records = %d, want 1", count)
+	}
+}
+
+
+func TestMigration003BackfillsExistingAudienceMembership(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := (migration001{}).Up(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, userID := range []int64{300, 100, 200} {
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO assistant_audience_members (user_id, sources, first_seen_at, last_seen_at)
+			VALUES (?, ?, ?, ?)
+		`, userID, int64(AudienceSourceStart), now, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := (migration003{}).Up(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	if err := (migration003{}).VerifySchema(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := NewSQLiteRepository(db)
+	snapshot, err := repo.SnapshotAudience(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Total != 3 || snapshot.MaxSequence != 3 {
+		t.Fatalf("backfilled snapshot=%+v, want total=3 max_sequence=3", snapshot)
+	}
+	page, next, err := repo.ListAudienceSnapshot(ctx, snapshot, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next != 3 || len(page) != 3 ||
+		page[0].UserID != 100 || page[1].UserID != 200 || page[2].UserID != 300 {
+		t.Fatalf("backfilled page=%+v next=%d", page, next)
 	}
 }
