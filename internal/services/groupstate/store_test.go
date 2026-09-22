@@ -332,7 +332,6 @@ func TestSQLiteStoreRejectsOversizedValueAndInvalidLimits(t *testing.T) {
 	}
 }
 
-
 func TestSQLiteSchemaRejectsOversizedValueBypass(t *testing.T) {
 	store, db := newTestStore(t, Limits{MaxEntries: 8, CleanupBatch: 2})
 	if store == nil {
