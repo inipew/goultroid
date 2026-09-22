@@ -44,9 +44,13 @@ func (p *Plugin) Commands() []core.Command {
 			Aliases:     []string{"groupinfo", "cinfo"},
 			Description: "Display detailed metadata of the current group",
 			Usage:       ".chatinfo",
-			Category:    "Info",
-			Permission:  core.PermissionEveryone,
-			GroupOnly:   true,
+			Category:   "Info",
+			Permission: core.PermissionEveryone,
+			Invocation: core.InvocationPolicy{
+				Userbot:   core.InvocationSelfOrSudo,
+				Assistant: core.InvocationAnyone,
+			},
+			GroupOnly: true,
 			GroupAuthorization: core.GroupAuthorizationRequirement{
 				Level: core.GroupAuthorizationAdministrator,
 			},
