@@ -9,29 +9,29 @@ import (
 )
 
 const (
-	TokenVersion    = "d1"
-	DefaultTTL      = 24 * time.Hour
-	MaxTTL          = 30 * 24 * time.Hour
-	MaxPayloadBytes  = 1024
-	MaxKindBytes     = 32
-	MaxRetainedTokens = 4096
+	TokenVersion       = "d1"
+	DefaultTTL         = 24 * time.Hour
+	MaxTTL             = 30 * 24 * time.Hour
+	MaxPayloadBytes    = 1024
+	MaxKindBytes       = 32
+	MaxRetainedTokens  = 4096
 	ClaimLeaseTTL      = 5 * time.Minute
 )
 
 var (
-	ErrInvalidToken       = errors.New("assistant/deeplink: invalid token")
-	ErrTokenNotFound      = errors.New("assistant/deeplink: token not found")
-	ErrTokenExpired       = errors.New("assistant/deeplink: token expired")
-	ErrTokenConsumed      = errors.New("assistant/deeplink: token already consumed")
-	ErrTokenClaimed       = errors.New("assistant/deeplink: token execution already in progress")
-	ErrTokenUnauthorized  = errors.New("assistant/deeplink: token actor mismatch")
-	ErrTokenExists        = errors.New("assistant/deeplink: token already exists")
-	ErrInvalidKind        = errors.New("assistant/deeplink: invalid kind")
-	ErrInvalidPayload     = errors.New("assistant/deeplink: invalid payload")
-	ErrProviderRegistered = errors.New("assistant/deeplink: provider already registered")
+	ErrInvalidToken        = errors.New("assistant/deeplink: invalid token")
+	ErrTokenNotFound       = errors.New("assistant/deeplink: token not found")
+	ErrTokenExpired        = errors.New("assistant/deeplink: token expired")
+	ErrTokenConsumed       = errors.New("assistant/deeplink: token already consumed")
+	ErrTokenClaimed        = errors.New("assistant/deeplink: token execution already in progress")
+	ErrTokenUnauthorized   = errors.New("assistant/deeplink: token actor mismatch")
+	ErrTokenExists         = errors.New("assistant/deeplink: token already exists")
+	ErrInvalidKind         = errors.New("assistant/deeplink: invalid kind")
+	ErrInvalidPayload      = errors.New("assistant/deeplink: invalid payload")
+	ErrProviderRegistered  = errors.New("assistant/deeplink: provider already registered")
 	ErrProviderUnavailable = errors.New("assistant/deeplink: provider unavailable")
-	ErrProviderStale      = errors.New("assistant/deeplink: provider registration is stale")
-	ErrCapacity           = errors.New("assistant/deeplink: token capacity exhausted")
+	ErrProviderStale       = errors.New("assistant/deeplink: provider registration is stale")
+	ErrCapacity            = errors.New("assistant/deeplink: token capacity exhausted")
 )
 
 // Token is immutable durable routing state. Payload is opaque to the router.
@@ -65,9 +65,9 @@ type PreparedTarget struct {
 
 // Delivery is the transport-neutral subset needed by deep-link providers.
 type Delivery struct {
-	ActorID  int64
-	ChatID   int64
-	SendText func(string) error
+	ActorID   int64
+	ChatID    int64
+	SendText  func(string) error
 	SendMedia func(mediaType, path, caption string) error
 }
 
