@@ -30,9 +30,11 @@ type relayMessageIngress interface {
 type RelayIngress struct {
 	relay            pmrelay.Ingress
 	tasks            tasks.Client
-	visitorTransport pmrelay.VisitorTransport
-	ownerTransport   pmrelay.OwnerTransport
-	seq              atomic.Uint64
+	visitorTransport  pmrelay.VisitorTransport
+	ownerTransport    pmrelay.OwnerTransport
+	guidanceTransport forceSubGuidanceTransport
+	forceSub          forceSubMembershipGate
+	seq               atomic.Uint64
 }
 
 func NewRelayIngress(relay pmrelay.Ingress, taskClient tasks.Client, visitorTransport ...pmrelay.VisitorTransport) *RelayIngress {
@@ -41,15 +43,24 @@ func NewRelayIngress(relay pmrelay.Ingress, taskClient tasks.Client, visitorTran
 	}
 	var transport pmrelay.VisitorTransport
 	var ownerTransport pmrelay.OwnerTransport
+	var guidanceTransport forceSubGuidanceTransport
 	if len(visitorTransport) > 0 {
 		transport = visitorTransport[0]
 		ownerTransport, _ = transport.(pmrelay.OwnerTransport)
+		guidanceTransport, _ = transport.(forceSubGuidanceTransport)
 	}
 	return &RelayIngress{
-		relay:            relay,
-		tasks:            taskClient,
-		visitorTransport: transport,
-		ownerTransport:   ownerTransport,
+		relay:             relay,
+		tasks:             taskClient,
+		visitorTransport:  transport,
+		ownerTransport:    ownerTransport,
+		guidanceTransport: guidanceTransport,
+	}
+}
+
+func (r *RelayIngress) setForceSubGate(gate forceSubMembershipGate) {
+	if r != nil {
+		r.forceSub = gate
 	}
 }
 
@@ -181,7 +192,85 @@ func (r *RelayIngress) tryVisitor(ctx context.Context, message pmrelay.IngressMe
 	if err != nil || !handled {
 		return handled, err
 	}
+	if r.forceSub != nil {
+		decision, gateErr := r.forceSub.Check(ctx, prepared.VisitorUserID())
+		if gateErr != nil || !decision.Allowed {
+			guidanceErr := r.submitForceSubGuidance(ctx, prepared.VisitorUserID(), decision)
+			switch {
+			case gateErr != nil && guidanceErr != nil:
+				return true, errors.Join(gateErr, guidanceErr)
+			case gateErr != nil:
+				return true, gateErr
+			default:
+				return true, guidanceErr
+			}
+		}
+	}
 	return true, r.submit(ctx, prepared)
+}
+
+func (r *RelayIngress) submitForceSubGuidance(
+	ctx context.Context,
+	visitorID int64,
+	decision forceSubDecision,
+) error {
+	if r == nil || r.tasks == nil || r.guidanceTransport == nil || visitorID <= 0 {
+		return pmrelay.ErrUnavailable
+	}
+	sequence := r.seq.Add(1)
+	_, err := r.tasks.Submit(ctx, tasks.WorkSpec{
+		ID: tasks.TaskID(fmt.Sprintf("asst:relay:forcesub-guidance:%d:%d", visitorID, sequence)),
+		Scope:            relayScope,
+		QuotaOwner:       tasks.OwnerID(fmt.Sprintf("pmrelay:guidance:%d", visitorID)),
+		Pool:             tasks.PoolID("interactive"),
+		Class:            tasks.PriorityInteractive,
+		OrderingKey:      fmt.Sprintf("pmrelay:thread:%d", visitorID),
+		ExecutionTimeout: 10 * time.Second,
+		Handler: func(taskCtx context.Context) error {
+			return r.guidanceTransport.SendForceSubGuidance(
+				taskCtx,
+				visitorID,
+				decision.Config,
+				decision.VerificationBlocked,
+			)
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("assistant force-sub guidance admission failed: %w", err)
+	}
+	return nil
+}
+
+type forceSubGuardedVisitorTransport struct {
+	base     pmrelay.VisitorTransport
+	gate     forceSubMembershipGate
+	guidance forceSubGuidanceTransport
+	visitor  int64
+}
+
+func (t forceSubGuardedVisitorTransport) ForwardVisitor(
+	ctx context.Context,
+	request pmrelay.VisitorForward,
+) (int, error) {
+	if t.base == nil || t.gate == nil {
+		return 0, pmrelay.ErrUnavailable
+	}
+	decision, err := t.gate.Check(ctx, t.visitor)
+	if err != nil || !decision.Allowed {
+		if t.guidance != nil {
+			_ = t.guidance.SendForceSubGuidance(
+				ctx,
+				t.visitor,
+				decision.Config,
+				decision.VerificationBlocked,
+			)
+		}
+		if err != nil {
+			return 0, err
+		}
+		return 0, pmrelay.ErrForceSubRequired
+	}
+	return t.base.ForwardVisitor(ctx, request)
 }
 
 func (r *RelayIngress) submit(ctx context.Context, prepared pmrelay.PreparedIngress) error {
@@ -219,7 +308,31 @@ func (r *RelayIngress) submit(ctx context.Context, prepared pmrelay.PreparedIngr
 				if !ok {
 					return pmrelay.ErrUnavailable
 				}
-				return executor.ExecuteVisitor(taskCtx, prepared, r.visitorTransport)
+				transport := r.visitorTransport
+				if r.forceSub != nil {
+					decision, gateErr := r.forceSub.Check(taskCtx, visitorID)
+					if gateErr != nil || !decision.Allowed {
+						if r.guidanceTransport != nil {
+							_ = r.guidanceTransport.SendForceSubGuidance(
+								taskCtx,
+								visitorID,
+								decision.Config,
+								decision.VerificationBlocked,
+							)
+						}
+						if gateErr != nil {
+							return gateErr
+						}
+						return pmrelay.ErrForceSubRequired
+					}
+					transport = forceSubGuardedVisitorTransport{
+						base:     r.visitorTransport,
+						gate:     r.forceSub,
+						guidance: r.guidanceTransport,
+						visitor:  visitorID,
+					}
+				}
+				return executor.ExecuteVisitor(taskCtx, prepared, transport)
 			}
 			if prepared.Direction() == pmrelay.DeliveryOwnerToVisitor && r.ownerTransport != nil {
 				executor, ok := r.relay.(pmrelay.OwnerExecutor)
