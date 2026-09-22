@@ -1,0 +1,127 @@
+package pmrelay
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/inipew/goultroid/internal/database"
+)
+
+type MigrationProvider struct{}
+
+type migration001 struct{}
+
+var _ database.SchemaInvariantMigration = migration001{}
+
+var schemaStatements = []string{
+	`CREATE TABLE IF NOT EXISTS pm_relay_mappings (
+		owner_chat_id INTEGER NOT NULL CHECK (owner_chat_id > 0),
+		owner_message_id INTEGER NOT NULL CHECK (owner_message_id > 0),
+		visitor_user_id INTEGER NOT NULL CHECK (visitor_user_id > 0),
+		visitor_message_id INTEGER NOT NULL CHECK (visitor_message_id > 0),
+		created_at DATETIME NOT NULL,
+		expires_at DATETIME NOT NULL,
+		PRIMARY KEY (owner_chat_id, owner_message_id),
+		UNIQUE (visitor_user_id, visitor_message_id)
+	);`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_pm_relay_mappings_visitor_message
+		ON pm_relay_mappings(visitor_user_id, visitor_message_id);`,
+	`CREATE INDEX IF NOT EXISTS idx_pm_relay_mappings_expiry
+		ON pm_relay_mappings(expires_at, owner_chat_id, owner_message_id);`,
+	`CREATE TABLE IF NOT EXISTS pm_relay_deliveries (
+		direction TEXT NOT NULL CHECK (direction IN ('visitor_to_owner', 'owner_to_visitor')),
+		source_chat_id INTEGER NOT NULL CHECK (source_chat_id > 0),
+		source_message_id INTEGER NOT NULL CHECK (source_message_id > 0),
+		target_chat_id INTEGER NOT NULL CHECK (target_chat_id > 0),
+		random_id INTEGER NOT NULL CHECK (random_id <> 0),
+		target_message_id INTEGER NOT NULL DEFAULT 0 CHECK (target_message_id >= 0),
+		claim_id TEXT NOT NULL DEFAULT '',
+		claim_expires_at DATETIME,
+		attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+		last_error TEXT NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL,
+		delivered_at DATETIME,
+		expires_at DATETIME NOT NULL,
+		PRIMARY KEY (direction, source_chat_id, source_message_id),
+		CHECK ((claim_id = '' AND claim_expires_at IS NULL) OR (claim_id <> '' AND claim_expires_at IS NOT NULL)),
+		CHECK ((delivered_at IS NULL AND target_message_id = 0) OR (delivered_at IS NOT NULL AND target_message_id > 0)),
+		CHECK (delivered_at IS NULL OR (claim_id = '' AND claim_expires_at IS NULL))
+	);`,
+	`CREATE INDEX IF NOT EXISTS idx_pm_relay_deliveries_claim
+		ON pm_relay_deliveries(delivered_at, claim_expires_at, direction, source_chat_id, source_message_id);`,
+	`CREATE INDEX IF NOT EXISTS idx_pm_relay_deliveries_expiry
+		ON pm_relay_deliveries(expires_at, direction, source_chat_id, source_message_id);`,
+	`CREATE TABLE IF NOT EXISTS assistant_audience_members (
+		user_id INTEGER PRIMARY KEY CHECK (user_id > 0),
+		sources INTEGER NOT NULL CHECK (sources > 0),
+		first_seen_at DATETIME NOT NULL,
+		last_seen_at DATETIME NOT NULL
+	);`,
+	`CREATE INDEX IF NOT EXISTS idx_assistant_audience_last_seen
+		ON assistant_audience_members(last_seen_at, user_id);`,
+}
+
+func (MigrationProvider) Migrations() []database.Migration {
+	return []database.Migration{migration001{}}
+}
+
+func (migration001) ID() string { return "pmrelay.001" }
+
+func (migration001) Description() string {
+	return "Durable Assistant PM relay mappings, delivery intents, and audience registry"
+}
+
+func (migration001) Checksum() string {
+	return "810644be799770d3c05d21a61950682233ad10b18d566eec962436aab494beef"
+}
+
+func (migration001) LegacyVersions() []int { return nil }
+
+func (migration001) Up(ctx context.Context, tx database.SQLExecutor) error {
+	for _, statement := range schemaStatements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (migration001) VerifySchema(ctx context.Context, tx database.SQLExecutor) error {
+	for _, table := range []string{
+		"pm_relay_mappings",
+		"pm_relay_deliveries",
+		"assistant_audience_members",
+	} {
+		var count int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT count(*) FROM sqlite_master
+			WHERE type = 'table' AND name = ?
+		`, table).Scan(&count); err != nil {
+			return err
+		}
+		if count != 1 {
+			return fmt.Errorf("required table %s does not exist", table)
+		}
+	}
+
+	for _, index := range []string{
+		"idx_pm_relay_mappings_visitor_message",
+		"idx_pm_relay_mappings_expiry",
+		"idx_pm_relay_deliveries_claim",
+		"idx_pm_relay_deliveries_expiry",
+		"idx_assistant_audience_last_seen",
+	} {
+		var count int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT count(*) FROM sqlite_master
+			WHERE type = 'index' AND name = ?
+		`, index).Scan(&count); err != nil {
+			return err
+		}
+		if count != 1 {
+			return fmt.Errorf("required index %s does not exist", index)
+		}
+	}
+	return nil
+}
