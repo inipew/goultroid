@@ -59,6 +59,7 @@ type Resolved struct {
 	FeatureID     string
 	InteractionID string
 	Scope         tasks.ScopeIdentity
+	pattern       string
 	token         uint64
 }
 
@@ -242,7 +243,7 @@ func resolvedEntry(entry registryEntry, args []string) Resolved {
 	return Resolved{
 		Handler: entry.handler, Args: append([]string(nil), args...),
 		FeatureID: entry.featureID, InteractionID: entry.interactionID,
-		Scope: entry.scope, token: entry.token,
+		Scope: entry.scope, pattern: entry.pattern, token: entry.token,
 	}
 }
 
@@ -251,7 +252,10 @@ func (r *Registry) IsCurrent(resolved Resolved) bool {
 	if r == nil || resolved.Handler == nil || resolved.token == 0 {
 		return false
 	}
-	pattern := strings.ToLower(strings.TrimSpace(resolved.Handler.Pattern()))
+	pattern := resolved.pattern
+	if pattern == "" {
+		pattern = strings.ToLower(strings.TrimSpace(resolved.Handler.Pattern()))
+	}
 	r.mu.RLock()
 	current, ok := r.handlers[pattern]
 	r.mu.RUnlock()
