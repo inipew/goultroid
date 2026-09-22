@@ -9,6 +9,7 @@ import (
 	"github.com/inipew/goultroid/internal/interaction"
 	interactionorchestration "github.com/inipew/goultroid/internal/interaction/orchestration"
 	"github.com/inipew/goultroid/internal/presentation"
+	inlineservice "github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -16,6 +17,76 @@ import (
 // Command entries remain canonical in Plugin.Commands and are projected by the manager.
 type FeatureSpecProvider interface {
 	FeatureSpec() feature.Spec
+}
+
+// InlineFeatureProvider optionally binds implementations to InteractionInline
+// declarations. Query patterns remain handler concerns, while identity/policy
+// come from the canonical FeatureSpec.
+type InlineFeatureProvider interface {
+	InlineBindings() []inlineservice.Binding
+}
+
+type featureInlineHandler struct {
+	interaction feature.Interaction
+	delegate    inlineservice.InlineHandler
+}
+
+func (h *featureInlineHandler) Pattern() string { return h.delegate.Pattern() }
+
+func (h *featureInlineHandler) Description() string {
+	if description := strings.TrimSpace(h.interaction.Description); description != "" {
+		return description
+	}
+	return h.delegate.Description()
+}
+
+func (h *featureInlineHandler) HandleInline(ctx *inlineservice.InlineContext) ([]inlineservice.InlineResult, error) {
+	return h.delegate.HandleInline(ctx)
+}
+
+func (h *featureInlineHandler) Matcher() inlineservice.InlineMatcher {
+	if extended, ok := h.delegate.(inlineservice.InlineHandlerV2); ok {
+		return extended.Matcher()
+	}
+	return nil
+}
+
+func (h *featureInlineHandler) AccessPolicy() inlineservice.InlineAccessPolicy {
+	policy := h.interaction.Policy
+	access := policy.Invocation.Inline
+	result := inlineservice.InlineAccessPolicy{}
+	if policy.Permission == core.PermissionOwner || access == core.InvocationSelfOnly {
+		result.OwnerOnly = true
+	} else if policy.Permission == core.PermissionSudo || access == core.InvocationSelfOrSudo {
+		result.SudoOnly = true
+	}
+	if policy.PrivateOnly {
+		result.AllowedChatTypes = []inlineservice.InlineChatType{inlineservice.ChatTypePrivate}
+	} else if policy.GroupOnly {
+		result.AllowedChatTypes = []inlineservice.InlineChatType{
+			inlineservice.ChatTypeGroup,
+			inlineservice.ChatTypeSupergroup,
+		}
+	}
+	return result
+}
+
+func (h *featureInlineHandler) CachePolicy() inlineservice.CachePolicy {
+	if extended, ok := h.delegate.(inlineservice.InlineHandlerV2); ok {
+		return extended.CachePolicy()
+	}
+	return inlineservice.CacheGlobal
+}
+
+func (h *featureInlineHandler) HandleInlineV2(ctx *inlineservice.InlineContext) (*inlineservice.InlineResponse, error) {
+	if extended, ok := h.delegate.(inlineservice.InlineHandlerV2); ok {
+		return extended.HandleInlineV2(ctx)
+	}
+	results, err := h.delegate.HandleInline(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &inlineservice.InlineResponse{Results: results, Cache: h.CachePolicy()}, nil
 }
 
 type featureRegistry struct {
@@ -109,7 +180,71 @@ func (m *Manager) registerFeatureContract(name string, p Plugin, scope tasks.Sco
 	if err != nil {
 		return nil, err
 	}
+
+	var inlineRegistrations []*inlineservice.Registration
+	if provider, ok := p.(InlineFeatureProvider); ok {
+		m.mu.RLock()
+		inlineRegistry := m.inlineRegistry
+		m.mu.RUnlock()
+		bindings := provider.InlineBindings()
+		if len(bindings) > 0 && inlineRegistry == nil {
+			registration.Close()
+			return nil, fmt.Errorf("feature %s declares inline implementations but inline registry is unavailable", name)
+		}
+		declared := make(map[string]feature.Interaction)
+		for _, interaction := range spec.Interactions {
+			if interaction.Kind == feature.InteractionInline {
+				declared[strings.ToLower(strings.TrimSpace(interaction.ID))] = interaction
+			}
+		}
+		seen := make(map[string]struct{}, len(bindings))
+		for _, binding := range bindings {
+			interactionID := strings.ToLower(strings.TrimSpace(binding.InteractionID))
+			interaction, exists := declared[interactionID]
+			if !exists {
+				for _, inlineRegistration := range inlineRegistrations {
+					inlineRegistration.Close()
+				}
+				registration.Close()
+				return nil, fmt.Errorf("feature %s inline binding %q has no InteractionInline declaration", name, binding.InteractionID)
+			}
+			if _, duplicate := seen[interactionID]; duplicate {
+				for _, inlineRegistration := range inlineRegistrations {
+					inlineRegistration.Close()
+				}
+				registration.Close()
+				return nil, fmt.Errorf("feature %s inline binding %q is duplicated", name, interactionID)
+			}
+			if binding.Handler == nil {
+				for _, inlineRegistration := range inlineRegistrations {
+					inlineRegistration.Close()
+				}
+				registration.Close()
+				return nil, fmt.Errorf("feature %s inline binding %q has nil handler", name, interactionID)
+			}
+			seen[interactionID] = struct{}{}
+			owned, registerErr := inlineRegistry.RegisterOwned(
+				name,
+				interactionID,
+				scope,
+				&featureInlineHandler{interaction: interaction, delegate: binding.Handler},
+				binding.Priority,
+			)
+			if registerErr != nil {
+				for _, inlineRegistration := range inlineRegistrations {
+					inlineRegistration.Close()
+				}
+				registration.Close()
+				return nil, fmt.Errorf("feature %s inline binding %q: %w", name, interactionID, registerErr)
+			}
+			inlineRegistrations = append(inlineRegistrations, owned)
+		}
+	}
+
 	return func() {
+		for _, inlineRegistration := range inlineRegistrations {
+			inlineRegistration.Close()
+		}
 		registration.Close()
 		if registry.actions != nil {
 			registry.actions.UnregisterScope(scope)
