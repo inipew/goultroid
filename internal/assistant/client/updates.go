@@ -468,6 +468,8 @@ func assistantGroupServiceUser(userID int64, entities tg.Entities) core.GroupSer
 	}
 }
 
+const maxAssistantGroupServiceUsers = 64
+
 func handleAssistantGroupService(
 	ctx context.Context,
 	message *tg.MessageService,
@@ -494,17 +496,31 @@ func handleAssistantGroupService(
 	if deps.SelfID != nil {
 		selfID = deps.SelfID()
 	}
-	seen := make(map[int64]struct{}, len(userIDs))
-	users := make([]core.GroupServiceUser, 0, len(userIDs))
+	capacity := len(userIDs)
+	if capacity > maxAssistantGroupServiceUsers {
+		capacity = maxAssistantGroupServiceUsers
+	}
+	seen := make(map[int64]struct{}, capacity)
+	users := make([]core.GroupServiceUser, 0, capacity)
+	userCount := 0
 	for _, userID := range userIDs {
 		if userID <= 0 || userID == selfID {
 			continue
 		}
-		if _, duplicate := seen[userID]; duplicate {
+		if len(users) < maxAssistantGroupServiceUsers {
+			if _, duplicate := seen[userID]; duplicate {
+				continue
+			}
+			seen[userID] = struct{}{}
+			users = append(users, assistantGroupServiceUser(userID, entities))
+			userCount++
 			continue
 		}
-		seen[userID] = struct{}{}
-		users = append(users, assistantGroupServiceUser(userID, entities))
+		// Once the materialized set reaches its hard cap, keep only an
+		// allocation-free reported count. Telegram service actions normally
+		// contain unique IDs; duplicates beyond the cap may only overstate the
+		// display count, never expand retained event state.
+		userCount++
 	}
 	if len(users) == 0 {
 		return
@@ -522,6 +538,7 @@ func handleAssistantGroupService(
 		Peer:      peer,
 		MessageID: message.ID,
 		ActorID:   actorID,
+		UserCount: userCount,
 		Users:     users,
 	})
 }
