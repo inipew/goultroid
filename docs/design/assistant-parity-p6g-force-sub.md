@@ -206,7 +206,7 @@ capacity = 2048 visitors
 cooldown = 1 minute per visitor/config revision
 ~~~
 
-The cooldown is claimed inside admitted execution, not before TaskEngine submission. Rejected guidance work therefore does not suppress a later valid attempt. While cooldown is active, later denied updates skip creating another guidance WorkSpec.
+Before an admitted guidance task sends anything, it re-runs the force-sub gate. If the owner disabled force-sub, changed channel/revision, or the visitor is now allowed, the stale guidance is suppressed. The cooldown is then claimed inside admitted execution, not before TaskEngine submission. Rejected guidance work therefore does not suppress a later valid attempt. While cooldown is active, later denied updates skip creating another guidance WorkSpec.
 
 No background cleanup is needed; expiry is lazy and bounded eviction is O(1).
 
@@ -274,6 +274,7 @@ P6-G tests freeze:
 - bounded 2048 membership cache;
 - bounded 32 concurrent verification chains;
 - bounded/revision-aware one-minute guidance cooldown;
+- guidance policy is revalidated again before the join message is sent;
 - no invalid guidance when durable policy read fails;
 - non-members skip normal relay admission;
 - admitted relay work rechecks force-sub;
