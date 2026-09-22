@@ -41,6 +41,7 @@ type forceSubAPIStub struct {
 	accessHash       int64
 	member           map[int64]bool
 	resolveErr       error
+	resolveNil       bool
 	participantErr   error
 }
 
@@ -53,6 +54,9 @@ func (a *forceSubAPIStub) ContactsResolveUsername(
 	a.resolveCalls++
 	if a.resolveErr != nil {
 		return nil, a.resolveErr
+	}
+	if a.resolveNil {
+		return nil, nil
 	}
 	channelID := a.channelID
 	if channelID == 0 {
@@ -273,5 +277,62 @@ func TestParticipantMembershipClassification(t *testing.T) {
 	}
 	if !participantIsMember(&tg.ChannelParticipantCreator{}) {
 		t.Fatal("creator should count as member")
+	}
+}
+
+
+func TestForceSubGateNilResolveResponseFailsClosedWithoutPanic(t *testing.T) {
+	policy := &forceSubPolicyStub{config: enabledForceSubConfig(2, pmrelay.ForceSubFailClosed)}
+	api := &forceSubAPIStub{
+		member:     map[int64]bool{42: true},
+		resolveNil: true,
+	}
+	gate := newTelegramForceSubGate(policy, api, forceSubResolver(42), zap.NewNop())
+	decision, err := gate.Check(context.Background(), 42)
+	if !decision.VerificationBlocked || decision.Allowed ||
+		!errors.Is(err, pmrelay.ErrForceSubVerify) {
+		t.Fatalf("nil resolve decision=%+v err=%v", decision, err)
+	}
+}
+
+func TestForceSubGuidanceCooldownIsBoundedAndRevisionAware(t *testing.T) {
+	policy := &forceSubPolicyStub{config: enabledForceSubConfig(2, pmrelay.ForceSubFailClosed)}
+	api := &forceSubAPIStub{member: map[int64]bool{}}
+	gate := newTelegramForceSubGate(policy, api, forceSubResolver(1, 2, 3), zap.NewNop())
+	gate.cacheCapacity = 2
+	gate.guidance = make(map[int64]*list.Element, 2)
+	base := time.Now().UTC()
+	now := base
+	gate.now = func() time.Time { return now }
+
+	if !gate.ClaimGuidance(1, 2) {
+		t.Fatal("first guidance claim rejected")
+	}
+	if gate.ClaimGuidance(1, 2) {
+		t.Fatal("duplicate guidance claim was not throttled")
+	}
+	if !gate.ClaimGuidance(2, 2) {
+		t.Fatal("second visitor guidance claim rejected")
+	}
+	if !gate.ClaimGuidance(3, 2) {
+		t.Fatal("bounded guidance cache failed to evict oldest entry")
+	}
+	if len(gate.guidance) != 2 {
+		t.Fatalf("guidance cache size=%d, want 2", len(gate.guidance))
+	}
+
+	// User 1 was evicted by capacity and may be guided again.
+	if !gate.ClaimGuidance(1, 2) {
+		t.Fatal("evicted guidance entry remained throttled")
+	}
+
+	now = base.Add(forceSubGuidanceCooldown + time.Second)
+	if !gate.ClaimGuidance(1, 2) {
+		t.Fatal("expired guidance cooldown remained throttled")
+	}
+
+	// A config revision change invalidates all guidance throttles immediately.
+	if !gate.ClaimGuidance(1, 3) {
+		t.Fatal("config revision did not invalidate guidance cooldown")
 	}
 }
