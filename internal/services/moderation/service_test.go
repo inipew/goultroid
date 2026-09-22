@@ -2,6 +2,7 @@ package moderation
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -12,14 +13,15 @@ import (
 
 type recordingModService struct {
 	core.MockTelegramServicer
-	muted  bool
-	kicked bool
-	banned bool
+	muted   bool
+	kicked  bool
+	banned  bool
+	muteErr error
 }
 
 func (r *recordingModService) MuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, untilDate int) error {
 	r.muted = true
-	return nil
+	return r.muteErr
 }
 
 func (r *recordingModService) KickUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
@@ -197,5 +199,25 @@ func TestP7IWarnWithServiceUsesCallerTransport(t *testing.T) {
 	}
 	if defaultSvc.muted || defaultSvc.kicked || defaultSvc.banned {
 		t.Fatalf("P7-I warning escaped through default userbot transport: %+v", defaultSvc)
+	}
+}
+
+
+func TestP7IFailedThresholdRetryDoesNotGrowWarnings(t *testing.T) {
+	mockSvc := &recordingModService{muteErr: errors.New("telegram unavailable")}
+	service := newTestService(t, mockSvc)
+	ctx := context.Background()
+	peer := &tg.InputPeerChat{ChatID: 100}
+	user := &tg.InputPeerUser{UserID: 200}
+
+	for attempt := 0; attempt < 6; attempt++ {
+		_, _ = service.Warn(ctx, peer, user, 100, 200, "retry", 999, 3, ActionMute)
+	}
+	count, err := service.GetWarningCount(ctx, 100, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 {
+		t.Fatalf("failed enforcement warning count=%d, want bounded threshold 3", count)
 	}
 }
