@@ -484,6 +484,16 @@ func TestPreparedBindingRejectsDeleteRecreateABA(t *testing.T) {
 	if recreated.Incarnation == "" || recreated.Incarnation == original.Incarnation {
 		t.Fatalf("binding incarnation was not renewed: original=%q recreated=%q", original.Incarnation, recreated.Incarnation)
 	}
+	if _, err := service.SetEnabled(
+		ctx,
+		original.Surface,
+		original.Alias,
+		false,
+		original.Revision,
+		original.Incarnation,
+	); !errors.Is(err, ErrBindingConflict) {
+		t.Fatalf("stale mutation after delete+recreate error = %v, want %v", err, ErrBindingConflict)
+	}
 	if _, err := service.ResolvePrepared(ctx, prepared); !errors.Is(err, ErrBindingStale) {
 		t.Fatalf("ResolvePrepared(delete+recreate) error = %v, want %v", err, ErrBindingStale)
 	}
