@@ -1,8 +1,10 @@
 package command_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -12,16 +14,21 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/execution"
+	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/services/savedresponse"
+	"github.com/inipew/goultroid/internal/services/storage"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
 
 type fakeInteraction struct {
-	lastSentText   string
-	lastSentMarkup tg.ReplyMarkupClass
-	lastEditedText string
-	lastDeletedIDs []int
+	lastSentText    string
+	lastSentMarkup  tg.ReplyMarkupClass
+	lastEditedText  string
+	lastDeletedIDs  []int
+	lastMediaType   string
+	lastMediaPath   string
+	lastMediaCaption string
 }
 
 func (f *fakeInteraction) Answer(ctx context.Context, queryID int64, text string, alert bool) error {
@@ -49,6 +56,12 @@ func (f *fakeInteraction) SendMessage(ctx context.Context, peer tg.InputPeerClas
 	return &tg.Message{ID: 100}, nil
 }
 func (f *fakeInteraction) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
+	if _, err := os.Stat(filePath); err != nil {
+		return nil, err
+	}
+	f.lastMediaType = mediaType
+	f.lastMediaPath = filePath
+	f.lastMediaCaption = caption
 	return &tg.Message{ID: 101}, nil
 }
 
@@ -632,6 +645,65 @@ func TestCommandRouter_DynamicSavedResponseReservesMediaResource(t *testing.T) {
 	}
 	if taskClient.last.Scope != scope {
 		t.Fatalf("media task scope = %+v, want %+v", taskClient.last.Scope, scope)
+	}
+	if len(taskClient.last.Resources) != 1 ||
+		taskClient.last.Resources[0].Name != "media" ||
+		taskClient.last.Resources[0].Amount != 1 {
+		t.Fatalf("media task resources = %+v, want media:1", taskClient.last.Resources)
+	}
+}
+
+func TestCommandRouter_DynamicSavedResponseDeliversMedia(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStorage()
+	asset, err := store.Put(ctx, bytes.NewBufferString("image-bytes"), storage.Metadata{
+		Name: "photo.jpg",
+		MIME: "image/jpeg",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := savedresponse.Response{
+		Text: "caption {id}",
+		Media: &savedresponse.MediaRef{
+			AssetID:   asset.ID,
+			MediaType: "photo",
+			Name:      asset.Name,
+			MIMEType:  asset.MIME,
+		},
+	}
+	bindings, _, _, _ := newSavedResponseCommandFixture(t, "photo-live", response)
+
+	files, err := filesystem.NewManager(t.TempDir(), "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseService := savedresponse.NewService(store)
+	responseService.SetFiles(files.ForOwner("assistant-savedresponse-test"))
+
+	taskClient := &immediateTaskClient{}
+	r := command.NewRouter(zap.NewNop())
+	r.SetSavedResponseBindings(bindings, savedresponse.NewResponseDelivery(responseService))
+	r.SetTasks(taskClient)
+
+	fake := &fakeInteraction{}
+	if err := r.Dispatch(
+		ctx,
+		12345,
+		&tg.InputPeerUser{UserID: 12345},
+		"/photo-live",
+		fake,
+	); err != nil {
+		t.Fatalf("Dispatch(media) error = %v", err)
+	}
+	if fake.lastMediaType != "photo" || fake.lastMediaCaption != "caption 12345" {
+		t.Fatalf("media delivery = type %q caption %q", fake.lastMediaType, fake.lastMediaCaption)
+	}
+	if fake.lastMediaPath == "" {
+		t.Fatal("media delivery did not receive a materialized path")
+	}
+	if _, err := os.Stat(fake.lastMediaPath); !os.IsNotExist(err) {
+		t.Fatalf("materialized media path was not cleaned up: stat error = %v", err)
 	}
 	if len(taskClient.last.Resources) != 1 ||
 		taskClient.last.Resources[0].Name != "media" ||
