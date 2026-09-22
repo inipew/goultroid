@@ -3,7 +3,11 @@ package filters
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/gotd/td/tg"
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/services/savedresponse"
@@ -81,5 +85,155 @@ func TestP7IStaleFilterCompileCannotClearActiveInterest(t *testing.T) {
 	}
 	if !p.MessageHookInterested(10) {
 		t.Fatal("stale filter compilation cleared active chat interest")
+	}
+}
+
+
+type p7iBlockingFilterRepo struct {
+	mu          sync.Mutex
+	filters     map[int64]map[string]Filter
+	saveEnter   chan struct{}
+	saveRelease chan struct{}
+}
+
+func (r *p7iBlockingFilterRepo) SaveFilter(
+	ctx context.Context,
+	chatID int64,
+	keyword string,
+	response savedresponse.Response,
+) error {
+	select {
+	case r.saveEnter <- struct{}{}:
+	default:
+	}
+	select {
+	case <-r.saveRelease:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	r.mu.Lock()
+	if r.filters[chatID] == nil {
+		r.filters[chatID] = make(map[string]Filter)
+	}
+	r.filters[chatID][keyword] = Filter{
+		ChatID:   chatID,
+		Keyword:  keyword,
+		Response: response,
+	}
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *p7iBlockingFilterRepo) GetFilter(
+	_ context.Context,
+	chatID int64,
+	keyword string,
+) (*Filter, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	filter, ok := r.filters[chatID][keyword]
+	if !ok {
+		return nil, nil
+	}
+	copy := filter
+	return &copy, nil
+}
+
+func (r *p7iBlockingFilterRepo) ListFilters(
+	_ context.Context,
+	chatID int64,
+) ([]Filter, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	items := make([]Filter, 0, len(r.filters[chatID]))
+	for _, filter := range r.filters[chatID] {
+		items = append(items, filter)
+	}
+	return items, nil
+}
+
+func (r *p7iBlockingFilterRepo) DeleteFilter(
+	_ context.Context,
+	chatID int64,
+	keyword string,
+) error {
+	r.mu.Lock()
+	delete(r.filters[chatID], keyword)
+	r.mu.Unlock()
+	return nil
+}
+
+func TestP7IFilterMutationLinearizesWithMatcher(t *testing.T) {
+	repo := &p7iBlockingFilterRepo{
+		filters:     make(map[int64]map[string]Filter),
+		saveEnter:   make(chan struct{}, 1),
+		saveRelease: make(chan struct{}),
+	}
+	svc := &mockService{}
+	p := New(repo, func() core.TelegramServicer { return svc })
+	p.featureState.ReplaceLoaded(nil)
+
+	commandCtx := &core.Context{
+		Ctx:    context.Background(),
+		Chat:   &core.Chat{ID: 77, Type: "supergroup"},
+		PeerID: &tg.InputPeerChat{ChatID: 77},
+		Svc:    svc,
+	}
+	mutationDone := make(chan error, 1)
+	go func() {
+		mutationDone <- p.saveFilterResponse(
+			commandCtx,
+			77,
+			"hello",
+			savedresponse.NewText("world"),
+		)
+	}()
+
+	select {
+	case <-repo.saveEnter:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for durable filter mutation")
+	}
+
+	type matchResult struct {
+		matched bool
+		err     error
+	}
+	matchDone := make(chan matchResult, 1)
+	go func() {
+		_, matched, err := p.matchAssistantRule(context.Background(), &core.MessageEnvelope{
+			ChatID: 77,
+			Text:   "hello",
+		})
+		matchDone <- matchResult{matched: matched, err: err}
+	}()
+
+	select {
+	case got := <-matchDone:
+		t.Fatalf("filter matcher escaped mutation fence before commit: %+v", got)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(repo.saveRelease)
+	if err := <-mutationDone; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-matchDone:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if !got.matched {
+			t.Fatal("filter matcher did not observe newly committed rule")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("filter matcher remained blocked after mutation commit")
+	}
+
+	if !p.MessageHookInterested(77) {
+		t.Fatal("committed filter mutation did not publish chat interest")
+	}
+	if p.AssistantRuleRevision(77) == 0 {
+		t.Fatal("committed filter mutation did not advance chat generation")
 	}
 }
