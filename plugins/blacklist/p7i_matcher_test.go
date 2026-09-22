@@ -88,7 +88,6 @@ func TestP7IBlacklistRevisionIsChatScoped(t *testing.T) {
 	}
 }
 
-
 type p7iChurningBlacklistRepo struct {
 	plugin *Plugin
 }
@@ -118,7 +117,6 @@ func TestP7IStaleBlacklistCompileCannotClearActiveInterest(t *testing.T) {
 		t.Fatal("stale blacklist compilation cleared active chat interest")
 	}
 }
-
 
 type p7iBlacklistMemoryRepo struct {
 	words []string
@@ -221,7 +219,6 @@ func TestP7IBlacklistRemovalWaitsForInFlightDeletion(t *testing.T) {
 		t.Fatal("final blacklist removal did not clear chat interest")
 	}
 }
-
 
 type p7iBlockingBlacklistRepo struct {
 	mu        sync.Mutex
