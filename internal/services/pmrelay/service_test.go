@@ -28,8 +28,8 @@ func TestPrepareVisitorRequiresEnabledPrivateVisitor(t *testing.T) {
 		prepared.TargetChatID() != 7 {
 		t.Fatalf("prepared visitor ingress = %+v", prepared)
 	}
-	if err := service.ExecutePrepared(context.Background(), prepared); err != nil {
-		t.Fatalf("ExecutePrepared(visitor) error = %v", err)
+	if err := service.RevalidatePrepared(context.Background(), prepared); err != nil {
+		t.Fatalf("RevalidatePrepared(visitor) error = %v", err)
 	}
 
 	if _, handled, err := service.PrepareVisitor(context.Background(), IngressMessage{
@@ -57,13 +57,13 @@ func TestPreparedVisitorFailsClosedAcrossPolicyRevision(t *testing.T) {
 	}
 
 	service.SetEnabled(false)
-	if err := service.ExecutePrepared(context.Background(), prepared); !errors.Is(err, ErrDisabled) {
-		t.Fatalf("ExecutePrepared(disabled) error=%v, want %v", err, ErrDisabled)
+	if err := service.RevalidatePrepared(context.Background(), prepared); !errors.Is(err, ErrDisabled) {
+		t.Fatalf("RevalidatePrepared(disabled) error=%v, want %v", err, ErrDisabled)
 	}
 
 	service.SetEnabled(true)
-	if err := service.ExecutePrepared(context.Background(), prepared); !errors.Is(err, ErrPreparedStale) {
-		t.Fatalf("ExecutePrepared(re-enabled old prepare) error=%v, want %v", err, ErrPreparedStale)
+	if err := service.RevalidatePrepared(context.Background(), prepared); !errors.Is(err, ErrPreparedStale) {
+		t.Fatalf("RevalidatePrepared(re-enabled old prepare) error=%v, want %v", err, ErrPreparedStale)
 	}
 }
 
@@ -96,8 +96,8 @@ func TestOwnerReplyPrepareAndRevalidationUsesDurableMapping(t *testing.T) {
 		prepared.SourceMessageID() != 101 {
 		t.Fatalf("prepared owner reply = %+v", prepared)
 	}
-	if err := service.ExecutePrepared(ctx, prepared); err != nil {
-		t.Fatalf("ExecutePrepared(owner reply) error=%v", err)
+	if err := service.RevalidatePrepared(ctx, prepared); err != nil {
+		t.Fatalf("RevalidatePrepared(owner reply) error=%v", err)
 	}
 
 	if _, handled, err := service.PrepareOwnerReply(ctx, IngressMessage{
@@ -109,8 +109,8 @@ func TestOwnerReplyPrepareAndRevalidationUsesDurableMapping(t *testing.T) {
 	if pruned, err := repo.PruneExpiredMappings(ctx, base.Add(2*time.Hour), 64); err != nil || pruned != 1 {
 		t.Fatalf("PruneExpiredMappings()=%d err=%v", pruned, err)
 	}
-	if err := service.ExecutePrepared(ctx, prepared); !errors.Is(err, ErrPreparedStale) {
-		t.Fatalf("ExecutePrepared(after mapping prune) error=%v, want %v", err, ErrPreparedStale)
+	if err := service.RevalidatePrepared(ctx, prepared); !errors.Is(err, ErrPreparedStale) {
+		t.Fatalf("RevalidatePrepared(after mapping prune) error=%v, want %v", err, ErrPreparedStale)
 	}
 }
 
@@ -138,8 +138,8 @@ func TestPreparedOwnerReplyExpiresWhileQueued(t *testing.T) {
 	}
 
 	service.now = func() time.Time { return base.Add(2 * time.Hour) }
-	if err := service.ExecutePrepared(ctx, prepared); !errors.Is(err, ErrPreparedStale) {
-		t.Fatalf("ExecutePrepared(after mapping TTL) error=%v, want %v", err, ErrPreparedStale)
+	if err := service.RevalidatePrepared(ctx, prepared); !errors.Is(err, ErrPreparedStale) {
+		t.Fatalf("RevalidatePrepared(after mapping TTL) error=%v, want %v", err, ErrPreparedStale)
 	}
 }
 
