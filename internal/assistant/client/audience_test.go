@@ -108,3 +108,69 @@ func TestAssistantAudienceTouchMergesEntryPointSources(t *testing.T) {
 		t.Fatalf("snapshot total=%d, want 1", snapshot.Total)
 	}
 }
+
+
+func TestAssistantAudienceTargetSourceAccountsForRetentionPruneAfterSnapshot(t *testing.T) {
+	ctx := context.Background()
+	registry, repo := newAssistantAudienceRegistry(t)
+	old := time.Now().UTC().Add(-2 * time.Hour)
+	recent := time.Now().UTC()
+	if _, err := registry.TouchAudience(ctx, pmrelay.AudienceTouch{
+		UserID: 11, Source: pmrelay.AudienceSourceStart, SeenAt: old,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.TouchAudience(ctx, pmrelay.AudienceTouch{
+		UserID: 22, Source: pmrelay.AudienceSourceStart, SeenAt: recent,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	source, err := newAssistantAudienceTargetSource(ctx, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.Total() != 2 {
+		t.Fatalf("snapshot total=%d, want 2", source.Total())
+	}
+
+	pruned, err := repo.PruneAudienceBefore(ctx, recent.Add(-time.Hour), 64)
+	if err != nil || pruned != 1 {
+		t.Fatalf("PruneAudienceBefore()=%d err=%v, want 1 nil", pruned, err)
+	}
+
+	var (
+		actualUsers []int64
+		nilTargets int
+	)
+	for {
+		page, done, err := source.Next(ctx, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, target := range page {
+			if target == nil {
+				nilTargets++
+				continue
+			}
+			user, ok := target.(*tg.InputPeerUser)
+			if !ok {
+				t.Fatalf("target type=%T", target)
+			}
+			actualUsers = append(actualUsers, user.UserID)
+		}
+		if done {
+			break
+		}
+	}
+	if len(actualUsers) != 1 || actualUsers[0] != 22 {
+		t.Fatalf("remaining snapshot users=%v, want [22]", actualUsers)
+	}
+	if nilTargets != 1 {
+		t.Fatalf("pruned snapshot placeholders=%d, want 1", nilTargets)
+	}
+	if len(actualUsers)+nilTargets != source.Total() {
+		t.Fatalf("snapshot accounting users=%d missing=%d total=%d",
+			len(actualUsers), nilTargets, source.Total())
+	}
+}
