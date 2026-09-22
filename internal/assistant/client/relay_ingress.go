@@ -220,6 +220,10 @@ func (r *RelayIngress) submitForceSubGuidance(
 	if r == nil || r.tasks == nil || r.guidanceTransport == nil || visitorID <= 0 {
 		return pmrelay.ErrUnavailable
 	}
+	if limiter, ok := r.forceSub.(forceSubGuidanceLimiter); ok &&
+		!limiter.GuidanceDue(visitorID, decision.Config.Revision) {
+		return nil
+	}
 	sequence := r.seq.Add(1)
 	_, err := r.tasks.Submit(ctx, tasks.WorkSpec{
 		ID: tasks.TaskID(fmt.Sprintf("asst:relay:forcesub-guidance:%d:%d", visitorID, sequence)),
