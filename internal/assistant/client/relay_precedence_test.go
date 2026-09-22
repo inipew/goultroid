@@ -27,7 +27,7 @@ func (precedenceResolver) ReResolve(_ context.Context, input tg.InputPeerClass) 
 	return input, nil
 }
 func (precedenceResolver) InvalidatePeer(tg.InputPeerClass) {}
-func (precedenceResolver) Cache() peer.Cache              { return nil }
+func (precedenceResolver) Cache() peer.Cache { return nil }
 
 type precedenceTextIngress struct {
 	calls   int
