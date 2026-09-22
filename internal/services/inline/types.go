@@ -14,6 +14,9 @@ var (
 	ErrNoMatchingHandler = errors.New("no matching inline handler found")
 	// ErrEmptyResults indicates the handler produced zero inline results.
 	ErrEmptyResults = errors.New("no inline results available")
+	// ErrStaleHandler indicates a prepared feature-owned handler crossed a
+	// disable/reload generation boundary before execution.
+	ErrStaleHandler = errors.New("inline handler registration is stale")
 )
 
 // InlineResultType defines Telegram inline result types.
