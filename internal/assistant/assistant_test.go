@@ -8,6 +8,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/assistant"
 	"github.com/inipew/goultroid/internal/assistant/client"
+	"github.com/inipew/goultroid/internal/runtime"
 	"go.uber.org/zap"
 )
 
@@ -52,5 +53,23 @@ func TestNewBotClient_Alias(t *testing.T) {
 	app := assistant.NewBotClient(1234, "hash", "token", zap.NewNop())
 	if app == nil {
 		t.Fatalf("expected non-nil AssistantApp from NewBotClient alias")
+	}
+}
+
+
+func TestAssistantAppP6HLifecycleDeclaresDrainDependenciesAndQuiesce(t *testing.T) {
+	app := assistant.NewApp(1234, "hash", "token", zap.NewNop())
+
+	deps := make(map[string]bool)
+	for _, dep := range app.Dependencies() {
+		deps[dep] = true
+	}
+	for _, required := range []string{"dispatcher", "settings", "taskengine"} {
+		if !deps[required] {
+			t.Fatalf("assistant missing lifecycle dependency %q: %v", required, app.Dependencies())
+		}
+	}
+	if _, ok := any(app).(runtime.Quiescer); !ok {
+		t.Fatal("AssistantApp does not expose runtime.Quiescer")
 	}
 }
