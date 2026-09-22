@@ -178,3 +178,108 @@ func TestPreparedActionRejectsRevisionChangedWhileQueued(t *testing.T) {
 		t.Fatal("stale revision executed handler")
 	}
 }
+
+
+func TestPreparedActionCarriesDynamicExecutionAdmission(t *testing.T) {
+	runtime, _, featureScope := testRuntime(t, Config{})
+	dispatcher := NewDispatcher(runtime)
+	providerScope := tasks.ScopeIdentity{Owner: "plugin:provider", Generation: 9}
+	handlerCalled := false
+
+	registration, err := dispatcher.RegisterPrepared(
+		featureScope,
+		"demo",
+		"next",
+		func(_ context.Context, action Action) (ActionAdmission, error) {
+			if string(action.Session.State) != "lease" {
+				t.Fatalf("preparer state=%q, want lease", action.Session.State)
+			}
+			return ActionAdmission{
+				Scope:     providerScope,
+				Resources: []tasks.ResourceRequirement{{Name: "media", Amount: 1}},
+				State:     "prepared-provider",
+			}, nil
+		},
+		func(_ context.Context, action Action) error {
+			handlerCalled = true
+			if got, _ := action.Preparation.(string); got != "prepared-provider" {
+				t.Fatalf("handler preparation=%v", action.Preparation)
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("RegisterPrepared() error=%v", err)
+	}
+	defer registration.Close()
+
+	created, err := runtime.Create(context.Background(), CreateRequest{
+		FeatureID: "demo",
+		Binding:   Binding{ActorID: 21},
+		State:     []byte("lease"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := runtime.CallbackData(context.Background(), created.Session.ID, "next")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := dispatcher.Prepare(context.Background(), data, Binding{ActorID: 21})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Scope() != providerScope {
+		t.Fatalf("prepared scope=%+v, want %+v", prepared.Scope(), providerScope)
+	}
+	resources := prepared.Resources()
+	if len(resources) != 1 || resources[0].Name != "media" || resources[0].Amount != 1 {
+		t.Fatalf("prepared resources=%+v, want media:1", resources)
+	}
+	if err := prepared.Dispatch(context.Background()); err != nil {
+		t.Fatalf("Dispatch() error=%v", err)
+	}
+	if !handlerCalled {
+		t.Fatal("prepared handler was not called")
+	}
+}
+
+func TestPreparedActionPreparerFailureStopsBeforeHandler(t *testing.T) {
+	runtime, _, scope := testRuntime(t, Config{})
+	dispatcher := NewDispatcher(runtime)
+	want := errors.New("provider unavailable")
+	handlerCalled := false
+	registration, err := dispatcher.RegisterPrepared(
+		scope,
+		"demo",
+		"next",
+		func(context.Context, Action) (ActionAdmission, error) {
+			return ActionAdmission{}, want
+		},
+		func(context.Context, Action) error {
+			handlerCalled = true
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registration.Close()
+
+	created, err := runtime.Create(context.Background(), CreateRequest{
+		FeatureID: "demo", Binding: Binding{ActorID: 22},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := runtime.CallbackData(context.Background(), created.Session.ID, "next")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dispatcher.Prepare(context.Background(), data, Binding{ActorID: 22}); !errors.Is(err, want) {
+		t.Fatalf("Prepare() error=%v, want %v", err, want)
+	}
+	if handlerCalled {
+		t.Fatal("handler ran despite prepare failure")
+	}
+}
