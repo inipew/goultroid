@@ -26,7 +26,7 @@ client.RelayIngress
     | Prepare (read-only)
     | TaskEngine admission
     v
-pmrelay.Service.ExecutePrepared
+pmrelay.Service.RevalidatePrepared
     |
     | revalidate policy/mapping
     v
@@ -125,11 +125,11 @@ Both visitor-to-owner and owner-to-visitor directions use the same visitor
 ordering key. That preserves conversation order without globally serializing
 independent visitors.
 
-A TaskEngine submission failure never calls `ExecutePrepared`.
+A TaskEngine submission failure never calls `RevalidatePrepared`.
 
 ## Revalidation fence
 
-Prepare captures the current relay policy revision. `ExecutePrepared` rejects
+Prepare captures the current relay policy revision. `RevalidatePrepared` rejects
 work when:
 
 - relay was disabled after prepare;
@@ -172,7 +172,7 @@ The disabled default is intentional. P6-B must not consume CPU/DB capacity for
 ordinary PM traffic while it still has no delivery plane.
 
 P6-C is responsible for defining when relay becomes active and for attaching
-durable visitor-to-owner delivery after `ExecutePrepared` revalidation.
+durable visitor-to-owner delivery after `RevalidatePrepared` revalidation.
 
 ## Acceptance gates
 
