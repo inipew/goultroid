@@ -231,12 +231,17 @@ func (p *Plugin) submitContinuation(
 		admissionCtx = context.Background()
 	}
 	resources = append([]tasks.ResourceRequirement(nil), resources...)
+	var queueDeadline time.Time
+	if timeout > 0 {
+		queueDeadline = time.Now().Add(timeout)
+	}
 	_, err := p.tasks.Submit(admissionCtx, tasks.WorkSpec{
 		ID:               p.nextTaskID(kind, chatID),
 		QuotaOwner:       tasks.OwnerID(fmt.Sprintf("telegram:chat:%d", chatID)),
 		Pool:             pool,
 		Class:            tasks.PriorityNormal,
 		OrderingKey:      core.GroupOrderingKey(chatID, topicID),
+		QueueDeadline:    queueDeadline,
 		ExecutionTimeout: timeout,
 		Resources:        resources,
 		Handler: func(taskCtx context.Context) error {
