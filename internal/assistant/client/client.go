@@ -273,10 +273,11 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 		PluginScopeResolver: pluginScopeResolver, InteractionIngress: ingress,
 		RelayIngress:     relayIngress,
 		AudienceRegistry: audience,
-		GroupEvents:    groupEvents,
-		GroupRules:     groupRules,
-		GroupRuleChats: newManagedGroupRuleChatClassifier(managedAPI),
-		SelfID:         c.selfID,
+		GroupEvents:       groupEvents,
+		GroupRules:        groupRules,
+		GroupRuleChats:    newManagedGroupRuleChatClassifier(managedAPI),
+		GlobalPrivileged: c.isGlobalPrivileged,
+		SelfID:            c.selfID,
 	}
 	RegisterUpdateHandlers(&dispatcher, deps)
 
