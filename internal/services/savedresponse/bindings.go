@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 type Surface string
@@ -28,6 +30,7 @@ var (
 	ErrBindingNotFound = errors.New("saved response: surface binding not found")
 	ErrBindingConflict = errors.New("saved response: surface binding revision conflict")
 	ErrBindingDisabled = errors.New("saved response: surface binding disabled")
+	ErrBindingStale    = errors.New("saved response: prepared surface binding is stale")
 )
 
 // SurfaceBinding exposes one provider-owned SavedResponse on a stable external
@@ -94,6 +97,16 @@ type ResolvedBinding struct {
 	Binding  SurfaceBinding
 	Resolved Resolved
 }
+
+// PreparedBinding freezes routing identity and provider generation before
+// TaskEngine admission without retaining a response payload across queue wait.
+type PreparedBinding struct {
+	binding SurfaceBinding
+	scope   tasks.ScopeIdentity
+}
+
+func (p PreparedBinding) Binding() SurfaceBinding { return p.binding }
+func (p PreparedBinding) Scope() tasks.ScopeIdentity { return p.scope }
 
 // BindingService joins durable surface metadata to the lifecycle-aware provider
 // registry. Consumers must carry Resolved.Scope into TaskEngine admission so a
@@ -176,6 +189,56 @@ func (s *BindingService) Delete(ctx context.Context, surface Surface, alias stri
 		return ErrResolverUnavailable
 	}
 	return s.bindings.DeleteBinding(ctx, surface, alias, expectedRevision)
+}
+
+func (s *BindingService) Prepare(ctx context.Context, surface Surface, alias string) (PreparedBinding, error) {
+	if s == nil || s.bindings == nil || s.responses == nil {
+		return PreparedBinding{}, ErrResolverUnavailable
+	}
+	surface, alias, err := normalizeSurfaceAlias(surface, alias)
+	if err != nil {
+		return PreparedBinding{}, err
+	}
+	binding, err := s.bindings.GetBinding(ctx, surface, alias)
+	if err != nil {
+		return PreparedBinding{}, err
+	}
+	if binding == nil {
+		return PreparedBinding{}, ErrBindingNotFound
+	}
+	if !binding.Enabled {
+		return PreparedBinding{}, ErrBindingDisabled
+	}
+	resolved, err := s.responses.Resolve(ctx, binding.Reference)
+	if err != nil {
+		return PreparedBinding{}, err
+	}
+	return PreparedBinding{binding: *binding, scope: resolved.Scope}, nil
+}
+
+// ResolvePrepared revalidates the exact durable binding revision and provider
+// generation after queueing, then loads the latest authoritative response.
+func (s *BindingService) ResolvePrepared(ctx context.Context, prepared PreparedBinding) (ResolvedBinding, error) {
+	if s == nil || s.bindings == nil || s.responses == nil || prepared.scope.IsZero() {
+		return ResolvedBinding{}, ErrResolverUnavailable
+	}
+	current, err := s.bindings.GetBinding(ctx, prepared.binding.Surface, prepared.binding.Alias)
+	if err != nil {
+		return ResolvedBinding{}, err
+	}
+	if current == nil || !current.Enabled ||
+		current.Revision != prepared.binding.Revision ||
+		current.Reference != prepared.binding.Reference {
+		return ResolvedBinding{}, ErrBindingStale
+	}
+	resolved, err := s.responses.Resolve(ctx, current.Reference)
+	if err != nil {
+		return ResolvedBinding{}, err
+	}
+	if resolved.Scope != prepared.scope {
+		return ResolvedBinding{}, ErrBindingStale
+	}
+	return ResolvedBinding{Binding: *current, Resolved: resolved}, nil
 }
 
 func (s *BindingService) Resolve(ctx context.Context, surface Surface, alias string) (ResolvedBinding, error) {
