@@ -90,9 +90,9 @@ type SurfaceBindingRepository interface {
 	CreateBinding(context.Context, SurfaceBinding) (SurfaceBinding, error)
 	GetBinding(context.Context, Surface, string) (*SurfaceBinding, error)
 	ListBindings(context.Context, Surface, bool, int) ([]SurfaceBinding, error)
-	UpdateBinding(context.Context, Surface, string, Reference, bool, uint64) (SurfaceBinding, error)
-	SetBindingEnabled(context.Context, Surface, string, bool, uint64) (SurfaceBinding, error)
-	DeleteBinding(context.Context, Surface, string, uint64) error
+	UpdateBinding(context.Context, Surface, string, Reference, bool, uint64, string) (SurfaceBinding, error)
+	SetBindingEnabled(context.Context, Surface, string, bool, uint64, string) (SurfaceBinding, error)
+	DeleteBinding(context.Context, Surface, string, uint64, string) error
 }
 
 type ResolvedBinding struct {
@@ -159,6 +159,7 @@ func (s *BindingService) Update(
 	reference Reference,
 	enabled bool,
 	expectedRevision uint64,
+	expectedIncarnation string,
 ) (SurfaceBinding, error) {
 	if s == nil || s.bindings == nil || s.responses == nil {
 		return SurfaceBinding{}, ErrResolverUnavailable
@@ -179,7 +180,10 @@ func (s *BindingService) Update(
 	if current == nil {
 		return SurfaceBinding{}, ErrBindingNotFound
 	}
-	if expectedRevision == 0 || current.Revision != expectedRevision {
+	expectedIncarnation = strings.TrimSpace(expectedIncarnation)
+	if expectedRevision == 0 || expectedIncarnation == "" ||
+		current.Revision != expectedRevision ||
+		current.Incarnation != expectedIncarnation {
 		return SurfaceBinding{}, ErrBindingConflict
 	}
 	if _, err := s.responses.Resolve(ctx, normalized.Reference); err != nil {
@@ -192,10 +196,18 @@ func (s *BindingService) Update(
 		normalized.Reference,
 		normalized.Enabled,
 		expectedRevision,
+		expectedIncarnation,
 	)
 }
 
-func (s *BindingService) SetEnabled(ctx context.Context, surface Surface, alias string, enabled bool, expectedRevision uint64) (SurfaceBinding, error) {
+func (s *BindingService) SetEnabled(
+	ctx context.Context,
+	surface Surface,
+	alias string,
+	enabled bool,
+	expectedRevision uint64,
+	expectedIncarnation string,
+) (SurfaceBinding, error) {
 	if s == nil || s.bindings == nil {
 		return SurfaceBinding{}, ErrResolverUnavailable
 	}
@@ -206,7 +218,10 @@ func (s *BindingService) SetEnabled(ctx context.Context, surface Surface, alias 
 	if current == nil {
 		return SurfaceBinding{}, ErrBindingNotFound
 	}
-	if expectedRevision == 0 || current.Revision != expectedRevision {
+	expectedIncarnation = strings.TrimSpace(expectedIncarnation)
+	if expectedRevision == 0 || expectedIncarnation == "" ||
+		current.Revision != expectedRevision ||
+		current.Incarnation != expectedIncarnation {
 		return SurfaceBinding{}, ErrBindingConflict
 	}
 	if enabled {
@@ -217,14 +232,31 @@ func (s *BindingService) SetEnabled(ctx context.Context, surface Surface, alias 
 			return SurfaceBinding{}, err
 		}
 	}
-	return s.bindings.SetBindingEnabled(ctx, current.Surface, current.Alias, enabled, expectedRevision)
+	return s.bindings.SetBindingEnabled(
+		ctx,
+		current.Surface,
+		current.Alias,
+		enabled,
+		expectedRevision,
+		expectedIncarnation,
+	)
 }
 
-func (s *BindingService) Delete(ctx context.Context, surface Surface, alias string, expectedRevision uint64) error {
+func (s *BindingService) Delete(
+	ctx context.Context,
+	surface Surface,
+	alias string,
+	expectedRevision uint64,
+	expectedIncarnation string,
+) error {
 	if s == nil || s.bindings == nil {
 		return ErrResolverUnavailable
 	}
-	return s.bindings.DeleteBinding(ctx, surface, alias, expectedRevision)
+	expectedIncarnation = strings.TrimSpace(expectedIncarnation)
+	if expectedRevision == 0 || expectedIncarnation == "" {
+		return ErrBindingConflict
+	}
+	return s.bindings.DeleteBinding(ctx, surface, alias, expectedRevision, expectedIncarnation)
 }
 
 func (s *BindingService) Prepare(ctx context.Context, surface Surface, alias string) (PreparedBinding, error) {
