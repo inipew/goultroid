@@ -17,6 +17,7 @@ import (
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 	"github.com/inipew/goultroid/internal/interaction/orchestration"
 	"github.com/inipew/goultroid/internal/presentation"
+	"github.com/inipew/goultroid/internal/services/pmrelay"
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/tasks"
@@ -35,16 +36,25 @@ func (c *AssistantClient) dispatchStart(ctx *command.Context) error {
 	}
 	err := c.openShell(ctx)
 	if err == nil {
+		c.touchAudience(ctx.Ctx, ctx.SenderID, pmrelay.AudienceSourceStart)
 		return nil
 	}
 	if errors.Is(err, ErrShellAdmission) {
-		return c.dispatchPublicStart(ctx)
+		err = c.dispatchPublicStart(ctx)
+		if err == nil && ctx != nil {
+			c.touchAudience(ctx.Ctx, ctx.SenderID, pmrelay.AudienceSourceStart)
+		}
+		return err
 	}
 	if !shouldUseStartRecovery(err) {
 		return err
 	}
 	c.logger.Debug("assistant: using static /start recovery response")
-	return command.NewUnavailableStartHandler()(ctx)
+	err = command.NewUnavailableStartHandler()(ctx)
+	if err == nil && ctx != nil {
+		c.touchAudience(ctx.Ctx, ctx.SenderID, pmrelay.AudienceSourceStart)
+	}
+	return err
 }
 
 const assistantDeepLinkExecutionTimeout = 2 * time.Minute
@@ -136,6 +146,7 @@ func (c *AssistantClient) dispatchDeepLink(cmdCtx *command.Context, rawToken str
 		return waitErr
 	}
 	if result.IsSuccess() {
+		c.touchAudience(cmdCtx.Ctx, cmdCtx.SenderID, pmrelay.AudienceSourceDeepLink)
 		return nil
 	}
 	if result.Failure.Message != "" {
