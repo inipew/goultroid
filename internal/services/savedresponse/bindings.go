@@ -88,7 +88,7 @@ type SurfaceBindingRepository interface {
 	CreateBinding(context.Context, SurfaceBinding) (SurfaceBinding, error)
 	GetBinding(context.Context, Surface, string) (*SurfaceBinding, error)
 	ListBindings(context.Context, Surface, bool, int) ([]SurfaceBinding, error)
-	UpdateBinding(context.Context, SurfaceBinding, uint64) (SurfaceBinding, error)
+	UpdateBinding(context.Context, Surface, string, Reference, bool, uint64) (SurfaceBinding, error)
 	SetBindingEnabled(context.Context, Surface, string, bool, uint64) (SurfaceBinding, error)
 	DeleteBinding(context.Context, Surface, string, uint64) error
 }
@@ -105,7 +105,7 @@ type PreparedBinding struct {
 	scope   tasks.ScopeIdentity
 }
 
-func (p PreparedBinding) Binding() SurfaceBinding { return p.binding }
+func (p PreparedBinding) Binding() SurfaceBinding   { return p.binding }
 func (p PreparedBinding) Scope() tasks.ScopeIdentity { return p.scope }
 
 // BindingService joins durable surface metadata to the lifecycle-aware provider
@@ -148,18 +148,37 @@ func (s *BindingService) List(ctx context.Context, surface Surface, includeDisab
 	return s.bindings.ListBindings(ctx, surface, includeDisabled, limit)
 }
 
-func (s *BindingService) Update(ctx context.Context, binding SurfaceBinding, expectedRevision uint64) (SurfaceBinding, error) {
+func (s *BindingService) Update(
+	ctx context.Context,
+	surface Surface,
+	alias string,
+	reference Reference,
+	enabled bool,
+	expectedRevision uint64,
+) (SurfaceBinding, error) {
 	if s == nil || s.bindings == nil || s.responses == nil {
 		return SurfaceBinding{}, ErrResolverUnavailable
 	}
-	normalized, err := binding.Normalize()
+	normalized, err := (SurfaceBinding{
+		Surface:   surface,
+		Alias:     alias,
+		Reference: reference,
+		Enabled:   enabled,
+	}).Normalize()
 	if err != nil {
 		return SurfaceBinding{}, err
 	}
 	if _, err := s.responses.Resolve(ctx, normalized.Reference); err != nil {
 		return SurfaceBinding{}, err
 	}
-	return s.bindings.UpdateBinding(ctx, normalized, expectedRevision)
+	return s.bindings.UpdateBinding(
+		ctx,
+		normalized.Surface,
+		normalized.Alias,
+		normalized.Reference,
+		normalized.Enabled,
+		expectedRevision,
+	)
 }
 
 func (s *BindingService) SetEnabled(ctx context.Context, surface Surface, alias string, enabled bool, expectedRevision uint64) (SurfaceBinding, error) {
