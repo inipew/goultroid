@@ -225,3 +225,48 @@ func TestControllerWeightedOwners(t *testing.T) {
 		t.Fatal(counts)
 	}
 }
+
+
+func TestP7LAdmissionIndependentTopicsDoNotHeadOfLineBlock(t *testing.T) {
+	ctrl := NewController(map[tasks.PoolID]PoolConfig{
+		"interactive": {BacklogLimit: 16, PayloadBudget: 1 << 20},
+	})
+	ctrl.SetOwnerLimits("telegram:chat:77", OwnerLimits{
+		MaxWaiting: 16, MaxActive: 4, Weight: 1, MaxPayloadByte: 1 << 20,
+	})
+
+	specA1 := tasks.WorkSpec{
+		ID: "a1", QuotaOwner: "telegram:chat:77", Pool: "interactive",
+		Class: tasks.PriorityInteractive, OrderingKey: "chat:77:topic:10",
+	}
+	specA2 := tasks.WorkSpec{
+		ID: "a2", QuotaOwner: "telegram:chat:77", Pool: "interactive",
+		Class: tasks.PriorityInteractive, OrderingKey: "chat:77:topic:10",
+	}
+	specB1 := tasks.WorkSpec{
+		ID: "b1", QuotaOwner: "telegram:chat:77", Pool: "interactive",
+		Class: tasks.PriorityInteractive, OrderingKey: "chat:77:topic:20",
+	}
+	ctrl.Enqueue(&QueueEntry{Spec: specA1})
+	ctrl.Enqueue(&QueueEntry{Spec: specA2})
+	ctrl.Enqueue(&QueueEntry{Spec: specB1})
+
+	first, err := ctrl.SelectCandidate("interactive")
+	if err != nil || first.Spec.ID != "a1" {
+		t.Fatalf("first candidate=%v err=%v, want a1", first, err)
+	}
+
+	second, err := ctrl.SelectCandidate("interactive")
+	if err != nil || second.Spec.ID != "b1" {
+		t.Fatalf("second candidate=%v err=%v, want b1 while topic 10 is locked", second, err)
+	}
+	if second.Spec.OrderingKey == first.Spec.OrderingKey {
+		t.Fatalf("independent topic reused locked ordering key %q", second.Spec.OrderingKey)
+	}
+
+	ctrl.OnTaskTerminal(first.Spec)
+	third, err := ctrl.SelectCandidate("interactive")
+	if err != nil || third.Spec.ID != "a2" {
+		t.Fatalf("third candidate=%v err=%v, want a2 after topic 10 unlock", third, err)
+	}
+}
