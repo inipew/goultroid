@@ -204,19 +204,34 @@ func isPrivateOrUnsupported(ctx *core.Context) bool {
 }
 
 func formatAdminError(action string, err error) string {
-	if errors.Is(err, core.ErrPermissionDenied) || strings.Contains(err.Error(), "CHAT_ADMIN_REQUIRED") {
-		return fmt.Sprintf("❌ Gagal %s: Anda/bot harus menjadi Admin dengan hak yang sesuai di grup ini.", action)
+	switch {
+	case errors.Is(err, core.ErrGroupMutationTargetProtected):
+		return fmt.Sprintf("❌ Gagal %s: target dilindungi oleh hierarki admin Telegram.", action)
+	case errors.Is(err, core.ErrGroupMutationDenied),
+		errors.Is(err, core.ErrGroupAuthorizationDenied),
+		errors.Is(err, core.ErrPermissionDenied):
+		return fmt.Sprintf("❌ Gagal %s: Anda atau Assistant bot tidak memiliki hak Telegram yang diperlukan.", action)
+	case errors.Is(err, core.ErrUnsupported):
+		return "⚠️ Operasi ini tidak didukung untuk tipe grup tersebut."
+	case errors.Is(err, core.ErrUnavailable),
+		errors.Is(err, core.ErrResourceLimit),
+		errors.Is(err, core.ErrRateLimited),
+		errors.Is(err, core.ErrTimeout):
+		return core.UserMessage(err)
 	}
-	if strings.Contains(err.Error(), "USER_ADMIN_INVALID") {
-		return fmt.Sprintf("❌ Gagal %s: Target adalah admin atau memiliki hak lebih tinggi.", action)
+
+	upper := strings.ToUpper(err.Error())
+	switch {
+	case strings.Contains(upper, "USER_ADMIN_INVALID"),
+		strings.Contains(upper, "USER_CREATOR"):
+		return fmt.Sprintf("❌ Gagal %s: target dilindungi oleh hierarki admin Telegram.", action)
+	case strings.Contains(upper, "ADMINS_TOO_MUCH"):
+		return "❌ Gagal: batas maksimal admin di grup ini telah tercapai."
+	case strings.Contains(upper, "CHAT_ADMIN_REQUIRED"),
+		strings.Contains(upper, "RIGHT_FORBIDDEN"):
+		return fmt.Sprintf("❌ Gagal %s: hak admin Telegram yang diperlukan tidak tersedia.", action)
 	}
-	if strings.Contains(err.Error(), "ADMINS_TOO_MUCH") {
-		return "❌ Gagal: Batas maksimal admin di grup ini telah tercapai."
-	}
-	if errors.Is(err, core.ErrUnsupported) {
-		return "⚠️ Fitur ini hanya didukung pada Supergroup."
-	}
-	return fmt.Sprintf("❌ Failed to %s: %v", action, err)
+	return "❌ Operasi admin gagal. Silakan coba lagi."
 }
 
 func (p *Plugin) handleBan(ctx *core.Context) error {
