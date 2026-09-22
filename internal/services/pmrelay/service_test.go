@@ -218,8 +218,9 @@ func TestExecuteVisitorPersistsDeliveryMappingAndAudience(t *testing.T) {
 	ctx := context.Background()
 	repo, _ := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8})
 	base := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	now := base
 	service := NewService(repo, 7)
-	service.now = func() time.Time { return base }
+	service.now = func() time.Time { return now }
 	service.randomID = func() (int64, error) { return 777, nil }
 	service.claimID = func() (string, error) { return "claim-a", nil }
 	service.SetEnabled(true)
@@ -264,6 +265,7 @@ func TestExecuteVisitorPersistsDeliveryMappingAndAudience(t *testing.T) {
 
 	// A duplicate admitted occurrence heals/finalizes durable state but must not
 	// perform a second Telegram forward once delivery is committed.
+	now = base.Add(24 * time.Hour)
 	service.randomID = func() (int64, error) { return 999, nil }
 	service.claimID = func() (string, error) { return "claim-b", nil }
 	if err := service.ExecuteVisitor(ctx, prepared, transport); err != nil {
@@ -271,6 +273,44 @@ func TestExecuteVisitorPersistsDeliveryMappingAndAudience(t *testing.T) {
 	}
 	if transport.calls != 1 {
 		t.Fatalf("duplicate completed delivery forwarded again: calls=%d", transport.calls)
+	}
+	audience, err = repo.GetAudience(ctx, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !audience.LastSeenAt.Equal(base) {
+		t.Fatalf("duplicate recovery extended audience activity: last_seen=%v want %v", audience.LastSeenAt, base)
+	}
+}
+
+func TestExecuteVisitorExpiredCompletedDeliveryDoesNotResurrectMapping(t *testing.T) {
+	ctx := context.Background()
+	repo, _ := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8})
+	base := time.Date(2026, 9, 22, 12, 15, 0, 0, time.UTC)
+	now := base
+	service := NewService(repo, 7)
+	service.now = func() time.Time { return now }
+	service.randomID = func() (int64, error) { return 777, nil }
+	service.claimID = func() (string, error) { return "claim-a", nil }
+	service.SetEnabled(true)
+	prepared := prepareVisitorForDelivery(t, service)
+	transport := &visitorTransportStub{message: 501}
+
+	if err := service.ExecuteVisitor(ctx, prepared, transport); err != nil {
+		t.Fatal(err)
+	}
+	if pruned, err := repo.PruneExpiredMappings(ctx, base.Add(DefaultMappingRetention+time.Second), 64); err != nil || pruned != 1 {
+		t.Fatalf("PruneExpiredMappings()=%d err=%v", pruned, err)
+	}
+	now = base.Add(DefaultDeliveryRetention + time.Second)
+	if err := service.ExecuteVisitor(ctx, prepared, transport); !errors.Is(err, ErrDeliveryExpired) {
+		t.Fatalf("ExecuteVisitor(expired completed) error=%v, want %v", err, ErrDeliveryExpired)
+	}
+	if transport.calls != 1 {
+		t.Fatalf("expired completed delivery forwarded again: calls=%d", transport.calls)
+	}
+	if _, err := repo.GetMapping(ctx, 7, 501); !errors.Is(err, ErrMappingNotFound) {
+		t.Fatalf("expired delivery resurrected mapping: %v", err)
 	}
 }
 
