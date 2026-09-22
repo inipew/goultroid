@@ -3,8 +3,8 @@ package deeplink
 import (
 	"context"
 	"crypto/rand"
-	"errors"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
