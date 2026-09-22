@@ -123,9 +123,10 @@ type Service struct {
 	ownerID int64
 	now     func() time.Time
 
-	mu       sync.RWMutex
-	enabled  bool
-	revision uint64
+	mu             sync.RWMutex
+	enabled        bool
+	revision       uint64
+	forceSubCached *ForceSubConfig
 
 	randomID func() (int64, error)
 	claimID  func() (string, error)
@@ -207,7 +208,26 @@ func (s *Service) ForceSubConfig(ctx context.Context) (ForceSubConfig, error) {
 	if s == nil || s.repo == nil {
 		return ForceSubConfig{}, ErrUnavailable
 	}
-	return s.repo.GetForceSubConfig(ctx)
+	s.mu.RLock()
+	if s.forceSubCached != nil {
+		config := *s.forceSubCached
+		s.mu.RUnlock()
+		return config, nil
+	}
+	s.mu.RUnlock()
+
+	config, err := s.repo.GetForceSubConfig(ctx)
+	if err != nil {
+		return ForceSubConfig{}, err
+	}
+	s.mu.Lock()
+	if s.forceSubCached == nil || s.forceSubCached.Revision <= config.Revision {
+		cached := config
+		s.forceSubCached = &cached
+	}
+	config = *s.forceSubCached
+	s.mu.Unlock()
+	return config, nil
 }
 
 func (s *Service) ConfigureForceSub(
@@ -220,7 +240,7 @@ func (s *Service) ConfigureForceSub(
 	if s == nil || s.repo == nil {
 		return ForceSubConfig{}, ErrUnavailable
 	}
-	current, err := s.repo.GetForceSubConfig(ctx)
+	current, err := s.ForceSubConfig(ctx)
 	if err != nil {
 		return ForceSubConfig{}, err
 	}
@@ -239,7 +259,15 @@ func (s *Service) ConfigureForceSub(
 	if err != nil {
 		return ForceSubConfig{}, err
 	}
-	return s.repo.UpdateForceSubConfig(ctx, current.Revision, normalized)
+	updated, err := s.repo.UpdateForceSubConfig(ctx, current.Revision, normalized)
+	if err != nil {
+		return ForceSubConfig{}, err
+	}
+	s.mu.Lock()
+	cached := updated
+	s.forceSubCached = &cached
+	s.mu.Unlock()
+	return updated, nil
 }
 
 func (s *Service) checkVisitorAllowed(ctx context.Context, visitorID int64) error {
