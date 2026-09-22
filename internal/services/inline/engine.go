@@ -9,6 +9,8 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	rootinteraction "github.com/inipew/goultroid/internal/interaction"
+	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/services/ratelimit"
 	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/ui"
@@ -274,6 +276,8 @@ type Engine struct {
 	limiter     *ratelimit.Limiter
 	timeout     time.Duration
 	perms       *core.Permissions
+	sessions    *rootinteraction.Runtime
+	compiler    *presentation.Compiler
 }
 
 const (
@@ -319,6 +323,21 @@ func (e *Engine) SetTimeout(d time.Duration) {
 // SetPermissions configures authorization checker for inline handlers.
 func (e *Engine) SetPermissions(p *core.Permissions) { e.perms = p }
 
+// SetInteractionRuntime connects typed inline actions to the canonical a2
+// session runtime. Query execution remains usable without it for non-interactive
+// legacy results.
+func (e *Engine) SetInteractionRuntime(runtime *rootinteraction.Runtime) {
+	if e == nil {
+		return
+	}
+	e.sessions = runtime
+	if runtime == nil {
+		e.compiler = nil
+		return
+	}
+	e.compiler = presentation.NewCompiler(runtime)
+}
+
 // SetPaginator configures a custom paginator for inline results.
 func (e *Engine) SetPaginator(p *Paginator) {
 	if p != nil {
@@ -358,6 +377,109 @@ func PeerTypeToChatType(pt tg.InlineQueryPeerTypeClass) InlineChatType {
 }
 
 // hasCallbackButtons inspects inline results to detect whether any item contains inline keyboard buttons with callback_data.
+func resultHasRawCallbackMarkup(result InlineResult) bool {
+	if result.Markup == nil {
+		return false
+	}
+	for _, row := range result.Markup.Rows {
+		for _, button := range row {
+			if button.Type == ui.ButtonCallback || len(button.Data) > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func mergeCompiledActionRows(markup *ui.Markup, rows []presentation.CompiledRow) *ui.Markup {
+	var merged ui.Markup
+	if markup != nil {
+		merged = *markup
+		merged.Rows = make([]ui.ButtonRow, len(markup.Rows))
+		for i, row := range markup.Rows {
+			merged.Rows[i] = append(ui.ButtonRow(nil), row...)
+			for j := range merged.Rows[i] {
+				merged.Rows[i][j].Data = append([]byte(nil), row[j].Data...)
+			}
+		}
+	}
+	for _, row := range rows {
+		out := make(ui.ButtonRow, 0, len(row))
+		for _, button := range row {
+			out = append(out, ui.NewCallbackButton(button.Text, button.Data))
+		}
+		if len(out) > 0 {
+			merged.Rows = append(merged.Rows, out)
+		}
+	}
+	if len(merged.Rows) == 0 {
+		return nil
+	}
+	return &merged
+}
+
+func (e *Engine) compileTypedActions(
+	ctx context.Context,
+	resolved Resolved,
+	userID int64,
+	results []InlineResult,
+) ([]InlineResult, []string, bool, error) {
+	if len(results) == 0 {
+		return results, nil, false, nil
+	}
+	out := cloneInlineResults(results)
+	created := make([]string, 0)
+	interactive := false
+	cleanup := func() {
+		if e == nil || e.sessions == nil {
+			return
+		}
+		for _, id := range created {
+			e.sessions.Cancel(id)
+		}
+	}
+	for i := range out {
+		result := &out[i]
+		if resolved.FeatureID != "" && resultHasRawCallbackMarkup(*result) {
+			cleanup()
+			return nil, nil, false, fmt.Errorf("feature-owned inline result %q embeds raw callback data", result.ID)
+		}
+		if len(result.ActionRows) == 0 {
+			continue
+		}
+		interactive = true
+		if resolved.FeatureID == "" || resolved.Scope.IsZero() {
+			cleanup()
+			return nil, nil, false, fmt.Errorf("typed inline actions require feature ownership")
+		}
+		if e.sessions == nil || e.compiler == nil {
+			cleanup()
+			return nil, nil, false, fmt.Errorf("typed inline actions require interaction runtime")
+		}
+		session, err := e.sessions.Create(ctx, rootinteraction.CreateRequest{
+			FeatureID: resolved.FeatureID,
+			Binding:   rootinteraction.Binding{ActorID: userID},
+			State:     append([]byte(nil), result.InteractionState...),
+			TTL:       result.InteractionTTL,
+		})
+		if err != nil {
+			cleanup()
+			return nil, nil, false, err
+		}
+		created = append(created, session.Session.ID)
+		compiled, err := e.compiler.CompileRows(ctx, session.Session.ID, result.ActionRows)
+		if err != nil {
+			cleanup()
+			return nil, nil, false, err
+		}
+		result.Markup = mergeCompiledActionRows(result.Markup, compiled)
+		result.ActionRows = nil
+		result.InteractionState = nil
+		result.InteractionTTL = 0
+	}
+	return out, created, interactive, nil
+}
+
 func hasCallbackButtons(results []InlineResult) bool {
 	for _, res := range results {
 		if res.Markup != nil {
@@ -655,6 +777,37 @@ func (e *Engine) executeWithPeerType(ctx context.Context, svc core.TelegramServi
 		resp = &InlineResponse{Results: results}
 	}
 
+	compiledResults, interactionSessions, interactiveResults, compileErr := e.compileTypedActions(ctx, resolved, userID, resp.Results)
+	if compileErr != nil {
+		e.logger.Warn("inline typed action compilation failed", zap.Error(compileErr), zap.String("correlation_id", correlationID), zap.String("pattern", handler.Pattern()))
+		if e.metrics != nil {
+			e.metrics.RecordInline(false, 0, time.Since(start), compileErr)
+		}
+		if svc != nil {
+			fallback := fallbackErrorResults(compileErr)
+			tgRes := e.serializeResults(fallback)
+			_ = svc.AnswerInlineQueryOptions(ctx, queryID, tgRes, core.InlineAnswerOptions{NextOffset: "", CacheTime: 1, Private: true})
+		}
+		return compileErr
+	}
+	resp.Results = compiledResults
+	interactionSessionsCommitted := false
+	defer func() {
+		if interactionSessionsCommitted || e.sessions == nil {
+			return
+		}
+		for _, id := range interactionSessions {
+			e.sessions.Cancel(id)
+		}
+	}()
+	if interactiveResults {
+		// a2 tokens are actor/session specific and revisions can change after a
+		// callback. Never retain them in local or Telegram shared caches.
+		policy = CacheNone
+		resp.Private = true
+		resp.CacheTime = 0
+	}
+
 	// Empty results fallback to help (Phase 3 UX: never answer empty)
 	if len(resp.Results) == 0 {
 		e.logger.Debug("inline handler returned empty results, using fallback help", zap.String("pattern", handler.Pattern()), zap.String("correlation_id", correlationID))
@@ -745,6 +898,9 @@ func (e *Engine) executeWithPeerType(ctx context.Context, svc core.TelegramServi
 		if ansErr != nil && e.metrics != nil {
 			// record answer error separately via RecordTelegram-like? reuse inline error
 			e.metrics.RecordInline(false, len(tgResults), time.Since(start), ansErr)
+		}
+		if ansErr == nil {
+			interactionSessionsCommitted = true
 		}
 		return ansErr
 	}
