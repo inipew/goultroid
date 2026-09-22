@@ -11,6 +11,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/addon"
 	"github.com/inipew/goultroid/internal/assistant"
+	assistantdeeplink "github.com/inipew/goultroid/internal/assistant/deeplink"
 	assistantinteraction "github.com/inipew/goultroid/internal/assistant/interaction"
 	assistantshell "github.com/inipew/goultroid/internal/assistant/shell"
 	"github.com/inipew/goultroid/internal/config"
@@ -55,8 +56,11 @@ type App struct {
 	inlineEngine          *inline.Engine
 	settingsService       *settings.Service
 	settingsLive          *settings.LiveBinder
-	savedResponseBindings *savedresponse.BindingService
-	media                 *mediaSvc.Service
+	savedResponseBindings    *savedresponse.BindingService
+	deepLinks                *assistantdeeplink.Router
+	savedResponseDeepLinks   *assistantdeeplink.SavedResponseProvider
+	savedDeepLinkRegistration *assistantdeeplink.Registration
+	media                    *mediaSvc.Service
 	downloadRegistry      *download.Registry
 	processRunner         *processSvc.OSRunner
 	startTime             time.Time
@@ -189,6 +193,12 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		savedResponseService.SetFiles(coreDeps.fsManager.ForOwner("assistant-savedresponse"))
 	}
 	savedResponseDelivery := savedresponse.NewResponseDelivery(savedResponseService)
+	deepLinks := assistantdeeplink.NewRouter(assistantdeeplink.NewSQLiteRepository(coreDeps.db))
+	savedResponseDeepLinks := assistantdeeplink.NewSavedResponseProvider(savedResponseBindings, savedResponseDelivery)
+	savedDeepLinkRegistration, err := deepLinks.Register(assistantdeeplink.SavedResponseKind, savedResponseDeepLinks)
+	if err != nil {
+		return nil, fmt.Errorf("register saved-response deep-link provider: %w", err)
+	}
 	if coreDeps.inlineEngine != nil {
 		coreDeps.inlineEngine.SetDynamicSource(savedresponse.NewInlineSource(savedResponseBindings, savedResponseService))
 	}
@@ -198,6 +208,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		}); ok {
 			aware.SetSavedResponseBindings(savedResponseBindings, savedResponseDelivery)
 		}
+		tgRuntime.assistant.SetDeepLinkRouter(deepLinks)
 	}
 	if _, err := reconcileBuiltinPersistentMedia(context.Background(), coreDeps.db, domServices.storage); err != nil {
 		return nil, err
@@ -392,8 +403,11 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		inlineEngine:          coreDeps.inlineEngine,
 		settingsService:       domServices.settingsService,
 		settingsLive:          settingsLive,
-		savedResponseBindings: savedResponseBindings,
-		media:                 domServices.mediaService,
+		savedResponseBindings:     savedResponseBindings,
+		deepLinks:                 deepLinks,
+		savedResponseDeepLinks:    savedResponseDeepLinks,
+		savedDeepLinkRegistration: savedDeepLinkRegistration,
+		media:                      domServices.mediaService,
 		downloadRegistry:      domServices.downloadRegistry,
 		processRunner:         domServices.processRunner,
 		startTime:             domServices.startTime,
