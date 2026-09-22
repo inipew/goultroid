@@ -511,6 +511,39 @@ func isNumeric(s string) bool {
 	return err == nil
 }
 
+func validateAssistantWarningTarget(ctx *core.Context, targetID int64) error {
+	if ctx == nil || ctx.Source != core.ExecutionAssistant {
+		return nil
+	}
+	if targetID <= 0 {
+		return core.ErrInvalidArgs
+	}
+	if ctx.Perms != nil && ctx.Perms.IsSudo(targetID) {
+		return core.ErrGroupMutationTargetProtected
+	}
+	if ctx.Chat == nil || !ctx.IsManagerGroup() || ctx.GroupRoles == nil {
+		return fmt.Errorf("%w: warning target role verification unavailable", core.ErrUnavailable)
+	}
+	snapshot, err := ctx.GroupRoles.ResolveGroupRoleFresh(ctx.Ctx, core.GroupRoleRequest{
+		ChatID: ctx.Chat.ID,
+		Kind:   ctx.Chat.Kind(),
+		Peer:   ctx.PeerID,
+		UserID: targetID,
+	})
+	if err != nil {
+		return err
+	}
+	if !snapshot.Principal.Verified || snapshot.Principal.UserID != targetID {
+		return fmt.Errorf("%w: warning target role is not verified", core.ErrUnavailable)
+	}
+	switch snapshot.Principal.Role {
+	case core.GroupActorRoleAdministrator, core.GroupActorRoleCreator:
+		return core.ErrGroupMutationTargetProtected
+	default:
+		return nil
+	}
+}
+
 func (p *Plugin) handleWarn(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
 		_ = ctx.EditOrReply("⚠️ Fitur warn hanya dapat digunakan in grup or supergroup.")
@@ -530,6 +563,10 @@ func (p *Plugin) handleWarn(ctx *core.Context) error {
 	if ctx.Perms != nil && ctx.Perms.IsOwner(targetID) {
 		_ = ctx.EditOrReply("⚠️ Cannot warn the owner!")
 		return errors.New("cannot warn owner")
+	}
+	if err := validateAssistantWarningTarget(ctx, targetID); err != nil {
+		_ = ctx.EditOrReply(formatAdminError("warn user", err))
+		return err
 	}
 
 	reason := "No reason provided"
