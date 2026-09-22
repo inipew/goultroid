@@ -692,6 +692,20 @@ func (c *ClientInteraction) CopyMessageWithRandomID(
 			randomID,
 		)
 	}
+	if _, webpage := sourceMessage.Media.(*tg.MessageMediaWebPage); webpage {
+		if strings.TrimSpace(sourceMessage.Message) == "" {
+			return nil, fmt.Errorf("%w: webpage relay has no text", core.ErrUnsupported)
+		}
+		// A webpage preview is presentation metadata for text. Re-send the text
+		// as the bot and let Telegram regenerate an appropriate preview.
+		return c.SendMessageWithRandomID(
+			ctx,
+			toPeer,
+			sourceMessage.Message,
+			append([]tg.MessageEntityClass(nil), sourceMessage.Entities...),
+			randomID,
+		)
+	}
 
 	media, err := reusableInputMedia(sourceMessage.Media)
 	if err != nil {
