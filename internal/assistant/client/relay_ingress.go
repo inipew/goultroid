@@ -10,6 +10,7 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/assistant/peer"
+	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/services/pmrelay"
 	"github.com/inipew/goultroid/internal/tasks"
 )
@@ -30,6 +31,7 @@ type RelayIngress struct {
 	relay            pmrelay.Ingress
 	tasks            tasks.Client
 	visitorTransport pmrelay.VisitorTransport
+	ownerTransport   pmrelay.OwnerTransport
 	seq              atomic.Uint64
 }
 
@@ -38,10 +40,17 @@ func NewRelayIngress(relay pmrelay.Ingress, taskClient tasks.Client, visitorTran
 		return nil
 	}
 	var transport pmrelay.VisitorTransport
+	var ownerTransport pmrelay.OwnerTransport
 	if len(visitorTransport) > 0 {
 		transport = visitorTransport[0]
+		ownerTransport, _ = transport.(pmrelay.OwnerTransport)
 	}
-	return &RelayIngress{relay: relay, tasks: taskClient, visitorTransport: transport}
+	return &RelayIngress{
+		relay:            relay,
+		tasks:            taskClient,
+		visitorTransport: transport,
+		ownerTransport:   ownerTransport,
+	}
 }
 
 type telegramRelayVisitorTransport struct {
@@ -107,6 +116,52 @@ func (t *telegramRelayVisitorTransport) ForwardVisitor(ctx context.Context, requ
 	return 0, interaction.ErrAccessHashStale
 }
 
+func (t *telegramRelayVisitorTransport) SendOwnerReply(ctx context.Context, request pmrelay.OwnerSend) (int, error) {
+	if t == nil || t.interaction == nil || request.SourceChatID <= 0 ||
+		request.SourceMessageID <= 0 || request.TargetChatID <= 0 || request.RandomID == 0 {
+		return 0, pmrelay.ErrUnavailable
+	}
+
+	sourcePeer, err := t.resolveUser(ctx, request.SourceChatID)
+	if err != nil {
+		return 0, fmt.Errorf("resolve relay owner source: %w", err)
+	}
+	targetPeer, err := t.resolveUser(ctx, request.TargetChatID)
+	if err != nil {
+		return 0, fmt.Errorf("resolve relay visitor target: %w", err)
+	}
+
+	for attempt := 0; attempt <= interaction.MaxPeerRecoveryAttempts; attempt++ {
+		msg, sendErr := t.interaction.CopyTextMessageWithRandomID(
+			ctx,
+			interaction.NewMessageTarget(sourcePeer, request.SourceMessageID, request.SourceChatID, 0),
+			targetPeer,
+			request.RandomID,
+		)
+		if sendErr == nil {
+			return msg.ID, nil
+		}
+		if errors.Is(sendErr, core.ErrUnsupported) {
+			return 0, pmrelay.ErrUnsupportedDelivery
+		}
+		if !errors.Is(sendErr, interaction.ErrAccessHashStale) || attempt >= interaction.MaxPeerRecoveryAttempts {
+			return 0, sendErr
+		}
+
+		t.resolver.InvalidatePeer(sourcePeer)
+		t.resolver.InvalidatePeer(targetPeer)
+		sourcePeer, err = t.resolveUser(ctx, request.SourceChatID)
+		if err != nil {
+			return 0, fmt.Errorf("re-resolve relay owner source: %w", err)
+		}
+		targetPeer, err = t.resolveUser(ctx, request.TargetChatID)
+		if err != nil {
+			return 0, fmt.Errorf("re-resolve relay visitor target: %w", err)
+		}
+	}
+	return 0, interaction.ErrAccessHashStale
+}
+
 func (r *RelayIngress) tryOwnerReply(ctx context.Context, message pmrelay.IngressMessage) (bool, error) {
 	if r == nil || r.relay == nil {
 		return false, nil
@@ -166,13 +221,19 @@ func (r *RelayIngress) submit(ctx context.Context, prepared pmrelay.PreparedIngr
 				}
 				return executor.ExecuteVisitor(taskCtx, prepared, r.visitorTransport)
 			}
+			if prepared.Direction() == pmrelay.DeliveryOwnerToVisitor && r.ownerTransport != nil {
+				executor, ok := r.relay.(pmrelay.OwnerExecutor)
+				if !ok {
+					return pmrelay.ErrUnavailable
+				}
+				return executor.ExecuteOwner(taskCtx, prepared, r.ownerTransport)
+			}
 			if err := r.relay.RevalidatePrepared(taskCtx, prepared); err != nil {
 				return err
 			}
 			if prepared.Direction() == pmrelay.DeliveryOwnerToVisitor && r.visitorTransport != nil {
-				// P6-C activates the visitor delivery plane only. Keep mapped
-				// owner replies claimed/fail-closed so they cannot fall into an
-				// unrelated AwaitInput while P6-D transport is not installed.
+				// A partial P6-C transport without the P6-D owner port must
+				// keep mapped replies claimed/fail-closed.
 				return pmrelay.ErrUnsupportedDelivery
 			}
 			return nil
