@@ -11,9 +11,11 @@ type MigrationProvider struct{}
 
 type migration001 struct{}
 type migration002 struct{}
+type migration003 struct{}
 
 var _ database.SchemaInvariantMigration = migration001{}
 var _ database.SchemaInvariantMigration = migration002{}
+var _ database.SchemaInvariantMigration = migration003{}
 
 var schemaStatements = []string{
 	`CREATE TABLE IF NOT EXISTS pm_relay_mappings (
@@ -65,7 +67,7 @@ var schemaStatements = []string{
 }
 
 func (MigrationProvider) Migrations() []database.Migration {
-	return []database.Migration{migration001{}, migration002{}}
+	return []database.Migration{migration001{}, migration002{}, migration003{}}
 }
 
 func (migration001) ID() string { return "pmrelay.001" }
@@ -166,6 +168,61 @@ func (migration002) VerifySchema(ctx context.Context, tx database.SQLExecutor) e
 	}{
 		{kind: "table", name: "pm_relay_visitor_blocks"},
 		{kind: "index", name: "idx_pm_relay_visitor_blocks_blocked_at"},
+	} {
+		var count int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT count(*) FROM sqlite_master
+			WHERE type = ? AND name = ?
+		`, item.kind, item.name).Scan(&count); err != nil {
+			return err
+		}
+		if count != 1 {
+			return fmt.Errorf("required %s %s does not exist", item.kind, item.name)
+		}
+	}
+	return nil
+}
+
+
+var audienceMembershipOrderSchemaStatements = []string{
+	`CREATE TABLE IF NOT EXISTS assistant_audience_membership_order (
+		sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id INTEGER NOT NULL UNIQUE CHECK (user_id > 0)
+	);`,
+	`CREATE INDEX IF NOT EXISTS idx_assistant_audience_membership_user
+		ON assistant_audience_membership_order(user_id);`,
+	`INSERT OR IGNORE INTO assistant_audience_membership_order (user_id)
+		SELECT user_id FROM assistant_audience_members ORDER BY user_id ASC;`,
+}
+
+func (migration003) ID() string { return "pmrelay.003" }
+
+func (migration003) Description() string {
+	return "Stable keyset order for Assistant audience snapshots"
+}
+
+func (migration003) Checksum() string {
+	return "f374580eb39d876668c11d295a709c2b264f339c8b983cf1b67845d7fda6b4a5"
+}
+
+func (migration003) LegacyVersions() []int { return nil }
+
+func (migration003) Up(ctx context.Context, tx database.SQLExecutor) error {
+	for _, statement := range audienceMembershipOrderSchemaStatements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (migration003) VerifySchema(ctx context.Context, tx database.SQLExecutor) error {
+	for _, item := range []struct {
+		kind string
+		name string
+	}{
+		{kind: "table", name: "assistant_audience_membership_order"},
+		{kind: "index", name: "idx_assistant_audience_membership_user"},
 	} {
 		var count int
 		if err := tx.QueryRowContext(ctx, `
