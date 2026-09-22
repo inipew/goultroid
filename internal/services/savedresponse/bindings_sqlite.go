@@ -122,14 +122,26 @@ func (r *SQLiteSurfaceBindingRepository) ListBindings(ctx context.Context, surfa
 	return result, nil
 }
 
-func (r *SQLiteSurfaceBindingRepository) UpdateBinding(ctx context.Context, binding SurfaceBinding, expectedRevision uint64) (SurfaceBinding, error) {
+func (r *SQLiteSurfaceBindingRepository) UpdateBinding(
+	ctx context.Context,
+	surface Surface,
+	alias string,
+	reference Reference,
+	enabled bool,
+	expectedRevision uint64,
+) (SurfaceBinding, error) {
 	if r == nil || r.db == nil {
 		return SurfaceBinding{}, ErrResolverUnavailable
 	}
 	if expectedRevision == 0 {
 		return SurfaceBinding{}, ErrBindingConflict
 	}
-	normalized, err := binding.Normalize()
+	normalized, err := (SurfaceBinding{
+		Surface:   surface,
+		Alias:     alias,
+		Reference: reference,
+		Enabled:   enabled,
+	}).Normalize()
 	if err != nil {
 		return SurfaceBinding{}, err
 	}
