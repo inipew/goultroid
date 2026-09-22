@@ -20,8 +20,9 @@ var _ plugin.MessageEventStatePlugin = (*Plugin)(nil)
 const (
 	MaxRulesPerChat      = 512
 	MaxRuleBytes         = 256
-	MaxActiveChats       = 50_000
+	MaxActiveChats        = 50_000
 	maxCompiledCacheChats = 500
+	ruleLockStripes       = 64
 )
 
 var ErrRuleLimit = fmt.Errorf("%w: blacklist rule limit exceeded", core.ErrResourceLimit)
@@ -46,6 +47,7 @@ type Plugin struct {
 	cacheMu       sync.RWMutex
 	chatRevision  map[int64]uint64
 	chatBlacklist map[int64]*compiledBlacklistSet
+	ruleLocks     [ruleLockStripes]sync.RWMutex
 }
 
 func New(db Repository, svcFunc func() core.TelegramServicer) *Plugin {
@@ -126,6 +128,46 @@ func (p *Plugin) getChatID(ctx *core.Context) int64 {
 	}
 	return ctx.SenderID()
 }
+
+func (p *Plugin) ruleLock(chatID int64) *sync.RWMutex {
+	mixed := uint64(chatID) * 0x9e3779b97f4a7c15
+	return &p.ruleLocks[mixed%ruleLockStripes]
+}
+
+func (p *Plugin) addBlacklistRule(ctx context.Context, chatID int64, word string) error {
+	lock := p.ruleLock(chatID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	p.featureState.MarkUnknown(chatID)
+	if err := p.db.AddBlacklist(ctx, chatID, word); err != nil {
+		return err
+	}
+	p.invalidateChat(chatID, true)
+	p.featureState.SetActive(chatID, true)
+	return nil
+}
+
+func (p *Plugin) removeBlacklistRule(ctx context.Context, chatID int64, word string) error {
+	lock := p.ruleLock(chatID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	p.featureState.MarkUnknown(chatID)
+	if err := p.db.RemoveBlacklist(ctx, chatID, word); err != nil {
+		return err
+	}
+	remaining, listErr := p.db.ListBlacklists(ctx, chatID)
+	if listErr != nil {
+		p.invalidateChatUnknown(chatID)
+		p.featureState.MarkUnknown(chatID)
+		return nil
+	}
+	active := len(remaining) > 0
+	p.invalidateChat(chatID, active)
+	p.featureState.SetActive(chatID, active)
+	return nil
+}
 func (p *Plugin) handleBlacklist(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
 		_ = ctx.EditOrReply("⚠️ Usage: <code>.blacklist &lt;word/phrase&gt;</code>")
@@ -141,13 +183,10 @@ func (p *Plugin) handleBlacklist(ctx *core.Context) error {
 		return fmt.Errorf("%w: blacklist rule exceeds %d bytes", core.ErrInvalidArgs, MaxRuleBytes)
 	}
 	chatID := p.getChatID(ctx)
-	p.featureState.MarkUnknown(chatID)
-	if err := p.db.AddBlacklist(ctx.Ctx, chatID, word); err != nil {
+	if err := p.addBlacklistRule(ctx.Ctx, chatID, word); err != nil {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to add to blacklist: %v", err))
 		return err
 	}
-	p.invalidateChat(chatID, true)
-	p.featureState.SetActive(chatID, true)
 	return ctx.EditOrReply(fmt.Sprintf("🚫 Added <code>%s</code> to chat blacklist.", html.EscapeString(word)))
 }
 func (p *Plugin) handleUnblacklist(ctx *core.Context) error {
@@ -157,19 +196,9 @@ func (p *Plugin) handleUnblacklist(ctx *core.Context) error {
 	}
 	word := strings.ToLower(strings.TrimSpace(ctx.RawArgs))
 	chatID := p.getChatID(ctx)
-	p.featureState.MarkUnknown(chatID)
-	if err := p.db.RemoveBlacklist(ctx.Ctx, chatID, word); err != nil {
+	if err := p.removeBlacklistRule(ctx.Ctx, chatID, word); err != nil {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to remove from blacklist: %v", err))
 		return err
-	}
-	remaining, listErr := p.db.ListBlacklists(ctx.Ctx, chatID)
-	if listErr != nil {
-		p.invalidateChatUnknown(chatID)
-		p.featureState.MarkUnknown(chatID)
-	} else {
-		active := len(remaining) > 0
-		p.invalidateChat(chatID, active)
-		p.featureState.SetActive(chatID, active)
 	}
 	return ctx.EditOrReply(fmt.Sprintf("✅ Removed <code>%s</code> from chat blacklist.", html.EscapeString(word)))
 }
@@ -328,6 +357,10 @@ func (p *Plugin) matchMessage(ctx context.Context, message *core.MessageEnvelope
 	if p.db == nil || message.ChatID == 0 {
 		return false, nil
 	}
+	lock := p.ruleLock(message.ChatID)
+	lock.RLock()
+	defer lock.RUnlock()
+
 	compiled, err := p.compiledForChat(ctx, message.ChatID)
 	if err != nil {
 		return false, err
