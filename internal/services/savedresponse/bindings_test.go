@@ -200,7 +200,6 @@ func TestBindingServiceJoinsDurableBindingToLiveProviderGeneration(t *testing.T)
 	}
 }
 
-
 func TestBindingServiceMutationRevalidatesProviderButAllowsOfflineCleanup(t *testing.T) {
 	repo, _ := newSurfaceBindingRepository(t)
 	ctx := context.Background()
