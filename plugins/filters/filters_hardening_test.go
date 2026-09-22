@@ -59,7 +59,7 @@ func TestFilterDeliveryResourcePlanning(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := p.submitDelivery(
-		context.Background(), svc, peer, 10, 20,
+		context.Background(), svc, peer, 10, 0, 20,
 		textResponse, textTemplate, savedresponse.TemplateVars{},
 	); err != nil {
 		t.Fatal(err)
@@ -81,7 +81,7 @@ func TestFilterDeliveryResourcePlanning(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := p.submitDelivery(
-		context.Background(), svc, peer, 10, 21,
+		context.Background(), svc, peer, 10, 0, 21,
 		media, mediaTemplate, savedresponse.TemplateVars{},
 	); err != nil {
 		t.Fatal(err)
