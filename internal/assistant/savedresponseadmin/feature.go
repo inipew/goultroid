@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	FeatureID = "savedresponse_admin"
+	FeatureID = "saved_admin"
 	CommandID = "responses"
 
 	screenHome   = "home"
