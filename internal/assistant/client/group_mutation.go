@@ -637,8 +637,8 @@ func (m *managedGroupMutation) promote(
 			return err
 		}
 		request := &tg.ChannelsEditAdminRequest{
-			Channel: channel,
-			UserID: user,
+			Channel:     channel,
+			UserID:      user,
 			AdminRights: promotedAdminRights(authorization.actor, authorization.bot),
 		}
 		if req.Title != "" {
