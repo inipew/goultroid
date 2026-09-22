@@ -24,12 +24,47 @@ type GroupQueryReader interface {
 	GetFullChat(context.Context, tg.InputPeerClass) (*tg.MessagesChatFull, error)
 }
 
+// GroupMutationContext carries the immutable command coordinates required by
+// the P7-G managed mutation service. It deliberately carries no cached role.
+type GroupMutationContext struct {
+	ActorID int64
+	ChatID  int64
+	Kind    core.ChatKind
+}
+
+// GroupMutationRequest is the typed transport request emitted by the thin
+// TelegramServicer adapter. Authorization and Telegram RPC policy live in the
+// managed mutation executor, not in this adapter.
+type GroupMutationRequest struct {
+	Action       core.GroupMutationAction
+	Peer         tg.InputPeerClass
+	Target       tg.InputPeerClass
+	MessageID    int
+	Silent       bool
+	TopicID      int
+	FromID       int
+	ToID         int
+	UntilDate    int
+	Title        string
+	DefaultRights tg.ChatBannedRights
+}
+
+type GroupMutationResult struct {
+	Deleted int
+}
+
+type GroupMutationExecutor interface {
+	Execute(context.Context, GroupMutationContext, GroupMutationRequest) (GroupMutationResult, error)
+}
+
 // assistantServicerAdapter adapts Assistant MessageInteraction into core.TelegramServicer
 // so plugin command handlers can transparently use ctx.Reply, ctx.EditOrReply, and ctx.ReplyMarkup.
 type assistantServicerAdapter struct {
 	core.MockTelegramServicer
-	inter      interaction.MessageInteraction
-	groupQuery GroupQueryReader
+	inter           interaction.MessageInteraction
+	groupQuery      GroupQueryReader
+	groupMutation   GroupMutationExecutor
+	mutationContext GroupMutationContext
 }
 
 func (a *assistantServicerAdapter) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
@@ -103,46 +138,89 @@ func (a *assistantServicerAdapter) GetFullChat(ctx context.Context, peer tg.Inpu
 	return a.groupQuery.GetFullChat(ctx, peer)
 }
 
-func (*assistantServicerAdapter) PinMessage(context.Context, tg.InputPeerClass, int, bool) error {
-	return ErrGroupMutationUnavailable
+func (a *assistantServicerAdapter) executeGroupMutation(
+	ctx context.Context,
+	request GroupMutationRequest,
+) (GroupMutationResult, error) {
+	if a == nil || a.groupMutation == nil {
+		return GroupMutationResult{}, ErrGroupMutationUnavailable
+	}
+	return a.groupMutation.Execute(ctx, a.mutationContext, request)
 }
 
-func (*assistantServicerAdapter) UnpinMessage(context.Context, tg.InputPeerClass, int) error {
-	return ErrGroupMutationUnavailable
+func (a *assistantServicerAdapter) PinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, silent bool) error {
+	_, err := a.executeGroupMutation(ctx, GroupMutationRequest{
+		Action: core.GroupMutationPin, Peer: peer, MessageID: msgID, Silent: silent,
+	})
+	return err
 }
 
-func (*assistantServicerAdapter) BanUser(context.Context, tg.InputPeerClass, tg.InputPeerClass, int) error {
-	return ErrGroupMutationUnavailable
+func (a *assistantServicerAdapter) UnpinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) error {
+	_, err := a.executeGroupMutation(ctx, GroupMutationRequest{
+		Action: core.GroupMutationUnpin, Peer: peer, MessageID: msgID,
+	})
+	return err
 }
 
-func (*assistantServicerAdapter) UnbanUser(context.Context, tg.InputPeerClass, tg.InputPeerClass) error {
-	return ErrGroupMutationUnavailable
+func (a *assistantServicerAdapter) BanUser(ctx context.Context, peer, user tg.InputPeerClass, untilDate int) error {
+	_, err := a.executeGroupMutation(ctx, GroupMutationRequest{
+		Action: core.GroupMutationBan, Peer: peer, Target: user, UntilDate: untilDate,
+	})
+	return err
 }
 
-func (*assistantServicerAdapter) KickUser(context.Context, tg.InputPeerClass, tg.InputPeerClass) error {
-	return ErrGroupMutationUnavailable
+func (a *assistantServicerAdapter) UnbanUser(ctx context.Context, peer, user tg.InputPeerClass) error {
+	_, err := a.executeGroupMutation(ctx, GroupMutationRequest{
+		Action: core.GroupMutationUnban, Peer: peer, Target: user,
+	})
+	return err
 }
 
-func (*assistantServicerAdapter) MuteUser(context.Context, tg.InputPeerClass, tg.InputPeerClass, int) error {
-	return ErrGroupMutationUnavailable
+func (a *assistantServicerAdapter) KickUser(ctx context.Context, peer, user tg.InputPeerClass) error {
+	_, err := a.executeGroupMutation(ctx, GroupMutationRequest{
+		Action: core.GroupMutationKick, Peer: peer, Target: user,
+	})
+	return err
 }
 
-func (*assistantServicerAdapter) UnmuteUser(context.Context, tg.InputPeerClass, tg.InputPeerClass) error {
-	return ErrGroupMutationUnavailable
+func (a *assistantServicerAdapter) MuteUser(ctx context.Context, peer, user tg.InputPeerClass, untilDate int) error {
+	_, err := a.executeGroupMutation(ctx, GroupMutationRequest{
+		Action: core.GroupMutationMute, Peer: peer, Target: user, UntilDate: untilDate,
+	})
+	return err
 }
 
-func (*assistantServicerAdapter) PurgeMessages(context.Context, tg.InputPeerClass, int, int, int) (int, error) {
-	return 0, ErrGroupMutationUnavailable
+func (a *assistantServicerAdapter) UnmuteUser(ctx context.Context, peer, user tg.InputPeerClass) error {
+	_, err := a.executeGroupMutation(ctx, GroupMutationRequest{
+		Action: core.GroupMutationUnmute, Peer: peer, Target: user,
+	})
+	return err
 }
 
-func (*assistantServicerAdapter) PromoteAdmin(context.Context, tg.InputPeerClass, tg.InputPeerClass, string) error {
-	return ErrGroupMutationUnavailable
+func (a *assistantServicerAdapter) PurgeMessages(ctx context.Context, peer tg.InputPeerClass, topicID, fromID, toID int) (int, error) {
+	result, err := a.executeGroupMutation(ctx, GroupMutationRequest{
+		Action: core.GroupMutationPurge, Peer: peer, TopicID: topicID, FromID: fromID, ToID: toID,
+	})
+	return result.Deleted, err
 }
 
-func (*assistantServicerAdapter) DemoteAdmin(context.Context, tg.InputPeerClass, tg.InputPeerClass) error {
-	return ErrGroupMutationUnavailable
+func (a *assistantServicerAdapter) PromoteAdmin(ctx context.Context, peer, user tg.InputPeerClass, title string) error {
+	_, err := a.executeGroupMutation(ctx, GroupMutationRequest{
+		Action: core.GroupMutationPromote, Peer: peer, Target: user, Title: title,
+	})
+	return err
 }
 
-func (*assistantServicerAdapter) EditChatDefaultBannedRights(context.Context, tg.InputPeerClass, tg.ChatBannedRights) error {
-	return ErrGroupMutationUnavailable
+func (a *assistantServicerAdapter) DemoteAdmin(ctx context.Context, peer, user tg.InputPeerClass) error {
+	_, err := a.executeGroupMutation(ctx, GroupMutationRequest{
+		Action: core.GroupMutationDemote, Peer: peer, Target: user,
+	})
+	return err
+}
+
+func (a *assistantServicerAdapter) EditChatDefaultBannedRights(ctx context.Context, peer tg.InputPeerClass, rights tg.ChatBannedRights) error {
+	_, err := a.executeGroupMutation(ctx, GroupMutationRequest{
+		Action: core.GroupMutationDefaultPermissions, Peer: peer, DefaultRights: rights,
+	})
+	return err
 }
