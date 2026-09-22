@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
@@ -18,6 +19,7 @@ type SQLiteRepository struct {
 	db            *database.DB
 	registryReady bool
 	registryErr   error
+	mutationMu    sync.Mutex
 }
 
 func NewSQLiteRepository(db *database.DB) *SQLiteRepository {
@@ -26,6 +28,8 @@ func NewSQLiteRepository(db *database.DB) *SQLiteRepository {
 }
 
 func (r *SQLiteRepository) SaveFilter(ctx context.Context, chatID int64, keyword string, response savedresponse.Response) error {
+	r.mutationMu.Lock()
+	defer r.mutationMu.Unlock()
 	if r.registryErr != nil {
 		return fmt.Errorf("failed to inspect media registry schema: %w", r.registryErr)
 	}
@@ -240,6 +244,8 @@ func (r *SQLiteRepository) ListFilters(ctx context.Context, chatID int64) ([]Fil
 }
 
 func (r *SQLiteRepository) DeleteFilter(ctx context.Context, chatID int64, keyword string) error {
+	r.mutationMu.Lock()
+	defer r.mutationMu.Unlock()
 	if r.registryErr != nil {
 		return fmt.Errorf("failed to inspect media registry schema: %w", r.registryErr)
 	}
