@@ -53,6 +53,9 @@ func (c *AssistantClient) dispatchDeepLink(cmdCtx *command.Context, rawToken str
 	if cmdCtx == nil || cmdCtx.Ctx == nil || cmdCtx.Peer == nil || cmdCtx.SenderID == 0 {
 		return ErrShellUnavailable
 	}
+	if !isPrivatePeer(cmdCtx.Peer) {
+		return replyDeepLinkUnavailable(cmdCtx)
+	}
 	c.mu.RLock()
 	router := c.deepLinks
 	taskClient := c.tasks
