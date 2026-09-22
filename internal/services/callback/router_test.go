@@ -626,7 +626,7 @@ func TestTimeoutMiddleware_ReusesTighterUpstreamDeadline(t *testing.T) {
 
 	handler := &contextCaptureHandler{}
 	cbCtx := &CallbackContext{Ctx: parent}
-	if err := Chain(handler, TimeoutMiddleware(15*time.Second)).HandleCallback(cbCtx); err != nil {
+	if err := chain(handler, timeoutMiddleware(15*time.Second)).HandleCallback(cbCtx); err != nil {
 		t.Fatalf("handler failed: %v", err)
 	}
 	if handler.seen != parent {
@@ -720,8 +720,8 @@ func TestStateStore_StartStopCancel(t *testing.T) {
 }
 
 func TestCallback_FailureAndCheckedEncoding(t *testing.T) {
-	fail := &CallbackFailure{
-		Code:        FailureCodeUnauthorized,
+	fail := &callbackFailure{
+		Code:        failureCodeUnauthorized,
 		UserAlert:   "Access denied",
 		InternalErr: ErrUnauthorized,
 		MetricTag:   "unauthorized",

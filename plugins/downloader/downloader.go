@@ -276,18 +276,14 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 }
 
 func (p *Plugin) createDownloadWorkspace() (string, func(), error) {
-	if p != nil && p.files != nil {
-		dir, err := p.files.CreateTempDir("goultroid-download-*")
-		if err != nil {
-			return "", nil, err
-		}
-		return dir, func() { _ = p.files.RemoveTempDir(dir) }, nil
+	if p == nil || p.files == nil {
+		return "", nil, fmt.Errorf("downloader: filesystem temp capability unavailable")
 	}
-	dir, err := os.MkdirTemp("", "goultroid-download-*")
+	dir, err := p.files.CreateTempDir("goultroid-download-*")
 	if err != nil {
 		return "", nil, err
 	}
-	return dir, func() { _ = os.RemoveAll(dir) }, nil
+	return dir, func() { _ = p.files.RemoveTempDir(dir) }, nil
 }
 
 func (p *Plugin) executeMediaDownload(taskCtx context.Context, ctx *core.Context, _ string, _ int64) error {

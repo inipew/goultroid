@@ -327,9 +327,37 @@ func TestMyXLPlugin_Commands(t *testing.T) {
 	if !strings.Contains(svc.sent, "Konfirmasi Pembelian") {
 		t.Errorf("expected purchase confirmation, got %s", svc.sent)
 	}
-	_, purchaseEntry := callbackEntryFromMarkup(t, plugin.stateStore, svc.lastMarkup)
-	if !purchaseEntry.Scope.SingleUse || purchaseEntry.Scope.UserID != 1001 || purchaseEntry.Scope.ChatID != 1001 {
-		t.Fatalf("purchase confirmation is not single-use and scoped: %#v", purchaseEntry.Scope)
+	purchaseData := callbackDataFromMarkup(t, svc.lastMarkup)
+	purchaseRouter := callback.NewRouter(nil, plugin.stateStore)
+	purchaseCapture := &callbackStateCaptureHandler{}
+	purchaseRegistration, err := purchaseRouter.RegisterOwned("test", purchaseCapture)
+	if err != nil {
+		t.Fatalf("register purchase capture handler: %v", err)
+	}
+	defer purchaseRegistration.Close()
+	dispatchPurchaseState := func(queryID, userID, chatID int64) error {
+		evt := &core.CallbackQueryEvent{QueryID: queryID, UserID: userID, ChatID: chatID, Data: purchaseData}
+		prepared, err := purchaseRouter.Prepare(context.Background(), evt, svc, nil)
+		if err != nil {
+			return err
+		}
+		return prepared.Dispatch(context.Background(), evt, svc)
+	}
+	if err := dispatchPurchaseState(1301, 1002, 1001); !errors.Is(err, callback.ErrUnauthorized) {
+		t.Fatalf("purchase state accepted wrong user: %v", err)
+	}
+	if err := dispatchPurchaseState(1302, 1001, 1002); !errors.Is(err, callback.ErrUnauthorized) {
+		t.Fatalf("purchase state accepted wrong chat: %v", err)
+	}
+	if err := dispatchPurchaseState(1303, 1001, 1001); err != nil {
+		t.Fatalf("purchase state canonical dispatch failed: %v", err)
+	}
+	capturedPurchase, ok := purchaseCapture.state.(purchaseDraftState)
+	if !ok || capturedPurchase.MSISDN != "6281912345678" || capturedPurchase.OptionCode != "OPT-FLEX-S" {
+		t.Fatalf("unexpected canonical purchase state: %#v", purchaseCapture.state)
+	}
+	if err := dispatchPurchaseState(1304, 1001, 1001); !errors.Is(err, callback.ErrStateConsumed) {
+		t.Fatalf("single-use purchase state replay error = %v, want %v", err, callback.ErrStateConsumed)
 	}
 	_ = plugin.HandleCallback(&callback.CallbackContext{
 		Ctx: ctx, Action: "buy_confirm", UserID: 1001, Service: svc,
@@ -424,9 +452,11 @@ func TestRefreshMarkupStoresScopedMaskedState(t *testing.T) {
 
 	router := callback.NewRouter(nil, store)
 	capture := &callbackStateCaptureHandler{}
-	if err := router.Register(capture); err != nil {
+	registration, err := router.RegisterOwned("test", capture)
+	if err != nil {
 		t.Fatalf("register capture handler: %v", err)
 	}
+	defer registration.Close()
 	svc := &core.MockTelegramServicer{}
 	dispatch := func(queryID, userID, chatID int64) error {
 		evt := &core.CallbackQueryEvent{QueryID: queryID, UserID: userID, ChatID: chatID, Data: data}

@@ -272,7 +272,7 @@ func TestAssistantShellOwnerStartUsesA2Canary(t *testing.T) {
 	if len(port.sent.Rows) == 0 || len(port.sent.Rows[0]) == 0 {
 		t.Fatal("owner/private start did not render the a2 shell")
 	}
-	if !isV2Callback(port.sent.Rows[0][0].Data) {
+	if !isInteractionCallback(port.sent.Rows[0][0].Data) {
 		t.Fatalf("owner/private callback data = %q, want a2", port.sent.Rows[0][0].Data)
 	}
 	if got := manager.InteractionRuntime().Stats().Sessions; got != 1 {

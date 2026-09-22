@@ -89,7 +89,7 @@ func TestA2IngressSyntheticSurfaceEndToEnd(t *testing.T) {
 		t.Fatalf("Begin() error = %v", err)
 	}
 	data := port.sent.Rows[0][0].Data
-	if !isV2Callback(data) {
+	if !isInteractionCallback(data) {
 		t.Fatalf("compiled data %q is not a2", data)
 	}
 

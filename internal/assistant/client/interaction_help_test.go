@@ -13,7 +13,6 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
-	"github.com/inipew/goultroid/internal/interaction/orchestration"
 )
 
 type publicStartInteraction struct {
