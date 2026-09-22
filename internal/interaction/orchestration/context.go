@@ -9,11 +9,12 @@ import (
 )
 
 type Context struct {
-	ctx     context.Context
-	engine  *Engine
-	session interaction.Session
-	target  presentation.Target
-	queryID int64
+	ctx         context.Context
+	engine      *Engine
+	session     interaction.Session
+	target      presentation.Target
+	queryID     int64
+	preparation any
 }
 
 func newContext(ctx context.Context, engine *Engine, session interaction.Session, target presentation.Target, queryID int64) *Context {
@@ -51,6 +52,15 @@ func (c *Context) Target() presentation.Target {
 		return nil
 	}
 	return c.target
+}
+
+// Preparation returns opaque state produced by a prepared-action admission hook.
+// Ordinary a2 actions return nil.
+func (c *Context) Preparation() any {
+	if c == nil {
+		return nil
+	}
+	return c.preparation
 }
 
 // SetTarget attaches the transport target corresponding to the session's
