@@ -121,11 +121,14 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			logger.Warn("assistant: inline query execution unavailable", zap.Int64("query_id", update.QueryID))
 			return deps.InlineService.AnswerInlineQueryOptions(ctx, update.QueryID, nil, core.InlineAnswerOptions{CacheTime: 1, Private: true})
 		}
-		prepared, prepareErr := deps.InlineEngine.Prepare(update.Query)
+		var prepared inlineservice.PreparedQuery
+		var prepareErr error
 		if contextual, ok := deps.InlineEngine.(interface {
 			PrepareContext(context.Context, string) (inlineservice.PreparedQuery, error)
 		}); ok {
 			prepared, prepareErr = contextual.PrepareContext(ctx, update.Query)
+		} else {
+			prepared, prepareErr = deps.InlineEngine.Prepare(update.Query)
 		}
 		var scope tasks.ScopeIdentity
 		var resources []tasks.ResourceRequirement
