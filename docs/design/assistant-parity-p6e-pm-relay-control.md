@@ -152,8 +152,8 @@ The same fence applies to:
 - runtime enabled/disabled state;
 - known Assistant audience count;
 - durable blocked visitor count;
-- live reply mapping count;
-- durable delivery intent count.
+- stored reply mapping count;
+- stored durable delivery intent count.
 
 This is a read-only status surface; P6-E does not introduce a persistent
 enable/disable setting. Application composition still determines whether PM
