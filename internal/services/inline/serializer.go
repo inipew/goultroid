@@ -1,6 +1,7 @@
 package inline
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/gotd/td/telegram/message/entity"
@@ -393,4 +394,52 @@ func (s *gameSerializer) Serialize(res InlineResult) (tg.InputBotInlineResultCla
 
 	// Fallback to generic article if GameShortName is empty
 	return (&articleSerializer{}).Serialize(res)
+}
+
+
+func serializePreparedLocalMedia(res InlineResult, prepared PreparedLocalMedia) (tg.InputBotInlineResultClass, error) {
+	id := sanitizeID(res.ID)
+	text, entities := parseFormattedText(res.Text)
+	markup := toTelegramMarkup(res)
+	send := &tg.InputBotInlineMessageMediaAuto{
+		Message:  text,
+		Entities: entities,
+	}
+	if markup != nil {
+		send.ReplyMarkup = markup
+	}
+	send.SetFlags()
+
+	switch res.Type {
+	case ResultPhoto:
+		if prepared.Photo == nil {
+			return nil, errors.New("inline local photo reference is nil")
+		}
+		return &tg.InputBotInlineResultPhoto{
+			ID:          id,
+			Type:        string(ResultPhoto),
+			Photo:       prepared.Photo,
+			SendMessage: send,
+		}, nil
+	case ResultDocument, ResultVideo, ResultAudio, ResultSticker:
+		if prepared.Document == nil {
+			return nil, errors.New("inline local document reference is nil")
+		}
+		resultType := res.Type
+		if resultType == "" {
+			resultType = ResultDocument
+		}
+		item := &tg.InputBotInlineResultDocument{
+			ID:          id,
+			Type:        string(resultType),
+			Title:       truncate(res.Title, maxInlineTitleLen),
+			Description: truncate(res.Description, maxInlineDescLen),
+			Document:    prepared.Document,
+			SendMessage: send,
+		}
+		item.SetFlags()
+		return item, nil
+	default:
+		return nil, errors.New("unsupported inline local media result type")
+	}
 }
