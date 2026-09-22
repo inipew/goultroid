@@ -177,6 +177,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		tgRuntime.assistant.SetCallbackRouter(coreDeps.callbackRouter)
 		tgRuntime.assistant.SetInlineEngine(coreDeps.inlineEngine)
 		tgRuntime.assistant.SetTasks(coreDeps.taskEngine)
+		tgRuntime.assistant.SetRelayIngress(domServices.pmrelayService)
 		tgRuntime.assistant.SetPluginScopeResolver(func(owner string) (tasks.ScopeIdentity, bool) {
 			scope, ok := pluginManager.Scope(owner)
 			if !ok {
