@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -528,5 +529,220 @@ func TestRelayIngressBlockedMappedOwnerReplyFailsBeforeTaskEngine(t *testing.T) 
 	}
 	if count, err := repo.CountDeliveries(ctx); err != nil || count != 0 {
 		t.Fatalf("blocked owner reply created deliveries=%d err=%v", count, err)
+	}
+}
+
+
+type forceSubGateStub struct {
+	decisions []forceSubDecision
+	errs      []error
+	calls     int
+}
+
+func (g *forceSubGateStub) Check(context.Context, int64) (forceSubDecision, error) {
+	index := g.calls
+	g.calls++
+	if len(g.decisions) == 0 {
+		return forceSubDecision{Allowed: true}, nil
+	}
+	if index >= len(g.decisions) {
+		index = len(g.decisions) - 1
+	}
+	var err error
+	if len(g.errs) > 0 {
+		errIndex := index
+		if errIndex >= len(g.errs) {
+			errIndex = len(g.errs) - 1
+		}
+		err = g.errs[errIndex]
+	}
+	return g.decisions[index], err
+}
+
+type forceSubRelayTransportStub struct {
+	relayVisitorTransportStub
+	guidanceCalls       int
+	guidanceUserID      int64
+	guidanceConfig      pmrelay.ForceSubConfig
+	guidanceUnavailable bool
+	guidanceErr         error
+}
+
+func (t *forceSubRelayTransportStub) SendForceSubGuidance(
+	_ context.Context,
+	userID int64,
+	config pmrelay.ForceSubConfig,
+	unavailable bool,
+) error {
+	t.guidanceCalls++
+	t.guidanceUserID = userID
+	t.guidanceConfig = config
+	t.guidanceUnavailable = unavailable
+	return t.guidanceErr
+}
+
+func forceSubDecisionConfig() pmrelay.ForceSubConfig {
+	return pmrelay.ForceSubConfig{
+		Enabled:         true,
+		ChannelUsername: "required_channel",
+		JoinURL:         "https://t.me/required_channel",
+		FailureMode:     pmrelay.ForceSubFailClosed,
+		Revision:        2,
+		UpdatedAt:       time.Now().UTC(),
+	}
+}
+
+func TestRelayIngressForceSubNonMemberSkipsRelayWorkAndAdmitsGuidanceOnly(t *testing.T) {
+	ctx := context.Background()
+	service := newRelayIngressService(t)
+	taskClient := &relayAdmissionTaskClient{run: true}
+	transport := &forceSubRelayTransportStub{
+		relayVisitorTransportStub: relayVisitorTransportStub{message: 501},
+	}
+	ingress := NewRelayIngress(service, taskClient, transport)
+	ingress.setForceSubGate(&forceSubGateStub{
+		decisions: []forceSubDecision{{
+			JoinRequired: true,
+			Config:       forceSubDecisionConfig(),
+		}},
+	})
+
+	handled, err := ingress.tryVisitor(ctx, pmrelay.IngressMessage{
+		SenderID: 42, ChatID: 42, MessageID: 11,
+	})
+	if err != nil || !handled {
+		t.Fatalf("tryVisitor(non-member) handled=%v err=%v", handled, err)
+	}
+	if taskClient.calls != 1 {
+		t.Fatalf("TaskEngine submissions=%d, want one guidance work only", taskClient.calls)
+	}
+	if got := string(taskClient.spec.ID); !strings.Contains(got, "forcesub-guidance") {
+		t.Fatalf("submitted task=%q, want force-sub guidance", got)
+	}
+	if taskClient.spec.QuotaOwner != tasks.OwnerID("pmrelay:guidance:42") ||
+		taskClient.spec.OrderingKey != "pmrelay:thread:42" {
+		t.Fatalf("guidance quota=%q ordering=%q", taskClient.spec.QuotaOwner, taskClient.spec.OrderingKey)
+	}
+	if transport.calls != 0 {
+		t.Fatalf("visitor relay transport calls=%d, want 0", transport.calls)
+	}
+	if transport.guidanceCalls != 1 || transport.guidanceUserID != 42 {
+		t.Fatalf("guidance calls=%d user=%d", transport.guidanceCalls, transport.guidanceUserID)
+	}
+	if transport.guidanceConfig.JoinURL != "https://t.me/required_channel" {
+		t.Fatalf("guidance config=%+v", transport.guidanceConfig)
+	}
+}
+
+func TestRelayIngressForceSubFailClosedGuidesAndReturnsVerificationError(t *testing.T) {
+	ctx := context.Background()
+	service := newRelayIngressService(t)
+	taskClient := &relayAdmissionTaskClient{run: true}
+	transport := &forceSubRelayTransportStub{}
+	verifyErr := fmt.Errorf("%w: telegram unavailable", pmrelay.ErrForceSubVerify)
+	ingress := NewRelayIngress(service, taskClient, transport)
+	ingress.setForceSubGate(&forceSubGateStub{
+		decisions: []forceSubDecision{{
+			VerificationBlocked: true,
+			Config:              forceSubDecisionConfig(),
+		}},
+		errs: []error{verifyErr},
+	})
+
+	handled, err := ingress.tryVisitor(ctx, pmrelay.IngressMessage{
+		SenderID: 42, ChatID: 42, MessageID: 11,
+	})
+	if !handled || !errors.Is(err, pmrelay.ErrForceSubVerify) {
+		t.Fatalf("tryVisitor(fail-closed) handled=%v err=%v", handled, err)
+	}
+	if taskClient.calls != 1 || transport.guidanceCalls != 1 {
+		t.Fatalf("guidance admission/calls=%d/%d, want 1/1", taskClient.calls, transport.guidanceCalls)
+	}
+	if !transport.guidanceUnavailable {
+		t.Fatal("verification-unavailable guidance flag was not preserved")
+	}
+	if transport.calls != 0 {
+		t.Fatalf("visitor relay transport calls=%d, want 0", transport.calls)
+	}
+}
+
+func TestRelayIngressForceSubRechecksInsideAdmittedHandler(t *testing.T) {
+	ctx := context.Background()
+	service := newRelayIngressService(t)
+	taskClient := &relayAdmissionTaskClient{run: true}
+	transport := &forceSubRelayTransportStub{
+		relayVisitorTransportStub: relayVisitorTransportStub{message: 501},
+	}
+	ingress := NewRelayIngress(service, taskClient, transport)
+	ingress.setForceSubGate(&forceSubGateStub{
+		decisions: []forceSubDecision{
+			{Allowed: true, Config: forceSubDecisionConfig()},
+			{JoinRequired: true, Config: forceSubDecisionConfig()},
+		},
+	})
+
+	handled, err := ingress.tryVisitor(ctx, pmrelay.IngressMessage{
+		SenderID: 42, ChatID: 42, MessageID: 11,
+	})
+	if !handled || !errors.Is(err, pmrelay.ErrForceSubRequired) {
+		t.Fatalf("tryVisitor(revoked while queued) handled=%v err=%v", handled, err)
+	}
+	if taskClient.calls != 1 {
+		t.Fatalf("TaskEngine submissions=%d, want relay admission only", taskClient.calls)
+	}
+	if transport.calls != 0 || transport.guidanceCalls != 1 {
+		t.Fatalf("transport/guidance calls=%d/%d, want 0/1", transport.calls, transport.guidanceCalls)
+	}
+}
+
+func TestRelayIngressForceSubRechecksAfterClaimBeforeForward(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := database.RunFeatureMigrations(ctx, db, pmrelay.MigrationProvider{}); err != nil {
+		t.Fatal(err)
+	}
+	repo := pmrelay.NewSQLiteRepository(db)
+	service := pmrelay.NewService(repo, 7)
+	service.SetEnabled(true)
+	taskClient := &relayAdmissionTaskClient{run: true}
+	transport := &forceSubRelayTransportStub{
+		relayVisitorTransportStub: relayVisitorTransportStub{message: 501},
+	}
+	ingress := NewRelayIngress(service, taskClient, transport)
+	gate := &forceSubGateStub{
+		decisions: []forceSubDecision{
+			{Allowed: true, Config: forceSubDecisionConfig()},
+			{Allowed: true, Config: forceSubDecisionConfig()},
+			{JoinRequired: true, Config: forceSubDecisionConfig()},
+		},
+	}
+	ingress.setForceSubGate(gate)
+
+	handled, err := ingress.tryVisitor(ctx, pmrelay.IngressMessage{
+		SenderID: 42, ChatID: 42, MessageID: 11,
+	})
+	if !handled || !errors.Is(err, pmrelay.ErrForceSubRequired) {
+		t.Fatalf("tryVisitor(revoked after claim) handled=%v err=%v", handled, err)
+	}
+	if gate.calls < 3 {
+		t.Fatalf("force-sub checks=%d, want pre-admission + handler + pre-forward", gate.calls)
+	}
+	if transport.calls != 0 || transport.guidanceCalls != 1 {
+		t.Fatalf("transport/guidance calls=%d/%d, want 0/1", transport.calls, transport.guidanceCalls)
+	}
+	delivery, err := repo.GetDelivery(ctx, pmrelay.DeliveryKey{
+		Direction:       pmrelay.DeliveryVisitorToOwner,
+		SourceChatID:    42,
+		SourceMessageID: 11,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delivery.Completed() || delivery.ClaimID != "" {
+		t.Fatalf("post-claim force-sub denial left active delivery=%+v", delivery)
 	}
 }
