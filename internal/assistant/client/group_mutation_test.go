@@ -714,7 +714,6 @@ func TestP7GBasicGroupBanUserNotParticipantIsIdempotentSuccess(t *testing.T) {
 	}
 }
 
-
 func TestP7LBotRightsChangedAfterAdmissionPreventPhysicalMutation(t *testing.T) {
 	api := &mutationAPIStub{
 		botParticipant: mutationBotParticipant(tg.ChatAdminRights{BanUsers: true}),
