@@ -121,3 +121,52 @@ func (a *managedAPI) MessagesGetFullChat(ctx context.Context, chatID int64) (*tg
 		return a.raw.MessagesGetFullChat(opCtx, chatID)
 	})
 }
+
+
+func (a *managedAPI) ChannelsEditBanned(ctx context.Context, req *tg.ChannelsEditBannedRequest) (tg.UpdatesClass, error) {
+	return managedValue(ctx, a, "channels.editBanned", assistentrpc.IdempotentMutation, func(opCtx context.Context) (tg.UpdatesClass, error) {
+		return a.raw.ChannelsEditBanned(opCtx, req)
+	})
+}
+
+func (a *managedAPI) ChannelsEditAdmin(ctx context.Context, req *tg.ChannelsEditAdminRequest) (tg.UpdatesClass, error) {
+	return managedValue(ctx, a, "channels.editAdmin", assistentrpc.IdempotentMutation, func(opCtx context.Context) (tg.UpdatesClass, error) {
+		return a.raw.ChannelsEditAdmin(opCtx, req)
+	})
+}
+
+func (a *managedAPI) MessagesDeleteChatUser(ctx context.Context, req *tg.MessagesDeleteChatUserRequest) (tg.UpdatesClass, error) {
+	return managedValue(ctx, a, "messages.deleteChatUser", assistentrpc.IdempotentMutation, func(opCtx context.Context) (tg.UpdatesClass, error) {
+		return a.raw.MessagesDeleteChatUser(opCtx, req)
+	})
+}
+
+func (a *managedAPI) MessagesEditChatAdmin(ctx context.Context, req *tg.MessagesEditChatAdminRequest) (bool, error) {
+	return managedValue(ctx, a, "messages.editChatAdmin", assistentrpc.IdempotentMutation, func(opCtx context.Context) (bool, error) {
+		return a.raw.MessagesEditChatAdmin(opCtx, req)
+	})
+}
+
+func (a *managedAPI) MessagesUpdatePinnedMessage(ctx context.Context, req *tg.MessagesUpdatePinnedMessageRequest) (tg.UpdatesClass, error) {
+	return managedValue(ctx, a, "messages.updatePinnedMessage", assistentrpc.IdempotentMutation, func(opCtx context.Context) (tg.UpdatesClass, error) {
+		return a.raw.MessagesUpdatePinnedMessage(opCtx, req)
+	})
+}
+
+func (a *managedAPI) MessagesEditChatDefaultBannedRights(ctx context.Context, req *tg.MessagesEditChatDefaultBannedRightsRequest) (tg.UpdatesClass, error) {
+	return managedValue(ctx, a, "messages.editChatDefaultBannedRights", assistentrpc.IdempotentMutation, func(opCtx context.Context) (tg.UpdatesClass, error) {
+		return a.raw.MessagesEditChatDefaultBannedRights(opCtx, req)
+	})
+}
+
+func (a *managedAPI) MessagesGetHistory(ctx context.Context, req *tg.MessagesGetHistoryRequest) (tg.MessagesMessagesClass, error) {
+	return managedValue(ctx, a, "messages.getHistory", assistentrpc.ReadOnly, func(opCtx context.Context) (tg.MessagesMessagesClass, error) {
+		return a.raw.MessagesGetHistory(opCtx, req)
+	})
+}
+
+func (a *managedAPI) MessagesGetReplies(ctx context.Context, req *tg.MessagesGetRepliesRequest) (tg.MessagesMessagesClass, error) {
+	return managedValue(ctx, a, "messages.getReplies", assistentrpc.ReadOnly, func(opCtx context.Context) (tg.MessagesMessagesClass, error) {
+		return a.raw.MessagesGetReplies(opCtx, req)
+	})
+}
