@@ -133,11 +133,13 @@ func (r *SQLiteSurfaceBindingRepository) UpdateBinding(
 	reference Reference,
 	enabled bool,
 	expectedRevision uint64,
+	expectedIncarnation string,
 ) (SurfaceBinding, error) {
 	if r == nil || r.db == nil {
 		return SurfaceBinding{}, ErrResolverUnavailable
 	}
-	if expectedRevision == 0 {
+	expectedIncarnation = strings.TrimSpace(expectedIncarnation)
+	if expectedRevision == 0 || expectedIncarnation == "" {
 		return SurfaceBinding{}, ErrBindingConflict
 	}
 	normalized, err := (SurfaceBinding{
@@ -154,7 +156,7 @@ func (r *SQLiteSurfaceBindingRepository) UpdateBinding(
 		UPDATE saved_response_surface_bindings
 		SET provider = ?, provider_scope_id = ?, provider_key = ?,
 		    enabled = ?, revision = revision + 1, updated_at = ?
-		WHERE surface = ? AND alias = ? AND revision = ?
+		WHERE surface = ? AND alias = ? AND revision = ? AND incarnation = ?
 	`,
 		normalized.Reference.Provider,
 		normalized.Reference.ScopeID,
@@ -164,6 +166,7 @@ func (r *SQLiteSurfaceBindingRepository) UpdateBinding(
 		string(normalized.Surface),
 		normalized.Alias,
 		expectedRevision,
+		expectedIncarnation,
 	)
 	if err != nil {
 		return SurfaceBinding{}, fmt.Errorf("update saved response surface binding: %w", err)
@@ -181,11 +184,19 @@ func (r *SQLiteSurfaceBindingRepository) UpdateBinding(
 	return *updated, nil
 }
 
-func (r *SQLiteSurfaceBindingRepository) SetBindingEnabled(ctx context.Context, surface Surface, alias string, enabled bool, expectedRevision uint64) (SurfaceBinding, error) {
+func (r *SQLiteSurfaceBindingRepository) SetBindingEnabled(
+	ctx context.Context,
+	surface Surface,
+	alias string,
+	enabled bool,
+	expectedRevision uint64,
+	expectedIncarnation string,
+) (SurfaceBinding, error) {
 	if r == nil || r.db == nil {
 		return SurfaceBinding{}, ErrResolverUnavailable
 	}
-	if expectedRevision == 0 {
+	expectedIncarnation = strings.TrimSpace(expectedIncarnation)
+	if expectedRevision == 0 || expectedIncarnation == "" {
 		return SurfaceBinding{}, ErrBindingConflict
 	}
 	surface, alias, err := normalizeSurfaceAlias(surface, alias)
@@ -196,8 +207,8 @@ func (r *SQLiteSurfaceBindingRepository) SetBindingEnabled(ctx context.Context, 
 	result, err := r.db.ExecContext(ctx, `
 		UPDATE saved_response_surface_bindings
 		SET enabled = ?, revision = revision + 1, updated_at = ?
-		WHERE surface = ? AND alias = ? AND revision = ?
-	`, enabled, now, string(surface), alias, expectedRevision)
+		WHERE surface = ? AND alias = ? AND revision = ? AND incarnation = ?
+	`, enabled, now, string(surface), alias, expectedRevision, expectedIncarnation)
 	if err != nil {
 		return SurfaceBinding{}, fmt.Errorf("set saved response surface binding enabled: %w", err)
 	}
@@ -214,11 +225,18 @@ func (r *SQLiteSurfaceBindingRepository) SetBindingEnabled(ctx context.Context, 
 	return *updated, nil
 }
 
-func (r *SQLiteSurfaceBindingRepository) DeleteBinding(ctx context.Context, surface Surface, alias string, expectedRevision uint64) error {
+func (r *SQLiteSurfaceBindingRepository) DeleteBinding(
+	ctx context.Context,
+	surface Surface,
+	alias string,
+	expectedRevision uint64,
+	expectedIncarnation string,
+) error {
 	if r == nil || r.db == nil {
 		return ErrResolverUnavailable
 	}
-	if expectedRevision == 0 {
+	expectedIncarnation = strings.TrimSpace(expectedIncarnation)
+	if expectedRevision == 0 || expectedIncarnation == "" {
 		return ErrBindingConflict
 	}
 	surface, alias, err := normalizeSurfaceAlias(surface, alias)
@@ -227,8 +245,8 @@ func (r *SQLiteSurfaceBindingRepository) DeleteBinding(ctx context.Context, surf
 	}
 	result, err := r.db.ExecContext(ctx, `
 		DELETE FROM saved_response_surface_bindings
-		WHERE surface = ? AND alias = ? AND revision = ?
-	`, string(surface), alias, expectedRevision)
+		WHERE surface = ? AND alias = ? AND revision = ? AND incarnation = ?
+	`, string(surface), alias, expectedRevision, expectedIncarnation)
 	if err != nil {
 		return fmt.Errorf("delete saved response surface binding: %w", err)
 	}
