@@ -72,6 +72,7 @@ type Router struct {
 	delayedActions       core.DelayedActionScheduler
 	groupRoles           core.GroupRoleResolver
 	groupQuery           GroupQueryReader
+	groupMutation        GroupMutationExecutor
 	groupState           core.GroupStateStore
 	botUsername          atomic.Value // string
 	ownerID              int64
@@ -111,6 +112,11 @@ func (r *Router) SetGroupRoleResolver(resolver core.GroupRoleResolver) {
 // by manager canaries such as /chatinfo.
 func (r *Router) SetGroupQueryReader(reader GroupQueryReader) {
 	r.groupQuery = reader
+}
+
+// SetGroupMutationExecutor installs the managed P7-G Telegram mutation boundary.
+func (r *Router) SetGroupMutationExecutor(executor GroupMutationExecutor) {
+	r.groupMutation = executor
 }
 
 // SetGroupStateStore installs the durable chat-scoped manager state boundary.
@@ -640,8 +646,17 @@ func (r *Router) dispatch(
 			Chat:           &chat,
 			Perms:          perms,
 			Principal:      principal,
-			GroupRoles:     r.groupRoles,
-			Svc:            &assistantServicerAdapter{inter: inter, groupQuery: r.groupQuery},
+			GroupRoles: r.groupRoles,
+			Svc: &assistantServicerAdapter{
+				inter:         inter,
+				groupQuery:    r.groupQuery,
+				groupMutation: r.groupMutation,
+				mutationContext: GroupMutationContext{
+					ActorID: senderID,
+					ChatID:  chat.ID,
+					Kind:    chat.Kind(),
+				},
+			},
 			DelayedActions: r.delayedActions,
 		}
 		core.AttachGroupStateStore(coreCtx, r.groupState)
