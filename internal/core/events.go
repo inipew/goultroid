@@ -179,6 +179,7 @@ type GroupServiceEvent struct {
 	Peer      tg.InputPeerClass
 	MessageID int
 	ActorID   int64
+	UserCount int
 	Users     []GroupServiceUser
 }
 
