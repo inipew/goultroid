@@ -780,3 +780,170 @@ func TestExecuteOwnerRevalidatesMappingAgainAfterClaim(t *testing.T) {
 		t.Fatalf("mapping revalidation failure left active delivery=%+v", delivery)
 	}
 }
+
+
+func TestPrepareVisitorSuppressesDurablyBlockedVisitorBeforeAdmission(t *testing.T) {
+	ctx := context.Background()
+	repo, _ := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8, Blocked: 8})
+	base := time.Date(2026, 9, 22, 20, 30, 0, 0, time.UTC)
+	service := NewService(repo, 7)
+	service.now = func() time.Time { return base }
+	service.SetEnabled(true)
+	if _, err := service.BlockVisitor(ctx, 42, "spam"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, handled, err := service.PrepareVisitor(ctx, IngressMessage{
+		SenderID: 42, ChatID: 42, MessageID: 11,
+	})
+	if err != nil || handled {
+		t.Fatalf("PrepareVisitor(blocked) handled=%v err=%v, want false nil", handled, err)
+	}
+}
+
+func TestPrepareOwnerReplyFailsClosedForBlockedMappedVisitor(t *testing.T) {
+	ctx := context.Background()
+	repo, _ := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8, Blocked: 8})
+	base := time.Date(2026, 9, 22, 20, 45, 0, 0, time.UTC)
+	service := NewService(repo, 7)
+	service.now = func() time.Time { return base.Add(time.Minute) }
+	service.SetEnabled(true)
+	if _, err := repo.EnsureMapping(ctx, Mapping{
+		OwnerChatID: 7, OwnerMessageID: 100,
+		VisitorUserID: 42, VisitorMessageID: 11,
+		CreatedAt: base, ExpiresAt: base.Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.BlockVisitor(ctx, 42, "abuse"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, handled, err := service.PrepareOwnerReply(ctx, IngressMessage{
+		SenderID: 7, ChatID: 7, MessageID: 101, ReplyToMessageID: 100,
+	})
+	if !handled || !errors.Is(err, ErrVisitorBlocked) {
+		t.Fatalf("PrepareOwnerReply(blocked) handled=%v err=%v, want handled ErrVisitorBlocked", handled, err)
+	}
+}
+
+func TestExecuteVisitorRevalidatesBlockAfterClaimBeforeTransport(t *testing.T) {
+	ctx := context.Background()
+	sqliteRepo, _ := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8, Blocked: 8})
+	repo := &claimHookRepository{Repository: sqliteRepo}
+	base := time.Date(2026, 9, 22, 21, 0, 0, 0, time.UTC)
+	service := NewService(repo, 7)
+	service.now = func() time.Time { return base }
+	service.randomID = func() (int64, error) { return 777, nil }
+	service.claimID = func() (string, error) { return "claim-block-visitor", nil }
+	service.SetEnabled(true)
+	prepared := prepareVisitorForDelivery(t, service)
+	repo.afterClaim = func() {
+		if _, err := service.BlockVisitor(context.Background(), 42, "late block"); err != nil {
+			t.Errorf("BlockVisitor() after claim error=%v", err)
+		}
+	}
+	transport := &visitorTransportStub{message: 501}
+
+	if err := service.ExecuteVisitor(ctx, prepared, transport); !errors.Is(err, ErrVisitorBlocked) {
+		t.Fatalf("ExecuteVisitor(blocked after claim) error=%v, want %v", err, ErrVisitorBlocked)
+	}
+	if transport.calls != 0 {
+		t.Fatalf("visitor transport ran after late block: calls=%d", transport.calls)
+	}
+	delivery, err := sqliteRepo.GetDelivery(ctx, DeliveryKey{
+		Direction: DeliveryVisitorToOwner, SourceChatID: 42, SourceMessageID: 11,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delivery.ClaimID != "" || delivery.Completed() {
+		t.Fatalf("late block left active visitor delivery=%+v", delivery)
+	}
+}
+
+func TestExecuteOwnerRevalidatesBlockAfterClaimBeforeTransport(t *testing.T) {
+	ctx := context.Background()
+	sqliteRepo, _ := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8, Blocked: 8})
+	repo := &claimHookRepository{Repository: sqliteRepo}
+	base := time.Date(2026, 9, 22, 21, 30, 0, 0, time.UTC)
+	service := NewService(repo, 7)
+	service.now = func() time.Time { return base.Add(time.Minute) }
+	service.randomID = func() (int64, error) { return 888, nil }
+	service.claimID = func() (string, error) { return "claim-block-owner", nil }
+	service.SetEnabled(true)
+	prepared := prepareOwnerForDelivery(t, ctx, repo, service, base)
+	repo.afterClaim = func() {
+		if _, err := service.BlockVisitor(context.Background(), 42, "late block"); err != nil {
+			t.Errorf("BlockVisitor() after claim error=%v", err)
+		}
+	}
+	transport := &ownerTransportStub{message: 601}
+
+	if err := service.ExecuteOwner(ctx, prepared, transport); !errors.Is(err, ErrVisitorBlocked) {
+		t.Fatalf("ExecuteOwner(blocked after claim) error=%v, want %v", err, ErrVisitorBlocked)
+	}
+	if transport.calls != 0 {
+		t.Fatalf("owner transport ran after late block: calls=%d", transport.calls)
+	}
+	delivery, err := sqliteRepo.GetDelivery(ctx, DeliveryKey{
+		Direction: DeliveryOwnerToVisitor, SourceChatID: 7, SourceMessageID: 501,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delivery.ClaimID != "" || delivery.Completed() {
+		t.Fatalf("late block left active owner delivery=%+v", delivery)
+	}
+}
+
+func TestRelayControlStatusAndVisitorDetails(t *testing.T) {
+	ctx := context.Background()
+	repo, _ := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8, Blocked: 8})
+	base := time.Date(2026, 9, 22, 22, 0, 0, 0, time.UTC)
+	service := NewService(repo, 7)
+	service.now = func() time.Time { return base.Add(time.Minute) }
+	service.SetEnabled(true)
+	if _, err := repo.EnsureMapping(ctx, Mapping{
+		OwnerChatID: 7, OwnerMessageID: 100,
+		VisitorUserID: 42, VisitorMessageID: 11,
+		CreatedAt: base, ExpiresAt: base.Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.TouchAudience(ctx, AudienceTouch{
+		UserID: 42, Source: AudienceSourceRelay, SeenAt: base,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.BlockVisitor(ctx, 42, "spam"); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := service.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Enabled || status.Mappings != 1 || status.Audience != 1 || status.Blocked != 1 {
+		t.Fatalf("Status()=%+v", status)
+	}
+
+	details, err := service.VisitorDetails(ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if details.Mapping.VisitorUserID != 42 || details.Audience == nil || details.Block == nil ||
+		details.Block.Reason != "spam" {
+		t.Fatalf("VisitorDetails()=%+v", details)
+	}
+	if removed, err := service.UnblockVisitor(ctx, 42); err != nil || !removed {
+		t.Fatalf("UnblockVisitor() removed=%v err=%v", removed, err)
+	}
+	details, err = service.VisitorDetails(ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if details.Block != nil {
+		t.Fatalf("VisitorDetails() block after unblock=%+v", details.Block)
+	}
+}
