@@ -270,19 +270,24 @@ P7-F tests cover:
 - create-only revision 1;
 - exact-revision update;
 - stale CAS conflict;
+- concurrent same-revision CAS has exactly one winner;
 - exact-revision delete;
 - expired rows invisible to reads;
 - lazy bounded expiry reclamation;
 - live state never evicted at capacity;
 - hard capacity failure;
+- concurrent creates cannot exceed configured capacity;
 - bounded explicit pruning;
 - max value/limit validation;
+- additive migration upgrade from published `001`;
+- SQLite rejection of oversized values and non-canonical coordinates;
 - direct repository write rejected without opaque grant;
 - fresh authorization immediately before persistence;
 - Owner/Sudo not bypassing Telegram admin role;
 - member-level write requirements rejected;
 - role revoked between TaskEngine admission and persistence prevents the write;
 - no Settings dependency;
+- single production ownership of the durable table;
 - no background goroutine/ticker/poller.
 
 ## P7-G boundary
