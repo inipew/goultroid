@@ -12,9 +12,9 @@ import (
 )
 
 var (
-	ErrDisabled       = errors.New("pmrelay: relay disabled")
-	ErrPreparedStale  = errors.New("pmrelay: prepared ingress stale")
-	ErrMappingExpired = errors.New("pmrelay: mapping expired")
+	ErrDisabled            = errors.New("pmrelay: relay disabled")
+	ErrPreparedStale       = errors.New("pmrelay: prepared ingress stale")
+	ErrMappingExpired      = errors.New("pmrelay: mapping expired")
 	ErrUnsupportedDelivery = errors.New("pmrelay: unsupported delivery")
 )
 
@@ -77,8 +77,8 @@ type VisitorExecutor interface {
 	ExecuteVisitor(context.Context, PreparedIngress, VisitorTransport) error
 }
 
-// Service owns relay admission policy and durable reply-routing revalidation.
-// P6-B deliberately has no Telegram transport dependency.
+// Service owns relay admission policy, durable visitor delivery state, and
+// reply-routing revalidation. Telegram remains behind the VisitorTransport port.
 type Service struct {
 	repo    Repository
 	ownerID int64
