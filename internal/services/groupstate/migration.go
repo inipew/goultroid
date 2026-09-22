@@ -11,9 +11,11 @@ type MigrationProvider struct{}
 
 type migration001 struct{}
 type migration002 struct{}
+type migration003 struct{}
 
 var _ database.SchemaInvariantMigration = migration001{}
 var _ database.SchemaInvariantMigration = migration002{}
+var _ database.SchemaInvariantMigration = migration003{}
 
 var schemaStatements = []string{
 	`CREATE TABLE IF NOT EXISTS assistant_group_state (
@@ -32,7 +34,7 @@ var schemaStatements = []string{
 }
 
 func (MigrationProvider) Migrations() []database.Migration {
-	return []database.Migration{migration001{}, migration002{}}
+	return []database.Migration{migration001{}, migration002{}, migration003{}}
 }
 
 func (migration001) ID() string { return "assistant_group_state.001" }
@@ -133,3 +135,76 @@ func (migration002) VerifySchema(ctx context.Context, tx database.SQLExecutor) e
 	return nil
 }
 
+
+var coordinateBoundStatements = []string{
+	`CREATE TRIGGER IF NOT EXISTS trg_assistant_group_state_coordinate_insert
+		BEFORE INSERT ON assistant_group_state
+		WHEN NEW.namespace = ''
+		  OR NEW.key = ''
+		  OR length(CAST(NEW.namespace AS BLOB)) > 64
+		  OR length(CAST(NEW.key AS BLOB)) > 128
+		  OR NEW.namespace <> trim(NEW.namespace)
+		  OR NEW.key <> trim(NEW.key)
+		  OR NEW.namespace <> lower(NEW.namespace)
+		  OR NEW.key <> lower(NEW.key)
+		  OR NEW.namespace GLOB '*[^a-z0-9._:/-]*'
+		  OR NEW.key GLOB '*[^a-z0-9._:/-]*'
+		BEGIN
+			SELECT RAISE(ABORT, 'assistant_group_state coordinate is not canonical');
+		END;`,
+	`CREATE TRIGGER IF NOT EXISTS trg_assistant_group_state_coordinate_update
+		BEFORE UPDATE OF namespace, key ON assistant_group_state
+		WHEN NEW.namespace = ''
+		  OR NEW.key = ''
+		  OR length(CAST(NEW.namespace AS BLOB)) > 64
+		  OR length(CAST(NEW.key AS BLOB)) > 128
+		  OR NEW.namespace <> trim(NEW.namespace)
+		  OR NEW.key <> trim(NEW.key)
+		  OR NEW.namespace <> lower(NEW.namespace)
+		  OR NEW.key <> lower(NEW.key)
+		  OR NEW.namespace GLOB '*[^a-z0-9._:/-]*'
+		  OR NEW.key GLOB '*[^a-z0-9._:/-]*'
+		BEGIN
+			SELECT RAISE(ABORT, 'assistant_group_state coordinate is not canonical');
+		END;`,
+}
+
+func (migration003) ID() string { return "assistant_group_state.003" }
+
+func (migration003) Description() string {
+	return "Enforce canonical Assistant group-state coordinates"
+}
+
+func (migration003) Checksum() string {
+	return "d73da4fabcc615ddd70ff19f673224a279f51a3d1faf32effcb731a4c16ee817"
+}
+
+func (migration003) LegacyVersions() []int { return nil }
+
+func (migration003) Up(ctx context.Context, tx database.SQLExecutor) error {
+	for _, statement := range coordinateBoundStatements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (migration003) VerifySchema(ctx context.Context, tx database.SQLExecutor) error {
+	for _, trigger := range []string{
+		"trg_assistant_group_state_coordinate_insert",
+		"trg_assistant_group_state_coordinate_update",
+	} {
+		var count int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT count(*) FROM sqlite_master
+			WHERE type = 'trigger' AND name = ?
+		`, trigger).Scan(&count); err != nil {
+			return err
+		}
+		if count != 1 {
+			return fmt.Errorf("required trigger %s does not exist", trigger)
+		}
+	}
+	return nil
+}
