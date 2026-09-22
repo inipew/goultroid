@@ -251,7 +251,6 @@ than overloading PM Relay block semantics.
 P6-F does not add:
 
 - a user-facing broadcast command/UI;
-- force-sub;
 - audience segmentation/filter expressions;
 - a second fan-out engine;
 - per-audience custom rate limits;
@@ -261,3 +260,11 @@ P6-F does not add:
 
 Those can be layered later without changing the durable membership identity or
 bounded Broadcast execution model.
+
+
+## Later force-sub integration
+
+P6-G adds an optional force-sub gate only to the PM Relay visitor → owner path.
+It does not use Assistant audience membership as proof of channel membership
+and does not remove non-members from this registry. Successful relays still
+record AudienceSourceRelay only after durable delivery commit.
