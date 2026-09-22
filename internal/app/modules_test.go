@@ -85,6 +85,34 @@ func TestBuiltinFeatureMigrationsIncludeGlobalMediaRegistry(t *testing.T) {
 	}
 }
 
+func TestBuiltinFeatureMigrationsIncludePMRelaySchema(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := migrateBuiltinFeatures(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, table := range []string{
+		"pm_relay_mappings",
+		"pm_relay_deliveries",
+		"assistant_audience_members",
+	} {
+		var count int
+		if err := db.QueryRowContext(ctx, `
+			SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?
+		`, table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("PM relay table %q missing after builtin migrations", table)
+		}
+	}
+}
+
 func TestBuiltinPersistentMediaReconcileRunsAfterFeatureMigrations(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(":memory:")
