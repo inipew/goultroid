@@ -358,3 +358,66 @@ func TestSQLiteSchemaRejectsOversizedValueBypass(t *testing.T) {
 		t.Fatalf("oversized raw row persisted count=%d", count)
 	}
 }
+
+
+type migration001OnlyProvider struct{}
+
+func (migration001OnlyProvider) Migrations() []database.Migration {
+	return []database.Migration{migration001{}}
+}
+
+func TestP7FMigration001UpgradeToValueBound(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if got := (migration001{}).Checksum(); got != "4963bf013a3370d9ba521c005c408dfbbe51064aeb6d976d68f2dd19cc2d4f5e" {
+		t.Fatalf("assistant_group_state.001 checksum changed: %s", got)
+	}
+	if err := database.RunFeatureMigrations(ctx, db, migration001OnlyProvider{}); err != nil {
+		t.Fatalf("apply migration001 only: %v", err)
+	}
+
+	var applied int
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM feature_schema_migrations
+		WHERE id = 'assistant_group_state.001'
+	`).Scan(&applied); err != nil {
+		t.Fatal(err)
+	}
+	if applied != 1 {
+		t.Fatalf("migration001 applied count=%d, want 1", applied)
+	}
+
+	if err := database.RunFeatureMigrations(ctx, db, MigrationProvider{}); err != nil {
+		t.Fatalf("upgrade migration001 -> current provider: %v", err)
+	}
+
+	for _, trigger := range []string{
+		"trg_assistant_group_state_value_insert",
+		"trg_assistant_group_state_value_update",
+	} {
+		var count int
+		if err := db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM sqlite_master
+			WHERE type = 'trigger' AND name = ?
+		`, trigger).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("upgrade missing trigger %s", trigger)
+		}
+	}
+
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO assistant_group_state (
+			chat_id, namespace, key, value, revision, updated_by, updated_at
+		) VALUES (?, ?, ?, ?, 1, ?, ?)
+	`, 99, "manager", "upgrade", make([]byte, core.MaxGroupStateValueBytes+1), 7, time.Now().UTC())
+	if err == nil {
+		t.Fatal("post-upgrade database accepted oversized value")
+	}
+}
