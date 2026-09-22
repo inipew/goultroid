@@ -15,6 +15,7 @@ import (
 	"github.com/inipew/goultroid/internal/interaction/orchestration"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/presentation"
+	"github.com/inipew/goultroid/internal/services/pmrelay"
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 	"go.uber.org/zap"
 )
@@ -256,6 +257,8 @@ func TestAssistantShellOwnerStartUsesA2Canary(t *testing.T) {
 	}
 	client := NewAssistantClient(1, "hash", "token", zap.NewNop())
 	client.SetOwner(7, nil)
+	audience, audienceRepo := newAssistantAudienceRegistry(t)
+	client.SetAudienceRegistry(audience)
 	client.mu.Lock()
 	client.featureCatalog = manager.FeatureCatalog()
 	client.interactionIngress = &interactionIngress{engine: engine}
@@ -278,6 +281,13 @@ func TestAssistantShellOwnerStartUsesA2Canary(t *testing.T) {
 	if got := manager.InteractionRuntime().Stats().Sessions; got != 1 {
 		t.Fatalf("live shell sessions = %d, want 1", got)
 	}
+	member, err := audienceRepo.GetAudience(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("owner start audience missing: %v", err)
+	}
+	if member.Sources != pmrelay.AudienceSourceStart {
+		t.Fatalf("owner start audience sources=%d, want start", member.Sources)
+	}
 }
 
 func TestAssistantShellVisitorStartUsesPublicReadOnlyPath(t *testing.T) {
@@ -294,6 +304,8 @@ func TestAssistantShellVisitorStartUsesPublicReadOnlyPath(t *testing.T) {
 	}
 	client := NewAssistantClient(1, "hash", "token", zap.NewNop())
 	client.SetOwner(7, nil)
+	audience, audienceRepo := newAssistantAudienceRegistry(t)
+	client.SetAudienceRegistry(audience)
 	public := &publicStartInteraction{}
 	client.mu.Lock()
 	client.featureCatalog = manager.FeatureCatalog()
@@ -314,6 +326,13 @@ func TestAssistantShellVisitorStartUsesPublicReadOnlyPath(t *testing.T) {
 	}
 	if got := manager.InteractionRuntime().Stats().Sessions; got != 0 {
 		t.Fatalf("visitor created a2 session = %d, want 0", got)
+	}
+	member, err := audienceRepo.GetAudience(context.Background(), 99)
+	if err != nil {
+		t.Fatalf("visitor start audience missing: %v", err)
+	}
+	if member.Sources != pmrelay.AudienceSourceStart {
+		t.Fatalf("visitor start audience sources=%d, want start", member.Sources)
 	}
 }
 
