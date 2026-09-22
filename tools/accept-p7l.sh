@@ -28,6 +28,8 @@ go test -race \
   ./internal/assistant/... \
   ./internal/core \
   ./internal/admission \
+  ./internal/taskengine \
+  ./internal/app \
   ./internal/services/groupstate \
   ./internal/telegram \
   ./plugins/admin \
@@ -44,6 +46,8 @@ go test \
   ./internal/assistant/grouprules \
   ./internal/core \
   ./internal/admission \
+  ./internal/taskengine \
+  ./internal/app \
   ./internal/services/groupstate \
   ./internal/telegram \
   ./internal/architecture \
