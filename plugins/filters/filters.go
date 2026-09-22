@@ -233,6 +233,7 @@ func (p *Plugin) submitContinuation(
 	resources = append([]tasks.ResourceRequirement(nil), resources...)
 	_, err := p.tasks.Submit(admissionCtx, tasks.WorkSpec{
 		ID:               p.nextTaskID(kind, chatID),
+		QuotaOwner:       tasks.OwnerID(fmt.Sprintf("telegram:chat:%d", chatID)),
 		Pool:             pool,
 		Class:            tasks.PriorityNormal,
 		OrderingKey:      core.GroupOrderingKey(chatID, topicID),
