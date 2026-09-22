@@ -126,6 +126,9 @@ func TestP7HActiveJoinDeduplicatesUsersAndExcludesAssistant(t *testing.T) {
 	if len(event.Users) != 2 || event.Users[0].ID != 42 || event.Users[1].ID != 43 {
 		t.Fatalf("users=%+v, want [42 43]", event.Users)
 	}
+	if event.UserCount != 2 {
+		t.Fatalf("user count=%d, want 2", event.UserCount)
+	}
 	if _, ok := event.Peer.(*tg.InputPeerChat); !ok {
 		t.Fatalf("peer=%T, want InputPeerChat", event.Peer)
 	}
@@ -271,5 +274,37 @@ func TestP7HInactiveSupergroupDoesNotResolveMissingEntity(t *testing.T) {
 	}
 	if len(ingress.published) != 0 {
 		t.Fatalf("inactive supergroup published %d events", len(ingress.published))
+	}
+}
+
+
+func TestP7KGroupServiceUserMaterializationIsBounded(t *testing.T) {
+	ingress := &groupServiceIngressStub{interested: true}
+	userIDs := make([]int64, maxAssistantGroupServiceUsers*4)
+	for i := range userIDs {
+		userIDs[i] = int64(i + 1)
+	}
+	message := &tg.MessageService{
+		ID:     17,
+		PeerID: &tg.PeerChat{ChatID: 77},
+		FromID: &tg.PeerUser{UserID: 7},
+		Action: &tg.MessageActionChatAddUser{Users: userIDs},
+	}
+	handleAssistantGroupService(context.Background(), message, tg.Entities{
+		Chats: map[int64]*tg.Chat{77: {ID: 77, Title: "Large Group"}},
+	}, UpdateHandlerDeps{
+		GroupEvents: ingress,
+		SelfID:      func() int64 { return 9999 },
+	})
+
+	if len(ingress.published) != 1 {
+		t.Fatalf("published events=%d, want 1", len(ingress.published))
+	}
+	event := ingress.published[0]
+	if len(event.Users) != maxAssistantGroupServiceUsers {
+		t.Fatalf("materialized users=%d, want cap %d", len(event.Users), maxAssistantGroupServiceUsers)
+	}
+	if event.UserCount != len(userIDs) {
+		t.Fatalf("reported user count=%d want %d", event.UserCount, len(userIDs))
 	}
 }
