@@ -12,6 +12,7 @@ import (
 	"github.com/inipew/goultroid/internal/addon"
 	"github.com/inipew/goultroid/internal/assistant"
 	assistantdeeplink "github.com/inipew/goultroid/internal/assistant/deeplink"
+	"github.com/inipew/goultroid/internal/assistant/grouprules"
 	groupeventsadmin "github.com/inipew/goultroid/internal/assistant/groupeventsadmin"
 	assistantinteraction "github.com/inipew/goultroid/internal/assistant/interaction"
 	pmrelayadmin "github.com/inipew/goultroid/internal/assistant/pmrelayadmin"
@@ -318,6 +319,32 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	}
 	if err := registerBuiltinModules(context.Background(), featureRuntime); err != nil {
 		return nil, err
+	}
+
+	blacklistPlugin, ok := pluginManager.Find("blacklist")
+	if !ok {
+		return nil, fmt.Errorf("P7-I blacklist plugin is not registered")
+	}
+	blacklistRules, ok := blacklistPlugin.(grouprules.Source)
+	if !ok {
+		return nil, fmt.Errorf("P7-I blacklist plugin does not expose canonical group rules")
+	}
+	filterPlugin, ok := pluginManager.Find("filters")
+	if !ok {
+		return nil, fmt.Errorf("P7-I filters plugin is not registered")
+	}
+	filterRules, ok := filterPlugin.(grouprules.Source)
+	if !ok {
+		return nil, fmt.Errorf("P7-I filters plugin does not expose canonical group rules")
+	}
+	groupRules := grouprules.New(blacklistRules, filterRules)
+	groupRules.SetEnabledChecker(pluginManager.IsEnabled)
+	if tgRuntime.assistant != nil {
+		if aware, ok := tgRuntime.assistant.(interface {
+			SetGroupRuleService(*grouprules.Service)
+		}); ok {
+			aware.SetGroupRuleService(groupRules)
+		}
 	}
 
 	settingsLive, err := buildLiveSettingsBinder(coreDeps, domServices, pluginManager, logLevel)
