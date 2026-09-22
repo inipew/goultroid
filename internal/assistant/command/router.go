@@ -255,6 +255,8 @@ func sendContextualGroupFeedback(
 	}
 	switch {
 	case errors.Is(err, core.ErrGroupAuthorizationDenied),
+		errors.Is(err, core.ErrGroupOnly),
+		errors.Is(err, core.ErrUnsupported),
 		errors.Is(err, core.ErrUnavailable),
 		errors.Is(err, core.ErrResourceLimit):
 		_, _ = inter.SendMessage(ctx, peer, core.UserMessage(err), nil)
