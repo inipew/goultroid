@@ -323,3 +323,84 @@ func TestP7IConcurrentSameTargetWarnHasSingleThresholdEnforcement(t *testing.T) 
 		t.Fatalf("warnings after successful threshold enforcement=%d, want 0", count)
 	}
 }
+
+
+type p7iBlockingMuteService struct {
+	core.MockTelegramServicer
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *p7iBlockingMuteService) MuteUser(
+	context.Context,
+	tg.InputPeerClass,
+	tg.InputPeerClass,
+	int,
+) error {
+	select {
+	case <-s.entered:
+	default:
+		close(s.entered)
+	}
+	<-s.release
+	return nil
+}
+
+func TestP7IResetWaitsForSameTargetWarningSequence(t *testing.T) {
+	repo := &memoryWarningRepository{}
+	transport := &p7iBlockingMuteService{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	service := NewService(repo, transport, zap.NewNop())
+	peer := &tg.InputPeerChat{ChatID: 100}
+	user := &tg.InputPeerUser{UserID: 200}
+
+	warnDone := make(chan error, 1)
+	go func() {
+		_, err := service.Warn(
+			context.Background(),
+			peer,
+			user,
+			100,
+			200,
+			"threshold",
+			999,
+			1,
+			ActionMute,
+		)
+		warnDone <- err
+	}()
+
+	select {
+	case <-transport.entered:
+	case <-time.After(time.Second):
+		t.Fatal("warning did not reach threshold enforcement")
+	}
+
+	resetDone := make(chan error, 1)
+	go func() {
+		resetDone <- service.ResetWarnings(context.Background(), 100, 200)
+	}()
+
+	select {
+	case err := <-resetDone:
+		t.Fatalf("reset crossed same-target warning stripe before enforcement completed: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(transport.release)
+	if err := <-warnDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-resetDone; err != nil {
+		t.Fatal(err)
+	}
+	count, err := service.GetWarningCount(context.Background(), 100, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("warnings after serialized enforcement/reset=%d, want 0", count)
+	}
+}
