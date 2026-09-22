@@ -816,6 +816,24 @@ func (e *Engine) executeWithPeerType(ctx context.Context, svc core.TelegramServi
 		resp = &InlineResponse{Results: results}
 	}
 
+	if resolved.FeatureID != "" {
+		for _, result := range resp.Results {
+			if resultHasRawCallbackMarkup(result) {
+				err := fmt.Errorf("feature-owned inline result %q embeds raw callback data", result.ID)
+				e.logger.Warn("inline raw callback rejected", zap.Error(err), zap.String("correlation_id", correlationID), zap.String("pattern", handler.Pattern()))
+				if e.metrics != nil {
+					e.metrics.RecordInline(false, 0, time.Since(start), err)
+				}
+				if svc != nil {
+					fallback := fallbackErrorResults(err)
+					tgRes := e.serializeResults(fallback)
+					_ = svc.AnswerInlineQueryOptions(ctx, queryID, tgRes, core.InlineAnswerOptions{NextOffset: "", CacheTime: 1, Private: true})
+				}
+				return err
+			}
+		}
+	}
+
 	interactiveResults := false
 	for _, result := range resp.Results {
 		if len(result.ActionRows) > 0 {
