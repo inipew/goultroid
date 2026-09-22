@@ -692,40 +692,13 @@ func (e *Engine) executeWithPeerType(ctx context.Context, svc core.TelegramServi
 				e.metrics.RecordInline(true, len(cached), time.Since(start), nil)
 			}
 			pageResults, nextOffset := e.paginator.Paginate(cached, offset)
-			interactionSessionsCommitted := false
-	var interactionSessions []string
-	if interactiveResults {
-		compiledPage, created, _, compileErr := e.compileTypedActions(ctx, resolved, userID, pageResults)
-		if compileErr != nil {
-			e.logger.Warn("inline typed action compilation failed", zap.Error(compileErr), zap.String("correlation_id", correlationID), zap.String("pattern", handler.Pattern()))
-			if e.metrics != nil {
-				e.metrics.RecordInline(false, 0, time.Since(start), compileErr)
-			}
-			if svc != nil {
-				fallback := fallbackErrorResults(compileErr)
-				tgRes := e.serializeResults(fallback)
-				_ = svc.AnswerInlineQueryOptions(ctx, queryID, tgRes, core.InlineAnswerOptions{NextOffset: "", CacheTime: 1, Private: true})
-			}
-			return compileErr
-		}
-		pageResults = compiledPage
-		interactionSessions = created
-		defer func() {
-			if interactionSessionsCommitted || e.sessions == nil {
-				return
-			}
-			for _, id := range interactionSessions {
-				e.sessions.Cancel(id)
-			}
-		}()
-	}
-
-	tgResults := e.serializeResults(pageResults)
+			tgResults := e.serializeResults(pageResults)
 			if len(tgResults) > 50 {
 				tgResults = tgResults[:50]
 			}
 			if svc != nil {
-				// Use scoped cacheTime; for cached we reuse e.cacheTime
+				// Cached responses cannot contain typed a2 interactions because
+				// interactive responses are always CacheNone.
 				err := svc.AnswerInlineQuery(ctx, queryID, tgResults, nextOffset, e.cacheTime)
 				if err != nil && e.metrics != nil {
 					e.metrics.RecordInline(false, len(tgResults), time.Since(start), err)
@@ -865,6 +838,34 @@ func (e *Engine) executeWithPeerType(ctx context.Context, svc core.TelegramServi
 		if resp.NextOffset != "" {
 			nextOffset = resp.NextOffset
 		}
+	}
+
+	interactionSessionsCommitted := false
+	var interactionSessions []string
+	if interactiveResults {
+		compiledPage, created, _, compileErr := e.compileTypedActions(ctx, resolved, userID, pageResults)
+		if compileErr != nil {
+			e.logger.Warn("inline typed action compilation failed", zap.Error(compileErr), zap.String("correlation_id", correlationID), zap.String("pattern", handler.Pattern()))
+			if e.metrics != nil {
+				e.metrics.RecordInline(false, 0, time.Since(start), compileErr)
+			}
+			if svc != nil {
+				fallback := fallbackErrorResults(compileErr)
+				tgRes := e.serializeResults(fallback)
+				_ = svc.AnswerInlineQueryOptions(ctx, queryID, tgRes, core.InlineAnswerOptions{NextOffset: "", CacheTime: 1, Private: true})
+			}
+			return compileErr
+		}
+		pageResults = compiledPage
+		interactionSessions = created
+		defer func() {
+			if interactionSessionsCommitted || e.sessions == nil {
+				return
+			}
+			for _, id := range interactionSessions {
+				e.sessions.Cancel(id)
+			}
+		}()
 	}
 
 	tgResults := e.serializeResults(pageResults)
