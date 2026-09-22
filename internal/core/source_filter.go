@@ -24,8 +24,17 @@ func FilterMiddlewareForSource(cmd Command, source ExecutionSource) Middleware {
 				}
 				return next(ctx)
 			}
-			if cmd.GroupOnly && !ctx.IsGroup() {
-				return ErrGroupOnly
+			if cmd.GroupOnly {
+				groupAllowed := ctx.IsGroup()
+				if source == ExecutionAssistant {
+					// Assistant manager commands require an authoritative basic-group
+					// or supergroup classification. A bare InputPeerChannel is
+					// ambiguous and therefore fails closed as a broadcast channel.
+					groupAllowed = ctx.IsManagerGroup()
+				}
+				if !groupAllowed {
+					return ErrGroupOnly
+				}
 			}
 			if cmd.PrivateOnly && !ctx.IsPrivate() {
 				return ErrPrivateOnly

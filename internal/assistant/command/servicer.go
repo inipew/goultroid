@@ -2,11 +2,18 @@ package command
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/core"
 )
+
+// ErrGroupMutationUnavailable fences Assistant group mutations until the P7
+// manager transport has authoritative actor/bot rights revalidation and managed
+// Telegram RPC wiring. It prevents the embedded mock fallback from reporting a
+// mutation as successful when no Telegram operation occurred.
+var ErrGroupMutationUnavailable = fmt.Errorf("%w: assistant group mutation transport is not configured", core.ErrUnavailable)
 
 // assistantServicerAdapter adapts Assistant MessageInteraction into core.TelegramServicer
 // so plugin command handlers can transparently use ctx.Reply, ctx.EditOrReply, and ctx.ReplyMarkup.
@@ -77,4 +84,49 @@ func (a *assistantServicerAdapter) GetMessage(ctx context.Context, peer tg.Input
 		return a.inter.GetMessage(ctx, interaction.NewMessageTarget(peer, msgID, chatID, 0))
 	}
 	return a.MockTelegramServicer.GetMessage(ctx, peer, msgID)
+}
+
+
+func (*assistantServicerAdapter) PinMessage(context.Context, tg.InputPeerClass, int, bool) error {
+	return ErrGroupMutationUnavailable
+}
+
+func (*assistantServicerAdapter) UnpinMessage(context.Context, tg.InputPeerClass, int) error {
+	return ErrGroupMutationUnavailable
+}
+
+func (*assistantServicerAdapter) BanUser(context.Context, tg.InputPeerClass, tg.InputPeerClass, int) error {
+	return ErrGroupMutationUnavailable
+}
+
+func (*assistantServicerAdapter) UnbanUser(context.Context, tg.InputPeerClass, tg.InputPeerClass) error {
+	return ErrGroupMutationUnavailable
+}
+
+func (*assistantServicerAdapter) KickUser(context.Context, tg.InputPeerClass, tg.InputPeerClass) error {
+	return ErrGroupMutationUnavailable
+}
+
+func (*assistantServicerAdapter) MuteUser(context.Context, tg.InputPeerClass, tg.InputPeerClass, int) error {
+	return ErrGroupMutationUnavailable
+}
+
+func (*assistantServicerAdapter) UnmuteUser(context.Context, tg.InputPeerClass, tg.InputPeerClass) error {
+	return ErrGroupMutationUnavailable
+}
+
+func (*assistantServicerAdapter) PurgeMessages(context.Context, tg.InputPeerClass, int, int, int) (int, error) {
+	return 0, ErrGroupMutationUnavailable
+}
+
+func (*assistantServicerAdapter) PromoteAdmin(context.Context, tg.InputPeerClass, tg.InputPeerClass, string) error {
+	return ErrGroupMutationUnavailable
+}
+
+func (*assistantServicerAdapter) DemoteAdmin(context.Context, tg.InputPeerClass, tg.InputPeerClass) error {
+	return ErrGroupMutationUnavailable
+}
+
+func (*assistantServicerAdapter) EditChatDefaultBannedRights(context.Context, tg.InputPeerClass, tg.ChatBannedRights) error {
+	return ErrGroupMutationUnavailable
 }

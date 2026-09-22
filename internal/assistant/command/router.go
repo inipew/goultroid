@@ -40,6 +40,17 @@ type Context struct {
 	Interaction interaction.MessageInteraction
 }
 
+// MessageContext carries transport-derived message and chat identity into the
+// canonical core.Context. Production Assistant ingress should populate Chat
+// from Telegram entities so PeerChannel can be distinguished as supergroup or
+// broadcast channel instead of guessing from the input-peer class alone.
+type MessageContext struct {
+	Chat             core.Chat
+	MessageID        int
+	ReplyToMessageID int
+	TopicID          int
+}
+
 // Reply sends a formatted response to the command originator.
 func (c *Context) Reply(text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
 	if c.Interaction == nil || c.Peer == nil {
@@ -137,17 +148,19 @@ func (r *Router) findCommand(name string) (core.Command, bool) {
 	return core.Command{}, false
 }
 
-func chatTypeForPeer(peer tg.InputPeerClass) string {
+func legacyChatForPeer(peer tg.InputPeerClass) core.Chat {
+	chat := core.Chat{ID: extractChatIDFromInputPeer(peer)}
 	switch peer.(type) {
 	case *tg.InputPeerUser, *tg.InputPeerSelf:
-		return "private"
+		chat.Type = string(core.ChatKindPrivate)
 	case *tg.InputPeerChat:
-		return "group"
+		chat.Type = string(core.ChatKindGroup)
 	case *tg.InputPeerChannel:
-		return "channel"
-	default:
-		return ""
+		// Without entity metadata InputPeerChannel is ambiguous. Treat it as a
+		// broadcast channel so Assistant GroupOnly admission fails closed.
+		chat.Type = string(core.ChatKindChannel)
 	}
+	return chat
 }
 
 func taskResultError(res tasks.TaskResult) error {
@@ -340,12 +353,13 @@ func (r *Router) executeSavedResponseBinding(
 // for embedding/tests; production Assistant updates should use DispatchMessage
 // so reply-aware canonical commands receive message identity.
 func (r *Router) Dispatch(ctx context.Context, senderID int64, peer tg.InputPeerClass, messageText string, inter interaction.MessageInteraction) error {
-	return r.dispatch(ctx, senderID, peer, messageText, 0, 0, inter)
+	return r.dispatch(ctx, senderID, peer, messageText, MessageContext{Chat: legacyChatForPeer(peer)}, inter)
 }
 
 // DispatchMessage preserves Telegram message/reply identity in the canonical
 // core.Context so reply-based Assistant commands (/who, relay controls, etc.)
 // can use the same command registry rather than a transport-local dispatcher.
+// Callers with Telegram entity metadata should prefer DispatchMessageContext.
 func (r *Router) DispatchMessage(
 	ctx context.Context,
 	senderID int64,
@@ -355,7 +369,27 @@ func (r *Router) DispatchMessage(
 	replyToMessageID int,
 	inter interaction.MessageInteraction,
 ) error {
-	return r.dispatch(ctx, senderID, peer, messageText, messageID, replyToMessageID, inter)
+	return r.dispatch(ctx, senderID, peer, messageText, MessageContext{
+		Chat:             legacyChatForPeer(peer),
+		MessageID:        messageID,
+		ReplyToMessageID: replyToMessageID,
+	}, inter)
+}
+
+// DispatchMessageContext preserves authoritative chat kind and topic metadata
+// from the Assistant update boundary.
+func (r *Router) DispatchMessageContext(
+	ctx context.Context,
+	senderID int64,
+	peer tg.InputPeerClass,
+	messageText string,
+	messageContext MessageContext,
+	inter interaction.MessageInteraction,
+) error {
+	if messageContext.Chat.ID == 0 {
+		messageContext.Chat = legacyChatForPeer(peer)
+	}
+	return r.dispatch(ctx, senderID, peer, messageText, messageContext, inter)
 }
 
 func (r *Router) dispatch(
@@ -363,8 +397,7 @@ func (r *Router) dispatch(
 	senderID int64,
 	peer tg.InputPeerClass,
 	messageText string,
-	messageID int,
-	replyToMessageID int,
+	messageContext MessageContext,
 	inter interaction.MessageInteraction,
 ) error {
 	fields := strings.Fields(strings.TrimSpace(messageText))
@@ -463,15 +496,22 @@ func (r *Router) dispatch(
 			}
 		}
 
-		chatID := extractChatIDFromInputPeer(peer)
-		if chatID == 0 {
-			chatID = senderID
+		chat := messageContext.Chat
+		if chat.ID == 0 {
+			chat = legacyChatForPeer(peer)
+		}
+		if chat.ID == 0 {
+			chat.ID = senderID
+		}
+		if chat.Type == "" && chat.ID == senderID {
+			chat.Type = string(core.ChatKindPrivate)
 		}
 
 		principal := &core.Principal{
 			UserID:  senderID,
 			IsOwner: isOwner,
 			IsSudo:  isSudo,
+			Level:   perms.Level(senderID),
 		}
 
 		coreCtx := &core.Context{
@@ -483,13 +523,14 @@ func (r *Router) dispatch(
 			RawArgs:       strings.Join(fields[1:], " "),
 			PeerID:        peer,
 			Message: &core.Message{
-				ID:        messageID,
+				ID:        messageContext.MessageID,
 				SenderID:  senderID,
+				TopicID:   messageContext.TopicID,
 				Text:      strings.TrimSpace(messageText),
-				ReplyToID: replyToMessageID,
+				ReplyToID: messageContext.ReplyToMessageID,
 			},
 			Sender:         &core.User{ID: senderID},
-			Chat:           &core.Chat{ID: chatID, Type: chatTypeForPeer(peer)},
+			Chat:           &chat,
 			Perms:          perms,
 			Principal:      principal,
 			Svc:            &assistantServicerAdapter{inter: inter},

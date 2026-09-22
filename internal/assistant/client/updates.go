@@ -66,6 +66,62 @@ func assistantReplyToMessageID(message *tg.Message) int {
 	return header.ReplyToMsgID
 }
 
+func assistantTopicID(message *tg.Message) int {
+	if message == nil || message.ReplyTo == nil {
+		return 0
+	}
+	header, ok := message.ReplyTo.(*tg.MessageReplyHeader)
+	if !ok || header == nil || (!header.ForumTopic && header.ReplyToTopID == 0) {
+		return 0
+	}
+	if header.ReplyToTopID != 0 {
+		return header.ReplyToTopID
+	}
+	return header.ReplyToMsgID
+}
+
+func assistantCommandMessageContext(message *tg.Message, entities tg.Entities) command.MessageContext {
+	if message == nil {
+		return command.MessageContext{}
+	}
+
+	chat := core.Chat{ID: extractChatID(message.PeerID)}
+	switch peer := message.PeerID.(type) {
+	case *tg.PeerUser:
+		chat.Type = string(core.ChatKindPrivate)
+		if user := entities.Users[peer.UserID]; user != nil {
+			chat.Title = strings.TrimSpace(user.FirstName + " " + user.LastName)
+			chat.Username = user.Username
+			chat.AccessHash = user.AccessHash
+		}
+	case *tg.PeerChat:
+		chat.Type = string(core.ChatKindGroup)
+		if group := entities.Chats[peer.ChatID]; group != nil {
+			chat.Title = group.Title
+		}
+	case *tg.PeerChannel:
+		// PeerChannel is ambiguous without entity metadata. Keep it as a
+		// broadcast channel by default so manager-plane GroupOnly commands fail
+		// closed instead of accidentally treating every channel peer as a group.
+		chat.Type = string(core.ChatKindChannel)
+		if channel := entities.Channels[peer.ChannelID]; channel != nil {
+			chat.Title = channel.Title
+			chat.Username = channel.Username
+			chat.AccessHash = channel.AccessHash
+			if channel.Megagroup {
+				chat.Type = string(core.ChatKindSupergroup)
+			}
+		}
+	}
+
+	return command.MessageContext{
+		Chat:             chat,
+		MessageID:        message.ID,
+		ReplyToMessageID: assistantReplyToMessageID(message),
+		TopicID:          assistantTopicID(message),
+	}
+}
+
 // InlineQueryExecutor is the Assistant-facing subset of the shared inline engine.
 type InlineQueryExecutor interface {
 	Prepare(string) (inlineservice.PreparedQuery, error)
@@ -131,13 +187,12 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 				logger.Warn("assistant: rate limit exceeded for command", zap.Int64("sender_id", senderID))
 				return
 			}
-			err := deps.CmdRouter.DispatchMessage(
+			err := deps.CmdRouter.DispatchMessageContext(
 				ctx,
 				senderID,
 				inputPeer,
 				msg.Message,
-				msg.ID,
-				assistantReplyToMessageID(msg),
+				assistantCommandMessageContext(msg, e),
 				deps.Interaction,
 			)
 			if err != nil && !errors.Is(err, command.ErrUnknownCommand) {
