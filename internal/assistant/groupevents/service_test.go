@@ -135,12 +135,15 @@ func TestP7HSubscriptionTracksEnabledChatsAndKeepsDisabledRevision(t *testing.T)
 		t.Fatalf("subscriptions after final disable=%d, want 0", got)
 	}
 
-	status, err := service.State(77, core.GroupServiceMemberJoined)
+	if _, hot := service.chats[77]; hot {
+		t.Fatal("disabled group-event state remained resident in hot cache")
+	}
+	status, err := service.StateContext(context.Background(), 77, core.GroupServiceMemberJoined)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if status.Revision != 2 || status.Config.Template != "Hello {user} in {chat}" {
-		t.Fatalf("disabled durable state lost from snapshot: %+v", status)
+		t.Fatalf("disabled durable state lost from lazy read: %+v", status)
 	}
 }
 
