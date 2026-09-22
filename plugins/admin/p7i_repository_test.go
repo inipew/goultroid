@@ -92,7 +92,6 @@ func TestP7IWarningRepositoryBoundsDirectCallers(t *testing.T) {
 	}
 }
 
-
 func TestP7IWarningRepositoryRejectsInvalidCoordinates(t *testing.T) {
 	db, err := database.Open(":memory:")
 	if err != nil {
