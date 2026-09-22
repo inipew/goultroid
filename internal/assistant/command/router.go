@@ -128,6 +128,25 @@ func (r *Router) botUsernameValue() string {
 	return username
 }
 
+// NormalizeCommandToken validates an optional @botusername suffix and returns
+// the canonical lower-case slash command. Suffixed commands fail closed until
+// the authenticated bot username is known.
+func (r *Router) NormalizeCommandToken(token string) (string, bool) {
+	cmd := strings.ToLower(strings.TrimSpace(token))
+	if !strings.HasPrefix(cmd, "/") {
+		return "", false
+	}
+	if atIdx := strings.Index(cmd, "@"); atIdx != -1 {
+		target := strings.TrimSpace(strings.TrimPrefix(cmd[atIdx+1:], "@"))
+		botUsername := r.botUsernameValue()
+		if target == "" || botUsername == "" || !strings.EqualFold(target, botUsername) {
+			return "", false
+		}
+		cmd = cmd[:atIdx]
+	}
+	return cmd, true
+}
+
 // SetOwner configures the owner identity and optional sudo getter for permission enforcement.
 func (r *Router) SetOwner(ownerID int64, sudoGetter func() []int64) {
 	r.ownerID = ownerID
@@ -472,21 +491,9 @@ func (r *Router) dispatch(
 		return nil
 	}
 
-	cmdRaw := strings.ToLower(fields[0])
-	if !strings.HasPrefix(cmdRaw, "/") {
+	cmdRaw, targeted := r.NormalizeCommandToken(fields[0])
+	if !targeted {
 		return nil
-	}
-
-	// Telegram group commands may target a specific bot as /command@username.
-	// Ignore commands for another bot instead of treating them as unknown local
-	// commands or allowing them to enter the manager plane.
-	if atIdx := strings.Index(cmdRaw, "@"); atIdx != -1 {
-		target := strings.TrimSpace(strings.TrimPrefix(cmdRaw[atIdx+1:], "@"))
-		botUsername := r.botUsernameValue()
-		if target == "" || botUsername == "" || !strings.EqualFold(target, botUsername) {
-			return nil
-		}
-		cmdRaw = cmdRaw[:atIdx]
 	}
 
 	cmdCtx := &Context{
