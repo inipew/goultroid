@@ -235,6 +235,17 @@ P6-F tests freeze the following behavior:
 - rich SavedResponse/media broadcasts continue using the shared media resource
   budget and cleanup lifecycle.
 
+## PM Relay block policy
+
+The durable visitor block introduced by P6-E is a PM Relay transport policy,
+not a global Assistant account ban. A visitor can therefore remain in the
+generic Assistant audience because of a successful start, inline, or deep-link
+interaction even while relay forwarding is blocked.
+
+P6-F does not silently filter that member from the audience snapshot. Any
+future global opt-out/suppression policy must be represented explicitly rather
+than overloading PM Relay block semantics.
+
 ## Non-goals
 
 P6-F does not add:
