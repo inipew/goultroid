@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
+	"io"
 	"fmt"
 	"strings"
 	"time"
@@ -77,7 +77,8 @@ func decodeSavedResponseLease(raw string) (savedResponseLease, error) {
 	if err := decoder.Decode(&lease); err != nil {
 		return savedResponseLease{}, fmt.Errorf("%w: saved-response lease: %v", ErrInvalidPayload, err)
 	}
-	if decoder.More() {
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
 		return savedResponseLease{}, ErrInvalidPayload
 	}
 	lease.Alias = strings.ToLower(strings.TrimSpace(lease.Alias))
@@ -155,9 +156,3 @@ func (p *SavedResponseProvider) Execute(
 }
 
 var _ Provider = (*SavedResponseProvider)(nil)
-
-func isSavedResponseStale(err error) bool {
-	return errors.Is(err, savedresponse.ErrBindingStale) ||
-		errors.Is(err, savedresponse.ErrBindingDisabled) ||
-		errors.Is(err, savedresponse.ErrBindingNotFound)
-}
