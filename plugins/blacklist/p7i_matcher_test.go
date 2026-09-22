@@ -1,8 +1,12 @@
 package blacklist
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/inipew/goultroid/internal/core"
 )
 
 func TestP7IBlacklistMatcherPreservesWordBoundarySemantics(t *testing.T) {
@@ -77,5 +81,36 @@ func TestP7IBlacklistRevisionIsChatScoped(t *testing.T) {
 	}
 	if got := p.AssistantRuleRevision(20); got != rev20 {
 		t.Fatalf("deactivating chat 10 changed chat 20 revision: got=%d want=%d", got, rev20)
+	}
+}
+
+
+type p7iChurningBlacklistRepo struct {
+	plugin *Plugin
+}
+
+func (*p7iChurningBlacklistRepo) AddBlacklist(context.Context, int64, string) error { return nil }
+func (*p7iChurningBlacklistRepo) RemoveBlacklist(context.Context, int64, string) error { return nil }
+func (r *p7iChurningBlacklistRepo) ListBlacklists(_ context.Context, chatID int64) ([]string, error) {
+	// Simulate a manager mutation after the compiler captured its generation but
+	// before it attempts to publish the compiled snapshot.
+	r.plugin.featureState.SetActive(chatID, true)
+	r.plugin.invalidateChat(chatID, true)
+	return nil, nil
+}
+
+func TestP7IStaleBlacklistCompileCannotClearActiveInterest(t *testing.T) {
+	repo := &p7iChurningBlacklistRepo{}
+	p := New(repo, nil)
+	repo.plugin = p
+	p.featureState.ReplaceLoaded([]int64{10})
+	p.invalidateChat(10, true)
+
+	_, err := p.compiledForChat(context.Background(), 10)
+	if !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("compiledForChat error=%v, want ErrConflict after repeated generation churn", err)
+	}
+	if !p.MessageHookInterested(10) {
+		t.Fatal("stale blacklist compilation cleared active chat interest")
 	}
 }
