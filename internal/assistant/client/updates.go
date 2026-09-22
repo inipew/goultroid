@@ -147,6 +147,12 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		}
 		inlineTarget := interaction.NewInlineTarget(update.QueryID, update.MsgID, update.ChatInstance)
 		if isInteractionCallback(update.Data) {
+			if deps.CallbackDeduper != nil && !deps.CallbackDeduper.Admit(update.QueryID, time.Now()) {
+				if deps.Interaction != nil {
+					_ = deps.Interaction.Answer(ctx, update.QueryID, "", false)
+				}
+				return nil
+			}
 			if deps.RateLimiter != nil && !deps.RateLimiter.Allow(update.UserID, "inline") {
 				if deps.Interaction != nil {
 					_ = deps.Interaction.Answer(ctx, update.QueryID, "Too many requests. Please wait.", true)
@@ -210,6 +216,12 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		}
 		target := interaction.NewMessageTarget(inputPeer, update.MsgID, extractChatID(update.Peer), update.ChatInstance)
 		if isInteractionCallback(update.Data) {
+			if deps.CallbackDeduper != nil && !deps.CallbackDeduper.Admit(update.QueryID, time.Now()) {
+				if deps.Interaction != nil {
+					_ = deps.Interaction.Answer(ctx, update.QueryID, "", false)
+				}
+				return nil
+			}
 			if deps.RateLimiter != nil && !deps.RateLimiter.Allow(update.UserID, "callback") {
 				if deps.Interaction != nil {
 					_ = deps.Interaction.Answer(ctx, update.QueryID, "Too many requests. Please wait.", true)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -649,6 +650,73 @@ type countingAssistantRateLimiter struct {
 func (l *countingAssistantRateLimiter) Allow(int64, string) bool {
 	l.calls++
 	return l.allow
+}
+
+func TestCallbackQueryDeduper_ConcurrentDuplicateStormAdmitsOnce(t *testing.T) {
+	deduper := newCallbackQueryDeduper()
+	const workers = 256
+	start := make(chan struct{})
+	results := make(chan bool, workers)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	now := time.Unix(200, 0)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			results <- deduper.Admit(9001, now)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	admitted := 0
+	for ok := range results {
+		if ok {
+			admitted++
+		}
+	}
+	if admitted != 1 {
+		t.Fatalf("concurrent duplicate storm admitted %d callbacks, want 1", admitted)
+	}
+	if len(deduper.seen) != 1 {
+		t.Fatalf("dedupe cardinality after duplicate storm = %d, want 1", len(deduper.seen))
+	}
+}
+
+func TestUpdateHandlers_A2DuplicateSuppressedBeforeRateLimit(t *testing.T) {
+	dispatcher := tg.NewUpdateDispatcher()
+	api := &mockTelegramAPI{}
+	clientInter := interaction.NewClientInteraction(api, zap.NewNop())
+	transportLimiter := &countingAssistantRateLimiter{allow: true}
+	deduper := newCallbackQueryDeduper()
+
+	RegisterUpdateHandlers(&dispatcher, UpdateHandlerDeps{
+		Logger:          zap.NewNop(),
+		RateLimiter:     transportLimiter,
+		Interaction:     clientInter,
+		CallbackDeduper: deduper,
+	})
+
+	update := &tg.UpdateInlineBotCallbackQuery{
+		QueryID:      702,
+		UserID:       42,
+		MsgID:        &tg.InputBotInlineMessageID{DCID: 1, ID: 100, AccessHash: 7},
+		ChatInstance: 1,
+		Data:         []byte("a2:synthetic:next:invalid.1"),
+	}
+	for i := 0; i < 2; i++ {
+		if err := dispatcher.Handle(context.Background(), &tg.Updates{Updates: []tg.UpdateClass{update}}); err != nil {
+			t.Fatalf("a2 duplicate handle %d: %v", i+1, err)
+		}
+	}
+	if transportLimiter.calls != 1 {
+		t.Fatalf("duplicate a2 delivery consumed transport limiter %d times, want 1", transportLimiter.calls)
+	}
+	if api.answerReq == nil || api.answerReq.QueryID != 702 || api.answerReq.Message != "" {
+		t.Fatalf("duplicate a2 callback must receive terminal empty ack, got %+v", api.answerReq)
+	}
 }
 
 func TestUpdateHandlers_V1UsesOnlyCanonicalCallbackRateLimit(t *testing.T) {

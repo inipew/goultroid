@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gotd/td/tg"
 	assistantinteraction "github.com/inipew/goultroid/internal/assistant/interaction"
@@ -13,6 +14,7 @@ import (
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 	"github.com/inipew/goultroid/internal/interaction/orchestration"
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 var ErrInteractionUnavailable = errors.New("assistant/client: interaction engine unavailable")
@@ -24,6 +26,7 @@ type callbackAcknowledger interface {
 type interactionIngress struct {
 	engine *orchestration.Engine
 	ack    callbackAcknowledger
+	tasks  tasks.Client
 	input  func(*orchestration.Context, string) error
 }
 
@@ -39,11 +42,81 @@ func (v *interactionIngress) tryMessage(ctx context.Context, data []byte, userID
 		return true, ErrInteractionUnavailable
 	}
 	target := presentationtelegram.MessageTarget{Peer: peer, ChatID: chatID, MessageID: msgID}
-	err := v.engine.Dispatch(ctx, orchestration.CallbackRequest{
+	err := v.dispatchCallback(ctx, orchestration.CallbackRequest{
 		Data: data, ActorID: userID, QueryID: queryID, Target: target,
-	})
-	v.ack.ensureAnswered(ctx, queryID, err)
+	}, tasks.TaskID(fmt.Sprintf("asst:cb:a2:%d", queryID)), fmt.Sprintf("callback:msg:%d:%d", chatID, msgID))
 	return true, err
+}
+
+func (v *interactionIngress) dispatchCallback(
+	ctx context.Context,
+	request orchestration.CallbackRequest,
+	taskID tasks.TaskID,
+	orderingKey string,
+) error {
+	if v == nil || v.engine == nil || v.ack == nil {
+		return ErrInteractionUnavailable
+	}
+	prepared, err := v.engine.PrepareCallback(ctx, request)
+	if err != nil {
+		v.ack.ensureAnswered(ctx, request.QueryID, err)
+		return err
+	}
+	if v.tasks == nil {
+		err = ErrInteractionUnavailable
+		v.ack.ensureAnswered(ctx, request.QueryID, err)
+		return err
+	}
+
+	doneCh := make(chan error, 1)
+	ticket, submitErr := v.tasks.Submit(ctx, tasks.WorkSpec{
+		ID:               taskID,
+		Scope:            prepared.Scope(),
+		QuotaOwner:       tasks.OwnerID(fmt.Sprintf("telegram:user:%d", request.ActorID)),
+		Pool:             "interactive",
+		Class:            tasks.PriorityInteractive,
+		OrderingKey:      orderingKey,
+		ExecutionTimeout: 15 * time.Second,
+		Handler: func(taskCtx context.Context) error {
+			dispatchErr := prepared.Dispatch(taskCtx)
+			doneCh <- dispatchErr
+			return dispatchErr
+		},
+	})
+	if submitErr != nil {
+		err = fmt.Errorf("interaction task submission failed: %w", submitErr)
+		v.ack.ensureAnswered(ctx, request.QueryID, err)
+		return err
+	}
+
+	var ticketDone <-chan struct{}
+	if ticket != nil {
+		ticketDone = ticket.Done()
+	}
+	select {
+	case err = <-doneCh:
+	case <-ticketDone:
+		select {
+		case err = <-doneCh:
+		default:
+			if ticket != nil {
+				if result, ok := ticket.Result(); ok && !result.IsSuccess() {
+					if result.Failure.Message != "" {
+						err = errors.New(result.Failure.Message)
+					} else {
+						err = fmt.Errorf("interaction task finished with outcome %s (%s)", result.Outcome, result.Cause)
+					}
+				}
+			}
+		}
+	case <-ctx.Done():
+		if ticket != nil {
+			_, _ = v.tasks.Cancel(ticket.TaskID(), tasks.CauseTimeout)
+		}
+		err = ctx.Err()
+	}
+	v.ack.ensureAnswered(ctx, request.QueryID, err)
+	return err
 }
 
 func (v *interactionIngress) tryText(ctx context.Context, text string, userID, chatID int64, peer tg.InputPeerClass) (bool, error) {
@@ -110,10 +183,16 @@ func (v *interactionIngress) tryInline(ctx context.Context, data []byte, userID,
 		MessageID: messageID,
 		BindingID: inlineBindingID(messageID),
 	}
-	err := v.engine.Dispatch(ctx, orchestration.CallbackRequest{
+	orderingKey := fmt.Sprintf("callback:inline:%s", target.BindingID)
+	switch id := messageID.(type) {
+	case *tg.InputBotInlineMessageID:
+		orderingKey = fmt.Sprintf("callback:inline_msg:%d:%d", id.DCID, id.ID)
+	case *tg.InputBotInlineMessageID64:
+		orderingKey = fmt.Sprintf("callback:inline_msg:%d:%d", id.DCID, id.ID)
+	}
+	err := v.dispatchCallback(ctx, orchestration.CallbackRequest{
 		Data: data, ActorID: userID, QueryID: queryID, Target: target,
-	})
-	v.ack.ensureAnswered(ctx, queryID, err)
+	}, tasks.TaskID(fmt.Sprintf("asst:cb:a2:inline:%d", queryID)), orderingKey)
 	return true, err
 }
 

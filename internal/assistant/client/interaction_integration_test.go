@@ -94,7 +94,8 @@ func TestA2IngressSyntheticSurfaceEndToEnd(t *testing.T) {
 	}
 
 	ack := &syntheticAck{}
-	ingress := &interactionIngress{engine: engine, ack: ack}
+	taskClient := &testTaskClient{}
+	ingress := &interactionIngress{engine: engine, ack: ack, tasks: taskClient}
 	handled, err := ingress.tryMessage(context.Background(), data, 7, 99, nil, 42, 77)
 	if err != nil {
 		t.Fatalf("tryMessage() error = %v", err)
@@ -104,6 +105,12 @@ func TestA2IngressSyntheticSurfaceEndToEnd(t *testing.T) {
 	}
 	if ack.calls != 1 || ack.err != nil {
 		t.Fatalf("ack = calls:%d err:%v", ack.calls, ack.err)
+	}
+	if taskClient.last.ID != "asst:cb:a2:99" ||
+		taskClient.last.Scope != scope ||
+		taskClient.last.QuotaOwner != "telegram:user:7" ||
+		taskClient.last.OrderingKey != "callback:msg:42:77" {
+		t.Fatalf("unexpected a2 TaskEngine work spec: %+v", taskClient.last)
 	}
 
 	handled, err = ingress.tryMessage(context.Background(), []byte("v1:menu:home:noop"), 7, 100, nil, 42, 77)

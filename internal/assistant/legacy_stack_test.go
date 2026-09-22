@@ -35,6 +35,7 @@ func TestLegacyAssistantCompatibilityStackRemoved(t *testing.T) {
 	forbidden := []string{
 		"LegacyAssistantMenu",
 		"LegacyMenuCompatibility",
+		"CompatibilityHost",
 		"RegisterTextHandler",
 		"MenuInstanceStore",
 		"internal/assistant/menu",
@@ -56,10 +57,10 @@ func TestLegacyAssistantCompatibilityStackRemoved(t *testing.T) {
 	}
 
 	scanRoots := []string{
-		"internal/assistant",
-		"internal/app",
-		"internal/module",
-		"plugins/myxl",
+		"cmd",
+		"internal",
+		"plugins",
+		"tools",
 	}
 	for _, relRoot := range scanRoots {
 		root := filepath.Join(repoRoot, relRoot)
@@ -81,8 +82,7 @@ func TestLegacyAssistantCompatibilityStackRemoved(t *testing.T) {
 					t.Errorf("retired Assistant compatibility token %q found in %s", token, rel)
 				}
 			}
-			if (strings.HasPrefix(relRoot, "internal/assistant") || relRoot == "plugins/myxl") &&
-				strings.Contains(text, "a1:") {
+			if strings.Contains(text, "a1:") {
 				rel, _ := filepath.Rel(repoRoot, path)
 				t.Errorf("legacy a1 callback envelope found in %s", rel)
 			}

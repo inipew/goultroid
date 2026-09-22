@@ -58,6 +58,21 @@ func TestManagerInteractionRuntimeFollowsPluginLifecycle(t *testing.T) {
 		t.Fatalf("ResolveCallback() error = %v", err)
 	}
 
+	actions := manager.ActionDispatcher()
+	oldCalls := 0
+	oldRegistration, err := actions.Register(first.Session.Scope, plugin.Name(), "next", func(context.Context, interaction.Action) error {
+		oldCalls++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Register(old action) error = %v", err)
+	}
+	defer oldRegistration.Close()
+	preparedOld, err := actions.Prepare(context.Background(), data, interaction.Binding{ActorID: 7})
+	if err != nil {
+		t.Fatalf("Prepare(old action) error = %v", err)
+	}
+
 	if err := manager.Disable(context.Background(), plugin.Name()); err != nil {
 		t.Fatalf("Disable() error = %v", err)
 	}
@@ -66,6 +81,12 @@ func TestManagerInteractionRuntimeFollowsPluginLifecycle(t *testing.T) {
 	}
 	if stats := runtime.Stats(); stats.Sessions != 0 {
 		t.Fatalf("sessions after disable = %d, want 0", stats.Sessions)
+	}
+	if err := preparedOld.Dispatch(context.Background()); err == nil {
+		t.Fatal("prepared old-generation action executed after disable")
+	}
+	if oldCalls != 0 {
+		t.Fatalf("old-generation handler calls after disable = %d, want 0", oldCalls)
 	}
 
 	if err := manager.Enable(context.Background(), plugin.Name()); err != nil {
@@ -81,12 +102,41 @@ func TestManagerInteractionRuntimeFollowsPluginLifecycle(t *testing.T) {
 	if second.Session.Scope.Generation == firstGeneration {
 		t.Fatalf("generation after enable = %d, want a new generation", second.Session.Scope.Generation)
 	}
+	secondData, err := runtime.CallbackData(context.Background(), second.Session.ID, "next")
+	if err != nil {
+		t.Fatalf("CallbackData(second) error = %v", err)
+	}
+	newCalls := 0
+	newRegistration, err := actions.Register(second.Session.Scope, plugin.Name(), "next", func(context.Context, interaction.Action) error {
+		newCalls++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Register(new action) error = %v", err)
+	}
+	defer newRegistration.Close()
+	if err := actions.Dispatch(context.Background(), secondData, interaction.Binding{ActorID: 7}); err != nil {
+		t.Fatalf("Dispatch(new generation) error = %v", err)
+	}
+	if newCalls != 1 {
+		t.Fatalf("new-generation handler calls = %d, want 1", newCalls)
+	}
+	preparedShutdown, err := actions.Prepare(context.Background(), secondData, interaction.Binding{ActorID: 7})
+	if err != nil {
+		t.Fatalf("Prepare(before shutdown) error = %v", err)
+	}
 
 	if err := manager.ShutdownWithContext(context.Background()); err != nil {
 		t.Fatalf("ShutdownWithContext() error = %v", err)
 	}
 	if !errors.Is(context.Cause(second.Context), interaction.ErrScopeStale) {
 		t.Fatalf("second session cause = %v, want %v", context.Cause(second.Context), interaction.ErrScopeStale)
+	}
+	if err := preparedShutdown.Dispatch(context.Background()); err == nil {
+		t.Fatal("prepared action executed after manager shutdown")
+	}
+	if newCalls != 1 {
+		t.Fatalf("handler crossed shutdown boundary, calls=%d", newCalls)
 	}
 	if _, err := runtime.Create(context.Background(), interaction.CreateRequest{
 		FeatureID: plugin.Name(),

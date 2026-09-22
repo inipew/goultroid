@@ -85,3 +85,96 @@ func TestDispatcherStaleCleanupCannotRemoveNewGeneration(t *testing.T) {
 		t.Fatal("new generation handler was removed by stale cleanup")
 	}
 }
+
+func TestPreparedActionRejectsReplacedRegistration(t *testing.T) {
+	runtime, _, scope := testRuntime(t, Config{})
+	dispatcher := NewDispatcher(runtime)
+	oldCalled := false
+	oldRegistration, err := dispatcher.Register(scope, "demo", "next", func(context.Context, Action) error {
+		oldCalled = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Register(old) error = %v", err)
+	}
+
+	created, err := runtime.Create(context.Background(), CreateRequest{FeatureID: "demo", Binding: Binding{ActorID: 11}})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	data, err := runtime.CallbackData(context.Background(), created.Session.ID, "next")
+	if err != nil {
+		t.Fatalf("CallbackData() error = %v", err)
+	}
+	prepared, err := dispatcher.Prepare(context.Background(), data, Binding{ActorID: 11})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+
+	oldRegistration.Close()
+	newCalled := false
+	newRegistration, err := dispatcher.Register(scope, "demo", "next", func(context.Context, Action) error {
+		newCalled = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Register(new) error = %v", err)
+	}
+	defer newRegistration.Close()
+
+	if err := prepared.Dispatch(context.Background()); !errors.Is(err, ErrHandlerUnavailable) {
+		t.Fatalf("prepared Dispatch() error = %v, want %v", err, ErrHandlerUnavailable)
+	}
+	if oldCalled || newCalled {
+		t.Fatalf("stale prepared action executed handler old=%v new=%v", oldCalled, newCalled)
+	}
+	if err := dispatcher.Dispatch(context.Background(), data, Binding{ActorID: 11}); err != nil {
+		t.Fatalf("fresh Dispatch() error = %v", err)
+	}
+	if !newCalled {
+		t.Fatal("fresh dispatch did not reach replacement handler")
+	}
+}
+
+func TestPreparedActionRejectsRevisionChangedWhileQueued(t *testing.T) {
+	runtime, _, scope := testRuntime(t, Config{})
+	dispatcher := NewDispatcher(runtime)
+	called := false
+	registration, err := dispatcher.Register(scope, "demo", "next", func(context.Context, Action) error {
+		called = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	defer registration.Close()
+
+	created, err := runtime.Create(context.Background(), CreateRequest{
+		FeatureID: "demo",
+		Binding:   Binding{ActorID: 12},
+		State:     []byte("one"),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	data, err := runtime.CallbackData(context.Background(), created.Session.ID, "next")
+	if err != nil {
+		t.Fatalf("CallbackData() error = %v", err)
+	}
+	prepared, err := dispatcher.Prepare(context.Background(), data, Binding{ActorID: 12})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if _, err := runtime.UpdateState(context.Background(), created.Session.ID, UpdateRequest{
+		ExpectedRevision: created.Session.Revision,
+		State:            []byte("two"),
+	}); err != nil {
+		t.Fatalf("UpdateState() error = %v", err)
+	}
+	if err := prepared.Dispatch(context.Background()); !errors.Is(err, ErrStaleToken) {
+		t.Fatalf("prepared Dispatch() error = %v, want %v", err, ErrStaleToken)
+	}
+	if called {
+		t.Fatal("stale revision executed handler")
+	}
+}

@@ -40,6 +40,38 @@ type CallbackRequest struct {
 	Target  presentation.Target
 }
 
+// PreparedCallback is an opaque execution lease for one validated a2 action.
+// The transport uses Scope for TaskEngine admission and Dispatch for the
+// revalidated feature invocation.
+type PreparedCallback interface {
+	Scope() tasks.ScopeIdentity
+	Dispatch(context.Context) error
+}
+
+type preparedCallback struct {
+	action  interaction.PreparedAction
+	target  presentation.Target
+	queryID int64
+}
+
+func (p *preparedCallback) Scope() tasks.ScopeIdentity {
+	if p == nil || p.action == nil {
+		return tasks.ScopeIdentity{}
+	}
+	return p.action.Scope()
+}
+
+func (p *preparedCallback) Dispatch(ctx context.Context) error {
+	if p == nil || p.action == nil {
+		return ErrInvalidEngine
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = withCallbackInvocation(ctx, callbackInvocation{queryID: p.queryID, target: p.target})
+	return p.action.Dispatch(ctx)
+}
+
 type Handler func(*Context) error
 
 func New(sessions *interaction.Runtime, actions *interaction.Dispatcher, port presentation.Port) (*Engine, error) {
@@ -142,24 +174,38 @@ func (e *Engine) TakeInput(ctx context.Context, actorID, chatID int64) (*Context
 	return newContext(resolved.Context, e, resolved.Session, nil, 0), true, nil
 }
 
-// Dispatch derives the P1 binding from the concrete callback target and actor,
-// preventing a caller from validating one target while editing another.
-func (e *Engine) Dispatch(ctx context.Context, request CallbackRequest) error {
+// PrepareCallback derives the P1 binding from the concrete callback target,
+// validates the current session/action generation, and returns a lease suitable
+// for TaskEngine admission. No feature handler is invoked during preparation.
+func (e *Engine) PrepareCallback(ctx context.Context, request CallbackRequest) (PreparedCallback, error) {
 	if e == nil {
-		return ErrInvalidEngine
+		return nil, ErrInvalidEngine
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	_, binding, err := sessionTarget(request.Target, request.ActorID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if request.QueryID == 0 {
-		return fmt.Errorf("%w: query id is zero", ErrNoCallback)
+		return nil, fmt.Errorf("%w: query id is zero", ErrNoCallback)
 	}
-	ctx = withCallbackInvocation(ctx, callbackInvocation{queryID: request.QueryID, target: request.Target})
-	return e.actions.Dispatch(ctx, request.Data, binding)
+	action, err := e.actions.Prepare(ctx, request.Data, binding)
+	if err != nil {
+		return nil, err
+	}
+	return &preparedCallback{action: action, target: request.Target, queryID: request.QueryID}, nil
+}
+
+// Dispatch remains the synchronous feature-facing convenience path. Live
+// Assistant ingress uses PrepareCallback -> TaskEngine -> PreparedCallback.Dispatch.
+func (e *Engine) Dispatch(ctx context.Context, request CallbackRequest) error {
+	prepared, err := e.PrepareCallback(ctx, request)
+	if err != nil {
+		return err
+	}
+	return prepared.Dispatch(ctx)
 }
 
 func sessionTarget(target presentation.Target, actorID int64) (presentation.SessionTarget, interaction.Binding, error) {

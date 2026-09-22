@@ -47,6 +47,36 @@ type HandlerRegistration struct {
 	once       sync.Once
 }
 
+// PreparedAction is an opaque, generation-bound action lease. It is prepared
+// before TaskEngine admission and revalidated immediately before execution.
+type PreparedAction interface {
+	Scope() tasks.ScopeIdentity
+	Dispatch(context.Context) error
+}
+
+type preparedAction struct {
+	dispatcher   *Dispatcher
+	data         []byte
+	binding      Binding
+	key          handlerKey
+	scope        tasks.ScopeIdentity
+	handlerToken uint64
+}
+
+func (p *preparedAction) Scope() tasks.ScopeIdentity {
+	if p == nil {
+		return tasks.ScopeIdentity{}
+	}
+	return p.scope
+}
+
+func (p *preparedAction) Dispatch(ctx context.Context) error {
+	if p == nil || p.dispatcher == nil {
+		return ErrHandlerUnavailable
+	}
+	return p.dispatcher.dispatchPrepared(ctx, p)
+}
+
 func NewDispatcher(sessions *Runtime) *Dispatcher {
 	return &Dispatcher{sessions: sessions, handlers: make(map[handlerKey]handlerEntry)}
 }
@@ -116,28 +146,73 @@ func (d *Dispatcher) UnregisterScope(scope tasks.ScopeIdentity) int {
 	return removed
 }
 
-func (d *Dispatcher) Dispatch(ctx context.Context, data []byte, binding Binding) error {
+// Prepare validates the callback and pins the exact handler registration and
+// plugin generation without invoking feature code. The returned lease can be
+// admitted to TaskEngine using Scope(), then Dispatch revalidates everything
+// that may have changed while the task was queued.
+func (d *Dispatcher) Prepare(ctx context.Context, data []byte, binding Binding) (PreparedAction, error) {
 	if d == nil || d.sessions == nil {
-		return ErrHandlerUnavailable
+		return nil, ErrHandlerUnavailable
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	resolved, err := d.sessions.ResolveCallback(ctx, data, binding)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	key := handlerKey{feature: resolved.Token.FeatureID, action: resolved.Token.ActionID}
 	d.mu.RLock()
 	entry, ok := d.handlers[key]
 	d.mu.RUnlock()
 	if !ok || entry.scope != resolved.Session.Scope {
-		return ErrHandlerUnavailable
+		return nil, ErrHandlerUnavailable
 	}
 	current, available := d.sessions.catalog.FeatureScope(resolved.Session.FeatureID)
 	if !available || current != entry.scope {
+		return nil, ErrScopeStale
+	}
+	return &preparedAction{
+		dispatcher:   d,
+		data:         append([]byte(nil), data...),
+		binding:      binding.normalized(),
+		key:          key,
+		scope:        entry.scope,
+		handlerToken: entry.token,
+	}, nil
+}
+
+func (d *Dispatcher) dispatchPrepared(ctx context.Context, prepared *preparedAction) error {
+	if d == nil || d.sessions == nil || prepared == nil || prepared.dispatcher != d {
+		return ErrHandlerUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Re-resolve the token after queueing so a state transition, expiry,
+	// disable/reload, or target change cannot execute a lease prepared against
+	// older interaction state.
+	resolved, err := d.sessions.ResolveCallback(ctx, prepared.data, prepared.binding)
+	if err != nil {
+		return err
+	}
+	key := handlerKey{feature: resolved.Token.FeatureID, action: resolved.Token.ActionID}
+	if key != prepared.key || resolved.Session.Scope != prepared.scope {
 		return ErrScopeStale
 	}
+
+	d.mu.RLock()
+	entry, ok := d.handlers[key]
+	d.mu.RUnlock()
+	if !ok || entry.scope != prepared.scope || entry.token != prepared.handlerToken {
+		return ErrHandlerUnavailable
+	}
+	current, available := d.sessions.catalog.FeatureScope(resolved.Session.FeatureID)
+	if !available || current != prepared.scope {
+		return ErrScopeStale
+	}
+
 	actionCtx, release := mergeActionContext(ctx, resolved.Context)
 	defer release()
 	return entry.handler(actionCtx, Action{
@@ -145,6 +220,14 @@ func (d *Dispatcher) Dispatch(ctx context.Context, data []byte, binding Binding)
 		Session: resolved.Session,
 		Context: actionCtx,
 	})
+}
+
+func (d *Dispatcher) Dispatch(ctx context.Context, data []byte, binding Binding) error {
+	prepared, err := d.Prepare(ctx, data, binding)
+	if err != nil {
+		return err
+	}
+	return prepared.Dispatch(ctx)
 }
 
 func mergeActionContext(caller, session context.Context) (context.Context, func()) {

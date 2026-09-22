@@ -212,7 +212,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 			close(runDone)
 			return startErr
 		}
-		ingress = &interactionIngress{engine: interactionEngine, ack: presentationService, input: c.handleInteractionTextInput}
+		ingress = &interactionIngress{engine: interactionEngine, ack: presentationService, tasks: taskClient, input: c.handleInteractionTextInput}
 	}
 	c.mu.Lock()
 	c.interactionIngress = ingress
