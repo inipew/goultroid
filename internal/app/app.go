@@ -192,11 +192,6 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	if err := migrateBuiltinFeatures(context.Background(), coreDeps.db); err != nil {
 		return nil, err
 	}
-	pmRelayAdmin := pmrelayadmin.New(domServices.pmrelayService)
-	if err := pluginManager.RegisterWithContext(context.Background(), pmRelayAdmin); err != nil {
-		return nil, fmt.Errorf("register PM relay admin feature: %w", err)
-	}
-
 	savedResponseBindings := savedresponse.NewBindingService(
 		savedresponse.NewSQLiteSurfaceBindingRepository(coreDeps.db),
 		pluginManager.SavedResponseRegistry(),
@@ -220,6 +215,15 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		return nil
 	})
 	pluginManager.SetRegistrationValidator(savedResponseBindings.ValidateEnabledCollisions)
+
+	// Register PM Relay controls only after the SavedResponse collision validator
+	// is installed so /relay and /who participate in the same staged canonical
+	// namespace validation as every later feature registration.
+	pmRelayAdmin := pmrelayadmin.New(domServices.pmrelayService)
+	if err := pluginManager.RegisterWithContext(context.Background(), pmRelayAdmin); err != nil {
+		return nil, fmt.Errorf("register PM relay admin feature: %w", err)
+	}
+
 	savedResponseAdmin := savedresponseadmin.New(savedResponseBindings)
 	if err := pluginManager.RegisterWithContext(context.Background(), savedResponseAdmin); err != nil {
 		return nil, fmt.Errorf("register saved-response admin feature: %w", err)
