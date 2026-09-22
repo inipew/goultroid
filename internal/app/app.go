@@ -13,6 +13,7 @@ import (
 	"github.com/inipew/goultroid/internal/assistant"
 	assistantdeeplink "github.com/inipew/goultroid/internal/assistant/deeplink"
 	assistantinteraction "github.com/inipew/goultroid/internal/assistant/interaction"
+	pmrelayadmin "github.com/inipew/goultroid/internal/assistant/pmrelayadmin"
 	savedresponseadmin "github.com/inipew/goultroid/internal/assistant/savedresponseadmin"
 	savedresponsecallback "github.com/inipew/goultroid/internal/assistant/savedresponsecallback"
 	assistantshell "github.com/inipew/goultroid/internal/assistant/shell"
@@ -65,6 +66,7 @@ type App struct {
 	savedDeepLinkRegistration *assistantdeeplink.Registration
 	savedResponseCallbacks    *savedresponsecallback.Feature
 	savedResponseAdmin        *savedresponseadmin.Feature
+	pmRelayAdmin              *pmrelayadmin.Feature
 	media                     *mediaSvc.Service
 	downloadRegistry          *download.Registry
 	processRunner             *processSvc.OSRunner
@@ -190,6 +192,11 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	if err := migrateBuiltinFeatures(context.Background(), coreDeps.db); err != nil {
 		return nil, err
 	}
+	pmRelayAdmin := pmrelayadmin.New(domServices.pmrelayService)
+	if err := pluginManager.RegisterWithContext(context.Background(), pmRelayAdmin); err != nil {
+		return nil, fmt.Errorf("register PM relay admin feature: %w", err)
+	}
+
 	savedResponseBindings := savedresponse.NewBindingService(
 		savedresponse.NewSQLiteSurfaceBindingRepository(coreDeps.db),
 		pluginManager.SavedResponseRegistry(),
@@ -445,6 +452,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		savedDeepLinkRegistration: savedDeepLinkRegistration,
 		savedResponseCallbacks:    savedResponseCallbacks,
 		savedResponseAdmin:        savedResponseAdmin,
+		pmRelayAdmin:              pmRelayAdmin,
 		media:                     domServices.mediaService,
 		downloadRegistry:          domServices.downloadRegistry,
 		processRunner:             domServices.processRunner,
