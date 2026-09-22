@@ -10,22 +10,56 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/services/ratelimit"
+	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/ui"
 	"go.uber.org/zap"
 )
 
 // Registry stores and resolves inline query handlers.
 type Registry struct {
-	handlers map[string]InlineHandler
+	handlers map[string]registryEntry
 	entries  []registryEntry
+	next     uint64
 	mu       sync.RWMutex
 }
 
 type registryEntry struct {
+	pattern       string
+	handler       InlineHandler
+	matcher       InlineMatcher
+	priority      int
+	featureID     string
+	interactionID string
+	scope         tasks.ScopeIdentity
+	token         uint64
+}
+
+// Binding connects one FeatureSpec inline interaction to its implementation.
+// InteractionID is the stable catalog identity; Handler.Pattern controls query
+// matching and may intentionally differ from that identity.
+type Binding struct {
+	InteractionID string
+	Handler       InlineHandler
+	Priority      int
+}
+
+// Registration owns one registry entry. Close is generation-safe: stale
+// cleanup cannot remove a replacement registered for the same query pattern.
+type Registration struct {
+	registry *Registry
 	pattern  string
-	handler  InlineHandler
-	matcher  InlineMatcher
-	priority int
+	token    uint64
+	once     sync.Once
+}
+
+// Resolved identifies one matched inline handler and its lifecycle ownership.
+type Resolved struct {
+	Handler       InlineHandler
+	Args          []string
+	FeatureID     string
+	InteractionID string
+	Scope         tasks.ScopeIdentity
+	token         uint64
 }
 
 func matcherForPattern(pattern string) InlineMatcher {
@@ -53,110 +87,172 @@ func (m *exactKeywordMatcher) Match(query string) ([]string, bool) {
 // NewRegistry creates a new Registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		handlers: make(map[string]InlineHandler),
+		handlers: make(map[string]registryEntry),
 	}
 }
 
-// Register registers an InlineHandler for its pattern or keyword.
+// Register registers a legacy unowned InlineHandler for its pattern or keyword.
 func (r *Registry) Register(h InlineHandler) error {
-	return r.RegisterWithPriority(h, 0)
+	_, err := r.register("", "", tasks.ScopeIdentity{}, h, nil, 0)
+	return err
 }
 
-// RegisterWithPriority registers with explicit priority (higher wins).
+// RegisterWithPriority registers a legacy unowned handler with explicit priority.
 func (r *Registry) RegisterWithPriority(h InlineHandler, priority int) error {
-	if h == nil {
-		return fmt.Errorf("inline handler cannot be nil")
+	_, err := r.register("", "", tasks.ScopeIdentity{}, h, nil, priority)
+	return err
+}
+
+// RegisterOwned binds a handler to one feature generation and interaction.
+// Plugin lifecycle code should prefer this over the legacy registration APIs.
+func (r *Registry) RegisterOwned(featureID, interactionID string, scope tasks.ScopeIdentity, h InlineHandler, priority int) (*Registration, error) {
+	featureID = strings.ToLower(strings.TrimSpace(featureID))
+	interactionID = strings.ToLower(strings.TrimSpace(interactionID))
+	if featureID == "" || interactionID == "" || scope.IsZero() {
+		return nil, fmt.Errorf("owned inline handler requires feature, interaction, and scope")
+	}
+	return r.register(featureID, interactionID, scope, h, nil, priority)
+}
+
+// RegisterMatcher registers a legacy unowned handler with a custom matcher.
+func (r *Registry) RegisterMatcher(pattern string, matcher InlineMatcher, h InlineHandler, priority int) error {
+	if h == nil || matcher == nil {
+		return fmt.Errorf("matcher and handler cannot be nil")
+	}
+	_, err := r.register("", "", tasks.ScopeIdentity{}, h, matcher, priority)
+	return err
+}
+
+func (r *Registry) register(featureID, interactionID string, scope tasks.ScopeIdentity, h InlineHandler, matcher InlineMatcher, priority int) (*Registration, error) {
+	if r == nil || h == nil {
+		return nil, fmt.Errorf("inline handler cannot be nil")
 	}
 	pattern := strings.ToLower(strings.TrimSpace(h.Pattern()))
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if _, exists := r.handlers[pattern]; exists {
-		return fmt.Errorf("inline handler for pattern %q is already registered", pattern)
-	}
-
-	var matcher InlineMatcher
-	if v2, ok := h.(InlineHandlerV2); ok {
-		matcher = v2.Matcher()
+	if matcher == nil {
+		if v2, ok := h.(InlineHandlerV2); ok {
+			matcher = v2.Matcher()
+		}
 	}
 	if matcher == nil {
 		matcher = matcherForPattern(pattern)
 	}
 
-	r.handlers[pattern] = h
-	r.entries = append(r.entries, registryEntry{pattern: pattern, handler: h, matcher: matcher, priority: priority})
-	// sort by priority descending, then pattern length descending for determinism
-	for i := len(r.entries) - 1; i > 0; i-- {
-		if r.entries[i].priority > r.entries[i-1].priority || (r.entries[i].priority == r.entries[i-1].priority && len(r.entries[i].pattern) > len(r.entries[i-1].pattern)) {
-			r.entries[i], r.entries[i-1] = r.entries[i-1], r.entries[i]
-		} else {
-			break
-		}
-	}
-	return nil
-}
-
-// RegisterMatcher registers a handler with a custom matcher (prefix/regex).
-func (r *Registry) RegisterMatcher(pattern string, matcher InlineMatcher, h InlineHandler, priority int) error {
-	if h == nil || matcher == nil {
-		return fmt.Errorf("matcher and handler cannot be nil")
-	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := strings.ToLower(strings.TrimSpace(pattern))
-	if _, exists := r.handlers[key]; exists {
-		return fmt.Errorf("inline handler for pattern %q is already registered", key)
+	if _, exists := r.handlers[pattern]; exists {
+		return nil, fmt.Errorf("inline handler for pattern %q is already registered", pattern)
 	}
-	r.handlers[key] = h
-	r.entries = append(r.entries, registryEntry{pattern: key, handler: h, matcher: matcher, priority: priority})
-	for i := len(r.entries) - 1; i > 0; i-- {
-		if r.entries[i].priority > r.entries[i-1].priority {
-			r.entries[i], r.entries[i-1] = r.entries[i-1], r.entries[i]
-		} else {
-			break
+	r.next++
+	entry := registryEntry{
+		pattern: pattern, handler: h, matcher: matcher, priority: priority,
+		featureID: featureID, interactionID: interactionID, scope: scope, token: r.next,
+	}
+	r.handlers[pattern] = entry
+	r.entries = append(r.entries, entry)
+	r.sortEntriesLocked()
+	return &Registration{registry: r, pattern: pattern, token: entry.token}, nil
+}
+
+func (r *Registry) sortEntriesLocked() {
+	for i := 1; i < len(r.entries); i++ {
+		for j := i; j > 0; j-- {
+			left, right := r.entries[j-1], r.entries[j]
+			if right.priority < left.priority || (right.priority == left.priority && len(right.pattern) <= len(left.pattern)) {
+				break
+			}
+			r.entries[j-1], r.entries[j] = right, left
 		}
 	}
-	return nil
+}
+
+// Close removes only the exact registration generation.
+func (r *Registration) Close() {
+	if r == nil || r.registry == nil {
+		return
+	}
+	r.once.Do(func() {
+		registry := r.registry
+		registry.mu.Lock()
+		defer registry.mu.Unlock()
+		current, ok := registry.handlers[r.pattern]
+		if !ok || current.token != r.token {
+			return
+		}
+		delete(registry.handlers, r.pattern)
+		for i := range registry.entries {
+			if registry.entries[i].token == r.token {
+				registry.entries = append(registry.entries[:i], registry.entries[i+1:]...)
+				break
+			}
+		}
+	})
 }
 
 // Resolve looks up the appropriate InlineHandler and splits query arguments.
 func (r *Registry) Resolve(query string) (InlineHandler, []string, bool) {
+	resolved, ok := r.ResolveOwned(query)
+	if !ok {
+		return nil, nil, false
+	}
+	return resolved.Handler, resolved.Args, true
+}
+
+// ResolveOwned returns handler metadata including lifecycle scope.
+func (r *Registry) ResolveOwned(query string) (Resolved, bool) {
+	if r == nil {
+		return Resolved{}, false
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	trimmed := strings.TrimSpace(query)
 	if trimmed == "" {
-		if h, ok := r.handlers[""]; ok {
-			return h, nil, true
+		if entry, ok := r.handlers[""]; ok {
+			return resolvedEntry(entry, nil), true
 		}
-		return nil, nil, false
+		return Resolved{}, false
 	}
 
-	// Try entries in priority order where matcher matches
-	for _, e := range r.entries {
-		if e.pattern == "" {
+	for _, entry := range r.entries {
+		if entry.pattern == "" {
 			continue
 		}
-		if e.matcher != nil {
-			if args, ok := e.matcher.Match(trimmed); ok {
-				return e.handler, args, true
+		if entry.matcher != nil {
+			if args, ok := entry.matcher.Match(trimmed); ok {
+				return resolvedEntry(entry, args), true
 			}
 		}
 	}
-	// Fallback keyword exact already covered via matcher, but keep legacy fast path
 	fields := strings.Fields(trimmed)
 	if len(fields) > 0 {
-		kw := strings.ToLower(fields[0])
-		if h, ok := r.handlers[kw]; ok {
-			return h, fields[1:], true
+		if entry, ok := r.handlers[strings.ToLower(fields[0])]; ok {
+			return resolvedEntry(entry, fields[1:]), true
 		}
 	}
-	// catch-all
-	if h, ok := r.handlers[""]; ok {
-		return h, strings.Fields(trimmed), true
+	if entry, ok := r.handlers[""]; ok {
+		return resolvedEntry(entry, strings.Fields(trimmed)), true
 	}
-	return nil, nil, false
+	return Resolved{}, false
+}
+
+func resolvedEntry(entry registryEntry, args []string) Resolved {
+	return Resolved{
+		Handler: entry.handler, Args: append([]string(nil), args...),
+		FeatureID: entry.featureID, InteractionID: entry.interactionID,
+		Scope: entry.scope, token: entry.token,
+	}
+}
+
+// IsCurrent reports whether a previously resolved registration is still active.
+func (r *Registry) IsCurrent(resolved Resolved) bool {
+	if r == nil || resolved.Handler == nil || resolved.token == 0 {
+		return false
+	}
+	pattern := strings.ToLower(strings.TrimSpace(resolved.Handler.Pattern()))
+	r.mu.RLock()
+	current, ok := r.handlers[pattern]
+	r.mu.RUnlock()
+	return ok && current.token == resolved.token
 }
 
 // Engine coordinates inline query execution, caching, pagination, and MTProto serialization.
