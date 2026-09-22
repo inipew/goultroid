@@ -775,14 +775,23 @@ func TestCrossSurfaceLifecycleMatrixUsesOneAuthoritativeResponse(t *testing.T) {
 	if err := database.RunFeatureMigrations(ctx, db2, MigrationProvider{}); err != nil {
 		t.Fatal(err)
 	}
-	restarted := NewBindingService(NewSQLiteSurfaceBindingRepository(db2), registry)
+	registration1.Close()
+	restartedRegistry := NewRegistry()
+	restartScope := tasks.ScopeIdentity{Owner: "plugin:notes", Generation: 41}
+	restartRegistration, err := restartedRegistry.Register(
+		"notes", restartScope, &bindingTestResolver{response: NewText("v2")},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted := NewBindingService(NewSQLiteSurfaceBindingRepository(db2), restartedRegistry)
 	for _, surface := range []Surface{SurfaceAssistantCommand, SurfaceInline, SurfaceDeepLink} {
 		resolved, err := restarted.Resolve(ctx, surface, "shared")
 		if err != nil {
 			t.Fatalf("restart Resolve(%s) error=%v", surface, err)
 		}
-		if resolved.Resolved.Response.Text != "v2" {
-			t.Fatalf("restart %s saw %q, want v2", surface, resolved.Resolved.Response.Text)
+		if resolved.Resolved.Response.Text != "v2" || resolved.Resolved.Scope != restartScope {
+			t.Fatalf("restart %s resolved=%+v, want v2/%+v", surface, resolved.Resolved, restartScope)
 		}
 	}
 	if _, err := restarted.Resolve(ctx, SurfaceCallback, "shared"); !errors.Is(err, ErrBindingNotFound) {
@@ -797,15 +806,14 @@ func TestCrossSurfaceLifecycleMatrixUsesOneAuthoritativeResponse(t *testing.T) {
 		}
 		reloadPrepared[surface] = item
 	}
-	registration1.Close()
-	scope2 := tasks.ScopeIdentity{Owner: "plugin:notes", Generation: 2}
-	registration2, err := registry.Register(
+	restartRegistration.Close()
+	scope2 := tasks.ScopeIdentity{Owner: "plugin:notes", Generation: 42}
+	registration2, err := restartedRegistry.Register(
 		"notes", scope2, &bindingTestResolver{response: NewText("v3")},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer registration2.Close()
 
 	for surface, item := range reloadPrepared {
 		if _, err := restarted.ResolvePrepared(ctx, item); !errors.Is(err, ErrBindingStale) {
