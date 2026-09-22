@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/gotd/td/tg"
@@ -28,6 +29,17 @@ func (precedenceResolver) ReResolve(_ context.Context, input tg.InputPeerClass) 
 }
 func (precedenceResolver) InvalidatePeer(tg.InputPeerClass) {}
 func (precedenceResolver) Cache() peer.Cache                { return nil }
+
+type precedenceFailingResolver struct{}
+
+func (precedenceFailingResolver) Resolve(context.Context, tg.PeerClass, int64, tg.Entities) (tg.InputPeerClass, error) {
+	return nil, errors.New("peer unavailable")
+}
+func (precedenceFailingResolver) ReResolve(context.Context, tg.InputPeerClass) (tg.InputPeerClass, error) {
+	return nil, errors.New("peer unavailable")
+}
+func (precedenceFailingResolver) InvalidatePeer(tg.InputPeerClass) {}
+func (precedenceFailingResolver) Cache() peer.Cache                { return nil }
 
 type precedenceTextIngress struct {
 	calls   int
@@ -143,6 +155,45 @@ func TestRelayPrecedenceVisitorFallbackRunsLast(t *testing.T) {
 	}
 	if relay.visitorCalls != 1 {
 		t.Fatalf("visitor fallback calls=%d, want 1", relay.visitorCalls)
+	}
+}
+
+func TestRelayVisitorFallbackDoesNotRequireInteractionPresentation(t *testing.T) {
+	relay := &precedenceRelayIngress{visitorHandled: true}
+	dispatchPrecedenceMessage(t, UpdateHandlerDeps{
+		Logger:       zap.NewNop(),
+		RelayIngress: relay,
+	}, &tg.Message{
+		ID:      12,
+		Message: "relay without a2 presentation",
+		FromID:  &tg.PeerUser{UserID: 42},
+		PeerID:  &tg.PeerUser{UserID: 42},
+	})
+	if relay.ownerCalls != 1 || relay.visitorCalls != 1 {
+		t.Fatalf("relay calls owner=%d visitor=%d, want 1/1", relay.ownerCalls, relay.visitorCalls)
+	}
+}
+
+func TestRelayVisitorFallbackSurvivesInteractionPeerResolutionFailure(t *testing.T) {
+	input := &precedenceTextIngress{handled: true}
+	relay := &precedenceRelayIngress{visitorHandled: true}
+	dispatchPrecedenceMessage(t, UpdateHandlerDeps{
+		Logger:             zap.NewNop(),
+		Resolver:           precedenceFailingResolver{},
+		Interaction:        interaction.NewClientInteraction(nil, zap.NewNop()),
+		InteractionIngress: input,
+		RelayIngress:       relay,
+	}, &tg.Message{
+		ID:      13,
+		Message: "relay despite resolver failure",
+		FromID:  &tg.PeerUser{UserID: 42},
+		PeerID:  &tg.PeerUser{UserID: 42},
+	})
+	if input.calls != 0 {
+		t.Fatalf("AwaitInput calls=%d with unresolved peer, want 0", input.calls)
+	}
+	if relay.ownerCalls != 1 || relay.visitorCalls != 1 {
+		t.Fatalf("relay calls owner=%d visitor=%d, want 1/1", relay.ownerCalls, relay.visitorCalls)
 	}
 }
 
