@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
+	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 )
 
@@ -112,5 +114,108 @@ func TestP7IStaleBlacklistCompileCannotClearActiveInterest(t *testing.T) {
 	}
 	if !p.MessageHookInterested(10) {
 		t.Fatal("stale blacklist compilation cleared active chat interest")
+	}
+}
+
+
+type p7iBlacklistMemoryRepo struct {
+	words []string
+}
+
+func (r *p7iBlacklistMemoryRepo) AddBlacklist(_ context.Context, _ int64, word string) error {
+	r.words = append(r.words, word)
+	return nil
+}
+
+func (r *p7iBlacklistMemoryRepo) RemoveBlacklist(_ context.Context, _ int64, word string) error {
+	filtered := r.words[:0]
+	for _, current := range r.words {
+		if current != word {
+			filtered = append(filtered, current)
+		}
+	}
+	r.words = filtered
+	return nil
+}
+
+func (r *p7iBlacklistMemoryRepo) ListBlacklists(context.Context, int64) ([]string, error) {
+	return append([]string(nil), r.words...), nil
+}
+
+type p7iBlockingDeleteService struct {
+	core.MockTelegramServicer
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *p7iBlockingDeleteService) DeleteMessage(
+	context.Context,
+	tg.InputPeerClass,
+	[]int,
+) error {
+	select {
+	case <-s.entered:
+	default:
+		close(s.entered)
+	}
+	<-s.release
+	return nil
+}
+
+func TestP7IBlacklistRemovalWaitsForInFlightDeletion(t *testing.T) {
+	repo := &p7iBlacklistMemoryRepo{words: []string{"spam"}}
+	p := New(repo, nil)
+	p.featureState.ReplaceLoaded([]int64{77})
+	p.invalidateChat(77, true)
+
+	message := &core.MessageEnvelope{
+		ID:     9,
+		ChatID: 77,
+		Peer: core.PeerRef{
+			Kind:       core.PeerKindChannel,
+			ID:         77,
+			AccessHash: 177,
+		},
+		Chat:   core.Chat{ID: 77, Type: string(core.ChatKindSupergroup)},
+		Sender: core.User{ID: 42},
+		Text:   "spam",
+	}
+	svc := &p7iBlockingDeleteService{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+
+	applyDone := make(chan error, 1)
+	go func() {
+		_, err := p.ApplyAssistantRule(context.Background(), svc, message)
+		applyDone <- err
+	}()
+
+	select {
+	case <-svc.entered:
+	case <-time.After(time.Second):
+		t.Fatal("blacklist apply did not reach delete")
+	}
+
+	removeDone := make(chan error, 1)
+	go func() {
+		removeDone <- p.removeBlacklistRule(context.Background(), 77, "spam")
+	}()
+
+	select {
+	case err := <-removeDone:
+		t.Fatalf("rule removal crossed in-flight deletion fence: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(svc.release)
+	if err := <-applyDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-removeDone; err != nil {
+		t.Fatal(err)
+	}
+	if p.MessageHookInterested(77) {
+		t.Fatal("final blacklist removal did not clear chat interest")
 	}
 }
