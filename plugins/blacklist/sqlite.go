@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
 )
 
@@ -25,6 +26,29 @@ func (r *SQLiteRepository) AddBlacklist(ctx context.Context, chatID int64, word 
 	word = strings.ToLower(strings.TrimSpace(word))
 	if word == "" {
 		return errors.New("word cannot be empty")
+	}
+	if len(word) > MaxRuleBytes {
+		return fmt.Errorf("%w: blacklist rule exceeds %d bytes", core.ErrInvalidArgs, MaxRuleBytes)
+	}
+
+	var exists int
+	if err := r.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM blacklists WHERE chat_id = ? AND word = ?",
+		chatID, word,
+	).Scan(&exists); err != nil {
+		return fmt.Errorf("failed to inspect blacklist rule: %w", err)
+	}
+	if exists == 0 {
+		var count int
+		if err := r.db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM blacklists WHERE chat_id = ?",
+			chatID,
+		).Scan(&count); err != nil {
+			return fmt.Errorf("failed to count blacklist rules: %w", err)
+		}
+		if count >= MaxRulesPerChat {
+			return ErrRuleLimit
+		}
 	}
 
 	query := `INSERT INTO blacklists (chat_id, word, created_at)
@@ -57,7 +81,7 @@ func (r *SQLiteRepository) RemoveBlacklist(ctx context.Context, chatID int64, wo
 
 // ListActiveChatIDs returns chats with at least one persisted blacklist entry.
 func (r *SQLiteRepository) ListActiveChatIDs(ctx context.Context) ([]int64, error) {
-	rows, err := r.db.QueryContext(ctx, "SELECT DISTINCT chat_id FROM blacklists ORDER BY chat_id ASC")
+	rows, err := r.db.QueryContext(ctx, "SELECT DISTINCT chat_id FROM blacklists ORDER BY chat_id ASC LIMIT ?", MaxActiveChats+1)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list active blacklist chats: %w", err)
 	}
@@ -71,13 +95,19 @@ func (r *SQLiteRepository) ListActiveChatIDs(ctx context.Context) ([]int64, erro
 		}
 		chatIDs = append(chatIDs, chatID)
 	}
-	return chatIDs, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(chatIDs) > MaxActiveChats {
+		return nil, fmt.Errorf("%w: active blacklist chats exceed %d", core.ErrResourceLimit, MaxActiveChats)
+	}
+	return chatIDs, nil
 }
 
 // ListBlacklists returns all blacklisted words for a chat.
 func (r *SQLiteRepository) ListBlacklists(ctx context.Context, chatID int64) ([]string, error) {
-	query := "SELECT word FROM blacklists WHERE chat_id = ? ORDER BY word ASC"
-	rows, err := r.db.QueryContext(ctx, query, chatID)
+	query := "SELECT word FROM blacklists WHERE chat_id = ? ORDER BY word ASC LIMIT ?"
+	rows, err := r.db.QueryContext(ctx, query, chatID, MaxRulesPerChat+1)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list blacklists: %w", err)
 	}
@@ -91,7 +121,13 @@ func (r *SQLiteRepository) ListBlacklists(ctx context.Context, chatID int64) ([]
 		}
 		words = append(words, w)
 	}
-	return words, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(words) > MaxRulesPerChat {
+		return nil, ErrRuleLimit
+	}
+	return words, nil
 }
 
 var _ Repository = (*SQLiteRepository)(nil)
