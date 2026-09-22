@@ -123,19 +123,12 @@ func (f *Feature) handle(ctx *core.Context, kind core.GroupServiceKind, label st
 		return ctx.Reply(renderConfigured(label, state))
 	default:
 		return ctx.Reply(fmt.Sprintf(
-			"⚠️ <b>%s usage</b>
-"+
-				"<code>/%s</code> — status
-"+
-				"<code>/%s on [template]</code> — enable
-"+
-				"<code>/%s off</code> — disable
-"+
-				"<code>/%s set &lt;template&gt;</code> — set text and enable
-"+
-				"<code>/%s reset</code> — restore default template
-
-"+
+			"⚠️ <b>%s usage</b>\n"+
+				"<code>/%s</code> — status\n"+
+				"<code>/%s on [template]</code> — enable\n"+
+				"<code>/%s off</code> — disable\n"+
+				"<code>/%s set &lt;template&gt;</code> — set text and enable\n"+
+				"<code>/%s reset</code> — restore default template\n\n"+
 				"Variables: <code>{user}</code>, <code>{user_id}</code>, <code>{chat}</code>, <code>{count}</code>",
 			titleLabel(label),
 			label,
@@ -157,16 +150,10 @@ func (f *Feature) replyStatus(ctx *core.Context, kind core.GroupServiceKind, lab
 		status = "enabled"
 	}
 	return ctx.Reply(fmt.Sprintf(
-		"👋 <b>%s</b>
-
-"+
-			"• <b>Status:</b> <code>%s</code>
-"+
-			"• <b>Revision:</b> <code>%d</code>
-"+
-			"• <b>Template:</b> %s
-
-"+
+		"👋 <b>%s</b>\n\n"+
+			"• <b>Status:</b> <code>%s</code>\n"+
+			"• <b>Revision:</b> <code>%d</code>\n"+
+			"• <b>Template:</b> %s\n\n"+
 			"Variables: <code>{user}</code>, <code>{user_id}</code>, <code>{chat}</code>, <code>{count}</code>",
 		core.EscapeHTML(titleLabel(label)),
 		status,
@@ -174,19 +161,15 @@ func (f *Feature) replyStatus(ctx *core.Context, kind core.GroupServiceKind, lab
 		core.EscapeHTML(state.Config.Template),
 	))
 }
-
 func renderConfigured(label string, state groupevents.State) string {
 	status := "disabled"
 	if state.Config.Enabled {
 		status = "enabled"
 	}
 	return fmt.Sprintf(
-		"✅ <b>%s updated</b>
-"+
-			"• <b>Status:</b> <code>%s</code>
-"+
-			"• <b>Revision:</b> <code>%d</code>
-"+
+		"✅ <b>%s updated</b>\n"+
+			"• <b>Status:</b> <code>%s</code>\n"+
+			"• <b>Revision:</b> <code>%d</code>\n"+
 			"• <b>Template:</b> %s",
 		core.EscapeHTML(titleLabel(label)),
 		status,
@@ -194,5 +177,4 @@ func renderConfigured(label string, state groupevents.State) string {
 		core.EscapeHTML(state.Config.Template),
 	)
 }
-
 var _ interface{ FeatureSpec() feature.Spec } = (*Feature)(nil)
