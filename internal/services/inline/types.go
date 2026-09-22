@@ -31,6 +31,7 @@ const (
 	ResultVideo    InlineResultType = "video"
 	ResultGif      InlineResultType = "gif"
 	ResultAudio    InlineResultType = "audio"
+	ResultSticker  InlineResultType = "sticker"
 	ResultVenue    InlineResultType = "venue"
 	ResultGeo      InlineResultType = "geo"
 	ResultContact  InlineResultType = "contact"
@@ -82,6 +83,7 @@ type InlineResult struct {
 	// Media fields for non-article types
 	MediaURL      string // photo/document/video/gif/audio media URL or file id
 	MediaMimeType string
+	LocalMedia    *LocalMedia
 	Width         int
 	Height        int
 	Duration      int
@@ -101,6 +103,29 @@ type InlineResult struct {
 	VCard       string
 }
 
+// LocalMedia is a transient, bounded file materialized for one inline answer.
+// The engine never caches LocalMedia results and the producer owns cleanup via
+// InlineResponse.Finalize.
+type LocalMedia struct {
+	Path      string
+	MediaType string
+	FileName  string
+	MIMEType  string
+}
+
+// PreparedLocalMedia is the Telegram cached-media reference produced by the
+// active transport after uploading LocalMedia without sending a chat message.
+type PreparedLocalMedia struct {
+	Photo    tg.InputPhotoClass
+	Document tg.InputDocumentClass
+}
+
+// LocalMediaPreparer is an optional transport capability used only when an
+// InlineResult carries LocalMedia.
+type LocalMediaPreparer interface {
+	PrepareInlineLocalMedia(context.Context, LocalMedia) (PreparedLocalMedia, error)
+}
+
 // InlineResponse is returned by handlers; allows native pagination and response policy.
 type InlineResponse struct {
 	Results       []InlineResult
@@ -111,6 +136,9 @@ type InlineResponse struct {
 	Private       bool
 	SwitchPM      *SwitchPM
 	SwitchWebView *SwitchWebView
+	// Finalize releases transient resources after the answer attempt. Handlers
+	// that set it must use CacheNone.
+	Finalize func()
 }
 
 type SwitchPM struct {
