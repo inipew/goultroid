@@ -324,8 +324,9 @@ func assistantMuteRights(untilDate int) tg.ChatBannedRights {
 }
 
 type mutationAuthorization struct {
-	actor core.GroupActorPrincipal
-	bot   core.GroupActorPrincipal
+	actor  core.GroupActorPrincipal
+	bot    core.GroupActorPrincipal
+	target *core.GroupActorPrincipal
 }
 
 func promotedAdminRights(actor, bot core.GroupActorPrincipal) tg.ChatAdminRights {
@@ -348,7 +349,7 @@ func (m *managedGroupMutation) authorizeForRPC(
 	meta command.GroupMutationContext,
 	peer tg.InputPeerClass,
 	action core.GroupMutationAction,
-	target *core.GroupActorPrincipal,
+	targetID int64,
 ) (mutationAuthorization, error) {
 	requirement, err := core.GroupMutationRequirement(action)
 	if err != nil {
@@ -363,8 +364,6 @@ func (m *managedGroupMutation) authorizeForRPC(
 		return mutationAuthorization{}, err
 	}
 
-	// Actor is intentionally resolved last. This is the final authorization
-	// observation before the physical Telegram mutation RPC.
 	actor, err := m.roleFresh(ctx, meta, peer, meta.ActorID)
 	if err != nil {
 		return mutationAuthorization{}, err
@@ -372,40 +371,40 @@ func (m *managedGroupMutation) authorizeForRPC(
 	if err := authorizeMutationPrincipal(requirement, actor, "actor"); err != nil {
 		return mutationAuthorization{}, err
 	}
-	if target != nil {
-		if err := validateTargetHierarchy(action, meta.Kind, actor, *target, m.selfID()); err != nil {
+
+	authorization := mutationAuthorization{actor: actor, bot: bot}
+	if targetID > 0 {
+		// Target is resolved last so hierarchy/no-op decisions use the freshest
+		// participant snapshot immediately before the physical mutation RPC.
+		target, err := m.roleFresh(ctx, meta, peer, targetID)
+		if err != nil {
 			return mutationAuthorization{}, err
 		}
+		if err := validateTargetHierarchy(action, meta.Kind, actor, target, m.selfID()); err != nil {
+			return mutationAuthorization{}, err
+		}
+		authorization.target = &target
 	}
-	return mutationAuthorization{actor: actor, bot: bot}, nil
+	return authorization, nil
 }
 
-func (m *managedGroupMutation) targetedState(
+func (m *managedGroupMutation) targetedPeer(
 	ctx context.Context,
 	meta command.GroupMutationContext,
-	peer tg.InputPeerClass,
 	targetPeer tg.InputPeerClass,
-	action core.GroupMutationAction,
-) (tg.InputPeerClass, core.GroupActorPrincipal, bool, error) {
+) (tg.InputPeerClass, int64, error) {
 	targetPeer, err := m.resolvePeer(ctx, targetPeer)
 	if err != nil {
-		return nil, core.GroupActorPrincipal{}, false, err
+		return nil, 0, err
 	}
 	targetID, err := inputUserID(targetPeer)
 	if err != nil {
-		return nil, core.GroupActorPrincipal{}, false, err
+		return nil, 0, err
 	}
 	if targetID == meta.ActorID || targetID == m.selfID() {
-		return nil, core.GroupActorPrincipal{}, false, core.ErrGroupMutationTargetProtected
+		return nil, 0, core.ErrGroupMutationTargetProtected
 	}
-	target, err := m.roleFresh(ctx, meta, peer, targetID)
-	if err != nil {
-		return nil, core.GroupActorPrincipal{}, false, err
-	}
-	if mutationNoop(action, meta.Kind, target) {
-		return targetPeer, target, true, nil
-	}
-	return targetPeer, target, false, nil
+	return targetPeer, targetID, nil
 }
 
 func (m *managedGroupMutation) Execute(
@@ -437,20 +436,20 @@ func (m *managedGroupMutation) Execute(
 
 	var authorization mutationAuthorization
 	if core.GroupMutationTargetsParticipant(req.Action) {
-		targetPeer, target, noop, err := m.targetedState(ctx, meta, peer, req.Target, req.Action)
+		targetPeer, targetID, err := m.targetedPeer(ctx, meta, req.Target)
 		if err != nil {
 			return command.GroupMutationResult{}, err
 		}
 		req.Target = targetPeer
-		authorization, err = m.authorizeForRPC(ctx, meta, peer, req.Action, &target)
+		authorization, err = m.authorizeForRPC(ctx, meta, peer, req.Action, targetID)
 		if err != nil {
 			return command.GroupMutationResult{}, err
 		}
-		if noop {
+		if authorization.target != nil && mutationNoop(req.Action, meta.Kind, *authorization.target) {
 			return command.GroupMutationResult{}, nil
 		}
 	} else if req.Action != core.GroupMutationPurge {
-		authorization, err = m.authorizeForRPC(ctx, meta, peer, req.Action, nil)
+		authorization, err = m.authorizeForRPC(ctx, meta, peer, req.Action, 0)
 		if err != nil {
 			return command.GroupMutationResult{}, err
 		}
@@ -558,13 +557,9 @@ func (m *managedGroupMutation) kick(
 	if err != nil {
 		return err
 	}
-	target, err := m.roleFresh(ctx, meta, req.Peer, targetID)
-	if err != nil {
-		return err
-	}
 	// Kick is a two-step desired-state operation. The unban step is a second
 	// physical mutation and therefore gets a second fresh actor/bot/target gate.
-	if _, err := m.authorizeForRPC(ctx, meta, req.Peer, req.Action, &target); err != nil {
+	if _, err := m.authorizeForRPC(ctx, meta, req.Peer, req.Action, targetID); err != nil {
 		return err
 	}
 	_, err = m.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
@@ -774,7 +769,7 @@ func (m *managedGroupMutation) purge(
 	meta command.GroupMutationContext,
 	req command.GroupMutationRequest,
 ) (int, error) {
-	if _, err := m.authorizeForRPC(ctx, meta, req.Peer, req.Action, nil); err != nil {
+	if _, err := m.authorizeForRPC(ctx, meta, req.Peer, req.Action, 0); err != nil {
 		return 0, err
 	}
 	ids, err := m.collectPurgeIDs(ctx, req)
@@ -790,7 +785,7 @@ func (m *managedGroupMutation) purge(
 			end = len(ids)
 		}
 		// Each physical delete RPC gets a fresh actor+bot authorization fence.
-		if _, err := m.authorizeForRPC(ctx, meta, req.Peer, req.Action, nil); err != nil {
+		if _, err := m.authorizeForRPC(ctx, meta, req.Peer, req.Action, 0); err != nil {
 			return total, err
 		}
 
