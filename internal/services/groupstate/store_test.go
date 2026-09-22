@@ -593,7 +593,6 @@ func TestSQLiteStoreConcurrentCreatesRespectCapacity(t *testing.T) {
 	}
 }
 
-
 func TestSQLiteStoreListNamespaceIsBoundedAndScoped(t *testing.T) {
 	store, _ := newTestStore(t, Limits{MaxEntries: 8, CleanupBatch: 2})
 
