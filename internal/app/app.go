@@ -29,6 +29,7 @@ import (
 	mediaSvc "github.com/inipew/goultroid/internal/services/media"
 	processSvc "github.com/inipew/goultroid/internal/services/process"
 	"github.com/inipew/goultroid/internal/services/ratelimit"
+	"github.com/inipew/goultroid/internal/services/savedresponse"
 	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/taskengine"
 	"github.com/inipew/goultroid/internal/tasks"
@@ -52,8 +53,9 @@ type App struct {
 	addonMgr         *addon.Manager
 	callbackStore    *callback.StateStore
 	inlineEngine     *inline.Engine
-	settingsService  *settings.Service
-	settingsLive     *settings.LiveBinder
+	settingsService       *settings.Service
+	settingsLive          *settings.LiveBinder
+	savedResponseBindings *savedresponse.BindingService
 	media            *mediaSvc.Service
 	downloadRegistry *download.Registry
 	processRunner    *processSvc.OSRunner
@@ -178,6 +180,10 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	if err := migrateBuiltinFeatures(context.Background(), coreDeps.db); err != nil {
 		return nil, err
 	}
+	savedResponseBindings := savedresponse.NewBindingService(
+		savedresponse.NewSQLiteSurfaceBindingRepository(coreDeps.db),
+		pluginManager.SavedResponseRegistry(),
+	)
 	if _, err := reconcileBuiltinPersistentMedia(context.Background(), coreDeps.db, domServices.storage); err != nil {
 		return nil, err
 	}
@@ -369,9 +375,10 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		addonMgr:         domServices.addonManager,
 		callbackStore:    coreDeps.callbackStore,
 		inlineEngine:     coreDeps.inlineEngine,
-		settingsService:  domServices.settingsService,
-		settingsLive:     settingsLive,
-		media:            domServices.mediaService,
+		settingsService:       domServices.settingsService,
+		settingsLive:          settingsLive,
+		savedResponseBindings: savedResponseBindings,
+		media:                 domServices.mediaService,
 		downloadRegistry: domServices.downloadRegistry,
 		processRunner:    domServices.processRunner,
 		startTime:        domServices.startTime,
