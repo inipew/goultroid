@@ -49,6 +49,10 @@ type durableMessageAPI interface {
 	MessagesSendMessageDurable(context.Context, *tg.MessagesSendMessageRequest) (tg.UpdatesClass, error)
 }
 
+type durableMediaAPI interface {
+	MessagesSendMediaDurable(context.Context, *tg.MessagesSendMediaRequest) (tg.UpdatesClass, error)
+}
+
 var _ MessageInteraction = (*ClientInteraction)(nil)
 
 // NewClientInteraction creates an interaction engine backed by a Telegram API instance.
@@ -530,6 +534,147 @@ func (c *ClientInteraction) SendMessageWithRandomID(
 		return nil, retErr
 	}
 	return msg, nil
+}
+
+// SendMediaReferenceWithRandomID sends an existing Telegram media reference
+// as a new bot-authored message with a caller-owned durable random_id.
+func (c *ClientInteraction) SendMediaReferenceWithRandomID(
+	ctx context.Context,
+	peer tg.InputPeerClass,
+	media tg.InputMediaClass,
+	caption string,
+	entities []tg.MessageEntityClass,
+	randomID int64,
+) (_ *tg.Message, retErr error) {
+	if c == nil || c.api == nil || peer == nil || media == nil || randomID == 0 {
+		return nil, ErrInvalidTarget
+	}
+	start := time.Now()
+	defer func() {
+		if c.metrics != nil {
+			c.metrics.RecordTelegramRequest("MessagesSendMedia", time.Since(start), retErr)
+		}
+	}()
+
+	req := &tg.MessagesSendMediaRequest{
+		Peer:     peer,
+		Media:    media,
+		Message:  caption,
+		RandomID: randomID,
+	}
+	if cleaned := sanitizeEntities(caption, entities); len(cleaned) > 0 {
+		req.SetEntities(cleaned)
+	}
+
+	var (
+		updates tg.UpdatesClass
+		err     error
+	)
+	if durable, ok := c.api.(durableMediaAPI); ok {
+		updates, err = durable.MessagesSendMediaDurable(ctx, req)
+	} else {
+		updates, err = c.api.MessagesSendMedia(ctx, req)
+	}
+	if err != nil {
+		retErr = fmt.Errorf("assistant send durable media: %w", ClassifyRPCError(err))
+		return nil, retErr
+	}
+
+	msg, unpackErr := messageunpack.Message(updates, nil)
+	if unpackErr != nil || msg == nil || msg.ID <= 0 {
+		if fallback := extractMessage(updates); fallback != nil && fallback.ID > 0 {
+			return fallback, nil
+		}
+		if unpackErr != nil {
+			retErr = fmt.Errorf("assistant send durable media: unpack target message: %w", unpackErr)
+		} else {
+			retErr = fmt.Errorf("assistant send durable media: Telegram returned no target message")
+		}
+		return nil, retErr
+	}
+	return msg, nil
+}
+
+func reusableInputMedia(media tg.MessageMediaClass) (tg.InputMediaClass, error) {
+	switch value := media.(type) {
+	case *tg.MessageMediaPhoto:
+		photoClass, ok := value.GetPhoto()
+		if !ok || photoClass == nil {
+			return nil, fmt.Errorf("%w: photo payload is absent", core.ErrUnsupported)
+		}
+		photo, ok := photoClass.AsNotEmpty()
+		if !ok || photo == nil {
+			return nil, fmt.Errorf("%w: photo payload is empty", core.ErrUnsupported)
+		}
+		return &tg.InputMediaPhoto{
+			ID:      photo.AsInput(),
+			Spoiler: value.Spoiler,
+		}, nil
+
+	case *tg.MessageMediaDocument:
+		documentClass, ok := value.GetDocument()
+		if !ok || documentClass == nil {
+			return nil, fmt.Errorf("%w: document payload is absent", core.ErrUnsupported)
+		}
+		document, ok := documentClass.AsNotEmpty()
+		if !ok || document == nil {
+			return nil, fmt.Errorf("%w: document payload is empty", core.ErrUnsupported)
+		}
+		return &tg.InputMediaDocument{
+			ID:      document.AsInput(),
+			Spoiler: value.Spoiler,
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("%w: unsupported PM relay media %T", core.ErrUnsupported, media)
+	}
+}
+
+// CopyMessageWithRandomID reloads one owner message and emits a new bot-authored
+// copy. Plain text uses messages.sendMessage; reusable photo/document references
+// use messages.sendMedia. Forward metadata and source author identity are never
+// carried to the destination.
+func (c *ClientInteraction) CopyMessageWithRandomID(
+	ctx context.Context,
+	source MessageTarget,
+	toPeer tg.InputPeerClass,
+	randomID int64,
+) (*tg.Message, error) {
+	if c == nil || !source.IsValid() || toPeer == nil || randomID == 0 {
+		return nil, ErrInvalidTarget
+	}
+	sourceMessage, err := c.GetMessage(ctx, source)
+	if err != nil {
+		return nil, err
+	}
+	if sourceMessage == nil {
+		return nil, ErrMessageNotFound
+	}
+	if sourceMessage.Media == nil {
+		if strings.TrimSpace(sourceMessage.Message) == "" {
+			return nil, fmt.Errorf("%w: PM relay copy has no text or media", core.ErrUnsupported)
+		}
+		return c.SendMessageWithRandomID(
+			ctx,
+			toPeer,
+			sourceMessage.Message,
+			append([]tg.MessageEntityClass(nil), sourceMessage.Entities...),
+			randomID,
+		)
+	}
+
+	media, err := reusableInputMedia(sourceMessage.Media)
+	if err != nil {
+		return nil, err
+	}
+	return c.SendMediaReferenceWithRandomID(
+		ctx,
+		toPeer,
+		media,
+		sourceMessage.Message,
+		append([]tg.MessageEntityClass(nil), sourceMessage.Entities...),
+		randomID,
+	)
 }
 
 // CopyTextMessageWithRandomID reloads a source Telegram message and emits a new
