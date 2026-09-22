@@ -170,3 +170,38 @@ func TestP7GAdminPluginOwnsPolicyNotTelegramTransport(t *testing.T) {
 		}
 	}
 }
+
+
+func TestP7GMutationPortRequiresTaskAdmissionCapability(t *testing.T) {
+	root := repositoryRoot(t)
+
+	servicerPath := filepath.Join(root, "internal", "assistant", "command", "servicer.go")
+	servicerRaw, err := os.ReadFile(servicerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	servicerSource := string(servicerRaw)
+	for _, required := range []string{
+		"mutationAdmitted",
+		"if !a.mutationAdmitted",
+		"ErrGroupMutationNotAdmitted",
+		"func admitGroupMutationExecution",
+	} {
+		if !strings.Contains(servicerSource, required) {
+			t.Errorf("P7-G mutation admission invariant missing %q", required)
+		}
+	}
+
+	routerPath := filepath.Join(root, "internal", "assistant", "command", "router.go")
+	routerRaw, err := os.ReadFile(routerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routerSource := string(routerRaw)
+	if !strings.Contains(routerSource, "admitGroupMutationExecution(&execCtx)") {
+		t.Fatal("P7-G mutation port is not activated inside TaskEngine WorkSpec execution")
+	}
+	if strings.Contains(routerSource, "admitGroupMutationExecution(coreCtx)") {
+		t.Fatal("P7-G mutation admission leaked onto the pre-TaskEngine command context")
+	}
+}
