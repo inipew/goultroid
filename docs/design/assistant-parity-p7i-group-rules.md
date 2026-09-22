@@ -37,6 +37,8 @@ shared TaskEngine admission
    ↓
 peer resolution inside admitted task
    ↓
+authoritative chat-kind classification
+   ↓
 canonical MessageEnvelope
    ↓
 shared P7-I coordinator
@@ -46,11 +48,18 @@ For an inactive group, the interest gate occurs before:
 
 - global entity cache population;
 - peer/access-hash resolution;
+- managed channel metadata lookup;
 - MessageEnvelope allocation;
 - TaskEngine admission;
 - Telegram role verification;
 - rule compilation/database lookup;
 - filter response or blacklist action.
+
+For `PeerChannel`, known entity metadata rejects broadcast channels immediately. If
+Telegram omits channel metadata, classification is deferred until after interest
+and TaskEngine admission. The admitted path resolves the peer and uses managed
+`channels.getChannels` to prove `Megagroup=true`; durable rule interest alone
+never reinterprets an unknown channel as a supergroup.
 
 The admitted rule task uses:
 
@@ -301,17 +310,23 @@ Warning state is explicitly bounded:
 | default threshold | 3 |
 | hard threshold / active rows per target | 16 |
 | reason size | 1,024 bytes |
+| global active warning rows | 50,000 |
 | in-process lock stripes | 64 |
 
 `GetWarnings` reads at most the hard threshold rows.
 
 The moderation service serializes same-target count/add/enforce/reset through one of 64 fixed mutex stripes.
 
-This prevents concurrent warnings for the same target from:
+This prevents concurrent warnings/reset for the same target from:
 
 - racing the warning count;
+- resetting midway through threshold enforcement;
 - overshooting the threshold rows;
 - invoking duplicate threshold punishment.
+
+The SQLite repository additionally caps total active warning rows at 50,000.
+`chat_id` and `user_id` must both be positive at the service and repository
+boundaries, preventing unreachable rows from consuming that capacity.
 
 No dynamic lock map is created.
 
@@ -323,19 +338,33 @@ After successful punitive enforcement, active warnings are reset.
 
 ## Mutation and stale-state semantics
 
-Rule manager mutations follow:
+Rule manager mutations are linearized per chat with one of 64 fixed striped
+`RWMutex` fences per plugin:
 
 ```text
+manager mutation (write fence)
+        ↓
 persist durable mutation
         ↓
 advance only this chat's generation
         ↓
-update chat interest
-        ↓
 drop only this chat's compiled cache
+        ↓
+publish chat interest
 ```
 
-Matching/apply code fences compilation against that generation.
+Matching uses the corresponding read fence. Compiled state is installed only
+after the captured generation still matches the current chat generation.
+Interest is published only after that final generation-validated commit, so a
+stale compiler cannot incorrectly mark a newly active chat inactive.
+
+Final Assistant application also stays inside the same per-chat read fence:
+
+- blacklist re-match + destructive message deletion are fenced together;
+- filter re-match + response delivery are fenced together.
+
+Therefore a manager cannot commit rule removal between the final re-match and
+the side effect that was authorized by that rule.
 
 If the generation changes during compilation or contextual role verification:
 
@@ -367,7 +396,12 @@ P7-I tests cover:
 - verification failure fails safe;
 - blacklist precedence over filters;
 - disabled plugins do not contribute interest/actions;
+- authoritative managed channel classification after interest/admission;
+- unknown broadcast remains fail-closed even when durable rules exist;
 - stale rule generation re-match;
+- generation-safe interest publication;
+- per-chat mutation/match linearization;
+- blacklist delete and filter delivery fenced with final re-match;
 - per-chat revision isolation across mutations;
 - another chat's compiled filter cache remains warm;
 - indexed blacklist word/phrase boundary behavior;
@@ -380,6 +414,9 @@ P7-I tests cover:
 - failed threshold retry does not grow rows;
 - oversized warning reason/threshold rejected before persistence;
 - concurrent same-target warning has one threshold enforcement;
+- reset cannot interleave with same-target threshold enforcement;
+- global warning rows are capped at 50,000;
+- invalid warning chat/user coordinates are rejected;
 - direct warning repository callers cannot exceed hard row/reason limits.
 
 ## P7-I / later-phase boundary
