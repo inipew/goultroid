@@ -29,6 +29,7 @@ type Client interface {
 	SetCoreRouter(router *core.Router)
 	SetOwner(ownerID int64, sudoGetter func() []int64)
 	SetSettingsService(svc *settings.Service)
+	SetGroupStateStore(store core.GroupStateStore)
 	SetMetricsCollector(m core.MetricsCollector)
 	SetCallbackRouter(router client.CoreCallbackDispatcher)
 	SetInlineEngine(engine *inline.Engine)
@@ -106,6 +107,9 @@ func (a *AssistantApp) SetDelayedActions(scheduler core.DelayedActionScheduler) 
 	a.client.SetDelayedActions(scheduler)
 }
 func (a *AssistantApp) SetSettingsService(svc *settings.Service) { a.client.SetSettingsService(svc) }
+func (a *AssistantApp) SetGroupStateStore(store core.GroupStateStore) {
+	a.client.SetGroupStateStore(store)
+}
 func (a *AssistantApp) SetSavedResponseBindings(bindings *savedresponse.BindingService, delivery *savedresponse.ResponseDelivery) {
 	a.client.SetSavedResponseBindings(bindings, delivery)
 }
