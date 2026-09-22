@@ -273,3 +273,18 @@ func TestP7IRuleRevisionRefreshesAcrossFreshRoleWindow(t *testing.T) {
 		t.Fatalf("apply calls=%d, want 1 current-state re-match", blacklist.applyCalls)
 	}
 }
+
+
+func TestP7KTopicDeliveryFailsClosedWithoutContextualTransport(t *testing.T) {
+	svc := &interactionServicer{inter: &interactionStub{}}
+	_, err := svc.SendMessageContext(
+		context.Background(),
+		&tg.InputPeerChannel{ChannelID: 77, AccessHash: 177},
+		"topic reply",
+		nil,
+		core.MessageSendContext{ReplyToID: 9, TopicID: 5},
+	)
+	if !errors.Is(err, core.ErrUnavailable) {
+		t.Fatalf("topic fallback error=%v want ErrUnavailable", err)
+	}
+}
