@@ -192,3 +192,17 @@ func TestRelayIngressShutdownBarrierRunsBeforePrepare(t *testing.T) {
 		t.Fatalf("shutdown update reached relay owner=%d visitor=%d", relay.ownerCalls, relay.visitorCalls)
 	}
 }
+
+func TestRelayIngressGroupMessageNeverReachesRelay(t *testing.T) {
+	input := &precedenceTextIngress{}
+	relay := &precedenceRelayIngress{ownerHandled: true, visitorHandled: true}
+	dispatchPrecedenceMessage(t, basePrecedenceDeps(input, relay), &tg.Message{
+		ID:      51,
+		Message: "group message",
+		FromID:  &tg.PeerUser{UserID: 42},
+		PeerID:  &tg.PeerChat{ChatID: 99},
+	})
+	if relay.ownerCalls != 0 || relay.visitorCalls != 0 {
+		t.Fatalf("group message reached relay owner=%d visitor=%d", relay.ownerCalls, relay.visitorCalls)
+	}
+}
