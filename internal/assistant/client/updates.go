@@ -29,6 +29,11 @@ type groupServiceIngress interface {
 	Publish(*core.GroupServiceEvent)
 }
 
+type groupRuleIngress interface {
+	Interested(int64) bool
+	Handle(context.Context, *core.MessageEnvelope) error
+}
+
 type UpdateHandlerDeps struct {
 	Logger              *zap.Logger
 	RateLimiter         RateLimiter
@@ -47,6 +52,7 @@ type UpdateHandlerDeps struct {
 	RelayIngress        relayMessageIngress
 	AudienceRegistry    pmrelay.AudienceRegistry
 	GroupEvents         groupServiceIngress
+	GroupRules          groupRuleIngress
 	SelfID              func() int64
 }
 
@@ -122,6 +128,113 @@ func assistantCommandMessageContext(message *tg.Message, entities tg.Entities) c
 		MessageID:        message.ID,
 		ReplyToMessageID: assistantReplyToMessageID(message),
 		TopicID:          assistantTopicID(message),
+	}
+}
+
+func assistantGroupRuleEnvelope(
+	message *tg.Message,
+	entities tg.Entities,
+	inputPeer tg.InputPeerClass,
+	senderID int64,
+	selfID int64,
+) (*core.MessageEnvelope, bool) {
+	if message == nil || inputPeer == nil || senderID <= 0 {
+		return nil, false
+	}
+	messageContext := assistantCommandMessageContext(message, entities)
+	chat := messageContext.Chat
+	if !(&chat).IsManagerGroup() {
+		return nil, false
+	}
+	peerRef, err := core.PeerRefFromInputPeer(inputPeer)
+	if err != nil || !peerRef.Valid() {
+		return nil, false
+	}
+	sender := core.User{ID: senderID}
+	senderVerified := false
+	if user := entities.Users[senderID]; user != nil {
+		sender.FirstName = user.FirstName
+		sender.LastName = user.LastName
+		sender.Username = user.Username
+		sender.IsBot = user.Bot
+		senderVerified = true
+	}
+	return &core.MessageEnvelope{
+		ID:             message.ID,
+		ChatID:         chat.ID,
+		Peer:           peerRef,
+		Chat:           chat,
+		Sender:         sender,
+		Text:           message.Message,
+		Date:           time.Unix(int64(message.Date), 0),
+		ReplyToID:      messageContext.ReplyToMessageID,
+		TopicID:        messageContext.TopicID,
+		GroupedID:      message.GroupedID,
+		Outgoing:       message.Out,
+		IsCommand:      false,
+		SenderVerified: senderVerified,
+		SenderSelf:     senderID == selfID,
+	}, true
+}
+
+func submitAssistantGroupRules(
+	ctx context.Context,
+	message *tg.Message,
+	entities tg.Entities,
+	senderID int64,
+	deps UpdateHandlerDeps,
+	logger *zap.Logger,
+) {
+	if message == nil || deps.GroupRules == nil || deps.Tasks == nil || deps.Resolver == nil {
+		return
+	}
+	chatID := extractChatID(message.PeerID)
+	if chatID <= 0 {
+		return
+	}
+	_, err := deps.Tasks.Submit(ctx, tasks.WorkSpec{
+		ID:               tasks.TaskID(fmt.Sprintf("asst:rules:%d:%d", chatID, message.ID)),
+		QuotaOwner:       tasks.OwnerID(fmt.Sprintf("telegram:chat:%d", chatID)),
+		Pool:             tasks.PoolID("interactive"),
+		Class:            tasks.PriorityInteractive,
+		OrderingKey:      fmt.Sprintf("chat:%d", chatID),
+		ExecutionTimeout: 5 * time.Second,
+		Handler: func(taskCtx context.Context) error {
+			inputPeer, resolveErr := deps.Resolver.Resolve(
+				taskCtx,
+				message.PeerID,
+				senderID,
+				entities,
+			)
+			if resolveErr != nil || inputPeer == nil {
+				if resolveErr == nil {
+					resolveErr = core.ErrUnavailable
+				}
+				return fmt.Errorf("assistant group rules resolve peer: %w", resolveErr)
+			}
+			selfID := int64(0)
+			if deps.SelfID != nil {
+				selfID = deps.SelfID()
+			}
+			envelope, ok := assistantGroupRuleEnvelope(
+				message,
+				entities,
+				inputPeer,
+				senderID,
+				selfID,
+			)
+			if !ok {
+				return nil
+			}
+			return deps.GroupRules.Handle(taskCtx, envelope)
+		},
+	})
+	if err != nil && logger != nil {
+		logger.Warn("assistant: group rule admission rejected",
+			zap.Int64("chat_id", chatID),
+			zap.Int("message_id", message.ID),
+			zap.Error(err),
+		)
 	}
 }
 
@@ -321,9 +434,6 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			handleAssistantGroupService(ctx, service, e, deps)
 			return nil
 		}
-		if deps.CacheEntities != nil {
-			deps.CacheEntities(e)
-		}
 		msg, ok := message.(*tg.Message)
 		if !ok || msg.Out {
 			return nil
@@ -340,6 +450,23 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 
 		chatID := extractChatID(msg.PeerID)
 		_, privateChat := msg.PeerID.(*tg.PeerUser)
+		commandToken, slashCommand := assistantSlashCommand(msg.Message)
+		groupRuleCandidate := false
+		if !privateChat && !slashCommand {
+			if strings.TrimSpace(msg.Message) == "" || deps.GroupRules == nil {
+				return nil
+			}
+			messageContext := assistantCommandMessageContext(msg, e)
+			if !(&messageContext.Chat).IsManagerGroup() ||
+				!deps.GroupRules.Interested(chatID) {
+				return nil
+			}
+			groupRuleCandidate = true
+		}
+
+		if deps.CacheEntities != nil {
+			deps.CacheEntities(e)
+		}
 		plainTextRelay := msg.Media == nil && strings.TrimSpace(msg.Message) != ""
 		relayMessage := pmrelay.IngressMessage{
 			SenderID:         senderID,
@@ -380,7 +507,6 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			}
 		}
 
-		commandToken, slashCommand := assistantSlashCommand(msg.Message)
 		if slashCommand {
 			commandName := commandToken
 			if deps.CmdRouter != nil {
@@ -412,6 +538,11 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			// Slash-prefixed messages are command/control-plane traffic. Unknown
 			// commands fail closed here and are never reclassified as PM relay.
 			dispatchCommand(inputPeer)
+			return nil
+		}
+
+		if groupRuleCandidate {
+			submitAssistantGroupRules(ctx, msg, e, senderID, deps, logger)
 			return nil
 		}
 
