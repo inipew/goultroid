@@ -24,6 +24,8 @@ incoming Telegram message
         ↓
 private/slash/broadcast classification
         ↓
+Owner/Sudo automation bypass
+        ↓
 GroupRules.Interested(chat_id)
         ↓
 inactive
@@ -113,13 +115,19 @@ Rule application always re-matches current compiled state after contextual bypas
 
 ## Owner and Sudo bypass
 
-Goultroid Owner/Sudo bypass happens before rule matching and before any Telegram role RPC:
+Goultroid Owner/Sudo bypass happens at Assistant ingress before chat-rule
+interest, entity-cache population, TaskEngine admission, rule matching, or any
+Telegram role RPC. The coordinator repeats the check as defense in depth:
 
 ```text
 sender is Owner/Sudo
         ↓
 automation bypass
         ↓
+0 rule-interest lookup
+0 entity-cache work
+0 TaskEngine admission
+0 peer/channel resolution
 0 matcher work
 0 Telegram role verification
 0 automatic delete/reply
@@ -391,7 +399,7 @@ P7-I tests cover:
 - interested chat submits one ordered shared TaskEngine occurrence;
 - peer resolution occurs inside admitted work;
 - slash commands/private/broadcast traffic do not enter the rule plane;
-- Owner/Sudo bypass before matcher and role RPC;
+- Owner/Sudo bypass before interest, entity cache, TaskEngine, matcher, and role RPC;
 - administrator/creator bypass only after a match and fresh role verification;
 - verification failure fails safe;
 - blacklist precedence over filters;
