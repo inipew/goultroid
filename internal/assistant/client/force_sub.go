@@ -255,7 +255,10 @@ func participantIsMember(participant tg.ChannelParticipantClass) bool {
 	case *tg.ChannelParticipantLeft:
 		return false
 	case *tg.ChannelParticipantBanned:
-		return !value.GetLeft()
+		// Decoded Telegram values set both the flags and exported field. Reading
+		// the field too keeps classification correct for direct test/embedding
+		// construction before SetFlags has been called.
+		return !(value.Left || value.GetLeft())
 	default:
 		return true
 	}
