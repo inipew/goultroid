@@ -505,6 +505,11 @@ func (m *managedGroupMutation) ban(ctx context.Context, kind core.ChatKind, req 
 			ChatID: req.Peer.(*tg.InputPeerChat).ChatID,
 			UserID: user,
 		})
+		if err != nil && tgerr.Is(err, "USER_NOT_PARTICIPANT") {
+			// Basic-group ban/kick is a removal desired state. If a retry or
+			// concurrent actor already removed the target, the state is reached.
+			return nil
+		}
 		return normalizeMutationError(req.Action, err)
 	default:
 		return core.ErrUnsupported
