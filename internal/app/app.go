@@ -119,6 +119,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	pluginManager.SetHookRegistrar(tgRuntime.dispatcher)
 	pluginManager.SetCallbackRegistrar(coreDeps.callbackRouter)
 	pluginManager.SetInlineRegistry(coreDeps.inlineEngine.Registry())
+	coreDeps.inlineEngine.SetFeatureCatalog(pluginManager.FeatureCatalog())
 	coreDeps.inlineEngine.SetInteractionRuntime(pluginManager.InteractionRuntime())
 	tgRuntime.dispatcher.SetPluginScopeResolver(func(owner string) (tasks.ScopeIdentity, bool) {
 		scope, ok := pluginManager.Scope(owner)
