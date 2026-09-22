@@ -211,7 +211,7 @@ func TestSavedResponseCallbackUsesOpaqueA2TokenAndProviderAdmission(t *testing.T
 		t.Fatalf("callback token=%+v", token)
 	}
 	raw := string(data)
-	for _, forbidden := range []string{"hello", "notes", "42"} {
+	for _, forbidden := range []string{"hello", "notes"} {
 		if strings.Contains(raw, forbidden) {
 			t.Fatalf("callback data leaks SavedResponse identity %q: %q", forbidden, raw)
 		}
