@@ -177,8 +177,10 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	tdClient := telegram.NewClient(c.appID, c.appHash, telegram.Options{UpdateHandler: updateMgr})
 	managedAPI := &managedAPI{raw: tdClient.API(), executor: c.rpcExecutor}
 	c.resolver.SetEntityFetcher(peer.NewTelegramEntityFetcher(managedAPI))
-	c.cmdRouter.SetGroupRoleResolver(assistantgroupauth.NewTelegramRoleResolver(managedAPI, c.resolver))
+	groupRoles := assistantgroupauth.NewTelegramRoleResolver(managedAPI, c.resolver)
+	c.cmdRouter.SetGroupRoleResolver(groupRoles)
 	c.cmdRouter.SetGroupQueryReader(newManagedGroupQuery(managedAPI, c.resolver))
+	c.cmdRouter.SetGroupMutationExecutor(newManagedGroupMutation(managedAPI, c.resolver, groupRoles, c.selfID))
 	c.interaction = interaction.NewClientInteraction(managedAPI, c.logger)
 	c.interaction.SetRPCExecutor(c.rpcExecutor)
 	c.interaction.SetMediaSender(message.NewSender(tdClient.API()), uploader.NewUploader(tdClient.API()))
@@ -414,6 +416,15 @@ func (c *AssistantClient) Username() string {
 		return c.self.Username
 	}
 	return "GoUltroidBot"
+}
+
+func (c *AssistantClient) selfID() int64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.self == nil {
+		return 0
+	}
+	return c.self.ID
 }
 func (c *AssistantClient) StartTime() time.Time {
 	c.mu.RLock()
