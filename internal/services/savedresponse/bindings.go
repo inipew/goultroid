@@ -111,11 +111,11 @@ func (s *BindingService) Resolve(ctx context.Context, surface Surface, alias str
 	if s == nil || s.bindings == nil || s.responses == nil {
 		return ResolvedBinding{}, ErrResolverUnavailable
 	}
-	normalized, err := (SurfaceBinding{Surface: surface, Alias: alias, Reference: Reference{Provider: "_", Key: "_"}}).Normalize()
+	surface, alias, err := normalizeSurfaceAlias(surface, alias)
 	if err != nil {
 		return ResolvedBinding{}, err
 	}
-	binding, err := s.bindings.GetBinding(ctx, normalized.Surface, normalized.Alias)
+	binding, err := s.bindings.GetBinding(ctx, surface, alias)
 	if err != nil {
 		return ResolvedBinding{}, err
 	}
