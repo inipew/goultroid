@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/inipew/goultroid/internal/services/pmrelay"
@@ -24,6 +25,7 @@ type relayMessageIngress interface {
 type RelayIngress struct {
 	relay pmrelay.Ingress
 	tasks tasks.Client
+	seq   atomic.Uint64
 }
 
 func NewRelayIngress(relay pmrelay.Ingress, taskClient tasks.Client) *RelayIngress {
@@ -64,12 +66,14 @@ func (r *RelayIngress) submit(ctx context.Context, prepared pmrelay.PreparedIngr
 		return pmrelay.ErrPreparedStale
 	}
 
+	sequence := r.seq.Add(1)
 	_, err := r.tasks.Submit(ctx, tasks.WorkSpec{
 		ID: tasks.TaskID(fmt.Sprintf(
-			"asst:relay:%s:%d:%d",
+			"asst:relay:%s:%d:%d:%d",
 			prepared.Direction(),
 			prepared.SourceChatID(),
 			prepared.SourceMessageID(),
+			sequence,
 		)),
 		Scope:            relayScope,
 		QuotaOwner:       tasks.OwnerID(fmt.Sprintf("pmrelay:visitor:%d", visitorID)),
