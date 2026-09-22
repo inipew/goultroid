@@ -23,6 +23,8 @@ type Repository interface {
 	TouchAudience(context.Context, AudienceTouch) (AudienceMember, error)
 	GetAudience(context.Context, int64) (AudienceMember, error)
 	ListAudience(context.Context, int64, int) ([]AudienceMember, error)
+	SnapshotAudience(context.Context) (AudienceSnapshot, error)
+	ListAudienceSnapshot(context.Context, AudienceSnapshot, int64, int) ([]AudienceMember, int64, error)
 	PruneAudienceBefore(context.Context, time.Time, int) (int, error)
 	CountAudience(context.Context) (int, error)
 
