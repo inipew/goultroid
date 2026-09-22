@@ -37,16 +37,16 @@ type GroupMutationContext struct {
 // TelegramServicer adapter. Authorization and Telegram RPC policy live in the
 // managed mutation executor, not in this adapter.
 type GroupMutationRequest struct {
-	Action       core.GroupMutationAction
-	Peer         tg.InputPeerClass
-	Target       tg.InputPeerClass
-	MessageID    int
-	Silent       bool
-	TopicID      int
-	FromID       int
-	ToID         int
-	UntilDate    int
-	Title        string
+	Action        core.GroupMutationAction
+	Peer          tg.InputPeerClass
+	Target        tg.InputPeerClass
+	MessageID     int
+	Silent        bool
+	TopicID       int
+	FromID        int
+	ToID          int
+	UntilDate     int
+	Title         string
 	DefaultRights tg.ChatBannedRights
 }
 
@@ -62,11 +62,11 @@ type GroupMutationExecutor interface {
 // so plugin command handlers can transparently use ctx.Reply, ctx.EditOrReply, and ctx.ReplyMarkup.
 type assistantServicerAdapter struct {
 	core.MockTelegramServicer
-	inter             interaction.MessageInteraction
-	groupQuery        GroupQueryReader
-	groupMutation     GroupMutationExecutor
-	mutationContext   GroupMutationContext
-	mutationAdmitted  bool
+	inter            interaction.MessageInteraction
+	groupQuery       GroupQueryReader
+	groupMutation    GroupMutationExecutor
+	mutationContext  GroupMutationContext
+	mutationAdmitted bool
 }
 
 func (a *assistantServicerAdapter) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {

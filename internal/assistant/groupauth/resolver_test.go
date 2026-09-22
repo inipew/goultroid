@@ -377,7 +377,6 @@ func TestTelegramRoleResolverForbiddenBasicGroupIsVerificationFailure(t *testing
 	}
 }
 
-
 func TestP7LHighCardinalityRoleCacheRemainsBounded(t *testing.T) {
 	const (
 		total    = 1024

@@ -227,7 +227,6 @@ func TestControllerWeightedOwners(t *testing.T) {
 	}
 }
 
-
 func TestP7LAdmissionIndependentTopicsDoNotHeadOfLineBlock(t *testing.T) {
 	ctrl := NewController(map[tasks.PoolID]PoolConfig{
 		"interactive": {BacklogLimit: 16, PayloadBudget: 1 << 20},
@@ -271,7 +270,6 @@ func TestP7LAdmissionIndependentTopicsDoNotHeadOfLineBlock(t *testing.T) {
 		t.Fatalf("third candidate=%v err=%v, want a2 after topic 10 unlock", third, err)
 	}
 }
-
 
 func TestP7LChatQuotaBoundsHighCardinalityTopics(t *testing.T) {
 	ctrl := NewController(map[tasks.PoolID]PoolConfig{

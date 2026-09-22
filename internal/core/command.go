@@ -74,7 +74,6 @@ func (c Command) IsAvailableOn(s execution.Source) bool {
 	return mask.Supports(s)
 }
 
-
 // PermissionRef returns a stable pointer for explicit per-surface permission
 // overrides in static command metadata.
 func PermissionRef(permission Permission) *Permission {

@@ -277,13 +277,13 @@ type Context struct {
 	Args          []string
 	RawArgs       string
 
-	Message        *Message
-	Album          []*Message
-	Chat           *Chat
-	Sender         *User
-	Self           *User
-	Perms          *Permissions
-	Principal      *Principal
+	Message         *Message
+	Album           []*Message
+	Chat            *Chat
+	Sender          *User
+	Self            *User
+	Perms           *Permissions
+	Principal       *Principal
 	GroupPrincipal  *GroupActorPrincipal
 	GroupRoles      GroupRoleResolver
 	groupStateStore GroupStateStore

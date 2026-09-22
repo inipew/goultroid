@@ -19,9 +19,9 @@ func TestP7JAssistantMessageContextCarriesMediaMentionAndLinkedReply(t *testing.
 		},
 		Media: &tg.MessageMediaWebPage{Webpage: &tg.WebPage{URL: "https://example.com"}},
 		ReplyTo: &tg.MessageReplyHeader{
-			ForumTopic:   true,
-			ReplyToMsgID: 123,
-			ReplyToTopID: 100,
+			ForumTopic:    true,
+			ReplyToMsgID:  123,
+			ReplyToTopID:  100,
 			ReplyToPeerID: &tg.PeerChannel{ChannelID: 88},
 		},
 	}

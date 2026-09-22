@@ -177,4 +177,5 @@ func renderConfigured(label string, state groupevents.State) string {
 		core.EscapeHTML(state.Config.Template),
 	)
 }
+
 var _ interface{ FeatureSpec() feature.Spec } = (*Feature)(nil)

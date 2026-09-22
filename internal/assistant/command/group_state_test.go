@@ -38,8 +38,10 @@ func (*p7fCommandStateStore) DeleteCompareAndSwap(context.Context, core.GroupSta
 	return nil
 }
 
-func (*p7fCommandStateStore) PruneExpired(context.Context, time.Time, int) (int, error) { return 0, nil }
-func (*p7fCommandStateStore) Count(context.Context) (int, error)                        { return 0, nil }
+func (*p7fCommandStateStore) PruneExpired(context.Context, time.Time, int) (int, error) {
+	return 0, nil
+}
+func (*p7fCommandStateStore) Count(context.Context) (int, error) { return 0, nil }
 
 type p7fSequentialRoleResolver struct {
 	cached     core.GroupActorPrincipal

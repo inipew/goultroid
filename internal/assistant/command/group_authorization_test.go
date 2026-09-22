@@ -355,7 +355,6 @@ func TestP7CDoesNotOpenAssistantGroupMutationTransport(t *testing.T) {
 	}
 }
 
-
 func TestP7CCommandsWithoutContextualMetadataStayLazy(t *testing.T) {
 	resolver := &p7cRoleResolver{
 		cached: p7cVerified(core.GroupActorRoleAdministrator, core.GroupAdminRights{}),

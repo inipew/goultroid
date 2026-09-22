@@ -392,7 +392,6 @@ func TestP7HCloseCannotResurrectSubscriptionOrTransport(t *testing.T) {
 	}
 }
 
-
 func TestP7KTransportLifecycleOwnsGroupEventSubscription(t *testing.T) {
 	store, bus := newGroupEventTestRuntime(t)
 	service := New(store, bus)
@@ -425,7 +424,6 @@ func TestP7KTransportLifecycleOwnsGroupEventSubscription(t *testing.T) {
 		t.Fatalf("reattached transport subscriptions=%d, want 1", got)
 	}
 }
-
 
 func TestP7KBoundedGroupEventPayloadPreservesReportedCount(t *testing.T) {
 	users := make([]core.GroupServiceUser, maxRenderedUsers)

@@ -53,7 +53,7 @@ func (r *groupQueryResolverStub) ReResolve(_ context.Context, input tg.InputPeer
 }
 
 func (*groupQueryResolverStub) InvalidatePeer(tg.InputPeerClass) {}
-func (*groupQueryResolverStub) Cache() peer.Cache                 { return nil }
+func (*groupQueryResolverStub) Cache() peer.Cache                { return nil }
 
 func TestManagedGroupQueryBasicGroupUsesManagedFullChat(t *testing.T) {
 	want := &tg.MessagesChatFull{FullChat: &tg.ChatFull{ID: 55}}

@@ -19,10 +19,10 @@ const (
 	MaxWarningRows        = 50_000
 	warningLockStripes    = 64
 
-	ActionNone           = "none"
-	ActionMute           = "muted"
-	ActionKick           = "kicked"
-	ActionBan            = "banned"
+	ActionNone = "none"
+	ActionMute = "muted"
+	ActionKick = "kicked"
+	ActionBan  = "banned"
 )
 
 type WarningRecord struct {

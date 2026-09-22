@@ -157,7 +157,7 @@ func TestP7IInterestedGroupUsesOneOrderedTaskAndResolvesInsideTask(t *testing.T)
 	cacheCalls := 0
 
 	deps := UpdateHandlerDeps{
-		Logger:     zap.NewNop(),
+		Logger:         zap.NewNop(),
 		GroupRules:     rules,
 		GroupRuleChats: classifier,
 		Resolver:       resolver,

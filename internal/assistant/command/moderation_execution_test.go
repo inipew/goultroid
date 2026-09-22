@@ -14,12 +14,12 @@ import (
 )
 
 type p7gMutationExecutorStub struct {
-	tasks            *p7cTaskClient
-	calls            int
+	tasks             *p7cTaskClient
+	calls             int
 	calledAfterSubmit bool
-	meta             command.GroupMutationContext
-	request          command.GroupMutationRequest
-	err              error
+	meta              command.GroupMutationContext
+	request           command.GroupMutationRequest
+	err               error
 }
 
 func (m *p7gMutationExecutorStub) Execute(

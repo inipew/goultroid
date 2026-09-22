@@ -15,9 +15,9 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/command"
 	assistantdeeplink "github.com/inipew/goultroid/internal/assistant/deeplink"
+	assistantgroupauth "github.com/inipew/goultroid/internal/assistant/groupauth"
 	"github.com/inipew/goultroid/internal/assistant/groupevents"
 	"github.com/inipew/goultroid/internal/assistant/grouprules"
-	assistantgroupauth "github.com/inipew/goultroid/internal/assistant/groupauth"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/assistant/peer"
 	assistentrpc "github.com/inipew/goultroid/internal/assistant/rpc"
@@ -273,11 +273,11 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 		PluginScopeResolver: pluginScopeResolver, InteractionIngress: ingress,
 		RelayIngress:     relayIngress,
 		AudienceRegistry: audience,
-		GroupEvents:       groupEvents,
-		GroupRules:        groupRules,
-		GroupRuleChats:    newManagedGroupRuleChatClassifier(managedAPI),
+		GroupEvents:      groupEvents,
+		GroupRules:       groupRules,
+		GroupRuleChats:   newManagedGroupRuleChatClassifier(managedAPI),
 		GlobalPrivileged: c.isGlobalPrivileged,
-		SelfID:            c.selfID,
+		SelfID:           c.selfID,
 	}
 	RegisterUpdateHandlers(&dispatcher, deps)
 

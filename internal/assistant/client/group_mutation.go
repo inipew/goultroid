@@ -33,11 +33,11 @@ type groupMutationAPI interface {
 }
 
 type managedGroupMutation struct {
-	api       groupMutationAPI
-	peers     peer.Resolver
-	roles     core.GroupRoleResolver
-	selfID    func() int64
-	now       func() time.Time
+	api    groupMutationAPI
+	peers  peer.Resolver
+	roles  core.GroupRoleResolver
+	selfID func() int64
+	now    func() time.Time
 }
 
 var _ command.GroupMutationExecutor = (*managedGroupMutation)(nil)
@@ -546,8 +546,8 @@ func (m *managedGroupMutation) kick(
 	}
 	kickUntil := int(m.now().Unix() + 60)
 	if _, err := m.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
-		Channel: channel,
-		Participant: req.Target,
+		Channel:      channel,
+		Participant:  req.Target,
 		BannedRights: tg.ChatBannedRights{ViewMessages: true, UntilDate: kickUntil},
 	}); err != nil {
 		return normalizeMutationError(req.Action, err)
@@ -563,8 +563,8 @@ func (m *managedGroupMutation) kick(
 		return err
 	}
 	_, err = m.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
-		Channel: channel,
-		Participant: req.Target,
+		Channel:      channel,
+		Participant:  req.Target,
 		BannedRights: tg.ChatBannedRights{},
 	})
 	return normalizeMutationError(req.Action, err)

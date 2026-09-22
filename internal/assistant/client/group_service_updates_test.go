@@ -277,7 +277,6 @@ func TestP7HInactiveSupergroupDoesNotResolveMissingEntity(t *testing.T) {
 	}
 }
 
-
 func TestP7KGroupServiceUserMaterializationIsBounded(t *testing.T) {
 	ingress := &groupServiceIngressStub{interested: true}
 	userIDs := make([]int64, maxAssistantGroupServiceUsers*4)

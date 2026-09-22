@@ -20,17 +20,17 @@ import (
 )
 
 const (
-	filterCacheTTL                = 10 * time.Minute
-	filterCooldown                = 5 * time.Second
-	filterCaptureTimeout          = 2 * time.Minute
-	filterDeliveryTimeout         = 30 * time.Second
-	filtersTelegramMessageRunes   = 4096
-	MaxRulesPerChat               = 512
-	MaxKeywordBytes               = 256
-	MaxActiveChats                = 50_000
-	maxCompiledFilterCacheChats   = 500
-	maxFilterCooldownEntries      = 1_000
-	ruleLockStripes               = 64
+	filterCacheTTL              = 10 * time.Minute
+	filterCooldown              = 5 * time.Second
+	filterCaptureTimeout        = 2 * time.Minute
+	filterDeliveryTimeout       = 30 * time.Second
+	filtersTelegramMessageRunes = 4096
+	MaxRulesPerChat             = 512
+	MaxKeywordBytes             = 256
+	MaxActiveChats              = 50_000
+	maxCompiledFilterCacheChats = 500
+	maxFilterCooldownEntries    = 1_000
+	ruleLockStripes             = 64
 )
 
 var filterTaskSequence atomic.Uint64
@@ -140,31 +140,31 @@ func (p *Plugin) Commands() []core.Command {
 	return []core.Command{
 		{
 			Name: "filter", Description: "Save a rich automated keyword filter in this chat",
-			Usage: ".filter <keyword> <reply text> or reply to text/media with .filter <keyword>",
+			Usage:    ".filter <keyword> <reply text> or reply to text/media with .filter <keyword>",
 			Category: "Filters", Permission: core.PermissionSudo,
 			AssistantPermission: core.PermissionRef(core.PermissionEveryone),
-			GroupAuthorization: auth, GroupOnly: true, Surfaces: surfaces,
+			GroupAuthorization:  auth, GroupOnly: true, Surfaces: surfaces,
 			Handler: p.handleFilter,
 		},
 		{
 			Name: "stop", Description: "Stop and delete a chat filter",
 			Usage: ".stop <keyword>", Category: "Filters", Permission: core.PermissionSudo,
 			AssistantPermission: core.PermissionRef(core.PermissionEveryone),
-			GroupAuthorization: auth, GroupOnly: true, Surfaces: surfaces,
+			GroupAuthorization:  auth, GroupOnly: true, Surfaces: surfaces,
 			Handler: p.handleStop,
 		},
 		{
 			Name: "filters", Description: "List all active filters in this chat",
 			Category: "Filters", Permission: core.PermissionSudo,
 			AssistantPermission: core.PermissionRef(core.PermissionEveryone),
-			GroupAuthorization: auth, GroupOnly: true, Surfaces: surfaces,
+			GroupAuthorization:  auth, GroupOnly: true, Surfaces: surfaces,
 			Handler: p.handleList,
 		},
 		{
 			Name: "filterinfo", Description: "Show filter response/media details",
 			Usage: ".filterinfo <keyword>", Category: "Filters", Permission: core.PermissionSudo,
 			AssistantPermission: core.PermissionRef(core.PermissionEveryone),
-			GroupAuthorization: auth, GroupOnly: true, Surfaces: surfaces,
+			GroupAuthorization:  auth, GroupOnly: true, Surfaces: surfaces,
 			Handler: p.handleInfo,
 		},
 	}

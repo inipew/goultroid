@@ -91,7 +91,7 @@ type p7iChurningBlacklistRepo struct {
 	plugin *Plugin
 }
 
-func (*p7iChurningBlacklistRepo) AddBlacklist(context.Context, int64, string) error { return nil }
+func (*p7iChurningBlacklistRepo) AddBlacklist(context.Context, int64, string) error    { return nil }
 func (*p7iChurningBlacklistRepo) RemoveBlacklist(context.Context, int64, string) error { return nil }
 func (r *p7iChurningBlacklistRepo) ListBlacklists(_ context.Context, chatID int64) ([]string, error) {
 	// Simulate a manager mutation after the compiler captured its generation but
@@ -220,9 +220,9 @@ func TestP7IBlacklistRemovalWaitsForInFlightDeletion(t *testing.T) {
 }
 
 type p7iBlockingBlacklistRepo struct {
-	mu        sync.Mutex
-	words     map[int64][]string
-	addEnter  chan struct{}
+	mu         sync.Mutex
+	words      map[int64][]string
+	addEnter   chan struct{}
 	addRelease chan struct{}
 }
 

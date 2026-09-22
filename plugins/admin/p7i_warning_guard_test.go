@@ -62,8 +62,8 @@ func (r *p7iWarningRoleResolver) ResolveGroupRoleFresh(
 	}
 	return core.GroupRoleSnapshot{
 		Principal: core.GroupActorPrincipal{
-			UserID: request.UserID,
-			Role: role,
+			UserID:   request.UserID,
+			Role:     role,
 			Verified: true,
 		},
 	}, nil

@@ -281,7 +281,6 @@ func TestHelpPlugin_Interactive(t *testing.T) {
 	}
 }
 
-
 func TestGroupAuthorizationLabel(t *testing.T) {
 	label := groupAuthorizationLabel(core.GroupAuthorizationRequirement{
 		Level: core.GroupAuthorizationAdministrator,

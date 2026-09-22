@@ -39,9 +39,9 @@ func TestP7LAssistantGroupSurfaceMatrix(t *testing.T) {
 		wantError error
 	}{
 		{
-			name: "private rejected",
-			peer: &tg.InputPeerUser{UserID: 7, AccessHash: 70},
-			chat: core.Chat{ID: 7, Type: string(core.ChatKindPrivate)},
+			name:      "private rejected",
+			peer:      &tg.InputPeerUser{UserID: 7, AccessHash: 70},
+			chat:      core.Chat{ID: 7, Type: string(core.ChatKindPrivate)},
 			wantError: core.ErrGroupOnly,
 		},
 		{
@@ -55,9 +55,9 @@ func TestP7LAssistantGroupSurfaceMatrix(t *testing.T) {
 			chat: core.Chat{ID: 66, Type: string(core.ChatKindSupergroup), AccessHash: 660},
 		},
 		{
-			name: "broadcast channel rejected",
-			peer: &tg.InputPeerChannel{ChannelID: 77, AccessHash: 770},
-			chat: core.Chat{ID: 77, Type: string(core.ChatKindChannel), AccessHash: 770},
+			name:      "broadcast channel rejected",
+			peer:      &tg.InputPeerChannel{ChannelID: 77, AccessHash: 770},
+			chat:      core.Chat{ID: 77, Type: string(core.ChatKindChannel), AccessHash: 770},
 			wantError: core.ErrGroupOnly,
 		},
 	}
@@ -126,8 +126,8 @@ func TestP7LGlobalPrivilegeDoesNotReplaceTelegramGroupRole(t *testing.T) {
 		{name: "sudo but member denied", userID: sudoID, role: core.GroupActorRoleMember},
 		{
 			name: "telegram admin allowed", userID: adminID,
-			role: core.GroupActorRoleAdministrator,
-			rights: core.GroupAdminRights{DeleteMessages: true},
+			role:    core.GroupActorRoleAdministrator,
+			rights:  core.GroupAdminRights{DeleteMessages: true},
 			allowed: true,
 		},
 		{name: "ordinary member denied", userID: memberID, role: core.GroupActorRoleMember},
@@ -138,9 +138,9 @@ func TestP7LGlobalPrivilegeDoesNotReplaceTelegramGroupRole(t *testing.T) {
 			client := &p7cTaskClient{}
 			principal := p7cVerified(tc.role, tc.rights)
 			resolver := &p7cRoleResolver{
-				tasks: client,
+				tasks:  client,
 				cached: principal,
-				fresh: principal,
+				fresh:  principal,
 			}
 			router := command.NewRouter(zap.NewNop())
 			router.SetOwner(ownerID, func() []int64 { return []int64{sudoID} })
@@ -156,7 +156,7 @@ func TestP7LGlobalPrivilegeDoesNotReplaceTelegramGroupRole(t *testing.T) {
 				Permission: core.PermissionEveryone,
 				GroupOnly:  true,
 				GroupAuthorization: core.GroupAuthorizationRequirement{
-					Level: core.GroupAuthorizationAdministrator,
+					Level:  core.GroupAuthorizationAdministrator,
 					Rights: core.GroupAdminRights{DeleteMessages: true},
 				},
 				Handler: func(*core.Context) error {
@@ -218,7 +218,7 @@ func TestP7LTaskAdmissionRejectionNeverExecutesGroupHandler(t *testing.T) {
 		&tg.InputPeerChannel{ChannelID: 99, AccessHash: 199},
 		"/rejectprobe",
 		command.MessageContext{
-			Chat: core.Chat{ID: 99, Type: string(core.ChatKindSupergroup), AccessHash: 199},
+			Chat:      core.Chat{ID: 99, Type: string(core.ChatKindSupergroup), AccessHash: 199},
 			MessageID: 7,
 		},
 		&fakeInteraction{},
@@ -262,7 +262,7 @@ func TestP7LHighCardinalityTopicsShareChatQuotaButKeepOrderingIdentity(t *testin
 					ID: chatID, Type: string(core.ChatKindSupergroup), AccessHash: peer.AccessHash,
 				},
 				MessageID: topicID,
-				TopicID: topicID,
+				TopicID:   topicID,
 			},
 			&fakeInteraction{},
 		)

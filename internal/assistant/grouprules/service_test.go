@@ -274,7 +274,6 @@ func TestP7IRuleRevisionRefreshesAcrossFreshRoleWindow(t *testing.T) {
 	}
 }
 
-
 func TestP7KTopicDeliveryFailsClosedWithoutContextualTransport(t *testing.T) {
 	svc := &interactionServicer{inter: &interactionStub{}}
 	_, err := svc.SendMessageContext(

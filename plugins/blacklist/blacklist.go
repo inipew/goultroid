@@ -18,8 +18,8 @@ var _ plugin.MessageEventPlugin = (*Plugin)(nil)
 var _ plugin.MessageEventStatePlugin = (*Plugin)(nil)
 
 const (
-	MaxRulesPerChat      = 512
-	MaxRuleBytes         = 256
+	MaxRulesPerChat       = 512
+	MaxRuleBytes          = 256
 	MaxActiveChats        = 50_000
 	maxCompiledCacheChats = 500
 	ruleLockStripes       = 64
@@ -95,7 +95,7 @@ func (p *Plugin) MessageHookRouting() core.MessageHookRouting {
 func (p *Plugin) Commands() []core.Command {
 	surfaces := execution.SurfaceUserbot | execution.SurfaceAssistant
 	manage := core.GroupAuthorizationRequirement{
-		Level: core.GroupAuthorizationAdministrator,
+		Level:  core.GroupAuthorizationAdministrator,
 		Rights: core.GroupAdminRights{DeleteMessages: true},
 	}
 	return []core.Command{
@@ -103,21 +103,21 @@ func (p *Plugin) Commands() []core.Command {
 			Name: "blacklist", Description: "Add a word or phrase to the chat blacklist for auto-deletion",
 			Usage: ".blacklist <word/phrase>", Category: "Moderation", Permission: core.PermissionSudo,
 			AssistantPermission: core.PermissionRef(core.PermissionEveryone),
-			GroupAuthorization: manage, GroupOnly: true, Surfaces: surfaces, Handler: p.handleBlacklist,
+			GroupAuthorization:  manage, GroupOnly: true, Surfaces: surfaces, Handler: p.handleBlacklist,
 		},
 		{
 			Name: "unblacklist", Aliases: []string{"rmblacklist"},
 			Description: "Remove a word or phrase from the chat blacklist",
-			Usage: ".unblacklist <word/phrase>", Category: "Moderation", Permission: core.PermissionSudo,
+			Usage:       ".unblacklist <word/phrase>", Category: "Moderation", Permission: core.PermissionSudo,
 			AssistantPermission: core.PermissionRef(core.PermissionEveryone),
-			GroupAuthorization: manage, GroupOnly: true, Surfaces: surfaces, Handler: p.handleUnblacklist,
+			GroupAuthorization:  manage, GroupOnly: true, Surfaces: surfaces, Handler: p.handleUnblacklist,
 		},
 		{
 			Name: "blacklists", Description: "List all blacklisted words in this chat",
 			Category: "Moderation", Permission: core.PermissionSudo,
 			AssistantPermission: core.PermissionRef(core.PermissionEveryone),
-			GroupAuthorization: core.GroupAuthorizationRequirement{Level: core.GroupAuthorizationAdministrator},
-			GroupOnly: true, Surfaces: surfaces, Handler: p.handleListBlacklists,
+			GroupAuthorization:  core.GroupAuthorizationRequirement{Level: core.GroupAuthorizationAdministrator},
+			GroupOnly:           true, Surfaces: surfaces, Handler: p.handleListBlacklists,
 		},
 	}
 }
