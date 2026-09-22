@@ -326,11 +326,11 @@ func (p *Plugin) saveFilterResponse(ctx *core.Context, chatID int64, keyword str
 
 	lock := p.ruleLock(chatID)
 	lock.Lock()
-	defer lock.Unlock()
 
 	p.featureState.MarkUnknown(chatID)
 	previous, err := p.db.GetFilter(ctx.Ctx, chatID, keyword)
 	if err != nil {
+		lock.Unlock()
 		_ = p.responses.DeleteMedia(ctx.Ctx, response)
 		return err
 	}
@@ -341,11 +341,14 @@ func (p *Plugin) saveFilterResponse(ctx *core.Context, chatID int64, keyword str
 	if err := p.responses.CommitReplacement(ctx.Ctx, old, response, func() error {
 		return p.db.SaveFilter(ctx.Ctx, chatID, keyword, response)
 	}); err != nil {
+		lock.Unlock()
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to save filter: %v", err))
 		return err
 	}
 	p.invalidateChat(chatID, true)
 	p.featureState.SetActive(chatID, true)
+	lock.Unlock()
+
 	return ctx.EditOrReply(fmt.Sprintf("🎯 Filter <code>%s</code> saved successfully.", html.EscapeString(keyword)))
 }
 
@@ -361,13 +364,14 @@ func (p *Plugin) handleStop(ctx *core.Context) error {
 	chatID := p.getChatID(ctx)
 	lock := p.ruleLock(chatID)
 	lock.Lock()
-	defer lock.Unlock()
 
 	filter, err := p.db.GetFilter(ctx.Ctx, chatID, keyword)
 	if err != nil {
+		lock.Unlock()
 		return err
 	}
 	if filter == nil {
+		lock.Unlock()
 		_ = ctx.EditOrReply(fmt.Sprintf("ℹ️ Filter <code>%s</code> not found.", html.EscapeString(keyword)))
 		return errors.New("filter not found")
 	}
@@ -376,6 +380,7 @@ func (p *Plugin) handleStop(ctx *core.Context) error {
 	if err := p.responses.CommitDelete(ctx.Ctx, filter.Response, func() error {
 		return p.db.DeleteFilter(ctx.Ctx, chatID, keyword)
 	}); err != nil {
+		lock.Unlock()
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to stop filter: %v", err))
 		return err
 	}
@@ -388,6 +393,8 @@ func (p *Plugin) handleStop(ctx *core.Context) error {
 		p.invalidateChat(chatID, active)
 		p.featureState.SetActive(chatID, active)
 	}
+	lock.Unlock()
+
 	return ctx.EditOrReply(fmt.Sprintf("🗑️ Filter <code>%s</code> stopped.", html.EscapeString(keyword)))
 }
 
@@ -560,16 +567,25 @@ func (p *Plugin) matchAssistantRule(
 	ctx context.Context,
 	message *core.MessageEnvelope,
 ) (*compiledFilter, bool, error) {
+	if message == nil || message.ChatID == 0 {
+		return nil, false, nil
+	}
+	lock := p.ruleLock(message.ChatID)
+	lock.RLock()
+	defer lock.RUnlock()
+	return p.matchAssistantRuleUnlocked(ctx, message)
+}
+
+func (p *Plugin) matchAssistantRuleUnlocked(
+	ctx context.Context,
+	message *core.MessageEnvelope,
+) (*compiledFilter, bool, error) {
 	if message == nil || message.IsCommand || message.Text == "" || message.Outgoing || message.Sender.IsBot {
 		return nil, false, nil
 	}
 	if p.db == nil || p.responses == nil || message.ChatID == 0 {
 		return nil, false, nil
 	}
-
-	lock := p.ruleLock(message.ChatID)
-	lock.RLock()
-	defer lock.RUnlock()
 
 	filterSet, err := p.compiledFiltersForChat(ctx, message.ChatID)
 	if err != nil {
@@ -604,7 +620,14 @@ func (p *Plugin) ApplyAssistantRule(
 	svc core.TelegramServicer,
 	message *core.MessageEnvelope,
 ) (bool, error) {
-	f, matched, err := p.matchAssistantRule(ctx, message)
+	if message == nil || message.ChatID == 0 {
+		return false, nil
+	}
+	lock := p.ruleLock(message.ChatID)
+	lock.RLock()
+	defer lock.RUnlock()
+
+	f, matched, err := p.matchAssistantRuleUnlocked(ctx, message)
 	if err != nil || !matched {
 		return false, err
 	}
