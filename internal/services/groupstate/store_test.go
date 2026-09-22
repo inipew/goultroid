@@ -331,3 +331,31 @@ func TestSQLiteStoreRejectsOversizedValueAndInvalidLimits(t *testing.T) {
 		t.Fatalf("invalid max entries error=%v, want ErrInvalidState", err)
 	}
 }
+
+
+func TestSQLiteSchemaRejectsOversizedValueBypass(t *testing.T) {
+	store, db := newTestStore(t, Limits{MaxEntries: 8, CleanupBatch: 2})
+	if store == nil {
+		t.Fatal("store is nil")
+	}
+
+	_, err := db.ExecContext(context.Background(), `
+		INSERT INTO assistant_group_state (
+			chat_id, namespace, key, value, revision, updated_by, updated_at
+		) VALUES (?, ?, ?, ?, 1, ?, ?)
+	`, 1, "manager", "raw", make([]byte, core.MaxGroupStateValueBytes+1), 7, time.Now().UTC())
+	if err == nil {
+		t.Fatal("raw SQL oversized group state bypassed database value bound")
+	}
+
+	var count int
+	if err := db.QueryRowContext(context.Background(), `
+		SELECT COUNT(*) FROM assistant_group_state
+		WHERE chat_id = 1 AND namespace = 'manager' AND key = 'raw'
+	`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("oversized raw row persisted count=%d", count)
+	}
+}
