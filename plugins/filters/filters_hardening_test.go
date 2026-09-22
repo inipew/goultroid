@@ -100,6 +100,9 @@ func TestFilterDeliveryResourcePlanning(t *testing.T) {
 	if client.specs[1].ExecutionTimeout != filterDeliveryTimeout {
 		t.Fatalf("media delivery timeout=%v, want %v", client.specs[1].ExecutionTimeout, filterDeliveryTimeout)
 	}
+	if client.specs[1].QueueDeadline.IsZero() {
+		t.Fatal("media filter continuation must have a bounded queue deadline")
+	}
 }
 
 func TestResponseCloneDetachesMediaPointer(t *testing.T) {
