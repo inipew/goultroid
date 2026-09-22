@@ -322,3 +322,21 @@ func TestSQLiteSingleUseClaimExcludesConcurrentExecutionAndExpires(t *testing.T)
 		t.Fatalf("ReleaseClaim() error=%v", err)
 	}
 }
+
+
+func TestLooksLikeTokenClaimsVersionedProtocolFamily(t *testing.T) {
+	for _, raw := range []string{
+		"d1_AAAAAAAAAAAAAAAAAAAAAA",
+		"d2_AAAAAAAAAAAAAAAAAAAAAA",
+		"d12_AAAAAAAAAAAAAAAAAAAAAA",
+	} {
+		if !LooksLikeToken(raw) {
+			t.Fatalf("LooksLikeToken(%q)=false", raw)
+		}
+	}
+	for _, raw := range []string{"legacy", "data_payload", "d_bad", "d1"} {
+		if LooksLikeToken(raw) {
+			t.Fatalf("LooksLikeToken(%q)=true", raw)
+		}
+	}
+}
