@@ -29,8 +29,12 @@ func messageSendContext(c *Context) MessageSendContext {
 }
 
 func sendContextualMessage(c *Context, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
+	send := messageSendContext(c)
 	if contextual, ok := c.Svc.(ContextualTelegramServicer); ok {
-		return contextual.SendMessageContext(c.Ctx, c.PeerID, text, markup, messageSendContext(c))
+		return contextual.SendMessageContext(c.Ctx, c.PeerID, text, markup, send)
+	}
+	if send.TopicID > 0 {
+		return nil, fmt.Errorf("%w: telegram transport cannot preserve forum topic %d", ErrUnavailable, send.TopicID)
 	}
 	if markup != nil {
 		return c.Svc.SendMessageWithMarkup(c.Ctx, c.PeerID, text, markup)
