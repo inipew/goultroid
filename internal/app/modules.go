@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	assistantdeeplink "github.com/inipew/goultroid/internal/assistant/deeplink"
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/module"
 	"github.com/inipew/goultroid/internal/services/mediaregistry"
@@ -29,8 +30,9 @@ func registerBuiltinModules(ctx context.Context, rt *module.Runtime) error {
 }
 
 func migrateBuiltinFeatures(ctx context.Context, db *database.DB) error {
-	providers := make([]database.MigrationProvider, 0, len(builtinModules)+2)
+	providers := make([]database.MigrationProvider, 0, len(builtinModules)+3)
 	providers = append(providers,
+		assistantdeeplink.MigrationProvider{},
 		mediaregistry.MigrationProvider{},
 		savedresponse.MigrationProvider{},
 	)
