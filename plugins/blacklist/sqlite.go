@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
@@ -13,7 +14,8 @@ import (
 
 // SQLiteRepository implements Repository using *database.DB.
 type SQLiteRepository struct {
-	db *database.DB
+	db         *database.DB
+	mutationMu sync.Mutex
 }
 
 // NewSQLiteRepository constructs a SQLiteRepository.
@@ -23,6 +25,8 @@ func NewSQLiteRepository(db *database.DB) *SQLiteRepository {
 
 // AddBlacklist adds a word to the blacklist for a chat.
 func (r *SQLiteRepository) AddBlacklist(ctx context.Context, chatID int64, word string) error {
+	r.mutationMu.Lock()
+	defer r.mutationMu.Unlock()
 	word = strings.ToLower(strings.TrimSpace(word))
 	if word == "" {
 		return errors.New("word cannot be empty")
@@ -75,6 +79,8 @@ func (r *SQLiteRepository) AddBlacklist(ctx context.Context, chatID int64, word 
 
 // RemoveBlacklist removes a word from the blacklist for a chat.
 func (r *SQLiteRepository) RemoveBlacklist(ctx context.Context, chatID int64, word string) error {
+	r.mutationMu.Lock()
+	defer r.mutationMu.Unlock()
 	word = strings.ToLower(strings.TrimSpace(word))
 	query := "DELETE FROM blacklists WHERE chat_id = ? AND word = ?"
 	res, err := r.db.ExecContext(ctx, query, chatID, word)
