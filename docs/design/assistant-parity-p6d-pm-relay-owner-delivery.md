@@ -2,7 +2,9 @@
 
 ## Status
 
-P6-D adds the durable reverse PM Relay data plane for **plain-text owner replies**.
+P6-D adds the durable reverse PM Relay data plane for owner replies. The phase
+first establishes plain-text delivery, then extends the same durable transport
+to reusable Telegram photo/document media references.
 
 A reply is eligible only when the owner replies to a still-valid durable
 `RelayMapping` created by P6-C. The mapping remains the authorization authority
@@ -31,12 +33,22 @@ RevalidatePrepared(mapping) again
         ↓
 reload owner source message from Telegram
         ↓
-messages.sendMessage(
-    visitor,
-    source.Message,
-    source.Entities,
-    random_id = durable random_id
-)
+plain text:
+  messages.sendMessage(
+      visitor,
+      source.Message,
+      source.Entities,
+      random_id = durable random_id
+  )
+
+photo/document media:
+  messages.sendMedia(
+      visitor,
+      reusable Telegram media reference,
+      source.Message caption,
+      source.Entities,
+      random_id = durable random_id
+  )
         ↓
 CommitDelivery(visitor_message_id)
 ```
@@ -58,8 +70,11 @@ It deliberately does **not** copy:
 - forward metadata;
 - owner author metadata;
 - owner reply header;
-- media;
 - callback markup.
+
+For photo/document-class media, only the Telegram media reference and caption
+are reused. This includes document-backed file/sticker/audio/video/voice
+variants without downloading or re-uploading bytes.
 
 The resulting visitor-side message is authored by the Assistant bot.
 
@@ -129,9 +144,10 @@ payload.
 P6-D uses a caller-owned durable `random_id` with
 `messages.sendMessage`.
 
-Production exposes a separate durable send path through the Assistant managed
-RPC adapter. Only this pre-persisted-random-ID path enters the idempotent
-mutation lane; ordinary Assistant sends keep their previous behavior.
+Production exposes separate durable `sendMessage` and `sendMedia` paths
+through the Assistant managed RPC adapter. Only these pre-persisted-random-ID
+paths enter the idempotent mutation lane; ordinary Assistant sends keep their
+previous behavior.
 
 Failure semantics:
 
@@ -198,23 +214,25 @@ remaining independent across visitors.
 No delivery intent or Telegram request is created if TaskEngine rejects
 admission.
 
-## Text-only gate
+## Payload gate
 
-P6-D is intentionally text-only.
+The reverse transport supports:
 
-The transport accepts a source message only when:
+- plain text;
+- Telegram `MessageMediaPhoto`;
+- Telegram `MessageMediaDocument`.
 
-```text
-source.Media == nil
-AND trim(source.Message) != ""
-```
+Photo/document media is copied server-side using `InputMediaPhoto` or
+`InputMediaDocument` built from the freshly reloaded source message. The
+existing file reference is therefore refreshed by the source lookup before each
+attempt, and no local media bytes are retained.
 
-A mapped media reply is still claimed by relay precedence, but execution returns
-`ErrUnsupportedDelivery` without calling `messages.sendMessage` or
-`messages.forwardMessages`.
+Other semantic media such as polls, contacts, locations, games, invoices, and
+unsupported constructors remain fail-closed with `ErrUnsupportedDelivery`.
+They are never coerced into a lossy text/media representation.
 
-This fail-closed behavior prevents media replies from falling into an unrelated
-AwaitInput session while the media transport is not implemented.
+Mapped unsupported-media replies still outrank AwaitInput, preventing them from
+being consumed as unrelated workflow input.
 
 ## Acceptance gates
 
@@ -235,15 +253,19 @@ Tests freeze these invariants:
 - owner delivery does not update Assistant audience activity;
 - TaskEngine admission rejection creates no delivery or transport side effect;
 - source text/entities are copied into `messages.sendMessage`;
+- photo references are copied through `messages.sendMedia`;
+- document references are copied through `messages.sendMedia`;
+- media copy performs no upload/download;
 - owner reverse delivery never invokes `messages.forwardMessages`;
-- media source messages produce no send/forward side effect.
+- unsupported semantic media produces no send/forward side effect.
 
 ## Explicit non-goals
 
 P6-D does not implement:
 
-- media/photo/document/sticker/audio/video relay;
-- media download/re-upload;
+- visitor → owner media relay;
+- semantic media copy for polls/contacts/locations/games/invoices;
+- media download/re-upload fallback;
 - album grouping;
 - visitor block/ban controls;
 - force-sub;
@@ -251,6 +273,5 @@ P6-D does not implement:
 - broadcast fan-out;
 - proactive startup replay/scanning of pending delivery intents.
 
-The next transport expansion should extend this same durable
-`owner_to_visitor` contract for media rather than creating a parallel relay
-pipeline.
+Any later semantic-media expansion should extend this same durable
+`owner_to_visitor` contract rather than creating a parallel relay pipeline.
