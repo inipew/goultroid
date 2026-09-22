@@ -71,6 +71,8 @@ type Router struct {
 	tasks                tasks.Client
 	delayedActions       core.DelayedActionScheduler
 	groupRoles           core.GroupRoleResolver
+	groupQuery           GroupQueryReader
+	botUsername          atomic.Value // string
 	ownerID              int64
 	sudoGetter           func() []int64
 	metrics              core.MetricsCollector
@@ -102,6 +104,28 @@ func (r *Router) SetDelayedActions(scheduler core.DelayedActionScheduler) {
 // P7-C decides which commands require admission-time/fresh authorization.
 func (r *Router) SetGroupRoleResolver(resolver core.GroupRoleResolver) {
 	r.groupRoles = resolver
+}
+
+// SetGroupQueryReader installs the managed read-only Telegram query surface used
+// by manager canaries such as /chatinfo.
+func (r *Router) SetGroupQueryReader(reader GroupQueryReader) {
+	r.groupQuery = reader
+}
+
+// SetBotUsername sets the authenticated Assistant bot username used to validate
+// /command@botusername targeting. Empty usernames fail closed for suffixed commands.
+func (r *Router) SetBotUsername(username string) {
+	username = strings.TrimSpace(strings.TrimPrefix(username, "@"))
+	r.botUsername.Store(strings.ToLower(username))
+}
+
+func (r *Router) botUsernameValue() string {
+	value := r.botUsername.Load()
+	if value == nil {
+		return ""
+	}
+	username, _ := value.(string)
+	return username
 }
 
 // SetOwner configures the owner identity and optional sudo getter for permission enforcement.
@@ -453,8 +477,15 @@ func (r *Router) dispatch(
 		return nil
 	}
 
-	// Strip optional @botusername suffix (e.g. /start@GoUltroidBot -> /start)
+	// Telegram group commands may target a specific bot as /command@username.
+	// Ignore commands for another bot instead of treating them as unknown local
+	// commands or allowing them to enter the manager plane.
 	if atIdx := strings.Index(cmdRaw, "@"); atIdx != -1 {
+		target := strings.TrimSpace(strings.TrimPrefix(cmdRaw[atIdx+1:], "@"))
+		botUsername := r.botUsernameValue()
+		if target == "" || botUsername == "" || !strings.EqualFold(target, botUsername) {
+			return nil
+		}
 		cmdRaw = cmdRaw[:atIdx]
 	}
 
@@ -577,7 +608,7 @@ func (r *Router) dispatch(
 			Perms:          perms,
 			Principal:      principal,
 			GroupRoles:     r.groupRoles,
-			Svc:            &assistantServicerAdapter{inter: inter},
+			Svc:            &assistantServicerAdapter{inter: inter, groupQuery: r.groupQuery},
 			DelayedActions: r.delayedActions,
 		}
 
