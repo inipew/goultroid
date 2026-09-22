@@ -80,17 +80,17 @@ func TestP7DDoesNotOpenAssistantMutationFence(t *testing.T) {
 	}
 
 	mutations := map[string]bool{
-		"PinMessage":                       false,
-		"UnpinMessage":                     false,
-		"BanUser":                          false,
-		"UnbanUser":                        false,
-		"KickUser":                         false,
-		"MuteUser":                         false,
-		"UnmuteUser":                       false,
-		"PurgeMessages":                    false,
-		"PromoteAdmin":                     false,
-		"DemoteAdmin":                      false,
-		"EditChatDefaultBannedRights":      false,
+		"PinMessage":                  false,
+		"UnpinMessage":                false,
+		"BanUser":                     false,
+		"UnbanUser":                   false,
+		"KickUser":                    false,
+		"MuteUser":                    false,
+		"UnmuteUser":                  false,
+		"PurgeMessages":               false,
+		"PromoteAdmin":                false,
+		"DemoteAdmin":                 false,
+		"EditChatDefaultBannedRights": false,
 	}
 
 	for _, decl := range file.Decls {
