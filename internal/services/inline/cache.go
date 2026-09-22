@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/ui"
 )
@@ -44,6 +45,13 @@ func cloneInlineResults(results []InlineResult) []InlineResult {
 	cloned := make([]InlineResult, len(results))
 	copy(cloned, results)
 	for i := range cloned {
+		cloned[i].InteractionState = append([]byte(nil), results[i].InteractionState...)
+		if results[i].ActionRows != nil {
+			cloned[i].ActionRows = make([]presentation.Row, len(results[i].ActionRows))
+			for rowIndex, row := range results[i].ActionRows {
+				cloned[i].ActionRows[rowIndex] = append(presentation.Row(nil), row...)
+			}
+		}
 		if results[i].Markup == nil {
 			continue
 		}
