@@ -25,4 +25,10 @@ type Repository interface {
 	ListAudience(context.Context, int64, int) ([]AudienceMember, error)
 	PruneAudienceBefore(context.Context, time.Time, int) (int, error)
 	CountAudience(context.Context) (int, error)
+
+	SetVisitorBlock(context.Context, VisitorBlock) (VisitorBlock, error)
+	GetVisitorBlock(context.Context, int64) (VisitorBlock, error)
+	DeleteVisitorBlock(context.Context, int64) (bool, error)
+	ListVisitorBlocks(context.Context, int64, int) ([]VisitorBlock, error)
+	CountVisitorBlocks(context.Context) (int, error)
 }
