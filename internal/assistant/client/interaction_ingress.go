@@ -68,7 +68,10 @@ func (v *interactionIngress) dispatchCallback(
 		return err
 	}
 
-	resources := prepared.Resources()
+	var resources []tasks.ResourceRequirement
+	if aware, ok := prepared.(orchestration.ResourcePreparedCallback); ok {
+		resources = aware.Resources()
+	}
 	pool := tasks.PoolID("interactive")
 	executionTimeout := 15 * time.Second
 	for _, requirement := range resources {
