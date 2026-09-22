@@ -2,6 +2,7 @@ package client_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -267,5 +268,62 @@ func TestUpdateHandlers_DynamicInlineMediaCarriesAdmissionAuthority(t *testing.T
 	}
 	if audience.touches[0].UserID != 42 || audience.touches[0].Source != pmrelay.AudienceSourceInline {
 		t.Fatalf("inline audience touch=%+v", audience.touches[0])
+	}
+}
+
+
+type failingInlineExecutor struct{}
+
+func (failingInlineExecutor) Prepare(string) (inlineservice.PreparedQuery, error) {
+	return inlineservice.PreparedQuery{}, inlineservice.ErrNoMatchingHandler
+}
+
+func (failingInlineExecutor) ExecuteWithPeerType(
+	context.Context,
+	core.TelegramServicer,
+	int64,
+	int64,
+	string,
+	string,
+	tg.InlineQueryPeerTypeClass,
+) error {
+	return errors.New("inline execution failed")
+}
+
+func (failingInlineExecutor) ExecutePreparedWithPeerType(
+	context.Context,
+	core.TelegramServicer,
+	int64,
+	int64,
+	inlineservice.PreparedQuery,
+	string,
+	tg.InlineQueryPeerTypeClass,
+) error {
+	return errors.New("prepared inline execution failed")
+}
+
+func TestUpdateHandlers_FailedInlineDoesNotTouchAudience(t *testing.T) {
+	dispatcher := tg.NewUpdateDispatcher()
+	taskClient := &captureInlineTaskClient{run: true}
+	audience := &recordingAudienceRegistry{}
+	client.RegisterUpdateHandlers(&dispatcher, client.UpdateHandlerDeps{
+		InlineEngine:     failingInlineExecutor{},
+		InlineService:    &core.MockTelegramServicer{},
+		Tasks:            taskClient,
+		AudienceRegistry: audience,
+	})
+
+	update := &tg.UpdateBotInlineQuery{
+		QueryID: 902,
+		UserID:  42,
+		Query:   "will-fail",
+	}
+	if err := dispatcher.Handle(context.Background(), &tg.Updates{
+		Updates: []tg.UpdateClass{update},
+	}); err != nil {
+		t.Fatalf("inline update error=%v", err)
+	}
+	if len(audience.touches) != 0 {
+		t.Fatalf("failed inline execution touched audience: %+v", audience.touches)
 	}
 }
