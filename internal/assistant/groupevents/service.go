@@ -203,6 +203,7 @@ func (s *Service) Close() {
 	sub := s.sub
 	s.sub = nil
 	s.transport = nil
+	s.loaded = false
 	s.mu.Unlock()
 	if sub != nil {
 		sub.Close()
