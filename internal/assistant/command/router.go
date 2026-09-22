@@ -336,8 +336,37 @@ func (r *Router) executeSavedResponseBinding(
 	return true, taskResultError(res)
 }
 
-// Dispatch parses the message text, extracts the command, and invokes the matching handler.
+// Dispatch parses a command without transport message coordinates. It is kept
+// for embedding/tests; production Assistant updates should use DispatchMessage
+// so reply-aware canonical commands receive message identity.
 func (r *Router) Dispatch(ctx context.Context, senderID int64, peer tg.InputPeerClass, messageText string, inter interaction.MessageInteraction) error {
+	return r.dispatch(ctx, senderID, peer, messageText, 0, 0, inter)
+}
+
+// DispatchMessage preserves Telegram message/reply identity in the canonical
+// core.Context so reply-based Assistant commands (/who, relay controls, etc.)
+// can use the same command registry rather than a transport-local dispatcher.
+func (r *Router) DispatchMessage(
+	ctx context.Context,
+	senderID int64,
+	peer tg.InputPeerClass,
+	messageText string,
+	messageID int,
+	replyToMessageID int,
+	inter interaction.MessageInteraction,
+) error {
+	return r.dispatch(ctx, senderID, peer, messageText, messageID, replyToMessageID, inter)
+}
+
+func (r *Router) dispatch(
+	ctx context.Context,
+	senderID int64,
+	peer tg.InputPeerClass,
+	messageText string,
+	messageID int,
+	replyToMessageID int,
+	inter interaction.MessageInteraction,
+) error {
 	fields := strings.Fields(strings.TrimSpace(messageText))
 	if len(fields) == 0 {
 		return nil
@@ -453,7 +482,12 @@ func (r *Router) Dispatch(ctx context.Context, senderID int64, peer tg.InputPeer
 			Args:           fields[1:],
 			RawArgs:        strings.Join(fields[1:], " "),
 			PeerID:         peer,
-			Message:        &core.Message{SenderID: senderID, Text: strings.TrimSpace(messageText)},
+			Message: &core.Message{
+				ID:        messageID,
+				SenderID:  senderID,
+				Text:      strings.TrimSpace(messageText),
+				ReplyToID: replyToMessageID,
+			},
 			Sender:         &core.User{ID: senderID},
 			Chat:           &core.Chat{ID: chatID, Type: chatTypeForPeer(peer)},
 			Perms:          perms,
