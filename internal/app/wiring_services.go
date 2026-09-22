@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/addon"
+	"github.com/inipew/goultroid/internal/assistant/groupevents"
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/scheduler"
 	broadcastSvc "github.com/inipew/goultroid/internal/services/broadcast"
@@ -54,6 +55,7 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 	if groupState == nil {
 		return nil, fmt.Errorf("initialize group state store")
 	}
+	groupEvents := groupevents.New(groupState, core.eventBus)
 
 	schedRepo := scheduler.NewSQLiteRepository(core.db.DB)
 	schedEngine := scheduler.NewEngine(schedRepo, logger)
@@ -128,6 +130,7 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 		settingsService:  settingsService,
 		settingsRegistry: settingsRegistry,
 		groupState:       groupState,
+		groupEvents:      groupEvents,
 		schedEngine:      schedEngine,
 		storage:          appStorage,
 		mediaService:     mediaService,
