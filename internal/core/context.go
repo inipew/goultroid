@@ -263,8 +263,10 @@ type Context struct {
 	Album     []*Message
 	Chat      *Chat
 	Sender    *User
-	Perms     *Permissions
-	Principal *Principal
+	Perms          *Permissions
+	Principal      *Principal
+	GroupPrincipal *GroupActorPrincipal
+	GroupRoles     GroupRoleResolver
 
 	// LastResponseID tracks the ID of the bot's most recent reply in this context
 	LastResponseID int
