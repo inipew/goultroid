@@ -243,7 +243,6 @@ func TestP7ISlashPrivateAndBroadcastDoNotEnterRulePlane(t *testing.T) {
 	}
 }
 
-
 func TestP7IActiveUnknownSupergroupDefersClassificationUntilTask(t *testing.T) {
 	rules := &p7iRuleIngressStub{interested: true}
 	resolver := &groupServiceResolverStub{
