@@ -151,3 +151,17 @@ func (r *SQLiteRepository) PruneExpired(ctx context.Context, now time.Time, limi
 }
 
 var _ Repository = (*SQLiteRepository)(nil)
+
+
+func (r *SQLiteRepository) CountRetained(ctx context.Context) (int, error) {
+	if r == nil || r.db == nil {
+		return 0, ErrProviderUnavailable
+	}
+	var count int
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT count(*) FROM assistant_deep_link_tokens
+	`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count assistant deep-link tokens: %w", err)
+	}
+	return count, nil
+}
