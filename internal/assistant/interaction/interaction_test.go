@@ -365,6 +365,42 @@ func TestClientInteraction_CopyTextMessageRejectsMedia(t *testing.T) {
 	}
 }
 
+func TestClientInteraction_CopyMessageTreatsWebPagePreviewAsText(t *testing.T) {
+	mockAPI := &mockTelegramAPI{
+		getMsgsResult: &tg.MessagesMessages{
+			Messages: []tg.MessageClass{
+				&tg.Message{
+					ID:      76,
+					Message: "https://example.com",
+					Media:   &tg.MessageMediaWebPage{},
+				},
+			},
+		},
+		sendMsgResult: &tg.UpdateShortSentMessage{ID: 302},
+	}
+	ci := interaction.NewClientInteraction(mockAPI, zap.NewNop())
+	msg, err := ci.CopyMessageWithRandomID(
+		context.Background(),
+		interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 7, AccessHash: 70}, 76, 7, 0),
+		&tg.InputPeerUser{UserID: 42, AccessHash: 420},
+		998,
+	)
+	if err != nil {
+		t.Fatalf("CopyMessageWithRandomID(webpage) error=%v", err)
+	}
+	if msg == nil || msg.ID != 302 {
+		t.Fatalf("webpage copy message=%+v", msg)
+	}
+	if mockAPI.sendMsgReq == nil || mockAPI.sendMsgReq.Message != "https://example.com" ||
+		mockAPI.sendMsgReq.RandomID != 998 {
+		t.Fatalf("webpage text send request=%+v", mockAPI.sendMsgReq)
+	}
+	if mockAPI.sendMediaReq != nil || mockAPI.forwardMsgsReq != nil {
+		t.Fatalf("webpage preview used media/forward transport: media=%+v forward=%+v",
+			mockAPI.sendMediaReq, mockAPI.forwardMsgsReq)
+	}
+}
+
 func TestClientInteraction_CopyMessageWithRandomIDCopiesPhotoReference(t *testing.T) {
 	photoMedia := &tg.MessageMediaPhoto{}
 	photoMedia.SetPhoto(&tg.Photo{ID: 901, AccessHash: 902, FileReference: []byte{1, 2, 3}})
