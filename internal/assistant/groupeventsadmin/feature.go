@@ -68,6 +68,14 @@ func (f *Feature) Commands() []core.Command {
 	}
 }
 
+func titleLabel(label string) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return ""
+	}
+	return strings.ToUpper(label[:1]) + label[1:]
+}
+
 func (f *Feature) handle(ctx *core.Context, kind core.GroupServiceKind, label string) error {
 	if f == nil || f.service == nil {
 		return groupevents.ErrUnavailable
@@ -129,7 +137,7 @@ func (f *Feature) handle(ctx *core.Context, kind core.GroupServiceKind, label st
 
 "+
 				"Variables: <code>{user}</code>, <code>{user_id}</code>, <code>{chat}</code>, <code>{count}</code>",
-			strings.Title(label),
+			titleLabel(label),
 			label,
 			label,
 			label,
@@ -160,7 +168,7 @@ func (f *Feature) replyStatus(ctx *core.Context, kind core.GroupServiceKind, lab
 
 "+
 			"Variables: <code>{user}</code>, <code>{user_id}</code>, <code>{chat}</code>, <code>{count}</code>",
-		core.EscapeHTML(strings.Title(label)),
+		core.EscapeHTML(titleLabel(label)),
 		status,
 		state.Revision,
 		core.EscapeHTML(state.Config.Template),
@@ -180,7 +188,7 @@ func renderConfigured(label string, state groupevents.State) string {
 			"• <b>Revision:</b> <code>%d</code>
 "+
 			"• <b>Template:</b> %s",
-		core.EscapeHTML(strings.Title(label)),
+		core.EscapeHTML(titleLabel(label)),
 		status,
 		state.Revision,
 		core.EscapeHTML(state.Config.Template),
