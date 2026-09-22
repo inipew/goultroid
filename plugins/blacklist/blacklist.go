@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
@@ -23,17 +24,23 @@ type compiledBlacklist struct {
 	re   *regexp.Regexp
 }
 
+type compiledBlacklistSet struct {
+	items    []compiledBlacklist
+	revision uint64
+}
+
 type Plugin struct {
 	db            Repository
 	svcFunc       func() core.TelegramServicer
 	featureState  core.ChatFeatureSnapshot
+	ruleRevision  atomic.Uint64
 	cacheMu       sync.RWMutex
-	chatBlacklist map[int64][]compiledBlacklist
+	chatBlacklist map[int64]compiledBlacklistSet
 	chatAccess    map[int64]time.Time
 }
 
 func New(db Repository, svcFunc func() core.TelegramServicer) *Plugin {
-	return &Plugin{db: db, svcFunc: svcFunc, chatBlacklist: make(map[int64][]compiledBlacklist), chatAccess: make(map[int64]time.Time)}
+	return &Plugin{db: db, svcFunc: svcFunc, chatBlacklist: make(map[int64]compiledBlacklistSet), chatAccess: make(map[int64]time.Time)}
 }
 func (p *Plugin) Name() string { return "blacklist" }
 
@@ -121,6 +128,7 @@ func (p *Plugin) handleBlacklist(ctx *core.Context) error {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to add to blacklist: %v", err))
 		return err
 	}
+	p.ruleRevision.Add(1)
 	p.featureState.SetActive(chatID, true)
 	p.cacheMu.Lock()
 	delete(p.chatBlacklist, chatID)
@@ -140,6 +148,7 @@ func (p *Plugin) handleUnblacklist(ctx *core.Context) error {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to remove from blacklist: %v", err))
 		return err
 	}
+	p.ruleRevision.Add(1)
 	if remaining, err := p.db.ListBlacklists(ctx.Ctx, chatID); err != nil {
 		p.featureState.MarkUnknown(chatID)
 	} else {
@@ -173,6 +182,10 @@ func (p *Plugin) AssistantRuleInterested(chatID int64) bool {
 	return p.MessageHookInterested(chatID)
 }
 
+func (p *Plugin) AssistantRuleRevision(_ int64) uint64 {
+	return p.ruleRevision.Load()
+}
+
 func (p *Plugin) MatchAssistantRule(ctx context.Context, message *core.MessageEnvelope) (bool, error) {
 	return p.matchMessage(ctx, message)
 }
@@ -200,32 +213,44 @@ func (p *Plugin) ApplyAssistantRule(
 	return true, nil
 }
 
-func (p *Plugin) matchMessage(ctx context.Context, message *core.MessageEnvelope) (bool, error) {
-	if message == nil || message.IsCommand || message.Text == "" || message.Outgoing || message.Sender.IsBot {
-		return false, nil
-	}
-	if p.db == nil || message.ChatID == 0 {
-		return false, nil
-	}
-	chatID := message.ChatID
-	p.cacheMu.RLock()
-	items, ok := p.chatBlacklist[chatID]
-	p.cacheMu.RUnlock()
-	if !ok {
+func (p *Plugin) compiledForChat(
+	ctx context.Context,
+	chatID int64,
+) ([]compiledBlacklist, error) {
+	for attempt := 0; attempt < 3; attempt++ {
+		revision := p.ruleRevision.Load()
+		p.cacheMu.RLock()
+		cached, ok := p.chatBlacklist[chatID]
+		p.cacheMu.RUnlock()
+		if ok && cached.revision == revision {
+			p.cacheMu.Lock()
+			p.chatAccess[chatID] = time.Now()
+			p.cacheMu.Unlock()
+			return cached.items, nil
+		}
+
 		rawWords, err := p.db.ListBlacklists(ctx, chatID)
 		if err != nil {
 			p.featureState.MarkUnknown(chatID)
-			return false, nil
+			return nil, err
 		}
+		items := compileBlacklist(rawWords)
+		if p.ruleRevision.Load() != revision {
+			continue
+		}
+
 		p.featureState.SetActive(chatID, len(rawWords) > 0)
-		items = compileBlacklist(rawWords)
 		p.cacheMu.Lock()
+		if p.ruleRevision.Load() != revision {
+			p.cacheMu.Unlock()
+			continue
+		}
 		if len(p.chatBlacklist) >= 500 {
 			var oldestChat int64
 			var oldestTime time.Time
-			for c, t := range p.chatAccess {
-				if oldestTime.IsZero() || t.Before(oldestTime) {
-					oldestTime, oldestChat = t, c
+			for c, accessed := range p.chatAccess {
+				if oldestTime.IsZero() || accessed.Before(oldestTime) {
+					oldestTime, oldestChat = accessed, c
 				}
 			}
 			if oldestChat != 0 {
@@ -233,13 +258,27 @@ func (p *Plugin) matchMessage(ctx context.Context, message *core.MessageEnvelope
 				delete(p.chatAccess, oldestChat)
 			}
 		}
-		p.chatBlacklist[chatID] = items
+		p.chatBlacklist[chatID] = compiledBlacklistSet{
+			items:    items,
+			revision: revision,
+		}
 		p.chatAccess[chatID] = time.Now()
 		p.cacheMu.Unlock()
-	} else {
-		p.cacheMu.Lock()
-		p.chatAccess[chatID] = time.Now()
-		p.cacheMu.Unlock()
+		return items, nil
+	}
+	return nil, fmt.Errorf("%w: blacklist rules changed during compilation", core.ErrConflict)
+}
+
+func (p *Plugin) matchMessage(ctx context.Context, message *core.MessageEnvelope) (bool, error) {
+	if message == nil || message.IsCommand || message.Text == "" || message.Outgoing || message.Sender.IsBot {
+		return false, nil
+	}
+	if p.db == nil || message.ChatID == 0 {
+		return false, nil
+	}
+	items, err := p.compiledForChat(ctx, message.ChatID)
+	if err != nil {
+		return false, err
 	}
 	if len(items) == 0 {
 		return false, nil
