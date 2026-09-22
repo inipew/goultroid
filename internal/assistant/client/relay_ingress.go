@@ -66,6 +66,11 @@ func (r *RelayIngress) submit(ctx context.Context, prepared pmrelay.PreparedIngr
 		return pmrelay.ErrPreparedStale
 	}
 
+	quotaOwner := tasks.OwnerID(fmt.Sprintf("pmrelay:visitor:%d", visitorID))
+	if prepared.Direction() == pmrelay.DeliveryOwnerToVisitor {
+		quotaOwner = tasks.OwnerID(fmt.Sprintf("pmrelay:owner-reply:%d", visitorID))
+	}
+
 	sequence := r.seq.Add(1)
 	_, err := r.tasks.Submit(ctx, tasks.WorkSpec{
 		ID: tasks.TaskID(fmt.Sprintf(
@@ -76,7 +81,7 @@ func (r *RelayIngress) submit(ctx context.Context, prepared pmrelay.PreparedIngr
 			sequence,
 		)),
 		Scope:            relayScope,
-		QuotaOwner:       tasks.OwnerID(fmt.Sprintf("pmrelay:visitor:%d", visitorID)),
+		QuotaOwner:       quotaOwner,
 		Pool:             tasks.PoolID("interactive"),
 		Class:            tasks.PriorityInteractive,
 		OrderingKey:      fmt.Sprintf("pmrelay:thread:%d", visitorID),
