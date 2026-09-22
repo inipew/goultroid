@@ -18,8 +18,10 @@ import (
 	"go.uber.org/zap"
 )
 
-type interactionTextIngress interface {
+type interactionIngressPort interface {
 	tryText(context.Context, string, int64, int64, tg.InputPeerClass) (bool, error)
+	tryInline(context.Context, []byte, int64, int64, tg.InputBotInlineMessageIDClass) (bool, error)
+	tryMessage(context.Context, []byte, int64, int64, tg.InputPeerClass, int64, int) (bool, error)
 }
 
 type UpdateHandlerDeps struct {
@@ -36,7 +38,7 @@ type UpdateHandlerDeps struct {
 	InlineService       core.TelegramServicer
 	Tasks               tasks.Client
 	PluginScopeResolver func(string) (tasks.ScopeIdentity, bool)
-	InteractionIngress  interactionTextIngress
+	InteractionIngress  interactionIngressPort
 	RelayIngress        relayMessageIngress
 }
 
