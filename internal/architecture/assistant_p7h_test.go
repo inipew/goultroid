@@ -197,7 +197,6 @@ func TestP7HDoesNotOpenGroupFreeFormInteractionBeforeP7J(t *testing.T) {
 	}
 }
 
-
 func TestP7HDeliveryReusesEventBusTaskEngine(t *testing.T) {
 	root := repositoryRoot(t)
 
