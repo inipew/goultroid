@@ -3,8 +3,10 @@ package admin
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/services/moderation"
 )
@@ -20,6 +22,22 @@ func NewSQLiteWarningRepository(db *database.DB) moderation.WarningRepository {
 func (r *sqliteWarningRepository) AddWarning(ctx context.Context, chatID, userID int64, reason string, warnedBy int64) error {
 	if r == nil || r.db == nil {
 		return fmt.Errorf("warning repository database is nil")
+	}
+	reason = strings.TrimSpace(reason)
+	if len(reason) > moderation.MaxWarningReasonBytes {
+		return fmt.Errorf("%w: warning reason exceeds %d bytes", core.ErrInvalidArgs, moderation.MaxWarningReasonBytes)
+	}
+	var count int
+	if err := r.db.QueryRowContext(
+		ctx,
+		`SELECT COUNT(*) FROM moderation_warnings WHERE chat_id = ? AND user_id = ?`,
+		chatID,
+		userID,
+	).Scan(&count); err != nil {
+		return fmt.Errorf("failed to count warning rows before insert: %w", err)
+	}
+	if count >= moderation.MaxWarningThreshold {
+		return fmt.Errorf("%w: warning rows reached hard target limit %d", core.ErrResourceLimit, moderation.MaxWarningThreshold)
 	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO moderation_warnings (chat_id, user_id, reason, warned_by, created_at)
@@ -38,7 +56,8 @@ func (r *sqliteWarningRepository) GetWarnings(ctx context.Context, chatID, userI
 		SELECT id, chat_id, user_id, reason, warned_by, created_at
 		FROM moderation_warnings
 		WHERE chat_id = ? AND user_id = ?
-		ORDER BY id DESC`, chatID, userID)
+		ORDER BY id DESC
+		LIMIT ?`, chatID, userID, moderation.MaxWarningThreshold)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query warnings: %w", err)
 	}
