@@ -163,7 +163,6 @@ func TestP7DGroupInfoMemberIsDeniedBeforeTaskAndQuery(t *testing.T) {
 	}
 }
 
-
 func TestP7DGroupInfoCreatorIsAccepted(t *testing.T) {
 	client := &p7cTaskClient{}
 	resolver := &p7cRoleResolver{
