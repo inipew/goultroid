@@ -15,6 +15,7 @@ import (
 // mutation as successful when no Telegram operation occurred.
 var (
 	ErrGroupMutationUnavailable = fmt.Errorf("%w: assistant group mutation transport is not configured", core.ErrUnavailable)
+	ErrGroupMutationNotAdmitted = fmt.Errorf("%w: assistant group mutation requires TaskEngine admission", core.ErrForbidden)
 	ErrGroupQueryUnavailable    = fmt.Errorf("%w: assistant group query transport is not configured", core.ErrUnavailable)
 )
 
@@ -61,10 +62,11 @@ type GroupMutationExecutor interface {
 // so plugin command handlers can transparently use ctx.Reply, ctx.EditOrReply, and ctx.ReplyMarkup.
 type assistantServicerAdapter struct {
 	core.MockTelegramServicer
-	inter           interaction.MessageInteraction
-	groupQuery      GroupQueryReader
-	groupMutation   GroupMutationExecutor
-	mutationContext GroupMutationContext
+	inter             interaction.MessageInteraction
+	groupQuery        GroupQueryReader
+	groupMutation     GroupMutationExecutor
+	mutationContext   GroupMutationContext
+	mutationAdmitted  bool
 }
 
 func (a *assistantServicerAdapter) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
@@ -145,7 +147,23 @@ func (a *assistantServicerAdapter) executeGroupMutation(
 	if a == nil || a.groupMutation == nil {
 		return GroupMutationResult{}, ErrGroupMutationUnavailable
 	}
+	if !a.mutationAdmitted {
+		return GroupMutationResult{}, ErrGroupMutationNotAdmitted
+	}
 	return a.groupMutation.Execute(ctx, a.mutationContext, request)
+}
+
+func admitGroupMutationExecution(c *core.Context) {
+	if c == nil || c.Svc == nil {
+		return
+	}
+	adapter, ok := c.Svc.(*assistantServicerAdapter)
+	if !ok || adapter == nil {
+		return
+	}
+	admitted := *adapter
+	admitted.mutationAdmitted = true
+	c.Svc = &admitted
 }
 
 func (a *assistantServicerAdapter) PinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, silent bool) error {
