@@ -28,7 +28,7 @@ func (m IngressMessage) valid() bool {
 }
 
 // PreparedIngress is immutable admission state produced before TaskEngine
-// submission. ExecutePrepared must revalidate it immediately before feature
+// submission. RevalidatePrepared must revalidate it immediately before feature
 // execution.
 type PreparedIngress struct {
 	direction        DeliveryDirection
@@ -49,12 +49,12 @@ func (p PreparedIngress) VisitorUserID() int64         { return p.visitorUserID 
 func (p PreparedIngress) TargetChatID() int64          { return p.targetChatID }
 
 // Ingress is the narrow Assistant-facing PM relay contract. Prepare methods are
-// read-only. ExecutePrepared is the post-admission authority and revalidates all
+// read-only. RevalidatePrepared is the post-admission authority and revalidates all
 // mutable policy/mapping state before any later phase may attach delivery.
 type Ingress interface {
 	PrepareVisitor(context.Context, IngressMessage) (PreparedIngress, bool, error)
 	PrepareOwnerReply(context.Context, IngressMessage) (PreparedIngress, bool, error)
-	ExecutePrepared(context.Context, PreparedIngress) error
+	RevalidatePrepared(context.Context, PreparedIngress) error
 }
 
 // Service owns relay admission policy and durable reply-routing revalidation.
@@ -179,9 +179,9 @@ func (s *Service) PrepareOwnerReply(ctx context.Context, message IngressMessage)
 	}, true, nil
 }
 
-// ExecutePrepared is the only post-admission execution entry point in P6-B.
+// RevalidatePrepared is the only post-admission execution entry point in P6-B.
 // Later phases may append durable delivery after this revalidation succeeds.
-func (s *Service) ExecutePrepared(ctx context.Context, prepared PreparedIngress) error {
+func (s *Service) RevalidatePrepared(ctx context.Context, prepared PreparedIngress) error {
 	if s == nil || s.ownerID <= 0 {
 		return ErrUnavailable
 	}
