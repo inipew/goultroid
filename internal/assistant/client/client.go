@@ -232,7 +232,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 		Interaction: c.interaction, CacheEntities: c.CacheEntities, IsShuttingDown: c.shuttingDown.Load,
 		InlineEngine: c.inlineEngine, InlineService: inlineQueryService, Tasks: taskClient,
 		PluginScopeResolver: pluginScopeResolver, InteractionIngress: ingress,
-		RelayIngress: NewRelayIngress(pmRelay, taskClient),
+		RelayIngress: NewRelayIngress(pmRelay, taskClient, newTelegramRelayVisitorTransport(c.resolver, c.interaction)),
 	}
 	RegisterUpdateHandlers(&dispatcher, deps)
 
