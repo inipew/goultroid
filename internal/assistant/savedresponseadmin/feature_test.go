@@ -395,3 +395,36 @@ func TestA2ControlSurfaceInputCASDoesNotOverwriteConcurrentEdit(t *testing.T) {
 		t.Fatalf("stale input overwrote concurrent mutation: current=%+v concurrent=%+v", current, concurrent)
 	}
 }
+
+
+func TestAdminA2ActionTokensFitTelegramLimitAtMaxRevision(t *testing.T) {
+	sessionID := "AAAAAAAAAAAAAAAAAAAAAA"
+	actions := []string{
+		actionHome,
+		actionSurfaceAssistant,
+		actionSurfaceInline,
+		actionSurfaceDeepLink,
+		actionSurfaceCallback,
+		actionPrev,
+		actionNext,
+		actionCreate,
+		actionBack,
+		actionToggle,
+		actionEdit,
+		actionDelete,
+		actionDeleteConfirm,
+		actionDeleteCancel,
+	}
+	for i := 0; i < slotCount; i++ {
+		actions = append(actions, slotID(i))
+	}
+	for _, actionID := range actions {
+		data, err := rootinteraction.EncodeCallbackToken(FeatureID, actionID, sessionID, ^uint64(0))
+		if err != nil {
+			t.Fatalf("EncodeCallbackToken(%s) error=%v", actionID, err)
+		}
+		if len(data) > rootinteraction.MaxCallbackDataBytes {
+			t.Fatalf("callback %s size=%d, max=%d", actionID, len(data), rootinteraction.MaxCallbackDataBytes)
+		}
+	}
+}
