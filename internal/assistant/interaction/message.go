@@ -153,21 +153,36 @@ func randomID() int64 {
 	return n.Int64()
 }
 
+func extractMessageFromUpdate(update tg.UpdateClass) *tg.Message {
+	switch item := update.(type) {
+	case *tg.UpdateNewMessage:
+		if msg, ok := item.Message.(*tg.Message); ok {
+			return msg
+		}
+	case *tg.UpdateNewChannelMessage:
+		if msg, ok := item.Message.(*tg.Message); ok {
+			return msg
+		}
+	}
+	return nil
+}
+
 func extractMessage(u tg.UpdatesClass) *tg.Message {
 	switch upd := u.(type) {
 	case *tg.Updates:
 		for _, item := range upd.Updates {
-			if newMsg, ok := item.(*tg.UpdateNewMessage); ok {
-				if msg, ok := newMsg.Message.(*tg.Message); ok {
-					return msg
-				}
-			}
-			if newChannelMsg, ok := item.(*tg.UpdateNewChannelMessage); ok {
-				if msg, ok := newChannelMsg.Message.(*tg.Message); ok {
-					return msg
-				}
+			if msg := extractMessageFromUpdate(item); msg != nil {
+				return msg
 			}
 		}
+	case *tg.UpdatesCombined:
+		for _, item := range upd.Updates {
+			if msg := extractMessageFromUpdate(item); msg != nil {
+				return msg
+			}
+		}
+	case *tg.UpdateShort:
+		return extractMessageFromUpdate(upd.Update)
 	case *tg.UpdateShortSentMessage:
 		return &tg.Message{
 			ID:   upd.ID,
