@@ -234,3 +234,93 @@ func TestRelayBlockedListBoundsPageAndReasonPreview(t *testing.T) {
 		t.Fatalf("blocked page missing pagination/reason truncation: %q", reply)
 	}
 }
+
+
+func TestRelayControlForceSubDefaultsClosedAndPersistsRevision(t *testing.T) {
+	f, service, _ := newControlFeature(t)
+
+	statusCtx, statusSvc := newOwnerContext(0, "forcesub")
+	if err := f.handleRelay(statusCtx); err != nil {
+		t.Fatalf("handleRelay(forcesub status) error=%v", err)
+	}
+	if len(statusSvc.messages) != 1 || !strings.Contains(statusSvc.messages[0], "Force-sub disabled") {
+		t.Fatalf("initial force-sub status=%+v", statusSvc.messages)
+	}
+
+	setCtx, setSvc := newOwnerContext(0, "forcesub", "set", "@Required_Channel")
+	if err := f.handleRelay(setCtx); err != nil {
+		t.Fatalf("handleRelay(forcesub set) error=%v", err)
+	}
+	if len(setSvc.messages) != 1 ||
+		!strings.Contains(setSvc.messages[0], "@required_channel") ||
+		!strings.Contains(setSvc.messages[0], "fail-closed") {
+		t.Fatalf("force-sub set reply=%+v", setSvc.messages)
+	}
+	config, err := service.ForceSubConfig(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.Enabled ||
+		config.ChannelUsername != "required_channel" ||
+		config.JoinURL != "https://t.me/required_channel" ||
+		config.FailureMode != pmrelay.ForceSubFailClosed ||
+		config.Revision != 2 {
+		t.Fatalf("force-sub config=%+v", config)
+	}
+
+	openCtx, openSvc := newOwnerContext(
+		0,
+		"forcesub", "set", "@Required_Channel", "open", "https://t.me/+invite-code",
+	)
+	if err := f.handleRelay(openCtx); err != nil {
+		t.Fatalf("handleRelay(forcesub fail-open) error=%v", err)
+	}
+	if len(openSvc.messages) != 1 || !strings.Contains(openSvc.messages[0], "fail-open") {
+		t.Fatalf("force-sub fail-open reply=%+v", openSvc.messages)
+	}
+	config, err = service.ForceSubConfig(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.FailureMode != pmrelay.ForceSubFailOpen ||
+		config.JoinURL != "https://t.me/+invite-code" ||
+		config.Revision != 3 {
+		t.Fatalf("force-sub fail-open config=%+v", config)
+	}
+
+	offCtx, offSvc := newOwnerContext(0, "forcesub", "off")
+	if err := f.handleRelay(offCtx); err != nil {
+		t.Fatalf("handleRelay(forcesub off) error=%v", err)
+	}
+	if len(offSvc.messages) != 1 || !strings.Contains(offSvc.messages[0], "Force-sub disabled") {
+		t.Fatalf("force-sub off reply=%+v", offSvc.messages)
+	}
+	config, err = service.ForceSubConfig(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Enabled || config.FailureMode != pmrelay.ForceSubFailClosed || config.Revision != 4 {
+		t.Fatalf("disabled force-sub config=%+v", config)
+	}
+}
+
+func TestRelayControlForceSubRejectsUnsafeConfiguration(t *testing.T) {
+	f, service, _ := newControlFeature(t)
+	ctx, svc := newOwnerContext(
+		0,
+		"forcesub", "set", "@required_channel", "closed", "https://example.com/join",
+	)
+	if err := f.handleRelay(ctx); err != nil {
+		t.Fatalf("handleRelay(invalid force-sub) error=%v", err)
+	}
+	if len(svc.messages) != 1 || !strings.Contains(svc.messages[0], "Invalid force-sub config") {
+		t.Fatalf("invalid force-sub reply=%+v", svc.messages)
+	}
+	config, err := service.ForceSubConfig(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Enabled || config.Revision != 1 {
+		t.Fatalf("invalid config mutated durable policy=%+v", config)
+	}
+}
