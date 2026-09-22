@@ -194,3 +194,55 @@ func TestBindingServiceJoinsDurableBindingToLiveProviderGeneration(t *testing.T)
 		t.Fatalf("Resolve(after provider unload) error = %v, want %v", err, ErrResolverUnavailable)
 	}
 }
+
+
+func TestBindingServiceMutationRevalidatesProviderButAllowsOfflineCleanup(t *testing.T) {
+	repo, _ := newSurfaceBindingRepository(t)
+	ctx := context.Background()
+	registry := NewRegistry()
+	scope := tasks.ScopeIdentity{Owner: "plugin:notes", Generation: 3}
+	registration, err := registry.Register("notes", scope, &bindingTestResolver{response: NewText("live")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewBindingService(repo, registry)
+
+	created, err := service.Create(ctx, SurfaceBinding{
+		Surface:   SurfaceAssistantCommand,
+		Alias:     "hello",
+		Reference: Reference{Provider: "notes", ScopeID: 10, Key: "hello"},
+		Enabled:   true,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	registration.Close()
+
+	updated := created
+	updated.Reference.Key = "replacement"
+	if _, err := service.Update(ctx, updated, created.Revision); !errors.Is(err, ErrResolverUnavailable) {
+		t.Fatalf("Update(with provider offline) error = %v, want %v", err, ErrResolverUnavailable)
+	}
+	current, err := service.Get(ctx, created.Surface, created.Alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == nil || current.Reference.Key != "hello" || current.Revision != created.Revision {
+		t.Fatalf("failed update mutated durable binding: %+v", current)
+	}
+
+	disabled, err := service.SetEnabled(ctx, created.Surface, created.Alias, false, created.Revision)
+	if err != nil {
+		t.Fatalf("SetEnabled(false with provider offline) error = %v", err)
+	}
+	if disabled.Enabled {
+		t.Fatalf("binding remained enabled: %+v", disabled)
+	}
+	if _, err := service.SetEnabled(ctx, disabled.Surface, disabled.Alias, true, disabled.Revision); !errors.Is(err, ErrResolverUnavailable) {
+		t.Fatalf("SetEnabled(true with provider offline) error = %v, want %v", err, ErrResolverUnavailable)
+	}
+	if err := service.Delete(ctx, disabled.Surface, disabled.Alias, disabled.Revision); err != nil {
+		t.Fatalf("Delete(with provider offline) error = %v", err)
+	}
+}
