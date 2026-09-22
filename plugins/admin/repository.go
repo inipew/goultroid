@@ -25,6 +25,9 @@ func (r *sqliteWarningRepository) AddWarning(ctx context.Context, chatID, userID
 	if r == nil || r.db == nil {
 		return fmt.Errorf("warning repository database is nil")
 	}
+	if chatID <= 0 || userID <= 0 {
+		return fmt.Errorf("%w: warning chat/user coordinates must be positive", core.ErrInvalidArgs)
+	}
 	r.mutationMu.Lock()
 	defer r.mutationMu.Unlock()
 	reason = strings.TrimSpace(reason)
