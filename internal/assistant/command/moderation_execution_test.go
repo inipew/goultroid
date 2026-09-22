@@ -2,11 +2,13 @@ package command_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/command"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/plugins/admin"
 	"go.uber.org/zap"
 )
