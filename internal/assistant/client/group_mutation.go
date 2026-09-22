@@ -434,12 +434,12 @@ func (m *managedGroupMutation) Execute(
 		if err != nil {
 			return command.GroupMutationResult{}, err
 		}
-		if noop {
-			return command.GroupMutationResult{}, nil
-		}
 		req.Target = targetPeer
 		if err := m.authorizeForRPC(ctx, meta, peer, req.Action, &target); err != nil {
 			return command.GroupMutationResult{}, err
+		}
+		if noop {
+			return command.GroupMutationResult{}, nil
 		}
 	} else if req.Action != core.GroupMutationPurge {
 		if err := m.authorizeForRPC(ctx, meta, peer, req.Action, nil); err != nil {
@@ -453,7 +453,7 @@ func (m *managedGroupMutation) Execute(
 	case core.GroupMutationUnban:
 		return command.GroupMutationResult{}, m.unban(ctx, meta.Kind, req)
 	case core.GroupMutationKick:
-		return command.GroupMutationResult{}, m.kick(ctx, meta.Kind, req)
+		return command.GroupMutationResult{}, m.kick(ctx, meta, req)
 	case core.GroupMutationMute:
 		return command.GroupMutationResult{}, m.mute(ctx, meta.Kind, req)
 	case core.GroupMutationUnmute:
@@ -516,11 +516,15 @@ func (m *managedGroupMutation) unban(ctx context.Context, kind core.ChatKind, re
 	return normalizeMutationError(req.Action, err)
 }
 
-func (m *managedGroupMutation) kick(ctx context.Context, kind core.ChatKind, req command.GroupMutationRequest) error {
-	if kind == core.ChatKindGroup {
-		return m.ban(ctx, kind, req)
+func (m *managedGroupMutation) kick(
+	ctx context.Context,
+	meta command.GroupMutationContext,
+	req command.GroupMutationRequest,
+) error {
+	if meta.Kind == core.ChatKindGroup {
+		return m.ban(ctx, meta.Kind, req)
 	}
-	if kind != core.ChatKindSupergroup {
+	if meta.Kind != core.ChatKindSupergroup {
 		return core.ErrUnsupported
 	}
 	channel, err := inputChannel(req.Peer)
@@ -536,20 +540,26 @@ func (m *managedGroupMutation) kick(ctx context.Context, kind core.ChatKind, req
 		return normalizeMutationError(req.Action, err)
 	}
 
-	// Kick is a two-step desired-state operation. Revalidate actor and bot rights
-	// before the second physical mutation rather than assuming the first grant
-	// is still valid.
-	if err := m.authorizeForRPC(ctx, command.GroupMutationContext{
-		ActorID: metaActorIDUnavailable,
-	}, req.Peer, req.Action, nil); err != nil {
+	targetID, err := inputUserID(req.Target)
+	if err != nil {
 		return err
 	}
-	return nil
+	target, err := m.roleFresh(ctx, meta, req.Peer, targetID)
+	if err != nil {
+		return err
+	}
+	// Kick is a two-step desired-state operation. The unban step is a second
+	// physical mutation and therefore gets a second fresh actor/bot/target gate.
+	if err := m.authorizeForRPC(ctx, meta, req.Peer, req.Action, &target); err != nil {
+		return err
+	}
+	_, err = m.api.ChannelsEditBanned(ctx, &tg.ChannelsEditBannedRequest{
+		Channel: channel,
+		Participant: req.Target,
+		BannedRights: tg.ChatBannedRights{},
+	})
+	return normalizeMutationError(req.Action, err)
 }
-
-// metaActorIDUnavailable is never used for execution; kick supplies its second
-// revalidation from the outer method where full mutation coordinates exist.
-const metaActorIDUnavailable int64 = -1
 
 func (m *managedGroupMutation) mute(ctx context.Context, kind core.ChatKind, req command.GroupMutationRequest) error {
 	if kind != core.ChatKindSupergroup {
