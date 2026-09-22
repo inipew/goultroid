@@ -12,8 +12,14 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
+	"github.com/inipew/goultroid/internal/services/savedresponse"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
+)
+
+const (
+	assistantSavedResponseTimeout    = 2 * time.Minute
+	assistantSavedResponseMetricName = "savedresponse"
 )
 
 var (
@@ -56,6 +62,8 @@ type Router struct {
 	ownerID              int64
 	sudoGetter           func() []int64
 	metrics              core.MetricsCollector
+	savedBindings        *savedresponse.BindingService
+	savedDelivery        *savedresponse.ResponseDelivery
 	logger               *zap.Logger
 	taskSeq              atomic.Uint64
 }
@@ -87,6 +95,13 @@ func (r *Router) SetOwner(ownerID int64, sudoGetter func() []int64) {
 // SetMetricsCollector configures optional runtime metrics collection.
 func (r *Router) SetMetricsCollector(m core.MetricsCollector) {
 	r.metrics = m
+}
+
+// SetSavedResponseBindings installs the canonical persistent SavedResponse
+// surface-binding service and shared bounded delivery lifecycle.
+func (r *Router) SetSavedResponseBindings(bindings *savedresponse.BindingService, delivery *savedresponse.ResponseDelivery) {
+	r.savedBindings = bindings
+	r.savedDelivery = delivery
 }
 
 // OwnerID returns the configured owner ID.
@@ -205,6 +220,113 @@ func (r *Router) executeCanonicalTask(ctx context.Context, senderID int64, cmd c
 		return waitErr
 	}
 	return taskResultError(res)
+}
+
+
+func (r *Router) executeSavedResponseBinding(
+	ctx context.Context,
+	senderID int64,
+	peer tg.InputPeerClass,
+	inter interaction.MessageInteraction,
+	commandName string,
+) (bool, error) {
+	if r.savedBindings == nil || r.savedDelivery == nil {
+		return false, nil
+	}
+
+	prepared, err := r.savedBindings.Prepare(ctx, savedresponse.SurfaceAssistantCommand, commandName)
+	switch {
+	case err == nil:
+	case errors.Is(err, savedresponse.ErrBindingNotFound),
+		errors.Is(err, savedresponse.ErrBindingDisabled),
+		errors.Is(err, savedresponse.ErrInvalidBinding):
+		return false, nil
+	default:
+		return true, err
+	}
+	if r.tasks == nil {
+		return true, ErrTasksNotConfigured
+	}
+
+	chatID := extractChatIDFromInputPeer(peer)
+	if chatID == 0 {
+		chatID = senderID
+	}
+	resources := make([]tasks.ResourceRequirement, 0, 1)
+	if prepared.HasMedia() {
+		resources = append(resources, tasks.ResourceRequirement{Name: "media", Amount: 1})
+	}
+
+	sequence := r.taskSeq.Add(1)
+	taskID := tasks.TaskID(fmt.Sprintf("assistant:savedresponse:%d:%d", senderID, sequence))
+	ticket, err := r.tasks.Submit(ctx, tasks.WorkSpec{
+		ID:               taskID,
+		Scope:            prepared.Scope(),
+		QuotaOwner:       tasks.OwnerID(fmt.Sprintf("assistant:user:%d", senderID)),
+		Pool:             "interactive",
+		Class:            tasks.PriorityInteractive,
+		OrderingKey:      fmt.Sprintf("assistant:savedresponse:%d", chatID),
+		ExecutionTimeout: assistantSavedResponseTimeout,
+		Resources:        resources,
+		Handler: func(taskCtx context.Context) (runErr error) {
+			runCtx, cancel := context.WithCancel(taskCtx)
+			defer cancel()
+			stopWatching := context.AfterFunc(ctx, cancel)
+			defer stopWatching()
+
+			start := time.Now()
+			defer func() {
+				if r.metrics != nil {
+					r.metrics.RecordCommand(assistantSavedResponseMetricName, time.Since(start), runErr)
+				}
+			}()
+
+			resolved, resolveErr := r.savedBindings.ResolvePrepared(runCtx, prepared)
+			if resolveErr != nil {
+				return resolveErr
+			}
+			vars := savedresponse.TemplateVars{
+				UserID: senderID,
+				ChatID: chatID,
+				Now:    time.Now(),
+			}
+			stage, deliveryErr := r.savedDelivery.Deliver(
+				runCtx,
+				resolved.Resolved.Response,
+				vars,
+				savedresponse.DeliverySink{
+					SendMedia: func(mediaType, path, caption string) error {
+						if inter == nil || peer == nil {
+							return interaction.ErrInvalidTarget
+						}
+						_, sendErr := inter.SendMedia(runCtx, peer, mediaType, path, caption)
+						return sendErr
+					},
+					SendText: func(text string) error {
+						if inter == nil || peer == nil {
+							return interaction.ErrInvalidTarget
+						}
+						_, sendErr := inter.SendMessage(runCtx, peer, text, nil)
+						return sendErr
+					},
+				},
+			)
+			if deliveryErr != nil {
+				return fmt.Errorf("assistant/command: saved response delivery stage %d: %w", stage, deliveryErr)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		return true, err
+	}
+
+	res, waitErr := ticket.Wait(ctx)
+	if waitErr != nil {
+		_, _ = r.tasks.Cancel(ticket.TaskID(), tasks.CauseTimeout)
+		return true, waitErr
+	}
+	return true, taskResultError(res)
 }
 
 // Dispatch parses the message text, extracts the command, and invokes the matching handler.
@@ -336,7 +458,8 @@ func (r *Router) Dispatch(ctx context.Context, senderID int64, peer tg.InputPeer
 		return r.executeCanonicalTask(ctx, senderID, cmd, coreCtx, cmdNameClean)
 	}
 
-	// Presentation-only fallback. This must not become a second plugin command registry.
+	// Presentation-only fallbacks such as /start stay reserved ahead of
+	// persistent dynamic aliases; this keeps shell entry points authoritative.
 	if handler, ok := r.presentationHandlers[cmdRaw]; ok {
 		r.logger.Debug("assistant: executing presentation command",
 			zap.String("command", cmdRaw),
@@ -347,6 +470,10 @@ func (r *Router) Dispatch(ctx context.Context, senderID int64, peer tg.InputPeer
 		if r.metrics != nil {
 			r.metrics.RecordCommand(cmdNameClean, time.Since(start), err)
 		}
+		return err
+	}
+
+	if handled, err := r.executeSavedResponseBinding(ctx, senderID, peer, inter, cmdNameClean); handled {
 		return err
 	}
 
