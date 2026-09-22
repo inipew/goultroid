@@ -73,6 +73,9 @@ func TestFilterDeliveryResourcePlanning(t *testing.T) {
 	if client.specs[0].Pool != tasks.PoolID("general") || client.specs[0].Class != tasks.PriorityNormal {
 		t.Fatalf("unexpected text delivery scheduling: %+v", client.specs[0])
 	}
+	if client.specs[0].QuotaOwner != tasks.OwnerID("telegram:chat:10") {
+		t.Fatalf("text filter quota owner=%q, want telegram:chat:10", client.specs[0].QuotaOwner)
+	}
 
 	media := savedresponse.NewHTML("caption")
 	media.Media = &savedresponse.MediaRef{AssetID: "asset-1", MediaType: "photo"}
