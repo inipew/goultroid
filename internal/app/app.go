@@ -184,6 +184,14 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		savedresponse.NewSQLiteSurfaceBindingRepository(coreDeps.db),
 		pluginManager.SavedResponseRegistry(),
 	)
+	savedResponseService := savedresponse.NewService(domServices.storage, coreDeps.db)
+	if coreDeps.fsManager != nil {
+		savedResponseService.SetFiles(coreDeps.fsManager.ForOwner("assistant-savedresponse"))
+	}
+	savedResponseDelivery := savedresponse.NewResponseDelivery(savedResponseService)
+	if tgRuntime.assistant != nil {
+		tgRuntime.assistant.SetSavedResponseBindings(savedResponseBindings, savedResponseDelivery)
+	}
 	if _, err := reconcileBuiltinPersistentMedia(context.Background(), coreDeps.db, domServices.storage); err != nil {
 		return nil, err
 	}
