@@ -4,11 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
+	"github.com/inipew/goultroid/internal/feature"
+	rootinteraction "github.com/inipew/goultroid/internal/interaction"
+	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/ui"
 	"go.uber.org/zap"
@@ -176,6 +181,151 @@ func TestEngine_PreparedOwnedQueryRejectsStaleGeneration(t *testing.T) {
 	}
 	if handler.invoked {
 		t.Fatal("stale prepared handler executed after registration removal")
+	}
+}
+
+func TestEngine_TypedFeatureActionsCompileToA2AndClaimInlineTarget(t *testing.T) {
+	catalog := feature.NewRegistry()
+	scope := tasks.ScopeIdentity{Owner: "plugin:inline-actions", Generation: 1}
+	featureRegistration, err := catalog.Register(feature.Owner{ID: "inline-actions", Scope: scope}, feature.Spec{
+		ID:   "inline-actions",
+		Name: "Inline Actions",
+		Interactions: []feature.Interaction{
+			{
+				ID: "lookup", Kind: feature.InteractionInline,
+				Surfaces: execution.SurfaceInline,
+				Policy:   feature.PublicPolicy(execution.SurfaceInline),
+			},
+			{
+				ID: "choose", Kind: feature.InteractionAction,
+				Surfaces: execution.SurfaceInline,
+				Policy:   feature.PublicPolicy(execution.SurfaceInline),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("feature register error = %v", err)
+	}
+	defer featureRegistration.Close()
+
+	sessions, err := rootinteraction.NewRuntime(catalog, rootinteraction.Config{})
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	defer sessions.Close()
+
+	registry := NewRegistry()
+	handler := &mockInlineHandler{
+		pattern: "typed",
+		results: []InlineResult{{
+			ID:               "typed-1",
+			Title:            "Typed action",
+			Text:             "Choose this result",
+			InteractionState: []byte("result:1"),
+			InteractionTTL:   5 * time.Minute,
+			ActionRows: []presentation.Row{{
+				{Text: "Choose", ActionID: "choose"},
+			}},
+		}},
+	}
+	if _, err := registry.RegisterOwned("inline-actions", "lookup", scope, handler, 0); err != nil {
+		t.Fatalf("RegisterOwned() error = %v", err)
+	}
+
+	engine := NewEngine(registry, zap.NewNop())
+	engine.SetInteractionRuntime(sessions)
+	prepared, err := engine.Prepare("typed")
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	svc := &recordingInlineService{}
+	if err := engine.ExecutePreparedWithPeerType(context.Background(), svc, 7001, 42, prepared, "", nil); err != nil {
+		t.Fatalf("ExecutePreparedWithPeerType() error = %v", err)
+	}
+	if !svc.lastOpts.Private || svc.lastCacheTime != 0 {
+		t.Fatalf("interactive inline answer must be private/no-cache: %+v", svc.lastOpts)
+	}
+	if engine.Cache().Len() != 0 {
+		t.Fatalf("interactive result populated local cache: %d entries", engine.Cache().Len())
+	}
+	if stats := sessions.Stats(); stats.Sessions != 1 {
+		t.Fatalf("interaction sessions=%d, want exactly emitted result session", stats.Sessions)
+	}
+	if len(svc.lastResults) != 1 {
+		t.Fatalf("telegram results=%d, want 1", len(svc.lastResults))
+	}
+	item, ok := svc.lastResults[0].(*tg.InputBotInlineResult)
+	if !ok {
+		t.Fatalf("telegram result type = %T", svc.lastResults[0])
+	}
+	message, ok := item.SendMessage.(*tg.InputBotInlineMessageText)
+	if !ok {
+		t.Fatalf("send message type = %T", item.SendMessage)
+	}
+	markup, ok := message.ReplyMarkup.(*tg.ReplyInlineMarkup)
+	if !ok || len(markup.Rows) != 1 || len(markup.Rows[0].Buttons) != 1 {
+		t.Fatalf("compiled markup = %#v", message.ReplyMarkup)
+	}
+	button, ok := markup.Rows[0].Buttons[0].(*tg.KeyboardButtonCallback)
+	if !ok {
+		t.Fatalf("compiled button type = %T", markup.Rows[0].Buttons[0])
+	}
+	token, err := rootinteraction.ParseCallbackToken(button.Data)
+	if err != nil {
+		t.Fatalf("compiled callback is not a2: %q: %v", button.Data, err)
+	}
+	resolved, err := sessions.ResolveCallback(context.Background(), button.Data, rootinteraction.Binding{
+		ActorID:         42,
+		InlineMessageID: "inline:one",
+	})
+	if err != nil {
+		t.Fatalf("ResolveCallback(first inline target) error = %v", err)
+	}
+	if resolved.Session.ID != token.SessionID || string(resolved.Session.State) != "result:1" {
+		t.Fatalf("resolved typed inline state mismatch: token=%+v session=%+v", token, resolved.Session)
+	}
+	if _, err := sessions.ResolveCallback(context.Background(), button.Data, rootinteraction.Binding{
+		ActorID:         42,
+		InlineMessageID: "inline:copy",
+	}); !errors.Is(err, rootinteraction.ErrBindingMismatch) {
+		t.Fatalf("copied inline target error = %v, want binding mismatch", err)
+	}
+}
+
+func TestEngine_FeatureOwnedInlineRejectsRawCallbackData(t *testing.T) {
+	catalog := feature.NewRegistry()
+	scope := tasks.ScopeIdentity{Owner: "plugin:inline-raw", Generation: 1}
+	featureRegistration, err := catalog.Register(feature.Owner{ID: "inline-raw", Scope: scope}, feature.Spec{
+		ID:   "inline-raw",
+		Name: "Inline Raw",
+		Interactions: []feature.Interaction{{
+			ID: "lookup", Kind: feature.InteractionInline,
+			Surfaces: execution.SurfaceInline,
+			Policy:   feature.PublicPolicy(execution.SurfaceInline),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("feature register error = %v", err)
+	}
+	defer featureRegistration.Close()
+
+	registry := NewRegistry()
+	markup := ui.NewMarkup(ui.ButtonRow{ui.NewCallbackButton("Legacy", []byte("raw:callback"))})
+	handler := &mockInlineHandler{
+		pattern: "raw",
+		results: []InlineResult{{ID: "raw", Title: "Raw", Text: "Raw", Markup: &markup}},
+	}
+	if _, err := registry.RegisterOwned("inline-raw", "lookup", scope, handler, 0); err != nil {
+		t.Fatalf("RegisterOwned() error = %v", err)
+	}
+	engine := NewEngine(registry, zap.NewNop())
+	prepared, err := engine.Prepare("raw")
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	err = engine.ExecutePreparedWithPeerType(context.Background(), &recordingInlineService{}, 7002, 42, prepared, "", nil)
+	if err == nil || !strings.Contains(err.Error(), "raw callback") {
+		t.Fatalf("feature-owned raw callback error = %v", err)
 	}
 }
 
