@@ -244,7 +244,7 @@ func readTx(ctx context.Context, tx *sql.Tx, key core.GroupStateKey, now time.Ti
 	return record, err
 }
 
-func (s *SQLiteStore) CompareAndSwap(ctx context.Context, req core.GroupStateCAS) (core.GroupStateRecord, error) {
+func (s *SQLiteStore) CompareAndSwap(ctx context.Context, grant core.GroupStateWriteGrant, req core.GroupStateCAS) (core.GroupStateRecord, error) {
 	if s == nil || s.db == nil {
 		return core.GroupStateRecord{}, fmt.Errorf("%w: store unavailable", core.ErrUnavailable)
 	}
@@ -252,6 +252,9 @@ func (s *SQLiteStore) CompareAndSwap(ctx context.Context, req core.GroupStateCAS
 	req, err := normalizeCAS(req, now)
 	if err != nil {
 		return core.GroupStateRecord{}, err
+	}
+	if !grant.Authorizes(req.ChatID, req.UpdatedBy) {
+		return core.GroupStateRecord{}, fmt.Errorf("%w: invalid group-state write grant", core.ErrGroupAuthorizationDenied)
 	}
 
 	if req.ExpectedRevision == 0 {
@@ -358,7 +361,7 @@ func (s *SQLiteStore) CompareAndSwap(ctx context.Context, req core.GroupStateCAS
 	return record, nil
 }
 
-func (s *SQLiteStore) DeleteCompareAndSwap(ctx context.Context, req core.GroupStateDelete) error {
+func (s *SQLiteStore) DeleteCompareAndSwap(ctx context.Context, grant core.GroupStateWriteGrant, req core.GroupStateDelete) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("%w: store unavailable", core.ErrUnavailable)
 	}
@@ -369,6 +372,9 @@ func (s *SQLiteStore) DeleteCompareAndSwap(ctx context.Context, req core.GroupSt
 	req.GroupStateKey = key
 	if req.ExpectedRevision == 0 || req.DeletedBy <= 0 {
 		return fmt.Errorf("%w: delete requires revision and actor", ErrInvalidState)
+	}
+	if !grant.Authorizes(req.ChatID, req.DeletedBy) {
+		return fmt.Errorf("%w: invalid group-state write grant", core.ErrGroupAuthorizationDenied)
 	}
 	now := s.now().UTC()
 	if req.DeletedAt.IsZero() {
