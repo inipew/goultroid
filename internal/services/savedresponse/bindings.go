@@ -105,7 +105,7 @@ type PreparedBinding struct {
 	scope   tasks.ScopeIdentity
 }
 
-func (p PreparedBinding) Binding() SurfaceBinding   { return p.binding }
+func (p PreparedBinding) Binding() SurfaceBinding    { return p.binding }
 func (p PreparedBinding) Scope() tasks.ScopeIdentity { return p.scope }
 
 // BindingService joins durable surface metadata to the lifecycle-aware provider
