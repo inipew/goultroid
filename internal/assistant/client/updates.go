@@ -19,6 +19,8 @@ import (
 	"go.uber.org/zap"
 )
 
+const assistantGroupRuleQueueTimeout = 5 * time.Second
+
 type interactionIngressPort interface {
 	tryText(context.Context, string, int64, int64, tg.InputPeerClass) (bool, error)
 	tryInline(context.Context, []byte, int64, int64, tg.InputBotInlineMessageIDClass) (bool, error)
@@ -291,6 +293,7 @@ func submitAssistantGroupRules(
 		Pool:             tasks.PoolID("interactive"),
 		Class:            tasks.PriorityInteractive,
 		OrderingKey:      core.GroupOrderingKey(chatID, assistantTopicID(message)),
+		QueueDeadline:    time.Now().Add(assistantGroupRuleQueueTimeout),
 		ExecutionTimeout: 5 * time.Second,
 		Handler: func(taskCtx context.Context) error {
 			inputPeer, resolveErr := deps.Resolver.Resolve(
