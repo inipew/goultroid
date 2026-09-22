@@ -62,6 +62,7 @@ type mutationAPIStub struct {
 
 	editAdminErr   error
 	editAdminCalls int
+	editAdminReqs  []*tg.ChannelsEditAdminRequest
 
 	deleteChatUserErr   error
 	deleteChatUserCalls int
@@ -114,10 +115,11 @@ func (a *mutationAPIStub) ChannelsEditBanned(
 }
 
 func (a *mutationAPIStub) ChannelsEditAdmin(
-	context.Context,
-	*tg.ChannelsEditAdminRequest,
+	_ context.Context,
+	req *tg.ChannelsEditAdminRequest,
 ) (tg.UpdatesClass, error) {
 	a.editAdminCalls++
+	a.editAdminReqs = append(a.editAdminReqs, req)
 	a.event("rpc:editAdmin")
 	return &tg.Updates{}, a.editAdminErr
 }
@@ -627,5 +629,86 @@ func TestP7GTelegramAdminInvalidMapsToProtectedTarget(t *testing.T) {
 	})
 	if !errors.Is(err, core.ErrGroupMutationTargetProtected) {
 		t.Fatalf("USER_ADMIN_INVALID error=%v, want target-protected", err)
+	}
+}
+
+
+func TestP7GPromoteDelegatesOnlyActorBotIntersection(t *testing.T) {
+	api := &mutationAPIStub{
+		botParticipant: mutationBotParticipant(tg.ChatAdminRights{
+			ChangeInfo:     true,
+			DeleteMessages: true,
+			BanUsers:       true,
+			InviteUsers:    false,
+			PinMessages:    true,
+			AddAdmins:      true,
+			ManageTopics:   false,
+		}),
+	}
+	roles := &mutationRoleStub{
+		values: map[int64][]core.GroupActorPrincipal{
+			10: {
+				mutationPrincipal(core.GroupActorRoleAdministrator, core.GroupAdminRights{
+					ChangeInfo:     true,
+					DeleteMessages: false,
+					BanUsers:       true,
+					InviteUsers:    true,
+					PinMessages:    true,
+					AddAdmins:      true,
+					ManageTopics:   true,
+				}),
+			},
+			30: {mutationPrincipal(core.GroupActorRoleMember, core.GroupAdminRights{})},
+		},
+	}
+	service := newMutationService(api, roles)
+	meta, chat, target := supergroupMutationFixture()
+
+	if _, err := service.Execute(context.Background(), meta, command.GroupMutationRequest{
+		Action: core.GroupMutationPromote,
+		Peer:   chat,
+		Target: target,
+		Title:  "helper",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if api.editAdminCalls != 1 || len(api.editAdminReqs) != 1 {
+		t.Fatalf("editAdmin calls=%d reqs=%d, want 1/1", api.editAdminCalls, len(api.editAdminReqs))
+	}
+	rights := api.editAdminReqs[0].AdminRights
+	if !rights.ChangeInfo || !rights.BanUsers || !rights.PinMessages || !rights.AddAdmins {
+		t.Fatalf("intersection rights missing expected grants: %+v", rights)
+	}
+	if rights.DeleteMessages || rights.InviteUsers || rights.ManageTopics ||
+		rights.PostMessages || rights.EditMessages {
+		t.Fatalf("promotion delegated rights outside actor/bot intersection: %+v", rights)
+	}
+}
+
+func TestP7GBasicGroupBanUserNotParticipantIsIdempotentSuccess(t *testing.T) {
+	api := &mutationAPIStub{
+		deleteChatUserErr: tgerr.New(400, "USER_NOT_PARTICIPANT"),
+	}
+	roles := &mutationRoleStub{
+		values: map[int64][]core.GroupActorPrincipal{
+			10: {banAdmin()},
+			20: {banAdmin()},
+			30: {mutationPrincipal(core.GroupActorRoleMember, core.GroupAdminRights{})},
+		},
+	}
+	service := newMutationService(api, roles)
+	meta := command.GroupMutationContext{ActorID: 10, ChatID: 55, Kind: core.ChatKindGroup}
+	chat := &tg.InputPeerChat{ChatID: 55}
+	target := &tg.InputPeerUser{UserID: 30, AccessHash: 3000}
+
+	if _, err := service.Execute(context.Background(), meta, command.GroupMutationRequest{
+		Action: core.GroupMutationBan,
+		Peer:   chat,
+		Target: target,
+	}); err != nil {
+		t.Fatalf("USER_NOT_PARTICIPANT should be desired-state success for basic-group ban: %v", err)
+	}
+	if api.deleteChatUserCalls != 1 {
+		t.Fatalf("deleteChatUser calls=%d, want 1", api.deleteChatUserCalls)
 	}
 }
