@@ -13,10 +13,12 @@ import (
 )
 
 type assistantAudienceTargetSource struct {
-	registry pmrelay.AudienceRegistry
-	snapshot pmrelay.AudienceSnapshot
-	cursor   int64
-	mu       sync.Mutex
+	registry         pmrelay.AudienceRegistry
+	snapshot         pmrelay.AudienceSnapshot
+	cursor           int64
+	yielded          int
+	missingRemaining int
+	mu               sync.Mutex
 }
 
 func newAssistantAudienceTargetSource(
@@ -53,6 +55,16 @@ func (s *assistantAudienceTargetSource) Next(
 	if s.cursor >= s.snapshot.MaxSequence {
 		return nil, true, nil
 	}
+	if s.missingRemaining > 0 {
+		count := s.missingRemaining
+		if limit > 0 && count > limit {
+			count = limit
+		}
+		targets := make([]tg.InputPeerClass, count)
+		s.missingRemaining -= count
+		return targets, s.missingRemaining == 0, nil
+	}
+
 	members, next, err := s.registry.ListAudienceSnapshot(ctx, s.snapshot, s.cursor, limit)
 	if err != nil {
 		return nil, false, err
@@ -64,11 +76,22 @@ func (s *assistantAudienceTargetSource) Next(
 	for _, member := range members {
 		if member.UserID > 0 {
 			targets = append(targets, &tg.InputPeerUser{UserID: member.UserID})
+			s.yielded++
 		}
 	}
 	s.cursor = next
-	done := len(members) == 0 || s.cursor >= s.snapshot.MaxSequence
-	return targets, done, nil
+	reachedEnd := len(members) == 0 || s.cursor >= s.snapshot.MaxSequence
+	if reachedEnd && s.yielded < s.snapshot.Total {
+		s.missingRemaining = s.snapshot.Total - s.yielded
+		count := s.missingRemaining
+		if limit > 0 && count > limit {
+			count = limit
+		}
+		targets = append(targets, make([]tg.InputPeerClass, count)...)
+		s.missingRemaining -= count
+		return targets, s.missingRemaining == 0, nil
+	}
+	return targets, reachedEnd, nil
 }
 
 type assistantAudienceBroadcastServicer struct {
