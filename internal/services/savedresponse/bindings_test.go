@@ -246,3 +246,78 @@ func TestBindingServiceMutationRevalidatesProviderButAllowsOfflineCleanup(t *tes
 		t.Fatalf("Delete(with provider offline) error = %v", err)
 	}
 }
+
+func TestPreparedBindingRevalidatesRevisionAndProviderGeneration(t *testing.T) {
+	repo, _ := newSurfaceBindingRepository(t)
+	ctx := context.Background()
+	registry := NewRegistry()
+	scope1 := tasks.ScopeIdentity{Owner: "plugin:notes", Generation: 1}
+	resolver1 := &bindingTestResolver{response: NewText("v1")}
+	registration1, err := registry.Register("notes", scope1, resolver1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewBindingService(repo, registry)
+
+	created, err := service.Create(ctx, SurfaceBinding{
+		Surface:   SurfaceAssistantCommand,
+		Alias:     "queued",
+		Reference: Reference{Provider: "notes", ScopeID: 77, Key: "queued"},
+		Enabled:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := service.Prepare(ctx, created.Surface, created.Alias)
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if prepared.Scope() != scope1 || prepared.Binding().Revision != created.Revision {
+		t.Fatalf("unexpected prepared binding: scope=%+v binding=%+v", prepared.Scope(), prepared.Binding())
+	}
+
+	// Response content is provider-owned. A content update that does not change
+	// routing identity should be observed at execution time, not frozen while queued.
+	resolver1.response = NewText("v2")
+	resolved, err := service.ResolvePrepared(ctx, prepared)
+	if err != nil {
+		t.Fatalf("ResolvePrepared(latest content) error = %v", err)
+	}
+	if resolved.Resolved.Response.Text != "v2" {
+		t.Fatalf("prepared execution used stale response content %q", resolved.Resolved.Response.Text)
+	}
+
+	rebound := created
+	rebound.Reference.Key = "other"
+	if _, err := service.Update(ctx, rebound, created.Revision); err != nil {
+		t.Fatalf("Update(rebind) error = %v", err)
+	}
+	if _, err := service.ResolvePrepared(ctx, prepared); !errors.Is(err, ErrBindingStale) {
+		t.Fatalf("ResolvePrepared(after rebind) error = %v, want %v", err, ErrBindingStale)
+	}
+
+	reloadBinding, err := service.Create(ctx, SurfaceBinding{
+		Surface:   SurfaceInline,
+		Alias:     "reload",
+		Reference: Reference{Provider: "notes", ScopeID: 77, Key: "reload"},
+		Enabled:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparedReload, err := service.Prepare(ctx, reloadBinding.Surface, reloadBinding.Alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registration1.Close()
+	scope2 := tasks.ScopeIdentity{Owner: "plugin:notes", Generation: 2}
+	registration2, err := registry.Register("notes", scope2, &bindingTestResolver{response: NewText("reloaded")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registration2.Close()
+
+	if _, err := service.ResolvePrepared(ctx, preparedReload); !errors.Is(err, ErrBindingStale) {
+		t.Fatalf("ResolvePrepared(after provider reload) error = %v, want %v", err, ErrBindingStale)
+	}
+}
