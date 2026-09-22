@@ -209,7 +209,6 @@ func (r *SQLiteRepository) PruneExpired(ctx context.Context, now time.Time, limi
 
 var _ Repository = (*SQLiteRepository)(nil)
 
-
 func (r *SQLiteRepository) CountRetained(ctx context.Context) (int, error) {
 	if r == nil || r.db == nil {
 		return 0, ErrProviderUnavailable
