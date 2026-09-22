@@ -3,6 +3,7 @@ package savedresponse
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -882,5 +883,58 @@ func TestValidateEnabledCollisionsCatchesLegacyBindingAfterRuntimeChange(t *test
 	}
 	if err := service.ValidateEnabledCollisions(ctx); err != nil {
 		t.Fatalf("disabled collision should be ignored: %v", err)
+	}
+}
+
+
+func TestSQLiteSurfaceBindingRepositoryEnforcesPerSurfaceCapacity(t *testing.T) {
+	repo, _ := newSurfaceBindingRepository(t)
+	ctx := context.Background()
+	var first SurfaceBinding
+	for i := 0; i < MaxBindingList; i++ {
+		created, err := repo.CreateBinding(ctx, SurfaceBinding{
+			Surface: SurfaceCallback,
+			Alias: fmt.Sprintf("b%03d", i),
+			Reference: Reference{Provider: "notes", ScopeID: int64(i), Key: "key"},
+			Enabled: true,
+		})
+		if err != nil {
+			t.Fatalf("CreateBinding(%d) error=%v", i, err)
+		}
+		if i == 0 {
+			first = created
+		}
+	}
+	if _, err := repo.CreateBinding(ctx, SurfaceBinding{
+		Surface: SurfaceCallback,
+		Alias: "overflow",
+		Reference: Reference{Provider: "notes", ScopeID: 999, Key: "overflow"},
+		Enabled: true,
+	}); !errors.Is(err, ErrBindingCapacity) {
+		t.Fatalf("overflow CreateBinding() error=%v, want %v", err, ErrBindingCapacity)
+	}
+
+	// Capacity is per surface namespace, not global.
+	if _, err := repo.CreateBinding(ctx, SurfaceBinding{
+		Surface: SurfaceInline,
+		Alias: "still-free",
+		Reference: Reference{Provider: "notes", ScopeID: 1, Key: "inline"},
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("cross-surface CreateBinding() error=%v", err)
+	}
+
+	if err := repo.DeleteBinding(
+		ctx, first.Surface, first.Alias, first.Revision, first.Incarnation,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.CreateBinding(ctx, SurfaceBinding{
+		Surface: SurfaceCallback,
+		Alias: "replacement",
+		Reference: Reference{Provider: "notes", ScopeID: 1000, Key: "replacement"},
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("CreateBinding(after free capacity) error=%v", err)
 	}
 }
