@@ -22,6 +22,7 @@ import (
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/services/callback"
 	inlineservice "github.com/inipew/goultroid/internal/services/inline"
+	"github.com/inipew/goultroid/internal/services/savedresponse"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -179,6 +180,7 @@ type Manager struct {
 	jobsManager       *jobs.Manager
 	storageManager    *storage.Manager
 	featureRegistry   *featureRegistry
+	savedResponses    *savedresponse.Registry
 	plugins           map[string]Plugin
 	metadata          map[string]Metadata
 	manifests         map[string]Manifest
@@ -215,6 +217,7 @@ func NewManager(router *core.Router) *Manager {
 		callbackCleanups: make(map[string]func()),
 		featureCleanups:  make(map[string]func()),
 		featureRegistry:  newFeatureRegistry(),
+		savedResponses:   savedresponse.NewRegistry(),
 		list:             make([]Plugin, 0),
 		cleanupExecutor:  runtime.NewCallbackExecutor(runtime.DefaultLifecycleCallbackConcurrency),
 	}
