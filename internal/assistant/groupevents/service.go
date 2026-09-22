@@ -484,9 +484,12 @@ func displayUser(user core.GroupServiceUser) string {
 	return fmt.Sprintf("<a href=\"tg://user?id=%d\">%s</a>", user.ID, label)
 }
 
-func renderUsers(users []core.GroupServiceUser) string {
+func renderUsers(users []core.GroupServiceUser, total int) string {
 	if len(users) == 0 {
 		return "someone"
+	}
+	if total < len(users) {
+		total = len(users)
 	}
 	limit := len(users)
 	if limit > maxRenderedUsers {
@@ -496,8 +499,8 @@ func renderUsers(users []core.GroupServiceUser) string {
 	for _, user := range users[:limit] {
 		parts = append(parts, displayUser(user))
 	}
-	if len(users) > limit {
-		parts = append(parts, fmt.Sprintf("and %d more", len(users)-limit))
+	if total > limit {
+		parts = append(parts, fmt.Sprintf("and %d more", total-limit))
 	}
 	return strings.Join(parts, ", ")
 }
@@ -506,11 +509,15 @@ func renderTemplate(template string, event *core.GroupServiceEvent) string {
 	if event == nil || len(event.Users) == 0 {
 		return ""
 	}
+	total := event.UserCount
+	if total < len(event.Users) {
+		total = len(event.Users)
+	}
 	replacements := strings.NewReplacer(
-		"{user}", renderUsers(event.Users),
+		"{user}", renderUsers(event.Users, total),
 		"{user_id}", strconv.FormatInt(event.Users[0].ID, 10),
 		"{chat}", html.EscapeString(strings.TrimSpace(event.ChatTitle)),
-		"{count}", strconv.Itoa(len(event.Users)),
+		"{count}", strconv.Itoa(total),
 	)
 	return replacements.Replace(template)
 }
