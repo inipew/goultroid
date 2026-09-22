@@ -298,8 +298,8 @@ func (s *Service) ensureMapping(ctx context.Context, mapping Mapping, now time.T
 	return err
 }
 
-func (s *Service) touchRelayAudience(ctx context.Context, visitorID int64, now time.Time) error {
-	touch := AudienceTouch{UserID: visitorID, Source: AudienceSourceRelay, SeenAt: now}
+func (s *Service) touchRelayAudience(ctx context.Context, visitorID int64, seenAt, now time.Time) error {
+	touch := AudienceTouch{UserID: visitorID, Source: AudienceSourceRelay, SeenAt: seenAt}
 	if _, err := s.repo.TouchAudience(ctx, touch); !errors.Is(err, ErrAudienceCapacity) {
 		return err
 	}
@@ -328,7 +328,7 @@ func (s *Service) finalizeVisitorDelivery(ctx context.Context, prepared Prepared
 	}, now); err != nil {
 		return fmt.Errorf("pmrelay: persist visitor mapping: %w", err)
 	}
-	if err := s.touchRelayAudience(ctx, prepared.visitorUserID, now); err != nil {
+	if err := s.touchRelayAudience(ctx, prepared.visitorUserID, deliveredAt, now); err != nil {
 		return fmt.Errorf("pmrelay: touch relay audience: %w", err)
 	}
 	return nil
@@ -369,11 +369,11 @@ func (s *Service) ExecuteVisitor(ctx context.Context, prepared PreparedIngress, 
 	if err != nil {
 		return err
 	}
-	if intent.Completed() {
-		return s.finalizeVisitorDelivery(ctx, prepared, intent, now)
-	}
 	if intent.Expired(now) {
 		return ErrDeliveryExpired
+	}
+	if intent.Completed() {
+		return s.finalizeVisitorDelivery(ctx, prepared, intent, now)
 	}
 
 	claimID, err := s.claimID()
@@ -394,6 +394,14 @@ func (s *Service) ExecuteVisitor(ctx context.Context, prepared PreparedIngress, 
 				return getErr
 			}
 			return s.finalizeVisitorDelivery(ctx, prepared, current, now)
+		}
+		return err
+	}
+
+	if err := s.RevalidatePrepared(ctx, prepared); err != nil {
+		releaseErr := s.repo.ReleaseDelivery(ctx, claimed.DeliveryKey, claimID, s.now().UTC(), err.Error())
+		if releaseErr != nil {
+			return errors.Join(err, releaseErr)
 		}
 		return err
 	}
