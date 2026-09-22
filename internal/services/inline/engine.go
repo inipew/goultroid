@@ -93,13 +93,13 @@ func NewRegistry() *Registry {
 
 // Register registers a legacy unowned InlineHandler for its pattern or keyword.
 func (r *Registry) Register(h InlineHandler) error {
-	_, err := r.register("", "", tasks.ScopeIdentity{}, h, nil, 0)
+	_, err := r.register("", "", tasks.ScopeIdentity{}, "", h, nil, 0)
 	return err
 }
 
 // RegisterWithPriority registers a legacy unowned handler with explicit priority.
 func (r *Registry) RegisterWithPriority(h InlineHandler, priority int) error {
-	_, err := r.register("", "", tasks.ScopeIdentity{}, h, nil, priority)
+	_, err := r.register("", "", tasks.ScopeIdentity{}, "", h, nil, priority)
 	return err
 }
 
@@ -111,7 +111,7 @@ func (r *Registry) RegisterOwned(featureID, interactionID string, scope tasks.Sc
 	if featureID == "" || interactionID == "" || scope.IsZero() {
 		return nil, fmt.Errorf("owned inline handler requires feature, interaction, and scope")
 	}
-	return r.register(featureID, interactionID, scope, h, nil, priority)
+	return r.register(featureID, interactionID, scope, "", h, nil, priority)
 }
 
 // RegisterMatcher registers a legacy unowned handler with a custom matcher.
@@ -119,15 +119,18 @@ func (r *Registry) RegisterMatcher(pattern string, matcher InlineMatcher, h Inli
 	if h == nil || matcher == nil {
 		return fmt.Errorf("matcher and handler cannot be nil")
 	}
-	_, err := r.register("", "", tasks.ScopeIdentity{}, h, matcher, priority)
+	_, err := r.register("", "", tasks.ScopeIdentity{}, pattern, h, matcher, priority)
 	return err
 }
 
-func (r *Registry) register(featureID, interactionID string, scope tasks.ScopeIdentity, h InlineHandler, matcher InlineMatcher, priority int) (*Registration, error) {
+func (r *Registry) register(featureID, interactionID string, scope tasks.ScopeIdentity, patternOverride string, h InlineHandler, matcher InlineMatcher, priority int) (*Registration, error) {
 	if r == nil || h == nil {
 		return nil, fmt.Errorf("inline handler cannot be nil")
 	}
-	pattern := strings.ToLower(strings.TrimSpace(h.Pattern()))
+	pattern := strings.ToLower(strings.TrimSpace(patternOverride))
+	if pattern == "" {
+		pattern = strings.ToLower(strings.TrimSpace(h.Pattern()))
+	}
 	if matcher == nil {
 		if v2, ok := h.(InlineHandlerV2); ok {
 			matcher = v2.Matcher()
