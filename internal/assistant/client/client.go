@@ -23,6 +23,7 @@ import (
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 	"github.com/inipew/goultroid/internal/interaction/orchestration"
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
+	broadcastsvc "github.com/inipew/goultroid/internal/services/broadcast"
 	inlineService "github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/services/pmrelay"
 	"github.com/inipew/goultroid/internal/services/savedresponse"
@@ -79,6 +80,7 @@ type AssistantClient struct {
 	deepLinks             *assistantdeeplink.Router
 	pmRelay               pmrelay.Ingress
 	audience              pmrelay.AudienceRegistry
+	broadcast             *broadcastsvc.Service
 	deepLinkSeq           atomic.Uint64
 	rpcExecutor           assistentrpc.Executor
 	featureCatalog        feature.Catalog
@@ -448,6 +450,11 @@ func (c *AssistantClient) SetRelayIngress(relay pmrelay.Ingress) {
 func (c *AssistantClient) SetAudienceRegistry(registry pmrelay.AudienceRegistry) {
 	c.mu.Lock()
 	c.audience = registry
+	c.mu.Unlock()
+}
+func (c *AssistantClient) SetBroadcastService(service *broadcastsvc.Service) {
+	c.mu.Lock()
+	c.broadcast = service
 	c.mu.Unlock()
 }
 func (c *AssistantClient) SetSettingsService(svc *settings.Service) {
