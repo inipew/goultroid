@@ -185,8 +185,8 @@ func (s *Service) Load(ctx context.Context) error {
 	s.activeChats = activeChats
 	s.loaded = true
 	s.syncSubscriptionLocked()
-	s.mu.Unlock()
 	s.ready.Store(true)
+	s.mu.Unlock()
 	return nil
 }
 
@@ -202,11 +202,15 @@ func (s *Service) SetTransport(transport Transport) {
 }
 
 func (s *Service) Close() {
-	if s == nil || !s.closed.CompareAndSwap(false, true) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if !s.closed.CompareAndSwap(false, true) {
+		s.mu.Unlock()
 		return
 	}
 	s.ready.Store(false)
-	s.mu.Lock()
 	sub := s.sub
 	s.sub = nil
 	s.transport = nil
@@ -280,7 +284,7 @@ func (s *Service) State(chatID int64, kind core.GroupServiceKind) (State, error)
 }
 
 func (s *Service) Interested(chatID int64, kind core.GroupServiceKind) bool {
-	if s == nil || chatID <= 0 || !s.ready.Load() {
+	if s == nil || chatID <= 0 || s.closed.Load() || !s.ready.Load() {
 		return false
 	}
 	switch kind {
