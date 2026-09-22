@@ -2,7 +2,11 @@ package pmrelay
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"math/big"
 	"sync"
 	"time"
 )
@@ -11,6 +15,7 @@ var (
 	ErrDisabled       = errors.New("pmrelay: relay disabled")
 	ErrPreparedStale  = errors.New("pmrelay: prepared ingress stale")
 	ErrMappingExpired = errors.New("pmrelay: mapping expired")
+	ErrUnsupportedDelivery = errors.New("pmrelay: unsupported delivery")
 )
 
 // IngressMessage is the transport-neutral message identity needed to classify
@@ -51,10 +56,22 @@ func (p PreparedIngress) TargetChatID() int64          { return p.targetChatID }
 // Ingress is the narrow Assistant-facing PM relay contract. Prepare methods are
 // read-only. RevalidatePrepared is the post-admission authority and revalidates all
 // mutable policy/mapping state before any later phase may attach delivery.
+type VisitorForward struct {
+	SourceChatID    int64
+	SourceMessageID int
+	TargetChatID    int64
+	RandomID        int64
+}
+
+type VisitorTransport interface {
+	ForwardVisitor(context.Context, VisitorForward) (int, error)
+}
+
 type Ingress interface {
 	PrepareVisitor(context.Context, IngressMessage) (PreparedIngress, bool, error)
 	PrepareOwnerReply(context.Context, IngressMessage) (PreparedIngress, bool, error)
 	RevalidatePrepared(context.Context, PreparedIngress) error
+	ExecuteVisitor(context.Context, PreparedIngress, VisitorTransport) error
 }
 
 // Service owns relay admission policy and durable reply-routing revalidation.
@@ -67,6 +84,9 @@ type Service struct {
 	mu       sync.RWMutex
 	enabled  bool
 	revision uint64
+
+	randomID func() (int64, error)
+	claimID  func() (string, error)
 }
 
 func NewService(repo Repository, ownerID int64) *Service {
@@ -75,6 +95,8 @@ func NewService(repo Repository, ownerID int64) *Service {
 		ownerID:  ownerID,
 		now:      time.Now,
 		revision: 1,
+		randomID: newRandomID,
+		claimID:  newClaimID,
 	}
 }
 
@@ -228,6 +250,179 @@ func (s *Service) RevalidatePrepared(ctx context.Context, prepared PreparedIngre
 	default:
 		return ErrPreparedStale
 	}
+}
+
+
+func newRandomID() (int64, error) {
+	n, err := rand.Int(rand.Reader, big.NewInt(1<<62))
+	if err != nil {
+		return 0, fmt.Errorf("pmrelay: generate random id: %w", err)
+	}
+	id := n.Int64()
+	if id == 0 {
+		id = 1
+	}
+	return id, nil
+}
+
+func newClaimID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("pmrelay: generate claim id: %w", err)
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
+func (s *Service) ensureDelivery(ctx context.Context, intent DeliveryIntent, now time.Time) (DeliveryIntent, error) {
+	delivery, err := s.repo.EnsureDelivery(ctx, intent)
+	if !errors.Is(err, ErrDeliveryCapacity) {
+		return delivery, err
+	}
+	if _, pruneErr := s.repo.PruneExpiredDeliveries(ctx, now, 64); pruneErr != nil {
+		return DeliveryIntent{}, errors.Join(err, pruneErr)
+	}
+	return s.repo.EnsureDelivery(ctx, intent)
+}
+
+func (s *Service) ensureMapping(ctx context.Context, mapping Mapping, now time.Time) error {
+	if _, err := s.repo.EnsureMapping(ctx, mapping); !errors.Is(err, ErrMappingCapacity) {
+		return err
+	}
+	if _, err := s.repo.PruneExpiredMappings(ctx, now, 64); err != nil {
+		return err
+	}
+	_, err := s.repo.EnsureMapping(ctx, mapping)
+	return err
+}
+
+func (s *Service) touchRelayAudience(ctx context.Context, visitorID int64, now time.Time) error {
+	touch := AudienceTouch{UserID: visitorID, Source: AudienceSourceRelay, SeenAt: now}
+	if _, err := s.repo.TouchAudience(ctx, touch); !errors.Is(err, ErrAudienceCapacity) {
+		return err
+	}
+	if _, err := s.repo.PruneAudienceBefore(ctx, now.Add(-DefaultAudienceRetention), 64); err != nil {
+		return err
+	}
+	_, err := s.repo.TouchAudience(ctx, touch)
+	return err
+}
+
+func (s *Service) finalizeVisitorDelivery(ctx context.Context, prepared PreparedIngress, delivery DeliveryIntent, now time.Time) error {
+	if !delivery.Completed() || delivery.TargetMessageID <= 0 {
+		return ErrDeliveryConflict
+	}
+	deliveredAt := now
+	if delivery.DeliveredAt != nil {
+		deliveredAt = delivery.DeliveredAt.UTC()
+	}
+	if err := s.ensureMapping(ctx, Mapping{
+		OwnerChatID:      prepared.targetChatID,
+		OwnerMessageID:   delivery.TargetMessageID,
+		VisitorUserID:    prepared.visitorUserID,
+		VisitorMessageID: prepared.sourceMessageID,
+		CreatedAt:        deliveredAt,
+		ExpiresAt:        deliveredAt.Add(DefaultMappingRetention),
+	}, now); err != nil {
+		return fmt.Errorf("pmrelay: persist visitor mapping: %w", err)
+	}
+	if err := s.touchRelayAudience(ctx, prepared.visitorUserID, now); err != nil {
+		return fmt.Errorf("pmrelay: touch relay audience: %w", err)
+	}
+	return nil
+}
+
+// ExecuteVisitor owns the durable visitor→owner delivery state machine. It is
+// called only from an admitted TaskEngine handler. The transport receives the
+// durable random_id so a crash after Telegram success but before local commit
+// can safely retry the same logical forward.
+func (s *Service) ExecuteVisitor(ctx context.Context, prepared PreparedIngress, transport VisitorTransport) error {
+	if transport == nil || s == nil || s.repo == nil {
+		return ErrUnavailable
+	}
+	if prepared.direction != DeliveryVisitorToOwner {
+		return ErrUnsupportedDelivery
+	}
+	if err := s.RevalidatePrepared(ctx, prepared); err != nil {
+		return err
+	}
+
+	now := s.now().UTC()
+	randomID, err := s.randomID()
+	if err != nil {
+		return err
+	}
+	intent, err := s.ensureDelivery(ctx, DeliveryIntent{
+		DeliveryKey: DeliveryKey{
+			Direction:       DeliveryVisitorToOwner,
+			SourceChatID:    prepared.sourceChatID,
+			SourceMessageID: prepared.sourceMessageID,
+		},
+		TargetChatID: prepared.targetChatID,
+		RandomID:     randomID,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+		ExpiresAt:    now.Add(DefaultDeliveryRetention),
+	}, now)
+	if err != nil {
+		return err
+	}
+	if intent.Completed() {
+		return s.finalizeVisitorDelivery(ctx, prepared, intent, now)
+	}
+	if intent.Expired(now) {
+		return ErrDeliveryExpired
+	}
+
+	claimID, err := s.claimID()
+	if err != nil {
+		return err
+	}
+	claimed, err := s.repo.ClaimDelivery(
+		ctx,
+		intent.DeliveryKey,
+		now,
+		claimID,
+		now.Add(DeliveryClaimTTL),
+	)
+	if err != nil {
+		if errors.Is(err, ErrDeliveryCompleted) {
+			current, getErr := s.repo.GetDelivery(ctx, intent.DeliveryKey)
+			if getErr != nil {
+				return getErr
+			}
+			return s.finalizeVisitorDelivery(ctx, prepared, current, now)
+		}
+		return err
+	}
+
+	targetMessageID, sendErr := transport.ForwardVisitor(ctx, VisitorForward{
+		SourceChatID:    prepared.sourceChatID,
+		SourceMessageID: prepared.sourceMessageID,
+		TargetChatID:    prepared.targetChatID,
+		RandomID:        claimed.RandomID,
+	})
+	if sendErr != nil {
+		releaseErr := s.repo.ReleaseDelivery(ctx, claimed.DeliveryKey, claimID, s.now().UTC(), sendErr.Error())
+		if releaseErr != nil {
+			return errors.Join(sendErr, releaseErr)
+		}
+		return sendErr
+	}
+	if targetMessageID <= 0 {
+		sendErr = ErrDeliveryConflict
+		releaseErr := s.repo.ReleaseDelivery(ctx, claimed.DeliveryKey, claimID, s.now().UTC(), sendErr.Error())
+		if releaseErr != nil {
+			return errors.Join(sendErr, releaseErr)
+		}
+		return sendErr
+	}
+
+	deliveredAt := s.now().UTC()
+	committed, err := s.repo.CommitDelivery(ctx, claimed.DeliveryKey, claimID, targetMessageID, deliveredAt)
+	if err != nil {
+		return err
+	}
+	return s.finalizeVisitorDelivery(ctx, prepared, committed, deliveredAt)
 }
 
 var _ Ingress = (*Service)(nil)
