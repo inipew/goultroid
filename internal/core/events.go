@@ -988,6 +988,14 @@ func (b *EventBus) runJob(job eventJob) {
 	if ordered, ok := job.event.(OrderedEvent); ok {
 		orderingKey = ordered.OrderingKey()
 	}
+	var queueDeadline time.Time
+	if _, bounded := job.event.(QuotaOwnedEvent); bounded {
+		maxQueueAge := job.subscriber.timeout
+		if maxQueueAge <= 0 {
+			maxQueueAge = 5 * time.Second
+		}
+		queueDeadline = time.Now().Add(maxQueueAge)
+	}
 	b.taskWG.Add(1)
 	_, err := client.Submit(context.Background(), tasks.WorkSpec{
 		ID:               tasks.TaskID(fmt.Sprintf("event:%d", b.taskSequence.Add(1))),
@@ -996,6 +1004,7 @@ func (b *EventBus) runJob(job eventJob) {
 		Pool:             "general",
 		Class:            class,
 		OrderingKey:      orderingKey,
+		QueueDeadline:    queueDeadline,
 		ExecutionTimeout: job.subscriber.timeout,
 		Handler: func(taskCtx context.Context) error {
 			b.executeJob(taskCtx, job)
