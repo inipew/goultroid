@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"html"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,11 +29,11 @@ var ErrRuleLimit = fmt.Errorf("%w: blacklist rule limit exceeded", core.ErrResou
 
 type compiledBlacklist struct {
 	word string
-	re   *regexp.Regexp
 }
 
 type compiledBlacklistSet struct {
 	items    []compiledBlacklist
+	matcher  *blacklistMatcher
 	revision uint64
 }
 
@@ -45,7 +44,7 @@ type Plugin struct {
 	revisionSeq   atomic.Uint64
 	cacheMu       sync.RWMutex
 	chatRevision  map[int64]uint64
-	chatBlacklist map[int64]compiledBlacklistSet
+	chatBlacklist map[int64]*compiledBlacklistSet
 	chatAccess    map[int64]time.Time
 }
 
@@ -53,7 +52,7 @@ func New(db Repository, svcFunc func() core.TelegramServicer) *Plugin {
 	return &Plugin{
 		db: db, svcFunc: svcFunc,
 		chatRevision:  make(map[int64]uint64),
-		chatBlacklist: make(map[int64]compiledBlacklistSet),
+		chatBlacklist: make(map[int64]*compiledBlacklistSet),
 		chatAccess:    make(map[int64]time.Time),
 	}
 }
@@ -249,17 +248,17 @@ func (p *Plugin) ApplyAssistantRule(
 func (p *Plugin) compiledForChat(
 	ctx context.Context,
 	chatID int64,
-) ([]compiledBlacklist, error) {
+) (*compiledBlacklistSet, error) {
 	for attempt := 0; attempt < 3; attempt++ {
 		revision := p.chatRuleRevision(chatID)
 		p.cacheMu.RLock()
 		cached, ok := p.chatBlacklist[chatID]
 		p.cacheMu.RUnlock()
-		if ok && cached.revision == revision {
+		if ok && cached != nil && cached.revision == revision {
 			p.cacheMu.Lock()
 			p.chatAccess[chatID] = time.Now()
 			p.cacheMu.Unlock()
-			return cached.items, nil
+			return cached, nil
 		}
 
 		rawWords, err := p.db.ListBlacklists(ctx, chatID)
@@ -278,13 +277,18 @@ func (p *Plugin) compiledForChat(
 			}
 		}
 		items := compileBlacklist(rawWords)
+		compiled := &compiledBlacklistSet{
+			items:    items,
+			matcher:  newBlacklistMatcher(items),
+			revision: revision,
+		}
 		if p.chatRuleRevision(chatID) != revision {
 			continue
 		}
 
 		p.featureState.SetActive(chatID, len(rawWords) > 0)
 		p.cacheMu.Lock()
-		if p.chatRuleRevision(chatID) != revision {
+		if p.chatRevision[chatID] != revision {
 			p.cacheMu.Unlock()
 			continue
 		}
@@ -301,13 +305,10 @@ func (p *Plugin) compiledForChat(
 				delete(p.chatAccess, oldestChat)
 			}
 		}
-		p.chatBlacklist[chatID] = compiledBlacklistSet{
-			items:    items,
-			revision: revision,
-		}
+		p.chatBlacklist[chatID] = compiled
 		p.chatAccess[chatID] = time.Now()
 		p.cacheMu.Unlock()
-		return items, nil
+		return compiled, nil
 	}
 	return nil, fmt.Errorf("%w: blacklist rules changed during compilation", core.ErrConflict)
 }
@@ -319,20 +320,14 @@ func (p *Plugin) matchMessage(ctx context.Context, message *core.MessageEnvelope
 	if p.db == nil || message.ChatID == 0 {
 		return false, nil
 	}
-	items, err := p.compiledForChat(ctx, message.ChatID)
+	compiled, err := p.compiledForChat(ctx, message.ChatID)
 	if err != nil {
 		return false, err
 	}
-	if len(items) == 0 {
+	if compiled == nil || len(compiled.items) == 0 || compiled.matcher == nil {
 		return false, nil
 	}
-	lowerText := strings.ToLower(message.Text)
-	for _, b := range items {
-		if (b.re != nil && b.re.MatchString(lowerText)) || (b.re == nil && b.word != "" && strings.Contains(lowerText, b.word)) {
-			return true, nil
-		}
-	}
-	return false, nil
+	return compiled.matcher.matches(message.Text), nil
 }
 
 func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEnvelope) error {
@@ -362,25 +357,17 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 
 func compileBlacklist(raw []string) []compiledBlacklist {
 	res := make([]compiledBlacklist, len(raw))
-	for i, w := range raw {
-		res[i] = compileBlacklistItem(w)
+	for i, word := range raw {
+		res[i] = compileBlacklistItem(word)
 	}
 	return res
 }
+
 func compileBlacklistItem(word string) compiledBlacklist {
-	w := strings.ToLower(strings.TrimSpace(word))
-	var re *regexp.Regexp
-	if w != "" {
-		pattern := `(?i)(?:^|[^\p{L}\p{N}_])` + regexp.QuoteMeta(w) + `(?:$|[^\p{L}\p{N}_])`
-		re, _ = regexp.Compile(pattern)
-	}
-	return compiledBlacklist{word: w, re: re}
+	return compiledBlacklist{word: strings.ToLower(strings.TrimSpace(word))}
 }
+
 func matchBlacklist(text, word string) bool {
-	b := compileBlacklistItem(word)
-	lowerText := strings.ToLower(text)
-	if b.re != nil {
-		return b.re.MatchString(lowerText)
-	}
-	return strings.Contains(lowerText, b.word)
+	items := []compiledBlacklist{compileBlacklistItem(word)}
+	return newBlacklistMatcher(items).matches(text)
 }
