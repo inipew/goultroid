@@ -36,6 +36,7 @@ type Client interface {
 	SetRelayIngress(relay pmrelay.Ingress)
 	SetAudienceRegistry(registry pmrelay.AudienceRegistry)
 	SetBroadcastService(service *broadcastsvc.Service)
+	BroadcastAudience(context.Context, broadcastsvc.BroadcastRequest) (*broadcastsvc.BroadcastReport, error)
 	SetTasks(client tasks.Client)
 	SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool))
 	SetInteractionFoundation(catalog feature.Catalog, sessions *rootinteraction.Runtime, actions *rootinteraction.Dispatcher)
@@ -122,6 +123,12 @@ func (a *AssistantApp) SetAudienceRegistry(registry pmrelay.AudienceRegistry) {
 }
 func (a *AssistantApp) SetBroadcastService(service *broadcastsvc.Service) {
 	a.client.SetBroadcastService(service)
+}
+func (a *AssistantApp) BroadcastAudience(
+	ctx context.Context,
+	req broadcastsvc.BroadcastRequest,
+) (*broadcastsvc.BroadcastReport, error) {
+	return a.client.BroadcastAudience(ctx, req)
 }
 func (a *AssistantApp) SetRPCExecutor(executor assistentrpc.Executor) {
 	a.client.SetRPCExecutor(executor)
