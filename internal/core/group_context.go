@@ -81,12 +81,14 @@ type GroupAdminRights struct {
 // GroupActorPrincipal separates global Goultroid identity from Telegram's
 // chat-scoped role. Role/rights remain unverified until P7-B resolves them.
 type GroupActorPrincipal struct {
-	UserID   int64
-	IsOwner  bool
-	IsSudo   bool
-	Role     GroupActorRole
-	Rights   GroupAdminRights
-	Verified bool
+	UserID     int64
+	IsOwner    bool
+	IsSudo     bool
+	Role       GroupActorRole
+	Rights     GroupAdminRights
+	CanEdit    bool
+	PromotedBy int64
+	Verified   bool
 }
 
 // GroupExecutionContext is the canonical contextual principal envelope for the
