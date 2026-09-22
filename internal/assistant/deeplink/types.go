@@ -12,8 +12,9 @@ const (
 	TokenVersion    = "d1"
 	DefaultTTL      = 24 * time.Hour
 	MaxTTL          = 30 * 24 * time.Hour
-	MaxPayloadBytes = 1024
-	MaxKindBytes    = 32
+	MaxPayloadBytes  = 1024
+	MaxKindBytes     = 32
+	MaxRetainedTokens = 4096
 )
 
 var (
@@ -28,6 +29,7 @@ var (
 	ErrProviderRegistered = errors.New("assistant/deeplink: provider already registered")
 	ErrProviderUnavailable = errors.New("assistant/deeplink: provider unavailable")
 	ErrProviderStale      = errors.New("assistant/deeplink: provider registration is stale")
+	ErrCapacity           = errors.New("assistant/deeplink: token capacity exhausted")
 )
 
 // Token is immutable durable routing state. Payload is opaque to the router.
@@ -79,4 +81,5 @@ type Repository interface {
 	Get(context.Context, string) (Token, error)
 	Claim(context.Context, string, int64, time.Time) (Token, error)
 	PruneExpired(context.Context, time.Time, int) (int, error)
+	CountRetained(context.Context) (int, error)
 }
