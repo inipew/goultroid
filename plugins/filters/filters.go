@@ -333,8 +333,8 @@ func (p *Plugin) saveFilterResponse(ctx *core.Context, chatID int64, keyword str
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to save filter: %v", err))
 		return err
 	}
-	p.featureState.SetActive(chatID, true)
 	p.invalidateChat(chatID, true)
+	p.featureState.SetActive(chatID, true)
 	return ctx.EditOrReply(fmt.Sprintf("🎯 Filter <code>%s</code> saved successfully.", html.EscapeString(keyword)))
 }
 
@@ -364,14 +364,15 @@ func (p *Plugin) handleStop(ctx *core.Context) error {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to stop filter: %v", err))
 		return err
 	}
-	active := false
-	if remaining, err := p.db.ListFilters(ctx.Ctx, chatID); err != nil {
+	remaining, listErr := p.db.ListFilters(ctx.Ctx, chatID)
+	if listErr != nil {
+		p.invalidateChatUnknown(chatID)
 		p.featureState.MarkUnknown(chatID)
 	} else {
-		active = len(remaining) > 0
+		active := len(remaining) > 0
+		p.invalidateChat(chatID, active)
 		p.featureState.SetActive(chatID, active)
 	}
-	p.invalidateChat(chatID, active)
 	return ctx.EditOrReply(fmt.Sprintf("🗑️ Filter <code>%s</code> stopped.", html.EscapeString(keyword)))
 }
 
@@ -522,6 +523,13 @@ func (p *Plugin) invalidateChat(chatID int64, active bool) {
 	} else {
 		delete(p.chatRevision, chatID)
 	}
+	p.cacheMu.Unlock()
+}
+
+func (p *Plugin) invalidateChatUnknown(chatID int64) {
+	p.cacheMu.Lock()
+	delete(p.chatFilters, chatID)
+	p.chatRevision[chatID] = p.revisionSeq.Add(1)
 	p.cacheMu.Unlock()
 }
 
