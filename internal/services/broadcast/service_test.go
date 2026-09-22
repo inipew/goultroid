@@ -425,9 +425,9 @@ func TestBroadcast_RejectsStalledTargetSource(t *testing.T) {
 
 type oversizedTargetSource struct{}
 
-func (oversizedTargetSource) Total() int { return maxBroadcastInFlight + 1 }
+func (oversizedTargetSource) Total() int { return 65 }
 func (oversizedTargetSource) Next(context.Context, int) ([]tg.InputPeerClass, bool, error) {
-	targets := make([]tg.InputPeerClass, maxBroadcastInFlight+1)
+	targets := make([]tg.InputPeerClass, 65)
 	for i := range targets {
 		targets[i] = &tg.InputPeerUser{UserID: int64(i + 1)}
 	}
