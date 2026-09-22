@@ -139,13 +139,15 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		if slashCommand {
 			inputPeer := resolvePeer()
 			if commandName == "/cancel" && deps.InteractionIngress != nil && inputPeer != nil {
-				if handled, hErr := deps.InteractionIngress.tryText(ctx, msg.Message, senderID, chatID, inputPeer); handled {
-					if hErr != nil {
-						logger.Warn("assistant: interaction text input dispatch failed", zap.Error(hErr), zap.Int64("sender_id", senderID))
-						if feedback := interactionTextInputErrorMessage(hErr); feedback != "" && deps.Interaction != nil {
-							_, _ = deps.Interaction.SendMessage(ctx, inputPeer, feedback, nil)
-						}
+				handled, hErr := deps.InteractionIngress.tryText(ctx, msg.Message, senderID, chatID, inputPeer)
+				if hErr != nil {
+					logger.Warn("assistant: interaction text input dispatch failed", zap.Error(hErr), zap.Int64("sender_id", senderID))
+					if feedback := interactionTextInputErrorMessage(hErr); feedback != "" && deps.Interaction != nil {
+						_, _ = deps.Interaction.SendMessage(ctx, inputPeer, feedback, nil)
 					}
+					return nil
+				}
+				if handled {
 					return nil
 				}
 			}
@@ -178,13 +180,17 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		if deps.Resolver != nil && deps.Interaction != nil {
 			inputPeer := resolvePeer()
 			if inputPeer != nil && deps.InteractionIngress != nil {
-				if handled, hErr := deps.InteractionIngress.tryText(ctx, msg.Message, senderID, chatID, inputPeer); handled {
-					if hErr != nil {
-						logger.Warn("assistant: interaction text input dispatch failed", zap.Error(hErr), zap.Int64("sender_id", senderID))
-						if feedback := interactionTextInputErrorMessage(hErr); feedback != "" {
-							_, _ = deps.Interaction.SendMessage(ctx, inputPeer, feedback, nil)
-						}
+				handled, hErr := deps.InteractionIngress.tryText(ctx, msg.Message, senderID, chatID, inputPeer)
+				if hErr != nil {
+					logger.Warn("assistant: interaction text input dispatch failed", zap.Error(hErr), zap.Int64("sender_id", senderID))
+					if feedback := interactionTextInputErrorMessage(hErr); feedback != "" {
+						_, _ = deps.Interaction.SendMessage(ctx, inputPeer, feedback, nil)
 					}
+					// Classification failure is terminal for this update. Only a
+					// clean "not handled" result may fall through to PM Relay.
+					return nil
+				}
+				if handled {
 					return nil
 				}
 			}
