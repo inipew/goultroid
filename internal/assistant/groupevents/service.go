@@ -55,11 +55,12 @@ type Service struct {
 	reader core.GroupStateNamespaceReader
 	bus    *core.EventBus
 
-	mu        sync.RWMutex
-	chats     map[int64]chatConfig
-	transport Transport
-	sub       *core.Subscription
-	loaded    bool
+	mu          sync.RWMutex
+	chats       map[int64]chatConfig
+	activeChats int
+	transport   Transport
+	sub         *core.Subscription
+	loaded      bool
 }
 
 func New(store core.GroupStateStore, bus *core.EventBus) *Service {
@@ -153,8 +154,16 @@ func (s *Service) Load(ctx context.Context) error {
 		chats[record.ChatID] = current
 	}
 
+	activeChats := 0
+	for _, config := range chats {
+		if enabledChat(config) {
+			activeChats++
+		}
+	}
+
 	s.mu.Lock()
 	s.chats = chats
+	s.activeChats = activeChats
 	s.loaded = true
 	s.syncSubscriptionLocked()
 	s.mu.Unlock()
@@ -188,12 +197,7 @@ func enabledChat(config chatConfig) bool {
 }
 
 func (s *Service) hasEnabledLocked() bool {
-	for _, config := range s.chats {
-		if enabledChat(config) {
-			return true
-		}
-	}
-	return false
+	return s.activeChats > 0
 }
 
 func (s *Service) syncSubscriptionLocked() {
@@ -265,16 +269,22 @@ func (s *Service) Interested(chatID int64, kind core.GroupServiceKind) bool {
 func (s *Service) applyState(chatID int64, state State) {
 	s.mu.Lock()
 	current := s.chats[chatID]
+	wasActive := enabledChat(current)
 	if state.Kind == core.GroupServiceMemberJoined {
 		current.welcome = state
 	} else {
 		current.goodbye = state
 	}
-	if enabledChat(current) {
-		s.chats[chatID] = current
-	} else {
-		delete(s.chats, chatID)
+	isActive := enabledChat(current)
+	switch {
+	case !wasActive && isActive:
+		s.activeChats++
+	case wasActive && !isActive && s.activeChats > 0:
+		s.activeChats--
 	}
+	// Retain disabled durable state as well. Status/revision must reflect the
+	// persisted P7-F row rather than falling back to synthetic defaults.
+	s.chats[chatID] = current
 	s.syncSubscriptionLocked()
 	s.mu.Unlock()
 }
@@ -357,7 +367,7 @@ func (s *Service) Publish(event *core.GroupServiceEvent) {
 }
 
 func displayUser(user core.GroupServiceUser) string {
-	label := strings.TrimSpace(strings.TrimSpace(user.FirstName + " " + user.LastName))
+	label := strings.TrimSpace(user.FirstName + " " + user.LastName)
 	if label == "" {
 		if user.Username != "" {
 			label = "@" + strings.TrimPrefix(user.Username, "@")
