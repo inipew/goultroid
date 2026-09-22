@@ -190,7 +190,11 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	}
 	savedResponseDelivery := savedresponse.NewResponseDelivery(savedResponseService)
 	if tgRuntime.assistant != nil {
-		tgRuntime.assistant.SetSavedResponseBindings(savedResponseBindings, savedResponseDelivery)
+		if aware, ok := tgRuntime.assistant.(interface {
+			SetSavedResponseBindings(*savedresponse.BindingService, *savedresponse.ResponseDelivery)
+		}); ok {
+			aware.SetSavedResponseBindings(savedResponseBindings, savedResponseDelivery)
+		}
 	}
 	if _, err := reconcileBuiltinPersistentMedia(context.Background(), coreDeps.db, domServices.storage); err != nil {
 		return nil, err
