@@ -277,3 +277,91 @@ func TestDomainRetentionBoundsRejectUnboundedRows(t *testing.T) {
 		t.Fatalf("DeliveryIntent.Normalize() error = %v, want %v", err, ErrInvalidDelivery)
 	}
 }
+
+
+func TestSQLiteVisitorBlocksAreDurableIdempotentAndBounded(t *testing.T) {
+	ctx := context.Background()
+	repo, db := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8, Blocked: 1})
+	base := time.Date(2026, 9, 22, 19, 0, 0, 0, time.UTC)
+
+	block, err := repo.SetVisitorBlock(ctx, VisitorBlock{
+		VisitorUserID: 42,
+		BlockedAt:     base,
+		Reason:        "spam",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if block.VisitorUserID != 42 || block.Reason != "spam" || !block.BlockedAt.Equal(base) {
+		t.Fatalf("block=%+v", block)
+	}
+
+	restarted := NewSQLiteRepositoryWithLimits(db, Limits{Mappings: 8, Deliveries: 8, Audience: 8, Blocked: 1})
+	got, err := restarted.GetVisitorBlock(ctx, 42)
+	if err != nil {
+		t.Fatalf("GetVisitorBlock(restart) error=%v", err)
+	}
+	if got.Reason != "spam" {
+		t.Fatalf("restart block=%+v", got)
+	}
+
+	updatedAt := base.Add(time.Minute)
+	got, err = restarted.SetVisitorBlock(ctx, VisitorBlock{
+		VisitorUserID: 42,
+		BlockedAt:     updatedAt,
+		Reason:        "repeat abuse",
+	})
+	if err != nil {
+		t.Fatalf("SetVisitorBlock(update) error=%v", err)
+	}
+	if got.Reason != "repeat abuse" || !got.BlockedAt.Equal(updatedAt) {
+		t.Fatalf("updated block=%+v", got)
+	}
+
+	if _, err := restarted.SetVisitorBlock(ctx, VisitorBlock{
+		VisitorUserID: 43,
+		BlockedAt:     base,
+	}); !errors.Is(err, ErrBlockCapacity) {
+		t.Fatalf("SetVisitorBlock(at capacity) error=%v, want %v", err, ErrBlockCapacity)
+	}
+	if _, err := restarted.GetVisitorBlock(ctx, 42); err != nil {
+		t.Fatalf("existing block was evicted: %v", err)
+	}
+
+	list, err := restarted.ListVisitorBlocks(ctx, 0, 10)
+	if err != nil || len(list) != 1 || list[0].VisitorUserID != 42 {
+		t.Fatalf("ListVisitorBlocks()=%+v err=%v", list, err)
+	}
+	if count, err := restarted.CountVisitorBlocks(ctx); err != nil || count != 1 {
+		t.Fatalf("CountVisitorBlocks()=%d err=%v", count, err)
+	}
+
+	deleted, err := restarted.DeleteVisitorBlock(ctx, 42)
+	if err != nil || !deleted {
+		t.Fatalf("DeleteVisitorBlock()=%v err=%v", deleted, err)
+	}
+	deleted, err = restarted.DeleteVisitorBlock(ctx, 42)
+	if err != nil || deleted {
+		t.Fatalf("DeleteVisitorBlock(idempotent)=%v err=%v", deleted, err)
+	}
+	if _, err := restarted.GetVisitorBlock(ctx, 42); !errors.Is(err, ErrBlockNotFound) {
+		t.Fatalf("GetVisitorBlock(after delete) error=%v, want %v", err, ErrBlockNotFound)
+	}
+	if _, err := restarted.SetVisitorBlock(ctx, VisitorBlock{VisitorUserID: 43, BlockedAt: base}); err != nil {
+		t.Fatalf("SetVisitorBlock(after capacity release) error=%v", err)
+	}
+}
+
+func TestVisitorBlockRejectsInvalidRows(t *testing.T) {
+	base := time.Date(2026, 9, 22, 20, 0, 0, 0, time.UTC)
+	if _, err := (VisitorBlock{VisitorUserID: 0, BlockedAt: base}).Normalize(); !errors.Is(err, ErrInvalidBlock) {
+		t.Fatalf("VisitorBlock.Normalize(zero user) error=%v, want %v", err, ErrInvalidBlock)
+	}
+	if _, err := (VisitorBlock{
+		VisitorUserID: 42,
+		BlockedAt:     base,
+		Reason:        string(make([]byte, MaxBlockReasonBytes+1)),
+	}).Normalize(); !errors.Is(err, ErrInvalidBlock) {
+		t.Fatalf("VisitorBlock.Normalize(long reason) error=%v, want %v", err, ErrInvalidBlock)
+	}
+}
