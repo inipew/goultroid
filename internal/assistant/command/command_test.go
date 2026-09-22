@@ -198,6 +198,7 @@ func configureSavedResponseRouter(
 
 func TestCommandRouter_Dispatch(t *testing.T) {
 	r := command.NewRouter(zap.NewNop())
+	r.SetBotUsername("TestBot")
 	r.Register("/start", func(c *command.Context) error {
 		_, err := c.Reply("start", nil)
 		return err
@@ -233,6 +234,16 @@ func TestCommandRouter_Dispatch(t *testing.T) {
 	}
 	if fake.lastSentText != "start" {
 		t.Fatalf("unexpected /start response: %q", fake.lastSentText)
+	}
+
+	// Commands explicitly targeted at another bot are ignored.
+	fake.lastSentText = ""
+	err = r.Dispatch(ctx, 12345, peer, "/start@OtherBot", fake)
+	if err != nil {
+		t.Fatalf("other-bot command should be ignored, got %v", err)
+	}
+	if fake.lastSentText != "" {
+		t.Fatalf("other-bot command produced response: %q", fake.lastSentText)
 	}
 
 	// 2. /ping
