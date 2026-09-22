@@ -793,3 +793,52 @@ func TestCrossSurfaceLifecycleMatrixUsesOneAuthoritativeResponse(t *testing.T) {
 		}
 	}
 }
+
+
+func TestValidateEnabledCollisionsCatchesLegacyBindingAfterRuntimeChange(t *testing.T) {
+	repo, _ := newSurfaceBindingRepository(t)
+	ctx := context.Background()
+	registry := NewRegistry()
+	registration, err := registry.Register(
+		"notes",
+		tasks.ScopeIdentity{Owner: "plugin:notes", Generation: 1},
+		&bindingTestResolver{response: NewText("live")},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registration.Close()
+
+	service := NewBindingService(repo, registry)
+	created, err := service.Create(ctx, SurfaceBinding{
+		Surface: SurfaceAssistantCommand,
+		Alias: "legacy",
+		Reference: Reference{Provider: "notes", ScopeID: 1, Key: "legacy"},
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetAliasGuard(func(surface Surface, alias string) error {
+		if surface == SurfaceAssistantCommand && alias == created.Alias {
+			return ErrBindingReserved
+		}
+		return nil
+	})
+	if err := service.ValidateEnabledCollisions(ctx); !errors.Is(err, ErrBindingReserved) {
+		t.Fatalf("ValidateEnabledCollisions() error=%v, want %v", err, ErrBindingReserved)
+	}
+
+	disabled, err := service.SetEnabled(
+		ctx, created.Surface, created.Alias, false, created.Revision, created.Incarnation,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disabled.Enabled {
+		t.Fatal("expected legacy binding disabled")
+	}
+	if err := service.ValidateEnabledCollisions(ctx); err != nil {
+		t.Fatalf("disabled collision should be ignored: %v", err)
+	}
+}
