@@ -211,10 +211,10 @@ func TestSavedResponseCallbackUsesOpaqueA2TokenAndProviderAdmission(t *testing.T
 		t.Fatalf("callback token=%+v", token)
 	}
 	raw := string(data)
-	for _, forbidden := range []string{"hello", "notes"} {
-		if strings.Contains(raw, forbidden) {
-			t.Fatalf("callback data leaks SavedResponse identity %q: %q", forbidden, raw)
-		}
+	if !strings.HasPrefix(raw, "a2:"+FeatureID+":"+ActionDeliver+":") ||
+		strings.Count(raw, ":") != 3 ||
+		len(data) > rootinteraction.MaxCallbackDataBytes {
+		t.Fatalf("callback data is not canonical opaque a2: %q", raw)
 	}
 
 	prepared, err := fixture.engine.PrepareCallback(context.Background(), orchestration.CallbackRequest{
