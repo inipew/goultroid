@@ -219,6 +219,7 @@ func (p *Plugin) submitContinuation(
 	kind string,
 	pool tasks.PoolID,
 	chatID int64,
+	topicID int,
 	timeout time.Duration,
 	resources []tasks.ResourceRequirement,
 	handler func(context.Context) error,
@@ -234,7 +235,7 @@ func (p *Plugin) submitContinuation(
 		ID:               p.nextTaskID(kind, chatID),
 		Pool:             pool,
 		Class:            tasks.PriorityNormal,
-		OrderingKey:      fmt.Sprintf("chat:%d", chatID),
+		OrderingKey:      core.GroupOrderingKey(chatID, topicID),
 		ExecutionTimeout: timeout,
 		Resources:        resources,
 		Handler: func(taskCtx context.Context) error {
@@ -295,6 +296,7 @@ func (p *Plugin) saveReply(ctx *core.Context, chatID int64, keyword string, repl
 		"save-media",
 		tasks.PoolID("download"),
 		chatID,
+		ctx.TopicID(),
 		filterCaptureTimeout,
 		resources,
 		func(taskCtx context.Context) error {
@@ -640,7 +642,8 @@ func (p *Plugin) ApplyAssistantRule(
 	}
 	vars := savedresponse.VarsFromEnvelope(message, time.Now())
 	response := f.response.Clone()
-	if err := p.deliverResponse(ctx, svc, peer, response, f.template, vars); err != nil {
+	sendContext := core.MessageSendContext{ReplyToID: message.ID, TopicID: message.TopicID}
+	if err := p.deliverResponse(ctx, svc, peer, response, f.template, vars, sendContext); err != nil {
 		return false, fmt.Errorf("filters: deliver Assistant response for %q: %w", f.keyword, err)
 	}
 	p.markCooldown(fmt.Sprintf("%d:%s", message.ChatID, f.keyword))
@@ -670,7 +673,7 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 	}
 	vars := savedresponse.VarsFromEnvelope(message, time.Now())
 	response := f.response.Clone()
-	if err := p.submitDelivery(ctx, svc, peer, message.ChatID, message.ID, response, f.template, vars); err != nil {
+	if err := p.submitDelivery(ctx, svc, peer, message.ChatID, message.TopicID, message.ID, response, f.template, vars); err != nil {
 		return fmt.Errorf("filters: submit reply for %q: %w", f.keyword, err)
 	}
 	p.markCooldown(fmt.Sprintf("%d:%s", message.ChatID, f.keyword))
@@ -685,13 +688,15 @@ func (p *Plugin) submitDelivery(
 	svc core.TelegramServicer,
 	peer tg.InputPeerClass,
 	chatID int64,
+	topicID int,
 	messageID int,
 	response savedresponse.Response,
 	template *savedresponse.CompiledTemplate,
 	vars savedresponse.TemplateVars,
 ) error {
+	sendContext := core.MessageSendContext{ReplyToID: messageID, TopicID: topicID}
 	if p.tasks == nil {
-		return p.deliverResponse(admissionCtx, svc, peer, response, template, vars)
+		return p.deliverResponse(admissionCtx, svc, peer, response, template, vars, sendContext)
 	}
 
 	resources := []tasks.ResourceRequirement(nil)
@@ -703,10 +708,11 @@ func (p *Plugin) submitDelivery(
 		fmt.Sprintf("response-%d", messageID),
 		tasks.PoolID("general"),
 		chatID,
+		topicID,
 		filterDeliveryTimeout,
 		resources,
 		func(taskCtx context.Context) error {
-			return p.deliverResponse(taskCtx, svc, peer, response, template, vars)
+			return p.deliverResponse(taskCtx, svc, peer, response, template, vars, sendContext)
 		},
 	)
 }
@@ -718,16 +724,25 @@ func (p *Plugin) deliverResponse(
 	response savedresponse.Response,
 	template *savedresponse.CompiledTemplate,
 	vars savedresponse.TemplateVars,
+	sendContext core.MessageSendContext,
 ) error {
 	if svc == nil || peer == nil {
 		return errors.New("filters: telegram delivery is unavailable")
 	}
 	_, err := p.delivery.DeliverCompiled(ctx, response, template, vars, savedresponse.DeliverySink{
 		SendMedia: func(mediaType, path, caption string) error {
+			if contextual, ok := svc.(core.ContextualTelegramServicer); ok {
+				_, sendErr := contextual.SendMediaContext(ctx, peer, mediaType, path, caption, sendContext)
+				return sendErr
+			}
 			_, sendErr := svc.SendMedia(ctx, peer, mediaType, path, caption)
 			return sendErr
 		},
 		SendText: func(text string) error {
+			if contextual, ok := svc.(core.ContextualTelegramServicer); ok {
+				_, sendErr := contextual.SendMessageContext(ctx, peer, text, nil, sendContext)
+				return sendErr
+			}
 			_, sendErr := svc.SendMessage(ctx, peer, text)
 			return sendErr
 		},
