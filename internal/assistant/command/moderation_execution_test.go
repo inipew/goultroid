@@ -162,3 +162,80 @@ func TestP7GRealBanCommandStillFailsPreflightWithoutTelegramRight(t *testing.T) 
 		t.Fatalf("denied /ban leaked work submits=%d mutations=%d", client.submits, mutation.calls)
 	}
 }
+
+
+func TestP7GMutationPortRejectsDirectExecutionWithoutTaskAdmission(t *testing.T) {
+	mutation := &p7gMutationExecutorStub{}
+	router := command.NewRouter(zap.NewNop())
+	router.SetGroupMutationExecutor(mutation)
+
+	coreRouter := core.NewRouter(".")
+	if err := coreRouter.Register(core.Command{
+		Name:       "directbanprobe",
+		Invocation: core.InvocationPolicy{Assistant: core.InvocationAnyone},
+		Surfaces:   execution.SurfaceAssistant,
+		GroupOnly:  true,
+		Handler: func(c *core.Context) error {
+			return c.Ban(&tg.InputPeerUser{UserID: 99, AccessHash: 999}, 0)
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	router.SetCoreRouter(coreRouter)
+
+	err := router.DispatchMessageContext(
+		context.Background(),
+		42,
+		&tg.InputPeerChannel{ChannelID: 55, AccessHash: 8},
+		"/directbanprobe",
+		command.MessageContext{Chat: core.Chat{ID: 55, Type: "supergroup"}, MessageID: 102},
+		&fakeInteraction{},
+	)
+	if !errors.Is(err, command.ErrGroupMutationNotAdmitted) {
+		t.Fatalf("direct mutation error=%v, want ErrGroupMutationNotAdmitted", err)
+	}
+	if mutation.calls != 0 {
+		t.Fatalf("direct execution reached mutation executor %d times", mutation.calls)
+	}
+}
+
+func TestP7GMutationPortActivatesInsideSharedTaskEngine(t *testing.T) {
+	client := &p7cTaskClient{}
+	mutation := &p7gMutationExecutorStub{tasks: client}
+	router := command.NewRouter(zap.NewNop())
+	router.SetTasks(client)
+	router.SetGroupMutationExecutor(mutation)
+
+	coreRouter := core.NewRouter(".")
+	if err := coreRouter.Register(core.Command{
+		Name:       "taskbanprobe",
+		Invocation: core.InvocationPolicy{Assistant: core.InvocationAnyone},
+		Surfaces:   execution.SurfaceAssistant,
+		GroupOnly:  true,
+		Handler: func(c *core.Context) error {
+			return c.Ban(&tg.InputPeerUser{UserID: 99, AccessHash: 999}, 0)
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	router.SetCoreRouter(coreRouter)
+
+	err := router.DispatchMessageContext(
+		context.Background(),
+		42,
+		&tg.InputPeerChannel{ChannelID: 55, AccessHash: 8},
+		"/taskbanprobe",
+		command.MessageContext{Chat: core.Chat{ID: 55, Type: "supergroup"}, MessageID: 103},
+		&fakeInteraction{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.submits != 1 {
+		t.Fatalf("TaskEngine submissions=%d, want 1", client.submits)
+	}
+	if mutation.calls != 1 || !mutation.calledAfterSubmit {
+		t.Fatalf("mutation calls=%d after-submit=%v, want 1/true",
+			mutation.calls, mutation.calledAfterSubmit)
+	}
+}
