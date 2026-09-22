@@ -15,6 +15,7 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/command"
 	assistantdeeplink "github.com/inipew/goultroid/internal/assistant/deeplink"
+	assistantgroupauth "github.com/inipew/goultroid/internal/assistant/groupauth"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/assistant/peer"
 	assistentrpc "github.com/inipew/goultroid/internal/assistant/rpc"
@@ -176,6 +177,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	tdClient := telegram.NewClient(c.appID, c.appHash, telegram.Options{UpdateHandler: updateMgr})
 	managedAPI := &managedAPI{raw: tdClient.API(), executor: c.rpcExecutor}
 	c.resolver.SetEntityFetcher(peer.NewTelegramEntityFetcher(managedAPI))
+	c.cmdRouter.SetGroupRoleResolver(assistantgroupauth.NewTelegramRoleResolver(managedAPI, c.resolver))
 	c.interaction = interaction.NewClientInteraction(managedAPI, c.logger)
 	c.interaction.SetRPCExecutor(c.rpcExecutor)
 	c.interaction.SetMediaSender(message.NewSender(tdClient.API()), uploader.NewUploader(tdClient.API()))
