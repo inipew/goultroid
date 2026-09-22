@@ -72,10 +72,10 @@ func normalizedGroupStateCoordinate(namespace, key string) (string, string, erro
 	namespace = strings.ToLower(strings.TrimSpace(namespace))
 	key = strings.ToLower(strings.TrimSpace(key))
 	if namespace == "" || len(namespace) > MaxGroupStateNamespaceBytes {
-		return "", "", fmt.Errorf("%w: invalid group-state namespace", ErrInvalidArgument)
+		return "", "", fmt.Errorf("%w: invalid group-state namespace", ErrInvalidArgs)
 	}
 	if key == "" || len(key) > MaxGroupStateKeyBytes {
-		return "", "", fmt.Errorf("%w: invalid group-state key", ErrInvalidArgument)
+		return "", "", fmt.Errorf("%w: invalid group-state key", ErrInvalidArgs)
 	}
 	return namespace, key, nil
 }
@@ -89,7 +89,7 @@ func (c *Context) groupStateKey(namespace, key string) (GroupStateKey, error) {
 		return GroupStateKey{}, err
 	}
 	if c.Chat.ID <= 0 {
-		return GroupStateKey{}, fmt.Errorf("%w: invalid group chat id", ErrInvalidArgument)
+		return GroupStateKey{}, fmt.Errorf("%w: invalid group chat id", ErrInvalidArgs)
 	}
 	return GroupStateKey{ChatID: c.Chat.ID, Namespace: namespace, Key: key}, nil
 }
@@ -144,10 +144,10 @@ func (c *Context) CompareAndSwapGroupState(
 		return GroupStateRecord{}, err
 	}
 	if len(value) > MaxGroupStateValueBytes {
-		return GroupStateRecord{}, fmt.Errorf("%w: group-state value exceeds %d bytes", ErrInvalidArgument, MaxGroupStateValueBytes)
+		return GroupStateRecord{}, fmt.Errorf("%w: group-state value exceeds %d bytes", ErrInvalidArgs, MaxGroupStateValueBytes)
 	}
 	if ttl < 0 {
-		return GroupStateRecord{}, fmt.Errorf("%w: negative group-state ttl", ErrInvalidArgument)
+		return GroupStateRecord{}, fmt.Errorf("%w: negative group-state ttl", ErrInvalidArgs)
 	}
 	if c.groupStateStore == nil {
 		return GroupStateRecord{}, fmt.Errorf("%w: group state store is not configured", ErrUnavailable)
@@ -184,7 +184,7 @@ func (c *Context) DeleteGroupState(
 		return err
 	}
 	if expectedRevision == 0 {
-		return fmt.Errorf("%w: delete requires a non-zero revision", ErrInvalidArgument)
+		return fmt.Errorf("%w: delete requires a non-zero revision", ErrInvalidArgs)
 	}
 	if c.groupStateStore == nil {
 		return fmt.Errorf("%w: group state store is not configured", ErrUnavailable)
