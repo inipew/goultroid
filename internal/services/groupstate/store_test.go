@@ -592,3 +592,46 @@ func TestSQLiteStoreConcurrentCreatesRespectCapacity(t *testing.T) {
 		t.Fatalf("final count=%d err=%v, want 1 nil", count, err)
 	}
 }
+
+
+func TestSQLiteStoreListNamespaceIsBoundedAndScoped(t *testing.T) {
+	store, _ := newTestStore(t, Limits{MaxEntries: 8, CleanupBatch: 2})
+
+	for _, item := range []struct {
+		chatID    int64
+		namespace string
+		key       string
+	}{
+		{chatID: 10, namespace: "assistant_group_events", key: "welcome"},
+		{chatID: 20, namespace: "assistant_group_events", key: "goodbye"},
+		{chatID: 30, namespace: "other_feature", key: "welcome"},
+	} {
+		ctx := stateContext(store, item.chatID, 7)
+		if _, err := ctx.CompareAndSwapGroupState(
+			storeAdminRequirement,
+			item.namespace,
+			item.key,
+			0,
+			[]byte("x"),
+			0,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	one, err := store.ListNamespace(context.Background(), "assistant_group_events", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(one) != 1 || one[0].Namespace != "assistant_group_events" {
+		t.Fatalf("bounded namespace rows=%+v", one)
+	}
+
+	all, err := store.ListNamespace(context.Background(), "assistant_group_events", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 || all[0].ChatID != 10 || all[1].ChatID != 20 {
+		t.Fatalf("scoped namespace rows=%+v", all)
+	}
+}
