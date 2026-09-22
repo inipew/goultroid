@@ -162,6 +162,9 @@ func (r *Router) Issue(ctx context.Context, request IssueRequest) (Token, error)
 	if r == nil || r.repo == nil {
 		return Token{}, ErrProviderUnavailable
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	request.Kind = normalizeKind(request.Kind)
 	if !validKind(request.Kind) {
 		return Token{}, ErrInvalidKind
@@ -224,6 +227,9 @@ func (r *Router) Issue(ctx context.Context, request IssueRequest) (Token, error)
 func (r *Router) Prepare(ctx context.Context, rawToken string, actorID int64) (Prepared, error) {
 	if r == nil || r.repo == nil {
 		return Prepared{}, ErrProviderUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	id, err := normalizeToken(rawToken)
 	if err != nil {
