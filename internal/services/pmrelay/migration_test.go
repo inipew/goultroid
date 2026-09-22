@@ -21,7 +21,10 @@ func TestMigrationCreatesRelaySchemaIdempotently(t *testing.T) {
 		}
 	}
 	if err := (migration001{}).VerifySchema(ctx, db); err != nil {
-		t.Fatalf("VerifySchema() error = %v", err)
+		t.Fatalf("migration001 VerifySchema() error = %v", err)
+	}
+	if err := (migration002{}).VerifySchema(ctx, db); err != nil {
+		t.Fatalf("migration002 VerifySchema() error = %v", err)
 	}
 
 	var count int
@@ -31,6 +34,14 @@ func TestMigrationCreatesRelaySchemaIdempotently(t *testing.T) {
 		t.Fatal(err)
 	}
 	if count != 1 {
-		t.Fatalf("pmrelay migration records = %d, want 1", count)
+		t.Fatalf("pmrelay.001 migration records = %d, want 1", count)
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*) FROM feature_schema_migrations WHERE id = 'pmrelay.002'
+	`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("pmrelay.002 migration records = %d, want 1", count)
 	}
 }
