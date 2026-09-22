@@ -107,6 +107,77 @@ func NewBindingService(bindings SurfaceBindingRepository, responses *Registry) *
 	return &BindingService{bindings: bindings, responses: responses}
 }
 
+func (s *BindingService) Create(ctx context.Context, binding SurfaceBinding) (SurfaceBinding, error) {
+	if s == nil || s.bindings == nil || s.responses == nil {
+		return SurfaceBinding{}, ErrResolverUnavailable
+	}
+	normalized, err := binding.Normalize()
+	if err != nil {
+		return SurfaceBinding{}, err
+	}
+	if _, err := s.responses.Resolve(ctx, normalized.Reference); err != nil {
+		return SurfaceBinding{}, err
+	}
+	return s.bindings.CreateBinding(ctx, normalized)
+}
+
+func (s *BindingService) Get(ctx context.Context, surface Surface, alias string) (*SurfaceBinding, error) {
+	if s == nil || s.bindings == nil {
+		return nil, ErrResolverUnavailable
+	}
+	return s.bindings.GetBinding(ctx, surface, alias)
+}
+
+func (s *BindingService) List(ctx context.Context, surface Surface, includeDisabled bool, limit int) ([]SurfaceBinding, error) {
+	if s == nil || s.bindings == nil {
+		return nil, ErrResolverUnavailable
+	}
+	return s.bindings.ListBindings(ctx, surface, includeDisabled, limit)
+}
+
+func (s *BindingService) Update(ctx context.Context, binding SurfaceBinding, expectedRevision uint64) (SurfaceBinding, error) {
+	if s == nil || s.bindings == nil || s.responses == nil {
+		return SurfaceBinding{}, ErrResolverUnavailable
+	}
+	normalized, err := binding.Normalize()
+	if err != nil {
+		return SurfaceBinding{}, err
+	}
+	if _, err := s.responses.Resolve(ctx, normalized.Reference); err != nil {
+		return SurfaceBinding{}, err
+	}
+	return s.bindings.UpdateBinding(ctx, normalized, expectedRevision)
+}
+
+func (s *BindingService) SetEnabled(ctx context.Context, surface Surface, alias string, enabled bool, expectedRevision uint64) (SurfaceBinding, error) {
+	if s == nil || s.bindings == nil {
+		return SurfaceBinding{}, ErrResolverUnavailable
+	}
+	if enabled {
+		if s.responses == nil {
+			return SurfaceBinding{}, ErrResolverUnavailable
+		}
+		binding, err := s.bindings.GetBinding(ctx, surface, alias)
+		if err != nil {
+			return SurfaceBinding{}, err
+		}
+		if binding == nil {
+			return SurfaceBinding{}, ErrBindingNotFound
+		}
+		if _, err := s.responses.Resolve(ctx, binding.Reference); err != nil {
+			return SurfaceBinding{}, err
+		}
+	}
+	return s.bindings.SetBindingEnabled(ctx, surface, alias, enabled, expectedRevision)
+}
+
+func (s *BindingService) Delete(ctx context.Context, surface Surface, alias string, expectedRevision uint64) error {
+	if s == nil || s.bindings == nil {
+		return ErrResolverUnavailable
+	}
+	return s.bindings.DeleteBinding(ctx, surface, alias, expectedRevision)
+}
+
 func (s *BindingService) Resolve(ctx context.Context, surface Surface, alias string) (ResolvedBinding, error) {
 	if s == nil || s.bindings == nil || s.responses == nil {
 		return ResolvedBinding{}, ErrResolverUnavailable
