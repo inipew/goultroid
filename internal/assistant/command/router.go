@@ -238,6 +238,23 @@ func authorizeContextualGroup(
 	return requirement.Authorize(snapshot.Principal)
 }
 
+func sendContextualGroupFeedback(
+	ctx context.Context,
+	inter interaction.MessageInteraction,
+	peer tg.InputPeerClass,
+	err error,
+) {
+	if err == nil || inter == nil || peer == nil {
+		return
+	}
+	switch {
+	case errors.Is(err, core.ErrGroupAuthorizationDenied),
+		errors.Is(err, core.ErrUnavailable),
+		errors.Is(err, core.ErrResourceLimit):
+		_, _ = inter.SendMessage(ctx, peer, core.UserMessage(err), nil)
+	}
+}
+
 func (r *Router) executeCanonicalDirect(cmd core.Command, coreCtx *core.Context, cmdName string) error {
 	handler := core.FilterMiddlewareForSource(cmd, core.ExecutionAssistant)(cmd.Handler)
 	start := time.Now()
@@ -630,11 +647,16 @@ func (r *Router) dispatch(
 					zap.String("required_role", cmd.GroupAuthorization.Level.String()),
 					zap.Error(authErr),
 				)
+				sendContextualGroupFeedback(ctx, inter, peer, authErr)
 				return authErr
 			}
 		}
 
-		return r.executeCanonicalTask(ctx, senderID, cmd, coreCtx, cmdNameClean)
+		execErr := r.executeCanonicalTask(ctx, senderID, cmd, coreCtx, cmdNameClean)
+		if cmd.GroupAuthorization.Required() && execErr != nil {
+			sendContextualGroupFeedback(ctx, inter, peer, execErr)
+		}
+		return execErr
 	}
 
 	// Presentation-only fallbacks such as /start stay reserved ahead of
