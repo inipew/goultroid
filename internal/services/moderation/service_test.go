@@ -181,7 +181,6 @@ func TestModerationService_ManualActions(t *testing.T) {
 	}
 }
 
-
 func TestP7IWarnWithServiceUsesCallerTransport(t *testing.T) {
 	defaultSvc := &recordingModService{}
 	assistantSvc := &recordingModService{}
@@ -210,7 +209,6 @@ func TestP7IWarnWithServiceUsesCallerTransport(t *testing.T) {
 	}
 }
 
-
 func TestP7IFailedThresholdRetryDoesNotGrowWarnings(t *testing.T) {
 	mockSvc := &recordingModService{muteErr: errors.New("telegram unavailable")}
 	service := newTestService(t, mockSvc)
@@ -229,7 +227,6 @@ func TestP7IFailedThresholdRetryDoesNotGrowWarnings(t *testing.T) {
 		t.Fatalf("failed enforcement warning count=%d, want bounded threshold 3", count)
 	}
 }
-
 
 func TestP7IWarningBoundsRejectBeforePersistence(t *testing.T) {
 	repo := &memoryWarningRepository{}
