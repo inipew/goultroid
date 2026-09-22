@@ -123,6 +123,10 @@ Cached role may be used only as preflight optimization. Fresh role validation ha
 
 ### Bot rights / actor rights / hierarchy at mutation time
 
+Executable acceptance now includes the exact post-admission bot-right downgrade race:
+
+- `TestP7LBotRightsChangedAfterAdmissionPreventPhysicalMutation`
+
 Existing P7-G acceptance:
 
 - `TestP7GSupergroupBanRevalidatesTargetBotActorBeforeRPC`
@@ -176,6 +180,28 @@ Existing acceptance:
 `TestTelegramRoleResolverFreshBypassesCachedRole`
 
 Fresh resolution bypasses stale cached role observations and refreshes the bounded cache.
+
+## Media-filter delayed persistence
+
+P7-L re-audit found and closed a cross-task authorization window in P7-I media filters.
+
+The original sequence was:
+
+```text
+fresh admin authorization in command task
+    ↓
+media-capture continuation queued
+    ↓
+actor can lose admin role
+    ↓
+captured response persisted
+```
+
+The continuation now carries a lightweight fresh-auth guard captured from the admitted Assistant group context. Immediately before durable `SaveFilter` replacement it calls the shared `GroupRoleResolver.ResolveGroupRoleFresh` and re-applies the Administrator requirement. Verification failure or role downgrade aborts the write; captured media is reclaimed.
+
+Regression:
+
+`TestP7LMediaFilterContinuationRevalidatesAuthorityBeforePersistence`
 
 ## Topic/thread isolation
 
@@ -289,6 +315,22 @@ TaskEngine:
 - `TestDurabilityLaneWorkersAreLazyAndRetire`
 
 P7 group services themselves remain free of per-chat/topic workers and periodic polling as fenced by P7-K architecture tests.
+
+## High-cardinality process footprint
+
+P7-L now contains a process-level cold-path stress acceptance:
+
+`TestP7LHighCardinalityColdTrafficDoesNotAmplifyIdleProcessState`
+
+It sends 8,192 unique irrelevant group IDs through the actual Assistant dispatcher, forces GC/OS-memory release before and after, and records:
+
+- goroutine count;
+- Go heap allocation;
+- Linux RSS when `/proc/self/statm` is available.
+
+The test also asserts the traffic never escapes into entity cache, peer resolver, TaskEngine, or group-rule execution. Goroutine/heap/RSS deltas use deliberately broad regression bounds so the test catches cardinality-driven retention without encoding machine-specific performance expectations.
+
+The focused acceptance harness runs with `-v`, so these observations are preserved in CI logs.
 
 ## FloodWait / RPC acceptance
 
