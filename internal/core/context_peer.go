@@ -118,6 +118,7 @@ func (p *PeerFacade) ResolveTargetUser() (tg.InputPeerClass, int64, error) {
 			ref := strconv.FormatInt(reply.SenderID, 10)
 			return resolve(ref, true)
 		}
+		return nil, 0, errors.New("replied message does not identify a user target")
 	}
 
 	// Preserve bare-username compatibility when there is no reply context.
