@@ -526,7 +526,15 @@ func (f *Feature) deleteSelected(ctx *orchestration.Context) error {
 		ctx.Context(), s.Surface, s.Selected, s.Revision, s.Incarnation,
 	); err != nil {
 		if errors.Is(err, savedresponse.ErrBindingConflict) {
-			return ctx.Answer("Binding berubah; buka ulang detail sebelum menghapus.", true)
+			current, getErr := f.bindings.Get(ctx.Context(), s.Surface, s.Selected)
+			if getErr != nil {
+				return getErr
+			}
+			if current == nil {
+				return f.renderList(ctx, s)
+			}
+			_ = ctx.Answer("Binding berubah; detail direfresh.", true)
+			return f.renderDetail(ctx, s, *current)
 		}
 		if errors.Is(err, savedresponse.ErrBindingNotFound) {
 			return f.renderList(ctx, s)
@@ -642,7 +650,8 @@ func (f *Feature) applyEdit(ctx *orchestration.Context, s state, input string) e
 		return f.renderList(ctx, s)
 	}
 	if current.Revision != s.Revision || current.Incarnation != s.Incarnation {
-		return ctx.Answer("Binding berubah sejak edit dimulai; buka ulang detail.", true)
+		s.Wizard = ""
+		return f.renderDetail(ctx, s, *current)
 	}
 	updated, err := f.bindings.Update(
 		ctx.Context(), current.Surface, current.Alias, ref, current.Enabled,
@@ -653,7 +662,15 @@ func (f *Feature) applyEdit(ctx *orchestration.Context, s state, input string) e
 		case errors.Is(err, savedresponse.ErrBindingReserved):
 			return f.rearm(ctx, s, "alias sekarang reserved oleh handler canonical")
 		case errors.Is(err, savedresponse.ErrBindingConflict):
-			return ctx.Answer("Binding berubah sejak edit dimulai; buka ulang detail.", true)
+			current, getErr := f.bindings.Get(ctx.Context(), s.Surface, s.Selected)
+			if getErr != nil {
+				return getErr
+			}
+			if current == nil {
+				return f.renderList(ctx, s)
+			}
+			s.Wizard = ""
+			return f.renderDetail(ctx, s, *current)
 		default:
 			return f.rearm(ctx, s, err.Error())
 		}
