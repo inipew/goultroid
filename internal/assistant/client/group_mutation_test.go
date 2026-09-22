@@ -632,7 +632,6 @@ func TestP7GTelegramAdminInvalidMapsToProtectedTarget(t *testing.T) {
 	}
 }
 
-
 func TestP7GPromoteDelegatesOnlyActorBotIntersection(t *testing.T) {
 	api := &mutationAPIStub{
 		botParticipant: mutationBotParticipant(tg.ChatAdminRights{
