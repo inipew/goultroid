@@ -28,7 +28,9 @@ const (
 	HardMaxAudience   = 50_000
 	HardMaxBlocked    = 50_000
 
-	MaxBlockReasonBytes = 512
+	MaxBlockReasonBytes       = 512
+	MaxForceSubUsernameBytes  = 32
+	MaxForceSubJoinURLBytes   = 512
 )
 
 var (
@@ -50,7 +52,11 @@ var (
 	ErrVisitorBlocked    = errors.New("pmrelay: visitor blocked")
 	ErrInvalidBlock      = errors.New("pmrelay: invalid visitor block")
 	ErrBlockNotFound     = errors.New("pmrelay: visitor block not found")
-	ErrBlockCapacity     = errors.New("pmrelay: visitor block capacity exhausted")
+	ErrBlockCapacity          = errors.New("pmrelay: visitor block capacity exhausted")
+	ErrInvalidForceSubConfig  = errors.New("pmrelay: invalid force-sub config")
+	ErrForceSubConfigConflict = errors.New("pmrelay: force-sub config conflict")
+	ErrForceSubRequired       = errors.New("pmrelay: force-sub membership required")
+	ErrForceSubVerify         = errors.New("pmrelay: force-sub verification unavailable")
 )
 
 type Limits struct {
@@ -256,6 +262,63 @@ func (b VisitorBlock) Normalize() (VisitorBlock, error) {
 	return b, nil
 }
 
+
+
+type ForceSubFailureMode string
+
+const (
+	ForceSubFailClosed ForceSubFailureMode = "closed"
+	ForceSubFailOpen   ForceSubFailureMode = "open"
+)
+
+func (m ForceSubFailureMode) valid() bool {
+	return m == ForceSubFailClosed || m == ForceSubFailOpen
+}
+
+type ForceSubConfig struct {
+	Enabled         bool
+	ChannelUsername string
+	JoinURL         string
+	FailureMode     ForceSubFailureMode
+	Revision        int64
+	UpdatedAt       time.Time
+}
+
+func (c ForceSubConfig) Normalize() (ForceSubConfig, error) {
+	c.ChannelUsername = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(c.ChannelUsername), "@"))
+	c.JoinURL = strings.TrimSpace(c.JoinURL)
+	c.UpdatedAt = c.UpdatedAt.UTC()
+	if c.FailureMode == "" {
+		c.FailureMode = ForceSubFailClosed
+	}
+	if !c.FailureMode.valid() || c.Revision <= 0 || c.UpdatedAt.IsZero() {
+		return ForceSubConfig{}, ErrInvalidForceSubConfig
+	}
+	if len(c.ChannelUsername) > MaxForceSubUsernameBytes || len(c.JoinURL) > MaxForceSubJoinURLBytes {
+		return ForceSubConfig{}, ErrInvalidForceSubConfig
+	}
+	if c.Enabled {
+		if len(c.ChannelUsername) < 5 {
+			return ForceSubConfig{}, ErrInvalidForceSubConfig
+		}
+		for _, r := range c.ChannelUsername {
+			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+				continue
+			}
+			return ForceSubConfig{}, ErrInvalidForceSubConfig
+		}
+		if c.JoinURL == "" {
+			c.JoinURL = "https://t.me/" + c.ChannelUsername
+		}
+		if !strings.HasPrefix(c.JoinURL, "https://t.me/") {
+			return ForceSubConfig{}, ErrInvalidForceSubConfig
+		}
+	} else {
+		c.ChannelUsername = ""
+		c.JoinURL = ""
+	}
+	return c, nil
+}
 
 type AudienceSnapshot struct {
 	MaxSequence int64
