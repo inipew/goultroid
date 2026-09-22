@@ -212,7 +212,6 @@ func TestP7HGoodbyeMapsDeleteUser(t *testing.T) {
 	}
 }
 
-
 func TestP7HInterestedSupergroupRecoversPeerWithoutEntitySnapshot(t *testing.T) {
 	ingress := &groupServiceIngressStub{interested: true}
 	resolver := &groupServiceResolverStub{
