@@ -121,6 +121,28 @@ func TestRelayPrecedenceOwnerMappedReplyOutranksAwaitInput(t *testing.T) {
 	}
 }
 
+func TestRelayPrecedenceOwnerMappedMediaReplyOutranksAwaitInput(t *testing.T) {
+	input := &precedenceTextIngress{handled: true}
+	relay := &precedenceRelayIngress{ownerHandled: true}
+	dispatchPrecedenceMessage(t, basePrecedenceDeps(input, relay), &tg.Message{
+		ID:      102,
+		Message: "media caption",
+		FromID:  &tg.PeerUser{UserID: 7},
+		PeerID:  &tg.PeerUser{UserID: 7},
+		ReplyTo: &tg.MessageReplyHeader{ReplyToMsgID: 100},
+		Media:   &tg.MessageMediaPhoto{},
+	})
+	if relay.ownerCalls != 1 {
+		t.Fatalf("owner relay calls=%d, want 1", relay.ownerCalls)
+	}
+	if input.calls != 0 {
+		t.Fatalf("AwaitInput calls=%d after mapped owner media reply, want 0", input.calls)
+	}
+	if relay.visitorCalls != 0 {
+		t.Fatalf("visitor fallback calls=%d, want 0", relay.visitorCalls)
+	}
+}
+
 func TestRelayPrecedenceAwaitInputOutranksVisitorFallback(t *testing.T) {
 	input := &precedenceTextIngress{handled: true}
 	relay := &precedenceRelayIngress{}
