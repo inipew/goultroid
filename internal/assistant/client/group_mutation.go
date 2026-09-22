@@ -244,10 +244,11 @@ func validateTargetHierarchy(
 	return nil
 }
 
-func mutationNoop(action core.GroupMutationAction, target core.GroupActorPrincipal) bool {
+func mutationNoop(action core.GroupMutationAction, kind core.ChatKind, target core.GroupActorPrincipal) bool {
 	switch action {
 	case core.GroupMutationBan:
-		return target.Role == core.GroupActorRoleBanned
+		return target.Role == core.GroupActorRoleBanned ||
+			(kind == core.ChatKindGroup && target.Role == core.GroupActorRoleLeft)
 	case core.GroupMutationUnban:
 		return target.Role == core.GroupActorRoleLeft || target.Role == core.GroupActorRoleMember
 	case core.GroupMutationKick:
@@ -396,7 +397,7 @@ func (m *managedGroupMutation) targetedState(
 	if err != nil {
 		return nil, core.GroupActorPrincipal{}, false, err
 	}
-	if mutationNoop(action, target) {
+	if mutationNoop(action, meta.Kind, target) {
 		return targetPeer, target, true, nil
 	}
 	return targetPeer, target, false, nil
