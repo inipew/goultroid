@@ -13,11 +13,13 @@ import (
 	"github.com/inipew/goultroid/internal/assistant"
 	assistantdeeplink "github.com/inipew/goultroid/internal/assistant/deeplink"
 	assistantinteraction "github.com/inipew/goultroid/internal/assistant/interaction"
+	savedresponseadmin "github.com/inipew/goultroid/internal/assistant/savedresponseadmin"
 	savedresponsecallback "github.com/inipew/goultroid/internal/assistant/savedresponsecallback"
 	assistantshell "github.com/inipew/goultroid/internal/assistant/shell"
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/idempotency"
 	"github.com/inipew/goultroid/internal/jobs"
 	"github.com/inipew/goultroid/internal/module"
@@ -62,6 +64,7 @@ type App struct {
 	savedResponseDeepLinks    *assistantdeeplink.SavedResponseProvider
 	savedDeepLinkRegistration *assistantdeeplink.Registration
 	savedResponseCallbacks    *savedresponsecallback.Feature
+	savedResponseAdmin        *savedresponseadmin.Feature
 	media                     *mediaSvc.Service
 	downloadRegistry      *download.Registry
 	processRunner         *processSvc.OSRunner
@@ -190,6 +193,28 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		savedresponse.NewSQLiteSurfaceBindingRepository(coreDeps.db),
 		pluginManager.SavedResponseRegistry(),
 	)
+	savedResponseBindings.SetAliasGuard(func(surface savedresponse.Surface, alias string) error {
+		switch surface {
+		case savedresponse.SurfaceAssistantCommand:
+			if alias == "start" {
+				return fmt.Errorf("%w: /start is owned by the Assistant shell", savedresponse.ErrBindingReserved)
+			}
+			if _, ok := coreDeps.router.FindForSurface(alias, execution.SourceAssistant); ok {
+				return fmt.Errorf("%w: assistant command %q", savedresponse.ErrBindingReserved, alias)
+			}
+		case savedresponse.SurfaceInline:
+			if registry := coreDeps.inlineEngine.Registry(); registry != nil {
+				if _, ok := registry.ResolveOwnedExplicit(alias); ok {
+					return fmt.Errorf("%w: inline pattern %q", savedresponse.ErrBindingReserved, alias)
+				}
+			}
+		}
+		return nil
+	})
+	savedResponseAdmin := savedresponseadmin.New(savedResponseBindings)
+	if err := pluginManager.RegisterWithContext(context.Background(), savedResponseAdmin); err != nil {
+		return nil, fmt.Errorf("register saved-response admin feature: %w", err)
+	}
 	savedResponseService := savedresponse.NewService(domServices.storage, coreDeps.db)
 	if coreDeps.fsManager != nil {
 		savedResponseService.SetFiles(coreDeps.fsManager.ForOwner("assistant-savedresponse"))
@@ -414,6 +439,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		savedResponseDeepLinks:    savedResponseDeepLinks,
 		savedDeepLinkRegistration: savedDeepLinkRegistration,
 		savedResponseCallbacks:    savedResponseCallbacks,
+		savedResponseAdmin:        savedResponseAdmin,
 		media:                      domServices.mediaService,
 		downloadRegistry:      domServices.downloadRegistry,
 		processRunner:         domServices.processRunner,
