@@ -23,7 +23,7 @@ func TestAssistantCommandMessageContextClassifiesSupergroupAndTopic(t *testing.T
 		},
 	}
 
-	got := assistantCommandMessageContext(msg, entities)
+	got := assistantCommandMessageContext(msg, entities, 0, "")
 	if got.Chat.ID != 99 || got.Chat.Type != string(core.ChatKindSupergroup) || got.Chat.AccessHash != 123 {
 		t.Fatalf("unexpected chat context: %+v", got.Chat)
 	}
@@ -34,7 +34,7 @@ func TestAssistantCommandMessageContextClassifiesSupergroupAndTopic(t *testing.T
 
 func TestAssistantCommandMessageContextFailsClosedWithoutChannelMetadata(t *testing.T) {
 	msg := &tg.Message{ID: 11, PeerID: &tg.PeerChannel{ChannelID: 88}}
-	got := assistantCommandMessageContext(msg, tg.Entities{})
+	got := assistantCommandMessageContext(msg, tg.Entities{}, 0, "")
 	if got.Chat.Type != string(core.ChatKindChannel) {
 		t.Fatalf("ambiguous channel peer must remain channel, got %+v", got.Chat)
 	}
@@ -47,7 +47,7 @@ func TestAssistantCommandMessageContextClassifiesBasicGroup(t *testing.T) {
 			55: {ID: 55, Title: "Basic Group"},
 		},
 	}
-	got := assistantCommandMessageContext(msg, entities)
+	got := assistantCommandMessageContext(msg, entities, 0, "")
 	if got.Chat.ID != 55 || got.Chat.Type != string(core.ChatKindGroup) || got.Chat.Title != "Basic Group" {
 		t.Fatalf("unexpected basic group context: %+v", got.Chat)
 	}
