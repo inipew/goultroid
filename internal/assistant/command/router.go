@@ -312,8 +312,10 @@ func (r *Router) executeCanonicalTask(ctx context.Context, senderID int64, cmd c
 	taskID := tasks.TaskID(fmt.Sprintf("assistant:%d:%d", senderID, sequence))
 	correlationID := coreCtx.CorrelationID
 	orderingKey := correlationID
+	quotaOwner := tasks.OwnerID(fmt.Sprintf("assistant:user:%d", senderID))
 	if coreCtx.IsManagerGroup() && coreCtx.Chat != nil && coreCtx.Chat.ID > 0 {
 		orderingKey = core.GroupOrderingKey(coreCtx.Chat.ID, coreCtx.TopicID())
+		quotaOwner = tasks.OwnerID(fmt.Sprintf("telegram:chat:%d", coreCtx.Chat.ID))
 	}
 	handler := core.FilterMiddlewareForSource(cmd, core.ExecutionAssistant)(cmd.Handler)
 	var freshAuthorizationError chan error
@@ -324,7 +326,7 @@ func (r *Router) executeCanonicalTask(ctx context.Context, senderID int64, cmd c
 	ticket, err := r.tasks.Submit(ctx, tasks.WorkSpec{
 		ID:               taskID,
 		Scope:            cmd.Scope,
-		QuotaOwner:       tasks.OwnerID(fmt.Sprintf("assistant:user:%d", senderID)),
+		QuotaOwner:       quotaOwner,
 		Pool:             "interactive",
 		Class:            tasks.PriorityInteractive,
 		OrderingKey:      orderingKey,
@@ -419,8 +421,10 @@ func (r *Router) executeSavedResponseBinding(
 	}
 
 	orderingKey := fmt.Sprintf("assistant:savedresponse:%d", chatID)
+	quotaOwner := tasks.OwnerID(fmt.Sprintf("assistant:user:%d", senderID))
 	if (&messageContext.Chat).IsManagerGroup() {
 		orderingKey = core.GroupOrderingKey(chatID, messageContext.TopicID)
+		quotaOwner = tasks.OwnerID(fmt.Sprintf("telegram:chat:%d", chatID))
 	}
 	sendContext := core.MessageSendContext{ReplyToID: messageContext.MessageID, TopicID: messageContext.TopicID}
 
@@ -429,7 +433,7 @@ func (r *Router) executeSavedResponseBinding(
 	ticket, err := r.tasks.Submit(ctx, tasks.WorkSpec{
 		ID:               taskID,
 		Scope:            prepared.Scope(),
-		QuotaOwner:       tasks.OwnerID(fmt.Sprintf("assistant:user:%d", senderID)),
+		QuotaOwner:       quotaOwner,
 		Pool:             pool,
 		Class:            tasks.PriorityInteractive,
 		OrderingKey:      orderingKey,
