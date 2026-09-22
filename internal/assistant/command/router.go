@@ -180,6 +180,21 @@ func taskResultError(res tasks.TaskResult) error {
 	return fmt.Errorf("assistant/command: task %s finished with outcome %s (%s)", res.TaskID, res.Outcome, res.Cause)
 }
 
+func authorizeContextualGroup(
+	coreCtx *core.Context,
+	requirement core.GroupAuthorizationRequirement,
+	fresh bool,
+) error {
+	if !requirement.Required() {
+		return nil
+	}
+	snapshot, err := coreCtx.ResolveGroupActor(fresh)
+	if err != nil {
+		return err
+	}
+	return requirement.Authorize(snapshot.Principal)
+}
+
 func (r *Router) executeCanonicalDirect(cmd core.Command, coreCtx *core.Context, cmdName string) error {
 	handler := core.FilterMiddlewareForSource(cmd, core.ExecutionAssistant)(cmd.Handler)
 	start := time.Now()
@@ -191,10 +206,11 @@ func (r *Router) executeCanonicalDirect(cmd core.Command, coreCtx *core.Context,
 }
 
 func (r *Router) executeCanonicalTask(ctx context.Context, senderID int64, cmd core.Command, coreCtx *core.Context, cmdName string) error {
+	requiresGroupAuthorization := cmd.GroupAuthorization.Required()
 	if r.tasks == nil {
 		// Preserve lightweight embedding/test compatibility, but never let a
-		// resource-bearing command bypass TaskEngine reservations.
-		if len(cmd.Resources) > 0 {
+		// resource-bearing or contextual-authorized command bypass TaskEngine.
+		if len(cmd.Resources) > 0 || requiresGroupAuthorization {
 			return ErrTasksNotConfigured
 		}
 		return r.executeCanonicalDirect(cmd, coreCtx, cmdName)
@@ -204,6 +220,10 @@ func (r *Router) executeCanonicalTask(ctx context.Context, senderID int64, cmd c
 	taskID := tasks.TaskID(fmt.Sprintf("assistant:%d:%d", senderID, sequence))
 	correlationID := coreCtx.CorrelationID
 	handler := core.FilterMiddlewareForSource(cmd, core.ExecutionAssistant)(cmd.Handler)
+	var freshAuthorizationError chan error
+	if requiresGroupAuthorization {
+		freshAuthorizationError = make(chan error, 1)
+	}
 
 	ticket, err := r.tasks.Submit(ctx, tasks.WorkSpec{
 		ID:               taskID,
@@ -223,6 +243,15 @@ func (r *Router) executeCanonicalTask(ctx context.Context, senderID int64, cmd c
 			execCtx := *coreCtx
 			execCtx.Ctx = runCtx
 			start := time.Now()
+			if requiresGroupAuthorization {
+				if authErr := authorizeContextualGroup(&execCtx, cmd.GroupAuthorization, true); authErr != nil {
+					freshAuthorizationError <- authErr
+					if r.metrics != nil {
+						r.metrics.RecordCommand(cmdName, time.Since(start), authErr)
+					}
+					return authErr
+				}
+			}
 			err := handler(&execCtx)
 			if r.metrics != nil {
 				r.metrics.RecordCommand(cmdName, time.Since(start), err)
@@ -238,6 +267,13 @@ func (r *Router) executeCanonicalTask(ctx context.Context, senderID int64, cmd c
 	if waitErr != nil {
 		_, _ = r.tasks.Cancel(ticket.TaskID(), tasks.CauseTimeout)
 		return waitErr
+	}
+	if !res.IsSuccess() && freshAuthorizationError != nil {
+		select {
+		case authErr := <-freshAuthorizationError:
+			return authErr
+		default:
+		}
 	}
 	return taskResultError(res)
 }
@@ -543,6 +579,21 @@ func (r *Router) dispatch(
 			GroupRoles:     r.groupRoles,
 			Svc:            &assistantServicerAdapter{inter: inter},
 			DelayedActions: r.delayedActions,
+		}
+
+		if cmd.GroupAuthorization.Required() {
+			if r.tasks == nil {
+				return ErrTasksNotConfigured
+			}
+			if authErr := authorizeContextualGroup(coreCtx, cmd.GroupAuthorization, false); authErr != nil {
+				r.logger.Debug("assistant: contextual group authorization preflight denied",
+					zap.String("command", cmdNameClean),
+					zap.Int64("sender_id", senderID),
+					zap.String("required_role", cmd.GroupAuthorization.Level.String()),
+					zap.Error(authErr),
+				)
+				return authErr
+			}
 		}
 
 		return r.executeCanonicalTask(ctx, senderID, cmd, coreCtx, cmdNameClean)
