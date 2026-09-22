@@ -172,6 +172,11 @@ func (s *Service) bypassed(
 // per-chat rule matches. Role verification is fresh and fail-open for
 // moderation safety: inability to prove that a sender is not an administrator
 // suppresses automatic actions.
+func (s *Service) Handle(ctx context.Context, message *core.MessageEnvelope) error {
+	_, err := s.Evaluate(ctx, message)
+	return err
+}
+
 func (s *Service) Evaluate(
 	ctx context.Context,
 	message *core.MessageEnvelope,
