@@ -17,9 +17,11 @@ type mockTelegramAPI struct {
 	editReq       *tg.MessagesEditMessageRequest
 	deleteMsgsReq *tg.MessagesDeleteMessagesRequest
 	deleteChanReq *tg.ChannelsDeleteMessagesRequest
-	getMsgsIDs    []tg.InputMessageClass
-	getChanReq    *tg.ChannelsGetMessagesRequest
+	getMsgsIDs     []tg.InputMessageClass
+	getMsgsResult  tg.MessagesMessagesClass
+	getChanReq     *tg.ChannelsGetMessagesRequest
 	sendMsgReq     *tg.MessagesSendMessageRequest
+	sendMsgResult  tg.UpdatesClass
 	forwardMsgsReq *tg.MessagesForwardMessagesRequest
 	forwardResult  tg.UpdatesClass
 	editInlineReq  *tg.MessagesEditInlineBotMessageRequest
@@ -53,6 +55,9 @@ func (m *mockTelegramAPI) ChannelsDeleteMessages(ctx context.Context, req *tg.Ch
 
 func (m *mockTelegramAPI) MessagesGetMessages(ctx context.Context, id []tg.InputMessageClass) (tg.MessagesMessagesClass, error) {
 	m.getMsgsIDs = id
+	if m.getMsgsResult != nil {
+		return m.getMsgsResult, nil
+	}
 	return &tg.MessagesMessages{
 		Messages: []tg.MessageClass{
 			&tg.Message{ID: 10, Message: "test user msg"},
@@ -71,6 +76,9 @@ func (m *mockTelegramAPI) ChannelsGetMessages(ctx context.Context, req *tg.Chann
 
 func (m *mockTelegramAPI) MessagesSendMessage(ctx context.Context, req *tg.MessagesSendMessageRequest) (tg.UpdatesClass, error) {
 	m.sendMsgReq = req
+	if m.sendMsgResult != nil {
+		return m.sendMsgResult, nil
+	}
 	return &tg.UpdateShortSentMessage{ID: 100}, nil
 }
 
@@ -271,6 +279,79 @@ func TestParseHTML_SanitizeEntities(t *testing.T) {
 	}
 	if _, ok := ents[0].(*tg.MessageEntityPre); !ok {
 		t.Fatalf("expected MessageEntityPre, got %T", ents[0])
+	}
+}
+
+func TestClientInteraction_CopyTextMessageWithRandomIDSendsBotAuthoredCopy(t *testing.T) {
+	entities := []tg.MessageEntityClass{
+		&tg.MessageEntityBold{Offset: 0, Length: 5},
+	}
+	mockAPI := &mockTelegramAPI{
+		getMsgsResult: &tg.MessagesMessages{
+			Messages: []tg.MessageClass{
+				&tg.Message{ID: 77, Message: "hello visitor", Entities: entities},
+			},
+		},
+		sendMsgResult: &tg.UpdateShortSentMessage{ID: 303},
+	}
+	ci := interaction.NewClientInteraction(mockAPI, zap.NewNop())
+	sourcePeer := &tg.InputPeerUser{UserID: 7, AccessHash: 70}
+	targetPeer := &tg.InputPeerUser{UserID: 42, AccessHash: 420}
+
+	msg, err := ci.CopyTextMessageWithRandomID(
+		context.Background(),
+		interaction.NewMessageTarget(sourcePeer, 77, 7, 0),
+		targetPeer,
+		999,
+	)
+	if err != nil {
+		t.Fatalf("CopyTextMessageWithRandomID() error = %v", err)
+	}
+	if msg == nil || msg.ID != 303 {
+		t.Fatalf("copied message = %+v", msg)
+	}
+	if mockAPI.forwardMsgsReq != nil {
+		t.Fatalf("owner reply leaked through forwardMessages: %+v", mockAPI.forwardMsgsReq)
+	}
+	req := mockAPI.sendMsgReq
+	if req == nil || req.Peer != targetPeer || req.Message != "hello visitor" || req.RandomID != 999 {
+		t.Fatalf("durable send request = %+v", req)
+	}
+	if len(req.Entities) != 1 {
+		t.Fatalf("copied entities=%+v, want one entity", req.Entities)
+	}
+	if len(mockAPI.getMsgsIDs) != 1 {
+		t.Fatalf("source lookup ids=%+v", mockAPI.getMsgsIDs)
+	}
+	if id, ok := mockAPI.getMsgsIDs[0].(*tg.InputMessageID); !ok || id.ID != 77 {
+		t.Fatalf("source lookup=%+v", mockAPI.getMsgsIDs)
+	}
+}
+
+func TestClientInteraction_CopyTextMessageRejectsMedia(t *testing.T) {
+	mockAPI := &mockTelegramAPI{
+		getMsgsResult: &tg.MessagesMessages{
+			Messages: []tg.MessageClass{
+				&tg.Message{
+					ID:      77,
+					Message: "caption",
+					Media:   &tg.MessageMediaPhoto{},
+				},
+			},
+		},
+	}
+	ci := interaction.NewClientInteraction(mockAPI, zap.NewNop())
+	_, err := ci.CopyTextMessageWithRandomID(
+		context.Background(),
+		interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 7, AccessHash: 70}, 77, 7, 0),
+		&tg.InputPeerUser{UserID: 42, AccessHash: 420},
+		999,
+	)
+	if !errors.Is(err, core.ErrUnsupported) {
+		t.Fatalf("CopyTextMessageWithRandomID(media) error=%v, want %v", err, core.ErrUnsupported)
+	}
+	if mockAPI.sendMsgReq != nil || mockAPI.forwardMsgsReq != nil {
+		t.Fatalf("media copy produced transport side effect: send=%+v forward=%+v", mockAPI.sendMsgReq, mockAPI.forwardMsgsReq)
 	}
 }
 
