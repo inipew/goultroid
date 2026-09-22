@@ -53,6 +53,13 @@ func (a *managedAPI) ChannelsGetMessages(ctx context.Context, req *tg.ChannelsGe
 func (a *managedAPI) MessagesSendMessage(ctx context.Context, req *tg.MessagesSendMessageRequest) (tg.UpdatesClass, error) {
 	return managedValue(ctx, a, "messages.sendMessage", assistentrpc.NonIdempotentMutation, func(opCtx context.Context) (tg.UpdatesClass, error) { return a.raw.MessagesSendMessage(opCtx, req) })
 }
+func (a *managedAPI) MessagesSendMessageDurable(ctx context.Context, req *tg.MessagesSendMessageRequest) (tg.UpdatesClass, error) {
+	// The caller persists req.RandomID before transport, so retries are the same
+	// logical Telegram send rather than a new bot-authored message.
+	return managedValue(ctx, a, "messages.sendMessage", assistentrpc.IdempotentMutation, func(opCtx context.Context) (tg.UpdatesClass, error) {
+		return a.raw.MessagesSendMessage(opCtx, req)
+	})
+}
 func (a *managedAPI) MessagesForwardMessages(ctx context.Context, req *tg.MessagesForwardMessagesRequest) (tg.UpdatesClass, error) {
 	// PM Relay persists the request random_id before transport. Repeating the
 	// same request is therefore one logical Telegram mutation and may use the
