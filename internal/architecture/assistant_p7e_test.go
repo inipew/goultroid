@@ -28,6 +28,7 @@ func TestP7EReadOnlyCanaryCannotCallGroupMutations(t *testing.T) {
 		"Purge":                       {},
 		"Promote":                     {},
 		"Demote":                      {},
+		"SetChatPermissions":          {},
 		"EditChatDefaultBannedRights": {},
 	}
 
