@@ -128,7 +128,6 @@ func (migration001) VerifySchema(ctx context.Context, tx database.SQLExecutor) e
 	return nil
 }
 
-
 var visitorBlockSchemaStatements = []string{
 	`CREATE TABLE IF NOT EXISTS pm_relay_visitor_blocks (
 		visitor_user_id INTEGER PRIMARY KEY CHECK (visitor_user_id > 0),
