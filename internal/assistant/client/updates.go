@@ -116,7 +116,7 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			}
 			inputPeer, err := deps.Resolver.Resolve(ctx, msg.PeerID, senderID, e)
 			if err != nil || inputPeer == nil {
-				logger.Warn("assistant: sender access hash missing, message ignored", zap.Int64("sender_id", senderID), zap.Error(err))
+				logger.Warn("assistant: sender access hash unavailable for command/interaction path", zap.Int64("sender_id", senderID), zap.Error(err))
 				return nil
 			}
 			return inputPeer
@@ -171,22 +171,22 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			}
 		}
 
-		if deps.Resolver == nil || deps.Interaction == nil {
-			return nil
-		}
-		inputPeer := resolvePeer()
-		if inputPeer == nil {
-			return nil
-		}
-		if deps.InteractionIngress != nil {
-			if handled, hErr := deps.InteractionIngress.tryText(ctx, msg.Message, senderID, chatID, inputPeer); handled {
-				if hErr != nil {
-					logger.Warn("assistant: interaction text input dispatch failed", zap.Error(hErr), zap.Int64("sender_id", senderID))
-					if feedback := interactionTextInputErrorMessage(hErr); feedback != "" {
-						_, _ = deps.Interaction.SendMessage(ctx, inputPeer, feedback, nil)
+		// Generic a2 input is attempted only when its presentation/resolution
+		// dependencies are available. PM Relay is an independent data-plane
+		// fallback and must not disappear merely because the interaction path
+		// cannot resolve a peer or is temporarily unavailable.
+		if deps.Resolver != nil && deps.Interaction != nil {
+			inputPeer := resolvePeer()
+			if inputPeer != nil && deps.InteractionIngress != nil {
+				if handled, hErr := deps.InteractionIngress.tryText(ctx, msg.Message, senderID, chatID, inputPeer); handled {
+					if hErr != nil {
+						logger.Warn("assistant: interaction text input dispatch failed", zap.Error(hErr), zap.Int64("sender_id", senderID))
+						if feedback := interactionTextInputErrorMessage(hErr); feedback != "" {
+							_, _ = deps.Interaction.SendMessage(ctx, inputPeer, feedback, nil)
+						}
 					}
+					return nil
 				}
-				return nil
 			}
 		}
 
