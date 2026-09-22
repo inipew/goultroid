@@ -164,3 +164,64 @@ func TestCommandRouter_AssistantGroupMutationFailsClosedBeforeP7G(t *testing.T) 
 		t.Fatalf("expected mutation fence to classify as unavailable, got %v", err)
 	}
 }
+
+
+type commandGroupRoleResolverStub struct {
+	calls int
+}
+
+func (s *commandGroupRoleResolverStub) ResolveGroupRole(_ context.Context, request core.GroupRoleRequest) (core.GroupRoleSnapshot, error) {
+	s.calls++
+	return core.GroupRoleSnapshot{
+		Principal: core.GroupActorPrincipal{
+			UserID:   request.UserID,
+			Role:     core.GroupActorRoleAdministrator,
+			Rights:   core.GroupAdminRights{DeleteMessages: true},
+			Verified: true,
+		},
+	}, nil
+}
+
+func (s *commandGroupRoleResolverStub) ResolveGroupRoleFresh(_ context.Context, request core.GroupRoleRequest) (core.GroupRoleSnapshot, error) {
+	return s.ResolveGroupRole(context.Background(), request)
+}
+
+func TestCommandRouter_GroupRoleResolverIsAvailableLazilyToCanonicalHandler(t *testing.T) {
+	roleResolver := &commandGroupRoleResolverStub{}
+	r := command.NewRouter(zap.NewNop())
+	r.SetGroupRoleResolver(roleResolver)
+
+	var resolved core.GroupRoleSnapshot
+	coreRouter := core.NewRouter(".")
+	if err := coreRouter.Register(core.Command{
+		Name:       "roleprobe",
+		Surfaces:   execution.SurfaceAssistant,
+		GroupOnly:  true,
+		Permission: core.PermissionEveryone,
+		Handler: func(c *core.Context) error {
+			var err error
+			resolved, err = c.ResolveGroupActor(false)
+			return err
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r.SetCoreRouter(coreRouter)
+
+	err := r.DispatchMessageContext(
+		context.Background(),
+		7,
+		&tg.InputPeerChannel{ChannelID: 55, AccessHash: 8},
+		"/roleprobe",
+		command.MessageContext{Chat: core.Chat{ID: 55, Type: "supergroup"}, MessageID: 1},
+		&fakeInteraction{},
+	)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if roleResolver.calls != 1 ||
+		resolved.Principal.Role != core.GroupActorRoleAdministrator ||
+		!resolved.Principal.Rights.DeleteMessages {
+		t.Fatalf("resolver calls=%d snapshot=%+v", roleResolver.calls, resolved)
+	}
+}
