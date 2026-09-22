@@ -334,3 +334,90 @@ func TestBroadcast_RichSavedResponseCaptionOverflowFallsBackToText(t *testing.T)
 		t.Fatalf("overflow caption=%q, want empty", telegram.caption)
 	}
 }
+
+
+type pagedTargetSource struct {
+	total int
+	next  int
+	calls int32
+}
+
+func (s *pagedTargetSource) Total() int { return s.total }
+
+func (s *pagedTargetSource) Next(_ context.Context, limit int) ([]tg.InputPeerClass, bool, error) {
+	atomic.AddInt32(&s.calls, 1)
+	if s.next >= s.total {
+		return nil, true, nil
+	}
+	if limit <= 0 {
+		limit = 1
+	}
+	end := s.next + limit
+	if end > s.total {
+		end = s.total
+	}
+	targets := make([]tg.InputPeerClass, 0, end-s.next)
+	for i := s.next; i < end; i++ {
+		targets = append(targets, &tg.InputPeerUser{UserID: int64(i + 1)})
+	}
+	s.next = end
+	return targets, s.next >= s.total, nil
+}
+
+func TestBroadcast_TargetSourceStreamsThroughSameBoundedFanout(t *testing.T) {
+	defaultTG := &mockTelegram{}
+	sender := &mockTelegram{}
+	svc := newBroadcastService(t, defaultTG)
+	source := &pagedTargetSource{total: maxBroadcastInFlight*2 + 5}
+
+	rep, err := svc.Broadcast(context.Background(), broadcast.BroadcastRequest{
+		TargetSource: source,
+		Sender:       sender,
+		Text:         "audience",
+	})
+	if err != nil {
+		t.Fatalf("Broadcast(TargetSource) error=%v", err)
+	}
+	if rep.Total != source.total || rep.Sent != source.total || rep.Failed != 0 {
+		t.Fatalf("streamed report=%+v", rep)
+	}
+	if got := atomic.LoadInt32(&sender.sentCount); got != int32(source.total) {
+		t.Fatalf("override sender calls=%d, want %d", got, source.total)
+	}
+	if got := atomic.LoadInt32(&defaultTG.sentCount); got != 0 {
+		t.Fatalf("default transport received %d audience sends", got)
+	}
+	if got := atomic.LoadInt32(&source.calls); got < 3 {
+		t.Fatalf("target source page calls=%d, want >=3", got)
+	}
+}
+
+func TestBroadcast_TargetSourceAndSliceAreMutuallyExclusive(t *testing.T) {
+	svc := newBroadcastService(t, &mockTelegram{})
+	_, err := svc.Broadcast(context.Background(), broadcast.BroadcastRequest{
+		Targets:      []tg.InputPeerClass{&tg.InputPeerUser{UserID: 1}},
+		TargetSource: &pagedTargetSource{total: 1},
+		Text:         "invalid",
+	})
+	if !errors.Is(err, core.ErrInvalidArgs) {
+		t.Fatalf("Broadcast(mixed targets) error=%v, want %v", err, core.ErrInvalidArgs)
+	}
+}
+
+type stalledTargetSource struct{}
+
+func (stalledTargetSource) Total() int { return 1 }
+func (stalledTargetSource) Next(context.Context, int) ([]tg.InputPeerClass, bool, error) {
+	return nil, false, nil
+}
+
+func TestBroadcast_RejectsStalledTargetSource(t *testing.T) {
+	svc := newBroadcastService(t, &mockTelegram{})
+	_, err := svc.Broadcast(context.Background(), broadcast.BroadcastRequest{
+		TargetSource: stalledTargetSource{},
+		Text:         "stalled",
+	})
+	if !errors.Is(err, broadcast.ErrTargetSourceStalled) {
+		t.Fatalf("Broadcast(stalled source) error=%v, want %v", err, broadcast.ErrTargetSourceStalled)
+	}
+}
