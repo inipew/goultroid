@@ -261,6 +261,11 @@ func (s *Service) ConfigureForceSub(
 	}
 	updated, err := s.repo.UpdateForceSubConfig(ctx, current.Revision, normalized)
 	if err != nil {
+		if errors.Is(err, ErrForceSubConfigConflict) {
+			s.mu.Lock()
+			s.forceSubCached = nil
+			s.mu.Unlock()
+		}
 		return ForceSubConfig{}, err
 	}
 	s.mu.Lock()
