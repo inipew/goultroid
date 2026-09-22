@@ -385,3 +385,51 @@ func TestUpdateBindingCannotRenameIntoAnotherIdentity(t *testing.T) {
 		t.Fatalf("second binding was modified by first update: %+v", untouched)
 	}
 }
+
+
+func TestPreparedBindingRejectsResourceClassDrift(t *testing.T) {
+	repo, _ := newSurfaceBindingRepository(t)
+	ctx := context.Background()
+	registry := NewRegistry()
+	resolver := &bindingTestResolver{response: NewText("text")}
+	registration, err := registry.Register(
+		"notes",
+		tasks.ScopeIdentity{Owner: "plugin:notes", Generation: 1},
+		resolver,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registration.Close()
+
+	service := NewBindingService(repo, registry)
+	created, err := service.Create(ctx, SurfaceBinding{
+		Surface:   SurfaceAssistantCommand,
+		Alias:     "resource-drift",
+		Reference: Reference{Provider: "notes", ScopeID: 9, Key: "resource-drift"},
+		Enabled:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := service.Prepare(ctx, created.Surface, created.Alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.HasMedia() {
+		t.Fatal("text response unexpectedly requires media resource")
+	}
+
+	resolver.response = Response{
+		Text: "caption",
+		Media: &MediaRef{
+			AssetID:   "asset-1",
+			MediaType: "photo",
+			Name:      "photo.jpg",
+			MIMEType:  "image/jpeg",
+		},
+	}
+	if _, err := service.ResolvePrepared(ctx, prepared); !errors.Is(err, ErrBindingStale) {
+		t.Fatalf("ResolvePrepared(resource drift) error = %v, want %v", err, ErrBindingStale)
+	}
+}
