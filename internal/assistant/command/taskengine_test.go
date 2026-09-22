@@ -149,5 +149,8 @@ func TestCommandRouter_P7JGroupTaskOrderingIsTopicScoped(t *testing.T) {
 		if client.last.OrderingKey != tc.want {
 			t.Fatalf("topic %d ordering=%q want %q", tc.topic, client.last.OrderingKey, tc.want)
 		}
+		if client.last.QuotaOwner != "telegram:chat:99" {
+			t.Fatalf("topic %d quota owner=%q want telegram:chat:99", tc.topic, client.last.QuotaOwner)
+		}
 	}
 }
