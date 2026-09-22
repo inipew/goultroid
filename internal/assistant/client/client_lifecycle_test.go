@@ -138,3 +138,37 @@ func TestAssistantClientStartRejectsCanceledContext(t *testing.T) {
 		t.Fatalf("state after canceled Start() = %v, want new", got)
 	}
 }
+
+
+func TestAssistantClientQuiesceStopsAdmissionWithoutStoppingTransport(t *testing.T) {
+	c := &AssistantClient{
+		logger:    zap.NewNop(),
+		lifecycle: NewLifecycle(),
+		runDone:   make(chan struct{}),
+		cancel:    func() { t.Fatal("Quiesce cancelled Assistant transport") },
+	}
+	c.lifecycle.SetState(StateRunning)
+
+	if err := c.Quiesce(context.Background()); err != nil {
+		t.Fatalf("Quiesce() error=%v", err)
+	}
+	if !c.IsShuttingDown() {
+		t.Fatal("Quiesce did not close update admission")
+	}
+	if got := c.State(); got != StateRunning {
+		t.Fatalf("state after Quiesce=%v, want running transport", got)
+	}
+}
+
+func TestAssistantClientQuiesceHonorsCanceledContext(t *testing.T) {
+	c := NewAssistantClient(1234, "hash", "test-token", zap.NewNop())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := c.Quiesce(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Quiesce(canceled) error=%v, want context canceled", err)
+	}
+	if c.IsShuttingDown() {
+		t.Fatal("canceled Quiesce unexpectedly changed admission state")
+	}
+}
