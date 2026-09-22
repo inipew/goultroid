@@ -767,6 +767,70 @@ func (r *SQLiteRepository) CountVisitorBlocks(ctx context.Context) (int, error) 
 	return r.count(ctx, "pm_relay_visitor_blocks")
 }
 
+func (r *SQLiteRepository) GetForceSubConfig(ctx context.Context) (ForceSubConfig, error) {
+	if r == nil || r.db == nil {
+		return ForceSubConfig{}, ErrUnavailable
+	}
+	config, err := scanForceSubConfig(r.db.QueryRowContext(ctx, `
+		SELECT enabled, channel_username, join_url, failure_mode, revision, updated_at
+		FROM pm_relay_force_sub_config
+		WHERE singleton_id = 1
+	`))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ForceSubConfig{}, ErrUnavailable
+	}
+	if err != nil {
+		return ForceSubConfig{}, fmt.Errorf("get pm relay force-sub config: %w", err)
+	}
+	return config, nil
+}
+
+func (r *SQLiteRepository) UpdateForceSubConfig(
+	ctx context.Context,
+	expectedRevision int64,
+	config ForceSubConfig,
+) (ForceSubConfig, error) {
+	if r == nil || r.db == nil {
+		return ForceSubConfig{}, ErrUnavailable
+	}
+	if expectedRevision <= 0 || config.Revision != expectedRevision+1 {
+		return ForceSubConfig{}, ErrInvalidForceSubConfig
+	}
+	normalized, err := config.Normalize()
+	if err != nil {
+		return ForceSubConfig{}, err
+	}
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE pm_relay_force_sub_config
+		SET enabled = ?,
+		    channel_username = ?,
+		    join_url = ?,
+		    failure_mode = ?,
+		    revision = ?,
+		    updated_at = ?
+		WHERE singleton_id = 1 AND revision = ?
+	`,
+		boolToInt(normalized.Enabled),
+		normalized.ChannelUsername,
+		normalized.JoinURL,
+		string(normalized.FailureMode),
+		normalized.Revision,
+		normalized.UpdatedAt,
+		expectedRevision,
+	)
+	if err != nil {
+		return ForceSubConfig{}, fmt.Errorf("update pm relay force-sub config: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return ForceSubConfig{}, err
+	}
+	if affected != 1 {
+		return ForceSubConfig{}, ErrForceSubConfigConflict
+	}
+	return r.GetForceSubConfig(ctx)
+}
+
 type rowScanner interface {
 	Scan(...any) error
 }
@@ -821,6 +885,25 @@ func scanDelivery(scanner rowScanner) (DeliveryIntent, error) {
 	return intent.Normalize()
 }
 
+func scanForceSubConfig(scanner rowScanner) (ForceSubConfig, error) {
+	var config ForceSubConfig
+	var enabled int
+	var failureMode string
+	if err := scanner.Scan(
+		&enabled,
+		&config.ChannelUsername,
+		&config.JoinURL,
+		&failureMode,
+		&config.Revision,
+		&config.UpdatedAt,
+	); err != nil {
+		return ForceSubConfig{}, err
+	}
+	config.Enabled = enabled != 0
+	config.FailureMode = ForceSubFailureMode(failureMode)
+	return config.Normalize()
+}
+
 func scanVisitorBlock(scanner rowScanner) (VisitorBlock, error) {
 	var block VisitorBlock
 	if err := scanner.Scan(&block.VisitorUserID, &block.BlockedAt, &block.Reason); err != nil {
@@ -844,6 +927,13 @@ func normalizePruneLimit(limit int) int {
 		return 64
 	}
 	return limit
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func affectedRows(result sql.Result) (int, error) {
