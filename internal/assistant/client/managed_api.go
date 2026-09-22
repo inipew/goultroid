@@ -60,6 +60,18 @@ func (a *managedAPI) MessagesSendMessageDurable(ctx context.Context, req *tg.Mes
 		return a.raw.MessagesSendMessage(opCtx, req)
 	})
 }
+func (a *managedAPI) MessagesSendMedia(ctx context.Context, req *tg.MessagesSendMediaRequest) (tg.UpdatesClass, error) {
+	return managedValue(ctx, a, "messages.sendMedia", assistentrpc.NonIdempotentMutation, func(opCtx context.Context) (tg.UpdatesClass, error) {
+		return a.raw.MessagesSendMedia(opCtx, req)
+	})
+}
+func (a *managedAPI) MessagesSendMediaDurable(ctx context.Context, req *tg.MessagesSendMediaRequest) (tg.UpdatesClass, error) {
+	// PM Relay persists req.RandomID before transport, so the server-side media
+	// copy may use the idempotent mutation lane without risking duplicate sends.
+	return managedValue(ctx, a, "messages.sendMedia", assistentrpc.IdempotentMutation, func(opCtx context.Context) (tg.UpdatesClass, error) {
+		return a.raw.MessagesSendMedia(opCtx, req)
+	})
+}
 func (a *managedAPI) MessagesForwardMessages(ctx context.Context, req *tg.MessagesForwardMessagesRequest) (tg.UpdatesClass, error) {
 	// PM Relay persists the request random_id before transport. Repeating the
 	// same request is therefore one logical Telegram mutation and may use the
