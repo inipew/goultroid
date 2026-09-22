@@ -29,6 +29,7 @@ const (
 	MaxKeywordBytes              = 256
 	MaxActiveChats               = 50_000
 	maxCompiledFilterCacheChats  = 500
+	maxFilterCooldownEntries      = 1_000
 )
 
 var filterTaskSequence atomic.Uint64
@@ -765,10 +766,16 @@ func (p *Plugin) markCooldown(key string) {
 	now := time.Now()
 	p.cooldownMu.Lock()
 	p.lastReply[key] = now
-	if len(p.lastReply) > 1000 {
+	if len(p.lastReply) > maxFilterCooldownEntries {
 		for k, v := range p.lastReply {
 			if now.Sub(v) > 30*time.Second {
 				delete(p.lastReply, k)
+			}
+		}
+		for len(p.lastReply) > maxFilterCooldownEntries {
+			for k := range p.lastReply {
+				delete(p.lastReply, k)
+				break
 			}
 		}
 	}
