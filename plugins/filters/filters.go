@@ -192,6 +192,41 @@ func (p *Plugin) nextTaskID(kind string, chatID int64) tasks.TaskID {
 	))
 }
 
+type filterWriteGuard func(context.Context) error
+
+func assistantFilterWriteGuard(ctx *core.Context) filterWriteGuard {
+	if ctx == nil || !ctx.IsAssistant() {
+		return nil
+	}
+	requirement := core.GroupAuthorizationRequirement{Level: core.GroupAuthorizationAdministrator}
+	if ctx.Chat == nil || !ctx.Chat.IsManagerGroup() || ctx.SenderID() <= 0 ||
+		ctx.GroupRoles == nil || ctx.PeerID == nil {
+		return func(context.Context) error {
+			return fmt.Errorf("%w: Assistant filter write authorization is unavailable", core.ErrUnavailable)
+		}
+	}
+	request := core.GroupRoleRequest{
+		ChatID: ctx.Chat.ID,
+		Kind:   ctx.Chat.Kind(),
+		Peer:   ctx.PeerID,
+		UserID: ctx.SenderID(),
+	}
+	roles := ctx.GroupRoles
+	return func(authCtx context.Context) error {
+		if authCtx == nil {
+			authCtx = context.Background()
+		}
+		snapshot, err := roles.ResolveGroupRoleFresh(authCtx, request)
+		if err != nil {
+			return err
+		}
+		if !snapshot.Principal.Verified || snapshot.Principal.UserID != request.UserID {
+			return fmt.Errorf("%w: filter write role verification returned an invalid principal", core.ErrUnavailable)
+		}
+		return requirement.Authorize(snapshot.Principal)
+	}
+}
+
 func detachFilterContext(ctx *core.Context) *core.Context {
 	if ctx == nil {
 		return nil
@@ -295,6 +330,7 @@ func (p *Plugin) saveReply(ctx *core.Context, chatID int64, keyword string, repl
 		return p.saveFilterResponse(ctx, chatID, keyword, savedresponse.NewPlainText(reply.Text))
 	}
 
+	writeGuard := assistantFilterWriteGuard(ctx)
 	uiCtx := detachFilterContext(ctx)
 	resources := []tasks.ResourceRequirement{{Name: "download", Amount: 1}}
 	if err := p.submitContinuation(
@@ -312,7 +348,7 @@ func (p *Plugin) saveReply(ctx *core.Context, chatID int64, keyword string, repl
 				_ = taskCore.EditOrReply(fmt.Sprintf("⚠️ Could not capture replied response: %v", captureErr))
 				return captureErr
 			}
-			return p.saveFilterResponse(taskCore, chatID, keyword, response)
+			return p.saveFilterResponseGuarded(taskCore, chatID, keyword, response, writeGuard)
 		},
 	); err != nil {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to queue media filter save: %v", err))
@@ -322,6 +358,16 @@ func (p *Plugin) saveReply(ctx *core.Context, chatID int64, keyword string, repl
 }
 
 func (p *Plugin) saveFilterResponse(ctx *core.Context, chatID int64, keyword string, response savedresponse.Response) error {
+	return p.saveFilterResponseGuarded(ctx, chatID, keyword, response, assistantFilterWriteGuard(ctx))
+}
+
+func (p *Plugin) saveFilterResponseGuarded(
+	ctx *core.Context,
+	chatID int64,
+	keyword string,
+	response savedresponse.Response,
+	writeGuard filterWriteGuard,
+) error {
 	if response.Empty() {
 		_ = ctx.EditOrReply("⚠️ Filter response cannot be empty.")
 		return errors.New("empty filter response")
@@ -345,6 +391,18 @@ func (p *Plugin) saveFilterResponse(ctx *core.Context, chatID int64, keyword str
 	var old savedresponse.Response
 	if previous != nil {
 		old = previous.Response
+	}
+	if writeGuard != nil {
+		authCtx := ctx.Ctx
+		if authCtx == nil {
+			authCtx = context.Background()
+		}
+		if err := writeGuard(authCtx); err != nil {
+			lock.Unlock()
+			_ = p.responses.DeleteMedia(authCtx, response)
+			_ = ctx.EditOrReply(core.UserMessage(err))
+			return fmt.Errorf("filters: filter write authorization failed: %w", err)
+		}
 	}
 	if err := p.responses.CommitReplacement(ctx.Ctx, old, response, func() error {
 		return p.db.SaveFilter(ctx.Ctx, chatID, keyword, response)
