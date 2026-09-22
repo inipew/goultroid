@@ -146,8 +146,8 @@ func (p *Plugin) handleBlacklist(ctx *core.Context) error {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to add to blacklist: %v", err))
 		return err
 	}
-	p.featureState.SetActive(chatID, true)
 	p.invalidateChat(chatID, true)
+	p.featureState.SetActive(chatID, true)
 	return ctx.EditOrReply(fmt.Sprintf("🚫 Added <code>%s</code> to chat blacklist.", html.EscapeString(word)))
 }
 func (p *Plugin) handleUnblacklist(ctx *core.Context) error {
@@ -162,14 +162,15 @@ func (p *Plugin) handleUnblacklist(ctx *core.Context) error {
 		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to remove from blacklist: %v", err))
 		return err
 	}
-	active := false
-	if remaining, err := p.db.ListBlacklists(ctx.Ctx, chatID); err != nil {
+	remaining, listErr := p.db.ListBlacklists(ctx.Ctx, chatID)
+	if listErr != nil {
+		p.invalidateChatUnknown(chatID)
 		p.featureState.MarkUnknown(chatID)
 	} else {
-		active = len(remaining) > 0
+		active := len(remaining) > 0
+		p.invalidateChat(chatID, active)
 		p.featureState.SetActive(chatID, active)
 	}
-	p.invalidateChat(chatID, active)
 	return ctx.EditOrReply(fmt.Sprintf("✅ Removed <code>%s</code> from chat blacklist.", html.EscapeString(word)))
 }
 func (p *Plugin) handleListBlacklists(ctx *core.Context) error {
@@ -213,6 +214,13 @@ func (p *Plugin) invalidateChat(chatID int64, active bool) {
 	} else {
 		delete(p.chatRevision, chatID)
 	}
+	p.cacheMu.Unlock()
+}
+
+func (p *Plugin) invalidateChatUnknown(chatID int64) {
+	p.cacheMu.Lock()
+	delete(p.chatBlacklist, chatID)
+	p.chatRevision[chatID] = p.revisionSeq.Add(1)
 	p.cacheMu.Unlock()
 }
 
