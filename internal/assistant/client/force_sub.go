@@ -16,10 +16,11 @@ import (
 )
 
 const (
-	forceSubCacheCapacity    = 2048
-	forceSubMemberTTL         = 10 * time.Minute
-	forceSubNonMemberTTL      = time.Minute
-	forceSubGuidanceCooldown  = time.Minute
+	forceSubCacheCapacity       = 2048
+	forceSubMaxVerifications    = 32
+	forceSubMemberTTL            = 10 * time.Minute
+	forceSubNonMemberTTL         = time.Minute
+	forceSubGuidanceCooldown     = time.Minute
 )
 
 type forceSubDecision struct {
@@ -34,6 +35,7 @@ type forceSubMembershipGate interface {
 }
 
 type forceSubGuidanceLimiter interface {
+	GuidanceDue(int64, int64) bool
 	ClaimGuidance(int64, int64) bool
 }
 
@@ -65,7 +67,8 @@ type telegramForceSubGate struct {
 	cacheCapacity    int
 	memberTTL        time.Duration
 	nonMemberTTL     time.Duration
-	guidanceCooldown time.Duration
+	guidanceCooldown  time.Duration
+	verificationSlots chan struct{}
 }
 
 func newTelegramForceSubGate(
@@ -93,7 +96,8 @@ func newTelegramForceSubGate(
 		cacheCapacity:    forceSubCacheCapacity,
 		memberTTL:        forceSubMemberTTL,
 		nonMemberTTL:     forceSubNonMemberTTL,
-		guidanceCooldown: forceSubGuidanceCooldown,
+		guidanceCooldown:  forceSubGuidanceCooldown,
+		verificationSlots: make(chan struct{}, forceSubMaxVerifications),
 	}
 }
 
@@ -159,6 +163,27 @@ func (g *telegramForceSubGate) putCached(userID, revision int64, member bool, no
 type forceSubGuidanceEntry struct {
 	userID    int64
 	expiresAt time.Time
+}
+
+func (g *telegramForceSubGate) GuidanceDue(userID, revision int64) bool {
+	if g == nil || userID <= 0 || revision <= 0 {
+		return false
+	}
+	now := g.now().UTC()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.resetForRevisionLocked(revision)
+	elem, ok := g.guidance[userID]
+	if !ok {
+		return true
+	}
+	entry := elem.Value.(forceSubGuidanceEntry)
+	if !now.Before(entry.expiresAt) {
+		delete(g.guidance, userID)
+		g.guidanceLRU.Remove(elem)
+		return true
+	}
+	return false
 }
 
 func (g *telegramForceSubGate) ClaimGuidance(userID, revision int64) bool {
@@ -269,6 +294,15 @@ func (g *telegramForceSubGate) verifyMembership(
 	config pmrelay.ForceSubConfig,
 	userID int64,
 ) (bool, error) {
+	if g.verificationSlots == nil {
+		return false, fmt.Errorf("%w: membership verifier is unavailable", pmrelay.ErrForceSubVerify)
+	}
+	select {
+	case g.verificationSlots <- struct{}{}:
+		defer func() { <-g.verificationSlots }()
+	default:
+		return false, fmt.Errorf("%w: membership verification capacity saturated", pmrelay.ErrForceSubVerify)
+	}
 	channel, err := g.resolveChannel(ctx, config)
 	if err != nil {
 		return false, err
