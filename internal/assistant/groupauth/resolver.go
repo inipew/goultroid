@@ -290,7 +290,10 @@ func adminRights(rights tg.ChatAdminRights) core.GroupAdminRights {
 	}
 }
 
-func channelPrincipal(userID int64, participant tg.ChannelParticipantClass) (core.GroupActorPrincipal, error) {
+// MapChannelParticipant maps one authoritative Telegram participant into the
+// transport-neutral manager principal, including hierarchy metadata required by
+// P7-G target protection.
+func MapChannelParticipant(userID int64, participant tg.ChannelParticipantClass) (core.GroupActorPrincipal, error) {
 	principal := core.GroupActorPrincipal{UserID: userID, Verified: true}
 	switch value := participant.(type) {
 	case *tg.ChannelParticipant, *tg.ChannelParticipantSelf:
@@ -301,6 +304,8 @@ func channelPrincipal(userID int64, participant tg.ChannelParticipantClass) (cor
 	case *tg.ChannelParticipantAdmin:
 		principal.Role = core.GroupActorRoleAdministrator
 		principal.Rights = adminRights(value.AdminRights)
+		principal.CanEdit = value.CanEdit
+		principal.PromotedBy = value.PromotedBy
 	case *tg.ChannelParticipantBanned:
 		switch {
 		case value.BannedRights.ViewMessages:
@@ -345,7 +350,7 @@ func (r *TelegramRoleResolver) verifySupergroup(ctx context.Context, request cor
 	if result == nil || result.Participant == nil {
 		return core.GroupRoleSnapshot{}, fmt.Errorf("%w: empty channels.getParticipant response", ErrGroupRoleVerification)
 	}
-	principal, err := channelPrincipal(request.UserID, result.Participant)
+	principal, err := MapChannelParticipant(request.UserID, result.Participant)
 	if err != nil {
 		return core.GroupRoleSnapshot{}, err
 	}
@@ -353,6 +358,13 @@ func (r *TelegramRoleResolver) verifySupergroup(ctx context.Context, request cor
 }
 
 func basicParticipant(userID int64, participant tg.ChatParticipantClass) (core.GroupActorPrincipal, bool, error) {
+	basicAdminRights := core.GroupAdminRights{
+		ChangeInfo:     true,
+		DeleteMessages: true,
+		BanUsers:       true,
+		InviteUsers:    true,
+		PinMessages:    true,
+	}
 	switch value := participant.(type) {
 	case *tg.ChatParticipant:
 		if value.UserID != userID {
@@ -363,12 +375,20 @@ func basicParticipant(userID int64, participant tg.ChatParticipantClass) (core.G
 		if value.UserID != userID {
 			return core.GroupActorPrincipal{}, false, nil
 		}
-		return core.GroupActorPrincipal{UserID: userID, Role: core.GroupActorRoleAdministrator, Verified: true}, true, nil
+		return core.GroupActorPrincipal{
+			UserID: userID, Role: core.GroupActorRoleAdministrator,
+			Rights: basicAdminRights, Verified: true,
+		}, true, nil
 	case *tg.ChatParticipantCreator:
 		if value.UserID != userID {
 			return core.GroupActorPrincipal{}, false, nil
 		}
-		return core.GroupActorPrincipal{UserID: userID, Role: core.GroupActorRoleCreator, Verified: true}, true, nil
+		creatorRights := basicAdminRights
+		creatorRights.AddAdmins = true
+		return core.GroupActorPrincipal{
+			UserID: userID, Role: core.GroupActorRoleCreator,
+			Rights: creatorRights, Verified: true,
+		}, true, nil
 	case nil:
 		return core.GroupActorPrincipal{}, false, fmt.Errorf("%w: nil basic-group participant", ErrGroupRoleVerification)
 	default:
