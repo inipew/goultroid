@@ -32,6 +32,7 @@ import (
 	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/inline"
 	mediaSvc "github.com/inipew/goultroid/internal/services/media"
+	"github.com/inipew/goultroid/internal/services/pmrelay"
 	processSvc "github.com/inipew/goultroid/internal/services/process"
 	"github.com/inipew/goultroid/internal/services/ratelimit"
 	"github.com/inipew/goultroid/internal/services/savedresponse"
@@ -180,6 +181,11 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		tgRuntime.assistant.SetInlineEngine(coreDeps.inlineEngine)
 		tgRuntime.assistant.SetTasks(coreDeps.taskEngine)
 		tgRuntime.assistant.SetRelayIngress(domServices.pmrelayService)
+		if aware, ok := tgRuntime.assistant.(interface {
+			SetAudienceRegistry(pmrelay.AudienceRegistry)
+		}); ok {
+			aware.SetAudienceRegistry(domServices.pmrelayService)
+		}
 		tgRuntime.assistant.SetPluginScopeResolver(func(owner string) (tasks.ScopeIdentity, bool) {
 			scope, ok := pluginManager.Scope(owner)
 			if !ok {
