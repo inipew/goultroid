@@ -65,6 +65,54 @@ type Resolved struct {
 	Scope         tasks.ScopeIdentity
 	pattern       string
 	token         uint64
+	dynamic       bool
+}
+
+// DynamicPrepared is an opaque admission-time match produced by a dynamic
+// inline source. It carries lifecycle scope and execution resources without
+// publishing one registry entry per dynamic alias.
+type DynamicPrepared struct {
+	Pattern   string
+	Args      []string
+	Scope     tasks.ScopeIdentity
+	Resources []tasks.ResourceRequirement
+	State     any
+}
+
+// DynamicSource resolves dynamic inline identities after canonical explicit
+// handlers but before the canonical catch-all. Execute must revalidate any
+// durable/lifecycle identity captured by Prepare before using its state.
+type DynamicSource interface {
+	Prepare(context.Context, string) (DynamicPrepared, bool, error)
+	Execute(context.Context, DynamicPrepared, *InlineContext) (*InlineResponse, error)
+}
+
+type dynamicPreparedHandler struct {
+	source   DynamicSource
+	prepared DynamicPrepared
+}
+
+func (h *dynamicPreparedHandler) Pattern() string {
+	return strings.ToLower(strings.TrimSpace(h.prepared.Pattern))
+}
+func (*dynamicPreparedHandler) Description() string { return "dynamic inline response" }
+func (*dynamicPreparedHandler) Matcher() InlineMatcher { return nil }
+func (*dynamicPreparedHandler) AccessPolicy() InlineAccessPolicy {
+	return InlineAccessPolicy{}
+}
+func (*dynamicPreparedHandler) CachePolicy() CachePolicy { return CacheNone }
+func (h *dynamicPreparedHandler) HandleInline(ctx *InlineContext) ([]InlineResult, error) {
+	resp, err := h.HandleInlineV2(ctx)
+	if err != nil || resp == nil {
+		return nil, err
+	}
+	return resp.Results, nil
+}
+func (h *dynamicPreparedHandler) HandleInlineV2(ctx *InlineContext) (*InlineResponse, error) {
+	if h == nil || h.source == nil || ctx == nil {
+		return nil, ErrNoMatchingHandler
+	}
+	return h.source.Execute(ctx.Ctx, h.prepared, ctx)
 }
 
 func matcherForPattern(pattern string) InlineMatcher {
@@ -207,20 +255,24 @@ func (r *Registry) Resolve(query string) (InlineHandler, []string, bool) {
 
 // ResolveOwned returns handler metadata including lifecycle scope.
 func (r *Registry) ResolveOwned(query string) (Resolved, bool) {
+	if resolved, ok := r.ResolveOwnedExplicit(query); ok {
+		return resolved, true
+	}
+	return r.ResolveOwnedFallback(query)
+}
+
+// ResolveOwnedExplicit resolves only non-catch-all registrations.
+func (r *Registry) ResolveOwnedExplicit(query string) (Resolved, bool) {
 	if r == nil {
 		return Resolved{}, false
 	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
 	trimmed := strings.TrimSpace(query)
 	if trimmed == "" {
-		if entry, ok := r.handlers[""]; ok {
-			return resolvedEntry(entry, nil), true
-		}
 		return Resolved{}, false
 	}
 
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	for _, entry := range r.entries {
 		if entry.pattern == "" {
 			continue
@@ -233,14 +285,29 @@ func (r *Registry) ResolveOwned(query string) (Resolved, bool) {
 	}
 	fields := strings.Fields(trimmed)
 	if len(fields) > 0 {
-		if entry, ok := r.handlers[strings.ToLower(fields[0])]; ok {
+		if entry, ok := r.handlers[strings.ToLower(fields[0])]; ok && entry.pattern != "" {
 			return resolvedEntry(entry, fields[1:]), true
 		}
 	}
-	if entry, ok := r.handlers[""]; ok {
-		return resolvedEntry(entry, strings.Fields(trimmed)), true
-	}
 	return Resolved{}, false
+}
+
+// ResolveOwnedFallback resolves only the canonical catch-all registration.
+func (r *Registry) ResolveOwnedFallback(query string) (Resolved, bool) {
+	if r == nil {
+		return Resolved{}, false
+	}
+	trimmed := strings.TrimSpace(query)
+	r.mu.RLock()
+	entry, ok := r.handlers[""]
+	r.mu.RUnlock()
+	if !ok {
+		return Resolved{}, false
+	}
+	if trimmed == "" {
+		return resolvedEntry(entry, nil), true
+	}
+	return resolvedEntry(entry, strings.Fields(trimmed)), true
 }
 
 func resolvedEntry(entry registryEntry, args []string) Resolved {
@@ -253,6 +320,9 @@ func resolvedEntry(entry registryEntry, args []string) Resolved {
 
 // IsCurrent reports whether a previously resolved registration is still active.
 func (r *Registry) IsCurrent(resolved Resolved) bool {
+	if resolved.dynamic && resolved.Handler != nil {
+		return true
+	}
 	if r == nil || resolved.Handler == nil || resolved.token == 0 {
 		return false
 	}
@@ -281,6 +351,7 @@ type Engine struct {
 	catalog     feature.Catalog
 	sessions    *rootinteraction.Runtime
 	compiler    *presentation.Compiler
+	dynamic     DynamicSource
 }
 
 const (
@@ -347,6 +418,14 @@ func (e *Engine) SetInteractionRuntime(runtime *rootinteraction.Runtime) {
 		return
 	}
 	e.compiler = presentation.NewCompiler(runtime)
+}
+
+// SetDynamicSource installs the single dynamic inline source evaluated after
+// explicit canonical handlers and before the canonical catch-all.
+func (e *Engine) SetDynamicSource(source DynamicSource) {
+	if e != nil {
+		e.dynamic = source
+	}
 }
 
 // SetPaginator configures a custom paginator for inline results.
@@ -589,28 +668,67 @@ func (e *Engine) Registry() *Registry {
 	return e.registry
 }
 
-// PreparedQuery freezes one registry match at admission time. Scope is carried
-// into TaskEngine so disable/reload can cancel queued or running feature work.
+// PreparedQuery freezes one inline match at admission time. Scope and resources
+// are carried into TaskEngine so lifecycle and resource authority stay outside
+// the handler body.
 type PreparedQuery struct {
-	query    string
-	resolved Resolved
+	query     string
+	resolved  Resolved
+	resources []tasks.ResourceRequirement
 }
 
 func (p PreparedQuery) Scope() tasks.ScopeIdentity { return p.resolved.Scope }
+func (p PreparedQuery) Query() string              { return p.query }
+func (p PreparedQuery) Resources() []tasks.ResourceRequirement {
+	return append([]tasks.ResourceRequirement(nil), p.resources...)
+}
 
-func (p PreparedQuery) Query() string { return p.query }
-
-// Prepare resolves a query without executing feature code.
+// Prepare resolves a query without executing feature code. Dynamic sources that
+// require durable lookups should use PrepareContext through production ingress.
 func (e *Engine) Prepare(rawQuery string) (PreparedQuery, error) {
+	return e.PrepareContext(context.Background(), rawQuery)
+}
+
+// PrepareContext resolves explicit canonical handlers first, then the dynamic
+// source, and finally the canonical catch-all.
+func (e *Engine) PrepareContext(ctx context.Context, rawQuery string) (PreparedQuery, error) {
 	if e == nil || e.registry == nil {
 		return PreparedQuery{}, ErrNoMatchingHandler
 	}
-	trimmed := strings.TrimSpace(rawQuery)
-	resolved, ok := e.registry.ResolveOwned(trimmed)
-	if !ok {
-		return PreparedQuery{}, ErrNoMatchingHandler
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	return PreparedQuery{query: trimmed, resolved: resolved}, nil
+	trimmed := strings.TrimSpace(rawQuery)
+	if resolved, ok := e.registry.ResolveOwnedExplicit(trimmed); ok {
+		return PreparedQuery{query: trimmed, resolved: resolved}, nil
+	}
+	if e.dynamic != nil && trimmed != "" {
+		prepared, matched, err := e.dynamic.Prepare(ctx, trimmed)
+		if err != nil {
+			return PreparedQuery{}, err
+		}
+		if matched {
+			if prepared.Scope.IsZero() || strings.TrimSpace(prepared.Pattern) == "" {
+				return PreparedQuery{}, fmt.Errorf("inline dynamic source returned invalid prepared match")
+			}
+			handler := &dynamicPreparedHandler{source: e.dynamic, prepared: prepared}
+			return PreparedQuery{
+				query: trimmed,
+				resolved: Resolved{
+					Handler: handler,
+					Args: append([]string(nil), prepared.Args...),
+					Scope: prepared.Scope,
+					pattern: handler.Pattern(),
+					dynamic: true,
+				},
+				resources: append([]tasks.ResourceRequirement(nil), prepared.Resources...),
+			}, nil
+		}
+	}
+	if resolved, ok := e.registry.ResolveOwnedFallback(trimmed); ok {
+		return PreparedQuery{query: trimmed, resolved: resolved}, nil
+	}
+	return PreparedQuery{}, ErrNoMatchingHandler
 }
 
 // Cache returns the internal inline result cache.
@@ -625,6 +743,13 @@ func (e *Engine) Execute(ctx context.Context, svc core.TelegramServicer, queryID
 
 // ExecuteWithPeerType processes an incoming inline query with peer context and answers Telegram.
 func (e *Engine) ExecuteWithPeerType(ctx context.Context, svc core.TelegramServicer, queryID int64, userID int64, rawQuery string, offset string, peerType tg.InlineQueryPeerTypeClass) error {
+	if e != nil && e.dynamic != nil {
+		if prepared, err := e.PrepareContext(ctx, rawQuery); err == nil {
+			return e.executeWithPeerType(ctx, svc, queryID, userID, prepared.query, offset, peerType, &prepared.resolved)
+		} else if err != ErrNoMatchingHandler {
+			return err
+		}
+	}
 	return e.executeWithPeerType(ctx, svc, queryID, userID, rawQuery, offset, peerType, nil)
 }
 
