@@ -2,12 +2,14 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/core"
 	corecallback "github.com/inipew/goultroid/internal/services/callback"
+	inlineservice "github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -28,11 +30,12 @@ type inlineQueryAPI interface {
 
 type assistantInlineQueryServicer struct {
 	unsupportedTelegramServicer
-	api inlineQueryAPI
+	api         inlineQueryAPI
+	interaction *interaction.ClientInteraction
 }
 
-func newAssistantInlineQueryServicer(api inlineQueryAPI) *assistantInlineQueryServicer {
-	return &assistantInlineQueryServicer{api: api}
+func newAssistantInlineQueryServicer(api inlineQueryAPI, inter *interaction.ClientInteraction) *assistantInlineQueryServicer {
+	return &assistantInlineQueryServicer{api: api, interaction: inter}
 }
 
 func (s *assistantInlineQueryServicer) AnswerInlineQuery(ctx context.Context, queryID int64, results []tg.InputBotInlineResultClass, nextOffset string, cacheTime int) error {
@@ -57,6 +60,43 @@ func (s *assistantInlineQueryServicer) AnswerInlineQueryOptions(ctx context.Cont
 	_, err := s.api.MessagesSetInlineBotResults(ctx, req)
 	return err
 }
+
+func (s *assistantInlineQueryServicer) PrepareInlineLocalMedia(
+	ctx context.Context,
+	media inlineservice.LocalMedia,
+) (inlineservice.PreparedLocalMedia, error) {
+	if s == nil || s.interaction == nil {
+		return inlineservice.PreparedLocalMedia{}, fmt.Errorf("assistant inline media transport is unavailable")
+	}
+	uploaded, err := s.interaction.UploadInlineMedia(
+		ctx,
+		media.MediaType,
+		media.Path,
+		media.FileName,
+		media.MIMEType,
+	)
+	if err != nil {
+		return inlineservice.PreparedLocalMedia{}, err
+	}
+
+	switch value := uploaded.(type) {
+	case *tg.MessageMediaPhoto:
+		photo, ok := value.Photo.AsNotEmpty()
+		if !ok {
+			return inlineservice.PreparedLocalMedia{}, fmt.Errorf("assistant inline upload returned empty photo")
+		}
+		return inlineservice.PreparedLocalMedia{Photo: photo.AsInput()}, nil
+	case *tg.MessageMediaDocument:
+		document, ok := value.Document.AsNotEmpty()
+		if !ok {
+			return inlineservice.PreparedLocalMedia{}, fmt.Errorf("assistant inline upload returned empty document")
+		}
+		return inlineservice.PreparedLocalMedia{Document: document.AsInput()}, nil
+	default:
+		return inlineservice.PreparedLocalMedia{}, fmt.Errorf("assistant inline upload returned unsupported media %T", uploaded)
+	}
+}
+
 
 func resolveMessageTarget(base interaction.MessageTarget, peer tg.InputPeerClass, msgID int) interaction.MessageTarget {
 	tPeer := base.Peer()
