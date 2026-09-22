@@ -133,6 +133,7 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		var scope tasks.ScopeIdentity
 		var resources []tasks.ResourceRequirement
 		pool := tasks.PoolID("interactive")
+		executionTimeout := 5 * time.Second
 		run := func(taskCtx context.Context) error {
 			return deps.InlineEngine.ExecuteWithPeerType(taskCtx, deps.InlineService, update.QueryID, update.UserID, update.Query, update.Offset, update.PeerType)
 		}
@@ -142,6 +143,9 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			for _, requirement := range resources {
 				if requirement.Name == "media" && requirement.Amount > 0 {
 					pool = tasks.PoolID("general")
+					// SavedResponse media is bounded to 32 MiB, but upload may
+					// legitimately exceed the text-only inline budget.
+					executionTimeout = 30 * time.Second
 					break
 				}
 			}
@@ -159,7 +163,7 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			Pool:             pool,
 			Class:            tasks.PriorityInteractive,
 			OrderingKey:      fmt.Sprintf("inline:%d", update.QueryID),
-			ExecutionTimeout: 5 * time.Second,
+			ExecutionTimeout: executionTimeout,
 			Resources:        append([]tasks.ResourceRequirement(nil), resources...),
 			Handler:          run,
 		})
