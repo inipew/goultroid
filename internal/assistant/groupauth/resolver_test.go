@@ -82,11 +82,16 @@ func supergroupRequest(userID int64) core.GroupRoleRequest {
 func TestTelegramRoleResolverSupergroupRoleMapping(t *testing.T) {
 	api := &roleAPIStub{channel: map[int64]tg.ChannelParticipantClass{
 		1: &tg.ChannelParticipant{UserID: 1},
-		2: &tg.ChannelParticipantAdmin{UserID: 2, AdminRights: tg.ChatAdminRights{
-			DeleteMessages: true,
-			BanUsers:       true,
-			PinMessages:    true,
-		}},
+		2: &tg.ChannelParticipantAdmin{
+			UserID:     2,
+			CanEdit:    true,
+			PromotedBy: 77,
+			AdminRights: tg.ChatAdminRights{
+				DeleteMessages: true,
+				BanUsers:       true,
+				PinMessages:    true,
+			},
+		},
 		3: &tg.ChannelParticipantCreator{UserID: 3, AdminRights: tg.ChatAdminRights{
 			AddAdmins:    true,
 			ManageTopics: true,
@@ -110,7 +115,8 @@ func TestTelegramRoleResolverSupergroupRoleMapping(t *testing.T) {
 	}{
 		{1, core.GroupActorRoleMember, nil},
 		{2, core.GroupActorRoleAdministrator, func(p core.GroupActorPrincipal) bool {
-			return p.Rights.DeleteMessages && p.Rights.BanUsers && p.Rights.PinMessages
+			return p.Rights.DeleteMessages && p.Rights.BanUsers && p.Rights.PinMessages &&
+				p.CanEdit && p.PromotedBy == 77
 		}},
 		{3, core.GroupActorRoleCreator, func(p core.GroupActorPrincipal) bool {
 			return p.Rights.AddAdmins && p.Rights.ManageTopics
@@ -312,11 +318,18 @@ func TestTelegramRoleResolverBasicGroupUsesManagedFullChat(t *testing.T) {
 	for _, tc := range []struct {
 		userID int64
 		role   core.GroupActorRole
+		check  func(core.GroupActorPrincipal) bool
 	}{
-		{1, core.GroupActorRoleMember},
-		{2, core.GroupActorRoleAdministrator},
-		{3, core.GroupActorRoleCreator},
-		{9, core.GroupActorRoleLeft},
+		{1, core.GroupActorRoleMember, nil},
+		{2, core.GroupActorRoleAdministrator, func(p core.GroupActorPrincipal) bool {
+			return p.Rights.BanUsers && p.Rights.DeleteMessages && p.Rights.PinMessages &&
+				!p.Rights.AddAdmins
+		}},
+		{3, core.GroupActorRoleCreator, func(p core.GroupActorPrincipal) bool {
+			return p.Rights.BanUsers && p.Rights.DeleteMessages && p.Rights.PinMessages &&
+				p.Rights.AddAdmins
+		}},
+		{9, core.GroupActorRoleLeft, nil},
 	} {
 		snapshot, err := resolver.ResolveGroupRoleFresh(context.Background(), core.GroupRoleRequest{
 			ChatID: 55,
@@ -329,6 +342,9 @@ func TestTelegramRoleResolverBasicGroupUsesManagedFullChat(t *testing.T) {
 		}
 		if !snapshot.Principal.Verified || snapshot.Principal.Role != tc.role {
 			t.Fatalf("user %d principal=%+v want role=%s", tc.userID, snapshot.Principal, tc.role)
+		}
+		if tc.check != nil && !tc.check(snapshot.Principal) {
+			t.Fatalf("user %d effective basic-group rights=%+v", tc.userID, snapshot.Principal.Rights)
 		}
 	}
 	participantCalls, fullCalls := api.calls()
