@@ -122,10 +122,12 @@ func TestP7GManagedMutationRPCsUseExistingRPCExecutor(t *testing.T) {
 	for _, method := range []string{
 		"ChannelsEditBanned",
 		"ChannelsEditAdmin",
+		"ChannelsDeleteMessages",
 		"MessagesDeleteChatUser",
 		"MessagesEditChatAdmin",
 		"MessagesUpdatePinnedMessage",
 		"MessagesEditChatDefaultBannedRights",
+		"MessagesDeleteMessages",
 	} {
 		start := strings.Index(source, "func (a *managedAPI) "+method+"(")
 		if start < 0 {
