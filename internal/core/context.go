@@ -383,6 +383,20 @@ func (c *Context) RepliedToSelf() (bool, error) {
 	return reply.SenderID == c.Self.ID, nil
 }
 
+// AddressedToSelf reports whether the triggering message explicitly addresses
+// this Assistant either through a Telegram mention entity or by replying to a
+// message sent by the Assistant. Reply inspection remains lazy and inherits the
+// linked-chat/forum-topic fences enforced by GetReply.
+func (c *Context) AddressedToSelf() (bool, error) {
+	if c == nil {
+		return false, nil
+	}
+	if c.MentionedSelf() {
+		return true, nil
+	}
+	return c.RepliedToSelf()
+}
+
 // URLs returns all URLs present in the triggering message.
 func (c *Context) URLs() []string {
 	if c != nil && c.Message != nil {
