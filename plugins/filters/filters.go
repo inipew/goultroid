@@ -28,8 +28,9 @@ const (
 	MaxRulesPerChat              = 512
 	MaxKeywordBytes              = 256
 	MaxActiveChats               = 50_000
-	maxCompiledFilterCacheChats  = 500
-	maxFilterCooldownEntries      = 1_000
+	maxCompiledFilterCacheChats = 500
+	maxFilterCooldownEntries     = 1_000
+	ruleLockStripes              = 64
 )
 
 var filterTaskSequence atomic.Uint64
@@ -68,6 +69,7 @@ type Plugin struct {
 	chatFilters  map[int64]*compiledFilterSet
 	cooldownMu   sync.Mutex
 	lastReply    map[string]time.Time
+	ruleLocks    [ruleLockStripes]sync.RWMutex
 }
 
 func New(db Repository, svcFunc func() core.TelegramServicer, responses ...*savedresponse.Service) *Plugin {
@@ -173,6 +175,11 @@ func (p *Plugin) getChatID(ctx *core.Context) int64 {
 		return ctx.Chat.ID
 	}
 	return ctx.SenderID()
+}
+
+func (p *Plugin) ruleLock(chatID int64) *sync.RWMutex {
+	mixed := uint64(chatID) * 0x9e3779b97f4a7c15
+	return &p.ruleLocks[mixed%ruleLockStripes]
 }
 
 func (p *Plugin) nextTaskID(kind string, chatID int64) tasks.TaskID {
@@ -317,6 +324,10 @@ func (p *Plugin) saveFilterResponse(ctx *core.Context, chatID int64, keyword str
 		return err
 	}
 
+	lock := p.ruleLock(chatID)
+	lock.Lock()
+	defer lock.Unlock()
+
 	p.featureState.MarkUnknown(chatID)
 	previous, err := p.db.GetFilter(ctx.Ctx, chatID, keyword)
 	if err != nil {
@@ -348,6 +359,10 @@ func (p *Plugin) handleStop(ctx *core.Context) error {
 	}
 	keyword := strings.ToLower(strings.TrimSpace(ctx.Args[0]))
 	chatID := p.getChatID(ctx)
+	lock := p.ruleLock(chatID)
+	lock.Lock()
+	defer lock.Unlock()
+
 	filter, err := p.db.GetFilter(ctx.Ctx, chatID, keyword)
 	if err != nil {
 		return err
@@ -551,6 +566,10 @@ func (p *Plugin) matchAssistantRule(
 	if p.db == nil || p.responses == nil || message.ChatID == 0 {
 		return nil, false, nil
 	}
+
+	lock := p.ruleLock(message.ChatID)
+	lock.RLock()
+	defer lock.RUnlock()
 
 	filterSet, err := p.compiledFiltersForChat(ctx, message.ChatID)
 	if err != nil {
