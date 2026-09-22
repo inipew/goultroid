@@ -267,6 +267,7 @@ type Context struct {
 	Principal      *Principal
 	GroupPrincipal *GroupActorPrincipal
 	GroupRoles     GroupRoleResolver
+	groupStateStore GroupStateStore
 
 	// LastResponseID tracks the ID of the bot's most recent reply in this context
 	LastResponseID int
