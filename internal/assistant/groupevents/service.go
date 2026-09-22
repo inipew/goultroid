@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gotd/td/tg"
@@ -55,12 +56,15 @@ type Service struct {
 	reader core.GroupStateNamespaceReader
 	bus    *core.EventBus
 
-	mu          sync.RWMutex
-	chats       map[int64]chatConfig
-	activeChats int
-	transport   Transport
-	sub         *core.Subscription
-	loaded      bool
+	mu              sync.RWMutex
+	chats           map[int64]chatConfig
+	activeChats     int
+	welcomeInterest core.ChatFeatureSnapshot
+	goodbyeInterest core.ChatFeatureSnapshot
+	ready           atomic.Bool
+	transport       Transport
+	sub             *core.Subscription
+	loaded          bool
 }
 
 func New(store core.GroupStateStore, bus *core.EventBus) *Service {
@@ -155,18 +159,29 @@ func (s *Service) Load(ctx context.Context) error {
 	}
 
 	activeChats := 0
-	for _, config := range chats {
+	welcomeChats := make([]int64, 0, len(chats))
+	goodbyeChats := make([]int64, 0, len(chats))
+	for chatID, config := range chats {
 		if enabledChat(config) {
 			activeChats++
 		}
+		if config.welcome.Config.Enabled {
+			welcomeChats = append(welcomeChats, chatID)
+		}
+		if config.goodbye.Config.Enabled {
+			goodbyeChats = append(goodbyeChats, chatID)
+		}
 	}
 
+	s.welcomeInterest.ReplaceLoaded(welcomeChats)
+	s.goodbyeInterest.ReplaceLoaded(goodbyeChats)
 	s.mu.Lock()
 	s.chats = chats
 	s.activeChats = activeChats
 	s.loaded = true
 	s.syncSubscriptionLocked()
 	s.mu.Unlock()
+	s.ready.Store(true)
 	return nil
 }
 
@@ -255,15 +270,17 @@ func (s *Service) State(chatID int64, kind core.GroupServiceKind) (State, error)
 }
 
 func (s *Service) Interested(chatID int64, kind core.GroupServiceKind) bool {
-	if s == nil || chatID <= 0 {
+	if s == nil || chatID <= 0 || !s.ready.Load() {
 		return false
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if !s.loaded {
+	switch kind {
+	case core.GroupServiceMemberJoined:
+		return s.welcomeInterest.Interested(chatID)
+	case core.GroupServiceMemberLeft:
+		return s.goodbyeInterest.Interested(chatID)
+	default:
 		return false
 	}
-	return s.stateLocked(chatID, kind).Config.Enabled
 }
 
 func (s *Service) applyState(chatID int64, state State) {
@@ -287,6 +304,13 @@ func (s *Service) applyState(chatID int64, state State) {
 	s.chats[chatID] = current
 	s.syncSubscriptionLocked()
 	s.mu.Unlock()
+
+	switch state.Kind {
+	case core.GroupServiceMemberJoined:
+		s.welcomeInterest.SetActive(chatID, state.Config.Enabled)
+	case core.GroupServiceMemberLeft:
+		s.goodbyeInterest.SetActive(chatID, state.Config.Enabled)
+	}
 }
 
 func (s *Service) Configure(
