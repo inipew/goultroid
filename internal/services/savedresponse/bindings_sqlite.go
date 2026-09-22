@@ -28,12 +28,12 @@ func (r *SQLiteSurfaceBindingRepository) CreateBinding(ctx context.Context, bind
 		return SurfaceBinding{}, err
 	}
 	now := time.Now().UTC()
-	_, err = r.db.ExecContext(ctx, \`
+	_, err = r.db.ExecContext(ctx, `
 		INSERT INTO saved_response_surface_bindings (
 			surface, alias, provider, provider_scope_id, provider_key,
 			enabled, revision, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
-	\`,
+	`,
 		string(normalized.Surface),
 		normalized.Alias,
 		normalized.Reference.Provider,
@@ -63,12 +63,12 @@ func (r *SQLiteSurfaceBindingRepository) GetBinding(ctx context.Context, surface
 	if err != nil {
 		return nil, err
 	}
-	row := r.db.QueryRowContext(ctx, \`
+	row := r.db.QueryRowContext(ctx, `
 		SELECT surface, alias, provider, provider_scope_id, provider_key,
 		       enabled, revision, created_at, updated_at
 		FROM saved_response_surface_bindings
 		WHERE surface = ? AND alias = ?
-	\`, string(surface), alias)
+	`, string(surface), alias)
 	binding, err := scanSurfaceBinding(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -90,16 +90,16 @@ func (r *SQLiteSurfaceBindingRepository) ListBindings(ctx context.Context, surfa
 	if limit <= 0 || limit > MaxBindingList {
 		limit = MaxBindingList
 	}
-	query := \`
+	query := `
 		SELECT surface, alias, provider, provider_scope_id, provider_key,
 		       enabled, revision, created_at, updated_at
 		FROM saved_response_surface_bindings
-		WHERE surface = ?\`
+		WHERE surface = ?`
 	args := []any{string(surface)}
 	if !includeDisabled {
-		query += \` AND enabled = 1\`
+		query += ` AND enabled = 1`
 	}
-	query += \` ORDER BY alias ASC LIMIT ?\`
+	query += ` ORDER BY alias ASC LIMIT ?`
 	args = append(args, limit)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
@@ -134,12 +134,12 @@ func (r *SQLiteSurfaceBindingRepository) UpdateBinding(ctx context.Context, bind
 		return SurfaceBinding{}, err
 	}
 	now := time.Now().UTC()
-	result, err := r.db.ExecContext(ctx, \`
+	result, err := r.db.ExecContext(ctx, `
 		UPDATE saved_response_surface_bindings
 		SET provider = ?, provider_scope_id = ?, provider_key = ?,
 		    enabled = ?, revision = revision + 1, updated_at = ?
 		WHERE surface = ? AND alias = ? AND revision = ?
-	\`,
+	`,
 		normalized.Reference.Provider,
 		normalized.Reference.ScopeID,
 		normalized.Reference.Key,
@@ -177,11 +177,11 @@ func (r *SQLiteSurfaceBindingRepository) SetBindingEnabled(ctx context.Context, 
 		return SurfaceBinding{}, err
 	}
 	now := time.Now().UTC()
-	result, err := r.db.ExecContext(ctx, \`
+	result, err := r.db.ExecContext(ctx, `
 		UPDATE saved_response_surface_bindings
 		SET enabled = ?, revision = revision + 1, updated_at = ?
 		WHERE surface = ? AND alias = ? AND revision = ?
-	\`, enabled, now, string(surface), alias, expectedRevision)
+	`, enabled, now, string(surface), alias, expectedRevision)
 	if err != nil {
 		return SurfaceBinding{}, fmt.Errorf("set saved response surface binding enabled: %w", err)
 	}
@@ -209,10 +209,10 @@ func (r *SQLiteSurfaceBindingRepository) DeleteBinding(ctx context.Context, surf
 	if err != nil {
 		return err
 	}
-	result, err := r.db.ExecContext(ctx, \`
+	result, err := r.db.ExecContext(ctx, `
 		DELETE FROM saved_response_surface_bindings
 		WHERE surface = ? AND alias = ? AND revision = ?
-	\`, string(surface), alias, expectedRevision)
+	`, string(surface), alias, expectedRevision)
 	if err != nil {
 		return fmt.Errorf("delete saved response surface binding: %w", err)
 	}
@@ -255,10 +255,10 @@ func normalizeSurfaceAlias(surface Surface, alias string) (Surface, string, erro
 
 func bindingExists(ctx context.Context, db *database.DB, surface Surface, alias string) bool {
 	var count int
-	if err := db.QueryRowContext(ctx, \`
+	if err := db.QueryRowContext(ctx, `
 		SELECT count(*) FROM saved_response_surface_bindings
 		WHERE surface = ? AND alias = ?
-	\`, string(surface), alias).Scan(&count); err != nil {
+	`, string(surface), alias).Scan(&count); err != nil {
 		return false
 	}
 	return count != 0
