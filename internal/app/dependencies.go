@@ -5,6 +5,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/addon"
 	"github.com/inipew/goultroid/internal/assistant"
+	"github.com/inipew/goultroid/internal/assistant/groupevents"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/idempotency"
@@ -78,6 +79,7 @@ type domainServices struct {
 	settingsService  *settings.Service
 	settingsRegistry *settings.Registry
 	groupState       *groupstate.SQLiteStore
+	groupEvents      *groupevents.Service
 	schedEngine      *scheduler.Engine
 	storage          storage.Storage
 	mediaService     *mediaSvc.Service
