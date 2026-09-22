@@ -62,6 +62,7 @@ type SQLiteStore struct {
 }
 
 var _ core.GroupStateStore = (*SQLiteStore)(nil)
+var _ core.GroupStateNamespaceReader = (*SQLiteStore)(nil)
 
 func NewSQLiteStore(db *database.DB) *SQLiteStore {
 	store, err := NewSQLiteStoreWithLimits(db, DefaultLimits())
@@ -151,6 +152,49 @@ func scanRecord(scanner interface{ Scan(...any) error }) (core.GroupStateRecord,
 		record.ExpiresAt = &expiry
 	}
 	return record, nil
+}
+
+func (s *SQLiteStore) ListNamespace(ctx context.Context, namespace string, limit int) ([]core.GroupStateRecord, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("%w: store unavailable", core.ErrUnavailable)
+	}
+	normalized, err := core.NormalizeGroupStateKey(core.GroupStateKey{
+		ChatID:    1,
+		Namespace: namespace,
+		Key:       "preload",
+	})
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 || limit > s.limits.MaxEntries {
+		limit = s.limits.MaxEntries
+	}
+	now := s.now().UTC()
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT chat_id, namespace, key, value, revision, updated_by, updated_at, expires_at
+		FROM assistant_group_state
+		WHERE namespace = ?
+		  AND (expires_at IS NULL OR expires_at > ?)
+		ORDER BY chat_id ASC, key ASC
+		LIMIT ?
+	`, normalized.Namespace, now, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list group state namespace: %w", err)
+	}
+	defer rows.Close()
+
+	records := make([]core.GroupStateRecord, 0)
+	for rows.Next() {
+		record, scanErr := scanRecord(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan group state namespace: %w", scanErr)
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate group state namespace: %w", err)
+	}
+	return records, nil
 }
 
 func (s *SQLiteStore) Get(ctx context.Context, key core.GroupStateKey) (core.GroupStateRecord, error) {
