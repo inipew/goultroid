@@ -386,7 +386,6 @@ func TestUpdateBindingCannotRenameIntoAnotherIdentity(t *testing.T) {
 	}
 }
 
-
 func TestPreparedBindingRejectsResourceClassDrift(t *testing.T) {
 	repo, _ := newSurfaceBindingRepository(t)
 	ctx := context.Background()
@@ -433,7 +432,6 @@ func TestPreparedBindingRejectsResourceClassDrift(t *testing.T) {
 		t.Fatalf("ResolvePrepared(resource drift) error = %v, want %v", err, ErrBindingStale)
 	}
 }
-
 
 func TestPreparedBindingRejectsDeleteRecreateABA(t *testing.T) {
 	repo, _ := newSurfaceBindingRepository(t)
