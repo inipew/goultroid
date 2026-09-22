@@ -376,3 +376,40 @@ func TestTelegramRoleResolverForbiddenBasicGroupIsVerificationFailure(t *testing
 		t.Fatalf("forbidden participant list error=%v", err)
 	}
 }
+
+
+func TestP7LHighCardinalityRoleCacheRemainsBounded(t *testing.T) {
+	const (
+		total    = 1024
+		capacity = 128
+	)
+	channel := make(map[int64]tg.ChannelParticipantClass, total)
+	userIDs := make([]int64, 0, total)
+	for i := int64(1); i <= total; i++ {
+		channel[i] = &tg.ChannelParticipant{UserID: i}
+		userIDs = append(userIDs, i)
+	}
+	api := &roleAPIStub{channel: channel}
+	resolver := NewTelegramRoleResolver(api, rolePeerResolver(userIDs...))
+	resolver.cacheCapacity = capacity
+
+	for _, userID := range userIDs {
+		snapshot, err := resolver.ResolveGroupRoleFresh(context.Background(), supergroupRequest(userID))
+		if err != nil {
+			t.Fatalf("user %d: %v", userID, err)
+		}
+		if snapshot.Principal.Role != core.GroupActorRoleMember || !snapshot.Principal.Verified {
+			t.Fatalf("user %d snapshot=%+v", userID, snapshot)
+		}
+	}
+	if got := len(resolver.entries); got != capacity {
+		t.Fatalf("role cache size=%d want %d", got, capacity)
+	}
+	if got := len(resolver.verificationSlots); got != 0 {
+		t.Fatalf("verification slots leaked=%d", got)
+	}
+	participantCalls, fullCalls := api.calls()
+	if participantCalls != total || fullCalls != 0 {
+		t.Fatalf("RPC calls participant=%d full=%d want %d/0", participantCalls, fullCalls, total)
+	}
+}
