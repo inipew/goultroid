@@ -20,6 +20,7 @@ import (
 const (
 	assistantSavedResponseTimeout    = 2 * time.Minute
 	assistantGroupQueueTimeout       = 10 * time.Second
+	assistantGroupExecutionTimeout   = 30 * time.Second
 	assistantSavedResponseMetricName = "savedresponse"
 )
 
@@ -315,10 +316,14 @@ func (r *Router) executeCanonicalTask(ctx context.Context, senderID int64, cmd c
 	orderingKey := correlationID
 	quotaOwner := tasks.OwnerID(fmt.Sprintf("assistant:user:%d", senderID))
 	var queueDeadline time.Time
+	executionTimeout := cmd.Timeout
 	if coreCtx.IsManagerGroup() && coreCtx.Chat != nil && coreCtx.Chat.ID > 0 {
 		orderingKey = core.GroupOrderingKey(coreCtx.Chat.ID, coreCtx.TopicID())
 		quotaOwner = tasks.OwnerID(fmt.Sprintf("telegram:chat:%d", coreCtx.Chat.ID))
 		queueDeadline = time.Now().Add(assistantGroupQueueTimeout)
+		if executionTimeout <= 0 {
+			executionTimeout = assistantGroupExecutionTimeout
+		}
 	}
 	handler := core.FilterMiddlewareForSource(cmd, core.ExecutionAssistant)(cmd.Handler)
 	var freshAuthorizationError chan error
@@ -334,7 +339,7 @@ func (r *Router) executeCanonicalTask(ctx context.Context, senderID int64, cmd c
 		Class:            tasks.PriorityInteractive,
 		OrderingKey:      orderingKey,
 		QueueDeadline:    queueDeadline,
-		ExecutionTimeout: cmd.Timeout,
+		ExecutionTimeout: executionTimeout,
 		Resources:        append([]tasks.ResourceRequirement(nil), cmd.Resources...),
 		Handler: func(taskCtx context.Context) error {
 			runCtx, cancel := context.WithCancel(taskCtx)
