@@ -48,7 +48,6 @@ func (h *featureInlineHandler) Version() string {
 	return fmt.Sprintf("%s:%d", h.scope.Owner, h.scope.Generation)
 }
 
-
 func (h *featureInlineHandler) HandleInline(ctx *inlineservice.InlineContext) ([]inlineservice.InlineResult, error) {
 	return h.delegate.HandleInline(ctx)
 }

@@ -613,7 +613,6 @@ func (e *Engine) Prepare(rawQuery string) (PreparedQuery, error) {
 	return PreparedQuery{query: trimmed, resolved: resolved}, nil
 }
 
-
 // Cache returns the internal inline result cache.
 func (e *Engine) Cache() *Cache {
 	return e.cache

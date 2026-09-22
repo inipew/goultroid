@@ -27,8 +27,8 @@ type inlineRootHandler struct {
 	startTime time.Time
 }
 
-func (*inlineRootHandler) Pattern() string     { return "" }
-func (*inlineRootHandler) Description() string { return "GoUltroid interactive inline assistant" }
+func (*inlineRootHandler) Pattern() string                      { return "" }
+func (*inlineRootHandler) Description() string                  { return "GoUltroid interactive inline assistant" }
 func (*inlineRootHandler) Matcher() inlineservice.InlineMatcher { return nil }
 func (*inlineRootHandler) AccessPolicy() inlineservice.InlineAccessPolicy {
 	return inlineservice.InlineAccessPolicy{}
@@ -69,8 +69,8 @@ type inlinePingHandler struct {
 	startTime time.Time
 }
 
-func (*inlinePingHandler) Pattern() string     { return "ping" }
-func (*inlinePingHandler) Description() string { return "Check userbot uptime and liveness" }
+func (*inlinePingHandler) Pattern() string                      { return "ping" }
+func (*inlinePingHandler) Description() string                  { return "Check userbot uptime and liveness" }
 func (*inlinePingHandler) Matcher() inlineservice.InlineMatcher { return nil }
 func (*inlinePingHandler) AccessPolicy() inlineservice.InlineAccessPolicy {
 	return inlineservice.InlineAccessPolicy{}
@@ -106,8 +106,8 @@ type inlineHelpHandler struct {
 	catalog feature.Catalog
 }
 
-func (*inlineHelpHandler) Pattern() string     { return "help" }
-func (*inlineHelpHandler) Description() string { return "Search canonical feature commands" }
+func (*inlineHelpHandler) Pattern() string                      { return "help" }
+func (*inlineHelpHandler) Description() string                  { return "Search canonical feature commands" }
 func (*inlineHelpHandler) Matcher() inlineservice.InlineMatcher { return nil }
 func (*inlineHelpHandler) AccessPolicy() inlineservice.InlineAccessPolicy {
 	return inlineservice.InlineAccessPolicy{}

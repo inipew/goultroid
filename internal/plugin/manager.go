@@ -300,7 +300,6 @@ func (m *Manager) SetInlineRegistry(registry *inlineservice.Registry) {
 	m.mu.Unlock()
 }
 
-
 // SetPlatformServices attaches platform managers and capability gate to this manager.
 func (m *Manager) SetPlatformServices(
 	gate *CapabilityGate,

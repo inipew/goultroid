@@ -51,7 +51,6 @@ func (r *Runtime) ResolveCallback(ctx context.Context, data []byte, actual Bindi
 	return ResolvedCallback{Token: token, Session: resolved.Session, Context: resolved.Context}, nil
 }
 
-
 func bindingHasTarget(binding Binding) bool {
 	return binding.ChatID != 0 || binding.MessageID != 0 || binding.InlineMessageID != ""
 }

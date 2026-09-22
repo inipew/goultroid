@@ -39,8 +39,10 @@ func (inlineRuntimeTestPlugin) InlineBindings() []inlineservice.Binding {
 
 type inlineRuntimeTestHandler struct{}
 
-func (*inlineRuntimeTestHandler) Pattern() string     { return "p4lookup" }
-func (*inlineRuntimeTestHandler) Description() string { return "legacy description must not own policy" }
+func (*inlineRuntimeTestHandler) Pattern() string { return "p4lookup" }
+func (*inlineRuntimeTestHandler) Description() string {
+	return "legacy description must not own policy"
+}
 func (*inlineRuntimeTestHandler) HandleInline(*inlineservice.InlineContext) ([]inlineservice.InlineResult, error) {
 	return []inlineservice.InlineResult{{ID: "ok", Title: "ok", Text: "ok"}}, nil
 }
