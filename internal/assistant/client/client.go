@@ -178,6 +178,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	managedAPI := &managedAPI{raw: tdClient.API(), executor: c.rpcExecutor}
 	c.resolver.SetEntityFetcher(peer.NewTelegramEntityFetcher(managedAPI))
 	c.cmdRouter.SetGroupRoleResolver(assistantgroupauth.NewTelegramRoleResolver(managedAPI, c.resolver))
+	c.cmdRouter.SetGroupQueryReader(newManagedGroupQuery(managedAPI, c.resolver))
 	c.interaction = interaction.NewClientInteraction(managedAPI, c.logger)
 	c.interaction.SetRPCExecutor(c.rpcExecutor)
 	c.interaction.SetMediaSender(message.NewSender(tdClient.API()), uploader.NewUploader(tdClient.API()))
@@ -281,6 +282,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 			c.mu.Lock()
 			c.self = user
 			c.mu.Unlock()
+			c.cmdRouter.SetBotUsername(user.Username)
 
 			// Telegram's native command menu is generated from the canonical
 			// Assistant command surface. Registration is best-effort so a
