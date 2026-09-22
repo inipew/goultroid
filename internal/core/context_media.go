@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
