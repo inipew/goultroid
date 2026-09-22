@@ -28,11 +28,15 @@ func (r *SQLiteSurfaceBindingRepository) CreateBinding(ctx context.Context, bind
 		return SurfaceBinding{}, err
 	}
 	now := time.Now().UTC()
-	_, err = r.db.ExecContext(ctx, `
+	result, err := r.db.ExecContext(ctx, `
 		INSERT INTO saved_response_surface_bindings (
 			surface, alias, provider, provider_scope_id, provider_key,
 			enabled, revision, incarnation, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, 1, lower(hex(randomblob(16))), ?, ?)
+		)
+		SELECT ?, ?, ?, ?, ?, ?, 1, lower(hex(randomblob(16))), ?, ?
+		WHERE (
+			SELECT count(*) FROM saved_response_surface_bindings WHERE surface = ?
+		) < ?
 	`,
 		string(normalized.Surface),
 		normalized.Alias,
@@ -42,12 +46,24 @@ func (r *SQLiteSurfaceBindingRepository) CreateBinding(ctx context.Context, bind
 		normalized.Enabled,
 		now,
 		now,
+		string(normalized.Surface),
+		MaxBindingList,
 	)
 	if err != nil {
 		if bindingExists(ctx, r.db, normalized.Surface, normalized.Alias) {
 			return SurfaceBinding{}, ErrBindingExists
 		}
 		return SurfaceBinding{}, fmt.Errorf("create saved response surface binding: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return SurfaceBinding{}, fmt.Errorf("inspect saved response surface binding insert: %w", err)
+	}
+	if affected != 1 {
+		if bindingExists(ctx, r.db, normalized.Surface, normalized.Alias) {
+			return SurfaceBinding{}, ErrBindingExists
+		}
+		return SurfaceBinding{}, ErrBindingCapacity
 	}
 	created, err := r.GetBinding(ctx, normalized.Surface, normalized.Alias)
 	if err != nil {
