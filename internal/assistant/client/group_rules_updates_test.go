@@ -361,7 +361,6 @@ func TestP7IKnownBroadcastStillFailsClosedBeforeInterest(t *testing.T) {
 	}
 }
 
-
 func TestP7IGlobalPrivilegedSenderStopsBeforeInterestCacheAndTask(t *testing.T) {
 	rules := &p7iRuleIngressStub{interested: true}
 	resolver := &groupServiceResolverStub{resolved: &tg.InputPeerChat{ChatID: 77}}
