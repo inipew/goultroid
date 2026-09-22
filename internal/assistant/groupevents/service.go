@@ -62,6 +62,7 @@ type Service struct {
 	welcomeInterest core.ChatFeatureSnapshot
 	goodbyeInterest core.ChatFeatureSnapshot
 	ready           atomic.Bool
+	closed          atomic.Bool
 	transport       Transport
 	sub             *core.Subscription
 	loaded          bool
@@ -122,7 +123,7 @@ func decodeConfig(kind core.GroupServiceKind, raw []byte) (Config, error) {
 }
 
 func (s *Service) Load(ctx context.Context) error {
-	if s == nil || s.store == nil || s.reader == nil || s.bus == nil {
+	if s == nil || s.store == nil || s.reader == nil || s.bus == nil || s.closed.Load() {
 		return ErrUnavailable
 	}
 	if ctx == nil {
@@ -176,6 +177,10 @@ func (s *Service) Load(ctx context.Context) error {
 	s.welcomeInterest.ReplaceLoaded(welcomeChats)
 	s.goodbyeInterest.ReplaceLoaded(goodbyeChats)
 	s.mu.Lock()
+	if s.closed.Load() {
+		s.mu.Unlock()
+		return ErrUnavailable
+	}
 	s.chats = chats
 	s.activeChats = activeChats
 	s.loaded = true
@@ -186,16 +191,18 @@ func (s *Service) Load(ctx context.Context) error {
 }
 
 func (s *Service) SetTransport(transport Transport) {
-	if s == nil {
+	if s == nil || s.closed.Load() {
 		return
 	}
 	s.mu.Lock()
-	s.transport = transport
+	if !s.closed.Load() {
+		s.transport = transport
+	}
 	s.mu.Unlock()
 }
 
 func (s *Service) Close() {
-	if s == nil {
+	if s == nil || !s.closed.CompareAndSwap(false, true) {
 		return
 	}
 	s.ready.Store(false)
@@ -222,7 +229,7 @@ func (s *Service) syncSubscriptionLocked() {
 	if s.bus == nil {
 		return
 	}
-	active := s.loaded && s.hasEnabledLocked()
+	active := !s.closed.Load() && s.loaded && s.hasEnabledLocked()
 	if active && s.sub == nil {
 		s.sub = s.bus.SubscribeWithOptions(
 			core.EventTypeGroupService,
@@ -305,6 +312,10 @@ func (s *Service) applyState(chatID int64, state State) {
 	// Retain disabled durable state as well. Status/revision must reflect the
 	// persisted P7-F row rather than falling back to synthetic defaults.
 	s.chats[chatID] = current
+	if s.closed.Load() {
+		s.mu.Unlock()
+		return
+	}
 
 	setInterest := func() {
 		switch state.Kind {
@@ -334,7 +345,7 @@ func (s *Service) Configure(
 	enabled bool,
 	template string,
 ) (State, error) {
-	if s == nil || s.store == nil || ctx == nil || ctx.Chat == nil {
+	if s == nil || s.store == nil || ctx == nil || ctx.Chat == nil || s.closed.Load() {
 		return State{}, ErrUnavailable
 	}
 	key, err := keyFor(kind)
