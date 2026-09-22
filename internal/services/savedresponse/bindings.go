@@ -273,7 +273,7 @@ func (s *BindingService) ResolvePrepared(ctx context.Context, prepared PreparedB
 	if err != nil {
 		return ResolvedBinding{}, err
 	}
-	if resolved.Scope != prepared.scope {
+	if resolved.Scope != prepared.scope || resolved.Response.HasMedia() != prepared.hasMedia {
 		return ResolvedBinding{}, ErrBindingStale
 	}
 	return ResolvedBinding{Binding: *current, Resolved: resolved}, nil
