@@ -997,3 +997,182 @@ func TestEngine_Response_GalleryAndPrivate(t *testing.T) {
 		t.Errorf("expected CacheTime=0 for private results, got %d", svc.lastOpts.CacheTime)
 	}
 }
+
+
+type testDynamicInlineSource struct {
+	match     string
+	scope     tasks.ScopeIdentity
+	resources []tasks.ResourceRequirement
+	result    InlineResult
+	prepares  int
+	executes  int
+	finalized int
+}
+
+func (s *testDynamicInlineSource) Prepare(_ context.Context, query string) (DynamicPrepared, bool, error) {
+	s.prepares++
+	fields := strings.Fields(query)
+	if len(fields) == 0 || fields[0] != s.match {
+		return DynamicPrepared{}, false, nil
+	}
+	return DynamicPrepared{
+		Pattern:   s.match,
+		Args:      append([]string(nil), fields[1:]...),
+		Scope:     s.scope,
+		Resources: append([]tasks.ResourceRequirement(nil), s.resources...),
+		State:     "prepared",
+	}, true, nil
+}
+
+func (s *testDynamicInlineSource) Execute(_ context.Context, prepared DynamicPrepared, ctx *InlineContext) (*InlineResponse, error) {
+	s.executes++
+	if prepared.State != "prepared" {
+		return nil, fmt.Errorf("unexpected prepared state: %v", prepared.State)
+	}
+	if ctx == nil || ctx.Pattern != s.match {
+		return nil, fmt.Errorf("unexpected inline context")
+	}
+	resp := &InlineResponse{
+		Results: []InlineResult{s.result},
+		Cache:   CacheNone,
+		Private: true,
+	}
+	resp.Finalize = func() { s.finalized++ }
+	return resp, nil
+}
+
+type mediaPreparingInlineService struct {
+	recordingInlineService
+	prepared PreparedLocalMedia
+	calls    int
+	path     string
+}
+
+func (s *mediaPreparingInlineService) PrepareInlineLocalMedia(_ context.Context, media LocalMedia) (PreparedLocalMedia, error) {
+	s.calls++
+	s.path = media.Path
+	return s.prepared, nil
+}
+
+func TestEngine_DynamicSourceResolvesBetweenExplicitAndCatchAll(t *testing.T) {
+	registry := NewRegistry()
+	explicit := &mockInlineHandler{
+		pattern: "help",
+		results: []InlineResult{{ID: "help", Type: ResultArticle, Title: "Help", Text: "canonical help"}},
+	}
+	fallback := &mockInlineHandler{
+		pattern: "",
+		results: []InlineResult{{ID: "root", Type: ResultArticle, Title: "Root", Text: "canonical root"}},
+	}
+	if err := registry.Register(explicit); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(fallback); err != nil {
+		t.Fatal(err)
+	}
+
+	scope := tasks.ScopeIdentity{Owner: "plugin:saved", Generation: 9}
+	dynamic := &testDynamicInlineSource{
+		match:     "saved",
+		scope:     scope,
+		resources: []tasks.ResourceRequirement{{Name: "media", Amount: 1}},
+		result:    InlineResult{ID: "saved-1", Type: ResultArticle, Title: "Saved", Text: "saved response"},
+	}
+	engine := NewEngine(registry, zap.NewNop())
+	engine.SetDynamicSource(dynamic)
+
+	help, err := engine.PrepareContext(context.Background(), "help topic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if help.resolved.Handler != explicit {
+		t.Fatal("dynamic source shadowed explicit canonical handler")
+	}
+	if dynamic.prepares != 0 {
+		t.Fatalf("dynamic prepare calls after explicit match=%d, want 0", dynamic.prepares)
+	}
+
+	prepared, err := engine.PrepareContext(context.Background(), "saved arg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Scope() != scope {
+		t.Fatalf("dynamic scope=%+v, want %+v", prepared.Scope(), scope)
+	}
+	resources := prepared.Resources()
+	if len(resources) != 1 || resources[0].Name != "media" || resources[0].Amount != 1 {
+		t.Fatalf("dynamic resources=%+v, want media:1", resources)
+	}
+	svc := &recordingInlineService{}
+	if err := engine.ExecutePreparedWithPeerType(context.Background(), svc, 55, 77, prepared, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if dynamic.executes != 1 || dynamic.finalized != 1 {
+		t.Fatalf("dynamic execute/finalize=%d/%d, want 1/1", dynamic.executes, dynamic.finalized)
+	}
+	if !svc.lastOpts.Private || svc.lastCacheTime != 0 {
+		t.Fatalf("dynamic answer must be private/no-cache: %+v", svc.lastOpts)
+	}
+
+	root, err := engine.PrepareContext(context.Background(), "unknown alias")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.resolved.Handler != fallback {
+		t.Fatal("unknown query did not fall back to canonical catch-all")
+	}
+}
+
+func TestEngine_DynamicLocalMediaPreparedAndFinalized(t *testing.T) {
+	registry := NewRegistry()
+	scope := tasks.ScopeIdentity{Owner: "plugin:saved-media", Generation: 3}
+	dynamic := &testDynamicInlineSource{
+		match: "photo",
+		scope: scope,
+		result: InlineResult{
+			ID:    "photo-1",
+			Type:  ResultPhoto,
+			Title: "Photo",
+			Text:  "caption",
+			LocalMedia: &LocalMedia{
+				Path:      "/tmp/saved-photo.jpg",
+				MediaType: "photo",
+				FileName:  "photo.jpg",
+				MIMEType:  "image/jpeg",
+			},
+		},
+	}
+	engine := NewEngine(registry, zap.NewNop())
+	engine.SetDynamicSource(dynamic)
+	prepared, err := engine.PrepareContext(context.Background(), "photo")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc := &mediaPreparingInlineService{
+		prepared: PreparedLocalMedia{
+			Photo: &tg.InputPhoto{ID: 1, AccessHash: 2, FileReference: []byte{3}},
+		},
+	}
+	if err := engine.ExecutePreparedWithPeerType(context.Background(), svc, 88, 99, prepared, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if svc.calls != 1 || svc.path != "/tmp/saved-photo.jpg" {
+		t.Fatalf("local media prepare calls=%d path=%q", svc.calls, svc.path)
+	}
+	if dynamic.finalized != 1 {
+		t.Fatalf("dynamic finalize calls=%d, want 1", dynamic.finalized)
+	}
+	if len(svc.lastResults) != 1 {
+		t.Fatalf("inline results=%d, want 1", len(svc.lastResults))
+	}
+	if _, ok := svc.lastResults[0].(*tg.InputBotInlineResultPhoto); !ok {
+		t.Fatalf("inline result type=%T, want *tg.InputBotInlineResultPhoto", svc.lastResults[0])
+	}
+	if !svc.lastOpts.Private || svc.lastCacheTime != 0 {
+		t.Fatalf("local media answer must be private/no-cache: %+v", svc.lastOpts)
+	}
+	if engine.Cache().Len() != 0 {
+		t.Fatalf("local media populated cache: %d", engine.Cache().Len())
+	}
+}
