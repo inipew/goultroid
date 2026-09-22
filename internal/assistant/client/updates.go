@@ -130,7 +130,15 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 				logger.Warn("assistant: rate limit exceeded for command", zap.Int64("sender_id", senderID))
 				return
 			}
-			err := deps.CmdRouter.Dispatch(ctx, senderID, inputPeer, msg.Message, deps.Interaction)
+			err := deps.CmdRouter.DispatchMessage(
+				ctx,
+				senderID,
+				inputPeer,
+				msg.Message,
+				msg.ID,
+				assistantReplyToMessageID(msg),
+				deps.Interaction,
+			)
 			if err != nil && !errors.Is(err, command.ErrUnknownCommand) {
 				logger.Warn("assistant: command error", zap.Error(err), zap.Int64("sender_id", senderID))
 			}
