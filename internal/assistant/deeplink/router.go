@@ -87,7 +87,15 @@ func validKind(kind string) bool {
 }
 
 func LooksLikeToken(raw string) bool {
-	return strings.HasPrefix(strings.TrimSpace(raw), TokenVersion+"_")
+	raw = strings.TrimSpace(raw)
+	if len(raw) < 3 || raw[0] != 'd' {
+		return false
+	}
+	index := 1
+	for index < len(raw) && raw[index] >= '0' && raw[index] <= '9' {
+		index++
+	}
+	return index > 1 && index < len(raw) && raw[index] == '_'
 }
 
 func normalizeToken(raw string) (string, error) {
@@ -180,9 +188,9 @@ func (r *Router) Issue(ctx context.Context, request IssueRequest) (Token, error)
 		return Token{}, ErrInvalidToken
 	}
 	r.mu.RLock()
-	_, registered := r.providers[request.Kind]
+	entry, registered := r.providers[request.Kind]
 	r.mu.RUnlock()
-	if !registered {
+	if !registered || entry.provider == nil {
 		return Token{}, ErrProviderUnavailable
 	}
 	r.issueMu.Lock()
@@ -204,6 +212,12 @@ func (r *Router) Issue(ctx context.Context, request IssueRequest) (Token, error)
 		return Token{}, ErrCapacity
 	}
 	for attempt := 0; attempt < 4; attempt++ {
+		r.mu.RLock()
+		current, currentOK := r.providers[request.Kind]
+		r.mu.RUnlock()
+		if !currentOK || current.token != entry.token {
+			return Token{}, ErrProviderStale
+		}
 		id, err := newTokenID()
 		if err != nil {
 			return Token{}, err
