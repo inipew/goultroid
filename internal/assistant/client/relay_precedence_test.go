@@ -70,7 +70,7 @@ func dispatchPrecedenceMessage(t *testing.T, deps UpdateHandlerDeps, message *tg
 	}
 }
 
-func basePrecedenceDeps(input interactionTextIngress, relay relayMessageIngress) UpdateHandlerDeps {
+func basePrecedenceDeps(input interactionIngressPort, relay relayMessageIngress) UpdateHandlerDeps {
 	return UpdateHandlerDeps{
 		Logger:             zap.NewNop(),
 		Resolver:           precedenceResolver{},
