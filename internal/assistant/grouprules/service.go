@@ -16,8 +16,18 @@ import (
 // a second rules registry.
 type Source interface {
 	AssistantRuleInterested(chatID int64) bool
+	AssistantRuleRevision(chatID int64) uint64
 	MatchAssistantRule(context.Context, *core.MessageEnvelope) (bool, error)
 	ApplyAssistantRule(context.Context, core.TelegramServicer, *core.MessageEnvelope) (bool, error)
+}
+
+type Revision struct {
+	Blacklist uint64
+	Filters   uint64
+}
+
+func (r Revision) Equal(other Revision) bool {
+	return r.Blacklist == other.Blacklist && r.Filters == other.Filters
 }
 
 type Result struct {
@@ -25,6 +35,7 @@ type Result struct {
 	Handled  bool
 	Bypassed bool
 	Domain   string
+	Revision Revision
 }
 
 type Service struct {
@@ -93,6 +104,20 @@ func (s *Service) Interested(chatID int64) bool {
 	filtersEnabled := enabled == nil || enabled("filters")
 	return (blacklistEnabled && s.blacklist != nil && s.blacklist.AssistantRuleInterested(chatID)) ||
 		(filtersEnabled && s.filters != nil && s.filters.AssistantRuleInterested(chatID))
+}
+
+func (s *Service) Revision(chatID int64) Revision {
+	if s == nil || chatID <= 0 {
+		return Revision{}
+	}
+	var revision Revision
+	if s.blacklist != nil {
+		revision.Blacklist = s.blacklist.AssistantRuleRevision(chatID)
+	}
+	if s.filters != nil {
+		revision.Filters = s.filters.AssistantRuleRevision(chatID)
+	}
+	return revision
 }
 
 func (s *Service) dependencies() (
@@ -195,6 +220,7 @@ func (s *Service) Evaluate(
 		return Result{Bypassed: true}, nil
 	}
 
+	revision := s.Revision(message.ChatID)
 	blacklistMatch, filterMatch, err := s.matched(ctx, message, enabled)
 	if err != nil {
 		return Result{}, err
@@ -202,10 +228,16 @@ func (s *Service) Evaluate(
 	if !blacklistMatch && !filterMatch {
 		return Result{}, nil
 	}
-	result := Result{Matched: true}
+	result := Result{Matched: true, Revision: revision}
 	if s.bypassed(ctx, message, roles, privileged) {
 		result.Bypassed = true
 		return result, nil
+	}
+	if latest := s.Revision(message.ChatID); !latest.Equal(revision) {
+		// A manager changed rules while the role verification RPC was in
+		// flight. Apply paths re-match current compiled state; surface the new
+		// generation in the result so tests/metrics can prove invalidation.
+		result.Revision = latest
 	}
 	if svc == nil {
 		return result, fmt.Errorf("%w: Assistant group-rule transport unavailable", core.ErrUnavailable)
