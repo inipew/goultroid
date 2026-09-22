@@ -498,3 +498,122 @@ func TestPreparedBindingRejectsDeleteRecreateABA(t *testing.T) {
 		t.Fatalf("ResolvePrepared(delete+recreate) error = %v, want %v", err, ErrBindingStale)
 	}
 }
+
+
+func TestBindingServiceCollisionPolicyIsSurfaceScoped(t *testing.T) {
+	repo, _ := newSurfaceBindingRepository(t)
+	ctx := context.Background()
+	registry := NewRegistry()
+	registration, err := registry.Register(
+		"notes",
+		tasks.ScopeIdentity{Owner: "plugin:notes", Generation: 1},
+		&bindingTestResolver{response: NewText("live")},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registration.Close()
+
+	service := NewBindingService(repo, registry)
+	service.SetAliasGuard(func(surface Surface, alias string) error {
+		if surface == SurfaceAssistantCommand && alias == "help" {
+			return ErrBindingReserved
+		}
+		if surface == SurfaceInline && alias == "ping" {
+			return ErrBindingReserved
+		}
+		return nil
+	})
+
+	ref := Reference{Provider: "notes", ScopeID: 1, Key: "shared"}
+	if _, err := service.Create(ctx, SurfaceBinding{
+		Surface: SurfaceAssistantCommand, Alias: "help", Reference: ref, Enabled: true,
+	}); !errors.Is(err, ErrBindingReserved) {
+		t.Fatalf("Create(reserved assistant) error=%v, want %v", err, ErrBindingReserved)
+	}
+	if _, err := service.Create(ctx, SurfaceBinding{
+		Surface: SurfaceInline, Alias: "ping", Reference: ref, Enabled: true,
+	}); !errors.Is(err, ErrBindingReserved) {
+		t.Fatalf("Create(reserved inline) error=%v, want %v", err, ErrBindingReserved)
+	}
+
+	for _, surface := range []Surface{
+		SurfaceAssistantCommand, SurfaceInline, SurfaceDeepLink, SurfaceCallback,
+	} {
+		if _, err := service.Create(ctx, SurfaceBinding{
+			Surface: surface, Alias: "shared", Reference: ref, Enabled: true,
+		}); err != nil {
+			t.Fatalf("Create(%s/shared) error=%v", surface, err)
+		}
+	}
+	for _, surface := range []Surface{
+		SurfaceAssistantCommand, SurfaceInline, SurfaceDeepLink, SurfaceCallback,
+	} {
+		resolved, err := service.Resolve(ctx, surface, "shared")
+		if err != nil {
+			t.Fatalf("Resolve(%s/shared) error=%v", surface, err)
+		}
+		if resolved.Binding.Surface != surface || resolved.Binding.Alias != "shared" {
+			t.Fatalf("Resolve(%s/shared)=%+v", surface, resolved.Binding)
+		}
+	}
+}
+
+func TestBindingServiceCollisionGuardRecheckedOnEnableAndUpdate(t *testing.T) {
+	repo, _ := newSurfaceBindingRepository(t)
+	ctx := context.Background()
+	registry := NewRegistry()
+	registration, err := registry.Register(
+		"notes",
+		tasks.ScopeIdentity{Owner: "plugin:notes", Generation: 1},
+		&bindingTestResolver{response: NewText("live")},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registration.Close()
+
+	reserved := false
+	service := NewBindingService(repo, registry)
+	service.SetAliasGuard(func(surface Surface, alias string) error {
+		if reserved && surface == SurfaceAssistantCommand && alias == "later" {
+			return ErrBindingReserved
+		}
+		return nil
+	})
+	created, err := service.Create(ctx, SurfaceBinding{
+		Surface: SurfaceAssistantCommand,
+		Alias: "later",
+		Reference: Reference{Provider: "notes", ScopeID: 1, Key: "one"},
+		Enabled: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserved = true
+
+	if _, err := service.SetEnabled(
+		ctx, created.Surface, created.Alias, true, created.Revision, created.Incarnation,
+	); !errors.Is(err, ErrBindingReserved) {
+		t.Fatalf("SetEnabled(reserved) error=%v, want %v", err, ErrBindingReserved)
+	}
+	if _, err := service.Update(
+		ctx,
+		created.Surface,
+		created.Alias,
+		Reference{Provider: "notes", ScopeID: 1, Key: "two"},
+		true,
+		created.Revision,
+		created.Incarnation,
+	); !errors.Is(err, ErrBindingReserved) {
+		t.Fatalf("Update(enable reserved) error=%v, want %v", err, ErrBindingReserved)
+	}
+	current, err := service.Get(ctx, created.Surface, created.Alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == nil || current.Enabled || current.Revision != created.Revision ||
+		current.Reference.Key != created.Reference.Key {
+		t.Fatalf("reserved mutation changed durable state: %+v", current)
+	}
+}
