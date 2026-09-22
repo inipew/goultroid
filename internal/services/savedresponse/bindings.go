@@ -31,6 +31,7 @@ var (
 	ErrBindingConflict = errors.New("saved response: surface binding revision conflict")
 	ErrBindingDisabled = errors.New("saved response: surface binding disabled")
 	ErrBindingStale    = errors.New("saved response: prepared surface binding is stale")
+	ErrBindingReserved = errors.New("saved response: surface alias is reserved by canonical runtime")
 )
 
 // SurfaceBinding exposes one provider-owned SavedResponse on a stable external
@@ -115,13 +116,39 @@ func (p PreparedBinding) HasMedia() bool             { return p.hasMedia }
 // BindingService joins durable surface metadata to the lifecycle-aware provider
 // registry. Consumers must carry Resolved.Scope into TaskEngine admission so a
 // provider disable/reload between resolution and execution still fails closed.
+// AliasGuard rejects enabled aliases shadowed by canonical runtime surfaces.
+type AliasGuard func(Surface, string) error
+
 type BindingService struct {
 	bindings  SurfaceBindingRepository
 	responses *Registry
+	guard     AliasGuard
 }
 
 func NewBindingService(bindings SurfaceBindingRepository, responses *Registry) *BindingService {
 	return &BindingService{bindings: bindings, responses: responses}
+}
+
+// SetAliasGuard installs the composition-owned collision policy. Durable aliases
+// remain namespaced by Surface; this hook only prevents an enabled binding from
+// being silently shadowed by a canonical handler on the same surface.
+func (s *BindingService) SetAliasGuard(guard AliasGuard) {
+	if s != nil {
+		s.guard = guard
+	}
+}
+
+func (s *BindingService) checkAlias(surface Surface, alias string, enabled bool) error {
+	if s == nil || !enabled || s.guard == nil {
+		return nil
+	}
+	if err := s.guard(surface, alias); err != nil {
+		if errors.Is(err, ErrBindingReserved) {
+			return err
+		}
+		return fmt.Errorf("%w: %v", ErrBindingReserved, err)
+	}
+	return nil
 }
 
 func (s *BindingService) Create(ctx context.Context, binding SurfaceBinding) (SurfaceBinding, error) {
@@ -130,6 +157,9 @@ func (s *BindingService) Create(ctx context.Context, binding SurfaceBinding) (Su
 	}
 	normalized, err := binding.Normalize()
 	if err != nil {
+		return SurfaceBinding{}, err
+	}
+	if err := s.checkAlias(normalized.Surface, normalized.Alias, normalized.Enabled); err != nil {
 		return SurfaceBinding{}, err
 	}
 	if _, err := s.responses.Resolve(ctx, normalized.Reference); err != nil {
@@ -186,6 +216,9 @@ func (s *BindingService) Update(
 		current.Incarnation != expectedIncarnation {
 		return SurfaceBinding{}, ErrBindingConflict
 	}
+	if err := s.checkAlias(normalized.Surface, normalized.Alias, normalized.Enabled); err != nil {
+		return SurfaceBinding{}, err
+	}
 	if _, err := s.responses.Resolve(ctx, normalized.Reference); err != nil {
 		return SurfaceBinding{}, err
 	}
@@ -225,6 +258,9 @@ func (s *BindingService) SetEnabled(
 		return SurfaceBinding{}, ErrBindingConflict
 	}
 	if enabled {
+		if err := s.checkAlias(current.Surface, current.Alias, true); err != nil {
+			return SurfaceBinding{}, err
+		}
 		if s.responses == nil {
 			return SurfaceBinding{}, ErrResolverUnavailable
 		}
