@@ -12,10 +12,10 @@ import (
 	"unicode/utf16"
 
 	"github.com/gotd/td/telegram/message"
-	messageunpack "github.com/gotd/td/telegram/message/unpack"
 	"github.com/gotd/td/telegram/message/entity"
 	"github.com/gotd/td/telegram/message/html"
 	"github.com/gotd/td/telegram/message/styling"
+	messageunpack "github.com/gotd/td/telegram/message/unpack"
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
 	assistentrpc "github.com/inipew/goultroid/internal/assistant/rpc"
