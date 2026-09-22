@@ -43,6 +43,7 @@ type recordingInlineService struct {
 	lastNextOffset string
 	lastCacheTime  int
 	lastOpts       core.InlineAnswerOptions
+	answerErr      error
 }
 
 func (r *recordingInlineService) AnswerInlineQuery(ctx context.Context, queryID int64, results []tg.InputBotInlineResultClass, nextOffset string, cacheTime int) error {
@@ -55,7 +56,7 @@ func (r *recordingInlineService) AnswerInlineQuery(ctx context.Context, queryID 
 		NextOffset: nextOffset,
 		CacheTime:  cacheTime,
 	}
-	return nil
+	return r.answerErr
 }
 
 func (r *recordingInlineService) AnswerInlineQueryOptions(ctx context.Context, queryID int64, results []tg.InputBotInlineResultClass, opts core.InlineAnswerOptions) error {
@@ -68,7 +69,7 @@ func (r *recordingInlineService) AnswerInlineQueryOptions(ctx context.Context, q
 	r.lastNextOffset = opts.NextOffset
 	r.lastCacheTime = opts.CacheTime
 	r.lastOpts = opts
-	return nil
+	return r.answerErr
 }
 
 func TestRegistry_RegisterAndResolve(t *testing.T) {
@@ -290,6 +291,149 @@ func TestEngine_TypedFeatureActionsCompileToA2AndClaimInlineTarget(t *testing.T)
 		InlineMessageID: "inline:copy",
 	}); !errors.Is(err, rootinteraction.ErrBindingMismatch) {
 		t.Fatalf("copied inline target error = %v, want binding mismatch", err)
+	}
+}
+
+func TestEngine_TypedActionRequiresInlineSurfaceDeclaration(t *testing.T) {
+	catalog := feature.NewRegistry()
+	scope := tasks.ScopeIdentity{Owner: "plugin:inline-surface", Generation: 1}
+	featureRegistration, err := catalog.Register(feature.Owner{ID: "inline-surface", Scope: scope}, feature.Spec{
+		ID:   "inline-surface",
+		Name: "Inline Surface",
+		Interactions: []feature.Interaction{
+			{
+				ID: "lookup", Kind: feature.InteractionInline,
+				Surfaces: execution.SurfaceInline,
+				Policy:   feature.PublicPolicy(execution.SurfaceInline),
+			},
+			{
+				ID: "assistant_only", Kind: feature.InteractionAction,
+				Surfaces: execution.SurfaceAssistant,
+				Policy:   feature.PublicPolicy(execution.SurfaceAssistant),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("feature register error = %v", err)
+	}
+	defer featureRegistration.Close()
+
+	sessions, err := rootinteraction.NewRuntime(catalog, rootinteraction.Config{})
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	defer sessions.Close()
+
+	registry := NewRegistry()
+	handler := &mockInlineHandler{
+		pattern: "surface",
+		results: []InlineResult{{
+			ID:    "surface-1",
+			Title: "Surface",
+			Text:  "Surface",
+			ActionRows: []presentation.Row{{
+				{Text: "Wrong surface", ActionID: "assistant_only"},
+			}},
+		}},
+	}
+	if _, err := registry.RegisterOwned("inline-surface", "lookup", scope, handler, 0); err != nil {
+		t.Fatalf("RegisterOwned() error = %v", err)
+	}
+
+	engine := NewEngine(registry, zap.NewNop())
+	engine.SetFeatureCatalog(catalog)
+	engine.SetInteractionRuntime(sessions)
+	prepared, err := engine.Prepare("surface")
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	err = engine.ExecutePreparedWithPeerType(
+		context.Background(),
+		&recordingInlineService{},
+		7003,
+		42,
+		prepared,
+		"",
+		&tg.InlineQueryPeerTypePM{},
+	)
+	if err == nil || !strings.Contains(err.Error(), "not declared on inline surface") {
+		t.Fatalf("wrong-surface action error = %v", err)
+	}
+	if stats := sessions.Stats(); stats.Sessions != 0 {
+		t.Fatalf("wrong-surface action retained %d session(s), want 0", stats.Sessions)
+	}
+}
+
+func TestEngine_TypedActionAnswerFailureCancelsCreatedSession(t *testing.T) {
+	catalog := feature.NewRegistry()
+	scope := tasks.ScopeIdentity{Owner: "plugin:inline-answer", Generation: 1}
+	featureRegistration, err := catalog.Register(feature.Owner{ID: "inline-answer", Scope: scope}, feature.Spec{
+		ID:   "inline-answer",
+		Name: "Inline Answer",
+		Interactions: []feature.Interaction{
+			{
+				ID: "lookup", Kind: feature.InteractionInline,
+				Surfaces: execution.SurfaceInline,
+				Policy:   feature.PublicPolicy(execution.SurfaceInline),
+			},
+			{
+				ID: "choose", Kind: feature.InteractionAction,
+				Surfaces: execution.SurfaceInline,
+				Policy:   feature.PublicPolicy(execution.SurfaceInline),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("feature register error = %v", err)
+	}
+	defer featureRegistration.Close()
+
+	sessions, err := rootinteraction.NewRuntime(catalog, rootinteraction.Config{})
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	defer sessions.Close()
+
+	registry := NewRegistry()
+	handler := &mockInlineHandler{
+		pattern: "answerfail",
+		results: []InlineResult{{
+			ID:    "answer-1",
+			Title: "Answer",
+			Text:  "Answer",
+			ActionRows: []presentation.Row{{
+				{Text: "Choose", ActionID: "choose"},
+			}},
+		}},
+	}
+	if _, err := registry.RegisterOwned("inline-answer", "lookup", scope, handler, 0); err != nil {
+		t.Fatalf("RegisterOwned() error = %v", err)
+	}
+
+	engine := NewEngine(registry, zap.NewNop())
+	engine.SetFeatureCatalog(catalog)
+	engine.SetInteractionRuntime(sessions)
+	prepared, err := engine.Prepare("answerfail")
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+
+	answerErr := errors.New("inline answer failed")
+	svc := &recordingInlineService{answerErr: answerErr}
+	err = engine.ExecutePreparedWithPeerType(
+		context.Background(),
+		svc,
+		7004,
+		42,
+		prepared,
+		"",
+		&tg.InlineQueryPeerTypePM{},
+	)
+	if !errors.Is(err, answerErr) {
+		t.Fatalf("answer failure error = %v, want %v", err, answerErr)
+	}
+	if stats := sessions.Stats(); stats.Sessions != 0 {
+		t.Fatalf("failed inline answer retained %d session(s), want 0", stats.Sessions)
 	}
 }
 
