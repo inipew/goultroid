@@ -107,33 +107,17 @@ func (migration002) Up(ctx context.Context, tx database.SQLExecutor) error {
 }
 
 func (migration002) VerifySchema(ctx context.Context, tx database.SQLExecutor) error {
-	required := map[string]bool{"claim_id": false, "claim_expires_at": false}
-	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(assistant_deep_link_tokens)`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var name, typ string
-		var notNull, pk int
-		var defaultValue any
-		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
-			return err
-		}
-		if _, ok := required[name]; ok {
-			required[name] = true
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	for name, present := range required {
-		if !present {
-			return fmt.Errorf("required column %s does not exist", name)
-		}
-	}
 	var count int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT count(*) FROM pragma_table_info('assistant_deep_link_tokens')
+		WHERE name IN ('claim_id', 'claim_expires_at')
+	`).Scan(&count); err != nil {
+		return err
+	}
+	if count != 2 {
+		return fmt.Errorf("required deep-link claim columns do not exist")
+	}
+	count = 0
 	if err := tx.QueryRowContext(ctx, `
 		SELECT count(*) FROM sqlite_master
 		WHERE type = 'index' AND name = 'idx_assistant_deep_link_tokens_claim'
