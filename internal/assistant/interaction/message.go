@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"strings"
 	"time"
 	"unicode/utf16"
 
@@ -526,6 +527,64 @@ func (c *ClientInteraction) SendMedia(ctx context.Context, peer tg.InputPeerClas
 	}
 
 	return extractMessage(updates), nil
+}
+
+// UploadInlineMedia uploads media and obtains a reusable Telegram media
+// reference without sending a chat message. The caller may use that reference
+// in one inline answer.
+func (c *ClientInteraction) UploadInlineMedia(
+	ctx context.Context,
+	mediaType string,
+	filePath string,
+	fileName string,
+	mimeType string,
+) (_ tg.MessageMediaClass, retErr error) {
+	if c == nil || c.sender == nil || c.uploader == nil {
+		return nil, fmt.Errorf("%w: assistant media upload is not configured", core.ErrUnsupported)
+	}
+	stat, err := os.Stat(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to inspect file %q: %w", filePath, err)
+	}
+	if stat.Size() > core.DefaultMaxUploadSize {
+		return nil, fmt.Errorf("%w: file size (%d bytes) exceeds maximum upload limit (500MB)", core.ErrMediaTooLarge, stat.Size())
+	}
+
+	const transferTimeout = 30 * time.Minute
+	inputFile, err := executeValue(ctx, c.executor, "upload.saveFilePart", "upload", assistentrpc.IdempotentMutation, transferTimeout, func(opCtx context.Context) (tg.InputFileClass, error) {
+		return c.uploader.FromPath(opCtx, filePath)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to upload inline media %q: %w", filePath, err)
+	}
+
+	var media message.MediaOption
+	kind := strings.ToLower(strings.TrimSpace(mediaType))
+	if kind == "photo" {
+		media = message.UploadedPhoto(inputFile)
+	} else {
+		doc := message.UploadedDocument(inputFile)
+		if mime := strings.TrimSpace(mimeType); mime != "" {
+			doc.MIME(mime)
+		}
+		if name := strings.TrimSpace(fileName); name != "" {
+			doc.Filename(name)
+		}
+		switch kind {
+		case "sticker":
+			media = doc.UploadedSticker()
+		case "audio":
+			media = doc.Audio()
+		case "video":
+			media = doc.Video()
+		default:
+			media = doc.ForceFile(true)
+		}
+	}
+
+	return executeValue(ctx, c.executor, "messages.uploadMedia", "messages", assistentrpc.IdempotentMutation, transferTimeout, func(opCtx context.Context) (tg.MessageMediaClass, error) {
+		return c.sender.Self().UploadMedia(opCtx, media)
+	})
 }
 
 // InlineClientInteraction adapts ClientInteraction to the InlineInteraction interface.
