@@ -13,6 +13,7 @@ import (
 	"github.com/inipew/goultroid/internal/assistant"
 	assistantdeeplink "github.com/inipew/goultroid/internal/assistant/deeplink"
 	assistantinteraction "github.com/inipew/goultroid/internal/assistant/interaction"
+	savedresponsecallback "github.com/inipew/goultroid/internal/assistant/savedresponsecallback"
 	assistantshell "github.com/inipew/goultroid/internal/assistant/shell"
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
@@ -58,9 +59,10 @@ type App struct {
 	settingsLive          *settings.LiveBinder
 	savedResponseBindings    *savedresponse.BindingService
 	deepLinks                *assistantdeeplink.Router
-	savedResponseDeepLinks   *assistantdeeplink.SavedResponseProvider
+	savedResponseDeepLinks    *assistantdeeplink.SavedResponseProvider
 	savedDeepLinkRegistration *assistantdeeplink.Registration
-	media                    *mediaSvc.Service
+	savedResponseCallbacks    *savedresponsecallback.Feature
+	media                     *mediaSvc.Service
 	downloadRegistry      *download.Registry
 	processRunner         *processSvc.OSRunner
 	startTime             time.Time
@@ -198,6 +200,10 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	savedDeepLinkRegistration, err := deepLinks.Register(assistantdeeplink.SavedResponseKind, savedResponseDeepLinks)
 	if err != nil {
 		return nil, fmt.Errorf("register saved-response deep-link provider: %w", err)
+	}
+	savedResponseCallbacks := savedresponsecallback.New(savedResponseBindings, savedResponseDelivery)
+	if err := pluginManager.RegisterWithContext(context.Background(), savedResponseCallbacks); err != nil {
+		return nil, fmt.Errorf("register saved-response callback feature: %w", err)
 	}
 	if coreDeps.inlineEngine != nil {
 		coreDeps.inlineEngine.SetDynamicSource(savedresponse.NewInlineSource(savedResponseBindings, savedResponseService))
@@ -407,6 +413,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		deepLinks:                 deepLinks,
 		savedResponseDeepLinks:    savedResponseDeepLinks,
 		savedDeepLinkRegistration: savedDeepLinkRegistration,
+		savedResponseCallbacks:    savedResponseCallbacks,
 		media:                      domServices.mediaService,
 		downloadRegistry:      domServices.downloadRegistry,
 		processRunner:         domServices.processRunner,
