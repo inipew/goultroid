@@ -21,6 +21,7 @@ import (
 	"github.com/inipew/goultroid/internal/resource"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/services/callback"
+	inlineservice "github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -166,6 +167,7 @@ type Manager struct {
 	router            *core.Router
 	hookRegistrar     HookRegistrar
 	callbackRegistrar callbackRegistrar
+	inlineRegistry    *inlineservice.Registry
 	schedCleaner      SchedulerTaskCleaner
 	resourceManager   *resource.Manager
 	gate              *CapabilityGate
@@ -289,6 +291,15 @@ func (m *Manager) SetCallbackRegistrar(registrar callbackRegistrar) {
 	m.callbackRegistrar = registrar
 	m.mu.Unlock()
 }
+
+// SetInlineRegistry binds feature-owned inline handlers to plugin lifecycle
+// transactions. Registration and cleanup remain atomic with the feature catalog.
+func (m *Manager) SetInlineRegistry(registry *inlineservice.Registry) {
+	m.mu.Lock()
+	m.inlineRegistry = registry
+	m.mu.Unlock()
+}
+
 
 // SetPlatformServices attaches platform managers and capability gate to this manager.
 func (m *Manager) SetPlatformServices(
