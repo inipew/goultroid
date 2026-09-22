@@ -134,6 +134,10 @@ func TestInfoPlugin_Metadata(t *testing.T) {
 	if cmds[1].Permission != core.PermissionEveryone {
 		t.Errorf("expected chatinfo to use global PermissionEveryone, got %v", cmds[1].Permission)
 	}
+	if cmds[1].Invocation.Userbot != core.InvocationSelfOrSudo ||
+		cmds[1].Invocation.Assistant != core.InvocationAnyone {
+		t.Errorf("unexpected chatinfo invocation policy: %+v", cmds[1].Invocation)
+	}
 	if !cmds[1].GroupOnly || cmds[1].GroupAuthorization.Level != core.GroupAuthorizationAdministrator {
 		t.Errorf("expected chatinfo to require contextual group administrator, got group_only=%v auth=%+v",
 			cmds[1].GroupOnly, cmds[1].GroupAuthorization)
