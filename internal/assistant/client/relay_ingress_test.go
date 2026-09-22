@@ -455,3 +455,78 @@ func TestRelayIngressOwnerAdmissionRejectionHasNoDeliverySideEffect(t *testing.T
 		t.Fatalf("deliveries after rejected owner admission=%d err=%v", count, err)
 	}
 }
+
+
+func TestRelayIngressBlockedVisitorNeverReachesTaskEngine(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := database.RunFeatureMigrations(ctx, db, pmrelay.MigrationProvider{}); err != nil {
+		t.Fatal(err)
+	}
+	repo := pmrelay.NewSQLiteRepository(db)
+	service := pmrelay.NewService(repo, 7)
+	service.SetEnabled(true)
+	if _, err := service.BlockVisitor(ctx, 42, "spam"); err != nil {
+		t.Fatal(err)
+	}
+	taskClient := &relayAdmissionTaskClient{}
+	ingress := NewRelayIngress(service, taskClient)
+
+	handled, err := ingress.tryVisitor(ctx, pmrelay.IngressMessage{
+		SenderID: 42, ChatID: 42, MessageID: 11,
+	})
+	if err != nil || handled {
+		t.Fatalf("tryVisitor(blocked) handled=%v err=%v, want false nil", handled, err)
+	}
+	if taskClient.calls != 0 {
+		t.Fatalf("blocked visitor reached TaskEngine %d time(s)", taskClient.calls)
+	}
+	if count, err := repo.CountDeliveries(ctx); err != nil || count != 0 {
+		t.Fatalf("blocked visitor created deliveries=%d err=%v", count, err)
+	}
+}
+
+func TestRelayIngressBlockedMappedOwnerReplyFailsBeforeTaskEngine(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := database.RunFeatureMigrations(ctx, db, pmrelay.MigrationProvider{}); err != nil {
+		t.Fatal(err)
+	}
+	repo := pmrelay.NewSQLiteRepository(db)
+	now := time.Now().UTC()
+	if _, err := repo.EnsureMapping(ctx, pmrelay.Mapping{
+		OwnerChatID: 7, OwnerMessageID: 100,
+		VisitorUserID: 42, VisitorMessageID: 11,
+		CreatedAt: now, ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := pmrelay.NewService(repo, 7)
+	service.SetEnabled(true)
+	if _, err := service.BlockVisitor(ctx, 42, "abuse"); err != nil {
+		t.Fatal(err)
+	}
+	taskClient := &relayAdmissionTaskClient{}
+	ingress := NewRelayIngress(service, taskClient)
+
+	handled, err := ingress.tryOwnerReply(ctx, pmrelay.IngressMessage{
+		SenderID: 7, ChatID: 7, MessageID: 101, ReplyToMessageID: 100,
+	})
+	if !handled || !errors.Is(err, pmrelay.ErrVisitorBlocked) {
+		t.Fatalf("tryOwnerReply(blocked) handled=%v err=%v, want handled ErrVisitorBlocked", handled, err)
+	}
+	if taskClient.calls != 0 {
+		t.Fatalf("blocked owner reply reached TaskEngine %d time(s)", taskClient.calls)
+	}
+	if count, err := repo.CountDeliveries(ctx); err != nil || count != 0 {
+		t.Fatalf("blocked owner reply created deliveries=%d err=%v", count, err)
+	}
+}
