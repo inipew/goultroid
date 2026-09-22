@@ -200,3 +200,37 @@ func TestRelayControlStatusBlockedListAndNumericTarget(t *testing.T) {
 		t.Fatalf("status=%+v", status)
 	}
 }
+
+
+func TestRelayBlockedListBoundsPageAndReasonPreview(t *testing.T) {
+	f, _, repo := newControlFeature(t)
+	now := time.Now().UTC()
+	for i := int64(1); i <= blockedPageSize+1; i++ {
+		reason := strings.Repeat("&", blockedReasonPreviewRunes+32)
+		if _, err := repo.SetVisitorBlock(context.Background(), pmrelay.VisitorBlock{
+			VisitorUserID: 100 + i,
+			BlockedAt:     now.Add(time.Duration(i) * time.Second),
+			Reason:        reason,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx, svc := newOwnerContext(0, "blocked")
+	if err := f.handleRelay(ctx); err != nil {
+		t.Fatalf("handleRelay(blocked) error=%v", err)
+	}
+	if len(svc.messages) != 1 {
+		t.Fatalf("blocked list replies=%d, want 1", len(svc.messages))
+	}
+	reply := svc.messages[0]
+	if len([]rune(reply)) >= 4096 {
+		t.Fatalf("blocked page output too large: %d runes", len([]rune(reply)))
+	}
+	if strings.Count(reply, "• <code>") != blockedPageSize {
+		t.Fatalf("blocked page rows=%d, want %d", strings.Count(reply, "• <code>"), blockedPageSize)
+	}
+	if !strings.Contains(reply, "Next page:") || !strings.Contains(reply, "…") {
+		t.Fatalf("blocked page missing pagination/reason truncation: %q", reply)
+	}
+}
