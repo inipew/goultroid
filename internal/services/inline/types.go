@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"time"
 
 	"github.com/gotd/td/tg"
+	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/ui"
 )
 
@@ -69,6 +71,13 @@ type InlineResult struct {
 	Markup      *ui.Markup
 	ThumbURL    string
 	URL         string
+
+	// ActionRows are transport-neutral callback buttons compiled through the
+	// shared a2 interaction runtime. Feature-owned inline handlers must use these
+	// instead of embedding callback_data in Markup.
+	ActionRows       []presentation.Row
+	InteractionState []byte
+	InteractionTTL   time.Duration
 
 	// Media fields for non-article types
 	MediaURL      string // photo/document/video/gif/audio media URL or file id
