@@ -1,6 +1,7 @@
 package client
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"sync"
