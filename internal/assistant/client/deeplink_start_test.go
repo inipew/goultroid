@@ -11,6 +11,7 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/command"
 	assistantdeeplink "github.com/inipew/goultroid/internal/assistant/deeplink"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/services/pmrelay"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
@@ -119,6 +120,8 @@ func TestAssistantStartDeepLinkCarriesScopeAndMediaAdmission(t *testing.T) {
 
 	taskClient := &immediateDeepLinkTasks{}
 	client := NewAssistantClient(1, "hash", "token", zap.NewNop())
+	audience, audienceRepo := newAssistantAudienceRegistry(t)
+	client.SetAudienceRegistry(audience)
 	client.SetDeepLinkRouter(router)
 	client.SetTasks(taskClient)
 	interaction := &publicStartInteraction{}
@@ -150,6 +153,13 @@ func TestAssistantStartDeepLinkCarriesScopeAndMediaAdmission(t *testing.T) {
 		taskClient.spec.Resources[0].Name != "media" ||
 		taskClient.spec.Resources[0].Amount != 1 {
 		t.Fatalf("task resources=%+v, want media:1", taskClient.spec.Resources)
+	}
+	member, err := audienceRepo.GetAudience(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("deep-link audience missing: %v", err)
+	}
+	if member.Sources != pmrelay.AudienceSourceDeepLink {
+		t.Fatalf("deep-link audience sources=%d, want deep_link", member.Sources)
 	}
 }
 
