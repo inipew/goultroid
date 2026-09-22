@@ -42,7 +42,7 @@ func (s *p7fStateStore) Get(_ context.Context, key GroupStateKey) (GroupStateRec
 	return GroupStateRecord{GroupStateKey: key, Revision: 2, Value: []byte("value")}, nil
 }
 
-func (s *p7fStateStore) CompareAndSwap(_ context.Context, req GroupStateCAS) (GroupStateRecord, error) {
+func (s *p7fStateStore) CompareAndSwap(_ context.Context, _ GroupStateWriteGrant, req GroupStateCAS) (GroupStateRecord, error) {
 	s.casCalls++
 	s.cas = req
 	return GroupStateRecord{
@@ -55,7 +55,7 @@ func (s *p7fStateStore) CompareAndSwap(_ context.Context, req GroupStateCAS) (Gr
 	}, nil
 }
 
-func (s *p7fStateStore) DeleteCompareAndSwap(_ context.Context, req GroupStateDelete) error {
+func (s *p7fStateStore) DeleteCompareAndSwap(_ context.Context, _ GroupStateWriteGrant, req GroupStateDelete) error {
 	s.deleteCalls++
 	s.del = req
 	return nil
