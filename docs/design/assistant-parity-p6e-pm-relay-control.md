@@ -196,8 +196,10 @@ Examples:
 
 ## Blocked list
 
-`/relay blocked` returns a bounded page of at most 50 durable blocks sorted by
-visitor user ID.
+`/relay blocked` returns a bounded page of at most 5 durable blocks sorted by
+visitor user ID. Reasons are previewed at a bounded length; `/who` remains the
+surface for the full stored reason. This keeps the rendered Telegram response
+well below the message-size ceiling even for heavily escaped HTML input.
 
 Pagination is keyset-based:
 
