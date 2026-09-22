@@ -226,8 +226,12 @@ func TestSavedResponseCallbackUsesOpaqueA2TokenAndProviderAdmission(t *testing.T
 	if prepared.Scope() != fixture.providerScope {
 		t.Fatalf("prepared scope=%+v, want provider scope %+v", prepared.Scope(), fixture.providerScope)
 	}
-	if len(prepared.Resources()) != 0 {
-		t.Fatalf("text callback resources=%+v, want none", prepared.Resources())
+	aware, ok := prepared.(orchestration.ResourcePreparedCallback)
+	if !ok {
+		t.Fatal("prepared callback did not expose resource admission")
+	}
+	if len(aware.Resources()) != 0 {
+		t.Fatalf("text callback resources=%+v, want none", aware.Resources())
 	}
 	if err := prepared.Dispatch(context.Background()); err != nil {
 		t.Fatalf("Dispatch() error=%v", err)
@@ -251,7 +255,11 @@ func TestSavedResponseCallbackCarriesMediaResourceBeforeExecution(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	resources := prepared.Resources()
+	aware, ok := prepared.(orchestration.ResourcePreparedCallback)
+	if !ok {
+		t.Fatal("prepared callback did not expose media admission")
+	}
+	resources := aware.Resources()
 	if len(resources) != 1 || resources[0].Name != "media" || resources[0].Amount != 1 {
 		t.Fatalf("media callback resources=%+v, want media:1", resources)
 	}
