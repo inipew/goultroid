@@ -231,7 +231,7 @@ func (r *Router) ExecutePrepared(ctx context.Context, prepared Prepared, deliver
 	r.mu.RLock()
 	current, ok := r.providers[prepared.record.Kind]
 	r.mu.RUnlock()
-	if !ok || current.token != prepared.providerToken || current.provider != prepared.provider {
+	if !ok || current.token != prepared.providerToken {
 		return ErrProviderStale
 	}
 	claimed, err := r.repo.Claim(ctx, prepared.record.ID, delivery.ActorID, r.now().UTC())
