@@ -255,7 +255,6 @@ func (s *Service) RevalidatePrepared(ctx context.Context, prepared PreparedIngre
 	}
 }
 
-
 func newRandomID() (int64, error) {
 	n, err := rand.Int(rand.Reader, big.NewInt(1<<62))
 	if err != nil {
