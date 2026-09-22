@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -95,7 +96,77 @@ func assistantTopicID(message *tg.Message) int {
 	return header.ReplyToMsgID
 }
 
-func assistantCommandMessageContext(message *tg.Message, entities tg.Entities) command.MessageContext {
+func assistantReplyPeer(message *tg.Message, entities tg.Entities) core.PeerRef {
+	if message == nil || message.ReplyTo == nil {
+		return core.PeerRef{}
+	}
+	header, ok := message.ReplyTo.(*tg.MessageReplyHeader)
+	if !ok || header == nil || header.ReplyToPeerID == nil {
+		return core.PeerRef{}
+	}
+	var accessHash int64
+	switch peer := header.ReplyToPeerID.(type) {
+	case *tg.PeerUser:
+		if user := entities.Users[peer.UserID]; user != nil {
+			accessHash = user.AccessHash
+		}
+	case *tg.PeerChannel:
+		if channel := entities.Channels[peer.ChannelID]; channel != nil {
+			accessHash = channel.AccessHash
+		}
+	}
+	ref, err := core.PeerRefFromPeer(header.ReplyToPeerID, accessHash)
+	if err != nil {
+		return core.PeerRef{}
+	}
+	return ref
+}
+
+func assistantMessageMentions(message *tg.Message) []core.MessageMention {
+	if message == nil {
+		return nil
+	}
+	parsed := (&core.Message{Text: message.Message, Entities: message.Entities}).Mentions()
+	if len(parsed) == 0 {
+		return nil
+	}
+	mentions := make([]core.MessageMention, 0, len(parsed))
+	for _, raw := range parsed {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			continue
+		}
+		if userID, err := strconv.ParseInt(value, 10, 64); err == nil && userID > 0 {
+			mentions = append(mentions, core.MessageMention{UserID: userID})
+			continue
+		}
+		username := strings.TrimPrefix(value, "@")
+		if username != "" {
+			mentions = append(mentions, core.MessageMention{Username: username})
+		}
+	}
+	return mentions
+}
+
+func assistantMentionsSelf(mentions []core.MessageMention, selfID int64, selfUsername string) bool {
+	selfUsername = strings.TrimPrefix(strings.TrimSpace(selfUsername), "@")
+	for _, mention := range mentions {
+		if selfID > 0 && mention.UserID == selfID {
+			return true
+		}
+		if selfUsername != "" && mention.Username != "" && strings.EqualFold(mention.Username, selfUsername) {
+			return true
+		}
+	}
+	return false
+}
+
+func assistantCommandMessageContext(
+	message *tg.Message,
+	entities tg.Entities,
+	selfID int64,
+	selfUsername string,
+) command.MessageContext {
 	if message == nil {
 		return command.MessageContext{}
 	}
@@ -129,11 +200,22 @@ func assistantCommandMessageContext(message *tg.Message, entities tg.Entities) c
 		}
 	}
 
+	mentions := assistantMessageMentions(message)
+	topicID := assistantTopicID(message)
+	replyToID := assistantReplyToMessageID(message)
 	return command.MessageContext{
 		Chat:             chat,
 		MessageID:        message.ID,
-		ReplyToMessageID: assistantReplyToMessageID(message),
-		TopicID:          assistantTopicID(message),
+		ReplyToMessageID: replyToID,
+		ReplyPeer:        assistantReplyPeer(message, entities),
+		ReplyIsTopicRoot: topicID > 0 && replyToID == topicID,
+		TopicID:          topicID,
+		Media:            core.ExtractMediaFromTG(message.Media),
+		GroupedID:        message.GroupedID,
+		Entities:         append([]tg.MessageEntityClass(nil), message.Entities...),
+		Self:             core.User{ID: selfID, Username: selfUsername, IsBot: selfID > 0},
+		MentionedSelf:    assistantMentionsSelf(mentions, selfID, selfUsername),
+		Mentions:         mentions,
 	}
 }
 
@@ -144,11 +226,12 @@ func assistantGroupRuleEnvelope(
 	chat core.Chat,
 	senderID int64,
 	selfID int64,
+	selfUsername string,
 ) (*core.MessageEnvelope, bool) {
 	if message == nil || inputPeer == nil || senderID <= 0 || !(&chat).IsManagerGroup() {
 		return nil, false
 	}
-	messageContext := assistantCommandMessageContext(message, entities)
+	messageContext := assistantCommandMessageContext(message, entities, selfID, selfUsername)
 	peerRef, err := core.PeerRefFromInputPeer(inputPeer)
 	if err != nil || !peerRef.Valid() {
 		return nil, false
@@ -170,13 +253,19 @@ func assistantGroupRuleEnvelope(
 		Sender:         sender,
 		Text:           message.Message,
 		Date:           time.Unix(int64(message.Date), 0),
-		ReplyToID:      messageContext.ReplyToMessageID,
-		TopicID:        messageContext.TopicID,
-		GroupedID:      message.GroupedID,
-		Outgoing:       message.Out,
-		IsCommand:      false,
-		SenderVerified: senderVerified,
-		SenderSelf:     senderID == selfID,
+		ReplyToID:       messageContext.ReplyToMessageID,
+		ReplyPeer:       messageContext.ReplyPeer,
+		TopicID:         messageContext.TopicID,
+		GroupedID:       message.GroupedID,
+		Outgoing:        message.Out,
+		IsCommand:       false,
+		SenderVerified:  senderVerified,
+		SenderSelf:      senderID == selfID,
+		Self:            messageContext.Self,
+		Mentioned:       messageContext.MentionedSelf,
+		ReplyIsTopicRoot: messageContext.ReplyIsTopicRoot,
+		Mentions:        append([]core.MessageMention(nil), messageContext.Mentions...),
+		Media:           core.SummarizeMedia(messageContext.Media),
 	}, true
 }
 
@@ -201,7 +290,7 @@ func submitAssistantGroupRules(
 		QuotaOwner:       tasks.OwnerID(fmt.Sprintf("telegram:chat:%d", chatID)),
 		Pool:             tasks.PoolID("interactive"),
 		Class:            tasks.PriorityInteractive,
-		OrderingKey:      fmt.Sprintf("chat:%d", chatID),
+		OrderingKey:      core.GroupOrderingKey(chatID, assistantTopicID(message)),
 		ExecutionTimeout: 5 * time.Second,
 		Handler: func(taskCtx context.Context) error {
 			inputPeer, resolveErr := deps.Resolver.Resolve(
@@ -232,6 +321,10 @@ func submitAssistantGroupRules(
 			if deps.SelfID != nil {
 				selfID = deps.SelfID()
 			}
+			selfUsername := ""
+			if deps.CmdRouter != nil {
+				selfUsername = deps.CmdRouter.BotUsername()
+			}
 			envelope, ok := assistantGroupRuleEnvelope(
 				message,
 				entities,
@@ -239,6 +332,7 @@ func submitAssistantGroupRules(
 				chat,
 				senderID,
 				selfID,
+				selfUsername,
 			)
 			if !ok {
 				return nil
@@ -531,7 +625,12 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 				senderID,
 				inputPeer,
 				msg.Message,
-				assistantCommandMessageContext(msg, e),
+				assistantCommandMessageContext(msg, e, func() int64 {
+					if deps.SelfID != nil {
+						return deps.SelfID()
+					}
+					return 0
+				}(), deps.CmdRouter.BotUsername()),
 				deps.Interaction,
 			)
 			if err != nil && !errors.Is(err, command.ErrUnknownCommand) {

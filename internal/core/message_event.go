@@ -52,6 +52,7 @@ type MessageEnvelope struct {
 	Text       string
 	Date       time.Time
 	ReplyToID  int
+	ReplyPeer  PeerRef
 	TopicID    int
 	GroupedID  int64
 

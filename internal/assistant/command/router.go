@@ -48,7 +48,15 @@ type MessageContext struct {
 	Chat             core.Chat
 	MessageID        int
 	ReplyToMessageID int
+	ReplyPeer        core.PeerRef
+	ReplyIsTopicRoot bool
 	TopicID          int
+	Media            *core.MediaInfo
+	GroupedID        int64
+	Entities         []tg.MessageEntityClass
+	Self             core.User
+	MentionedSelf    bool
+	Mentions         []core.MessageMention
 }
 
 // Reply sends a formatted response to the command originator.
@@ -145,6 +153,10 @@ func (r *Router) botUsernameValue() string {
 	username, _ := value.(string)
 	return username
 }
+
+// BotUsername returns the normalized authenticated Assistant username used by
+// transport context extraction and targeted-command validation.
+func (r *Router) BotUsername() string { return r.botUsernameValue() }
 
 // NormalizeCommandToken validates an optional @botusername suffix and returns
 // the canonical lower-case slash command. Suffixed commands fail closed until
@@ -299,6 +311,10 @@ func (r *Router) executeCanonicalTask(ctx context.Context, senderID int64, cmd c
 	sequence := r.taskSeq.Add(1)
 	taskID := tasks.TaskID(fmt.Sprintf("assistant:%d:%d", senderID, sequence))
 	correlationID := coreCtx.CorrelationID
+	orderingKey := correlationID
+	if coreCtx.IsManagerGroup() && coreCtx.Chat != nil && coreCtx.Chat.ID > 0 {
+		orderingKey = core.GroupOrderingKey(coreCtx.Chat.ID, coreCtx.TopicID())
+	}
 	handler := core.FilterMiddlewareForSource(cmd, core.ExecutionAssistant)(cmd.Handler)
 	var freshAuthorizationError chan error
 	if requiresGroupAuthorization {
@@ -311,7 +327,7 @@ func (r *Router) executeCanonicalTask(ctx context.Context, senderID int64, cmd c
 		QuotaOwner:       tasks.OwnerID(fmt.Sprintf("assistant:user:%d", senderID)),
 		Pool:             "interactive",
 		Class:            tasks.PriorityInteractive,
-		OrderingKey:      correlationID,
+		OrderingKey:      orderingKey,
 		ExecutionTimeout: cmd.Timeout,
 		Resources:        append([]tasks.ResourceRequirement(nil), cmd.Resources...),
 		Handler: func(taskCtx context.Context) error {
@@ -365,6 +381,7 @@ func (r *Router) executeSavedResponseBinding(
 	peer tg.InputPeerClass,
 	inter interaction.MessageInteraction,
 	commandName string,
+	messageContext MessageContext,
 ) (bool, error) {
 	if r.savedBindings == nil {
 		return false, nil
@@ -401,6 +418,12 @@ func (r *Router) executeSavedResponseBinding(
 		resources = append(resources, tasks.ResourceRequirement{Name: "media", Amount: 1})
 	}
 
+	orderingKey := fmt.Sprintf("assistant:savedresponse:%d", chatID)
+	if (&messageContext.Chat).IsManagerGroup() {
+		orderingKey = core.GroupOrderingKey(chatID, messageContext.TopicID)
+	}
+	sendContext := core.MessageSendContext{ReplyToID: messageContext.MessageID, TopicID: messageContext.TopicID}
+
 	sequence := r.taskSeq.Add(1)
 	taskID := tasks.TaskID(fmt.Sprintf("assistant:savedresponse:%d:%d", senderID, sequence))
 	ticket, err := r.tasks.Submit(ctx, tasks.WorkSpec{
@@ -409,7 +432,7 @@ func (r *Router) executeSavedResponseBinding(
 		QuotaOwner:       tasks.OwnerID(fmt.Sprintf("assistant:user:%d", senderID)),
 		Pool:             pool,
 		Class:            tasks.PriorityInteractive,
-		OrderingKey:      fmt.Sprintf("assistant:savedresponse:%d", chatID),
+		OrderingKey:      orderingKey,
 		ExecutionTimeout: assistantSavedResponseTimeout,
 		Resources:        resources,
 		Handler: func(taskCtx context.Context) (runErr error) {
@@ -443,12 +466,24 @@ func (r *Router) executeSavedResponseBinding(
 						if inter == nil || peer == nil {
 							return interaction.ErrInvalidTarget
 						}
+						if contextual, ok := inter.(interface {
+							SendMediaContext(context.Context, tg.InputPeerClass, string, string, string, core.MessageSendContext) (*tg.Message, error)
+						}); ok {
+							_, sendErr := contextual.SendMediaContext(runCtx, peer, mediaType, path, caption, sendContext)
+							return sendErr
+						}
 						_, sendErr := inter.SendMedia(runCtx, peer, mediaType, path, caption)
 						return sendErr
 					},
 					SendText: func(text string) error {
 						if inter == nil || peer == nil {
 							return interaction.ErrInvalidTarget
+						}
+						if contextual, ok := inter.(interface {
+							SendMessageContext(context.Context, tg.InputPeerClass, string, tg.ReplyMarkupClass, core.MessageSendContext) (*tg.Message, error)
+						}); ok {
+							_, sendErr := contextual.SendMessageContext(runCtx, peer, text, nil, sendContext)
+							return sendErr
 						}
 						_, sendErr := inter.SendMessage(runCtx, peer, text, nil)
 						return sendErr
@@ -643,13 +678,20 @@ func (r *Router) dispatch(
 			RawArgs:       strings.Join(fields[1:], " "),
 			PeerID:        peer,
 			Message: &core.Message{
-				ID:        messageContext.MessageID,
-				SenderID:  senderID,
-				TopicID:   messageContext.TopicID,
-				Text:      strings.TrimSpace(messageText),
-				ReplyToID: messageContext.ReplyToMessageID,
+				ID:               messageContext.MessageID,
+				SenderID:         senderID,
+				TopicID:          messageContext.TopicID,
+				Text:             strings.TrimSpace(messageText),
+				ReplyToID:        messageContext.ReplyToMessageID,
+				ReplyPeer:        messageContext.ReplyPeer,
+				ReplyIsTopicRoot: messageContext.ReplyIsTopicRoot,
+				MentionedSelf:    messageContext.MentionedSelf,
+				Media:            messageContext.Media,
+				GroupedID:        messageContext.GroupedID,
+				Entities:         append([]tg.MessageEntityClass(nil), messageContext.Entities...),
 			},
 			Sender:         &core.User{ID: senderID},
+			Self:           &core.User{ID: messageContext.Self.ID, Username: messageContext.Self.Username, IsBot: messageContext.Self.IsBot},
 			Chat:           &chat,
 			Perms:          perms,
 			Principal:      principal,
@@ -707,7 +749,7 @@ func (r *Router) dispatch(
 		return err
 	}
 
-	if handled, err := r.executeSavedResponseBinding(ctx, senderID, peer, inter, cmdNameClean); handled {
+	if handled, err := r.executeSavedResponseBinding(ctx, senderID, peer, inter, cmdNameClean, messageContext); handled {
 		return err
 	}
 
