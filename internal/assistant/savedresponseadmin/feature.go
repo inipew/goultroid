@@ -571,14 +571,14 @@ func (f *Feature) HandleAssistantInput(ctx *orchestration.Context, input string)
 }
 
 func parseReference(fields []string) (savedresponse.Reference, error) {
-	if len(fields) != 3 {
+	if len(fields) < 3 {
 		return savedresponse.Reference{}, fmt.Errorf("expected provider scope_id key")
 	}
 	scopeID, err := strconv.ParseInt(fields[1], 10, 64)
 	if err != nil {
 		return savedresponse.Reference{}, fmt.Errorf("scope_id must be int64")
 	}
-	ref := savedresponse.Reference{Provider: fields[0], ScopeID: scopeID, Key: fields[2]}
+	ref := savedresponse.Reference{Provider: fields[0], ScopeID: scopeID, Key: strings.Join(fields[2:], " ")}
 	if err := ref.Validate(); err != nil {
 		return savedresponse.Reference{}, err
 	}
@@ -602,7 +602,7 @@ func (f *Feature) rearm(ctx *orchestration.Context, s state, message string) err
 
 func (f *Feature) applyCreate(ctx *orchestration.Context, s state, input string) error {
 	fields := strings.Fields(input)
-	if len(fields) != 4 {
+	if len(fields) < 4 {
 		return f.rearm(ctx, s, "format: <alias> <provider> <scope_id> <key>")
 	}
 	ref, err := parseReference(fields[1:])
