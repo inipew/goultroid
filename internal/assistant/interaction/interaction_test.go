@@ -21,6 +21,7 @@ type mockTelegramAPI struct {
 	getChanReq    *tg.ChannelsGetMessagesRequest
 	sendMsgReq     *tg.MessagesSendMessageRequest
 	forwardMsgsReq *tg.MessagesForwardMessagesRequest
+	forwardResult  tg.UpdatesClass
 	editInlineReq  *tg.MessagesEditInlineBotMessageRequest
 
 	// Injected errors
@@ -75,6 +76,9 @@ func (m *mockTelegramAPI) MessagesSendMessage(ctx context.Context, req *tg.Messa
 
 func (m *mockTelegramAPI) MessagesForwardMessages(ctx context.Context, req *tg.MessagesForwardMessagesRequest) (tg.UpdatesClass, error) {
 	m.forwardMsgsReq = req
+	if m.forwardResult != nil {
+		return m.forwardResult, nil
+	}
 	return &tg.UpdateShortSentMessage{ID: 101}, nil
 }
 
@@ -288,6 +292,30 @@ func TestClientInteraction_ForwardMessageWithRandomID(t *testing.T) {
 		len(req.ID) != 1 || req.ID[0] != 11 ||
 		len(req.RandomID) != 1 || req.RandomID[0] != 999 {
 		t.Fatalf("forward request = %+v", req)
+	}
+}
+
+func TestClientInteraction_ForwardExtractsMessageFromUpdatesCombined(t *testing.T) {
+	mockAPI := &mockTelegramAPI{
+		forwardResult: &tg.UpdatesCombined{
+			Updates: []tg.UpdateClass{
+				&tg.UpdateNewMessage{Message: &tg.Message{ID: 202, Message: "forwarded"}},
+			},
+		},
+	}
+	ci := interaction.NewClientInteraction(mockAPI, zap.NewNop())
+	msg, err := ci.ForwardMessageWithRandomID(
+		context.Background(),
+		&tg.InputPeerUser{UserID: 42, AccessHash: 420},
+		&tg.InputPeerUser{UserID: 7, AccessHash: 70},
+		11,
+		999,
+	)
+	if err != nil {
+		t.Fatalf("ForwardMessageWithRandomID() error = %v", err)
+	}
+	if msg == nil || msg.ID != 202 {
+		t.Fatalf("combined forward message = %+v", msg)
 	}
 }
 
