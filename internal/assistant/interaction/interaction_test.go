@@ -22,6 +22,8 @@ type mockTelegramAPI struct {
 	getChanReq     *tg.ChannelsGetMessagesRequest
 	sendMsgReq     *tg.MessagesSendMessageRequest
 	sendMsgResult  tg.UpdatesClass
+	sendMediaReq   *tg.MessagesSendMediaRequest
+	sendMediaResult tg.UpdatesClass
 	forwardMsgsReq *tg.MessagesForwardMessagesRequest
 	forwardResult  tg.UpdatesClass
 	editInlineReq  *tg.MessagesEditInlineBotMessageRequest
@@ -80,6 +82,14 @@ func (m *mockTelegramAPI) MessagesSendMessage(ctx context.Context, req *tg.Messa
 		return m.sendMsgResult, nil
 	}
 	return &tg.UpdateShortSentMessage{ID: 100}, nil
+}
+
+func (m *mockTelegramAPI) MessagesSendMedia(ctx context.Context, req *tg.MessagesSendMediaRequest) (tg.UpdatesClass, error) {
+	m.sendMediaReq = req
+	if m.sendMediaResult != nil {
+		return m.sendMediaResult, nil
+	}
+	return &tg.UpdateShortSentMessage{ID: 102}, nil
 }
 
 func (m *mockTelegramAPI) MessagesForwardMessages(ctx context.Context, req *tg.MessagesForwardMessagesRequest) (tg.UpdatesClass, error) {
@@ -352,6 +362,117 @@ func TestClientInteraction_CopyTextMessageRejectsMedia(t *testing.T) {
 	}
 	if mockAPI.sendMsgReq != nil || mockAPI.forwardMsgsReq != nil {
 		t.Fatalf("media copy produced transport side effect: send=%+v forward=%+v", mockAPI.sendMsgReq, mockAPI.forwardMsgsReq)
+	}
+}
+
+func TestClientInteraction_CopyMessageWithRandomIDCopiesPhotoReference(t *testing.T) {
+	photoMedia := &tg.MessageMediaPhoto{}
+	photoMedia.SetPhoto(&tg.Photo{ID: 901, AccessHash: 902, FileReference: []byte{1, 2, 3}})
+	mockAPI := &mockTelegramAPI{
+		getMsgsResult: &tg.MessagesMessages{
+			Messages: []tg.MessageClass{
+				&tg.Message{ID: 77, Message: "photo caption", Media: photoMedia},
+			},
+		},
+		sendMediaResult: &tg.UpdateShortSentMessage{ID: 304},
+	}
+	ci := interaction.NewClientInteraction(mockAPI, zap.NewNop())
+	msg, err := ci.CopyMessageWithRandomID(
+		context.Background(),
+		interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 7, AccessHash: 70}, 77, 7, 0),
+		&tg.InputPeerUser{UserID: 42, AccessHash: 420},
+		1001,
+	)
+	if err != nil {
+		t.Fatalf("CopyMessageWithRandomID(photo) error=%v", err)
+	}
+	if msg == nil || msg.ID != 304 {
+		t.Fatalf("photo copy message=%+v", msg)
+	}
+	if mockAPI.sendMsgReq != nil || mockAPI.forwardMsgsReq != nil {
+		t.Fatalf("photo copy used wrong transport: send=%+v forward=%+v", mockAPI.sendMsgReq, mockAPI.forwardMsgsReq)
+	}
+	req := mockAPI.sendMediaReq
+	if req == nil || req.RandomID != 1001 || req.Message != "photo caption" {
+		t.Fatalf("photo sendMedia request=%+v", req)
+	}
+	input, ok := req.Media.(*tg.InputMediaPhoto)
+	if !ok || input == nil {
+		t.Fatalf("photo media type=%T", req.Media)
+	}
+	photo, ok := input.ID.(*tg.InputPhoto)
+	if !ok || photo.ID != 901 || photo.AccessHash != 902 ||
+		string(photo.FileReference) != string([]byte{1, 2, 3}) {
+		t.Fatalf("photo input=%+v", input.ID)
+	}
+}
+
+func TestClientInteraction_CopyMessageWithRandomIDCopiesDocumentReference(t *testing.T) {
+	documentMedia := &tg.MessageMediaDocument{}
+	documentMedia.SetDocument(&tg.Document{
+		ID: 801, AccessHash: 802, FileReference: []byte{4, 5, 6},
+		MimeType: "video/mp4",
+	})
+	mockAPI := &mockTelegramAPI{
+		getMsgsResult: &tg.MessagesMessages{
+			Messages: []tg.MessageClass{
+				&tg.Message{ID: 78, Message: "video caption", Media: documentMedia},
+			},
+		},
+		sendMediaResult: &tg.UpdateShortSentMessage{ID: 305},
+	}
+	ci := interaction.NewClientInteraction(mockAPI, zap.NewNop())
+	msg, err := ci.CopyMessageWithRandomID(
+		context.Background(),
+		interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 7, AccessHash: 70}, 78, 7, 0),
+		&tg.InputPeerUser{UserID: 42, AccessHash: 420},
+		1002,
+	)
+	if err != nil {
+		t.Fatalf("CopyMessageWithRandomID(document) error=%v", err)
+	}
+	if msg == nil || msg.ID != 305 {
+		t.Fatalf("document copy message=%+v", msg)
+	}
+	req := mockAPI.sendMediaReq
+	if req == nil || req.RandomID != 1002 || req.Message != "video caption" {
+		t.Fatalf("document sendMedia request=%+v", req)
+	}
+	input, ok := req.Media.(*tg.InputMediaDocument)
+	if !ok || input == nil {
+		t.Fatalf("document media type=%T", req.Media)
+	}
+	document, ok := input.ID.(*tg.InputDocument)
+	if !ok || document.ID != 801 || document.AccessHash != 802 ||
+		string(document.FileReference) != string([]byte{4, 5, 6}) {
+		t.Fatalf("document input=%+v", input.ID)
+	}
+	if mockAPI.forwardMsgsReq != nil {
+		t.Fatalf("document copy leaked through forwardMessages: %+v", mockAPI.forwardMsgsReq)
+	}
+}
+
+func TestClientInteraction_CopyMessageRejectsUnsupportedMediaWithoutSideEffect(t *testing.T) {
+	mockAPI := &mockTelegramAPI{
+		getMsgsResult: &tg.MessagesMessages{
+			Messages: []tg.MessageClass{
+				&tg.Message{ID: 79, Media: &tg.MessageMediaUnsupported{}},
+			},
+		},
+	}
+	ci := interaction.NewClientInteraction(mockAPI, zap.NewNop())
+	_, err := ci.CopyMessageWithRandomID(
+		context.Background(),
+		interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 7, AccessHash: 70}, 79, 7, 0),
+		&tg.InputPeerUser{UserID: 42, AccessHash: 420},
+		1003,
+	)
+	if !errors.Is(err, core.ErrUnsupported) {
+		t.Fatalf("CopyMessageWithRandomID(unsupported) error=%v, want %v", err, core.ErrUnsupported)
+	}
+	if mockAPI.sendMsgReq != nil || mockAPI.sendMediaReq != nil || mockAPI.forwardMsgsReq != nil {
+		t.Fatalf("unsupported media produced side effect: send=%+v media=%+v forward=%+v",
+			mockAPI.sendMsgReq, mockAPI.sendMediaReq, mockAPI.forwardMsgsReq)
 	}
 }
 
