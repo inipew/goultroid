@@ -207,3 +207,49 @@ func TestMigrationStoresOpaqueRoutingPayloadOnly(t *testing.T) {
 		t.Fatalf("persisted token=%+v", got)
 	}
 }
+
+
+func TestRouterCapacityFailsClosedWithoutEvictingLiveTokens(t *testing.T) {
+	router, _ := newTestRouter(t)
+	router.maxRetained = 1
+	provider := &testProvider{scope: tasks.ScopeIdentity{Owner: "plugin:test", Generation: 1}}
+	if _, err := router.Register("test", provider); err != nil {
+		t.Fatal(err)
+	}
+	first, err := router.Issue(context.Background(), IssueRequest{
+		Kind: "test", Payload: "first", TTL: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := router.Issue(context.Background(), IssueRequest{
+		Kind: "test", Payload: "second", TTL: time.Hour,
+	}); !errors.Is(err, ErrCapacity) {
+		t.Fatalf("second Issue() error=%v, want %v", err, ErrCapacity)
+	}
+	if _, err := router.Prepare(context.Background(), first.ID, 7); err != nil {
+		t.Fatalf("live token was evicted at capacity: %v", err)
+	}
+}
+
+func TestRouterIssuePrunesExpiredBeforeCapacityCheck(t *testing.T) {
+	router, _ := newTestRouter(t)
+	router.maxRetained = 1
+	provider := &testProvider{scope: tasks.ScopeIdentity{Owner: "plugin:test", Generation: 1}}
+	if _, err := router.Register("test", provider); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC)
+	router.now = func() time.Time { return base }
+	if _, err := router.Issue(context.Background(), IssueRequest{
+		Kind: "test", Payload: "expired", TTL: time.Minute,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	router.now = func() time.Time { return base.Add(2 * time.Minute) }
+	if _, err := router.Issue(context.Background(), IssueRequest{
+		Kind: "test", Payload: "replacement", TTL: time.Hour,
+	}); err != nil {
+		t.Fatalf("Issue(after expiry) error=%v", err)
+	}
+}
