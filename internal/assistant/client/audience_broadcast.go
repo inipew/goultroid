@@ -12,6 +12,11 @@ import (
 	"github.com/inipew/goultroid/internal/services/pmrelay"
 )
 
+// assistantAudienceTargetSource freezes the audience insertion watermark and
+// streams recipients by durable membership sequence. Retention pruning is
+// allowed to remove stale recipients during a long broadcast; any such
+// disappearance is surfaced as nil targets so the shared Broadcast service
+// counts them as failures and Total never overclaims successful delivery.
 type assistantAudienceTargetSource struct {
 	registry         pmrelay.AudienceRegistry
 	snapshot         pmrelay.AudienceSnapshot
