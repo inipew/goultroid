@@ -164,6 +164,12 @@ type SchedulerTaskCleaner interface {
 	UnregisterPeriodicTasksByOwner(owner string) int
 }
 
+// RegistrationValidator runs after all externally visible plugin registrations
+// (commands/hooks/callbacks/feature surfaces) are staged but before the manager
+// commits that generation. Returning an error makes registration/enable roll
+// back atomically.
+type RegistrationValidator func(context.Context) error
+
 type Manager struct {
 	router            *core.Router
 	hookRegistrar     HookRegistrar
@@ -196,8 +202,9 @@ type Manager struct {
 	featureCleanups   map[string]func()
 	auditor           audit.Auditor
 	panicReporter     core.PanicReporter
-	cleanupExecutor   *runtime.CallbackExecutor
-	mu                sync.RWMutex
+	cleanupExecutor       *runtime.CallbackExecutor
+	registrationValidator RegistrationValidator
+	mu                    sync.RWMutex
 	shutdown          bool
 }
 
@@ -376,6 +383,24 @@ func (m *Manager) SetTaskClient(client tasks.Client) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.taskClient = client
+}
+
+// SetRegistrationValidator installs a transaction-time validator invoked after
+// runtime surfaces are staged and before a plugin generation becomes committed.
+func (m *Manager) SetRegistrationValidator(validator RegistrationValidator) {
+	m.mu.Lock()
+	m.registrationValidator = validator
+	m.mu.Unlock()
+}
+
+func (m *Manager) validateStagedRegistration(ctx context.Context) error {
+	m.mu.RLock()
+	validator := m.registrationValidator
+	m.mu.RUnlock()
+	if validator == nil {
+		return nil
+	}
+	return validator(ctx)
 }
 
 func (m *Manager) buildPluginContext(baseCtx context.Context, name string, scope *Scope) PluginContext {
@@ -630,6 +655,20 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 		router.UnregisterBatch(cmds)
 		cleanupPlugin()
 		return fmt.Errorf("plugin %s feature contract registration failed: %w", name, err)
+	}
+	if err := m.validateStagedRegistration(ctx); err != nil {
+		if featureCleanup != nil {
+			_ = m.runLifecycleCallback(ctx, "plugin "+name+" feature validation rollback", func() error { featureCleanup(); return nil })
+		}
+		if callbackCleanup != nil {
+			_ = m.runLifecycleCallback(ctx, "plugin "+name+" callback validation rollback", func() error { callbackCleanup(); return nil })
+		}
+		if hookCleanup != nil {
+			_ = m.runLifecycleCallback(ctx, "plugin "+name+" hook validation rollback", func() error { hookCleanup(); return nil })
+		}
+		router.UnregisterBatch(cmds)
+		cleanupPlugin()
+		return fmt.Errorf("plugin %s staged registration rejected: %w", name, err)
 	}
 
 	var meta Metadata
@@ -1172,11 +1211,30 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 		if hookCleanup != nil {
 			_ = m.runLifecycleCallback(ctx, "plugin "+name+" hook feature rollback", func() error { hookCleanup(); return nil })
 		}
-		_ = scope.Close(ctx)
+		cleanupEnabledPlugin("plugin " + name + " feature enable rollback")
 		m.mu.Lock()
 		delete(m.transitions, key)
 		m.mu.Unlock()
 		return fmt.Errorf("failed to re-register feature contract for plugin %s: %w", name, err)
+	}
+	if err := m.validateStagedRegistration(ctx); err != nil {
+		if featureCleanup != nil {
+			_ = m.runLifecycleCallback(ctx, "plugin "+name+" feature validation rollback", func() error { featureCleanup(); return nil })
+		}
+		if router != nil && len(cmds) > 0 {
+			router.UnregisterBatch(cmds)
+		}
+		if callbackCleanup != nil {
+			_ = m.runLifecycleCallback(ctx, "plugin "+name+" callback validation rollback", func() error { callbackCleanup(); return nil })
+		}
+		if hookCleanup != nil {
+			_ = m.runLifecycleCallback(ctx, "plugin "+name+" hook validation rollback", func() error { hookCleanup(); return nil })
+		}
+		cleanupEnabledPlugin("plugin " + name + " validation enable rollback")
+		m.mu.Lock()
+		delete(m.transitions, key)
+		m.mu.Unlock()
+		return fmt.Errorf("plugin %s staged enable rejected: %w", name, err)
 	}
 
 	m.mu.Lock()
