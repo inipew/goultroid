@@ -403,3 +403,46 @@ func TestP7IWarningResetSharesSameTargetStripe(t *testing.T) {
 		}
 	}
 }
+
+
+func TestP7IWarningPersistenceRevalidatesTargetInsideStripe(t *testing.T) {
+	root := repositoryRoot(t)
+
+	moderationPath := filepath.Join(root, "internal", "services", "moderation", "service.go")
+	moderationRaw, err := os.ReadFile(moderationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moderationSource := string(moderationRaw)
+	for _, required := range []string{
+		"func (s *Service) WarnWithServiceGuarded(",
+		"lock := s.warningLock(chatID, userID)",
+		"if guard != nil",
+		"if err := guard(ctx); err != nil",
+		"s.repo.AddWarning(ctx, chatID, userID, reason, warnedBy)",
+	} {
+		if !strings.Contains(moderationSource, required) {
+			t.Errorf("P7-I warning persistence guard missing %q", required)
+		}
+	}
+	guard := strings.Index(moderationSource, "if err := guard(ctx); err != nil")
+	persist := strings.Index(moderationSource, "s.repo.AddWarning(ctx, chatID, userID, reason, warnedBy)")
+	if guard < 0 || persist < 0 || guard > persist {
+		t.Fatalf("P7-I warning guard ordering invalid guard=%d persist=%d", guard, persist)
+	}
+
+	adminPath := filepath.Join(root, "plugins", "admin", "admin.go")
+	adminRaw, err := os.ReadFile(adminPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminSource := string(adminRaw)
+	for _, required := range []string{
+		"WarnWithServiceGuarded(",
+		"validateAssistantWarningTargetAt(guardCtx, ctx, targetID)",
+	} {
+		if !strings.Contains(adminSource, required) {
+			t.Errorf("P7-I Assistant warning guard wiring missing %q", required)
+		}
+	}
+}
