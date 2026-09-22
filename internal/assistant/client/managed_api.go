@@ -122,7 +122,6 @@ func (a *managedAPI) MessagesGetFullChat(ctx context.Context, chatID int64) (*tg
 	})
 }
 
-
 func (a *managedAPI) ChannelsEditBanned(ctx context.Context, req *tg.ChannelsEditBannedRequest) (tg.UpdatesClass, error) {
 	return managedValue(ctx, a, "channels.editBanned", assistentrpc.IdempotentMutation, func(opCtx context.Context) (tg.UpdatesClass, error) {
 		return a.raw.ChannelsEditBanned(opCtx, req)
