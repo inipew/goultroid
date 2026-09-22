@@ -131,6 +131,15 @@ type AttemptSummary struct {
 	Deferrals       int
 }
 
+// DurableDiagnostics is a read-only aggregate of persisted job deferral state.
+// It intentionally contains bounded aggregate values rather than occurrence IDs
+// so application diagnostics cannot grow with workload cardinality.
+type DurableDiagnostics struct {
+	DeferredOccurrences int
+	RetainedDeferrals    int
+	EarliestDeferredAt   time.Time
+}
+
 // RecoveryCandidate is a batch recovery row containing the occurrence and its
 // pre-aggregated attempt decision state. Summary is non-nil for stores that
 // implement the compact recovery query path.
