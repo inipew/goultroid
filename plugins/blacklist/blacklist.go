@@ -262,7 +262,14 @@ func (p *Plugin) ApplyAssistantRule(
 	svc core.TelegramServicer,
 	message *core.MessageEnvelope,
 ) (bool, error) {
-	matched, err := p.matchMessage(ctx, message)
+	if message == nil || message.ChatID == 0 {
+		return false, nil
+	}
+	lock := p.ruleLock(message.ChatID)
+	lock.RLock()
+	defer lock.RUnlock()
+
+	matched, err := p.matchMessageUnlocked(ctx, message)
 	if err != nil || !matched {
 		return false, err
 	}
@@ -351,16 +358,25 @@ func (p *Plugin) compiledForChat(
 }
 
 func (p *Plugin) matchMessage(ctx context.Context, message *core.MessageEnvelope) (bool, error) {
+	if message == nil || message.ChatID == 0 {
+		return false, nil
+	}
+	lock := p.ruleLock(message.ChatID)
+	lock.RLock()
+	defer lock.RUnlock()
+	return p.matchMessageUnlocked(ctx, message)
+}
+
+func (p *Plugin) matchMessageUnlocked(
+	ctx context.Context,
+	message *core.MessageEnvelope,
+) (bool, error) {
 	if message == nil || message.IsCommand || message.Text == "" || message.Outgoing || message.Sender.IsBot {
 		return false, nil
 	}
 	if p.db == nil || message.ChatID == 0 {
 		return false, nil
 	}
-	lock := p.ruleLock(message.ChatID)
-	lock.RLock()
-	defer lock.RUnlock()
-
 	compiled, err := p.compiledForChat(ctx, message.ChatID)
 	if err != nil {
 		return false, err
