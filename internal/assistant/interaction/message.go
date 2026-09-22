@@ -12,6 +12,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/gotd/td/telegram/message"
+	messageunpack "github.com/gotd/td/telegram/message/unpack"
 	"github.com/gotd/td/telegram/message/entity"
 	"github.com/gotd/td/telegram/message/html"
 	"github.com/gotd/td/telegram/message/styling"
@@ -153,36 +154,21 @@ func randomID() int64 {
 	return n.Int64()
 }
 
-func extractMessageFromUpdate(update tg.UpdateClass) *tg.Message {
-	switch item := update.(type) {
-	case *tg.UpdateNewMessage:
-		if msg, ok := item.Message.(*tg.Message); ok {
-			return msg
-		}
-	case *tg.UpdateNewChannelMessage:
-		if msg, ok := item.Message.(*tg.Message); ok {
-			return msg
-		}
-	}
-	return nil
-}
-
 func extractMessage(u tg.UpdatesClass) *tg.Message {
 	switch upd := u.(type) {
 	case *tg.Updates:
 		for _, item := range upd.Updates {
-			if msg := extractMessageFromUpdate(item); msg != nil {
-				return msg
+			if newMsg, ok := item.(*tg.UpdateNewMessage); ok {
+				if msg, ok := newMsg.Message.(*tg.Message); ok {
+					return msg
+				}
+			}
+			if newChannelMsg, ok := item.(*tg.UpdateNewChannelMessage); ok {
+				if msg, ok := newChannelMsg.Message.(*tg.Message); ok {
+					return msg
+				}
 			}
 		}
-	case *tg.UpdatesCombined:
-		for _, item := range upd.Updates {
-			if msg := extractMessageFromUpdate(item); msg != nil {
-				return msg
-			}
-		}
-	case *tg.UpdateShort:
-		return extractMessageFromUpdate(upd.Update)
 	case *tg.UpdateShortSentMessage:
 		return &tg.Message{
 			ID:   upd.ID,
@@ -511,9 +497,13 @@ func (c *ClientInteraction) ForwardMessageWithRandomID(
 		retErr = fmt.Errorf("assistant forward message: %w", ClassifyRPCError(err))
 		return nil, retErr
 	}
-	msg := extractMessage(updates)
-	if msg == nil || msg.ID <= 0 {
-		retErr = fmt.Errorf("assistant forward message: Telegram returned no target message")
+	msg, unpackErr := messageunpack.Message(updates, nil)
+	if unpackErr != nil || msg == nil || msg.ID <= 0 {
+		if unpackErr != nil {
+			retErr = fmt.Errorf("assistant forward message: unpack target message: %w", unpackErr)
+		} else {
+			retErr = fmt.Errorf("assistant forward message: Telegram returned no target message")
+		}
 		return nil, retErr
 	}
 	return msg, nil
