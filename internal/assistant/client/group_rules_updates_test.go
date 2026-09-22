@@ -207,3 +207,117 @@ func TestP7ISlashPrivateAndBroadcastDoNotEnterRulePlane(t *testing.T) {
 		})
 	}
 }
+
+
+func TestP7IActiveUnknownSupergroupDefersClassificationUntilTask(t *testing.T) {
+	rules := &p7iRuleIngressStub{interested: true}
+	resolver := &groupServiceResolverStub{
+		resolved: &tg.InputPeerChannel{ChannelID: 88, AccessHash: 188},
+	}
+	tasksClient := &p7iTaskClient{run: false}
+	cacheCalls := 0
+
+	message := &tg.Message{
+		ID:      105,
+		Date:    1234,
+		PeerID:  &tg.PeerChannel{ChannelID: 88},
+		FromID:  &tg.PeerUser{UserID: 42},
+		Message: "active rule text",
+	}
+	p7iDispatchMessage(t, UpdateHandlerDeps{
+		Logger:     zap.NewNop(),
+		GroupRules: rules,
+		Resolver:   resolver,
+		Tasks:      tasksClient,
+		SelfID:     func() int64 { return 999 },
+		CacheEntities: func(tg.Entities) {
+			cacheCalls++
+		},
+	}, message, nil, []tg.UserClass{
+		&tg.User{ID: 42, FirstName: "Alice"},
+	})
+
+	if rules.interestedCalls != 1 || tasksClient.calls != 1 {
+		t.Fatalf("unknown supergroup interested/tasks=%d/%d, want 1/1",
+			rules.interestedCalls, tasksClient.calls)
+	}
+	if resolver.calls != 0 || rules.handleCalls != 0 {
+		t.Fatalf("unknown supergroup did work before task resolver=%d handle=%d",
+			resolver.calls, rules.handleCalls)
+	}
+	if cacheCalls != 1 {
+		t.Fatalf("entity cache calls=%d, want 1 after interest hit", cacheCalls)
+	}
+
+	if err := tasksClient.spec.Handler(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if resolver.calls != 1 || rules.handleCalls != 1 {
+		t.Fatalf("unknown supergroup in-task resolver/handle=%d/%d, want 1/1",
+			resolver.calls, rules.handleCalls)
+	}
+	if rules.last == nil || rules.last.Chat.Kind() != core.ChatKindSupergroup ||
+		rules.last.Peer.Kind != core.PeerKindChannel {
+		t.Fatalf("unknown supergroup envelope=%+v", rules.last)
+	}
+}
+
+func TestP7IInactiveUnknownChannelStopsBeforeTaskAndResolver(t *testing.T) {
+	rules := &p7iRuleIngressStub{interested: false}
+	resolver := &groupServiceResolverStub{
+		resolved: &tg.InputPeerChannel{ChannelID: 88, AccessHash: 188},
+	}
+	tasksClient := &p7iTaskClient{run: true}
+	cacheCalls := 0
+
+	p7iDispatchMessage(t, UpdateHandlerDeps{
+		Logger:     zap.NewNop(),
+		GroupRules: rules,
+		Resolver:   resolver,
+		Tasks:      tasksClient,
+		CacheEntities: func(tg.Entities) {
+			cacheCalls++
+		},
+	}, &tg.Message{
+		ID:      106,
+		PeerID:  &tg.PeerChannel{ChannelID: 88},
+		FromID:  &tg.PeerUser{UserID: 42},
+		Message: "cold unknown channel",
+	}, nil, nil)
+
+	if rules.interestedCalls != 1 {
+		t.Fatalf("interest calls=%d, want 1", rules.interestedCalls)
+	}
+	if cacheCalls != 0 || resolver.calls != 0 || tasksClient.calls != 0 || rules.handleCalls != 0 {
+		t.Fatalf("inactive unknown channel cache=%d resolver=%d tasks=%d handle=%d, want 0/0/0/0",
+			cacheCalls, resolver.calls, tasksClient.calls, rules.handleCalls)
+	}
+}
+
+func TestP7IKnownBroadcastStillFailsClosedBeforeInterest(t *testing.T) {
+	rules := &p7iRuleIngressStub{interested: true}
+	resolver := &groupServiceResolverStub{
+		resolved: &tg.InputPeerChannel{ChannelID: 88, AccessHash: 188},
+	}
+	tasksClient := &p7iTaskClient{run: true}
+
+	p7iDispatchMessage(t, UpdateHandlerDeps{
+		Logger:     zap.NewNop(),
+		GroupRules: rules,
+		Resolver:   resolver,
+		Tasks:      tasksClient,
+	}, &tg.Message{
+		ID:      107,
+		PeerID:  &tg.PeerChannel{ChannelID: 88},
+		FromID:  &tg.PeerUser{UserID: 42},
+		Message: "known broadcast",
+	}, []tg.ChatClass{
+		&tg.Channel{ID: 88, AccessHash: 188, Megagroup: false},
+	}, nil)
+
+	if rules.interestedCalls != 0 || resolver.calls != 0 ||
+		tasksClient.calls != 0 || rules.handleCalls != 0 {
+		t.Fatalf("known broadcast entered rule plane interested=%d resolver=%d tasks=%d handle=%d",
+			rules.interestedCalls, resolver.calls, tasksClient.calls, rules.handleCalls)
+	}
+}
