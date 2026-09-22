@@ -122,12 +122,26 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			return deps.InlineService.AnswerInlineQueryOptions(ctx, update.QueryID, nil, core.InlineAnswerOptions{CacheTime: 1, Private: true})
 		}
 		prepared, prepareErr := deps.InlineEngine.Prepare(update.Query)
+		if contextual, ok := deps.InlineEngine.(interface {
+			PrepareContext(context.Context, string) (inlineservice.PreparedQuery, error)
+		}); ok {
+			prepared, prepareErr = contextual.PrepareContext(ctx, update.Query)
+		}
 		var scope tasks.ScopeIdentity
+		var resources []tasks.ResourceRequirement
+		pool := tasks.PoolID("interactive")
 		run := func(taskCtx context.Context) error {
 			return deps.InlineEngine.ExecuteWithPeerType(taskCtx, deps.InlineService, update.QueryID, update.UserID, update.Query, update.Offset, update.PeerType)
 		}
 		if prepareErr == nil {
 			scope = prepared.Scope()
+			resources = prepared.Resources()
+			for _, requirement := range resources {
+				if requirement.Name == "media" && requirement.Amount > 0 {
+					pool = tasks.PoolID("general")
+					break
+				}
+			}
 			run = func(taskCtx context.Context) error {
 				return deps.InlineEngine.ExecutePreparedWithPeerType(taskCtx, deps.InlineService, update.QueryID, update.UserID, prepared, update.Offset, update.PeerType)
 			}
@@ -139,10 +153,11 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			ID:               tasks.TaskID(fmt.Sprintf("asst:inline:%d", update.QueryID)),
 			Scope:            scope,
 			QuotaOwner:       tasks.OwnerID(fmt.Sprintf("telegram:user:%d", update.UserID)),
-			Pool:             "interactive",
+			Pool:             pool,
 			Class:            tasks.PriorityInteractive,
 			OrderingKey:      fmt.Sprintf("inline:%d", update.QueryID),
 			ExecutionTimeout: 5 * time.Second,
+			Resources:        append([]tasks.ResourceRequirement(nil), resources...),
 			Handler:          run,
 		})
 		if err != nil {
