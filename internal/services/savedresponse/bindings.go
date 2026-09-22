@@ -32,6 +32,7 @@ var (
 	ErrBindingDisabled = errors.New("saved response: surface binding disabled")
 	ErrBindingStale    = errors.New("saved response: prepared surface binding is stale")
 	ErrBindingReserved = errors.New("saved response: surface alias is reserved by canonical runtime")
+	ErrBindingCapacity = errors.New("saved response: surface binding capacity reached")
 )
 
 // SurfaceBinding exposes one provider-owned SavedResponse on a stable external
