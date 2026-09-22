@@ -421,7 +421,14 @@ func (r *SQLiteRepository) TouchAudience(ctx context.Context, touch AudienceTouc
 	if err != nil {
 		return AudienceMember{}, err
 	}
-	result, err := r.db.ExecContext(ctx, `
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return AudienceMember{}, fmt.Errorf("begin assistant audience touch: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	result, err := tx.ExecContext(ctx, `
 		INSERT INTO assistant_audience_members (user_id, sources, first_seen_at, last_seen_at)
 		SELECT ?, ?, ?, ?
 		WHERE EXISTS (
@@ -451,7 +458,26 @@ func (r *SQLiteRepository) TouchAudience(ctx context.Context, touch AudienceTouc
 	if affected != 1 {
 		return AudienceMember{}, ErrAudienceCapacity
 	}
-	return r.GetAudience(ctx, normalized.UserID)
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO assistant_audience_membership_order (user_id)
+		VALUES (?)
+	`, normalized.UserID); err != nil {
+		return AudienceMember{}, fmt.Errorf("record assistant audience membership order: %w", err)
+	}
+
+	member, err := scanAudience(tx.QueryRowContext(ctx, `
+		SELECT user_id, sources, first_seen_at, last_seen_at
+		FROM assistant_audience_members
+		WHERE user_id = ?
+	`, normalized.UserID))
+	if err != nil {
+		return AudienceMember{}, fmt.Errorf("read touched assistant audience member: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return AudienceMember{}, fmt.Errorf("commit assistant audience touch: %w", err)
+	}
+	return member, nil
 }
 
 func (r *SQLiteRepository) GetAudience(ctx context.Context, userID int64) (AudienceMember, error) {
@@ -510,13 +536,97 @@ func (r *SQLiteRepository) ListAudience(ctx context.Context, afterUserID int64, 
 	return result, nil
 }
 
+func (r *SQLiteRepository) SnapshotAudience(ctx context.Context) (AudienceSnapshot, error) {
+	if r == nil || r.db == nil {
+		return AudienceSnapshot{}, ErrUnavailable
+	}
+	var snapshot AudienceSnapshot
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT COALESCE(MAX(o.sequence), 0), count(*)
+		FROM assistant_audience_membership_order o
+		INNER JOIN assistant_audience_members m ON m.user_id = o.user_id
+	`).Scan(&snapshot.MaxSequence, &snapshot.Total); err != nil {
+		return AudienceSnapshot{}, fmt.Errorf("snapshot assistant audience: %w", err)
+	}
+	return snapshot, nil
+}
+
+func (r *SQLiteRepository) ListAudienceSnapshot(
+	ctx context.Context,
+	snapshot AudienceSnapshot,
+	afterSequence int64,
+	limit int,
+) ([]AudienceMember, int64, error) {
+	if r == nil || r.db == nil {
+		return nil, afterSequence, ErrUnavailable
+	}
+	if !snapshot.valid() || afterSequence < 0 || afterSequence > snapshot.MaxSequence {
+		return nil, afterSequence, ErrInvalidAudience
+	}
+	if limit <= 0 || limit > MaxPruneBatch {
+		limit = 100
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT m.user_id, m.sources, m.first_seen_at, m.last_seen_at, o.sequence
+		FROM assistant_audience_membership_order o
+		INNER JOIN assistant_audience_members m ON m.user_id = o.user_id
+		WHERE o.sequence > ? AND o.sequence <= ?
+		ORDER BY o.sequence ASC
+		LIMIT ?
+	`, afterSequence, snapshot.MaxSequence, limit)
+	if err != nil {
+		return nil, afterSequence, fmt.Errorf("list assistant audience snapshot: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]AudienceMember, 0, limit)
+	next := afterSequence
+	for rows.Next() {
+		var member AudienceMember
+		var sources int64
+		var sequence int64
+		if err := rows.Scan(&member.UserID, &sources, &member.FirstSeenAt, &member.LastSeenAt, &sequence); err != nil {
+			return nil, afterSequence, fmt.Errorf("scan assistant audience snapshot: %w", err)
+		}
+		member.Sources = AudienceSource(sources)
+		normalized, err := member.Normalize()
+		if err != nil {
+			return nil, afterSequence, err
+		}
+		result = append(result, normalized)
+		next = sequence
+	}
+	if err := rows.Err(); err != nil {
+		return nil, afterSequence, fmt.Errorf("iterate assistant audience snapshot: %w", err)
+	}
+	return result, next, nil
+}
+
 func (r *SQLiteRepository) PruneAudienceBefore(ctx context.Context, cutoff time.Time, limit int) (int, error) {
 	if r == nil || r.db == nil {
 		return 0, ErrUnavailable
 	}
 	cutoff = cutoff.UTC()
 	limit = normalizePruneLimit(limit)
-	result, err := r.db.ExecContext(ctx, `
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin assistant audience prune: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM assistant_audience_membership_order
+		WHERE user_id IN (
+			SELECT user_id FROM assistant_audience_members
+			WHERE last_seen_at < ?
+			ORDER BY last_seen_at ASC, user_id ASC
+			LIMIT ?
+		)
+	`, cutoff, limit); err != nil {
+		return 0, fmt.Errorf("prune assistant audience membership order: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `
 		DELETE FROM assistant_audience_members
 		WHERE user_id IN (
 			SELECT user_id FROM assistant_audience_members
@@ -528,7 +638,14 @@ func (r *SQLiteRepository) PruneAudienceBefore(ctx context.Context, cutoff time.
 	if err != nil {
 		return 0, fmt.Errorf("prune assistant audience: %w", err)
 	}
-	return affectedRows(result)
+	affected, err := affectedRows(result)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit assistant audience prune: %w", err)
+	}
+	return affected, nil
 }
 
 func (r *SQLiteRepository) CountAudience(ctx context.Context) (int, error) {
