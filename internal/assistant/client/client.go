@@ -339,6 +339,20 @@ func (c *AssistantClient) WaitReady(ctx context.Context) error {
 	return waitForStartup(ctx, ready, startupResult)
 }
 
+// Quiesce closes Assistant update admission without cancelling the bot
+// transport. Runtime drain may still need that MTProto connection for PM Relay
+// and other already-admitted Assistant work.
+func (c *AssistantClient) Quiesce(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.shuttingDown.Store(true)
+	return nil
+}
+
 func (c *AssistantClient) Stop(ctx context.Context) error {
 	c.lifecycleOpMu.Lock()
 	defer c.lifecycleOpMu.Unlock()
