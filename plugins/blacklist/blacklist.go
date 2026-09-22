@@ -282,7 +282,6 @@ func (p *Plugin) compiledForChat(
 			continue
 		}
 
-		p.featureState.SetActive(chatID, len(rawWords) > 0)
 		p.cacheMu.Lock()
 		if p.chatRevision[chatID] != revision {
 			p.cacheMu.Unlock()
@@ -308,6 +307,7 @@ func (p *Plugin) compiledForChat(
 		compiled.lastUsed.Store(p.cacheClock.Add(1))
 		p.chatBlacklist[chatID] = compiled
 		p.cacheMu.Unlock()
+		p.featureState.SetActive(chatID, len(rawWords) > 0)
 		return compiled, nil
 	}
 	return nil, fmt.Errorf("%w: blacklist rules changed during compilation", core.ErrConflict)
