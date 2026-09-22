@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/plugin"
 )
 
@@ -69,10 +70,32 @@ func (p *Plugin) MessageHookRouting() core.MessageHookRouting {
 }
 
 func (p *Plugin) Commands() []core.Command {
+	surfaces := execution.SurfaceUserbot | execution.SurfaceAssistant
+	manage := core.GroupAuthorizationRequirement{
+		Level: core.GroupAuthorizationAdministrator,
+		Rights: core.GroupAdminRights{DeleteMessages: true},
+	}
 	return []core.Command{
-		{Name: "blacklist", Description: "Add a word or phrase to the chat blacklist for auto-deletion", Usage: ".blacklist <word/phrase>", Category: "Moderation", Permission: core.PermissionSudo, GroupOnly: true, Handler: p.handleBlacklist},
-		{Name: "unblacklist", Aliases: []string{"rmblacklist"}, Description: "Remove a word or phrase from the chat blacklist", Usage: ".unblacklist <word/phrase>", Category: "Moderation", Permission: core.PermissionSudo, GroupOnly: true, Handler: p.handleUnblacklist},
-		{Name: "blacklists", Description: "List all blacklisted words in this chat", Category: "Moderation", Permission: core.PermissionSudo, GroupOnly: true, Handler: p.handleListBlacklists},
+		{
+			Name: "blacklist", Description: "Add a word or phrase to the chat blacklist for auto-deletion",
+			Usage: ".blacklist <word/phrase>", Category: "Moderation", Permission: core.PermissionSudo,
+			AssistantPermission: core.PermissionRef(core.PermissionEveryone),
+			GroupAuthorization: manage, GroupOnly: true, Surfaces: surfaces, Handler: p.handleBlacklist,
+		},
+		{
+			Name: "unblacklist", Aliases: []string{"rmblacklist"},
+			Description: "Remove a word or phrase from the chat blacklist",
+			Usage: ".unblacklist <word/phrase>", Category: "Moderation", Permission: core.PermissionSudo,
+			AssistantPermission: core.PermissionRef(core.PermissionEveryone),
+			GroupAuthorization: manage, GroupOnly: true, Surfaces: surfaces, Handler: p.handleUnblacklist,
+		},
+		{
+			Name: "blacklists", Description: "List all blacklisted words in this chat",
+			Category: "Moderation", Permission: core.PermissionSudo,
+			AssistantPermission: core.PermissionRef(core.PermissionEveryone),
+			GroupAuthorization: core.GroupAuthorizationRequirement{Level: core.GroupAuthorizationAdministrator},
+			GroupOnly: true, Surfaces: surfaces, Handler: p.handleListBlacklists,
+		},
 	}
 }
 
@@ -146,24 +169,45 @@ func (p *Plugin) handleListBlacklists(ctx *core.Context) error {
 	return ctx.EditOrReply(sb.String())
 }
 
-func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEnvelope) error {
-	if message == nil || message.IsCommand || message.Text == "" || message.Outgoing {
-		return nil
+func (p *Plugin) AssistantRuleInterested(chatID int64) bool {
+	return p.MessageHookInterested(chatID)
+}
+
+func (p *Plugin) MatchAssistantRule(ctx context.Context, message *core.MessageEnvelope) (bool, error) {
+	return p.matchMessage(ctx, message)
+}
+
+func (p *Plugin) ApplyAssistantRule(
+	ctx context.Context,
+	svc core.TelegramServicer,
+	message *core.MessageEnvelope,
+) (bool, error) {
+	matched, err := p.matchMessage(ctx, message)
+	if err != nil || !matched {
+		return false, err
 	}
-	if message.Sender.IsBot {
-		return nil
+	peer, err := message.Peer.InputPeer()
+	if err != nil {
+		return false, fmt.Errorf("blacklist: cannot resolve peer for chat %d; message %d was not deleted: %w",
+			message.ChatID, message.ID, err)
 	}
-	if p.svcFunc == nil {
-		return nil
-	}
-	svc := p.svcFunc()
 	if svc == nil {
-		return nil
+		return false, fmt.Errorf("%w: blacklist Assistant transport unavailable", core.ErrUnavailable)
+	}
+	if err := svc.DeleteMessage(ctx, peer, []int{message.ID}); err != nil {
+		return false, fmt.Errorf("blacklist: failed to delete message %d: %w", message.ID, err)
+	}
+	return true, nil
+}
+
+func (p *Plugin) matchMessage(ctx context.Context, message *core.MessageEnvelope) (bool, error) {
+	if message == nil || message.IsCommand || message.Text == "" || message.Outgoing || message.Sender.IsBot {
+		return false, nil
+	}
+	if p.db == nil || message.ChatID == 0 {
+		return false, nil
 	}
 	chatID := message.ChatID
-	if chatID == 0 {
-		return nil
-	}
 	p.cacheMu.RLock()
 	items, ok := p.chatBlacklist[chatID]
 	p.cacheMu.RUnlock()
@@ -171,7 +215,7 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 		rawWords, err := p.db.ListBlacklists(ctx, chatID)
 		if err != nil {
 			p.featureState.MarkUnknown(chatID)
-			return nil
+			return false, nil
 		}
 		p.featureState.SetActive(chatID, len(rawWords) > 0)
 		items = compileBlacklist(rawWords)
@@ -198,32 +242,42 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 		p.cacheMu.Unlock()
 	}
 	if len(items) == 0 {
-		return nil
+		return false, nil
 	}
 	lowerText := strings.ToLower(message.Text)
 	for _, b := range items {
-		matched := (b.re != nil && b.re.MatchString(lowerText)) || (b.re == nil && b.word != "" && strings.Contains(lowerText, b.word))
-		if !matched {
-			continue
+		if (b.re != nil && b.re.MatchString(lowerText)) || (b.re == nil && b.word != "" && strings.Contains(lowerText, b.word)) {
+			return true, nil
 		}
-		peer, err := message.Peer.InputPeer()
-		if err != nil {
-			return fmt.Errorf("blacklist: cannot resolve peer for chat %d; message %d was not deleted: %w", chatID, message.ID, err)
-		}
-		if err := svc.DeleteMessage(ctx, peer, []int{message.ID}); err != nil {
-			return fmt.Errorf("blacklist: failed to delete message %d: %w", message.ID, err)
-		}
-		if decision := core.GetMessageDecision(ctx); decision != nil {
-			decision.SetHandled(true)
-			decision.SetSuppressAutomation(true)
-			decision.SetSuppressAFK(true)
-			decision.SetSuppressFilters(true)
-			decision.SetSuppressCommands(true)
-		}
-		return core.ErrInterceptHandled
 	}
-	return nil
+	return false, nil
 }
+
+func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEnvelope) error {
+	if p.svcFunc == nil {
+		return nil
+	}
+	svc := p.svcFunc()
+	if svc == nil {
+		return nil
+	}
+	handled, err := p.ApplyAssistantRule(ctx, svc, message)
+	if err != nil {
+		return err
+	}
+	if !handled {
+		return nil
+	}
+	if decision := core.GetMessageDecision(ctx); decision != nil {
+		decision.SetHandled(true)
+		decision.SetSuppressAutomation(true)
+		decision.SetSuppressAFK(true)
+		decision.SetSuppressFilters(true)
+		decision.SetSuppressCommands(true)
+	}
+	return core.ErrInterceptHandled
+}
+
 func compileBlacklist(raw []string) []compiledBlacklist {
 	res := make([]compiledBlacklist, len(raw))
 	for i, w := range raw {
