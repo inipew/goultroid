@@ -166,7 +166,16 @@ func (r *RelayIngress) submit(ctx context.Context, prepared pmrelay.PreparedIngr
 				}
 				return executor.ExecuteVisitor(taskCtx, prepared, r.visitorTransport)
 			}
-			return r.relay.RevalidatePrepared(taskCtx, prepared)
+			if err := r.relay.RevalidatePrepared(taskCtx, prepared); err != nil {
+				return err
+			}
+			if prepared.Direction() == pmrelay.DeliveryOwnerToVisitor && r.visitorTransport != nil {
+				// P6-C activates the visitor delivery plane only. Keep mapped
+				// owner replies claimed/fail-closed so they cannot fall into an
+				// unrelated AwaitInput while P6-D transport is not installed.
+				return pmrelay.ErrUnsupportedDelivery
+			}
+			return nil
 		},
 	})
 	if err != nil {
