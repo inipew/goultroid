@@ -421,3 +421,46 @@ func TestBroadcast_RejectsStalledTargetSource(t *testing.T) {
 		t.Fatalf("Broadcast(stalled source) error=%v, want %v", err, broadcast.ErrTargetSourceStalled)
 	}
 }
+
+
+type oversizedTargetSource struct{}
+
+func (oversizedTargetSource) Total() int { return maxBroadcastInFlight + 1 }
+func (oversizedTargetSource) Next(context.Context, int) ([]tg.InputPeerClass, bool, error) {
+	targets := make([]tg.InputPeerClass, maxBroadcastInFlight+1)
+	for i := range targets {
+		targets[i] = &tg.InputPeerUser{UserID: int64(i + 1)}
+	}
+	return targets, true, nil
+}
+
+type shortTargetSource struct {
+	done bool
+}
+
+func (*shortTargetSource) Total() int { return 2 }
+func (s *shortTargetSource) Next(context.Context, int) ([]tg.InputPeerClass, bool, error) {
+	if s.done {
+		return nil, true, nil
+	}
+	s.done = true
+	return []tg.InputPeerClass{&tg.InputPeerUser{UserID: 1}}, true, nil
+}
+
+func TestBroadcast_RejectsTargetSourceContractViolations(t *testing.T) {
+	for name, source := range map[string]broadcast.TargetSource{
+		"oversized page": oversizedTargetSource{},
+		"short snapshot": &shortTargetSource{},
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc := newBroadcastService(t, &mockTelegram{})
+			_, err := svc.Broadcast(context.Background(), broadcast.BroadcastRequest{
+				TargetSource: source,
+				Text:         "invalid source",
+			})
+			if !errors.Is(err, broadcast.ErrTargetSourceContract) {
+				t.Fatalf("Broadcast() error=%v, want %v", err, broadcast.ErrTargetSourceContract)
+			}
+		})
+	}
+}
