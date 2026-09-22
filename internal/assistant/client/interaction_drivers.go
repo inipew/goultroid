@@ -128,11 +128,17 @@ func (c *AssistantClient) admitFeatureInteraction(featureID string, kind feature
 	if !ok {
 		return fmt.Errorf("%w: %s:%s", ErrInteractionUnavailable, kind, interactionID)
 	}
+	source := execution.SourceAssistant
 	private := false
-	if messageTarget, ok := target.(presentationtelegram.MessageTarget); ok {
-		private = isPrivatePeer(messageTarget.Peer)
+	switch typed := target.(type) {
+	case presentationtelegram.MessageTarget:
+		private = isPrivatePeer(typed.Peer)
+	case presentationtelegram.InlineTarget:
+		source = execution.SourceInline
+		// Telegram inline callback updates do not carry a verifiable originating
+		// chat type. Target-dependent inline policies therefore remain fail-closed.
 	}
-	if err := feature.AdmitInteraction(decl, execution.SourceAssistant, actorID, private, c.shellPermissions()); err != nil {
+	if err := feature.AdmitInteraction(decl, source, actorID, private, c.shellPermissions()); err != nil {
 		return fmt.Errorf("%w: %w", ErrInteractionAdmission, err)
 	}
 	return nil
