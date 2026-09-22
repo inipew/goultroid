@@ -58,7 +58,9 @@ func TestIntegration_PostCutoverMatrix(t *testing.T) {
 	t.Run("Client_RateLimiter", func(t *testing.T) {
 		rl := client.NewUserRateLimiter(2, 500*time.Millisecond)
 		userID := int64(98765)
-		if !rl.Allow(userID, "callback") || !rl.Allow(userID, "callback") {
+		firstAllowed := rl.Allow(userID, "callback")
+		secondAllowed := rl.Allow(userID, "callback")
+		if !firstAllowed || !secondAllowed {
 			t.Fatal("expected burst tokens to be allowed")
 		}
 		if rl.Allow(userID, "callback") {

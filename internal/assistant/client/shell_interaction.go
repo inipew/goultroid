@@ -503,7 +503,7 @@ func (c *AssistantClient) handleShellSettingTextInput(ctx *orchestration.Context
 	if svc == nil || svc.Registry() == nil {
 		return ErrShellUnavailable
 	}
-	def, schemaVersion, err := boundSettingDefinition(svc.Registry(), ctx.State())
+	def, _, err := boundSettingDefinition(svc.Registry(), ctx.State())
 	if err != nil {
 		return &assistantshell.MutationError{Stage: assistantshell.MutationStageBinding, Err: err}
 	}
@@ -537,7 +537,7 @@ func (c *AssistantClient) handleShellSettingTextInput(ctx *orchestration.Context
 
 	// Revalidate the exact detail-bound schema revision immediately before the
 	// registered persistence boundary.
-	def, schemaVersion, err = boundSettingDefinition(svc.Registry(), ctx.State())
+	def, schemaVersion, err := boundSettingDefinition(svc.Registry(), ctx.State())
 	if err != nil {
 		return &assistantshell.MutationError{Stage: assistantshell.MutationStageBinding, Err: err}
 	}

@@ -139,9 +139,7 @@ func NormalizeMSISDN(msisdn string) (string, error) {
 	s := strings.TrimSpace(msisdn)
 	s = strings.ReplaceAll(s, "-", "")
 	s = strings.ReplaceAll(s, " ", "")
-	if strings.HasPrefix(s, "+") {
-		s = strings.TrimPrefix(s, "+")
-	}
+	s = strings.TrimPrefix(s, "+")
 
 	if strings.HasPrefix(s, "08") {
 		s = "62" + s[1:]

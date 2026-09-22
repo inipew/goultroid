@@ -312,14 +312,6 @@ func (l *assetLedger) referencedCandidatesFromSources(
 	return ids, nil
 }
 
-func (l *assetLedger) referencedCandidates(ctx context.Context, limit int) ([]string, error) {
-	sources, _, err := l.resolveReferenceSources(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return l.referencedCandidatesFromSources(ctx, sources, limit)
-}
-
 func (l *assetLedger) repairMissingReferencesFromSources(
 	ctx context.Context,
 	sources []mediaReferenceSource,
@@ -380,14 +372,6 @@ func (l *assetLedger) repairMissingReferencesFromSources(
 	return detached, removed, nil
 }
 
-func (l *assetLedger) repairMissingReferences(ctx context.Context, assetID string) (detached, removed int, err error) {
-	sources, _, err := l.resolveReferenceSources(ctx)
-	if err != nil {
-		return 0, 0, err
-	}
-	return l.repairMissingReferencesFromSources(ctx, sources, assetID)
-}
-
 func (l *assetLedger) orphanCandidatesFromSources(
 	ctx context.Context,
 	sources []mediaReferenceSource,
@@ -438,14 +422,6 @@ func (l *assetLedger) orphanCandidatesFromSources(
 		return nil, err
 	}
 	return ids, nil
-}
-
-func (l *assetLedger) orphanCandidates(ctx context.Context, limit int) ([]string, error) {
-	sources, complete, err := l.resolveReferenceSources(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return l.orphanCandidatesFromSources(ctx, sources, complete, limit)
 }
 
 func (l *assetLedger) count(ctx context.Context) (int, error) {

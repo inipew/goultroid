@@ -123,12 +123,3 @@ func (c *AssistantClient) handleShellHelpBack(ctx *orchestration.Context) error 
 		Selected:    int(decoded.SettingIndex),
 	}))
 }
-
-func (c *AssistantClient) handleShellClose(ctx *orchestration.Context) error {
-	if err := ctx.Delete(); err != nil {
-		return err
-	}
-	_ = ctx.Answer("Menu closed", false)
-	ctx.Cancel()
-	return nil
-}

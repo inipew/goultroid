@@ -208,7 +208,7 @@ func (p *Plugin) handleBroadcast(ctx *core.Context) error {
 
 	// TaskEngine releases download:1 before closing the ticket. Keep the
 	// captured asset alive across fan-out, then reclaim it after the run.
-	defer p.responses.DeleteMedia(context.Background(), response)
+	defer func() { _ = p.responses.DeleteMedia(context.Background(), response) }()
 	return p.runBroadcast(ctx, scope, response)
 }
 

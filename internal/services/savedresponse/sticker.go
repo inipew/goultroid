@@ -134,7 +134,7 @@ func validateAnimatedSticker(path string, size int64) error {
 	if err != nil {
 		return fmt.Errorf("%w: invalid TGS gzip stream: %v", ErrInvalidSticker, err)
 	}
-	defer zr.Close()
+	defer func() { _ = zr.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(zr, maxTGSDecodedBytes+1))
 	if err != nil {
