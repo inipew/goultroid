@@ -261,3 +261,45 @@ func TestAssistantStartNonVersionedPayloadPreservesHomeFlow(t *testing.T) {
 		t.Fatalf("non-versioned payload did not preserve home flow: %q", port.sent.Text)
 	}
 }
+
+
+func TestAssistantStartDeepLinkRejectsGroupDelivery(t *testing.T) {
+	provider := &startDeepLinkProvider{scope: tasks.ScopeIdentity{Owner: "plugin:test", Generation: 1}}
+	router := newStartDeepLinkRouter(t, provider)
+	token, err := router.Issue(context.Background(), assistantdeeplink.IssueRequest{
+		Kind: "test", Payload: "private-only", ActorID: 7, SingleUse: true, TTL: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client := NewAssistantClient(1, "hash", "token", zap.NewNop())
+	client.SetDeepLinkRouter(router)
+	client.SetTasks(&immediateDeepLinkTasks{})
+	interaction := &publicStartInteraction{}
+	if err := client.dispatchStart(&command.Context{
+		Ctx: context.Background(), SenderID: 7,
+		Peer: &tg.InputPeerChat{ChatID: 99}, Args: []string{token.ID}, Interaction: interaction,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(interaction.sent, "invalid, expired, or no longer available") {
+		t.Fatalf("group deep-link response=%q", interaction.sent)
+	}
+	if provider.executes != 0 {
+		t.Fatalf("group deep-link executed provider %d times", provider.executes)
+	}
+
+	// Rejection happens before durable claim; the same single-use token remains
+	// valid in the intended private bot conversation.
+	private := &publicStartInteraction{}
+	if err := client.dispatchStart(&command.Context{
+		Ctx: context.Background(), SenderID: 7,
+		Peer: &tg.InputPeerUser{UserID: 7}, Args: []string{token.ID}, Interaction: private,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if private.sent != "deep-link delivered" || provider.executes != 1 {
+		t.Fatalf("private retry delivery=%q executes=%d", private.sent, provider.executes)
+	}
+}
