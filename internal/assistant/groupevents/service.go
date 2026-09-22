@@ -302,15 +302,16 @@ func (s *Service) applyState(chatID int64, state State) {
 	// Retain disabled durable state as well. Status/revision must reflect the
 	// persisted P7-F row rather than falling back to synthetic defaults.
 	s.chats[chatID] = current
-	s.syncSubscriptionLocked()
-	s.mu.Unlock()
-
 	switch state.Kind {
 	case core.GroupServiceMemberJoined:
 		s.welcomeInterest.SetActive(chatID, state.Config.Enabled)
 	case core.GroupServiceMemberLeft:
 		s.goodbyeInterest.SetActive(chatID, state.Config.Enabled)
 	}
+	// Update interest before attaching/detaching the shared EventBus
+	// subscription so ingress never observes stale chat enablement.
+	s.syncSubscriptionLocked()
+	s.mu.Unlock()
 }
 
 func (s *Service) Configure(
