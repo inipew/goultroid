@@ -108,7 +108,6 @@ func TestP7FGroupStateSchemaKeepsExplicitChatRevisionAndExpiry(t *testing.T) {
 	}
 }
 
-
 func TestP7FGroupStateTableHasSingleProductionOwner(t *testing.T) {
 	root := repositoryRoot(t)
 	allowedRoot := filepath.Join(root, "internal", "services", "groupstate")
