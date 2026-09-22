@@ -92,6 +92,20 @@ type OwnerExecutor interface {
 	ExecuteOwner(context.Context, PreparedIngress, OwnerTransport) error
 }
 
+type ControlStatus struct {
+	Enabled    bool
+	Mappings   int
+	Deliveries int
+	Audience   int
+	Blocked    int
+}
+
+type VisitorDetails struct {
+	Mapping  Mapping
+	Audience *AudienceMember
+	Block    *VisitorBlock
+}
+
 // Service owns relay admission policy, durable visitor delivery state, and
 // reply-routing revalidation. Telegram remains behind the VisitorTransport port.
 type Service struct {
@@ -140,6 +154,104 @@ func (s *Service) IsEnabled() bool {
 	return enabled
 }
 
+func (s *Service) checkVisitorAllowed(ctx context.Context, visitorID int64) error {
+	if s == nil || s.repo == nil {
+		return ErrUnavailable
+	}
+	if visitorID <= 0 {
+		return ErrInvalidBlock
+	}
+	_, err := s.repo.GetVisitorBlock(ctx, visitorID)
+	switch {
+	case err == nil:
+		return ErrVisitorBlocked
+	case errors.Is(err, ErrBlockNotFound):
+		return nil
+	default:
+		return err
+	}
+}
+
+func (s *Service) Status(ctx context.Context) (ControlStatus, error) {
+	if s == nil || s.repo == nil {
+		return ControlStatus{}, ErrUnavailable
+	}
+	status := ControlStatus{Enabled: s.IsEnabled()}
+	var err error
+	if status.Mappings, err = s.repo.CountMappings(ctx); err != nil {
+		return ControlStatus{}, err
+	}
+	if status.Deliveries, err = s.repo.CountDeliveries(ctx); err != nil {
+		return ControlStatus{}, err
+	}
+	if status.Audience, err = s.repo.CountAudience(ctx); err != nil {
+		return ControlStatus{}, err
+	}
+	if status.Blocked, err = s.repo.CountVisitorBlocks(ctx); err != nil {
+		return ControlStatus{}, err
+	}
+	return status, nil
+}
+
+func (s *Service) BlockVisitor(ctx context.Context, visitorID int64, reason string) (VisitorBlock, error) {
+	if s == nil || s.repo == nil {
+		return VisitorBlock{}, ErrUnavailable
+	}
+	if visitorID <= 0 || visitorID == s.ownerID {
+		return VisitorBlock{}, ErrInvalidBlock
+	}
+	return s.repo.SetVisitorBlock(ctx, VisitorBlock{
+		VisitorUserID: visitorID,
+		BlockedAt:     s.now().UTC(),
+		Reason:        reason,
+	})
+}
+
+func (s *Service) UnblockVisitor(ctx context.Context, visitorID int64) (bool, error) {
+	if s == nil || s.repo == nil {
+		return false, ErrUnavailable
+	}
+	if visitorID <= 0 || visitorID == s.ownerID {
+		return false, ErrInvalidBlock
+	}
+	return s.repo.DeleteVisitorBlock(ctx, visitorID)
+}
+
+func (s *Service) ListVisitorBlocks(ctx context.Context, afterUserID int64, limit int) ([]VisitorBlock, error) {
+	if s == nil || s.repo == nil {
+		return nil, ErrUnavailable
+	}
+	return s.repo.ListVisitorBlocks(ctx, afterUserID, limit)
+}
+
+func (s *Service) VisitorDetails(ctx context.Context, ownerMessageID int) (VisitorDetails, error) {
+	if s == nil || s.repo == nil || s.ownerID <= 0 {
+		return VisitorDetails{}, ErrUnavailable
+	}
+	if ownerMessageID <= 0 {
+		return VisitorDetails{}, ErrInvalidMapping
+	}
+	mapping, err := s.repo.GetMapping(ctx, s.ownerID, ownerMessageID)
+	if err != nil {
+		return VisitorDetails{}, err
+	}
+	if mapping.Expired(s.now().UTC()) {
+		return VisitorDetails{}, ErrMappingExpired
+	}
+	details := VisitorDetails{Mapping: mapping}
+	if member, audienceErr := s.repo.GetAudience(ctx, mapping.VisitorUserID); audienceErr == nil {
+		details.Audience = &member
+	} else if !errors.Is(audienceErr, ErrAudienceNotFound) {
+		return VisitorDetails{}, audienceErr
+	}
+	if block, blockErr := s.repo.GetVisitorBlock(ctx, mapping.VisitorUserID); blockErr == nil {
+		details.Block = &block
+	} else if !errors.Is(blockErr, ErrBlockNotFound) {
+		return VisitorDetails{}, blockErr
+	}
+	return details, nil
+}
+
 func (s *Service) policySnapshot() (bool, uint64) {
 	if s == nil {
 		return false, 0
@@ -150,7 +262,7 @@ func (s *Service) policySnapshot() (bool, uint64) {
 	return enabled, revision
 }
 
-func (s *Service) PrepareVisitor(_ context.Context, message IngressMessage) (PreparedIngress, bool, error) {
+func (s *Service) PrepareVisitor(ctx context.Context, message IngressMessage) (PreparedIngress, bool, error) {
 	if s == nil || s.ownerID <= 0 || !message.valid() {
 		return PreparedIngress{}, false, nil
 	}
@@ -166,6 +278,15 @@ func (s *Service) PrepareVisitor(_ context.Context, message IngressMessage) (Pre
 	// visitor fallback for a group/channel identity.
 	if message.ChatID != message.SenderID {
 		return PreparedIngress{}, false, nil
+	}
+	if err := s.checkVisitorAllowed(ctx, message.SenderID); err != nil {
+		if errors.Is(err, ErrVisitorBlocked) {
+			// Blocked visitors are a normal policy outcome. Consume no task
+			// capacity and emit no noisy error for ordinary blocked traffic.
+			return PreparedIngress{}, false, nil
+		}
+		// Repository uncertainty fails closed instead of forwarding.
+		return PreparedIngress{}, true, err
 	}
 	return PreparedIngress{
 		direction:       DeliveryVisitorToOwner,
@@ -206,6 +327,9 @@ func (s *Service) PrepareOwnerReply(ctx context.Context, message IngressMessage)
 	if mapping.Expired(now) {
 		return PreparedIngress{}, true, ErrMappingExpired
 	}
+	if err := s.checkVisitorAllowed(ctx, mapping.VisitorUserID); err != nil {
+		return PreparedIngress{}, true, err
+	}
 	return PreparedIngress{
 		direction:        DeliveryOwnerToVisitor,
 		sourceChatID:     message.ChatID,
@@ -243,7 +367,7 @@ func (s *Service) RevalidatePrepared(ctx context.Context, prepared PreparedIngre
 			prepared.ownerChatID != s.ownerID {
 			return ErrPreparedStale
 		}
-		return nil
+		return s.checkVisitorAllowed(ctx, prepared.visitorUserID)
 
 	case DeliveryOwnerToVisitor:
 		if s.repo == nil ||
@@ -264,7 +388,7 @@ func (s *Service) RevalidatePrepared(ctx context.Context, prepared PreparedIngre
 		if current.Expired(s.now().UTC()) || !sameMappingIdentity(current, prepared.mapping) {
 			return ErrPreparedStale
 		}
-		return nil
+		return s.checkVisitorAllowed(ctx, prepared.visitorUserID)
 	default:
 		return ErrPreparedStale
 	}
