@@ -439,3 +439,36 @@ func TestP7IWarningCoordinatesRejectBeforePersistence(t *testing.T) {
 		t.Fatalf("invalid warning coordinates persisted %d rows", len(repo.records))
 	}
 }
+
+
+func TestP7IGuardedWarningRejectsBeforePersistence(t *testing.T) {
+	repo := &memoryWarningRepository{}
+	service := NewService(repo, &recordingModService{}, zap.NewNop())
+	guardCalls := 0
+
+	_, err := service.WarnWithServiceGuarded(
+		context.Background(),
+		&recordingModService{},
+		&tg.InputPeerChat{ChatID: 100},
+		&tg.InputPeerUser{UserID: 200},
+		100,
+		200,
+		"guarded",
+		999,
+		DefaultWarnThreshold,
+		ActionMute,
+		func(context.Context) error {
+			guardCalls++
+			return core.ErrGroupMutationTargetProtected
+		},
+	)
+	if !errors.Is(err, core.ErrGroupMutationTargetProtected) {
+		t.Fatalf("guarded warning error=%v, want ErrGroupMutationTargetProtected", err)
+	}
+	if guardCalls != 1 {
+		t.Fatalf("guard calls=%d, want 1", guardCalls)
+	}
+	if len(repo.records) != 0 {
+		t.Fatalf("guarded warning persisted %d rows", len(repo.records))
+	}
+}
