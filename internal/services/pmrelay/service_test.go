@@ -550,3 +550,233 @@ func TestExecuteVisitorLazilyReclaimsExpiredCapacity(t *testing.T) {
 		t.Fatalf("stale audience survived capacity reclamation: %v", err)
 	}
 }
+
+
+type ownerTransportStub struct {
+	calls    int
+	requests []OwnerSend
+	message  int
+	err      error
+}
+
+func (t *ownerTransportStub) SendOwnerReply(_ context.Context, request OwnerSend) (int, error) {
+	t.calls++
+	t.requests = append(t.requests, request)
+	if t.err != nil {
+		return 0, t.err
+	}
+	return t.message, nil
+}
+
+func prepareOwnerForDelivery(
+	t *testing.T,
+	ctx context.Context,
+	repo Repository,
+	service *Service,
+	base time.Time,
+) PreparedIngress {
+	t.Helper()
+	if _, err := repo.EnsureMapping(ctx, Mapping{
+		OwnerChatID: 7, OwnerMessageID: 500,
+		VisitorUserID: 42, VisitorMessageID: 11,
+		CreatedAt: base, ExpiresAt: base.Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	prepared, handled, err := service.PrepareOwnerReply(ctx, IngressMessage{
+		SenderID: 7, ChatID: 7, MessageID: 501, ReplyToMessageID: 500,
+	})
+	if err != nil || !handled {
+		t.Fatalf("PrepareOwnerReply() handled=%v err=%v", handled, err)
+	}
+	return prepared
+}
+
+func TestExecuteOwnerPersistsDurableBotDeliveryWithoutNewMappingOrAudience(t *testing.T) {
+	ctx := context.Background()
+	repo, _ := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8})
+	base := time.Date(2026, 9, 22, 16, 0, 0, 0, time.UTC)
+	service := NewService(repo, 7)
+	service.now = func() time.Time { return base.Add(5 * time.Minute) }
+	service.randomID = func() (int64, error) { return 888, nil }
+	service.claimID = func() (string, error) { return "owner-claim-a", nil }
+	service.SetEnabled(true)
+	prepared := prepareOwnerForDelivery(t, ctx, repo, service, base)
+
+	transport := &ownerTransportStub{message: 601}
+	if err := service.ExecuteOwner(ctx, prepared, transport); err != nil {
+		t.Fatalf("ExecuteOwner() error=%v", err)
+	}
+	if transport.calls != 1 || len(transport.requests) != 1 {
+		t.Fatalf("owner transport calls=%d requests=%+v", transport.calls, transport.requests)
+	}
+	request := transport.requests[0]
+	if request.SourceChatID != 7 || request.SourceMessageID != 501 ||
+		request.TargetChatID != 42 || request.RandomID != 888 {
+		t.Fatalf("owner send request=%+v", request)
+	}
+
+	delivery, err := repo.GetDelivery(ctx, DeliveryKey{
+		Direction: DeliveryOwnerToVisitor, SourceChatID: 7, SourceMessageID: 501,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !delivery.Completed() || delivery.TargetChatID != 42 ||
+		delivery.TargetMessageID != 601 || delivery.RandomID != 888 || delivery.Attempts != 1 {
+		t.Fatalf("owner delivery=%+v", delivery)
+	}
+	if count, err := repo.CountMappings(ctx); err != nil || count != 1 {
+		t.Fatalf("mapping count=%d err=%v, want original mapping only", count, err)
+	}
+	if count, err := repo.CountAudience(ctx); err != nil || count != 0 {
+		t.Fatalf("audience count=%d err=%v, owner reply must not imply visitor activity", count, err)
+	}
+
+	service.randomID = func() (int64, error) { return 999, nil }
+	service.claimID = func() (string, error) { return "owner-claim-b", nil }
+	if err := service.ExecuteOwner(ctx, prepared, transport); err != nil {
+		t.Fatalf("ExecuteOwner(duplicate) error=%v", err)
+	}
+	if transport.calls != 1 {
+		t.Fatalf("completed owner reply sent twice: calls=%d", transport.calls)
+	}
+}
+
+func TestExecuteOwnerTransportFailureReleasesClaimAndReusesRandomID(t *testing.T) {
+	ctx := context.Background()
+	repo, _ := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8})
+	base := time.Date(2026, 9, 22, 16, 30, 0, 0, time.UTC)
+	now := base.Add(5 * time.Minute)
+	service := NewService(repo, 7)
+	service.now = func() time.Time { return now }
+	nextRandom := int64(888)
+	service.randomID = func() (int64, error) {
+		value := nextRandom
+		nextRandom = 999
+		return value, nil
+	}
+	nextClaim := "owner-claim-a"
+	service.claimID = func() (string, error) {
+		value := nextClaim
+		nextClaim = "owner-claim-b"
+		return value, nil
+	}
+	service.SetEnabled(true)
+	prepared := prepareOwnerForDelivery(t, ctx, repo, service, base)
+
+	transportErr := errors.New("telegram unavailable")
+	transport := &ownerTransportStub{message: 601, err: transportErr}
+	if err := service.ExecuteOwner(ctx, prepared, transport); !errors.Is(err, transportErr) {
+		t.Fatalf("ExecuteOwner(failure) error=%v, want %v", err, transportErr)
+	}
+	delivery, err := repo.GetDelivery(ctx, DeliveryKey{
+		Direction: DeliveryOwnerToVisitor, SourceChatID: 7, SourceMessageID: 501,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delivery.RandomID != 888 || delivery.ClaimID != "" || delivery.Completed() || delivery.Attempts != 1 {
+		t.Fatalf("released owner delivery=%+v", delivery)
+	}
+
+	now = now.Add(time.Second)
+	transport.err = nil
+	if err := service.ExecuteOwner(ctx, prepared, transport); err != nil {
+		t.Fatalf("ExecuteOwner(retry) error=%v", err)
+	}
+	if transport.calls != 2 ||
+		transport.requests[0].RandomID != 888 ||
+		transport.requests[1].RandomID != 888 {
+		t.Fatalf("owner retry requests=%+v", transport.requests)
+	}
+}
+
+func TestExecuteOwnerRecoversCommitFailureWithSameRandomID(t *testing.T) {
+	ctx := context.Background()
+	sqliteRepo, _ := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8})
+	repo := &commitFailRepository{Repository: sqliteRepo, failNext: true}
+	base := time.Date(2026, 9, 22, 17, 0, 0, 0, time.UTC)
+	now := base.Add(5 * time.Minute)
+	service := NewService(repo, 7)
+	service.now = func() time.Time { return now }
+	nextRandom := int64(888)
+	service.randomID = func() (int64, error) {
+		value := nextRandom
+		nextRandom = 999
+		return value, nil
+	}
+	nextClaim := "owner-claim-a"
+	service.claimID = func() (string, error) {
+		value := nextClaim
+		nextClaim = "owner-claim-b"
+		return value, nil
+	}
+	service.SetEnabled(true)
+	prepared := prepareOwnerForDelivery(t, ctx, repo, service, base)
+	transport := &ownerTransportStub{message: 601}
+
+	if err := service.ExecuteOwner(ctx, prepared, transport); err == nil {
+		t.Fatal("ExecuteOwner() unexpectedly succeeded with failed durable commit")
+	}
+	delivery, err := sqliteRepo.GetDelivery(ctx, DeliveryKey{
+		Direction: DeliveryOwnerToVisitor, SourceChatID: 7, SourceMessageID: 501,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delivery.RandomID != 888 || delivery.ClaimID != "owner-claim-a" || delivery.Completed() {
+		t.Fatalf("ambiguous owner delivery=%+v", delivery)
+	}
+
+	now = now.Add(DeliveryClaimTTL + time.Second)
+	if err := service.ExecuteOwner(ctx, prepared, transport); err != nil {
+		t.Fatalf("ExecuteOwner(recovery) error=%v", err)
+	}
+	if transport.calls != 2 ||
+		transport.requests[0].RandomID != 888 ||
+		transport.requests[1].RandomID != 888 {
+		t.Fatalf("owner recovery requests=%+v", transport.requests)
+	}
+	delivery, err = sqliteRepo.GetDelivery(ctx, delivery.DeliveryKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !delivery.Completed() || delivery.TargetMessageID != 601 || delivery.Attempts != 2 {
+		t.Fatalf("recovered owner delivery=%+v", delivery)
+	}
+}
+
+func TestExecuteOwnerRevalidatesMappingAgainAfterClaim(t *testing.T) {
+	ctx := context.Background()
+	sqliteRepo, _ := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8})
+	repo := &claimHookRepository{Repository: sqliteRepo}
+	base := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
+	now := base.Add(5 * time.Minute)
+	service := NewService(repo, 7)
+	service.now = func() time.Time { return now }
+	service.randomID = func() (int64, error) { return 888, nil }
+	service.claimID = func() (string, error) { return "owner-claim-a", nil }
+	service.SetEnabled(true)
+	prepared := prepareOwnerForDelivery(t, ctx, repo, service, base)
+	repo.afterClaim = func() {
+		now = base.Add(2 * time.Hour)
+	}
+	transport := &ownerTransportStub{message: 601}
+
+	if err := service.ExecuteOwner(ctx, prepared, transport); !errors.Is(err, ErrPreparedStale) {
+		t.Fatalf("ExecuteOwner(expired mapping after claim) error=%v, want %v", err, ErrPreparedStale)
+	}
+	if transport.calls != 0 {
+		t.Fatalf("owner transport ran after mapping revalidation failed: calls=%d", transport.calls)
+	}
+	delivery, err := sqliteRepo.GetDelivery(ctx, DeliveryKey{
+		Direction: DeliveryOwnerToVisitor, SourceChatID: 7, SourceMessageID: 501,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delivery.ClaimID != "" || delivery.Completed() {
+		t.Fatalf("mapping revalidation failure left active delivery=%+v", delivery)
+	}
+}
