@@ -235,7 +235,6 @@ P6-E tests freeze these invariants:
 
 P6-E does not implement:
 
-- force-sub policy;
 - proactive audience broadcast;
 - public/non-owner relay management;
 - a second PMPermit-backed blocklist;
@@ -244,8 +243,9 @@ P6-E does not implement:
 - automatic block expiry;
 - semantic media types not already supported by P6-D.
 
-Force-sub and audience integration can build on this control-plane boundary in
-later P6 phases without changing delivery identity or TaskEngine admission.
+P6-F later adds shared Assistant audience/broadcast integration. P6-G later
+adds optional force-sub configuration and visitor relay admission without
+changing the P6-E visitor-block authority.
 
 
 ## Later audience integration
