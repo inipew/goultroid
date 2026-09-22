@@ -34,6 +34,7 @@ type Service struct {
 	mu         sync.RWMutex
 	roles      core.GroupRoleResolver
 	privileged func(int64) bool
+	enabled    func(string) bool
 	svc        core.TelegramServicer
 }
 
@@ -59,6 +60,15 @@ func (s *Service) SetPrivilegedChecker(check func(int64) bool) {
 	s.mu.Unlock()
 }
 
+func (s *Service) SetEnabledChecker(check func(string) bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.enabled = check
+	s.mu.Unlock()
+}
+
 func (s *Service) SetTransport(transport interaction.MessageInteraction) {
 	if s == nil {
 		return
@@ -76,31 +86,40 @@ func (s *Service) Interested(chatID int64) bool {
 	if s == nil || chatID <= 0 {
 		return false
 	}
-	return (s.blacklist != nil && s.blacklist.AssistantRuleInterested(chatID)) ||
-		(s.filters != nil && s.filters.AssistantRuleInterested(chatID))
+	s.mu.RLock()
+	enabled := s.enabled
+	s.mu.RUnlock()
+	blacklistEnabled := enabled == nil || enabled("blacklist")
+	filtersEnabled := enabled == nil || enabled("filters")
+	return (blacklistEnabled && s.blacklist != nil && s.blacklist.AssistantRuleInterested(chatID)) ||
+		(filtersEnabled && s.filters != nil && s.filters.AssistantRuleInterested(chatID))
 }
 
 func (s *Service) dependencies() (
 	core.GroupRoleResolver,
 	func(int64) bool,
+	func(string) bool,
 	core.TelegramServicer,
 ) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.roles, s.privileged, s.svc
+	return s.roles, s.privileged, s.enabled, s.svc
 }
 
 func (s *Service) matched(
 	ctx context.Context,
 	message *core.MessageEnvelope,
+	enabled func(string) bool,
 ) (blacklist, filters bool, err error) {
-	if s.blacklist != nil && s.blacklist.AssistantRuleInterested(message.ChatID) {
+	blacklistEnabled := enabled == nil || enabled("blacklist")
+	filtersEnabled := enabled == nil || enabled("filters")
+	if blacklistEnabled && s.blacklist != nil && s.blacklist.AssistantRuleInterested(message.ChatID) {
 		blacklist, err = s.blacklist.MatchAssistantRule(ctx, message)
 		if err != nil {
 			return false, false, err
 		}
 	}
-	if s.filters != nil && s.filters.AssistantRuleInterested(message.ChatID) {
+	if filtersEnabled && s.filters != nil && s.filters.AssistantRuleInterested(message.ChatID) {
 		filters, err = s.filters.MatchAssistantRule(ctx, message)
 		if err != nil {
 			return false, false, err
@@ -166,12 +185,12 @@ func (s *Service) Evaluate(
 		return Result{}, nil
 	}
 
-	roles, privileged, svc := s.dependencies()
+	roles, privileged, enabled, svc := s.dependencies()
 	if privileged != nil && privileged(message.Sender.ID) {
 		return Result{Bypassed: true}, nil
 	}
 
-	blacklistMatch, filterMatch, err := s.matched(ctx, message)
+	blacklistMatch, filterMatch, err := s.matched(ctx, message, enabled)
 	if err != nil {
 		return Result{}, err
 	}
@@ -190,7 +209,8 @@ func (s *Service) Evaluate(
 	// Blacklist is a decision/interception rule and therefore outranks the
 	// automated filter response. Re-evaluate at apply time so a rule mutation
 	// that raced the initial match never executes stale compiled state.
-	if s.blacklist != nil && s.blacklist.AssistantRuleInterested(message.ChatID) {
+	if (enabled == nil || enabled("blacklist")) &&
+		s.blacklist != nil && s.blacklist.AssistantRuleInterested(message.ChatID) {
 		handled, applyErr := s.blacklist.ApplyAssistantRule(ctx, svc, message)
 		if applyErr != nil {
 			return result, applyErr
@@ -201,7 +221,8 @@ func (s *Service) Evaluate(
 			return result, nil
 		}
 	}
-	if s.filters != nil && s.filters.AssistantRuleInterested(message.ChatID) {
+	if (enabled == nil || enabled("filters")) &&
+		s.filters != nil && s.filters.AssistantRuleInterested(message.ChatID) {
 		handled, applyErr := s.filters.ApplyAssistantRule(ctx, svc, message)
 		if applyErr != nil {
 			return result, applyErr
