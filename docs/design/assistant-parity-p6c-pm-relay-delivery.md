@@ -264,13 +264,13 @@ Tests freeze these invariants:
 P6-C does not implement:
 
 - visitor → owner media relay;
-- force-sub checks;
 - interactive relay settings UI;
 - audience broadcast fan-out;
 - proactive startup scan/replay of pending delivery intents.
 
 Durable visitor block/ban policy and the canonical owner command control plane
-were added later by P6-E. The remaining items stay outside P6-C.
+were added later by P6-E. Optional visitor force-sub gating was added by P6-G.
+The remaining items stay outside P6-C.
 
 
 ## Later audience integration
