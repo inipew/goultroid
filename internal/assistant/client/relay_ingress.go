@@ -132,7 +132,7 @@ func (t *telegramRelayVisitorTransport) SendOwnerReply(ctx context.Context, requ
 	}
 
 	for attempt := 0; attempt <= interaction.MaxPeerRecoveryAttempts; attempt++ {
-		msg, sendErr := t.interaction.CopyTextMessageWithRandomID(
+		msg, sendErr := t.interaction.CopyMessageWithRandomID(
 			ctx,
 			interaction.NewMessageTarget(sourcePeer, request.SourceMessageID, request.SourceChatID, 0),
 			targetPeer,
@@ -232,8 +232,8 @@ func (r *RelayIngress) submit(ctx context.Context, prepared pmrelay.PreparedIngr
 				return err
 			}
 			if prepared.Direction() == pmrelay.DeliveryOwnerToVisitor && r.visitorTransport != nil {
-				// A partial P6-C transport without the P6-D owner port must
-				// keep mapped replies claimed/fail-closed.
+				// A partial transport without the P6-D owner port must keep
+				// mapped replies claimed/fail-closed.
 				return pmrelay.ErrUnsupportedDelivery
 			}
 			return nil
