@@ -48,6 +48,9 @@ func (p *SavedResponseProvider) Issue(
 	if p == nil || p.bindings == nil || router == nil {
 		return Token{}, ErrProviderUnavailable
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	prepared, err := p.bindings.Prepare(ctx, savedresponse.SurfaceDeepLink, alias)
 	if err != nil {
 		return Token{}, err
