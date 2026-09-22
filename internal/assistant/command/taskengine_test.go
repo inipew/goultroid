@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/command"
@@ -151,6 +152,12 @@ func TestCommandRouter_P7JGroupTaskOrderingIsTopicScoped(t *testing.T) {
 		}
 		if client.last.QuotaOwner != "telegram:chat:99" {
 			t.Fatalf("topic %d quota owner=%q want telegram:chat:99", tc.topic, client.last.QuotaOwner)
+		}
+		if client.last.QueueDeadline.IsZero() || !client.last.QueueDeadline.After(time.Now()) {
+			t.Fatalf("topic %d queue deadline=%v want future deadline", tc.topic, client.last.QueueDeadline)
+		}
+		if client.last.ExecutionTimeout != 30*time.Second {
+			t.Fatalf("topic %d execution timeout=%v want 30s", tc.topic, client.last.ExecutionTimeout)
 		}
 	}
 }
