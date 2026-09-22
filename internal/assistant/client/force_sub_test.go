@@ -458,3 +458,38 @@ func TestForceSubFailClosedGuidanceExplainsVerificationOutage(t *testing.T) {
 		t.Fatalf("verification guidance=%+v", api.sendMsgReq)
 	}
 }
+
+
+func TestForceSubGateDisabledPolicyBypassesTelegramVerification(t *testing.T) {
+	config := enabledForceSubConfig(2, pmrelay.ForceSubFailClosed)
+	config.Enabled = false
+	config.ChannelUsername = ""
+	config.JoinURL = ""
+	policy := &forceSubPolicyStub{config: config}
+	api := &forceSubAPIStub{member: map[int64]bool{}}
+	gate := newTelegramForceSubGate(policy, api, forceSubResolver(42), zap.NewNop())
+
+	decision, err := gate.Check(context.Background(), 42)
+	if err != nil || !decision.Allowed || decision.JoinRequired || decision.VerificationBlocked {
+		t.Fatalf("disabled force-sub decision=%+v err=%v", decision, err)
+	}
+	resolveCalls, participantCalls := api.calls()
+	if resolveCalls != 0 || participantCalls != 0 {
+		t.Fatalf("disabled force-sub RPC calls resolve=%d participant=%d, want 0/0",
+			resolveCalls, participantCalls)
+	}
+}
+
+func TestForceSubFailOpenStillRejectsDefiniteNonMember(t *testing.T) {
+	policy := &forceSubPolicyStub{config: enabledForceSubConfig(2, pmrelay.ForceSubFailOpen)}
+	api := &forceSubAPIStub{member: map[int64]bool{42: false}}
+	gate := newTelegramForceSubGate(policy, api, forceSubResolver(42), zap.NewNop())
+
+	decision, err := gate.Check(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("fail-open definite non-member error=%v", err)
+	}
+	if decision.Allowed || !decision.JoinRequired || decision.VerificationBlocked {
+		t.Fatalf("fail-open definite non-member decision=%+v", decision)
+	}
+}
