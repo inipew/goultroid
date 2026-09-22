@@ -235,10 +235,9 @@ reach the P6-C visitor delivery fallback.
 Media/caption messages are not forwarded by this phase.
 
 At the P6-C milestone, mapped owner replies remained higher precedence than
-generic AwaitInput but terminated with `ErrUnsupportedDelivery`. P6-D now
-supersedes that terminal boundary for plain-text replies with the durable
-owner → visitor bot-authored delivery plane. Media remains fail-closed until
-the transport is extended explicitly.
+generic AwaitInput but terminated with `ErrUnsupportedDelivery`. P6-D
+superseded that terminal boundary with durable owner → visitor bot-authored
+text and reusable media-reference delivery.
 
 ## Acceptance gates
 
@@ -265,10 +264,10 @@ Tests freeze these invariants:
 P6-C does not implement:
 
 - visitor → owner media relay;
-- local visitor block/ban policy;
 - force-sub checks;
-- relay settings/control UI;
+- interactive relay settings UI;
 - audience broadcast fan-out;
 - proactive startup scan/replay of pending delivery intents.
 
-Those remain later P6 phases.
+Durable visitor block/ban policy and the canonical owner command control plane
+were added later by P6-E. The remaining items stay outside P6-C.
