@@ -354,3 +354,39 @@ func TestP7CDoesNotOpenAssistantGroupMutationTransport(t *testing.T) {
 		t.Fatalf("authorization path did not complete before mutation fence: cached=%d fresh=%d submits=%d", resolver.cachedCalls, resolver.freshCalls, client.submits)
 	}
 }
+
+
+func TestP7CCommandsWithoutContextualMetadataStayLazy(t *testing.T) {
+	resolver := &p7cRoleResolver{
+		cached: p7cVerified(core.GroupActorRoleAdministrator, core.GroupAdminRights{}),
+		fresh:  p7cVerified(core.GroupActorRoleAdministrator, core.GroupAdminRights{}),
+	}
+	router := command.NewRouter(zap.NewNop())
+	router.SetGroupRoleResolver(resolver)
+
+	called := false
+	coreRouter := core.NewRouter(".")
+	if err := coreRouter.Register(core.Command{
+		Name:       "plainread",
+		Invocation: core.InvocationPolicy{Assistant: core.InvocationAnyone},
+		Surfaces:   execution.SurfaceAssistant,
+		GroupOnly:  true,
+		Handler: func(*core.Context) error {
+			called = true
+			return nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	router.SetCoreRouter(coreRouter)
+
+	if err := p7cDispatch(t, router, 42, "/plainread"); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("plain command did not execute")
+	}
+	if resolver.cachedCalls != 0 || resolver.freshCalls != 0 {
+		t.Fatalf("plain command unexpectedly resolved group role: cached=%d fresh=%d", resolver.cachedCalls, resolver.freshCalls)
+	}
+}
