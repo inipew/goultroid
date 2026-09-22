@@ -132,31 +132,47 @@ type InlineQueryExecutor interface {
 	ExecutePreparedWithPeerType(context.Context, core.TelegramServicer, int64, int64, inlineservice.PreparedQuery, string, tg.InlineQueryPeerTypeClass) error
 }
 
-func assistantGroupServicePeer(
+type assistantGroupServiceChat struct {
+	id         int64
+	title      string
+	accessHash int64
+	supergroup bool
+}
+
+func (c assistantGroupServiceChat) inputPeer() tg.InputPeerClass {
+	if c.supergroup {
+		return &tg.InputPeerChannel{ChannelID: c.id, AccessHash: c.accessHash}
+	}
+	return &tg.InputPeerChat{ChatID: c.id}
+}
+
+func assistantGroupServiceChatMeta(
 	message *tg.MessageService,
 	entities tg.Entities,
-) (tg.InputPeerClass, int64, string, bool) {
+) (assistantGroupServiceChat, bool) {
 	if message == nil {
-		return nil, 0, "", false
+		return assistantGroupServiceChat{}, false
 	}
 	switch peer := message.PeerID.(type) {
 	case *tg.PeerChat:
-		title := ""
+		meta := assistantGroupServiceChat{id: peer.ChatID}
 		if chat := entities.Chats[peer.ChatID]; chat != nil {
-			title = chat.Title
+			meta.title = chat.Title
 		}
-		return &tg.InputPeerChat{ChatID: peer.ChatID}, peer.ChatID, title, true
+		return meta, meta.id > 0
 	case *tg.PeerChannel:
 		channel := entities.Channels[peer.ChannelID]
 		if channel == nil || !channel.Megagroup || channel.AccessHash == 0 {
-			return nil, 0, "", false
+			return assistantGroupServiceChat{}, false
 		}
-		return &tg.InputPeerChannel{
-			ChannelID:  peer.ChannelID,
-			AccessHash: channel.AccessHash,
-		}, peer.ChannelID, channel.Title, true
+		return assistantGroupServiceChat{
+			id:         peer.ChannelID,
+			title:      channel.Title,
+			accessHash: channel.AccessHash,
+			supergroup: true,
+		}, true
 	default:
-		return nil, 0, "", false
+		return assistantGroupServiceChat{}, false
 	}
 }
 
@@ -206,14 +222,15 @@ func handleAssistantGroupService(
 	if message == nil || deps.GroupEvents == nil {
 		return
 	}
-	peer, chatID, chatTitle, ok := assistantGroupServicePeer(message, entities)
+	chat, ok := assistantGroupServiceChatMeta(message, entities)
 	if !ok {
 		return
 	}
 	kind, userIDs, ok := assistantGroupServiceKind(message)
-	if !ok || !deps.GroupEvents.Interested(chatID, kind) {
+	if !ok || !deps.GroupEvents.Interested(chat.id, kind) {
 		return
 	}
+	peer := chat.inputPeer()
 
 	selfID := int64(0)
 	if deps.SelfID != nil {
@@ -242,8 +259,8 @@ func handleAssistantGroupService(
 	deps.GroupEvents.Publish(&core.GroupServiceEvent{
 		At:        time.Unix(int64(message.Date), 0),
 		Kind:      kind,
-		ChatID:    chatID,
-		ChatTitle: chatTitle,
+		ChatID:    chat.id,
+		ChatTitle: chat.title,
 		Peer:      peer,
 		MessageID: message.ID,
 		ActorID:   actorID,
