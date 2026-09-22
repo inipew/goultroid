@@ -1,18 +1,19 @@
-name: P7 gofmt once
+name: One-shot gofmt P7
 
 on:
   push:
-    branches: [ test-next ]
+    branches: [test-next]
+    paths:
+      - '.github/workflows/p7-gofmt-once.yml'
 
 permissions:
   contents: write
 
 jobs:
   gofmt:
-    if: github.event.head_commit.message == 'chore(p7): trigger one-shot gofmt'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout test-next
+      - name: Checkout Code
         uses: actions/checkout@v4
         with:
           ref: test-next
@@ -22,20 +23,18 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: 'go.mod'
-          cache: false
+          cache: true
+          cache-dependency-path: 'go.sum'
 
-      - name: Apply gofmt
+      - name: Apply gofmt and push
         run: |
-          gofmt -w $(git ls-files '*.go')
-
-      - name: Commit formatted sources
-        run: |
+          gofmt -w .
           if git diff --quiet; then
-            echo "Repository already gofmt-clean."
+            echo "No gofmt changes required."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- '*.go'
+          git add -A
           git commit -m "style(p7): apply repository gofmt"
           git push origin HEAD:test-next
