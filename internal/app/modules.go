@@ -9,6 +9,7 @@ import (
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/module"
 	"github.com/inipew/goultroid/internal/services/mediaregistry"
+	"github.com/inipew/goultroid/internal/services/pmrelay"
 	"github.com/inipew/goultroid/internal/services/savedresponse"
 	"github.com/inipew/goultroid/internal/services/storage"
 	cloneplugin "github.com/inipew/goultroid/plugins/clone"
@@ -34,6 +35,7 @@ func migrateBuiltinFeatures(ctx context.Context, db *database.DB) error {
 	providers = append(providers,
 		assistantdeeplink.MigrationProvider{},
 		mediaregistry.MigrationProvider{},
+		pmrelay.MigrationProvider{},
 		savedresponse.MigrationProvider{},
 	)
 	for _, m := range builtinModules {
