@@ -203,6 +203,12 @@ func (m *mockTelegramAPI) MessagesSendMessage(ctx context.Context, req *tg.Messa
 	m.sendMsgReq = req
 	return &tg.Updates{}, nil
 }
+func (m *mockTelegramAPI) MessagesSendMedia(context.Context, *tg.MessagesSendMediaRequest) (tg.UpdatesClass, error) {
+	return &tg.UpdateShortSentMessage{ID: 11}, nil
+}
+func (m *mockTelegramAPI) MessagesForwardMessages(context.Context, *tg.MessagesForwardMessagesRequest) (tg.UpdatesClass, error) {
+	return &tg.UpdateShortSentMessage{ID: 12}, nil
+}
 func (m *mockTelegramAPI) MessagesEditInlineBotMessage(ctx context.Context, req *tg.MessagesEditInlineBotMessageRequest) (bool, error) {
 	m.editInlineReq = req
 	return true, nil
