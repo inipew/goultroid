@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gotd/td/tg"
@@ -12,9 +13,14 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/peer"
 	"github.com/inipew/goultroid/internal/core"
 	inlineservice "github.com/inipew/goultroid/internal/services/inline"
+	"github.com/inipew/goultroid/internal/services/pmrelay"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
+
+type interactionTextIngress interface {
+	tryText(context.Context, string, int64, int64, tg.InputPeerClass) (bool, error)
+}
 
 type UpdateHandlerDeps struct {
 	Logger              *zap.Logger
@@ -30,7 +36,31 @@ type UpdateHandlerDeps struct {
 	InlineService       core.TelegramServicer
 	Tasks               tasks.Client
 	PluginScopeResolver func(string) (tasks.ScopeIdentity, bool)
-	InteractionIngress  *interactionIngress
+	InteractionIngress  interactionTextIngress
+	RelayIngress        relayMessageIngress
+}
+
+func assistantSlashCommand(text string) (string, bool) {
+	fields := strings.Fields(strings.TrimSpace(text))
+	if len(fields) == 0 || !strings.HasPrefix(fields[0], "/") {
+		return "", false
+	}
+	command := strings.ToLower(fields[0])
+	if at := strings.Index(command, "@"); at >= 0 {
+		command = command[:at]
+	}
+	return command, true
+}
+
+func assistantReplyToMessageID(message *tg.Message) int {
+	if message == nil || message.ReplyTo == nil {
+		return 0
+	}
+	header, ok := message.ReplyTo.(*tg.MessageReplyHeader)
+	if !ok || header == nil {
+		return 0
+	}
+	return header.ReplyToMsgID
 }
 
 // InlineQueryExecutor is the Assistant-facing subset of the shared inline engine.
@@ -68,16 +98,86 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		if senderID == 0 {
 			return nil
 		}
+
+		chatID := extractChatID(msg.PeerID)
+		_, privateChat := msg.PeerID.(*tg.PeerUser)
+		relayMessage := pmrelay.IngressMessage{
+			SenderID:         senderID,
+			ChatID:           chatID,
+			MessageID:        msg.ID,
+			ReplyToMessageID: assistantReplyToMessageID(msg),
+		}
+
+		resolvePeer := func() tg.InputPeerClass {
+			if deps.Resolver == nil {
+				return nil
+			}
+			inputPeer, err := deps.Resolver.Resolve(ctx, msg.PeerID, senderID, e)
+			if err != nil || inputPeer == nil {
+				logger.Warn("assistant: sender access hash missing, message ignored", zap.Int64("sender_id", senderID), zap.Error(err))
+				return nil
+			}
+			return inputPeer
+		}
+		dispatchCommand := func(inputPeer tg.InputPeerClass) {
+			if inputPeer == nil || deps.Interaction == nil || deps.CmdRouter == nil {
+				return
+			}
+			if deps.RateLimiter != nil && !deps.RateLimiter.Allow(senderID, "command") {
+				logger.Warn("assistant: rate limit exceeded for command", zap.Int64("sender_id", senderID))
+				return
+			}
+			err := deps.CmdRouter.Dispatch(ctx, senderID, inputPeer, msg.Message, deps.Interaction)
+			if err != nil && !errors.Is(err, command.ErrUnknownCommand) {
+				logger.Warn("assistant: command error", zap.Error(err), zap.Int64("sender_id", senderID))
+			}
+		}
+
+		commandName, slashCommand := assistantSlashCommand(msg.Message)
+		if slashCommand {
+			inputPeer := resolvePeer()
+			if commandName == "/cancel" && deps.InteractionIngress != nil && inputPeer != nil {
+				if handled, hErr := deps.InteractionIngress.tryText(ctx, msg.Message, senderID, chatID, inputPeer); handled {
+					if hErr != nil {
+						logger.Warn("assistant: interaction text input dispatch failed", zap.Error(hErr), zap.Int64("sender_id", senderID))
+						if feedback := interactionTextInputErrorMessage(hErr); feedback != "" && deps.Interaction != nil {
+							_, _ = deps.Interaction.SendMessage(ctx, inputPeer, feedback, nil)
+						}
+					}
+					return nil
+				}
+			}
+			// Slash-prefixed messages are command/control-plane traffic. Unknown
+			// commands fail closed here and are never reclassified as PM relay.
+			dispatchCommand(inputPeer)
+			return nil
+		}
+
+		// Owner replies to a durable relay mapping outrank generic AwaitInput.
+		// This keeps a Settings/MyXL input claim from consuming an explicit reply
+		// to a visitor conversation.
+		if privateChat && deps.RelayIngress != nil {
+			if handled, relayErr := deps.RelayIngress.tryOwnerReply(ctx, relayMessage); handled {
+				if relayErr != nil {
+					logger.Warn("assistant: PM relay owner reply admission failed",
+						zap.Error(relayErr),
+						zap.Int64("sender_id", senderID),
+						zap.Int("message_id", msg.ID),
+					)
+				}
+				return nil
+			}
+		}
+
 		if deps.Resolver == nil || deps.Interaction == nil {
 			return nil
 		}
-		inputPeer, err := deps.Resolver.Resolve(ctx, msg.PeerID, senderID, e)
-		if err != nil || inputPeer == nil {
-			logger.Warn("assistant: sender access hash missing, message ignored", zap.Int64("sender_id", senderID), zap.Error(err))
+		inputPeer := resolvePeer()
+		if inputPeer == nil {
 			return nil
 		}
 		if deps.InteractionIngress != nil {
-			if handled, hErr := deps.InteractionIngress.tryText(ctx, msg.Message, senderID, extractChatID(msg.PeerID), inputPeer); handled {
+			if handled, hErr := deps.InteractionIngress.tryText(ctx, msg.Message, senderID, chatID, inputPeer); handled {
 				if hErr != nil {
 					logger.Warn("assistant: interaction text input dispatch failed", zap.Error(hErr), zap.Int64("sender_id", senderID))
 					if feedback := interactionTextInputErrorMessage(hErr); feedback != "" {
@@ -87,16 +187,21 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 				return nil
 			}
 		}
-		if deps.RateLimiter != nil && !deps.RateLimiter.Allow(senderID, "command") {
-			logger.Warn("assistant: rate limit exceeded for command", zap.Int64("sender_id", senderID))
-			return nil
-		}
-		if deps.CmdRouter == nil {
-			return nil
-		}
-		err = deps.CmdRouter.Dispatch(ctx, senderID, inputPeer, msg.Message, deps.Interaction)
-		if err != nil && !errors.Is(err, command.ErrUnknownCommand) {
-			logger.Warn("assistant: command error", zap.Error(err), zap.Int64("sender_id", senderID))
+
+		// PM Relay is the final private-message data-plane fallback. Prepare is
+		// read-only; execution is admitted through TaskEngine and revalidated in
+		// RelayIngress before later phases may attach Telegram delivery.
+		if privateChat && deps.RelayIngress != nil {
+			if handled, relayErr := deps.RelayIngress.tryVisitor(ctx, relayMessage); handled {
+				if relayErr != nil {
+					logger.Warn("assistant: PM relay visitor admission failed",
+						zap.Error(relayErr),
+						zap.Int64("sender_id", senderID),
+						zap.Int("message_id", msg.ID),
+					)
+				}
+				return nil
+			}
 		}
 		return nil
 	})
