@@ -3,6 +3,7 @@ package presentation
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/inipew/goultroid/internal/interaction"
 )
@@ -34,17 +35,36 @@ func (c *Compiler) Compile(ctx context.Context, sessionID string, view View) (Co
 	if err := view.Validate(); err != nil {
 		return CompiledView{}, err
 	}
-	out := CompiledView{Text: view.Text, Rows: make([]CompiledRow, 0, len(view.Rows))}
-	for _, row := range view.Rows {
+	rows, err := c.CompileRows(ctx, sessionID, view.Rows)
+	if err != nil {
+		return CompiledView{}, err
+	}
+	return CompiledView{Text: view.Text, Rows: rows}, nil
+}
+
+// CompileRows compiles typed action identities without requiring message text.
+// Inline results use this before a concrete inline message target exists.
+func (c *Compiler) CompileRows(ctx context.Context, sessionID string, rows []Row) ([]CompiledRow, error) {
+	if c == nil || c.sessions == nil {
+		return nil, fmt.Errorf("%w: session runtime unavailable", ErrInvalidView)
+	}
+	out := make([]CompiledRow, 0, len(rows))
+	for _, row := range rows {
+		if len(row) == 0 {
+			return nil, ErrInvalidView
+		}
 		compiled := make(CompiledRow, 0, len(row))
 		for _, button := range row {
+			if strings.TrimSpace(button.Text) == "" || !validID(button.ActionID) {
+				return nil, ErrInvalidButton
+			}
 			data, err := c.sessions.CallbackData(ctx, sessionID, button.ActionID)
 			if err != nil {
-				return CompiledView{}, err
+				return nil, err
 			}
 			compiled = append(compiled, CompiledButton{Text: button.Text, Data: data})
 		}
-		out.Rows = append(out.Rows, compiled)
+		out = append(out, compiled)
 	}
 	return out, nil
 }
