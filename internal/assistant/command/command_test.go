@@ -22,12 +22,12 @@ import (
 )
 
 type fakeInteraction struct {
-	lastSentText    string
-	lastSentMarkup  tg.ReplyMarkupClass
-	lastEditedText  string
-	lastDeletedIDs  []int
-	lastMediaType   string
-	lastMediaPath   string
+	lastSentText     string
+	lastSentMarkup   tg.ReplyMarkupClass
+	lastEditedText   string
+	lastDeletedIDs   []int
+	lastMediaType    string
+	lastMediaPath    string
 	lastMediaCaption string
 }
 
@@ -556,7 +556,6 @@ func TestCommandRouter_InjectsDelayedActionOwner(t *testing.T) {
 		t.Fatalf("dispatch: %v", err)
 	}
 }
-
 
 func TestCommandRouter_DynamicSavedResponseDispatch(t *testing.T) {
 	bindings, _, _, scope := newSavedResponseCommandFixture(
