@@ -953,7 +953,7 @@ func (c *ClientInteraction) SendMediaContext(
 		replyToID = send.TopicID
 	}
 	if replyToID > 0 {
-		builder = builder.Reply(replyToID)
+		builder.Reply(replyToID)
 	}
 	var styledCaption []message.StyledTextOption
 	if caption != "" {
