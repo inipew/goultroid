@@ -365,3 +365,76 @@ func TestVisitorBlockRejectsInvalidRows(t *testing.T) {
 		t.Fatalf("VisitorBlock.Normalize(long reason) error=%v, want %v", err, ErrInvalidBlock)
 	}
 }
+
+
+func TestSQLiteAudienceSnapshotUsesStableMembershipKeyset(t *testing.T) {
+	ctx := context.Background()
+	repo, _ := newTestRepository(t, Limits{Mappings: 8, Deliveries: 8, Audience: 8, Blocked: 8})
+	base := time.Now().UTC().Add(-time.Minute)
+
+	for _, userID := range []int64{100, 300} {
+		if _, err := repo.TouchAudience(ctx, AudienceTouch{
+			UserID: userID, Source: AudienceSourceStart, SeenAt: base,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err := repo.SnapshotAudience(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Total != 2 || snapshot.MaxSequence <= 0 {
+		t.Fatalf("SnapshotAudience()=%+v", snapshot)
+	}
+
+	// A member first seen after snapshot creation must never leak into the
+	// already-captured broadcast membership, regardless of Telegram user ID.
+	if _, err := repo.TouchAudience(ctx, AudienceTouch{
+		UserID: 200, Source: AudienceSourceInline, SeenAt: base.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Updating an existing member preserves its membership sequence.
+	if _, err := repo.TouchAudience(ctx, AudienceTouch{
+		UserID: 100, Source: AudienceSourceDeepLink, SeenAt: base.Add(2 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var (
+		cursor int64
+		got    []int64
+	)
+	for {
+		page, next, err := repo.ListAudienceSnapshot(ctx, snapshot, cursor, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, member := range page {
+			got = append(got, member.UserID)
+		}
+		cursor = next
+		if len(page) == 0 || cursor >= snapshot.MaxSequence {
+			break
+		}
+	}
+	if len(got) != 2 || got[0] != 100 || got[1] != 300 {
+		t.Fatalf("snapshot members=%v, want [100 300]", got)
+	}
+
+	current, err := repo.SnapshotAudience(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Total != 3 || current.MaxSequence <= snapshot.MaxSequence {
+		t.Fatalf("current snapshot=%+v, previous=%+v", current, snapshot)
+	}
+	member, err := repo.GetAudience(ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSources := AudienceSourceStart | AudienceSourceDeepLink
+	if member.Sources != wantSources {
+		t.Fatalf("existing member sources=%d, want %d", member.Sources, wantSources)
+	}
+}
