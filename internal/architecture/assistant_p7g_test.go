@@ -134,8 +134,7 @@ func TestP7GManagedMutationRPCsUseExistingRPCExecutor(t *testing.T) {
 			t.Errorf("managed P7-G wrapper %s is missing", method)
 			continue
 		}
-		end := strings.Index(source[start+1:], "
-func (a *managedAPI) ")
+		end := strings.Index(source[start+1:], "\nfunc (a *managedAPI) ")
 		block := source[start:]
 		if end >= 0 {
 			block = source[start : start+1+end]
