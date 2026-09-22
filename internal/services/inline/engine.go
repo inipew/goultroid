@@ -597,6 +597,15 @@ func (e *Engine) compileTypedActions(
 	return out, created, interactive, nil
 }
 
+func hasLocalMedia(results []InlineResult) bool {
+	for _, result := range results {
+		if result.LocalMedia != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func hasCallbackButtons(results []InlineResult) bool {
 	for _, res := range results {
 		if res.Markup != nil {
@@ -939,6 +948,9 @@ func (e *Engine) executeWithPeerType(ctx context.Context, svc core.TelegramServi
 	if resp == nil {
 		resp = &InlineResponse{Results: results}
 	}
+	if resp.Finalize != nil {
+		defer resp.Finalize()
+	}
 
 	if resolved.FeatureID != "" {
 		for _, result := range resp.Results {
@@ -968,6 +980,13 @@ func (e *Engine) executeWithPeerType(ctx context.Context, svc core.TelegramServi
 	if interactiveResults {
 		// a2 tokens are actor/session specific and revisions can change after a
 		// callback. Never retain them in local or Telegram shared caches.
+		policy = CacheNone
+		resp.Private = true
+		resp.CacheTime = 0
+	}
+	if hasLocalMedia(resp.Results) {
+		// Local paths are transient and user/template-specific. They must be
+		// uploaded during this answer attempt and never enter either cache.
 		policy = CacheNone
 		resp.Private = true
 		resp.CacheTime = 0
@@ -1048,7 +1067,19 @@ func (e *Engine) executeWithPeerType(ctx context.Context, svc core.TelegramServi
 		}()
 	}
 
-	tgResults := e.serializeResults(pageResults)
+	tgResults, serializeErr := e.serializeResultsForAnswer(ctx, svc, pageResults)
+	if serializeErr != nil {
+		e.logger.Warn("inline local media preparation failed", zap.Error(serializeErr), zap.String("correlation_id", correlationID))
+		if e.metrics != nil {
+			e.metrics.RecordInline(false, 0, time.Since(start), serializeErr)
+		}
+		if svc != nil {
+			fallback := fallbackErrorResults(serializeErr)
+			fallbackResults := e.serializeResults(fallback)
+			_ = svc.AnswerInlineQueryOptions(ctx, queryID, fallbackResults, core.InlineAnswerOptions{NextOffset: "", CacheTime: 1, Private: true})
+		}
+		return serializeErr
+	}
 	if len(tgResults) > 50 {
 		tgResults = tgResults[:50]
 	}
@@ -1101,6 +1132,40 @@ func (e *Engine) executeWithPeerType(ctx context.Context, svc core.TelegramServi
 }
 
 var defaultSerializers = NewSerializerRegistry()
+
+func (e *Engine) serializeResultsForAnswer(
+	ctx context.Context,
+	svc core.TelegramServicer,
+	results []InlineResult,
+) ([]tg.InputBotInlineResultClass, error) {
+	if !hasLocalMedia(results) {
+		return e.serializeResults(results), nil
+	}
+	preparer, ok := svc.(LocalMediaPreparer)
+	if !ok || preparer == nil {
+		return nil, fmt.Errorf("inline local media transport is unavailable")
+	}
+	out := make([]tg.InputBotInlineResultClass, 0, len(results))
+	for _, result := range results {
+		if result.LocalMedia == nil {
+			serialized := e.serializeResults([]InlineResult{result})
+			if len(serialized) == 1 {
+				out = append(out, serialized[0])
+			}
+			continue
+		}
+		prepared, err := preparer.PrepareInlineLocalMedia(ctx, *result.LocalMedia)
+		if err != nil {
+			return nil, err
+		}
+		item, err := serializePreparedLocalMedia(result, prepared)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
 
 func (e *Engine) serializeResults(results []InlineResult) []tg.InputBotInlineResultClass {
 	if e != nil && e.serializers != nil {
