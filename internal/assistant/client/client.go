@@ -272,6 +272,9 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 
 	go func() {
 		defer func() {
+			if groupEvents != nil {
+				groupEvents.SetTransport(nil)
+			}
 			c.unbindFeatureDrivers()
 			c.mu.Lock()
 			c.interactionIngress = nil
