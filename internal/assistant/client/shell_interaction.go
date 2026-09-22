@@ -9,6 +9,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/command"
+	assistantdeeplink "github.com/inipew/goultroid/internal/assistant/deeplink"
 	assistantshell "github.com/inipew/goultroid/internal/assistant/shell"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
@@ -29,6 +30,9 @@ var (
 )
 
 func (c *AssistantClient) dispatchStart(ctx *command.Context) error {
+	if ctx != nil && len(ctx.Args) > 0 && assistantdeeplink.LooksLikeToken(ctx.Args[0]) {
+		return c.dispatchDeepLink(ctx, ctx.Args[0])
+	}
 	err := c.openShell(ctx)
 	if err == nil {
 		return nil
@@ -41,6 +45,111 @@ func (c *AssistantClient) dispatchStart(ctx *command.Context) error {
 	}
 	c.logger.Debug("assistant: using static /start recovery response")
 	return command.NewUnavailableStartHandler()(ctx)
+}
+
+const assistantDeepLinkExecutionTimeout = 2 * time.Minute
+
+func (c *AssistantClient) dispatchDeepLink(cmdCtx *command.Context, rawToken string) error {
+	if cmdCtx == nil || cmdCtx.Ctx == nil || cmdCtx.Peer == nil || cmdCtx.SenderID == 0 {
+		return ErrShellUnavailable
+	}
+	c.mu.RLock()
+	router := c.deepLinks
+	taskClient := c.tasks
+	c.mu.RUnlock()
+	if router == nil || taskClient == nil {
+		c.logger.Warn("assistant: deep-link runtime unavailable")
+		return replyDeepLinkUnavailable(cmdCtx)
+	}
+
+	prepared, err := router.Prepare(cmdCtx.Ctx, rawToken, cmdCtx.SenderID)
+	if err != nil {
+		c.logger.Debug("assistant: deep-link rejected",
+			zap.Int64("sender_id", cmdCtx.SenderID),
+			zap.Error(err),
+		)
+		return replyDeepLinkUnavailable(cmdCtx)
+	}
+
+	chatID := extractChatIDFromInputPeer(cmdCtx.Peer)
+	if chatID == 0 {
+		chatID = cmdCtx.SenderID
+	}
+	resources := prepared.Resources()
+	pool := tasks.PoolID("interactive")
+	for _, requirement := range resources {
+		if requirement.Name == "media" && requirement.Amount > 0 {
+			pool = tasks.PoolID("general")
+			break
+		}
+	}
+	sequence := c.deepLinkSeq.Add(1)
+	taskID := tasks.TaskID(fmt.Sprintf("assistant:deeplink:%d:%d", cmdCtx.SenderID, sequence))
+	ticket, err := taskClient.Submit(cmdCtx.Ctx, tasks.WorkSpec{
+		ID:               taskID,
+		Scope:            prepared.Scope(),
+		QuotaOwner:       tasks.OwnerID(fmt.Sprintf("assistant:user:%d", cmdCtx.SenderID)),
+		Pool:             pool,
+		Class:            tasks.PriorityInteractive,
+		OrderingKey:      fmt.Sprintf("assistant:deeplink:%d", chatID),
+		ExecutionTimeout: assistantDeepLinkExecutionTimeout,
+		Resources:        append([]tasks.ResourceRequirement(nil), resources...),
+		Handler: func(taskCtx context.Context) error {
+			runCtx, cancel := context.WithCancel(taskCtx)
+			defer cancel()
+			stopWatching := context.AfterFunc(cmdCtx.Ctx, cancel)
+			defer stopWatching()
+			return router.ExecutePrepared(runCtx, prepared, assistantdeeplink.Delivery{
+				ActorID: cmdCtx.SenderID,
+				ChatID:  chatID,
+				SendMedia: func(mediaType, path, caption string) error {
+					if cmdCtx.Interaction == nil || cmdCtx.Peer == nil {
+						return ErrShellUnavailable
+					}
+					_, sendErr := cmdCtx.Interaction.SendMedia(runCtx, cmdCtx.Peer, mediaType, path, caption)
+					return sendErr
+				},
+				SendText: func(text string) error {
+					if cmdCtx.Interaction == nil || cmdCtx.Peer == nil {
+						return ErrShellUnavailable
+					}
+					_, sendErr := cmdCtx.Interaction.SendMessage(runCtx, cmdCtx.Peer, text, nil)
+					return sendErr
+				},
+			})
+		},
+	})
+	if err != nil {
+		c.logger.Warn("assistant: deep-link admission rejected",
+			zap.Int64("sender_id", cmdCtx.SenderID),
+			zap.Error(err),
+		)
+		return replyDeepLinkUnavailable(cmdCtx)
+	}
+
+	result, waitErr := ticket.Wait(cmdCtx.Ctx)
+	if waitErr != nil {
+		_, _ = taskClient.Cancel(ticket.TaskID(), tasks.CauseTimeout)
+		return waitErr
+	}
+	if result.IsSuccess() {
+		return nil
+	}
+	if result.Failure.Message != "" {
+		c.logger.Warn("assistant: deep-link execution failed",
+			zap.Int64("sender_id", cmdCtx.SenderID),
+			zap.String("failure", result.Failure.Message),
+		)
+	}
+	return replyDeepLinkUnavailable(cmdCtx)
+}
+
+func replyDeepLinkUnavailable(ctx *command.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	_, err := ctx.Reply("⚠️ This link is invalid, expired, or no longer available.", nil)
+	return err
 }
 
 func shouldUseStartRecovery(err error) bool {
