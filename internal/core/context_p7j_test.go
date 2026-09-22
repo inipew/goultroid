@@ -3,6 +3,8 @@ package core
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/gotd/td/tg"
@@ -212,5 +214,70 @@ func TestP7JCoreReplyCarriesSourceMessageAndTopic(t *testing.T) {
 	}
 	if svc.lastSend.ReplyToID != 900 || svc.lastSend.TopicID != 100 {
 		t.Fatalf("send context=%+v want reply=900 topic=100", svc.lastSend)
+	}
+}
+
+
+type p7jPlainServicer struct {
+	MockTelegramServicer
+	sendCalls  int
+	mediaCalls int
+}
+
+func (s *p7jPlainServicer) SendMessage(context.Context, tg.InputPeerClass, string) (*tg.Message, error) {
+	s.sendCalls++
+	return &tg.Message{ID: 1}, nil
+}
+
+func (s *p7jPlainServicer) SendMedia(context.Context, tg.InputPeerClass, string, string, string) (*tg.Message, error) {
+	s.mediaCalls++
+	return &tg.Message{ID: 1}, nil
+}
+
+func TestP7JAddressedToSelfPrefersMentionWithoutReplyRPC(t *testing.T) {
+	ctx := &Context{
+		Message: &Message{MentionedSelf: true, ReplyToID: 77},
+		Self:    &User{ID: 999, IsBot: true},
+	}
+	ok, err := ctx.AddressedToSelf()
+	if err != nil || !ok {
+		t.Fatalf("AddressedToSelf=%v err=%v", ok, err)
+	}
+}
+
+func TestP7JTopicReplyFailsClosedWithoutContextualTransport(t *testing.T) {
+	svc := &p7jPlainServicer{}
+	ctx := &Context{
+		Ctx:     context.Background(),
+		Svc:     svc,
+		PeerID:  &tg.InputPeerChannel{ChannelID: 77, AccessHash: 700},
+		Message: &Message{ID: 900, TopicID: 100},
+	}
+	if err := ctx.Reply("topic response"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("topic Reply error=%v want ErrUnavailable", err)
+	}
+	if svc.sendCalls != 0 {
+		t.Fatalf("topic reply escaped contextual transport with %d plain sends", svc.sendCalls)
+	}
+}
+
+func TestP7JTopicMediaFailsClosedWithoutContextualTransport(t *testing.T) {
+	svc := &p7jPlainServicer{}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "payload.bin")
+	if err := os.WriteFile(path, []byte("p7j"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := &Context{
+		Ctx:     context.Background(),
+		Svc:     svc,
+		PeerID:  &tg.InputPeerChannel{ChannelID: 77, AccessHash: 700},
+		Message: &Message{ID: 900, TopicID: 100},
+	}
+	if _, err := ctx.Media().SendMedia("file", path, "topic media"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("topic SendMedia error=%v want ErrUnavailable", err)
+	}
+	if svc.mediaCalls != 0 {
+		t.Fatalf("topic media escaped contextual transport with %d plain sends", svc.mediaCalls)
 	}
 }
