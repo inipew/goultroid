@@ -230,13 +230,26 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	c.mu.Unlock()
 	c.shuttingDown.Store(false)
 
+	relayTransport := newTelegramRelayVisitorTransport(c.resolver, c.interaction)
+	relayIngress := NewRelayIngress(pmRelay, taskClient, relayTransport)
+	if relayIngress != nil {
+		if forceSubPolicy, ok := pmRelay.(pmrelay.ForceSubPolicy); ok {
+			relayIngress.setForceSubGate(newTelegramForceSubGate(
+				forceSubPolicy,
+				managedAPI,
+				c.resolver,
+				c.logger,
+			))
+		}
+	}
+
 	deps := UpdateHandlerDeps{
 		Logger: c.logger, RateLimiter: c.rateLimiter, Resolver: c.resolver,
 		CmdRouter: c.cmdRouter, CallbackDispatcher: callbackDispatcher, CallbackDeduper: callbackDeduper,
 		Interaction: c.interaction, CacheEntities: c.CacheEntities, IsShuttingDown: c.shuttingDown.Load,
 		InlineEngine: c.inlineEngine, InlineService: inlineQueryService, Tasks: taskClient,
 		PluginScopeResolver: pluginScopeResolver, InteractionIngress: ingress,
-		RelayIngress: NewRelayIngress(pmRelay, taskClient, newTelegramRelayVisitorTransport(c.resolver, c.interaction)),
+		RelayIngress: relayIngress,
 		AudienceRegistry: audience,
 	}
 	RegisterUpdateHandlers(&dispatcher, deps)
