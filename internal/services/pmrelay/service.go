@@ -53,9 +53,6 @@ func (p PreparedIngress) SourceMessageID() int         { return p.sourceMessageI
 func (p PreparedIngress) VisitorUserID() int64         { return p.visitorUserID }
 func (p PreparedIngress) TargetChatID() int64          { return p.targetChatID }
 
-// Ingress is the narrow Assistant-facing PM relay contract. Prepare methods are
-// read-only. RevalidatePrepared is the post-admission authority and revalidates all
-// mutable policy/mapping state before any later phase may attach delivery.
 type VisitorForward struct {
 	SourceChatID    int64
 	SourceMessageID int
@@ -67,6 +64,9 @@ type VisitorTransport interface {
 	ForwardVisitor(context.Context, VisitorForward) (int, error)
 }
 
+// Ingress is the narrow Assistant-facing PM relay contract. Prepare methods are
+// read-only. RevalidatePrepared is the post-admission authority and revalidates
+// mutable policy/mapping state before delivery execution.
 type Ingress interface {
 	PrepareVisitor(context.Context, IngressMessage) (PreparedIngress, bool, error)
 	PrepareOwnerReply(context.Context, IngressMessage) (PreparedIngress, bool, error)
