@@ -173,10 +173,11 @@ func (r *Router) Issue(ctx context.Context, request IssueRequest) (Token, error)
 	if err != nil {
 		return Token{}, err
 	}
-	if r.maxRetained <= 0 {
-		r.maxRetained = MaxRetainedTokens
+	maxRetained := r.maxRetained
+	if maxRetained <= 0 {
+		maxRetained = MaxRetainedTokens
 	}
-	if retained >= r.maxRetained {
+	if retained >= maxRetained {
 		return Token{}, ErrCapacity
 	}
 	for attempt := 0; attempt < 4; attempt++ {
@@ -255,8 +256,6 @@ func (r *Router) ExecutePrepared(ctx context.Context, prepared Prepared, deliver
 	}
 	if err := ctx.Err(); err != nil {
 		return err
-	}
-		return ErrProviderUnavailable
 	}
 	r.mu.RLock()
 	current, ok := r.providers[prepared.record.Kind]
