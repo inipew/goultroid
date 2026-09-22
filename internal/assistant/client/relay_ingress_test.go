@@ -291,3 +291,40 @@ func TestRelayIngressAdmissionRejectionCannotTouchVisitorDeliveryState(t *testin
 		t.Fatalf("audience after rejected admission=%d err=%v", count, err)
 	}
 }
+
+
+func TestRelayIngressP6CClaimsMappedOwnerReplyButFailsClosedBeforeP6D(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := database.RunFeatureMigrations(ctx, db, pmrelay.MigrationProvider{}); err != nil {
+		t.Fatal(err)
+	}
+	repo := pmrelay.NewSQLiteRepository(db)
+	now := time.Now().UTC()
+	if _, err := repo.EnsureMapping(ctx, pmrelay.Mapping{
+		OwnerChatID: 7, OwnerMessageID: 100,
+		VisitorUserID: 42, VisitorMessageID: 11,
+		CreatedAt: now, ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := pmrelay.NewService(repo, 7)
+	service.SetEnabled(true)
+	taskClient := &relayAdmissionTaskClient{run: true}
+	transport := &relayVisitorTransportStub{message: 501}
+	ingress := NewRelayIngress(service, taskClient, transport)
+
+	handled, err := ingress.tryOwnerReply(ctx, pmrelay.IngressMessage{
+		SenderID: 7, ChatID: 7, MessageID: 101, ReplyToMessageID: 100,
+	})
+	if !handled || !errors.Is(err, pmrelay.ErrUnsupportedDelivery) {
+		t.Fatalf("tryOwnerReply() handled=%v err=%v, want fail-closed unsupported delivery", handled, err)
+	}
+	if transport.calls != 0 {
+		t.Fatalf("visitor transport used for owner reply: calls=%d", transport.calls)
+	}
+}
