@@ -899,3 +899,52 @@ func TestCommandRouter_CanonicalNamespaceBlocksDynamicFallback(t *testing.T) {
 		t.Fatalf("canonical namespace collision sent dynamic response %q", fake.lastSentText)
 	}
 }
+
+
+func TestCommandRouter_DispatchMessagePreservesReplyIdentity(t *testing.T) {
+	r := command.NewRouter(zap.NewNop())
+	coreRouter := core.NewRouter(".")
+	var gotMessageID, gotReplyToID int
+	if err := coreRouter.Register(core.Command{
+		Name:       "replyaware",
+		Surfaces:   execution.SurfaceAssistant,
+		PrivateOnly: true,
+		ReplyOnly:   true,
+		Handler: func(c *core.Context) error {
+			if c.Message != nil {
+				gotMessageID = c.Message.ID
+				gotReplyToID = c.Message.ReplyToID
+			}
+			return nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r.SetCoreRouter(coreRouter)
+
+	peer := &tg.InputPeerUser{UserID: 7}
+	if err := r.DispatchMessage(
+		context.Background(),
+		7,
+		peer,
+		"/replyaware",
+		101,
+		100,
+		&fakeInteraction{},
+	); err != nil {
+		t.Fatalf("DispatchMessage() error=%v", err)
+	}
+	if gotMessageID != 101 || gotReplyToID != 100 {
+		t.Fatalf("canonical message identity=(%d,%d), want (101,100)", gotMessageID, gotReplyToID)
+	}
+
+	if err := r.Dispatch(
+		context.Background(),
+		7,
+		peer,
+		"/replyaware",
+		&fakeInteraction{},
+	); !errors.Is(err, core.ErrReplyRequired) {
+		t.Fatalf("legacy Dispatch() error=%v, want %v", err, core.ErrReplyRequired)
+	}
+}
