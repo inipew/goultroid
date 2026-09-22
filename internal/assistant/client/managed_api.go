@@ -109,3 +109,9 @@ func (a *managedAPI) ChannelsGetParticipant(ctx context.Context, req *tg.Channel
 		return a.raw.ChannelsGetParticipant(opCtx, req)
 	})
 }
+
+func (a *managedAPI) MessagesGetFullChat(ctx context.Context, chatID int64) (*tg.MessagesChatFull, error) {
+	return managedValue(ctx, a, "messages.getFullChat", assistentrpc.ReadOnly, func(opCtx context.Context) (*tg.MessagesChatFull, error) {
+		return a.raw.MessagesGetFullChat(opCtx, chatID)
+	})
+}
