@@ -9,6 +9,8 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
+	"github.com/inipew/goultroid/internal/feature"
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/services/ratelimit"
@@ -276,6 +278,7 @@ type Engine struct {
 	limiter     *ratelimit.Limiter
 	timeout     time.Duration
 	perms       *core.Permissions
+	catalog     feature.Catalog
 	sessions    *rootinteraction.Runtime
 	compiler    *presentation.Compiler
 }
@@ -322,6 +325,14 @@ func (e *Engine) SetTimeout(d time.Duration) {
 
 // SetPermissions configures authorization checker for inline handlers.
 func (e *Engine) SetPermissions(p *core.Permissions) { e.perms = p }
+
+// SetFeatureCatalog connects typed inline actions to canonical interaction
+// metadata so action surface and policy are validated before token generation.
+func (e *Engine) SetFeatureCatalog(catalog feature.Catalog) {
+	if e != nil {
+		e.catalog = catalog
+	}
+}
 
 // SetInteractionRuntime connects typed inline actions to the canonical a2
 // session runtime. Query execution remains usable without it for non-interactive
@@ -422,6 +433,7 @@ func (e *Engine) compileTypedActions(
 	ctx context.Context,
 	resolved Resolved,
 	userID int64,
+	peerType tg.InlineQueryPeerTypeClass,
 	results []InlineResult,
 ) ([]InlineResult, []string, bool, error) {
 	if len(results) == 0 {
@@ -455,6 +467,32 @@ func (e *Engine) compileTypedActions(
 		if e.sessions == nil || e.compiler == nil {
 			cleanup()
 			return nil, nil, false, fmt.Errorf("typed inline actions require interaction runtime")
+		}
+		if e.catalog == nil {
+			cleanup()
+			return nil, nil, false, fmt.Errorf("typed inline actions require feature catalog")
+		}
+		chatType := PeerTypeToChatType(peerType)
+		for _, row := range result.ActionRows {
+			for _, button := range row {
+				decl, ok := e.catalog.FindInteraction(resolved.FeatureID, feature.InteractionAction, button.ActionID)
+				if !ok || !decl.Surfaces.Supports(execution.SourceInline) {
+					cleanup()
+					return nil, nil, false, fmt.Errorf("inline action %q is not declared on inline surface", button.ActionID)
+				}
+				if decl.Policy.PrivateOnly && chatType != ChatTypePrivate {
+					cleanup()
+					return nil, nil, false, fmt.Errorf("inline action %q requires private chat", button.ActionID)
+				}
+				if decl.Policy.GroupOnly && chatType != ChatTypeGroup && chatType != ChatTypeSupergroup {
+					cleanup()
+					return nil, nil, false, fmt.Errorf("inline action %q requires group chat", button.ActionID)
+				}
+				if err := feature.AdmitInteraction(decl, execution.SourceInline, userID, chatType == ChatTypePrivate, e.perms); err != nil {
+					cleanup()
+					return nil, nil, false, fmt.Errorf("inline action %q admission: %w", button.ActionID, err)
+				}
+			}
 		}
 		session, err := e.sessions.Create(ctx, rootinteraction.CreateRequest{
 			FeatureID: resolved.FeatureID,
@@ -843,7 +881,7 @@ func (e *Engine) executeWithPeerType(ctx context.Context, svc core.TelegramServi
 	interactionSessionsCommitted := false
 	var interactionSessions []string
 	if interactiveResults {
-		compiledPage, created, _, compileErr := e.compileTypedActions(ctx, resolved, userID, pageResults)
+		compiledPage, created, _, compileErr := e.compileTypedActions(ctx, resolved, userID, peerType, pageResults)
 		if compileErr != nil {
 			e.logger.Warn("inline typed action compilation failed", zap.Error(compileErr), zap.String("correlation_id", correlationID), zap.String("pattern", handler.Pattern()))
 			if e.metrics != nil {
