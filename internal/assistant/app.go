@@ -12,6 +12,7 @@ import (
 	"github.com/inipew/goultroid/internal/feature"
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 	"github.com/inipew/goultroid/internal/runtime"
+	broadcastsvc "github.com/inipew/goultroid/internal/services/broadcast"
 	"github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/services/pmrelay"
 	"github.com/inipew/goultroid/internal/services/savedresponse"
@@ -33,6 +34,8 @@ type Client interface {
 	SetInlineEngine(engine *inline.Engine)
 	SetDeepLinkRouter(router *assistantdeeplink.Router)
 	SetRelayIngress(relay pmrelay.Ingress)
+	SetAudienceRegistry(registry pmrelay.AudienceRegistry)
+	SetBroadcastService(service *broadcastsvc.Service)
 	SetTasks(client tasks.Client)
 	SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool))
 	SetInteractionFoundation(catalog feature.Catalog, sessions *rootinteraction.Runtime, actions *rootinteraction.Dispatcher)
@@ -113,6 +116,12 @@ func (a *AssistantApp) SetDeepLinkRouter(router *assistantdeeplink.Router) {
 }
 func (a *AssistantApp) SetRelayIngress(relay pmrelay.Ingress) {
 	a.client.SetRelayIngress(relay)
+}
+func (a *AssistantApp) SetAudienceRegistry(registry pmrelay.AudienceRegistry) {
+	a.client.SetAudienceRegistry(registry)
+}
+func (a *AssistantApp) SetBroadcastService(service *broadcastsvc.Service) {
+	a.client.SetBroadcastService(service)
 }
 func (a *AssistantApp) SetRPCExecutor(executor assistentrpc.Executor) {
 	a.client.SetRPCExecutor(executor)
