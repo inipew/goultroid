@@ -1,6 +1,7 @@
 package admission
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -268,5 +269,51 @@ func TestP7LAdmissionIndependentTopicsDoNotHeadOfLineBlock(t *testing.T) {
 	third, err := ctrl.SelectCandidate("interactive")
 	if err != nil || third.Spec.ID != "a2" {
 		t.Fatalf("third candidate=%v err=%v, want a2 after topic 10 unlock", third, err)
+	}
+}
+
+
+func TestP7LChatQuotaBoundsHighCardinalityTopics(t *testing.T) {
+	ctrl := NewController(map[tasks.PoolID]PoolConfig{
+		"interactive": {BacklogLimit: 128, PayloadBudget: 1 << 20},
+	})
+	const owner tasks.OwnerID = "telegram:chat:77"
+
+	for topic := 1; topic <= DefaultOwnerLimits.MaxWaiting; topic++ {
+		spec := tasks.WorkSpec{
+			ID:          tasks.TaskID(fmt.Sprintf("topic-%d", topic)),
+			QuotaOwner:  owner,
+			Pool:        "interactive",
+			Class:       tasks.PriorityInteractive,
+			OrderingKey: fmt.Sprintf("chat:77:topic:%d", topic),
+		}
+		if err := ctrl.CanAdmit(spec, 0); err != nil {
+			t.Fatalf("topic %d admission: %v", topic, err)
+		}
+		ctrl.Enqueue(&QueueEntry{Spec: spec})
+	}
+
+	overflow := tasks.WorkSpec{
+		ID: "overflow", QuotaOwner: owner, Pool: "interactive",
+		Class: tasks.PriorityInteractive, OrderingKey: "chat:77:topic:999",
+	}
+	err := ctrl.CanAdmit(overflow, 0)
+	if !errors.Is(err, tasks.ErrOwnerQueueFull) {
+		t.Fatalf("overflow admission=%v want ErrOwnerQueueFull", err)
+	}
+
+	active := make([]tasks.WorkSpec, 0, DefaultOwnerLimits.MaxActive)
+	for i := 0; i < DefaultOwnerLimits.MaxActive; i++ {
+		entry, selectErr := ctrl.SelectCandidate("interactive")
+		if selectErr != nil {
+			t.Fatalf("select %d: %v", i, selectErr)
+		}
+		active = append(active, entry.Spec)
+	}
+	if _, selectErr := ctrl.SelectCandidate("interactive"); selectErr != ErrNoEligibleTask {
+		t.Fatalf("selection above MaxActive error=%v want ErrNoEligibleTask", selectErr)
+	}
+	for _, spec := range active {
+		ctrl.OnTaskTerminal(spec)
 	}
 }
