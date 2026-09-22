@@ -111,7 +111,7 @@ func (f *Feature) replyStatus(ctx *core.Context) error {
 	return ctx.Reply(fmt.Sprintf(
 		"📨 <b>PM Relay</b>\n\n"+
 			"• <b>Status:</b> <code>%s</code>\n"+
-			"• <b>Known visitors:</b> <code>%d</code>\n"+
+			"• <b>Assistant audience:</b> <code>%d</code>\n"+
 			"• <b>Blocked visitors:</b> <code>%d</code>\n"+
 			"• <b>Reply mappings:</b> <code>%d</code>\n"+
 			"• <b>Delivery intents:</b> <code>%d</code>\n\n"+
