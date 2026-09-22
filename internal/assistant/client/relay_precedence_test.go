@@ -158,6 +158,23 @@ func TestRelayPrecedenceVisitorFallbackRunsLast(t *testing.T) {
 	}
 }
 
+func TestRelayPrecedenceInputClassificationErrorFailsClosed(t *testing.T) {
+	input := &precedenceTextIngress{handled: false, err: errors.New("input store unavailable")}
+	relay := &precedenceRelayIngress{visitorHandled: true}
+	dispatchPrecedenceMessage(t, basePrecedenceDeps(input, relay), &tg.Message{
+		ID:      14,
+		Message: "must not become relay traffic",
+		FromID:  &tg.PeerUser{UserID: 42},
+		PeerID:  &tg.PeerUser{UserID: 42},
+	})
+	if input.calls != 1 {
+		t.Fatalf("AwaitInput calls=%d, want 1", input.calls)
+	}
+	if relay.visitorCalls != 0 {
+		t.Fatalf("visitor fallback ran after input classification error: %d", relay.visitorCalls)
+	}
+}
+
 func TestRelayVisitorFallbackDoesNotRequireInteractionPresentation(t *testing.T) {
 	relay := &precedenceRelayIngress{visitorHandled: true}
 	dispatchPrecedenceMessage(t, UpdateHandlerDeps{
