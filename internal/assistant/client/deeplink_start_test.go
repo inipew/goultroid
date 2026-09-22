@@ -305,3 +305,23 @@ func TestAssistantStartDeepLinkRejectsGroupDelivery(t *testing.T) {
 	}
 }
 
+
+
+func TestAssistantStartUnsupportedDeepLinkVersionFailsClosed(t *testing.T) {
+	manager, client, _, _ := newShellEngine(t)
+	defer manager.Shutdown()
+	client.SetTasks(&immediateDeepLinkTasks{})
+	interaction := &publicStartInteraction{}
+	if err := client.dispatchStart(&command.Context{
+		Ctx: context.Background(), SenderID: 7,
+		Peer: &tg.InputPeerUser{UserID: 7}, Args: []string{"d2_AAAAAAAAAAAAAAAAAAAAAA"}, Interaction: interaction,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(interaction.sent, "invalid, expired, or no longer available") {
+		t.Fatalf("unsupported token version response=%q", interaction.sent)
+	}
+	if got := manager.InteractionRuntime().Stats().Sessions; got != 0 {
+		t.Fatalf("unsupported token version fell through to shell sessions=%d", got)
+	}
+}
