@@ -14,6 +14,7 @@ import (
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/command"
+	assistantdeeplink "github.com/inipew/goultroid/internal/assistant/deeplink"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/assistant/peer"
 	assistentrpc "github.com/inipew/goultroid/internal/assistant/rpc"
@@ -74,6 +75,8 @@ type AssistantClient struct {
 	delayedActions        core.DelayedActionScheduler
 	pluginScopeResolver   func(string) (tasks.ScopeIdentity, bool)
 	inlineEngine          *inlineService.Engine
+	deepLinks             *assistantdeeplink.Router
+	deepLinkSeq           atomic.Uint64
 	rpcExecutor           assistentrpc.Executor
 	featureCatalog        feature.Catalog
 	interactionSessions   *rootinteraction.Runtime
@@ -423,6 +426,11 @@ func (c *AssistantClient) SetInteractionFoundation(catalog feature.Catalog, sess
 func (c *AssistantClient) SetInlineEngine(engine *inlineService.Engine) {
 	c.mu.Lock()
 	c.inlineEngine = engine
+	c.mu.Unlock()
+}
+func (c *AssistantClient) SetDeepLinkRouter(router *assistantdeeplink.Router) {
+	c.mu.Lock()
+	c.deepLinks = router
 	c.mu.Unlock()
 }
 func (c *AssistantClient) SetSettingsService(svc *settings.Service) {
