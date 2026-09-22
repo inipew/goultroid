@@ -50,12 +50,32 @@ type GroupStateDelete struct {
 	DeletedAt        time.Time
 }
 
+// GroupStateWriteGrant is an opaque proof that fresh contextual authorization
+// succeeded for one chat/actor immediately before persistence. Its fields are
+// private so callers outside core cannot manufacture a valid grant.
+type GroupStateWriteGrant struct {
+	chatID     int64
+	actorID    int64
+	authorized bool
+}
+
+func newGroupStateWriteGrant(chatID, actorID int64) GroupStateWriteGrant {
+	return GroupStateWriteGrant{chatID: chatID, actorID: actorID, authorized: true}
+}
+
+// Authorizes reports whether the opaque grant matches the exact persistence
+// coordinate actor. Store implementations must reject invalid grants.
+func (g GroupStateWriteGrant) Authorizes(chatID, actorID int64) bool {
+	return g.authorized && g.chatID > 0 && g.actorID > 0 &&
+		g.chatID == chatID && g.actorID == actorID
+}
+
 // GroupStateStore is the persistent boundary consumed by Assistant commands.
 // Implementations must not implement scope fallback to global/user settings.
 type GroupStateStore interface {
 	Get(context.Context, GroupStateKey) (GroupStateRecord, error)
-	CompareAndSwap(context.Context, GroupStateCAS) (GroupStateRecord, error)
-	DeleteCompareAndSwap(context.Context, GroupStateDelete) error
+	CompareAndSwap(context.Context, GroupStateWriteGrant, GroupStateCAS) (GroupStateRecord, error)
+	DeleteCompareAndSwap(context.Context, GroupStateWriteGrant, GroupStateDelete) error
 	PruneExpired(context.Context, time.Time, int) (int, error)
 	Count(context.Context) (int, error)
 }
@@ -119,15 +139,18 @@ func validateGroupStateWriteRequirement(requirement GroupAuthorizationRequiremen
 	}
 }
 
-func (c *Context) authorizeGroupStateWrite(requirement GroupAuthorizationRequirement) error {
+func (c *Context) authorizeGroupStateWrite(requirement GroupAuthorizationRequirement) (GroupStateWriteGrant, error) {
 	if err := validateGroupStateWriteRequirement(requirement); err != nil {
-		return err
+		return GroupStateWriteGrant{}, err
 	}
 	snapshot, err := c.ResolveGroupActor(true)
 	if err != nil {
-		return err
+		return GroupStateWriteGrant{}, err
 	}
-	return requirement.Authorize(snapshot.Principal)
+	if err := requirement.Authorize(snapshot.Principal); err != nil {
+		return GroupStateWriteGrant{}, err
+	}
+	return newGroupStateWriteGrant(c.Chat.ID, c.SenderID()), nil
 }
 
 // CompareAndSwapGroupState performs fresh contextual authorization immediately
@@ -152,7 +175,8 @@ func (c *Context) CompareAndSwapGroupState(
 	if c.groupStateStore == nil {
 		return GroupStateRecord{}, fmt.Errorf("%w: group state store is not configured", ErrUnavailable)
 	}
-	if err := c.authorizeGroupStateWrite(requirement); err != nil {
+	grant, err := c.authorizeGroupStateWrite(requirement)
+	if err != nil {
 		return GroupStateRecord{}, err
 	}
 
@@ -162,7 +186,7 @@ func (c *Context) CompareAndSwapGroupState(
 		expiry := now.Add(ttl)
 		expiresAt = &expiry
 	}
-	return c.groupStateStore.CompareAndSwap(c.Ctx, GroupStateCAS{
+	return c.groupStateStore.CompareAndSwap(c.Ctx, grant, GroupStateCAS{
 		GroupStateKey:    coordinate,
 		ExpectedRevision: expectedRevision,
 		Value:            append([]byte(nil), value...),
@@ -189,10 +213,11 @@ func (c *Context) DeleteGroupState(
 	if c.groupStateStore == nil {
 		return fmt.Errorf("%w: group state store is not configured", ErrUnavailable)
 	}
-	if err := c.authorizeGroupStateWrite(requirement); err != nil {
+	grant, err := c.authorizeGroupStateWrite(requirement)
+	if err != nil {
 		return err
 	}
-	return c.groupStateStore.DeleteCompareAndSwap(c.Ctx, GroupStateDelete{
+	return c.groupStateStore.DeleteCompareAndSwap(c.Ctx, grant, GroupStateDelete{
 		GroupStateKey:    coordinate,
 		ExpectedRevision: expectedRevision,
 		DeletedBy:        c.SenderID(),
