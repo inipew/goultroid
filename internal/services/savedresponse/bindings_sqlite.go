@@ -31,8 +31,8 @@ func (r *SQLiteSurfaceBindingRepository) CreateBinding(ctx context.Context, bind
 	_, err = r.db.ExecContext(ctx, `
 		INSERT INTO saved_response_surface_bindings (
 			surface, alias, provider, provider_scope_id, provider_key,
-			enabled, revision, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+			enabled, revision, incarnation, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, 1, lower(hex(randomblob(16))), ?, ?)
 	`,
 		string(normalized.Surface),
 		normalized.Alias,
@@ -49,10 +49,14 @@ func (r *SQLiteSurfaceBindingRepository) CreateBinding(ctx context.Context, bind
 		}
 		return SurfaceBinding{}, fmt.Errorf("create saved response surface binding: %w", err)
 	}
-	normalized.Revision = 1
-	normalized.CreatedAt = now
-	normalized.UpdatedAt = now
-	return normalized, nil
+	created, err := r.GetBinding(ctx, normalized.Surface, normalized.Alias)
+	if err != nil {
+		return SurfaceBinding{}, err
+	}
+	if created == nil {
+		return SurfaceBinding{}, ErrBindingNotFound
+	}
+	return *created, nil
 }
 
 func (r *SQLiteSurfaceBindingRepository) GetBinding(ctx context.Context, surface Surface, alias string) (*SurfaceBinding, error) {
@@ -65,7 +69,7 @@ func (r *SQLiteSurfaceBindingRepository) GetBinding(ctx context.Context, surface
 	}
 	row := r.db.QueryRowContext(ctx, `
 		SELECT surface, alias, provider, provider_scope_id, provider_key,
-		       enabled, revision, created_at, updated_at
+		       enabled, revision, incarnation, created_at, updated_at
 		FROM saved_response_surface_bindings
 		WHERE surface = ? AND alias = ?
 	`, string(surface), alias)
@@ -92,7 +96,7 @@ func (r *SQLiteSurfaceBindingRepository) ListBindings(ctx context.Context, surfa
 	}
 	query := `
 		SELECT surface, alias, provider, provider_scope_id, provider_key,
-		       enabled, revision, created_at, updated_at
+		       enabled, revision, incarnation, created_at, updated_at
 		FROM saved_response_surface_bindings
 		WHERE surface = ?`
 	args := []any{string(surface)}
@@ -246,6 +250,7 @@ func scanSurfaceBinding(scanner surfaceBindingScanner) (SurfaceBinding, error) {
 		&binding.Reference.Key,
 		&binding.Enabled,
 		&binding.Revision,
+		&binding.Incarnation,
 		&binding.CreatedAt,
 		&binding.UpdatedAt,
 	)
