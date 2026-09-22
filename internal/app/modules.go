@@ -29,8 +29,11 @@ func registerBuiltinModules(ctx context.Context, rt *module.Runtime) error {
 }
 
 func migrateBuiltinFeatures(ctx context.Context, db *database.DB) error {
-	providers := make([]database.MigrationProvider, 0, len(builtinModules)+1)
-	providers = append(providers, mediaregistry.MigrationProvider{})
+	providers := make([]database.MigrationProvider, 0, len(builtinModules)+2)
+	providers = append(providers,
+		mediaregistry.MigrationProvider{},
+		savedresponse.MigrationProvider{},
+	)
 	for _, m := range builtinModules {
 		provider, ok := m.(database.MigrationProvider)
 		if !ok {
