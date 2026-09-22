@@ -404,3 +404,40 @@ func TestP7IResetWaitsForSameTargetWarningSequence(t *testing.T) {
 		t.Fatalf("warnings after serialized enforcement/reset=%d, want 0", count)
 	}
 }
+
+
+func TestP7IWarningCoordinatesRejectBeforePersistence(t *testing.T) {
+	repo := &memoryWarningRepository{}
+	service := NewService(repo, &recordingModService{}, zap.NewNop())
+	peer := &tg.InputPeerChat{ChatID: 100}
+	user := &tg.InputPeerUser{UserID: 200}
+
+	for _, tc := range []struct {
+		chatID int64
+		userID int64
+	}{
+		{chatID: 0, userID: 200},
+		{chatID: 100, userID: 0},
+		{chatID: -1, userID: 200},
+		{chatID: 100, userID: -1},
+	} {
+		_, err := service.Warn(
+			context.Background(),
+			peer,
+			user,
+			tc.chatID,
+			tc.userID,
+			"invalid coordinates",
+			999,
+			DefaultWarnThreshold,
+			ActionMute,
+		)
+		if !errors.Is(err, core.ErrInvalidArgs) {
+			t.Fatalf("Warn(chat=%d,user=%d) error=%v, want ErrInvalidArgs",
+				tc.chatID, tc.userID, err)
+		}
+	}
+	if len(repo.records) != 0 {
+		t.Fatalf("invalid warning coordinates persisted %d rows", len(repo.records))
+	}
+}
