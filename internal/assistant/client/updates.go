@@ -263,12 +263,15 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		if deps.IsShuttingDown != nil && deps.IsShuttingDown() {
 			return nil
 		}
-		if deps.CacheEntities != nil {
-			deps.CacheEntities(e)
-		}
 		if service, ok := message.(*tg.MessageService); ok {
+			// P7-H service updates are fully classified from the update's entity
+			// snapshot. Inactive chats return before touching the global peer
+			// cache, TaskEngine, EventBus queue, or interaction pipeline.
 			handleAssistantGroupService(service, e, deps)
 			return nil
+		}
+		if deps.CacheEntities != nil {
+			deps.CacheEntities(e)
 		}
 		msg, ok := message.(*tg.Message)
 		if !ok || msg.Out {
@@ -381,7 +384,7 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		// dependencies are available. PM Relay is an independent data-plane
 		// fallback and must not disappear merely because the interaction path
 		// cannot resolve a peer or is temporarily unavailable.
-		if deps.Resolver != nil && deps.Interaction != nil {
+		if privateChat && deps.Resolver != nil && deps.Interaction != nil {
 			inputPeer := resolvePeer()
 			if inputPeer != nil && deps.InteractionIngress != nil {
 				handled, hErr := deps.InteractionIngress.tryText(ctx, msg.Message, senderID, chatID, inputPeer)
