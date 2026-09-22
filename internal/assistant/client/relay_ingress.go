@@ -227,6 +227,10 @@ func (r *RelayIngress) submitForceSubGuidance(
 		OrderingKey:      fmt.Sprintf("pmrelay:thread:%d", visitorID),
 		ExecutionTimeout: 10 * time.Second,
 		Handler: func(taskCtx context.Context) error {
+			if limiter, ok := r.forceSub.(forceSubGuidanceLimiter); ok &&
+				!limiter.ClaimGuidance(visitorID, decision.Config.Revision) {
+				return nil
+			}
 			return r.guidanceTransport.SendForceSubGuidance(
 				taskCtx,
 				visitorID,
@@ -239,6 +243,28 @@ func (r *RelayIngress) submitForceSubGuidance(
 		return fmt.Errorf("assistant force-sub guidance admission failed: %w", err)
 	}
 	return nil
+}
+
+func sendForceSubGuidance(
+	ctx context.Context,
+	gate forceSubMembershipGate,
+	transport forceSubGuidanceTransport,
+	visitorID int64,
+	decision forceSubDecision,
+) {
+	if transport == nil {
+		return
+	}
+	if limiter, ok := gate.(forceSubGuidanceLimiter); ok &&
+		!limiter.ClaimGuidance(visitorID, decision.Config.Revision) {
+		return
+	}
+	_ = transport.SendForceSubGuidance(
+		ctx,
+		visitorID,
+		decision.Config,
+		decision.VerificationBlocked,
+	)
 }
 
 type forceSubGuardedVisitorTransport struct {
@@ -257,14 +283,7 @@ func (t forceSubGuardedVisitorTransport) ForwardVisitor(
 	}
 	decision, err := t.gate.Check(ctx, t.visitor)
 	if err != nil || !decision.Allowed {
-		if t.guidance != nil {
-			_ = t.guidance.SendForceSubGuidance(
-				ctx,
-				t.visitor,
-				decision.Config,
-				decision.VerificationBlocked,
-			)
-		}
+		sendForceSubGuidance(ctx, t.gate, t.guidance, t.visitor, decision)
 		if err != nil {
 			return 0, err
 		}
@@ -312,14 +331,13 @@ func (r *RelayIngress) submit(ctx context.Context, prepared pmrelay.PreparedIngr
 				if r.forceSub != nil {
 					decision, gateErr := r.forceSub.Check(taskCtx, visitorID)
 					if gateErr != nil || !decision.Allowed {
-						if r.guidanceTransport != nil {
-							_ = r.guidanceTransport.SendForceSubGuidance(
-								taskCtx,
-								visitorID,
-								decision.Config,
-								decision.VerificationBlocked,
-							)
-						}
+						sendForceSubGuidance(
+							taskCtx,
+							r.forceSub,
+							r.guidanceTransport,
+							visitorID,
+							decision,
+						)
 						if gateErr != nil {
 							return gateErr
 						}
