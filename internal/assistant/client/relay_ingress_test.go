@@ -328,3 +328,130 @@ func TestRelayIngressP6CClaimsMappedOwnerReplyButFailsClosedBeforeP6D(t *testing
 		t.Fatalf("visitor transport used for owner reply: calls=%d", transport.calls)
 	}
 }
+
+
+type relayBidirectionalTransportStub struct {
+	visitorCalls int
+	visitorReq   pmrelay.VisitorForward
+	visitorMsg   int
+	visitorErr   error
+
+	ownerCalls int
+	ownerReq   pmrelay.OwnerSend
+	ownerMsg   int
+	ownerErr   error
+}
+
+func (t *relayBidirectionalTransportStub) ForwardVisitor(_ context.Context, request pmrelay.VisitorForward) (int, error) {
+	t.visitorCalls++
+	t.visitorReq = request
+	if t.visitorErr != nil {
+		return 0, t.visitorErr
+	}
+	return t.visitorMsg, nil
+}
+
+func (t *relayBidirectionalTransportStub) SendOwnerReply(_ context.Context, request pmrelay.OwnerSend) (int, error) {
+	t.ownerCalls++
+	t.ownerReq = request
+	if t.ownerErr != nil {
+		return 0, t.ownerErr
+	}
+	return t.ownerMsg, nil
+}
+
+func TestRelayIngressExecutesMappedOwnerReplyThroughP6DTransport(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := database.RunFeatureMigrations(ctx, db, pmrelay.MigrationProvider{}); err != nil {
+		t.Fatal(err)
+	}
+	repo := pmrelay.NewSQLiteRepository(db)
+	now := time.Now().UTC()
+	if _, err := repo.EnsureMapping(ctx, pmrelay.Mapping{
+		OwnerChatID: 7, OwnerMessageID: 100,
+		VisitorUserID: 42, VisitorMessageID: 11,
+		CreatedAt: now, ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := pmrelay.NewService(repo, 7)
+	service.SetEnabled(true)
+	taskClient := &relayAdmissionTaskClient{run: true}
+	transport := &relayBidirectionalTransportStub{visitorMsg: 501, ownerMsg: 601}
+	ingress := NewRelayIngress(service, taskClient, transport)
+
+	handled, err := ingress.tryOwnerReply(ctx, pmrelay.IngressMessage{
+		SenderID: 7, ChatID: 7, MessageID: 101, ReplyToMessageID: 100,
+	})
+	if err != nil || !handled {
+		t.Fatalf("tryOwnerReply() handled=%v err=%v", handled, err)
+	}
+	if transport.ownerCalls != 1 {
+		t.Fatalf("owner transport calls=%d, want 1", transport.ownerCalls)
+	}
+	if transport.visitorCalls != 0 {
+		t.Fatalf("owner reply incorrectly used visitor forward transport: calls=%d", transport.visitorCalls)
+	}
+	if transport.ownerReq.SourceChatID != 7 ||
+		transport.ownerReq.SourceMessageID != 101 ||
+		transport.ownerReq.TargetChatID != 42 ||
+		transport.ownerReq.RandomID == 0 {
+		t.Fatalf("owner transport request=%+v", transport.ownerReq)
+	}
+
+	delivery, err := repo.GetDelivery(ctx, pmrelay.DeliveryKey{
+		Direction:       pmrelay.DeliveryOwnerToVisitor,
+		SourceChatID:    7,
+		SourceMessageID: 101,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !delivery.Completed() || delivery.TargetMessageID != 601 {
+		t.Fatalf("owner delivery=%+v", delivery)
+	}
+}
+
+func TestRelayIngressOwnerAdmissionRejectionHasNoDeliverySideEffect(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := database.RunFeatureMigrations(ctx, db, pmrelay.MigrationProvider{}); err != nil {
+		t.Fatal(err)
+	}
+	repo := pmrelay.NewSQLiteRepository(db)
+	now := time.Now().UTC()
+	if _, err := repo.EnsureMapping(ctx, pmrelay.Mapping{
+		OwnerChatID: 7, OwnerMessageID: 100,
+		VisitorUserID: 42, VisitorMessageID: 11,
+		CreatedAt: now, ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := pmrelay.NewService(repo, 7)
+	service.SetEnabled(true)
+	taskClient := &relayAdmissionTaskClient{submitErr: errors.New("queue full")}
+	transport := &relayBidirectionalTransportStub{visitorMsg: 501, ownerMsg: 601}
+	ingress := NewRelayIngress(service, taskClient, transport)
+
+	handled, err := ingress.tryOwnerReply(ctx, pmrelay.IngressMessage{
+		SenderID: 7, ChatID: 7, MessageID: 101, ReplyToMessageID: 100,
+	})
+	if !handled || err == nil {
+		t.Fatalf("tryOwnerReply() handled=%v err=%v", handled, err)
+	}
+	if transport.ownerCalls != 0 || transport.visitorCalls != 0 {
+		t.Fatalf("transport ran before owner admission: owner=%d visitor=%d", transport.ownerCalls, transport.visitorCalls)
+	}
+	if count, err := repo.CountDeliveries(ctx); err != nil || count != 0 {
+		t.Fatalf("deliveries after rejected owner admission=%d err=%v", count, err)
+	}
+}
