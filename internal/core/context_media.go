@@ -150,8 +150,11 @@ func (m *MediaFacade) SendMedia(mediaType string, filePath string, caption strin
 	}
 	var msg *tg.Message
 	var err error
+	send := messageSendContext(c)
 	if contextual, ok := c.Svc.(ContextualTelegramServicer); ok {
-		msg, err = contextual.SendMediaContext(c.Ctx, c.PeerID, mediaType, filePath, caption, messageSendContext(c))
+		msg, err = contextual.SendMediaContext(c.Ctx, c.PeerID, mediaType, filePath, caption, send)
+	} else if send.TopicID > 0 {
+		return nil, fmt.Errorf("%w: telegram transport cannot preserve forum topic %d", ErrUnavailable, send.TopicID)
 	} else {
 		msg, err = c.Svc.SendMedia(c.Ctx, c.PeerID, mediaType, filePath, caption)
 	}
