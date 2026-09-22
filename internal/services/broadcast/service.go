@@ -310,6 +310,10 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 			report.Duration = time.Since(start)
 			return &report, ErrTargetSourceStalled
 		}
+		if len(page) > maxBroadcastInFlight || targetIndex+len(page) > report.Total {
+			report.Duration = time.Since(start)
+			return &report, ErrTargetSourceContract
+		}
 
 		for _, target := range page {
 			if target == nil {
@@ -387,6 +391,10 @@ func (s *Service) Broadcast(ctx context.Context, req BroadcastRequest) (*Broadca
 		if done {
 			break
 		}
+	}
+	if targetIndex != report.Total {
+		report.Duration = time.Since(start)
+		return &report, ErrTargetSourceContract
 	}
 
 	for len(pending) > 0 {
