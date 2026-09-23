@@ -29,7 +29,7 @@ func TestLanguageViewUsesTypedA2Actions(t *testing.T) {
 
 func TestHomeAndStatusViewsAreLocaleAware(t *testing.T) {
 	home := HomeView(HomeModel{Username: "goultroid", Uptime: time.Minute, Locale: "id"})
-	if !strings.Contains(home.Text, "Pusat kontrol") {
+	if !strings.Contains(home.Text, "Silakan telusuri opsi") {
 		t.Fatalf("localized home=%q", home.Text)
 	}
 	if !viewContainsButton(home, "Pengaturan ⚙️") || !viewContainsButton(home, "Bahasa 🌐") {
