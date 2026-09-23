@@ -75,7 +75,6 @@ func TestHelpNavigatorReusesBoundedStateWithoutTouchingSettingBinding(t *testing
 	}
 }
 
-
 func TestPublicStartViewIsCompactLocalizedAndRelayAware(t *testing.T) {
 	base := PublicStartView(PublicStartModel{
 		Username: "bot<unsafe>",
