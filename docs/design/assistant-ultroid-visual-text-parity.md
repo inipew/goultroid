@@ -1057,11 +1057,168 @@ perf(assistant): avoid duplicate help catalog sorting
 
 `Close/Open Again` is not required for direct-grid closure and remains optional presentation work; it was not implemented by introducing a delete/reopen state machine merely for visual imitation.
 
-## V4 — Settings direct-grid parity
+## V4 — Settings direct-grid parity — COMPLETE
 
-Render visible categories/settings as direct buttons using typed slots.
+Implemented as a bounded typed-slot projection over the existing central `settings.Registry`.
 
-Do not duplicate the Settings registry.
+Root topology:
+
+```text
+GoUltroid Settings
+
+[ Category 1 ] [ Category 2 ]
+[ Category 3 ] [ Category 4 ]
+[ Category 5 ] [ Category 6 ]
+[ Category 7 ] [ Category 8 ]
+
+[ « Previous ] [ « Back ] [ Next » ]
+```
+
+Category topology:
+
+```text
+Category
+
+[ Setting 1 ] [ Setting 2 ]
+[ Setting 3 ] [ Setting 4 ]
+[ Setting 5 ] [ Setting 6 ]
+[ Setting 7 ] [ Setting 8 ]
+
+[ « Previous ] [ Categories ] [ Next » ]
+```
+
+Exact implementation constraints:
+
+- category page size = 8;
+- setting page size = 8;
+- maximum grid width = 2;
+- fixed action vocabulary = 8 category slot IDs + 8 setting slot IDs;
+- category/setting identities are never embedded into Telegram callback bytes;
+- no dynamic callback registration;
+- no second Settings tree or registry;
+- `settings.Registry` remains the schema/discovery authority;
+- existing a2 actor/target/revision/generation validation remains authoritative.
+
+The former carousel-only actions:
+
+```text
+settings_open
+setting_open
+```
+
+and their old selected-item state helpers were removed. Existing Previous/Next actions now mean bounded page navigation.
+
+### Session-bound slot protection
+
+Settings navigation reuses the existing 128-bit shell binding field while the session is on Settings list/category screens.
+
+Category pages fingerprint the visible canonical category identities.
+
+Setting pages fingerprint both the visible `namespace:key` identities and relevant schema/presentation metadata:
+
+- type;
+- default value;
+- allowed values;
+- min/max;
+- title/description;
+- category;
+- widget, step, presets, confirmation/search hints;
+- ordering;
+- sensitive flag.
+
+Flow:
+
+```text
+settings.Registry
+    ↓
+deterministic category/definition snapshot
+    ↓
+bounded page
+    ↓
+128-bit page fingerprint
+    ↓
+existing a2 session state
+    ↓
+fixed typed slot ActionID
+    ↓
+callback
+    ↓
+normal a2 token validation
+    ↓
+re-read canonical registry
+    ↓
+recompute fingerprint
+    ↓
+match?
+    ├─ yes → resolve slot
+    └─ no  → ErrShellSettingsSelectionStale
+```
+
+When a concrete setting is opened, page fingerprint authority is replaced by the existing mutation binding:
+
+```text
+namespace:key
++
+registry schemaVersion
+```
+
+using the existing `BindSettingState` / `boundSettingDefinition` path. Mutation, reset, free-form input, persistence revalidation, and recovery semantics are therefore unchanged.
+
+### Navigation resource improvement
+
+The old category carousel resolved the selected setting's effective value while browsing.
+
+V4 no longer performs effective-value DB/service resolution on:
+
+```text
+Settings root
+Settings category grid
+category/setting pagination
+```
+
+Effective value/source/user-override reads begin only after the user opens one concrete setting detail.
+
+This removes unnecessary persistence/cache work from pure Settings navigation.
+
+### Acceptance evidence
+
+Added/updated source tests cover:
+
+- deterministic two-column category grid;
+- deterministic two-column setting grid;
+- category pagination beyond 8 entries;
+- setting pagination beyond 8 entries;
+- direct category-slot and setting-slot transitions;
+- zero effective-value reads while browsing root/category grids;
+- effective-value resolution only at concrete detail;
+- sensitive values remain masked;
+- stale old a2 token rejection;
+- category registry remap rejection;
+- setting identity remap rejection;
+- same-key schema/presentation replacement rejection;
+- Back preserving the setting page containing the opened detail;
+- one bounded a2 session for the full Settings navigation flow;
+- all 16 Settings slot ActionIDs declared as owner/private Assistant actions;
+- existing `namespace:key + schemaVersion` mutation fencing retained.
+
+Resource delta:
+
+```text
+new worker       = 0
+new goroutine    = 0
+new ticker       = 0
+new poller       = 0
+new global map   = 0
+new registry     = 0
+new session bytes = 0
+```
+
+Production commit:
+
+```text
+45787b90a5e9a38d33c6b8169f5f14820fabbc64
+feat(assistant): add bounded direct-grid settings slots
+```
 
 ## V5 — inline root rich presentation
 
