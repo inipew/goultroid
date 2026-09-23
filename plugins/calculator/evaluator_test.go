@@ -37,3 +37,14 @@ func TestEvaluateExpressionFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestEvaluateExpressionDepthBound(t *testing.T) {
+	tooDeepParens := strings.Repeat("(", maxParserDepth+1) + "1" + strings.Repeat(")", maxParserDepth+1)
+	if _, err := evaluateExpression(tooDeepParens); err == nil {
+		t.Fatal("deep parenthesis expression unexpectedly succeeded")
+	}
+	tooDeepUnary := strings.Repeat("-", maxParserDepth+1) + "1"
+	if _, err := evaluateExpression(tooDeepUnary); err == nil {
+		t.Fatal("deep unary expression unexpectedly succeeded")
+	}
+}

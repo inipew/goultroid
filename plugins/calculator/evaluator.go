@@ -8,11 +8,15 @@ import (
 	"unicode"
 )
 
-const maxExpressionBytes = 128
+const (
+	maxExpressionBytes = 128
+	maxParserDepth     = 32
+)
 
 type expressionParser struct {
 	runes []rune
 	pos   int
+	depth int
 }
 
 func evaluateExpression(input string) (float64, error) {
@@ -109,7 +113,11 @@ func (p *expressionParser) parsePower() (float64, error) {
 		return left, nil
 	}
 	p.pos++
+	if err := p.enter(); err != nil {
+		return 0, err
+	}
 	right, err := p.parsePower()
+	p.leave()
 	if err != nil {
 		return 0, err
 	}
@@ -125,10 +133,19 @@ func (p *expressionParser) parseUnary() (float64, error) {
 	switch p.peek() {
 	case '+':
 		p.pos++
-		return p.parseUnary()
+		if err := p.enter(); err != nil {
+			return 0, err
+		}
+		value, err := p.parseUnary()
+		p.leave()
+		return value, err
 	case '-':
 		p.pos++
+		if err := p.enter(); err != nil {
+			return 0, err
+		}
 		value, err := p.parseUnary()
+		p.leave()
 		return -value, err
 	default:
 		return p.parsePrimary()
@@ -139,7 +156,11 @@ func (p *expressionParser) parsePrimary() (float64, error) {
 	p.skipSpace()
 	if p.peek() == '(' {
 		p.pos++
+		if err := p.enter(); err != nil {
+			return 0, err
+		}
 		value, err := p.parseExpression()
+		p.leave()
 		if err != nil {
 			return 0, err
 		}
@@ -194,6 +215,20 @@ func (p *expressionParser) parseNumber() (float64, error) {
 		return 0, fmt.Errorf("invalid number: %w", err)
 	}
 	return value, nil
+}
+
+func (p *expressionParser) enter() error {
+	if p.depth >= maxParserDepth {
+		return fmt.Errorf("expression nesting exceeds %d", maxParserDepth)
+	}
+	p.depth++
+	return nil
+}
+
+func (p *expressionParser) leave() {
+	if p.depth > 0 {
+		p.depth--
+	}
 }
 
 func (p *expressionParser) skipSpace() {

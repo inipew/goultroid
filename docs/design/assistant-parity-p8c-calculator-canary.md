@@ -301,3 +301,20 @@ P8-C does not:
 Proceed to **P8-D — representative rich search/lookup inline**.
 
 The recommended canary is the existing Wikipedia backend because it already uses the capability-gated network service and canonical userbot/Assistant command path. P8-D should add a bounded FeatureSpec-owned inline lookup rather than a second search service.
+
+
+## Final depth hardening
+
+The final source re-audit adds an explicit parser recursion bound in addition to the existing 128-byte expression limit:
+
+```text
+max parser recursion depth = 32
+```
+
+The bound applies to nested parentheses, unary recursion, and right-associative exponent recursion. This prevents parser stack depth from depending only on the byte limit.
+
+Regression:
+
+`TestEvaluateExpressionDepthBound`
+
+This hardening was passed through `gofmt` before its commit.
