@@ -120,9 +120,17 @@ func (*Feature) FeatureSpec() feature.Spec {
 			{ID: InteractionSettingDetail, Kind: feature.InteractionScreen, Description: "Bound setting detail and typed mutation surface", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionSettingInput, Kind: feature.InteractionScreen, Description: "Bound free-form setting input surface", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionRefresh, Kind: feature.InteractionAction, Description: "Refresh shell state and presentation", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: ActionPing, Kind: feature.InteractionSction, Description: "Acknowledge shell liveness", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionPing, Kind: feature.InteractionAction, Description: "Acknowledge shell liveness", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionStatus, Kind: feature.InteractionAction, Description: "Navigate to read-only status", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: ActionHelp, Kind: feature.InteractionAction, Description: "Navigate to read-only help overview", Surfaces: assistant, Policy},
+			{ID: ActionHelp, Kind: feature.InteractionAction, Description: "Navigate to read-only help overview", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionHelpPrev, Kind: feature.InteractionAction, Description: "Select previous Assistant help module", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionHelpNext, Kind: feature.InteractionAction, Description: "Select next Assistant help module", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionHelpOpen, Kind: feature.InteractionAction, Description: "Open selected Assistant help module", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionHelpCmdPrev, Kind: feature.InteractionAction, Description: "Select previous command in help module", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionHelpCmdNext, Kind: feature.InteractionAction, Description: "Select next command in help module", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionHelpCmdOpen, Kind: feature.InteractionAction, Description: "Open selected Assistant command detail", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionHelpBack, Kind: feature.InteractionAction, Description: "Return from command detail to its module", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionHome, Kind: feature.InteractionAction, Description: "Return to the shell home screen", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionStatusRefresh, Kind: feature.InteractionAction, Description: "Refresh read-only status", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettings, Kind: feature.InteractionAction, Description: "Navigate to settings categories", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionLanguage, Kind: feature.InteractionAction, Description: "Navigate to canonical Assistant language selection", Surfaces: assistant, Policy: ownerPolicy},
@@ -137,10 +145,10 @@ func (*Feature) FeatureSpec() feature.Spec {
 			{ID: ActionSettingBack, Kind: feature.InteractionAction, Description: "Return to selected settings category", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingChange, Kind: feature.InteractionAction, Description: "Apply typed bool or enum mutation", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingDecrease, Kind: feature.InteractionAction, Description: "Decrease typed numeric or duration setting", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: ActionSettingIncrease, Kind: feature.InteractionAction, Description: "Increase typed numeric or duration setting", Surfaces: assistant, Policy},
+			{ID: ActionSettingIncrease, Kind: feature.InteractionAction, Description: "Increase typed numeric or duration setting", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingReset, Kind: feature.InteractionAction, Description: "Reset bound user setting override", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingInput, Kind: feature.InteractionAction, Description: "Begin bounded free-form input for a bound string setting", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: ActionSettingInputCancel, Kind: feature.InteractionAction, Description: "Cancel bounded free-form setting input", Surfaces: assistant, Policy},
+			{ID: ActionSettingInputCancel, Kind: feature.InteractionAction, Description: "Cancel bounded free-form setting input", Surfaces: assistant, Policy: ownerPolicy},
 		},
 	}
 }
@@ -155,19 +163,95 @@ type HomeModel struct {
 func HomeView(model HomeModel) presentation.View {
 	locale := shellLocale(model.Locale)
 	username := normalizedUsername(model.Username)
-	greeting := fmt.Sprintf("Hey @%s. Please browse through the options", username)
-	if locale == "id" {
-		greeting = fmt.Sprintf("Haloo @%s. Silakan telusuri opsi", username)
+	card := ui.NewCard("GoUltroid Assistant").
+		WithIcon("🤖").
+		WithHeader(tr(locale, "assistant.home.header")).
+		AddField(tr(locale, "assistant.field.bot"), "@"+username).
+		AddField(tr(locale, "assistant.field.status"), tr(locale, "assistant.home.status_ready")).
+		AddField(tr(locale, "assistant.field.uptime"), appstatus.FormatDuration(model.Uptime))
+	if model.Refreshes > 0 {
+		card.AddField(tr(locale, "assistant.field.refreshes"), strconv.FormatUint(model.Refreshes, 10))
 	}
-	text := "<b>GoUltroid Assistant</b>\n\n" + greeting
+	card.WithFooter(tr(locale, "assistant.home.footer"))
 
 	return presentation.View{
-		Text: text,
+		Text: card.Render(),
 		Rows: []presentation.Row{
-			{{Text: tr(locale, "assistant.button.language"), ActionID: ActionLanguage}, {Text: tr(locale, "assistant.button.settings"), ActionID: ActionSettings}},
-			{{Text: tr(locale, "assistant.button.status"), ActionID: ActionStatus}, {Text: tr(locale, "assistant.button.help"), ActionID: ActionHelp}},
-			{{Text: tr(locale, "assistant.button.ping"), ActionID: ActionPing}, {Text: tr(locale, "assistant.button.refresh"), ActionID: ActionRefresh}},
+			{{Text: tr(locale, "assistant.button.settings"), ActionID: ActionSettings}, {Text: tr(locale, "assistant.button.help"), ActionID: ActionHelp}},
+			{{Text: tr(locale, "assistant.button.status"), ActionID: ActionStatus}, {Text: tr(locale, "assistant.button.refresh"), ActionID: ActionRefresh}},
+			{{Text: tr(locale, "assistant.button.language"), ActionID: ActionLanguage}, {Text: tr(locale, "assistant.button.ping"), ActionID: ActionPing}},
 		},
 	}
+}
 
-  ECB1  
+type StatusModel struct {
+	Username  string
+	Uptime    time.Duration
+	Engine    string
+	Refreshes uint64
+	Locale    string
+}
+
+func StatusView(model StatusModel) presentation.View {
+	locale := shellLocale(model.Locale)
+	username := normalizedUsername(model.Username)
+	engine := strings.TrimSpace(model.Engine)
+	if engine == "" {
+		engine = "GoUltroid (MTProto)"
+	}
+	card := ui.NewCard(tr(locale, "assistant.status.title")).
+		WithIcon("📊").
+		WithHeader(tr(locale, "assistant.status.header")).
+		AddField(tr(locale, "assistant.field.assistant"), "@"+username).
+		AddField(tr(locale, "assistant.field.status"), tr(locale, "assistant.status.operational")).
+		AddField(tr(locale, "assistant.field.uptime"), appstatus.FormatDuration(model.Uptime)).
+		AddField(tr(locale, "assistant.field.engine"), ui.EscapeHTML(engine)).
+		AddField(tr(locale, "assistant.field.callbacks"), tr(locale, "assistant.status.active"))
+	if model.Refreshes > 0 {
+		card.AddField(tr(locale, "assistant.field.refreshes"), strconv.FormatUint(model.Refreshes, 10))
+	}
+	card.WithFooter(tr(locale, "assistant.status.footer"))
+
+	return presentation.View{
+		Text: card.Render(),
+		Rows: []presentation.Row{
+			{{Text: tr(locale, "assistant.button.refresh"), ActionID: ActionStatusRefresh}, {Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}},
+		},
+	}
+}
+
+func normalizedUsername(username string) string {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return "GoUltroidBot"
+	}
+	return username
+}
+
+func ValidateSpec() error {
+	spec := NewFeature().FeatureSpec()
+	bound, err := feature.BindCanonicalCommands(spec, nil)
+	if err != nil {
+		return err
+	}
+	if bound.ID != FeatureID {
+		return fmt.Errorf("assistant shell feature id = %q", bound.ID)
+	}
+	for name, view := range map[string]presentation.View{
+		"home":         HomeView(HomeModel{}),
+		"status":       StatusView(StatusModel{}),
+		"language":     LanguageView(LanguageModel{}),
+		"help":         HelpView(HelpModel{}),
+		"help_module":  HelpModuleView(HelpModuleModel{}),
+		"help_command": HelpCommandView(HelpCommandModel{}),
+		"settings":     SettingsHomeView(SettingsHomeModel{}),
+		"category":     SettingsCategoryView(SettingsCategoryModel{}),
+		"detail":       SettingDetailView(SettingDetailModel{}),
+		"input":        SettingInputView(SettingInputModel{}),
+	} {
+		if err := view.Validate(); err != nil {
+			return fmt.Errorf("%s view: %w", name, err)
+		}
+	}
+	return nil
+}
