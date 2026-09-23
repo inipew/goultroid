@@ -14,9 +14,26 @@ func (c *AssistantClient) dispatchPublicStart(ctx *command.Context) error {
 	if chatID == 0 {
 		chatID = ctx.SenderID
 	}
-	view := shell.PublicStartView(c.Username(), c.shellLocale(ctx.Ctx, ctx.SenderID, chatID))
+	view := shell.PublicStartView(shell.PublicStartModel{
+		Username:       c.Username(),
+		Locale:         c.shellLocale(ctx.Ctx, ctx.SenderID, chatID),
+		RelayAvailable: c.publicStartRelayAvailable(),
+	})
 	_, err := ctx.Reply(view.Text, nil)
 	return err
+}
+
+func (c *AssistantClient) publicStartRelayAvailable() bool {
+	c.mu.RLock()
+	relay := c.pmRelay
+	c.mu.RUnlock()
+	if relay == nil {
+		return false
+	}
+	if state, ok := relay.(interface{ IsEnabled() bool }); ok {
+		return state.IsEnabled()
+	}
+	return true
 }
 
 func (c *AssistantClient) stepShellHelpModule(ctx *orchestration.Context, delta int) error {
