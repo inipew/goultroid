@@ -13,10 +13,13 @@ var Module ModuleType
 
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
-		ID:           "calculator",
-		Version:      "1.0.0",
-		Description:  "Bounded interactive calculator canary",
-		Capabilities: []string{plugin.CapTelegramSendMessage},
+		ID:          "calculator",
+		Version:     "1.0.0",
+		Description: "Bounded interactive calculator canary",
+		Capabilities: []string{
+			plugin.CapTelegramRead,
+			plugin.CapTelegramSendMessage,
+		},
 	}
 }
 

@@ -30,6 +30,9 @@ func wireSelfInlineRenderers(manager *plugin.Manager, client *telegram.Client, a
 		}
 		pluginID := registered.Name()
 		aware.SetSelfInlineRenderer(selfinline.Authorized(base, func() error {
+			if err := gate.Check(pluginID, plugin.CapTelegramRead); err != nil {
+				return err
+			}
 			return gate.Check(pluginID, plugin.CapTelegramSendMessage)
 		}))
 	}

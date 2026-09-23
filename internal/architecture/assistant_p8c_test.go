@@ -25,8 +25,13 @@ func TestP8CCalculatorUsesCanonicalInlineAndA2Runtime(t *testing.T) {
 			"rootinteraction.ErrStaleToken",
 			"rootinteraction.ErrBindingMismatch",
 		},
+		filepath.Join(root, "plugins", "calculator", "module.go"): {
+			"plugin.CapTelegramRead",
+			"plugin.CapTelegramSendMessage",
+		},
 		filepath.Join(root, "internal", "app", "selfinline_features.go"): {
 			"selfinline.Authorized(",
+			"gate.Check(pluginID, plugin.CapTelegramRead)",
 			"gate.Check(pluginID, plugin.CapTelegramSendMessage)",
 		},
 		filepath.Join(root, "internal", "assistant", "client", "interaction_drivers.go"): {

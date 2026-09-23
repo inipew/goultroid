@@ -78,13 +78,17 @@ The injected renderer is wrapped with:
 
 and performs:
 
+`CapabilityGate.Check(pluginID, plugin.CapTelegramRead)`
+
+followed by:
+
 `CapabilityGate.Check(pluginID, plugin.CapTelegramSendMessage)`
 
 **on every Render call**.
 
 Capability authorization is therefore not cached inside the plugin across disable/reload or manifest changes.
 
-The calculator manifest explicitly declares `telegram.send_message`.
+The calculator manifest explicitly declares both `telegram.read` and `telegram.send_message`, matching the two physical self-inline operations: query + insertion.
 
 ## Command surface
 
@@ -318,3 +322,23 @@ Regression:
 `TestEvaluateExpressionDepthBound`
 
 This hardening was passed through `gofmt` before its commit.
+
+
+## Final capability hardening
+
+The final P8-C source re-audit tightened the self-inline capability boundary.
+
+Self-inline rendering performs two distinct Telegram operations:
+
+```text
+messages.getInlineBotResults   -> telegram.read
+messages.sendInlineBotResult   -> telegram.send_message
+```
+
+The generic renderer injection now checks both capabilities on every render, in that order. The calculator manifest declares both capabilities explicitly.
+
+This prevents a plugin that is only authorized to send messages from implicitly gaining Telegram read/query authority through the self-inline bridge.
+
+The architecture fence requires both capability checks and both manifest declarations.
+
+This hardening was passed through `gofmt` before commit.
