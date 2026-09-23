@@ -30,7 +30,7 @@ func TestAssistantShellLanguageSelectorPersistsCanonicalUserSetting(t *testing.T
 	if err := dispatchShell(t, engine, openLanguage, 700, peer); err != nil {
 		t.Fatalf("Dispatch(language) error = %v", err)
 	}
-	if !strings.Contains(port.edited.Text, "Assistant Language") {
+	if !strings.Contains(port.edited.Text, "List Of Available Languages.") {
 		t.Fatalf("English language selector not rendered: %q", port.edited.Text)
 	}
 
@@ -38,7 +38,7 @@ func TestAssistantShellLanguageSelectorPersistsCanonicalUserSetting(t *testing.T
 	if err := dispatchShell(t, engine, setIndonesian, 701, peer); err != nil {
 		t.Fatalf("Dispatch(language_id) error = %v", err)
 	}
-	if !strings.Contains(port.edited.Text, "Bahasa Assistant") ||
+	if !strings.Contains(port.edited.Text, "Daftar Bahasa Tersedia.") ||
 		!strings.Contains(port.edited.Text, "Preferensi bahasa tersimpan") {
 		t.Fatalf("Indonesian selector not rendered after persistence: %q", port.edited.Text)
 	}
