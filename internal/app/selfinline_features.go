@@ -13,7 +13,7 @@ type selfInlineRendererAware interface {
 
 // wireSelfInlineRenderers injects the shared P8-B renderer only into features
 // that explicitly opt in. Authorization is evaluated on every render against
-// the feature's current manifest; no capability grant is cached in the plugin.
+// the feature's current enable state and manifest; no lifecycle/capability grant is cached.
 func wireSelfInlineRenderers(manager *plugin.Manager, client *telegram.Client, assistantClient assistant.Client, gate *plugin.CapabilityGate) {
 	if manager == nil || client == nil || assistantClient == nil || gate == nil {
 		return
@@ -29,11 +29,18 @@ func wireSelfInlineRenderers(manager *plugin.Manager, client *telegram.Client, a
 			continue
 		}
 		pluginID := registered.Name()
-		aware.SetSelfInlineRenderer(selfinline.Authorized(base, func() error {
-			if err := gate.Check(pluginID, plugin.CapTelegramRead); err != nil {
-				return err
-			}
-			return gate.Check(pluginID, plugin.CapTelegramSendMessage)
-		}))
+		aware.SetSelfInlineRenderer(selfinline.Authorized(base, selfInlineFeatureAuthorizer(manager, gate, pluginID)))
+	}
+}
+
+func selfInlineFeatureAuthorizer(manager *plugin.Manager, gate *plugin.CapabilityGate, pluginID string) selfinline.Authorizer {
+	return func() error {
+		if manager == nil || gate == nil || !manager.IsEnabled(pluginID) {
+			return selfinline.ErrUnavailable
+		}
+		if err := gate.Check(pluginID, plugin.CapTelegramRead); err != nil {
+			return err
+		}
+		return gate.Check(pluginID, plugin.CapTelegramSendMessage)
 	}
 }
