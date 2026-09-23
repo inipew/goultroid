@@ -237,9 +237,10 @@ func TestAssistantShellReadOnlyNavigationUsesOneRevisionFencedSession(t *testing
 	if err := dispatchShell(t, engine, helpFromHome, 204, peer); err != nil {
 		t.Fatalf("Dispatch(help) error = %v", err)
 	}
-	if !strings.Contains(port.edited.Text, "GoUltroid Help Menu") || !strings.Contains(port.edited.Text, "Media") {
+	if !strings.Contains(port.edited.Text, "GoUltroid Help Menu") {
 		t.Fatalf("help view missing canonical command navigator: %q", port.edited.Text)
 	}
+	_ = callbackForAction(t, port.edited, assistantshell.HelpModuleSlotActionIDs()[0])
 	if strings.Contains(port.edited.Text, "Hidden") {
 		t.Fatalf("help view leaked userbot-only command category: %q", port.edited.Text)
 	}

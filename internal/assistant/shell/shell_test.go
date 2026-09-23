@@ -16,8 +16,8 @@ func TestFeatureSpecAndViews(t *testing.T) {
 		t.Fatalf("ValidateSpec() error = %v", err)
 	}
 	spec := NewFeature().FeatureSpec()
-	if len(spec.Interactions) != 44 {
-		t.Fatalf("interactions = %d, want 44", len(spec.Interactions))
+	if len(spec.Interactions) != 58 {
+		t.Fatalf("interactions = %d, want 58", len(spec.Interactions))
 	}
 	for _, screenID := range []string{
 		InteractionHome,
@@ -56,20 +56,26 @@ func TestFeatureSpecAndViews(t *testing.T) {
 	}
 }
 
-func TestHelpViewUsesDeterministicCanonicalNavigator(t *testing.T) {
+func TestHelpViewUsesDeterministicCanonicalDirectGrid(t *testing.T) {
 	view := HelpView(HelpModel{Commands: []core.Command{
 		{Name: "zeta", Category: "Zulu"},
 		{Name: "alpha", Category: "Alpha"},
 		{Name: "again", Category: "Alpha"},
-	}, Selected: 0})
+	}, Page: 0})
 	if err := view.Validate(); err != nil {
 		t.Fatalf("HelpView() invalid: %v", err)
 	}
 	if !strings.Contains(view.Text, "<b>Commands:</b> 3") || !strings.Contains(view.Text, "<b>Modules:</b> 2") {
 		t.Fatalf("help summary missing canonical counts: %q", view.Text)
 	}
-	if !strings.Contains(view.Text, "Alpha · 2") {
-		t.Fatalf("help selection is not deterministic: %q", view.Text)
+	if len(view.Rows) < 2 || len(view.Rows[0]) != 2 || view.Rows[0][0].Text != "Alpha" || view.Rows[0][1].Text != "Zulu" {
+		t.Fatalf("help direct grid is not deterministic: %+v", view.Rows)
+	}
+	for _, actionID := range append(HelpModuleSlotActionIDs(), HelpCommandSlotActionIDs()...) {
+		interaction, ok := findInteraction(NewFeature().FeatureSpec(), feature.InteractionAction, actionID)
+		if !ok || !interaction.Policy.PrivateOnly {
+			t.Fatalf("help slot interaction %q = %+v, ok=%v", actionID, interaction, ok)
+		}
 	}
 }
 

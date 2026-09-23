@@ -99,7 +99,7 @@ func (*Feature) FeatureSpec() feature.Spec {
 	inlinePublicPolicy := feature.PublicPolicy(inlineSurface)
 	inlineOwnerPolicy := feature.OwnerPolicy(inlineSurface)
 
-	return feature.Spec{
+	spec := feature.Spec{
 		ID:          FeatureID,
 		Name:        "Assistant Shell",
 		Description: "Root Assistant control surface migrated to interaction protocol a2.",
@@ -123,12 +123,10 @@ func (*Feature) FeatureSpec() feature.Spec {
 			{ID: ActionPing, Kind: feature.InteractionAction, Description: "Acknowledge shell liveness", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionStatus, Kind: feature.InteractionAction, Description: "Navigate to read-only status", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionHelp, Kind: feature.InteractionAction, Description: "Navigate to read-only help overview", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: ActionHelpPrev, Kind: feature.InteractionAction, Description: "Select previous Assistant help module", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: ActionHelpNext, Kind: feature.InteractionAction, Description: "Select next Assistant help module", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: ActionHelpOpen, Kind: feature.InteractionAction, Description: "Open selected Assistant help module", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: ActionHelpCmdPrev, Kind: feature.InteractionAction, Description: "Select previous command in help module", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: ActionHelpCmdNext, Kind: feature.InteractionAction, Description: "Select next command in help module", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: ActionHelpCmdOpen, Kind: feature.InteractionAction, Description: "Open selected Assistant command detail", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionHelpPrev, Kind: feature.InteractionAction, Description: "Open previous Assistant help module page", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionHelpNext, Kind: feature.InteractionAction, Description: "Open next Assistant help module page", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionHelpCmdPrev, Kind: feature.InteractionAction, Description: "Open previous command page in help module", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionHelpCmdNext, Kind: feature.InteractionAction, Description: "Open next command page in help module", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionHelpBack, Kind: feature.InteractionAction, Description: "Return from command detail to its module", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionHome, Kind: feature.InteractionAction, Description: "Return to the shell home screen", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionStatusRefresh, Kind: feature.InteractionAction, Description: "Refresh read-only status", Surfaces: assistant, Policy: ownerPolicy},
@@ -151,6 +149,25 @@ func (*Feature) FeatureSpec() feature.Spec {
 			{ID: ActionSettingInputCancel, Kind: feature.InteractionAction, Description: "Cancel bounded free-form setting input", Surfaces: assistant, Policy: ownerPolicy},
 		},
 	}
+	for _, actionID := range HelpModuleSlotActionIDs() {
+		spec.Interactions = append(spec.Interactions, feature.Interaction{
+			ID:          actionID,
+			Kind:        feature.InteractionAction,
+			Description: "Open one bounded Assistant help module slot",
+			Surfaces:    assistant,
+			Policy:      ownerPolicy,
+		})
+	}
+	for _, actionID := range HelpCommandSlotActionIDs() {
+		spec.Interactions = append(spec.Interactions, feature.Interaction{
+			ID:          actionID,
+			Kind:        feature.InteractionAction,
+			Description: "Open one bounded Assistant help command slot",
+			Surfaces:    assistant,
+			Policy:      ownerPolicy,
+		})
+	}
+	return spec
 }
 
 type HomeModel struct {

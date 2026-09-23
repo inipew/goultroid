@@ -40,7 +40,7 @@ func (*publicStartInteraction) SendMedia(context.Context, tg.InputPeerClass, str
 	return nil, nil
 }
 
-func TestAssistantShellDetailedHelpParityUsesOneRevisionFencedSession(t *testing.T) {
+func TestAssistantShellDetailedHelpParityUsesDirectTypedSlots(t *testing.T) {
 	manager, client, port, engine := newShellEngine(t)
 	defer manager.Shutdown()
 
@@ -74,34 +74,24 @@ func TestAssistantShellDetailedHelpParityUsesOneRevisionFencedSession(t *testing
 	if err := dispatchShell(t, engine, help, 600, peer); err != nil {
 		t.Fatalf("Dispatch(help) error = %v", err)
 	}
-	if !strings.Contains(port.edited.Text, "GoUltroid Help Menu") || !strings.Contains(port.edited.Text, "Media") {
+	if !strings.Contains(port.edited.Text, "GoUltroid Help Menu") || strings.Contains(port.edited.Text, "Hidden") {
 		t.Fatalf("help root = %q", port.edited.Text)
 	}
-	if strings.Contains(port.edited.Text, "Hidden") {
-		t.Fatalf("help root leaked userbot-only command: %q", port.edited.Text)
+
+	moduleSlot := callbackForAction(t, port.edited, assistantshell.HelpModuleSlotActionIDs()[0])
+	if err := dispatchShell(t, engine, moduleSlot, 601, peer); err != nil {
+		t.Fatalf("Dispatch(module slot) error = %v", err)
 	}
-	openModule := callbackForAction(t, port.edited, assistantshell.ActionHelpOpen)
-	if err := dispatchShell(t, engine, openModule, 601, peer); err != nil {
-		t.Fatalf("Dispatch(open module) error = %v", err)
-	}
-	if !strings.Contains(port.edited.Text, "/alpha") || !strings.Contains(port.edited.Text, "First media command") {
+	if !strings.Contains(port.edited.Text, "Media") {
 		t.Fatalf("module view = %q", port.edited.Text)
 	}
-	if err := dispatchShell(t, engine, openModule, 602, peer); !errors.Is(err, rootinteraction.ErrStaleToken) {
+	if err := dispatchShell(t, engine, moduleSlot, 602, peer); !errors.Is(err, rootinteraction.ErrStaleToken) {
 		t.Fatalf("old module token error = %v, want %v", err, rootinteraction.ErrStaleToken)
 	}
 
-	nextCommand := callbackForAction(t, port.edited, assistantshell.ActionHelpCmdNext)
-	if err := dispatchShell(t, engine, nextCommand, 603, peer); err != nil {
-		t.Fatalf("Dispatch(next command) error = %v", err)
-	}
-	if !strings.Contains(port.edited.Text, "/beta") {
-		t.Fatalf("next command did not select beta: %q", port.edited.Text)
-	}
-
-	openCommand := callbackForAction(t, port.edited, assistantshell.ActionHelpCmdOpen)
-	if err := dispatchShell(t, engine, openCommand, 604, peer); err != nil {
-		t.Fatalf("Dispatch(command detail) error = %v", err)
+	commandSlot := callbackForAction(t, port.edited, assistantshell.HelpCommandSlotActionIDs()[1])
+	if err := dispatchShell(t, engine, commandSlot, 603, peer); err != nil {
+		t.Fatalf("Dispatch(command slot) error = %v", err)
 	}
 	for _, want := range []string{"/beta", "beta &lt;url&gt;", "/b", "Media", "Sudo", "1s", "5s"} {
 		if !strings.Contains(port.edited.Text, want) {
@@ -110,21 +100,60 @@ func TestAssistantShellDetailedHelpParityUsesOneRevisionFencedSession(t *testing
 	}
 
 	back := callbackForAction(t, port.edited, assistantshell.ActionHelpBack)
-	if err := dispatchShell(t, engine, back, 605, peer); err != nil {
+	if err := dispatchShell(t, engine, back, 604, peer); err != nil {
 		t.Fatalf("Dispatch(back to module) error = %v", err)
 	}
-	if !strings.Contains(port.edited.Text, "/beta") {
-		t.Fatalf("module selection was not preserved: %q", port.edited.Text)
+	if !strings.Contains(port.edited.Text, "Media") {
+		t.Fatalf("module view was not restored: %q", port.edited.Text)
 	}
 
 	modules := callbackForAction(t, port.edited, assistantshell.ActionHelp)
-	if err := dispatchShell(t, engine, modules, 606, peer); err != nil {
+	if err := dispatchShell(t, engine, modules, 605, peer); err != nil {
 		t.Fatalf("Dispatch(back to modules) error = %v", err)
 	}
-	if !strings.Contains(port.edited.Text, "Media") {
-		t.Fatalf("module selection was not preserved at root: %q", port.edited.Text)
+	if !strings.Contains(port.edited.Text, "GoUltroid Help Menu") {
+		t.Fatalf("help root was not restored: %q", port.edited.Text)
 	}
 	if got := manager.InteractionRuntime().Stats().Sessions; got != 1 {
 		t.Fatalf("help navigation sessions = %d, want 1", got)
+	}
+}
+
+func TestAssistantShellHelpSlotRejectsCatalogRemap(t *testing.T) {
+	manager, client, port, engine := newShellEngine(t)
+	defer manager.Shutdown()
+
+	first := core.NewRouter(".")
+	if err := first.RegisterBatch([]core.Command{
+		{Name: "alpha", Category: "Media", Surfaces: execution.SurfaceAssistant, Handler: func(*core.Context) error { return nil }},
+		{Name: "alive", Category: "System", Surfaces: execution.SurfaceAssistant, Handler: func(*core.Context) error { return nil }},
+	}); err != nil {
+		t.Fatalf("RegisterBatch(first) error = %v", err)
+	}
+	client.SetCoreRouter(first)
+
+	peer := &tg.InputPeerUser{UserID: 7}
+	beginShell(t, engine, port, peer)
+	help := callbackForAction(t, port.sent, assistantshell.ActionHelp)
+	if err := dispatchShell(t, engine, help, 700, peer); err != nil {
+		t.Fatalf("Dispatch(help) error = %v", err)
+	}
+	oldSlot := callbackForAction(t, port.edited, assistantshell.HelpModuleSlotActionIDs()[0])
+
+	second := core.NewRouter(".")
+	if err := second.RegisterBatch([]core.Command{
+		{Name: "aardvark", Category: "Aardvark", Surfaces: execution.SurfaceAssistant, Handler: func(*core.Context) error { return nil }},
+		{Name: "alpha", Category: "Media", Surfaces: execution.SurfaceAssistant, Handler: func(*core.Context) error { return nil }},
+		{Name: "alive", Category: "System", Surfaces: execution.SurfaceAssistant, Handler: func(*core.Context) error { return nil }},
+	}); err != nil {
+		t.Fatalf("RegisterBatch(second) error = %v", err)
+	}
+	client.SetCoreRouter(second)
+
+	if err := dispatchShell(t, engine, oldSlot, 701, peer); !errors.Is(err, ErrShellHelpSelectionStale) {
+		t.Fatalf("catalog-remapped slot error = %v, want %v", err, ErrShellHelpSelectionStale)
+	}
+	if !strings.Contains(port.edited.Text, "GoUltroid Help Menu") {
+		t.Fatalf("stale slot unexpectedly transitioned view: %q", port.edited.Text)
 	}
 }

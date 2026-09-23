@@ -28,6 +28,7 @@ var (
 	ErrShellUnavailable         = errors.New("assistant/client: assistant shell unavailable")
 	ErrShellAdmission           = errors.New("assistant/client: assistant shell admission denied")
 	ErrShellSettingBindingStale = errors.New("assistant/client: setting binding is stale")
+	ErrShellHelpSelectionStale  = errors.New("assistant/client: help selection is stale")
 )
 
 func (c *AssistantClient) dispatchStart(ctx *command.Context) error {
@@ -255,7 +256,8 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 
 	c.shellMu.Lock()
 	defer c.shellMu.Unlock()
-	if c.shellScope == scope && len(c.shellRegistrations) == 30 {
+	expectedRegistrations := 28 + assistantshell.HelpModuleSlotCount + assistantshell.HelpCommandSlotCount
+	if c.shellScope == scope && len(c.shellRegistrations) == expectedRegistrations {
 		return nil
 	}
 	for _, registration := range c.shellRegistrations {
@@ -266,7 +268,7 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 	c.shellRegistrations = nil
 	c.shellScope = tasks.ScopeIdentity{}
 
-	registrations := make([]*rootinteraction.HandlerRegistration, 0, 30)
+	registrations := make([]*rootinteraction.HandlerRegistration, 0, expectedRegistrations)
 	register := func(actionID string, handler orchestration.Handler) error {
 		guarded := func(ctx *orchestration.Context) error {
 			if err := c.admitShellAction(catalog, actionID, ctx); err != nil {
@@ -291,10 +293,8 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 		{id: assistantshell.ActionHelp, handler: c.handleShellHelp},
 		{id: assistantshell.ActionHelpPrev, handler: c.handleShellHelpPrev},
 		{id: assistantshell.ActionHelpNext, handler: c.handleShellHelpNext},
-		{id: assistantshell.ActionHelpOpen, handler: c.handleShellHelpOpen},
 		{id: assistantshell.ActionHelpCmdPrev, handler: c.handleShellHelpCmdPrev},
 		{id: assistantshell.ActionHelpCmdNext, handler: c.handleShellHelpCmdNext},
-		{id: assistantshell.ActionHelpCmdOpen, handler: c.handleShellHelpCmdOpen},
 		{id: assistantshell.ActionHelpBack, handler: c.handleShellHelpBack},
 		{id: assistantshell.ActionHome, handler: c.handleShellHome},
 		{id: assistantshell.ActionStatusRefresh, handler: c.handleShellStatusRefresh},
@@ -317,6 +317,24 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 		{id: assistantshell.ActionSettingInputCancel, handler: c.handleShellSettingInputCancel},
 	} {
 		if err := register(action.id, action.handler); err != nil {
+			closeShellRegistrations(registrations)
+			return err
+		}
+	}
+	for slot, actionID := range assistantshell.HelpModuleSlotActionIDs() {
+		slot := slot
+		if err := register(actionID, func(ctx *orchestration.Context) error {
+			return c.handleShellHelpModuleSlot(ctx, slot)
+		}); err != nil {
+			closeShellRegistrations(registrations)
+			return err
+		}
+	}
+	for slot, actionID := range assistantshell.HelpCommandSlotActionIDs() {
+		slot := slot
+		if err := register(actionID, func(ctx *orchestration.Context) error {
+			return c.handleShellHelpCommandSlot(ctx, slot)
+		}); err != nil {
 			closeShellRegistrations(registrations)
 			return err
 		}
@@ -397,12 +415,13 @@ func (c *AssistantClient) handleShellHelp(ctx *orchestration.Context) error {
 	if err := c.admitShellScreen(ctx, assistantshell.InteractionHelp); err != nil {
 		return err
 	}
+	commands := c.shellCommands()
 	current := assistantshell.DecodeState(ctx.State())
-	state := assistantshell.HelpState(ctx.State(), current.Screen != assistantshell.ScreenHelp)
+	state := assistantshell.HelpState(ctx.State(), commands, current.Screen != assistantshell.ScreenHelp)
 	decoded := assistantshell.DecodeState(state)
 	return ctx.Transition(state, 0, assistantshell.HelpView(assistantshell.HelpModel{
-		Commands: c.shellCommands(),
-		Selected: int(decoded.CategoryIndex),
+		Commands: commands,
+		Page:     int(decoded.CategoryIndex),
 		Locale:   c.shellInteractionLocale(ctx),
 	}))
 }

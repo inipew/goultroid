@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"sort"
 	"strconv"
@@ -17,13 +18,27 @@ const (
 
 	ActionHelpPrev    = "help_prev"
 	ActionHelpNext    = "help_next"
-	ActionHelpOpen    = "help_open"
 	ActionHelpCmdPrev = "help_cmd_prev"
 	ActionHelpCmdNext = "help_cmd_next"
-	ActionHelpCmdOpen = "help_cmd_open"
 	ActionHelpBack    = "help_back"
 	ActionClose       = "close"
+
+	HelpModuleSlotCount  = 8
+	HelpCommandSlotCount = 8
 )
+
+var helpModuleSlotActions = [HelpModuleSlotCount]string{
+	"help_module_slot_0", "help_module_slot_1", "help_module_slot_2", "help_module_slot_3",
+	"help_module_slot_4", "help_module_slot_5", "help_module_slot_6", "help_module_slot_7",
+}
+
+var helpCommandSlotActions = [HelpCommandSlotCount]string{
+	"help_command_slot_0", "help_command_slot_1", "help_command_slot_2", "help_command_slot_3",
+	"help_command_slot_4", "help_command_slot_5", "help_command_slot_6", "help_command_slot_7",
+}
+
+func HelpModuleSlotActionIDs() []string  { return append([]string(nil), helpModuleSlotActions[:]...) }
+func HelpCommandSlotActionIDs() []string { return append([]string(nil), helpCommandSlotActions[:]...) }
 
 type HelpModule struct {
 	Name     string
@@ -62,96 +77,250 @@ func HelpModules(commands []core.Command) []HelpModule {
 	return modules
 }
 
-func HelpState(raw []byte, reset bool) []byte {
+func HelpState(raw []byte, commands []core.Command, reset bool) []byte {
+	modules := HelpModules(commands)
 	state := DecodeState(raw)
-	wasHelp := state.Screen == ScreenHelp
-	state.Screen = ScreenHelp
-	clearSettingBinding(&state)
-	if reset || !wasHelp {
-		state.CategoryIndex = 0
-		state.SettingIndex = 0
+	page := 0
+	if !reset && state.Screen == ScreenHelp {
+		if current, ok := helpRootPageFromState(state, modules); ok {
+			page = current
+		}
 	}
-	return EncodeState(state)
-}
-
-func StepHelpModuleState(raw []byte, total, delta int) []byte {
-	state := DecodeState(raw)
+	_, _, page, _ = helpPageWindow(len(modules), page, HelpModuleSlotCount)
 	state.Screen = ScreenHelp
-	state.CategoryIndex = uint16(stepIndex(int(state.CategoryIndex), total, delta))
+	state.CategoryIndex = uint16(page)
 	state.SettingIndex = 0
-	clearSettingBinding(&state)
+	setHelpBinding(&state, helpModulePageBinding(modules, page))
 	return EncodeState(state)
 }
 
-func OpenHelpModuleState(raw []byte, total int) []byte {
+func StepHelpModuleState(raw []byte, commands []core.Command, delta int) ([]byte, bool) {
+	modules := HelpModules(commands)
 	state := DecodeState(raw)
-	state.Screen = ScreenHelp
-	state.CategoryIndex = uint16(clampIndex(int(state.CategoryIndex), total))
+	page := int(state.CategoryIndex)
+	if state.Screen != ScreenHelp || !helpBindingMatches(state, helpModulePageBinding(modules, page)) {
+		return nil, false
+	}
+	pages := helpPageCount(len(modules), HelpModuleSlotCount)
+	page = stepIndex(page, pages, delta)
+	state.CategoryIndex = uint16(page)
 	state.SettingIndex = 0
-	clearSettingBinding(&state)
-	return EncodeState(state)
+	setHelpBinding(&state, helpModulePageBinding(modules, page))
+	return EncodeState(state), true
 }
 
-func StepHelpCommandState(raw []byte, total, delta int) []byte {
+func OpenHelpModuleSlotState(raw []byte, commands []core.Command, slot int) ([]byte, HelpModule, int, bool) {
+	modules := HelpModules(commands)
 	state := DecodeState(raw)
-	state.Screen = ScreenHelp
-	state.SettingIndex = uint16(stepIndex(int(state.SettingIndex), total, delta))
-	clearSettingBinding(&state)
-	return EncodeState(state)
+	page := int(state.CategoryIndex)
+	if slot < 0 || slot >= HelpModuleSlotCount || state.Screen != ScreenHelp || !helpBindingMatches(state, helpModulePageBinding(modules, page)) {
+		return nil, HelpModule{}, 0, false
+	}
+	start, end, page, _ := helpPageWindow(len(modules), page, HelpModuleSlotCount)
+	index := start + slot
+	if index < start || index >= end {
+		return nil, HelpModule{}, 0, false
+	}
+	module := modules[index]
+	state.CategoryIndex = uint16(index)
+	state.SettingIndex = 0
+	setHelpBinding(&state, helpCommandPageBinding(module, 0))
+	return EncodeState(state), module, index, true
 }
 
-func OpenHelpCommandState(raw []byte, total int) []byte {
+func StepHelpCommandState(raw []byte, commands []core.Command, delta int) ([]byte, HelpModule, int, bool) {
+	modules := HelpModules(commands)
 	state := DecodeState(raw)
-	state.Screen = ScreenHelp
-	state.SettingIndex = uint16(clampIndex(int(state.SettingIndex), total))
-	clearSettingBinding(&state)
-	return EncodeState(state)
+	moduleIndex := int(state.CategoryIndex)
+	if state.Screen != ScreenHelp || moduleIndex < 0 || moduleIndex >= len(modules) {
+		return nil, HelpModule{}, 0, false
+	}
+	module := modules[moduleIndex]
+	page := int(state.SettingIndex)
+	if !helpBindingMatches(state, helpCommandPageBinding(module, page)) {
+		return nil, HelpModule{}, 0, false
+	}
+	pages := helpPageCount(len(module.Commands), HelpCommandSlotCount)
+	page = stepIndex(page, pages, delta)
+	state.SettingIndex = uint16(page)
+	setHelpBinding(&state, helpCommandPageBinding(module, page))
+	return EncodeState(state), module, moduleIndex, true
 }
 
-func BackHelpModuleState(raw []byte, moduleTotal, commandTotal int) []byte {
+func OpenHelpCommandSlotState(raw []byte, commands []core.Command, slot int) ([]byte, core.Command, int, int, bool) {
+	modules := HelpModules(commands)
 	state := DecodeState(raw)
-	state.Screen = ScreenHelp
-	state.CategoryIndex = uint16(clampIndex(int(state.CategoryIndex), moduleTotal))
-	state.SettingIndex = uint16(clampIndex(int(state.SettingIndex), commandTotal))
-	clearSettingBinding(&state)
-	return EncodeState(state)
+	moduleIndex := int(state.CategoryIndex)
+	if slot < 0 || slot >= HelpCommandSlotCount || state.Screen != ScreenHelp || moduleIndex < 0 || moduleIndex >= len(modules) {
+		return nil, core.Command{}, 0, 0, false
+	}
+	module := modules[moduleIndex]
+	page := int(state.SettingIndex)
+	if !helpBindingMatches(state, helpCommandPageBinding(module, page)) {
+		return nil, core.Command{}, 0, 0, false
+	}
+	start, end, _, _ := helpPageWindow(len(module.Commands), page, HelpCommandSlotCount)
+	commandIndex := start + slot
+	if commandIndex < start || commandIndex >= end {
+		return nil, core.Command{}, 0, 0, false
+	}
+	command := module.Commands[commandIndex]
+	state.SettingIndex = uint16(commandIndex)
+	setHelpBinding(&state, helpCommandDetailBinding(module, command))
+	return EncodeState(state), command, moduleIndex, commandIndex, true
+}
+
+func BackHelpModuleState(raw []byte, commands []core.Command) ([]byte, HelpModule, int, bool) {
+	modules := HelpModules(commands)
+	state := DecodeState(raw)
+	moduleIndex := int(state.CategoryIndex)
+	commandIndex := int(state.SettingIndex)
+	if state.Screen != ScreenHelp || moduleIndex < 0 || moduleIndex >= len(modules) {
+		return nil, HelpModule{}, 0, false
+	}
+	module := modules[moduleIndex]
+	if commandIndex < 0 || commandIndex >= len(module.Commands) || !helpBindingMatches(state, helpCommandDetailBinding(module, module.Commands[commandIndex])) {
+		return nil, HelpModule{}, 0, false
+	}
+	page := commandIndex / HelpCommandSlotCount
+	state.SettingIndex = uint16(page)
+	setHelpBinding(&state, helpCommandPageBinding(module, page))
+	return EncodeState(state), module, moduleIndex, true
+}
+
+func helpRootPageFromState(state State, modules []HelpModule) (int, bool) {
+	page := int(state.CategoryIndex)
+	if helpBindingMatches(state, helpModulePageBinding(modules, page)) {
+		_, _, page, _ = helpPageWindow(len(modules), page, HelpModuleSlotCount)
+		return page, true
+	}
+	moduleIndex := int(state.CategoryIndex)
+	if moduleIndex < 0 || moduleIndex >= len(modules) {
+		return 0, false
+	}
+	module := modules[moduleIndex]
+	commandPage := int(state.SettingIndex)
+	if helpBindingMatches(state, helpCommandPageBinding(module, commandPage)) {
+		return moduleIndex / HelpModuleSlotCount, true
+	}
+	commandIndex := int(state.SettingIndex)
+	if commandIndex >= 0 && commandIndex < len(module.Commands) && helpBindingMatches(state, helpCommandDetailBinding(module, module.Commands[commandIndex])) {
+		return moduleIndex / HelpModuleSlotCount, true
+	}
+	return 0, false
+}
+
+func helpPageCount(total, pageSize int) int {
+	if pageSize <= 0 || total <= 0 {
+		return 1
+	}
+	return (total + pageSize - 1) / pageSize
+}
+
+func helpPageWindow(total, page, pageSize int) (start, end, current, pages int) {
+	pages = helpPageCount(total, pageSize)
+	current = clampIndex(page, pages)
+	start = current * pageSize
+	if start > total {
+		start = total
+	}
+	end = start + pageSize
+	if end > total {
+		end = total
+	}
+	return
+}
+
+func helpBinding(kind string, page int, identities []string) [bindingBytes]byte {
+	var source strings.Builder
+	source.WriteString("help\x00")
+	source.WriteString(kind)
+	source.WriteByte(0)
+	source.WriteString(strconv.Itoa(page))
+	for _, identity := range identities {
+		source.WriteByte(0)
+		source.WriteString(strings.ToLower(strings.TrimSpace(identity)))
+	}
+	sum := sha256.Sum256([]byte(source.String()))
+	var binding [bindingBytes]byte
+	copy(binding[:], sum[:bindingBytes])
+	return binding
+}
+
+func setHelpBinding(state *State, binding [bindingBytes]byte) {
+	clearSettingBinding(state)
+	state.SettingBinding = binding
+}
+
+func helpBindingMatches(state State, binding [bindingBytes]byte) bool {
+	return state.SchemaVersion == 0 && state.SettingBinding != ([bindingBytes]byte{}) && state.SettingBinding == binding
+}
+
+func helpModulePageBinding(modules []HelpModule, page int) [bindingBytes]byte {
+	start, end, page, _ := helpPageWindow(len(modules), page, HelpModuleSlotCount)
+	identities := make([]string, 0, end-start)
+	for _, module := range modules[start:end] {
+		identities = append(identities, module.Name)
+	}
+	return helpBinding("modules", page, identities)
+}
+
+func helpCommandPageBinding(module HelpModule, page int) [bindingBytes]byte {
+	start, end, page, _ := helpPageWindow(len(module.Commands), page, HelpCommandSlotCount)
+	identities := make([]string, 0, 1+end-start)
+	identities = append(identities, module.Name)
+	for _, command := range module.Commands[start:end] {
+		identities = append(identities, command.Name)
+	}
+	return helpBinding("commands", page, identities)
+}
+
+func helpCommandDetailBinding(module HelpModule, command core.Command) [bindingBytes]byte {
+	return helpBinding("detail", 0, []string{module.Name, command.Name})
 }
 
 type HelpModel struct {
 	Commands []core.Command
-	Selected int
+	Page     int
 	Locale   string
 }
 
 func HelpView(model HelpModel) presentation.View {
 	locale := shellLocale(model.Locale)
 	modules := HelpModules(model.Commands)
+	start, end, page, pages := helpPageWindow(len(modules), model.Page, HelpModuleSlotCount)
 	card := ui.NewCard(tr(locale, "assistant.help.title")).
 		WithIcon("📚").
 		WithHeader(tr(locale, "assistant.help.header")).
 		AddField(tr(locale, "assistant.help.commands"), strconv.Itoa(len(model.Commands))).
 		AddField(tr(locale, "assistant.help.modules"), strconv.Itoa(len(modules)))
 
-	rows := make([]presentation.Row, 0, 3)
+	rows := make([]presentation.Row, 0, 5)
 	if len(modules) == 0 {
 		card.WithRaw(tr(locale, "assistant.help.empty"))
 	} else {
-		selected := clampIndex(model.Selected, len(modules))
-		module := modules[selected]
-		card.AddField(tr(locale, "assistant.help.selected"), fmt.Sprintf("%s · %d", ui.EscapeHTML(module.Name), len(module.Commands))).
-			AddField(tr(locale, "assistant.help.position"), fmt.Sprintf("%d / %d", selected+1, len(modules))).
-			WithFooter(tr(locale, "assistant.help.footer"))
-		if len(modules) > 1 {
-			rows = append(rows, presentation.Row{
-				{Text: tr(locale, "assistant.button.previous"), ActionID: ActionHelpPrev},
-				{Text: tr(locale, "assistant.button.open"), ActionID: ActionHelpOpen},
-				{Text: tr(locale, "assistant.button.next"), ActionID: ActionHelpNext},
-			})
-		} else {
-			rows = append(rows, presentation.Row{{Text: tr(locale, "assistant.button.open"), ActionID: ActionHelpOpen}})
+		card.AddField(tr(locale, "assistant.help.position"), fmt.Sprintf("%d / %d", page+1, pages))
+		for index := start; index < end; index += 2 {
+			row := make(presentation.Row, 0, 2)
+			for cursor := index; cursor < end && cursor < index+2; cursor++ {
+				slot := cursor - start
+				row = append(row, presentation.Button{
+					Text:     truncateHelp(modules[cursor].Name, 32),
+					ActionID: helpModuleSlotActions[slot],
+				})
+			}
+			rows = append(rows, row)
 		}
 	}
-	rows = append(rows, presentation.Row{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}})
+	if pages > 1 {
+		rows = append(rows, presentation.Row{
+			{Text: tr(locale, "assistant.button.previous"), ActionID: ActionHelpPrev},
+			{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome},
+			{Text: tr(locale, "assistant.button.next"), ActionID: ActionHelpNext},
+		})
+	} else {
+		rows = append(rows, presentation.Row{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}})
+	}
 	return presentation.View{Text: card.Render(), Rows: rows}
 }
 
@@ -159,7 +328,7 @@ type HelpModuleModel struct {
 	Module      HelpModule
 	ModuleIndex int
 	ModuleTotal int
-	Selected    int
+	Page        int
 	Locale      string
 }
 
@@ -170,6 +339,7 @@ func HelpModuleView(model HelpModuleModel) presentation.View {
 	if name == "" {
 		name = "General"
 	}
+	start, end, page, pages := helpPageWindow(len(commands), model.Page, HelpCommandSlotCount)
 	card := ui.NewCard(name).
 		WithIcon("📂").
 		WithHeader(tr(locale, "assistant.help.module_header")).
@@ -178,33 +348,32 @@ func HelpModuleView(model HelpModuleModel) presentation.View {
 		card.AddField(tr(locale, "assistant.help.module"), fmt.Sprintf("%d / %d", clampIndex(model.ModuleIndex, model.ModuleTotal)+1, model.ModuleTotal))
 	}
 
-	rows := make([]presentation.Row, 0, 3)
+	rows := make([]presentation.Row, 0, 5)
 	if len(commands) == 0 {
 		card.WithRaw(tr(locale, "assistant.help.module_empty"))
 	} else {
-		selected := clampIndex(model.Selected, len(commands))
-		command := commands[selected]
-		label := "/" + command.Name
-		if description := strings.TrimSpace(command.Description); description != "" {
-			label += " — " + truncateHelp(description, 72)
-		}
-		card.AddField(tr(locale, "assistant.help.selected"), ui.EscapeHTML(label)).
-			AddField(tr(locale, "assistant.help.position"), fmt.Sprintf("%d / %d", selected+1, len(commands))).
-			WithFooter(tr(locale, "assistant.help.module_footer"))
-		if len(commands) > 1 {
-			rows = append(rows, presentation.Row{
-				{Text: tr(locale, "assistant.button.previous"), ActionID: ActionHelpCmdPrev},
-				{Text: tr(locale, "assistant.button.details"), ActionID: ActionHelpCmdOpen},
-				{Text: tr(locale, "assistant.button.next"), ActionID: ActionHelpCmdNext},
-			})
-		} else {
-			rows = append(rows, presentation.Row{{Text: tr(locale, "assistant.button.details"), ActionID: ActionHelpCmdOpen}})
+		card.AddField(tr(locale, "assistant.help.position"), fmt.Sprintf("%d / %d", page+1, pages))
+		for index := start; index < end; index += 2 {
+			row := make(presentation.Row, 0, 2)
+			for cursor := index; cursor < end && cursor < index+2; cursor++ {
+				slot := cursor - start
+				row = append(row, presentation.Button{
+					Text:     "/" + truncateHelp(commands[cursor].Name, 30),
+					ActionID: helpCommandSlotActions[slot],
+				})
+			}
+			rows = append(rows, row)
 		}
 	}
-	rows = append(rows,
-		presentation.Row{{Text: tr(locale, "assistant.button.modules"), ActionID: ActionHelp}},
-		presentation.Row{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}},
-	)
+	if pages > 1 {
+		rows = append(rows, presentation.Row{
+			{Text: tr(locale, "assistant.button.previous"), ActionID: ActionHelpCmdPrev},
+			{Text: tr(locale, "assistant.button.modules"), ActionID: ActionHelp},
+			{Text: tr(locale, "assistant.button.next"), ActionID: ActionHelpCmdNext},
+		})
+	} else {
+		rows = append(rows, presentation.Row{{Text: tr(locale, "assistant.button.modules"), ActionID: ActionHelp}})
+	}
 	return presentation.View{Text: card.Render(), Rows: rows}
 }
 
