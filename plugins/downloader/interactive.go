@@ -491,40 +491,40 @@ func providerDescription(provider string) string {
 
 func extractorChoiceView(rawURL string) presentation.View {
 	return presentation.View{
-		Text: "📥 <b>Interactive downloader</b>\n<code>" + core.EscapeHTML(rawURL) + "</code>\n\nChoose media type:",
+		Text: "<b>GoUltroid Media Downloader</b>\n\n<code>" + core.EscapeHTML(rawURL) + "</code>",
 		Rows: []presentation.Row{
-			{{Text: "🎵 Audio", ActionID: actionAudio}, {Text: "🎬 Video", ActionID: actionVideo}},
-			{{Text: "✖ Cancel", ActionID: actionCancel}},
+			{{Text: "Audio", ActionID: actionAudio}, {Text: "Video", ActionID: actionVideo}},
+			{{Text: "✖ Cᴀɴᴄᴇʟ", ActionID: actionCancel}},
 		},
 	}
 }
 
 func directDownloadView(rawURL string) presentation.View {
 	return presentation.View{
-		Text: "📥 <b>Interactive downloader</b>\n<code>" + core.EscapeHTML(rawURL) + "</code>\n\nDirect HTTP source detected.",
+		Text: "<b>GoUltroid Media Downloader</b>\n\n<code>" + core.EscapeHTML(rawURL) + "</code>",
 		Rows: []presentation.Row{
-			{{Text: "⬇ Download file", ActionID: actionDownloadFile}},
-			{{Text: "✖ Cancel", ActionID: actionCancel}},
+			{{Text: "Dᴏᴡɴʟᴏᴀᴅ Fɪʟᴇ", ActionID: actionDownloadFile}},
+			{{Text: "✖ Cᴀɴᴄᴇʟ", ActionID: actionCancel}},
 		},
 	}
 }
 
 func audioFormatView(rawURL string) presentation.View {
 	return presentation.View{
-		Text: "🎵 <b>Audio download</b>\n<code>" + core.EscapeHTML(rawURL) + "</code>\n\nChoose format:",
+		Text: "<code>Select Your Format.</code>",
 		Rows: []presentation.Row{
 			{{Text: "M4A", ActionID: actionFormatM4A}, {Text: "MP3", ActionID: actionFormatMP3}},
-			{{Text: "✖ Cancel", ActionID: actionCancel}},
+			{{Text: "✖ Cᴀɴᴄᴇʟ", ActionID: actionCancel}},
 		},
 	}
 }
 
 func videoFormatView(rawURL string) presentation.View {
 	return presentation.View{
-		Text: "🎬 <b>Video download</b>\n<code>" + core.EscapeHTML(rawURL) + "</code>\n\nChoose format:",
+		Text: "<code>Select Your Format.</code>",
 		Rows: []presentation.Row{
 			{{Text: "MP4", ActionID: actionFormatMP4}, {Text: "Best", ActionID: actionFormatBest}},
-			{{Text: "✖ Cancel", ActionID: actionCancel}},
+			{{Text: "✖ Cᴀɴᴄᴇʟ", ActionID: actionCancel}},
 		},
 	}
 }
@@ -535,10 +535,8 @@ func runningView(state interactiveState) presentation.View {
 		label = string(state.Mode) + " / " + string(state.Format)
 	}
 	return presentation.View{
-		Text: "⏳ <b>Downloader task admitted</b>\n" +
-			"TaskEngine owns the heavy operation and its resources.\n" +
-			"Format: <code>" + core.EscapeHTML(label) + "</code>\n\nDownloading…",
-		Rows: []presentation.Row{{{Text: "✖ Cancel", ActionID: actionCancel}}},
+		Text: "⬇️ <b>Downloading...</b>\n\n<b>Format:</b> <code>" + core.EscapeHTML(label) + "</code>",
+		Rows: []presentation.Row{{{Text: "✖ Cᴀɴᴄᴇʟ", ActionID: actionCancel}}},
 	}
 }
 
@@ -551,16 +549,15 @@ func completedView(asset *storage.Asset, mode download.MediaMode, format downloa
 		selection = string(mode) + " / " + string(format)
 	}
 	return presentation.View{Text: fmt.Sprintf(
-		"✅ <b>Download complete</b>\n\n📁 <b>File:</b> <code>%s</code>\n📦 <b>Size:</b> <code>%s</code>\n🎛 <b>Selection:</b> <code>%s</code>\n📍 <b>Retained asset:</b> <code>%s</code>",
+		"✅ <b>Download complete</b>\n\n<b>Title:</b> <code>%s</code>\n<b>Size:</b> <code>%s</code>\n<b>Format:</b> <code>%s</code>",
 		core.EscapeHTML(asset.Name),
 		formatBytes(asset.Size),
 		core.EscapeHTML(selection),
-		core.EscapeHTML(asset.Path),
 	)}
 }
 
 func failedView(err error) presentation.View {
-	return presentation.View{Text: "❌ <b>Download failed</b>\n" + core.EscapeHTML(err.Error())}
+	return presentation.View{Text: "❌ <b>Error downloading media.</b>\nTry again."}
 }
 
 func cancelledView() presentation.View {
