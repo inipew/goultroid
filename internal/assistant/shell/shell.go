@@ -163,23 +163,18 @@ type HomeModel struct {
 func HomeView(model HomeModel) presentation.View {
 	locale := shellLocale(model.Locale)
 	username := normalizedUsername(model.Username)
-	card := ui.NewCard("GoUltroid Assistant").
-		WithIcon("🤖").
-		WithHeader(tr(locale, "assistant.home.header")).
-		AddField(tr(locale, "assistant.field.bot"), "@"+username).
-		AddField(tr(locale, "assistant.field.status"), tr(locale, "assistant.home.status_ready")).
-		AddField(tr(locale, "assistant.field.uptime"), appstatus.FormatDuration(model.Uptime))
-	if model.Refreshes > 0 {
-		card.AddField(tr(locale, "assistant.field.refreshes"), strconv.FormatUint(model.Refreshes, 10))
+	greeting := fmt.Sprintf("Hey @%s. Please browse through the options", username)
+	if locale == "id" {
+		greeting = fmt.Sprintf("Haloo @%s. Silakan telusuri opsi", username)
 	}
-	card.WithFooter(tr(locale, "assistant.home.footer"))
+	text := "<b>GoUltroid Assistant</b>\n\n" + greeting
 
 	return presentation.View{
-		Text: card.Render(),
+		Text: text,
 		Rows: []presentation.Row{
-			{{Text: tr(locale, "assistant.button.settings"), ActionID: ActionSettings}, {Text: tr(locale, "assistant.button.help"), ActionID: ActionHelp}},
-			{{Text: tr(locale, "assistant.button.status"), ActionID: ActionStatus}, {Text: tr(locale, "assistant.button.refresh"), ActionID: ActionRefresh}},
-			{{Text: tr(locale, "assistant.button.language"), ActionID: ActionLanguage}, {Text: tr(locale, "assistant.button.ping"), ActionID: ActionPing}},
+			{{Text: tr(locale, "assistant.button.language"), ActionID: ActionLanguage}, {Text: tr(locale, "assistant.button.settings"), ActionID: ActionSettings}},
+			{{Text: tr(locale, "assistant.button.status"), ActionID: ActionStatus}, {Text: tr(locale, "assistant.button.help"), ActionID: ActionHelp}},
+			{{Text: tr(locale, "assistant.button.ping"), ActionID: ActionPing}, {Text: tr(locale, "assistant.button.refresh"), ActionID: ActionRefresh}},
 		},
 	}
 }
@@ -199,23 +194,29 @@ func StatusView(model StatusModel) presentation.View {
 	if engine == "" {
 		engine = "GoUltroid (MTProto)"
 	}
-	card := ui.NewCard(tr(locale, "assistant.status.title")).
-		WithIcon("📊").
-		WithHeader(tr(locale, "assistant.status.header")).
-		AddField(tr(locale, "assistant.field.assistant"), "@"+username).
-		AddField(tr(locale, "assistant.field.status"), tr(locale, "assistant.status.operational")).
-		AddField(tr(locale, "assistant.field.uptime"), appstatus.FormatDuration(model.Uptime)).
-		AddField(tr(locale, "assistant.field.engine"), ui.EscapeHTML(engine)).
-		AddField(tr(locale, "assistant.field.callbacks"), tr(locale, "assistant.status.active"))
+	text := fmt.Sprintf(
+		"<b>%s</b>\n\n<b>%s</b> - @%s\n<b>%s</b> - %s\n<b>%s</b> - %s\n<b>%s</b> - %s\n<b>%s</b> - %s",
+		tr(locale, "assistant.status.title"),
+		tr(locale, "assistant.field.assistant"),
+		username,
+		tr(locale, "assistant.field.status"),
+		tr(locale, "assistant.status.operational"),
+		tr(locale, "assistant.field.uptime"),
+		appstatus.FormatDuration(model.Uptime),
+		tr(locale, "assistant.field.engine"),
+		ui.EscapeHTML(engine),
+		tr(locale, "assistant.field.callbacks"),
+		tr(locale, "assistant.status.active"),
+	)
 	if model.Refreshes > 0 {
-		card.AddField(tr(locale, "assistant.field.refreshes"), strconv.FormatUint(model.Refreshes, 10))
+		text += fmt.Sprintf("\n<b>%s</b> - %s", tr(locale, "assistant.field.refreshes"), strconv.FormatUint(model.Refreshes, 10))
 	}
-	card.WithFooter(tr(locale, "assistant.status.footer"))
 
 	return presentation.View{
-		Text: card.Render(),
+		Text: text,
 		Rows: []presentation.Row{
-			{{Text: tr(locale, "assistant.button.refresh"), ActionID: ActionStatusRefresh}, {Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}},
+			{{Text: tr(locale, "assistant.button.refresh"), ActionID: ActionStatusRefresh}},
+			{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}},
 		},
 	}
 }
