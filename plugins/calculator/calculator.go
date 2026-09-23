@@ -22,7 +22,7 @@ const (
 )
 
 var calculatorActions = []string{
-	"key_0", "key_1", "key_2", "key_3", "key_4", "key_5", "key_6", "key_7", "key_8", "key_9",
+	"key_0", "key_00", "key_1", "key_2", "key_3", "key_4", "key_5", "key_6", "key_7", "key_8", "key_9",
 	"dot", "op_add", "op_sub", "op_mul", "op_div", "op_mod", "op_pow", "paren_l", "paren_r",
 	"clear", "back", "equals",
 }
@@ -254,10 +254,10 @@ func calculatorView(expression string) presentation.View {
 	if display == "" {
 		display = "0"
 	}
-	text := "🧮 <b>Calculator</b>\n<code>" + core.EscapeHTML(display) + "</code>"
+	text := "• <b>GoUltroid Inline Calculator</b> •\n\n<code>" + core.EscapeHTML(display) + "</code>"
 	if expression != "" {
 		if value, err := evaluateExpression(expression); err == nil {
-			text += "\n= <b>" + core.EscapeHTML(formatResult(value)) + "</b>"
+			text += "\n\n<b>Answer :</b> " + core.EscapeHTML(formatResult(value))
 		}
 	}
 	return presentation.View{Text: text, Rows: calculatorRows()}
@@ -265,11 +265,12 @@ func calculatorView(expression string) presentation.View {
 
 func calculatorRows() []presentation.Row {
 	return []presentation.Row{
-		{{Text: "7", ActionID: "key_7"}, {Text: "8", ActionID: "key_8"}, {Text: "9", ActionID: "key_9"}, {Text: "÷", ActionID: "op_div"}, {Text: "C", ActionID: "clear"}},
-		{{Text: "4", ActionID: "key_4"}, {Text: "5", ActionID: "key_5"}, {Text: "6", ActionID: "key_6"}, {Text: "×", ActionID: "op_mul"}, {Text: "⌫", ActionID: "back"}},
-		{{Text: "1", ActionID: "key_1"}, {Text: "2", ActionID: "key_2"}, {Text: "3", ActionID: "key_3"}, {Text: "−", ActionID: "op_sub"}, {Text: "%", ActionID: "op_mod"}},
-		{{Text: "0", ActionID: "key_0"}, {Text: ".", ActionID: "dot"}, {Text: "(", ActionID: "paren_l"}, {Text: ")", ActionID: "paren_r"}, {Text: "+", ActionID: "op_add"}},
-		{{Text: "^", ActionID: "op_pow"}, {Text: "=", ActionID: "equals"}},
+		{{Text: "AC", ActionID: "clear"}, {Text: "C", ActionID: "clear"}, {Text: "⌫", ActionID: "back"}, {Text: "%", ActionID: "op_mod"}},
+		{{Text: "7", ActionID: "key_7"}, {Text: "8", ActionID: "key_8"}, {Text: "9", ActionID: "key_9"}, {Text: "+", ActionID: "op_add"}},
+		{{Text: "4", ActionID: "key_4"}, {Text: "5", ActionID: "key_5"}, {Text: "6", ActionID: "key_6"}, {Text: "−", ActionID: "op_sub"}},
+		{{Text: "1", ActionID: "key_1"}, {Text: "2", ActionID: "key_2"}, {Text: "3", ActionID: "key_3"}, {Text: "×", ActionID: "op_mul"}},
+		{{Text: "00", ActionID: "key_00"}, {Text: "0", ActionID: "key_0"}, {Text: ".", ActionID: "dot"}, {Text: "÷", ActionID: "op_div"}},
+		{{Text: "=", ActionID: "equals"}},
 	}
 }
 
@@ -308,6 +309,8 @@ func applyAction(expression, actionID string) (next string, notice string, err e
 
 func actionToken(actionID string) (string, bool) {
 	switch actionID {
+	case "key_00":
+		return "00", true
 	case "key_0", "key_1", "key_2", "key_3", "key_4", "key_5", "key_6", "key_7", "key_8", "key_9":
 		return strings.TrimPrefix(actionID, "key_"), true
 	case "dot":
@@ -328,9 +331,8 @@ func actionToken(actionID string) (string, bool) {
 		return "(", true
 	case "paren_r":
 		return ")", true
-	default:
-		return "", false
 	}
+	return "", false
 }
 
 var _ assistantinteraction.FeatureDriver = (*Plugin)(nil)
