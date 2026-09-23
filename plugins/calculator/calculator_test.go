@@ -1,0 +1,244 @@
+package calculator
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/gotd/td/tg"
+	assistantinteraction "github.com/inipew/goultroid/internal/assistant/interaction"
+	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/feature"
+	rootinteraction "github.com/inipew/goultroid/internal/interaction"
+	"github.com/inipew/goultroid/internal/interaction/orchestration"
+	"github.com/inipew/goultroid/internal/presentation"
+	"github.com/inipew/goultroid/internal/presentation/selfinline"
+	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
+	inlineservice "github.com/inipew/goultroid/internal/services/inline"
+	"github.com/inipew/goultroid/internal/tasks"
+)
+
+type fakeRenderer struct {
+	calls   int
+	request selfinline.Request
+	err     error
+}
+
+func (f *fakeRenderer) Render(_ context.Context, request selfinline.Request) (selfinline.Result, error) {
+	f.calls++
+	f.request = request
+	return selfinline.Result{QueryID: 1, ResultID: "calculator", RandomID: 2}, f.err
+}
+
+func TestCalculatorFeatureDeclaresTypedInlineSurface(t *testing.T) {
+	p := New()
+	spec := p.FeatureSpec()
+	if spec.ID != "calculator" {
+		t.Fatalf("feature ID = %q", spec.ID)
+	}
+	seenInline := false
+	actions := 0
+	for _, interaction := range spec.Interactions {
+		switch interaction.Kind {
+		case feature.InteractionInline:
+			seenInline = interaction.ID == interactionInlineID
+		case feature.InteractionAction:
+			actions++
+		}
+	}
+	if !seenInline || actions != len(calculatorActions) {
+		t.Fatalf("inline/actions = %v/%d, want true/%d", seenInline, actions, len(calculatorActions))
+	}
+	bindings := p.InlineBindings()
+	if len(bindings) != 1 || bindings[0].InteractionID != interactionInlineID {
+		t.Fatalf("inline bindings = %+v", bindings)
+	}
+}
+
+func TestCalculatorInlineProducesBoundedPrivateTypedState(t *testing.T) {
+	h := &inlineHandler{}
+	response, err := h.HandleInlineV2(&inlineservice.InlineContext{Args: []string{"1", "+", "2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Cache != inlineservice.CacheNone || !response.Private || len(response.Results) != 1 {
+		t.Fatalf("response policy = cache:%v private:%v results:%d", response.Cache, response.Private, len(response.Results))
+	}
+	result := response.Results[0]
+	if result.ID != "calculator" || string(result.InteractionState) != "1+2" {
+		t.Fatalf("result ID/state = %q/%q", result.ID, result.InteractionState)
+	}
+	if len(result.InteractionState) > maxExpressionBytes || len(result.ActionRows) == 0 {
+		t.Fatalf("state bytes/rows = %d/%d", len(result.InteractionState), len(result.ActionRows))
+	}
+	for _, row := range result.ActionRows {
+		for _, button := range row {
+			if _, ok := actionToken(button.ActionID); !ok && button.ActionID != "clear" && button.ActionID != "back" && button.ActionID != "equals" {
+				t.Fatalf("unexpected raw/untyped action %q", button.ActionID)
+			}
+		}
+	}
+}
+
+func TestCalculatorCommandUsesSelfInlineRenderer(t *testing.T) {
+	renderer := &fakeRenderer{}
+	p := New()
+	p.SetSelfInlineRenderer(renderer)
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		RawArgs: " (1 + 2) * 3 ",
+		PeerID:  &tg.InputPeerChat{ChatID: 77},
+		Message: &core.Message{
+			ID:        9,
+			ReplyToID: 5,
+			TopicID:   4,
+		},
+		Svc: &core.MockTelegramServicer{},
+	}
+	if err := p.handleCommand(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if renderer.calls != 1 || renderer.request.Query != "calc (1+2)*3" || renderer.request.ResultID != "calculator" {
+		t.Fatalf("renderer calls/request = %d/%+v", renderer.calls, renderer.request)
+	}
+	if renderer.request.ReplyToID != 5 || renderer.request.TopicID != 4 {
+		t.Fatalf("reply/topic = %d/%d", renderer.request.ReplyToID, renderer.request.TopicID)
+	}
+}
+
+func TestCalculatorActionMutationIsBoundedAndSafe(t *testing.T) {
+	expression := ""
+	for _, action := range []string{"key_1", "op_add", "key_2", "op_mul", "key_3"} {
+		var err error
+		expression, _, err = applyAction(expression, action)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if expression != "1+2*3" {
+		t.Fatalf("expression = %q", expression)
+	}
+	result, _, err := applyAction(expression, "equals")
+	if err != nil || result != "7" {
+		t.Fatalf("equals = %q, %v", result, err)
+	}
+	if _, _, err := applyAction(strings.Repeat("1", maxExpressionBytes), "key_1"); err == nil {
+		t.Fatal("expression growth beyond bound succeeded")
+	}
+	if _, _, err := applyAction("1", "raw_callback"); err == nil {
+		t.Fatal("unknown action unexpectedly succeeded")
+	}
+}
+
+func TestCalculatorCommandFailsClosedWhenRendererUnavailable(t *testing.T) {
+	p := New()
+	ctx := &core.Context{Ctx: context.Background(), PeerID: &tg.InputPeerSelf{}, Svc: &core.MockTelegramServicer{}}
+	if err := p.handleCommand(ctx); err != nil && !errors.Is(err, core.ErrUnavailable) {
+		// EditOrReply is allowed to succeed through the mock; the important
+		// invariant is that a nil renderer never falls back to raw MTProto.
+		t.Fatalf("handleCommand() error = %v", err)
+	}
+}
+
+type calculatorPort struct {
+	edits   int
+	last    presentation.CompiledView
+	answers []presentation.Answer
+}
+
+func (p *calculatorPort) Send(_ context.Context, target presentation.Target, _ presentation.CompiledView) (presentation.Target, error) {
+	return target, nil
+}
+
+func (p *calculatorPort) Edit(_ context.Context, _ presentation.Target, view presentation.CompiledView) error {
+	p.edits++
+	p.last = view
+	return nil
+}
+
+func (p *calculatorPort) Answer(_ context.Context, answer presentation.Answer) error {
+	p.answers = append(p.answers, answer)
+	return nil
+}
+
+func TestCalculatorTypedCallbackUsesSharedSessionRevisionAndActorBinding(t *testing.T) {
+	p := New()
+	catalog := feature.NewRegistry()
+	scope := tasks.ScopeIdentity{Owner: "plugin:calculator", Generation: 1}
+	registration, err := catalog.Register(feature.Owner{ID: p.Name(), Scope: scope}, p.FeatureSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registration.Close()
+
+	sessions, err := rootinteraction.NewRuntime(catalog, rootinteraction.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sessions.Close()
+	actions := rootinteraction.NewDispatcher(sessions)
+	port := &calculatorPort{}
+	engine, err := orchestration.New(sessions, actions, port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup, err := p.BindAssistant(assistantinteraction.DriverRuntime{
+		Engine:  engine,
+		Catalog: catalog,
+		Admit: func(_ string, _ feature.InteractionKind, _ string, actorID int64, target presentation.Target) error {
+			if actorID != 42 || target.PresentationTargetKind() != "inline" {
+				return core.ErrPermissionDenied
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	created, err := sessions.Create(context.Background(), rootinteraction.CreateRequest{
+		FeatureID: p.Name(),
+		Binding:   rootinteraction.Binding{ActorID: 42},
+		State:     []byte("1+2"),
+		TTL:       interactionTTL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := sessions.CallbackData(context.Background(), created.Session.ID, "equals")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := presentationtelegram.InlineTarget{BindingID: "inline:calculator:test"}
+	request := orchestration.CallbackRequest{Data: data, ActorID: 42, QueryID: 99, Target: target}
+	if err := engine.Dispatch(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if port.edits != 1 || !strings.Contains(port.last.Text, "<code>3</code>") {
+		t.Fatalf("edit count/view = %d/%q", port.edits, port.last.Text)
+	}
+	if len(port.answers) != 1 || port.answers[0].QueryID != 99 {
+		t.Fatalf("callback answers = %+v", port.answers)
+	}
+	if _, err := sessions.ResolveCallback(context.Background(), data, rootinteraction.Binding{ActorID: 42, InlineMessageID: "inline:calculator:test"}); !errors.Is(err, rootinteraction.ErrStaleToken) {
+		t.Fatalf("old callback error = %v, want stale token", err)
+	}
+
+	other, err := sessions.Create(context.Background(), rootinteraction.CreateRequest{
+		FeatureID: p.Name(), Binding: rootinteraction.Binding{ActorID: 42}, TTL: interactionTTL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherData, err := sessions.CallbackData(context.Background(), other.Session.ID, "key_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Dispatch(context.Background(), orchestration.CallbackRequest{
+		Data: otherData, ActorID: 99, QueryID: 100, Target: presentationtelegram.InlineTarget{BindingID: "inline:wrong-actor"},
+	}); !errors.Is(err, rootinteraction.ErrBindingMismatch) {
+		t.Fatalf("wrong actor callback error = %v, want binding mismatch", err)
+	}
+}

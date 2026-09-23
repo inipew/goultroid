@@ -10,6 +10,7 @@ import (
 	alive "github.com/inipew/goultroid/plugins/alive"
 	blacklist "github.com/inipew/goultroid/plugins/blacklist"
 	broadcast "github.com/inipew/goultroid/plugins/broadcast"
+	calculator "github.com/inipew/goultroid/plugins/calculator"
 	clone "github.com/inipew/goultroid/plugins/clone"
 	downloader "github.com/inipew/goultroid/plugins/downloader"
 	filters "github.com/inipew/goultroid/plugins/filters"
@@ -45,6 +46,7 @@ var builtinModules = []module.Module{
 	alive.Module,
 	blacklist.Module,
 	broadcast.Module,
+	calculator.Module,
 	clone.Module,
 	downloader.Module,
 	filters.Module,

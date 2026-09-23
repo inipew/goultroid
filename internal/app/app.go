@@ -320,6 +320,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	if err := registerBuiltinModules(context.Background(), featureRuntime); err != nil {
 		return nil, err
 	}
+	wireSelfInlineRenderers(pluginManager, tgRuntime.client, tgRuntime.assistant, coreDeps.capGate)
 
 	blacklistPlugin, ok := pluginManager.Find("blacklist")
 	if !ok {
