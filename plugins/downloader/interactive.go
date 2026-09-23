@@ -58,11 +58,11 @@ const (
 )
 
 type interactiveState struct {
-	URL      string               \`json:"u"\`
-	Provider string               \`json:"p"\`
-	Phase    interactivePhase     \`json:"s"\`
-	Mode     download.MediaMode   \`json:"m,omitempty"\`
-	Format   download.MediaFormat \`json:"f,omitempty"\`
+	URL      string               `json:"u"`
+	Provider string               `json:"p"`
+	Phase    interactivePhase     `json:"s"`
+	Mode     download.MediaMode   `json:"m,omitempty"`
+	Format   download.MediaFormat `json:"f,omitempty"`
 }
 
 type downloadPreparation struct {

@@ -57,12 +57,7 @@ func (h *inlineRootHandler) HandleInlineV2(ctx *inlineservice.InlineContext) (*i
 	locale := inlineContextLocale(ctx, h.settingsSvc)
 	uptime := inlineUptime(h.startTime)
 	text := fmt.Sprintf(
-		"⚡ <b>%s</b>
-
-• <b>%s:</b> %s
-• <b>%s:</b> %s
-
-%s",
+		"⚡ <b>%s</b>\n\n• <b>%s:</b> %s\n• <b>%s:</b> %s\n\n%s",
 		tr(locale, "assistant.inline.title"),
 		tr(locale, "assistant.field.status"),
 		tr(locale, "assistant.inline.active"),
@@ -118,10 +113,7 @@ func (h *inlinePingHandler) HandleInlineV2(ctx *inlineservice.InlineContext) (*i
 			ID:          "ping_status",
 			Title:       tr(locale, "assistant.inline.status_title"),
 			Description: tr(locale, "assistant.inline.online_uptime", uptime),
-			Text: fmt.Sprintf("🏓 <b>%s</b>
-
-• <b>%s:</b> %s
-• <b>%s:</b> %s",
+			Text: fmt.Sprintf("🏓 <b>%s</b>\n\n• <b>%s:</b> %s\n• <b>%s:</b> %s",
 				tr(locale, "assistant.inline.status_title"),
 				tr(locale, "assistant.field.status"),
 				tr(locale, "assistant.inline.online"),
@@ -178,10 +170,7 @@ func (h *inlineHelpHandler) HandleInlineV2(ctx *inlineservice.InlineContext) (*i
 					usage = command.Name
 				}
 				text := fmt.Sprintf(
-					"<b>%s:</b> %s
-<b>%s:</b> <code>%s</code>
-<b>%s:</b> %s
-<b>%s:</b> <code>%s</code>",
+					"<b>%s:</b> %s\n<b>%s:</b> <code>%s</code>\n<b>%s:</b> %s\n<b>%s:</b> <code>%s</code>",
 					tr(locale, "assistant.inline.feature"),
 					ui.EscapeHTML(entry.Spec.Name),
 					tr(locale, "assistant.inline.command"),

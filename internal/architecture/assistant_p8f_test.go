@@ -11,9 +11,9 @@ func TestP8FLocaleUsesCanonicalSettingsAndA2Surface(t *testing.T) {
 	root := repositoryRoot(t)
 	checks := map[string][]string{
 		filepath.Join(root, "internal", "settings", "defaults.go"): {
-			"Key:           "locale"",
+			`Key:           "locale"`,
 			"Type:          TypeEnum",
-			"AllowedValues: []string{"en", "id"}",
+			`AllowedValues: []string{"en", "id"}`,
 		},
 		filepath.Join(root, "internal", "assistant", "shell", "shell.go"): {
 			"InteractionLanguage",
@@ -22,8 +22,8 @@ func TestP8FLocaleUsesCanonicalSettingsAndA2Surface(t *testing.T) {
 			"SetSettingsService",
 		},
 		filepath.Join(root, "internal", "assistant", "shell", "locale.go"): {
-			"LocaleSettingNamespace = "ui"",
-			"LocaleSettingKey       = "locale"",
+			`LocaleSettingNamespace = "ui"`,
+			`LocaleSettingKey       = "locale"`,
 			"svc.ResolveString(",
 			"LanguageView(",
 		},
