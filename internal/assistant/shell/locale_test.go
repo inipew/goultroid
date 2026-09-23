@@ -11,7 +11,7 @@ import (
 
 func TestLanguageViewUsesTypedA2Actions(t *testing.T) {
 	view := LanguageView(LanguageModel{Locale: "id"})
-	if !strings.Contains(view.Text, "Bahasa Assistant") || !strings.Contains(view.Text, "Bahasa Indonesia") {
+	if !strings.Contains(view.Text, "Daftar Bahasa Tersedia.") || !strings.Contains(view.Text, "Bahasa Indonesia") {
 		t.Fatalf("Indonesian language view=%q", view.Text)
 	}
 	seen := map[string]bool{}
@@ -32,12 +32,12 @@ func TestHomeAndStatusViewsAreLocaleAware(t *testing.T) {
 	if !strings.Contains(home.Text, "Pusat kontrol") {
 		t.Fatalf("localized home=%q", home.Text)
 	}
-	if !viewContainsButton(home, "⚙️ Pengaturan") || !viewContainsButton(home, "🌐 Bahasa") {
+	if !viewContainsButton(home, "Pengaturan ⚙️") || !viewContainsButton(home, "Bahasa 🌐") {
 		t.Fatalf("localized home buttons=%+v", home.Rows)
 	}
 
 	status := StatusView(StatusModel{Username: "goultroid", Locale: "id"})
-	if !strings.Contains(status.Text, "Status Sistem") || !strings.Contains(status.Text, "Beroperasi") {
+	if !strings.Contains(status.Text, "GoUltroid Assistant - Stats") || !strings.Contains(status.Text, "Online") {
 		t.Fatalf("localized status=%q", status.Text)
 	}
 }
