@@ -907,14 +907,40 @@ The downloader now presents compact media choices, format selection, downloading
 
 # 14. Required next visual work
 
-## V2 — public /start presentation
+## V2 — public /start presentation — COMPLETE
 
-Target:
+Implemented:
 
-- compact visitor greeting;
-- optional owner-info affordance only if canonical owner-info capability exists;
-- preserve audience-touch/PM relay semantics;
-- no a2 session for plain visitor start.
+- compact visitor greeting aligned with Ultroid's public `/start` intent;
+- Assistant username is HTML-escaped before presentation;
+- PM relay guidance is shown only when the configured relay is live-enabled;
+- relay enable/disable changes are reflected without rebuilding the Assistant shell;
+- audience-touch semantics remain unchanged;
+- plain visitor `/start` still creates zero a2 sessions;
+- public start remains stateless text-only presentation;
+- owner-info button remains intentionally absent because Goultroid has no canonical public owner-info capability yet.
+
+Current flow:
+
+```text
+visitor /start
+    ↓
+owner-shell admission denied normally
+    ↓
+public start path
+    ↓
+read current locale
+    ↓
+read relay availability
+    ↓
+render compact greeting
+    ↓
+optional relay guidance
+    ↓
+touch audience source=start
+```
+
+No new worker, ticker, poller, global map, session, or callback protocol was introduced.
 
 ## V3 — Help direct-grid parity
 
