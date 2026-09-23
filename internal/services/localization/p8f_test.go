@@ -23,10 +23,10 @@ func TestCanonicalLocaleUsesBoundedAssistantVocabulary(t *testing.T) {
 }
 
 func TestAssistantBuiltinTranslationsAreLocaleExplicit(t *testing.T) {
-	if got := Translate(LocaleIndonesian, "assistant.button.settings"); got != "⚙️ Pengaturan" {
+	if got := Translate(LocaleIndonesian, "assistant.button.settings"); got != "Pengaturan ⚙️" {
 		t.Fatalf("Indonesian settings label=%q", got)
 	}
-	if got := Translate(LocaleEnglish, "assistant.button.settings"); got != "⚙️ Settings" {
+	if got := Translate(LocaleEnglish, "assistant.button.settings"); got != "Settings ⚙️" {
 		t.Fatalf("English settings label=%q", got)
 	}
 	svc := New(LocaleEnglish)
