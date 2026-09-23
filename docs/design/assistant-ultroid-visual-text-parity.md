@@ -942,18 +942,120 @@ touch audience source=start
 
 No new worker, ticker, poller, global map, session, or callback protocol was introduced.
 
-## V3 — Help direct-grid parity
+## V3 — Help direct-grid parity — COMPLETE
 
-Add session-bound typed action slots for visible modules/commands so Help can become:
+Implemented as a bounded typed-slot projection over the canonical Assistant command catalog.
+
+Visible topology:
 
 ```text
-two-column module grid
-pagination
-Back
-Close/Open Again where useful
+GoUltroid Help Menu
+
+[ Module 1 ] [ Module 2 ]
+[ Module 3 ] [ Module 4 ]
+[ Module 5 ] [ Module 6 ]
+[ Module 7 ] [ Module 8 ]
+
+[ « Previous ] [ « Back ] [ Next » ]
 ```
 
-without raw callback payloads.
+Opening a module uses the same bounded shape for commands:
+
+```text
+Module
+
+[ /cmd1 ] [ /cmd2 ]
+[ /cmd3 ] [ /cmd4 ]
+[ /cmd5 ] [ /cmd6 ]
+[ /cmd7 ] [ /cmd8 ]
+
+[ « Previous ] [ « Back » ] [ Next » ]
+```
+
+Exact implementation constraints:
+
+- module page size = 8;
+- command page size = 8;
+- maximum grid width = 2;
+- fixed action vocabulary = 8 module slot IDs + 8 command slot IDs;
+- no command/module identity is embedded into Telegram callback bytes;
+- no dynamic callback registration;
+- no second command/help registry;
+- source data remains `core.Router` / canonical shell command projection;
+- existing a2 actor/target/revision/generation validation remains authoritative.
+
+The former carousel-only actions:
+
+```text
+help_open
+help_cmd_open
+```
+
+were removed from the production interaction vocabulary. Existing Previous/Next actions now mean page navigation.
+
+### Session-bound slot protection
+
+Each rendered Help page stores a 128-bit fingerprint of the visible identities in the existing shell state binding bytes while `ScreenHelp` is active.
+
+Flow:
+
+```text
+canonical commands
+    ↓
+deterministic sort/group
+    ↓
+bounded page
+    ↓
+fingerprint visible module/command identities
+    ↓
+store fingerprint in current a2 session state
+    ↓
+compile fixed typed slot ActionIDs
+    ↓
+callback
+    ↓
+normal a2 token validation
+    ↓
+rebuild canonical catalog
+    ↓
+recompute page fingerprint
+    ↓
+match?
+    ├─ yes → slot may resolve
+    └─ no  → ErrShellHelpSelectionStale
+```
+
+This prevents a button rendered for one module/command from silently selecting another item if the plugin/command catalog changes before the user clicks it.
+
+No extra session bytes were added: Help reuses binding bytes that are otherwise unused on `ScreenHelp`; Settings mutation binding authority is cleared before the Help fingerprint is installed.
+
+### Acceptance evidence
+
+Added/updated source tests cover:
+
+- deterministic two-column module grid;
+- deterministic two-column command grid;
+- module pagination beyond 8 entries;
+- command pagination beyond 8 entries;
+- direct command-slot detail transition;
+- Back preserving the command page;
+- stale old a2 token rejection after transition;
+- catalog-remap rejection even when the a2 revision itself is still current;
+- userbot-only commands remaining excluded from the Assistant projection;
+- one bounded a2 session for the entire Help navigation flow;
+- all 16 slot ActionIDs declared as owner/private Assistant actions.
+
+Production commits:
+
+```text
+dbb0e65a852ccf30578ab05a89fab6efd5ad114c
+feat(assistant): add bounded direct-grid help slots
+
+94a4403f2e67db74638ee0ea04b11c6207aa52e5
+perf(assistant): avoid duplicate help catalog sorting
+```
+
+`Close/Open Again` is not required for direct-grid closure and remains optional presentation work; it was not implemented by introducing a delete/reopen state machine merely for visual imitation.
 
 ## V4 — Settings direct-grid parity
 
