@@ -230,21 +230,6 @@ func (r *Router) findCommand(name string) (core.Command, bool) {
 	return core.Command{}, false
 }
 
-func legacyChatForPeer(peer tg.InputPeerClass) core.Chat {
-	chat := core.Chat{ID: extractChatIDFromInputPeer(peer)}
-	switch peer.(type) {
-	case *tg.InputPeerUser, *tg.InputPeerSelf:
-		chat.Type = string(core.ChatKindPrivate)
-	case *tg.InputPeerChat:
-		chat.Type = string(core.ChatKindGroup)
-	case *tg.InputPeerChannel:
-		// Without entity metadata InputPeerChannel is ambiguous. Treat it as a
-		// broadcast channel so Assistant GroupOnly admission fails closed.
-		chat.Type = string(core.ChatKindChannel)
-	}
-	return chat
-}
-
 func taskResultError(res tasks.TaskResult) error {
 	if res.IsSuccess() {
 		return nil
@@ -302,8 +287,9 @@ func (r *Router) executeCanonicalDirect(cmd core.Command, coreCtx *core.Context,
 func (r *Router) executeCanonicalTask(ctx context.Context, senderID int64, cmd core.Command, coreCtx *core.Context, cmdName string) error {
 	requiresGroupAuthorization := cmd.GroupAuthorization.Required()
 	if r.tasks == nil {
-		// Preserve lightweight embedding/test compatibility, but never let a
-		// resource-bearing or contextual-authorized command bypass TaskEngine.
+		// Lightweight callers without TaskEngine may execute only commands that
+		// carry neither resources nor contextual authorization. Production
+		// Assistant wiring always supplies TaskEngine.
 		if len(cmd.Resources) > 0 || requiresGroupAuthorization {
 			return ErrTasksNotConfigured
 		}
@@ -530,33 +516,6 @@ func (r *Router) executeSavedResponseBinding(
 	return true, taskResultError(res)
 }
 
-// Dispatch parses a command without transport message coordinates. It is kept
-// for embedding/tests; production Assistant updates should use DispatchMessage
-// so reply-aware canonical commands receive message identity.
-func (r *Router) Dispatch(ctx context.Context, senderID int64, peer tg.InputPeerClass, messageText string, inter interaction.MessageInteraction) error {
-	return r.dispatch(ctx, senderID, peer, messageText, MessageContext{Chat: legacyChatForPeer(peer)}, inter)
-}
-
-// DispatchMessage preserves Telegram message/reply identity in the canonical
-// core.Context so reply-based Assistant commands (/who, relay controls, etc.)
-// can use the same command registry rather than a transport-local dispatcher.
-// Callers with Telegram entity metadata should prefer DispatchMessageContext.
-func (r *Router) DispatchMessage(
-	ctx context.Context,
-	senderID int64,
-	peer tg.InputPeerClass,
-	messageText string,
-	messageID int,
-	replyToMessageID int,
-	inter interaction.MessageInteraction,
-) error {
-	return r.dispatch(ctx, senderID, peer, messageText, MessageContext{
-		Chat:             legacyChatForPeer(peer),
-		MessageID:        messageID,
-		ReplyToMessageID: replyToMessageID,
-	}, inter)
-}
-
 // DispatchMessageContext preserves authoritative chat kind and topic metadata
 // from the Assistant update boundary.
 func (r *Router) DispatchMessageContext(
@@ -568,7 +527,7 @@ func (r *Router) DispatchMessageContext(
 	inter interaction.MessageInteraction,
 ) error {
 	if messageContext.Chat.ID == 0 {
-		messageContext.Chat = legacyChatForPeer(peer)
+		return fmt.Errorf("%w: Assistant message context requires chat identity", core.ErrInvalidArguments)
 	}
 	return r.dispatch(ctx, senderID, peer, messageText, messageContext, inter)
 }
@@ -674,12 +633,6 @@ func (r *Router) dispatch(
 		}
 
 		chat := messageContext.Chat
-		if chat.ID == 0 {
-			chat = legacyChatForPeer(peer)
-		}
-		if chat.ID == 0 {
-			chat.ID = senderID
-		}
 		if chat.Type == "" && chat.ID == senderID {
 			chat.Type = string(core.ChatKindPrivate)
 		}

@@ -91,9 +91,6 @@ func NewApp(appID int, appHash string, botToken string, logger *zap.Logger) *Ass
 	}
 	return &AssistantApp{client: client.NewAssistantClient(appID, appHash, botToken, logger), logger: logger}
 }
-func NewBotClient(appID int, appHash string, botToken string, logger *zap.Logger) *AssistantApp {
-	return NewApp(appID, appHash, botToken, logger)
-}
 func (a *AssistantApp) Start(ctx context.Context) error     { return a.client.Start(ctx) }
 func (a *AssistantApp) Quiesce(ctx context.Context) error   { return a.client.Quiesce(ctx) }
 func (a *AssistantApp) Stop(ctx context.Context) error      { return a.client.Stop(ctx) }

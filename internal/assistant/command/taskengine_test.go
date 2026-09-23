@@ -70,7 +70,7 @@ func TestCommandRouter_ResourceCommandUsesTaskClient(t *testing.T) {
 	}
 	r.SetCoreRouter(coreRouter)
 
-	if err := r.Dispatch(context.Background(), 42, &tg.InputPeerUser{UserID: 42}, "/mediaheavy", &fakeInteraction{}); err != nil {
+	if err := dispatchTest(r, context.Background(), 42, &tg.InputPeerUser{UserID: 42}, "/mediaheavy", &fakeInteraction{}); err != nil {
 		t.Fatal(err)
 	}
 	if !called {
@@ -100,7 +100,7 @@ func TestCommandRouter_ResourceCommandFailsClosedWithoutTaskClient(t *testing.T)
 	}
 	r.SetCoreRouter(coreRouter)
 
-	err := r.Dispatch(context.Background(), 7, &tg.InputPeerUser{UserID: 7}, "/resourceheavy", &fakeInteraction{})
+	err := dispatchTest(r, context.Background(), 7, &tg.InputPeerUser{UserID: 7}, "/resourceheavy", &fakeInteraction{})
 	if !errors.Is(err, command.ErrTasksNotConfigured) {
 		t.Fatalf("expected ErrTasksNotConfigured, got %v", err)
 	}

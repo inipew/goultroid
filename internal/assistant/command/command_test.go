@@ -228,7 +228,7 @@ func TestCommandRouter_Dispatch(t *testing.T) {
 	peer := &tg.InputPeerUser{UserID: 12345}
 
 	// 1. /start with bot suffix
-	err := r.Dispatch(ctx, 12345, peer, "/start@TestBot", fake)
+	err := dispatchTest(r, ctx, 12345, peer, "/start@TestBot", fake)
 	if err != nil {
 		t.Fatalf("unexpected error dispatching /start: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestCommandRouter_Dispatch(t *testing.T) {
 
 	// Commands explicitly targeted at another bot are ignored.
 	fake.lastSentText = ""
-	err = r.Dispatch(ctx, 12345, peer, "/start@OtherBot", fake)
+	err = dispatchTest(r, ctx, 12345, peer, "/start@OtherBot", fake)
 	if err != nil {
 		t.Fatalf("other-bot command should be ignored, got %v", err)
 	}
@@ -247,7 +247,7 @@ func TestCommandRouter_Dispatch(t *testing.T) {
 	}
 
 	// 2. /ping
-	err = r.Dispatch(ctx, 12345, peer, "/ping", fake)
+	err = dispatchTest(r, ctx, 12345, peer, "/ping", fake)
 	if err != nil {
 		t.Fatalf("unexpected error dispatching /ping: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestCommandRouter_Dispatch(t *testing.T) {
 	}
 
 	// 3. /alive
-	err = r.Dispatch(ctx, 12345, peer, "/alive", fake)
+	err = dispatchTest(r, ctx, 12345, peer, "/alive", fake)
 	if err != nil {
 		t.Fatalf("unexpected error dispatching /alive: %v", err)
 	}
@@ -265,13 +265,13 @@ func TestCommandRouter_Dispatch(t *testing.T) {
 	}
 
 	// 4. Unknown command
-	err = r.Dispatch(ctx, 12345, peer, "/unknown_cmd", fake)
+	err = dispatchTest(r, ctx, 12345, peer, "/unknown_cmd", fake)
 	if !errors.Is(err, command.ErrUnknownCommand) {
 		t.Fatalf("expected ErrUnknownCommand, got %v", err)
 	}
 
 	// 5. Non-command text should be silently ignored (return nil)
-	err = r.Dispatch(ctx, 12345, peer, "hello bot", fake)
+	err = dispatchTest(r, ctx, 12345, peer, "hello bot", fake)
 	if err != nil {
 		t.Fatalf("expected non-command to return nil, got %v", err)
 	}
@@ -302,7 +302,7 @@ func TestCommandRouter_CoreRouterDispatch(t *testing.T) {
 	})
 	r.SetCoreRouter(coreRouter)
 
-	err := r.Dispatch(ctx, 12345, peer, "/customplugin arg1", fake)
+	err := dispatchTest(r, ctx, 12345, peer, "/customplugin arg1", fake)
 	if err != nil {
 		t.Fatalf("unexpected error dispatching command: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestCommandRouter_CoreRouterDispatch(t *testing.T) {
 	}
 
 	// Verify command not available on assistant surface
-	err = r.Dispatch(ctx, 12345, peer, "/useronly", fake)
+	err = dispatchTest(r, ctx, 12345, peer, "/useronly", fake)
 	if !errors.Is(err, command.ErrUnknownCommand) {
 		t.Fatalf("expected ErrUnknownCommand for user-only command on assistant, got %v", err)
 	}
@@ -341,7 +341,7 @@ func TestCommandRouter_CoreRouterPrecedenceOverLocal(t *testing.T) {
 	})
 	r.SetCoreRouter(coreRouter)
 
-	err := r.Dispatch(ctx, 12345, peer, "/ping", fake)
+	err := dispatchTest(r, ctx, 12345, peer, "/ping", fake)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -404,7 +404,7 @@ func TestCommandRouter_Permissions(t *testing.T) {
 
 	// 1. Regular user calling owner-only command -> denied
 	peerRegular := &tg.InputPeerUser{UserID: regularID}
-	_ = r.Dispatch(ctx, regularID, peerRegular, "/admincmd", fake)
+	_ = dispatchTest(r, ctx, regularID, peerRegular, "/admincmd", fake)
 	if adminCalled {
 		t.Fatal("expected regular user to be blocked from admincmd")
 	}
@@ -414,7 +414,7 @@ func TestCommandRouter_Permissions(t *testing.T) {
 
 	// 2. Regular user calling sudo command -> denied
 	fake.lastSentText = ""
-	_ = r.Dispatch(ctx, regularID, peerRegular, "/sudocmd", fake)
+	_ = dispatchTest(r, ctx, regularID, peerRegular, "/sudocmd", fake)
 	if sudoCalled {
 		t.Fatal("expected regular user to be blocked from sudocmd")
 	}
@@ -423,21 +423,21 @@ func TestCommandRouter_Permissions(t *testing.T) {
 	}
 
 	// 3. Regular user calling everyone command -> allowed
-	_ = r.Dispatch(ctx, regularID, peerRegular, "/allcmd", fake)
+	_ = dispatchTest(r, ctx, regularID, peerRegular, "/allcmd", fake)
 	if !everyoneCalled {
 		t.Fatal("expected regular user to be allowed on allcmd")
 	}
 
 	// 4. Sudo user calling sudocmd -> allowed
 	peerSudo := &tg.InputPeerUser{UserID: sudoID}
-	_ = r.Dispatch(ctx, sudoID, peerSudo, "/sudocmd", fake)
+	_ = dispatchTest(r, ctx, sudoID, peerSudo, "/sudocmd", fake)
 	if !sudoCalled {
 		t.Fatal("expected sudo user to be allowed on sudocmd")
 	}
 
 	// 5. Owner calling admincmd -> allowed
 	peerOwner := &tg.InputPeerUser{UserID: ownerID}
-	_ = r.Dispatch(ctx, ownerID, peerOwner, "/admincmd", fake)
+	_ = dispatchTest(r, ctx, ownerID, peerOwner, "/admincmd", fake)
 	if !adminCalled {
 		t.Fatal("expected owner to be allowed on admincmd")
 	}
@@ -481,7 +481,7 @@ func TestCommandRouter_ContextMessaging(t *testing.T) {
 	fake := &fakeInteraction{}
 	peer := &tg.InputPeerUser{UserID: ownerID}
 
-	err := r.Dispatch(ctx, ownerID, peer, "/echotest some args", fake)
+	err := dispatchTest(r, ctx, ownerID, peer, "/echotest some args", fake)
 	if err != nil {
 		t.Fatalf("unexpected dispatch error: %v", err)
 	}
@@ -526,7 +526,7 @@ func TestCommandRouter_CoreRouterDirect(t *testing.T) {
 	ctx := context.Background()
 	peer := &tg.InputPeerUser{UserID: 12345}
 
-	err = r.Dispatch(ctx, 12345, peer, "/coreping", fake)
+	err = dispatchTest(r, ctx, 12345, peer, "/coreping", fake)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -562,7 +562,7 @@ func TestCommandRouter_InjectsDelayedActionOwner(t *testing.T) {
 	}
 	r.SetCoreRouter(coreRouter)
 
-	err = r.Dispatch(context.Background(), 12345, &tg.InputPeerUser{UserID: 12345}, "/delayowner", &fakeInteraction{})
+	err = dispatchTest(r, context.Background(), 12345, &tg.InputPeerUser{UserID: 12345}, "/delayowner", &fakeInteraction{})
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -579,7 +579,7 @@ func TestCommandRouter_DynamicSavedResponseDispatch(t *testing.T) {
 	configureSavedResponseRouter(r, bindings, taskClient)
 
 	fake := &fakeInteraction{}
-	err := r.Dispatch(
+	err := dispatchTest(r,
 		context.Background(),
 		12345,
 		&tg.InputPeerUser{UserID: 12345},
@@ -615,7 +615,7 @@ func TestCommandRouter_DynamicSavedResponseRequiresTaskEngine(t *testing.T) {
 	r := command.NewRouter(zap.NewNop())
 	configureSavedResponseRouter(r, bindings, nil)
 
-	err := r.Dispatch(
+	err := dispatchTest(r,
 		context.Background(),
 		12345,
 		&tg.InputPeerUser{UserID: 12345},
@@ -643,7 +643,7 @@ func TestCommandRouter_DynamicSavedResponseReservesMediaResource(t *testing.T) {
 	r := command.NewRouter(zap.NewNop())
 	configureSavedResponseRouter(r, bindings, taskClient)
 
-	err := r.Dispatch(
+	err := dispatchTest(r,
 		context.Background(),
 		12345,
 		&tg.InputPeerUser{UserID: 12345},
@@ -700,7 +700,7 @@ func TestCommandRouter_DynamicSavedResponseDeliversMedia(t *testing.T) {
 	r.SetTasks(taskClient)
 
 	fake := &fakeInteraction{}
-	if err := r.Dispatch(
+	if err := dispatchTest(r,
 		ctx,
 		12345,
 		&tg.InputPeerUser{UserID: 12345},
@@ -748,7 +748,7 @@ func TestCommandRouter_CanonicalAndPresentationPrecedeDynamicBindings(t *testing
 		r.SetCoreRouter(coreRouter)
 
 		fake := &fakeInteraction{}
-		if err := r.Dispatch(
+		if err := dispatchTest(r,
 			context.Background(),
 			12345,
 			&tg.InputPeerUser{UserID: 12345},
@@ -773,7 +773,7 @@ func TestCommandRouter_CanonicalAndPresentationPrecedeDynamicBindings(t *testing
 		})
 
 		fake := &fakeInteraction{}
-		if err := r.Dispatch(
+		if err := dispatchTest(r,
 			context.Background(),
 			12345,
 			&tg.InputPeerUser{UserID: 12345},
@@ -814,7 +814,7 @@ func TestCommandRouter_DynamicSavedResponseFailsClosedAcrossProviderReload(t *te
 	r := command.NewRouter(zap.NewNop())
 	configureSavedResponseRouter(r, bindings, taskClient)
 	fake := &fakeInteraction{}
-	err := r.Dispatch(
+	err := dispatchTest(r,
 		context.Background(),
 		12345,
 		&tg.InputPeerUser{UserID: 12345},
@@ -838,7 +838,7 @@ func TestCommandRouter_UnknownCommandStillReturnsUnknownAfterDynamicLookup(t *te
 	r := command.NewRouter(zap.NewNop())
 	configureSavedResponseRouter(r, bindings, &immediateTaskClient{})
 
-	err := r.Dispatch(
+	err := dispatchTest(r,
 		context.Background(),
 		12345,
 		&tg.InputPeerUser{UserID: 12345},
@@ -860,7 +860,7 @@ func TestCommandRouter_DynamicSavedResponseFailsClosedWithoutDelivery(t *testing
 	r.SetSavedResponseBindings(bindings, nil)
 	r.SetTasks(&immediateTaskClient{})
 
-	err := r.Dispatch(
+	err := dispatchTest(r,
 		context.Background(),
 		12345,
 		&tg.InputPeerUser{UserID: 12345},
@@ -893,7 +893,7 @@ func TestCommandRouter_CanonicalNamespaceBlocksDynamicFallback(t *testing.T) {
 	r.SetCoreRouter(coreRouter)
 
 	fake := &fakeInteraction{}
-	err := r.Dispatch(
+	err := dispatchTest(r,
 		context.Background(),
 		12345,
 		&tg.InputPeerUser{UserID: 12345},
@@ -933,7 +933,7 @@ func TestCommandRouter_DispatchMessagePreservesReplyIdentity(t *testing.T) {
 	r.SetCoreRouter(coreRouter)
 
 	peer := &tg.InputPeerUser{UserID: 7}
-	if err := r.DispatchMessage(
+	if err := dispatchMessageTest(r,
 		context.Background(),
 		7,
 		peer,
@@ -948,7 +948,7 @@ func TestCommandRouter_DispatchMessagePreservesReplyIdentity(t *testing.T) {
 		t.Fatalf("canonical message identity=(%d,%d), want (101,100)", gotMessageID, gotReplyToID)
 	}
 
-	if err := r.Dispatch(
+	if err := dispatchTest(r,
 		context.Background(),
 		7,
 		peer,

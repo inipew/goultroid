@@ -49,13 +49,6 @@ func TestAssistantApp_EmptyTokenRequired(t *testing.T) {
 	}
 }
 
-func TestNewBotClient_Alias(t *testing.T) {
-	app := assistant.NewBotClient(1234, "hash", "token", zap.NewNop())
-	if app == nil {
-		t.Fatalf("expected non-nil AssistantApp from NewBotClient alias")
-	}
-}
-
 func TestAssistantAppP6HLifecycleDeclaresDrainDependenciesAndQuiesce(t *testing.T) {
 	app := assistant.NewApp(1234, "hash", "token", zap.NewNop())
 

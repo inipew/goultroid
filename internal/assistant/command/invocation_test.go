@@ -49,7 +49,7 @@ func TestCommandRouter_InvocationPolicyIsSeparateFromPermission(t *testing.T) {
 
 	fake := &fakeInteraction{}
 	peer := &tg.InputPeerUser{UserID: regularID}
-	if err := r.Dispatch(context.Background(), regularID, peer, "/privateeveryone", fake); err != nil {
+	if err := dispatchTest(r, context.Background(), regularID, peer, "/privateeveryone", fake); err != nil {
 		t.Fatalf("dispatch privateeveryone: %v", err)
 	}
 	if privateEveryoneRan {
@@ -60,7 +60,7 @@ func TestCommandRouter_InvocationPolicyIsSeparateFromPermission(t *testing.T) {
 	}
 
 	fake.lastSentText = ""
-	if err := r.Dispatch(context.Background(), regularID, peer, "/owneranyone", fake); err != nil {
+	if err := dispatchTest(r, context.Background(), regularID, peer, "/owneranyone", fake); err != nil {
 		t.Fatalf("dispatch owneranyone: %v", err)
 	}
 	if ownerAnyoneRan {
@@ -71,7 +71,7 @@ func TestCommandRouter_InvocationPolicyIsSeparateFromPermission(t *testing.T) {
 	}
 
 	ownerPeer := &tg.InputPeerUser{UserID: ownerID}
-	if err := r.Dispatch(context.Background(), ownerID, ownerPeer, "/privateeveryone", fake); err != nil {
+	if err := dispatchTest(r, context.Background(), ownerID, ownerPeer, "/privateeveryone", fake); err != nil {
 		t.Fatalf("owner dispatch: %v", err)
 	}
 	if !privateEveryoneRan {

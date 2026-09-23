@@ -121,7 +121,7 @@ func TestAssistantCanonicalBehaviorMatrix(t *testing.T) {
 	fake := &fakeInteraction{}
 	peer := &tg.InputPeerUser{UserID: regularID}
 
-	if err := router.Dispatch(context.Background(), regularID, peer, "/selfonly", fake); err != nil {
+	if err := dispatchTest(router, context.Background(), regularID, peer, "/selfonly", fake); err != nil {
 		t.Fatalf("selfonly dispatch: %v", err)
 	}
 	if submits, _, _ := client.snapshot(); submits != 0 {
@@ -131,7 +131,7 @@ func TestAssistantCanonicalBehaviorMatrix(t *testing.T) {
 		t.Fatal("invocation-denied handler executed")
 	}
 
-	if err := router.Dispatch(context.Background(), regularID, peer, "/owneronly", fake); err != nil {
+	if err := dispatchTest(router, context.Background(), regularID, peer, "/owneronly", fake); err != nil {
 		t.Fatalf("owneronly dispatch: %v", err)
 	}
 	if submits, _, _ := client.snapshot(); submits != 0 {
@@ -141,7 +141,7 @@ func TestAssistantCanonicalBehaviorMatrix(t *testing.T) {
 		t.Fatal("permission-denied handler executed")
 	}
 
-	if err := router.Dispatch(context.Background(), regularID, peer, "/resource", fake); err != nil {
+	if err := dispatchTest(router, context.Background(), regularID, peer, "/resource", fake); err != nil {
 		t.Fatalf("resource dispatch: %v", err)
 	}
 	submits, resources, scope := client.snapshot()
