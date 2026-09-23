@@ -291,13 +291,21 @@ func truncateHelp(value string, limit int) string {
 	return string(runes[:limit-1]) + "…"
 }
 
-func PublicStartView(username string, locales ...string) presentation.View {
-	locale := optionalLocale(locales)
-	username = normalizedUsername(username)
-	card := ui.NewCard("GoUltroid Assistant").
-		WithIcon("🤖").
-		WithHeader(tr(locale, "assistant.public.header")).
-		AddField(tr(locale, "assistant.field.bot"), "@"+username).
-		WithRaw(tr(locale, "assistant.public.owner_only"))
-	return presentation.View{Text: card.Render()}
+type PublicStartModel struct {
+	Username       string
+	Locale         string
+	RelayAvailable bool
+}
+
+func PublicStartView(model PublicStartModel) presentation.View {
+	locale := shellLocale(model.Locale)
+	username := normalizedUsername(model.Username)
+	text := fmt.Sprintf(
+		tr(locale, "assistant.public.header"),
+		ui.EscapeHTML("@"+username),
+	)
+	if model.RelayAvailable {
+		text += "\n\n" + tr(locale, "assistant.public.relay_hint")
+	}
+	return presentation.View{Text: text}
 }
