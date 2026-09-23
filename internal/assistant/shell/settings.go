@@ -20,37 +20,39 @@ type SettingsHomeModel struct {
 	Category SettingsCategory
 	Total    int
 	Selected int
+	Locale   string
 }
 
 func SettingsHomeView(model SettingsHomeModel) presentation.View {
+	locale := shellLocale(model.Locale)
 	card := ui.NewCard("GoUltroid Settings").
 		WithIcon("⚙️").
-		WithHeader("Settings browser backed by the central settings registry.").
-		AddField("Categories", strconv.Itoa(model.Total))
+		WithHeader(tr(locale, "assistant.settings.header")).
+		AddField(tr(locale, "assistant.settings.categories"), strconv.Itoa(model.Total))
 
 	rows := []presentation.Row{}
 	if model.Total <= 0 {
-		card.WithRaw("<i>No settings are currently registered.</i>")
+		card.WithRaw(tr(locale, "assistant.settings.empty"))
 	} else {
 		selected := clampIndex(model.Selected, model.Total)
 		label := strings.TrimSpace(model.Category.Label)
 		if label == "" {
 			label = model.Category.ID
 		}
-		card.AddField("Selected", fmt.Sprintf("%s · %d settings", ui.EscapeHTML(label), model.Category.Count)).
-			AddField("Position", fmt.Sprintf("%d / %d", selected+1, model.Total))
+		card.AddField(tr(locale, "assistant.settings.selected"), fmt.Sprintf("%s · %d", ui.EscapeHTML(label), model.Category.Count)).
+			AddField(tr(locale, "assistant.settings.position"), fmt.Sprintf("%d / %d", selected+1, model.Total))
 		if model.Total > 1 {
 			rows = append(rows, presentation.Row{
-				{Text: "◀️ Previous", ActionID: ActionSettingsPrev},
-				{Text: "Open", ActionID: ActionSettingsOpen},
-				{Text: "Next ▶️", ActionID: ActionSettingsNext},
+				{Text: tr(locale, "assistant.button.previous"), ActionID: ActionSettingsPrev},
+				{Text: tr(locale, "assistant.button.open"), ActionID: ActionSettingsOpen},
+				{Text: tr(locale, "assistant.button.next"), ActionID: ActionSettingsNext},
 			})
 		} else {
-			rows = append(rows, presentation.Row{{Text: "Open", ActionID: ActionSettingsOpen}})
+			rows = append(rows, presentation.Row{{Text: tr(locale, "assistant.button.open"), ActionID: ActionSettingsOpen}})
 		}
 	}
-	card.WithFooter("<i>Settings writes, resets, and free-form input are now owned by the revision-fenced a2 flow.</i>")
-	rows = append(rows, presentation.Row{{Text: "🏠 Home", ActionID: ActionHome}})
+	card.WithFooter(tr(locale, "assistant.settings.footer"))
+	rows = append(rows, presentation.Row{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}})
 	return presentation.View{Text: card.Render(), Rows: rows}
 }
 
@@ -64,39 +66,41 @@ type SettingsCategoryModel struct {
 	Current  SettingSummary
 	Total    int
 	Selected int
+	Locale   string
 }
 
 func SettingsCategoryView(model SettingsCategoryModel) presentation.View {
+	locale := shellLocale(model.Locale)
 	label := strings.TrimSpace(model.Category.Label)
 	if label == "" {
 		label = model.Category.ID
 	}
 	card := ui.NewCard(label).
 		WithIcon("📂").
-		WithHeader("Browse effective values in this settings category.").
-		AddField("Settings", strconv.Itoa(model.Total))
+		WithHeader(tr(locale, "assistant.settings.category_header")).
+		AddField(tr(locale, "assistant.settings.settings"), strconv.Itoa(model.Total))
 
 	rows := []presentation.Row{}
 	if model.Total <= 0 {
-		card.WithRaw("<i>No settings are currently registered in this category.</i>")
+		card.WithRaw(tr(locale, "assistant.settings.category_empty"))
 	} else {
 		selected := clampIndex(model.Selected, model.Total)
-		card.AddField("Selected", ui.EscapeHTML(model.Current.Title)).
-			AddField("Current", model.Current.Value).
-			AddField("Position", fmt.Sprintf("%d / %d", selected+1, model.Total))
+		card.AddField(tr(locale, "assistant.settings.selected"), ui.EscapeHTML(model.Current.Title)).
+			AddField(tr(locale, "assistant.settings.current"), model.Current.Value).
+			AddField(tr(locale, "assistant.settings.position"), fmt.Sprintf("%d / %d", selected+1, model.Total))
 		if model.Total > 1 {
 			rows = append(rows, presentation.Row{
-				{Text: "◀️ Previous", ActionID: ActionSettingPrev},
-				{Text: "Details", ActionID: ActionSettingOpen},
-				{Text: "Next ▶️", ActionID: ActionSettingNext},
+				{Text: tr(locale, "assistant.button.previous"), ActionID: ActionSettingPrev},
+				{Text: tr(locale, "assistant.button.details"), ActionID: ActionSettingOpen},
+				{Text: tr(locale, "assistant.button.next"), ActionID: ActionSettingNext},
 			})
 		} else {
-			rows = append(rows, presentation.Row{{Text: "Details", ActionID: ActionSettingOpen}})
+			rows = append(rows, presentation.Row{{Text: tr(locale, "assistant.button.details"), ActionID: ActionSettingOpen}})
 		}
 	}
 	rows = append(rows,
-		presentation.Row{{Text: "⚙️ Categories", ActionID: ActionSettings}},
-		presentation.Row{{Text: "🏠 Home", ActionID: ActionHome}},
+		presentation.Row{{Text: tr(locale, "assistant.settings.categories"), ActionID: ActionSettings}},
+		presentation.Row{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}},
 	)
 	return presentation.View{Text: card.Render(), Rows: rows}
 }
@@ -107,67 +111,69 @@ type SettingDetailModel struct {
 	Source       string
 	ExplicitUser bool
 	Notice       string
+	Locale       string
 }
 
 func SettingDetailView(model SettingDetailModel) presentation.View {
-	def := model.Definition
+	locale := shellLocale(model.Locale)
+	def := LocalizedSettingDefinition(locale, model.Definition)
 	title := strings.TrimSpace(def.Title)
 	if title == "" {
 		title = def.Namespace + ":" + def.Key
 	}
 	description := strings.TrimSpace(def.Description)
 	if description == "" {
-		description = "No description is registered for this setting."
+		description = tr(locale, "assistant.settings.no_description")
 	}
 	current := displaySettingValue(def.Sensitive, model.Current)
 	defaultValue := displaySettingValue(def.Sensitive, def.DefaultValue)
 	source := strings.TrimSpace(model.Source)
 	if source == "" {
-		source = "Inherited/default"
+		source = tr(locale, "assistant.settings.inherited")
 	}
 	card := ui.NewCard(title).
 		WithIcon("⚙️").
 		WithHeader(ui.EscapeHTML(description)).
-		AddField("Key", ui.Code(def.Namespace+":"+def.Key)).
-		AddField("Current", current).
-		AddField("Source", ui.EscapeHTML(source)).
-		AddField("Type", ui.Code(string(def.Type))).
-		AddField("Default", defaultValue).
-		AddField("Widget", ui.Code(string(def.UI.Widget)))
+		AddField(tr(locale, "assistant.settings.key"), ui.Code(def.Namespace+":"+def.Key)).
+		AddField(tr(locale, "assistant.settings.current"), current).
+		AddField(tr(locale, "assistant.settings.source"), ui.EscapeHTML(localizedSettingSource(locale, source))).
+		AddField(tr(locale, "assistant.settings.type"), ui.Code(string(def.Type))).
+		AddField(tr(locale, "assistant.settings.default"), defaultValue).
+		AddField(tr(locale, "assistant.settings.widget"), ui.Code(string(def.UI.Widget)))
 
 	if len(def.AllowedValues) > 0 {
-		card.AddField("Options", ui.Code(boundedOptions(def.AllowedValues, 8)))
+		card.AddField(tr(locale, "assistant.settings.options"), ui.Code(boundedOptions(def.AllowedValues, 8)))
 	}
 	if def.MinVal != nil || def.MaxVal != nil {
-		card.AddField("Range", boundText(def.MinVal)+" … "+boundText(def.MaxVal))
+		card.AddField(tr(locale, "assistant.settings.range"), boundText(def.MinVal)+" … "+boundText(def.MaxVal))
 	}
 	if def.UI.Step > 0 {
-		card.AddField("Step", ui.Code(strconv.FormatInt(def.UI.Step, 10)))
+		card.AddField(tr(locale, "assistant.settings.step"), ui.Code(strconv.FormatInt(def.UI.Step, 10)))
 	}
 	if notice := strings.TrimSpace(model.Notice); notice != "" {
-		card.AddField("Result", ui.EscapeHTML(notice))
+		card.AddField(tr(locale, "assistant.settings.result"), ui.EscapeHTML(localizedNotice(locale, notice)))
 	}
 
 	rows := []presentation.Row{}
 	switch def.Type {
 	case settings.TypeBool, settings.TypeEnum:
-		rows = append(rows, presentation.Row{{Text: "✏️ Change", ActionID: ActionSettingChange}})
+		rows = append(rows, presentation.Row{{Text: tr(locale, "assistant.settings.change"), ActionID: ActionSettingChange}})
 	case settings.TypeInt, settings.TypeDuration:
 		rows = append(rows, presentation.Row{
-			{Text: "➖ Decrease", ActionID: ActionSettingDecrease},
-			{Text: "➕ Increase", ActionID: ActionSettingIncrease},
+			{Text: tr(locale, "assistant.settings.decrease"), ActionID: ActionSettingDecrease},
+			{Text: tr(locale, "assistant.settings.increase"), ActionID: ActionSettingIncrease},
 		})
 	case settings.TypeString:
-		rows = append(rows, presentation.Row{{Text: "✏️ Change", ActionID: ActionSettingInput}})
-		card.WithRaw("<i>Free-form input uses the bounded a2 input session.</i>")
+		rows = append(rows, presentation.Row{{Text: tr(locale, "assistant.settings.change"), ActionID: ActionSettingInput}})
+		card.WithRaw(tr(locale, "assistant.settings.freeform"))
 	}
 	if model.ExplicitUser {
-		rows = append(rows, presentation.Row{{Text: "↩ Reset user override", ActionID: ActionSettingReset}})
+		rows = append(rows, presentation.Row{{Text: tr(locale, "assistant.settings.reset"), ActionID: ActionSettingReset}})
 	}
-	card.WithFooter("<i>Mutation is bound to this stable setting identity and consumes the current session revision before persistence.</i>")
+	card.WithFooter(tr(locale, "assistant.settings.detail_footer"))
 	rows = append(rows,
-		presentation.Row{{Text: "« Category", ActionID: ActionSettingBack}, {Text: "⚙️ Categories", ActionID: ActionSettings}},
-		presentation.Row{{Text: "🏠 Home", ActionID: ActionHome}},
+		presentation.Row{{Text: tr(locale, "assistant.settings.category"), ActionID: ActionSettingBack}, {Text: tr(locale, "assistant.settings.categories"), ActionID: ActionSettings}},
+		presentation.Row{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}},
 	)
 	return presentation.View{Text: card.Render(), Rows: rows}
 }
@@ -175,72 +181,76 @@ func SettingDetailView(model SettingDetailModel) presentation.View {
 type SettingInputModel struct {
 	Definition settings.SettingDefinition
 	Notice     string
+	Locale     string
 }
 
 func SettingInputView(model SettingInputModel) presentation.View {
-	def := model.Definition
+	locale := shellLocale(model.Locale)
+	def := LocalizedSettingDefinition(locale, model.Definition)
 	title := strings.TrimSpace(def.Title)
 	if title == "" {
 		title = def.Namespace + ":" + def.Key
 	}
 	description := strings.TrimSpace(def.Description)
 	if description == "" {
-		description = "Send the new value as your next message."
+		description = tr(locale, "assistant.settings.input_header")
 	}
 	card := ui.NewCard(title).
 		WithIcon("✏️").
 		WithHeader(ui.EscapeHTML(description)).
-		AddField("Key", ui.Code(def.Namespace+":"+def.Key)).
-		AddField("Input", "Send the new value as your next message in this chat.").
-		AddField("Cancel", ui.Code("/cancel")).
-		AddField("Expires", "2 minutes")
+		AddField(tr(locale, "assistant.settings.key"), ui.Code(def.Namespace+":"+def.Key)).
+		AddField(tr(locale, "assistant.settings.input"), tr(locale, "assistant.settings.input_prompt")).
+		AddField(tr(locale, "assistant.settings.cancel"), ui.Code("/cancel")).
+		AddField(tr(locale, "assistant.settings.expires"), tr(locale, "assistant.settings.two_minutes"))
 
 	if def.Sensitive {
-		card.AddField("Privacy", "Sensitive values are never echoed back in the Settings UI.")
+		card.AddField(tr(locale, "assistant.settings.privacy"), tr(locale, "assistant.settings.privacy_text"))
 	}
 	if notice := strings.TrimSpace(model.Notice); notice != "" {
-		card.AddField("Result", ui.EscapeHTML(notice))
+		card.AddField(tr(locale, "assistant.settings.result"), ui.EscapeHTML(localizedNotice(locale, notice)))
 	}
-	card.WithFooter("<i>Only this actor/chat can satisfy the pending input claim. Other slash commands continue normally.</i>")
+	card.WithFooter(tr(locale, "assistant.settings.input_footer"))
 
 	return presentation.View{
 		Text: card.Render(),
 		Rows: []presentation.Row{
-			{{Text: "❌ Cancel input", ActionID: ActionSettingInputCancel}},
-			{{Text: "🏠 Home", ActionID: ActionHome}},
+			{{Text: tr(locale, "assistant.settings.cancel_input"), ActionID: ActionSettingInputCancel}},
+			{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}},
 		},
 	}
 }
 
-func CategoryLabel(category string) string {
+func CategoryLabel(category string, locales ...string) string {
+	locale := optionalLocale(locales)
 	switch strings.ToLower(strings.TrimSpace(category)) {
 	case settings.CategoryGeneral:
-		return "⚙️ General"
+		return tr(locale, "assistant.settings.general")
 	case settings.CategorySecurity:
-		return "🔒 Security"
+		return tr(locale, "assistant.settings.security")
 	case settings.CategoryModeration:
-		return "🛡 Moderation"
+		return tr(locale, "assistant.settings.moderation")
 	case settings.CategoryAutomation:
-		return "🤖 Automation"
+		return tr(locale, "assistant.settings.automation")
 	case settings.CategoryUI:
-		return "🎨 Interface"
+		return tr(locale, "assistant.settings.interface")
 	case settings.CategoryAdvanced:
-		return "🧰 Advanced"
+		return tr(locale, "assistant.settings.advanced")
 	default:
 		category = strings.TrimSpace(category)
 		if category == "" {
-			category = "Other"
+			category = tr(locale, "assistant.settings.other")
 		}
 		return "📁 " + category
 	}
 }
 
-func DisplaySettingValue(sensitive bool, value string) string {
+func DisplaySettingValue(sensitive bool, value string, locales ...string) string {
+	locale := optionalLocale(locales)
 	if sensitive && value != "" {
 		return "••••"
 	}
 	if value == "" {
-		return "<i>empty</i>"
+		return tr(locale, "assistant.settings.empty_value")
 	}
 	return ui.Code(value)
 }

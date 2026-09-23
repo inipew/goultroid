@@ -204,10 +204,7 @@ func (c *AssistantClient) openShell(cmdCtx *command.Context) error {
 		ActorID:   cmdCtx.SenderID,
 		State:     assistantshell.InitialState(),
 		Target:    presentationtelegram.MessageTarget{Peer: cmdCtx.Peer, ChatID: chatID},
-		View: assistantshell.HomeView(assistantshell.HomeModel{
-			Username: c.Username(),
-			Uptime:   time.Since(c.StartTime()),
-		}),
+		View: c.shellHomeView(cmdCtx.Ctx, cmdCtx.SenderID, chatID, assistantshell.InitialState()),
 	})
 	return err
 }
@@ -258,7 +255,7 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 
 	c.shellMu.Lock()
 	defer c.shellMu.Unlock()
-	if c.shellScope == scope && len(c.shellRegistrations) == 27 {
+	if c.shellScope == scope && len(c.shellRegistrations) == 30 {
 		return nil
 	}
 	for _, registration := range c.shellRegistrations {
@@ -269,7 +266,7 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 	c.shellRegistrations = nil
 	c.shellScope = tasks.ScopeIdentity{}
 
-	registrations := make([]*rootinteraction.HandlerRegistration, 0, 27)
+	registrations := make([]*rootinteraction.HandlerRegistration, 0, 30)
 	register := func(actionID string, handler orchestration.Handler) error {
 		guarded := func(ctx *orchestration.Context) error {
 			if err := c.admitShellAction(catalog, actionID, ctx); err != nil {
@@ -302,6 +299,9 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 		{id: assistantshell.ActionHome, handler: c.handleShellHome},
 		{id: assistantshell.ActionStatusRefresh, handler: c.handleShellStatusRefresh},
 		{id: assistantshell.ActionSettings, handler: c.handleShellSettings},
+		{id: assistantshell.ActionLanguage, handler: c.handleShellLanguage},
+		{id: assistantshell.ActionLanguageEnglish, handler: c.handleShellLanguageEnglish},
+		{id: assistantshell.ActionLanguageIndonesian, handler: c.handleShellLanguageIndonesian},
 		{id: assistantshell.ActionSettingsPrev, handler: c.handleShellSettingsPrev},
 		{id: assistantshell.ActionSettingsNext, handler: c.handleShellSettingsNext},
 		{id: assistantshell.ActionSettingsOpen, handler: c.handleShellSettingsOpen},
@@ -366,11 +366,8 @@ func (c *AssistantClient) handleShellRefresh(ctx *orchestration.Context) error {
 	}
 	state := assistantshell.NextRefreshState(ctx.State())
 	state = assistantshell.ScreenState(state, assistantshell.ScreenHome)
-	return ctx.Transition(state, 0, assistantshell.HomeView(assistantshell.HomeModel{
-		Username:  c.Username(),
-		Uptime:    time.Since(c.StartTime()),
-		Refreshes: assistantshell.RefreshCount(state),
-	}))
+	session := ctx.Session()
+	return ctx.Transition(state, 0, c.shellHomeView(ctx.Context(), session.Binding.ActorID, session.Binding.ChatID, state))
 }
 
 func (*AssistantClient) handleShellPing(ctx *orchestration.Context) error {
@@ -382,7 +379,8 @@ func (c *AssistantClient) handleShellStatus(ctx *orchestration.Context) error {
 		return err
 	}
 	state := assistantshell.ScreenState(ctx.State(), assistantshell.ScreenStatus)
-	return ctx.Transition(state, 0, c.shellStatusView(state))
+	session := ctx.Session()
+	return ctx.Transition(state, 0, c.shellStatusView(ctx.Context(), session.Binding.ActorID, session.Binding.ChatID, state))
 }
 
 func (c *AssistantClient) handleShellStatusRefresh(ctx *orchestration.Context) error {
@@ -391,7 +389,8 @@ func (c *AssistantClient) handleShellStatusRefresh(ctx *orchestration.Context) e
 	}
 	state := assistantshell.NextRefreshState(ctx.State())
 	state = assistantshell.ScreenState(state, assistantshell.ScreenStatus)
-	return ctx.Transition(state, 0, c.shellStatusView(state))
+	session := ctx.Session()
+	return ctx.Transition(state, 0, c.shellStatusView(ctx.Context(), session.Binding.ActorID, session.Binding.ChatID, state))
 }
 
 func (c *AssistantClient) handleShellHelp(ctx *orchestration.Context) error {
@@ -404,6 +403,7 @@ func (c *AssistantClient) handleShellHelp(ctx *orchestration.Context) error {
 	return ctx.Transition(state, 0, assistantshell.HelpView(assistantshell.HelpModel{
 		Commands: c.shellCommands(),
 		Selected: int(decoded.CategoryIndex),
+		Locale:   c.shellInteractionLocale(ctx),
 	}))
 }
 
@@ -412,11 +412,8 @@ func (c *AssistantClient) handleShellHome(ctx *orchestration.Context) error {
 		return err
 	}
 	state := assistantshell.ScreenState(ctx.State(), assistantshell.ScreenHome)
-	return ctx.Transition(state, 0, assistantshell.HomeView(assistantshell.HomeModel{
-		Username:  c.Username(),
-		Uptime:    time.Since(c.StartTime()),
-		Refreshes: assistantshell.RefreshCount(state),
-	}))
+	session := ctx.Session()
+	return ctx.Transition(state, 0, c.shellHomeView(ctx.Context(), session.Binding.ActorID, session.Binding.ChatID, state))
 }
 
 func (c *AssistantClient) handleShellSettings(ctx *orchestration.Context) error {
@@ -424,7 +421,8 @@ func (c *AssistantClient) handleShellSettings(ctx *orchestration.Context) error 
 		return err
 	}
 	state := assistantshell.ScreenState(ctx.State(), assistantshell.ScreenSettings)
-	view, err := c.shellSettingsHomeView(state)
+	session := ctx.Session()
+	view, err := c.shellSettingsHomeView(ctx.Context(), session.Binding.ActorID, session.Binding.ChatID, state)
 	if err != nil {
 		return err
 	}
@@ -449,7 +447,8 @@ func (c *AssistantClient) stepShellSettingsCategory(ctx *orchestration.Context, 
 	}
 	categories := svc.Registry().Categories()
 	state := assistantshell.StepCategoryState(ctx.State(), len(categories), delta)
-	view, err := c.shellSettingsHomeView(state)
+	session := ctx.Session()
+	view, err := c.shellSettingsHomeView(ctx.Context(), session.Binding.ActorID, session.Binding.ChatID, state)
 	if err != nil {
 		return err
 	}
@@ -492,7 +491,8 @@ func (c *AssistantClient) stepShellSetting(ctx *orchestration.Context, delta int
 	category, defs := selectedSettingsCategory(svc.Registry(), assistantshell.DecodeState(ctx.State()))
 	if category == "" {
 		state := assistantshell.ScreenState(ctx.State(), assistantshell.ScreenSettings)
-		view, err := c.shellSettingsHomeView(state)
+		session := ctx.Session()
+	view, err := c.shellSettingsHomeView(ctx.Context(), session.Binding.ActorID, session.Binding.ChatID, state)
 		if err != nil {
 			return err
 		}
@@ -581,6 +581,7 @@ func (c *AssistantClient) handleShellSettingInput(ctx *orchestration.Context) er
 	state := assistantshell.BeginSettingInputState(ctx.State())
 	if err := ctx.AwaitInput(state, assistantshell.SettingsInputTTL, assistantshell.SettingInputView(assistantshell.SettingInputModel{
 		Definition: *def,
+		Locale:     c.shellInteractionLocale(ctx),
 	})); err != nil {
 		_ = ctx.Answer("Unable to open setting input. Reopen Settings.", true)
 		return &assistantshell.MutationError{Stage: assistantshell.MutationStageRender, Err: err}
@@ -748,6 +749,7 @@ func (c *AssistantClient) rearmShellSettingInput(ctx *orchestration.Context, def
 	if err := ctx.AwaitInput(state, assistantshell.SettingsInputTTL, assistantshell.SettingInputView(assistantshell.SettingInputModel{
 		Definition: def,
 		Notice:     notice,
+		Locale:     c.shellInteractionLocale(ctx),
 	})); err != nil {
 		return &assistantshell.MutationError{Stage: assistantshell.MutationStageRender, Err: err}
 	}
@@ -950,12 +952,14 @@ func (c *AssistantClient) shellSettingDetailViewWithNotice(ctx context.Context, 
 	if err != nil {
 		return presentation.View{}, err
 	}
+	locale := c.shellLocale(ctx, userID, chatID)
 	return assistantshell.SettingDetailView(assistantshell.SettingDetailModel{
 		Definition:   *def,
 		Current:      value,
 		Source:       source,
 		ExplicitUser: explicit != nil,
 		Notice:       notice,
+		Locale:       locale,
 	}), nil
 }
 
@@ -965,26 +969,28 @@ func (c *AssistantClient) shellSettingsService() *settings.Service {
 	return c.settingsSvc
 }
 
-func (c *AssistantClient) shellSettingsHomeView(stateRaw []byte) (presentation.View, error) {
+func (c *AssistantClient) shellSettingsHomeView(ctx context.Context, userID, chatID int64, stateRaw []byte) (presentation.View, error) {
 	svc := c.shellSettingsService()
 	if svc == nil || svc.Registry() == nil {
 		return presentation.View{}, ErrShellUnavailable
 	}
 	categories := svc.Registry().Categories()
 	state := assistantshell.DecodeState(stateRaw)
+	locale := c.shellLocale(ctx, userID, chatID)
 	if len(categories) == 0 {
-		return assistantshell.SettingsHomeView(assistantshell.SettingsHomeModel{}), nil
+		return assistantshell.SettingsHomeView(assistantshell.SettingsHomeModel{Locale: locale}), nil
 	}
 	index := selectionIndex(int(state.CategoryIndex), len(categories))
 	category := categories[index]
 	return assistantshell.SettingsHomeView(assistantshell.SettingsHomeModel{
 		Category: assistantshell.SettingsCategory{
 			ID:    category,
-			Label: assistantshell.CategoryLabel(category),
+			Label: assistantshell.CategoryLabel(category, locale),
 			Count: len(svc.Registry().ListByCategory(category)),
 		},
 		Total:    len(categories),
 		Selected: index,
+		Locale:   locale,
 	}), nil
 }
 
@@ -994,19 +1000,21 @@ func (c *AssistantClient) shellSettingsCategoryView(ctx context.Context, userID,
 		return presentation.View{}, ErrShellUnavailable
 	}
 	state := assistantshell.DecodeState(stateRaw)
+	locale := c.shellLocale(ctx, userID, chatID)
 	category, defs := selectedSettingsCategory(svc.Registry(), state)
 	if category == "" {
-		return assistantshell.SettingsCategoryView(assistantshell.SettingsCategoryModel{}), nil
+		return assistantshell.SettingsCategoryView(assistantshell.SettingsCategoryModel{Locale: locale}), nil
 	}
 	index := selectionIndex(int(state.SettingIndex), len(defs))
 	model := assistantshell.SettingsCategoryModel{
 		Category: assistantshell.SettingsCategory{
 			ID:    category,
-			Label: assistantshell.CategoryLabel(category),
+			Label: assistantshell.CategoryLabel(category, locale),
 			Count: len(defs),
 		},
 		Total:    len(defs),
 		Selected: index,
+		Locale:   locale,
 	}
 	if len(defs) > 0 {
 		def := defs[index]
@@ -1014,13 +1022,14 @@ func (c *AssistantClient) shellSettingsCategoryView(ctx context.Context, userID,
 		if err != nil {
 			return presentation.View{}, err
 		}
-		title := def.Title
+		localizedDef := assistantshell.LocalizedSettingDefinition(locale, def)
+		title := localizedDef.Title
 		if title == "" {
 			title = def.Namespace + ":" + def.Key
 		}
 		model.Current = assistantshell.SettingSummary{
 			Title: title,
-			Value: assistantshell.DisplaySettingValue(def.Sensitive, value),
+			Value: assistantshell.DisplaySettingValue(def.Sensitive, value, locale),
 		}
 	}
 	return assistantshell.SettingsCategoryView(model), nil
@@ -1084,12 +1093,13 @@ func settingValueSource(ctx context.Context, svc *settings.Service, userID, chat
 	return "Default", nil
 }
 
-func (c *AssistantClient) shellStatusView(state []byte) presentation.View {
+func (c *AssistantClient) shellStatusView(ctx context.Context, userID, chatID int64, state []byte) presentation.View {
 	return assistantshell.StatusView(assistantshell.StatusModel{
 		Username:  c.Username(),
 		Uptime:    time.Since(c.StartTime()),
 		Engine:    "GoUltroid (MTProto)",
 		Refreshes: assistantshell.RefreshCount(state),
+		Locale:    c.shellLocale(ctx, userID, chatID),
 	})
 }
 

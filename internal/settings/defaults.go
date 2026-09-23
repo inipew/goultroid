@@ -44,6 +44,20 @@ func RegisterDefaultDefinitions(reg *Registry) error {
 			Category:     CategoryGeneral,
 		},
 
+		// UI / presentation
+		{
+			Namespace:     "ui",
+			Key:           "locale",
+			Type:          TypeEnum,
+			DefaultValue:  "en",
+			AllowedValues: []string{"en", "id"},
+			Title:         "Assistant Language",
+			Description:   "Language used by the Assistant control interface",
+			Category:      CategoryUI,
+			UI:            UIHint{Widget: WidgetSelector},
+			Order:         -100,
+		},
+
 		// Security
 		{
 			Namespace:    "pmpermit",

@@ -11,6 +11,7 @@ import (
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/feature"
 	"github.com/inipew/goultroid/internal/presentation"
+	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/ui"
 )
 
@@ -22,6 +23,7 @@ const (
 	InteractionStatus           = "status"
 	InteractionHelp             = "help"
 	InteractionSettings         = "settings"
+	InteractionLanguage         = "language"
 	InteractionSettingsCategory = "settings_category"
 	InteractionSettingDetail    = "setting_detail"
 	InteractionSettingInput     = "setting_input"
@@ -36,6 +38,9 @@ const (
 	ActionHome               = "home"
 	ActionStatusRefresh      = "status_refresh"
 	ActionSettings           = "settings"
+	ActionLanguage           = "language"
+	ActionLanguageEnglish    = "language_en"
+	ActionLanguageIndonesian = "language_id"
 	ActionSettingsPrev       = "settings_prev"
 	ActionSettingsNext       = "settings_next"
 	ActionSettingsOpen       = "settings_open"
@@ -56,6 +61,7 @@ const (
 // or Telegram transport resource.
 type Feature struct {
 	inlineCatalog feature.Catalog
+	settingsSvc   *settings.Service
 	startTime     time.Time
 }
 
@@ -70,6 +76,12 @@ func (f *Feature) SetInlineCatalog(catalog feature.Catalog) {
 func (f *Feature) SetStartTime(startTime time.Time) {
 	if f != nil {
 		f.startTime = startTime
+	}
+}
+
+func (f *Feature) SetSettingsService(svc *settings.Service) {
+	if f != nil {
+		f.settingsSvc = svc
 	}
 }
 
@@ -103,6 +115,7 @@ func (*Feature) FeatureSpec() feature.Spec {
 			{ID: InteractionHelpModule, Kind: feature.InteractionScreen, Description: "Canonical Assistant module command navigator", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionHelpCommand, Kind: feature.InteractionScreen, Description: "Canonical Assistant command detail", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionSettings, Kind: feature.InteractionScreen, Description: "Settings category navigator", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: InteractionLanguage, Kind: feature.InteractionScreen, Description: "Canonical Assistant locale selector", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionSettingsCategory, Kind: feature.InteractionScreen, Description: "Settings value navigator", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionSettingDetail, Kind: feature.InteractionScreen, Description: "Bound setting detail and typed mutation surface", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionSettingInput, Kind: feature.InteractionScreen, Description: "Bound free-form setting input surface", Surfaces: assistant, Policy: ownerPolicy},
@@ -120,6 +133,9 @@ func (*Feature) FeatureSpec() feature.Spec {
 			{ID: ActionHome, Kind: feature.InteractionAction, Description: "Return to the shell home screen", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionStatusRefresh, Kind: feature.InteractionAction, Description: "Refresh read-only status", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettings, Kind: feature.InteractionAction, Description: "Navigate to settings categories", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionLanguage, Kind: feature.InteractionAction, Description: "Navigate to canonical Assistant language selection", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionLanguageEnglish, Kind: feature.InteractionAction, Description: "Set canonical Assistant locale to English", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionLanguageIndonesian, Kind: feature.InteractionAction, Description: "Set canonical Assistant locale to Indonesian", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingsPrev, Kind: feature.InteractionAction, Description: "Select previous settings category", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingsNext, Kind: feature.InteractionAction, Description: "Select next settings category", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingsOpen, Kind: feature.InteractionAction, Description: "Open selected settings category", Surfaces: assistant, Policy: ownerPolicy},
@@ -141,27 +157,29 @@ type HomeModel struct {
 	Username  string
 	Uptime    time.Duration
 	Refreshes uint64
+	Locale    string
 }
 
 func HomeView(model HomeModel) presentation.View {
+	locale := shellLocale(model.Locale)
 	username := normalizedUsername(model.Username)
 	card := ui.NewCard("GoUltroid Assistant").
 		WithIcon("🤖").
-		WithHeader("Control center for your userbot and assistant.").
-		AddField("Bot", "@"+username).
-		AddField("Status", "🟢 Online & ready").
-		AddField("Uptime", appstatus.FormatDuration(model.Uptime))
+		WithHeader(tr(locale, "assistant.home.header")).
+		AddField(tr(locale, "assistant.field.bot"), "@"+username).
+		AddField(tr(locale, "assistant.field.status"), tr(locale, "assistant.home.status_ready")).
+		AddField(tr(locale, "assistant.field.uptime"), appstatus.FormatDuration(model.Uptime))
 	if model.Refreshes > 0 {
-		card.AddField("Session refreshes", strconv.FormatUint(model.Refreshes, 10))
+		card.AddField(tr(locale, "assistant.field.refreshes"), strconv.FormatUint(model.Refreshes, 10))
 	}
-	card.WithFooter("<i>Assistant shell navigation and state are fully a2-native.</i>")
+	card.WithFooter(tr(locale, "assistant.home.footer"))
 
 	return presentation.View{
 		Text: card.Render(),
 		Rows: []presentation.Row{
-			{{Text: "⚙️ Settings", ActionID: ActionSettings}, {Text: "📚 Help", ActionID: ActionHelp}},
-			{{Text: "📊 Status", ActionID: ActionStatus}, {Text: "🔄 Refresh", ActionID: ActionRefresh}},
-			{{Text: "🏓 Ping", ActionID: ActionPing}},
+			{{Text: tr(locale, "assistant.button.settings"), ActionID: ActionSettings}, {Text: tr(locale, "assistant.button.help"), ActionID: ActionHelp}},
+			{{Text: tr(locale, "assistant.button.status"), ActionID: ActionStatus}, {Text: tr(locale, "assistant.button.refresh"), ActionID: ActionRefresh}},
+			{{Text: tr(locale, "assistant.button.language"), ActionID: ActionLanguage}, {Text: tr(locale, "assistant.button.ping"), ActionID: ActionPing}},
 		},
 	}
 }
@@ -171,31 +189,33 @@ type StatusModel struct {
 	Uptime    time.Duration
 	Engine    string
 	Refreshes uint64
+	Locale    string
 }
 
 func StatusView(model StatusModel) presentation.View {
+	locale := shellLocale(model.Locale)
 	username := normalizedUsername(model.Username)
 	engine := strings.TrimSpace(model.Engine)
 	if engine == "" {
 		engine = "GoUltroid (MTProto)"
 	}
-	card := ui.NewCard("System Status").
+	card := ui.NewCard(tr(locale, "assistant.status.title")).
 		WithIcon("📊").
-		WithHeader("Assistant runtime health and transport information.").
-		AddField("Assistant", "@"+username).
-		AddField("Status", "🟢 Operational").
-		AddField("Uptime", appstatus.FormatDuration(model.Uptime)).
-		AddField("Engine", ui.EscapeHTML(engine)).
-		AddField("Callbacks", "🟢 Active")
+		WithHeader(tr(locale, "assistant.status.header")).
+		AddField(tr(locale, "assistant.field.assistant"), "@"+username).
+		AddField(tr(locale, "assistant.field.status"), tr(locale, "assistant.status.operational")).
+		AddField(tr(locale, "assistant.field.uptime"), appstatus.FormatDuration(model.Uptime)).
+		AddField(tr(locale, "assistant.field.engine"), ui.EscapeHTML(engine)).
+		AddField(tr(locale, "assistant.field.callbacks"), tr(locale, "assistant.status.active"))
 	if model.Refreshes > 0 {
-		card.AddField("Session refreshes", strconv.FormatUint(model.Refreshes, 10))
+		card.AddField(tr(locale, "assistant.field.refreshes"), strconv.FormatUint(model.Refreshes, 10))
 	}
-	card.WithFooter("<i>Refresh reads the latest runtime state without creating a new session.</i>")
+	card.WithFooter(tr(locale, "assistant.status.footer"))
 
 	return presentation.View{
 		Text: card.Render(),
 		Rows: []presentation.Row{
-			{{Text: "🔄 Refresh", ActionID: ActionStatusRefresh}, {Text: "🏠 Home", ActionID: ActionHome}},
+			{{Text: tr(locale, "assistant.button.refresh"), ActionID: ActionStatusRefresh}, {Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}},
 		},
 	}
 }
@@ -220,6 +240,7 @@ func ValidateSpec() error {
 	for name, view := range map[string]presentation.View{
 		"home":         HomeView(HomeModel{}),
 		"status":       StatusView(StatusModel{}),
+		"language":     LanguageView(LanguageModel{}),
 		"help":         HelpView(HelpModel{}),
 		"help_module":  HelpModuleView(HelpModuleModel{}),
 		"help_command": HelpCommandView(HelpCommandModel{}),

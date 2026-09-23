@@ -10,7 +10,11 @@ func (c *AssistantClient) dispatchPublicStart(ctx *command.Context) error {
 	if ctx == nil || ctx.Peer == nil || ctx.Interaction == nil {
 		return ErrShellUnavailable
 	}
-	view := shell.PublicStartView(c.Username())
+	chatID := extractChatIDFromInputPeer(ctx.Peer)
+	if chatID == 0 {
+		chatID = ctx.SenderID
+	}
+	view := shell.PublicStartView(c.Username(), c.shellLocale(ctx.Ctx, ctx.SenderID, chatID))
 	_, err := ctx.Reply(view.Text, nil)
 	return err
 }
@@ -23,7 +27,7 @@ func (c *AssistantClient) stepShellHelpModule(ctx *orchestration.Context, delta 
 	modules := shell.HelpModules(commands)
 	state := shell.StepHelpModuleState(ctx.State(), len(modules), delta)
 	selected := int(shell.DecodeState(state).CategoryIndex)
-	return ctx.Transition(state, 0, shell.HelpView(shell.HelpModel{Commands: commands, Selected: selected}))
+	return ctx.Transition(state, 0, shell.HelpView(shell.HelpModel{Commands: commands, Selected: selected, Locale: c.shellInteractionLocale(ctx)}))
 }
 
 func (c *AssistantClient) handleShellHelpPrev(ctx *orchestration.Context) error {
@@ -51,6 +55,7 @@ func (c *AssistantClient) handleShellHelpOpen(ctx *orchestration.Context) error 
 		ModuleIndex: moduleIndex,
 		ModuleTotal: len(modules),
 		Selected:    int(decoded.SettingIndex),
+		Locale:      c.shellInteractionLocale(ctx),
 	}))
 }
 
@@ -72,6 +77,7 @@ func (c *AssistantClient) stepShellHelpCommand(ctx *orchestration.Context, delta
 		ModuleIndex: moduleIndex,
 		ModuleTotal: len(modules),
 		Selected:    int(decoded.SettingIndex),
+		Locale:      c.shellInteractionLocale(ctx),
 	}))
 }
 
@@ -100,7 +106,7 @@ func (c *AssistantClient) handleShellHelpCmdOpen(ctx *orchestration.Context) err
 	state := shell.OpenHelpCommandState(ctx.State(), len(module.Commands))
 	decoded = shell.DecodeState(state)
 	commandIndex := selectionIndex(int(decoded.SettingIndex), len(module.Commands))
-	return ctx.Transition(state, 0, shell.HelpCommandView(shell.HelpCommandModel{Command: module.Commands[commandIndex]}))
+	return ctx.Transition(state, 0, shell.HelpCommandView(shell.HelpCommandModel{Command: module.Commands[commandIndex], Locale: c.shellInteractionLocale(ctx)}))
 }
 
 func (c *AssistantClient) handleShellHelpBack(ctx *orchestration.Context) error {
@@ -121,5 +127,6 @@ func (c *AssistantClient) handleShellHelpBack(ctx *orchestration.Context) error 
 		ModuleIndex: moduleIndex,
 		ModuleTotal: len(modules),
 		Selected:    int(decoded.SettingIndex),
+		Locale:      c.shellInteractionLocale(ctx),
 	}))
 }

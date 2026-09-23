@@ -16,6 +16,7 @@ const (
 	ScreenSettingsCategory
 	ScreenSettingDetail
 	ScreenSettingInput
+	ScreenLanguage
 )
 
 const (
@@ -77,7 +78,7 @@ func DecodeState(raw []byte) State {
 }
 
 func normalizeScreen(screen Screen) Screen {
-	if screen > ScreenSettingInput {
+	if screen > ScreenLanguage {
 		return ScreenHome
 	}
 	return screen

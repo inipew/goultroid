@@ -120,36 +120,38 @@ func BackHelpModuleState(raw []byte, moduleTotal, commandTotal int) []byte {
 type HelpModel struct {
 	Commands []core.Command
 	Selected int
+	Locale   string
 }
 
 func HelpView(model HelpModel) presentation.View {
+	locale := shellLocale(model.Locale)
 	modules := HelpModules(model.Commands)
-	card := ui.NewCard("Command Browser").
+	card := ui.NewCard(tr(locale, "assistant.help.title")).
 		WithIcon("📚").
-		WithHeader("Browse the canonical Assistant command registry by module.").
-		AddField("Commands", strconv.Itoa(len(model.Commands))).
-		AddField("Modules", strconv.Itoa(len(modules)))
+		WithHeader(tr(locale, "assistant.help.header")).
+		AddField(tr(locale, "assistant.help.commands"), strconv.Itoa(len(model.Commands))).
+		AddField(tr(locale, "assistant.help.modules"), strconv.Itoa(len(modules)))
 
 	rows := make([]presentation.Row, 0, 3)
 	if len(modules) == 0 {
-		card.WithRaw("<i>No Assistant commands are currently registered.</i>")
+		card.WithRaw(tr(locale, "assistant.help.empty"))
 	} else {
 		selected := clampIndex(model.Selected, len(modules))
 		module := modules[selected]
-		card.AddField("Selected", fmt.Sprintf("%s · %d commands", ui.EscapeHTML(module.Name), len(module.Commands))).
-			AddField("Position", fmt.Sprintf("%d / %d", selected+1, len(modules))).
-			WithFooter("<i>Open the selected module, or move through the bounded module navigator.</i>")
+		card.AddField(tr(locale, "assistant.help.selected"), fmt.Sprintf("%s · %d", ui.EscapeHTML(module.Name), len(module.Commands))).
+			AddField(tr(locale, "assistant.help.position"), fmt.Sprintf("%d / %d", selected+1, len(modules))).
+			WithFooter(tr(locale, "assistant.help.footer"))
 		if len(modules) > 1 {
 			rows = append(rows, presentation.Row{
-				{Text: "◀️ Previous", ActionID: ActionHelpPrev},
-				{Text: "Open", ActionID: ActionHelpOpen},
-				{Text: "Next ▶️", ActionID: ActionHelpNext},
+				{Text: tr(locale, "assistant.button.previous"), ActionID: ActionHelpPrev},
+				{Text: tr(locale, "assistant.button.open"), ActionID: ActionHelpOpen},
+				{Text: tr(locale, "assistant.button.next"), ActionID: ActionHelpNext},
 			})
 		} else {
-			rows = append(rows, presentation.Row{{Text: "Open", ActionID: ActionHelpOpen}})
+			rows = append(rows, presentation.Row{{Text: tr(locale, "assistant.button.open"), ActionID: ActionHelpOpen}})
 		}
 	}
-	rows = append(rows, presentation.Row{{Text: "🏠 Home", ActionID: ActionHome}})
+	rows = append(rows, presentation.Row{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}})
 	return presentation.View{Text: card.Render(), Rows: rows}
 }
 
@@ -158,9 +160,11 @@ type HelpModuleModel struct {
 	ModuleIndex int
 	ModuleTotal int
 	Selected    int
+	Locale      string
 }
 
 func HelpModuleView(model HelpModuleModel) presentation.View {
+	locale := shellLocale(model.Locale)
 	commands := model.Module.Commands
 	name := strings.TrimSpace(model.Module.Name)
 	if name == "" {
@@ -168,15 +172,15 @@ func HelpModuleView(model HelpModuleModel) presentation.View {
 	}
 	card := ui.NewCard(name).
 		WithIcon("📂").
-		WithHeader("Browse commands in this module.").
-		AddField("Commands", strconv.Itoa(len(commands)))
+		WithHeader(tr(locale, "assistant.help.module_header")).
+		AddField(tr(locale, "assistant.help.commands"), strconv.Itoa(len(commands)))
 	if model.ModuleTotal > 0 {
-		card.AddField("Module", fmt.Sprintf("%d / %d", clampIndex(model.ModuleIndex, model.ModuleTotal)+1, model.ModuleTotal))
+		card.AddField(tr(locale, "assistant.help.module"), fmt.Sprintf("%d / %d", clampIndex(model.ModuleIndex, model.ModuleTotal)+1, model.ModuleTotal))
 	}
 
 	rows := make([]presentation.Row, 0, 3)
 	if len(commands) == 0 {
-		card.WithRaw("<i>No commands are currently available in this module.</i>")
+		card.WithRaw(tr(locale, "assistant.help.module_empty"))
 	} else {
 		selected := clampIndex(model.Selected, len(commands))
 		command := commands[selected]
@@ -184,31 +188,33 @@ func HelpModuleView(model HelpModuleModel) presentation.View {
 		if description := strings.TrimSpace(command.Description); description != "" {
 			label += " — " + truncateHelp(description, 72)
 		}
-		card.AddField("Selected", ui.EscapeHTML(label)).
-			AddField("Position", fmt.Sprintf("%d / %d", selected+1, len(commands))).
-			WithFooter("<i>Open Details for usage, aliases, permissions, and execution constraints.</i>")
+		card.AddField(tr(locale, "assistant.help.selected"), ui.EscapeHTML(label)).
+			AddField(tr(locale, "assistant.help.position"), fmt.Sprintf("%d / %d", selected+1, len(commands))).
+			WithFooter(tr(locale, "assistant.help.module_footer"))
 		if len(commands) > 1 {
 			rows = append(rows, presentation.Row{
-				{Text: "◀️ Previous", ActionID: ActionHelpCmdPrev},
-				{Text: "Details", ActionID: ActionHelpCmdOpen},
-				{Text: "Next ▶️", ActionID: ActionHelpCmdNext},
+				{Text: tr(locale, "assistant.button.previous"), ActionID: ActionHelpCmdPrev},
+				{Text: tr(locale, "assistant.button.details"), ActionID: ActionHelpCmdOpen},
+				{Text: tr(locale, "assistant.button.next"), ActionID: ActionHelpCmdNext},
 			})
 		} else {
-			rows = append(rows, presentation.Row{{Text: "Details", ActionID: ActionHelpCmdOpen}})
+			rows = append(rows, presentation.Row{{Text: tr(locale, "assistant.button.details"), ActionID: ActionHelpCmdOpen}})
 		}
 	}
 	rows = append(rows,
-		presentation.Row{{Text: "📚 Modules", ActionID: ActionHelp}},
-		presentation.Row{{Text: "🏠 Home", ActionID: ActionHome}},
+		presentation.Row{{Text: tr(locale, "assistant.button.modules"), ActionID: ActionHelp}},
+		presentation.Row{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}},
 	)
 	return presentation.View{Text: card.Render(), Rows: rows}
 }
 
 type HelpCommandModel struct {
 	Command core.Command
+	Locale  string
 }
 
 func HelpCommandView(model HelpCommandModel) presentation.View {
+	locale := shellLocale(model.Locale)
 	command := model.Command
 	name := strings.TrimSpace(command.Name)
 	if name == "" {
@@ -216,13 +222,13 @@ func HelpCommandView(model HelpCommandModel) presentation.View {
 	}
 	description := strings.TrimSpace(command.Description)
 	if description == "" {
-		description = "No command description is registered."
+		description = tr(locale, "assistant.help.no_description")
 	}
 	card := ui.NewCard("/" + name).
 		WithIcon("📖").
 		WithHeader(ui.EscapeHTML(description))
 	if usage := strings.TrimSpace(command.Usage); usage != "" {
-		card.AddField("Usage", ui.Code(usage))
+		card.AddField(tr(locale, "assistant.help.usage"), ui.Code(usage))
 	}
 	if len(command.Aliases) > 0 {
 		aliases := make([]string, 0, len(command.Aliases))
@@ -233,43 +239,43 @@ func HelpCommandView(model HelpCommandModel) presentation.View {
 			}
 		}
 		if len(aliases) > 0 {
-			card.AddField("Aliases", ui.EscapeHTML(strings.Join(aliases, ", ")))
+			card.AddField(tr(locale, "assistant.help.aliases"), ui.EscapeHTML(strings.Join(aliases, ", ")))
 		}
 	}
 	category := strings.TrimSpace(command.Category)
 	if category == "" {
 		category = "General"
 	}
-	card.AddField("Module", ui.EscapeHTML(category)).
-		AddField("Permission", command.Permission.String())
+	card.AddField(tr(locale, "assistant.help.module"), ui.EscapeHTML(category)).
+		AddField(tr(locale, "assistant.help.permission"), command.Permission.String())
 	contexts := make([]string, 0, 3)
 	if command.GroupOnly {
-		contexts = append(contexts, "Group only")
+		contexts = append(contexts, tr(locale, "assistant.help.group_only"))
 	}
 	if command.PrivateOnly {
-		contexts = append(contexts, "Private only")
+		contexts = append(contexts, tr(locale, "assistant.help.private_only"))
 	}
 	if command.ReplyOnly {
-		contexts = append(contexts, "Reply required")
+		contexts = append(contexts, tr(locale, "assistant.help.reply_required"))
 	}
 	if len(contexts) > 0 {
-		card.AddField("Context", strings.Join(contexts, " · "))
+		card.AddField(tr(locale, "assistant.help.context"), strings.Join(contexts, " · "))
 	}
 	if command.Cooldown > 0 {
-		card.AddField("Cooldown", command.Cooldown.String())
+		card.AddField(tr(locale, "assistant.help.cooldown"), command.Cooldown.String())
 	}
 	if command.Timeout > 0 {
-		card.AddField("Timeout", command.Timeout.String())
+		card.AddField(tr(locale, "assistant.help.timeout"), command.Timeout.String())
 	}
 	if len(command.Resources) > 0 {
-		card.AddField("Resources", strconv.Itoa(len(command.Resources)))
+		card.AddField(tr(locale, "assistant.help.resources"), strconv.Itoa(len(command.Resources)))
 	}
-	card.WithFooter("<i>Execute it with /" + ui.EscapeHTML(name) + ".</i>")
+	card.WithFooter(tr(locale, "assistant.help.execute", ui.EscapeHTML(name)))
 	return presentation.View{
 		Text: card.Render(),
 		Rows: []presentation.Row{
-			{{Text: "« Commands", ActionID: ActionHelpBack}, {Text: "📚 Modules", ActionID: ActionHelp}},
-			{{Text: "🏠 Home", ActionID: ActionHome}},
+			{{Text: tr(locale, "assistant.button.commands"), ActionID: ActionHelpBack}, {Text: tr(locale, "assistant.button.modules"), ActionID: ActionHelp}},
+			{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}},
 		},
 	}
 }
@@ -285,12 +291,13 @@ func truncateHelp(value string, limit int) string {
 	return string(runes[:limit-1]) + "…"
 }
 
-func PublicStartView(username string) presentation.View {
+func PublicStartView(username string, locales ...string) presentation.View {
+	locale := optionalLocale(locales)
 	username = normalizedUsername(username)
 	card := ui.NewCard("GoUltroid Assistant").
 		WithIcon("🤖").
-		WithHeader("Assistant endpoint is online.").
-		AddField("Bot", "@"+username).
-		WithRaw("<i>The interactive control shell is available only to its authorized owner.</i>")
+		WithHeader(tr(locale, "assistant.public.header")).
+		AddField(tr(locale, "assistant.field.bot"), "@"+username).
+		WithRaw(tr(locale, "assistant.public.owner_only"))
 	return presentation.View{Text: card.Render()}
 }

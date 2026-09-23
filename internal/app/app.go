@@ -354,6 +354,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	}
 	assistantShell := assistantshell.NewFeature()
 	assistantShell.SetInlineCatalog(pluginManager.FeatureCatalog())
+	assistantShell.SetSettingsService(domServices.settingsService)
 	assistantShell.SetStartTime(domServices.startTime)
 	if err := pluginManager.RegisterWithContext(context.Background(), assistantShell); err != nil {
 		return nil, fmt.Errorf("register assistant shell feature: %w", err)

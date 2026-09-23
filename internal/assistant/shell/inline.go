@@ -1,12 +1,14 @@
 package shell
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/inipew/goultroid/internal/feature"
 	inlineservice "github.com/inipew/goultroid/internal/services/inline"
+	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/ui"
 )
 
@@ -17,14 +19,22 @@ func (f *Feature) InlineBindings() []inlineservice.Binding {
 		return nil
 	}
 	return []inlineservice.Binding{
-		{InteractionID: InteractionInlineRoot, Handler: &inlineRootHandler{startTime: f.startTime}},
-		{InteractionID: InteractionInlineHelp, Handler: &inlineHelpHandler{catalog: f.inlineCatalog}},
-		{InteractionID: InteractionInlinePing, Handler: &inlinePingHandler{startTime: f.startTime}},
+		{InteractionID: InteractionInlineRoot, Handler: &inlineRootHandler{startTime: f.startTime, settingsSvc: f.settingsSvc}},
+		{InteractionID: InteractionInlineHelp, Handler: &inlineHelpHandler{catalog: f.inlineCatalog, settingsSvc: f.settingsSvc}},
+		{InteractionID: InteractionInlinePing, Handler: &inlinePingHandler{startTime: f.startTime, settingsSvc: f.settingsSvc}},
 	}
 }
 
+func inlineContextLocale(ctx *inlineservice.InlineContext, svc *settings.Service) string {
+	if ctx == nil {
+		return ResolveLocale(context.Background(), svc, 0, 0)
+	}
+	return ResolveLocale(ctx.Ctx, svc, ctx.UserID, 0)
+}
+
 type inlineRootHandler struct {
-	startTime time.Time
+	startTime   time.Time
+	settingsSvc *settings.Service
 }
 
 func (*inlineRootHandler) Pattern() string                      { return "" }
@@ -43,21 +53,32 @@ func (h *inlineRootHandler) HandleInline(ctx *inlineservice.InlineContext) ([]in
 	return response.Results, nil
 }
 
-func (h *inlineRootHandler) HandleInlineV2(*inlineservice.InlineContext) (*inlineservice.InlineResponse, error) {
+func (h *inlineRootHandler) HandleInlineV2(ctx *inlineservice.InlineContext) (*inlineservice.InlineResponse, error) {
+	locale := inlineContextLocale(ctx, h.settingsSvc)
 	uptime := inlineUptime(h.startTime)
 	text := fmt.Sprintf(
-		"⚡ <b>GoUltroid Inline Assistant</b>\n\n• <b>Status:</b> Active\n• <b>Uptime:</b> %s\n\nType <code>@bot help</code> to search feature commands or <code>@bot ping</code> for status.",
+		"⚡ <b>%s</b>
+
+• <b>%s:</b> %s
+• <b>%s:</b> %s
+
+%s",
+		tr(locale, "assistant.inline.title"),
+		tr(locale, "assistant.field.status"),
+		tr(locale, "assistant.inline.active"),
+		tr(locale, "assistant.field.uptime"),
 		ui.EscapeHTML(uptime),
+		tr(locale, "assistant.inline.hint"),
 	)
 	markup := ui.NewMarkup(ui.ButtonRow{
-		ui.NewSwitchInlineButton("🔍 Search Help", "help ", false),
-		ui.NewSwitchInlineButton("🏓 Ping Status", "ping", false),
+		ui.NewSwitchInlineButton(tr(locale, "assistant.inline.search_help"), "help ", false),
+		ui.NewSwitchInlineButton(tr(locale, "assistant.inline.ping_status"), "ping", false),
 	})
 	return &inlineservice.InlineResponse{
 		Results: []inlineservice.InlineResult{{
 			ID:          "default_menu",
-			Title:       "GoUltroid Assistant",
-			Description: "Search feature commands and view runtime status",
+			Title:       tr(locale, "assistant.inline.title"),
+			Description: tr(locale, "assistant.inline.description"),
 			Text:        text,
 			Markup:      &markup,
 		}},
@@ -66,7 +87,8 @@ func (h *inlineRootHandler) HandleInlineV2(*inlineservice.InlineContext) (*inlin
 }
 
 type inlinePingHandler struct {
-	startTime time.Time
+	startTime   time.Time
+	settingsSvc *settings.Service
 }
 
 func (*inlinePingHandler) Pattern() string                      { return "ping" }
@@ -85,25 +107,36 @@ func (h *inlinePingHandler) HandleInline(ctx *inlineservice.InlineContext) ([]in
 	return response.Results, nil
 }
 
-func (h *inlinePingHandler) HandleInlineV2(*inlineservice.InlineContext) (*inlineservice.InlineResponse, error) {
+func (h *inlinePingHandler) HandleInlineV2(ctx *inlineservice.InlineContext) (*inlineservice.InlineResponse, error) {
+	locale := inlineContextLocale(ctx, h.settingsSvc)
 	uptime := inlineUptime(h.startTime)
 	markup := ui.NewMarkup(ui.ButtonRow{
-		ui.NewSwitchInlineButton("Help Menu", "help", false),
+		ui.NewSwitchInlineButton(tr(locale, "assistant.inline.help_menu"), "help", false),
 	})
 	return &inlineservice.InlineResponse{
 		Results: []inlineservice.InlineResult{{
 			ID:          "ping_status",
-			Title:       "GoUltroid Status",
-			Description: "Online | Uptime " + uptime,
-			Text:        fmt.Sprintf("🏓 <b>GoUltroid Status</b>\n\n• <b>Status:</b> Online\n• <b>Uptime:</b> %s", ui.EscapeHTML(uptime)),
-			Markup:      &markup,
+			Title:       tr(locale, "assistant.inline.status_title"),
+			Description: tr(locale, "assistant.inline.online_uptime", uptime),
+			Text: fmt.Sprintf("🏓 <b>%s</b>
+
+• <b>%s:</b> %s
+• <b>%s:</b> %s",
+				tr(locale, "assistant.inline.status_title"),
+				tr(locale, "assistant.field.status"),
+				tr(locale, "assistant.inline.online"),
+				tr(locale, "assistant.field.uptime"),
+				ui.EscapeHTML(uptime),
+			),
+			Markup: &markup,
 		}},
 		Cache: inlineservice.CacheNone,
 	}, nil
 }
 
 type inlineHelpHandler struct {
-	catalog feature.Catalog
+	catalog     feature.Catalog
+	settingsSvc *settings.Service
 }
 
 func (*inlineHelpHandler) Pattern() string                      { return "help" }
@@ -123,6 +156,7 @@ func (h *inlineHelpHandler) HandleInline(ctx *inlineservice.InlineContext) ([]in
 }
 
 func (h *inlineHelpHandler) HandleInlineV2(ctx *inlineservice.InlineContext) (*inlineservice.InlineResponse, error) {
+	locale := inlineContextLocale(ctx, h.settingsSvc)
 	search := ""
 	if ctx != nil {
 		search = strings.ToLower(strings.TrimSpace(strings.Join(ctx.Args, " ")))
@@ -137,21 +171,28 @@ func (h *inlineHelpHandler) HandleInlineV2(ctx *inlineservice.InlineContext) (*i
 				}
 				description := strings.TrimSpace(command.Description)
 				if description == "" {
-					description = "No description"
+					description = tr(locale, "assistant.inline.no_description")
 				}
 				usage := strings.TrimSpace(command.Usage)
 				if usage == "" {
 					usage = command.Name
 				}
 				text := fmt.Sprintf(
-					"<b>Feature:</b> %s\n<b>Command:</b> <code>%s</code>\n<b>Description:</b> %s\n<b>Usage:</b> <code>%s</code>",
+					"<b>%s:</b> %s
+<b>%s:</b> <code>%s</code>
+<b>%s:</b> %s
+<b>%s:</b> <code>%s</code>",
+					tr(locale, "assistant.inline.feature"),
 					ui.EscapeHTML(entry.Spec.Name),
+					tr(locale, "assistant.inline.command"),
 					ui.EscapeHTML(command.Name),
+					tr(locale, "assistant.inline.description_field"),
 					ui.EscapeHTML(description),
+					tr(locale, "assistant.help.usage"),
 					ui.EscapeHTML(usage),
 				)
 				markup := ui.NewMarkup(ui.ButtonRow{
-					ui.NewSwitchInlineButton("Search More", "help ", false),
+					ui.NewSwitchInlineButton(tr(locale, "assistant.inline.search_more"), "help ", false),
 				})
 				results = append(results, inlineservice.InlineResult{
 					ID:          fmt.Sprintf("help_%d", len(results)),
@@ -171,13 +212,13 @@ func (h *inlineHelpHandler) HandleInlineV2(ctx *inlineservice.InlineContext) (*i
 	}
 
 	if len(results) == 0 {
-		message := "No commands matched the current feature catalog."
+		message := tr(locale, "assistant.inline.no_match")
 		if h.catalog == nil {
-			message = "Feature catalog is unavailable."
+			message = tr(locale, "assistant.inline.catalog_unavailable")
 		}
 		results = append(results, inlineservice.InlineResult{
 			ID:          "help_empty",
-			Title:       "GoUltroid Help",
+			Title:       tr(locale, "assistant.inline.help_title"),
 			Description: message,
 			Text:        ui.EscapeHTML(message),
 		})

@@ -9,9 +9,32 @@ import (
 const (
 	// DefaultLocale is the fallback locale when a translation is missing.
 	DefaultLocale = "en"
+	// LocaleEnglish is the canonical English locale.
+	LocaleEnglish = DefaultLocale
 	// LocaleIndonesian identifier.
 	LocaleIndonesian = "id"
 )
+
+// CanonicalLocale normalizes Telegram/settings locale variants to the bounded
+// Assistant locale vocabulary. The generic Service still supports arbitrary
+// catalogs added by callers through AddTranslations.
+func CanonicalLocale(locale string) string {
+	locale = strings.ToLower(strings.TrimSpace(locale))
+	locale = strings.ReplaceAll(locale, "_", "-")
+	switch {
+	case locale == LocaleIndonesian, locale == "in", strings.HasPrefix(locale, LocaleIndonesian+"-"):
+		return LocaleIndonesian
+	case locale == LocaleEnglish, strings.HasPrefix(locale, LocaleEnglish+"-"):
+		return LocaleEnglish
+	default:
+		return DefaultLocale
+	}
+}
+
+// SupportedLocales returns the canonical built-in Assistant locale vocabulary.
+func SupportedLocales() []string {
+	return []string{LocaleEnglish, LocaleIndonesian}
+}
 
 // Localizer provides internationalization and localized string resolution.
 type Localizer interface {
@@ -135,6 +158,14 @@ func interpolate(pattern string, args ...any) string {
 	return fmt.Sprintf(pattern, args...)
 }
 
+var builtinTranslator = New(DefaultLocale)
+
+// Translate resolves a built-in translation for the bounded Assistant locale
+// vocabulary without mutating process-global locale selection.
+func Translate(locale, key string, args ...any) string {
+	return builtinTranslator.TLocale(CanonicalLocale(locale), key, args...)
+}
+
 func (s *Service) loadBuiltinTranslations() {
 	en := map[string]string{
 		// Common
@@ -202,4 +233,5 @@ func (s *Service) loadBuiltinTranslations() {
 
 	s.AddTranslations(DefaultLocale, en)
 	s.AddTranslations(LocaleIndonesian, id)
+	s.loadAssistantTranslations()
 }
