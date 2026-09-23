@@ -47,11 +47,11 @@ func TestFeatureSpecAndViews(t *testing.T) {
 	}
 
 	home := HomeView(HomeModel{Username: "TestBot", Uptime: time.Minute, Refreshes: 1})
-	if len(home.Rows) != 3 || home.Rows[0][0].ActionID != ActionSettings || home.Rows[0][1].ActionID != ActionHelp {
+	if len(home.Rows) != 3 || home.Rows[0][0].ActionID != ActionLanguage || home.Rows[0][1].ActionID != ActionSettings {
 		t.Fatalf("unexpected home actions: %+v", home.Rows)
 	}
 	status := StatusView(StatusModel{Username: "TestBot", Uptime: time.Minute, Refreshes: 1})
-	if len(status.Rows) != 1 || status.Rows[0][0].ActionID != ActionStatusRefresh || status.Rows[0][1].ActionID != ActionHome {
+	if len(status.Rows) != 2 || len(status.Rows[0]) != 1 || status.Rows[0][0].ActionID != ActionStatusRefresh || len(status.Rows[1]) != 1 || status.Rows[1][0].ActionID != ActionHome {
 		t.Fatalf("unexpected status actions: %+v", status.Rows)
 	}
 }
