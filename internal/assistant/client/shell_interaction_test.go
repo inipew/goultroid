@@ -190,7 +190,7 @@ func TestAssistantShellReadOnlyNavigationUsesOneRevisionFencedSession(t *testing
 	if err := dispatchShell(t, engine, statusFromHome, 200, peer); err != nil {
 		t.Fatalf("Dispatch(status) error = %v", err)
 	}
-	if !strings.Contains(port.edited.Text, "System Status") {
+	if !strings.Contains(port.edited.Text, "GoUltroid Assistant - Stats") {
 		t.Fatalf("status view not rendered: %q", port.edited.Text)
 	}
 	if err := dispatchShell(t, engine, statusFromHome, 201, peer); !errors.Is(err, rootinteraction.ErrStaleToken) {
