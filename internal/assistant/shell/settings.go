@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"strconv"
 	"strings"
@@ -10,63 +11,294 @@ import (
 	"github.com/inipew/goultroid/internal/ui"
 )
 
+const (
+	SettingsCategorySlotCount = 8
+	SettingSlotCount          = 8
+)
+
+var settingsCategorySlotActions = [SettingsCategorySlotCount]string{
+	"settings_category_slot_0", "settings_category_slot_1", "settings_category_slot_2", "settings_category_slot_3",
+	"settings_category_slot_4", "settings_category_slot_5", "settings_category_slot_6", "settings_category_slot_7",
+}
+
+var settingSlotActions = [SettingSlotCount]string{
+	"setting_slot_0", "setting_slot_1", "setting_slot_2", "setting_slot_3",
+	"setting_slot_4", "setting_slot_5", "setting_slot_6", "setting_slot_7",
+}
+
+func SettingsCategorySlotActionIDs() []string {
+	return append([]string(nil), settingsCategorySlotActions[:]...)
+}
+
+func SettingSlotActionIDs() []string {
+	return append([]string(nil), settingSlotActions[:]...)
+}
+
 type SettingsCategory struct {
 	ID    string
 	Label string
 	Count int
 }
 
+func SettingsHomeState(raw []byte, categories []SettingsCategory, reset bool) []byte {
+	state := DecodeState(raw)
+	page := 0
+	if !reset {
+		switch state.Screen {
+		case ScreenSettings:
+			current := int(state.CategoryIndex)
+			if settingsPageBindingMatches(state, settingsCategoryPageBinding(categories, current)) {
+				page = current
+			}
+		case ScreenSettingsCategory, ScreenSettingDetail, ScreenSettingInput:
+			index := int(state.CategoryIndex)
+			if index >= 0 && index < len(categories) {
+				page = index / SettingsCategorySlotCount
+			}
+		}
+	}
+	_, _, page, _ = settingsPageWindow(len(categories), page, SettingsCategorySlotCount)
+	state.Screen = ScreenSettings
+	state.CategoryIndex = uint16(page)
+	state.SettingIndex = 0
+	setSettingsPageBinding(&state, settingsCategoryPageBinding(categories, page))
+	return EncodeState(state)
+}
+
+func StepSettingsCategoryPageState(raw []byte, categories []SettingsCategory, delta int) ([]byte, bool) {
+	state := DecodeState(raw)
+	page := int(state.CategoryIndex)
+	if state.Screen != ScreenSettings || !settingsPageBindingMatches(state, settingsCategoryPageBinding(categories, page)) {
+		return nil, false
+	}
+	page = stepIndex(page, settingsPageCount(len(categories), SettingsCategorySlotCount), delta)
+	state.CategoryIndex = uint16(page)
+	state.SettingIndex = 0
+	setSettingsPageBinding(&state, settingsCategoryPageBinding(categories, page))
+	return EncodeState(state), true
+}
+
+func ResolveSettingsCategorySlot(raw []byte, categories []SettingsCategory, slot int) (SettingsCategory, int, bool) {
+	state := DecodeState(raw)
+	page := int(state.CategoryIndex)
+	if slot < 0 || slot >= SettingsCategorySlotCount || state.Screen != ScreenSettings ||
+		!settingsPageBindingMatches(state, settingsCategoryPageBinding(categories, page)) {
+		return SettingsCategory{}, 0, false
+	}
+	start, end, _, _ := settingsPageWindow(len(categories), page, SettingsCategorySlotCount)
+	index := start + slot
+	if index < start || index >= end {
+		return SettingsCategory{}, 0, false
+	}
+	return categories[index], index, true
+}
+
+func SettingsCategoryState(raw []byte, categoryIndex int, category SettingsCategory, defs []settings.SettingDefinition, page int) []byte {
+	state := DecodeState(raw)
+	_, _, page, _ = settingsPageWindow(len(defs), page, SettingSlotCount)
+	state.Screen = ScreenSettingsCategory
+	state.CategoryIndex = uint16(categoryIndex)
+	state.SettingIndex = uint16(page)
+	setSettingsPageBinding(&state, settingsDefinitionPageBinding(category.ID, defs, page))
+	return EncodeState(state)
+}
+
+func StepSettingPageState(raw []byte, category SettingsCategory, defs []settings.SettingDefinition, delta int) ([]byte, bool) {
+	state := DecodeState(raw)
+	page := int(state.SettingIndex)
+	if state.Screen != ScreenSettingsCategory ||
+		!settingsPageBindingMatches(state, settingsDefinitionPageBinding(category.ID, defs, page)) {
+		return nil, false
+	}
+	page = stepIndex(page, settingsPageCount(len(defs), SettingSlotCount), delta)
+	state.SettingIndex = uint16(page)
+	setSettingsPageBinding(&state, settingsDefinitionPageBinding(category.ID, defs, page))
+	return EncodeState(state), true
+}
+
+func ResolveSettingSlot(raw []byte, category SettingsCategory, defs []settings.SettingDefinition, slot int) (settings.SettingDefinition, int, bool) {
+	state := DecodeState(raw)
+	page := int(state.SettingIndex)
+	if slot < 0 || slot >= SettingSlotCount || state.Screen != ScreenSettingsCategory ||
+		!settingsPageBindingMatches(state, settingsDefinitionPageBinding(category.ID, defs, page)) {
+		return settings.SettingDefinition{}, 0, false
+	}
+	start, end, _, _ := settingsPageWindow(len(defs), page, SettingSlotCount)
+	index := start + slot
+	if index < start || index >= end {
+		return settings.SettingDefinition{}, 0, false
+	}
+	return defs[index], index, true
+}
+
+func SettingDetailState(raw []byte, settingIndex int) []byte {
+	state := DecodeState(raw)
+	state.Screen = ScreenSettingDetail
+	state.SettingIndex = uint16(settingIndex)
+	clearSettingBinding(&state)
+	return EncodeState(state)
+}
+
+func BackSettingsCategoryState(raw []byte, categoryIndex int, category SettingsCategory, defs []settings.SettingDefinition, settingIndex int) []byte {
+	page := 0
+	if settingIndex > 0 {
+		page = settingIndex / SettingSlotCount
+	}
+	return SettingsCategoryState(raw, categoryIndex, category, defs, page)
+}
+
+func settingsPageCount(total, pageSize int) int {
+	if pageSize <= 0 || total <= 0 {
+		return 1
+	}
+	return (total + pageSize - 1) / pageSize
+}
+
+func settingsPageWindow(total, page, pageSize int) (start, end, current, pages int) {
+	pages = settingsPageCount(total, pageSize)
+	current = clampIndex(page, pages)
+	start = current * pageSize
+	if start > total {
+		start = total
+	}
+	end = start + pageSize
+	if end > total {
+		end = total
+	}
+	return
+}
+
+func settingsPageBinding(kind string, page int, identities []string) [bindingBytes]byte {
+	var source strings.Builder
+	source.WriteString("settings\x00")
+	source.WriteString(kind)
+	source.WriteByte(0)
+	source.WriteString(strconv.Itoa(page))
+	for _, identity := range identities {
+		source.WriteByte(0)
+		source.WriteString(strings.ToLower(strings.TrimSpace(identity)))
+	}
+	sum := sha256.Sum256([]byte(source.String()))
+	var binding [bindingBytes]byte
+	copy(binding[:], sum[:bindingBytes])
+	return binding
+}
+
+func setSettingsPageBinding(state *State, binding [bindingBytes]byte) {
+	clearSettingBinding(state)
+	state.SettingBinding = binding
+}
+
+func settingsPageBindingMatches(state State, binding [bindingBytes]byte) bool {
+	return state.SchemaVersion == 0 &&
+		state.SettingBinding != ([bindingBytes]byte{}) &&
+		state.SettingBinding == binding
+}
+
+func settingsCategoryPageBinding(categories []SettingsCategory, page int) [bindingBytes]byte {
+	start, end, page, _ := settingsPageWindow(len(categories), page, SettingsCategorySlotCount)
+	identities := make([]string, 0, end-start)
+	for _, category := range categories[start:end] {
+		identities = append(identities, category.ID)
+	}
+	return settingsPageBinding("categories", page, identities)
+}
+
+func settingsDefinitionPageBinding(category string, defs []settings.SettingDefinition, page int) [bindingBytes]byte {
+	start, end, page, _ := settingsPageWindow(len(defs), page, SettingSlotCount)
+	identities := make([]string, 0, 1+end-start)
+	identities = append(identities, category)
+	for _, def := range defs[start:end] {
+		identities = append(identities, settingDefinitionSlotIdentity(def))
+	}
+	return settingsPageBinding("definitions", page, identities)
+}
+
+func settingDefinitionSlotIdentity(def settings.SettingDefinition) string {
+	minValue := ""
+	if def.MinVal != nil {
+		minValue = strconv.FormatInt(*def.MinVal, 10)
+	}
+	maxValue := ""
+	if def.MaxVal != nil {
+		maxValue = strconv.FormatInt(*def.MaxVal, 10)
+	}
+	return strings.Join([]string{
+		def.Namespace,
+		def.Key,
+		string(def.Type),
+		def.DefaultValue,
+		strings.Join(def.AllowedValues, "\x1f"),
+		minValue,
+		maxValue,
+		def.Title,
+		def.Description,
+		def.Category,
+		string(def.UI.Widget),
+		strconv.FormatInt(def.UI.Step, 10),
+		strings.Join(def.UI.Presets, "\x1f"),
+		strconv.FormatBool(def.UI.Confirm),
+		strconv.FormatBool(def.UI.Searchable),
+		strconv.Itoa(def.Order),
+		strconv.FormatBool(def.Sensitive),
+	}, "\x1e")
+}
+
 type SettingsHomeModel struct {
-	Category SettingsCategory
-	Total    int
-	Selected int
-	Locale   string
+	Categories []SettingsCategory
+	Page       int
+	Locale     string
 }
 
 func SettingsHomeView(model SettingsHomeModel) presentation.View {
 	locale := shellLocale(model.Locale)
+	start, end, page, pages := settingsPageWindow(len(model.Categories), model.Page, SettingsCategorySlotCount)
 	card := ui.NewCard("GoUltroid Settings").
 		WithIcon("⚙️").
 		WithHeader(tr(locale, "assistant.settings.header")).
-		AddField(tr(locale, "assistant.settings.categories"), strconv.Itoa(model.Total))
+		AddField(tr(locale, "assistant.settings.categories"), strconv.Itoa(len(model.Categories)))
 
-	rows := []presentation.Row{}
-	if model.Total <= 0 {
+	rows := make([]presentation.Row, 0, 5)
+	if len(model.Categories) == 0 {
 		card.WithRaw(tr(locale, "assistant.settings.empty"))
 	} else {
-		selected := clampIndex(model.Selected, model.Total)
-		label := strings.TrimSpace(model.Category.Label)
-		if label == "" {
-			label = model.Category.ID
+		if pages > 1 {
+			card.AddField(tr(locale, "assistant.settings.position"), fmt.Sprintf("%d / %d", page+1, pages))
 		}
-		card.AddField(tr(locale, "assistant.settings.selected"), fmt.Sprintf("%s · %d", ui.EscapeHTML(label), model.Category.Count)).
-			AddField(tr(locale, "assistant.settings.position"), fmt.Sprintf("%d / %d", selected+1, model.Total))
-		if model.Total > 1 {
-			rows = append(rows, presentation.Row{
-				{Text: tr(locale, "assistant.button.previous"), ActionID: ActionSettingsPrev},
-				{Text: tr(locale, "assistant.button.open"), ActionID: ActionSettingsOpen},
-				{Text: tr(locale, "assistant.button.next"), ActionID: ActionSettingsNext},
-			})
-		} else {
-			rows = append(rows, presentation.Row{{Text: tr(locale, "assistant.button.open"), ActionID: ActionSettingsOpen}})
+		for index := start; index < end; index += 2 {
+			row := make(presentation.Row, 0, 2)
+			for cursor := index; cursor < end && cursor < index+2; cursor++ {
+				slot := cursor - start
+				label := strings.TrimSpace(model.Categories[cursor].Label)
+				if label == "" {
+					label = model.Categories[cursor].ID
+				}
+				row = append(row, presentation.Button{
+					Text:     truncateSettingsLabel(label, 32),
+					ActionID: settingsCategorySlotActions[slot],
+				})
+			}
+			rows = append(rows, row)
 		}
 	}
+	if pages > 1 {
+		rows = append(rows, presentation.Row{
+			{Text: tr(locale, "assistant.button.previous"), ActionID: ActionSettingsPrev},
+			{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome},
+			{Text: tr(locale, "assistant.button.next"), ActionID: ActionSettingsNext},
+		})
+	} else {
+		rows = append(rows, presentation.Row{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}})
+	}
 	card.WithFooter(tr(locale, "assistant.settings.footer"))
-	rows = append(rows, presentation.Row{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}})
 	return presentation.View{Text: card.Render(), Rows: rows}
 }
 
-type SettingSummary struct {
-	Title string
-	Value string
-}
-
 type SettingsCategoryModel struct {
-	Category SettingsCategory
-	Current  SettingSummary
-	Total    int
-	Selected int
-	Locale   string
+	Category    SettingsCategory
+	Definitions []settings.SettingDefinition
+	Page        int
+	Locale      string
 }
 
 func SettingsCategoryView(model SettingsCategoryModel) presentation.View {
@@ -75,34 +307,57 @@ func SettingsCategoryView(model SettingsCategoryModel) presentation.View {
 	if label == "" {
 		label = model.Category.ID
 	}
+	start, end, page, pages := settingsPageWindow(len(model.Definitions), model.Page, SettingSlotCount)
 	card := ui.NewCard(label).
 		WithIcon("📂").
 		WithHeader(tr(locale, "assistant.settings.category_header")).
-		AddField(tr(locale, "assistant.settings.settings"), strconv.Itoa(model.Total))
+		AddField(tr(locale, "assistant.settings.settings"), strconv.Itoa(len(model.Definitions)))
 
-	rows := []presentation.Row{}
-	if model.Total <= 0 {
+	rows := make([]presentation.Row, 0, 5)
+	if len(model.Definitions) == 0 {
 		card.WithRaw(tr(locale, "assistant.settings.category_empty"))
 	} else {
-		selected := clampIndex(model.Selected, model.Total)
-		card.AddField(tr(locale, "assistant.settings.selected"), ui.EscapeHTML(model.Current.Title)).
-			AddField(tr(locale, "assistant.settings.current"), model.Current.Value).
-			AddField(tr(locale, "assistant.settings.position"), fmt.Sprintf("%d / %d", selected+1, model.Total))
-		if model.Total > 1 {
-			rows = append(rows, presentation.Row{
-				{Text: tr(locale, "assistant.button.previous"), ActionID: ActionSettingPrev},
-				{Text: tr(locale, "assistant.button.details"), ActionID: ActionSettingOpen},
-				{Text: tr(locale, "assistant.button.next"), ActionID: ActionSettingNext},
-			})
-		} else {
-			rows = append(rows, presentation.Row{{Text: tr(locale, "assistant.button.details"), ActionID: ActionSettingOpen}})
+		if pages > 1 {
+			card.AddField(tr(locale, "assistant.settings.position"), fmt.Sprintf("%d / %d", page+1, pages))
+		}
+		for index := start; index < end; index += 2 {
+			row := make(presentation.Row, 0, 2)
+			for cursor := index; cursor < end && cursor < index+2; cursor++ {
+				slot := cursor - start
+				def := LocalizedSettingDefinition(locale, model.Definitions[cursor])
+				title := strings.TrimSpace(def.Title)
+				if title == "" {
+					title = def.Namespace + ":" + def.Key
+				}
+				row = append(row, presentation.Button{
+					Text:     truncateSettingsLabel(title, 32),
+					ActionID: settingSlotActions[slot],
+				})
+			}
+			rows = append(rows, row)
 		}
 	}
-	rows = append(rows,
-		presentation.Row{{Text: tr(locale, "assistant.settings.categories"), ActionID: ActionSettings}},
-		presentation.Row{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}},
-	)
+	if pages > 1 {
+		rows = append(rows, presentation.Row{
+			{Text: tr(locale, "assistant.button.previous"), ActionID: ActionSettingPrev},
+			{Text: tr(locale, "assistant.settings.categories"), ActionID: ActionSettings},
+			{Text: tr(locale, "assistant.button.next"), ActionID: ActionSettingNext},
+		})
+	} else {
+		rows = append(rows, presentation.Row{{Text: tr(locale, "assistant.settings.categories"), ActionID: ActionSettings}})
+	}
 	return presentation.View{Text: card.Render(), Rows: rows}
+}
+
+func truncateSettingsLabel(value string, limit int) string {
+	runes := []rune(strings.TrimSpace(value))
+	if limit <= 0 || len(runes) <= limit {
+		return string(runes)
+	}
+	if limit == 1 {
+		return "…"
+	}
+	return string(runes[:limit-1]) + "…"
 }
 
 type SettingDetailModel struct {

@@ -55,7 +55,7 @@ func TestPlanMutationRejectsStringAndWrongOperation(t *testing.T) {
 }
 
 func TestSettingBindingStableAndVersioned(t *testing.T) {
-	raw := BindSettingState(OpenSettingState(InitialState(), 1), " Core ", "Prefix", 9)
+	raw := BindSettingState(EncodeState(State{Screen: ScreenSettingDetail}), " Core ", "Prefix", 9)
 	if !SettingBindingMatches(raw, "core", "prefix") {
 		t.Fatal("normalized binding did not match")
 	}

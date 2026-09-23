@@ -15,8 +15,9 @@ import (
 )
 
 type shellSettingsRepo struct {
-	mu    sync.Mutex
-	items map[string]*settings.SettingItem
+	mu             sync.Mutex
+	items          map[string]*settings.SettingItem
+	effectiveReads int
 }
 
 func newShellSettingsRepo() *shellSettingsRepo {
@@ -41,6 +42,7 @@ func (r *shellSettingsRepo) GetSetting(_ context.Context, scope string, scopeID 
 func (r *shellSettingsRepo) GetEffectiveSetting(_ context.Context, namespace, key string, chatID, userID int64) (*settings.SettingItem, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.effectiveReads++
 	for _, ref := range []struct {
 		scope string
 		id    int64
@@ -85,6 +87,12 @@ func (r *shellSettingsRepo) DeleteSetting(_ context.Context, scope string, scope
 	delete(r.items, r.key(scope, scopeID, namespace, key))
 	r.mu.Unlock()
 	return nil
+}
+
+func (r *shellSettingsRepo) EffectiveReadCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.effectiveReads
 }
 
 func (*shellSettingsRepo) ListSettings(context.Context, string, int64, string) ([]settings.SettingItem, error) {
@@ -161,27 +169,36 @@ func TestAssistantShellSettingsNavigationUsesCentralService(t *testing.T) {
 	if err := dispatchShell(t, engine, settingsFromHome, 400, peer); err != nil {
 		t.Fatalf("Dispatch(settings) error = %v", err)
 	}
-	if !strings.Contains(port.edited.Text, "GoUltroid Settings") || !strings.Contains(port.edited.Text, "General") {
+	if !strings.Contains(port.edited.Text, "GoUltroid Settings") {
 		t.Fatalf("settings home not rendered from registry: %q", port.edited.Text)
 	}
 	if err := dispatchShell(t, engine, settingsFromHome, 401, peer); !errors.Is(err, rootinteraction.ErrStaleToken) {
 		t.Fatalf("old settings token error = %v, want %v", err, rootinteraction.ErrStaleToken)
 	}
+	if got := repo.EffectiveReadCount(); got != 0 {
+		t.Fatalf("settings root performed effective value reads = %d, want 0", got)
+	}
 
-	openGeneral := callbackForAction(t, port.edited, assistantshell.ActionSettingsOpen)
+	openGeneral := callbackForAction(t, port.edited, assistantshell.SettingsCategorySlotActionIDs()[0])
 	if err := dispatchShell(t, engine, openGeneral, 402, peer); err != nil {
-		t.Fatalf("Dispatch(open general) error = %v", err)
+		t.Fatalf("Dispatch(general slot) error = %v", err)
 	}
-	if !strings.Contains(port.edited.Text, "Command Prefix") || !strings.Contains(port.edited.Text, "• <b>Current:</b> <code>!</code>") {
-		t.Fatalf("general category missing effective value: %q", port.edited.Text)
+	if !strings.Contains(port.edited.Text, "General") {
+		t.Fatalf("general category missing: %q", port.edited.Text)
+	}
+	if got := repo.EffectiveReadCount(); got != 0 {
+		t.Fatalf("settings category grid performed effective value reads = %d, want 0", got)
 	}
 
-	openPrefix := callbackForAction(t, port.edited, assistantshell.ActionSettingOpen)
+	openPrefix := callbackForAction(t, port.edited, assistantshell.SettingSlotActionIDs()[0])
 	if err := dispatchShell(t, engine, openPrefix, 403, peer); err != nil {
-		t.Fatalf("Dispatch(prefix detail) error = %v", err)
+		t.Fatalf("Dispatch(prefix slot) error = %v", err)
 	}
 	if !strings.Contains(port.edited.Text, "User override") || !strings.Contains(port.edited.Text, "• <b>Current:</b> !") {
 		t.Fatalf("prefix detail missing source/value: %q", port.edited.Text)
+	}
+	if got := repo.EffectiveReadCount(); got == 0 {
+		t.Fatal("setting detail did not resolve effective value")
 	}
 	if callbackForAction(t, port.edited, assistantshell.ActionSettingInput) == nil {
 		t.Fatal("string detail missing a2 free-form input action")
@@ -194,30 +211,58 @@ func TestAssistantShellSettingsNavigationUsesCentralService(t *testing.T) {
 	if err := dispatchShell(t, engine, backCategories, 404, peer); err != nil {
 		t.Fatalf("Dispatch(categories) error = %v", err)
 	}
-	nextCategory := callbackForAction(t, port.edited, assistantshell.ActionSettingsNext)
-	if err := dispatchShell(t, engine, nextCategory, 405, peer); err != nil {
-		t.Fatalf("Dispatch(next category) error = %v", err)
+	openSecurity := callbackForAction(t, port.edited, assistantshell.SettingsCategorySlotActionIDs()[1])
+	if err := dispatchShell(t, engine, openSecurity, 405, peer); err != nil {
+		t.Fatalf("Dispatch(security slot) error = %v", err)
 	}
 	if !strings.Contains(port.edited.Text, "Security") {
-		t.Fatalf("security category not selected: %q", port.edited.Text)
+		t.Fatalf("security category not opened: %q", port.edited.Text)
 	}
 
-	openSecurity := callbackForAction(t, port.edited, assistantshell.ActionSettingsOpen)
-	if err := dispatchShell(t, engine, openSecurity, 406, peer); err != nil {
-		t.Fatalf("Dispatch(open security) error = %v", err)
+	openToken := callbackForAction(t, port.edited, assistantshell.SettingSlotActionIDs()[0])
+	if err := dispatchShell(t, engine, openToken, 406, peer); err != nil {
+		t.Fatalf("Dispatch(token slot) error = %v", err)
 	}
-	if strings.Contains(port.edited.Text, "runtime-secret") || !strings.Contains(port.edited.Text, "••••") {
-		t.Fatalf("sensitive category value leaked: %q", port.edited.Text)
-	}
-
-	openToken := callbackForAction(t, port.edited, assistantshell.ActionSettingOpen)
-	if err := dispatchShell(t, engine, openToken, 407, peer); err != nil {
-		t.Fatalf("Dispatch(token detail) error = %v", err)
-	}
-	if strings.Contains(port.edited.Text, "runtime-secret") || strings.Contains(port.edited.Text, "default-secret") {
+	if strings.Contains(port.edited.Text, "runtime-secret") || strings.Contains(port.edited.Text, "default-secret") || !strings.Contains(port.edited.Text, "••••") {
 		t.Fatalf("sensitive detail leaked value: %q", port.edited.Text)
 	}
 	if got := manager.InteractionRuntime().Stats().Sessions; got != 1 {
 		t.Fatalf("settings navigation sessions = %d, want 1", got)
+	}
+}
+
+func TestAssistantShellSettingsSlotRejectsRegistryRemap(t *testing.T) {
+	manager, client, port, engine := newShellEngine(t)
+	defer manager.Shutdown()
+
+	registry := settings.NewRegistry()
+	for _, def := range []settings.SettingDefinition{
+		{Namespace: "media", Key: "enabled", Type: settings.TypeBool, DefaultValue: "false", Title: "Media", Category: "media"},
+		{Namespace: "system", Key: "enabled", Type: settings.TypeBool, DefaultValue: "false", Title: "System", Category: "system"},
+	} {
+		if err := registry.Register(def); err != nil {
+			t.Fatalf("Register(%s) error = %v", def.Namespace, err)
+		}
+	}
+	client.SetSettingsService(settings.NewService(newShellSettingsRepo(), registry, nil))
+
+	peer := &tg.InputPeerUser{UserID: 7}
+	beginShell(t, engine, port, peer)
+	settingsAction := callbackForAction(t, port.sent, assistantshell.ActionSettings)
+	if err := dispatchShell(t, engine, settingsAction, 500, peer); err != nil {
+		t.Fatalf("Dispatch(settings) error = %v", err)
+	}
+	oldSlot := callbackForAction(t, port.edited, assistantshell.SettingsCategorySlotActionIDs()[0])
+
+	if err := registry.Register(settings.SettingDefinition{
+		Namespace: "aaa", Key: "enabled", Type: settings.TypeBool, DefaultValue: "false", Title: "AAA", Category: "aardvark",
+	}); err != nil {
+		t.Fatalf("Register(aardvark) error = %v", err)
+	}
+	if err := dispatchShell(t, engine, oldSlot, 501, peer); !errors.Is(err, ErrShellSettingsSelectionStale) {
+		t.Fatalf("registry-remapped slot error = %v, want %v", err, ErrShellSettingsSelectionStale)
+	}
+	if !strings.Contains(port.edited.Text, "GoUltroid Settings") {
+		t.Fatalf("stale settings slot unexpectedly transitioned view: %q", port.edited.Text)
 	}
 }

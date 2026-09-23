@@ -28,7 +28,8 @@ var (
 	ErrShellUnavailable         = errors.New("assistant/client: assistant shell unavailable")
 	ErrShellAdmission           = errors.New("assistant/client: assistant shell admission denied")
 	ErrShellSettingBindingStale = errors.New("assistant/client: setting binding is stale")
-	ErrShellHelpSelectionStale  = errors.New("assistant/client: help selection is stale")
+	ErrShellHelpSelectionStale     = errors.New("assistant/client: help selection is stale")
+	ErrShellSettingsSelectionStale = errors.New("assistant/client: settings selection is stale")
 )
 
 func (c *AssistantClient) dispatchStart(ctx *command.Context) error {
@@ -256,7 +257,7 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 
 	c.shellMu.Lock()
 	defer c.shellMu.Unlock()
-	expectedRegistrations := 28 + assistantshell.HelpModuleSlotCount + assistantshell.HelpCommandSlotCount
+	expectedRegistrations := 26 + assistantshell.HelpModuleSlotCount + assistantshell.HelpCommandSlotCount + assistantshell.SettingsCategorySlotCount + assistantshell.SettingSlotCount
 	if c.shellScope == scope && len(c.shellRegistrations) == expectedRegistrations {
 		return nil
 	}
@@ -304,10 +305,8 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 		{id: assistantshell.ActionLanguageIndonesian, handler: c.handleShellLanguageIndonesian},
 		{id: assistantshell.ActionSettingsPrev, handler: c.handleShellSettingsPrev},
 		{id: assistantshell.ActionSettingsNext, handler: c.handleShellSettingsNext},
-		{id: assistantshell.ActionSettingsOpen, handler: c.handleShellSettingsOpen},
 		{id: assistantshell.ActionSettingPrev, handler: c.handleShellSettingPrev},
 		{id: assistantshell.ActionSettingNext, handler: c.handleShellSettingNext},
-		{id: assistantshell.ActionSettingOpen, handler: c.handleShellSettingOpen},
 		{id: assistantshell.ActionSettingBack, handler: c.handleShellSettingBack},
 		{id: assistantshell.ActionSettingChange, handler: c.handleShellSettingChange},
 		{id: assistantshell.ActionSettingDecrease, handler: c.handleShellSettingDecrease},
@@ -334,6 +333,24 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 		slot := slot
 		if err := register(actionID, func(ctx *orchestration.Context) error {
 			return c.handleShellHelpCommandSlot(ctx, slot)
+		}); err != nil {
+			closeShellRegistrations(registrations)
+			return err
+		}
+	}
+	for slot, actionID := range assistantshell.SettingsCategorySlotActionIDs() {
+		slot := slot
+		if err := register(actionID, func(ctx *orchestration.Context) error {
+			return c.handleShellSettingsCategorySlot(ctx, slot)
+		}); err != nil {
+			closeShellRegistrations(registrations)
+			return err
+		}
+	}
+	for slot, actionID := range assistantshell.SettingSlotActionIDs() {
+		slot := slot
+		if err := register(actionID, func(ctx *orchestration.Context) error {
+			return c.handleShellSettingSlot(ctx, slot)
 		}); err != nil {
 			closeShellRegistrations(registrations)
 			return err
@@ -439,8 +456,19 @@ func (c *AssistantClient) handleShellSettings(ctx *orchestration.Context) error 
 	if err := c.admitShellScreen(ctx, assistantshell.InteractionSettings); err != nil {
 		return err
 	}
-	state := assistantshell.ScreenState(ctx.State(), assistantshell.ScreenSettings)
+	svc := c.shellSettingsService()
+	if svc == nil || svc.Registry() == nil {
+		return ErrShellUnavailable
+	}
 	session := ctx.Session()
+	locale := c.shellInteractionLocale(ctx)
+	categories := shellSettingsCategories(svc.Registry(), locale)
+	current := assistantshell.DecodeState(ctx.State())
+	reset := current.Screen != assistantshell.ScreenSettings &&
+		current.Screen != assistantshell.ScreenSettingsCategory &&
+		current.Screen != assistantshell.ScreenSettingDetail &&
+		current.Screen != assistantshell.ScreenSettingInput
+	state := assistantshell.SettingsHomeState(ctx.State(), categories, reset)
 	view, err := c.shellSettingsHomeView(ctx.Context(), session.Binding.ActorID, session.Binding.ChatID, state)
 	if err != nil {
 		return err
@@ -449,14 +477,14 @@ func (c *AssistantClient) handleShellSettings(ctx *orchestration.Context) error 
 }
 
 func (c *AssistantClient) handleShellSettingsPrev(ctx *orchestration.Context) error {
-	return c.stepShellSettingsCategory(ctx, -1)
+	return c.stepShellSettingsCategoryPage(ctx, -1)
 }
 
 func (c *AssistantClient) handleShellSettingsNext(ctx *orchestration.Context) error {
-	return c.stepShellSettingsCategory(ctx, 1)
+	return c.stepShellSettingsCategoryPage(ctx, 1)
 }
 
-func (c *AssistantClient) stepShellSettingsCategory(ctx *orchestration.Context, delta int) error {
+func (c *AssistantClient) stepShellSettingsCategoryPage(ctx *orchestration.Context, delta int) error {
 	if err := c.admitShellScreen(ctx, assistantshell.InteractionSettings); err != nil {
 		return err
 	}
@@ -464,9 +492,13 @@ func (c *AssistantClient) stepShellSettingsCategory(ctx *orchestration.Context, 
 	if svc == nil || svc.Registry() == nil {
 		return ErrShellUnavailable
 	}
-	categories := svc.Registry().Categories()
-	state := assistantshell.StepCategoryState(ctx.State(), len(categories), delta)
 	session := ctx.Session()
+	locale := c.shellInteractionLocale(ctx)
+	categories := shellSettingsCategories(svc.Registry(), locale)
+	state, ok := assistantshell.StepSettingsCategoryPageState(ctx.State(), categories, delta)
+	if !ok {
+		return ErrShellSettingsSelectionStale
+	}
 	view, err := c.shellSettingsHomeView(ctx.Context(), session.Binding.ActorID, session.Binding.ChatID, state)
 	if err != nil {
 		return err
@@ -474,7 +506,7 @@ func (c *AssistantClient) stepShellSettingsCategory(ctx *orchestration.Context, 
 	return ctx.Transition(state, 0, view)
 }
 
-func (c *AssistantClient) handleShellSettingsOpen(ctx *orchestration.Context) error {
+func (c *AssistantClient) handleShellSettingsCategorySlot(ctx *orchestration.Context, slot int) error {
 	if err := c.admitShellScreen(ctx, assistantshell.InteractionSettingsCategory); err != nil {
 		return err
 	}
@@ -482,8 +514,16 @@ func (c *AssistantClient) handleShellSettingsOpen(ctx *orchestration.Context) er
 	if svc == nil || svc.Registry() == nil {
 		return ErrShellUnavailable
 	}
-	categories := svc.Registry().Categories()
-	state := assistantshell.OpenCategoryState(ctx.State(), len(categories))
+	reg := svc.Registry()
+	locale := c.shellInteractionLocale(ctx)
+	categories := shellSettingsCategories(reg, locale)
+	category, categoryIndex, ok := assistantshell.ResolveSettingsCategorySlot(ctx.State(), categories, slot)
+	if !ok {
+		return ErrShellSettingsSelectionStale
+	}
+	defs := reg.ListByCategory(category.ID)
+	category.Count = len(defs)
+	state := assistantshell.SettingsCategoryState(ctx.State(), categoryIndex, category, defs, 0)
 	view, err := c.shellSettingsCategoryView(ctx.Context(), ctx.Session().Binding.ActorID, ctx.Session().Binding.ChatID, state)
 	if err != nil {
 		return err
@@ -492,14 +532,14 @@ func (c *AssistantClient) handleShellSettingsOpen(ctx *orchestration.Context) er
 }
 
 func (c *AssistantClient) handleShellSettingPrev(ctx *orchestration.Context) error {
-	return c.stepShellSetting(ctx, -1)
+	return c.stepShellSettingPage(ctx, -1)
 }
 
 func (c *AssistantClient) handleShellSettingNext(ctx *orchestration.Context) error {
-	return c.stepShellSetting(ctx, 1)
+	return c.stepShellSettingPage(ctx, 1)
 }
 
-func (c *AssistantClient) stepShellSetting(ctx *orchestration.Context, delta int) error {
+func (c *AssistantClient) stepShellSettingPage(ctx *orchestration.Context, delta int) error {
 	if err := c.admitShellScreen(ctx, assistantshell.InteractionSettingsCategory); err != nil {
 		return err
 	}
@@ -507,17 +547,22 @@ func (c *AssistantClient) stepShellSetting(ctx *orchestration.Context, delta int
 	if svc == nil || svc.Registry() == nil {
 		return ErrShellUnavailable
 	}
-	category, defs := selectedSettingsCategory(svc.Registry(), assistantshell.DecodeState(ctx.State()))
+	reg := svc.Registry()
+	stateDecoded := assistantshell.DecodeState(ctx.State())
+	category, defs := selectedSettingsCategory(reg, stateDecoded)
 	if category == "" {
-		state := assistantshell.ScreenState(ctx.State(), assistantshell.ScreenSettings)
-		session := ctx.Session()
-		view, err := c.shellSettingsHomeView(ctx.Context(), session.Binding.ActorID, session.Binding.ChatID, state)
-		if err != nil {
-			return err
-		}
-		return ctx.Transition(state, 0, view)
+		return ErrShellSettingsSelectionStale
 	}
-	state := assistantshell.StepSettingState(ctx.State(), len(defs), delta)
+	locale := c.shellInteractionLocale(ctx)
+	modelCategory := assistantshell.SettingsCategory{
+		ID:    category,
+		Label: assistantshell.CategoryLabel(category, locale),
+		Count: len(defs),
+	}
+	state, ok := assistantshell.StepSettingPageState(ctx.State(), modelCategory, defs, delta)
+	if !ok {
+		return ErrShellSettingsSelectionStale
+	}
 	view, err := c.shellSettingsCategoryView(ctx.Context(), ctx.Session().Binding.ActorID, ctx.Session().Binding.ChatID, state)
 	if err != nil {
 		return err
@@ -525,7 +570,7 @@ func (c *AssistantClient) stepShellSetting(ctx *orchestration.Context, delta int
 	return ctx.Transition(state, 0, view)
 }
 
-func (c *AssistantClient) handleShellSettingOpen(ctx *orchestration.Context) error {
+func (c *AssistantClient) handleShellSettingSlot(ctx *orchestration.Context, slot int) error {
 	if err := c.admitShellScreen(ctx, assistantshell.InteractionSettingDetail); err != nil {
 		return err
 	}
@@ -533,17 +578,27 @@ func (c *AssistantClient) handleShellSettingOpen(ctx *orchestration.Context) err
 	if svc == nil || svc.Registry() == nil {
 		return ErrShellUnavailable
 	}
-	_, defs := selectedSettingsCategory(svc.Registry(), assistantshell.DecodeState(ctx.State()))
-	if len(defs) == 0 {
-		return c.handleShellSettingBack(ctx)
+	reg := svc.Registry()
+	decoded := assistantshell.DecodeState(ctx.State())
+	category, defs := selectedSettingsCategory(reg, decoded)
+	if category == "" {
+		return ErrShellSettingsSelectionStale
 	}
-	state := assistantshell.OpenSettingState(ctx.State(), len(defs))
-	index := selectionIndex(int(assistantshell.DecodeState(state).SettingIndex), len(defs))
-	def := defs[index]
-	fresh, schemaVersion, ok := svc.Registry().GetVersioned(def.Namespace, def.Key)
+	locale := c.shellInteractionLocale(ctx)
+	modelCategory := assistantshell.SettingsCategory{
+		ID:    category,
+		Label: assistantshell.CategoryLabel(category, locale),
+		Count: len(defs),
+	}
+	def, index, ok := assistantshell.ResolveSettingSlot(ctx.State(), modelCategory, defs, slot)
+	if !ok {
+		return ErrShellSettingsSelectionStale
+	}
+	fresh, schemaVersion, ok := reg.GetVersioned(def.Namespace, def.Key)
 	if !ok || fresh == nil || schemaVersion == 0 {
 		return ErrShellSettingBindingStale
 	}
+	state := assistantshell.SettingDetailState(ctx.State(), index)
 	state = assistantshell.BindSettingState(state, fresh.Namespace, fresh.Key, schemaVersion)
 	view, err := c.shellSettingDetailView(ctx.Context(), ctx.Session().Binding.ActorID, ctx.Session().Binding.ChatID, state)
 	if err != nil {
@@ -556,7 +611,32 @@ func (c *AssistantClient) handleShellSettingBack(ctx *orchestration.Context) err
 	if err := c.admitShellScreen(ctx, assistantshell.InteractionSettingsCategory); err != nil {
 		return err
 	}
-	state := assistantshell.ScreenState(ctx.State(), assistantshell.ScreenSettingsCategory)
+	svc := c.shellSettingsService()
+	if svc == nil || svc.Registry() == nil {
+		return ErrShellUnavailable
+	}
+	reg := svc.Registry()
+	def, _, err := boundSettingDefinition(reg, ctx.State())
+	if err != nil {
+		return err
+	}
+	categories := reg.Categories()
+	categoryIndex := settingsCategoryIndex(categories, def.Category)
+	if categoryIndex < 0 {
+		return ErrShellSettingsSelectionStale
+	}
+	defs := reg.ListByCategory(categories[categoryIndex])
+	settingIndex := settingDefinitionIndex(defs, def.Namespace, def.Key)
+	if settingIndex < 0 {
+		return ErrShellSettingBindingStale
+	}
+	locale := c.shellInteractionLocale(ctx)
+	category := assistantshell.SettingsCategory{
+		ID:    categories[categoryIndex],
+		Label: assistantshell.CategoryLabel(categories[categoryIndex], locale),
+		Count: len(defs),
+	}
+	state := assistantshell.BackSettingsCategoryState(ctx.State(), categoryIndex, category, defs, settingIndex)
 	view, err := c.shellSettingsCategoryView(ctx.Context(), ctx.Session().Binding.ActorID, ctx.Session().Binding.ChatID, state)
 	if err != nil {
 		return err
@@ -993,23 +1073,13 @@ func (c *AssistantClient) shellSettingsHomeView(ctx context.Context, userID, cha
 	if svc == nil || svc.Registry() == nil {
 		return presentation.View{}, ErrShellUnavailable
 	}
-	categories := svc.Registry().Categories()
-	state := assistantshell.DecodeState(stateRaw)
 	locale := c.shellLocale(ctx, userID, chatID)
-	if len(categories) == 0 {
-		return assistantshell.SettingsHomeView(assistantshell.SettingsHomeModel{Locale: locale}), nil
-	}
-	index := selectionIndex(int(state.CategoryIndex), len(categories))
-	category := categories[index]
+	categories := shellSettingsCategories(svc.Registry(), locale)
+	state := assistantshell.DecodeState(stateRaw)
 	return assistantshell.SettingsHomeView(assistantshell.SettingsHomeModel{
-		Category: assistantshell.SettingsCategory{
-			ID:    category,
-			Label: assistantshell.CategoryLabel(category, locale),
-			Count: len(svc.Registry().ListByCategory(category)),
-		},
-		Total:    len(categories),
-		Selected: index,
-		Locale:   locale,
+		Categories: categories,
+		Page:       int(state.CategoryIndex),
+		Locale:     locale,
 	}), nil
 }
 
@@ -1018,44 +1088,64 @@ func (c *AssistantClient) shellSettingsCategoryView(ctx context.Context, userID,
 	if svc == nil || svc.Registry() == nil {
 		return presentation.View{}, ErrShellUnavailable
 	}
+	reg := svc.Registry()
 	state := assistantshell.DecodeState(stateRaw)
 	locale := c.shellLocale(ctx, userID, chatID)
-	category, defs := selectedSettingsCategory(svc.Registry(), state)
+	category, defs := selectedSettingsCategory(reg, state)
 	if category == "" {
 		return assistantshell.SettingsCategoryView(assistantshell.SettingsCategoryModel{Locale: locale}), nil
 	}
-	index := selectionIndex(int(state.SettingIndex), len(defs))
-	model := assistantshell.SettingsCategoryModel{
+	return assistantshell.SettingsCategoryView(assistantshell.SettingsCategoryModel{
 		Category: assistantshell.SettingsCategory{
 			ID:    category,
 			Label: assistantshell.CategoryLabel(category, locale),
 			Count: len(defs),
 		},
-		Total:    len(defs),
-		Selected: index,
-		Locale:   locale,
-	}
-	if len(defs) > 0 {
-		def := defs[index]
-		value, err := svc.Resolve(ctx, userID, chatID, def.Namespace, def.Key)
-		if err != nil {
-			return presentation.View{}, err
-		}
-		localizedDef := assistantshell.LocalizedSettingDefinition(locale, def)
-		title := localizedDef.Title
-		if title == "" {
-			title = def.Namespace + ":" + def.Key
-		}
-		model.Current = assistantshell.SettingSummary{
-			Title: title,
-			Value: assistantshell.DisplaySettingValue(def.Sensitive, value, locale),
-		}
-	}
-	return assistantshell.SettingsCategoryView(model), nil
+		Definitions: defs,
+		Page:        int(state.SettingIndex),
+		Locale:      locale,
+	}), nil
 }
 
 func (c *AssistantClient) shellSettingDetailView(ctx context.Context, userID, chatID int64, stateRaw []byte) (presentation.View, error) {
 	return c.shellSettingDetailViewWithNotice(ctx, userID, chatID, stateRaw, "")
+}
+
+func shellSettingsCategories(reg *settings.Registry, locale string) []assistantshell.SettingsCategory {
+	if reg == nil {
+		return nil
+	}
+	categories := reg.Categories()
+	out := make([]assistantshell.SettingsCategory, 0, len(categories))
+	for _, category := range categories {
+		out = append(out, assistantshell.SettingsCategory{
+			ID:    category,
+			Label: assistantshell.CategoryLabel(category, locale),
+		})
+	}
+	return out
+}
+
+func settingsCategoryIndex(categories []string, category string) int {
+	category = strings.TrimSpace(category)
+	if category == "" {
+		category = settings.CategoryGeneral
+	}
+	for index, candidate := range categories {
+		if strings.EqualFold(candidate, category) {
+			return index
+		}
+	}
+	return -1
+}
+
+func settingDefinitionIndex(defs []settings.SettingDefinition, namespace, key string) int {
+	for index, def := range defs {
+		if strings.EqualFold(def.Namespace, namespace) && strings.EqualFold(def.Key, key) {
+			return index
+		}
+	}
+	return -1
 }
 
 func selectedSettingsCategory(reg *settings.Registry, state assistantshell.State) (string, []settings.SettingDefinition) {

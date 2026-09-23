@@ -43,10 +43,8 @@ const (
 	ActionLanguageIndonesian = "language_id"
 	ActionSettingsPrev       = "settings_prev"
 	ActionSettingsNext       = "settings_next"
-	ActionSettingsOpen       = "settings_open"
 	ActionSettingPrev        = "setting_prev"
 	ActionSettingNext        = "setting_next"
-	ActionSettingOpen        = "setting_open"
 	ActionSettingBack        = "setting_back"
 	ActionSettingChange      = "setting_change"
 	ActionSettingDecrease    = "setting_dec"
@@ -136,10 +134,8 @@ func (*Feature) FeatureSpec() feature.Spec {
 			{ID: ActionLanguageIndonesian, Kind: feature.InteractionAction, Description: "Set canonical Assistant locale to Indonesian", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingsPrev, Kind: feature.InteractionAction, Description: "Select previous settings category", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingsNext, Kind: feature.InteractionAction, Description: "Select next settings category", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: ActionSettingsOpen, Kind: feature.InteractionAction, Description: "Open selected settings category", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingPrev, Kind: feature.InteractionAction, Description: "Select previous setting", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingNext, Kind: feature.InteractionAction, Description: "Select next setting", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: ActionSettingOpen, Kind: feature.InteractionAction, Description: "Open selected setting detail", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingBack, Kind: feature.InteractionAction, Description: "Return to selected settings category", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingChange, Kind: feature.InteractionAction, Description: "Apply typed bool or enum mutation", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingDecrease, Kind: feature.InteractionAction, Description: "Decrease typed numeric or duration setting", Surfaces: assistant, Policy: ownerPolicy},
@@ -163,6 +159,24 @@ func (*Feature) FeatureSpec() feature.Spec {
 			ID:          actionID,
 			Kind:        feature.InteractionAction,
 			Description: "Open one bounded Assistant help command slot",
+			Surfaces:    assistant,
+			Policy:      ownerPolicy,
+		})
+	}
+	for _, actionID := range SettingsCategorySlotActionIDs() {
+		spec.Interactions = append(spec.Interactions, feature.Interaction{
+			ID:          actionID,
+			Kind:        feature.InteractionAction,
+			Description: "Open one bounded Assistant settings category slot",
+			Surfaces:    assistant,
+			Policy:      ownerPolicy,
+		})
+	}
+	for _, actionID := range SettingSlotActionIDs() {
+		spec.Interactions = append(spec.Interactions, feature.Interaction{
+			ID:          actionID,
+			Kind:        feature.InteractionAction,
+			Description: "Open one bounded Assistant setting slot",
 			Surfaces:    assistant,
 			Policy:      ownerPolicy,
 		})

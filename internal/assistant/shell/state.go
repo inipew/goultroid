@@ -115,40 +115,6 @@ func ScreenState(raw []byte, screen Screen) []byte {
 	return EncodeState(state)
 }
 
-func StepCategoryState(raw []byte, total, delta int) []byte {
-	state := DecodeState(raw)
-	state.Screen = ScreenSettings
-	state.CategoryIndex = uint16(stepIndex(int(state.CategoryIndex), total, delta))
-	state.SettingIndex = 0
-	clearSettingBinding(&state)
-	return EncodeState(state)
-}
-
-func OpenCategoryState(raw []byte, total int) []byte {
-	state := DecodeState(raw)
-	state.Screen = ScreenSettingsCategory
-	state.CategoryIndex = uint16(clampIndex(int(state.CategoryIndex), total))
-	state.SettingIndex = 0
-	clearSettingBinding(&state)
-	return EncodeState(state)
-}
-
-func StepSettingState(raw []byte, total, delta int) []byte {
-	state := DecodeState(raw)
-	state.Screen = ScreenSettingsCategory
-	state.SettingIndex = uint16(stepIndex(int(state.SettingIndex), total, delta))
-	clearSettingBinding(&state)
-	return EncodeState(state)
-}
-
-func OpenSettingState(raw []byte, total int) []byte {
-	state := DecodeState(raw)
-	state.Screen = ScreenSettingDetail
-	state.SettingIndex = uint16(clampIndex(int(state.SettingIndex), total))
-	clearSettingBinding(&state)
-	return EncodeState(state)
-}
-
 func BeginSettingInputState(raw []byte) []byte {
 	state := DecodeState(raw)
 	state.Screen = ScreenSettingInput

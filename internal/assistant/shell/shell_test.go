@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -16,8 +17,8 @@ func TestFeatureSpecAndViews(t *testing.T) {
 		t.Fatalf("ValidateSpec() error = %v", err)
 	}
 	spec := NewFeature().FeatureSpec()
-	if len(spec.Interactions) != 58 {
-		t.Fatalf("interactions = %d, want 58", len(spec.Interactions))
+	if len(spec.Interactions) != 72 {
+		t.Fatalf("interactions = %d, want 72", len(spec.Interactions))
 	}
 	for _, screenID := range []string{
 		InteractionHome,
@@ -79,29 +80,122 @@ func TestHelpViewUsesDeterministicCanonicalDirectGrid(t *testing.T) {
 	}
 }
 
-func TestSettingsViewsExposeOnlyTypedMutationsAndMaskSensitiveValues(t *testing.T) {
-	home := SettingsHomeView(SettingsHomeModel{
-		Category: SettingsCategory{ID: settings.CategorySecurity, Label: CategoryLabel(settings.CategorySecurity), Count: 2},
-		Total:    2,
-		Selected: 1,
-	})
+func TestSettingsViewsUseDeterministicCanonicalDirectGrid(t *testing.T) {
+	categories := []SettingsCategory{
+		{ID: settings.CategoryGeneral, Label: CategoryLabel(settings.CategoryGeneral)},
+		{ID: settings.CategorySecurity, Label: CategoryLabel(settings.CategorySecurity)},
+		{ID: settings.CategoryUI, Label: CategoryLabel(settings.CategoryUI)},
+	}
+	home := SettingsHomeView(SettingsHomeModel{Categories: categories, Page: 0})
 	if err := home.Validate(); err != nil {
 		t.Fatalf("SettingsHomeView() invalid: %v", err)
 	}
-	if !strings.Contains(home.Text, "Security") || !strings.Contains(home.Text, "revision-fenced") {
-		t.Fatalf("settings home text = %q", home.Text)
+	if len(home.Rows) != 3 || len(home.Rows[0]) != 2 ||
+		home.Rows[0][0].ActionID != settingsCategorySlotActions[0] ||
+		home.Rows[0][1].ActionID != settingsCategorySlotActions[1] {
+		t.Fatalf("settings category grid = %+v", home.Rows)
 	}
 
+	defs := []settings.SettingDefinition{
+		{Namespace: "core", Key: "prefix", Title: "Command Prefix", Category: settings.CategoryGeneral, Type: settings.TypeString},
+		{Namespace: "ui", Key: "locale", Title: "Language", Category: settings.CategoryGeneral, Type: settings.TypeEnum, AllowedValues: []string{"en", "id"}},
+	}
 	category := SettingsCategoryView(SettingsCategoryModel{
-		Category: SettingsCategory{ID: settings.CategorySecurity, Label: CategoryLabel(settings.CategorySecurity), Count: 2},
-		Current:  SettingSummary{Title: "API Token", Value: DisplaySettingValue(true, "secret")},
-		Total:    2,
-		Selected: 0,
+		Category:    categories[0],
+		Definitions: defs,
+		Page:        0,
 	})
-	if strings.Contains(category.Text, "secret") || !strings.Contains(category.Text, "••••") {
-		t.Fatalf("sensitive category value leaked: %q", category.Text)
+	if err := category.Validate(); err != nil {
+		t.Fatalf("SettingsCategoryView() invalid: %v", err)
+	}
+	if len(category.Rows) != 2 || len(category.Rows[0]) != 2 ||
+		category.Rows[0][0].Text != "Command Prefix" ||
+		category.Rows[0][1].Text != "Language" ||
+		category.Rows[0][0].ActionID != settingSlotActions[0] ||
+		category.Rows[0][1].ActionID != settingSlotActions[1] {
+		t.Fatalf("settings definition grid = %+v", category.Rows)
+	}
+	if strings.Contains(category.Text, "Current") {
+		t.Fatalf("category grid unexpectedly rendered effective values: %q", category.Text)
 	}
 
+	for _, actionID := range append(SettingsCategorySlotActionIDs(), SettingSlotActionIDs()...) {
+		interaction, ok := findInteraction(NewFeature().FeatureSpec(), feature.InteractionAction, actionID)
+		if !ok || !interaction.Policy.PrivateOnly {
+			t.Fatalf("settings slot interaction %q = %+v, ok=%v", actionID, interaction, ok)
+		}
+	}
+}
+
+func TestSettingsGridStateIsBoundedAndRejectsCatalogRemap(t *testing.T) {
+	categories := make([]SettingsCategory, 0, 10)
+	for i := 0; i < 10; i++ {
+		categories = append(categories, SettingsCategory{
+			ID:    fmt.Sprintf("cat%02d", i),
+			Label: fmt.Sprintf("Category %02d", i),
+		})
+	}
+	root := SettingsHomeState(InitialState(), categories, true)
+	state, ok := StepSettingsCategoryPageState(root, categories, 1)
+	if !ok || DecodeState(state).CategoryIndex != 1 {
+		t.Fatalf("next settings category page = %+v ok=%v", DecodeState(state), ok)
+	}
+	category, categoryIndex, ok := ResolveSettingsCategorySlot(state, categories, 0)
+	if !ok || categoryIndex != 8 || category.ID != "cat08" {
+		t.Fatalf("category slot = index:%d category:%+v ok=%v", categoryIndex, category, ok)
+	}
+
+	defs := make([]settings.SettingDefinition, 0, 10)
+	for i := 0; i < 10; i++ {
+		defs = append(defs, settings.SettingDefinition{
+			Namespace: "feature",
+			Key:       fmt.Sprintf("item%02d", i),
+			Title:     fmt.Sprintf("Item %02d", i),
+			Category:  category.ID,
+			Type:      settings.TypeString,
+		})
+	}
+	state = SettingsCategoryState(state, categoryIndex, category, defs, 0)
+	state, ok = StepSettingPageState(state, category, defs, 1)
+	if !ok || DecodeState(state).SettingIndex != 1 {
+		t.Fatalf("next setting page = %+v ok=%v", DecodeState(state), ok)
+	}
+	def, settingIndex, ok := ResolveSettingSlot(state, category, defs, 1)
+	if !ok || settingIndex != 9 || def.Key != "item09" {
+		t.Fatalf("setting slot = index:%d def:%+v ok=%v", settingIndex, def, ok)
+	}
+
+	detail := SettingDetailState(state, settingIndex)
+	detail = BindSettingState(detail, def.Namespace, def.Key, 9)
+	if !SettingBindingMatches(detail, "feature", "item09") || DecodeState(detail).SchemaVersion != 9 {
+		t.Fatalf("detail binding = %+v", DecodeState(detail))
+	}
+	back := BackSettingsCategoryState(detail, categoryIndex, category, defs, settingIndex)
+	if DecodeState(back).Screen != ScreenSettingsCategory || DecodeState(back).SettingIndex != 1 {
+		t.Fatalf("back category page = %+v", DecodeState(back))
+	}
+
+	changedCategories := append([]SettingsCategory{{ID: "aaa", Label: "AAA"}}, categories...)
+	if _, _, ok := ResolveSettingsCategorySlot(root, changedCategories, 0); ok {
+		t.Fatal("category slot remapped after registry change instead of failing stale")
+	}
+	categoryState := SettingsCategoryState(InitialState(), 0, categories[0], defs, 0)
+	changedDefs := append([]settings.SettingDefinition{{
+		Namespace: "aaa", Key: "aaa", Title: "AAA", Category: categories[0].ID, Type: settings.TypeString,
+	}}, defs...)
+	if _, _, ok := ResolveSettingSlot(categoryState, categories[0], changedDefs, 0); ok {
+		t.Fatal("setting slot remapped after definition change instead of failing stale")
+	}
+
+	schemaDefs := append([]settings.SettingDefinition(nil), defs...)
+	schemaState := SettingsCategoryState(InitialState(), 0, categories[0], schemaDefs, 0)
+	schemaDefs[0].Title = "Changed schema title"
+	if _, _, ok := ResolveSettingSlot(schemaState, categories[0], schemaDefs, 0); ok {
+		t.Fatal("setting slot accepted a same-key schema replacement instead of failing stale")
+	}
+}
+
+func TestSettingsViewsExposeOnlyTypedMutationsAndMaskSensitiveValues(t *testing.T) {
 	detail := SettingDetailView(SettingDetailModel{
 		Definition: settings.SettingDefinition{
 			Namespace:    "security",
@@ -135,7 +229,7 @@ func TestSettingsViewsExposeOnlyTypedMutationsAndMaskSensitiveValues(t *testing.
 	}
 }
 
-func TestStateCodecAcceptsHistoricalA2AndBoundsNavigator(t *testing.T) {
+func TestStateCodecAcceptsHistoricalA2AndDetailBinding(t *testing.T) {
 	legacy := make([]byte, v0StateBytes)
 	legacy[7] = 4
 	state := DecodeState(legacy)
@@ -160,14 +254,7 @@ func TestStateCodecAcceptsHistoricalA2AndBoundsNavigator(t *testing.T) {
 		t.Fatalf("v2 state = %+v", state)
 	}
 
-	raw := StepCategoryState(InitialState(), 3, -1)
-	state = DecodeState(raw)
-	if state.Screen != ScreenSettings || state.CategoryIndex != 2 {
-		t.Fatalf("previous category state = %+v", state)
-	}
-	raw = OpenCategoryState(raw, 3)
-	raw = StepSettingState(raw, 2, 1)
-	raw = OpenSettingState(raw, 2)
+	raw := EncodeState(State{Screen: ScreenSettingDetail, CategoryIndex: 2, SettingIndex: 1})
 	state = DecodeState(raw)
 	if state.Screen != ScreenSettingDetail || state.CategoryIndex != 2 || state.SettingIndex != 1 {
 		t.Fatalf("detail state = %+v", state)

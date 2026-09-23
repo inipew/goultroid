@@ -45,8 +45,7 @@ func registerBoolSetting(t *testing.T, registry *settings.Registry, namespace, k
 
 func beginBoundBoolMutation(t *testing.T, engine *orchestration.Engine, port *shellTestPort, peer tg.InputPeerClass, def *settings.SettingDefinition, version uint64, current, source string, explicit bool) []byte {
 	t.Helper()
-	state := assistantshell.OpenCategoryState(assistantshell.InitialState(), 1)
-	state = assistantshell.OpenSettingState(state, 1)
+	state := assistantshell.EncodeState(assistantshell.State{Screen: assistantshell.ScreenSettingDetail})
 	state = assistantshell.BindSettingState(state, def.Namespace, def.Key, version)
 	_, err := engine.Begin(context.Background(), orchestration.BeginRequest{
 		FeatureID: assistantshell.FeatureID,
