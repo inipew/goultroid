@@ -57,7 +57,7 @@ func TestAssistantShellLanguageSelectorPersistsCanonicalUserSetting(t *testing.T
 	if err := dispatchShell(t, engine, home, 703, peer); err != nil {
 		t.Fatalf("Dispatch(home) error = %v", err)
 	}
-	if !strings.Contains(port.edited.Text, "Pusat kontrol") {
+	if !strings.Contains(port.edited.Text, "Silakan telusuri opsi") {
 		t.Fatalf("persisted locale did not drive next shell render: %q", port.edited.Text)
 	}
 }
