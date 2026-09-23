@@ -172,7 +172,7 @@ func TestAssistantShellSettingsNavigationUsesCentralService(t *testing.T) {
 	if err := dispatchShell(t, engine, openGeneral, 402, peer); err != nil {
 		t.Fatalf("Dispatch(open general) error = %v", err)
 	}
-	if !strings.Contains(port.edited.Text, "Command Prefix") || !strings.Contains(port.edited.Text, "<code>!</code>") {
+	if !strings.Contains(port.edited.Text, "Command Prefix") || !strings.Contains(port.edited.Text, "• <b>Current:</b> <code>!</code>") {
 		t.Fatalf("general category missing effective value: %q", port.edited.Text)
 	}
 
@@ -180,7 +180,7 @@ func TestAssistantShellSettingsNavigationUsesCentralService(t *testing.T) {
 	if err := dispatchShell(t, engine, openPrefix, 403, peer); err != nil {
 		t.Fatalf("Dispatch(prefix detail) error = %v", err)
 	}
-	if !strings.Contains(port.edited.Text, "User override") || !strings.Contains(port.edited.Text, "<code>!</code>") {
+	if !strings.Contains(port.edited.Text, "User override") || !strings.Contains(port.edited.Text, "• <b>Current:</b> !") {
 		t.Fatalf("prefix detail missing source/value: %q", port.edited.Text)
 	}
 	if callbackForAction(t, port.edited, assistantshell.ActionSettingInput) == nil {

@@ -27,7 +27,7 @@ func TestHelpModulesDeterministicAndDetailedViews(t *testing.T) {
 	if err := root.Validate(); err != nil {
 		t.Fatalf("HelpView() invalid: %v", err)
 	}
-	if !strings.Contains(root.Text, "Media") || !strings.Contains(root.Text, "2 commands") {
+	if !strings.Contains(root.Text, "Media · 2") {
 		t.Fatalf("root help text = %q", root.Text)
 	}
 	module := HelpModuleView(HelpModuleModel{Module: modules[1], ModuleIndex: 1, ModuleTotal: 3, Selected: 0})

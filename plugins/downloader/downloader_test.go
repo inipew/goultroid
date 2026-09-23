@@ -167,6 +167,7 @@ func TestDownloaderURLResourcePlanning(t *testing.T) {
 func TestDownloaderRepliedMediaContinuationOutlivesCommandContext(t *testing.T) {
 	client := &capturedClient{}
 	p := New(client)
+	attachDownloaderTestFilesystem(t, p)
 
 	tmpDir := t.TempDir()
 	fs, err := storage.NewFileStorage(tmpDir, 100*1024*1024)

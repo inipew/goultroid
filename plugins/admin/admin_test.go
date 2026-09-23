@@ -27,6 +27,16 @@ func (m *mockService) SendMessage(_ context.Context, _ tg.InputPeerClass, text s
 	m.sent = text
 	return &tg.Message{ID: 999, Message: text}, nil
 }
+func (m *mockService) SendMessageContext(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass, _ core.MessageSendContext) (*tg.Message, error) {
+	if markup != nil {
+		return m.SendMessageWithMarkup(ctx, peer, text, markup)
+	}
+	return m.SendMessage(ctx, peer, text)
+}
+func (m *mockService) SendMediaContext(ctx context.Context, peer tg.InputPeerClass, mediaType, filePath, caption string, _ core.MessageSendContext) (*tg.Message, error) {
+	return m.SendMedia(ctx, peer, mediaType, filePath, caption)
+}
+
 func (m *mockService) EditMessage(_ context.Context, _ tg.InputPeerClass, _ int, text string) error {
 	m.sent = text
 	return nil

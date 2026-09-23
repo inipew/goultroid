@@ -292,11 +292,18 @@ func TestP8ICombinedResourceIdleHighLoadAcceptance(t *testing.T) {
 	sessions.Cancel(callbackSession.Session.ID)
 
 	for i := 0; i < rootinteraction.DefaultMaxSessionsPerActor; i++ {
-		if err := inlineEngine.Execute(ctx, nil, int64(1000+i), 1, fmt.Sprintf("calc %d", i%10), ""); err != nil {
-			t.Fatalf("calculator pressure query %d: %v", i, err)
+		if _, err := sessions.Create(ctx, rootinteraction.CreateRequest{
+			FeatureID: calc.Name(),
+			Binding:   rootinteraction.Binding{ActorID: 1},
+			State:     []byte{byte(i)},
+		}); err != nil {
+			t.Fatalf("calculator pressure session %d: %v", i, err)
 		}
 	}
-	if err := inlineEngine.Execute(ctx, nil, 2000, 1, "calc 1", ""); !errors.Is(err, rootinteraction.ErrCapacity) {
+	if _, err := sessions.Create(ctx, rootinteraction.CreateRequest{
+		FeatureID: calc.Name(),
+		Binding:   rootinteraction.Binding{ActorID: 1},
+	}); !errors.Is(err, rootinteraction.ErrCapacity) {
 		t.Fatalf("calculator pressure overflow error=%v want=%v", err, rootinteraction.ErrCapacity)
 	}
 	interactionStats := sessions.Stats()

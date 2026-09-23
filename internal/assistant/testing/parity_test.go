@@ -42,7 +42,7 @@ func TestParity_SingleCommandMultipleSurfaces(t *testing.T) {
 	fakeAsst := NewFakeInteraction()
 	peer := &tg.InputPeerUser{UserID: 12345}
 
-	err = asstRouter.Dispatch(ctx, 12345, peer, "/uniping", fakeAsst)
+	err = asstRouter.DispatchMessageContext(ctx, 12345, peer, "/uniping", command.MessageContext{Chat: core.Chat{ID: 12345, Type: string(core.ChatKindPrivate)}}, fakeAsst)
 	if err != nil {
 		t.Fatalf("assistant dispatch failed: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestParity_SurfaceFiltering(t *testing.T) {
 	fakeAsst := NewFakeInteraction()
 	peer := &tg.InputPeerUser{UserID: 12345}
 
-	err := asstRouter.Dispatch(ctx, 12345, peer, "/useronly", fakeAsst)
+	err := asstRouter.DispatchMessageContext(ctx, 12345, peer, "/useronly", command.MessageContext{Chat: core.Chat{ID: 12345, Type: string(core.ChatKindPrivate)}}, fakeAsst)
 	if !errors.Is(err, command.ErrUnknownCommand) {
 		t.Fatalf("expected ErrUnknownCommand for userbot-only command on assistant, got %v", err)
 	}
@@ -125,7 +125,7 @@ func TestParity_PermissionFailClosed_OwnerZero(t *testing.T) {
 	fakeAsst := NewFakeInteraction()
 	peer := &tg.InputPeerUser{UserID: 12345}
 
-	_ = asstRouter.Dispatch(ctx, 12345, peer, "/owneronly", fakeAsst)
+	_ = asstRouter.DispatchMessageContext(ctx, 12345, peer, "/owneronly", command.MessageContext{Chat: core.Chat{ID: 12345, Type: string(core.ChatKindPrivate)}}, fakeAsst)
 	if adminRan {
 		t.Fatalf("owner-only command must fail-closed when ownerID is unconfigured (0)")
 	}

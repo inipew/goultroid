@@ -204,7 +204,7 @@ func (c *AssistantClient) openShell(cmdCtx *command.Context) error {
 		ActorID:   cmdCtx.SenderID,
 		State:     assistantshell.InitialState(),
 		Target:    presentationtelegram.MessageTarget{Peer: cmdCtx.Peer, ChatID: chatID},
-		View: c.shellHomeView(cmdCtx.Ctx, cmdCtx.SenderID, chatID, assistantshell.InitialState()),
+		View:      c.shellHomeView(cmdCtx.Ctx, cmdCtx.SenderID, chatID, assistantshell.InitialState()),
 	})
 	return err
 }
@@ -492,7 +492,7 @@ func (c *AssistantClient) stepShellSetting(ctx *orchestration.Context, delta int
 	if category == "" {
 		state := assistantshell.ScreenState(ctx.State(), assistantshell.ScreenSettings)
 		session := ctx.Session()
-	view, err := c.shellSettingsHomeView(ctx.Context(), session.Binding.ActorID, session.Binding.ChatID, state)
+		view, err := c.shellSettingsHomeView(ctx.Context(), session.Binding.ActorID, session.Binding.ChatID, state)
 		if err != nil {
 			return err
 		}

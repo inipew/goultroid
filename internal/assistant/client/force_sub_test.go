@@ -384,7 +384,10 @@ func TestForceSubGuidanceDueDoesNotMutateCooldown(t *testing.T) {
 	now := base
 	gate.now = func() time.Time { return now }
 
-	if !gate.GuidanceDue(42, 2) || !gate.GuidanceDue(42, 2) {
+	if !gate.GuidanceDue(42, 2) {
+		t.Fatal("first GuidanceDue unexpectedly rejected before execution claim")
+	}
+	if !gate.GuidanceDue(42, 2) {
 		t.Fatal("GuidanceDue mutated cooldown before execution claim")
 	}
 	if !gate.ClaimGuidance(42, 2) {

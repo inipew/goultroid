@@ -341,7 +341,12 @@ func TestMyXLPlugin_Commands(t *testing.T) {
 	defer purchaseRegistration.Close()
 	dispatchPurchaseState := func(queryID, userID, chatID int64) error {
 		evt := &core.CallbackQueryEvent{QueryID: queryID, UserID: userID, ChatID: chatID, Data: purchaseData}
-		prepared, err := purchaseRouter.Prepare(context.Background(), evt, svc, nil)
+		prepared, err := purchaseRouter.Prepare(context.Background(), evt, svc, func(owner string) (tasks.ScopeIdentity, bool) {
+			if owner != "test" {
+				return tasks.ScopeIdentity{}, false
+			}
+			return tasks.ScopeIdentity{Owner: "plugin:myxl", Generation: 1}, true
+		})
 		if err != nil {
 			return err
 		}
@@ -360,8 +365,8 @@ func TestMyXLPlugin_Commands(t *testing.T) {
 	if !ok || capturedPurchase.MSISDN != "6281912345678" || capturedPurchase.OptionCode != "OPT-FLEX-S" {
 		t.Fatalf("unexpected canonical purchase state: %#v", purchaseCapture.state)
 	}
-	if err := dispatchPurchaseState(1304, 1001, 1001); !errors.Is(err, callback.ErrStateConsumed) {
-		t.Fatalf("single-use purchase state replay error = %v, want %v", err, callback.ErrStateConsumed)
+	if err := dispatchPurchaseState(1304, 1001, 1001); !errors.Is(err, callback.ErrStateNotFound) {
+		t.Fatalf("single-use purchase state replay error = %v, want %v", err, callback.ErrStateNotFound)
 	}
 	_ = plugin.HandleCallback(&callback.CallbackContext{
 		Ctx: ctx, Action: "buy_confirm", UserID: 1001, Service: svc,
@@ -464,7 +469,12 @@ func TestRefreshMarkupStoresScopedMaskedState(t *testing.T) {
 	svc := &core.MockTelegramServicer{}
 	dispatch := func(queryID, userID, chatID int64) error {
 		evt := &core.CallbackQueryEvent{QueryID: queryID, UserID: userID, ChatID: chatID, Data: data}
-		prepared, err := router.Prepare(context.Background(), evt, svc, nil)
+		prepared, err := router.Prepare(context.Background(), evt, svc, func(owner string) (tasks.ScopeIdentity, bool) {
+			if owner != "test" {
+				return tasks.ScopeIdentity{}, false
+			}
+			return tasks.ScopeIdentity{Owner: "plugin:myxl", Generation: 1}, true
+		})
 		if err != nil {
 			return err
 		}

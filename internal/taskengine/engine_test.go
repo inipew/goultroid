@@ -290,6 +290,52 @@ func TestEngine_CancelScope(t *testing.T) {
 	close(blockerRelease)
 }
 
+func TestEngine_CancelScopePreservesReasonForRunningTask(t *testing.T) {
+	cfg := Config{
+		Pools: map[tasks.PoolID]PoolEngineConfig{
+			"general": {Concurrency: 1, BacklogLimit: 4, PayloadBudget: 1000},
+		},
+		ResultCapacity: 4,
+	}
+	engine := NewEngine(cfg)
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Stop(context.Background())
+
+	started := make(chan struct{})
+	ticket, err := engine.Submit(context.Background(), tasks.WorkSpec{
+		ID:         "running-scope-cancel",
+		Scope:      tasks.ScopeIdentity{Owner: "plugin:test", Generation: 1},
+		QuotaOwner: "plugin:test",
+		Pool:       "general",
+		Handler: func(ctx context.Context) error {
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("task did not start")
+	}
+
+	if got := engine.CancelScope(tasks.ScopeIdentity{Owner: "plugin:test", Generation: 1}, tasks.CauseScopeClosed); got != 1 {
+		t.Fatalf("CancelScope()=%d, want 1", got)
+	}
+	res, err := ticket.Wait(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != tasks.OutcomeCancelled || res.Cause != tasks.CauseScopeClosed || res.Failure.Code != string(tasks.CauseScopeClosed) {
+		t.Fatalf("running scope cancellation result=%+v", res)
+	}
+}
+
 func TestEngine_GuaranteedOnCompleteInvocation(t *testing.T) {
 	cfg := Config{
 		Pools: map[tasks.PoolID]PoolEngineConfig{

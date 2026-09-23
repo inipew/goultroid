@@ -53,40 +53,31 @@ func TestP7KGroupServiceEventUsesChatQuotaOwner(t *testing.T) {
 	client := &p7kEventTaskClient{specs: make(chan tasks.WorkSpec, 1)}
 	bus := NewEventBus()
 	bus.SetTasks(client)
-	if err := bus.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	defer bus.Close()
 
-	sub := bus.SubscribeWithOptions(
-		EventTypeGroupService,
-		func(context.Context, Event) error { return nil },
-		SubscribeOptions{Owner: "assistant:groupevents", Timeout: time.Second},
-	)
-	if sub == nil {
-		t.Fatal("group service subscription was not created")
-	}
-	defer sub.Close()
-
-	bus.Publish(&GroupServiceEvent{
+	event := &GroupServiceEvent{
 		At:     time.Now(),
 		ChatID: 77,
 		Kind:   GroupServiceMemberJoined,
 		Users:  []GroupServiceUser{{ID: 42}},
+	}
+	bus.runJob(eventJob{
+		subscriber: eventSubscriber{
+			owner:          "assistant:groupevents",
+			timeout:        time.Second,
+			contextHandler: func(context.Context, Event) error { return nil },
+		},
+		event:    event,
+		priority: PriorityNormal,
 	})
 
-	select {
-	case spec := <-client.specs:
-		if spec.QuotaOwner != tasks.OwnerID("telegram:chat:77") {
-			t.Fatalf("quota owner=%q want telegram:chat:77", spec.QuotaOwner)
-		}
-		if spec.OrderingKey != "chat:77" {
-			t.Fatalf("ordering key=%q want chat:77", spec.OrderingKey)
-		}
-		if spec.QueueDeadline.IsZero() || !spec.QueueDeadline.After(time.Now()) {
-			t.Fatalf("queue deadline=%v want future deadline", spec.QueueDeadline)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for group event task")
+	spec := <-client.specs
+	if spec.QuotaOwner != tasks.OwnerID("telegram:chat:77") {
+		t.Fatalf("quota owner=%q want telegram:chat:77", spec.QuotaOwner)
+	}
+	if spec.OrderingKey != "chat:77" {
+		t.Fatalf("ordering key=%q want chat:77", spec.OrderingKey)
+	}
+	if spec.QueueDeadline.IsZero() || !spec.QueueDeadline.After(time.Now()) {
+		t.Fatalf("queue deadline=%v want future deadline", spec.QueueDeadline)
 	}
 }

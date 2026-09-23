@@ -86,7 +86,7 @@ func newSavedDeepLinkFixture(t *testing.T, response savedresponse.Response) *sav
 }
 
 func TestSavedResponseDeepLinkIssuesExactBindingLeaseAndDelivers(t *testing.T) {
-	fixture := newSavedDeepLinkFixture(t, savedresponse.NewText("Hello {id} in {chat}"))
+	fixture := newSavedDeepLinkFixture(t, savedresponse.NewText("Hello {id} in {chat_id}"))
 	token, err := fixture.provider.Issue(
 		context.Background(),
 		fixture.router,

@@ -349,8 +349,9 @@ type interactiveInlineHandler struct {
 	plugin *Plugin
 }
 
-func (*interactiveInlineHandler) Pattern() string      { return "dl" }
+func (*interactiveInlineHandler) Pattern() string     { return "dl" }
 func (*interactiveInlineHandler) Description() string { return "Interactive media downloader" }
+
 type downloaderMatcher struct{}
 
 func (downloaderMatcher) Match(query string) ([]string, bool) {

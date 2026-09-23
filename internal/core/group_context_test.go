@@ -3,17 +3,20 @@ package core
 import "testing"
 
 func TestNormalizeChatKind(t *testing.T) {
-	tests := map[string]ChatKind{
-		"private":      ChatKindPrivate,
-		"GROUP":        ChatKindGroup,
-		" supergroup ": ChatKindSupergroup,
-		"channel":      ChatKindChannel,
-		"":             ChatKindUnknown,
-		"mystery":      ChatKindUnknown,
+	tests := []struct {
+		input string
+		want  ChatKind
+	}{
+		{input: "private", want: ChatKindPrivate},
+		{input: "GROUP", want: ChatKindGroup},
+		{input: " supergroup ", want: ChatKindSupergroup},
+		{input: "channel", want: ChatKindChannel},
+		{input: "", want: ChatKindUnknown},
+		{input: "mystery", want: ChatKindUnknown},
 	}
-	for input, want := range tests {
-		if got := NormalizeChatKind(input); got != want {
-			t.Fatalf("NormalizeChatKind(%q)=%q, want %q", input, got, want)
+	for _, tc := range tests {
+		if got := NormalizeChatKind(tc.input); got != tc.want {
+			t.Fatalf("NormalizeChatKind(%q)=%q, want %q", tc.input, got, tc.want)
 		}
 	}
 }

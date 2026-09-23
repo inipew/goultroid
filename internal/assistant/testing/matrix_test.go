@@ -85,7 +85,7 @@ func TestIntegration_PostCutoverMatrix(t *testing.T) {
 		fake := NewFakeInteraction()
 		peer := &tg.InputPeerUser{UserID: 12345}
 		for _, cmd := range []string{"/start", "/help", "/status", "/alive"} {
-			if err := r.Dispatch(ctx, 12345, peer, cmd, fake); err != nil {
+			if err := r.DispatchMessageContext(ctx, 12345, peer, cmd, command.MessageContext{Chat: core.Chat{ID: 12345, Type: string(core.ChatKindPrivate)}}, fake); err != nil {
 				t.Fatalf("dispatch %s: %v", cmd, err)
 			}
 		}
@@ -108,7 +108,7 @@ func TestIntegration_PostCutoverMatrix(t *testing.T) {
 
 		fake := NewFakeInteraction()
 		peer := &tg.InputPeerUser{UserID: 12345}
-		_ = cmdRouter.Dispatch(ctx, 12345, peer, "/metricping", fake)
+		_ = cmdRouter.DispatchMessageContext(ctx, 12345, peer, "/metricping", command.MessageContext{Chat: core.Chat{ID: 12345, Type: string(core.ChatKindPrivate)}}, fake)
 
 		snap := metrics.Snapshot()
 		if snap.TotalCommands == 0 {

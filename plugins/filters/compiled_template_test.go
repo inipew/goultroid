@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
@@ -67,9 +68,12 @@ func TestInvalidLegacyTemplateIsReportedOnlyWhenMatched(t *testing.T) {
 	}
 	repo := NewSQLiteRepository(db)
 	chatID := int64(700)
-	if err := repo.SaveFilter(context.Background(), chatID, "legacy", savedresponse.Response{
-		Text: "broken", Format: savedresponse.Format("legacy-format"),
-	}); err != nil {
+	if _, err := db.ExecContext(context.Background(), `
+		INSERT INTO filters (
+			chat_id, keyword, reply_text, created_at, response_format,
+			media_asset_id, media_type, media_name, media_mime
+		) VALUES (?, ?, ?, ?, ?, '', '', '', '')
+	`, chatID, "legacy", "broken", time.Now().UTC(), "legacy-format"); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.SaveFilter(context.Background(), chatID, "hello", savedresponse.NewHTML("Hi {name}")); err != nil {

@@ -74,12 +74,11 @@ func TestBlacklistFeatureStatePreloadAndMutation(t *testing.T) {
 
 	ctx.Args = []string{"phish"}
 	ctx.RawArgs = "phish"
-	beforeRevision = p.AssistantRuleRevision(20)
 	if err := byName["unblacklist"].Handler(ctx); err != nil {
 		t.Fatalf("remove final blacklist: %v", err)
 	}
-	if got := p.AssistantRuleRevision(20); got != beforeRevision+1 {
-		t.Fatalf("blacklist revision after delete=%d, want %d", got, beforeRevision+1)
+	if got := p.AssistantRuleRevision(20); got != 0 {
+		t.Fatalf("blacklist revision after final delete=%d, want inactive zero revision", got)
 	}
 	if p.MessageHookInterested(20) {
 		t.Fatal("removing final blacklist item did not mark chat inactive")

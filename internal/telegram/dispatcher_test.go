@@ -998,7 +998,12 @@ func TestDispatcher_AFK_EndToEnd(t *testing.T) {
 	deadline = time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		st, err = afkRepo.GetAFK(ctx, ownerID)
-		if err == nil && (st == nil || !st.IsAFK) {
+		svc.mu.Lock()
+		if len(svc.sentMessages) > 0 {
+			lastSent = svc.sentMessages[len(svc.sentMessages)-1]
+		}
+		svc.mu.Unlock()
+		if err == nil && (st == nil || !st.IsAFK) && strings.Contains(lastSent, "Welcome back") {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -1006,11 +1011,6 @@ func TestDispatcher_AFK_EndToEnd(t *testing.T) {
 	if err != nil || (st != nil && st.IsAFK) {
 		t.Fatalf("expected AFK to be deactivated after manual message, got: %+v", st)
 	}
-
-	svc.mu.Lock()
-	lastSent = svc.sentMessages[len(svc.sentMessages)-1]
-	svc.mu.Unlock()
-
 	if !strings.Contains(lastSent, "Welcome back") {
 		t.Fatalf("expected Welcome back message in private chat, got: %q", lastSent)
 	}

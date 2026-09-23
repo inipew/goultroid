@@ -889,10 +889,6 @@ func (p *Plugin) compiledFiltersForChat(
 				p.featureState.MarkUnknown(chatID)
 				return nil, fmt.Errorf("%w: persisted filter keyword exceeds %d bytes", core.ErrResourceLimit, MaxKeywordBytes)
 			}
-			if err := savedresponse.Validate(filter.Response); err != nil {
-				p.featureState.MarkUnknown(chatID)
-				return nil, fmt.Errorf("filters: persisted response %q is invalid: %w", filter.Keyword, err)
-			}
 		}
 		filterSet := compileFilterSet(rawFilters)
 		if p.chatRuleRevision(chatID) != revision {

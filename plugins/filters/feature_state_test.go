@@ -82,12 +82,11 @@ func TestFilterFeatureStatePreloadAndMutation(t *testing.T) {
 	}
 
 	stopCtx.Args = []string{"second"}
-	beforeRevision = p.AssistantRuleRevision(20)
 	if err := byName["stop"].Handler(stopCtx); err != nil {
 		t.Fatalf("delete final filter: %v", err)
 	}
-	if got := p.AssistantRuleRevision(20); got != beforeRevision+1 {
-		t.Fatalf("filter revision after delete=%d, want %d", got, beforeRevision+1)
+	if got := p.AssistantRuleRevision(20); got != 0 {
+		t.Fatalf("filter revision after final delete=%d, want inactive zero revision", got)
 	}
 	if p.MessageHookInterested(20) {
 		t.Fatal("removing final filter did not mark chat inactive")

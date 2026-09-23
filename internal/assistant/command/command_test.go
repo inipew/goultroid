@@ -55,6 +55,13 @@ func (f *fakeInteraction) SendMessage(ctx context.Context, peer tg.InputPeerClas
 	f.lastSentMarkup = markup
 	return &tg.Message{ID: 100}, nil
 }
+func (f *fakeInteraction) SendMessageContext(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass, _ core.MessageSendContext) (*tg.Message, error) {
+	return f.SendMessage(ctx, peer, text, markup)
+}
+func (f *fakeInteraction) SendMediaContext(ctx context.Context, peer tg.InputPeerClass, mediaType, filePath, caption string, _ core.MessageSendContext) (*tg.Message, error) {
+	return f.SendMedia(ctx, peer, mediaType, filePath, caption)
+}
+
 func (f *fakeInteraction) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
 	if _, err := os.Stat(filePath); err != nil {
 		return nil, err

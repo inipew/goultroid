@@ -366,13 +366,6 @@ type assistantGroupServiceChat struct {
 	supergroup bool
 }
 
-func (c assistantGroupServiceChat) inputPeer() tg.InputPeerClass {
-	if c.supergroup {
-		return &tg.InputPeerChannel{ChannelID: c.id, AccessHash: c.accessHash}
-	}
-	return &tg.InputPeerChat{ChatID: c.id}
-}
-
 func assistantGroupServiceChatMeta(
 	message *tg.MessageService,
 	entities tg.Entities,

@@ -16,6 +16,7 @@ import (
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/presentation"
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
+	inlineservice "github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/services/pmrelay"
 	"go.uber.org/zap"
 )
@@ -74,6 +75,7 @@ func callbackForAction(t *testing.T, view presentation.CompiledView, actionID st
 func newShellEngine(t *testing.T) (*plugin.Manager, *AssistantClient, *shellTestPort, *orchestration.Engine) {
 	t.Helper()
 	manager := plugin.NewManager(core.NewRouter("."))
+	manager.SetInlineRegistry(inlineservice.NewRegistry())
 	if err := manager.Register(assistantshell.NewFeature()); err != nil {
 		t.Fatalf("Register(shell) error = %v", err)
 	}
@@ -86,6 +88,7 @@ func newShellEngine(t *testing.T) (*plugin.Manager, *AssistantClient, *shellTest
 	client := NewAssistantClient(1, "hash", "token", zap.NewNop())
 	client.SetOwner(7, nil)
 	client.SetInteractionFoundation(manager.FeatureCatalog(), manager.InteractionRuntime(), manager.ActionDispatcher())
+	client.interactionIngress = &interactionIngress{engine: engine}
 	if err := client.ensureShellActions(engine, manager.FeatureCatalog()); err != nil {
 		manager.Shutdown()
 		t.Fatalf("ensureShellActions() error = %v", err)
@@ -245,6 +248,7 @@ func TestAssistantShellActionAdmissionTracksOwnerChanges(t *testing.T) {
 
 func TestAssistantShellOwnerStartUsesA2Canary(t *testing.T) {
 	manager := plugin.NewManager(core.NewRouter("."))
+	manager.SetInlineRegistry(inlineservice.NewRegistry())
 	if err := manager.Register(assistantshell.NewFeature()); err != nil {
 		t.Fatalf("Register(shell) error = %v", err)
 	}
@@ -292,6 +296,7 @@ func TestAssistantShellOwnerStartUsesA2Canary(t *testing.T) {
 
 func TestAssistantShellVisitorStartUsesPublicReadOnlyPath(t *testing.T) {
 	manager := plugin.NewManager(core.NewRouter("."))
+	manager.SetInlineRegistry(inlineservice.NewRegistry())
 	if err := manager.Register(assistantshell.NewFeature()); err != nil {
 		t.Fatalf("Register(shell) error = %v", err)
 	}

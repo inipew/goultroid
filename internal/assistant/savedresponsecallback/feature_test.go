@@ -199,7 +199,7 @@ func (f *callbackFixture) callbackData(t *testing.T) []byte {
 }
 
 func TestSavedResponseCallbackUsesOpaqueA2TokenAndProviderAdmission(t *testing.T) {
-	fixture := newCallbackFixture(t, savedresponse.NewText("Hello {id} in {chat}"))
+	fixture := newCallbackFixture(t, savedresponse.NewText("Hello {id} in {chat_id}"))
 	sessionCtx := fixture.begin(t)
 	data := fixture.callbackData(t)
 

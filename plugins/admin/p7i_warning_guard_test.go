@@ -77,6 +77,7 @@ func TestP7IWarningTargetPromotionBeforePersistenceIsProtected(t *testing.T) {
 	svc := &mockService{}
 	ctx := newAdminTestContext(svc)
 	ctx.Source = core.ExecutionAssistant
+	ctx.Chat = &core.Chat{ID: 123456, Type: "supergroup"}
 	ctx.Message = &core.Message{ID: 77}
 	ctx.Args = []string{"5555", "race"}
 	ctx.GroupRoles = &p7iWarningRoleResolver{}

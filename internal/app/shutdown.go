@@ -17,6 +17,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if a.beginQuiesce() {
 		go a.performShutdown()
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	select {
 	case <-a.shutdownDone:
 		a.lifecycleMu.Lock()

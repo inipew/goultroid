@@ -793,7 +793,17 @@ func (r *SQLiteRepository) UpdateForceSubConfig(
 	if r == nil || r.db == nil {
 		return ForceSubConfig{}, ErrUnavailable
 	}
-	if expectedRevision <= 0 || config.Revision != expectedRevision+1 {
+	if expectedRevision <= 0 {
+		return ForceSubConfig{}, ErrInvalidForceSubConfig
+	}
+	current, err := r.GetForceSubConfig(ctx)
+	if err != nil {
+		return ForceSubConfig{}, err
+	}
+	if current.Revision != expectedRevision {
+		return ForceSubConfig{}, ErrForceSubConfigConflict
+	}
+	if config.Revision != expectedRevision+1 {
 		return ForceSubConfig{}, ErrInvalidForceSubConfig
 	}
 	normalized, err := config.Normalize()

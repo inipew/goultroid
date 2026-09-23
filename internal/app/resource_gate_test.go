@@ -271,7 +271,7 @@ func TestCommandResourceTaskEngineGate_AllBuiltinCommands(t *testing.T) {
 				client.Clear()
 				asstRouter.SetTasks(client)
 
-				err := asstRouter.Dispatch(context.Background(), 1001, &tg.InputPeerUser{UserID: 1001}, "/"+cmdName, &gateInteraction{})
+				err := asstRouter.DispatchMessageContext(context.Background(), 1001, &tg.InputPeerUser{UserID: 1001}, "/"+cmdName, asstcmd.MessageContext{Chat: core.Chat{ID: 1001, Type: string(core.ChatKindPrivate)}}, &gateInteraction{})
 				if err != nil {
 					t.Fatalf("unexpected dispatch error: %v", err)
 				}
@@ -290,7 +290,7 @@ func TestCommandResourceTaskEngineGate_AllBuiltinCommands(t *testing.T) {
 				// Fail-closed verification
 				asstRouter.SetTasks(nil)
 				client.Clear()
-				fcErr := asstRouter.Dispatch(context.Background(), 1001, &tg.InputPeerUser{UserID: 1001}, "/"+cmdName, &gateInteraction{})
+				fcErr := asstRouter.DispatchMessageContext(context.Background(), 1001, &tg.InputPeerUser{UserID: 1001}, "/"+cmdName, asstcmd.MessageContext{Chat: core.Chat{ID: 1001, Type: string(core.ChatKindPrivate)}}, &gateInteraction{})
 				if !errors.Is(fcErr, asstcmd.ErrTasksNotConfigured) {
 					t.Fatalf("command %q failed to fail-closed on Assistant without TaskEngine: %v", cmdName, fcErr)
 				}
@@ -406,7 +406,7 @@ func TestCommandResourceTaskEngineGate_HandlerRunsStrictlyInsideTaskEngine(t *te
 
 	// 2. Assistant: client intercepts and does not run Handler
 	handlerRan = false
-	_ = asstRouter.Dispatch(context.Background(), 1001, &tg.InputPeerUser{UserID: 1001}, "/proberesource", &gateInteraction{})
+	_ = asstRouter.DispatchMessageContext(context.Background(), 1001, &tg.InputPeerUser{UserID: 1001}, "/proberesource", asstcmd.MessageContext{Chat: core.Chat{ID: 1001, Type: string(core.ChatKindPrivate)}}, &gateInteraction{})
 	if handlerRan {
 		t.Fatal("handler ran on Assistant despite TaskEngine withholding execution!")
 	}
@@ -430,7 +430,7 @@ func TestCommandResourceTaskEngineGate_HandlerRunsStrictlyInsideTaskEngine(t *te
 
 	// Assistant rejection
 	handlerRan = false
-	err = asstRouter.Dispatch(context.Background(), 1001, &tg.InputPeerUser{UserID: 1001}, "/proberesource", &gateInteraction{})
+	err = asstRouter.DispatchMessageContext(context.Background(), 1001, &tg.InputPeerUser{UserID: 1001}, "/proberesource", asstcmd.MessageContext{Chat: core.Chat{ID: 1001, Type: string(core.ChatKindPrivate)}}, &gateInteraction{})
 	if err == nil || !errors.Is(err, client.returnError) {
 		t.Fatalf("expected admission error on Assistant, got %v", err)
 	}

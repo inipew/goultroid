@@ -416,8 +416,8 @@ func TestFilterListDeliveryIsChunkedToTelegramLimit(t *testing.T) {
 	}
 	repo := NewSQLiteRepository(db)
 	chatID := int64(98765)
-	for i := 0; i < 700; i++ {
-		keyword := fmt.Sprintf("filter-%04d-%s", i, strings.Repeat("x", 8))
+	for i := 0; i < MaxRulesPerChat; i++ {
+		keyword := fmt.Sprintf("filter-%04d-%s", i, strings.Repeat("x", 48))
 		if err := repo.SaveFilter(context.Background(), chatID, keyword, savedresponse.NewText("value")); err != nil {
 			t.Fatal(err)
 		}

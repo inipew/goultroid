@@ -54,7 +54,7 @@ func (m *mockCoreDispatcher) Prepare(
 	ns, _, _, err := corecallback.ParseCallbackData(evt.Data)
 	if err != nil {
 		if svc != nil {
-			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Invalid callback", false)
+			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Invalid button action", false)
 		}
 		return nil, err
 	}
@@ -405,13 +405,13 @@ func TestCallbackIngress_InvalidUnknownAndDuplicate(t *testing.T) {
 	if err := dispatchCoreCallback(context.Background(), canonicalRouter, taskClient, nil, newCallbackQueryDeduper(), invalid, newAssistantCallbackServicer(201, target, invalidInter), zap.NewNop()); !errors.Is(err, corecallback.ErrInvalidCallbackData) {
 		t.Fatalf("malformed callback error = %v, want ErrInvalidCallbackData", err)
 	}
-	if invalidInter.answer != "Invalid callback" {
+	if invalidInter.answer != "Invalid button action" {
 		t.Fatalf("invalid answer = %q", invalidInter.answer)
 	}
 
 	unknownInter := &recordingInteraction{mockInteraction: &mockInteraction{}}
 	unknown := messageEvent(202, 7, []byte("v1:missing:run:noop"), target)
-	err := dispatchCoreCallback(context.Background(), &mockCoreDispatcher{}, taskClient, nil, newCallbackQueryDeduper(), unknown, newAssistantCallbackServicer(202, target, unknownInter), zap.NewNop())
+	err := dispatchCoreCallback(context.Background(), &mockCoreDispatcher{hasHandlerFunc: func(string) bool { return false }}, taskClient, nil, newCallbackQueryDeduper(), unknown, newAssistantCallbackServicer(202, target, unknownInter), zap.NewNop())
 	if !errors.Is(err, corecallback.ErrHandlerNotFound) || unknownInter.answer != "Feature not available." {
 		t.Fatalf("unknown result err=%v answer=%q", err, unknownInter.answer)
 	}
@@ -534,7 +534,7 @@ func TestUpdateHandlers_CallbackSpinnerProtection(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("malformed handle: %v", err)
 	}
-	if api.answerReq == nil || api.answerReq.QueryID != 101 || api.answerReq.Message != "Invalid callback" {
+	if api.answerReq == nil || api.answerReq.QueryID != 101 || api.answerReq.Message != "Invalid button action" {
 		t.Fatalf("invalid answer: %+v", api.answerReq)
 	}
 
@@ -556,7 +556,7 @@ func TestUpdateHandlers_CallbackSpinnerProtection(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("inline malformed handle: %v", err)
 	}
-	if api.answerReq == nil || api.answerReq.QueryID != 201 || api.answerReq.Message != "Invalid callback" {
+	if api.answerReq == nil || api.answerReq.QueryID != 201 || api.answerReq.Message != "Invalid button action" {
 		t.Fatalf("inline invalid answer: %+v", api.answerReq)
 	}
 }
@@ -629,7 +629,13 @@ func TestCallbackIngress_UsesCanonicalCallbackRouter(t *testing.T) {
 	evt := messageEvent(990, 42, corecallback.EncodeCallbackData("bridge", "run", "noop"), target)
 	svc := newAssistantCallbackServicer(evt.QueryID, target, inter)
 
-	if err := dispatchCoreCallback(context.Background(), router, taskClient, nil, newCallbackQueryDeduper(), evt, svc, zap.NewNop()); err != nil {
+	resolve := func(owner string) (tasks.ScopeIdentity, bool) {
+		if owner != "test" {
+			return tasks.ScopeIdentity{}, false
+		}
+		return tasks.ScopeIdentity{Owner: "plugin:test", Generation: 1}, true
+	}
+	if err := dispatchCoreCallback(context.Background(), router, taskClient, resolve, newCallbackQueryDeduper(), evt, svc, zap.NewNop()); err != nil {
 		t.Fatalf("dispatch canonical router: %v", err)
 	}
 	if !handler.handled {

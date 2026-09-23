@@ -1448,13 +1448,11 @@ func (e *Engine) applyWorkerCompleted(res tasks.TaskResult, grant *permit) {
 	}
 	rec.result = res
 	rec.finishedAt = res.FinishedAt
-	if rec.cancelRequested && res.Outcome != tasks.OutcomeCancelled {
+	if rec.cancelRequested {
 		res.Outcome = tasks.OutcomeCancelled
 		res.Cause = rec.cancelReason
 		res.Disposition = execution.DispositionCancelled
-		if res.Failure.Code == "" {
-			res.Failure.Code = string(rec.cancelReason)
-		}
+		res.Failure.Code = string(rec.cancelReason)
 		if res.Failure.Message == "" {
 			res.Failure.Message = fmt.Sprintf("late cancellation applied: %s", rec.cancelReason)
 		}

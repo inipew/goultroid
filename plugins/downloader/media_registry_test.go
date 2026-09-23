@@ -85,6 +85,7 @@ func TestTelegramDownloadCreatesManagedRetainedAsset(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := New(store, registry)
+	attachDownloaderTestFilesystem(t, p)
 	tgSvc := &mockTelegramService{}
 	coreCtx := &core.Context{
 		Ctx:    ctx,

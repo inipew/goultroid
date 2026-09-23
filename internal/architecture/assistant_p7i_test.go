@@ -99,7 +99,7 @@ func TestP7IAssistantColdPathGatesBeforeCacheResolveAndTask(t *testing.T) {
 	for _, required := range []string{
 		"deps.Tasks.Submit",
 		"OrderingKey:",
-		"fmt.Sprintf(\"chat:%d\", chatID)",
+		"core.GroupOrderingKey(chatID, assistantTopicID(message))",
 		"deps.Resolver.Resolve(",
 		"deps.GroupRuleChats.Classify(",
 		"deps.GroupRules.Handle(taskCtx, envelope)",

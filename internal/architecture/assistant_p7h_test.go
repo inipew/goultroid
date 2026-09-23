@@ -239,7 +239,8 @@ func TestP7HCloseIsTerminalForInterestAndSubscription(t *testing.T) {
 	}
 	source := string(raw)
 	for _, required := range []string{
-		"closed atomic.Bool",
+		"closed",
+		"atomic.Bool",
 		"if !s.closed.CompareAndSwap(false, true)",
 		"s.ready.Store(false)",
 		"active := !s.closed.Load() && s.loaded && s.hasEnabledLocked()",

@@ -16,8 +16,8 @@ func TestFeatureSpecAndViews(t *testing.T) {
 		t.Fatalf("ValidateSpec() error = %v", err)
 	}
 	spec := NewFeature().FeatureSpec()
-	if len(spec.Interactions) != 41 {
-		t.Fatalf("interactions = %d, want 41", len(spec.Interactions))
+	if len(spec.Interactions) != 44 {
+		t.Fatalf("interactions = %d, want 44", len(spec.Interactions))
 	}
 	for _, screenID := range []string{
 		InteractionHome,
@@ -68,7 +68,7 @@ func TestHelpViewUsesDeterministicCanonicalNavigator(t *testing.T) {
 	if !strings.Contains(view.Text, "<b>Commands:</b> 3") || !strings.Contains(view.Text, "<b>Modules:</b> 2") {
 		t.Fatalf("help summary missing canonical counts: %q", view.Text)
 	}
-	if !strings.Contains(view.Text, "Alpha") || !strings.Contains(view.Text, "2 commands") {
+	if !strings.Contains(view.Text, "Alpha · 2") {
 		t.Fatalf("help selection is not deterministic: %q", view.Text)
 	}
 }

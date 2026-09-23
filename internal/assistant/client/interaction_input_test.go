@@ -98,7 +98,7 @@ func TestAssistantShellStringInputEndToEnd(t *testing.T) {
 	if stats := manager.InteractionRuntime().Stats(); stats.Inputs != 0 || stats.Sessions != 1 {
 		t.Fatalf("completed stats = %+v", stats)
 	}
-	if !strings.Contains(port.edited.Text, "<code>!</code>") || !strings.Contains(port.edited.Text, "User override saved.") {
+	if !strings.Contains(port.edited.Text, "• <b>Current:</b> !") || !strings.Contains(port.edited.Text, "User override saved.") {
 		t.Fatalf("completed detail not rendered: %q", port.edited.Text)
 	}
 }

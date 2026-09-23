@@ -74,11 +74,16 @@ func (s *InlineSource) Execute(
 		return nil, err
 	}
 
+	responseValue := resolved.Resolved.Response
+	if responseValue.Kind() == "sticker" && strings.TrimSpace(responseValue.Text) != "" {
+		return nil, fmt.Errorf("%w: alias %q requires separate text", ErrInlineMediaNotRepresentable, resolved.Binding.Alias)
+	}
+
 	vars := TemplateVars{Now: time.Now()}
 	if inlineCtx != nil {
 		vars.UserID = inlineCtx.UserID
 	}
-	rendered, err := s.responses.Prepare(ctx, resolved.Resolved.Response, vars)
+	rendered, err := s.responses.Prepare(ctx, responseValue, vars)
 	if err != nil {
 		return nil, err
 	}

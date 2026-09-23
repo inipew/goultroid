@@ -908,7 +908,13 @@ func TestRouter_PrepareOwnsRateLimitBeforeExecution(t *testing.T) {
 		UserID:  99,
 		Data:    EncodeCallbackData("limited", "run", "noop"),
 	}
-	if _, err := router.Prepare(context.Background(), first, svc, nil); err != nil {
+	resolve := func(owner string) (tasks.ScopeIdentity, bool) {
+		if owner != "test" {
+			return tasks.ScopeIdentity{}, false
+		}
+		return tasks.ScopeIdentity{Owner: "plugin:test", Generation: 1}, true
+	}
+	if _, err := router.Prepare(context.Background(), first, svc, resolve); err != nil {
 		t.Fatalf("first prepare: %v", err)
 	}
 	if handler.handled {
@@ -920,7 +926,7 @@ func TestRouter_PrepareOwnsRateLimitBeforeExecution(t *testing.T) {
 		UserID:  99,
 		Data:    EncodeCallbackData("limited", "run", "noop"),
 	}
-	if _, err := router.Prepare(context.Background(), second, svc, nil); !errors.Is(err, core.ErrRateLimited) {
+	if _, err := router.Prepare(context.Background(), second, svc, resolve); !errors.Is(err, core.ErrRateLimited) {
 		t.Fatalf("second prepare error = %v, want rate limit", err)
 	}
 	if handler.handled {
