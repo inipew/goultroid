@@ -8,7 +8,7 @@ Baseline:
 
 `812b853e2a40da6ddd9a5e91d59cd39e95444ac7` — P8-E representative interactive downloader workflow.
 
-P8-F closes the remaining MUST UX residual frozen by P8-A and reconciles the behavioral matrix through P8-E. It does not claim the later unload/reload stress or combined resource acceptance that remain owned by P8-H and P8-I.
+P8-F closed the remaining MUST UX residual frozen by P8-A. P8-J later reconciled this matrix through P8-I; the status table below reflects the final P8 closure.
 
 ## Canonical locale contract
 
@@ -142,7 +142,7 @@ Inline shell handlers resolve the same `ui:locale` setting using the inline requ
 
 Feature-owned payloads remain feature-owned. For example a plugin's command description or remote Wikipedia content is not machine-translated by the shell.
 
-## P8 A→F behavioral matrix
+## P8 A→J behavioral matrix — P8-J reconciled
 
 | Capability / behavior | Ultroid behavior target | Goultroid evidence | Class | P8-F status |
 | --- | --- | --- | --- | --- |
@@ -168,8 +168,8 @@ Feature-owned payloads remain feature-owned. For example a plugin's command desc
 | Rich network lookup | inline search provider | P8-D Wikipedia | REPRESENTATIVE | CLOSED |
 | Interactive heavy downloader | source → media/format → heavy task | P8-E downloader | REPRESENTATIVE heavy proof | CLOSED |
 | Legacy a1/menu stack absent | migration off old callback/menu stack | `legacy_stack_test.go` regression fence | BASELINE-CLOSED | CLOSED |
-| Cross-surface disable/re-enable matrix | old generation fully invalidated | existing foundation, final matrix deferred | MUST / P8-H | DEFERRED TO P8-H |
-| Combined idle/high-load/resource matrix | bounded under mixed workloads | subsystem evidence exists, combined acceptance deferred | MUST / P8-I | DEFERRED TO P8-I |
+| Cross-surface disable/re-enable matrix | old generation fully invalidated | P8-H generation-scoped command/inline/a2/deep-link/self-inline/input/TaskEngine acceptance | MUST / P8-H | CLOSED |
+| Combined idle/high-load/resource matrix | bounded under mixed workloads | P8-I 10k inline + callback/session pressure + RPC/cache/resource/restart/settle acceptance | MUST / P8-I | CLOSED |
 
 ## P8-B audit reconciliation
 
@@ -329,7 +329,7 @@ P8-F adds coverage for:
 - source architecture fences against a second locale runtime/map;
 - shell inline locale resolution through the same central setting.
 
-## Remaining P8 work after P8-F
+## Final P8 closure status — P8-J reconciliation
 
 ```text
 P8-A CLOSED
@@ -338,17 +338,13 @@ P8-C CLOSED
 P8-D CLOSED
 P8-E CLOSED
 P8-F CLOSED
-
-P8-G NEXT  reference-driven compatibility/dead-stack reclamation
-P8-H TODO  unload/reload/generation cross-surface acceptance
-P8-I TODO  resource/idle/high-load acceptance
-P8-J TODO  final cleanup/parity freeze/closure
+P8-G CLOSED
+P8-H CLOSED
+P8-I CLOSED
+P8-J CLOSED
 ```
 
-P8-G must remain reference-driven. In particular it must retain:
-
-- `internal/assistant/legacy_stack_test.go` as an architecture regression fence;
-- media/storage compatibility files that are not Assistant a1 legacy.
+The reference-driven reclamation rule remains frozen: `internal/assistant/legacy_stack_test.go` stays as an architecture regression fence, while media/storage compatibility that belongs to independent migrations is not reclassified as Assistant legacy.
 
 ## Formatting and CI
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-**P8-A is CLOSED.**
+**P8-A is CLOSED. P8-J has reconciled this inventory to the final closed state.**
 
 This phase freezes the remaining Assistant/Inline parity target before any new P8 implementation work.
 
@@ -302,11 +302,11 @@ It already proves:
 
 Therefore P8 does not need another stateful business workflow merely to prove a2 can handle multi-step state.
 
-## Remaining MUST parity capabilities
+## Closed MUST parity capabilities — P8-J freeze
 
 ### 1. Production self-inline / render bridge
 
-Current status: **GAP**
+Current status: **CLOSED by P8-B**
 
 Class: **MUST**
 
@@ -337,7 +337,7 @@ The render bridge must remain bounded and generation-aware.
 
 ### 2. Callback-heavy calculator canary
 
-Current status: **MISSING**
+Current status: **CLOSED by P8-C**
 
 Class: **MUST**
 
@@ -358,21 +358,19 @@ Required proof:
 
 ### 3. Locale-aware Assistant presentation
 
-Current status: **PARTIAL**
+Current status: **CLOSED by P8-F**
 
 Class: **MUST**
 
 Target owner: **P8-F**
 
-The repository already has `internal/services/localization` with English/Indonesian catalogs, but the Assistant shell currently presents hard-coded text and Settings has no locale registration.
-
-P8 parity requires one canonical locale selection/configuration path and locale-aware Assistant presentation.
+`internal/services/localization` remains the translation authority. P8-F added the canonical `ui:locale` setting, typed Language screen/actions, and locale-aware Assistant shell/inline presentation without a second preference runtime.
 
 This does **not** require reproducing every Ultroid translation pack.
 
 ### 4. Unload/reload cross-surface acceptance
 
-Current status: **PARTIAL foundation, missing final cross-surface matrix**
+Current status: **CLOSED by P8-H**
 
 Class: **MUST**
 
@@ -400,7 +398,7 @@ enable
 
 ### 5. Resource / idle / high-load acceptance
 
-Current status: **PARTIAL per subsystem**
+Current status: **CLOSED by P8-I**
 
 Class: **MUST**
 
@@ -408,22 +406,21 @@ Target owner: **P8-I**
 
 P8 must validate combined cross-surface load, not only isolated subsystem bounds.
 
-## REPRESENTATIVE parity capabilities
+## Closed REPRESENTATIVE parity capabilities — P8-J freeze
 
 ### Rich network lookup
 
-Current status: **PARTIAL**
+Current status: **CLOSED by P8-D**
 
 Class: **REPRESENTATIVE**
 
 Target owner: **P8-D**
 
-Current reusable backend candidate:
+Production representative proof:
 
-- `plugins/wikipedia`
-- canonical userbot + Assistant command already exists.
-
-P8-D should expose at least one production FeatureSpec-owned inline lookup using existing network/runtime boundaries.
+- `plugins/wikipedia`;
+- the canonical command backend is reused by the FeatureSpec-owned Inline vNext lookup;
+- managed HTTP, bounded results, cache policy, and lifecycle ownership are regression-fenced by P8-D.
 
 Required behavior:
 
@@ -438,7 +435,7 @@ Once this succeeds, provider-specific copies such as Google/F-Droid/OrangeFox/Tw
 
 ### Interactive downloader / YouTube-style flow
 
-Current status: **backend present, interactive parity missing**
+Current status: **CLOSED by P8-E**
 
 Class: **REPRESENTATIVE, but required as the heavy-workflow proof**
 
@@ -453,7 +450,7 @@ Existing downloader backend already provides:
 - scoped temp workspace;
 - persistent media ownership.
 
-P8-E must prove one interaction of the form:
+P8-E proves one interaction of the form:
 
 ```text
 query / select source
@@ -542,16 +539,15 @@ The frozen sequence is:
 
 ```text
 P8-A  behavioral inventory + target freeze                 CLOSED
-P8-B  production self-inline / RenderBridge
-P8-C  calculator callback-heavy canary
-P8-D  representative rich search/lookup inline
-P8-E  representative interactive downloader workflow
-P8-F  complete behavioral matrix + remaining MUST UX
-      residuals, including locale-aware Assistant UI
-P8-G  reference-driven compatibility/dead-stack reclamation
-P8-H  unload/reload/generation cross-surface acceptance
-P8-I  resource/idle/high-load acceptance
-P8-J  final cleanup, parity freeze, and closure
+P8-B  production self-inline / RenderBridge                 CLOSED
+P8-C  calculator callback-heavy canary                      CLOSED
+P8-D  representative rich search/lookup inline              CLOSED
+P8-E  representative interactive downloader workflow       CLOSED
+P8-F  behavioral matrix + locale-aware Assistant UI         CLOSED
+P8-G  compatibility/dead-stack reclamation                  CLOSED
+P8-H  unload/reload/generation cross-surface acceptance     CLOSED
+P8-I  resource/idle/high-load acceptance                    CLOSED
+P8-J  final cleanup, parity freeze, and closure              CLOSED
 ```
 
 No future P8 phase may silently convert a REPRESENTATIVE provider into a MUST provider without updating this inventory and recording the reason.
@@ -560,7 +556,7 @@ No future P8 phase may silently convert a REPRESENTATIVE provider into a MUST pr
 
 P8 can close only when all MUST items are implemented and accepted, and every REPRESENTATIVE capability has at least one production proof.
 
-Expected final matrix:
+Final frozen matrix:
 
 | Domain | Expected P8-J state |
 | --- | --- |
@@ -601,8 +597,6 @@ P8-A intentionally does not:
 
 Those belong to their frozen downstream phases.
 
-## Next phase
+## Final state
 
-Proceed to **P8-B — production self-inline / RenderBridge**.
-
-P8-B is the correct next dependency because calculator and heavy interactive downloader must consume a shared rendering capability rather than each reimplementing the userbot→Assistant inline trick independently.
+P8 is closed by P8-J. This inventory is now a frozen capability baseline rather than an active roadmap. New Assistant product work should be scoped as a new phase/feature unless it is fixing a regression against this matrix.

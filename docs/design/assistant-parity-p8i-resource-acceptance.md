@@ -286,7 +286,7 @@ The model shell cannot resolve `github.com`, so a full repository checkout canno
 
 CI is not inspected.
 
-## P8 status after I
+## P8 final status — P8-J reconciliation
 
 ```text
 P8-A CLOSED
@@ -298,6 +298,7 @@ P8-F CLOSED
 P8-G CLOSED
 P8-H CLOSED
 P8-I CLOSED
-
-P8-J NEXT — final cleanup, parity freeze, closure
+P8-J CLOSED
 ```
+
+P8-J freezes this acceptance as the combined resource/load evidence for the final Assistant parity closure.
