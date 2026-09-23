@@ -17,6 +17,28 @@ var (
 	ErrDownloadFailed = errors.New("download: file download failed")
 )
 
+// MediaMode is a bounded semantic selection understood by extractor-backed
+// providers. Direct HTTP providers intentionally ignore it.
+type MediaMode string
+
+const (
+	MediaModeDefault MediaMode = ""
+	MediaModeAudio   MediaMode = "audio"
+	MediaModeVideo   MediaMode = "video"
+)
+
+// MediaFormat is the bounded output format vocabulary exposed by the shared
+// downloader service. Providers reject unsupported mode/format combinations.
+type MediaFormat string
+
+const (
+	MediaFormatDefault MediaFormat = ""
+	MediaFormatBest    MediaFormat = "best"
+	MediaFormatM4A     MediaFormat = "m4a"
+	MediaFormatMP3     MediaFormat = "mp3"
+	MediaFormatMP4     MediaFormat = "mp4"
+)
+
 // ProgressCallback is invoked periodically with the current download progress.
 type ProgressCallback func(downloaded, total int64)
 
@@ -28,6 +50,8 @@ type DownloadOptions struct {
 	RetryDelay     time.Duration
 	TargetFilename string
 	Progress       ProgressCallback
+	Mode           MediaMode
+	Format         MediaFormat
 }
 
 // Provider represents a source-specific media downloader.

@@ -102,6 +102,36 @@ func (p *ExtractorProvider) IsAvailable() bool {
 	return err == nil
 }
 
+func extractorSelectionArgs(opts DownloadOptions) ([]string, error) {
+	switch opts.Mode {
+	case MediaModeDefault:
+		if opts.Format != MediaFormatDefault {
+			return nil, fmt.Errorf("%w: extractor format requires a media mode", core.ErrInvalidArgs)
+		}
+		return nil, nil
+	case MediaModeAudio:
+		switch opts.Format {
+		case MediaFormatM4A:
+			return []string{"-f", "bestaudio[ext=m4a]/bestaudio"}, nil
+		case MediaFormatMP3:
+			return []string{"-f", "bestaudio/best", "-x", "--audio-format", "mp3"}, nil
+		default:
+			return nil, fmt.Errorf("%w: unsupported audio extractor format %q", core.ErrInvalidArgs, opts.Format)
+		}
+	case MediaModeVideo:
+		switch opts.Format {
+		case MediaFormatMP4:
+			return []string{"-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best", "--merge-output-format", "mp4"}, nil
+		case MediaFormatBest:
+			return []string{"-f", "bestvideo+bestaudio/best"}, nil
+		default:
+			return nil, fmt.Errorf("%w: unsupported video extractor format %q", core.ErrInvalidArgs, opts.Format)
+		}
+	default:
+		return nil, fmt.Errorf("%w: unsupported extractor media mode %q", core.ErrInvalidArgs, opts.Mode)
+	}
+}
+
 // Download extracts media using yt-dlp through the process runner.
 func (p *ExtractorProvider) Download(ctx context.Context, rawURL string, store storage.Storage, opts DownloadOptions) (*storage.Asset, error) {
 	if store == nil {
@@ -115,6 +145,10 @@ func (p *ExtractorProvider) Download(ctx context.Context, rawURL string, store s
 
 	// Validate URL scheme
 	parsedURL, err := ValidateURL(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	selectionArgs, err := extractorSelectionArgs(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -143,9 +177,12 @@ func (p *ExtractorProvider) Download(ctx context.Context, rawURL string, store s
 		"--no-playlist",
 		"--no-warnings",
 		"--max-filesize", fmt.Sprintf("%d", p.defaultMaxCap),
+	}
+	args = append(args, selectionArgs...)
+	args = append(args,
 		"-o", outTemplate,
 		parsedURL.String(),
-	}
+	)
 
 	req := process.Request{
 		Command:    ytdlpPath,
