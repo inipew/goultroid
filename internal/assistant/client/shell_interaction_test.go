@@ -31,6 +31,26 @@ type shellTestPort struct {
 	deleted   bool
 }
 
+type publicStartRelayState struct {
+	enabled bool
+}
+
+func (*publicStartRelayState) PrepareVisitor(context.Context, pmrelay.IngressMessage) (pmrelay.PreparedIngress, bool, error) {
+	return pmrelay.PreparedIngress{}, false, nil
+}
+
+func (*publicStartRelayState) PrepareOwnerReply(context.Context, pmrelay.IngressMessage) (pmrelay.PreparedIngress, bool, error) {
+	return pmrelay.PreparedIngress{}, false, nil
+}
+
+func (*publicStartRelayState) RevalidatePrepared(context.Context, pmrelay.PreparedIngress) error {
+	return nil
+}
+
+func (r *publicStartRelayState) IsEnabled() bool {
+	return r != nil && r.enabled
+}
+
 func (p *shellTestPort) Send(_ context.Context, target presentation.Target, view presentation.CompiledView) (presentation.Target, error) {
 	p.sent = view
 	messageTarget, _ := target.(presentationtelegram.MessageTarget)
@@ -326,7 +346,7 @@ func TestAssistantShellVisitorStartUsesPublicReadOnlyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dispatchStart(visitor) error = %v", err)
 	}
-	if !strings.Contains(public.sent, "Assistant endpoint is online") {
+	if !strings.Contains(public.sent, "Hey there! This is") || strings.Contains(public.sent, "Send your message") {
 		t.Fatalf("public start text = %q", public.sent)
 	}
 	if got := manager.InteractionRuntime().Stats().Sessions; got != 0 {
@@ -338,6 +358,35 @@ func TestAssistantShellVisitorStartUsesPublicReadOnlyPath(t *testing.T) {
 	}
 	if member.Sources != pmrelay.AudienceSourceStart {
 		t.Fatalf("visitor start audience sources=%d, want start", member.Sources)
+	}
+}
+
+func TestAssistantShellPublicStartTracksLiveRelayAvailabilityWithoutA2Session(t *testing.T) {
+	client := NewAssistantClient(1, "hash", "token", zap.NewNop())
+	client.SetOwner(7, nil)
+	relay := &publicStartRelayState{}
+	client.SetRelayIngress(relay)
+	public := &publicStartInteraction{}
+	ctx := &command.Context{
+		Ctx:         context.Background(),
+		SenderID:    99,
+		Peer:        &tg.InputPeerUser{UserID: 99},
+		Interaction: public,
+	}
+
+	if err := client.dispatchPublicStart(ctx); err != nil {
+		t.Fatalf("dispatchPublicStart(disabled relay) error = %v", err)
+	}
+	if strings.Contains(public.sent, "Send your message") {
+		t.Fatalf("disabled relay was advertised: %q", public.sent)
+	}
+
+	relay.enabled = true
+	if err := client.dispatchPublicStart(ctx); err != nil {
+		t.Fatalf("dispatchPublicStart(enabled relay) error = %v", err)
+	}
+	if !strings.Contains(public.sent, "Send your message and I'll deliver it to my owner.") {
+		t.Fatalf("enabled relay hint missing: %q", public.sent)
 	}
 }
 
