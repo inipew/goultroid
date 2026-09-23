@@ -74,3 +74,30 @@ func TestHelpNavigatorReusesBoundedStateWithoutTouchingSettingBinding(t *testing
 		t.Fatalf("clamped help navigator = %+v", decoded)
 	}
 }
+
+
+func TestPublicStartViewIsCompactLocalizedAndRelayAware(t *testing.T) {
+	base := PublicStartView(PublicStartModel{
+		Username: "bot<unsafe>",
+		Locale:   "en",
+	})
+	if !strings.Contains(base.Text, "Hey there! This is @bot&lt;unsafe&gt;, the GoUltroid Assistant.") {
+		t.Fatalf("public start text = %q", base.Text)
+	}
+	if strings.Contains(base.Text, "Send your message") {
+		t.Fatalf("relay-disabled public start advertised relay: %q", base.Text)
+	}
+	if len(base.Rows) != 0 {
+		t.Fatalf("public start rows = %+v, want stateless text-only view", base.Rows)
+	}
+
+	relay := PublicStartView(PublicStartModel{
+		Username:       "goultroidbot",
+		Locale:         "id",
+		RelayAvailable: true,
+	})
+	if !strings.Contains(relay.Text, "Halo! Ini @goultroidbot, GoUltroid Assistant.") ||
+		!strings.Contains(relay.Text, "Kirim pesan Anda dan saya akan meneruskannya ke owner.") {
+		t.Fatalf("localized relay public start = %q", relay.Text)
+	}
+}
