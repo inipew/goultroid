@@ -62,16 +62,14 @@ func (c *AssistantClient) handleShellHelpModuleSlot(ctx *orchestration.Context, 
 		return err
 	}
 	commands := c.shellCommands()
-	state, module, moduleIndex, ok := shell.OpenHelpModuleSlotState(ctx.State(), commands, slot)
+	state, module, _, ok := shell.OpenHelpModuleSlotState(ctx.State(), commands, slot)
 	if !ok {
 		return ErrShellHelpSelectionStale
 	}
 	return ctx.Transition(state, 0, shell.HelpModuleView(shell.HelpModuleModel{
-		Module:      module,
-		ModuleIndex: moduleIndex,
-		ModuleTotal: len(shell.HelpModules(commands)),
-		Page:        int(shell.DecodeState(state).SettingIndex),
-		Locale:      c.shellInteractionLocale(ctx),
+		Module: module,
+		Page:   int(shell.DecodeState(state).SettingIndex),
+		Locale: c.shellInteractionLocale(ctx),
 	}))
 }
 
@@ -80,16 +78,14 @@ func (c *AssistantClient) stepShellHelpCommand(ctx *orchestration.Context, delta
 		return err
 	}
 	commands := c.shellCommands()
-	state, module, moduleIndex, ok := shell.StepHelpCommandState(ctx.State(), commands, delta)
+	state, module, _, ok := shell.StepHelpCommandState(ctx.State(), commands, delta)
 	if !ok {
 		return ErrShellHelpSelectionStale
 	}
 	return ctx.Transition(state, 0, shell.HelpModuleView(shell.HelpModuleModel{
-		Module:      module,
-		ModuleIndex: moduleIndex,
-		ModuleTotal: len(shell.HelpModules(commands)),
-		Page:        int(shell.DecodeState(state).SettingIndex),
-		Locale:      c.shellInteractionLocale(ctx),
+		Module: module,
+		Page:   int(shell.DecodeState(state).SettingIndex),
+		Locale: c.shellInteractionLocale(ctx),
 	}))
 }
 
@@ -117,15 +113,13 @@ func (c *AssistantClient) handleShellHelpBack(ctx *orchestration.Context) error 
 		return err
 	}
 	commands := c.shellCommands()
-	state, module, moduleIndex, ok := shell.BackHelpModuleState(ctx.State(), commands)
+	state, module, _, ok := shell.BackHelpModuleState(ctx.State(), commands)
 	if !ok {
 		return ErrShellHelpSelectionStale
 	}
 	return ctx.Transition(state, 0, shell.HelpModuleView(shell.HelpModuleModel{
-		Module:      module,
-		ModuleIndex: moduleIndex,
-		ModuleTotal: len(shell.HelpModules(commands)),
-		Page:        int(shell.DecodeState(state).SettingIndex),
-		Locale:      c.shellInteractionLocale(ctx),
+		Module: module,
+		Page:   int(shell.DecodeState(state).SettingIndex),
+		Locale: c.shellInteractionLocale(ctx),
 	}))
 }
