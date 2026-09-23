@@ -74,7 +74,7 @@ func TestAssistantShellDetailedHelpParityUsesOneRevisionFencedSession(t *testing
 	if err := dispatchShell(t, engine, help, 600, peer); err != nil {
 		t.Fatalf("Dispatch(help) error = %v", err)
 	}
-	if !strings.Contains(port.edited.Text, "Command Browser") || !strings.Contains(port.edited.Text, "Media") {
+	if !strings.Contains(port.edited.Text, "GoUltroid Help Menu") || !strings.Contains(port.edited.Text, "Media") {
 		t.Fatalf("help root = %q", port.edited.Text)
 	}
 	if strings.Contains(port.edited.Text, "Hidden") {
