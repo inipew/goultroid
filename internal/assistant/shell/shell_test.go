@@ -281,3 +281,13 @@ func findInteraction(spec feature.Spec, kind feature.InteractionKind, id string)
 	}
 	return feature.Interaction{}, false
 }
+
+
+func TestOwnerNavigationLifetimePolicy(t *testing.T) {
+	if InteractionTTL != 24*time.Hour {
+		t.Fatalf("InteractionTTL = %v, want 24h", InteractionTTL)
+	}
+	if SettingsInputTTL != 2*time.Minute {
+		t.Fatalf("SettingsInputTTL = %v, want 2m", SettingsInputTTL)
+	}
+}

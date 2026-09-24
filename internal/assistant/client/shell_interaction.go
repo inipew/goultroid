@@ -205,6 +205,7 @@ func (c *AssistantClient) openShell(cmdCtx *command.Context) error {
 		FeatureID: assistantshell.FeatureID,
 		ActorID:   cmdCtx.SenderID,
 		State:     assistantshell.InitialState(),
+		TTL:       assistantshell.InteractionTTL,
 		Target:    presentationtelegram.MessageTarget{Peer: cmdCtx.Peer, ChatID: chatID},
 		View:      c.shellHomeView(cmdCtx.Ctx, cmdCtx.SenderID, chatID, assistantshell.InitialState()),
 	})
@@ -402,10 +403,13 @@ func (c *AssistantClient) handleShellRefresh(ctx *orchestration.Context) error {
 	state := assistantshell.NextRefreshState(ctx.State())
 	state = assistantshell.ScreenState(state, assistantshell.ScreenHome)
 	session := ctx.Session()
-	return ctx.Transition(state, 0, c.shellHomeView(ctx.Context(), session.Binding.ActorID, session.Binding.ChatID, state))
+	return ctx.Transition(state, assistantshell.InteractionTTL, c.shellHomeView(ctx.Context(), session.Binding.ActorID, session.Binding.ChatID, state))
 }
 
 func (*AssistantClient) handleShellPing(ctx *orchestration.Context) error {
+	if err := ctx.Touch(assistantshell.InteractionTTL); err != nil {
+		return err
+	}
 	return ctx.Answer("🏓 Pong!", false)
 }
 
@@ -415,7 +419,7 @@ func (c *AssistantClient) handleShellStatus(ctx *orchestration.Context) error {
 	}
 	state := assistantshell.ScreenState(ctx.State(), assistantshell.ScreenStatus)
 	session := ctx.Session()
-	return ctx.Transition(state, 0, c.shellStatusView(ctx.Context(), session.Binding.ActorID, session.Binding.ChatID, state))
+	return ctx.Transition(state, assistantshell.InteractionTTL, c.shellStatusView(ctx.Context(), session.Binding.ActorID, session.Binding.ChatID, state))
 }
 
 func (c *AssistantClient) handleShellStatusRefresh(ctx *orchestration.Context) error {
@@ -425,7 +429,7 @@ func (c *AssistantClient) handleShellStatusRefresh(ctx *orchestration.Context) e
 	state := assistantshell.NextRefreshState(ctx.State())
 	state = assistantshell.ScreenState(state, assistantshell.ScreenStatus)
 	session := ctx.Session()
-	return ctx.Transition(state, 0, c.shellStatusView(ctx.Context(), session.Binding.ActorID, session.Binding.ChatID, state))
+	return ctx.Transition(state, assistantshell.InteractionTTL, c.shellStatusView(ctx.Context(), session.Binding.ActorID, session.Binding.ChatID, state))
 }
 
 func (c *AssistantClient) handleShellHelp(ctx *orchestration.Context) error {
@@ -436,7 +440,7 @@ func (c *AssistantClient) handleShellHelp(ctx *orchestration.Context) error {
 	current := assistantshell.DecodeState(ctx.State())
 	state := assistantshell.HelpState(ctx.State(), commands, current.Screen != assistantshell.ScreenHelp)
 	decoded := assistantshell.DecodeState(state)
-	return ctx.Transition(state, 0, assistantshell.HelpView(assistantshell.HelpModel{
+	return ctx.Transition(state, assistantshell.InteractionTTL, assistantshell.HelpView(assistantshell.HelpModel{
 		Commands: commands,
 		Page:     int(decoded.CategoryIndex),
 		Locale:   c.shellInteractionLocale(ctx),
@@ -449,7 +453,7 @@ func (c *AssistantClient) handleShellHome(ctx *orchestration.Context) error {
 	}
 	state := assistantshell.ScreenState(ctx.State(), assistantshell.ScreenHome)
 	session := ctx.Session()
-	return ctx.Transition(state, 0, c.shellHomeView(ctx.Context(), session.Binding.ActorID, session.Binding.ChatID, state))
+	return ctx.Transition(state, assistantshell.InteractionTTL, c.shellHomeView(ctx.Context(), session.Binding.ActorID, session.Binding.ChatID, state))
 }
 
 func (c *AssistantClient) handleShellSettings(ctx *orchestration.Context) error {
@@ -473,7 +477,7 @@ func (c *AssistantClient) handleShellSettings(ctx *orchestration.Context) error 
 	if err != nil {
 		return err
 	}
-	return ctx.Transition(state, 0, view)
+	return ctx.Transition(state, assistantshell.InteractionTTL, view)
 }
 
 func (c *AssistantClient) handleShellSettingsPrev(ctx *orchestration.Context) error {
@@ -503,7 +507,7 @@ func (c *AssistantClient) stepShellSettingsCategoryPage(ctx *orchestration.Conte
 	if err != nil {
 		return err
 	}
-	return ctx.Transition(state, 0, view)
+	return ctx.Transition(state, assistantshell.InteractionTTL, view)
 }
 
 func (c *AssistantClient) handleShellSettingsCategorySlot(ctx *orchestration.Context, slot int) error {
@@ -528,7 +532,7 @@ func (c *AssistantClient) handleShellSettingsCategorySlot(ctx *orchestration.Con
 	if err != nil {
 		return err
 	}
-	return ctx.Transition(state, 0, view)
+	return ctx.Transition(state, assistantshell.InteractionTTL, view)
 }
 
 func (c *AssistantClient) handleShellSettingPrev(ctx *orchestration.Context) error {
@@ -567,7 +571,7 @@ func (c *AssistantClient) stepShellSettingPage(ctx *orchestration.Context, delta
 	if err != nil {
 		return err
 	}
-	return ctx.Transition(state, 0, view)
+	return ctx.Transition(state, assistantshell.InteractionTTL, view)
 }
 
 func (c *AssistantClient) handleShellSettingSlot(ctx *orchestration.Context, slot int) error {
@@ -604,7 +608,7 @@ func (c *AssistantClient) handleShellSettingSlot(ctx *orchestration.Context, slo
 	if err != nil {
 		return err
 	}
-	return ctx.Transition(state, 0, view)
+	return ctx.Transition(state, assistantshell.InteractionTTL, view)
 }
 
 func (c *AssistantClient) handleShellSettingBack(ctx *orchestration.Context) error {
@@ -641,7 +645,7 @@ func (c *AssistantClient) handleShellSettingBack(ctx *orchestration.Context) err
 	if err != nil {
 		return err
 	}
-	return ctx.Transition(state, 0, view)
+	return ctx.Transition(state, assistantshell.InteractionTTL, view)
 }
 
 func (c *AssistantClient) handleShellSettingChange(ctx *orchestration.Context) error {
@@ -700,7 +704,7 @@ func (c *AssistantClient) handleShellSettingInputCancel(ctx *orchestration.Conte
 	if err != nil {
 		return err
 	}
-	return ctx.Transition(state, 0, view)
+	return ctx.Transition(state, assistantshell.InteractionTTL, view)
 }
 
 func (c *AssistantClient) handleInteractionTextInput(ctx *orchestration.Context, text string) error {
@@ -745,7 +749,7 @@ func (c *AssistantClient) handleShellSettingTextInput(ctx *orchestration.Context
 		if viewErr != nil {
 			return viewErr
 		}
-		return ctx.Transition(state, 0, view)
+		return ctx.Transition(state, assistantshell.InteractionTTL, view)
 	}
 	if trimmed == "" {
 		return c.rearmShellSettingInput(ctx, *def, "Value cannot be empty.")
@@ -827,7 +831,7 @@ func (c *AssistantClient) handleShellSettingTextInput(ctx *orchestration.Context
 	}
 	view, viewErr := c.shellSettingDetailViewWithNotice(ctx.Context(), userID, chatID, state, notice)
 	if viewErr == nil {
-		viewErr = ctx.Transition(state, 0, view)
+		viewErr = ctx.Transition(state, assistantshell.InteractionTTL, view)
 	}
 	if viewErr != nil {
 		return &assistantshell.MutationError{

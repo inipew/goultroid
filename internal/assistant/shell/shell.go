@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	FeatureID = "assistant_shell"
+	FeatureID = "assistant_shell"\n\n\tInteractionTTL = 24 * time.Hour
 
 	InteractionStart            = "start"
 	InteractionHome             = "home"

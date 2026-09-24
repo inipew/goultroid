@@ -18,7 +18,7 @@ import (
 
 const (
 	interactionInlineID = "calculator"
-	interactionTTL      = 10 * time.Minute
+	interactionTTL      = 24 * time.Hour
 )
 
 var calculatorActions = []string{

@@ -23,7 +23,7 @@ import (
 
 const (
 	interactiveInlineID  = "interactive"
-	interactiveTTL       = 15 * time.Minute
+	interactiveTTL       = 24 * time.Hour
 	maxInteractiveURLLen = 2048
 	maxInteractiveState  = 2304
 
