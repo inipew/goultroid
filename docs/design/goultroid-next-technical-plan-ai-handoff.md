@@ -6,8 +6,9 @@ Current implementation state, post-P8 work, lifecycle/resource invariants, and n
 |---|---|
 | Repository | github.com/inipew/goultroid |
 | Branch | test-next |
-| Audited HEAD | d307311d2dab084fb4bcdc01935e6448049cb32e |
-| HEAD message | fix(downloader): deliver userbot URL downloads to Telegram |
+| Branch HEAD before this handoff refresh | 6feb450114da476353dae9a4ffc4d77cec8d946c |
+| Latest implementation commit | d307311d2dab084fb4bcdc01935e6448049cb32e |
+| Latest implementation message | fix(downloader): deliver userbot URL downloads to Telegram |
 | Snapshot | 25 September 2026, Asia/Jakarta |
 | P1-P8 Assistant parity | CLOSED |
 | Ultroid-facing V2-V4 | CLOSED |
@@ -794,7 +795,113 @@ refresh HEAD
 
 ---
 
-## 20. Final handoff rule
+## 20. Session memory consolidation — 25 September 2026
+
+This section records the latest cross-session state explicitly so a future AI does not regress to an older chat memory.
+
+### Completed architecture/product work
+
+~~~text
+P1-P8 Assistant parity                 CLOSED
+V2 public /start                       CLOSED
+V3 Help direct-grid                    CLOSED
+V4 Settings direct-grid                CLOSED
+
+Owner-bound button lifetime            IMPLEMENTED
+MyXL safe navigation lease             24h sliding
+MyXL input                             2m
+MyXL purchase/delete confirmation      5m
+wrong actor / wrong target             fail closed before handler
+
+YT-A/YT-B search contract + yt-dlp     CLOSED
+YT-E..YT-I inline yt UX/convergence    CLOSED
+YT-K Search Again                      CLOSED
+YT-N search lifecycle acceptance       CLOSED
+YT-Z retained media Telegram delivery  IMPLEMENTED
+Userbot URL automatic delivery         IMPLEMENTED
+~~~
+
+### Latest downloader architecture
+
+~~~text
+yt <query>
+  -> TaskEngine process=1
+  -> download.Registry.Search("extractor")
+  -> yt-dlp structured ytsearch
+  -> <=5 normalized rich results
+  -> Inline vNext result selection
+  -> actor/target/generation/revision-bound state
+  -> same interactiveState as dl <URL>
+  -> Audio / Video
+  -> format
+  -> existing downloader
+  -> retained asset ownership
+  -> release process/download
+  -> TaskEngine media=1 delivery continuation
+  -> shared presentation.MediaDeliverer
+  -> Telegram message/inline media
+~~~
+
+There is no second YouTube downloader, no plugin-local Telegram uploader, no query-result global map, and no second callback protocol.
+
+### YT-Z is already implemented
+
+Do **not** start a new YT-Z implementation from the older chat TODO.
+
+The implementation sequence already present is:
+
+~~~text
+f154f1cc feat(downloader): deliver retained media to Telegram
+cd246031 fix(downloader): harden retained media delivery lifecycle
+83f46a7b fix(downloader): keep YT-Z completion RPCs task-owned
+e0b82e13 cleanup(downloader): remove metadata-only completion fallback
+d307311d fix(downloader): deliver userbot URL downloads to Telegram
+~~~
+
+The next session should audit and harden this implementation, not recreate it.
+
+### Immediate next analysis
+
+1. Refresh current `test-next`.
+2. Compare source drift from implementation baseline `d307311d2dab084fb4bcdc01935e6448049cb32e`.
+3. If a real checkout is available, run:
+   - `gofmt` cleanliness;
+   - `go build -o bin/goultroid ./cmd/goultroid`;
+   - targeted downloader delivery/search tests;
+   - targeted interaction ownership/lifecycle tests.
+4. Audit YT-Z resource/lifecycle correctness:
+   - retained asset registered before delivery;
+   - download/process released before media=1;
+   - no Telegram RPC directly in completion callback;
+   - inline/message/userbot targets all use shared delivery boundary;
+   - reply/topic preserved;
+   - failure keeps retained ownership;
+   - lifecycle cancellation does not produce misleading terminal failure;
+   - materialized temp files always cleaned;
+   - ambiguous upload/send failure cannot trivially duplicate media on retry.
+5. Fix only defects verified in current source.
+6. Reconcile stale historical docs after correctness work.
+7. Then choose the next ordinary product feature.
+
+### Binding working rules
+
+- current source/tests outrank old handoff/chat memory;
+- refresh HEAD before each phase;
+- `gofmt` before every Go commit;
+- never inspect CI unless explicitly asked;
+- TaskEngine remains physical execution/resource authority;
+- telegram.RPCExecutor remains Telegram retry/FloodWait authority;
+- a2 remains callback/session authority;
+- Inline vNext remains inline lifecycle authority;
+- shared storage/media ownership remains retained-asset authority;
+- shared presentation/Telegram boundary remains media-delivery authority;
+- no duplicate runtime/registry/executor/uploader;
+- no unbounded cache/cardinality;
+- no unnecessary idle worker/ticker/poller.
+
+---
+
+## 21. Final handoff rule
 
 Do not continue from an old TODO list merely because it exists.
 
