@@ -355,17 +355,10 @@ func (*interactiveInlineHandler) Description() string { return "Interactive medi
 type downloaderMatcher struct{}
 
 func (downloaderMatcher) Match(query string) ([]string, bool) {
-	trimmed := strings.TrimSpace(query)
-	if strings.EqualFold(trimmed, "dl") {
-		return nil, true
+	if args, ok := matchDownloaderKeyword(query, "dl"); ok {
+		return args, true
 	}
-	if len(trimmed) <= len("dl") || !strings.EqualFold(trimmed[:len("dl")], "dl") {
-		return nil, false
-	}
-	if trimmed[len("dl")] != ' ' && trimmed[len("dl")] != '\t' {
-		return nil, false
-	}
-	return strings.Fields(strings.TrimSpace(trimmed[len("dl"):])), true
+	return matchDownloaderKeyword(query, "yt")
 }
 
 func (*interactiveInlineHandler) Matcher() inlineservice.InlineMatcher {
@@ -389,6 +382,9 @@ func (h *interactiveInlineHandler) HandleInline(ctx *inlineservice.InlineContext
 func (h *interactiveInlineHandler) HandleInlineV2(ctx *inlineservice.InlineContext) (*inlineservice.InlineResponse, error) {
 	if ctx == nil || h == nil || h.plugin == nil {
 		return nil, core.ErrInvalidArgs
+	}
+	if isYouTubeSearchQuery(ctx.RawQuery) {
+		return h.handleYouTubeSearch(ctx)
 	}
 	rawURL := strings.TrimSpace(strings.Join(ctx.Args, " "))
 	if rawURL == "" {
