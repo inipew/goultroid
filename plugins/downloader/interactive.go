@@ -3,7 +3,6 @@ package downloader
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -150,9 +149,8 @@ func (p *Plugin) BindAssistant(rt assistantinteraction.DriverRuntime) (func(), e
 						return rootinteraction.ActionAdmission{}, err
 					}
 					return rootinteraction.ActionAdmission{
-						Scope:     scope,
-						Resources: p.urlResources(state.URL),
-						State:     downloadPreparation{State: state},
+						Scope: scope,
+						State: downloadPreparation{State: state},
 					}, nil
 				},
 				handler,
@@ -292,35 +290,43 @@ func (p *Plugin) executeInteractiveDownload(ctx *orchestration.Context, state in
 		return err
 	}
 
-	targetStore := p.storage
-	if targetStore == nil {
-		targetStore = storage.NewMemoryStorage()
-	}
-	provider := p.registry.Resolve(state.URL)
-	asset, err := p.registry.Download(ctx.Context(), state.URL, targetStore, download.DownloadOptions{
-		Timeout:  downloaderExecutionTimeout,
-		MaxBytes: 500 * 1024 * 1024,
-		Mode:     mode,
-		Format:   format,
-	})
+	delivery, err := ctx.PrepareMediaDelivery()
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Context().Err() != nil {
-			return err
-		}
 		_ = ctx.Edit(failedView(err))
 		ctx.Cancel()
 		return err
 	}
-	producer := "downloader.unknown"
-	if provider != nil {
-		producer = downloaderProviderProducer(provider.Name())
-	}
-	if err := p.registerRetainedAsset(ctx.Context(), targetStore, asset, producer); err != nil {
-		_ = ctx.Edit(failedView(err))
+	downloadFailure, err := ctx.PrepareStaticEdit(failedView(nil))
+	if err != nil {
 		ctx.Cancel()
 		return err
 	}
-	if err := ctx.Edit(completedView(asset, mode, format)); err != nil {
+	deliveryFailure, err := ctx.PrepareStaticEdit(deliveryFailedView())
+	if err != nil {
+		ctx.Cancel()
+		return err
+	}
+	delivered, err := ctx.PrepareStaticEdit(deliveredView())
+	if err != nil {
+		ctx.Cancel()
+		return err
+	}
+	targetKind := ""
+	if target := ctx.Target(); target != nil {
+		targetKind = target.PresentationTargetKind()
+	}
+	if err := p.submitInteractivePipeline(
+		context.WithoutCancel(ctx.Context()),
+		state,
+		mode,
+		format,
+		delivery,
+		downloadFailure,
+		deliveryFailure,
+		delivered,
+		targetKind,
+	); err != nil {
+		_ = ctx.Edit(failedView(err))
 		ctx.Cancel()
 		return err
 	}
@@ -532,7 +538,6 @@ func runningView(state interactiveState) presentation.View {
 	}
 	return presentation.View{
 		Text: "⬇️ <b>Downloading...</b>\n\n<b>Format:</b> <code>" + core.EscapeHTML(label) + "</code>",
-		Rows: []presentation.Row{{{Text: "✖ Cᴀɴᴄᴇʟ", ActionID: actionCancel}}},
 	}
 }
 

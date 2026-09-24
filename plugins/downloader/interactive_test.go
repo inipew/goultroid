@@ -168,7 +168,7 @@ func (*p8ePort) Edit(context.Context, presentation.Target, presentation.Compiled
 }
 func (*p8ePort) Answer(context.Context, presentation.Answer) error { return nil }
 
-func TestP8EFinalCallbackPublishesDynamicResourcesBeforeDispatch(t *testing.T) {
+func TestYTZZFinalCallbackDefersPhysicalResourcesToContinuation(t *testing.T) {
 	p := New()
 	p.registry = download.NewRegistry(
 		download.NewExtractorProvider(nil, 500*1024*1024),
@@ -240,8 +240,8 @@ func TestP8EFinalCallbackPublishesDynamicResourcesBeforeDispatch(t *testing.T) {
 		t.Fatal("final downloader callback did not expose TaskEngine resources")
 	}
 	resources := resourceAware.Resources()
-	if !hasResource(resources, "download") || !hasResource(resources, "process") {
-		t.Fatalf("prepared resources=%+v", resources)
+	if len(resources) != 0 {
+		t.Fatalf("prepared callback resources=%+v, want none; physical resources belong to continuation", resources)
 	}
 	if resourceAware.Scope() != scope {
 		t.Fatalf("prepared scope=%+v, want %+v", resourceAware.Scope(), scope)

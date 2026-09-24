@@ -53,6 +53,7 @@ type Bridge struct {
 }
 
 var _ presentation.Port = (*Bridge)(nil)
+var _ presentation.MediaDeliverer = (*Bridge)(nil)
 var _ presentation.SessionTarget = MessageTarget{}
 var _ presentation.SessionTarget = InlineTarget{}
 
@@ -94,6 +95,42 @@ func (b *Bridge) Edit(ctx context.Context, target presentation.Target, view pres
 			return ErrInvalidTarget
 		}
 		return b.Service.EditInlineBotMessage(ctx, t.MessageID, view.Text, markup(view))
+	default:
+		return ErrInvalidTarget
+	}
+}
+
+type inlineMediaEditor interface {
+	EditInlineBotMedia(context.Context, tg.InputBotInlineMessageIDClass, presentation.Media) error
+}
+
+func (b *Bridge) DeliverMedia(ctx context.Context, target presentation.Target, media presentation.Media) error {
+	if b == nil || b.Service == nil {
+		return core.ErrUnavailable
+	}
+	if strings.TrimSpace(media.Path) == "" {
+		return ErrInvalidTarget
+	}
+	switch t := target.(type) {
+	case MessageTarget:
+		if t.Peer == nil || t.ChatID == 0 || t.MessageID <= 0 {
+			return ErrInvalidTarget
+		}
+		if contextual, ok := b.Service.(core.ContextualTelegramServicer); ok {
+			_, err := contextual.SendMediaContext(ctx, t.Peer, media.Type, media.Path, media.Caption, core.MessageSendContext{ReplyToID: t.MessageID})
+			return err
+		}
+		_, err := b.Service.SendMedia(ctx, t.Peer, media.Type, media.Path, media.Caption)
+		return err
+	case InlineTarget:
+		if t.MessageID == nil || strings.TrimSpace(t.BindingID) == "" {
+			return ErrInvalidTarget
+		}
+		editor, ok := b.Service.(inlineMediaEditor)
+		if !ok {
+			return core.ErrUnsupported
+		}
+		return editor.EditInlineBotMedia(ctx, t.MessageID, media)
 	default:
 		return ErrInvalidTarget
 	}

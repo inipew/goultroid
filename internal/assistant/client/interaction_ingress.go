@@ -13,6 +13,7 @@ import (
 	assistantshell "github.com/inipew/goultroid/internal/assistant/shell"
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 	"github.com/inipew/goultroid/internal/interaction/orchestration"
+	"github.com/inipew/goultroid/internal/presentation"
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 	"github.com/inipew/goultroid/internal/tasks"
 )
@@ -253,6 +254,45 @@ func (s *interactionPresentationServicer) EditMessageMarkup(ctx context.Context,
 	}
 	target := assistantinteraction.NewMessageTarget(peer, msgID, extractChatIDFromInputPeer(peer), 0)
 	return s.interaction.Edit(ctx, target, text, markup)
+}
+
+func (s *interactionPresentationServicer) SendMessageContext(
+	ctx context.Context,
+	peer tg.InputPeerClass,
+	text string,
+	markup tg.ReplyMarkupClass,
+	send core.MessageSendContext,
+) (*tg.Message, error) {
+	if s == nil || s.interaction == nil {
+		return nil, ErrInteractionUnavailable
+	}
+	return s.interaction.SendMessageContext(ctx, peer, text, markup, send)
+}
+
+func (s *interactionPresentationServicer) SendMediaContext(
+	ctx context.Context,
+	peer tg.InputPeerClass,
+	mediaType string,
+	filePath string,
+	caption string,
+	send core.MessageSendContext,
+) (*tg.Message, error) {
+	if s == nil || s.interaction == nil {
+		return nil, ErrInteractionUnavailable
+	}
+	return s.interaction.SendMediaContext(ctx, peer, mediaType, filePath, caption, send)
+}
+
+func (s *interactionPresentationServicer) EditInlineBotMedia(
+	ctx context.Context,
+	inlineID tg.InputBotInlineMessageIDClass,
+	media presentation.Media,
+) error {
+	if s == nil || s.interaction == nil || inlineID == nil {
+		return ErrInteractionUnavailable
+	}
+	target := assistantinteraction.NewInlineTarget(1, inlineID, 0)
+	return s.interaction.AsInline().EditMedia(ctx, target, media.Type, media.Path, media.FileName, media.MIMEType, media.Caption)
 }
 
 func (s *interactionPresentationServicer) EditInlineBotMessage(ctx context.Context, inlineID tg.InputBotInlineMessageIDClass, text string, markup tg.ReplyMarkupClass) error {

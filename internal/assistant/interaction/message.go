@@ -1095,6 +1095,58 @@ func (i *InlineClientInteraction) Edit(ctx context.Context, target InlineTarget,
 	return nil
 }
 
+// EditMedia uploads a local asset through the shared Assistant media executor and
+// replaces an inline-sent message with the reusable Telegram media reference.
+func (i *InlineClientInteraction) EditMedia(
+	ctx context.Context,
+	target InlineTarget,
+	mediaType, filePath, fileName, mimeType, caption string,
+) (retErr error) {
+	if i == nil || i.ci == nil || i.ci.api == nil || !target.IsValid() {
+		return ErrInvalidTarget
+	}
+	uploaded, err := i.ci.UploadInlineMedia(ctx, mediaType, filePath, fileName, mimeType)
+	if err != nil {
+		return err
+	}
+	media, err := reusableInputMedia(uploaded)
+	if err != nil {
+		return err
+	}
+	plain, ents := parseHTML(caption)
+	req := &tg.MessagesEditInlineBotMessageRequest{
+		ID:    target.MessageID(),
+		Media: media,
+	}
+	if plain != "" {
+		req.SetMessage(plain)
+	}
+	if len(ents) > 0 {
+		req.SetEntities(ents)
+	}
+	req.SetFlags()
+
+	start := time.Now()
+	defer func() {
+		if i.ci.metrics != nil {
+			i.ci.metrics.RecordTelegramRequest("MessagesEditInlineBotMessage", time.Since(start), retErr)
+		}
+	}()
+	const transferTimeout = 30 * time.Minute
+	_, err = executeValue(ctx, i.ci.executor, "messages.editInlineBotMessage", "messages", assistentrpc.NonIdempotentMutation, transferTimeout, func(opCtx context.Context) (bool, error) {
+		return i.ci.api.MessagesEditInlineBotMessage(opCtx, req)
+	})
+	if err != nil {
+		classified := ClassifyRPCError(err)
+		if classified == nil {
+			return nil
+		}
+		retErr = fmt.Errorf("assistant edit inline media: %w", classified)
+		return retErr
+	}
+	return nil
+}
+
 // EditMarkup updates only the inline markup of an inline bot message, preserving the text on Telegram.
 func (i *InlineClientInteraction) EditMarkup(ctx context.Context, target InlineTarget, markup tg.ReplyMarkupClass) (retErr error) {
 	if i.ci == nil || i.ci.api == nil || !target.IsValid() {

@@ -25,6 +25,20 @@ type Answer struct {
 	Alert   bool
 }
 
+// Media describes one materialized local asset for transport delivery.
+type Media struct {
+	Type     string
+	Path     string
+	FileName string
+	MIMEType string
+	Caption  string
+}
+
+// MediaDeliverer is an optional presentation capability for media targets.
+type MediaDeliverer interface {
+	DeliverMedia(context.Context, Target, Media) error
+}
+
 type Port interface {
 	Send(context.Context, Target, CompiledView) (Target, error)
 	Edit(context.Context, Target, CompiledView) error

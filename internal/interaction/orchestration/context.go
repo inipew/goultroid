@@ -156,6 +156,49 @@ func (c *Context) Transition(state []byte, ttl time.Duration, view presentation.
 	return c.Edit(view)
 }
 
+// MediaDelivery is a detached target-bound delivery handle.
+type MediaDelivery func(context.Context, presentation.Media) error
+
+// PrepareMediaDelivery snapshots the transport target without retaining session state.
+func (c *Context) PrepareMediaDelivery() (MediaDelivery, error) {
+	if c == nil || c.engine == nil || c.target == nil {
+		return nil, ErrInvalidEngine
+	}
+	deliverer, ok := c.engine.port.(presentation.MediaDeliverer)
+	if !ok {
+		return nil, ErrInvalidTarget
+	}
+	target := c.target
+	return func(ctx context.Context, media presentation.Media) error {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		return deliverer.DeliverMedia(ctx, target, media)
+	}, nil
+}
+
+// PrepareStaticEdit compiles a callback-free terminal view for asynchronous updates.
+func (c *Context) PrepareStaticEdit(view presentation.View) (func(context.Context) error, error) {
+	if c == nil || c.engine == nil || c.target == nil {
+		return nil, ErrInvalidEngine
+	}
+	if len(view.Rows) != 0 {
+		return nil, ErrInvalidTarget
+	}
+	compiled, err := c.engine.compiler.Compile(c.Context(), c.session.ID, view)
+	if err != nil {
+		return nil, err
+	}
+	target := c.target
+	port := c.engine.port
+	return func(ctx context.Context) error {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		return port.Edit(ctx, target, compiled)
+	}, nil
+}
+
 func (c *Context) Answer(text string, alert bool) error {
 	if c == nil || c.engine == nil {
 		return ErrInvalidEngine
