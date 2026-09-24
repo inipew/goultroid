@@ -18,7 +18,10 @@ import (
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
-const downloaderDeliveryTimeout = 30 * time.Minute
+const (
+	downloaderDeliveryTimeout = 30 * time.Minute
+	downloaderStatusTimeout   = 30 * time.Second
+)
 
 func interactiveDeliveryMediaType(mode download.MediaMode, asset *storage.Asset) string {
 	switch mode {
@@ -102,6 +105,27 @@ func (p *Plugin) materializeDeliveryAsset(ctx context.Context, store storage.Sto
 	return tmp.Name(), cleanup, nil
 }
 
+func (p *Plugin) submitTerminalEdit(admissionCtx context.Context, kind string, edit func(context.Context) error) error {
+	if p == nil || p.tasks == nil || edit == nil {
+		return fmt.Errorf("%w: downloader terminal edit is unavailable", core.ErrUnavailable)
+	}
+	if admissionCtx == nil {
+		admissionCtx = context.Background()
+	}
+	_, err := p.tasks.Submit(admissionCtx, tasks.WorkSpec{
+		ID:               p.nextTaskID("terminal-" + strings.TrimSpace(kind)),
+		QuotaOwner:       tasks.OwnerID("plugin:downloader"),
+		Pool:             tasks.PoolID("general"),
+		Class:            tasks.PriorityNormal,
+		ExecutionTimeout: downloaderStatusTimeout,
+		Handler:          edit,
+	})
+	if err != nil {
+		return fmt.Errorf("submit downloader terminal edit: %w", err)
+	}
+	return nil
+}
+
 func (p *Plugin) submitInteractivePipeline(
 	admissionCtx context.Context,
 	state interactiveState,
@@ -162,13 +186,13 @@ func (p *Plugin) submitInteractivePipeline(
 	spec.OnComplete = func(result tasks.TaskResult) {
 		if !result.IsSuccess() {
 			if result.Outcome != tasks.OutcomeCancelled && result.Outcome != tasks.OutcomeTimedOut && downloadFailure != nil {
-				_ = downloadFailure(context.Background())
+				_ = p.submitTerminalEdit(context.Background(), "download-failed", downloadFailure)
 			}
 			return
 		}
 		if asset == nil || targetStore == nil {
 			if downloadFailure != nil {
-				_ = downloadFailure(context.Background())
+				_ = p.submitTerminalEdit(context.Background(), "download-invalid-result", downloadFailure)
 			}
 			return
 		}
@@ -183,7 +207,7 @@ func (p *Plugin) submitInteractivePipeline(
 			delivered,
 			targetKind,
 		); err != nil && deliveryFailure != nil && !isDeliveryLifecycleCancellation(err) {
-			_ = deliveryFailure(context.Background())
+			_ = p.submitTerminalEdit(context.Background(), "delivery-submit-failed", deliveryFailure)
 		}
 	}
 	_, err := p.tasks.Submit(admissionCtx, spec)
@@ -233,12 +257,12 @@ func (p *Plugin) submitRetainedDelivery(
 	spec.OnComplete = func(result tasks.TaskResult) {
 		if result.IsSuccess() {
 			if targetKind == "message" && delivered != nil {
-				_ = delivered(context.Background())
+				_ = p.submitTerminalEdit(context.Background(), "delivered", delivered)
 			}
 			return
 		}
 		if result.Outcome != tasks.OutcomeCancelled && result.Outcome != tasks.OutcomeTimedOut && deliveryFailure != nil {
-			_ = deliveryFailure(context.Background())
+			_ = p.submitTerminalEdit(context.Background(), "delivery-failed", deliveryFailure)
 		}
 	}
 	_, err := p.tasks.Submit(admissionCtx, spec)
