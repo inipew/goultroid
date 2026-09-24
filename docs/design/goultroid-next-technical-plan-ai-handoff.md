@@ -1,1132 +1,812 @@
-# Goultroid — AI Session Handoff
+# Goultroid - AI Session Handoff
 
-Current-head implementation context, frozen Assistant parity state, and post-parity work guide.
+Current implementation state, post-P8 work, lifecycle/resource invariants, and next-analysis guide.
 
 | Field | Value |
 |---|---|
-| Repository | `github.com/inipew/goultroid` |
-| Branch | `test-next` |
-| Implementation baseline audited for this handoff | `b5ceb8338ea14182bf58466b9e663a05b4db5b07` |
-| Baseline message | `docs(assistant): close P8 parity freeze` |
-| Snapshot date | 23 September 2026 (Asia/Jakarta) |
-| Assistant parity state | **P1–P8 CLOSED; P8-J final freeze CLOSED** |
-| Primary historical parity spec | `docs/bug/4.md` |
-| Final P8 authority | `docs/design/assistant-parity-p8j-closure.md` |
+| Repository | github.com/inipew/goultroid |
+| Branch | test-next |
+| Audited HEAD | d307311d2dab084fb4bcdc01935e6448049cb32e |
+| HEAD message | fix(downloader): deliver userbot URL downloads to Telegram |
+| Snapshot | 25 September 2026, Asia/Jakarta |
+| P1-P8 Assistant parity | CLOSED |
+| Ultroid-facing V2-V4 | CLOSED |
+| Owner-bound button lifetime | IMPLEMENTED |
+| YouTube search-first | CLOSED through lifecycle UX |
+| YT-Z Telegram media delivery | IMPLEMENTED |
+| CI rule | Do not inspect CI unless the user explicitly asks |
 
-> **Purpose**
->
-> This document is the current AI-session handoff for Goultroid. It replaces the old 19 September 2026 handoff plan whose implementation baseline was `08626042...`.
->
-> The previous document contained a then-current execution/RPC/Job roadmap. That plan must **not** be resumed mechanically. The repository has changed substantially since that snapshot, especially through the Assistant vNext/parity P1–P8 program. Any older finding must be re-audited against the current `test-next` source before it becomes work again.
-
----
-
-## 1. Mandatory bootstrap for the next AI session
-
-Do this before proposing or editing code:
-
-1. Fetch/refresh `test-next`.
-2. Record the exact current HEAD.
-3. Compare it to the implementation baseline in this document.
-4. Read the files touched by the drift.
-5. Use source + architecture/regression tests as the current truth.
-6. Do not assume an older audit item still exists just because it is mentioned in old chat/docs.
-7. Before committing Go changes, run `gofmt` on all changed Go files.
-8. Do not inspect or wait on CI unless the user explicitly asks.
-
-Canonical priority of evidence:
-
-```text
-current source at test-next
-        ↓
-architecture / integration / regression tests
-        ↓
-final closure docs for the relevant phase
-        ↓
-design docs / ADRs
-        ↓
-historical audits and benchmark reports
-        ↓
-old chat/session memory
-```
-
-If a document and current source disagree, current source wins and the stale document should be corrected.
+This is the canonical handoff for the next AI session. Current source and regression tests are always higher authority than this document.
 
 ---
 
-## 2. Executive state summary
+## 1. Mandatory bootstrap for the next session
 
-The major Assistant rewrite/parity program described by `docs/bug/4.md` is complete.
+Before changing code:
 
-The original product objective was:
+1. Refresh test-next and record exact HEAD.
+2. Compare drift from the audited HEAD above.
+3. Read every source/test file touched by drift.
+4. Treat current source plus architecture/integration/regression tests as truth.
+5. Re-audit any older issue before calling it still open.
+6. Run gofmt before every commit that changes Go.
+7. Do not inspect, poll, or wait for CI unless explicitly requested.
+8. Do not solve local UX work by adding a second runtime, registry, TaskEngine, RPC executor, callback protocol, downloader, or retry engine.
+9. Keep state/cache/cardinality bounded and idle footprint near zero.
 
-> Goultroid should provide the Assistant UX breadth demonstrated by Ultroid—control bot, dual command surface, rich inline, typed callbacks, interactive workflows, PM relay, custom responses, deep links, manager/group behavior, and self-inline rendering—without copying Ultroid's global/decorator architecture.
+Evidence order:
 
-The final implementation reached that target with Goultroid-native authorities:
+~~~text
+current source
+  -> architecture/integration/regression tests
+  -> current handoff and closure docs
+  -> design docs
+  -> historical audits
+  -> old chat/session memory
+~~~
 
-```text
+---
+
+## 2. Frozen architecture authorities
+
+Post-P8 work must continue to reuse these authorities:
+
+~~~text
 core.Router
     canonical command execution
 
 feature.Registry
-    canonical cross-surface feature/interaction metadata
+    canonical cross-surface feature metadata
 
 interaction.Runtime
-    bounded a2 session + callback-token authority
+    bounded a2 session/token authority
 
 interaction.Dispatcher
-    typed callback handler ownership
+    typed callback validation/registration
 
 interaction/orchestration.Engine
-    feature-facing state/presentation transaction boundary
+    state transition/action/media-delivery boundary
+
+presentation.View / presentation.Port
+    transport-neutral UI boundary
 
 Inline vNext
-    inline lookup/cache/lifecycle authority
+    inline matching/result/cache/lifecycle
 
 TaskEngine
-    execution / backpressure / resource authority
+    execution/backpressure/resources
 
 telegram.RPCExecutor
-    Telegram retry / FloodWait / RPC metrics authority
+    retry/FloodWait/RPC authority
 
 selfinline.Renderer
-    userbot → own Assistant inline-rendering authority
-```
+    userbot -> own Assistant rendering
 
-There is no accepted second Assistant command registry, second TaskEngine, feature-local retry/FloodWait engine, feature-local callback protocol, or per-user workflow worker model.
+download.Registry
+    canonical downloader provider registry
 
----
+shared storage/media ownership
+    retained-asset lifecycle
+~~~
 
-## 3. Roadmap reconciliation: original docs/bug/4 vs actual implementation
+Still forbidden:
 
-The early `docs/bug/4.md` roadmap proposed:
+~~~text
+second command registry
+second callback protocol
+second TaskEngine
+second RPC executor
+feature-local FloodWait/retry
+feature-owned Telegram uploader when shared delivery exists
+global per-user workflow maps
+per-user/per-chat permanent workers
+unbounded query/result caches
+raw arbitrary callback_data
+AssistantDownloader / InlineDownloader / YouTubeDownloader second engines
+~~~
 
-```text
-P0 contract
-P1 session runtime
-P2 presentation/rendering
-P3 Assistant shell
-P4 Inline vNext
-P5 SavedResponse
-P6 PM Relay
-P7 group/manager + advanced workflows
-P8 migration/parity/reclamation
-```
-
-The implementation evolved while preserving the same architecture goal.
-
-Actual sequence:
-
-```text
-P0  Feature Surface / Interaction Contract
-
-P1  bounded interaction session runtime + a2 token foundation
-
-P2  transport-neutral presentation + typed action dispatcher
-
-P3  interaction/orchestration engine
-
-P4  live a2 Assistant ingress
-
-P5  real Assistant shell migration
-    ├ root/home
-    ├ Help + Status
-    ├ Settings foundation
-    ├ stable settings mutation contract
-    ├ free-form Settings input
-    ├ Settings cutover
-    └ shell/help/public parity before a1 reclamation
-
-P6  PM Relay / public messaging plane
-    ├ durable relay domain
-    ├ ingress + delivery
-    ├ owner reply/control
-    ├ audience registry
-    ├ force-sub
-    └ durability/resource/lifecycle acceptance
-
-P7  complete Group / Manager Plane
-    ├ group execution/context
-    ├ Telegram role resolver
-    ├ contextual authorization
-    ├ manager read/query + foundation
-    ├ group state
-    ├ moderation mutations
-    ├ event-driven group features
-    ├ rules / filters / warnings
-    ├ reply/topic/media context
-    ├ lifecycle/resource hardening
-    └ final acceptance
-
-P8  remaining advanced parity + reclamation + closure
-    ├ parity inventory/freeze
-    ├ self-inline RenderBridge
-    ├ calculator canary
-    ├ representative rich lookup
-    ├ representative interactive downloader
-    ├ locale + final behavior matrix
-    ├ reference-driven dead-stack reclamation
-    ├ unload/reload/generation acceptance
-    ├ mixed resource/idle/high-load acceptance
-    └ final P8-J freeze
-```
-
-The important point for a future session: **do not try to restore the old phase numbering literally.** Use the actual current architecture and the final closure documents.
+Target remains: Ultroid-facing UX plus Goultroid-native state/resource/lifecycle architecture.
 
 ---
 
-## 4. Assistant parity P1–P8 closure summary
-
-### P1 — Interaction Session Runtime — CLOSED
-
-Authority:
-
-`internal/interaction`
-
-Key frozen properties:
-
-- callback protocol is versioned `a2`;
-- session ownership is exact plugin `tasks.ScopeIdentity`;
-- session state is copied on ingress/egress;
-- optimistic revision fencing rejects stale UI;
-- actor/chat/message/inline target binding is explicit;
-- plugin generation is revalidated;
-- capacity is fail-closed; live sessions are not evicted to admit new ones;
-- no permanent cleanup ticker or interaction goroutine.
-
-Current default bounds:
-
-| Bound | Default |
-|---|---:|
-| live sessions | 4096 |
-| per plugin generation | 512 |
-| per actor | 64 |
-| state per session | 64 KiB |
-| total retained state | 8 MiB |
-| default TTL | 15 min |
-| maximum TTL | 24 h |
-
-Do not replace this with a feature-local session map or conversation goroutine.
-
-### P2 — Presentation / Render Bridge primitives — CLOSED
-
-Authorities:
-
-- `internal/presentation`
-- `internal/presentation/telegram`
-- `interaction.Dispatcher`
-
-Features emit transport-neutral `presentation.View` and typed `ActionID` values.
-
-Feature code does not construct arbitrary callback bytes.
-
-Telegram-specific target/send/edit/answer behavior remains behind the presentation adapter.
-
-### P3 — Interaction orchestration — CLOSED
-
-Authority:
-
-`internal/interaction/orchestration`
-
-Features use one orchestration context for:
-
-- session state;
-- target;
-- optimistic update;
-- transition;
-- edit;
-- callback answer;
-- cancellation.
-
-The orchestration layer preserves caller + session cancellation without creating a long-lived goroutine.
-
-### P4 — live a2 ingress — CLOSED
-
-Assistant callback ingress distinguishes a2 from old compatibility traffic.
-
-a2 callbacks go through the shared P1/P2/P3 foundation.
-
-Malformed/stale a2 input never falls through as a legacy callback.
-
-The old a1/menu stack was subsequently removed and is now regression-fenced.
-
-### P5 — Assistant shell / Settings / Help migration — CLOSED
-
-Major completed surfaces:
-
-- owner `/start` shell;
-- read-only root destinations;
-- Help;
-- Status;
-- Settings navigation;
-- stable `namespace:key` mutation binding;
-- schema-version revalidation;
-- optimistic UI revision before persistence;
-- bounded free-form Settings input;
-- Settings legacy write cutover;
-- command-detail Help;
-- Close/delete;
-- public/non-owner `/start`.
-
-The old Settings-specific pending-input map was removed.
-
-Normal shell output no longer depends on the old a1 menu stack.
-
-Useful design docs:
-
-- `assistant-vnext-p5-assistant-shell.md`
-- `assistant-vnext-p5b-readonly-root-destinations.md`
-- `assistant-vnext-p5c-settings-foundation.md`
-- `assistant-vnext-p5d-settings-mutation-contract.md`
-- `assistant-vnext-p5e-settings-input-session.md`
-- `assistant-vnext-p5f-settings-parity-cutover.md`
-- `assistant-vnext-p5g-shell-parity.md`
-
-### P6 — PM Relay / public messaging plane — CLOSED
-
-Final acceptance authority:
-
-`docs/design/assistant-parity-p6h-pm-relay-acceptance.md`
-
-Implemented behavior includes:
-
-- visitor → owner relay;
-- owner reply → visitor;
-- durable delivery intent;
-- durable random-id/idempotency behavior;
-- mapping recovery;
-- owner control commands;
-- audience registry;
-- visitor block/ban policy;
-- optional force-sub;
-- bounded broadcast through shared execution infrastructure;
-- shutdown/restart/resource acceptance.
-
-P6 intentionally did **not** add another worker pool, retry scheduler, or PM-specific recovery poller.
-
-Recovery is occurrence-driven and idempotent, not a permanent PM relay scanner.
-
-### P7 — Group / Manager Plane — CLOSED A→L
-
-Final acceptance authority:
-
-`docs/design/assistant-parity-p7l-final-acceptance.md`
-
-Frozen high-level flow:
-
-```text
-Telegram group update
-    ↓
-cheap surface / feature-interest classification
-    ↓
-canonical group context
-    ↓
-global identity + contextual Telegram authority
-    ↓
-shared TaskEngine admission
-    ↓
-fresh authorization / target / bot-right validation
-    ↓
-shared managed Telegram RPC
-    ↓
-topic/reply-aware output or mutation
-```
-
-Critical invariants:
-
-- Owner/Sudo does not manufacture Telegram administrator authority;
-- cached role is preflight only where permitted;
-- fresh role/right/hierarchy checks happen immediately before sensitive mutation;
-- TaskEngine rejection stops execution before handler/RPC;
-- no per-chat/per-topic permanent worker;
-- topic ordering does not multiply chat quota;
-- one shared Telegram mutation/RPC path;
-- rule/filter/warning lookup is chat-scoped and bounded;
-- high-cardinality cold traffic has resource regression coverage.
-
-P7 closed the Group/Manager plane. Do not create a second manager-bot subsystem.
-
-### P8 — Advanced parity + final reclamation — CLOSED A→J
-
-Final authority:
-
-`docs/design/assistant-parity-p8j-closure.md`
-
-#### P8-A — inventory/freeze — CLOSED
-
-Canonical target classes were frozen as:
-
-- MUST;
-- REPRESENTATIVE;
-- BASELINE-CLOSED;
-- EXCLUDED.
-
-This prevents provider-count parity from becoming the architecture target.
-
-#### P8-B — production self-inline / RenderBridge — CLOSED
-
-Feature-facing authority:
-
-`selfinline.Renderer`
-
-Flow:
-
-```text
-feature
-  ↓
-selfinline.Renderer
-  ↓
-own Assistant inline query
-  ↓
-select one result
-  ↓
-insert into target
-  ↓
-a2 callback continuity
-```
-
-Important bounds:
-
-- no retained self-inline result map;
-- no self-inline worker/ticker;
-- query/offset/result selection bounded;
-- Telegram query/send uses managed service + shared RPCExecutor;
-- topic/reply context preserved.
-
-P8-H later hardened authorization to check current plugin enable state on every render in addition to Telegram capabilities.
-
-#### P8-C — calculator callback-heavy canary — CLOSED
-
-Plugin:
-
-`plugins/calculator`
-
-Proves:
-
-- userbot command → self-inline rendering;
-- Inline vNext → bounded a2 state;
-- typed calculator actions;
-- session revision fencing;
-- cross-user/target binding checks;
-- no global CALC map;
-- no worker/ticker;
-- bounded recursive-descent arithmetic evaluator;
-- no Python/JS/shell/eval/remote arbitrary execution.
-
-#### P8-D — representative rich lookup — CLOSED
-
-Plugin:
-
-`plugins/wikipedia`
-
-Proves:
-
-- one canonical lookup backend reused by command + inline;
-- managed `CapHTTP`;
-- bounded query/result cardinality;
-- explicit cache policy;
-- sanitized rich results;
-- no plugin-owned search cache/worker.
-
-This satisfies the platform capability. Google/F-Droid/Play Store/OrangeFox/Saavn/Twitter/etc. are ordinary future feature work, not missing P8 parity.
-
-#### P8-E — representative interactive downloader — CLOSED
-
-Plugin:
-
-`plugins/downloader`
-
-Canonical workflow:
-
-```text
-inline/query source
-   ↓
-select media/result
-   ↓
-choose audio/video or equivalent variant
-   ↓
-choose format
-   ↓
-prepared a2 action
-   ↓
-TaskEngine
-   ├ download:1
-   └ process:1 only for extractor/provider path
-   ↓
-canonical downloader/storage/media ownership
-```
-
-Do not create `AssistantDownloader`, `InlineDownloader`, or `YouTubeDownloader` engines.
-
-Direct HTTP must not hold the `process` resource.
-
-#### P8-F — locale-aware UI + behavioral matrix — CLOSED
-
-Canonical locale setting:
-
-```text
-ui:locale
-type    = enum
-values  = en | id
-default = en
-```
-
-Locale resolution uses central Settings hierarchy.
-
-Assistant locale presentation covers shell/Status/Help/Settings/public start/shell inline structural labels.
-
-There is no separate locale preference map/runtime.
-
-#### P8-G — reference-driven reclamation — CLOSED
-
-Reclaimed production shims include:
-
-- `assistant.NewBotClient`;
-- `Router.Dispatch`;
-- `Router.DispatchMessage`;
-- `legacyChatForPeer`.
-
-Canonical production Assistant command ingress is:
-
-`Router.DispatchMessageContext`
-
-with authoritative chat/message context.
-
-KEEP decisions were reference-driven. In particular:
-
-- `internal/assistant/interaction` is production-live and not a1 legacy;
-- `interaction_ingress.go` is canonical a2 ingress;
-- `callback_dispatch.go` remains a live generic callback adapter;
-- `telegram_menu.go` is transport presentation, not a second command registry;
-- DB/data migration files remain valid upgrade compatibility;
-- SavedResponse/media compatibility files are not Assistant legacy automatically.
-
-Mandatory fence:
-
-`internal/assistant/legacy_stack_test.go`
-
-#### P8-H — unload/reload/generation cross-surface acceptance — CLOSED
-
-One generation-sensitive acceptance matrix now covers:
-
-- canonical command;
-- FeatureSpec screen/action/inline/deep-link declaration;
-- Inline vNext registration;
-- SavedResponse resolver/deep-link lease;
-- a2 session/callback;
-- pending input;
-- scoped TaskEngine client;
-- resource ownership;
-- self-inline enable-state fencing.
-
-Disable semantics:
-
-```text
-generation N disabled
-  ↓
-TaskEngine scope cancelled
-  ↓
-feature registrations removed
-  ↓
-sessions/input invalidated
-  ↓
-old callback/action/prepared execution cannot revive
-```
-
-Re-enable creates generation N+1.
-
-Old generation remains dead.
-
-A durable deep-link token may survive reload, but an old prepared execution lease may not. It must be re-prepared against the current generation.
-
-#### P8-I — resource / idle / high-load acceptance — CLOSED
-
-Combined acceptance includes:
-
-- 10,000 inline queries;
-- 512 typed calculator callbacks;
-- per-actor interaction-capacity pressure;
-- Wikipedia managed HTTP/cache load;
-- Downloader `download:1 + process:1`;
-- RPC metrics cardinality pressure;
-- active scope cancellation;
-- Assistant interaction-runtime restart;
-- zero-idle worker retirement;
-- bounded shutdown;
-- goroutine/heap/RSS settle sampling.
-
-P8-I production delta is only read-only Inline vNext cache diagnostics.
-
-Important acceptance bounds include:
-
-| Metric | Gate |
-|---|---:|
-| Inline cache entries | <= 500 |
-| Inline cache retained bytes | <= 8 MiB |
-| RPC method metric labels | <= 512 + overflow |
-| RPC wait-scope labels | <= 32 + overflow |
-| settled goroutines | baseline + 32 |
-| settled heap | baseline + 64 MiB |
-| settled RSS when measurable | baseline + 128 MiB |
-
-These are regression-oriented gates, not performance guarantees for all hardware.
-
-#### P8-J — final parity freeze — CLOSED
-
-Final commit at implementation baseline:
-
-`b5ceb8338ea14182bf58466b9e663a05b4db5b07`
-
-P8-J:
-
-- reconciled P8-A inventory to CLOSED;
-- reconciled P8-F matrix through P8-I;
-- froze intentional differences from Ultroid;
-- added `internal/architecture/assistant_p8j_test.go`;
-- kept all P8-B→I phase fences;
-- kept `internal/assistant/legacy_stack_test.go`;
-- added no new production runtime.
-
-No P8 capability remains deferred.
+## 3. P8 remains CLOSED
+
+P8-A through P8-J are closed and must not be mechanically reopened.
+
+Important closure commits:
+
+~~~text
+P8-A  8cb0d9cadfd6599dadcaf92677a15e9fecc77094
+P8-B  3ae37805080134f571c936293528eeb46b823cf6
+P8-C  aab6f94ef1cb0c90f59d0e62495fcba81b0dd93c
+P8-D  ab6f98841a0b92062a785e3d2ececd84fe764727
+P8-E  812b853e2a40da6ddd9a5e91d59cd39e95444ac7
+P8-F  fb32d215b00045f0c38a4aff4c7f083808f00d44
+P8-G  c0ef995d2dc238bfdb2006378e1e49c94ff743ce
+P8-H  d19c2a8e2494ab6568360cf6d9c7c3a242e81c6e
+P8-I  13f9cd6fd1cb2b55f3d5c09fd319d886d952eed1
+P8-J  b5ceb8338ea14182bf58466b9e663a05b4db5b07
+~~~
+
+Post-closure lint/vet/race cleanup later reached 52978381b7b3fa4b8b293259774ac8ae0c2b511c and removed the old CI P7 acceptance job.
+
+Later downloader/product work does not reopen P8.
 
 ---
 
-## 5. Legacy stack and compatibility state
+## 4. Post-P8 Ultroid-facing presentation work
 
-The old Assistant a1/menu architecture is gone from normal production.
+First wave:
 
-Forbidden/reclaimed concepts include:
+~~~text
+57409cae feat(assistant): align shell presentation with Ultroid UX
+cd10177f feat(calculator): match Ultroid inline keypad presentation
+cc512fd6 feat(downloader): align interactive presentation with Ultroid UX
+f5e8b5d6 feat(assistant): adopt Ultroid-facing labels and navigation text
+c93b22b1 docs(assistant): map Ultroid visual text and interaction parity
+~~~
 
-- `LegacyAssistantMenu`;
-- `CompatibilityHost`;
-- `MenuInstanceStore`;
-- retired `internal/assistant/menu`;
-- retired `internal/assistant/presentation`;
-- retired `internal/assistant/callback`;
-- `a1:` callback envelopes;
-- `NewBotClient`;
-- `legacyChatForPeer`;
-- old Assistant Router convenience dispatch wrappers.
+Effects:
 
-Do **not** delete compatibility merely by filename.
+- Home became shorter and action-first.
+- Stats became compact.
+- Calculator became keypad-style.
+- Downloader stopped exposing TaskEngine/storage jargon to normal users.
+- Visible wording/button grammar moved closer to Ultroid.
+- Architecture remained Goultroid-native.
 
-Examples that are not automatically Assistant legacy:
-
-- `internal/services/savedresponse/ledger_compat.go`;
-- `internal/services/savedresponse/registry_compat.go`;
-- media ownership/reconciliation migration compatibility;
-- database/data migrations still required for upgrades.
-
-Deletion must remain reference-driven.
+One malformed shell edit occurred temporarily and was restored before final presentation commits. Do not resurrect that intermediate state.
 
 ---
 
-## 6. Frozen architecture rules for all new work
+## 5. V2 public /start - CLOSED
 
-### 6.1 Command authority
+Important commits:
 
-Use `core.Command` + `core.Router`.
+~~~text
+c4a433e2 make public start relay-aware and Ultroid-facing
+991d95b1 add public-start localization
+d6c01d69 expose live relay availability
+052bfc89 close V2 public-start parity
+~~~
 
-Do not add:
+Current contract:
 
-- Assistant-only command registries;
-- plugin-local Telegram command dispatchers;
-- duplicate Help registries.
+~~~text
+visitor /start
+  -> public path
+  -> canonical locale
+  -> live relay availability
+  -> compact greeting
+  -> optional relay guidance
+  -> audience touch source=start
+~~~
 
-### 6.2 Interaction authority
+Invariants:
 
-Use:
-
-- `feature.Registry`;
-- `interaction.Runtime`;
-- `interaction.Dispatcher`;
-- `orchestration.Engine`;
-- `presentation.View`.
-
-Do not add:
-
-- raw callback protocols in feature code;
-- per-feature global callback maps;
-- feature-local conversation goroutines;
-- unbounded state maps.
-
-### 6.3 Execution/resource authority
-
-Use shared TaskEngine.
-
-Do not add:
-
-- feature worker pools for ordinary feature execution;
-- Assistant-specific TaskEngine;
-- downloader-specific execution scheduler;
-- per-topic/per-user execution workers.
-
-Resource-bearing work must declare canonical TaskEngine resources.
-
-### 6.4 Telegram RPC authority
-
-Use shared managed Telegram service/RPCExecutor.
-
-Do not add:
-
-- feature-local FloodWait handling;
-- feature retry loops around Telegram RPC;
-- plugin-owned limiter;
-- raw Telegram client access when a canonical service boundary exists.
-
-### 6.5 Lifecycle
-
-Everything generation-owned must become unusable after disable.
-
-Do not cache capability/lifecycle authorization across reload unless the cache itself is generation-scoped and invalidated by the lifecycle owner.
-
-### 6.6 Boundedness / idle
-
-Every retained collection must have a cardinality and/or byte bound appropriate to retained object size.
-
-Avoid periodic polling when event/deadline-driven behavior exists.
-
-Feature idle expectation remains approximately:
-
-```text
-no active feature work
-  → no per-feature worker
-  → no per-user worker
-  → no session cleanup ticker
-  → no unbounded callback/search/downloader cache
-```
+- plain public /start remains sessionless;
+- no a2 session is created;
+- relay hint appears only when relay is actually enabled;
+- username is escaped before HTML output;
+- no worker/ticker/poller/global map;
+- no fake owner-info button without a canonical owner-info capability.
 
 ---
 
-## 7. Definition of Done from docs/bug/4 — current result
+## 6. V3 Help direct-grid - CLOSED
 
-The original target said that loading one plugin/feature should make one canonical declaration visible across relevant surfaces and unloading it should remove/invalidate all generation-owned behavior.
+Commits:
 
-That target is now represented by the P8-H acceptance matrix.
+~~~text
+dbb0e65a add bounded direct-grid help slots
+94a4403f avoid duplicate help catalog sorting
+4b7551ea close V3
+~~~
 
-The original request path target was:
+Current design:
 
-```text
-Telegram update
-   ↓
-cheap classification
-   ↓
-surface / feature lookup
-   ↓
-policy / admission
-   ↓
-TaskEngine if execution/resources are needed
-   ↓
-feature use-case
-   ↓
-Presentation / managed transport
-   ↓
-shared RPC policy
-```
+~~~text
+module page: max 8, two columns
+command page: max 8, two columns
+~~~
 
-This remains the north-star.
+Fixed action vocabulary:
 
-The following old architecture patterns remain unacceptable:
+~~~text
+8 x help_module_slot_N
+8 x help_command_slot_N
+~~~
 
-- plugin directly registering its own Telegram event tree for ordinary feature behavior;
-- plugin inventing callback protocol bytes;
-- plugin owning a private conversation worker;
-- Assistant command registry #2;
-- feature-local RPC/retry policy;
-- unbounded per-user/per-query workflow maps.
+No module/command identity is encoded into callback bytes.
+
+A 128-bit visible-page fingerprint is stored in existing a2 binding bytes. On click the canonical catalog is rebuilt and fingerprint is revalidated. Catalog remap therefore fails closed with ErrShellHelpSelectionStale instead of silently remapping a slot.
+
+Old help_open/help_cmd_open carousel actions were reclaimed.
 
 ---
 
-## 8. Verification state and caveat at handoff
+## 7. V4 Settings direct-grid - CLOSED
 
-A key limitation of the AI environment used for P8-H/P8-I/P8-J:
+Commits:
 
-- the shell could not resolve `github.com`;
-- a complete local repository checkout could not be materialized there;
-- therefore those sessions did **not** claim `go build`, `go vet`, `go test ./...`, or CI green.
+~~~text
+45787b90 add bounded direct-grid settings slots
+3158704d close V4
+~~~
 
-The user previously reported concrete Go syntax errors in:
+Current design:
 
-- `internal/assistant/shell/inline.go`;
-- `plugins/downloader/interactive.go`;
-- `internal/architecture/assistant_p8f_test.go`.
+~~~text
+Settings root: max 8 categories/page, two columns
+Category: max 8 settings/page, two columns
+~~~
 
-Those corrections are present in:
+Fixed slots:
 
-`e7297b1940b481a59c03b06213504443293c1e7d` — `fix(assistant): restore P8-E/P8-F Go syntax`.
+~~~text
+8 x settings_category_slot_N
+8 x setting_slot_N
+~~~
 
-However, the next session should still treat full current-HEAD verification as mandatory before claiming runtime acceptance.
+settings.Registry remains the only schema/category authority.
 
-Recommended local gate:
+Page fingerprint protects identity plus schema/presentation metadata. After selecting a concrete setting, authority returns to the existing namespace:key + schemaVersion mutation binding.
 
-```bash
-gofmt -l .
+Important performance invariant:
+
+~~~text
+browse root/category/page -> zero effective-value reads
+open concrete setting    -> resolve effective value
+~~~
+
+Do not regress this with eager per-setting reads.
+
+---
+
+## 8. Owner-bound button lifetime - IMPLEMENTED
+
+Key commits:
+
+~~~text
+6c40c895 sustain owner-bound MyXL buttons safely
+480dbd59 keep sensitive MyXL screens on short leases
+7e475e7d sustain safe owner-bound interaction buttons
+0386a62c document owner-bound lifetime
+76b578ba repair shell TTL declaration syntax
+~~~
+
+Modern a2 sessions remain bound to:
+
+~~~text
+feature generation
+actor ID
+chat/message or inline target
+session revision
+~~~
+
+Wrong actor or copied/wrong target fails before feature handler execution.
+
+User-facing mismatch alert:
+
+~~~text
+This button can only be used by the user who opened it on the original message.
+~~~
+
+Safe navigation/read-only surfaces use sliding 24h leases. Context.Touch extends expiry without changing revision.
+
+Long-lived examples:
+
+- Assistant Home/Status/Help/Settings;
+- MyXL read-only/navigation;
+- MyXL legacy quota refresh;
+- calculator;
+- downloader choose/format UI.
+
+Sensitive authority intentionally remains short:
+
+~~~text
+Settings input             2m
+MyXL input/wizard          2m
+MyXL purchase confirm      5m
+MyXL delete confirm        5m
+pending QRIS               5m
+legacy transaction state   short + single-use
+~~~
+
+MyXL uses a screen-owned Sustain flag:
+
+~~~text
+navigation -> Sustain=true  -> 24h
+input      -> Sustain=false -> 2m
+confirm    -> Sustain=false -> 5m
+~~~
+
+Hard-expired sensitive state is never resurrected.
+
+---
+
+## 9. YouTube search-first downloader - CLOSED through lifecycle UX
+
+The implementation reuses existing yt-dlp and P8-E. There is no second YouTube downloader.
+
+Canonical flow:
+
+~~~text
+yt <query>
+  -> yt-dlp structured search
+  -> max 5 rich results
+  -> select result
+  -> canonical YouTube URL
+  -> same interactiveState as dl <URL>
+  -> Audio / Video
+  -> format
+  -> existing P8-E downloader
+~~~
+
+Direct URL and search-result paths converge before physical download.
+
+### YT-A / YT-B
+
+Commit b7a38284afe8ef58a075cc15888983c9c95b1fd9 added the shared search contract and yt-dlp search.
+
+Bounds:
+
+~~~text
+results max          5
+query max            256 bytes
+service timeout      15s default / 30s max
+structured stdout    <= 1 MiB
+~~~
+
+yt-dlp invocation uses:
+
+~~~text
+--ignore-config
+--no-warnings
+--simulate
+--flat-playlist
+--dump-single-json
+ytsearchN:<query>
+~~~
+
+Search uses TaskEngine PriorityInteractive with process=1 only.
+
+### YT-E through YT-I
+
+Commit fb8605223ec557c1681ecfeeec639760651fa2e3 added inline yt search.
+
+The same downloader inline binding recognizes:
+
+~~~text
+dl <URL>
+yt <query>
+~~~
+
+Bare yt returns help without TaskEngine admission.
+
+Rich results expose thumbnail/title/channel/duration/views when available.
+
+Selected search result produces the same state as direct URL:
+
+~~~text
+interactiveState{
+  URL: canonical URL,
+  Provider: extractor,
+  Phase: choose
+}
+~~~
+
+Regression tests compare search state and dl-state for equality.
+
+Cache policy remains CacheNone; no plugin query map/cache exists.
+
+### YT-K / YT-N
+
+Commit b3f27593c9ead1aebf2941792bfe9d9e6f329046 closed Search Again and lifecycle acceptance.
+
+Search Again is SwitchInline, SamePeer=true, query "yt ", with no callback Data and no new action slot.
+
+Plugin-scoped TaskClient owns search generation. Manager.Disable -> CancelScope cancels active search and releases process resource. Do not add a downloader-local cancellation registry.
+
+---
+
+## 10. YT-Z canonical Telegram media delivery - IMPLEMENTED
+
+This supersedes the old P8-E metadata-only completion behavior.
+
+Commit sequence:
+
+~~~text
+f154f1cc feat(downloader): deliver retained media to Telegram
+cd246031 fix(downloader): harden retained media delivery lifecycle
+83f46a7b fix(downloader): keep YT-Z completion RPCs task-owned
+e0b82e13 cleanup(downloader): remove metadata-only completion fallback
+d307311d fix(downloader): deliver userbot URL downloads to Telegram
+~~~
+
+Current implementation is centered on plugins/downloader/delivery.go.
+
+### 10.1 Canonical delivery boundary
+
+Presentation now exposes presentation.Media and presentation.MediaDeliverer.
+
+orchestration.Context.PrepareMediaDelivery snapshots a target-bound delivery handle without retaining mutable session state.
+
+~~~text
+interactive session
+  -> PrepareMediaDelivery
+  -> detached target-bound handle
+  -> download finishes
+  -> shared presentation transport delivers media
+~~~
+
+Downloader does not own Telegram MTProto upload logic.
+
+### 10.2 Message and inline target behavior
+
+presentation/telegram.Bridge.DeliverMedia handles both:
+
+~~~text
+message target
+  -> SendMediaContext / SendMedia
+
+inline target
+  -> UploadInlineMedia
+  -> reusable Telegram media
+  -> EditInlineBotMedia
+~~~
+
+Assistant transport additions include SendMedia, SendMediaContext, UploadInlineMedia, and InlineClientInteraction.EditMedia, still using shared RPC executor semantics.
+
+### 10.3 Resource separation
+
+Critical invariant:
+
+~~~text
+SEARCH:
+process=1
+download=0
+media=0
+
+DOWNLOAD:
+direct HTTP -> download=1
+extractor   -> download=1 + process=1
+
+DELIVERY:
+media=1
+download=0
+process=0
+~~~
+
+Delivery timeout is currently 30 minutes.
+
+Telegram upload must never keep download/process leases alive.
+
+### 10.4 Retained asset semantics
+
+Retained ownership is registered before delivery.
+
+Success does not blindly delete the retained asset.
+
+Failure also preserves retained ownership and tells the user the asset remains safely retained.
+
+Materialization is bounded by upload-size checks, bounded copy, temp cleanup, and sanitized name/extension handling.
+
+### 10.5 Completion callback hardening
+
+Do not perform Telegram RPC directly inside TaskEngine completion callback.
+
+Required pattern:
+
+~~~text
+task completion callback
+  -> enqueue task-owned continuation
+  -> Telegram RPC
+~~~
+
+Commit 83f46a7b hardened this.
+
+Commit e0b82e13 removed normal metadata-only completion fallback.
+
+### 10.6 Userbot URL delivery
+
+Current HEAD d307311d... adds automatic Telegram delivery for userbot URL downloads as well.
+
+Reply/topic context is preserved.
+
+Do not assume YT-Z is Assistant-inline-only.
+
+---
+
+## 11. YT-Z acceptance evidence already present
+
+plugins/downloader/delivery_test.go covers:
+
+- media=1 only in delivery stage;
+- no download/process resource during upload;
+- retained asset survives success;
+- retained asset survives delivery failure;
+- download resources release before delivery;
+- lifecycle cancellation classification;
+- userbot URL delivery;
+- reply/topic preservation.
+
+plugins/downloader/delivery_completion_test.go covers:
+
+- terminal edit deferred out of completion callback;
+- delivery-completion UI continuation is task-owned;
+- delivery-failure UI continuation is task-owned.
+
+Preserve these as regression fences.
+
+---
+
+## 12. Current end-to-end downloader flow
+
+Search-first Assistant/inline:
+
+~~~text
+yt query
+  -> process=1 search
+  -> rich results
+  -> select
+  -> actor/target/generation/revision-bound a2 state
+  -> Audio/Video
+  -> format
+  -> download (+ process for extractor)
+  -> retained asset + ownership
+  -> release download/process
+  -> media=1 delivery
+  -> presentation.MediaDeliverer
+  -> Telegram
+~~~
+
+Direct inline URL:
+
+~~~text
+dl URL
+  -> same choose/format path
+  -> same download backend
+  -> same retained ownership
+  -> same delivery path
+~~~
+
+Userbot URL:
+
+~~~text
+userbot URL command
+  -> download/process
+  -> retained asset
+  -> release download/process
+  -> media=1
+  -> SendMediaContext
+  -> reply/topic-aware Telegram output
+~~~
+
+---
+
+## 13. Known stale-document hazards
+
+docs/design/assistant-parity-p8e-interactive-downloader.md is historically correct for P8-E closure but stale for current TTL and Telegram-delivery behavior.
+
+Do not use it to conclude automatic media delivery is still missing.
+
+docs/design/assistant-ultroid-visual-text-parity.md correctly describes V2-V4 architecture but some "next work" text predates completed YouTube search-first and YT-Z.
+
+Current source always wins.
+
+---
+
+## 14. Working rules that remain binding
+
+1. test-next is the working branch.
+2. Refresh exact HEAD before each phase.
+3. Run gofmt before every Go commit.
+4. Do not inspect CI unless explicitly requested.
+5. Reuse canonical runtime/registry/executor boundaries.
+6. Keep state/cache/cardinality bounded.
+7. Prefer event-driven/zero-idle design over polling.
+8. Telegram retry/FloodWait remains in telegram.RPCExecutor.
+9. Heavy work/resources remain in TaskEngine.
+10. Callback/session authority remains in a2 runtime.
+11. Inline lifecycle remains in Inline vNext.
+12. Retained ownership remains in shared storage/media infrastructure.
+13. Telegram media delivery goes through shared presentation/Telegram boundaries.
+14. Fresh authority is required before delayed mutation.
+15. Generation-scoped work must fail closed after disable/reload.
+
+---
+
+## 15. High-risk regression checklist
+
+Before closing future downloader/Assistant work, verify:
+
+- no second downloader/provider registry;
+- no raw callback protocol;
+- no plugin-local retry/FloodWait;
+- no full search-result JSON retained in session;
+- no N full metadata fetches for N search results;
+- no process lease while waiting for button selection;
+- no download/process lease during Telegram upload;
+- retained asset is not deleted merely because send succeeded;
+- retained asset is not lost when send fails;
+- no direct Telegram RPC from completion callback;
+- no wrong-actor button execution;
+- no hard-expired sensitive-state resurrection;
+- no plugin disable/reload resurrection;
+- no unbounded per-query map/cache;
+- no permanent feature worker/ticker;
+- no query text in metric labels.
+
+---
+
+## 16. Remaining ordinary product breadth
+
+P8 parity is closed. Remaining work is product work, not parity debt.
+
+Potential future areas:
+
+- final YT-Z audit and dedicated closure documentation;
+- reconcile stale P8-E/visual-parity docs;
+- optional Share UX after Search Again;
+- additional rich search providers such as F-Droid/web search;
+- more locale packs through canonical localization service;
+- dedicated first-run onboarding using bounded a2 + central Settings;
+- arbitrary-code/Piston style work remains security-gated and must not run on host shell/process without a separate threat model and isolated backend.
+
+Do not add Ultroid providers mechanically.
+
+---
+
+## 17. Recommended next-session analysis order
+
+### Step 1 - refresh and drift audit
+
+~~~text
+fetch test-next
+record HEAD
+compare against d307311d2dab084fb4bcdc01935e6448049cb32e
+inspect all drifted files
+~~~
+
+### Step 2 - build/test sanity if real checkout is available
+
+A real build error previously exposed an escaped newline in shell.go and was fixed in 76b578....
+
+Prefer actual verification:
+
+~~~text
+gofmt check
 go build -o bin/goultroid ./cmd/goultroid
-go vet ./...
-go test ./...
-go test ./internal/architecture -count=1
-```
+targeted downloader tests
+targeted interaction tests
+~~~
 
-If practical after normal tests pass:
+Do not claim green without running them.
 
-```bash
-go test -race ./...
-```
+### Step 3 - audit current YT-Z implementation
 
-Useful focused P8 gates include the P8-H lifecycle tests, P8-I combined resource acceptance, and P8-J architecture closure test.
+Read:
 
-Do not claim green CI unless an actual run was inspected.
+~~~text
+plugins/downloader/delivery.go
+plugins/downloader/delivery_test.go
+plugins/downloader/delivery_completion_test.go
+plugins/downloader/downloader.go
+plugins/downloader/interactive.go
 
----
+internal/presentation/port.go
+internal/presentation/telegram/bridge.go
+internal/interaction/orchestration/context.go
+internal/assistant/interaction/message.go
+internal/assistant/client/interaction_ingress.go
+~~~
 
-## 9. What comes after P8?
+Questions:
 
-### Important: docs/bug/4 defines no P9 parity phase
+1. Is every retained asset registered before delivery?
+2. Are download/process leases released before media=1?
+3. Does every Assistant message/inline target use the shared presentation bridge?
+4. Does userbot delivery always preserve reply/topic context?
+5. Do failure paths keep retained ownership?
+6. Do lifecycle cancellations avoid fake delivery-failed terminal errors?
+7. Are completion-related Telegram RPCs always task-owned?
+8. Can ambiguous send/upload failure produce duplicate media if retried?
+9. Does inline media edit preserve intended caption/markup?
+10. Is disable/reload cancellation leak-free?
+11. Are temp materialization files always cleaned?
+12. Is upload-size enforcement consistent across materialization and sender?
 
-The Assistant parity program is complete.
+Fix real defects before adding provider breadth.
 
-Do **not** invent “P9 parity” merely because P8 ended.
+### Step 4 - reconcile stale docs
 
-Future work falls into one of three categories:
+At minimum review:
 
-1. regression/stabilization against the frozen P8 matrix;
-2. repository-wide performance/correctness work independent of parity;
-3. ordinary new product features built on the frozen framework.
-
-P8 should only be reopened if a regression violates the frozen behavioral/lifecycle/resource matrix.
-
----
-
-## 10. Recommended next work — post-parity stabilization
-
-This is the recommended order for the next session unless the user selects a different feature.
-
-### N0 — current-HEAD build/test verification
-
-First priority.
-
-Run the verification gate in section 8 against the exact current HEAD.
-
-If anything is red:
-
-1. fix compile/vet/test failures first;
-2. keep fixes minimal;
-3. run `gofmt` before every Go commit;
-4. re-run the narrow failing package;
-5. then re-run the wider gate.
-
-Do not start another architecture redesign while the branch is not known-buildable.
-
-### N1 — P1→P8 integration re-audit against final HEAD
-
-Purpose: catch cross-phase regressions that individual phase tests may not expose.
-
-Audit actual source, not old checklists.
-
-High-value questions:
-
-- Does every normal Assistant command still project from canonical `core.Router`?
-- Can any feature bypass TaskEngine despite declaring resources?
-- Can any feature construct raw callback data or retain its own workflow map?
-- Does disable remove command/inline/action/session/input/resource ownership consistently?
-- Can a stale generation execute through deep-link, self-inline, SavedResponse, or prepared action paths?
-- Are contextual Telegram permissions still revalidated immediately before mutation?
-- Does any new inline/search/downloader path add its own worker/cache/retry engine?
-- Are any feature caches count-bounded but not byte-bounded where object graphs can be large?
-- Has a new periodic ticker/poller appeared in an otherwise event-driven path?
-- Are all raw goroutines owned, cancellable, joinable, panic-safe, and cardinality-bounded?
-
-Do not re-score the project using an old audit without reading current code.
-
-### N2 — real runtime performance/soak evidence
-
-P8-I is an executable source-level combined acceptance harness. It is not a substitute for real deployment profiling.
-
-Recommended real-condition runs:
-
-#### Idle
-
-30–60 minutes:
-
-- goroutines baseline/settled;
-- CPU;
-- heap/RSS;
-- DB activity;
-- TaskEngine workers;
-- inline cache;
-- interaction sessions;
-- RPC metrics cardinality.
-
-Expected: no monotonic growth and no feature worker at idle.
-
-#### Mixed Assistant load
-
-Combine:
-
-- inline Help/search;
-- calculator callbacks;
-- SavedResponse;
-- PM Relay;
-- group commands;
-- Wikipedia lookup;
-- interactive downloader.
-
-Measure:
-
-- p50/p95/p99 response latency;
-- TaskEngine queue/rejection;
-- worker count;
-- interaction session count/bytes;
-- inline cache count/bytes;
-- RPC attempts/FloodWait;
-- resource grants;
-- heap/RSS plateau.
-
-#### Heavy media
-
-Test direct HTTP and extractor paths separately.
-
-Verify:
-
-```text
-direct HTTP → download only
-extractor    → download + process only while required
-```
-
-Include shutdown/cancel while extraction/upload is active.
-
-#### Reload/restart
-
-Exercise:
-
-- plugin disable during active workflow;
-- re-enable;
-- Assistant restart mid-session;
-- application shutdown with active extraction/network/RPC.
-
-Old tokens/prepared leases must remain invalid.
-
-### N3 — evidence/document synchronization
-
-Several older docs are historical snapshots.
-
-Before using them as current guidance:
-
-- check their baseline commit;
-- compare against current source;
-- update or explicitly mark superseded.
-
-Especially important:
-
-- old benchmark reports;
-- old worker/limiter audits;
-- the earlier version of this handoff;
-- historical sections inside `docs/bug/4.md` that describe pre-P8 gaps.
-
-For final Assistant parity status prefer:
-
-1. `assistant-parity-p8j-closure.md`;
-2. `assistant-parity-p8a-inventory.md` after P8-J reconciliation;
-3. `assistant-parity-p8f-behavioral-matrix.md`;
-4. phase-specific closure docs/tests.
-
-### N4 — ordinary product feature expansion
-
-Only after N0 is green and there is no selected regression blocker.
-
-Examples that are valid future product work, not missing parity:
-
-- more rich lookup providers;
-- more locale packs;
-- games/novelty inline features;
-- additional interactive utilities;
-- richer downloader search/provider UX;
-- automatic Telegram delivery of retained downloader assets.
-
-If implementing automatic downloader delivery, put it at the **canonical downloader/media delivery boundary** so userbot/Assistant/other surfaces reuse one path. Do not add an Assistant-only uploader.
-
-Additional providers should reuse Inline vNext and existing network/resource boundaries rather than adding provider-specific runtimes.
-
-Arbitrary remote code execution through a public/inline Assistant workflow remains intentionally excluded unless the product requirement is explicitly revisited with a separate security design.
+~~~text
+docs/design/assistant-parity-p8e-interactive-downloader.md
+docs/design/assistant-ultroid-visual-text-parity.md
+~~~
 
 ---
 
-## 11. Old execution/RPC handoff roadmap — historical only
+## 18. Recent commit timeline
 
-The previous version of this document proposed a detailed sequence around:
+~~~text
+57409cae  align shell presentation with Ultroid UX
+cd10177f  calculator keypad presentation
+cc512fd6  downloader Ultroid-facing presentation
+f5e8b5d6  Ultroid-facing labels/navigation
+c93b22b1  visual/text parity map
 
-- structured RateLimit signals;
-- durable deferral;
-- attempt accounting;
-- yielding durable RPC waits;
-- observability;
-- goroutine ownership;
-- benchmark refresh.
+052bfc89  close V2 public start
 
-That plan was written for implementation baseline:
+dbb0e65a  Help direct-grid slots
+94a4403f  avoid duplicate Help sorting
+4b7551ea  close V3
 
-`08626042b0645df958fc5b9e95c10906e4441813`
+45787b90  Settings direct-grid slots
+3158704d  close V4
 
-on 19 September 2026.
+6c40c895  owner-bound MyXL buttons
+480dbd59  short sensitive MyXL leases
+7e475e7d  safe owner-bound interaction lifetime
+0386a62c  owner-bound lifetime doc
+76b578ba  repair shell TTL syntax
 
-Since then the repository has undergone substantial execution/resource fixes and the full Assistant P1–P8 implementation.
+b7a38284  bounded yt-dlp search foundation
+fb860522  search-first YouTube inline UX
+b3f27593  YouTube search lifecycle UX
 
-Therefore:
+f154f1cc  retained media Telegram delivery
+cd246031  delivery lifecycle hardening
+83f46a7b  task-owned completion RPCs
+e0b82e13  remove metadata-only fallback
+d307311d  userbot URL Telegram delivery
+~~~
 
-> **Do not resume that old Phase 1/2/3 list by name.**
-
-If rate-limit deferral, Job attempt accounting, limiter waits, goroutine ownership, or RPC observability is selected again, start with a fresh current-HEAD audit and produce a new issue list from the source that exists now.
-
-Historical docs/commits are useful for understanding intent, not for proving a current bug still exists.
-
----
-
-## 12. Files/docs the next session should read first
-
-### Always
-
-- this file;
-- `docs/bug/4.md`;
-- current git diff since the handoff baseline.
-
-### Final Assistant parity
-
-- `docs/design/assistant-parity-p8j-closure.md`
-- `docs/design/assistant-parity-p8a-inventory.md`
-- `docs/design/assistant-parity-p8f-behavioral-matrix.md`
-- `docs/design/assistant-parity-p8i-resource-acceptance.md`
-
-### Foundation
-
-- `docs/design/assistant-vnext-p1-interaction-session-runtime.md`
-- `docs/design/assistant-vnext-p2-presentation-render-bridge.md`
-- `docs/design/assistant-vnext-p3-interaction-orchestration.md`
-- `docs/design/assistant-vnext-p4-a2-ingress.md`
-- `docs/design/assistant-vnext-p5g-shell-parity.md`
-
-### PM Relay / Group plane
-
-- `docs/design/assistant-parity-p6h-pm-relay-acceptance.md`
-- `docs/design/assistant-parity-p7l-final-acceptance.md`
-
-### Architecture fences
-
-- `internal/assistant/legacy_stack_test.go`
-- `internal/architecture/assistant_p8b_test.go`
-- `internal/architecture/assistant_p8c_test.go`
-- `internal/architecture/assistant_p8d_test.go`
-- `internal/architecture/assistant_p8e_test.go`
-- `internal/architecture/assistant_p8f_test.go`
-- `internal/architecture/assistant_p8g_reclamation_test.go`
-- `internal/architecture/assistant_p8h_test.go`
-- `internal/architecture/assistant_p8i_test.go`
-- `internal/architecture/assistant_p8j_test.go`
+Use full SHA from Git history when editing/cherry-picking.
 
 ---
 
-## 13. Useful final commit ledger
+## 19. Current one-line state
 
-Important milestones near final closure:
+~~~text
+P1-P8 architecture/parity                 CLOSED
+V2 public start                           CLOSED
+V3 Help direct-grid                       CLOSED
+V4 Settings direct-grid                   CLOSED
+Owner-bound safe long-lived buttons       IMPLEMENTED
+MyXL short sensitive authority            IMPLEMENTED
+YouTube search-first discovery            CLOSED
+Search Again + search lifecycle           CLOSED
+Canonical retained-media delivery         IMPLEMENTED
+Userbot URL automatic media delivery      IMPLEMENTED
 
-| Phase | Commit |
-|---|---|
-| P7 final group-plane closure | `7c1ce5e125503f00c08496a11a267e353f39857f` |
-| P8-A inventory/freeze | `8cb0d9cadfd6599dadcaf92677a15e9fecc77094` |
-| P8-B self-inline RenderBridge | `3ae37805080134f571c936293528eeb46b823cf6` |
-| P8-C calculator canary | `aab6f94ef1cb0c90f59d0e62495fcba81b0dd93c` |
-| P8-C recursion hardening | `aa77c1b6edd46c017848d557a106e9f8a68a1be9` |
-| P8-C capability hardening | `cfd7af505608b7ea76481df0604cbcdf7907ccb3` |
-| P8-D Wikipedia rich lookup | `ab6f98841a0b92062a785e3d2ececd84fe764727` |
-| P8-E interactive downloader | `812b853e2a40da6ddd9a5e91d59cd39e95444ac7` |
-| P8-F locale/matrix | `fb32d215b00045f0c38a4aff4c7f083808f00d44` |
-| P8-G reclamation | `c0ef995d2dc238bfdb2006378e1e49c94ff743ce` |
-| P8-H lifecycle acceptance | `d19c2a8e2494ab6568360cf6d9c7c3a242e81c6e` |
-| P8-E/P8-F syntax restoration | `e7297b1940b481a59c03b06213504443293c1e7d` |
-| P8-I resource acceptance | `13f9cd6fd1cb2b55f3d5c09fd319d886d952eed1` |
-| P8-J final parity freeze | `b5ceb8338ea14182bf58466b9e663a05b4db5b07` |
-
-For anything before these milestones, inspect git history/source rather than trusting a remembered SHA.
-
----
-
-## 14. Commit/workflow rules for future AI sessions
-
-1. Refresh `test-next` before starting a phase/fix.
-2. Never build a patch against an old parent after the branch moves.
-3. Keep commits scoped to one coherent invariant.
-4. For Go changes:
-   - run `gofmt` first;
-   - then commit;
-   - then push.
-5. Prefer focused tests first, then wider tests.
-6. Do not check CI unless explicitly requested.
-7. Do not claim tests/benchmarks/CI succeeded unless they were actually run and observed.
-8. Do not create a second subsystem when a canonical authority already exists.
-9. When deleting compatibility, prove references are gone first.
-10. Treat resource/idle behavior as part of correctness, not optional optimization.
+NEXT:
+refresh HEAD
+-> build/test sanity if possible
+-> audit YT-Z resource/lifecycle correctness
+-> fix only real defects
+-> reconcile stale docs
+-> then choose next ordinary product feature
+~~~
 
 ---
 
-## 15. Suggested prompt for the next AI session
+## 20. Final handoff rule
 
-```text
-Refresh github.com/inipew/goultroid branch test-next and read:
+Do not continue from an old TODO list merely because it exists.
 
-- docs/design/goultroid-next-technical-plan-ai-handoff.md
-- docs/bug/4.md
-- docs/design/assistant-parity-p8j-closure.md
-- relevant phase-specific architecture tests
+~~~text
+refresh source
+  -> establish HEAD
+  -> read drift
+  -> reconstruct actual behavior
+  -> test architecture/resource/lifecycle invariants
+  -> only then choose or fix the next item
+~~~
 
-Do not assume old audits are current.
+Current Goultroid direction:
 
-Assistant parity P1-P8 is closed. P8-J is the frozen baseline.
-Do not invent a P9 parity phase unless a new specification explicitly requires one.
-
-First run/establish current-head verification:
-gofmt -l .
-go build -o bin/goultroid ./cmd/goultroid
-go vet ./...
-go test ./...
-go test ./internal/architecture -count=1
-
-If anything fails, fix that first.
-
-If the tree is green and no specific feature was requested, perform a fresh post-parity integration/performance audit against the current source and propose only findings that still exist.
-
-Preserve:
-- one core.Router
-- one feature.Registry
-- bounded interaction.Runtime / a2
-- shared TaskEngine
-- shared telegram.RPCExecutor
-- generation-scoped plugin lifecycle
-- zero-idle / bounded-resource design
-
-Before every Go commit:
-gofmt changed Go files, then commit and push.
-Do not inspect CI unless explicitly requested.
-```
-
----
-
-## 16. Final handoff statement
-
-At the implementation baseline recorded here, **Assistant parity P1–P8 is complete and frozen by P8-J**.
-
-The next session should not continue parity implementation by inertia.
-
-The correct next move is:
-
-```text
-refresh current HEAD
-    ↓
-build/vet/test verification
-    ↓
-fix any real regression
-    ↓
-fresh post-parity integration/performance audit
-    ↓
-then ordinary product features or separately-scoped technical work
-```
-
-Any future architecture change should demonstrate why the existing canonical authorities cannot safely express the requirement before introducing a new runtime, registry, cache, worker pool, retry engine, or callback protocol.
+> reliable, lightweight, responsive userbot behavior with bounded state/resources, one authority per concern, zero unnecessary idle work, and richer Ultroid-like UX without importing Ultroid global-state architecture.
