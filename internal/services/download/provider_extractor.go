@@ -2,6 +2,7 @@ package download
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -10,11 +11,19 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/services/process"
 	"github.com/inipew/goultroid/internal/services/storage"
 	"github.com/inipew/goultroid/internal/tasks"
+)
+
+const (
+	extractorSearchMaxOutput        int64 = 1024 * 1024
+	extractorSearchTitleBytes             = 256
+	extractorSearchDescriptionBytes       = 1024
+	extractorSearchChannelBytes           = 128
 )
 
 var extractorDomains = []string{
@@ -33,14 +42,16 @@ var extractorDomains = []string{
 // ExtractorProvider handles video and social media downloads using yt-dlp.
 type ExtractorProvider struct {
 	runner        process.Runner
+	lookPath      func(string) (string, error)
 	defaultMaxCap int64
 	tasks         tasks.Client
 	mu            sync.Mutex
 	activeTemps   map[string]time.Time
 }
 
-// Ensure ExtractorProvider implements Provider.
+// Ensure ExtractorProvider implements the download and optional search capabilities.
 var _ Provider = (*ExtractorProvider)(nil)
+var _ SearchProvider = (*ExtractorProvider)(nil)
 
 // SetTasks attaches the tasks client used to acquire execution resources.
 func (p *ExtractorProvider) SetTasks(client tasks.Client) {
@@ -59,6 +70,7 @@ func NewExtractorProvider(runner process.Runner, defaultMaxCap int64) *Extractor
 	}
 	return &ExtractorProvider{
 		runner:        runner,
+		lookPath:      exec.LookPath,
 		defaultMaxCap: defaultMaxCap,
 		activeTemps:   make(map[string]time.Time),
 	}
@@ -96,10 +108,233 @@ func (p *ExtractorProvider) Match(rawURL string) bool {
 	return false
 }
 
+func (p *ExtractorProvider) extractorPath() (string, error) {
+	lookup := exec.LookPath
+	if p != nil && p.lookPath != nil {
+		lookup = p.lookPath
+	}
+	return lookup("yt-dlp")
+}
+
 // IsAvailable checks whether the yt-dlp binary is present on the host system.
 func (p *ExtractorProvider) IsAvailable() bool {
-	_, err := exec.LookPath("yt-dlp")
+	_, err := p.extractorPath()
 	return err == nil
+}
+
+type extractorSearchPayload struct {
+	Entries []extractorSearchEntry `json:"entries"`
+}
+
+type extractorSearchEntry struct {
+	ID          string                     `json:"id"`
+	Title       string                     `json:"title"`
+	Description string                     `json:"description"`
+	Thumbnail   string                     `json:"thumbnail"`
+	Thumbnails  []extractorSearchThumbnail `json:"thumbnails"`
+	Channel     string                     `json:"channel"`
+	Uploader    string                     `json:"uploader"`
+	Duration    float64                    `json:"duration"`
+	ViewCount   int64                      `json:"view_count"`
+	UploadDate  string                     `json:"upload_date"`
+}
+
+type extractorSearchThumbnail struct {
+	URL string `json:"url"`
+}
+
+func normalizeSearchRequest(query string, opts SearchOptions) (string, int, time.Duration, error) {
+	query = strings.TrimSpace(query)
+	if query == "" || len(query) > MaxSearchQueryBytes || strings.IndexByte(query, 0) >= 0 {
+		return "", 0, 0, fmt.Errorf("%w: search query must contain 1..%d bytes", core.ErrInvalidArgs, MaxSearchQueryBytes)
+	}
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = DefaultSearchLimit
+	}
+	if limit > MaxSearchLimit {
+		limit = MaxSearchLimit
+	}
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = DefaultSearchTimeout
+	}
+	if timeout > MaxSearchTimeout {
+		timeout = MaxSearchTimeout
+	}
+	return query, limit, timeout, nil
+}
+
+func validYouTubeVideoID(id string) bool {
+	if len(id) != 11 {
+		return false
+	}
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func truncateSearchText(value string, maxBytes int) string {
+	value = strings.TrimSpace(value)
+	if maxBytes <= 0 || len(value) <= maxBytes {
+		return value
+	}
+	value = value[:maxBytes]
+	for !utf8.ValidString(value) && value != "" {
+		_, size := utf8.DecodeLastRuneInString(value)
+		if size <= 0 || size > len(value) {
+			value = value[:len(value)-1]
+			continue
+		}
+		value = value[:len(value)-size]
+	}
+	return strings.TrimSpace(value)
+}
+
+func normalizeSearchThumbnail(entry extractorSearchEntry) string {
+	candidates := make([]string, 0, 1+len(entry.Thumbnails))
+	candidates = append(candidates, entry.Thumbnail)
+	for i := len(entry.Thumbnails) - 1; i >= 0; i-- {
+		candidates = append(candidates, entry.Thumbnails[i].URL)
+	}
+	for _, candidate := range candidates {
+		u, err := url.Parse(strings.TrimSpace(candidate))
+		if err == nil && u != nil && strings.EqualFold(u.Scheme, "https") && u.Hostname() != "" {
+			return u.String()
+		}
+	}
+	return ""
+}
+
+func normalizeExtractorSearch(payload extractorSearchPayload, limit int) []SearchResult {
+	results := make([]SearchResult, 0, limit)
+	for _, entry := range payload.Entries {
+		id := strings.TrimSpace(entry.ID)
+		if !validYouTubeVideoID(id) {
+			continue
+		}
+		title := truncateSearchText(entry.Title, extractorSearchTitleBytes)
+		if title == "" {
+			continue
+		}
+		channel := entry.Channel
+		if strings.TrimSpace(channel) == "" {
+			channel = entry.Uploader
+		}
+		duration := int64(entry.Duration)
+		if duration < 0 {
+			duration = 0
+		}
+		views := entry.ViewCount
+		if views < 0 {
+			views = 0
+		}
+		results = append(results, SearchResult{
+			Provider:        "extractor",
+			Source:          "youtube",
+			SourceID:        id,
+			URL:             "https://www.youtube.com/watch?v=" + id,
+			Title:           title,
+			Description:     truncateSearchText(entry.Description, extractorSearchDescriptionBytes),
+			Thumbnail:       normalizeSearchThumbnail(entry),
+			Channel:         truncateSearchText(channel, extractorSearchChannelBytes),
+			DurationSeconds: duration,
+			Views:           views,
+			PublishedAt:     strings.TrimSpace(entry.UploadDate),
+		})
+		if len(results) >= limit {
+			break
+		}
+	}
+	return results
+}
+
+func parseExtractorSearch(stdout string, limit int) ([]SearchResult, error) {
+	var payload extractorSearchPayload
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		return nil, fmt.Errorf("%w: decode yt-dlp search output: %v", ErrSearchFailed, err)
+	}
+	results := normalizeExtractorSearch(payload, limit)
+	if len(results) == 0 {
+		return nil, ErrSearchNoResults
+	}
+	return results, nil
+}
+
+// Search performs bounded YouTube metadata discovery using yt-dlp without
+// downloading media. The process resource is held only for the physical search.
+func (p *ExtractorProvider) Search(ctx context.Context, query string, opts SearchOptions) ([]SearchResult, error) {
+	query, limit, timeout, err := normalizeSearchRequest(query, opts)
+	if err != nil {
+		return nil, err
+	}
+	ytdlpPath, err := p.extractorPath()
+	if err != nil {
+		return nil, fmt.Errorf("%w: please install yt-dlp on the host machine to search YouTube", ErrExtractorUnavailable)
+	}
+	req := process.Request{
+		Command: ytdlpPath,
+		Args: []string{
+			"--ignore-config",
+			"--no-warnings",
+			"--simulate",
+			"--flat-playlist",
+			"--dump-single-json",
+			fmt.Sprintf("ytsearch%d:%s", limit, query),
+		},
+		Timeout:   timeout,
+		MaxOutput: extractorSearchMaxOutput,
+	}
+	var res *process.Result
+	run := func(runCtx context.Context) error {
+		var runErr error
+		res, runErr = p.runner.Run(runCtx, req)
+		return runErr
+	}
+	p.mu.Lock()
+	taskClient := p.tasks
+	p.mu.Unlock()
+	if !tasks.HasHeldResource(ctx, "process") && taskClient != nil {
+		ticket, taskErr := taskClient.Submit(ctx, tasks.WorkSpec{
+			ID:               tasks.TaskID(fmt.Sprintf("extractor-search:%d", time.Now().UnixNano())),
+			QuotaOwner:       "download:extractor-search",
+			Pool:             "download",
+			Class:            tasks.PriorityInteractive,
+			ExecutionTimeout: timeout,
+			Resources:        []tasks.ResourceRequirement{{Name: "process", Amount: 1}},
+			Handler:          run,
+		})
+		if taskErr != nil {
+			return nil, fmt.Errorf("%w: failed to allocate process resource: %v", ErrSearchFailed, taskErr)
+		}
+		result, waitErr := ticket.Wait(ctx)
+		if waitErr != nil {
+			return nil, fmt.Errorf("%w: extractor search process wait failed: %v", ErrSearchFailed, waitErr)
+		}
+		if !result.IsSuccess() {
+			return nil, fmt.Errorf("%w: yt-dlp search task failed: %s", ErrSearchFailed, result.Failure.Message)
+		}
+	} else if err := run(ctx); err != nil {
+		stderr := ""
+		if res != nil {
+			stderr = strings.TrimSpace(res.Stderr)
+		}
+		return nil, fmt.Errorf("%w: yt-dlp search failed: %s: %v", ErrSearchFailed, stderr, err)
+	}
+	if res == nil {
+		return nil, fmt.Errorf("%w: yt-dlp search returned no process result", ErrSearchFailed)
+	}
+	if res.Truncated {
+		return nil, fmt.Errorf("%w: yt-dlp search output exceeded %d bytes", core.ErrResourceLimit, extractorSearchMaxOutput)
+	}
+	if res.ExitCode != 0 {
+		return nil, fmt.Errorf("%w: yt-dlp search exited with code %d: %s", ErrSearchFailed, res.ExitCode, strings.TrimSpace(res.Stderr))
+	}
+	return parseExtractorSearch(res.Stdout, limit)
 }
 
 func extractorSelectionArgs(opts DownloadOptions) ([]string, error) {
@@ -138,7 +373,7 @@ func (p *ExtractorProvider) Download(ctx context.Context, rawURL string, store s
 		return nil, fmt.Errorf("storage destination cannot be nil")
 	}
 
-	ytdlpPath, err := exec.LookPath("yt-dlp")
+	ytdlpPath, err := p.extractorPath()
 	if err != nil {
 		return nil, fmt.Errorf("%w: please install yt-dlp on the host machine to download from this link", ErrExtractorUnavailable)
 	}

@@ -15,6 +15,20 @@ var (
 	ErrExtractorUnavailable = errors.New("download: external extractor (yt-dlp) is not installed on the system")
 	// ErrDownloadFailed indicates that the download operation failed.
 	ErrDownloadFailed = errors.New("download: file download failed")
+	// ErrSearchUnsupported indicates that a registered provider does not expose search.
+	ErrSearchUnsupported = errors.New("download: provider does not support search")
+	// ErrSearchFailed indicates that provider-backed metadata search failed.
+	ErrSearchFailed = errors.New("download: provider search failed")
+	// ErrSearchNoResults indicates that search completed without usable results.
+	ErrSearchNoResults = errors.New("download: search returned no usable results")
+)
+
+const (
+	DefaultSearchLimit   = 5
+	MaxSearchLimit       = 5
+	MaxSearchQueryBytes  = 256
+	DefaultSearchTimeout = 15 * time.Second
+	MaxSearchTimeout     = 30 * time.Second
 )
 
 // MediaMode is a bounded semantic selection understood by extractor-backed
@@ -38,6 +52,35 @@ const (
 	MediaFormatMP3     MediaFormat = "mp3"
 	MediaFormatMP4     MediaFormat = "mp4"
 )
+
+// SearchOptions controls bounded provider metadata searches.
+type SearchOptions struct {
+	Limit   int
+	Timeout time.Duration
+}
+
+// SearchResult is normalized provider metadata suitable for higher-level
+// discovery surfaces. It intentionally excludes raw provider payloads.
+type SearchResult struct {
+	Provider        string
+	Source          string
+	SourceID        string
+	URL             string
+	Title           string
+	Description     string
+	Thumbnail       string
+	Channel         string
+	DurationSeconds int64
+	Views           int64
+	PublishedAt     string
+}
+
+// SearchProvider is an optional capability implemented only by providers that
+// support metadata discovery. Provider remains download-only by default.
+type SearchProvider interface {
+	Name() string
+	Search(ctx context.Context, query string, opts SearchOptions) ([]SearchResult, error)
+}
 
 // ProgressCallback is invoked periodically with the current download progress.
 type ProgressCallback func(downloaded, total int64)

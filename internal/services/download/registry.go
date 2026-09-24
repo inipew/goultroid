@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,6 +50,33 @@ func (r *Registry) Resolve(rawURL string) Provider {
 		}
 	}
 	return nil
+}
+
+// Search delegates bounded metadata discovery to one named registered provider.
+func (r *Registry) Search(ctx context.Context, providerName, query string, opts SearchOptions) ([]SearchResult, error) {
+	providerName = strings.TrimSpace(providerName)
+	if providerName == "" {
+		return nil, fmt.Errorf("%w: search provider name cannot be empty", core.ErrInvalidArgs)
+	}
+
+	r.mu.RLock()
+	var provider Provider
+	for _, candidate := range r.providers {
+		if candidate != nil && candidate.Name() == providerName {
+			provider = candidate
+			break
+		}
+	}
+	r.mu.RUnlock()
+
+	if provider == nil {
+		return nil, fmt.Errorf("%w: %s", ErrNoMatchingProvider, providerName)
+	}
+	searcher, ok := provider.(SearchProvider)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrSearchUnsupported, providerName)
+	}
+	return searcher.Search(ctx, query, opts)
 }
 
 // Download finds the appropriate provider and downloads the media into storage.
