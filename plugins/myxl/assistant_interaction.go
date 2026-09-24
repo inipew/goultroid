@@ -37,6 +37,7 @@ type assistantState struct {
 	OptionCode string              `json:"option_code,omitempty"`
 	Method     string              `json:"method,omitempty"`
 	Draft      *purchaseDraftState `json:"draft,omitempty"`
+	Sustain    bool                `json:"sustain,omitempty"`
 }
 
 func (p *Plugin) AssistantFeatureID() string { return p.Name() }
@@ -161,7 +162,7 @@ func (p *Plugin) openAssistant(cmd *core.Context) error {
 	if err != nil {
 		return err
 	}
-	state, view, err := p.assistantScreen(assistantState{}, screen)
+	state, view, err := p.assistantScreen(assistantState{Sustain: true}, screen)
 	if err != nil {
 		return err
 	}
@@ -235,6 +236,7 @@ func (p *Plugin) assistantTransition(ctx *orchestration.Context, state assistant
 
 func (p *Plugin) assistantTransitionWithTTL(ctx *orchestration.Context, state assistantState, ttl time.Duration, screen *ui.Screen) error {
 	state.Wizard = ""
+	state.Sustain = ttl == assistantTTL
 	raw, view, err := p.assistantScreen(state, screen)
 	if err != nil {
 		return err
@@ -242,16 +244,8 @@ func (p *Plugin) assistantTransitionWithTTL(ctx *orchestration.Context, state as
 	return ctx.Transition(raw, ttl, view)
 }
 
-func assistantSustainsSession(action string) bool {
-	switch action {
-	case "checkout", "buy_confirm", "del_exec":
-		return false
-	default:
-		return true
-	}
-}
-
 func (p *Plugin) assistantAwait(ctx *orchestration.Context, state assistantState, prompt string) error {
+	state.Sustain = false
 	state.Slots = []string{"myxl:cancel_wizard"}
 	raw, err := encodeAssistantState(state)
 	if err != nil {
@@ -300,7 +294,7 @@ func (p *Plugin) handleAssistantSlot(ctx *orchestration.Context, slot int) error
 	if namespace != p.Name() {
 		return ctx.Answer("Interaction owner mismatch. Reopen MyXL.", true)
 	}
-	if assistantSustainsSession(action) {
+	if state.Sustain {
 		if err := ctx.Touch(assistantTTL); err != nil {
 			return err
 		}
@@ -375,6 +369,7 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		return p.assistantTransition(ctx, state, screen)
 
 	case "del_ask":
+		state.Sustain = false
 		state.Slots = []string{
 			fmt.Sprintf("myxl:del_exec:%s", opaque),
 			"myxl:accounts",

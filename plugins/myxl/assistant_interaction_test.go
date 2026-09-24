@@ -112,14 +112,21 @@ func TestAssistantV2OwnerBoundLifetimePolicy(t *testing.T) {
 	if pendingQRISTTL != 5*time.Minute {
 		t.Fatalf("pendingQRISTTL = %v, want 5m", pendingQRISTTL)
 	}
-	for _, action := range []string{"checkout", "buy_confirm", "del_exec"} {
-		if assistantSustainsSession(action) {
-			t.Fatalf("sensitive action %q unexpectedly extends long-lived session", action)
-		}
+	long := decodeAssistantState(mustAssistantState(t, assistantState{Sustain: true}))
+	if !long.Sustain {
+		t.Fatal("long-lived owner navigation lost sustain marker")
 	}
-	for _, action := range []string{"home", "refresh", "accounts", "store", "saved"} {
-		if !assistantSustainsSession(action) {
-			t.Fatalf("navigation action %q does not extend owner session", action)
-		}
+	short := decodeAssistantState(mustAssistantState(t, assistantState{Sustain: false}))
+	if short.Sustain {
+		t.Fatal("short-lived confirmation/input state became sustainable")
 	}
+}
+
+func mustAssistantState(t *testing.T, state assistantState) []byte {
+	t.Helper()
+	raw, err := encodeAssistantState(state)
+	if err != nil {
+		t.Fatalf("encodeAssistantState() error = %v", err)
+	}
+	return raw
 }
