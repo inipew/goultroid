@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -181,7 +182,7 @@ func (p *Plugin) submitInteractivePipeline(
 			deliveryFailure,
 			delivered,
 			targetKind,
-		); err != nil && deliveryFailure != nil {
+		); err != nil && deliveryFailure != nil && !isDeliveryLifecycleCancellation(err) {
 			_ = deliveryFailure(context.Background())
 		}
 	}
@@ -209,7 +210,7 @@ func (p *Plugin) submitRetainedDelivery(
 	spec := tasks.WorkSpec{
 		ID:               p.nextTaskID("media-delivery"),
 		QuotaOwner:       tasks.OwnerID("plugin:downloader"),
-		Pool:             tasks.PoolID("download"),
+		Pool:             tasks.PoolID("general"),
 		Class:            tasks.PriorityNormal,
 		ExecutionTimeout: downloaderDeliveryTimeout,
 		Input:            []byte(asset.ID),
@@ -245,6 +246,12 @@ func (p *Plugin) submitRetainedDelivery(
 		return fmt.Errorf("submit retained media delivery task: %w", err)
 	}
 	return nil
+}
+
+func isDeliveryLifecycleCancellation(err error) bool {
+	return errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, tasks.ErrScopeClosed)
 }
 
 func deliveryFailedView() presentation.View {

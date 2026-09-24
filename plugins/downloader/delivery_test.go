@@ -3,12 +3,15 @@ package downloader
 import (
 	"bytes"
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/storage"
+	"github.com/inipew/goultroid/internal/taskengine"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -55,6 +58,9 @@ func TestYTZZRetainedDeliveryUsesMediaResourceOnlyAndKeepsAsset(t *testing.T) {
 	spec := client.specs[0]
 	if spec.ExecutionTimeout != downloaderDeliveryTimeout {
 		t.Fatalf("delivery timeout=%v, want %v", spec.ExecutionTimeout, downloaderDeliveryTimeout)
+	}
+	if spec.Pool != tasks.PoolID("general") {
+		t.Fatalf("delivery pool=%q, want general", spec.Pool)
 	}
 	if len(spec.Resources) != 1 || spec.Resources[0].Name != "media" || spec.Resources[0].Amount != 1 {
 		t.Fatalf("delivery resources=%+v, want media=1 only", spec.Resources)
@@ -108,5 +114,159 @@ func TestYTZZDeliveryFailureKeepsRetainedAsset(t *testing.T) {
 func TestYTZZCallbackAdmissionDoesNotHoldPhysicalResources(t *testing.T) {
 	if got := downloaderDeliveryTimeout; got < 10*time.Minute {
 		t.Fatalf("delivery timeout=%v is unexpectedly short", got)
+	}
+}
+
+
+type ytzPipelineObservation struct {
+	download bool
+	process  bool
+	media    bool
+	assetID  string
+}
+
+type ytzPipelineProvider struct {
+	observed chan<- ytzPipelineObservation
+}
+
+func (*ytzPipelineProvider) Name() string { return "extractor" }
+
+func (*ytzPipelineProvider) Match(rawURL string) bool {
+	return strings.HasPrefix(rawURL, "https://www.youtube.com/")
+}
+
+func (p *ytzPipelineProvider) Download(
+	ctx context.Context,
+	_ string,
+	store storage.Storage,
+	_ download.DownloadOptions,
+) (*storage.Asset, error) {
+	asset, err := store.Put(ctx, bytes.NewBufferString("pipeline-media"), storage.Metadata{
+		Name: "pipeline.mp4",
+		MIME: "video/mp4",
+	})
+	if err != nil {
+		return nil, err
+	}
+	p.observed <- ytzPipelineObservation{
+		download: tasks.HasHeldResource(ctx, "download"),
+		process:  tasks.HasHeldResource(ctx, "process"),
+		media:    tasks.HasHeldResource(ctx, "media"),
+		assetID:  asset.ID,
+	}
+	return asset, nil
+}
+
+func TestYTZPipelineReleasesDownloadResourcesBeforeMediaDelivery(t *testing.T) {
+	engine := taskengine.NewEngine(taskengine.Config{
+		Pools: map[tasks.PoolID]taskengine.PoolEngineConfig{
+			"download": {
+				Concurrency:    1,
+				MinConcurrency: 0,
+				ZeroIdle:       true,
+				IdleTimeout:    20 * time.Millisecond,
+				BacklogLimit:   8,
+				PayloadBudget:  1 << 20,
+			},
+			"general": {
+				Concurrency:    1,
+				MinConcurrency: 0,
+				ZeroIdle:       true,
+				IdleTimeout:    20 * time.Millisecond,
+				BacklogLimit:   8,
+				PayloadBudget:  1 << 20,
+			},
+		},
+		ResultCapacity: 16,
+		ResourceCapacities: map[string]int64{
+			"download": 1,
+			"process":  1,
+			"media":    1,
+		},
+	})
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := engine.Stop(ctx); err != nil {
+			t.Errorf("stop TaskEngine: %v", err)
+		}
+	})
+
+	store, err := storage.NewFileStorage(t.TempDir(), 16*1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	downloadObserved := make(chan ytzPipelineObservation, 1)
+	deliveryObserved := make(chan ytzPipelineObservation, 1)
+	provider := &ytzPipelineProvider{observed: downloadObserved}
+	p := New(engine, store)
+	p.registry = download.NewRegistry(provider)
+
+	state := interactiveState{
+		URL:      "https://www.youtube.com/watch?v=abcdefghijk",
+		Provider: "extractor",
+		Phase:    phaseVideoFormat,
+		Mode:     download.MediaModeVideo,
+		Format:   download.MediaFormatMP4,
+	}
+	if err := p.submitInteractivePipeline(
+		context.Background(),
+		state,
+		download.MediaModeVideo,
+		download.MediaFormatMP4,
+		func(ctx context.Context, media presentation.Media) error {
+			deliveryObserved <- ytzPipelineObservation{
+				download: tasks.HasHeldResource(ctx, "download"),
+				process:  tasks.HasHeldResource(ctx, "process"),
+				media:    tasks.HasHeldResource(ctx, "media"),
+			}
+			return nil
+		},
+		nil,
+		nil,
+		nil,
+		"inline",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	var physical ytzPipelineObservation
+	select {
+	case physical = <-downloadObserved:
+	case <-time.After(2 * time.Second):
+		t.Fatal("physical download stage did not run")
+	}
+	if !physical.download || !physical.process || physical.media {
+		t.Fatalf("download-stage resources=%+v, want download+process only", physical)
+	}
+
+	select {
+	case delivered := <-deliveryObserved:
+		if delivered.download || delivered.process || !delivered.media {
+			t.Fatalf("delivery-stage resources=%+v, want media only", delivered)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("media delivery stage did not run")
+	}
+
+	if physical.assetID == "" {
+		t.Fatal("download stage produced no retained asset id")
+	}
+	if _, err := store.Stat(context.Background(), physical.assetID); err != nil {
+		t.Fatalf("retained asset missing after successful delivery: %v", err)
+	}
+}
+
+func TestYTZLifecycleCancellationDoesNotEmitPostDisableFailureUI(t *testing.T) {
+	for _, err := range []error{context.Canceled, context.DeadlineExceeded, tasks.ErrScopeClosed} {
+		if !isDeliveryLifecycleCancellation(err) {
+			t.Fatalf("lifecycle error %v was not classified", err)
+		}
+	}
+	if isDeliveryLifecycleCancellation(errors.New("telegram unavailable")) {
+		t.Fatal("ordinary delivery error classified as lifecycle cancellation")
 	}
 }
