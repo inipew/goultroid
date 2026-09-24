@@ -12,6 +12,7 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/mediaregistry"
 	"github.com/inipew/goultroid/internal/services/storage"
@@ -370,85 +371,67 @@ func (p *Plugin) executeMediaDownload(taskCtx context.Context, ctx *core.Context
 }
 
 func (p *Plugin) handleURLDownload(ctx *core.Context, rawURL string) error {
+	if ctx == nil {
+		return core.ErrInvalidArgs
+	}
 	if p.tasks == nil {
 		return fmt.Errorf("%w: downloader TaskEngine client is not configured", core.ErrUnavailable)
 	}
 	p.ensureRegistry()
-
-	resources := p.urlResources(rawURL)
+	if p.registry == nil {
+		return fmt.Errorf("%w: downloader registry unavailable", core.ErrUnavailable)
+	}
+	provider := p.registry.Resolve(rawURL)
+	if provider == nil {
+		return download.ErrNoMatchingProvider
+	}
 	if err := ctx.EditOrReply("⏳ <i>Downloading media from URL...</i>"); err != nil {
 		return err
 	}
+
 	uiCtx := detachDownloadContext(ctx)
-	return p.submitContinuation(ctx.Ctx, "url", []byte(rawURL), resources, func(taskCtx context.Context) error {
-		return p.executeURLDownload(taskCtx, uiCtx, rawURL)
-	})
-}
-
-func (p *Plugin) executeURLDownload(taskCtx context.Context, ctx *core.Context, rawURL string) error {
-	if taskCtx != nil && ctx != nil {
-		ctx = ctx.WithContext(taskCtx)
+	state := interactiveState{
+		URL:      rawURL,
+		Provider: provider.Name(),
+		Phase:    phaseRunning,
 	}
-	p.ensureRegistry()
-
-	targetStore := p.storage
-	if targetStore == nil {
-		targetStore = storage.NewMemoryStorage()
-	}
-
-	start := time.Now()
-	opts := download.DownloadOptions{
-		Timeout:  downloaderExecutionTimeout,
-		MaxBytes: 500 * 1024 * 1024,
-	}
-
-	provider := p.registry.Resolve(rawURL)
-	asset, err := p.registry.Download(taskCtx, rawURL, targetStore, opts)
-	if err != nil {
-		if ctx != nil {
-			return ctx.Edit(fmt.Sprintf("❌ <b>URL Download Failed</b>: %v", err))
+	delivery := func(deliveryCtx context.Context, media presentation.Media) error {
+		if uiCtx == nil {
+			return core.ErrInvalidArgs
 		}
-		return fmt.Errorf("URL download failed: %w", err)
+		current := uiCtx.WithContext(deliveryCtx)
+		_, err := current.Media().SendMedia(media.Type, media.Path, media.Caption)
+		return err
 	}
-	producer := "downloader.unknown"
-	if provider != nil {
-		producer = downloaderProviderProducer(provider.Name())
-	}
-	if err := p.registerRetainedAsset(taskCtx, targetStore, asset, producer); err != nil {
-		if ctx != nil {
-			return ctx.Edit(fmt.Sprintf("❌ <b>URL Download Ownership Failed</b>: %v", err))
+	downloadFailure := func(editCtx context.Context) error {
+		if uiCtx == nil {
+			return core.ErrInvalidArgs
 		}
-		return fmt.Errorf("URL download ownership registration failed: %w", err)
+		return uiCtx.WithContext(editCtx).Edit("❌ <b>URL download failed.</b> Try again.")
 	}
-
-	duration := time.Since(start)
-	sizeStr := formatBytes(asset.Size)
-
-	var speedStr string
-	if duration.Seconds() > 0 && asset.Size > 0 {
-		mbps := (float64(asset.Size) / 1024 / 1024) / duration.Seconds()
-		speedStr = fmt.Sprintf("%.2f MB/s", mbps)
-	} else {
-		speedStr = "fast"
+	deliveryFailure := func(editCtx context.Context) error {
+		if uiCtx == nil {
+			return core.ErrInvalidArgs
+		}
+		return uiCtx.WithContext(editCtx).Edit(deliveryFailedView().Text)
 	}
-
-	text := fmt.Sprintf(
-		"📥 <b>URL Download Complete!</b>\n\n"+
-			"📁 <b>File:</b> <code>%s</code>\n"+
-			"📦 <b>Size:</b> <code>%s</code>\n"+
-			"⏱️ <b>Time:</b> <code>%.2fs</code> (%s)\n"+
-			"📍 <b>Path:</b> <code>%s</code>",
-		core.EscapeHTML(asset.Name),
-		sizeStr,
-		duration.Seconds(),
-		speedStr,
-		core.EscapeHTML(asset.Path),
+	delivered := func(editCtx context.Context) error {
+		if uiCtx == nil {
+			return core.ErrInvalidArgs
+		}
+		return uiCtx.WithContext(editCtx).Edit(deliveredView().Text)
+	}
+	return p.submitInteractivePipeline(
+		ctx.Ctx,
+		state,
+		download.MediaModeDefault,
+		download.MediaFormatDefault,
+		delivery,
+		downloadFailure,
+		deliveryFailure,
+		delivered,
+		"message",
 	)
-
-	if ctx != nil {
-		return ctx.Edit(text)
-	}
-	return nil
 }
 
 func formatBytes(b int64) string {

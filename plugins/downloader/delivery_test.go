@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gotd/td/tg"
+	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/storage"
@@ -116,7 +118,6 @@ func TestYTZZCallbackAdmissionDoesNotHoldPhysicalResources(t *testing.T) {
 		t.Fatalf("delivery timeout=%v is unexpectedly short", got)
 	}
 }
-
 
 type ytzPipelineObservation struct {
 	download bool
@@ -268,5 +269,105 @@ func TestYTZLifecycleCancellationDoesNotEmitPostDisableFailureUI(t *testing.T) {
 	}
 	if isDeliveryLifecycleCancellation(errors.New("telegram unavailable")) {
 		t.Fatal("ordinary delivery error classified as lifecycle cancellation")
+	}
+}
+
+func TestYTZUserbotURLCommandDeliversAfterDownloadResourcesRelease(t *testing.T) {
+	engine := taskengine.NewEngine(taskengine.Config{
+		Pools: map[tasks.PoolID]taskengine.PoolEngineConfig{
+			"download": {
+				Concurrency:    1,
+				MinConcurrency: 0,
+				ZeroIdle:       true,
+				IdleTimeout:    20 * time.Millisecond,
+				BacklogLimit:   8,
+				PayloadBudget:  1 << 20,
+			},
+			"general": {
+				Concurrency:    1,
+				MinConcurrency: 0,
+				ZeroIdle:       true,
+				IdleTimeout:    20 * time.Millisecond,
+				BacklogLimit:   8,
+				PayloadBudget:  1 << 20,
+			},
+		},
+		ResultCapacity: 16,
+		ResourceCapacities: map[string]int64{
+			"download": 1,
+			"process":  1,
+			"media":    1,
+		},
+	})
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := engine.Stop(ctx); err != nil {
+			t.Errorf("stop TaskEngine: %v", err)
+		}
+	})
+
+	store, err := storage.NewFileStorage(t.TempDir(), 16*1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	downloadObserved := make(chan ytzPipelineObservation, 1)
+	provider := &ytzPipelineProvider{observed: downloadObserved}
+	p := New(engine, store)
+	p.registry = download.NewRegistry(provider)
+
+	mediaSends := make(chan core.MessageSendContext, 1)
+	tgSvc := &mockTelegramService{mediaSends: mediaSends}
+	ctx := &core.Context{
+		Ctx:    context.Background(),
+		Svc:    tgSvc,
+		PeerID: &tg.InputPeerSelf{},
+		Message: &core.Message{
+			ID:         77,
+			TopicID:    70,
+			IsOutgoing: true,
+			Text:       ".download https://www.youtube.com/watch?v=abcdefghijk",
+		},
+	}
+	if err := p.handleURLDownload(ctx, "https://www.youtube.com/watch?v=abcdefghijk"); err != nil {
+		t.Fatal(err)
+	}
+
+	var physical ytzPipelineObservation
+	select {
+	case physical = <-downloadObserved:
+	case <-time.After(2 * time.Second):
+		t.Fatal("userbot URL download stage did not run")
+	}
+	if !physical.download || !physical.process || physical.media {
+		t.Fatalf("userbot download-stage resources=%+v, want download+process only", physical)
+	}
+
+	var send core.MessageSendContext
+	select {
+	case send = <-mediaSends:
+	case <-time.After(2 * time.Second):
+		t.Fatal("userbot retained asset was not delivered to Telegram")
+	}
+	if send.ReplyToID != 77 || send.TopicID != 70 {
+		t.Fatalf("media send context=%+v, want reply=77 topic=70", send)
+	}
+
+	tgSvc.mu.Lock()
+	sawMedia := tgSvc.sawMedia
+	sawDownload := tgSvc.sawDownload
+	sawProcess := tgSvc.sawProcess
+	tgSvc.mu.Unlock()
+	if !sawMedia || sawDownload || sawProcess {
+		t.Fatalf("userbot delivery-stage resources media=%v download=%v process=%v", sawMedia, sawDownload, sawProcess)
+	}
+	if physical.assetID == "" {
+		t.Fatal("userbot URL download produced no retained asset")
+	}
+	if _, err := store.Stat(context.Background(), physical.assetID); err != nil {
+		t.Fatalf("retained userbot asset missing after Telegram delivery: %v", err)
 	}
 }

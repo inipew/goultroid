@@ -60,10 +60,24 @@ type mockTelegramService struct {
 	mu           sync.Mutex
 	lastEdited   string
 	replyMessage *tg.Message
+	mediaSends   chan core.MessageSendContext
+	sawMedia     bool
+	sawDownload  bool
+	sawProcess   bool
 }
 
 func (m *mockTelegramService) SendMessage(context.Context, tg.InputPeerClass, string) (*tg.Message, error) {
 	return &tg.Message{ID: 100}, nil
+}
+
+func (m *mockTelegramService) SendMessageContext(
+	ctx context.Context,
+	peer tg.InputPeerClass,
+	text string,
+	_ tg.ReplyMarkupClass,
+	_ core.MessageSendContext,
+) (*tg.Message, error) {
+	return m.SendMessage(ctx, peer, text)
 }
 
 func (m *mockTelegramService) EditMessage(_ context.Context, _ tg.InputPeerClass, _ int, text string) error {
@@ -71,6 +85,29 @@ func (m *mockTelegramService) EditMessage(_ context.Context, _ tg.InputPeerClass
 	m.lastEdited = text
 	m.mu.Unlock()
 	return nil
+}
+
+func (m *mockTelegramService) SendMediaContext(
+	ctx context.Context,
+	_ tg.InputPeerClass,
+	_ string,
+	_ string,
+	_ string,
+	send core.MessageSendContext,
+) (*tg.Message, error) {
+	m.mu.Lock()
+	m.sawMedia = tasks.HasHeldResource(ctx, "media")
+	m.sawDownload = tasks.HasHeldResource(ctx, "download")
+	m.sawProcess = tasks.HasHeldResource(ctx, "process")
+	ch := m.mediaSends
+	m.mu.Unlock()
+	if ch != nil {
+		select {
+		case ch <- send:
+		default:
+		}
+	}
+	return &tg.Message{ID: 101}, nil
 }
 
 func (m *mockTelegramService) GetMessage(ctx context.Context, _ tg.InputPeerClass, _ int) (*tg.Message, error) {
@@ -145,6 +182,9 @@ func TestDownloaderURLResourcePlanning(t *testing.T) {
 	if !hasResource(specHTTP.Resources, "download") || hasResource(specHTTP.Resources, "process") {
 		t.Fatalf("direct HTTP resources=%+v, want download only", specHTTP.Resources)
 	}
+	if specHTTP.OnComplete == nil {
+		t.Fatal("direct HTTP continuation is missing YT-Z delivery completion")
+	}
 
 	ctxExtractor := &core.Context{
 		Ctx:     context.Background(),
@@ -161,6 +201,9 @@ func TestDownloaderURLResourcePlanning(t *testing.T) {
 	specExtractor, _ := client.LastSpec()
 	if !hasResource(specExtractor.Resources, "download") || !hasResource(specExtractor.Resources, "process") {
 		t.Fatalf("extractor resources=%+v, want download+process", specExtractor.Resources)
+	}
+	if specExtractor.OnComplete == nil {
+		t.Fatal("extractor continuation is missing YT-Z delivery completion")
 	}
 }
 
