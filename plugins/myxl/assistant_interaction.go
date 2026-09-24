@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	assistantTTL             = 10 * time.Minute
+	assistantTTL             = 24 * time.Hour
 	assistantInputTTL        = 2 * time.Minute
+	assistantConfirmationTTL = 5 * time.Minute
 	assistantActionSlotCount = 32
 
 	assistantScreenHome  = "home"
@@ -229,12 +230,25 @@ func (p *Plugin) assistantScreen(state assistantState, screen *ui.Screen) ([]byt
 }
 
 func (p *Plugin) assistantTransition(ctx *orchestration.Context, state assistantState, screen *ui.Screen) error {
+	return p.assistantTransitionWithTTL(ctx, state, assistantTTL, screen)
+}
+
+func (p *Plugin) assistantTransitionWithTTL(ctx *orchestration.Context, state assistantState, ttl time.Duration, screen *ui.Screen) error {
 	state.Wizard = ""
 	raw, view, err := p.assistantScreen(state, screen)
 	if err != nil {
 		return err
 	}
-	return ctx.Transition(raw, assistantTTL, view)
+	return ctx.Transition(raw, ttl, view)
+}
+
+func assistantSustainsSession(action string) bool {
+	switch action {
+	case "checkout", "buy_confirm", "del_exec":
+		return false
+	default:
+		return true
+	}
 }
 
 func (p *Plugin) assistantAwait(ctx *orchestration.Context, state assistantState, prompt string) error {
@@ -285,6 +299,11 @@ func (p *Plugin) handleAssistantSlot(ctx *orchestration.Context, slot int) error
 	}
 	if namespace != p.Name() {
 		return ctx.Answer("Interaction owner mismatch. Reopen MyXL.", true)
+	}
+	if assistantSustainsSession(action) {
+		if err := ctx.Touch(assistantTTL); err != nil {
+			return err
+		}
 	}
 	return p.dispatchAssistantAction(ctx, state, action, opaque)
 }
@@ -371,7 +390,7 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 				{Text: "❌ Batal", ActionID: assistantSlotID(1)},
 			}},
 		}
-		return ctx.Transition(raw, assistantTTL, view)
+		return ctx.Transition(raw, assistantConfirmationTTL, view)
 
 	case "del_exec":
 		if err := p.repo.Delete(ctx.Context(), opaque); err != nil {
@@ -538,7 +557,7 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		if err != nil {
 			return ctx.Answer(fmt.Sprintf("Gagal membuat sesi checkout: %v", err), true)
 		}
-		return p.assistantTransition(ctx, state, screen)
+		return p.assistantTransitionWithTTL(ctx, state, assistantConfirmationTTL, screen)
 
 	case "custom_price":
 		state.Wizard = "custom_price"

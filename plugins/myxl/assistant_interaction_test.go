@@ -3,6 +3,7 @@ package myxl
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
@@ -90,6 +91,35 @@ func TestAssistantV2ActionDeclarationsAreTyped(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("missing typed action declaration %s", id)
+		}
+	}
+}
+
+
+func TestAssistantV2OwnerBoundLifetimePolicy(t *testing.T) {
+	if assistantTTL != 24*time.Hour {
+		t.Fatalf("assistantTTL = %v, want 24h", assistantTTL)
+	}
+	if myxlCallbackTTL != 24*time.Hour {
+		t.Fatalf("myxlCallbackTTL = %v, want 24h", myxlCallbackTTL)
+	}
+	if assistantInputTTL != 2*time.Minute {
+		t.Fatalf("assistantInputTTL = %v, want 2m", assistantInputTTL)
+	}
+	if assistantConfirmationTTL != 5*time.Minute {
+		t.Fatalf("assistantConfirmationTTL = %v, want 5m", assistantConfirmationTTL)
+	}
+	if pendingQRISTTL != 5*time.Minute {
+		t.Fatalf("pendingQRISTTL = %v, want 5m", pendingQRISTTL)
+	}
+	for _, action := range []string{"checkout", "buy_confirm", "del_exec"} {
+		if assistantSustainsSession(action) {
+			t.Fatalf("sensitive action %q unexpectedly extends long-lived session", action)
+		}
+	}
+	for _, action := range []string{"home", "refresh", "accounts", "store", "saved"} {
+		if !assistantSustainsSession(action) {
+			t.Fatalf("navigation action %q does not extend owner session", action)
 		}
 	}
 }

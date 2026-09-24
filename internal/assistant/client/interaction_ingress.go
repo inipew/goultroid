@@ -295,8 +295,12 @@ func (s *interactionPresentationServicer) ensureAnswered(ctx context.Context, qu
 		return
 	}
 	text := ""
+	alert := false
 	if dispatchErr != nil {
 		switch {
+		case errors.Is(dispatchErr, rootinteraction.ErrBindingMismatch):
+			text = "This button can only be used by the user who opened it on the original message."
+			alert = true
 		case errors.Is(dispatchErr, rootinteraction.ErrExpired),
 			errors.Is(dispatchErr, rootinteraction.ErrNotFound),
 			errors.Is(dispatchErr, rootinteraction.ErrStaleToken),
@@ -306,5 +310,5 @@ func (s *interactionPresentationServicer) ensureAnswered(ctx context.Context, qu
 			text = "Action failed. Please retry."
 		}
 	}
-	_ = s.interaction.Answer(ctx, queryID, text, false)
+	_ = s.interaction.Answer(ctx, queryID, text, alert)
 }

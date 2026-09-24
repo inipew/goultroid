@@ -46,7 +46,7 @@ type Plugin struct {
 }
 
 const (
-	myxlCallbackTTL   = 10 * time.Minute
+	myxlCallbackTTL   = 24 * time.Hour
 	pendingQRISTTL    = 5 * time.Minute
 	myxlQRSendTimeout = 10 * time.Second
 )

@@ -97,6 +97,21 @@ func (c *Context) UpdateState(state []byte, ttl time.Duration) error {
 	return nil
 }
 
+// Touch extends the live session deadline without changing state or revision.
+// It is intended for owner-bound navigation surfaces that should remain usable
+// while the authorized actor is actively interacting with the original message.
+func (c *Context) Touch(ttl time.Duration) error {
+	if c == nil || c.engine == nil {
+		return ErrInvalidEngine
+	}
+	updated, err := c.engine.sessions.Touch(c.Context(), c.session.ID, ttl)
+	if err != nil {
+		return err
+	}
+	c.session = updated
+	return nil
+}
+
 // AwaitInput atomically advances opaque state, reserves a bounded actor+chat
 // input claim, and renders the corresponding prompt revision. If presentation
 // fails, the claim is released so unseen input prompts never remain active.

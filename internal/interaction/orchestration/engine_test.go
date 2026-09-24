@@ -189,6 +189,55 @@ func TestDispatchRejectsDifferentTargetBeforeHandler(t *testing.T) {
 	}
 }
 
+func TestDispatchRejectsDifferentActorBeforeHandler(t *testing.T) {
+	engine, _, port, scope := testEngine(t)
+	called := false
+	registration, err := engine.RegisterAction(scope, "demo", "next", func(*Context) error {
+		called = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RegisterAction() error = %v", err)
+	}
+	defer registration.Close()
+	initial, err := engine.Begin(context.Background(), BeginRequest{
+		FeatureID: "demo", ActorID: 7, Target: testTarget{chatID: 42}, View: testView("first"),
+	})
+	if err != nil {
+		t.Fatalf("Begin() error = %v", err)
+	}
+	if err := engine.Dispatch(context.Background(), CallbackRequest{
+		Data: port.sent.Rows[0][0].Data, ActorID: 8, QueryID: 99, Target: initial.Target(),
+	}); !errors.Is(err, interaction.ErrBindingMismatch) {
+		t.Fatalf("Dispatch() error = %v, want %v", err, interaction.ErrBindingMismatch)
+	}
+	if called {
+		t.Fatal("handler called for mismatched actor")
+	}
+}
+
+func TestContextTouchExtendsExpiryWithoutChangingRevision(t *testing.T) {
+	engine, _, _, _ := testEngine(t)
+	ctx, err := engine.Begin(context.Background(), BeginRequest{
+		FeatureID: "demo", ActorID: 7, State: []byte("one"), TTL: time.Minute,
+		Target: testTarget{chatID: 42}, View: testView("first"),
+	})
+	if err != nil {
+		t.Fatalf("Begin() error = %v", err)
+	}
+	before := ctx.Session()
+	if err := ctx.Touch(time.Hour); err != nil {
+		t.Fatalf("Touch() error = %v", err)
+	}
+	after := ctx.Session()
+	if after.Revision != before.Revision {
+		t.Fatalf("revision changed on touch: before=%d after=%d", before.Revision, after.Revision)
+	}
+	if !after.ExpiresAt.After(before.ExpiresAt) {
+		t.Fatalf("expiry was not extended: before=%v after=%v", before.ExpiresAt, after.ExpiresAt)
+	}
+}
+
 func TestAwaitAndTakeInputOwnRevisionAndTargetLifecycle(t *testing.T) {
 	engine, sessions, port, _ := testEngine(t)
 	ctx, err := engine.Begin(context.Background(), BeginRequest{
