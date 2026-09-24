@@ -17,7 +17,6 @@ import (
 	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/services/download"
 	inlineservice "github.com/inipew/goultroid/internal/services/inline"
-	"github.com/inipew/goultroid/internal/services/storage"
 )
 
 const (
@@ -539,22 +538,6 @@ func runningView(state interactiveState) presentation.View {
 	return presentation.View{
 		Text: "⬇️ <b>Downloading...</b>\n\n<b>Format:</b> <code>" + core.EscapeHTML(label) + "</code>",
 	}
-}
-
-func completedView(asset *storage.Asset, mode download.MediaMode, format download.MediaFormat) presentation.View {
-	if asset == nil {
-		return presentation.View{Text: "✅ <b>Download complete</b>"}
-	}
-	selection := "file"
-	if mode != download.MediaModeDefault {
-		selection = string(mode) + " / " + string(format)
-	}
-	return presentation.View{Text: fmt.Sprintf(
-		"✅ <b>Download complete</b>\n\n<b>Title:</b> <code>%s</code>\n<b>Size:</b> <code>%s</code>\n<b>Format:</b> <code>%s</code>",
-		core.EscapeHTML(asset.Name),
-		formatBytes(asset.Size),
-		core.EscapeHTML(selection),
-	)}
 }
 
 func failedView(err error) presentation.View {
