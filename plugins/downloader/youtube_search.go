@@ -12,6 +12,7 @@ import (
 	"github.com/inipew/goultroid/internal/services/download"
 	inlineservice "github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/tasks"
+	"github.com/inipew/goultroid/internal/ui"
 )
 
 const youtubeInlineSearchTimeout = 3 * time.Second
@@ -193,12 +194,16 @@ func (p *Plugin) youtubeInlineResult(result download.SearchResult) (inlineservic
 		return inlineservice.InlineResult{}, false
 	}
 	view := youtubeSearchChoiceView(result)
+	markup := ui.NewMarkup(ui.ButtonRow{
+		ui.NewSwitchInlineButton("🔎 Search Again", "yt ", true),
+	})
 	return inlineservice.InlineResult{
 		ID:               "yt_" + result.SourceID,
 		Type:             inlineservice.ResultArticle,
 		Title:            result.Title,
 		Description:      youtubeSearchDescription(result),
 		Text:             view.Text,
+		Markup:           &markup,
 		ThumbURL:         result.Thumbnail,
 		URL:              normalized,
 		ActionRows:       view.Rows,

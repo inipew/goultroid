@@ -5,11 +5,15 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/download"
 	inlineservice "github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/services/storage"
+	"github.com/inipew/goultroid/internal/taskengine"
 	"github.com/inipew/goultroid/internal/tasks"
+	"github.com/inipew/goultroid/internal/ui"
 )
 
 type youtubeSearchTestTicket struct {
@@ -162,6 +166,13 @@ func TestYouTubeSearchUsesProcessOnlyAndConvergesOnP8EState(t *testing.T) {
 	if !viewHasAction(result.ActionRows, actionAudio) || !viewHasAction(result.ActionRows, actionVideo) {
 		t.Fatalf("search action rows=%+v", result.ActionRows)
 	}
+	if result.Markup == nil || len(result.Markup.Rows) != 1 || len(result.Markup.Rows[0]) != 1 {
+		t.Fatalf("search-again markup=%+v", result.Markup)
+	}
+	searchAgain := result.Markup.Rows[0][0]
+	if searchAgain.Type != ui.ButtonSwitchInline || searchAgain.InlineQuery != "yt " || !searchAgain.SamePeer || len(searchAgain.Data) != 0 {
+		t.Fatalf("search-again button=%+v", searchAgain)
+	}
 	searchState, err := decodeInteractiveState(result.InteractionState)
 	if err != nil {
 		t.Fatal(err)
@@ -221,5 +232,112 @@ func TestYouTubeSearchRejectsOversizedQueryBeforeAdmission(t *testing.T) {
 	}
 	if len(client.specs) != 0 {
 		t.Fatalf("oversized query submitted %d tasks", len(client.specs))
+	}
+}
+
+
+type blockingYouTubeSearchProvider struct {
+	started   chan struct{}
+	cancelled chan struct{}
+}
+
+func (*blockingYouTubeSearchProvider) Name() string { return "extractor" }
+func (*blockingYouTubeSearchProvider) Match(rawURL string) bool {
+	return strings.Contains(rawURL, "youtube.com/watch?v=") || strings.Contains(rawURL, "youtu.be/")
+}
+func (*blockingYouTubeSearchProvider) Download(context.Context, string, storage.Storage, download.DownloadOptions) (*storage.Asset, error) {
+	return nil, errors.New("not used")
+}
+func (p *blockingYouTubeSearchProvider) Search(ctx context.Context, _ string, _ download.SearchOptions) ([]download.SearchResult, error) {
+	close(p.started)
+	<-ctx.Done()
+	close(p.cancelled)
+	return nil, ctx.Err()
+}
+
+func TestYouTubeSearchScopeCancellationStopsActiveProcessTask(t *testing.T) {
+	engine := taskengine.NewEngine(taskengine.Config{
+		Pools: map[tasks.PoolID]taskengine.PoolEngineConfig{
+			"download": {
+				Concurrency:    1,
+				MinConcurrency: 0,
+				ZeroIdle:       true,
+				IdleTimeout:    20 * time.Millisecond,
+				BacklogLimit:   8,
+				PayloadBudget:  1 << 20,
+			},
+		},
+		ResultCapacity:     16,
+		ResourceCapacities: map[string]int64{"process": 1},
+	})
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := engine.Stop(ctx); err != nil {
+			t.Errorf("stop TaskEngine: %v", err)
+		}
+	})
+
+	scope := plugin.NewScope(context.Background(), "plugin:downloader")
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := scope.Close(ctx); err != nil {
+			t.Errorf("close plugin scope: %v", err)
+		}
+	})
+	gate := plugin.NewCapabilityGate()
+	gate.Register("downloader", []string{plugin.CapTasks})
+	gate.AllowPrivileged("downloader", plugin.CapTasks)
+	pctx := plugin.NewPluginContext(context.Background(), plugin.ContextConfig{
+		Scope:      scope,
+		Owner:      "downloader",
+		Gate:       gate,
+		TaskClient: engine,
+	})
+	scopedClient, err := pctx.TaskClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	provider := &blockingYouTubeSearchProvider{
+		started:   make(chan struct{}),
+		cancelled: make(chan struct{}),
+	}
+	p := New(scopedClient)
+	p.registry = download.NewRegistry(provider)
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := p.searchYouTube(context.Background(), "blocked search")
+		errCh <- err
+	}()
+
+	select {
+	case <-provider.started:
+	case <-time.After(time.Second):
+		t.Fatal("YouTube search task did not start")
+	}
+
+	wantScope := tasks.ScopeIdentity{Owner: "plugin:downloader", Generation: scope.Generation()}
+	if got := engine.CancelScope(wantScope, tasks.CauseScopeClosed); got != 1 {
+		t.Fatalf("CancelScope()=%d, want 1", got)
+	}
+
+	select {
+	case <-provider.cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("active YouTube search provider did not receive scope cancellation")
+	}
+	select {
+	case err := <-errCh:
+		if err == nil || !errors.Is(err, context.Canceled) {
+			t.Fatalf("search cancellation error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("search did not exit after scope cancellation")
 	}
 }
