@@ -360,6 +360,15 @@ func TestP8ICombinedResourceIdleHighLoadAcceptance(t *testing.T) {
 		t.Fatalf("RPC FloodWait count=%d", rpcSnapshot.FloodWaitCount)
 	}
 
+	peak := p8iSampleProcess()
+	peakTaskStats, err := taskRuntime.Stats(ctx)
+	if err != nil {
+		t.Fatalf("TaskEngine Stats(peak): %v", err)
+	}
+	if peakTaskStats.Resources["download"].Used != 1 || peakTaskStats.Resources["process"].Used != 1 {
+		t.Fatalf("P8-I peak downloader resources=%+v", peakTaskStats.Resources)
+	}
+
 	if cancelled := taskRuntime.CancelScope(downloaderScope, tasks.CauseScopeClosed); cancelled != 1 {
 		t.Fatalf("downloader CancelScope cancelled=%d want=1", cancelled)
 	}
@@ -401,6 +410,12 @@ func TestP8ICombinedResourceIdleHighLoadAcceptance(t *testing.T) {
 		if stats.Workers != 0 {
 			t.Fatalf("TaskEngine pool %s retained %d worker(s) after load", pool, stats.Workers)
 		}
+	}
+	if stats := sessions.Stats(); stats.Sessions != 0 || stats.Inputs != 0 || stats.StateBytes != 0 {
+		t.Fatalf("P8-I logical interaction state retained after workload: %+v", stats)
+	}
+	if snapshots := resourceManager.AllSnapshots(); len(snapshots) != 0 {
+		t.Fatalf("P8-I resource manager retained active resources after workload: %+v", snapshots)
 	}
 
 	restartSession, err := sessions.Create(ctx, rootinteraction.CreateRequest{
@@ -458,6 +473,6 @@ func TestP8ICombinedResourceIdleHighLoadAcceptance(t *testing.T) {
 		t.Fatalf("RSS did not settle: baseline=%d settled=%d", baseline.RSSBytes, settled.RSSBytes)
 	}
 
-	t.Logf("P8-I baseline=%+v settled=%+v inline=%+v interactions=%+v rpc_requests=%d wiki_http=%d task_resources=%+v",
-		baseline, settled, inlineStats, interactionStats, rpcSnapshot.TotalRequests, wikiHTTPCalls.Load(), settledTaskStats.Resources)
+	t.Logf("P8-I baseline=%+v peak=%+v settled=%+v inline=%+v interactions=%+v rpc_requests=%d wiki_http=%d task_resources=%+v",
+		baseline, peak, settled, inlineStats, interactionStats, rpcSnapshot.TotalRequests, wikiHTTPCalls.Load(), settledTaskStats.Resources)
 }
