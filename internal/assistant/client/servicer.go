@@ -8,6 +8,7 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/presentation"
 	corecallback "github.com/inipew/goultroid/internal/services/callback"
 	inlineservice "github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/tasks"
@@ -68,13 +69,12 @@ func (s *assistantInlineQueryServicer) PrepareInlineLocalMedia(
 	if s == nil || s.interaction == nil {
 		return inlineservice.PreparedLocalMedia{}, fmt.Errorf("assistant inline media transport is unavailable")
 	}
-	uploaded, err := s.interaction.UploadInlineMedia(
-		ctx,
-		media.MediaType,
-		media.Path,
-		media.FileName,
-		media.MIMEType,
-	)
+	uploaded, err := s.interaction.UploadInlineMedia(ctx, presentation.Media{
+		Type:     media.MediaType,
+		Path:     media.Path,
+		FileName: media.FileName,
+		MIMEType: media.MIMEType,
+	})
 	if err != nil {
 		return inlineservice.PreparedLocalMedia{}, err
 	}

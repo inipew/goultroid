@@ -59,7 +59,7 @@ func TestHelpGridStateIsBoundedAndRejectsCatalogRemap(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		commands = append(commands, core.Command{Name: fmt.Sprintf("cmd%02d", i), Category: fmt.Sprintf("Cat%02d", i)})
 	}
-	state := BindSettingState(OpenSettingState(InitialState(), 1), "core", "prefix", 9)
+	state := BindSettingState(SettingDetailState(InitialState(), 1), "core", "prefix", 9)
 	state = HelpState(state, commands, true)
 	decoded := DecodeState(state)
 	if decoded.Screen != ScreenHelp || decoded.CategoryIndex != 0 || decoded.SettingIndex != 0 || decoded.SchemaVersion != 0 {

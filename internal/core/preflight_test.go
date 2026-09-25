@@ -23,10 +23,10 @@ func TestPermissionMiddlewareForSourceHonorsAssistantOverride(t *testing.T) {
 		Perms:  NewPermissions(100, nil),
 	}
 
-	if err := PermissionMiddlewareForSource(cmd, ExecutionAssistant).Then(nil)(ctx); err != nil {
+	if err := NewChain(PermissionMiddlewareForSource(cmd, ExecutionAssistant)).Then(nil)(ctx); err != nil {
 		t.Fatalf("assistant override rejected: %v", err)
 	}
-	if err := PermissionMiddleware(cmd).Then(nil)(ctx); !errors.Is(err, ErrPermissionDenied) {
+	if err := NewChain(PermissionMiddleware(cmd)).Then(nil)(ctx); !errors.Is(err, ErrPermissionDenied) {
 		t.Fatalf("interactive permission wrapper error=%v, want ErrPermissionDenied", err)
 	}
 }
