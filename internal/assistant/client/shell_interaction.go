@@ -258,7 +258,7 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 
 	c.shellMu.Lock()
 	defer c.shellMu.Unlock()
-	expectedRegistrations := 27 + assistantshell.HelpModuleSlotCount + assistantshell.HelpCommandSlotCount + assistantshell.SettingsCategorySlotCount + assistantshell.SettingSlotCount
+	expectedRegistrations := 29 + assistantshell.HelpModuleSlotCount + assistantshell.HelpCommandSlotCount + assistantshell.SettingsCategorySlotCount + assistantshell.SettingSlotCount
 	if c.shellScope == scope && len(c.shellRegistrations) == expectedRegistrations {
 		return nil
 	}
@@ -314,6 +314,8 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 		{id: assistantshell.ActionSettingDecrease, handler: c.handleShellSettingDecrease},
 		{id: assistantshell.ActionSettingIncrease, handler: c.handleShellSettingIncrease},
 		{id: assistantshell.ActionSettingReset, handler: c.handleShellSettingReset},
+		{id: assistantshell.ActionSettingResetConfirm, handler: c.handleShellSettingResetConfirm},
+		{id: assistantshell.ActionSettingResetCancel, handler: c.handleShellSettingResetCancel},
 		{id: assistantshell.ActionSettingInput, handler: c.handleShellSettingInput},
 		{id: assistantshell.ActionSettingInputCancel, handler: c.handleShellSettingInputCancel},
 	} {
@@ -673,7 +675,49 @@ func (c *AssistantClient) handleShellSettingIncrease(ctx *orchestration.Context)
 }
 
 func (c *AssistantClient) handleShellSettingReset(ctx *orchestration.Context) error {
+	if err := c.admitShellScreen(ctx, assistantshell.InteractionSettingResetConfirm); err != nil {
+		return err
+	}
+	svc := c.shellSettingsService()
+	if svc == nil || svc.Registry() == nil {
+		return ErrShellUnavailable
+	}
+	def, _, err := boundSettingDefinition(svc.Registry(), ctx.State())
+	if err != nil {
+		_ = ctx.Answer("Setting changed while open. Reopen Settings.", true)
+		return &assistantshell.MutationError{Stage: assistantshell.MutationStageBinding, Err: err}
+	}
+	state := assistantshell.BeginSettingResetConfirmState(ctx.State())
+	return ctx.Transition(state, assistantshell.InteractionTTL, assistantshell.SettingResetConfirmView(assistantshell.SettingResetConfirmModel{
+		Definition: *def,
+		Locale:     c.shellInteractionLocale(ctx),
+	}))
+}
+
+func (c *AssistantClient) handleShellSettingResetConfirm(ctx *orchestration.Context) error {
+	if err := c.admitShellScreen(ctx, assistantshell.InteractionSettingResetConfirm); err != nil {
+		return err
+	}
+	state := assistantshell.CompleteSettingResetConfirmState(ctx.State())
+	if err := ctx.UpdateState(state, 0); err != nil {
+		return &assistantshell.MutationError{Stage: assistantshell.MutationStageReserve, Err: err}
+	}
 	return c.applyShellSettingMutation(ctx, assistantshell.MutationReset)
+}
+
+func (c *AssistantClient) handleShellSettingResetCancel(ctx *orchestration.Context) error {
+	if err := c.admitShellScreen(ctx, assistantshell.InteractionSettingResetConfirm); err != nil {
+		return err
+	}
+	if err := c.admitShellScreen(ctx, assistantshell.InteractionSettingDetail); err != nil {
+		return err
+	}
+	state := assistantshell.CompleteSettingResetConfirmState(ctx.State())
+	view, err := c.shellSettingDetailViewWithNotice(ctx.Context(), ctx.Session().Binding.ActorID, ctx.Session().Binding.ChatID, state, "Reset cancelled.")
+	if err != nil {
+		return err
+	}
+	return ctx.Transition(state, assistantshell.InteractionTTL, view)
 }
 
 func (c *AssistantClient) handleShellSettingInput(ctx *orchestration.Context) error {
@@ -1001,7 +1045,7 @@ func boundSettingDefinition(reg *settings.Registry, stateRaw []byte) (*settings.
 		return nil, 0, ErrShellUnavailable
 	}
 	state := assistantshell.DecodeState(stateRaw)
-	if state.Screen != assistantshell.ScreenSettingDetail && state.Screen != assistantshell.ScreenSettingInput {
+	if state.Screen != assistantshell.ScreenSettingDetail && state.Screen != assistantshell.ScreenSettingInput && state.Screen != assistantshell.ScreenSettingResetConfirm {
 		return nil, 0, ErrShellSettingBindingStale
 	}
 	_, defs := selectedSettingsCategory(reg, state)

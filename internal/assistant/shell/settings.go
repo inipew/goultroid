@@ -538,3 +538,35 @@ func boundText(value *int64) string {
 	}
 	return strconv.FormatInt(*value, 10)
 }
+
+type SettingResetConfirmModel struct {
+	Definition settings.SettingDefinition
+	Locale     string
+}
+
+func SettingResetConfirmView(model SettingResetConfirmModel) presentation.View {
+	locale := shellLocale(model.Locale)
+	def := LocalizedSettingDefinition(locale, model.Definition)
+	title := strings.TrimSpace(def.Title)
+	if title == "" {
+		title = def.Namespace + ":" + def.Key
+	}
+	card := ui.NewCard(title).
+		WithIcon("⚠️").
+		WithHeader("Reset this user override?").
+		AddField(tr(locale, "assistant.settings.key"), ui.Code(def.Namespace+":"+def.Key)).
+		WithRaw("This removes the user override and restores the inherited/default value. This action does not run until you confirm.")
+	return presentation.View{
+		Text: card.Render(),
+		Rows: []presentation.Row{
+			{
+				{Text: "✅ Confirm reset", ActionID: ActionSettingResetConfirm},
+				{Text: "↩ Cancel", ActionID: ActionSettingResetCancel},
+			},
+			{
+				{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome},
+				{Text: "✖ Close", ActionID: ActionClose},
+			},
+		},
+	}
+}

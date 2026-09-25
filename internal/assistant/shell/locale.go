@@ -109,6 +109,10 @@ func localizedSettingSource(locale, source string) string {
 
 func localizedNotice(locale, notice string) string {
 	switch strings.TrimSpace(notice) {
+	case "Reset cancelled.":
+		if shellLocale(locale) == localization.LocaleIndonesian {
+			return "Reset dibatalkan."
+		}
 	case "Input cancelled.":
 		if shellLocale(locale) == localization.LocaleIndonesian {
 			return "Input dibatalkan."

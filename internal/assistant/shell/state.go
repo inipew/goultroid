@@ -17,6 +17,7 @@ const (
 	ScreenSettingDetail
 	ScreenSettingInput
 	ScreenLanguage
+	ScreenSettingResetConfirm
 )
 
 const (
@@ -78,7 +79,7 @@ func DecodeState(raw []byte) State {
 }
 
 func normalizeScreen(screen Screen) Screen {
-	if screen > ScreenLanguage {
+	if screen > ScreenSettingResetConfirm {
 		return ScreenHome
 	}
 	return screen
@@ -109,7 +110,7 @@ func NextRefreshState(raw []byte) []byte {
 func ScreenState(raw []byte, screen Screen) []byte {
 	state := DecodeState(raw)
 	state.Screen = normalizeScreen(screen)
-	if state.Screen != ScreenSettingDetail && state.Screen != ScreenSettingInput {
+	if state.Screen != ScreenSettingDetail && state.Screen != ScreenSettingInput && state.Screen != ScreenSettingResetConfirm {
 		clearSettingBinding(&state)
 	}
 	return EncodeState(state)
@@ -122,6 +123,18 @@ func BeginSettingInputState(raw []byte) []byte {
 }
 
 func CompleteSettingInputState(raw []byte) []byte {
+	state := DecodeState(raw)
+	state.Screen = ScreenSettingDetail
+	return EncodeState(state)
+}
+
+func BeginSettingResetConfirmState(raw []byte) []byte {
+	state := DecodeState(raw)
+	state.Screen = ScreenSettingResetConfirm
+	return EncodeState(state)
+}
+
+func CompleteSettingResetConfirmState(raw []byte) []byte {
 	state := DecodeState(raw)
 	state.Screen = ScreenSettingDetail
 	return EncodeState(state)

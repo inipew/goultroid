@@ -231,6 +231,57 @@ func TestAssistantShellSettingsNavigationUsesCentralService(t *testing.T) {
 	}
 }
 
+func TestAssistantShellSettingResetRequiresConfirmation(t *testing.T) {
+	manager, client, port, engine := newShellEngine(t)
+	defer manager.Shutdown()
+
+	registry := settings.NewRegistry()
+	if err := registry.Register(settings.SettingDefinition{
+		Namespace: "core", Key: "prefix", Type: settings.TypeString, DefaultValue: ".", Title: "Prefix", Category: "general",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	repo := newShellSettingsRepo()
+	if err := repo.Set(context.Background(), settings.ScopeUser, 7, "core", "prefix", "!"); err != nil {
+		t.Fatal(err)
+	}
+	client.SetSettingsService(settings.NewService(repo, registry, nil))
+
+	peer := &tg.InputPeerUser{UserID: 7}
+	beginShell(t, engine, port, peer)
+	if err := dispatchShell(t, engine, callbackForAction(t, port.sent, assistantshell.ActionSettings), 600, peer); err != nil {
+		t.Fatal(err)
+	}
+	if err := dispatchShell(t, engine, callbackForAction(t, port.edited, assistantshell.SettingsCategorySlotActionIDs()[0]), 601, peer); err != nil {
+		t.Fatal(err)
+	}
+	if err := dispatchShell(t, engine, callbackForAction(t, port.edited, assistantshell.SettingSlotActionIDs()[0]), 602, peer); err != nil {
+		t.Fatal(err)
+	}
+	reset := callbackForAction(t, port.edited, assistantshell.ActionSettingReset)
+	if err := dispatchShell(t, engine, reset, 603, peer); err != nil {
+		t.Fatalf("Dispatch(reset opener) error=%v", err)
+	}
+	if callbackForAction(t, port.edited, assistantshell.ActionSettingResetConfirm) == nil {
+		t.Fatal("reset confirmation action missing")
+	}
+	value, err := repo.Get(context.Background(), settings.ScopeUser, 7, "core", "prefix")
+	if err != nil || value == nil || value.Value != "!" {
+		t.Fatalf("reset opener mutated setting: value=%+v err=%v", value, err)
+	}
+	confirm := callbackForAction(t, port.edited, assistantshell.ActionSettingResetConfirm)
+	if err := dispatchShell(t, engine, confirm, 604, peer); err != nil {
+		t.Fatalf("Dispatch(reset confirm) error=%v", err)
+	}
+	value, err = repo.Get(context.Background(), settings.ScopeUser, 7, "core", "prefix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != nil {
+		t.Fatalf("confirmed reset retained override: %+v", value)
+	}
+}
+
 func TestAssistantShellSettingsSlotRejectsRegistryRemap(t *testing.T) {
 	manager, client, port, engine := newShellEngine(t)
 	defer manager.Shutdown()

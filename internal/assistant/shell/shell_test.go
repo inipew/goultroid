@@ -290,3 +290,15 @@ func TestOwnerNavigationLifetimePolicy(t *testing.T) {
 		t.Fatalf("SettingsInputTTL = %v, want 2m", SettingsInputTTL)
 	}
 }
+
+func TestSettingResetConfirmViewRequiresExplicitConfirmation(t *testing.T) {
+	view := SettingResetConfirmView(SettingResetConfirmModel{
+		Definition: settings.SettingDefinition{Namespace: "core", Key: "prefix", Title: "Command prefix"},
+	})
+	if !viewHasAction(view.Rows, ActionSettingResetConfirm) || !viewHasAction(view.Rows, ActionSettingResetCancel) {
+		t.Fatalf("reset confirmation rows=%+v", view.Rows)
+	}
+	if viewHasAction(view.Rows, ActionSettingReset) {
+		t.Fatalf("reset confirmation unexpectedly loops to reset opener: %+v", view.Rows)
+	}
+}

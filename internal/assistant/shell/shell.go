@@ -29,6 +29,7 @@ const (
 	InteractionSettingsCategory = "settings_category"
 	InteractionSettingDetail    = "setting_detail"
 	InteractionSettingInput     = "setting_input"
+	InteractionSettingResetConfirm = "setting_reset_confirm"
 	InteractionInlineRoot       = "inline_root"
 	InteractionInlineHelp       = "inline_help"
 	InteractionInlinePing       = "inline_ping"
@@ -52,6 +53,8 @@ const (
 	ActionSettingDecrease    = "setting_dec"
 	ActionSettingIncrease    = "setting_inc"
 	ActionSettingReset       = "setting_reset"
+	ActionSettingResetConfirm = "setting_reset_confirm"
+	ActionSettingResetCancel  = "setting_reset_cancel"
 	ActionSettingInput       = "setting_input"
 	ActionSettingInputCancel = "setting_input_cancel"
 )
@@ -119,6 +122,7 @@ func (*Feature) FeatureSpec() feature.Spec {
 			{ID: InteractionSettingsCategory, Kind: feature.InteractionScreen, Description: "Settings value navigator", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionSettingDetail, Kind: feature.InteractionScreen, Description: "Bound setting detail and typed mutation surface", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionSettingInput, Kind: feature.InteractionScreen, Description: "Bound free-form setting input surface", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: InteractionSettingResetConfirm, Kind: feature.InteractionScreen, Description: "Revision-fenced destructive setting reset confirmation", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionRefresh, Kind: feature.InteractionAction, Description: "Refresh shell state and presentation", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionPing, Kind: feature.InteractionAction, Description: "Acknowledge shell liveness", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionStatus, Kind: feature.InteractionAction, Description: "Navigate to read-only status", Surfaces: assistant, Policy: ownerPolicy},
@@ -143,7 +147,9 @@ func (*Feature) FeatureSpec() feature.Spec {
 			{ID: ActionSettingChange, Kind: feature.InteractionAction, Description: "Apply typed bool or enum mutation", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingDecrease, Kind: feature.InteractionAction, Description: "Decrease typed numeric or duration setting", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingIncrease, Kind: feature.InteractionAction, Description: "Increase typed numeric or duration setting", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: ActionSettingReset, Kind: feature.InteractionAction, Description: "Reset bound user setting override", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionSettingReset, Kind: feature.InteractionAction, Description: "Open reset confirmation for a bound user setting override", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionSettingResetConfirm, Kind: feature.InteractionAction, Description: "Confirm reset of the bound user setting override", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionSettingResetCancel, Kind: feature.InteractionAction, Description: "Cancel reset confirmation and return to setting detail", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingInput, Kind: feature.InteractionAction, Description: "Begin bounded free-form input for a bound string setting", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettingInputCancel, Kind: feature.InteractionAction, Description: "Cancel bounded free-form setting input", Surfaces: assistant, Policy: ownerPolicy},
 		},
@@ -284,6 +290,7 @@ func ValidateSpec() error {
 		"category":     SettingsCategoryView(SettingsCategoryModel{}),
 		"detail":       SettingDetailView(SettingDetailModel{}),
 		"input":        SettingInputView(SettingInputModel{}),
+		"reset_confirm": SettingResetConfirmView(SettingResetConfirmModel{}),
 	} {
 		if err := view.Validate(); err != nil {
 			return fmt.Errorf("%s view: %w", name, err)
