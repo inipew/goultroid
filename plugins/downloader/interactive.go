@@ -351,8 +351,15 @@ func (p *Plugin) validateFinalAction(state interactiveState, actionID string) er
 	}
 	switch actionID {
 	case actionRetry:
-		if state.Phase != phaseFailed || state.Mode == "" || state.Format == "" {
+		if state.Phase != phaseFailed {
 			return fmt.Errorf("%w: retry action is stale or invalid", core.ErrInvalidArgs)
+		}
+		if state.Provider == "http" {
+			if state.Mode != download.MediaModeDefault || state.Format != download.MediaFormatDefault || state.MaxHeight != 0 {
+				return fmt.Errorf("%w: direct download retry selection is invalid", core.ErrInvalidArgs)
+			}
+		} else if state.Mode == download.MediaModeDefault || state.Format == download.MediaFormatDefault {
+			return fmt.Errorf("%w: extractor retry selection is invalid", core.ErrInvalidArgs)
 		}
 		if state.MaxHeight > 0 && !qualityMaskHas(state.QualityMask, state.MaxHeight) {
 			return fmt.Errorf("%w: retry video quality is no longer available", core.ErrInvalidArgs)

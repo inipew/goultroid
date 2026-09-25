@@ -347,6 +347,21 @@ func TestP4CancelInteractivePipelineTargetsDownloadAndDelivery(t *testing.T) {
 	}
 }
 
+func TestP4RetryActionAllowsDirectHTTPDefaultSelection(t *testing.T) {
+	p := New()
+	p.registry = download.NewRegistry(download.NewDirectHTTPProvider(time.Minute, 500*1024*1024))
+	state := interactiveState{
+		URL:      "https://example.com/file.bin",
+		Provider: "http",
+		Phase:    phaseFailed,
+		Mode:     download.MediaModeDefault,
+		Format:   download.MediaFormatDefault,
+	}
+	if err := p.validateFinalAction(state, actionRetry); err != nil {
+		t.Fatalf("direct HTTP retry rejected: %v", err)
+	}
+}
+
 func TestP4RetryActionRequiresFailedSelection(t *testing.T) {
 	p := New()
 	p.registry = download.NewRegistry(download.NewDirectHTTPProvider(time.Minute, 500*1024*1024))

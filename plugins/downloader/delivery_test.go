@@ -252,7 +252,6 @@ func TestYTZPipelineReleasesDownloadResourcesBeforeMediaDelivery(t *testing.T) {
 		nil,
 		nil,
 		nil,
-		nil,
 		"inline",
 	); err != nil {
 		t.Fatal(err)
