@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/gotd/td/tg"
+	"github.com/gotd/td/tgerr"
 	"github.com/inipew/goultroid/internal/core"
 )
 
@@ -139,5 +140,35 @@ func TestRenderUsesTopicRootAsReplyWhenNoExplicitReply(t *testing.T) {
 	}
 	if transport.sentReplyToID != 88 || transport.sentTopicID != 88 {
 		t.Fatalf("topic fallback reply/topic=%d/%d", transport.sentReplyToID, transport.sentTopicID)
+	}
+}
+
+func TestRenderCapabilityPreflightStopsBeforeTelegramQuery(t *testing.T) {
+	transport := &fakeTransport{}
+	bridge := NewWithIdentity(transport, func() (string, error) {
+		return "", ErrInlineDisabled
+	})
+	_, err := bridge.Render(context.Background(), Request{
+		Peer: &tg.InputPeerSelf{}, Query: "calc",
+	})
+	if !errors.Is(err, ErrInlineDisabled) {
+		t.Fatalf("Render() error=%v, want %v", err, ErrInlineDisabled)
+	}
+	if transport.queryBot != "" || transport.sendCalls != 0 {
+		t.Fatalf("disabled capability reached Telegram: queryBot=%q sendCalls=%d", transport.queryBot, transport.sendCalls)
+	}
+}
+
+func TestRenderMapsTelegramBotInlineDisabledToCapabilityError(t *testing.T) {
+	transport := &fakeTransport{queryErr: tgerr.New(400, tg.ErrBotInlineDisabled)}
+	bridge := New(transport, func() string { return "assistant_bot" })
+	_, err := bridge.Render(context.Background(), Request{
+		Peer: &tg.InputPeerSelf{}, Query: "calc",
+	})
+	if !errors.Is(err, ErrInlineDisabled) {
+		t.Fatalf("Render(BOT_INLINE_DISABLED) error=%v, want %v", err, ErrInlineDisabled)
+	}
+	if transport.sendCalls != 0 {
+		t.Fatalf("BOT_INLINE_DISABLED unexpectedly sent result, calls=%d", transport.sendCalls)
 	}
 }

@@ -3,9 +3,48 @@ package client
 import (
 	"context"
 	"errors"
+	"strings"
+
+	"github.com/gotd/td/tg"
 )
 
-var ErrNotReady = errors.New("assistant/client: client is not ready")
+var (
+	ErrNotReady       = errors.New("assistant/client: client is not ready")
+	ErrInlineDisabled = errors.New("assistant inline mode is disabled; enable it with @BotFather /setinline, then restart Goultroid")
+)
+
+// inlineCapability mirrors gotd peers.Bot.SupportsInline: Telegram exposes
+// inline-mode support through presence of bot_inline_placeholder on the
+// authenticated bot user. No extra RPC is needed for this preflight.
+func inlineCapability(user *tg.User) error {
+	if user == nil || strings.TrimSpace(user.Username) == "" {
+		return ErrNotReady
+	}
+	if _, ok := user.GetBotInlinePlaceholder(); !ok {
+		return ErrInlineDisabled
+	}
+	return nil
+}
+
+// InlineUsername returns the current Assistant username only when the current
+// authenticated bot identity is ready and Telegram reports inline mode enabled.
+// Self-inline presentation therefore fails before getInlineBotResults when
+// @BotFather /setinline has not been configured.
+func (c *AssistantClient) InlineUsername() (string, error) {
+	if c == nil || c.lifecycle == nil || c.lifecycle.State() != StateRunning || c.shuttingDown.Load() {
+		return "", ErrNotReady
+	}
+	c.mu.RLock()
+	user := c.self
+	c.mu.RUnlock()
+	if c.lifecycle.State() != StateRunning || c.shuttingDown.Load() {
+		return "", ErrNotReady
+	}
+	if err := inlineCapability(user); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(user.Username), nil
+}
 
 // WaitReady waits for the current Assistant run to become ready. A readiness
 // signal from an older run is never accepted after stop/failure/restart.

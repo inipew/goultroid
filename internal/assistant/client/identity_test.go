@@ -81,3 +81,41 @@ func TestAssistantClientWaitReadyRunningRequiresCurrentIdentity(t *testing.T) {
 		t.Fatalf("WaitReady(running with identity) error=%v", err)
 	}
 }
+
+func TestAssistantInlineCapabilityUsesBotInlinePlaceholderPresence(t *testing.T) {
+	user := &tg.User{Username: "assistant_bot"}
+	if err := inlineCapability(user); !errors.Is(err, ErrInlineDisabled) {
+		t.Fatalf("inlineCapability(without placeholder) error=%v, want %v", err, ErrInlineDisabled)
+	}
+
+	// gotd peers.Bot.SupportsInline checks presence of this optional field, not
+	// whether the placeholder text itself is non-empty.
+	user.SetBotInlinePlaceholder("")
+	if err := inlineCapability(user); err != nil {
+		t.Fatalf("inlineCapability(with placeholder flag) error=%v", err)
+	}
+}
+
+func TestAssistantClientInlineUsernameFailsClosedUntilInlineModeEnabled(t *testing.T) {
+	c := NewAssistantClient(1234, "hash", "token", zap.NewNop())
+	user := &tg.User{Username: "assistant_bot"}
+	c.mu.Lock()
+	c.self = user
+	c.mu.Unlock()
+	c.lifecycle.SetState(StateRunning)
+
+	if _, err := c.InlineUsername(); !errors.Is(err, ErrInlineDisabled) {
+		t.Fatalf("InlineUsername(disabled) error=%v, want %v", err, ErrInlineDisabled)
+	}
+
+	user.SetBotInlinePlaceholder("Search...")
+	got, err := c.InlineUsername()
+	if err != nil || got != "assistant_bot" {
+		t.Fatalf("InlineUsername(enabled)=%q err=%v", got, err)
+	}
+
+	c.shuttingDown.Store(true)
+	if _, err := c.InlineUsername(); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("InlineUsername(quiescing) error=%v, want %v", err, ErrNotReady)
+	}
+}

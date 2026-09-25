@@ -24,13 +24,14 @@ func (p *p0SelfInlineServiceProvider) Service() core.TelegramServicer {
 
 type p0AssistantIdentity struct {
 	username string
+	err      error
 }
 
-func (p *p0AssistantIdentity) Username() string {
+func (p *p0AssistantIdentity) InlineUsername() (string, error) {
 	if p == nil {
-		return ""
+		return "", nil
 	}
-	return p.username
+	return p.username, p.err
 }
 
 type p0SelfInlineService struct {

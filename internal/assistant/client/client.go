@@ -306,6 +306,13 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
+			if inlineErr := inlineCapability(user); inlineErr != nil {
+				c.logger.Warn(
+					"assistant: inline capability unavailable",
+					zap.Error(inlineErr),
+					zap.String("remediation", "enable inline mode with @BotFather /setinline, then restart Goultroid"),
+				)
+			}
 			c.mu.Lock()
 			c.self = user
 			c.mu.Unlock()

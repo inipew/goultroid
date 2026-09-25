@@ -19,8 +19,9 @@ const (
 )
 
 var (
-	ErrUnavailable = errors.New("self-inline render bridge unavailable")
-	ErrNoResults   = errors.New("self-inline query returned no selectable result")
+	ErrUnavailable    = errors.New("self-inline render bridge unavailable")
+	ErrInlineDisabled = errors.New("assistant inline mode is disabled; enable it with @BotFather /setinline, then restart Goultroid")
+	ErrNoResults      = errors.New("self-inline query returned no selectable result")
 )
 
 // Transport is the narrow MTProto boundary required by the self-inline bridge.
@@ -31,10 +32,15 @@ type Transport interface {
 	SendInlineBotResult(context.Context, tg.InputPeerClass, int64, string, int64, int, int, bool, bool) error
 }
 
-// UsernameProvider returns the currently running Assistant username. It is
-// evaluated for every render so Assistant restart/relogin never leaves a stale
-// process-local bot identity inside feature code.
+// UsernameProvider is the compatibility form for callers that only need a
+// username. New production wiring should use IdentityProvider so capability
+// preflight errors can fail closed before querying Telegram.
 type UsernameProvider func() string
+
+// IdentityProvider returns the currently usable Assistant inline identity.
+// It is evaluated for every render so readiness/capability changes never leave
+// stale process-local bot identity inside feature code.
+type IdentityProvider func() (string, error)
 
 // Renderer is the feature-facing production contract used by callback-heavy
 // userbot features. It deliberately exposes no raw Telegram API/client.
@@ -67,18 +73,27 @@ type Result struct {
 // this bridge only queries the current Assistant and inserts one result.
 type RenderBridge struct {
 	transport Transport
-	username  UsernameProvider
+	identity  IdentityProvider
 }
 
 func New(transport Transport, username UsernameProvider) *RenderBridge {
-	return &RenderBridge{transport: transport, username: username}
+	if username == nil {
+		return NewWithIdentity(transport, nil)
+	}
+	return NewWithIdentity(transport, func() (string, error) {
+		return username(), nil
+	})
+}
+
+func NewWithIdentity(transport Transport, identity IdentityProvider) *RenderBridge {
+	return &RenderBridge{transport: transport, identity: identity}
 }
 
 func (b *RenderBridge) Render(ctx context.Context, request Request) (Result, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if b == nil || b.transport == nil || b.username == nil {
+	if b == nil || b.transport == nil || b.identity == nil {
 		return Result{}, ErrUnavailable
 	}
 	if request.Peer == nil {
@@ -95,13 +110,20 @@ func (b *RenderBridge) Render(ctx context.Context, request Request) (Result, err
 	if request.ResultIndex < 0 || request.ResultIndex >= maxResults {
 		return Result{}, fmt.Errorf("%w: result index must be between 0 and %d", core.ErrInvalidArgs, maxResults-1)
 	}
-	username := strings.TrimPrefix(strings.TrimSpace(b.username()), "@")
+	username, identityErr := b.identity()
+	if identityErr != nil {
+		return Result{}, identityErr
+	}
+	username = strings.TrimPrefix(strings.TrimSpace(username), "@")
 	if username == "" {
 		return Result{}, ErrUnavailable
 	}
 
 	results, err := b.transport.QueryInlineBot(ctx, username, request.Peer, query, offset)
 	if err != nil {
+		if tg.IsBotInlineDisabled(err) {
+			return Result{}, ErrInlineDisabled
+		}
 		return Result{}, err
 	}
 	selectedID, err := selectResult(results, request.ResultID, request.ResultIndex)

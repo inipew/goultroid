@@ -2,11 +2,14 @@ package app
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/gotd/td/tg"
+	assistantclient "github.com/inipew/goultroid/internal/assistant/client"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/presentation/selfinline"
 	inlineservice "github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/plugins/calculator"
 )
@@ -77,5 +80,24 @@ func TestP0SelfInlineFailsClosedUntilAssistantIdentityIsReady(t *testing.T) {
 	}
 	if live.botUsername != "assistant_bot" {
 		t.Fatalf("self-inline bot username=%q, want assistant_bot", live.botUsername)
+	}
+}
+
+func TestP0SelfInlineMapsAssistantCapabilityPreflightBeforeTransport(t *testing.T) {
+	provider := &p0SelfInlineServiceProvider{service: &p0SelfInlineService{}}
+	identity := &p0AssistantIdentity{username: "assistant_bot", err: assistantclient.ErrInlineDisabled}
+	renderer := newSelfInlineRenderer(provider, identity)
+	if renderer == nil {
+		t.Fatal("newSelfInlineRenderer() returned nil")
+	}
+	_, err := renderer.Render(context.Background(), selfinline.Request{
+		Peer: &tg.InputPeerSelf{}, Query: "calc",
+	})
+	if !errors.Is(err, selfinline.ErrInlineDisabled) {
+		t.Fatalf("Render() error=%v, want %v", err, selfinline.ErrInlineDisabled)
+	}
+	live := provider.service.(*p0SelfInlineService)
+	if live.queryCalls != 0 || live.sendCalls != 0 {
+		t.Fatalf("capability preflight reached Telegram: query/send=%d/%d", live.queryCalls, live.sendCalls)
 	}
 }

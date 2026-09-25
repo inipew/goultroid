@@ -27,6 +27,7 @@ type Client interface {
 	runtime.Component
 	IsRunning() bool
 	Username() string
+	InlineUsername() (string, error)
 	StartTime() time.Time
 	SetCoreRouter(router *core.Router)
 	SetOwner(ownerID int64, sudoGetter func() []int64)
@@ -97,6 +98,7 @@ func (a *AssistantApp) Stop(ctx context.Context) error      { return a.client.St
 func (a *AssistantApp) IsRunning() bool                     { return a.client.IsRunning() }
 func (a *AssistantApp) WaitReady(ctx context.Context) error { return a.client.WaitReady(ctx) }
 func (a *AssistantApp) Username() string                    { return a.client.Username() }
+func (a *AssistantApp) InlineUsername() (string, error)     { return a.client.InlineUsername() }
 func (a *AssistantApp) StartTime() time.Time                { return a.client.StartTime() }
 func (a *AssistantApp) SetOwner(ownerID int64, sudoGetter func() []int64) {
 	a.client.SetOwner(ownerID, sudoGetter)
