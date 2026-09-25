@@ -856,6 +856,104 @@ func TestRouter_PreparedDispatchRejectsReloadWithoutConsumingState(t *testing.T)
 	}
 }
 
+func TestRouter_OpaqueStateIsFencedByPluginGeneration(t *testing.T) {
+	store := NewStateStore()
+	router := NewRouter(zap.NewNop(), store)
+	handler := &requiredStateHandler{mockHandler: &mockHandler{namespace: "reload"}}
+	if _, err := router.RegisterOwned("reload", handler); err != nil {
+		t.Fatalf("register handler: %v", err)
+	}
+
+	generation := uint64(1)
+	writer := NewScopedStateWriter(store, "reload", func(owner string) (tasks.ScopeIdentity, bool) {
+		if owner != "reload" {
+			return tasks.ScopeIdentity{}, false
+		}
+		return tasks.ScopeIdentity{Owner: "plugin:reload", Generation: generation}, true
+	})
+	if writer == nil {
+		t.Fatal("expected scoped state writer")
+	}
+
+	staleToken := writer.StoreWithScope("old", StateScope{
+		UserID:     42,
+		Namespace:  "reload",
+		SingleUse:  true,
+	}, 5*time.Minute)
+	if staleToken == "" {
+		t.Fatal("expected generation-1 state token")
+	}
+
+	generation = 2
+	freshToken := writer.StoreWithScope("new", StateScope{
+		UserID:     42,
+		Namespace:  "reload",
+		SingleUse:  true,
+	}, 5*time.Minute)
+	if freshToken == "" {
+		t.Fatal("expected generation-2 state token")
+	}
+
+	resolve := func(owner string) (tasks.ScopeIdentity, bool) {
+		if owner != "reload" {
+			return tasks.ScopeIdentity{}, false
+		}
+		return tasks.ScopeIdentity{Owner: "plugin:reload", Generation: generation}, true
+	}
+	svc := &recordingService{}
+
+	staleEvent := &core.CallbackQueryEvent{
+		QueryID: 1201,
+		UserID:  42,
+		Data:    EncodeCallbackData("reload", "run", staleToken),
+	}
+	stalePrepared, err := router.Prepare(context.Background(), staleEvent, svc, resolve)
+	if err != nil {
+		t.Fatalf("prepare stale-generation callback: %v", err)
+	}
+	if err := stalePrepared.Dispatch(context.Background(), staleEvent, svc); !errors.Is(err, ErrStateScopeStale) {
+		t.Fatalf("stale generation dispatch error=%v, want %v", err, ErrStateScopeStale)
+	}
+	if handler.handled {
+		t.Fatal("stale-generation state reached current handler")
+	}
+	if _, err := store.getEntry(staleToken); err != nil {
+		t.Fatalf("stale single-use state was consumed by rejection: %v", err)
+	}
+
+	freshEvent := &core.CallbackQueryEvent{
+		QueryID: 1202,
+		UserID:  42,
+		Data:    EncodeCallbackData("reload", "run", freshToken),
+	}
+	freshPrepared, err := router.Prepare(context.Background(), freshEvent, svc, resolve)
+	if err != nil {
+		t.Fatalf("prepare current-generation callback: %v", err)
+	}
+	if err := freshPrepared.Dispatch(context.Background(), freshEvent, svc); err != nil {
+		t.Fatalf("current-generation dispatch error=%v", err)
+	}
+	if !handler.handled || handler.lastCtx == nil || handler.lastCtx.State != "new" {
+		t.Fatalf("current-generation handler state=%#v handled=%v", handler.lastCtx, handler.handled)
+	}
+}
+
+func TestScopedStateWriterFailsClosedWithoutActiveGeneration(t *testing.T) {
+	store := NewStateStore()
+	writer := NewScopedStateWriter(store, "disabled", func(string) (tasks.ScopeIdentity, bool) {
+		return tasks.ScopeIdentity{}, false
+	})
+	if writer == nil {
+		t.Fatal("expected scoped writer wrapper")
+	}
+	if token := writer.Store("payload", 42, time.Minute); token != "" {
+		t.Fatalf("disabled plugin produced callback state %q", token)
+	}
+	if store.Len() != 0 {
+		t.Fatalf("disabled plugin retained %d callback states, want 0", store.Len())
+	}
+}
+
 func TestStateStore_ClaimEntryUnauthorizedDoesNotConsumeSingleUse(t *testing.T) {
 	store := NewStateStore()
 	token := store.StoreWithScope("secret", StateScope{UserID: 7, SingleUse: true}, time.Minute)
