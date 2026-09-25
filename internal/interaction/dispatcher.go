@@ -23,6 +23,16 @@ type Action struct {
 
 type ActionHandler func(context.Context, Action) error
 
+// AckPolicy controls who owns the one Telegram callback-query acknowledgement.
+// Handler-owned preserves rich toast/alert responses; immediate acknowledgement
+// is reserved for actions whose post-admission feedback is rendered in-message.
+type AckPolicy uint8
+
+const (
+	AckHandlerOwned AckPolicy = iota
+	AckImmediate
+)
+
 // ActionAdmission is prepared before TaskEngine submission. FeatureScope remains
 // owned by the a2 handler registration, while Scope may point at a dynamic
 // downstream provider whose lifecycle/resource authority must govern execution.
@@ -30,6 +40,7 @@ type ActionAdmission struct {
 	Scope     tasks.ScopeIdentity
 	Resources []tasks.ResourceRequirement
 	State     any
+	AckPolicy AckPolicy
 }
 
 type ActionPreparer func(context.Context, Action) (ActionAdmission, error)
@@ -74,6 +85,13 @@ type ResourcePreparedAction interface {
 	Resources() []tasks.ResourceRequirement
 }
 
+// AckPreparedAction exposes callback acknowledgement ownership determined
+// during side-effect-free action preparation.
+type AckPreparedAction interface {
+	PreparedAction
+	AckPolicy() AckPolicy
+}
+
 type preparedAction struct {
 	dispatcher     *Dispatcher
 	data           []byte
@@ -83,6 +101,7 @@ type preparedAction struct {
 	executionScope tasks.ScopeIdentity
 	resources      []tasks.ResourceRequirement
 	preparation    any
+	ackPolicy      AckPolicy
 	handlerToken   uint64
 }
 
@@ -101,6 +120,13 @@ func (p *preparedAction) Resources() []tasks.ResourceRequirement {
 		return nil
 	}
 	return append([]tasks.ResourceRequirement(nil), p.resources...)
+}
+
+func (p *preparedAction) AckPolicy() AckPolicy {
+	if p == nil {
+		return AckHandlerOwned
+	}
+	return p.ackPolicy
 }
 
 func (p *preparedAction) Dispatch(ctx context.Context) error {
@@ -256,6 +282,7 @@ func (d *Dispatcher) Prepare(ctx context.Context, data []byte, binding Binding) 
 		executionScope: admission.Scope,
 		resources:      append([]tasks.ResourceRequirement(nil), admission.Resources...),
 		preparation:    admission.State,
+		ackPolicy:      admission.AckPolicy,
 		handlerToken:   entry.token,
 	}, nil
 }

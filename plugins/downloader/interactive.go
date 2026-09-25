@@ -171,8 +171,9 @@ func (p *Plugin) BindAssistant(rt assistantinteraction.DriverRuntime) (func(), e
 						return rootinteraction.ActionAdmission{}, err
 					}
 					return rootinteraction.ActionAdmission{
-						Scope: scope,
-						State: downloadPreparation{State: state},
+						Scope:     scope,
+						State:     downloadPreparation{State: state},
+						AckPolicy: rootinteraction.AckImmediate,
 					}, nil
 				},
 				handler,
@@ -194,6 +195,7 @@ func (p *Plugin) BindAssistant(rt assistantinteraction.DriverRuntime) (func(), e
 						Scope:     scope,
 						Resources: []tasks.ResourceRequirement{{Name: "process", Amount: 1}},
 						State:     probePreparation{State: state},
+						AckPolicy: rootinteraction.AckImmediate,
 					}, nil
 				},
 				handler,
@@ -273,15 +275,23 @@ func (p *Plugin) handleInteractiveAction(ctx *orchestration.Context, actionID st
 		}
 		prepared, ok := ctx.Preparation().(probePreparation)
 		if !ok || prepared.State.URL != state.URL || prepared.State.Provider != state.Provider || prepared.State.Phase != state.Phase {
-			return fmt.Errorf("%w: downloader probe preparation is stale", core.ErrUnavailable)
+			err := fmt.Errorf("%w: downloader probe preparation is stale", core.ErrUnavailable)
+			_ = ctx.Edit(failedView(err))
+			ctx.Cancel()
+			return err
 		}
 		p.ensureRegistry()
 		if p.registry == nil {
-			return fmt.Errorf("%w: downloader registry unavailable", core.ErrUnavailable)
+			err := fmt.Errorf("%w: downloader registry unavailable", core.ErrUnavailable)
+			_ = ctx.Edit(failedView(err))
+			ctx.Cancel()
+			return err
 		}
 		probe, err := p.registry.Probe(ctx.Context(), state.URL, download.ProbeOptions{Timeout: download.DefaultProbeTimeout})
 		if err != nil {
-			return ctx.Answer("Unable to inspect available video qualities. Try again.", true)
+			_ = ctx.Edit(failedView(err))
+			ctx.Cancel()
+			return err
 		}
 		state.Phase = phaseVideoFormat
 		state.Mode = download.MediaModeVideo
@@ -353,11 +363,16 @@ func (p *Plugin) validateFinalAction(state interactiveState, actionID string) er
 
 func (p *Plugin) executeInteractiveDownload(ctx *orchestration.Context, state interactiveState, actionID string) error {
 	if err := p.validateFinalAction(state, actionID); err != nil {
-		return ctx.Answer(err.Error(), true)
+		_ = ctx.Edit(failedView(err))
+		ctx.Cancel()
+		return err
 	}
 	prepared, ok := ctx.Preparation().(downloadPreparation)
 	if !ok || prepared.State.URL != state.URL || prepared.State.Provider != state.Provider || prepared.State.Phase != state.Phase {
-		return fmt.Errorf("%w: downloader prepared state is stale", core.ErrUnavailable)
+		err := fmt.Errorf("%w: downloader prepared state is stale", core.ErrUnavailable)
+		_ = ctx.Edit(failedView(err))
+		ctx.Cancel()
+		return err
 	}
 
 	mode, format, maxHeight, err := finalSelection(actionID)

@@ -272,6 +272,10 @@ func TestYTZZFinalCallbackDefersPhysicalResourcesToContinuation(t *testing.T) {
 	if !ok {
 		t.Fatal("final downloader callback did not expose TaskEngine resources")
 	}
+	ackAware, ok := prepared.(orchestration.AckPreparedCallback)
+	if !ok || ackAware.AckPolicy() != rootinteraction.AckImmediate {
+		t.Fatalf("final downloader callback ack policy=%v ok=%v, want immediate", ackAware, ok)
+	}
 	resources := resourceAware.Resources()
 	if len(resources) != 0 {
 		t.Fatalf("prepared callback resources=%+v, want none; physical resources belong to continuation", resources)

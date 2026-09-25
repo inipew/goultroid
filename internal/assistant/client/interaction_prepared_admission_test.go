@@ -26,8 +26,13 @@ func (*preparedCallbackPort) Edit(context.Context, presentation.Target, presenta
 func (*preparedCallbackPort) Answer(context.Context, presentation.Answer) error { return nil }
 
 type preparedCallbackAck struct {
-	calls int
-	err   error
+	calls     int
+	immediate int
+	err       error
+}
+
+func (a *preparedCallbackAck) acknowledge(context.Context, int64) {
+	a.immediate++
 }
 
 func (a *preparedCallbackAck) ensureAnswered(_ context.Context, _ int64, err error) {
@@ -125,6 +130,7 @@ func TestInteractionIngressCarriesPreparedActionAdmissionToTaskEngine(t *testing
 			return rootinteraction.ActionAdmission{
 				Scope:     providerScope,
 				Resources: []tasks.ResourceRequirement{{Name: "media", Amount: 1}},
+				AckPolicy: rootinteraction.AckImmediate,
 			}, nil
 		},
 		func(*orchestration.Context) error {
@@ -195,7 +201,10 @@ func TestInteractionIngressCarriesPreparedActionAdmissionToTaskEngine(t *testing
 		taskClient.spec.Resources[0].Amount != 1 {
 		t.Fatalf("TaskEngine resources=%+v, want media:1", taskClient.spec.Resources)
 	}
+	if ack.immediate != 1 {
+		t.Fatalf("immediate callback acknowledgements=%d, want 1", ack.immediate)
+	}
 	if ack.calls != 1 || ack.err != nil {
-		t.Fatalf("callback ack calls=%d err=%v", ack.calls, ack.err)
+		t.Fatalf("callback completion ack calls=%d err=%v", ack.calls, ack.err)
 	}
 }

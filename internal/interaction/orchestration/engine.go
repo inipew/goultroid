@@ -55,6 +55,13 @@ type ResourcePreparedCallback interface {
 	Resources() []tasks.ResourceRequirement
 }
 
+// AckPreparedCallback exposes whether transport may acknowledge immediately
+// after TaskEngine admission or must leave the callback answer to the handler.
+type AckPreparedCallback interface {
+	PreparedCallback
+	AckPolicy() interaction.AckPolicy
+}
+
 type preparedCallback struct {
 	action  interaction.PreparedAction
 	target  presentation.Target
@@ -76,6 +83,16 @@ func (p *preparedCallback) Resources() []tasks.ResourceRequirement {
 		return aware.Resources()
 	}
 	return nil
+}
+
+func (p *preparedCallback) AckPolicy() interaction.AckPolicy {
+	if p == nil || p.action == nil {
+		return interaction.AckHandlerOwned
+	}
+	if aware, ok := p.action.(interaction.AckPreparedAction); ok {
+		return aware.AckPolicy()
+	}
+	return interaction.AckHandlerOwned
 }
 
 func (p *preparedCallback) Dispatch(ctx context.Context) error {

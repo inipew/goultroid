@@ -26,6 +26,10 @@ type callbackAcknowledger interface {
 	ensureAnswered(context.Context, int64, error)
 }
 
+type immediateCallbackAcknowledger interface {
+	acknowledge(context.Context, int64)
+}
+
 type interactionIngress struct {
 	engine *orchestration.Engine
 	ack    callbackAcknowledger
@@ -105,6 +109,13 @@ func (v *interactionIngress) dispatchCallback(
 		err = fmt.Errorf("interaction task submission failed: %w", submitErr)
 		v.ack.ensureAnswered(ctx, request.QueryID, err)
 		return err
+	}
+
+	if aware, ok := prepared.(orchestration.AckPreparedCallback); ok &&
+		aware.AckPolicy() == rootinteraction.AckImmediate {
+		if immediate, ok := v.ack.(immediateCallbackAcknowledger); ok {
+			immediate.acknowledge(ctx, request.QueryID)
+		}
 	}
 
 	var ticketDone <-chan struct{}
@@ -323,6 +334,13 @@ func (s *interactionPresentationServicer) AnswerCallbackQuery(ctx context.Contex
 		return err
 	}
 	return nil
+}
+
+func (s *interactionPresentationServicer) acknowledge(ctx context.Context, queryID int64) {
+	if s == nil || queryID == 0 {
+		return
+	}
+	_ = s.AnswerCallbackQuery(ctx, queryID, "", false)
 }
 
 func (s *interactionPresentationServicer) ensureAnswered(ctx context.Context, queryID int64, dispatchErr error) {
