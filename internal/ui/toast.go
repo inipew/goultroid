@@ -4,8 +4,18 @@ import (
 	"errors"
 
 	"github.com/inipew/goultroid/internal/core"
+	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 	"github.com/inipew/goultroid/internal/services/callback"
 )
+
+// UserErrorPresentation is the transport-neutral user-facing rendering of an
+// operational error. Internal diagnostics stay in logs; presentation surfaces
+// receive only bounded, intentional text plus whether Telegram should show it
+// as an alert.
+type UserErrorPresentation struct {
+	Text  string
+	Alert bool
+}
 
 // AnswerToast responds to an interactive callback query with a banner or pop-up notification.
 func AnswerToast(ctx *callback.CallbackContext, text string, alert bool) error {
@@ -31,32 +41,53 @@ func AnswerErrorToast(ctx *callback.CallbackContext, text string) error {
 	return AnswerToast(ctx, text, true)
 }
 
-// MapUserErrorMessage maps domain and infrastructure errors into user-friendly UI alert messages.
-func MapUserErrorMessage(err error) string {
+// PresentUserError maps domain, interaction, and callback errors into one
+// sanitized presentation contract shared by Assistant input and button flows.
+func PresentUserError(err error) UserErrorPresentation {
 	if err == nil {
-		return ""
+		return UserErrorPresentation{}
 	}
-	if errors.Is(err, core.ErrRateLimited) {
-		return "⏳ Too many requests, slow down."
+
+	switch {
+	case errors.Is(err, rootinteraction.ErrBindingMismatch):
+		return UserErrorPresentation{
+			Text:  "This button can only be used by the user who opened it on the original message.",
+			Alert: true,
+		}
+	case errors.Is(err, rootinteraction.ErrInputExpired):
+		return UserErrorPresentation{Text: "⌛ Input session expired. Reopen the interaction and try again."}
+	case errors.Is(err, rootinteraction.ErrExpired),
+		errors.Is(err, rootinteraction.ErrNotFound),
+		errors.Is(err, rootinteraction.ErrStaleToken),
+		errors.Is(err, rootinteraction.ErrScopeStale):
+		return UserErrorPresentation{Text: "⌛ Interaction expired. Please reopen it."}
+	case errors.Is(err, rootinteraction.ErrRevisionConflict):
+		return UserErrorPresentation{Text: "⚠️ Interaction changed while this action was pending. Please retry."}
+	case errors.Is(err, rootinteraction.ErrInputBusy):
+		return UserErrorPresentation{Text: "⚠️ Another input session is already active in this chat."}
+	case errors.Is(err, rootinteraction.ErrCapacity):
+		return UserErrorPresentation{Text: "⚠️ Too many active interactions. Close an older interaction and try again."}
+	case errors.Is(err, callback.ErrUnauthorized):
+		return UserErrorPresentation{Text: "⛔ You are not authorized to perform this action.", Alert: true}
+	case errors.Is(err, callback.ErrStateExpired):
+		return UserErrorPresentation{Text: "⌛ Button expired. Run the command again."}
+	case errors.Is(err, callback.ErrStateNotFound):
+		return UserErrorPresentation{Text: "⌛ Button was already used or its state expired."}
+	case errors.Is(err, callback.ErrInvalidCallbackData):
+		return UserErrorPresentation{Text: "⚠️ Invalid button action."}
+	case errors.Is(err, callback.ErrHandlerNotFound):
+		return UserErrorPresentation{Text: "⚠️ Feature is not available."}
 	}
-	if errors.Is(err, callback.ErrUnauthorized) {
-		return "⚠️ You are not authorized to perform this action."
+
+	message := core.UserMessage(err)
+	if message != "" && message != "❌ An internal error occurred." {
+		return UserErrorPresentation{Text: message}
 	}
-	if errors.Is(err, callback.ErrStateExpired) {
-		return "⏰ Button expired, run the command again."
-	}
-	if errors.Is(err, callback.ErrStateNotFound) {
-		return "Button already used or state expired."
-	}
-	if errors.Is(err, callback.ErrInvalidCallbackData) {
-		return "Invalid button action or payload."
-	}
-	if errors.Is(err, callback.ErrHandlerNotFound) {
-		return "Feature not available."
-	}
-	// Sanitize: only expose error text if it's user-safe (no internal details like sqlite)
-	if core.IsUserSafeText(err.Error()) {
-		return "❌ " + err.Error()
-	}
-	return "❌ Action failed. Please try again."
+	return UserErrorPresentation{Text: "❌ Action failed. Please try again."}
+}
+
+// MapUserErrorMessage preserves the historical helper while routing all callers
+// through the canonical presentation mapper.
+func MapUserErrorMessage(err error) string {
+	return PresentUserError(err).Text
 }

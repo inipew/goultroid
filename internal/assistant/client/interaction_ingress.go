@@ -17,6 +17,7 @@ import (
 	"github.com/inipew/goultroid/internal/presentation"
 
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
+	"github.com/inipew/goultroid/internal/ui"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -183,14 +184,6 @@ func interactionTextInputErrorMessage(err error) string {
 	if err == nil {
 		return ""
 	}
-	switch {
-	case errors.Is(err, rootinteraction.ErrInputExpired):
-		return "⌛ Input session expired. Reopen the interaction and try again."
-	case errors.Is(err, rootinteraction.ErrExpired),
-		errors.Is(err, rootinteraction.ErrNotFound),
-		errors.Is(err, rootinteraction.ErrScopeStale):
-		return "⌛ Interaction expired. Reopen it and try again."
-	}
 	var mutationErr *assistantshell.MutationError
 	if errors.As(err, &mutationErr) {
 		if mutationErr.Committed {
@@ -200,7 +193,7 @@ func interactionTextInputErrorMessage(err error) string {
 			return "⚠️ The setting changed while input was pending. Reopen Settings."
 		}
 	}
-	return "⚠️ Interaction input failed. Reopen it and try again."
+	return ui.PresentUserError(err).Text
 }
 
 func (v *interactionIngress) tryInline(ctx context.Context, data []byte, userID, queryID int64, messageID tg.InputBotInlineMessageIDClass) (bool, error) {
@@ -356,21 +349,6 @@ func (s *interactionPresentationServicer) ensureAnswered(ctx context.Context, qu
 	if answered {
 		return
 	}
-	text := ""
-	alert := false
-	if dispatchErr != nil {
-		switch {
-		case errors.Is(dispatchErr, rootinteraction.ErrBindingMismatch):
-			text = "This button can only be used by the user who opened it on the original message."
-			alert = true
-		case errors.Is(dispatchErr, rootinteraction.ErrExpired),
-			errors.Is(dispatchErr, rootinteraction.ErrNotFound),
-			errors.Is(dispatchErr, rootinteraction.ErrStaleToken),
-			errors.Is(dispatchErr, rootinteraction.ErrScopeStale):
-			text = "Interaction expired. Please reopen it."
-		default:
-			text = "Action failed. Please retry."
-		}
-	}
-	_ = s.interaction.Answer(ctx, queryID, text, alert)
+	presented := ui.PresentUserError(dispatchErr)
+	_ = s.interaction.Answer(ctx, queryID, presented.Text, presented.Alert)
 }
