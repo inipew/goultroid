@@ -6,7 +6,7 @@ Current implementation state, post-P8 work, lifecycle/resource invariants, and n
 |---|---|
 | Repository | github.com/inipew/goultroid |
 | Branch | test-next |
-| Branch HEAD before this handoff refresh | 6feb450114da476353dae9a4ffc4d77cec8d946c |
+| Branch HEAD before this handoff refresh | bb3af71bf8a2e21fc27f468bfab61cb4bd49f8e4 |
 | Latest implementation commit | d307311d2dab084fb4bcdc01935e6448049cb32e |
 | Latest implementation message | fix(downloader): deliver userbot URL downloads to Telegram |
 | Snapshot | 25 September 2026, Asia/Jakarta |
@@ -14,7 +14,7 @@ Current implementation state, post-P8 work, lifecycle/resource invariants, and n
 | Ultroid-facing V2-V4 | CLOSED |
 | Owner-bound button lifetime | IMPLEMENTED |
 | YouTube search-first | CLOSED through lifecycle UX |
-| YT-Z Telegram media delivery | IMPLEMENTED |
+| YT-Z Telegram media delivery | IMPLEMENTED, runtime hardening still OPEN |
 | CI rule | Do not inspect CI unless the user explicitly asks |
 
 This is the canonical handoff for the next AI session. Current source and regression tests are always higher authority than this document.
@@ -519,6 +519,47 @@ Do not assume YT-Z is Assistant-inline-only.
 
 ---
 
+### 10.7 Runtime defect still open: .download <youtube-url>
+
+The user reports that the real userbot command:
+
+~~~text
+.download <youtube-url>
+~~~
+
+still errors on the current branch even though YT-Z architecture/tests are present.
+
+Treat this as an **OPEN runtime defect**, not as evidence that the YT-Z architecture is absent.
+
+The exact runtime error/stderr was not captured in this handoff. The next session must reproduce it or obtain the exact log before changing behavior.
+
+Current path:
+
+~~~text
+.download URL
+  -> handleURLDownload
+  -> Registry.Resolve(URL)
+  -> submitInteractivePipeline
+  -> TaskEngine download(+process for extractor)
+  -> ExtractorProvider.Download
+  -> retained storage + media ownership
+  -> TaskEngine media=1
+  -> current.Media().SendMedia(...)
+  -> terminal status edit
+~~~
+
+High-value audit targets:
+
+1. Capture the exact error and identify whether it occurs in command admission, yt-dlp extraction, retained persistence, ownership registration, Telegram upload/send, or terminal edit.
+2. Inspect exact yt-dlp argv and stderr for the failing YouTube URL.
+3. Search uses --ignore-config; ExtractorProvider.Download currently does not. Host yt-dlp.conf can change output/sidecars/format behavior.
+4. Direct userbot URL download currently uses MediaModeDefault + MediaFormatDefault, so no explicit -f selection is added. Verify whether current yt-dlp chooses split streams/merge requiring ffmpeg.
+5. Audit modern YouTube failure classes from stderr: 403, PO-token requirement, cookies/account requirement, player-client issues, or outdated yt-dlp.
+6. ExtractorProvider.Download currently picks the first non-directory file in its temp directory. Verify no sidecar/config-generated file can be selected.
+7. Persisted extractor assets may have empty MIME metadata; default delivery can classify them as generic file.
+8. Verify the detached real core.Context still carries correct Telegram service/peer/topic into asynchronous delivery.
+9. Preserve resource split: extractor download = download=1 + process=1; Telegram delivery = media=1 only.
+10. Do not add a new downloader/uploader/retry engine to fix this defect.
 ## 11. YT-Z acceptance evidence already present
 
 plugins/downloader/delivery_test.go covers:
@@ -782,7 +823,7 @@ MyXL short sensitive authority            IMPLEMENTED
 YouTube search-first discovery            CLOSED
 Search Again + search lifecycle           CLOSED
 Canonical retained-media delivery         IMPLEMENTED
-Userbot URL automatic media delivery      IMPLEMENTED
+Userbot URL automatic media delivery      IMPLEMENTED IN SOURCE / LIVE .download DEFECT OPEN
 
 NEXT:
 refresh HEAD
@@ -869,7 +910,8 @@ The next session should audit and harden this implementation, not recreate it.
    - `go build -o bin/goultroid ./cmd/goultroid`;
    - targeted downloader delivery/search tests;
    - targeted interaction ownership/lifecycle tests.
-4. Audit YT-Z resource/lifecycle correctness:
+4. Reproduce the reported live .download <youtube-url> failure first and preserve exact error/stderr.
+5. Audit YT-Z resource/lifecycle correctness:
    - retained asset registered before delivery;
    - download/process released before media=1;
    - no Telegram RPC directly in completion callback;
@@ -879,9 +921,9 @@ The next session should audit and harden this implementation, not recreate it.
    - lifecycle cancellation does not produce misleading terminal failure;
    - materialized temp files always cleaned;
    - ambiguous upload/send failure cannot trivially duplicate media on retry.
-5. Fix only defects verified in current source.
-6. Reconcile stale historical docs after correctness work.
-7. Then choose the next ordinary product feature.
+6. Fix only defects verified in current source/runtime evidence.
+7. Reconcile stale historical docs after correctness work.
+8. Then choose the next ordinary product feature.
 
 ### Binding working rules
 
