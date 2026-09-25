@@ -113,7 +113,7 @@ func newP5TaskEngine(t *testing.T) *taskengine.Engine {
 				PayloadBudget:  1 << 20,
 			},
 		},
-		ResultCapacity: 64,
+		ResultCapacity: 1024,
 	})
 	if err := engine.Start(context.Background()); err != nil {
 		t.Fatalf("start P5 TaskEngine: %v", err)
