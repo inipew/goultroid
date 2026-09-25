@@ -106,7 +106,7 @@ func (*Feature) FeatureSpec() feature.Spec {
 	startPolicy.PrivateOnly = true
 	ownerPolicy := feature.OwnerPolicy(assistant)
 	ownerPolicy.PrivateOnly = true
-	helpPolicy := feature.OwnerPolicy(assistant | inlineSurface)
+	helpPolicy := feature.PublicPolicy(assistant | inlineSurface)
 	inlinePublicPolicy := feature.PublicPolicy(inlineSurface)
 	inlineOwnerPolicy := feature.OwnerPolicy(inlineSurface)
 
