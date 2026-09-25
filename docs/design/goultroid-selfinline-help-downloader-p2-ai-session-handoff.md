@@ -1021,3 +1021,24 @@ go build -o bin/goultroid ./cmd/goultroid
 Then run the live Telegram matrix from section 11.
 
 Do not mark the overall userbot UX redesign finished until those real-checkout tests/build and live Telegram smoke pass.
+
+### 16.10 Direct Help permission compatibility correction
+
+A final semantic audit found that the canonical Help command is `PermissionEveryone`, while the migrated a2 Help screen/actions still used `OwnerPolicy`. Direct `/help` cutover would therefore have silently changed existing Assistant behavior for non-owner visitors.
+
+This was corrected in:
+
+```text
+01f9f670b9e21fe676936d5e2d11b943ac9dad0c
+fix(assistant): preserve public help cutover policy
+```
+
+The canonical a2 Help screen/action policy is now public on Assistant/inline surfaces, while `InteractionInlineHelp` remains owner-only as the self-inline entry gate. Interaction sessions/tokens remain actor-bound.
+
+Regression coverage:
+
+```text
+TestAssistantDirectHelpPreservesPublicCommandPermission
+```
+
+This verifies that a non-owner visitor can still invoke direct `/help`, receives canonical a2 Help, and does not fall back to the legacy Help handler.
