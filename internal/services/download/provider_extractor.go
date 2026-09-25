@@ -337,28 +337,56 @@ func (p *ExtractorProvider) Search(ctx context.Context, query string, opts Searc
 	return parseExtractorSearch(res.Stdout, limit)
 }
 
+func validVideoMaxHeight(height int) bool {
+	switch height {
+	case 0, 360, 480, 720, 1080, 1440, 2160:
+		return true
+	default:
+		return false
+	}
+}
+
 func extractorSelectionArgs(opts DownloadOptions) ([]string, error) {
 	switch opts.Mode {
 	case MediaModeDefault:
-		if opts.Format != MediaFormatDefault {
-			return nil, fmt.Errorf("%w: extractor format requires a media mode", core.ErrInvalidArgs)
+		if opts.Format != MediaFormatDefault || opts.MaxHeight != 0 {
+			return nil, fmt.Errorf("%w: default extractor mode does not accept format or quality selection", core.ErrInvalidArgs)
 		}
 		return nil, nil
 	case MediaModeAudio:
+		if opts.MaxHeight != 0 {
+			return nil, fmt.Errorf("%w: audio extractor mode does not accept video height", core.ErrInvalidArgs)
+		}
 		switch opts.Format {
 		case MediaFormatM4A:
-			return []string{"-f", "bestaudio[ext=m4a]/bestaudio"}, nil
+			return []string{"-f", "bestaudio/best", "-x", "--audio-format", "m4a"}, nil
 		case MediaFormatMP3:
 			return []string{"-f", "bestaudio/best", "-x", "--audio-format", "mp3"}, nil
+		case MediaFormatOpus:
+			return []string{"-f", "bestaudio/best", "-x", "--audio-format", "opus"}, nil
 		default:
 			return nil, fmt.Errorf("%w: unsupported audio extractor format %q", core.ErrInvalidArgs, opts.Format)
 		}
 	case MediaModeVideo:
+		if !validVideoMaxHeight(opts.MaxHeight) {
+			return nil, fmt.Errorf("%w: unsupported video height %d", core.ErrInvalidArgs, opts.MaxHeight)
+		}
 		switch opts.Format {
 		case MediaFormatMP4:
-			return []string{"-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best", "--merge-output-format", "mp4"}, nil
+			selector := "bestvideo*[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]"
+			if opts.MaxHeight > 0 {
+				selector = fmt.Sprintf(
+					"bestvideo*[height<=%d][ext=mp4]+bestaudio[ext=m4a]/best[height<=%d][ext=mp4]",
+					opts.MaxHeight,
+					opts.MaxHeight,
+				)
+			}
+			return []string{"-f", selector, "--merge-output-format", "mp4"}, nil
 		case MediaFormatBest:
-			return []string{"-f", "bestvideo+bestaudio/best"}, nil
+			if opts.MaxHeight != 0 {
+				return nil, fmt.Errorf("%w: best video format cannot be combined with a height cap", core.ErrInvalidArgs)
+			}
+			return []string{"-f", "bestvideo*+bestaudio/best"}, nil
 		default:
 			return nil, fmt.Errorf("%w: unsupported video extractor format %q", core.ErrInvalidArgs, opts.Format)
 		}
@@ -427,6 +455,7 @@ func (p *ExtractorProvider) Download(ctx context.Context, rawURL string, store s
 			"--progress-template", extractorProgressTemplate,
 		)
 	}
+	args = append(args, "--print", extractorResultTemplate)
 	args = append(args, selectionArgs...)
 	args = append(args,
 		"-o", outTemplate,
@@ -491,22 +520,13 @@ func (p *ExtractorProvider) Download(ctx context.Context, rawURL string, store s
 		}
 	}
 
-	// Find the extracted file in tmpDir
-	entries, err := os.ReadDir(tmpDir)
+	resultMetadata := extractorResultMetadata{}
+	if res != nil {
+		resultMetadata = parseExtractorResult(res.Stdout)
+	}
+	targetFile, err := resolveExtractorOutput(tmpDir, resultMetadata.Path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to scan downloaded files: %w", err)
-	}
-
-	var targetFile string
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			targetFile = filepath.Join(tmpDir, entry.Name())
-			break
-		}
-	}
-
-	if targetFile == "" {
-		return nil, fmt.Errorf("%w: no file produced by extractor", ErrDownloadFailed)
+		return nil, err
 	}
 
 	f, err := os.Open(targetFile)
@@ -524,10 +544,7 @@ func (p *ExtractorProvider) Download(ctx context.Context, rawURL string, store s
 		return nil, fmt.Errorf("%w: extracted file size %d exceeds limit %d", core.ErrResourceLimit, stat.Size(), opts.MaxBytes)
 	}
 
-	fileName := filepath.Base(targetFile)
-	asset, err := store.Put(ctx, f, storage.Metadata{
-		Name: fileName,
-	})
+	asset, err := store.Put(ctx, f, extractorStorageMetadata(targetFile, resultMetadata, opts.Mode))
 	if err != nil {
 		return nil, fmt.Errorf("failed to persist extracted file to storage: %w", err)
 	}

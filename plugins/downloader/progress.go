@@ -25,6 +25,7 @@ type downloadProgressReporter struct {
 	provider   string
 	mode       download.MediaMode
 	format     download.MediaFormat
+	maxHeight  int
 	started    time.Time
 	downloaded atomic.Int64
 	total      atomic.Int64
@@ -37,6 +38,7 @@ func newDownloadProgressReporter(
 	provider string,
 	mode download.MediaMode,
 	format download.MediaFormat,
+	maxHeight int,
 ) *downloadProgressReporter {
 	if edit == nil {
 		return nil
@@ -55,8 +57,9 @@ func newDownloadProgressReporter(
 		edit:     edit,
 		provider: provider,
 		mode:     mode,
-		format:   format,
-		started:  time.Now(),
+		format:    format,
+		maxHeight: maxHeight,
+		started:   time.Now(),
 	}
 	reporter.stopParent = context.AfterFunc(parent, cancel)
 	go reporter.loop()
@@ -142,6 +145,7 @@ func (r *downloadProgressReporter) loop() {
 				r.provider,
 				r.mode,
 				r.format,
+				r.maxHeight,
 				downloaded,
 				total,
 				smoothedBPS,
@@ -157,6 +161,7 @@ func downloadProgressText(
 	provider string,
 	mode download.MediaMode,
 	format download.MediaFormat,
+	maxHeight int,
 	downloaded, total int64,
 	bytesPerSecond float64,
 	elapsed time.Duration,
@@ -195,7 +200,7 @@ func downloadProgressText(
 	}
 	fmt.Fprintf(&b, "🕒 <b>Elapsed:</b> <code>%s</code>\n", formatProgressDuration(elapsed))
 	fmt.Fprintf(&b, "🔧 <b>Source:</b> <code>%s</code>\n", progressProviderLabel(provider))
-	fmt.Fprintf(&b, "🎞 <b>Format:</b> <code>%s</code>", progressFormatLabel(mode, format))
+	fmt.Fprintf(&b, "🎞 <b>Format:</b> <code>%s</code>", progressFormatLabel(mode, format, maxHeight))
 	return b.String()
 }
 
@@ -213,14 +218,18 @@ func progressProviderLabel(provider string) string {
 	}
 }
 
-func progressFormatLabel(mode download.MediaMode, format download.MediaFormat) string {
+func progressFormatLabel(mode download.MediaMode, format download.MediaFormat, maxHeight int) string {
 	if mode == download.MediaModeDefault {
 		return "default"
 	}
-	if format == download.MediaFormatDefault {
-		return string(mode)
+	label := string(mode)
+	if format != download.MediaFormatDefault {
+		label += " / " + string(format)
 	}
-	return string(mode) + " / " + string(format)
+	if maxHeight > 0 {
+		label += fmt.Sprintf(" / ≤%dp", maxHeight)
+	}
+	return label
 }
 
 func formatTransferRate(bytesPerSecond float64) string {

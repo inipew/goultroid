@@ -1,7 +1,7 @@
 
 # Goultroid — YouTube / Downloader AI Session Handoff
 
-Status: ACTIVE — search-first and delivery architecture are implemented; live .download <youtube-url> acceptance is still OPEN.
+Status: ACTIVE — search-first, selection-first userbot UX, live progress, retained delivery, and metadata-aware Telegram delivery are implemented in source; final live acceptance after the latest UX change remains OPEN.
 
 Repository: github.com/inipew/goultroid  
 Branch: test-next  
@@ -11,6 +11,64 @@ Date: 25 September 2026, Asia/Jakarta
 This document is the preferred starting point for the next AI session continuing YouTube/downloader work.
 
 Current source and tests outrank this document if the branch has moved.
+
+## 2026-09-25 follow-up — runtime diagnosis + selection/metadata UX
+
+The previously reported real `.download <youtube-url>` error was traced to the host simply not having `yt-dlp` installed. After installation, extraction succeeded. Do not treat the old missing-binary report as evidence of a deeper downloader architecture defect.
+
+The next product issue observed from the successful run was UX/metadata quality:
+
+- userbot `.download <URL>` started extraction immediately with default/default selection;
+- yt-dlp could therefore choose a native WebM result;
+- completion UI rendered the generic fallback `Format: file`;
+- extractor persistence carried the filename but not MIME/title/performer/duration/resolution;
+- Telegram audio delivery therefore had insufficient semantic attributes and could display generic labels such as `Unknown Track`;
+- quality selection existed only on the Assistant inline surface and was not reached from the userbot command.
+
+The current implementation direction closes those source-level gaps without adding a second downloader/callback engine:
+
+~~~text
+.download <URL>
+    ↓
+existing self-inline RenderBridge
+    ↓
+dl <URL>
+    ↓
+existing a2 downloader interaction
+    ├─ direct HTTP → Download File confirmation
+    └─ extractor
+         ├─ Audio → MP3 / M4A / Opus
+         └─ Video → MP4 ≤360/480/720/1080/1440/2160 or Best (native)
+    ↓
+typed final action
+    ↓
+TaskEngine physical download
+    ↓
+yt-dlp after_move final-path + metadata record
+    ↓
+retained storage metadata
+    ↓
+release download/process
+    ↓
+media=1 Telegram delivery
+~~~
+
+Important invariants:
+
+- no physical URL download begins before the final typed action;
+- userbot and inline UX now converge through the existing self-inline/a2 authorities;
+- quality is a bounded whitelist, never an arbitrary user-provided yt-dlp selector;
+- MP4 quality presets are strict MP4 choices at or below the selected maximum height;
+- Best remains the native merge-aware best selection and can produce a non-MP4 container;
+- extractor output selection prefers yt-dlp's `after_move` final filepath and only uses a bounded sidecar-aware fallback scan;
+- retained media now carries MIME, title, performer, duration, width, and height;
+- Assistant Telegram media upload maps those fields to gotd filename/audio/video attributes;
+- live transfer progress includes the chosen maximum video height;
+- Telegram delivery still holds only `media=1`, never `download` or `process`.
+
+The old source test `TestYTZUserbotURLCommandDeliversAfterDownloadResourcesRelease` is intentionally replaced by a selection-first acceptance: the userbot command must open the canonical inline chooser and must submit zero heavy tasks before the user chooses the final format/quality.
+
+Real-world acceptance should still be rerun against the latest source after deployment before declaring the end-to-end UX CLOSED.
 
 ---
 

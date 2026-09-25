@@ -51,6 +51,7 @@ const (
 	MediaFormatM4A     MediaFormat = "m4a"
 	MediaFormatMP3     MediaFormat = "mp3"
 	MediaFormatMP4     MediaFormat = "mp4"
+	MediaFormatOpus    MediaFormat = "opus"
 )
 
 // SearchOptions controls bounded provider metadata searches.
@@ -95,6 +96,9 @@ type DownloadOptions struct {
 	Progress       ProgressCallback
 	Mode           MediaMode
 	Format         MediaFormat
+	// MaxHeight bounds extractor-backed video selection. Zero means uncapped.
+	// Providers must reject unsupported values rather than accepting arbitrary selectors.
+	MaxHeight int
 }
 
 // Provider represents a source-specific media downloader.

@@ -23,11 +23,13 @@ const (
 
 // Metadata provides descriptive metadata when storing a new asset.
 type Metadata struct {
-	Name     string        `json:"name"`
-	MIME     string        `json:"mime"`
-	Duration time.Duration `json:"duration,omitempty"`
-	Width    int           `json:"width,omitempty"`
-	Height   int           `json:"height,omitempty"`
+	Name      string        `json:"name"`
+	MIME      string        `json:"mime"`
+	Title     string        `json:"title,omitempty"`
+	Performer string        `json:"performer,omitempty"`
+	Duration  time.Duration `json:"duration,omitempty"`
+	Width     int           `json:"width,omitempty"`
+	Height    int           `json:"height,omitempty"`
 }
 
 // Asset represents a stored media or data file.
@@ -35,6 +37,8 @@ type Asset struct {
 	ID        string        `json:"id"`
 	Name      string        `json:"name"`
 	MIME      string        `json:"mime"`
+	Title     string        `json:"title,omitempty"`
+	Performer string        `json:"performer,omitempty"`
 	Size      int64         `json:"size"`
 	Path      string        `json:"path"`
 	Duration  time.Duration `json:"duration,omitempty"`

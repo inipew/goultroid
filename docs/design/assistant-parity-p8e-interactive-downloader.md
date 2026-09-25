@@ -4,6 +4,21 @@
 
 **P8-E is CLOSED for implementation/source acceptance.**
 
+### Post-P8-E evolution
+
+The original P8-E document below records the initial parity milestone and is intentionally historical. The current downloader has since evolved beyond that baseline:
+
+- userbot `.download <URL>` enters the same self-inline/a2 chooser instead of auto-downloading;
+- direct HTTP requires an explicit Download File action;
+- extractor audio offers MP3, M4A, and Opus;
+- extractor video offers bounded MP4 maximum-height presets at 360p/480p/720p/1080p/1440p/2160p plus Best (native);
+- byte-level transfer progress is throttled into bounded Telegram edits while work is active;
+- retained extractor assets carry MIME/title/performer/duration/resolution metadata;
+- automatic retained Telegram delivery is implemented through the shared media-delivery boundary;
+- yt-dlp final output is identified from its post-processing `after_move` path with a sidecar-aware fallback.
+
+The canonical implementation and current regression tests outrank the older behavior descriptions later in this document.
+
 Baseline:
 
 `ab6f98841a0b92062a785e3d2ececd84fe764727` — P8-D rich Wikipedia inline lookup.

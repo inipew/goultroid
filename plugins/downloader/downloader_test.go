@@ -10,6 +10,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/presentation/selfinline"
 	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/storage"
 	"github.com/inipew/goultroid/internal/tasks"
@@ -129,6 +130,22 @@ func (m *mockTelegramService) DownloadFile(ctx context.Context, _ tg.InputFileLo
 	return os.WriteFile(dstPath, []byte("dummy audio content"), 0600)
 }
 
+func (m *mockTelegramService) DeleteMessage(context.Context, tg.InputPeerClass, []int) error {
+	return nil
+}
+
+type downloaderFakeRenderer struct {
+	calls   int
+	request selfinline.Request
+	err     error
+}
+
+func (f *downloaderFakeRenderer) Render(_ context.Context, request selfinline.Request) (selfinline.Result, error) {
+	f.calls++
+	f.request = request
+	return selfinline.Result{QueryID: 1, ResultID: request.ResultID, RandomID: 2}, f.err
+}
+
 func hasResource(resources []tasks.ResourceRequirement, name string) bool {
 	for _, requirement := range resources {
 		if requirement.Name == name && requirement.Amount == 1 {
@@ -161,6 +178,20 @@ func TestDownloaderURLResourcePlanning(t *testing.T) {
 		download.NewDirectHTTPProvider(5*time.Minute, 500*1024*1024),
 	)
 	p.storage = storage.NewMemoryStorage()
+
+	httpURL := "https://example.com/media/file.mp4"
+	httpResources := p.urlResources(httpURL)
+	if !hasResource(httpResources, "download") || hasResource(httpResources, "process") {
+		t.Fatalf("direct HTTP resources=%+v, want download only", httpResources)
+	}
+	youtubeURL := "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+	extractorResources := p.urlResources(youtubeURL)
+	if !hasResource(extractorResources, "download") || !hasResource(extractorResources, "process") {
+		t.Fatalf("extractor resources=%+v, want download+process", extractorResources)
+	}
+
+	renderer := &downloaderFakeRenderer{}
+	p.SetSelfInlineRenderer(renderer)
 	tgSvc := &mockTelegramService{}
 
 	ctxHTTP := &core.Context{
@@ -169,41 +200,58 @@ func TestDownloaderURLResourcePlanning(t *testing.T) {
 		PeerID:  &tg.InputPeerSelf{},
 		Message: &core.Message{ID: 1, IsOutgoing: true},
 	}
-	if err := p.handleURLDownload(ctxHTTP, "https://example.com/media/file.mp4"); err != nil {
+	if err := p.handleURLDownload(ctxHTTP, httpURL); err != nil {
 		t.Fatal(err)
 	}
-	if got := client.Count(); got != 1 {
-		t.Fatalf("submitted tasks=%d, want 1", got)
+	if client.Count() != 0 {
+		t.Fatalf("HTTP command submitted %d heavy tasks before confirmation", client.Count())
 	}
-	specHTTP, _ := client.LastSpec()
-	if specHTTP.Pool != "download" || specHTTP.Class != tasks.PriorityNormal {
-		t.Fatalf("unexpected direct HTTP spec: %+v", specHTTP)
-	}
-	if !hasResource(specHTTP.Resources, "download") || hasResource(specHTTP.Resources, "process") {
-		t.Fatalf("direct HTTP resources=%+v, want download only", specHTTP.Resources)
-	}
-	if specHTTP.OnComplete == nil {
-		t.Fatal("direct HTTP continuation is missing YT-Z delivery completion")
+	if renderer.calls != 1 || renderer.request.Query != "dl "+httpURL || renderer.request.ResultID != "downloader" {
+		t.Fatalf("HTTP renderer calls/request=%d/%+v", renderer.calls, renderer.request)
 	}
 
 	ctxExtractor := &core.Context{
 		Ctx:     context.Background(),
 		Svc:     tgSvc,
 		PeerID:  &tg.InputPeerSelf{},
-		Message: &core.Message{ID: 2, IsOutgoing: true},
+		Message: &core.Message{ID: 2, ReplyToID: 7, TopicID: 5, IsOutgoing: true},
 	}
-	if err := p.handleURLDownload(ctxExtractor, "https://www.youtube.com/watch?v=dQw4w9WgXcQ"); err != nil {
+	if err := p.handleURLDownload(ctxExtractor, youtubeURL); err != nil {
 		t.Fatal(err)
 	}
-	if got := client.Count(); got != 2 {
-		t.Fatalf("submitted tasks=%d, want 2", got)
+	if client.Count() != 0 {
+		t.Fatalf("extractor command submitted %d heavy tasks before selection", client.Count())
 	}
-	specExtractor, _ := client.LastSpec()
-	if !hasResource(specExtractor.Resources, "download") || !hasResource(specExtractor.Resources, "process") {
-		t.Fatalf("extractor resources=%+v, want download+process", specExtractor.Resources)
+	if renderer.calls != 2 || renderer.request.Query != "dl "+youtubeURL || renderer.request.ResultID != "downloader" {
+		t.Fatalf("extractor renderer calls/request=%d/%+v", renderer.calls, renderer.request)
 	}
-	if specExtractor.OnComplete == nil {
-		t.Fatal("extractor continuation is missing YT-Z delivery completion")
+	if renderer.request.ReplyToID != 7 || renderer.request.TopicID != 5 {
+		t.Fatalf("renderer reply/topic=%d/%d", renderer.request.ReplyToID, renderer.request.TopicID)
+	}
+}
+
+func TestDownloaderExtractorURLFailsClosedWithoutSelfInlineRenderer(t *testing.T) {
+	client := &capturedClient{}
+	p := New(client)
+	p.registry = download.NewRegistry(download.NewExtractorProvider(nil, 500*1024*1024))
+	tgSvc := &mockTelegramService{}
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		Svc:     tgSvc,
+		PeerID:  &tg.InputPeerSelf{},
+		Message: &core.Message{ID: 3, IsOutgoing: true},
+	}
+	if err := p.handleURLDownload(ctx, "https://www.youtube.com/watch?v=dQw4w9WgXcQ"); err != nil {
+		t.Fatal(err)
+	}
+	if client.Count() != 0 {
+		t.Fatalf("extractor fallback submitted %d heavy tasks without renderer", client.Count())
+	}
+	tgSvc.mu.Lock()
+	lastEdited := tgSvc.lastEdited
+	tgSvc.mu.Unlock()
+	if !strings.Contains(lastEdited, "Interactive downloader is unavailable") {
+		t.Fatalf("fallback message=%q", lastEdited)
 	}
 }
 
@@ -267,10 +315,13 @@ func TestDownloaderRepliedMediaContinuationOutlivesCommandContext(t *testing.T) 
 	}
 }
 
-func TestDownloaderRepliedURLFallbackSubmitsContinuation(t *testing.T) {
+func TestDownloaderRepliedURLFallbackOpensInteractiveSurface(t *testing.T) {
 	client := &capturedClient{}
 	p := New(client)
 	p.storage = storage.NewMemoryStorage()
+	p.registry = download.NewRegistry(download.NewDirectHTTPProvider(5*time.Minute, 500*1024*1024))
+	renderer := &downloaderFakeRenderer{}
+	p.SetSelfInlineRenderer(renderer)
 
 	tgSvc := &mockTelegramService{
 		replyMessage: &tg.Message{
@@ -291,11 +342,10 @@ func TestDownloaderRepliedURLFallbackSubmitsContinuation(t *testing.T) {
 	if err := p.handleDownload(ctx); err != nil {
 		t.Fatalf("handleDownload: %v", err)
 	}
-	spec, ok := client.LastSpec()
-	if !ok {
-		t.Fatal("expected URL continuation task")
+	if client.Count() != 0 {
+		t.Fatalf("replied URL submitted %d heavy tasks before confirmation", client.Count())
 	}
-	if spec.Pool != "download" || !hasResource(spec.Resources, "download") {
-		t.Fatalf("unexpected URL continuation: %+v", spec)
+	if renderer.calls != 1 || renderer.request.Query != "dl https://example.com/audio/song.mp3" || renderer.request.ReplyToID != 55 {
+		t.Fatalf("renderer request=%+v calls=%d", renderer.request, renderer.calls)
 	}
 }

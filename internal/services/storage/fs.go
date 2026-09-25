@@ -216,8 +216,9 @@ func (f *FileStorage) Put(ctx context.Context, src io.Reader, meta Metadata) (*A
 	}
 
 	asset := &Asset{
-		ID: id, Name: fileName, MIME: meta.MIME, Size: written, Path: dataPath,
-		Duration: meta.Duration, Width: meta.Width, Height: meta.Height, CreatedAt: time.Now().UTC(),
+		ID: id, Name: fileName, MIME: meta.MIME, Title: meta.Title, Performer: meta.Performer,
+		Size: written, Path: dataPath, Duration: meta.Duration, Width: meta.Width, Height: meta.Height,
+		CreatedAt: time.Now().UTC(),
 	}
 	metaBytes, err := json.Marshal(asset)
 	if err != nil {

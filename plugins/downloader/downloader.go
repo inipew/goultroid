@@ -12,7 +12,7 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/plugin"
-	"github.com/inipew/goultroid/internal/presentation"
+	"github.com/inipew/goultroid/internal/presentation/selfinline"
 	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/mediaregistry"
 	"github.com/inipew/goultroid/internal/services/storage"
@@ -30,6 +30,7 @@ type Plugin struct {
 	mediaRegistry *mediaregistry.Registry
 	files         *filesystem.Scope
 	tasks         tasks.Client
+	renderer      selfinline.Renderer
 }
 
 // New creates a new downloader Plugin instance with optional dependencies.
@@ -63,6 +64,14 @@ func (p *Plugin) SetStorage(store storage.Storage) {
 // SetTaskClient sets the scoped TaskEngine client used for download continuations.
 func (p *Plugin) SetTaskClient(client tasks.Client) {
 	p.tasks = client
+}
+
+// SetSelfInlineRenderer injects the canonical userbot -> own Assistant inline
+// bridge. The renderer is capability-gated by application composition.
+func (p *Plugin) SetSelfInlineRenderer(renderer selfinline.Renderer) {
+	if p != nil {
+		p.renderer = renderer
+	}
 }
 
 // InitPlugin initializes the plugin using capability-gated runtime services.
@@ -370,75 +379,48 @@ func (p *Plugin) executeMediaDownload(taskCtx context.Context, ctx *core.Context
 	return ctx.Edit(text)
 }
 
+func (p *Plugin) openInteractiveURLDownload(ctx *core.Context, rawURL string) error {
+	if ctx == nil || ctx.PeerID == nil {
+		return core.ErrInvalidArgs
+	}
+	if p == nil || p.renderer == nil {
+		return ctx.EditOrReply("⚠️ <b>Interactive downloader is unavailable.</b> Start the Assistant inline renderer and try again.")
+	}
+	normalized, err := normalizeInteractiveURL(rawURL)
+	if err != nil {
+		return err
+	}
+	request := selfinline.Request{
+		Peer:     ctx.PeerID,
+		Query:    "dl " + normalized,
+		ResultID: "downloader",
+	}
+	if ctx.Message != nil {
+		request.ReplyToID = ctx.Message.ReplyToID
+		request.TopicID = ctx.Message.TopicID
+	}
+	if _, err := p.renderer.Render(ctx.Ctx, request); err != nil {
+		_ = ctx.EditOrReply("⚠️ Unable to open interactive downloader: " + core.EscapeHTML(err.Error()))
+		return fmt.Errorf("open interactive downloader: %w", err)
+	}
+	if ctx.Message != nil && ctx.Message.ID > 0 && ctx.Svc != nil {
+		_ = ctx.Svc.DeleteMessage(ctx.Ctx, ctx.PeerID, []int{ctx.Message.ID})
+	}
+	return nil
+}
+
 func (p *Plugin) handleURLDownload(ctx *core.Context, rawURL string) error {
 	if ctx == nil {
 		return core.ErrInvalidArgs
-	}
-	if p.tasks == nil {
-		return fmt.Errorf("%w: downloader TaskEngine client is not configured", core.ErrUnavailable)
 	}
 	p.ensureRegistry()
 	if p.registry == nil {
 		return fmt.Errorf("%w: downloader registry unavailable", core.ErrUnavailable)
 	}
-	provider := p.registry.Resolve(rawURL)
-	if provider == nil {
+	if p.registry.Resolve(rawURL) == nil {
 		return download.ErrNoMatchingProvider
 	}
-	if err := ctx.EditOrReply("⏳ <i>Downloading media from URL...</i>"); err != nil {
-		return err
-	}
-
-	uiCtx := detachDownloadContext(ctx)
-	state := interactiveState{
-		URL:      rawURL,
-		Provider: provider.Name(),
-		Phase:    phaseRunning,
-	}
-	delivery := func(deliveryCtx context.Context, media presentation.Media) error {
-		if uiCtx == nil {
-			return core.ErrInvalidArgs
-		}
-		current := uiCtx.WithContext(deliveryCtx)
-		_, err := current.Media().SendMedia(media.Type, media.Path, media.Caption)
-		return err
-	}
-	progressEdit := func(editCtx context.Context, text string) error {
-		if uiCtx == nil {
-			return core.ErrInvalidArgs
-		}
-		return uiCtx.WithContext(editCtx).Edit(text)
-	}
-	downloadFailure := func(editCtx context.Context) error {
-		if uiCtx == nil {
-			return core.ErrInvalidArgs
-		}
-		return uiCtx.WithContext(editCtx).Edit("❌ <b>URL download failed.</b> Try again.")
-	}
-	deliveryFailure := func(editCtx context.Context) error {
-		if uiCtx == nil {
-			return core.ErrInvalidArgs
-		}
-		return uiCtx.WithContext(editCtx).Edit(deliveryFailedView().Text)
-	}
-	delivered := func(editCtx context.Context) error {
-		if uiCtx == nil {
-			return core.ErrInvalidArgs
-		}
-		return uiCtx.WithContext(editCtx).Edit(deliveredView().Text)
-	}
-	return p.submitInteractivePipeline(
-		ctx.Ctx,
-		state,
-		download.MediaModeDefault,
-		download.MediaFormatDefault,
-		delivery,
-		progressEdit,
-		downloadFailure,
-		deliveryFailure,
-		delivered,
-		"message",
-	)
+	return p.openInteractiveURLDownload(ctx, rawURL)
 }
 
 func formatBytes(b int64) string {

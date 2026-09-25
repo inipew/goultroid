@@ -294,7 +294,7 @@ func (s *interactionPresentationServicer) EditInlineBotMedia(
 		return ErrInteractionUnavailable
 	}
 	target := assistantinteraction.NewInlineTarget(1, inlineID, 0)
-	return s.interaction.AsInline().EditMedia(ctx, target, media.Type, media.Path, media.FileName, media.MIMEType, media.Caption)
+	return s.interaction.AsInline().EditMedia(ctx, target, media)
 }
 
 func (s *interactionPresentationServicer) EditInlineBotMessage(ctx context.Context, inlineID tg.InputBotInlineMessageIDClass, text string, markup tg.ReplyMarkupClass) error {

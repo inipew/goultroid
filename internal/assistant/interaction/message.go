@@ -20,6 +20,7 @@ import (
 	"github.com/gotd/td/tg"
 	assistentrpc "github.com/inipew/goultroid/internal/assistant/rpc"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/presentation"
 	"go.uber.org/zap"
 )
 
@@ -988,13 +989,14 @@ func (c *ClientInteraction) SendMediaContext(
 // in one inline answer.
 func (c *ClientInteraction) UploadInlineMedia(
 	ctx context.Context,
-	mediaType string,
-	filePath string,
-	fileName string,
-	mimeType string,
+	asset presentation.Media,
 ) (_ tg.MessageMediaClass, retErr error) {
 	if c == nil || c.sender == nil || c.uploader == nil {
 		return nil, fmt.Errorf("%w: assistant media upload is not configured", core.ErrUnsupported)
+	}
+	filePath := strings.TrimSpace(asset.Path)
+	if filePath == "" {
+		return nil, fmt.Errorf("%w: assistant media path is empty", core.ErrInvalidArgs)
 	}
 	stat, err := os.Stat(filePath)
 	if err != nil {
@@ -1012,32 +1014,56 @@ func (c *ClientInteraction) UploadInlineMedia(
 		return nil, fmt.Errorf("failed to upload inline media %q: %w", filePath, err)
 	}
 
-	var media message.MediaOption
-	kind := strings.ToLower(strings.TrimSpace(mediaType))
+	var mediaOption message.MediaOption
+	kind := strings.ToLower(strings.TrimSpace(asset.Type))
 	if kind == "photo" {
-		media = message.UploadedPhoto(inputFile)
+		mediaOption = message.UploadedPhoto(inputFile)
 	} else {
 		doc := message.UploadedDocument(inputFile)
-		if mime := strings.TrimSpace(mimeType); mime != "" {
+		if mime := strings.TrimSpace(asset.MIMEType); mime != "" {
 			doc.MIME(mime)
 		}
-		if name := strings.TrimSpace(fileName); name != "" {
+		name := strings.TrimSpace(asset.FileName)
+		if kind != "audio" && name != "" {
 			doc.Filename(name)
 		}
 		switch kind {
 		case "sticker":
-			media = doc.UploadedSticker()
+			mediaOption = doc.UploadedSticker()
 		case "audio":
-			media = doc.Audio()
+			audio := doc.Audio()
+			if name != "" {
+				audio.Filename(name)
+			}
+			if title := strings.TrimSpace(asset.Title); title != "" {
+				audio.Title(title)
+			}
+			if performer := strings.TrimSpace(asset.Performer); performer != "" {
+				audio.Performer(performer)
+			}
+			if asset.Duration > 0 {
+				audio.Duration(asset.Duration)
+			}
+			mediaOption = audio
 		case "video":
-			media = doc.Video()
+			video := doc.Video()
+			if asset.Duration > 0 {
+				video.Duration(asset.Duration)
+			}
+			if asset.Width > 0 && asset.Height > 0 {
+				video.Resolution(asset.Width, asset.Height)
+			}
+			if strings.EqualFold(strings.TrimSpace(asset.MIMEType), "video/mp4") {
+				video.SupportsStreaming()
+			}
+			mediaOption = video
 		default:
-			media = doc.ForceFile(true)
+			mediaOption = doc.ForceFile(true)
 		}
 	}
 
 	return executeValue(ctx, c.executor, "messages.uploadMedia", "messages", assistentrpc.IdempotentMutation, transferTimeout, func(opCtx context.Context) (tg.MessageMediaClass, error) {
-		return c.sender.Self().UploadMedia(opCtx, media)
+		return c.sender.Self().UploadMedia(opCtx, mediaOption)
 	})
 }
 
@@ -1100,23 +1126,23 @@ func (i *InlineClientInteraction) Edit(ctx context.Context, target InlineTarget,
 func (i *InlineClientInteraction) EditMedia(
 	ctx context.Context,
 	target InlineTarget,
-	mediaType, filePath, fileName, mimeType, caption string,
+	asset presentation.Media,
 ) (retErr error) {
 	if i == nil || i.ci == nil || i.ci.api == nil || !target.IsValid() {
 		return ErrInvalidTarget
 	}
-	uploaded, err := i.ci.UploadInlineMedia(ctx, mediaType, filePath, fileName, mimeType)
+	uploaded, err := i.ci.UploadInlineMedia(ctx, asset)
 	if err != nil {
 		return err
 	}
-	media, err := reusableInputMedia(uploaded)
+	inputMedia, err := reusableInputMedia(uploaded)
 	if err != nil {
 		return err
 	}
-	plain, ents := parseHTML(caption)
+	plain, ents := parseHTML(asset.Caption)
 	req := &tg.MessagesEditInlineBotMessageRequest{
 		ID:    target.MessageID(),
-		Media: media,
+		Media: inputMedia,
 	}
 	if plain != "" {
 		req.SetMessage(plain)
@@ -1146,6 +1172,7 @@ func (i *InlineClientInteraction) EditMedia(
 	}
 	return nil
 }
+
 
 // EditMarkup updates only the inline markup of an inline bot message, preserving the text on Telegram.
 func (i *InlineClientInteraction) EditMarkup(ctx context.Context, target InlineTarget, markup tg.ReplyMarkupClass) (retErr error) {

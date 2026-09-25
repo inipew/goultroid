@@ -15,10 +15,12 @@ func TestExtractorSelectionArgsAreBoundedAndTyped(t *testing.T) {
 		want []string
 	}{
 		{name: "legacy default", opts: DownloadOptions{}, want: nil},
-		{name: "audio m4a", opts: DownloadOptions{Mode: MediaModeAudio, Format: MediaFormatM4A}, want: []string{"-f", "bestaudio[ext=m4a]/bestaudio"}},
+		{name: "audio m4a", opts: DownloadOptions{Mode: MediaModeAudio, Format: MediaFormatM4A}, want: []string{"-f", "bestaudio/best", "-x", "--audio-format", "m4a"}},
 		{name: "audio mp3", opts: DownloadOptions{Mode: MediaModeAudio, Format: MediaFormatMP3}, want: []string{"-f", "bestaudio/best", "-x", "--audio-format", "mp3"}},
-		{name: "video mp4", opts: DownloadOptions{Mode: MediaModeVideo, Format: MediaFormatMP4}, want: []string{"-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best", "--merge-output-format", "mp4"}},
-		{name: "video best", opts: DownloadOptions{Mode: MediaModeVideo, Format: MediaFormatBest}, want: []string{"-f", "bestvideo+bestaudio/best"}},
+		{name: "audio opus", opts: DownloadOptions{Mode: MediaModeAudio, Format: MediaFormatOpus}, want: []string{"-f", "bestaudio/best", "-x", "--audio-format", "opus"}},
+		{name: "video mp4", opts: DownloadOptions{Mode: MediaModeVideo, Format: MediaFormatMP4}, want: []string{"-f", "bestvideo*[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]", "--merge-output-format", "mp4"}},
+		{name: "video mp4 720p", opts: DownloadOptions{Mode: MediaModeVideo, Format: MediaFormatMP4, MaxHeight: 720}, want: []string{"-f", "bestvideo*[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]", "--merge-output-format", "mp4"}},
+		{name: "video best", opts: DownloadOptions{Mode: MediaModeVideo, Format: MediaFormatBest}, want: []string{"-f", "bestvideo*+bestaudio/best"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -38,6 +40,9 @@ func TestExtractorSelectionArgsRejectInvalidCombinations(t *testing.T) {
 		{Format: MediaFormatMP4},
 		{Mode: MediaModeAudio, Format: MediaFormatMP4},
 		{Mode: MediaModeVideo, Format: MediaFormatMP3},
+		{Mode: MediaModeAudio, Format: MediaFormatMP3, MaxHeight: 720},
+		{Mode: MediaModeVideo, Format: MediaFormatMP4, MaxHeight: 721},
+		{Mode: MediaModeVideo, Format: MediaFormatBest, MaxHeight: 720},
 		{Mode: MediaMode("other"), Format: MediaFormatBest},
 	} {
 		if _, err := extractorSelectionArgs(opts); !errors.Is(err, core.ErrInvalidArgs) {

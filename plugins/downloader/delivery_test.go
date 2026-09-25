@@ -23,8 +23,13 @@ func TestYTZZRetainedDeliveryUsesMediaResourceOnlyAndKeepsAsset(t *testing.T) {
 		t.Fatal(err)
 	}
 	asset, err := store.Put(context.Background(), bytes.NewBufferString("media"), storage.Metadata{
-		Name: "sample.mp4",
-		MIME: "video/mp4",
+		Name:      "sample.mp4",
+		MIME:      "video/mp4",
+		Title:     "Sample Video",
+		Performer: "Sample Channel",
+		Duration:  2 * time.Minute,
+		Width:     1280,
+		Height:    720,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -72,6 +77,12 @@ func TestYTZZRetainedDeliveryUsesMediaResourceOnlyAndKeepsAsset(t *testing.T) {
 	}
 	if delivered.Path != asset.Path || delivered.FileName != asset.Name || delivered.MIMEType != asset.MIME || delivered.Type != "video" {
 		t.Fatalf("delivered media=%+v", delivered)
+	}
+	if delivered.Title != asset.Title || delivered.Performer != asset.Performer || delivered.Duration != asset.Duration || delivered.Width != 1280 || delivered.Height != 720 {
+		t.Fatalf("delivered metadata=%+v, asset=%+v", delivered, asset)
+	}
+	if !strings.Contains(delivered.Caption, "<b>File:</b> <code>sample.mp4</code>") || !strings.Contains(delivered.Caption, "<b>Resolution:</b> <code>1280x720</code>") {
+		t.Fatalf("delivery caption=%q", delivered.Caption)
 	}
 	if _, err := store.Stat(context.Background(), asset.ID); err != nil {
 		t.Fatalf("retained asset was removed after delivery: %v", err)
@@ -128,6 +139,7 @@ type ytzPipelineObservation struct {
 
 type ytzPipelineProvider struct {
 	observed chan<- ytzPipelineObservation
+	options  chan<- download.DownloadOptions
 }
 
 func (*ytzPipelineProvider) Name() string { return "extractor" }
@@ -140,8 +152,11 @@ func (p *ytzPipelineProvider) Download(
 	ctx context.Context,
 	_ string,
 	store storage.Storage,
-	_ download.DownloadOptions,
+	opts download.DownloadOptions,
 ) (*storage.Asset, error) {
+	if p.options != nil {
+		p.options <- opts
+	}
 	asset, err := store.Put(ctx, bytes.NewBufferString("pipeline-media"), storage.Metadata{
 		Name: "pipeline.mp4",
 		MIME: "video/mp4",
@@ -202,7 +217,8 @@ func TestYTZPipelineReleasesDownloadResourcesBeforeMediaDelivery(t *testing.T) {
 	}
 	downloadObserved := make(chan ytzPipelineObservation, 1)
 	deliveryObserved := make(chan ytzPipelineObservation, 1)
-	provider := &ytzPipelineProvider{observed: downloadObserved}
+	optionsObserved := make(chan download.DownloadOptions, 1)
+	provider := &ytzPipelineProvider{observed: downloadObserved, options: optionsObserved}
 	p := New(engine, store)
 	p.registry = download.NewRegistry(provider)
 
@@ -210,8 +226,9 @@ func TestYTZPipelineReleasesDownloadResourcesBeforeMediaDelivery(t *testing.T) {
 		URL:      "https://www.youtube.com/watch?v=abcdefghijk",
 		Provider: "extractor",
 		Phase:    phaseVideoFormat,
-		Mode:     download.MediaModeVideo,
-		Format:   download.MediaFormatMP4,
+		Mode:      download.MediaModeVideo,
+		Format:    download.MediaFormatMP4,
+		MaxHeight: 720,
 	}
 	if err := p.submitInteractivePipeline(
 		context.Background(),
@@ -246,6 +263,15 @@ func TestYTZPipelineReleasesDownloadResourcesBeforeMediaDelivery(t *testing.T) {
 	}
 
 	select {
+	case opts := <-optionsObserved:
+		if opts.Mode != download.MediaModeVideo || opts.Format != download.MediaFormatMP4 || opts.MaxHeight != 720 {
+			t.Fatalf("download options=%+v, want video/mp4 maxHeight=720", opts)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("download options were not observed")
+	}
+
+	select {
 	case delivered := <-deliveryObserved:
 		if delivered.download || delivered.process || !delivered.media {
 			t.Fatalf("delivery-stage resources=%+v, want media only", delivered)
@@ -273,102 +299,37 @@ func TestYTZLifecycleCancellationDoesNotEmitPostDisableFailureUI(t *testing.T) {
 	}
 }
 
-func TestYTZUserbotURLCommandDeliversAfterDownloadResourcesRelease(t *testing.T) {
-	engine := taskengine.NewEngine(taskengine.Config{
-		Pools: map[tasks.PoolID]taskengine.PoolEngineConfig{
-			"download": {
-				Concurrency:    1,
-				MinConcurrency: 0,
-				ZeroIdle:       true,
-				IdleTimeout:    20 * time.Millisecond,
-				BacklogLimit:   8,
-				PayloadBudget:  1 << 20,
-			},
-			"general": {
-				Concurrency:    1,
-				MinConcurrency: 0,
-				ZeroIdle:       true,
-				IdleTimeout:    20 * time.Millisecond,
-				BacklogLimit:   8,
-				PayloadBudget:  1 << 20,
-			},
-		},
-		ResultCapacity: 16,
-		ResourceCapacities: map[string]int64{
-			"download": 1,
-			"process":  1,
-			"media":    1,
-		},
-	})
-	if err := engine.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		if err := engine.Stop(ctx); err != nil {
-			t.Errorf("stop TaskEngine: %v", err)
-		}
-	})
+func TestYTZUserbotURLCommandOpensSelectionBeforePhysicalDownload(t *testing.T) {
+	client := &capturedClient{}
+	p := New(client, storage.NewMemoryStorage())
+	p.registry = download.NewRegistry(download.NewExtractorProvider(nil, 500*1024*1024))
+	renderer := &downloaderFakeRenderer{}
+	p.SetSelfInlineRenderer(renderer)
 
-	store, err := storage.NewFileStorage(t.TempDir(), 16*1024*1024)
-	if err != nil {
-		t.Fatal(err)
-	}
-	downloadObserved := make(chan ytzPipelineObservation, 1)
-	provider := &ytzPipelineProvider{observed: downloadObserved}
-	p := New(engine, store)
-	p.registry = download.NewRegistry(provider)
-
-	mediaSends := make(chan core.MessageSendContext, 1)
-	tgSvc := &mockTelegramService{mediaSends: mediaSends}
 	ctx := &core.Context{
 		Ctx:    context.Background(),
-		Svc:    tgSvc,
+		Svc:    &mockTelegramService{},
 		PeerID: &tg.InputPeerSelf{},
 		Message: &core.Message{
 			ID:         77,
+			ReplyToID:  71,
 			TopicID:    70,
 			IsOutgoing: true,
 			Text:       ".download https://www.youtube.com/watch?v=abcdefghijk",
 		},
 	}
-	if err := p.handleURLDownload(ctx, "https://www.youtube.com/watch?v=abcdefghijk"); err != nil {
+	const rawURL = "https://www.youtube.com/watch?v=abcdefghijk"
+	if err := p.handleURLDownload(ctx, rawURL); err != nil {
 		t.Fatal(err)
 	}
-
-	var physical ytzPipelineObservation
-	select {
-	case physical = <-downloadObserved:
-	case <-time.After(2 * time.Second):
-		t.Fatal("userbot URL download stage did not run")
+	if client.Count() != 0 {
+		t.Fatalf("userbot URL command submitted %d heavy tasks before format selection", client.Count())
 	}
-	if !physical.download || !physical.process || physical.media {
-		t.Fatalf("userbot download-stage resources=%+v, want download+process only", physical)
+	if renderer.calls != 1 || renderer.request.Query != "dl "+rawURL || renderer.request.ResultID != "downloader" {
+		t.Fatalf("renderer calls/request=%d/%+v", renderer.calls, renderer.request)
 	}
-
-	var send core.MessageSendContext
-	select {
-	case send = <-mediaSends:
-	case <-time.After(2 * time.Second):
-		t.Fatal("userbot retained asset was not delivered to Telegram")
-	}
-	if send.ReplyToID != 77 || send.TopicID != 70 {
-		t.Fatalf("media send context=%+v, want reply=77 topic=70", send)
-	}
-
-	tgSvc.mu.Lock()
-	sawMedia := tgSvc.sawMedia
-	sawDownload := tgSvc.sawDownload
-	sawProcess := tgSvc.sawProcess
-	tgSvc.mu.Unlock()
-	if !sawMedia || sawDownload || sawProcess {
-		t.Fatalf("userbot delivery-stage resources media=%v download=%v process=%v", sawMedia, sawDownload, sawProcess)
-	}
-	if physical.assetID == "" {
-		t.Fatal("userbot URL download produced no retained asset")
-	}
-	if _, err := store.Stat(context.Background(), physical.assetID); err != nil {
-		t.Fatalf("retained userbot asset missing after Telegram delivery: %v", err)
+	if renderer.request.ReplyToID != 71 || renderer.request.TopicID != 70 {
+		t.Fatalf("renderer reply/topic=%d/%d, want 71/70", renderer.request.ReplyToID, renderer.request.TopicID)
 	}
 }
+

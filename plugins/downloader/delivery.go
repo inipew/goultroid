@@ -48,16 +48,39 @@ func interactiveDeliveryCaption(asset *storage.Asset, mode download.MediaMode, f
 	if asset == nil {
 		return "✅ <b>Download complete</b>"
 	}
-	selection := "file"
+
+	title := strings.TrimSpace(asset.Title)
+	if title == "" {
+		title = strings.TrimSuffix(asset.Name, filepath.Ext(asset.Name))
+	}
+	selection := strings.TrimPrefix(strings.ToLower(filepath.Ext(asset.Name)), ".")
+	if selection == "" {
+		selection = "file"
+	}
 	if mode != download.MediaModeDefault {
 		selection = string(mode) + " / " + string(format)
 	}
-	return fmt.Sprintf(
-		"✅ <b>Download complete</b>\n\n<b>Title:</b> <code>%s</code>\n<b>Size:</b> <code>%s</code>\n<b>Format:</b> <code>%s</code>",
-		core.EscapeHTML(asset.Name),
-		formatBytes(asset.Size),
-		core.EscapeHTML(selection),
+
+	lines := []string{
+		"✅ <b>Download complete</b>",
+		"",
+		"<b>Title:</b> <code>" + core.EscapeHTML(title) + "</code>",
+	}
+	if performer := strings.TrimSpace(asset.Performer); performer != "" {
+		lines = append(lines, "<b>Artist:</b> <code>"+core.EscapeHTML(performer)+"</code>")
+	}
+	lines = append(lines,
+		"<b>File:</b> <code>"+core.EscapeHTML(asset.Name)+"</code>",
+		"<b>Size:</b> <code>"+formatBytes(asset.Size)+"</code>",
+		"<b>Format:</b> <code>"+core.EscapeHTML(selection)+"</code>",
 	)
+	if asset.Width > 0 && asset.Height > 0 {
+		lines = append(lines, fmt.Sprintf("<b>Resolution:</b> <code>%dx%d</code>", asset.Width, asset.Height))
+	}
+	if asset.Duration > 0 {
+		lines = append(lines, "<b>Duration:</b> <code>"+formatProgressDuration(asset.Duration)+"</code>")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (p *Plugin) materializeDeliveryAsset(ctx context.Context, store storage.Storage, asset *storage.Asset) (string, func(), error) {
@@ -167,7 +190,7 @@ func (p *Plugin) submitInteractivePipeline(
 				targetStore = storage.NewMemoryStorage()
 			}
 			provider := p.registry.Resolve(state.URL)
-			reporter := newDownloadProgressReporter(taskCtx, progressEdit, state.Provider, mode, format)
+			reporter := newDownloadProgressReporter(taskCtx, progressEdit, state.Provider, mode, format, state.MaxHeight)
 			var progress download.ProgressCallback
 			if reporter != nil {
 				progress = reporter.Callback
@@ -179,7 +202,8 @@ func (p *Plugin) submitInteractivePipeline(
 				MaxBytes: 500 * 1024 * 1024,
 				Progress: progress,
 				Mode:     mode,
-				Format:   format,
+				Format:    format,
+				MaxHeight: state.MaxHeight,
 			})
 			if reporter != nil {
 				reporter.Close()
@@ -257,11 +281,16 @@ func (p *Plugin) submitRetainedDelivery(
 			}
 			defer cleanup()
 			return delivery(taskCtx, presentation.Media{
-				Type:     interactiveDeliveryMediaType(mode, asset),
-				Path:     path,
-				FileName: asset.Name,
-				MIMEType: asset.MIME,
-				Caption:  interactiveDeliveryCaption(asset, mode, format),
+				Type:      interactiveDeliveryMediaType(mode, asset),
+				Path:      path,
+				FileName:  asset.Name,
+				MIMEType:  asset.MIME,
+				Title:     asset.Title,
+				Performer: asset.Performer,
+				Duration:  asset.Duration,
+				Width:     asset.Width,
+				Height:    asset.Height,
+				Caption:   interactiveDeliveryCaption(asset, mode, format),
 			})
 		},
 	}

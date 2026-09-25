@@ -93,11 +93,11 @@ func TestP8EInlineExtractorOffersMediaThenFormatChoice(t *testing.T) {
 	if !viewHasAction(result.ActionRows, actionAudio) || !viewHasAction(result.ActionRows, actionVideo) {
 		t.Fatalf("extractor action rows=%+v", result.ActionRows)
 	}
-	if rows := audioFormatView(state.URL).Rows; !viewHasAction(rows, actionFormatM4A) || !viewHasAction(rows, actionFormatMP3) {
+	if rows := audioFormatView(state.URL).Rows; !viewHasAction(rows, actionFormatM4A) || !viewHasAction(rows, actionFormatMP3) || !viewHasAction(rows, actionFormatOpus) || !viewHasAction(rows, actionBack) {
 		t.Fatalf("audio format rows=%+v", rows)
 	}
-	if rows := videoFormatView(state.URL).Rows; !viewHasAction(rows, actionFormatMP4) || !viewHasAction(rows, actionFormatBest) {
-		t.Fatalf("video format rows=%+v", rows)
+	if rows := videoFormatView(state.URL).Rows; !viewHasAction(rows, actionVideo360) || !viewHasAction(rows, actionVideo720) || !viewHasAction(rows, actionVideo1080) || !viewHasAction(rows, actionVideo1440) || !viewHasAction(rows, actionVideo2160) || !viewHasAction(rows, actionFormatBest) || !viewHasAction(rows, actionBack) {
+		t.Fatalf("video quality rows=%+v", rows)
 	}
 }
 
@@ -130,9 +130,9 @@ func TestP8EFinalSelectionResourcePlanningMatchesProvider(t *testing.T) {
 	if !hasResource(resources, "download") || !hasResource(resources, "process") {
 		t.Fatalf("extractor resources=%+v", resources)
 	}
-	mode, format, err := finalSelection(extractor, actionFormatMP4)
-	if err != nil || mode != download.MediaModeVideo || format != download.MediaFormatMP4 {
-		t.Fatalf("selection=%q/%q err=%v", mode, format, err)
+	mode, format, maxHeight, err := finalSelection(actionVideo720)
+	if err != nil || mode != download.MediaModeVideo || format != download.MediaFormatMP4 || maxHeight != 720 {
+		t.Fatalf("selection=%q/%q/%d err=%v", mode, format, maxHeight, err)
 	}
 }
 

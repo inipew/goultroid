@@ -29,9 +29,17 @@ const (
 	actionVideo        = "select_video"
 	actionFormatM4A    = "format_m4a"
 	actionFormatMP3    = "format_mp3"
+	actionFormatOpus   = "format_opus"
 	actionFormatMP4    = "format_mp4"
 	actionFormatBest   = "format_best"
+	actionVideo360     = "video_360"
+	actionVideo480     = "video_480"
+	actionVideo720     = "video_720"
+	actionVideo1080    = "video_1080"
+	actionVideo1440    = "video_1440"
+	actionVideo2160    = "video_2160"
 	actionDownloadFile = "download_file"
+	actionBack         = "back"
 	actionCancel       = "cancel"
 )
 
@@ -40,9 +48,17 @@ var interactiveActions = []string{
 	actionVideo,
 	actionFormatM4A,
 	actionFormatMP3,
+	actionFormatOpus,
 	actionFormatMP4,
 	actionFormatBest,
+	actionVideo360,
+	actionVideo480,
+	actionVideo720,
+	actionVideo1080,
+	actionVideo1440,
+	actionVideo2160,
 	actionDownloadFile,
+	actionBack,
 	actionCancel,
 }
 
@@ -56,11 +72,12 @@ const (
 )
 
 type interactiveState struct {
-	URL      string               `json:"u"`
-	Provider string               `json:"p"`
-	Phase    interactivePhase     `json:"s"`
-	Mode     download.MediaMode   `json:"m,omitempty"`
-	Format   download.MediaFormat `json:"f,omitempty"`
+	URL       string               `json:"u"`
+	Provider  string               `json:"p"`
+	Phase     interactivePhase     `json:"s"`
+	Mode      download.MediaMode   `json:"m,omitempty"`
+	Format    download.MediaFormat `json:"f,omitempty"`
+	MaxHeight int                  `json:"h,omitempty"`
 }
 
 type downloadPreparation struct {
@@ -164,7 +181,7 @@ func (p *Plugin) BindAssistant(rt assistantinteraction.DriverRuntime) (func(), e
 		return nil
 	}
 
-	for _, actionID := range []string{actionAudio, actionVideo, actionCancel} {
+	for _, actionID := range []string{actionAudio, actionVideo, actionBack, actionCancel} {
 		if err := register(actionID, false); err != nil {
 			for i := len(registrations) - 1; i >= 0; i-- {
 				registrations[i].Close()
@@ -172,7 +189,20 @@ func (p *Plugin) BindAssistant(rt assistantinteraction.DriverRuntime) (func(), e
 			return nil, fmt.Errorf("downloader: register action %s: %w", actionID, err)
 		}
 	}
-	for _, actionID := range []string{actionFormatM4A, actionFormatMP3, actionFormatMP4, actionFormatBest, actionDownloadFile} {
+	for _, actionID := range []string{
+		actionFormatM4A,
+		actionFormatMP3,
+		actionFormatOpus,
+		actionFormatMP4,
+		actionFormatBest,
+		actionVideo360,
+		actionVideo480,
+		actionVideo720,
+		actionVideo1080,
+		actionVideo1440,
+		actionVideo2160,
+		actionDownloadFile,
+	} {
 		if err := register(actionID, true); err != nil {
 			for i := len(registrations) - 1; i >= 0; i-- {
 				registrations[i].Close()
@@ -222,6 +252,19 @@ func (p *Plugin) handleInteractiveAction(ctx *orchestration.Context, actionID st
 			return err
 		}
 		return ctx.Transition(encoded, interactiveTTL, videoFormatView(state.URL))
+	case actionBack:
+		if state.Provider != "extractor" || (state.Phase != phaseAudioFormat && state.Phase != phaseVideoFormat) {
+			return ctx.Answer("There is no previous downloader step.", true)
+		}
+		state.Phase = phaseChoose
+		state.Mode = download.MediaModeDefault
+		state.Format = download.MediaFormatDefault
+		state.MaxHeight = 0
+		encoded, err := encodeInteractiveState(state)
+		if err != nil {
+			return err
+		}
+		return ctx.Transition(encoded, interactiveTTL, extractorChoiceView(state.URL))
 	case actionCancel:
 		if err := ctx.Edit(cancelledView()); err != nil {
 			return err
@@ -250,11 +293,11 @@ func (p *Plugin) validateFinalAction(state interactiveState, actionID string) er
 		if state.Provider != "http" || state.Phase != phaseChoose {
 			return fmt.Errorf("%w: direct file action is not valid for this source", core.ErrInvalidArgs)
 		}
-	case actionFormatM4A, actionFormatMP3:
+	case actionFormatM4A, actionFormatMP3, actionFormatOpus:
 		if state.Provider != "extractor" || state.Phase != phaseAudioFormat || state.Mode != download.MediaModeAudio {
 			return fmt.Errorf("%w: audio format action is stale or invalid", core.ErrInvalidArgs)
 		}
-	case actionFormatMP4, actionFormatBest:
+	case actionFormatMP4, actionFormatBest, actionVideo360, actionVideo480, actionVideo720, actionVideo1080, actionVideo1440, actionVideo2160:
 		if state.Provider != "extractor" || state.Phase != phaseVideoFormat || state.Mode != download.MediaModeVideo {
 			return fmt.Errorf("%w: video format action is stale or invalid", core.ErrInvalidArgs)
 		}
@@ -273,13 +316,14 @@ func (p *Plugin) executeInteractiveDownload(ctx *orchestration.Context, state in
 		return fmt.Errorf("%w: downloader prepared state is stale", core.ErrUnavailable)
 	}
 
-	mode, format, err := finalSelection(state, actionID)
+	mode, format, maxHeight, err := finalSelection(actionID)
 	if err != nil {
 		return err
 	}
 	state.Phase = phaseRunning
 	state.Mode = mode
 	state.Format = format
+	state.MaxHeight = maxHeight
 	encoded, err := encodeInteractiveState(state)
 	if err != nil {
 		return err
@@ -340,20 +384,34 @@ func (p *Plugin) executeInteractiveDownload(ctx *orchestration.Context, state in
 	return nil
 }
 
-func finalSelection(state interactiveState, actionID string) (download.MediaMode, download.MediaFormat, error) {
+func finalSelection(actionID string) (download.MediaMode, download.MediaFormat, int, error) {
 	switch actionID {
 	case actionDownloadFile:
-		return download.MediaModeDefault, download.MediaFormatDefault, nil
+		return download.MediaModeDefault, download.MediaFormatDefault, 0, nil
 	case actionFormatM4A:
-		return download.MediaModeAudio, download.MediaFormatM4A, nil
+		return download.MediaModeAudio, download.MediaFormatM4A, 0, nil
 	case actionFormatMP3:
-		return download.MediaModeAudio, download.MediaFormatMP3, nil
+		return download.MediaModeAudio, download.MediaFormatMP3, 0, nil
+	case actionFormatOpus:
+		return download.MediaModeAudio, download.MediaFormatOpus, 0, nil
 	case actionFormatMP4:
-		return download.MediaModeVideo, download.MediaFormatMP4, nil
+		return download.MediaModeVideo, download.MediaFormatMP4, 0, nil
+	case actionVideo360:
+		return download.MediaModeVideo, download.MediaFormatMP4, 360, nil
+	case actionVideo480:
+		return download.MediaModeVideo, download.MediaFormatMP4, 480, nil
+	case actionVideo720:
+		return download.MediaModeVideo, download.MediaFormatMP4, 720, nil
+	case actionVideo1080:
+		return download.MediaModeVideo, download.MediaFormatMP4, 1080, nil
+	case actionVideo1440:
+		return download.MediaModeVideo, download.MediaFormatMP4, 1440, nil
+	case actionVideo2160:
+		return download.MediaModeVideo, download.MediaFormatMP4, 2160, nil
 	case actionFormatBest:
-		return download.MediaModeVideo, download.MediaFormatBest, nil
+		return download.MediaModeVideo, download.MediaFormatBest, 0, nil
 	default:
-		return "", "", fmt.Errorf("%w: unknown downloader selection", core.ErrInvalidArgs)
+		return "", "", 0, fmt.Errorf("%w: unknown downloader selection", core.ErrInvalidArgs)
 	}
 }
 
@@ -519,20 +577,25 @@ func directDownloadView(rawURL string) presentation.View {
 
 func audioFormatView(rawURL string) presentation.View {
 	return presentation.View{
-		Text: "<code>Select Your Format.</code>",
+		Text: "<b>Choose audio format</b>\n\n<code>" + core.EscapeHTML(rawURL) + "</code>",
 		Rows: []presentation.Row{
-			{{Text: "M4A", ActionID: actionFormatM4A}, {Text: "MP3", ActionID: actionFormatMP3}},
-			{{Text: "✖ Cᴀɴᴄᴇʟ", ActionID: actionCancel}},
+			{{Text: "MP3", ActionID: actionFormatMP3}, {Text: "M4A", ActionID: actionFormatM4A}, {Text: "Opus", ActionID: actionFormatOpus}},
+			{{Text: "‹ Back", ActionID: actionBack}, {Text: "✖ Cancel", ActionID: actionCancel}},
 		},
 	}
 }
 
 func videoFormatView(rawURL string) presentation.View {
 	return presentation.View{
-		Text: "<code>Select Your Format.</code>",
+		Text: "<b>Choose video quality (MP4)</b>\n\n"
+			+ "<code>" + core.EscapeHTML(rawURL) + "</code>\n\n"
+			+ "MP4 presets are maximum heights; yt-dlp selects the best available MP4 stream at or below the chosen value.",
 		Rows: []presentation.Row{
-			{{Text: "MP4", ActionID: actionFormatMP4}, {Text: "Best", ActionID: actionFormatBest}},
-			{{Text: "✖ Cᴀɴᴄᴇʟ", ActionID: actionCancel}},
+			{{Text: "≤360p", ActionID: actionVideo360}, {Text: "≤480p", ActionID: actionVideo480}},
+			{{Text: "≤720p", ActionID: actionVideo720}, {Text: "≤1080p", ActionID: actionVideo1080}},
+			{{Text: "≤1440p", ActionID: actionVideo1440}, {Text: "≤2160p", ActionID: actionVideo2160}},
+			{{Text: "⭐ Best (native)", ActionID: actionFormatBest}},
+			{{Text: "‹ Back", ActionID: actionBack}, {Text: "✖ Cancel", ActionID: actionCancel}},
 		},
 	}
 }
@@ -541,6 +604,9 @@ func runningView(state interactiveState) presentation.View {
 	label := "file"
 	if state.Mode != download.MediaModeDefault {
 		label = string(state.Mode) + " / " + string(state.Format)
+		if state.MaxHeight > 0 {
+			label += fmt.Sprintf(" / ≤%dp", state.MaxHeight)
+		}
 	}
 	return presentation.View{
 		Text: "⬇️ <b>Downloading...</b>\n\n<b>Format:</b> <code>" + core.EscapeHTML(label) + "</code>",

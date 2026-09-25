@@ -13,6 +13,7 @@ func TestDownloadProgressTextIncludesTransferDetails(t *testing.T) {
 		"extractor",
 		download.MediaModeVideo,
 		download.MediaFormatMP4,
+		720,
 		50*1024*1024,
 		100*1024*1024,
 		5*1024*1024,
@@ -25,7 +26,7 @@ func TestDownloadProgressTextIncludesTransferDetails(t *testing.T) {
 		"ETA:</b> <code>10s</code>",
 		"Elapsed:</b> <code>10s</code>",
 		"Source:</b> <code>yt-dlp</code>",
-		"Format:</b> <code>video / mp4</code>",
+		"Format:</b> <code>video / mp4 / ≤720p</code>",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("progress text missing %q:\n%s", want, got)
@@ -38,6 +39,7 @@ func TestDownloadProgressTextHandlesUnknownTotal(t *testing.T) {
 		"http",
 		download.MediaModeDefault,
 		download.MediaFormatDefault,
+		0,
 		8*1024*1024,
 		0,
 		2*1024*1024,

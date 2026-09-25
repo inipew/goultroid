@@ -22,6 +22,7 @@ func (ModuleType) Manifest() module.Manifest {
 			plugin.CapFilesystemTemp,
 			plugin.CapFilesystemData,
 			plugin.CapProcessExecute,
+			plugin.CapTelegramRead,
 			plugin.CapTelegramSendMessage,
 			plugin.CapTasks,
 		},

@@ -54,9 +54,9 @@ func (m *MemoryStorage) Put(ctx context.Context, src io.Reader, meta Metadata) (
 	}
 
 	asset := Asset{
-		ID: id, Name: name, MIME: meta.MIME, Size: int64(len(data)),
-		Path: fmt.Sprintf("memory://%s/%s", id, name), Duration: meta.Duration,
-		Width: meta.Width, Height: meta.Height, CreatedAt: time.Now().UTC(),
+		ID: id, Name: name, MIME: meta.MIME, Title: meta.Title, Performer: meta.Performer,
+		Size: int64(len(data)), Path: fmt.Sprintf("memory://%s/%s", id, name),
+		Duration: meta.Duration, Width: meta.Width, Height: meta.Height, CreatedAt: time.Now().UTC(),
 	}
 
 	m.mu.Lock()

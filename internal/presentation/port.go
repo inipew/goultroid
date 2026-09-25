@@ -2,6 +2,7 @@ package presentation
 
 import (
 	"context"
+	"time"
 
 	"github.com/inipew/goultroid/internal/interaction"
 )
@@ -27,11 +28,16 @@ type Answer struct {
 
 // Media describes one materialized local asset for transport delivery.
 type Media struct {
-	Type     string
-	Path     string
-	FileName string
-	MIMEType string
-	Caption  string
+	Type      string
+	Path      string
+	FileName  string
+	MIMEType  string
+	Title     string
+	Performer string
+	Duration  time.Duration
+	Width     int
+	Height    int
+	Caption   string
 }
 
 // MediaDeliverer is an optional presentation capability for media targets.
