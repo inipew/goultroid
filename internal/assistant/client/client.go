@@ -61,7 +61,6 @@ type AssistantClient struct {
 	cancel                context.CancelFunc
 	runDone               chan struct{}
 	ready                 chan struct{}
-	startupResult         chan error
 	lastError             error
 	shuttingDown          atomic.Bool
 	lifecycle             *Lifecycle
@@ -166,13 +165,11 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	runDone := make(chan struct{})
 	ready := make(chan struct{})
-	startupResult := make(chan error, 1)
 	c.mu.Lock()
 	c.self = nil
 	c.cancel = cancel
 	c.runDone = runDone
 	c.ready = ready
-	c.startupResult = startupResult
 	c.lastError = nil
 	c.startTime = time.Now()
 	c.mu.Unlock()
@@ -230,7 +227,6 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 			c.lastError = startErr
 			c.interactionIngress = nil
 			c.mu.Unlock()
-			startupResult <- startErr
 			close(runDone)
 			return startErr
 		}
@@ -242,7 +238,6 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 			c.lastError = startErr
 			c.interactionIngress = nil
 			c.mu.Unlock()
-			startupResult <- startErr
 			close(runDone)
 			return startErr
 		}
@@ -339,27 +334,14 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 			c.mu.Unlock()
 			c.lifecycle.SetState(StateFailed)
 			c.logger.Error("assistant client stopped with an error", zap.Error(err))
-			startupResult <- err
 		} else {
 			c.lifecycle.SetState(StateStopped)
-			startupResult <- err
 		}
 	}()
 
 	// The assistant is optional. Launching it must not delay the primary Telegram
 	// client; callers that require confirmed readiness can use WaitReady.
 	return nil
-}
-
-func waitForStartup(ctx context.Context, ready <-chan struct{}, errCh <-chan error) error {
-	select {
-	case <-ready:
-		return nil
-	case err := <-errCh:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
 }
 
 // Quiesce closes Assistant update admission without cancelling the bot

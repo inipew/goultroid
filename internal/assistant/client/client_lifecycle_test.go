@@ -80,35 +80,6 @@ func TestAssistantClientStartRejectsStoppingState(t *testing.T) {
 	}
 }
 
-func TestWaitForStartupWaitsForReadiness(t *testing.T) {
-	ready := make(chan struct{})
-	errCh := make(chan error, 1)
-	result := make(chan error, 1)
-	go func() {
-		result <- waitForStartup(context.Background(), ready, errCh)
-	}()
-
-	select {
-	case err := <-result:
-		t.Fatalf("startup returned before readiness: %v", err)
-	case <-time.After(20 * time.Millisecond):
-	}
-	close(ready)
-	if err := <-result; err != nil {
-		t.Fatalf("startup readiness error = %v", err)
-	}
-}
-
-func TestWaitForStartupPropagatesFailure(t *testing.T) {
-	ready := make(chan struct{})
-	errCh := make(chan error, 1)
-	want := errors.New("authentication failed")
-	errCh <- want
-	if err := waitForStartup(context.Background(), ready, errCh); !errors.Is(err, want) {
-		t.Fatalf("startup error = %v, want %v", err, want)
-	}
-}
-
 func TestAssistantClientStartDoesNotWaitForTelegramReadiness(t *testing.T) {
 	c := NewAssistantClient(1234, "hash", "test-token", zap.NewNop())
 	ctx, cancel := context.WithCancel(context.Background())
