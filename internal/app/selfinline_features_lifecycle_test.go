@@ -42,6 +42,7 @@ type p0SelfInlineService struct {
 	query        string
 	sentResultID string
 	sentQueryID  int64
+	edited       string
 }
 
 func (s *p0SelfInlineService) QueryInlineBot(
@@ -76,6 +77,11 @@ func (s *p0SelfInlineService) SendInlineBotResult(
 	s.sendCalls++
 	s.sentQueryID = queryID
 	s.sentResultID = resultID
+	return nil
+}
+
+func (s *p0SelfInlineService) EditMessage(_ context.Context, _ tg.InputPeerClass, _ int, text string) error {
+	s.edited = text
 	return nil
 }
 

@@ -31,6 +31,28 @@ func (f *fakeRenderer) Render(_ context.Context, request selfinline.Request) (se
 	return selfinline.Result{QueryID: 1, ResultID: "calculator", RandomID: 2}, f.err
 }
 
+type calculatorCommandService struct {
+	core.MockTelegramServicer
+	edited      string
+	sent        string
+	deleteCalls int
+}
+
+func (s *calculatorCommandService) EditMessage(_ context.Context, _ tg.InputPeerClass, _ int, text string) error {
+	s.edited = text
+	return nil
+}
+
+func (s *calculatorCommandService) SendMessage(_ context.Context, _ tg.InputPeerClass, text string) (*tg.Message, error) {
+	s.sent = text
+	return &tg.Message{ID: 100, Message: text}, nil
+}
+
+func (s *calculatorCommandService) DeleteMessage(_ context.Context, _ tg.InputPeerClass, _ []int) error {
+	s.deleteCalls++
+	return nil
+}
+
 func TestCalculatorFeatureDeclaresTypedInlineSurface(t *testing.T) {
 	p := New()
 	spec := p.FeatureSpec()
@@ -85,6 +107,7 @@ func TestCalculatorCommandUsesSelfInlineRenderer(t *testing.T) {
 	renderer := &fakeRenderer{}
 	p := New()
 	p.SetSelfInlineRenderer(renderer)
+	svc := &calculatorCommandService{}
 	ctx := &core.Context{
 		Ctx:     context.Background(),
 		RawArgs: " (1 + 2) * 3 ",
@@ -94,7 +117,7 @@ func TestCalculatorCommandUsesSelfInlineRenderer(t *testing.T) {
 			ReplyToID: 5,
 			TopicID:   4,
 		},
-		Svc: &core.MockTelegramServicer{},
+		Svc: svc,
 	}
 	if err := p.handleCommand(ctx); err != nil {
 		t.Fatal(err)
@@ -104,6 +127,33 @@ func TestCalculatorCommandUsesSelfInlineRenderer(t *testing.T) {
 	}
 	if renderer.request.ReplyToID != 5 || renderer.request.TopicID != 4 {
 		t.Fatalf("reply/topic = %d/%d", renderer.request.ReplyToID, renderer.request.TopicID)
+	}
+	if svc.edited != "" || svc.sent != "" {
+		t.Fatalf("healthy self-inline path emitted native output: edited=%q sent=%q", svc.edited, svc.sent)
+	}
+	if svc.deleteCalls != 1 {
+		t.Fatalf("successful self-inline command delete calls=%d, want 1", svc.deleteCalls)
+	}
+}
+
+func TestCalculatorCommandWithoutExpressionPrefersSelfInlineKeypad(t *testing.T) {
+	renderer := &fakeRenderer{}
+	p := New()
+	p.SetSelfInlineRenderer(renderer)
+	svc := &calculatorCommandService{}
+	ctx := calculatorCommandContext(svc, "")
+
+	if err := p.handleCommand(ctx); err != nil {
+		t.Fatalf("handleCommand() error=%v", err)
+	}
+	if renderer.calls != 1 || renderer.request.Query != "calc" || renderer.request.ResultID != "calculator" {
+		t.Fatalf("renderer calls/request=%d/%+v", renderer.calls, renderer.request)
+	}
+	if svc.edited != "" || svc.sent != "" {
+		t.Fatalf("healthy keypad path emitted native usage: edited=%q sent=%q", svc.edited, svc.sent)
+	}
+	if svc.deleteCalls != 1 {
+		t.Fatalf("successful keypad command delete calls=%d, want 1", svc.deleteCalls)
 	}
 }
 
@@ -131,13 +181,135 @@ func TestCalculatorActionMutationIsBoundedAndSafe(t *testing.T) {
 	}
 }
 
-func TestCalculatorCommandFailsClosedWhenRendererUnavailable(t *testing.T) {
+func TestCalculatorCommandFallsBackToNativeWithoutRenderer(t *testing.T) {
+	tests := []struct {
+		name    string
+		rawArgs string
+		want    []string
+	}{
+		{
+			name:    "expression",
+			rawArgs: " (1 + 2) * 3 ",
+			want:    []string{"Calculator", "<code>(1+2)*3</code>", "<b>9</b>"},
+		},
+		{
+			name: "usage",
+			want: []string{"Usage:", ".calc &lt;expression&gt;"},
+		},
+		{
+			name:    "invalid",
+			rawArgs: "1+",
+			want:    []string{"Error:", "Invalid expression:"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := New()
+			svc := &calculatorCommandService{}
+			ctx := calculatorCommandContext(svc, tc.rawArgs)
+			if err := p.handleCommand(ctx); err != nil {
+				t.Fatalf("handleCommand() error=%v", err)
+			}
+			if svc.sent != "" {
+				t.Fatalf("native userbot fallback unexpectedly sent a second message: %q", svc.sent)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(svc.edited, want) {
+					t.Fatalf("native output=%q, want %q", svc.edited, want)
+				}
+			}
+			if svc.deleteCalls != 0 {
+				t.Fatalf("native fallback deleted command, calls=%d", svc.deleteCalls)
+			}
+		})
+	}
+}
+
+func TestCalculatorCommandFallsBackAfterSafeSelfInlineFailure(t *testing.T) {
+	tests := []struct {
+		name  string
+		stage selfinline.RenderStage
+		err   error
+	}{
+		{name: "preflight", stage: selfinline.RenderStagePreflight, err: selfinline.ErrInlineDisabled},
+		{name: "query", stage: selfinline.RenderStageQuery, err: selfinline.ErrQueryFailed},
+		{name: "select", stage: selfinline.RenderStageSelect, err: selfinline.ErrNoResults},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			renderer := &fakeRenderer{err: &selfinline.RenderFailure{Stage: tc.stage, Err: tc.err}}
+			p := New()
+			p.SetSelfInlineRenderer(renderer)
+			svc := &calculatorCommandService{}
+			ctx := calculatorCommandContext(svc, "1 + 2 * 3")
+
+			if err := p.handleCommand(ctx); err != nil {
+				t.Fatalf("handleCommand() error=%v", err)
+			}
+			if renderer.calls != 1 {
+				t.Fatalf("renderer calls=%d, want 1", renderer.calls)
+			}
+			if !strings.Contains(svc.edited, "<code>1+2*3</code>") || !strings.Contains(svc.edited, "<b>7</b>") {
+				t.Fatalf("safe self-inline failure did not produce native result: %q", svc.edited)
+			}
+			if svc.deleteCalls != 0 {
+				t.Fatalf("safe fallback deleted command, calls=%d", svc.deleteCalls)
+			}
+		})
+	}
+}
+
+func TestCalculatorCommandSendStageFailureDoesNotEmitNativeDuplicate(t *testing.T) {
+	renderer := &fakeRenderer{err: &selfinline.RenderFailure{
+		Stage:            selfinline.RenderStageSend,
+		MayHaveCommitted: true,
+		Err:              selfinline.ErrSendFailed,
+	}}
 	p := New()
-	ctx := &core.Context{Ctx: context.Background(), PeerID: &tg.InputPeerSelf{}, Svc: &core.MockTelegramServicer{}}
-	if err := p.handleCommand(ctx); err != nil && !errors.Is(err, core.ErrUnavailable) {
-		// EditOrReply is allowed to succeed through the mock; the important
-		// invariant is that a nil renderer never falls back to raw MTProto.
-		t.Fatalf("handleCommand() error = %v", err)
+	p.SetSelfInlineRenderer(renderer)
+	svc := &calculatorCommandService{}
+	ctx := calculatorCommandContext(svc, "1 + 2 * 3")
+
+	if err := p.handleCommand(ctx); err != nil {
+		t.Fatalf("handleCommand() error=%v", err)
+	}
+	if strings.Contains(svc.edited, "<b>7</b>") || strings.Contains(svc.sent, "<b>7</b>") {
+		t.Fatalf("send-stage failure emitted native duplicate: edited=%q sent=%q", svc.edited, svc.sent)
+	}
+	if !strings.Contains(svc.edited, "could not be confirmed") && !strings.Contains(svc.sent, "could not be confirmed") {
+		t.Fatalf("send-stage failure missing delivery diagnostic: edited=%q sent=%q", svc.edited, svc.sent)
+	}
+	if svc.deleteCalls != 0 {
+		t.Fatalf("ambiguous send deleted command, calls=%d", svc.deleteCalls)
+	}
+}
+
+func TestCalculatorCommandOversizeRemainsBoundedBeforeRenderer(t *testing.T) {
+	renderer := &fakeRenderer{}
+	p := New()
+	p.SetSelfInlineRenderer(renderer)
+	svc := &calculatorCommandService{}
+	ctx := calculatorCommandContext(svc, strings.Repeat("1", maxExpressionBytes+1))
+
+	if err := p.handleCommand(ctx); err != nil {
+		t.Fatalf("handleCommand() error=%v", err)
+	}
+	if renderer.calls != 0 {
+		t.Fatalf("oversized expression reached self-inline renderer, calls=%d", renderer.calls)
+	}
+	if !strings.Contains(svc.edited, "limited to 128 bytes") {
+		t.Fatalf("oversize diagnostic=%q", svc.edited)
+	}
+}
+
+func calculatorCommandContext(svc *calculatorCommandService, rawArgs string) *core.Context {
+	return &core.Context{
+		Ctx:     context.Background(),
+		RawArgs: rawArgs,
+		PeerID:  &tg.InputPeerSelf{},
+		Message: &core.Message{ID: 77, IsOutgoing: true},
+		Svc:     svc,
 	}
 }
 

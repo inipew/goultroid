@@ -38,7 +38,7 @@ func New() *Plugin { return &Plugin{} }
 func (p *Plugin) Name() string { return "calculator" }
 
 func (p *Plugin) Description() string {
-	return "Bounded interactive calculator using Inline vNext and typed a2 actions"
+	return "Bounded calculator with optional Inline vNext keypad and typed a2 actions"
 }
 
 func (p *Plugin) Init() error { return nil }
@@ -55,7 +55,7 @@ func (p *Plugin) Commands() []core.Command {
 	return []core.Command{{
 		Name:        "calc",
 		Aliases:     []string{"calculator"},
-		Description: "Open the interactive calculator",
+		Description: "Calculate an expression or open the interactive calculator",
 		Usage:       ".calc [expression]",
 		Category:    "Utility",
 		Permission:  core.PermissionOwner,
@@ -145,13 +145,14 @@ func (p *Plugin) handleCommand(ctx *core.Context) error {
 	if ctx == nil || ctx.PeerID == nil {
 		return core.ErrInvalidArgs
 	}
-	if p == nil || p.renderer == nil {
-		return ctx.Status("Interactive calculator is unavailable because the Assistant inline renderer is not running.")
-	}
 	expression := compactExpression(ctx.RawArgs)
 	if len(expression) > maxExpressionBytes {
 		return ctx.Status(fmt.Sprintf("Expression is limited to %d bytes.", maxExpressionBytes))
 	}
+	if p == nil || p.renderer == nil {
+		return handleNativeCommand(ctx, expression)
+	}
+
 	query := "calc"
 	if expression != "" {
 		query += " " + expression
@@ -162,12 +163,32 @@ func (p *Plugin) handleCommand(ctx *core.Context) error {
 		request.TopicID = ctx.Message.TopicID
 	}
 	if _, err := p.renderer.Render(ctx.Ctx, request); err != nil {
-		return ctx.Status("Unable to open the interactive calculator: " + core.EscapeHTML(err.Error()))
+		if selfinline.FallbackSafe(err) {
+			return handleNativeCommand(ctx, expression)
+		}
+		return ctx.Status("Interactive calculator delivery could not be confirmed. Please retry the command.")
 	}
 	if ctx.Message != nil && ctx.Message.ID > 0 && ctx.Svc != nil {
 		_ = ctx.Svc.DeleteMessage(ctx.Ctx, ctx.PeerID, []int{ctx.Message.ID})
 	}
 	return nil
+}
+
+func handleNativeCommand(ctx *core.Context, expression string) error {
+	if ctx == nil {
+		return core.ErrInvalidArgs
+	}
+	if expression == "" {
+		return ctx.Status("Usage: <code>.calc &lt;expression&gt;</code> — example: <code>.calc (1+2)*3</code>")
+	}
+	value, err := evaluateExpression(expression)
+	if err != nil {
+		return ctx.Error("Invalid expression: " + core.EscapeHTML(err.Error()))
+	}
+	return ctx.Result(
+		"🧮 <b>Calculator</b>\n\n<code>" + core.EscapeHTML(expression) + "</code> = <b>" +
+			core.EscapeHTML(formatResult(value)) + "</b>",
+	)
 }
 
 func (p *Plugin) handleAction(ctx *orchestration.Context, actionID string) error {

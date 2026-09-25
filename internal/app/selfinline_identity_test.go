@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/gotd/td/tg"
@@ -14,7 +15,7 @@ import (
 	"github.com/inipew/goultroid/plugins/calculator"
 )
 
-func TestP0SelfInlineFailsClosedUntilAssistantIdentityIsReady(t *testing.T) {
+func TestP2CalculatorFallsBackUntilAssistantIdentityIsReady(t *testing.T) {
 	manager := plugin.NewManager(core.NewRouter("."))
 	manager.SetInlineRegistry(inlineservice.NewRegistry())
 	feature := calculator.New()
@@ -62,6 +63,9 @@ func TestP0SelfInlineFailsClosedUntilAssistantIdentityIsReady(t *testing.T) {
 	}
 	if live.queryCalls != 0 || live.sendCalls != 0 {
 		t.Fatalf("self-inline reached Telegram before Assistant identity readiness: query/send=%d/%d", live.queryCalls, live.sendCalls)
+	}
+	if !strings.Contains(live.edited, "<code>1+2</code>") || !strings.Contains(live.edited, "<b>3</b>") {
+		t.Fatalf("native calculator fallback before Assistant readiness=%q", live.edited)
 	}
 
 	identity.username = "assistant_bot"
