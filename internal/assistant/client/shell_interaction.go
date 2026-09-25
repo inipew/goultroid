@@ -366,29 +366,17 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 }
 
 func (c *AssistantClient) admitShellAction(catalog feature.Catalog, actionID string, ctx *orchestration.Context) error {
-	if ctx == nil {
-		return ErrShellUnavailable
-	}
-	session := ctx.Session()
-	private := false
-	if target, ok := ctx.Target().(presentationtelegram.MessageTarget); ok {
-		private = isPrivatePeer(target.Peer)
-	}
-	return c.admitShellInteraction(catalog, feature.InteractionAction, actionID, session.Binding.ActorID, private)
+	return c.admitShellContinuation(catalog, feature.InteractionAction, actionID, ctx)
 }
 
 func (c *AssistantClient) admitShellScreen(ctx *orchestration.Context, screenID string) error {
 	if ctx == nil {
 		return ErrShellUnavailable
 	}
-	private := false
-	if target, ok := ctx.Target().(presentationtelegram.MessageTarget); ok {
-		private = isPrivatePeer(target.Peer)
-	}
 	c.mu.RLock()
 	catalog := c.featureCatalog
 	c.mu.RUnlock()
-	return c.admitShellInteraction(catalog, feature.InteractionScreen, screenID, ctx.Session().Binding.ActorID, private)
+	return c.admitShellContinuation(catalog, feature.InteractionScreen, screenID, ctx)
 }
 
 func closeShellRegistrations(registrations []*rootinteraction.HandlerRegistration) {
@@ -443,11 +431,12 @@ func (c *AssistantClient) handleShellHelp(ctx *orchestration.Context) error {
 	current := assistantshell.DecodeState(ctx.State())
 	state := assistantshell.HelpState(ctx.State(), commands, current.Screen != assistantshell.ScreenHelp)
 	decoded := assistantshell.DecodeState(state)
-	return ctx.Transition(state, assistantshell.InteractionTTL, assistantshell.HelpView(assistantshell.HelpModel{
+	view := assistantshell.HelpView(assistantshell.HelpModel{
 		Commands: commands,
 		Page:     int(decoded.CategoryIndex),
 		Locale:   c.shellInteractionLocale(ctx),
-	}))
+	})
+	return ctx.Transition(state, assistantshell.InteractionTTL, c.shellHelpPresentation(ctx, view))
 }
 
 func (c *AssistantClient) handleShellHome(ctx *orchestration.Context) error {

@@ -21,7 +21,7 @@ func resolveInlineHelpSelection(commands []core.Command, target, locale string) 
 	if target == "" {
 		state := HelpState(InitialState(), commands, true)
 		decoded := DecodeState(state)
-		view := inlineHelpView(HelpView(HelpModel{Commands: commands, Page: int(decoded.CategoryIndex), Locale: locale}))
+		view := InlineHelpView(HelpView(HelpModel{Commands: commands, Page: int(decoded.CategoryIndex), Locale: locale}))
 		return inlineHelpSelection{
 			View:        view,
 			State:       state,
@@ -45,7 +45,7 @@ func resolveInlineHelpSelection(commands []core.Command, target, locale string) 
 				description = tr(locale, "assistant.help.no_description")
 			}
 			return inlineHelpSelection{
-				View:        inlineHelpView(HelpCommandView(HelpCommandModel{Command: command, Locale: locale})),
+				View:        InlineHelpView(HelpCommandView(HelpCommandModel{Command: command, Locale: locale})),
 				State:       EncodeState(state),
 				Title:       "/" + command.Name,
 				Description: description,
@@ -63,7 +63,7 @@ func resolveInlineHelpSelection(commands []core.Command, target, locale string) 
 		state.SettingIndex = 0
 		setHelpBinding(&state, helpCommandPageBinding(module, 0))
 		return inlineHelpSelection{
-			View: inlineHelpView(HelpModuleView(HelpModuleModel{
+			View: InlineHelpView(HelpModuleView(HelpModuleModel{
 				Module:      module,
 				ModuleIndex: moduleIndex,
 				ModuleTotal: len(modules),
@@ -91,7 +91,10 @@ func helpCommandMatchesTarget(command core.Command, target string) bool {
 	return false
 }
 
-func inlineHelpView(view presentation.View) presentation.View {
+// InlineHelpView removes message-only shell chrome from a canonical help view.
+// Help navigation buttons remain unchanged and are compiled through the shared
+// a2 interaction runtime for inline-message callbacks.
+func InlineHelpView(view presentation.View) presentation.View {
 	rows := make([]presentation.Row, 0, len(view.Rows))
 	for _, row := range view.Rows {
 		filtered := make(presentation.Row, 0, len(row))

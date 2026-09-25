@@ -31,6 +31,17 @@ func TestP1UserbotHelpUsesCanonicalSelfInlineAssistantPresentation(t *testing.T)
 			"SetHelpCommandProvider",
 			"CommandsForSurface(execution.SourceUserbot)",
 		},
+		filepath.Join(root, "internal", "assistant", "client", "interaction_help.go"): {
+			"shellHelpPresentation(ctx, view)",
+		},
+		filepath.Join(root, "internal", "assistant", "client", "shell_interaction.go"): {
+			"shellHelpPresentation(ctx, view)",
+			"admitShellContinuation",
+		},
+		filepath.Join(root, "internal", "assistant", "client", "shell_continuation.go"): {
+			"AdmitInteractionIdentity(interaction, execution.SourceInline",
+			"AdmitInteraction(interaction, execution.SourceAssistant",
+		},
 	}
 	for path, required := range checks {
 		raw, err := os.ReadFile(path)
@@ -52,6 +63,7 @@ func TestP1UserbotHelpDoesNotCreateSecondInteractionRuntime(t *testing.T) {
 		filepath.Join("plugins", "help", "help.go"),
 		filepath.Join("internal", "assistant", "shell", "inline_help.go"),
 		filepath.Join("internal", "assistant", "client", "help_commands.go"),
+		filepath.Join("internal", "assistant", "client", "shell_continuation.go"),
 	} {
 		raw, err := os.ReadFile(filepath.Join(root, rel))
 		if err != nil {

@@ -46,7 +46,8 @@ func (c *AssistantClient) stepShellHelpModule(ctx *orchestration.Context, delta 
 		return ErrShellHelpSelectionStale
 	}
 	page := int(shell.DecodeState(state).CategoryIndex)
-	return ctx.Transition(state, 0, shell.HelpView(shell.HelpModel{Commands: commands, Page: page, Locale: c.shellInteractionLocale(ctx)}))
+	view := shell.HelpView(shell.HelpModel{Commands: commands, Page: page, Locale: c.shellInteractionLocale(ctx)})
+	return ctx.Transition(state, 0, c.shellHelpPresentation(ctx, view))
 }
 
 func (c *AssistantClient) handleShellHelpPrev(ctx *orchestration.Context) error {
@@ -66,11 +67,12 @@ func (c *AssistantClient) handleShellHelpModuleSlot(ctx *orchestration.Context, 
 	if !ok {
 		return ErrShellHelpSelectionStale
 	}
-	return ctx.Transition(state, 0, shell.HelpModuleView(shell.HelpModuleModel{
+	view := shell.HelpModuleView(shell.HelpModuleModel{
 		Module: module,
 		Page:   int(shell.DecodeState(state).SettingIndex),
 		Locale: c.shellInteractionLocale(ctx),
-	}))
+	})
+	return ctx.Transition(state, 0, c.shellHelpPresentation(ctx, view))
 }
 
 func (c *AssistantClient) stepShellHelpCommand(ctx *orchestration.Context, delta int) error {
@@ -82,11 +84,12 @@ func (c *AssistantClient) stepShellHelpCommand(ctx *orchestration.Context, delta
 	if !ok {
 		return ErrShellHelpSelectionStale
 	}
-	return ctx.Transition(state, 0, shell.HelpModuleView(shell.HelpModuleModel{
+	view := shell.HelpModuleView(shell.HelpModuleModel{
 		Module: module,
 		Page:   int(shell.DecodeState(state).SettingIndex),
 		Locale: c.shellInteractionLocale(ctx),
-	}))
+	})
+	return ctx.Transition(state, 0, c.shellHelpPresentation(ctx, view))
 }
 
 func (c *AssistantClient) handleShellHelpCmdPrev(ctx *orchestration.Context) error {
@@ -105,7 +108,8 @@ func (c *AssistantClient) handleShellHelpCommandSlot(ctx *orchestration.Context,
 	if !ok {
 		return ErrShellHelpSelectionStale
 	}
-	return ctx.Transition(state, 0, shell.HelpCommandView(shell.HelpCommandModel{Command: command, Locale: c.shellInteractionLocale(ctx)}))
+	view := shell.HelpCommandView(shell.HelpCommandModel{Command: command, Locale: c.shellInteractionLocale(ctx)})
+	return ctx.Transition(state, 0, c.shellHelpPresentation(ctx, view))
 }
 
 func (c *AssistantClient) handleShellHelpBack(ctx *orchestration.Context) error {
@@ -117,9 +121,10 @@ func (c *AssistantClient) handleShellHelpBack(ctx *orchestration.Context) error 
 	if !ok {
 		return ErrShellHelpSelectionStale
 	}
-	return ctx.Transition(state, 0, shell.HelpModuleView(shell.HelpModuleModel{
+	view := shell.HelpModuleView(shell.HelpModuleModel{
 		Module: module,
 		Page:   int(shell.DecodeState(state).SettingIndex),
 		Locale: c.shellInteractionLocale(ctx),
-	}))
+	})
+	return ctx.Transition(state, 0, c.shellHelpPresentation(ctx, view))
 }

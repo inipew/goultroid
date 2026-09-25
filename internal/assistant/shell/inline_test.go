@@ -185,3 +185,22 @@ func TestInlineHelpActionsAreDeclaredOnInlineSurface(t *testing.T) {
 		}
 	}
 }
+
+func TestInlineHelpViewStripsOnlyMessageShellChrome(t *testing.T) {
+	view := HelpCommandView(HelpCommandModel{Command: core.Command{Name: "ping", Category: "System"}})
+	filtered := InlineHelpView(view)
+	seenBack := false
+	for _, row := range filtered.Rows {
+		for _, button := range row {
+			switch button.ActionID {
+			case ActionHome, ActionClose:
+				t.Fatalf("inline continuation retained message-only action %q", button.ActionID)
+			case ActionHelpBack:
+				seenBack = true
+			}
+		}
+	}
+	if !seenBack {
+		t.Fatal("inline continuation removed canonical help navigation")
+	}
+}
