@@ -35,7 +35,7 @@ func TestSemanticResponseIncomingReusesReplyForFinalResult(t *testing.T) {
 	}
 }
 
-func TestSemanticResponseOutgoingEditsTriggerInPlace(t *testing.T) {
+func TestSemanticResponseOutgoingEditsTriggerInPlaceAndTracksAnchor(t *testing.T) {
 	mock := &mockTelegramServicer{}
 	ctx := &Context{
 		Ctx:     context.Background(),
@@ -52,6 +52,15 @@ func TestSemanticResponseOutgoingEditsTriggerInPlace(t *testing.T) {
 	}
 	if mock.sentText != "" {
 		t.Fatalf("outgoing semantic response unexpectedly sent new message %q", mock.sentText)
+	}
+	if ctx.LastResponseID != 205 {
+		t.Fatalf("LastResponseID=%d, want outgoing anchor 205", ctx.LastResponseID)
+	}
+	if err := ctx.Messages().DeleteResponse(); err != nil {
+		t.Fatalf("DeleteResponse() error=%v", err)
+	}
+	if len(mock.deletedIDs) != 1 || mock.deletedIDs[0] != 205 {
+		t.Fatalf("deleted IDs=%v, want [205]", mock.deletedIDs)
 	}
 }
 
