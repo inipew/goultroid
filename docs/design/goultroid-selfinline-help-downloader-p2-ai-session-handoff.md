@@ -1042,3 +1042,114 @@ TestAssistantDirectHelpPreservesPublicCommandPermission
 ```
 
 This verifies that a non-owner visitor can still invoke direct `/help`, receives canonical a2 Help, and does not fall back to the legacy Help handler.
+
+### 16.11 Downloader generation-specific lifecycle acceptance
+
+The generic feature-driver generation test is now supplemented by a Downloader-specific lifecycle gate:
+
+```text
+26c415672a95bc4cf1df1f835a6095451a827636
+test(selfinline): cover downloader generation reload
+```
+
+New test:
+
+```text
+TestSelfInlineDownloaderDisableEnableRejectsOldGenerationAndRebindsNew
+```
+
+The test uses the production Plugin Manager, lifecycle-owned inline registry, feature catalog, interaction runtime/dispatcher, Downloader FeatureDriver, and `RefreshInteractionBindings`. It proves:
+
+```text
+generation N inline callback
+  -> dispatch succeeds through TaskEngine
+
+create untouched generation N callback
+  -> disable downloader
+  -> generation-N sessions are reclaimed
+  -> callback N is rejected before TaskEngine
+
+enable downloader without restarting Assistant
+  -> feature scope generation changes
+  -> driver bindings refresh against new scope
+  -> old callback N remains rejected
+  -> newly minted callback N+1 dispatches and edits successfully
+```
+
+This closes the previous source-level ambiguity around Downloader-specific disable/enable behavior instead of relying only on the synthetic generation-driver canary.
+
+### 16.12 Help pagination acceptance
+
+Help pagination now has a direct a2 transition regression:
+
+```text
+a2d58b91d08a2f75368a21bdc4de3d21b90d6163
+test(assistant): cover help pagination transitions
+```
+
+New test:
+
+```text
+TestAssistantDirectHelpPaginationTransitionsAndStalesOldButtons
+```
+
+It constructs enough modules and commands to force both pagination levels and verifies:
+
+```text
+/help root page 1
+  -> module next -> page 2
+  -> reused old next token is stale
+  -> module previous -> page 1
+  -> open Module00
+  -> command page 1
+  -> command next -> page 2
+  -> reused old command-next token is stale
+  -> command previous -> page 1
+```
+
+This closes the explicit pagination portion of Definition of Completion item 2 at source/regression level.
+
+### 16.13 Runtime validation attempt
+
+A real checkout was attempted from the execution environment before these commits:
+
+```text
+git clone --branch test-next --single-branch https://github.com/inipew/goultroid.git
+fatal: unable to access 'https://github.com/inipew/goultroid.git/':
+Could not resolve host: github.com
+```
+
+Therefore `go test` and `go build` still cannot be truthfully marked as executed in this session.
+
+What **was** executed locally for the two new Go tests:
+
+```text
+gofmt -w internal/assistant/client/selfinline_downloader_reload_e2e_test.go
+gofmt -w internal/assistant/client/shell_help_pagination_acceptance_test.go
+
+gofmt -d ...  # clean, no diff
+```
+
+Their API contracts were also cross-checked against current `test-next` source for:
+
+- Plugin Manager `Disable` / `Enable` lifecycle;
+- capability-gated filesystem/task PluginContext;
+- generation-owned inline registrations;
+- feature-scope cleanup and session cancellation;
+- `RefreshInteractionBindings` generation reconciliation;
+- interaction stale-token semantics;
+- Help module/command pagination state transitions.
+
+GitHub CI was **not** checked.
+
+### 16.14 Updated remaining work
+
+After the commits above, the handoff implementation/regression work is effectively closed at source level. Remaining hard gates are:
+
+1. run the targeted/full `go test` set on a real checkout;
+2. run `go build -o bin/goultroid ./cmd/goultroid`;
+3. fix any compile/test failures found by those executions;
+4. perform the live Telegram smoke matrix from section 11;
+5. record final resource/session/handler settling evidence and close the handoff.
+
+Do not report P2/live callback closure as final until these runtime/live gates pass.
