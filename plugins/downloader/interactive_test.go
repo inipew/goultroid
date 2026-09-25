@@ -299,10 +299,14 @@ func viewHasAction(rows []presentation.Row, actionID string) bool {
 type cancellationRecordingClient struct {
 	tasks.Client
 	cancelled []tasks.TaskID
+	cancelErr error
 }
 
 func (c *cancellationRecordingClient) Cancel(id tasks.TaskID, reason tasks.Cause) (tasks.CancelReceipt, error) {
 	c.cancelled = append(c.cancelled, id)
+	if c.cancelErr != nil {
+		return tasks.CancelReceipt{TaskID: id, Accepted: false, Reason: reason}, c.cancelErr
+	}
 	return tasks.CancelReceipt{TaskID: id, Accepted: true, Reason: reason}, nil
 }
 
@@ -378,5 +382,23 @@ func TestP4RetryActionRequiresFailedSelection(t *testing.T) {
 	state.Phase = phaseRunning
 	if err := p.validateFinalAction(state, actionRetry); !errors.Is(err, core.ErrInvalidArgs) {
 		t.Fatalf("running retry error=%v, want ErrInvalidArgs", err)
+	}
+}
+
+func TestP4CancelInteractivePipelinePropagatesCancellationFailure(t *testing.T) {
+	client := &cancellationRecordingClient{cancelErr: errors.New("cancel unavailable")}
+	p := New(client)
+	if err := p.cancelInteractivePipeline("downloader:interactive:42"); err == nil {
+		t.Fatal("cancelInteractivePipeline() hid cancellation failure")
+	}
+}
+
+func TestP4DeliveryFailureExplainsReopenSemantics(t *testing.T) {
+	view := deliveryFailedView()
+	if !strings.Contains(view.Text, "Reopen the downloader") || !strings.Contains(view.Text, "retained asset") {
+		t.Fatalf("delivery failure view=%q", view.Text)
+	}
+	if len(view.Rows) != 0 {
+		t.Fatalf("terminal delivery failure unexpectedly exposes dead actions: %+v", view.Rows)
 	}
 }

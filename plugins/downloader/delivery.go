@@ -363,7 +363,7 @@ func isDeliveryLifecycleCancellation(err error) bool {
 }
 
 func deliveryFailedView() presentation.View {
-	return presentation.View{Text: "⚠️ <b>Download retained, but Telegram delivery failed.</b>\nThe retained asset was kept safely for retry."}
+	return presentation.View{Text: "⚠️ <b>Download retained, but Telegram delivery failed.</b>\nReopen the downloader to retry. The retained asset remains safely stored."}
 }
 
 func deliveredView() presentation.View {

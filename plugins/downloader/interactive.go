@@ -324,13 +324,15 @@ func (p *Plugin) handleInteractiveAction(ctx *orchestration.Context, actionID st
 		}
 		return ctx.Transition(encoded, interactiveTTL, extractorChoiceView(state.URL))
 	case actionCancel:
+		if state.Phase == phaseRunning && strings.TrimSpace(state.TaskRoot) != "" {
+			if err := p.cancelInteractivePipeline(state.TaskRoot); err != nil {
+				return ctx.Answer("Cancellation could not be confirmed. Please try again.", true)
+			}
+		}
 		if err := ctx.Edit(cancelledView()); err != nil {
 			return err
 		}
 		ctx.Cancel()
-		if state.Phase == phaseRunning && strings.TrimSpace(state.TaskRoot) != "" && p.tasks != nil {
-			_ = p.cancelInteractivePipeline(state.TaskRoot)
-		}
 		return nil
 	default:
 		return p.executeInteractiveDownload(ctx, state, actionID)
