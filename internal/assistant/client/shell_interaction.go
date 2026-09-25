@@ -247,6 +247,30 @@ func (c *AssistantClient) admitShellInteraction(catalog feature.Catalog, kind fe
 	return nil
 }
 
+func (c *AssistantClient) syncShellActions(engine *orchestration.Engine, catalog feature.Catalog) error {
+	if engine == nil || catalog == nil {
+		return ErrShellUnavailable
+	}
+	scope, ok := catalog.FeatureScope(assistantshell.FeatureID)
+	if !ok || scope.IsZero() {
+		c.clearShellActions()
+		return nil
+	}
+	return c.ensureShellActions(engine, catalog)
+}
+
+func (c *AssistantClient) clearShellActions() {
+	if c == nil {
+		return
+	}
+	c.shellMu.Lock()
+	registrations := c.shellRegistrations
+	c.shellRegistrations = nil
+	c.shellScope = tasks.ScopeIdentity{}
+	c.shellMu.Unlock()
+	closeShellRegistrations(registrations)
+}
+
 func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catalog feature.Catalog) error {
 	if engine == nil || catalog == nil {
 		return ErrShellUnavailable
