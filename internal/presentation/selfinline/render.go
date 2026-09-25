@@ -121,10 +121,7 @@ func (b *RenderBridge) Render(ctx context.Context, request Request) (Result, err
 
 	results, err := b.transport.QueryInlineBot(ctx, username, request.Peer, query, offset)
 	if err != nil {
-		if tg.IsBotInlineDisabled(err) {
-			return Result{}, ErrInlineDisabled
-		}
-		return Result{}, err
+		return Result{}, normalizeQueryError(err)
 	}
 	selectedID, err := selectResult(results, request.ResultID, request.ResultIndex)
 	if err != nil {
@@ -150,7 +147,7 @@ func (b *RenderBridge) Render(ctx context.Context, request Request) (Result, err
 		request.Silent,
 		request.HideVia,
 	); err != nil {
-		return Result{}, err
+		return Result{}, normalizeSendError(err)
 	}
 	return Result{QueryID: results.QueryID, ResultID: selectedID, RandomID: randomID}, nil
 }

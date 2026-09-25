@@ -25,7 +25,7 @@ func TestP0AssistantInlineCapabilityPreflightUsesTelegramBotIdentity(t *testing.
 			"assistantclient.ErrInlineDisabled",
 			"selfinline.ErrInlineDisabled",
 		},
-		filepath.Join(root, "internal", "presentation", "selfinline", "render.go"): {
+		filepath.Join(root, "internal", "presentation", "selfinline", "diagnostics.go"): {
 			"tg.IsBotInlineDisabled(err)",
 			"ErrInlineDisabled",
 		},
@@ -49,6 +49,7 @@ func TestP0AssistantInlineCapabilityPreflightAddsNoBackgroundRuntime(t *testing.
 	for _, rel := range []string{
 		filepath.Join("internal", "assistant", "client", "identity.go"),
 		filepath.Join("internal", "presentation", "selfinline", "render.go"),
+		filepath.Join("internal", "presentation", "selfinline", "diagnostics.go"),
 	} {
 		raw, err := os.ReadFile(filepath.Join(root, rel))
 		if err != nil {
