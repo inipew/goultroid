@@ -67,7 +67,7 @@ func (p *Plugin) Commands() []core.Command {
 
 func (p *Plugin) handleAddon(ctx *core.Context) error {
 	if p.mgr == nil {
-		return ctx.EditOrReply("⚠️ Addon manager is not configured.")
+		return ctx.Status("Addon manager is not configured.")
 	}
 
 	if len(ctx.Args) == 0 || ctx.Args[0] == "list" {
@@ -91,14 +91,14 @@ func (p *Plugin) handleAddon(ctx *core.Context) error {
 	case "revoke":
 		return p.handleRevoke(ctx)
 	default:
-		return ctx.EditOrReply("⚠️ Unknown subcommand. Use: <code>list</code>, <code>info</code>, <code>install</code>, <code>uninstall</code>, <code>enable</code>, <code>disable</code>, <code>grant</code>, or <code>revoke</code>.")
+		return ctx.Status("Unknown subcommand. Use: <code>list</code>, <code>info</code>, <code>install</code>, <code>uninstall</code>, <code>enable</code>, <code>disable</code>, <code>grant</code>, or <code>revoke</code>.")
 	}
 }
 
 func (p *Plugin) handleList(ctx *core.Context) error {
 	addons, err := p.mgr.List(ctx.Ctx)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to list addons: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to list addons: %v", err))
 	}
 
 	if len(addons) == 0 {
@@ -125,18 +125,18 @@ func (p *Plugin) handleList(ctx *core.Context) error {
 	}
 
 	card.WithFooter("<i>Use <code>.addon info &lt;name&gt;</code> for details.</i>")
-	return ctx.EditOrReply(card.Render())
+	return ctx.Result(card.Render())
 }
 
 func (p *Plugin) handleInfo(ctx *core.Context) error {
 	if len(ctx.Args) < 2 {
-		return ctx.EditOrReply("⚠️ Please specify the addon name: <code>.addon info &lt;name&gt;</code>")
+		return ctx.Status("Please specify the addon name: <code>.addon info &lt;name&gt;</code>")
 	}
 
 	name := ctx.Args[1]
 	rec, err := p.mgr.Get(ctx.Ctx, name)
 	if err != nil || rec == nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Addon <code>%s</code> not found.", core.EscapeHTML(name)))
+		return ctx.Error(fmt.Sprintf("Addon <code>%s</code> not found.", core.EscapeHTML(name)))
 	}
 
 	statusEmoji := "🟢"
@@ -183,7 +183,7 @@ func (p *Plugin) handleInfo(ctx *core.Context) error {
 		card.AddField("Granted Capabilities", "<i>None</i>")
 	}
 
-	return ctx.EditOrReply(card.Render())
+	return ctx.Result(card.Render())
 }
 
 func (p *Plugin) handleInstall(ctx *core.Context) error {
@@ -205,12 +205,12 @@ func (p *Plugin) handleInstall(ctx *core.Context) error {
 
 	rawManifest = strings.TrimSpace(rawManifest)
 	if rawManifest == "" {
-		return ctx.EditOrReply("⚠️ Please provide manifest YAML content or reply to a manifest message:\n<code>.addon install name: example\nversion: 1.0.0\ncommands: [foo]</code>")
+		return ctx.Status("Please provide manifest YAML content or reply to a manifest message:\n<code>.addon install name: example\nversion: 1.0.0\ncommands: [foo]</code>")
 	}
 
 	manifest, err := p.mgr.Install(ctx.Ctx, []byte(rawManifest), sourceURL)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to install addon: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to install addon: %v", err))
 	}
 
 	capStr := "None"
@@ -231,46 +231,46 @@ func (p *Plugin) handleInstall(ctx *core.Context) error {
 		AddField("Declared Capabilities", ui.Code(capStr)).
 		WithFooter("Non-privileged capabilities are active. Privileged capabilities require an explicit owner grant.")
 
-	return ctx.EditOrReply(card.Render())
+	return ctx.Result(card.Render())
 }
 
 func (p *Plugin) handleUninstall(ctx *core.Context) error {
 	if len(ctx.Args) < 2 {
-		return ctx.EditOrReply("⚠️ Please specify the addon name: <code>.addon uninstall &lt;name&gt;</code>")
+		return ctx.Status("Please specify the addon name: <code>.addon uninstall &lt;name&gt;</code>")
 	}
 
 	name := ctx.Args[1]
 	if err := p.mgr.Uninstall(ctx.Ctx, name); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to uninstall addon: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to uninstall addon: %v", err))
 	}
 
-	return ctx.EditOrReply(fmt.Sprintf("🗑️ <b>Uninstalled addon:</b> <code>%s</code> (all capability permissions revoked)", core.EscapeHTML(name)))
+	return ctx.Success(fmt.Sprintf("Uninstalled addon <code>%s</code>; capability permissions revoked.", core.EscapeHTML(name)))
 }
 
 func (p *Plugin) handleEnable(ctx *core.Context) error {
 	if len(ctx.Args) < 2 {
-		return ctx.EditOrReply("⚠️ Please specify the addon name: <code>.addon enable &lt;name&gt;</code>")
+		return ctx.Status("Please specify the addon name: <code>.addon enable &lt;name&gt;</code>")
 	}
 
 	name := ctx.Args[1]
 	if err := p.mgr.Enable(ctx.Ctx, name); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to enable addon: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to enable addon: %v", err))
 	}
 
-	return ctx.EditOrReply(fmt.Sprintf("🟢 <b>Enabled addon:</b> <code>%s</code> (capability permissions restored)", core.EscapeHTML(name)))
+	return ctx.Success(fmt.Sprintf("Enabled addon <code>%s</code>; capability permissions restored.", core.EscapeHTML(name)))
 }
 
 func (p *Plugin) handleDisable(ctx *core.Context) error {
 	if len(ctx.Args) < 2 {
-		return ctx.EditOrReply("⚠️ Please specify the addon name: <code>.addon disable &lt;name&gt;</code>")
+		return ctx.Status("Please specify the addon name: <code>.addon disable &lt;name&gt;</code>")
 	}
 
 	name := ctx.Args[1]
 	if err := p.mgr.Disable(ctx.Ctx, name); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to disable addon: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to disable addon: %v", err))
 	}
 
-	return ctx.EditOrReply(fmt.Sprintf("🔴 <b>Disabled addon:</b> <code>%s</code> (capability permissions revoked)", core.EscapeHTML(name)))
+	return ctx.Success(fmt.Sprintf("Disabled addon <code>%s</code>; capability permissions revoked.", core.EscapeHTML(name)))
 }
 
 func eventStrings(events []addon.EventType) []string {
@@ -283,15 +283,15 @@ func eventStrings(events []addon.EventType) []string {
 
 func (p *Plugin) handleGrant(ctx *core.Context) error {
 	if len(ctx.Args) < 3 {
-		return ctx.EditOrReply("⚠️ Usage: <code>.addon grant &lt;name&gt; &lt;capability&gt;</code>")
+		return ctx.Status("Usage: <code>.addon grant &lt;name&gt; &lt;capability&gt;</code>")
 	}
 	name := strings.ToLower(strings.TrimSpace(ctx.Args[1]))
 	capability := addon.Capability(strings.TrimSpace(ctx.Args[2]))
 	if !addon.IsPrivilegedCapability(capability) {
-		return ctx.EditOrReply(fmt.Sprintf("⚠️ <code>%s</code> is not a privileged capability.", core.EscapeHTML(string(capability))))
+		return ctx.Status(fmt.Sprintf("<code>%s</code> is not a privileged capability.", core.EscapeHTML(string(capability))))
 	}
 	if err := p.mgr.GrantPrivilegedCapability(ctx.Ctx, name, capability); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to grant <code>%s</code>: %v", core.EscapeHTML(string(capability)), err))
+		return ctx.Error(fmt.Sprintf("Failed to grant <code>%s</code>: %v", core.EscapeHTML(string(capability)), err))
 	}
 	return ctx.EditOrReply(fmt.Sprintf(
 		"🔐 Granted <code>%s</code> to <code>%s</code> for this runtime session.",
@@ -301,12 +301,12 @@ func (p *Plugin) handleGrant(ctx *core.Context) error {
 
 func (p *Plugin) handleRevoke(ctx *core.Context) error {
 	if len(ctx.Args) < 3 {
-		return ctx.EditOrReply("⚠️ Usage: <code>.addon revoke &lt;name&gt; &lt;capability&gt;</code>")
+		return ctx.Status("Usage: <code>.addon revoke &lt;name&gt; &lt;capability&gt;</code>")
 	}
 	name := strings.ToLower(strings.TrimSpace(ctx.Args[1]))
 	capability := addon.Capability(strings.TrimSpace(ctx.Args[2]))
 	if !addon.IsPrivilegedCapability(capability) {
-		return ctx.EditOrReply(fmt.Sprintf("⚠️ <code>%s</code> is not a privileged capability.", core.EscapeHTML(string(capability))))
+		return ctx.Status(fmt.Sprintf("<code>%s</code> is not a privileged capability.", core.EscapeHTML(string(capability))))
 	}
 	p.mgr.RevokePrivilegedCapability(name, capability)
 	return ctx.EditOrReply(fmt.Sprintf(

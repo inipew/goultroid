@@ -170,54 +170,54 @@ func (p *Plugin) removeBlacklistRule(ctx context.Context, chatID int64, word str
 }
 func (p *Plugin) handleBlacklist(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		_ = ctx.EditOrReply("⚠️ Usage: <code>.blacklist &lt;word/phrase&gt;</code>")
+		_ = ctx.Status("Usage: <code>.blacklist &lt;word/phrase&gt;</code>")
 		return errors.New("missing blacklist word")
 	}
 	word := strings.ToLower(strings.TrimSpace(ctx.RawArgs))
 	if word == "" {
-		_ = ctx.EditOrReply("⚠️ Blacklist word cannot be empty.")
+		_ = ctx.Status("Blacklist word cannot be empty.")
 		return errors.New("empty blacklist word")
 	}
 	if len(word) > MaxRuleBytes {
-		_ = ctx.EditOrReply(fmt.Sprintf("⚠️ Blacklist rule is too long (max %d bytes).", MaxRuleBytes))
+		_ = ctx.Status(fmt.Sprintf("Blacklist rule is too long (max %d bytes).", MaxRuleBytes))
 		return fmt.Errorf("%w: blacklist rule exceeds %d bytes", core.ErrInvalidArgs, MaxRuleBytes)
 	}
 	chatID := p.getChatID(ctx)
 	if err := p.addBlacklistRule(ctx.Ctx, chatID, word); err != nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to add to blacklist: %v", err))
+		_ = ctx.Error(fmt.Sprintf("Failed to add to blacklist: %v", err))
 		return err
 	}
-	return ctx.EditOrReply(fmt.Sprintf("🚫 Added <code>%s</code> to chat blacklist.", html.EscapeString(word)))
+	return ctx.Success(fmt.Sprintf("Added <code>%s</code> to chat blacklist.", html.EscapeString(word)))
 }
 func (p *Plugin) handleUnblacklist(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		_ = ctx.EditOrReply("⚠️ Usage: <code>.unblacklist &lt;word/phrase&gt;</code>")
+		_ = ctx.Status("Usage: <code>.unblacklist &lt;word/phrase&gt;</code>")
 		return errors.New("missing blacklist word")
 	}
 	word := strings.ToLower(strings.TrimSpace(ctx.RawArgs))
 	chatID := p.getChatID(ctx)
 	if err := p.removeBlacklistRule(ctx.Ctx, chatID, word); err != nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to remove from blacklist: %v", err))
+		_ = ctx.Error(fmt.Sprintf("Failed to remove from blacklist: %v", err))
 		return err
 	}
-	return ctx.EditOrReply(fmt.Sprintf("✅ Removed <code>%s</code> from chat blacklist.", html.EscapeString(word)))
+	return ctx.Success(fmt.Sprintf("Removed <code>%s</code> from chat blacklist.", html.EscapeString(word)))
 }
 func (p *Plugin) handleListBlacklists(ctx *core.Context) error {
 	chatID := p.getChatID(ctx)
 	words, err := p.db.ListBlacklists(ctx.Ctx, chatID)
 	if err != nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to list blacklists: %v", err))
+		_ = ctx.Error(fmt.Sprintf("Failed to list blacklists: %v", err))
 		return err
 	}
 	if len(words) == 0 {
-		return ctx.EditOrReply("ℹ️ No blacklisted words in this chat.")
+		return ctx.Status("No blacklisted words in this chat.")
 	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "🚫 <b>Blacklisted Words in this chat (%d):</b>\n", len(words))
 	for _, w := range words {
 		fmt.Fprintf(&sb, "• <code>%s</code>\n", html.EscapeString(w))
 	}
-	return ctx.EditOrReply(sb.String())
+	return ctx.Result(sb.String())
 }
 
 func (p *Plugin) AssistantRuleInterested(chatID int64) bool {
