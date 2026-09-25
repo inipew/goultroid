@@ -8,6 +8,7 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/command"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/settings"
 )
@@ -65,7 +66,16 @@ func TestAssistantDirectHelpAndSettingsUseA2Shell(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	client.SetSettingsService(settings.NewService(nil, registry, nil))
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := settings.NewSQLiteRepository(db)
+	if err := repo.InitSchema(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	client.SetSettingsService(settings.NewService(repo, registry, nil))
 
 	peer := &tg.InputPeerUser{UserID: 7}
 	messageContext := command.MessageContext{

@@ -4,39 +4,22 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/presentation/selfinline"
-	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/ui"
-	"github.com/inipew/goultroid/internal/ui/render"
 )
 
 const maxTelegramLen = 4096
 
-var (
-	_ callback.Handler            = (*Plugin)(nil)
-	_ callback.HandlerWithOptions = (*Plugin)(nil)
-)
-
-type helpMenuState struct {
-	Category string `json:"c"`
-	Page     int    `json:"p"`
-	UserID   int64  `json:"u"`
-}
-
 type Plugin struct {
 	router     *core.Router
-	stateStore callback.StateWriter
 	renderer   selfinline.Renderer
 }
 
 func New(router *core.Router) *Plugin { return &Plugin{router: router} }
-
-func (p *Plugin) SetStateStore(store callback.StateWriter) { p.stateStore = store }
 
 func (p *Plugin) SetSelfInlineRenderer(renderer selfinline.Renderer) {
 	if p != nil {
@@ -46,12 +29,6 @@ func (p *Plugin) SetSelfInlineRenderer(renderer selfinline.Renderer) {
 
 func (p *Plugin) Name() string      { return "help" }
 func (p *Plugin) Namespace() string { return "help" }
-
-func (p *Plugin) CallbackOptions() callback.CallbackHandlerOptions {
-	// Help may answer with action-specific feedback. Leave acknowledgement to
-	// the handler (or the router's fallback after a successful edit).
-	return callback.CallbackHandlerOptions{AutoAnswer: false}
-}
 
 func (p *Plugin) Init() error { return nil }
 
@@ -239,11 +216,7 @@ func (p *Plugin) handleHelp(ctx *core.Context) error {
 	}
 
 	categories, catNames := p.getCategoryNames(source)
-	overviewText := p.renderOverviewWithCategories(prefix, categories, catNames, source)
-	if p.stateStore != nil {
-		return sendResultMarkup(ctx, overviewText, p.buildOverviewMarkup(catNames, ctx.SenderID()))
-	}
-	return sendResult(ctx, overviewText)
+	return sendResult(ctx, p.renderOverviewWithCategories(prefix, categories, catNames, source))
 }
 
 func (p *Plugin) openUserbotHelp(ctx *core.Context, prefix string) error {
@@ -363,72 +336,4 @@ func (p *Plugin) renderOverviewWithCategories(prefix string, categories map[stri
 		prefix, prefix,
 	))
 	return strings.TrimSpace(sb.String())
-}
-
-func (p *Plugin) buildOverviewMarkup(catNames []string, userID int64) tg.ReplyMarkupClass {
-	if p.stateStore == nil {
-		return nil
-	}
-
-	var rows []ui.ButtonRow
-	var row []ui.Button
-	for _, cat := range catNames {
-		st := helpMenuState{Category: cat, UserID: userID}
-		oid := p.stateStore.Store(st, userID, 15*time.Minute)
-		row = append(row, ui.NewCallbackButton("📂 "+cat, callback.EncodeCallbackData("help", "cat", oid)))
-		if len(row) == 2 {
-			rows = append(rows, row)
-			row = nil
-		}
-	}
-	if len(row) > 0 {
-		rows = append(rows, row)
-	}
-
-	backBtn := ui.NewCallbackButton("« Back to Menu", callback.EncodeCallbackData("assistant", "start", callback.ActionNoop))
-	closeBtn := ui.NewCallbackButton("❌ Close", callback.EncodeCallbackData("help", "close", callback.ActionNoop))
-	rows = append(rows, ui.ButtonRow{backBtn, closeBtn})
-	return render.ToTelegramMarkup(ui.Markup{Rows: rows})
-}
-
-func (p *Plugin) HandleCallback(ctx *callback.CallbackContext) error {
-	switch ctx.Action {
-	case "close":
-		return ctx.DisableButtons("✅ Help menu closed.")
-
-	case "home":
-		prefix := p.router.Prefix()
-		categories, catNames := p.getCategoryNames(execution.SourceUserbot)
-		overviewText := p.renderOverviewWithCategories(prefix, categories, catNames, execution.SourceUserbot)
-		markup := p.buildOverviewMarkup(catNames, ctx.UserID)
-		return ctx.Edit(overviewText, markup)
-
-	case "cat":
-		var state helpMenuState
-		if ctx.State != nil {
-			if s, ok := ctx.State.(helpMenuState); ok {
-				state = s
-			}
-		}
-		if state.Category == "" {
-			return ctx.Answer("Module not found", false)
-		}
-
-		matchedCat, catCmds := p.getCategoryCommands(state.Category, execution.SourceUserbot)
-		if matchedCat == "" {
-			return ctx.Answer("Module not found", false)
-		}
-
-		cardText := p.renderCategoryCard(matchedCat, catCmds, p.router.Prefix())
-		homeOid := p.stateStore.Store(helpMenuState{UserID: ctx.UserID}, ctx.UserID, 15*time.Minute)
-		navRow := ui.ButtonRow{
-			ui.NewCallbackButton("🔙 Back", callback.EncodeCallbackData("help", "home", homeOid)),
-			ui.NewCallbackButton("❌ Close", callback.EncodeCallbackData("help", "close", callback.ActionNoop)),
-		}
-		markup := render.ToTelegramMarkup(ui.Markup{Rows: []ui.ButtonRow{navRow}})
-		return ctx.Edit(cardText, markup)
-
-	default:
-		return nil
-	}
 }

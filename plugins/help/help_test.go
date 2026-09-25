@@ -4,13 +4,11 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/presentation/selfinline"
-	"github.com/inipew/goultroid/internal/services/callback"
 )
 
 type mockService struct {
@@ -30,12 +28,6 @@ func (f *fakeHelpRenderer) Render(_ context.Context, request selfinline.Request)
 	f.calls++
 	f.request = request
 	return selfinline.Result{QueryID: 1, ResultID: "assistant_help", RandomID: 2}, f.err
-}
-
-func TestPlugin_CallbackOptions_HandlerOwnsAnswer(t *testing.T) {
-	if opts := (&Plugin{}).CallbackOptions(); opts.AutoAnswer {
-		t.Fatal("help callbacks must not be pre-answered before action-specific feedback")
-	}
 }
 
 func (m *mockService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
@@ -191,108 +183,6 @@ func TestHelpPlugin(t *testing.T) {
 
 	if !strings.Contains(svc.edited, "not found") {
 		t.Errorf("expected not found message, got: %s", svc.edited)
-	}
-}
-
-func TestHelpPlugin_Interactive(t *testing.T) {
-	router := core.NewRouter(".")
-	_ = router.Register(core.Command{
-		Name:        "ping",
-		Description: "Check latency",
-		Category:    "Utility",
-	})
-	_ = router.Register(core.Command{
-		Name:        "ban",
-		Description: "Ban user",
-		Category:    "Admin",
-	})
-
-	p := New(router)
-	store := callback.NewStateStore()
-	p.SetStateStore(store)
-
-	if p.Namespace() != "help" {
-		t.Errorf("expected namespace 'help', got %s", p.Namespace())
-	}
-
-	svc := &mockService{}
-	ctx := &core.Context{
-		Ctx:     context.Background(),
-		Message: &core.Message{ID: 1, SenderID: 12345},
-		Sender:  &core.User{ID: 12345},
-		Svc:     svc,
-		PeerID:  &tg.InputPeerSelf{},
-	}
-
-	// 1. Run help command with stateStore enabled -> should attach markup with category buttons
-	cmds := p.Commands()
-	if err := cmds[0].Handler(ctx); err != nil {
-		t.Fatalf("help handler failed: %v", err)
-	}
-
-	if svc.lastMarkup == nil {
-		t.Fatal("expected inline markup with category buttons")
-	}
-
-	// 2. Simulate clicking "Admin" category callback
-	st := helpMenuState{
-		Category: "Admin",
-		UserID:   12345,
-	}
-	oid := store.Store(st, 12345, 10*time.Minute)
-
-	cbCtx := &callback.CallbackContext{
-		Ctx:      context.Background(),
-		QueryID:  101,
-		UserID:   12345,
-		Action:   "cat",
-		OpaqueID: oid,
-		State:    st,
-		Service:  svc,
-		Target:   core.CallbackTarget{Peer: &tg.InputPeerSelf{}, MessageID: 1},
-	}
-
-	if err := p.HandleCallback(cbCtx); err != nil {
-		t.Fatalf("HandleCallback cat failed: %v", err)
-	}
-
-	if !strings.Contains(svc.edited, "Module: Admin") || !strings.Contains(svc.edited, ".ban") {
-		t.Errorf("expected module Admin details after callback, got: %s", svc.edited)
-	}
-	if svc.lastMarkup == nil {
-		t.Fatal("expected back button markup in category view")
-	}
-
-	// 3. Simulate clicking "Back" (home)
-	cbCtxHome := &callback.CallbackContext{
-		Ctx:     context.Background(),
-		QueryID: 102,
-		UserID:  12345,
-		Action:  "home",
-		Service: svc,
-		Target:  core.CallbackTarget{Peer: &tg.InputPeerSelf{}, MessageID: 1},
-	}
-	if err := p.HandleCallback(cbCtxHome); err != nil {
-		t.Fatalf("HandleCallback home failed: %v", err)
-	}
-	if !strings.Contains(svc.edited, "GoUltroid Help") {
-		t.Errorf("expected overview text on home callback, got: %s", svc.edited)
-	}
-
-	// 4. Simulate clicking "Close"
-	cbCtxClose := &callback.CallbackContext{
-		Ctx:     context.Background(),
-		QueryID: 103,
-		UserID:  12345,
-		Action:  "close",
-		Service: svc,
-		Target:  core.CallbackTarget{Peer: &tg.InputPeerSelf{}, MessageID: 1},
-	}
-	if err := p.HandleCallback(cbCtxClose); err != nil {
-		t.Fatalf("HandleCallback close failed: %v", err)
-	}
-	if !strings.Contains(svc.edited, "Help menu closed") {
-		t.Errorf("expected closed text on close callback, got: %s", svc.edited)
 	}
 }
 

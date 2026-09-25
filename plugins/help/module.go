@@ -28,9 +28,6 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 		return module.ErrNilRuntime
 	}
 	p := New(rt.Router)
-	if state := rt.ScopedCallbackStore(m.Manifest().ID); state != nil {
-		p.SetStateStore(state)
-	}
 	return rt.RegisterPlugin(ctx, m.Manifest(), p)
 }
 
