@@ -94,13 +94,13 @@ func (p *Plugin) handle(ctx *core.Context) error {
 	}
 	reply, err := ctx.GetReply()
 	if err != nil || reply == nil {
-		return ctx.EditOrReply("❌ Unable to load the replied message.")
+		return ctx.Error("Unable to load the replied message.")
 	}
-	_ = ctx.EditOrReply("⏳ Generating quote...")
+	_ = ctx.Progress("Generating quote...")
 
 	workspace, err := p.createWorkspace()
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create quote workspace: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to create quote workspace: %v", err))
 	}
 	defer func() { _ = p.files.RemoveTempDir(workspace) }()
 
@@ -127,7 +127,7 @@ func (p *Plugin) handle(ctx *core.Context) error {
 
 	path, err := p.workspacePath(workspace, "quote.png")
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to prepare quote output: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to prepare quote output: %v", err))
 	}
 	if err := renderV3WithOpts(RenderOptions{
 		Path:         path,
@@ -140,10 +140,13 @@ func (p *Plugin) handle(ctx *core.Context) error {
 		ReplyPreview: replyPreview,
 		SenderID:     reply.SenderID,
 	}); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Quote rendering failed: %v", err))
+		return ctx.Error(fmt.Sprintf("Quote rendering failed: %v", err))
 	}
 	if _, err := ctx.SendMedia("photo", path, ""); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to send quote image: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to send quote image: %v", err))
+	}
+	if ctx.LastResponseID > 0 {
+		_ = ctx.Messages().DeleteResponse()
 	}
 	return nil
 }

@@ -134,27 +134,27 @@ func (p *Plugin) handleSticker(ctx *core.Context) error {
 		return ctx.EditOrReply("⚠️ The selected document is not a supported image.")
 	}
 	if err := imageguard.ValidateKnown(media.Size, media.Width, media.Height, stickerImagePolicy); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Image rejected by safety limits: %v", err))
+		return ctx.Error(fmt.Sprintf("Image rejected by safety limits: %v", err))
 	}
 
-	_ = ctx.EditOrReply("⏳ <i>Processing sticker...</i>")
+	_ = ctx.Progress("<i>Processing sticker...</i>")
 
 	files := p.getFiles()
 	tmpDir, err := files.CreateTempDir("goultroid-sticker-*")
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temp directory: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to create temp directory: %v", err))
 	}
 	defer files.RemoveTempDir(tmpDir)
 
 	downloadedPath, err := ctx.DownloadMedia(tmpDir)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to download media: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to download media: %v", err))
 	}
 
 	// Decode source image
 	srcImg, err := decodeImageFile(downloadedPath)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to decode image: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to decode image: %v", err))
 	}
 
 	// Calculate target dimensions (Telegram spec: 512px on one side, <= 512px on the other)
@@ -170,18 +170,19 @@ func (p *Plugin) handleSticker(ctx *core.Context) error {
 	outPath := filepath.Join(tmpDir, "sticker.png")
 	quantized, err := encodeStaticStickerOutput(outPath, dstImg)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Sticker output is not Telegram-compliant: %v", err))
+		return ctx.Error(fmt.Sprintf("Sticker output is not Telegram-compliant: %v", err))
 	}
 	if quantized {
-		_ = ctx.EditOrReply("⏳ <i>Sticker optimized to fit Telegram's 512 KiB limit...</i>")
+		_ = ctx.Progress("<i>Sticker optimized to fit Telegram's 512 KiB limit...</i>")
 	}
 
 	// Upload sticker
 	if err := ctx.SendSticker(outPath); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to send sticker: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to send sticker: %v", err))
 	}
-
-	_ = ctx.Delete()
+	if ctx.LastResponseID > 0 {
+		_ = ctx.Messages().DeleteResponse()
+	}
 	return nil
 }
 

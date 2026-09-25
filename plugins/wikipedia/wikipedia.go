@@ -135,17 +135,17 @@ func (p *Plugin) handle(ctx *core.Context) error {
 	if query == "" {
 		return ctx.EditOrReply("ℹ️ Usage: .wiki <query>")
 	}
-	_ = ctx.EditOrReply("🔎 Searching Wikipedia for <code>" + core.EscapeHTML(query) + "</code>...")
+	_ = ctx.Progress("Searching Wikipedia for <code>" + core.EscapeHTML(query) + "</code>...")
 	page, err := p.search(ctx.Ctx, query)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Wikipedia search failed: %v", err))
+		return ctx.Error(fmt.Sprintf("Wikipedia search failed: %v", err))
 	}
 	if page == "" {
 		return ctx.EditOrReply("ℹ️ No Wikipedia article found for that query.")
 	}
 	summary, err := p.summary(ctx.Ctx, page)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Wikipedia lookup failed: %v", err))
+		return ctx.Error(fmt.Sprintf("Wikipedia lookup failed: %v", err))
 	}
 	text := strings.TrimSpace(summary.Extract)
 	if text == "" {
@@ -159,7 +159,7 @@ func (p *Plugin) handle(ctx *core.Context) error {
 		out += "\n<i>" + core.EscapeHTML(summary.Description) + "</i>"
 	}
 	out += "\n\n" + core.EscapeHTML(text)
-	return ctx.EditOrReply(out)
+	return ctx.Result(out)
 }
 
 func (p *Plugin) search(ctx context.Context, q string) (string, error) {
