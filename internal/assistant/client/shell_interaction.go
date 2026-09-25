@@ -258,7 +258,7 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 
 	c.shellMu.Lock()
 	defer c.shellMu.Unlock()
-	expectedRegistrations := 26 + assistantshell.HelpModuleSlotCount + assistantshell.HelpCommandSlotCount + assistantshell.SettingsCategorySlotCount + assistantshell.SettingSlotCount
+	expectedRegistrations := 27 + assistantshell.HelpModuleSlotCount + assistantshell.HelpCommandSlotCount + assistantshell.SettingsCategorySlotCount + assistantshell.SettingSlotCount
 	if c.shellScope == scope && len(c.shellRegistrations) == expectedRegistrations {
 		return nil
 	}
@@ -299,6 +299,7 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 		{id: assistantshell.ActionHelpCmdNext, handler: c.handleShellHelpCmdNext},
 		{id: assistantshell.ActionHelpBack, handler: c.handleShellHelpBack},
 		{id: assistantshell.ActionHome, handler: c.handleShellHome},
+		{id: assistantshell.ActionClose, handler: c.handleShellClose},
 		{id: assistantshell.ActionStatusRefresh, handler: c.handleShellStatusRefresh},
 		{id: assistantshell.ActionSettings, handler: c.handleShellSettings},
 		{id: assistantshell.ActionLanguage, handler: c.handleShellLanguage},
@@ -454,6 +455,17 @@ func (c *AssistantClient) handleShellHome(ctx *orchestration.Context) error {
 	state := assistantshell.ScreenState(ctx.State(), assistantshell.ScreenHome)
 	session := ctx.Session()
 	return ctx.Transition(state, assistantshell.InteractionTTL, c.shellHomeView(ctx.Context(), session.Binding.ActorID, session.Binding.ChatID, state))
+}
+
+func (c *AssistantClient) handleShellClose(ctx *orchestration.Context) error {
+	if ctx == nil {
+		return ErrShellUnavailable
+	}
+	if err := ctx.Delete(); err != nil {
+		return err
+	}
+	ctx.Cancel()
+	return nil
 }
 
 func (c *AssistantClient) handleShellSettings(ctx *orchestration.Context) error {

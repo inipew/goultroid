@@ -129,6 +129,7 @@ func (*Feature) FeatureSpec() feature.Spec {
 			{ID: ActionHelpCmdNext, Kind: feature.InteractionAction, Description: "Open next command page in help module", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionHelpBack, Kind: feature.InteractionAction, Description: "Return from command detail to its module", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionHome, Kind: feature.InteractionAction, Description: "Return to the shell home screen", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionClose, Kind: feature.InteractionAction, Description: "Close the current Assistant interaction and release its session", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionStatusRefresh, Kind: feature.InteractionAction, Description: "Refresh read-only status", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionSettings, Kind: feature.InteractionAction, Description: "Navigate to settings categories", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionLanguage, Kind: feature.InteractionAction, Description: "Navigate to canonical Assistant language selection", Surfaces: assistant, Policy: ownerPolicy},
@@ -208,6 +209,7 @@ func HomeView(model HomeModel) presentation.View {
 			{{Text: tr(locale, "assistant.button.language"), ActionID: ActionLanguage}, {Text: tr(locale, "assistant.button.settings"), ActionID: ActionSettings}},
 			{{Text: tr(locale, "assistant.button.status"), ActionID: ActionStatus}, {Text: tr(locale, "assistant.button.help"), ActionID: ActionHelp}},
 			{{Text: tr(locale, "assistant.button.ping"), ActionID: ActionPing}, {Text: tr(locale, "assistant.button.refresh"), ActionID: ActionRefresh}},
+			{{Text: "✖ Close", ActionID: ActionClose}},
 		},
 	}
 }
@@ -249,7 +251,7 @@ func StatusView(model StatusModel) presentation.View {
 		Text: text,
 		Rows: []presentation.Row{
 			{{Text: tr(locale, "assistant.button.refresh"), ActionID: ActionStatusRefresh}},
-			{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}},
+			{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}, {Text: "✖ Close", ActionID: ActionClose}},
 		},
 	}
 }

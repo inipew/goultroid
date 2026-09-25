@@ -254,6 +254,40 @@ func TestAssistantShellReadOnlyNavigationUsesOneRevisionFencedSession(t *testing
 	}
 }
 
+func TestAssistantShellCloseDeletesTargetAndReleasesSession(t *testing.T) {
+	manager, _, port, engine := newShellEngine(t)
+	defer manager.Shutdown()
+	peer := &tg.InputPeerUser{UserID: 7}
+
+	beginShell(t, engine, port, peer)
+	closeData := callbackForAction(t, port.sent, assistantshell.ActionClose)
+	if err := dispatchShell(t, engine, closeData, 250, peer); err != nil {
+		t.Fatalf("Dispatch(close) error = %v", err)
+	}
+	if !port.deleted {
+		t.Fatal("close action did not delete presentation target")
+	}
+	if got := manager.InteractionRuntime().Stats().Sessions; got != 0 {
+		t.Fatalf("sessions after close = %d, want 0", got)
+	}
+}
+
+func TestAssistantShellCloseKeepsSessionWhenDeleteFails(t *testing.T) {
+	manager, _, port, engine := newShellEngine(t)
+	defer manager.Shutdown()
+	peer := &tg.InputPeerUser{UserID: 7}
+	beginShell(t, engine, port, peer)
+	port.deleteErr = errors.New("delete failed")
+
+	closeData := callbackForAction(t, port.sent, assistantshell.ActionClose)
+	if err := dispatchShell(t, engine, closeData, 251, peer); err == nil {
+		t.Fatal("Dispatch(close) succeeded despite delete failure")
+	}
+	if got := manager.InteractionRuntime().Stats().Sessions; got != 1 {
+		t.Fatalf("sessions after failed close = %d, want 1", got)
+	}
+}
+
 func TestAssistantShellActionAdmissionTracksOwnerChanges(t *testing.T) {
 	manager, client, port, engine := newShellEngine(t)
 	defer manager.Shutdown()

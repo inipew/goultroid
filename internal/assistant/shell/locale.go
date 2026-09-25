@@ -77,7 +77,7 @@ func LanguageView(model LanguageModel) presentation.View {
 				{Text: tr(locale, "assistant.language.english"), ActionID: ActionLanguageEnglish},
 				{Text: tr(locale, "assistant.language.indonesian"), ActionID: ActionLanguageIndonesian},
 			},
-			{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}},
+			{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}, {Text: "✖ Close", ActionID: ActionClose}},
 		},
 	}
 }

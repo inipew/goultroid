@@ -284,12 +284,13 @@ func SettingsHomeView(model SettingsHomeModel) presentation.View {
 	if pages > 1 {
 		rows = append(rows, presentation.Row{
 			{Text: tr(locale, "assistant.button.previous"), ActionID: ActionSettingsPrev},
-			{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome},
 			{Text: tr(locale, "assistant.button.next"), ActionID: ActionSettingsNext},
 		})
-	} else {
-		rows = append(rows, presentation.Row{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}})
 	}
+	rows = append(rows, presentation.Row{
+		{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome},
+		{Text: "✖ Close", ActionID: ActionClose},
+	})
 	card.WithFooter(tr(locale, "assistant.settings.footer"))
 	return presentation.View{Text: card.Render(), Rows: rows}
 }
@@ -346,6 +347,10 @@ func SettingsCategoryView(model SettingsCategoryModel) presentation.View {
 	} else {
 		rows = append(rows, presentation.Row{{Text: tr(locale, "assistant.settings.categories"), ActionID: ActionSettings}})
 	}
+	rows = append(rows, presentation.Row{
+		{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome},
+		{Text: "✖ Close", ActionID: ActionClose},
+	})
 	return presentation.View{Text: card.Render(), Rows: rows}
 }
 
@@ -428,7 +433,7 @@ func SettingDetailView(model SettingDetailModel) presentation.View {
 	card.WithFooter(tr(locale, "assistant.settings.detail_footer"))
 	rows = append(rows,
 		presentation.Row{{Text: tr(locale, "assistant.settings.category"), ActionID: ActionSettingBack}, {Text: tr(locale, "assistant.settings.categories"), ActionID: ActionSettings}},
-		presentation.Row{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}},
+		presentation.Row{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}, {Text: "✖ Close", ActionID: ActionClose}},
 	)
 	return presentation.View{Text: card.Render(), Rows: rows}
 }
@@ -470,7 +475,7 @@ func SettingInputView(model SettingInputModel) presentation.View {
 		Text: card.Render(),
 		Rows: []presentation.Row{
 			{{Text: tr(locale, "assistant.settings.cancel_input"), ActionID: ActionSettingInputCancel}},
-			{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}},
+			{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}, {Text: "✖ Close", ActionID: ActionClose}},
 		},
 	}
 }
