@@ -137,12 +137,10 @@ func (v *interactionIngress) dispatchCallback(
 		queueDeadline = time.Now().Add(profile.QueueTimeout)
 	}
 
-	immediateAck := false
 	if aware, ok := prepared.(orchestration.AckPreparedCallback); ok &&
 		aware.AckPolicy() == rootinteraction.AckImmediate {
 		if immediate, ok := v.ack.(immediateCallbackAcknowledger); ok {
 			immediate.acknowledge(ctx, request.QueryID)
-			immediateAck = true
 		}
 	}
 
@@ -165,9 +163,9 @@ func (v *interactionIngress) dispatchCallback(
 	})
 	if submitErr != nil {
 		err = fmt.Errorf("interaction task submission failed: %w", submitErr)
-		if !immediateAck {
-			v.ack.ensureAnswered(ctx, request.QueryID, err)
-		}
+		// If the optimistic immediate ACK failed, ensureAnswered retries it.
+		// If it succeeded, ensureAnswered is a no-op apart from bookkeeping cleanup.
+		v.ack.ensureAnswered(ctx, request.QueryID, err)
 		return err
 	}
 
