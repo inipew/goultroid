@@ -79,7 +79,7 @@ func TestAssistantDirectHelpAndSettingsUseA2Shell(t *testing.T) {
 
 	peer := &tg.InputPeerUser{UserID: 7}
 	messageContext := command.MessageContext{
-		Chat: core.Chat{ID: 7, Type: string(core.ChatKindPrivate)},
+		Chat: core.Chat{ID: 7, Type: "private"},
 	}
 	if err := client.cmdRouter.DispatchMessageContext(
 		context.Background(),
