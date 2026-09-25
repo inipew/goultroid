@@ -1,9 +1,6 @@
 package core
 
-import (
-	"context"
-	"time"
-)
+import "time"
 
 // ResponseOptions controls the behavior of a normal command response.
 type ResponseOptions struct {
@@ -24,14 +21,9 @@ func (c *Context) Respond(text string, opts ResponseOptions) error {
 		_ = c.Messages().Delete()
 	}
 	if opts.AutoDeleteDelay > 0 && c.LastResponseID > 0 && c.Svc != nil && c.PeerID != nil {
-		respID := c.LastResponseID
-		peer := c.PeerID
-		svc := c.Svc
-		time.AfterFunc(opts.AutoDeleteDelay, func() {
-			delCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			_ = svc.DeleteMessage(delCtx, peer, []int{respID})
-		})
+		if err := c.Messages().scheduleDelete(c.PeerID, c.LastResponseID, opts.AutoDeleteDelay); err != nil {
+			return err
+		}
 	}
 	return nil
 }
