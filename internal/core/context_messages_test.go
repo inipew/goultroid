@@ -192,3 +192,36 @@ func TestMessagesFacadeDelayedDeleteRequiresOwnedScheduler(t *testing.T) {
 		t.Fatalf("expected ErrUnavailable without delayed action owner, got %v", err)
 	}
 }
+
+
+func TestP5UserbotSemanticResponseReusesOneAnchor(t *testing.T) {
+	mock := &mockTelegramServicer{}
+	ctx := &Context{
+		Ctx:     context.Background(),
+		Message: &Message{ID: 205, IsOutgoing: true},
+		Svc:     mock,
+		PeerID:  &tg.InputPeerSelf{},
+	}
+
+	if err := ctx.Status("starting"); err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if ctx.LastResponseID != 205 {
+		t.Fatalf("status anchor = %d, want outgoing command 205", ctx.LastResponseID)
+	}
+	if err := ctx.Progress("halfway"); err != nil {
+		t.Fatalf("Progress() error = %v", err)
+	}
+	if err := ctx.Result("done"); err != nil {
+		t.Fatalf("Result() error = %v", err)
+	}
+	if ctx.LastResponseID != 205 {
+		t.Fatalf("final anchor = %d, want 205", ctx.LastResponseID)
+	}
+	if mock.sentText != "" {
+		t.Fatalf("semantic response sent a new message %q instead of reusing the outgoing command", mock.sentText)
+	}
+	if len(mock.deletedIDs) != 0 {
+		t.Fatalf("semantic response deleted messages: %v", mock.deletedIDs)
+	}
+}
