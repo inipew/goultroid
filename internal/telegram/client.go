@@ -38,6 +38,17 @@ type Client struct {
 	readyOnce   sync.Once
 }
 
+type affectedUpdateHandler struct {
+	delegate updhook.AffectedHandler
+}
+
+func (h *affectedUpdateHandler) HandleAffected(ctx context.Context, channelID int64, pts, ptsCount int) error {
+	if h == nil || h.delegate == nil {
+		return errors.New("telegram affected update handler is not initialized")
+	}
+	return h.delegate.HandleAffected(ctx, channelID, pts, ptsCount)
+}
+
 func (c *Client) Ready() <-chan struct{} {
 	if c.ready == nil {
 		return nil
@@ -115,6 +126,7 @@ func NewClient(cfg *config.Config, dispatcher *Dispatcher, db *database.DB, logg
 	dispatcher.RegisterHooks(&tgDispatcher)
 
 	var updateHook telegram.UpdateHandler
+	affectedUpdates := &affectedUpdateHandler{}
 
 	raw := telegram.NewClient(
 		cfg.AppID,
@@ -124,7 +136,7 @@ func NewClient(cfg *config.Config, dispatcher *Dispatcher, db *database.DB, logg
 				Path: cfg.SessionFile,
 			},
 			Middlewares: []telegram.Middleware{
-				updhook.AffectedHook(gaps),
+				updhook.AffectedHook(affectedUpdates),
 			},
 			UpdateHandler: telegram.UpdateHandlerFunc(func(ctx context.Context, u tg.UpdatesClass) error {
 				if updateHook != nil {
@@ -156,6 +168,7 @@ func NewClient(cfg *config.Config, dispatcher *Dispatcher, db *database.DB, logg
 		Storage:      updateStateStorage,
 		AccessHasher: peerManager,
 	})
+	affectedUpdates.delegate = gaps
 	updateHook = peerManager.UpdateHook(gaps)
 
 	limiter := NewHierarchicalRPCLimiter(DefaultHierarchicalLimiterConfig())
