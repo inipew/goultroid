@@ -1,3 +1,5 @@
+> **LATEST CONTINUATION (2026-09-26):** For the current userbot-first Assistant optionality audit/fix, read **docs/design/goultroid-assistant-optional-userbot-ai-session-handoff.md** first. It documents the cross-feature finding that Help, Calculator, and URL Downloader currently hard-depend on self-inline Assistant presentation, Settings has a hidden Assistant navigation dependency, and establishes the required progressive-enhancement contract plus stage-safe fallback plan. Current source always wins.
+>
 > **LATEST CONTINUATION (2026-09-25):** Read **docs/design/goultroid-selfinline-help-downloader-p2-ai-session-handoff.md** before continuing Assistant/self-inline work. Live testing after the P1 self-inline acceptance commit exposed Help callback handler-unavailable failures, unclickable downloader buttons, an incomplete callback-dispatch acceptance gate, and the previously identified P2 generic-callback/direct-Assistant cutover work. This dedicated handoff supersedes older assumptions that interactive self-inline acceptance was fully closed.
 
 # Goultroid - AI Session Handoff
