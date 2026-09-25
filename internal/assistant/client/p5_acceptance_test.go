@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,13 +13,63 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
-	"github.com/inipew/goultroid/internal/interaction/orchestration"
-	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/taskengine"
 	"github.com/inipew/goultroid/internal/tasks"
 	_ "modernc.org/sqlite"
 )
+
+type p5CallbackAck struct {
+	mu      sync.Mutex
+	answers map[int64]int
+}
+
+func newP5CallbackAck() *p5CallbackAck {
+	return &p5CallbackAck{answers: make(map[int64]int)}
+}
+
+func (a *p5CallbackAck) record(queryID int64) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.answers[queryID]++
+	a.mu.Unlock()
+}
+
+func (a *p5CallbackAck) ensureAnswered(_ context.Context, queryID int64, _ error) {
+	a.record(queryID)
+}
+
+func (a *p5CallbackAck) acknowledge(_ context.Context, queryID int64) {
+	a.record(queryID)
+}
+
+func (a *p5CallbackAck) count(queryID int64) int {
+	if a == nil {
+		return 0
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.answers[queryID]
+}
+
+func dispatchP5Shell(t *testing.T, client *AssistantClient, data []byte, queryID int64, peer tg.InputPeerClass) error {
+	t.Helper()
+	handled, err := client.interactionIngress.tryMessage(
+		context.Background(),
+		data,
+		7,
+		queryID,
+		peer,
+		7,
+		77,
+	)
+	if !handled {
+		t.Fatalf("P5 callback %d was not recognized as an a2 interaction", queryID)
+	}
+	return err
+}
 
 func newP5SettingsService(t *testing.T) *settings.Service {
 	t.Helper()
@@ -116,6 +167,9 @@ func TestP5FinalAssistantUXLifecycleAcceptance(t *testing.T) {
 	})
 	manager.SetTaskClient(taskRuntime)
 	client.SetTasks(taskRuntime)
+	ack := newP5CallbackAck()
+	client.interactionIngress.tasks = taskRuntime
+	client.interactionIngress.ack = ack
 
 	settingsSvc := newP5SettingsService(t)
 	client.SetSettingsService(settingsSvc)
@@ -149,57 +203,57 @@ func TestP5FinalAssistantUXLifecycleAcceptance(t *testing.T) {
 
 	view := port.sent
 	helpToken := callbackForAction(t, view, assistantshell.ActionHelp)
-	if err := dispatchShell(t, interactionEngine, helpToken, 1000, peer); err != nil {
+	if err := dispatchP5Shell(t, client, helpToken, 1000, peer); err != nil {
 		t.Fatalf("P5 Home -> Help: %v", err)
 	}
 	view = port.edited
 	moduleToken := callbackForAction(t, view, assistantshell.HelpModuleSlotActionIDs()[0])
-	if err := dispatchShell(t, interactionEngine, moduleToken, 1001, peer); err != nil {
+	if err := dispatchP5Shell(t, client, moduleToken, 1001, peer); err != nil {
 		t.Fatalf("P5 Help -> Module: %v", err)
 	}
 	view = port.edited
 	commandToken := callbackForAction(t, view, assistantshell.HelpCommandSlotActionIDs()[0])
-	if err := dispatchShell(t, interactionEngine, commandToken, 1002, peer); err != nil {
+	if err := dispatchP5Shell(t, client, commandToken, 1002, peer); err != nil {
 		t.Fatalf("P5 Module -> Command: %v", err)
 	}
 	view = port.edited
 	backToken := callbackForAction(t, view, assistantshell.ActionHelpBack)
-	if err := dispatchShell(t, interactionEngine, backToken, 1003, peer); err != nil {
+	if err := dispatchP5Shell(t, client, backToken, 1003, peer); err != nil {
 		t.Fatalf("P5 Command -> Back: %v", err)
 	}
 	view = port.edited
 	homeToken := callbackForAction(t, view, assistantshell.ActionHome)
-	if err := dispatchShell(t, interactionEngine, homeToken, 1004, peer); err != nil {
+	if err := dispatchP5Shell(t, client, homeToken, 1004, peer); err != nil {
 		t.Fatalf("P5 Module -> Home: %v", err)
 	}
 	view = port.edited
-	if err := dispatchShell(t, interactionEngine, helpToken, 1005, peer); !errors.Is(err, rootinteraction.ErrStaleToken) {
+	if err := dispatchP5Shell(t, client, helpToken, 1005, peer); !errors.Is(err, rootinteraction.ErrStaleToken) {
 		t.Fatalf("P5 stale pre-navigation token error=%v, want %v", err, rootinteraction.ErrStaleToken)
 	}
 
 	settingsToken := callbackForAction(t, view, assistantshell.ActionSettings)
-	if err := dispatchShell(t, interactionEngine, settingsToken, 1010, peer); err != nil {
+	if err := dispatchP5Shell(t, client, settingsToken, 1010, peer); err != nil {
 		t.Fatalf("P5 Home -> Settings: %v", err)
 	}
 	view = port.edited
 	categoryToken := callbackForAction(t, view, assistantshell.SettingsCategorySlotActionIDs()[0])
-	if err := dispatchShell(t, interactionEngine, categoryToken, 1011, peer); err != nil {
+	if err := dispatchP5Shell(t, client, categoryToken, 1011, peer); err != nil {
 		t.Fatalf("P5 Settings -> Category: %v", err)
 	}
 	view = port.edited
 	settingToken := callbackForAction(t, view, assistantshell.SettingSlotActionIDs()[0])
-	if err := dispatchShell(t, interactionEngine, settingToken, 1012, peer); err != nil {
+	if err := dispatchP5Shell(t, client, settingToken, 1012, peer); err != nil {
 		t.Fatalf("P5 Category -> Detail: %v", err)
 	}
 	view = port.edited
 	inputToken := callbackForAction(t, view, assistantshell.ActionSettingInput)
-	if err := dispatchShell(t, interactionEngine, inputToken, 1013, peer); err != nil {
+	if err := dispatchP5Shell(t, client, inputToken, 1013, peer); err != nil {
 		t.Fatalf("P5 Detail -> Input: %v", err)
 	}
 	if stats := manager.InteractionRuntime().Stats(); stats.Sessions != 1 || stats.Inputs != 1 {
 		t.Fatalf("P5 armed input stats=%+v, want one session/input", stats)
 	}
-	if err := dispatchShell(t, interactionEngine, inputToken, 1014, peer); !errors.Is(err, rootinteraction.ErrStaleToken) {
+	if err := dispatchP5Shell(t, client, inputToken, 1014, peer); !errors.Is(err, rootinteraction.ErrStaleToken) {
 		t.Fatalf("P5 stale input opener error=%v, want %v", err, rootinteraction.ErrStaleToken)
 	}
 
@@ -217,12 +271,12 @@ func TestP5FinalAssistantUXLifecycleAcceptance(t *testing.T) {
 
 	view = port.edited
 	inputToken = callbackForAction(t, view, assistantshell.ActionSettingInput)
-	if err := dispatchShell(t, interactionEngine, inputToken, 1015, peer); err != nil {
+	if err := dispatchP5Shell(t, client, inputToken, 1015, peer); err != nil {
 		t.Fatalf("P5 reopen input: %v", err)
 	}
 	view = port.edited
 	cancelInput := callbackForAction(t, view, assistantshell.ActionSettingInputCancel)
-	if err := dispatchShell(t, interactionEngine, cancelInput, 1016, peer); err != nil {
+	if err := dispatchP5Shell(t, client, cancelInput, 1016, peer); err != nil {
 		t.Fatalf("P5 cancel input: %v", err)
 	}
 	if stats := manager.InteractionRuntime().Stats(); stats.Inputs != 0 {
@@ -231,18 +285,18 @@ func TestP5FinalAssistantUXLifecycleAcceptance(t *testing.T) {
 
 	view = port.edited
 	inputToken = callbackForAction(t, view, assistantshell.ActionSettingInput)
-	if err := dispatchShell(t, interactionEngine, inputToken, 1017, peer); err != nil {
+	if err := dispatchP5Shell(t, client, inputToken, 1017, peer); err != nil {
 		t.Fatalf("P5 reopen input before Close: %v", err)
 	}
 	view = port.edited
 	closeInput := callbackForAction(t, view, assistantshell.ActionClose)
-	if err := dispatchShell(t, interactionEngine, closeInput, 1018, peer); err != nil {
+	if err := dispatchP5Shell(t, client, closeInput, 1018, peer); err != nil {
 		t.Fatalf("P5 Close while input armed: %v", err)
 	}
 	if stats := manager.InteractionRuntime().Stats(); stats.Sessions != 0 || stats.Inputs != 0 || stats.StateBytes != 0 {
 		t.Fatalf("P5 Close retained interaction state: %+v", stats)
 	}
-	if err := dispatchShell(t, interactionEngine, closeInput, 1019, peer); !errors.Is(err, rootinteraction.ErrNotFound) {
+	if err := dispatchP5Shell(t, client, closeInput, 1019, peer); !errors.Is(err, rootinteraction.ErrNotFound) {
 		t.Fatalf("P5 terminal callback error=%v, want %v", err, rootinteraction.ErrNotFound)
 	}
 
@@ -250,28 +304,29 @@ func TestP5FinalAssistantUXLifecycleAcceptance(t *testing.T) {
 	view = port.sent
 	pingToken := callbackForAction(t, view, assistantshell.ActionPing)
 	for i := 0; i < 512; i++ {
-		if err := dispatchShell(t, interactionEngine, pingToken, int64(2000+i), peer); err != nil {
+		if err := dispatchP5Shell(t, client, pingToken, int64(2000+i), peer); err != nil {
 			t.Fatalf("P5 callback burst %d: %v", i, err)
 		}
 	}
-	if err := interactionEngine.Dispatch(ctx, orchestration.CallbackRequest{
-		Data:    pingToken,
-		ActorID: 8,
-		QueryID: 2600,
-		Target: presentationtelegram.MessageTarget{
-			Peer:      peer,
-			ChatID:    7,
-			MessageID: 77,
-		},
-	}); err == nil {
+	for i := 0; i < 512; i++ {
+		queryID := int64(2000 + i)
+		if got := ack.count(queryID); got != 1 {
+			t.Fatalf("P5 callback query %d acknowledgement count=%d, want 1", queryID, got)
+		}
+	}
+	handled, err := client.interactionIngress.tryMessage(ctx, pingToken, 8, 2600, peer, 7, 77)
+	if !handled {
+		t.Fatal("P5 wrong-actor callback was not recognized as a2")
+	}
+	if err == nil {
 		t.Fatal("P5 wrong-actor callback unexpectedly executed")
 	}
 
 	refreshToken := callbackForAction(t, view, assistantshell.ActionRefresh)
-	if err := dispatchShell(t, interactionEngine, refreshToken, 2601, peer); err != nil {
+	if err := dispatchP5Shell(t, client, refreshToken, 2601, peer); err != nil {
 		t.Fatalf("P5 refresh before reload: %v", err)
 	}
-	if err := dispatchShell(t, interactionEngine, pingToken, 2602, peer); !errors.Is(err, rootinteraction.ErrStaleToken) {
+	if err := dispatchP5Shell(t, client, pingToken, 2602, peer); !errors.Is(err, rootinteraction.ErrStaleToken) {
 		t.Fatalf("P5 old burst token error=%v, want %v", err, rootinteraction.ErrStaleToken)
 	}
 	view = port.edited
@@ -309,7 +364,7 @@ func TestP5FinalAssistantUXLifecycleAcceptance(t *testing.T) {
 	if stats := manager.InteractionRuntime().Stats(); stats.Sessions != 0 || stats.Inputs != 0 {
 		t.Fatalf("P5 disabled shell retained sessions: %+v", stats)
 	}
-	if err := dispatchShell(t, interactionEngine, oldGenerationToken, 2603, peer); err == nil {
+	if err := dispatchP5Shell(t, client, oldGenerationToken, 2603, peer); err == nil {
 		t.Fatal("P5 disabled generation callback unexpectedly executed")
 	}
 	waitCtx, waitCancel := context.WithTimeout(ctx, time.Second)
@@ -335,11 +390,11 @@ func TestP5FinalAssistantUXLifecycleAcceptance(t *testing.T) {
 	beginShell(t, interactionEngine, port, peer)
 	view = port.sent
 	freshPing := callbackForAction(t, view, assistantshell.ActionPing)
-	if err := dispatchShell(t, interactionEngine, freshPing, 2700, peer); err != nil {
+	if err := dispatchP5Shell(t, client, freshPing, 2700, peer); err != nil {
 		t.Fatalf("P5 fresh generation callback: %v", err)
 	}
 	freshClose := callbackForAction(t, view, assistantshell.ActionClose)
-	if err := dispatchShell(t, interactionEngine, freshClose, 2701, peer); err != nil {
+	if err := dispatchP5Shell(t, client, freshClose, 2701, peer); err != nil {
 		t.Fatalf("P5 close reloaded shell: %v", err)
 	}
 
