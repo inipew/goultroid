@@ -17,6 +17,7 @@ import (
 	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/services/download"
 	inlineservice "github.com/inipew/goultroid/internal/services/inline"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 const (
@@ -72,15 +73,20 @@ const (
 )
 
 type interactiveState struct {
-	URL       string               `json:"u"`
-	Provider  string               `json:"p"`
-	Phase     interactivePhase     `json:"s"`
-	Mode      download.MediaMode   `json:"m,omitempty"`
-	Format    download.MediaFormat `json:"f,omitempty"`
-	MaxHeight int                  `json:"h,omitempty"`
+	URL         string               `json:"u"`
+	Provider    string               `json:"p"`
+	Phase       interactivePhase     `json:"s"`
+	Mode        download.MediaMode   `json:"m,omitempty"`
+	Format      download.MediaFormat `json:"f,omitempty"`
+	MaxHeight   int                  `json:"h,omitempty"`
+	QualityMask uint16               `json:"q,omitempty"`
 }
 
 type downloadPreparation struct {
+	State interactiveState
+}
+
+type probePreparation struct {
 	State interactiveState
 }
 
@@ -171,6 +177,27 @@ func (p *Plugin) BindAssistant(rt assistantinteraction.DriverRuntime) (func(), e
 				},
 				handler,
 			)
+		} else if actionID == actionVideo {
+			registration, err = rt.Engine.RegisterPreparedAction(
+				scope,
+				p.Name(),
+				actionID,
+				func(_ context.Context, action rootinteraction.Action) (rootinteraction.ActionAdmission, error) {
+					state, err := decodeInteractiveState(action.Session.State)
+					if err != nil {
+						return rootinteraction.ActionAdmission{}, err
+					}
+					if state.Provider != "extractor" || state.Phase != phaseChoose {
+						return rootinteraction.ActionAdmission{}, fmt.Errorf("%w: video probe action is stale or invalid", core.ErrInvalidArgs)
+					}
+					return rootinteraction.ActionAdmission{
+						Scope:     scope,
+						Resources: []tasks.ResourceRequirement{{Name: "process", Amount: 1}},
+						State:     probePreparation{State: state},
+					}, nil
+				},
+				handler,
+			)
 		} else {
 			registration, err = rt.Engine.RegisterAction(scope, p.Name(), actionID, handler)
 		}
@@ -244,14 +271,27 @@ func (p *Plugin) handleInteractiveAction(ctx *orchestration.Context, actionID st
 		if state.Provider != "extractor" || state.Phase != phaseChoose {
 			return ctx.Answer("This source does not support video selection.", true)
 		}
+		prepared, ok := ctx.Preparation().(probePreparation)
+		if !ok || prepared.State.URL != state.URL || prepared.State.Provider != state.Provider || prepared.State.Phase != state.Phase {
+			return fmt.Errorf("%w: downloader probe preparation is stale", core.ErrUnavailable)
+		}
+		p.ensureRegistry()
+		if p.registry == nil {
+			return fmt.Errorf("%w: downloader registry unavailable", core.ErrUnavailable)
+		}
+		probe, err := p.registry.Probe(ctx.Context(), state.URL, download.ProbeOptions{Timeout: download.DefaultProbeTimeout})
+		if err != nil {
+			return ctx.Answer("Unable to inspect available video qualities. Try again.", true)
+		}
 		state.Phase = phaseVideoFormat
 		state.Mode = download.MediaModeVideo
 		state.Format = ""
+		state.QualityMask = qualityMask(probe.VideoQualities)
 		encoded, err := encodeInteractiveState(state)
 		if err != nil {
 			return err
 		}
-		return ctx.Transition(encoded, interactiveTTL, videoFormatView(state.URL))
+		return ctx.Transition(encoded, interactiveTTL, videoFormatView(state.URL, probe))
 	case actionBack:
 		if state.Provider != "extractor" || (state.Phase != phaseAudioFormat && state.Phase != phaseVideoFormat) {
 			return ctx.Answer("There is no previous downloader step.", true)
@@ -260,6 +300,7 @@ func (p *Plugin) handleInteractiveAction(ctx *orchestration.Context, actionID st
 		state.Mode = download.MediaModeDefault
 		state.Format = download.MediaFormatDefault
 		state.MaxHeight = 0
+		state.QualityMask = 0
 		encoded, err := encodeInteractiveState(state)
 		if err != nil {
 			return err
@@ -300,6 +341,9 @@ func (p *Plugin) validateFinalAction(state interactiveState, actionID string) er
 	case actionFormatMP4, actionFormatBest, actionVideo360, actionVideo480, actionVideo720, actionVideo1080, actionVideo1440, actionVideo2160:
 		if state.Provider != "extractor" || state.Phase != phaseVideoFormat || state.Mode != download.MediaModeVideo {
 			return fmt.Errorf("%w: video format action is stale or invalid", core.ErrInvalidArgs)
+		}
+		if height := actionVideoHeight(actionID); height > 0 && !qualityMaskHas(state.QualityMask, height) {
+			return fmt.Errorf("%w: selected video quality is no longer available", core.ErrInvalidArgs)
 		}
 	default:
 		return fmt.Errorf("%w: unknown downloader final action", core.ErrInvalidArgs)
@@ -585,19 +629,116 @@ func audioFormatView(rawURL string) presentation.View {
 	}
 }
 
-func videoFormatView(rawURL string) presentation.View {
-	return presentation.View{
-		Text: "<b>Choose video quality (MP4)</b>\n\n"
-			+ "<code>" + core.EscapeHTML(rawURL) + "</code>\n\n"
-			+ "MP4 presets are maximum heights; yt-dlp selects the best available MP4 stream at or below the chosen value.",
-		Rows: []presentation.Row{
-			{{Text: "≤360p", ActionID: actionVideo360}, {Text: "≤480p", ActionID: actionVideo480}},
-			{{Text: "≤720p", ActionID: actionVideo720}, {Text: "≤1080p", ActionID: actionVideo1080}},
-			{{Text: "≤1440p", ActionID: actionVideo1440}, {Text: "≤2160p", ActionID: actionVideo2160}},
-			{{Text: "⭐ Best (native)", ActionID: actionFormatBest}},
-			{{Text: "‹ Back", ActionID: actionBack}, {Text: "✖ Cancel", ActionID: actionCancel}},
-		},
+func videoFormatView(rawURL string, probe download.ProbeResult) presentation.View {
+	lines := []string{"<b>Choose video quality</b>"}
+	if title := strings.TrimSpace(probe.Title); title != "" {
+		lines = append(lines, "", "<b>Title:</b> "+core.EscapeHTML(title))
 	}
+	if performer := strings.TrimSpace(probe.Performer); performer != "" {
+		lines = append(lines, "<b>Channel:</b> "+core.EscapeHTML(performer))
+	}
+	if probe.DurationSeconds > 0 {
+		lines = append(lines, "<b>Duration:</b> <code>"+formatSearchDuration(probe.DurationSeconds)+"</code>")
+	}
+	lines = append(lines, "", "<code>"+core.EscapeHTML(rawURL)+"</code>", "", "Available MP4 qualities:")
+
+	rows := make([]presentation.Row, 0, 6)
+	current := presentation.Row{}
+	for _, quality := range probe.VideoQualities {
+		actionID := videoHeightAction(quality.Height)
+		if actionID == "" {
+			continue
+		}
+		label := fmt.Sprintf("%dp", quality.Height)
+		if quality.Size > 0 {
+			label += " • ~" + formatBytes(quality.Size)
+		}
+		current = append(current, presentation.Button{Text: label, ActionID: actionID})
+		if len(current) == 2 {
+			rows = append(rows, current)
+			current = presentation.Row{}
+		}
+	}
+	if len(current) > 0 {
+		rows = append(rows, current)
+	}
+	if len(probe.VideoQualities) > 0 {
+		rows = append(rows, presentation.Row{{Text: "MP4 Auto", ActionID: actionFormatMP4}, {Text: "⭐ Best (native)", ActionID: actionFormatBest}})
+	} else {
+		rows = append(rows, presentation.Row{{Text: "⭐ Best (native)", ActionID: actionFormatBest}})
+	}
+	rows = append(rows, presentation.Row{{Text: "‹ Back", ActionID: actionBack}, {Text: "✖ Cancel", ActionID: actionCancel}})
+	return presentation.View{Text: strings.Join(lines, "\n"), Rows: rows}
+}
+
+func videoHeightAction(height int) string {
+	switch height {
+	case 360:
+		return actionVideo360
+	case 480:
+		return actionVideo480
+	case 720:
+		return actionVideo720
+	case 1080:
+		return actionVideo1080
+	case 1440:
+		return actionVideo1440
+	case 2160:
+		return actionVideo2160
+	default:
+		return ""
+	}
+}
+
+func actionVideoHeight(actionID string) int {
+	switch actionID {
+	case actionVideo360:
+		return 360
+	case actionVideo480:
+		return 480
+	case actionVideo720:
+		return 720
+	case actionVideo1080:
+		return 1080
+	case actionVideo1440:
+		return 1440
+	case actionVideo2160:
+		return 2160
+	default:
+		return 0
+	}
+}
+
+func qualityBit(height int) uint16 {
+	switch height {
+	case 360:
+		return 1 << 0
+	case 480:
+		return 1 << 1
+	case 720:
+		return 1 << 2
+	case 1080:
+		return 1 << 3
+	case 1440:
+		return 1 << 4
+	case 2160:
+		return 1 << 5
+	default:
+		return 0
+	}
+}
+
+func qualityMask(qualities []download.VideoQuality) uint16 {
+	var mask uint16
+	for _, quality := range qualities {
+		mask |= qualityBit(quality.Height)
+	}
+	return mask
+}
+
+func qualityMaskHas(mask uint16, height int) bool {
+	bit := qualityBit(height)
+	return bit != 0 && mask&bit != 0
 }
 
 func runningView(state interactiveState) presentation.View {

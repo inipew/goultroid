@@ -96,8 +96,23 @@ func TestP8EInlineExtractorOffersMediaThenFormatChoice(t *testing.T) {
 	if rows := audioFormatView(state.URL).Rows; !viewHasAction(rows, actionFormatM4A) || !viewHasAction(rows, actionFormatMP3) || !viewHasAction(rows, actionFormatOpus) || !viewHasAction(rows, actionBack) {
 		t.Fatalf("audio format rows=%+v", rows)
 	}
-	if rows := videoFormatView(state.URL).Rows; !viewHasAction(rows, actionVideo360) || !viewHasAction(rows, actionVideo720) || !viewHasAction(rows, actionVideo1080) || !viewHasAction(rows, actionVideo1440) || !viewHasAction(rows, actionVideo2160) || !viewHasAction(rows, actionFormatBest) || !viewHasAction(rows, actionBack) {
-		t.Fatalf("video quality rows=%+v", rows)
+	probe := download.ProbeResult{VideoQualities: []download.VideoQuality{
+		{Height: 360, Size: 10 * 1024 * 1024},
+		{Height: 720, Size: 25 * 1024 * 1024},
+		{Height: 1080, Size: 50 * 1024 * 1024},
+	}}
+	if rows := videoFormatView(state.URL, probe).Rows; !viewHasAction(rows, actionVideo360) || !viewHasAction(rows, actionVideo720) || !viewHasAction(rows, actionVideo1080) || viewHasAction(rows, actionVideo2160) || !viewHasAction(rows, actionFormatMP4) || !viewHasAction(rows, actionFormatBest) || !viewHasAction(rows, actionBack) {
+		t.Fatalf("dynamic video quality rows=%+v", rows)
+	}
+}
+
+func TestP8EVideoQualityViewDoesNotOfferMP4AutoWithoutMP4Inventory(t *testing.T) {
+	rows := videoFormatView("https://youtu.be/dQw4w9WgXcQ", download.ProbeResult{}).Rows
+	if viewHasAction(rows, actionFormatMP4) {
+		t.Fatalf("empty MP4 inventory unexpectedly offered MP4 Auto: %+v", rows)
+	}
+	if !viewHasAction(rows, actionFormatBest) || !viewHasAction(rows, actionBack) {
+		t.Fatalf("empty MP4 inventory lost native fallback/navigation: %+v", rows)
 	}
 }
 
@@ -133,6 +148,24 @@ func TestP8EFinalSelectionResourcePlanningMatchesProvider(t *testing.T) {
 	mode, format, maxHeight, err := finalSelection(actionVideo720)
 	if err != nil || mode != download.MediaModeVideo || format != download.MediaFormatMP4 || maxHeight != 720 {
 		t.Fatalf("selection=%q/%q/%d err=%v", mode, format, maxHeight, err)
+	}
+}
+
+func TestP8EUnavailableDynamicVideoQualityFailsClosed(t *testing.T) {
+	p := New()
+	p.registry = download.NewRegistry(download.NewExtractorProvider(nil, 500*1024*1024))
+	state := interactiveState{
+		URL:         "https://youtu.be/dQw4w9WgXcQ",
+		Provider:    "extractor",
+		Phase:       phaseVideoFormat,
+		Mode:        download.MediaModeVideo,
+		QualityMask: qualityBit(720),
+	}
+	if err := p.validateFinalAction(state, actionVideo720); err != nil {
+		t.Fatalf("available 720p rejected: %v", err)
+	}
+	if err := p.validateFinalAction(state, actionVideo1080); !errors.Is(err, core.ErrInvalidArgs) {
+		t.Fatalf("unavailable 1080p error=%v, want ErrInvalidArgs", err)
 	}
 }
 

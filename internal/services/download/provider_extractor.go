@@ -373,10 +373,10 @@ func extractorSelectionArgs(opts DownloadOptions) ([]string, error) {
 		}
 		switch opts.Format {
 		case MediaFormatMP4:
-			selector := "bestvideo*[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]"
+			selector := "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]"
 			if opts.MaxHeight > 0 {
 				selector = fmt.Sprintf(
-					"bestvideo*[height<=%d][ext=mp4]+bestaudio[ext=m4a]/best[height<=%d][ext=mp4]",
+					"bestvideo[height<=%d][ext=mp4]+bestaudio[ext=m4a]/best[height<=%d][ext=mp4]",
 					opts.MaxHeight,
 					opts.MaxHeight,
 				)
@@ -386,7 +386,7 @@ func extractorSelectionArgs(opts DownloadOptions) ([]string, error) {
 			if opts.MaxHeight != 0 {
 				return nil, fmt.Errorf("%w: best video format cannot be combined with a height cap", core.ErrInvalidArgs)
 			}
-			return []string{"-f", "bestvideo*+bestaudio/best"}, nil
+			return []string{"-f", "bestvideo+bestaudio/best"}, nil
 		default:
 			return nil, fmt.Errorf("%w: unsupported video extractor format %q", core.ErrInvalidArgs, opts.Format)
 		}

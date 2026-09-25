@@ -18,9 +18,9 @@ func TestExtractorSelectionArgsAreBoundedAndTyped(t *testing.T) {
 		{name: "audio m4a", opts: DownloadOptions{Mode: MediaModeAudio, Format: MediaFormatM4A}, want: []string{"-f", "bestaudio/best", "-x", "--audio-format", "m4a"}},
 		{name: "audio mp3", opts: DownloadOptions{Mode: MediaModeAudio, Format: MediaFormatMP3}, want: []string{"-f", "bestaudio/best", "-x", "--audio-format", "mp3"}},
 		{name: "audio opus", opts: DownloadOptions{Mode: MediaModeAudio, Format: MediaFormatOpus}, want: []string{"-f", "bestaudio/best", "-x", "--audio-format", "opus"}},
-		{name: "video mp4", opts: DownloadOptions{Mode: MediaModeVideo, Format: MediaFormatMP4}, want: []string{"-f", "bestvideo*[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]", "--merge-output-format", "mp4"}},
-		{name: "video mp4 720p", opts: DownloadOptions{Mode: MediaModeVideo, Format: MediaFormatMP4, MaxHeight: 720}, want: []string{"-f", "bestvideo*[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]", "--merge-output-format", "mp4"}},
-		{name: "video best", opts: DownloadOptions{Mode: MediaModeVideo, Format: MediaFormatBest}, want: []string{"-f", "bestvideo*+bestaudio/best"}},
+		{name: "video mp4", opts: DownloadOptions{Mode: MediaModeVideo, Format: MediaFormatMP4}, want: []string{"-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]", "--merge-output-format", "mp4"}},
+		{name: "video mp4 720p", opts: DownloadOptions{Mode: MediaModeVideo, Format: MediaFormatMP4, MaxHeight: 720}, want: []string{"-f", "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]", "--merge-output-format", "mp4"}},
+		{name: "video best", opts: DownloadOptions{Mode: MediaModeVideo, Format: MediaFormatBest}, want: []string{"-f", "bestvideo+bestaudio/best"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

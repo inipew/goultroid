@@ -79,6 +79,19 @@ func (r *Registry) Search(ctx context.Context, providerName, query string, opts 
 	return searcher.Search(ctx, query, opts)
 }
 
+// Probe inspects one URL through its resolved provider without downloading media.
+func (r *Registry) Probe(ctx context.Context, rawURL string, opts ProbeOptions) (ProbeResult, error) {
+	p := r.Resolve(rawURL)
+	if p == nil {
+		return ProbeResult{}, fmt.Errorf("%w: %s", ErrNoMatchingProvider, rawURL)
+	}
+	prober, ok := p.(ProbeProvider)
+	if !ok {
+		return ProbeResult{}, fmt.Errorf("%w: %s", ErrProbeUnsupported, p.Name())
+	}
+	return prober.Probe(ctx, rawURL, opts)
+}
+
 // Download finds the appropriate provider and downloads the media into storage.
 func (r *Registry) Download(ctx context.Context, rawURL string, store storage.Storage, opts DownloadOptions) (*storage.Asset, error) {
 	p := r.Resolve(rawURL)

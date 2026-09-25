@@ -21,6 +21,10 @@ var (
 	ErrSearchFailed = errors.New("download: provider search failed")
 	// ErrSearchNoResults indicates that search completed without usable results.
 	ErrSearchNoResults = errors.New("download: search returned no usable results")
+	// ErrProbeUnsupported indicates that a provider cannot inspect media formats.
+	ErrProbeUnsupported = errors.New("download: provider does not support media probing")
+	// ErrProbeFailed indicates that metadata/format inspection failed.
+	ErrProbeFailed = errors.New("download: media probe failed")
 )
 
 const (
@@ -29,6 +33,8 @@ const (
 	MaxSearchQueryBytes  = 256
 	DefaultSearchTimeout = 15 * time.Second
 	MaxSearchTimeout     = 30 * time.Second
+	DefaultProbeTimeout  = 15 * time.Second
+	MaxProbeTimeout      = 30 * time.Second
 )
 
 // MediaMode is a bounded semantic selection understood by extractor-backed
@@ -81,6 +87,33 @@ type SearchResult struct {
 type SearchProvider interface {
 	Name() string
 	Search(ctx context.Context, query string, opts SearchOptions) ([]SearchResult, error)
+}
+
+// ProbeOptions controls bounded metadata/format inspection without downloading media.
+type ProbeOptions struct {
+	Timeout time.Duration
+}
+
+// VideoQuality is one normalized, user-facing MP4 quality discovered from the
+// provider. Size is an estimate and may be zero when the provider cannot know it.
+type VideoQuality struct {
+	Height int
+	Size   int64
+}
+
+// ProbeResult is bounded metadata used to render a format chooser.
+type ProbeResult struct {
+	Title           string
+	Performer       string
+	DurationSeconds int64
+	VideoQualities  []VideoQuality
+}
+
+// ProbeProvider is an optional capability for inspecting one media URL before
+// the physical download begins.
+type ProbeProvider interface {
+	Name() string
+	Probe(ctx context.Context, rawURL string, opts ProbeOptions) (ProbeResult, error)
 }
 
 // ProgressCallback is invoked periodically with the current download progress.
