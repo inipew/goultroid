@@ -298,12 +298,16 @@ func viewHasAction(rows []presentation.Row, actionID string) bool {
 
 type cancellationRecordingClient struct {
 	tasks.Client
-	cancelled []tasks.TaskID
-	cancelErr error
+	cancelled      []tasks.TaskID
+	cancelErr      error
+	notFoundStage string
 }
 
 func (c *cancellationRecordingClient) Cancel(id tasks.TaskID, reason tasks.Cause) (tasks.CancelReceipt, error) {
 	c.cancelled = append(c.cancelled, id)
+	if c.notFoundStage != "" && strings.HasSuffix(string(id), ":"+c.notFoundStage) {
+		return tasks.CancelReceipt{TaskID: id, Accepted: false, Reason: reason}, tasks.ErrTaskNotFound
+	}
 	if c.cancelErr != nil {
 		return tasks.CancelReceipt{TaskID: id, Accepted: false, Reason: reason}, c.cancelErr
 	}
@@ -400,5 +404,16 @@ func TestP4DeliveryFailureExplainsReopenSemantics(t *testing.T) {
 	}
 	if len(view.Rows) != 0 {
 		t.Fatalf("terminal delivery failure unexpectedly exposes dead actions: %+v", view.Rows)
+	}
+}
+
+func TestP4CancelInteractivePipelineIgnoresInactiveSiblingStage(t *testing.T) {
+	client := &cancellationRecordingClient{notFoundStage: "delivery"}
+	p := New(client)
+	if err := p.cancelInteractivePipeline("downloader:interactive:42"); err != nil {
+		t.Fatalf("cancelInteractivePipeline() error=%v, want nil when delivery stage is not active", err)
+	}
+	if len(client.cancelled) != 2 {
+		t.Fatalf("cancelled stages=%v, want both stages attempted", client.cancelled)
 	}
 }

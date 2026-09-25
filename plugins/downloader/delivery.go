@@ -382,7 +382,7 @@ func (p *Plugin) cancelInteractivePipeline(root string) error {
 	}
 	var joined error
 	for _, stage := range []string{"download", "delivery"} {
-		if _, err := p.tasks.Cancel(interactivePipelineTaskID(root, stage), tasks.CauseUserCancel); err != nil {
+		if _, err := p.tasks.Cancel(interactivePipelineTaskID(root, stage), tasks.CauseUserCancel); err != nil && !errors.Is(err, tasks.ErrTaskNotFound) {
 			joined = errors.Join(joined, err)
 		}
 	}
