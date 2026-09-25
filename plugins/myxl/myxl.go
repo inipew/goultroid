@@ -354,17 +354,17 @@ func (p *Plugin) handleLogin(ctx *core.Context, args []string) error {
 	rawMSISDN := args[0]
 	msisdn, err := NormalizeMSISDN(rawMSISDN)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Nomor HP tidak valid: %v", err))
+		return ctx.Error(fmt.Sprintf("Nomor HP tidak valid: %v", err))
 	}
 
-	_ = ctx.EditOrReply(fmt.Sprintf("⏳ Mengirim permintaan OTP ke <code>%s</code>...", html.EscapeString(msisdn)))
+	_ = ctx.Progress(fmt.Sprintf("Mengirim permintaan OTP ke <code>%s</code>...", html.EscapeString(msisdn)))
 
 	cCtx, cancel := context.WithTimeout(getContext(ctx), 20*time.Second)
 	defer cancel()
 
 	subID, err := p.client.RequestOTP(cCtx, msisdn)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Gagal meminta OTP:\n<code>%s</code>", html.EscapeString(err.Error())))
+		return ctx.Error(fmt.Sprintf("Gagal meminta OTP:\n<code>%s</code>", html.EscapeString(err.Error())))
 	}
 
 	// Save or update placeholder account with subscriber_id if present
@@ -379,8 +379,8 @@ func (p *Plugin) handleLogin(ctx *core.Context, args []string) error {
 	}
 	_ = p.repo.Save(cCtx, existing)
 
-	return ctx.EditOrReply(
-		fmt.Sprintf("✅ <b>Kode OTP telah dikirimkan via SMS</b> ke <code>%s</code>!\n\n"+
+	return ctx.Success(
+		fmt.Sprintf("<b>Kode OTP telah dikirimkan via SMS</b> ke <code>%s</code>!\n\n"+
 			"Segera masukkan kode OTP dengan perintah:\n"+
 			"<code>.myxl otp %s &lt;kode_otp&gt;</code>",
 			html.EscapeString(msisdn), html.EscapeString(msisdn)),
@@ -400,14 +400,14 @@ func (p *Plugin) handleOTP(ctx *core.Context, args []string) error {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Nomor HP tidak valid: %v", err))
 	}
 
-	_ = ctx.EditOrReply(fmt.Sprintf("⏳ Memverifikasi kode OTP untuk <code>%s</code>...", html.EscapeString(msisdn)))
+	_ = ctx.Progress(fmt.Sprintf("Memverifikasi kode OTP untuk <code>%s</code>...", html.EscapeString(msisdn)))
 
 	cCtx, cancel := context.WithTimeout(getContext(ctx), 25*time.Second)
 	defer cancel()
 
 	tokens, err := p.client.SubmitOTP(cCtx, msisdn, code)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Verifikasi OTP gagal:\n<code>%s</code>", html.EscapeString(err.Error())))
+		return ctx.Error(fmt.Sprintf("Verifikasi OTP gagal:\n<code>%s</code>", html.EscapeString(err.Error())))
 	}
 
 	acc, _ := p.repo.GetByMSISDN(cCtx, msisdn)
@@ -427,11 +427,11 @@ func (p *Plugin) handleOTP(ctx *core.Context, args []string) error {
 	acc.IsActive = true
 
 	if err := p.repo.Save(cCtx, acc); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("⚠️ Login berhasil di CIAM tetapi gagal menyimpan ke database: %s", html.EscapeString(err.Error())))
+		return ctx.Error(fmt.Sprintf("Login berhasil di CIAM tetapi gagal menyimpan ke database: %s", html.EscapeString(err.Error())))
 	}
 
-	return ctx.EditOrReply(
-		fmt.Sprintf("🎉 <b>Login Berhasil!</b>\n\n"+
+	return ctx.Success(
+		fmt.Sprintf("<b>Login Berhasil!</b>\n\n"+
 			"Nomor <code>%s</code> telah tersimpan dan dijadikan sebagai <b>akun aktif</b>.\n\n"+
 			"Gunakan <code>.kuota</code> untuk memeriksa sisa kuota dan pulsa Anda.",
 			html.EscapeString(msisdn)),
@@ -464,7 +464,7 @@ func (p *Plugin) handleStatus(ctx *core.Context) error {
 	cCtx := getContext(ctx)
 	acc, err := p.repo.GetActive(cCtx)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Error database: %v", err))
+		return ctx.Error(fmt.Sprintf("Error database: %v", err))
 	}
 	if acc == nil {
 		return ctx.EditOrReply("⚠️ Tidak ada akun MyXL aktif saat ini. Gunakan <code>.myxl login &lt;nomor&gt;</code> untuk login.")
@@ -605,7 +605,7 @@ func (p *Plugin) handleShowQuota(ctx *core.Context, args []string) error {
 	}
 
 	maskMSISDN := isGroupChat(ctx.Chat)
-	_ = ctx.EditOrReply(fmt.Sprintf("⏳ Mengambil data kuota untuk <code>%s</code>...", html.EscapeString(condMask(acc.MSISDN, maskMSISDN))))
+	_ = ctx.Progress(fmt.Sprintf("Mengambil data kuota untuk <code>%s</code>...", html.EscapeString(condMask(acc.MSISDN, maskMSISDN))))
 
 	queryCtx, cancel := context.WithTimeout(cCtx, 25*time.Second)
 	defer cancel()
@@ -614,7 +614,7 @@ func (p *Plugin) handleShowQuota(ctx *core.Context, args []string) error {
 	quota, qErr := p.client.GetQuotaDetails(queryCtx, acc)
 
 	if bErr != nil && qErr != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Gagal mengambil data MyXL:\nPulsa: <code>%s</code>\nKuota: <code>%s</code>",
+		return ctx.Error(fmt.Sprintf("Gagal mengambil data MyXL:\nPulsa: <code>%s</code>\nKuota: <code>%s</code>",
 			html.EscapeString(bErr.Error()), html.EscapeString(qErr.Error())))
 	}
 
@@ -717,22 +717,22 @@ func (p *Plugin) handleRefreshToken(ctx *core.Context, args []string) error {
 		acc, err = p.repo.GetActive(cCtx)
 	}
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Gagal membaca akun: %v", err))
+		return ctx.Error(fmt.Sprintf("Gagal membaca akun: %v", err))
 	}
 	if acc == nil {
 		return ctx.EditOrReply("⚠️ Tidak ada akun MyXL yang aktif. Silakan login terlebih dahulu.")
 	}
 
-	_ = ctx.EditOrReply(fmt.Sprintf("⏳ Me-refresh token CIAM untuk <code>%s</code>...", html.EscapeString(acc.MSISDN)))
+	_ = ctx.Progress(fmt.Sprintf("Me-refresh token CIAM untuk <code>%s</code>...", html.EscapeString(acc.MSISDN)))
 
 	tokens, err := p.client.ForceRefreshToken(cCtx, acc.MSISDN)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Gagal me-refresh token:\n<code>%s</code>", html.EscapeString(err.Error())))
+		return ctx.Error(fmt.Sprintf("Gagal me-refresh token:\n<code>%s</code>", html.EscapeString(err.Error())))
 	}
 
-	return ctx.EditOrReply(
+	return ctx.Success(
 		fmt.Sprintf(
-			"<b>✅ Token CIAM Berhasil Diperbarui!</b>\n\n"+
+			"<b>Token CIAM Berhasil Diperbarui!</b>\n\n"+
 				"<b>Akun:</b> <code>%s</code>\n"+
 				"<b>Access Token:</b> <code>%s...</code>\n"+
 				"<b>ID Token:</b> <code>%s...</code>\n"+
@@ -760,11 +760,11 @@ func (p *Plugin) handleSearchFamily(ctx *core.Context, args []string) error {
 	}
 
 	familyCode := strings.TrimSpace(args[0])
-	_ = ctx.EditOrReply(fmt.Sprintf("⏳ Mencari daftar paket dalam family <code>%s</code>...", html.EscapeString(familyCode)))
+	_ = ctx.Progress(fmt.Sprintf("Mencari daftar paket dalam family <code>%s</code>...", html.EscapeString(familyCode)))
 
 	res, err := p.client.GetPackagesByFamily(cCtx, acc, familyCode)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Gagal memuat paket family:\n<code>%s</code>", html.EscapeString(err.Error())))
+		return ctx.Error(fmt.Sprintf("Gagal memuat paket family:\n<code>%s</code>", html.EscapeString(err.Error())))
 	}
 
 	return deliverHTML(ctx, FormatFamilyPackages(res))
@@ -783,14 +783,14 @@ func (p *Plugin) handlePackageDetail(ctx *core.Context, args []string) error {
 	}
 
 	optionCode := strings.TrimSpace(args[0])
-	_ = ctx.EditOrReply(fmt.Sprintf("⏳ Memuat rincian paket <code>%s</code>...", html.EscapeString(optionCode)))
+	_ = ctx.Progress(fmt.Sprintf("Memuat rincian paket <code>%s</code>...", html.EscapeString(optionCode)))
 
 	details, err := p.client.GetPackageDetails(cCtx, acc, optionCode)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Gagal memuat detail paket:\n<code>%s</code>", html.EscapeString(err.Error())))
+		return ctx.Error(fmt.Sprintf("Gagal memuat detail paket:\n<code>%s</code>", html.EscapeString(err.Error())))
 	}
 
-	return ctx.EditOrReply(FormatPackageDetails(details))
+	return ctx.Result(FormatPackageDetails(details))
 }
 
 func (p *Plugin) handleSavedPackages(ctx *core.Context, args []string) error {
@@ -820,7 +820,7 @@ func (p *Plugin) handleSavedPackages(ctx *core.Context, args []string) error {
 			return ctx.EditOrReply("⚠️ Format salah! Gunakan: <code>.myxl saved add &lt;option_code&gt; [nama] [harga]</code>")
 		}
 		optCode := strings.TrimSpace(args[1])
-		_ = ctx.EditOrReply(fmt.Sprintf("⏳ Mengambil data paket <code>%s</code>...", html.EscapeString(optCode)))
+		_ = ctx.Progress(fmt.Sprintf("Mengambil data paket <code>%s</code>...", html.EscapeString(optCode)))
 
 		pkgName := optCode
 		var price int64
@@ -848,9 +848,9 @@ func (p *Plugin) handleSavedPackages(ctx *core.Context, args []string) error {
 			FamilyCode: familyCode,
 		}
 		if err := p.repo.SavePackage(cCtx, item); err != nil {
-			return ctx.EditOrReply(fmt.Sprintf("❌ Gagal menyimpan bookmark: %v", err))
+			return ctx.Error(fmt.Sprintf("Gagal menyimpan bookmark: %v", err))
 		}
-		return ctx.EditOrReply(fmt.Sprintf("✅ Paket <b>%s</b> (<code>%s</code>) berhasil disimpan ke bookmark!", html.EscapeString(pkgName), html.EscapeString(optCode)))
+		return ctx.Success(fmt.Sprintf("Paket <b>%s</b> (<code>%s</code>) berhasil disimpan ke bookmark!", html.EscapeString(pkgName), html.EscapeString(optCode)))
 
 	case "del", "delete", "rm":
 		if len(args) < 2 {
@@ -1011,14 +1011,14 @@ func (p *Plugin) handleBuy(ctx *core.Context, args []string) error {
 
 		if val, err := strconv.ParseInt(low, 10, 64); err == nil {
 			if val < 0 {
-				return ctx.EditOrReply("❌ Nominal overwrite tidak boleh negatif.")
+				return ctx.Error("Nominal overwrite tidak boleh negatif.")
 			}
 			overwritePrice = &val
 			continue
 		}
 	}
 
-	_ = ctx.EditOrReply(fmt.Sprintf("⏳ Menyiapkan pembelian paket <code>%s</code> (metode: <code>%s</code>)...", html.EscapeString(optionCode), html.EscapeString(method)))
+	_ = ctx.Progress(fmt.Sprintf("Menyiapkan pembelian paket <code>%s</code> (metode: <code>%s</code>)...", html.EscapeString(optionCode), html.EscapeString(method)))
 
 	// Fetch package details to get confirmation token and real price
 	details, err := p.client.GetPackageDetails(cCtx, acc, optionCode)
@@ -1026,7 +1026,7 @@ func (p *Plugin) handleBuy(ctx *core.Context, args []string) error {
 		return ctx.EditOrReply(fmt.Sprintf("❌ Gagal memuat detail paket:\n<code>%s</code>", html.EscapeString(err.Error())))
 	}
 	if details.TokenConfirmation == "" {
-		return ctx.EditOrReply("❌ Token konfirmasi paket tidak ditemukan.")
+		return ctx.Error("Token konfirmasi paket tidak ditemukan.")
 	}
 
 	pkgName := optionCode
@@ -1048,7 +1048,7 @@ func (p *Plugin) handleBuy(ctx *core.Context, args []string) error {
 	}
 
 	if p.stateStore == nil || ctx.SenderID() <= 0 {
-		return ctx.EditOrReply("❌ Konfirmasi pembelian tidak tersedia pada sesi ini. Transaksi tidak dijalankan.")
+		return ctx.Error("Konfirmasi pembelian tidak tersedia pada sesi ini. Transaksi tidak dijalankan.")
 	}
 
 	draft := purchaseDraftState{
@@ -1063,7 +1063,7 @@ func (p *Plugin) handleBuy(ctx *core.Context, args []string) error {
 		UserID: ctx.SenderID(), ChatID: ctx.ChatID(), Namespace: p.Namespace(), SingleUse: true,
 	}, 5*time.Minute)
 	if oid == "" {
-		return ctx.EditOrReply("❌ Gagal membuat sesi konfirmasi. Transaksi tidak dijalankan.")
+		return ctx.Error("Gagal membuat sesi konfirmasi. Transaksi tidak dijalankan.")
 	}
 
 	preview := fmt.Sprintf(
@@ -1074,7 +1074,7 @@ func (p *Plugin) handleBuy(ctx *core.Context, args []string) error {
 		ui.NewCallbackButton("✅ Konfirmasi", callback.EncodeCallbackData("myxl", "buy_confirm", oid)),
 		ui.NewCallbackButton("❌ Batal", callback.EncodeCallbackData("myxl", "buy_cancel", oid)),
 	}}})
-	return ctx.Messages().ReplyMarkup(preview, markup)
+	return ctx.EditMarkup(preview, markup)
 }
 
 func (p *Plugin) confirmPurchase(cbCtx *callback.CallbackContext, draft purchaseDraftState) error {
