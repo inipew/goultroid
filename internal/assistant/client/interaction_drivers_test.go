@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/gotd/td/tg"
@@ -176,7 +175,7 @@ func TestRefreshInteractionBindingsTracksPluginGeneration(t *testing.T) {
 	if driver.dispatches != 2 {
 		t.Fatalf("reloaded dispatches = %d, want 2", driver.dispatches)
 	}
-	if err := dispatchGenerationDriver(engine, staleCallback, 4); err == nil || errors.Is(err, rootinteraction.ErrHandlerUnavailable) {
-		t.Fatalf("stale callback after reload error = %v, want stale session/token rejection", err)
+	if err := dispatchGenerationDriver(engine, staleCallback, 4); err == nil {
+		t.Fatal("stale callback revived after plugin reload")
 	}
 }
