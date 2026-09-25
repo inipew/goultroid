@@ -23,6 +23,8 @@ import (
 
 var ErrInteractionUnavailable = errors.New("assistant/client: interaction engine unavailable")
 
+const maxInteractionCallbackFlights = 4096
+
 type callbackAcknowledger interface {
 	ensureAnswered(context.Context, int64, error)
 }
@@ -32,14 +34,46 @@ type immediateCallbackAcknowledger interface {
 }
 
 type interactionIngress struct {
-	engine *orchestration.Engine
-	ack    callbackAcknowledger
-	tasks  tasks.Client
-	input  func(*orchestration.Context, string) error
+	engine  *orchestration.Engine
+	ack     callbackAcknowledger
+	tasks   tasks.Client
+	limiter RateLimiter
+	input   func(*orchestration.Context, string) error
+
+	flightMu sync.Mutex
+	flights  map[string]struct{}
 }
 
 func isInteractionCallback(data []byte) bool {
 	return strings.HasPrefix(string(data), "a2:")
+}
+
+func (v *interactionIngress) acquireCallbackFlight(key string) bool {
+	if v == nil || key == "" {
+		return true
+	}
+	v.flightMu.Lock()
+	defer v.flightMu.Unlock()
+	if v.flights == nil {
+		v.flights = make(map[string]struct{})
+	}
+	if _, exists := v.flights[key]; exists {
+		return false
+	}
+	if len(v.flights) >= maxInteractionCallbackFlights {
+		return false
+	}
+	v.flights[key] = struct{}{}
+	return true
+}
+
+func (v *interactionIngress) releaseCallbackFlight(key string) {
+	if v == nil || key == "" {
+		return
+	}
+	v.flightMu.Lock()
+	delete(v.flights, key)
+	v.flightMu.Unlock()
 }
 
 func (v *interactionIngress) tryMessage(ctx context.Context, data []byte, userID, queryID int64, peer tg.InputPeerClass, chatID int64, msgID int) (bool, error) {
@@ -65,6 +99,18 @@ func (v *interactionIngress) dispatchCallback(
 	if v == nil || v.engine == nil || v.ack == nil {
 		return ErrInteractionUnavailable
 	}
+	flightKey := fmt.Sprintf("%s:actor:%d", orderingKey, request.ActorID)
+	if !v.acquireCallbackFlight(flightKey) {
+		v.ack.ensureAnswered(ctx, request.QueryID, nil)
+		return nil
+	}
+	defer v.releaseCallbackFlight(flightKey)
+
+	if v.limiter != nil && !v.limiter.Allow(request.ActorID, "interaction") {
+		v.ack.ensureAnswered(ctx, request.QueryID, nil)
+		return nil
+	}
+
 	prepared, err := v.engine.PrepareCallback(ctx, request)
 	if err != nil {
 		v.ack.ensureAnswered(ctx, request.QueryID, err)

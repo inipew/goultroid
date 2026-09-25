@@ -851,12 +851,6 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 				}
 				return nil
 			}
-			if deps.RateLimiter != nil && !deps.RateLimiter.Allow(update.UserID, "inline") {
-				if deps.Interaction != nil {
-					_ = deps.Interaction.Answer(ctx, update.QueryID, "Too many requests. Please wait.", true)
-				}
-				return nil
-			}
 			if deps.InteractionIngress == nil {
 				if deps.Interaction != nil {
 					_ = deps.Interaction.Answer(ctx, update.QueryID, "Interaction service unavailable.", false)
@@ -917,12 +911,6 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			if deps.CallbackDeduper != nil && !deps.CallbackDeduper.Admit(update.QueryID, time.Now()) {
 				if deps.Interaction != nil {
 					_ = deps.Interaction.Answer(ctx, update.QueryID, "", false)
-				}
-				return nil
-			}
-			if deps.RateLimiter != nil && !deps.RateLimiter.Allow(update.UserID, "callback") {
-				if deps.Interaction != nil {
-					_ = deps.Interaction.Answer(ctx, update.QueryID, "Too many requests. Please wait.", true)
 				}
 				return nil
 			}

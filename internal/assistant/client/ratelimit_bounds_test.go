@@ -36,3 +36,24 @@ func TestUserRateLimiterCardinalityIsBoundedFailClosed(t *testing.T) {
 		t.Fatalf("assistant limiter grew past cap: got=%d cap=%d", got, maxUserRateLimiterBuckets)
 	}
 }
+
+
+func TestUserRateLimiterCategoryProfileKeepsInteractionBurstIndependent(t *testing.T) {
+	limiter := NewUserRateLimiter(1, time.Hour)
+	limiter.SetCategoryLimit("interaction", 3, time.Hour)
+
+	for i := 0; i < 3; i++ {
+		if !limiter.Allow(7, "interaction") {
+			t.Fatalf("interaction burst rejected at token %d", i+1)
+		}
+	}
+	if limiter.Allow(7, "interaction") {
+		t.Fatal("interaction burst exceeded configured category capacity")
+	}
+	if !limiter.Allow(7, "command") {
+		t.Fatal("interaction category unexpectedly consumed command capacity")
+	}
+	if limiter.Allow(7, "command") {
+		t.Fatal("default command capacity was not preserved")
+	}
+}

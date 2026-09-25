@@ -108,6 +108,7 @@ func NewAssistantClient(appID int, appHash string, botToken string, logger *zap.
 	cache := peer.NewMemoryCache()
 	res := peer.NewResolver(cache)
 	rl := NewUserRateLimiter(5, 2*time.Second)
+	rl.SetCategoryLimit("interaction", 12, 250*time.Millisecond)
 	cmdR := command.NewRouter(logger)
 	c := &AssistantClient{
 		appID: appID, appHash: appHash, botToken: botToken, logger: logger,
@@ -258,7 +259,13 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 			close(runDone)
 			return startErr
 		}
-		ingress = &interactionIngress{engine: interactionEngine, ack: presentationService, tasks: taskClient, input: c.handleInteractionTextInput}
+		ingress = &interactionIngress{
+			engine:  interactionEngine,
+			ack:     presentationService,
+			tasks:   taskClient,
+			limiter: c.rateLimiter,
+			input:   c.handleInteractionTextInput,
+		}
 	}
 	c.mu.Lock()
 	c.interactionIngress = ingress

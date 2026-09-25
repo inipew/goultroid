@@ -12,9 +12,17 @@ type RateLimiter interface {
 }
 
 type rateBucket struct {
-	tokens     int
-	lastRefill time.Time
-	lastAccess time.Time
+	tokens      int
+	capacity    int
+	refillEvery time.Duration
+	category    string
+	lastRefill  time.Time
+	lastAccess  time.Time
+}
+
+type rateLimitProfile struct {
+	maxTokens   int
+	refillEvery time.Duration
 }
 
 const (
@@ -28,6 +36,7 @@ type UserRateLimiter struct {
 	buckets           map[string]*rateBucket
 	maxTokens         int
 	refillEvery       time.Duration
+	profiles          map[string]rateLimitProfile
 	lastCapacitySweep time.Time
 }
 
@@ -43,16 +52,52 @@ func NewUserRateLimiter(maxTokens int, refillEvery time.Duration) *UserRateLimit
 		buckets:     make(map[string]*rateBucket),
 		maxTokens:   maxTokens,
 		refillEvery: refillEvery,
+		profiles:    make(map[string]rateLimitProfile),
 	}
+}
+
+// SetCategoryLimit configures a bounded category-specific burst/refill profile.
+// It is safe to call before or during runtime; existing buckets keep their
+// accumulated tokens but are clamped to the new capacity.
+func (l *UserRateLimiter) SetCategoryLimit(category string, maxTokens int, refillEvery time.Duration) {
+	if l == nil || category == "" {
+		return
+	}
+	if maxTokens <= 0 {
+		maxTokens = l.maxTokens
+	}
+	if refillEvery <= 0 {
+		refillEvery = l.refillEvery
+	}
+	l.mu.Lock()
+	l.profiles[category] = rateLimitProfile{maxTokens: maxTokens, refillEvery: refillEvery}
+	for _, bucket := range l.buckets {
+		if bucket.category != category {
+			continue
+		}
+		bucket.capacity = maxTokens
+		bucket.refillEvery = refillEvery
+		if bucket.tokens > maxTokens {
+			bucket.tokens = maxTokens
+		}
+	}
+	l.mu.Unlock()
+}
+
+func (l *UserRateLimiter) profileLocked(category string) rateLimitProfile {
+	if profile, ok := l.profiles[category]; ok {
+		return profile
+	}
+	return rateLimitProfile{maxTokens: l.maxTokens, refillEvery: l.refillEvery}
 }
 
 func (l *UserRateLimiter) reclaimIdleBucketsLocked(now time.Time) {
 	for key, bucket := range l.buckets {
-		missing := l.maxTokens - bucket.tokens
+		missing := bucket.capacity - bucket.tokens
 		if missing < 0 {
 			missing = 0
 		}
-		fullyRefilledAt := bucket.lastRefill.Add(time.Duration(missing) * l.refillEvery)
+		fullyRefilledAt := bucket.lastRefill.Add(time.Duration(missing) * bucket.refillEvery)
 		if now.Sub(bucket.lastAccess) >= time.Minute && !now.Before(fullyRefilledAt) {
 			delete(l.buckets, key)
 		}
@@ -66,6 +111,7 @@ func (l *UserRateLimiter) Allow(userID int64, category string) bool {
 
 	now := time.Now()
 	key := strconv.FormatInt(userID, 10) + ":" + category
+	profile := l.profileLocked(category)
 
 	b, ok := l.buckets[key]
 	if !ok {
@@ -82,20 +128,23 @@ func (l *UserRateLimiter) Allow(userID int64, category string) bool {
 			}
 		}
 		l.buckets[key] = &rateBucket{
-			tokens:     l.maxTokens - 1,
-			lastRefill: now,
-			lastAccess: now,
+			tokens:      profile.maxTokens - 1,
+			capacity:    profile.maxTokens,
+			refillEvery: profile.refillEvery,
+			category:    category,
+			lastRefill:  now,
+			lastAccess:  now,
 		}
 		return true
 	}
 
 	// Refill tokens based on elapsed time.
 	elapsed := now.Sub(b.lastRefill)
-	refill := int(elapsed / l.refillEvery)
+	refill := int(elapsed / b.refillEvery)
 	if refill > 0 {
 		b.tokens += refill
-		if b.tokens > l.maxTokens {
-			b.tokens = l.maxTokens
+		if b.tokens > b.capacity {
+			b.tokens = b.capacity
 		}
 		b.lastRefill = now
 	}

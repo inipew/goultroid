@@ -711,7 +711,7 @@ func TestCallbackQueryDeduper_ConcurrentDuplicateStormAdmitsOnce(t *testing.T) {
 	}
 }
 
-func TestUpdateHandlers_A2DuplicateSuppressedBeforeRateLimit(t *testing.T) {
+func TestUpdateHandlers_A2DuplicateBypassesLegacyTransportRateLimit(t *testing.T) {
 	dispatcher := tg.NewUpdateDispatcher()
 	api := &mockTelegramAPI{}
 	clientInter := interaction.NewClientInteraction(api, zap.NewNop())
@@ -737,8 +737,8 @@ func TestUpdateHandlers_A2DuplicateSuppressedBeforeRateLimit(t *testing.T) {
 			t.Fatalf("a2 duplicate handle %d: %v", i+1, err)
 		}
 	}
-	if transportLimiter.calls != 1 {
-		t.Fatalf("duplicate a2 delivery consumed transport limiter %d times, want 1", transportLimiter.calls)
+	if transportLimiter.calls != 0 {
+		t.Fatalf("a2 callback hit legacy transport limiter %d times, want 0", transportLimiter.calls)
 	}
 	if api.answerReq == nil || api.answerReq.QueryID != 702 || api.answerReq.Message != "" {
 		t.Fatalf("duplicate a2 callback must receive terminal empty ack, got %+v", api.answerReq)
@@ -799,8 +799,8 @@ func TestUpdateHandlers_V1UsesOnlyCanonicalCallbackRateLimit(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("a2 callback handle: %v", err)
 	}
-	if transportLimiter.calls != 1 {
-		t.Fatalf("a2 callback must retain transport limiter, calls=%d", transportLimiter.calls)
+	if transportLimiter.calls != 0 {
+		t.Fatalf("a2 callback hit legacy transport limiter, calls=%d", transportLimiter.calls)
 	}
 	if dispatched {
 		t.Fatal("rate-limited a2 callback reached canonical v1 dispatcher")
