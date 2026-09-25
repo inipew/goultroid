@@ -397,7 +397,7 @@ func (p *Plugin) handleOTP(ctx *core.Context, args []string) error {
 
 	msisdn, err := NormalizeMSISDN(rawMSISDN)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Nomor HP tidak valid: %v", err))
+		return ctx.Error(fmt.Sprintf("Nomor HP tidak valid: %v", err))
 	}
 
 	_ = ctx.Progress(fmt.Sprintf("Memverifikasi kode OTP untuk <code>%s</code>...", html.EscapeString(msisdn)))
@@ -593,7 +593,7 @@ func (p *Plugin) handleShowQuota(ctx *core.Context, args []string) error {
 	}
 
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Error database: %v", err))
+		return ctx.Error(fmt.Sprintf("Error database: %v", err))
 	}
 
 	if acc == nil {
@@ -1023,7 +1023,7 @@ func (p *Plugin) handleBuy(ctx *core.Context, args []string) error {
 	// Fetch package details to get confirmation token and real price
 	details, err := p.client.GetPackageDetails(cCtx, acc, optionCode)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Gagal memuat detail paket:\n<code>%s</code>", html.EscapeString(err.Error())))
+		return ctx.Error(fmt.Sprintf("Gagal memuat detail paket:\n<code>%s</code>", html.EscapeString(err.Error())))
 	}
 	if details.TokenConfirmation == "" {
 		return ctx.Error("Token konfirmasi paket tidak ditemukan.")
