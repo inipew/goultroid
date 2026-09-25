@@ -536,7 +536,6 @@ func TestHierarchicalRPCLimiter_SafeReclaimSkipsBeyondIdleTTL(t *testing.T) {
 	}
 }
 
-
 func TestHierarchicalRPCLimiter_CallbackAckLaneIsIndependentFromMessagesFamily(t *testing.T) {
 	limiter := NewHierarchicalRPCLimiter(DefaultHierarchicalLimiterConfig())
 	now := time.Unix(500, 0)

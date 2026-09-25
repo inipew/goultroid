@@ -37,7 +37,6 @@ func TestUserRateLimiterCardinalityIsBoundedFailClosed(t *testing.T) {
 	}
 }
 
-
 func TestUserRateLimiterCategoryProfileKeepsInteractionBurstIndependent(t *testing.T) {
 	limiter := NewUserRateLimiter(1, time.Hour)
 	limiter.SetCategoryLimit("interaction", 3, time.Hour)

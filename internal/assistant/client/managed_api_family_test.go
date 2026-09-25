@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	assistentrpc "github.com/inipew/goultroid/internal/assistant/rpc"
 	"github.com/gotd/td/tg"
+	assistentrpc "github.com/inipew/goultroid/internal/assistant/rpc"
 )
 
 type familyCaptureExecutor struct {
