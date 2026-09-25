@@ -41,6 +41,7 @@ const (
 	actionVideo2160    = "video_2160"
 	actionDownloadFile = "download_file"
 	actionBack         = "back"
+	actionRetry        = "retry"
 	actionCancel       = "cancel"
 )
 
@@ -60,6 +61,7 @@ var interactiveActions = []string{
 	actionVideo2160,
 	actionDownloadFile,
 	actionBack,
+	actionRetry,
 	actionCancel,
 }
 
@@ -70,6 +72,7 @@ const (
 	phaseAudioFormat interactivePhase = "audio_format"
 	phaseVideoFormat interactivePhase = "video_format"
 	phaseRunning     interactivePhase = "running"
+	phaseFailed      interactivePhase = "failed"
 )
 
 type interactiveState struct {
@@ -80,6 +83,7 @@ type interactiveState struct {
 	Format      download.MediaFormat `json:"f,omitempty"`
 	MaxHeight   int                  `json:"h,omitempty"`
 	QualityMask uint16               `json:"q,omitempty"`
+	TaskRoot    string               `json:"t,omitempty"`
 }
 
 type downloadPreparation struct {
@@ -221,6 +225,7 @@ func (p *Plugin) BindAssistant(rt assistantinteraction.DriverRuntime) (func(), e
 		}
 	}
 	for _, actionID := range []string{
+		actionRetry,
 		actionFormatM4A,
 		actionFormatMP3,
 		actionFormatOpus,
@@ -323,6 +328,9 @@ func (p *Plugin) handleInteractiveAction(ctx *orchestration.Context, actionID st
 			return err
 		}
 		ctx.Cancel()
+		if state.Phase == phaseRunning && strings.TrimSpace(state.TaskRoot) != "" && p.tasks != nil {
+			_ = p.cancelInteractivePipeline(state.TaskRoot)
+		}
 		return nil
 	default:
 		return p.executeInteractiveDownload(ctx, state, actionID)
@@ -342,6 +350,13 @@ func (p *Plugin) validateFinalAction(state interactiveState, actionID string) er
 		return fmt.Errorf("%w: downloader provider changed or disappeared", core.ErrUnavailable)
 	}
 	switch actionID {
+	case actionRetry:
+		if state.Phase != phaseFailed || state.Mode == "" || state.Format == "" {
+			return fmt.Errorf("%w: retry action is stale or invalid", core.ErrInvalidArgs)
+		}
+		if state.MaxHeight > 0 && !qualityMaskHas(state.QualityMask, state.MaxHeight) {
+			return fmt.Errorf("%w: retry video quality is no longer available", core.ErrInvalidArgs)
+		}
 	case actionDownloadFile:
 		if state.Provider != "http" || state.Phase != phaseChoose {
 			return fmt.Errorf("%w: direct file action is not valid for this source", core.ErrInvalidArgs)
@@ -377,14 +392,18 @@ func (p *Plugin) executeInteractiveDownload(ctx *orchestration.Context, state in
 		return err
 	}
 
-	mode, format, maxHeight, err := finalSelection(actionID)
-	if err != nil {
-		return err
+	mode, format, maxHeight := state.Mode, state.Format, state.MaxHeight
+	if actionID != actionRetry {
+		mode, format, maxHeight, err = finalSelection(actionID)
+		if err != nil {
+			return err
+		}
 	}
 	state.Phase = phaseRunning
 	state.Mode = mode
 	state.Format = format
 	state.MaxHeight = maxHeight
+	state.TaskRoot = string(p.nextTaskID("interactive"))
 	encoded, err := encodeInteractiveState(state)
 	if err != nil {
 		return err
@@ -406,10 +425,26 @@ func (p *Plugin) executeInteractiveDownload(ctx *orchestration.Context, state in
 		ctx.Cancel()
 		return err
 	}
-	downloadFailure, err := ctx.PrepareStaticEdit(failedView(nil))
+	terminalTransition, err := ctx.PrepareTransition()
 	if err != nil {
 		ctx.Cancel()
 		return err
+	}
+	cancelSession, err := ctx.PrepareCancel()
+	if err != nil {
+		ctx.Cancel()
+		return err
+	}
+	failedState := state
+	failedState.Phase = phaseFailed
+	failedState.TaskRoot = ""
+	failedEncoded, err := encodeInteractiveState(failedState)
+	if err != nil {
+		ctx.Cancel()
+		return err
+	}
+	downloadFailure := func(editCtx context.Context) error {
+		return terminalTransition(editCtx, failedEncoded, interactiveTTL, failedRetryView(failedState))
 	}
 	deliveryFailure, err := ctx.PrepareStaticEdit(deliveryFailedView())
 	if err != nil {
@@ -426,7 +461,7 @@ func (p *Plugin) executeInteractiveDownload(ctx *orchestration.Context, state in
 		targetKind = target.PresentationTargetKind()
 	}
 	if err := p.submitInteractivePipeline(
-		context.WithoutCancel(ctx.Context()),
+		ctx.Context(),
 		state,
 		mode,
 		format,
@@ -435,13 +470,13 @@ func (p *Plugin) executeInteractiveDownload(ctx *orchestration.Context, state in
 		downloadFailure,
 		deliveryFailure,
 		delivered,
+		cancelSession,
 		targetKind,
 	); err != nil {
 		_ = ctx.Edit(failedView(err))
 		ctx.Cancel()
 		return err
 	}
-	ctx.Cancel()
 	return nil
 }
 
@@ -768,11 +803,28 @@ func runningView(state interactiveState) presentation.View {
 	}
 	return presentation.View{
 		Text: "⬇️ <b>Downloading...</b>\n\n<b>Format:</b> <code>" + core.EscapeHTML(label) + "</code>",
+		Rows: []presentation.Row{{{Text: "✖ Cancel", ActionID: actionCancel}}},
+	}
+}
+
+func failedRetryView(state interactiveState) presentation.View {
+	label := "file"
+	if state.Mode != download.MediaModeDefault {
+		label = string(state.Mode) + " / " + string(state.Format)
+		if state.MaxHeight > 0 {
+			label += fmt.Sprintf(" / ≤%dp", state.MaxHeight)
+		}
+	}
+	return presentation.View{
+		Text: "❌ <b>Download failed.</b>\n\n<b>Selection:</b> <code>" + core.EscapeHTML(label) + "</code>\nRetry the same selection or close and reopen the downloader.",
+		Rows: []presentation.Row{
+			{{Text: "↻ Retry", ActionID: actionRetry}, {Text: "✖ Close", ActionID: actionCancel}},
+		},
 	}
 }
 
 func failedView(err error) presentation.View {
-	return presentation.View{Text: "❌ <b>Error downloading media.</b>\nTry again."}
+	return presentation.View{Text: "❌ <b>Error downloading media.</b>\nReopen the downloader and try again."}
 }
 
 func cancelledView() presentation.View {

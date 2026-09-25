@@ -41,6 +41,7 @@ func TestYTZZRetainedDeliveryUsesMediaResourceOnlyAndKeepsAsset(t *testing.T) {
 	var sawMedia, sawDownload, sawProcess bool
 	err = p.submitRetainedDelivery(
 		context.Background(),
+		tasks.TaskID("test:delivery"),
 		store,
 		asset,
 		download.MediaModeVideo,
@@ -52,6 +53,7 @@ func TestYTZZRetainedDeliveryUsesMediaResourceOnlyAndKeepsAsset(t *testing.T) {
 			sawProcess = tasks.HasHeldResource(ctx, "process")
 			return nil
 		},
+		nil,
 		nil,
 		nil,
 		"inline",
@@ -105,6 +107,7 @@ func TestYTZZDeliveryFailureKeepsRetainedAsset(t *testing.T) {
 	p := New(client, store)
 	err = p.submitRetainedDelivery(
 		context.Background(),
+		tasks.TaskID("test:delivery"),
 		store,
 		asset,
 		download.MediaModeAudio,
@@ -112,6 +115,7 @@ func TestYTZZDeliveryFailureKeepsRetainedAsset(t *testing.T) {
 		func(context.Context, presentation.Media) error {
 			return context.DeadlineExceeded
 		},
+		nil,
 		nil,
 		nil,
 		"inline",
@@ -243,6 +247,8 @@ func TestYTZPipelineReleasesDownloadResourcesBeforeMediaDelivery(t *testing.T) {
 			}
 			return nil
 		},
+		nil,
+		nil,
 		nil,
 		nil,
 		nil,

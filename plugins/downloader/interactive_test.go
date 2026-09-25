@@ -295,3 +295,73 @@ func viewHasAction(rows []presentation.Row, actionID string) bool {
 	}
 	return false
 }
+
+type cancellationRecordingClient struct {
+	tasks.Client
+	cancelled []tasks.TaskID
+}
+
+func (c *cancellationRecordingClient) Cancel(id tasks.TaskID, reason tasks.Cause) (tasks.CancelReceipt, error) {
+	c.cancelled = append(c.cancelled, id)
+	return tasks.CancelReceipt{TaskID: id, Accepted: true, Reason: reason}, nil
+}
+
+func TestP4RunningDownloaderOffersCancellationAndFailureOffersRetry(t *testing.T) {
+	state := interactiveState{
+		URL:      "https://example.com/file.mp4",
+		Provider: "http",
+		Phase:    phaseRunning,
+		Mode:     download.MediaModeVideo,
+		Format:   download.MediaFormatMP4,
+		TaskRoot: "downloader:interactive:1",
+	}
+	if !viewHasAction(runningView(state).Rows, actionCancel) {
+		t.Fatalf("running view missing cancel action: %+v", runningView(state).Rows)
+	}
+	state.Phase = phaseFailed
+	state.TaskRoot = ""
+	view := failedRetryView(state)
+	if !viewHasAction(view.Rows, actionRetry) || !viewHasAction(view.Rows, actionCancel) {
+		t.Fatalf("failed view retry/cancel actions=%+v", view.Rows)
+	}
+}
+
+func TestP4CancelInteractivePipelineTargetsDownloadAndDelivery(t *testing.T) {
+	client := &cancellationRecordingClient{}
+	p := New(client)
+	root := "downloader:interactive:42"
+	if err := p.cancelInteractivePipeline(root); err != nil {
+		t.Fatal(err)
+	}
+	want := []tasks.TaskID{
+		interactivePipelineTaskID(root, "download"),
+		interactivePipelineTaskID(root, "delivery"),
+	}
+	if len(client.cancelled) != len(want) {
+		t.Fatalf("cancelled=%v want=%v", client.cancelled, want)
+	}
+	for i := range want {
+		if client.cancelled[i] != want[i] {
+			t.Fatalf("cancelled[%d]=%q want=%q", i, client.cancelled[i], want[i])
+		}
+	}
+}
+
+func TestP4RetryActionRequiresFailedSelection(t *testing.T) {
+	p := New()
+	p.registry = download.NewRegistry(download.NewDirectHTTPProvider(time.Minute, 500*1024*1024))
+	state := interactiveState{
+		URL:      "https://example.com/file.mp4",
+		Provider: "http",
+		Phase:    phaseFailed,
+		Mode:     download.MediaModeVideo,
+		Format:   download.MediaFormatMP4,
+	}
+	if err := p.validateFinalAction(state, actionRetry); err != nil {
+		t.Fatalf("retry failed state rejected: %v", err)
+	}
+	state.Phase = phaseRunning
+	if err := p.validateFinalAction(state, actionRetry); !errors.Is(err, core.ErrInvalidArgs) {
+		t.Fatalf("running retry error=%v, want ErrInvalidArgs", err)
+	}
+}

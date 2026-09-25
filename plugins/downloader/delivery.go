@@ -159,6 +159,7 @@ func (p *Plugin) submitInteractivePipeline(
 	downloadFailure func(context.Context) error,
 	deliveryFailure func(context.Context) error,
 	delivered func(context.Context) error,
+	cancelSession func() bool,
 	targetKind string,
 ) error {
 	if p == nil || p.tasks == nil || delivery == nil {
@@ -171,13 +172,18 @@ func (p *Plugin) submitInteractivePipeline(
 	if admissionCtx == nil {
 		admissionCtx = context.Background()
 	}
+	if strings.TrimSpace(state.TaskRoot) == "" {
+		state.TaskRoot = string(p.nextTaskID("interactive"))
+	}
+	downloadTaskID := interactivePipelineTaskID(state.TaskRoot, "download")
+	deliveryTaskID := interactivePipelineTaskID(state.TaskRoot, "delivery")
 
 	var (
 		asset       *storage.Asset
 		targetStore storage.Storage
 	)
 	spec := tasks.WorkSpec{
-		ID:               p.nextTaskID("interactive-download"),
+		ID:               downloadTaskID,
 		QuotaOwner:       tasks.OwnerID("plugin:downloader"),
 		Pool:             tasks.PoolID("download"),
 		Class:            tasks.PriorityNormal,
@@ -220,19 +226,44 @@ func (p *Plugin) submitInteractivePipeline(
 	}
 	spec.OnComplete = func(result tasks.TaskResult) {
 		if !result.IsSuccess() {
-			if result.Outcome != tasks.OutcomeCancelled && result.Outcome != tasks.OutcomeTimedOut && downloadFailure != nil {
-				_ = p.submitTerminalEdit(context.Background(), "download-failed", downloadFailure)
+			if result.Outcome == tasks.OutcomeCancelled {
+				if cancelSession != nil {
+					cancelSession()
+				}
+				return
+			}
+			if downloadFailure != nil {
+				if err := p.submitTerminalEdit(context.Background(), "download-failed", func(editCtx context.Context) error {
+					if err := downloadFailure(editCtx); err != nil {
+						if cancelSession != nil {
+							cancelSession()
+						}
+						return err
+					}
+					return nil
+				}); err != nil && cancelSession != nil {
+					cancelSession()
+				}
 			}
 			return
 		}
 		if asset == nil || targetStore == nil {
 			if downloadFailure != nil {
-				_ = p.submitTerminalEdit(context.Background(), "download-invalid-result", downloadFailure)
+				if err := p.submitTerminalEdit(context.Background(), "download-invalid-result", downloadFailure); err != nil && cancelSession != nil {
+					cancelSession()
+				}
+			}
+			return
+		}
+		if err := admissionCtx.Err(); err != nil {
+			if cancelSession != nil {
+				cancelSession()
 			}
 			return
 		}
 		if err := p.submitRetainedDelivery(
-			context.Background(),
+			admissionCtx,
+			deliveryTaskID,
 			targetStore,
 			asset,
 			mode,
@@ -240,9 +271,15 @@ func (p *Plugin) submitInteractivePipeline(
 			delivery,
 			deliveryFailure,
 			delivered,
+			cancelSession,
 			targetKind,
-		); err != nil && deliveryFailure != nil && !isDeliveryLifecycleCancellation(err) {
-			_ = p.submitTerminalEdit(context.Background(), "delivery-submit-failed", deliveryFailure)
+		); err != nil {
+			if !isDeliveryLifecycleCancellation(err) && deliveryFailure != nil {
+				_ = p.submitTerminalEdit(context.Background(), "delivery-submit-failed", deliveryFailure)
+			}
+			if cancelSession != nil {
+				cancelSession()
+			}
 		}
 	}
 	_, err := p.tasks.Submit(admissionCtx, spec)
@@ -254,6 +291,7 @@ func (p *Plugin) submitInteractivePipeline(
 
 func (p *Plugin) submitRetainedDelivery(
 	admissionCtx context.Context,
+	taskID tasks.TaskID,
 	store storage.Storage,
 	asset *storage.Asset,
 	mode download.MediaMode,
@@ -261,13 +299,14 @@ func (p *Plugin) submitRetainedDelivery(
 	delivery orchestration.MediaDelivery,
 	deliveryFailure func(context.Context) error,
 	delivered func(context.Context) error,
+	cancelSession func() bool,
 	targetKind string,
 ) error {
 	if p == nil || p.tasks == nil || store == nil || asset == nil || delivery == nil {
 		return fmt.Errorf("%w: downloader media delivery is unavailable", core.ErrUnavailable)
 	}
 	spec := tasks.WorkSpec{
-		ID:               p.nextTaskID("media-delivery"),
+		ID:               taskID,
 		QuotaOwner:       tasks.OwnerID("plugin:downloader"),
 		Pool:             tasks.PoolID("general"),
 		Class:            tasks.PriorityNormal,
@@ -295,13 +334,18 @@ func (p *Plugin) submitRetainedDelivery(
 		},
 	}
 	spec.OnComplete = func(result tasks.TaskResult) {
+		defer func() {
+			if cancelSession != nil {
+				cancelSession()
+			}
+		}()
 		if result.IsSuccess() {
 			if targetKind == "message" && delivered != nil {
 				_ = p.submitTerminalEdit(context.Background(), "delivered", delivered)
 			}
 			return
 		}
-		if result.Outcome != tasks.OutcomeCancelled && result.Outcome != tasks.OutcomeTimedOut && deliveryFailure != nil {
+		if result.Outcome != tasks.OutcomeCancelled && deliveryFailure != nil {
 			_ = p.submitTerminalEdit(context.Background(), "delivery-failed", deliveryFailure)
 		}
 	}
@@ -324,4 +368,23 @@ func deliveryFailedView() presentation.View {
 
 func deliveredView() presentation.View {
 	return presentation.View{Text: "✅ <b>Download delivered to Telegram.</b>"}
+}
+
+func interactivePipelineTaskID(root, stage string) tasks.TaskID {
+	root = strings.TrimSpace(root)
+	stage = strings.TrimSpace(stage)
+	return tasks.TaskID(root + ":" + stage)
+}
+
+func (p *Plugin) cancelInteractivePipeline(root string) error {
+	if p == nil || p.tasks == nil || strings.TrimSpace(root) == "" {
+		return fmt.Errorf("%w: downloader task cancellation is unavailable", core.ErrUnavailable)
+	}
+	var joined error
+	for _, stage := range []string{"download", "delivery"} {
+		if _, err := p.tasks.Cancel(interactivePipelineTaskID(root, stage), tasks.CauseUserCancel); err != nil {
+			joined = errors.Join(joined, err)
+		}
+	}
+	return joined
 }
