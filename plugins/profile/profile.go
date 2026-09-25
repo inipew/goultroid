@@ -159,7 +159,7 @@ func (p *Plugin) Commands() []core.Command {
 func (p *Plugin) handleMe(ctx *core.Context) error {
 	fullUser, err := ctx.GetFullUser(&tg.InputUserSelf{})
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to fetch self info: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to fetch self info: %v", err))
 	}
 
 	var selfUser *tg.User
@@ -171,7 +171,7 @@ func (p *Plugin) handleMe(ctx *core.Context) error {
 	}
 
 	if selfUser == nil {
-		return ctx.EditOrReply("❌ Could not parse self profile details.")
+		return ctx.Error("Could not parse self profile details.")
 	}
 
 	var sb strings.Builder
@@ -194,30 +194,30 @@ func (p *Plugin) handleMe(ctx *core.Context) error {
 		sb.WriteString(fmt.Sprintf("• <b>Bio</b>: <i>%s</i>\n", core.EscapeHTML(fullUser.FullUser.About)))
 	}
 
-	return ctx.EditOrReply(sb.String())
+	return ctx.Result(sb.String())
 }
 
 // handleSetBio updates the account's bio/about.
 func (p *Plugin) handleSetBio(ctx *core.Context) error {
 	bio := strings.TrimSpace(ctx.RawArgs)
 	if bio == "" {
-		return ctx.EditOrReply("⚠️ Please provide bio text: <code>.setbio <text></code>")
+		return ctx.Status("Please provide bio text: <code>.setbio <text></code>")
 	}
 	if len([]rune(bio)) > 70 {
-		return ctx.EditOrReply(fmt.Sprintf("⚠️ Bio text is too long (%d/70 characters).", len([]rune(bio))))
+		return ctx.Status(fmt.Sprintf("Bio text is too long (%d/70 characters).", len([]rune(bio))))
 	}
 
 	if err := ctx.UpdateProfile(nil, nil, &bio); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to update bio: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to update bio: %v", err))
 	}
 
-	return ctx.EditOrReply(fmt.Sprintf("✅ <b>Bio updated successfully</b>:\n<i>%s</i>", core.EscapeHTML(bio)))
+	return ctx.Success(fmt.Sprintf("<b>Bio updated successfully</b>:\n<i>%s</i>", core.EscapeHTML(bio)))
 }
 
 // handleSetName updates the account's first name and optional last name.
 func (p *Plugin) handleSetName(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		return ctx.EditOrReply("⚠️ Please provide a name: <code>.setname <first_name> [last_name]</code>")
+		return ctx.Status("Please provide a name: <code>.setname <first_name> [last_name]</code>")
 	}
 
 	firstName := ctx.Args[0]
@@ -227,14 +227,14 @@ func (p *Plugin) handleSetName(ctx *core.Context) error {
 	}
 
 	if err := ctx.UpdateProfile(&firstName, &lastName, nil); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to update name: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to update name: %v", err))
 	}
 
 	fullName := firstName
 	if lastName != "" {
 		fullName += " " + lastName
 	}
-	return ctx.EditOrReply(fmt.Sprintf("✅ <b>Name updated successfully to</b>: %s", core.EscapeHTML(fullName)))
+	return ctx.Success(fmt.Sprintf("<b>Name updated successfully to</b>: %s", core.EscapeHTML(fullName)))
 }
 
 func isProfileImageMedia(media *core.MediaInfo) bool {
@@ -256,42 +256,42 @@ func isProfileImageMedia(media *core.MediaInfo) bool {
 func (p *Plugin) handleSetPic(ctx *core.Context) error {
 	reply, err := ctx.GetReply()
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to load replied message: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to load replied message: %v", err))
 	}
 	if reply == nil || !reply.HasMedia() {
-		return ctx.EditOrReply("⚠️ Reply to a Telegram photo or image document, then run <code>.setpic</code>. Local filesystem paths are not accepted.")
+		return ctx.Status("Reply to a Telegram photo or image document, then run <code>.setpic</code>. Local filesystem paths are not accepted.")
 	}
 	if !isProfileImageMedia(reply.Media) {
-		return ctx.EditOrReply("⚠️ Replied media must be a photo or image document.")
+		return ctx.Status("Replied media must be a photo or image document.")
 	}
 	if err := imageguard.ValidateKnown(reply.Media.Size, reply.Media.Width, reply.Media.Height, profileImagePolicy); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Profile image rejected by safety limits: %v", err))
+		return ctx.Error(fmt.Sprintf("Profile image rejected by safety limits: %v", err))
 	}
 
 	if p.files == nil {
-		return ctx.EditOrReply("❌ Profile filesystem scope is not available.")
+		return ctx.Error("Profile filesystem scope is not available.")
 	}
 	tempDir, err := p.files.CreateTempDir("goultroid-pfp-*")
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temporary directory: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to create temporary directory: %v", err))
 	}
 	defer func() { _ = p.files.RemoveTempDir(tempDir) }()
 
 	filePath, err := ctx.DownloadMedia(tempDir)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to download replied media: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to download replied media: %v", err))
 	}
 	if _, err := imageguard.Inspect(filePath, profileImagePolicy); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Downloaded profile image is invalid: %v", err))
+		return ctx.Error(fmt.Sprintf("Downloaded profile image is invalid: %v", err))
 	}
 
 	if ctx.Svc == nil {
-		return ctx.EditOrReply("❌ Telegram service not available.")
+		return ctx.Error("Telegram service not available.")
 	}
 	if err := ctx.Svc.UploadProfilePhoto(ctx.Ctx, filePath); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to set profile photo: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to set profile photo: %v", err))
 	}
-	return ctx.EditOrReply("✅ <b>Profile photo updated successfully!</b>")
+	return ctx.Success("<b>Profile photo updated successfully!</b>")
 }
 
 // handleDelPhoto deletes current profile photo(s).
@@ -307,58 +307,58 @@ func (p *Plugin) handleDelPhoto(ctx *core.Context) error {
 	}
 
 	if ctx.Svc == nil {
-		return ctx.EditOrReply("❌ Telegram service not available.")
+		return ctx.Error("Telegram service not available.")
 	}
 
 	deleted, err := ctx.Svc.DeleteProfilePhotos(ctx.Ctx, limit)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to delete profile photo: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to delete profile photo: %v", err))
 	}
 
 	if deleted == 0 {
-		return ctx.EditOrReply("⚠️ No profile photos found to delete.")
+		return ctx.Status("No profile photos found to delete.")
 	}
 
-	return ctx.EditOrReply(fmt.Sprintf("🗑️ <b>Successfully deleted %d profile photo(s).</b>", deleted))
+	return ctx.Success(fmt.Sprintf("Deleted %d profile photo(s).", deleted))
 }
 
 // handleBlock blocks a user from PM/contacts.
 func (p *Plugin) handleBlock(ctx *core.Context) error {
 	peer, uid, err := ctx.Peer().ResolveTargetUser()
 	if err != nil {
-		return ctx.EditOrReply("⚠️ " + err.Error())
+		return ctx.Status("" + err.Error())
 	}
 
 	if err := ctx.BlockUser(peer); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to block user: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to block user: %v", err))
 	}
 
-	return ctx.EditOrReply(fmt.Sprintf("🚫 <b>User blocked:</b> %s", ctx.DisplayUser(peer, uid)))
+	return ctx.Success(fmt.Sprintf("User blocked: %s", ctx.DisplayUser(peer, uid)))
 }
 
 // handleUnblock unblocks a user.
 func (p *Plugin) handleUnblock(ctx *core.Context) error {
 	peer, uid, err := ctx.Peer().ResolveTargetUser()
 	if err != nil {
-		return ctx.EditOrReply("⚠️ " + err.Error())
+		return ctx.Status("" + err.Error())
 	}
 
 	if err := ctx.UnblockUser(peer); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to unblock user: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to unblock user: %v", err))
 	}
 
-	return ctx.EditOrReply(fmt.Sprintf("✅ <b>User unblocked:</b> %s", ctx.DisplayUser(peer, uid)))
+	return ctx.Success(fmt.Sprintf("<b>User unblocked:</b> %s", ctx.DisplayUser(peer, uid)))
 }
 
 // handleContacts lists saved contacts.
 func (p *Plugin) handleContacts(ctx *core.Context) error {
 	if ctx.Svc == nil {
-		return ctx.EditOrReply("❌ Telegram service not available.")
+		return ctx.Error("Telegram service not available.")
 	}
 
 	contacts, err := ctx.Svc.GetContacts(ctx.Ctx)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to fetch contacts: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to fetch contacts: %v", err))
 	}
 
 	var sb strings.Builder
@@ -366,7 +366,7 @@ func (p *Plugin) handleContacts(ctx *core.Context) error {
 
 	if len(contacts) == 0 {
 		sb.WriteString("<i>No saved contacts found.</i>")
-		return ctx.EditOrReply(sb.String())
+		return ctx.Result(sb.String())
 	}
 
 	displayLimit := 15
@@ -391,7 +391,7 @@ func (p *Plugin) handleContacts(ctx *core.Context) error {
 		sb.WriteString(fmt.Sprintf("\n<i>...and %d more contacts.</i>", len(contacts)-displayLimit))
 	}
 
-	return ctx.EditOrReply(sb.String())
+	return ctx.Result(sb.String())
 }
 
 // handleDialogs lists active conversations.
@@ -407,12 +407,12 @@ func (p *Plugin) handleDialogs(ctx *core.Context) error {
 	}
 
 	if ctx.Svc == nil {
-		return ctx.EditOrReply("❌ Telegram service not available.")
+		return ctx.Error("Telegram service not available.")
 	}
 
 	dialogs, err := ctx.Svc.GetDialogs(ctx.Ctx, limit)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to fetch dialogs: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to fetch dialogs: %v", err))
 	}
 
 	var sb strings.Builder
@@ -420,7 +420,7 @@ func (p *Plugin) handleDialogs(ctx *core.Context) error {
 
 	if len(dialogs) == 0 {
 		sb.WriteString("<i>No active dialogs found.</i>")
-		return ctx.EditOrReply(sb.String())
+		return ctx.Result(sb.String())
 	}
 
 	for i, d := range dialogs {
@@ -432,5 +432,5 @@ func (p *Plugin) handleDialogs(ctx *core.Context) error {
 			i+1, core.EscapeHTML(title), core.EscapeHTML(d.Type), d.ID))
 	}
 
-	return ctx.EditOrReply(sb.String())
+	return ctx.Result(sb.String())
 }

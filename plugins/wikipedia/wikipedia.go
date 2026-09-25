@@ -133,7 +133,7 @@ type summaryResponse struct {
 func (p *Plugin) handle(ctx *core.Context) error {
 	query := strings.TrimSpace(ctx.RawArgs)
 	if query == "" {
-		return ctx.EditOrReply("ℹ️ Usage: .wiki <query>")
+		return ctx.Status("Usage: .wiki <query>")
 	}
 	_ = ctx.Progress("Searching Wikipedia for <code>" + core.EscapeHTML(query) + "</code>...")
 	page, err := p.search(ctx.Ctx, query)
@@ -141,7 +141,7 @@ func (p *Plugin) handle(ctx *core.Context) error {
 		return ctx.Error(fmt.Sprintf("Wikipedia search failed: %v", err))
 	}
 	if page == "" {
-		return ctx.EditOrReply("ℹ️ No Wikipedia article found for that query.")
+		return ctx.Status("No Wikipedia article found for that query.")
 	}
 	summary, err := p.summary(ctx.Ctx, page)
 	if err != nil {
@@ -149,7 +149,7 @@ func (p *Plugin) handle(ctx *core.Context) error {
 	}
 	text := strings.TrimSpace(summary.Extract)
 	if text == "" {
-		return ctx.EditOrReply("ℹ️ Wikipedia returned no article summary.")
+		return ctx.Status("Wikipedia returned no article summary.")
 	}
 	if len([]rune(text)) > 3800 {
 		text = string([]rune(text)[:3800]) + "…"

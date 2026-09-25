@@ -395,12 +395,12 @@ func (p *Plugin) handleHealth(ctx *core.Context) error {
 
 func (p *Plugin) handlePlugins(ctx *core.Context) error {
 	if p.pluginMgr == nil {
-		return ctx.EditOrReply("❌ Plugin manager is not available.")
+		return ctx.Error("Plugin manager is not available.")
 	}
 
 	plugins := p.pluginMgr.Plugins()
 	if len(plugins) == 0 {
-		return ctx.EditOrReply("ℹ️ No plugins registered.")
+		return ctx.Status("No plugins registered.")
 	}
 
 	type item struct {
@@ -459,40 +459,40 @@ func (p *Plugin) handlePlugins(ctx *core.Context) error {
 
 func (p *Plugin) handlePluginToggle(ctx *core.Context) error {
 	if p.pluginMgr == nil {
-		return ctx.EditOrReply("❌ Plugin manager is not available.")
+		return ctx.Error("Plugin manager is not available.")
 	}
 	if len(ctx.Args) < 2 {
-		return ctx.EditOrReply("⚠️ <b>Usage:</b> <code>.plugin &lt;enable|disable&gt; &lt;plugin_name&gt;</code>\nExample: <code>.plugin disable fun</code>")
+		return ctx.Status("<b>Usage:</b> <code>.plugin &lt;enable|disable&gt; &lt;plugin_name&gt;</code>\nExample: <code>.plugin disable fun</code>")
 	}
 
 	action := strings.ToLower(strings.TrimSpace(ctx.Args[0]))
 	target := strings.ToLower(strings.TrimSpace(ctx.Args[1]))
 
 	if target == "system" {
-		return ctx.EditOrReply("⚠️ Cannot toggle the <b>system</b> plugin itself to prevent lockouts.")
+		return ctx.Status("Cannot toggle the <b>system</b> plugin itself to prevent lockouts.")
 	}
 
 	switch action {
 	case "enable", "on":
 		if p.pluginMgr.IsEnabled(target) {
-			return ctx.EditOrReply(fmt.Sprintf("ℹ️ Plugin <b>%s</b> is already enabled.", escapeHTML(target)))
+			return ctx.Status(fmt.Sprintf("Plugin <b>%s</b> is already enabled.", escapeHTML(target)))
 		}
 		if err := p.pluginMgr.Enable(ctx.Ctx, target); err != nil {
-			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to enable plugin <b>%s</b>: %v", escapeHTML(target), err))
+			return ctx.Error(fmt.Sprintf("Failed to enable plugin <b>%s</b>: %v", escapeHTML(target), err))
 		}
-		return ctx.EditOrReply(fmt.Sprintf("✅ Plugin <b>%s</b> successfully enabled and initialized!", escapeHTML(target)))
+		return ctx.Success(fmt.Sprintf("Plugin <b>%s</b> successfully enabled and initialized!", escapeHTML(target)))
 
 	case "disable", "off":
 		if !p.pluginMgr.IsEnabled(target) {
-			return ctx.EditOrReply(fmt.Sprintf("ℹ️ Plugin <b>%s</b> is already disabled.", escapeHTML(target)))
+			return ctx.Status(fmt.Sprintf("Plugin <b>%s</b> is already disabled.", escapeHTML(target)))
 		}
 		if err := p.pluginMgr.Disable(ctx.Ctx, target); err != nil {
-			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to disable plugin <b>%s</b>: %v", escapeHTML(target), err))
+			return ctx.Error(fmt.Sprintf("Failed to disable plugin <b>%s</b>: %v", escapeHTML(target), err))
 		}
 		return ctx.EditOrReply(fmt.Sprintf("🛑 Plugin <b>%s</b> disabled and resources cleaned up!", escapeHTML(target)))
 
 	default:
-		return ctx.EditOrReply("⚠️ <b>Invalid action!</b> Use <code>enable</code> or <code>disable</code>.")
+		return ctx.Status("<b>Invalid action!</b> Use <code>enable</code> or <code>disable</code>.")
 	}
 }
 

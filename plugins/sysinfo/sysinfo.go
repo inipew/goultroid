@@ -207,7 +207,7 @@ func (p *Plugin) handleSysinfo(ctx *core.Context) error {
 
 	card.WithFooter("<i>Use <code>.cpuinfo</code>, <code>.meminfo</code>, <code>.diskinfo</code>, <code>.netinfo</code>, or <code>.botinfo</code> for deep dive.</i>")
 
-	return ctx.EditOrReply(card.Render())
+	return ctx.Result(card.Render())
 }
 
 func (p *Plugin) handleCPUInfo(ctx *core.Context) error {
@@ -240,7 +240,7 @@ func (p *Plugin) handleCPUInfo(ctx *core.Context) error {
 
 	card.WithFooter("<i>Real-time compute statistics sampled from host system.</i>")
 
-	return ctx.EditOrReply(card.Render())
+	return ctx.Result(card.Render())
 }
 
 func (p *Plugin) handleMemInfo(ctx *core.Context) error {
@@ -273,7 +273,7 @@ func (p *Plugin) handleMemInfo(ctx *core.Context) error {
 
 	card.WithFooter("<i>Memory metrics aggregated from /proc/meminfo and Go runtime.</i>")
 
-	return ctx.EditOrReply(card.Render())
+	return ctx.Result(card.Render())
 }
 
 func (p *Plugin) handleDiskInfo(ctx *core.Context) error {
@@ -304,7 +304,7 @@ func (p *Plugin) handleDiskInfo(ctx *core.Context) error {
 
 	card.WithFooter("<i>Storage capacity calculated via host filesystem statfs.</i>")
 
-	return ctx.EditOrReply(card.Render())
+	return ctx.Result(card.Render())
 }
 
 func (p *Plugin) handleNetInfo(ctx *core.Context) error {
@@ -355,7 +355,7 @@ func (p *Plugin) handleNetInfo(ctx *core.Context) error {
 
 	card.WithFooter("<i>Network telemetry sampled from kernel net subsystem.</i>")
 
-	return ctx.EditOrReply(card.Render())
+	return ctx.Result(card.Render())
 }
 
 func (p *Plugin) handleBotInfo(ctx *core.Context) error {
@@ -395,7 +395,7 @@ func (p *Plugin) handleBotInfo(ctx *core.Context) error {
 
 	card.WithFooter("<i>Internal runtime profiling from Go runtime and OS process descriptor.</i>")
 
-	return ctx.EditOrReply(card.Render())
+	return ctx.Result(card.Render())
 }
 
 func (p *Plugin) handleDiagnostics(ctx *core.Context) error {
@@ -470,7 +470,7 @@ func (p *Plugin) handleDiagnostics(ctx *core.Context) error {
 	}
 
 	card.WithFooter("<i>Telemetry aggregated across task execution, resources, and eventbus.</i>")
-	return ctx.EditOrReply(card.Render())
+	return ctx.Result(card.Render())
 }
 
 func formatPoolRuntimeStats(name string, pool taskengine.PoolRuntimeStats) string {

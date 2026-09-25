@@ -185,7 +185,7 @@ func (p *Plugin) submitContinuation(
 
 func (p *Plugin) handleSave(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		_ = ctx.EditOrReply("⚠️ Usage: <code>.save &lt;name&gt; &lt;content&gt;</code> or reply to text/media with <code>.save &lt;name&gt;</code>")
+		_ = ctx.Status("Usage: <code>.save &lt;name&gt; &lt;content&gt;</code> or reply to text/media with <code>.save &lt;name&gt;</code>")
 		return errors.New("missing arguments")
 	}
 	if p.responses == nil {
@@ -201,7 +201,7 @@ func (p *Plugin) handleSave(ctx *core.Context) error {
 
 	reply, err := ctx.GetReply()
 	if err != nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("⚠️ Could not load replied response: %v", err))
+		_ = ctx.Status(fmt.Sprintf("Could not load replied response: %v", err))
 		return err
 	}
 	return p.saveReply(ctx, chatID, noteName, reply)
@@ -209,7 +209,7 @@ func (p *Plugin) handleSave(ctx *core.Context) error {
 
 func (p *Plugin) saveReply(ctx *core.Context, chatID int64, noteName string, reply *core.Message) error {
 	if reply == nil {
-		_ = ctx.EditOrReply("⚠️ Reply to text/media or provide note content.")
+		_ = ctx.Status("Reply to text/media or provide note content.")
 		return savedresponse.ErrReplyNotFound
 	}
 	if !reply.HasMedia() {
@@ -228,7 +228,7 @@ func (p *Plugin) saveReply(ctx *core.Context, chatID int64, noteName string, rep
 		}
 		return p.saveResponse(taskCore, chatID, noteName, response)
 	}); err != nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to queue media note save: %v", err))
+		_ = ctx.Error(fmt.Sprintf("Failed to queue media note save: %v", err))
 		return err
 	}
 	return nil
@@ -236,12 +236,12 @@ func (p *Plugin) saveReply(ctx *core.Context, chatID int64, noteName string, rep
 
 func (p *Plugin) saveResponse(ctx *core.Context, chatID int64, noteName string, response savedresponse.Response) error {
 	if response.Empty() {
-		_ = ctx.EditOrReply("⚠️ Saved response cannot be empty.")
+		_ = ctx.Status("Saved response cannot be empty.")
 		return errors.New("empty note response")
 	}
 	if err := savedresponse.Validate(response); err != nil {
 		_ = p.responses.DeleteMedia(ctx.Ctx, response)
-		_ = ctx.EditOrReply(fmt.Sprintf("⚠️ Invalid saved response: %v", err))
+		_ = ctx.Status(fmt.Sprintf("Invalid saved response: %v", err))
 		return err
 	}
 
@@ -257,7 +257,7 @@ func (p *Plugin) saveResponse(ctx *core.Context, chatID int64, noteName string, 
 	if err := p.responses.CommitReplacement(ctx.Ctx, old, response, func() error {
 		return p.db.SaveNote(ctx.Ctx, chatID, noteName, response)
 	}); err != nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to save note: %v", err))
+		_ = ctx.Error(fmt.Sprintf("Failed to save note: %v", err))
 		return err
 	}
 	return ctx.EditOrReply(fmt.Sprintf("📝 Note <code>%s</code> saved successfully.", html.EscapeString(noteName)))
@@ -265,7 +265,7 @@ func (p *Plugin) saveResponse(ctx *core.Context, chatID int64, noteName string, 
 
 func (p *Plugin) handleGet(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		_ = ctx.EditOrReply("⚠️ Usage: <code>.get &lt;name&gt;</code>")
+		_ = ctx.Status("Usage: <code>.get &lt;name&gt;</code>")
 		return errors.New("missing note name")
 	}
 	if p.responses == nil {
@@ -275,11 +275,11 @@ func (p *Plugin) handleGet(ctx *core.Context) error {
 	chatID := p.getChatID(ctx)
 	note, err := p.db.GetNote(ctx.Ctx, chatID, noteName)
 	if err != nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Error fetching note: %v", err))
+		_ = ctx.Error(fmt.Sprintf("Error fetching note: %v", err))
 		return err
 	}
 	if note == nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Note <code>%s</code> not found in this chat.", html.EscapeString(noteName)))
+		_ = ctx.Error(fmt.Sprintf("Note <code>%s</code> not found in this chat.", html.EscapeString(noteName)))
 		return fmt.Errorf("note %s not found", noteName)
 	}
 
@@ -294,7 +294,7 @@ func (p *Plugin) handleGet(ctx *core.Context) error {
 	if err := p.submitContinuation(ctx.Ctx, "get-media", tasks.PoolID("general"), chatID, resources, func(taskCtx context.Context) error {
 		return p.deliverResponse(taskCtx, uiCtx.WithContext(taskCtx), response, vars)
 	}); err != nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to queue note media delivery: %v", err))
+		_ = ctx.Error(fmt.Sprintf("Failed to queue note media delivery: %v", err))
 		return err
 	}
 	return nil
@@ -318,9 +318,9 @@ func (p *Plugin) deliverResponse(
 	}
 	switch stage {
 	case savedresponse.DeliveryStagePrepare:
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to prepare note: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to prepare note: %v", err))
 	case savedresponse.DeliveryStageMedia:
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to send note media: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to send note media: %v", err))
 	default:
 		return err
 	}
@@ -334,22 +334,22 @@ func (p *Plugin) handleList(ctx *core.Context) error {
 	if details, ok := p.db.(DetailRepository); ok {
 		notes, err := details.ListNoteDetails(ctx.Ctx, chatID)
 		if err != nil {
-			_ = ctx.EditOrReply(fmt.Sprintf("❌ Error listing notes: %v", err))
+			_ = ctx.Error(fmt.Sprintf("Error listing notes: %v", err))
 			return err
 		}
 		if len(notes) == 0 {
-			return ctx.EditOrReply("ℹ️ No notes saved in this chat.")
+			return ctx.Status("No notes saved in this chat.")
 		}
 		return deliverNoteDetailsList(ctx, notes)
 	}
 
 	names, err := p.db.ListNotes(ctx.Ctx, chatID)
 	if err != nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Error listing notes: %v", err))
+		_ = ctx.Error(fmt.Sprintf("Error listing notes: %v", err))
 		return err
 	}
 	if len(names) == 0 {
-		return ctx.EditOrReply("ℹ️ No notes saved in this chat.")
+		return ctx.Status("No notes saved in this chat.")
 	}
 	return deliverNotesList(ctx, names)
 }
@@ -453,22 +453,22 @@ func (p *Plugin) handleInfo(ctx *core.Context) error {
 		return errors.New("notes: database is unavailable")
 	}
 	if len(ctx.Args) == 0 {
-		_ = ctx.EditOrReply("⚠️ Usage: <code>.noteinfo &lt;name&gt;</code>")
+		_ = ctx.Status("Usage: <code>.noteinfo &lt;name&gt;</code>")
 		return errors.New("missing note name")
 	}
 	noteName := strings.ToLower(strings.TrimSpace(ctx.Args[0]))
 	note, err := p.db.GetNote(ctx.Ctx, p.getChatID(ctx), noteName)
 	if err != nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Error fetching note info: %v", err))
+		_ = ctx.Error(fmt.Sprintf("Error fetching note info: %v", err))
 		return err
 	}
 	if note == nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("ℹ️ Note <code>%s</code> not found in this chat.", html.EscapeString(noteName)))
+		_ = ctx.Status(fmt.Sprintf("Note <code>%s</code> not found in this chat.", html.EscapeString(noteName)))
 		return errors.New("note not found")
 	}
 	info, err := savedresponse.Inspect(note.Response)
 	if err != nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to inspect note: %v", err))
+		_ = ctx.Error(fmt.Sprintf("Failed to inspect note: %v", err))
 		return err
 	}
 	return ctx.EditOrReply(renderNoteInfo(note, info))
@@ -519,7 +519,7 @@ func renderNoteTemplateVariables(variables []string) string {
 
 func (p *Plugin) handleClear(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		_ = ctx.EditOrReply("⚠️ Usage: <code>.clear &lt;name&gt;</code>")
+		_ = ctx.Status("Usage: <code>.clear &lt;name&gt;</code>")
 		return errors.New("missing note name")
 	}
 	if p.responses == nil {
@@ -532,14 +532,14 @@ func (p *Plugin) handleClear(ctx *core.Context) error {
 		return err
 	}
 	if note == nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("ℹ️ Note <code>%s</code> not found in this chat.", html.EscapeString(noteName)))
+		_ = ctx.Status(fmt.Sprintf("Note <code>%s</code> not found in this chat.", html.EscapeString(noteName)))
 		return errors.New("note not found")
 	}
 	if err := p.responses.CommitDelete(ctx.Ctx, note.Response, func() error {
 		return p.db.DeleteNote(ctx.Ctx, chatID, noteName)
 	}); err != nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to delete note: %v", err))
+		_ = ctx.Error(fmt.Sprintf("Failed to delete note: %v", err))
 		return err
 	}
-	return ctx.EditOrReply(fmt.Sprintf("🗑️ Note <code>%s</code> deleted.", html.EscapeString(noteName)))
+	return ctx.Success(fmt.Sprintf("Note <code>%s</code> deleted.", html.EscapeString(noteName)))
 }
