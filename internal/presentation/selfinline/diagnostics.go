@@ -15,6 +15,79 @@ var (
 	ErrSendFailed               = errors.New("Telegram could not insert the Assistant inline result. Try again.")
 )
 
+// RenderStage identifies the furthest self-inline phase reached before Render
+// returned an error. The zero value is reserved for errors that did not come
+// from the stage-aware renderer contract.
+type RenderStage uint8
+
+const (
+	RenderStageUnknown RenderStage = iota
+	RenderStagePreflight
+	RenderStageQuery
+	RenderStageSelect
+	RenderStageSend
+)
+
+// RenderFailure attaches delivery-safety metadata to a Render error while
+// preserving the original diagnostic and transport/RPC error chain.
+type RenderFailure struct {
+	Stage            RenderStage
+	MayHaveCommitted bool
+	Err              error
+}
+
+func (e *RenderFailure) Error() string {
+	if e == nil || e.Err == nil {
+		return ErrUnavailable.Error()
+	}
+	return e.Err.Error()
+}
+
+func (e *RenderFailure) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// FailureStage returns the self-inline stage attached to err. Unknown means the
+// error does not carry the stage-aware renderer contract and must not be
+// treated as safe for automatic fallback.
+func FailureStage(err error) RenderStage {
+	var failure *RenderFailure
+	if !errors.As(err, &failure) || failure == nil {
+		return RenderStageUnknown
+	}
+	return failure.Stage
+}
+
+// FallbackSafe reports whether native presentation may be emitted without
+// risking a duplicate self-inline delivery. Unknown and send-stage failures are
+// intentionally fail-closed.
+func FallbackSafe(err error) bool {
+	var failure *RenderFailure
+	if !errors.As(err, &failure) || failure == nil || failure.MayHaveCommitted {
+		return false
+	}
+	switch failure.Stage {
+	case RenderStagePreflight, RenderStageQuery, RenderStageSelect:
+		return true
+	default:
+		return false
+	}
+}
+
+func renderFailure(stage RenderStage, mayHaveCommitted bool, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &RenderFailure{
+		Stage:            stage,
+		MayHaveCommitted: mayHaveCommitted,
+		Err:              err,
+	}
+}
+
 // diagnosticError keeps the original transport/RPC error in the chain for
 // logging and execution semantics while exposing only the stable user-facing
 // diagnostic through Error().

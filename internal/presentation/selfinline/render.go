@@ -94,42 +94,42 @@ func (b *RenderBridge) Render(ctx context.Context, request Request) (Result, err
 		ctx = context.Background()
 	}
 	if b == nil || b.transport == nil || b.identity == nil {
-		return Result{}, ErrUnavailable
+		return Result{}, renderFailure(RenderStagePreflight, false, ErrUnavailable)
 	}
 	if request.Peer == nil {
-		return Result{}, fmt.Errorf("%w: destination peer is required", core.ErrInvalidArgs)
+		return Result{}, renderFailure(RenderStagePreflight, false, fmt.Errorf("%w: destination peer is required", core.ErrInvalidArgs))
 	}
 	query := strings.TrimSpace(request.Query)
 	if query == "" || len(query) > maxQueryBytes {
-		return Result{}, fmt.Errorf("%w: inline query must contain 1..%d bytes", core.ErrInvalidArgs, maxQueryBytes)
+		return Result{}, renderFailure(RenderStagePreflight, false, fmt.Errorf("%w: inline query must contain 1..%d bytes", core.ErrInvalidArgs, maxQueryBytes))
 	}
 	offset := strings.TrimSpace(request.Offset)
 	if len(offset) > maxOffsetBytes {
-		return Result{}, fmt.Errorf("%w: inline offset exceeds %d bytes", core.ErrInvalidArgs, maxOffsetBytes)
+		return Result{}, renderFailure(RenderStagePreflight, false, fmt.Errorf("%w: inline offset exceeds %d bytes", core.ErrInvalidArgs, maxOffsetBytes))
 	}
 	if request.ResultIndex < 0 || request.ResultIndex >= maxResults {
-		return Result{}, fmt.Errorf("%w: result index must be between 0 and %d", core.ErrInvalidArgs, maxResults-1)
+		return Result{}, renderFailure(RenderStagePreflight, false, fmt.Errorf("%w: result index must be between 0 and %d", core.ErrInvalidArgs, maxResults-1))
 	}
 	username, identityErr := b.identity()
 	if identityErr != nil {
-		return Result{}, identityErr
+		return Result{}, renderFailure(RenderStagePreflight, false, identityErr)
 	}
 	username = strings.TrimPrefix(strings.TrimSpace(username), "@")
 	if username == "" {
-		return Result{}, ErrUnavailable
+		return Result{}, renderFailure(RenderStagePreflight, false, ErrUnavailable)
 	}
 
 	results, err := b.transport.QueryInlineBot(ctx, username, request.Peer, query, offset)
 	if err != nil {
-		return Result{}, normalizeQueryError(err)
+		return Result{}, renderFailure(RenderStageQuery, false, normalizeQueryError(err))
 	}
 	selectedID, err := selectResult(results, request.ResultID, request.ResultIndex)
 	if err != nil {
-		return Result{}, err
+		return Result{}, renderFailure(RenderStageSelect, false, err)
 	}
 	randomID, err := randomID()
 	if err != nil {
-		return Result{}, fmt.Errorf("self-inline random id: %w", err)
+		return Result{}, renderFailure(RenderStageSelect, false, fmt.Errorf("self-inline random id: %w", err))
 	}
 
 	replyToID := request.ReplyToID
@@ -147,7 +147,7 @@ func (b *RenderBridge) Render(ctx context.Context, request Request) (Result, err
 		request.Silent,
 		request.HideVia,
 	); err != nil {
-		return Result{}, normalizeSendError(err)
+		return Result{}, renderFailure(RenderStageSend, true, normalizeSendError(err))
 	}
 	return Result{QueryID: results.QueryID, ResultID: selectedID, RandomID: randomID}, nil
 }

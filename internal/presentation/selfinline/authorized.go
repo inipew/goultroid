@@ -24,10 +24,10 @@ func Authorized(delegate Renderer, authorize Authorizer) Renderer {
 
 func (r *authorizedRenderer) Render(ctx context.Context, request Request) (Result, error) {
 	if r == nil || r.delegate == nil || r.authorize == nil {
-		return Result{}, ErrUnavailable
+		return Result{}, renderFailure(RenderStagePreflight, false, ErrUnavailable)
 	}
 	if err := r.authorize(); err != nil {
-		return Result{}, err
+		return Result{}, renderFailure(RenderStagePreflight, false, err)
 	}
 	return r.delegate.Render(ctx, request)
 }
