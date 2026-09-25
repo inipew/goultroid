@@ -55,6 +55,13 @@ type ResourcePreparedCallback interface {
 	Resources() []tasks.ResourceRequirement
 }
 
+// ExecutionProfilePreparedCallback exposes the complete TaskEngine admission
+// profile resolved before callback execution.
+type ExecutionProfilePreparedCallback interface {
+	PreparedCallback
+	ExecutionProfile() tasks.ExecutionProfile
+}
+
 // AckPreparedCallback exposes whether transport may acknowledge immediately
 // after TaskEngine admission or must leave the callback answer to the handler.
 type AckPreparedCallback interface {
@@ -83,6 +90,16 @@ func (p *preparedCallback) Resources() []tasks.ResourceRequirement {
 		return aware.Resources()
 	}
 	return nil
+}
+
+func (p *preparedCallback) ExecutionProfile() tasks.ExecutionProfile {
+	if p == nil || p.action == nil {
+		return tasks.ExecutionProfile{}
+	}
+	if aware, ok := p.action.(interaction.ExecutionProfilePreparedAction); ok {
+		return aware.ExecutionProfile()
+	}
+	return tasks.ExecutionProfile{Resources: p.Resources()}
 }
 
 func (p *preparedCallback) AckPolicy() interaction.AckPolicy {

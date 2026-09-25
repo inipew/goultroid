@@ -194,9 +194,11 @@ func TestPreparedActionCarriesDynamicExecutionAdmission(t *testing.T) {
 				t.Fatalf("preparer state=%q, want lease", action.Session.State)
 			}
 			return ActionAdmission{
-				Scope:     providerScope,
-				Resources: []tasks.ResourceRequirement{{Name: "media", Amount: 1}},
-				State:     "prepared-provider",
+				Scope: providerScope,
+				Profile: tasks.ExecutionProfile{
+					Resources: []tasks.ResourceRequirement{{Name: "media", Amount: 1}},
+				},
+				State: "prepared-provider",
 			}, nil
 		},
 		func(_ context.Context, action Action) error {

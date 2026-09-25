@@ -166,14 +166,19 @@ func (f *Feature) prepareAction(ctx context.Context, action rootinteraction.Acti
 	if binding.Revision != lease.Revision || binding.Incarnation != lease.Incarnation {
 		return rootinteraction.ActionAdmission{}, savedresponse.ErrBindingStale
 	}
-	resources := make([]tasks.ResourceRequirement, 0, 1)
+	profile := tasks.ExecutionProfile{}
 	if prepared.HasMedia() {
-		resources = append(resources, tasks.ResourceRequirement{Name: "media", Amount: 1})
+		profile = tasks.ExecutionProfile{
+			Pool:             tasks.PoolID("general"),
+			Class:            tasks.PriorityInteractive,
+			ExecutionTimeout: 2 * time.Minute,
+			Resources:        []tasks.ResourceRequirement{{Name: "media", Amount: 1}},
+		}
 	}
 	return rootinteraction.ActionAdmission{
-		Scope:     prepared.Scope(),
-		Resources: resources,
-		State:     prepared,
+		Scope:   prepared.Scope(),
+		Profile: profile,
+		State:   prepared,
 	}, nil
 }
 

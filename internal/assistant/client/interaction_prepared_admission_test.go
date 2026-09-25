@@ -128,8 +128,13 @@ func TestInteractionIngressCarriesPreparedActionAdmissionToTaskEngine(t *testing
 		"deliver",
 		func(context.Context, rootinteraction.Action) (rootinteraction.ActionAdmission, error) {
 			return rootinteraction.ActionAdmission{
-				Scope:     providerScope,
-				Resources: []tasks.ResourceRequirement{{Name: "media", Amount: 1}},
+				Scope: providerScope,
+				Profile: tasks.ExecutionProfile{
+					Pool:             tasks.PoolID("general"),
+					Class:            tasks.PriorityInteractive,
+					ExecutionTimeout: 2 * time.Minute,
+					Resources:        []tasks.ResourceRequirement{{Name: "media", Amount: 1}},
+				},
 				AckPolicy: rootinteraction.AckImmediate,
 			}, nil
 		},

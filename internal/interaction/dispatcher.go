@@ -38,7 +38,7 @@ const (
 // downstream provider whose lifecycle/resource authority must govern execution.
 type ActionAdmission struct {
 	Scope     tasks.ScopeIdentity
-	Resources []tasks.ResourceRequirement
+	Profile   tasks.ExecutionProfile
 	State     any
 	AckPolicy AckPolicy
 }
@@ -85,6 +85,13 @@ type ResourcePreparedAction interface {
 	Resources() []tasks.ResourceRequirement
 }
 
+// ExecutionProfilePreparedAction exposes the complete TaskEngine admission
+// profile chosen during action preparation.
+type ExecutionProfilePreparedAction interface {
+	PreparedAction
+	ExecutionProfile() tasks.ExecutionProfile
+}
+
 // AckPreparedAction exposes callback acknowledgement ownership determined
 // during side-effect-free action preparation.
 type AckPreparedAction interface {
@@ -99,7 +106,7 @@ type preparedAction struct {
 	key            handlerKey
 	scope          tasks.ScopeIdentity
 	executionScope tasks.ScopeIdentity
-	resources      []tasks.ResourceRequirement
+	profile        tasks.ExecutionProfile
 	preparation    any
 	ackPolicy      AckPolicy
 	handlerToken   uint64
@@ -119,7 +126,14 @@ func (p *preparedAction) Resources() []tasks.ResourceRequirement {
 	if p == nil {
 		return nil
 	}
-	return append([]tasks.ResourceRequirement(nil), p.resources...)
+	return append([]tasks.ResourceRequirement(nil), p.profile.Resources...)
+}
+
+func (p *preparedAction) ExecutionProfile() tasks.ExecutionProfile {
+	if p == nil {
+		return tasks.ExecutionProfile{}
+	}
+	return p.profile.WithDefaults(tasks.ExecutionProfile{})
 }
 
 func (p *preparedAction) AckPolicy() AckPolicy {
@@ -280,7 +294,7 @@ func (d *Dispatcher) Prepare(ctx context.Context, data []byte, binding Binding) 
 		key:            key,
 		scope:          entry.scope,
 		executionScope: admission.Scope,
-		resources:      append([]tasks.ResourceRequirement(nil), admission.Resources...),
+		profile:        admission.Profile.WithDefaults(tasks.ExecutionProfile{}),
 		preparation:    admission.State,
 		ackPolicy:      admission.AckPolicy,
 		handlerToken:   entry.token,

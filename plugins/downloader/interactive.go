@@ -192,8 +192,10 @@ func (p *Plugin) BindAssistant(rt assistantinteraction.DriverRuntime) (func(), e
 						return rootinteraction.ActionAdmission{}, fmt.Errorf("%w: video probe action is stale or invalid", core.ErrInvalidArgs)
 					}
 					return rootinteraction.ActionAdmission{
-						Scope:     scope,
-						Resources: []tasks.ResourceRequirement{{Name: "process", Amount: 1}},
+						Scope: scope,
+						Profile: tasks.ExecutionProfile{
+							Resources: []tasks.ResourceRequirement{{Name: "process", Amount: 1}},
+						},
 						State:     probePreparation{State: state},
 						AckPolicy: rootinteraction.AckImmediate,
 					}, nil

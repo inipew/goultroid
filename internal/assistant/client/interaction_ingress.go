@@ -75,18 +75,19 @@ func (v *interactionIngress) dispatchCallback(
 		return err
 	}
 
-	var resources []tasks.ResourceRequirement
-	if aware, ok := prepared.(orchestration.ResourcePreparedCallback); ok {
-		resources = aware.Resources()
+	profile := tasks.ExecutionProfile{
+		Pool:             tasks.PoolID("interactive"),
+		Class:            tasks.PriorityInteractive,
+		ExecutionTimeout: 15 * time.Second,
 	}
-	pool := tasks.PoolID("interactive")
-	executionTimeout := 15 * time.Second
-	for _, requirement := range resources {
-		if requirement.Name == "media" && requirement.Amount > 0 {
-			pool = tasks.PoolID("general")
-			executionTimeout = 2 * time.Minute
-			break
-		}
+	if aware, ok := prepared.(orchestration.ExecutionProfilePreparedCallback); ok {
+		profile = aware.ExecutionProfile().WithDefaults(profile)
+	} else if aware, ok := prepared.(orchestration.ResourcePreparedCallback); ok {
+		profile.Resources = aware.Resources()
+	}
+	var queueDeadline time.Time
+	if profile.QueueTimeout > 0 {
+		queueDeadline = time.Now().Add(profile.QueueTimeout)
 	}
 
 	doneCh := make(chan error, 1)
@@ -94,11 +95,12 @@ func (v *interactionIngress) dispatchCallback(
 		ID:               taskID,
 		Scope:            prepared.Scope(),
 		QuotaOwner:       tasks.OwnerID(fmt.Sprintf("telegram:user:%d", request.ActorID)),
-		Pool:             pool,
-		Class:            tasks.PriorityInteractive,
+		Pool:             profile.Pool,
+		Class:            profile.Class,
 		OrderingKey:      orderingKey,
-		ExecutionTimeout: executionTimeout,
-		Resources:        append([]tasks.ResourceRequirement(nil), resources...),
+		QueueDeadline:    queueDeadline,
+		ExecutionTimeout: profile.ExecutionTimeout,
+		Resources:        append([]tasks.ResourceRequirement(nil), profile.Resources...),
 		Handler: func(taskCtx context.Context) error {
 			dispatchErr := prepared.Dispatch(taskCtx)
 			doneCh <- dispatchErr

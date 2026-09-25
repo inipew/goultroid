@@ -263,6 +263,16 @@ func TestSavedResponseCallbackCarriesMediaResourceBeforeExecution(t *testing.T) 
 	if len(resources) != 1 || resources[0].Name != "media" || resources[0].Amount != 1 {
 		t.Fatalf("media callback resources=%+v, want media:1", resources)
 	}
+	profileAware, ok := prepared.(orchestration.ExecutionProfilePreparedCallback)
+	if !ok {
+		t.Fatal("media callback did not expose execution profile")
+	}
+	profile := profileAware.ExecutionProfile()
+	if profile.Pool != tasks.PoolID("general") ||
+		profile.Class != tasks.PriorityInteractive ||
+		profile.ExecutionTimeout != 2*time.Minute {
+		t.Fatalf("media callback profile=%+v, want general/interactive/2m", profile)
+	}
 	if prepared.Scope() != fixture.providerScope {
 		t.Fatalf("media callback scope=%+v, want %+v", prepared.Scope(), fixture.providerScope)
 	}
