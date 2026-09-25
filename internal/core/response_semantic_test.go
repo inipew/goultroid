@@ -64,6 +64,32 @@ func TestSemanticResponseOutgoingEditsTriggerInPlaceAndTracksAnchor(t *testing.T
 	}
 }
 
+func TestSemanticResponseAssistantPreservesCommandAndEditsOwnReply(t *testing.T) {
+	mock := &mockTelegramServicer{}
+	ctx := &Context{
+		Ctx:     context.Background(),
+		Source:  ExecutionAssistant,
+		Message: &Message{ID: 301, IsOutgoing: false},
+		Svc:     mock,
+		PeerID:  &tg.InputPeerSelf{},
+	}
+	if err := ctx.Progress("Working"); err != nil {
+		t.Fatalf("Progress() error=%v", err)
+	}
+	if len(mock.deletedIDs) != 0 {
+		t.Fatalf("assistant command deleted: %v", mock.deletedIDs)
+	}
+	if ctx.LastResponseID != 42 {
+		t.Fatalf("LastResponseID=%d, want 42", ctx.LastResponseID)
+	}
+	if err := ctx.Result("<b>Done</b>"); err != nil {
+		t.Fatalf("Result() error=%v", err)
+	}
+	if mock.editedText != "<b>Done</b>" {
+		t.Fatalf("editedText=%q", mock.editedText)
+	}
+}
+
 func TestSemanticResponseRejectsEmptyBody(t *testing.T) {
 	ctx := &Context{}
 	if err := ctx.Result("   "); err != ErrInvalidArgs {

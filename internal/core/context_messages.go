@@ -158,6 +158,9 @@ func (m *MessagesFacade) EditOrReply(text string) error {
 	if c.Message != nil && c.Message.IsOutgoing && c.Message.ID > 0 {
 		return m.Edit(text)
 	}
+	if c.Source != ExecutionInteractive {
+		return m.Reply(text)
+	}
 	return m.ReplyAndDelete(text)
 }
 
@@ -186,6 +189,15 @@ func (m *MessagesFacade) EditOrReplyWithDelay(text string, delay time.Duration) 
 			if err := m.scheduleDelete(c.PeerID, c.Message.ID, delay); err != nil {
 				return err
 			}
+		}
+		return nil
+	}
+	if c.Source != ExecutionInteractive {
+		if err := m.Reply(text); err != nil {
+			return err
+		}
+		if delay > 0 && c.LastResponseID > 0 && c.Svc != nil && c.PeerID != nil {
+			return m.scheduleDelete(c.PeerID, c.LastResponseID, delay)
 		}
 		return nil
 	}

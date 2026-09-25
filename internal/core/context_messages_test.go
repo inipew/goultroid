@@ -61,6 +61,51 @@ func TestMessagesFacadeEditOrReplyIncomingDeletesTrigger(t *testing.T) {
 	}
 }
 
+func TestMessagesFacadeAssistantReplyPreservesTriggerAndReusesAnchor(t *testing.T) {
+	mock := &mockTelegramServicer{}
+	ctx := &Context{
+		Ctx:     context.Background(),
+		Source:  ExecutionAssistant,
+		Message: &Message{ID: 104, IsOutgoing: false},
+		Svc:     mock,
+		PeerID:  &tg.InputPeerSelf{},
+	}
+	if err := ctx.Messages().EditOrReply("working"); err != nil {
+		t.Fatalf("EditOrReply() error = %v", err)
+	}
+	if len(mock.deletedIDs) != 0 {
+		t.Fatalf("assistant trigger deleted: %v", mock.deletedIDs)
+	}
+	if ctx.LastResponseID != 42 {
+		t.Fatalf("LastResponseID=%d, want 42", ctx.LastResponseID)
+	}
+	if err := ctx.Messages().EditOrReply("done"); err != nil {
+		t.Fatalf("second EditOrReply() error = %v", err)
+	}
+	if mock.editedText != "done" {
+		t.Fatalf("edited text=%q, want done", mock.editedText)
+	}
+}
+
+func TestMessagesFacadeAssistantDelayedReplyPreservesTrigger(t *testing.T) {
+	mock := &delayedDeleteMock{mockTelegramServicer: &mockTelegramServicer{}, deleted: make(chan int, 1)}
+	scheduler := &immediateDelayedActions{}
+	ctx := &Context{
+		Ctx:            context.Background(),
+		Source:         ExecutionAssistant,
+		Message:        &Message{ID: 104, IsOutgoing: false},
+		Svc:            mock,
+		PeerID:         &tg.InputPeerSelf{},
+		DelayedActions: scheduler,
+	}
+	if err := ctx.Messages().EditOrReplyWithDelay("done", time.Second); err != nil {
+		t.Fatalf("EditOrReplyWithDelay() error = %v", err)
+	}
+	if len(mock.mockTelegramServicer.deletedIDs) != 1 || mock.mockTelegramServicer.deletedIDs[0] != 42 {
+		t.Fatalf("deleted IDs=%v, want only response [42]", mock.mockTelegramServicer.deletedIDs)
+	}
+}
+
 type immediateDelayedActions struct {
 	delays        []time.Duration
 	retainedBytes []int64
