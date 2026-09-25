@@ -109,9 +109,9 @@ func newShellEngine(t *testing.T) (*plugin.Manager, *AssistantClient, *shellTest
 	client.SetOwner(7, nil)
 	client.SetInteractionFoundation(manager.FeatureCatalog(), manager.InteractionRuntime(), manager.ActionDispatcher())
 	client.interactionIngress = &interactionIngress{engine: engine}
-	if err := client.ensureShellActions(engine, manager.FeatureCatalog()); err != nil {
+	if err := client.syncShellActions(engine, manager.FeatureCatalog()); err != nil {
 		manager.Shutdown()
-		t.Fatalf("ensureShellActions() error = %v", err)
+		t.Fatalf("syncShellActions() error = %v", err)
 	}
 	return manager, client, port, engine
 }
@@ -136,6 +136,22 @@ func dispatchShell(t *testing.T, engine *orchestration.Engine, data []byte, quer
 		Data: data, ActorID: 7, QueryID: queryID,
 		Target: presentationtelegram.MessageTarget{Peer: peer, ChatID: 7, MessageID: 77},
 	})
+}
+
+func TestAssistantShellActionsBindWithoutStartEntry(t *testing.T) {
+	manager, _, port, engine := newShellEngine(t)
+	defer manager.Shutdown()
+
+	peer := &tg.InputPeerUser{UserID: 7}
+	beginShell(t, engine, port, peer)
+
+	help := callbackForAction(t, port.sent, assistantshell.ActionHelp)
+	if err := dispatchShell(t, engine, help, 90, peer); err != nil {
+		t.Fatalf("Dispatch(help) without /start error = %v", err)
+	}
+	if !strings.Contains(port.edited.Text, "GoUltroid Help Menu") {
+		t.Fatalf("help view not rendered without /start: %q", port.edited.Text)
+	}
 }
 
 func TestAssistantShellRefreshStalesOldButtonAndReloadsGeneration(t *testing.T) {
