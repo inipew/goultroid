@@ -16,7 +16,10 @@ func (ModuleType) Manifest() module.Manifest {
 		ID:           "help",
 		Version:      "1.0.0",
 		Description:  "Interactive help and command documentation browser",
-		Capabilities: []string{plugin.CapTelegramSendMessage},
+		Capabilities: []string{
+			plugin.CapTelegramRead,
+			plugin.CapTelegramSendMessage,
+		},
 	}
 }
 

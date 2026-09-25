@@ -354,6 +354,9 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	}
 	assistantShell := assistantshell.NewFeature()
 	assistantShell.SetInlineCatalog(pluginManager.FeatureCatalog())
+	assistantShell.SetHelpCommandProvider(func() []core.Command {
+		return coreDeps.router.CommandsForSurface(execution.SourceUserbot)
+	})
 	assistantShell.SetSettingsService(domServices.settingsService)
 	assistantShell.SetStartTime(domServices.startTime)
 	if err := pluginManager.RegisterWithContext(context.Background(), assistantShell); err != nil {

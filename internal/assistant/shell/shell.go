@@ -64,6 +64,7 @@ const (
 // or Telegram transport resource.
 type Feature struct {
 	inlineCatalog feature.Catalog
+	helpCommands  func() []core.Command
 	settingsSvc   *settings.Service
 	startTime     time.Time
 }
@@ -73,6 +74,12 @@ func NewFeature() *Feature { return &Feature{} }
 func (f *Feature) SetInlineCatalog(catalog feature.Catalog) {
 	if f != nil {
 		f.inlineCatalog = catalog
+	}
+}
+
+func (f *Feature) SetHelpCommandProvider(provider func() []core.Command) {
+	if f != nil {
+		f.helpCommands = provider
 	}
 }
 
@@ -99,6 +106,7 @@ func (*Feature) FeatureSpec() feature.Spec {
 	startPolicy.PrivateOnly = true
 	ownerPolicy := feature.OwnerPolicy(assistant)
 	ownerPolicy.PrivateOnly = true
+	helpPolicy := feature.OwnerPolicy(assistant | inlineSurface)
 	inlinePublicPolicy := feature.PublicPolicy(inlineSurface)
 	inlineOwnerPolicy := feature.OwnerPolicy(inlineSurface)
 
@@ -114,9 +122,9 @@ func (*Feature) FeatureSpec() feature.Spec {
 			{ID: InteractionInlinePing, Kind: feature.InteractionInline, Description: "Public inline Assistant liveness", Surfaces: inlineSurface, Policy: inlinePublicPolicy},
 			{ID: InteractionHome, Kind: feature.InteractionScreen, Description: "Owner root/home screen", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionStatus, Kind: feature.InteractionScreen, Description: "Read-only Assistant runtime status", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: InteractionHelp, Kind: feature.InteractionScreen, Description: "Read-only Assistant command overview", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: InteractionHelpModule, Kind: feature.InteractionScreen, Description: "Canonical Assistant module command navigator", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: InteractionHelpCommand, Kind: feature.InteractionScreen, Description: "Canonical Assistant command detail", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: InteractionHelp, Kind: feature.InteractionScreen, Description: "Read-only Assistant command overview", Surfaces: assistant | inlineSurface, Policy: helpPolicy},
+			{ID: InteractionHelpModule, Kind: feature.InteractionScreen, Description: "Canonical Assistant module command navigator", Surfaces: assistant | inlineSurface, Policy: helpPolicy},
+			{ID: InteractionHelpCommand, Kind: feature.InteractionScreen, Description: "Canonical Assistant command detail", Surfaces: assistant | inlineSurface, Policy: helpPolicy},
 			{ID: InteractionSettings, Kind: feature.InteractionScreen, Description: "Settings category navigator", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionLanguage, Kind: feature.InteractionScreen, Description: "Canonical Assistant locale selector", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: InteractionSettingsCategory, Kind: feature.InteractionScreen, Description: "Settings value navigator", Surfaces: assistant, Policy: ownerPolicy},
@@ -126,12 +134,12 @@ func (*Feature) FeatureSpec() feature.Spec {
 			{ID: ActionRefresh, Kind: feature.InteractionAction, Description: "Refresh shell state and presentation", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionPing, Kind: feature.InteractionAction, Description: "Acknowledge shell liveness", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionStatus, Kind: feature.InteractionAction, Description: "Navigate to read-only status", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: ActionHelp, Kind: feature.InteractionAction, Description: "Navigate to read-only help overview", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: ActionHelpPrev, Kind: feature.InteractionAction, Description: "Open previous Assistant help module page", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: ActionHelpNext, Kind: feature.InteractionAction, Description: "Open next Assistant help module page", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: ActionHelpCmdPrev, Kind: feature.InteractionAction, Description: "Open previous command page in help module", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: ActionHelpCmdNext, Kind: feature.InteractionAction, Description: "Open next command page in help module", Surfaces: assistant, Policy: ownerPolicy},
-			{ID: ActionHelpBack, Kind: feature.InteractionAction, Description: "Return from command detail to its module", Surfaces: assistant, Policy: ownerPolicy},
+			{ID: ActionHelp, Kind: feature.InteractionAction, Description: "Navigate to read-only help overview", Surfaces: assistant | inlineSurface, Policy: helpPolicy},
+			{ID: ActionHelpPrev, Kind: feature.InteractionAction, Description: "Open previous Assistant help module page", Surfaces: assistant | inlineSurface, Policy: helpPolicy},
+			{ID: ActionHelpNext, Kind: feature.InteractionAction, Description: "Open next Assistant help module page", Surfaces: assistant | inlineSurface, Policy: helpPolicy},
+			{ID: ActionHelpCmdPrev, Kind: feature.InteractionAction, Description: "Open previous command page in help module", Surfaces: assistant | inlineSurface, Policy: helpPolicy},
+			{ID: ActionHelpCmdNext, Kind: feature.InteractionAction, Description: "Open next command page in help module", Surfaces: assistant | inlineSurface, Policy: helpPolicy},
+			{ID: ActionHelpBack, Kind: feature.InteractionAction, Description: "Return from command detail to its module", Surfaces: assistant | inlineSurface, Policy: helpPolicy},
 			{ID: ActionHome, Kind: feature.InteractionAction, Description: "Return to the shell home screen", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionClose, Kind: feature.InteractionAction, Description: "Close the current Assistant interaction and release its session", Surfaces: assistant, Policy: ownerPolicy},
 			{ID: ActionStatusRefresh, Kind: feature.InteractionAction, Description: "Refresh read-only status", Surfaces: assistant, Policy: ownerPolicy},
@@ -159,8 +167,8 @@ func (*Feature) FeatureSpec() feature.Spec {
 			ID:          actionID,
 			Kind:        feature.InteractionAction,
 			Description: "Open one bounded Assistant help module slot",
-			Surfaces:    assistant,
-			Policy:      ownerPolicy,
+			Surfaces:    assistant | inlineSurface,
+			Policy:      helpPolicy,
 		})
 	}
 	for _, actionID := range HelpCommandSlotActionIDs() {
@@ -168,8 +176,8 @@ func (*Feature) FeatureSpec() feature.Spec {
 			ID:          actionID,
 			Kind:        feature.InteractionAction,
 			Description: "Open one bounded Assistant help command slot",
-			Surfaces:    assistant,
-			Policy:      ownerPolicy,
+			Surfaces:    assistant | inlineSurface,
+			Policy:      helpPolicy,
 		})
 	}
 	for _, actionID := range SettingsCategorySlotActionIDs() {

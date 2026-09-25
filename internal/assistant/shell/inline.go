@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/feature"
 	inlineservice "github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/settings"
@@ -20,7 +21,7 @@ func (f *Feature) InlineBindings() []inlineservice.Binding {
 	}
 	return []inlineservice.Binding{
 		{InteractionID: InteractionInlineRoot, Handler: &inlineRootHandler{startTime: f.startTime, settingsSvc: f.settingsSvc}},
-		{InteractionID: InteractionInlineHelp, Handler: &inlineHelpHandler{catalog: f.inlineCatalog, settingsSvc: f.settingsSvc}},
+		{InteractionID: InteractionInlineHelp, Handler: &inlineHelpHandler{catalog: f.inlineCatalog, commands: f.helpCommands, settingsSvc: f.settingsSvc}},
 		{InteractionID: InteractionInlinePing, Handler: &inlinePingHandler{startTime: f.startTime, settingsSvc: f.settingsSvc}},
 	}
 }
@@ -128,6 +129,7 @@ func (h *inlinePingHandler) HandleInlineV2(ctx *inlineservice.InlineContext) (*i
 
 type inlineHelpHandler struct {
 	catalog     feature.Catalog
+	commands    func() []core.Command
 	settingsSvc *settings.Service
 }
 
@@ -152,6 +154,24 @@ func (h *inlineHelpHandler) HandleInlineV2(ctx *inlineservice.InlineContext) (*i
 	search := ""
 	if ctx != nil {
 		search = strings.ToLower(strings.TrimSpace(strings.Join(ctx.Args, " ")))
+	}
+	if h.commands != nil {
+		if selection, ok := resolveInlineHelpSelection(h.commands(), search, locale); ok {
+			return &inlineservice.InlineResponse{
+				Results: []inlineservice.InlineResult{{
+					ID:               "assistant_help",
+					Title:            selection.Title,
+					Description:      selection.Description,
+					Text:             selection.View.Text,
+					ActionRows:       selection.View.Rows,
+					InteractionState: selection.State,
+					InteractionTTL:   InteractionTTL,
+				}},
+				Cache:     inlineservice.CacheNone,
+				Private:   true,
+				CacheTime: 0,
+			}, nil
+		}
 	}
 
 	results := make([]inlineservice.InlineResult, 0, 24)

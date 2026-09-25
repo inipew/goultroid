@@ -8,6 +8,8 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
+	"github.com/inipew/goultroid/internal/presentation/selfinline"
 	"github.com/inipew/goultroid/internal/services/callback"
 )
 
@@ -16,6 +18,18 @@ type mockService struct {
 	sent       string
 	edited     string
 	lastMarkup tg.ReplyMarkupClass
+}
+
+type fakeHelpRenderer struct {
+	calls   int
+	request selfinline.Request
+	err     error
+}
+
+func (f *fakeHelpRenderer) Render(_ context.Context, request selfinline.Request) (selfinline.Result, error) {
+	f.calls++
+	f.request = request
+	return selfinline.Result{QueryID: 1, ResultID: "assistant_help", RandomID: 2}, f.err
 }
 
 func TestPlugin_CallbackOptions_HandlerOwnsAnswer(t *testing.T) {
@@ -122,6 +136,7 @@ func TestHelpPlugin(t *testing.T) {
 	svc := &mockService{}
 	baseCtx := &core.Context{
 		Ctx:     context.Background(),
+		Source:  core.ExecutionAssistant,
 		Message: &core.Message{ID: 1},
 		Svc:     svc,
 		PeerID:  &tg.InputPeerSelf{},
@@ -293,5 +308,43 @@ func TestGroupAuthorizationLabel(t *testing.T) {
 		!strings.Contains(label, "ban_users") ||
 		!strings.Contains(label, "delete_messages") {
 		t.Fatalf("unexpected group authorization label: %q", label)
+	}
+}
+
+func TestHelpUserbotCommandUsesSelfInlineAssistantPresentation(t *testing.T) {
+	router := core.NewRouter(".")
+	p := New(router)
+	renderer := &fakeHelpRenderer{}
+	p.SetSelfInlineRenderer(renderer)
+	svc := &mockService{}
+	ctx := &core.Context{
+		Ctx:    context.Background(),
+		Source: core.ExecutionInteractive,
+		Args:   []string{".ping"},
+		Message: &core.Message{
+			ID:        77,
+			ReplyToID: 11,
+			TopicID:   9,
+		},
+		Svc:    svc,
+		PeerID: &tg.InputPeerChat{ChatID: 123},
+	}
+	if err := p.handleHelp(ctx); err != nil {
+		t.Fatalf("handleHelp() error=%v", err)
+	}
+	if renderer.calls != 1 {
+		t.Fatalf("renderer calls=%d, want 1", renderer.calls)
+	}
+	if renderer.request.Query != "help ping" {
+		t.Fatalf("renderer query=%q, want %q", renderer.request.Query, "help ping")
+	}
+	if renderer.request.ReplyToID != 11 || renderer.request.TopicID != 9 {
+		t.Fatalf("renderer reply/topic=%d/%d", renderer.request.ReplyToID, renderer.request.TopicID)
+	}
+	if svc.edited != "" || svc.lastMarkup != nil {
+		t.Fatalf("userbot help fell back to legacy edit/markup: edited=%q markup=%T", svc.edited, svc.lastMarkup)
+	}
+	if got := p.Capabilities()[0].Surfaces; got != execution.SurfaceUserbot|execution.SurfaceAssistant {
+		t.Fatalf("help surfaces=%v", got)
 	}
 }

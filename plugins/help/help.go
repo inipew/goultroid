@@ -9,6 +9,7 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
+	"github.com/inipew/goultroid/internal/presentation/selfinline"
 	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/ui"
 	"github.com/inipew/goultroid/internal/ui/render"
@@ -30,11 +31,18 @@ type helpMenuState struct {
 type Plugin struct {
 	router     *core.Router
 	stateStore callback.StateWriter
+	renderer   selfinline.Renderer
 }
 
 func New(router *core.Router) *Plugin { return &Plugin{router: router} }
 
 func (p *Plugin) SetStateStore(store callback.StateWriter) { p.stateStore = store }
+
+func (p *Plugin) SetSelfInlineRenderer(renderer selfinline.Renderer) {
+	if p != nil {
+		p.renderer = renderer
+	}
+}
 
 func (p *Plugin) Name() string      { return "help" }
 func (p *Plugin) Namespace() string { return "help" }
@@ -157,6 +165,9 @@ func groupAuthorizationLabel(requirement core.GroupAuthorizationRequirement) str
 func (p *Plugin) handleHelp(ctx *core.Context) error {
 	prefix := p.router.Prefix()
 	source := ctx.Source.Surface()
+	if source == execution.SourceUserbot {
+		return p.openUserbotHelp(ctx, prefix)
+	}
 
 	if len(ctx.Args) > 0 {
 		target := strings.TrimPrefix(ctx.Args[0], prefix)
@@ -233,6 +244,34 @@ func (p *Plugin) handleHelp(ctx *core.Context) error {
 		return sendResultMarkup(ctx, overviewText, p.buildOverviewMarkup(catNames, ctx.SenderID()))
 	}
 	return sendResult(ctx, overviewText)
+}
+
+func (p *Plugin) openUserbotHelp(ctx *core.Context, prefix string) error {
+	if ctx == nil || ctx.PeerID == nil {
+		return core.ErrInvalidArgs
+	}
+	if p == nil || p.renderer == nil {
+		return ctx.Status("Interactive help is unavailable because the Assistant inline renderer is not running.")
+	}
+	query := "help"
+	if len(ctx.Args) > 0 {
+		target := strings.TrimSpace(strings.TrimPrefix(ctx.Args[0], prefix))
+		if target != "" {
+			query += " " + target
+		}
+	}
+	request := selfinline.Request{Peer: ctx.PeerID, Query: query}
+	if ctx.Message != nil {
+		request.ReplyToID = ctx.Message.ReplyToID
+		request.TopicID = ctx.Message.TopicID
+	}
+	if _, err := p.renderer.Render(ctx.Ctx, request); err != nil {
+		return ctx.Status("Unable to open help through the Assistant: " + core.EscapeHTML(err.Error()))
+	}
+	if ctx.Message != nil && ctx.Message.ID > 0 && ctx.Svc != nil {
+		_ = ctx.Svc.DeleteMessage(ctx.Ctx, ctx.PeerID, []int{ctx.Message.ID})
+	}
+	return nil
 }
 
 func (p *Plugin) commandsForSource(source execution.Source) []core.Command {

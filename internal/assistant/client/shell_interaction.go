@@ -439,7 +439,7 @@ func (c *AssistantClient) handleShellHelp(ctx *orchestration.Context) error {
 	if err := c.admitShellScreen(ctx, assistantshell.InteractionHelp); err != nil {
 		return err
 	}
-	commands := c.shellCommands()
+	commands := c.shellHelpCommands(ctx)
 	current := assistantshell.DecodeState(ctx.State())
 	state := assistantshell.HelpState(ctx.State(), commands, current.Screen != assistantshell.ScreenHelp)
 	decoded := assistantshell.DecodeState(state)

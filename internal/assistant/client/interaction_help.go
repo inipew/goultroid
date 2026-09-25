@@ -40,7 +40,7 @@ func (c *AssistantClient) stepShellHelpModule(ctx *orchestration.Context, delta 
 	if err := c.admitShellScreen(ctx, shell.InteractionHelp); err != nil {
 		return err
 	}
-	commands := c.shellCommands()
+	commands := c.shellHelpCommands(ctx)
 	state, ok := shell.StepHelpModuleState(ctx.State(), commands, delta)
 	if !ok {
 		return ErrShellHelpSelectionStale
@@ -61,7 +61,7 @@ func (c *AssistantClient) handleShellHelpModuleSlot(ctx *orchestration.Context, 
 	if err := c.admitShellScreen(ctx, shell.InteractionHelpModule); err != nil {
 		return err
 	}
-	commands := c.shellCommands()
+	commands := c.shellHelpCommands(ctx)
 	state, module, _, ok := shell.OpenHelpModuleSlotState(ctx.State(), commands, slot)
 	if !ok {
 		return ErrShellHelpSelectionStale
@@ -77,7 +77,7 @@ func (c *AssistantClient) stepShellHelpCommand(ctx *orchestration.Context, delta
 	if err := c.admitShellScreen(ctx, shell.InteractionHelpModule); err != nil {
 		return err
 	}
-	commands := c.shellCommands()
+	commands := c.shellHelpCommands(ctx)
 	state, module, _, ok := shell.StepHelpCommandState(ctx.State(), commands, delta)
 	if !ok {
 		return ErrShellHelpSelectionStale
@@ -101,7 +101,7 @@ func (c *AssistantClient) handleShellHelpCommandSlot(ctx *orchestration.Context,
 	if err := c.admitShellScreen(ctx, shell.InteractionHelpCommand); err != nil {
 		return err
 	}
-	state, command, _, _, ok := shell.OpenHelpCommandSlotState(ctx.State(), c.shellCommands(), slot)
+	state, command, _, _, ok := shell.OpenHelpCommandSlotState(ctx.State(), c.shellHelpCommands(ctx), slot)
 	if !ok {
 		return ErrShellHelpSelectionStale
 	}
@@ -112,7 +112,7 @@ func (c *AssistantClient) handleShellHelpBack(ctx *orchestration.Context) error 
 	if err := c.admitShellScreen(ctx, shell.InteractionHelpModule); err != nil {
 		return err
 	}
-	commands := c.shellCommands()
+	commands := c.shellHelpCommands(ctx)
 	state, module, _, ok := shell.BackHelpModuleState(ctx.State(), commands)
 	if !ok {
 		return ErrShellHelpSelectionStale
