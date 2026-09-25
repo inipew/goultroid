@@ -242,7 +242,13 @@ func TestAssistantShellSettingResetRequiresConfirmation(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := newShellSettingsRepo()
-	if err := repo.Set(context.Background(), settings.ScopeUser, 7, "core", "prefix", "!"); err != nil {
+	if err := repo.SetSetting(context.Background(), &settings.SettingItem{
+		ScopeType: string(settings.ScopeUser),
+		ScopeID:   7,
+		Namespace: "core",
+		Key:       "prefix",
+		Value:     "!",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	client.SetSettingsService(settings.NewService(repo, registry, nil))
@@ -265,7 +271,7 @@ func TestAssistantShellSettingResetRequiresConfirmation(t *testing.T) {
 	if callbackForAction(t, port.edited, assistantshell.ActionSettingResetConfirm) == nil {
 		t.Fatal("reset confirmation action missing")
 	}
-	value, err := repo.Get(context.Background(), settings.ScopeUser, 7, "core", "prefix")
+	value, err := repo.GetSetting(context.Background(), string(settings.ScopeUser), 7, "core", "prefix")
 	if err != nil || value == nil || value.Value != "!" {
 		t.Fatalf("reset opener mutated setting: value=%+v err=%v", value, err)
 	}
@@ -273,7 +279,7 @@ func TestAssistantShellSettingResetRequiresConfirmation(t *testing.T) {
 	if err := dispatchShell(t, engine, confirm, 604, peer); err != nil {
 		t.Fatalf("Dispatch(reset confirm) error=%v", err)
 	}
-	value, err = repo.Get(context.Background(), settings.ScopeUser, 7, "core", "prefix")
+	value, err = repo.GetSetting(context.Background(), string(settings.ScopeUser), 7, "core", "prefix")
 	if err != nil {
 		t.Fatal(err)
 	}

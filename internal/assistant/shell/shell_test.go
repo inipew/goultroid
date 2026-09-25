@@ -9,6 +9,7 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/feature"
+	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/settings"
 )
 
@@ -17,8 +18,8 @@ func TestFeatureSpecAndViews(t *testing.T) {
 		t.Fatalf("ValidateSpec() error = %v", err)
 	}
 	spec := NewFeature().FeatureSpec()
-	if len(spec.Interactions) != 72 {
-		t.Fatalf("interactions = %d, want 72", len(spec.Interactions))
+	if len(spec.Interactions) != 76 {
+		t.Fatalf("interactions = %d, want 76", len(spec.Interactions))
 	}
 	for _, screenID := range []string{
 		InteractionHome,
@@ -31,6 +32,7 @@ func TestFeatureSpecAndViews(t *testing.T) {
 		InteractionSettingsCategory,
 		InteractionSettingDetail,
 		InteractionSettingInput,
+		InteractionSettingResetConfirm,
 	} {
 		interaction, ok := findInteraction(spec, feature.InteractionScreen, screenID)
 		if !ok || !interaction.Surfaces.Supports(execution.SourceAssistant) || !interaction.Policy.PrivateOnly {
@@ -295,10 +297,21 @@ func TestSettingResetConfirmViewRequiresExplicitConfirmation(t *testing.T) {
 	view := SettingResetConfirmView(SettingResetConfirmModel{
 		Definition: settings.SettingDefinition{Namespace: "core", Key: "prefix", Title: "Command prefix"},
 	})
-	if !viewHasAction(view.Rows, ActionSettingResetConfirm) || !viewHasAction(view.Rows, ActionSettingResetCancel) {
+	if !shellViewHasAction(view.Rows, ActionSettingResetConfirm) || !shellViewHasAction(view.Rows, ActionSettingResetCancel) {
 		t.Fatalf("reset confirmation rows=%+v", view.Rows)
 	}
-	if viewHasAction(view.Rows, ActionSettingReset) {
+	if shellViewHasAction(view.Rows, ActionSettingReset) {
 		t.Fatalf("reset confirmation unexpectedly loops to reset opener: %+v", view.Rows)
 	}
+}
+
+func shellViewHasAction(rows []presentation.Row, actionID string) bool {
+	for _, row := range rows {
+		for _, button := range row {
+			if button.ActionID == actionID {
+				return true
+			}
+		}
+	}
+	return false
 }
