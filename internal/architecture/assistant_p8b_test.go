@@ -16,6 +16,11 @@ func TestP8BSelfInlineUsesSingleManagedTransport(t *testing.T) {
 			"SendInlineBotResult(",
 			"crypto/rand",
 		},
+		filepath.Join(root, "internal", "presentation", "selfinline", "current.go"): {
+			"type TransportProvider func() Transport",
+			"CurrentTransport(provider TransportProvider) Transport",
+			"transport := t.provider()",
+		},
 		filepath.Join(root, "internal", "telegram", "selfinline.go"): {
 			"s.execReadOnlyPeerVal(",
 			"s.execNonIdempotentPeerVal(",
@@ -24,7 +29,11 @@ func TestP8BSelfInlineUsesSingleManagedTransport(t *testing.T) {
 		},
 		filepath.Join(root, "internal", "app", "selfinline.go"): {
 			"SelfInlineRenderer() selfinline.Renderer",
-			"a.assistant.Username()",
+			"selfinline.CurrentTransport(",
+			"newSelfInlineRenderer(a.client, a.assistant)",
+		},
+		filepath.Join(root, "internal", "app", "selfinline_features.go"): {
+			"base := newSelfInlineRenderer(client, assistantClient)",
 		},
 		filepath.Join(root, "internal", "services", "inline", "engine.go"): {
 			"Binding:   rootinteraction.Binding{ActorID: userID}",
@@ -49,22 +58,27 @@ func TestP8BSelfInlineUsesSingleManagedTransport(t *testing.T) {
 
 func TestP8BSelfInlineBridgeOwnsNoWorkersOrGlobalResultCache(t *testing.T) {
 	root := repositoryRoot(t)
-	path := filepath.Join(root, "internal", "presentation", "selfinline", "render.go")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	source := string(raw)
-	for _, forbidden := range []string{
-		"go func(",
-		"time.NewTicker(",
-		"time.Tick(",
-		"time.AfterFunc(",
-		"map[string]",
-		"sync.Map",
+	for _, rel := range []string{
+		filepath.Join("internal", "presentation", "selfinline", "render.go"),
+		filepath.Join("internal", "presentation", "selfinline", "current.go"),
 	} {
-		if strings.Contains(source, forbidden) {
-			t.Errorf("P8-B bridge introduced forbidden retained/runtime state %q", forbidden)
+		path := filepath.Join(root, rel)
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := string(raw)
+		for _, forbidden := range []string{
+			"go func(",
+			"time.NewTicker(",
+			"time.Tick(",
+			"time.AfterFunc(",
+			"map[string]",
+			"sync.Map",
+		} {
+			if strings.Contains(source, forbidden) {
+				t.Errorf("P8-B bridge introduced forbidden retained/runtime state %q in %s", forbidden, rel)
+			}
 		}
 	}
 }

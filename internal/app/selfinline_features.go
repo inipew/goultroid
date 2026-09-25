@@ -1,10 +1,8 @@
 package app
 
 import (
-	"github.com/inipew/goultroid/internal/assistant"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/presentation/selfinline"
-	"github.com/inipew/goultroid/internal/telegram"
 )
 
 type selfInlineRendererAware interface {
@@ -12,17 +10,18 @@ type selfInlineRendererAware interface {
 }
 
 // wireSelfInlineRenderers injects the shared P8-B renderer only into features
-// that explicitly opt in. Authorization is evaluated on every render against
-// the feature's current enable state and manifest; no lifecycle/capability grant is cached.
-func wireSelfInlineRenderers(manager *plugin.Manager, client *telegram.Client, assistantClient assistant.Client, gate *plugin.CapabilityGate) {
+// that explicitly opt in. Transport resolution is lazy/current, so this wiring
+// is valid during App construction before telegram.Client.Run installs Service.
+// Authorization is evaluated on every render against the feature's current
+// enable state and manifest; no lifecycle/capability grant is cached.
+func wireSelfInlineRenderers(manager *plugin.Manager, client selfInlineServiceProvider, assistantClient selfInlineAssistantIdentity, gate *plugin.CapabilityGate) {
 	if manager == nil || client == nil || assistantClient == nil || gate == nil {
 		return
 	}
-	transport, ok := client.Service().(selfinline.Transport)
-	if !ok || transport == nil {
+	base := newSelfInlineRenderer(client, assistantClient)
+	if base == nil {
 		return
 	}
-	base := selfinline.New(transport, assistantClient.Username)
 	for _, registered := range manager.Plugins() {
 		aware, ok := registered.(selfInlineRendererAware)
 		if !ok {
