@@ -121,7 +121,7 @@ func (p *Plugin) Commands() []core.Command {
 
 func (p *Plugin) handleBroadcast(ctx *core.Context) error {
 	if p.svc == nil {
-		return ctx.EditOrReply("⚠️ Broadcast service is not configured.")
+		return ctx.Status("Broadcast service is not configured.")
 	}
 
 	scope := broadcast.TargetAll
@@ -149,20 +149,20 @@ func (p *Plugin) handleBroadcast(ctx *core.Context) error {
 
 	reply, err := ctx.GetReply()
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("⚠️ Could not load replied broadcast: %v", err))
+		return ctx.Status(fmt.Sprintf("Could not load replied broadcast: %v", err))
 	}
 	if reply == nil {
-		return ctx.EditOrReply("⚠️ <b>Usage:</b> <code>.broadcast [-users|-groups|-all] &lt;message&gt;</code> or reply to text/media.")
+		return ctx.Status("<b>Usage:</b> <code>.broadcast [-users|-groups|-all] &lt;message&gt;</code> or reply to text/media.")
 	}
 	if !reply.HasMedia() {
 		response := savedresponse.NewPlainText(reply.Text)
 		if response.Empty() {
-			return ctx.EditOrReply("⚠️ Broadcast response cannot be empty.")
+			return ctx.Status("Broadcast response cannot be empty.")
 		}
 		return p.runBroadcast(ctx, scope, response)
 	}
 	if p.responses == nil || p.tasks == nil {
-		return ctx.EditOrReply("⚠️ Rich broadcast media capture is unavailable.")
+		return ctx.Status("Rich broadcast media capture is unavailable.")
 	}
 
 	uiCtx := detachBroadcastContext(ctx)
@@ -188,7 +188,7 @@ func (p *Plugin) handleBroadcast(ctx *core.Context) error {
 		},
 	})
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to queue broadcast media capture: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to queue broadcast media capture: %v", err))
 	}
 
 	result, waitErr := ticket.Wait(ctx.Ctx)
@@ -196,14 +196,14 @@ func (p *Plugin) handleBroadcast(ctx *core.Context) error {
 		return fmt.Errorf("broadcast: wait media capture: %w", waitErr)
 	}
 	if captureErr != nil {
-		return ctx.EditOrReply(fmt.Sprintf("⚠️ Could not capture replied broadcast: %v", captureErr))
+		return ctx.Status(fmt.Sprintf("Could not capture replied broadcast: %v", captureErr))
 	}
 	if !result.IsSuccess() {
 		failure := strings.TrimSpace(result.Failure.Message)
 		if failure == "" {
 			failure = fmt.Sprintf("capture task ended with %s", result.Outcome)
 		}
-		return ctx.EditOrReply(fmt.Sprintf("⚠️ Could not capture replied broadcast: %s", failure))
+		return ctx.Status(fmt.Sprintf("Could not capture replied broadcast: %s", failure))
 	}
 
 	// TaskEngine releases download:1 before closing the ticket. Keep the
@@ -232,10 +232,10 @@ func detachBroadcastContext(ctx *core.Context) *core.Context {
 
 func (p *Plugin) runBroadcast(ctx *core.Context, scope broadcast.TargetType, response savedresponse.Response) error {
 	if ctx.Svc == nil {
-		return ctx.EditOrReply("⚠️ Telegram service is unavailable.")
+		return ctx.Status("Telegram service is unavailable.")
 	}
 	if err := savedresponse.Validate(response); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("⚠️ Invalid broadcast response: %v", err))
+		return ctx.Status(fmt.Sprintf("Invalid broadcast response: %v", err))
 	}
 
 	_ = ctx.EditOrReply(fmt.Sprintf("📡 <i>Fetching dialogs for broadcast (scope: %s)...</i>", scope))
@@ -329,14 +329,14 @@ func (p *Plugin) runBroadcast(ctx *core.Context, scope broadcast.TargetType, res
 
 func (p *Plugin) handleCancelBroadcast(ctx *core.Context) error {
 	if p.svc == nil {
-		return ctx.EditOrReply("⚠️ Broadcast service is not configured.")
+		return ctx.Status("Broadcast service is not configured.")
 	}
 
 	canceled := p.svc.CancelActive()
 	if canceled {
-		return ctx.EditOrReply("🛑 <b>Active broadcast cancelled!</b>")
+		return ctx.Success("Active broadcast cancelled.")
 	}
-	return ctx.EditOrReply("ℹ️ No active broadcast task is currently running.")
+	return ctx.Status("No active broadcast task is currently running.")
 }
 
 func toInputPeer(d *core.Chat) tg.InputPeerClass {

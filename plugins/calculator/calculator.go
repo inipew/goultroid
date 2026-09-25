@@ -146,11 +146,11 @@ func (p *Plugin) handleCommand(ctx *core.Context) error {
 		return core.ErrInvalidArgs
 	}
 	if p == nil || p.renderer == nil {
-		return ctx.EditOrReply("⚠️ Interactive calculator is unavailable because the Assistant inline renderer is not running.")
+		return ctx.Status("Interactive calculator is unavailable because the Assistant inline renderer is not running.")
 	}
 	expression := compactExpression(ctx.RawArgs)
 	if len(expression) > maxExpressionBytes {
-		return ctx.EditOrReply(fmt.Sprintf("⚠️ Expression is limited to %d bytes.", maxExpressionBytes))
+		return ctx.Status(fmt.Sprintf("Expression is limited to %d bytes.", maxExpressionBytes))
 	}
 	query := "calc"
 	if expression != "" {
@@ -162,7 +162,7 @@ func (p *Plugin) handleCommand(ctx *core.Context) error {
 		request.TopicID = ctx.Message.TopicID
 	}
 	if _, err := p.renderer.Render(ctx.Ctx, request); err != nil {
-		return ctx.EditOrReply("⚠️ Unable to open the interactive calculator: " + core.EscapeHTML(err.Error()))
+		return ctx.Status("Unable to open the interactive calculator: " + core.EscapeHTML(err.Error()))
 	}
 	if ctx.Message != nil && ctx.Message.ID > 0 && ctx.Svc != nil {
 		_ = ctx.Svc.DeleteMessage(ctx.Ctx, ctx.PeerID, []int{ctx.Message.ID})

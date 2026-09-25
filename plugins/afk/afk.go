@@ -278,16 +278,16 @@ func (p *Plugin) handleAFKCommand(ctx *core.Context) error {
 		if st := p.state.Load(); st != nil && st.isAFK {
 			dur, changed, err := p.disableAFK(ctx.Ctx)
 			if err != nil {
-				return ctx.EditOrReply(fmt.Sprintf("❌ Failed to deactivate AFK mode: %v", err))
+				return ctx.Error(fmt.Sprintf("Failed to deactivate AFK mode: %v", err))
 			}
 			if !changed {
-				return ctx.EditOrReply("ℹ️ <b>AFK Mode is already inactive.</b>")
+				return ctx.Status("<b>AFK Mode is already inactive.</b>")
 			}
 			return p.replyTemplate(ctx, afkDeactivatedResponse, afkDeactivatedTemplate, afkTemplateVars("", dur))
 		}
 		const r = "Away from keyboard"
 		if err := p.enableAFK(ctx.Ctx, r); err != nil {
-			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to activate AFK mode: %v", err))
+			return ctx.Error(fmt.Sprintf("Failed to activate AFK mode: %v", err))
 		}
 		return p.replyTemplate(ctx, afkActivatedResponse, afkActivatedTemplate, afkTemplateVars(r, ""))
 	}
@@ -296,10 +296,10 @@ func (p *Plugin) handleAFKCommand(ctx *core.Context) error {
 	case "off", "disable", "stop":
 		dur, changed, err := p.disableAFK(ctx.Ctx)
 		if err != nil {
-			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to deactivate AFK mode: %v", err))
+			return ctx.Error(fmt.Sprintf("Failed to deactivate AFK mode: %v", err))
 		}
 		if !changed {
-			return ctx.EditOrReply("ℹ️ <b>AFK Mode is already inactive.</b>")
+			return ctx.Status("<b>AFK Mode is already inactive.</b>")
 		}
 		return p.replyTemplate(ctx, afkDeactivatedResponse, afkDeactivatedTemplate, afkTemplateVars("", dur))
 	case "status":
@@ -307,36 +307,36 @@ func (p *Plugin) handleAFKCommand(ctx *core.Context) error {
 		if st != nil && st.isAFK {
 			return p.replyTemplate(ctx, afkStatusResponse, afkStatusTemplate, afkTemplateVars(st.reason, formatDuration(time.Since(st.since))))
 		}
-		return ctx.EditOrReply("🟢 <b>AFK Status: Inactive</b>")
+		return ctx.Status("AFK mode is inactive.")
 	case "on":
 		reason := "Away from keyboard"
 		if len(ctx.Args) > 1 {
 			reason = strings.TrimSpace(strings.TrimPrefix(ctx.RawArgs, ctx.Args[0]))
 		}
 		if err := p.enableAFK(ctx.Ctx, reason); err != nil {
-			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to activate AFK mode: %v", err))
+			return ctx.Error(fmt.Sprintf("Failed to activate AFK mode: %v", err))
 		}
 		return p.replyTemplate(ctx, afkActivatedResponse, afkActivatedTemplate, afkTemplateVars(reason, ""))
 	case "toggle":
 		if st := p.state.Load(); st != nil && st.isAFK {
 			dur, changed, err := p.disableAFK(ctx.Ctx)
 			if err != nil {
-				return ctx.EditOrReply(fmt.Sprintf("❌ Failed to deactivate AFK mode: %v", err))
+				return ctx.Error(fmt.Sprintf("Failed to deactivate AFK mode: %v", err))
 			}
 			if !changed {
-				return ctx.EditOrReply("ℹ️ <b>AFK Mode is already inactive.</b>")
+				return ctx.Status("<b>AFK Mode is already inactive.</b>")
 			}
 			return p.replyTemplate(ctx, afkDeactivatedResponse, afkDeactivatedTemplate, afkTemplateVars("", dur))
 		}
 		const r = "Away from keyboard"
 		if err := p.enableAFK(ctx.Ctx, r); err != nil {
-			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to activate AFK mode: %v", err))
+			return ctx.Error(fmt.Sprintf("Failed to activate AFK mode: %v", err))
 		}
 		return p.replyTemplate(ctx, afkActivatedResponse, afkActivatedTemplate, afkTemplateVars(r, ""))
 	default:
 		reason := strings.TrimSpace(ctx.RawArgs)
 		if err := p.enableAFK(ctx.Ctx, reason); err != nil {
-			return ctx.EditOrReply(fmt.Sprintf("❌ Failed to activate AFK mode: %v", err))
+			return ctx.Error(fmt.Sprintf("Failed to activate AFK mode: %v", err))
 		}
 		return p.replyTemplate(ctx, afkActivatedResponse, afkActivatedTemplate, afkTemplateVars(reason, ""))
 	}
