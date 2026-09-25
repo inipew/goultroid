@@ -49,6 +49,8 @@ func PresentUserError(err error) UserErrorPresentation {
 	}
 
 	switch {
+	case errors.Is(err, core.ErrRateLimited):
+		return UserErrorPresentation{Text: "⏳ Too many requests. Please try again later."}
 	case errors.Is(err, rootinteraction.ErrBindingMismatch):
 		return UserErrorPresentation{
 			Text:  "This button can only be used by the user who opened it on the original message.",

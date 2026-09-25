@@ -41,7 +41,7 @@ func TestPresentUserErrorUnifiesLegacyAndCoreErrors(t *testing.T) {
 	}
 
 	rate := PresentUserError(core.ErrRateLimited)
-	if rate.Alert || !strings.Contains(rate.Text, "rate limit") {
+	if rate.Alert || !strings.Contains(rate.Text, "Too many requests") {
 		t.Fatalf("core rate limit=%+v", rate)
 	}
 
