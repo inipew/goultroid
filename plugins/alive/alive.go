@@ -68,7 +68,7 @@ func (p *Plugin) handleAlive(ctx *core.Context) error {
 
 	snapshot := appStatus.CollectSnapshot(p.startTime, ownerID)
 	cardText := appStatus.RenderAliveCard(snapshot, "")
-	return ctx.EditOrReply(cardText)
+	return ctx.Result(cardText)
 }
 
 func formatDuration(d time.Duration) string {

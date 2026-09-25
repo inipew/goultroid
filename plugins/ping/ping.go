@@ -56,10 +56,10 @@ func (p *Plugin) Commands() []core.Command {
 func (p *Plugin) handlePing(ctx *core.Context) error {
 	uc := appPing.NewUseCase()
 	res, err := uc.Execute(func() error {
-		return ctx.EditOrReply("🏓 ...")
+		return ctx.Status("🏓 ...")
 	})
 	if err != nil {
 		return err
 	}
-	return ctx.Edit(appPing.FormatResult(res.Latency))
+	return ctx.Result(appPing.FormatResult(res.Latency))
 }

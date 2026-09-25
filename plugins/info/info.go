@@ -64,11 +64,11 @@ func (p *Plugin) Commands() []core.Command {
 func (p *Plugin) handleWhois(ctx *core.Context) error {
 	inputUser, err := resolveInputUser(ctx)
 	if err != nil {
-		return ctx.EditOrReply("⚠️ " + err.Error())
+		return ctx.Status(err.Error())
 	}
 	fullUser, err := ctx.GetFullUser(inputUser)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to fetch user info: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to fetch user info: %v", err))
 	}
 	var u *tg.User
 	for _, userClass := range fullUser.Users {
@@ -78,7 +78,7 @@ func (p *Plugin) handleWhois(ctx *core.Context) error {
 		}
 	}
 	if u == nil {
-		return ctx.EditOrReply("❌ Could not parse user details.")
+		return ctx.Error("Could not parse user details.")
 	}
 
 	var sb strings.Builder
@@ -120,7 +120,7 @@ func (p *Plugin) handleWhois(ctx *core.Context) error {
 	if fullUser.FullUser.About != "" {
 		sb.WriteString(fmt.Sprintf("• <b>Bio</b>: <code>%s</code>\n", core.EscapeHTML(fullUser.FullUser.About)))
 	}
-	return ctx.EditOrReply(sb.String())
+	return ctx.Result(sb.String())
 }
 
 func (p *Plugin) handleChatInfo(ctx *core.Context) error {
@@ -129,7 +129,7 @@ func (p *Plugin) handleChatInfo(ctx *core.Context) error {
 		if ctx.IsAssistant() {
 			return ctx.EditOrReply(core.UserMessage(err))
 		}
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to fetch chat info: %v", err))
+		return ctx.Error(fmt.Sprintf("Failed to fetch chat info: %v", err))
 	}
 	var sb strings.Builder
 	sb.WriteString("👥 <b>Chat Information</b>\n\n")
@@ -182,7 +182,7 @@ func (p *Plugin) handleChatInfo(ctx *core.Context) error {
 			sb.WriteString(fmt.Sprintf("• <b>Members</b>: %d\n", len(participants.Participants)))
 		}
 	}
-	return ctx.EditOrReply(sb.String())
+	return ctx.Result(sb.String())
 }
 
 // resolveInputUser deliberately checks explicit arguments before fetching a reply.
@@ -229,5 +229,5 @@ func (p *Plugin) handleID(ctx *core.Context) error {
 			sb.WriteString(fmt.Sprintf("• <b>Reply Sender ID:</b> <code>%d</code>\n", reply.SenderID))
 		}
 	}
-	return ctx.EditOrReply(sb.String())
+	return ctx.Result(sb.String())
 }

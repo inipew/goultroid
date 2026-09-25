@@ -126,62 +126,62 @@ func (p *Plugin) resolveTargetUser(ctx *core.Context) (tg.InputPeerClass, int64,
 
 func (p *Plugin) handleAddSudo(ctx *core.Context) error {
 	if p.db == nil || p.perms == nil {
-		return ctx.EditOrReply("❌ Sudo service is not configured.")
+		return ctx.Error("Sudo service is not configured.")
 	}
 
 	targetPeer, targetID, err := p.resolveTargetUser(ctx)
 	if err != nil {
-		_ = ctx.EditOrReply("⚠️ " + err.Error())
+		_ = ctx.Status(err.Error())
 		return err
 	}
 	if p.perms.IsOwner(targetID) {
-		_ = ctx.EditOrReply("⚠️ User is already the owner!")
+		_ = ctx.Status("User is already the owner.")
 		return fmt.Errorf("user %d is owner", targetID)
 	}
 	if p.perms.IsSudo(targetID) {
-		return ctx.EditOrReply(fmt.Sprintf("ℹ️ %s is already a sudo user.", ctx.DisplayUser(targetPeer, targetID)))
+		return ctx.Status(fmt.Sprintf("%s is already a sudo user.", ctx.DisplayUser(targetPeer, targetID)))
 	}
 	if err := p.db.AddSudoUser(ctx.Ctx, targetID, ctx.SenderID()); err != nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to add sudo user: %v", err))
+		_ = ctx.Error(fmt.Sprintf("Failed to add sudo user: %v", err))
 		return err
 	}
 	p.perms.AddSudo(targetID)
-	return ctx.EditOrReply(fmt.Sprintf("✅ %s added to sudo users.", ctx.DisplayUser(targetPeer, targetID)))
+	return ctx.Success(fmt.Sprintf("%s added to sudo users.", ctx.DisplayUser(targetPeer, targetID)))
 }
 
 func (p *Plugin) handleDelSudo(ctx *core.Context) error {
 	if p.db == nil || p.perms == nil {
-		return ctx.EditOrReply("❌ Sudo service is not configured.")
+		return ctx.Error("Sudo service is not configured.")
 	}
 
 	targetPeer, targetID, err := p.resolveTargetUser(ctx)
 	if err != nil {
-		_ = ctx.EditOrReply("⚠️ " + err.Error())
+		_ = ctx.Status(err.Error())
 		return err
 	}
 	if p.perms.IsOwner(targetID) {
-		_ = ctx.EditOrReply("⚠️ Cannot remove owner from permissions!")
+		_ = ctx.Status("Cannot remove owner from permissions.")
 		return fmt.Errorf("cannot remove owner %d", targetID)
 	}
 	if err := p.db.RemoveSudoUser(ctx.Ctx, targetID); err != nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to remove sudo user: %v", err))
+		_ = ctx.Error(fmt.Sprintf("Failed to remove sudo user: %v", err))
 		return err
 	}
 	p.perms.RemoveSudo(targetID)
-	return ctx.EditOrReply(fmt.Sprintf("🗑️ %s removed from sudo users.", ctx.DisplayUser(targetPeer, targetID)))
+	return ctx.Success(fmt.Sprintf("%s removed from sudo users.", ctx.DisplayUser(targetPeer, targetID)))
 }
 
 func (p *Plugin) handleSudoList(ctx *core.Context) error {
 	if p.db == nil {
-		return ctx.EditOrReply("❌ Sudo database is unavailable.")
+		return ctx.Error("Sudo database is unavailable.")
 	}
 	users, err := p.db.GetSudoUsers(ctx.Ctx)
 	if err != nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to get sudo users: %v", err))
+		_ = ctx.Error(fmt.Sprintf("Failed to get sudo users: %v", err))
 		return err
 	}
 	if len(users) == 0 {
-		return ctx.EditOrReply("ℹ️ No dynamic sudo users registered.")
+		return ctx.Status("No dynamic sudo users registered.")
 	}
 
 	var sb strings.Builder
@@ -189,5 +189,5 @@ func (p *Plugin) handleSudoList(ctx *core.Context) error {
 	for idx, u := range users {
 		sb.WriteString(fmt.Sprintf("%d. <code>%d</code> (added by <code>%d</code> on %s)\n", idx+1, u.UserID, u.AddedBy, u.AddedAt.Format("2006-01-02 15:04:05")))
 	}
-	return ctx.EditOrReply(sb.String())
+	return ctx.Result(sb.String())
 }

@@ -42,5 +42,5 @@ func (p *Plugin) handleForward(ctx *core.Context) error {
 	if err := ctx.ForwardToSelf(); err != nil {
 		return err
 	}
-	return ctx.EditOrReply("📤 Message forwarded to Saved Messages!")
+	return ctx.Success("Message forwarded to Saved Messages.")
 }
