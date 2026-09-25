@@ -463,11 +463,9 @@ func (c *AssistantClient) handleShellClose(ctx *orchestration.Context) error {
 	if ctx == nil {
 		return ErrShellUnavailable
 	}
-	if err := ctx.Delete(); err != nil {
-		return err
-	}
+	deleteErr := ctx.Delete()
 	ctx.Cancel()
-	return nil
+	return deleteErr
 }
 
 func (c *AssistantClient) handleShellSettings(ctx *orchestration.Context) error {

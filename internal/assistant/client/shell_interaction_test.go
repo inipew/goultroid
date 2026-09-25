@@ -272,7 +272,7 @@ func TestAssistantShellCloseDeletesTargetAndReleasesSession(t *testing.T) {
 	}
 }
 
-func TestAssistantShellCloseKeepsSessionWhenDeleteFails(t *testing.T) {
+func TestAssistantShellCloseReleasesSessionWhenDeleteFails(t *testing.T) {
 	manager, _, port, engine := newShellEngine(t)
 	defer manager.Shutdown()
 	peer := &tg.InputPeerUser{UserID: 7}
@@ -283,8 +283,11 @@ func TestAssistantShellCloseKeepsSessionWhenDeleteFails(t *testing.T) {
 	if err := dispatchShell(t, engine, closeData, 251, peer); err == nil {
 		t.Fatal("Dispatch(close) succeeded despite delete failure")
 	}
-	if got := manager.InteractionRuntime().Stats().Sessions; got != 1 {
-		t.Fatalf("sessions after failed close = %d, want 1", got)
+	if got := manager.InteractionRuntime().Stats().Sessions; got != 0 {
+		t.Fatalf("sessions after failed close = %d, want 0", got)
+	}
+	if err := dispatchShell(t, engine, closeData, 252, peer); !errors.Is(err, rootinteraction.ErrNotFound) {
+		t.Fatalf("stale close after failed delete error = %v, want ErrNotFound", err)
 	}
 }
 
