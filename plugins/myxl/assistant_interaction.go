@@ -244,6 +244,32 @@ func (p *Plugin) assistantTransitionWithTTL(ctx *orchestration.Context, state as
 	return ctx.Transition(raw, ttl, view)
 }
 
+func assistantDestructiveConfirmation(
+	state assistantState,
+	text string,
+	confirmIntent string,
+	cancelIntent string,
+	confirmLabel string,
+) ([]byte, presentation.View, error) {
+	state.Wizard = ""
+	state.Sustain = false
+	state.Slots = []string{confirmIntent, cancelIntent}
+	raw, err := encodeAssistantState(state)
+	if err != nil {
+		return nil, presentation.View{}, err
+	}
+	if strings.TrimSpace(confirmLabel) == "" {
+		confirmLabel = "🗑️ Ya, Lanjutkan"
+	}
+	return raw, presentation.View{
+		Text: text,
+		Rows: []presentation.Row{{
+			{Text: confirmLabel, ActionID: assistantSlotID(0)},
+			{Text: "❌ Batal", ActionID: assistantSlotID(1)},
+		}},
+	}, nil
+}
+
 func (p *Plugin) assistantAwait(ctx *orchestration.Context, state assistantState, prompt string) error {
 	state.Sustain = false
 	state.Slots = []string{"myxl:cancel_wizard"}
@@ -369,21 +395,15 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		return p.assistantTransition(ctx, state, screen)
 
 	case "del_ask":
-		state.Sustain = false
-		state.Slots = []string{
+		raw, view, err := assistantDestructiveConfirmation(
+			state,
+			fmt.Sprintf("⚠️ <b>Hapus Akun MyXL</b>\n\nApakah Anda yakin ingin menghapus nomor <code>%s</code> dari penyimpanan bot?", html.EscapeString(opaque)),
 			fmt.Sprintf("myxl:del_exec:%s", opaque),
 			"myxl:accounts",
-		}
-		raw, err := encodeAssistantState(state)
+			"🗑️ Ya, Hapus",
+		)
 		if err != nil {
 			return err
-		}
-		view := presentation.View{
-			Text: fmt.Sprintf("⚠️ <b>Hapus Akun MyXL</b>\n\nApakah Anda yakin ingin menghapus nomor <code>%s</code> dari penyimpanan bot?", html.EscapeString(opaque)),
-			Rows: []presentation.Row{{
-				{Text: "🗑️ Ya, Hapus", ActionID: assistantSlotID(0)},
-				{Text: "❌ Batal", ActionID: assistantSlotID(1)},
-			}},
 		}
 		return ctx.Transition(raw, assistantConfirmationTTL, view)
 
@@ -593,6 +613,22 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		if opaque == "" || opaque == "noop" {
 			return ctx.Answer("Kode transaksi QRIS tidak valid", true)
 		}
+		raw, view, err := assistantDestructiveConfirmation(
+			state,
+			"⚠️ <b>Batalkan Transaksi QRIS</b>\n\nTransaksi pending akan dihapus dari penyimpanan bot. Lanjutkan?",
+			fmt.Sprintf("myxl:qris_cancel_exec:%s", opaque),
+			"myxl:pending_qris",
+			"🗑️ Ya, Batalkan",
+		)
+		if err != nil {
+			return err
+		}
+		return ctx.Transition(raw, assistantConfirmationTTL, view)
+
+	case "qris_cancel_exec":
+		if opaque == "" || opaque == "noop" {
+			return ctx.Answer("Kode transaksi QRIS tidak valid", true)
+		}
 		if err := p.repo.DeletePendingQRIS(ctx.Context(), opaque); err != nil {
 			return ctx.Answer("Gagal membatalkan transaksi QRIS. Silakan coba lagi.", true)
 		}
@@ -649,6 +685,23 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		return ctx.Answer("⭐ Paket berhasil disimpan ke favorit!", true)
 
 	case "bookmark_del":
+		optionCode := p.menuMgr.ResolveOptionCode(opaque)
+		if optionCode == "" {
+			return ctx.Answer("Kode paket favorit tidak valid", true)
+		}
+		raw, view, err := assistantDestructiveConfirmation(
+			state,
+			fmt.Sprintf("⚠️ <b>Hapus Paket Favorit</b>\n\nHapus paket <code>%s</code> dari favorit?", html.EscapeString(optionCode)),
+			fmt.Sprintf("myxl:bookmark_del_exec:%s", opaque),
+			"myxl:saved",
+			"🗑️ Ya, Hapus",
+		)
+		if err != nil {
+			return err
+		}
+		return ctx.Transition(raw, assistantConfirmationTTL, view)
+
+	case "bookmark_del_exec":
 		optionCode := p.menuMgr.ResolveOptionCode(opaque)
 		acc, _ := p.repo.GetActive(ctx.Context())
 		if acc != nil {

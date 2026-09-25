@@ -129,3 +129,28 @@ func mustAssistantState(t *testing.T, state assistantState) []byte {
 	}
 	return raw
 }
+
+func TestP4AssistantDestructiveConfirmationIsShortLivedAndRevisionBound(t *testing.T) {
+	raw, view, err := assistantDestructiveConfirmation(
+		assistantState{Sustain: true},
+		"Confirm delete",
+		"myxl:bookmark_del_exec:key",
+		"myxl:saved",
+		"Delete",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := decodeAssistantState(raw)
+	if state.Sustain {
+		t.Fatal("destructive confirmation retained long-lived sustain marker")
+	}
+	if len(state.Slots) != 2 || state.Slots[0] != "myxl:bookmark_del_exec:key" || state.Slots[1] != "myxl:saved" {
+		t.Fatalf("confirmation slots=%v", state.Slots)
+	}
+	if len(view.Rows) != 1 || len(view.Rows[0]) != 2 ||
+		view.Rows[0][0].ActionID != assistantSlotID(0) ||
+		view.Rows[0][1].ActionID != assistantSlotID(1) {
+		t.Fatalf("confirmation view rows=%+v", view.Rows)
+	}
+}
