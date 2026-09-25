@@ -175,7 +175,7 @@ func (p *Plugin) handle(ctx *core.Context) error {
 		return ctx.Error("OCR task runtime is unavailable.")
 	}
 	if ctx.Message == nil || ctx.Message.ReplyToID == 0 {
-		return ctx.EditOrReply("⚠️ Reply to a photo or image document with .ocr [language].")
+		return ctx.Status("Reply to a photo or image document with .ocr [language].")
 	}
 	reply, err := ctx.GetReply()
 	if err != nil {
@@ -183,7 +183,7 @@ func (p *Plugin) handle(ctx *core.Context) error {
 		return fmt.Errorf("ocr: load reply: %w", err)
 	}
 	if reply == nil || !isOCRMedia(reply.Media) {
-		return ctx.EditOrReply("⚠️ The replied message must contain a supported static image.")
+		return ctx.Status("The replied message must contain a supported static image.")
 	}
 
 	lang := "eng"
@@ -191,7 +191,7 @@ func (p *Plugin) handle(ctx *core.Context) error {
 		lang = strings.ToLower(strings.TrimSpace(ctx.Args[0]))
 	}
 	if !validLanguage(lang) {
-		return ctx.EditOrReply("⚠️ Unsupported OCR language. Use a valid OCR.Space language code such as eng, ind, jpn, kor, rus, or vie.")
+		return ctx.Status("Unsupported OCR language. Use a valid OCR.Space language code such as eng, ind, jpn, kor, rus, or vie.")
 	}
 	if err := imageguard.ValidateKnown(reply.Media.Size, reply.Media.Width, reply.Media.Height, ocrImagePolicy); err != nil {
 		return ctx.Error(fmt.Sprintf("Image rejected by safety limits: %s", core.EscapeHTML(err.Error())))

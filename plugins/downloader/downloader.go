@@ -248,7 +248,7 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 	}
 
 	if targetMedia == nil {
-		return ctx.EditOrReply("⚠️ <b>No media or URL found!</b> Reply to a media message or provide a valid download URL.")
+		return ctx.Status("<b>No media or URL found!</b> Reply to a media message or provide a valid download URL.")
 	}
 	if p.tasks == nil {
 		return fmt.Errorf("%w: downloader TaskEngine client is not configured", core.ErrUnavailable)
@@ -260,7 +260,7 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 	}
 	if mediaSize > 0 {
 		if err := core.ValidateMediaSize(mediaSize, core.DefaultMaxDownloadSize); err != nil {
-			return ctx.EditOrReply(fmt.Sprintf("⚠️ <b>Media too large!</b> File size (%s) exceeds download limit (500MB).", formatBytes(mediaSize)))
+			return ctx.Status(fmt.Sprintf("<b>Media too large!</b> File size (%s) exceeds download limit (500MB).", formatBytes(mediaSize)))
 		}
 	}
 
@@ -269,7 +269,7 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 		requiredSpace = 50 * 1024 * 1024
 	}
 	if err := core.CheckDiskSpace(saveDir, requiredSpace); err != nil {
-		return ctx.EditOrReply("❌ <b>Insufficient disk space</b> on host machine to complete download.")
+		return ctx.Error("<b>Insufficient disk space</b> on host machine to complete download.")
 	}
 
 	if err := ctx.EditOrReply("⏳ Downloading media..."); err != nil {
@@ -384,7 +384,7 @@ func (p *Plugin) openInteractiveURLDownload(ctx *core.Context, rawURL string) er
 		return core.ErrInvalidArgs
 	}
 	if p == nil || p.renderer == nil {
-		return ctx.EditOrReply("⚠️ <b>Interactive downloader is unavailable.</b> Start the Assistant inline renderer and try again.")
+		return ctx.Status("<b>Interactive downloader is unavailable.</b> Start the Assistant inline renderer and try again.")
 	}
 	normalized, err := normalizeInteractiveURL(rawURL)
 	if err != nil {
@@ -400,7 +400,7 @@ func (p *Plugin) openInteractiveURLDownload(ctx *core.Context, rawURL string) er
 		request.TopicID = ctx.Message.TopicID
 	}
 	if _, err := p.renderer.Render(ctx.Ctx, request); err != nil {
-		_ = ctx.EditOrReply("⚠️ Unable to open interactive downloader: " + core.EscapeHTML(err.Error()))
+		_ = ctx.Status("Unable to open interactive downloader: " + core.EscapeHTML(err.Error()))
 		return fmt.Errorf("open interactive downloader: %w", err)
 	}
 	if ctx.Message != nil && ctx.Message.ID > 0 && ctx.Svc != nil {

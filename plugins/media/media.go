@@ -183,7 +183,7 @@ func (p *Plugin) Commands() []core.Command {
 func (p *Plugin) handleMediaInfo(ctx *core.Context) error {
 	item := findMedia(ctx)
 	if item == nil {
-		return ctx.EditOrReply("⚠️ <b>No media found!</b> Please reply to a photo, video, audio, voice, sticker, or document.")
+		return ctx.Status("<b>No media found!</b> Please reply to a photo, video, audio, voice, sticker, or document.")
 	}
 
 	var sb strings.Builder
@@ -230,16 +230,16 @@ func (p *Plugin) handleMediaInfo(ctx *core.Context) error {
 func (p *Plugin) handleExtractAudio(ctx *core.Context) error {
 	item := findMedia(ctx)
 	if item == nil {
-		return ctx.EditOrReply("⚠️ <b>No media found!</b> Reply to a video, audio, or document to extract audio.")
+		return ctx.Status("<b>No media found!</b> Reply to a video, audio, or document to extract audio.")
 	}
 
 	if item.Type == "photo" || item.Type == "sticker" {
-		return ctx.EditOrReply("⚠️ Cannot extract audio from a photo or sticker.")
+		return ctx.Status("Cannot extract audio from a photo or sticker.")
 	}
 
 	if item.Size > 0 {
 		if err := core.ValidateMediaSize(item.Size, core.DefaultMaxExtractAudioSize); err != nil {
-			return ctx.EditOrReply(fmt.Sprintf("⚠️ <b>Media too large!</b> File size (%s) exceeds extraction limit (150MB).", formatBytes(item.Size)))
+			return ctx.Status(fmt.Sprintf("<b>Media too large!</b> File size (%s) exceeds extraction limit (150MB).", formatBytes(item.Size)))
 		}
 	}
 
@@ -299,7 +299,7 @@ func (p *Plugin) handleExtractAudio(ctx *core.Context) error {
 func (p *Plugin) handleConvert(ctx *core.Context) error {
 	item := findMedia(ctx)
 	if item == nil {
-		return ctx.EditOrReply("⚠️ <b>No media found!</b> Reply to a video or audio file to convert.")
+		return ctx.Status("<b>No media found!</b> Reply to a video or audio file to convert.")
 	}
 
 	targetFormat := "mp4"
@@ -309,7 +309,7 @@ func (p *Plugin) handleConvert(ctx *core.Context) error {
 
 	mediaType, audioOnly, err := classifyConvertFormat(targetFormat)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("⚠️ %v", err))
+		return ctx.Status(fmt.Sprintf("%v", err))
 	}
 
 	if p.mediaService == nil {
@@ -374,7 +374,7 @@ func (p *Plugin) handleConvert(ctx *core.Context) error {
 func (p *Plugin) handleConvertToGIF(ctx *core.Context) error {
 	item := findMedia(ctx)
 	if item == nil {
-		return ctx.EditOrReply("⚠️ <b>No media found!</b> Reply to a video to convert to GIF.")
+		return ctx.Status("<b>No media found!</b> Reply to a video to convert to GIF.")
 	}
 
 	if p.mediaService == nil {
@@ -425,7 +425,7 @@ func (p *Plugin) handleConvertToGIF(ctx *core.Context) error {
 func (p *Plugin) handleConvertToSticker(ctx *core.Context) error {
 	item := findMedia(ctx)
 	if item == nil {
-		return ctx.EditOrReply("⚠️ <b>No media found!</b> Reply to a video or animation to make a video sticker.")
+		return ctx.Status("<b>No media found!</b> Reply to a video or animation to make a video sticker.")
 	}
 
 	if p.mediaService == nil {

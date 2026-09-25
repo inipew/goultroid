@@ -291,7 +291,7 @@ func (p *Plugin) submitContinuation(
 
 func (p *Plugin) handleFilter(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		_ = ctx.EditOrReply("⚠️ Usage: <code>.filter &lt;keyword&gt; &lt;reply text&gt;</code> or reply to text/media with <code>.filter &lt;keyword&gt;</code>")
+		_ = ctx.Status("Usage: <code>.filter &lt;keyword&gt; &lt;reply text&gt;</code> or reply to text/media with <code>.filter &lt;keyword&gt;</code>")
 		return errors.New("missing arguments")
 	}
 	if p.db == nil || p.responses == nil {
@@ -299,11 +299,11 @@ func (p *Plugin) handleFilter(ctx *core.Context) error {
 	}
 	keyword := strings.ToLower(strings.TrimSpace(ctx.Args[0]))
 	if keyword == "" {
-		_ = ctx.EditOrReply("⚠️ Filter keyword cannot be empty.")
+		_ = ctx.Status("Filter keyword cannot be empty.")
 		return errors.New("empty filter keyword")
 	}
 	if len(keyword) > MaxKeywordBytes {
-		_ = ctx.EditOrReply(fmt.Sprintf("⚠️ Filter keyword is too long (max %d bytes).", MaxKeywordBytes))
+		_ = ctx.Status(fmt.Sprintf("Filter keyword is too long (max %d bytes).", MaxKeywordBytes))
 		return fmt.Errorf("%w: filter keyword exceeds %d bytes", core.ErrInvalidArgs, MaxKeywordBytes)
 	}
 
@@ -315,7 +315,7 @@ func (p *Plugin) handleFilter(ctx *core.Context) error {
 
 	reply, err := ctx.GetReply()
 	if err != nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("⚠️ Could not load replied response: %v", err))
+		_ = ctx.Status(fmt.Sprintf("Could not load replied response: %v", err))
 		return err
 	}
 	return p.saveReply(ctx, chatID, keyword, reply)
@@ -323,7 +323,7 @@ func (p *Plugin) handleFilter(ctx *core.Context) error {
 
 func (p *Plugin) saveReply(ctx *core.Context, chatID int64, keyword string, reply *core.Message) error {
 	if reply == nil {
-		_ = ctx.EditOrReply("⚠️ Reply to text/media or provide filter response.")
+		_ = ctx.Status("Reply to text/media or provide filter response.")
 		return savedresponse.ErrReplyNotFound
 	}
 	if !reply.HasMedia() {
@@ -351,7 +351,7 @@ func (p *Plugin) saveReply(ctx *core.Context, chatID int64, keyword string, repl
 			return p.saveFilterResponseGuarded(taskCore, chatID, keyword, response, writeGuard)
 		},
 	); err != nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to queue media filter save: %v", err))
+		_ = ctx.Error(fmt.Sprintf("Failed to queue media filter save: %v", err))
 		return err
 	}
 	return nil
@@ -369,12 +369,12 @@ func (p *Plugin) saveFilterResponseGuarded(
 	writeGuard filterWriteGuard,
 ) error {
 	if response.Empty() {
-		_ = ctx.EditOrReply("⚠️ Filter response cannot be empty.")
+		_ = ctx.Status("Filter response cannot be empty.")
 		return errors.New("empty filter response")
 	}
 	if err := savedresponse.Validate(response); err != nil {
 		_ = p.responses.DeleteMedia(ctx.Ctx, response)
-		_ = ctx.EditOrReply(fmt.Sprintf("⚠️ Invalid filter response: %v", err))
+		_ = ctx.Status(fmt.Sprintf("Invalid filter response: %v", err))
 		return err
 	}
 
@@ -408,19 +408,19 @@ func (p *Plugin) saveFilterResponseGuarded(
 		return p.db.SaveFilter(ctx.Ctx, chatID, keyword, response)
 	}); err != nil {
 		lock.Unlock()
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to save filter: %v", err))
+		_ = ctx.Error(fmt.Sprintf("Failed to save filter: %v", err))
 		return err
 	}
 	p.invalidateChat(chatID, true)
 	p.featureState.SetActive(chatID, true)
 	lock.Unlock()
 
-	return ctx.EditOrReply(fmt.Sprintf("🎯 Filter <code>%s</code> saved successfully.", html.EscapeString(keyword)))
+	return ctx.Success(fmt.Sprintf("Filter <code>%s</code> saved successfully.", html.EscapeString(keyword)))
 }
 
 func (p *Plugin) handleStop(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		_ = ctx.EditOrReply("⚠️ Usage: <code>.stop &lt;keyword&gt;</code>")
+		_ = ctx.Status("Usage: <code>.stop &lt;keyword&gt;</code>")
 		return errors.New("missing filter keyword")
 	}
 	if p.db == nil || p.responses == nil {
@@ -438,7 +438,7 @@ func (p *Plugin) handleStop(ctx *core.Context) error {
 	}
 	if filter == nil {
 		lock.Unlock()
-		_ = ctx.EditOrReply(fmt.Sprintf("ℹ️ Filter <code>%s</code> not found.", html.EscapeString(keyword)))
+		_ = ctx.Status(fmt.Sprintf("Filter <code>%s</code> not found.", html.EscapeString(keyword)))
 		return errors.New("filter not found")
 	}
 
@@ -447,7 +447,7 @@ func (p *Plugin) handleStop(ctx *core.Context) error {
 		return p.db.DeleteFilter(ctx.Ctx, chatID, keyword)
 	}); err != nil {
 		lock.Unlock()
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to stop filter: %v", err))
+		_ = ctx.Error(fmt.Sprintf("Failed to stop filter: %v", err))
 		return err
 	}
 	remaining, listErr := p.db.ListFilters(ctx.Ctx, chatID)
@@ -461,7 +461,7 @@ func (p *Plugin) handleStop(ctx *core.Context) error {
 	}
 	lock.Unlock()
 
-	return ctx.EditOrReply(fmt.Sprintf("🗑️ Filter <code>%s</code> stopped.", html.EscapeString(keyword)))
+	return ctx.Success(fmt.Sprintf("Filter <code>%s</code> stopped.", html.EscapeString(keyword)))
 }
 
 func (p *Plugin) handleList(ctx *core.Context) error {
@@ -473,7 +473,7 @@ func (p *Plugin) handleList(ctx *core.Context) error {
 		return err
 	}
 	if len(list) == 0 {
-		return ctx.EditOrReply("ℹ️ No active filters in this chat.")
+		return ctx.Status("No active filters in this chat.")
 	}
 	return deliverFilterList(ctx, list)
 }
@@ -532,22 +532,22 @@ func (p *Plugin) handleInfo(ctx *core.Context) error {
 		return errors.New("filters: database is unavailable")
 	}
 	if len(ctx.Args) == 0 {
-		_ = ctx.EditOrReply("⚠️ Usage: <code>.filterinfo &lt;keyword&gt;</code>")
+		_ = ctx.Status("Usage: <code>.filterinfo &lt;keyword&gt;</code>")
 		return errors.New("missing filter keyword")
 	}
 	keyword := strings.ToLower(strings.TrimSpace(ctx.Args[0]))
 	filter, err := p.db.GetFilter(ctx.Ctx, p.getChatID(ctx), keyword)
 	if err != nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Error fetching filter info: %v", err))
+		_ = ctx.Error(fmt.Sprintf("Error fetching filter info: %v", err))
 		return err
 	}
 	if filter == nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("ℹ️ Filter <code>%s</code> not found.", html.EscapeString(keyword)))
+		_ = ctx.Status(fmt.Sprintf("Filter <code>%s</code> not found.", html.EscapeString(keyword)))
 		return errors.New("filter not found")
 	}
 	info, err := savedresponse.Inspect(filter.Response)
 	if err != nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to inspect filter: %v", err))
+		_ = ctx.Error(fmt.Sprintf("Failed to inspect filter: %v", err))
 		return err
 	}
 	return ctx.EditOrReply(renderFilterInfo(filter, info))

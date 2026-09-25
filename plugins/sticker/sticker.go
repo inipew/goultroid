@@ -112,26 +112,26 @@ func (p *Plugin) Commands() []core.Command {
 func (p *Plugin) handleSticker(ctx *core.Context) error {
 	media := findMedia(ctx)
 	if media == nil {
-		return ctx.EditOrReply("⚠️ <b>No image found!</b> Reply to a photo, image file, or sticker.")
+		return ctx.Status("<b>No image found!</b> Reply to a photo, image file, or sticker.")
 	}
 
 	// Only process visual media
 	if media.Type != "photo" && media.Type != "sticker" && media.Type != "document" {
-		return ctx.EditOrReply("⚠️ Please reply to a photo, sticker, or image document.")
+		return ctx.Status("Please reply to a photo, sticker, or image document.")
 	}
 	if media.Type == "sticker" {
 		switch stickerSourceFormat(media) {
 		case "animated":
-			return ctx.EditOrReply("⚠️ Animated <code>.tgs</code> stickers are already Telegram stickers and cannot be raster-converted. Reply to a static image/WebP/PNG instead.")
+			return ctx.Status("Animated <code>.tgs</code> stickers are already Telegram stickers and cannot be raster-converted. Reply to a static image/WebP/PNG instead.")
 		case "video":
-			return ctx.EditOrReply("⚠️ Video <code>.webm</code> stickers are already Telegram stickers and cannot be raster-converted. Reply to a static image/WebP/PNG instead.")
+			return ctx.Status("Video <code>.webm</code> stickers are already Telegram stickers and cannot be raster-converted. Reply to a static image/WebP/PNG instead.")
 		case "unsupported":
-			return ctx.EditOrReply("⚠️ The selected sticker format is not supported for static conversion.")
+			return ctx.Status("The selected sticker format is not supported for static conversion.")
 		}
 	}
 	if media.Type == "document" &&
 		media.MimeType != "" && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(media.MimeType)), "image/") {
-		return ctx.EditOrReply("⚠️ The selected document is not a supported image.")
+		return ctx.Status("The selected document is not a supported image.")
 	}
 	if err := imageguard.ValidateKnown(media.Size, media.Width, media.Height, stickerImagePolicy); err != nil {
 		return ctx.Error(fmt.Sprintf("Image rejected by safety limits: %v", err))

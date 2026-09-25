@@ -342,13 +342,13 @@ func (p *Plugin) handleMyXL(ctx *core.Context) error {
 	case "qris", "pending":
 		return p.handlePendingQRIS(ctx, args)
 	default:
-		return ctx.EditOrReply(fmt.Sprintf("⚠️ Subcommand <code>%s</code> tidak dikenal. Ketik <code>.myxl</code> untuk bantuan.", html.EscapeString(subCmd)))
+		return ctx.Status(fmt.Sprintf("Subcommand <code>%s</code> tidak dikenal. Ketik <code>.myxl</code> untuk bantuan.", html.EscapeString(subCmd)))
 	}
 }
 
 func (p *Plugin) handleLogin(ctx *core.Context, args []string) error {
 	if len(args) == 0 {
-		return ctx.EditOrReply("⚠️ Format salah! Gunakan: <code>.myxl login &lt;nomor_hp&gt;</code>\nContoh: <code>.myxl login 081912345678</code>")
+		return ctx.Status("Format salah! Gunakan: <code>.myxl login &lt;nomor_hp&gt;</code>\nContoh: <code>.myxl login 081912345678</code>")
 	}
 
 	rawMSISDN := args[0]
@@ -389,7 +389,7 @@ func (p *Plugin) handleLogin(ctx *core.Context, args []string) error {
 
 func (p *Plugin) handleOTP(ctx *core.Context, args []string) error {
 	if len(args) < 2 {
-		return ctx.EditOrReply("⚠️ Format salah! Gunakan: <code>.myxl otp &lt;nomor_hp&gt; &lt;kode_otp&gt;</code>\nContoh: <code>.myxl otp 081912345678 123456</code>")
+		return ctx.Status("Format salah! Gunakan: <code>.myxl otp &lt;nomor_hp&gt; &lt;kode_otp&gt;</code>\nContoh: <code>.myxl otp 081912345678 123456</code>")
 	}
 
 	rawMSISDN := args[0]
@@ -440,7 +440,7 @@ func (p *Plugin) handleOTP(ctx *core.Context, args []string) error {
 
 func (p *Plugin) handleSetAlias(ctx *core.Context, args []string) error {
 	if len(args) < 2 {
-		return ctx.EditOrReply("⚠️ Format: <code>.myxl alias &lt;nomor/alias_lama&gt; &lt;alias_baru&gt;</code>\nContoh: <code>.myxl alias 081912345678 Utama</code>")
+		return ctx.Status("Format: <code>.myxl alias &lt;nomor/alias_lama&gt; &lt;alias_baru&gt;</code>\nContoh: <code>.myxl alias 081912345678 Utama</code>")
 	}
 
 	target := args[0]
@@ -449,15 +449,15 @@ func (p *Plugin) handleSetAlias(ctx *core.Context, args []string) error {
 	}
 	newAlias, err := normalizeAlias(strings.Join(args[1:], " "))
 	if err != nil {
-		return ctx.EditOrReply("⚠️ " + html.EscapeString(err.Error()) + ".")
+		return ctx.Status("" + html.EscapeString(err.Error()) + ".")
 	}
 
 	cCtx := getContext(ctx)
 	if err := p.repo.SetAlias(cCtx, target, newAlias); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Gagal mengatur alias: %v", err))
+		return ctx.Error(fmt.Sprintf("Gagal mengatur alias: %v", err))
 	}
 
-	return ctx.EditOrReply(fmt.Sprintf("✅ Alias untuk <code>%s</code> berhasil diatur menjadi <b>%s</b>.", html.EscapeString(target), html.EscapeString(newAlias)))
+	return ctx.Success(fmt.Sprintf("Alias untuk <code>%s</code> berhasil diatur menjadi <b>%s</b>.", html.EscapeString(target), html.EscapeString(newAlias)))
 }
 
 func (p *Plugin) handleStatus(ctx *core.Context) error {
@@ -467,7 +467,7 @@ func (p *Plugin) handleStatus(ctx *core.Context) error {
 		return ctx.Error(fmt.Sprintf("Error database: %v", err))
 	}
 	if acc == nil {
-		return ctx.EditOrReply("⚠️ Tidak ada akun MyXL aktif saat ini. Gunakan <code>.myxl login &lt;nomor&gt;</code> untuk login.")
+		return ctx.Status("Tidak ada akun MyXL aktif saat ini. Gunakan <code>.myxl login &lt;nomor&gt;</code> untuk login.")
 	}
 
 	maskMSISDN := isGroupChat(ctx.Chat)
@@ -500,7 +500,7 @@ func (p *Plugin) handleListAccounts(ctx *core.Context) error {
 	cCtx := getContext(ctx)
 	accounts, err := p.repo.List(cCtx)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Gagal memuat akun: %v", err))
+		return ctx.Error(fmt.Sprintf("Gagal memuat akun: %v", err))
 	}
 
 	if len(accounts) == 0 {
@@ -539,7 +539,7 @@ func (p *Plugin) handleListAccounts(ctx *core.Context) error {
 
 func (p *Plugin) handleUseAccount(ctx *core.Context, args []string) error {
 	if len(args) == 0 {
-		return ctx.EditOrReply("⚠️ Masukkan nomor atau alias akun! Contoh: <code>.myxl use 081912345678</code> atau <code>.myxl use Utama</code>")
+		return ctx.Status("Masukkan nomor atau alias akun! Contoh: <code>.myxl use 081912345678</code> atau <code>.myxl use Utama</code>")
 	}
 
 	target := args[0]
@@ -549,15 +549,15 @@ func (p *Plugin) handleUseAccount(ctx *core.Context, args []string) error {
 
 	cCtx := getContext(ctx)
 	if err := p.repo.SetActive(cCtx, target); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Gagal mengganti akun aktif: %v", err))
+		return ctx.Error(fmt.Sprintf("Gagal mengganti akun aktif: %v", err))
 	}
 
-	return ctx.EditOrReply(fmt.Sprintf("✅ Akun aktif berhasil diubah ke <code>%s</code>.", html.EscapeString(target)))
+	return ctx.Success(fmt.Sprintf("Akun aktif berhasil diubah ke <code>%s</code>.", html.EscapeString(target)))
 }
 
 func (p *Plugin) handleDeleteAccount(ctx *core.Context, args []string) error {
 	if len(args) == 0 {
-		return ctx.EditOrReply("⚠️ Masukkan nomor atau alias akun! Contoh: <code>.myxl del 081912345678</code>")
+		return ctx.Status("Masukkan nomor atau alias akun! Contoh: <code>.myxl del 081912345678</code>")
 	}
 
 	target := args[0]
@@ -567,7 +567,7 @@ func (p *Plugin) handleDeleteAccount(ctx *core.Context, args []string) error {
 
 	cCtx := getContext(ctx)
 	if err := p.repo.Delete(cCtx, target); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Gagal menghapus akun: %v", err))
+		return ctx.Error(fmt.Sprintf("Gagal menghapus akun: %v", err))
 	}
 
 	return ctx.EditOrReply(fmt.Sprintf("🗑️ Akun <code>%s</code> berhasil dihapus dari database.", html.EscapeString(target)))
@@ -597,11 +597,11 @@ func (p *Plugin) handleShowQuota(ctx *core.Context, args []string) error {
 	}
 
 	if acc == nil {
-		return ctx.EditOrReply("⚠️ Tidak ada akun MyXL aktif. Silakan login terlebih dahulu dengan <code>.myxl login &lt;nomor&gt;</code>")
+		return ctx.Status("Tidak ada akun MyXL aktif. Silakan login terlebih dahulu dengan <code>.myxl login &lt;nomor&gt;</code>")
 	}
 
 	if acc.IDToken == "" && acc.RefreshToken == "" {
-		return ctx.EditOrReply(fmt.Sprintf("⚠️ Akun <code>%s</code> belum terautentikasi. Silakan jalankan <code>.myxl login %s</code>", html.EscapeString(acc.MSISDN), html.EscapeString(acc.MSISDN)))
+		return ctx.Status(fmt.Sprintf("Akun <code>%s</code> belum terautentikasi. Silakan jalankan <code>.myxl login %s</code>", html.EscapeString(acc.MSISDN), html.EscapeString(acc.MSISDN)))
 	}
 
 	maskMSISDN := isGroupChat(ctx.Chat)
@@ -726,7 +726,7 @@ func (p *Plugin) handleRefreshToken(ctx *core.Context, args []string) error {
 		return ctx.Error(fmt.Sprintf("Gagal membaca akun: %v", err))
 	}
 	if acc == nil {
-		return ctx.EditOrReply("⚠️ Tidak ada akun MyXL yang aktif. Silakan login terlebih dahulu.")
+		return ctx.Status("Tidak ada akun MyXL yang aktif. Silakan login terlebih dahulu.")
 	}
 
 	_ = ctx.Progress(fmt.Sprintf("Me-refresh token CIAM untuk <code>%s</code>...", html.EscapeString(acc.MSISDN)))
@@ -755,14 +755,14 @@ func (p *Plugin) handleRefreshToken(ctx *core.Context, args []string) error {
 
 func (p *Plugin) handleSearchFamily(ctx *core.Context, args []string) error {
 	if len(args) == 0 {
-		return ctx.EditOrReply("⚠️ Format salah! Gunakan: <code>.myxl family &lt;family_code&gt;</code>")
+		return ctx.Status("Format salah! Gunakan: <code>.myxl family &lt;family_code&gt;</code>")
 	}
 	cCtx, cancel := context.WithTimeout(getContext(ctx), 30*time.Second)
 	defer cancel()
 
 	acc, err := p.repo.GetActive(cCtx)
 	if err != nil || acc == nil {
-		return ctx.EditOrReply("⚠️ Tidak ada akun MyXL yang aktif. Silakan login terlebih dahulu.")
+		return ctx.Status("Tidak ada akun MyXL yang aktif. Silakan login terlebih dahulu.")
 	}
 
 	familyCode := strings.TrimSpace(args[0])
@@ -778,14 +778,14 @@ func (p *Plugin) handleSearchFamily(ctx *core.Context, args []string) error {
 
 func (p *Plugin) handlePackageDetail(ctx *core.Context, args []string) error {
 	if len(args) == 0 {
-		return ctx.EditOrReply("⚠️ Format salah! Gunakan: <code>.myxl paket &lt;option_code&gt;</code>")
+		return ctx.Status("Format salah! Gunakan: <code>.myxl paket &lt;option_code&gt;</code>")
 	}
 	cCtx, cancel := context.WithTimeout(getContext(ctx), 30*time.Second)
 	defer cancel()
 
 	acc, err := p.repo.GetActive(cCtx)
 	if err != nil || acc == nil {
-		return ctx.EditOrReply("⚠️ Tidak ada akun MyXL yang aktif. Silakan login terlebih dahulu.")
+		return ctx.Status("Tidak ada akun MyXL yang aktif. Silakan login terlebih dahulu.")
 	}
 
 	optionCode := strings.TrimSpace(args[0])
@@ -805,7 +805,7 @@ func (p *Plugin) handleSavedPackages(ctx *core.Context, args []string) error {
 
 	acc, err := p.repo.GetActive(cCtx)
 	if err != nil || acc == nil {
-		return ctx.EditOrReply("⚠️ Tidak ada akun MyXL yang aktif. Silakan login terlebih dahulu.")
+		return ctx.Status("Tidak ada akun MyXL yang aktif. Silakan login terlebih dahulu.")
 	}
 
 	action := "list"
@@ -817,13 +817,13 @@ func (p *Plugin) handleSavedPackages(ctx *core.Context, args []string) error {
 	case "list", "show":
 		pkgs, err := p.repo.GetSavedPackages(cCtx, acc.MSISDN)
 		if err != nil {
-			return ctx.EditOrReply(fmt.Sprintf("❌ Gagal membaca bookmark: %v", err))
+			return ctx.Error(fmt.Sprintf("Gagal membaca bookmark: %v", err))
 		}
 		return deliverHTML(ctx, FormatSavedPackages(pkgs))
 
 	case "add", "save":
 		if len(args) < 2 {
-			return ctx.EditOrReply("⚠️ Format salah! Gunakan: <code>.myxl saved add &lt;option_code&gt; [nama] [harga]</code>")
+			return ctx.Status("Format salah! Gunakan: <code>.myxl saved add &lt;option_code&gt; [nama] [harga]</code>")
 		}
 		optCode := strings.TrimSpace(args[1])
 		_ = ctx.Progress(fmt.Sprintf("Mengambil data paket <code>%s</code>...", html.EscapeString(optCode)))
@@ -860,24 +860,24 @@ func (p *Plugin) handleSavedPackages(ctx *core.Context, args []string) error {
 
 	case "del", "delete", "rm":
 		if len(args) < 2 {
-			return ctx.EditOrReply("⚠️ Format salah! Gunakan: <code>.myxl saved del &lt;option_code&gt;</code>")
+			return ctx.Status("Format salah! Gunakan: <code>.myxl saved del &lt;option_code&gt;</code>")
 		}
 		optCode := strings.TrimSpace(args[1])
 		if err := p.repo.DeleteSavedPackage(cCtx, acc.MSISDN, optCode); err != nil {
-			return ctx.EditOrReply(fmt.Sprintf("❌ Gagal menghapus bookmark: %v", err))
+			return ctx.Error(fmt.Sprintf("Gagal menghapus bookmark: %v", err))
 		}
-		return ctx.EditOrReply(fmt.Sprintf("✅ Paket <code>%s</code> berhasil dihapus dari bookmark.", html.EscapeString(optCode)))
+		return ctx.Success(fmt.Sprintf("Paket <code>%s</code> berhasil dihapus dari bookmark.", html.EscapeString(optCode)))
 
 	case "buy", "beli":
 		if len(args) < 2 {
-			return ctx.EditOrReply("⚠️ Format salah! Gunakan: <code>.myxl saved buy &lt;option_code&gt; [metode] [overwrite_harga] [nomor]</code>")
+			return ctx.Status("Format salah! Gunakan: <code>.myxl saved buy &lt;option_code&gt; [metode] [overwrite_harga] [nomor]</code>")
 		}
 		return p.handleBuy(ctx, args[1:])
 
 	default:
 		pkgs, err := p.repo.GetSavedPackages(cCtx, acc.MSISDN)
 		if err != nil {
-			return ctx.EditOrReply(fmt.Sprintf("❌ Gagal membaca bookmark: %v", err))
+			return ctx.Error(fmt.Sprintf("Gagal membaca bookmark: %v", err))
 		}
 		return deliverHTML(ctx, FormatSavedPackages(pkgs))
 	}
@@ -893,7 +893,7 @@ func (p *Plugin) handlePendingQRIS(ctx *core.Context, args []string) error {
 
 	acc, err := p.repo.GetActive(cCtx)
 	if err != nil || acc == nil {
-		return ctx.EditOrReply("⚠️ Tidak ada akun MyXL yang aktif. Login terlebih dahulu.")
+		return ctx.Status("Tidak ada akun MyXL yang aktif. Login terlebih dahulu.")
 	}
 
 	if len(args) > 0 {
@@ -901,21 +901,21 @@ func (p *Plugin) handlePendingQRIS(ctx *core.Context, args []string) error {
 		if sub == "cancel" || sub == "batal" || sub == "del" {
 			pending, err := p.repo.GetPendingQRIS(cCtx, acc.MSISDN)
 			if err != nil || pending == nil {
-				return ctx.EditOrReply("ℹ️ Tidak ada transaksi QRIS aktif yang dapat dibatalkan.")
+				return ctx.Status("Tidak ada transaksi QRIS aktif yang dapat dibatalkan.")
 			}
 			if err := p.repo.DeletePendingQRIS(cCtx, pending.TransactionCode); err != nil {
-				return ctx.EditOrReply(fmt.Sprintf("❌ Gagal membatalkan transaksi QRIS: %v", err))
+				return ctx.Error(fmt.Sprintf("Gagal membatalkan transaksi QRIS: %v", err))
 			}
-			return ctx.EditOrReply("✅ Transaksi QRIS berhasil dibatalkan dan dihapus dari penyimpanan.")
+			return ctx.Success("Transaksi QRIS berhasil dibatalkan dan dihapus dari penyimpanan.")
 		}
 	}
 
 	pending, err := p.repo.GetPendingQRIS(cCtx, acc.MSISDN)
 	if err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Gagal memeriksa transaksi QRIS: %v", err))
+		return ctx.Error(fmt.Sprintf("Gagal memeriksa transaksi QRIS: %v", err))
 	}
 	if pending == nil {
-		return ctx.EditOrReply("ℹ️ Tidak ada transaksi QRIS aktif yang menunggu pembayaran.\nTransaksi QRIS otomatis kedaluwarsa setelah 5 menit.")
+		return ctx.Status("Tidak ada transaksi QRIS aktif yang menunggu pembayaran.\nTransaksi QRIS otomatis kedaluwarsa setelah 5 menit.")
 	}
 
 	remaining := time.Until(pending.ExpiresAt)
@@ -985,7 +985,7 @@ func (p *Plugin) handleBuy(ctx *core.Context, args []string) error {
 
 	acc, err := p.repo.GetActive(cCtx)
 	if err != nil || acc == nil {
-		return ctx.EditOrReply("⚠️ Tidak ada akun MyXL yang aktif. Login terlebih dahulu.")
+		return ctx.Status("Tidak ada akun MyXL yang aktif. Login terlebih dahulu.")
 	}
 
 	optionCode := strings.TrimSpace(args[0])
