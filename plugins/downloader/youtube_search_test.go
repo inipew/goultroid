@@ -235,7 +235,6 @@ func TestYouTubeSearchRejectsOversizedQueryBeforeAdmission(t *testing.T) {
 	}
 }
 
-
 type blockingYouTubeSearchProvider struct {
 	started   chan struct{}
 	cancelled chan struct{}

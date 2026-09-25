@@ -25,9 +25,9 @@ import (
 )
 
 var (
-	ErrShellUnavailable         = errors.New("assistant/client: assistant shell unavailable")
-	ErrShellAdmission           = errors.New("assistant/client: assistant shell admission denied")
-	ErrShellSettingBindingStale = errors.New("assistant/client: setting binding is stale")
+	ErrShellUnavailable            = errors.New("assistant/client: assistant shell unavailable")
+	ErrShellAdmission              = errors.New("assistant/client: assistant shell admission denied")
+	ErrShellSettingBindingStale    = errors.New("assistant/client: setting binding is stale")
 	ErrShellHelpSelectionStale     = errors.New("assistant/client: help selection is stale")
 	ErrShellSettingsSelectionStale = errors.New("assistant/client: settings selection is stale")
 )

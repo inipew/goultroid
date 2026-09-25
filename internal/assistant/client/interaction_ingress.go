@@ -11,9 +11,11 @@ import (
 	"github.com/gotd/td/tg"
 	assistantinteraction "github.com/inipew/goultroid/internal/assistant/interaction"
 	assistantshell "github.com/inipew/goultroid/internal/assistant/shell"
+	"github.com/inipew/goultroid/internal/core"
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 	"github.com/inipew/goultroid/internal/interaction/orchestration"
 	"github.com/inipew/goultroid/internal/presentation"
+
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 	"github.com/inipew/goultroid/internal/tasks"
 )

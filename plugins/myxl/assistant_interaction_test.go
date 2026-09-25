@@ -95,7 +95,6 @@ func TestAssistantV2ActionDeclarationsAreTyped(t *testing.T) {
 	}
 }
 
-
 func TestAssistantV2OwnerBoundLifetimePolicy(t *testing.T) {
 	if assistantTTL != 24*time.Hour {
 		t.Fatalf("assistantTTL = %v, want 24h", assistantTTL)
