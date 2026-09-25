@@ -814,3 +814,210 @@ The next phase is complete only when:
 12. gofmt precedes Go commits.
 13. Targeted tests and go build pass on a real checkout.
 14. Live Telegram smoke passes.
+
+---
+
+## 16. Continuation update — 2026-09-25
+
+This section supersedes the older open-status snapshot in section 14. The original diagnosis is kept for history, but current `test-next` has advanced substantially beyond handoff commit `8427b41ceca9e72514a082680ec036a7906b356b`.
+
+### 16.1 Drift that was already present before this continuation
+
+When work resumed, `test-next` was already at:
+
+```text
+723beb2369533deffe3ff1b965f5b7bb47ccb42f
+test(callback): fence opaque state across reload generations
+```
+
+The intervening commits had already closed most of the original P0/P2-A lifecycle work:
+
+- shell actions are synchronized before callback ingress and no longer depend on a prior `/start`;
+- shell reload lifecycle regression coverage exists;
+- Assistant feature-driver bindings are reconciled by plugin generation;
+- Assistant binding refresh is wired to plugin-generation changes;
+- real a2 callback dispatch through TaskEngine is covered by the calculator self-inline acceptance;
+- generic callback state is fenced by plugin generation, including stale-generation rejection.
+
+Do not recreate those fixes.
+
+### 16.2 Commits added in this continuation
+
+```text
+2c2e6b6434b5a45abe0299255cb15549896d1cc4
+feat(assistant): cut over direct help and settings to a2
+
+3d12b2ca7838c8a99bc4463d227bc869d53ef53b
+refactor(help): retire legacy callback state
+
+8e7fa436e495adbd0cbdc6dbb686dc5e42b1e15f
+fix(test): use canonical private chat type
+
+ac124d26b59689995684b44953107558d7acd356
+test(assistant): cover direct a2 help and settings mutation
+
+7c69878978453a0d5341544f051e889c1261ac36
+test(selfinline): dispatch help callbacks end to end
+
+b3736726466a5be9aa9cc653a68147f0722ccb65
+test(selfinline): cover downloader callback pipeline end to end
+```
+
+### 16.3 Direct Assistant cutover now implemented
+
+Direct Assistant entry points now use explicit presentation overrides while keeping `core.Router` canonical for command discovery/menu metadata:
+
+```text
+/help
+/h
+/commands
+/settings
+```
+
+The override is fail-closed: it runs only while the canonical Assistant command still exists and is allowed on the Assistant surface.
+
+`/help` begins the canonical a2 Help session directly and supports:
+
+- root Help;
+- exact command name or alias;
+- exact Help module/category.
+
+`/settings` begins the canonical a2 Settings session directly and can open a matching category. It therefore uses the existing revision-fenced mutation contract rather than legacy Settings presentation logic.
+
+No second interaction runtime, dispatcher, registry, executor, or Help/Settings view implementation was introduced.
+
+### 16.4 Legacy Help callback state reclaimed
+
+After all Help interactive entry points were routed through a2, the old generic Help callback/state path was removed reference-first:
+
+- removed Help generic callback handler implementation;
+- removed Help callback state writer injection;
+- removed `helpMenuState`;
+- removed generic Help callback markup/state generation;
+- removed callback-only Help tests.
+
+The userbot `.help` self-inline path and canonical a2 Help views remain intact.
+
+### 16.5 New direct-entry acceptance
+
+`internal/assistant/client/shell_direct_acceptance_test.go` now covers:
+
+```text
+/help
+  -> a2 root
+  -> module callback
+  -> command callback
+  -> back callback
+
+/settings general
+  -> a2 setting detail
+  -> reset confirmation
+  -> schema revision changes
+  -> stale confirm rejected with ErrShellSettingBindingStale
+  -> persisted value remains unchanged
+  -> reopen fresh revision
+  -> reset succeeds
+```
+
+This proves that direct Settings entry is connected to the same revision-fenced mutation semantics as Settings reached from `/start`.
+
+### 16.6 True self-inline Help E2E now reaches Dispatcher handler
+
+`internal/assistant/client/selfinline_help_e2e_test.go` covers the full production-shaped Help path:
+
+```text
+SelfInline renderer
+  -> messages.getInlineBotResults
+  -> production inline Engine
+  -> messages.setInlineBotResults
+  -> messages.sendInlineBotResult
+  -> compiled a2 callback_data
+  -> Assistant interaction ingress
+  -> Dispatcher Prepare
+  -> TaskEngine admission
+  -> canonical shell Help action handler
+  -> Transition
+  -> messages.editInlineBotMessage
+```
+
+The regression no longer treats `ResolveCallback` alone as proof of a functioning button.
+
+### 16.7 True self-inline Downloader E2E now covers final resource boundary
+
+`internal/assistant/client/selfinline_downloader_e2e_test.go` uses the production-shaped self-inline transport without any live network download:
+
+```text
+dl <youtube-url>
+  -> getInlineBotResults
+  -> setInlineBotResults
+  -> sendInlineBotResult
+  -> click Audio
+  -> ingress / Dispatcher / TaskEngine
+  -> edit to audio-format view
+  -> click MP3
+  -> prepared action
+  -> ingress / Dispatcher / TaskEngine
+  -> edit to running view
+  -> submit physical continuation
+```
+
+The captured extractor continuation must use:
+
+```text
+Pool: download
+Resources:
+  - download
+  - process
+```
+
+The continuation task handler is deliberately not executed by the test, so the gate validates production admission/resource planning without depending on YouTube, yt-dlp, or external network availability.
+
+This matches the current architecture: the callback task performs interaction preparation/state transition, while physical `download` / `process` ownership belongs to the queued continuation.
+
+### 16.8 Current acceptance status
+
+Source-level implementation and regression coverage now indicate:
+
+| Scenario | Current source/test status |
+| --- | --- |
+| fresh process, no `/start`, then `.help` | covered by shell-action lifecycle regression |
+| Help root -> module -> command -> back | covered |
+| Help exact command/alias | covered by canonical inline Help test |
+| Assistant restart / shell generation refresh | covered by existing lifecycle tests |
+| `assistant_shell` generation stale/new token behavior | covered by existing reload tests |
+| downloader clean startup selection callback | covered by true self-inline E2E |
+| downloader feature-driver generation rebinding | covered generically by feature-driver generation test |
+| generic callback generation N -> N+1 stale-state rejection | covered by callback-router generation tests |
+| Assistant `/help` | cut over to a2 and covered |
+| Assistant `/settings` | cut over to a2; revision-fenced mutation covered |
+| legacy Help generic callback state | reclaimed |
+| Downloader final extractor resource admission | covered by captured continuation WorkSpec |
+| shutdown cleanup | existing lifecycle coverage remains authoritative |
+
+### 16.9 Validation caveat
+
+This continuation did **not** run GitHub CI, by request.
+
+The new Go files were formatted with `gofmt` before their commits. However, because this AI session does not have a runnable checkout of the repository, the newly added tests and production changes have not yet been executed with `go test` / `go build` in this continuation.
+
+The next real-checkout validation should therefore start with:
+
+```bash
+gofmt -w internal/assistant/command/presentation_override.go \
+  internal/assistant/client/shell_commands.go \
+  internal/assistant/command/presentation_override_test.go \
+  internal/assistant/client/shell_commands_test.go \
+  internal/assistant/client/shell_direct_acceptance_test.go \
+  internal/assistant/client/selfinline_help_e2e_test.go \
+  internal/assistant/client/selfinline_downloader_e2e_test.go \
+  plugins/help/help.go \
+  plugins/help/module.go \
+  plugins/help/help_test.go
+
+go test ./internal/assistant/command/... ./internal/assistant/client/... ./plugins/help/... ./plugins/downloader/...
+go build -o bin/goultroid ./cmd/goultroid
+```
+
+Then run the live Telegram matrix from section 11.
+
+Do not mark the overall userbot UX redesign finished until those real-checkout tests/build and live Telegram smoke pass.
