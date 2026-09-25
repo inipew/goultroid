@@ -2,10 +2,12 @@ package feature
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
+	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 )
 
 func TestBindCanonicalCommandsProjectsCoreMetadata(t *testing.T) {
@@ -106,5 +108,23 @@ func TestSpecValidateRejectsWrongInteractionSurface(t *testing.T) {
 	}
 	if err := spec.Validate(); !errors.Is(err, ErrInvalidSpec) {
 		t.Fatalf("Validate() error = %v, want invalid spec", err)
+	}
+}
+
+
+func TestSpecValidateRejectsActionThatCannotFitCallbackBudget(t *testing.T) {
+	surface := execution.SurfaceAssistant
+	spec := Spec{
+		ID:   "very_long_feature_identity_is_server_side_only",
+		Name: "Callback budget",
+		Interactions: []Interaction{{
+			ID:       strings.Repeat("a", rootinteraction.MaxCallbackActionIDBytes+1),
+			Kind:     InteractionAction,
+			Surfaces: surface,
+			Policy:   OwnerPolicy(surface),
+		}},
+	}
+	if err := spec.Validate(); !errors.Is(err, ErrInvalidSpec) {
+		t.Fatalf("Validate() error=%v, want invalid spec", err)
 	}
 }

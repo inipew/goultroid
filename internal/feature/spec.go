@@ -7,6 +7,7 @@ import (
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
+	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 )
 
 var (
@@ -230,6 +231,9 @@ func validateInteraction(interaction Interaction) error {
 	case InteractionAction:
 		if !interaction.Surfaces.Supports(execution.SourceAssistant) && !interaction.Surfaces.Supports(execution.SourceInline) {
 			return errors.New("action interaction must expose assistant or inline surface")
+		}
+		if err := rootinteraction.ValidateCallbackActionID(normalizeID(interaction.ID)); err != nil {
+			return fmt.Errorf("action callback identity: %w", err)
 		}
 	case InteractionDeepLink:
 		if !interaction.Surfaces.Supports(execution.SourceAssistant) {

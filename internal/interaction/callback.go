@@ -39,13 +39,11 @@ func (r *Runtime) ResolveCallback(ctx context.Context, data []byte, actual Bindi
 			resolved.Session = bound
 		}
 	}
-	if resolved.Session.FeatureID != token.FeatureID {
-		return ResolvedCallback{}, ErrTokenMismatch
-	}
+	token.FeatureID = resolved.Session.FeatureID
 	if resolved.Session.Revision != token.Revision {
 		return ResolvedCallback{}, ErrStaleToken
 	}
-	if !r.catalog.HasAction(token.FeatureID, token.ActionID) {
+	if !r.catalog.HasAction(resolved.Session.FeatureID, token.ActionID) {
 		return ResolvedCallback{}, ErrActionNotFound
 	}
 	return ResolvedCallback{Token: token, Session: resolved.Session, Context: resolved.Context}, nil
