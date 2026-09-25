@@ -10,9 +10,12 @@ import (
 	"github.com/gotd/td/bin"
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgmock"
+	assistantinteraction "github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/core"
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
+	"github.com/inipew/goultroid/internal/interaction/orchestration"
 	"github.com/inipew/goultroid/internal/plugin"
+	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 	"github.com/inipew/goultroid/internal/presentation/selfinline"
 	inlineservice "github.com/inipew/goultroid/internal/services/inline"
 	telegramservice "github.com/inipew/goultroid/internal/telegram"
@@ -37,10 +40,12 @@ type p1SelfInlineBroker struct {
 	getReq   *tg.MessagesGetInlineBotResultsRequest
 	setReq   *tg.MessagesSetInlineBotResultsRequest
 	sendReq  *tg.MessagesSendInlineBotResultRequest
+	editReq  *tg.MessagesEditInlineBotMessageRequest
 
 	queryCalls  int
 	answerCalls int
 	sendCalls   int
+	editCalls   int
 }
 
 func (b *p1SelfInlineBroker) assistantInvoke(input bin.Encoder) (bin.Encoder, error) {
@@ -49,6 +54,11 @@ func (b *p1SelfInlineBroker) assistantInvoke(input bin.Encoder) (bin.Encoder, er
 		b.answerCalls++
 		b.events = append(b.events, "answer")
 		b.setReq = req
+		return &tg.BoolTrue{}, nil
+	case *tg.MessagesEditInlineBotMessageRequest:
+		b.editCalls++
+		b.events = append(b.events, "edit")
+		b.editReq = req
 		return &tg.BoolTrue{}, nil
 	default:
 		return nil, fmt.Errorf("unexpected Assistant RPC %T", input)
@@ -232,6 +242,54 @@ func TestP1SelfInlineTrueEndToEndAndReloadAcceptance(t *testing.T) {
 	}
 
 	callbackData := p1CallbackDataFromAssistantAnswer(t, broker.setReq)
+
+	assistantInteraction := assistantinteraction.NewClientInteraction(assistantAPI, zap.NewNop())
+	presentationService := newInteractionPresentationServicer(assistantInteraction)
+	interactionEngine, err := orchestration.New(
+		manager.InteractionRuntime(),
+		manager.ActionDispatcher(),
+		presentationtelegram.NewBridge(presentationService),
+	)
+	if err != nil {
+		t.Fatalf("orchestration.New() error=%v", err)
+	}
+	actionClient := NewAssistantClient(1, "hash", "token", zap.NewNop())
+	actionClient.SetOwner(p1E2EOwnerID, nil)
+	actionClient.SetInteractionDrivers([]assistantinteraction.FeatureDriver{calculatorPlugin})
+	actionClient.SetInteractionFoundation(manager.FeatureCatalog(), manager.InteractionRuntime(), manager.ActionDispatcher())
+	if err := actionClient.bindFeatureDrivers(interactionEngine, manager.FeatureCatalog(), presentationService); err != nil {
+		t.Fatalf("bindFeatureDrivers() error=%v", err)
+	}
+	t.Cleanup(actionClient.unbindFeatureDrivers)
+
+	taskClient := &preparedCallbackTasks{}
+	ack := &preparedCallbackAck{}
+	ingress := &interactionIngress{engine: interactionEngine, ack: ack, tasks: taskClient}
+	inlineMessageID := &tg.InputBotInlineMessageID{
+		DCID:       2,
+		ID:         778899,
+		AccessHash: 0x1234,
+	}
+	handled, err := ingress.tryInline(ctx, callbackData, p1E2EOwnerID, 99000, inlineMessageID)
+	if err != nil {
+		t.Fatalf("tryInline(real callback) error=%v", err)
+	}
+	if !handled {
+		t.Fatal("tryInline(real callback) did not claim a2 callback")
+	}
+	if taskClient.calls != 1 {
+		t.Fatalf("callback TaskEngine submissions=%d, want 1", taskClient.calls)
+	}
+	if ack.calls != 1 || ack.err != nil {
+		t.Fatalf("callback completion ack calls=%d err=%v", ack.calls, ack.err)
+	}
+	if broker.editCalls != 1 || broker.editReq == nil {
+		t.Fatalf("inline transition edits=%d request=%v, want one edit", broker.editCalls, broker.editReq)
+	}
+	if !reflect.DeepEqual(broker.events, []string{"query", "answer", "send", "edit"}) {
+		t.Fatalf("callback MTProto flow=%v, want query -> answer -> send -> edit", broker.events)
+	}
+
 	if stats := manager.InteractionRuntime().Stats(); stats.Sessions != 1 {
 		t.Fatalf("interaction sessions after inline answer=%+v, want one", stats)
 	}
