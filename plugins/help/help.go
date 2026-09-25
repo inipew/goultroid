@@ -143,9 +143,15 @@ func (p *Plugin) handleHelp(ctx *core.Context) error {
 	prefix := p.router.Prefix()
 	source := ctx.Source.Surface()
 	if source == execution.SourceUserbot {
-		return p.openUserbotHelp(ctx, prefix)
+		handled, err := p.openUserbotHelp(ctx, prefix)
+		if err != nil || handled {
+			return err
+		}
 	}
+	return p.handleNativeHelp(ctx, prefix, source)
+}
 
+func (p *Plugin) handleNativeHelp(ctx *core.Context, prefix string, source execution.Source) error {
 	if len(ctx.Args) > 0 {
 		target := strings.TrimPrefix(ctx.Args[0], prefix)
 
@@ -219,12 +225,12 @@ func (p *Plugin) handleHelp(ctx *core.Context) error {
 	return sendResult(ctx, p.renderOverviewWithCategories(prefix, categories, catNames, source))
 }
 
-func (p *Plugin) openUserbotHelp(ctx *core.Context, prefix string) error {
+func (p *Plugin) openUserbotHelp(ctx *core.Context, prefix string) (bool, error) {
 	if ctx == nil || ctx.PeerID == nil {
-		return core.ErrInvalidArgs
+		return true, core.ErrInvalidArgs
 	}
 	if p == nil || p.renderer == nil {
-		return ctx.Status("Interactive help is unavailable because the Assistant inline renderer is not running.")
+		return false, nil
 	}
 	query := "help"
 	if len(ctx.Args) > 0 {
@@ -239,12 +245,15 @@ func (p *Plugin) openUserbotHelp(ctx *core.Context, prefix string) error {
 		request.TopicID = ctx.Message.TopicID
 	}
 	if _, err := p.renderer.Render(ctx.Ctx, request); err != nil {
-		return ctx.Status("Unable to open help through the Assistant: " + core.EscapeHTML(err.Error()))
+		if selfinline.FallbackSafe(err) {
+			return false, nil
+		}
+		return true, ctx.Status("Interactive help delivery could not be confirmed. Please retry the command.")
 	}
 	if ctx.Message != nil && ctx.Message.ID > 0 && ctx.Svc != nil {
 		_ = ctx.Svc.DeleteMessage(ctx.Ctx, ctx.PeerID, []int{ctx.Message.ID})
 	}
-	return nil
+	return true, nil
 }
 
 func (p *Plugin) commandsForSource(source execution.Source) []core.Command {

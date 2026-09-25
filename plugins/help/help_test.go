@@ -13,9 +13,10 @@ import (
 
 type mockService struct {
 	core.MockTelegramServicer
-	sent       string
-	edited     string
-	lastMarkup tg.ReplyMarkupClass
+	sent        string
+	edited      string
+	lastMarkup  tg.ReplyMarkupClass
+	deleteCalls int
 }
 
 type fakeHelpRenderer struct {
@@ -46,6 +47,7 @@ func (m *mockService) EditMessageMarkup(ctx context.Context, peer tg.InputPeerCl
 	return nil
 }
 func (m *mockService) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {
+	m.deleteCalls++
 	return nil
 }
 func (m *mockService) React(ctx context.Context, peer tg.InputPeerClass, msgID int, emoji string) error {
@@ -232,9 +234,161 @@ func TestHelpUserbotCommandUsesSelfInlineAssistantPresentation(t *testing.T) {
 		t.Fatalf("renderer reply/topic=%d/%d", renderer.request.ReplyToID, renderer.request.TopicID)
 	}
 	if svc.edited != "" || svc.lastMarkup != nil {
-		t.Fatalf("userbot help fell back to legacy edit/markup: edited=%q markup=%T", svc.edited, svc.lastMarkup)
+		t.Fatalf("userbot help fell back to native edit/markup after successful self-inline render: edited=%q markup=%T", svc.edited, svc.lastMarkup)
+	}
+	if svc.deleteCalls != 1 {
+		t.Fatalf("successful self-inline help delete calls=%d, want 1", svc.deleteCalls)
 	}
 	if got := p.Capabilities()[0].Surfaces; got != execution.SurfaceUserbot|execution.SurfaceAssistant {
 		t.Fatalf("help surfaces=%v", got)
+	}
+}
+
+func TestHelpUserbotFallsBackToNativeWithoutRenderer(t *testing.T) {
+	router := core.NewRouter(".")
+	_ = router.Register(core.Command{
+		Name:        "ping",
+		Aliases:     []string{"p"},
+		Description: "Check latency",
+		Category:    "Utility",
+	})
+	_ = router.Register(core.Command{
+		Name:        "assistantonly",
+		Description: "Assistant-only command",
+		Category:    "Utility",
+		Surfaces:    execution.SurfaceAssistant,
+	})
+	p := New(router)
+
+	tests := []struct {
+		name      string
+		args      []string
+		want      []string
+		doNotWant []string
+	}{
+		{
+			name:      "overview",
+			want:      []string{"GoUltroid Help", ".ping", "Utility"},
+			doNotWant: []string{"assistantonly", "Assistant inline renderer"},
+		},
+		{
+			name:      "module",
+			args:      []string{"utility"},
+			want:      []string{"Module: Utility", ".ping"},
+			doNotWant: []string{"assistantonly"},
+		},
+		{
+			name: "command",
+			args: []string{"ping"},
+			want: []string{"Command: .ping", "Check latency", ".p"},
+		},
+		{
+			name: "alias",
+			args: []string{"p"},
+			want: []string{"Command: .ping", "Check latency"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &mockService{}
+			ctx := userbotHelpContext(svc, tc.args...)
+			if err := p.handleHelp(ctx); err != nil {
+				t.Fatalf("handleHelp() error=%v", err)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(svc.edited, want) {
+					t.Fatalf("native help output=%q, want %q", svc.edited, want)
+				}
+			}
+			for _, forbidden := range tc.doNotWant {
+				if strings.Contains(svc.edited, forbidden) {
+					t.Fatalf("native help output=%q unexpectedly contains %q", svc.edited, forbidden)
+				}
+			}
+			if svc.deleteCalls != 0 {
+				t.Fatalf("native fallback deleted command, calls=%d", svc.deleteCalls)
+			}
+		})
+	}
+}
+
+func TestHelpUserbotFallsBackAfterSafeSelfInlineFailure(t *testing.T) {
+	tests := []struct {
+		name  string
+		stage selfinline.RenderStage
+		err   error
+	}{
+		{name: "preflight inline disabled", stage: selfinline.RenderStagePreflight, err: selfinline.ErrInlineDisabled},
+		{name: "query failure", stage: selfinline.RenderStageQuery, err: selfinline.ErrQueryFailed},
+		{name: "selection failure", stage: selfinline.RenderStageSelect, err: selfinline.ErrNoResults},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			router := core.NewRouter(".")
+			_ = router.Register(core.Command{
+				Name:        "ping",
+				Description: "Check latency",
+				Category:    "Utility",
+			})
+			p := New(router)
+			p.SetSelfInlineRenderer(&fakeHelpRenderer{err: &selfinline.RenderFailure{
+				Stage: tc.stage,
+				Err:   tc.err,
+			}})
+			svc := &mockService{}
+			ctx := userbotHelpContext(svc, "ping")
+
+			if err := p.handleHelp(ctx); err != nil {
+				t.Fatalf("handleHelp() error=%v", err)
+			}
+			if !strings.Contains(svc.edited, "Command: .ping") {
+				t.Fatalf("safe self-inline failure did not fall back to native help: %q", svc.edited)
+			}
+			if svc.deleteCalls != 0 {
+				t.Fatalf("safe fallback deleted command, calls=%d", svc.deleteCalls)
+			}
+		})
+	}
+}
+
+func TestHelpUserbotSendStageFailureDoesNotEmitNativeDuplicate(t *testing.T) {
+	router := core.NewRouter(".")
+	_ = router.Register(core.Command{
+		Name:        "ping",
+		Description: "Check latency",
+		Category:    "Utility",
+	})
+	p := New(router)
+	p.SetSelfInlineRenderer(&fakeHelpRenderer{err: &selfinline.RenderFailure{
+		Stage:            selfinline.RenderStageSend,
+		MayHaveCommitted: true,
+		Err:              selfinline.ErrSendFailed,
+	}})
+	svc := &mockService{}
+	ctx := userbotHelpContext(svc, "ping")
+
+	if err := p.handleHelp(ctx); err != nil {
+		t.Fatalf("handleHelp() error=%v", err)
+	}
+	if strings.Contains(svc.edited, "Command: .ping") || strings.Contains(svc.sent, "Command: .ping") {
+		t.Fatalf("send-stage failure emitted native duplicate: edited=%q sent=%q", svc.edited, svc.sent)
+	}
+	if !strings.Contains(svc.edited, "could not be confirmed") && !strings.Contains(svc.sent, "could not be confirmed") {
+		t.Fatalf("send-stage failure missing concise diagnostic: edited=%q sent=%q", svc.edited, svc.sent)
+	}
+	if svc.deleteCalls != 0 {
+		t.Fatalf("ambiguous send deleted command, calls=%d", svc.deleteCalls)
+	}
+}
+
+func userbotHelpContext(svc *mockService, args ...string) *core.Context {
+	return &core.Context{
+		Ctx:     context.Background(),
+		Source:  core.ExecutionInteractive,
+		Args:    args,
+		Message: &core.Message{ID: 77, IsOutgoing: true},
+		Svc:     svc,
+		PeerID:  &tg.InputPeerChat{ChatID: 123},
 	}
 }

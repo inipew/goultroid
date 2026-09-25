@@ -7,13 +7,14 @@ import (
 	"testing"
 )
 
-func TestP1UserbotHelpUsesCanonicalSelfInlineAssistantPresentation(t *testing.T) {
+func TestP1UserbotHelpPrefersCanonicalSelfInlineWithNativeFallback(t *testing.T) {
 	root := repositoryRoot(t)
 	checks := map[string][]string{
 		filepath.Join(root, "plugins", "help", "help.go"): {
 			"SetSelfInlineRenderer",
 			"p.renderer.Render",
-			"Query: query",
+			"selfinline.FallbackSafe",
+			"handleNativeHelp",
 		},
 		filepath.Join(root, "plugins", "help", "module.go"): {
 			"plugin.CapTelegramRead",
@@ -51,8 +52,21 @@ func TestP1UserbotHelpUsesCanonicalSelfInlineAssistantPresentation(t *testing.T)
 		source := string(raw)
 		for _, invariant := range required {
 			if !strings.Contains(source, invariant) {
-				t.Fatalf("P1 help self-inline invariant missing from %s: %q", path, invariant)
+				t.Fatalf("P1 help progressive-enhancement invariant missing from %s: %q", path, invariant)
 			}
+		}
+	}
+
+	helpSource, err := os.ReadFile(filepath.Join(root, "plugins", "help", "help.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{
+		"Interactive help is unavailable because the Assistant inline renderer is not running.",
+		"Unable to open help through the Assistant:",
+	} {
+		if strings.Contains(string(helpSource), forbidden) {
+			t.Fatalf("P1 help still exposes Assistant as a userbot requirement: %q", forbidden)
 		}
 	}
 }
