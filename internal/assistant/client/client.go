@@ -230,7 +230,19 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 			close(runDone)
 			return startErr
 		}
+		if bindErr := c.syncShellActions(interactionEngine, featureCatalog); bindErr != nil {
+			startErr := fmt.Errorf("bind Assistant shell actions: %w", bindErr)
+			cancel()
+			c.lifecycle.SetState(StateFailed)
+			c.mu.Lock()
+			c.lastError = startErr
+			c.interactionIngress = nil
+			c.mu.Unlock()
+			close(runDone)
+			return startErr
+		}
 		if bindErr := c.bindFeatureDrivers(interactionEngine, featureCatalog, presentationService); bindErr != nil {
+			c.clearShellActions()
 			startErr := fmt.Errorf("bind feature drivers: %w", bindErr)
 			cancel()
 			c.lifecycle.SetState(StateFailed)
@@ -286,6 +298,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 				groupRules.SetTransport(nil)
 				groupRules.SetRoleResolver(nil)
 			}
+			c.clearShellActions()
 			c.unbindFeatureDrivers()
 			c.mu.Lock()
 			c.interactionIngress = nil
