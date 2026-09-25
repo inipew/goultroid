@@ -299,6 +299,7 @@ func (r *Router) resolveState(
 	ctx context.Context,
 	evt *core.CallbackQueryEvent,
 	ns, action, opaqueID string,
+	handlerScope tasks.ScopeIdentity,
 	svc core.TelegramServicer,
 	start time.Time,
 ) (any, stateEntry, bool, error) {
@@ -324,6 +325,14 @@ func (r *Router) resolveState(
 				UserAlert:   "Invalid button scope.",
 				InternalErr: ErrInvalidCallbackData,
 				IsAlert:     false,
+			}
+		case !scope.OwnerScope.IsZero() && scope.OwnerScope != handlerScope:
+			validationFailure = &callbackFailure{
+				Code:        failureCodeSessionExpired,
+				MetricTag:   "stale_generation",
+				UserAlert:   "⏰ Button expired, run the command again.",
+				InternalErr: ErrStateScopeStale,
+				IsAlert:     true,
 			}
 		case scope.ChatID != 0 && scope.ChatID != evt.ChatID:
 			validationFailure = &callbackFailure{
@@ -452,7 +461,7 @@ func (r *Router) dispatchPrepared(
 	handler := reg.handler
 	r.mu.RUnlock()
 
-	storedState, _, hasState, err := r.resolveState(ctx, evt, prepared.namespace, prepared.action, prepared.opaqueID, svc, start)
+	storedState, _, hasState, err := r.resolveState(ctx, evt, prepared.namespace, prepared.action, prepared.opaqueID, prepared.scope, svc, start)
 	if err != nil {
 		return err
 	}
