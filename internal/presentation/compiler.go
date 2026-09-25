@@ -3,14 +3,17 @@ package presentation
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/inipew/goultroid/internal/interaction"
 )
 
 type CompiledButton struct {
-	Text string
-	Data []byte
+	Type        ButtonType
+	Text        string
+	Data        []byte
+	URL         string
+	InlineQuery string
+	SamePeer    bool
 }
 
 type CompiledRow []CompiledButton
@@ -42,8 +45,9 @@ func (c *Compiler) Compile(ctx context.Context, sessionID string, view View) (Co
 	return CompiledView{Text: view.Text, Rows: rows}, nil
 }
 
-// CompileRows compiles typed action identities without requiring message text.
-// Inline results use this before a concrete inline message target exists.
+// CompileRows compiles semantic buttons without requiring message text.
+// Only action buttons consume a2 callback tokens; URL and switch-inline buttons
+// remain stateless transport metadata.
 func (c *Compiler) CompileRows(ctx context.Context, sessionID string, rows []Row) ([]CompiledRow, error) {
 	if c == nil || c.sessions == nil {
 		return nil, fmt.Errorf("%w: session runtime unavailable", ErrInvalidView)
@@ -55,14 +59,24 @@ func (c *Compiler) CompileRows(ctx context.Context, sessionID string, rows []Row
 		}
 		compiled := make(CompiledRow, 0, len(row))
 		for _, button := range row {
-			if strings.TrimSpace(button.Text) == "" || !validID(button.ActionID) {
-				return nil, ErrInvalidButton
-			}
-			data, err := c.sessions.CallbackData(ctx, sessionID, button.ActionID)
-			if err != nil {
+			if err := button.Validate(); err != nil {
 				return nil, err
 			}
-			compiled = append(compiled, CompiledButton{Text: button.Text, Data: data})
+			result := CompiledButton{
+				Type:        button.Type,
+				Text:        button.Text,
+				URL:         button.URL,
+				InlineQuery: button.InlineQuery,
+				SamePeer:    button.SamePeer,
+			}
+			if button.Type == ButtonAction {
+				data, err := c.sessions.CallbackData(ctx, sessionID, button.ActionID)
+				if err != nil {
+					return nil, err
+				}
+				result.Data = data
+			}
+			compiled = append(compiled, result)
 		}
 		out = append(out, compiled)
 	}

@@ -154,7 +154,14 @@ func markup(view presentation.CompiledView) tg.ReplyMarkupClass {
 	for _, row := range view.Rows {
 		buttons := make([]tg.KeyboardButtonClass, 0, len(row))
 		for _, button := range row {
-			buttons = append(buttons, &tg.KeyboardButtonCallback{Text: button.Text, Data: append([]byte(nil), button.Data...)})
+			switch button.Type {
+			case presentation.ButtonAction:
+				buttons = append(buttons, &tg.KeyboardButtonCallback{Text: button.Text, Data: append([]byte(nil), button.Data...)})
+			case presentation.ButtonURL:
+				buttons = append(buttons, &tg.KeyboardButtonURL{Text: button.Text, URL: button.URL})
+			case presentation.ButtonSwitchInline:
+				buttons = append(buttons, &tg.KeyboardButtonSwitchInline{Text: button.Text, Query: button.InlineQuery, SamePeer: button.SamePeer})
+			}
 		}
 		if len(buttons) > 0 {
 			rows = append(rows, tg.KeyboardButtonRow{Buttons: buttons})

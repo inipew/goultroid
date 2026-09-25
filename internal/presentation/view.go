@@ -2,6 +2,7 @@ package presentation
 
 import (
 	"errors"
+	"net/url"
 	"strings"
 )
 
@@ -10,9 +11,47 @@ var (
 	ErrInvalidButton = errors.New("presentation: invalid button")
 )
 
+// ButtonType identifies the transport-neutral behavior of a presentation button.
+// ButtonAction remains the zero value so existing {Text, ActionID} literals keep
+// their historical a2 callback semantics.
+type ButtonType uint8
+
+const (
+	ButtonAction ButtonType = iota
+	ButtonURL
+	ButtonSwitchInline
+)
+
 type Button struct {
-	Text     string
-	ActionID string
+	Type        ButtonType
+	Text        string
+	ActionID    string
+	URL         string
+	InlineQuery string
+	SamePeer    bool
+}
+
+func (b Button) Validate() error {
+	if strings.TrimSpace(b.Text) == "" {
+		return ErrInvalidButton
+	}
+	switch b.Type {
+	case ButtonAction:
+		if !validID(b.ActionID) || b.URL != "" || b.InlineQuery != "" || b.SamePeer {
+			return ErrInvalidButton
+		}
+	case ButtonURL:
+		if b.ActionID != "" || b.InlineQuery != "" || b.SamePeer || !validButtonURL(b.URL) {
+			return ErrInvalidButton
+		}
+	case ButtonSwitchInline:
+		if b.ActionID != "" || b.URL != "" {
+			return ErrInvalidButton
+		}
+	default:
+		return ErrInvalidButton
+	}
+	return nil
 }
 
 type Row []Button
@@ -31,12 +70,20 @@ func (v View) Validate() error {
 			return ErrInvalidView
 		}
 		for _, button := range row {
-			if strings.TrimSpace(button.Text) == "" || !validID(button.ActionID) {
-				return ErrInvalidButton
+			if err := button.Validate(); err != nil {
+				return err
 			}
 		}
 	}
 	return nil
+}
+
+func validButtonURL(value string) bool {
+	parsed, err := url.ParseRequestURI(strings.TrimSpace(value))
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	return parsed.Scheme == "http" || parsed.Scheme == "https"
 }
 
 func validID(value string) bool {
