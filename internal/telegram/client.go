@@ -138,8 +138,18 @@ func NewClient(cfg *config.Config, dispatcher *Dispatcher, db *database.DB, logg
 	peerManager := peers.Options{
 		Storage: peerStorage,
 	}.Build(raw.API())
+
+	var updateStateStorage updates.StateStorage
+	if db != nil {
+		persistentUpdates := NewUpdateStateStorage(db)
+		if err := persistentUpdates.InitSchema(context.Background()); err != nil {
+			return nil, fmt.Errorf("initialize Telegram update state storage: %w", err)
+		}
+		updateStateStorage = persistentUpdates
+	}
 	gaps := updates.New(updates.Config{
 		Handler:      tgDispatcher,
+		Storage:      updateStateStorage,
 		AccessHasher: peerManager,
 	})
 	updateHook = peerManager.UpdateHook(gaps)
