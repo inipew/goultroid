@@ -168,6 +168,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	ready := make(chan struct{})
 	startupResult := make(chan error, 1)
 	c.mu.Lock()
+	c.self = nil
 	c.cancel = cancel
 	c.runDone = runDone
 	c.ready = ready
@@ -329,6 +330,9 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 			close(ready)
 			return updateMgr.Run(ctx, tdClient.API(), user.ID, updates.AuthOptions{IsBot: true})
 		})
+		c.mu.Lock()
+		c.self = nil
+		c.mu.Unlock()
 		if err != nil && !errors.Is(err, context.Canceled) {
 			c.mu.Lock()
 			c.lastError = err
@@ -356,22 +360,6 @@ func waitForStartup(ctx context.Context, ready <-chan struct{}, errCh <-chan err
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-// WaitReady waits until the current assistant run has authenticated and can
-// receive updates, or returns its startup failure/caller cancellation.
-func (c *AssistantClient) WaitReady(ctx context.Context) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	c.mu.RLock()
-	ready := c.ready
-	startupResult := c.startupResult
-	c.mu.RUnlock()
-	if ready == nil || startupResult == nil {
-		return errors.New("assistant client has not been started")
-	}
-	return waitForStartup(ctx, ready, startupResult)
 }
 
 // Quiesce closes Assistant update admission without cancelling the bot
@@ -438,15 +426,6 @@ func (c *AssistantClient) LastError() error {
 	defer c.mu.RUnlock()
 	return c.lastError
 }
-func (c *AssistantClient) Username() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.self != nil && c.self.Username != "" {
-		return c.self.Username
-	}
-	return "GoUltroidBot"
-}
-
 func (c *AssistantClient) selfID() int64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

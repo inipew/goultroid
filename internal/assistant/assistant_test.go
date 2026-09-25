@@ -19,8 +19,8 @@ func TestAssistantApp_LifecycleAndMetadata(t *testing.T) {
 		t.Fatalf("expected app to not be running initially")
 	}
 
-	if app.Username() != "GoUltroidBot" {
-		t.Fatalf("expected default username GoUltroidBot, got %s", app.Username())
+	if app.Username() != "" {
+		t.Fatalf("expected no Assistant username before readiness, got %q", app.Username())
 	}
 
 	if app.StartTime().After(time.Now()) {
