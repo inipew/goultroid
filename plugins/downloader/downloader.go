@@ -272,7 +272,7 @@ func (p *Plugin) handleDownload(ctx *core.Context) error {
 		return ctx.Error("<b>Insufficient disk space</b> on host machine to complete download.")
 	}
 
-	if err := ctx.EditOrReply("⏳ Downloading media..."); err != nil {
+	if err := ctx.Progress("Downloading media..."); err != nil {
 		return err
 	}
 

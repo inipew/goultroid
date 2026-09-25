@@ -90,7 +90,7 @@ func (p *Plugin) workspacePath(workspace, name string) (string, error) {
 
 func (p *Plugin) handle(ctx *core.Context) error {
 	if ctx.Message == nil || ctx.Message.ReplyToID == 0 {
-		return ctx.EditOrReply("⚠️ Reply to a message with .qbot")
+		return ctx.Status("Reply to a message with .qbot")
 	}
 	reply, err := ctx.GetReply()
 	if err != nil || reply == nil {
