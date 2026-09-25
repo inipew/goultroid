@@ -329,11 +329,7 @@ func (p *Plugin) handleInteractiveAction(ctx *orchestration.Context, actionID st
 				return ctx.Answer("Cancellation could not be confirmed. Please try again.", true)
 			}
 		}
-		if err := ctx.Edit(cancelledView()); err != nil {
-			return err
-		}
-		ctx.Cancel()
-		return nil
+		return ctx.Terminate(cancelledView())
 	default:
 		return p.executeInteractiveDownload(ctx, state, actionID)
 	}

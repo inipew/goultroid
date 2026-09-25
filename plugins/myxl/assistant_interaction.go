@@ -311,10 +311,9 @@ func (p *Plugin) handleAssistantSlot(ctx *orchestration.Context, slot int) error
 		return ctx.Answer("Interaction data is invalid. Reopen MyXL.", true)
 	}
 	if namespace == "assistant" && action == "close" {
-		if err := ctx.Edit(presentation.View{Text: "✅ Menu MyXL ditutup."}); err != nil {
+		if err := ctx.Terminate(presentation.View{Text: "✅ Menu MyXL ditutup."}); err != nil {
 			return err
 		}
-		ctx.Cancel()
 		return ctx.Answer("", false)
 	}
 	if namespace != p.Name() {

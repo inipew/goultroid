@@ -342,3 +342,21 @@ func TestAwaitInputReleasesClaimWhenPromptEditFails(t *testing.T) {
 		t.Fatalf("unseen prompt retained input claim: %+v", stats)
 	}
 }
+
+func TestP4TerminateReleasesSessionWhenEditFails(t *testing.T) {
+	engine, sessions, port, _ := testEngine(t)
+	ctx, err := engine.Begin(context.Background(), BeginRequest{
+		FeatureID: "demo", ActorID: 7, State: []byte("one"),
+		Target: testTarget{chatID: 42}, View: testView("first"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	port.editErr = errors.New("edit failed")
+	if err := ctx.Terminate(presentation.View{Text: "closed"}); err == nil {
+		t.Fatal("Terminate() hid edit failure")
+	}
+	if got := sessions.Stats().Sessions; got != 0 {
+		t.Fatalf("sessions=%d, want 0 after terminal edit failure", got)
+	}
+}

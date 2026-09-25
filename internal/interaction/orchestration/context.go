@@ -146,6 +146,18 @@ func (c *Context) Edit(view presentation.View) error {
 	return c.engine.port.Edit(c.Context(), c.target, compiled)
 }
 
+// Terminate renders a terminal view and releases the interaction session even
+// when the transport edit fails. This keeps already-visible callback tokens
+// fail-closed after an explicit close/cancel action.
+func (c *Context) Terminate(view presentation.View) error {
+	if c == nil || c.engine == nil {
+		return ErrInvalidEngine
+	}
+	editErr := c.Edit(view)
+	c.Cancel()
+	return editErr
+}
+
 // Transition advances opaque session state and renders the corresponding new
 // revision. If transport editing fails, the older visible buttons are stale by
 // design and cannot execute against the new state.
