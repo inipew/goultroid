@@ -54,3 +54,43 @@ func TestSubmitInteractiveCommandPreservesCommandScope(t *testing.T) {
 		t.Fatalf("task scope=%+v, want %+v", got, scope)
 	}
 }
+
+
+func TestP5UserbotCommandAdmissionKeepsResourceProfile(t *testing.T) {
+	dispatcher := NewDispatcher(core.NewRouter("."), core.NewPermissions(100, nil), nil, zap.NewNop())
+	client := &scopeCaptureTaskClient{}
+	dispatcher.SetTasks(client)
+
+	scope := tasks.ScopeIdentity{Owner: "plugin:p5", Generation: 11}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd := core.Command{
+		Name:  "p5",
+		Scope: scope,
+		Resources: []tasks.ResourceRequirement{
+			{Name: "download", Amount: 1},
+			{Name: "process", Amount: 1},
+		},
+		Handler: func(*core.Context) error { return nil },
+	}
+	coreCtx := &core.Context{Ctx: ctx}
+
+	if err := dispatcher.submitInteractiveCommand(ctx, cancel, coreCtx, cmd, "cmd:p5:1", "telegram:user:100", "p5-correlation"); err != nil {
+		t.Fatalf("submitInteractiveCommand() error=%v", err)
+	}
+	spec := client.captured()
+	if spec.Scope != scope {
+		t.Fatalf("P5 command scope=%+v, want %+v", spec.Scope, scope)
+	}
+	if spec.Pool != tasks.PoolID("interactive") || spec.Class != tasks.PriorityInteractive {
+		t.Fatalf("P5 command admission pool/class=%q/%q", spec.Pool, spec.Class)
+	}
+	if len(spec.Resources) != 2 ||
+		spec.Resources[0].Name != "download" || spec.Resources[0].Amount != 1 ||
+		spec.Resources[1].Name != "process" || spec.Resources[1].Amount != 1 {
+		t.Fatalf("P5 command resources=%+v", spec.Resources)
+	}
+	if spec.OrderingKey != "p5-correlation" {
+		t.Fatalf("P5 command ordering key=%q", spec.OrderingKey)
+	}
+}
