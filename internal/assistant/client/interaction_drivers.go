@@ -12,6 +12,7 @@ import (
 	"github.com/inipew/goultroid/internal/interaction/orchestration"
 	"github.com/inipew/goultroid/internal/presentation"
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 var ErrInteractionAdmission = errors.New("assistant/client: interaction admission denied")
@@ -39,11 +40,15 @@ func (c *AssistantClient) SetInteractionDrivers(drivers []assistantinteraction.F
 	c.mu.Unlock()
 }
 
+type featureDriverBinding struct {
+	scope   tasks.ScopeIdentity
+	cleanup func()
+}
+
 func (c *AssistantClient) bindFeatureDrivers(engine *orchestration.Engine, catalog feature.Catalog, service *interactionPresentationServicer) error {
 	if c == nil || engine == nil || catalog == nil || service == nil {
 		return ErrInteractionUnavailable
 	}
-	c.unbindFeatureDrivers()
 
 	c.mu.RLock()
 	drivers := make(map[string]assistantinteraction.FeatureDriver, len(c.featureDrivers))
@@ -58,36 +63,56 @@ func (c *AssistantClient) bindFeatureDrivers(engine *orchestration.Engine, catal
 	}
 	sort.Strings(ids)
 
-	cleanups := make([]func(), 0, len(ids))
+	c.featureDriverMu.Lock()
+	defer c.featureDriverMu.Unlock()
+	if c.featureDriverBindings == nil {
+		c.featureDriverBindings = make(map[string]featureDriverBinding, len(drivers))
+	}
+
+	for id, binding := range c.featureDriverBindings {
+		_, configured := drivers[id]
+		scope, active := catalog.FeatureScope(id)
+		if configured && active && !scope.IsZero() && scope == binding.scope {
+			continue
+		}
+		if binding.cleanup != nil {
+			binding.cleanup()
+		}
+		delete(c.featureDriverBindings, id)
+	}
+
 	rt := assistantinteraction.DriverRuntime{
 		Engine:  engine,
 		Catalog: catalog,
 		Service: service,
 		Admit:   c.admitFeatureInteraction,
 	}
+	added := make([]string, 0, len(ids))
 	for _, id := range ids {
 		driver := drivers[id]
-		if _, ok := catalog.Get(id); !ok {
-			for i := len(cleanups) - 1; i >= 0; i-- {
-				cleanups[i]()
-			}
-			return fmt.Errorf("%w: feature %s is not registered", ErrInteractionUnavailable, id)
+		scope, active := catalog.FeatureScope(id)
+		if !active || scope.IsZero() {
+			continue
 		}
+		if current, ok := c.featureDriverBindings[id]; ok && current.scope == scope {
+			continue
+		}
+
 		cleanup, err := driver.BindAssistant(rt)
 		if err != nil {
-			for i := len(cleanups) - 1; i >= 0; i-- {
-				cleanups[i]()
+			for i := len(added) - 1; i >= 0; i-- {
+				binding := c.featureDriverBindings[added[i]]
+				if binding.cleanup != nil {
+					binding.cleanup()
+				}
+				delete(c.featureDriverBindings, added[i])
 			}
 			return fmt.Errorf("bind Assistant feature %s: %w", id, err)
 		}
-		if cleanup != nil {
-			cleanups = append(cleanups, cleanup)
-		}
+		c.featureDriverBindings[id] = featureDriverBinding{scope: scope, cleanup: cleanup}
+		added = append(added, id)
 	}
 
-	c.mu.Lock()
-	c.featureDriverCleanups = cleanups
-	c.mu.Unlock()
 	return nil
 }
 
@@ -95,15 +120,53 @@ func (c *AssistantClient) unbindFeatureDrivers() {
 	if c == nil {
 		return
 	}
-	c.mu.Lock()
-	cleanups := c.featureDriverCleanups
-	c.featureDriverCleanups = nil
-	c.mu.Unlock()
-	for i := len(cleanups) - 1; i >= 0; i-- {
-		if cleanups[i] != nil {
-			cleanups[i]()
+	c.featureDriverMu.Lock()
+	bindings := c.featureDriverBindings
+	c.featureDriverBindings = nil
+	c.featureDriverMu.Unlock()
+
+	ids := make([]string, 0, len(bindings))
+	for id := range bindings {
+		ids = append(ids, id)
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(ids)))
+	for _, id := range ids {
+		if cleanup := bindings[id].cleanup; cleanup != nil {
+			cleanup()
 		}
 	}
+}
+
+// RefreshInteractionBindings reconciles transport-bound shell and feature-driver
+// actions against the current feature catalog. It is safe to call from plugin
+// generation validation; when the Assistant transport is not running yet it is
+// intentionally a no-op.
+func (c *AssistantClient) RefreshInteractionBindings() error {
+	if c == nil {
+		return nil
+	}
+
+	c.lifecycleOpMu.Lock()
+	defer c.lifecycleOpMu.Unlock()
+
+	c.mu.RLock()
+	ingress := c.interactionIngress
+	catalog := c.featureCatalog
+	c.mu.RUnlock()
+	if ingress == nil || ingress.engine == nil || catalog == nil {
+		return nil
+	}
+	service, ok := ingress.ack.(*interactionPresentationServicer)
+	if !ok || service == nil {
+		return ErrInteractionUnavailable
+	}
+	if err := c.syncShellActions(ingress.engine, catalog); err != nil {
+		return fmt.Errorf("bind Assistant shell actions: %w", err)
+	}
+	if err := c.bindFeatureDrivers(ingress.engine, catalog, service); err != nil {
+		return fmt.Errorf("bind Assistant feature drivers: %w", err)
+	}
+	return nil
 }
 
 func (c *AssistantClient) featureDriver(featureID string) assistantinteraction.FeatureDriver {
