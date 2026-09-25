@@ -567,6 +567,26 @@ func (r *Router) dispatch(
 
 	cmdNameClean := strings.TrimPrefix(cmdRaw, "/")
 
+	// Explicit presentation cutovers may shadow canonical execution while the
+	// canonical command remains authoritative for discovery and Telegram menus.
+	// An override is valid only while that canonical Assistant command exists.
+	if handler, ok := r.presentationOverride(cmdRaw); ok {
+		cmd, exists := r.findCommand(cmdNameClean)
+		if !exists || cmd.Handler == nil || !cmd.IsAvailableOn(execution.SourceAssistant) {
+			return fmt.Errorf("%w: %s", ErrUnknownCommand, cmdRaw)
+		}
+		r.logger.Debug("assistant: executing canonical presentation override",
+			zap.String("command", cmdRaw),
+			zap.Int64("sender_id", senderID),
+		)
+		start := time.Now()
+		err := handler(cmdCtx)
+		if r.metrics != nil {
+			r.metrics.RecordCommand(cmdNameClean, time.Since(start), err)
+		}
+		return err
+	}
+
 	// Primary path: canonical command lookup from core.Router.
 	if cmd, ok := r.findCommand(cmdNameClean); ok && cmd.Handler != nil {
 		if !cmd.IsAvailableOn(execution.SourceAssistant) {

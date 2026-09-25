@@ -117,6 +117,10 @@ func NewAssistantClient(appID int, appHash string, botToken string, logger *zap.
 		rpcExecutor:     assistentrpc.DirectExecutor{},
 	}
 	cmdR.Register("/start", c.dispatchStart)
+	cmdR.RegisterPresentationOverride("/help", c.dispatchShellHelpCommand)
+	cmdR.RegisterPresentationOverride("/h", c.dispatchShellHelpCommand)
+	cmdR.RegisterPresentationOverride("/commands", c.dispatchShellHelpCommand)
+	cmdR.RegisterPresentationOverride("/settings", c.dispatchShellSettingsCommand)
 	return c
 }
 
