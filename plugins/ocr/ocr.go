@@ -169,17 +169,17 @@ func (p *Plugin) Commands() []core.Command {
 
 func (p *Plugin) handle(ctx *core.Context) error {
 	if p.apiKey == "" {
-		return ctx.EditOrReply("❌ OCR is not configured. Set OCR_API to an OCR.Space API key.")
+		return ctx.Error("OCR is not configured. Set OCR_API to an OCR.Space API key.")
 	}
 	if p.tasks == nil {
-		return ctx.EditOrReply("❌ OCR task runtime is unavailable.")
+		return ctx.Error("OCR task runtime is unavailable.")
 	}
 	if ctx.Message == nil || ctx.Message.ReplyToID == 0 {
 		return ctx.EditOrReply("⚠️ Reply to a photo or image document with .ocr [language].")
 	}
 	reply, err := ctx.GetReply()
 	if err != nil {
-		_ = ctx.EditOrReply("❌ Unable to load the replied message.")
+		_ = ctx.Error("Unable to load the replied message.")
 		return fmt.Errorf("ocr: load reply: %w", err)
 	}
 	if reply == nil || !isOCRMedia(reply.Media) {
@@ -194,10 +194,10 @@ func (p *Plugin) handle(ctx *core.Context) error {
 		return ctx.EditOrReply("⚠️ Unsupported OCR language. Use a valid OCR.Space language code such as eng, ind, jpn, kor, rus, or vie.")
 	}
 	if err := imageguard.ValidateKnown(reply.Media.Size, reply.Media.Width, reply.Media.Height, ocrImagePolicy); err != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Image rejected by safety limits: %s", core.EscapeHTML(err.Error())))
+		return ctx.Error(fmt.Sprintf("Image rejected by safety limits: %s", core.EscapeHTML(err.Error())))
 	}
 
-	_ = ctx.EditOrReply("⏳ Processing OCR...")
+	_ = ctx.Progress("OCR image and text extraction")
 	files := p.getFiles()
 	dir, err := files.CreateTempDir("goultroid-ocr-*")
 	if err != nil {
@@ -225,7 +225,7 @@ func (p *Plugin) handle(ctx *core.Context) error {
 		},
 	)
 	if err != nil {
-		_ = ctx.EditOrReply("❌ Failed to prepare a safe OCR image: " + safeOCRError(err))
+		_ = ctx.Error("Failed to prepare a safe OCR image: " + safeOCRError(err))
 		return fmt.Errorf("ocr: prepare input: %w", err)
 	}
 
@@ -244,13 +244,13 @@ func (p *Plugin) handle(ctx *core.Context) error {
 		},
 	)
 	if err != nil {
-		_ = ctx.EditOrReply("❌ OCR failed: " + safeOCRError(err))
+		_ = ctx.Error("OCR failed: " + safeOCRError(err))
 		return fmt.Errorf("ocr: extract: %w", err)
 	}
 
 	text = normalizeOCRText(text)
 	if text == "" {
-		return ctx.EditOrReply("ℹ️ OCR completed, but no text was detected.")
+		return ctx.Status("OCR completed, but no text was detected.")
 	}
 	if err := p.deliverResult(ctx, dir, text); err != nil {
 		return fmt.Errorf("ocr: deliver result: %w", err)
@@ -661,11 +661,11 @@ func (p *Plugin) deliverResult(ctx *core.Context, tempDir, text string) error {
 	text = normalizeOCRText(text)
 	chunks, attach := renderOCRChunks(text)
 	if len(chunks) == 0 {
-		return ctx.EditOrReply("ℹ️ OCR completed, but no text was detected.")
+		return ctx.Status("OCR completed, but no text was detected.")
 	}
 
 	if !attach {
-		if err := ctx.EditOrReply(chunks[0]); err != nil {
+		if err := ctx.Result(chunks[0]); err != nil {
 			return err
 		}
 		for i, chunk := range chunks[1:] {
@@ -676,7 +676,7 @@ func (p *Plugin) deliverResult(ctx *core.Context, tempDir, text string) error {
 		return nil
 	}
 
-	if err := ctx.EditOrReply(renderOCRPreview(text)); err != nil {
+	if err := ctx.Result(renderOCRPreview(text)); err != nil {
 		return err
 	}
 
@@ -705,7 +705,7 @@ func (p *Plugin) deliverResult(ctx *core.Context, tempDir, text string) error {
 		},
 	)
 	if err != nil {
-		_ = ctx.Reply("❌ Failed to attach full OCR result: " + safeOCRError(err))
+		_ = ctx.Error("Failed to attach full OCR result: " + safeOCRError(err))
 		return err
 	}
 	return nil
