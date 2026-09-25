@@ -137,6 +137,15 @@ func (v *interactionIngress) dispatchCallback(
 		queueDeadline = time.Now().Add(profile.QueueTimeout)
 	}
 
+	immediateAck := false
+	if aware, ok := prepared.(orchestration.AckPreparedCallback); ok &&
+		aware.AckPolicy() == rootinteraction.AckImmediate {
+		if immediate, ok := v.ack.(immediateCallbackAcknowledger); ok {
+			immediate.acknowledge(ctx, request.QueryID)
+			immediateAck = true
+		}
+	}
+
 	doneCh := make(chan error, 1)
 	ticket, submitErr := v.tasks.Submit(ctx, tasks.WorkSpec{
 		ID:               taskID,
@@ -156,15 +165,10 @@ func (v *interactionIngress) dispatchCallback(
 	})
 	if submitErr != nil {
 		err = fmt.Errorf("interaction task submission failed: %w", submitErr)
-		v.ack.ensureAnswered(ctx, request.QueryID, err)
-		return err
-	}
-
-	if aware, ok := prepared.(orchestration.AckPreparedCallback); ok &&
-		aware.AckPolicy() == rootinteraction.AckImmediate {
-		if immediate, ok := v.ack.(immediateCallbackAcknowledger); ok {
-			immediate.acknowledge(ctx, request.QueryID)
+		if !immediateAck {
+			v.ack.ensureAnswered(ctx, request.QueryID, err)
 		}
+		return err
 	}
 
 	var ticketDone <-chan struct{}

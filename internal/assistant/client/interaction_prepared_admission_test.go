@@ -63,13 +63,17 @@ func (t *preparedCallbackTicket) Wait(context.Context) (tasks.TaskResult, error)
 }
 
 type preparedCallbackTasks struct {
-	spec  tasks.WorkSpec
-	calls int
+	spec     tasks.WorkSpec
+	calls    int
+	onSubmit func()
 }
 
 func (c *preparedCallbackTasks) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket, error) {
 	c.spec = spec
 	c.calls++
+	if c.onSubmit != nil {
+		c.onSubmit()
+	}
 	result := tasks.TaskResult{TaskID: spec.ID, Outcome: tasks.OutcomeCompleted}
 	if err := spec.Handler(ctx); err != nil {
 		result.Outcome = tasks.OutcomeFailed
@@ -165,8 +169,14 @@ func TestInteractionIngressCarriesPreparedActionAdmissionToTaskEngine(t *testing
 		t.Fatal(err)
 	}
 
-	taskClient := &preparedCallbackTasks{}
 	ack := &preparedCallbackAck{}
+	taskClient := &preparedCallbackTasks{
+		onSubmit: func() {
+			if ack.immediate != 1 {
+				t.Fatalf("TaskEngine Submit observed immediate acknowledgements=%d, want 1 before admission", ack.immediate)
+			}
+		},
+	}
 	ingress := &interactionIngress{engine: engine, ack: ack, tasks: taskClient}
 	err = ingress.dispatchCallback(
 		context.Background(),
