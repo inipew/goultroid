@@ -567,7 +567,7 @@ func (p *Plugin) handleConfigCommand(ctx *core.Context) error {
 		p.resetUC = &usecase.ResetSettingUseCase{Service: p.service}
 	}
 	if len(ctx.Args) == 0 {
-		return ctx.Reply("⚙️ <b>GoUltroid CLI Configuration Subsystem</b>\n\n" +
+		return ctx.Result("⚙️ <b>GoUltroid CLI Configuration Subsystem</b>\n\n" +
 			"<b>Usage:</b>\n" +
 			"• <code>.config get &lt;namespace:key&gt;</code>\n" +
 			"• <code>.config set &lt;namespace:key&gt; &lt;value&gt;</code>\n" +
@@ -581,18 +581,18 @@ func (p *Plugin) handleConfigCommand(ctx *core.Context) error {
 	switch action {
 	case "get":
 		if len(ctx.Args) < 2 {
-			return ctx.Reply("⚠️ Usage: <code>.config get &lt;namespace:key&gt;</code>")
+			return ctx.Status("Usage: <code>.config get &lt;namespace:key&gt;</code>")
 		}
 		ns, key := parseFullKey(ctx.Args[1])
 		val, err := p.service.Resolve(ctx.Ctx, ctx.SenderID(), ctx.ChatID(), ns, key)
 		if err != nil {
-			return ctx.Reply(fmt.Sprintf("❌ <b>Error:</b> %s", ui.EscapeHTML(err.Error())))
+			return ctx.Error(ui.EscapeHTML(err.Error()))
 		}
-		return ctx.Reply(fmt.Sprintf("⚙️ <b>%s:%s</b> = <code>%s</code>", ui.EscapeHTML(ns), ui.EscapeHTML(key), ui.EscapeHTML(val)))
+		return ctx.Result(fmt.Sprintf("⚙️ <b>%s:%s</b> = <code>%s</code>", ui.EscapeHTML(ns), ui.EscapeHTML(key), ui.EscapeHTML(val)))
 
 	case "set":
 		if len(ctx.Args) < 3 {
-			return ctx.Reply("⚠️ Usage: <code>.config set &lt;namespace:key&gt; &lt;value&gt;</code>")
+			return ctx.Status("Usage: <code>.config set &lt;namespace:key&gt; &lt;value&gt;</code>")
 		}
 		ns, key := parseFullKey(ctx.Args[1])
 		val := strings.Join(ctx.Args[2:], " ")
@@ -600,19 +600,19 @@ func (p *Plugin) handleConfigCommand(ctx *core.Context) error {
 		scopeID := int64(0)
 
 		if err := p.setUC.Execute(ctx.Ctx, scope, scopeID, ns, key, val, ctx.SenderID()); err != nil {
-			return ctx.Reply(fmt.Sprintf("❌ Failed to set <b>%s:%s</b>: %s", ui.EscapeHTML(ns), ui.EscapeHTML(key), ui.EscapeHTML(err.Error())))
+			return ctx.Error(fmt.Sprintf("Failed to set <b>%s:%s</b>: %s", ui.EscapeHTML(ns), ui.EscapeHTML(key), ui.EscapeHTML(err.Error())))
 		}
-		return ctx.Reply(fmt.Sprintf("✅ <b>Setting updated:</b>\n<code>%s:%s</code> = <code>%s</code>", ui.EscapeHTML(ns), ui.EscapeHTML(key), ui.EscapeHTML(val)))
+		return ctx.Success(fmt.Sprintf("Setting updated:\n<code>%s:%s</code> = <code>%s</code>", ui.EscapeHTML(ns), ui.EscapeHTML(key), ui.EscapeHTML(val)))
 
 	case "reset":
 		if len(ctx.Args) < 2 {
-			return ctx.Reply("⚠️ Usage: <code>.config reset &lt;namespace:key&gt;</code>")
+			return ctx.Status("Usage: <code>.config reset &lt;namespace:key&gt;</code>")
 		}
 		ns, key := parseFullKey(ctx.Args[1])
 		if err := p.resetUC.Execute(ctx.Ctx, settings.ScopeGlobal, 0, ns, key, ctx.SenderID()); err != nil {
-			return ctx.Reply(fmt.Sprintf("❌ Failed to reset <b>%s:%s</b>: %s", ui.EscapeHTML(ns), ui.EscapeHTML(key), ui.EscapeHTML(err.Error())))
+			return ctx.Error(fmt.Sprintf("Failed to reset <b>%s:%s</b>: %s", ui.EscapeHTML(ns), ui.EscapeHTML(key), ui.EscapeHTML(err.Error())))
 		}
-		return ctx.Reply(fmt.Sprintf("✅ Setting <code>%s:%s</code> reset to default.", ui.EscapeHTML(ns), ui.EscapeHTML(key)))
+		return ctx.Success(fmt.Sprintf("Setting <code>%s:%s</code> reset to default.", ui.EscapeHTML(ns), ui.EscapeHTML(key)))
 
 	case "list":
 		cat := ""
@@ -627,7 +627,7 @@ func (p *Plugin) handleConfigCommand(ctx *core.Context) error {
 		}
 
 		if len(defs) == 0 {
-			return ctx.Reply("No settings found.")
+			return ctx.Status("No settings found.")
 		}
 
 		var sb strings.Builder
@@ -637,19 +637,19 @@ func (p *Plugin) handleConfigCommand(ctx *core.Context) error {
 			sb.WriteString(fmt.Sprintf("• <code>%s:%s</code> = <code>%s</code> (default: <code>%s</code>) [%s]\n  <i>%s</i>\n",
 				ui.EscapeHTML(d.Namespace), ui.EscapeHTML(d.Key), ui.EscapeHTML(cur), ui.EscapeHTML(d.DefaultValue), ui.EscapeHTML(string(d.Type)), ui.EscapeHTML(d.Description)))
 		}
-		return ctx.Reply(sb.String())
+		return ctx.Result(sb.String())
 
 	case "history":
 		if len(ctx.Args) < 2 {
-			return ctx.Reply("⚠️ Usage: <code>.config history &lt;namespace:key&gt;</code>")
+			return ctx.Status("Usage: <code>.config history &lt;namespace:key&gt;</code>")
 		}
 		ns, key := parseFullKey(ctx.Args[1])
 		history, err := p.service.GetHistory(ctx.Ctx, ns, key, 10)
 		if err != nil {
-			return ctx.Reply(fmt.Sprintf("❌ <b>Error retrieving history:</b> %s", ui.EscapeHTML(err.Error())))
+			return ctx.Error("Error retrieving history: " + ui.EscapeHTML(err.Error()))
 		}
 		if len(history) == 0 {
-			return ctx.Reply(fmt.Sprintf("No change history found for <code>%s:%s</code>.", ui.EscapeHTML(ns), ui.EscapeHTML(key)))
+			return ctx.Status(fmt.Sprintf("No change history found for <code>%s:%s</code>.", ui.EscapeHTML(ns), ui.EscapeHTML(key)))
 		}
 
 		var sb strings.Builder
@@ -658,18 +658,18 @@ func (p *Plugin) handleConfigCommand(ctx *core.Context) error {
 			sb.WriteString(fmt.Sprintf("• <code>%s</code> ➔ <code>%s</code> by user <code>%d</code> at <code>%s</code>\n",
 				ui.EscapeHTML(h.OldVal), ui.EscapeHTML(h.NewVal), h.ChangedBy, h.ChangedAt.Format("2006-01-02 15:04:05")))
 		}
-		return ctx.Reply(sb.String())
+		return ctx.Result(sb.String())
 
 	case "export":
 		exportData, err := p.service.Export(ctx.Ctx, settings.ScopeGlobal, 0)
 		if err != nil {
-			return ctx.Reply(fmt.Sprintf("❌ <b>Export failed:</b> %s", ui.EscapeHTML(err.Error())))
+			return ctx.Error("Export failed: " + ui.EscapeHTML(err.Error()))
 		}
 		bytes, _ := json.MarshalIndent(exportData, "", "  ")
-		return ctx.Reply(fmt.Sprintf("📤 <b>Global Settings Export:</b>\n<pre><code class=\"language-json\">%s</code></pre>", ui.EscapeHTML(string(bytes))))
+		return ctx.Result(fmt.Sprintf("📤 <b>Global Settings Export:</b>\n<pre><code class=\"language-json\">%s</code></pre>", ui.EscapeHTML(string(bytes))))
 
 	default:
-		return ctx.Reply(fmt.Sprintf("⚠️ Unknown action <code>%s</code>. Use <code>.config</code> to see available commands.", ui.EscapeHTML(action)))
+		return ctx.Status(fmt.Sprintf("Unknown action <code>%s</code>. Use <code>.config</code> to see available commands.", ui.EscapeHTML(action)))
 	}
 }
 

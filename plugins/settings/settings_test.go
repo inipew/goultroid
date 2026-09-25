@@ -167,6 +167,8 @@ type mockTelegramService struct {
 	lastMarkup    tg.ReplyMarkupClass
 	answeredText  string
 	answeredAlert bool
+	sendCalls     int
+	editCalls     int
 }
 
 func (m *mockTelegramService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
@@ -174,6 +176,7 @@ func (m *mockTelegramService) SendMessage(ctx context.Context, peer tg.InputPeer
 	defer m.mu.Unlock()
 	m.lastText = text
 	m.lastMarkup = nil
+	m.sendCalls++
 	return &tg.Message{ID: 100, Message: text}, nil
 }
 
@@ -190,6 +193,7 @@ func (m *mockTelegramService) EditMessage(ctx context.Context, peer tg.InputPeer
 	defer m.mu.Unlock()
 	m.lastText = text
 	m.lastMarkup = nil
+	m.editCalls++
 	return nil
 }
 
@@ -351,6 +355,30 @@ func TestPlugin_CLIConfig(t *testing.T) {
 	_ = p.handleConfigCommand(ctx)
 	if !strings.Contains(tgSvc.lastText, "core:prefix") {
 		t.Errorf("expected list to contain core:prefix, got: %s", tgSvc.lastText)
+	}
+}
+
+
+func TestPlugin_CLIConfigOutgoingUsesSemanticEdit(t *testing.T) {
+	p, _, _, tgSvc := setupTestPlugin(t)
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		Message: &core.Message{ID: 77, SenderID: 12345, IsOutgoing: true},
+		Sender:  &core.User{ID: 12345},
+		Chat:    &core.Chat{ID: -100123},
+		Svc:     tgSvc,
+		PeerID:  &tg.InputPeerChat{ChatID: 123},
+		Args:    []string{"get", "core:prefix"},
+	}
+
+	if err := p.handleConfigCommand(ctx); err != nil {
+		t.Fatalf("handleConfigCommand() error = %v", err)
+	}
+	if tgSvc.sendCalls != 0 || tgSvc.editCalls != 1 {
+		t.Fatalf("semantic config transport send/edit=%d/%d, want 0/1", tgSvc.sendCalls, tgSvc.editCalls)
+	}
+	if ctx.LastResponseID != 77 {
+		t.Fatalf("LastResponseID=%d, want outgoing anchor 77", ctx.LastResponseID)
 	}
 }
 
