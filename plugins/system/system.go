@@ -149,10 +149,10 @@ func (p *Plugin) Commands() []core.Command {
 
 func (p *Plugin) handleExec(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		return ctx.EditOrReply("⚠️ <b>Usage:</b> <code>.exec &lt;command&gt; [args...]</code>\nExample: <code>.exec ls -la</code>")
+		return ctx.Status("<b>Usage:</b> <code>.exec &lt;command&gt; [args...]</code>\nExample: <code>.exec ls -la</code>")
 	}
 	commandStr := strings.Join(ctx.Args, " ")
-	_ = ctx.EditOrReply("⏳ <i>Executing command...</i>")
+	_ = ctx.Progress("<i>Executing command...</i>")
 
 	cmdName := ctx.Args[0]
 	cmdArgs := []string{}
@@ -201,22 +201,28 @@ func (p *Plugin) handleExec(ctx *core.Context) error {
 		sb.WriteString(fmt.Sprintf("• <b>Command:</b> <code>%s</code>\n", escapeHTML(commandStr)))
 		sb.WriteString(fmt.Sprintf("• <b>Duration:</b> <i>%s</i>\n\n", elapsed.Round(time.Millisecond)))
 		sb.WriteString(fmt.Sprintf("<pre><code class=\"language-bash\">%s</code></pre>", escapeHTML(output)))
-		return ctx.EditOrReply(sb.String())
+		return ctx.Result(sb.String())
 	}
 	files := p.getFiles()
 	tmpFile, tmpErr := files.CreateTempFile("exec-output-*.txt")
 	if tmpErr != nil {
-		return ctx.EditOrReply(fmt.Sprintf("❌ Failed to create temp file for large output: %v", tmpErr))
+		return ctx.Error(fmt.Sprintf("Failed to create temp file for large output: %v", tmpErr))
 	}
 	defer files.RemoveTempFile(tmpFile.Name())
 	_, _ = tmpFile.WriteString(fmt.Sprintf("Command: %s\nDuration: %s\n\nOutput:\n%s", commandStr, elapsed, output))
 	_ = tmpFile.Close()
 	caption := fmt.Sprintf("📄 <b>Execution Output</b> (<code>%s</code>, took <i>%s</i>)", escapeHTML(commandStr), elapsed.Round(time.Millisecond))
-	return ctx.SendFile(tmpFile.Name(), caption)
+	if err := ctx.SendFile(tmpFile.Name(), caption); err != nil {
+		return ctx.Error(fmt.Sprintf("Failed to send execution output: %v", err))
+	}
+	if ctx.LastResponseID > 0 {
+		_ = ctx.Messages().DeleteResponse()
+	}
+	return nil
 }
 
 func (p *Plugin) handleRestart(ctx *core.Context) error {
-	_ = ctx.EditOrReply("🔄 <i>Restarting GoUltroid...</i>")
+	_ = ctx.Progress("<i>Restarting GoUltroid...</i>")
 	var chatID int64
 	var peerType string
 	var accessHash int64
@@ -305,11 +311,11 @@ func (p *Plugin) handleRestart(ctx *core.Context) error {
 func (p *Plugin) handleUpdate(ctx *core.Context) error {
 	isPull := len(ctx.Args) > 0 && (strings.ToLower(ctx.Args[0]) == "pull" || strings.ToLower(ctx.Args[0]) == "now")
 	if !isPull {
-		_ = ctx.EditOrReply("🔍 <i>Checking for updates from git remote...</i>")
+		_ = ctx.Progress("<i>Checking for updates from git remote...</i>")
 		fetchCtx, cancel := context.WithTimeout(ctx.Ctx, 30*time.Second)
 		defer cancel()
 		if out, err := p.runCmd(fetchCtx, "git", "fetch"); err != nil {
-			_ = ctx.EditOrReply(fmt.Sprintf("❌ <code>git fetch</code> failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
+			_ = ctx.Error(fmt.Sprintf("<code>git fetch</code> failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
 			return err
 		}
 		currHashOut, _ := p.runCmd(fetchCtx, "git", "rev-parse", "--short", "HEAD")
@@ -320,7 +326,7 @@ func (p *Plugin) handleUpdate(ctx *core.Context) error {
 		}
 		commits := strings.TrimSpace(string(logOut))
 		if err != nil || commits == "" {
-			return ctx.EditOrReply(fmt.Sprintf("✨ <b>GoUltroid is already up to date!</b>\n• <b>Commit:</b> <code>%s</code>", currHash))
+			return ctx.Success(fmt.Sprintf("GoUltroid is already up to date.\n• <b>Commit:</b> <code>%s</code>", currHash))
 		}
 		commitLines := strings.Split(commits, "\n")
 		var sb strings.Builder
@@ -329,36 +335,36 @@ func (p *Plugin) handleUpdate(ctx *core.Context) error {
 		sb.WriteString(fmt.Sprintf("• <b>Pending Commits (%d):</b>\n", len(commitLines)))
 		sb.WriteString(fmt.Sprintf("<pre>%s</pre>\n\n", escapeHTML(commits)))
 		sb.WriteString("💡 <i>Run <code>.update pull</code> or <code>.update now</code> to pull changes, rebuild, and restart.</i>")
-		return ctx.EditOrReply(sb.String())
+		return ctx.Result(sb.String())
 	}
-	_ = ctx.EditOrReply("⬇️ <i>Pulling latest updates from git...</i>")
+	_ = ctx.Progress("<i>Pulling latest updates from git...</i>")
 	pullCtx, cancelPull := context.WithTimeout(ctx.Ctx, 60*time.Second)
 	defer cancelPull()
 	statusOut, _ := p.runCmd(pullCtx, "git", "status", "--porcelain")
 	if strings.TrimSpace(string(statusOut)) != "" {
-		_ = ctx.EditOrReply("❌ Cannot update: working directory has uncommitted modifications. Stash or commit your changes first.")
+		_ = ctx.Error("Cannot update: working directory has uncommitted modifications. Stash or commit your changes first.")
 		return errors.New("dirty working tree")
 	}
 	if out, err := p.runCmd(pullCtx, "git", "pull", "--ff-only"); err != nil {
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ <code>git pull --ff-only</code> failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
+		_ = ctx.Error(fmt.Sprintf("<code>git pull --ff-only</code> failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
 		return err
 	}
-	_ = ctx.EditOrReply("🔨 <i>Rebuilding GoUltroid binary...</i>")
+	_ = ctx.Progress("<i>Rebuilding GoUltroid binary...</i>")
 	buildCtx, cancelBuild := context.WithTimeout(ctx.Ctx, 120*time.Second)
 	defer cancelBuild()
 	tmpBin := filepath.Join("bin", "goultroid.tmp")
 	if out, err := p.runCmd(buildCtx, "go", "build", "-o", tmpBin, "./cmd/goultroid"); err != nil {
 		_ = os.Remove(tmpBin)
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Rebuild failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
+		_ = ctx.Error(fmt.Sprintf("Rebuild failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
 		return err
 	}
 	finalBin := filepath.Join("bin", "goultroid")
 	if err := os.Rename(tmpBin, finalBin); err != nil {
 		_ = os.Remove(tmpBin)
-		_ = ctx.EditOrReply(fmt.Sprintf("❌ Failed to replace binary: %v", err))
+		_ = ctx.Error(fmt.Sprintf("Failed to replace binary: %v", err))
 		return err
 	}
-	_ = ctx.EditOrReply("✅ <i>Rebuild successful! Restarting GoUltroid...</i>")
+	_ = ctx.Progress("<i>Rebuild successful. Restarting GoUltroid...</i>")
 	return p.handleRestart(ctx)
 }
 
