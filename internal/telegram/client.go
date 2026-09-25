@@ -16,6 +16,7 @@ import (
 	"github.com/gotd/td/telegram/auth"
 	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/telegram/updates"
+	updhook "github.com/gotd/td/telegram/updates/hook"
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
@@ -121,6 +122,9 @@ func NewClient(cfg *config.Config, dispatcher *Dispatcher, db *database.DB, logg
 		telegram.Options{
 			SessionStorage: &telegram.FileSessionStorage{
 				Path: cfg.SessionFile,
+			},
+			Middlewares: []telegram.Middleware{
+				updhook.AffectedHook(gaps),
 			},
 			UpdateHandler: telegram.UpdateHandlerFunc(func(ctx context.Context, u tg.UpdatesClass) error {
 				if updateHook != nil {
