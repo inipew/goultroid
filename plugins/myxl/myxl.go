@@ -628,7 +628,7 @@ func (p *Plugin) handleShowQuota(ctx *core.Context, args []string) error {
 		if markup != nil {
 			chunks := core.SplitTelegramHTML(respText, myxlTelegramMessageRunes)
 			if len(chunks) == 1 && ctx.LastResponseID > 0 {
-				if err := ctx.EditMarkup(chunks[0], markup); err == nil {
+				if err := ctx.Messages().EditMarkup(chunks[0], markup); err == nil {
 					return nil
 				}
 			}
@@ -920,7 +920,7 @@ func (p *Plugin) handlePendingQRIS(ctx *core.Context, args []string) error {
 
 	remaining := time.Until(pending.ExpiresAt)
 	if remaining <= 0 {
-		return ctx.EditOrReply("⏳ Transaksi QRIS ini sudah kedaluwarsa (lebih dari 5 menit). Silakan lakukan pemesanan ulang.")
+		return ctx.Status("Transaksi QRIS ini sudah kedaluwarsa (lebih dari 5 menit). Silakan lakukan pemesanan ulang.")
 	}
 
 	var sb strings.Builder
@@ -1080,7 +1080,7 @@ func (p *Plugin) handleBuy(ctx *core.Context, args []string) error {
 		ui.NewCallbackButton("✅ Konfirmasi", callback.EncodeCallbackData("myxl", "buy_confirm", oid)),
 		ui.NewCallbackButton("❌ Batal", callback.EncodeCallbackData("myxl", "buy_cancel", oid)),
 	}}})
-	return ctx.EditMarkup(preview, markup)
+	return ctx.Messages().EditMarkup(preview, markup)
 }
 
 func (p *Plugin) confirmPurchase(cbCtx *callback.CallbackContext, draft purchaseDraftState) error {
