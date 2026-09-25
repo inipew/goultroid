@@ -1,15 +1,20 @@
 package callback
 
-import "time"
+import (
+	"time"
+
+	"github.com/inipew/goultroid/internal/tasks"
+)
 
 // StateScope describes authorization and lifecycle metadata for a callback state entry.
 type StateScope struct {
-	UserID    int64
-	ChatID    int64
-	MessageID int
-	Namespace string
-	SingleUse bool
-	ExpiresAt time.Time
+	UserID     int64
+	ChatID     int64
+	MessageID  int
+	Namespace  string
+	SingleUse  bool
+	OwnerScope tasks.ScopeIdentity
+	ExpiresAt  time.Time
 }
 
 // stateEntry is the stored value plus authorization scope used internally by the canonical callback router.
