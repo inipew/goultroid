@@ -69,6 +69,11 @@ type assistantServicerAdapter struct {
 	mutationAdmitted bool
 }
 
+var (
+	_ core.TelegramServicer           = (*assistantServicerAdapter)(nil)
+	_ core.ContextualTelegramServicer = (*assistantServicerAdapter)(nil)
+)
+
 func (a *assistantServicerAdapter) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
 	if a.inter != nil {
 		return a.inter.SendMessage(ctx, peer, text, nil)
