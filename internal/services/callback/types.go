@@ -30,6 +30,9 @@ var (
 	ErrStateNotFound = errors.New("callback state not found")
 	// ErrStateConsumed indicates a single-use callback state has already been consumed.
 	ErrStateConsumed = fmt.Errorf("%w: already consumed", ErrStateNotFound)
+	// ErrStateScopeStale indicates opaque state belongs to a previous plugin
+	// generation and must never be delivered to the current handler.
+	ErrStateScopeStale = fmt.Errorf("%w: callback state plugin generation is stale", ErrStateNotFound)
 )
 
 const (
