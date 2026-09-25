@@ -46,6 +46,10 @@ func DefaultHierarchicalLimiterConfig() HierarchicalLimiterConfig {
 		DefaultFamilyBurst: 20.0,
 		FamilyConfigs: map[string]LimiterBucketConfig{
 			"messages": {Rate: 5.0, Capacity: 10.0},
+			// Callback-query acknowledgements clear Telegram's client-side
+			// button spinner and must not queue behind ordinary message edits.
+			// They remain bounded by the global and per-method dimensions.
+			"callback": {Rate: 20.0, Capacity: 20.0},
 			"contacts": {Rate: 10.0, Capacity: 20.0},
 			"channels": {Rate: 10.0, Capacity: 20.0},
 			"photos":   {Rate: 10.0, Capacity: 15.0},

@@ -13,9 +13,8 @@ type managedAPI struct {
 	executor assistentrpc.Executor
 }
 
-func managedValue[T any](ctx context.Context, a *managedAPI, method string, kind assistentrpc.Kind, op func(context.Context) (T, error)) (T, error) {
+func managedValueFamily[T any](ctx context.Context, a *managedAPI, method, family string, kind assistentrpc.Kind, op func(context.Context) (T, error)) (T, error) {
 	var value T
-	family, _, _ := strings.Cut(method, ".")
 	err := a.executor.Do(ctx, method, family, kind, 0, func(opCtx context.Context) error {
 		var opErr error
 		value, opErr = op(opCtx)
@@ -24,8 +23,19 @@ func managedValue[T any](ctx context.Context, a *managedAPI, method string, kind
 	return value, err
 }
 
+func managedValue[T any](ctx context.Context, a *managedAPI, method string, kind assistentrpc.Kind, op func(context.Context) (T, error)) (T, error) {
+	family, _, _ := strings.Cut(method, ".")
+	return managedValueFamily(ctx, a, method, family, kind, op)
+}
+
 func (a *managedAPI) MessagesSetBotCallbackAnswer(ctx context.Context, req *tg.MessagesSetBotCallbackAnswerRequest) (bool, error) {
-	return managedValue(ctx, a, "messages.setBotCallbackAnswer", assistentrpc.IdempotentMutation, func(opCtx context.Context) (bool, error) { return a.raw.MessagesSetBotCallbackAnswer(opCtx, req) })
+	// Callback acknowledgements are latency-sensitive: Telegram clients keep the
+	// button spinner active until this RPC completes. Keep them under the shared
+	// global/method limiter and FloodWait policy, but isolate them from ordinary
+	// messages.* edit/send family pressure.
+	return managedValueFamily(ctx, a, "messages.setBotCallbackAnswer", "callback", assistentrpc.IdempotentMutation, func(opCtx context.Context) (bool, error) {
+		return a.raw.MessagesSetBotCallbackAnswer(opCtx, req)
+	})
 }
 func (a *managedAPI) MessagesEditMessage(ctx context.Context, req *tg.MessagesEditMessageRequest) (tg.UpdatesClass, error) {
 	return managedValue(ctx, a, "messages.editMessage", assistentrpc.IdempotentMutation, func(opCtx context.Context) (tg.UpdatesClass, error) { return a.raw.MessagesEditMessage(opCtx, req) })

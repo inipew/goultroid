@@ -535,3 +535,32 @@ func TestHierarchicalRPCLimiter_SafeReclaimSkipsBeyondIdleTTL(t *testing.T) {
 		t.Fatalf("idle fallback did not reclaim slow-refill bucket: %+v", res)
 	}
 }
+
+
+func TestHierarchicalRPCLimiter_CallbackAckLaneIsIndependentFromMessagesFamily(t *testing.T) {
+	limiter := NewHierarchicalRPCLimiter(DefaultHierarchicalLimiterConfig())
+	now := time.Unix(500, 0)
+
+	messageDims := []LimitKey{
+		{Scope: "global", Key: "account"},
+		{Scope: "family", Key: "messages"},
+		{Scope: "method", Key: "messages.editInlineBotMessage"},
+	}
+	for i := 0; i < 10; i++ {
+		if reservation := limiter.Reserve(now, messageDims, 1); !reservation.Allowed {
+			t.Fatalf("message reservation %d rejected early: %+v", i+1, reservation)
+		}
+	}
+	if reservation := limiter.Reserve(now, messageDims, 1); reservation.Allowed {
+		t.Fatal("messages family exceeded configured burst")
+	}
+
+	callbackDims := []LimitKey{
+		{Scope: "global", Key: "account"},
+		{Scope: "family", Key: "callback"},
+		{Scope: "method", Key: "messages.setBotCallbackAnswer"},
+	}
+	if reservation := limiter.Reserve(now, callbackDims, 1); !reservation.Allowed {
+		t.Fatalf("callback acknowledgement was blocked by messages family pressure: %+v", reservation)
+	}
+}
