@@ -20,43 +20,43 @@ const (
 
 	InteractionTTL = 24 * time.Hour
 
-	InteractionStart            = "start"
-	InteractionHome             = "home"
-	InteractionStatus           = "status"
-	InteractionHelp             = "help"
-	InteractionSettings         = "settings"
-	InteractionLanguage         = "language"
-	InteractionSettingsCategory = "settings_category"
-	InteractionSettingDetail    = "setting_detail"
-	InteractionSettingInput     = "setting_input"
+	InteractionStart               = "start"
+	InteractionHome                = "home"
+	InteractionStatus              = "status"
+	InteractionHelp                = "help"
+	InteractionSettings            = "settings"
+	InteractionLanguage            = "language"
+	InteractionSettingsCategory    = "settings_category"
+	InteractionSettingDetail       = "setting_detail"
+	InteractionSettingInput        = "setting_input"
 	InteractionSettingResetConfirm = "setting_reset_confirm"
-	InteractionInlineRoot       = "inline_root"
-	InteractionInlineHelp       = "inline_help"
-	InteractionInlinePing       = "inline_ping"
+	InteractionInlineRoot          = "inline_root"
+	InteractionInlineHelp          = "inline_help"
+	InteractionInlinePing          = "inline_ping"
 
-	ActionRefresh            = "refresh"
-	ActionPing               = "ping"
-	ActionStatus             = "status"
-	ActionHelp               = "help"
-	ActionHome               = "home"
-	ActionStatusRefresh      = "status_refresh"
-	ActionSettings           = "settings"
-	ActionLanguage           = "language"
-	ActionLanguageEnglish    = "language_en"
-	ActionLanguageIndonesian = "language_id"
-	ActionSettingsPrev       = "settings_prev"
-	ActionSettingsNext       = "settings_next"
-	ActionSettingPrev        = "setting_prev"
-	ActionSettingNext        = "setting_next"
-	ActionSettingBack        = "setting_back"
-	ActionSettingChange      = "setting_change"
-	ActionSettingDecrease    = "setting_dec"
-	ActionSettingIncrease    = "setting_inc"
-	ActionSettingReset       = "setting_reset"
+	ActionRefresh             = "refresh"
+	ActionPing                = "ping"
+	ActionStatus              = "status"
+	ActionHelp                = "help"
+	ActionHome                = "home"
+	ActionStatusRefresh       = "status_refresh"
+	ActionSettings            = "settings"
+	ActionLanguage            = "language"
+	ActionLanguageEnglish     = "language_en"
+	ActionLanguageIndonesian  = "language_id"
+	ActionSettingsPrev        = "settings_prev"
+	ActionSettingsNext        = "settings_next"
+	ActionSettingPrev         = "setting_prev"
+	ActionSettingNext         = "setting_next"
+	ActionSettingBack         = "setting_back"
+	ActionSettingChange       = "setting_change"
+	ActionSettingDecrease     = "setting_dec"
+	ActionSettingIncrease     = "setting_inc"
+	ActionSettingReset        = "setting_reset"
 	ActionSettingResetConfirm = "setting_reset_confirm"
 	ActionSettingResetCancel  = "setting_reset_cancel"
-	ActionSettingInput       = "setting_input"
-	ActionSettingInputCancel = "setting_input_cancel"
+	ActionSettingInput        = "setting_input"
+	ActionSettingInputCancel  = "setting_input_cancel"
 )
 
 // Feature is the first production feature migrated onto the interaction
@@ -280,16 +280,16 @@ func ValidateSpec() error {
 		return fmt.Errorf("assistant shell feature id = %q", bound.ID)
 	}
 	for name, view := range map[string]presentation.View{
-		"home":         HomeView(HomeModel{}),
-		"status":       StatusView(StatusModel{}),
-		"language":     LanguageView(LanguageModel{}),
-		"help":         HelpView(HelpModel{}),
-		"help_module":  HelpModuleView(HelpModuleModel{}),
-		"help_command": HelpCommandView(HelpCommandModel{}),
-		"settings":     SettingsHomeView(SettingsHomeModel{}),
-		"category":     SettingsCategoryView(SettingsCategoryModel{}),
-		"detail":       SettingDetailView(SettingDetailModel{}),
-		"input":        SettingInputView(SettingInputModel{}),
+		"home":          HomeView(HomeModel{}),
+		"status":        StatusView(StatusModel{}),
+		"language":      LanguageView(LanguageModel{}),
+		"help":          HelpView(HelpModel{}),
+		"help_module":   HelpModuleView(HelpModuleModel{}),
+		"help_command":  HelpCommandView(HelpCommandModel{}),
+		"settings":      SettingsHomeView(SettingsHomeModel{}),
+		"category":      SettingsCategoryView(SettingsCategoryModel{}),
+		"detail":        SettingDetailView(SettingDetailModel{}),
+		"input":         SettingInputView(SettingInputModel{}),
 		"reset_confirm": SettingResetConfirmView(SettingResetConfirmModel{}),
 	} {
 		if err := view.Validate(); err != nil {
