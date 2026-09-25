@@ -1153,3 +1153,194 @@ After the commits above, the handoff implementation/regression work is effective
 5. record final resource/session/handler settling evidence and close the handoff.
 
 Do not report P2/live callback closure as final until these runtime/live gates pass.
+
+### 16.15 Callback latency / rapid-click / Flood hardening
+
+A follow-up audit after the P2 self-inline closure found that the remaining poor button UX was not primarily a missing interaction handler. The Assistant still applied the generic user limiter directly to every a2 callback before interaction admission:
+
+```text
+capacity = 5
+refill   = 1 token / 2 seconds
+```
+
+When exhausted, Goultroid itself answered the callback with the modal:
+
+```text
+Too many requests. Please wait.
+```
+
+This was too strict for navigation and encouraged a negative feedback loop: callback spinner stays visible, the user taps again, more callback queries arrive, and the local limiter produces the popup.
+
+The callback hot path was hardened in the following commits:
+
+```text
+81bf95581d2f886a53f503ff8c6b514af4555666
+fix(assistant): coalesce rapid a2 callbacks
+
+dc3ccef0550f3ad9e16f7d3b5577d2bd028a8967
+fix(assistant): acknowledge navigation before render
+
+963fd9dce58fc05c0cff57efef64144f91ed8024
+fix(telegram): reserve callback acknowledgement capacity
+
+21396d70b09c5ae970d52cbc24a373c231460245
+fix(assistant): acknowledge prepared callbacks before admission wait
+
+b2515ffc7b84931c31a20a6851a1b5d7dbed23d1
+fix(assistant): preserve callback ack retry on admission failure
+
+0a072bef0ceb558c0e1c04184361b0fcf9ee67d0
+test(assistant): stress callback single-flight burst
+```
+
+#### Local interaction limiter
+
+The legacy Assistant limiter remains for command/control-plane traffic, but a2 interactions now use a dedicated category profile:
+
+```text
+interaction burst  = 12
+interaction refill = 1 / 250ms
+```
+
+Critically, this limiter is applied **after** callback single-flight coalescing, not to raw Telegram tap events.
+
+If the interaction limiter is reached, the callback receives a terminal empty ACK and is dropped. Goultroid no longer emits a user-facing `Too many requests` modal for normal a2 callback pressure.
+
+#### Bounded callback single-flight
+
+`interactionIngress` now has a bounded in-flight set:
+
+```text
+key = concrete callback ordering key + actor id
+cap = 4096
+```
+
+For a concrete inline/message target:
+
+```text
+first callback
+  -> prepare
+  -> limiter
+  -> TaskEngine
+  -> handler / transition
+
+concurrent duplicate taps by the same actor
+  -> empty ACK
+  -> no PrepareCallback
+  -> no local limiter token
+  -> no TaskEngine submission
+  -> no Telegram edit
+```
+
+The existing per-message `OrderingKey` remains intact. This is not a second executor or queue; it is only a bounded admission coalescer in front of the canonical TaskEngine path.
+
+The regression now stresses 128 concurrent duplicate query IDs and requires one TaskEngine submission.
+
+#### ACK ownership
+
+Navigation actions whose feedback is rendered in-message now opt into `AckImmediate`.
+
+Assistant shell examples:
+
+- Home / Refresh;
+- Status / Status refresh;
+- Help root, module, command, back, pagination;
+- Settings read-only navigation and slots;
+- Language screen navigation.
+
+Mutations/actions that need a rich callback toast or error remain handler-owned.
+
+Downloader:
+
+- Audio navigation -> prepared validation + immediate ACK;
+- Back navigation -> prepared validation + immediate ACK;
+- Video probe -> already immediate;
+- final format/quality/download actions -> already immediate;
+- Cancel remains handler-owned because cancellation failure must remain visible.
+
+The ingress now acknowledges an `AckImmediate` callback immediately after `PrepareCallback`, **before waiting for TaskEngine admission**. The handler itself is still executed only through TaskEngine. If the early ACK RPC fails, the normal `ensureAnswered` completion path remains able to retry.
+
+#### Dedicated RPC family for callback ACK
+
+Production `managedAPI` still routes callback answers through the shared application RPC executor. It does not bypass Telegram rate limiting.
+
+However:
+
+```text
+messages.setBotCallbackAnswer
+```
+
+now uses the dedicated limiter family:
+
+```text
+callback:
+  rate     = 20/s
+  capacity = 20
+```
+
+instead of competing with the ordinary:
+
+```text
+messages:
+  rate     = 5/s
+  capacity = 10
+```
+
+The callback ACK is still bounded by:
+
+- the process/account global bucket;
+- its per-method bucket;
+- RPC retry/max-elapsed policy;
+- Telegram FloodWait penalties.
+
+This gives spinner-clearing ACKs latency priority without creating a bypass or a second RPC executor.
+
+### 16.16 Callback performance acceptance still required on a real checkout
+
+The execution environment for this AI session still cannot resolve GitHub from the local container, so the new source/tests have not been run with the Go toolchain here. GitHub CI was not checked.
+
+Run locally:
+
+```bash
+gofmt -w \
+  internal/assistant/client/ratelimit.go \
+  internal/assistant/client/client.go \
+  internal/assistant/client/interaction_ingress.go \
+  internal/assistant/client/updates.go \
+  internal/assistant/client/ratelimit_bounds_test.go \
+  internal/assistant/client/callback_bridge_test.go \
+  internal/assistant/client/interaction_prepared_admission_test.go \
+  internal/assistant/client/shell_interaction.go \
+  internal/assistant/client/shell_ack_policy_test.go \
+  internal/assistant/client/selfinline_downloader_e2e_test.go \
+  internal/assistant/client/managed_api.go \
+  internal/assistant/client/managed_api_family_test.go \
+  plugins/downloader/interactive.go \
+  internal/telegram/rpc_limiter.go \
+  internal/telegram/rpc_limiter_test.go
+
+go test ./internal/assistant/client/... ./plugins/downloader/... ./internal/telegram/...
+go build -o bin/goultroid ./cmd/goultroid
+```
+
+Then live-test:
+
+```text
+1. Open .help from a fresh process.
+2. Rapidly tap one Help navigation button many times.
+   Expected: no "Too many requests" modal, spinner clears quickly,
+             one useful transition, redundant taps are harmless.
+3. Rapidly navigate Help module/detail/back/pagination.
+   Expected: fresh buttons work; stale buttons remain fenced.
+4. Open .download <youtube-url>.
+5. Rapidly tap Audio/Back and then a final format button.
+   Expected: navigation ACK is immediate; only one physical continuation
+             is admitted for the selected revision.
+6. Repeat while ordinary messages/edit traffic is active.
+   Expected: callback ACK remains responsive even if message edits are
+             locally throttled.
+7. If Telegram emits an actual FLOOD_WAIT, verify the shared RPC executor
+   honors it; do not classify that as the removed Assistant popup.
+```
+
+Do not add artificial sleeps between button clicks as a UX workaround. The intended behavior is to absorb redundant burst pressure with bounded admission/coalescing while preserving Telegram FloodWait safety.
