@@ -25,6 +25,7 @@ import (
 	userlogSvc "github.com/inipew/goultroid/internal/services/userlog"
 	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/taskengine"
+	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
 
@@ -103,6 +104,23 @@ func (rt *Runtime) RegisterPlugin(ctx context.Context, manifest Manifest, p plug
 		return ErrNilPluginManager
 	}
 	return rt.Plugins.RegisterModule(ctx, manifest, p)
+}
+
+// ScopedCallbackStore returns a fail-closed callback-state writer for one
+// plugin owner. Each Store resolves and stamps the currently committed plugin
+// generation, so opaque state cannot cross disable/reload boundaries.
+func (rt *Runtime) ScopedCallbackStore(owner string) callback.StateWriter {
+	if rt == nil || rt.CallbackStore == nil || rt.Plugins == nil {
+		return nil
+	}
+	return callback.NewScopedStateWriter(rt.CallbackStore, owner, func(name string) (tasks.ScopeIdentity, bool) {
+		scope, ok := rt.Plugins.Scope(name)
+		if !ok || scope == nil {
+			return tasks.ScopeIdentity{}, false
+		}
+		identity := tasks.ScopeIdentity{Owner: scope.Owner(), Generation: scope.Generation()}
+		return identity, !identity.IsZero()
+	})
 }
 
 type Module interface {
