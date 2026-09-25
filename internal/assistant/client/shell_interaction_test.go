@@ -108,7 +108,10 @@ func newShellEngine(t *testing.T) (*plugin.Manager, *AssistantClient, *shellTest
 	client := NewAssistantClient(1, "hash", "token", zap.NewNop())
 	client.SetOwner(7, nil)
 	client.SetInteractionFoundation(manager.FeatureCatalog(), manager.InteractionRuntime(), manager.ActionDispatcher())
-	client.interactionIngress = &interactionIngress{engine: engine}
+	client.interactionIngress = &interactionIngress{
+		engine: engine,
+		ack:    newInteractionPresentationServicer(nil),
+	}
 	if err := client.syncShellActions(engine, manager.FeatureCatalog()); err != nil {
 		manager.Shutdown()
 		t.Fatalf("syncShellActions() error = %v", err)
@@ -159,6 +162,9 @@ func TestAssistantShellRefreshStalesOldButtonAndReloadsGeneration(t *testing.T) 
 	defer manager.Shutdown()
 	catalog := manager.FeatureCatalog()
 	peer := &tg.InputPeerUser{UserID: 7}
+	manager.SetRegistrationValidator(func(context.Context) error {
+		return client.RefreshInteractionBindings()
+	})
 
 	beginShell(t, engine, port, peer)
 	oldRefresh := callbackForAction(t, port.sent, assistantshell.ActionRefresh)
@@ -195,9 +201,6 @@ func TestAssistantShellRefreshStalesOldButtonAndReloadsGeneration(t *testing.T) 
 	}
 	if after.Owner.Scope.Generation == before.Owner.Scope.Generation {
 		t.Fatalf("generation = %d, want replacement generation", after.Owner.Scope.Generation)
-	}
-	if err := client.ensureShellActions(engine, catalog); err != nil {
-		t.Fatalf("ensureShellActions(reload) error = %v", err)
 	}
 	beginShell(t, engine, port, peer)
 	newRefresh := callbackForAction(t, port.sent, assistantshell.ActionRefresh)
