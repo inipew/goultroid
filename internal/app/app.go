@@ -225,7 +225,19 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		}
 		return nil
 	})
-	pluginManager.SetRegistrationValidator(savedResponseBindings.ValidateEnabledCollisions)
+	pluginManager.SetRegistrationValidator(func(ctx context.Context) error {
+		if err := savedResponseBindings.ValidateEnabledCollisions(ctx); err != nil {
+			return err
+		}
+		if refresher, ok := tgRuntime.assistant.(interface {
+			RefreshInteractionBindings() error
+		}); ok {
+			if err := refresher.RefreshInteractionBindings(); err != nil {
+				return fmt.Errorf("refresh Assistant interaction bindings: %w", err)
+			}
+		}
+		return nil
+	})
 
 	// Register Assistant group-event controls only after the SavedResponse
 	// collision validator is installed so /welcome and /goodbye share the same
