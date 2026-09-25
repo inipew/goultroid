@@ -196,6 +196,9 @@ func TestSelfInlineDownloaderTrueEndToEndQueuesBoundedExtractorContinuation(t *t
 	if !handled || outerTasks.calls != 1 || broker.editCalls != 1 {
 		t.Fatalf("audio transition handled=%v outerTasks=%d edits=%d", handled, outerTasks.calls, broker.editCalls)
 	}
+	if ack.immediate != 1 {
+		t.Fatalf("audio callback immediate acknowledgements=%d, want 1", ack.immediate)
+	}
 	if !strings.Contains(broker.editReq.Message, "Choose audio format") {
 		t.Fatalf("audio transition text=%q", broker.editReq.Message)
 	}
@@ -207,6 +210,9 @@ func TestSelfInlineDownloaderTrueEndToEndQueuesBoundedExtractorContinuation(t *t
 	}
 	if !handled || outerTasks.calls != 2 {
 		t.Fatalf("format transition handled=%v outerTasks=%d", handled, outerTasks.calls)
+	}
+	if ack.immediate != 2 {
+		t.Fatalf("format callback immediate acknowledgements=%d, want 2", ack.immediate)
 	}
 	if broker.editCalls != 2 || !strings.Contains(broker.editReq.Message, "Downloading") {
 		t.Fatalf("running transition edits=%d text=%q", broker.editCalls, broker.editReq.Message)

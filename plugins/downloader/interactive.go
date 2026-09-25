@@ -206,6 +206,33 @@ func (p *Plugin) BindAssistant(rt assistantinteraction.DriverRuntime) (func(), e
 				},
 				handler,
 			)
+		} else if actionID == actionAudio || actionID == actionBack {
+			registration, err = rt.Engine.RegisterPreparedAction(
+				scope,
+				p.Name(),
+				actionID,
+				func(_ context.Context, action rootinteraction.Action) (rootinteraction.ActionAdmission, error) {
+					state, err := decodeInteractiveState(action.Session.State)
+					if err != nil {
+						return rootinteraction.ActionAdmission{}, err
+					}
+					switch actionID {
+					case actionAudio:
+						if state.Provider != "extractor" || state.Phase != phaseChoose {
+							return rootinteraction.ActionAdmission{}, fmt.Errorf("%w: audio navigation action is stale or invalid", core.ErrInvalidArgs)
+						}
+					case actionBack:
+						if state.Provider != "extractor" || (state.Phase != phaseAudioFormat && state.Phase != phaseVideoFormat) {
+							return rootinteraction.ActionAdmission{}, fmt.Errorf("%w: back navigation action is stale or invalid", core.ErrInvalidArgs)
+						}
+					}
+					return rootinteraction.ActionAdmission{
+						Scope:     scope,
+						AckPolicy: rootinteraction.AckImmediate,
+					}, nil
+				},
+				handler,
+			)
 		} else {
 			registration, err = rt.Engine.RegisterAction(scope, p.Name(), actionID, handler)
 		}

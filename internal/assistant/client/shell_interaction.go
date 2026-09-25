@@ -295,14 +295,33 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 	c.shellScope = tasks.ScopeIdentity{}
 
 	registrations := make([]*rootinteraction.HandlerRegistration, 0, expectedRegistrations)
-	register := func(actionID string, handler orchestration.Handler) error {
+	register := func(actionID string, immediate bool, handler orchestration.Handler) error {
 		guarded := func(ctx *orchestration.Context) error {
 			if err := c.admitShellAction(catalog, actionID, ctx); err != nil {
 				return err
 			}
 			return handler(ctx)
 		}
-		registration, err := engine.RegisterAction(scope, assistantshell.FeatureID, actionID, guarded)
+		var (
+			registration *rootinteraction.HandlerRegistration
+			err          error
+		)
+		if immediate {
+			registration, err = engine.RegisterPreparedAction(
+				scope,
+				assistantshell.FeatureID,
+				actionID,
+				func(context.Context, rootinteraction.Action) (rootinteraction.ActionAdmission, error) {
+					return rootinteraction.ActionAdmission{
+						Scope:     scope,
+						AckPolicy: rootinteraction.AckImmediate,
+					}, nil
+				},
+				guarded,
+			)
+		} else {
+			registration, err = engine.RegisterAction(scope, assistantshell.FeatureID, actionID, guarded)
+		}
 		if err != nil {
 			return err
 		}
@@ -310,47 +329,48 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 		return nil
 	}
 	for _, action := range []struct {
-		id      string
-		handler orchestration.Handler
+		id        string
+		immediate bool
+		handler   orchestration.Handler
 	}{
-		{id: assistantshell.ActionRefresh, handler: c.handleShellRefresh},
+		{id: assistantshell.ActionRefresh, immediate: true, handler: c.handleShellRefresh},
 		{id: assistantshell.ActionPing, handler: c.handleShellPing},
-		{id: assistantshell.ActionStatus, handler: c.handleShellStatus},
-		{id: assistantshell.ActionHelp, handler: c.handleShellHelp},
-		{id: assistantshell.ActionHelpPrev, handler: c.handleShellHelpPrev},
-		{id: assistantshell.ActionHelpNext, handler: c.handleShellHelpNext},
-		{id: assistantshell.ActionHelpCmdPrev, handler: c.handleShellHelpCmdPrev},
-		{id: assistantshell.ActionHelpCmdNext, handler: c.handleShellHelpCmdNext},
-		{id: assistantshell.ActionHelpBack, handler: c.handleShellHelpBack},
-		{id: assistantshell.ActionHome, handler: c.handleShellHome},
+		{id: assistantshell.ActionStatus, immediate: true, handler: c.handleShellStatus},
+		{id: assistantshell.ActionHelp, immediate: true, handler: c.handleShellHelp},
+		{id: assistantshell.ActionHelpPrev, immediate: true, handler: c.handleShellHelpPrev},
+		{id: assistantshell.ActionHelpNext, immediate: true, handler: c.handleShellHelpNext},
+		{id: assistantshell.ActionHelpCmdPrev, immediate: true, handler: c.handleShellHelpCmdPrev},
+		{id: assistantshell.ActionHelpCmdNext, immediate: true, handler: c.handleShellHelpCmdNext},
+		{id: assistantshell.ActionHelpBack, immediate: true, handler: c.handleShellHelpBack},
+		{id: assistantshell.ActionHome, immediate: true, handler: c.handleShellHome},
 		{id: assistantshell.ActionClose, handler: c.handleShellClose},
-		{id: assistantshell.ActionStatusRefresh, handler: c.handleShellStatusRefresh},
-		{id: assistantshell.ActionSettings, handler: c.handleShellSettings},
-		{id: assistantshell.ActionLanguage, handler: c.handleShellLanguage},
+		{id: assistantshell.ActionStatusRefresh, immediate: true, handler: c.handleShellStatusRefresh},
+		{id: assistantshell.ActionSettings, immediate: true, handler: c.handleShellSettings},
+		{id: assistantshell.ActionLanguage, immediate: true, handler: c.handleShellLanguage},
 		{id: assistantshell.ActionLanguageEnglish, handler: c.handleShellLanguageEnglish},
 		{id: assistantshell.ActionLanguageIndonesian, handler: c.handleShellLanguageIndonesian},
-		{id: assistantshell.ActionSettingsPrev, handler: c.handleShellSettingsPrev},
-		{id: assistantshell.ActionSettingsNext, handler: c.handleShellSettingsNext},
-		{id: assistantshell.ActionSettingPrev, handler: c.handleShellSettingPrev},
-		{id: assistantshell.ActionSettingNext, handler: c.handleShellSettingNext},
-		{id: assistantshell.ActionSettingBack, handler: c.handleShellSettingBack},
+		{id: assistantshell.ActionSettingsPrev, immediate: true, handler: c.handleShellSettingsPrev},
+		{id: assistantshell.ActionSettingsNext, immediate: true, handler: c.handleShellSettingsNext},
+		{id: assistantshell.ActionSettingPrev, immediate: true, handler: c.handleShellSettingPrev},
+		{id: assistantshell.ActionSettingNext, immediate: true, handler: c.handleShellSettingNext},
+		{id: assistantshell.ActionSettingBack, immediate: true, handler: c.handleShellSettingBack},
 		{id: assistantshell.ActionSettingChange, handler: c.handleShellSettingChange},
 		{id: assistantshell.ActionSettingDecrease, handler: c.handleShellSettingDecrease},
 		{id: assistantshell.ActionSettingIncrease, handler: c.handleShellSettingIncrease},
 		{id: assistantshell.ActionSettingReset, handler: c.handleShellSettingReset},
 		{id: assistantshell.ActionSettingResetConfirm, handler: c.handleShellSettingResetConfirm},
-		{id: assistantshell.ActionSettingResetCancel, handler: c.handleShellSettingResetCancel},
+		{id: assistantshell.ActionSettingResetCancel, immediate: true, handler: c.handleShellSettingResetCancel},
 		{id: assistantshell.ActionSettingInput, handler: c.handleShellSettingInput},
-		{id: assistantshell.ActionSettingInputCancel, handler: c.handleShellSettingInputCancel},
+		{id: assistantshell.ActionSettingInputCancel, immediate: true, handler: c.handleShellSettingInputCancel},
 	} {
-		if err := register(action.id, action.handler); err != nil {
+		if err := register(action.id, action.immediate, action.handler); err != nil {
 			closeShellRegistrations(registrations)
 			return err
 		}
 	}
 	for slot, actionID := range assistantshell.HelpModuleSlotActionIDs() {
 		slot := slot
-		if err := register(actionID, func(ctx *orchestration.Context) error {
+		if err := register(actionID, true, func(ctx *orchestration.Context) error {
 			return c.handleShellHelpModuleSlot(ctx, slot)
 		}); err != nil {
 			closeShellRegistrations(registrations)
@@ -359,7 +379,7 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 	}
 	for slot, actionID := range assistantshell.HelpCommandSlotActionIDs() {
 		slot := slot
-		if err := register(actionID, func(ctx *orchestration.Context) error {
+		if err := register(actionID, true, func(ctx *orchestration.Context) error {
 			return c.handleShellHelpCommandSlot(ctx, slot)
 		}); err != nil {
 			closeShellRegistrations(registrations)
@@ -368,7 +388,7 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 	}
 	for slot, actionID := range assistantshell.SettingsCategorySlotActionIDs() {
 		slot := slot
-		if err := register(actionID, func(ctx *orchestration.Context) error {
+		if err := register(actionID, true, func(ctx *orchestration.Context) error {
 			return c.handleShellSettingsCategorySlot(ctx, slot)
 		}); err != nil {
 			closeShellRegistrations(registrations)
@@ -377,7 +397,7 @@ func (c *AssistantClient) ensureShellActions(engine *orchestration.Engine, catal
 	}
 	for slot, actionID := range assistantshell.SettingSlotActionIDs() {
 		slot := slot
-		if err := register(actionID, func(ctx *orchestration.Context) error {
+		if err := register(actionID, true, func(ctx *orchestration.Context) error {
 			return c.handleShellSettingSlot(ctx, slot)
 		}); err != nil {
 			closeShellRegistrations(registrations)
