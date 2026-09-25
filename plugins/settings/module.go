@@ -24,7 +24,7 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	if rt == nil {
 		return module.ErrNilRuntime
 	}
-	p := New(rt.SettingsService, rt.CallbackStore)
+	p := New(rt.SettingsService, rt.ScopedCallbackStore(m.Manifest().ID))
 	if rt.Logger != nil {
 		p.SetLogger(rt.Logger)
 	}
