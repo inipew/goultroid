@@ -37,12 +37,16 @@ func (t testTarget) TargetBinding() (interaction.TargetBinding, bool) {
 }
 
 type testPort struct {
-	messageID int
-	sent      presentation.CompiledView
-	edited    presentation.CompiledView
-	answered  presentation.Answer
-	sendErr   error
-	editErr   error
+	messageID    int
+	sent         presentation.CompiledView
+	edited       presentation.CompiledView
+	answered     presentation.Answer
+	sentTarget   presentation.Target
+	editedTarget presentation.Target
+	sendCount    int
+	editCount    int
+	sendErr      error
+	editErr      error
 }
 
 func (p *testPort) Send(_ context.Context, target presentation.Target, view presentation.CompiledView) (presentation.Target, error) {
@@ -50,15 +54,19 @@ func (p *testPort) Send(_ context.Context, target presentation.Target, view pres
 		return nil, p.sendErr
 	}
 	p.sent = view
+	p.sentTarget = target
+	p.sendCount++
 	t := target.(testTarget)
 	t.messageID = p.messageID
 	return t, nil
 }
-func (p *testPort) Edit(_ context.Context, _ presentation.Target, view presentation.CompiledView) error {
+func (p *testPort) Edit(_ context.Context, target presentation.Target, view presentation.CompiledView) error {
 	if p.editErr != nil {
 		return p.editErr
 	}
 	p.edited = view
+	p.editedTarget = target
+	p.editCount++
 	return nil
 }
 func (p *testPort) Answer(_ context.Context, answer presentation.Answer) error {
@@ -358,5 +366,36 @@ func TestP4TerminateReleasesSessionWhenEditFails(t *testing.T) {
 	}
 	if got := sessions.Stats().Sessions; got != 0 {
 		t.Fatalf("sessions=%d, want 0 after terminal edit failure", got)
+	}
+}
+
+func TestP4PreparedTextEditReusesBoundMessageTarget(t *testing.T) {
+	engine, _, port, _ := testEngine(t)
+	ctx, err := engine.Begin(context.Background(), BeginRequest{
+		FeatureID: "demo",
+		ActorID:   7,
+		State:     []byte("one"),
+		Target:    testTarget{chatID: 42},
+		View:      testView("first"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit, err := ctx.PrepareTextEdit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := edit(context.Background(), "progress 1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := edit(context.Background(), "progress 2"); err != nil {
+		t.Fatal(err)
+	}
+	if port.sendCount != 1 || port.editCount != 2 {
+		t.Fatalf("send/edit counts=%d/%d, want 1/2", port.sendCount, port.editCount)
+	}
+	target, ok := port.editedTarget.(testTarget)
+	if !ok || target.chatID != 42 || target.messageID != 77 {
+		t.Fatalf("edited target=%T %+v, want chat=42 message=77", port.editedTarget, port.editedTarget)
 	}
 }

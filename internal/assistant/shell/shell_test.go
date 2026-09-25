@@ -317,3 +317,42 @@ func shellViewHasAction(rows []presentation.Row, actionID string) bool {
 	}
 	return false
 }
+
+func TestP4ShellNavigationMatrix(t *testing.T) {
+	stringDef := settings.SettingDefinition{
+		Namespace: "core",
+		Key:       "prefix",
+		Title:     "Command Prefix",
+		Type:      settings.TypeString,
+		Category:  settings.CategoryGeneral,
+	}
+	views := []struct {
+		name     string
+		view     presentation.View
+		required []string
+	}{
+		{name: "home", view: HomeView(HomeModel{Username: "TestBot"}), required: []string{ActionClose}},
+		{name: "status", view: StatusView(StatusModel{Username: "TestBot"}), required: []string{ActionHome, ActionClose}},
+		{name: "help", view: HelpView(HelpModel{}), required: []string{ActionHome, ActionClose}},
+		{name: "help module", view: HelpModuleView(HelpModuleModel{Module: HelpModule{Name: "General"}}), required: []string{ActionHelp, ActionHome, ActionClose}},
+		{name: "help command", view: HelpCommandView(HelpCommandModel{Command: core.Command{Name: "ping"}}), required: []string{ActionHelpBack, ActionHelp, ActionHome, ActionClose}},
+		{name: "settings", view: SettingsHomeView(SettingsHomeModel{}), required: []string{ActionHome, ActionClose}},
+		{name: "settings category", view: SettingsCategoryView(SettingsCategoryModel{Category: SettingsCategory{ID: settings.CategoryGeneral, Label: "General"}}), required: []string{ActionSettings, ActionHome, ActionClose}},
+		{name: "setting detail", view: SettingDetailView(SettingDetailModel{Definition: stringDef}), required: []string{ActionSettingBack, ActionSettings, ActionHome, ActionClose}},
+		{name: "setting input", view: SettingInputView(SettingInputModel{Definition: stringDef}), required: []string{ActionSettingInputCancel, ActionHome, ActionClose}},
+		{name: "setting reset confirmation", view: SettingResetConfirmView(SettingResetConfirmModel{Definition: stringDef}), required: []string{ActionSettingResetCancel, ActionHome, ActionClose}},
+		{name: "language", view: LanguageView(LanguageModel{}), required: []string{ActionHome, ActionClose}},
+	}
+	for _, tc := range views {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.view.Validate(); err != nil {
+				t.Fatalf("view invalid: %v", err)
+			}
+			for _, actionID := range tc.required {
+				if !shellViewHasAction(tc.view.Rows, actionID) {
+					t.Fatalf("view missing action %q: %+v", actionID, tc.view.Rows)
+				}
+			}
+		})
+	}
+}
