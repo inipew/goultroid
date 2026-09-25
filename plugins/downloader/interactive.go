@@ -399,10 +399,11 @@ func (p *Plugin) executeInteractiveDownload(ctx *orchestration.Context, state in
 
 	mode, format, maxHeight := state.Mode, state.Format, state.MaxHeight
 	if actionID != actionRetry {
-		mode, format, maxHeight, err = finalSelection(actionID)
+		selectedMode, selectedFormat, selectedMaxHeight, err := finalSelection(actionID)
 		if err != nil {
 			return err
 		}
+		mode, format, maxHeight = selectedMode, selectedFormat, selectedMaxHeight
 	}
 	state.Phase = phaseRunning
 	state.Mode = mode
