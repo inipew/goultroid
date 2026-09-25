@@ -1,6 +1,11 @@
 package core
 
-import "time"
+import (
+	"strings"
+	"time"
+
+	"github.com/inipew/goultroid/internal/presentation"
+)
 
 // ResponseOptions controls the behavior of a normal command response.
 type ResponseOptions struct {
@@ -26,6 +31,46 @@ func (c *Context) Respond(text string, opts ResponseOptions) error {
 		}
 	}
 	return nil
+}
+
+// SemanticResponse routes a transport-neutral response intent through the
+// canonical edit-or-reply behavior. Userbot and Assistant commands therefore
+// share the same progress replacement, reply/thread preservation, and final
+// result target without adding a second presentation runtime.
+func (c *Context) SemanticResponse(response presentation.Response) error {
+	return c.Messages().SemanticResponse(response)
+}
+
+func (c *Context) Status(text string) error   { return c.SemanticResponse(presentation.Status(text)) }
+func (c *Context) Success(text string) error  { return c.SemanticResponse(presentation.Success(text)) }
+func (c *Context) Error(text string) error    { return c.SemanticResponse(presentation.Error(text)) }
+func (c *Context) Progress(text string) error { return c.SemanticResponse(presentation.Progress(text)) }
+func (c *Context) Result(text string) error   { return c.SemanticResponse(presentation.Result(text)) }
+
+// SemanticResponse is the message-facade form used by code that intentionally
+// works through the facade namespace rather than Context convenience methods.
+func (m *MessagesFacade) SemanticResponse(response presentation.Response) error {
+	text := response.Render()
+	if strings.TrimSpace(text) == "" {
+		return ErrInvalidArgs
+	}
+	return m.EditOrReply(text)
+}
+
+func (m *MessagesFacade) Status(text string) error {
+	return m.SemanticResponse(presentation.Status(text))
+}
+func (m *MessagesFacade) Success(text string) error {
+	return m.SemanticResponse(presentation.Success(text))
+}
+func (m *MessagesFacade) Error(text string) error {
+	return m.SemanticResponse(presentation.Error(text))
+}
+func (m *MessagesFacade) Progress(text string) error {
+	return m.SemanticResponse(presentation.Progress(text))
+}
+func (m *MessagesFacade) Result(text string) error {
+	return m.SemanticResponse(presentation.Result(text))
 }
 
 // ReplyAndDelete is the convenience API for the common userbot command flow.
