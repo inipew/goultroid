@@ -496,6 +496,11 @@ func (c *AssistantClient) SetCoreRouter(router *core.Router) {
 		c.cmdRouter.SetCoreRouter(router)
 	}
 }
+func (c *AssistantClient) SetCommandExecutor(executor *core.CommandExecutor) {
+	if c.cmdRouter != nil {
+		c.cmdRouter.SetCommandExecutor(executor)
+	}
+}
 func (c *AssistantClient) SetTasks(client tasks.Client) {
 	c.mu.Lock()
 	c.tasks = client

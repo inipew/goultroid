@@ -192,19 +192,28 @@ func InvocationMiddleware(cmd Command, source ExecutionSource) Middleware {
 	}
 }
 
-// PermissionMiddleware enforces that the sender has sufficient permission for the command.
-// Security-sensitive commands fail closed when the permission provider is unavailable.
+// PermissionMiddleware preserves the historical interactive/userbot permission
+// contract for direct callers. Source-aware execution should use
+// PermissionMiddlewareForSource.
 func PermissionMiddleware(cmd Command) Middleware {
+	return PermissionMiddlewareForSource(cmd, ExecutionInteractive)
+}
+
+// PermissionMiddlewareForSource enforces the effective authorization tier for
+// the concrete execution source, including AssistantPermission overrides.
+func PermissionMiddlewareForSource(cmd Command, source ExecutionSource) Middleware {
+	required := cmd.EffectivePermission(source)
 	return func(next CommandHandler) CommandHandler {
 		return func(ctx *Context) error {
-			if cmd.Permission != PermissionEveryone {
-				var userID int64
-				if ctx.Sender != nil {
-					userID = ctx.Sender.ID
-				}
-				if ctx.Perms == nil || !ctx.Perms.CanRun(userID, cmd) {
-					return ErrPermissionDenied
-				}
+			if required == PermissionEveryone {
+				return next(ctx)
+			}
+			var userID int64
+			if ctx != nil && ctx.Sender != nil {
+				userID = ctx.Sender.ID
+			}
+			if ctx == nil || ctx.Perms == nil || ctx.Perms.Level(userID) < required {
+				return ErrPermissionDenied
 			}
 			return next(ctx)
 		}

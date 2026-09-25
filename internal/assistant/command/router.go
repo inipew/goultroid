@@ -78,6 +78,7 @@ type Handler func(c *Context) error
 type Router struct {
 	presentationHandlers map[string]Handler
 	coreRouter           *core.Router
+	executor             *core.CommandExecutor
 	tasks                tasks.Client
 	delayedActions       core.DelayedActionScheduler
 	groupRoles           core.GroupRoleResolver
@@ -109,6 +110,13 @@ func NewRouter(logger *zap.Logger) *Router {
 // SetTasks attaches the shared TaskEngine client used by canonical Assistant
 // commands. Resource-bearing commands fail closed when this dependency is absent.
 func (r *Router) SetTasks(client tasks.Client) { r.tasks = client }
+
+// SetCommandExecutor installs the application-owned canonical command executor.
+// Production Assistant wiring shares the exact executor used by the userbot.
+func (r *Router) SetCommandExecutor(executor *core.CommandExecutor) {
+	r.executor = executor
+}
+
 func (r *Router) SetDelayedActions(scheduler core.DelayedActionScheduler) {
 	r.delayedActions = scheduler
 }
@@ -275,6 +283,9 @@ func sendContextualGroupFeedback(
 }
 
 func (r *Router) executeCanonicalDirect(cmd core.Command, coreCtx *core.Context, cmdName string) error {
+	if r.executor != nil {
+		return r.executor.Execute(coreCtx, cmd)
+	}
 	handler := core.FilterMiddlewareForSource(cmd, core.ExecutionAssistant)(cmd.Handler)
 	start := time.Now()
 	err := handler(coreCtx)
@@ -311,7 +322,6 @@ func (r *Router) executeCanonicalTask(ctx context.Context, senderID int64, cmd c
 			executionTimeout = assistantGroupExecutionTimeout
 		}
 	}
-	handler := core.FilterMiddlewareForSource(cmd, core.ExecutionAssistant)(cmd.Handler)
 	var freshAuthorizationError chan error
 	if requiresGroupAuthorization {
 		freshAuthorizationError = make(chan error, 1)
@@ -336,8 +346,8 @@ func (r *Router) executeCanonicalTask(ctx context.Context, senderID int64, cmd c
 			execCtx := *coreCtx
 			execCtx.Ctx = runCtx
 			admitGroupMutationExecution(&execCtx)
-			start := time.Now()
 			if requiresGroupAuthorization {
+				start := time.Now()
 				if authErr := authorizeContextualGroup(&execCtx, cmd.GroupAuthorization, true); authErr != nil {
 					freshAuthorizationError <- authErr
 					if r.metrics != nil {
@@ -346,11 +356,7 @@ func (r *Router) executeCanonicalTask(ctx context.Context, senderID int64, cmd c
 					return authErr
 				}
 			}
-			err := handler(&execCtx)
-			if r.metrics != nil {
-				r.metrics.RecordCommand(cmdName, time.Since(start), err)
-			}
-			return err
+			return r.executeCanonicalDirect(cmd, &execCtx, cmdName)
 		},
 	})
 	if err != nil {
@@ -567,70 +573,14 @@ func (r *Router) dispatch(
 			return fmt.Errorf("%w: %s", ErrUnknownCommand, cmdRaw)
 		}
 
-		// Permission check. The owner/sudo policy is kept explicit here until
-		// command execution authorization is fully centralized in core.
-		isOwner := r.ownerID != 0 && senderID != 0 && senderID == r.ownerID
-		isSudo := isOwner
 		var sudoList []int64
 		if r.sudoGetter != nil {
 			sudoList = r.sudoGetter()
-			for _, s := range sudoList {
-				if s != 0 && s == senderID {
-					isSudo = true
-					break
-				}
-			}
 		}
-
 		perms := core.NewPermissions(r.ownerID, sudoList)
-		if !cmd.CanInvoke(core.ExecutionAssistant, senderID, false, perms) {
-			r.logger.Debug("assistant: command invocation denied",
-				zap.String("command", cmdNameClean),
-				zap.Int64("sender_id", senderID),
-				zap.String("policy", cmd.EffectiveInvocation(core.ExecutionAssistant).String()),
-			)
-			if inter != nil && peer != nil {
-				_, _ = inter.SendMessage(ctx, peer, "⛔ <i>This command cannot be invoked by this account.</i>", nil)
-			}
-			return nil
-		}
-
+		isOwner := perms.IsOwner(senderID)
+		isSudo := perms.IsSudo(senderID)
 		effectivePermission := cmd.EffectivePermission(core.ExecutionAssistant)
-		if (effectivePermission == core.PermissionOwner || effectivePermission == core.PermissionSudo) && r.ownerID == 0 {
-			r.logger.Warn("assistant: owner_id not configured, rejecting privileged command",
-				zap.String("command", cmdNameClean),
-				zap.Int64("sender_id", senderID),
-			)
-			if inter != nil && peer != nil {
-				_, _ = inter.SendMessage(ctx, peer, "⛔ <i>Privileged commands are disabled: bot owner is not configured.</i>", nil)
-			}
-			return nil
-		}
-
-		switch effectivePermission {
-		case core.PermissionOwner:
-			if !isOwner {
-				r.logger.Warn("assistant: permission denied for command",
-					zap.String("command", cmdNameClean),
-					zap.Int64("sender_id", senderID),
-				)
-				if inter != nil && peer != nil {
-					_, _ = inter.SendMessage(ctx, peer, "⛔ <i>This command is restricted to the bot owner.</i>", nil)
-				}
-				return nil
-			}
-		case core.PermissionSudo:
-			if !isSudo {
-				r.logger.Warn("assistant: sudo permission required for command",
-					zap.String("command", cmdNameClean),
-					zap.Int64("sender_id", senderID),
-				)
-				if inter != nil && peer != nil {
-					_, _ = inter.SendMessage(ctx, peer, "⛔ <i>This command requires sudo privileges.</i>", nil)
-				}
-				return nil
-			}
-		}
 
 		chat := messageContext.Chat
 		if chat.Type == "" && chat.ID == senderID {
@@ -685,6 +635,53 @@ func (r *Router) dispatch(
 			DelayedActions: r.delayedActions,
 		}
 		core.AttachGroupStateStore(coreCtx, r.groupState)
+
+		if admissionErr := core.PreflightCommand(coreCtx, cmd, core.ExecutionAssistant); admissionErr != nil {
+			switch {
+			case errors.Is(admissionErr, core.ErrInvocationDenied):
+				r.logger.Debug("assistant: command invocation denied",
+					zap.String("command", cmdNameClean),
+					zap.Int64("sender_id", senderID),
+					zap.String("policy", cmd.EffectiveInvocation(core.ExecutionAssistant).String()),
+				)
+				if inter != nil && peer != nil {
+					_, _ = inter.SendMessage(ctx, peer, "⛔ <i>This command cannot be invoked by this account.</i>", nil)
+				}
+				return nil
+			case errors.Is(admissionErr, core.ErrPermissionDenied):
+				if (effectivePermission == core.PermissionOwner || effectivePermission == core.PermissionSudo) && r.ownerID == 0 {
+					r.logger.Warn("assistant: owner_id not configured, rejecting privileged command",
+						zap.String("command", cmdNameClean),
+						zap.Int64("sender_id", senderID),
+					)
+					if inter != nil && peer != nil {
+						_, _ = inter.SendMessage(ctx, peer, "⛔ <i>Privileged commands are disabled: bot owner is not configured.</i>", nil)
+					}
+					return nil
+				}
+				switch effectivePermission {
+				case core.PermissionOwner:
+					r.logger.Warn("assistant: permission denied for command",
+						zap.String("command", cmdNameClean),
+						zap.Int64("sender_id", senderID),
+					)
+					if inter != nil && peer != nil {
+						_, _ = inter.SendMessage(ctx, peer, "⛔ <i>This command is restricted to the bot owner.</i>", nil)
+					}
+				case core.PermissionSudo:
+					r.logger.Warn("assistant: sudo permission required for command",
+						zap.String("command", cmdNameClean),
+						zap.Int64("sender_id", senderID),
+					)
+					if inter != nil && peer != nil {
+						_, _ = inter.SendMessage(ctx, peer, "⛔ <i>This command requires sudo privileges.</i>", nil)
+					}
+				}
+				return nil
+			default:
+				return admissionErr
+			}
+		}
 
 		if cmd.GroupAuthorization.Required() {
 			if r.tasks == nil {

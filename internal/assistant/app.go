@@ -102,7 +102,10 @@ func (a *AssistantApp) SetOwner(ownerID int64, sudoGetter func() []int64) {
 	a.client.SetOwner(ownerID, sudoGetter)
 }
 func (a *AssistantApp) SetCoreRouter(router *core.Router) { a.client.SetCoreRouter(router) }
-func (a *AssistantApp) SetTasks(client tasks.Client)      { a.client.SetTasks(client) }
+func (a *AssistantApp) SetCommandExecutor(executor *core.CommandExecutor) {
+	a.client.SetCommandExecutor(executor)
+}
+func (a *AssistantApp) SetTasks(client tasks.Client) { a.client.SetTasks(client) }
 func (a *AssistantApp) SetDelayedActions(scheduler core.DelayedActionScheduler) {
 	a.client.SetDelayedActions(scheduler)
 }

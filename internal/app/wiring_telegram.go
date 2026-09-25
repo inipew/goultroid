@@ -41,6 +41,7 @@ func buildTelegramRuntime(cfg *config.Config, core *coreDependencies, logger *za
 		app := assistant.NewApp(cfg.AppID, cfg.AppHash, cfg.BotToken, logger)
 		app.SetRPCExecutor(assistantRPCExecutor{executor: client.Executor()})
 		app.SetTasks(core.taskEngine)
+		app.SetCommandExecutor(dispatcher.Executor())
 		if core.perms != nil {
 			app.SetOwner(core.perms.OwnerID, core.perms.ListSudo)
 		} else if cfg.OwnerID != 0 {
