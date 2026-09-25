@@ -26,6 +26,12 @@ type Request struct {
 	MaxOutput  int64
 	WorkingDir string
 	Env        []string
+
+	// StdoutObserver and StderrObserver receive copies of process output chunks
+	// while the child is running. Observers must stay lightweight; they execute
+	// on the os/exec copy path and are intended for bounded progress parsing.
+	StdoutObserver func([]byte)
+	StderrObserver func([]byte)
 }
 
 // Result contains the outcome and outputs of an executed process.
@@ -95,14 +101,19 @@ type limitedBuffer struct {
 	buf       *bytes.Buffer
 	remain    int64
 	truncated bool
+	observer  func([]byte)
 	mu        sync.Mutex
 }
 
-func newLimitedBuffer(limit int64) *limitedBuffer {
-	return &limitedBuffer{buf: new(bytes.Buffer), remain: limit}
+func newLimitedBuffer(limit int64, observer func([]byte)) *limitedBuffer {
+	return &limitedBuffer{buf: new(bytes.Buffer), remain: limit, observer: observer}
 }
 
 func (lb *limitedBuffer) Write(p []byte) (n int, err error) {
+	if lb.observer != nil && len(p) > 0 {
+		lb.observer(append([]byte(nil), p...))
+	}
+
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
 	origLen := len(p)
@@ -195,8 +206,8 @@ func (r *OSRunner) Run(ctx context.Context, req Request) (*Result, error) {
 	if maxOutput <= 0 {
 		maxOutput = r.maxOutputBytes
 	}
-	outBuf := newLimitedBuffer(maxOutput)
-	errBuf := newLimitedBuffer(maxOutput)
+	outBuf := newLimitedBuffer(maxOutput, req.StdoutObserver)
+	errBuf := newLimitedBuffer(maxOutput, req.StderrObserver)
 	cmd.Stdout = outBuf
 	cmd.Stderr = errBuf
 

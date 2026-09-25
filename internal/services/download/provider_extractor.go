@@ -388,6 +388,12 @@ func (p *ExtractorProvider) Download(ctx context.Context, rawURL string, store s
 		return nil, err
 	}
 
+	var progressOutputObserver func([]byte)
+	if opts.Progress != nil {
+		progressObserver := newExtractorProgressObserver(opts.Progress)
+		progressOutputObserver = progressObserver.Observe
+	}
+
 	tmpDir, err := os.MkdirTemp("", "goultroid-ytdlp-*")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temporary extraction folder: %w", err)
@@ -413,6 +419,14 @@ func (p *ExtractorProvider) Download(ctx context.Context, rawURL string, store s
 		"--no-warnings",
 		"--max-filesize", fmt.Sprintf("%d", p.defaultMaxCap),
 	}
+	if progressOutputObserver != nil {
+		args = append(args,
+			"--newline",
+			"--progress",
+			"--progress-delta", "0.5",
+			"--progress-template", extractorProgressTemplate,
+		)
+	}
 	args = append(args, selectionArgs...)
 	args = append(args,
 		"-o", outTemplate,
@@ -420,10 +434,12 @@ func (p *ExtractorProvider) Download(ctx context.Context, rawURL string, store s
 	)
 
 	req := process.Request{
-		Command:    ytdlpPath,
-		Args:       args,
-		Timeout:    timeout,
-		WorkingDir: tmpDir,
+		Command:        ytdlpPath,
+		Args:           args,
+		Timeout:        timeout,
+		WorkingDir:     tmpDir,
+		StdoutObserver: progressOutputObserver,
+		StderrObserver: progressOutputObserver,
 	}
 
 	var res *process.Result

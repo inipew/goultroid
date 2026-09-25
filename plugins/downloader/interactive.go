@@ -295,6 +295,12 @@ func (p *Plugin) executeInteractiveDownload(ctx *orchestration.Context, state in
 		ctx.Cancel()
 		return err
 	}
+	progressEdit, err := ctx.PrepareTextEdit()
+	if err != nil {
+		_ = ctx.Edit(failedView(err))
+		ctx.Cancel()
+		return err
+	}
 	downloadFailure, err := ctx.PrepareStaticEdit(failedView(nil))
 	if err != nil {
 		ctx.Cancel()
@@ -320,6 +326,7 @@ func (p *Plugin) executeInteractiveDownload(ctx *orchestration.Context, state in
 		mode,
 		format,
 		delivery,
+		progressEdit,
 		downloadFailure,
 		deliveryFailure,
 		delivered,

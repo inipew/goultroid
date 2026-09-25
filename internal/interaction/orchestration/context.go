@@ -177,6 +177,29 @@ func (c *Context) PrepareMediaDelivery() (MediaDelivery, error) {
 	}, nil
 }
 
+// PrepareTextEdit snapshots a target-bound, callback-free editor for transient
+// asynchronous status updates such as downloader progress. Dynamic text is
+// compiled on each update, but no callback rows or mutable session state are retained.
+func (c *Context) PrepareTextEdit() (func(context.Context, string) error, error) {
+	if c == nil || c.engine == nil || c.target == nil {
+		return nil, ErrInvalidEngine
+	}
+	target := c.target
+	port := c.engine.port
+	compiler := c.engine.compiler
+	sessionID := c.session.ID
+	return func(ctx context.Context, text string) error {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		compiled, err := compiler.Compile(ctx, sessionID, presentation.View{Text: text})
+		if err != nil {
+			return err
+		}
+		return port.Edit(ctx, target, compiled)
+	}, nil
+}
+
 // PrepareStaticEdit compiles a callback-free terminal view for asynchronous updates.
 func (c *Context) PrepareStaticEdit(view presentation.View) (func(context.Context) error, error) {
 	if c == nil || c.engine == nil || c.target == nil {

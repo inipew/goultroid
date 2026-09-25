@@ -403,6 +403,12 @@ func (p *Plugin) handleURLDownload(ctx *core.Context, rawURL string) error {
 		_, err := current.Media().SendMedia(media.Type, media.Path, media.Caption)
 		return err
 	}
+	progressEdit := func(editCtx context.Context, text string) error {
+		if uiCtx == nil {
+			return core.ErrInvalidArgs
+		}
+		return uiCtx.WithContext(editCtx).Edit(text)
+	}
 	downloadFailure := func(editCtx context.Context) error {
 		if uiCtx == nil {
 			return core.ErrInvalidArgs
@@ -427,6 +433,7 @@ func (p *Plugin) handleURLDownload(ctx *core.Context, rawURL string) error {
 		download.MediaModeDefault,
 		download.MediaFormatDefault,
 		delivery,
+		progressEdit,
 		downloadFailure,
 		deliveryFailure,
 		delivered,

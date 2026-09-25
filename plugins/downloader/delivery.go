@@ -132,6 +132,7 @@ func (p *Plugin) submitInteractivePipeline(
 	mode download.MediaMode,
 	format download.MediaFormat,
 	delivery orchestration.MediaDelivery,
+	progressEdit func(context.Context, string) error,
 	downloadFailure func(context.Context) error,
 	deliveryFailure func(context.Context) error,
 	delivered func(context.Context) error,
@@ -166,13 +167,23 @@ func (p *Plugin) submitInteractivePipeline(
 				targetStore = storage.NewMemoryStorage()
 			}
 			provider := p.registry.Resolve(state.URL)
+			reporter := newDownloadProgressReporter(taskCtx, progressEdit, state.Provider, mode, format)
+			var progress download.ProgressCallback
+			if reporter != nil {
+				progress = reporter.Callback
+			}
+
 			var err error
 			asset, err = p.registry.Download(taskCtx, state.URL, targetStore, download.DownloadOptions{
 				Timeout:  downloaderExecutionTimeout,
 				MaxBytes: 500 * 1024 * 1024,
+				Progress: progress,
 				Mode:     mode,
 				Format:   format,
 			})
+			if reporter != nil {
+				reporter.Close()
+			}
 			if err != nil {
 				return err
 			}
