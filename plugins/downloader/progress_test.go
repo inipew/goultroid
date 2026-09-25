@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -53,5 +54,61 @@ func TestDownloadProgressTextHandlesUnknownTotal(t *testing.T) {
 	}
 	if !strings.Contains(got, "Source:</b> <code>HTTP</code>") {
 		t.Fatalf("unknown-total progress missing HTTP source:\n%s", got)
+	}
+}
+
+func TestP4DownloadProgressCoalescesBurstAndSkipsIdleTicks(t *testing.T) {
+	edits := make(chan string, 8)
+	reporter := newDownloadProgressReporterWithInterval(
+		context.Background(),
+		func(_ context.Context, text string) error {
+			edits <- text
+			return nil
+		},
+		"http",
+		download.MediaModeDefault,
+		download.MediaFormatDefault,
+		0,
+		20*time.Millisecond,
+	)
+	if reporter == nil {
+		t.Fatal("progress reporter is nil")
+	}
+
+	reporter.Callback(10, 100)
+	reporter.Callback(20, 100)
+	reporter.Callback(30, 100)
+
+	select {
+	case text := <-edits:
+		if !strings.Contains(text, "30.0%") {
+			t.Fatalf("coalesced progress=%q, want latest 30%% sample", text)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for coalesced progress edit")
+	}
+
+	select {
+	case text := <-edits:
+		t.Fatalf("idle tick emitted duplicate progress edit: %q", text)
+	case <-time.After(60 * time.Millisecond):
+	}
+
+	reporter.Callback(40, 100)
+	select {
+	case text := <-edits:
+		if !strings.Contains(text, "40.0%") {
+			t.Fatalf("next progress=%q, want 40%%", text)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for next progress edit")
+	}
+
+	reporter.Close()
+	reporter.Callback(50, 100)
+	select {
+	case text := <-edits:
+		t.Fatalf("closed reporter emitted progress edit: %q", text)
+	case <-time.After(60 * time.Millisecond):
 	}
 }

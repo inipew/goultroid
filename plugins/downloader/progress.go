@@ -27,6 +27,7 @@ type downloadProgressReporter struct {
 	format     download.MediaFormat
 	maxHeight  int
 	started    time.Time
+	interval   time.Duration
 	downloaded atomic.Int64
 	total      atomic.Int64
 	revision   atomic.Uint64
@@ -40,26 +41,50 @@ func newDownloadProgressReporter(
 	format download.MediaFormat,
 	maxHeight int,
 ) *downloadProgressReporter {
+	return newDownloadProgressReporterWithInterval(
+		parent,
+		edit,
+		provider,
+		mode,
+		format,
+		maxHeight,
+		downloaderProgressInterval,
+	)
+}
+
+func newDownloadProgressReporterWithInterval(
+	parent context.Context,
+	edit func(context.Context, string) error,
+	provider string,
+	mode download.MediaMode,
+	format download.MediaFormat,
+	maxHeight int,
+	interval time.Duration,
+) *downloadProgressReporter {
 	if edit == nil {
 		return nil
 	}
 	if parent == nil {
 		parent = context.Background()
 	}
+	if interval <= 0 {
+		interval = downloaderProgressInterval
+	}
 
 	// Deliberately start from Background so progress Telegram RPCs do not inherit
 	// TaskEngine download/process resource markers from the physical download.
 	ctx, cancel := context.WithCancel(context.Background())
 	reporter := &downloadProgressReporter{
-		ctx:      ctx,
-		cancel:   cancel,
-		done:     make(chan struct{}),
-		edit:     edit,
-		provider: provider,
-		mode:     mode,
+		ctx:       ctx,
+		cancel:    cancel,
+		done:      make(chan struct{}),
+		edit:      edit,
+		provider:  provider,
+		mode:      mode,
 		format:    format,
 		maxHeight: maxHeight,
 		started:   time.Now(),
+		interval:  interval,
 	}
 	reporter.stopParent = context.AfterFunc(parent, cancel)
 	go reporter.loop()
@@ -94,7 +119,7 @@ func (r *downloadProgressReporter) Close() {
 
 func (r *downloadProgressReporter) loop() {
 	defer close(r.done)
-	ticker := time.NewTicker(downloaderProgressInterval)
+	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 
 	var (
