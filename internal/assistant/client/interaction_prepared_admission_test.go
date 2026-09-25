@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -364,26 +365,41 @@ func TestInteractionIngressSingleFlightCoalescesSameActorMessageBeforeTaskEngine
 	}()
 	<-taskClient.started
 
-	if err := ingress.dispatchCallback(
-		context.Background(),
-		request(9102),
-		tasks.TaskID("single-flight:duplicate"),
-		"callback:msg:42:77",
-	); err != nil {
-		t.Fatalf("coalesced callback error=%v", err)
+	const duplicateBurst = 128
+	var duplicateWG sync.WaitGroup
+	duplicateWG.Add(duplicateBurst)
+	duplicateErrs := make(chan error, duplicateBurst)
+	for i := 0; i < duplicateBurst; i++ {
+		i := i
+		go func() {
+			defer duplicateWG.Done()
+			duplicateErrs <- ingress.dispatchCallback(
+				context.Background(),
+				request(int64(9102+i)),
+				tasks.TaskID(fmt.Sprintf("single-flight:duplicate:%d", i)),
+				"callback:msg:42:77",
+			)
+		}()
+	}
+	duplicateWG.Wait()
+	close(duplicateErrs)
+	for err := range duplicateErrs {
+		if err != nil {
+			t.Fatalf("coalesced callback error=%v", err)
+		}
 	}
 	if got := taskClient.Calls(); got != 1 {
 		t.Fatalf("coalesced callback submissions=%d, want 1", got)
 	}
-	if got := ack.Calls(); got != 1 {
-		t.Fatalf("coalesced callback acknowledgements=%d, want 1 before release", got)
+	if got := ack.Calls(); got != duplicateBurst {
+		t.Fatalf("coalesced callback acknowledgements=%d, want %d before release", got, duplicateBurst)
 	}
 
 	close(taskClient.release)
 	if err := <-firstDone; err != nil {
 		t.Fatalf("first callback error=%v", err)
 	}
-	if got := ack.Calls(); got != 2 {
-		t.Fatalf("total callback acknowledgements=%d, want 2", got)
+	if got := ack.Calls(); got != duplicateBurst+1 {
+		t.Fatalf("total callback acknowledgements=%d, want %d", got, duplicateBurst+1)
 	}
 }
