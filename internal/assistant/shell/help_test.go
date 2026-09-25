@@ -52,6 +52,15 @@ func TestHelpModulesDeterministicAndDirectGridViews(t *testing.T) {
 			t.Fatalf("detail missing %q: %q", want, detail.Text)
 		}
 	}
+	if len(detail.Rows) < 1 || len(detail.Rows[0]) != 2 {
+		t.Fatalf("detail navigation row = %+v", detail.Rows)
+	}
+	if detail.Rows[0][0].ActionID != ActionHelpBack || detail.Rows[0][0].Text != "« Bᴀᴄᴋ" {
+		t.Fatalf("detail command back button = %+v", detail.Rows[0][0])
+	}
+	if detail.Rows[0][1].ActionID != ActionHelp || detail.Rows[0][1].Text != "Modules" {
+		t.Fatalf("detail modules shortcut = %+v", detail.Rows[0][1])
+	}
 }
 
 func TestHelpGridStateIsBoundedAndRejectsCatalogRemap(t *testing.T) {

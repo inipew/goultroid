@@ -448,7 +448,7 @@ func HelpCommandView(model HelpCommandModel) presentation.View {
 	return presentation.View{
 		Text: card.Render(),
 		Rows: []presentation.Row{
-			{{Text: tr(locale, "assistant.button.commands"), ActionID: ActionHelpBack}, {Text: tr(locale, "assistant.button.modules"), ActionID: ActionHelp}},
+			{{Text: tr(locale, "assistant.button.commands"), ActionID: ActionHelpBack}, {Text: tr(locale, "assistant.help.modules"), ActionID: ActionHelp}},
 			{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}, {Text: "✖ Close", ActionID: ActionClose}},
 		},
 	}
