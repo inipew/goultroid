@@ -156,6 +156,55 @@ func (c *Context) Transition(state []byte, ttl time.Duration, view presentation.
 	return c.Edit(view)
 }
 
+// DetachedTransition advances one captured session revision and edits the
+// already-bound target after the originating callback handler has returned.
+// The runtime remains the sole state authority; a stale/cancelled session fails
+// closed through the normal revision checks.
+type DetachedTransition func(context.Context, []byte, time.Duration, presentation.View) error
+
+func (c *Context) PrepareTransition() (DetachedTransition, error) {
+	if c == nil || c.engine == nil || c.target == nil || c.session.ID == "" {
+		return nil, ErrInvalidEngine
+	}
+	sessions := c.engine.sessions
+	compiler := c.engine.compiler
+	port := c.engine.port
+	target := c.target
+	sessionID := c.session.ID
+	expectedRevision := c.session.Revision
+	return func(ctx context.Context, state []byte, ttl time.Duration, view presentation.View) error {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		_, err := sessions.UpdateState(ctx, sessionID, interaction.UpdateRequest{
+			ExpectedRevision: expectedRevision,
+			State:            state,
+			TTL:              ttl,
+		})
+		if err != nil {
+			return err
+		}
+		compiled, err := compiler.Compile(ctx, sessionID, view)
+		if err != nil {
+			return err
+		}
+		return port.Edit(ctx, target, compiled)
+	}, nil
+}
+
+// PrepareCancel returns a minimal detached session cancellation handle for
+// asynchronous terminal completion. It retains no presentation view/state.
+func (c *Context) PrepareCancel() (func() bool, error) {
+	if c == nil || c.engine == nil || c.session.ID == "" {
+		return nil, ErrInvalidEngine
+	}
+	sessions := c.engine.sessions
+	sessionID := c.session.ID
+	return func() bool {
+		return sessions.Cancel(sessionID)
+	}, nil
+}
+
 // MediaDelivery is a detached target-bound delivery handle.
 type MediaDelivery func(context.Context, presentation.Media) error
 

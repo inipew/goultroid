@@ -238,6 +238,55 @@ func TestContextTouchExtendsExpiryWithoutChangingRevision(t *testing.T) {
 	}
 }
 
+func TestPreparedTransitionUsesCapturedRevisionAndFailsStale(t *testing.T) {
+	engine, _, port, _ := testEngine(t)
+	ctx, err := engine.Begin(context.Background(), BeginRequest{
+		FeatureID: "demo", ActorID: 7, State: []byte("one"),
+		Target: testTarget{chatID: 42}, View: testView("first"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transition, err := ctx.PrepareTransition()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transition(context.Background(), []byte("two"), time.Hour, testView("second")); err != nil {
+		t.Fatalf("detached transition error=%v", err)
+	}
+	token, err := interaction.ParseCallbackToken(port.edited.Rows[0][0].Data)
+	if err != nil || token.Revision != 2 {
+		t.Fatalf("transition token=%+v err=%v", token, err)
+	}
+	if err := transition(context.Background(), []byte("three"), time.Hour, testView("third")); !errors.Is(err, interaction.ErrRevisionConflict) {
+		t.Fatalf("second detached transition error=%v, want ErrRevisionConflict", err)
+	}
+}
+
+func TestPreparedCancelReleasesSession(t *testing.T) {
+	engine, sessions, _, _ := testEngine(t)
+	ctx, err := engine.Begin(context.Background(), BeginRequest{
+		FeatureID: "demo", ActorID: 7, State: []byte("one"),
+		Target: testTarget{chatID: 42}, View: testView("first"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel, err := ctx.PrepareCancel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cancel() {
+		t.Fatal("prepared cancel did not cancel live session")
+	}
+	if got := sessions.Stats().Sessions; got != 0 {
+		t.Fatalf("sessions=%d, want 0", got)
+	}
+	if cancel() {
+		t.Fatal("prepared cancel reported second cancellation as successful")
+	}
+}
+
 func TestAwaitAndTakeInputOwnRevisionAndTargetLifecycle(t *testing.T) {
 	engine, sessions, port, _ := testEngine(t)
 	ctx, err := engine.Begin(context.Background(), BeginRequest{
