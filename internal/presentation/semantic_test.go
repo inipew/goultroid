@@ -31,3 +31,13 @@ func TestSemanticResponseTrimsOuterWhitespace(t *testing.T) {
 		t.Fatalf("empty result Render()=%q", got)
 	}
 }
+
+func TestSemanticResponseViewUsesCanonicalText(t *testing.T) {
+	view := Progress("Loading").View(Row{{Text: "Cancel", ActionID: "cancel"}})
+	if view.Text != "⏳ <b>Processing:</b> Loading" {
+		t.Fatalf("view text=%q", view.Text)
+	}
+	if len(view.Rows) != 1 || len(view.Rows[0]) != 1 || view.Rows[0][0].ActionID != "cancel" {
+		t.Fatalf("view rows=%+v", view.Rows)
+	}
+}

@@ -70,3 +70,19 @@ func TestSemanticResponseRejectsEmptyBody(t *testing.T) {
 		t.Fatalf("Result(empty) error=%v, want ErrInvalidArgs", err)
 	}
 }
+
+func TestSemanticResponsePreservesTopicCoordinates(t *testing.T) {
+	svc := &p7jContextualSendServicer{}
+	ctx := &Context{
+		Ctx:     context.Background(),
+		Svc:     svc,
+		PeerID:  &tg.InputPeerChannel{ChannelID: 77, AccessHash: 700},
+		Message: &Message{ID: 900, TopicID: 100},
+	}
+	if err := ctx.Progress("Working"); err != nil {
+		t.Fatalf("Progress() error = %v", err)
+	}
+	if svc.lastSend.ReplyToID != 900 || svc.lastSend.TopicID != 100 {
+		t.Fatalf("semantic send context=%+v want reply=900 topic=100", svc.lastSend)
+	}
+}

@@ -50,3 +50,9 @@ func (r Response) Render() string {
 		return text
 	}
 }
+
+// View projects the same semantic response into the existing a2/inline
+// presentation model without creating another UI runtime.
+func (r Response) View(rows ...Row) View {
+	return View{Text: r.Render(), Rows: rows}
+}

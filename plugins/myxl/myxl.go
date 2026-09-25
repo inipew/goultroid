@@ -626,6 +626,12 @@ func (p *Plugin) handleShowQuota(ctx *core.Context, args []string) error {
 			UserID: ctx.SenderID(), ChatID: ctx.ChatID(), Namespace: p.Namespace(),
 		})
 		if markup != nil {
+			chunks := core.SplitTelegramHTML(respText, myxlTelegramMessageRunes)
+			if len(chunks) == 1 && ctx.LastResponseID > 0 {
+				if err := ctx.EditMarkup(chunks[0], markup); err == nil {
+					return nil
+				}
+			}
 			if err := deliverHTMLWithMarkup(ctx, respText, markup); err == nil {
 				return nil
 			}
