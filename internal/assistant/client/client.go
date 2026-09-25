@@ -91,10 +91,10 @@ type AssistantClient struct {
 	interactionSessions   *rootinteraction.Runtime
 	actionDispatcher      *rootinteraction.Dispatcher
 	interactionIngress    *interactionIngress
-	featureDrivers         map[string]interaction.FeatureDriver
+	featureDrivers        map[string]interaction.FeatureDriver
 	featureDriverMu       sync.Mutex
 	featureDriverBindings map[string]featureDriverBinding
-	shellMu                sync.Mutex
+	shellMu               sync.Mutex
 	shellScope            tasks.ScopeIdentity
 	shellRegistrations    []*rootinteraction.HandlerRegistration
 }

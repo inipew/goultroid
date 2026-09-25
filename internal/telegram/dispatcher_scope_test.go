@@ -55,7 +55,6 @@ func TestSubmitInteractiveCommandPreservesCommandScope(t *testing.T) {
 	}
 }
 
-
 func TestP5UserbotCommandAdmissionKeepsResourceProfile(t *testing.T) {
 	dispatcher := NewDispatcher(core.NewRouter("."), core.NewPermissions(100, nil), nil, zap.NewNop())
 	client := &scopeCaptureTaskClient{}

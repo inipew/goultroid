@@ -15,8 +15,8 @@ import (
 const maxTelegramLen = 4096
 
 type Plugin struct {
-	router     *core.Router
-	renderer   selfinline.Renderer
+	router   *core.Router
+	renderer selfinline.Renderer
 }
 
 func New(router *core.Router) *Plugin { return &Plugin{router: router} }

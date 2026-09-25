@@ -193,7 +193,6 @@ func TestMessagesFacadeDelayedDeleteRequiresOwnedScheduler(t *testing.T) {
 	}
 }
 
-
 func TestP5UserbotSemanticResponseReusesOneAnchor(t *testing.T) {
 	mock := &mockTelegramServicer{}
 	ctx := &Context{

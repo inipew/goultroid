@@ -204,10 +204,10 @@ func (p *Plugin) submitInteractivePipeline(
 
 			var err error
 			asset, err = p.registry.Download(taskCtx, state.URL, targetStore, download.DownloadOptions{
-				Timeout:  downloaderExecutionTimeout,
-				MaxBytes: 500 * 1024 * 1024,
-				Progress: progress,
-				Mode:     mode,
+				Timeout:   downloaderExecutionTimeout,
+				MaxBytes:  500 * 1024 * 1024,
+				Progress:  progress,
+				Mode:      mode,
 				Format:    format,
 				MaxHeight: state.MaxHeight,
 			})

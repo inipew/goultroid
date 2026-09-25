@@ -1173,7 +1173,6 @@ func (i *InlineClientInteraction) EditMedia(
 	return nil
 }
 
-
 // EditMarkup updates only the inline markup of an inline bot message, preserving the text on Telegram.
 func (i *InlineClientInteraction) EditMarkup(ctx context.Context, target InlineTarget, markup tg.ReplyMarkupClass) (retErr error) {
 	if i.ci == nil || i.ci.api == nil || !target.IsValid() {

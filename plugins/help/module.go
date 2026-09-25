@@ -13,9 +13,9 @@ var Module ModuleType
 
 func (ModuleType) Manifest() module.Manifest {
 	return module.Manifest{
-		ID:           "help",
-		Version:      "1.0.0",
-		Description:  "Interactive help and command documentation browser",
+		ID:          "help",
+		Version:     "1.0.0",
+		Description: "Interactive help and command documentation browser",
 		Capabilities: []string{
 			plugin.CapTelegramRead,
 			plugin.CapTelegramSendMessage,

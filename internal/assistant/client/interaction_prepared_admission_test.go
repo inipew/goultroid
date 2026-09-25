@@ -226,7 +226,6 @@ func TestInteractionIngressCarriesPreparedActionAdmissionToTaskEngine(t *testing
 	}
 }
 
-
 type blockingPreparedCallbackTasks struct {
 	mu      sync.Mutex
 	calls   int

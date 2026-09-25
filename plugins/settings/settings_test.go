@@ -358,7 +358,6 @@ func TestPlugin_CLIConfig(t *testing.T) {
 	}
 }
 
-
 func TestPlugin_CLIConfigOutgoingUsesSemanticEdit(t *testing.T) {
 	p, _, _, tgSvc := setupTestPlugin(t)
 	ctx := &core.Context{

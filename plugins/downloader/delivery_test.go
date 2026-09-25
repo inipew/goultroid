@@ -227,9 +227,9 @@ func TestYTZPipelineReleasesDownloadResourcesBeforeMediaDelivery(t *testing.T) {
 	p.registry = download.NewRegistry(provider)
 
 	state := interactiveState{
-		URL:      "https://www.youtube.com/watch?v=abcdefghijk",
-		Provider: "extractor",
-		Phase:    phaseVideoFormat,
+		URL:       "https://www.youtube.com/watch?v=abcdefghijk",
+		Provider:  "extractor",
+		Phase:     phaseVideoFormat,
 		Mode:      download.MediaModeVideo,
 		Format:    download.MediaFormatMP4,
 		MaxHeight: 720,
@@ -337,4 +337,3 @@ func TestYTZUserbotURLCommandOpensSelectionBeforePhysicalDownload(t *testing.T) 
 		t.Fatalf("renderer reply/topic=%d/%d, want 71/70", renderer.request.ReplyToID, renderer.request.TopicID)
 	}
 }
-

@@ -298,8 +298,8 @@ func viewHasAction(rows []presentation.Row, actionID string) bool {
 
 type cancellationRecordingClient struct {
 	tasks.Client
-	cancelled      []tasks.TaskID
-	cancelErr      error
+	cancelled     []tasks.TaskID
+	cancelErr     error
 	notFoundStage string
 }
 

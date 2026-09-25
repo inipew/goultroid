@@ -111,7 +111,6 @@ func TestSpecValidateRejectsWrongInteractionSurface(t *testing.T) {
 	}
 }
 
-
 func TestSpecValidateRejectsActionThatCannotFitCallbackBudget(t *testing.T) {
 	surface := execution.SurfaceAssistant
 	spec := Spec{

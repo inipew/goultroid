@@ -876,9 +876,9 @@ func TestRouter_OpaqueStateIsFencedByPluginGeneration(t *testing.T) {
 	}
 
 	staleToken := writer.StoreWithScope("old", StateScope{
-		UserID:     42,
-		Namespace:  "reload",
-		SingleUse:  true,
+		UserID:    42,
+		Namespace: "reload",
+		SingleUse: true,
 	}, 5*time.Minute)
 	if staleToken == "" {
 		t.Fatal("expected generation-1 state token")
@@ -886,9 +886,9 @@ func TestRouter_OpaqueStateIsFencedByPluginGeneration(t *testing.T) {
 
 	generation = 2
 	freshToken := writer.StoreWithScope("new", StateScope{
-		UserID:     42,
-		Namespace:  "reload",
-		SingleUse:  true,
+		UserID:    42,
+		Namespace: "reload",
+		SingleUse: true,
 	}, 5*time.Minute)
 	if freshToken == "" {
 		t.Fatal("expected generation-2 state token")

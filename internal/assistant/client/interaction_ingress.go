@@ -17,8 +17,8 @@ import (
 	"github.com/inipew/goultroid/internal/presentation"
 
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
-	"github.com/inipew/goultroid/internal/ui"
 	"github.com/inipew/goultroid/internal/tasks"
+	"github.com/inipew/goultroid/internal/ui"
 )
 
 var ErrInteractionUnavailable = errors.New("assistant/client: interaction engine unavailable")
