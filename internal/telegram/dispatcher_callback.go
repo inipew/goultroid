@@ -343,7 +343,7 @@ func (d *Dispatcher) OnMessageReactions(ctx context.Context, e tg.Entities, upda
 	return nil
 }
 
-// extractChatIDFromPeer returns a numeric chat ID for the given peer class.// extractChatIDFromPeer returns a numeric chat ID for the given peer class.
+// extractChatIDFromPeer returns a numeric chat ID for the given peer class.
 func extractChatIDFromPeer(peer tg.PeerClass) int64 {
 	if peer == nil {
 		return 0

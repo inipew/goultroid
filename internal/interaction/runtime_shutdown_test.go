@@ -37,7 +37,7 @@ func TestCloseCancelsSessionsAndRejectsNewWork(t *testing.T) {
 	}
 }
 
-func TestCreateDetectsFeatureRemoved(t *testing.T) {func TestCreateDetectsFeatureRemoved(t *testing.T) {
+func TestCreateDetectsFeatureRemoved(t *testing.T) {
 	runtime, catalog, _ := testRuntime(t, Config{})
 	catalog.removeScope("demo")
 	if _, err := runtime.Create(context.Background(), CreateRequest{FeatureID: "demo", Binding: Binding{ActorID: 1}}); !errors.Is(err, ErrInvalidFeature) {

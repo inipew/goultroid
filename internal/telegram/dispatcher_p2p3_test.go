@@ -107,7 +107,7 @@ func TestDispatcher_UnknownCallbackPolicyAfterLegacyRouterRemoval(t *testing.T) 
 	}
 }
 
-func TestDispatcher_CanonicalPipeline_Normalizer(t *testing.T) {func TestDispatcher_CanonicalPipeline_Normalizer(t *testing.T) {
+func TestDispatcher_CanonicalPipeline_Normalizer(t *testing.T) {
 	logger := zap.NewNop()
 	router := core.NewRouter(".")
 	dispatcher := NewDispatcher(router, nil, nil, logger)

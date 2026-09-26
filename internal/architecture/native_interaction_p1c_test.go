@@ -62,7 +62,7 @@ func TestP1CNativeCallbackPrecedesUnknownFallback(t *testing.T) {
 	}
 }
 
-func TestP1CNativeFoundationWiredWithoutAssistantGate(t *testing.T) {func TestP1CNativeFoundationWiredWithoutAssistantGate(t *testing.T) {
+func TestP1CNativeFoundationWiredWithoutAssistantGate(t *testing.T) {
 	root := repositoryRoot(t)
 	path := filepath.Join(root, "internal", "app", "app.go")
 	raw, err := os.ReadFile(path)
