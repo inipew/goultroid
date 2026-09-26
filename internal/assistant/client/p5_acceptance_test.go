@@ -314,7 +314,7 @@ func TestP5FinalAssistantUXLifecycleAcceptance(t *testing.T) {
 			t.Fatalf("P5 callback query %d acknowledgement count=%d, want 1", queryID, got)
 		}
 	}
-	handled, err := client.interactionIngress.tryMessage(ctx, pingToken, 8, 2600, peer, 7, 77)
+	handled, err = client.interactionIngress.tryMessage(ctx, pingToken, 8, 2600, peer, 7, 77)
 	if !handled {
 		t.Fatal("P5 wrong-actor callback was not recognized as a2")
 	}

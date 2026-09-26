@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/gotd/td/tg"
-	"github.com/inipew/goultroid/internal/assistant/command"
 	assistantshell "github.com/inipew/goultroid/internal/assistant/shell"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"

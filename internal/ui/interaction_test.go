@@ -205,19 +205,6 @@ func TestMenuComponents(t *testing.T) {
 	}
 }
 
-func TestToast(t *testing.T) {
-	// Nil context safe
-	if err := AnswerToast(nil, "hello", false); err != nil {
-		t.Errorf("expected nil error on nil context: %v", err)
-	}
-	if err := AnswerSuccessToast(nil, ""); err != nil {
-		t.Errorf("expected nil error on nil context: %v", err)
-	}
-	if err := AnswerErrorToast(nil, ""); err != nil {
-		t.Errorf("expected nil error on nil context: %v", err)
-	}
-}
-
 func TestAdvancedUIPrimitives(t *testing.T) {
 	// 1. StateToggle
 	stOn := BuildStateToggle(true, "AntiFlood", []byte("toggle"))

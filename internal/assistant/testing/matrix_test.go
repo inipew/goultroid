@@ -11,7 +11,7 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/command"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
-	corecallback "github.com/inipew/goultroid/internal/services/callback"
+	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 	"go.uber.org/zap"
 )
 
@@ -19,25 +19,37 @@ func TestIntegration_PostCutoverMatrix(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("CanonicalCallback_Malformed", func(t *testing.T) {
-		if _, _, _, err := corecallback.ParseCallbackData([]byte("invalid_format")); !errors.Is(err, corecallback.ErrInvalidCallbackData) {
-			t.Fatalf("expected ErrInvalidCallbackData, got %v", err)
+		data := []byte("a2:invalid")
+		if !rootinteraction.OwnsCallbackData(data) {
+			t.Fatal("malformed a2 callback must remain owned by a2 for fail-closed dispatch")
+		}
+		if _, err := rootinteraction.ParseCallbackToken(data); !errors.Is(err, rootinteraction.ErrInvalidCallbackToken) {
+			t.Fatalf("expected ErrInvalidCallbackToken, got %v", err)
 		}
 	})
 
 	t.Run("CanonicalCallback_RejectsRetiredA1", func(t *testing.T) {
-		if _, _, _, err := corecallback.ParseCallbackData([]byte("a1:assistant:start:noop")); !errors.Is(err, corecallback.ErrInvalidCallbackData) {
+		data := []byte("a1:assistant:start:noop")
+		if rootinteraction.OwnsCallbackData(data) {
+			t.Fatal("retired a1 callback unexpectedly owned by a2")
+		}
+		if _, err := rootinteraction.ParseCallbackToken(data); !errors.Is(err, rootinteraction.ErrInvalidCallbackToken) {
 			t.Fatalf("expected retired a1 rejection, got %v", err)
 		}
 	})
 
-	t.Run("CanonicalCallback_V1RoundTrip", func(t *testing.T) {
-		data := corecallback.EncodeCallbackData("myxl", "refresh", "abc123")
-		ns, action, opaqueID, err := corecallback.ParseCallbackData(data)
+	t.Run("CanonicalCallback_A2RoundTrip", func(t *testing.T) {
+		const sessionID = "AAAAAAAAAAAAAAAAAAAAAA"
+		data, err := rootinteraction.EncodeCallbackToken("myxl", "refresh", sessionID, 1)
 		if err != nil {
-			t.Fatalf("parse v1 callback: %v", err)
+			t.Fatalf("encode a2 callback: %v", err)
 		}
-		if ns != "myxl" || action != "refresh" || opaqueID != "abc123" {
-			t.Fatalf("unexpected callback coordinates: %q %q %q", ns, action, opaqueID)
+		token, err := rootinteraction.ParseCallbackToken(data)
+		if err != nil {
+			t.Fatalf("parse a2 callback: %v", err)
+		}
+		if token.Version != rootinteraction.CallbackVersion || token.ActionID != "refresh" || token.SessionID != sessionID || token.Revision != 1 {
+			t.Fatalf("unexpected callback token: %+v", token)
 		}
 	})
 

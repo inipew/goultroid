@@ -162,7 +162,8 @@ func TestP1DTextOnlySettingsAllocatesNoA2Session(t *testing.T) {
 
 	if err := p.handleSettingsCommand(nativeSettingsCommandContext(tgSvc, ownerID)); err != nil {
 		t.Fatalf("open text-only settings: %v", err)
-	}	if got := h.runtime.CancelScope(h.scope); got != 0 {
+	}
+	if got := h.runtime.CancelScope(h.scope); got != 0 {
 		t.Fatalf("text-only settings allocated %d a2 sessions, want 0", got)
 	}
 	tgSvc.mu.Lock()
