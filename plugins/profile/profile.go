@@ -159,7 +159,7 @@ func (p *Plugin) Commands() []core.Command {
 func (p *Plugin) handleMe(ctx *core.Context) error {
 	fullUser, err := ctx.GetFullUser(&tg.InputUserSelf{})
 	if err != nil {
-		return ctx.Fail(err, "Failed to fetch self info.")
+		return ctx.Fail(err, ctx.T("profile.me.fetch_failed"))
 	}
 
 	var selfUser *tg.User
@@ -171,27 +171,27 @@ func (p *Plugin) handleMe(ctx *core.Context) error {
 	}
 
 	if selfUser == nil {
-		return ctx.Error("Could not parse self profile details.")
+		return ctx.Error(ctx.T("profile.me.parse_failed"))
 	}
 
 	var sb strings.Builder
-	sb.WriteString("🤖 <b>My Profile</b>\n\n")
-	sb.WriteString(fmt.Sprintf("• <b>ID</b>: <code>%d</code>\n", selfUser.ID))
-	sb.WriteString(fmt.Sprintf("• <b>First Name</b>: %s\n", core.EscapeHTML(selfUser.FirstName)))
+	sb.WriteString(ctx.T("profile.me.title"))
+	sb.WriteString(ctx.T("profile.me.id", selfUser.ID))
+	sb.WriteString(ctx.T("profile.me.first_name", core.EscapeHTML(selfUser.FirstName)))
 	if selfUser.LastName != "" {
-		sb.WriteString(fmt.Sprintf("• <b>Last Name</b>: %s\n", core.EscapeHTML(selfUser.LastName)))
+		sb.WriteString(ctx.T("profile.me.last_name", core.EscapeHTML(selfUser.LastName)))
 	}
 	if selfUser.Username != "" {
-		sb.WriteString(fmt.Sprintf("• <b>Username</b>: @%s\n", core.EscapeHTML(selfUser.Username)))
+		sb.WriteString(ctx.T("profile.me.username", core.EscapeHTML(selfUser.Username)))
 	}
 	if selfUser.Phone != "" {
-		sb.WriteString(fmt.Sprintf("• <b>Phone</b>: <code>+%s</code>\n", core.EscapeHTML(selfUser.Phone)))
+		sb.WriteString(ctx.T("profile.me.phone", core.EscapeHTML(selfUser.Phone)))
 	}
 	if selfUser.Premium {
-		sb.WriteString("• <b>Premium</b>: Yes ⭐\n")
+		sb.WriteString(ctx.T("profile.me.premium"))
 	}
 	if fullUser.FullUser.About != "" {
-		sb.WriteString(fmt.Sprintf("• <b>Bio</b>: <i>%s</i>\n", core.EscapeHTML(fullUser.FullUser.About)))
+		sb.WriteString(ctx.T("profile.me.bio", core.EscapeHTML(fullUser.FullUser.About)))
 	}
 
 	return ctx.Result(sb.String())
@@ -201,23 +201,23 @@ func (p *Plugin) handleMe(ctx *core.Context) error {
 func (p *Plugin) handleSetBio(ctx *core.Context) error {
 	bio := strings.TrimSpace(ctx.RawArgs)
 	if bio == "" {
-		return ctx.Status("Please provide bio text: <code>.setbio <text></code>")
+		return ctx.Status(ctx.T("profile.bio.usage"))
 	}
 	if len([]rune(bio)) > 70 {
-		return ctx.Status(fmt.Sprintf("Bio text is too long (%d/70 characters).", len([]rune(bio))))
+		return ctx.Status(ctx.T("profile.bio.too_long", len([]rune(bio))))
 	}
 
 	if err := ctx.UpdateProfile(nil, nil, &bio); err != nil {
-		return ctx.Fail(err, "Failed to update bio.")
+		return ctx.Fail(err, ctx.T("profile.bio.update_failed"))
 	}
 
-	return ctx.Success(fmt.Sprintf("<b>Bio updated successfully</b>:\n<i>%s</i>", core.EscapeHTML(bio)))
+	return ctx.Success(ctx.T("profile.bio.updated", core.EscapeHTML(bio)))
 }
 
 // handleSetName updates the account's first name and optional last name.
 func (p *Plugin) handleSetName(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		return ctx.Status("Please provide a name: <code>.setname <first_name> [last_name]</code>")
+		return ctx.Status(ctx.T("profile.name.usage"))
 	}
 
 	firstName := ctx.Args[0]
@@ -227,14 +227,14 @@ func (p *Plugin) handleSetName(ctx *core.Context) error {
 	}
 
 	if err := ctx.UpdateProfile(&firstName, &lastName, nil); err != nil {
-		return ctx.Fail(err, "Failed to update name.")
+		return ctx.Fail(err, ctx.T("profile.name.update_failed"))
 	}
 
 	fullName := firstName
 	if lastName != "" {
 		fullName += " " + lastName
 	}
-	return ctx.Success(fmt.Sprintf("<b>Name updated successfully to</b>: %s", core.EscapeHTML(fullName)))
+	return ctx.Success(ctx.T("profile.name.updated", core.EscapeHTML(fullName)))
 }
 
 func isProfileImageMedia(media *core.MediaInfo) bool {
@@ -256,42 +256,42 @@ func isProfileImageMedia(media *core.MediaInfo) bool {
 func (p *Plugin) handleSetPic(ctx *core.Context) error {
 	reply, err := ctx.GetReply()
 	if err != nil {
-		return ctx.Fail(err, "Failed to load replied message.")
+		return ctx.Fail(err, ctx.T("profile.photo.reply_failed"))
 	}
 	if reply == nil || !reply.HasMedia() {
-		return ctx.Status("Reply to a Telegram photo or image document, then run <code>.setpic</code>. Local filesystem paths are not accepted.")
+		return ctx.Status(ctx.T("profile.photo.usage"))
 	}
 	if !isProfileImageMedia(reply.Media) {
-		return ctx.Status("Replied media must be a photo or image document.")
+		return ctx.Status(ctx.T("profile.photo.invalid_media"))
 	}
 	if err := imageguard.ValidateKnown(reply.Media.Size, reply.Media.Width, reply.Media.Height, profileImagePolicy); err != nil {
-		return ctx.Fail(err, "Profile image rejected by safety limits.")
+		return ctx.Fail(err, ctx.T("profile.photo.rejected"))
 	}
 
 	if p.files == nil {
-		return ctx.Error("Profile filesystem scope is not available.")
+		return ctx.Error(ctx.T("profile.photo.filesystem_unavailable"))
 	}
 	tempDir, err := p.files.CreateTempDir("goultroid-pfp-*")
 	if err != nil {
-		return ctx.Fail(err, "Failed to create temporary directory.")
+		return ctx.Fail(err, ctx.T("profile.photo.temp_failed"))
 	}
 	defer func() { _ = p.files.RemoveTempDir(tempDir) }()
 
 	filePath, err := ctx.DownloadMedia(tempDir)
 	if err != nil {
-		return ctx.Fail(err, "Failed to download replied media.")
+		return ctx.Fail(err, ctx.T("profile.photo.download_failed"))
 	}
 	if _, err := imageguard.Inspect(filePath, profileImagePolicy); err != nil {
-		return ctx.Fail(err, "Downloaded profile image is invalid.")
+		return ctx.Fail(err, ctx.T("profile.photo.invalid_download"))
 	}
 
 	if ctx.Svc == nil {
-		return ctx.Error("Telegram service not available.")
+		return ctx.Error(ctx.T("profile.telegram_unavailable"))
 	}
 	if err := ctx.Svc.UploadProfilePhoto(ctx.Ctx, filePath); err != nil {
-		return ctx.Fail(err, "Failed to set profile photo.")
+		return ctx.Fail(err, ctx.T("profile.photo.set_failed"))
 	}
-	return ctx.Success("<b>Profile photo updated successfully!</b>")
+	return ctx.Success(ctx.T("profile.photo.updated"))
 }
 
 // handleDelPhoto deletes current profile photo(s).
@@ -307,65 +307,65 @@ func (p *Plugin) handleDelPhoto(ctx *core.Context) error {
 	}
 
 	if ctx.Svc == nil {
-		return ctx.Error("Telegram service not available.")
+		return ctx.Error(ctx.T("profile.telegram_unavailable"))
 	}
 
 	deleted, err := ctx.Svc.DeleteProfilePhotos(ctx.Ctx, limit)
 	if err != nil {
-		return ctx.Fail(err, "Failed to delete profile photo.")
+		return ctx.Fail(err, ctx.T("profile.photo.delete_failed"))
 	}
 
 	if deleted == 0 {
-		return ctx.Status("No profile photos found to delete.")
+		return ctx.Status(ctx.T("profile.photo.none"))
 	}
 
-	return ctx.Success(fmt.Sprintf("Deleted %d profile photo(s).", deleted))
+	return ctx.Success(ctx.T("profile.photo.deleted", deleted))
 }
 
 // handleBlock blocks a user from PM/contacts.
 func (p *Plugin) handleBlock(ctx *core.Context) error {
 	peer, uid, err := ctx.Peer().ResolveTargetUser()
 	if err != nil {
-		return ctx.Fail(err, "Could not resolve target user. Reply to a user or provide a valid target.")
+		return ctx.Fail(err, ctx.T("profile.user.resolve_failed"))
 	}
 
 	if err := ctx.BlockUser(peer); err != nil {
-		return ctx.Fail(err, "Failed to block user.")
+		return ctx.Fail(err, ctx.T("profile.user.block_failed"))
 	}
 
-	return ctx.Success(fmt.Sprintf("User blocked: %s", ctx.DisplayUser(peer, uid)))
+	return ctx.Success(ctx.T("profile.user.blocked", ctx.DisplayUser(peer, uid)))
 }
 
 // handleUnblock unblocks a user.
 func (p *Plugin) handleUnblock(ctx *core.Context) error {
 	peer, uid, err := ctx.Peer().ResolveTargetUser()
 	if err != nil {
-		return ctx.Fail(err, "Could not resolve target user. Reply to a user or provide a valid target.")
+		return ctx.Fail(err, ctx.T("profile.user.resolve_failed"))
 	}
 
 	if err := ctx.UnblockUser(peer); err != nil {
-		return ctx.Fail(err, "Failed to unblock user.")
+		return ctx.Fail(err, ctx.T("profile.user.unblock_failed"))
 	}
 
-	return ctx.Success(fmt.Sprintf("<b>User unblocked:</b> %s", ctx.DisplayUser(peer, uid)))
+	return ctx.Success(ctx.T("profile.user.unblocked", ctx.DisplayUser(peer, uid)))
 }
 
 // handleContacts lists saved contacts.
 func (p *Plugin) handleContacts(ctx *core.Context) error {
 	if ctx.Svc == nil {
-		return ctx.Error("Telegram service not available.")
+		return ctx.Error(ctx.T("profile.telegram_unavailable"))
 	}
 
 	contacts, err := ctx.Svc.GetContacts(ctx.Ctx)
 	if err != nil {
-		return ctx.Fail(err, "Failed to fetch contacts.")
+		return ctx.Fail(err, ctx.T("profile.contacts.fetch_failed"))
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("📖 <b>Contacts List (%d total)</b>\n\n", len(contacts)))
+	sb.WriteString(ctx.T("profile.contacts.title", len(contacts)))
 
 	if len(contacts) == 0 {
-		sb.WriteString("<i>No saved contacts found.</i>")
+		sb.WriteString(ctx.T("profile.contacts.none"))
 		return ctx.Result(sb.String())
 	}
 
@@ -378,17 +378,17 @@ func (p *Plugin) handleContacts(ctx *core.Context) error {
 		c := contacts[i]
 		name := strings.TrimSpace(c.FirstName + " " + c.LastName)
 		if name == "" {
-			name = "Unknown"
+			name = ctx.T("profile.common.unknown")
 		}
 		uname := ""
 		if c.Username != "" {
 			uname = fmt.Sprintf(" (@%s)", core.EscapeHTML(c.Username))
 		}
-		sb.WriteString(fmt.Sprintf("%d. <b>%s</b>%s — <code>%d</code>\n", i+1, core.EscapeHTML(name), uname, c.ID))
+		sb.WriteString(ctx.T("profile.contacts.item", i+1, core.EscapeHTML(name), uname, c.ID))
 	}
 
 	if len(contacts) > displayLimit {
-		sb.WriteString(fmt.Sprintf("\n<i>...and %d more contacts.</i>", len(contacts)-displayLimit))
+		sb.WriteString(ctx.T("profile.contacts.more", len(contacts)-displayLimit))
 	}
 
 	return ctx.Result(sb.String())
@@ -407,29 +407,34 @@ func (p *Plugin) handleDialogs(ctx *core.Context) error {
 	}
 
 	if ctx.Svc == nil {
-		return ctx.Error("Telegram service not available.")
+		return ctx.Error(ctx.T("profile.telegram_unavailable"))
 	}
 
 	dialogs, err := ctx.Svc.GetDialogs(ctx.Ctx, limit)
 	if err != nil {
-		return ctx.Fail(err, "Failed to fetch dialogs.")
+		return ctx.Fail(err, ctx.T("profile.dialogs.fetch_failed"))
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("💬 <b>Recent Dialogs (%d fetched)</b>\n\n", len(dialogs)))
+	sb.WriteString(ctx.T("profile.dialogs.title", len(dialogs)))
 
 	if len(dialogs) == 0 {
-		sb.WriteString("<i>No active dialogs found.</i>")
+		sb.WriteString(ctx.T("profile.dialogs.none"))
 		return ctx.Result(sb.String())
 	}
 
 	for i, d := range dialogs {
 		title := d.Title
 		if title == "" {
-			title = "Untitled Chat"
+			title = ctx.T("profile.dialogs.untitled")
 		}
-		sb.WriteString(fmt.Sprintf("%d. <b>%s</b> [<code>%s</code>]\n   ID: <code>%d</code>\n",
-			i+1, core.EscapeHTML(title), core.EscapeHTML(d.Type), d.ID))
+		sb.WriteString(ctx.T(
+			"profile.dialogs.item",
+			i+1,
+			core.EscapeHTML(title),
+			core.EscapeHTML(d.Type),
+			d.ID,
+		))
 	}
 
 	return ctx.Result(sb.String())
