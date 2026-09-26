@@ -96,7 +96,7 @@ func TestP2COwnerExecDiagnosticExceptionRemainsNarrowAndBounded(t *testing.T) {
 	// .exec intentionally returns command/process diagnostics to the Owner. Keep
 	// this exception exact: owner-only, userbot-only, bounded, and HTML escaped.
 	for _, required := range []string{
-		{Name: "exec"},
+		"Name: \"exec\"",
 		"Permission: core.PermissionOwner",
 		"Surfaces: execution.SurfaceUserbot",
 		"2*1024*1024",
