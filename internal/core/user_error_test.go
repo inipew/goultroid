@@ -58,3 +58,33 @@ func TestContextFailPresentsSafeMessageOnceAndPreservesCause(t *testing.T) {
 		t.Fatalf("presentation leaked internal cause: %q", service.editedText)
 	}
 }
+
+
+func TestContextFailAmbiguousEditPresentationFailsClosed(t *testing.T) {
+	transportErr := errors.New("connection reset after error edit")
+	service := &mockTelegramServicer{errToEdit: transportErr}
+	ctx := &Context{
+		Ctx:     context.Background(),
+		Message: &Message{ID: 205, IsOutgoing: true},
+		Svc:     service,
+		PeerID:  &tg.InputPeerSelf{},
+	}
+
+	err := ctx.Fail(ErrUnavailable, "The service is temporarily unavailable.")
+	if err == nil {
+		t.Fatal("Fail() unexpectedly succeeded")
+	}
+	if !errors.Is(err, transportErr) || !MessageEditMayHaveCommitted(err) {
+		t.Fatalf("error=%v, want ambiguous edit cause", err)
+	}
+	if !UserErrorWasPresented(err) {
+		t.Fatal("ambiguous presentation must fail closed against duplicate feedback")
+	}
+	semantics := ExecutionSemantics(err)
+	if semantics.Disposition != execution.DispositionHandled || semantics.Code != "user_error_presentation_unconfirmed" {
+		t.Fatalf("semantics=%+v, want handled unconfirmed presentation", semantics)
+	}
+	if service.sendCalls != 0 {
+		t.Fatalf("send calls=%d, ambiguous edit must not trigger a reply fallback", service.sendCalls)
+	}
+}

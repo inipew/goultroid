@@ -125,38 +125,48 @@ func (m *MessagesFacade) ReplyAndDeleteWithDelay(text string, delay time.Duratio
 	return nil
 }
 
-// Edit edits the previously sent response (if Reply was called) or the outgoing command message.
+// Edit edits the previously sent response or the current trigger message.
+// Direct Edit keeps its legacy target selection, but every transport attempt is
+// stage-aware so callers can distinguish preflight failure from an ambiguous
+// Telegram edit delivery.
 func (m *MessagesFacade) Edit(text string) error {
 	c := m.ctx
-	if c == nil || c.Svc == nil {
-		return errors.New("telegram service not initialized")
-	}
-	if c.PeerID == nil {
-		return errors.New("peer is nil")
+	if c == nil {
+		return messageEditFailure(MessageEditStagePreflight, false, errors.New("context is nil"))
 	}
 	msgID := c.LastResponseID
+	outgoingTrigger := false
 	if msgID == 0 && c.Message != nil {
 		msgID = c.Message.ID
+		outgoingTrigger = c.Message.IsOutgoing && msgID > 0
 	}
-	if msgID == 0 {
-		return errors.New("no message to edit")
+	if err := m.editMessageID(text, msgID); err != nil {
+		return err
 	}
-	return c.Svc.EditMessage(c.Ctx, c.PeerID, msgID, text)
+	if outgoingTrigger && c.LastResponseID == 0 {
+		c.LastResponseID = msgID
+	}
+	return nil
 }
 
-// EditOrReply updates an existing bot-owned response or an outgoing userbot command.
-// A scheduled/system execution has no real trigger message (ID 0), so it must
-// reply instead of trying to edit the synthetic placeholder.
+// EditOrReply chooses its mutation mode before issuing any Telegram RPC.
+// A known bot-owned response or outgoing userbot trigger is edited. If no
+// editable anchor exists, it replies immediately. Once an edit RPC is attempted,
+// any error is returned without reply fallback because Telegram may have already
+// committed the edit.
 func (m *MessagesFacade) EditOrReply(text string) error {
 	c := m.ctx
 	if c == nil {
 		return errors.New("context is nil")
 	}
-	if c.LastResponseID != 0 {
-		return m.Edit(text)
-	}
-	if c.Message != nil && c.Message.IsOutgoing && c.Message.ID > 0 {
-		return m.Edit(text)
+	if msgID, outgoingTrigger, ok := editableResponseAnchor(c); ok {
+		if err := m.editMessageID(text, msgID); err != nil {
+			return err
+		}
+		if outgoingTrigger && c.LastResponseID == 0 {
+			c.LastResponseID = msgID
+		}
+		return nil
 	}
 	if c.Source != ExecutionInteractive {
 		return m.Reply(text)
@@ -164,30 +174,24 @@ func (m *MessagesFacade) EditOrReply(text string) error {
 	return m.ReplyAndDelete(text)
 }
 
-// EditOrReplyWithDelay updates an existing response or outgoing message and schedules its deletion after delay.
+// EditOrReplyWithDelay follows the same preflight routing as EditOrReply. A
+// failed edit never falls back to a reply, and a post-edit cleanup failure is
+// marked as already committed so callers cannot safely emit another response.
 func (m *MessagesFacade) EditOrReplyWithDelay(text string, delay time.Duration) error {
 	c := m.ctx
 	if c == nil {
 		return errors.New("context is nil")
 	}
-	if c.LastResponseID != 0 {
-		if err := m.Edit(text); err != nil {
+	if msgID, outgoingTrigger, ok := editableResponseAnchor(c); ok {
+		if err := m.editMessageID(text, msgID); err != nil {
 			return err
 		}
-		if delay > 0 && c.Svc != nil && c.PeerID != nil {
-			if err := m.scheduleDelete(c.PeerID, c.LastResponseID, delay); err != nil {
-				return err
-			}
+		if outgoingTrigger && c.LastResponseID == 0 {
+			c.LastResponseID = msgID
 		}
-		return nil
-	}
-	if c.Message != nil && c.Message.IsOutgoing && c.Message.ID > 0 {
-		if err := m.Edit(text); err != nil {
-			return err
-		}
-		if delay > 0 && c.Svc != nil && c.PeerID != nil {
-			if err := m.scheduleDelete(c.PeerID, c.Message.ID, delay); err != nil {
-				return err
+		if delay > 0 {
+			if err := m.scheduleDelete(c.PeerID, msgID, delay); err != nil {
+				return messageEditFailure(MessageEditStagePostCommit, true, err)
 			}
 		}
 		return nil

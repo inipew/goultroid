@@ -54,17 +54,6 @@ func (m *MessagesFacade) SemanticResponse(response presentation.Response) error 
 	if strings.TrimSpace(text) == "" {
 		return ErrInvalidArgs
 	}
-	c := m.ctx
-	if c != nil && c.LastResponseID == 0 && c.Message != nil && c.Message.IsOutgoing && c.Message.ID > 0 {
-		if err := m.Edit(text); err != nil {
-			return err
-		}
-		// The edited outgoing command is now the semantic response anchor. This
-		// lets media-producing commands clean up progress uniformly across
-		// userbot and Assistant surfaces via DeleteResponse.
-		c.LastResponseID = c.Message.ID
-		return nil
-	}
 	return m.EditOrReply(text)
 }
 

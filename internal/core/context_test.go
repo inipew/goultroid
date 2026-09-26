@@ -19,6 +19,8 @@ type mockTelegramServicer struct {
 	sentText     string
 	editedText   string
 	deletedIDs   []int
+	sendCalls    int
+	editCalls    int
 	reactEmoji   string
 	messageToGet *tg.Message
 	getCalls     int
@@ -31,6 +33,7 @@ type mockTelegramServicer struct {
 }
 
 func (m *mockTelegramServicer) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
+	m.sendCalls++
 	if m.errToSend != nil {
 		return nil, m.errToSend
 	}
@@ -39,6 +42,7 @@ func (m *mockTelegramServicer) SendMessage(ctx context.Context, peer tg.InputPee
 }
 
 func (m *mockTelegramServicer) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
+	m.editCalls++
 	if m.errToEdit != nil {
 		return m.errToEdit
 	}

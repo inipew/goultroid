@@ -614,8 +614,9 @@ func (c *Context) Edit(text string) error {
 	return c.Messages().Edit(text)
 }
 
-// EditOrReply tries to edit the trigger (or last response) message in-place.
-// Falls back to Reply if editing fails. Canonical userbot UX helper.
+// EditOrReply edits only a preflight-confirmed response/outgoing trigger.
+// When no editable anchor exists it replies instead. An attempted edit that
+// returns an error never falls back to reply because commit may be ambiguous.
 func (c *Context) EditOrReply(text string) error {
 	return c.Messages().EditOrReply(text)
 }

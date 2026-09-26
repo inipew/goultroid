@@ -67,12 +67,16 @@ func (e *UserFacingError) SafeUserMessage() string {
 }
 
 func (e *UserFacingError) UserErrorPresented() bool {
-	return e != nil && e.presented
+	return e != nil && (e.presented || MessageEditMayHaveCommitted(e.presentationErr))
 }
 
 func (e *UserFacingError) ExecutionSemantics() execution.Semantics {
-	if e != nil && e.presented {
-		return execution.Semantics{Disposition: execution.DispositionHandled, Code: "user_error_presented"}
+	if e != nil && e.UserErrorPresented() {
+		code := "user_error_presented"
+		if !e.presented {
+			code = "user_error_presentation_unconfirmed"
+		}
+		return execution.Semantics{Disposition: execution.DispositionHandled, Code: code}
 	}
 	if e == nil || e.cause == nil {
 		return execution.Semantics{Disposition: execution.DispositionInternal, Code: "user_error"}
@@ -115,7 +119,9 @@ func ExplicitUserMessage(err error) (string, bool) {
 	return message, message != ""
 }
 
-// UserErrorWasPresented reports whether safe feedback was already delivered.
+// UserErrorWasPresented reports whether safe feedback was delivered or its
+// delivery may already have committed. Callers must fail closed in either case
+// to avoid duplicate fallback presentation.
 func UserErrorWasPresented(err error) bool {
 	if err == nil {
 		return false

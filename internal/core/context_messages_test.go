@@ -224,3 +224,178 @@ func TestP5UserbotSemanticResponseReusesOneAnchor(t *testing.T) {
 		t.Fatalf("semantic response deleted messages: %v", mock.deletedIDs)
 	}
 }
+
+
+func TestP0CEditOrReplyPreflightChoosesReplyWithoutEditRPC(t *testing.T) {
+	mock := &mockTelegramServicer{}
+	ctx := &Context{
+		Ctx:     context.Background(),
+		Source:  ExecutionInteractive,
+		Message: &Message{ID: 104, IsOutgoing: false},
+		Svc:     mock,
+		PeerID:  &tg.InputPeerSelf{},
+	}
+
+	if err := ctx.Messages().EditOrReply("done"); err != nil {
+		t.Fatalf("EditOrReply() error = %v", err)
+	}
+	if mock.editCalls != 0 {
+		t.Fatalf("edit calls=%d, want 0 when no editable anchor exists", mock.editCalls)
+	}
+	if mock.sendCalls != 1 {
+		t.Fatalf("send calls=%d, want 1 reply", mock.sendCalls)
+	}
+	if len(mock.deletedIDs) != 1 || mock.deletedIDs[0] != 104 {
+		t.Fatalf("deleted IDs=%v, want interactive trigger [104]", mock.deletedIDs)
+	}
+}
+
+func TestP0CEditOrReplyAmbiguousEditNeverFallsBackToReply(t *testing.T) {
+	transportErr := errors.New("connection reset after edit write")
+	mock := &mockTelegramServicer{errToEdit: transportErr}
+	ctx := &Context{
+		Ctx:     context.Background(),
+		Source:  ExecutionInteractive,
+		Message: &Message{ID: 205, IsOutgoing: true},
+		Svc:     mock,
+		PeerID:  &tg.InputPeerSelf{},
+	}
+
+	err := ctx.Messages().EditOrReply("done")
+	if err == nil {
+		t.Fatal("EditOrReply() unexpectedly succeeded")
+	}
+	if !errors.Is(err, transportErr) || !errors.Is(err, ErrEditDeliveryUnconfirmed) {
+		t.Fatalf("error=%v, want transport cause plus ErrEditDeliveryUnconfirmed", err)
+	}
+	if err.Error() != ErrEditDeliveryUnconfirmed.Error() {
+		t.Fatalf("public edit diagnostic=%q, want stable unconfirmed-delivery message", err.Error())
+	}
+	if got := MessageEditFailureStage(err); got != MessageEditStageSend {
+		t.Fatalf("stage=%v, want send", got)
+	}
+	if !MessageEditMayHaveCommitted(err) || MessageEditFallbackSafe(err) {
+		t.Fatalf("ambiguous edit safety mismatch: committed=%v fallback=%v", MessageEditMayHaveCommitted(err), MessageEditFallbackSafe(err))
+	}
+	if mock.editCalls != 1 {
+		t.Fatalf("edit calls=%d, want 1", mock.editCalls)
+	}
+	if mock.sendCalls != 0 {
+		t.Fatalf("send calls=%d, ambiguous edit must not fall back to reply", mock.sendCalls)
+	}
+	if len(mock.deletedIDs) != 0 {
+		t.Fatalf("deleted IDs=%v, ambiguous edit must not delete trigger", mock.deletedIDs)
+	}
+	if ctx.LastResponseID != 0 {
+		t.Fatalf("LastResponseID=%d, failed edit must not claim a confirmed anchor", ctx.LastResponseID)
+	}
+}
+
+func TestP0CEditOrReplySuccessfulOutgoingEditBecomesResponseAnchor(t *testing.T) {
+	mock := &mockTelegramServicer{}
+	ctx := &Context{
+		Ctx:     context.Background(),
+		Source:  ExecutionInteractive,
+		Message: &Message{ID: 205, IsOutgoing: true},
+		Svc:     mock,
+		PeerID:  &tg.InputPeerSelf{},
+	}
+
+	if err := ctx.Messages().EditOrReply("first"); err != nil {
+		t.Fatalf("first EditOrReply() error = %v", err)
+	}
+	if ctx.LastResponseID != 205 {
+		t.Fatalf("LastResponseID=%d, want confirmed outgoing anchor 205", ctx.LastResponseID)
+	}
+	if err := ctx.Messages().EditOrReply("second"); err != nil {
+		t.Fatalf("second EditOrReply() error = %v", err)
+	}
+	if mock.editCalls != 2 || mock.sendCalls != 0 {
+		t.Fatalf("edit/send calls=%d/%d, want 2/0", mock.editCalls, mock.sendCalls)
+	}
+	if mock.editedText != "second" {
+		t.Fatalf("edited text=%q, want second", mock.editedText)
+	}
+}
+
+func TestP0CEditOrReplyWithDelayAmbiguousEditDoesNotScheduleOrReply(t *testing.T) {
+	transportErr := errors.New("timeout after edit write")
+	mock := &mockTelegramServicer{errToEdit: transportErr}
+	scheduler := &immediateDelayedActions{}
+	ctx := &Context{
+		Ctx:            context.Background(),
+		Source:         ExecutionInteractive,
+		Message:        &Message{ID: 205, IsOutgoing: true},
+		Svc:            mock,
+		PeerID:         &tg.InputPeerSelf{},
+		DelayedActions: scheduler,
+	}
+
+	err := ctx.Messages().EditOrReplyWithDelay("done", time.Minute)
+	if err == nil || !MessageEditMayHaveCommitted(err) {
+		t.Fatalf("error=%v, want ambiguous committed edit failure", err)
+	}
+	if mock.sendCalls != 0 {
+		t.Fatalf("send calls=%d, ambiguous edit must not reply", mock.sendCalls)
+	}
+	if len(scheduler.delays) != 0 {
+		t.Fatalf("scheduled delays=%v, failed edit must not schedule deletion", scheduler.delays)
+	}
+}
+
+func TestP0CDirectEditPreflightFailureIsFallbackSafe(t *testing.T) {
+	ctx := &Context{Ctx: context.Background()}
+	err := ctx.Messages().Edit("done")
+	if err == nil {
+		t.Fatal("Edit() unexpectedly succeeded")
+	}
+	if got := MessageEditFailureStage(err); got != MessageEditStagePreflight {
+		t.Fatalf("stage=%v, want preflight", got)
+	}
+	if MessageEditMayHaveCommitted(err) || !MessageEditFallbackSafe(err) {
+		t.Fatalf("preflight safety mismatch: committed=%v fallback=%v", MessageEditMayHaveCommitted(err), MessageEditFallbackSafe(err))
+	}
+}
+
+
+type failingDelayedActions struct {
+	err error
+}
+
+func (s *failingDelayedActions) Schedule(context.Context, time.Duration, int64, func(context.Context) error) error {
+	return s.err
+}
+
+func TestP0CEditOrReplyWithDelayPostCommitFailureRemainsFailClosed(t *testing.T) {
+	scheduleErr := errors.New("delayed action queue unavailable")
+	mock := &mockTelegramServicer{}
+	scheduler := &failingDelayedActions{err: scheduleErr}
+	ctx := &Context{
+		Ctx:            context.Background(),
+		Source:         ExecutionInteractive,
+		Message:        &Message{ID: 205, IsOutgoing: true},
+		Svc:            mock,
+		PeerID:         &tg.InputPeerSelf{},
+		DelayedActions: scheduler,
+	}
+
+	err := ctx.Messages().EditOrReplyWithDelay("done", time.Minute)
+	if err == nil {
+		t.Fatal("EditOrReplyWithDelay() unexpectedly succeeded")
+	}
+	if !errors.Is(err, scheduleErr) || !errors.Is(err, ErrEditPostCommit) {
+		t.Fatalf("error=%v, want schedule cause plus ErrEditPostCommit", err)
+	}
+	if got := MessageEditFailureStage(err); got != MessageEditStagePostCommit {
+		t.Fatalf("stage=%v, want post-commit", got)
+	}
+	if !MessageEditMayHaveCommitted(err) || MessageEditFallbackSafe(err) {
+		t.Fatalf("post-commit safety mismatch: committed=%v fallback=%v", MessageEditMayHaveCommitted(err), MessageEditFallbackSafe(err))
+	}
+	if mock.editCalls != 1 || mock.sendCalls != 0 {
+		t.Fatalf("edit/send calls=%d/%d, want 1/0", mock.editCalls, mock.sendCalls)
+	}
+	if ctx.LastResponseID != 205 {
+		t.Fatalf("LastResponseID=%d, confirmed edit must remain the response anchor", ctx.LastResponseID)
+	}
+}
