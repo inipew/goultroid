@@ -84,13 +84,11 @@ func (p *Plugin) handleLock(ctx *core.Context) error {
 	perm := ctx.Args[0]
 	current, err := getCurrentRights(ctx)
 	if err != nil {
-		_ = ctx.Error(fmt.Sprintf("%v", err))
-		return err
+		return ctx.Fail(err, core.UserMessage(err))
 	}
 	updated, err := applyLock(current, perm, true)
 	if err != nil {
-		_ = ctx.Error(fmt.Sprintf("%v", err))
-		return err
+		return ctx.Fail(err, core.UserMessage(err))
 	}
 
 	if err := ctx.EditChatDefaultBannedRights(updated); err != nil {
@@ -105,8 +103,7 @@ func (p *Plugin) handleLock(ctx *core.Context) error {
 			_ = ctx.Error("Gagal mengatur lock: Anda/bot harus menjadi Admin dengan hak ubah permission di grup ini.")
 			return err
 		}
-		_ = ctx.Error(fmt.Sprintf("Failed to lock permission: %v", err))
-		return err
+		return ctx.Fail(err, "Failed to lock permission.")
 	}
 
 	return ctx.EditOrReply(fmt.Sprintf("🔒 <b>Locked permission:</b> <code>%s</code> for this chat.", strings.ToLower(perm)))
@@ -126,13 +123,11 @@ func (p *Plugin) handleUnlock(ctx *core.Context) error {
 	perm := ctx.Args[0]
 	current, err := getCurrentRights(ctx)
 	if err != nil {
-		_ = ctx.Error(fmt.Sprintf("%v", err))
-		return err
+		return ctx.Fail(err, core.UserMessage(err))
 	}
 	updated, err := applyLock(current, perm, false)
 	if err != nil {
-		_ = ctx.Error(fmt.Sprintf("%v", err))
-		return err
+		return ctx.Fail(err, core.UserMessage(err))
 	}
 
 	if err := ctx.EditChatDefaultBannedRights(updated); err != nil {
@@ -147,8 +142,7 @@ func (p *Plugin) handleUnlock(ctx *core.Context) error {
 			_ = ctx.Error("Gagal mengatur lock: Anda/bot harus menjadi Admin dengan hak ubah permission di grup ini.")
 			return err
 		}
-		_ = ctx.Error(fmt.Sprintf("Failed to unlock permission: %v", err))
-		return err
+		return ctx.Fail(err, "Failed to unlock permission.")
 	}
 
 	return ctx.EditOrReply(fmt.Sprintf("🔓 <b>Unlocked permission:</b> <code>%s</code> for this chat.", strings.ToLower(perm)))
@@ -161,8 +155,7 @@ func (p *Plugin) handleLocks(ctx *core.Context) error {
 	}
 	rights, err := getCurrentRights(ctx)
 	if err != nil {
-		_ = ctx.Error(fmt.Sprintf("%v", err))
-		return err
+		return ctx.Fail(err, core.UserMessage(err))
 	}
 	return ctx.EditOrReply(formatLocks(rights))
 }
