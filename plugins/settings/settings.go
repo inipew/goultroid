@@ -402,7 +402,7 @@ func (p *Plugin) handleConfigCommand(ctx *core.Context) error {
 		ns, key := parseFullKey(ctx.Args[1])
 		val, err := p.service.Resolve(ctx.Ctx, ctx.SenderID(), ctx.ChatID(), ns, key)
 		if err != nil {
-			return ctx.Error(ui.EscapeHTML(err.Error()))
+			return ctx.Fail(err, core.UserMessage(err))
 		}
 		return ctx.Result(ctx.T(
 			"settings.cli.value",
@@ -421,11 +421,10 @@ func (p *Plugin) handleConfigCommand(ctx *core.Context) error {
 		scopeID := int64(0)
 
 		if err := p.setUC.Execute(ctx.Ctx, scope, scopeID, ns, key, val, ctx.SenderID()); err != nil {
-			return ctx.Error(ctx.T(
+			return ctx.Fail(err, ctx.T(
 				"settings.cli.set_failed",
 				ui.EscapeHTML(ns),
 				ui.EscapeHTML(key),
-				ui.EscapeHTML(err.Error()),
 			))
 		}
 		return ctx.Success(ctx.T(
@@ -441,11 +440,10 @@ func (p *Plugin) handleConfigCommand(ctx *core.Context) error {
 		}
 		ns, key := parseFullKey(ctx.Args[1])
 		if err := p.resetUC.Execute(ctx.Ctx, settings.ScopeGlobal, 0, ns, key, ctx.SenderID()); err != nil {
-			return ctx.Error(ctx.T(
+			return ctx.Fail(err, ctx.T(
 				"settings.cli.reset_failed",
 				ui.EscapeHTML(ns),
 				ui.EscapeHTML(key),
-				ui.EscapeHTML(err.Error()),
 			))
 		}
 		return ctx.Success(ctx.T("settings.cli.reset_done", ui.EscapeHTML(ns), ui.EscapeHTML(key)))
@@ -490,7 +488,7 @@ func (p *Plugin) handleConfigCommand(ctx *core.Context) error {
 		ns, key := parseFullKey(ctx.Args[1])
 		history, err := p.service.GetHistory(ctx.Ctx, ns, key, 10)
 		if err != nil {
-			return ctx.Error(ctx.T("settings.cli.history_failed", ui.EscapeHTML(err.Error())))
+			return ctx.Fail(err, ctx.T("settings.cli.history_failed"))
 		}
 		if len(history) == 0 {
 			return ctx.Status(ctx.T("settings.cli.history_none", ui.EscapeHTML(ns), ui.EscapeHTML(key)))
@@ -513,7 +511,7 @@ func (p *Plugin) handleConfigCommand(ctx *core.Context) error {
 	case "export":
 		exportData, err := p.service.Export(ctx.Ctx, settings.ScopeGlobal, 0)
 		if err != nil {
-			return ctx.Error(ctx.T("settings.cli.export_failed", ui.EscapeHTML(err.Error())))
+			return ctx.Fail(err, ctx.T("settings.cli.export_failed"))
 		}
 		bytes, _ := json.MarshalIndent(exportData, "", "  ")
 		return ctx.Result(ctx.T("settings.cli.export_result", ui.EscapeHTML(string(bytes))))
