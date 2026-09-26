@@ -131,7 +131,7 @@ func (p *Plugin) handleAddSudo(ctx *core.Context) error {
 
 	targetPeer, targetID, err := p.resolveTargetUser(ctx)
 	if err != nil {
-		_ = ctx.Status(err.Error())
+		_ = ctx.Fail(err, core.UserMessage(err))
 		return err
 	}
 	if p.perms.IsOwner(targetID) {
@@ -142,7 +142,7 @@ func (p *Plugin) handleAddSudo(ctx *core.Context) error {
 		return ctx.Status(fmt.Sprintf("%s is already a sudo user.", ctx.DisplayUser(targetPeer, targetID)))
 	}
 	if err := p.db.AddSudoUser(ctx.Ctx, targetID, ctx.SenderID()); err != nil {
-		_ = ctx.Error(fmt.Sprintf("Failed to add sudo user: %v", err))
+		_ = ctx.Fail(err, "Failed to add sudo user.")
 		return err
 	}
 	p.perms.AddSudo(targetID)
@@ -156,7 +156,7 @@ func (p *Plugin) handleDelSudo(ctx *core.Context) error {
 
 	targetPeer, targetID, err := p.resolveTargetUser(ctx)
 	if err != nil {
-		_ = ctx.Status(err.Error())
+		_ = ctx.Fail(err, core.UserMessage(err))
 		return err
 	}
 	if p.perms.IsOwner(targetID) {
@@ -164,7 +164,7 @@ func (p *Plugin) handleDelSudo(ctx *core.Context) error {
 		return fmt.Errorf("cannot remove owner %d", targetID)
 	}
 	if err := p.db.RemoveSudoUser(ctx.Ctx, targetID); err != nil {
-		_ = ctx.Error(fmt.Sprintf("Failed to remove sudo user: %v", err))
+		_ = ctx.Fail(err, "Failed to remove sudo user.")
 		return err
 	}
 	p.perms.RemoveSudo(targetID)
@@ -177,7 +177,7 @@ func (p *Plugin) handleSudoList(ctx *core.Context) error {
 	}
 	users, err := p.db.GetSudoUsers(ctx.Ctx)
 	if err != nil {
-		_ = ctx.Error(fmt.Sprintf("Failed to get sudo users: %v", err))
+		_ = ctx.Fail(err, "Failed to list sudo users.")
 		return err
 	}
 	if len(users) == 0 {
