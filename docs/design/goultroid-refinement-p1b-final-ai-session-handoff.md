@@ -1280,7 +1280,7 @@ At that point Goultroid returns to ordinary product development instead of archi
 ## One-line handoff
 
 ```text
-Current HEAD 1d00110b closes Settings final legacy transport after P1-E was fully closed at 122991c.
-NEXT = P1-F1-A repo-wide production legacy callback inventory only.
-Then F1-B producers -> F1-C consumers/wiring -> F1-D state/resource ownership -> F1-E freeze/migration matrix -> F2 remaining namespace migrations -> F3 StateStore/v1 removal -> F4 Router/wiring removal -> F5 acceptance -> P2 cleanup -> P3 measured refinement -> P4 final closure.
+P1-F1-A/B/C/D/E CLOSED at closure commit 37f86e95; authoritative F1-E matrix finds zero remaining production legacy namespace.
+P1-F2 worklist = EMPTY.
+NEXT = P1-F3 StateStore/v1 reclamation only -> STOP before P1-F4.
 ```
