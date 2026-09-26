@@ -175,7 +175,7 @@ func (p *Plugin) handleApprove(ctx *core.Context) error {
 		reason = strings.Join(ctx.Args[1:], " ")
 	}
 	if err := p.svc.ApproveWithPeer(ctx.Ctx, peer, target, reason, 0); err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to approve user: %v", err))
+		return ctx.Fail(err, "Failed to approve user.")
 	}
 	return ctx.EditOrReplyWithDelay(fmt.Sprintf("✅ <b>Approved</b> %s for private messaging.", ctx.DisplayUser(peer, target)), 4*time.Second)
 }
@@ -189,7 +189,7 @@ func (p *Plugin) handleDisapprove(ctx *core.Context) error {
 		return ctx.Status("Could not determine user. Reply to a message, run inside a PM, or provide user ID / @username.")
 	}
 	if err := p.svc.Disapprove(ctx.Ctx, target); err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to revoke approval: %v", err))
+		return ctx.Fail(err, "Failed to revoke approval.")
 	}
 	return ctx.EditOrReplyWithDelay(fmt.Sprintf("⚠️ <b>Revoked approval</b> for %s.", ctx.DisplayUser(peer, target)), 4*time.Second)
 }
@@ -210,7 +210,7 @@ func (p *Plugin) handleBlock(ctx *core.Context) error {
 		reason = strings.Join(ctx.Args[1:], " ")
 	}
 	if err := p.svc.BlockWithPeer(ctx.Ctx, peer, target, reason); err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to block user: %v", err))
+		return ctx.Fail(err, "Failed to block user.")
 	}
 	return ctx.EditOrReplyWithDelay(fmt.Sprintf("⛔ <b>Blocked</b> %s from private messaging.", ctx.DisplayUser(peer, target)), 4*time.Second)
 }
@@ -224,7 +224,7 @@ func (p *Plugin) handleUnblock(ctx *core.Context) error {
 		return ctx.Status("Could not determine user. Reply to a message, run inside a PM, or provide user ID / @username.")
 	}
 	if err := p.svc.Unblock(ctx.Ctx, peer, target); err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to unblock user: %v", err))
+		return ctx.Fail(err, "Failed to unblock user.")
 	}
 	return ctx.EditOrReplyWithDelay(fmt.Sprintf("✅ <b>Unblocked</b> %s.", ctx.DisplayUser(peer, target)), 4*time.Second)
 }
@@ -250,7 +250,7 @@ func (p *Plugin) renderList(ctx *core.Context, statusFilter string) error {
 		return ctx.Status("Invalid status filter. Use <code>approved</code>, <code>blocked</code>, or <code>pending</code>.")
 	}
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to list records: %v", err))
+		return ctx.Fail(err, "Failed to list PM Permit records.")
 	}
 	if len(records) == 0 {
 		return ctx.EditOrReply(fmt.Sprintf("📋 No <b>%s</b> PM records found.", statusFilter))
@@ -299,12 +299,12 @@ func (p *Plugin) handleToggle(ctx *core.Context) error {
 	switch sub {
 	case "on", "enable", "true":
 		if err := p.setEnabled(ctx, true); err != nil {
-			return ctx.Error(fmt.Sprintf("Failed to enable PM Permit: %v", err))
+			return ctx.Fail(err, "Failed to enable PM Permit.")
 		}
 		return ctx.EditOrReply("🛡️ <b>PM Permit</b> is now <b>ENABLED</b>.")
 	case "off", "disable", "false":
 		if err := p.setEnabled(ctx, false); err != nil {
-			return ctx.Error(fmt.Sprintf("Failed to disable PM Permit: %v", err))
+			return ctx.Fail(err, "Failed to disable PM Permit.")
 		}
 		return ctx.Status("<b>PM Permit</b> is now <b>DISABLED</b>.")
 	case "unblock":
@@ -318,7 +318,7 @@ func (p *Plugin) handleToggle(ctx *core.Context) error {
 			return ctx.Status("Could not determine user to unblock.")
 		}
 		if err := p.svc.Unblock(ctx.Ctx, peer, target); err != nil {
-			return ctx.Error(fmt.Sprintf("Failed to unblock user: %v", err))
+			return ctx.Fail(err, "Failed to unblock user.")
 		}
 		return ctx.EditOrReplyWithDelay(fmt.Sprintf("✅ <b>Unblocked</b> %s.", ctx.DisplayUser(peer, target)), 4*time.Second)
 	case "list":
@@ -330,7 +330,7 @@ func (p *Plugin) handleToggle(ctx *core.Context) error {
 	case "test":
 		pending, approved, blocked, err := p.svc.GetStats(ctx.Ctx)
 		if err != nil {
-			return ctx.Error(fmt.Sprintf("PM Permit test failed: %v", err))
+			return ctx.Fail(err, "PM Permit test failed.")
 		}
 		return ctx.Success(fmt.Sprintf("<b>PM Permit Self-Test OK</b>\n\n<b>Status:</b> %s\n<b>Max Warns:</b> %d\n\n• <b>Approved:</b> <code>%d</code>\n• <b>Pending:</b> <code>%d</code>\n• <b>Blocked:</b> <code>%d</code>\n\n<b>Commands:</b>\n• <code>.approve</code> / <code>.disapprove</code> / <code>.blockpm</code> / <code>.unblockpm</code>\n• <code>.pmpermit [on|off]</code>\n• <code>.pmpermit list [approved|blocked|pending]</code>\n• <code>.pmpermit test</code>", map[bool]string{true: "ENABLED", false: "DISABLED"}[p.svc.IsEnabled()], p.svc.MaxWarns(), approved, pending, blocked))
 	case "status", "":
@@ -340,7 +340,7 @@ func (p *Plugin) handleToggle(ctx *core.Context) error {
 		}
 		pending, approved, blocked, err := p.svc.GetStats(ctx.Ctx)
 		if err != nil {
-			return ctx.Error(fmt.Sprintf("Failed to read PM Permit status: %v", err))
+			return ctx.Fail(err, "Failed to read PM Permit status.")
 		}
 		text := fmt.Sprintf("🛡️ <b>PM Permit Dashboard</b>\n\n<b>Status:</b> %s\n<b>Max Warns:</b> <code>%d</code>\n<b>Burst Cooldown:</b> <code>%s</code>\n\n<b>Access Control Records:</b>\n• <b>Approved:</b> <code>%d</code>\n• <b>Pending:</b> <code>%d</code>\n• <b>Blocked:</b> <code>%d</code>\n\n<b>Commands:</b>\n• <code>.approve</code> / <code>.disapprove</code> / <code>.blockpm</code> / <code>.unblockpm</code>\n• <code>.pmpermit [on|off]</code>\n• <code>.pmpermit list [approved|blocked|pending]</code>\n• <code>.pmpermit test</code>", statusStr, p.svc.MaxWarns(), p.svc.WarnCooldown(), approved, pending, blocked)
 		return ctx.EditOrReply(text)
