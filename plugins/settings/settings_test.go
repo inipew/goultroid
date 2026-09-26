@@ -9,7 +9,6 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/settings"
 )
 
@@ -18,12 +17,6 @@ type mockSettingsDB struct {
 	items   map[string]*settings.SettingItem
 	history []settings.SettingChangeRecord
 	idGen   int64
-}
-
-func TestPlugin_CallbackOptions_HandlerOwnsAnswer(t *testing.T) {
-	if opts := (&Plugin{}).CallbackOptions(); opts.AutoAnswer {
-		t.Fatal("settings callbacks must not be pre-answered before action-specific feedback")
-	}
 }
 
 func newMockSettingsDB() *mockSettingsDB {
@@ -213,28 +206,23 @@ func (m *mockTelegramService) AnswerCallbackQuery(ctx context.Context, queryID i
 	return nil
 }
 
-func setupTestPlugin(t *testing.T) (*Plugin, *settings.Service, *callback.StateStore, *mockTelegramService) {
+func setupTestPlugin(t *testing.T) (*Plugin, *settings.Service, *mockTelegramService) {
 	db := newMockSettingsDB()
 	reg := settings.NewRegistry()
 	_ = settings.RegisterDefaultDefinitions(reg)
 	bus := core.NewEventBus()
 	svc := settings.NewService(db, reg, bus)
-	store := callback.NewStateStore()
-	plugin := New(svc, store)
+	plugin := New(svc)
 	tgSvc := &mockTelegramService{}
-	return plugin, svc, store, tgSvc
+	return plugin, svc, tgSvc
 }
 
 func TestPlugin_CommandsRegistration(t *testing.T) {
-	p, _, _, _ := setupTestPlugin(t)
+	p, _, _ := setupTestPlugin(t)
 
 	if p.Name() != "settings" {
 		t.Errorf("expected 'settings', got %s", p.Name())
 	}
-	if p.Namespace() != "settings" {
-		t.Errorf("expected 'settings', got %s", p.Namespace())
-	}
-
 	cmds := p.Commands()
 	if len(cmds) != 2 {
 		t.Fatalf("expected 2 commands, got %d", len(cmds))
@@ -245,7 +233,10 @@ func TestPlugin_CommandsRegistration(t *testing.T) {
 }
 
 func TestPlugin_DashboardRender(t *testing.T) {
-	p, _, _, tgSvc := setupTestPlugin(t)
+	p, svc, tgSvc := setupTestPlugin(t)
+	if err := svc.Set(context.Background(), settings.ScopeGlobal, 0, "ui", "inline_buttons", "false", 12345); err != nil {
+		t.Fatal(err)
+	}
 
 	ctx := &core.Context{
 		Ctx:     context.Background(),
@@ -271,8 +262,8 @@ func TestPlugin_DashboardRender(t *testing.T) {
 	if !strings.Contains(text, "GoUltroid Settings Dashboard") {
 		t.Errorf("expected dashboard title in text: %s", text)
 	}
-	if markup == nil {
-		t.Fatal("expected reply markup for settings dashboard")
+	if markup != nil {
+		t.Fatal("text-only settings dashboard unexpectedly returned reply markup")
 	}
 
 	// 2. Open specific category via command
@@ -291,7 +282,7 @@ func TestPlugin_DashboardRender(t *testing.T) {
 }
 
 func TestPlugin_CLIConfig(t *testing.T) {
-	p, _, _, tgSvc := setupTestPlugin(t)
+	p, _, tgSvc := setupTestPlugin(t)
 
 	ctx := &core.Context{
 		Ctx:     context.Background(),
@@ -360,7 +351,7 @@ func TestPlugin_CLIConfig(t *testing.T) {
 }
 
 func TestPlugin_CLIConfigOutgoingUsesSemanticEdit(t *testing.T) {
-	p, _, _, tgSvc := setupTestPlugin(t)
+	p, _, tgSvc := setupTestPlugin(t)
 	ctx := &core.Context{
 		Ctx:     context.Background(),
 		Message: &core.Message{ID: 77, SenderID: 12345, IsOutgoing: true},
@@ -382,167 +373,43 @@ func TestPlugin_CLIConfigOutgoingUsesSemanticEdit(t *testing.T) {
 	}
 }
 
-func TestPlugin_InteractiveCallbacks(t *testing.T) {
-	p, svc, store, tgSvc := setupTestPlugin(t)
+func TestPlugin_SettingMutationBoundary(t *testing.T) {
+	p, svc, _ := setupTestPlugin(t)
 	ctx := context.Background()
 
-	// Initial check: pmpermit:enabled is true
-	val, _ := svc.ResolveBool(ctx, 12345, 0, "pmpermit", "enabled")
-	if !val {
-		t.Fatal("expected default pmpermit:enabled true")
-	}
-
-	// 1. Toggle pmpermit:enabled
-	st := MenuState{
+	state := MenuState{
 		Scope:    settings.ScopeGlobal,
 		ScopeID:  0,
 		Category: "security",
 		Selected: "pmpermit:enabled",
 		OwnerID:  12345,
 	}
-	oid := store.Store(st, 12345, time.Minute)
-
-	cbCtx := &callback.CallbackContext{
-		Ctx:      ctx,
-		QueryID:  111,
-		UserID:   12345,
-		Action:   "toggle",
-		OpaqueID: oid,
-		State:    st,
-		Service:  tgSvc,
-		Target:   core.CallbackTarget{Peer: &tg.InputPeerUser{UserID: 12345}, MessageID: 1},
+	if err := p.applySettingMutation(ctx, 12345, &state, nativeIntentToggle); err != nil {
+		t.Fatalf("toggle mutation failed: %v", err)
+	}
+	value, err := svc.ResolveBool(ctx, 12345, 0, "pmpermit", "enabled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value {
+		t.Fatal("toggle mutation did not disable pmpermit:enabled")
 	}
 
-	if err := p.HandleCallback(cbCtx); err != nil {
-		t.Fatalf("HandleCallback toggle failed: %v", err)
+	state.SetTarget("pmpermit", "max_warns")
+	state.ActionValue = "5"
+	if err := p.applySettingMutation(ctx, 12345, &state, nativeIntentSet); err != nil {
+		t.Fatalf("set mutation failed: %v", err)
+	}
+	warns, err := svc.ResolveInt(ctx, 12345, 0, "pmpermit", "max_warns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warns != 5 {
+		t.Fatalf("max_warns=%d, want 5", warns)
 	}
 
-	// Verify toggled to false
-	valAfter, _ := svc.ResolveBool(ctx, 12345, 0, "pmpermit", "enabled")
-	if valAfter {
-		t.Error("expected pmpermit:enabled to be toggled to false")
-	}
-
-	// 2. Select enum: antispam:action -> mute
-	stSelect := MenuState{
-		Scope:    settings.ScopeGlobal,
-		ScopeID:  0,
-		Category: "moderation",
-		Selected: "antispam:action:mute",
-		OwnerID:  12345,
-	}
-	oidSelect := store.Store(stSelect, 12345, time.Minute)
-	cbCtxSelect := &callback.CallbackContext{
-		Ctx:      ctx,
-		QueryID:  222,
-		UserID:   12345,
-		Action:   "select",
-		OpaqueID: oidSelect,
-		State:    stSelect,
-		Service:  tgSvc,
-		Target:   core.CallbackTarget{Peer: &tg.InputPeerUser{UserID: 12345}, MessageID: 1},
-	}
-	if err := p.HandleCallback(cbCtxSelect); err != nil {
-		t.Fatalf("HandleCallback select failed: %v", err)
-	}
-
-	valAction, _ := svc.Resolve(ctx, 12345, 0, "antispam", "action")
-	if valAction != "mute" {
-		t.Errorf("expected 'mute', got %s", valAction)
-	}
-
-	// 3. Step int: pmpermit:max_warns -> 5
-	stStep := MenuState{
-		Scope:    settings.ScopeGlobal,
-		ScopeID:  0,
-		Category: "security",
-		Selected: "pmpermit:max_warns:5",
-		OwnerID:  12345,
-	}
-	oidStep := store.Store(stStep, 12345, time.Minute)
-	cbCtxStep := &callback.CallbackContext{
-		Ctx:      ctx,
-		QueryID:  333,
-		UserID:   12345,
-		Action:   "step",
-		OpaqueID: oidStep,
-		State:    stStep,
-		Service:  tgSvc,
-		Target:   core.CallbackTarget{Peer: &tg.InputPeerUser{UserID: 12345}, MessageID: 1},
-	}
-	if err := p.HandleCallback(cbCtxStep); err != nil {
-		t.Fatalf("HandleCallback step failed: %v", err)
-	}
-
-	valWarns, _ := svc.ResolveInt(ctx, 12345, 0, "pmpermit", "max_warns")
-	if valWarns != 5 {
-		t.Errorf("expected 5 warns, got %d", valWarns)
-	}
-
-	// 4. Duration picker preset callback: afk:cooldown -> 15m0s
-	stDur := MenuState{
-		Scope:    settings.ScopeGlobal,
-		ScopeID:  0,
-		Category: "automation",
-		Selected: "afk:cooldown:15m0s",
-		OwnerID:  12345,
-	}
-	oidDur := store.Store(stDur, 12345, time.Minute)
-	cbCtxDur := &callback.CallbackContext{
-		Ctx:      ctx,
-		QueryID:  444,
-		UserID:   12345,
-		Action:   "dur",
-		OpaqueID: oidDur,
-		State:    stDur,
-		Service:  tgSvc,
-		Target:   core.CallbackTarget{Peer: &tg.InputPeerUser{UserID: 12345}, MessageID: 1},
-	}
-	if err := p.HandleCallback(cbCtxDur); err != nil {
-		t.Fatalf("HandleCallback dur failed: %v", err)
-	}
-	valDur, _ := svc.ResolveDuration(ctx, 12345, 0, "afk", "cooldown")
-	if valDur != 15*time.Minute {
-		t.Errorf("expected 15m cooldown, got %v", valDur)
-	}
-
-	// 5. Test Inheritance Badging in renderSettingDetailScreen
-	stDetail := MenuState{
-		Scope:    settings.ScopeChat,
-		ScopeID:  -100123,
-		Category: "automation",
-		Selected: "afk:cooldown",
-		OwnerID:  12345,
-	}
-	// Currently afk:cooldown is set at global scope (15m0s) -> should show "Inherited from Global"
-	scr := p.renderSettingDetailScreen(ctx, stDetail)
-	textDetail, _ := scr.Render()
-	if !strings.Contains(textDetail, "Inherited from Global") {
-		t.Errorf("expected 'Inherited from Global' in detail text, got: %s", textDetail)
-	}
-
-	// Override at chat scope -> should show "Chat Override"
-	_ = svc.Set(ctx, settings.ScopeChat, -100123, "afk", "cooldown", "30s", 12345)
-	scrOverridden := p.renderSettingDetailScreen(ctx, stDetail)
-	textOverridden, _ := scrOverridden.Render()
-	if !strings.Contains(textOverridden, "Chat Override") {
-		t.Errorf("expected 'Chat Override' in detail text, got: %s", textOverridden)
-	}
-
-	// 6. Close dashboard
-	cbCtxClose := &callback.CallbackContext{
-		Ctx:     ctx,
-		QueryID: 555,
-		UserID:  12345,
-		Action:  "close",
-		Service: tgSvc,
-		Target:  core.CallbackTarget{Peer: &tg.InputPeerUser{UserID: 12345}, MessageID: 1},
-	}
-	if err := p.HandleCallback(cbCtxClose); err != nil {
-		t.Fatalf("HandleCallback close failed: %v", err)
-	}
-	if !strings.Contains(tgSvc.lastText, "dashboard closed") {
-		t.Errorf("expected dashboard closed text, got: %s", tgSvc.lastText)
+	if err := p.applySettingMutation(ctx, 12345, &state, nativeIntentReset); err != nil {
+		t.Fatalf("reset mutation failed: %v", err)
 	}
 }
 
@@ -570,18 +437,18 @@ func TestPlugin_ScopeSwitchingAndTarget(t *testing.T) {
 		t.Errorf("expected afk:cooldown, got %s:%s", nsOld, keyOld)
 	}
 
-	// Verify scope switching bindings
-	p, svc, _, tgSvc := setupTestPlugin(t)
+	// Verify scope switching bindings.
+	p, svc, _ := setupTestPlugin(t)
 	ctx := context.Background()
 
-	// 1. Initial home screen with Global scope
+	// Text-only render helpers intentionally carry no callback rows after P1-F2.
 	scr := p.renderHomeScreen(ctx, st)
 	_, markup := scr.Render()
-	if len(markup.Rows) == 0 {
-		t.Fatalf("expected non-empty markup for home screen")
+	if len(markup.Rows) != 0 {
+		t.Fatalf("text-only home retained %d callback rows", len(markup.Rows))
 	}
 
-	// 2. Test applySettingAction with typed Target
+	// Test transport-neutral mutation boundary with typed Target.
 	stAction := MenuState{
 		Scope:       settings.ScopeChat,
 		ScopeID:     -100777,
@@ -590,25 +457,17 @@ func TestPlugin_ScopeSwitchingAndTarget(t *testing.T) {
 		OwnerID:     888,
 		ChatID:      -100777,
 	}
-	cbCtx := &callback.CallbackContext{
-		Ctx:     ctx,
-		QueryID: 999,
-		UserID:  888,
-		Action:  "set",
-		Service: tgSvc,
-		Target:  core.CallbackTarget{Peer: &tg.InputPeerUser{UserID: 888}, MessageID: 1},
-	}
-	if err := p.applySettingAction(cbCtx, &stAction, "set"); err != nil {
-		t.Fatalf("applySettingAction set failed: %v", err)
+	if err := p.applySettingMutation(ctx, 888, &stAction, nativeIntentSet); err != nil {
+		t.Fatalf("applySettingMutation set failed: %v", err)
 	}
 	val, err := svc.Resolve(ctx, 888, -100777, "core", "prefix")
 	if err != nil || val != "!" {
 		t.Errorf("expected '!' set for chat scope, got: %q (err=%v)", val, err)
 	}
 
-	// 3. Reset via applySettingAction
-	if err := p.applySettingAction(cbCtx, &stAction, "reset"); err != nil {
-		t.Fatalf("applySettingAction reset failed: %v", err)
+	// 3. Reset through the same canonical mutation boundary.
+	if err := p.applySettingMutation(ctx, 888, &stAction, nativeIntentReset); err != nil {
+		t.Fatalf("applySettingMutation reset failed: %v", err)
 	}
 	valReset, _ := svc.Resolve(ctx, 888, -100777, "core", "prefix")
 	if valReset != "." {

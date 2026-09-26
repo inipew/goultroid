@@ -72,22 +72,41 @@ type nativeSettingsIntent struct {
 }
 
 func (p *Plugin) FeatureSpec() feature.Spec {
-	policy := feature.OwnerPolicy(execution.SurfaceUserbot)
-	interactions := []feature.Interaction{{
-		ID:          nativeSettingsScreenDashboard,
-		Kind:        feature.InteractionScreen,
-		Description: "Native userbot settings dashboard",
-		Surfaces:    execution.SurfaceUserbot,
-		Policy:      policy,
-	}}
-	for i := 0; i < nativeSettingsActionSlotCount; i++ {
-		interactions = append(interactions, feature.Interaction{
-			ID:          nativeSettingsSlotID(i),
-			Kind:        feature.InteractionAction,
-			Description: "Native userbot settings session action slot",
+	nativePolicy := feature.OwnerPolicy(execution.SurfaceUserbot)
+	assistantPolicy := feature.OwnerPolicy(execution.SurfaceAssistant)
+	interactions := []feature.Interaction{
+		{
+			ID:          nativeSettingsScreenDashboard,
+			Kind:        feature.InteractionScreen,
+			Description: "Native userbot settings dashboard",
 			Surfaces:    execution.SurfaceUserbot,
-			Policy:      policy,
-		})
+			Policy:      nativePolicy,
+		},
+		{
+			ID:          assistantSettingsScreenDashboard,
+			Kind:        feature.InteractionScreen,
+			Description: "Assistant settings dashboard",
+			Surfaces:    execution.SurfaceAssistant,
+			Policy:      assistantPolicy,
+		},
+	}
+	for i := 0; i < nativeSettingsActionSlotCount; i++ {
+		interactions = append(interactions,
+			feature.Interaction{
+				ID:          nativeSettingsSlotID(i),
+				Kind:        feature.InteractionAction,
+				Description: "Native userbot settings session action slot",
+				Surfaces:    execution.SurfaceUserbot,
+				Policy:      nativePolicy,
+			},
+			feature.Interaction{
+				ID:          assistantSettingsSlotID(i),
+				Kind:        feature.InteractionAction,
+				Description: "Assistant settings session action slot",
+				Surfaces:    execution.SurfaceAssistant,
+				Policy:      assistantPolicy,
+			},
+		)
 	}
 	return feature.Spec{
 		ID:           p.Name(),

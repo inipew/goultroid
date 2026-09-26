@@ -10,8 +10,8 @@ import (
 	settingssvc "github.com/inipew/goultroid/internal/settings"
 )
 
-func TestPlugin_DashboardTextOnlyDoesNotAllocateCallbackState(t *testing.T) {
-	p, svc, store, tgSvc := setupTestPlugin(t)
+func TestPlugin_DashboardTextOnlyAllocatesNoInteraction(t *testing.T) {
+	p, svc, tgSvc := setupTestPlugin(t)
 	ctx := context.Background()
 	if err := svc.Set(ctx, settingssvc.ScopeGlobal, 0, "ui", "inline_buttons", "false", 12345); err != nil {
 		t.Fatalf("disable inline buttons: %v", err)
@@ -29,9 +29,6 @@ func TestPlugin_DashboardTextOnlyDoesNotAllocateCallbackState(t *testing.T) {
 	if err := p.handleSettingsCommand(commandCtx); err != nil {
 		t.Fatalf("text-only home failed: %v", err)
 	}
-	if got := store.Len(); got != 0 {
-		t.Fatalf("text-only home retained %d callback states, want 0", got)
-	}
 	tgSvc.mu.Lock()
 	homeText := tgSvc.lastText
 	homeMarkup := tgSvc.lastMarkup
@@ -47,9 +44,6 @@ func TestPlugin_DashboardTextOnlyDoesNotAllocateCallbackState(t *testing.T) {
 	if err := p.handleSettingsCommand(commandCtx); err != nil {
 		t.Fatalf("text-only category failed: %v", err)
 	}
-	if got := store.Len(); got != 0 {
-		t.Fatalf("text-only category retained %d callback states, want 0", got)
-	}
 	tgSvc.mu.Lock()
 	categoryText := tgSvc.lastText
 	categoryMarkup := tgSvc.lastMarkup
@@ -62,8 +56,8 @@ func TestPlugin_DashboardTextOnlyDoesNotAllocateCallbackState(t *testing.T) {
 	}
 }
 
-func TestPlugin_AssistantDashboardInteractiveStillAllocatesLegacyCallbackState(t *testing.T) {
-	p, _, store, tgSvc := setupTestPlugin(t)
+func TestP1F2AssistantInteractiveFailsClosedWithoutA2Runtime(t *testing.T) {
+	p, _, tgSvc := setupTestPlugin(t)
 	ctx := &core.Context{
 		Ctx:     context.Background(),
 		Source:  core.ExecutionAssistant,
@@ -74,16 +68,13 @@ func TestPlugin_AssistantDashboardInteractiveStillAllocatesLegacyCallbackState(t
 		PeerID:  &tg.InputPeerChat{ChatID: 123},
 	}
 
-	if err := p.handleSettingsCommand(ctx); err != nil {
-		t.Fatalf("interactive home failed: %v", err)
-	}
-	if got := store.Len(); got == 0 {
-		t.Fatal("interactive home allocated no callback state")
+	if err := p.handleSettingsCommand(ctx); err == nil {
+		t.Fatal("interactive Assistant settings unexpectedly fell back without a2 runtime")
 	}
 	tgSvc.mu.Lock()
 	markup := tgSvc.lastMarkup
 	tgSvc.mu.Unlock()
-	if markup == nil {
-		t.Fatal("interactive home did not send reply markup")
+	if markup != nil {
+		t.Fatal("unbound Assistant settings emitted legacy reply markup")
 	}
 }

@@ -122,17 +122,13 @@ func nativeSettingsCommandContext(svc core.TelegramServicer, ownerID int64, args
 }
 
 func TestP1DNativeSettingsUsesA2WithoutLegacyCallbackState(t *testing.T) {
-	p, _, store, tgSvc := setupTestPlugin(t)
+	p, _, tgSvc := setupTestPlugin(t)
 	const ownerID int64 = 12345
 	h := bindNativeSettings(t, p, tgSvc, ownerID)
 
 	if err := p.handleSettingsCommand(nativeSettingsCommandContext(tgSvc, ownerID)); err != nil {
 		t.Fatalf("open native settings: %v", err)
 	}
-	if got := store.Len(); got != 0 {
-		t.Fatalf("native settings retained %d legacy callback states, want 0", got)
-	}
-
 	markup := snapshotNativeMarkup(t, tgSvc)
 	if len(markup.Rows) == 0 {
 		t.Fatal("native settings produced no buttons")
@@ -157,7 +153,7 @@ func TestP1DNativeSettingsUsesA2WithoutLegacyCallbackState(t *testing.T) {
 }
 
 func TestP1DTextOnlySettingsAllocatesNoA2Session(t *testing.T) {
-	p, svc, store, tgSvc := setupTestPlugin(t)
+	p, svc, tgSvc := setupTestPlugin(t)
 	const ownerID int64 = 12345
 	h := bindNativeSettings(t, p, tgSvc, ownerID)
 	if err := svc.Set(context.Background(), settingssvc.ScopeGlobal, 0, "ui", "inline_buttons", "false", ownerID); err != nil {
@@ -166,11 +162,7 @@ func TestP1DTextOnlySettingsAllocatesNoA2Session(t *testing.T) {
 
 	if err := p.handleSettingsCommand(nativeSettingsCommandContext(tgSvc, ownerID)); err != nil {
 		t.Fatalf("open text-only settings: %v", err)
-	}
-	if got := store.Len(); got != 0 {
-		t.Fatalf("text-only settings retained %d legacy callback states, want 0", got)
-	}
-	if got := h.runtime.CancelScope(h.scope); got != 0 {
+	}	if got := h.runtime.CancelScope(h.scope); got != 0 {
 		t.Fatalf("text-only settings allocated %d a2 sessions, want 0", got)
 	}
 	tgSvc.mu.Lock()
@@ -186,7 +178,7 @@ func TestP1DTextOnlySettingsAllocatesNoA2Session(t *testing.T) {
 }
 
 func TestP1DNativeSettingsMutationRevisesA2AndRejectsStaleButton(t *testing.T) {
-	p, svc, store, tgSvc := setupTestPlugin(t)
+	p, svc, tgSvc := setupTestPlugin(t)
 	const ownerID int64 = 12345
 	h := bindNativeSettings(t, p, tgSvc, ownerID)
 
@@ -219,10 +211,6 @@ func TestP1DNativeSettingsMutationRevisesA2AndRejectsStaleButton(t *testing.T) {
 	if value {
 		t.Fatal("native toggle did not disable pmpermit:enabled")
 	}
-	if got := store.Len(); got != 0 {
-		t.Fatalf("native mutation retained %d legacy callback states, want 0", got)
-	}
-
 	stale := *event
 	stale.QueryID = 778
 	handled, err = h.adapter.HandleCallback(context.Background(), &stale)

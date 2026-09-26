@@ -6,24 +6,17 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/plugin"
-	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/ui"
-	"github.com/inipew/goultroid/internal/ui/render"
 	"github.com/inipew/goultroid/plugins/settings/usecase"
 	"go.uber.org/zap"
 )
 
-var (
-	_ plugin.Plugin               = (*Plugin)(nil)
-	_ callback.Handler            = (*Plugin)(nil)
-	_ callback.HandlerWithOptions = (*Plugin)(nil)
-)
+var _ plugin.Plugin = (*Plugin)(nil)
 
 // SettingTarget specifies the exact namespace and key being inspected or modified.
 type SettingTarget struct {
@@ -31,7 +24,7 @@ type SettingTarget struct {
 	Key       string `json:"k"`
 }
 
-// MenuState captures interactive dashboard state stored in StateStore.
+// MenuState is bounded server-side interaction state shared by native and Assistant a2 views.
 type MenuState struct {
 	Scope       settings.SettingScope `json:"sc"`
 	ScopeID     int64                 `json:"sid"`
@@ -76,25 +69,21 @@ func (s *MenuState) SetTarget(ns, key string) {
 
 // Plugin provides interactive settings management via dashboard and CLI.
 type Plugin struct {
-	service    *settings.Service
-	stateStore callback.StateWriter
-	logger     *zap.Logger
-	setUC      *usecase.SetSettingUseCase
-	resetUC    *usecase.ResetSettingUseCase
-	native     nativeRuntimeState
+	service   *settings.Service
+	logger    *zap.Logger
+	setUC     *usecase.SetSettingUseCase
+	resetUC   *usecase.ResetSettingUseCase
+	native    nativeRuntimeState
+	assistant assistantRuntimeState
 }
 
 // New creates a new settings plugin instance.
-func New(service *settings.Service, stateStore callback.StateWriter) *Plugin {
-	if stateStore == nil {
-		stateStore = callback.NewStateStore()
-	}
+func New(service *settings.Service) *Plugin {
 	return &Plugin{
-		service:    service,
-		stateStore: stateStore,
-		logger:     zap.NewNop(),
-		setUC:      &usecase.SetSettingUseCase{Service: service},
-		resetUC:    &usecase.ResetSettingUseCase{Service: service},
+		service:  service,
+		logger:   zap.NewNop(),
+		setUC:    &usecase.SetSettingUseCase{Service: service},
+		resetUC:  &usecase.ResetSettingUseCase{Service: service},
 	}
 }
 
@@ -115,18 +104,6 @@ func (p *Plugin) Init() error {
 
 func (p *Plugin) Description() string {
 	return "Hierarchical settings subsystem and interactive Telegram configuration dashboard"
-}
-
-func (p *Plugin) Namespace() string {
-	return "settings"
-}
-
-func (p *Plugin) CallbackOptions() callback.CallbackHandlerOptions {
-	return callback.CallbackHandlerOptions{
-		// Settings handlers own their success and error acknowledgements. The
-		// router still sends a silent fallback answer when a handler only edits.
-		AutoAnswer: false,
-	}
 }
 
 // Capabilities declares the capabilities provided by this plugin (§4 bug16_1).
@@ -192,36 +169,27 @@ func (p *Plugin) handleSettingsCommand(ctx *core.Context) error {
 	if err != nil {
 		p.logger.Debug("settings: resolve inline button preference failed", zap.Error(err))
 	}
-
-	if useButtons && !ctx.IsAssistant() {
+	if useButtons {
+		if ctx.IsAssistant() {
+			return p.openAssistantSettings(ctx, state)
+		}
 		return p.openNativeSettings(ctx, state)
 	}
 
-	screen := p.renderScreenMode(ctx.Ctx, state, useButtons)
-	text, markup := screen.Render()
-	if useButtons {
-		if tgMarkup := render.ToTelegramMarkup(markup); tgMarkup != nil {
-			if err := ctx.ReplyMarkup(text, tgMarkup); err == nil {
-				return nil
-			}
-		}
-	}
+	screen := p.renderScreen(ctx.Ctx, state)
+	text, _ := screen.Render()
 	return ctx.Reply(text)
 }
 
 func (p *Plugin) renderScreen(ctx context.Context, state MenuState) *ui.Screen {
-	return p.renderScreenMode(ctx, state, true)
-}
-
-func (p *Plugin) renderScreenMode(ctx context.Context, state MenuState, interactive bool) *ui.Screen {
 	ns, key := state.GetTarget()
 	if ns != "" && key != "" {
-		return p.renderSettingDetailScreenMode(ctx, state, interactive)
+		return p.renderSettingDetailScreen(ctx, state)
 	}
 	if state.Category != "" {
-		return p.renderCategoryScreenMode(ctx, state, interactive)
+		return p.renderCategoryScreen(ctx, state)
 	}
-	return p.renderHomeScreenMode(ctx, state, interactive)
+	return p.renderHomeScreen(ctx, state)
 }
 
 func settingsCategoryLabel(cat string) string {
@@ -243,77 +211,24 @@ func settingsCategoryLabel(cat string) string {
 	}
 }
 
-func (p *Plugin) renderHomeScreen(ctx context.Context, state MenuState) *ui.Screen {
-	return p.renderHomeScreenMode(ctx, state, true)
-}
-
-func (p *Plugin) renderHomeScreenMode(ctx context.Context, state MenuState, interactive bool) *ui.Screen {
+func (p *Plugin) renderHomeScreen(_ context.Context, state MenuState) *ui.Screen {
 	screen := ui.NewScreen("settings:home", "⚙️ GoUltroid Settings Dashboard",
 		"Welcome to the interactive configuration dashboard.\nSelect a category below to view and modify settings:\n")
-
-	categories := p.service.Registry().Categories()
-	if !interactive {
-		var body strings.Builder
-		body.WriteString("Available settings categories:\n\n")
-		for _, cat := range categories {
-			body.WriteString(fmt.Sprintf("• %s — <code>%s</code>\n", ui.EscapeHTML(settingsCategoryLabel(cat)), ui.EscapeHTML(cat)))
-		}
-		body.WriteString("\n<i>Inline buttons are disabled. Pass a category name to the settings command to browse its values.</i>")
-		screen.Body = body.String()
-		return screen
+	var body strings.Builder
+	body.WriteString("Available settings categories:\n\n")
+	for _, cat := range p.service.Registry().Categories() {
+		body.WriteString(fmt.Sprintf("• %s — <code>%s</code>\n", ui.EscapeHTML(settingsCategoryLabel(cat)), ui.EscapeHTML(cat)))
 	}
-
-	var row []ui.Button
-	for i, cat := range categories {
-		catState := state
-		catState.Category = cat
-		catState.Page = 1
-		catState.Target = nil
-		catState.Selected = ""
-		catOid := p.storeState(catState)
-
-		btn := ui.NewCallbackButton(settingsCategoryLabel(cat), callback.EncodeCallbackData("settings", callback.ActionNav, catOid))
-		row = append(row, btn)
-
-		if (i+1)%2 == 0 || i == len(categories)-1 {
-			screen.AddRow(row...)
-			row = nil
-		}
-	}
-	if len(row) > 0 {
-		screen.AddRow(row...)
-	}
-
-	nextScope, nextScopeID, scopeText := p.nextScope(state)
-	scopeState := state
-	scopeState.Scope = nextScope
-	scopeState.ScopeID = nextScopeID
-	scopeOid := p.storeState(scopeState)
-	closeOid := p.storeState(state)
-
-	screen.AddRow(ui.NewCallbackButton(scopeText, callback.EncodeCallbackData("settings", callback.ActionNav, scopeOid)))
-	screen.AddRow(ui.NewCallbackButton("❌ Close", callback.EncodeCallbackData("settings", callback.ActionClose, closeOid)))
-
+	body.WriteString("\n<i>Inline buttons are disabled. Pass a category name to the settings command to browse its values.</i>")
+	screen.Body = body.String()
 	return screen
 }
 
 func (p *Plugin) renderCategoryScreen(ctx context.Context, state MenuState) *ui.Screen {
-	return p.renderCategoryScreenMode(ctx, state, true)
-}
-
-func (p *Plugin) renderCategoryScreenMode(ctx context.Context, state MenuState, interactive bool) *ui.Screen {
 	defs := p.service.Registry().ListByCategory(state.Category)
 	title := fmt.Sprintf("⚙️ Settings: %s", strings.Title(state.Category))
-
 	if len(defs) == 0 {
-		screen := ui.NewScreen("settings:cat", title, "No settings configured for this category.")
-		if interactive {
-			homeState := state
-			homeState.Category = ""
-			homeOid := p.storeState(homeState)
-			screen.AddRow(ui.NewCallbackButton("🔙 Back", callback.EncodeCallbackData("settings", callback.ActionNav, homeOid)))
-		}
-		return screen
+		return ui.NewScreen("settings:cat", title, "No settings configured for this category.")
 	}
 
 	pageSize := 5
@@ -324,109 +239,43 @@ func (p *Plugin) renderCategoryScreenMode(ctx context.Context, state MenuState, 
 		state.Page = totalPages
 	}
 
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Category: <b>%s</b> | Scope: <b>%s</b>\n\n", ui.EscapeHTML(strings.Title(state.Category)), ui.EscapeHTML(string(state.Scope))))
-
-	screen := ui.NewScreen("settings:cat", title, "")
-
+	var body strings.Builder
+	body.WriteString(fmt.Sprintf("Category: <b>%s</b> | Scope: <b>%s</b>\n\n",
+		ui.EscapeHTML(strings.Title(state.Category)), ui.EscapeHTML(string(state.Scope))))
 	for _, def := range pagedDefs {
 		currentVal, _ := p.service.Resolve(ctx, state.OwnerID, state.ScopeID, def.Namespace, def.Key)
-		sb.WriteString(fmt.Sprintf("• <b>%s</b> (<code>%s:%s</code>)\n  Val: <code>%s</code> | <i>%s</i>\n",
-			ui.EscapeHTML(def.Title), ui.EscapeHTML(def.Namespace), ui.EscapeHTML(def.Key), ui.EscapeHTML(currentVal), ui.EscapeHTML(def.Description)))
-
-		if !interactive {
-			continue
-		}
-		switch def.Type {
-		case settings.TypeBool:
-			boolVal := strings.ToLower(currentVal) == "true"
-			toggleState := state
-			toggleState.SetTarget(def.Namespace, def.Key)
-			toggleOid := p.storeState(toggleState)
-
-			btn := ui.BuildToggleSwitch(boolVal, def.Title, def.Title, callback.EncodeCallbackData("settings", callback.ActionToggle, toggleOid))
-			screen.AddRow(btn)
-
-		default:
-			editState := state
-			editState.SetTarget(def.Namespace, def.Key)
-			editOid := p.storeState(editState)
-
-			btn := ui.NewCallbackButton("⚙️ Edit "+def.Title, callback.EncodeCallbackData("settings", callback.ActionNav, editOid))
-			screen.AddRow(btn)
-		}
+		body.WriteString(fmt.Sprintf("• <b>%s</b> (<code>%s:%s</code>)\n  Val: <code>%s</code> | <i>%s</i>\n",
+			ui.EscapeHTML(def.Title), ui.EscapeHTML(def.Namespace), ui.EscapeHTML(def.Key),
+			ui.EscapeHTML(currentVal), ui.EscapeHTML(def.Description)))
 	}
-
-	if !interactive {
-		if totalPages > 1 {
-			sb.WriteString(fmt.Sprintf("\nPage <b>%d / %d</b>. Pass a page number as the second argument to browse more settings.\n", state.Page, totalPages))
-		}
-		sb.WriteString("\n<i>Inline buttons are disabled. Use the config command to change values.</i>")
-		screen.Body = sb.String()
-		return screen
+	if totalPages > 1 {
+		body.WriteString(fmt.Sprintf("\nPage <b>%d / %d</b>. Pass a page number as the second argument to browse more settings.\n", state.Page, totalPages))
 	}
-
-	screen.Body = sb.String()
-
-	noopData := callback.EncodeCallbackData("settings", callback.ActionNoop, callback.ActionNoop)
-	pagRow := ui.BuildPaginationRow(state.Page, totalPages, func(targetPage int) []byte {
-		pState := state
-		pState.Page = targetPage
-		oid := p.storeState(pState)
-		return callback.EncodeCallbackData("settings", callback.ActionNav, oid)
-	}, noopData)
-	if len(pagRow) > 0 {
-		screen.AddRow(pagRow...)
-	}
-
-	homeState := state
-	homeState.Category = ""
-	homeState.Page = 1
-	homeState.Selected = ""
-	homeState.Target = nil
-	homeState.ActionValue = ""
-	homeOid := p.storeState(homeState)
-
-	closeOid := p.storeState(state)
-
-	screen.AddRow(
-		ui.NewCallbackButton("🏠 Home", callback.EncodeCallbackData("settings", callback.ActionNav, homeOid)),
-		ui.NewCallbackButton("❌ Close", callback.EncodeCallbackData("settings", callback.ActionClose, closeOid)),
-	)
-
-	return screen
+	body.WriteString("\n<i>Inline buttons are disabled. Use the config command to change values.</i>")
+	return ui.NewScreen("settings:cat", title, body.String())
 }
 
 func (p *Plugin) renderSettingDetailScreen(ctx context.Context, state MenuState) *ui.Screen {
-	return p.renderSettingDetailScreenMode(ctx, state, true)
-}
-
-func (p *Plugin) renderSettingDetailScreenMode(ctx context.Context, state MenuState, interactive bool) *ui.Screen {
 	ns, key := state.GetTarget()
 	if ns == "" || key == "" {
-		state.Selected = ""
 		state.Target = nil
-		return p.renderCategoryScreenMode(ctx, state, interactive)
+		state.Selected = ""
+		return p.renderCategoryScreen(ctx, state)
 	}
 	def, ok := p.service.Registry().Get(ns, key)
 	if !ok {
-		state.Selected = ""
 		state.Target = nil
-		return p.renderCategoryScreenMode(ctx, state, interactive)
+		state.Selected = ""
+		return p.renderCategoryScreen(ctx, state)
 	}
 	currentVal, _ := p.service.Resolve(ctx, state.OwnerID, state.ScopeID, ns, key)
 	originBadge := p.settingOriginBadge(ctx, state, ns, key)
 	body := fmt.Sprintf(
 		"<b>%s</b>\n%s\n\n<b>Type:</b> <code>%s</code>\n<b>Current Value:</b> <code>%s</code>\n<b>Origin:</b> %s\n<b>Default:</b> <code>%s</code>\n<b>Scope:</b> <code>%s</code>\n",
-		ui.EscapeHTML(def.Title), ui.EscapeHTML(def.Description), def.Type, ui.EscapeHTML(currentVal), originBadge, ui.EscapeHTML(def.DefaultValue), state.Scope,
+		ui.EscapeHTML(def.Title), ui.EscapeHTML(def.Description), def.Type,
+		ui.EscapeHTML(currentVal), originBadge, ui.EscapeHTML(def.DefaultValue), state.Scope,
 	)
-	screen := ui.NewScreen("settings:detail", fmt.Sprintf("⚙️ %s (%s:%s)", def.Title, ns, key), body)
-	if interactive {
-		noopData := callback.EncodeCallbackData("settings", callback.ActionNoop, callback.ActionNoop)
-		p.addSettingTypeControls(screen, state, ns, key, currentVal, *def, noopData)
-		p.addDetailFooter(screen, state, ns, key, originBadge, def.Category)
-	}
-	return screen
+	return ui.NewScreen("settings:detail", fmt.Sprintf("⚙️ %s (%s:%s)", def.Title, ns, key), body)
 }
 
 func (p *Plugin) settingOriginBadge(ctx context.Context, state MenuState, ns, key string) string {
@@ -449,68 +298,6 @@ func (p *Plugin) settingOriginBadge(ctx context.Context, state MenuState, ns, ke
 	return "⚙️ Schema Default"
 }
 
-func (p *Plugin) addSettingTypeControls(screen *ui.Screen, state MenuState, ns, key, currentVal string, def settings.SettingDefinition, noopData []byte) {
-	switch def.Type {
-	case settings.TypeBool:
-		boolVal := strings.ToLower(currentVal) == "true"
-		toggleState := state
-		toggleState.SetTarget(ns, key)
-		toggleOid := p.storeState(toggleState)
-		screen.AddRow(ui.BuildStateToggle(boolVal, def.Title, callback.EncodeCallbackData("settings", callback.ActionToggle, toggleOid)))
-	case settings.TypeInt:
-		intVal, _ := strconv.ParseInt(currentVal, 10, 64)
-		decState := state
-		decState.SetTarget(ns, key)
-		decState.ActionValue = fmt.Sprintf("%d", intVal-1)
-		decOid := p.storeState(decState)
-		incState := state
-		incState.SetTarget(ns, key)
-		incState.ActionValue = fmt.Sprintf("%d", intVal+1)
-		incOid := p.storeState(incState)
-		decData := callback.EncodeCallbackData("settings", callback.ActionStep, decOid)
-		incData := callback.EncodeCallbackData("settings", callback.ActionStep, incOid)
-		screen.AddRow(ui.BuildStepper(intVal, def.MinVal, def.MaxVal, decData, incData, noopData)...)
-	case settings.TypeDuration:
-		durVal, _ := time.ParseDuration(currentVal)
-		durRows := ui.BuildDurationPicker(nil, durVal, func(preset time.Duration) []byte {
-			durState := state
-			durState.SetTarget(ns, key)
-			durState.ActionValue = preset.String()
-			oid := p.storeState(durState)
-			return callback.EncodeCallbackData("settings", callback.ActionDuration, oid)
-		})
-		for _, r := range durRows {
-			screen.AddRow(r...)
-		}
-	case settings.TypeEnum:
-		selRow := ui.BuildSelector(def.AllowedValues, currentVal, func(opt string) []byte {
-			selState := state
-			selState.SetTarget(ns, key)
-			selState.ActionValue = opt
-			oid := p.storeState(selState)
-			return callback.EncodeCallbackData("settings", callback.ActionSelect, oid)
-		})
-		screen.AddRow(selRow...)
-	}
-}
-
-func (p *Plugin) addDetailFooter(screen *ui.Screen, state MenuState, ns, key, originBadge, category string) {
-	resetState := state
-	resetState.SetTarget(ns, key)
-	resetOid := p.storeState(resetState)
-	resetLabel := "🔄 Reset to Default"
-	if originBadge != "⚙️ Schema Default" && originBadge != "🌐 Global Setting" {
-		resetLabel = "↩ Reset Override"
-	}
-	screen.AddRow(ui.NewCallbackButton(resetLabel, callback.EncodeCallbackData("settings", callback.ActionReset, resetOid)))
-	catState := state
-	catState.Target = nil
-	catState.Selected = ""
-	catState.ActionValue = ""
-	catOid := p.storeState(catState)
-	screen.AddRow(ui.NewCallbackButton("🔙 Back to "+strings.Title(category), callback.EncodeCallbackData("settings", callback.ActionNav, catOid)))
-}
-
 func (p *Plugin) nextScope(state MenuState) (settings.SettingScope, int64, string) {
 	if state.Scope == settings.ScopeGlobal {
 		return settings.ScopeChat, state.ChatID, "Scope: 🌐 Global [Click to Chat]"
@@ -521,12 +308,8 @@ func (p *Plugin) nextScope(state MenuState) (settings.SettingScope, int64, strin
 	return settings.ScopeGlobal, 0, "Scope: 👤 User [Click to Global]"
 }
 
-func (p *Plugin) storeState(st MenuState) string {
-	return p.stateStore.Store(st, st.OwnerID, 15*time.Minute)
-}
-
 // applySettingMutation is the transport-neutral settings mutation boundary used
-// by both legacy compatibility callbacks and the native a2 interaction adapter.
+// by both native and Assistant a2 interaction adapters.
 func (p *Plugin) applySettingMutation(ctx context.Context, actorID int64, state *MenuState, action string) error {
 	if p.setUC == nil {
 		p.setUC = &usecase.SetSettingUseCase{Service: p.service}
@@ -546,7 +329,7 @@ func (p *Plugin) applySettingMutation(ctx context.Context, actorID int64, state 
 	}
 
 	switch action {
-	case callback.ActionToggle:
+	case nativeIntentToggle:
 		currentVal, err := p.service.Resolve(ctx, state.OwnerID, state.ScopeID, ns, key)
 		if err != nil {
 			return err
@@ -557,7 +340,7 @@ func (p *Plugin) applySettingMutation(ctx context.Context, actorID int64, state 
 		}
 		return p.setUC.Execute(ctx, state.Scope, state.ScopeID, ns, key, newVal, actorID)
 
-	case callback.ActionStep, callback.ActionDuration, callback.ActionSelect, callback.ActionSet:
+	case nativeIntentSet:
 		targetVal := state.ActionValue
 		if targetVal == "" {
 			parts := strings.Split(state.Selected, ":")
@@ -574,63 +357,10 @@ func (p *Plugin) applySettingMutation(ctx context.Context, actorID int64, state 
 		state.SetTarget(ns, key)
 		return nil
 
-	case callback.ActionReset:
+	case nativeIntentReset:
 		return p.resetUC.Execute(ctx, state.Scope, state.ScopeID, ns, key, actorID)
 	}
 	return nil
-}
-
-// applySettingAction retains the legacy callback transport as a compatibility
-// reader for already-issued v1 buttons. New native Settings renders use a2.
-func (p *Plugin) applySettingAction(ctx *callback.CallbackContext, state *MenuState, action string) error {
-	if ctx == nil {
-		return fmt.Errorf("settings callback context unavailable")
-	}
-	if err := p.applySettingMutation(ctx.Ctx, ctx.UserID, state, action); err != nil {
-		return ui.AnswerErrorToast(ctx, ui.MapUserErrorMessage(err))
-	}
-	return nil
-}
-
-// =================== Callback Query Router Handler ===================
-
-func (p *Plugin) HandleCallback(ctx *callback.CallbackContext) error {
-	var state MenuState
-	if ctx.State != nil {
-		if s, ok := ctx.State.(MenuState); ok {
-			state = s
-		}
-	}
-	if state.ChatID == 0 && ctx.ChatID != 0 {
-		state.ChatID = ctx.ChatID
-	}
-	if state.OwnerID == 0 && ctx.UserID != 0 {
-		state.OwnerID = ctx.UserID
-	}
-
-	switch ctx.Action {
-	case callback.ActionClose:
-		return ctx.DisableButtons("✅ Settings dashboard closed.")
-
-	case callback.ActionNoop:
-		return nil
-
-	case callback.ActionNav:
-		screen := p.renderScreen(ctx.Ctx, state)
-		text, markup := screen.Render()
-		return ctx.Edit(text, render.ToTelegramMarkup(markup))
-
-	case callback.ActionToggle, callback.ActionStep, callback.ActionDuration, callback.ActionSelect, callback.ActionReset:
-		if err := p.applySettingAction(ctx, &state, ctx.Action); err != nil {
-			return err
-		}
-		screen := p.renderScreen(ctx.Ctx, state)
-		text, markup := screen.Render()
-		return ctx.Edit(text, render.ToTelegramMarkup(markup))
-
-	default:
-		return fmt.Errorf("unknown settings callback action: %s", ctx.Action)
-	}
 }
 
 // =================== CLI .config Command Handler ===================

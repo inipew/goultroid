@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestP1DNativeSettingsUsesA2WithoutLegacyCallbackDependency(t *testing.T) {
+func TestP1DNativeSettingsUsesA2WithoutAssistantOrLegacyCallbackDependency(t *testing.T) {
 	root := repositoryRoot(t)
 	path := filepath.Join(root, "plugins", "settings", "native_interaction.go")
 	raw, err := os.ReadFile(path)
@@ -16,7 +16,7 @@ func TestP1DNativeSettingsUsesA2WithoutLegacyCallbackDependency(t *testing.T) {
 	}
 	source := string(raw)
 	if strings.Contains(source, "/internal/assistant") {
-		t.Fatal("native Settings must not depend on Assistant")
+		t.Fatal("native Settings must not depend on Assistant transport")
 	}
 	if strings.Contains(source, "/internal/services/callback") || strings.Contains(source, "EncodeCallbackData(") {
 		t.Fatal("native Settings must not generate legacy callback payloads")
@@ -35,7 +35,7 @@ func TestP1DNativeSettingsUsesA2WithoutLegacyCallbackDependency(t *testing.T) {
 	}
 }
 
-func TestP1DTextOnlyGatePrecedesNativeSessionBegin(t *testing.T) {
+func TestP1DTextOnlyGatePrecedesBothA2SessionBegins(t *testing.T) {
 	root := repositoryRoot(t)
 	path := filepath.Join(root, "plugins", "settings", "settings.go")
 	raw, err := os.ReadFile(path)
@@ -53,12 +53,14 @@ func TestP1DTextOnlyGatePrecedesNativeSessionBegin(t *testing.T) {
 	}
 	body := source[start : start+end]
 	resolve := strings.Index(body, "ResolveBool(")
-	begin := strings.Index(body, "openNativeSettings(")
-	textRender := strings.Index(body, "renderScreenMode(")
-	if resolve < 0 || begin < 0 || textRender < 0 || resolve > begin || begin > textRender {
-		t.Fatal("settings command must resolve inline_buttons before native Begin and retain text-only render fallback")
+	buttonGate := strings.Index(body, "if useButtons {")
+	assistantBegin := strings.Index(body, "openAssistantSettings(")
+	nativeBegin := strings.Index(body, "openNativeSettings(")
+	textRender := strings.Index(body, "renderScreen(")
+	if resolve < 0 || buttonGate < 0 || assistantBegin < 0 || nativeBegin < 0 || textRender < 0 {
+		t.Fatal("settings command a2/text-only gates incomplete")
 	}
-	if !strings.Contains(body, "if useButtons && !ctx.IsAssistant()") {
-		t.Fatal("native Settings a2 gate is missing")
+	if !(resolve < buttonGate && buttonGate < assistantBegin && assistantBegin < nativeBegin && nativeBegin < textRender) {
+		t.Fatal("settings must resolve inline_buttons before any a2 Begin and retain text-only render fallback")
 	}
 }
