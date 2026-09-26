@@ -361,9 +361,12 @@ func TestMyXLPlugin_Commands(t *testing.T) {
 	if err := dispatchPurchaseState(1303, 1001, 1001); err != nil {
 		t.Fatalf("purchase state canonical dispatch failed: %v", err)
 	}
-	capturedPurchase, ok := purchaseCapture.state.(purchaseDraftState)
+	capturedPurchase, ok := purchaseCapture.state.(purchaseIntentState)
 	if !ok || capturedPurchase.MSISDN != "6281912345678" || capturedPurchase.OptionCode != "OPT-FLEX-S" {
 		t.Fatalf("unexpected canonical purchase state: %#v", purchaseCapture.state)
+	}
+	if capturedPurchase.QuotedPrice != 35000 || capturedPurchase.Method != "balance" {
+		t.Fatalf("unexpected purchase quote state: %#v", capturedPurchase)
 	}
 	if err := dispatchPurchaseState(1304, 1001, 1001); !errors.Is(err, callback.ErrStateNotFound) {
 		t.Fatalf("single-use purchase state replay error = %v, want %v", err, callback.ErrStateNotFound)

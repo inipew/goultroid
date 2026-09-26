@@ -197,16 +197,18 @@ func TestMenuManager_Screens(t *testing.T) {
 	}
 
 	// 8. Checkout screen
-	draft := purchaseDraftState{
-		MSISDN:            acc.MSISDN,
-		OptionCode:        "OPT-10GB",
-		PackageName:       "Combo 10GB",
-		Price:             25000,
-		TokenConfirmation: "TOK-CONFIRM-123",
-		Method:            "BALANCE",
-		WalletNumber:      acc.MSISDN,
+	quote := purchaseCheckoutPreview{
+		Intent: purchaseIntentState{
+			MSISDN:      acc.MSISDN,
+			OptionCode:  "OPT-10GB",
+			Method:      "balance",
+			QuotedPrice: 25000,
+		},
+		PackageName:    "Combo 10GB",
+		CanonicalPrice: 25000,
+		EffectivePrice: 25000,
 	}
-	checkoutScreen, err := plugin.menuMgr.BuildCheckoutScreen(draft)
+	checkoutScreen, err := plugin.menuMgr.BuildCheckoutScreen(quote)
 	if err != nil || checkoutScreen == nil || !strings.Contains(checkoutScreen.Body, "Konfirmasi Pembelian") {
 		t.Errorf("expected checkout screen confirmation")
 	}

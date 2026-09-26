@@ -2,8 +2,8 @@ package myxl
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"strconv"
@@ -23,7 +23,7 @@ import (
 const (
 	assistantTTL             = 24 * time.Hour
 	assistantInputTTL        = 2 * time.Minute
-	assistantConfirmationTTL = 5 * time.Minute
+	assistantConfirmationTTL = purchaseConfirmationTTL
 	assistantActionSlotCount = 32
 
 	assistantScreenHome  = "home"
@@ -36,7 +36,7 @@ type assistantState struct {
 	MSISDN     string              `json:"msisdn,omitempty"`
 	OptionCode string              `json:"option_code,omitempty"`
 	Method     string              `json:"method,omitempty"`
-	Draft      *purchaseDraftState `json:"draft,omitempty"`
+	Draft      *purchaseIntentState `json:"draft,omitempty"`
 	Sustain    bool                `json:"sustain,omitempty"`
 }
 
@@ -570,22 +570,17 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		if err != nil || acc == nil {
 			return ctx.Answer("Tidak ada akun aktif", true)
 		}
-		details, err := p.client.GetPackageDetails(ctx.Context(), acc, optionCode)
-		if err != nil || details.TokenConfirmation == "" {
-			return ctx.Answer("Gagal memuat token konfirmasi", true)
+		intent, quote, err := p.preparePurchaseIntent(ctx.Context(), purchaseIntentState{
+			MSISDN:       acc.MSISDN,
+			OptionCode:   optionCode,
+			Method:       method,
+			WalletNumber: acc.MSISDN,
+		})
+		if err != nil {
+			return ctx.Answer("Gagal memuat detail paket terbaru. Silakan coba lagi.", true)
 		}
-		pkgName := optionCode
-		var price int64
-		if details.PackageOption != nil {
-			pkgName = details.PackageOption.Name
-			price = int64(details.PackageOption.Price)
-		}
-		draft := purchaseDraftState{
-			MSISDN: acc.MSISDN, OptionCode: optionCode, PackageName: pkgName, Price: price,
-			TokenConfirmation: details.TokenConfirmation, Method: method, WalletNumber: acc.MSISDN,
-		}
-		state.Draft = &draft
-		screen, err := p.menuMgr.BuildCheckoutScreen(draft)
+		state.Draft = &intent
+		screen, err := p.menuMgr.BuildCheckoutScreen(quote)
 		if err != nil {
 			return ctx.Answer(fmt.Sprintf("Gagal membuat sesi checkout: %v", err), true)
 		}
@@ -605,7 +600,10 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		return ctx.Answer("Masukkan harga kustom…", false)
 
 	case "checkout", "buy_confirm":
-		if state.Draft == nil || state.Draft.MSISDN == "" || state.Draft.OptionCode == "" || state.Draft.TokenConfirmation == "" {
+		if state.Draft == nil {
+			return ctx.Answer("Draft pembelian tidak valid atau sudah kedaluwarsa", true)
+		}
+		if _, err := normalizePurchaseIntent(*state.Draft); err != nil {
 			return ctx.Answer("Draft pembelian tidak valid atau sudah kedaluwarsa", true)
 		}
 		return p.confirmAssistantPurchase(ctx, state, *state.Draft)
@@ -893,24 +891,20 @@ func (p *Plugin) assistantInputCustomPrice(ctx *orchestration.Context, state ass
 	if err != nil || acc == nil {
 		return p.assistantRearm(ctx, state, "❌ Tidak ada akun MyXL aktif.")
 	}
-	details, err := p.client.GetPackageDetails(ctx.Context(), acc, state.OptionCode)
-	if err != nil || details.TokenConfirmation == "" {
-		return p.assistantRearm(ctx, state, "❌ Gagal memuat token konfirmasi paket.")
-	}
-	pkgName := state.OptionCode
-	var price int64
-	if details.PackageOption != nil {
-		pkgName = details.PackageOption.Name
-		price = int64(details.PackageOption.Price)
-	}
-	draft := purchaseDraftState{
-		MSISDN: acc.MSISDN, OptionCode: state.OptionCode, PackageName: pkgName, Price: price,
-		TokenConfirmation: details.TokenConfirmation, Method: state.Method, WalletNumber: acc.MSISDN,
-		OverwritePrice: value, HasOverwrite: true,
+	intent, quote, err := p.preparePurchaseIntent(ctx.Context(), purchaseIntentState{
+		MSISDN:         acc.MSISDN,
+		OptionCode:     state.OptionCode,
+		Method:         state.Method,
+		WalletNumber:   acc.MSISDN,
+		OverwritePrice: value,
+		HasOverwrite:   true,
+	})
+	if err != nil {
+		return p.assistantRearm(ctx, state, "❌ Gagal memuat detail paket terbaru.")
 	}
 	state.Wizard = ""
-	state.Draft = &draft
-	screen, err := p.menuMgr.BuildCheckoutScreen(draft)
+	state.Draft = &intent
+	screen, err := p.menuMgr.BuildCheckoutScreen(quote)
 	if err != nil {
 		return err
 	}
@@ -933,22 +927,25 @@ func (p *Plugin) assistantInputFamily(ctx *orchestration.Context, state assistan
 	return p.assistantTransition(ctx, assistantState{}, screen)
 }
 
-func (p *Plugin) confirmAssistantPurchase(ctx *orchestration.Context, state assistantState, draft purchaseDraftState) error {
+func (p *Plugin) confirmAssistantPurchase(ctx *orchestration.Context, state assistantState, intent purchaseIntentState) error {
 	cCtx, cancel := context.WithTimeout(ctx.Context(), 45*time.Second)
 	defer cancel()
 
-	acc, err := p.repo.GetByMSISDN(cCtx, draft.MSISDN)
-	if err != nil || acc == nil {
-		return ctx.Answer("Akun untuk draft pembelian tidak ditemukan.", true)
+	resolved, err := p.resolvePurchaseIntent(cCtx, intent)
+	if err != nil {
+		if errors.Is(err, ErrPurchaseQuoteChanged) {
+			return ctx.Answer("Harga paket berubah sejak halaman konfirmasi dibuat. Pembelian tidak dijalankan; buka ulang paket untuk harga terbaru.", true)
+		}
+		return ctx.Answer("Detail pembelian tidak lagi valid. Buka ulang paket lalu coba lagi.", true)
 	}
-	tokenKey := draft.TokenConfirmation
-	if tokenKey == "" {
-		tokenKey = fmt.Sprintf("%d", time.Now().UnixNano())
-	}
-	tokenHash := sha256.Sum256([]byte(tokenKey))
-	key := fmt.Sprintf("%s:%s:%x", draft.MSISDN, draft.OptionCode, tokenHash[:16])
 
-	reserved, err := p.repo.ReservePurchase(cCtx, key, draft.MSISDN, draft.OptionCode, draft.Method)
+	reserved, err := p.repo.ReservePurchase(
+		cCtx,
+		resolved.IdempotencyKey,
+		resolved.Intent.MSISDN,
+		resolved.Intent.OptionCode,
+		resolved.Intent.Method,
+	)
 	if err != nil {
 		return ctx.Answer("Gagal mengamankan transaksi. Pembelian tidak dijalankan.", true)
 	}
@@ -956,40 +953,39 @@ func (p *Plugin) confirmAssistantPurchase(ctx *orchestration.Context, state assi
 		return ctx.Answer("Transaksi sedang diproses atau baru saja dikonfirmasi.", true)
 	}
 
-	item := PurchaseItem{
-		ItemCode: draft.OptionCode, ItemPrice: draft.Price, ItemName: draft.PackageName,
-		TokenConfirmation: draft.TokenConfirmation,
-	}
-	var overwrite *int64
-	if draft.HasOverwrite {
-		overwrite = &draft.OverwritePrice
-	}
 	var result *SettlementResult
-	switch draft.Method {
+	switch resolved.Intent.Method {
 	case "balance":
-		result, err = p.client.SettlementBalance(cCtx, acc, item, overwrite)
+		result, err = p.client.SettlementBalance(cCtx, resolved.Account, resolved.Item, resolved.Overwrite)
 	case "qris":
-		result, err = p.client.SettlementQRIS(cCtx, acc, item, overwrite)
+		result, err = p.client.SettlementQRIS(cCtx, resolved.Account, resolved.Item, resolved.Overwrite)
 	case "gopay", "ovo", "dana", "shopeepay":
-		result, err = p.client.SettlementMultipayment(cCtx, acc, item, strings.ToUpper(draft.Method), draft.WalletNumber, overwrite)
+		result, err = p.client.SettlementMultipayment(
+			cCtx,
+			resolved.Account,
+			resolved.Item,
+			strings.ToUpper(resolved.Intent.Method),
+			resolved.Intent.WalletNumber,
+			resolved.Overwrite,
+		)
 	case "decoy_balance":
-		result, err = p.client.SettlementDecoy(cCtx, acc, item, "balance", overwrite)
+		result, err = p.client.SettlementDecoy(cCtx, resolved.Account, resolved.Item, "balance", resolved.Overwrite)
 	case "decoy_qris":
-		result, err = p.client.SettlementDecoy(cCtx, acc, item, "qris", overwrite)
+		result, err = p.client.SettlementDecoy(cCtx, resolved.Account, resolved.Item, "qris", resolved.Overwrite)
 	case "decoy_qris0":
-		result, err = p.client.SettlementDecoy(cCtx, acc, item, "qris0", overwrite)
+		result, err = p.client.SettlementDecoy(cCtx, resolved.Account, resolved.Item, "qris0", resolved.Overwrite)
 	default:
-		err = fmt.Errorf("unsupported payment method %q", draft.Method)
+		err = fmt.Errorf("unsupported payment method %q", resolved.Intent.Method)
 	}
 	if err != nil {
 		persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(cCtx), 5*time.Second)
-		_ = p.repo.FinishPurchase(persistCtx, key, "UNKNOWN", "", err.Error())
+		_ = p.repo.FinishPurchase(persistCtx, resolved.IdempotencyKey, "UNKNOWN", "", err.Error())
 		persistCancel()
 		return ctx.Answer("Hasil transaksi tidak dapat dipastikan. Periksa riwayat MyXL sebelum mencoba lagi.", true)
 	}
 	if result == nil {
 		persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(cCtx), 5*time.Second)
-		_ = p.repo.FinishPurchase(persistCtx, key, "UNKNOWN", "", "empty settlement result")
+		_ = p.repo.FinishPurchase(persistCtx, resolved.IdempotencyKey, "UNKNOWN", "", "empty settlement result")
 		persistCancel()
 		return ctx.Answer("Hasil transaksi kosong dan tidak dapat dipastikan.", true)
 	}
@@ -999,16 +995,12 @@ func (p *Plugin) confirmAssistantPurchase(ctx *orchestration.Context, state assi
 		status = "SUCCESS"
 	}
 	persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(cCtx), 5*time.Second)
-	finishErr := p.repo.FinishPurchase(persistCtx, key, status, result.TransactionCode, result.Message)
+	finishErr := p.repo.FinishPurchase(persistCtx, resolved.IdempotencyKey, status, result.TransactionCode, result.Message)
 	persistCancel()
 	if finishErr != nil {
 		return ctx.Answer("Transaksi selesai tetapi hasilnya gagal dicatat. Periksa riwayat MyXL.", true)
 	}
 
-	effectivePrice := draft.Price
-	if draft.HasOverwrite {
-		effectivePrice = draft.OverwritePrice
-	}
 	var qrWarning string
 	if result.QRCode != "" {
 		qrPayload, qrErr := normalizeQRPayload(result.QRCode)
@@ -1020,11 +1012,11 @@ func (p *Plugin) confirmAssistantPurchase(ctx *orchestration.Context, state assi
 			now := time.Now().UTC()
 			pending := &PendingQRIS{
 				TransactionCode: result.TransactionCode,
-				IdempotencyKey:  key,
-				MSISDN:          draft.MSISDN,
-				OptionCode:      draft.OptionCode,
-				PackageName:     draft.PackageName,
-				Price:           effectivePrice,
+				IdempotencyKey:  resolved.IdempotencyKey,
+				MSISDN:          resolved.Intent.MSISDN,
+				OptionCode:      resolved.Intent.OptionCode,
+				PackageName:     resolved.PackageName,
+				Price:           resolved.EffectivePrice,
 				QRCode:          qrPayload,
 				Status:          "PENDING",
 				CreatedAt:       now,
@@ -1037,7 +1029,13 @@ func (p *Plugin) confirmAssistantPurchase(ctx *orchestration.Context, state assi
 	}
 
 	state.Draft = nil
-	screen := p.menuMgr.BuildPurchaseResultScreen(result, draft.PackageName, effectivePrice, draft.Method, draft.OptionCode)
+	screen := p.menuMgr.BuildPurchaseResultScreen(
+		result,
+		resolved.PackageName,
+		resolved.EffectivePrice,
+		resolved.Intent.Method,
+		resolved.Intent.OptionCode,
+	)
 	if err := p.assistantTransition(ctx, state, screen); err != nil {
 		return err
 	}
@@ -1045,7 +1043,7 @@ func (p *Plugin) confirmAssistantPurchase(ctx *orchestration.Context, state assi
 	if result.QRCode != "" {
 		rt := p.currentAssistantRuntime()
 		if target, ok := ctx.Target().(presentationtelegram.MessageTarget); ok && target.Peer != nil && rt.Service != nil {
-			if err := p.sendQRPhoto(ctx.Context(), rt.Service, target.Peer, result.QRCode, draft.PackageName, effectivePrice); err != nil && qrWarning == "" {
+			if err := p.sendQRPhoto(ctx.Context(), rt.Service, target.Peer, result.QRCode, resolved.PackageName, resolved.EffectivePrice); err != nil && qrWarning == "" {
 				qrWarning = "Transaksi selesai tetapi foto QRIS gagal dikirim."
 			}
 		}

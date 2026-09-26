@@ -384,24 +384,21 @@ func (m *MenuManager) BuildPackageDetailScreen(ctx context.Context, acc *Account
 	return screen, nil
 }
 
-func (m *MenuManager) BuildCheckoutScreen(draft purchaseDraftState) (*ui.Screen, error) {
-
-	effectivePrice := draft.Price
-	priceLabel := fmt.Sprintf("Rp %s", formatRupiah(effectivePrice))
-	if draft.HasOverwrite {
-		effectivePrice = draft.OverwritePrice
-		priceLabel = fmt.Sprintf("Rp %s <i>(Harga Overwrite)</i>", formatRupiah(effectivePrice))
+func (m *MenuManager) BuildCheckoutScreen(quote purchaseCheckoutPreview) (*ui.Screen, error) {
+	priceLabel := fmt.Sprintf("Rp %s", formatRupiah(quote.EffectivePrice))
+	if quote.Intent.HasOverwrite {
+		priceLabel = fmt.Sprintf("Rp %s <i>(Harga Overwrite)</i>", formatRupiah(quote.EffectivePrice))
 	}
 
 	card := ui.NewCard("Konfirmasi Pembelian MyXL").
 		WithIcon("⚠️").
 		WithHeader("Harap periksa rincian pembelian Anda sebelum melanjutkan.").
-		AddField("Paket", html.EscapeString(draft.PackageName)).
-		AddField("Option Code", "<code>"+html.EscapeString(draft.OptionCode)+"</code>").
-		AddField("Metode", "<code>"+strings.ToUpper(html.EscapeString(draft.Method))+"</code>").
+		AddField("Paket", html.EscapeString(quote.PackageName)).
+		AddField("Option Code", "<code>"+html.EscapeString(quote.Intent.OptionCode)+"</code>").
+		AddField("Metode", "<code>"+strings.ToUpper(html.EscapeString(quote.Intent.Method))+"</code>").
 		AddField("Total Bayar", priceLabel).
-		AddField("Target Nomor", "<code>"+html.EscapeString(draft.MSISDN)+"</code>").
-		WithRaw("<i>Proteksi idempotensi aktif. Transaksi ini hanya akan dieksekusi 1 kali dan tidak dapat dibatalkan setelah dikonfirmasi.</i>").
+		AddField("Target Nomor", "<code>"+html.EscapeString(quote.Intent.MSISDN)+"</code>").
+		WithRaw("<i>Harga canonical akan diverifikasi ulang saat Konfirmasi ditekan. Jika berubah, transaksi dibatalkan sebelum reserve/settlement.</i>").
 		WithFooter("<i>Tekan Konfirmasi Pembayaran untuk menjalankan transaksi.</i>")
 
 	screen := ui.NewScreen("myxl:checkout", "", card.Render())
