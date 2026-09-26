@@ -365,8 +365,6 @@ The P1-F5 architecture fence prevents reintroduction of the deleted production a
 
 ---
 
-# 8. P1-F1---
-
 # 8. P1-F1 — inventory/freeze all repo-wide legacy callback callers
 
 P1-F1 is itself split into five sequential subphases.
@@ -1282,7 +1280,7 @@ NEXT executable phase: P2-A
 
 ---
 
-# 24. Definition of done# 24. Definition of done for the whole refinement program
+# 24. Definition of done for the whole refinement program
 
 The program is finished when:
 
