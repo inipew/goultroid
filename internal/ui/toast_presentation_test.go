@@ -7,7 +7,6 @@ import (
 
 	"github.com/inipew/goultroid/internal/core"
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
-	"github.com/inipew/goultroid/internal/services/callback"
 )
 
 func TestPresentUserErrorInteractionSemantics(t *testing.T) {
@@ -34,12 +33,7 @@ func TestPresentUserErrorInteractionSemantics(t *testing.T) {
 	}
 }
 
-func TestPresentUserErrorUnifiesLegacyAndCoreErrors(t *testing.T) {
-	legacy := PresentUserError(callback.ErrUnauthorized)
-	if !legacy.Alert || !strings.Contains(legacy.Text, "not authorized") {
-		t.Fatalf("legacy unauthorized=%+v", legacy)
-	}
-
+func TestPresentUserErrorUnifiesInteractionAndCoreErrors(t *testing.T) {
 	rate := PresentUserError(core.ErrRateLimited)
 	if rate.Alert || !strings.Contains(rate.Text, "Too many requests") {
 		t.Fatalf("core rate limit=%+v", rate)

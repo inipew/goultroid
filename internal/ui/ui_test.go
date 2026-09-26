@@ -198,12 +198,6 @@ func TestMapUserErrorMessage(t *testing.T) {
 	if got := MapUserErrorMessage(core.ErrRateLimited); !strings.Contains(got, "Too many requests") {
 		t.Errorf("expected rate limit message, got: %s", got)
 	}
-	if got := MapUserErrorMessage(callback.ErrUnauthorized); !strings.Contains(got, "not authorized") {
-		t.Errorf("expected unauthorized message, got: %s", got)
-	}
-	if got := MapUserErrorMessage(callback.ErrStateExpired); !strings.Contains(got, "expired") {
-		t.Errorf("expected expired message, got: %s", got)
-	}
 	if got := MapUserErrorMessage(callback.ErrInvalidCallbackData); !strings.Contains(got, "Invalid button action") {
 		t.Errorf("expected invalid callback message, got: %s", got)
 	}

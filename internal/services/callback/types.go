@@ -12,58 +12,32 @@ import (
 )
 
 var (
-	// ErrInvalidCallbackData indicates the callback data is malformed or invalid version.
+	// ErrInvalidCallbackData marks malformed residual callback input handled by
+	// the temporary compatibility Router retained until P1-F4.
 	ErrInvalidCallbackData = errors.New("invalid callback data format")
-	// ErrHandlerNotFound indicates no handler is registered for the specified namespace.
+	// ErrHandlerNotFound marks a non-a2 callback whose legacy feature authority
+	// no longer exists. P1-F3 uses it for the explicit expired/unknown policy.
 	ErrHandlerNotFound = errors.New("no callback handler found for namespace")
-	// ErrHandlerRegistrationChanged indicates admission was prepared for a callback
-	// handler generation that is no longer current.
+	// ErrHandlerRegistrationChanged is retained only with the legacy Handler
+	// registration contract until P1-F4 removes that surface.
 	ErrHandlerRegistrationChanged = fmt.Errorf("%w: callback handler registration changed", ErrHandlerNotFound)
-	// ErrUnauthorized indicates the user pressing the button is not allowed to trigger this action.
-	ErrUnauthorized = errors.New("unauthorized button interaction")
-	// ErrHandlerPanic marks a recovered callback handler panic so terminal metrics
-	// can record exactly one panic outcome instead of panic + generic error.
+	// ErrHandlerPanic marks a recovered legacy callback handler panic.
 	ErrHandlerPanic = fmt.Errorf("%w: callback handler panic", core.ErrInternal)
-	// ErrStateExpired indicates the state associated with the callback opaque id has expired.
-	ErrStateExpired = errors.New("callback state has expired")
-	// ErrStateNotFound indicates no state exists for the opaque id.
-	ErrStateNotFound = errors.New("callback state not found")
-	// ErrStateConsumed indicates a single-use callback state has already been consumed.
-	ErrStateConsumed = fmt.Errorf("%w: already consumed", ErrStateNotFound)
-	// ErrStateScopeStale indicates opaque state belongs to a previous plugin
-	// generation and must never be delivered to the current handler.
-	ErrStateScopeStale = fmt.Errorf("%w: callback state plugin generation is stale", ErrStateNotFound)
 )
 
 const (
-	// CallbackVersion1 defines standard version 1 callback payload prefix.
-	CallbackVersion1 = "v1"
-	// MaxCallbackDataLen is Telegram's callback data limit (64 bytes).
-	MaxCallbackDataLen = 64
-
-	// Standard callback actions.
-	ActionNoop     = "noop"
-	ActionNav      = "nav"
-	ActionToggle   = "toggle"
-	ActionSet      = "set"
-	ActionReset    = "reset"
-	ActionBack     = "back"
-	ActionClose    = "close"
-	ActionSelect   = "select"
-	ActionStep     = "step"
-	ActionDuration = "dur"
+	// ActionNoop is the only residual control payload retained after P1-F3. It
+	// is not a namespace protocol: raw "noop" only clears Telegram's spinner.
+	ActionNoop = "noop"
 )
 
-// failureCode categorizes canonical callback processing rejections.
+// failureCode categorizes compatibility callback processing rejections.
 type failureCode string
 
 const (
 	failureCodeInvalidPayload  failureCode = "INVALID_PAYLOAD"
 	failureCodeRateLimited     failureCode = "RATE_LIMITED"
-	failureCodeSessionExpired  failureCode = "SESSION_EXPIRED"
-	failureCodeUnauthorized    failureCode = "UNAUTHORIZED"
 	failureCodeHandlerNotFound failureCode = "HANDLER_NOT_FOUND"
-	failureCodeInternal        failureCode = "INTERNAL_ERROR"
 )
 
 // callbackFailure carries internal rejection details for feedback and metrics.
@@ -92,58 +66,35 @@ func (f *callbackFailure) Unwrap() error {
 	return f.InternalErr
 }
 
-// CallbackHandlerOptions controls standard UX behaviour for a handler.
+// CallbackHandlerOptions controls UX behaviour for the legacy Handler contract
+// retained only until P1-F4. State requirements were removed in P1-F3.
 type CallbackHandlerOptions struct {
-	// AutoAnswer when true (default) immediately answers the callback with empty toast
-	// to clear Telegram loading state before handler execution.
+	// AutoAnswer when true immediately answers the callback with the configured
+	// toast before handler execution.
 	AutoAnswer bool
-	// RequiresState rejects the callback when its opaque id does not resolve to
-	// live state. Leave false only for explicitly stateless handlers.
-	RequiresState bool
-	// DefaultText and DefaultAlert are used for the immediate answer when AutoAnswer is true.
-	// Empty DefaultText means silent ack.
+	// DefaultText and DefaultAlert are used by the immediate answer.
 	DefaultText  string
 	DefaultAlert bool
 }
 
-// Handler represents a domain callback query processor for a specific namespace.
+// Handler is the legacy plugin callback contract retained until P1-F4. P1-F3
+// no longer admits namespace payloads to registered handlers.
 type Handler interface {
 	Namespace() string
 	HandleCallback(ctx *CallbackContext) error
 }
 
-// HandlerWithOptions is optionally implemented by handlers needing custom ack behaviour.
+// HandlerWithOptions is optionally implemented by legacy handlers needing
+// custom acknowledgement behaviour.
 type HandlerWithOptions interface {
 	Handler
 	CallbackOptions() CallbackHandlerOptions
-}
-
-// HandlerWithStatePolicy optionally declares state requirements per action.
-// This supports namespaces that intentionally mix stateless navigation with
-// stateful or single-use mutations.
-type HandlerWithStatePolicy interface {
-	Handler
-	RequiresCallbackState(action, opaqueID string) bool
-}
-
-func requiresHandlerState(h Handler, action, opaqueID string) bool {
-	if h == nil {
-		return false
-	}
-	if handlerOptions(h).RequiresState {
-		return true
-	}
-	if policy, ok := h.(HandlerWithStatePolicy); ok {
-		return policy.RequiresCallbackState(action, opaqueID)
-	}
-	return false
 }
 
 func handlerOptions(h Handler) CallbackHandlerOptions {
 	if ho, ok := h.(HandlerWithOptions); ok {
 		return ho.CallbackOptions()
 	}
-	// Default: immediate ack, silent
 	return CallbackHandlerOptions{AutoAnswer: true}
 }
 
@@ -161,21 +112,18 @@ func truncateUTF8Bytes(text string, maxBytes int) string {
 	return text[:cut]
 }
 
-// CallbackContext encapsulates the execution environment and metadata of an incoming callback query.
-// ChatID and MsgID are deprecated (C): use Origin/Target. They are kept populated from Target for compatibility.
+// CallbackContext is the transport convenience context retained for the legacy
+// Handler API until P1-F4. P1-F3 removed namespace/action/opaque/state protocol
+// fields; canonical interactive state belongs to interaction.Runtime (a2).
 type CallbackContext struct {
 	Ctx     context.Context
 	QueryID int64
 	UserID  int64
-	// Deprecated: use Target.Peer / Target.MessageID. Kept populated from Target for backward compat.
+	// Deprecated: use Target.Peer / Target.MessageID. Kept for compatibility.
 	ChatID int64
 	// Deprecated: use Target.MessageID or Target.InlineID.
 	MsgID        int
 	RawData      []byte
-	Namespace    string
-	Action       string
-	OpaqueID     string
-	State        any // Retrieved from StateStore if associated
 	Service      core.TelegramServicer
 	Origin       core.CallbackOrigin
 	Target       core.CallbackTarget
@@ -184,8 +132,7 @@ type CallbackContext struct {
 	answered bool
 }
 
-// IsInline returns true when the callback originated from an inline message,
-// using Target.IsInline() as the single source of truth.
+// IsInline returns true when the callback originated from an inline message.
 func (c *CallbackContext) IsInline() bool {
 	if c == nil {
 		return false
@@ -206,7 +153,6 @@ func (c *CallbackContext) Answer(text string, alert bool) error {
 	if c.Service == nil {
 		return fmt.Errorf("%w: telegram service is nil", core.ErrInternal)
 	}
-	// Keep the legacy byte budget while preserving valid UTF-8 boundaries.
 	text = truncateUTF8Bytes(text, 200)
 	err := c.Service.AnswerCallbackQuery(c.Ctx, c.QueryID, text, alert)
 	if err == nil {
@@ -216,7 +162,6 @@ func (c *CallbackContext) Answer(text string, alert bool) error {
 }
 
 // Edit updates the text and optional reply markup of the message where the button was pressed.
-// It dispatches to EditMessageMarkup for normal messages and EditInlineBotMessage for inline messages.
 func (c *CallbackContext) Edit(text string, markup tg.ReplyMarkupClass) error {
 	if c == nil {
 		return fmt.Errorf("%w: callback context is nil", core.ErrInternal)
@@ -224,7 +169,6 @@ func (c *CallbackContext) Edit(text string, markup tg.ReplyMarkupClass) error {
 	if c.Service == nil {
 		return fmt.Errorf("%w: telegram service is nil", core.ErrInternal)
 	}
-	// Keep the legacy byte budget while preserving valid UTF-8 boundaries.
 	text = truncateUTF8Bytes(text, 4096)
 	if c.IsInline() {
 		if c.Target.InlineID == nil {
@@ -244,7 +188,6 @@ func (c *CallbackContext) EditText(text string) error {
 }
 
 // EditMarkup updates only the reply markup, preserving the message text on Telegram server.
-// For inline messages it calls EditInlineBotMessageMarkup; for normal messages it calls EditMessageMarkupOnly.
 func (c *CallbackContext) EditMarkup(markup tg.ReplyMarkupClass) error {
 	if c == nil {
 		return fmt.Errorf("%w: callback context is nil", core.ErrInternal)
@@ -264,8 +207,7 @@ func (c *CallbackContext) EditMarkup(markup tg.ReplyMarkupClass) error {
 	return c.Service.EditMessageMarkupOnly(c.Ctx, c.Target.Peer, c.Target.MessageID, markup)
 }
 
-// Delete deletes the originating message. For inline-origin callbacks it returns an error
-// because inline messages have no normal peer/message and must be edited, not deleted.
+// Delete deletes the originating message. Inline targets must be edited instead.
 func (c *CallbackContext) Delete() error {
 	if c == nil {
 		return fmt.Errorf("%w: callback context is nil", core.ErrInternal)
@@ -282,7 +224,7 @@ func (c *CallbackContext) Delete() error {
 	return c.Service.DeleteMessage(c.Ctx, c.Target.Peer, []int{c.Target.MessageID})
 }
 
-// GetMessage fetches the originating message. For inline it returns ErrUnsupported.
+// GetMessage fetches the originating message. Inline targets are unsupported.
 func (c *CallbackContext) GetMessage() (*tg.Message, error) {
 	if c == nil {
 		return nil, fmt.Errorf("%w: callback context is nil", core.ErrInternal)
@@ -299,9 +241,7 @@ func (c *CallbackContext) GetMessage() (*tg.Message, error) {
 	return c.Service.GetMessage(c.Ctx, c.Target.Peer, c.Target.MessageID)
 }
 
-// --- Standard UX helpers (Phase 3) ---
-
-// ShowProgress edits the message to show intermediate progress. Keeps existing markup unless new one provided.
+// ShowProgress edits the message to show intermediate progress.
 func (c *CallbackContext) ShowProgress(text string, markup tg.ReplyMarkupClass) error {
 	if text == "" {
 		text = "⏳ Processing..."
@@ -311,7 +251,7 @@ func (c *CallbackContext) ShowProgress(text string, markup tg.ReplyMarkupClass) 
 	return c.Edit(text, markup)
 }
 
-// ShowSuccess edits the message to show completion. Intended to be called after long-running work.
+// ShowSuccess edits the message to show completion.
 func (c *CallbackContext) ShowSuccess(text string, markup tg.ReplyMarkupClass) error {
 	if text == "" {
 		text = "✅ Done."
@@ -319,27 +259,21 @@ func (c *CallbackContext) ShowSuccess(text string, markup tg.ReplyMarkupClass) e
 	return c.Edit(text, markup)
 }
 
-// ShowError edits the message to show a user-safe error state plus optional toast.
-// It sanitizes raw error text via core.IsUserSafeText before exposing.
+// ShowError edits the message to a user-safe error state.
 func (c *CallbackContext) ShowError(userMsg string, err error, markup tg.ReplyMarkupClass) error {
 	msg := userMsg
 	if msg == "" {
 		msg = "❌ Action failed."
 	}
-	if err != nil && core.IsUserSafeText(err.Error()) {
-		// Prefer explicit userMsg; don't leak raw err unless safe and userMsg empty
-		if userMsg == "" {
-			msg = fmt.Sprintf("❌ %v", err)
-		}
+	if err != nil && core.IsUserSafeText(err.Error()) && userMsg == "" {
+		msg = fmt.Sprintf("❌ %v", err)
 	}
-	// Toast already consumed by AutoAnswer; error is durable via Edit
 	return c.Edit(msg, markup)
 }
 
-// DisableButtons removes keyboard after single-use destructive action while keeping text.
+// DisableButtons removes keyboard after a terminal action while keeping text.
 func (c *CallbackContext) DisableButtons(text string) error {
 	if text == "" {
-		// Try to fetch current text via GetMessage for normal messages
 		if !c.IsInline() && c.Target.Peer != nil && c.Service != nil {
 			if msg, err := c.GetMessage(); err == nil && msg != nil {
 				text = msg.Message
@@ -352,12 +286,12 @@ func (c *CallbackContext) DisableButtons(text string) error {
 	return c.Edit(text, nil)
 }
 
-// RemoveMarkup is alias for disabling buttons.
+// RemoveMarkup is an alias for disabling buttons.
 func (c *CallbackContext) RemoveMarkup(text string) error {
 	return c.DisableButtons(text)
 }
 
-// AnswerError is convenience for handlers with AutoAnswer=false that need to show alert on failure.
+// AnswerError shows an alert for handlers with AutoAnswer=false.
 func (c *CallbackContext) AnswerError(text string) error {
 	if text == "" {
 		text = "❌ Action failed."
@@ -365,118 +299,10 @@ func (c *CallbackContext) AnswerError(text string) error {
 	return c.Answer(text, true)
 }
 
-// AnswerSuccess is convenience for toast on success when AutoAnswer=false.
+// AnswerSuccess shows a success toast for handlers with AutoAnswer=false.
 func (c *CallbackContext) AnswerSuccess(text string) error {
 	if text == "" {
 		text = "✅ Done"
 	}
 	return c.Answer(text, false)
-}
-
-// EncodeCallbackData serializes namespace, action, and opaque id into standard versioned format:
-// v1:<namespace>:<action>:<opaque-id>
-func EncodeCallbackData(namespace, action, opaqueID string) []byte {
-	b, _ := EncodeCallbackDataChecked(namespace, action, opaqueID)
-	return b
-}
-
-// EncodeCallbackDataChecked validates and serializes; returns error if payload invalid.
-func EncodeCallbackDataChecked(namespace, action, opaqueID string) ([]byte, error) {
-	if err := validateCallbackField(namespace, "namespace"); err != nil {
-		return nil, err
-	}
-	if err := validateCallbackField(action, "action"); err != nil {
-		return nil, err
-	}
-	if opaqueID == "" {
-		return nil, fmt.Errorf("%w: opaque id cannot be empty", ErrInvalidCallbackData)
-	}
-	if len(opaqueID) > 48 || !isHexID(opaqueID) {
-		// opaqueID from StateStore is hex16, but allow up to 48 chars for UUIDs, composite tokens, or signed mode
-		// for now enforce hex; "noop" is handled earlier by router, not via validation here
-		if opaqueID != "noop" && !isValidOpaqueID(opaqueID) {
-			return nil, fmt.Errorf("%w: invalid opaque id %q", ErrInvalidCallbackData, opaqueID)
-		}
-	}
-	raw := fmt.Sprintf("%s:%s:%s:%s", CallbackVersion1, namespace, action, opaqueID)
-	if len(raw) > MaxCallbackDataLen {
-		return nil, fmt.Errorf("%w: callback data exceeds %d bytes (%d)", ErrInvalidCallbackData, MaxCallbackDataLen, len(raw))
-	}
-	return []byte(raw), nil
-}
-
-// ParseCallbackData deserializes callback payload into (namespace, action, opaqueID).
-func ParseCallbackData(data []byte) (namespace, action, opaqueID string, err error) {
-	if len(data) == 0 || len(data) > MaxCallbackDataLen {
-		return "", "", "", ErrInvalidCallbackData
-	}
-	str := string(data)
-	parts := strings.SplitN(str, ":", 4)
-	if len(parts) != 4 || parts[0] != CallbackVersion1 {
-		return "", "", "", ErrInvalidCallbackData
-	}
-	ns, act := parts[1], parts[2]
-	if err := validateCallbackField(ns, "namespace"); err != nil {
-		return "", "", "", err
-	}
-	if err := validateCallbackField(act, "action"); err != nil {
-		return "", "", "", err
-	}
-	oid := "noop"
-	if len(parts) == 4 {
-		oid = parts[3]
-		if oid == "" {
-			return "", "", "", ErrInvalidCallbackData
-		}
-	}
-	if !isValidOpaqueID(oid) {
-		return "", "", "", ErrInvalidCallbackData
-	}
-	return ns, act, oid, nil
-}
-
-func validateCallbackField(s, field string) error {
-	if s == "" {
-		return fmt.Errorf("%w: %s cannot be empty", ErrInvalidCallbackData, field)
-	}
-	if len(s) > 32 {
-		return fmt.Errorf("%w: %s too long (%d > 32)", ErrInvalidCallbackData, field, len(s))
-	}
-	for _, r := range s {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
-			continue
-		}
-		return fmt.Errorf("%w: %s contains invalid character %q", ErrInvalidCallbackData, field, r)
-	}
-	return nil
-}
-
-func isHexID(s string) bool {
-	if len(s) == 0 {
-		return false
-	}
-	for _, r := range s {
-		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
-func isValidOpaqueID(s string) bool {
-	if s == "noop" {
-		return true
-	}
-	if len(s) > 48 {
-		return false
-	}
-	// allow hex or base64url-like without padding for future; for now hex, alnum, _ - . :
-	for _, r := range s {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' || r == ':' {
-			continue
-		}
-		return false
-	}
-	return true
 }

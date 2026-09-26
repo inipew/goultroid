@@ -51,12 +51,16 @@ func (m *mockCoreDispatcher) Prepare(
 	if evt == nil {
 		return nil, corecallback.ErrInvalidCallbackData
 	}
-	ns, _, _, err := corecallback.ParseCallbackData(evt.Data)
-	if err != nil {
+	raw := strings.TrimSpace(string(evt.Data))
+	if raw == "" {
 		if svc != nil {
 			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Invalid button action", false)
 		}
-		return nil, err
+		return nil, corecallback.ErrInvalidCallbackData
+	}
+	ns := raw
+	if i := strings.IndexByte(raw, ':'); i >= 0 {
+		ns = raw[:i]
 	}
 	if m.hasHandlerFunc != nil && !m.hasHandlerFunc(ns) {
 		if svc != nil {
@@ -322,7 +326,7 @@ func TestCallbackIngress_DispatchMessageDirectlyToCore(t *testing.T) {
 	taskClient := &testTaskClient{}
 	inter := &recordingInteraction{mockInteraction: &mockInteraction{}}
 	target := interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 589287392}, 42, 589287392, 12345)
-	evt := messageEvent(987654321, 589287392, []byte("v1:myxl:refresh:628123456789"), target)
+	evt := messageEvent(987654321, 589287392, []byte("myxl:refresh:628123456789"), target)
 	var received *core.CallbackQueryEvent
 
 	router := &mockCoreDispatcher{
@@ -361,7 +365,7 @@ func TestCallbackIngress_TaskEngineScopeAndOrdering(t *testing.T) {
 	}
 	inter := &recordingInteraction{mockInteraction: &mockInteraction{}}
 	target := interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 7}, 100, 7, 9)
-	evt := messageEvent(777, 7, []byte("v1:myxl:refresh:123"), target)
+	evt := messageEvent(777, 7, []byte("myxl:refresh:123"), target)
 	if err := dispatchCoreCallback(context.Background(), router, taskClient, resolver, newCallbackQueryDeduper(), evt, newAssistantCallbackServicer(evt.QueryID, target, inter), zap.NewNop()); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -380,7 +384,7 @@ func TestCallbackIngress_RejectsUnavailableAndMissingTaskEngine(t *testing.T) {
 			return tasks.ScopeIdentity{}, false
 		},
 	}
-	evt := messageEvent(111, 7, []byte("v1:myxl:run:noop"), target)
+	evt := messageEvent(111, 7, []byte("myxl:run:noop"), target)
 	err := dispatchCoreCallback(context.Background(), unavailable, &testTaskClient{}, nil, newCallbackQueryDeduper(), evt, newAssistantCallbackServicer(evt.QueryID, target, inter), zap.NewNop())
 	if err == nil || inter.answer != "Feature not available." {
 		t.Fatalf("expected unavailable feature rejection, err=%v answer=%q", err, inter.answer)
@@ -388,7 +392,7 @@ func TestCallbackIngress_RejectsUnavailableAndMissingTaskEngine(t *testing.T) {
 
 	inter2 := &recordingInteraction{mockInteraction: &mockInteraction{}}
 	available := &mockCoreDispatcher{hasHandlerFunc: func(string) bool { return true }}
-	evt2 := messageEvent(112, 7, []byte("v1:myxl:run:noop"), target)
+	evt2 := messageEvent(112, 7, []byte("myxl:run:noop"), target)
 	err = dispatchCoreCallback(context.Background(), available, nil, nil, newCallbackQueryDeduper(), evt2, newAssistantCallbackServicer(evt2.QueryID, target, inter2), zap.NewNop())
 	if !errors.Is(err, ErrCallbackTasksNotConfigured) || inter2.answer != "Interaction service unavailable." {
 		t.Fatalf("expected missing TaskEngine rejection, err=%v answer=%q", err, inter2.answer)
@@ -401,16 +405,16 @@ func TestCallbackIngress_InvalidUnknownAndDuplicate(t *testing.T) {
 
 	invalidInter := &recordingInteraction{mockInteraction: &mockInteraction{}}
 	invalid := messageEvent(201, 7, []byte("malformed"), target)
-	canonicalRouter := corecallback.NewRouter(zap.NewNop(), corecallback.NewStateStore())
-	if err := dispatchCoreCallback(context.Background(), canonicalRouter, taskClient, nil, newCallbackQueryDeduper(), invalid, newAssistantCallbackServicer(201, target, invalidInter), zap.NewNop()); !errors.Is(err, corecallback.ErrInvalidCallbackData) {
-		t.Fatalf("malformed callback error = %v, want ErrInvalidCallbackData", err)
+	canonicalRouter := corecallback.NewRouter(zap.NewNop())
+	if err := dispatchCoreCallback(context.Background(), canonicalRouter, taskClient, nil, newCallbackQueryDeduper(), invalid, newAssistantCallbackServicer(201, target, invalidInter), zap.NewNop()); !errors.Is(err, corecallback.ErrHandlerNotFound) {
+		t.Fatalf("retired callback error = %v, want ErrHandlerNotFound", err)
 	}
-	if invalidInter.answer != "Invalid button action" {
+	if invalidInter.answer != "⌛ Interaction expired. Please reopen it." {
 		t.Fatalf("invalid answer = %q", invalidInter.answer)
 	}
 
 	unknownInter := &recordingInteraction{mockInteraction: &mockInteraction{}}
-	unknown := messageEvent(202, 7, []byte("v1:missing:run:noop"), target)
+	unknown := messageEvent(202, 7, []byte("missing:run:noop"), target)
 	err := dispatchCoreCallback(context.Background(), &mockCoreDispatcher{hasHandlerFunc: func(string) bool { return false }}, taskClient, nil, newCallbackQueryDeduper(), unknown, newAssistantCallbackServicer(202, target, unknownInter), zap.NewNop())
 	if !errors.Is(err, corecallback.ErrHandlerNotFound) || unknownInter.answer != "Feature not available." {
 		t.Fatalf("unknown result err=%v answer=%q", err, unknownInter.answer)
@@ -420,8 +424,8 @@ func TestCallbackIngress_InvalidUnknownAndDuplicate(t *testing.T) {
 	dupInter1 := &recordingInteraction{mockInteraction: &mockInteraction{}}
 	dupInter2 := &recordingInteraction{mockInteraction: &mockInteraction{}}
 	router := &mockCoreDispatcher{hasHandlerFunc: func(string) bool { return true }}
-	first := messageEvent(203, 7, []byte("v1:myxl:refresh:noop"), target)
-	second := messageEvent(203, 7, []byte("v1:myxl:refresh:noop"), target)
+	first := messageEvent(203, 7, []byte("myxl:refresh:noop"), target)
+	second := messageEvent(203, 7, []byte("myxl:refresh:noop"), target)
 	if err := dispatchCoreCallback(context.Background(), router, taskClient, nil, deduper, first, newAssistantCallbackServicer(203, target, dupInter1), zap.NewNop()); err != nil {
 		t.Fatalf("first duplicate test dispatch: %v", err)
 	}
@@ -438,7 +442,7 @@ func TestCallbackIngress_DispatchInlineDirectlyToCore(t *testing.T) {
 	inter := &mockInlineInteraction{}
 	inlineID := &tg.InputBotInlineMessageID{DCID: 1, ID: 12345, AccessHash: 67890}
 	target := interaction.NewInlineTarget(555, inlineID, 999)
-	evt := inlineEvent(555, 9, []byte("v1:help:module:myxl"), target)
+	evt := inlineEvent(555, 9, []byte("help:module:myxl"), target)
 	var received *core.CallbackQueryEvent
 	router := &mockCoreDispatcher{
 		hasHandlerFunc: func(ns string) bool { return ns == "help" },
@@ -521,7 +525,7 @@ func TestUpdateHandlers_CallbackSpinnerProtection(t *testing.T) {
 	api := &mockTelegramAPI{}
 	clientInter := interaction.NewClientInteraction(api, zap.NewNop())
 	isShutdown := false
-	canonicalRouter := corecallback.NewRouter(zap.NewNop(), corecallback.NewStateStore())
+	canonicalRouter := corecallback.NewRouter(zap.NewNop())
 	RegisterUpdateHandlers(&dispatcher, UpdateHandlerDeps{
 		Logger: zap.NewNop(), IsShuttingDown: func() bool { return isShutdown },
 		Interaction: clientInter, CallbackDispatcher: canonicalRouter,
@@ -534,14 +538,14 @@ func TestUpdateHandlers_CallbackSpinnerProtection(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("malformed handle: %v", err)
 	}
-	if api.answerReq == nil || api.answerReq.QueryID != 101 || api.answerReq.Message != "Invalid button action" {
+	if api.answerReq == nil || api.answerReq.QueryID != 101 || api.answerReq.Message != "⌛ Interaction expired. Please reopen it." {
 		t.Fatalf("invalid answer: %+v", api.answerReq)
 	}
 
 	isShutdown = true
 	api.answerReq = nil
 	if err := dispatcher.Handle(ctx, &tg.Updates{Updates: []tg.UpdateClass{
-		&tg.UpdateBotCallbackQuery{QueryID: 102, UserID: 1, Data: []byte("v1:test:act:noop")},
+		&tg.UpdateBotCallbackQuery{QueryID: 102, UserID: 1, Data: []byte("test:act:noop")},
 	}}); err != nil {
 		t.Fatalf("shutdown handle: %v", err)
 	}
@@ -556,7 +560,7 @@ func TestUpdateHandlers_CallbackSpinnerProtection(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("inline malformed handle: %v", err)
 	}
-	if api.answerReq == nil || api.answerReq.QueryID != 201 || api.answerReq.Message != "Invalid button action" {
+	if api.answerReq == nil || api.answerReq.QueryID != 201 || api.answerReq.Message != "⌛ Interaction expired. Please reopen it." {
 		t.Fatalf("inline invalid answer: %+v", api.answerReq)
 	}
 }
@@ -593,7 +597,7 @@ func TestCallbackIngress_TaskCancellationUnblocksAndAnswers(t *testing.T) {
 	router := &mockCoreDispatcher{hasHandlerFunc: func(string) bool { return true }}
 	inter := &recordingInteraction{mockInteraction: &mockInteraction{}}
 	target := interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 9}, 100, 9, 1)
-	evt := messageEvent(888, 9, []byte("v1:myxl:refresh:123"), target)
+	evt := messageEvent(888, 9, []byte("myxl:refresh:123"), target)
 	err := dispatchCoreCallback(context.Background(), router, &testCancelledTaskClient{ticket: ticket}, nil, newCallbackQueryDeduper(), evt, newAssistantCallbackServicer(evt.QueryID, target, inter), zap.NewNop())
 	if err == nil || !strings.Contains(err.Error(), "scope cancelled") {
 		t.Fatalf("expected cancellation error, got %v", err)
@@ -616,17 +620,17 @@ func (h *canonicalBridgeHandler) HandleCallback(ctx *corecallback.CallbackContex
 	return ctx.Answer("canonical", false)
 }
 
-func TestCallbackIngress_UsesCanonicalCallbackRouter(t *testing.T) {
-	router := corecallback.NewRouter(zap.NewNop(), corecallback.NewStateStore())
+func TestCallbackIngress_CanonicalRouterRejectsRetiredLegacyPayload(t *testing.T) {
+	router := corecallback.NewRouter(zap.NewNop())
 	handler := &canonicalBridgeHandler{}
 	if _, err := router.RegisterOwned("test", handler); err != nil {
-		t.Fatalf("register canonical handler: %v", err)
+		t.Fatalf("register legacy handler: %v", err)
 	}
 
 	taskClient := &testTaskClient{}
 	inter := &recordingInteraction{mockInteraction: &mockInteraction{}}
 	target := interaction.NewMessageTarget(&tg.InputPeerUser{UserID: 42}, 9, 42, 1)
-	evt := messageEvent(990, 42, corecallback.EncodeCallbackData("bridge", "run", "noop"), target)
+	evt := messageEvent(990, 42, []byte("bridge:run"), target)
 	svc := newAssistantCallbackServicer(evt.QueryID, target, inter)
 
 	resolve := func(owner string) (tasks.ScopeIdentity, bool) {
@@ -635,14 +639,14 @@ func TestCallbackIngress_UsesCanonicalCallbackRouter(t *testing.T) {
 		}
 		return tasks.ScopeIdentity{Owner: "plugin:test", Generation: 1}, true
 	}
-	if err := dispatchCoreCallback(context.Background(), router, taskClient, resolve, newCallbackQueryDeduper(), evt, svc, zap.NewNop()); err != nil {
-		t.Fatalf("dispatch canonical router: %v", err)
+	if err := dispatchCoreCallback(context.Background(), router, taskClient, resolve, newCallbackQueryDeduper(), evt, svc, zap.NewNop()); !errors.Is(err, corecallback.ErrHandlerNotFound) {
+		t.Fatalf("retired callback error = %v, want ErrHandlerNotFound", err)
 	}
-	if !handler.handled {
-		t.Fatal("canonical callback handler was not executed")
+	if handler.handled {
+		t.Fatal("retired callback payload reached a registered legacy handler")
 	}
-	if inter.answer != "canonical" || inter.answerCalls != 1 {
-		t.Fatalf("canonical acknowledgement = %q calls=%d", inter.answer, inter.answerCalls)
+	if inter.answer != "⌛ Interaction expired. Please reopen it." || inter.answerCalls != 1 {
+		t.Fatalf("retired callback acknowledgement = %q calls=%d", inter.answer, inter.answerCalls)
 	}
 }
 
@@ -745,7 +749,7 @@ func TestUpdateHandlers_A2DuplicateBypassesLegacyTransportRateLimit(t *testing.T
 	}
 }
 
-func TestUpdateHandlers_V1UsesOnlyCanonicalCallbackRateLimit(t *testing.T) {
+func TestUpdateHandlers_LegacyFallbackBypassesAssistantTransportRateLimit(t *testing.T) {
 	dispatcher := tg.NewUpdateDispatcher()
 	api := &mockTelegramAPI{}
 	clientInter := interaction.NewClientInteraction(api, zap.NewNop())
@@ -775,16 +779,16 @@ func TestUpdateHandlers_V1UsesOnlyCanonicalCallbackRateLimit(t *testing.T) {
 			UserID:       42,
 			MsgID:        inlineID,
 			ChatInstance: 1,
-			Data:         []byte("v1:test:run:noop"),
+			Data:         []byte("test:run:noop"),
 		},
 	}}); err != nil {
-		t.Fatalf("v1 callback handle: %v", err)
+		t.Fatalf("legacy callback handle: %v", err)
 	}
 	if transportLimiter.calls != 0 {
-		t.Fatalf("v1 callback hit Assistant transport limiter %d times; canonical router must own v1 rate limiting", transportLimiter.calls)
+		t.Fatalf("legacy callback hit Assistant transport limiter %d times", transportLimiter.calls)
 	}
 	if !dispatched {
-		t.Fatal("v1 callback did not reach canonical callback dispatcher")
+		t.Fatal("legacy callback did not reach callback compatibility dispatcher")
 	}
 
 	dispatched = false
@@ -803,6 +807,6 @@ func TestUpdateHandlers_V1UsesOnlyCanonicalCallbackRateLimit(t *testing.T) {
 		t.Fatalf("a2 callback hit legacy transport limiter, calls=%d", transportLimiter.calls)
 	}
 	if dispatched {
-		t.Fatal("rate-limited a2 callback reached canonical v1 dispatcher")
+		t.Fatal("rate-limited a2 callback reached legacy callback dispatcher")
 	}
 }

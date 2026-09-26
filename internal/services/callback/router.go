@@ -14,16 +14,20 @@ import (
 	"go.uber.org/zap"
 )
 
-// Router routes incoming callback query events to registered namespace handlers.
+const legacyExpiredText = "⌛ Interaction expired. Please reopen it."
+
+// Router is the temporary legacy callback compatibility shell retained until
+// P1-F4 removes transport/bootstrap wiring. P1-F3 intentionally ended the v1
+// protocol/state compatibility window: only raw noop survives to clear an
+// already-visible spinner; every other non-a2 payload is rejected as expired.
 type Router struct {
-	handlers   map[string]registration
-	stateStore *StateStore
-	logger     *zap.Logger
-	metrics    core.MetricsCollector
-	limiter    *ratelimit.Limiter
-	timeout    time.Duration
-	nextID     uint64
-	mu         sync.RWMutex
+	handlers map[string]registration
+	logger   *zap.Logger
+	metrics  core.MetricsCollector
+	limiter  *ratelimit.Limiter
+	timeout  time.Duration
+	nextID   uint64
+	mu       sync.RWMutex
 }
 
 type registration struct {
@@ -32,30 +36,22 @@ type registration struct {
 	id      uint64
 }
 
-// PreparedCallback is the opaque execution lease returned by Router.Prepare.
-// It pins one callback handler registration and its TaskEngine lifecycle scope.
-// Callers cannot inspect or mutate the registration identity.
+// PreparedCallback is the opaque execution lease consumed by the existing
+// transport bridges. After P1-F3 only raw noop produces a prepared lease; all
+// other non-a2 payloads are rejected during Prepare.
 type PreparedCallback interface {
 	Scope() tasks.ScopeIdentity
 	Dispatch(context.Context, *core.CallbackQueryEvent, core.TelegramServicer) error
 }
 
 type preparedDispatch struct {
-	router         *Router
-	namespace      string
-	action         string
-	opaqueID       string
-	rawData        string
-	registrationID uint64
-	scope          tasks.ScopeIdentity
-	noop           bool
+	router  *Router
+	rawData string
+	noop    bool
 }
 
 func (p *preparedDispatch) Scope() tasks.ScopeIdentity {
-	if p == nil {
-		return tasks.ScopeIdentity{}
-	}
-	return p.scope
+	return tasks.ScopeIdentity{}
 }
 
 func (p *preparedDispatch) Dispatch(ctx context.Context, evt *core.CallbackQueryEvent, svc core.TelegramServicer) error {
@@ -66,7 +62,7 @@ func (p *preparedDispatch) Dispatch(ctx context.Context, evt *core.CallbackQuery
 }
 
 // Registration is the minimal lifecycle lease returned by RegisterOwned.
-// Its concrete registration identity remains private to the callback router.
+// The legacy registration surface is retained only until P1-F4 removes it.
 type Registration interface {
 	Close()
 }
@@ -92,43 +88,37 @@ func (r *registrationLease) Close() {
 	})
 }
 
-const (
-	defaultCallbackTimeout = 15 * time.Second
-	maxCallbackTextLen     = 4096
-)
+const defaultCallbackTimeout = 15 * time.Second
 
-// NewRouter creates a new callback Router.
-func NewRouter(logger *zap.Logger, stateStore *StateStore) *Router {
+// NewRouter creates the temporary legacy callback compatibility shell.
+func NewRouter(logger *zap.Logger) *Router {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	if stateStore == nil {
-		stateStore = NewStateStore()
-	}
 	return &Router{
-		handlers:   make(map[string]registration),
-		stateStore: stateStore,
-		logger:     logger,
-		timeout:    defaultCallbackTimeout,
+		handlers: make(map[string]registration),
+		logger:   logger,
+		timeout:  defaultCallbackTimeout,
 	}
 }
 
-// SetMetrics configures metrics collector for callback interactions.
+// SetMetrics configures metrics collector for callback compatibility outcomes.
 func (r *Router) SetMetrics(m core.MetricsCollector) { r.metrics = m }
 
-// SetLimiter configures rate limiter for callback queries.
+// SetLimiter retains the pre-P1-F4 composition contract. P1-F3 no longer
+// creates legacy callback buckets because v1 dispatch has been retired.
 func (r *Router) SetLimiter(l *ratelimit.Limiter) { r.limiter = l }
 
-// SetTimeout configures per-handler timeout.
+// SetTimeout retains the pre-P1-F4 handler configuration contract.
 func (r *Router) SetTimeout(d time.Duration) {
 	if d > 0 {
 		r.timeout = d
 	}
 }
 
-// RegisterOwned registers a handler together with its lifecycle owner.
-// Every canonical callback handler must be lifecycle-owned so TaskEngine scope
-// admission can fence disable/reload boundaries.
+// RegisterOwned retains the legacy plugin lifecycle surface until P1-F4. No
+// production feature currently implements Handler and P1-F3 no longer admits
+// namespace payloads into these registrations.
 func (r *Router) RegisterOwned(owner string, h Handler) (Registration, error) {
 	owner = strings.TrimSpace(owner)
 	if owner == "" {
@@ -154,25 +144,15 @@ func (r *Router) RegisterOwned(owner string, h Handler) (Registration, error) {
 	return &registrationLease{router: r, namespace: ns, id: r.nextID}, nil
 }
 
-// Prepare validates callback protocol and rate limits, pins one concrete
-// registration, resolves its TaskEngine scope, and then revalidates the
-// registration before returning. No callback state is read or consumed here.
+// Prepare admits only the raw noop compatibility control. The legacy v1
+// namespace protocol/state window ended in P1-F3; all other non-a2 payloads
+// are terminally acknowledged as expired before TaskEngine submission.
 func (r *Router) Prepare(
 	ctx context.Context,
 	evt *core.CallbackQueryEvent,
 	svc core.TelegramServicer,
-	resolve func(string) (tasks.ScopeIdentity, bool),
+	_ func(string) (tasks.ScopeIdentity, bool),
 ) (PreparedCallback, error) {
-	return r.prepare(ctx, evt, svc, resolve, true)
-}
-
-func (r *Router) prepare(
-	ctx context.Context,
-	evt *core.CallbackQueryEvent,
-	svc core.TelegramServicer,
-	resolve func(string) (tasks.ScopeIdentity, bool),
-	requireScope bool,
-) (*preparedDispatch, error) {
 	if evt == nil {
 		return nil, ErrInvalidCallbackData
 	}
@@ -182,99 +162,23 @@ func (r *Router) prepare(
 		return &preparedDispatch{router: r, rawData: raw, noop: true}, nil
 	}
 
-	ns, action, opaqueID, err := ParseCallbackData(evt.Data)
-	if err != nil {
-		r.logger.Debug("unrecognized callback data format",
-			zap.Int64("query_id", evt.QueryID),
-			zap.Int64("user_id", evt.UserID),
-			zap.Int64("chat_id", evt.ChatID),
-			zap.String("origin", originString(evt.Origin)),
-			zap.ByteString("data", evt.Data),
-			zap.Error(err))
-		return nil, r.reject(ctx, evt, svc, callbackFailure{
-			Code:        failureCodeInvalidPayload,
-			MetricTag:   "invalid",
-			UserAlert:   "Invalid button action",
-			InternalErr: ErrInvalidCallbackData,
-			IsAlert:     false,
-		}, start)
-	}
-	if err := r.checkRateLimit(ctx, evt, ns, svc, start); err != nil {
-		return nil, err
-	}
-	if action == ActionNoop {
-		return &preparedDispatch{
-			router:    r,
-			namespace: ns,
-			action:    action,
-			opaqueID:  opaqueID,
-			rawData:   raw,
-			noop:      true,
-		}, nil
-	}
-
-	r.mu.RLock()
-	reg, ok := r.handlers[ns]
-	r.mu.RUnlock()
-	if !ok {
-		return nil, r.reject(ctx, evt, svc, callbackFailure{
-			Code:        failureCodeHandlerNotFound,
-			MetricTag:   "invalid",
-			UserAlert:   "Feature not available",
-			InternalErr: ErrHandlerNotFound,
-			IsAlert:     false,
-		}, start)
-	}
-
-	var scope tasks.ScopeIdentity
-	if requireScope && reg.owner != "" {
-		if resolve == nil {
-			return nil, r.reject(ctx, evt, svc, callbackFailure{
-				Code:        failureCodeHandlerNotFound,
-				MetricTag:   "unavailable",
-				UserAlert:   "Feature not available.",
-				InternalErr: ErrHandlerRegistrationChanged,
-				IsAlert:     false,
-			}, start)
-		}
-		var available bool
-		scope, available = resolve(reg.owner)
-		if !available {
-			return nil, r.reject(ctx, evt, svc, callbackFailure{
-				Code:        failureCodeHandlerNotFound,
-				MetricTag:   "unavailable",
-				UserAlert:   "Feature not available.",
-				InternalErr: ErrHandlerRegistrationChanged,
-				IsAlert:     false,
-			}, start)
-		}
-	}
-
-	r.mu.RLock()
-	current, stillCurrent := r.handlers[ns]
-	r.mu.RUnlock()
-	if !stillCurrent || current.id != reg.id {
-		return nil, r.reject(ctx, evt, svc, callbackFailure{
-			Code:        failureCodeHandlerNotFound,
-			MetricTag:   "stale_registration",
-			UserAlert:   "Feature not available.",
-			InternalErr: ErrHandlerRegistrationChanged,
-			IsAlert:     false,
-		}, start)
-	}
-
-	return &preparedDispatch{
-		router:         r,
-		namespace:      ns,
-		action:         action,
-		opaqueID:       opaqueID,
-		rawData:        raw,
-		registrationID: reg.id,
-		scope:          scope,
-	}, nil
+	r.logger.Debug("retired legacy callback rejected",
+		zap.Int64("query_id", evt.QueryID),
+		zap.Int64("user_id", evt.UserID),
+		zap.Int64("chat_id", evt.ChatID),
+		zap.String("origin", originString(evt.Origin)))
+	return nil, r.reject(ctx, evt, svc, callbackFailure{
+		Code:        failureCodeHandlerNotFound,
+		MetricTag:   "expired_legacy",
+		UserAlert:   legacyExpiredText,
+		InternalErr: ErrHandlerNotFound,
+		IsAlert:     false,
+	}, start)
 }
 
-// checkRateLimit enforces per-user callback rate limiting. Returns reject error if limited.
+// checkRateLimit is retained with the legacy Router until P1-F4. It is no
+// longer called by Prepare after v1 admission was removed, so P1-F3 creates no
+// new callback-specific buckets in the shared interaction limiter.
 func (r *Router) checkRateLimit(ctx context.Context, evt *core.CallbackQueryEvent, ns string, svc core.TelegramServicer, start time.Time) error {
 	if r.limiter == nil {
 		return nil
@@ -293,128 +197,6 @@ func (r *Router) checkRateLimit(ctx context.Context, evt *core.CallbackQueryEven
 	return nil
 }
 
-// resolveState atomically validates callback scope and claims single-use
-// state only after authorization succeeds.
-func (r *Router) resolveState(
-	ctx context.Context,
-	evt *core.CallbackQueryEvent,
-	ns, action, opaqueID string,
-	handlerScope tasks.ScopeIdentity,
-	svc core.TelegramServicer,
-	start time.Time,
-) (any, stateEntry, bool, error) {
-	if opaqueID == "" || opaqueID == ActionNoop || opaqueID == "-" || r.stateStore == nil {
-		return nil, stateEntry{}, false, nil
-	}
-
-	var validationFailure *callbackFailure
-	entry, stateErr := r.stateStore.claimEntry(opaqueID, func(scope StateScope) error {
-		switch {
-		case scope.UserID > 0 && evt.UserID != scope.UserID:
-			validationFailure = &callbackFailure{
-				Code:        failureCodeUnauthorized,
-				MetricTag:   "unauthorized",
-				UserAlert:   "⚠️ You are not authorized to use this button.",
-				InternalErr: ErrUnauthorized,
-				IsAlert:     true,
-			}
-		case scope.Namespace != "" && scope.Namespace != ns:
-			validationFailure = &callbackFailure{
-				Code:        failureCodeInvalidPayload,
-				MetricTag:   "invalid",
-				UserAlert:   "Invalid button scope.",
-				InternalErr: ErrInvalidCallbackData,
-				IsAlert:     false,
-			}
-		case !scope.OwnerScope.IsZero() && scope.OwnerScope != handlerScope:
-			validationFailure = &callbackFailure{
-				Code:        failureCodeSessionExpired,
-				MetricTag:   "stale_generation",
-				UserAlert:   "⏰ Button expired, run the command again.",
-				InternalErr: ErrStateScopeStale,
-				IsAlert:     true,
-			}
-		case scope.ChatID != 0 && scope.ChatID != evt.ChatID:
-			validationFailure = &callbackFailure{
-				Code:        failureCodeUnauthorized,
-				MetricTag:   "unauthorized",
-				UserAlert:   "Button not valid in this chat.",
-				InternalErr: ErrUnauthorized,
-				IsAlert:     true,
-			}
-		case scope.MessageID != 0 && scope.MessageID != evt.Target.MessageID:
-			validationFailure = &callbackFailure{
-				Code:        failureCodeUnauthorized,
-				MetricTag:   "unauthorized",
-				UserAlert:   "Button not valid for this message.",
-				InternalErr: ErrUnauthorized,
-				IsAlert:     true,
-			}
-		}
-		if validationFailure != nil {
-			return validationFailure.InternalErr
-		}
-		return nil
-	})
-	if stateErr == nil {
-		return entry.Data, entry, true, nil
-	}
-	if validationFailure != nil {
-		r.logger.Warn("callback state scope rejected",
-			zap.Int64("query_id", evt.QueryID),
-			zap.Int64("user_id", evt.UserID),
-			zap.String("namespace", ns),
-			zap.String("action", action),
-			zap.String("opaque_id", opaqueID),
-			zap.String("code", string(validationFailure.Code)))
-		return nil, stateEntry{}, false, r.reject(ctx, evt, svc, *validationFailure, start)
-	}
-
-	switch {
-	case errors.Is(stateErr, ErrStateExpired):
-		r.logger.Debug("callback state expired",
-			zap.Int64("query_id", evt.QueryID),
-			zap.Int64("user_id", evt.UserID),
-			zap.String("namespace", ns),
-			zap.String("action", action),
-			zap.String("opaque_id", opaqueID),
-			zap.String("origin", originString(evt.Origin)))
-		return nil, stateEntry{}, false, r.reject(ctx, evt, svc, callbackFailure{
-			Code:        failureCodeSessionExpired,
-			MetricTag:   "expired",
-			UserAlert:   "⏰ Button expired, run the command again.",
-			InternalErr: ErrStateExpired,
-			IsAlert:     true,
-		}, start)
-	case errors.Is(stateErr, ErrStateConsumed):
-		r.logger.Debug("callback state already consumed",
-			zap.Int64("query_id", evt.QueryID),
-			zap.Int64("user_id", evt.UserID),
-			zap.String("namespace", ns),
-			zap.String("action", action),
-			zap.String("opaque_id", opaqueID),
-			zap.String("origin", originString(evt.Origin)))
-		return nil, stateEntry{}, false, r.reject(ctx, evt, svc, callbackFailure{
-			Code:        failureCodeSessionExpired,
-			MetricTag:   "invalid",
-			UserAlert:   "Button already used.",
-			InternalErr: ErrStateNotFound,
-			IsAlert:     true,
-		}, start)
-	case errors.Is(stateErr, ErrStateNotFound):
-		return nil, stateEntry{}, false, nil
-	default:
-		r.logger.Warn("callback state lookup failed",
-			zap.Int64("query_id", evt.QueryID),
-			zap.String("namespace", ns),
-			zap.Error(stateErr))
-		return nil, stateEntry{}, false, nil
-	}
-}
-
-// dispatchPrepared executes exactly the handler registration pinned by Prepare.
-// If the plugin was disabled/reloaded after admission, the stale registration
-// is rejected before callback state can be claimed or consumed.
 func (r *Router) dispatchPrepared(
 	ctx context.Context,
 	evt *core.CallbackQueryEvent,
@@ -442,57 +224,22 @@ func (r *Router) dispatchPrepared(
 		}
 		return nil
 	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	r.mu.RLock()
-	reg, ok := r.handlers[prepared.namespace]
-	if !ok || reg.id != prepared.registrationID {
-		r.mu.RUnlock()
-		return r.reject(ctx, evt, svc, callbackFailure{
-			Code:        failureCodeHandlerNotFound,
-			MetricTag:   "stale_registration",
-			UserAlert:   "Feature not available.",
-			InternalErr: ErrHandlerRegistrationChanged,
-			IsAlert:     false,
-		}, start)
-	}
-	handler := reg.handler
-	r.mu.RUnlock()
-
-	storedState, _, hasState, err := r.resolveState(ctx, evt, prepared.namespace, prepared.action, prepared.opaqueID, prepared.scope, svc, start)
-	if err != nil {
-		return err
-	}
-
-	if !hasState && requiresHandlerState(handler, prepared.action, prepared.opaqueID) {
-		r.logger.Debug("callback requires state but none is available",
-			zap.Int64("query_id", evt.QueryID),
-			zap.Int64("user_id", evt.UserID),
-			zap.String("namespace", prepared.namespace),
-			zap.String("action", prepared.action),
-			zap.String("opaque_id", prepared.opaqueID))
-		return r.reject(ctx, evt, svc, callbackFailure{
-			Code:        failureCodeSessionExpired,
-			MetricTag:   "missing_state",
-			UserAlert:   "⏰ Button expired, run the command again.",
-			InternalErr: ErrStateNotFound,
-			IsAlert:     true,
-		}, start)
-	}
-
-	return r.executeHandler(ctx, evt, svc, handler, prepared.namespace, prepared.action, prepared.opaqueID, storedState, start)
+	return r.reject(ctx, evt, svc, callbackFailure{
+		Code:        failureCodeHandlerNotFound,
+		MetricTag:   "expired_legacy",
+		UserAlert:   legacyExpiredText,
+		InternalErr: ErrHandlerNotFound,
+		IsAlert:     false,
+	}, start)
 }
 
-// executeHandler runs the registration already validated for this dispatch.
+// executeHandler remains only for the P1-F4 Handler/Router removal boundary.
+// No production ingress can reach it after P1-F3 retired namespace admission.
 func (r *Router) executeHandler(
 	ctx context.Context,
 	evt *core.CallbackQueryEvent,
 	svc core.TelegramServicer,
 	handler Handler,
-	ns, action, opaqueID string,
-	storedState any,
 	start time.Time,
 ) error {
 	cbCtx := &CallbackContext{
@@ -502,10 +249,6 @@ func (r *Router) executeHandler(
 		ChatID:       evt.ChatID,
 		MsgID:        evt.MsgID,
 		RawData:      evt.Data,
-		Namespace:    ns,
-		Action:       action,
-		OpaqueID:     opaqueID,
-		State:        storedState,
 		Service:      svc,
 		Origin:       evt.Origin,
 		Target:       evt.Target,

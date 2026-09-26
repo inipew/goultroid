@@ -14,49 +14,19 @@ import (
 func TestP1F1ELegacyCallbackProductionSurfaceIsExactlyFrozen(t *testing.T) {
 	root := repositoryRoot(t)
 	legacyImport := modulePath + "/internal/services/callback"
-
-	// This is the complete production API surface still allowed to depend on
-	// the legacy callback package after P1-F1. It contains infrastructure-only
-	// compatibility ownership; no feature/plugin namespace is allowlisted.
 	allowed := map[string]map[string]struct{}{
-		"internal/app/app.go": {
-			"StateStore": {},
-		},
-		"internal/app/dependencies.go": {
-			"Router":     {},
-			"StateStore": {},
-		},
-		"internal/app/wiring_core.go": {
-			"NewRouter":     {},
-			"NewStateStore": {},
-		},
-		"internal/assistant/client/servicer.go": {
-			"PreparedCallback": {},
-		},
-		"internal/module/module.go": {
-			"NewScopedStateWriter": {},
-			"StateWriter":          {},
-		},
-		"internal/plugin/manager.go": {
-			"Handler":      {},
-			"Registration": {},
-		},
-		"internal/telegram/dispatcher.go": {
-			"Router": {},
-		},
-		"internal/telegram/dispatcher_accessors.go": {
-			"Router": {},
-		},
+		"internal/app/dependencies.go":              {"Router": {}},
+		"internal/app/wiring_core.go":               {"NewRouter": {}},
+		"internal/assistant/client/servicer.go":     {"PreparedCallback": {}},
+		"internal/plugin/manager.go":                {"Handler": {}, "Registration": {}},
+		"internal/telegram/dispatcher.go":           {"Router": {}},
+		"internal/telegram/dispatcher_accessors.go": {"Router": {}},
 		"internal/ui/toast.go": {
 			"CallbackContext":        {},
 			"ErrHandlerNotFound":     {},
 			"ErrInvalidCallbackData": {},
-			"ErrStateExpired":        {},
-			"ErrStateNotFound":       {},
-			"ErrUnauthorized":        {},
 		},
 	}
-
 	seen := make(map[string]map[string]struct{}, len(allowed))
 	for rel := range allowed {
 		seen[rel] = make(map[string]struct{})
@@ -78,13 +48,11 @@ func TestP1F1ELegacyCallbackProductionSurfaceIsExactlyFrozen(t *testing.T) {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-
 		file, err := parser.ParseFile(fset, path, nil, 0)
 		if err != nil {
 			return err
@@ -92,11 +60,11 @@ func TestP1F1ELegacyCallbackProductionSurfaceIsExactlyFrozen(t *testing.T) {
 
 		callbackAlias := ""
 		for _, spec := range file.Imports {
-			if strings.Trim(spec.Path.Value, """) != legacyImport {
+			if strings.Trim(spec.Path.Value, "\"") != legacyImport {
 				continue
 			}
 			if _, ok := allowed[rel]; !ok {
-				t.Errorf("new production legacy callback importer outside P1-F1-E closure: %s", rel)
+				t.Errorf("new production legacy callback importer outside P1-F1 closure: %s", rel)
 				continue
 			}
 			callbackAlias = "callback"
@@ -104,11 +72,10 @@ func TestP1F1ELegacyCallbackProductionSurfaceIsExactlyFrozen(t *testing.T) {
 				callbackAlias = spec.Name.Name
 			}
 			if callbackAlias == "." || callbackAlias == "_" {
-				t.Errorf("legacy callback import must remain explicit for auditability: %s", rel)
+				t.Errorf("legacy callback import must remain explicit: %s", rel)
 				callbackAlias = ""
 			}
 		}
-
 		if callbackAlias != "" {
 			ast.Inspect(file, func(n ast.Node) bool {
 				sel, ok := n.(*ast.SelectorExpr)
@@ -120,14 +87,13 @@ func TestP1F1ELegacyCallbackProductionSurfaceIsExactlyFrozen(t *testing.T) {
 					return true
 				}
 				if _, ok := allowed[rel][sel.Sel.Name]; !ok {
-					t.Errorf("new legacy callback API use %s.%s outside P1-F1-E symbol allowlist: %s", callbackAlias, sel.Sel.Name, rel)
+					t.Errorf("new legacy callback API use %s.%s outside allowlist: %s", callbackAlias, sel.Sel.Name, rel)
 					return true
 				}
 				seen[rel][sel.Sel.Name] = struct{}{}
 				return true
 			})
 		}
-
 		if strings.HasPrefix(rel, "internal/services/callback/") {
 			return nil
 		}
@@ -147,11 +113,10 @@ func TestP1F1ELegacyCallbackProductionSurfaceIsExactlyFrozen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	for rel, symbols := range allowed {
 		for symbol := range symbols {
 			if _, ok := seen[rel][symbol]; !ok {
-				t.Errorf("P1-F1-E callback symbol allowlist is stale; remove or reclassify %s.%s", rel, symbol)
+				t.Errorf("P1-F1 callback symbol allowlist is stale; remove or reclassify %s.%s", rel, symbol)
 			}
 		}
 	}
@@ -175,17 +140,9 @@ func TestP1F1ESettingsAndMyXLRemainZeroLegacy(t *testing.T) {
 			}
 			source := string(raw)
 			for _, forbidden := range []string{
-				"/internal/services/callback",
-				"callback.",
-				"StateStore",
-				"ScopedCallbackStore",
-				"SetStateStore",
-				"EncodeCallbackData(",
-				"ParseCallbackData(",
-				"RequiresCallbackState",
-				"CallbackOptions(",
-				"HandleCallback(",
-				"v1:" + plugin,
+				"/internal/services/callback", "callback.", "StateStore", "ScopedCallbackStore",
+				"SetStateStore", "EncodeCallbackData(", "ParseCallbackData(", "RequiresCallbackState",
+				"CallbackOptions(", "HandleCallback(", "v1:" + plugin,
 			} {
 				if strings.Contains(source, forbidden) {
 					t.Errorf("%s/%s reintroduced legacy callback surface %q", plugin, entry.Name(), forbidden)

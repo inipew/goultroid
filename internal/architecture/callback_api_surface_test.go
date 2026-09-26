@@ -11,31 +11,18 @@ import (
 func TestCanonicalCallbackAPISurface(t *testing.T) {
 	root := repositoryRoot(t)
 	fset := token.NewFileSet()
-
 	forbiddenMethods := map[string]map[string]struct{}{
 		"Router": {
-			"Register":         {},
-			"HasHandler":       {},
-			"GetHandler":       {},
-			"TaskScope":        {},
-			"DispatchPrepared": {},
-			"StateStore":       {},
-		},
-		"StateStore": {
-			"Get":        {},
-			"GetEntry":   {},
-			"ClaimEntry": {},
-			"Consume":    {},
-			"Delete":     {},
+			"Register": {}, "HasHandler": {}, "GetHandler": {}, "TaskScope": {},
+			"DispatchPrepared": {}, "StateStore": {},
 		},
 	}
 	forbiddenFuncs := map[string]struct{}{
-		"NewActionData": {},
+		"NewActionData": {}, "NewStateStore": {}, "NewScopedStateWriter": {},
+		"EncodeCallbackData": {}, "EncodeCallbackDataChecked": {}, "ParseCallbackData": {},
 	}
-
 	callbackFiles := []string{
 		filepath.Join(root, "internal", "services", "callback", "router.go"),
-		filepath.Join(root, "internal", "services", "callback", "store.go"),
 		filepath.Join(root, "internal", "services", "callback", "types.go"),
 	}
 	for _, path := range callbackFiles {
@@ -65,30 +52,6 @@ func TestCanonicalCallbackAPISurface(t *testing.T) {
 			}
 		}
 	}
-
-	modulePath := filepath.Join(root, "internal", "module", "module.go")
-	moduleFile, err := parser.ParseFile(fset, modulePath, nil, 0)
-	if err != nil {
-		t.Fatalf("parse %s: %v", modulePath, err)
-	}
-	ast.Inspect(moduleFile, func(n ast.Node) bool {
-		typeSpec, ok := n.(*ast.TypeSpec)
-		if !ok || typeSpec.Name.Name != "TelegramRuntime" {
-			return true
-		}
-		st, ok := typeSpec.Type.(*ast.StructType)
-		if !ok {
-			return false
-		}
-		for _, field := range st.Fields.List {
-			for _, name := range field.Names {
-				if name.Name == "Callbacks" {
-					t.Error("module.TelegramRuntime must not expose callback.Router")
-				}
-			}
-		}
-		return false
-	})
 }
 
 func receiverTypeName(expr ast.Expr) string {

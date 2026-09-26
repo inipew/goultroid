@@ -31,7 +31,6 @@ import (
 	"github.com/inipew/goultroid/internal/resource"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/scheduler"
-	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/inline"
 	mediaSvc "github.com/inipew/goultroid/internal/services/media"
@@ -59,7 +58,6 @@ type App struct {
 	limiter                   *ratelimit.Limiter
 	interLimiter              *ratelimit.Limiter
 	addonMgr                  *addon.Manager
-	callbackStore             *callback.StateStore
 	inlineEngine              *inline.Engine
 	settingsService           *settings.Service
 	settingsLive              *settings.LiveBinder
@@ -318,7 +316,6 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		TelegramRuntime: module.TelegramRuntime{
 			TelegramService: tgRuntime.client.Service,
 			Resolver:        tgRuntime.dispatcher.Resolver(),
-			CallbackStore:   coreDeps.callbackStore,
 		},
 		ServiceRuntime: module.ServiceRuntime{
 			Storage:          domServices.storage,
@@ -437,11 +434,6 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	if err := rt.Register(domServices.schedEngine); err != nil {
 		return nil, fmt.Errorf("register scheduler component: %w", err)
 	}
-	if coreDeps.callbackStore != nil {
-		if err := rt.Register(coreDeps.callbackStore); err != nil {
-			return nil, fmt.Errorf("register callback_store component: %w", err)
-		}
-	}
 	if coreDeps.inlineEngine != nil && coreDeps.inlineEngine.Cache() != nil {
 		if err := rt.Register(coreDeps.inlineEngine.Cache()); err != nil {
 			return nil, fmt.Errorf("register inline_cache component: %w", err)
@@ -522,7 +514,6 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		limiter:                   coreDeps.cmdLimiter,
 		interLimiter:              coreDeps.interLimiter,
 		addonMgr:                  domServices.addonManager,
-		callbackStore:             coreDeps.callbackStore,
 		inlineEngine:              coreDeps.inlineEngine,
 		settingsService:           domServices.settingsService,
 		settingsLive:              settingsLive,

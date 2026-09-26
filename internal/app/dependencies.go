@@ -47,7 +47,6 @@ type coreDependencies struct {
 	eventBus        *core.EventBus
 	metrics         core.MetricsCollector
 	localizer       localization.Localizer
-	callbackStore   *callback.StateStore
 	callbackRouter  *callback.Router
 	inlineEngine    *inline.Engine
 	cmdLimiter      *ratelimit.Limiter

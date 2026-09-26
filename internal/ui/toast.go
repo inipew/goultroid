@@ -69,12 +69,6 @@ func PresentUserError(err error) UserErrorPresentation {
 		return UserErrorPresentation{Text: "⚠️ Another input session is already active in this chat."}
 	case errors.Is(err, rootinteraction.ErrCapacity):
 		return UserErrorPresentation{Text: "⚠️ Too many active interactions. Close an older interaction and try again."}
-	case errors.Is(err, callback.ErrUnauthorized):
-		return UserErrorPresentation{Text: "⛔ You are not authorized to perform this action.", Alert: true}
-	case errors.Is(err, callback.ErrStateExpired):
-		return UserErrorPresentation{Text: "⌛ Button expired. Run the command again."}
-	case errors.Is(err, callback.ErrStateNotFound):
-		return UserErrorPresentation{Text: "⌛ Button was already used or its state expired."}
 	case errors.Is(err, callback.ErrInvalidCallbackData):
 		return UserErrorPresentation{Text: "⚠️ Invalid button action."}
 	case errors.Is(err, callback.ErrHandlerNotFound):

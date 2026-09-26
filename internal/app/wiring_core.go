@@ -63,8 +63,7 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 	cmdLimiter := ratelimit.New(ratelimit.Policy{Limit: 60, Window: time.Minute, Burst: 30}, 5*time.Minute)
 	interLimiter := ratelimit.New(ratelimit.Policy{Limit: 30, Window: time.Minute, Burst: 10}, 5*time.Minute)
 
-	callbackStore := callback.NewStateStore()
-	callbackRouter := callback.NewRouter(logger, callbackStore)
+	callbackRouter := callback.NewRouter(logger)
 	callbackRouter.SetMetrics(metrics)
 	callbackRouter.SetLimiter(interLimiter)
 	callbackRouter.SetTimeout(15 * time.Second)
@@ -159,7 +158,6 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 		eventBus:        eventBus,
 		metrics:         metrics,
 		localizer:       localizer,
-		callbackStore:   callbackStore,
 		callbackRouter:  callbackRouter,
 		inlineEngine:    inlineEngine,
 		cmdLimiter:      cmdLimiter,
