@@ -276,5 +276,6 @@ func (s *Service) loadBuiltinTranslations() {
 
 	s.AddTranslations(DefaultLocale, en)
 	s.AddTranslations(LocaleIndonesian, id)
+	s.loadCommonUXTranslations()
 	s.loadAssistantTranslations()
 }
