@@ -28,7 +28,6 @@ const (
 	nativePurchaseConfirmAction = "native_purchase_confirm"
 	nativePurchaseCancelAction  = "native_purchase_cancel"
 	nativePurchaseConfirmExec   = 55 * time.Second
-	nativePurchaseProcessingTTL = 2 * time.Minute
 )
 
 type nativeRuntimeState struct {
@@ -245,7 +244,7 @@ func (p *Plugin) handleNativePurchaseConfirm(ctx *orchestration.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := ctx.Transition(raw, nativePurchaseProcessingTTL, presentation.View{
+	if err := ctx.Transition(raw, purchaseProcessingTTL, presentation.View{
 		Text: fmt.Sprintf(
 			"⏳ <b>Memproses pembelian MyXL</b>\n\nPaket: <b>%s</b>\nKode: <code>%s</code>\nMetode: <code>%s</code>\n\nJangan ulangi transaksi sampai hasil akhir ditampilkan.",
 			html.EscapeString(resolved.PackageName),

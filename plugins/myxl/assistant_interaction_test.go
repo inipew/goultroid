@@ -106,6 +106,12 @@ func TestAssistantV2OwnerBoundLifetimePolicy(t *testing.T) {
 	if assistantConfirmationTTL != 5*time.Minute {
 		t.Fatalf("assistantConfirmationTTL = %v, want 5m", assistantConfirmationTTL)
 	}
+	if purchaseProcessingTTL != 2*time.Minute {
+		t.Fatalf("purchaseProcessingTTL = %v, want 2m", purchaseProcessingTTL)
+	}
+	if assistantPurchaseConfirmExec != 65*time.Second {
+		t.Fatalf("assistantPurchaseConfirmExec = %v, want 65s", assistantPurchaseConfirmExec)
+	}
 	if pendingQRISTTL != 5*time.Minute {
 		t.Fatalf("pendingQRISTTL = %v, want 5m", pendingQRISTTL)
 	}
@@ -191,5 +197,24 @@ func TestP1E4AssistantDirectPurchaseCheckoutCompilesA2State(t *testing.T) {
 	}
 	if strings.Contains(view.Text, "v1:myxl") || strings.Contains(view.Text, "myxl:checkout") {
 		t.Fatalf("checkout presentation leaked transport/internal callback data: %q", view.Text)
+	}
+}
+
+func TestP1EAssistantPurchaseSlotGetsLongExecutionProfile(t *testing.T) {
+	raw, err := encodeAssistantState(assistantState{Slots: []string{"myxl:checkout"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := assistantSlotExecutionProfile(raw, 0)
+	if profile.ExecutionTimeout != assistantPurchaseConfirmExec {
+		t.Fatalf("purchase execution timeout = %v, want %v", profile.ExecutionTimeout, assistantPurchaseConfirmExec)
+	}
+
+	raw, err = encodeAssistantState(assistantState{Slots: []string{"myxl:home"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile := assistantSlotExecutionProfile(raw, 0); profile.ExecutionTimeout != 0 {
+		t.Fatalf("ordinary action timeout override = %v, want zero/default", profile.ExecutionTimeout)
 	}
 }

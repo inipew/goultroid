@@ -14,6 +14,7 @@ import (
 const (
 	maxPurchaseOptionCodeBytes = 128
 	purchaseConfirmationTTL    = 5 * time.Minute
+	purchaseProcessingTTL      = 2 * time.Minute
 )
 
 var (

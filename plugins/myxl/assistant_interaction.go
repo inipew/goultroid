@@ -14,17 +14,20 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/feature"
+	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 	"github.com/inipew/goultroid/internal/interaction/orchestration"
 	"github.com/inipew/goultroid/internal/presentation"
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
+	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/ui"
 )
 
 const (
-	assistantTTL             = 24 * time.Hour
-	assistantInputTTL        = 2 * time.Minute
-	assistantConfirmationTTL = purchaseConfirmationTTL
-	assistantActionSlotCount = 32
+	assistantTTL                 = 24 * time.Hour
+	assistantInputTTL            = 2 * time.Minute
+	assistantConfirmationTTL     = purchaseConfirmationTTL
+	assistantPurchaseConfirmExec = 65 * time.Second
+	assistantActionSlotCount     = 32
 
 	assistantScreenHome     = "home"
 	assistantScreenInput    = "input"
@@ -143,16 +146,27 @@ func (p *Plugin) BindAssistant(rt assistantinteraction.DriverRuntime) (func(), e
 	for i := 0; i < assistantActionSlotCount; i++ {
 		slot := i
 		actionID := assistantSlotID(slot)
-		reg, err := rt.Engine.RegisterAction(scope, p.Name(), actionID, func(ctx *orchestration.Context) error {
-			if ctx == nil {
-				return orchestration.ErrInvalidEngine
-			}
-			session := ctx.Session()
-			if err := rt.Admit(p.Name(), feature.InteractionAction, actionID, session.Binding.ActorID, ctx.Target()); err != nil {
-				return err
-			}
-			return p.handleAssistantSlot(ctx, slot)
-		})
+		reg, err := rt.Engine.RegisterPreparedAction(
+			scope,
+			p.Name(),
+			actionID,
+			func(_ context.Context, action rootinteraction.Action) (rootinteraction.ActionAdmission, error) {
+				return rootinteraction.ActionAdmission{
+					Scope:   scope,
+					Profile: assistantSlotExecutionProfile(action.Session.State, slot),
+				}, nil
+			},
+			func(ctx *orchestration.Context) error {
+				if ctx == nil {
+					return orchestration.ErrInvalidEngine
+				}
+				session := ctx.Session()
+				if err := rt.Admit(p.Name(), feature.InteractionAction, actionID, session.Binding.ActorID, ctx.Target()); err != nil {
+					return err
+				}
+				return p.handleAssistantSlot(ctx, slot)
+			},
+		)
 		if err != nil {
 			for j := len(registrations) - 1; j >= 0; j-- {
 				registrations[j].Close()
@@ -177,6 +191,23 @@ func (p *Plugin) BindAssistant(rt assistantinteraction.DriverRuntime) (func(), e
 		p.assistantMu.Unlock()
 	}
 	return cleanup, nil
+}
+
+func assistantSlotExecutionProfile(raw []byte, slot int) tasks.ExecutionProfile {
+	state := decodeAssistantState(raw)
+	if slot < 0 || slot >= len(state.Slots) {
+		return tasks.ExecutionProfile{}
+	}
+	_, action, _, err := parseAssistantIntent(state.Slots[slot])
+	if err != nil {
+		return tasks.ExecutionProfile{}
+	}
+	switch action {
+	case "checkout", "buy_confirm":
+		return tasks.ExecutionProfile{ExecutionTimeout: assistantPurchaseConfirmExec}
+	default:
+		return tasks.ExecutionProfile{}
+	}
 }
 
 func (p *Plugin) currentAssistantRuntime() assistantinteraction.DriverRuntime {
@@ -1009,10 +1040,31 @@ func (p *Plugin) confirmAssistantPurchase(ctx *orchestration.Context, state assi
 	resolved, err := p.resolvePurchaseIntent(cCtx, intent)
 	if err != nil {
 		if errors.Is(err, ErrPurchaseQuoteChanged) {
-			return ctx.Answer("Harga paket berubah sejak halaman konfirmasi dibuat. Pembelian tidak dijalankan; buka ulang paket untuk harga terbaru.", true)
+			return ctx.Terminate(presentation.View{Text: "⚠️ Harga paket berubah sejak halaman konfirmasi dibuat. Pembelian tidak dijalankan; buka ulang paket untuk harga terbaru."})
 		}
-		return ctx.Answer("Detail pembelian tidak lagi valid. Buka ulang paket lalu coba lagi.", true)
+		return ctx.Terminate(presentation.View{Text: "❌ Detail pembelian tidak lagi valid. Buka ulang paket lalu coba lagi."})
 	}
+
+	processingState := state
+	processingState.Draft = &resolved.Intent
+	processingState.Slots = nil
+	processingState.Wizard = ""
+	processingState.Sustain = false
+	processingRaw, err := encodeAssistantState(processingState)
+	if err != nil {
+		return err
+	}
+	if err := ctx.Transition(processingRaw, purchaseProcessingTTL, presentation.View{
+		Text: fmt.Sprintf(
+			"⏳ <b>Memproses pembelian MyXL</b>\n\nPaket: <b>%s</b>\nKode: <code>%s</code>\nMetode: <code>%s</code>\n\nJangan ulangi transaksi sampai hasil akhir ditampilkan.",
+			html.EscapeString(resolved.PackageName),
+			html.EscapeString(resolved.Intent.OptionCode),
+			html.EscapeString(strings.ToUpper(resolved.Intent.Method)),
+		),
+	}); err != nil {
+		return err
+	}
+	state = processingState
 
 	reserved, err := p.repo.ReservePurchase(
 		cCtx,
@@ -1022,10 +1074,10 @@ func (p *Plugin) confirmAssistantPurchase(ctx *orchestration.Context, state assi
 		resolved.Intent.Method,
 	)
 	if err != nil {
-		return ctx.Answer("Gagal mengamankan transaksi. Pembelian tidak dijalankan.", true)
+		return ctx.Terminate(presentation.View{Text: "❌ Gagal mengamankan transaksi. Pembelian tidak dijalankan."})
 	}
 	if !reserved {
-		return ctx.Answer("Transaksi sedang diproses atau baru saja dikonfirmasi.", true)
+		return ctx.Terminate(presentation.View{Text: "⏳ Transaksi sedang diproses atau baru saja dikonfirmasi. Pembelian tidak dijalankan ulang."})
 	}
 
 	var result *SettlementResult
@@ -1056,13 +1108,13 @@ func (p *Plugin) confirmAssistantPurchase(ctx *orchestration.Context, state assi
 		persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(cCtx), 5*time.Second)
 		_ = p.repo.FinishPurchase(persistCtx, resolved.IdempotencyKey, "UNKNOWN", "", err.Error())
 		persistCancel()
-		return ctx.Answer("Hasil transaksi tidak dapat dipastikan. Periksa riwayat MyXL sebelum mencoba lagi.", true)
+		return ctx.Terminate(presentation.View{Text: "⚠️ Hasil transaksi tidak dapat dipastikan. Transaksi tidak akan diulang otomatis; periksa riwayat MyXL sebelum mencoba lagi."})
 	}
 	if result == nil {
 		persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(cCtx), 5*time.Second)
 		_ = p.repo.FinishPurchase(persistCtx, resolved.IdempotencyKey, "UNKNOWN", "", "empty settlement result")
 		persistCancel()
-		return ctx.Answer("Hasil transaksi kosong dan tidak dapat dipastikan.", true)
+		return ctx.Terminate(presentation.View{Text: "⚠️ Hasil transaksi kosong dan tidak dapat dipastikan. Periksa riwayat MyXL sebelum mencoba lagi."})
 	}
 
 	status := "FAILED"
@@ -1073,7 +1125,7 @@ func (p *Plugin) confirmAssistantPurchase(ctx *orchestration.Context, state assi
 	finishErr := p.repo.FinishPurchase(persistCtx, resolved.IdempotencyKey, status, result.TransactionCode, result.Message)
 	persistCancel()
 	if finishErr != nil {
-		return ctx.Answer("Transaksi selesai tetapi hasilnya gagal dicatat. Periksa riwayat MyXL.", true)
+		return ctx.Terminate(presentation.View{Text: "⚠️ Transaksi selesai tetapi hasilnya gagal dicatat. Periksa riwayat MyXL sebelum mencoba lagi."})
 	}
 
 	var qrWarning string

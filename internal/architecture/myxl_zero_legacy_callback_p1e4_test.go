@@ -105,3 +105,31 @@ func TestP1E4DirectAssistantPurchaseUsesAssistantA2Checkout(t *testing.T) {
 		}
 	}
 }
+
+func TestP1EAssistantPurchaseUsesPreparedExecutionAndStalesBeforeReserve(t *testing.T) {
+	root := repositoryRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "plugins", "myxl", "assistant_interaction.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(raw)
+	if !strings.Contains(source, "rt.Engine.RegisterPreparedAction(") ||
+		!strings.Contains(source, "assistantPurchaseConfirmExec") {
+		t.Fatal("Assistant MyXL actions must expose a prepared TaskEngine profile for purchase confirmation")
+	}
+
+	start := strings.Index(source, "func (p *Plugin) confirmAssistantPurchase(")
+	if start < 0 {
+		t.Fatal("confirmAssistantPurchase missing")
+	}
+	end := strings.Index(source[start:], "\nvar _ assistantinteraction.FeatureDriver")
+	if end < 0 {
+		t.Fatal("confirmAssistantPurchase terminator missing")
+	}
+	body := source[start : start+end]
+	transition := strings.Index(body, "ctx.Transition(")
+	reserve := strings.Index(body, "ReservePurchase(")
+	if transition < 0 || reserve < 0 || transition > reserve {
+		t.Fatal("Assistant purchase must advance session revision before ReservePurchase")
+	}
+}
