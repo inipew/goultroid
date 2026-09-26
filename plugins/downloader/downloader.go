@@ -320,14 +320,14 @@ func (p *Plugin) executeMediaDownload(taskCtx context.Context, ctx *core.Context
 
 	workspace, cleanup, err := p.createDownloadWorkspace()
 	if err != nil {
-		return ctx.Fail(err, ctx.T("downloader.error.generic"))
+		return ctx.Fail(err, ctx.T("downloader.error"))
 	}
 	defer cleanup()
 
 	start := time.Now()
 	filePath, err := ctx.DownloadMedia(workspace)
 	if err != nil {
-		return ctx.Fail(err, ctx.T("downloader.error.generic"))
+		return ctx.Fail(err, ctx.T("downloader.error"))
 	}
 
 	targetStore := p.storage
@@ -337,7 +337,7 @@ func (p *Plugin) executeMediaDownload(taskCtx context.Context, ctx *core.Context
 
 	f, err := os.Open(filePath)
 	if err != nil {
-		return ctx.Fail(err, ctx.T("downloader.error.generic"))
+		return ctx.Fail(err, ctx.T("downloader.error"))
 	}
 	defer f.Close()
 
@@ -354,10 +354,10 @@ func (p *Plugin) executeMediaDownload(taskCtx context.Context, ctx *core.Context
 	}
 	asset, err := targetStore.Put(taskCtx, f, meta)
 	if err != nil {
-		return ctx.Fail(err, ctx.T("downloader.error.generic"))
+		return ctx.Fail(err, ctx.T("downloader.error"))
 	}
 	if err := p.registerRetainedAsset(taskCtx, targetStore, asset, downloaderTelegramProducer); err != nil {
-		return ctx.Fail(err, ctx.T("downloader.error.generic"))
+		return ctx.Fail(err, ctx.T("downloader.error"))
 	}
 
 	duration := time.Since(start)
