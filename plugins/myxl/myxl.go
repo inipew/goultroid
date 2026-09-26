@@ -354,7 +354,7 @@ func (p *Plugin) handleLogin(ctx *core.Context, args []string) error {
 	rawMSISDN := args[0]
 	msisdn, err := NormalizeMSISDN(rawMSISDN)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Nomor HP tidak valid: %v", err))
+		return ctx.Fail(err, "Nomor HP tidak valid.")
 	}
 
 	_ = ctx.Progress(fmt.Sprintf("Mengirim permintaan OTP ke <code>%s</code>...", html.EscapeString(msisdn)))
@@ -364,7 +364,7 @@ func (p *Plugin) handleLogin(ctx *core.Context, args []string) error {
 
 	subID, err := p.client.RequestOTP(cCtx, msisdn)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Gagal meminta OTP:\n<code>%s</code>", html.EscapeString(err.Error())))
+		return ctx.Fail(err, "Gagal meminta OTP. Silakan coba lagi.")
 	}
 
 	// Save or update placeholder account with subscriber_id if present
@@ -397,7 +397,7 @@ func (p *Plugin) handleOTP(ctx *core.Context, args []string) error {
 
 	msisdn, err := NormalizeMSISDN(rawMSISDN)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Nomor HP tidak valid: %v", err))
+		return ctx.Fail(err, "Nomor HP tidak valid.")
 	}
 
 	_ = ctx.Progress(fmt.Sprintf("Memverifikasi kode OTP untuk <code>%s</code>...", html.EscapeString(msisdn)))
@@ -407,7 +407,7 @@ func (p *Plugin) handleOTP(ctx *core.Context, args []string) error {
 
 	tokens, err := p.client.SubmitOTP(cCtx, msisdn, code)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Verifikasi OTP gagal:\n<code>%s</code>", html.EscapeString(err.Error())))
+		return ctx.Fail(err, "Verifikasi OTP gagal. Periksa kode lalu coba lagi.")
 	}
 
 	acc, _ := p.repo.GetByMSISDN(cCtx, msisdn)
@@ -427,7 +427,7 @@ func (p *Plugin) handleOTP(ctx *core.Context, args []string) error {
 	acc.IsActive = true
 
 	if err := p.repo.Save(cCtx, acc); err != nil {
-		return ctx.Error(fmt.Sprintf("Login berhasil di CIAM tetapi gagal menyimpan ke database: %s", html.EscapeString(err.Error())))
+		return ctx.Fail(err, "Login berhasil, tetapi akun gagal disimpan. Periksa log sebelum mencoba ulang.")
 	}
 
 	return ctx.Success(
@@ -449,12 +449,12 @@ func (p *Plugin) handleSetAlias(ctx *core.Context, args []string) error {
 	}
 	newAlias, err := normalizeAlias(strings.Join(args[1:], " "))
 	if err != nil {
-		return ctx.Status("" + html.EscapeString(err.Error()) + ".")
+		return ctx.Fail(err, "Alias tidak valid. Gunakan nama alias yang lebih sederhana.")
 	}
 
 	cCtx := getContext(ctx)
 	if err := p.repo.SetAlias(cCtx, target, newAlias); err != nil {
-		return ctx.Error(fmt.Sprintf("Gagal mengatur alias: %v", err))
+		return ctx.Fail(err, "Gagal mengatur alias.")
 	}
 
 	return ctx.Success(fmt.Sprintf("Alias untuk <code>%s</code> berhasil diatur menjadi <b>%s</b>.", html.EscapeString(target), html.EscapeString(newAlias)))
@@ -464,7 +464,7 @@ func (p *Plugin) handleStatus(ctx *core.Context) error {
 	cCtx := getContext(ctx)
 	acc, err := p.repo.GetActive(cCtx)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Error database: %v", err))
+		return ctx.Fail(err, "Error database.")
 	}
 	if acc == nil {
 		return ctx.Status("Tidak ada akun MyXL aktif saat ini. Gunakan <code>.myxl login &lt;nomor&gt;</code> untuk login.")
@@ -500,7 +500,7 @@ func (p *Plugin) handleListAccounts(ctx *core.Context) error {
 	cCtx := getContext(ctx)
 	accounts, err := p.repo.List(cCtx)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Gagal memuat akun: %v", err))
+		return ctx.Fail(err, "Gagal memuat akun.")
 	}
 
 	if len(accounts) == 0 {
@@ -549,7 +549,7 @@ func (p *Plugin) handleUseAccount(ctx *core.Context, args []string) error {
 
 	cCtx := getContext(ctx)
 	if err := p.repo.SetActive(cCtx, target); err != nil {
-		return ctx.Error(fmt.Sprintf("Gagal mengganti akun aktif: %v", err))
+		return ctx.Fail(err, "Gagal mengganti akun aktif.")
 	}
 
 	return ctx.Success(fmt.Sprintf("Akun aktif berhasil diubah ke <code>%s</code>.", html.EscapeString(target)))
@@ -567,7 +567,7 @@ func (p *Plugin) handleDeleteAccount(ctx *core.Context, args []string) error {
 
 	cCtx := getContext(ctx)
 	if err := p.repo.Delete(cCtx, target); err != nil {
-		return ctx.Error(fmt.Sprintf("Gagal menghapus akun: %v", err))
+		return ctx.Fail(err, "Gagal menghapus akun.")
 	}
 
 	return ctx.EditOrReply(fmt.Sprintf("🗑️ Akun <code>%s</code> berhasil dihapus dari database.", html.EscapeString(target)))
@@ -593,7 +593,7 @@ func (p *Plugin) handleShowQuota(ctx *core.Context, args []string) error {
 	}
 
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Error database: %v", err))
+		return ctx.Fail(err, "Error database.")
 	}
 
 	if acc == nil {
@@ -614,8 +614,7 @@ func (p *Plugin) handleShowQuota(ctx *core.Context, args []string) error {
 	quota, qErr := p.client.GetQuotaDetails(queryCtx, acc)
 
 	if bErr != nil && qErr != nil {
-		return ctx.Error(fmt.Sprintf("Gagal mengambil data MyXL:\nPulsa: <code>%s</code>\nKuota: <code>%s</code>",
-			html.EscapeString(bErr.Error()), html.EscapeString(qErr.Error())))
+		return ctx.Fail(errors.Join(bErr, qErr), "Gagal mengambil data pulsa dan kuota MyXL. Silakan coba lagi.")
 	}
 
 	respText := FormatQuotaResponse(acc, balance, quota, maskMSISDN)
@@ -723,7 +722,7 @@ func (p *Plugin) handleRefreshToken(ctx *core.Context, args []string) error {
 		acc, err = p.repo.GetActive(cCtx)
 	}
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Gagal membaca akun: %v", err))
+		return ctx.Fail(err, "Gagal membaca akun.")
 	}
 	if acc == nil {
 		return ctx.Status("Tidak ada akun MyXL yang aktif. Silakan login terlebih dahulu.")
@@ -733,7 +732,7 @@ func (p *Plugin) handleRefreshToken(ctx *core.Context, args []string) error {
 
 	tokens, err := p.client.ForceRefreshToken(cCtx, acc.MSISDN)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Gagal me-refresh token:\n<code>%s</code>", html.EscapeString(err.Error())))
+		return ctx.Fail(err, "Gagal memperbarui sesi MyXL. Silakan coba lagi.")
 	}
 
 	return ctx.Success(
@@ -770,7 +769,7 @@ func (p *Plugin) handleSearchFamily(ctx *core.Context, args []string) error {
 
 	res, err := p.client.GetPackagesByFamily(cCtx, acc, familyCode)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Gagal memuat paket family:\n<code>%s</code>", html.EscapeString(err.Error())))
+		return ctx.Fail(err, "Gagal memuat daftar paket MyXL. Silakan coba lagi.")
 	}
 
 	return deliverHTML(ctx, FormatFamilyPackages(res))
@@ -793,7 +792,7 @@ func (p *Plugin) handlePackageDetail(ctx *core.Context, args []string) error {
 
 	details, err := p.client.GetPackageDetails(cCtx, acc, optionCode)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Gagal memuat detail paket:\n<code>%s</code>", html.EscapeString(err.Error())))
+		return ctx.Fail(err, "Gagal memuat detail paket MyXL. Silakan coba lagi.")
 	}
 
 	return ctx.Result(FormatPackageDetails(details))
@@ -817,7 +816,7 @@ func (p *Plugin) handleSavedPackages(ctx *core.Context, args []string) error {
 	case "list", "show":
 		pkgs, err := p.repo.GetSavedPackages(cCtx, acc.MSISDN)
 		if err != nil {
-			return ctx.Error(fmt.Sprintf("Gagal membaca bookmark: %v", err))
+			return ctx.Fail(err, "Gagal membaca bookmark.")
 		}
 		return deliverHTML(ctx, FormatSavedPackages(pkgs))
 
@@ -854,7 +853,7 @@ func (p *Plugin) handleSavedPackages(ctx *core.Context, args []string) error {
 			FamilyCode: familyCode,
 		}
 		if err := p.repo.SavePackage(cCtx, item); err != nil {
-			return ctx.Error(fmt.Sprintf("Gagal menyimpan bookmark: %v", err))
+			return ctx.Fail(err, "Gagal menyimpan bookmark.")
 		}
 		return ctx.Success(fmt.Sprintf("Paket <b>%s</b> (<code>%s</code>) berhasil disimpan ke bookmark!", html.EscapeString(pkgName), html.EscapeString(optCode)))
 
@@ -864,7 +863,7 @@ func (p *Plugin) handleSavedPackages(ctx *core.Context, args []string) error {
 		}
 		optCode := strings.TrimSpace(args[1])
 		if err := p.repo.DeleteSavedPackage(cCtx, acc.MSISDN, optCode); err != nil {
-			return ctx.Error(fmt.Sprintf("Gagal menghapus bookmark: %v", err))
+			return ctx.Fail(err, "Gagal menghapus bookmark.")
 		}
 		return ctx.Success(fmt.Sprintf("Paket <code>%s</code> berhasil dihapus dari bookmark.", html.EscapeString(optCode)))
 
@@ -877,7 +876,7 @@ func (p *Plugin) handleSavedPackages(ctx *core.Context, args []string) error {
 	default:
 		pkgs, err := p.repo.GetSavedPackages(cCtx, acc.MSISDN)
 		if err != nil {
-			return ctx.Error(fmt.Sprintf("Gagal membaca bookmark: %v", err))
+			return ctx.Fail(err, "Gagal membaca bookmark.")
 		}
 		return deliverHTML(ctx, FormatSavedPackages(pkgs))
 	}
@@ -904,7 +903,7 @@ func (p *Plugin) handlePendingQRIS(ctx *core.Context, args []string) error {
 				return ctx.Status("Tidak ada transaksi QRIS aktif yang dapat dibatalkan.")
 			}
 			if err := p.repo.DeletePendingQRIS(cCtx, pending.TransactionCode); err != nil {
-				return ctx.Error(fmt.Sprintf("Gagal membatalkan transaksi QRIS: %v", err))
+				return ctx.Fail(err, "Gagal membatalkan transaksi QRIS.")
 			}
 			return ctx.Success("Transaksi QRIS berhasil dibatalkan dan dihapus dari penyimpanan.")
 		}
@@ -912,7 +911,7 @@ func (p *Plugin) handlePendingQRIS(ctx *core.Context, args []string) error {
 
 	pending, err := p.repo.GetPendingQRIS(cCtx, acc.MSISDN)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Gagal memeriksa transaksi QRIS: %v", err))
+		return ctx.Fail(err, "Gagal memeriksa transaksi QRIS.")
 	}
 	if pending == nil {
 		return ctx.Status("Tidak ada transaksi QRIS aktif yang menunggu pembayaran.\nTransaksi QRIS otomatis kedaluwarsa setelah 5 menit.")
@@ -1029,7 +1028,7 @@ func (p *Plugin) handleBuy(ctx *core.Context, args []string) error {
 	// Fetch package details to get confirmation token and real price
 	details, err := p.client.GetPackageDetails(cCtx, acc, optionCode)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Gagal memuat detail paket:\n<code>%s</code>", html.EscapeString(err.Error())))
+		return ctx.Fail(err, "Gagal memuat detail paket MyXL. Silakan coba lagi.")
 	}
 	if details.TokenConfirmation == "" {
 		return ctx.Error("Token konfirmasi paket tidak ditemukan.")

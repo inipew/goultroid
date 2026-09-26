@@ -272,6 +272,9 @@ func sendContextualGroupFeedback(
 	if err == nil || inter == nil || peer == nil {
 		return
 	}
+	if core.UserErrorWasPresented(err) {
+		return
+	}
 	switch {
 	case errors.Is(err, core.ErrGroupAuthorizationDenied),
 		errors.Is(err, core.ErrGroupOnly),

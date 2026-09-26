@@ -252,13 +252,13 @@ func (p *Plugin) handleExtractAudio(ctx *core.Context) error {
 	files := p.getFiles()
 	tmpDir, err := files.CreateTempDir("goultroid-audio-*")
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to create temp directory: %v", err))
+		return ctx.Fail(err, "Failed to create temp directory.")
 	}
 	defer files.RemoveTempDir(tmpDir)
 
 	downloadedPath, err := ctx.DownloadMedia(tmpDir)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to download media: %v", err))
+		return ctx.Fail(err, "Failed to download media.")
 	}
 
 	stat, _ := os.Stat(downloadedPath)
@@ -280,13 +280,13 @@ func (p *Plugin) handleExtractAudio(ctx *core.Context) error {
 
 	outAsset, err := p.mediaService.ExtractAudio(ctx.Ctx, inAsset, "mp3")
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Audio extraction failed: %v", err))
+		return ctx.Fail(err, "Audio extraction failed.")
 	}
 
 	cleanFileName := core.SanitizeFileName(item.FileName)
 	caption := fmt.Sprintf("🎵 Extracted from: <code>%s</code>", core.EscapeHTML(cleanFileName))
 	if err := p.withTransientAsset(ctx.Ctx, outAsset, func() error { return ctx.SendAudio(outAsset.Path, caption) }); err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to send audio: %v", err))
+		return ctx.Fail(err, "Failed to send audio.")
 	}
 
 	if ctx.LastResponseID > 0 {
@@ -309,7 +309,10 @@ func (p *Plugin) handleConvert(ctx *core.Context) error {
 
 	mediaType, audioOnly, err := classifyConvertFormat(targetFormat)
 	if err != nil {
-		return ctx.Status(fmt.Sprintf("%v", err))
+		return ctx.Fail(err, fmt.Sprintf(
+			"Unsupported target format <code>%s</code>. Supported: <code>mp4, mkv, mov, webm, avi, mp3, m4a, aac, ogg, opus, flac, wav</code>.",
+			core.EscapeHTML(targetFormat),
+		))
 	}
 
 	if p.mediaService == nil {
@@ -321,13 +324,13 @@ func (p *Plugin) handleConvert(ctx *core.Context) error {
 	files := p.getFiles()
 	tmpDir, err := files.CreateTempDir("goultroid-convert-*")
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to create temp directory: %v", err))
+		return ctx.Fail(err, "Failed to create temp directory.")
 	}
 	defer files.RemoveTempDir(tmpDir)
 
 	downloadedPath, err := ctx.DownloadMedia(tmpDir)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to download media: %v", err))
+		return ctx.Fail(err, "Failed to download media.")
 	}
 
 	stat, _ := os.Stat(downloadedPath)
@@ -356,12 +359,12 @@ func (p *Plugin) handleConvert(ctx *core.Context) error {
 		})
 	}
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Conversion failed: %v", err))
+		return ctx.Fail(err, "Conversion failed.")
 	}
 
 	caption := fmt.Sprintf("🎬 Converted to: <code>%s</code>", core.EscapeHTML(targetFormat))
 	if err := p.withTransientAsset(ctx.Ctx, outAsset, func() error { return sendAsset(ctx, mediaType, outAsset, caption) }); err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to send converted media: %v", err))
+		return ctx.Fail(err, "Failed to send converted media.")
 	}
 
 	if ctx.LastResponseID > 0 {
@@ -386,13 +389,13 @@ func (p *Plugin) handleConvertToGIF(ctx *core.Context) error {
 	files := p.getFiles()
 	tmpDir, err := files.CreateTempDir("goultroid-gif-*")
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to create temp directory: %v", err))
+		return ctx.Fail(err, "Failed to create temp directory.")
 	}
 	defer files.RemoveTempDir(tmpDir)
 
 	downloadedPath, err := ctx.DownloadMedia(tmpDir)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to download media: %v", err))
+		return ctx.Fail(err, "Failed to download media.")
 	}
 
 	inAsset := &storage.Asset{
@@ -408,11 +411,11 @@ func (p *Plugin) handleConvertToGIF(ctx *core.Context) error {
 
 	outAsset, err := p.mediaService.ConvertToGIF(ctx.Ctx, inAsset, media.TranscodeOptions{})
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("GIF conversion failed: %v", err))
+		return ctx.Fail(err, "GIF conversion failed.")
 	}
 
 	if err := p.withTransientAsset(ctx.Ctx, outAsset, func() error { return sendAsset(ctx, "document", outAsset, "🎞️ Converted to GIF") }); err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to send GIF: %v", err))
+		return ctx.Fail(err, "Failed to send GIF.")
 	}
 
 	if ctx.LastResponseID > 0 {
@@ -437,13 +440,13 @@ func (p *Plugin) handleConvertToSticker(ctx *core.Context) error {
 	files := p.getFiles()
 	tmpDir, err := files.CreateTempDir("goultroid-vstick-*")
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to create temp directory: %v", err))
+		return ctx.Fail(err, "Failed to create temp directory.")
 	}
 	defer files.RemoveTempDir(tmpDir)
 
 	downloadedPath, err := ctx.DownloadMedia(tmpDir)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to download media: %v", err))
+		return ctx.Fail(err, "Failed to download media.")
 	}
 
 	inAsset := &storage.Asset{
@@ -459,7 +462,7 @@ func (p *Plugin) handleConvertToSticker(ctx *core.Context) error {
 
 	outAsset, err := p.mediaService.ConvertToSticker(ctx.Ctx, inAsset)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Video sticker generation failed: %v", err))
+		return ctx.Fail(err, "Video sticker generation failed.")
 	}
 
 	if err := p.withTransientAsset(ctx.Ctx, outAsset, func() error {
@@ -468,7 +471,7 @@ func (p *Plugin) handleConvertToSticker(ctx *core.Context) error {
 		}
 		return nil
 	}); err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to send video sticker: %v", err))
+		return ctx.Fail(err, "Failed to send video sticker.")
 	}
 
 	if ctx.LastResponseID > 0 {

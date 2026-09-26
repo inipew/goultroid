@@ -205,7 +205,7 @@ func (p *Plugin) clonePlan(ctx *core.Context) (clonePlan, error) {
 func (p *Plugin) handleClone(ctx *core.Context) error {
 	state, err := p.repo.GetCloneState(ctx.Ctx, p.ownerID)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to read clone state: %v", err))
+		return ctx.Fail(err, "Failed to read clone state.")
 	}
 	if state != nil && state.Active {
 		return ctx.Status("A clone is already active. Run <code>.revert</code> before cloning another identity.")
@@ -213,7 +213,7 @@ func (p *Plugin) handleClone(ctx *core.Context) error {
 
 	plan, err := p.clonePlan(ctx)
 	if err != nil {
-		return ctx.Status("" + err.Error())
+		return ctx.Fail(err, "Could not resolve the clone target. Reply to a valid user or provide a valid target.")
 	}
 	if plan.targetPhotoID == 0 {
 		return p.executeClone(ctx, plan)
@@ -235,7 +235,7 @@ func (p *Plugin) handleClone(ctx *core.Context) error {
 		}
 		return p.executeClone(taskCore, plan)
 	}); err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to queue profile-photo clone: %v", err))
+		return ctx.Fail(err, "Failed to queue profile-photo clone.")
 	}
 	return nil
 }
@@ -246,7 +246,7 @@ func (p *Plugin) executeClone(ctx *core.Context, plan clonePlan) error {
 		var err error
 		workspace, err = p.createWorkspace()
 		if err != nil {
-			return ctx.Error(fmt.Sprintf("Failed to create clone workspace: %v", err))
+			return ctx.Fail(err, "Failed to create clone workspace.")
 		}
 		defer func() { _ = p.files.RemoveTempDir(workspace) }()
 	}
@@ -255,11 +255,11 @@ func (p *Plugin) executeClone(ctx *core.Context, plan clonePlan) error {
 	if plan.targetPhotoID != 0 && plan.originalPhotoID != 0 {
 		path, err := p.downloadProfilePhoto(ctx, &tg.InputPeerSelf{}, plan.originalPhotoID, workspace, "original.jpg")
 		if err != nil {
-			return ctx.Error(fmt.Sprintf("Could not snapshot your current profile photo: %v", err))
+			return ctx.Fail(err, "Could not snapshot your current profile photo.")
 		}
 		originalPhotoRef, err = p.storeOriginalPhotoSnapshot(ctx.Ctx, path)
 		if err != nil {
-			return ctx.Error(fmt.Sprintf("Could not persist original profile photo: %v", err))
+			return ctx.Fail(err, "Could not persist original profile photo.")
 		}
 	}
 
@@ -275,7 +275,7 @@ func (p *Plugin) executeClone(ctx *core.Context, plan clonePlan) error {
 	}
 	if err := p.repo.SaveCloneState(ctx.Ctx, snapshot); err != nil {
 		_ = p.cleanupSnapshot(context.Background(), snapshot.OriginalPhoto)
-		return ctx.Error(fmt.Sprintf("Failed to persist clone snapshot: %v", err))
+		return ctx.Fail(err, "Failed to persist clone snapshot.")
 	}
 
 	firstName := sanitizeName(plan.targetFirst)
@@ -310,7 +310,7 @@ func (p *Plugin) executeClone(ctx *core.Context, plan clonePlan) error {
 func (p *Plugin) handleRevert(ctx *core.Context) error {
 	state, err := p.repo.GetCloneState(ctx.Ctx, p.ownerID)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to read clone state: %v", err))
+		return ctx.Fail(err, "Failed to read clone state.")
 	}
 	if state == nil || !state.Active {
 		return ctx.Status("No active clone state exists.")
@@ -337,7 +337,7 @@ func (p *Plugin) handleRevert(ctx *core.Context) error {
 		}
 		return p.executeRevert(taskCore, *current)
 	}); err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to queue profile-photo revert: %v", err))
+		return ctx.Fail(err, "Failed to queue profile-photo revert.")
 	}
 	return nil
 }
@@ -345,29 +345,29 @@ func (p *Plugin) handleRevert(ctx *core.Context) error {
 func (p *Plugin) executeRevert(ctx *core.Context, state CloneState) error {
 	if state.ClonedPhoto {
 		if _, err := ctx.Svc.DeleteProfilePhotos(ctx.Ctx, 1); err != nil {
-			return ctx.Error(fmt.Sprintf("Failed to remove cloned profile photo: %v", err))
+			return ctx.Fail(err, "Failed to remove cloned profile photo.")
 		}
 	}
 	if err := ctx.UpdateProfile(&state.OriginalFirst, &state.OriginalLast, &state.OriginalBio); err != nil {
-		return ctx.Status(fmt.Sprintf("Profile photo state handled, but profile text restore failed: %v", err))
+		return ctx.Fail(err, "Profile photo state was handled, but profile text could not be restored.")
 	}
 	if strings.TrimSpace(state.OriginalPhoto) != "" {
 		workspace, err := p.createWorkspace()
 		if err != nil {
-			return ctx.Status(fmt.Sprintf("Profile text restored, but revert workspace is unavailable: %v", err))
+			return ctx.Fail(err, "Profile text was restored, but the revert workspace is unavailable.")
 		}
 		defer func() { _ = p.files.RemoveTempDir(workspace) }()
 
 		path, err := p.materializeSnapshot(ctx.Ctx, workspace, state.OriginalPhoto)
 		if err != nil {
-			return ctx.Status(fmt.Sprintf("Profile text restored, but original photo snapshot is unavailable: %v", err))
+			return ctx.Fail(err, "Profile text was restored, but the original photo snapshot is unavailable.")
 		}
 		if err := ctx.Svc.UploadProfilePhoto(ctx.Ctx, path); err != nil {
-			return ctx.Status(fmt.Sprintf("Profile text restored, but original photo restore failed: %v", err))
+			return ctx.Fail(err, "Profile text was restored, but the original profile photo could not be restored.")
 		}
 	}
 	if err := p.repo.ClearCloneState(ctx.Ctx, p.ownerID); err != nil {
-		return ctx.Status(fmt.Sprintf("Profile restored, but clone state cleanup failed: %v", err))
+		return ctx.Fail(err, "Profile was restored, but clone state cleanup failed. Check the logs before retrying.")
 	}
 	_ = p.cleanupSnapshot(context.Background(), state.OriginalPhoto)
 	return ctx.Success("<b>Successfully reverted to your original profile.</b>")
@@ -597,9 +597,9 @@ func (p *Plugin) cloneFailure(ctx *core.Context, snapshot CloneState, photoMutat
 	}
 
 	if len(rollbackErrs) > 0 {
-		return ctx.Error(fmt.Sprintf("Clone aborted: %v. Rollback incomplete: %v", cause, errors.Join(rollbackErrs...)))
+		return ctx.Fail(errors.Join(cause, errors.Join(rollbackErrs...)), "Clone aborted and rollback could not be completed safely.")
 	}
-	return ctx.Error(fmt.Sprintf("Clone aborted and rolled back safely: %v", cause))
+	return ctx.Fail(cause, "Clone aborted and rolled back safely.")
 }
 
 func sanitizeName(s string) string {

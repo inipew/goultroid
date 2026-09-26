@@ -323,6 +323,9 @@ func UserMessage(err error) string {
 	if err == nil {
 		return ""
 	}
+	if message, ok := ExplicitUserMessage(err); ok {
+		return message
+	}
 	if errors.Is(err, ErrValidation) {
 		return "⚠️ Validation failed. Please check your input."
 	}

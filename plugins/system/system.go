@@ -206,14 +206,14 @@ func (p *Plugin) handleExec(ctx *core.Context) error {
 	files := p.getFiles()
 	tmpFile, tmpErr := files.CreateTempFile("exec-output-*.txt")
 	if tmpErr != nil {
-		return ctx.Error(fmt.Sprintf("Failed to create temp file for large output: %v", tmpErr))
+		return ctx.Fail(tmpErr, "Failed to create a temporary file for the execution output.")
 	}
 	defer files.RemoveTempFile(tmpFile.Name())
 	_, _ = tmpFile.WriteString(fmt.Sprintf("Command: %s\nDuration: %s\n\nOutput:\n%s", commandStr, elapsed, output))
 	_ = tmpFile.Close()
 	caption := fmt.Sprintf("📄 <b>Execution Output</b> (<code>%s</code>, took <i>%s</i>)", escapeHTML(commandStr), elapsed.Round(time.Millisecond))
 	if err := ctx.SendFile(tmpFile.Name(), caption); err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to send execution output: %v", err))
+		return ctx.Fail(err, "Failed to send execution output.")
 	}
 	if ctx.LastResponseID > 0 {
 		_ = ctx.Messages().DeleteResponse()
@@ -314,9 +314,8 @@ func (p *Plugin) handleUpdate(ctx *core.Context) error {
 		_ = ctx.Progress("<i>Checking for updates from git remote...</i>")
 		fetchCtx, cancel := context.WithTimeout(ctx.Ctx, 30*time.Second)
 		defer cancel()
-		if out, err := p.runCmd(fetchCtx, "git", "fetch"); err != nil {
-			_ = ctx.Error(fmt.Sprintf("<code>git fetch</code> failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
-			return err
+		if _, err := p.runCmd(fetchCtx, "git", "fetch"); err != nil {
+			return ctx.Fail(fmt.Errorf("git fetch: %w", err), "<code>git fetch</code> failed. Check the logs for details.")
 		}
 		currHashOut, _ := p.runCmd(fetchCtx, "git", "rev-parse", "--short", "HEAD")
 		currHash := strings.TrimSpace(string(currHashOut))
@@ -342,27 +341,23 @@ func (p *Plugin) handleUpdate(ctx *core.Context) error {
 	defer cancelPull()
 	statusOut, _ := p.runCmd(pullCtx, "git", "status", "--porcelain")
 	if strings.TrimSpace(string(statusOut)) != "" {
-		_ = ctx.Error("Cannot update: working directory has uncommitted modifications. Stash or commit your changes first.")
-		return errors.New("dirty working tree")
+		return ctx.Fail(errors.New("dirty working tree"), "Cannot update: working directory has uncommitted modifications. Stash or commit your changes first.")
 	}
-	if out, err := p.runCmd(pullCtx, "git", "pull", "--ff-only"); err != nil {
-		_ = ctx.Error(fmt.Sprintf("<code>git pull --ff-only</code> failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
-		return err
+	if _, err := p.runCmd(pullCtx, "git", "pull", "--ff-only"); err != nil {
+		return ctx.Fail(fmt.Errorf("git pull --ff-only: %w", err), "<code>git pull --ff-only</code> failed. Check the logs for details.")
 	}
 	_ = ctx.Progress("<i>Rebuilding GoUltroid binary...</i>")
 	buildCtx, cancelBuild := context.WithTimeout(ctx.Ctx, 120*time.Second)
 	defer cancelBuild()
 	tmpBin := filepath.Join("bin", "goultroid.tmp")
-	if out, err := p.runCmd(buildCtx, "go", "build", "-o", tmpBin, "./cmd/goultroid"); err != nil {
+	if _, err := p.runCmd(buildCtx, "go", "build", "-o", tmpBin, "./cmd/goultroid"); err != nil {
 		_ = os.Remove(tmpBin)
-		_ = ctx.Error(fmt.Sprintf("Rebuild failed: %v\n<pre>%s</pre>", err, escapeHTML(string(out))))
-		return err
+		return ctx.Fail(fmt.Errorf("rebuild GoUltroid: %w", err), "Rebuild failed. Check the logs for details.")
 	}
 	finalBin := filepath.Join("bin", "goultroid")
 	if err := os.Rename(tmpBin, finalBin); err != nil {
 		_ = os.Remove(tmpBin)
-		_ = ctx.Error(fmt.Sprintf("Failed to replace binary: %v", err))
-		return err
+		return ctx.Fail(err, "Failed to replace the GoUltroid binary.")
 	}
 	_ = ctx.Progress("<i>Rebuild successful. Restarting GoUltroid...</i>")
 	return p.handleRestart(ctx)
@@ -478,7 +473,7 @@ func (p *Plugin) handlePluginToggle(ctx *core.Context) error {
 			return ctx.Status(fmt.Sprintf("Plugin <b>%s</b> is already enabled.", escapeHTML(target)))
 		}
 		if err := p.pluginMgr.Enable(ctx.Ctx, target); err != nil {
-			return ctx.Error(fmt.Sprintf("Failed to enable plugin <b>%s</b>: %v", escapeHTML(target), err))
+			return ctx.Fail(err, fmt.Sprintf("Failed to enable plugin <b>%s</b>.", escapeHTML(target)))
 		}
 		return ctx.Success(fmt.Sprintf("Plugin <b>%s</b> successfully enabled and initialized!", escapeHTML(target)))
 
@@ -487,7 +482,7 @@ func (p *Plugin) handlePluginToggle(ctx *core.Context) error {
 			return ctx.Status(fmt.Sprintf("Plugin <b>%s</b> is already disabled.", escapeHTML(target)))
 		}
 		if err := p.pluginMgr.Disable(ctx.Ctx, target); err != nil {
-			return ctx.Error(fmt.Sprintf("Failed to disable plugin <b>%s</b>: %v", escapeHTML(target), err))
+			return ctx.Fail(err, fmt.Sprintf("Failed to disable plugin <b>%s</b>.", escapeHTML(target)))
 		}
 		return ctx.EditOrReply(fmt.Sprintf("🛑 Plugin <b>%s</b> disabled and resources cleaned up!", escapeHTML(target)))
 
