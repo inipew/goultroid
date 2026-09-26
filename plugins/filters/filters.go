@@ -315,7 +315,7 @@ func (p *Plugin) handleFilter(ctx *core.Context) error {
 
 	reply, err := ctx.GetReply()
 	if err != nil {
-		_ = ctx.Status(fmt.Sprintf("Could not load replied response: %v", err))
+		_ = ctx.Fail(err, "Could not load the replied response.")
 		return err
 	}
 	return p.saveReply(ctx, chatID, keyword, reply)
@@ -351,7 +351,7 @@ func (p *Plugin) saveReply(ctx *core.Context, chatID int64, keyword string, repl
 			return p.saveFilterResponseGuarded(taskCore, chatID, keyword, response, writeGuard)
 		},
 	); err != nil {
-		_ = ctx.Error(fmt.Sprintf("Failed to queue media filter save: %v", err))
+		_ = ctx.Fail(err, "Failed to queue media filter save.")
 		return err
 	}
 	return nil
@@ -374,7 +374,7 @@ func (p *Plugin) saveFilterResponseGuarded(
 	}
 	if err := savedresponse.Validate(response); err != nil {
 		_ = p.responses.DeleteMedia(ctx.Ctx, response)
-		_ = ctx.Status(fmt.Sprintf("Invalid filter response: %v", err))
+		_ = ctx.Fail(err, "Invalid filter response.")
 		return err
 	}
 
@@ -408,7 +408,7 @@ func (p *Plugin) saveFilterResponseGuarded(
 		return p.db.SaveFilter(ctx.Ctx, chatID, keyword, response)
 	}); err != nil {
 		lock.Unlock()
-		_ = ctx.Error(fmt.Sprintf("Failed to save filter: %v", err))
+		_ = ctx.Fail(err, "Failed to save filter.")
 		return err
 	}
 	p.invalidateChat(chatID, true)
@@ -447,7 +447,7 @@ func (p *Plugin) handleStop(ctx *core.Context) error {
 		return p.db.DeleteFilter(ctx.Ctx, chatID, keyword)
 	}); err != nil {
 		lock.Unlock()
-		_ = ctx.Error(fmt.Sprintf("Failed to stop filter: %v", err))
+		_ = ctx.Fail(err, "Failed to stop filter.")
 		return err
 	}
 	remaining, listErr := p.db.ListFilters(ctx.Ctx, chatID)
@@ -538,7 +538,7 @@ func (p *Plugin) handleInfo(ctx *core.Context) error {
 	keyword := strings.ToLower(strings.TrimSpace(ctx.Args[0]))
 	filter, err := p.db.GetFilter(ctx.Ctx, p.getChatID(ctx), keyword)
 	if err != nil {
-		_ = ctx.Error(fmt.Sprintf("Error fetching filter info: %v", err))
+		_ = ctx.Fail(err, "Failed to fetch filter information.")
 		return err
 	}
 	if filter == nil {
@@ -547,7 +547,7 @@ func (p *Plugin) handleInfo(ctx *core.Context) error {
 	}
 	info, err := savedresponse.Inspect(filter.Response)
 	if err != nil {
-		_ = ctx.Error(fmt.Sprintf("Failed to inspect filter: %v", err))
+		_ = ctx.Fail(err, "Failed to inspect filter.")
 		return err
 	}
 	return ctx.EditOrReply(renderFilterInfo(filter, info))
