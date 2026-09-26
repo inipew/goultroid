@@ -21,10 +21,10 @@ import (
 
 // Registry stores and resolves inline query handlers.
 type Registry struct {
-	handlers map[string]registryEntry
-	entries  []registryEntry
-	next     uint64
-	mu       sync.RWMutex
+	handlers      map[string]registryEntry
+	customEntries []registryEntry
+	next          uint64
+	mu            sync.RWMutex
 }
 
 type registryEntry struct {
@@ -36,6 +36,7 @@ type registryEntry struct {
 	interactionID string
 	scope         tasks.ScopeIdentity
 	token         uint64
+	exact         bool
 }
 
 // Binding connects one FeatureSpec inline interaction to its implementation.
@@ -199,24 +200,41 @@ func (r *Registry) register(featureID, interactionID string, scope tasks.ScopeId
 		return nil, fmt.Errorf("inline handler for pattern %q is already registered", pattern)
 	}
 	r.next++
+	exact := false
+	if exactMatcher, ok := matcher.(*exactKeywordMatcher); ok {
+		exact = exactMatcher != nil && exactMatcher.keyword == pattern
+	}
 	entry := registryEntry{
 		pattern: pattern, handler: h, matcher: matcher, priority: priority,
 		featureID: featureID, interactionID: interactionID, scope: scope, token: r.next,
+		exact: exact,
 	}
 	r.handlers[pattern] = entry
-	r.entries = append(r.entries, entry)
-	r.sortEntriesLocked()
+	if pattern != "" && !entry.exact {
+		r.customEntries = append(r.customEntries, entry)
+		r.sortCustomEntriesLocked()
+	}
 	return &Registration{registry: r, pattern: pattern, token: entry.token}, nil
 }
 
-func (r *Registry) sortEntriesLocked() {
-	for i := 1; i < len(r.entries); i++ {
+func registryEntryPrecedes(left, right registryEntry) bool {
+	if left.priority != right.priority {
+		return left.priority > right.priority
+	}
+	if len(left.pattern) != len(right.pattern) {
+		return len(left.pattern) > len(right.pattern)
+	}
+	return left.token < right.token
+}
+
+func (r *Registry) sortCustomEntriesLocked() {
+	for i := 1; i < len(r.customEntries); i++ {
 		for j := i; j > 0; j-- {
-			left, right := r.entries[j-1], r.entries[j]
-			if right.priority < left.priority || (right.priority == left.priority && len(right.pattern) <= len(left.pattern)) {
+			left, right := r.customEntries[j-1], r.customEntries[j]
+			if registryEntryPrecedes(left, right) {
 				break
 			}
-			r.entries[j-1], r.entries[j] = right, left
+			r.customEntries[j-1], r.customEntries[j] = right, left
 		}
 	}
 }
@@ -235,10 +253,12 @@ func (r *Registration) Close() {
 			return
 		}
 		delete(registry.handlers, r.pattern)
-		for i := range registry.entries {
-			if registry.entries[i].token == r.token {
-				registry.entries = append(registry.entries[:i], registry.entries[i+1:]...)
-				break
+		if current.pattern != "" && !current.exact {
+			for i := range registry.customEntries {
+				if registry.customEntries[i].token == r.token {
+					registry.customEntries = append(registry.customEntries[:i], registry.customEntries[i+1:]...)
+					break
+				}
 			}
 		}
 	})
@@ -270,24 +290,43 @@ func (r *Registry) ResolveOwnedExplicit(query string) (Resolved, bool) {
 	if trimmed == "" {
 		return Resolved{}, false
 	}
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 {
+		return Resolved{}, false
+	}
+	keyword := strings.ToLower(fields[0])
 
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	for _, entry := range r.entries {
-		if entry.pattern == "" {
-			continue
-		}
-		if entry.matcher != nil {
+
+	direct, directOK := r.handlers[keyword]
+	if directOK && direct.pattern != "" && direct.exact {
+		// Exact keyword registrations are indexed by first token. Only custom
+		// matchers ordered ahead of this exact entry can preserve legacy
+		// priority/longest-pattern precedence, so stop as soon as the ordered
+		// custom slice can no longer shadow the exact candidate.
+		for _, entry := range r.customEntries {
+			if !registryEntryPrecedes(entry, direct) {
+				break
+			}
 			if args, ok := entry.matcher.Match(trimmed); ok {
 				return resolvedEntry(entry, args), true
 			}
 		}
+		return resolvedEntry(direct, fields[1:]), true
 	}
-	fields := strings.Fields(trimmed)
-	if len(fields) > 0 {
-		if entry, ok := r.handlers[strings.ToLower(fields[0])]; ok && entry.pattern != "" {
-			return resolvedEntry(entry, fields[1:]), true
+
+	// Queries without an indexed exact candidate need only evaluate custom
+	// matchers. Exact keyword handlers for other first tokens cannot match.
+	for _, entry := range r.customEntries {
+		if args, ok := entry.matcher.Match(trimmed); ok {
+			return resolvedEntry(entry, args), true
 		}
+	}
+	// Preserve the historical direct-pattern fallback for custom handlers whose
+	// matcher declined the query but whose registered pattern is the first token.
+	if directOK && direct.pattern != "" {
+		return resolvedEntry(direct, fields[1:]), true
 	}
 	return Resolved{}, false
 }
