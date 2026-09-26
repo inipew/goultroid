@@ -29,7 +29,7 @@ func (p *statefulHookTestPlugin) MessageHookInterested(chatID int64) bool {
 	return chatID == 42
 }
 
-func TestManager_PrefersStateAwareIndexedHookRouting(t *testing.T) {func TestManager_PrefersStateAwareIndexedHookRouting(t *testing.T) {
+func TestManager_PrefersStateAwareIndexedHookRouting(t *testing.T) {
 	mgr := NewManager(core.NewRouter("."))
 	registrar := &recordingHookRegistrar{}
 	mgr.SetHookRegistrar(registrar)

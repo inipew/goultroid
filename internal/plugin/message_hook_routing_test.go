@@ -37,7 +37,7 @@ func (r *recordingHookRegistrar) RegisterMessageHook(registration core.MessageHo
 	return func() {}, nil
 }
 
-func TestManager_PrefersIndexedHookRouting(t *testing.T) {func TestManager_PrefersIndexedHookRouting(t *testing.T) {
+func TestManager_PrefersIndexedHookRouting(t *testing.T) {
 	mgr := NewManager(core.NewRouter("."))
 	registrar := &recordingHookRegistrar{}
 	mgr.SetHookRegistrar(registrar)
@@ -79,7 +79,7 @@ func (p *canonicalHookTestPlugin) MessageHookRouting() core.MessageHookRouting {
 	}
 }
 
-func TestManager_PrefersCanonicalMessageHook(t *testing.T) {func TestManager_PrefersCanonicalMessageHook(t *testing.T) {
+func TestManager_PrefersCanonicalMessageHook(t *testing.T) {
 	mgr := NewManager(core.NewRouter("."))
 	registrar := &recordingHookRegistrar{}
 	mgr.SetHookRegistrar(registrar)

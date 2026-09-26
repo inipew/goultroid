@@ -43,7 +43,7 @@ type HookRegistrar interface {
 	RegisterMessageHook(core.MessageHookRegistration) (func(), error)
 }
 
-func validateMessageHookAccess(func validateMessageHookAccess(pluginID string, p Plugin, gate *CapabilityGate) error {
+func validateMessageHookAccess(pluginID string, p Plugin, gate *CapabilityGate) error {
 	if gate == nil {
 		// Compatibility for standalone/unit-test managers. The application
 		// composition root always installs a fail-closed capability gate.
@@ -107,7 +107,7 @@ func registerMessageHook(registrar HookRegistrar, p Plugin, scope tasks.ScopeIde
 	return registrar.RegisterMessageHook(registration)
 }
 
-// SchedulerTaskCleaner allows the plugin manager to unregister periodic tasks owned by disabled plugins.// SchedulerTaskCleaner allows the plugin manager to unregister periodic tasks owned by disabled plugins.
+// SchedulerTaskCleaner allows the plugin manager to unregister periodic tasks owned by disabled plugins.
 type SchedulerTaskCleaner interface {
 	UnregisterPeriodicTasksByOwner(owner string) int
 }
