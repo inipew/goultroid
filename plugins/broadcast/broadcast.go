@@ -149,7 +149,7 @@ func (p *Plugin) handleBroadcast(ctx *core.Context) error {
 
 	reply, err := ctx.GetReply()
 	if err != nil {
-		return ctx.Status(fmt.Sprintf("Could not load replied broadcast: %v", err))
+		return ctx.Fail(err, "Could not load the replied broadcast.")
 	}
 	if reply == nil {
 		return ctx.Status("<b>Usage:</b> <code>.broadcast [-users|-groups|-all] &lt;message&gt;</code> or reply to text/media.")
@@ -188,7 +188,7 @@ func (p *Plugin) handleBroadcast(ctx *core.Context) error {
 		},
 	})
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to queue broadcast media capture: %v", err))
+		return ctx.Fail(err, "Failed to queue broadcast media capture.")
 	}
 
 	result, waitErr := ticket.Wait(ctx.Ctx)
@@ -235,13 +235,13 @@ func (p *Plugin) runBroadcast(ctx *core.Context, scope broadcast.TargetType, res
 		return ctx.Status("Telegram service is unavailable.")
 	}
 	if err := savedresponse.Validate(response); err != nil {
-		return ctx.Status(fmt.Sprintf("Invalid broadcast response: %v", err))
+		return ctx.Fail(err, "Invalid broadcast response.")
 	}
 
 	_ = ctx.EditOrReply(fmt.Sprintf("📡 <i>Fetching dialogs for broadcast (scope: %s)...</i>", scope))
 	dialogs, err := ctx.Svc.GetDialogs(ctx.Ctx, 100)
 	if err != nil {
-		return ctx.Edit(fmt.Sprintf("❌ Failed to retrieve dialogs: %v", err))
+		return ctx.Fail(err, "Failed to retrieve dialogs.")
 	}
 
 	var targets []tg.InputPeerClass
@@ -308,7 +308,7 @@ func (p *Plugin) runBroadcast(ctx *core.Context, scope broadcast.TargetType, res
 		},
 	})
 	if err != nil && (rep == nil || !rep.Canceled) {
-		return ctx.Edit(fmt.Sprintf("❌ Broadcast failed: %v", err))
+		return ctx.Fail(err, "Broadcast failed.")
 	}
 
 	status := "Completed"
