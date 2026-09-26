@@ -171,61 +171,95 @@ func (p *Plugin) handleSettingsCommand(ctx *core.Context) error {
 	if len(ctx.Args) > 0 {
 		cat = strings.ToLower(ctx.Args[0])
 	}
+	page := 1
+	if len(ctx.Args) > 1 {
+		if parsed, err := strconv.Atoi(ctx.Args[1]); err == nil && parsed > 0 {
+			page = parsed
+		}
+	}
 
 	state := MenuState{
 		Scope:    settings.ScopeGlobal,
 		ScopeID:  0,
 		Category: cat,
-		Page:     1,
+		Page:     page,
 		OwnerID:  ctx.SenderID(),
 		ChatID:   ctx.ChatID(),
 	}
 
-	screen := p.renderScreen(ctx.Ctx, state)
-	text, markup := screen.Render()
-	tgMarkup := render.ToTelegramMarkup(markup)
+	useButtons, err := p.service.ResolveBool(ctx.Ctx, ctx.SenderID(), ctx.ChatID(), "ui", "inline_buttons")
+	if err != nil {
+		p.logger.Debug("settings: resolve inline button preference failed", zap.Error(err))
+	}
 
-	// If interactive inline buttons enabled
-	useButtons, _ := p.service.ResolveBool(ctx.Ctx, ctx.SenderID(), ctx.ChatID(), "ui", "inline_buttons")
-	if useButtons && tgMarkup != nil {
-		if err := ctx.ReplyMarkup(text, tgMarkup); err == nil {
-			return nil
+	screen := p.renderScreenMode(ctx.Ctx, state, useButtons)
+	text, markup := screen.Render()
+	if useButtons {
+		if tgMarkup := render.ToTelegramMarkup(markup); tgMarkup != nil {
+			if err := ctx.ReplyMarkup(text, tgMarkup); err == nil {
+				return nil
+			}
 		}
 	}
 	return ctx.Reply(text)
 }
 
 func (p *Plugin) renderScreen(ctx context.Context, state MenuState) *ui.Screen {
+	return p.renderScreenMode(ctx, state, true)
+}
+
+func (p *Plugin) renderScreenMode(ctx context.Context, state MenuState, interactive bool) *ui.Screen {
 	ns, key := state.GetTarget()
 	if ns != "" && key != "" {
-		return p.renderSettingDetailScreen(ctx, state)
+		return p.renderSettingDetailScreenMode(ctx, state, interactive)
 	}
 	if state.Category != "" {
-		return p.renderCategoryScreen(ctx, state)
+		return p.renderCategoryScreenMode(ctx, state, interactive)
 	}
-	return p.renderHomeScreen(ctx, state)
+	return p.renderHomeScreenMode(ctx, state, interactive)
+}
+
+func settingsCategoryLabel(cat string) string {
+	switch cat {
+	case settings.CategoryGeneral:
+		return "⚙️ General"
+	case settings.CategorySecurity:
+		return "🛡 Security"
+	case settings.CategoryModeration:
+		return "👮 Moderation"
+	case settings.CategoryAutomation:
+		return "⚡ Automation"
+	case settings.CategoryUI:
+		return "🎨 UI Layout"
+	case settings.CategoryAdvanced:
+		return "🔧 Advanced"
+	default:
+		return fmt.Sprintf("📁 %s", strings.Title(cat))
+	}
 }
 
 func (p *Plugin) renderHomeScreen(ctx context.Context, state MenuState) *ui.Screen {
+	return p.renderHomeScreenMode(ctx, state, true)
+}
+
+func (p *Plugin) renderHomeScreenMode(ctx context.Context, state MenuState, interactive bool) *ui.Screen {
 	screen := ui.NewScreen("settings:home", "⚙️ GoUltroid Settings Dashboard",
 		"Welcome to the interactive configuration dashboard.\nSelect a category below to view and modify settings:\n")
 
 	categories := p.service.Registry().Categories()
-	catIcons := map[string]string{
-		settings.CategoryGeneral:    "⚙️ General",
-		settings.CategorySecurity:   "🛡 Security",
-		settings.CategoryModeration: "👮 Moderation",
-		settings.CategoryAutomation: "⚡ Automation",
-		settings.CategoryUI:         "🎨 UI Layout",
-		settings.CategoryAdvanced:   "🔧 Advanced",
+	if !interactive {
+		var body strings.Builder
+		body.WriteString("Available settings categories:\n\n")
+		for _, cat := range categories {
+			body.WriteString(fmt.Sprintf("• %s — <code>%s</code>\n", ui.EscapeHTML(settingsCategoryLabel(cat)), ui.EscapeHTML(cat)))
+		}
+		body.WriteString("\n<i>Inline buttons are disabled. Pass a category name to the settings command to browse its values.</i>")
+		screen.Body = body.String()
+		return screen
 	}
 
 	var row []ui.Button
 	for i, cat := range categories {
-		label := catIcons[cat]
-		if label == "" {
-			label = fmt.Sprintf("📁 %s", strings.Title(cat))
-		}
 		catState := state
 		catState.Category = cat
 		catState.Page = 1
@@ -233,7 +267,7 @@ func (p *Plugin) renderHomeScreen(ctx context.Context, state MenuState) *ui.Scre
 		catState.Selected = ""
 		catOid := p.storeState(catState)
 
-		btn := ui.NewCallbackButton(label, callback.EncodeCallbackData("settings", callback.ActionNav, catOid))
+		btn := ui.NewCallbackButton(settingsCategoryLabel(cat), callback.EncodeCallbackData("settings", callback.ActionNav, catOid))
 		row = append(row, btn)
 
 		if (i+1)%2 == 0 || i == len(categories)-1 {
@@ -259,20 +293,31 @@ func (p *Plugin) renderHomeScreen(ctx context.Context, state MenuState) *ui.Scre
 }
 
 func (p *Plugin) renderCategoryScreen(ctx context.Context, state MenuState) *ui.Screen {
+	return p.renderCategoryScreenMode(ctx, state, true)
+}
+
+func (p *Plugin) renderCategoryScreenMode(ctx context.Context, state MenuState, interactive bool) *ui.Screen {
 	defs := p.service.Registry().ListByCategory(state.Category)
 	title := fmt.Sprintf("⚙️ Settings: %s", strings.Title(state.Category))
 
 	if len(defs) == 0 {
 		screen := ui.NewScreen("settings:cat", title, "No settings configured for this category.")
-		homeState := state
-		homeState.Category = ""
-		homeOid := p.storeState(homeState)
-		screen.AddRow(ui.NewCallbackButton("🔙 Back", callback.EncodeCallbackData("settings", callback.ActionNav, homeOid)))
+		if interactive {
+			homeState := state
+			homeState.Category = ""
+			homeOid := p.storeState(homeState)
+			screen.AddRow(ui.NewCallbackButton("🔙 Back", callback.EncodeCallbackData("settings", callback.ActionNav, homeOid)))
+		}
 		return screen
 	}
 
 	pageSize := 5
 	pagedDefs, totalPages := ui.PaginateSlice(defs, state.Page, pageSize)
+	if state.Page < 1 {
+		state.Page = 1
+	} else if state.Page > totalPages {
+		state.Page = totalPages
+	}
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Category: <b>%s</b> | Scope: <b>%s</b>\n\n", ui.EscapeHTML(strings.Title(state.Category)), ui.EscapeHTML(string(state.Scope))))
@@ -280,11 +325,13 @@ func (p *Plugin) renderCategoryScreen(ctx context.Context, state MenuState) *ui.
 	screen := ui.NewScreen("settings:cat", title, "")
 
 	for _, def := range pagedDefs {
-		// Resolve current value in scope
 		currentVal, _ := p.service.Resolve(ctx, state.OwnerID, state.ScopeID, def.Namespace, def.Key)
 		sb.WriteString(fmt.Sprintf("• <b>%s</b> (<code>%s:%s</code>)\n  Val: <code>%s</code> | <i>%s</i>\n",
 			ui.EscapeHTML(def.Title), ui.EscapeHTML(def.Namespace), ui.EscapeHTML(def.Key), ui.EscapeHTML(currentVal), ui.EscapeHTML(def.Description)))
 
+		if !interactive {
+			continue
+		}
 		switch def.Type {
 		case settings.TypeBool:
 			boolVal := strings.ToLower(currentVal) == "true"
@@ -305,9 +352,17 @@ func (p *Plugin) renderCategoryScreen(ctx context.Context, state MenuState) *ui.
 		}
 	}
 
+	if !interactive {
+		if totalPages > 1 {
+			sb.WriteString(fmt.Sprintf("\nPage <b>%d / %d</b>. Pass a page number as the second argument to browse more settings.\n", state.Page, totalPages))
+		}
+		sb.WriteString("\n<i>Inline buttons are disabled. Use the config command to change values.</i>")
+		screen.Body = sb.String()
+		return screen
+	}
+
 	screen.Body = sb.String()
 
-	// Pagination row
 	noopData := callback.EncodeCallbackData("settings", callback.ActionNoop, callback.ActionNoop)
 	pagRow := ui.BuildPaginationRow(state.Page, totalPages, func(targetPage int) []byte {
 		pState := state
@@ -319,7 +374,6 @@ func (p *Plugin) renderCategoryScreen(ctx context.Context, state MenuState) *ui.
 		screen.AddRow(pagRow...)
 	}
 
-	// Back to Home row
 	homeState := state
 	homeState.Category = ""
 	homeState.Page = 1
@@ -339,17 +393,21 @@ func (p *Plugin) renderCategoryScreen(ctx context.Context, state MenuState) *ui.
 }
 
 func (p *Plugin) renderSettingDetailScreen(ctx context.Context, state MenuState) *ui.Screen {
+	return p.renderSettingDetailScreenMode(ctx, state, true)
+}
+
+func (p *Plugin) renderSettingDetailScreenMode(ctx context.Context, state MenuState, interactive bool) *ui.Screen {
 	ns, key := state.GetTarget()
 	if ns == "" || key == "" {
 		state.Selected = ""
 		state.Target = nil
-		return p.renderCategoryScreen(ctx, state)
+		return p.renderCategoryScreenMode(ctx, state, interactive)
 	}
 	def, ok := p.service.Registry().Get(ns, key)
 	if !ok {
 		state.Selected = ""
 		state.Target = nil
-		return p.renderCategoryScreen(ctx, state)
+		return p.renderCategoryScreenMode(ctx, state, interactive)
 	}
 	currentVal, _ := p.service.Resolve(ctx, state.OwnerID, state.ScopeID, ns, key)
 	originBadge := p.settingOriginBadge(ctx, state, ns, key)
@@ -358,9 +416,11 @@ func (p *Plugin) renderSettingDetailScreen(ctx context.Context, state MenuState)
 		ui.EscapeHTML(def.Title), ui.EscapeHTML(def.Description), def.Type, ui.EscapeHTML(currentVal), originBadge, ui.EscapeHTML(def.DefaultValue), state.Scope,
 	)
 	screen := ui.NewScreen("settings:detail", fmt.Sprintf("⚙️ %s (%s:%s)", def.Title, ns, key), body)
-	noopData := callback.EncodeCallbackData("settings", callback.ActionNoop, callback.ActionNoop)
-	p.addSettingTypeControls(screen, state, ns, key, currentVal, *def, noopData)
-	p.addDetailFooter(screen, state, ns, key, originBadge, def.Category)
+	if interactive {
+		noopData := callback.EncodeCallbackData("settings", callback.ActionNoop, callback.ActionNoop)
+		p.addSettingTypeControls(screen, state, ns, key, currentVal, *def, noopData)
+		p.addDetailFooter(screen, state, ns, key, originBadge, def.Category)
+	}
 	return screen
 }
 

@@ -1,0 +1,88 @@
+package settings
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/gotd/td/tg"
+	"github.com/inipew/goultroid/internal/core"
+	settingssvc "github.com/inipew/goultroid/internal/settings"
+)
+
+func TestPlugin_DashboardTextOnlyDoesNotAllocateCallbackState(t *testing.T) {
+	p, svc, store, tgSvc := setupTestPlugin(t)
+	ctx := context.Background()
+	if err := svc.Set(ctx, settingssvc.ScopeGlobal, 0, "ui", "inline_buttons", "false", 12345); err != nil {
+		t.Fatalf("disable inline buttons: %v", err)
+	}
+
+	commandCtx := &core.Context{
+		Ctx:     ctx,
+		Message: &core.Message{ID: 1, SenderID: 12345},
+		Sender:  &core.User{ID: 12345},
+		Chat:    &core.Chat{ID: -100123},
+		Svc:     tgSvc,
+		PeerID:  &tg.InputPeerChat{ChatID: 123},
+	}
+
+	if err := p.handleSettingsCommand(commandCtx); err != nil {
+		t.Fatalf("text-only home failed: %v", err)
+	}
+	if got := store.Len(); got != 0 {
+		t.Fatalf("text-only home retained %d callback states, want 0", got)
+	}
+	tgSvc.mu.Lock()
+	homeText := tgSvc.lastText
+	homeMarkup := tgSvc.lastMarkup
+	tgSvc.mu.Unlock()
+	if homeMarkup != nil {
+		t.Fatal("text-only home unexpectedly sent reply markup")
+	}
+	if !strings.Contains(homeText, "Available settings categories") || !strings.Contains(homeText, "<code>security</code>") {
+		t.Fatalf("text-only home is not navigable:\n%s", homeText)
+	}
+
+	commandCtx.Args = []string{"security", "1"}
+	if err := p.handleSettingsCommand(commandCtx); err != nil {
+		t.Fatalf("text-only category failed: %v", err)
+	}
+	if got := store.Len(); got != 0 {
+		t.Fatalf("text-only category retained %d callback states, want 0", got)
+	}
+	tgSvc.mu.Lock()
+	categoryText := tgSvc.lastText
+	categoryMarkup := tgSvc.lastMarkup
+	tgSvc.mu.Unlock()
+	if categoryMarkup != nil {
+		t.Fatal("text-only category unexpectedly sent reply markup")
+	}
+	if !strings.Contains(categoryText, "Settings: Security") || !strings.Contains(categoryText, "Inline buttons are disabled") {
+		t.Fatalf("unexpected text-only category:\n%s", categoryText)
+	}
+}
+
+func TestPlugin_DashboardInteractiveStillAllocatesCallbackState(t *testing.T) {
+	p, _, store, tgSvc := setupTestPlugin(t)
+	ctx := &core.Context{
+		Ctx:     context.Background(),
+		Message: &core.Message{ID: 1, SenderID: 12345},
+		Sender:  &core.User{ID: 12345},
+		Chat:    &core.Chat{ID: -100123},
+		Svc:     tgSvc,
+		PeerID:  &tg.InputPeerChat{ChatID: 123},
+	}
+
+	if err := p.handleSettingsCommand(ctx); err != nil {
+		t.Fatalf("interactive home failed: %v", err)
+	}
+	if got := store.Len(); got == 0 {
+		t.Fatal("interactive home allocated no callback state")
+	}
+	tgSvc.mu.Lock()
+	markup := tgSvc.lastMarkup
+	tgSvc.mu.Unlock()
+	if markup == nil {
+		t.Fatal("interactive home did not send reply markup")
+	}
+}
