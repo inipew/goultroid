@@ -2,10 +2,14 @@
 
 Date: 2026-09-26
 Branch: `test-next`
-Current audited HEAD: `1d00110be8e664032e728902fb563dec93abe2d9` — `refactor(settings): retire legacy callback transport`
-Purpose: continue refinement from **P1-F1-A** through final **P4 closure**, without reopening already-closed architecture phases.
+Current audited baseline before P1-F1-E closure: `4fb5bb77d9a0a1186eae358699b9402f7eb74db3` — `docs(callback): classify legacy ownership`
+Purpose: continue refinement from **P1-F3** through final **P4 closure** after authoritative P1-F1 closure; P1-F2 has no namespace migration work.
 
 Authority rule: **always refresh current HEAD and current source first. Source/tests win over this handoff if the branch has moved.**
+
+## 2026-09-26 P1-F1 closure update
+
+P1-F1-A/B/C/D/E are **CLOSED**. The authoritative F1-E matrix found zero production feature v1 producers, zero production legacy `callback.Handler` feature implementations, and zero identified production feature `StateStore` writers. Settings and MyXL remain zero-legacy. The exact P1-F2 namespace worklist is **EMPTY**; do not invent an F2 namespace. Remaining legacy ownership is infrastructure compatibility only. Next executable phase, after explicit user confirmation, is **P1-F3 — remove legacy StateStore + legacy v1 protocol**. See `docs/design/goultroid-refinement-p1f1e-callback-inventory-closure.md`.
 
 ---
 
@@ -350,7 +354,7 @@ P1-F1 is itself split into five sequential subphases.
 
 **Execution rule: complete exactly one subphase, summarize findings + commit if appropriate, then STOP and wait for user confirmation.**
 
-## P1-F1-A — production import / ownership inventory — NEXT
+## P1-F1-A — production import / ownership inventory — CLOSED
 
 Goal: build an authoritative list of production packages that still depend on the legacy callback subsystem.
 
@@ -597,6 +601,8 @@ Only after F1-A/B/C/D/E are each complete and confirmed may P1-F1 be marked CLOS
 ---
 
 # 9. P1-F2 — migrate every remaining production legacy namespace
+
+**F1-E authoritative result: no remaining production legacy namespace exists. The P1-F2 worklist is EMPTY; no namespace migration subphase should be invented. Proceed to P1-F3 only after explicit user confirmation.**
 
 **Do not invent F2 namespace names before F1 is complete. F1-E matrix is authoritative.**
 
@@ -1232,24 +1238,17 @@ internal/taskengine/
 
 Start with:
 
-> Refresh `test-next` HEAD and current source. Continue **P1-F1-A — production import / ownership inventory** only. Enumerate production Go files repo-wide and classify every legacy callback dependency. Do not migrate/delete production callback behavior yet. Create the authoritative inventory + exact allowlist/freeze basis, commit/push if appropriate, summarize conclusions, then STOP and wait for confirmation before P1-F1-B. Do not check CI.
+> Refresh `test-next` HEAD and current source. P1-F1-A/B/C/D/E are CLOSED and the authoritative F1-E namespace matrix makes P1-F2 an empty/no-op worklist. Continue **P1-F3 — remove legacy StateStore + legacy v1 protocol** only. Remove module callback-state capability, StateStore, v1 encoder/parser/protocol and state-only error mappings; atomically narrow any temporary Router shell so it no longer depends on state/v1 while preserving explicit stale/noop/unknown callback ACK semantics. Do not start P1-F4. Run gofmt before commit, commit/push, summarize, then STOP for confirmation. Do not check CI.
 
-Important current baseline:
+Important baseline:
 
 ```text
-HEAD at handoff creation:
-1d00110be8e664032e728902fb563dec93abe2d9
-
-Settings:
-zero legacy callback production surface
-
-MyXL:
-zero legacy callback production surface
-P1-E fully re-audited and closed
-
-Global callback stack:
-NOT YET proven zero-caller
-DO NOT delete Router/StateStore/protocol until P1-F inventory proves it
+P1-F1: CLOSED
+P1-F2 namespace worklist: EMPTY
+Settings: zero legacy callback production surface
+MyXL: zero legacy callback production surface
+remaining legacy ownership: infrastructure compatibility only
+NEXT executable phase: P1-F3
 ```
 
 ---
