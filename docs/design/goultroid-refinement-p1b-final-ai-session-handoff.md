@@ -36,7 +36,7 @@ Production legacy callback authority is frozen at zero: no callback package, Rou
 
 No CI was inspected. A complete executable checkout could not be obtained because direct GitHub DNS access from the container failed, so no `gofmt`, `go build`, or `go test` command is claimed. Source-level inspection plus the committed regression/architecture gates are the acceptance evidence. See `docs/design/goultroid-refinement-p1f5-callback-final-acceptance.md`.
 
-**P1-F is globally CLOSED. NEXT = P2-A, only after explicit user confirmation.**
+**P1-F is globally CLOSED. At P1-F5 closure the next step was P2-A; P2-A is now also CLOSED. Current NEXT is P2-B.**
 
 ## 2026-09-26 P1-F4 closure update
 
@@ -837,10 +837,10 @@ P1-F5 closure result:
 - P1-F is CLOSED;
 - this refinement handoff is updated;
 - the main technical handoff pointer is updated;
-- implementation acceptance baseline is `985b2ea5de7f4b3e7f7bc326fb4ef56deba4f57e`;
-- P2-A remains NOT STARTED.
+- implementation acceptance baseline was `985b2ea5de7f4b3e7f7bc326fb4ef56deba4f57e`;
+- P2-A was the next step at that closure and has since been completed.
 
-Stop and wait for explicit user confirmation before P2-A.
+See the P2-A closure section above for current continuation.
 
 ---
 
@@ -920,7 +920,6 @@ Stop and wait for explicit user confirmation before P2-B.
 
 ---
 
-# 14. P2-B — expand localization into common userbot UX
 # 14. P2-B — expand localization into common userbot UX
 
 Status: NOT STARTED here.
@@ -1339,7 +1338,6 @@ NEXT executable phase: P2-B
 
 ---
 
-# 24. Definition of done for the whole refinement program
 # 24. Definition of done for the whole refinement program
 
 The program is finished when:
