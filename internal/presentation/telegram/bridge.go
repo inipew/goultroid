@@ -69,7 +69,7 @@ func (b *Bridge) Send(ctx context.Context, target presentation.Target, view pres
 	if !ok || messageTarget.Peer == nil || messageTarget.ChatID == 0 {
 		return nil, ErrInvalidTarget
 	}
-	msg, err := b.Service.SendMessageWithMarkup(ctx, messageTarget.Peer, view.Text, markup(view))
+	msg, err := b.Service.SendMessageWithMarkup(ctx, messageTarget.Peer, view.Text, EncodeMarkup(view.Rows))
 	if err != nil {
 		return nil, err
 	}
@@ -89,12 +89,12 @@ func (b *Bridge) Edit(ctx context.Context, target presentation.Target, view pres
 		if t.Peer == nil || t.ChatID == 0 || t.MessageID <= 0 {
 			return ErrInvalidTarget
 		}
-		return b.Service.EditMessageMarkup(ctx, t.Peer, t.MessageID, view.Text, markup(view))
+		return b.Service.EditMessageMarkup(ctx, t.Peer, t.MessageID, view.Text, EncodeMarkup(view.Rows))
 	case InlineTarget:
 		if t.MessageID == nil || strings.TrimSpace(t.BindingID) == "" {
 			return ErrInvalidTarget
 		}
-		return b.Service.EditInlineBotMessage(ctx, t.MessageID, view.Text, markup(view))
+		return b.Service.EditInlineBotMessage(ctx, t.MessageID, view.Text, EncodeMarkup(view.Rows))
 	default:
 		return ErrInvalidTarget
 	}
@@ -146,29 +146,3 @@ func (b *Bridge) Answer(ctx context.Context, answer presentation.Answer) error {
 	return b.Service.AnswerCallbackQuery(ctx, answer.QueryID, answer.Text, answer.Alert)
 }
 
-func markup(view presentation.CompiledView) tg.ReplyMarkupClass {
-	if len(view.Rows) == 0 {
-		return nil
-	}
-	rows := make([]tg.KeyboardButtonRow, 0, len(view.Rows))
-	for _, row := range view.Rows {
-		buttons := make([]tg.KeyboardButtonClass, 0, len(row))
-		for _, button := range row {
-			switch button.Type {
-			case presentation.ButtonAction:
-				buttons = append(buttons, &tg.KeyboardButtonCallback{Text: button.Text, Data: append([]byte(nil), button.Data...)})
-			case presentation.ButtonURL:
-				buttons = append(buttons, &tg.KeyboardButtonURL{Text: button.Text, URL: button.URL})
-			case presentation.ButtonSwitchInline:
-				buttons = append(buttons, &tg.KeyboardButtonSwitchInline{Text: button.Text, Query: button.InlineQuery, SamePeer: button.SamePeer})
-			}
-		}
-		if len(buttons) > 0 {
-			rows = append(rows, tg.KeyboardButtonRow{Buttons: buttons})
-		}
-	}
-	if len(rows) == 0 {
-		return nil
-	}
-	return &tg.ReplyInlineMarkup{Rows: rows}
-}
