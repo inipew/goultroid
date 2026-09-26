@@ -229,8 +229,8 @@ func validateInteraction(interaction Interaction) error {
 			return errors.New("inline interaction must expose the inline surface")
 		}
 	case InteractionAction:
-		if !interaction.Surfaces.Supports(execution.SourceAssistant) && !interaction.Surfaces.Supports(execution.SourceInline) {
-			return errors.New("action interaction must expose assistant or inline surface")
+		if !interaction.Surfaces.Supports(execution.SourceUserbot) && !interaction.Surfaces.Supports(execution.SourceAssistant) && !interaction.Surfaces.Supports(execution.SourceInline) {
+			return errors.New("action interaction must expose userbot, assistant, or inline surface")
 		}
 		if err := rootinteraction.ValidateCallbackActionID(normalizeID(interaction.ID)); err != nil {
 			return fmt.Errorf("action callback identity: %w", err)

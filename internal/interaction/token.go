@@ -76,6 +76,13 @@ func EncodeCallbackToken(featureID, actionID, sessionID string, revision uint64)
 	return []byte(raw), nil
 }
 
+// OwnsCallbackData reports whether data belongs to the a2 callback protocol
+// namespace. It intentionally accepts malformed a2 payloads so transport
+// dispatchers can fail closed instead of falling through into legacy parsers.
+func OwnsCallbackData(data []byte) bool {
+	return len(data) >= 3 && data[0] == 'a' && data[1] == '2' && data[2] == ':'
+}
+
 // ParseCallbackToken strictly parses the compact a2 protocol.
 func ParseCallbackToken(data []byte) (CallbackToken, error) {
 	if len(data) == 0 || len(data) > MaxCallbackDataBytes {

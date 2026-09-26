@@ -24,6 +24,7 @@ import (
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/idempotency"
+	nativeinteraction "github.com/inipew/goultroid/internal/interaction/native"
 	"github.com/inipew/goultroid/internal/jobs"
 	"github.com/inipew/goultroid/internal/module"
 	"github.com/inipew/goultroid/internal/plugin"
@@ -161,6 +162,19 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		coreDeps.jobsManager,
 	)
 	pluginManager.SetTaskClient(coreDeps.taskEngine)
+	nativeInteractions, err := nativeinteraction.New(
+		pluginManager.FeatureCatalog(),
+		pluginManager.InteractionRuntime(),
+		pluginManager.ActionDispatcher(),
+		coreDeps.taskEngine,
+		tgRuntime.client.Service,
+		coreDeps.perms,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("build native interaction adapter: %w", err)
+	}
+	tgRuntime.dispatcher.SetNativeInteractions(nativeInteractions)
+	pluginManager.SetNativeInteractions(nativeInteractions)
 	if domServices.schedEngine != nil {
 		pluginManager.SetSchedulerCleaner(domServices.schedEngine)
 	}

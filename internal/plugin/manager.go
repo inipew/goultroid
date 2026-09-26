@@ -11,6 +11,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	nativeinteraction "github.com/inipew/goultroid/internal/interaction/native"
 	"github.com/inipew/goultroid/internal/jobs"
 	"github.com/inipew/goultroid/internal/platform/audit"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
@@ -186,6 +187,7 @@ type Manager struct {
 	jobsManager           *jobs.Manager
 	storageManager        *storage.Manager
 	featureRegistry       *featureRegistry
+	nativeInteractions    *nativeinteraction.Adapter
 	savedResponses        *savedresponse.Registry
 	plugins               map[string]Plugin
 	metadata              map[string]Metadata
@@ -383,6 +385,15 @@ func (m *Manager) SetTaskClient(client tasks.Client) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.taskClient = client
+}
+
+// SetNativeInteractions binds the native/userbot transport adapter to feature
+// registration transactions. The adapter reuses this manager's shared a2
+// runtime and dispatcher; it does not own a second interaction lifecycle.
+func (m *Manager) SetNativeInteractions(adapter *nativeinteraction.Adapter) {
+	m.mu.Lock()
+	m.nativeInteractions = adapter
+	m.mu.Unlock()
 }
 
 // SetRegistrationValidator installs a transaction-time validator invoked after

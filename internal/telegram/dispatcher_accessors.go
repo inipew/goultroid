@@ -164,6 +164,19 @@ func (d *Dispatcher) getCallbackRouter() *callback.Router {
 	return d.callbackRouter
 }
 
+// SetNativeInteractions installs the native/userbot a2 callback ingress.
+func (d *Dispatcher) SetNativeInteractions(interactions NativeInteractionDispatcher) {
+	d.mu.Lock()
+	d.nativeInteractions = interactions
+	d.mu.Unlock()
+}
+
+func (d *Dispatcher) getNativeInteractions() NativeInteractionDispatcher {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.nativeInteractions
+}
+
 // SetInlineEngine configures the inline query evaluation engine.
 func (d *Dispatcher) SetInlineEngine(e *inline.Engine) {
 	d.mu.Lock()

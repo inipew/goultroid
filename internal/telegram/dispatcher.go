@@ -16,28 +16,36 @@ import (
 	"go.uber.org/zap"
 )
 
+// NativeInteractionDispatcher is the narrow userbot a2 ingress boundary. It
+// claims only callbacks owned by the canonical a2 protocol and leaves legacy
+// callback payloads untouched.
+type NativeInteractionDispatcher interface {
+	HandleCallback(context.Context, *core.CallbackQueryEvent) (bool, error)
+}
+
 // Dispatcher processes incoming Telegram updates and routes them to userbot commands.
 // Composition root is split across dispatcher_*.go files (peer, handlers, accessors, callback, dispatch).
 type Dispatcher struct {
-	router         *core.Router
-	perms          *core.Permissions
-	svc            core.TelegramServicer
-	logger         *zap.Logger
-	cooldown       *core.CooldownTracker
-	executor       *core.CommandExecutor
-	selfID         int64
-	resolver       core.PeerResolver
-	rootCtx        context.Context
-	eventBus       *core.EventBus
-	albumBuffer    *core.AlbumBuffer
-	localizer      core.Localizer
-	callbackRouter *callback.Router
-	inlineEngine   *inline.Engine
-	normalizer     UpdateNormalizer
-	idempotencyMgr *idempotency.Manager
-	ingressDedupe  *ingressMessageDedupe
-	tasks          tasks.Client
-	scopeResolver  func(string) (tasks.ScopeIdentity, bool)
+	router             *core.Router
+	perms              *core.Permissions
+	svc                core.TelegramServicer
+	logger             *zap.Logger
+	cooldown           *core.CooldownTracker
+	executor           *core.CommandExecutor
+	selfID             int64
+	resolver           core.PeerResolver
+	rootCtx            context.Context
+	eventBus           *core.EventBus
+	albumBuffer        *core.AlbumBuffer
+	localizer          core.Localizer
+	callbackRouter     *callback.Router
+	nativeInteractions NativeInteractionDispatcher
+	inlineEngine       *inline.Engine
+	normalizer         UpdateNormalizer
+	idempotencyMgr     *idempotency.Manager
+	ingressDedupe      *ingressMessageDedupe
+	tasks              tasks.Client
+	scopeResolver      func(string) (tasks.ScopeIdentity, bool)
 
 	messageHandlers   []prioritizedHandler
 	messageRouteIndex atomic.Pointer[messageHandlerIndex]

@@ -7,6 +7,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
@@ -157,6 +158,30 @@ func (d *Dispatcher) callbackInputPeer(ctx context.Context, peer tg.PeerClass, e
 	}
 }
 
+func (d *Dispatcher) dispatchNativeInteraction(ctx context.Context, event *core.CallbackQueryEvent) bool {
+	if event == nil {
+		return false
+	}
+	native := d.getNativeInteractions()
+	if native == nil {
+		if !rootinteraction.OwnsCallbackData(event.Data) {
+			return false
+		}
+		if svc := d.getService(); svc != nil {
+			_ = svc.AnswerCallbackQuery(ctx, event.QueryID, "Interaction service unavailable.", false)
+		}
+		return true
+	}
+	handled, err := native.HandleCallback(ctx, event)
+	if !handled {
+		return false
+	}
+	if err != nil {
+		d.logger.Debug("native interaction callback rejected", zap.Int64("query_id", event.QueryID), zap.Error(err))
+	}
+	return true
+}
+
 // OnBotCallbackQuery handles inline keyboard button callback queries.
 func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, update *tg.UpdateBotCallbackQuery) error {
 	release, accepted := d.admitIngress()
@@ -189,6 +214,10 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 	bus := d.getEventBus()
 	if bus != nil && bus.HasSubscribersAtPriority(core.EventTypeCallbackQuery, core.PriorityNormal) {
 		bus.Publish(evt)
+	}
+
+	if d.dispatchNativeInteraction(ctx, evt) {
+		return nil
 	}
 
 	cbRouter := d.getCallbackRouter()
@@ -269,6 +298,10 @@ func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities
 	bus := d.getEventBus()
 	if bus != nil && bus.HasSubscribersAtPriority(core.EventTypeCallbackQuery, core.PriorityNormal) {
 		bus.Publish(evt)
+	}
+
+	if d.dispatchNativeInteraction(ctx, evt) {
+		return nil
 	}
 
 	cbRouter := d.getCallbackRouter()

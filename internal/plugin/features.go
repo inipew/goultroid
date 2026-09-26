@@ -7,6 +7,7 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/feature"
 	"github.com/inipew/goultroid/internal/interaction"
+	nativeinteraction "github.com/inipew/goultroid/internal/interaction/native"
 	interactionorchestration "github.com/inipew/goultroid/internal/interaction/orchestration"
 	"github.com/inipew/goultroid/internal/presentation"
 	inlineservice "github.com/inipew/goultroid/internal/services/inline"
@@ -284,7 +285,50 @@ func (m *Manager) registerFeatureContract(name string, p Plugin, scope tasks.Sco
 		}
 	}
 
+	rollbackFeature := func() {
+		if savedResponseRegistration != nil {
+			savedResponseRegistration.Close()
+		}
+		for _, inlineRegistration := range inlineRegistrations {
+			inlineRegistration.Close()
+		}
+		registration.Close()
+		if registry.actions != nil {
+			registry.actions.UnregisterScope(scope)
+		}
+		if registry.interactions != nil {
+			registry.interactions.CancelScope(scope)
+		}
+	}
+
+	var nativeCleanup func()
+	if driver, ok := p.(nativeinteraction.FeatureDriver); ok {
+		m.mu.RLock()
+		nativeRuntime := m.nativeInteractions
+		m.mu.RUnlock()
+		if nativeRuntime == nil {
+			rollbackFeature()
+			return nil, fmt.Errorf("feature %s declares native interactions but native adapter is unavailable", name)
+		}
+		if driverID := strings.ToLower(strings.TrimSpace(driver.NativeFeatureID())); driverID != name {
+			rollbackFeature()
+			return nil, fmt.Errorf("feature %s native driver id %q does not match feature id", name, driver.NativeFeatureID())
+		}
+		nativeCleanup, err = driver.BindNative(nativeinteraction.DriverRuntime{
+			Interactions: nativeRuntime,
+			Catalog:      registry,
+			Scope:        scope,
+		})
+		if err != nil {
+			rollbackFeature()
+			return nil, fmt.Errorf("feature %s native interaction binding: %w", name, err)
+		}
+	}
+
 	return func() {
+		if nativeCleanup != nil {
+			nativeCleanup()
+		}
 		if savedResponseRegistration != nil {
 			savedResponseRegistration.Close()
 		}
