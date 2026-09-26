@@ -67,7 +67,7 @@ func LanguageView(model LanguageModel) presentation.View {
 				{Text: tr(locale, "assistant.language.english"), ActionID: ActionLanguageEnglish},
 				{Text: tr(locale, "assistant.language.indonesian"), ActionID: ActionLanguageIndonesian},
 			},
-			{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}, {Text: "✖ Close", ActionID: ActionClose}},
+			{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}, {Text: tr(locale, "ui.close"), ActionID: ActionClose}},
 		},
 	}
 }
@@ -100,25 +100,16 @@ func localizedSettingSource(locale, source string) string {
 func localizedNotice(locale, notice string) string {
 	switch strings.TrimSpace(notice) {
 	case "Reset cancelled.":
-		if shellLocale(locale) == localization.LocaleIndonesian {
-			return "Reset dibatalkan."
-		}
+		return tr(locale, "common.reset_cancelled")
 	case "Input cancelled.":
-		if shellLocale(locale) == localization.LocaleIndonesian {
-			return "Input dibatalkan."
-		}
+		return tr(locale, "common.input_cancelled")
 	case "User override saved.":
-		if shellLocale(locale) == localization.LocaleIndonesian {
-			return "Override user tersimpan."
-		}
+		return tr(locale, "settings.notice.user_saved")
 	case "User override reset.":
-		if shellLocale(locale) == localization.LocaleIndonesian {
-			return "Override user direset."
-		}
+		return tr(locale, "settings.notice.user_reset")
 	case "No change was needed.", "No persistent change was needed.":
-		if shellLocale(locale) == localization.LocaleIndonesian {
-			return "Tidak ada perubahan yang diperlukan."
-		}
+		return tr(locale, "common.no_change")
+	default:
+		return notice
 	}
-	return notice
 }

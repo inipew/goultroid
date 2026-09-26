@@ -320,7 +320,7 @@ func HelpView(model HelpModel) presentation.View {
 	}
 	rows = append(rows, presentation.Row{
 		{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome},
-		{Text: "✖ Close", ActionID: ActionClose},
+		{Text: tr(locale, "ui.close"), ActionID: ActionClose},
 	})
 	return presentation.View{Text: card.Render(), Rows: rows}
 }
@@ -377,7 +377,7 @@ func HelpModuleView(model HelpModuleModel) presentation.View {
 	}
 	rows = append(rows, presentation.Row{
 		{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome},
-		{Text: "✖ Close", ActionID: ActionClose},
+		{Text: tr(locale, "ui.close"), ActionID: ActionClose},
 	})
 	return presentation.View{Text: card.Render(), Rows: rows}
 }
@@ -449,7 +449,7 @@ func HelpCommandView(model HelpCommandModel) presentation.View {
 		Text: card.Render(),
 		Rows: []presentation.Row{
 			{{Text: tr(locale, "assistant.button.commands"), ActionID: ActionHelpBack}, {Text: tr(locale, "assistant.help.modules"), ActionID: ActionHelp}},
-			{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}, {Text: "✖ Close", ActionID: ActionClose}},
+			{{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome}, {Text: tr(locale, "ui.close"), ActionID: ActionClose}},
 		},
 	}
 }
