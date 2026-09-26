@@ -68,8 +68,7 @@ func (p *Plugin) handlePin(ctx *core.Context) error {
 			_ = ctx.Status("Fitur pin tidak didukung di tipe chat ini.")
 			return err
 		}
-		_ = ctx.Error(fmt.Sprintf("Gagal menyematkan pesan: %v", err))
-		return err
+		return ctx.Fail(err, "Gagal menyematkan pesan.")
 	}
 
 	if silent {
@@ -88,8 +87,7 @@ func (p *Plugin) handleUnpin(ctx *core.Context) error {
 			_ = ctx.Status("Fitur unpin tidak didukung di tipe chat ini.")
 			return err
 		}
-		_ = ctx.Error(fmt.Sprintf("Gagal melepas sematan pesan: %v", err))
-		return err
+		return ctx.Fail(err, "Gagal melepas sematan pesan.")
 	}
 	return ctx.Success("Message unpinned.")
 }
