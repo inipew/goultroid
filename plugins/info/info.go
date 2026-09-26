@@ -64,11 +64,11 @@ func (p *Plugin) Commands() []core.Command {
 func (p *Plugin) handleWhois(ctx *core.Context) error {
 	inputUser, err := resolveInputUser(ctx)
 	if err != nil {
-		return ctx.Status(err.Error())
+		return ctx.Fail(err, core.UserMessage(err))
 	}
 	fullUser, err := ctx.GetFullUser(inputUser)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to fetch user info: %v", err))
+		return ctx.Fail(err, "Failed to fetch user information.")
 	}
 	var u *tg.User
 	for _, userClass := range fullUser.Users {
@@ -129,7 +129,7 @@ func (p *Plugin) handleChatInfo(ctx *core.Context) error {
 		if ctx.IsAssistant() {
 			return ctx.EditOrReply(core.UserMessage(err))
 		}
-		return ctx.Error(fmt.Sprintf("Failed to fetch chat info: %v", err))
+		return ctx.Fail(err, "Failed to fetch chat information.")
 	}
 	var sb strings.Builder
 	sb.WriteString("👥 <b>Chat Information</b>\n\n")
