@@ -10,6 +10,7 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/services/localization"
 	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/ui"
 	"github.com/inipew/goultroid/plugins/settings/usecase"
@@ -192,43 +193,51 @@ func (p *Plugin) renderScreen(ctx context.Context, state MenuState) *ui.Screen {
 	return p.renderHomeScreen(ctx, state)
 }
 
-func settingsCategoryLabel(cat string) string {
+func (p *Plugin) locale(ctx context.Context, state MenuState) string {
+	return localization.ResolveLocale(ctx, p.service, state.OwnerID, state.ChatID)
+}
+
+func (p *Plugin) tr(ctx context.Context, state MenuState, key string, args ...any) string {
+	return localization.Translate(p.locale(ctx, state), key, args...)
+}
+
+func (p *Plugin) settingsCategoryLabel(ctx context.Context, state MenuState, cat string) string {
 	switch cat {
 	case settings.CategoryGeneral:
-		return "⚙️ General"
+		return p.tr(ctx, state, "settings.category.general")
 	case settings.CategorySecurity:
-		return "🛡 Security"
+		return p.tr(ctx, state, "settings.category.security")
 	case settings.CategoryModeration:
-		return "👮 Moderation"
+		return p.tr(ctx, state, "settings.category.moderation")
 	case settings.CategoryAutomation:
-		return "⚡ Automation"
+		return p.tr(ctx, state, "settings.category.automation")
 	case settings.CategoryUI:
-		return "🎨 UI Layout"
+		return p.tr(ctx, state, "settings.category.ui")
 	case settings.CategoryAdvanced:
-		return "🔧 Advanced"
+		return p.tr(ctx, state, "settings.category.advanced")
 	default:
 		return fmt.Sprintf("📁 %s", strings.Title(cat))
 	}
 }
 
-func (p *Plugin) renderHomeScreen(_ context.Context, state MenuState) *ui.Screen {
-	screen := ui.NewScreen("settings:home", "⚙️ GoUltroid Settings Dashboard",
-		"Welcome to the interactive configuration dashboard.\nSelect a category below to view and modify settings:\n")
+func (p *Plugin) renderHomeScreen(ctx context.Context, state MenuState) *ui.Screen {
+	screen := ui.NewScreen("settings:home", "⚙️ "+p.tr(ctx, state, "settings.dashboard.title"),
+		p.tr(ctx, state, "settings.dashboard.welcome"))
 	var body strings.Builder
-	body.WriteString("Available settings categories:\n\n")
+	body.WriteString(p.tr(ctx, state, "settings.dashboard.categories") + "\n\n")
 	for _, cat := range p.service.Registry().Categories() {
-		body.WriteString(fmt.Sprintf("• %s — <code>%s</code>\n", ui.EscapeHTML(settingsCategoryLabel(cat)), ui.EscapeHTML(cat)))
+		body.WriteString(fmt.Sprintf("• %s — <code>%s</code>\n", ui.EscapeHTML(p.settingsCategoryLabel(ctx, state, cat)), ui.EscapeHTML(cat)))
 	}
-	body.WriteString("\n<i>Inline buttons are disabled. Pass a category name to the settings command to browse its values.</i>")
+	body.WriteString("\n<i>" + ui.EscapeHTML(p.tr(ctx, state, "settings.dashboard.inline_disabled")) + "</i>")
 	screen.Body = body.String()
 	return screen
 }
 
 func (p *Plugin) renderCategoryScreen(ctx context.Context, state MenuState) *ui.Screen {
 	defs := p.service.Registry().ListByCategory(state.Category)
-	title := fmt.Sprintf("⚙️ Settings: %s", strings.Title(state.Category))
+	title := "⚙️ " + p.tr(ctx, state, "settings.category.title", strings.Title(state.Category))
 	if len(defs) == 0 {
-		return ui.NewScreen("settings:cat", title, "No settings configured for this category.")
+		return ui.NewScreen("settings:cat", title, p.tr(ctx, state, "settings.category.none"))
 	}
 
 	pageSize := 5
@@ -240,8 +249,8 @@ func (p *Plugin) renderCategoryScreen(ctx context.Context, state MenuState) *ui.
 	}
 
 	var body strings.Builder
-	body.WriteString(fmt.Sprintf("Category: <b>%s</b> | Scope: <b>%s</b>\n\n",
-		ui.EscapeHTML(strings.Title(state.Category)), ui.EscapeHTML(string(state.Scope))))
+	body.WriteString(p.tr(ctx, state, "settings.category.scope",
+		ui.EscapeHTML(strings.Title(state.Category)), ui.EscapeHTML(string(state.Scope))) + "\n\n")
 	for _, def := range pagedDefs {
 		currentVal, _ := p.service.Resolve(ctx, state.OwnerID, state.ScopeID, def.Namespace, def.Key)
 		body.WriteString(fmt.Sprintf("• <b>%s</b> (<code>%s:%s</code>)\n  Val: <code>%s</code> | <i>%s</i>\n",
@@ -249,9 +258,9 @@ func (p *Plugin) renderCategoryScreen(ctx context.Context, state MenuState) *ui.
 			ui.EscapeHTML(currentVal), ui.EscapeHTML(def.Description)))
 	}
 	if totalPages > 1 {
-		body.WriteString(fmt.Sprintf("\nPage <b>%d / %d</b>. Pass a page number as the second argument to browse more settings.\n", state.Page, totalPages))
+		body.WriteString("\n" + p.tr(ctx, state, "settings.category.page", state.Page, totalPages) + "\n")
 	}
-	body.WriteString("\n<i>Inline buttons are disabled. Use the config command to change values.</i>")
+	body.WriteString("\n<i>" + ui.EscapeHTML(p.tr(ctx, state, "settings.category.use_config")) + "</i>")
 	return ui.NewScreen("settings:cat", title, body.String())
 }
 
@@ -271,41 +280,49 @@ func (p *Plugin) renderSettingDetailScreen(ctx context.Context, state MenuState)
 	currentVal, _ := p.service.Resolve(ctx, state.OwnerID, state.ScopeID, ns, key)
 	originBadge := p.settingOriginBadge(ctx, state, ns, key)
 	body := fmt.Sprintf(
-		"<b>%s</b>\n%s\n\n<b>Type:</b> <code>%s</code>\n<b>Current Value:</b> <code>%s</code>\n<b>Origin:</b> %s\n<b>Default:</b> <code>%s</code>\n<b>Scope:</b> <code>%s</code>\n",
-		ui.EscapeHTML(def.Title), ui.EscapeHTML(def.Description), def.Type,
-		ui.EscapeHTML(currentVal), originBadge, ui.EscapeHTML(def.DefaultValue), state.Scope,
+		"<b>%s</b>\n%s\n\n<b>%s:</b> <code>%s</code>\n<b>%s:</b> <code>%s</code>\n<b>%s:</b> %s\n<b>%s:</b> <code>%s</code>\n<b>%s:</b> <code>%s</code>\n",
+		ui.EscapeHTML(def.Title), ui.EscapeHTML(def.Description),
+		ui.EscapeHTML(p.tr(ctx, state, "settings.detail.type")), def.Type,
+		ui.EscapeHTML(p.tr(ctx, state, "settings.detail.current")), ui.EscapeHTML(currentVal),
+		ui.EscapeHTML(p.tr(ctx, state, "settings.detail.origin")), originBadge,
+		ui.EscapeHTML(p.tr(ctx, state, "settings.detail.default")), ui.EscapeHTML(def.DefaultValue),
+		ui.EscapeHTML(p.tr(ctx, state, "settings.detail.scope")), state.Scope,
 	)
 	return ui.NewScreen("settings:detail", fmt.Sprintf("⚙️ %s (%s:%s)", def.Title, ns, key), body)
 }
 
-func (p *Plugin) settingOriginBadge(ctx context.Context, state MenuState, ns, key string) string {
+func (p *Plugin) settingOriginKey(ctx context.Context, state MenuState, ns, key string) string {
 	if state.Scope == settings.ScopeChat && state.ScopeID != 0 {
 		if explicit, _ := p.service.Get(ctx, settings.ScopeChat, state.ScopeID, ns, key); explicit != nil {
-			return "💬 Chat Override"
+			return "settings.origin.chat_override"
 		}
 	}
 	if state.Scope == settings.ScopeUser || state.OwnerID != 0 {
 		if explicit, _ := p.service.Get(ctx, settings.ScopeUser, state.OwnerID, ns, key); explicit != nil {
-			return "👤 User Override"
+			return "settings.origin.user_override"
 		}
 	}
 	if explicit, _ := p.service.Get(ctx, settings.ScopeGlobal, 0, ns, key); explicit != nil {
 		if state.Scope != settings.ScopeGlobal {
-			return "🌐 Inherited from Global"
+			return "settings.origin.inherited_global"
 		}
-		return "🌐 Global Setting"
+		return "settings.origin.global"
 	}
-	return "⚙️ Schema Default"
+	return "settings.origin.default"
 }
 
-func (p *Plugin) nextScope(state MenuState) (settings.SettingScope, int64, string) {
+func (p *Plugin) settingOriginBadge(ctx context.Context, state MenuState, ns, key string) string {
+	return p.tr(ctx, state, p.settingOriginKey(ctx, state, ns, key))
+}
+
+func (p *Plugin) nextScope(ctx context.Context, state MenuState) (settings.SettingScope, int64, string) {
 	if state.Scope == settings.ScopeGlobal {
-		return settings.ScopeChat, state.ChatID, "Scope: 🌐 Global [Click to Chat]"
+		return settings.ScopeChat, state.ChatID, p.tr(ctx, state, "settings.scope.global_to_chat")
 	}
 	if state.Scope == settings.ScopeChat {
-		return settings.ScopeUser, state.OwnerID, "Scope: 💬 Chat [Click to User]"
+		return settings.ScopeUser, state.OwnerID, p.tr(ctx, state, "settings.scope.chat_to_user")
 	}
-	return settings.ScopeGlobal, 0, "Scope: 👤 User [Click to Global]"
+	return settings.ScopeGlobal, 0, p.tr(ctx, state, "settings.scope.user_to_global")
 }
 
 // applySettingMutation is the transport-neutral settings mutation boundary used
