@@ -2,10 +2,44 @@
 
 Date: 2026-09-27
 Branch: `test-next`
-Current audited implementation baseline after P2-A acceptance: `0b3dac3b45e8b1117657c9fafd8a96a03ffe4fa7` — `test(architecture): make p2-a contract fence format-stable`
-Purpose: continue refinement from **P2-B** through final **P4 closure** after P2-A collapsed plugin message-hook registrar capabilities into one explicit shared contract.
+Current audited implementation baseline after P2-B acceptance: `0fd0d08314afe0689486aecd7ca5c507475ac3f6` — `test(localization): close common userbot p2-b gaps`
+Purpose: continue refinement from **P2-C** through final **P4 closure** after P2-B unified common userbot UX with the existing EN/ID localization authority.
 
 Authority rule: **always refresh current HEAD and current source first. Source/tests win over this handoff if the branch has moved.**
+
+## 2026-09-27 P2-B closure update
+
+P2-B is **CLOSED**. The branch already contained a substantial P2-B implementation when this continuation began, so the phase was first re-audited against current HEAD rather than replayed from the roadmap. Existing work had already centralized locale binding, resolved userbot locale per invocation from the canonical `ui:locale` setting hierarchy, added EN/ID common Help/Settings/Downloader vocabulary, reused the same vocabulary in Assistant surfaces, removed manual Assistant locale branches, and added initial authority fences.
+
+This continuation closed the remaining common-userbot gaps in Settings CLI, Admin/moderation, Media, and Profile. Those surfaces now resolve user-visible common UX through the invocation-local `core.Context` translator or the existing explicit locale helper. No localization dependency was introduced into `internal/presentation`, and metrics remain localization-independent.
+
+Canonical authority at closure:
+
+```text
+locale setting authority     settings.Service / ui:locale
+locale normalization         localization.CanonicalLocale
+per-invocation resolution    localization.ResolveLocale
+per-invocation translator    localization.Bind
+built-in fallback            English
+built-in locales             en / id
+presentation                 localization-agnostic
+```
+
+The userbot catalog has **136 English keys and 136 Indonesian keys with zero parity mismatch**. Representative Settings/Admin/Media/Profile translations have explicit regression coverage. Standalone plugin tests now bind the canonical English Localizer so their fixtures match production command wiring instead of falling back to raw translation keys.
+
+Pre-existing P2-B chain discovered at phase refresh:
+
+`50b42ea080` -> `3c8288b58c` -> `370dd50585` -> `be3c0f85b9` -> `c9b3f6ddba` -> `8b5bcdab36` -> `86c67b7ec3` -> `4044243dce` -> `1fa5f46c4d` -> `b0f7721b74` -> `40ee5eb6b0` -> `83fe7597d7` -> `28fac5ceae`.
+
+Continuation/closure chain:
+
+`27bd75d5c9` Settings CLI -> `f290a5f703` Admin -> `e9f9a0051d` Media -> `3484891f4e` Profile -> `005944d883` production-like localized test fixtures -> `0fd0d08314` final architecture/parity fences.
+
+No CI was inspected. A complete executable checkout was still unavailable from the container, so this continuation does **not** claim `gofmt`, `go build`, `go test`, `go vet`, race, or benchmark execution. The Go source is syntactically inspected through current GitHub source/diffs and regression fences, but test struct literals touched by the connector have not been locally reformatted with `gofmt`.
+
+See `docs/design/goultroid-refinement-p2b-localization.md`.
+
+**NEXT = P2-C — repo-wide response/error modernization, only after explicit user confirmation.**
 
 ## 2026-09-27 P2-A closure update
 
@@ -920,35 +954,62 @@ Stop and wait for explicit user confirmation before P2-B.
 
 ---
 
-# 14. P2-B — expand localization into common userbot UX
+# 14. P2-B — expand localization into common userbot UX — CLOSED
 
-Status: NOT STARTED here.
+Final code acceptance baseline: `0fd0d08314afe0689486aecd7ca5c507475ac3f6`.
 
-Use the existing localization authority only.
-
-Recommended order:
+P2-B reuses the existing localization authority rather than creating another locale registry or presentation layer. The final model is:
 
 ```text
-common navigation
-common status/error/success/progress
-usage/help templates
-Help
-Settings
-Downloader
-admin/moderation
-media/profile
-plugin-specific copy
+settings.Service ui:locale
+        ↓
+localization.ResolveLocale(userID, chatID)
+        ↓
+localization.Bind(shared Localizer, locale)
+        ↓
+core.Context.Localizer
+        ↓
+ctx.T(key, args...)
 ```
 
-Do not make `internal/presentation` depend on localization/global state.
+Interactive surfaces that retain locale in bounded interaction state continue to use the existing explicit `localization.Translate(locale, ...)` helper. Assistant locale selection uses the same `ui:locale` identity and resolver.
+
+Closed common UX surfaces:
+
+```text
+common navigation/status vocabulary
+Help
+Settings dashboard/native interaction
+Settings CLI
+Downloader interactive lifecycle
+Admin/moderation
+Media
+Profile/contacts/dialogs
+Assistant shared navigation/settings/help vocabulary
+```
 
 Acceptance:
 
-- required EN/ID key parity;
-- deterministic fallback;
-- current settings authority selects locale;
-- no dynamic metric-label localization;
-- avoid duplicate native/Assistant copy where reasonable.
+- English remains the deterministic default/fallback;
+- locale is selected by the existing settings hierarchy;
+- EN/ID built-in catalog parity is enforced;
+- current userbot-specific catalog parity is 136/136;
+- `internal/presentation` imports neither localization nor settings;
+- metrics do not depend on localization;
+- no locale-specific worker/ticker/cache/registry was added;
+- no dynamic metric-label localization was introduced;
+- common Help/Settings/Downloader copy is shared with Assistant where appropriate;
+- Settings/Admin/Media/Profile hardcoded residuals identified by the P2-B audit are removed;
+- standalone unit-test contexts for these localized surfaces bind the English canonical Localizer;
+- architecture fences prevent the selected common UX literals and localization authority from drifting back.
+
+P2-B deliberately does **not** attempt P2-C work. Raw/internal error exposure that still exists in production paths belongs to the next response/error modernization phase and must not be conflated with localization.
+
+Verification constraint: no executable checkout was available in this environment, so no local Go command is claimed. CI was not inspected.
+
+P2-B: **CLOSED**.
+
+Stop and wait for explicit user confirmation before P2-C.
 
 ---
 
@@ -1322,18 +1383,20 @@ internal/taskengine/
 
 Start with:
 
-> Refresh `test-next` HEAD and current source. P1-F is CLOSED through P1-F5 and P2-A is CLOSED. Continue **P2-B — expand localization into common userbot UX** only. Audit the existing localization service, locale selection/fallback, EN/ID catalog coverage, and current duplicated common UX strings before changing production behavior. Reuse the existing localization authority; do not make `internal/presentation` depend on localization/global state and do not create a second localization registry. Migrate common navigation/status/error/success/progress/usage copy in reviewable scope, preserve deterministic fallback and settings-owned locale selection, add regression/architecture coverage, then STOP before P2-C. Run gofmt/build/tests when an executable checkout is available; do not claim commands that did not run. Do not check CI unless explicitly requested.
+> Refresh `test-next` HEAD and current source. P1-F is CLOSED through P1-F5, P2-A is CLOSED, and P2-B is CLOSED. Continue **P2-C — repo-wide response/error modernization** only. Re-audit current production code for raw internal error exposure rather than trusting historical grep results. Preserve the P0-B typed user-facing error boundary and semantic response helpers; do not change mutation/RPC/resource semantics merely to rewrite copy. Build a temporary exact allowlist for existing unsafe patterns, migrate real production debt to safe semantic messages, shrink the allowlist as debt closes, add architecture/regression coverage that blocks new raw-error exposure, and STOP before P2-D. Run gofmt/build/tests when an executable checkout is available; do not claim commands that did not run. Do not check CI unless explicitly requested.
 
 Important baseline:
 
 ```text
 P1-F: CLOSED
 P2-A: CLOSED
-HookRegistrar capability interfaces: collapsed to one RegisterMessageHook contract
-core.MessageHookRegistration: canonical shared registration data
-canonical production message hooks: AFK/Blacklist/Filters/PMPermit/UserLog
-active production raw hook implementations: 0
-NEXT executable phase: P2-B
+P2-B: CLOSED
+locale authority: settings ui:locale -> ResolveLocale -> Bind
+fallback locale: en
+built-in locale parity: en/id
+common localized surfaces: Help/Settings/Downloader/Admin/Media/Profile + shared Assistant UX
+presentation localization dependency: none
+NEXT executable phase: P2-C
 ```
 
 ---
@@ -1365,6 +1428,6 @@ At that point Goultroid returns to ordinary product development instead of archi
 ## One-line handoff
 
 ```text
-P1-F CLOSED through P1-F5; P2-A CLOSED at code baseline 0b3dac3b with one shared MessageHookRegistration/HookRegistrar contract and preserved canonical/raw lifecycle semantics.
-NEXT = P2-B localization only -> STOP before P2-C.
+P1-F CLOSED through P1-F5; P2-A CLOSED; P2-B CLOSED at code baseline 0fd0d083 with canonical settings-owned EN/ID localization across common userbot UX.
+NEXT = P2-C response/error modernization only -> STOP before P2-D.
 ```
