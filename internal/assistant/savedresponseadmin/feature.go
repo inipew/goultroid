@@ -620,7 +620,7 @@ func (f *Feature) applyCreate(ctx *orchestration.Context, s state, input string)
 	}
 	ref, err := parseReference(fields[1:])
 	if err != nil {
-		return f.rearm(ctx, s, err.Error())
+		return f.rearm(ctx, s, "referensi tidak valid; gunakan format provider scope_id key")
 	}
 	created, err := f.bindings.Create(ctx.Context(), savedresponse.SurfaceBinding{
 		Surface: s.Surface, Alias: fields[0], Reference: ref, Enabled: true,
@@ -632,7 +632,7 @@ func (f *Feature) applyCreate(ctx *orchestration.Context, s state, input string)
 		case errors.Is(err, savedresponse.ErrBindingExists):
 			return f.rearm(ctx, s, "alias sudah ada pada surface ini")
 		default:
-			return f.rearm(ctx, s, err.Error())
+			return f.rearm(ctx, s, "operasi SavedResponse gagal; silakan coba lagi")
 		}
 	}
 	s.Selected = created.Alias
@@ -645,7 +645,7 @@ func (f *Feature) applyCreate(ctx *orchestration.Context, s state, input string)
 func (f *Feature) applyEdit(ctx *orchestration.Context, s state, input string) error {
 	ref, err := parseReference(strings.Fields(input))
 	if err != nil {
-		return f.rearm(ctx, s, err.Error())
+		return f.rearm(ctx, s, "referensi tidak valid; gunakan format provider scope_id key")
 	}
 	current, err := f.bindings.Get(ctx.Context(), s.Surface, s.Selected)
 	if err != nil {
@@ -677,7 +677,7 @@ func (f *Feature) applyEdit(ctx *orchestration.Context, s state, input string) e
 			s.Wizard = ""
 			return f.renderDetail(ctx, s, *current)
 		default:
-			return f.rearm(ctx, s, err.Error())
+			return f.rearm(ctx, s, "operasi SavedResponse gagal; silakan coba lagi")
 		}
 	}
 	s.Revision = updated.Revision
