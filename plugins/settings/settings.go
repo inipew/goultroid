@@ -81,6 +81,7 @@ type Plugin struct {
 	logger     *zap.Logger
 	setUC      *usecase.SetSettingUseCase
 	resetUC    *usecase.ResetSettingUseCase
+	native     nativeRuntimeState
 }
 
 // New creates a new settings plugin instance.
@@ -190,6 +191,10 @@ func (p *Plugin) handleSettingsCommand(ctx *core.Context) error {
 	useButtons, err := p.service.ResolveBool(ctx.Ctx, ctx.SenderID(), ctx.ChatID(), "ui", "inline_buttons")
 	if err != nil {
 		p.logger.Debug("settings: resolve inline button preference failed", zap.Error(err))
+	}
+
+	if useButtons && !ctx.IsAssistant() {
+		return p.openNativeSettings(ctx, state)
 	}
 
 	screen := p.renderScreenMode(ctx.Ctx, state, useButtons)
@@ -520,38 +525,39 @@ func (p *Plugin) storeState(st MenuState) string {
 	return p.stateStore.Store(st, st.OwnerID, 15*time.Minute)
 }
 
-// applySettingAction encapsulates setting mutation logic (toggle, step, dur, select, reset)
-// for both typed Target and backward-compatible Selected state formats.
-// Uses use-case layer so command and callback share the same validation path.
-func (p *Plugin) applySettingAction(ctx *callback.CallbackContext, state *MenuState, action string) error {
+// applySettingMutation is the transport-neutral settings mutation boundary used
+// by both legacy compatibility callbacks and the native a2 interaction adapter.
+func (p *Plugin) applySettingMutation(ctx context.Context, actorID int64, state *MenuState, action string) error {
 	if p.setUC == nil {
 		p.setUC = &usecase.SetSettingUseCase{Service: p.service}
 	}
 	if p.resetUC == nil {
 		p.resetUC = &usecase.ResetSettingUseCase{Service: p.service}
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	ns, key := state.GetTarget()
 	if ns == "" || key == "" {
 		return nil
 	}
+	if err := state.ValidateScope(); err != nil {
+		return err
+	}
 
 	switch action {
 	case callback.ActionToggle:
-		currentVal, _ := p.service.Resolve(ctx.Ctx, state.OwnerID, state.ScopeID, ns, key)
+		currentVal, err := p.service.Resolve(ctx, state.OwnerID, state.ScopeID, ns, key)
+		if err != nil {
+			return err
+		}
 		newVal := "true"
-		if strings.ToLower(currentVal) == "true" {
+		if strings.EqualFold(currentVal, "true") {
 			newVal = "false"
 		}
-		if err := state.ValidateScope(); err != nil {
-			return ui.AnswerErrorToast(ctx, "Invalid scope: "+err.Error())
-		}
-		if err := p.setUC.Execute(ctx.Ctx, state.Scope, state.ScopeID, ns, key, newVal, ctx.UserID); err != nil {
-			return ui.AnswerErrorToast(ctx, ui.MapUserErrorMessage(err))
-		}
+		return p.setUC.Execute(ctx, state.Scope, state.ScopeID, ns, key, newVal, actorID)
+
 	case callback.ActionStep, callback.ActionDuration, callback.ActionSelect, callback.ActionSet:
-		if err := state.ValidateScope(); err != nil {
-			return ui.AnswerErrorToast(ctx, "Invalid scope: "+err.Error())
-		}
 		targetVal := state.ActionValue
 		if targetVal == "" {
 			parts := strings.Split(state.Selected, ":")
@@ -559,16 +565,29 @@ func (p *Plugin) applySettingAction(ctx *callback.CallbackContext, state *MenuSt
 				targetVal = parts[2]
 			}
 		}
-		if targetVal != "" {
-			if err := p.setUC.Execute(ctx.Ctx, state.Scope, state.ScopeID, ns, key, targetVal, ctx.UserID); err != nil {
-				return ui.AnswerErrorToast(ctx, ui.MapUserErrorMessage(err))
-			}
-			state.SetTarget(ns, key)
+		if targetVal == "" {
+			return nil
 		}
+		if err := p.setUC.Execute(ctx, state.Scope, state.ScopeID, ns, key, targetVal, actorID); err != nil {
+			return err
+		}
+		state.SetTarget(ns, key)
+		return nil
+
 	case callback.ActionReset:
-		if err := p.resetUC.Execute(ctx.Ctx, state.Scope, state.ScopeID, ns, key, ctx.UserID); err != nil {
-			return ui.AnswerErrorToast(ctx, ui.MapUserErrorMessage(err))
-		}
+		return p.resetUC.Execute(ctx, state.Scope, state.ScopeID, ns, key, actorID)
+	}
+	return nil
+}
+
+// applySettingAction retains the legacy callback transport as a compatibility
+// reader for already-issued v1 buttons. New native Settings renders use a2.
+func (p *Plugin) applySettingAction(ctx *callback.CallbackContext, state *MenuState, action string) error {
+	if ctx == nil {
+		return fmt.Errorf("settings callback context unavailable")
+	}
+	if err := p.applySettingMutation(ctx.Ctx, ctx.UserID, state, action); err != nil {
+		return ui.AnswerErrorToast(ctx, ui.MapUserErrorMessage(err))
 	}
 	return nil
 }

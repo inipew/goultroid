@@ -249,6 +249,7 @@ func TestPlugin_DashboardRender(t *testing.T) {
 
 	ctx := &core.Context{
 		Ctx:     context.Background(),
+		Source:  core.ExecutionAssistant,
 		Message: &core.Message{ID: 1, SenderID: 12345},
 		Sender:  &core.User{ID: 12345},
 		Chat:    &core.Chat{ID: -100123},
