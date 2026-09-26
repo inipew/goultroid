@@ -183,7 +183,7 @@ func handleNativeCommand(ctx *core.Context, expression string) error {
 	}
 	value, err := evaluateExpression(expression)
 	if err != nil {
-		return ctx.Error("Invalid expression: " + core.EscapeHTML(err.Error()))
+		return ctx.Fail(err, "Invalid expression.")
 	}
 	return ctx.Result(
 		"🧮 <b>Calculator</b>\n\n<code>" + core.EscapeHTML(expression) + "</code> = <b>" +
@@ -199,7 +199,7 @@ func (p *Plugin) handleAction(ctx *orchestration.Context, actionID string) error
 	}
 	next, notice, err := applyAction(expression, actionID)
 	if err != nil {
-		return ctx.Answer(err.Error(), true)
+		return ctx.Answer("Invalid calculator input.", true)
 	}
 	if notice != "" {
 		if err := ctx.Answer(notice, false); err != nil {
