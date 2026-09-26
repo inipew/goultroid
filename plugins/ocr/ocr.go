@@ -194,7 +194,7 @@ func (p *Plugin) handle(ctx *core.Context) error {
 		return ctx.Status("Unsupported OCR language. Use a valid OCR.Space language code such as eng, ind, jpn, kor, rus, or vie.")
 	}
 	if err := imageguard.ValidateKnown(reply.Media.Size, reply.Media.Width, reply.Media.Height, ocrImagePolicy); err != nil {
-		return ctx.Error(fmt.Sprintf("Image rejected by safety limits: %s", core.EscapeHTML(err.Error())))
+		return ctx.Fail(err, "Image rejected by safety limits.")
 	}
 
 	_ = ctx.Progress("OCR image and text extraction")
