@@ -138,14 +138,14 @@ func (p *Plugin) handle(ctx *core.Context) error {
 	_ = ctx.Progress("Searching Wikipedia for <code>" + core.EscapeHTML(query) + "</code>...")
 	page, err := p.search(ctx.Ctx, query)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Wikipedia search failed: %v", err))
+		return ctx.Fail(err, "Wikipedia search failed.")
 	}
 	if page == "" {
 		return ctx.Status("No Wikipedia article found for that query.")
 	}
 	summary, err := p.summary(ctx.Ctx, page)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Wikipedia lookup failed: %v", err))
+		return ctx.Fail(err, "Wikipedia lookup failed.")
 	}
 	text := strings.TrimSpace(summary.Extract)
 	if text == "" {
