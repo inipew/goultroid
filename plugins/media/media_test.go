@@ -9,6 +9,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/services/localization"
 	mediaSvc "github.com/inipew/goultroid/internal/services/media"
 	"github.com/inipew/goultroid/internal/services/storage"
 )
@@ -211,7 +212,7 @@ func TestClassifyConvertFormat(t *testing.T) {
 
 func TestConvertRejectsUnsupportedFormatBeforeDownload(t *testing.T) {
 	svc := &mockService{}
-	ctx := &core.Context{
+	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale),
 		Ctx:     context.Background(),
 		PeerID:  &tg.InputPeerChat{ChatID: 100},
 		Message: &core.Message{ID: 1, IsOutgoing: true, Media: &core.MediaInfo{Type: "video", Location: &tg.InputDocumentFileLocation{}}},
@@ -232,7 +233,7 @@ func TestConvertRejectsUnsupportedFormatBeforeDownload(t *testing.T) {
 
 func TestSendAssetPreservesMediaArgumentOrder(t *testing.T) {
 	svc := &mockService{}
-	ctx := &core.Context{
+	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale),
 		Ctx:    context.Background(),
 		PeerID: &tg.InputPeerChat{ChatID: 100},
 		Svc:    svc,
@@ -257,7 +258,7 @@ func TestSendAssetPreservesMediaArgumentOrder(t *testing.T) {
 }
 
 func TestSendAssetRejectsMissingAsset(t *testing.T) {
-	ctx := &core.Context{Ctx: context.Background(), PeerID: &tg.InputPeerChat{ChatID: 100}, Svc: &mockService{}}
+	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale),Ctx: context.Background(), PeerID: &tg.InputPeerChat{ChatID: 100}, Svc: &mockService{}}
 	if err := sendAsset(ctx, "video", nil, ""); err == nil {
 		t.Fatal("expected nil asset to be rejected")
 	}
@@ -269,7 +270,7 @@ func TestSendAssetRejectsMissingAsset(t *testing.T) {
 func TestMediaInfo_NoMedia(t *testing.T) {
 	p := New()
 	svc := &mockService{}
-	ctx := &core.Context{
+	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale),
 		Ctx:     context.Background(),
 		PeerID:  &tg.InputPeerChat{ChatID: 100},
 		Message: &core.Message{ID: 1, Text: ".mediainfo"},
@@ -288,7 +289,7 @@ func TestMediaInfo_NoMedia(t *testing.T) {
 func TestMediaInfo_WithDirectMedia(t *testing.T) {
 	p := New()
 	svc := &mockService{}
-	ctx := &core.Context{
+	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale),
 		Ctx:    context.Background(),
 		PeerID: &tg.InputPeerChat{ChatID: 100},
 		Message: &core.Message{
@@ -331,7 +332,7 @@ func TestMediaInfo_WithDirectMedia(t *testing.T) {
 func TestMediaInfo_WithRepliedMedia(t *testing.T) {
 	p := New()
 	svc := &mockService{}
-	ctx := &core.Context{
+	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale),
 		Ctx:    context.Background(),
 		PeerID: &tg.InputPeerChat{ChatID: 100},
 		Message: &core.Message{
@@ -357,7 +358,7 @@ func TestMediaInfo_WithRepliedMedia(t *testing.T) {
 func TestExtractAudio_NoMedia(t *testing.T) {
 	p := New()
 	svc := &mockService{}
-	ctx := &core.Context{
+	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale),
 		Ctx:     context.Background(),
 		PeerID:  &tg.InputPeerChat{ChatID: 100},
 		Message: &core.Message{ID: 1, Text: ".extractaudio"},
@@ -376,7 +377,7 @@ func TestExtractAudio_NoMedia(t *testing.T) {
 func TestExtractAudio_Photo(t *testing.T) {
 	p := New()
 	svc := &mockService{}
-	ctx := &core.Context{
+	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale),
 		Ctx:    context.Background(),
 		PeerID: &tg.InputPeerChat{ChatID: 100},
 		Message: &core.Message{
@@ -440,7 +441,7 @@ func TestFormatBytes(t *testing.T) {
 func TestMediaInfo_EmptyTypeNoPanic(t *testing.T) {
 	p := New()
 	svc := &mockService{}
-	ctx := &core.Context{
+	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale),
 		Ctx:    context.Background(),
 		PeerID: &tg.InputPeerChat{ChatID: 100},
 		Message: &core.Message{
@@ -475,7 +476,7 @@ func TestMediaInfo_EmptyTypeNoPanic(t *testing.T) {
 func TestExtractAudio_MediaTooLarge(t *testing.T) {
 	p := New()
 	svc := &mockService{}
-	ctx := &core.Context{
+	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale),
 		Ctx:    context.Background(),
 		PeerID: &tg.InputPeerChat{ChatID: 100},
 		Message: &core.Message{
@@ -503,7 +504,7 @@ func TestExtractAudio_MediaTooLarge(t *testing.T) {
 func TestNewCommands_NoMedia(t *testing.T) {
 	p := New()
 	svc := &mockService{}
-	ctx := &core.Context{
+	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale),
 		Ctx:     context.Background(),
 		PeerID:  &tg.InputPeerChat{ChatID: 100},
 		Message: &core.Message{ID: 1},

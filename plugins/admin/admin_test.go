@@ -8,6 +8,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/services/localization"
 )
 
 type mockService struct {
@@ -83,7 +84,7 @@ func (m *mockService) PurgeMessagesSafe(ctx context.Context, peer tg.InputPeerCl
 }
 
 func newAdminTestContext(svc *mockService) *core.Context {
-	return &core.Context{
+	return &core.Context{Localizer: localization.New(localization.DefaultLocale),
 		Ctx:      context.Background(),
 		Sender:   &core.User{ID: 2002},
 		Chat:     &core.Chat{ID: -100123456, Type: "supergroup"},

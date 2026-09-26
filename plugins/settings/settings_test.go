@@ -9,6 +9,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/services/localization"
 	"github.com/inipew/goultroid/internal/settings"
 )
 
@@ -238,7 +239,7 @@ func TestPlugin_DashboardRender(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx := &core.Context{
+	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale),
 		Ctx:     context.Background(),
 		Source:  core.ExecutionAssistant,
 		Message: &core.Message{ID: 1, SenderID: 12345},
@@ -284,7 +285,7 @@ func TestPlugin_DashboardRender(t *testing.T) {
 func TestPlugin_CLIConfig(t *testing.T) {
 	p, _, tgSvc := setupTestPlugin(t)
 
-	ctx := &core.Context{
+	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale),
 		Ctx:     context.Background(),
 		Message: &core.Message{ID: 1, SenderID: 12345},
 		Sender:  &core.User{ID: 12345},
@@ -352,7 +353,7 @@ func TestPlugin_CLIConfig(t *testing.T) {
 
 func TestPlugin_CLIConfigOutgoingUsesSemanticEdit(t *testing.T) {
 	p, _, tgSvc := setupTestPlugin(t)
-	ctx := &core.Context{
+	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale),
 		Ctx:     context.Background(),
 		Message: &core.Message{ID: 77, SenderID: 12345, IsOutgoing: true},
 		Sender:  &core.User{ID: 12345},

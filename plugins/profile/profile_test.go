@@ -7,6 +7,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/services/localization"
 )
 
 type mockService struct {
@@ -140,7 +141,7 @@ func TestProfile_Metadata(t *testing.T) {
 func TestHandleMe(t *testing.T) {
 	p := New()
 	svc := &mockService{}
-	ctx := &core.Context{
+	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale),
 		Ctx:    context.Background(),
 		Svc:    svc,
 		PeerID: &tg.InputPeerSelf{},
@@ -170,7 +171,7 @@ func TestHandleSetBio(t *testing.T) {
 	svc := &mockService{}
 
 	// 1. Empty bio
-	ctx := &core.Context{
+	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale),
 		Ctx:     context.Background(),
 		Svc:     svc,
 		RawArgs: "   ",
@@ -207,7 +208,7 @@ func TestHandleSetName(t *testing.T) {
 	svc := &mockService{}
 
 	// 1. Empty args
-	ctx := &core.Context{
+	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale),
 		Ctx:    context.Background(),
 		Svc:    svc,
 		Args:   nil,
@@ -245,7 +246,7 @@ func TestHandleSetName(t *testing.T) {
 func TestHandleSetPicRejectsHostFilesystemPath(t *testing.T) {
 	p := New()
 	svc := &mockService{}
-	ctx := &core.Context{
+	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale),
 		Ctx:     context.Background(),
 		Svc:     svc,
 		Args:    []string{"/etc/passwd"},
@@ -268,7 +269,7 @@ func TestHandleDelPhoto(t *testing.T) {
 	p := New()
 	svc := &mockService{}
 
-	ctx := &core.Context{
+	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale),
 		Ctx:    context.Background(),
 		Svc:    svc,
 		Args:   []string{"2"},
@@ -282,7 +283,7 @@ func TestHandleDelPhoto(t *testing.T) {
 	if svc.deletedPhotoLimit != 2 {
 		t.Errorf("expected limit 2, got %d", svc.deletedPhotoLimit)
 	}
-	if !strings.Contains(svc.sent, "Successfully deleted 2 profile photo") {
+	if !strings.Contains(svc.sent, "Deleted 2 profile photo") {
 		t.Errorf("expected reply with deleted count, got: %s", svc.sent)
 	}
 }
@@ -291,7 +292,7 @@ func TestHandleBlockAndUnblock(t *testing.T) {
 	p := New()
 	svc := &mockService{}
 
-	ctx := &core.Context{
+	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale),
 		Ctx:      context.Background(),
 		Svc:      svc,
 		Args:     []string{"12345678"},
@@ -320,7 +321,7 @@ func TestHandleBlockAndUnblock(t *testing.T) {
 	// 3. Missing user
 	ctx.Args = nil
 	_ = p.handleBlock(ctx)
-	if !strings.Contains(svc.sent, "provide a valid user") {
+	if !strings.Contains(svc.sent, "provide a valid target") {
 		t.Errorf("expected warning for missing user, got: %s", svc.sent)
 	}
 }
@@ -334,7 +335,7 @@ func TestHandleContacts(t *testing.T) {
 		},
 	}
 
-	ctx := &core.Context{
+	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale),
 		Ctx:    context.Background(),
 		Svc:    svc,
 		PeerID: &tg.InputPeerSelf{},
@@ -361,7 +362,7 @@ func TestHandleDialogs(t *testing.T) {
 		},
 	}
 
-	ctx := &core.Context{
+	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale),
 		Ctx:    context.Background(),
 		Svc:    svc,
 		Args:   []string{"5"},
