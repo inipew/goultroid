@@ -322,6 +322,7 @@ func TestMyXLPlugin_Commands(t *testing.T) {
 
 	// 13. .myxl buy OPT-FLEX-S pulsa 0
 	ctxBuy := *baseCtx
+	ctxBuy.Source = core.ExecutionAssistant
 	ctxBuy.Args = []string{"buy", "OPT-FLEX-S", "pulsa", "0"}
 	_ = cmdMap["myxl"].Handler(&ctxBuy)
 	if !strings.Contains(svc.sent, "Konfirmasi Pembelian") {
@@ -386,13 +387,14 @@ func TestMyXLPlugin_Commands(t *testing.T) {
 
 	// 14. .beli OPT-FLEX-S qris 1000
 	ctxBeli := *baseCtx
-	ctxBeli.Args = []string{"OPT-FLEX-Q", "qris", "1000"}
+	ctxBeli.Source = core.ExecutionAssistant
+	ctxBeli.Args = []string{"OPT-FLEX-S", "qris", "1000"}
 	_ = cmdMap["beli"].Handler(&ctxBeli)
 	_ = plugin.HandleCallback(&callback.CallbackContext{
 		Ctx: ctx, Action: "buy_confirm", UserID: 1001, Service: svc,
 		Target: core.CallbackTarget{Peer: &tg.InputPeerUser{UserID: 1001}, MessageID: 10},
 		State: purchaseDraftState{
-			MSISDN: "6281912345678", OptionCode: "OPT-FLEX-Q", PackageName: "Flex Q",
+			MSISDN: "6281912345678", OptionCode: "OPT-FLEX-S", PackageName: "Flex S 10GB",
 			Price: 35000, TokenConfirmation: "CONFIRM-TOKEN-123", Method: "qris",
 			HasOverwrite: true, OverwritePrice: 1000,
 		},

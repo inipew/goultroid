@@ -87,6 +87,27 @@ func (p *Plugin) FeatureSpec() feature.Spec {
 			Surfaces:    execution.SurfaceUserbot,
 			Policy:      nativePolicy,
 		},
+		feature.Interaction{
+			ID:          nativePurchaseScreen,
+			Kind:        feature.InteractionScreen,
+			Description: "Native userbot MyXL purchase confirmation",
+			Surfaces:    execution.SurfaceUserbot,
+			Policy:      nativePolicy,
+		},
+		feature.Interaction{
+			ID:          nativePurchaseConfirmAction,
+			Kind:        feature.InteractionAction,
+			Description: "Confirm native userbot MyXL purchase",
+			Surfaces:    execution.SurfaceUserbot,
+			Policy:      nativePolicy,
+		},
+		feature.Interaction{
+			ID:          nativePurchaseCancelAction,
+			Kind:        feature.InteractionAction,
+			Description: "Cancel native userbot MyXL purchase",
+			Surfaces:    execution.SurfaceUserbot,
+			Policy:      nativePolicy,
+		},
 	)
 	return feature.Spec{
 		ID:           p.Name(),

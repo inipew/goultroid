@@ -998,7 +998,13 @@ func (p *Plugin) handleBuy(ctx *core.Context, args []string) error {
 		}
 	}
 
-	_ = ctx.Progress(fmt.Sprintf("Menyiapkan pembelian paket <code>%s</code> (metode: <code>%s</code>)...", html.EscapeString(optionCode), html.EscapeString(method)))
+	useNativePurchase := !ctx.IsAssistant()
+	if useNativePurchase && !p.nativePurchaseAvailable() {
+		return ctx.Error("Konfirmasi pembelian native a2 tidak tersedia. Transaksi tidak dijalankan.")
+	}
+	if !useNativePurchase {
+		_ = ctx.Progress(fmt.Sprintf("Menyiapkan pembelian paket <code>%s</code> (metode: <code>%s</code>)...", html.EscapeString(optionCode), html.EscapeString(method)))
+	}
 
 	intent := purchaseIntentState{
 		MSISDN:       acc.MSISDN,
@@ -1015,6 +1021,16 @@ func (p *Plugin) handleBuy(ctx *core.Context, args []string) error {
 		return ctx.Fail(err, "Gagal memuat detail paket MyXL. Silakan coba lagi.")
 	}
 
+	if useNativePurchase {
+		attempted, err := p.openNativePurchaseConfirmation(ctx, intent, quote)
+		if attempted {
+			return err
+		}
+		return ctx.Error("Konfirmasi pembelian native a2 tidak tersedia. Transaksi tidak dijalankan.")
+	}
+
+	// Compatibility only for direct Assistant command surfaces until P1-E4.
+	// Native/userbot purchase confirmations are emitted exclusively through a2.
 	if p.stateStore == nil || ctx.SenderID() <= 0 {
 		return ctx.Error("Konfirmasi pembelian tidak tersedia pada sesi ini. Transaksi tidak dijalankan.")
 	}
