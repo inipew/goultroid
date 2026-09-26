@@ -506,7 +506,7 @@ func (p *Plugin) handleSetLog(ctx *core.Context) error {
 		}
 		resolved, err := ctx.Resolver.ResolveChat(ctx.Ctx, targetRef)
 		if err != nil {
-			return ctx.Fail(err, fmt.Sprintf("Could not resolve %q.", ui.EscapeHTML(targetRef)))
+			return ctx.Fail(err, fmt.Sprintf("Could not resolve %q.", core.EscapeHTML(targetRef)))
 		}
 		switch peer := resolved.(type) {
 		case *tg.InputPeerChannel:
