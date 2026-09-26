@@ -2,10 +2,29 @@
 
 Date: 2026-09-27
 Branch: `test-next`
-Current audited implementation baseline after P1-F5 acceptance fixes: `985b2ea5de7f4b3e7f7bc326fb4ef56deba4f57e` — `fix(callback): repair p1-f5 acceptance patch markers`
-Purpose: continue refinement from **P2-A** through final **P4 closure** after P1-F5 closed the repo-wide legacy callback program; P1-F2 had no namespace migration work.
+Current audited implementation baseline after P2-A acceptance: `0b3dac3b45e8b1117657c9fafd8a96a03ffe4fa7` — `test(architecture): make p2-a contract fence format-stable`
+Purpose: continue refinement from **P2-B** through final **P4 closure** after P2-A collapsed plugin message-hook registrar capabilities into one explicit shared contract.
 
 Authority rule: **always refresh current HEAD and current source first. Source/tests win over this handoff if the branch has moved.**
+
+## 2026-09-27 P2-A closure update
+
+P2-A is **CLOSED**. The plugin message-hook registration boundary has been compressed from one base registrar plus nine capability interfaces into one explicit shared `core.MessageHookRegistration` contract and one `HookRegistrar.RegisterMessageHook(...)` method. `plugin.Manager` no longer capability-probes the registrar; raw/canonical handler shape, generation scope, structural routing, and optional state gate are registration data.
+
+The Telegram Dispatcher implements that single contract and still funnels registrations into the existing indexed `addMessageHandler` authority. No second registry, router, worker, or hot-path fan-out was introduced. Existing convenience registration methods remain compatibility APIs but are no longer capability contracts consumed by `plugin.Manager`.
+
+Canonical hooks remain preferred and continue to require `telegram.read` when the capability gate is configured. Privileged raw hooks remain supported behind `telegram.raw`. Unrouted raw compatibility hooks explicitly carry `LegacyRouting`, preserving historical scoped priority/lane behavior; routed/stateful raw hooks and all canonical hooks use explicit routing.
+
+Current production hook inventory is canonical: AFK and UserLog use canonical routed hooks; Blacklist, Filters, and PMPermit use canonical routed hooks with dynamic state gates. No active production raw hook implementation was found during the P2-A inventory.
+
+Implementation/acceptance chain:
+`ec55296b8971ed3c3cebe697dfa849e932fb69b3` -> `bb7de208c409a9a05ce5bdad6c724e654a54012d` -> `cb95dfd1a032ce8102d2e1b7d46afc0afef17361` -> `0b3dac3b45e8b1117657c9fafd8a96a03ffe4fa7`.
+
+Architecture fences now require a one-method `HookRegistrar`, prohibit the retired registrar capability interfaces and registrar type assertions, and AST-check the shared registration field set. Dispatcher tests preserve explicit routing/state/scope, cleanup, canonical/raw exclusivity, and legacy raw lane compatibility.
+
+No CI was inspected. The executable container still cannot resolve GitHub, so no full checkout was available and this session does not claim `gofmt`, `go build`, `go test`, `go vet`, race, or benchmark execution. Source-level acceptance and committed regression/architecture fences are the evidence recorded here. See `docs/design/goultroid-refinement-p2a-plugin-hook-registration.md`.
+
+**NEXT = P2-B — localization, only after explicit user confirmation.**
 
 ## 2026-09-27 P1-F5 closure update
 
@@ -69,6 +88,11 @@ f72f3e4d36a3  P1-E4 remove legacy MyXL callback stack
 41148cd5d1e2  P1-F4 legacy Router/bootstrap reclamation
 009aec2ace79  P1-F5 acceptance fixes + final fences
 985b2ea5de7f  P1-F5 acceptance patch marker repair
+
+ec55296b8971  P2-A unified message-hook registration
+bb7de208c409  P2-A patch marker repair
+cb95dfd1a032  P2-A architecture fence hardening
+0b3dac3b45e8  P2-A format-stable contract fence
 ```
 
 Earlier Assistant-optional redesign remains closed and must not be reopened without fresh regression evidence.
@@ -820,46 +844,83 @@ Stop and wait for explicit user confirmation before P2-A.
 
 ---
 
-# 13. P2-A — compress plugin hook registration API
+# 13. P2-A — compress plugin hook registration API — CLOSED
 
-Status: NOT STARTED in this refinement continuation.
+Final code acceptance baseline: `0b3dac3b45e8b1117657c9fafd8a96a03ffe4fa7`.
 
-Problem: plugin hook registration has accumulated capability-interface variants.
+P2-A audited the current registration topology rather than copying the approximate roadmap struct. Before the change, `plugin.Manager` depended on one base `HookRegistrar` plus nine optional registrar capability interfaces to negotiate:
 
-Goal: move toward one explicit registration spec, based on current source, approximately:
+```text
+raw vs canonical
+scoped vs unscoped
+routed vs legacy routing
+state-aware vs no state gate
+```
+
+The final boundary is:
 
 ```go
-type MessageHookRegistration struct {
-    Scope     tasks.ScopeIdentity
-    Priority  int
-    Routing   core.MessageHookRouting
-    StateGate func(int64) bool
-    Handler   CanonicalMessageHookHandler
+core.MessageHookRegistration {
+    Scope
+    Priority
+    Routing
+    StateGate
+    Handler
+    RawHandler
+    LegacyRouting
+}
+
+plugin.HookRegistrar {
+    RegisterMessageHook(core.MessageHookRegistration) (cleanup, error)
 }
 ```
 
-Do not copy this exact struct without refreshing source.
+Current behavior:
 
-Constraints:
+- canonical `MessageEventPlugin` is still preferred over raw compatibility;
+- canonical plugins must declare routing;
+- optional canonical state gate is copied into the registration;
+- raw compatibility remains privileged and capability-gated;
+- routed/stateful raw hooks carry explicit routing;
+- old unrouted raw hooks carry `LegacyRouting`, so Dispatcher derives the same historical lane from priority + scope;
+- plugin generation scope is always explicit in the registration;
+- register and enable/reload paths share the same `registerMessageHook` helper;
+- existing hook cleanup ownership in `plugin.Manager` is unchanged;
+- Dispatcher still stores/indexes hooks through one `addMessageHandler` implementation.
 
-- canonical normalized message handler remains default;
-- raw Telegram hooks remain privileged compatibility;
-- lifecycle scope explicit;
-- no full-plugin hot-path scan;
-- no reflection-heavy registration.
+Production inventory at closure:
 
-Acceptance:
+```text
+AFK        canonical + routed
+Blacklist  canonical + routed + state gate
+Filters    canonical + routed + state gate
+PMPermit   canonical + routed + state gate
+UserLog    canonical + routed
+raw production hook implementations found: 0
+```
 
-- materially fewer interface assertions;
-- routing unchanged;
-- reload/unregister unchanged;
-- no worker added;
-- no hot-path fan-out regression.
+Acceptance evidence:
 
-Execute as reviewable subphases if source shows multiple independent hook families.
+- nine registrar capability interfaces removed;
+- zero `registrar.(...)` capability probing in `registerMessageHook`;
+- one `HookRegistrar` method;
+- one shared registration struct;
+- direct application wiring `SetHookRegistrar(tgRuntime.dispatcher)` preserved;
+- explicit canonical/raw exclusivity validation;
+- routing/state/scope cleanup tests updated;
+- historical raw scoped feature lane has a regression test;
+- architecture fence prevents re-expansion into registrar capability interfaces;
+- no worker/ticker/cache/registry introduced by P2-A.
+
+Verification constraint remains unchanged: no executable checkout was available in this environment, so no local Go command is claimed. CI was not inspected.
+
+P2-A: **CLOSED**.
+
+Stop and wait for explicit user confirmation before P2-B.
 
 ---
 
+# 14. P2-B — expand localization into common userbot UX
 # 14. P2-B — expand localization into common userbot UX
 
 Status: NOT STARTED here.
@@ -1262,24 +1323,23 @@ internal/taskengine/
 
 Start with:
 
-> Refresh `test-next` HEAD and current source. P1-F1 is CLOSED, P1-F2 was EMPTY, P1-F3 is CLOSED, P1-F4 is CLOSED, and P1-F5 is CLOSED. Continue **P2-A — plugin hook registration simplification** only. Re-audit the current plugin/message-hook registration API, reduce capability-interface variants without changing routing/lifecycle semantics, preserve generation-scoped cleanup and canonical normalized handlers, add/update regression fences, then STOP before P2-B. Run gofmt/build/tests when an executable checkout is available; do not claim commands that did not run. Do not check CI unless explicitly requested.
+> Refresh `test-next` HEAD and current source. P1-F is CLOSED through P1-F5 and P2-A is CLOSED. Continue **P2-B — expand localization into common userbot UX** only. Audit the existing localization service, locale selection/fallback, EN/ID catalog coverage, and current duplicated common UX strings before changing production behavior. Reuse the existing localization authority; do not make `internal/presentation` depend on localization/global state and do not create a second localization registry. Migrate common navigation/status/error/success/progress/usage copy in reviewable scope, preserve deterministic fallback and settings-owned locale selection, add regression/architecture coverage, then STOP before P2-C. Run gofmt/build/tests when an executable checkout is available; do not claim commands that did not run. Do not check CI unless explicitly requested.
 
 Important baseline:
 
 ```text
-P1-F1: CLOSED
-P1-F2: EMPTY
-P1-F3: CLOSED
-P1-F4: CLOSED
-P1-F5: CLOSED
-legacy callback package/Router/Handler/StateStore/v1 authority: zero in production
-native unknown callback: noop silent ACK / otherwise expired ACK
-Assistant unknown callback: bounded dedupe + noop silent ACK / otherwise expired ACK
-NEXT executable phase: P2-A
+P1-F: CLOSED
+P2-A: CLOSED
+HookRegistrar capability interfaces: collapsed to one RegisterMessageHook contract
+core.MessageHookRegistration: canonical shared registration data
+canonical production message hooks: AFK/Blacklist/Filters/PMPermit/UserLog
+active production raw hook implementations: 0
+NEXT executable phase: P2-B
 ```
 
 ---
 
+# 24. Definition of done for the whole refinement program
 # 24. Definition of done for the whole refinement program
 
 The program is finished when:
@@ -1307,6 +1367,6 @@ At that point Goultroid returns to ordinary product development instead of archi
 ## One-line handoff
 
 ```text
-P1-F1 CLOSED; P1-F2 EMPTY; P1-F3 CLOSED; P1-F4 CLOSED; P1-F5 CLOSED at code baseline 985b2ea5 with zero production legacy callback authority and repaired native inline ingress.
-NEXT = P2-A plugin hook registration simplification only -> STOP before P2-B.
+P1-F CLOSED through P1-F5; P2-A CLOSED at code baseline 0b3dac3b with one shared MessageHookRegistration/HookRegistrar contract and preserved canonical/raw lifecycle semantics.
+NEXT = P2-B localization only -> STOP before P2-C.
 ```
