@@ -62,11 +62,35 @@ type messageHandlerIndex struct {
 }
 
 // MessageHandler is the privileged raw Telegram compatibility hook.
-type MessageHandler = func(ctx context.Context, e tg.Entities, msg *tg.Message, isCommand bool, cmdName string) error
+type MessageHandler = core.RawMessageHookHandler
 
-// CanonicalMessageHandler is the default plugin hook contract. It receives a
-// lightweight normalized envelope and no raw Telegram entity container.
-type CanonicalMessageHandler = func(ctx context.Context, message *core.MessageEnvelope) error
+// CanonicalMessageHandler is the default plugin hook contract.
+type CanonicalMessageHandler = core.CanonicalMessageHookHandler
+
+// RegisterMessageHook installs one explicit plugin hook registration.
+func (d *Dispatcher) RegisterMessageHook(registration core.MessageHookRegistration) (func(), error) {
+	hasCanonical := registration.Handler != nil
+	hasRaw := registration.RawHandler != nil
+	if hasCanonical == hasRaw {
+		return nil, errors.New("message hook registration requires exactly one canonical or raw handler")
+	}
+	if hasCanonical && registration.LegacyRouting {
+		return nil, errors.New("canonical message hook cannot use legacy routing")
+	}
+
+	routing := registration.Routing
+	if registration.LegacyRouting {
+		routing = legacyMessageHookRouting(registration.Priority, registration.Scope)
+	}
+	return d.addMessageHandler(
+		registration.Priority,
+		registration.Scope,
+		routing,
+		registration.StateGate,
+		registration.RawHandler,
+		registration.Handler,
+	), nil
+}
 
 // AddMessageHandler registers a compatibility interceptor with default
 // PriorityFeature. Unscoped feature handlers remain in the decision lane to

@@ -175,13 +175,15 @@ func (m *mockHookPlugin) MessageHookPriority() int {
 type mockHookRegistrar struct {
 	registered   int
 	unregistered int
+	last         core.MessageHookRegistration
 }
 
-func (r *mockHookRegistrar) AddPrioritizedMessageHandler(priority int, handler MessageHookHandler) func() {
+func (r *mockHookRegistrar) RegisterMessageHook(registration core.MessageHookRegistration) (func(), error) {
 	r.registered++
+	r.last = registration
 	return func() {
 		r.unregistered++
-	}
+	}, nil
 }
 
 func TestManager_HookRegistrationAndShutdown(t *testing.T) {
@@ -200,6 +202,16 @@ func TestManager_HookRegistrationAndShutdown(t *testing.T) {
 
 	if registrar.registered != 1 {
 		t.Errorf("expected 1 hook registered, got %d", registrar.registered)
+	}
+
+	if registrar.last.RawHandler == nil || registrar.last.Handler != nil {
+		t.Fatal("raw compatibility hook was not registered through the raw handler slot")
+	}
+	if !registrar.last.LegacyRouting {
+		t.Fatal("unrouted raw compatibility hook lost legacy routing semantics")
+	}
+	if registrar.last.Scope.Owner != "plugin:hook_plugin" || registrar.last.Scope.Generation == 0 {
+		t.Fatalf("unexpected hook scope: %+v", registrar.last.Scope)
 	}
 
 	if err := mgr.Shutdown(); err != nil {

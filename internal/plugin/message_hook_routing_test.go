@@ -26,36 +26,38 @@ func (p *routedHookTestPlugin) MessageHookRouting() core.MessageHookRouting {
 	}
 }
 
-type routedHookTestRegistrar struct {
-	legacyCalls int
-	routedCalls int
-	routing     core.MessageHookRouting
+type recordingHookRegistrar struct {
+	calls        int
+	registration core.MessageHookRegistration
 }
 
-func (r *routedHookTestRegistrar) AddPrioritizedMessageHandler(int, MessageHookHandler) func() {
-	r.legacyCalls++
-	return func() {}
-}
-func (r *routedHookTestRegistrar) AddPrioritizedMessageHandlerWithRouting(_ int, routing core.MessageHookRouting, _ MessageHookHandler) func() {
-	r.routedCalls++
-	r.routing = routing
-	return func() {}
+func (r *recordingHookRegistrar) RegisterMessageHook(registration core.MessageHookRegistration) (func(), error) {
+	r.calls++
+	r.registration = registration
+	return func() {}, nil
 }
 
-func TestManager_PrefersIndexedHookRouting(t *testing.T) {
+func TestManager_PrefersIndexedHookRouting(t *testing.T) {func TestManager_PrefersIndexedHookRouting(t *testing.T) {
 	mgr := NewManager(core.NewRouter("."))
-	registrar := &routedHookTestRegistrar{}
+	registrar := &recordingHookRegistrar{}
 	mgr.SetHookRegistrar(registrar)
 
 	p := &routedHookTestPlugin{dummyPlugin: dummyPlugin{name: "routed_hook"}}
 	if err := mgr.Register(p); err != nil {
 		t.Fatalf("register plugin: %v", err)
 	}
-	if registrar.routedCalls != 1 || registrar.legacyCalls != 0 {
-		t.Fatalf("registrar calls routed=%d legacy=%d, want 1/0", registrar.routedCalls, registrar.legacyCalls)
+	if registrar.calls != 1 {
+		t.Fatalf("registrar calls=%d, want 1", registrar.calls)
 	}
-	if registrar.routing.Lane != core.MessageHookDecision || len(registrar.routing.Interests) != 1 {
-		t.Fatalf("unexpected routing metadata: %+v", registrar.routing)
+	registration := registrar.registration
+	if registration.RawHandler == nil || registration.Handler != nil || registration.LegacyRouting {
+		t.Fatalf("unexpected raw routed registration: %+v", registration)
+	}
+	if registration.Routing.Lane != core.MessageHookDecision || len(registration.Routing.Interests) != 1 {
+		t.Fatalf("unexpected routing metadata: %+v", registration.Routing)
+	}
+	if registration.Scope.Owner != "plugin:routed_hook" || registration.Scope.Generation == 0 {
+		t.Fatalf("unexpected scope: %+v", registration.Scope)
 	}
 }
 
@@ -77,41 +79,30 @@ func (p *canonicalHookTestPlugin) MessageHookRouting() core.MessageHookRouting {
 	}
 }
 
-type canonicalHookTestRegistrar struct {
-	routedHookTestRegistrar
-	canonicalCalls int
-	routing        core.MessageHookRouting
-}
-
-func (r *canonicalHookTestRegistrar) AddPrioritizedCanonicalMessageHandlerWithRouting(_ int, routing core.MessageHookRouting, _ CanonicalMessageHookHandler) func() {
-	r.canonicalCalls++
-	r.routing = routing
-	return func() {}
-}
-
-func TestManager_PrefersCanonicalMessageHook(t *testing.T) {
+func TestManager_PrefersCanonicalMessageHook(t *testing.T) {func TestManager_PrefersCanonicalMessageHook(t *testing.T) {
 	mgr := NewManager(core.NewRouter("."))
-	registrar := &canonicalHookTestRegistrar{}
+	registrar := &recordingHookRegistrar{}
 	mgr.SetHookRegistrar(registrar)
 
 	p := &canonicalHookTestPlugin{dummyPlugin: dummyPlugin{name: "canonical_hook"}}
 	if err := mgr.Register(p); err != nil {
 		t.Fatalf("register canonical plugin: %v", err)
 	}
-	if registrar.canonicalCalls != 1 {
-		t.Fatalf("canonical registrar calls=%d, want 1", registrar.canonicalCalls)
+	if registrar.calls != 1 {
+		t.Fatalf("canonical registrar calls=%d, want 1", registrar.calls)
 	}
-	if registrar.legacyCalls != 0 || registrar.routedCalls != 0 {
-		t.Fatalf("legacy raw registrar was used: legacy=%d routed=%d", registrar.legacyCalls, registrar.routedCalls)
+	registration := registrar.registration
+	if registration.Handler == nil || registration.RawHandler != nil || registration.LegacyRouting {
+		t.Fatalf("unexpected canonical registration: %+v", registration)
 	}
-	if registrar.routing.Lane != core.MessageHookDecision {
-		t.Fatalf("unexpected routing: %+v", registrar.routing)
+	if registration.Routing.Lane != core.MessageHookDecision {
+		t.Fatalf("unexpected routing: %+v", registration.Routing)
 	}
 }
 
 func TestManager_RawMessageHookRequiresCapabilityWhenGateConfigured(t *testing.T) {
 	mgr := NewManager(core.NewRouter("."))
-	registrar := &routedHookTestRegistrar{}
+	registrar := &recordingHookRegistrar{}
 	mgr.SetHookRegistrar(registrar)
 	gate := NewCapabilityGate()
 	gate.SetFailClosed(true)
@@ -122,14 +113,14 @@ func TestManager_RawMessageHookRequiresCapabilityWhenGateConfigured(t *testing.T
 	if err == nil {
 		t.Fatal("expected raw hook registration to be denied without telegram.raw")
 	}
-	if registrar.routedCalls != 0 || registrar.legacyCalls != 0 {
+	if registrar.calls != 0 {
 		t.Fatal("denied raw hook reached dispatcher registrar")
 	}
 }
 
 func TestManager_RawMessageHookCapabilityCanBeExplicitlyGranted(t *testing.T) {
 	mgr := NewManager(core.NewRouter("."))
-	registrar := &routedHookTestRegistrar{}
+	registrar := &recordingHookRegistrar{}
 	mgr.SetHookRegistrar(registrar)
 	gate := NewCapabilityGate()
 	gate.SetFailClosed(true)
@@ -146,14 +137,14 @@ func TestManager_RawMessageHookCapabilityCanBeExplicitlyGranted(t *testing.T) {
 	if err := mgr.RegisterModule(context.Background(), manifest, p); err != nil {
 		t.Fatalf("register privileged raw hook: %v", err)
 	}
-	if registrar.routedCalls != 1 {
-		t.Fatalf("raw routed calls=%d, want 1", registrar.routedCalls)
+	if registrar.calls != 1 || registrar.registration.RawHandler == nil {
+		t.Fatalf("raw registration=%+v calls=%d, want one raw registration", registrar.registration, registrar.calls)
 	}
 }
 
 func TestManager_CanonicalMessageHookRequiresReadCapabilityWhenGateConfigured(t *testing.T) {
 	mgr := NewManager(core.NewRouter("."))
-	registrar := &canonicalHookTestRegistrar{}
+	registrar := &recordingHookRegistrar{}
 	mgr.SetHookRegistrar(registrar)
 	gate := NewCapabilityGate()
 	gate.SetFailClosed(true)
@@ -164,14 +155,14 @@ func TestManager_CanonicalMessageHookRequiresReadCapabilityWhenGateConfigured(t 
 	if err == nil {
 		t.Fatal("expected canonical hook registration to require telegram.read")
 	}
-	if registrar.canonicalCalls != 0 {
+	if registrar.calls != 0 {
 		t.Fatal("denied canonical hook reached dispatcher registrar")
 	}
 }
 
 func TestManager_CanonicalMessageHookReadCapabilityDeclared(t *testing.T) {
 	mgr := NewManager(core.NewRouter("."))
-	registrar := &canonicalHookTestRegistrar{}
+	registrar := &recordingHookRegistrar{}
 	mgr.SetHookRegistrar(registrar)
 	gate := NewCapabilityGate()
 	gate.SetFailClosed(true)
@@ -187,7 +178,7 @@ func TestManager_CanonicalMessageHookReadCapabilityDeclared(t *testing.T) {
 	if err := mgr.RegisterModule(context.Background(), manifest, p); err != nil {
 		t.Fatalf("register canonical hook with telegram.read: %v", err)
 	}
-	if registrar.canonicalCalls != 1 {
-		t.Fatalf("canonical registrar calls=%d, want 1", registrar.canonicalCalls)
+	if registrar.calls != 1 || registrar.registration.Handler == nil {
+		t.Fatalf("canonical registration=%+v calls=%d, want one canonical registration", registrar.registration, registrar.calls)
 	}
 }

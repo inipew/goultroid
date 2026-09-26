@@ -1,5 +1,35 @@
 package core
 
+import (
+	"context"
+
+	"github.com/gotd/td/tg"
+	"github.com/inipew/goultroid/internal/tasks"
+)
+
+// RawMessageHookHandler is the privileged Telegram compatibility hook.
+// New production hooks should prefer CanonicalMessageHookHandler.
+type RawMessageHookHandler = func(ctx context.Context, e tg.Entities, msg *tg.Message, isCommand bool, cmdName string) error
+
+// CanonicalMessageHookHandler receives the normalized, transport-light message envelope.
+type CanonicalMessageHookHandler = func(ctx context.Context, message *MessageEnvelope) error
+
+// MessageHookRegistration is the single registration contract shared by the
+// plugin manager and message dispatcher. Routing/state/scope are data rather
+// than registrar capability interfaces.
+//
+// Exactly one of Handler or RawHandler should be set. LegacyRouting exists only
+// for privileged raw compatibility hooks that predate explicit routing.
+type MessageHookRegistration struct {
+	Scope            tasks.ScopeIdentity
+	Priority         int
+	Routing          MessageHookRouting
+	StateGate        func(int64) bool
+	Handler          CanonicalMessageHookHandler
+	RawHandler       RawMessageHookHandler
+	LegacyRouting    bool
+}
+
 // MessageHookLane separates synchronous decision/interception work from
 // asynchronous feature/observability work.
 type MessageHookLane uint8

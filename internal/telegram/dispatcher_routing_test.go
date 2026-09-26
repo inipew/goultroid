@@ -126,6 +126,83 @@ func TestDispatcher_MessageRoutingMediaInterest(t *testing.T) {
 	}
 }
 
+func TestDispatcher_RegisterMessageHookContract(t *testing.T) {
+	d := NewDispatcher(core.NewRouter("."), core.NewPermissions(1, nil), nil, zap.NewNop())
+	scope := tasks.ScopeIdentity{Owner: "plugin:contract", Generation: 7}
+	stateGate := func(chatID int64) bool { return chatID == 7 }
+
+	cleanup, err := d.RegisterMessageHook(core.MessageHookRegistration{
+		Scope:     scope,
+		Priority:  PriorityFeature,
+		Routing: core.MessageHookRouting{
+			Lane: core.MessageHookEvent,
+			Interests: []core.MessageHookInterest{{
+				Directions: core.MessageDirectionIncoming,
+				Peers:      core.MessagePeerGroup,
+			}},
+		},
+		StateGate: stateGate,
+		Handler: func(context.Context, *core.MessageEnvelope) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("register canonical hook: %v", err)
+	}
+
+	decision, event := d.messageHandlersFor(&tg.Message{PeerID: &tg.PeerChat{ChatID: 7}, Message: "hello"}, false)
+	if len(decision) != 0 || len(event) != 1 {
+		t.Fatalf("lane sizes decision=%d event=%d, want 0/1", len(decision), len(event))
+	}
+	if event[0].scope != scope || event[0].stateGate == nil || !event[0].stateGate(7) || event[0].stateGate(8) {
+		t.Fatalf("registration metadata not preserved: %+v", event[0])
+	}
+	if event[0].canonicalHandler == nil || event[0].handler != nil {
+		t.Fatal("canonical/raw handler shape changed")
+	}
+	cleanup()
+
+	_, event = d.messageHandlersFor(&tg.Message{PeerID: &tg.PeerChat{ChatID: 7}, Message: "hello"}, false)
+	if len(event) != 0 {
+		t.Fatalf("cleanup left %d event handlers", len(event))
+	}
+}
+
+func TestDispatcher_RegisterMessageHookPreservesLegacyRawLane(t *testing.T) {
+	d := NewDispatcher(core.NewRouter("."), core.NewPermissions(1, nil), nil, zap.NewNop())
+	cleanup, err := d.RegisterMessageHook(core.MessageHookRegistration{
+		Scope:         tasks.ScopeIdentity{Owner: "plugin:legacy", Generation: 1},
+		Priority:      PriorityFeature,
+		RawHandler:    func(context.Context, tg.Entities, *tg.Message, bool, string) error { return nil },
+		LegacyRouting: true,
+	})
+	if err != nil {
+		t.Fatalf("register legacy raw hook: %v", err)
+	}
+	defer cleanup()
+
+	decision, event := d.messageHandlersFor(&tg.Message{PeerID: &tg.PeerUser{UserID: 1}}, false)
+	if len(decision) != 0 || len(event) != 1 {
+		t.Fatalf("legacy scoped feature lane decision=%d event=%d, want 0/1", len(decision), len(event))
+	}
+}
+
+func TestDispatcher_RegisterMessageHookRejectsAmbiguousHandlers(t *testing.T) {
+	d := NewDispatcher(core.NewRouter("."), core.NewPermissions(1, nil), nil, zap.NewNop())
+	_, err := d.RegisterMessageHook(core.MessageHookRegistration{
+		Priority: PriorityFeature,
+		Handler: func(context.Context, *core.MessageEnvelope) error {
+			return nil
+		},
+		RawHandler: func(context.Context, tg.Entities, *tg.Message, bool, string) error {
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("ambiguous canonical+raw registration was accepted")
+	}
+}
+
 func TestDispatcher_LegacyHookRoutingCompatibility(t *testing.T) {
 	d := NewDispatcher(core.NewRouter("."), core.NewPermissions(1, nil), nil, zap.NewNop())
 	d.AddMessageHandler(func(context.Context, tg.Entities, *tg.Message, bool, string) error { return nil })

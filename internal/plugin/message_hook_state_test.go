@@ -6,7 +6,6 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/tasks"
 )
 
 type statefulHookTestPlugin struct {
@@ -30,43 +29,29 @@ func (p *statefulHookTestPlugin) MessageHookInterested(chatID int64) bool {
 	return chatID == 42
 }
 
-type statefulHookTestRegistrar struct {
-	legacyCalls int
-	stateCalls  int
-	stateGate   func(int64) bool
-	routing     core.MessageHookRouting
-}
-
-func (r *statefulHookTestRegistrar) AddPrioritizedMessageHandler(int, MessageHookHandler) func() {
-	r.legacyCalls++
-	return func() {}
-}
-func (r *statefulHookTestRegistrar) AddScopedMessageHandlerWithRoutingAndState(_ int, _ tasks.ScopeIdentity, routing core.MessageHookRouting, stateGate func(int64) bool, _ MessageHookHandler) func() {
-	r.stateCalls++
-	r.routing = routing
-	r.stateGate = stateGate
-	return func() {}
-}
-
-func TestManager_PrefersStateAwareIndexedHookRouting(t *testing.T) {
+func TestManager_PrefersStateAwareIndexedHookRouting(t *testing.T) {func TestManager_PrefersStateAwareIndexedHookRouting(t *testing.T) {
 	mgr := NewManager(core.NewRouter("."))
-	registrar := &statefulHookTestRegistrar{}
+	registrar := &recordingHookRegistrar{}
 	mgr.SetHookRegistrar(registrar)
 
 	p := &statefulHookTestPlugin{dummyPlugin: dummyPlugin{name: "stateful_hook"}}
 	if err := mgr.Register(p); err != nil {
 		t.Fatalf("register plugin: %v", err)
 	}
-	if registrar.stateCalls != 1 || registrar.legacyCalls != 0 {
-		t.Fatalf("registrar calls state=%d legacy=%d, want 1/0", registrar.stateCalls, registrar.legacyCalls)
+	if registrar.calls != 1 {
+		t.Fatalf("registrar calls=%d, want 1", registrar.calls)
 	}
-	if registrar.stateGate == nil {
+	registration := registrar.registration
+	if registration.RawHandler == nil || registration.Handler != nil || registration.LegacyRouting {
+		t.Fatalf("unexpected stateful raw registration: %+v", registration)
+	}
+	if registration.StateGate == nil {
 		t.Fatal("state gate was not propagated")
 	}
-	if registrar.stateGate(7) || !registrar.stateGate(42) {
+	if registration.StateGate(7) || !registration.StateGate(42) {
 		t.Fatal("propagated state gate returned unexpected result")
 	}
-	if registrar.routing.Lane != core.MessageHookDecision {
-		t.Fatalf("unexpected lane: %v", registrar.routing.Lane)
+	if registration.Routing.Lane != core.MessageHookDecision {
+		t.Fatalf("unexpected lane: %v", registration.Routing.Lane)
 	}
 }
