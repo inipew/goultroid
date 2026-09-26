@@ -201,15 +201,17 @@ func (p *Plugin) handleNativeSettingsSlot(ctx *orchestration.Context, slot int) 
 	if p == nil || ctx == nil {
 		return orchestration.ErrInvalidEngine
 	}
+	binding := ctx.Session().Binding
+	fallbackMenu := MenuState{OwnerID: binding.ActorID, ChatID: binding.ChatID}
 	state, err := decodeNativeSettingsState(ctx.State())
 	if err != nil || slot < 0 || slot >= len(state.Slots) {
-		return ctx.Answer("Settings interaction expired. Reopen .settings.", true)
+		return ctx.Answer(p.tr(ctx.Context(), fallbackMenu, "settings.interaction.expired"), true)
 	}
 	intent := state.Slots[slot]
 	menu := state.Menu
-	menu.OwnerID = ctx.Session().Binding.ActorID
+	menu.OwnerID = binding.ActorID
 	if menu.ChatID == 0 {
-		menu.ChatID = ctx.Session().Binding.ChatID
+		menu.ChatID = binding.ChatID
 	}
 
 	switch intent.Kind {
@@ -220,7 +222,7 @@ func (p *Plugin) handleNativeSettingsSlot(ctx *orchestration.Context, slot int) 
 		return ctx.Answer("", false)
 
 	case nativeIntentClose:
-		if err := ctx.Terminate(presentation.View{Text: "✅ Settings dashboard closed."}); err != nil {
+		if err := ctx.Terminate(presentation.View{Text: p.tr(ctx.Context(), menu, "settings.interaction.closed")}); err != nil {
 			return err
 		}
 		return ctx.Answer("", false)
@@ -274,7 +276,7 @@ func (p *Plugin) handleNativeSettingsSlot(ctx *orchestration.Context, slot int) 
 		menu.ActionValue = ""
 
 	default:
-		return ctx.Answer("Settings interaction is invalid. Reopen .settings.", true)
+		return ctx.Answer(p.tr(ctx.Context(), menu, "settings.interaction.invalid"), true)
 	}
 
 	raw, view, err := p.nativeSettingsView(ctx.Context(), menu)
@@ -372,17 +374,17 @@ func (p *Plugin) nativeSettingsView(ctx context.Context, menu MenuState) ([]byte
 	return raw, view, nil
 }
 
-func (p *Plugin) buildNativeHome(_ context.Context, builder *nativeSettingsViewBuilder) (string, error) {
+func (p *Plugin) buildNativeHome(ctx context.Context, builder *nativeSettingsViewBuilder) (string, error) {
 	menu := builder.state.Menu
 	screen := ui.NewScreen(
 		"settings:home",
-		"⚙️ GoUltroid Settings Dashboard",
-		"Welcome to the interactive configuration dashboard.\nSelect a category below to view and modify settings:\n",
+		"⚙️ "+p.tr(ctx, menu, "settings.dashboard.title"),
+		p.tr(ctx, menu, "settings.dashboard.welcome"),
 	)
 	categories := p.service.Registry().Categories()
 	row := make([]presentation.Button, 0, 2)
 	for _, category := range categories {
-		button, err := builder.add(settingsCategoryLabel(category), nativeSettingsIntent{
+		button, err := builder.add(p.settingsCategoryLabel(ctx, menu, category), nativeSettingsIntent{
 			Kind:     nativeIntentCategory,
 			Category: category,
 		})
@@ -399,7 +401,7 @@ func (p *Plugin) buildNativeHome(_ context.Context, builder *nativeSettingsViewB
 		builder.addRow(row...)
 	}
 
-	nextScope, nextScopeID, scopeText := p.nextScope(menu)
+	nextScope, nextScopeID, scopeText := p.nextScope(ctx, menu)
 	scopeButton, err := builder.add(scopeText, nativeSettingsIntent{
 		Kind:    nativeIntentScope,
 		Scope:   nextScope,
@@ -410,7 +412,7 @@ func (p *Plugin) buildNativeHome(_ context.Context, builder *nativeSettingsViewB
 	}
 	builder.addRow(scopeButton)
 
-	closeButton, err := builder.add("❌ Close", nativeSettingsIntent{Kind: nativeIntentClose})
+	closeButton, err := builder.add(p.tr(ctx, menu, "ui.close"), nativeSettingsIntent{Kind: nativeIntentClose})
 	if err != nil {
 		return "", err
 	}
@@ -421,7 +423,7 @@ func (p *Plugin) buildNativeHome(_ context.Context, builder *nativeSettingsViewB
 func (p *Plugin) buildNativeCategory(ctx context.Context, builder *nativeSettingsViewBuilder) (string, error) {
 	menu := builder.state.Menu
 	defs := p.service.Registry().ListByCategory(menu.Category)
-	title := fmt.Sprintf("⚙️ Settings: %s", strings.Title(menu.Category))
+	title := "⚙️ " + p.tr(ctx, menu, "settings.category.title", strings.Title(menu.Category))
 	pagedDefs, totalPages := ui.PaginateSlice(defs, menu.Page, nativeSettingsPageSize)
 	if menu.Page < 1 {
 		menu.Page = 1
@@ -430,12 +432,12 @@ func (p *Plugin) buildNativeCategory(ctx context.Context, builder *nativeSetting
 	}
 	builder.state.Menu = menu
 	if len(defs) == 0 {
-		screen := ui.NewScreen("settings:cat", title, "No settings configured for this category.")
-		homeButton, err := builder.add("🏠 Home", nativeSettingsIntent{Kind: nativeIntentHome})
+		screen := ui.NewScreen("settings:cat", title, p.tr(ctx, menu, "settings.category.none"))
+		homeButton, err := builder.add(p.tr(ctx, menu, "ui.home"), nativeSettingsIntent{Kind: nativeIntentHome})
 		if err != nil {
 			return "", err
 		}
-		closeButton, err := builder.add("❌ Close", nativeSettingsIntent{Kind: nativeIntentClose})
+		closeButton, err := builder.add(p.tr(ctx, menu, "ui.close"), nativeSettingsIntent{Kind: nativeIntentClose})
 		if err != nil {
 			return "", err
 		}
@@ -444,11 +446,9 @@ func (p *Plugin) buildNativeCategory(ctx context.Context, builder *nativeSetting
 	}
 
 	var body strings.Builder
-	body.WriteString(fmt.Sprintf(
-		"Category: <b>%s</b> | Scope: <b>%s</b>\n\n",
+	body.WriteString(p.tr(ctx, menu, "settings.category.scope",
 		ui.EscapeHTML(strings.Title(menu.Category)),
-		ui.EscapeHTML(string(menu.Scope)),
-	))
+		ui.EscapeHTML(string(menu.Scope))) + "\n\n")
 	for _, def := range pagedDefs {
 		currentVal, _ := p.service.Resolve(ctx, menu.OwnerID, menu.ScopeID, def.Namespace, def.Key)
 		body.WriteString(fmt.Sprintf(
@@ -476,7 +476,7 @@ func (p *Plugin) buildNativeCategory(ctx context.Context, builder *nativeSetting
 				Key:       def.Key,
 			}
 		} else {
-			label = "⚙️ Edit " + def.Title
+			label = p.tr(ctx, menu, "settings.button.edit", def.Title)
 			intent = nativeSettingsIntent{
 				Kind:      nativeIntentTarget,
 				Namespace: def.Namespace,
@@ -492,7 +492,7 @@ func (p *Plugin) buildNativeCategory(ctx context.Context, builder *nativeSetting
 	if totalPages > 1 {
 		pagination := make(presentation.Row, 0, 3)
 		if menu.Page > 1 {
-			prev, err := builder.add("◀ Prev", nativeSettingsIntent{Kind: nativeIntentPage, Page: menu.Page - 1})
+			prev, err := builder.add(p.tr(ctx, menu, "ui.previous"), nativeSettingsIntent{Kind: nativeIntentPage, Page: menu.Page - 1})
 			if err != nil {
 				return "", err
 			}
@@ -510,7 +510,7 @@ func (p *Plugin) buildNativeCategory(ctx context.Context, builder *nativeSetting
 		}
 		pagination = append(pagination, counter)
 		if menu.Page < totalPages {
-			next, err := builder.add("Next ▶", nativeSettingsIntent{Kind: nativeIntentPage, Page: menu.Page + 1})
+			next, err := builder.add(p.tr(ctx, menu, "ui.next"), nativeSettingsIntent{Kind: nativeIntentPage, Page: menu.Page + 1})
 			if err != nil {
 				return "", err
 			}
@@ -525,11 +525,11 @@ func (p *Plugin) buildNativeCategory(ctx context.Context, builder *nativeSetting
 		builder.addRow(pagination...)
 	}
 
-	homeButton, err := builder.add("🏠 Home", nativeSettingsIntent{Kind: nativeIntentHome})
+	homeButton, err := builder.add(p.tr(ctx, menu, "ui.home"), nativeSettingsIntent{Kind: nativeIntentHome})
 	if err != nil {
 		return "", err
 	}
-	closeButton, err := builder.add("❌ Close", nativeSettingsIntent{Kind: nativeIntentClose})
+	closeButton, err := builder.add(p.tr(ctx, menu, "ui.close"), nativeSettingsIntent{Kind: nativeIntentClose})
 	if err != nil {
 		return "", err
 	}
@@ -551,16 +551,17 @@ func (p *Plugin) buildNativeDetail(ctx context.Context, builder *nativeSettingsV
 	if err != nil {
 		return "", err
 	}
-	originBadge := p.settingOriginBadge(ctx, menu, ns, key)
+	originKey := p.settingOriginKey(ctx, menu, ns, key)
+	originBadge := p.tr(ctx, menu, originKey)
 	body := fmt.Sprintf(
-		"<b>%s</b>\n%s\n\n<b>Type:</b> <code>%s</code>\n<b>Current Value:</b> <code>%s</code>\n<b>Origin:</b> %s\n<b>Default:</b> <code>%s</code>\n<b>Scope:</b> <code>%s</code>\n",
+		"<b>%s</b>\n%s\n\n<b>%s:</b> <code>%s</code>\n<b>%s:</b> <code>%s</code>\n<b>%s:</b> %s\n<b>%s:</b> <code>%s</code>\n<b>%s:</b> <code>%s</code>\n",
 		ui.EscapeHTML(def.Title),
 		ui.EscapeHTML(def.Description),
-		def.Type,
-		ui.EscapeHTML(currentVal),
-		originBadge,
-		ui.EscapeHTML(def.DefaultValue),
-		menu.Scope,
+		ui.EscapeHTML(p.tr(ctx, menu, "settings.detail.type")), def.Type,
+		ui.EscapeHTML(p.tr(ctx, menu, "settings.detail.current")), ui.EscapeHTML(currentVal),
+		ui.EscapeHTML(p.tr(ctx, menu, "settings.detail.origin")), originBadge,
+		ui.EscapeHTML(p.tr(ctx, menu, "settings.detail.default")), ui.EscapeHTML(def.DefaultValue),
+		ui.EscapeHTML(p.tr(ctx, menu, "settings.detail.scope")), menu.Scope,
 	)
 	screen := ui.NewScreen("settings:detail", fmt.Sprintf("⚙️ %s (%s:%s)", def.Title, ns, key), body)
 
@@ -680,9 +681,9 @@ func (p *Plugin) buildNativeDetail(ctx context.Context, builder *nativeSettingsV
 		}
 	}
 
-	resetLabel := "🔄 Reset to Default"
-	if originBadge != "⚙️ Schema Default" && originBadge != "🌐 Global Setting" {
-		resetLabel = "↩ Reset Override"
+	resetLabel := p.tr(ctx, menu, "settings.button.reset_default")
+	if originKey != "settings.origin.default" && originKey != "settings.origin.global" {
+		resetLabel = p.tr(ctx, menu, "settings.button.reset_override")
 	}
 	resetButton, err := builder.add(resetLabel, nativeSettingsIntent{
 		Kind:      nativeIntentReset,
@@ -692,7 +693,7 @@ func (p *Plugin) buildNativeDetail(ctx context.Context, builder *nativeSettingsV
 	if err != nil {
 		return "", err
 	}
-	backButton, err := builder.add("🔙 Back to "+strings.Title(def.Category), nativeSettingsIntent{Kind: nativeIntentBack})
+	backButton, err := builder.add(p.tr(ctx, menu, "settings.button.back_category", strings.Title(def.Category)), nativeSettingsIntent{Kind: nativeIntentBack})
 	if err != nil {
 		return "", err
 	}
