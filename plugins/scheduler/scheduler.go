@@ -87,7 +87,7 @@ func (p *Plugin) handleRemind(ctx *core.Context) error {
 	durStr := ctx.Args[0]
 	dur, err := scheduler.ParseDuration(durStr)
 	if err != nil {
-		_ = ctx.Error(fmt.Sprintf("Invalid duration %q: %v", durStr, err))
+		_ = ctx.Fail(err, fmt.Sprintf("Invalid duration <code>%s</code>.", core.EscapeHTML(durStr)))
 		return err
 	}
 
@@ -143,7 +143,7 @@ func (p *Plugin) handleSchedule(ctx *core.Context) error {
 	durStr := ctx.Args[durIdx]
 	dur, err := scheduler.ParseDuration(durStr)
 	if err != nil {
-		_ = ctx.Error(fmt.Sprintf("Invalid duration %q: %v", durStr, err))
+		_ = ctx.Fail(err, fmt.Sprintf("Invalid duration <code>%s</code>.", core.EscapeHTML(durStr)))
 		return err
 	}
 
@@ -234,7 +234,7 @@ func (p *Plugin) handleCancel(ctx *core.Context) error {
 	idStr := strings.TrimPrefix(ctx.Args[0], "#")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		_ = ctx.Error(fmt.Sprintf("Invalid job ID %q: %v", idStr, err))
+		_ = ctx.Fail(err, fmt.Sprintf("Invalid job ID <code>%s</code>.", core.EscapeHTML(idStr)))
 		return err
 	}
 	if err := p.sched.CancelScoped(ctx.Ctx, ctx.SenderID(), getChatID(ctx), id); err != nil {
@@ -252,7 +252,7 @@ func (p *Plugin) handleSchedHistory(ctx *core.Context) error {
 	idStr := strings.TrimPrefix(ctx.Args[0], "#")
 	jobID, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		_ = ctx.Error(fmt.Sprintf("Invalid job ID %q: %v", idStr, err))
+		_ = ctx.Fail(err, fmt.Sprintf("Invalid job ID <code>%s</code>.", core.EscapeHTML(idStr)))
 		return err
 	}
 	limit := 10
