@@ -34,7 +34,6 @@ type Client interface {
 	SetSettingsService(svc *settings.Service)
 	SetGroupStateStore(store core.GroupStateStore)
 	SetMetricsCollector(m core.MetricsCollector)
-	SetCallbackRouter(router client.CoreCallbackDispatcher)
 	SetInlineEngine(engine *inline.Engine)
 	SetDeepLinkRouter(router *assistantdeeplink.Router)
 	SetRelayIngress(relay pmrelay.Ingress)
@@ -43,7 +42,6 @@ type Client interface {
 	SetGroupEventService(service *groupevents.Service)
 	BroadcastAudience(context.Context, broadcastsvc.BroadcastRequest) (*broadcastsvc.BroadcastReport, error)
 	SetTasks(client tasks.Client)
-	SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool))
 	SetInteractionFoundation(catalog feature.Catalog, sessions *rootinteraction.Runtime, actions *rootinteraction.Dispatcher)
 	SetInteractionDrivers(drivers []assistantinteraction.FeatureDriver)
 	SetRPCExecutor(executor assistentrpc.Executor)
@@ -119,9 +117,6 @@ func (a *AssistantApp) SetSavedResponseBindings(bindings *savedresponse.BindingS
 	a.client.SetSavedResponseBindings(bindings, delivery)
 }
 func (a *AssistantApp) SetMetricsCollector(m core.MetricsCollector) { a.client.SetMetricsCollector(m) }
-func (a *AssistantApp) SetCallbackRouter(router client.CoreCallbackDispatcher) {
-	a.client.SetCallbackRouter(router)
-}
 func (a *AssistantApp) SetInlineEngine(engine *inline.Engine) { a.client.SetInlineEngine(engine) }
 func (a *AssistantApp) SetDeepLinkRouter(router *assistantdeeplink.Router) {
 	a.client.SetDeepLinkRouter(router)
@@ -151,9 +146,6 @@ func (a *AssistantApp) BroadcastAudience(
 }
 func (a *AssistantApp) SetRPCExecutor(executor assistentrpc.Executor) {
 	a.client.SetRPCExecutor(executor)
-}
-func (a *AssistantApp) SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool)) {
-	a.client.SetPluginScopeResolver(resolver)
 }
 func (a *AssistantApp) SetInteractionFoundation(catalog feature.Catalog, sessions *rootinteraction.Runtime, actions *rootinteraction.Dispatcher) {
 	a.client.SetInteractionFoundation(catalog, sessions, actions)

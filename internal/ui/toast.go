@@ -5,7 +5,6 @@ import (
 
 	"github.com/inipew/goultroid/internal/core"
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
-	"github.com/inipew/goultroid/internal/services/callback"
 )
 
 // UserErrorPresentation is the transport-neutral user-facing rendering of an
@@ -15,30 +14,6 @@ import (
 type UserErrorPresentation struct {
 	Text  string
 	Alert bool
-}
-
-// AnswerToast responds to an interactive callback query with a banner or pop-up notification.
-func AnswerToast(ctx *callback.CallbackContext, text string, alert bool) error {
-	if ctx == nil || ctx.IsAnswered() {
-		return nil
-	}
-	return ctx.Answer(text, alert)
-}
-
-// AnswerSuccessToast displays a brief success toast to the user.
-func AnswerSuccessToast(ctx *callback.CallbackContext, text string) error {
-	if text == "" {
-		text = "✅ Success"
-	}
-	return AnswerToast(ctx, text, false)
-}
-
-// AnswerErrorToast displays an error alert modal or toast to the user.
-func AnswerErrorToast(ctx *callback.CallbackContext, text string) error {
-	if text == "" {
-		text = "❌ Action failed"
-	}
-	return AnswerToast(ctx, text, true)
 }
 
 // PresentUserError maps domain, interaction, and callback errors into one
@@ -69,10 +44,6 @@ func PresentUserError(err error) UserErrorPresentation {
 		return UserErrorPresentation{Text: "⚠️ Another input session is already active in this chat."}
 	case errors.Is(err, rootinteraction.ErrCapacity):
 		return UserErrorPresentation{Text: "⚠️ Too many active interactions. Close an older interaction and try again."}
-	case errors.Is(err, callback.ErrInvalidCallbackData):
-		return UserErrorPresentation{Text: "⚠️ Invalid button action."}
-	case errors.Is(err, callback.ErrHandlerNotFound):
-		return UserErrorPresentation{Text: "⚠️ Feature is not available."}
 	}
 
 	message := core.UserMessage(err)

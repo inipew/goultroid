@@ -10,15 +10,13 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/idempotency"
-	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
 
 // NativeInteractionDispatcher is the narrow userbot a2 ingress boundary. It
-// claims only callbacks owned by the canonical a2 protocol and leaves legacy
-// callback payloads untouched.
+// claims callbacks owned by the canonical a2 protocol.
 type NativeInteractionDispatcher interface {
 	HandleCallback(context.Context, *core.CallbackQueryEvent) (bool, error)
 }
@@ -38,7 +36,6 @@ type Dispatcher struct {
 	eventBus           *core.EventBus
 	albumBuffer        *core.AlbumBuffer
 	localizer          core.Localizer
-	callbackRouter     *callback.Router
 	nativeInteractions NativeInteractionDispatcher
 	inlineEngine       *inline.Engine
 	normalizer         UpdateNormalizer
@@ -96,7 +93,6 @@ type DispatcherDeps struct {
 	Logger         *zap.Logger
 	EventBus       *core.EventBus
 	Localizer      core.Localizer
-	CallbackRouter *callback.Router
 	InlineEngine   *inline.Engine
 	Resolver       core.PeerResolver
 	Tasks          tasks.Client
@@ -122,9 +118,6 @@ func NewDispatcherWithDeps(deps DispatcherDeps) (*Dispatcher, error) {
 	}
 	if deps.Localizer != nil {
 		d.SetLocalizer(deps.Localizer)
-	}
-	if deps.CallbackRouter != nil {
-		d.SetCallbackRouter(deps.CallbackRouter)
 	}
 	if deps.InlineEngine != nil {
 		d.SetInlineEngine(deps.InlineEngine)

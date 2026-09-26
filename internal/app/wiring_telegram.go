@@ -17,7 +17,6 @@ func buildTelegramRuntime(cfg *config.Config, core *coreDependencies, logger *za
 		Logger:         logger,
 		EventBus:       core.eventBus,
 		Localizer:      core.localizer,
-		CallbackRouter: core.callbackRouter,
 		InlineEngine:   core.inlineEngine,
 		Tasks:          core.taskEngine,
 	}

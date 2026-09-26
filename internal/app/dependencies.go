@@ -21,7 +21,6 @@ import (
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/scheduler"
 	broadcastSvc "github.com/inipew/goultroid/internal/services/broadcast"
-	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/groupstate"
 	"github.com/inipew/goultroid/internal/services/inline"
@@ -47,7 +46,6 @@ type coreDependencies struct {
 	eventBus        *core.EventBus
 	metrics         core.MetricsCollector
 	localizer       localization.Localizer
-	callbackRouter  *callback.Router
 	inlineEngine    *inline.Engine
 	cmdLimiter      *ratelimit.Limiter
 	interLimiter    *ratelimit.Limiter
@@ -101,7 +99,6 @@ type Dependencies struct {
 	Permissions     *core.Permissions
 	Settings        *settings.Service
 	Dispatcher      *telegram.Dispatcher
-	Callbacks       *callback.Router
 	Inline          *inline.Engine
 	JobsManager     *jobs.Manager
 	TaskEngine      *taskengine.Engine

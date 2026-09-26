@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/services/inline"
 )
 
@@ -149,19 +148,6 @@ func (d *Dispatcher) getLocalizer() core.Localizer {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.localizer
-}
-
-// SetCallbackRouter configures the router for button callback queries.
-func (d *Dispatcher) SetCallbackRouter(r *callback.Router) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.callbackRouter = r
-}
-
-func (d *Dispatcher) getCallbackRouter() *callback.Router {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	return d.callbackRouter
 }
 
 // SetNativeInteractions installs the native/userbot a2 callback ingress.

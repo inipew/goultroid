@@ -46,7 +46,6 @@ type UpdateHandlerDeps struct {
 	RateLimiter         RateLimiter
 	Resolver            peer.Resolver
 	CmdRouter           *command.Router
-	CallbackDispatcher  CoreCallbackDispatcher
 	CallbackDeduper     *callbackQueryDeduper
 	Interaction         *interaction.ClientInteraction
 	CacheEntities       func(e tg.Entities)
@@ -54,7 +53,6 @@ type UpdateHandlerDeps struct {
 	InlineEngine        InlineQueryExecutor
 	InlineService       core.TelegramServicer
 	Tasks               tasks.Client
-	PluginScopeResolver func(string) (tasks.ScopeIdentity, bool)
 	InteractionIngress  interactionIngressPort
 	RelayIngress        relayMessageIngress
 	AudienceRegistry    pmrelay.AudienceRegistry
@@ -63,6 +61,25 @@ type UpdateHandlerDeps struct {
 	GroupRuleChats      groupRuleChatClassifier
 	GlobalPrivileged    func(int64) bool
 	SelfID              func() int64
+}
+
+const unknownAssistantCallbackExpiredText = "⌛ Interaction expired. Please reopen it."
+
+func answerUnknownAssistantCallback(ctx context.Context, deps UpdateHandlerDeps, queryID int64, data []byte) {
+	if deps.CallbackDeduper != nil && !deps.CallbackDeduper.Admit(queryID, time.Now()) {
+		if deps.Interaction != nil {
+			_ = deps.Interaction.Answer(ctx, queryID, "", false)
+		}
+		return
+	}
+	if deps.Interaction == nil {
+		return
+	}
+	text := unknownAssistantCallbackExpiredText
+	if string(data) == "noop" {
+		text = ""
+	}
+	_ = deps.Interaction.Answer(ctx, queryID, text, false)
 }
 
 func assistantSlashCommand(text string) (string, bool) {
@@ -843,7 +860,6 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		if deps.CacheEntities != nil {
 			deps.CacheEntities(e)
 		}
-		inlineTarget := interaction.NewInlineTarget(update.QueryID, update.MsgID, update.ChatInstance)
 		if isInteractionCallback(update.Data) {
 			if deps.CallbackDeduper != nil && !deps.CallbackDeduper.Admit(update.QueryID, time.Now()) {
 				if deps.Interaction != nil {
@@ -863,26 +879,7 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			}
 			return nil
 		}
-		if deps.Interaction == nil {
-			return nil
-		}
-		evt := &core.CallbackQueryEvent{
-			At:      time.Now(),
-			QueryID: update.QueryID,
-			UserID:  update.UserID,
-			Data:    update.Data,
-			Origin:  core.CallbackOriginInline,
-			Target: core.CallbackTarget{
-				Origin:       core.CallbackOriginInline,
-				InlineID:     update.MsgID,
-				ChatInstance: update.ChatInstance,
-			},
-			ChatInstance: update.ChatInstance,
-		}
-		svc := newAssistantInlineCallbackServicer(update.QueryID, inlineTarget, deps.Interaction.AsInline())
-		if err := dispatchCoreCallback(ctx, deps.CallbackDispatcher, deps.Tasks, deps.PluginScopeResolver, deps.CallbackDeduper, evt, svc, logger); err != nil {
-			logger.Warn("assistant: inline callback dispatch failed", zap.Error(err), zap.Int64("query_id", update.QueryID), zap.Int64("user_id", update.UserID))
-		}
+		answerUnknownAssistantCallback(ctx, deps, update.QueryID, update.Data)
 		return nil
 	})
 	dispatcher.OnBotCallbackQuery(func(ctx context.Context, e tg.Entities, update *tg.UpdateBotCallbackQuery) error {
@@ -926,29 +923,7 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 			}
 			return nil
 		}
-		if deps.Interaction == nil {
-			return nil
-		}
-		evt := &core.CallbackQueryEvent{
-			At:      time.Now(),
-			QueryID: update.QueryID,
-			UserID:  update.UserID,
-			ChatID:  target.ChatID(),
-			MsgID:   target.MessageID(),
-			Data:    update.Data,
-			Origin:  core.CallbackOriginMessage,
-			Target: core.CallbackTarget{
-				Origin:       core.CallbackOriginMessage,
-				Peer:         target.Peer(),
-				MessageID:    target.MessageID(),
-				ChatInstance: target.ChatInstance(),
-			},
-			ChatInstance: target.ChatInstance(),
-		}
-		svc := newAssistantCallbackServicer(update.QueryID, target, deps.Interaction)
-		if err := dispatchCoreCallback(ctx, deps.CallbackDispatcher, deps.Tasks, deps.PluginScopeResolver, deps.CallbackDeduper, evt, svc, logger); err != nil {
-			logger.Warn("assistant: callback dispatch failed", zap.Error(err), zap.Int64("query_id", update.QueryID), zap.Int64("user_id", update.UserID))
-		}
+		answerUnknownAssistantCallback(ctx, deps, update.QueryID, update.Data)
 		return nil
 	})
 }

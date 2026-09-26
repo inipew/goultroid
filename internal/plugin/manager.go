@@ -21,7 +21,6 @@ import (
 	"github.com/inipew/goultroid/internal/platform/storage"
 	"github.com/inipew/goultroid/internal/resource"
 	"github.com/inipew/goultroid/internal/runtime"
-	"github.com/inipew/goultroid/internal/services/callback"
 	inlineservice "github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/services/savedresponse"
 	"github.com/inipew/goultroid/internal/tasks"
@@ -156,17 +155,13 @@ func registerMessageHook(registrar HookRegistrar, p Plugin, scope tasks.ScopeIde
 	return registrar.AddPrioritizedMessageHandler(mhp.MessageHookPriority(), mhp.HandleIncomingMessage), nil
 }
 
-type callbackRegistrar interface {
-	RegisterOwned(string, callback.Handler) (callback.Registration, error)
-}
-
 // SchedulerTaskCleaner allows the plugin manager to unregister periodic tasks owned by disabled plugins.
 type SchedulerTaskCleaner interface {
 	UnregisterPeriodicTasksByOwner(owner string) int
 }
 
 // RegistrationValidator runs after all externally visible plugin registrations
-// (commands/hooks/callbacks/feature surfaces) are staged but before the manager
+// (commands/hooks/feature surfaces) are staged but before the manager
 // commits that generation. Returning an error makes registration/enable roll
 // back atomically.
 type RegistrationValidator func(context.Context) error
@@ -174,7 +169,6 @@ type RegistrationValidator func(context.Context) error
 type Manager struct {
 	router                *core.Router
 	hookRegistrar         HookRegistrar
-	callbackRegistrar     callbackRegistrar
 	inlineRegistry        *inlineservice.Registry
 	schedCleaner          SchedulerTaskCleaner
 	resourceManager       *resource.Manager
@@ -200,7 +194,6 @@ type Manager struct {
 	registering           map[string]bool
 	list                  []Plugin
 	hookCleanups          map[string]func()
-	callbackCleanups      map[string]func()
 	featureCleanups       map[string]func()
 	auditor               audit.Auditor
 	panicReporter         core.PanicReporter
@@ -223,7 +216,6 @@ func NewManager(router *core.Router) *Manager {
 		teardownErrors:   make(map[string]error),
 		registering:      make(map[string]bool),
 		hookCleanups:     make(map[string]func()),
-		callbackCleanups: make(map[string]func()),
 		featureCleanups:  make(map[string]func()),
 		featureRegistry:  newFeatureRegistry(),
 		savedResponses:   savedresponse.NewRegistry(),
@@ -295,13 +287,6 @@ func (m *Manager) CleanupStats() runtime.CallbackExecutorStats {
 		return runtime.CallbackExecutorStats{}
 	}
 	return executor.Stats()
-}
-
-// SetCallbackRegistrar binds callback registrations to plugin transactions.
-func (m *Manager) SetCallbackRegistrar(registrar callbackRegistrar) {
-	m.mu.Lock()
-	m.callbackRegistrar = registrar
-	m.mu.Unlock()
 }
 
 // SetInlineRegistry binds feature-owned inline handlers to plugin lifecycle
@@ -633,33 +618,8 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 			return fmt.Errorf("plugin %s message hook registration failed: %w", name, hookErr)
 		}
 	}
-	var callbackCleanup func()
-	m.mu.RLock()
-	callbackRegistry := m.callbackRegistrar
-	m.mu.RUnlock()
-	if callbackRegistry != nil {
-		if handler, ok := p.(callback.Handler); ok {
-			registration, err := callbackRegistry.RegisterOwned(name, handler)
-			if err != nil {
-				if hookCleanup != nil {
-					_ = m.runLifecycleCallback(ctx, "plugin "+name+" hook registration rollback", func() error {
-						hookCleanup()
-						return nil
-					})
-				}
-				router.UnregisterBatch(cmds)
-				cleanupPlugin()
-				return fmt.Errorf("plugin %s callback registration failed: %w", name, err)
-			}
-			callbackCleanup = registration.Close
-		}
-	}
-
 	featureCleanup, err := m.registerFeatureContract(name, p, commandScope, cmds)
 	if err != nil {
-		if callbackCleanup != nil {
-			_ = m.runLifecycleCallback(ctx, "plugin "+name+" callback feature rollback", func() error { callbackCleanup(); return nil })
-		}
 		if hookCleanup != nil {
 			_ = m.runLifecycleCallback(ctx, "plugin "+name+" hook feature rollback", func() error { hookCleanup(); return nil })
 		}
@@ -670,9 +630,6 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 	if err := m.validateStagedRegistration(ctx); err != nil {
 		if featureCleanup != nil {
 			_ = m.runLifecycleCallback(ctx, "plugin "+name+" feature validation rollback", func() error { featureCleanup(); return nil })
-		}
-		if callbackCleanup != nil {
-			_ = m.runLifecycleCallback(ctx, "plugin "+name+" callback validation rollback", func() error { callbackCleanup(); return nil })
 		}
 		if hookCleanup != nil {
 			_ = m.runLifecycleCallback(ctx, "plugin "+name+" hook validation rollback", func() error { hookCleanup(); return nil })
@@ -704,9 +661,6 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 		if hookCleanup != nil {
 			_ = m.runLifecycleCallback(ctx, "plugin "+name+" hook shutdown rollback", func() error { hookCleanup(); return nil })
 		}
-		if callbackCleanup != nil {
-			_ = m.runLifecycleCallback(ctx, "plugin "+name+" callback shutdown rollback", func() error { callbackCleanup(); return nil })
-		}
 		router.UnregisterBatch(cmds)
 		cleanupPlugin()
 		return fmt.Errorf("plugin manager is shutting down")
@@ -718,9 +672,6 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 		}
 		if hookCleanup != nil {
 			_ = m.runLifecycleCallback(ctx, "plugin "+name+" hook duplicate rollback", func() error { hookCleanup(); return nil })
-		}
-		if callbackCleanup != nil {
-			_ = m.runLifecycleCallback(ctx, "plugin "+name+" callback duplicate rollback", func() error { callbackCleanup(); return nil })
 		}
 		router.UnregisterBatch(cmds)
 		cleanupPlugin()
@@ -736,9 +687,6 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 	m.list = append(m.list, p)
 	if hookCleanup != nil {
 		m.hookCleanups[name] = hookCleanup
-	}
-	if callbackCleanup != nil {
-		m.callbackCleanups[name] = callbackCleanup
 	}
 	if featureCleanup != nil {
 		m.featureCleanups[name] = featureCleanup
@@ -834,7 +782,7 @@ func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 		return nil
 	}
 	m.shutdown = true
-	cleanups := make([]func(), 0, len(m.featureCleanups)+len(m.hookCleanups)+len(m.callbackCleanups))
+	cleanups := make([]func(), 0, len(m.featureCleanups)+len(m.hookCleanups))
 	for _, cleanup := range m.featureCleanups {
 		cleanups = append(cleanups, cleanup)
 	}
@@ -843,10 +791,6 @@ func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 		cleanups = append(cleanups, cleanup)
 	}
 	m.hookCleanups = make(map[string]func())
-	for _, cleanup := range m.callbackCleanups {
-		cleanups = append(cleanups, cleanup)
-	}
-	m.callbackCleanups = make(map[string]func())
 	plugins := make([]Plugin, len(m.list))
 	copy(plugins, m.list)
 	scopes := make(map[string]*Scope, len(m.scopes))
@@ -863,7 +807,7 @@ func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 
 	// Quiesce TaskEngine ownership before detaching registrations. This prevents
 	// already-admitted work from crossing a plugin generation boundary while
-	// callbacks/hooks/features are being removed.
+	// hooks/features are being removed.
 	m.mu.RLock()
 	shutdownTaskClient := m.taskClient
 	m.mu.RUnlock()
@@ -875,7 +819,7 @@ func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 		}
 	}
 
-	// 1. Detach all feature surfaces, message hooks, and callbacks before plugin shutdown.
+	// 1. Detach all feature surfaces and message hooks before plugin shutdown.
 	for i, cleanup := range cleanups {
 		if cleanup == nil {
 			continue
@@ -953,8 +897,6 @@ func (m *Manager) Disable(ctx context.Context, name string) error {
 	scope := m.scopes[key]
 	hookCleanup := m.hookCleanups[key]
 	delete(m.hookCleanups, key)
-	callbackCleanup := m.callbackCleanups[key]
-	delete(m.callbackCleanups, key)
 	featureCleanup := m.featureCleanups[key]
 	delete(m.featureCleanups, key)
 	delete(m.scopes, key)
@@ -964,8 +906,7 @@ func (m *Manager) Disable(ctx context.Context, name string) error {
 	taskClient := m.taskClient
 	m.mu.Unlock()
 
-	// Quiesce this generation before registrations are detached. New callback
-	// admission already fails because m.scopes no longer exposes this scope.
+	// Quiesce this generation before registrations are detached.
 	if scope != nil && taskClient != nil {
 		taskClient.CancelScope(tasks.ScopeIdentity{Owner: scope.Owner(), Generation: scope.Generation()}, tasks.CauseScopeClosed)
 	}
@@ -982,14 +923,6 @@ func (m *Manager) Disable(ctx context.Context, name string) error {
 	if hookCleanup != nil {
 		if err := m.runLifecycleCallback(ctx, "plugin "+name+" hook cleanup", func() error {
 			hookCleanup()
-			return nil
-		}); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if callbackCleanup != nil {
-		if err := m.runLifecycleCallback(ctx, "plugin "+name+" callback cleanup", func() error {
-			callbackCleanup()
 			return nil
 		}); err != nil {
 			errs = append(errs, err)
@@ -1173,35 +1106,11 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 			return fmt.Errorf("failed to re-register message hook for plugin %s: %w", name, hookErr)
 		}
 	}
-	var callbackCleanup func()
-	m.mu.RLock()
-	callbackRegistry := m.callbackRegistrar
-	m.mu.RUnlock()
-	if callbackRegistry != nil {
-		if handler, ok := p.(callback.Handler); ok {
-			registration, regErr := callbackRegistry.RegisterOwned(key, handler)
-			if regErr != nil {
-				if hookCleanup != nil {
-					_ = m.runLifecycleCallback(ctx, "plugin "+name+" hook enable rollback", func() error { hookCleanup(); return nil })
-				}
-				_ = scope.Close(ctx)
-				m.mu.Lock()
-				delete(m.transitions, key)
-				m.mu.Unlock()
-				return fmt.Errorf("failed to re-register callback for plugin %s: %w", name, regErr)
-			}
-			callbackCleanup = registration.Close
-		}
-	}
-
 	// Register commands back to router.
 	if router != nil && len(cmds) > 0 {
 		if err := router.RegisterBatch(cmds); err != nil {
 			if hookCleanup != nil {
 				_ = m.runLifecycleCallback(ctx, "plugin "+name+" hook command rollback", func() error { hookCleanup(); return nil })
-			}
-			if callbackCleanup != nil {
-				_ = m.runLifecycleCallback(ctx, "plugin "+name+" callback command rollback", func() error { callbackCleanup(); return nil })
 			}
 			_ = scope.Close(ctx)
 			m.mu.Lock()
@@ -1215,9 +1124,6 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 	if err != nil {
 		if router != nil && len(cmds) > 0 {
 			router.UnregisterBatch(cmds)
-		}
-		if callbackCleanup != nil {
-			_ = m.runLifecycleCallback(ctx, "plugin "+name+" callback feature rollback", func() error { callbackCleanup(); return nil })
 		}
 		if hookCleanup != nil {
 			_ = m.runLifecycleCallback(ctx, "plugin "+name+" hook feature rollback", func() error { hookCleanup(); return nil })
@@ -1235,9 +1141,6 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 		if router != nil && len(cmds) > 0 {
 			router.UnregisterBatch(cmds)
 		}
-		if callbackCleanup != nil {
-			_ = m.runLifecycleCallback(ctx, "plugin "+name+" callback validation rollback", func() error { callbackCleanup(); return nil })
-		}
 		if hookCleanup != nil {
 			_ = m.runLifecycleCallback(ctx, "plugin "+name+" hook validation rollback", func() error { hookCleanup(); return nil })
 		}
@@ -1253,9 +1156,6 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 	m.commands[key] = append([]core.Command(nil), cmds...)
 	if hookCleanup != nil {
 		m.hookCleanups[key] = hookCleanup
-	}
-	if callbackCleanup != nil {
-		m.callbackCleanups[key] = callbackCleanup
 	}
 	if featureCleanup != nil {
 		m.featureCleanups[key] = featureCleanup

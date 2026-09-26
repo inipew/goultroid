@@ -9,21 +9,8 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/interaction"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/presentation"
-	corecallback "github.com/inipew/goultroid/internal/services/callback"
 	inlineservice "github.com/inipew/goultroid/internal/services/inline"
-	"github.com/inipew/goultroid/internal/tasks"
 )
-
-// CoreCallbackDispatcher admits callback query events into the canonical
-// callback pipeline and returns an opaque prepared execution lease.
-type CoreCallbackDispatcher interface {
-	Prepare(
-		context.Context,
-		*core.CallbackQueryEvent,
-		core.TelegramServicer,
-		func(string) (tasks.ScopeIdentity, bool),
-	) (corecallback.PreparedCallback, error)
-}
 
 type inlineQueryAPI interface {
 	MessagesSetInlineBotResults(context.Context, *tg.MessagesSetInlineBotResultsRequest) (bool, error)

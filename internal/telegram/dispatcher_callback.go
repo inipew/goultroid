@@ -182,6 +182,21 @@ func (d *Dispatcher) dispatchNativeInteraction(ctx context.Context, event *core.
 	return true
 }
 
+const unknownCallbackExpiredText = "⌛ Interaction expired. Please reopen it."
+
+func (d *Dispatcher) answerUnknownCallback(ctx context.Context, event *core.CallbackQueryEvent) {
+	if event == nil {
+		return
+	}
+	text := unknownCallbackExpiredText
+	if string(event.Data) == "noop" {
+		text = ""
+	}
+	if svc := d.getService(); svc != nil {
+		_ = svc.AnswerCallbackQuery(ctx, event.QueryID, text, false)
+	}
+}
+
 // OnBotCallbackQuery handles inline keyboard button callback queries.
 func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, update *tg.UpdateBotCallbackQuery) error {
 	release, accepted := d.admitIngress()
@@ -220,134 +235,7 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 		return nil
 	}
 
-	cbRouter := d.getCallbackRouter()
-	if cbRouter == nil {
-		if svc := d.getService(); svc != nil {
-			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Interaction service unavailable.", false)
-		}
-		return nil
-	}
-
-	prepared, prepareErr := cbRouter.Prepare(ctx, evt, d.getService(), d.resolvePluginScope)
-	if prepareErr != nil {
-		d.logger.Debug("callback admission rejected", zap.Int64("query_id", evt.QueryID), zap.Error(prepareErr))
-		return nil
-	}
-	client := d.taskClient()
-	if client != nil {
-		taskID := fmt.Sprintf("cb:%d", evt.QueryID)
-		owner := fmt.Sprintf("telegram:user:%d", evt.UserID)
-		d.inFlight.Add(1)
-		_, err := client.Submit(ctx, tasks.WorkSpec{
-			ID:               tasks.TaskID(taskID),
-			Scope:            prepared.Scope(),
-			QuotaOwner:       tasks.OwnerID(owner),
-			Pool:             "interactive",
-			Class:            tasks.PriorityInteractive,
-			OrderingKey:      callbackOrderingKey(evt),
-			ExecutionTimeout: 15 * time.Second,
-			Handler: func(taskCtx context.Context) error {
-				return prepared.Dispatch(taskCtx, evt, d.getService())
-			},
-			OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
-		})
-		if err != nil {
-			d.inFlight.Done()
-			d.logger.Warn("callback dispatch admission rejected", zap.Int64("query_id", evt.QueryID), zap.Error(err))
-			if svc := d.getService(); svc != nil {
-				_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Server is overloaded, please try again shortly.", false)
-			}
-		}
-	} else {
-		d.logger.Warn("callback execution unavailable", zap.Error(ErrTasksNotConfigured))
-		if svc := d.getService(); svc != nil {
-			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Service unavailable.", false)
-		}
-	}
-	return nil
-}
-
-// OnInlineBotCallbackQuery handles inline message button callback queries.
-func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities, update *tg.UpdateInlineBotCallbackQuery) error {
-	release, accepted := d.admitIngress()
-	if !accepted {
-		return nil
-	}
-	defer release()
-
-	if d.idempotencyMgr != nil {
-		key := fmt.Sprintf("inline_cb:%d", update.QueryID)
-		isNew, claimErr := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
-		if claimErr != nil {
-			d.logger.Error("inline callback idempotency claim failed",
-				zap.String("key", key),
-				zap.Int64("query_id", update.QueryID),
-				zap.Error(claimErr),
-			)
-			if svc := d.getService(); svc != nil {
-				_ = svc.AnswerCallbackQuery(ctx, update.QueryID, "Interaction service temporarily unavailable.", true)
-			}
-			return nil
-		}
-		if !isNew {
-			return nil
-		}
-	}
-	evt := canonicalInlineCallbackQueryEvent(update, time.Now())
-
-	bus := d.getEventBus()
-	if bus != nil && bus.HasSubscribersAtPriority(core.EventTypeCallbackQuery, core.PriorityNormal) {
-		bus.Publish(evt)
-	}
-
-	if d.dispatchNativeInteraction(ctx, evt) {
-		return nil
-	}
-
-	cbRouter := d.getCallbackRouter()
-	if cbRouter == nil {
-		if svc := d.getService(); svc != nil {
-			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Interaction service unavailable.", false)
-		}
-		return nil
-	}
-
-	prepared, prepareErr := cbRouter.Prepare(ctx, evt, d.getService(), d.resolvePluginScope)
-	if prepareErr != nil {
-		d.logger.Debug("inline callback admission rejected", zap.Int64("query_id", evt.QueryID), zap.Error(prepareErr))
-		return nil
-	}
-	client := d.taskClient()
-	if client != nil {
-		taskID := fmt.Sprintf("inline_cb:%d", evt.QueryID)
-		owner := fmt.Sprintf("telegram:user:%d", evt.UserID)
-		d.inFlight.Add(1)
-		_, err := client.Submit(ctx, tasks.WorkSpec{
-			ID:               tasks.TaskID(taskID),
-			Scope:            prepared.Scope(),
-			QuotaOwner:       tasks.OwnerID(owner),
-			Pool:             "interactive",
-			Class:            tasks.PriorityInteractive,
-			OrderingKey:      callbackOrderingKey(evt),
-			ExecutionTimeout: 15 * time.Second,
-			Handler: func(taskCtx context.Context) error {
-				return prepared.Dispatch(taskCtx, evt, d.getService())
-			},
-			OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
-		})
-		if err != nil {
-			d.inFlight.Done()
-			d.logger.Warn("inline callback dispatch admission rejected", zap.Int64("query_id", evt.QueryID), zap.Error(err))
-			if svc := d.getService(); svc != nil {
-				_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Server is overloaded, please try again shortly.", false)
-			}
-		}
-	} else {
-		d.logger.Warn("inline callback execution unavailable", zap.Error(ErrTasksNotConfigured))
-		if svc := d.getService(); svc != nil {
-			_ = svc.AnswerCallbackQuery(ctx, evt.QueryID, "Service unavailable.", false)
-		}
-	}
+	d.answerUnknownCallback(ctx, evt)
 	return nil
 }
 

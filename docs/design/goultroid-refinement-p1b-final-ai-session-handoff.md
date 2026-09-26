@@ -3,9 +3,13 @@
 Date: 2026-09-26
 Branch: `test-next`
 Current audited baseline before P1-F1-E closure: `4fb5bb77d9a0a1186eae358699b9402f7eb74db3` — `docs(callback): classify legacy ownership`
-Purpose: continue refinement from **P1-F4** through final **P4 closure** after P1-F3 retired legacy StateStore/v1 protocol; P1-F2 had no namespace migration work.
+Purpose: continue refinement from **P1-F5** through final **P4 closure** after P1-F4 removed the legacy Router/bootstrap/plugin wiring; P1-F2 had no namespace migration work.
 
 Authority rule: **always refresh current HEAD and current source first. Source/tests win over this handoff if the branch has moved.**
+
+## 2026-09-26 P1-F4 closure update
+
+P1-F4 is **CLOSED**: the legacy callback Router/Handler/CallbackContext/middleware package and all app/plugin/native/Assistant bootstrap wiring are removed. Native and Assistant ingress now own explicit non-a2 policy directly: raw `noop` receives a silent ACK; every other unknown/non-a2 callback receives the expired-interaction ACK. a2, callback idempotency/dedupe, EventBus, TaskEngine, Inline, shared limiter, RPCExecutor, and plugin generation scopes remain canonical. Next executable phase, after explicit user confirmation, is **P1-F5 — repo-wide legacy callback final acceptance**. See `docs/design/goultroid-refinement-p1f4-callback-router-reclamation.md`.
 
 ## 2026-09-26 P1-F3 closure update
 
@@ -694,7 +698,7 @@ Stop after F3 and wait for confirmation before F4.
 
 ---
 
-# 11. P1-F4 — remove legacy Router + bootstrap/plugin wiring
+# 11. P1-F4 — remove legacy Router + bootstrap/plugin wiring — CLOSED
 
 Preconditions:
 
@@ -1242,7 +1246,7 @@ internal/taskengine/
 
 Start with:
 
-> Refresh `test-next` HEAD and current source. P1-F1 is CLOSED, P1-F2 was EMPTY, and P1-F3 is CLOSED. Continue **P1-F4 — remove legacy Router + bootstrap/plugin wiring** only. Remove `callback.Router`, `callback.Handler`/options/context/middleware, plugin-manager callback registration/cleanup, app Router construction/dependency fields, native Dispatcher callback Router field/accessors/fallback, and Assistant `CoreCallbackDispatcher` bridge/fallback. Preserve a2 callback handling, callback idempotency/dedupe, EventBus publication, TaskEngine, Inline, shared limiter, RPCExecutor, and leave an explicit safe unknown/non-a2 callback ACK policy at ingress. Do not start P1-F5. Run gofmt before commit, commit/push, summarize, then STOP for confirmation. Do not check CI.
+> Refresh `test-next` HEAD and current source. P1-F1 is CLOSED, P1-F2 was EMPTY, P1-F3 is CLOSED, and P1-F4 is CLOSED. Continue **P1-F5 — repo-wide legacy callback final acceptance** only. Prove zero production import/reference to the deleted callback subsystem, verify native + Assistant a2 callback behavior and explicit unknown/noop ACK policy, verify Settings/MyXL remain zero-legacy, check plugin reload/shutdown/session invalidation/resource settling, and update the closure documentation. Do not start P2-A. Run gofmt/build/tests when an executable checkout is available; do not claim commands that did not run. Do not check CI unless explicitly requested.
 
 Important baseline:
 
@@ -1250,12 +1254,12 @@ Important baseline:
 P1-F1: CLOSED
 P1-F2: EMPTY
 P1-F3: CLOSED
-legacy StateStore: removed
-legacy v1 producer/parser: removed
-callback package: temporary Router/Handler shell only
-raw noop: terminal spinner-clear compatibility
-other non-a2: fail-closed expired ACK before TaskEngine
-NEXT executable phase: P1-F4
+P1-F4: CLOSED
+legacy callback package: removed
+legacy Router/Handler/bootstrap wiring: removed
+native unknown callback: noop silent ACK / otherwise expired ACK
+Assistant unknown callback: bounded dedupe + noop silent ACK / otherwise expired ACK
+NEXT executable phase: P1-F5
 ```
 
 ---

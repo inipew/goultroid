@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/services/callback"
 )
 
 func TestFormatHelpers(t *testing.T) {
@@ -197,8 +196,5 @@ func TestMapUserErrorMessage(t *testing.T) {
 	}
 	if got := MapUserErrorMessage(core.ErrRateLimited); !strings.Contains(got, "Too many requests") {
 		t.Errorf("expected rate limit message, got: %s", got)
-	}
-	if got := MapUserErrorMessage(callback.ErrInvalidCallbackData); !strings.Contains(got, "Invalid button action") {
-		t.Errorf("expected invalid callback message, got: %s", got)
 	}
 }

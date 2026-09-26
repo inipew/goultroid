@@ -131,7 +131,6 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	pluginManager.SetPanicReporter(zapCorePanicReporter{logger: logger.Named("plugin.panic")})
 	coreDeps.eventBus.SetTasks(coreDeps.taskEngine)
 	pluginManager.SetHookRegistrar(tgRuntime.dispatcher)
-	pluginManager.SetCallbackRegistrar(coreDeps.callbackRouter)
 	pluginManager.SetInlineRegistry(coreDeps.inlineEngine.Registry())
 	coreDeps.inlineEngine.SetFeatureCatalog(pluginManager.FeatureCatalog())
 	coreDeps.inlineEngine.SetInteractionRuntime(pluginManager.InteractionRuntime())
@@ -191,20 +190,12 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		tgRuntime.assistant.SetSettingsService(domServices.settingsService)
 		tgRuntime.assistant.SetGroupStateStore(domServices.groupState)
 		tgRuntime.assistant.SetMetricsCollector(coreDeps.metrics)
-		tgRuntime.assistant.SetCallbackRouter(coreDeps.callbackRouter)
 		tgRuntime.assistant.SetInlineEngine(coreDeps.inlineEngine)
 		tgRuntime.assistant.SetTasks(coreDeps.taskEngine)
 		tgRuntime.assistant.SetRelayIngress(domServices.pmrelayService)
 		tgRuntime.assistant.SetAudienceRegistry(domServices.pmrelayService)
 		tgRuntime.assistant.SetBroadcastService(domServices.broadcastService)
 		tgRuntime.assistant.SetGroupEventService(domServices.groupEvents)
-		tgRuntime.assistant.SetPluginScopeResolver(func(owner string) (tasks.ScopeIdentity, bool) {
-			scope, ok := pluginManager.Scope(owner)
-			if !ok {
-				return tasks.ScopeIdentity{}, false
-			}
-			return tasks.ScopeIdentity{Owner: scope.Owner(), Generation: scope.Generation()}, true
-		})
 	}
 
 	if err := migrateBuiltinFeatures(context.Background(), coreDeps.db); err != nil {

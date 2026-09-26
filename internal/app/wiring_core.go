@@ -21,7 +21,6 @@ import (
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/resource"
 	"github.com/inipew/goultroid/internal/runtime"
-	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/services/localization"
 	"github.com/inipew/goultroid/internal/services/ratelimit"
@@ -62,11 +61,6 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 
 	cmdLimiter := ratelimit.New(ratelimit.Policy{Limit: 60, Window: time.Minute, Burst: 30}, 5*time.Minute)
 	interLimiter := ratelimit.New(ratelimit.Policy{Limit: 30, Window: time.Minute, Burst: 10}, 5*time.Minute)
-
-	callbackRouter := callback.NewRouter(logger)
-	callbackRouter.SetMetrics(metrics)
-	callbackRouter.SetLimiter(interLimiter)
-	callbackRouter.SetTimeout(15 * time.Second)
 
 	// Inline handlers are registered transactionally from FeatureSpec providers
 	// by plugin.Manager. The engine owns execution/caching only; it is no longer
@@ -158,7 +152,6 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 		eventBus:        eventBus,
 		metrics:         metrics,
 		localizer:       localizer,
-		callbackRouter:  callbackRouter,
 		inlineEngine:    inlineEngine,
 		cmdLimiter:      cmdLimiter,
 		interLimiter:    interLimiter,

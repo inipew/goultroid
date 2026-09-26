@@ -38,7 +38,6 @@ import (
 var (
 	ErrBotTokenRequired           = errors.New("assistant/client: BOT_TOKEN is required")
 	ErrAlreadyRunning             = errors.New("assistant/client: client already running")
-	ErrCallbackTasksNotConfigured = errors.New("assistant/client: task client is required for callback execution")
 )
 
 type Client interface {
@@ -69,7 +68,6 @@ type AssistantClient struct {
 	resolver              *peer.DefaultResolver
 	interaction           *interaction.ClientInteraction
 	cmdRouter             *command.Router
-	callbackDispatcher    CoreCallbackDispatcher
 	callbackDeduper       *callbackQueryDeduper
 	metrics               core.MetricsCollector
 	ownerID               int64
@@ -77,7 +75,6 @@ type AssistantClient struct {
 	settingsSvc           *settings.Service
 	tasks                 tasks.Client
 	delayedActions        core.DelayedActionScheduler
-	pluginScopeResolver   func(string) (tasks.ScopeIdentity, bool)
 	inlineEngine          *inlineService.Engine
 	deepLinks             *assistantdeeplink.Router
 	pmRelay               pmrelay.Ingress
@@ -214,9 +211,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	featureCatalog := c.featureCatalog
 	interactionSessions := c.interactionSessions
 	actionDispatcher := c.actionDispatcher
-	callbackDispatcher := c.callbackDispatcher
 	callbackDeduper := c.callbackDeduper
-	pluginScopeResolver := c.pluginScopeResolver
 	taskClient := c.tasks
 	pmRelay := c.pmRelay
 	audience := c.audience
@@ -287,10 +282,10 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 
 	deps := UpdateHandlerDeps{
 		Logger: c.logger, RateLimiter: c.rateLimiter, Resolver: c.resolver,
-		CmdRouter: c.cmdRouter, CallbackDispatcher: callbackDispatcher, CallbackDeduper: callbackDeduper,
+		CmdRouter: c.cmdRouter, CallbackDeduper: callbackDeduper,
 		Interaction: c.interaction, CacheEntities: c.CacheEntities, IsShuttingDown: c.shuttingDown.Load,
 		InlineEngine: c.inlineEngine, InlineService: inlineQueryService, Tasks: taskClient,
-		PluginScopeResolver: pluginScopeResolver, InteractionIngress: ingress,
+		InteractionIngress: ingress,
 		RelayIngress:     relayIngress,
 		AudienceRegistry: audience,
 		GroupEvents:      groupEvents,
@@ -510,12 +505,6 @@ func (c *AssistantClient) SetDelayedActions(scheduler core.DelayedActionSchedule
 		c.cmdRouter.SetDelayedActions(scheduler)
 	}
 }
-func (c *AssistantClient) SetPluginScopeResolver(resolver func(string) (tasks.ScopeIdentity, bool)) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.pluginScopeResolver = resolver
-}
-
 func (c *AssistantClient) SetInteractionFoundation(catalog feature.Catalog, sessions *rootinteraction.Runtime, actions *rootinteraction.Dispatcher) {
 	c.mu.Lock()
 	c.featureCatalog = catalog
@@ -592,9 +581,3 @@ func (c *AssistantClient) CacheEntities(e tg.Entities) {
 	}
 }
 
-// SetCallbackRouter installs the canonical core/plugin callback dispatcher.
-func (c *AssistantClient) SetCallbackRouter(coreRouter CoreCallbackDispatcher) {
-	c.mu.Lock()
-	c.callbackDispatcher = coreRouter
-	c.mu.Unlock()
-}
