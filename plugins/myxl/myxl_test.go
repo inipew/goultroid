@@ -3,7 +3,6 @@ package myxl
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,7 +16,6 @@ import (
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/platform/network"
-	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -94,12 +92,6 @@ func (s *myXLQRService) SendMedia(ctx context.Context, _ tg.InputPeerClass, _, _
 	s.mediaSent = true
 	s.heldMediaLease = tasks.HasHeldResource(ctx, "media")
 	return &tg.Message{ID: 55}, nil
-}
-
-func TestPlugin_CallbackOptions_HandlerOwnsAnswer(t *testing.T) {
-	if opts := (&Plugin{}).CallbackOptions(); opts.AutoAnswer {
-		t.Fatal("MyXL callbacks must not be pre-answered before action-specific feedback")
-	}
 }
 
 func (m *mockTgService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
@@ -201,7 +193,6 @@ func TestMyXLPlugin_Commands(t *testing.T) {
 	netCli := network.NewService(server.Client(), nil).ForOwner("myxl")
 	client := NewClient(cfg, repo, netCli)
 	plugin := New(repo, client)
-	plugin.SetStateStore(callback.NewStateStore())
 
 	if plugin.Name() != "myxl" {
 		t.Errorf("expected name myxl, got %s", plugin.Name())
@@ -320,89 +311,6 @@ func TestMyXLPlugin_Commands(t *testing.T) {
 		t.Errorf("expected saved package listed, got %s", svc.sent)
 	}
 
-	// 13. .myxl buy OPT-FLEX-S pulsa 0
-	ctxBuy := *baseCtx
-	ctxBuy.Source = core.ExecutionAssistant
-	ctxBuy.Args = []string{"buy", "OPT-FLEX-S", "pulsa", "0"}
-	_ = cmdMap["myxl"].Handler(&ctxBuy)
-	if !strings.Contains(svc.sent, "Konfirmasi Pembelian") {
-		t.Errorf("expected purchase confirmation, got %s", svc.sent)
-	}
-	purchaseData := callbackDataFromMarkup(t, svc.lastMarkup)
-	purchaseStateStore, ok := plugin.stateStore.(*callback.StateStore)
-	if !ok || purchaseStateStore == nil {
-		t.Fatalf("purchase state writer type = %T, want *callback.StateStore", plugin.stateStore)
-	}
-	purchaseRouter := callback.NewRouter(nil, purchaseStateStore)
-	purchaseCapture := &callbackStateCaptureHandler{}
-	purchaseRegistration, err := purchaseRouter.RegisterOwned("test", purchaseCapture)
-	if err != nil {
-		t.Fatalf("register purchase capture handler: %v", err)
-	}
-	defer purchaseRegistration.Close()
-	dispatchPurchaseState := func(queryID, userID, chatID int64) error {
-		evt := &core.CallbackQueryEvent{QueryID: queryID, UserID: userID, ChatID: chatID, Data: purchaseData}
-		prepared, err := purchaseRouter.Prepare(context.Background(), evt, svc, func(owner string) (tasks.ScopeIdentity, bool) {
-			if owner != "test" {
-				return tasks.ScopeIdentity{}, false
-			}
-			return tasks.ScopeIdentity{Owner: "plugin:myxl", Generation: 1}, true
-		})
-		if err != nil {
-			return err
-		}
-		return prepared.Dispatch(context.Background(), evt, svc)
-	}
-	if err := dispatchPurchaseState(1301, 1002, 1001); !errors.Is(err, callback.ErrUnauthorized) {
-		t.Fatalf("purchase state accepted wrong user: %v", err)
-	}
-	if err := dispatchPurchaseState(1302, 1001, 1002); !errors.Is(err, callback.ErrUnauthorized) {
-		t.Fatalf("purchase state accepted wrong chat: %v", err)
-	}
-	if err := dispatchPurchaseState(1303, 1001, 1001); err != nil {
-		t.Fatalf("purchase state canonical dispatch failed: %v", err)
-	}
-	capturedPurchase, ok := purchaseCapture.state.(purchaseIntentState)
-	if !ok || capturedPurchase.MSISDN != "6281912345678" || capturedPurchase.OptionCode != "OPT-FLEX-S" {
-		t.Fatalf("unexpected canonical purchase state: %#v", purchaseCapture.state)
-	}
-	if capturedPurchase.QuotedPrice != 35000 || capturedPurchase.Method != "balance" {
-		t.Fatalf("unexpected purchase quote state: %#v", capturedPurchase)
-	}
-	if err := dispatchPurchaseState(1304, 1001, 1001); !errors.Is(err, callback.ErrStateNotFound) {
-		t.Fatalf("single-use purchase state replay error = %v, want %v", err, callback.ErrStateNotFound)
-	}
-	_ = plugin.HandleCallback(&callback.CallbackContext{
-		Ctx: ctx, Action: "buy_confirm", UserID: 1001, Service: svc,
-		Target: core.CallbackTarget{Peer: &tg.InputPeerUser{UserID: 1001}, MessageID: 10},
-		State: purchaseDraftState{
-			MSISDN: "6281912345678", OptionCode: "OPT-FLEX-S", PackageName: "Flex S 10GB",
-			Price: 35000, TokenConfirmation: "CONFIRM-TOKEN-123", Method: "balance",
-			HasOverwrite: true, OverwritePrice: 0,
-		},
-	})
-	if !strings.Contains(svc.sent, "TRX-BAL-123") {
-		t.Errorf("expected balance purchase transaction code, got %s", svc.sent)
-	}
-
-	// 14. .beli OPT-FLEX-S qris 1000
-	ctxBeli := *baseCtx
-	ctxBeli.Source = core.ExecutionAssistant
-	ctxBeli.Args = []string{"OPT-FLEX-S", "qris", "1000"}
-	_ = cmdMap["beli"].Handler(&ctxBeli)
-	_ = plugin.HandleCallback(&callback.CallbackContext{
-		Ctx: ctx, Action: "buy_confirm", UserID: 1001, Service: svc,
-		Target: core.CallbackTarget{Peer: &tg.InputPeerUser{UserID: 1001}, MessageID: 10},
-		State: purchaseDraftState{
-			MSISDN: "6281912345678", OptionCode: "OPT-FLEX-S", PackageName: "Flex S 10GB",
-			Price: 35000, TokenConfirmation: "CONFIRM-TOKEN-123", Method: "qris",
-			HasOverwrite: true, OverwritePrice: 1000,
-		},
-	})
-	if !strings.Contains(svc.sent, "TRX-QR-456") || !strings.Contains(svc.sent, "0002010102122659...") {
-		t.Errorf("expected QRIS transaction code and QR string, got %s", svc.sent)
-	}
-
 	// 15. .kuota (shortcut)
 	ctxKuota := *baseCtx
 	ctxKuota.Args = []string{}
@@ -423,20 +331,6 @@ func TestMyXLPlugin_Commands(t *testing.T) {
 		t.Errorf("expected capability myxl, got %#v", caps)
 	}
 
-	// 17. Test Callback handler
-	cbCtx := &callback.CallbackContext{
-		Ctx:       ctx,
-		Action:    "refresh",
-		State:     quotaRefreshState{MSISDN: "6281912345678", Masked: true},
-		Target:    core.CallbackTarget{Peer: &tg.InputPeerUser{UserID: 1001}, MessageID: 1},
-		Namespace: "myxl",
-		UserID:    1001,
-		Service:   svc,
-	}
-	if err := plugin.HandleCallback(cbCtx); err != nil {
-		t.Errorf("HandleCallback failed: %v", err)
-	}
-
 	// 18. .myxl del 081912345678
 	ctxDel := *baseCtx
 	ctxDel.Args = []string{"del", "081912345678"}
@@ -444,32 +338,6 @@ func TestMyXLPlugin_Commands(t *testing.T) {
 	if !strings.Contains(svc.sent, "berhasil dihapus") {
 		t.Errorf("expected deleted message, got %s", svc.sent)
 	}
-}
-
-type callbackStateCaptureHandler struct {
-	state any
-}
-
-func (h *callbackStateCaptureHandler) Namespace() string { return "myxl" }
-func (h *callbackStateCaptureHandler) HandleCallback(ctx *callback.CallbackContext) error {
-	h.state = ctx.State
-	return nil
-}
-
-func callbackDataFromMarkup(t *testing.T, markup tg.ReplyMarkupClass) []byte {
-	t.Helper()
-	inline, ok := markup.(*tg.ReplyInlineMarkup)
-	if !ok || len(inline.Rows) == 0 || len(inline.Rows[0].Buttons) == 0 {
-		t.Fatalf("unexpected refresh markup: %#v", markup)
-	}
-	button, ok := inline.Rows[0].Buttons[0].(*tg.KeyboardButtonCallback)
-	if !ok {
-		t.Fatalf("unexpected button type: %T", inline.Rows[0].Buttons[0])
-	}
-	if _, _, _, err := callback.ParseCallbackData(button.Data); err != nil {
-		t.Fatalf("parse callback data: %v", err)
-	}
-	return append([]byte(nil), button.Data...)
 }
 
 func TestReservePurchase_ConcurrencyAndDebounce(t *testing.T) {

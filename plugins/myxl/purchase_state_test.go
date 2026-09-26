@@ -6,17 +6,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/gotd/td/tg"
-	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/platform/network"
-	"github.com/inipew/goultroid/internal/services/callback"
 )
 
 type purchaseQuoteFixture struct {
@@ -152,56 +148,6 @@ func TestP1E2PurchaseIntentUsesFreshTokenAndFencesPriceDrift(t *testing.T) {
 		t.Fatalf("price drift error = %v, want ErrPurchaseQuoteChanged", err)
 	}
 
-	cb := &callback.CallbackContext{
-		Ctx:     ctx,
-		QueryID: 100,
-		UserID:  1,
-		Service: &core.MockTelegramServicer{},
-		Target: core.CallbackTarget{
-			Peer:      &tg.InputPeerUser{UserID: 1},
-			MessageID: 10,
-		},
-	}
-	if err := p.confirmPurchase(cb, intent); err != nil {
-		t.Fatalf("confirmPurchase price drift response error = %v", err)
-	}
-	var reservations int
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM myxl_purchase_requests").Scan(&reservations); err != nil {
-		t.Fatal(err)
-	}
-	if reservations != 0 {
-		t.Fatalf("price drift created %d purchase reservations, want 0", reservations)
-	}
-}
-
-func TestP1E2LegacyPurchaseDraftConvertsWithoutTrustingSnapshotAuthority(t *testing.T) {
-	legacy := purchaseDraftState{
-		MSISDN:            "6281912345678",
-		OptionCode:        "OPT-A",
-		PackageName:       "Stale Package Name",
-		Price:             25000,
-		TokenConfirmation: "STALE-TOKEN",
-		Method:            "balance",
-		WalletNumber:      "6281912345678",
-		OverwritePrice:    1000,
-		HasOverwrite:      true,
-	}
-	intent, ok := purchaseIntentFromCallbackState(legacy)
-	if !ok {
-		t.Fatal("legacy draft was not accepted for compatibility")
-	}
-	if intent.MSISDN != legacy.MSISDN || intent.OptionCode != legacy.OptionCode || intent.QuotedPrice != legacy.Price {
-		t.Fatalf("compatibility intent = %+v", intent)
-	}
-	if intent.WalletNumber != "" {
-		t.Fatalf("non-wallet method retained wallet number %q", intent.WalletNumber)
-	}
-	typ := reflect.TypeOf(intent)
-	for _, forbidden := range []string{"TokenConfirmation", "PackageName", "Price"} {
-		if _, exists := typ.FieldByName(forbidden); exists {
-			t.Fatalf("purchaseIntentState must not contain legacy authority field %s", forbidden)
-		}
-	}
 }
 
 func TestP1E2PurchaseIntentValidationFailsClosed(t *testing.T) {

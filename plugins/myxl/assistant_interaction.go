@@ -26,8 +26,9 @@ const (
 	assistantConfirmationTTL = purchaseConfirmationTTL
 	assistantActionSlotCount = 32
 
-	assistantScreenHome  = "home"
-	assistantScreenInput = "input"
+	assistantScreenHome     = "home"
+	assistantScreenInput    = "input"
+	assistantScreenCheckout = "checkout"
 )
 
 type assistantState struct {
@@ -57,6 +58,13 @@ func (p *Plugin) FeatureSpec() feature.Spec {
 			ID:          assistantScreenInput,
 			Kind:        feature.InteractionScreen,
 			Description: "MyXL bounded free-form input",
+			Surfaces:    execution.SurfaceAssistant,
+			Policy:      policy,
+		},
+		{
+			ID:          assistantScreenCheckout,
+			Kind:        feature.InteractionScreen,
+			Description: "MyXL direct purchase checkout",
 			Surfaces:    execution.SurfaceAssistant,
 			Policy:      policy,
 		},
@@ -210,6 +218,52 @@ func (p *Plugin) openAssistant(cmd *core.Context) error {
 		ActorID:   cmd.SenderID(),
 		State:     state,
 		TTL:       assistantTTL,
+		Target:    target,
+		View:      view,
+	})
+	return err
+}
+
+func (p *Plugin) openAssistantPurchaseConfirmation(
+	cmd *core.Context,
+	intent purchaseIntentState,
+	quote purchaseCheckoutPreview,
+) error {
+	if p == nil || cmd == nil || cmd.PeerID == nil || cmd.SenderID() == 0 {
+		return fmt.Errorf("myxl: assistant purchase target unavailable")
+	}
+	rt := p.currentAssistantRuntime()
+	if rt.Engine == nil || rt.Admit == nil {
+		return fmt.Errorf("myxl: assistant runtime unavailable")
+	}
+	intent, err := normalizePurchaseIntent(intent)
+	if err != nil {
+		return err
+	}
+	chatID := cmd.ChatID()
+	if chatID == 0 {
+		chatID = cmd.SenderID()
+	}
+	target := presentationtelegram.MessageTarget{Peer: cmd.PeerID, ChatID: chatID}
+	if err := rt.Admit(p.Name(), feature.InteractionScreen, assistantScreenCheckout, cmd.SenderID(), target); err != nil {
+		return err
+	}
+	screen, err := p.menuMgr.BuildCheckoutScreen(quote)
+	if err != nil {
+		return err
+	}
+	state, view, err := p.assistantScreen(assistantState{
+		Draft:   &intent,
+		Sustain: false,
+	}, screen)
+	if err != nil {
+		return err
+	}
+	_, err = rt.Engine.Begin(cmd.Ctx, orchestration.BeginRequest{
+		FeatureID: p.Name(),
+		ActorID:   cmd.SenderID(),
+		State:     state,
+		TTL:       assistantConfirmationTTL,
 		Target:    target,
 		View:      view,
 	})

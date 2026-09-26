@@ -18,14 +18,12 @@ func TestAssistantV2FeatureSpecIsPrivateOwnerOnly(t *testing.T) {
 	if spec.ID != "myxl" {
 		t.Fatalf("feature id = %q, want myxl", spec.ID)
 	}
-	if len(spec.Interactions) != assistantActionSlotCount+2 {
-		t.Fatalf("interaction count = %d, want %d", len(spec.Interactions), assistantActionSlotCount+2)
-	}
-
+	assistantCount := 0
 	for _, interaction := range spec.Interactions {
 		if !interaction.Surfaces.Supports(execution.SourceAssistant) {
-			t.Fatalf("%s does not expose Assistant", interaction.ID)
+			continue
 		}
+		assistantCount++
 		if !interaction.Policy.PrivateOnly {
 			t.Fatalf("%s is not private-only", interaction.ID)
 		}
@@ -35,6 +33,9 @@ func TestAssistantV2FeatureSpecIsPrivateOwnerOnly(t *testing.T) {
 		if interaction.Policy.Invocation.Assistant != core.InvocationSelfOnly {
 			t.Fatalf("%s assistant invocation = %v, want self-only", interaction.ID, interaction.Policy.Invocation.Assistant)
 		}
+	}
+	if want := assistantActionSlotCount + 3; assistantCount != want {
+		t.Fatalf("Assistant interaction count = %d, want %d", assistantCount, want)
 	}
 }
 
@@ -99,9 +100,6 @@ func TestAssistantV2OwnerBoundLifetimePolicy(t *testing.T) {
 	if assistantTTL != 24*time.Hour {
 		t.Fatalf("assistantTTL = %v, want 24h", assistantTTL)
 	}
-	if myxlCallbackTTL != 24*time.Hour {
-		t.Fatalf("myxlCallbackTTL = %v, want 24h", myxlCallbackTTL)
-	}
 	if assistantInputTTL != 2*time.Minute {
 		t.Fatalf("assistantInputTTL = %v, want 2m", assistantInputTTL)
 	}
@@ -152,5 +150,46 @@ func TestP4AssistantDestructiveConfirmationIsShortLivedAndRevisionBound(t *testi
 		view.Rows[0][0].ActionID != assistantSlotID(0) ||
 		view.Rows[0][1].ActionID != assistantSlotID(1) {
 		t.Fatalf("confirmation view rows=%+v", view.Rows)
+	}
+}
+
+func TestP1E4AssistantDirectPurchaseCheckoutCompilesA2State(t *testing.T) {
+	p := &Plugin{}
+	p.menuMgr = NewMenuManager(p)
+	intent := purchaseIntentState{
+		MSISDN:      "6281912345678",
+		OptionCode:  "OPT-A",
+		Method:      "balance",
+		QuotedPrice: 25000,
+	}
+	quote := purchaseCheckoutPreview{
+		Intent:         intent,
+		PackageName:    "Paket A",
+		CanonicalPrice: 25000,
+		EffectivePrice: 25000,
+	}
+	screen, err := p.menuMgr.BuildCheckoutScreen(quote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, view, err := p.assistantScreen(assistantState{Draft: &intent}, screen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := decodeAssistantState(raw)
+	if state.Draft == nil || state.Draft.OptionCode != "OPT-A" || state.Draft.QuotedPrice != 25000 {
+		t.Fatalf("checkout state draft=%+v", state.Draft)
+	}
+	if len(state.Slots) != 2 || state.Slots[0] != "myxl:checkout" || state.Slots[1] != "myxl:cancel_draft" {
+		t.Fatalf("checkout slots=%v", state.Slots)
+	}
+	if len(view.Rows) != 1 || len(view.Rows[0]) != 2 {
+		t.Fatalf("checkout rows=%+v", view.Rows)
+	}
+	if view.Rows[0][0].ActionID != assistantSlotID(0) || view.Rows[0][1].ActionID != assistantSlotID(1) {
+		t.Fatalf("checkout action IDs=%q,%q", view.Rows[0][0].ActionID, view.Rows[0][1].ActionID)
+	}
+	if strings.Contains(view.Text, "v1:myxl") || strings.Contains(view.Text, "myxl:checkout") {
+		t.Fatalf("checkout presentation leaked transport/internal callback data: %q", view.Text)
 	}
 }

@@ -46,7 +46,7 @@ func TestP1E2PurchaseIntentRetainsNoSettlementAuthority(t *testing.T) {
 func TestP1E2BothPurchaseConfirmPathsResolveFreshBeforeReserve(t *testing.T) {
 	root := repositoryRoot(t)
 	for _, rel := range []string{
-		filepath.Join("plugins", "myxl", "myxl.go"),
+		filepath.Join("plugins", "myxl", "native_interaction.go"),
 		filepath.Join("plugins", "myxl", "assistant_interaction.go"),
 	} {
 		raw, err := os.ReadFile(filepath.Join(root, rel))
@@ -58,25 +58,6 @@ func TestP1E2BothPurchaseConfirmPathsResolveFreshBeforeReserve(t *testing.T) {
 		reserve := strings.Index(source, "ReservePurchase(")
 		if resolve < 0 || reserve < 0 || resolve > reserve {
 			t.Fatalf("%s must fresh-resolve purchase intent before ReservePurchase", rel)
-		}
-	}
-}
-
-func TestP1E2DoesNotMigrateNativePurchaseButtonsYet(t *testing.T) {
-	root := repositoryRoot(t)
-	path := filepath.Join(root, "plugins", "myxl", "myxl.go")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	source := string(raw)
-	for _, retained := range []string{
-		`EncodeCallbackData("myxl", "buy_confirm"`,
-		`EncodeCallbackData("myxl", "buy_cancel"`,
-		"RequiresCallbackState",
-	} {
-		if !strings.Contains(source, retained) {
-			t.Fatalf("P1-E2 must retain legacy purchase transport %q until P1-E3", retained)
 		}
 	}
 }

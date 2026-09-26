@@ -50,7 +50,7 @@ func TestP1E3NativeMyXLPurchaseProducerUsesA2(t *testing.T) {
 	}
 }
 
-func TestP1E3NativeHandleBuyCannotFallBackToLegacyState(t *testing.T) {
+func TestP1E3HandleBuyRoutesBothSurfacesToA2(t *testing.T) {
 	root := repositoryRoot(t)
 	raw, err := os.ReadFile(filepath.Join(root, "plugins", "myxl", "myxl.go"))
 	if err != nil {
@@ -66,20 +66,25 @@ func TestP1E3NativeHandleBuyCannotFallBackToLegacyState(t *testing.T) {
 		t.Fatal("handleBuy terminator missing")
 	}
 	body := source[start : start+end]
-	nativeGate := strings.Index(body, "useNativePurchase := !ctx.IsAssistant()")
-	nativeOpen := strings.Index(body, "openNativePurchaseConfirmation(")
-	legacyStore := strings.Index(body, "StoreWithScope(")
-	if nativeGate < 0 || nativeOpen < 0 || legacyStore < 0 {
-		t.Fatal("handleBuy native/legacy migration gates incomplete")
+	for _, required := range []string{
+		"ctx.IsAssistant()",
+		"openAssistantPurchaseConfirmation(",
+		"openNativePurchaseConfirmation(",
+	} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("handleBuy missing final a2 route %q", required)
+		}
 	}
-	if !(nativeGate < nativeOpen && nativeOpen < legacyStore) {
-		t.Fatal("native purchase a2 path must be selected before Assistant-only legacy callback storage")
-	}
-	if !strings.Contains(body, "Compatibility only for direct Assistant command surfaces until P1-E4") {
-		t.Fatal("legacy purchase producer must be explicitly fenced as Assistant compatibility only")
+	for _, forbidden := range []string{
+		"StoreWithScope(",
+		"EncodeCallbackData(",
+		"stateStore",
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("handleBuy retained legacy purchase transport %q", forbidden)
+		}
 	}
 }
-
 func TestP1E3FeatureSpecDeclaresNativePurchaseInteractions(t *testing.T) {
 	root := repositoryRoot(t)
 	raw, err := os.ReadFile(filepath.Join(root, "plugins", "myxl", "assistant_interaction.go"))

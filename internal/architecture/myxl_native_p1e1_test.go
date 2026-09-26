@@ -43,12 +43,4 @@ func TestP1E1MyXLNoLongerIssuesLegacyRefreshCallbacks(t *testing.T) {
 	if strings.Contains(source, `EncodeCallbackData("myxl", "refresh"`) || strings.Contains(source, "buildRefreshMarkup(") {
 		t.Fatal("MyXL native quota path still issues legacy v1 refresh callbacks")
 	}
-	for _, retained := range []string{
-		`EncodeCallbackData("myxl", "buy_confirm"`,
-		`EncodeCallbackData("myxl", "buy_cancel"`,
-	} {
-		if !strings.Contains(source, retained) {
-			t.Fatalf("P1-E1 must not migrate purchase callback %q yet", retained)
-		}
-	}
 }

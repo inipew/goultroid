@@ -40,9 +40,6 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	client := NewClient(DefaultClientConfig(), repo, nil)
 	p := New(repo, client)
 
-	if state := rt.ScopedCallbackStore(m.Manifest().ID); state != nil {
-		p.SetStateStore(state)
-	}
 	return rt.RegisterPlugin(ctx, m.Manifest(), p)
 }
 

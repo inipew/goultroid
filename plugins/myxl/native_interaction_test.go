@@ -18,7 +18,6 @@ import (
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 	nativeinteraction "github.com/inipew/goultroid/internal/interaction/native"
 	"github.com/inipew/goultroid/internal/platform/network"
-	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -106,8 +105,6 @@ func TestP1E1NativeQuotaRefreshA2Lifecycle(t *testing.T) {
 	cfg.BaseAPIURL = server.URL
 	netSvc := network.NewService(server.Client(), nil).ForOwner("myxl")
 	p := New(repo, NewClient(cfg, repo, netSvc))
-	legacy := callback.NewStateStore()
-	p.SetStateStore(legacy)
 
 	catalog := feature.NewRegistry()
 	scope1 := tasks.ScopeIdentity{Owner: "plugin:myxl", Generation: 1}
@@ -158,9 +155,6 @@ func TestP1E1NativeQuotaRefreshA2Lifecycle(t *testing.T) {
 	}
 	if err := p.handleShowQuota(command, nil); err != nil {
 		t.Fatalf("open native quota: %v", err)
-	}
-	if got := legacy.Len(); got != 0 {
-		t.Fatalf("native quota allocated %d legacy callback states, want 0", got)
 	}
 	if stats := sessions.Stats(); stats.Sessions != 1 {
 		t.Fatalf("native quota sessions=%d, want 1", stats.Sessions)
@@ -240,9 +234,6 @@ func TestP1E1NativeQuotaRefreshA2Lifecycle(t *testing.T) {
 	}
 	if handled, err := adapter.HandleCallback(ctx, nativeQuotaCallbackEvent(reloadedData, 16, ownerID, ownerID, 10, peer)); !handled || err != nil {
 		t.Fatalf("reloaded generation callback handled=%v err=%v", handled, err)
-	}
-	if got := legacy.Len(); got != 0 {
-		t.Fatalf("native quota allocated legacy state after reload: %d", got)
 	}
 }
 
@@ -335,9 +326,6 @@ func TestP1E3NativePurchaseConfirmCancelUseA2(t *testing.T) {
 	cfg := DefaultClientConfig()
 	cfg.BaseAPIURL = server.URL
 	p := New(repo, NewClient(cfg, repo, network.NewService(server.Client(), nil).ForOwner("myxl")))
-	legacy := callback.NewStateStore()
-	p.SetStateStore(legacy)
-
 	catalog := feature.NewRegistry()
 	scope := tasks.ScopeIdentity{Owner: "plugin:myxl", Generation: 1}
 	registration, err := catalog.Register(feature.Owner{ID: p.Name(), Scope: scope}, p.FeatureSpec())
@@ -390,9 +378,6 @@ func TestP1E3NativePurchaseConfirmCancelUseA2(t *testing.T) {
 
 	if err := p.handleBuy(newCommand(), []string{"OPT-A", "balance"}); err != nil {
 		t.Fatalf("open native purchase: %v", err)
-	}
-	if got := legacy.Len(); got != 0 {
-		t.Fatalf("native purchase allocated %d legacy callback states, want 0", got)
 	}
 	if stats := sessions.Stats(); stats.Sessions != 1 {
 		t.Fatalf("native purchase sessions=%d, want 1", stats.Sessions)
@@ -454,9 +439,6 @@ func TestP1E3NativePurchaseConfirmCancelUseA2(t *testing.T) {
 	}
 	if reservations != 0 {
 		t.Fatalf("price-drift confirm created %d purchase reservations, want 0", reservations)
-	}
-	if got := legacy.Len(); got != 0 {
-		t.Fatalf("native purchase allocated legacy state after confirm: %d", got)
 	}
 }
 

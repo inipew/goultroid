@@ -232,36 +232,3 @@ func (p *Plugin) resolvePurchaseDetails(ctx context.Context, intent purchaseInte
 		IdempotencyKey: key,
 	}, nil
 }
-
-func purchaseIntentFromCallbackState(state any) (purchaseIntentState, bool) {
-	switch typed := state.(type) {
-	case purchaseIntentState:
-		intent, err := normalizePurchaseIntent(typed)
-		return intent, err == nil
-	case *purchaseIntentState:
-		if typed == nil {
-			return purchaseIntentState{}, false
-		}
-		intent, err := normalizePurchaseIntent(*typed)
-		return intent, err == nil
-	case purchaseDraftState:
-		intent := purchaseIntentState{
-			MSISDN:         typed.MSISDN,
-			OptionCode:     typed.OptionCode,
-			Method:         typed.Method,
-			WalletNumber:   typed.WalletNumber,
-			QuotedPrice:    typed.Price,
-			OverwritePrice: typed.OverwritePrice,
-			HasOverwrite:   typed.HasOverwrite,
-		}
-		normalized, err := normalizePurchaseIntent(intent)
-		return normalized, err == nil
-	case *purchaseDraftState:
-		if typed == nil {
-			return purchaseIntentState{}, false
-		}
-		return purchaseIntentFromCallbackState(*typed)
-	default:
-		return purchaseIntentState{}, false
-	}
-}

@@ -11,7 +11,6 @@ import (
 
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/platform/network"
-	"github.com/inipew/goultroid/internal/services/callback"
 )
 
 func setupTestMyXLEnv(t *testing.T) (*Plugin, *httptest.Server, *SQLiteRepository) {
@@ -81,9 +80,6 @@ func setupTestMyXLEnv(t *testing.T) (*Plugin, *httptest.Server, *SQLiteRepositor
 	netCli := network.NewService(server.Client(), nil).ForOwner("myxl")
 	client := NewClient(cfg, repo, netCli)
 	plugin := New(repo, client)
-
-	stateStore := callback.NewStateStore()
-	plugin.SetStateStore(stateStore)
 
 	return plugin, server, repo
 }

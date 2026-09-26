@@ -18,27 +18,19 @@ import (
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/plugin"
-	"github.com/inipew/goultroid/internal/services/callback"
 	"github.com/inipew/goultroid/internal/tasks"
-	"github.com/inipew/goultroid/internal/ui"
-	"github.com/inipew/goultroid/internal/ui/render"
 )
 
-var (
-	_ execution.CapabilityProvider = (*Plugin)(nil)
-	_ callback.Handler             = (*Plugin)(nil)
-	_ callback.HandlerWithOptions  = (*Plugin)(nil)
-)
+var _ execution.CapabilityProvider = (*Plugin)(nil)
 
 // Plugin provides MyXL account management and quota viewing commands.
 type Plugin struct {
-	repo       Repository
-	client     *Client
-	stateStore callback.StateWriter
-	menuMgr    *MenuManager
-	files      *filesystem.Scope
-	tasks      tasks.Client
-	qrTaskSeq  atomic.Uint64
+	repo      Repository
+	client    *Client
+	menuMgr   *MenuManager
+	files     *filesystem.Scope
+	tasks     tasks.Client
+	qrTaskSeq atomic.Uint64
 
 	assistantMu      sync.RWMutex
 	assistantRuntime interaction.DriverRuntime
@@ -56,18 +48,6 @@ type quotaRefreshState struct {
 	Masked bool
 }
 
-type purchaseDraftState struct {
-	MSISDN            string
-	OptionCode        string
-	PackageName       string
-	Price             int64
-	TokenConfirmation string
-	Method            string
-	WalletNumber      string
-	OverwritePrice    int64
-	HasOverwrite      bool
-}
-
 // New creates a new MyXL plugin instance.
 func New(repo Repository, client *Client) *Plugin {
 	if client == nil {
@@ -79,11 +59,6 @@ func New(repo Repository, client *Client) *Plugin {
 	}
 	p.menuMgr = NewMenuManager(p)
 	return p
-}
-
-// SetStateStore configures the callback state store.
-func (p *Plugin) SetStateStore(store callback.StateWriter) {
-	p.stateStore = store
 }
 
 // SetTaskClient configures staged TaskEngine access for scarce QR media sends.
@@ -99,31 +74,6 @@ func (p *Plugin) MenuManager() *MenuManager {
 // Name returns the plugin identifier.
 func (p *Plugin) Name() string {
 	return "myxl"
-}
-
-// Namespace returns the callback routing namespace.
-func (p *Plugin) Namespace() string {
-	return "myxl"
-}
-
-// CallbackOptions configures immediate ack behavior for callback interactions.
-func (p *Plugin) CallbackOptions() callback.CallbackHandlerOptions {
-	// MyXL handlers return action-specific callback answers. Pre-answering here
-	// would consume Telegram's single callback acknowledgement and turn the
-	// handler's later Answer call into ErrCallbackAlreadyAnswered on Assistant.
-	return callback.CallbackHandlerOptions{AutoAnswer: false}
-}
-
-// RequiresCallbackState fails closed only for transaction actions whose opaque
-// id must resolve to a live single-use purchase draft. Other MyXL callbacks
-// intentionally mix menu/session state with stateless navigation.
-func (p *Plugin) RequiresCallbackState(action, _ string) bool {
-	switch action {
-	case "buy_confirm", "buy_cancel":
-		return true
-	default:
-		return false
-	}
 }
 
 // Description returns a summary of the plugin functionality.
@@ -638,49 +588,6 @@ func condMask(s string, mask bool) string {
 	return s
 }
 
-// HandleCallback handles inline button interactions (e.g. Refresh Kuota).
-func (p *Plugin) HandleCallback(cbCtx *callback.CallbackContext) error {
-	if cbCtx == nil {
-		return nil
-	}
-	switch cbCtx.Action {
-	case "refresh":
-		state, ok := cbCtx.State.(quotaRefreshState)
-		if !ok || state.MSISDN == "" {
-			return cbCtx.Answer("Tombol refresh tidak valid atau sudah kedaluwarsa", true)
-		}
-		cCtx, cancel := context.WithTimeout(cbCtx.Ctx, 25*time.Second)
-		defer cancel()
-		acc, err := p.repo.GetByMSISDN(cCtx, state.MSISDN)
-		if err != nil || acc == nil {
-			return cbCtx.Answer("Akun tidak ditemukan", true)
-		}
-		balance, balanceErr := p.client.GetBalance(cCtx, acc)
-		quota, quotaErr := p.client.GetQuotaDetails(cCtx, acc)
-		if balanceErr != nil && quotaErr != nil {
-			return cbCtx.Answer("Gagal memperbarui pulsa dan kuota MyXL. Silakan coba lagi.", true)
-		}
-		text := FormatQuotaResponse(acc, balance, quota, state.Masked)
-		// Compatibility only: consume old v1 refresh buttons without issuing a
-		// replacement legacy callback. New refresh buttons are native a2.
-		return cbCtx.Edit(text, nil)
-
-	case "buy_confirm":
-		intent, ok := purchaseIntentFromCallbackState(cbCtx.State)
-		if !ok {
-			return cbCtx.Answer("Draft pembelian tidak valid atau sudah kedaluwarsa", true)
-		}
-		return p.confirmPurchase(cbCtx, intent)
-
-	case "buy_cancel":
-		_ = cbCtx.Answer("Pembelian dibatalkan", false)
-		return cbCtx.Edit("✅ Pembelian dibatalkan.", nil)
-
-	default:
-		return cbCtx.Answer("Interaksi menu MyXL lama sudah tidak didukung. Buka ulang MyXL.", true)
-	}
-}
-
 func (p *Plugin) handleRefreshToken(ctx *core.Context, args []string) error {
 	cCtx, cancel := context.WithTimeout(getContext(ctx), 30*time.Second)
 	defer cancel()
@@ -998,12 +905,13 @@ func (p *Plugin) handleBuy(ctx *core.Context, args []string) error {
 		}
 	}
 
-	useNativePurchase := !ctx.IsAssistant()
-	if useNativePurchase && !p.nativePurchaseAvailable() {
+	if ctx.IsAssistant() {
+		rt := p.currentAssistantRuntime()
+		if rt.Engine == nil || rt.Admit == nil {
+			return ctx.Error("Konfirmasi pembelian Assistant a2 tidak tersedia. Transaksi tidak dijalankan.")
+		}
+	} else if !p.nativePurchaseAvailable() {
 		return ctx.Error("Konfirmasi pembelian native a2 tidak tersedia. Transaksi tidak dijalankan.")
-	}
-	if !useNativePurchase {
-		_ = ctx.Progress(fmt.Sprintf("Menyiapkan pembelian paket <code>%s</code> (metode: <code>%s</code>)...", html.EscapeString(optionCode), html.EscapeString(method)))
 	}
 
 	intent := purchaseIntentState{
@@ -1021,154 +929,14 @@ func (p *Plugin) handleBuy(ctx *core.Context, args []string) error {
 		return ctx.Fail(err, "Gagal memuat detail paket MyXL. Silakan coba lagi.")
 	}
 
-	if useNativePurchase {
-		attempted, err := p.openNativePurchaseConfirmation(ctx, intent, quote)
-		if attempted {
-			return err
-		}
-		return ctx.Error("Konfirmasi pembelian native a2 tidak tersedia. Transaksi tidak dijalankan.")
+	if ctx.IsAssistant() {
+		return p.openAssistantPurchaseConfirmation(ctx, intent, quote)
 	}
-
-	// Compatibility only for direct Assistant command surfaces until P1-E4.
-	// Native/userbot purchase confirmations are emitted exclusively through a2.
-	if p.stateStore == nil || ctx.SenderID() <= 0 {
-		return ctx.Error("Konfirmasi pembelian tidak tersedia pada sesi ini. Transaksi tidak dijalankan.")
-	}
-
-	oid := p.stateStore.StoreWithScope(intent, callback.StateScope{
-		UserID: ctx.SenderID(), ChatID: ctx.ChatID(), Namespace: p.Namespace(), SingleUse: true,
-	}, purchaseConfirmationTTL)
-	if oid == "" {
-		return ctx.Error("Gagal membuat sesi konfirmasi. Transaksi tidak dijalankan.")
-	}
-
-	preview := fmt.Sprintf(
-		"⚠️ <b>Konfirmasi Pembelian MyXL</b>\n\n<b>Paket:</b> %s\n<b>Kode:</b> <code>%s</code>\n<b>Metode:</b> <code>%s</code>\n<b>Nominal:</b> Rp %s\n\nTekan <b>Konfirmasi</b> untuk menjalankan transaksi satu kali.",
-		html.EscapeString(quote.PackageName), html.EscapeString(intent.OptionCode), html.EscapeString(strings.ToUpper(intent.Method)), formatRupiah(quote.EffectivePrice),
-	)
-	markup := render.ToTelegramMarkup(ui.Markup{Rows: []ui.ButtonRow{{
-		ui.NewCallbackButton("✅ Konfirmasi", callback.EncodeCallbackData("myxl", "buy_confirm", oid)),
-		ui.NewCallbackButton("❌ Batal", callback.EncodeCallbackData("myxl", "buy_cancel", oid)),
-	}}})
-	return ctx.Messages().EditMarkup(preview, markup)
-}
-
-func (p *Plugin) confirmPurchase(cbCtx *callback.CallbackContext, intent purchaseIntentState) error {
-	cCtx, cancel := context.WithTimeout(cbCtx.Ctx, 45*time.Second)
-	defer cancel()
-
-	resolved, err := p.resolvePurchaseIntent(cCtx, intent)
-	if err != nil {
-		if errors.Is(err, ErrPurchaseQuoteChanged) {
-			return cbCtx.Edit("⚠️ Harga paket berubah sejak halaman konfirmasi dibuat. Pembelian tidak dijalankan; buka ulang paket untuk mengonfirmasi harga terbaru.", nil)
-		}
-		return cbCtx.Edit("❌ Detail pembelian tidak lagi valid. Pembelian tidak dijalankan; buka ulang paket lalu coba lagi.", nil)
-	}
-
-	reserved, err := p.repo.ReservePurchase(
-		cCtx,
-		resolved.IdempotencyKey,
-		resolved.Intent.MSISDN,
-		resolved.Intent.OptionCode,
-		resolved.Intent.Method,
-	)
-	if err != nil {
-		return cbCtx.Edit("❌ Gagal mengamankan transaksi. Pembelian tidak dijalankan.", nil)
-	}
-	if !reserved {
-		return cbCtx.Edit("⏳ Transaksi sedang diproses atau baru saja dikonfirmasi. Mohon tunggu sejenak untuk mencegah saldo/pulsa terpotong dua kali.", nil)
-	}
-
-	var result *SettlementResult
-	switch resolved.Intent.Method {
-	case "balance":
-		result, err = p.client.SettlementBalance(cCtx, resolved.Account, resolved.Item, resolved.Overwrite)
-	case "qris":
-		result, err = p.client.SettlementQRIS(cCtx, resolved.Account, resolved.Item, resolved.Overwrite)
-	case "gopay", "ovo", "dana", "shopeepay":
-		result, err = p.client.SettlementMultipayment(
-			cCtx,
-			resolved.Account,
-			resolved.Item,
-			strings.ToUpper(resolved.Intent.Method),
-			resolved.Intent.WalletNumber,
-			resolved.Overwrite,
-		)
-	case "decoy_balance":
-		result, err = p.client.SettlementDecoy(cCtx, resolved.Account, resolved.Item, "balance", resolved.Overwrite)
-	case "decoy_qris":
-		result, err = p.client.SettlementDecoy(cCtx, resolved.Account, resolved.Item, "qris", resolved.Overwrite)
-	case "decoy_qris0":
-		result, err = p.client.SettlementDecoy(cCtx, resolved.Account, resolved.Item, "qris0", resolved.Overwrite)
-	default:
-		err = fmt.Errorf("unsupported payment method %q", resolved.Intent.Method)
-	}
-
-	if err != nil {
-		persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(cCtx), 5*time.Second)
-		_ = p.repo.FinishPurchase(persistCtx, resolved.IdempotencyKey, "UNKNOWN", "", err.Error())
-		persistCancel()
-		return cbCtx.Edit("⚠️ Hasil transaksi tidak dapat dipastikan. Transaksi tidak akan diulang otomatis; periksa riwayat MyXL sebelum mencoba lagi.", nil)
-	}
-	if result == nil {
-		persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(cCtx), 5*time.Second)
-		_ = p.repo.FinishPurchase(persistCtx, resolved.IdempotencyKey, "UNKNOWN", "", "empty settlement result")
-		persistCancel()
-		return cbCtx.Edit("⚠️ Hasil transaksi kosong dan tidak dapat dipastikan. Periksa riwayat MyXL sebelum mencoba lagi.", nil)
-	}
-	status := "FAILED"
-	if result.IsSuccess {
-		status = "SUCCESS"
-	}
-	persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(cCtx), 5*time.Second)
-	finishErr := p.repo.FinishPurchase(persistCtx, resolved.IdempotencyKey, status, result.TransactionCode, result.Message)
-	persistCancel()
-	if finishErr != nil {
-		return cbCtx.Edit("⚠️ Transaksi selesai tetapi hasilnya gagal dicatat. Periksa riwayat MyXL sebelum mencoba lagi.", nil)
-	}
-
-	var qrWarning string
-	if result.QRCode != "" {
-		qrPayload, qrErr := normalizeQRPayload(result.QRCode)
-		if qrErr != nil {
-			qrWarning = "Payload QRIS dari operator tidak valid; gambar QR tidak dibuat."
-			result.QRCode = ""
-		} else {
-			result.QRCode = qrPayload
-			if p.repo != nil {
-				now := time.Now().UTC()
-				pending := &PendingQRIS{
-					TransactionCode: result.TransactionCode,
-					IdempotencyKey:  resolved.IdempotencyKey,
-					MSISDN:          resolved.Intent.MSISDN,
-					OptionCode:      resolved.Intent.OptionCode,
-					PackageName:     resolved.PackageName,
-					Price:           resolved.EffectivePrice,
-					QRCode:          qrPayload,
-					Status:          "PENDING",
-					CreatedAt:       now,
-					ExpiresAt:       now.Add(pendingQRISTTL),
-				}
-				if err := p.repo.SavePendingQRIS(cCtx, pending); err != nil {
-					qrWarning = "QRIS berhasil dibuat tetapi gagal disimpan untuk dilihat kembali."
-				}
-			}
-		}
-	}
-
-	resText := FormatPurchaseResult(result, resolved.PackageName, resolved.EffectivePrice, strings.ToUpper(resolved.Intent.Method))
-	if err := cbCtx.Edit(resText, nil); err != nil {
+	attempted, err := p.openNativePurchaseConfirmation(ctx, intent, quote)
+	if attempted {
 		return err
 	}
-	if result.QRCode != "" && p.files != nil && p.tasks != nil && cbCtx.Service != nil && cbCtx.Target.Peer != nil {
-		if err := p.sendQRPhoto(cbCtx.Ctx, cbCtx.Service, cbCtx.Target.Peer, result.QRCode, resolved.PackageName, resolved.EffectivePrice); err != nil && qrWarning == "" {
-			qrWarning = "Transaksi selesai tetapi foto QRIS gagal dikirim."
-		}
-	}
-	if qrWarning != "" {
-		_ = cbCtx.Answer(qrWarning, true)
-	}
-	return nil
+	return ctx.Error("Konfirmasi pembelian native a2 tidak tersedia. Transaksi tidak dijalankan.")
 }
 
 func (p *Plugin) getFiles() *filesystem.Scope {
