@@ -36,6 +36,7 @@ type Dispatcher struct {
 	eventBus           *core.EventBus
 	albumBuffer        *core.AlbumBuffer
 	localizer          core.Localizer
+	localizerResolver  func(context.Context, int64, int64) core.Localizer
 	nativeInteractions NativeInteractionDispatcher
 	inlineEngine       *inline.Engine
 	normalizer         UpdateNormalizer

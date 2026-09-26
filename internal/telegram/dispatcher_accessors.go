@@ -150,6 +150,20 @@ func (d *Dispatcher) getLocalizer() core.Localizer {
 	return d.localizer
 }
 
+// SetLocalizerResolver binds a locale-specific translator to each command
+// invocation without mutating the shared process localizer.
+func (d *Dispatcher) SetLocalizerResolver(resolve func(context.Context, int64, int64) core.Localizer) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.localizerResolver = resolve
+}
+
+func (d *Dispatcher) getLocalizerResolver() func(context.Context, int64, int64) core.Localizer {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.localizerResolver
+}
+
 // SetNativeInteractions installs the native/userbot a2 callback ingress.
 func (d *Dispatcher) SetNativeInteractions(interactions NativeInteractionDispatcher) {
 	d.mu.Lock()

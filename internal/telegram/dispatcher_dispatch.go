@@ -200,6 +200,12 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	if coreMsg.GroupedID != 0 && d.albumBuffer != nil {
 		album = d.albumBuffer.Get(coreMsg.GroupedID)
 	}
+	localizer := d.getLocalizer()
+	if resolve := d.getLocalizerResolver(); resolve != nil {
+		if bound := resolve(execCtx, sender.ID, chat.ID); bound != nil {
+			localizer = bound
+		}
+	}
 	coreCtx := &core.Context{
 		Ctx:       execCtx,
 		Command:   parsed.Name,
@@ -213,7 +219,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		Svc:       d.getService(),
 		PeerID:    peerInput,
 		Resolver:  d.getResolver(),
-		Localizer: d.getLocalizer(),
+		Localizer: localizer,
 		EventBus:  d.getEventBus(),
 	}
 
