@@ -176,53 +176,53 @@ func (p *Plugin) handleNativeHelp(ctx *core.Context, prefix string, source execu
 				usage = prefix + cmd.Name
 			}
 
-			card := ui.NewCard(fmt.Sprintf("Command: %s%s", prefix, cmd.Name)).WithIcon("📖")
+			card := ui.NewCard(ctx.T("help.command_title", prefix+cmd.Name)).WithIcon("📖")
 			if cmd.Description != "" {
 				card.WithHeader(cmd.Description)
 			}
-			card.AddField("Category", category).
-				AddField("Permission", ui.Badge(cmd.Permission)).
-				AddField("Invocation", ui.Code(cmd.EffectiveInvocation(ctx.Source).String())).
-				AddField("Usage", ui.Code(usage)).
-				AddField("Aliases", aliasesStr)
+			card.AddField(ctx.T("help.field.category"), category).
+				AddField(ctx.T("help.field.permission"), ui.Badge(cmd.Permission)).
+				AddField(ctx.T("help.field.invocation"), ui.Code(cmd.EffectiveInvocation(ctx.Source).String())).
+				AddField(ctx.T("help.field.usage"), ui.Code(usage)).
+				AddField(ctx.T("help.field.aliases"), aliasesStr)
 			if groupAuth := groupAuthorizationLabel(cmd.GroupAuthorization); groupAuth != "" {
-				card.AddField("Group Authorization", ui.Code(groupAuth))
+				card.AddField(ctx.T("help.field.group_authorization"), ui.Code(groupAuth))
 			}
 
 			if cmd.Cooldown > 0 {
-				card.AddField("Cooldown", cmd.Cooldown.String())
+				card.AddField(ctx.T("help.field.cooldown"), cmd.Cooldown.String())
 			}
 			if cmd.Timeout > 0 {
-				card.AddField("Timeout", cmd.Timeout.String())
+				card.AddField(ctx.T("help.field.timeout"), cmd.Timeout.String())
 			}
 
 			var scope []string
 			if cmd.GroupOnly {
-				scope = append(scope, "Groups only")
+				scope = append(scope, ctx.T("help.scope.groups_only"))
 			}
 			if cmd.PrivateOnly {
-				scope = append(scope, "PM only")
+				scope = append(scope, ctx.T("help.scope.pm_only"))
 			}
 			if cmd.ReplyOnly {
-				scope = append(scope, "Requires reply")
+				scope = append(scope, ctx.T("help.scope.requires_reply"))
 			}
 			if len(scope) > 0 {
-				card.AddField("Constraints", strings.Join(scope, ", "))
+				card.AddField(ctx.T("help.field.constraints"), strings.Join(scope, ", "))
 			}
-			card.WithFooter(fmt.Sprintf("<i>Run with <code>%s%s</code></i>", prefix, cmd.Name))
+			card.WithFooter(ctx.T("help.run_with", prefix+cmd.Name))
 			return sendResult(ctx, card.Render())
 		}
 
 		matchedCat, catCmds := p.getCategoryCommands(target, source)
 		if matchedCat != "" {
-			return sendResult(ctx, p.renderCategoryCard(matchedCat, catCmds, prefix))
+			return sendResult(ctx, p.renderCategoryCard(ctx, matchedCat, catCmds, prefix))
 		}
 
-		return sendResult(ctx, ui.Error(fmt.Sprintf("Command or module %q not found.", ctx.Args[0])))
+		return sendResult(ctx, ui.Error(ctx.T("help.not_found", ctx.Args[0])))
 	}
 
 	categories, catNames := p.getCategoryNames(source)
-	return sendResult(ctx, p.renderOverviewWithCategories(prefix, categories, catNames, source))
+	return sendResult(ctx, p.renderOverviewWithCategories(ctx, prefix, categories, catNames, source))
 }
 
 func (p *Plugin) openUserbotHelp(ctx *core.Context, prefix string) (bool, error) {
@@ -248,7 +248,7 @@ func (p *Plugin) openUserbotHelp(ctx *core.Context, prefix string) (bool, error)
 		if selfinline.FallbackSafe(err) {
 			return false, nil
 		}
-		return true, ctx.Status("Interactive help delivery could not be confirmed. Please retry the command.")
+		return true, ctx.Status(ctx.T("help.interactive_uncertain"))
 	}
 	if ctx.Message != nil && ctx.Message.ID > 0 && ctx.Svc != nil {
 		_ = ctx.Svc.DeleteMessage(ctx.Ctx, ctx.PeerID, []int{ctx.Message.ID})
@@ -303,29 +303,29 @@ func (p *Plugin) getCategoryCommands(target string, source execution.Source) (st
 	return matchedCat, catCmds
 }
 
-func (p *Plugin) renderCategoryCard(cat string, cmds []core.Command, prefix string) string {
+func (p *Plugin) renderCategoryCard(ctx *core.Context, cat string, cmds []core.Command, prefix string) string {
 	var sb strings.Builder
 	for _, c := range cmds {
 		desc := c.Description
 		if desc == "" {
-			desc = "No description"
+			desc = ctx.T("common.no_description")
 		}
 		sb.WriteString(fmt.Sprintf("• <code>%s%s</code> — %s\n", prefix, c.Name, ui.EscapeHTML(desc)))
 	}
 
-	card := ui.NewCard(fmt.Sprintf("Module: %s", cat)).
+	card := ui.NewCard(ctx.T("help.module_title", cat)).
 		WithIcon("📂").
-		WithHeader(fmt.Sprintf("%d commands available in this module:", len(cmds))).
+		WithHeader(ctx.T("help.commands_available", len(cmds))).
 		WithRaw(sb.String()).
-		WithFooter(fmt.Sprintf("<i>Tip: Use <code>%shelp &lt;command&gt;</code> for details.</i>", prefix))
+		WithFooter(ctx.T("help.tip_details", prefix))
 	return card.Render()
 }
 
-func (p *Plugin) renderOverviewWithCategories(prefix string, categories map[string][]core.Command, catNames []string, source execution.Source) string {
+func (p *Plugin) renderOverviewWithCategories(ctx *core.Context, prefix string, categories map[string][]core.Command, catNames []string, source execution.Source) string {
 	all := p.commandsForSource(source)
 	var sb strings.Builder
-	sb.WriteString("📚 <b>GoUltroid Help</b>\n")
-	sb.WriteString(fmt.Sprintf("<i>%d commands across %d modules.</i>\n\n", len(all), len(catNames)))
+	sb.WriteString("📚 <b>" + ui.EscapeHTML(ctx.T("help.title")) + "</b>\n")
+	sb.WriteString("<i>" + ui.EscapeHTML(ctx.T("help.summary", len(all), len(catNames))) + "</i>\n\n")
 
 	for _, cat := range catNames {
 		cmds := categories[cat]
@@ -340,9 +340,6 @@ func (p *Plugin) renderOverviewWithCategories(prefix string, categories map[stri
 		sb.WriteString("\n\n")
 	}
 
-	sb.WriteString(fmt.Sprintf(
-		"💡 <i>Use <code>%shelp &lt;module&gt;</code> or <code>%shelp &lt;command&gt;</code> for details.</i>",
-		prefix, prefix,
-	))
+	sb.WriteString(ctx.T("help.tip_overview", prefix, prefix))
 	return strings.TrimSpace(sb.String())
 }

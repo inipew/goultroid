@@ -9,6 +9,7 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/presentation/selfinline"
+	"github.com/inipew/goultroid/internal/services/localization"
 )
 
 type mockService struct {
@@ -133,7 +134,8 @@ func TestHelpPlugin(t *testing.T) {
 		Source:  core.ExecutionAssistant,
 		Message: &core.Message{ID: 1},
 		Svc:     svc,
-		PeerID:  &tg.InputPeerSelf{},
+		PeerID:    &tg.InputPeerSelf{},
+		Localizer: localization.New(localization.LocaleEnglish),
 	}
 
 	// 1. Help without args -> compact category overview (bold category names, command list)
