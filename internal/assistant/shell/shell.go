@@ -211,10 +211,7 @@ type HomeModel struct {
 func HomeView(model HomeModel) presentation.View {
 	locale := shellLocale(model.Locale)
 	username := normalizedUsername(model.Username)
-	greeting := fmt.Sprintf("Hey @%s. Please browse through the options", username)
-	if locale == "id" {
-		greeting = fmt.Sprintf("Haloo @%s. Silakan telusuri opsi", username)
-	}
+	greeting := fmt.Sprintf(tr(locale, "assistant.home.greeting"), username)
 	text := "<b>GoUltroid Assistant</b>\n\n" + greeting
 
 	return presentation.View{

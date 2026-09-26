@@ -77,6 +77,11 @@ func (s *Service) loadCommonUXTranslations() {
 		"settings.notice.user_saved":          "User override saved.",
 		"settings.notice.user_reset":          "User override reset.",
 		"settings.notice.language_update_fail":"Language update failed. Retry safely.",
+		"settings.reset.title":               "Reset this user override?",
+		"settings.reset.body":                "This removes the user override and restores the inherited/default value. This action does not run until you confirm.",
+		"settings.reset.confirm":             "✅ Confirm reset",
+		"settings.reset.cancel":              "↩ Cancel",
+		"assistant.home.greeting":            "Hey @%s. Please browse through the options",
 
 		"downloader.title":                 "GoUltroid Media Downloader",
 		"downloader.inline.title":          "Interactive downloader",
@@ -187,6 +192,11 @@ func (s *Service) loadCommonUXTranslations() {
 		"settings.notice.user_saved":          "Override pengguna tersimpan.",
 		"settings.notice.user_reset":          "Override pengguna direset.",
 		"settings.notice.language_update_fail":"Pembaruan bahasa gagal. Silakan coba lagi.",
+		"settings.reset.title":               "Reset override pengguna ini?",
+		"settings.reset.body":                "Ini menghapus override pengguna dan mengembalikan nilai warisan/default. Tindakan baru dijalankan setelah Anda mengonfirmasi.",
+		"settings.reset.confirm":             "✅ Konfirmasi reset",
+		"settings.reset.cancel":              "↩ Batal",
+		"assistant.home.greeting":            "Halo @%s. Silakan telusuri opsi",
 
 		"downloader.title":                 "Pengunduh Media GoUltroid",
 		"downloader.inline.title":          "Pengunduh interaktif",

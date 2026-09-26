@@ -553,15 +553,15 @@ func SettingResetConfirmView(model SettingResetConfirmModel) presentation.View {
 	}
 	card := ui.NewCard(title).
 		WithIcon("⚠️").
-		WithHeader("Reset this user override?").
+		WithHeader(tr(locale, "settings.reset.title")).
 		AddField(tr(locale, "assistant.settings.key"), ui.Code(def.Namespace+":"+def.Key)).
-		WithRaw("This removes the user override and restores the inherited/default value. This action does not run until you confirm.")
+		WithRaw(tr(locale, "settings.reset.body"))
 	return presentation.View{
 		Text: card.Render(),
 		Rows: []presentation.Row{
 			{
-				{Text: "✅ Confirm reset", ActionID: ActionSettingResetConfirm},
-				{Text: "↩ Cancel", ActionID: ActionSettingResetCancel},
+				{Text: tr(locale, "settings.reset.confirm"), ActionID: ActionSettingResetConfirm},
+				{Text: tr(locale, "settings.reset.cancel"), ActionID: ActionSettingResetCancel},
 			},
 			{
 				{Text: tr(locale, "assistant.button.home"), ActionID: ActionHome},
