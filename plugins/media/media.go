@@ -183,11 +183,11 @@ func (p *Plugin) Commands() []core.Command {
 func (p *Plugin) handleMediaInfo(ctx *core.Context) error {
 	item := findMedia(ctx)
 	if item == nil {
-		return ctx.Status("<b>No media found!</b> Please reply to a photo, video, audio, voice, sticker, or document.")
+		return ctx.Status(ctx.T("media.info.none"))
 	}
 
 	var sb strings.Builder
-	sb.WriteString("📊 <b>Media Information</b>\n\n")
+	sb.WriteString(ctx.T("media.info.title"))
 
 	// Type
 	mediaTypeDisplay := item.Type
@@ -196,31 +196,31 @@ func (p *Plugin) handleMediaInfo(ctx *core.Context) error {
 	} else {
 		mediaTypeDisplay = "Unknown"
 	}
-	sb.WriteString(fmt.Sprintf("• <b>Type</b>: <code>%s</code>\n", core.EscapeHTML(mediaTypeDisplay)))
+	sb.WriteString(ctx.T("media.info.type", core.EscapeHTML(mediaTypeDisplay)))
 
 	// File Name
 	if item.FileName != "" {
-		sb.WriteString(fmt.Sprintf("• <b>File Name</b>: <code>%s</code>\n", core.EscapeHTML(item.FileName)))
+		sb.WriteString(ctx.T("media.info.filename", core.EscapeHTML(item.FileName)))
 	}
 
 	// MIME Type
 	if item.MimeType != "" {
-		sb.WriteString(fmt.Sprintf("• <b>MIME Type</b>: <code>%s</code>\n", core.EscapeHTML(item.MimeType)))
+		sb.WriteString(ctx.T("media.info.mime", core.EscapeHTML(item.MimeType)))
 	}
 
 	// Size
 	if item.Size > 0 {
-		sb.WriteString(fmt.Sprintf("• <b>File Size</b>: <code>%s</code> (%d bytes)\n", formatBytes(item.Size), item.Size))
+		sb.WriteString(ctx.T("media.info.size", formatBytes(item.Size), item.Size))
 	}
 
 	// Resolution
 	if item.Width > 0 && item.Height > 0 {
-		sb.WriteString(fmt.Sprintf("• <b>Resolution</b>: <code>%dx%d</code>\n", item.Width, item.Height))
+		sb.WriteString(ctx.T("media.info.resolution", item.Width, item.Height))
 	}
 
 	// Duration
 	if item.Duration > 0 {
-		sb.WriteString(fmt.Sprintf("• <b>Duration</b>: <code>%s</code>\n", formatDuration(item.Duration)))
+		sb.WriteString(ctx.T("media.info.duration", formatDuration(item.Duration)))
 	}
 
 	return ctx.Result(sb.String())
@@ -230,16 +230,16 @@ func (p *Plugin) handleMediaInfo(ctx *core.Context) error {
 func (p *Plugin) handleExtractAudio(ctx *core.Context) error {
 	item := findMedia(ctx)
 	if item == nil {
-		return ctx.Status("<b>No media found!</b> Reply to a video, audio, or document to extract audio.")
+		return ctx.Status(ctx.T("media.extract.none"))
 	}
 
 	if item.Type == "photo" || item.Type == "sticker" {
-		return ctx.Status("Cannot extract audio from a photo or sticker.")
+		return ctx.Status(ctx.T("media.extract.unsupported"))
 	}
 
 	if item.Size > 0 {
 		if err := core.ValidateMediaSize(item.Size, core.DefaultMaxExtractAudioSize); err != nil {
-			return ctx.Status(fmt.Sprintf("<b>Media too large!</b> File size (%s) exceeds extraction limit (150MB).", formatBytes(item.Size)))
+			return ctx.Status(ctx.T("media.extract.too_large", formatBytes(item.Size)))
 		}
 	}
 
@@ -247,18 +247,18 @@ func (p *Plugin) handleExtractAudio(ctx *core.Context) error {
 		_ = p.Init()
 	}
 
-	_ = ctx.Progress("<i>Downloading and extracting audio...</i>")
+	_ = ctx.Progress(ctx.T("media.extract.progress"))
 
 	files := p.getFiles()
 	tmpDir, err := files.CreateTempDir("goultroid-audio-*")
 	if err != nil {
-		return ctx.Fail(err, "Failed to create temp directory.")
+		return ctx.Fail(err, ctx.T("media.temp_failed"))
 	}
 	defer files.RemoveTempDir(tmpDir)
 
 	downloadedPath, err := ctx.DownloadMedia(tmpDir)
 	if err != nil {
-		return ctx.Fail(err, "Failed to download media.")
+		return ctx.Fail(err, ctx.T("media.download_failed"))
 	}
 
 	stat, _ := os.Stat(downloadedPath)
@@ -280,13 +280,13 @@ func (p *Plugin) handleExtractAudio(ctx *core.Context) error {
 
 	outAsset, err := p.mediaService.ExtractAudio(ctx.Ctx, inAsset, "mp3")
 	if err != nil {
-		return ctx.Fail(err, "Audio extraction failed.")
+		return ctx.Fail(err, ctx.T("media.extract.failed"))
 	}
 
 	cleanFileName := core.SanitizeFileName(item.FileName)
-	caption := fmt.Sprintf("🎵 Extracted from: <code>%s</code>", core.EscapeHTML(cleanFileName))
+	caption := ctx.T("media.extract.caption", core.EscapeHTML(cleanFileName))
 	if err := p.withTransientAsset(ctx.Ctx, outAsset, func() error { return ctx.SendAudio(outAsset.Path, caption) }); err != nil {
-		return ctx.Fail(err, "Failed to send audio.")
+		return ctx.Fail(err, ctx.T("media.extract.send_failed"))
 	}
 
 	if ctx.LastResponseID > 0 {
@@ -299,7 +299,7 @@ func (p *Plugin) handleExtractAudio(ctx *core.Context) error {
 func (p *Plugin) handleConvert(ctx *core.Context) error {
 	item := findMedia(ctx)
 	if item == nil {
-		return ctx.Status("<b>No media found!</b> Reply to a video or audio file to convert.")
+		return ctx.Status(ctx.T("media.convert.none"))
 	}
 
 	targetFormat := "mp4"
@@ -309,8 +309,8 @@ func (p *Plugin) handleConvert(ctx *core.Context) error {
 
 	mediaType, audioOnly, err := classifyConvertFormat(targetFormat)
 	if err != nil {
-		return ctx.Fail(err, fmt.Sprintf(
-			"Unsupported target format <code>%s</code>. Supported: <code>mp4, mkv, mov, webm, avi, mp3, m4a, aac, ogg, opus, flac, wav</code>.",
+		return ctx.Fail(err, ctx.T(
+			"media.convert.unsupported_format",
 			core.EscapeHTML(targetFormat),
 		))
 	}
@@ -319,18 +319,18 @@ func (p *Plugin) handleConvert(ctx *core.Context) error {
 		_ = p.Init()
 	}
 
-	_ = ctx.Progress(fmt.Sprintf("<i>Converting media to %s...</i>", core.EscapeHTML(targetFormat)))
+	_ = ctx.Progress(ctx.T("media.convert.progress", core.EscapeHTML(targetFormat)))
 
 	files := p.getFiles()
 	tmpDir, err := files.CreateTempDir("goultroid-convert-*")
 	if err != nil {
-		return ctx.Fail(err, "Failed to create temp directory.")
+		return ctx.Fail(err, ctx.T("media.temp_failed"))
 	}
 	defer files.RemoveTempDir(tmpDir)
 
 	downloadedPath, err := ctx.DownloadMedia(tmpDir)
 	if err != nil {
-		return ctx.Fail(err, "Failed to download media.")
+		return ctx.Fail(err, ctx.T("media.download_failed"))
 	}
 
 	stat, _ := os.Stat(downloadedPath)
@@ -359,12 +359,12 @@ func (p *Plugin) handleConvert(ctx *core.Context) error {
 		})
 	}
 	if err != nil {
-		return ctx.Fail(err, "Conversion failed.")
+		return ctx.Fail(err, ctx.T("media.convert.failed"))
 	}
 
-	caption := fmt.Sprintf("🎬 Converted to: <code>%s</code>", core.EscapeHTML(targetFormat))
+	caption := ctx.T("media.convert.caption", core.EscapeHTML(targetFormat))
 	if err := p.withTransientAsset(ctx.Ctx, outAsset, func() error { return sendAsset(ctx, mediaType, outAsset, caption) }); err != nil {
-		return ctx.Fail(err, "Failed to send converted media.")
+		return ctx.Fail(err, ctx.T("media.convert.send_failed"))
 	}
 
 	if ctx.LastResponseID > 0 {
@@ -377,25 +377,25 @@ func (p *Plugin) handleConvert(ctx *core.Context) error {
 func (p *Plugin) handleConvertToGIF(ctx *core.Context) error {
 	item := findMedia(ctx)
 	if item == nil {
-		return ctx.Status("<b>No media found!</b> Reply to a video to convert to GIF.")
+		return ctx.Status(ctx.T("media.gif.none"))
 	}
 
 	if p.mediaService == nil {
 		_ = p.Init()
 	}
 
-	_ = ctx.Progress("<i>Converting video to GIF...</i>")
+	_ = ctx.Progress(ctx.T("media.gif.progress"))
 
 	files := p.getFiles()
 	tmpDir, err := files.CreateTempDir("goultroid-gif-*")
 	if err != nil {
-		return ctx.Fail(err, "Failed to create temp directory.")
+		return ctx.Fail(err, ctx.T("media.temp_failed"))
 	}
 	defer files.RemoveTempDir(tmpDir)
 
 	downloadedPath, err := ctx.DownloadMedia(tmpDir)
 	if err != nil {
-		return ctx.Fail(err, "Failed to download media.")
+		return ctx.Fail(err, ctx.T("media.download_failed"))
 	}
 
 	inAsset := &storage.Asset{
@@ -411,11 +411,11 @@ func (p *Plugin) handleConvertToGIF(ctx *core.Context) error {
 
 	outAsset, err := p.mediaService.ConvertToGIF(ctx.Ctx, inAsset, media.TranscodeOptions{})
 	if err != nil {
-		return ctx.Fail(err, "GIF conversion failed.")
+		return ctx.Fail(err, ctx.T("media.gif.failed"))
 	}
 
-	if err := p.withTransientAsset(ctx.Ctx, outAsset, func() error { return sendAsset(ctx, "document", outAsset, "🎞️ Converted to GIF") }); err != nil {
-		return ctx.Fail(err, "Failed to send GIF.")
+	if err := p.withTransientAsset(ctx.Ctx, outAsset, func() error { return sendAsset(ctx, "document", outAsset, ctx.T("media.gif.caption")) }); err != nil {
+		return ctx.Fail(err, ctx.T("media.gif.send_failed"))
 	}
 
 	if ctx.LastResponseID > 0 {
@@ -428,25 +428,25 @@ func (p *Plugin) handleConvertToGIF(ctx *core.Context) error {
 func (p *Plugin) handleConvertToSticker(ctx *core.Context) error {
 	item := findMedia(ctx)
 	if item == nil {
-		return ctx.Status("<b>No media found!</b> Reply to a video or animation to make a video sticker.")
+		return ctx.Status(ctx.T("media.sticker.none"))
 	}
 
 	if p.mediaService == nil {
 		_ = p.Init()
 	}
 
-	_ = ctx.Progress("<i>Generating video sticker (WebM 512x512)...</i>")
+	_ = ctx.Progress(ctx.T("media.sticker.progress"))
 
 	files := p.getFiles()
 	tmpDir, err := files.CreateTempDir("goultroid-vstick-*")
 	if err != nil {
-		return ctx.Fail(err, "Failed to create temp directory.")
+		return ctx.Fail(err, ctx.T("media.temp_failed"))
 	}
 	defer files.RemoveTempDir(tmpDir)
 
 	downloadedPath, err := ctx.DownloadMedia(tmpDir)
 	if err != nil {
-		return ctx.Fail(err, "Failed to download media.")
+		return ctx.Fail(err, ctx.T("media.download_failed"))
 	}
 
 	inAsset := &storage.Asset{
@@ -462,7 +462,7 @@ func (p *Plugin) handleConvertToSticker(ctx *core.Context) error {
 
 	outAsset, err := p.mediaService.ConvertToSticker(ctx.Ctx, inAsset)
 	if err != nil {
-		return ctx.Fail(err, "Video sticker generation failed.")
+		return ctx.Fail(err, ctx.T("media.sticker.failed"))
 	}
 
 	if err := p.withTransientAsset(ctx.Ctx, outAsset, func() error {
@@ -471,7 +471,7 @@ func (p *Plugin) handleConvertToSticker(ctx *core.Context) error {
 		}
 		return nil
 	}); err != nil {
-		return ctx.Fail(err, "Failed to send video sticker.")
+		return ctx.Fail(err, ctx.T("media.sticker.send_failed"))
 	}
 
 	if ctx.LastResponseID > 0 {
