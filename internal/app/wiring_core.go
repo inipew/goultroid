@@ -57,7 +57,7 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 	router := core.NewRouter(cfg.Prefix)
 	eventBus := core.NewEventBus()
 	metrics := core.NewDefaultMetricsTracker()
-	localizer := localization.New("id")
+	localizer := localization.New(localization.DefaultLocale)
 
 	cmdLimiter := ratelimit.New(ratelimit.Policy{Limit: 60, Window: time.Minute, Burst: 30}, 5*time.Minute)
 	interLimiter := ratelimit.New(ratelimit.Policy{Limit: 30, Window: time.Minute, Burst: 10}, 5*time.Minute)

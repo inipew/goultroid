@@ -13,6 +13,7 @@ import (
 	"github.com/inipew/goultroid/internal/scheduler"
 	broadcastSvc "github.com/inipew/goultroid/internal/services/broadcast"
 	"github.com/inipew/goultroid/internal/services/download"
+	"github.com/inipew/goultroid/internal/services/localization"
 	"github.com/inipew/goultroid/internal/services/groupstate"
 	mediaSvc "github.com/inipew/goultroid/internal/services/media"
 	"github.com/inipew/goultroid/internal/services/mediaregistry"
@@ -51,6 +52,12 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 	}
 	settingsRepo := settings.NewSQLiteRepository(core.db.DB)
 	settingsService := settings.NewService(settingsRepo, settingsRegistry, core.eventBus)
+	if tg != nil && tg.dispatcher != nil {
+		tg.dispatcher.SetLocalizerResolver(func(ctx context.Context, userID, chatID int64) core.Localizer {
+			locale := localization.ResolveLocale(ctx, settingsService, userID, chatID)
+			return localization.Bind(core.localizer, locale)
+		})
+	}
 	groupState := groupstate.NewSQLiteStore(core.db)
 	if groupState == nil {
 		return nil, fmt.Errorf("initialize group state store")
