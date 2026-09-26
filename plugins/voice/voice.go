@@ -140,7 +140,7 @@ func (p *Plugin) playTrack(ctx *core.Context, defaultType voiceSvc.SourceType) e
 
 	source, err := resolver.ResolveInput(ctx.Ctx, ctx, query)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("%v", err))
+		return ctx.Fail(err, core.UserMessage(err))
 	}
 	if defaultType == voiceSvc.SourceVideo && source.Type == voiceSvc.SourceAudio {
 		source.Type = voiceSvc.SourceVideo
@@ -150,7 +150,7 @@ func (p *Plugin) playTrack(ctx *core.Context, defaultType voiceSvc.SourceType) e
 
 	sess, enqueued, err := p.svc.Play(ctx.Ctx, ctx.ChatID(), *source)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to start playback: %v", err))
+		return ctx.Fail(err, "Failed to start playback.")
 	}
 
 	durationStr := "Live / Unknown"
@@ -185,7 +185,7 @@ func (p *Plugin) handlePause(ctx *core.Context) error {
 		return ctx.Status("Voice service is not configured.")
 	}
 	if err := p.svc.Pause(ctx.Ctx, ctx.ChatID()); err != nil {
-		return ctx.Error(fmt.Sprintf("%v", err))
+		return ctx.Fail(err, core.UserMessage(err))
 	}
 	return ctx.EditOrReply("⏸️ <b>Voice playback paused.</b> Use <code>.resume</code> to continue.")
 }
@@ -195,7 +195,7 @@ func (p *Plugin) handleResume(ctx *core.Context) error {
 		return ctx.Status("Voice service is not configured.")
 	}
 	if err := p.svc.Resume(ctx.Ctx, ctx.ChatID()); err != nil {
-		return ctx.Error(fmt.Sprintf("%v", err))
+		return ctx.Fail(err, core.UserMessage(err))
 	}
 	return ctx.EditOrReply("▶️ <b>Voice playback resumed.</b>")
 }
@@ -206,7 +206,7 @@ func (p *Plugin) handleSkip(ctx *core.Context) error {
 	}
 	next, err := p.svc.Skip(ctx.Ctx, ctx.ChatID())
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("%v", err))
+		return ctx.Fail(err, core.UserMessage(err))
 	}
 
 	if next == nil {
@@ -221,7 +221,7 @@ func (p *Plugin) handleStop(ctx *core.Context) error {
 		return ctx.Status("Voice service is not configured.")
 	}
 	if err := p.svc.Leave(ctx.Ctx, ctx.ChatID()); err != nil {
-		return ctx.Error(fmt.Sprintf("%v", err))
+		return ctx.Fail(err, core.UserMessage(err))
 	}
 	return ctx.EditOrReply("⏹️ <b>Playback stopped and left voice chat.</b>")
 }
@@ -299,7 +299,7 @@ func (p *Plugin) handleVolume(ctx *core.Context) error {
 	}
 
 	if err := p.svc.SetVolume(ctx.Ctx, ctx.ChatID(), vol); err != nil {
-		return ctx.Error(fmt.Sprintf("%v", err))
+		return ctx.Fail(err, core.UserMessage(err))
 	}
 
 	return ctx.EditOrReply(fmt.Sprintf("🔊 <b>Volume set to:</b> <code>%d%%</code>", vol))
@@ -332,7 +332,7 @@ func (p *Plugin) handleRepeat(ctx *core.Context) error {
 	}
 
 	if err := p.svc.SetRepeatMode(ctx.Ctx, ctx.ChatID(), repMode); err != nil {
-		return ctx.Error(fmt.Sprintf("%v", err))
+		return ctx.Fail(err, core.UserMessage(err))
 	}
 
 	return ctx.EditOrReply(fmt.Sprintf("🔁 <b>Repeat mode set to:</b> <code>%s</code>", repMode))
