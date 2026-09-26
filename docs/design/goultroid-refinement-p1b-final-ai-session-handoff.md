@@ -1291,7 +1291,6 @@ At that point Goultroid returns to ordinary product development instead of archi
 ## One-line handoff
 
 ```text
-P1-F1-A/B/C/D/E CLOSED at closure commit 37f86e95; authoritative F1-E matrix finds zero remaining production legacy namespace.
-P1-F2 worklist = EMPTY.
-NEXT = P1-F3 StateStore/v1 reclamation only -> STOP before P1-F4.
+P1-F1 CLOSED; P1-F2 EMPTY; P1-F3 CLOSED; P1-F4 CLOSED at 41148cd5 with legacy callback package/Router/bootstrap removed.
+NEXT = P1-F5 repo-wide legacy callback final acceptance only -> STOP before P2-A.
 ```
