@@ -456,7 +456,7 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 	case "home", "refresh":
 		screen, err := p.menuMgr.BuildDashboardScreen(ctx.Context(), false)
 		if err != nil {
-			return ctx.Answer(fmt.Sprintf("Gagal memuat MyXL: %v", err), true)
+			return ctx.Answer("Gagal memuat MyXL. Silakan coba lagi.", true)
 		}
 		if action == "refresh" {
 			_ = ctx.Answer("🔄 Kuota & pulsa diperbarui", false)
@@ -466,14 +466,14 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 	case "detail", "quota":
 		screen, err := p.menuMgr.BuildQuotaDetailScreen(ctx.Context(), false)
 		if err != nil {
-			return ctx.Answer(fmt.Sprintf("Gagal memuat rincian: %v", err), true)
+			return ctx.Answer("Gagal memuat rincian. Silakan coba lagi.", true)
 		}
 		return p.assistantTransition(ctx, state, screen)
 
 	case "accounts":
 		screen, err := p.menuMgr.BuildAccountsScreen(ctx.Context())
 		if err != nil {
-			return ctx.Answer(fmt.Sprintf("Gagal memuat akun: %v", err), true)
+			return ctx.Answer("Gagal memuat akun. Silakan coba lagi.", true)
 		}
 		return p.assistantTransition(ctx, state, screen)
 
@@ -482,7 +482,7 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 			return ctx.Answer("", false)
 		}
 		if err := p.repo.SetActive(ctx.Context(), opaque); err != nil {
-			return ctx.Answer(fmt.Sprintf("Gagal ganti akun: %v", err), true)
+			return ctx.Answer("Gagal mengganti akun. Silakan coba lagi.", true)
 		}
 		_ = ctx.Answer("✅ Akun aktif diganti", false)
 		screen, err := p.menuMgr.BuildAccountsScreen(ctx.Context())
@@ -494,7 +494,7 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 	case "alias_pick":
 		screen, err := p.menuMgr.BuildAliasPickScreen(ctx.Context())
 		if err != nil {
-			return ctx.Answer(fmt.Sprintf("Gagal memuat akun: %v", err), true)
+			return ctx.Answer("Gagal memuat akun. Silakan coba lagi.", true)
 		}
 		return p.assistantTransition(ctx, state, screen)
 
@@ -513,7 +513,7 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 	case "del_pick":
 		screen, err := p.menuMgr.BuildDeletePickScreen(ctx.Context())
 		if err != nil {
-			return ctx.Answer(fmt.Sprintf("Gagal memuat akun: %v", err), true)
+			return ctx.Answer("Gagal memuat akun. Silakan coba lagi.", true)
 		}
 		return p.assistantTransition(ctx, state, screen)
 
@@ -532,7 +532,7 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 
 	case "del_exec":
 		if err := p.repo.Delete(ctx.Context(), opaque); err != nil {
-			return ctx.Answer(fmt.Sprintf("Gagal menghapus: %v", err), true)
+			return ctx.Answer("Gagal menghapus data. Silakan coba lagi.", true)
 		}
 		_ = ctx.Answer("✅ Akun berhasil dihapus", false)
 		screen, err := p.menuMgr.BuildAccountsScreen(ctx.Context())
@@ -547,7 +547,7 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 			return ctx.Answer("Tidak ada akun aktif", true)
 		}
 		if err := p.client.EnsureFreshToken(ctx.Context(), acc); err != nil {
-			return ctx.Answer(fmt.Sprintf("Refresh token gagal: %v", err), true)
+			return ctx.Answer("Refresh token gagal. Silakan coba lagi.", true)
 		}
 		_ = ctx.Answer("🔄 Token CIAM berhasil disegarkan", false)
 		screen, err := p.menuMgr.BuildAccountsScreen(ctx.Context())
@@ -578,7 +578,7 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		}
 		subID, err := p.client.RequestOTP(ctx.Context(), msisdn)
 		if err != nil {
-			return ctx.Answer(fmt.Sprintf("Gagal kirim ulang OTP: %v", err), true)
+			return ctx.Answer("Gagal mengirim ulang OTP. Silakan coba lagi.", true)
 		}
 		if subID != "" {
 			if existing, _ := p.repo.GetByMSISDN(ctx.Context(), msisdn); existing != nil {
@@ -599,14 +599,14 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 	case "store":
 		screen, err := p.menuMgr.BuildStoreScreen(ctx.Context())
 		if err != nil {
-			return ctx.Answer(fmt.Sprintf("Gagal memuat store: %v", err), true)
+			return ctx.Answer("Gagal memuat store. Silakan coba lagi.", true)
 		}
 		return p.assistantTransition(ctx, state, screen)
 
 	case "saved":
 		screen, err := p.menuMgr.BuildSavedPackagesScreen(ctx.Context())
 		if err != nil {
-			return ctx.Answer(fmt.Sprintf("Gagal memuat favorit: %v", err), true)
+			return ctx.Answer("Gagal memuat favorit. Silakan coba lagi.", true)
 		}
 		return p.assistantTransition(ctx, state, screen)
 
@@ -636,7 +636,7 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		}
 		screen, err := p.menuMgr.BuildFamilyPackagesScreen(ctx.Context(), acc, familyCode, page)
 		if err != nil {
-			return ctx.Answer(fmt.Sprintf("Gagal memuat paket family: %v", err), true)
+			return ctx.Answer("Gagal memuat paket family. Silakan coba lagi.", true)
 		}
 		return p.assistantTransition(ctx, state, screen)
 
@@ -661,7 +661,7 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		}
 		screen, err := p.menuMgr.BuildPackageDetailScreen(ctx.Context(), acc, optionCode)
 		if err != nil {
-			return ctx.Answer(fmt.Sprintf("Gagal memuat paket: %v", err), true)
+			return ctx.Answer("Gagal memuat paket. Silakan coba lagi.", true)
 		}
 		return p.assistantTransition(ctx, state, screen)
 
@@ -688,7 +688,7 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		state.Draft = &intent
 		screen, err := p.menuMgr.BuildCheckoutScreen(quote)
 		if err != nil {
-			return ctx.Answer(fmt.Sprintf("Gagal membuat sesi checkout: %v", err), true)
+			return ctx.Answer("Gagal membuat sesi checkout. Silakan coba lagi.", true)
 		}
 		return p.assistantTransitionWithTTL(ctx, state, assistantConfirmationTTL, screen)
 
@@ -726,7 +726,7 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 	case "pending_qris":
 		screen, err := p.menuMgr.BuildPendingQRISScreen(ctx.Context())
 		if err != nil {
-			return ctx.Answer(fmt.Sprintf("Gagal memuat QRIS: %v", err), true)
+			return ctx.Answer("Gagal memuat QRIS. Silakan coba lagi.", true)
 		}
 		return p.assistantTransition(ctx, state, screen)
 
@@ -778,7 +778,7 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 			return ctx.Answer("Layanan pengiriman foto tidak tersedia", true)
 		}
 		if err := p.sendQRPhoto(ctx.Context(), rt.Service, target.Peer, qrCode, "QRIS MyXL", 0); err != nil {
-			return ctx.Answer(fmt.Sprintf("Gagal mengirim foto QRIS: %v", err), true)
+			return ctx.Answer("Gagal mengirim foto QRIS. Silakan coba lagi.", true)
 		}
 		return ctx.Answer("✅ Foto QRIS berhasil dikirim!", false)
 
@@ -790,7 +790,7 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		}
 		details, err := p.client.GetPackageDetails(ctx.Context(), acc, optionCode)
 		if err != nil {
-			return ctx.Answer(fmt.Sprintf("Gagal membaca paket: %v", err), true)
+			return ctx.Answer("Gagal membaca paket. Silakan coba lagi.", true)
 		}
 		pkgName := optionCode
 		var price int64
@@ -801,7 +801,7 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		if err := p.repo.SavePackage(ctx.Context(), &SavedPackage{
 			MSISDN: acc.MSISDN, OptionCode: optionCode, Name: pkgName, Price: price,
 		}); err != nil {
-			return ctx.Answer(fmt.Sprintf("Gagal menyimpan favorit: %v", err), true)
+			return ctx.Answer("Gagal menyimpan favorit. Silakan coba lagi.", true)
 		}
 		return ctx.Answer("⭐ Paket berhasil disimpan ke favorit!", true)
 
@@ -827,7 +827,7 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		acc, _ := p.repo.GetActive(ctx.Context())
 		if acc != nil {
 			if err := p.repo.DeleteSavedPackage(ctx.Context(), acc.MSISDN, optionCode); err != nil {
-				return ctx.Answer(fmt.Sprintf("Gagal menghapus favorit: %v", err), true)
+				return ctx.Answer("Gagal menghapus favorit. Silakan coba lagi.", true)
 			}
 		}
 		_ = ctx.Answer("Paket dihapus dari favorit", false)
@@ -897,13 +897,13 @@ func (p *Plugin) assistantRearm(ctx *orchestration.Context, state assistantState
 func (p *Plugin) assistantInputMSISDN(ctx *orchestration.Context, state assistantState, input string) error {
 	msisdn, err := NormalizeMSISDN(input)
 	if err != nil {
-		return p.assistantRearm(ctx, state, fmt.Sprintf("⚠️ <b>Nomor HP tidak valid:</b> %s\nContoh: <code>081912345678</code> atau <code>6281912345678</code>.", html.EscapeString(err.Error())))
+		return p.assistantRearm(ctx, state, "⚠️ <b>Nomor HP tidak valid.</b>\nContoh: <code>081912345678</code> atau <code>6281912345678</code>.")
 	}
 	cCtx, cancel := context.WithTimeout(ctx.Context(), 25*time.Second)
 	defer cancel()
 	subID, err := p.client.RequestOTP(cCtx, msisdn)
 	if err != nil {
-		return p.assistantRearm(ctx, state, fmt.Sprintf("❌ <b>Gagal meminta OTP dari MyXL:</b>\n<code>%s</code>", html.EscapeString(err.Error())))
+		return p.assistantRearm(ctx, state, "❌ <b>Gagal meminta OTP dari MyXL.</b> Silakan coba lagi.")
 	}
 	existing, _ := p.repo.GetByMSISDN(cCtx, msisdn)
 	if existing == nil {
@@ -912,7 +912,7 @@ func (p *Plugin) assistantInputMSISDN(ctx *orchestration.Context, state assistan
 		existing.SubscriberID = subID
 	}
 	if err := p.repo.Save(cCtx, existing); err != nil {
-		return p.assistantRearm(ctx, state, fmt.Sprintf("❌ Gagal menyimpan sesi login: <code>%s</code>", html.EscapeString(err.Error())))
+		return p.assistantRearm(ctx, state, "❌ Gagal menyimpan sesi login. Silakan coba lagi.")
 	}
 	state.Wizard = "login_otp"
 	state.MSISDN = msisdn
@@ -932,7 +932,7 @@ func (p *Plugin) assistantInputOTP(ctx *orchestration.Context, state assistantSt
 	defer cancel()
 	tokens, err := p.client.SubmitOTP(cCtx, state.MSISDN, code)
 	if err != nil {
-		return p.assistantRearm(ctx, state, fmt.Sprintf("❌ <b>Verifikasi OTP gagal:</b>\n<code>%s</code>", html.EscapeString(err.Error())))
+		return p.assistantRearm(ctx, state, "❌ <b>Verifikasi OTP gagal.</b> Periksa OTP lalu coba lagi.")
 	}
 	acc, _ := p.repo.GetByMSISDN(cCtx, state.MSISDN)
 	if acc == nil {
@@ -948,7 +948,7 @@ func (p *Plugin) assistantInputOTP(ctx *orchestration.Context, state assistantSt
 	}
 	acc.IsActive = true
 	if err := p.repo.Save(cCtx, acc); err != nil {
-		return p.assistantRearm(ctx, state, fmt.Sprintf("⚠️ Login berhasil di CIAM tetapi gagal disimpan: <code>%s</code>", html.EscapeString(err.Error())))
+		return p.assistantRearm(ctx, state, "⚠️ Login berhasil, tetapi sesi gagal disimpan. Silakan coba lagi.")
 	}
 	screen, err := p.menuMgr.BuildDashboardScreen(cCtx, false)
 	if err != nil {
@@ -960,10 +960,10 @@ func (p *Plugin) assistantInputOTP(ctx *orchestration.Context, state assistantSt
 func (p *Plugin) assistantInputAlias(ctx *orchestration.Context, state assistantState, input string) error {
 	alias, err := normalizeAlias(input)
 	if err != nil {
-		return p.assistantRearm(ctx, state, "⚠️ "+html.EscapeString(err.Error())+".")
+		return p.assistantRearm(ctx, state, "⚠️ Alias tidak valid atau tidak dapat digunakan.")
 	}
 	if err := p.repo.SetAlias(ctx.Context(), state.MSISDN, alias); err != nil {
-		return p.assistantRearm(ctx, state, fmt.Sprintf("❌ Gagal menyimpan alias: %v", err))
+		return p.assistantRearm(ctx, state, "❌ Gagal menyimpan alias. Silakan coba lagi.")
 	}
 	screen, err := p.menuMgr.BuildAccountsScreen(ctx.Context())
 	if err != nil {
@@ -983,7 +983,7 @@ func (p *Plugin) assistantInputOptionCode(ctx *orchestration.Context, state assi
 	}
 	screen, err := p.menuMgr.BuildPackageDetailScreen(ctx.Context(), acc, optionCode)
 	if err != nil {
-		return p.assistantRearm(ctx, state, fmt.Sprintf("❌ Gagal memuat paket <code>%s</code>: <code>%s</code>", html.EscapeString(optionCode), html.EscapeString(err.Error())))
+		return p.assistantRearm(ctx, state, fmt.Sprintf("❌ Gagal memuat paket <code>%s</code>. Silakan coba lagi.", html.EscapeString(optionCode)))
 	}
 	return p.assistantTransition(ctx, assistantState{}, screen)
 }
@@ -1028,7 +1028,7 @@ func (p *Plugin) assistantInputFamily(ctx *orchestration.Context, state assistan
 	}
 	screen, err := p.menuMgr.BuildFamilyPackagesScreen(ctx.Context(), acc, familyCode, 1)
 	if err != nil {
-		return p.assistantRearm(ctx, state, fmt.Sprintf("⚠️ <b>Gagal mencari paket:</b> %v", err))
+		return p.assistantRearm(ctx, state, "⚠️ <b>Gagal mencari paket.</b> Silakan coba lagi.")
 	}
 	return p.assistantTransition(ctx, assistantState{}, screen)
 }
