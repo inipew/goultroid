@@ -1,11 +1,23 @@
 # Goultroid — Userbot / Assistant / Inline / UI Refinement AI Session Handoff
 
-Date: 2026-09-26
+Date: 2026-09-27
 Branch: `test-next`
-Current audited baseline before P1-F1-E closure: `4fb5bb77d9a0a1186eae358699b9402f7eb74db3` — `docs(callback): classify legacy ownership`
-Purpose: continue refinement from **P1-F5** through final **P4 closure** after P1-F4 removed the legacy Router/bootstrap/plugin wiring; P1-F2 had no namespace migration work.
+Current audited implementation baseline after P1-F5 acceptance fixes: `985b2ea5de7f4b3e7f7bc326fb4ef56deba4f57e` — `fix(callback): repair p1-f5 acceptance patch markers`
+Purpose: continue refinement from **P2-A** through final **P4 closure** after P1-F5 closed the repo-wide legacy callback program; P1-F2 had no namespace migration work.
 
 Authority rule: **always refresh current HEAD and current source first. Source/tests win over this handoff if the branch has moved.**
+
+## 2026-09-27 P1-F5 closure update
+
+P1-F5 is **CLOSED**. Final repo-wide acceptance found one real P1-F4 regression plus stale Router-era tests: native `OnInlineBotCallbackQuery` had been accidentally removed while the Router path was reclaimed, while old tests still expected `getCallbackRouter()` / "Interaction service unavailable." compatibility behavior. P1-F5 restored native inline ingress using only canonical a2 ownership + explicit unknown/noop ACK policy, removed the dead callback ordering helper, rewrote stale fences, added a repo-wide zero-legacy architecture gate, extended Assistant noop acceptance, and made runtime shutdown assert `Sessions/Inputs/StateBytes == 0`.
+
+Final code acceptance state before this documentation commit: `985b2ea5de7f4b3e7f7bc326fb4ef56deba4f57e`. Implementation chain: `009aec2ace7986f29797df06a625bb05990ef893` followed by `985b2ea5de7f4b3e7f7bc326fb4ef56deba4f57e`.
+
+Production legacy callback authority is frozen at zero: no callback package, Router/Handler/StateStore, legacy v1 encoder/parser, bootstrap/plugin wiring, native legacy fallback, or Assistant legacy fallback. Raw `noop` receives a silent ACK; other non-a2 data receives the expired-interaction ACK. Settings and MyXL remain a2-only. Plugin generation invalidation and shutdown/session settling remain owned by `interaction.Runtime` + `plugin.Manager`.
+
+No CI was inspected. A complete executable checkout could not be obtained because direct GitHub DNS access from the container failed, so no `gofmt`, `go build`, or `go test` command is claimed. Source-level inspection plus the committed regression/architecture gates are the acceptance evidence. See `docs/design/goultroid-refinement-p1f5-callback-final-acceptance.md`.
+
+**P1-F is globally CLOSED. NEXT = P2-A, only after explicit user confirmation.**
 
 ## 2026-09-26 P1-F4 closure update
 
@@ -54,6 +66,9 @@ f72f3e4d36a3  P1-E4 remove legacy MyXL callback stack
 122991c611c1  P1-E acceptance closure: Assistant purchase TaskEngine/revision parity
 
 1d00110be8e6  Settings final legacy callback transport retirement + Assistant Settings a2
+41148cd5d1e2  P1-F4 legacy Router/bootstrap reclamation
+009aec2ace79  P1-F5 acceptance fixes + final fences
+985b2ea5de7f  P1-F5 acceptance patch marker repair
 ```
 
 Earlier Assistant-optional redesign remains closed and must not be reopened without fresh regression evidence.
@@ -145,7 +160,7 @@ Result:
 
 - native/userbot a2 works without Assistant;
 - reuses shared `interaction.Runtime`, dispatcher, orchestration engine, TaskEngine;
-- native callback ingress checks a2 before legacy router;
+- native callback ingress checks a2 before the explicit unknown/noop ACK policy;
 - malformed `a2:` is owned/fail-closed;
 - actor/chat/message/revision/generation validation;
 - plugin lifecycle bind/rebind through `nativeinteraction.FeatureDriver`;
@@ -334,27 +349,23 @@ Final MyXL production scan at closure: 14 production Go files, zero legacy callb
 
 ## Critical current state
 
-P1-F is **not yet globally closed**.
+P1-F is **globally CLOSED through P1-F5**.
 
-Known-zero domains:
+Final current truth:
 
 ```text
-plugins/myxl      zero legacy callback production surface
-plugins/settings  zero legacy callback production surface
+plugins/myxl       zero legacy callback production surface
+plugins/settings   zero legacy callback production surface
+production repo    zero legacy callback package/Router/Handler/StateStore/v1 authority
+native callback    a2 -> noop silent ACK / unknown expired ACK
+Assistant callback a2 -> bounded dedupe + InteractionIngress; non-a2 -> noop/expired ACK
 ```
 
-Unknown:
-
-- remaining plugins/features that still import or implement legacy callback APIs;
-- remaining producers of v1 payloads;
-- remaining consumers/Router registrations;
-- remaining StateStore ownership;
-- bootstrap/dispatcher dependencies on legacy Router;
-- generic utilities inside `internal/services/callback` that may still have production callers.
-
-Therefore the next session must **not** jump directly to deleting `internal/services/callback`.
+The P1-F5 architecture fence prevents reintroduction of the deleted production authority. Historical P1-F1/P1-F2/P1-F3/P1-F4 sections below remain migration history, not open work.
 
 ---
+
+# 8. P1-F1---
 
 # 8. P1-F1 — inventory/freeze all repo-wide legacy callback callers
 
@@ -744,9 +755,15 @@ Stop after F4 and wait for confirmation before F5.
 
 ---
 
-# 12. P1-F5 — repo-wide legacy callback final acceptance
+# 12. P1-F5 — repo-wide legacy callback final acceptance — CLOSED
 
-Run source and lifecycle acceptance.
+Final code acceptance baseline: `985b2ea5de7f4b3e7f7bc326fb4ef56deba4f57e`.
+
+P1-F5 completed source/lifecycle acceptance and repaired the only production regression found during the audit: P1-F4 had accidentally dropped the native inline callback method while deleting the legacy Router branch. The restored method preserves ingress admission, callback idempotency, EventBus publication, native a2 ownership, and explicit unknown/noop ACK behavior without restoring Router, Handler, StateStore, plugin-scope legacy dispatch, or callback-specific TaskEngine execution.
+
+Final regression gates cover zero production legacy symbols/imports, Settings/MyXL zero-legacy invariants, native + Assistant unknown/noop policy, stale/wrong binding behavior through existing a2 tests, plugin generation invalidation, shutdown rejection, bounded callback dedupe, and a2 session/state settling.
+
+Historical acceptance checklist follows for reference.
 
 Architecture scan must show zero production references to the deleted legacy subsystem.
 
@@ -793,14 +810,15 @@ Resource evidence:
 - idle goroutine count not increased;
 - a2 session count settles after workload.
 
-At F5 closure:
+P1-F5 closure result:
 
-- mark P1-F CLOSED;
-- update this handoff;
-- update the main technical handoff pointer if needed;
-- record exact HEAD.
+- P1-F is CLOSED;
+- this refinement handoff is updated;
+- the main technical handoff pointer is updated;
+- implementation acceptance baseline is `985b2ea5de7f4b3e7f7bc326fb4ef56deba4f57e`;
+- P2-A remains NOT STARTED.
 
-Stop and wait for confirmation before P2-A.
+Stop and wait for explicit user confirmation before P2-A.
 
 ---
 
@@ -1246,7 +1264,7 @@ internal/taskengine/
 
 Start with:
 
-> Refresh `test-next` HEAD and current source. P1-F1 is CLOSED, P1-F2 was EMPTY, P1-F3 is CLOSED, and P1-F4 is CLOSED. Continue **P1-F5 — repo-wide legacy callback final acceptance** only. Prove zero production import/reference to the deleted callback subsystem, verify native + Assistant a2 callback behavior and explicit unknown/noop ACK policy, verify Settings/MyXL remain zero-legacy, check plugin reload/shutdown/session invalidation/resource settling, and update the closure documentation. Do not start P2-A. Run gofmt/build/tests when an executable checkout is available; do not claim commands that did not run. Do not check CI unless explicitly requested.
+> Refresh `test-next` HEAD and current source. P1-F1 is CLOSED, P1-F2 was EMPTY, P1-F3 is CLOSED, P1-F4 is CLOSED, and P1-F5 is CLOSED. Continue **P2-A — plugin hook registration simplification** only. Re-audit the current plugin/message-hook registration API, reduce capability-interface variants without changing routing/lifecycle semantics, preserve generation-scoped cleanup and canonical normalized handlers, add/update regression fences, then STOP before P2-B. Run gofmt/build/tests when an executable checkout is available; do not claim commands that did not run. Do not check CI unless explicitly requested.
 
 Important baseline:
 
@@ -1255,16 +1273,16 @@ P1-F1: CLOSED
 P1-F2: EMPTY
 P1-F3: CLOSED
 P1-F4: CLOSED
-legacy callback package: removed
-legacy Router/Handler/bootstrap wiring: removed
+P1-F5: CLOSED
+legacy callback package/Router/Handler/StateStore/v1 authority: zero in production
 native unknown callback: noop silent ACK / otherwise expired ACK
 Assistant unknown callback: bounded dedupe + noop silent ACK / otherwise expired ACK
-NEXT executable phase: P1-F5
+NEXT executable phase: P2-A
 ```
 
 ---
 
-# 24. Definition of done for the whole refinement program
+# 24. Definition of done# 24. Definition of done for the whole refinement program
 
 The program is finished when:
 
@@ -1291,6 +1309,6 @@ At that point Goultroid returns to ordinary product development instead of archi
 ## One-line handoff
 
 ```text
-P1-F1 CLOSED; P1-F2 EMPTY; P1-F3 CLOSED; P1-F4 CLOSED at 41148cd5 with legacy callback package/Router/bootstrap removed.
-NEXT = P1-F5 repo-wide legacy callback final acceptance only -> STOP before P2-A.
+P1-F1 CLOSED; P1-F2 EMPTY; P1-F3 CLOSED; P1-F4 CLOSED; P1-F5 CLOSED at code baseline 985b2ea5 with zero production legacy callback authority and repaired native inline ingress.
+NEXT = P2-A plugin hook registration simplification only -> STOP before P2-B.
 ```
