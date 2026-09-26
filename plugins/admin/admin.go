@@ -253,8 +253,7 @@ func (p *Plugin) handleBan(ctx *core.Context) error {
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
-		_ = ctx.Status("" + err.Error())
-		return err
+		return ctx.Fail(err, core.UserMessage(err))
 	}
 
 	if ctx.Perms != nil && ctx.Perms.IsOwner(targetID) {
@@ -289,8 +288,7 @@ func (p *Plugin) handleUnban(ctx *core.Context) error {
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
-		_ = ctx.Status("" + err.Error())
-		return err
+		return ctx.Fail(err, core.UserMessage(err))
 	}
 
 	if err := ctx.Unban(targetPeer); err != nil {
@@ -311,8 +309,7 @@ func (p *Plugin) handleKick(ctx *core.Context) error {
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
-		_ = ctx.Status("" + err.Error())
-		return err
+		return ctx.Fail(err, core.UserMessage(err))
 	}
 
 	if ctx.Perms != nil && ctx.Perms.IsOwner(targetID) {
@@ -342,8 +339,7 @@ func (p *Plugin) handleMute(ctx *core.Context) error {
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
-		_ = ctx.Status("" + err.Error())
-		return err
+		return ctx.Fail(err, core.UserMessage(err))
 	}
 
 	if ctx.Perms != nil && ctx.Perms.IsOwner(targetID) {
@@ -385,8 +381,7 @@ func (p *Plugin) handleUnmute(ctx *core.Context) error {
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
-		_ = ctx.Status("" + err.Error())
-		return err
+		return ctx.Fail(err, core.UserMessage(err))
 	}
 
 	if err := ctx.Unmute(targetPeer); err != nil {
@@ -436,8 +431,7 @@ func (p *Plugin) handlePromote(ctx *core.Context) error {
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
-		_ = ctx.Status("" + err.Error())
-		return err
+		return ctx.Fail(err, core.UserMessage(err))
 	}
 
 	title := ""
@@ -474,8 +468,7 @@ func (p *Plugin) handleDemote(ctx *core.Context) error {
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
-		_ = ctx.Status("" + err.Error())
-		return err
+		return ctx.Fail(err, core.UserMessage(err))
 	}
 
 	if ctx.Perms != nil && ctx.Perms.IsOwner(targetID) {
@@ -570,8 +563,7 @@ func (p *Plugin) handleWarn(ctx *core.Context) error {
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
-		_ = ctx.Status("" + err.Error())
-		return err
+		return ctx.Fail(err, core.UserMessage(err))
 	}
 
 	if ctx.Perms != nil && ctx.Perms.IsOwner(targetID) {
@@ -670,8 +662,7 @@ func (p *Plugin) handleWarns(ctx *core.Context) error {
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
-		_ = ctx.Status("" + err.Error())
-		return err
+		return ctx.Fail(err, core.UserMessage(err))
 	}
 
 	chatID := ctx.ChatID()
@@ -708,8 +699,7 @@ func (p *Plugin) handleResetWarns(ctx *core.Context) error {
 
 	targetPeer, targetID, err := ctx.ResolveTargetUser()
 	if err != nil {
-		_ = ctx.Status("" + err.Error())
-		return err
+		return ctx.Fail(err, core.UserMessage(err))
 	}
 
 	chatID := ctx.ChatID()
