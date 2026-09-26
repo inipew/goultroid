@@ -81,32 +81,66 @@ func TestP2AHookRegistrarUsesSingleRegistrationContract(t *testing.T) {
 
 func TestP2AMessageHookRegistrationContractIsShared(t *testing.T) {
 	root := repositoryRoot(t)
-	checks := map[string][]string{
-		filepath.Join(root, "internal", "core", "message_hook.go"): {
-			"type MessageHookRegistration struct {",
-			"Scope            tasks.ScopeIdentity",
-			"Priority         int",
-			"Routing          MessageHookRouting",
-			"StateGate        func(int64) bool",
-			"Handler          CanonicalMessageHookHandler",
-			"RawHandler       RawMessageHookHandler",
-			"LegacyRouting    bool",
-		},
-		filepath.Join(root, "internal", "telegram", "dispatcher_handlers.go"): {
-			"func (d *Dispatcher) RegisterMessageHook(registration core.MessageHookRegistration) (func(), error)",
-			"legacyMessageHookRouting(registration.Priority, registration.Scope)",
-		},
+	corePath := filepath.Join(root, "internal", "core", "message_hook.go")
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, corePath, nil, 0)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for path, required := range checks {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
+
+	expectedFields := map[string]struct{}{
+		"Scope":         {},
+		"Priority":      {},
+		"Routing":       {},
+		"StateGate":     {},
+		"Handler":       {},
+		"RawHandler":    {},
+		"LegacyRouting": {},
+	}
+	var registration *ast.StructType
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok {
+			continue
 		}
-		source := string(raw)
-		for _, marker := range required {
-			if !strings.Contains(source, marker) {
-				t.Errorf("P2-A shared hook contract missing %q from %s", marker, path)
+		for _, spec := range gen.Specs {
+			typeSpec, ok := spec.(*ast.TypeSpec)
+			if !ok || typeSpec.Name.Name != "MessageHookRegistration" {
+				continue
 			}
+			registration, _ = typeSpec.Type.(*ast.StructType)
+		}
+	}
+	if registration == nil {
+		t.Fatal("core.MessageHookRegistration struct missing")
+	}
+	seen := make(map[string]struct{}, len(registration.Fields.List))
+	for _, field := range registration.Fields.List {
+		for _, name := range field.Names {
+			seen[name.Name] = struct{}{}
+		}
+	}
+	if len(seen) != len(expectedFields) {
+		t.Fatalf("MessageHookRegistration fields=%v, want %v", seen, expectedFields)
+	}
+	for name := range expectedFields {
+		if _, ok := seen[name]; !ok {
+			t.Errorf("MessageHookRegistration missing field %s", name)
+		}
+	}
+
+	dispatcherPath := filepath.Join(root, "internal", "telegram", "dispatcher_handlers.go")
+	raw, err := os.ReadFile(dispatcherPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := string(raw)
+	for _, marker := range []string{
+		"func (d *Dispatcher) RegisterMessageHook(registration core.MessageHookRegistration) (func(), error)",
+		"legacyMessageHookRouting(registration.Priority, registration.Scope)",
+	} {
+		if !strings.Contains(dispatcher, marker) {
+			t.Errorf("P2-A shared hook contract missing %q from dispatcher", marker)
 		}
 	}
 }
