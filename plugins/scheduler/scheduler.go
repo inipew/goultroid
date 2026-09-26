@@ -109,7 +109,7 @@ func (p *Plugin) handleRemind(ctx *core.Context) error {
 
 	job, err := p.sched.ScheduleOnce(ctx.Ctx, chatID, peerType, accessHash, when, scheduler.ActionMessage, text, ctx.SenderID())
 	if err != nil {
-		_ = ctx.Error(fmt.Sprintf("Failed to schedule reminder: %v", err))
+		_ = ctx.Fail(err, "Failed to schedule reminder.")
 		return err
 	}
 
@@ -173,7 +173,7 @@ func (p *Plugin) handleSchedule(ctx *core.Context) error {
 	if isRecurring {
 		job, err := p.sched.ScheduleRecurring(ctx.Ctx, chatID, peerType, accessHash, dur, actionType, payload, ctx.SenderID())
 		if err != nil {
-			_ = ctx.Error(fmt.Sprintf("Failed to create recurring schedule: %v", err))
+			_ = ctx.Fail(err, "Failed to create recurring schedule.")
 			return err
 		}
 		return ctx.Success(fmt.Sprintf("Recurring schedule created. Interval: <code>%s</code>; type: <code>%s</code>; action: <code>%s</code>; job: <code>#%d</code>.", durStr, actionType, html.EscapeString(payload), job.ID))
@@ -182,7 +182,7 @@ func (p *Plugin) handleSchedule(ctx *core.Context) error {
 	when := time.Now().Add(dur)
 	job, err := p.sched.ScheduleOnce(ctx.Ctx, chatID, peerType, accessHash, when, actionType, payload, ctx.SenderID())
 	if err != nil {
-		_ = ctx.Error(fmt.Sprintf("Failed to create schedule: %v", err))
+		_ = ctx.Fail(err, "Failed to create schedule.")
 		return err
 	}
 	return ctx.Success(fmt.Sprintf("Schedule created. Due in <code>%s</code>; type: <code>%s</code>; action: <code>%s</code>; job: <code>#%d</code>.", durStr, actionType, html.EscapeString(payload), job.ID))
@@ -192,7 +192,7 @@ func (p *Plugin) handleList(ctx *core.Context) error {
 	chatID := getChatID(ctx)
 	jobs, err := p.sched.List(ctx.Ctx, chatID)
 	if err != nil {
-		_ = ctx.Error(fmt.Sprintf("Failed to list schedules: %v", err))
+		_ = ctx.Fail(err, "Failed to list schedules.")
 		return err
 	}
 	if len(jobs) == 0 {
@@ -238,7 +238,7 @@ func (p *Plugin) handleCancel(ctx *core.Context) error {
 		return err
 	}
 	if err := p.sched.CancelScoped(ctx.Ctx, ctx.SenderID(), getChatID(ctx), id); err != nil {
-		_ = ctx.Error(fmt.Sprintf("Failed to cancel job #%d: %v", id, err))
+		_ = ctx.Fail(err, fmt.Sprintf("Failed to cancel job #%d.", id))
 		return err
 	}
 	return ctx.Success(fmt.Sprintf("Scheduled job <code>#%d</code> canceled successfully.", id))
@@ -266,7 +266,7 @@ func (p *Plugin) handleSchedHistory(ctx *core.Context) error {
 	}
 	entries, err := p.sched.JobHistoryScoped(ctx.Ctx, ctx.SenderID(), getChatID(ctx), jobID, limit)
 	if err != nil {
-		_ = ctx.Error(fmt.Sprintf("Failed to fetch history for job #%d: %v", jobID, err))
+		_ = ctx.Fail(err, fmt.Sprintf("Failed to fetch history for job #%d.", jobID))
 		return err
 	}
 	if len(entries) == 0 {
