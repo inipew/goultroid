@@ -506,7 +506,7 @@ func (p *Plugin) handleSetLog(ctx *core.Context) error {
 		}
 		resolved, err := ctx.Resolver.ResolveChat(ctx.Ctx, targetRef)
 		if err != nil {
-			return ctx.Error(fmt.Sprintf("Could not resolve %q: %v", targetRef, err))
+			return ctx.Fail(err, fmt.Sprintf("Could not resolve %q.", ui.EscapeHTML(targetRef)))
 		}
 		switch peer := resolved.(type) {
 		case *tg.InputPeerChannel:
@@ -563,7 +563,7 @@ func (p *Plugin) handleSetLog(ctx *core.Context) error {
 	}
 
 	if err := p.svc.SetDestination(ctx.Ctx, dest); err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to save log destination: %v", err))
+		return ctx.Fail(err, "Failed to save log destination.")
 	}
 
 	destType := "group"
@@ -589,13 +589,13 @@ func (p *Plugin) handleLogStatus(ctx *core.Context) error {
 		if arg == "test" {
 			latency, err := p.svc.SendTestMessage(ctx.Ctx)
 			if err != nil {
-				return ctx.Error(fmt.Sprintf("<b>Log test failed:</b> %v", err))
+				return ctx.Fail(err, "<b>Log test failed.</b>")
 			}
 			return ctx.Success(fmt.Sprintf("<b>UserLog test successful!</b>\n\n• <b>Latency:</b> %s\n• <b>Destination:</b> Verified", latency.Round(time.Millisecond)))
 		}
 		if arg == "clear" || arg == "disable" || arg == "off" {
 			if err := p.svc.ClearDestination(ctx.Ctx); err != nil {
-				return ctx.Error(fmt.Sprintf("Failed to clear log destination: %v", err))
+				return ctx.Fail(err, "Failed to clear log destination.")
 			}
 			return ctx.Success("<b>Log destination disabled.</b> No logs will be sent.")
 		}
@@ -617,7 +617,7 @@ func (p *Plugin) handleLogStatus(ctx *core.Context) error {
 			return ctx.Status("Unknown category. Choose <code>tags</code>, <code>pms</code>, or <code>actions</code>.")
 		}
 		if err := p.svc.SetFeatureEnabled(ctx.Ctx, settingKey, enable); err != nil {
-			return ctx.Error(fmt.Sprintf("Failed to update setting: %v", err))
+			return ctx.Fail(err, "Failed to update log setting.")
 		}
 		status := "DISABLED"
 		if enable {
