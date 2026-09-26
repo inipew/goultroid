@@ -43,10 +43,11 @@ type Plugin struct {
 
 	assistantMu      sync.RWMutex
 	assistantRuntime interaction.DriverRuntime
+
+	native nativeRuntimeState
 }
 
 const (
-	myxlCallbackTTL   = 24 * time.Hour
 	pendingQRISTTL    = 5 * time.Minute
 	myxlQRSendTimeout = 10 * time.Second
 )
@@ -605,7 +606,10 @@ func (p *Plugin) handleShowQuota(ctx *core.Context, args []string) error {
 	}
 
 	maskMSISDN := isGroupChat(ctx.Chat)
-	_ = ctx.Progress(fmt.Sprintf("Mengambil data kuota untuk <code>%s</code>...", html.EscapeString(condMask(acc.MSISDN, maskMSISDN))))
+	useNativeRefresh := !ctx.IsAssistant() && ctx.SenderID() > 0 && p.nativeQuotaAvailable()
+	if !useNativeRefresh {
+		_ = ctx.Progress(fmt.Sprintf("Mengambil data kuota untuk <code>%s</code>...", html.EscapeString(condMask(acc.MSISDN, maskMSISDN))))
+	}
 
 	queryCtx, cancel := context.WithTimeout(cCtx, 25*time.Second)
 	defer cancel()
@@ -618,22 +622,10 @@ func (p *Plugin) handleShowQuota(ctx *core.Context, args []string) error {
 	}
 
 	respText := FormatQuotaResponse(acc, balance, quota, maskMSISDN)
-
-	// Attach an interactive refresh callback button
-	if p.stateStore != nil && ctx.SenderID() > 0 {
-		markup := p.buildRefreshMarkup(quotaRefreshState{MSISDN: acc.MSISDN, Masked: maskMSISDN}, callback.StateScope{
-			UserID: ctx.SenderID(), ChatID: ctx.ChatID(), Namespace: p.Namespace(),
-		})
-		if markup != nil {
-			chunks := core.SplitTelegramHTML(respText, myxlTelegramMessageRunes)
-			if len(chunks) == 1 && ctx.LastResponseID > 0 {
-				if err := ctx.Messages().EditMarkup(chunks[0], markup); err == nil {
-					return nil
-				}
-			}
-			if err := deliverHTMLWithMarkup(ctx, respText, markup); err == nil {
-				return nil
-			}
+	if useNativeRefresh {
+		attempted, err := p.openNativeQuotaRefresh(ctx, quotaRefreshState{MSISDN: acc.MSISDN, Masked: maskMSISDN}, respText)
+		if attempted {
+			return err
 		}
 	}
 
@@ -645,20 +637,6 @@ func condMask(s string, mask bool) string {
 		return MaskMSISDN(s)
 	}
 	return s
-}
-
-func (p *Plugin) buildRefreshMarkup(state quotaRefreshState, scope callback.StateScope) tg.ReplyMarkupClass {
-	if p.stateStore == nil || scope.UserID <= 0 {
-		return nil
-	}
-	oid := p.stateStore.StoreWithScope(state, scope, myxlCallbackTTL)
-	if oid == "" {
-		return nil
-	}
-	row := ui.ButtonRow{
-		ui.NewCallbackButton("🔄 Perbarui Kuota", callback.EncodeCallbackData("myxl", "refresh", oid)),
-	}
-	return render.ToTelegramMarkup(ui.Markup{Rows: []ui.ButtonRow{row}})
 }
 
 // HandleCallback handles inline button interactions (e.g. Refresh Kuota).
@@ -681,14 +659,12 @@ func (p *Plugin) HandleCallback(cbCtx *callback.CallbackContext) error {
 		balance, balanceErr := p.client.GetBalance(cCtx, acc)
 		quota, quotaErr := p.client.GetQuotaDetails(cCtx, acc)
 		if balanceErr != nil && quotaErr != nil {
-			return cbCtx.Answer(fmt.Sprintf("Gagal update: %v", balanceErr), true)
+			return cbCtx.Answer("Gagal memperbarui pulsa dan kuota MyXL. Silakan coba lagi.", true)
 		}
 		text := FormatQuotaResponse(acc, balance, quota, state.Masked)
-		markup := p.buildRefreshMarkup(state, callback.StateScope{
-			UserID: cbCtx.UserID, ChatID: cbCtx.ChatID, MessageID: cbCtx.Target.MessageID,
-			Namespace: p.Namespace(),
-		})
-		return cbCtx.Edit(text, markup)
+		// Compatibility only: consume old v1 refresh buttons without issuing a
+		// replacement legacy callback. New refresh buttons are native a2.
+		return cbCtx.Edit(text, nil)
 
 	case "buy_confirm":
 		state, ok := cbCtx.State.(purchaseDraftState)

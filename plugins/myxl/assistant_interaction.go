@@ -70,6 +70,24 @@ func (p *Plugin) FeatureSpec() feature.Spec {
 			Policy:      policy,
 		})
 	}
+
+	nativePolicy := feature.OwnerPolicy(execution.SurfaceUserbot)
+	interactions = append(interactions,
+		feature.Interaction{
+			ID:          nativeQuotaScreen,
+			Kind:        feature.InteractionScreen,
+			Description: "Native userbot quota refresh canary",
+			Surfaces:    execution.SurfaceUserbot,
+			Policy:      nativePolicy,
+		},
+		feature.Interaction{
+			ID:          nativeQuotaRefreshAction,
+			Kind:        feature.InteractionAction,
+			Description: "Refresh native userbot MyXL quota",
+			Surfaces:    execution.SurfaceUserbot,
+			Policy:      nativePolicy,
+		},
+	)
 	return feature.Spec{
 		ID:           p.Name(),
 		Name:         "MyXL",

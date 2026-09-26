@@ -451,57 +451,6 @@ func (h *callbackStateCaptureHandler) HandleCallback(ctx *callback.CallbackConte
 	return nil
 }
 
-func TestRefreshMarkupStoresScopedMaskedState(t *testing.T) {
-	store := callback.NewStateStore()
-	p := &Plugin{stateStore: store}
-	markup := p.buildRefreshMarkup(quotaRefreshState{MSISDN: "6281912345678", Masked: true}, callback.StateScope{
-		UserID: 42, ChatID: -10099, Namespace: "myxl",
-	})
-	data := callbackDataFromMarkup(t, markup)
-
-	router := callback.NewRouter(nil, store)
-	capture := &callbackStateCaptureHandler{}
-	registration, err := router.RegisterOwned("test", capture)
-	if err != nil {
-		t.Fatalf("register capture handler: %v", err)
-	}
-	defer registration.Close()
-	svc := &core.MockTelegramServicer{}
-	dispatch := func(queryID, userID, chatID int64) error {
-		evt := &core.CallbackQueryEvent{QueryID: queryID, UserID: userID, ChatID: chatID, Data: data}
-		prepared, err := router.Prepare(context.Background(), evt, svc, func(owner string) (tasks.ScopeIdentity, bool) {
-			if owner != "test" {
-				return tasks.ScopeIdentity{}, false
-			}
-			return tasks.ScopeIdentity{Owner: "plugin:myxl", Generation: 1}, true
-		})
-		if err != nil {
-			return err
-		}
-		return prepared.Dispatch(context.Background(), evt, svc)
-	}
-
-	if err := dispatch(1, 42, -10099); err != nil {
-		t.Fatalf("dispatch scoped callback: %v", err)
-	}
-	state, ok := capture.state.(quotaRefreshState)
-	if !ok || !state.Masked || state.MSISDN != "6281912345678" {
-		t.Fatalf("unexpected refresh state: %#v", capture.state)
-	}
-
-	capture.state = nil
-	if err := dispatch(2, 43, -10099); !errors.Is(err, callback.ErrUnauthorized) {
-		t.Fatalf("wrong user error = %v, want ErrUnauthorized", err)
-	}
-	if capture.state != nil {
-		t.Fatal("wrong user reached callback handler")
-	}
-
-	if err := dispatch(3, 42, -10098); !errors.Is(err, callback.ErrUnauthorized) {
-		t.Fatalf("wrong chat error = %v, want ErrUnauthorized", err)
-	}
-}
-
 func callbackDataFromMarkup(t *testing.T, markup tg.ReplyMarkupClass) []byte {
 	t.Helper()
 	inline, ok := markup.(*tg.ReplyInlineMarkup)
