@@ -92,24 +92,29 @@ func TestDownloaderPropagatesReplyLookupError(t *testing.T) {
 	}
 }
 
-func TestDownloaderSelfInlineFailureDoesNotFallBackToPhysicalDownload(t *testing.T) {
+func TestDownloaderUnknownSelfInlineFailureDoesNotFallBackToPhysicalDownload(t *testing.T) {
 	client := &capturedClient{}
 	p := New(client)
 	p.registry = download.NewRegistry(download.NewExtractorProvider(nil, 500*1024*1024))
-	renderErr := errors.New("self-inline unavailable")
-	p.SetSelfInlineRenderer(&downloaderFakeRenderer{err: renderErr})
+	p.SetSelfInlineRenderer(&downloaderFakeRenderer{err: errors.New("self-inline unavailable")})
+	svc := &mockTelegramService{}
 
 	ctx := &core.Context{
 		Ctx:     context.Background(),
-		Svc:     &mockTelegramService{},
+		Svc:     svc,
 		PeerID:  &tg.InputPeerSelf{},
 		Message: &core.Message{ID: 7, IsOutgoing: true},
 	}
-	err := p.handleURLDownload(ctx, "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-	if !errors.Is(err, renderErr) {
-		t.Fatalf("render failure=%v, want %v", err, renderErr)
+	if err := p.handleURLDownload(ctx, "https://www.youtube.com/watch?v=dQw4w9WgXcQ"); err != nil {
+		t.Fatalf("handleURLDownload() error=%v", err)
 	}
 	if client.Count() != 0 {
-		t.Fatalf("render failure fell back to %d heavy tasks", client.Count())
+		t.Fatalf("unknown self-inline failure fell back to %d heavy tasks", client.Count())
+	}
+	svc.mu.Lock()
+	lastEdited := svc.lastEdited
+	svc.mu.Unlock()
+	if !strings.Contains(lastEdited, "could not be confirmed") {
+		t.Fatalf("unknown self-inline diagnostic=%q", lastEdited)
 	}
 }

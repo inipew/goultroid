@@ -162,131 +162,22 @@ func (p *Plugin) submitInteractivePipeline(
 	cancelSession func() bool,
 	targetKind string,
 ) error {
-	if p == nil || p.tasks == nil || delivery == nil {
-		return fmt.Errorf("%w: downloader delivery pipeline is unavailable", core.ErrUnavailable)
-	}
-	p.ensureRegistry()
-	if p.registry == nil {
-		return fmt.Errorf("%w: downloader registry unavailable", core.ErrUnavailable)
-	}
-	if admissionCtx == nil {
-		admissionCtx = context.Background()
-	}
-	if strings.TrimSpace(state.TaskRoot) == "" {
-		state.TaskRoot = string(p.nextTaskID("interactive"))
-	}
-	downloadTaskID := interactivePipelineTaskID(state.TaskRoot, "download")
-	deliveryTaskID := interactivePipelineTaskID(state.TaskRoot, "delivery")
-
-	var (
-		asset       *storage.Asset
-		targetStore storage.Storage
-	)
-	spec := tasks.WorkSpec{
-		ID:               downloadTaskID,
-		QuotaOwner:       tasks.OwnerID("plugin:downloader"),
-		Pool:             tasks.PoolID("download"),
-		Class:            tasks.PriorityNormal,
-		ExecutionTimeout: downloaderExecutionTimeout,
-		Input:            []byte(state.URL),
-		Resources:        p.urlResources(state.URL),
-		Handler: func(taskCtx context.Context) error {
-			targetStore = p.storage
-			if targetStore == nil {
-				targetStore = storage.NewMemoryStorage()
-			}
-			provider := p.registry.Resolve(state.URL)
-			reporter := newDownloadProgressReporter(taskCtx, progressEdit, state.Provider, mode, format, state.MaxHeight)
-			var progress download.ProgressCallback
-			if reporter != nil {
-				progress = reporter.Callback
-			}
-
-			var err error
-			asset, err = p.registry.Download(taskCtx, state.URL, targetStore, download.DownloadOptions{
-				Timeout:   downloaderExecutionTimeout,
-				MaxBytes:  500 * 1024 * 1024,
-				Progress:  progress,
-				Mode:      mode,
-				Format:    format,
-				MaxHeight: state.MaxHeight,
-			})
-			if reporter != nil {
-				reporter.Close()
-			}
-			if err != nil {
-				return err
-			}
-			producer := "downloader.unknown"
-			if provider != nil {
-				producer = downloaderProviderProducer(provider.Name())
-			}
-			return p.registerRetainedAsset(taskCtx, targetStore, asset, producer)
-		},
-	}
-	spec.OnComplete = func(result tasks.TaskResult) {
-		if !result.IsSuccess() {
-			if result.Outcome == tasks.OutcomeCancelled {
-				if cancelSession != nil {
-					cancelSession()
-				}
-				return
-			}
-			if downloadFailure != nil {
-				if err := p.submitTerminalEdit(context.Background(), "download-failed", func(editCtx context.Context) error {
-					if err := downloadFailure(editCtx); err != nil {
-						if cancelSession != nil {
-							cancelSession()
-						}
-						return err
-					}
-					return nil
-				}); err != nil && cancelSession != nil {
-					cancelSession()
-				}
-			}
-			return
-		}
-		if asset == nil || targetStore == nil {
-			if downloadFailure != nil {
-				if err := p.submitTerminalEdit(context.Background(), "download-invalid-result", downloadFailure); err != nil && cancelSession != nil {
-					cancelSession()
-				}
-			}
-			return
-		}
-		if err := admissionCtx.Err(); err != nil {
-			if cancelSession != nil {
-				cancelSession()
-			}
-			return
-		}
-		if err := p.submitRetainedDelivery(
-			admissionCtx,
-			deliveryTaskID,
-			targetStore,
-			asset,
-			mode,
-			format,
-			delivery,
-			deliveryFailure,
-			delivered,
-			cancelSession,
-			targetKind,
-		); err != nil {
-			if !isDeliveryLifecycleCancellation(err) && deliveryFailure != nil {
-				_ = p.submitTerminalEdit(context.Background(), "delivery-submit-failed", deliveryFailure)
-			}
-			if cancelSession != nil {
-				cancelSession()
-			}
-		}
-	}
-	_, err := p.tasks.Submit(admissionCtx, spec)
-	if err != nil {
-		return fmt.Errorf("submit interactive downloader task: %w", err)
-	}
-	return nil
+	return p.submitURLPipeline(admissionCtx, urlDownloadRequest{
+		URL:       state.URL,
+		Provider:  state.Provider,
+		TaskRoot:  state.TaskRoot,
+		Mode:      mode,
+		Format:    format,
+		MaxHeight: state.MaxHeight,
+	}, urlPipelineHooks{
+		Delivery:        delivery,
+		ProgressEdit:    progressEdit,
+		DownloadFailure: downloadFailure,
+		DeliveryFailure: deliveryFailure,
+		Delivered:       delivered,
+		Cancel:          cancelSession,
+		TargetKind:      targetKind,
+	})
 }
 
 func (p *Plugin) submitRetainedDelivery(

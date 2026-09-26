@@ -379,20 +379,16 @@ func (p *Plugin) executeMediaDownload(taskCtx context.Context, ctx *core.Context
 	return ctx.Edit(text)
 }
 
-func (p *Plugin) openInteractiveURLDownload(ctx *core.Context, rawURL string) error {
+func (p *Plugin) openInteractiveURLDownload(ctx *core.Context, normalizedURL string) (bool, error) {
 	if ctx == nil || ctx.PeerID == nil {
-		return core.ErrInvalidArgs
+		return true, core.ErrInvalidArgs
 	}
 	if p == nil || p.renderer == nil {
-		return ctx.Status("<b>Interactive downloader is unavailable.</b> Start the Assistant inline renderer and try again.")
-	}
-	normalized, err := normalizeInteractiveURL(rawURL)
-	if err != nil {
-		return err
+		return false, nil
 	}
 	request := selfinline.Request{
 		Peer:     ctx.PeerID,
-		Query:    "dl " + normalized,
+		Query:    "dl " + normalizedURL,
 		ResultID: "downloader",
 	}
 	if ctx.Message != nil {
@@ -400,27 +396,37 @@ func (p *Plugin) openInteractiveURLDownload(ctx *core.Context, rawURL string) er
 		request.TopicID = ctx.Message.TopicID
 	}
 	if _, err := p.renderer.Render(ctx.Ctx, request); err != nil {
-		_ = ctx.Status("Unable to open interactive downloader: " + core.EscapeHTML(err.Error()))
-		return fmt.Errorf("open interactive downloader: %w", err)
+		if selfinline.FallbackSafe(err) {
+			return false, nil
+		}
+		return true, ctx.Status("Interactive downloader delivery could not be confirmed. Please retry the command.")
 	}
 	if ctx.Message != nil && ctx.Message.ID > 0 && ctx.Svc != nil {
 		_ = ctx.Svc.DeleteMessage(ctx.Ctx, ctx.PeerID, []int{ctx.Message.ID})
 	}
-	return nil
+	return true, nil
 }
 
 func (p *Plugin) handleURLDownload(ctx *core.Context, rawURL string) error {
 	if ctx == nil {
 		return core.ErrInvalidArgs
 	}
+	normalized, err := normalizeInteractiveURL(rawURL)
+	if err != nil {
+		return err
+	}
 	p.ensureRegistry()
 	if p.registry == nil {
 		return fmt.Errorf("%w: downloader registry unavailable", core.ErrUnavailable)
 	}
-	if p.registry.Resolve(rawURL) == nil {
+	provider := p.registry.Resolve(normalized)
+	if provider == nil {
 		return download.ErrNoMatchingProvider
 	}
-	return p.openInteractiveURLDownload(ctx, rawURL)
+	if handled, err := p.openInteractiveURLDownload(ctx, normalized); err != nil || handled {
+		return err
+	}
+	return p.startNativeURLDownload(ctx, normalized, provider.Name())
 }
 
 func formatBytes(b int64) string {

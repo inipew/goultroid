@@ -230,7 +230,7 @@ func TestDownloaderURLResourcePlanning(t *testing.T) {
 	}
 }
 
-func TestDownloaderExtractorURLFailsClosedWithoutSelfInlineRenderer(t *testing.T) {
+func TestDownloaderExtractorURLFallsBackToNativePipelineWithoutSelfInlineRenderer(t *testing.T) {
 	client := &capturedClient{}
 	p := New(client)
 	p.registry = download.NewRegistry(download.NewExtractorProvider(nil, 500*1024*1024))
@@ -244,14 +244,18 @@ func TestDownloaderExtractorURLFailsClosedWithoutSelfInlineRenderer(t *testing.T
 	if err := p.handleURLDownload(ctx, "https://www.youtube.com/watch?v=dQw4w9WgXcQ"); err != nil {
 		t.Fatal(err)
 	}
-	if client.Count() != 0 {
-		t.Fatalf("extractor fallback submitted %d heavy tasks without renderer", client.Count())
+	if client.Count() != 1 {
+		t.Fatalf("extractor native fallback submitted %d task(s), want 1", client.Count())
+	}
+	spec, ok := client.LastSpec()
+	if !ok || !hasResource(spec.Resources, "download") || !hasResource(spec.Resources, "process") {
+		t.Fatalf("extractor native fallback resources=%+v", spec.Resources)
 	}
 	tgSvc.mu.Lock()
 	lastEdited := tgSvc.lastEdited
 	tgSvc.mu.Unlock()
-	if !strings.Contains(lastEdited, "Interactive downloader is unavailable") {
-		t.Fatalf("fallback message=%q", lastEdited)
+	if !strings.Contains(lastEdited, "Preparing URL download") {
+		t.Fatalf("native fallback message=%q", lastEdited)
 	}
 }
 

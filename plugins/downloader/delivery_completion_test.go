@@ -61,6 +61,7 @@ func TestYTZDeliveryCompletionEnqueuesTerminalEditInsteadOfRunningItInline(t *te
 	deliveredCalls := 0
 	if err := p.submitRetainedDelivery(
 		context.Background(),
+		tasks.TaskID("test:delivery"),
 		store,
 		asset,
 		download.MediaModeVideo,
@@ -71,6 +72,7 @@ func TestYTZDeliveryCompletionEnqueuesTerminalEditInsteadOfRunningItInline(t *te
 			deliveredCalls++
 			return nil
 		},
+		nil,
 		"message",
 	); err != nil {
 		t.Fatal(err)
@@ -112,6 +114,7 @@ func TestYTZDeliveryFailureEnqueuesTerminalEditInsteadOfRunningItInline(t *testi
 	failureCalls := 0
 	if err := p.submitRetainedDelivery(
 		context.Background(),
+		tasks.TaskID("test:delivery"),
 		store,
 		asset,
 		download.MediaModeVideo,
@@ -121,6 +124,7 @@ func TestYTZDeliveryFailureEnqueuesTerminalEditInsteadOfRunningItInline(t *testi
 			failureCalls++
 			return nil
 		},
+		nil,
 		nil,
 		"message",
 	); err != nil {

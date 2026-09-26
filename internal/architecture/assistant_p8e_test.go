@@ -26,9 +26,15 @@ func TestP8EDownloaderUsesA2PreparedActionsAndSharedResources(t *testing.T) {
 			"ctx.Cancel()",
 		},
 		filepath.Join(root, "plugins", "downloader", "delivery.go"): {
-			"Resources:        p.urlResources(state.URL)",
-			"p.registry.Download(taskCtx, state.URL, targetStore",
-			"MaxHeight: state.MaxHeight",
+			"return p.submitURLPipeline(",
+			"urlDownloadRequest{",
+			"urlPipelineHooks{",
+		},
+		filepath.Join(root, "plugins", "downloader", "url_pipeline.go"): {
+			"Resources:        p.urlResources(request.URL)",
+			"p.registry.Download(taskCtx, request.URL, targetStore",
+			"MaxHeight: request.MaxHeight",
+			"p.registerRetainedAsset(taskCtx, targetStore, asset, producer)",
 			"p.submitRetainedDelivery(",
 		},
 		filepath.Join(root, "plugins", "downloader", "downloader.go"): {
