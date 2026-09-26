@@ -1,400 +1,804 @@
 # Goultroid — Userbot / Assistant / Inline / UI Refinement AI Session Handoff
 
 Date: 2026-09-26
-Branch: test-next
-Audited HEAD: 27b1f0fe7dd2e2d25d568daca2632a7d52a82bc9 — refactor(ui): establish canonical presentation vocabulary
-Purpose: continue post-redesign engineering refinement from P1-B through final closure.
+Branch: `test-next`
+Current audited HEAD: `1d00110be8e664032e728902fb563dec93abe2d9` — `refactor(settings): retire legacy callback transport`
+Purpose: continue refinement from **P1-F1-A** through final **P4 closure**, without reopening already-closed architecture phases.
 
-Authority rule: always refresh current source and HEAD first. Current source/tests override this handoff if branch drift exists.
-
----
-
-## 0. Current state
-
-The architecture is no longer in a broad redesign phase. The current goal is refinement: remove duplicate compatibility layers, simplify contracts, preserve one authority per concern, keep resources bounded, and improve UX consistency without adding new engines.
-
-Completed refinement chain:
-
-~~~text
-1f6aaae5  P0-A  Settings zero-state text rendering
-189aefe2  P0-B  typed safe user-facing error boundary
-20b5532c  P0-C  commit-safe EditOrReply contract
-b7892e13  P0-D  Inline exact-handler fast path + benchmark
-27b1f0fe  P1-A  canonical presentation vocabulary
-~~~
-
-Earlier Assistant-optional userbot redesign is also closed:
-
-~~~text
-4733631b  stage-aware self-inline failure semantics
-8ce89d6a  Assistant-optional composition acceptance
-491f1f9e  Help progressive fallback
-48af3fd3  Calculator progressive fallback
-2262903e  Downloader URL progressive fallback
-99669a0f  retained ownership acceptance
-d1b8c4a3  Settings Assistant decoupling
-502d5aeb  repo-wide SurfaceUserbot dependency fence
-bd807592  final Assistant-optional userbot acceptance
-0f88e543  closure handoff/docs
-~~~
-
-Do not reopen those phases unless fresh source/runtime evidence proves a regression.
+Authority rule: **always refresh current HEAD and current source first. Source/tests win over this handoff if the branch has moved.**
 
 ---
 
-## 1. Binding engineering rules
+# 0. Executive state
 
-1. Work on test-next.
-2. Refresh exact HEAD before every phase.
-3. Read current source/tests before trusting this handoff.
-4. Run gofmt before every Go commit.
-5. Do not inspect or wait for CI unless the user explicitly asks.
-6. Do not create a second TaskEngine.
-7. Do not create a second Telegram RPC/retry/FloodWait executor.
-8. Do not create a second interaction/session runtime.
-9. Do not create a second inline registry.
-10. Do not create a second downloader/provider registry.
-11. Do not add permanent per-feature workers, tickers, or pollers.
-12. Keep every cache, state store, queue, and retained resource bounded.
-13. Prefer event-driven/lazy workers and zero-idle behavior.
-14. Generation-scoped work must fail closed after plugin disable/reload.
-15. Fresh authority is required immediately before mutations.
-16. Never auto-send an alternate Telegram message after an ambiguous send/edit commit.
-17. Ordinary user-facing errors must not expose raw provider/database/filesystem/process/RPC causes.
-18. Simplify current boundaries; do not replace them with competing authorities.
+The broad redesign is already complete. The remaining program is refinement and reclamation:
+
+- keep one authority per concern;
+- remove compatibility layers only after zero-production-caller proof;
+- preserve a2 as the single interaction/session runtime;
+- preserve TaskEngine as the execution/resource authority;
+- preserve RPCExecutor as Telegram retry/FloodWait authority;
+- preserve zero-idle / bounded-state behavior;
+- benchmark before optimization;
+- do not recreate deleted legacy stacks under a new name.
+
+## Completed refinement chain
+
+```text
+1f6aaae50833  P0-A  Settings zero-state text rendering
+189aefe2ca96  P0-B  typed safe user-facing error boundary
+20b5532c5429  P0-C  commit-safe EditOrReply contract
+b7892e13a703  P0-D  Inline exact-handler fast path + benchmark fence
+27b1f0fe7dd2  P1-A  canonical presentation vocabulary
+
+5c998be0814c  P1-B  canonical Telegram keyboard serialization
+892f10dca14e  P1-C  native/userbot a2 interaction adapter
+0d47ae3efd44  P1-D  native Settings migrated to a2
+
+bc09289b83da  P1-E1 native MyXL quota refresh -> a2
+886d0ecb83f9  P1-E2 hardened purchase confirmation state
+b29ea43d0e2c  P1-E3 native buy confirm/cancel -> a2
+f72f3e4d36a3  P1-E4 remove legacy MyXL callback stack
+122991c611c1  P1-E acceptance closure: Assistant purchase TaskEngine/revision parity
+
+1d00110be8e6  Settings final legacy callback transport retirement + Assistant Settings a2
+```
+
+Earlier Assistant-optional redesign remains closed and must not be reopened without fresh regression evidence.
+
+---
+
+# 1. Current architectural truth
 
 Canonical authorities:
 
-~~~text
+```text
 Command routing                 core.Router
 Execution/admission             TaskEngine + execution semantics
 Telegram retry/FloodWait        telegram.RPCExecutor
 Plugin lifecycle                plugin.Manager + generation scope
 Interaction/session state       interaction.Runtime (a2)
 Interaction orchestration       interaction/orchestration.Engine
+Native a2 transport             internal/interaction/native.Adapter
+Assistant a2 transport          internal/assistant/interaction driver
 Inline lifecycle                services/inline vNext
 Presentation model              internal/presentation
 Telegram rich presentation      presentation/telegram Bridge
 Settings domain state           internal/settings service
 Downloader/provider selection   download.Registry
 Retained media ownership        shared media/storage infrastructure
-~~~
+```
+
+Do not create a second authority for any of these.
 
 ---
 
-# P1-B — collapse duplicate Telegram keyboard serializers
+# 2. Binding engineering rules
 
-## Problem
+1. Work on `test-next`.
+2. Refresh exact HEAD before every subphase.
+3. Read current source/tests before trusting this document.
+4. Run `gofmt` before every Go commit.
+5. **Do not inspect or wait for CI unless the user explicitly asks.**
+6. No second TaskEngine.
+7. No second Telegram RPC/retry/FloodWait executor.
+8. No second interaction/session runtime.
+9. No second inline registry.
+10. No second downloader/provider registry.
+11. No permanent per-feature worker/ticker/poller.
+12. Every cache/state/queue/retained resource must be bounded.
+13. Prefer event-driven/lazy workers and zero-idle behavior.
+14. Generation-scoped work must fail closed after disable/reload.
+15. Revalidate fresh authority immediately before mutations.
+16. Never auto-send an alternate Telegram message after ambiguous send/edit commit.
+17. Ordinary user-facing errors must not expose raw provider/db/fs/process/RPC causes.
+18. Do not use compatibility code as a reason to preserve a whole dead subsystem.
+19. Delete only after zero-production-caller proof.
+20. **Execution cadence for P1-F:** one subphase at a time. Finish it, summarize, stop, and wait for explicit user confirmation before the next subphase.
 
-Two production paths currently serialize generic button metadata into MTProto inline keyboards:
+Verification honesty:
 
-~~~text
-internal/presentation/telegram/bridge.go
-    markup(presentation.CompiledView)
-
-internal/ui/render/telegram.go
-    ToTelegramMarkup(ui.Markup)
-~~~
-
-Both construct KeyboardButtonCallback, KeyboardButtonURL, and KeyboardButtonSwitchInline independently.
-
-## Goal
-
-Make presentation/telegram the single Telegram keyboard serialization authority.
-
-Preferred flow:
-
-~~~text
-presentation.CompiledButton/CompiledRow
-                |
-                v
-presentation/telegram canonical encoder
-                ^
-                |
-legacy ui.Markup adapter
-~~~
-
-Do not make internal/presentation import internal/ui.
-
-## Safe migration
-
-1. Extract bridge markup conversion into one reusable encoder.
-2. Keep Bridge.Send/Edit using it.
-3. Convert legacy ui.Markup into canonical transport-ready button rows.
-4. Delegate legacy ui/render to the same encoder.
-5. Preserve callback Data bytes exactly.
-6. Preserve URL, InlineQuery, and SamePeer semantics.
-7. Preserve empty row / nil markup behavior.
-8. Do not compile legacy callback bytes through a2; they are already callback payloads.
-
-## Acceptance
-
-Test equivalent legacy and presentation keyboards for:
-
-- callback data;
-- URL;
-- switch-inline SamePeer false/true;
-- mixed rows;
-- empty rows;
-- nil markup;
-- callback byte ownership/copy behavior.
-
-Architecture fence:
-
-- one production encoder constructs generic inline button MTProto types;
-- internal/ui/render delegates;
-- internal/presentation never imports internal/ui.
-
-Likely files:
-
-~~~text
-internal/presentation/telegram/bridge.go
-internal/presentation/telegram/bridge_markup_test.go
-internal/ui/render/telegram.go
-internal/ui/render/telegram_test.go
-internal/architecture/
-~~~
+- Current AI environment previously could not obtain a complete executable checkout because GitHub DNS was unavailable in the container.
+- Source-level diff/fence verification was performed.
+- Do **not** claim `go test`, `go vet`, race, build, or benchmark commands ran unless they actually run in the current session.
+- Do not check CI unless explicitly requested.
 
 ---
 
-# P1-C — native/userbot a2 interaction adapter
+# 3. P1-B — CLOSED
 
-## Goal
+Commit:
 
-Allow native userbot rich interactions to use the existing a2 runtime without depending on Assistant.
+`5c998be0814ca25fab0a4b44c059756185e0cdb5` — `refactor(ui): centralize Telegram keyboard serialization`
 
-Target:
+Result:
 
-~~~text
-userbot message
-   -> native message target adapter
-   -> interaction.Runtime + Dispatcher + orchestration.Engine
-   -> presentation.Compiler
-   -> presentation/telegram Bridge
-~~~
+- `internal/presentation/telegram/markup.go` is the canonical generic Telegram keyboard encoder.
+- Bridge and legacy UI renderer delegate to the same implementation.
+- Callback bytes are copied/owned safely.
+- URL and switch-inline semantics preserved.
+- No a2 compilation of already-transport-ready legacy payloads.
 
-Assistant identity must not be required.
-
-## Why
-
-Most modern interactions already use a2, but Settings and residual MyXL native callbacks still depend on legacy services/callback.
-
-Do not delete the legacy stack in P1-C. First make native a2 usable.
-
-## Required binding
-
-Native a2 must bind at least:
-
-~~~text
-ActorID
-ChatID
-MessageID
-plugin generation/scope
-session revision
-~~~
-
-Reuse presentation/telegram.MessageTarget, interaction.Binding, and interaction.TargetBinding where possible.
-
-## Callback ingress coexistence
-
-During migration:
-
-~~~text
-known a2 callback/token
-    -> a2 dispatcher
-
-known legacy v1 namespace callback
-    -> legacy callback router
-
-unknown
-    -> current reject/ignore policy
-~~~
-
-Do not let failed a2 parsing consume or mutate legacy state.
-
-## Lifecycle acceptance
-
-- native session works with Assistant absent;
-- wrong actor rejected;
-- wrong chat/message rejected;
-- stale revision rejected;
-- plugin disable invalidates action;
-- reload gets new generation;
-- old token never revives;
-- shutdown clears/settles sessions;
-- no permanent feature worker;
-- physical work still goes through TaskEngine.
+Do not revisit unless a current regression proves duplication has returned.
 
 ---
 
-# P1-D — migrate native Settings callbacks to a2
+# 4. P1-C — CLOSED
 
-## Goal
+Commit:
 
-Remove production dependency from plugins/settings to internal/services/callback.
+`892f10dca14eb3d5f47e90ec47d26eef167a5403` — `feat(interaction): add native userbot a2 adapter`
 
-P0-A invariant must remain:
+Result:
 
-~~~text
-ui:inline_buttons=false
-    -> text-only Settings
-    -> zero callback/a2 session allocation
-~~~
+- native/userbot a2 works without Assistant;
+- reuses shared `interaction.Runtime`, dispatcher, orchestration engine, TaskEngine;
+- native callback ingress checks a2 before legacy router;
+- malformed `a2:` is owned/fail-closed;
+- actor/chat/message/revision/generation validation;
+- plugin lifecycle bind/rebind through `nativeinteraction.FeatureDriver`;
+- bounded callback answer tracking;
+- no feature ticker/worker.
 
-Interactive mode becomes:
-
-~~~text
-.settings
-    -> bounded native a2 session
-    -> presentation.View
-    -> typed actions
-    -> existing Settings service
-~~~
-
-## Preserve domain authority
-
-Do not duplicate setting values or definitions into session state.
-
-Session state should contain only minimal navigation data, for example:
-
-~~~text
-scope
-scope id
-category
-page
-selected namespace:key
-revision/navigation state
-~~~
-
-Immediately before persistence, re-resolve current definition and revalidate authority.
-
-## Preserve parity
-
-Native Settings must retain:
-
-- home;
-- categories;
-- pagination;
-- detail;
-- bool toggle;
-- steppers/selectors/duration controls where applicable;
-- reset;
-- scope switching;
-- Home;
-- Back;
-- Close;
-- command category/page arguments;
-- text-only mode.
-
-Assistant Settings remains a separate enhancement over the same Settings domain service.
-
-## Acceptance
-
-- no production internal/services/callback import in plugins/settings;
-- text-only mode still allocates zero interaction state;
-- interactive native path uses a2;
-- wrong actor/target and stale revision fail closed;
-- old buttons die on reload;
-- native command works with Assistant absent/stopped;
-- sessions settle after Close/expiry/reload/shutdown.
+This is the native interaction foundation for Settings/MyXL and any future migration.
 
 ---
 
-# P1-E — migrate residual MyXL native callbacks to a2
+# 5. P1-D — CLOSED, including final Settings legacy retirement
 
-## Goal
+Initial native migration:
 
-MyXL Assistant path is already a2. Remove remaining legacy native callback state.
+`0d47ae3efd4447b15e0a5040083ac5733e8be410` — `feat(settings): migrate native dashboard to a2`
 
-Historically residual native actions included refresh, buy_confirm, and buy_cancel; refresh current source before assuming this list is still exact.
+Final legacy retirement:
 
-## Security/resource rules
+`1d00110be8e664032e728902fb563dec93abe2d9` — `refactor(settings): retire legacy callback transport`
 
-Keep sensitive state shorter lived than ordinary navigation.
+Current truth:
 
-Do not retain full provider/API payloads in session memory. Prefer stable IDs:
+- native Settings is a2;
+- Assistant Settings is also a2;
+- shared Settings domain/mutation authority remains `internal/settings`;
+- Settings production code no longer imports `internal/services/callback`;
+- no Settings `StateStore`, `ScopedCallbackStore`, `HandleCallback`, `CallbackOptions`, `EncodeCallbackData`, `ParseCallbackData`, or `v1:settings`;
+- interactive Assistant fails closed if its a2 runtime is unavailable;
+- text-only `ui:inline_buttons=false` still allocates no interaction session;
+- shared view semantics are reused between native/Assistant via session-bound action IDs.
 
-~~~text
-account id
-package id
-option id
-draft id
-revision
-~~~
+Important: the commit `1d00110...` is effectively a **known-completed P1-F migration slice for Settings**. Do not redo Settings during P1-F inventory; classify it as a known-zero domain and verify the fence still holds.
 
-Before purchase/mutation:
+---
 
-1. revalidate actor/session/generation;
-2. load fresh account/session;
-3. load fresh package/option/price when needed;
-4. revalidate draft/revision;
-5. execute through TaskEngine;
-6. preserve shared retry/RPC boundaries;
-7. use P0-B typed safe errors;
-8. preserve idempotency under ambiguous outcomes.
+# 6. P1-E — CLOSED after full re-audit
 
-## Acceptance
+## P1-E1 — native quota refresh -> a2
 
-- no production legacy callback import in MyXL;
-- native .myxl works without Assistant;
-- Assistant MyXL remains a2;
-- legacy payload cannot execute;
-- sensitive TTLs bounded;
+Commit:
+
+`bc09289b83da32417772ac66fde2001ed4af1742`
+
+Current behavior:
+
+```text
+.kuota / .myxl kuota
+  -> fresh account/quota read
+  -> native a2 Begin
+  -> state = MSISDN + masking flag only
+  -> 10m TTL
+  -> a2 refresh callback
+  -> TaskEngine, 30s profile
+  -> fresh account/quota read
+  -> Transition -> new revision
+```
+
+No legacy state allocation.
+
+## P1-E2 — purchase state hardening
+
+Commit:
+
+`886d0ecb83f9e0e6560fc8b94349bef5fe281545`
+
+Canonical retained intent:
+
+```text
+MSISDN
+OptionCode
+Method
+WalletNumber
+QuotedPrice        # consent fence, not settlement authority
+OverwritePrice
+HasOverwrite
+```
+
+Not retained:
+
+```text
+TokenConfirmation
+PackageName as authority
+AccessToken
+RefreshToken
+IDToken
+provider response payload
+payment token
+```
+
+Immediately before reservation:
+
+```text
+normalize intent
+ -> fresh account
+ -> fresh package details
+ -> verify option
+ -> fresh TokenConfirmation
+ -> verify canonical price == QuotedPrice
+ -> derive idempotency key
+ -> ReservePurchase
+ -> Settlement
+```
+
+Price drift fails before reserve.
+
+## P1-E3 — native buy confirm/cancel -> a2
+
+Commit:
+
+`b29ea43d0e2c184ac1450401883ed5d1f4eceed2`
+
+Native flow:
+
+```text
+.beli / .myxl buy
+ -> preparePurchaseIntent
+ -> a2 checkout, TTL 5m
+ -> Confirm / Cancel
+ -> TaskEngine
+```
+
+Confirm:
+
+```text
+fresh resolve
+ -> Transition(processing)
+ -> old revision stale
+ -> ReservePurchase
+ -> Settlement
+ -> FinishPurchase
+ -> Terminate(final result)
+```
+
+Native purchase execution profile: 55s.
+
+## P1-E4 — legacy MyXL callback reclamation
+
+Commit:
+
+`f72f3e4d36a373e7a90245a4cc984b8e85c69f18`
+
+Removed from MyXL production:
+
+- `callback.Handler`;
+- `callback.HandlerWithOptions`;
+- `SetStateStore`;
+- `RequiresCallbackState`;
+- `CallbackOptions`;
+- `HandleCallback`;
+- `ScopedCallbackStore`;
+- `StateStore`;
+- legacy `refresh`;
+- legacy `buy_confirm`;
+- legacy `buy_cancel`;
+- `purchaseDraftState`;
+- `EncodeCallbackData`;
+- `ParseCallbackData`;
+- `v1:myxl`.
+
+## P1-E final audit closure
+
+Commit:
+
+`122991c611c1fff6dd81745d8c6595d552fb0db4` — `fix(myxl): close p1-e assistant purchase gaps`
+
+The full re-audit found two real Assistant gaps and fixed them:
+
+1. Assistant purchase confirmation previously inherited the 15s default TaskEngine profile while the purchase path can legitimately take longer.
+   - now Assistant action slots use `RegisterPreparedAction`;
+   - purchase confirm gets a 65s execution profile;
+   - ordinary Assistant actions keep default profile.
+
+2. Assistant confirm previously reserved before revision invalidation.
+   - now it fresh-resolves;
+   - transitions to shared 2m processing state;
+   - old button revision becomes stale;
+   - only then calls `ReservePurchase`.
+
+Final MyXL production scan at closure: 14 production Go files, zero legacy callback violations.
+
+**P1-E is CLOSED.**
+
+---
+
+# 7. P1-F — repo-wide legacy callback stack reclamation
+
+## Critical current state
+
+P1-F is **not yet globally closed**.
+
+Known-zero domains:
+
+```text
+plugins/myxl      zero legacy callback production surface
+plugins/settings  zero legacy callback production surface
+```
+
+Unknown:
+
+- remaining plugins/features that still import or implement legacy callback APIs;
+- remaining producers of v1 payloads;
+- remaining consumers/Router registrations;
+- remaining StateStore ownership;
+- bootstrap/dispatcher dependencies on legacy Router;
+- generic utilities inside `internal/services/callback` that may still have production callers.
+
+Therefore the next session must **not** jump directly to deleting `internal/services/callback`.
+
+---
+
+# 8. P1-F1 — inventory/freeze all repo-wide legacy callback callers
+
+P1-F1 is itself split into five sequential subphases.
+
+**Execution rule: complete exactly one subphase, summarize findings + commit if appropriate, then STOP and wait for user confirmation.**
+
+## P1-F1-A — production import / ownership inventory — NEXT
+
+Goal: build an authoritative list of production packages that still depend on the legacy callback subsystem.
+
+Search every production Go file, excluding tests/generated/vendor where appropriate, for:
+
+```text
+internal/services/callback
+callback.
+callback.Handler
+callback.HandlerWithOptions
+callback.StateStore
+callback.StateReader
+callback.StateWriter
+callback.ScopedCallbackStore
+callback.CallbackContext
+callback.CallbackOptions
+SetStateStore
+RequiresCallbackState
+HandleCallback
+Namespace() callback ownership
+```
+
+For every match classify:
+
+```text
+PRODUCTION_ACTIVE
+PRODUCTION_COMPATIBILITY
+GENERIC_UTILITY
+TEST_ONLY
+DEAD
+FALSE_POSITIVE
+```
+
+Required output:
+
+- one inventory table/document checked into `docs/design/`;
+- exact file + symbol + owner namespace;
+- whether migration is needed;
+- expected replacement authority;
+- whether deletion is blocked.
+
+Known baselines that should classify zero:
+
+```text
+plugins/settings
+plugins/myxl
+```
+
+Do not modify production callback behavior in F1-A.
+
+Acceptance:
+
+- repo-wide production file enumeration, not code-search alone;
+- every legacy callback import/type assertion has an owner/classification;
+- no deletion yet;
+- architecture freeze may be added only if it can allowlist known current callers exactly.
+
+### Stop point
+
+After F1-A: summarize inventory and **wait for user confirmation before F1-B**.
+
+---
+
+## P1-F1-B — legacy producer inventory
+
+Goal: find every production site that **creates/emits** legacy callback payloads.
+
+Search for:
+
+```text
+EncodeCallbackData
+v1:
+NewCallbackButton
+BuildStateToggle
+BuildStepper
+BuildDurationPicker
+BuildSelector
+raw callback Data literals
+namespace/action/opaque legacy composition
+```
+
+Separate:
+
+- actual Telegram callback payload producer;
+- internal semantic intent string that merely contains `foo:bar`;
+- test fixture;
+- dead helper.
+
+Required matrix:
+
+```text
+namespace
+producer file/function
+consumer
+state requirement
+target surface
+planned a2 replacement
+migration risk
+```
+
+Known non-producers:
+
+- MyXL internal a2 intents like `myxl:checkout` are not legacy protocol by themselves.
+- Settings semantic/session action identifiers are not legacy v1 payloads.
+
+Acceptance:
+
+- every production v1 producer accounted for;
+- zero unowned namespace;
+- exact migration order proposed for F2.
+
+### Stop point
+
+After F1-B: summarize and wait for confirmation before F1-C.
+
+---
+
+## P1-F1-C — consumer/router/bootstrap inventory
+
+Goal: map who still consumes legacy callbacks and who keeps the Router alive.
+
+Audit:
+
+```text
+callback.Router creation
+callback.Router registration
+callback.Handler assertions
+HandlerWithOptions assertions
+Telegram Dispatcher callback routing
+dispatcher SetCallbackRouter/getCallbackRouter
+app/bootstrap construction
+plugin.Manager legacy registration
+plugin disable/reload cleanup
+Assistant callback bridge compatibility
+inline callback coexistence
+```
+
+Produce a dependency chain, for example:
+
+```text
+Telegram callback ingress
+ -> native a2 claim
+ -> legacy Router fallback
+ -> namespace handler
+ -> StateStore
+```
+
+For each edge mark whether still production-required.
+
+Acceptance:
+
+- exact blockers to Router deletion known;
+- exact blockers to StateStore deletion known;
+- exact bootstrap/wiring files known;
+- no deletion yet.
+
+### Stop point
+
+After F1-C: summarize and wait for confirmation before F1-D.
+
+---
+
+## P1-F1-D — state/protocol/resource ownership inventory
+
+Goal: understand what can be deleted versus what must be moved.
+
+Audit all types/functions under `internal/services/callback/` and classify:
+
+```text
+protocol parsing/encoding
+Router
+handler interfaces
+StateStore
+state scope ownership
+callback answer helpers
+rate limiting / answer ownership
+generic Telegram utility
+test helper
+dead code
+```
+
+For generic utilities still useful elsewhere:
+
+- move them to the correct authority package;
+- do not keep a dead callback subsystem merely to retain helpers.
+
+Resource audit:
+
+- StateStore max cardinality / TTL behavior;
+- cleanup worker/ticker if any;
+- Router retained maps;
+- callback limiter state;
+- shutdown lifecycle;
+- idle goroutines.
+
+Acceptance:
+
+- deletion/move plan for every file in `internal/services/callback/`;
+- resource savings expected from reclamation documented;
+- no speculative rewrite.
+
+### Stop point
+
+After F1-D: summarize and wait for confirmation before F1-E.
+
+---
+
+## P1-F1-E — inventory closure + freeze fence
+
+Goal: freeze the exact remaining legacy surface before migrations.
+
+Create/strengthen architecture tests so that:
+
+- no new production package may import legacy callback outside the F1 allowlist;
+- no new v1 namespace producer may appear outside the producer allowlist;
+- Settings/MyXL remain permanently zero-legacy;
+- the allowlist can only shrink during F2.
+
+Produce final F1 migration order.
+
+Recommended prioritization:
+
+```text
+small/read-only namespace
+ -> bounded stateful namespace
+ -> mutation namespace
+ -> high-risk purchase/admin namespace
+ -> bootstrap-only residual
+```
+
+Do not order by filename; order by state/mutation risk.
+
+Acceptance:
+
+- authoritative inventory checked in;
+- freeze architecture test checked in;
+- exact F2 worklist established;
+- zero unknown production caller.
+
+### P1-F1 closure
+
+Only after F1-A/B/C/D/E are each complete and confirmed may P1-F1 be marked CLOSED.
+
+---
+
+# 9. P1-F2 — migrate every remaining production legacy namespace
+
+**Do not invent F2 namespace names before F1 is complete. F1-E matrix is authoritative.**
+
+Settings and MyXL are already completed slices and must not be migrated again.
+
+For each remaining namespace, create one reviewable subphase:
+
+```text
+P1-F2-<namespace>
+```
+
+Migration template:
+
+1. identify current producer/consumer/state;
+2. declare FeatureSpec interactions;
+3. bind to existing native/Assistant a2 driver as appropriate;
+4. retain only minimal bounded session state;
+5. fresh-revalidate immediately before mutation;
+6. execute physical work through TaskEngine;
+7. preserve Telegram RPCExecutor boundaries;
+8. bind actor/chat/message/revision/generation;
+9. migrate producer to a2;
+10. keep old consumer temporarily only if already-issued token compatibility is genuinely needed;
+11. then remove old namespace producer/consumer/state;
+12. shrink F1 allowlist.
+
+Never create a second interaction runtime or namespace-specific callback engine.
+
+Per-namespace acceptance:
+
+- no production legacy import in migrated feature;
+- no v1 producer;
 - wrong actor/target fails closed;
-- reload kills old tokens;
-- purchase/cancel semantics remain durable/idempotent.
+- stale revision fails closed;
+- disable/reload kills old actions;
+- bounded state;
+- no permanent worker/ticker;
+- mutation semantics unchanged;
+- user-facing errors safe.
+
+Execution cadence: one F2 namespace at a time, conclude, stop, wait for confirmation.
+
+P1-F2 closes when F1 allowlist has no production feature namespace entries.
 
 ---
 
-# P1-F — remove legacy callback stack after zero production callers
+# 10. P1-F3 — remove legacy StateStore + legacy v1 protocol
 
-Only after P1-D and P1-E are proven.
+Preconditions:
 
-Candidate components:
+- no production feature emits legacy payloads;
+- no production feature needs legacy state;
+- already-issued compatibility window is intentionally ended;
+- F1 freeze fence confirms producer allowlist empty.
 
-~~~text
-internal/services/callback.Router
-internal/services/callback.StateStore
-legacy v1 callback encoding/parsing
-legacy bootstrap/plugin wiring
-legacy callback-only state helpers
-~~~
+Candidate removals:
 
-Required procedure:
+```text
+callback.StateStore
+StateReader/StateWriter interfaces
+ScopedCallbackStore
+state scope structs/helpers
+opaque ID allocation
+Store / StoreWithScope
+TTL cleanup owned only by legacy state
+EncodeCallbackData
+ParseCallbackData
+v1 protocol constants/parsers
+legacy callback data validation
+```
 
-1. Search all production Go source for internal/services/callback.
-2. Separate test/history references from production callers.
-3. Verify no plugin registers legacy Handler.
-4. Verify no bootstrap route needs callback.Router.
-5. Verify no production screen emits v1 payloads.
-6. Run targeted lifecycle/interaction tests when possible.
-7. Delete only after zero production callers.
-8. Move generic utilities out if still useful rather than retaining the subsystem.
+Before deletion:
 
-Add an architecture fence preventing new production legacy callback imports.
+- move any generic reusable helper to the correct package only if current production still uses it;
+- do not carry opaque-ID semantics into a2.
 
-Resource acceptance:
+Acceptance:
 
-- legacy StateStore budget gone;
-- legacy callback limiter/router lifecycle gone;
-- a2 sessions settle to baseline;
-- Settings/MyXL behavior unchanged.
+- repo-wide zero production StateStore reference;
+- repo-wide zero production `v1:` producer/parser;
+- no legacy-state idle worker/resource budget;
+- a2 state/resource baseline unchanged.
+
+Stop after F3 and wait for confirmation before F4.
 
 ---
 
-# P2-A — compress plugin hook registration API
+# 11. P1-F4 — remove legacy Router + bootstrap/plugin wiring
 
-## Problem
+Preconditions:
 
-Plugin manager hook registration has accumulated a matrix of interfaces for scoped/routed/state-gated/canonical variants.
+- no production legacy namespace handler;
+- no StateStore/protocol dependency;
+- native a2 and Assistant a2 cover all interactive production surfaces.
 
-Behavior is mature, but the API is hard to reason about.
+Candidate removals:
 
-## Goal
+```text
+callback.Router
+callback.Handler
+callback.HandlerWithOptions
+CallbackOptions
+legacy callback registration in plugin.Manager
+callback Router construction in app/bootstrap
+dispatcher callbackRouter field/accessors
+legacy fallback branch in Telegram callback ingress
+legacy shutdown/cleanup wiring
+callback-only metrics/limiter if no other owner
+```
 
-Move toward one explicit registration specification, approximately:
+Important ingress target after removal:
 
-~~~go
+```text
+Telegram callback update
+ -> a2 ownership/dispatch
+ -> unknown callback reject/ignore policy
+```
+
+Do not accidentally consume inline-bot callback surfaces that are owned by another current subsystem; audit actual ingress variants first.
+
+Acceptance:
+
+- no Router object constructed;
+- no plugin callback.Handler assertion;
+- no callback router setter/getter;
+- no legacy fallback in callback ingress;
+- disable/reload lifecycle remains correct;
+- unknown data policy explicit and safe.
+
+Stop after F4 and wait for confirmation before F5.
+
+---
+
+# 12. P1-F5 — repo-wide legacy callback final acceptance
+
+Run source and lifecycle acceptance.
+
+Architecture scan must show zero production references to the deleted legacy subsystem.
+
+Suggested forbidden production tokens after closure:
+
+```text
+internal/services/callback
+callback.Router
+callback.Handler
+callback.HandlerWithOptions
+callback.StateStore
+callback.ScopedCallbackStore
+EncodeCallbackData
+ParseCallbackData
+v1:
+SetStateStore
+RequiresCallbackState
+HandleCallback
+```
+
+Be careful: `v1:` may have unrelated protocols. Fence exact legacy callback semantics rather than blindly banning every unrelated string.
+
+Behavior matrix:
+
+| Surface | Acceptance |
+|---|---|
+| Native Settings | a2; text-only still zero-session |
+| Assistant Settings | a2 |
+| Native MyXL quota | a2 |
+| Native MyXL purchase | a2 |
+| Assistant MyXL | a2 |
+| Other migrated namespaces | a2 |
+| Wrong actor/target | fail closed |
+| Stale revision | fail closed |
+| Plugin reload | old tokens dead |
+| Shutdown | sessions settle |
+| Unknown callback | explicit safe policy |
+
+Resource evidence:
+
+- StateStore allocation gone;
+- Router namespace maps gone;
+- callback-only cleanup worker/ticker gone if it existed;
+- idle goroutine count not increased;
+- a2 session count settles after workload.
+
+At F5 closure:
+
+- mark P1-F CLOSED;
+- update this handoff;
+- update the main technical handoff pointer if needed;
+- record exact HEAD.
+
+Stop and wait for confirmation before P2-A.
+
+---
+
+# 13. P2-A — compress plugin hook registration API
+
+Status: NOT STARTED in this refinement continuation.
+
+Problem: plugin hook registration has accumulated capability-interface variants.
+
+Goal: move toward one explicit registration spec, based on current source, approximately:
+
+```go
 type MessageHookRegistration struct {
     Scope     tasks.ScopeIdentity
     Priority  int
@@ -402,36 +806,39 @@ type MessageHookRegistration struct {
     StateGate func(int64) bool
     Handler   CanonicalMessageHookHandler
 }
-~~~
+```
 
-Exact fields must follow current source.
+Do not copy this exact struct without refreshing source.
 
-## Constraints
+Constraints:
 
-- normalized/canonical message handler remains default;
-- raw Telegram hooks stay privileged compatibility;
-- lifecycle scope remains explicit;
-- interest routing must not regress to global fan-out;
-- no reflection-heavy hot-path registration.
+- canonical normalized message handler remains default;
+- raw Telegram hooks remain privileged compatibility;
+- lifecycle scope explicit;
+- no full-plugin hot-path scan;
+- no reflection-heavy registration.
 
-## Acceptance
+Acceptance:
 
-- materially fewer capability-interface assertions;
-- registration code smaller;
-- routing behavior unchanged;
-- reload/unregister behavior unchanged;
-- no new worker;
-- no hot-path full plugin scan.
+- materially fewer interface assertions;
+- routing unchanged;
+- reload/unregister unchanged;
+- no worker added;
+- no hot-path fan-out regression.
+
+Execute as reviewable subphases if source shows multiple independent hook families.
 
 ---
 
-# P2-B — expand localization into common userbot UX
+# 14. P2-B — expand localization into common userbot UX
 
-Use the existing localization service and Context.T(). Do not create another i18n system.
+Status: NOT STARTED here.
 
-Recommended migration order:
+Use the existing localization authority only.
 
-~~~text
+Recommended order:
+
+```text
 common navigation
 common status/error/success/progress
 usage/help templates
@@ -441,100 +848,97 @@ Downloader
 admin/moderation
 media/profile
 plugin-specific copy
-~~~
+```
 
-P1-A established canonical English role labels in presentation.ButtonRole. Localized surfaces can keep using ActionButton with translated labels.
-
-Do not make the base presentation package depend on localization/global state.
+Do not make `internal/presentation` depend on localization/global state.
 
 Acceptance:
 
-- required built-in EN/ID key parity;
+- required EN/ID key parity;
 - deterministic fallback;
+- current settings authority selects locale;
 - no dynamic metric-label localization;
-- userbot locale follows current settings authority;
-- common text is not duplicated separately between Assistant/userbot where avoidable.
+- avoid duplicate native/Assistant copy where reasonable.
 
 ---
 
-# P2-C — repo-wide response/error modernization
+# 15. P2-C — repo-wide response/error modernization
 
-Extend P0-B to remaining production code.
+Status: PARTIAL FOUNDATION exists via P0-B; repo-wide migration remains.
 
-Search for patterns such as:
+Search production code for unsafe patterns:
 
-~~~text
+```text
 ctx.Error(err.Error())
 ctx.Error(fmt.Sprintf(... err ...))
 ctx.Status(err.Error())
 ctx.Reply(fmt.Sprintf(... err ...))
 ctx.EditOrReply(fmt.Sprintf(... err ...))
 html.EscapeString(err.Error())
-~~~
+```
 
 Escaping is not sanitization.
 
-Prefer:
+Prefer semantic/safe boundaries:
 
-~~~text
+```text
 ctx.Status(...)
 ctx.Progress(...)
 ctx.Success(...)
 ctx.Result(...)
 ctx.Fail(cause, safeMessage)
-~~~
+```
 
-Use raw Reply/Edit only for genuine transport-specific behavior.
+For owner diagnostics: explicit authorization, size cap, escaping, and redaction.
 
-For owner-only diagnostics, use an explicit bounded diagnostic path with authorization, size cap, escaping, and secret/path redaction.
+Migration model:
 
-Migration strategy:
-
-~~~text
-existing debt -> temporary allowlist
-new debt      -> architecture test fails
-~~~
-
-Reduce allowlist as plugins migrate.
-
-Acceptance:
-
-- internal causes are not passed directly to presentation methods;
-- causes remain available to logs/metrics;
-- Assistant does not duplicate already-presented errors;
-- DispositionHandled remains correct;
-- no raw internal details in ordinary Telegram UI.
+```text
+existing debt -> temporary exact allowlist
+new debt      -> architecture test failure
+allowlist     -> shrink per migration
+```
 
 ---
 
-# P2-D — remove dead legacy UI helpers
+# 16. P2-D — remove dead legacy UI helpers
 
-After Settings/MyXL leave legacy callbacks:
+Run only after P1-F is closed, because callback reclamation may make additional UI helpers dead.
 
-1. search production references to internal/ui helpers;
-2. classify production / compatibility / test-only / dead;
-3. remove only zero-production-call helpers;
-4. keep pure formatting/card helpers that still add value;
-5. use P1-A vocabulary for surviving common actions.
+Classify `internal/ui` helpers:
 
-Do not rewrite stable screens just to reduce LOC.
+```text
+production
+pure formatting/value helper
+compatibility
+test-only
+dead
+```
+
+Remove only zero-production-call helpers.
+
+Preserve useful pure cards/formatters.
 
 Acceptance:
 
-- smaller internal/ui surface;
-- no duplicate common labels;
-- no duplicate Telegram serializer after P1-B;
-- no dead callback helpers after P1-F.
+- smaller UI surface;
+- no callback-only builders after legacy callback removal;
+- no second Telegram serializer;
+- common labels remain owned by presentation vocabulary.
 
 ---
 
-# P3-A — benchmark before further optimization
+# 17. P3-A — benchmark before optimization
 
-From this point forward, optimize only measured problems.
+Status: NOT YET RUN for current post-P1-F/P2 code.
 
-Run the real Go benchmark from P0-D when a full checkout/toolchain exists:
+Do not optimize based on historical suspicion.
 
-~~~text
+Required measurements when a real executable checkout/toolchain is available:
+
+## Inline
+
+```text
 exact/1
 exact/16
 exact/64
@@ -543,41 +947,59 @@ custom/1
 custom/16
 custom/64
 custom/256
-~~~
+```
 
-Record ns/op, B/op, allocs/op.
+Record:
 
-Also benchmark:
+```text
+ns/op
+B/op
+allocs/op
+```
 
-### Inline cache
-Current cache is bounded. Do not replace expiry scanning unless measurement shows meaningful CPU cost.
+## a2 runtime
 
-### Generic rate limiter
-Current buckets are bounded and cleanup is lazy. Do not add heap/timing-wheel complexity without evidence.
+Measure:
 
-### a2 runtime
-Measure create/action/transition, expiry, 1/64/512/4096 sessions, memory/session, reload/close settling.
+- create;
+- callback prepare/dispatch;
+- transition;
+- terminate;
+- expiry;
+- 1 / 64 / 512 / 4096 sessions;
+- memory/session;
+- reload cancellation;
+- close settling.
 
-### TaskEngine
-Measure cold/warm admission, completion delivery, drain, resource contention.
+## TaskEngine
 
-### Combined workload
+Measure:
 
-~~~text
+- cold admission;
+- warm admission;
+- completion delivery;
+- resource contention;
+- drain/shutdown.
+
+## Combined workload
+
+```text
 normal userbot command
 Assistant navigation
 inline exact query
 inline custom query
 a2 callback burst
 Settings mutation
-downloader long op
+MyXL refresh
+MyXL purchase confirmation without real charge
+downloader long op/cancel path
 plugin reload
 shutdown
-~~~
+```
 
-Observe:
+Observe before/peak/after settling:
 
-~~~text
+```text
 goroutines
 heap/RSS when practical
 TaskEngine active/pending
@@ -585,367 +1007,281 @@ a2 sessions
 Inline cache
 RPC limiter buckets
 resource usage
-settling after workload
-~~~
+completion state
+```
 
-Create a benchmark/acceptance document. Never claim an optimization without before/after evidence.
+Create a benchmark/acceptance document. Do not claim optimization benefits without before/after evidence.
 
 ---
 
-# P3-B — event-driven TaskEngine completion drain if polling still exists
+# 18. P3-B — event-driven TaskEngine completion drain if polling still exists
 
-Historical audit found a short ticker/poll loop in completion drain/shutdown. Refresh current source first.
+Refresh source first. Historical audit mentioned short polling in completion drain/shutdown; it may already be changed.
 
-If still present, target:
+Only if current source still polls:
 
-~~~text
-pending/active state transition
-    -> drained signal/channel/condition
-~~~
+```text
+pending/active transition
+ -> drained signal/channel/condition
+```
 
 Constraints:
 
 - no permanent worker;
 - no deadlock;
-- global shutdown deadline still wins;
-- current completion ordering/ownership preserved;
+- global shutdown deadline wins;
+- completion ordering preserved;
 - shutdown idempotent.
 
-Acceptance:
-
-- empty drain immediate;
-- pending work blocks until settled;
-- deadline/cancellation correct;
-- no goroutine leak;
-- no short polling ticker in drain path;
-- resource counts return to zero.
-
-Do not redesign TaskEngine.
+If no polling remains, record P3-B as intentionally skipped/already satisfied.
 
 ---
 
-# P3-C — optimize only hotspots proven by P3-A
+# 19. P3-C — optimize only measured hotspots
 
-Potential candidates only if measurement justifies them:
+Potential candidates only if P3-A proves material impact:
 
-- Inline cache expiry indexing/min-heap;
-- generic rate-limiter expiry indexing;
-- presentation adapter allocations after P1-B;
-- compatibility registration overhead after P2-A.
+- Inline expiry management;
+- generic limiter expiry management;
+- presentation allocations;
+- plugin registration overhead;
+- a2 hot-path allocation;
+- TaskEngine completion path.
 
-Forbidden optimization styles:
+Forbidden:
 
-- unbounded global caches;
-- sync.Pool only to win microbenchmarks;
-- permanent cleanup goroutines;
-- unsafe reuse across session lifetimes;
-- lock-free complexity without measured contention.
+- unbounded caches;
+- permanent cleanup workers;
+- sync.Pool solely for benchmark cosmetics;
+- lock-free complexity without measured contention;
+- unsafe cross-session reuse.
 
-If P3-A shows bounded scans are cheap, record that and deliberately skip P3-C changes.
+If measurements show bounded scans are cheap, document that and skip optimization.
 
 ---
 
-# P4 — final refinement closure acceptance
+# 20. P4 — final refinement closure acceptance
 
-After P1-B through P3-C, or after explicitly deciding measured P3-C work is unnecessary, run final closure.
+P4 runs only after:
+
+```text
+P1-F CLOSED
+P2-A/B/C/D CLOSED
+P3-A completed
+P3-B closed/skipped with source proof
+P3-C completed or explicitly skipped from evidence
+```
 
 Functional matrix:
 
 | Area | Acceptance |
 |---|---|
-| Userbot | normal commands work without Assistant |
-| Assistant | navigation/action/input works and reloads cleanly |
+| Userbot | ordinary commands work without Assistant |
+| Assistant | navigation/action/input work and reload cleanly |
 | Inline | exact/custom precedence unchanged |
-| Settings | text-only zero-state; interactive native a2 |
-| MyXL | native + Assistant a2; sensitive TTL/revalidation |
+| Settings | text-only zero-state; native + Assistant interactive a2 |
+| MyXL | native + Assistant a2; fresh purchase authority; bounded TTL |
+| Callback | legacy callback stack absent from production |
 | Presentation | one Telegram keyboard serializer |
-| Errors | no raw internal cause leakage |
-| Edit UX | ambiguous edit never triggers duplicate reply |
-| Plugins | disable/reload invalidates old tokens/work |
-| Shutdown | sessions/tasks/resources settle under deadline |
+| Errors | ordinary UI does not expose raw internal causes |
+| Edit UX | ambiguous edit never triggers duplicate fallback send |
+| Plugins | disable/reload invalidates old sessions/work |
+| Shutdown | tasks/sessions/resources settle within global deadline |
 
 Combined workload:
 
-~~~text
+```text
 regular command burst
 Assistant root/help/settings navigation
 callback burst
 native Settings navigation/mutation
-native MyXL navigation/confirmation
+native MyXL quota refresh
+native/Assistant MyXL confirmation flow without real financial charge
 inline exact queries
 custom matcher queries
 downloader cancel/retry
 plugin disable/reload while sessions exist
 shutdown
-~~~
+```
 
 Measure before, peak, and after settling:
 
-~~~text
+```text
 goroutines
 a2 sessions
 TaskEngine active/pending
 resource budget usage
 Inline cache size
-limiter bucket count
+RPC limiter bucket count
 completion state
 heap/RSS when practical
-~~~
+```
 
-Architectural closure target:
+Verification when possible:
 
-~~~text
-interaction sessions -> a2
-Telegram keyboard encoding -> one encoder
-native callback lifecycle -> a2 after legacy removal
-inline routing -> Inline vNext
-Telegram retry -> RPCExecutor
-execution/resources -> TaskEngine
-~~~
-
-Verification when a real checkout exists:
-
-~~~text
+```text
 gofmt cleanliness
 go build -o bin/goultroid ./cmd/goultroid
 targeted package tests
-go test ./... when appropriate
-go test -race for lifecycle/state-heavy packages when requested/feasible
+go test ./...
+go test -race for lifecycle/state-heavy packages when explicitly requested/feasible
 P3-A benchmarks
-~~~
+```
 
-Do not claim commands were run unless actually run.
-Do not inspect CI unless the user explicitly asks.
+Do not claim commands that did not run.
+Do not inspect CI unless explicitly asked.
 
-At closure:
+Final architecture target:
+
+```text
+interaction sessions       -> a2 only
+native callbacks           -> a2 only
+Assistant interactions     -> a2 only
+Telegram keyboard encoding -> one encoder
+inline routing             -> Inline vNext
+Telegram retry             -> RPCExecutor
+execution/resources        -> TaskEngine
+plugin lifecycle           -> plugin.Manager generation scope
+```
+
+At P4 closure:
 
 1. mark this handoff CLOSED;
-2. update docs/design/goultroid-next-technical-plan-ai-handoff.md;
-3. record final HEAD;
+2. update `docs/design/goultroid-next-technical-plan-ai-handoff.md`;
+3. record exact final HEAD;
 4. record benchmark/resource evidence;
-5. record optimizations intentionally skipped because benchmarks did not justify them.
+5. record any optimization intentionally skipped;
+6. declare refinement program complete and return to ordinary feature/product development.
 
 ---
 
-## 2. P1-A baseline inherited by the next session
+# 21. High-risk regression checklist
 
-HEAD 27b1f0fe establishes the canonical presentation vocabulary.
-
-P1-A added presentation-side concepts including:
-
-~~~text
-ButtonRole
-ButtonLabel
-ActionButton
-RoleActionButton
-URLButton
-RoleURLButton
-SwitchInlineButton
-RoleSwitchInlineButton
-RowOf
-~~~
-
-Common roles cover:
-
-~~~text
-Action
-Back
-Home
-Close
-Confirm
-Cancel
-Edit
-Open
-Help
-Previous
-Next
-Search
-Refresh
-Save
-~~~
-
-Warning/Information semantic rendering is also under internal/presentation.
-
-Legacy internal/ui now adapts common button labels and alert formatting to presentation instead of maintaining separate canonical copies.
-
-Important boundary:
-
-P1-A unifies semantic UI vocabulary only. It does not move callback/session ownership into presentation.
-
----
-
-## 3. High-risk regression checklist
-
-Before closing any remaining phase, verify it did not introduce:
+Before closing any remaining subphase verify it did not introduce:
 
 - second interaction runtime;
 - second callback token protocol;
 - second inline registry;
 - second TaskEngine;
 - plugin-local Telegram retry/FloodWait;
-- direct Telegram RPC in completion callback;
-- unbounded per-user/per-chat/per-query state;
+- direct Telegram RPC inside completion callback;
+- unbounded per-user/chat/query state;
 - permanent feature worker/ticker;
 - stale generation resurrection;
 - wrong-actor execution;
 - wrong-target execution;
-- mutation based only on stale session state;
-- automatic fallback after ambiguous send/edit;
+- stale-session mutation;
+- purchase based on stale provider authority;
+- duplicate settlement on replay;
+- auto fallback after ambiguous send/edit;
 - raw internal-error exposure;
-- resource lease held while waiting for a user click;
+- resource lease held while waiting for user click;
 - download/process lease held during Telegram upload;
-- metrics labels containing dynamic query/user/error text.
+- dynamic user/query/error metric labels.
 
 ---
 
-## 4. Recommended next-session execution order
+# 22. Files to read first in the next session
 
-~~~text
-1. Refresh test-next HEAD.
-2. Compare against audited HEAD 27b1f0fe...
-3. Read P1-A vocabulary + both current Telegram serializers.
-4. Implement P1-B only.
-5. gofmt, commit, push.
-6. Refresh HEAD.
-7. Implement P1-C native a2 adapter.
-8. Implement P1-D Settings migration.
-9. Implement P1-E MyXL residual migration.
-10. Verify zero production legacy callback callers.
-11. Implement P1-F removal.
-12. Continue P2-A/B/C/D.
-13. Run P3-A measurements.
-14. Implement P3-B if polling still exists.
-15. Implement P3-C only for measured hotspots.
-16. Run P4 final closure acceptance.
-~~~
+## P1-F1-A — immediate next task
 
-Do not combine P1-C through P1-F into one giant commit. Keep lifecycle migrations phase-separated for review and rollback.
-
----
-
-## 5. Files to read first
-
-P1-B:
-
-~~~text
-internal/presentation/vocabulary.go
-internal/presentation/view.go
-internal/presentation/compiler.go
-internal/presentation/telegram/bridge.go
-internal/presentation/telegram/bridge_markup_test.go
-internal/ui/button.go
-internal/ui/render/telegram.go
-internal/ui/render/telegram_test.go
-~~~
-
-P1-C:
-
-~~~text
-internal/interaction/runtime.go
-internal/interaction/runtime_internal.go
-internal/interaction/dispatcher.go
-internal/interaction/orchestration/
-internal/presentation/compiler.go
-internal/presentation/telegram/bridge.go
-Telegram callback ingress/dispatcher
-internal/plugin/manager.go
-~~~
-
-P1-D:
-
-~~~text
-plugins/settings/settings.go
-plugins/settings/assistant_optional_test.go
-internal/settings/
-internal/assistant/shell/settings.go
-~~~
-
-P1-E:
-
-~~~text
-plugins/myxl/myxl.go
-plugins/myxl/assistant_interaction.go
-plugins/myxl/*test.go
-~~~
-
-P1-F:
-
-~~~text
+```text
 internal/services/callback/
-app/bootstrap/plugin wiring constructing callback Router/StateStore
-~~~
-
-P2-A:
-
-~~~text
 internal/plugin/manager.go
 internal/plugin/features.go
-hook registration/routing tests
-~~~
+internal/module/
+internal/app/
+internal/telegram/dispatcher.go
+internal/telegram/dispatcher_callback.go
+internal/telegram/dispatcher_accessors.go
+plugins/** production Go files importing internal/services/callback
+internal/architecture/*callback*
+```
 
-P2-B/P2-C:
+Also verify known-zero baselines:
 
-~~~text
+```text
+plugins/settings/
+plugins/myxl/
+```
+
+## Later P2
+
+```text
+internal/plugin/
 internal/services/localization/
 internal/core/context.go
 internal/core/user_error.go
-internal/presentation/semantic.go
+internal/presentation/
+internal/ui/
 plugins/
-~~~
+```
 
-P3:
+## P3
 
-~~~text
+```text
 internal/services/inline/
 internal/services/ratelimit/
 internal/interaction/
 internal/taskengine/
-~~~
+```
 
 ---
 
-## 6. Areas already strong — preserve them
+# 23. Exact next-session instruction
 
-Telegram hot path is already oriented around cheap ingress, interest/admission decisions, lazy media extraction, and bounded TaskEngine work. Do not regress to full feature fan-out or ordinary-message DB claims.
+Start with:
 
-a2 already provides bounded sessions, expiry heap, zero-idle behavior, binding/revision fences, input sessions, and generation ownership. Do not replace it.
+> Refresh `test-next` HEAD and current source. Continue **P1-F1-A — production import / ownership inventory** only. Enumerate production Go files repo-wide and classify every legacy callback dependency. Do not migrate/delete production callback behavior yet. Create the authoritative inventory + exact allowlist/freeze basis, commit/push if appropriate, summarize conclusions, then STOP and wait for confirmation before P1-F1-B. Do not check CI.
 
-TaskEngine already owns bounded execution/resources, adaptive/lazy workers, durability, scope cancellation, completion delivery, and shutdown. Improve only measured/local issues.
+Important current baseline:
 
-Inline registry P0-D already separates exact indexing from custom matcher scans. Do not reintroduce a full exact+custom scan.
+```text
+HEAD at handoff creation:
+1d00110be8e664032e728902fb563dec93abe2d9
 
-P0-B/P0-C already established safe typed errors and commit-aware EditOrReply. Rich UI migrations must continue using those contracts.
+Settings:
+zero legacy callback production surface
+
+MyXL:
+zero legacy callback production surface
+P1-E fully re-audited and closed
+
+Global callback stack:
+NOT YET proven zero-caller
+DO NOT delete Router/StateStore/protocol until P1-F inventory proves it
+```
 
 ---
 
-## 7. Definition of done
+# 24. Definition of done for the whole refinement program
 
-The refinement program is finished when:
+The program is finished when:
 
-1. common UI semantics come from presentation;
+1. presentation owns common UI semantics;
 2. Telegram keyboard serialization has one implementation;
 3. native rich interactions use a2 without Assistant dependency;
-4. Settings no longer uses legacy callback state;
-5. MyXL no longer uses legacy callback state;
-6. legacy callback stack has zero production callers and is removed;
+4. Settings native + Assistant interactions are a2 and zero-legacy;
+5. MyXL native + Assistant interactions are a2 and zero-legacy;
+6. repo-wide legacy callback stack has zero production callers and is removed;
 7. plugin hook registration is materially simpler;
 8. common userbot UX uses the existing localization authority;
-9. remaining plugins no longer casually expose raw internal causes;
-10. dead compatibility UI helpers are removed;
-11. performance/resource changes are benchmark-driven;
-12. completion drain has no unnecessary polling if current source still has it;
+9. remaining production paths do not casually expose raw internal errors;
+10. dead callback/UI compatibility helpers are removed;
+11. performance/resource work is benchmark-driven;
+12. completion drain has no unnecessary polling if current source still had it;
 13. combined workload settles resources cleanly;
 14. no duplicate authority was introduced;
-15. closure matrix and benchmark/resource evidence are documented.
+15. final acceptance and benchmark/resource evidence are documented.
 
-At that point Goultroid returns to ordinary product development rather than architecture migration.
+At that point Goultroid returns to ordinary product development instead of architecture migration.
 
 ---
 
 ## One-line handoff
 
-~~~text
-Current HEAD 27b1f0fe closes P1-A canonical UI vocabulary.
-NEXT = P1-B single Telegram keyboard serializer.
-Then native a2 adapter -> Settings migration -> MyXL migration -> legacy callback removal -> plugin API/localization/error/UI cleanup -> benchmark-driven refinement -> final closure acceptance.
-~~~
+```text
+Current HEAD 1d00110b closes Settings final legacy transport after P1-E was fully closed at 122991c.
+NEXT = P1-F1-A repo-wide production legacy callback inventory only.
+Then F1-B producers -> F1-C consumers/wiring -> F1-D state/resource ownership -> F1-E freeze/migration matrix -> F2 remaining namespace migrations -> F3 StateStore/v1 removal -> F4 Router/wiring removal -> F5 acceptance -> P2 cleanup -> P3 measured refinement -> P4 final closure.
+```
