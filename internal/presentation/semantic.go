@@ -12,6 +12,8 @@ const (
 	ResponseError
 	ResponseProgress
 	ResponseResult
+	ResponseWarning
+	ResponseInformation
 )
 
 // Response is a transport-neutral semantic response. Text may contain the
@@ -22,11 +24,13 @@ type Response struct {
 	Text string
 }
 
-func Status(text string) Response   { return Response{Kind: ResponseStatus, Text: text} }
-func Success(text string) Response  { return Response{Kind: ResponseSuccess, Text: text} }
-func Error(text string) Response    { return Response{Kind: ResponseError, Text: text} }
-func Progress(text string) Response { return Response{Kind: ResponseProgress, Text: text} }
-func Result(text string) Response   { return Response{Kind: ResponseResult, Text: text} }
+func Status(text string) Response      { return Response{Kind: ResponseStatus, Text: text} }
+func Success(text string) Response     { return Response{Kind: ResponseSuccess, Text: text} }
+func Error(text string) Response       { return Response{Kind: ResponseError, Text: text} }
+func Progress(text string) Response    { return Response{Kind: ResponseProgress, Text: text} }
+func Result(text string) Response      { return Response{Kind: ResponseResult, Text: text} }
+func Warning(text string) Response     { return Response{Kind: ResponseWarning, Text: text} }
+func Information(text string) Response { return Response{Kind: ResponseInformation, Text: text} }
 
 // Render returns one canonical visual treatment for each semantic intent. The
 // result intent deliberately preserves caller-owned rich presentation exactly.
@@ -46,6 +50,10 @@ func (r Response) Render() string {
 		return "⏳ <b>Processing:</b> " + text
 	case ResponseResult:
 		return text
+	case ResponseWarning:
+		return "⚠️ <b>Warning:</b> " + text
+	case ResponseInformation:
+		return "ℹ️ <b>Info:</b> " + text
 	default:
 		return text
 	}

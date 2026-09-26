@@ -1,28 +1,28 @@
 package ui
 
-import "fmt"
+import "github.com/inipew/goultroid/internal/presentation"
 
-// Success formats a positive status message.
+// Success formats a positive status message through the canonical presentation vocabulary.
 func Success(msg string) string {
-	return fmt.Sprintf("✅ <b>Success:</b> %s", msg)
+	return presentation.Success(msg).Render()
 }
 
-// Warning formats an alert or cautionary status message.
+// Warning formats an alert or cautionary status message through the canonical presentation vocabulary.
 func Warning(msg string) string {
-	return fmt.Sprintf("⚠️ <b>Warning:</b> %s", msg)
+	return presentation.Warning(msg).Render()
 }
 
-// Error formats a failure or error message.
+// Error formats a failure or error message through the canonical presentation vocabulary.
 func Error(msg string) string {
-	return fmt.Sprintf("❌ <b>Error:</b> %s", msg)
+	return presentation.Error(msg).Render()
 }
 
-// Processing formats an in-progress or loading status message.
+// Processing formats an in-progress status through the canonical presentation vocabulary.
 func Processing(msg string) string {
-	return fmt.Sprintf("⏳ <b>Processing:</b> %s", msg)
+	return presentation.Progress(msg).Render()
 }
 
-// Information formats an informative note or status.
+// Information formats an informational note through the canonical presentation vocabulary.
 func Information(msg string) string {
-	return fmt.Sprintf("ℹ️ <b>Info:</b> %s", msg)
+	return presentation.Information(msg).Render()
 }

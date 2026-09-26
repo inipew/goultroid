@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+
+	"github.com/inipew/goultroid/internal/presentation"
 )
 
 // ButtonType identifies the behavior of an inline keyboard button.
@@ -43,6 +45,12 @@ func NewCallbackButton(text string, data []byte) Button {
 	}
 }
 
+// NewRoleCallbackButton adapts the canonical presentation role vocabulary to
+// the legacy callback payload model without changing callback ownership.
+func NewRoleCallbackButton(role presentation.ButtonRole, data []byte) Button {
+	return NewCallbackButton(presentation.ButtonLabel(role), data)
+}
+
 // NewURLButton creates a button that opens an external HTTP/HTTPS URL.
 func NewURLButton(text string, url string) Button {
 	return Button{
@@ -50,6 +58,11 @@ func NewURLButton(text string, url string) Button {
 		Text: text,
 		URL:  url,
 	}
+}
+
+// NewRoleURLButton adapts a canonical role label to a legacy URL button.
+func NewRoleURLButton(role presentation.ButtonRole, url string) Button {
+	return NewURLButton(presentation.ButtonLabel(role), url)
 }
 
 // NewSwitchInlineButton creates a button that switches to inline query mode.
@@ -60,6 +73,11 @@ func NewSwitchInlineButton(text string, query string, samePeer bool) Button {
 		InlineQuery: query,
 		SamePeer:    samePeer,
 	}
+}
+
+// NewRoleSwitchInlineButton adapts a canonical role label to legacy switch-inline metadata.
+func NewRoleSwitchInlineButton(role presentation.ButtonRole, query string, samePeer bool) Button {
+	return NewSwitchInlineButton(presentation.ButtonLabel(role), query, samePeer)
 }
 
 // NewMarkup initializes a Markup with the given rows.
@@ -76,14 +94,14 @@ func NewPaginationRow(prevData, nextData []byte, currentPage, totalPages int) Bu
 	var row ButtonRow
 
 	if len(prevData) > 0 && currentPage > 1 {
-		row = append(row, NewCallbackButton("◀ Prev", prevData))
+		row = append(row, NewRoleCallbackButton(presentation.ButtonRolePrevious, prevData))
 	}
 
 	label := fmt.Sprintf("%d / %d", currentPage, totalPages)
 	row = append(row, NewCallbackButton(label, NoopData))
 
 	if len(nextData) > 0 && currentPage < totalPages {
-		row = append(row, NewCallbackButton("Next ▶", nextData))
+		row = append(row, NewRoleCallbackButton(presentation.ButtonRoleNext, nextData))
 	}
 
 	return row
@@ -92,8 +110,8 @@ func NewPaginationRow(prevData, nextData []byte, currentPage, totalPages int) Bu
 // NewConfirmCancelRow creates a standard confirmation and cancellation button row.
 func NewConfirmCancelRow(confirmData, cancelData []byte) ButtonRow {
 	return ButtonRow{
-		NewCallbackButton("✅ Confirm", confirmData),
-		NewCallbackButton("❌ Cancel", cancelData),
+		NewRoleCallbackButton(presentation.ButtonRoleConfirm, confirmData),
+		NewRoleCallbackButton(presentation.ButtonRoleCancel, cancelData),
 	}
 }
 
@@ -104,12 +122,12 @@ func NewCloseRow(closeData []byte) ButtonRow {
 	if len(closeData) == 0 {
 		closeData = []byte("noop")
 	}
-	return ButtonRow{NewCallbackButton("✖ Close", closeData)}
+	return ButtonRow{NewRoleCallbackButton(presentation.ButtonRoleClose, closeData)}
 }
 
 // NewBackRow creates a Back navigation button.
 func NewBackRow(backData []byte) ButtonRow {
-	return ButtonRow{NewCallbackButton("◀ Back", backData)}
+	return ButtonRow{NewRoleCallbackButton(presentation.ButtonRoleBack, backData)}
 }
 
 // NewPaginationMarkup wraps NewPaginationRow into a Markup for convenience.
@@ -137,7 +155,7 @@ func NewHelpSwitchRow(query string) ButtonRow {
 	if query == "" {
 		query = "help"
 	}
-	return ButtonRow{NewSwitchInlineButton("🔍 Help", query, false)}
+	return ButtonRow{NewRoleSwitchInlineButton(presentation.ButtonRoleHelp, query, false)}
 }
 
 // NewCommonResultRow creates a row with common inline result actions: URL + SwitchInline Help.
@@ -145,12 +163,12 @@ func NewCommonResultRow(helpQuery string, url string, urlText string) ButtonRow 
 	var row ButtonRow
 	if url != "" {
 		if urlText == "" {
-			urlText = "🔗 Open"
+			urlText = presentation.ButtonLabel(presentation.ButtonRoleOpen)
 		}
 		row = append(row, NewURLButton(urlText, url))
 	}
 	if helpQuery != "" {
-		row = append(row, NewSwitchInlineButton("🔍 Help", helpQuery, false))
+		row = append(row, NewRoleSwitchInlineButton(presentation.ButtonRoleHelp, helpQuery, false))
 	}
 	return row
 }
@@ -161,19 +179,19 @@ func NewStandardActionRow(callbackData []byte, callbackText string, url string, 
 	var row ButtonRow
 	if len(callbackData) > 0 {
 		if callbackText == "" {
-			callbackText = "Action"
+			callbackText = presentation.ButtonLabel(presentation.ButtonRoleAction)
 		}
 		row = append(row, NewCallbackButton(callbackText, callbackData))
 	}
 	if url != "" {
 		if urlText == "" {
-			urlText = "Open"
+			urlText = presentation.ButtonLabel(presentation.ButtonRoleOpen)
 		}
 		row = append(row, NewURLButton(urlText, url))
 	}
 	if inlineQuery != "" {
 		if inlineText == "" {
-			inlineText = "Search"
+			inlineText = presentation.ButtonLabel(presentation.ButtonRoleSearch)
 		}
 		row = append(row, NewSwitchInlineButton(inlineText, inlineQuery, false))
 	}
