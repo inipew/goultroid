@@ -99,3 +99,86 @@ func TestP2BMetricPathsDoNotDependOnLocalization(t *testing.T) {
 		}
 	}
 }
+
+func TestP2BCommonUserbotSurfacesUseLocalizedVocabulary(t *testing.T) {
+	root := repositoryRoot(t)
+	checks := map[string]struct {
+		required []string
+		forbidden []string
+	}{
+		filepath.Join(root, "plugins", "settings", "settings.go"): {
+			required: []string{"ctx.T(\"settings.cli."},
+			forbidden: []string{
+				"GoUltroid CLI Configuration Subsystem",
+				"Setting updated:",
+				"Global Settings Export:",
+			},
+		},
+		filepath.Join(root, "plugins", "admin", "admin.go"): {
+			required: []string{"ctx.T(\"admin.", "formatAdminError(ctx *core.Context"},
+			forbidden: []string{
+				"Fitur ban hanya dapat digunakan",
+				"Cannot ban the owner!",
+				"Purged %d messages successfully",
+			},
+		},
+		filepath.Join(root, "plugins", "media", "media.go"): {
+			required: []string{"ctx.T(\"media."},
+			forbidden: []string{
+				"📊 <b>Media Information</b>",
+				"Cannot extract audio from a photo or sticker.",
+				"<i>Converting video to GIF...</i>",
+			},
+		},
+		filepath.Join(root, "plugins", "profile", "profile.go"): {
+			required: []string{"ctx.T(\"profile."},
+			forbidden: []string{
+				"🤖 <b>My Profile</b>",
+				"Please provide bio text:",
+				"Telegram service not available.",
+			},
+		},
+	}
+	for path, check := range checks {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := string(raw)
+		for _, marker := range check.required {
+			if !strings.Contains(source, marker) {
+				t.Errorf("P2-B localized vocabulary marker %q missing from %s", marker, path)
+			}
+		}
+		for _, marker := range check.forbidden {
+			if strings.Contains(source, marker) {
+				t.Errorf("P2-B hard-coded common UX %q returned in %s", marker, path)
+			}
+		}
+	}
+}
+
+func TestP2BUserbotCatalogIsCanonicalBuiltinInput(t *testing.T) {
+	root := repositoryRoot(t)
+	localizerPath := filepath.Join(root, "internal", "services", "localization", "localizer.go")
+	raw, err := os.ReadFile(localizerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(raw)
+	if strings.Count(source, "s.loadUserbotUXTranslations()") != 1 {
+		t.Fatal("userbot UX catalog must be loaded exactly once by the canonical localization service")
+	}
+
+	catalogPath := filepath.Join(root, "internal", "services", "localization", "userbot_catalog.go")
+	raw, err = os.ReadFile(catalogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := string(raw)
+	for _, prefix := range []string{"settings.cli.", "admin.", "media.", "profile."} {
+		if !strings.Contains(catalog, "\""+prefix) {
+			t.Errorf("userbot catalog missing %s family", prefix)
+		}
+	}
+}
