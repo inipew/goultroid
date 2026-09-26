@@ -184,7 +184,7 @@ func (p *Plugin) handleBlacklist(ctx *core.Context) error {
 	}
 	chatID := p.getChatID(ctx)
 	if err := p.addBlacklistRule(ctx.Ctx, chatID, word); err != nil {
-		_ = ctx.Error(fmt.Sprintf("Failed to add to blacklist: %v", err))
+		_ = ctx.Fail(err, "Failed to add to blacklist.")
 		return err
 	}
 	return ctx.Success(fmt.Sprintf("Added <code>%s</code> to chat blacklist.", html.EscapeString(word)))
@@ -197,7 +197,7 @@ func (p *Plugin) handleUnblacklist(ctx *core.Context) error {
 	word := strings.ToLower(strings.TrimSpace(ctx.RawArgs))
 	chatID := p.getChatID(ctx)
 	if err := p.removeBlacklistRule(ctx.Ctx, chatID, word); err != nil {
-		_ = ctx.Error(fmt.Sprintf("Failed to remove from blacklist: %v", err))
+		_ = ctx.Fail(err, "Failed to remove from blacklist.")
 		return err
 	}
 	return ctx.Success(fmt.Sprintf("Removed <code>%s</code> from chat blacklist.", html.EscapeString(word)))
@@ -206,7 +206,7 @@ func (p *Plugin) handleListBlacklists(ctx *core.Context) error {
 	chatID := p.getChatID(ctx)
 	words, err := p.db.ListBlacklists(ctx.Ctx, chatID)
 	if err != nil {
-		_ = ctx.Error(fmt.Sprintf("Failed to list blacklists: %v", err))
+		_ = ctx.Fail(err, "Failed to list blacklists.")
 		return err
 	}
 	if len(words) == 0 {
