@@ -2,7 +2,6 @@ package pin
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/inipew/goultroid/internal/core"
