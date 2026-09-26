@@ -11,12 +11,23 @@ import (
 
 func TestCloseCancelsSessionsAndRejectsNewWork(t *testing.T) {
 	runtime, _, _ := testRuntime(t, Config{})
-	created, err := runtime.Create(context.Background(), CreateRequest{FeatureID: "demo", Binding: Binding{ActorID: 1}})
+	created, err := runtime.Create(context.Background(), CreateRequest{
+		FeatureID: "demo",
+		Binding:   Binding{ActorID: 1},
+		State:     []byte("retained"),
+	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
+	before := runtime.Stats()
+	if before.Sessions != 1 || before.StateBytes != len("retained") {
+		t.Fatalf("pre-close stats = %+v, want one retained session", before)
+	}
 	if err := runtime.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
+	}
+	if stats := runtime.Stats(); stats.Sessions != 0 || stats.Inputs != 0 || stats.StateBytes != 0 {
+		t.Fatalf("post-close stats = %+v, want sessions/inputs/state bytes settled to zero", stats)
 	}
 	if !errors.Is(context.Cause(created.Context), ErrClosed) {
 		t.Fatalf("context cause = %v, want %v", context.Cause(created.Context), ErrClosed)
@@ -26,7 +37,7 @@ func TestCloseCancelsSessionsAndRejectsNewWork(t *testing.T) {
 	}
 }
 
-func TestCreateDetectsFeatureRemoved(t *testing.T) {
+func TestCreateDetectsFeatureRemoved(t *testing.T) {func TestCreateDetectsFeatureRemoved(t *testing.T) {
 	runtime, catalog, _ := testRuntime(t, Config{})
 	catalog.removeScope("demo")
 	if _, err := runtime.Create(context.Background(), CreateRequest{FeatureID: "demo", Binding: Binding{ActorID: 1}}); !errors.Is(err, ErrInvalidFeature) {

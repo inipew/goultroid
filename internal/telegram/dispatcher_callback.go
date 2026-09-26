@@ -239,6 +239,47 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 	return nil
 }
 
+// OnInlineBotCallbackQuery handles inline message button callback queries.
+func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities, update *tg.UpdateInlineBotCallbackQuery) error {
+	release, accepted := d.admitIngress()
+	if !accepted {
+		return nil
+	}
+	defer release()
+
+	if d.idempotencyMgr != nil {
+		key := fmt.Sprintf("inline_cb:%d", update.QueryID)
+		isNew, claimErr := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
+		if claimErr != nil {
+			d.logger.Error("inline callback idempotency claim failed",
+				zap.String("key", key),
+				zap.Int64("query_id", update.QueryID),
+				zap.Error(claimErr),
+			)
+			if svc := d.getService(); svc != nil {
+				_ = svc.AnswerCallbackQuery(ctx, update.QueryID, "Interaction service temporarily unavailable.", true)
+			}
+			return nil
+		}
+		if !isNew {
+			return nil
+		}
+	}
+	evt := canonicalInlineCallbackQueryEvent(update, time.Now())
+
+	bus := d.getEventBus()
+	if bus != nil && bus.HasSubscribersAtPriority(core.EventTypeCallbackQuery, core.PriorityNormal) {
+		bus.Publish(evt)
+	}
+
+	if d.dispatchNativeInteraction(ctx, evt) {
+		return nil
+	}
+
+	d.answerUnknownCallback(ctx, evt)
+	return nil
+}
+
 // OnBotInlineQuery handles incoming inline search query requests.
 func (d *Dispatcher) OnBotInlineQuery(ctx context.Context, e tg.Entities, update *tg.UpdateBotInlineQuery) error {
 	release, accepted := d.admitIngress()
@@ -302,34 +343,7 @@ func (d *Dispatcher) OnMessageReactions(ctx context.Context, e tg.Entities, upda
 	return nil
 }
 
-func callbackOrderingKey(evt *core.CallbackQueryEvent) string {
-	if evt == nil {
-		return ""
-	}
-	if !evt.IsInline() {
-		if evt.ChatID != 0 && evt.MsgID != 0 {
-			return fmt.Sprintf("callback:msg:%d:%d", evt.ChatID, evt.MsgID)
-		}
-		if evt.MsgID != 0 {
-			return fmt.Sprintf("callback:msg:%d", evt.MsgID)
-		}
-		return fmt.Sprintf("callback:%d", evt.QueryID)
-	}
-	if evt.Target.InlineID != nil {
-		switch id := evt.Target.InlineID.(type) {
-		case *tg.InputBotInlineMessageID:
-			return fmt.Sprintf("callback:inline_msg:%d:%d", id.DCID, id.ID)
-		case *tg.InputBotInlineMessageID64:
-			return fmt.Sprintf("callback:inline_msg:%d:%d", id.DCID, id.ID)
-		}
-	}
-	if evt.ChatInstance != 0 {
-		return fmt.Sprintf("callback:instance:%d", evt.ChatInstance)
-	}
-	return fmt.Sprintf("inline_callback:%d", evt.QueryID)
-}
-
-// extractChatIDFromPeer returns a numeric chat ID for the given peer class.
+// extractChatIDFromPeer returns a numeric chat ID for the given peer class.// extractChatIDFromPeer returns a numeric chat ID for the given peer class.
 func extractChatIDFromPeer(peer tg.PeerClass) int64 {
 	if peer == nil {
 		return 0

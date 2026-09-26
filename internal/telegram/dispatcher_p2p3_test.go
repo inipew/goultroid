@@ -36,19 +36,16 @@ func (s *callbackRecordingService) AnswerCallbackQuery(ctx context.Context, quer
 	return nil
 }
 
-func TestDispatcher_MissingCallbackRouter_GracefulFallback(t *testing.T) {
+func TestDispatcher_UnknownCallbackPolicyAfterLegacyRouterRemoval(t *testing.T) {
 	logger := zap.NewNop()
 	router := core.NewRouter(".")
 	dispatcher := NewDispatcher(router, nil, nil, logger)
 
 	svc := newCallbackRecordingService()
 	dispatcher.SetService(svc)
-	// cbRouter is intentionally nil
-
 	ctx := context.Background()
 
-	// 1. Test OnBotCallbackQuery with nil cbRouter
-	updateBot := &tg.UpdateBotCallbackQuery{
+	messageUnknown := &tg.UpdateBotCallbackQuery{
 		QueryID:      1001,
 		UserID:       2001,
 		Peer:         &tg.PeerUser{UserID: 2001},
@@ -56,87 +53,61 @@ func TestDispatcher_MissingCallbackRouter_GracefulFallback(t *testing.T) {
 		ChatInstance: 9999,
 		Data:         []byte("test_button"),
 	}
-	if err := dispatcher.OnBotCallbackQuery(ctx, tg.Entities{}, updateBot); err != nil {
-		t.Fatalf("unexpected error on bot callback query: %v", err)
+	if err := dispatcher.OnBotCallbackQuery(ctx, tg.Entities{}, messageUnknown); err != nil {
+		t.Fatalf("message unknown callback: %v", err)
 	}
 
-	// 2. Test OnInlineBotCallbackQuery with nil cbRouter
-	updateInline := &tg.UpdateInlineBotCallbackQuery{
+	inlineUnknown := &tg.UpdateInlineBotCallbackQuery{
 		QueryID:      1002,
 		UserID:       2001,
 		ChatInstance: 9999,
 		Data:         []byte("test_inline_button"),
 	}
-	if err := dispatcher.OnInlineBotCallbackQuery(ctx, tg.Entities{}, updateInline); err != nil {
-		t.Fatalf("unexpected error on inline callback query: %v", err)
+	if err := dispatcher.OnInlineBotCallbackQuery(ctx, tg.Entities{}, inlineUnknown); err != nil {
+		t.Fatalf("inline unknown callback: %v", err)
 	}
 
-	if count := svc.callCount.Load(); count != 2 {
-		t.Fatalf("expected 2 AnswerCallbackQuery invocations, got %d", count)
+	messageNoop := &tg.UpdateBotCallbackQuery{
+		QueryID:      1003,
+		UserID:       2001,
+		Peer:         &tg.PeerUser{UserID: 2001},
+		MsgID:        51,
+		ChatInstance: 9999,
+		Data:         []byte("noop"),
+	}
+	if err := dispatcher.OnBotCallbackQuery(ctx, tg.Entities{}, messageNoop); err != nil {
+		t.Fatalf("message noop callback: %v", err)
+	}
+
+	inlineNoop := &tg.UpdateInlineBotCallbackQuery{
+		QueryID:      1004,
+		UserID:       2001,
+		ChatInstance: 9999,
+		Data:         []byte("noop"),
+	}
+	if err := dispatcher.OnInlineBotCallbackQuery(ctx, tg.Entities{}, inlineNoop); err != nil {
+		t.Fatalf("inline noop callback: %v", err)
+	}
+
+	if count := svc.callCount.Load(); count != 4 {
+		t.Fatalf("AnswerCallbackQuery invocations=%d, want 4", count)
 	}
 
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
-	if text := svc.answered[1001]; text != "Interaction service unavailable." {
-		t.Errorf("expected 'Interaction service unavailable.', got '%s'", text)
+	for _, queryID := range []int64{1001, 1002} {
+		if text := svc.answered[queryID]; text != unknownCallbackExpiredText {
+			t.Errorf("unknown callback %d answer=%q, want %q", queryID, text, unknownCallbackExpiredText)
+		}
 	}
-	if text := svc.answered[1002]; text != "Interaction service unavailable." {
-		t.Errorf("expected 'Interaction service unavailable.', got '%s'", text)
-	}
-}
-
-func TestDispatcher_CallbackOrderingKey(t *testing.T) {
-	// 1. Message target with chat and msg ID
-	evt1 := &core.CallbackQueryEvent{
-		ChatID:  -100123456789,
-		MsgID:   42,
-		QueryID: 999,
-		Origin:  core.CallbackOriginMessage,
-	}
-	key1 := callbackOrderingKey(evt1)
-	if expected := "callback:msg:-100123456789:42"; key1 != expected {
-		t.Errorf("expected %s, got %s", expected, key1)
-	}
-
-	// 2. Message target with zero ChatID but MsgID
-	evt2 := &core.CallbackQueryEvent{
-		ChatID:  0,
-		MsgID:   88,
-		QueryID: 1000,
-		Origin:  core.CallbackOriginMessage,
-	}
-	key2 := callbackOrderingKey(evt2)
-	if expected := "callback:msg:88"; key2 != expected {
-		t.Errorf("expected %s, got %s", expected, key2)
-	}
-
-	// 3. Inline message target with DCID and ID
-	evt3 := &core.CallbackQueryEvent{
-		QueryID: 1001,
-		Origin:  core.CallbackOriginInline,
-		Target: core.CallbackTarget{
-			Origin:   core.CallbackOriginInline,
-			InlineID: &tg.InputBotInlineMessageID{DCID: 2, ID: 12345},
-		},
-	}
-	key3 := callbackOrderingKey(evt3)
-	if expected := "callback:inline_msg:2:12345"; key3 != expected {
-		t.Errorf("expected %s, got %s", expected, key3)
-	}
-
-	// 4. Inline message target with ChatInstance fallback
-	evt4 := &core.CallbackQueryEvent{
-		QueryID:      1002,
-		Origin:       core.CallbackOriginInline,
-		ChatInstance: 55555,
-	}
-	key4 := callbackOrderingKey(evt4)
-	if expected := "callback:instance:55555"; key4 != expected {
-		t.Errorf("expected %s, got %s", expected, key4)
+	for _, queryID := range []int64{1003, 1004} {
+		if text := svc.answered[queryID]; text != "" {
+			t.Errorf("noop callback %d answer=%q, want silent ACK", queryID, text)
+		}
 	}
 }
 
-func TestDispatcher_CanonicalPipeline_Normalizer(t *testing.T) {
+func TestDispatcher_CanonicalPipeline_Normalizer(t *testing.T) {func TestDispatcher_CanonicalPipeline_Normalizer(t *testing.T) {
 	logger := zap.NewNop()
 	router := core.NewRouter(".")
 	dispatcher := NewDispatcher(router, nil, nil, logger)

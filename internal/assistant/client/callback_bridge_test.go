@@ -332,6 +332,16 @@ func TestUpdateHandlers_CallbackSpinnerProtection(t *testing.T) {
 		t.Fatalf("invalid answer: %+v", api.answerReq)
 	}
 
+	api.answerReq = nil
+	if err := dispatcher.Handle(ctx, &tg.Updates{Updates: []tg.UpdateClass{
+		&tg.UpdateBotCallbackQuery{QueryID: 103, UserID: 1, Data: []byte("noop")},
+	}}); err != nil {
+		t.Fatalf("noop handle: %v", err)
+	}
+	if api.answerReq == nil || api.answerReq.QueryID != 103 || api.answerReq.Message != "" {
+		t.Fatalf("noop answer: %+v", api.answerReq)
+	}
+
 	isShutdown = true
 	api.answerReq = nil
 	if err := dispatcher.Handle(ctx, &tg.Updates{Updates: []tg.UpdateClass{
@@ -352,6 +362,16 @@ func TestUpdateHandlers_CallbackSpinnerProtection(t *testing.T) {
 	}
 	if api.answerReq == nil || api.answerReq.QueryID != 201 || api.answerReq.Message != "⌛ Interaction expired. Please reopen it." {
 		t.Fatalf("inline invalid answer: %+v", api.answerReq)
+	}
+
+	api.answerReq = nil
+	if err := dispatcher.Handle(ctx, &tg.Updates{Updates: []tg.UpdateClass{
+		&tg.UpdateInlineBotCallbackQuery{QueryID: 202, UserID: 1, Data: []byte("noop")},
+	}}); err != nil {
+		t.Fatalf("inline noop handle: %v", err)
+	}
+	if api.answerReq == nil || api.answerReq.QueryID != 202 || api.answerReq.Message != "" {
+		t.Fatalf("inline noop answer: %+v", api.answerReq)
 	}
 }
 

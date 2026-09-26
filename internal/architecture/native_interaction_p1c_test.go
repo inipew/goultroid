@@ -30,7 +30,7 @@ func TestP1CNativeInteractionAdapterIsAssistantIndependent(t *testing.T) {
 	}
 }
 
-func TestP1CNativeCallbackPrecedesLegacyRouter(t *testing.T) {
+func TestP1CNativeCallbackPrecedesUnknownFallback(t *testing.T) {
 	root := repositoryRoot(t)
 	path := filepath.Join(root, "internal", "telegram", "dispatcher_callback.go")
 	raw, err := os.ReadFile(path)
@@ -50,14 +50,19 @@ func TestP1CNativeCallbackPrecedesLegacyRouter(t *testing.T) {
 		}
 		body := source[start:end]
 		nativeIndex := strings.Index(body, "dispatchNativeInteraction(ctx, evt)")
-		legacyIndex := strings.Index(body, "d.getCallbackRouter()")
-		if nativeIndex < 0 || legacyIndex < 0 || nativeIndex > legacyIndex {
-			t.Fatalf("%s must route native a2 before legacy callback state", functionName)
+		unknownIndex := strings.Index(body, "d.answerUnknownCallback(ctx, evt)")
+		if nativeIndex < 0 || unknownIndex < 0 || nativeIndex > unknownIndex {
+			t.Fatalf("%s must route native a2 before explicit unknown callback fallback", functionName)
+		}
+		for _, legacy := range []string{"getCallbackRouter(", "callbackRouter", "dispatchCoreCallback("} {
+			if strings.Contains(body, legacy) {
+				t.Fatalf("%s reintroduced legacy callback fallback %q", functionName, legacy)
+			}
 		}
 	}
 }
 
-func TestP1CNativeFoundationWiredWithoutAssistantGate(t *testing.T) {
+func TestP1CNativeFoundationWiredWithoutAssistantGate(t *testing.T) {func TestP1CNativeFoundationWiredWithoutAssistantGate(t *testing.T) {
 	root := repositoryRoot(t)
 	path := filepath.Join(root, "internal", "app", "app.go")
 	raw, err := os.ReadFile(path)
