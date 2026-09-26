@@ -63,9 +63,12 @@ func TestP2AHookRegistrarUsesSingleRegistrationContract(t *testing.T) {
 	}
 
 	start := strings.Index(source, "func registerMessageHook(")
-	end := strings.Index(source[start:], "// SchedulerTaskCleaner")
-	if start < 0 || end < 0 {
+	if start < 0 {
 		t.Fatal("registerMessageHook body not found")
+	}
+	end := strings.Index(source[start:], "// SchedulerTaskCleaner")
+	if end < 0 {
+		t.Fatal("registerMessageHook terminator not found")
 	}
 	body := source[start : start+end]
 	if strings.Contains(body, "registrar.(") {
