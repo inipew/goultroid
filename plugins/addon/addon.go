@@ -98,7 +98,7 @@ func (p *Plugin) handleAddon(ctx *core.Context) error {
 func (p *Plugin) handleList(ctx *core.Context) error {
 	addons, err := p.mgr.List(ctx.Ctx)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to list addons: %v", err))
+		return ctx.Fail(err, "Failed to list addons.")
 	}
 
 	if len(addons) == 0 {
@@ -210,7 +210,7 @@ func (p *Plugin) handleInstall(ctx *core.Context) error {
 
 	manifest, err := p.mgr.Install(ctx.Ctx, []byte(rawManifest), sourceURL)
 	if err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to install addon: %v", err))
+		return ctx.Fail(err, "Failed to install addon.")
 	}
 
 	capStr := "None"
@@ -241,7 +241,7 @@ func (p *Plugin) handleUninstall(ctx *core.Context) error {
 
 	name := ctx.Args[1]
 	if err := p.mgr.Uninstall(ctx.Ctx, name); err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to uninstall addon: %v", err))
+		return ctx.Fail(err, "Failed to uninstall addon.")
 	}
 
 	return ctx.Success(fmt.Sprintf("Uninstalled addon <code>%s</code>; capability permissions revoked.", core.EscapeHTML(name)))
@@ -254,7 +254,7 @@ func (p *Plugin) handleEnable(ctx *core.Context) error {
 
 	name := ctx.Args[1]
 	if err := p.mgr.Enable(ctx.Ctx, name); err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to enable addon: %v", err))
+		return ctx.Fail(err, "Failed to enable addon.")
 	}
 
 	return ctx.Success(fmt.Sprintf("Enabled addon <code>%s</code>; capability permissions restored.", core.EscapeHTML(name)))
@@ -267,7 +267,7 @@ func (p *Plugin) handleDisable(ctx *core.Context) error {
 
 	name := ctx.Args[1]
 	if err := p.mgr.Disable(ctx.Ctx, name); err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to disable addon: %v", err))
+		return ctx.Fail(err, "Failed to disable addon.")
 	}
 
 	return ctx.Success(fmt.Sprintf("Disabled addon <code>%s</code>; capability permissions revoked.", core.EscapeHTML(name)))
