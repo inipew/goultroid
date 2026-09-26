@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	LocaleSettingNamespace = "ui"
-	LocaleSettingKey       = "locale"
+	LocaleSettingNamespace = localization.LocaleSettingNamespace
+	LocaleSettingKey       = localization.LocaleSettingKey
 )
 
 func shellLocale(locale string) string {
@@ -22,17 +22,7 @@ func shellLocale(locale string) string {
 // ResolveLocale reads the one canonical Assistant locale setting through the
 // central bounded settings service. Callers never retain a second locale map.
 func ResolveLocale(ctx context.Context, svc *settings.Service, userID, chatID int64) string {
-	if svc == nil {
-		return localization.DefaultLocale
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	value, err := svc.ResolveString(ctx, userID, chatID, LocaleSettingNamespace, LocaleSettingKey)
-	if err != nil {
-		return localization.DefaultLocale
-	}
-	return localization.CanonicalLocale(value)
+	return localization.ResolveLocale(ctx, svc, userID, chatID)
 }
 
 func tr(locale, key string, args ...any) string {

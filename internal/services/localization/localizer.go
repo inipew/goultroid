@@ -13,6 +13,11 @@ const (
 	LocaleEnglish = DefaultLocale
 	// LocaleIndonesian identifier.
 	LocaleIndonesian = "id"
+
+	// LocaleSettingNamespace and LocaleSettingKey are the canonical setting
+	// identity shared by userbot and Assistant localization.
+	LocaleSettingNamespace = "ui"
+	LocaleSettingKey       = "locale"
 )
 
 // CanonicalLocale normalizes Telegram/settings locale variants to the bounded
@@ -43,6 +48,44 @@ type Localizer interface {
 	SetLocale(locale string)
 	GetLocale() string
 	AddTranslations(locale string, dict map[string]string)
+}
+
+// Translator is the narrow immutable translation view consumed by command
+// contexts. It deliberately exposes no locale mutation.
+type Translator interface {
+	T(key string, args ...any) string
+}
+
+type boundTranslator struct {
+	localizer Localizer
+	locale    string
+}
+
+// Bind returns a locale-specific translator without mutating the shared
+// Localizer. Different user/chat invocations may therefore translate
+// concurrently with independent locales.
+func Bind(localizer Localizer, locale string) Translator {
+	return boundTranslator{localizer: localizer, locale: CanonicalLocale(locale)}
+}
+
+func (b boundTranslator) T(key string, args ...any) string {
+	if b.localizer != nil {
+		return b.localizer.TLocale(b.locale, key, args...)
+	}
+	if len(args) == 0 {
+		return key
+	}
+	var sb strings.Builder
+	sb.WriteString(key)
+	sb.WriteString(" [")
+	for i, arg := range args {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		sb.WriteString(fmt.Sprint(arg))
+	}
+	sb.WriteString("]")
+	return sb.String()
 }
 
 // Service implements Localizer with thread-safe translation catalogs.
