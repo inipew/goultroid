@@ -214,16 +214,16 @@ func isPrivateOrUnsupported(ctx *core.Context) bool {
 	return false
 }
 
-func formatAdminError(action string, err error) string {
+func formatAdminError(ctx *core.Context, action string, err error) string {
 	switch {
 	case errors.Is(err, core.ErrGroupMutationTargetProtected):
-		return fmt.Sprintf("❌ Gagal %s: target dilindungi oleh hierarki admin Telegram.", action)
+		return ctx.T("admin.error.target_protected", action)
 	case errors.Is(err, core.ErrGroupMutationDenied),
 		errors.Is(err, core.ErrGroupAuthorizationDenied),
 		errors.Is(err, core.ErrPermissionDenied):
-		return fmt.Sprintf("❌ Gagal %s: Anda atau Assistant bot tidak memiliki hak Telegram yang diperlukan.", action)
+		return ctx.T("admin.error.permission", action)
 	case errors.Is(err, core.ErrUnsupported):
-		return "⚠️ Operasi ini tidak didukung untuk tipe grup tersebut."
+		return ctx.T("admin.error.unsupported")
 	case errors.Is(err, core.ErrUnavailable),
 		errors.Is(err, core.ErrResourceLimit),
 		errors.Is(err, core.ErrRateLimited),
@@ -235,19 +235,19 @@ func formatAdminError(action string, err error) string {
 	switch {
 	case strings.Contains(upper, "USER_ADMIN_INVALID"),
 		strings.Contains(upper, "USER_CREATOR"):
-		return fmt.Sprintf("❌ Gagal %s: target dilindungi oleh hierarki admin Telegram.", action)
+		return ctx.T("admin.error.target_protected", action)
 	case strings.Contains(upper, "ADMINS_TOO_MUCH"):
-		return "❌ Gagal: batas maksimal admin di grup ini telah tercapai."
+		return ctx.T("admin.error.admin_limit")
 	case strings.Contains(upper, "CHAT_ADMIN_REQUIRED"),
 		strings.Contains(upper, "RIGHT_FORBIDDEN"):
-		return fmt.Sprintf("❌ Gagal %s: hak admin Telegram yang diperlukan tidak tersedia.", action)
+		return ctx.T("admin.error.rights", action)
 	}
-	return "❌ Operasi admin gagal. Silakan coba lagi."
+	return ctx.T("admin.error.generic")
 }
 
 func (p *Plugin) handleBan(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
-		_ = ctx.Status("Fitur ban hanya dapat digunakan di grup atau supergroup.")
+		_ = ctx.Status(ctx.T("admin.group_only", ctx.T("admin.action.ban")))
 		return core.ErrUnsupported
 	}
 
@@ -258,18 +258,18 @@ func (p *Plugin) handleBan(ctx *core.Context) error {
 	}
 
 	if ctx.Perms != nil && ctx.Perms.IsOwner(targetID) {
-		_ = ctx.Status("Cannot ban the owner!")
+		_ = ctx.Status(ctx.T("admin.owner_protected", ctx.T("admin.action.ban")))
 		return errors.New("cannot ban owner")
 	}
 
 	if err := ctx.Ban(targetPeer, 0); err != nil {
-		_ = ctx.EditOrReply(formatAdminError("ban user", err))
+		_ = ctx.EditOrReply(formatAdminError(ctx, ctx.T("admin.action.ban"), err))
 		return err
 	}
 
 	reason := ""
 	if len(ctx.Args) > 1 {
-		reason = fmt.Sprintf("\n<b>Reason:</b> %s", core.EscapeHTML(strings.Join(ctx.Args[1:], " ")))
+		reason = ctx.T("admin.reason_suffix", core.EscapeHTML(strings.Join(ctx.Args[1:], " ")))
 	}
 
 	rawReason := ""
@@ -278,12 +278,12 @@ func (p *Plugin) handleBan(ctx *core.Context) error {
 	}
 	p.publishAdminAction(ctx, "ban", targetID, rawReason)
 
-	return ctx.Success(fmt.Sprintf("Banned user %s.%s", ctx.DisplayUser(targetPeer, targetID), reason))
+	return ctx.Success(ctx.T("admin.ban.success", ctx.DisplayUser(targetPeer, targetID), reason))
 }
 
 func (p *Plugin) handleUnban(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
-		_ = ctx.Status("Fitur unban hanya dapat digunakan di grup or supergroup.")
+		_ = ctx.Status(ctx.T("admin.group_only", ctx.T("admin.action.unban")))
 		return core.ErrUnsupported
 	}
 
@@ -294,18 +294,18 @@ func (p *Plugin) handleUnban(ctx *core.Context) error {
 	}
 
 	if err := ctx.Unban(targetPeer); err != nil {
-		_ = ctx.EditOrReply(formatAdminError("unban user", err))
+		_ = ctx.EditOrReply(formatAdminError(ctx, ctx.T("admin.action.unban"), err))
 		return err
 	}
 
 	p.publishAdminAction(ctx, "unban", targetID, "")
 
-	return ctx.Success(fmt.Sprintf("Unbanned user %s.", ctx.DisplayUser(targetPeer, targetID)))
+	return ctx.Success(ctx.T("admin.unban.success", ctx.DisplayUser(targetPeer, targetID)))
 }
 
 func (p *Plugin) handleKick(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
-		_ = ctx.Status("Fitur kick hanya dapat digunakan in grup or supergroup.")
+		_ = ctx.Status(ctx.T("admin.group_only", ctx.T("admin.action.kick")))
 		return core.ErrUnsupported
 	}
 
@@ -316,12 +316,12 @@ func (p *Plugin) handleKick(ctx *core.Context) error {
 	}
 
 	if ctx.Perms != nil && ctx.Perms.IsOwner(targetID) {
-		_ = ctx.Status("Cannot kick the owner!")
+		_ = ctx.Status(ctx.T("admin.owner_protected", ctx.T("admin.action.kick")))
 		return errors.New("cannot kick owner")
 	}
 
 	if err := ctx.Kick(targetPeer); err != nil {
-		_ = ctx.EditOrReply(formatAdminError("kick user", err))
+		_ = ctx.EditOrReply(formatAdminError(ctx, ctx.T("admin.action.kick"), err))
 		return err
 	}
 
@@ -331,12 +331,12 @@ func (p *Plugin) handleKick(ctx *core.Context) error {
 	}
 	p.publishAdminAction(ctx, "kick", targetID, kickReason)
 
-	return ctx.Success(fmt.Sprintf("Kicked user %s.", ctx.DisplayUser(targetPeer, targetID)))
+	return ctx.Success(ctx.T("admin.kick.success", ctx.DisplayUser(targetPeer, targetID)))
 }
 
 func (p *Plugin) handleMute(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
-		_ = ctx.Status("Fitur mute hanya dapat digunakan in grup or supergroup.")
+		_ = ctx.Status(ctx.T("admin.group_only", ctx.T("admin.action.mute")))
 		return core.ErrUnsupported
 	}
 
@@ -347,7 +347,7 @@ func (p *Plugin) handleMute(ctx *core.Context) error {
 	}
 
 	if ctx.Perms != nil && ctx.Perms.IsOwner(targetID) {
-		_ = ctx.Status("Cannot mute the owner!")
+		_ = ctx.Status(ctx.T("admin.owner_protected", ctx.T("admin.action.mute")))
 		return errors.New("cannot mute owner")
 	}
 
@@ -362,24 +362,24 @@ func (p *Plugin) handleMute(ctx *core.Context) error {
 		}
 		if d, err := parseDuration(arg); err == nil && d > 0 {
 			untilDate = int(time.Now().Add(d).Unix())
-			durStr = fmt.Sprintf(" for <code>%s</code>", d.String())
+			durStr = ctx.T("admin.duration_suffix", d.String())
 			break
 		}
 	}
 
 	if err := ctx.Mute(targetPeer, untilDate); err != nil {
-		_ = ctx.EditOrReply(formatAdminError("mute user", err))
+		_ = ctx.EditOrReply(formatAdminError(ctx, ctx.T("admin.action.mute"), err))
 		return err
 	}
 
 	p.publishAdminAction(ctx, "mute", targetID, durStr)
 
-	return ctx.Success(fmt.Sprintf("Muted user %s%s.", ctx.DisplayUser(targetPeer, targetID), durStr))
+	return ctx.Success(ctx.T("admin.mute.success", ctx.DisplayUser(targetPeer, targetID), durStr))
 }
 
 func (p *Plugin) handleUnmute(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
-		_ = ctx.Status("Fitur unmute hanya dapat digunakan in grup or supergroup.")
+		_ = ctx.Status(ctx.T("admin.group_only", ctx.T("admin.action.unmute")))
 		return core.ErrUnsupported
 	}
 
@@ -390,30 +390,30 @@ func (p *Plugin) handleUnmute(ctx *core.Context) error {
 	}
 
 	if err := ctx.Unmute(targetPeer); err != nil {
-		_ = ctx.EditOrReply(formatAdminError("unmute user", err))
+		_ = ctx.EditOrReply(formatAdminError(ctx, ctx.T("admin.action.unmute"), err))
 		return err
 	}
 
 	p.publishAdminAction(ctx, "unmute", targetID, "")
 
-	return ctx.Success(fmt.Sprintf("Unmuted user %s.", ctx.DisplayUser(targetPeer, targetID)))
+	return ctx.Success(ctx.T("admin.unmute.success", ctx.DisplayUser(targetPeer, targetID)))
 }
 
 func (p *Plugin) handlePurge(ctx *core.Context) error {
 	if ctx.Message == nil || ctx.Message.ReplyToID == 0 {
-		_ = ctx.Status("Harap reply ke pesan awal yang ingin di-purge.")
+		_ = ctx.Status(ctx.T("admin.purge.reply_required"))
 		return core.ErrReplyRequired
 	}
 
 	count, err := ctx.Purge()
 	if err != nil {
-		_ = ctx.EditOrReply(formatAdminError("purge pesan", err))
+		_ = ctx.EditOrReply(formatAdminError(ctx, ctx.T("admin.action.purge"), err))
 		return err
 	}
 
 	topicMsg := ""
 	if ctx.TopicID() > 0 {
-		topicMsg = fmt.Sprintf(" in topic <code>%d</code>", ctx.TopicID())
+		topicMsg = ctx.T("admin.topic_suffix", ctx.TopicID())
 	}
 
 	// Purge is destructive and must consume its trigger regardless of whether
@@ -423,14 +423,14 @@ func (p *Plugin) handlePurge(ctx *core.Context) error {
 	// The confirmation notification is self-destructed after 4 seconds to leave
 	// the chat cleanly purged without leftover bot responses.
 	return ctx.ReplyAndDeleteWithDelay(
-		fmt.Sprintf("🗑️ <b>Purged %d messages successfully%s!</b>", count, topicMsg),
+		ctx.T("admin.purge.success", count, topicMsg),
 		4*time.Second,
 	)
 }
 
 func (p *Plugin) handlePromote(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
-		_ = ctx.Status("Fitur promote hanya dapat digunakan in grup or supergroup.")
+		_ = ctx.Status(ctx.T("admin.group_only", ctx.T("admin.action.promote")))
 		return core.ErrUnsupported
 	}
 
@@ -452,7 +452,7 @@ func (p *Plugin) handlePromote(ctx *core.Context) error {
 	}
 
 	if err := ctx.Promote(targetPeer, title); err != nil {
-		_ = ctx.EditOrReply(formatAdminError("promote user", err))
+		_ = ctx.EditOrReply(formatAdminError(ctx, ctx.T("admin.action.promote"), err))
 		return err
 	}
 
@@ -460,15 +460,15 @@ func (p *Plugin) handlePromote(ctx *core.Context) error {
 
 	titleStr := ""
 	if title != "" {
-		titleStr = fmt.Sprintf(" with title <i>%s</i>", core.EscapeHTML(title))
+		titleStr = ctx.T("admin.title_suffix", core.EscapeHTML(title))
 	}
 
-	return ctx.Success(fmt.Sprintf("Promoted user %s%s to admin.", ctx.DisplayUser(targetPeer, targetID), titleStr))
+	return ctx.Success(ctx.T("admin.promote.success", ctx.DisplayUser(targetPeer, targetID), titleStr))
 }
 
 func (p *Plugin) handleDemote(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
-		_ = ctx.Status("Fitur demote hanya dapat digunakan in grup or supergroup.")
+		_ = ctx.Status(ctx.T("admin.group_only", ctx.T("admin.action.demote")))
 		return core.ErrUnsupported
 	}
 
@@ -479,18 +479,18 @@ func (p *Plugin) handleDemote(ctx *core.Context) error {
 	}
 
 	if ctx.Perms != nil && ctx.Perms.IsOwner(targetID) {
-		_ = ctx.Status("Cannot demote the owner!")
+		_ = ctx.Status(ctx.T("admin.owner_protected", ctx.T("admin.action.demote")))
 		return errors.New("cannot demote owner")
 	}
 
 	if err := ctx.Demote(targetPeer); err != nil {
-		_ = ctx.EditOrReply(formatAdminError("demote user", err))
+		_ = ctx.EditOrReply(formatAdminError(ctx, ctx.T("admin.action.demote"), err))
 		return err
 	}
 
 	p.publishAdminAction(ctx, "demote", targetID, "")
 
-	return ctx.Success(fmt.Sprintf("Demoted admin %s to normal user.", ctx.DisplayUser(targetPeer, targetID)))
+	return ctx.Success(ctx.T("admin.demote.success", ctx.DisplayUser(targetPeer, targetID)))
 }
 
 func parseDuration(s string) (time.Duration, error) {
@@ -560,11 +560,11 @@ func validateAssistantWarningTarget(ctx *core.Context, targetID int64) error {
 
 func (p *Plugin) handleWarn(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
-		_ = ctx.Status("Fitur warn hanya dapat digunakan in grup or supergroup.")
+		_ = ctx.Status(ctx.T("admin.group_only", ctx.T("admin.action.warn")))
 		return core.ErrUnsupported
 	}
 	if p.moderator == nil {
-		_ = ctx.Status("Moderation service is not configured.")
+		_ = ctx.Status(ctx.T("admin.moderation_unavailable"))
 		return fmt.Errorf("%w: moderation service is nil", core.ErrUnavailable)
 	}
 
@@ -575,15 +575,15 @@ func (p *Plugin) handleWarn(ctx *core.Context) error {
 	}
 
 	if ctx.Perms != nil && ctx.Perms.IsOwner(targetID) {
-		_ = ctx.Status("Cannot warn the owner!")
+		_ = ctx.Status(ctx.T("admin.owner_protected", ctx.T("admin.action.warn")))
 		return errors.New("cannot warn owner")
 	}
 	if err := validateAssistantWarningTarget(ctx, targetID); err != nil {
-		_ = ctx.EditOrReply(formatAdminError("warn user", err))
+		_ = ctx.EditOrReply(formatAdminError(ctx, ctx.T("admin.action.warn"), err))
 		return err
 	}
 
-	reason := "No reason provided"
+	reason := ctx.T("admin.no_reason")
 	if len(ctx.Args) > 0 {
 		if len(ctx.Args) > 1 && (strings.HasPrefix(ctx.Args[0], "@") || isNumeric(ctx.Args[0])) {
 			reason = strings.Join(ctx.Args[1:], " ")
@@ -645,7 +645,7 @@ func (p *Plugin) handleWarn(ctx *core.Context) error {
 		)
 	}
 	if err != nil {
-		_ = ctx.EditOrReply(formatAdminError("warn user", err))
+		_ = ctx.EditOrReply(formatAdminError(ctx, ctx.T("admin.action.warn"), err))
 		return err
 	}
 
@@ -660,11 +660,11 @@ func (p *Plugin) handleWarn(ctx *core.Context) error {
 
 func (p *Plugin) handleWarns(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
-		_ = ctx.Status("Fitur warns hanya dapat digunakan in grup or supergroup.")
+		_ = ctx.Status(ctx.T("admin.group_only", ctx.T("admin.action.warns")))
 		return core.ErrUnsupported
 	}
 	if p.moderator == nil {
-		_ = ctx.Status("Moderation service is not configured.")
+		_ = ctx.Status(ctx.T("admin.moderation_unavailable"))
 		return fmt.Errorf("%w: moderation service is nil", core.ErrUnavailable)
 	}
 
@@ -677,20 +677,20 @@ func (p *Plugin) handleWarns(ctx *core.Context) error {
 	chatID := ctx.ChatID()
 	records, err := p.moderator.GetWarnings(ctx.Ctx, chatID, targetID)
 	if err != nil {
-		_ = ctx.EditOrReply(formatAdminError("get warnings", err))
+		_ = ctx.EditOrReply(formatAdminError(ctx, ctx.T("admin.action.warns"), err))
 		return err
 	}
 
 	targetStr := ctx.DisplayUser(targetPeer, targetID)
 	if len(records) == 0 {
-		return ctx.EditOrReply(fmt.Sprintf("User <b>%s</b> has 0 active warnings.", targetStr))
+		return ctx.EditOrReply(ctx.T("admin.warns_zero", targetStr))
 	}
 
 	var sb strings.Builder
 	sb.WriteString(ctx.T("admin.warns_count", targetStr, len(records)))
-	sb.WriteString("\n\n<b>Recent warnings:</b>\n")
+	sb.WriteString(ctx.T("admin.recent_warnings"))
 	for i, r := range records {
-		sb.WriteString(fmt.Sprintf("%d. <i>%s</i> (by <code>%d</code>)\n", i+1, core.EscapeHTML(r.Reason), r.WarnedBy))
+		sb.WriteString(ctx.T("admin.warning_item", i+1, core.EscapeHTML(r.Reason), r.WarnedBy))
 	}
 
 	return ctx.Result(sb.String())
@@ -698,11 +698,11 @@ func (p *Plugin) handleWarns(ctx *core.Context) error {
 
 func (p *Plugin) handleResetWarns(ctx *core.Context) error {
 	if isPrivateOrUnsupported(ctx) {
-		_ = ctx.Status("Fitur resetwarns hanya dapat digunakan in grup or supergroup.")
+		_ = ctx.Status(ctx.T("admin.group_only", ctx.T("admin.action.resetwarns")))
 		return core.ErrUnsupported
 	}
 	if p.moderator == nil {
-		_ = ctx.Status("Moderation service is not configured.")
+		_ = ctx.Status(ctx.T("admin.moderation_unavailable"))
 		return fmt.Errorf("%w: moderation service is nil", core.ErrUnavailable)
 	}
 
@@ -714,7 +714,7 @@ func (p *Plugin) handleResetWarns(ctx *core.Context) error {
 
 	chatID := ctx.ChatID()
 	if err := p.moderator.ResetWarnings(ctx.Ctx, chatID, targetID); err != nil {
-		_ = ctx.EditOrReply(formatAdminError("reset warnings", err))
+		_ = ctx.EditOrReply(formatAdminError(ctx, ctx.T("admin.action.resetwarns"), err))
 		return err
 	}
 
