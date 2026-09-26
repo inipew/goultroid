@@ -1,16 +1,73 @@
 # Goultroid — Assistant-Optional Userbot AI Session Handoff
 
-> **Purpose:** continue the audit/fix that makes Assistant and self-inline presentation an optional UX enhancement rather than a functional dependency of userbot commands.
+> **Purpose:** record the completed Assistant-optional userbot redesign, its closure acceptance, and the invariants future work must preserve.
 >
 > **Audited branch:** `test-next`
 >
-> **Audited HEAD:** `1b5cd807e9c5223d5854becb23edf37018711037` — `fix(help): disambiguate command detail navigation`
+> **Audited HEAD:** `bd807592322b6f3d0aa8160064ae96ade9c90cfa` — `test(architecture): close assistant-optional userbot acceptance`
 >
 > **Date:** 2026-09-26, Asia/Jakarta
 >
 > **CI rule:** do not inspect or wait for CI unless the user explicitly asks.
 >
 > **Authority rule:** refresh current source first. If branch drift exists after the audited HEAD above, current source/tests outrank this handoff.
+>
+> **Closure status:** **CLOSED** at acceptance commit `bd807592322b6f3d0aa8160064ae96ade9c90cfa`.
+>
+> **Verification caveat:** the closure is backed by source, behavioral tests, lifecycle tests, and the architecture matrix below. The session that closed it did not run the full repository `go test ./...` or inspect CI because a complete checkout/toolchain was unavailable and CI inspection was explicitly out of scope.
+
+---
+
+## 0. Closure status — CLOSED
+
+The Assistant-optional userbot redesign is closed. Do not reopen P0-P6 from the historical sections below unless current source or runtime evidence shows a regression.
+
+Implemented sequence:
+
+~~~text
+4733631b  P0-A stage-aware self-inline failure semantics
+8ce89d6a  P0-B Assistant-optional composition acceptance
+491f1f9e  P1 Help progressive fallback
+48af3fd3  P2 Calculator progressive fallback
+2262903e  P3 Downloader URL progressive fallback
+99669a0f  P3 retained ownership acceptance
+d1b8c4a3  P4 Settings Assistant decoupling
+502d5aeb  P5 repo-wide SurfaceUserbot dependency fence
+bd807592  P6 final closure acceptance
+~~~
+
+Final product invariant:
+
+> Any command available on `SurfaceUserbot` keeps its core userbot function when Assistant is absent, unconfigured, not ready, stopped, or inline mode is disabled. Assistant/self-inline may improve presentation, but it does not own userbot capability.
+
+Final acceptance matrix:
+
+| Condition | Help | Calculator | Downloader URL | Settings | MyXL | Wikipedia |
+|---|---|---|---|---|---|---|
+| Assistant healthy | rich self-inline/a2 | rich keypad | interactive selector | native settings + separate Assistant settings | native CLI + separate a2 UI | native command + separate inline |
+| Assistant absent | native Help | native evaluate/usage | native default pipeline | native | native | native |
+| Assistant not ready/stopped | native fallback before send | native fallback before send | native fallback before send | unaffected | unaffected | unaffected |
+| Inline disabled | native fallback | native fallback | native fallback | unaffected | unaffected | native command unaffected |
+| Query/select failure | native fallback | native fallback | native fallback | N/A | N/A | N/A |
+| Send-stage ambiguity | no duplicate native output | no duplicate native output | no duplicate physical download | N/A | N/A | N/A |
+| Plugin disable/reload | generation-fenced shared runtime | generation-fenced shared runtime | explicit downloader E2E generation fence | scoped callback/runtime lifecycle | shared generation lifecycle | Inline vNext generation lifecycle |
+| Shutdown/restart | userbot capability survives Assistant loss | explicitly tested rich -> stopped -> native | preflight fallback + scoped task lifecycle | independent native callbacks | native command independent | native command independent |
+
+P6 regression authorities:
+
+- `internal/architecture/assistant_optional_userbot_p6_test.go` — 22-cell closure matrix;
+- `internal/architecture/assistant_optional_userbot_p5_test.go` — repo-wide AST audit, including commands with unspecified `Surfaces`;
+- `internal/app/assistant_optional_closure_test.go` — ready Assistant -> stopped/not-ready -> native calculator fallback without another inline transport call;
+- `plugins/help/help_test.go` — absent/safe-failure/send-ambiguous Help behavior;
+- `plugins/calculator/calculator_test.go` — absent/safe-failure/send-ambiguous calculator behavior;
+- `plugins/downloader/url_progressive_test.go` — default native pipeline, safe fallback, no duplicate on send ambiguity;
+- `plugins/settings/assistant_optional_test.go` — all native settings callbacks remain settings-owned;
+- `plugins/myxl/assistant_optional_test.go` — native MyXL menu works without Assistant;
+- `plugins/wikipedia/assistant_optional_test.go` — native Wikipedia command does not require inline;
+- `internal/assistant/client/selfinline_downloader_reload_e2e_test.go` and `internal/plugin/p8h_cross_surface_test.go` — disable/reload generation fencing;
+- `internal/assistant/client/identity_p1_lifecycle_test.go` and `client_lifecycle_test.go` — stale identity/restart/quiesce behavior.
+
+The remainder of this document preserves the original audit and design rationale. Sections that describe Help, Calculator, Downloader, or Settings as a current hard dependency are **historical pre-fix analysis**, not current status.
 
 ---
 

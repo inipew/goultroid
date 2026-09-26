@@ -1,4 +1,4 @@
-> **LATEST CONTINUATION (2026-09-26):** For the current userbot-first Assistant optionality audit/fix, read **docs/design/goultroid-assistant-optional-userbot-ai-session-handoff.md** first. It documents the cross-feature finding that Help, Calculator, and URL Downloader currently hard-depend on self-inline Assistant presentation, Settings has a hidden Assistant navigation dependency, and establishes the required progressive-enhancement contract plus stage-safe fallback plan. Current source always wins.
+> **LATEST CONTINUATION (2026-09-26):** The Assistant-optional userbot redesign is **CLOSED** at `bd807592322b6f3d0aa8160064ae96ade9c90cfa` (`test(architecture): close assistant-optional userbot acceptance`). Read **docs/design/goultroid-assistant-optional-userbot-ai-session-handoff.md** for the final P0-P6 history and closure matrix. The repo-wide AST fence covers explicit and default-zero `SurfaceUserbot` commands; Help/Calculator/Downloader retain stage-safe native fallback, Settings no longer emits Assistant-owned navigation, MyXL/Wikipedia remain reference separations, and reload/shutdown generation fencing is part of P6. Do not reopen this redesign without fresh regression evidence. Current source always wins.
 >
 > **LATEST CONTINUATION (2026-09-25):** Read **docs/design/goultroid-selfinline-help-downloader-p2-ai-session-handoff.md** before continuing Assistant/self-inline work. Live testing after the P1 self-inline acceptance commit exposed Help callback handler-unavailable failures, unclickable downloader buttons, an incomplete callback-dispatch acceptance gate, and the previously identified P2 generic-callback/direct-Assistant cutover work. This dedicated handoff supersedes older assumptions that interactive self-inline acceptance was fully closed.
 
@@ -10,9 +10,9 @@ Current implementation state, post-P8 work, lifecycle/resource invariants, and n
 |---|---|
 | Repository | github.com/inipew/goultroid |
 | Branch | test-next |
-| Branch HEAD before this handoff refresh | bb3af71bf8a2e21fc27f468bfab61cb4bd49f8e4 |
-| Latest implementation commit | d307311d2dab084fb4bcdc01935e6448049cb32e |
-| Latest implementation message | fix(downloader): deliver userbot URL downloads to Telegram |
+| Branch HEAD before this handoff refresh | bd807592322b6f3d0aa8160064ae96ade9c90cfa |
+| Latest implementation commit | bd807592322b6f3d0aa8160064ae96ade9c90cfa |
+| Latest implementation message | test(architecture): close assistant-optional userbot acceptance |
 | Snapshot | 25 September 2026, Asia/Jakarta |
 | P1-P8 Assistant parity | CLOSED |
 | Ultroid-facing V2-V4 | CLOSED |
