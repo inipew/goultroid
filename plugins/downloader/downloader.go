@@ -16,6 +16,7 @@ import (
 	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/mediaregistry"
 	"github.com/inipew/goultroid/internal/services/storage"
+	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -31,6 +32,7 @@ type Plugin struct {
 	files         *filesystem.Scope
 	tasks         tasks.Client
 	renderer      selfinline.Renderer
+	settings      *settings.Service
 }
 
 // New creates a new downloader Plugin instance with optional dependencies.
@@ -64,6 +66,12 @@ func (p *Plugin) SetStorage(store storage.Storage) {
 // SetTaskClient sets the scoped TaskEngine client used for download continuations.
 func (p *Plugin) SetTaskClient(client tasks.Client) {
 	p.tasks = client
+}
+
+// SetSettingsService binds the canonical settings authority used only for
+// per-user locale resolution. Downloader does not retain a second locale map.
+func (p *Plugin) SetSettingsService(service *settings.Service) {
+	p.settings = service
 }
 
 // SetSelfInlineRenderer injects the canonical userbot -> own Assistant inline

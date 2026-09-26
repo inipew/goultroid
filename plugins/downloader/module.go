@@ -37,6 +37,7 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 		return module.ErrNilDatabase
 	}
 	p := New(rt.DownloadRegistry, rt.Storage, mediaregistry.New(rt.DB))
+	p.SetSettingsService(rt.SettingsService)
 	return rt.RegisterPlugin(ctx, m.Manifest(), p)
 }
 
